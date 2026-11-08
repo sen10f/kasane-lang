@@ -947,3 +947,44 @@ fn well_typed_programs_with_inference_produce_no_type_errors() {
     );
     assert!(!got.iter().any(|c| matches!(c.as_str(), "E2022" | "E2023" | "E2024" | "E2025" | "E1108")), "{}", out);
 }
+
+// ---- リテラルの範囲 (E2026) と、型が決まらないリテラル (E2027) ----
+
+#[test]
+fn out_of_range_literals_are_rejected() {
+    let (got, out) = check_codes("lit_range", &["let a = 300u8", "let b: u8 = 256", "let c = -1u32", "let d = 128i8"]);
+    assert_eq!(got.iter().filter(|c| *c == "E2026").count(), 4, "{}", out);
+}
+
+#[test]
+fn boundary_literals_are_accepted() {
+    let (got, out) = check_codes(
+        "lit_edge",
+        &["let a = 255u8", "let b = -128i8", "let c = 127i8", "let d = 0xffu8", "let e = 4294967295u32", "let f = -2147483648i32"],
+    );
+    assert!(!got.iter().any(|c| c == "E2026"), "{}", out);
+}
+
+#[test]
+fn a_literal_whose_type_is_never_decided_is_an_error() {
+    let (got, out) = check_codes("lit_undecided", &["let a = 5", "let b = 2.5"]);
+    assert_eq!(got.iter().filter(|c| *c == "E2027").count(), 2, "{}", out);
+}
+
+#[test]
+fn context_decides_a_literal() {
+    let src = "type t.S\n    n: u16\nend t.S\n\nfn t.f(x: u8) -> u8\n    x + 1\nend t.f\n\n\
+               fn t.g() -> u64\n    7\nend t.g\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    let s = t.S { n: 9 }\n    core.mem.drop(s)\n    \
+               core.mem.drop(t.f(2))\n    core.mem.drop(t.g())\n    let xs = [1u8, 2u8]\n    core.mem.drop(xs[0])\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("lit_ctx", src);
+    let got = codes(&text(&run(&["check", "--json"], &t.0).stdout));
+    assert!(!got.iter().any(|c| c == "E2027" || c == "E2026"), "{:?}", got);
+}
+
+#[test]
+fn literals_passed_to_unknown_receivers_are_not_flagged() {
+    // 型が分からない呼び出しに渡したリテラルは、型を決められなくてもエラーにしない (近似の限界)。
+    let (got, out) = check_codes("lit_escape", &["let f = 1u8", "core.mem.drop(f.unknown_thing(5))"]);
+    assert!(!got.iter().any(|c| c == "E2027"), "{}", out);
+}

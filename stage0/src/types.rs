@@ -131,6 +131,10 @@ pub struct TypeCk<'a> {
     /// 型変数の束縛 (None = 未束縛) と種類 (0 = 一般、1 = 整数リテラル、2 = 浮動小数リテラル)
     vars: Vec<Option<Ty>>,
     kinds: Vec<u8>,
+    /// 文脈が追えなかった (未知の型に渡された) 型変数。型が決まらなくてもエラーにしない。
+    escaped: HashSet<usize>,
+    /// 出てきたリテラル: (種類 "int"/"float", 綴り, 型, 行)
+    lits: Vec<(&'static str, String, Ty, usize)>,
 }
 
 impl<'a> TypeCk<'a> {
@@ -149,7 +153,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), lits: vec![] }
     }
 
     fn def(&self) -> &'a Def {
@@ -167,6 +171,8 @@ impl<'a> TypeCk<'a> {
         self.cur = di;
         self.vars.clear();
         self.kinds.clear();
+        self.escaped.clear();
+        self.lits.clear();
         self.scopes = vec![HashMap::new()];
         let gn = d.gnames();
         for (n, t) in &d.params {
@@ -175,7 +181,52 @@ impl<'a> TypeCk<'a> {
             let ty = subst_params_unknown(&ty);
             self.scopes[0].insert(n.clone(), ty);
         }
-        self.infer(body);
+        let value = self.infer(body);
+        let gn = d.gnames();
+        let ret = subst_params_unknown(&from_v(&d.ret, &gn));
+        let _ = self.unify2(&ret, &value);
+        self.finish_literals();
+    }
+
+    /// 関数の最後に、リテラルの範囲と、型が決まらなかったリテラルを検査する。
+    fn finish_literals(&mut self) {
+        let lits = std::mem::take(&mut self.lits);
+        for (kind, text, ty, line) in lits {
+            match self.deep(&ty) {
+                Ty::Prim(p) if kind == "int" && INTS.contains(&p.as_str()) => {
+                    if let Some(msg) = int_literal_problem(&text, &p) {
+                        self.diag("E2026", msg, line);
+                    }
+                }
+                Ty::Var(v) => {
+                    if !self.escaped.contains(&v) {
+                        self.diag(
+                            "E2027",
+                            format!(
+                                "cannot infer the type of the {} literal `{}`: add a suffix such as `{}{}`",
+                                kind,
+                                text,
+                                text,
+                                if kind == "int" { "u32" } else { "f64" }
+                            ),
+                            line,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn escape(&mut self, t: &Ty) {
+        match self.resolve(t) {
+            Ty::Var(v) => {
+                self.escaped.insert(v);
+            }
+            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().for_each(|x| self.escape(x)),
+            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.escape(&x),
+            _ => {}
+        }
     }
 
     fn lookup(&self, name: &str) -> Option<Ty> {
@@ -231,6 +282,12 @@ impl<'a> TypeCk<'a> {
     /// 2 つの型を等しくする。矛盾したら、その箇所の 2 つの型を返す。参照は透過的。
     fn unify2(&mut self, a: &Ty, b: &Ty) -> Result<(), (Ty, Ty)> {
         let (a, b) = (self.resolve(a), self.resolve(b));
+        if matches!(a, Ty::Unknown | Ty::Param(_)) {
+            self.escape(&b);
+        }
+        if matches!(b, Ty::Unknown | Ty::Param(_)) {
+            self.escape(&a);
+        }
         match (&a, &b) {
             (Ty::Unknown, _) | (_, Ty::Unknown) | (Ty::Never, _) | (_, Ty::Never) | (Ty::Param(_), _) | (_, Ty::Param(_)) => Ok(()),
             (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
@@ -394,6 +451,12 @@ impl<'a> TypeCk<'a> {
     fn call_method(&mut self, recv: &Ty, name: &str, args: &[Ty], line: usize) -> Ty {
         let (owners, complete) = self.owners_for(recv);
         let mut cands: Vec<(usize, String)> = vec![];
+        let escape_all = |this: &mut Self| {
+            for a in args {
+                this.escape(a);
+            }
+            this.escape(recv);
+        };
         for o in &owners {
             if let Some(m) = self.owners.get(o).and_then(|m| m.get(name)) {
                 cands.extend(m.iter().map(|&i| (i, o.clone())));
@@ -414,6 +477,7 @@ impl<'a> TypeCk<'a> {
                 let shown = self.deep(recv).strip().show();
                 self.diag("E1108", format!("type `{}` has no method `{}`{}", shown, name, hint), line);
             }
+            escape_all(self);
             return Ty::Unknown;
         }
         let fit: Vec<(usize, String)> = cands.iter().cloned().filter(|(i, _)| self.p.defs[*i].params.len() == args.len() + 1).collect();
@@ -426,6 +490,7 @@ impl<'a> TypeCk<'a> {
                     line,
                 );
             }
+            escape_all(self);
             return Ty::Unknown;
         }
         let (di, owner) = fit[0].clone();
@@ -473,14 +538,22 @@ impl<'a> TypeCk<'a> {
                 last
             }
             "Lit" => match st(&f[0]).as_str() {
-                "int" => match &f[2] {
-                    V::S(s) => Ty::Prim(s.clone()),
-                    _ => self.fresh(1),
-                },
-                "float" => match &f[1] {
-                    V::S(s) => Ty::Prim(s.clone()),
-                    _ => self.fresh(2),
-                },
+                "int" => {
+                    let t = match &f[2] {
+                        V::S(s) => Ty::Prim(s.clone()),
+                        _ => self.fresh(1),
+                    };
+                    self.lits.push(("int", st(&f[1]), t.clone(), nline(e)));
+                    t
+                }
+                "float" => {
+                    let t = match &f[1] {
+                        V::S(s) => Ty::Prim(s.clone()),
+                        _ => self.fresh(2),
+                    };
+                    self.lits.push(("float", st(&f[2]), t.clone(), nline(e)));
+                    t
+                }
                 "bool" => Ty::Prim("bool".into()),
                 "char" => Ty::Prim("char".into()),
                 "byte" => Ty::Prim("u8".into()),
@@ -551,12 +624,19 @@ impl<'a> TypeCk<'a> {
                 }
             }
             "StructLit" => {
-                for x in items(&f[1]) {
-                    self.infer(&items(x)[1]);
-                }
                 let segs: Vec<String> = st(&f[0]).split('.').map(String::from).collect();
                 let fq = self.p.expand(&segs, &self.def().file).join(".");
-                if self.p.types.contains_key(&fq) { Ty::Named(fq, vec![]) } else { Ty::Unknown }
+                let known = self.p.types.contains_key(&fq);
+                for x in items(&f[1]) {
+                    let vt = self.infer(&items(x)[1]);
+                    let declared = if known {
+                        self.field_ty(&Ty::Named(fq.clone(), vec![]), &st(&items(x)[0]))
+                    } else {
+                        Ty::Unknown
+                    };
+                    let _ = self.unify2(&declared, &vt);
+                }
+                if known { Ty::Named(fq, vec![]) } else { Ty::Unknown }
             }
             "TupleE" => {
                 let ts: Vec<Ty> = items(&f[0]).iter().map(|x| self.infer(x)).collect();
@@ -615,7 +695,11 @@ impl<'a> TypeCk<'a> {
             }
             "Return" | "Break" | "Continue" => {
                 if nname(e) == "Return" && !is_nil(&f[0]) {
-                    self.infer(&f[0]);
+                    let v = self.infer(&f[0]);
+                    let d = self.def();
+                    let gn = d.gnames();
+                    let ret = subst_params_unknown(&from_v(&d.ret, &gn));
+                    let _ = self.unify2(&ret, &v);
                 }
                 Ty::Never
             }
@@ -762,6 +846,7 @@ impl<'a> TypeCk<'a> {
         let argt: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
         if nname(callee) != "Path" {
             self.infer(callee);
+            argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;
         }
         let segs = strs(&nf(callee)[0]);
@@ -776,8 +861,13 @@ impl<'a> TypeCk<'a> {
             }
             return self.call_method(&t, &segs[segs.len() - 1], &argt, line);
         }
-        let Some(r) = self.p.resolve(&segs, &self.def().file) else { return Ty::Unknown };
+        let _ = &argt;
+        let Some(r) = self.p.resolve(&segs, &self.def().file) else {
+            argt.iter().for_each(|a| self.escape(a));
+            return Ty::Unknown;
+        };
         if !r.rest.is_empty() {
+            argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;
         }
         match r.target {
@@ -802,7 +892,10 @@ impl<'a> TypeCk<'a> {
                 self.call_def(i, &argt, line)
             }
             Target::Fn(i) | Target::Sig(i) => self.call_def(i, &argt, line),
-            _ => Ty::Unknown,
+            _ => {
+                argt.iter().for_each(|a| self.escape(a));
+                Ty::Unknown
+            }
         }
     }
 
@@ -836,4 +929,46 @@ impl<'a> TypeCk<'a> {
 /// 関数自身の型パラメータは、本体の中では分からない型として扱う。
 fn subst_params_unknown(t: &Ty) -> Ty {
     subst(t, &HashMap::new())
+}
+
+/// 整数リテラルの綴り `text` が型 `ty` に収まらなければ、その説明を返す。
+fn int_literal_problem(text: &str, ty: &str) -> Option<String> {
+    let neg = text.starts_with('-');
+    let t = text.trim_start_matches('-').replace('_', "");
+    let (digits, radix) = if let Some(r) = t.strip_prefix("0x") {
+        (r.to_string(), 16)
+    } else if let Some(r) = t.strip_prefix("0b") {
+        (r.to_string(), 2)
+    } else if let Some(r) = t.strip_prefix("0o") {
+        (r.to_string(), 8)
+    } else {
+        (t.clone(), 10)
+    };
+    // 接尾辞は字句解析の段階で分けてある (綴りには含まれない) が、念のため取り除く。
+    let digits: String = digits.chars().take_while(|c| c.is_digit(radix)).collect();
+    let mag = u128::from_str_radix(&digits, radix).ok();
+    let bits: u32 = match ty {
+        "i8" | "u8" => 8,
+        "i16" | "u16" => 16,
+        "i32" | "u32" => 32,
+        "i128" | "u128" => 128,
+        _ => 64,
+    };
+    let signed = ty.starts_with('i');
+    let Some(mag) = mag else { return Some(format!("integer literal `{}` is too large for `{}`", text, ty)) };
+    if !signed {
+        if neg && mag != 0 {
+            return Some(format!("a negative literal `{}` cannot have the unsigned type `{}`", text, ty));
+        }
+        let max = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+        if mag > max {
+            return Some(format!("integer literal `{}` is out of range for `{}` (max {})", text, ty, max));
+        }
+    } else {
+        let limit: u128 = 1u128 << (bits - 1);
+        if (!neg && mag >= limit) || (neg && mag > limit) {
+            return Some(format!("integer literal `{}` is out of range for `{}`", text, ty));
+        }
+    }
+    None
 }
