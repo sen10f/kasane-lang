@@ -31,6 +31,7 @@ impl[K: core.cmp.Ord + core.marker.Sync, V: core.marker.Sync, A: alloc.alloc.All
 impl[T: core.marker.Send, A: alloc.alloc.Allocator + core.marker.Send] core.marker.Send for alloc.collections.VecDeque<T, A>
 impl[T: core.marker.Sync, A: alloc.alloc.Allocator + core.marker.Sync] core.marker.Sync for alloc.collections.VecDeque<T, A>
 
+fn alloc.collections.BtreeMap.contains_key[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>, key: &K) -> bool uses [] panics never pub
 fn alloc.collections.BtreeMap.get[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>, key: &K) -> Option<&V> uses [] panics never pub
 fn alloc.collections.BtreeMap.get_mut[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.BtreeMap<K, V, A>, key: &K) -> Option<&mut V> uses [] panics never pub
 fn alloc.collections.BtreeMap.insert[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.BtreeMap<K, V, A>, key: K, value: V) -> Result<Option<V>, alloc.alloc.AllocError> uses [alloc] panics never pub

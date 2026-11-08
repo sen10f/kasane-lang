@@ -18,6 +18,7 @@ mod parser;
 mod program;
 mod resolve;
 mod rustisms;
+mod types;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

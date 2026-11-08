@@ -770,6 +770,15 @@ impl<'a> Checker<'a> {
                 self.tc_fn(i);
             }
         }
+        // 型付きの式推論に基づく検査 (レシーバの型によるメソッドの存在・引数の個数と型)。
+        let mut tk = crate::types::TypeCk::new(self.p);
+        for &i in &user {
+            let d = self.def(i);
+            if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" {
+                tk.check_def(i);
+            }
+        }
+        self.diags.extend(tk.diags);
         self.check_recursion();
     }
 

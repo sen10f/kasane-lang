@@ -818,3 +818,52 @@ fn junk_header_lines_are_never_silently_accepted() {
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
     assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E0054"), "{}", text(&o.stdout));
 }
+
+// ---- 型付きの式推論 (types.rs): レシーバの型によるメソッド検査 ----
+
+fn check_codes(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let t = Tmp::new(name, &main_wrap("", &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn method_missing_on_a_known_receiver_type_is_reported() {
+    // `is_some` は Option のメソッドで、Vec にはない。
+    let (got, out) = check_codes(
+        "ty_missing",
+        &["let v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.is_some())"],
+    );
+    assert!(got.iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("has no method `is_some`"), "{}", out);
+}
+
+#[test]
+fn method_arity_is_checked_on_a_known_receiver() {
+    let (got, out) = check_codes(
+        "ty_arity",
+        &["let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.push(1u8, 2u8))"],
+    );
+    assert!(got.iter().any(|c| c == "E2022"), "{}", out);
+}
+
+#[test]
+fn method_argument_types_are_checked_for_primitives() {
+    // slice.get は usize の添字を取る。
+    let (got, out) = check_codes(
+        "ty_arg",
+        &["let xs = [1u8, 2u8]", "let i = 0u32", "core.mem.drop(xs.get(i))"],
+    );
+    assert!(got.iter().any(|c| c == "E2023"), "{}", out);
+}
+
+#[test]
+fn types_flow_through_calls_and_fields() {
+    // v.pop() は Option<_>、その Option に is_some は存在する。items フィールド経由のメソッドも解決する。
+    let src = "type t.S\n    items: alloc.vec.Vec<u32, std.alloc.System>\nend t.S\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may\n    let mut s = t.S { items: alloc.vec.Vec.new(std.alloc.SYSTEM) }\n    \
+               core.mem.drop(s.items.pop().is_some())\n    core.mem.drop(s.items.len())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("ty_flow", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E1108" || c == "E2022" || c == "E2023"), "{}", out);
+}
