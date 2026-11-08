@@ -1,8 +1,11 @@
 //! 型付きの式推論 (型付き IR の最初の段階)。
 //!
-//! 関数本体の各式に型 (`Ty`) を与え、レシーバの型に基づいてメソッドの存在・引数の個数と型を検査する。
+//! 関数本体の各式に型 (`Ty`) を与える。型変数 (`Ty::Var`) と双方向の単一化で、整数・浮動小数リテラルの型と
+//! コンテナの要素型 (`let mut v = Vec.new()` を `v.push(1u8)` で決める) を、関数の中で伝播する。
+//! 検査: レシーバの型によるメソッドの存在 (E1108)・引数の個数 (E2022)・プリミティブ引数の型 (E2023)、
+//! 演算子の両辺の型の不一致 (E2024)、添字の型 (E2025)。
 //! 分からない型は `Ty::Unknown` にして、そこから先は何も言わない (誤検出より取りこぼしを選ぶ)。
-//! 結果の型は呼び出しのシグネチャから単一化 (unify) して求める。
+//! 参照は透過的に扱う (`&T` と `T` は同じとみなす)。
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,6 +26,8 @@ pub enum Ty {
     Slice(Box<Ty>),
     /// ジェネリクスの型パラメータ (シグネチャの中だけに現れる)
     Param(String),
+    /// 推論中の型変数 (関数ごとの表の添字)
+    Var(usize),
 }
 
 impl Ty {
@@ -35,7 +40,7 @@ impl Ty {
     }
     fn show(&self) -> String {
         match self {
-            Ty::Unknown => "_".into(),
+            Ty::Unknown | Ty::Var(_) => "_".into(),
             Ty::Never => "!".into(),
             Ty::Unit => "()".into(),
             Ty::Prim(p) => p.clone(),
@@ -53,7 +58,17 @@ impl Ty {
             Ty::Param(p) => p.clone(),
         }
     }
+    fn has_param(&self) -> bool {
+        match self {
+            Ty::Param(_) => true,
+            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| x.has_param()),
+            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => x.has_param(),
+            _ => false,
+        }
+    }
 }
+
+const INTS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"];
 
 /// 型の構文木 (V) を `Ty` にする。`params` に含まれる名前は型パラメータ。
 pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
@@ -86,33 +101,7 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
     }
 }
 
-/// `pattern` (シグネチャ側) を `actual` に合わせて、型パラメータの束縛を集める。
-fn unify(pattern: &Ty, actual: &Ty, bind: &mut HashMap<String, Ty>) {
-    match (pattern, actual) {
-        (Ty::Param(p), a) => {
-            if !matches!(a, Ty::Unknown | Ty::Param(_)) {
-                bind.entry(p.clone()).or_insert_with(|| a.clone());
-            }
-        }
-        (Ty::Ref(_, p), Ty::Ref(_, a)) => unify(p, a, bind),
-        (Ty::Ref(_, p), a) => unify(p, a, bind),
-        (p, Ty::Ref(_, a)) => unify(p, a, bind),
-        (Ty::Named(pn, pa), Ty::Named(an, aa)) if pn == an => {
-            for (p, a) in pa.iter().zip(aa) {
-                unify(p, a, bind);
-            }
-        }
-        (Ty::Tuple(ps), Ty::Tuple(as_)) => {
-            for (p, a) in ps.iter().zip(as_) {
-                unify(p, a, bind);
-            }
-        }
-        (Ty::Slice(p), Ty::Slice(a)) | (Ty::Slice(p), Ty::Array(a)) | (Ty::Array(p), Ty::Array(a)) => unify(p, a, bind),
-        _ => {}
-    }
-}
-
-/// 束縛を適用する。束縛のない型パラメータは `Unknown`。
+/// 型パラメータを束縛で置き換える。束縛のないものは `Unknown`。
 fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
     match t {
         Ty::Param(p) => bind.get(p).cloned().unwrap_or(Ty::Unknown),
@@ -122,16 +111,6 @@ fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
         Ty::Array(x) => Ty::Array(Box::new(subst(x, bind))),
         Ty::Slice(x) => Ty::Slice(Box::new(subst(x, bind))),
         other => other.clone(),
-    }
-}
-
-fn concrete(t: &Ty) -> bool {
-    match t {
-        Ty::Unknown | Ty::Param(_) | Ty::Never => false,
-        Ty::Prim(_) | Ty::Unit => true,
-        Ty::Named(_, a) => a.iter().all(concrete),
-        Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => concrete(x),
-        Ty::Tuple(xs) => xs.iter().all(concrete),
     }
 }
 
@@ -149,6 +128,9 @@ pub struct TypeCk<'a> {
     // 現在の関数
     cur: usize,
     scopes: Vec<HashMap<String, Ty>>,
+    /// 型変数の束縛 (None = 未束縛) と種類 (0 = 一般、1 = 整数リテラル、2 = 浮動小数リテラル)
+    vars: Vec<Option<Ty>>,
+    kinds: Vec<u8>,
 }
 
 impl<'a> TypeCk<'a> {
@@ -167,7 +149,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![] }
     }
 
     fn def(&self) -> &'a Def {
@@ -183,10 +165,14 @@ impl<'a> TypeCk<'a> {
         let d = &self.p.defs[di];
         let Some(body) = &d.body else { return };
         self.cur = di;
+        self.vars.clear();
+        self.kinds.clear();
         self.scopes = vec![HashMap::new()];
         let gn = d.gnames();
         for (n, t) in &d.params {
             let ty = from_v(t, &gn);
+            // 関数自身の型パラメータは、本体の中では「分からない型」として扱う。
+            let ty = subst_params_unknown(&ty);
             self.scopes[0].insert(n.clone(), ty);
         }
         self.infer(body);
@@ -202,13 +188,160 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    // ------------------------------------------------------------ 型変数と単一化
+    fn fresh(&mut self, kind: u8) -> Ty {
+        self.vars.push(None);
+        self.kinds.push(kind);
+        Ty::Var(self.vars.len() - 1)
+    }
+
+    /// 先頭だけ解決する。
+    fn resolve(&self, t: &Ty) -> Ty {
+        let mut t = t.clone();
+        while let Ty::Var(i) = t {
+            match &self.vars[i] {
+                Some(b) => t = b.clone(),
+                None => break,
+            }
+        }
+        t
+    }
+
+    /// 中まで解決する。
+    fn deep(&self, t: &Ty) -> Ty {
+        match self.resolve(t) {
+            Ty::Named(n, a) => Ty::Named(n, a.iter().map(|x| self.deep(x)).collect()),
+            Ty::Ref(m, x) => Ty::Ref(m, Box::new(self.deep(&x))),
+            Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.deep(x)).collect()),
+            Ty::Array(x) => Ty::Array(Box::new(self.deep(&x))),
+            Ty::Slice(x) => Ty::Slice(Box::new(self.deep(&x))),
+            other => other,
+        }
+    }
+
+    fn occurs(&self, v: usize, t: &Ty) -> bool {
+        match self.resolve(t) {
+            Ty::Var(i) => i == v,
+            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.occurs(v, x)),
+            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.occurs(v, &x),
+            _ => false,
+        }
+    }
+
+    /// 2 つの型を等しくする。矛盾したら、その箇所の 2 つの型を返す。参照は透過的。
+    fn unify2(&mut self, a: &Ty, b: &Ty) -> Result<(), (Ty, Ty)> {
+        let (a, b) = (self.resolve(a), self.resolve(b));
+        match (&a, &b) {
+            (Ty::Unknown, _) | (_, Ty::Unknown) | (Ty::Never, _) | (_, Ty::Never) | (Ty::Param(_), _) | (_, Ty::Param(_)) => Ok(()),
+            (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
+            (Ty::Var(x), Ty::Var(y)) => {
+                let k = self.kinds[*x].max(self.kinds[*y]);
+                self.kinds[*y] = k;
+                self.vars[*x] = Some(Ty::Var(*y));
+                Ok(())
+            }
+            (Ty::Var(x), t) | (t, Ty::Var(x)) => {
+                let t = t.clone();
+                match self.kinds[*x] {
+                    1 => {
+                        if let Ty::Prim(p) = &t {
+                            if !INTS.contains(&p.as_str()) {
+                                return Err((Ty::Prim("{integer}".into()), t));
+                            }
+                        } else if !matches!(t, Ty::Ref(..)) {
+                            return Err((Ty::Prim("{integer}".into()), t));
+                        }
+                    }
+                    2 => {
+                        if let Ty::Prim(p) = &t {
+                            if p != "f32" && p != "f64" {
+                                return Err((Ty::Prim("{float}".into()), t));
+                            }
+                        } else if !matches!(t, Ty::Ref(..)) {
+                            return Err((Ty::Prim("{float}".into()), t));
+                        }
+                    }
+                    _ => {}
+                }
+                if let Ty::Ref(_, inner) = &t {
+                    // 参照は透過的: リテラルの型は参照の中身に合わせる。
+                    return self.unify2(&Ty::Var(*x), inner);
+                }
+                if self.occurs(*x, &t) {
+                    return Ok(());
+                }
+                self.vars[*x] = Some(t);
+                Ok(())
+            }
+            (Ty::Ref(_, x), y) | (y, Ty::Ref(_, x)) => {
+                let (x, y) = (x.clone(), y.clone());
+                self.unify2(&x, &y)
+            }
+            (Ty::Prim(p), Ty::Prim(q)) => {
+                if p == q { Ok(()) } else { Err((a.clone(), b.clone())) }
+            }
+            (Ty::Named(n, xs), Ty::Named(m, ys)) => {
+                if n != m {
+                    return Err((a.clone(), b.clone()));
+                }
+                let (xs, ys) = (xs.clone(), ys.clone());
+                for (x, y) in xs.iter().zip(&ys) {
+                    self.unify2(x, y)?;
+                }
+                Ok(())
+            }
+            (Ty::Tuple(xs), Ty::Tuple(ys)) => {
+                let (xs, ys) = (xs.clone(), ys.clone());
+                for (x, y) in xs.iter().zip(&ys) {
+                    self.unify2(x, y)?;
+                }
+                Ok(())
+            }
+            (Ty::Slice(x), Ty::Slice(y)) | (Ty::Slice(x), Ty::Array(y)) | (Ty::Array(x), Ty::Slice(y)) | (Ty::Array(x), Ty::Array(y)) => {
+                let (x, y) = (x.clone(), y.clone());
+                self.unify2(&x, &y)
+            }
+            (Ty::Unit, Ty::Unit) => Ok(()),
+            _ => Ok(()), // 構造が違うものは、近似の限界かもしれないので何も言わない
+        }
+    }
+
+    /// シグネチャの型パラメータを、呼び出しごとの新しい型変数に置き換える。
+    fn inst(&mut self, t: &Ty, map: &mut HashMap<String, Ty>) -> Ty {
+        match t {
+            Ty::Param(p) => {
+                if let Some(v) = map.get(p) {
+                    return v.clone();
+                }
+                let v = self.fresh(0);
+                map.insert(p.clone(), v.clone());
+                v
+            }
+            Ty::Named(n, a) => Ty::Named(n.clone(), a.iter().map(|x| self.inst(x, map)).collect()),
+            Ty::Ref(m, x) => Ty::Ref(*m, Box::new(self.inst(x, map))),
+            Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.inst(x, map)).collect()),
+            Ty::Array(x) => Ty::Array(Box::new(self.inst(x, map))),
+            Ty::Slice(x) => Ty::Slice(Box::new(self.inst(x, map))),
+            other => other.clone(),
+        }
+    }
+
+    /// 矛盾した 2 つが両方プリミティブ (リテラル型を含む) なら、診断のための文字列を返す。
+    fn prim_conflict(&self, e: &(Ty, Ty)) -> Option<(String, String)> {
+        match (&e.0, &e.1) {
+            (Ty::Prim(a), Ty::Prim(b)) => Some((a.clone(), b.clone())),
+            _ => None,
+        }
+    }
+
     // ------------------------------------------------------------ 型の情報
     fn type_def(&self, fqn: &str) -> Option<&'a Def> {
         self.p.types.get(fqn).map(|&i| &self.p.defs[i])
     }
 
     fn field_ty(&self, recv: &Ty, name: &str) -> Ty {
-        let Ty::Named(fqn, args) = recv.strip() else { return Ty::Unknown };
+        let r = self.deep(recv);
+        let Ty::Named(fqn, args) = r.strip() else { return Ty::Unknown };
         let Some(td) = self.type_def(fqn) else { return Ty::Unknown };
         if td.kw != "type" {
             return Ty::Unknown;
@@ -226,6 +359,7 @@ impl<'a> TypeCk<'a> {
 
     /// レシーバの型から、メソッドを探す所有者の列と「その型のメソッド表が完全か」を返す。
     fn owners_for(&self, t: &Ty) -> (Vec<String>, bool) {
+        let t = self.deep(t);
         match t.strip() {
             Ty::Prim(p) if p == "str" => (vec!["core.str".into()], true),
             Ty::Prim(p) if p == "bool" => (vec!["core.bool".into()], false),
@@ -244,13 +378,25 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// 所有者 `owner` のメソッドの `self` に合わせたレシーバの見え方 (Vec → スライス、String → str)。
+    fn view_for(&self, recv: &Ty, owner: &str) -> Ty {
+        let r = self.deep(recv);
+        match (r.strip(), owner) {
+            (Ty::Named(n, a), "core.slice") if n == "alloc.vec.Vec" => {
+                Ty::Slice(Box::new(a.first().cloned().unwrap_or(Ty::Unknown)))
+            }
+            (Ty::Named(n, _), "core.str") if n == "alloc.string.String" => Ty::Prim("str".into()),
+            _ => r,
+        }
+    }
+
     // ------------------------------------------------------------ メソッド呼び出し
     fn call_method(&mut self, recv: &Ty, name: &str, args: &[Ty], line: usize) -> Ty {
         let (owners, complete) = self.owners_for(recv);
-        let mut cands: Vec<usize> = vec![];
+        let mut cands: Vec<(usize, String)> = vec![];
         for o in &owners {
             if let Some(m) = self.owners.get(o).and_then(|m| m.get(name)) {
-                cands.extend(m);
+                cands.extend(m.iter().map(|&i| (i, o.clone())));
             }
         }
         if cands.is_empty() {
@@ -265,14 +411,15 @@ impl<'a> TypeCk<'a> {
                     .filter(|(d, n)| *d <= (name.len().max(n.len()) / 3).max(1) || n.contains(name) || name.contains(n.as_str()))
                     .min_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(b.1)));
                 let hint = best.map(|(_, n)| format!("; did you mean `{}`?", n)).unwrap_or_default();
-                self.diag("E1108", format!("type `{}` has no method `{}`{}", recv.strip().show(), name, hint), line);
+                let shown = self.deep(recv).strip().show();
+                self.diag("E1108", format!("type `{}` has no method `{}`{}", shown, name, hint), line);
             }
             return Ty::Unknown;
         }
-        let fit: Vec<usize> = cands.iter().copied().filter(|&i| self.p.defs[i].params.len() == args.len() + 1).collect();
+        let fit: Vec<(usize, String)> = cands.iter().cloned().filter(|(i, _)| self.p.defs[*i].params.len() == args.len() + 1).collect();
         if fit.is_empty() {
             if cands.len() == 1 && complete {
-                let d = &self.p.defs[cands[0]];
+                let d = &self.p.defs[cands[0].0];
                 self.diag(
                     "E2022",
                     format!("method `{}` takes {} argument(s) but {} given", name, d.params.len() - 1, args.len()),
@@ -281,20 +428,20 @@ impl<'a> TypeCk<'a> {
             }
             return Ty::Unknown;
         }
-        let d = &self.p.defs[fit[0]];
+        let (di, owner) = fit[0].clone();
+        let d = &self.p.defs[di];
         let gn = d.gnames();
-        let mut bind: HashMap<String, Ty> = HashMap::new();
+        let mut map: HashMap<String, Ty> = HashMap::new();
         let self_ty = from_v(&d.params[0].1, &gn);
-        unify(&self_ty, recv, &mut bind);
+        let self_ty = self.inst(&self_ty, &mut map);
+        let view = self.view_for(recv, &owner);
+        let _ = self.unify2(&self_ty, &view);
         for (k, a) in args.iter().enumerate() {
             let pt = from_v(&d.params[k + 1].1, &gn);
-            unify(&pt, a, &mut bind);
-        }
-        if fit.len() == 1 {
-            for (k, a) in args.iter().enumerate() {
-                let pt = subst(&from_v(&d.params[k + 1].1, &gn), &bind);
-                if let (Ty::Prim(want), Ty::Prim(got)) = (pt.strip(), a.strip()) {
-                    if want != got && concrete(&pt) && concrete(a) {
+            let pt = self.inst(&pt, &mut map);
+            if let Err(e) = self.unify2(&pt, a) {
+                if fit.len() == 1 {
+                    if let Some((want, got)) = self.prim_conflict(&e) {
                         self.diag(
                             "E2023",
                             format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
@@ -304,8 +451,8 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
-        let gn_ret = from_v(&d.ret, &gn);
-        subst(&gn_ret, &bind)
+        let ret = from_v(&d.ret, &gn);
+        self.inst(&ret, &mut map)
     }
 
     // ------------------------------------------------------------ 式
@@ -328,11 +475,11 @@ impl<'a> TypeCk<'a> {
             "Lit" => match st(&f[0]).as_str() {
                 "int" => match &f[2] {
                     V::S(s) => Ty::Prim(s.clone()),
-                    _ => Ty::Unknown,
+                    _ => self.fresh(1),
                 },
                 "float" => match &f[1] {
                     V::S(s) => Ty::Prim(s.clone()),
-                    _ => Ty::Unknown,
+                    _ => self.fresh(2),
                 },
                 "bool" => Ty::Prim("bool".into()),
                 "char" => Ty::Prim("char".into()),
@@ -353,14 +500,23 @@ impl<'a> TypeCk<'a> {
                 let r = self.infer(&f[0]);
                 self.field_ty(&r, &st(&f[1]))
             }
-            "Try" => match self.infer(&f[0]).strip() {
-                Ty::Named(n, a) if n == "Result" || n == "Option" => a.first().cloned().unwrap_or(Ty::Unknown),
-                _ => Ty::Unknown,
-            },
+            "Try" => {
+                let t = self.infer(&f[0]);
+                match self.deep(&t).strip() {
+                    Ty::Named(n, a) if n == "Result" || n == "Option" => a.first().cloned().unwrap_or(Ty::Unknown),
+                    _ => Ty::Unknown,
+                }
+            }
             "Index" => {
                 let t = self.infer(&f[0]);
-                self.infer(&f[1]);
-                match t.strip() {
+                let idx = self.infer(&f[1]);
+                let want = Ty::Prim("usize".into());
+                if let Err(err) = self.unify2(&want, &idx) {
+                    if let Some((_, got)) = self.prim_conflict(&err) {
+                        self.diag("E2025", format!("an index must be `usize`, found `{}`", got), nline(e));
+                    }
+                }
+                match self.deep(&t).strip() {
                     Ty::Array(x) | Ty::Slice(x) => (**x).clone(),
                     _ => Ty::Unknown,
                 }
@@ -370,7 +526,7 @@ impl<'a> TypeCk<'a> {
                 match st(&f[0]).as_str() {
                     "&" => Ty::Ref(false, Box::new(t)),
                     "&mut" => Ty::Ref(true, Box::new(t)),
-                    "*" => match t {
+                    "*" => match self.resolve(&t) {
                         Ty::Ref(_, x) => *x,
                         _ => Ty::Unknown,
                     },
@@ -380,11 +536,18 @@ impl<'a> TypeCk<'a> {
             "Bin" => {
                 let a = self.infer(&f[1]);
                 let b = self.infer(&f[2]);
-                match st(&f[0]).as_str() {
-                    "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||" => Ty::Prim("bool".into()),
-                    _ => {
-                        if matches!(a, Ty::Prim(_)) { a } else { b }
+                let op = st(&f[0]);
+                if op == "&&" || op == "||" {
+                    return Ty::Prim("bool".into());
+                }
+                if let Err(err) = self.unify2(&a, &b) {
+                    if let Some((l, r)) = self.prim_conflict(&err) {
+                        self.diag("E2024", format!("operands of `{}` have different types: `{}` and `{}`", op, l, r), nline(e));
                     }
+                }
+                match op.as_str() {
+                    "==" | "!=" | "<" | "<=" | ">" | ">=" => Ty::Prim("bool".into()),
+                    _ => a,
                 }
             }
             "StructLit" => {
@@ -401,7 +564,11 @@ impl<'a> TypeCk<'a> {
             }
             "ArrayE" => {
                 let ts: Vec<Ty> = items(&f[0]).iter().map(|x| self.infer(x)).collect();
-                Ty::Array(Box::new(ts.into_iter().find(|t| *t != Ty::Unknown).unwrap_or(Ty::Unknown)))
+                let elem = self.fresh(0);
+                for t in &ts {
+                    let _ = self.unify2(&elem, t);
+                }
+                Ty::Array(Box::new(elem))
             }
             "If" => {
                 self.infer(&f[0]);
@@ -426,7 +593,7 @@ impl<'a> TypeCk<'a> {
             "For" => {
                 let it = self.infer(&f[1]);
                 self.scopes.push(HashMap::new());
-                let elem = match it.strip() {
+                let elem = match self.deep(&it).strip() {
                     Ty::Named(n, a) if n == "core.iter.Range" => a.first().cloned().unwrap_or(Ty::Unknown),
                     _ => Ty::Unknown,
                 };
@@ -439,7 +606,7 @@ impl<'a> TypeCk<'a> {
                 self.scopes.push(HashMap::new());
                 let gn = self.def().gnames();
                 for p in items(&f[0]) {
-                    let ty = from_v(&items(p)[1], &gn);
+                    let ty = subst_params_unknown(&from_v(&items(p)[1], &gn));
                     self.bind(&st(&items(p)[0]), ty);
                 }
                 self.infer(&f[3]);
@@ -470,13 +637,29 @@ impl<'a> TypeCk<'a> {
             "Let" => {
                 let rhs = self.infer(&f[3]);
                 let gn = self.def().gnames();
-                let ty = if !is_nil(&f[2]) { from_v(&f[2], &gn) } else { rhs };
+                let ty = if !is_nil(&f[2]) {
+                    let ann = subst_params_unknown(&from_v(&f[2], &gn));
+                    let _ = self.unify2(&ann, &rhs);
+                    ann
+                } else {
+                    rhs
+                };
                 self.bind_pat(&f[0], &ty);
                 Ty::Unit
             }
             "Assign" => {
-                self.infer(&f[0]);
-                self.infer(&f[1]);
+                let target = self.infer(&f[0]);
+                let value = self.infer(&f[1]);
+                // 変数への代入は従来の検査 (E2020) が見る。フィールド・添字への代入をここで見る。
+                if nname(&f[0]) != "Path" || strs(&nf(&f[0])[0]).len() > 1 {
+                    if let Err(e) = self.unify2(&target, &value) {
+                        if let Some((want, got)) = self.prim_conflict(&e) {
+                            self.diag("E2024", format!("assignment: expected `{}`, found `{}`", want, got), nline(&f[1]));
+                        }
+                    }
+                } else {
+                    let _ = self.unify2(&target, &value);
+                }
                 Ty::Unit
             }
             _ => self.infer(&f[0]),
@@ -487,12 +670,9 @@ impl<'a> TypeCk<'a> {
         let f = nf(pat);
         match nname(pat) {
             "PBind" => self.bind(&st(&f[0]), ty.clone()),
-            "PRef" => {
-                let inner = ty.strip().clone();
-                self.bind_pat(&f[0], &inner)
-            }
+            "PRef" => self.bind_pat(&f[0], ty),
             "PTuple" => {
-                let ts: Vec<Ty> = match ty.strip() {
+                let ts: Vec<Ty> = match self.deep(ty).strip() {
                     Ty::Tuple(ts) => ts.clone(),
                     _ => vec![],
                 };
@@ -521,7 +701,8 @@ impl<'a> TypeCk<'a> {
 
     fn variant_payload(&self, segs: &[String], ty: &Ty) -> Vec<Ty> {
         let name = segs.last().cloned().unwrap_or_default();
-        let args = match ty.strip() {
+        let t = self.deep(ty);
+        let args = match t.strip() {
             Ty::Named(_, a) => a.clone(),
             _ => vec![],
         };
@@ -563,7 +744,8 @@ impl<'a> TypeCk<'a> {
                 Target::Const(i) => from_v(&self.p.defs[i].ret, &HashSet::new()),
                 Target::Variant(en, vn) => {
                     if en == "Option" && vn == "None" {
-                        Ty::Named("Option".into(), vec![Ty::Unknown])
+                        let v = self.fresh(0);
+                        Ty::Named("Option".into(), vec![v])
                     } else if self.p.types.contains_key(&en) {
                         Ty::Named(en, vec![])
                     } else {
@@ -603,34 +785,55 @@ impl<'a> TypeCk<'a> {
                 let a0 = argt.first().cloned().unwrap_or(Ty::Unknown);
                 match (en.as_str(), vn.as_str()) {
                     ("Option", "Some") => Ty::Named("Option".into(), vec![a0]),
-                    ("Result", "Ok") => Ty::Named("Result".into(), vec![a0, Ty::Unknown]),
-                    ("Result", "Err") => Ty::Named("Result".into(), vec![Ty::Unknown, a0]),
+                    ("Result", "Ok") => {
+                        let e = self.fresh(0);
+                        Ty::Named("Result".into(), vec![a0, e])
+                    }
+                    ("Result", "Err") => {
+                        let t = self.fresh(0);
+                        Ty::Named("Result".into(), vec![t, a0])
+                    }
                     _ if self.p.types.contains_key(&en) => Ty::Named(en, vec![]),
                     _ => Ty::Unknown,
                 }
             }
             Target::Native(ref fq) | Target::Value(ref fq) if self.p.sigs.contains_key(fq) => {
                 let i = self.p.sigs[fq];
-                self.call_def(i, &argt)
+                self.call_def(i, &argt, line)
             }
-            Target::Fn(i) | Target::Sig(i) => self.call_def(i, &argt),
+            Target::Fn(i) | Target::Sig(i) => self.call_def(i, &argt, line),
             _ => Ty::Unknown,
         }
     }
 
-    fn call_def(&mut self, i: usize, argt: &[Ty]) -> Ty {
-        {
-            {
-                let d = &self.p.defs[i];
-                let gn = d.gnames();
-                let mut bind = HashMap::new();
-                for (k, a) in argt.iter().enumerate() {
-                    if let Some(p) = d.params.get(k) {
-                        unify(&from_v(&p.1, &gn), a, &mut bind);
+    /// 関数・関連関数の呼び出し: 型パラメータを新しい型変数にし、引数と単一化して、戻り値の型を求める。
+    fn call_def(&mut self, i: usize, argt: &[Ty], line: usize) -> Ty {
+        let d = &self.p.defs[i];
+        let gn = d.gnames();
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        for (k, a) in argt.iter().enumerate() {
+            let Some(p) = d.params.get(k) else { break };
+            let raw = from_v(&p.1, &gn);
+            let pt = self.inst(&raw, &mut map);
+            if let Err(e) = self.unify2(&pt, a) {
+                // 型パラメータを含まない引数の型は従来の検査 (E2020) が見る。ここでは重複を避ける。
+                if raw.has_param() {
+                    if let Some((want, got)) = self.prim_conflict(&e) {
+                        self.diag(
+                            "E2023",
+                            format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
+                            line,
+                        );
                     }
                 }
-                subst(&from_v(&d.ret, &gn), &bind)
             }
         }
+        let ret = from_v(&d.ret, &gn);
+        self.inst(&ret, &mut map)
     }
+}
+
+/// 関数自身の型パラメータは、本体の中では分からない型として扱う。
+fn subst_params_unknown(t: &Ty) -> Ty {
+    subst(t, &HashMap::new())
 }

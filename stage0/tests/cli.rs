@@ -867,3 +867,83 @@ fn types_flow_through_calls_and_fields() {
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(!codes(&out).iter().any(|c| c == "E1108" || c == "E2022" || c == "E2023"), "{}", out);
 }
+
+// ---- 型推論の拡張: 型変数・リテラル・要素型の伝播 ----
+
+#[test]
+fn operands_of_different_primitive_types_are_rejected() {
+    let (got, out) = check_codes("ty_binop", &["let a = 1u8", "let b = 2u32", "core.mem.drop(a + b)"]);
+    assert!(got.iter().any(|c| c == "E2024"), "{}", out);
+}
+
+#[test]
+fn unsuffixed_literals_adopt_the_other_operand_type() {
+    let (got, out) = check_codes(
+        "ty_litok",
+        &["let a = 1u8", "let c = a + 1", "let f = 2.5f32", "let g = f * 2.0", "core.mem.drop(c)", "core.mem.drop(g)"],
+    );
+    assert!(!got.iter().any(|c| c.starts_with("E202")), "{}", out);
+}
+
+#[test]
+fn a_float_literal_cannot_meet_an_integer() {
+    let (got, out) = check_codes("ty_floatint", &["let a = 1u8", "core.mem.drop(a + 2.5)"]);
+    assert!(got.iter().any(|c| c == "E2024"), "{}", out);
+}
+
+#[test]
+fn element_type_is_inferred_from_the_first_push() {
+    let (got, out) = check_codes(
+        "ty_elem",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "core.mem.drop(v.push(1u8))",
+            "core.mem.drop(v.push(2u32))",
+        ],
+    );
+    assert!(got.iter().any(|c| c == "E2023"), "{}", out);
+    assert!(out.contains("expected `u8`, found `u32`"), "{}", out);
+}
+
+#[test]
+fn generic_function_arguments_must_agree() {
+    // core.iter.range[T](start: T, stop: T): 両方が同じ T でなければならない。
+    let (got, out) = check_codes("ty_range", &["let n = 5u64", "core.mem.drop(core.iter.range(0u32, n))"]);
+    assert!(got.iter().any(|c| c == "E2023"), "{}", out);
+}
+
+#[test]
+fn field_and_index_assignment_types_are_checked() {
+    let src = "type t.S\n    total: u32\nend t.S\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    let mut s = t.S { total: 0u32 }\n    s.total = 5u8\n    \
+               let xs = [1u8, 2u8]\n    let i = 0u32\n    core.mem.drop(xs[i])\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("ty_assign", src);
+    let got = codes(&text(&run(&["check", "--json"], &t.0).stdout));
+    assert!(got.iter().any(|c| c == "E2024"), "{:?}", got);
+    assert!(got.iter().any(|c| c == "E2025"), "{:?}", got);
+}
+
+#[test]
+fn well_typed_programs_with_inference_produce_no_type_errors() {
+    let (got, out) = check_codes(
+        "ty_clean",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "core.mem.drop(v.push(1u32))",
+            "core.mem.drop(v.push(2u32))",
+            "let n = v.len()",
+            "let mut total = 0u32",
+            "for i in core.iter.range(0usize, n) {",
+            "    match v.get(i) {",
+            "        Some(x) => {",
+            "            total = total + x",
+            "        }",
+            "        None => {",
+            "        }",
+            "    }",
+            "}",
+            "core.check.eq(total, 3u32)",
+        ],
+    );
+    assert!(!got.iter().any(|c| matches!(c.as_str(), "E2022" | "E2023" | "E2024" | "E2025" | "E1108")), "{}", out);
+}
