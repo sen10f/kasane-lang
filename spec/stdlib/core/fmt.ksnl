@@ -1,0 +1,48 @@
+trait core.fmt.Debug pub
+    fn debug_fmt(self: &Self, f: &mut core.fmt.Formatter) -> Result<(), core.fmt.Error> uses [] panics never
+end core.fmt.Debug
+
+trait core.fmt.Display pub
+    fn display_fmt(self: &Self, f: &mut core.fmt.Formatter) -> Result<(), core.fmt.Error> uses [] panics never
+end core.fmt.Display
+
+type core.fmt.Error derive [Debug, Clone, Copy] pub
+    code: u32
+end core.fmt.Error
+
+type core.fmt.Formatter['a] pub
+    buf: &'a mut [u8]
+    len: usize
+end core.fmt.Formatter
+
+fn core.fmt.Formatter.new['a](buffer: &'a mut [u8]) -> core.fmt.Formatter<'a> const uses [] panics never pub
+    core.fmt.Formatter { buf: buffer, len: 0usize }
+end core.fmt.Formatter.new
+
+fn core.fmt.Formatter.push_bytes(self: &mut core.fmt.Formatter, bytes: &[u8]) -> Result<(), core.fmt.Error> uses [] panics never
+    let stop = match self.len.checked_add(bytes.len()) {
+        Some(e) => e
+        None => return Err(core.fmt.Error { code: 1u32 })
+    }
+    let dst = match self.buf.sub_mut(self.len, stop) {
+        Some(d) => d
+        None => return Err(core.fmt.Error { code: 1u32 })
+    }
+    match dst.copy_from(bytes) {
+        Ok(done) => done
+        Err(_error) => return Err(core.fmt.Error { code: 1u32 })
+    }
+    self.len = stop
+    Ok(())
+end core.fmt.Formatter.push_bytes
+
+fn core.fmt.Formatter.write_str(self: &mut core.fmt.Formatter, s: &str) -> Result<(), core.fmt.Error> uses [] panics never pub
+    core.fmt.Formatter.push_bytes(self, s.as_bytes())
+end core.fmt.Formatter.write_str
+
+fn core.fmt.Formatter.written(self: &core.fmt.Formatter) -> &[u8] uses [] panics never pub
+    match self.buf.sub(0usize, self.len) {
+        Some(part) => part
+        None => self.buf
+    }
+end core.fmt.Formatter.written

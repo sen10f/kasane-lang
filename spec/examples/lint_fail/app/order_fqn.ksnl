@@ -1,0 +1,7 @@
+fn app.order_fqn.b() -> i32 uses [] panics never pub
+    1i32
+end app.order_fqn.b
+
+fn app.order_fqn.a() -> i32 uses [] panics never pub
+    1i32
+end app.order_fqn.a

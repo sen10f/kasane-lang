@@ -1,0 +1,9 @@
+import core.cmp
+
+import core.fmt
+
+fn app.blank_import.f(a: cmp.Ordering, b: fmt.Error) -> i32 uses [] panics never pub
+    core.mem.drop(a)
+    core.mem.drop(b)
+    1i32
+end app.blank_import.f

@@ -1,0 +1,6 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = [1u8]
+    let b = a[0usize]
+    core.mem.drop(b)
+    Ok(())
+end t.main

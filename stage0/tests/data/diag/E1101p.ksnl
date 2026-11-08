@@ -1,0 +1,8 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x = 1u8
+    match x {
+        t.Nope.A => 1u8
+        _ => 2u8
+    }
+    Ok(())
+end t.main

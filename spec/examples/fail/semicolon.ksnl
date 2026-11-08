@@ -1,0 +1,4 @@
+fn app.x.f() -> i32 uses [] panics never
+    let x = 5i32;
+    x
+end app.x.f

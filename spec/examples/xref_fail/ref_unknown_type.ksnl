@@ -1,0 +1,4 @@
+fn app.ref_unknown.f(x: core.nothing.Missing) -> i32 uses [] panics never pub
+    core.mem.drop(x)
+    1i32
+end app.ref_unknown.f

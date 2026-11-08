@@ -1,0 +1,3 @@
+fn app.name_digit.foo_2() -> i32 uses [] panics never pub
+    1i32
+end app.name_digit.foo_2

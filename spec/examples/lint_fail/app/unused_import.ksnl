@@ -1,0 +1,5 @@
+import core.cmp
+
+fn app.unused_import.f() -> i32 uses [] panics never pub
+    2i32
+end app.unused_import.f

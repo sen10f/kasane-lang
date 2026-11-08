@@ -1,0 +1,4 @@
+fn app.unused_var.f() -> i32 uses [] panics never pub
+    let x = 1i32
+    2i32
+end app.unused_var.f

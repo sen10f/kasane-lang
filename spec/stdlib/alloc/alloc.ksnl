@@ -1,0 +1,14 @@
+type alloc.alloc.AllocError derive [Debug, Clone, Copy] pub
+    code: u32
+end alloc.alloc.AllocError
+
+trait alloc.alloc.Allocator pub
+    fn alloc(self: &Self, fit: alloc.alloc.Layout) -> Result<*mut u8, alloc.alloc.AllocError> uses [alloc] panics never
+    fn dealloc(self: &Self, pointer: *mut u8, fit: alloc.alloc.Layout) -> () uses [] panics never
+    fn realloc(self: &Self, pointer: *mut u8, old: alloc.alloc.Layout, new_size: usize) -> Result<*mut u8, alloc.alloc.AllocError> uses [alloc] panics never
+end alloc.alloc.Allocator
+
+type alloc.alloc.Layout derive [Debug, Clone, Copy] pub
+    size: usize pub
+    align: usize pub
+end alloc.alloc.Layout

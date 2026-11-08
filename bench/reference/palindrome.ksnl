@@ -1,0 +1,12 @@
+fn bench.is_palindrome(text: &str) -> bool
+    let bytes = text.as_bytes()
+    let n = bytes.len()
+    let mut i = 0usize
+    while i < n / 2usize {
+        if bytes.get(i) != bytes.get(n - 1usize - i) {
+            return false
+        }
+        i = i + 1usize
+    }
+    true
+end bench.is_palindrome

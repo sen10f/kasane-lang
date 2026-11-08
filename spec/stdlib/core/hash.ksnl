@@ -1,0 +1,8 @@
+trait core.hash.Hash requires core.cmp.Eq pub
+    fn hash[H: core.hash.Hasher](self: &Self, state: &mut H) -> () uses [] panics never
+end core.hash.Hash
+
+trait core.hash.Hasher pub
+    fn finish(self: &Self) -> u64 uses [] panics never
+    fn write_bytes(self: &mut Self, bytes: &[u8]) -> () uses [] panics never
+end core.hash.Hasher

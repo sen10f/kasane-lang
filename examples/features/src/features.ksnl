@@ -1,0 +1,143 @@
+const features.LIMIT: u32 = 3u32
+
+trait features.Area pub
+    fn area(self: &Self) -> i64 uses [] panics never
+end features.Area
+
+enum features.Op derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    Add
+    Sub
+    Neg
+end features.Op
+
+type features.Point derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    x: i32 pub
+    y: i32 pub
+end features.Point
+
+type features.Square pub
+    side: i64
+end features.Square
+
+type features.Upto pub
+    cur: u32
+    stop: u32
+end features.Upto
+
+impl core.cmp.Eq for features.Point
+
+impl features.Area for features.Square
+fn features.Square.area(self: &features.Square) -> i64 uses [] panics never impls features.Area
+    self.side.wrapping_mul(self.side)
+end features.Square.area
+
+impl core.iter.Iterator<u32, [], never> for features.Upto
+fn features.Upto.next(self: &mut features.Upto) -> Option<u32> uses [] panics never impls core.iter.Iterator<u32, [], never>
+    if self.cur >= self.stop {
+        return None
+    }
+    let v = self.cur
+    self.cur = self.cur.wrapping_add(1u32)
+    Some(v)
+end features.Upto.next
+
+fn features.apply(op: features.Op, a: i32, b: i32) -> i32 uses [] panics never pub
+    match op {
+        features.Op.Add => a.wrapping_add(b)
+        features.Op.Sub => a.wrapping_sub(b)
+        features.Op.Neg => a.wrapping_neg()
+    }
+end features.apply
+
+fn features.chain(a: u8, b: u8) -> Result<u8, u8> uses [] panics never pub
+    let s = features.checked(a, b)?
+    features.checked(s, 1u8)
+end features.chain
+
+fn features.checked(a: u8, b: u8) -> Result<u8, u8> uses [] panics never pub
+    match a.checked_add(b) {
+        Some(v) => Ok(v)
+        None => Err(a)
+    }
+end features.checked
+
+fn features.collatz(n: u64) -> u32 uses [] panics never pub
+    let mut steps = 0u32
+    let mut cur = n
+    while cur != 1u64 {
+        if cur & 1u64 == 0u64 {
+            cur = cur.wrapping_shr(1u32)
+        } else {
+            cur = cur.wrapping_mul(3u64).wrapping_add(1u64)
+        }
+        steps = steps.wrapping_add(1u32)
+    }
+    steps
+end features.collatz
+
+fn features.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let p = features.Point { x: 1i32, y: 2i32 }
+    let mut q = p
+    q.x = 10i32
+    core.check.eq(p.x, 1i32)
+    core.check.eq(q.x, 10i32)
+    core.check.eq(p == q, false)
+    core.check.eq(features.apply(features.Op.Neg, 5i32, 0i32), -5i32)
+    core.check.eq(features.chain(250u8, 4u8), Ok(255u8))
+    core.check.eq(features.chain(255u8, 1u8), Err(255u8))
+    core.check.eq(features.collatz(27u64), 111u32)
+    let sq = features.Square { side: 7i64 }
+    core.check.eq(sq.area(), 49i64)
+    let mut it = features.Upto { cur: 0u32, stop: 4u32 }
+    let mut acc = 0u32
+    for n in it {
+        acc = acc.wrapping_add(n)
+    }
+    core.check.eq(acc, 6u32)
+    let total = core.iter.fold(
+        core.iter.map(
+            core.iter.filter(
+                core.iter.range(0i32, 10i32),
+                fn(x: &i32) -> bool capture [] {
+                    *x > 2i32
+                },
+            ),
+            fn(x: i32) -> i32 capture [] {
+                x.wrapping_mul(2i32)
+            },
+        ),
+        0i32,
+        fn(a: i32, x: i32) -> i32 capture [] {
+            a.wrapping_add(x)
+        },
+    )
+    core.check.eq(total, 84i32)
+    let mut opt = Some(5u8)
+    let taken = opt.take()
+    core.check.eq(taken, Some(5u8))
+    core.check.eq(opt, None)
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    match m.insert("a", 1u8) {
+        Ok(_old) => 0u8
+        Err(_e) => 1u8
+    }
+    core.check.eq(m.get("a"), Some(1u8))
+    core.check.eq(m.len(), 1usize)
+    let arr = [1u8, 2u8, 3u8]
+    core.check.eq(arr.len(), 3usize)
+    core.check.eq(arr.get(7usize), None)
+    let s = "héllo"
+    core.check.eq(s.len(), 6usize)
+    core.check.eq(255u8.wrapping_add(1u8), 0u8)
+    core.check.eq(i32.try_from_i64(5i64), Ok(5i32))
+    std.io.print_line("features ok")?
+    Ok(())
+end features.main
+
+test features.collatz.test_one
+    core.check.eq(features.collatz(1u64), 0u32)
+end features.collatz.test_one
+
+test features.collatz.test_two
+    core.check.eq(features.collatz(2u64), 1u32)
+end features.collatz.test_two

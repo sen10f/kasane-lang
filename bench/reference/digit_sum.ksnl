@@ -1,0 +1,31 @@
+enum bench.ParseError derive [Debug, PartialEq]
+    Empty
+    BadChar(u8)
+end bench.ParseError
+
+fn bench.digit_sum(text: &str) -> Result<u32, bench.ParseError>
+    let bytes = text.as_bytes()
+    if bytes.len() == 0usize {
+        return Err(bench.ParseError.Empty)
+    }
+    let mut total = 0u32
+    let mut i = 0usize
+    while i < bytes.len() {
+        match bytes.get(i) {
+            Some(c) => {
+                if c < 48u8 || c > 57u8 {
+                    return Err(bench.ParseError.BadChar(c))
+                }
+                total = total + (c - 48u8).to_u32()
+            }
+            None => break
+        }
+        i = i + 1usize
+    }
+    Ok(total)
+end bench.digit_sum
+
+fn bench.double_digit_sum(text: &str) -> Result<u32, bench.ParseError>
+    let s = bench.digit_sum(text)?
+    Ok(s * 2u32)
+end bench.double_digit_sum

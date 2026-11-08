@@ -1,0 +1,7 @@
+type app.field_clash.T pub
+    size: usize
+end app.field_clash.T
+
+fn app.field_clash.T.size(self: &app.field_clash.T) -> usize uses [] panics never pub
+    1usize
+end app.field_clash.T.size

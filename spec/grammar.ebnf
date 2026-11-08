@@ -1,0 +1,211 @@
+(* Kasane grammar v0.8.4 -- ISO 14977 風の記法 (終端は引用符、{ } 0回以上、[ ] 省略可、| 選択)
+   構文は「正規形」を記述する。ksn fmt の出力と一致しない入力はエラー (仕様書 2章 原則5, 3.7, 4.6)。
+
+   字句層の約束:
+   - NL = 改行 (LF)。ただし行末が "(" "[" "," の行 (コメント行 "//" と "///" を除く)、または次行が "." で始まる行では
+     NL を生成せず、生の改行 LF として扱う。抑止された改行に続く行頭の空白は CONT_INDENT 1トークン
+     (基準行+4スペース。閉じ括弧の行は CLOSE_INDENT = 基準行と同じ深さ。基準行 = 開き括弧を含む物理行。
+     メソッドチェーンの "." 行は文頭行+4で累積しない) (4.6)。
+   - BLANK = 空行 (インデントも空白も含まない)。
+   - INDENT = 現在の深さのスペース (4スペース単位)。INDENT_BACK = 開き "{" を含む行と同じ深さ。
+   - 予約語 (仕様書 3.7) は ident / upper_ident として使えない。
+   - text = 改行を含まない任意のUTF-8文字列。char_any = 改行・"\"・引用符以外の任意のスカラ値。
+     ascii = 0x00-0x7F のうち改行・"\"・引用符以外。
+   - 折り返し形は args_wrap で表す。メソッドチェーンの継続行は chain_cont で表す。 *)
+
+(* ---------- ファイル ---------- *)
+file          = { import_line } , { const_def | static_def } ,
+                { type_def | enum_def | trait_def } , { extern_def } ,
+                { impl_only } , { fn_group } , { test_def } ;
+(* 定義と定義の間は空行ちょうど1行、import は連続、群内はUTF-8バイト列順 (構文では強制せず ksn fmt/check が検査) *)
+import_line   = "import" , module_path , NL ;
+impl_only     = impl_line ;                           (* メソッドを持たないトレイトの impl (Eq, Copy 等) *)
+fn_group      = [ impl_line ] , fn_def ;
+impl_line     = "impl" , [ generics ] , trait_ref , "for" , type , NL ;
+
+(* シグネチャ専用ファイル (標準ライブラリの API 一覧。拡張子 .sig)。fn は本体と end を持たず1行のヘッダのみ *)
+sig_file      = { sig_item } ;
+sig_item      = type_def | enum_def | trait_def | const_def | static_def | extern_def | impl_line | sig_fn ;
+sig_fn        = lead , fn_head , NL ;
+
+(* ---------- 定義 ---------- *)
+fn_head       = "fn" , fqn , [ generics ] , "(" , [ params ] , ")" , "->" , type ,
+                [ "const" ] , [ uses_attr , panics_attr ] , [ stack_attr ] , [ impls_attr ] , [ "pub" ] ;
+fn_def        = lead , fn_head , NL , body , "end" , fqn , NL ;
+type_def      = lead , "type" , fqn , [ generics ] ,
+                [ "layout" , "c" ] , [ derive_attr ] , [ "linear" ] , [ "pub" ] , NL ,
+                INDENT , field , NL , { INDENT , field , NL } , "end" , fqn , NL ;
+enum_def      = lead , "enum" , fqn , [ generics ] ,
+                [ "layout" , "c" ] , [ derive_attr ] , [ "linear" ] , [ "pub" ] , NL ,
+                INDENT , variant , NL , { INDENT , variant , NL } , "end" , fqn , NL ;
+trait_def     = lead , "trait" , fqn , [ generics ] , [ requires_attr ] , [ "pub" ] , NL ,
+                { INDENT , trait_fn , NL } , "end" , fqn , NL ;
+test_def      = lead , "test" , fqn , NL , body , "end" , fqn , NL ;
+const_def     = lead , "const" , fqn , ":" , type , "=" , expr , [ "pub" ] , NL ;
+static_def    = lead , "static" , fqn , ":" , type , "=" , expr , [ "pub" ] , NL ;
+extern_def    = lead , "extern" , fqn , "(" , [ params ] , ")" , "->" , type ,
+                [ "link" , string ] , NL ;
+doc           = { "///" , text , NL } ;
+lead          = { comment , NL } , doc ;                          (* 定義の直前: 独立行 // コメント → /// ドキュメント (どちらも省略可)。impl_line には付けない *)
+
+field         = ident , ":" , type , [ "pub" ] ;
+variant       = upper_ident , [ "(" , type , { "," , type } , ")" ] ;
+trait_fn      = "fn" , ident , [ generics ] , "(" , [ params ] , ")" , "->" , type , uses_attr , panics_attr ;
+
+(* ---------- 属性 ---------- *)
+uses_attr     = "uses" , effect_set ;
+effect_set    = "[" , [ effect , { "," , effect } ] , "]" ;
+effect        = effect_name | effect_var ;
+effect_name   = "io" | "io.fs" | "io.net" | "io.console" | "time" | "rand"
+              | "thread" | "alloc" | "env" | "process" ;
+effect_var    = upper_ident ;                       (* E: uses で宣言した変数 *)
+panics_attr   = "panics" , ( "never" | "may" | upper_ident ) ;
+stack_attr    = "stack" , int_dec ;
+impls_attr    = "impls" , trait_ref ;
+requires_attr = "requires" , trait_ref , { "," , trait_ref } ;
+derive_attr   = "derive" , "[" , derive_name , { "," , derive_name } , "]" ;
+derive_name   = "Debug" | "Clone" | "Copy" | "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Hash" ;
+
+(* ---------- ジェネリクス ---------- *)
+generics      = "[" , gparam , { "," , gparam } , "]" ;
+gparam        = lifetime
+              | upper_ident , ":" , "uses"
+              | upper_ident , ":" , "panics"
+              | "const" , upper_ident , ":" , type
+              | upper_ident , [ ":" , bound , { "+" , bound } ] ;
+bound         = trait_ref | "linear" | lifetime ;
+trait_ref     = fqn , [ "<" , targ , { "," , targ } , ">" ] ;
+targ          = lifetime | type | effect_set | "never" | "may"
+              | int_lit | "true" | "false" | char_lit ;               (* const 実引数。名前は名前解決で型と区別 *)
+
+(* ---------- 型 ---------- *)
+(* 素のスライス型 [T] は "&" の直後にのみ現れる。targ の effect_set "[E]" との曖昧さを避けるため *)
+type          = value_prim
+              | "!" | "(" , ")" | "(" , type , "," , [ type , { "," , type } ] , ")"
+              | "[" , type , ";" , const_expr , "]"
+              | "&" , [ lifetime ] , [ "mut" ] , ( "[" , type , "]" | "str" | type )
+              | "*" , "const" , type | "*" , "mut" , type            (* .ksnl のみ *)
+              | "fn" , "(" , [ type , { "," , type } ] , ")" , "->" , type , uses_attr , panics_attr
+              | "dyn" , trait_ref , [ "+" , lifetime ]
+              | "Self"
+              | fqn , [ "<" , targ , { "," , targ } , ">" ]
+              | upper_ident ;                                         (* 型パラメータ / プレリュード *)
+value_prim    = "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+              | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+              | "f32" | "f64" | "bool" | "char" ;
+prim_type     = "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+              | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+              | "f32" | "f64" | "bool" | "char" | "str" ;             (* str は &str の形でのみ *)
+params        = param , { "," , param } ;                             (* ヘッダ・クロージャのパラメータ列は折り返さない *)
+param         = ( ident | "self" ) , ":" , type ;
+
+(* ---------- 本体・文 ---------- *)
+body_line     = INDENT , ( stmt | comment ) , NL ;                  (* 各行は INDENT 以上 *)
+body          = [ body_line , { [ BLANK ] , body_line } ] ;         (* 空行は行の間にのみ1行。先頭・末尾・連続は不可 *)
+block         = "{" , NL , [ body_line , { [ BLANK ] , body_line } ] , INDENT_BACK , "}" ;
+(* ブロックの最後の stmt が式文 (expr_stmt) で値を持てば、それがブロックの値 (4.6) *)
+stmt          = let_stmt | assign_stmt | expr_stmt ;                (* jump_expr は expr_stmt 経由 *)
+let_stmt      = "let" , [ "mut" ] , pattern , [ ":" , type ] , "=" , expr ;
+assign_stmt   = unary_expr , "=" , expr ;     (* 左辺 (place) の妥当性は意味検査。複合代入はない *)
+expr_stmt     = expr ;                          (* 値が () でなければブロックの値の位置以外ではエラー *)
+
+(* ---------- 式 (優先順位 低→高) ---------- *)
+expr          = jump_expr | or_expr ;
+jump_expr     = "break" | "continue" | "return" , [ expr ] ;       (* 型は ! (4.2, 4.6) *)
+or_expr       = and_expr , { "||" , and_expr } ;
+and_expr      = cmp_expr , { "&&" , cmp_expr } ;
+cmp_expr      = bor_expr , [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) , bor_expr ] ;   (* 非結合 *)
+bor_expr      = bxor_expr , { "|" , bxor_expr } ;
+bxor_expr     = band_expr , { "^" , band_expr } ;
+band_expr     = add_expr , { "&" , add_expr } ;
+add_expr      = mul_expr , { ( "+" | "-" ) , mul_expr } ;
+mul_expr      = unary_expr , { ( "*" | "/" | "%" ) , unary_expr } ;
+unary_expr    = ( "-" | "!" | "&" | "&" , "mut" | "*" ) , unary_expr | postfix_expr ;
+postfix_expr  = primary , { postfix_tail } ;
+postfix_tail  = ( "." | chain_cont ) , ident ,                   (* フィールド / メソッド。chain_cont は行頭 "." の継続 *)
+                [ "::" , "<" , targ , { "," , targ } , ">" ] ,
+                [ "(" , call_args , ")" ]
+              | "(" , call_args , ")"                             (* 呼び出し *)
+              | "[" , expr , "]"                                  (* 添字 (panics may) *)
+              | "?" ;
+call_args     = [ args | args_wrap ] ;
+args          = expr , { "," , expr } ;                           (* 折り返さない形。末尾 "," 禁止 *)
+args_wrap     = LF , CONT_INDENT , expr , "," , LF , { CONT_INDENT , expr , "," , LF } , CLOSE_INDENT ;  (* 折り返し形。最終要素にも "," *)
+chain_cont    = LF , CONT_INDENT , "." ;                          (* 次行が "." で始まる継続 *)
+primary       = literal
+              | path , [ "::" , "<" , targ , { "," , targ } , ">" ]
+              | prim_type , "." , ident                           (* i32.try_from_i64 など *)
+              | "self"
+              | "(" , expr , ")" | "(" , expr , "," , [ expr , { "," , expr } ] , ")"
+              | "[" , [ args | args_wrap ] , "]" | "[" , expr , ";" , const_expr , "]"
+              | struct_lit | closure | if_expr | match_expr | loop_expr
+              | while_expr | for_expr | unsafe_block | block ;
+path          = fqn ;                           (* 変数 / フィールド連鎖 / FQN / 列挙子 / 定数は名前解決で区別 *)
+struct_lit    = fqn , "{" , field_init , { "," , field_init } , "}" ;   (* 1行のみ。折り返し不可 *)
+                                                                       (* if/while/match/for の先頭式では括弧で囲む *)
+field_init    = ident , ":" , expr ;
+closure       = "fn" , "(" , [ params ] , ")" , "->" , type ,
+                "capture" , "[" , [ capture , { "," , capture } ] , "]" , block ;
+capture       = "&" , ident | "&" , "mut" , ident | "move" , ident ;
+(* expr_nostruct: expr から括弧なしの struct_lit を除いたもの (if/while/match/for の先頭式用) *)
+expr_nostruct = jump_expr | or_ns ;
+or_ns         = and_ns , { "||" , and_ns } ;
+and_ns        = cmp_ns , { "&&" , cmp_ns } ;
+cmp_ns        = bor_ns , [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) , bor_ns ] ;
+bor_ns        = bxor_ns , { "|" , bxor_ns } ;
+bxor_ns       = band_ns , { "^" , band_ns } ;
+band_ns       = add_ns , { "&" , add_ns } ;
+add_ns        = mul_ns , { ( "+" | "-" ) , mul_ns } ;
+mul_ns        = unary_ns , { ( "*" | "/" | "%" ) , unary_ns } ;
+unary_ns      = ( "-" | "!" | "&" | "&" , "mut" | "*" ) , unary_ns | postfix_ns ;
+postfix_ns    = primary_ns , { postfix_tail } ;
+primary_ns    = literal
+              | path , [ "::" , "<" , targ , { "," , targ } , ">" ]
+              | prim_type , "." , ident
+              | "self"
+              | "(" , expr , ")" | "(" , expr , "," , [ expr , { "," , expr } ] , ")"
+              | "[" , [ args | args_wrap ] , "]" | "[" , expr , ";" , const_expr , "]"
+              | closure | if_expr | match_expr | loop_expr
+              | while_expr | for_expr | unsafe_block | block ;
+if_expr       = "if" , expr_nostruct , block , [ "else" , ( block | if_expr ) ] ;
+match_expr    = "match" , expr_nostruct , "{" , NL , INDENT , pattern , "=>" , expr , NL ,
+                { INDENT , pattern , "=>" , expr , NL } , INDENT_BACK , "}" ;
+loop_expr     = "loop" , block ;
+while_expr    = "while" , expr_nostruct , block ;
+for_expr      = "for" , pattern , "in" , expr_nostruct , block ;
+unsafe_block  = "unsafe" , string , string , block ;              (* .ksnl のみ *)
+
+(* ---------- パターン ---------- *)
+(* 単独の小文字 ident は束縛、それ以外の fqn は列挙子 / 定数。"mut" は let の直後にのみ置く *)
+pattern       = "_" | literal | ident | fqn
+              | fqn , "(" , pattern , { "," , pattern } , ")"
+              | fqn , "{" , ident , ":" , pattern , { "," , ident , ":" , pattern } , "}"
+              | "(" , pattern , "," , [ pattern , { "," , pattern } ] , ")"   (* タプル。括弧パターンはない *)
+              | "&" , pattern ;
+
+(* ---------- 字句 ---------- *)
+fqn           = name , { "." , fname } ;
+name          = ident | upper_ident ;
+fname         = name | prim_type | "blanket" ;                    (* FQN の途中成分には基本型名と blanket を許す (3.7) *)
+module_path   = mname , { "." , mname } ;
+mname         = ident | prim_type ;
+ident         = [ "_" ] , lower , { lower | digit | "_" } ;       (* snake_case。"_" 始まりは未使用の印。予約語は除く *)
+upper_ident   = upper , { letter | digit | "_" } ;                (* UpperCamelCase / SCREAMING_SNAKE_CASE は命名規約で検査 *)
+lifetime      = "'" , lower , { lower | digit | "_" } ;
+literal       = int_lit | float_lit | char_lit | string | byte_lit | byte_string | "true" | "false" | "(" , ")" ;
+int_lit       = [ "-" ] , ( int_dec | "0x" , hex , { hex | "_" } | "0b" , bin , { bin | "_" } | "0o" , oct , { oct | "_" } ) , [ int_suffix ] ;
+int_dec       = digit , { digit | "_" } ;
+int_suffix    = "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+              | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" ;
+float_lit     = digit , { digit } , "." , digit , { digit } , [ exp ] , [ "f32" | "f64" ]
+              | digit , { digit } , exp , [ "f32" | "f64" ] ;
+exp           = "e" , [ "-" | "+" ] , digit , { digit } ;
+char_lit      = "'" , ( char_any | escape ) , "'" ;
+string        = '"' , { char_any | escape } , '"' ;
+byte_lit      = "b'" , ( ascii | escape ) , "'" ;
+byte_string   = 'b"' , { ascii | escape } , '"' ;
+escape        = "\" , ( "n" | "t" | "r" | "\" | "0" | "'" | '"' | "x" , hex , hex | "u{" , hex , { hex } , "}" ) ;
+const_expr    = int_lit | path | "(" , const_expr , ")" ;          (* const fn 呼び出しは含めない。const 名と整数リテラルのみ *)
+comment       = "//" , text ;                                       (* 独立行のみ。トップレベルでは定義 (/// を含む) の直前 *)
+lower         = "a" | ... | "z" ;   upper = "A" | ... | "Z" ;   letter = lower | upper ;
+digit         = "0" | ... | "9" ;   hex = digit | "a" | ... | "f" ;   bin = "0" | "1" ;   oct = "0" | ... | "7" ;

@@ -1,0 +1,6 @@
+fn app.blank_missing.a() -> i32 uses [] panics never pub
+    1i32
+end app.blank_missing.a
+fn app.blank_missing.b() -> i32 uses [] panics never pub
+    1i32
+end app.blank_missing.b

@@ -1,0 +1,5 @@
+type app.impl_missing.T pub
+    a: u8
+end app.impl_missing.T
+
+impl core.cmp.PartialOrd<app.impl_missing.T> for app.impl_missing.T

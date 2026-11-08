@@ -1,0 +1,3 @@
+trait core.iter.Iterator[T, E: uses, P: panics] pub
+    fn next(self: &mut Self) -> Option<T> uses [E] panics P
+end core.iter.Iterator

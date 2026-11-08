@@ -1,0 +1,4 @@
+fn app.x.f(a: i32) -> i32 uses [] panics never
+    match a {
+    }
+end app.x.f

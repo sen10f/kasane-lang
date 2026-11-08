@@ -1,0 +1,8 @@
+type app.pub_private.Hidden
+    a: u8
+end app.pub_private.Hidden
+
+fn app.pub_private.f(h: app.pub_private.Hidden) -> i32 uses [] panics never pub
+    core.mem.drop(h)
+    1i32
+end app.pub_private.f

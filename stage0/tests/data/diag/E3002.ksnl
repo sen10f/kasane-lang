@@ -1,0 +1,14 @@
+type t.P pub
+    a: u8
+end t.P
+
+fn t.take(p: t.P) -> () uses [] panics never
+    core.mem.drop(p)
+end t.take
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let p = t.P { a: 1u8 }
+    t.take(p)
+    t.take(p)
+    Ok(())
+end t.main

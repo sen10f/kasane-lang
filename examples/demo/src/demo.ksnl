@@ -1,0 +1,47 @@
+import demo.shape
+
+const demo.LIMIT: usize = 5
+
+type demo.Counter derive [Debug, Clone] pub
+    count: u32
+end demo.Counter
+
+fn demo.Counter.bump(self: &mut demo.Counter) -> () uses [] panics never pub
+    self.count = self.count.wrapping_add(1u32)
+end demo.Counter.bump
+
+fn demo.fib(n: u32) -> u32 uses [] panics never stack 4096 pub
+    if n < 2u32 {
+        return n
+    }
+    demo.fib(n.wrapping_sub(1u32)).wrapping_add(demo.fib(n.wrapping_sub(2u32)))
+end demo.fib
+
+fn demo.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut c = demo.Counter { count: 0u32 }
+    c.bump()
+    c.bump()
+    let total = core.iter.fold(
+        core.iter.range(0u32, 5u32),
+        0u32,
+        fn(acc: u32, x: u32) -> u32 capture [] {
+            acc.wrapping_add(x)
+        },
+    )
+    let v = shape.area(shape.Shape.Rect(3i32, 4i32))
+    let mut vec = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match vec.push(demo.fib(10u32)) {
+        Ok(_u) => 0u32
+        Err(_e) => core.panic.panic("oom")
+    }
+    std.io.print_line("hello from demo")?
+    core.check.eq(c.count, 2u32)
+    core.check.eq(total, 10u32)
+    core.check.eq(v, 12i32)
+    core.check.eq(vec.len(), 1usize)
+    Ok(())
+end demo.main
+
+test demo.fib.test_ten
+    core.check.eq(demo.fib(10u32), 55u32)
+end demo.fib.test_ten

@@ -1,0 +1,9 @@
+fn t.f() -> () uses [] panics never
+end t.f
+
+fn t.f() -> () uses [] panics never
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

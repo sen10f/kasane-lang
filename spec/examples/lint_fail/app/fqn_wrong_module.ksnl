@@ -1,0 +1,3 @@
+fn app.other.f() -> i32 uses [] panics never pub
+    1i32
+end app.other.f

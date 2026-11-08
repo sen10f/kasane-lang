@@ -1,0 +1,17 @@
+type t.A pub
+    a: u8
+end t.A
+
+type t.B pub
+    a: u8
+end t.B
+
+fn t.f(a: t.A) -> t.B uses [] panics never
+    a
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x: bool = 1u8
+    core.mem.drop(x)
+    Ok(())
+end t.main

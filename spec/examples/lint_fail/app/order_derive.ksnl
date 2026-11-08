@@ -1,0 +1,3 @@
+type app.order_derive.T derive [Clone, Debug] pub
+    a: u8
+end app.order_derive.T

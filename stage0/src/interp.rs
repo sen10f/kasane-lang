@@ -1,0 +1,1361 @@
+//! ツリーウォーキング・インタプリタ (stage0)。Python 参照実装 ksn/interp.py に対応する。
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::io::Write;
+use std::rc::Rc;
+
+use crate::check::{children as _children, items, nf, nline, nname, st, strs};
+use crate::parser::V;
+use crate::program::{Def, Program, Resolved, Target};
+use crate::value::*;
+
+const PRIMS: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
+    "bool", "char", "str",
+];
+
+pub struct Interp {
+    pub p: Rc<Program>,
+    pub depth: usize,
+    pub const_cache: HashMap<String, Val>,
+    pub args: Vec<String>,
+    pub out: std::io::BufWriter<std::io::Stdout>,
+    pub reload: Option<std::sync::mpsc::Receiver<Program>>,
+    keep: Vec<Rc<Program>>,
+}
+
+fn unhex(s: &str) -> String {
+    let bytes: Vec<u8> = (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap_or(0)).collect();
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+fn parse_int(s: &str) -> i128 {
+    s.parse::<i128>().unwrap_or_else(|_| s.parse::<u128>().map(|u| u as i128).unwrap_or(0))
+}
+
+impl Interp {
+    pub fn new(p: Rc<Program>) -> Interp {
+        Interp {
+            p,
+            depth: 0,
+            const_cache: HashMap::new(),
+            args: vec![],
+            out: std::io::BufWriter::new(std::io::stdout()),
+            reload: None,
+            keep: vec![],
+        }
+    }
+
+    fn def(&self, i: usize) -> &'static Def {
+        // Program は Rc で実行中ずっと生きるため、'static として扱う(参照は内部でのみ使う)。
+        unsafe { &*(&self.p.defs[i] as *const Def) }
+    }
+
+    // ------------------------------------------------------------ 型による変換
+    pub fn coerce(&self, v: Val, ty: &V) -> Val {
+        use crate::check::{is_nil, tag, tel};
+        if is_nil(ty) {
+            return v;
+        }
+        match tag(ty).as_str() {
+            "prim" => {
+                let p = st(tel(ty, 1));
+                if is_int_ty(&p) {
+                    if let Val::Int(x, None) = v {
+                        return Val::Int(x, Some(ity(&p)));
+                    }
+                } else if p == "f32" {
+                    match v {
+                        Val::Int(x, _) => return Val::F32(x as f32),
+                        Val::Float(x) => return Val::F32(x as f32),
+                        _ => {}
+                    }
+                } else if p == "f64" {
+                    if let Val::Int(x, _) = v {
+                        return Val::Float(x as f64);
+                    }
+                }
+                v
+            }
+            "tuple" => {
+                if let Val::Tuple(t) = &v {
+                    let tys = items(tel(ty, 1));
+                    if t.len() == tys.len() {
+                        return Val::Tuple(Rc::new(t.iter().zip(tys).map(|(x, y)| self.coerce(x.clone(), y)).collect()));
+                    }
+                }
+                v
+            }
+            "array" => {
+                if let Val::Arr(l) = &v {
+                    let items: Vec<Val> = l.borrow().iter().map(|x| self.coerce(x.clone(), tel(ty, 1))).collect();
+                    return Val::Arr(new_list(items));
+                }
+                v
+            }
+            "ref" => {
+                if matches!(v, Val::Ref(_)) {
+                    v
+                } else {
+                    self.coerce(v, tel(ty, 2))
+                }
+            }
+            "named" => {
+                if st(tel(ty, 1)) == "Option" && !items(tel(ty, 2)).is_empty() {
+                    if let Val::Enum(e) = &v {
+                        if !e.pl.is_empty() {
+                            let pl = e.pl.iter().map(|x| self.coerce(x.clone(), &items(tel(ty, 2))[0])).collect();
+                            return Val::Enum(Rc::new(EnumV { en: e.en.clone(), var: e.var.clone(), pl }));
+                        }
+                    }
+                }
+                v
+            }
+            _ => v,
+        }
+    }
+
+    pub fn is_copy(&self, tyfqn: &str) -> bool {
+        self.p.types.get(tyfqn).map_or(false, |&i| self.p.defs[i].derive.iter().any(|x| x == "Copy"))
+    }
+
+    pub fn cp(&self, v: Val) -> Val {
+        if let Val::Struct(s) = &v {
+            if self.is_copy(&s.ty) {
+                let f = s.f.borrow().iter().map(|(k, x)| (k.clone(), self.cp(x.clone()))).collect();
+                return Val::Struct(Rc::new(StructV { ty: s.ty.clone(), f: RefCell::new(f) }));
+            }
+        }
+        v
+    }
+
+    // ------------------------------------------------------------ 定数
+    pub fn const_value(&mut self, di: usize) -> Res {
+        let d = self.def(di);
+        if let Some(v) = self.const_cache.get(&d.name) {
+            return Ok(v.clone());
+        }
+        let sc = new_scope(None, Rc::from(d.file.as_str()));
+        let v = self.eval(d.init.as_ref().unwrap(), &sc)?;
+        let v = self.coerce(v, &d.ret);
+        self.const_cache.insert(d.name.clone(), v.clone());
+        Ok(v)
+    }
+
+    // ------------------------------------------------------------ 呼び出し
+    fn poll_reload(&mut self) {
+        let np = match &self.reload {
+            Some(rx) => rx.try_recv().ok(),
+            None => None,
+        };
+        if let Some(np) = np {
+            let old = std::mem::replace(&mut self.p, Rc::new(np));
+            self.keep.push(old);
+            eprintln!("hot reload: function bodies updated");
+        }
+    }
+
+    pub fn call_def(&mut self, di: usize, args: Vec<Val>) -> Res {
+        self.poll_reload();
+        let d = self.def(di);
+        if args.len() != d.params.len() {
+            return panic(format!("arity mismatch calling {}: expected {}, got {}", d.name, d.params.len(), args.len()));
+        }
+        let sc = new_scope(None, Rc::from(d.file.as_str()));
+        for ((pn, pty), a) in d.params.iter().zip(args) {
+            let a = self.coerce(a, pty);
+            sc_declare(&sc, pn, a);
+        }
+        self.depth += 1;
+        if self.depth > 2500 {
+            eprintln!("stack overflow");
+            return Err(Ctl::Exit(102));
+        }
+        let r = self.eval_block_body(d.body.as_ref().unwrap(), &sc);
+        self.depth -= 1;
+        let v = match r {
+            Ok(v) => v,
+            Err(Ctl::Return(v)) => v,
+            Err(e) => return Err(e),
+        };
+        Ok(self.coerce(v, &d.ret))
+    }
+
+    /// テスト本体など、引数なしの本体だけを実行する。
+    pub fn call_body(&mut self, di: usize) -> Res {
+        let d = self.def(di);
+        let sc = new_scope(None, Rc::from(d.file.as_str()));
+        match self.eval_block_body(d.body.as_ref().unwrap(), &sc) {
+            Ok(v) => Ok(v),
+            Err(Ctl::Return(v)) => Ok(v),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn call_value(&mut self, f: &Val, args: Vec<Val>) -> Res {
+        let f = dr(f);
+        match &f {
+            Val::Closure(c) => {
+                let sc = new_scope(Some(&c.scope), Rc::from(""));
+                for ((pn, pty), a) in c.params.iter().zip(args) {
+                    let a = self.coerce(a, pty);
+                    sc_declare(&sc, pn, a);
+                }
+                let r = match self.eval(&c.body, &sc) {
+                    Ok(v) => v,
+                    Err(Ctl::Return(v)) => v,
+                    Err(e) => return Err(e),
+                };
+                Ok(self.coerce(r, &c.ret))
+            }
+            Val::Func(i) => self.call_def(*i, args),
+            Val::Native(n) => self.call_native(&n.clone(), args),
+            Val::Ctor(c) => {
+                let (en, vn) = (&c.0, &c.1);
+                self.mk_variant(en, vn, args)
+            }
+            _ => panic("not callable"),
+        }
+    }
+
+    fn mk_variant(&self, en: &str, vn: &str, args: Vec<Val>) -> Res {
+        if let Some(&ei) = self.p.types.get(en) {
+            let d = &self.p.defs[ei];
+            if let Some((_, tys)) = d.variants.iter().find(|v| v.0 == vn) {
+                let pl = args.into_iter().zip(tys).map(|(a, t)| self.coerce(a, t)).collect();
+                return Ok(mk_enum(en, vn, pl));
+            }
+        }
+        Ok(mk_enum(en, vn, args))
+    }
+
+    // ------------------------------------------------------------ 評価
+    pub fn eval_block_body(&mut self, blk: &V, sc: &Scope) -> Res {
+        let mut v = Val::Unit;
+        for s in items(&nf(blk)[0]) {
+            v = self.exec_stmt(s, sc)?;
+        }
+        Ok(v)
+    }
+
+    fn exec_stmt(&mut self, s: &V, sc: &Scope) -> Res {
+        let f = nf(s);
+        match nname(s) {
+            "Let" => {
+                let v = self.eval(&f[3], sc)?;
+                let mut v = self.cp(v);
+                if !matches!(f[2], V::Nil) {
+                    v = self.coerce(v, &f[2]);
+                }
+                if !self.bind(&f[0], v, sc)? {
+                    return panic("refutable let pattern failed");
+                }
+                Ok(Val::Unit)
+            }
+            "Assign" => {
+                let v = self.eval(&f[1], sc)?;
+                let v = self.cp(v);
+                self.assign(&f[0], v, sc)?;
+                Ok(Val::Unit)
+            }
+            _ => self.eval(&f[0], sc),
+        }
+    }
+
+    fn eval_block(&mut self, blk: &V, sc: &Scope) -> Res {
+        let inner = new_scope(Some(sc), Rc::from(""));
+        let mut v = Val::Unit;
+        for s in items(&nf(blk)[0]) {
+            v = self.exec_stmt(s, &inner)?;
+        }
+        Ok(v)
+    }
+
+    pub fn eval(&mut self, e: &V, sc: &Scope) -> Res {
+        let f = nf(e);
+        match nname(e) {
+            "Lit" => Ok(self.lit(e)),
+            "Block" => self.eval_block(e, sc),
+            "Unsafe" => self.eval_block(&f[2], sc),
+            "TupleE" => {
+                let mut out = vec![];
+                for x in items(&f[0]) {
+                    let v = self.eval(x, sc)?;
+                    out.push(self.cp(v));
+                }
+                Ok(Val::Tuple(Rc::new(out)))
+            }
+            "ArrayE" => {
+                let mut out = vec![];
+                for x in items(&f[0]) {
+                    let v = self.eval(x, sc)?;
+                    out.push(self.cp(v));
+                }
+                Ok(Val::Arr(new_list(out)))
+            }
+            "ArrayRep" => {
+                let v = self.eval(&f[0], sc)?;
+                let n = match &f[1] {
+                    V::N(s) => parse_int(s) as usize,
+                    V::L(xs) if xs.len() == 2 => {
+                        let segs: Vec<V> = st(&xs[1]).split('.').map(|x| V::S(x.to_string())).collect();
+                        let p = V::Node("Path", vec![V::L(segs), V::Nil], 0);
+                        match dr(&self.eval(&p, sc)?) {
+                            Val::Int(x, _) => x as usize,
+                            _ => 0,
+                        }
+                    }
+                    _ => 0,
+                };
+                let out: Vec<Val> = (0..n).map(|_| self.cp(v.clone())).collect();
+                Ok(Val::Arr(new_list(out)))
+            }
+            "StructLit" => {
+                let name = st(&f[0]);
+                let segs: Vec<String> = name.split('.').map(String::from).collect();
+                let file = sc.borrow().file.to_string();
+                let fq = self.p.expand(&segs, &file).join(".");
+                let ftypes: Vec<(String, V)> = self
+                    .p
+                    .types
+                    .get(&fq)
+                    .map(|&i| self.p.defs[i].fields.iter().map(|x| (x.0.clone(), x.1.clone())).collect())
+                    .unwrap_or_default();
+                let mut fields = vec![];
+                for fe in items(&f[1]) {
+                    let fnm = st(&items(fe)[0]);
+                    let v = self.eval(&items(fe)[1], sc)?;
+                    let v = self.cp(v);
+                    let v = match ftypes.iter().find(|x| x.0 == fnm) {
+                        Some((_, t)) => self.coerce(v, t),
+                        None => v,
+                    };
+                    fields.push((fnm, v));
+                }
+                Ok(Val::Struct(Rc::new(StructV { ty: fq, f: RefCell::new(fields) })))
+            }
+            "Closure" => {
+                let params = items(&f[0]).iter().map(|p| (st(&items(p)[0]), items(p)[1].clone())).collect();
+                Ok(Val::Closure(Rc::new(ClosureV { params, ret: f[1].clone(), body: f[3].clone(), scope: sc.clone() })))
+            }
+            "If" => {
+                if self.truthy(&f[0], sc)? {
+                    self.eval(&f[1], sc)
+                } else if !matches!(f[2], V::Nil) {
+                    self.eval(&f[2], sc)
+                } else {
+                    Ok(Val::Unit)
+                }
+            }
+            "Match" => {
+                let v = self.eval(&f[0], sc)?;
+                for arm in items(&f[1]) {
+                    let s2 = new_scope(Some(sc), Rc::from(""));
+                    if self.bind(&items(arm)[0], v.clone(), &s2)? {
+                        return self.eval(&items(arm)[1], &s2);
+                    }
+                }
+                panic(format!("non-exhaustive match at line {}", nline(e)))
+            }
+            "Loop" => {
+                loop {
+                    match self.eval(&f[0], sc) {
+                        Ok(_) | Err(Ctl::Continue) => {}
+                        Err(Ctl::Break) => break,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(Val::Unit)
+            }
+            "While" => {
+                while self.truthy(&f[0], sc)? {
+                    match self.eval(&f[1], sc) {
+                        Ok(_) | Err(Ctl::Continue) => {}
+                        Err(Ctl::Break) => break,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(Val::Unit)
+            }
+            "For" => {
+                let it = self.eval(&f[1], sc)?;
+                let it = self.to_iter(&it)?;
+                loop {
+                    let o = self.iter_next(&it)?;
+                    let Val::Enum(en) = &o else { break };
+                    if en.var == "None" {
+                        break;
+                    }
+                    let s2 = new_scope(Some(sc), Rc::from(""));
+                    self.bind(&f[0], en.pl[0].clone(), &s2)?;
+                    match self.eval(&f[2], &s2) {
+                        Ok(_) | Err(Ctl::Continue) => {}
+                        Err(Ctl::Break) => break,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(Val::Unit)
+            }
+            "Break" => Err(Ctl::Break),
+            "Continue" => Err(Ctl::Continue),
+            "Return" => {
+                let v = if matches!(f[0], V::Nil) { Val::Unit } else { self.eval(&f[0], sc)? };
+                Err(Ctl::Return(v))
+            }
+            "ExprStmt" | "Let" | "Assign" => self.exec_stmt(e, sc),
+            "Try" => {
+                let v = dr(&self.eval(&f[0], sc)?);
+                if let Val::Enum(en) = &v {
+                    if en.en == "Result" {
+                        if en.var == "Ok" {
+                            return Ok(en.pl[0].clone());
+                        }
+                        return Err(Ctl::Return(v.clone()));
+                    }
+                    if en.en == "Option" {
+                        if en.var == "Some" {
+                            return Ok(en.pl[0].clone());
+                        }
+                        return Err(Ctl::Return(v.clone()));
+                    }
+                }
+                panic("? applied to non-Option/Result")
+            }
+            "Unary" => self.unary(e, sc),
+            "Bin" => self.binary(e, sc),
+            "Path" => self.e_path(e, sc),
+            "Field" => {
+                let b = dr(&self.eval(&f[0], sc)?);
+                let name = st(&f[1]);
+                if let Val::Struct(s) = &b {
+                    if let Some(v) = s.get(&name) {
+                        return Ok(self.cp(v));
+                    }
+                }
+                panic(format!("no field {}", name))
+            }
+            "Index" => {
+                let b = dr(&self.eval(&f[0], sc)?);
+                let i = match dr(&self.eval(&f[1], sc)?) {
+                    Val::Int(x, _) => x,
+                    _ => return panic("bad index"),
+                };
+                let items = seq_items(&b).unwrap_or_default();
+                if i < 0 || i as usize >= items.len() {
+                    return panic(format!("index out of bounds: the len is {} but the index is {}", items.len(), i));
+                }
+                Ok(items[i as usize].clone())
+            }
+            "Call" => self.e_call(e, sc),
+            "MCall" => {
+                let recv = self.eval(&f[0], sc)?;
+                let name = st(&f[1]);
+                let mut args = vec![];
+                for a in items(&f[2]) {
+                    let v = self.eval(a, sc)?;
+                    args.push(self.cp(v));
+                }
+                let recv_expr = f[0].clone();
+                let sc2 = sc.clone();
+                self.invoke_method(recv, &name, args, Some((&recv_expr, &sc2)))
+            }
+            n => panic(format!("cannot evaluate node {}", n)),
+        }
+    }
+
+    fn truthy(&mut self, e: &V, sc: &Scope) -> Result<bool, Ctl> {
+        Ok(matches!(dr(&self.eval(e, sc)?), Val::Bool(true)))
+    }
+
+    fn lit(&self, e: &V) -> Val {
+        let f = nf(e);
+        match st(&f[0]).as_str() {
+            "int" => {
+                let sfx = match &f[2] {
+                    V::S(s) => Some(ity(s)),
+                    _ => None,
+                };
+                Val::Int(parse_int(&st(&f[1])), sfx)
+            }
+            "float" => {
+                let x = st(&f[2]).parse::<f64>().unwrap_or(0.0);
+                if matches!(&f[1], V::S(s) if s.as_str() == "f32") { Val::F32(x as f32) } else { Val::Float(x) }
+            }
+            "str" => Val::Str(Rc::from(unhex(&st(&f[1])).as_str())),
+            "char" => Val::Char(char::from_u32(parse_int(&st(&f[1])) as u32).unwrap_or('\0')),
+            "bool" => Val::Bool(matches!(f[1], V::B(true))),
+            "byte" => int(parse_int(&st(&f[1])), "u8"),
+            "bstr" => Val::Arr(new_list(items(&f[1]).iter().map(|x| int(parse_int(&st(x)), "u8")).collect())),
+            _ => Val::Unit,
+        }
+    }
+
+    fn unary(&mut self, e: &V, sc: &Scope) -> Res {
+        let f = nf(e);
+        let op = st(&f[0]);
+        match op.as_str() {
+            "&mut" => return self.eval_place(&f[1], sc),
+            "&" => return self.eval(&f[1], sc),
+            "*" => {
+                let v = self.eval(&f[1], sc)?;
+                return Ok(self.cp(dr(&v)));
+            }
+            _ => {}
+        }
+        let v = dr(&self.eval(&f[1], sc)?);
+        match (op.as_str(), &v) {
+            ("-", Val::Int(x, t)) => match t {
+                Some(ty) if *ty == "u128" || !signed(ty) => {
+                    if *x == 0 { Ok(Val::Int(0, *t)) } else { panic("attempt to negate an unsigned integer".to_string()) }
+                }
+                Some(ty) if -*x > tmax(ty) => panic("attempt to negate with overflow".to_string()),
+                _ => Ok(Val::Int(-x, *t)),
+            },
+            ("-", Val::Float(x)) => Ok(Val::Float(-x)),
+            ("-", Val::F32(x)) => Ok(Val::F32(-x)),
+            ("!", Val::Bool(b)) => Ok(Val::Bool(!b)),
+            ("!", Val::Int(x, t)) => Ok(Val::Int(wrap(!x, t.unwrap_or("i32")), *t)),
+            _ => panic(format!("bad unary {}", op)),
+        }
+    }
+
+    fn binary(&mut self, e: &V, sc: &Scope) -> Res {
+        let f = nf(e);
+        let op = st(&f[0]);
+        if op == "&&" {
+            return Ok(Val::Bool(self.truthy(&f[1], sc)? && self.truthy(&f[2], sc)?));
+        }
+        if op == "||" {
+            return Ok(Val::Bool(self.truthy(&f[1], sc)? || self.truthy(&f[2], sc)?));
+        }
+        let a = dr(&self.eval(&f[1], sc)?);
+        let b = dr(&self.eval(&f[2], sc)?);
+        match op.as_str() {
+            "==" | "!=" => {
+                let r = self.v_eq(&a, &b)?;
+                return Ok(Val::Bool(if op == "==" { r } else { !r }));
+            }
+            "<" | "<=" | ">" | ">=" => {
+                let c = self.v_cmp(&a, &b)?;
+                let r = match c {
+                    None => false,
+                    Some(c) => match op.as_str() {
+                        "<" => c < 0,
+                        "<=" => c <= 0,
+                        ">" => c > 0,
+                        _ => c >= 0,
+                    },
+                };
+                return Ok(Val::Bool(r));
+            }
+            _ => {}
+        }
+        if let (Val::Bool(x), Val::Bool(y)) = (&a, &b) {
+            return Ok(Val::Bool(match op.as_str() {
+                "&" => x & y,
+                "|" => x | y,
+                _ => x ^ y,
+            }));
+        }
+        let fl = |v: &Val| match v {
+            Val::Float(x) => Some(*x),
+            Val::Int(x, _) => Some(*x as f64),
+            _ => None,
+        };
+        if matches!(a, Val::F32(_)) || matches!(b, Val::F32(_)) {
+            let g = |v: &Val| match v {
+                Val::F32(x) => *x,
+                Val::Float(x) => *x as f32,
+                Val::Int(x, _) => *x as f32,
+                _ => 0.0,
+            };
+            let (x, y) = (g(&a), g(&b));
+            return match op.as_str() {
+                "+" => Ok(Val::F32(x + y)),
+                "-" => Ok(Val::F32(x - y)),
+                "*" => Ok(Val::F32(x * y)),
+                "/" => Ok(Val::F32(x / y)),
+                _ => panic(format!("bad float operator {}", op)),
+            };
+        }
+        if matches!(a, Val::Float(_)) || matches!(b, Val::Float(_)) {
+            let (x, y) = (fl(&a).unwrap_or(0.0), fl(&b).unwrap_or(0.0));
+            return match op.as_str() {
+                "+" => Ok(Val::Float(x + y)),
+                "-" => Ok(Val::Float(x - y)),
+                "*" => Ok(Val::Float(x * y)),
+                "/" => {
+                    if y == 0.0 {
+                        Ok(Val::Float(if x == 0.0 || x.is_nan() { f64::NAN } else { f64::INFINITY.copysign(x) * 1f64.copysign(y) }))
+                    } else {
+                        Ok(Val::Float(x / y))
+                    }
+                }
+                _ => panic(format!("bad float operator {}", op)),
+            };
+        }
+        if let (Val::Int(x, ta), Val::Int(y, tb)) = (&a, &b) {
+            let ty = ta.or(*tb);
+            let r = match op.as_str() {
+                "&" => x & y,
+                "|" => x | y,
+                "^" => x ^ y,
+                "+" | "-" | "*" | "/" | "%" => return int_arith(op.as_str(), *x, *y, ty),
+                _ => return panic(format!("operator {} is not defined for integers", op)),
+            };
+            return Ok(Val::Int(r, ty));
+        }
+        panic(format!("bad operands for {}", op))
+    }
+
+    pub fn v_eq(&mut self, a: &Val, b: &Val) -> Result<bool, Ctl> {
+        if let Val::Struct(s) = a {
+            if let Some(&di) = self.p.funcs.get(&format!("{}.eq", s.ty)) {
+                let r = self.call_def(di, vec![a.clone(), b.clone()])?;
+                return Ok(matches!(r, Val::Bool(true)));
+            }
+        }
+        if let Val::Enum(en) = a {
+            if en.en != "Option" && en.en != "Result" {
+                if let Some(&di) = self.p.funcs.get(&format!("{}.eq", en.en)) {
+                    let r = self.call_def(di, vec![a.clone(), b.clone()])?;
+                    return Ok(matches!(r, Val::Bool(true)));
+                }
+            }
+        }
+        Ok(veq(a, b))
+    }
+
+    fn order_of(&self, en: &str) -> Box<dyn Fn(&str, &str) -> (usize, usize)> {
+        let names: Vec<String> = match en {
+            "Option" => vec!["None".into(), "Some".into()],
+            "Result" => vec!["Ok".into(), "Err".into()],
+            _ => self
+                .p
+                .types
+                .get(en)
+                .map(|&i| self.p.defs[i].variants.iter().map(|v| v.0.clone()).collect())
+                .unwrap_or_default(),
+        };
+        Box::new(move |a, b| {
+            (names.iter().position(|x| x == a).unwrap_or(0), names.iter().position(|x| x == b).unwrap_or(0))
+        })
+    }
+
+    fn ordering(v: &Val) -> i32 {
+        if let Val::Enum(e) = v {
+            return match e.var.as_str() {
+                "Less" => -1,
+                "Equal" => 0,
+                _ => 1,
+            };
+        }
+        0
+    }
+
+    pub fn v_cmp(&mut self, a: &Val, b: &Val) -> Result<Option<i32>, Ctl> {
+        if let Val::Struct(s) = a {
+            if let Some(&di) = self.p.funcs.get(&format!("{}.partial_cmp", s.ty)) {
+                let r = self.call_def(di, vec![a.clone(), b.clone()])?;
+                if let Val::Enum(e) = &r {
+                    if e.var == "None" {
+                        return Ok(None);
+                    }
+                    return Ok(Some(Self::ordering(&e.pl[0])));
+                }
+            }
+            if let Some(&di) = self.p.funcs.get(&format!("{}.cmp", s.ty)) {
+                let r = self.call_def(di, vec![a.clone(), b.clone()])?;
+                return Ok(Some(Self::ordering(&r)));
+            }
+        }
+        let order = match a {
+            Val::Enum(e) => self.order_of(&e.en),
+            _ => self.order_of(""),
+        };
+        Ok(vcmp(a, b, &*order))
+    }
+
+    // ------------------------------------------------------------ 場所・代入
+    pub fn eval_place(&mut self, e: &V, sc: &Scope) -> Res {
+        let f = nf(e);
+        match nname(e) {
+            "Path" => {
+                let segs = strs(&f[0]);
+                if let Some(owner) = sc_owner(sc, &segs[0]) {
+                    if segs.len() == 1 {
+                        let cur = owner.borrow().vars[&segs[0]].clone();
+                        if matches!(cur, Val::Ref(_)) {
+                            return Ok(cur);
+                        }
+                        return Ok(Val::Ref(Rc::new(VarPlace(owner, segs[0].clone()))));
+                    }
+                    let mut base = dr(&owner.borrow().vars[&segs[0]].clone());
+                    for s in &segs[1..segs.len() - 1] {
+                        base = match &base {
+                            Val::Struct(x) => dr(&x.get(s).unwrap_or(Val::Unit)),
+                            _ => return panic("bad place"),
+                        };
+                    }
+                    if let Val::Struct(x) = base {
+                        return Ok(Val::Ref(Rc::new(FieldPlace(x, segs[segs.len() - 1].clone()))));
+                    }
+                    return panic("bad place");
+                }
+                let v = self.eval(e, sc)?;
+                Ok(Val::Ref(Rc::new(CellPlace(RefCell::new(v)))))
+            }
+            "Field" => {
+                let b = dr(&self.eval(&f[0], sc)?);
+                match b {
+                    Val::Struct(x) => Ok(Val::Ref(Rc::new(FieldPlace(x, st(&f[1]))))),
+                    _ => panic("bad place"),
+                }
+            }
+            "Index" => {
+                let b = dr(&self.eval(&f[0], sc)?);
+                let i = match dr(&self.eval(&f[1], sc)?) {
+                    Val::Int(x, _) => x,
+                    _ => return panic("bad index"),
+                };
+                match b {
+                    Val::Arr(l) | Val::Vec(l) => {
+                        if i < 0 || i as usize >= l.borrow().len() {
+                            return panic(format!("index out of bounds: the len is {} but the index is {}", l.borrow().len(), i));
+                        }
+                        Ok(Val::Ref(Rc::new(IdxPlace(l, i as usize))))
+                    }
+                    Val::View(l, a, bnd) => {
+                        if i < 0 || i as usize >= bnd - a {
+                            return panic(format!("index out of bounds: the len is {} but the index is {}", bnd - a, i));
+                        }
+                        Ok(Val::Ref(Rc::new(IdxPlace(l, a + i as usize))))
+                    }
+                    _ => panic("bad place"),
+                }
+            }
+            "Unary" if st(&f[0]) == "*" => {
+                let v = self.eval(&f[1], sc)?;
+                if matches!(v, Val::Ref(_)) {
+                    Ok(v)
+                } else {
+                    Ok(Val::Ref(Rc::new(CellPlace(RefCell::new(v)))))
+                }
+            }
+            _ => {
+                let v = self.eval(e, sc)?;
+                Ok(Val::Ref(Rc::new(CellPlace(RefCell::new(v)))))
+            }
+        }
+    }
+
+    fn assign(&mut self, target: &V, v: Val, sc: &Scope) -> Result<(), Ctl> {
+        let f = nf(target);
+        if nname(target) == "Unary" && st(&f[0]) == "*" {
+            let r = self.eval(&f[1], sc)?;
+            if let Val::Ref(p) = r {
+                p.set(v);
+                return Ok(());
+            }
+            return panic("assignment through non-reference");
+        }
+        if nname(target) == "Path" {
+            let segs = strs(&f[0]);
+            if segs.len() == 1 {
+                if let Some(owner) = sc_owner(sc, &segs[0]) {
+                    let cur = owner.borrow().vars[&segs[0]].clone();
+                    if let Val::Ref(p) = &cur {
+                        if !matches!(v, Val::Ref(_)) {
+                            p.set(v);
+                            return Ok(());
+                        }
+                    }
+                    owner.borrow_mut().vars.insert(segs[0].clone(), v);
+                    return Ok(());
+                }
+            }
+        }
+        if let Val::Ref(p) = self.eval_place(target, sc)? {
+            p.set(v);
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ パターン
+    pub fn bind(&mut self, pat: &V, v: Val, sc: &Scope) -> Result<bool, Ctl> {
+        let f = nf(pat);
+        let n = nname(pat);
+        if n == "PWild" {
+            return Ok(true);
+        }
+        if n == "PBind" {
+            sc_declare(sc, &st(&f[0]), v);
+            return Ok(true);
+        }
+        let v = dr(&v);
+        match n {
+            "PLit" => {
+                let lv = self.lit(&f[0]);
+                Ok(veq(&v, &lv))
+            }
+            "PRef" => self.bind(&f[0], v, sc),
+            "PTuple" => {
+                let Val::Tuple(t) = &v else { return Ok(false) };
+                let ps = items(&f[0]);
+                if t.len() != ps.len() {
+                    return Ok(false);
+                }
+                for (p, x) in ps.iter().zip(t.iter()) {
+                    if !self.bind(p, x.clone(), sc)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            "PPath" => {
+                let segs = strs(&f[0]);
+                let file = sc.borrow().file.to_string();
+                match self.p.resolve(&segs, &file) {
+                    Some(r) => match &r.target {
+                        Target::Variant(en, vn) => Ok(matches!(&v, Val::Enum(e) if &e.en == en && &e.var == vn)),
+                        Target::Const(i) => {
+                            let cv = self.const_value(*i)?;
+                            Ok(veq(&v, &cv))
+                        }
+                        _ => panic(format!("unresolved pattern {}", segs.join("."))),
+                    },
+                    None => panic(format!("unresolved pattern {}", segs.join("."))),
+                }
+            }
+            "PVariant" => {
+                let segs = strs(&f[0]);
+                let file = sc.borrow().file.to_string();
+                let Some(r) = self.p.resolve(&segs, &file) else {
+                    return panic(format!("unresolved variant pattern {}", segs.join(".")));
+                };
+                let Target::Variant(en, vn) = &r.target else {
+                    return panic(format!("unresolved variant pattern {}", segs.join(".")));
+                };
+                let Val::Enum(e) = &v else { return Ok(false) };
+                if &e.en != en || &e.var != vn {
+                    return Ok(false);
+                }
+                let ps = items(&f[1]);
+                if e.pl.len() != ps.len() {
+                    return Ok(false);
+                }
+                for (p, x) in ps.iter().zip(e.pl.iter()) {
+                    if !self.bind(p, x.clone(), sc)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            "PStruct" => {
+                let Val::Struct(s) = &v else { return Ok(false) };
+                for fp in items(&f[1]) {
+                    let fnm = st(&items(fp)[0]);
+                    let x = s.get(&fnm).unwrap_or(Val::Unit);
+                    if !self.bind(&items(fp)[1], x, sc)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            _ => panic(format!("bad pattern {}", n)),
+        }
+    }
+
+    // ------------------------------------------------------------ パス・呼び出し
+    fn e_path(&mut self, e: &V, sc: &Scope) -> Res {
+        let segs = strs(&nf(e)[0]);
+        if let Some(owner) = sc_owner(sc, &segs[0]) {
+            let mut v = owner.borrow().vars[&segs[0]].clone();
+            for s in &segs[1..] {
+                v = match dr(&v) {
+                    Val::Struct(x) => x.get(s).unwrap_or(Val::Unit),
+                    _ => return panic(format!("no field {}", s)),
+                };
+            }
+            return Ok(if segs.len() > 1 { self.cp(v) } else { v });
+        }
+        let file = sc.borrow().file.to_string();
+        let Some(r) = self.p.resolve(&segs, &file) else {
+            return panic(format!("unresolved name {} (line {})", segs.join("."), nline(e)));
+        };
+        self.path_value(&r, 0)
+    }
+
+    fn path_value(&mut self, r: &Resolved, drop_last: usize) -> Res {
+        let mut v = match &r.target {
+            Target::Const(i) => self.const_value(*i)?,
+            Target::Variant(en, vn) => {
+                let has_payload = match en.as_str() {
+                    "Option" => vn == "Some",
+                    "Result" => true,
+                    _ => self
+                        .p
+                        .types
+                        .get(en)
+                        .map_or(false, |&i| self.p.defs[i].variants.iter().any(|x| &x.0 == vn && !x.1.is_empty())),
+                };
+                if has_payload {
+                    Val::Ctor(Rc::new((en.clone(), vn.clone())))
+                } else {
+                    mk_enum(en, vn, vec![])
+                }
+            }
+            Target::Fn(i) => Val::Func(*i),
+            Target::Native(n) => Val::Native(Rc::from(n.as_str())),
+            Target::Value(n) => self.num_const_val(n),
+            _ => return panic("cannot use definition as value"),
+        };
+        let rest = &r.rest[..r.rest.len() - drop_last];
+        for s in rest {
+            v = match dr(&v) {
+                Val::Struct(x) => x.get(s).unwrap_or(Val::Unit),
+                _ => return panic(format!("no field {}", s)),
+            };
+        }
+        Ok(v)
+    }
+
+    fn e_call(&mut self, e: &V, sc: &Scope) -> Res {
+        let f = nf(e);
+        let fnn = &f[0];
+        if nname(fnn) == "Path" {
+            let segs = strs(&nf(fnn)[0]);
+            if let Some(owner) = sc_owner(sc, &segs[0]) {
+                let first = owner.borrow().vars[&segs[0]].clone();
+                if segs.len() == 1 {
+                    let args = self.eval_args(&f[1], sc)?;
+                    return self.call_value(&first, args);
+                }
+                let mut base = first;
+                for s in &segs[1..segs.len() - 1] {
+                    base = match dr(&base) {
+                        Val::Struct(x) => x.get(s).unwrap_or(Val::Unit),
+                        _ => return panic(format!("no field {}", s)),
+                    };
+                }
+                let args = self.eval_args(&f[1], sc)?;
+                let place_path = V::Node(
+                    "Path",
+                    vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil],
+                    0,
+                );
+                return self.invoke_method(base, &segs[segs.len() - 1], args, Some((&place_path, sc)));
+            }
+            let file = sc.borrow().file.to_string();
+            let Some(r) = self.p.resolve(&segs, &file) else {
+                return panic(format!("unresolved function {} (line {})", segs.join("."), nline(e)));
+            };
+            if !r.rest.is_empty() {
+                let base = self.path_value(&r, 1)?;
+                let args = self.eval_args(&f[1], sc)?;
+                return self.invoke_method(base, &r.rest[r.rest.len() - 1], args, None);
+            }
+            let args = self.eval_args(&f[1], sc)?;
+            return self.call_resolved(&r, args);
+        }
+        let callee = self.eval(fnn, sc)?;
+        let args = self.eval_args(&f[1], sc)?;
+        self.call_value(&callee, args)
+    }
+
+    fn eval_args(&mut self, args: &V, sc: &Scope) -> Result<Vec<Val>, Ctl> {
+        let mut out = vec![];
+        for a in items(args) {
+            let v = self.eval(a, sc)?;
+            out.push(self.cp(v));
+        }
+        Ok(out)
+    }
+
+    fn call_resolved(&mut self, r: &Resolved, args: Vec<Val>) -> Res {
+        match &r.target {
+            Target::Fn(i) => self.call_def(*i, args),
+            Target::Native(n) => self.call_native(&n.clone(), args),
+            Target::Variant(en, vn) => self.mk_variant(en, vn, args),
+            Target::Type(i) => panic(format!("cannot call type {}", self.p.defs[*i].name)),
+            Target::Sig(i) => {
+                let d = self.def(*i);
+                let parts: Vec<&str> = d.name.split('.').collect();
+                if parts.len() >= 4 && parts[0] == "core" && matches!(parts[1], "num" | "bool" | "char") && PRIMS.contains(&parts[2]) {
+                    if crate::natives::known_num(parts[3]) {
+                        let n = format!("{}.{}", parts[2], parts[3]);
+                        return self.call_native(&n, args);
+                    }
+                }
+                if d.is_method() {
+                    let mut it = args.into_iter();
+                    let recv = it.next().unwrap();
+                    return self.invoke_method(recv, parts[parts.len() - 1], it.collect(), None);
+                }
+                panic(format!("function {} has no implementation in this interpreter", d.name))
+            }
+            _ => panic("cannot call value"),
+        }
+    }
+
+    // ------------------------------------------------------------ メソッド
+    fn find_method(&self, v: &Val, name: &str) -> Option<usize> {
+        match v {
+            Val::Struct(s) => self.p.funcs.get(&format!("{}.{}", s.ty, name)).copied(),
+            Val::Enum(e) => self.p.funcs.get(&format!("{}.{}", e.en, name)).copied(),
+            _ => None,
+        }
+    }
+
+    fn prim_kind(v: &Val) -> Option<&'static str> {
+        match v {
+            Val::Bool(_) => Some("bool"),
+            Val::Int(_, t) => Some(t.unwrap_or("i32")),
+            Val::Float(_) => Some("f64"),
+            Val::F32(_) => Some("f32"),
+            Val::Char(_) => Some("char"),
+            Val::Str(_) => Some("str"),
+            _ => None,
+        }
+    }
+
+    pub fn invoke_method(&mut self, recv: Val, name: &str, args: Vec<Val>, place: Option<(&V, &Scope)>) -> Res {
+        let v = dr(&recv);
+        let mut d = self.find_method(&v, name);
+        if d.is_none() && !matches!(v, Val::Struct(_) | Val::Enum(_)) {
+            if let Some(kind) = Self::prim_kind(&v) {
+                if let Some(cands) = self.p.method_idx.get(name) {
+                    for &ci in cands {
+                        let cd = &self.p.defs[ci];
+                        if cd.body.is_none() {
+                            continue;
+                        }
+                        let parts: Vec<&str> = cd.name.split('.').collect();
+                        if parts.len() >= 3 && PRIMS.contains(&parts[parts.len() - 2]) && parts[parts.len() - 2] == kind {
+                            d = Some(ci);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(di) = d {
+            let def = self.def(di);
+            let selfty = &def.params[0].1;
+            let by_mut = crate::check::tag(selfty) == "ref" && matches!(crate::check::tel(selfty, 1), V::B(true));
+            let first = if by_mut {
+                if matches!(recv, Val::Ref(_)) {
+                    recv.clone()
+                } else if let Some((pe, sc)) = place {
+                    self.eval_place(pe, sc)?
+                } else {
+                    Val::Ref(Rc::new(CellPlace(RefCell::new(v.clone()))))
+                }
+            } else {
+                v.clone()
+            };
+            let mut all = vec![first];
+            all.extend(args);
+            return self.call_def(di, all);
+        }
+        self.native_method(&recv, &v, name, args, place)
+    }
+
+    // ------------------------------------------------------------ イテレータ
+    pub fn to_iter(&mut self, v: &Val) -> Result<Rc<RefCell<IterV>>, Ctl> {
+        let v = dr(v);
+        match &v {
+            Val::Iter(it) => Ok(it.clone()),
+            Val::Arr(l) | Val::Vec(l) => Ok(Rc::new(RefCell::new(IterV::List { items: l.clone(), i: 0, end: None }))),
+            Val::View(l, a, b) => Ok(Rc::new(RefCell::new(IterV::List { items: l.clone(), i: *a, end: Some(*b) }))),
+            Val::Struct(s) => match self.p.funcs.get(&format!("{}.next", s.ty)) {
+                Some(&di) => Ok(Rc::new(RefCell::new(IterV::User { place: Rc::new(CellPlace(RefCell::new(v.clone()))), def: di }))),
+                None => panic(format!("{} is not an iterator", s.ty)),
+            },
+            _ => panic("not an iterator"),
+        }
+    }
+
+    pub fn iter_next(&mut self, it: &Rc<RefCell<IterV>>) -> Res {
+        enum Step {
+            Done(Val),
+            Map(Rc<RefCell<IterV>>, Val),
+            Filter(Rc<RefCell<IterV>>, Val),
+            Enum(Rc<RefCell<IterV>>, i128),
+            Take(Rc<RefCell<IterV>>),
+            User(Rc<dyn Place>, usize),
+        }
+        let step = {
+            let mut b = it.borrow_mut();
+            match &mut *b {
+                IterV::List { items, i, end } => {
+                    let l = items.borrow();
+                    let limit = end.unwrap_or(l.len()).min(l.len());
+                    if *i >= limit {
+                        Step::Done(none())
+                    } else {
+                        let x = l[*i].clone();
+                        *i += 1;
+                        Step::Done(some(x))
+                    }
+                }
+                IterV::Pre { items, i } => {
+                    if *i >= items.len() {
+                        Step::Done(none())
+                    } else {
+                        let x = items[*i].clone();
+                        *i += 1;
+                        Step::Done(some(x))
+                    }
+                }
+                IterV::Range { cur, end } => {
+                    let (c, e) = (cur.clone(), end.clone());
+                    match (&c, &e) {
+                        (Val::Int(x, t), Val::Int(y, _)) => {
+                            if x >= y {
+                                Step::Done(none())
+                            } else {
+                                *cur = Val::Int(x + 1, *t);
+                                Step::Done(some(c))
+                            }
+                        }
+                        _ => Step::Done(none()),
+                    }
+                }
+                IterV::Map { src, f } => Step::Map(src.clone(), f.clone()),
+                IterV::Filter { src, f } => Step::Filter(src.clone(), f.clone()),
+                IterV::Enumerate { src, i } => {
+                    let idx = *i;
+                    *i += 1;
+                    Step::Enum(src.clone(), idx)
+                }
+                IterV::Take { src, n } => {
+                    if *n <= 0 {
+                        Step::Done(none())
+                    } else {
+                        *n -= 1;
+                        Step::Take(src.clone())
+                    }
+                }
+                IterV::User { place, def } => Step::User(place.clone(), *def),
+            }
+        };
+        match step {
+            Step::Done(v) => Ok(v),
+            Step::Map(src, f) => {
+                let o = self.iter_next(&src)?;
+                match &o {
+                    Val::Enum(e) if e.var == "Some" => {
+                        let r = self.call_value(&f, vec![e.pl[0].clone()])?;
+                        Ok(some(r))
+                    }
+                    _ => Ok(o),
+                }
+            }
+            Step::Filter(src, f) => loop {
+                let o = self.iter_next(&src)?;
+                match &o {
+                    Val::Enum(e) if e.var == "Some" => {
+                        if matches!(dr(&self.call_value(&f, vec![e.pl[0].clone()])?), Val::Bool(true)) {
+                            return Ok(o);
+                        }
+                    }
+                    _ => return Ok(o),
+                }
+            },
+            Step::Enum(src, idx) => {
+                let o = self.iter_next(&src)?;
+                match &o {
+                    Val::Enum(e) if e.var == "Some" => {
+                        Ok(some(Val::Tuple(Rc::new(vec![int(idx, "usize"), e.pl[0].clone()]))))
+                    }
+                    _ => Ok(o),
+                }
+            }
+            Step::Take(src) => self.iter_next(&src),
+            Step::User(place, di) => self.call_def(di, vec![Val::Ref(place)]),
+        }
+    }
+
+    // ------------------------------------------------------------ 表示
+    pub fn debug_str(&mut self, v: &Val) -> Result<String, Ctl> {
+        let v = dr(v);
+        Ok(match &v {
+            Val::Bool(b) => (if *b { "true" } else { "false" }).into(),
+            Val::Char(c) => format!("{:?}", c),
+            Val::Str(s) => py_quote(s),
+            Val::StrBuf(b) => py_quote(&b.borrow()),
+            Val::Float(f) => py_float(*f),
+            Val::F32(f) => py_float32(*f),
+            Val::Int(x, t) => {
+                if *t == Some("u128") { (*x as u128).to_string() } else { x.to_string() }
+            }
+            Val::Unit => "()".into(),
+            Val::Tuple(t) => {
+                let parts: Result<Vec<String>, Ctl> = t.iter().map(|x| self.debug_str(x)).collect();
+                let parts = parts?;
+                if parts.len() == 1 { format!("({},)", parts[0]) } else { format!("({})", parts.join(", ")) }
+            }
+            Val::Arr(_) | Val::Vec(_) | Val::View(..) => {
+                let items = seq_items(&v).unwrap_or_default();
+                let parts: Result<Vec<String>, Ctl> = items.iter().map(|x| self.debug_str(x)).collect();
+                format!("[{}]", parts?.join(", "))
+            }
+            Val::Struct(s) => {
+                if let Some(&di) = self.p.funcs.get(&format!("{}.debug_fmt", s.ty)) {
+                    let fm = Rc::new(RefCell::new(String::new()));
+                    self.call_def(di, vec![v.clone(), Val::Fmt(fm.clone())])?;
+                    let r = fm.borrow().clone();
+                    return Ok(r);
+                }
+                let nm = s.ty.rsplit('.').next().unwrap().to_string();
+                let fields: Vec<(String, Val)> = s.f.borrow().clone();
+                let mut parts = vec![];
+                for (k, x) in fields {
+                    parts.push(format!("{}: {}", k, self.debug_str(&x)?));
+                }
+                format!("{} {{ {} }}", nm, parts.join(", "))
+            }
+            Val::Enum(e) => {
+                if let Some(&di) = self.p.funcs.get(&format!("{}.debug_fmt", e.en)) {
+                    let fm = Rc::new(RefCell::new(String::new()));
+                    self.call_def(di, vec![v.clone(), Val::Fmt(fm.clone())])?;
+                    let r = fm.borrow().clone();
+                    return Ok(r);
+                }
+                if e.pl.is_empty() {
+                    e.var.clone()
+                } else {
+                    let parts: Result<Vec<String>, Ctl> = e.pl.iter().map(|x| self.debug_str(x)).collect();
+                    format!("{}({})", e.var, parts?.join(", "))
+                }
+            }
+            _ => "<value>".into(),
+        })
+    }
+
+    pub fn display_str(&mut self, v: &Val) -> Result<String, Ctl> {
+        let v = dr(v);
+        if let Some(s) = str_of(&v) {
+            return Ok(s);
+        }
+        if let Val::Struct(s) = &v {
+            if let Some(&di) = self.p.funcs.get(&format!("{}.display_fmt", s.ty)) {
+                let fm = Rc::new(RefCell::new(String::new()));
+                self.call_def(di, vec![v.clone(), Val::Fmt(fm.clone())])?;
+                let r = fm.borrow().clone();
+                return Ok(r);
+            }
+        }
+        self.debug_str(&v)
+    }
+
+    pub fn write_out(&mut self, s: &str) {
+        let _ = self.out.write_all(s.as_bytes());
+    }
+
+    // ------------------------------------------------------------ 実行
+    pub fn run_entry(&mut self, di: usize) -> i32 {
+        let r = self.call_def(di, vec![]);
+        let code = match r {
+            Err(Ctl::Panic(m)) => {
+                let _ = self.out.flush();
+                eprintln!("panic: {}", m);
+                return 101;
+            }
+            Err(Ctl::Exit(c)) => c,
+            Err(_) => 0,
+            Ok(v) => {
+                let v = dr(&v);
+                if let Val::Enum(e) = &v {
+                    if e.en == "Result" && e.var == "Err" {
+                        let _ = self.out.flush();
+                        let s = self.debug_str(&e.pl[0]).unwrap_or_default();
+                        eprintln!("Error: {}", s);
+                        return 1;
+                    }
+                }
+                0
+            }
+        };
+        let _ = self.out.flush();
+        code
+    }
+}
+
+pub fn py_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n"))
+}
+
+pub fn py_float32(f: f32) -> String {
+    if f.is_nan() {
+        return "nan".into();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { "inf".into() } else { "-inf".into() };
+    }
+    if f == f.trunc() && f.abs() < 1e16 {
+        return format!("{:.1}", f);
+    }
+    format!("{}", f)
+}
+
+pub fn py_float(f: f64) -> String {
+    if f.is_nan() {
+        return "nan".into();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { "inf".into() } else { "-inf".into() };
+    }
+    if f == f.trunc() && f.abs() < 1e16 {
+        return format!("{:.1}", f);
+    }
+    format!("{}", f)
+}
+
+#[allow(dead_code)]
+fn unused() {
+    let _ = _children;
+}
+
+/// 整数の `+ - * / %`。オーバーフローとゼロ除算は panic (4.1)。u128 はビットパターンで保持している。
+fn int_arith(op: &str, x: i128, y: i128, ty: Ity) -> Res {
+    let name = match op {
+        "+" => "add",
+        "-" => "subtract",
+        "*" => "multiply",
+        "/" => "divide",
+        _ => "calculate the remainder",
+    };
+    if (op == "/" || op == "%") && y == 0 {
+        return panic(format!("attempt to {} by zero", if op == "/" { "divide" } else { "calculate the remainder with a divisor of" }));
+    }
+    let overflow = || panic(format!("attempt to {} with overflow", name));
+    if ty == Some("u128") {
+        let (a, b) = (x as u128, y as u128);
+        let r = match op {
+            "+" => a.checked_add(b),
+            "-" => a.checked_sub(b),
+            "*" => a.checked_mul(b),
+            "/" => a.checked_div(b),
+            _ => a.checked_rem(b),
+        };
+        return match r {
+            Some(v) => Ok(Val::Int(v as i128, ty)),
+            None => overflow(),
+        };
+    }
+    let r = match op {
+        "+" => x.checked_add(y),
+        "-" => x.checked_sub(y),
+        "*" => x.checked_mul(y),
+        "/" => x.checked_div(y),
+        _ => x.checked_rem(y),
+    };
+    match (r, ty) {
+        (Some(v), Some(t)) if v >= tmin(t) && v <= tmax(t) => Ok(Val::Int(v, ty)),
+        (Some(v), None) => Ok(Val::Int(v, ty)),
+        _ => overflow(),
+    }
+}

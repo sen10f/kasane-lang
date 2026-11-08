@@ -1,0 +1,7 @@
+type app.dup_impl.T pub
+    a: u8
+end app.dup_impl.T
+
+impl core.cmp.Eq for app.dup_impl.T
+
+impl core.cmp.Eq for app.dup_impl.T

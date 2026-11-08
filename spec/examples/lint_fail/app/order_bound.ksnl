@@ -1,0 +1,4 @@
+fn app.order_bound.f[T: core.hash.Hash + core.cmp.Eq](x: T) -> i32 uses [] panics never pub
+    core.mem.drop(x)
+    1i32
+end app.order_bound.f

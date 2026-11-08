@@ -1,0 +1,6 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    unsafe "n" "why" {
+        core.mem.drop(1u8)
+    }
+    Ok(())
+end t.main

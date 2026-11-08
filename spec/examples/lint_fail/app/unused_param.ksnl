@@ -1,0 +1,3 @@
+fn app.unused_param.f(a: i32) -> i32 uses [] panics never pub
+    2i32
+end app.unused_param.f

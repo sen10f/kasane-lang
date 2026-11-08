@@ -1,0 +1,12 @@
+enum t.E pub
+    A
+    B
+end t.E
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let e = t.E.A
+    match e {
+        t.E.A => 1u8
+    }
+    Ok(())
+end t.main

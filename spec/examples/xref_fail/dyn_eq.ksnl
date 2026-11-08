@@ -1,0 +1,4 @@
+fn app.dyn_eq.f(h: &dyn core.cmp.Eq + 'static) -> i32 uses [] panics never pub
+    core.mem.drop(h)
+    1i32
+end app.dyn_eq.f

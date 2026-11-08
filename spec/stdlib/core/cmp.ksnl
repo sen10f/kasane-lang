@@ -1,0 +1,20 @@
+trait core.cmp.Eq requires core.cmp.PartialEq<Self> pub
+end core.cmp.Eq
+
+trait core.cmp.Ord requires core.cmp.Eq, core.cmp.PartialOrd<Self> pub
+    fn cmp(self: &Self, other: &Self) -> core.cmp.Ordering uses [] panics never
+end core.cmp.Ord
+
+enum core.cmp.Ordering derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    Less
+    Equal
+    Greater
+end core.cmp.Ordering
+
+trait core.cmp.PartialEq[Rhs] pub
+    fn eq(self: &Self, other: &Rhs) -> bool uses [] panics never
+end core.cmp.PartialEq
+
+trait core.cmp.PartialOrd[Rhs] requires core.cmp.PartialEq<Rhs> pub
+    fn partial_cmp(self: &Self, other: &Rhs) -> Option<core.cmp.Ordering> uses [] panics never
+end core.cmp.PartialOrd

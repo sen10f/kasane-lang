@@ -1,0 +1,21 @@
+fn bench.bsearch(xs: &[i32], target: i32) -> Option<usize>
+    let mut lo = 0usize
+    let mut hi = xs.len()
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2usize
+        match xs.get(mid) {
+            Some(v) => {
+                if v == target {
+                    return Some(mid)
+                }
+                if v < target {
+                    lo = mid + 1usize
+                } else {
+                    hi = mid
+                }
+            }
+            None => return None
+        }
+    }
+    None
+end bench.bsearch

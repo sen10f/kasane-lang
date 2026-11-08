@@ -1,0 +1,7 @@
+type app.impl_orphan.T pub
+    a: u8
+end app.impl_orphan.T
+
+fn app.impl_orphan.T.eq(self: &app.impl_orphan.T, other: &app.impl_orphan.T) -> bool uses [] panics never impls core.cmp.PartialEq<app.impl_orphan.T>
+    true
+end app.impl_orphan.T.eq

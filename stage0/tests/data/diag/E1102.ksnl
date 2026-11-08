@@ -1,0 +1,7 @@
+type t.A pub
+    a: t.Nope
+end t.A
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

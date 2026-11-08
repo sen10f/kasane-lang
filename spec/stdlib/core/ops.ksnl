@@ -1,0 +1,22 @@
+trait core.ops.Clone pub
+    fn clone(self: &Self) -> Self uses [] panics never
+end core.ops.Clone
+
+trait core.ops.Copy requires core.ops.Clone pub
+end core.ops.Copy
+
+trait core.ops.Drop pub
+    fn drop(self: &mut Self) -> () uses [] panics never
+end core.ops.Drop
+
+trait core.ops.Fn[Args, R, E: uses, P: panics] requires core.ops.FnMut<Args, R, E, P> pub
+    fn call(self: &Self, args: Args) -> R uses [E] panics P
+end core.ops.Fn
+
+trait core.ops.FnMut[Args, R, E: uses, P: panics] requires core.ops.FnOnce<Args, R, E, P> pub
+    fn call_mut(self: &mut Self, args: Args) -> R uses [E] panics P
+end core.ops.FnMut
+
+trait core.ops.FnOnce[Args, R, E: uses, P: panics] pub
+    fn call_once(self: Self, args: Args) -> R uses [E] panics P
+end core.ops.FnOnce

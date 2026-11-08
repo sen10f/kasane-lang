@@ -1,0 +1,7 @@
+fn app.x.f() -> i32 uses [] panics never pub
+    1i32
+end app.x.f
+
+type app.x.T pub
+    a: u8
+end app.x.T

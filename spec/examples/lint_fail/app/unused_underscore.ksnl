@@ -1,0 +1,3 @@
+fn app.unused_underscore.f(_a: i32) -> i32 uses [] panics never pub
+    _a
+end app.unused_underscore.f

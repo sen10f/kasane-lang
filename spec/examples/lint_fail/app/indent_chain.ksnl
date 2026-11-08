@@ -1,0 +1,6 @@
+fn app.indent_chain.f(buf: &[u8]) -> i32 uses [] panics never pub
+    let n = buf
+    .iter()
+    .count()
+    n
+end app.indent_chain.f

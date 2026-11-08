@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+target/
+target/
+stage0/target/
+bench/agent_out/
+bench/agent_prompts*/
+bench/results/
+bench/*.log

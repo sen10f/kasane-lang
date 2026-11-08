@@ -1,0 +1,13 @@
+fn bench.repeat_str(s: &str, n: u32) -> alloc.string.String<std.alloc.System>
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        match out.push_str(s) {
+            Ok(_u) => {
+            }
+            Err(_e) => core.panic.panic("oom")
+        }
+        i = i + 1u32
+    }
+    out
+end bench.repeat_str

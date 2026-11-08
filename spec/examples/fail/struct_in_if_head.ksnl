@@ -1,0 +1,6 @@
+fn app.x.f(p: app.p.P) -> i32 uses [] panics never
+    if p == app.p.P { x: 1i32 } {
+        return 1i32
+    }
+    0i32
+end app.x.f

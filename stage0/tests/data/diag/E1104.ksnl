@@ -1,0 +1,9 @@
+type t.P pub
+    a: u8
+end t.P
+
+impl t.Nope for t.P
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

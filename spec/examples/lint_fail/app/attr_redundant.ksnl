@@ -1,0 +1,3 @@
+fn app.attr_redundant.f() -> i32 uses [io, io.fs] panics never pub
+    1i32
+end app.attr_redundant.f

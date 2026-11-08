@@ -1,0 +1,9 @@
+fn bench.fact_checked(n: u64) -> Option<u64> uses [] panics never stack 4096
+    if n == 0u64 {
+        return Some(1u64)
+    }
+    match bench.fact_checked(n.wrapping_sub(1u64)) {
+        Some(r) => r.checked_mul(n)
+        None => None
+    }
+end bench.fact_checked

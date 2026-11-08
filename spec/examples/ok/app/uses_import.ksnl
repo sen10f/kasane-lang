@@ -1,0 +1,5 @@
+import core.cmp
+
+fn app.uses_import.first() -> core.cmp.Ordering uses [] panics never pub
+    cmp.Ordering.Less
+end app.uses_import.first

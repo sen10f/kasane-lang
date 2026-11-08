@@ -1,0 +1,5 @@
+trait core.marker.Send pub
+end core.marker.Send
+
+trait core.marker.Sync pub
+end core.marker.Sync

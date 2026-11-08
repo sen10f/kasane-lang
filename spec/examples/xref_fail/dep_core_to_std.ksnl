@@ -1,0 +1,4 @@
+fn core.dep_x.f(e: std.io.Error) -> i32 uses [] panics never pub
+    core.mem.drop(e)
+    1i32
+end core.dep_x.f

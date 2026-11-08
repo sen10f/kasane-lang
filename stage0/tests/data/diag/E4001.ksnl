@@ -1,0 +1,3 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    std.io.print_line("x")
+end t.main

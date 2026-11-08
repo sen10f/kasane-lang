@@ -1,0 +1,8 @@
+fn t.f(n: u8) -> u8 uses [] panics never stack 8
+    t.f(n)
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.f(1u8))
+    Ok(())
+end t.main

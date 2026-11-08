@@ -1,0 +1,107 @@
+static app.misc.GREETING: &'static str = "hello\n" pub
+
+const app.misc.LIMIT: usize = 16
+
+trait app.misc.Area requires core.fmt.Debug pub
+    fn area(self: &Self) -> i64 uses [] panics never
+end app.misc.Area
+
+type app.misc.Buf[T, const N: usize] linear pub
+    items: [T; N]
+end app.misc.Buf
+
+type app.misc.Point derive [Clone, Copy, PartialEq, Eq] pub
+    x: i32 pub
+    y: i32 pub
+end app.misc.Point
+
+type app.misc.Raw layout c derive [Clone] pub
+    a: u8
+    b: u32
+end app.misc.Raw
+
+enum app.misc.Shape derive [Debug] pub
+    Circle(i32)
+    Rect(i32, i32)
+    Empty
+end app.misc.Shape
+
+type app.misc.Tag derive [PartialEq] pub
+    id: u32
+end app.misc.Tag
+
+impl core.cmp.Eq for app.misc.Tag
+
+impl core.fmt.Debug for app.misc.Point
+fn app.misc.Point.debug_fmt(self: &app.misc.Point, f: &mut core.fmt.Formatter) -> Result<(), core.fmt.Error> uses [] panics never impls core.fmt.Debug
+    f.write_str("Point")
+end app.misc.Point.debug_fmt
+
+fn app.misc.Shape.describe(self: &app.misc.Shape) -> i64 uses [] panics never pub
+    match self {
+        app.misc.Shape.Circle(_r) => 3
+        app.misc.Shape.Rect(_w, _h) => 4
+        app.misc.Shape.Empty => 0
+    }
+end app.misc.Shape.describe
+
+fn app.misc.apply[F: core.ops.Fn<(i32,), i32, E, P>, E: uses, P: panics](f: F) -> i32 uses [E] panics P pub
+    f(1i32)
+end app.misc.apply
+
+fn app.misc.call_all(items: &[i32], _h: &dyn std.net.Handler<[io.net], never> + 'static, g: fn(i32) -> i32 uses [] panics never) -> i32 uses [] panics never pub
+    let _doubled = core.iter.map(
+        items.iter(),
+        fn(x: &i32) -> i32 capture [move g] {
+            let y = g(*x)
+            y.wrapping_add(1i32)
+        },
+    )
+    app.misc.apply(g)
+end app.misc.call_all
+
+fn app.misc.id[T: linear + core.cmp.Eq](x: T) -> T uses [] panics never pub
+    x
+end app.misc.id
+
+fn app.misc.pick['a, T](x: &'a T, _y: &T) -> &'a T uses [] panics never pub
+    x
+end app.misc.pick
+
+fn app.misc.sum(xs: &[i32]) -> i32 uses [] panics never pub
+    let mut acc = 0i32
+    let mut i = 0usize
+    while i < xs.len() {
+        acc = acc.wrapping_add(xs.get(i).unwrap_or(0i32))
+        i = i.wrapping_add(1usize)
+    }
+    loop {
+        if acc == 0i32 {
+            break
+        } else if acc == 1i32 {
+            continue
+        } else {
+            break
+        }
+    }
+    let (a, b) = (acc, 1i32)
+    let app.misc.Point { x: px, y: py } = app.misc.Point { x: a, y: b }
+    core.mem.drop(py)
+    app.misc.id::<i32>(px)
+end app.misc.sum
+
+fn app.misc.twice(x: u32) -> u32 const uses [] panics never pub
+    x.wrapping_mul(2u32)
+end app.misc.twice
+
+fn app.misc.walk(n: u32) -> u32 uses [] panics never stack 4096 pub
+    if n == 0u32 {
+        return 0u32
+    }
+    app.misc.walk(n.wrapping_sub(1u32))
+end app.misc.walk
+
+test app.misc.sum.test_empty
+    let r = app.misc.sum(&[])
+    core.check.eq(r, 0i32)
+end app.misc.sum.test_empty

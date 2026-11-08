@@ -1,0 +1,8 @@
+fn t.f(a: u8) -> u8 uses [] panics never
+    a
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.f())
+    Ok(())
+end t.main

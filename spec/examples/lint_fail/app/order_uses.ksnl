@@ -1,0 +1,3 @@
+fn app.order_uses.f() -> i32 uses [io.fs, alloc] panics never pub
+    1i32
+end app.order_uses.f

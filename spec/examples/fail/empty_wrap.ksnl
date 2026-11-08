@@ -1,0 +1,4 @@
+fn app.x.f() -> i32 uses [] panics never
+    foo(
+    )
+end app.x.f

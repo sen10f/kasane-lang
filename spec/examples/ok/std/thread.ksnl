@@ -1,0 +1,13 @@
+extern std.thread.sched_yield() -> i32 link "sched_yield"
+
+fn std.thread.peek(p: *const u8) -> u8 uses [] panics never
+    unsafe "peek" "呼び出し側が p の有効性を保証する" {
+        *p
+    }
+end std.thread.peek
+
+fn std.thread.yield_now() -> () uses [thread] panics never pub
+    unsafe "yield" "sched_yield は副作用なしで常に成功する" {
+        let _r = std.thread.sched_yield()
+    }
+end std.thread.yield_now

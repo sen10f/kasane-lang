@@ -1,0 +1,17 @@
+[package]
+name = "kasane-lang"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ksn"
+path = "src/main.rs"
+
+[dependencies]
+regex = "1"
+toml = "0.8"
+sha2 = "0.10"
+similar = "2"
+
+[profile.release]
+opt-level = 2

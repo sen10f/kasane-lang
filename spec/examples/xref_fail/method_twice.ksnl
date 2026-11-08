@@ -1,0 +1,11 @@
+type app.method_dup.T pub
+    a: u8
+end app.method_dup.T
+
+fn app.method_dup.T.show(self: &app.method_dup.T) -> i32 uses [] panics never pub
+    1i32
+end app.method_dup.T.show
+
+fn app.method_dup.T.show(self: &app.method_dup.T) -> i32 uses [] panics never pub
+    2i32
+end app.method_dup.T.show

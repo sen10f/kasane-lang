@@ -1,0 +1,23 @@
+type bench.Stack
+    items: alloc.vec.Vec<u32, std.alloc.System>
+end bench.Stack
+
+fn bench.Stack.new() -> bench.Stack
+    let items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    bench.Stack { items: items }
+end bench.Stack.new
+
+fn bench.Stack.push(self: &mut bench.Stack, v: u32) -> bool
+    match self.items.push(v) {
+        Ok(_u) => true
+        Err(_e) => false
+    }
+end bench.Stack.push
+
+fn bench.Stack.pop(self: &mut bench.Stack) -> Option<u32>
+    self.items.pop()
+end bench.Stack.pop
+
+fn bench.Stack.len(self: &bench.Stack) -> usize
+    self.items.len()
+end bench.Stack.len

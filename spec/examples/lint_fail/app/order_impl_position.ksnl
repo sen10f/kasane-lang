@@ -1,0 +1,7 @@
+type app.order_impl_position.T pub
+    a: u8
+end app.order_impl_position.T
+
+fn app.order_impl_position.T.eq(self: &app.order_impl_position.T, other: &app.order_impl_position.T) -> bool uses [] panics never impls core.cmp.PartialEq<app.order_impl_position.T>
+    true
+end app.order_impl_position.T.eq

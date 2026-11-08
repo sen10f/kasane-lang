@@ -1,0 +1,3 @@
+fn app.fqn_end_mismatch.f() -> i32 uses [] panics never pub
+    1i32
+end app.fqn_end_mismatch.g

@@ -1,0 +1,27 @@
+fn bench.is_space(c: u8) -> bool
+    c == 32u8 || c == 10u8 || c == 9u8 || c == 13u8
+end bench.is_space
+
+fn bench.word_count(text: &str) -> u32
+    let bytes = text.as_bytes()
+    let mut count = 0u32
+    let mut in_word = false
+    let mut i = 0usize
+    while i < bytes.len() {
+        match bytes.get(i) {
+            Some(c) => {
+                if bench.is_space(c) {
+                    in_word = false
+                } else {
+                    if !in_word {
+                        count = count + 1u32
+                    }
+                    in_word = true
+                }
+            }
+            None => break
+        }
+        i = i + 1usize
+    }
+    count
+end bench.word_count

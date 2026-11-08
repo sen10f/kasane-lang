@@ -1,0 +1,9 @@
+fn bench.sum_of_squares(n: u32) -> u32
+    core.iter.fold(
+        core.iter.range(0u32, n),
+        0u32,
+        fn(acc: u32, x: u32) -> u32 capture [] {
+            acc + x * x
+        },
+    )
+end bench.sum_of_squares

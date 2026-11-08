@@ -1,0 +1,377 @@
+type json.Doc pub
+    links: alloc.vec.Vec<usize, std.alloc.System>
+    nodes: alloc.vec.Vec<json.Node, std.alloc.System>
+end json.Doc
+
+enum json.Error derive [Debug, Clone, PartialEq] pub
+    Alloc
+    BadEscape(usize)
+    BadNumber(usize)
+    Eof
+    Trailing(usize)
+    Unexpected(usize)
+end json.Error
+
+enum json.Node derive [Debug, Clone, Copy, PartialEq] pub
+    Array(usize, usize)
+    Bool(bool)
+    Null
+    Number(usize, usize)
+    Object(usize, usize)
+    Str(usize, usize)
+end json.Node
+
+fn json.array(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error> uses [alloc] panics never stack 4096
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = json.skip_ws(src, pos.wrapping_add(1usize))
+    if src.get(i) == Some(b']') {
+        let at = json.push_node(doc, json.Node.Array(doc.links.len(), 0usize))?
+        return Ok((at, i.wrapping_add(1usize)))
+    }
+    let mut close = 0usize
+    loop {
+        let (child, after) = json.value(doc, src, i)?
+        items.push(child).map_err(json.oom)?
+        let j = json.skip_ws(src, after)
+        match src.get(j) {
+            Some(b',') => {
+                i = json.skip_ws(src, j.wrapping_add(1usize))
+            }
+            Some(b']') => {
+                close = j
+                break
+            }
+            Some(_c) => return Err(json.Error.Unexpected(j))
+            None => return Err(json.Error.Eof)
+        }
+    }
+    let first = doc.links.len()
+    let count = items.len()
+    json.flush(doc, &items)?
+    let at = json.push_node(doc, json.Node.Array(first, count))?
+    Ok((at, close.wrapping_add(1usize)))
+end json.array
+
+fn json.compact(text: &str) -> Result<alloc.string.String<std.alloc.System>, json.Error>
+    let (doc, root) = json.parse(text)?
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    json.write(&doc, text.as_bytes(), root, &mut out)?
+    Ok(out)
+end json.compact
+
+fn json.digits(src: &[u8], pos: usize) -> usize
+    let mut i = pos
+    loop {
+        match src.get(i) {
+            Some(c) => {
+                if c >= b'0' && c <= b'9' {
+                    i = i.wrapping_add(1usize)
+                } else {
+                    break
+                }
+            }
+            None => break
+        }
+    }
+    i
+end json.digits
+
+fn json.escape(src: &[u8], pos: usize) -> Result<usize, json.Error>
+    match src.get(pos.wrapping_add(1usize)) {
+        None => Err(json.Error.Eof)
+        Some(b'u') => {
+            let mut k = pos.wrapping_add(2usize)
+            let stop = pos.wrapping_add(6usize)
+            loop {
+                if k >= stop {
+                    break
+                }
+                match src.get(k) {
+                    Some(c) => {
+                        if !json.is_hex(c) {
+                            return Err(json.Error.BadEscape(pos))
+                        }
+                    }
+                    None => return Err(json.Error.Eof)
+                }
+                k = k.wrapping_add(1usize)
+            }
+            Ok(stop)
+        }
+        Some(c) => {
+            if c == b'"' || c == b'\\' || c == b'/' || c == b'b' || c == b'f' || c == b'n' || c == b'r' || c == b't' {
+                Ok(pos.wrapping_add(2usize))
+            } else {
+                Err(json.Error.BadEscape(pos))
+            }
+        }
+    }
+end json.escape
+
+fn json.flush(doc: &mut json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), json.Error>
+    let n = items.len()
+    for k in core.iter.range(0usize, n) {
+        match items.get(k) {
+            Some(v) => json.push_link(doc, v)?
+            None => return Err(json.Error.Eof)
+        }
+    }
+    Ok(())
+end json.flush
+
+fn json.is_hex(c: u8) -> bool
+    (c >= b'0' && c <= b'9') || (c >= b'a' && c <= b'f') || (c >= b'A' && c <= b'F')
+end json.is_hex
+
+fn json.literal(doc: &mut json.Doc, src: &[u8], pos: usize, word: &str, node: json.Node) -> Result<(usize, usize), json.Error>
+    let want = word.as_bytes()
+    let stop = pos.wrapping_add(want.len())
+    match src.sub(pos, stop) {
+        Some(got) => {
+            if got == want {
+                let at = json.push_node(doc, node)?
+                Ok((at, stop))
+            } else {
+                Err(json.Error.Unexpected(pos))
+            }
+        }
+        None => Err(json.Error.Eof)
+    }
+end json.literal
+
+fn json.main() -> Result<(), json.Error>
+    let text = "{ \"name\": \"kasane\", \"tags\": [\"a\", \"b\"], \"n\": -12.5e3, \"ok\": true, \"none\": null }"
+    let out = json.compact(text)?
+    match std.io.print_line(out.as_str()) {
+        Ok(_u) => Ok(())
+        Err(_e) => Err(json.Error.Eof)
+    }
+end json.main
+
+fn json.number(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error>
+    let mut i = pos
+    if src.get(i) == Some(b'-') {
+        i = i.wrapping_add(1usize)
+    }
+    let int_end = json.digits(src, i)
+    if int_end == i {
+        return Err(json.Error.BadNumber(pos))
+    }
+    i = int_end
+    if src.get(i) == Some(b'.') {
+        let frac_end = json.digits(src, i.wrapping_add(1usize))
+        if frac_end == i.wrapping_add(1usize) {
+            return Err(json.Error.BadNumber(pos))
+        }
+        i = frac_end
+    }
+    let e = src.get(i)
+    if e == Some(b'e') || e == Some(b'E') {
+        let mut k = i.wrapping_add(1usize)
+        let sign = src.get(k)
+        if sign == Some(b'+') || sign == Some(b'-') {
+            k = k.wrapping_add(1usize)
+        }
+        let exp_end = json.digits(src, k)
+        if exp_end == k {
+            return Err(json.Error.BadNumber(pos))
+        }
+        i = exp_end
+    }
+    let at = json.push_node(doc, json.Node.Number(pos, i))?
+    Ok((at, i))
+end json.number
+
+fn json.object(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error> uses [alloc] panics never stack 4096
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = json.skip_ws(src, pos.wrapping_add(1usize))
+    if src.get(i) == Some(b'}') {
+        let at = json.push_node(doc, json.Node.Object(doc.links.len(), 0usize))?
+        return Ok((at, i.wrapping_add(1usize)))
+    }
+    let mut close = 0usize
+    loop {
+        if src.get(i) != Some(b'"') {
+            return Err(json.Error.Unexpected(i))
+        }
+        let (key, after_key) = json.string(doc, src, i)?
+        let colon = json.skip_ws(src, after_key)
+        if src.get(colon) != Some(b':') {
+            return Err(json.Error.Unexpected(colon))
+        }
+        let (val, after_val) = json.value(doc, src, json.skip_ws(src, colon.wrapping_add(1usize)))?
+        items.push(key).map_err(json.oom)?
+        items.push(val).map_err(json.oom)?
+        let j = json.skip_ws(src, after_val)
+        match src.get(j) {
+            Some(b',') => {
+                i = json.skip_ws(src, j.wrapping_add(1usize))
+            }
+            Some(b'}') => {
+                close = j
+                break
+            }
+            Some(_c) => return Err(json.Error.Unexpected(j))
+            None => return Err(json.Error.Eof)
+        }
+    }
+    let first = doc.links.len()
+    let pairs = items.len().wrapping_shr(1u32)
+    json.flush(doc, &items)?
+    let at = json.push_node(doc, json.Node.Object(first, pairs))?
+    Ok((at, close.wrapping_add(1usize)))
+end json.object
+
+fn json.oom(_e: alloc.alloc.AllocError) -> json.Error
+    json.Error.Alloc
+end json.oom
+
+fn json.parse(text: &str) -> Result<(json.Doc, usize), json.Error>
+    let src = text.as_bytes()
+    let links = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut doc = json.Doc { links: links, nodes: nodes }
+    let (root, after) = json.value(&mut doc, src, json.skip_ws(src, 0usize))?
+    let tail = json.skip_ws(src, after)
+    if tail != src.len() {
+        return Err(json.Error.Trailing(tail))
+    }
+    Ok((doc, root))
+end json.parse
+
+fn json.push_link(doc: &mut json.Doc, slot: usize) -> Result<(), json.Error>
+    doc.links.push(slot).map_err(json.oom)
+end json.push_link
+
+fn json.push_node(doc: &mut json.Doc, node: json.Node) -> Result<usize, json.Error>
+    let at = doc.nodes.len()
+    doc.nodes.push(node).map_err(json.oom)?
+    Ok(at)
+end json.push_node
+
+fn json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], from: usize, to: usize) -> Result<(), json.Error>
+    match src.sub(from, to) {
+        Some(bytes) => {
+            match core.str.from_utf8(bytes) {
+                Ok(text) => out.push_str(text).map_err(json.oom)
+                Err(_e) => Err(json.Error.Unexpected(from))
+            }
+        }
+        None => Err(json.Error.Eof)
+    }
+end json.push_range
+
+fn json.skip_ws(src: &[u8], pos: usize) -> usize
+    let mut i = pos
+    loop {
+        match src.get(i) {
+            Some(c) => {
+                if c == b' ' || c == b'\n' || c == b'\t' || c == b'\r' {
+                    i = i.wrapping_add(1usize)
+                } else {
+                    break
+                }
+            }
+            None => break
+        }
+    }
+    i
+end json.skip_ws
+
+fn json.string(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error>
+    let mut i = pos.wrapping_add(1usize)
+    loop {
+        match src.get(i) {
+            None => return Err(json.Error.Eof)
+            Some(b'"') => break
+            Some(b'\\') => {
+                i = json.escape(src, i)?
+            }
+            Some(c) => {
+                if c < 32u8 {
+                    return Err(json.Error.Unexpected(i))
+                }
+                i = i.wrapping_add(1usize)
+            }
+        }
+    }
+    let at = json.push_node(doc, json.Node.Str(pos.wrapping_add(1usize), i))?
+    Ok((at, i.wrapping_add(1usize)))
+end json.string
+
+fn json.value(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error> uses [alloc] panics never stack 4096
+    match src.get(pos) {
+        None => Err(json.Error.Eof)
+        Some(b'{') => json.object(doc, src, pos)
+        Some(b'[') => json.array(doc, src, pos)
+        Some(b'"') => json.string(doc, src, pos)
+        Some(b't') => json.literal(doc, src, pos, "true", json.Node.Bool(true))
+        Some(b'f') => json.literal(doc, src, pos, "false", json.Node.Bool(false))
+        Some(b'n') => json.literal(doc, src, pos, "null", json.Node.Null)
+        Some(_c) => json.number(doc, src, pos)
+    }
+end json.value
+
+fn json.write(doc: &json.Doc, src: &[u8], node: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), json.Error> uses [alloc] panics never stack 4096
+    match doc.nodes.get(node) {
+        None => Err(json.Error.Eof)
+        Some(json.Node.Null) => out.push_str("null").map_err(json.oom)
+        Some(json.Node.Bool(true)) => out.push_str("true").map_err(json.oom)
+        Some(json.Node.Bool(false)) => out.push_str("false").map_err(json.oom)
+        Some(json.Node.Number(a, b)) => json.push_range(out, src, a, b)
+        Some(json.Node.Str(a, b)) => {
+            out.push('"').map_err(json.oom)?
+            json.push_range(out, src, a, b)?
+            out.push('"').map_err(json.oom)
+        }
+        Some(json.Node.Array(first, count)) => {
+            out.push('[').map_err(json.oom)?
+            for k in core.iter.range(0usize, count) {
+                if k > 0usize {
+                    out.push(',').map_err(json.oom)?
+                }
+                json.write_link(doc, src, first.wrapping_add(k), out)?
+            }
+            out.push(']').map_err(json.oom)
+        }
+        Some(json.Node.Object(first, pairs)) => {
+            out.push('{').map_err(json.oom)?
+            for k in core.iter.range(0usize, pairs) {
+                if k > 0usize {
+                    out.push(',').map_err(json.oom)?
+                }
+                let at = first.wrapping_add(k.wrapping_mul(2usize))
+                json.write_link(doc, src, at, out)?
+                out.push(':').map_err(json.oom)?
+                json.write_link(doc, src, at.wrapping_add(1usize), out)?
+            }
+            out.push('}').map_err(json.oom)
+        }
+    }
+end json.write
+
+fn json.write_link(doc: &json.Doc, src: &[u8], slot: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), json.Error> uses [alloc] panics never stack 4096
+    match doc.links.get(slot) {
+        Some(node) => json.write(doc, src, node, out)
+        None => Err(json.Error.Eof)
+    }
+end json.write_link
+
+test json.compact.test_array
+    core.check.eq(json.compact("[ 1 , 2 ,3 ]").unwrap().as_str(), "[1,2,3]")
+end json.compact.test_array
+
+test json.compact.test_errors
+    core.check.eq(json.compact("[1,").is_err(), true)
+    core.check.eq(json.compact("{\"a\" 1}").is_err(), true)
+    core.check.eq(json.compact("[1] x").is_err(), true)
+    core.check.eq(json.compact("01x").is_err(), true)
+end json.compact.test_errors
+
+test json.compact.test_nested
+    core.check.eq(json.compact("{ \"a\" : [1, {\"b\": null}], \"c\": \"x\" }").unwrap().as_str(), "{\"a\":[1,{\"b\":null}],\"c\":\"x\"}")
+end json.compact.test_nested
+
+test json.compact.test_numbers
+    core.check.eq(json.compact("[-0, 1.5, 2e10, -3.25E-2]").unwrap().as_str(), "[-0,1.5,2e10,-3.25E-2]")
+end json.compact.test_numbers

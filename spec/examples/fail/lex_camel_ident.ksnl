@@ -1,0 +1,3 @@
+fn app.x.badName() -> i32 uses [] panics never pub
+    1i32
+end app.x.badName

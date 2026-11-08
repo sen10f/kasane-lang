@@ -1,0 +1,4 @@
+fn app.dyn_self_arg.f(h: &dyn core.cmp.Ord + 'static) -> i32 uses [] panics never pub
+    core.mem.drop(h)
+    1i32
+end app.dyn_self_arg.f

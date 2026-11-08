@@ -1,0 +1,3 @@
+fn app.x.f() -> char uses [] panics never
+    '\q'
+end app.x.f

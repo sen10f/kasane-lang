@@ -1,0 +1,61 @@
+type bench.Stats derive [Debug, Clone] pub
+    total: u32
+    count: u32
+end bench.Stats
+
+fn bench.Stats.new() -> bench.Stats uses [] panics never pub
+    bench.Stats { total: 0u32, count: 0u32 }
+end bench.Stats.new
+
+fn bench.Stats.add(self: &mut bench.Stats, v: u32) -> () uses [] panics may pub
+    self.total = self.total + v
+    self.count = self.count + 1u32
+end bench.Stats.add
+
+fn bench.Stats.mean(self: &bench.Stats) -> Option<u32> uses [] panics may pub
+    if self.count == 0u32 {
+        None
+    } else {
+        Some(self.total / self.count)
+    }
+end bench.Stats.mean
+
+fn bench.sum_even(n: u32) -> u32
+    let mut total = 0u32
+    for i in core.iter.range(0u32, n) {
+        if i % 2u32 == 0u32 {
+            total = total + i
+        }
+    }
+    total
+end bench.sum_even
+
+fn bench.first_big(xs: &[u32], limit: u32) -> Option<u32>
+    let mut i = 0usize
+    let mut found = None
+    while i < xs.len() {
+        match xs.get(i) {
+            Some(v) => {
+                if v > limit {
+                    found = Some(v)
+                    break
+                }
+            }
+            None => break
+        }
+        i = i + 1usize
+    }
+    found
+end bench.first_big
+
+test bench.sum_even.test_basic
+    core.check.eq(bench.sum_even(7u32), 12u32)
+end bench.sum_even.test_basic
+
+test bench.Stats.test_mean
+    let mut s = bench.Stats.new()
+    core.check.eq(s.mean(), None)
+    s.add(4u32)
+    s.add(8u32)
+    core.check.eq(s.mean(), Some(6u32))
+end bench.Stats.test_mean

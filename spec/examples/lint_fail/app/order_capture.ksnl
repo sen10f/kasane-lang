@@ -1,0 +1,6 @@
+fn app.order_capture.f(a: i32, b: i32) -> i32 uses [] panics never pub
+    let g = fn(x: i32) -> i32 capture [move b, move a] {
+        x.wrapping_add(a).wrapping_add(b)
+    }
+    g(1i32)
+end app.order_capture.f

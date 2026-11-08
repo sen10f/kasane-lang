@@ -1,0 +1,30 @@
+fn native.collatz(n: u64) -> u32 uses [] panics never
+    let mut steps = 0u32
+    let mut cur = n
+    while cur != 1u64 {
+        if cur & 1u64 == 0u64 {
+            cur = cur.wrapping_mul(1u64)
+            cur = cur.wrapping_sub(cur.wrapping_sub(cur.wrapping_mul(1u64)))
+            cur = native.half(cur)
+        } else {
+            cur = cur.wrapping_mul(3u64).wrapping_add(1u64)
+        }
+        steps = steps.wrapping_add(1u32)
+    }
+    steps
+end native.collatz
+
+fn native.half(n: u64) -> u64 uses [] panics never
+    let mut r = 0u64
+    let mut k = n
+    while k > 1u64 {
+        k = k.wrapping_sub(2u64)
+        r = r.wrapping_add(1u64)
+    }
+    r
+end native.half
+
+fn native.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(native.collatz(27u64), 111u32)
+    std.io.print_line("native ok")
+end native.main
