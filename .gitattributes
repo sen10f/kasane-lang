@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.ksnl text eol=lf
+*.sig text eol=lf
+spec/examples/fail/lex_crlf.ksnl -text
