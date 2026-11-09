@@ -1569,3 +1569,104 @@ fn a_wrong_struct_result_in_a_cranelift_executable_fails_the_check() {
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
+
+fn clif_option_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "type t.Pair derive [Copy, Clone]",
+        "    a: u32",
+        "    b: u32",
+        "end t.Pair",
+        "",
+        "fn t.find(a: u32, b: u32) -> Option<u32> uses [] panics never",
+        "    if a > b {",
+        "        return Some(a.wrapping_sub(b))",
+        "    }",
+        "    None",
+        "end t.find",
+        "",
+        "fn t.parse(n: u32) -> Result<u32, u8> uses [] panics never",
+        "    if n == 0u32 {",
+        "        return Err(7u8)",
+        "    }",
+        "    Ok(n.wrapping_mul(2u32))",
+        "end t.parse",
+        "",
+        "fn t.unit_ok(flag: bool) -> Result<(), u8> uses [] panics never",
+        "    if flag {",
+        "        return Ok(())",
+        "    }",
+        "    Err(1u8)",
+        "end t.unit_ok",
+        "",
+        "fn t.pair_of(n: u32) -> Option<t.Pair> uses [] panics never",
+        "    if n == 0u32 {",
+        "        return None",
+        "    }",
+        "    Some(t.Pair { a: n, b: n.wrapping_add(1u32) })",
+        "end t.pair_of",
+        "",
+        "fn t.describe(o: Option<u32>) -> u32 uses [] panics never",
+        "    match o {",
+        "        Some(v) => v.wrapping_add(100u32)",
+        "        None => 0u32",
+        "    }",
+        "end t.describe",
+        "",
+        "fn t.res_val(r: Result<u32, u8>) -> u32 uses [] panics never",
+        "    match r {",
+        "        Ok(v) => v",
+        "        Err(_) => 999u32",
+        "    }",
+        "end t.res_val",
+        "",
+        "fn t.unit_code(r: Result<(), u8>) -> u8 uses [] panics never",
+        "    match r {",
+        "        Ok(_) => 0u8",
+        "        Err(e) => e",
+        "    }",
+        "end t.unit_code",
+        "",
+        "fn t.pair_sum(o: Option<t.Pair>) -> u32 uses [] panics never",
+        "    match o {",
+        "        Some(p) => p.a.wrapping_add(p.b)",
+        "        None => 0u32",
+        "    }",
+        "end t.pair_sum",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    core.check.eq(t.describe(t.find(9u32, 4u32)), 105u32)",
+        "    core.check.eq(t.describe(t.find(1u32, 4u32)), 0u32)",
+        "    core.check.eq(t.res_val(t.parse(21u32)), 42u32)",
+        "    core.check.eq(t.res_val(t.parse(0u32)), 999u32)",
+        "    core.check.eq(t.unit_code(t.unit_ok(true)), 0u8)",
+        "    core.check.eq(t.unit_code(t.unit_ok(false)), 1u8)",
+        "    core.check.eq(t.pair_sum(t.pair_of(5u32)), 11u32)",
+        "    core.check.eq(t.pair_sum(t.pair_of(0u32)), 0u32)",
+        tail,
+        "    std.io.print_line(\"option ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_option_and_result() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_opt_{}", release), &clif_option_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "option ok");
+    }
+}
+
+#[test]
+fn a_wrong_option_result_in_a_cranelift_executable_fails_the_check() {
+    let (_t, exe_path, out) = build_clif("clif_opt_bad", &clif_option_program("    core.check.eq(t.describe(t.find(9u32, 4u32)), 106u32)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}

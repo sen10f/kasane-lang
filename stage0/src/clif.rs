@@ -10,6 +10,7 @@
 //! - 関数呼び出し・`T.method(..)`・`std.io.print_line("..")`・`core.check.eq`・`core.mem.drop`。
 //! 総称型・文字列・Vec・`Option` / `Result`・スカラーへの参照は未対応 (Err を返し、呼び出し側が別の経路に回す)。
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
@@ -78,6 +79,8 @@ fn scalar_size(p: &str) -> u32 {
 /// 型の定義表とレイアウト計算。
 struct Cx<'a> {
     types: &'a HashMap<String, &'a Def>,
+    /// `Option<u32>` のような組み込みの総称列挙型の具体化: 名前 → [(バリアント名, ペイロードの型)]
+    gen: RefCell<HashMap<String, Vec<(String, Vec<String>)>>>,
 }
 
 /// 構造体・列挙型のメモリ配置。
@@ -113,6 +116,11 @@ impl<'a> Cx<'a> {
             }
             "named" => {
                 let n = st(tel(t, 1));
+                if n == "Option" || n == "Result" {
+                    let args: Vec<String> =
+                        items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).map(|a| self.pty(a)).collect::<R<Vec<String>>>()?;
+                    return self.builtin_enum(&n, &args);
+                }
                 if let Some(d) = self.types.get(&n) {
                     if d.generics.is_empty() && (d.kw == "type" || d.kw == "enum") {
                         return Ok(n);
@@ -127,6 +135,10 @@ impl<'a> Cx<'a> {
     fn layout(&self, name: &str, depth: u32) -> R<Layout> {
         if depth > 8 {
             return Err(format!("recursive type {}", name));
+        }
+        let registered = self.gen.borrow().get(name).cloned();
+        if let Some(vs) = registered {
+            return self.enum_layout(vs, depth);
         }
         let d = self.types.get(name).ok_or_else(|| format!("unknown type {}", name))?;
         let fsize = |ty: &str| -> R<(u32, u32)> {
@@ -151,33 +163,70 @@ impl<'a> Cx<'a> {
             }
             return Ok(Layout { size: align_up(off.max(1), align), align, fields, is_enum: false, variants: vec![] });
         }
-        // 列挙型: 先頭に 4 バイトのタグ、その後ろにバリアントごとのペイロード (重ねて置く)。
-        let mut variants = vec![];
-        let mut max_align = 4u32;
-        let mut payloads: Vec<Vec<(String, u32, u32)>> = vec![];
+        let mut vs = vec![];
         for (vn, tys) in &d.variants {
+            let mut ts = vec![];
+            for t in tys {
+                ts.push(self.pty(t)?);
+            }
+            vs.push((vn.clone(), ts));
+        }
+        self.enum_layout(vs, depth)
+    }
+
+    /// 先頭に 4 バイトのタグ、その後ろにバリアントごとのペイロードを重ねて置く。
+    fn enum_layout(&self, vs: Vec<(String, Vec<String>)>, depth: u32) -> R<Layout> {
+        let fsize = |ty: &str| -> R<(u32, u32)> {
+            if is_scalar(ty) {
+                Ok((scalar_size(ty), scalar_size(ty)))
+            } else {
+                let l = self.layout(ty, depth + 1)?;
+                Ok((l.size, l.align))
+            }
+        };
+        let mut max_align = 4u32;
+        let mut sizes = vec![];
+        let mut rel: Vec<Vec<(String, u32)>> = vec![];
+        for (_, tys) in &vs {
             let mut cur = 0u32;
             let mut fs = vec![];
-            for t in tys {
-                let ty = self.pty(t)?;
-                let (sz, al) = fsize(&ty)?;
+            for ty in tys {
+                let (sz, al) = fsize(ty)?;
                 cur = align_up(cur, al);
-                fs.push((ty, cur, sz));
+                fs.push((ty.clone(), cur));
                 cur += sz;
                 max_align = max_align.max(al);
             }
-            payloads.push(fs.iter().map(|x| (x.0.clone(), x.1, x.2)).collect());
-            variants.push((vn.clone(), cur));
+            sizes.push(cur);
+            rel.push(fs);
         }
         let start = align_up(4, max_align);
-        let max_payload = variants.iter().map(|v| v.1).max().unwrap_or(0);
-        let vs = d
-            .variants
+        let max_payload = sizes.iter().copied().max().unwrap_or(0);
+        let variants = vs
             .iter()
-            .zip(payloads)
-            .map(|((vn, _), fs)| (vn.clone(), fs.into_iter().map(|(ty, off, _)| (ty, start + off)).collect()))
+            .zip(rel)
+            .map(|((vn, _), fs)| (vn.clone(), fs.into_iter().map(|(ty, off)| (ty, start + off)).collect()))
             .collect();
-        Ok(Layout { size: align_up(start + max_payload, max_align), align: max_align, fields: vec![], is_enum: true, variants: vs })
+        Ok(Layout { size: align_up(start + max_payload, max_align), align: max_align, fields: vec![], is_enum: true, variants })
+    }
+
+    /// `Option<T>` / `Result<T, E>` の具体化を登録して、その名前を返す。`()` はペイロードなし。
+    fn builtin_enum(&self, base: &str, args: &[String]) -> R<String> {
+        let name = format!("{}<{}>", base, args.join(","));
+        let payload = |t: &String| if t == "void" { vec![] } else { vec![t.clone()] };
+        let vs = if base == "Option" {
+            if args.len() != 1 {
+                return Err("Option needs one type argument".into());
+            }
+            vec![("None".to_string(), vec![]), ("Some".to_string(), payload(&args[0]))]
+        } else {
+            if args.len() != 2 {
+                return Err("Result needs two type arguments".into());
+            }
+            vec![("Ok".to_string(), payload(&args[0])), ("Err".to_string(), payload(&args[1]))]
+        };
+        self.gen.borrow_mut().insert(name.clone(), vs);
+        Ok(name)
     }
 
     /// `A.B.C` を (列挙型 `A.B`, バリアント `C`) に分ける。
@@ -251,6 +300,19 @@ impl<'a, 'b> FnGen<'a, 'b> {
         self.funcs.get(&format!("{}.{}", recv_ty, name)).copied()
     }
 
+    /// `Some(x)` / `Ok(x)` / `Err(e)` が作る列挙型の名前。期待される型があればそれ、なければ引数から決める。
+    fn ctor_type(&self, ctor: &str, args: &[V], env: &Env, expect: Option<&str>) -> Option<String> {
+        let want = if ctor == "Some" { "Option<" } else { "Result<" };
+        if let Some(t) = expect.filter(|t| t.starts_with(want)) {
+            return Some(t.to_string());
+        }
+        if ctor == "Some" {
+            let a = self.ty_of(args.first()?, env, None)?;
+            return self.cx.builtin_enum("Option", &[a]).ok();
+        }
+        None
+    }
+
     fn body_ty(&self, body: &V, env: &Env, expect: Option<&str>) -> Option<String> {
         if nname(body) == "Block" {
             let stmts = items(&nf(body)[0]);
@@ -282,6 +344,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let segs = strs(&f[0]);
                 if env.contains_key(&segs[0]) {
                     return self.field_chain_ty(&segs, env);
+                }
+                if segs == ["None"] {
+                    return expect.filter(|t| t.starts_with("Option<")).map(String::from);
                 }
                 self.cx.split_variant(&segs).map(|v| v.0)
             }
@@ -338,6 +403,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 if let Some((en, _, _)) = self.cx.split_variant(&segs) {
                     return Some(en);
+                }
+                if segs.len() == 1 && matches!(segs[0].as_str(), "Some" | "Ok" | "Err") && !self.funcs.contains_key(&segs[0]) {
+                    return self.ctor_type(&segs[0], items(&f[1]), env, expect);
                 }
                 if segs == ["core", "check", "eq"] || segs == ["core", "mem", "drop"] {
                     return Some("void".into());
@@ -759,7 +827,13 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let mut binds = vec![];
                 if nname(pat) == "PVariant" {
                     for (j, sp) in items(&pf[1]).iter().enumerate() {
-                        let (fty, off) = l.variants[idx].1.get(j).cloned().ok_or("too many sub-patterns")?;
+                        let Some((fty, off)) = l.variants[idx].1.get(j).cloned() else {
+                            // `Ok(_)` / `Ok(())` のように、ペイロードが空 (`()`) のバリアントに対するパターン。
+                            if nname(sp) == "PWild" || (nname(sp) == "PLit" && st(&nf(&nf(sp)[0])[0]) == "unit") {
+                                continue;
+                            }
+                            return Err("too many sub-patterns".into());
+                        };
                         match nname(sp) {
                             "PBind" => {
                                 let addr = self.b.ins().iadd_imm(scrut, off as i64);
@@ -890,6 +964,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
         let tg = self.b.ins().iconst(types::I32, idx as i64);
         self.b.ins().store(MemFlags::new(), tg, p, 0);
         let fields = l.variants[idx].1.clone();
+        let args: Vec<&V> = args.iter().filter(|a| !(nname(a) == "Lit" && st(&nf(a)[0]) == "unit")).collect();
         if fields.len() != args.len() {
             return Err("variant arity".into());
         }
@@ -966,6 +1041,10 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     }
                     let v = self.b.ins().load(cl(&ty), MemFlags::new(), addr, 0);
                     return Ok((Some(v), ty));
+                }
+                if segs == ["None"] {
+                    let Some(t) = expect.filter(|t| t.starts_with("Option<")) else { return Err("None without an expected type".into()) };
+                    return self.make_variant(&t.to_string(), 0, &[], env);
                 }
                 if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
                     return self.make_variant(&en, idx, &[], env);
@@ -1187,6 +1266,15 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
                     return self.make_variant(&en, idx, args, env);
                 }
+                if segs.len() == 1 && matches!(segs[0].as_str(), "Some" | "Ok" | "Err") && !self.funcs.contains_key(&segs[0]) {
+                    let Some(t) = self.ctor_type(&segs[0], args, env, expect) else { return Err("constructor without an expected type".into()) };
+                    let idx = match segs[0].as_str() {
+                        "Some" => 1,
+                        "Ok" => 0,
+                        _ => 1,
+                    };
+                    return self.make_variant(&t, idx, args, env);
+                }
                 if segs == ["core", "check", "eq"] {
                     let t = self.ty_of(&args[0], env, None).or_else(|| self.ty_of(&args[1], env, None)).ok_or("operand type")?;
                     if !is_scalar(&t) {
@@ -1305,7 +1393,7 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
-    let cx = Cx { types: type_defs };
+    let cx = Cx { types: type_defs, gen: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
