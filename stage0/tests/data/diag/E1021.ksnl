@@ -1,0 +1,7 @@
+import t.util
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let util = 1u8
+    core.mem.drop(util)
+    Ok(())
+end t.main

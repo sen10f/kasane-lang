@@ -1,6 +1,8 @@
 //! lint (stage0)。Python 参照実装 spec/tools/ksnlint.py の移植。
 //! FQN とパスの一致・命名・定義順・空行・属性の並び・インデント・未使用・pub の伝播を検査する。
 
+use std::collections::HashMap;
+
 use regex::Regex;
 
 pub type LintErr = (String, usize, String);
@@ -743,11 +745,20 @@ impl Lint {
 
     fn check_imports(&mut self, items: &[Item]) {
         let text = self.lines.iter().filter(|l| !l.starts_with("import ")).cloned().collect::<Vec<_>>().join("\n");
+        // 3.3: 末尾名が衝突する2つのモジュールは同一ファイルで import できない。
+        let mut tails: HashMap<&str, ()> = HashMap::new();
         for it in items {
             if it.kw != "import" {
                 continue;
             }
             let tail = it.name.rsplit('.').next().unwrap();
+            if tails.insert(tail, ()).is_some() {
+                self.err(
+                    "impcollide",
+                    it.line + 1,
+                    format!("import tail `{}` collides with another import; use the FQN instead", tail),
+                );
+            }
             let needle = format!("{}.", tail);
             let used = text.match_indices(&needle).any(|(i, _)| {
                 text[..i].chars().next_back().map_or(true, |c| !(word_char(c) || c == '.'))

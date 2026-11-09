@@ -316,6 +316,27 @@ fn gap_recursive_type_needs_drop() {
 }
 
 #[test]
+fn duplicate_import_tails_are_rejected() {
+    let t = Tmp::new("impdup", &main_wrap("", ""));
+    fs::create_dir_all(t.0.join("src/t/other")).unwrap();
+    fs::write(t.0.join("src/t/util.ksnl"), "fn t.util.f() -> u8 uses [] panics never\n    1u8\nend t.util.f\n")
+        .unwrap();
+    fs::write(
+        t.0.join("src/t/other/util.ksnl"),
+        "fn t.other.util.g() -> u8 uses [] panics never\n    2u8\nend t.other.util.g\n",
+    )
+    .unwrap();
+    fs::write(
+        t.0.join("src").join("t.ksnl"),
+        "import t.other.util\nimport t.util\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n",
+    )
+    .unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1111"), "{}", text(&o.stdout));
+}
+
+#[test]
 fn gap_ksn_rt_link() {
     let t = Tmp::new("gap_rt", &main_wrap("", ""));
     fs::create_dir_all(t.0.join("src/t")).unwrap();
@@ -405,6 +426,45 @@ fn run_ok(name: &str, body: &str) {
     let t = Tmp::new(name, &main_wrap("", body));
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}: {}{}", name, text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn hashmap_preserves_insertion_order() {
+    // 8章: 標準 HashMap の反復順は挿入順で、削除後も残りの相対順を保つ。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    core.mem.drop(m.insert(3u8, "c"))
+    core.mem.drop(m.insert(1u8, "a"))
+    core.mem.drop(m.insert(2u8, "b"))
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    for kv in m.iter() {
+        let (k, v) = kv
+        core.mem.drop(k)
+        match s.push_str(*v) {
+            Ok(_u) => ()
+            Err(_e) => core.panic.panic("oom")
+        }
+    }
+    core.mem.drop(m.remove(&1u8))
+    let mut s2 = alloc.string.String.new(std.alloc.SYSTEM)
+    for kv in m.iter() {
+        let (k, v) = kv
+        core.mem.drop(k)
+        match s2.push_str(*v) {
+            Ok(_u) => ()
+            Err(_e) => core.panic.panic("oom")
+        }
+    }
+    std.io.print_line(s.as_str())?
+    std.io.print_line(s2.as_str())?
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("maporder", src);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "cab\ncb");
 }
 
 #[test]

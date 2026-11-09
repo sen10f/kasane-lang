@@ -32,6 +32,7 @@ fn lint_code(c: &str) -> &'static str {
         "indent" => "E0031",
         "pub" => "E1010",
         "unused" => "E1020",
+        "impcollide" => "E1111",
         _ => "E0020",
     }
 }

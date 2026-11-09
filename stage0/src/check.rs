@@ -130,6 +130,15 @@ pub(crate) fn covers(caller: &[String], eff: &str) -> bool {
 }
 
 const PRELUDE_TYPES: &[&str] = &["Option", "Result"];
+/// プレリュード名のFQN形 (型・パターンに書くとE1110。メソッドFQNは除く)。
+const PRELUDE_FQN: &[&str] = &[
+    "core.option.Option",
+    "core.option.Some",
+    "core.option.None",
+    "core.result.Result",
+    "core.result.Ok",
+    "core.result.Err",
+];
 pub(crate) const DERIVE_TRAITS: &[(&str, &str)] = &[
     ("Debug", "core.fmt.Debug"),
     ("Clone", "core.ops.Clone"),
@@ -156,6 +165,8 @@ pub struct Checker<'a> {
     moved: BTreeMap<String, usize>,
     final_env: HashMap<String, V>,
     graph: BTreeMap<String, BTreeSet<String>>,
+    /// 現在の関数のファイルで `import` したモジュールの末尾名 (シャドーイング検査用)。
+    import_tails: HashSet<String>,
 }
 
 type Env = HashMap<String, V>;
@@ -175,6 +186,7 @@ impl<'a> Checker<'a> {
             moved: BTreeMap::new(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
+            import_tails: HashSet::new(),
         }
     }
 
@@ -251,6 +263,8 @@ impl<'a> Checker<'a> {
     // ---- 宣言レベルの規則 (3.5 / 5.3 / 8.2)
     fn check_declarations(&mut self) {
         let user = self.user.clone();
+        // 5.3: 再帰を含む型 (自己参照・相互再帰の両方) の集合。
+        let recursive = self.recursive_types();
         for &i in &user {
             let d = self.def(i);
             // 効果の推論 (非 pub の関数のみ): pub / impls の関数は宣言が必要。
@@ -264,25 +278,66 @@ impl<'a> Checker<'a> {
                     self.diag("E1030", "`ksn_rt_` link names are reserved for the runtime".into(), i, 0);
                 }
             }
-            // 5.3: 再帰を含む型は Drop の明示実装が必要。
-            if matches!(d.kw.as_str(), "type" | "enum") {
-                let tys: Vec<V> = if d.kw == "type" {
-                    d.fields.iter().map(|f| f.1.clone()).collect()
-                } else {
-                    d.variants.iter().flat_map(|v| v.1.clone()).collect()
-                };
-                if tys.iter().any(|t| ty_mentions(t, &d.name)) {
-                    let has_drop = user.iter().any(|&j| {
-                        let x = self.def(j);
-                        x.kw == "impl" && x.impl_trait == "core.ops.Drop" && ty_mentions(&x.impl_for, &d.name)
-                    });
-                    if !has_drop {
-                        let msg = format!("recursive type {} requires an explicit core.ops.Drop impl", d.name);
-                        self.diag("E4013", msg, i, 0);
+            // 5.3: 再帰を含む型 (自己参照・相互再帰) は Drop の明示実装が必要。
+            if matches!(d.kw.as_str(), "type" | "enum") && recursive.contains(&d.name) {
+                let has_drop = user.iter().any(|&j| {
+                    let x = self.def(j);
+                    x.kw == "impl" && x.impl_trait == "core.ops.Drop" && ty_mentions(&x.impl_for, &d.name)
+                });
+                if !has_drop {
+                    let msg = format!("recursive type {} requires an explicit core.ops.Drop impl", d.name);
+                    self.diag("E4013", msg, i, 0);
+                }
+            }
+        }
+    }
+
+    /// 型の辺 (フィールド・バリアント・タプル・配列・スライス・型引数・参照・生ポインタ) をたどって
+    /// 自分自身に戻れる型 (自己参照・相互再帰) の名前を集める (5.3)。
+    fn recursive_types(&self) -> HashSet<String> {
+        let defs: Vec<&Def> = self
+            .user
+            .iter()
+            .map(|&j| self.def(j))
+            .filter(|d| matches!(d.kw.as_str(), "type" | "enum"))
+            .collect();
+        let idx: HashMap<&str, usize> = defs.iter().enumerate().map(|(k, d)| (d.name.as_str(), k)).collect();
+        let n = defs.len();
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (k, d) in defs.iter().enumerate() {
+            let tys: Vec<&V> = if d.kw == "type" {
+                d.fields.iter().map(|f| &f.1).collect()
+            } else {
+                d.variants.iter().flat_map(|v| v.1.iter()).collect()
+            };
+            let mut names = HashSet::new();
+            for t in tys {
+                collect_ty_names(t, &mut names);
+            }
+            for nm in names {
+                if let Some(&m) = idx.get(nm.as_str()) {
+                    if !adj[k].contains(&m) {
+                        adj[k].push(m);
                     }
                 }
             }
         }
+        let mut out = HashSet::new();
+        for k in 0..n {
+            let mut seen = vec![false; n];
+            let mut stack = adj[k].clone();
+            while let Some(m) = stack.pop() {
+                if m == k {
+                    out.insert(defs[k].name.clone());
+                    break;
+                }
+                if !seen[m] {
+                    seen[m] = true;
+                    stack.extend(adj[m].iter().copied());
+                }
+            }
+        }
+        out
     }
 
     // ---- 型の参照
@@ -297,6 +352,10 @@ impl<'a> Checker<'a> {
         match tag(t).as_str() {
             "named" => {
                 let nm = st(tel(t, 1));
+                if PRELUDE_FQN.contains(&nm.as_str()) {
+                    let bare = nm.rsplit('.').next().unwrap();
+                    self.diag("E1110", format!("write the prelude name `{}` without its module path", bare), di, 0);
+                }
                 if !nm.contains('.') {
                     if !names.contains(&nm) && !PRELUDE_TYPES.contains(&nm.as_str()) {
                         self.diag("E1102", format!("unknown type {}", nm), di, 0);
@@ -388,6 +447,9 @@ impl<'a> Checker<'a> {
         tys.push(d.ret.clone());
         self.check_header_types(di, &tys);
         let mut locals: HashSet<String> = d.params.iter().map(|p| p.0.clone()).collect();
+        // 4.1: `import` したモジュールの末尾名も可視なので、同名の束縛はシャドーイングになる。
+        // 変数の解決には使わない (別集合)。
+        self.import_tails = self.p.imports.get(&d.file).map(|m| m.keys().cloned().collect()).unwrap_or_default();
         self.cur_uses = if test { None } else { Some(d.uses.clone()) };
         self.cur_panics = if test { "may".into() } else { d.panics.clone().unwrap_or("may".into()) };
         self.unsafe_ok = self.module_may_use_unsafe(&d.module);
@@ -641,7 +703,8 @@ impl<'a> Checker<'a> {
     /// 4.1: 可視な束縛と同名の宣言はシャドーイングでエラー。
     fn shadow_check(&mut self, binds: &[String], locals: &HashSet<String>, di: usize, line: usize) {
         for n in binds {
-            if locals.contains(n) {
+            let shadows = locals.contains(n) || self.import_tails.contains(n);
+            if shadows {
                 self.diag("E1021", format!("`{}` shadows an existing binding", n), di, line);
             }
         }
@@ -654,6 +717,10 @@ impl<'a> Checker<'a> {
             let segs = strs(&f[0]);
             if segs.len() == 1 && matches!(segs[0].as_str(), "None" | "Some" | "Ok" | "Err") {
                 return;
+            }
+            if PRELUDE_FQN.contains(&segs.join(".").as_str()) {
+                let bare = segs.last().unwrap();
+                self.diag("E1110", format!("write the prelude name `{}` without its module path", bare), di, 0);
             }
             let r = self.p.resolve(&segs, &self.def(di).file);
             let ok = matches!(r, Some(ref x) if matches!(x.target, Target::Variant(..) | Target::Const(_) | Target::Type(_)));
@@ -1624,6 +1691,28 @@ pub fn format_diag(d: &Diag) -> String {
 }
 
 /// 型 `t` が名前 `name` の型を (参照・引数・タプル・配列を通して) 含むか。
+/// 型の中に現れる名前つき型を集める (`ty_mentions` と同じ辺をたどる)。
+fn collect_ty_names(t: &V, out: &mut HashSet<String>) {
+    match tag(t).as_str() {
+        "named" => {
+            out.insert(st(tel(t, 1)));
+            for a in items(tel(t, 2)) {
+                if matches!(a, V::L(_)) {
+                    collect_ty_names(a, out);
+                }
+            }
+        }
+        "ref" | "ptr" => collect_ty_names(tel(t, 2), out),
+        "slice" | "array" => collect_ty_names(tel(t, 1), out),
+        "tuple" => {
+            for x in items(tel(t, 1)) {
+                collect_ty_names(x, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn ty_mentions(t: &V, name: &str) -> bool {
     match tag(t).as_str() {
         "named" => {

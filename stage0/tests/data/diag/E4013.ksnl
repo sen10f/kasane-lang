@@ -1,0 +1,11 @@
+type t.A
+    b: Option<t.B>
+end t.A
+
+type t.B
+    a: Option<t.A>
+end t.B
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
