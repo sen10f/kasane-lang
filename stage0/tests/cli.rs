@@ -2231,3 +2231,109 @@ fn a_write_through_a_mutable_reference_is_visible_in_a_cranelift_executable() {
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
+
+#[test]
+fn the_realtime_example_runs_natively_through_cranelift() {
+    let d = root().join("examples").join("realtime");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_rt_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    for release in [false, true] {
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "clif"]).current_dir(&d).env("KSN_CACHE_DIR", &cache);
+        if release {
+            c.arg("--release");
+        }
+        let o = c.output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        let kind = if release { "release" } else { "debug" };
+        let p = d.join("target").join(kind).join(if cfg!(windows) { "realtime.exe" } else { "realtime.native" });
+        assert!(p.exists(), "native executable missing: {}", out);
+        let r = Command::new(&p).output().unwrap();
+        assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    }
+    let _ = fs::remove_dir_all(&cache);
+}
+
+fn clif_try_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.collect(n: u32) -> alloc.vec.Vec<u32, std.alloc.System>",
+        "    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+        "    for k in core.iter.range(1u32, n.wrapping_add(1u32)) {",
+        "        match v.push(k.wrapping_mul(k)) {",
+        "            Ok(_u) => {",
+        "            }",
+        "            Err(_e) => {",
+        "                break",
+        "            }",
+        "        }",
+        "    }",
+        "    v",
+        "end t.collect",
+        "",
+        "fn t.parse(n: u32) -> Result<u32, u8>",
+        "    if n == 0u32 {",
+        "        return Err(7u8)",
+        "    }",
+        "    Ok(n.wrapping_mul(2u32))",
+        "end t.parse",
+        "",
+        "fn t.positive(n: u32) -> Option<u32>",
+        "    if n == 0u32 {",
+        "        return None",
+        "    }",
+        "    Some(n)",
+        "end t.positive",
+        "",
+        "fn t.sum_two(a: u32, b: u32) -> Option<u32>",
+        "    let x = t.positive(a)?",
+        "    let y = t.positive(b)?",
+        "    x.checked_add(y)",
+        "end t.sum_two",
+        "",
+        "fn t.twice(n: u32) -> Result<u32, u8>",
+        "    let a = t.parse(n)?",
+        "    let b = t.parse(a)?",
+        "    Ok(b)",
+        "end t.twice",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    core.check.eq(t.twice(3u32), Ok(12u32))",
+        "    core.check.eq(t.twice(0u32), Err(7u8))",
+        "    core.check.eq(t.sum_two(2u32, 5u32), Some(7u32))",
+        "    core.check.eq(t.sum_two(0u32, 5u32), None)",
+        "    core.check.eq(t.sum_two(4u32, 0u32), None)",
+        "    let v = t.collect(4u32)",
+        "    core.check.eq(v.len(), 4usize)",
+        "    core.check.eq(v[3usize], 16u32)",
+        tail,
+        "    std.io.print_line(\"try ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_the_question_mark_and_infers_vec_types() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_try_{}", release), &clif_try_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "try ok");
+    }
+}
+
+#[test]
+fn a_question_mark_error_in_main_exits_with_code_1_in_a_cranelift_executable() {
+    let (_t, exe_path, out) = build_clif("clif_try_main", &clif_try_program("    core.check.eq(t.parse(0u32)?, 0u32)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
+    assert!(!text(&o.stdout).contains("try ok"));
+}
