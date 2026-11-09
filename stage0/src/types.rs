@@ -133,6 +133,8 @@ pub struct TypeCk<'a> {
     kinds: Vec<u8>,
     /// 文脈が追えなかった (未知の型に渡された) 型変数。型が決まらなくてもエラーにしない。
     escaped: HashSet<usize>,
+    /// `let mut` で宣言された局所変数 (Kasane はシャドーイング禁止なので、名前は関数内で一意)
+    mutable: HashSet<String>,
     /// 出てきたリテラル: (種類 "int"/"float", 綴り, 型, 行)
     lits: Vec<(&'static str, String, Ty, usize)>,
 }
@@ -153,7 +155,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), lits: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![] }
     }
 
     fn def(&self) -> &'a Def {
@@ -172,6 +174,7 @@ impl<'a> TypeCk<'a> {
         self.vars.clear();
         self.kinds.clear();
         self.escaped.clear();
+        self.mutable.clear();
         self.lits.clear();
         self.scopes = vec![HashMap::new()];
         let gn = d.gnames();
@@ -184,8 +187,57 @@ impl<'a> TypeCk<'a> {
         let value = self.infer(body);
         let gn = d.gnames();
         let ret = subst_params_unknown(&from_v(&d.ret, &gn));
-        let _ = self.unify2(&ret, &value);
+        if let Err(err) = self.unify2(&ret, &value) {
+            if let Some((want, got)) = self.prim_conflict(&err) {
+                let stmts = items(&nf(body)[0]);
+                let line = stmts.last().map(nline).unwrap_or(0);
+                self.diag("E2020", format!("type mismatch in return value: expected {}, found {}", want, got), line);
+            }
+        }
+        self.check_dangling(body, &ret);
         self.finish_literals();
+    }
+
+    /// 戻り値が参照のとき、局所変数 (引数以外) への参照を返していないか。
+    fn check_dangling(&mut self, body: &V, ret: &Ty) {
+        if !matches!(ret, Ty::Ref(..)) {
+            return;
+        }
+        let d = self.def();
+        let params: HashSet<&String> = d.params.iter().map(|p| &p.0).collect();
+        let mut nodes: Vec<&V> = vec![];
+        crate::check::walk(body, &mut nodes);
+        let mut locals: HashSet<String> = HashSet::new();
+        for n in &nodes {
+            if nname(n) == "Let" {
+                let mut b = vec![];
+                pat_binds(&nf(n)[0], &mut b);
+                locals.extend(b);
+            }
+        }
+        let mut returned: Vec<&V> = vec![];
+        if let Some(last) = items(&nf(body)[0]).last() {
+            if nname(last) == "ExprStmt" {
+                returned.push(&nf(last)[0]);
+            }
+        }
+        for n in &nodes {
+            if nname(n) == "Return" && !is_nil(&nf(n)[0]) {
+                returned.push(&nf(n)[0]);
+            }
+        }
+        for r in returned {
+            if nname(r) == "Unary" && matches!(st(&nf(r)[0]).as_str(), "&" | "&mut") && nname(&nf(r)[1]) == "Path" {
+                let segs = strs(&nf(&nf(r)[1])[0]);
+                if segs.len() == 1 && locals.contains(&segs[0]) && !params.contains(&segs[0]) {
+                    self.diag(
+                        "E3030",
+                        format!("returns a reference to the local variable `{}`, which does not live long enough", segs[0]),
+                        nline(r),
+                    );
+                }
+            }
+        }
     }
 
     /// 関数の最後に、リテラルの範囲と、型が決まらなかったリテラルを検査する。
@@ -448,7 +500,7 @@ impl<'a> TypeCk<'a> {
     }
 
     // ------------------------------------------------------------ メソッド呼び出し
-    fn call_method(&mut self, recv: &Ty, name: &str, args: &[Ty], line: usize) -> Ty {
+    fn call_method(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize) -> Ty {
         let (owners, complete) = self.owners_for(recv);
         let mut cands: Vec<(usize, String)> = vec![];
         let escape_all = |this: &mut Self| {
@@ -496,6 +548,11 @@ impl<'a> TypeCk<'a> {
         let (di, owner) = fit[0].clone();
         let d = &self.p.defs[di];
         let gn = d.gnames();
+        if let Some(b) = base {
+            if matches!(from_v(&d.params[0].1, &gn), Ty::Ref(true, _)) {
+                self.need_mut(b, name, line);
+            }
+        }
         let mut map: HashMap<String, Ty> = HashMap::new();
         let self_ty = from_v(&d.params[0].1, &gn);
         let self_ty = self.inst(&self_ty, &mut map);
@@ -516,8 +573,78 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
+        self.check_bounds(d, &map, line, false);
         let ret = from_v(&d.ret, &gn);
         self.inst(&ret, &mut map)
+    }
+
+    /// `&mut self` のメソッドを呼ぶには、レシーバの局所変数が `let mut` か、`&mut` の参照でなければならない。
+    fn need_mut(&mut self, base: &str, method: &str, line: usize) {
+        let Some(t) = self.lookup(base) else { return };
+        match self.resolve(&t) {
+            Ty::Ref(false, _) => self.diag(
+                "E3031",
+                format!("cannot call the `&mut self` method `{}` through the shared reference `{}`", method, base),
+                line,
+            ),
+            Ty::Ref(true, _) | Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Never => {}
+            _ => {
+                if !self.mutable.contains(base) {
+                    self.diag(
+                        "E3031",
+                        format!("cannot borrow `{}` as mutable to call `{}`: declare it with `let mut {}`", base, method, base),
+                        line,
+                    );
+                }
+            }
+        }
+    }
+
+    /// 型パラメータの境界 (`T: core.cmp.Ord` など) を、解決された型が満たすか。
+    fn check_bounds(&mut self, d: &Def, map: &HashMap<String, Ty>, line: usize, direct_only_skip: bool) {
+        let _ = direct_only_skip;
+        for g in &d.generics {
+            if g.0 != "type" || items(&g.2).is_empty() {
+                continue;
+            }
+            let Some(t) = map.get(&g.1) else { continue };
+            let t = self.deep(t);
+            let t = t.strip();
+            for b in items(&g.2) {
+                let V::L(bx) = b else { continue };
+                let tr = st(&bx[0]);
+                if tr == "core.marker.Send" || tr == "core.marker.Sync" || tr.starts_with("core.ops.Fn") {
+                    continue;
+                }
+                let known = self.p.types.get(&tr).map_or(false, |&i| self.p.defs[i].kw == "trait")
+                    || crate::check::DERIVE_TRAITS.iter().any(|(_, v)| *v == tr);
+                if !known {
+                    continue;
+                }
+                let bad = match t {
+                    Ty::Named(n, _) => self.p.types.contains_key(n) && !self.implements(n, &tr),
+                    Ty::Prim(p) if p == "f32" || p == "f64" => {
+                        matches!(tr.as_str(), "core.cmp.Eq" | "core.cmp.Ord" | "core.hash.Hash")
+                    }
+                    _ => false,
+                };
+                if bad {
+                    self.diag(
+                        "E2030",
+                        format!("the trait bound `{}: {}` of {} is not satisfied by {}", g.1, tr, d.name, t.show()),
+                        line,
+                    );
+                }
+            }
+        }
+    }
+
+    fn implements(&self, ty: &str, tr: &str) -> bool {
+        let Some(&i) = self.p.types.get(ty) else { return true };
+        if self.p.impls.contains(&(tr.to_string(), ty.to_string())) {
+            return true;
+        }
+        self.p.defs[i].derive.iter().any(|x| crate::check::DERIVE_TRAITS.iter().any(|(k, v)| k == x && *v == tr))
     }
 
     // ------------------------------------------------------------ 式
@@ -567,7 +694,8 @@ impl<'a> TypeCk<'a> {
             "MCall" => {
                 let recv = self.infer(&f[0]);
                 let args: Vec<Ty> = items(&f[2]).iter().map(|a| self.infer(a)).collect();
-                self.call_method(&recv, &st(&f[1]), &args, nline(e))
+                let base = self.base_local(&f[0]);
+                self.call_method(&recv, base.as_deref(), &st(&f[1]), &args, nline(e))
             }
             "Field" => {
                 let r = self.infer(&f[0]);
@@ -723,11 +851,20 @@ impl<'a> TypeCk<'a> {
                 let gn = self.def().gnames();
                 let ty = if !is_nil(&f[2]) {
                     let ann = subst_params_unknown(&from_v(&f[2], &gn));
-                    let _ = self.unify2(&ann, &rhs);
+                    if let Err(err) = self.unify2(&ann, &rhs) {
+                        if let Some((want, got)) = self.prim_conflict(&err) {
+                            self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}", want, got), nline(s));
+                        }
+                    }
                     ann
                 } else {
                     rhs
                 };
+                if matches!(f[1], V::B(true)) {
+                    let mut b = vec![];
+                    pat_binds(&f[0], &mut b);
+                    self.mutable.extend(b);
+                }
                 self.bind_pat(&f[0], &ty);
                 Ty::Unit
             }
@@ -859,7 +996,7 @@ impl<'a> TypeCk<'a> {
             for s in &segs[1..segs.len() - 1] {
                 t = self.field_ty(&t, s);
             }
-            return self.call_method(&t, &segs[segs.len() - 1], &argt, line);
+            return self.call_method(&t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line);
         }
         let _ = &argt;
         let Some(r) = self.p.resolve(&segs, &self.def().file) else {
@@ -921,8 +1058,21 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
+        self.check_bounds(d, &map, line, true);
         let ret = from_v(&d.ret, &gn);
         self.inst(&ret, &mut map)
+    }
+
+    /// 式の根にある局所変数の名前 (`v` / `s.items` → `s`)。
+    fn base_local(&self, e: &V) -> Option<String> {
+        match nname(e) {
+            "Path" => {
+                let segs = strs(&nf(e)[0]);
+                if self.lookup(&segs[0]).is_some() { Some(segs[0].clone()) } else { None }
+            }
+            "Field" => self.base_local(&nf(e)[0]),
+            _ => None,
+        }
     }
 }
 

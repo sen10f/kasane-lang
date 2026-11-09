@@ -988,3 +988,69 @@ fn literals_passed_to_unknown_receivers_are_not_flagged() {
     let (got, out) = check_codes("lit_escape", &["let f = 1u8", "core.mem.drop(f.unknown_thing(5))"]);
     assert!(!got.iter().any(|c| c == "E2027"), "{}", out);
 }
+
+// ---- 借用・境界・注釈の検査 (types.rs) ----
+
+#[test]
+fn mut_method_on_an_immutable_local_is_rejected() {
+    let (got, out) = check_codes(
+        "bor_imm",
+        &["let v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.push(1u8))"],
+    );
+    assert!(got.iter().any(|c| c == "E3031"), "{}", out);
+    assert!(out.contains("let mut v"), "{}", out);
+}
+
+#[test]
+fn mut_method_on_a_mut_local_or_mut_ref_is_accepted() {
+    let f = "fn t.fill(v: &mut alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics may\n    core.mem.drop(v.push(1u8))\nend t.fill\n\n";
+    let src = main_wrap(f, &body(&["let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.push(2u8))", "t.fill(&mut v)"]));
+    let t = Tmp::new("bor_ok", &src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E3031"), "{}", out);
+}
+
+#[test]
+fn mut_method_through_a_shared_reference_is_rejected() {
+    let f = "fn t.fill(v: &alloc.vec.Vec<u8, std.alloc.System>) -> () uses [alloc] panics may\n    core.mem.drop(v.push(1u8))\nend t.fill\n\n";
+    let t = Tmp::new("bor_shared", &main_wrap(f, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E3031"), "{}", out);
+    assert!(out.contains("shared reference"), "{}", out);
+}
+
+#[test]
+fn returning_a_reference_to_a_local_is_rejected() {
+    let f = "fn t.bad() -> &u8 uses [] panics never\n    let x = 5u8\n    &x\nend t.bad\n\n";
+    let t = Tmp::new("bor_dangling", &main_wrap(f, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E3030"), "{}", out);
+}
+
+#[test]
+fn returning_a_reference_derived_from_a_parameter_is_accepted() {
+    let f = "fn t.first(xs: &[u8]) -> Option<&u8> uses [] panics never\n    xs.get(0usize)\nend t.first\n\n\
+             fn t.id(x: &u8) -> &u8 uses [] panics never\n    x\nend t.id\n\n";
+    let t = Tmp::new("bor_ok_ret", &main_wrap(f, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E3030"), "{}", out);
+}
+
+#[test]
+fn float_keys_do_not_satisfy_ord_bounds() {
+    let (got, out) = check_codes(
+        "bound_float",
+        &["let mut m = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)", "core.mem.drop(m.insert(1.5f64, 1u8))"],
+    );
+    assert!(got.iter().any(|c| c == "E2030"), "{}", out);
+}
+
+#[test]
+fn let_annotation_and_return_value_mismatches_are_reported_once() {
+    let src = "fn t.f() -> u8 uses [] panics never\n    5u32\nend t.f\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    let a: u8 = 1u32\n    core.mem.drop(a)\n    core.mem.drop(t.f())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("ann_mismatch", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert_eq!(out.matches("type mismatch in let binding").count(), 1, "{}", out);
+    assert_eq!(out.matches("type mismatch in return value").count(), 1, "{}", out);
+}
