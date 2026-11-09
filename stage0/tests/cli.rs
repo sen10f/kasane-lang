@@ -2337,3 +2337,112 @@ fn a_question_mark_error_in_main_exits_with_code_1_in_a_cranelift_executable() {
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
     assert!(!text(&o.stdout).contains("try ok"));
 }
+
+fn clif_closure_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.evens_sum(limit: i32) -> i32",
+        "    core.iter.fold(",
+        "        core.iter.map(",
+        "            core.iter.filter(",
+        "                core.iter.range(0i32, limit),",
+        "                fn(x: &i32) -> bool capture [] {",
+        "                    *x % 2i32 == 0i32",
+        "                },",
+        "            ),",
+        "            fn(x: i32) -> i32 capture [] {",
+        "                x.wrapping_mul(10i32)",
+        "            },",
+        "        ),",
+        "        0i32,",
+        "        fn(a: i32, x: i32) -> i32 capture [] {",
+        "            a.wrapping_add(x)",
+        "        },",
+        "    )",
+        "end t.evens_sum",
+        "",
+        "fn t.fresh() -> alloc.vec.Vec<i32, std.alloc.System>",
+        "    alloc.vec.Vec.new(std.alloc.SYSTEM)",
+        "end t.fresh",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    core.check.eq(t.evens_sum(7i32), 120i32)",
+        "    let twice = fn(n: i32) -> i32 capture [] {",
+        "        n.wrapping_mul(2i32)",
+        "    }",
+        "    core.check.eq(twice(21i32), 42i32)",
+        "    let base = 100i32",
+        "    let add_base = fn(n: i32) -> i32 capture [&base] {",
+        "        n.wrapping_add(base)",
+        "    }",
+        "    core.check.eq(add_base(5i32), 105i32)",
+        "    let mut v = t.fresh()",
+        "    for k in core.iter.range(1i32, 6i32) {",
+        "        match v.push(k) {",
+        "            Ok(_u) => 0u8",
+        "            Err(_e) => 1u8",
+        "        }",
+        "    }",
+        "    core.check.eq(core.iter.count(v.iter()), 5usize)",
+        "    core.check.eq(core.iter.count(core.iter.take(v.iter(), 3usize)), 3usize)",
+        "    let total = core.iter.fold(",
+        "        core.iter.take(v.iter(), 3usize),",
+        "        0i32,",
+        "        fn(a: i32, x: &i32) -> i32 capture [] {",
+        "            a.wrapping_add(*x)",
+        "        },",
+        "    )",
+        "    core.check.eq(total, 6i32)",
+        "    let mut seen = 0usize",
+        "    let mut sum = 0i32",
+        "    for (i, x) in core.iter.enumerate(core.iter.take(v.iter(), 2usize)) {",
+        "        core.check.eq(i, seen)",
+        "        sum = sum.wrapping_add(*x)",
+        "        seen = seen.wrapping_add(1usize)",
+        "    }",
+        "    core.check.eq(seen, 2usize)",
+        "    core.check.eq(sum, 3i32)",
+        tail,
+        "    std.io.print_line(\"closure ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_inlines_closures_and_fuses_iterator_pipelines() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_clo_{}", release), &clif_closure_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "closure ok");
+    }
+}
+
+#[test]
+fn a_wrong_closure_result_in_a_cranelift_executable_fails_the_check() {
+    let (_t, exe_path, out) = build_clif("clif_clo_bad", &clif_closure_program("    core.check.eq(twice(2i32), 5i32)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}
+
+#[test]
+fn the_demo_example_runs_natively_through_cranelift() {
+    let d = root().join("examples").join("demo");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_demo_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    let o = Command::new(exe()).args(["build", "--backend", "clif"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    let p = d.join("target").join("debug").join(if cfg!(windows) { "demo.exe" } else { "demo.native" });
+    assert!(p.exists(), "native executable missing: {}", out);
+    let r = Command::new(&p).output().unwrap();
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    let _ = fs::remove_dir_all(&cache);
+}

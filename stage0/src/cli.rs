@@ -1429,7 +1429,7 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                         tdefs.insert(d.name.clone(), d);
                     }
                 }
-                crate::clif::compile_clif(&funcs, &tdefs, e, &norm(&exe), release)
+                crate::clif::compile_clif(&prog, &funcs, &tdefs, e, &norm(&exe), release)
             } else {
                 crate::cnative::compile_native(&funcs, e, &norm(&exe), release)
             }

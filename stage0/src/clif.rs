@@ -22,7 +22,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::check::{items, nf, nname, st, strs, tag, tel};
 use crate::parser::V;
-use crate::program::Def;
+use crate::program::{Def, Program};
 
 type R<T> = Result<T, String>;
 type Env = HashMap<String, (Variable, String)>;
@@ -91,6 +91,9 @@ fn scalar_size(p: &str) -> u32 {
 /// 型の定義表とレイアウト計算。
 struct Cx<'a> {
     types: &'a HashMap<String, &'a Def>,
+    prog: &'a Program,
+    /// いま名前を解決しているファイル (`use` による短い名前を完全修飾名に直す)
+    file: RefCell<String>,
     /// `Option<u32>` のような組み込みの総称列挙型の具体化: 名前 → [(バリアント名, ペイロードの型)]
     gen: RefCell<HashMap<String, Vec<(String, Vec<String>)>>>,
     /// `alloc.vec.Vec<u32>` のような Vec の具体化: 名前 → 要素の型
@@ -173,15 +176,40 @@ impl<'a> Cx<'a> {
                         items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).map(|a| self.pty_owned(a)).collect::<R<Vec<String>>>()?;
                     return self.builtin_enum(&n, &args);
                 }
-                if let Some(d) = self.types.get(&n) {
+                let q = self.qual_name(&n);
+                if let Some(d) = self.types.get(&q) {
                     if d.generics.is_empty() && (d.kw == "type" || d.kw == "enum") {
-                        return Ok(n);
+                        return Ok(q);
                     }
                 }
             }
             _ => {}
         }
         Err(format!("type {}", t.dump()))
+    }
+
+    /// 名前の列を、現在のファイルの `use` に従って完全修飾名にする。
+    fn qual_segs(&self, segs: &[String]) -> Vec<String> {
+        if segs.is_empty() {
+            return vec![];
+        }
+        self.prog.expand(segs, &self.file.borrow())
+    }
+
+    fn qual_name(&self, n: &str) -> String {
+        if self.types.contains_key(n) {
+            return n.to_string();
+        }
+        let segs: Vec<String> = n.split('.').map(String::from).collect();
+        self.qual_segs(&segs).join(".")
+    }
+
+    /// 関数 `d` の宣言の型 `t` を、`d` が書かれたファイルの名前で解決する。
+    fn pty_for(&self, d: &Def, t: &V) -> R<String> {
+        let old = self.file.replace(d.file.clone());
+        let r = self.pty(t);
+        *self.file.borrow_mut() = old;
+        r
     }
 
     /// 参照でない型 (フィールド・ペイロード・要素の型に使う)。参照を値として持つと所有と取り違えるため。
@@ -240,6 +268,19 @@ impl<'a> Cx<'a> {
     }
 
     fn layout(&self, name: &str, depth: u32) -> R<Layout> {
+        let file = self.types.get(name).map(|d| d.file.clone());
+        match file {
+            Some(f) => {
+                let old = self.file.replace(f);
+                let r = self.layout_raw(name, depth);
+                *self.file.borrow_mut() = old;
+                r
+            }
+            None => self.layout_raw(name, depth),
+        }
+    }
+
+    fn layout_raw(&self, name: &str, depth: u32) -> R<Layout> {
         if depth > 8 {
             return Err(format!("recursive type {}", name));
         }
@@ -467,6 +508,7 @@ impl<'a> Cx<'a> {
 
     /// `A.B.C` を (列挙型 `A.B`, バリアント `C`) に分ける。
     fn split_variant(&self, segs: &[String]) -> Option<(String, usize, String)> {
+        let segs = &self.qual_segs(segs);
         if segs.len() < 2 {
             return None;
         }
@@ -517,8 +559,39 @@ struct FnGen<'a, 'b> {
     addr_taken: HashSet<String>,
     /// いま処理している文の後ろに続く文 (型を使われ方から決めるために先読みする)
     rest: Vec<V>,
+    /// `let f = fn(..) ..` で束縛したクロージャ (呼び出しの場所で本体を展開する)
+    closures: HashMap<String, V>,
     /// スロットに置いた変数の番号 (変数の値はスロットのアドレス)
     promoted: HashSet<u32>,
+}
+
+/// イテレータの始点。
+enum Src {
+    Range(V, V),
+    /// (列の式, `iter_mut` か)
+    Seq(V, bool),
+}
+
+/// イテレータの中間の段。
+enum Stage {
+    Map(V),
+    Filter(V),
+    Enumerate,
+    Take(V),
+}
+
+struct Pipe {
+    src: Src,
+    stages: Vec<Stage>,
+}
+
+/// イテレータの終端。
+enum Sink<'a> {
+    /// (パターン, 本体)
+    For(&'a V, &'a V),
+    /// (初期値, クロージャ)
+    Fold(&'a V, &'a V),
+    Count,
 }
 
 /// 解放の責任を持つ変数。`flag` が真の間だけ、スコープの終わりで解放する (移動したら偽にする)。
@@ -724,6 +797,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if env.contains_key(&segs[0]) { self.field_chain_ty(&segs, env) } else { None }
             }
             "Try" => {
+                if is_print(&f[0]) {
+                    return Some("void".into());
+                }
                 let t = self.ty_of(&f[0], env, None)?;
                 let ok_idx = if t.starts_with("Option<") { 1 } else if t.starts_with("Result<") { 0 } else { return None };
                 let l = self.cx.layout(&t, 0).ok()?;
@@ -739,7 +815,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 Some(self.cx.tuple_of(&elems))
             }
             "StructLit" => {
-                let n = st(&f[0]);
+                let n = self.cx.qual_name(&st(&f[0]));
                 if self.cx.types.contains_key(&n) { Some(n) } else { None }
             }
             "Bin" => {
@@ -778,7 +854,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                         return Some(t);
                     }
                     if is_agg(rt) {
-                        return self.method_target(rt, &name).and_then(|d| self.cx.pty(&d.ret).ok());
+                        return self.method_target(rt, &name).and_then(|d| self.cx.pty_for(d, &d.ret).ok());
                     }
                 }
                 self.ty_of(&f[0], env, expect).or_else(|| items(&f[2]).first().and_then(|a| self.ty_of(a, env, expect)))
@@ -788,6 +864,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     return None;
                 }
                 let segs = strs(&nf(&f[0])[0]);
+                let segs = if env.contains_key(&segs[0]) { segs } else { self.cx.qual_segs(&segs) };
                 if segs.len() >= 2 && env.contains_key(&segs[0]) {
                     let recv_ty = self.field_chain_ty(&segs[..segs.len() - 1], env)?;
                     let name = &segs[segs.len() - 1];
@@ -795,7 +872,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                         return Some(t);
                     }
                     if is_agg(&recv_ty) {
-                        return self.method_target(&recv_ty, name).and_then(|d| self.cx.pty(&d.ret).ok());
+                        return self.method_target(&recv_ty, name).and_then(|d| self.cx.pty_for(d, &d.ret).ok());
                     }
                     return Some(recv_ty);
                 }
@@ -805,7 +882,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if segs.len() >= 3 {
                     if let Some((en, _, _)) = self.cx.split_variant(&segs[..segs.len() - 1]) {
                         let name = &segs[segs.len() - 1];
-                        return self.method_target(&en, name).and_then(|d| self.cx.pty(&d.ret).ok());
+                        return self.method_target(&en, name).and_then(|d| self.cx.pty_for(d, &d.ret).ok());
                     }
                 }
                 if segs.len() == 1 && matches!(segs[0].as_str(), "Some" | "Ok" | "Err") && !self.funcs.contains_key(&segs[0]) {
@@ -813,6 +890,19 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 if segs == ["alloc", "vec", "Vec", "new"] {
                     return expect.filter(|t| self.cx.elem_of(t).is_some()).map(String::from);
+                }
+                if segs == ["core", "iter", "count"] {
+                    return Some("usize".into());
+                }
+                if segs == ["core", "panic", "panic"] {
+                    return Some("void".into());
+                }
+                if segs == ["core", "iter", "fold"] && items(&f[1]).len() == 3 {
+                    return self.ty_of(&items(&f[1])[1], env, expect);
+                }
+                if segs.len() == 1 && self.closures.contains_key(&segs[0]) {
+                    let clo = &self.closures[&segs[0]];
+                    return self.cx.pty(&nf(clo)[1]).ok();
                 }
                 if segs == ["alloc", "string", "String", "new"] {
                     return Some(STRING.to_string());
@@ -826,7 +916,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if segs == ["core", "check", "eq"] || segs == ["core", "mem", "drop"] {
                     return Some("void".into());
                 }
-                self.funcs.get(&segs.join(".")).and_then(|d| self.cx.pty(&d.ret).ok())
+                self.funcs.get(&segs.join(".")).and_then(|d| self.cx.pty_for(d, &d.ret).ok())
             }
             _ => None,
         }
@@ -1059,6 +1149,20 @@ impl<'a, 'b> FnGen<'a, 'b> {
         }
     }
 
+    /// 定数のバイト列を標準エラーに書く。
+    fn write_stderr(&mut self, bytes: &[u8]) -> R<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let n = bytes.len() as i64;
+        let p = self.string_ptr(bytes.to_vec())?;
+        let fd = self.b.ins().iconst(types::I32, 2);
+        let len = self.b.ins().iconst(types::I32, n);
+        let w = self.rt.write;
+        self.call_rt(w, &[fd, p, len]);
+        Ok(())
+    }
+
     /// 条件 `bad` が真なら panic して終了コード 101 で終わる。
     fn guard(&mut self, bad: Value, msg: &str) -> R<()> {
         let (pb, ok) = (self.b.create_block(), self.b.create_block());
@@ -1221,6 +1325,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 Ok(())
             }
+            "Let" if nname(&f[0]) == "PBind" && nname(&f[3]) == "Closure" => {
+                // クロージャは値を持たず、呼び出しの場所で本体を展開する。
+                self.closures.insert(st(&nf(&f[0])[0]), f[3].clone());
+                Ok(())
+            }
             "Let" => {
                 if nname(&f[0]) != "PBind" {
                     return Err("destructuring let".into());
@@ -1231,7 +1340,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let known = known.or_else(|| self.infer_let_type(&f[3], &lname, env));
                 let ty = match known {
                     Some(t) if t != "void" => t,
-                    _ => return Err("let of unknown type".into()),
+                    _ => return Err(format!("let of unknown type: {}", lname)),
                 };
                 let (v, _) = self.expr(&f[3], env, Some(&ty))?;
                 let mut v = v.ok_or("let of unit")?;
@@ -1486,141 +1595,318 @@ impl<'a, 'b> FnGen<'a, 'b> {
         }
     }
 
-    /// `for` の反復の元: `core.iter.range(a, b)`、`x.iter()`、`core.iter.enumerate(x.iter())`。
-    fn iter_source(&self, it: &V, env: &Env) -> Option<(V, bool, bool)> {
+    // ------------------------------------------------------------ イテレータの連なり
+    /// `for` や `fold` / `count` の元になるイテレータの式を、始点と中間の段に分ける。
+    fn parse_pipe(&self, it: &V, env: &Env) -> Option<Pipe> {
         if nname(it) == "Call" && nname(&nf(it)[0]) == "Path" {
             let segs = strs(&nf(&nf(it)[0])[0]);
+            let segs = if env.contains_key(&segs[0]) { segs } else { self.cx.qual_segs(&segs) };
             let args = items(&nf(it)[1]);
-            if segs == ["core", "iter", "enumerate"] && args.len() == 1 {
-                let (r, _, m) = self.iter_source(&args[0], env)?;
-                return Some((r, true, m));
+            let core_iter = |n: &str| segs.len() == 3 && segs[0] == "core" && segs[1] == "iter" && segs[2] == n;
+            if core_iter("range") && args.len() == 2 {
+                return Some(Pipe { src: Src::Range(args[0].clone(), args[1].clone()), stages: vec![] });
+            }
+            for (name, nargs) in [("map", 2usize), ("filter", 2), ("enumerate", 1), ("take", 2)] {
+                if core_iter(name) && args.len() == nargs {
+                    let mut p = self.parse_pipe(&args[0], env)?;
+                    p.stages.push(match name {
+                        "map" => Stage::Map(args[1].clone()),
+                        "filter" => Stage::Filter(args[1].clone()),
+                        "enumerate" => Stage::Enumerate,
+                        _ => Stage::Take(args[1].clone()),
+                    });
+                    return Some(p);
+                }
             }
             if segs.len() >= 2 && env.contains_key(&segs[0]) && matches!(segs[segs.len() - 1].as_str(), "iter" | "iter_mut") && args.is_empty() {
                 let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
-                return Some((recv, false, segs[segs.len() - 1] == "iter_mut"));
+                return Some(Pipe { src: Src::Seq(recv, segs[segs.len() - 1] == "iter_mut"), stages: vec![] });
             }
         }
         if nname(it) == "MCall" && matches!(st(&nf(it)[1]).as_str(), "iter" | "iter_mut") && items(&nf(it)[2]).is_empty() {
-            return Some((nf(it)[0].clone(), false, st(&nf(it)[1]) == "iter_mut"));
+            return Some(Pipe { src: Src::Seq(nf(it)[0].clone(), st(&nf(it)[1]) == "iter_mut"), stages: vec![] });
         }
         None
     }
 
-    fn for_stmt(&mut self, e: &V, env: &mut Env) -> R<()> {
-        let f = nf(e);
-        let (pat, it, body) = (&f[0], &f[1], &f[2]);
+    /// クロージャ (式、または `let` で束縛した名前) の本体を、引数を束縛してその場に展開する。
+    fn inline_closure(&mut self, clo: &V, args: &[(Value, String)], env: &Env) -> R<(Option<Value>, String)> {
+        let node: V = if nname(clo) == "Closure" {
+            clo.clone()
+        } else if nname(clo) == "Path" && strs(&nf(clo)[0]).len() == 1 {
+            self.closures.get(&strs(&nf(clo)[0])[0]).cloned().ok_or("call of an unknown closure")?
+        } else {
+            return Err("call of a non-closure".into());
+        };
+        let f = nf(&node);
+        let mut nodes: Vec<&V> = vec![];
+        crate::check::walk(&f[3], &mut nodes);
+        if nodes.iter().any(|n| nname(n) == "Return") {
+            return Err("return inside a closure".into());
+        }
+        let ps = items(&f[0]);
+        if ps.len() != args.len() {
+            return Err("closure arity".into());
+        }
+        let mut inner = env.clone();
+        for (p, (val, ty)) in ps.iter().zip(args) {
+            let pty = self.cx.pty(&items(p)[1])?;
+            if &pty != ty {
+                return Err(format!("closure parameter type mismatch: {} vs {}", pty, ty));
+            }
+            let var = self.new_var(&pty);
+            self.b.def_var(var, *val);
+            if is_agg(&pty) {
+                self.refs.insert(var.as_u32());
+            }
+            inner.insert(st(&items(p)[0]), (var, pty));
+        }
+        let rty = self.cx.pty(&f[1])?;
+        self.scopes.push(vec![]);
+        let (v, t) = self.arm_value(&f[3], &mut inner, if rty == "void" { None } else { Some(&rty) })?;
+        let d = self.scopes.len() - 1;
+        self.drop_scopes_from(d)?;
+        self.scopes.pop();
+        if is_agg(&t) && self.cx.needs_drop(&t) {
+            return Err("closure returning a droppable value".into());
+        }
+        Ok((v, if rty != "void" { rty } else { t }))
+    }
+
+    /// 束縛パターン (`x` / `_` / `(a, b)`) に、型 `ty` の値 `val` を束縛する。
+    fn bind_item(&mut self, pat: &V, val: Value, ty: &str, inner: &mut Env) -> R<()> {
+        match nname(pat) {
+            "PBind" => {
+                let var = self.new_var(ty);
+                self.b.def_var(var, val);
+                if is_agg(ty) {
+                    self.refs.insert(var.as_u32());
+                }
+                inner.insert(st(&nf(pat)[0]), (var, ty.to_string()));
+                Ok(())
+            }
+            "PWild" => Ok(()),
+            "PTuple" => {
+                if !self.cx.tuples.borrow().contains_key(ty) {
+                    return Err("tuple pattern on a non-tuple item".into());
+                }
+                let l = self.cx.layout(ty, 0)?;
+                let pats = items(&nf(pat)[0]).to_vec();
+                if pats.len() != l.fields.len() {
+                    return Err("tuple pattern arity".into());
+                }
+                for (sp, (_, fty, off)) in pats.iter().zip(l.fields.iter()) {
+                    let addr = self.b.ins().iadd_imm(val, *off as i64);
+                    let v = self.load_value(addr, fty);
+                    self.bind_item(sp, v, fty, inner)?;
+                }
+                Ok(())
+            }
+            _ => Err("for pattern".into()),
+        }
+    }
+
+    /// イテレータの連なりを 1 つのループにまとめて出す。クロージャは本体をその場に展開する。
+    fn run_pipe(&mut self, pipe: &Pipe, env: &mut Env, sink: Sink) -> R<(Option<Value>, String)> {
         let i64t = types::I64;
         let pt = self.ptr_ty();
         let (head, body_b, cont, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
-        // 範囲 `core.iter.range(a, b)`
-        let range = nname(it) == "Call"
-            && nname(&nf(it)[0]) == "Path"
-            && strs(&nf(&nf(it)[0])[0]) == ["core", "iter", "range"]
-            && items(&nf(it)[1]).len() == 2;
-        if range {
-            let args = items(&nf(it)[1]);
-            let t = self
-                .ty_of(&args[0], env, None)
-                .or_else(|| self.ty_of(&args[1], env, None))
-                .filter(|t| is_int(t))
-                .ok_or("range element type")?;
-            let (a, _) = self.expr(&args[0], env, Some(&t))?;
-            let (b, _) = self.expr(&args[1], env, Some(&t))?;
-            let (a, b) = (a.ok_or("bad range")?, b.ok_or("bad range")?);
-            self.b.append_block_param(head, cl(&t));
-            self.b.ins().jump(head, &[a]);
-            self.b.switch_to_block(head);
-            let i = self.b.block_params(head)[0];
-            let cc = if signed(&t) { IntCC::SignedLessThan } else { IntCC::UnsignedLessThan };
-            let c = self.b.ins().icmp(cc, i, b);
-            self.b.ins().brif(c, body_b, &[], exit, &[]);
-            self.b.switch_to_block(body_b);
-            let mut inner = env.clone();
-            match nname(pat) {
-                "PBind" => {
-                    let var = self.new_var(&t);
-                    self.b.def_var(var, i);
-                    inner.insert(st(&nf(pat)[0]), (var, t.clone()));
+        // 段ごとの状態 (take の上限と数、enumerate の番号) は、ループの前に用意する。
+        let mut take_state: Vec<(Variable, Value)> = vec![];
+        let mut enum_vars: Vec<Variable> = vec![];
+        for st_ in &pipe.stages {
+            match st_ {
+                Stage::Take(n) => {
+                    let (lim, _) = self.expr(n, env, Some("usize"))?;
+                    let var = self.new_var("usize");
+                    let z = self.b.ins().iconst(i64t, 0);
+                    self.b.def_var(var, z);
+                    take_state.push((var, lim.ok_or("bad take count")?));
                 }
-                "PWild" => {}
-                _ => return Err("for pattern".into()),
+                Stage::Enumerate => {
+                    let var = self.new_var("usize");
+                    let z = self.b.ins().iconst(i64t, 0);
+                    self.b.def_var(var, z);
+                    enum_vars.push(var);
+                }
+                _ => {}
             }
-            let depth = self.scopes.len();
-            self.loops.push((cont, exit, depth));
-            self.block(body, &mut inner, false)?;
-            self.loops.pop();
-            if !self.term {
-                self.b.ins().jump(cont, &[]);
-            }
-            self.b.switch_to_block(cont);
-            let n = self.b.ins().iadd_imm(i, 1);
-            self.b.ins().jump(head, &[n]);
-            self.b.switch_to_block(exit);
-            self.term = false;
-            return Ok(());
         }
-        // 列の要素 `x.iter()`
-        let (recv, enumerate, by_mut) = self.iter_source(it, env).ok_or("unsupported iterator in for")?;
-        let (sp, sty) = self.expr(&recv, env, None)?;
-        let sp = sp.ok_or("bad iterable")?;
-        let elem = self.cx.seq_elem(&sty).ok_or("iteration over a non-sequence")?;
-        let sz = self.elem_size(&elem)?;
-        let base = self.b.ins().load(pt, MemFlags::new(), sp, 0);
-        let len = self.b.ins().load(i64t, MemFlags::new(), sp, 8);
-        self.b.append_block_param(head, i64t);
-        let zero = self.b.ins().iconst(i64t, 0);
-        self.b.ins().jump(head, &[zero]);
+        // 終端の状態
+        let mut acc: Option<(Variable, String)> = None;
+        match &sink {
+            Sink::Fold(init, _) => {
+                let t = self.ty_of(init, env, None).filter(|t| t != "void").ok_or("fold initial value type")?;
+                if is_agg(&t) && self.cx.needs_drop(&t) {
+                    return Err("fold with a droppable accumulator".into());
+                }
+                if is_agg(&t) {
+                    return Err("fold with an aggregate accumulator".into());
+                }
+                let (iv, _) = self.expr(init, env, Some(&t))?;
+                let var = self.new_var(&t);
+                self.b.def_var(var, iv.ok_or("bad initial value")?);
+                acc = Some((var, t));
+            }
+            Sink::Count => {
+                let var = self.new_var("usize");
+                let z = self.b.ins().iconst(i64t, 0);
+                self.b.def_var(var, z);
+                acc = Some((var, "usize".to_string()));
+            }
+            Sink::For(..) => {}
+        }
+        // 始点
+        let (index_ty, start, item_ty, elem_info): (Type, Value, String, Option<(Value, Value, String, bool)>);
+        let limit: Value;
+        match &pipe.src {
+            Src::Range(a, b) => {
+                let t = self
+                    .ty_of(a, env, None)
+                    .or_else(|| self.ty_of(b, env, None))
+                    .filter(|t| is_int(t))
+                    .ok_or("range element type")?;
+                let (av, _) = self.expr(a, env, Some(&t))?;
+                let (bv, _) = self.expr(b, env, Some(&t))?;
+                index_ty = cl(&t);
+                start = av.ok_or("bad range")?;
+                limit = bv.ok_or("bad range")?;
+                item_ty = t;
+                elem_info = None;
+            }
+            Src::Seq(recv, by_mut) => {
+                let (sp, sty) = self.expr(recv, env, None)?;
+                let sp = sp.ok_or("bad iterable")?;
+                let elem = self.cx.seq_elem(&sty).ok_or("iteration over a non-sequence")?;
+                let base = self.b.ins().load(pt, MemFlags::new(), sp, 0);
+                let len = self.b.ins().load(i64t, MemFlags::new(), sp, 8);
+                index_ty = i64t;
+                start = self.b.ins().iconst(i64t, 0);
+                limit = len;
+                item_ty = elem.clone();
+                elem_info = Some((base, len, elem, *by_mut));
+            }
+        }
+        self.b.append_block_param(head, index_ty);
+        self.b.ins().jump(head, &[start]);
         self.b.switch_to_block(head);
         let i = self.b.block_params(head)[0];
-        let c = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
-        self.b.ins().brif(c, body_b, &[], exit, &[]);
-        self.b.switch_to_block(body_b);
-        let off = self.b.ins().imul_imm(i, sz as i64);
-        let addr = self.b.ins().iadd(base, off);
-        // `iter_mut()` のスカラー要素は、値ではなく要素のアドレス (`mutref<T>`) を束縛する。
-        let mut_scalar = by_mut && !is_agg(&elem);
-        let val = if mut_scalar { addr } else { self.load_value(addr, &elem) };
-        let bound_ty = if mut_scalar { format!("mutref<{}>", elem) } else { elem.clone() };
-        let mut inner = env.clone();
-        let (idx_pat, elem_pat) = if enumerate {
-            if nname(pat) != "PTuple" || items(&nf(pat)[0]).len() != 2 {
-                return Err("enumerate needs a (index, item) pattern".into());
-            }
-            (Some(&items(&nf(pat)[0])[0]), &items(&nf(pat)[0])[1])
+        // take の上限に達していたら、元のイテレータを進めずに終わる。
+        let more = if matches!(pipe.src, Src::Range(..)) {
+            let cc = if signed(&item_ty) { IntCC::SignedLessThan } else { IntCC::UnsignedLessThan };
+            self.b.ins().icmp(cc, i, limit)
         } else {
-            (None, pat)
+            self.b.ins().icmp(IntCC::UnsignedLessThan, i, limit)
         };
-        if let Some(ip) = idx_pat {
-            if nname(ip) == "PBind" {
-                let var = self.new_var("usize");
-                self.b.def_var(var, i);
-                inner.insert(st(&nf(ip)[0]), (var, "usize".to_string()));
-            }
+        let mut go = more;
+        for (cvar, lim) in &take_state {
+            let c = self.b.use_var(*cvar);
+            let reached = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, c, *lim);
+            let not_reached = self.b.ins().bxor_imm(reached, 1);
+            go = self.b.ins().band(go, not_reached);
         }
-        match nname(elem_pat) {
-            "PBind" => {
-                let var = self.new_var(&bound_ty);
-                self.b.def_var(var, val);
-                if is_agg(&elem) {
-                    self.refs.insert(var.as_u32());
+        self.b.ins().brif(go, body_b, &[], exit, &[]);
+        self.b.switch_to_block(body_b);
+        // 要素
+        let (mut val, mut ty) = match &elem_info {
+            None => (i, item_ty.clone()),
+            Some((base, _, elem, by_mut)) => {
+                let sz = self.elem_size(elem)?;
+                let off = self.b.ins().imul_imm(i, sz as i64);
+                let addr = self.b.ins().iadd(*base, off);
+                if *by_mut && !is_agg(elem) {
+                    (addr, format!("mutref<{}>", elem))
+                } else {
+                    (self.load_value(addr, elem), elem.clone())
                 }
-                inner.insert(st(&nf(elem_pat)[0]), (var, bound_ty.clone()));
             }
-            "PWild" => {}
-            _ => return Err("for pattern".into()),
+        };
+        // 中間の段
+        let (mut ti, mut ei) = (0usize, 0usize);
+        for st_ in &pipe.stages {
+            match st_ {
+                Stage::Map(f) => {
+                    let (v, t) = self.inline_closure(f, &[(val, ty.clone())], env)?;
+                    val = v.ok_or("map closure returns unit")?;
+                    ty = t;
+                }
+                Stage::Filter(f) => {
+                    let (c, _) = self.inline_closure(f, &[(val, ty.clone())], env)?;
+                    let pass = self.b.create_block();
+                    self.b.ins().brif(c.ok_or("filter closure returns unit")?, pass, &[], cont, &[]);
+                    self.b.switch_to_block(pass);
+                }
+                Stage::Enumerate => {
+                    let var = enum_vars[ei];
+                    ei += 1;
+                    let tname = self.cx.tuple_of(&["usize".to_string(), ty.clone()]);
+                    let l = self.cx.layout(&tname, 0)?;
+                    let slot = self.alloc(l.size, l.align);
+                    let cur = self.b.use_var(var);
+                    let a0 = self.b.ins().iadd_imm(slot, l.fields[0].2 as i64);
+                    self.b.ins().store(MemFlags::new(), cur, a0, 0);
+                    let a1 = self.b.ins().iadd_imm(slot, l.fields[1].2 as i64);
+                    self.store_value(a1, &ty, val)?;
+                    let nx = self.b.ins().iadd_imm(cur, 1);
+                    self.b.def_var(var, nx);
+                    val = slot;
+                    ty = tname;
+                }
+                Stage::Take(_) => {
+                    let (cvar, _) = take_state[ti];
+                    ti += 1;
+                    let c = self.b.use_var(cvar);
+                    let nx = self.b.ins().iadd_imm(c, 1);
+                    self.b.def_var(cvar, nx);
+                }
+            }
         }
-        let depth = self.scopes.len();
-        self.loops.push((cont, exit, depth));
-        self.block(body, &mut inner, false)?;
-        self.loops.pop();
-        if !self.term {
-            self.b.ins().jump(cont, &[]);
+        // 終端
+        match &sink {
+            Sink::For(pat, body) => {
+                let mut inner = env.clone();
+                self.bind_item(pat, val, &ty, &mut inner)?;
+                let depth = self.scopes.len();
+                self.loops.push((cont, exit, depth));
+                self.block(body, &mut inner, false)?;
+                self.loops.pop();
+                if !self.term {
+                    self.b.ins().jump(cont, &[]);
+                }
+            }
+            Sink::Fold(_, f) => {
+                let (var, aty) = acc.clone().ok_or("fold state")?;
+                let cur = self.b.use_var(var);
+                let (nv, nt) = self.inline_closure(f, &[(cur, aty.clone()), (val, ty.clone())], env)?;
+                if nt != aty {
+                    return Err(format!("fold closure returns {} but the accumulator is {}", nt, aty));
+                }
+                self.b.def_var(var, nv.ok_or("fold closure returns unit")?);
+                self.b.ins().jump(cont, &[]);
+            }
+            Sink::Count => {
+                let (var, _) = acc.clone().ok_or("count state")?;
+                let cur = self.b.use_var(var);
+                let nx = self.b.ins().iadd_imm(cur, 1);
+                self.b.def_var(var, nx);
+                self.b.ins().jump(cont, &[]);
+            }
         }
         self.b.switch_to_block(cont);
         let n = self.b.ins().iadd_imm(i, 1);
         self.b.ins().jump(head, &[n]);
         self.b.switch_to_block(exit);
         self.term = false;
+        match acc {
+            Some((var, t)) => Ok((Some(self.b.use_var(var)), t)),
+            None => Ok((None, "void".into())),
+        }
+    }
+
+    fn for_stmt(&mut self, e: &V, env: &mut Env) -> R<()> {
+        let f = nf(e);
+        let pipe = self.parse_pipe(&f[1], env).ok_or("unsupported iterator in for")?;
+        self.run_pipe(&pipe, env, Sink::For(&f[0], &f[2]))?;
         Ok(())
     }
 
@@ -1908,7 +2194,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
             return Err("call of a function returning a reference".into());
         }
         let id = *self.ids.get(fq).ok_or("call target not declared")?;
-        let rt = self.cx.pty(&d.ret)?;
+        let rt = self.cx.pty_for(d, &d.ret)?;
         let mut vals = vec![];
         let mut out = None;
         if is_agg(&rt) {
@@ -1922,7 +2208,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
             vals.push(r);
         }
         for ((_, pt), a) in params.zip(args) {
-            let want = self.cx.pty(pt)?;
+            let want = self.cx.pty_for(d, pt)?;
             let (v, got) = self.expr(a, env, Some(&want))?;
             let mut v = v.ok_or("bad argument")?;
             if got != want {
@@ -2032,6 +2318,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
             "Try" => {
                 let inner = &f[0];
+                if is_print(inner) {
+                    // `print_line(..)?`: 標準出力への出力は失敗しない扱い。
+                    self.print_value(&items(&nf(inner)[1])[0], env)?;
+                    return Ok((None, "void".into()));
+                }
                 let (v, t) = self.expr(inner, env, None)?;
                 let p = v.ok_or("? on a unit value")?;
                 let is_opt = t.starts_with("Option<");
@@ -2114,7 +2405,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 Ok((Some(p), ty))
             }
             "StructLit" => {
-                let name = st(&f[0]);
+                let name = self.cx.qual_name(&st(&f[0]));
                 let l = self.cx.layout(&name, 0)?;
                 if l.is_enum {
                     return Err("struct literal of an enum".into());
@@ -2366,6 +2657,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     return Err("call of non-path".into());
                 }
                 let segs = strs(&nf(&f[0])[0]);
+                let segs = if env.contains_key(&segs[0]) { segs } else { self.cx.qual_segs(&segs) };
                 let args = items(&f[1]);
                 if segs.len() >= 2 && env.contains_key(&segs[0]) {
                     let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
@@ -2416,6 +2708,56 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let ne = self.b.ins().bxor_imm(c, 1);
                     self.guard(ne, "assertion failed")?;
                     return Ok((None, "void".into()));
+                }
+                if segs == ["core", "panic", "panic"] && args.len() == 1 {
+                    // メッセージを標準エラーに出して、終了コード 101 で終わる。
+                    self.write_stderr(b"panic: ")?;
+                    if nname(&args[0]) == "Lit" && st(&nf(&args[0])[0]) == "str" {
+                        let bytes = lit_bytes(&args[0]);
+                        self.write_stderr(&bytes)?;
+                    } else {
+                        let (sv, t) = self.expr(&args[0], env, Some("str"))?;
+                        if t != "str" {
+                            return Err("panic with a non-string message".into());
+                        }
+                        let sv = sv.ok_or("bad message")?;
+                        let pt = self.ptr_ty();
+                        let ptr = self.b.ins().load(pt, MemFlags::new(), sv, 0);
+                        let len = self.b.ins().load(types::I64, MemFlags::new(), sv, 8);
+                        let len32 = self.b.ins().ireduce(types::I32, len);
+                        let fd = self.b.ins().iconst(types::I32, 2);
+                        let w = self.rt.write;
+                        self.call_rt(w, &[fd, ptr, len32]);
+                    }
+                    self.write_stderr(&[10u8])?;
+                    let code = self.b.ins().iconst(types::I32, 101);
+                    let x = self.rt.exit;
+                    self.call_rt(x, &[code]);
+                    self.b.ins().trap(TrapCode::user(5).unwrap());
+                    self.term = true;
+                    return Ok((None, "void".into()));
+                }
+                if segs == ["core", "iter", "fold"] && args.len() == 3 {
+                    let pipe = self.parse_pipe(&args[0], env).ok_or("unsupported iterator in fold")?;
+                    return self.run_pipe(&pipe, env, Sink::Fold(&args[1], &args[2]));
+                }
+                if segs == ["core", "iter", "count"] && args.len() == 1 {
+                    let pipe = self.parse_pipe(&args[0], env).ok_or("unsupported iterator in count")?;
+                    return self.run_pipe(&pipe, env, Sink::Count);
+                }
+                if segs.len() == 1 && self.closures.contains_key(&segs[0]) {
+                    let clo = self.closures[&segs[0]].clone();
+                    let ps = items(&nf(&clo)[0]).to_vec();
+                    if ps.len() != args.len() {
+                        return Err("closure arity".into());
+                    }
+                    let mut vals = vec![];
+                    for (p, a) in ps.iter().zip(args) {
+                        let pt = self.cx.pty(&items(p)[1])?;
+                        let (v, t) = self.expr(a, env, Some(&pt))?;
+                        vals.push((v.ok_or("bad closure argument")?, t));
+                    }
+                    return self.inline_closure(&clo, &vals, env);
                 }
                 if segs == ["core", "mem", "drop"] {
                     let (_, t) = self.expr(&args[0], env, None)?;
@@ -3220,6 +3562,7 @@ fn int_value(text: &str) -> R<i64> {
 }
 
 pub fn compile_clif(
+    prog: &Program,
     funcs: &HashMap<String, &Def>,
     type_defs: &HashMap<String, &Def>,
     entry: &str,
@@ -3229,7 +3572,7 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
-    let cx = Cx { types: type_defs, gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()) };
+    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
@@ -3253,7 +3596,11 @@ pub fn compile_clif(
         order.push(n.clone());
         let mut calls = vec![];
         crate::cnative::calls_in(d.body.as_ref().unwrap(), &mut calls);
-        todo.extend(calls);
+        *cx.file.borrow_mut() = d.file.clone();
+        for c in calls {
+            let segs: Vec<String> = c.split('.').map(String::from).collect();
+            todo.push(cx.qual_segs(&segs).join("."));
+        }
         // メソッド呼び出しの候補: 同じ名前を持つ、型に属する関数をすべて取り込む。
         let mut mnames = vec![];
         method_names(d.body.as_ref().unwrap(), &mut mnames);
@@ -3306,6 +3653,7 @@ pub fn compile_clif(
     let mut ids: HashMap<String, FuncId> = HashMap::new();
     for n in &order {
         let d = funcs[n];
+        *cx.file.borrow_mut() = d.file.clone();
         let mut sig = module.make_signature();
         if n != entry && tag(&d.ret) == "ref" {
             return Err(format!("{}: returns a reference", d.name));
@@ -3331,6 +3679,7 @@ pub fn compile_clif(
     let mut fbc = FunctionBuilderContext::new();
     for n in &order {
         let d = funcs[n];
+        *cx.file.borrow_mut() = d.file.clone();
         let mut ctx = module.make_context();
         ctx.func.signature = module.declarations().get_function_decl(ids[n]).signature.clone();
         {
@@ -3360,6 +3709,7 @@ pub fn compile_clif(
                 refs: HashSet::new(),
                 addr_taken: HashSet::new(),
                 rest: vec![],
+                closures: HashMap::new(),
                 promoted: HashSet::new(),
             };
             g.func(d, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?;
