@@ -2762,3 +2762,128 @@ fn the_tour_example_runs_natively_through_cranelift() {
     }
     let _ = fs::remove_dir_all(&cache);
 }
+
+fn clif_generic_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "enum t.Maybe[T] derive [Debug, Clone, Copy, PartialEq]",
+        "    Nothing",
+        "    Just(T)",
+        "end t.Maybe",
+        "",
+        "type t.Pair[A, B] derive [Debug, Clone, Copy, PartialEq]",
+        "    first: A",
+        "    second: B",
+        "end t.Pair",
+        "",
+        "fn t.Maybe.or_else[T](self: t.Maybe<T>, other: T) -> T",
+        "    match self {",
+        "        t.Maybe.Just(v) => v",
+        "        t.Maybe.Nothing => other",
+        "    }",
+        "end t.Maybe.or_else",
+        "",
+        "fn t.Pair.swap[A, B](self: t.Pair<A, B>) -> t.Pair<B, A>",
+        "    t.Pair { first: self.second, second: self.first }",
+        "end t.Pair.swap",
+        "",
+        "fn t.pick[T](flag: bool, a: T, b: T) -> T",
+        "    if flag {",
+        "        return a",
+        "    }",
+        "    b",
+        "end t.pick",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    let p = t.Pair { first: 1u32, second: true }",
+        "    let q = p.swap()",
+        "    core.check.eq(q.first, true)",
+        "    core.check.eq(q.second, 1u32)",
+        "    core.check.eq(q, t.Pair { first: true, second: 1u32 })",
+        "    core.check.eq(t.pick(true, 3u8, 4u8), 3u8)",
+        "    core.check.eq(t.pick(false, 3i64, 4i64), 4i64)",
+        "    core.check.eq(t.pick(false, p, p.swap().swap()), p)",
+        "    let m = t.Maybe.Just(5u32)",
+        "    core.check.eq(m.or_else(9u32), 5u32)",
+        "    let n: t.Maybe<u32> = t.Maybe.Nothing",
+        "    core.check.eq(n.or_else(9u32), 9u32)",
+        "    let nested = t.Pair { first: t.Maybe.Just(2u8), second: p }",
+        "    core.check.eq(nested.second.first, 1u32)",
+        "    core.check.eq(nested.first.or_else(0u8), 2u8)",
+        tail,
+        "    std.io.print_line(\"generic ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_monomorphizes_generic_types_and_functions() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_gen_{}", release), &clif_generic_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "generic ok");
+    }
+}
+
+#[test]
+fn a_wrong_generic_result_in_a_cranelift_executable_fails_the_check() {
+    let (_t, exe_path, out) = build_clif("clif_gen_bad", &clif_generic_program("    core.check.eq(t.pick(true, 3u8, 4u8), 4u8)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}
+
+#[test]
+fn a_generic_function_calls_trait_methods_of_its_concrete_type_arguments() {
+    let nl = char::from(10u8).to_string();
+    let src = [
+        "trait t.Area",
+        "    fn area(self: &Self) -> u32 uses [] panics never",
+        "end t.Area",
+        "",
+        "type t.Circle",
+        "    r: u32",
+        "end t.Circle",
+        "",
+        "type t.Sq",
+        "    side: u32",
+        "end t.Sq",
+        "",
+        "impl t.Area for t.Circle",
+        "fn t.Circle.area(self: &t.Circle) -> u32 uses [] panics never impls t.Area",
+        "    self.r.wrapping_mul(self.r).wrapping_mul(3u32)",
+        "end t.Circle.area",
+        "",
+        "impl t.Area for t.Sq",
+        "fn t.Sq.area(self: &t.Sq) -> u32 uses [] panics never impls t.Area",
+        "    self.side.wrapping_mul(self.side)",
+        "end t.Sq.area",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    let c1 = t.Circle { r: 2u32 }",
+        "    let c2 = t.Circle { r: 1u32 }",
+        "    let s1 = t.Sq { side: 3u32 }",
+        "    let s2 = t.Sq { side: 4u32 }",
+        "    core.check.eq(t.total(&c1, &c2), 15u32)",
+        "    core.check.eq(t.total(&s1, &s2), 25u32)",
+        "    std.io.print_line(\"trait generic ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+        "fn t.total[T: t.Area](a: &T, b: &T) -> u32",
+        "    a.area().wrapping_add(b.area())",
+        "end t.total",
+        "",
+    ]
+    .join(&nl);
+    let (_t, exe_path, out) = build_clif("clif_gen_trait", &src, false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "trait generic ok");
+}

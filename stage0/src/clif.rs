@@ -71,6 +71,57 @@ fn signed(p: &str) -> bool {
 
 const STRING: &str = "alloc.string.String";
 
+/// `Name<a,b>` の `Name`。
+fn base_of(ty: &str) -> &str {
+    match ty.find('<') {
+        Some(i) => &ty[..i],
+        None => ty,
+    }
+}
+
+/// `Name<a,b<c>>` を (`Name`, [`a`, `b<c>`]) に分ける (最上位のコンマだけで区切る)。
+fn split_ty_args(ty: &str) -> Option<(String, Vec<String>)> {
+    let i = ty.find('<')?;
+    if !ty.ends_with('>') {
+        return None;
+    }
+    let inner = &ty[i + 1..ty.len() - 1];
+    let mut out = vec![];
+    let (mut depth, mut cur) = (0i32, String::new());
+    for ch in inner.chars() {
+        match ch {
+            '<' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            '>' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ',' if depth == 0 => out.push(std::mem::take(&mut cur)),
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    Some((ty[..i].to_string(), out))
+}
+
+/// 定義 `d` の型パラメータの名前 (ライフタイムや効果の変数は除く)。
+fn type_params(d: &Def) -> Vec<String> {
+    d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect()
+}
+
+/// 関数の1回の具体化 (単相化): 型パラメータを具体的な型に置いた版。
+#[derive(Clone)]
+struct Inst<'a> {
+    key: String,
+    def: &'a Def,
+    subst: HashMap<String, String>,
+    entry: bool,
+}
+
 fn mangle(fqn: &str) -> String {
     format!("k_{}", fqn.replace('.', "_"))
 }
@@ -104,6 +155,10 @@ struct Cx<'a> {
     tuples: RefCell<HashMap<String, Vec<String>>>,
     /// `hashmap<K,V>` / `btreemap<K,V>`: 名前 → (整列するか, キーの型, 値の型)。実体は組 `(K, V)` の列 (Vec と同じ配置)。
     maps: RefCell<HashMap<String, (bool, String, String)>>,
+    /// 単相化している関数の型パラメータの束縛 (`T` → `u32`)。型の名前の解決で使う。
+    subst: RefCell<HashMap<String, String>>,
+    /// 総称な `type` / `enum` の具体化 (`pkg.Pair<u32,bool>` → (`pkg.Pair`, [`u32`, `bool`]))
+    inst_types: RefCell<HashMap<String, (String, Vec<String>)>>,
 }
 
 /// 構造体・列挙型のメモリ配置。
@@ -162,6 +217,9 @@ impl<'a> Cx<'a> {
             }
             "named" => {
                 let n = st(tel(t, 1));
+                if let Some(r) = self.subst.borrow().get(&n) {
+                    return Ok(r.clone());
+                }
                 if n == "alloc.vec.Vec" {
                     let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("Vec without an element type")?;
                     let elem = self.pty_owned(first)?;
@@ -196,8 +254,20 @@ impl<'a> Cx<'a> {
                 }
                 let q = self.qual_name(&n);
                 if let Some(d) = self.types.get(&q) {
-                    if d.generics.is_empty() && (d.kw == "type" || d.kw == "enum") {
-                        return Ok(q);
+                    if d.kw == "type" || d.kw == "enum" {
+                        if d.generics.iter().any(|g| matches!(g.0.as_str(), "const" | "uses" | "panics")) {
+                            return Err("generic type with unsupported parameters".into());
+                        }
+                        let tps = type_params(d);
+                        if tps.is_empty() {
+                            return Ok(q);
+                        }
+                        let args: Vec<String> =
+                            items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).map(|a| self.pty_owned(a)).collect::<R<Vec<String>>>()?;
+                        if args.len() != tps.len() {
+                            return Err(format!("{}: wrong number of type arguments", q));
+                        }
+                        return Ok(self.type_inst(&q, &args));
                     }
                 }
             }
@@ -222,12 +292,122 @@ impl<'a> Cx<'a> {
         self.qual_segs(&segs).join(".")
     }
 
-    /// 関数 `d` の宣言の型 `t` を、`d` が書かれたファイルの名前で解決する。
-    fn pty_for(&self, d: &Def, t: &V) -> R<String> {
+    /// 関数 `d` の宣言の型 `t` を、`d` が書かれたファイルの名前で、型パラメータの束縛 `subst` のもとで解決する。
+    fn pty_in(&self, d: &Def, subst: &HashMap<String, String>, t: &V) -> R<String> {
         let old = self.file.replace(d.file.clone());
+        let olds = self.subst.replace(subst.clone());
         let r = self.pty(t);
         *self.file.borrow_mut() = old;
+        *self.subst.borrow_mut() = olds;
         r
+    }
+
+    fn pty_for(&self, d: &Def, t: &V) -> R<String> {
+        self.pty_in(d, &HashMap::new(), t)
+    }
+
+    /// 総称な型 `base` に型引数 `args` を与えた具体化の名前 (`pkg.Pair<u32,bool>`)。
+    fn type_inst(&self, base: &str, args: &[String]) -> String {
+        let name = format!("{}<{}>", base, args.join(","));
+        self.inst_types.borrow_mut().insert(name.clone(), (base.to_string(), args.to_vec()));
+        name
+    }
+
+    /// 型 `v` (宣言の側) と実際の型 `actual` を突き合わせて、型パラメータの束縛を `bind` に集める。
+    fn unify_v(&self, v: &V, actual: &str, params: &HashSet<String>, bind: &mut HashMap<String, String>) -> bool {
+        match tag(v).as_str() {
+            "ref" => {
+                let a = mutref_inner(actual).unwrap_or(actual);
+                self.unify_v(tel(v, 2), a, params, bind)
+            }
+            "slice" => match split_ty_args(actual) {
+                Some((b, args)) if b == "slice" && args.len() == 1 => self.unify_v(tel(v, 1), &args[0], params, bind),
+                _ => true,
+            },
+            "tuple" => match split_ty_args(actual) {
+                Some((b, args)) if b == "tuple" => {
+                    for (x, a) in items(tel(v, 1)).iter().zip(args.iter()) {
+                        if !self.unify_v(x, a, params, bind) {
+                            return false;
+                        }
+                    }
+                    true
+                }
+                _ => true,
+            },
+            "named" => {
+                let n = st(tel(v, 1));
+                if params.contains(&n) {
+                    return match bind.get(&n) {
+                        Some(x) => x == actual,
+                        None => {
+                            bind.insert(n, actual.to_string());
+                            true
+                        }
+                    };
+                }
+                let vargs: Vec<&V> = items(tel(v, 2)).iter().filter(|a| matches!(a, V::L(_))).collect();
+                if vargs.is_empty() {
+                    return true;
+                }
+                let Some((ab, aargs)) = split_ty_args(actual) else { return true };
+                let nq = self.qual_name(&n);
+                let ok = ab == n
+                    || ab == nq
+                    || (n.ends_with("HashMap") && ab == "hashmap")
+                    || (n.ends_with("BtreeMap") && ab == "btreemap");
+                if !ok {
+                    return true;
+                }
+                for (x, a) in vargs.iter().zip(aargs.iter()) {
+                    if !self.unify_v(x, a, params, bind) {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+
+    /// 総称な関数 `d` の呼び出しで、実引数の型 (`arg_tys`、レシーバの型 `recv_ty`) と期待される戻り値の型から、型パラメータを決める。
+    /// 総称でなければ空の束縛。決まらない、または `Fn` 境界を持つ (クロージャを値として渡す) ときは None。
+    fn infer_subst(&self, d: &Def, arg_tys: &[Option<String>], recv_ty: Option<&str>, expect: Option<&str>) -> Option<HashMap<String, String>> {
+        let tps = type_params(d);
+        if tps.is_empty() {
+            return Some(HashMap::new());
+        }
+        if d.generics.iter().any(|g| g.0 == "type" && g.2.dump().contains("Fn")) {
+            return None;
+        }
+        let params: HashSet<String> = tps.iter().cloned().collect();
+        let mut bind: HashMap<String, String> = HashMap::new();
+        let old = self.file.replace(d.file.clone());
+        let off = if recv_ty.is_some() { 1 } else { 0 };
+        let mut ok = true;
+        for (k, (_, pt)) in d.params.iter().enumerate() {
+            let actual: Option<&str> = if k == 0 && recv_ty.is_some() {
+                recv_ty
+            } else {
+                arg_tys.get(k - off).and_then(|x| x.as_deref())
+            };
+            if let Some(a) = actual {
+                if !self.unify_v(pt, a, &params, &mut bind) {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            if let Some(e) = expect {
+                let mut tmp = bind.clone();
+                if self.unify_v(&d.ret, e, &params, &mut tmp) {
+                    bind = tmp;
+                }
+            }
+        }
+        *self.file.borrow_mut() = old;
+        if ok && tps.iter().all(|p| bind.contains_key(p)) { Some(bind) } else { None }
     }
 
     /// 参照でない型 (フィールド・ペイロード・要素の型に使う)。参照を値として持つと所有と取り違えるため。
@@ -316,12 +496,20 @@ impl<'a> Cx<'a> {
     }
 
     fn layout(&self, name: &str, depth: u32) -> R<Layout> {
-        let file = self.types.get(name).map(|d| d.file.clone());
+        let inst = self.inst_types.borrow().get(name).cloned();
+        let def_name = inst.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| name.to_string());
+        let file = self.types.get(&def_name).map(|d| d.file.clone());
         match file {
             Some(f) => {
                 let old = self.file.replace(f);
+                let new_subst: HashMap<String, String> = match &inst {
+                    Some((b, args)) => type_params(self.types[b]).into_iter().zip(args.iter().cloned()).collect(),
+                    None => HashMap::new(),
+                };
+                let olds = self.subst.replace(new_subst);
                 let r = self.layout_raw(name, depth);
                 *self.file.borrow_mut() = old;
+                *self.subst.borrow_mut() = olds;
                 r
             }
             None => self.layout_raw(name, depth),
@@ -391,7 +579,8 @@ impl<'a> Cx<'a> {
         if let Some(vs) = registered {
             return self.enum_layout(vs, depth);
         }
-        let d = self.types.get(name).ok_or_else(|| format!("unknown type {}", name))?;
+        let base_name = self.inst_types.borrow().get(name).map(|x| x.0.clone()).unwrap_or_else(|| name.to_string());
+        let d = self.types.get(&base_name).ok_or_else(|| format!("unknown type {}", name))?;
         let fsize = |ty: &str| -> R<(u32, u32)> {
             if is_scalar(ty) {
                 Ok((scalar_size(ty), scalar_size(ty)))
@@ -644,14 +833,16 @@ struct Rt {
     utf8: FuncId,
 }
 
-struct FnGen<'a, 'b> {
+struct FnGen<'a, 'b, 'm> {
     b: FunctionBuilder<'b>,
-    module: &'a mut ObjectModule,
+    module: &'m mut ObjectModule,
     cx: &'a Cx<'a>,
     funcs: &'a HashMap<String, &'a Def>,
-    ids: &'a HashMap<String, FuncId>,
+    ids: &'a RefCell<HashMap<String, FuncId>>,
+    /// 呼び出しで見つかった、まだ生成していない関数 (総称な関数の具体化など)
+    pending: &'a RefCell<Vec<Inst<'a>>>,
     rt: &'a Rt,
-    data_n: &'a mut usize,
+    data_n: &'m mut usize,
     entry: bool,
     ret_ty: String,
     sret: Option<Value>,
@@ -715,7 +906,7 @@ struct Owner {
     ty: String,
 }
 
-impl<'a, 'b> FnGen<'a, 'b> {
+impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// 直前で終端した (return / break など) なら、到達できない新しいブロックに移る。
     fn live(&mut self) {
         if self.term {
@@ -743,7 +934,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
     }
 
     fn method_target(&self, recv_ty: &str, name: &str) -> Option<&'a Def> {
-        self.funcs.get(&format!("{}.{}", recv_ty, name)).copied()
+        self.funcs.get(&format!("{}.{}", base_of(recv_ty), name)).copied()
     }
 
     /// `P.from_S(x)` / `P.try_from_S(x)` / `char.try_from_u32(x)` の結果の型。
@@ -785,6 +976,102 @@ impl<'a, 'b> FnGen<'a, 'b> {
             return self.cx.builtin_enum("Option", &[a]).ok();
         }
         None
+    }
+
+    /// 呼び出しの引数の型 (わかるもの) から、総称な呼び出し先の型パラメータを決める。
+    fn callee_subst(&self, d: &Def, args: &[V], recv_ty: Option<&str>, env: &Env, expect: Option<&str>) -> Option<HashMap<String, String>> {
+        let arg_tys: Vec<Option<String>> = args.iter().map(|a| self.ty_of(a, env, None)).collect();
+        self.cx.infer_subst(d, &arg_tys, recv_ty, expect)
+    }
+
+    /// 呼び出しの戻り値の型 (総称な呼び出し先は、引数の型から決める)。
+    fn call_ret_ty(&self, d: &Def, recv_ty: Option<&str>, args: &[V], env: &Env, expect: Option<&str>) -> Option<String> {
+        let sub = self.callee_subst(d, args, recv_ty, env, expect)?;
+        self.cx.pty_in(d, &sub, &d.ret).ok()
+    }
+
+    /// 型リテラル `Name { .. }` が作る型 (総称な型は、期待される型かフィールドの値の型から具体化する)。
+    fn struct_lit_type(&self, f: &[V], env: &Env, expect: Option<&str>) -> Option<String> {
+        let base = self.cx.qual_name(&st(&f[0]));
+        let d = *self.cx.types.get(&base)?;
+        let tps = type_params(d);
+        if tps.is_empty() {
+            return Some(base);
+        }
+        if let Some(e) = expect.filter(|e| base_of(e) == base) {
+            return Some(e.to_string());
+        }
+        let params: HashSet<String> = tps.iter().cloned().collect();
+        let mut bind = HashMap::new();
+        let old = self.cx.file.replace(d.file.clone());
+        for fl in items(&f[1]) {
+            let fi = items(fl);
+            let fname = st(&fi[0]);
+            if let Some((_, fv, _)) = d.fields.iter().find(|x| x.0 == fname) {
+                *self.cx.file.borrow_mut() = old.clone();
+                let actual = self.ty_of(&fi[1], env, None);
+                *self.cx.file.borrow_mut() = d.file.clone();
+                if let Some(a) = actual {
+                    self.cx.unify_v(fv, &a, &params, &mut bind);
+                }
+            }
+        }
+        *self.cx.file.borrow_mut() = old;
+        if tps.iter().all(|p| bind.contains_key(p)) {
+            let args: Vec<String> = tps.iter().map(|p| bind[p].clone()).collect();
+            Some(self.cx.type_inst(&base, &args))
+        } else {
+            None
+        }
+    }
+
+    /// 総称な列挙型 `en` のバリアント `idx` を作る式の型 (期待される型か、引数の型から具体化する)。
+    fn variant_enum_type(&self, en: &str, idx: usize, args: &[V], env: &Env, expect: Option<&str>) -> Option<String> {
+        let d = *self.cx.types.get(en)?;
+        let tps = type_params(d);
+        if tps.is_empty() {
+            return Some(en.to_string());
+        }
+        if let Some(e) = expect.filter(|e| base_of(e) == en) {
+            return Some(e.to_string());
+        }
+        let params: HashSet<String> = tps.iter().cloned().collect();
+        let mut bind = HashMap::new();
+        let old = self.cx.file.replace(d.file.clone());
+        for (a, fv) in args.iter().zip(d.variants.get(idx)?.1.iter()) {
+            *self.cx.file.borrow_mut() = old.clone();
+            let actual = self.ty_of(a, env, None);
+            *self.cx.file.borrow_mut() = d.file.clone();
+            if let Some(t) = actual {
+                self.cx.unify_v(fv, &t, &params, &mut bind);
+            }
+        }
+        *self.cx.file.borrow_mut() = old;
+        if tps.iter().all(|p| bind.contains_key(p)) {
+            let targs: Vec<String> = tps.iter().map(|p| bind[p].clone()).collect();
+            Some(self.cx.type_inst(en, &targs))
+        } else {
+            None
+        }
+    }
+
+    /// 関数 `d` の具体化 (`subst` が空なら元の関数) の識別子を返す。まだ宣言していなければ宣言して、生成の待ち行列に入れる。
+    fn func_id(&mut self, d: &'a Def, fq: &str, subst: &HashMap<String, String>) -> R<FuncId> {
+        let tps = type_params(d);
+        let key = if tps.is_empty() {
+            fq.to_string()
+        } else {
+            format!("{}<{}>", fq, tps.iter().map(|p| subst.get(p).cloned().unwrap_or_default()).collect::<Vec<_>>().join(","))
+        };
+        if let Some(&id) = self.ids.borrow().get(&key) {
+            return Ok(id);
+        }
+        let sig = make_sig(self.module, self.cx, d, false, subst)?;
+        let sym = format!("{}_{}", mangle(&key), self.ids.borrow().len());
+        let id = self.module.declare_function(&sym, Linkage::Local, &sig).map_err(|e| e.to_string())?;
+        self.ids.borrow_mut().insert(key.clone(), id);
+        self.pending.borrow_mut().push(Inst { key, def: d, subst: subst.clone(), entry: false });
+        Ok(id)
     }
 
     /// 型注釈のない `let x = Vec.new(..)` / `let x = None` の型を、後ろの文での使われ方から決める。
@@ -1026,7 +1313,8 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let d = &self.cx.prog.defs[ci];
                     return self.cx.pty_for(d, &d.ret).ok();
                 }
-                self.cx.split_variant(&segs).map(|v| v.0)
+                let (en, idx, _) = self.cx.split_variant(&segs)?;
+                self.variant_enum_type(&en, idx, &[], env, expect)
             }
             "Field" => {
                 let segs = place_segs(e)?;
@@ -1059,10 +1347,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 Some(self.cx.tuple_of(&elems))
             }
-            "StructLit" => {
-                let n = self.cx.qual_name(&st(&f[0]));
-                if self.cx.types.contains_key(&n) { Some(n) } else { None }
-            }
+            "StructLit" => self.struct_lit_type(f, env, expect),
             "Bin" => {
                 let op = st(&f[0]);
                 if matches!(op.as_str(), "&&" | "||" | "==" | "!=" | "<" | "<=" | ">" | ">=") {
@@ -1112,7 +1397,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                         return Some(t);
                     }
                     if is_agg(rt) {
-                        return self.method_target(rt, &name).and_then(|d| self.cx.pty_for(d, &d.ret).ok());
+                        return self.method_target(rt, &name).and_then(|d| self.call_ret_ty(d, Some(rt), items(&f[2]), env, expect));
                     }
                 }
                 self.ty_of(&f[0], env, expect).or_else(|| items(&f[2]).first().and_then(|a| self.ty_of(a, env, expect)))
@@ -1133,17 +1418,17 @@ impl<'a, 'b> FnGen<'a, 'b> {
                         return Some(t);
                     }
                     if is_agg(&recv_ty) {
-                        return self.method_target(&recv_ty, name).and_then(|d| self.cx.pty_for(d, &d.ret).ok());
+                        return self.method_target(&recv_ty, name).and_then(|d| self.call_ret_ty(d, Some(&recv_ty), items(&f[1]), env, expect));
                     }
                     return Some(recv_ty);
                 }
-                if let Some((en, _, _)) = self.cx.split_variant(&segs) {
-                    return Some(en);
+                if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
+                    return self.variant_enum_type(&en, idx, items(&f[1]), env, expect);
                 }
                 if segs.len() >= 3 {
                     if let Some((en, _, _)) = self.cx.split_variant(&segs[..segs.len() - 1]) {
                         let name = &segs[segs.len() - 1];
-                        return self.method_target(&en, name).and_then(|d| self.cx.pty_for(d, &d.ret).ok());
+                        return self.method_target(&en, name).and_then(|d| self.call_ret_ty(d, Some(&en), items(&f[1]), env, expect));
                     }
                 }
                 if segs.len() == 1 && matches!(segs[0].as_str(), "Some" | "Ok" | "Err") && !self.funcs.contains_key(&segs[0]) {
@@ -1210,7 +1495,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if segs == ["core", "check", "eq"] || segs == ["core", "mem", "drop"] {
                     return Some("void".into());
                 }
-                self.funcs.get(&segs.join(".")).and_then(|d| self.cx.pty_for(d, &d.ret).ok())
+                self.funcs.get(&segs.join(".")).and_then(|d| self.call_ret_ty(d, None, items(&f[1]), env, expect))
             }
             _ => None,
         }
@@ -2678,12 +2963,26 @@ impl<'a, 'b> FnGen<'a, 'b> {
     }
 
     /// 関数 `d` を呼ぶ。`recv` があれば第 1 引数 (self)。
-    fn call_user(&mut self, fq: &str, d: &Def, recv: Option<Value>, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+    fn call_user(
+        &mut self,
+        fq: &str,
+        d: &'a Def,
+        recv: Option<(Value, String)>,
+        args: &[V],
+        env: &mut Env,
+        expect: Option<&str>,
+    ) -> R<(Option<Value>, String)> {
         if tag(&d.ret) == "ref" {
             return Err("call of a function returning a reference".into());
         }
-        let id = *self.ids.get(fq).ok_or("call target not declared")?;
-        let rt = self.cx.pty_for(d, &d.ret)?;
+        let recv_ty = recv.as_ref().map(|r| r.1.clone());
+        let subst = if type_params(d).is_empty() {
+            HashMap::new()
+        } else {
+            self.callee_subst(d, args, recv_ty.as_deref(), env, expect).ok_or("cannot infer the type arguments of a generic call")?
+        };
+        let id = self.func_id(d, fq, &subst)?;
+        let rt = self.cx.pty_in(d, &subst, &d.ret)?;
         let mut vals = vec![];
         let mut out = None;
         if is_agg(&rt) {
@@ -2692,12 +2991,12 @@ impl<'a, 'b> FnGen<'a, 'b> {
             out = Some(p);
         }
         let mut params = d.params.iter();
-        if let Some(r) = recv {
+        if let Some((r, _)) = recv {
             params.next();
             vals.push(r);
         }
         for ((_, pt), a) in params.zip(args) {
-            let want = self.cx.pty_for(d, pt)?;
+            let want = self.cx.pty_in(d, &subst, pt)?;
             let (v, got) = self.expr(a, env, Some(&want))?;
             let mut v = v.ok_or("bad argument")?;
             if got != want {
@@ -2801,6 +3100,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     return r;
                 }
                 if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
+                    let en = self.variant_enum_type(&en, idx, &[], env, expect).ok_or("cannot infer the type arguments of an enum")?;
                     return self.make_variant(&en, idx, &[], env);
                 }
                 Err(format!("path {}", segs.join(".")))
@@ -2942,7 +3242,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 Ok((Some(p), ty))
             }
             "StructLit" => {
-                let name = self.cx.qual_name(&st(&f[0]));
+                let name = self.struct_lit_type(f, env, expect).ok_or("cannot infer the type arguments of a struct literal")?;
                 let l = self.cx.layout(&name, 0)?;
                 if l.is_enum {
                     return Err("struct literal of an enum".into());
@@ -3209,6 +3509,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     return self.method_call(&recv, &segs[segs.len() - 1], args, env, expect);
                 }
                 if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
+                    let en = self.variant_enum_type(&en, idx, args, env, expect).ok_or("cannot infer the type arguments of an enum")?;
                     return self.make_variant(&en, idx, args, env);
                 }
                 if segs.len() >= 3 && self.cx.split_variant(&segs[..segs.len() - 1]).is_some() {
@@ -3456,7 +3757,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 let fq = segs.join(".");
                 let Some(d) = self.funcs.get(&fq).copied() else { return Err(format!("call to {}", fq)) };
-                self.call_user(&fq, d, None, args, env)
+                self.call_user(&fq, d, None, args, env, expect)
             }
             n => Err(format!("expression {}", n)),
         }
@@ -3530,7 +3831,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 return self.builtin_method(p, rt, name, args, env);
             }
             if is_agg(rt) {
-                let fq = format!("{}.{}", rt, name);
+                let fq = format!("{}.{}", base_of(rt), name);
                 let d = self.funcs.get(&fq).copied().ok_or_else(|| format!("method {}", fq))?;
                 if !d.is_method() {
                     return Err(format!("{} is not a method", fq));
@@ -3539,7 +3840,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if tag(&d.params[0].1) != "ref" {
                     self.consume(recv, &rty2, env)?;
                 }
-                return self.call_user(&fq, d, Some(p.ok_or("bad receiver")?), args, env);
+                return self.call_user(&fq, d, Some((p.ok_or("bad receiver")?, rty2.clone())), args, env, expect);
             }
         }
         self.method(recv, name, args, env, expect)
@@ -3919,8 +4220,8 @@ impl<'a, 'b> FnGen<'a, 'b> {
     }
 
     /// 関数 `d` を、評価済みの値で呼ぶ。
-    fn call_fn_values(&mut self, fq: &str, d: &Def, vals: &[Value]) -> R<(Option<Value>, String)> {
-        let id = *self.ids.get(fq).ok_or("call target not declared")?;
+    fn call_fn_values(&mut self, fq: &str, d: &'a Def, vals: &[Value]) -> R<(Option<Value>, String)> {
+        let id = self.func_id(d, fq, &HashMap::new())?;
         let rt = self.cx.pty_for(d, &d.ret)?;
         let mut all = vec![];
         let mut out = None;
@@ -5219,6 +5520,36 @@ fn int_value(text: &str) -> R<i64> {
     Ok(if neg { (m as i64).wrapping_neg() } else { m as i64 })
 }
 
+/// 関数 `d` (型パラメータは `subst` で具体化した版) の Cranelift のシグネチャ。
+fn make_sig(module: &ObjectModule, cx: &Cx, d: &Def, is_entry: bool, subst: &HashMap<String, String>) -> R<cranelift_codegen::ir::Signature> {
+    let ptr = module.target_config().pointer_type();
+    let old = cx.file.replace(d.file.clone());
+    let olds = cx.subst.replace(subst.clone());
+    let r = (|| -> R<cranelift_codegen::ir::Signature> {
+        let mut sig = module.make_signature();
+        if !is_entry && tag(&d.ret) == "ref" {
+            return Err(format!("{}: returns a reference", d.name));
+        }
+        let rty = if is_entry { "void".to_string() } else { cx.pty(&d.ret).map_err(|e| format!("{}: {}", d.name, e))? };
+        if !is_entry && is_agg(&rty) {
+            sig.params.push(AbiParam::new(ptr));
+        }
+        for (_, t) in &d.params {
+            let pt = cx.pty(t).map_err(|e| format!("{}: {}", d.name, e))?;
+            sig.params.push(AbiParam::new(if is_agg(&pt) { ptr } else { cl(&pt) }));
+        }
+        if is_entry {
+            sig.returns.push(AbiParam::new(types::I32));
+        } else if rty != "void" && !is_agg(&rty) {
+            sig.returns.push(AbiParam::new(cl(&rty)));
+        }
+        Ok(sig)
+    })();
+    *cx.file.borrow_mut() = old;
+    *cx.subst.borrow_mut() = olds;
+    r
+}
+
 pub fn compile_clif(
     prog: &Program,
     funcs: &HashMap<String, &Def>,
@@ -5230,7 +5561,7 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
-    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()) };
+    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
@@ -5248,8 +5579,9 @@ pub fn compile_clif(
             continue;
         }
         let Some(d) = funcs.get(&n) else { continue };
-        if !d.generics.is_empty() {
-            return Err(format!("generic function {}", d.name));
+        if !type_params(d).is_empty() {
+            // 総称な関数は、呼び出しのたびに型引数を決めて、そのときに具体化する。
+            continue;
         }
         order.push(n.clone());
         let mut calls = vec![];
@@ -5282,7 +5614,7 @@ pub fn compile_clif(
         method_names(d.body.as_ref().unwrap(), &mut mnames);
         for m in mnames {
             for (fq, fd) in funcs.iter() {
-                if fd.is_method() && fq.rsplit('.').next() == Some(m.as_str()) {
+                if fd.is_method() && type_params(fd).is_empty() && fq.rsplit('.').next() == Some(m.as_str()) {
                     todo.push(fq.clone());
                 }
             }
@@ -5337,55 +5669,50 @@ pub fn compile_clif(
     let rt = Rt { puts, write, exit, realloc, free, memcpy, memcmp, memmove, utf8 };
 
     // 関数の宣言。入口は C の `main` にする。構造体・列挙型を返す関数は、先頭に戻り値用のアドレスを取る。
-    let mut ids: HashMap<String, FuncId> = HashMap::new();
+    let ids: RefCell<HashMap<String, FuncId>> = RefCell::new(HashMap::new());
+    let pending: RefCell<Vec<Inst>> = RefCell::new(vec![]);
+    let empty: HashMap<String, String> = HashMap::new();
+    let mut queue: Vec<Inst> = vec![];
     for n in &order {
         let d = funcs[n];
-        *cx.file.borrow_mut() = d.file.clone();
-        let mut sig = module.make_signature();
-        if n != entry && tag(&d.ret) == "ref" {
-            return Err(format!("{}: returns a reference", d.name));
-        }
-        let rty = if n == entry { "void".to_string() } else { cx.pty(&d.ret).map_err(|e| format!("{}: {}", d.name, e))? };
-        if n != entry && is_agg(&rty) {
-            sig.params.push(AbiParam::new(ptr));
-        }
-        for (_, t) in &d.params {
-            let pt = cx.pty(t).map_err(|e| format!("{}: {}", d.name, e))?;
-            sig.params.push(AbiParam::new(if is_agg(&pt) { ptr } else { cl(&pt) }));
-        }
-        if n == entry {
-            sig.returns.push(AbiParam::new(types::I32));
-        } else if rty != "void" && !is_agg(&rty) {
-            sig.returns.push(AbiParam::new(cl(&rty)));
-        }
+        let sig = make_sig(&module, &cx, d, n == entry, &empty)?;
         let (name, link) = if n == entry { ("main".to_string(), Linkage::Export) } else { (mangle(n), Linkage::Local) };
-        ids.insert(n.clone(), module.declare_function(&name, link, &sig).map_err(|e| e.to_string())?);
+        let id = module.declare_function(&name, link, &sig).map_err(|e| e.to_string())?;
+        ids.borrow_mut().insert(n.clone(), id);
+        queue.push(Inst { key: n.clone(), def: d, subst: HashMap::new(), entry: n == entry });
     }
 
     let mut data_n = 0usize;
     let mut fbc = FunctionBuilderContext::new();
     define_utf8_valid(&mut module, rt.utf8, &mut fbc)?;
-    for n in &order {
-        let d = funcs[n];
+    // 生成の途中で見つかった関数 (総称な関数の具体化など) も、待ち行列に足して順に生成する。
+    let mut qi = 0usize;
+    while qi < queue.len() {
+        let inst = queue[qi].clone();
+        qi += 1;
+        let d = inst.def;
         *cx.file.borrow_mut() = d.file.clone();
+        *cx.subst.borrow_mut() = inst.subst.clone();
+        let fid = *ids.borrow().get(&inst.key).ok_or("function not declared")?;
         let mut ctx = module.make_context();
-        ctx.func.signature = module.declarations().get_function_decl(ids[n]).signature.clone();
+        ctx.func.signature = module.declarations().get_function_decl(fid).signature.clone();
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
             let eb = b.create_block();
             b.append_block_params_for_function_params(eb);
             b.switch_to_block(eb);
             let params_vals = b.block_params(eb).to_vec();
-            let ret_ty = if n == entry { "void".to_string() } else { cx.pty(&d.ret)? };
+            let ret_ty = if inst.entry { "void".to_string() } else { cx.pty(&d.ret)? };
             let mut g = FnGen {
                 b,
                 module: &mut module,
                 cx: &cx,
                 funcs,
                 ids: &ids,
+                pending: &pending,
                 rt: &rt,
                 data_n: &mut data_n,
-                entry: n == entry,
+                entry: inst.entry,
                 ret_ty,
                 sret: None,
                 loops: vec![],
@@ -5404,8 +5731,11 @@ pub fn compile_clif(
             b.seal_all_blocks();
             b.finalize();
         }
-        module.define_function(ids[n], &mut ctx).map_err(|e| format!("{}: {}", d.name, e))?;
+        module.define_function(fid, &mut ctx).map_err(|e| format!("{}: {}", d.name, e))?;
         module.clear_context(&mut ctx);
+        *cx.subst.borrow_mut() = HashMap::new();
+        let newly: Vec<Inst> = pending.borrow_mut().drain(..).collect();
+        queue.extend(newly);
     }
 
     let bytes = module.finish().emit().map_err(|e| e.to_string())?;
