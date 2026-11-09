@@ -221,6 +221,7 @@ impl<'a> Checker<'a> {
         self.check_impls();
         self.check_field_method();
         self.check_statics();
+        self.check_tests();
         for &i in &user {
             let d = self.def(i);
             match d.kw.as_str() {
@@ -370,6 +371,34 @@ impl<'a> Checker<'a> {
                     at,
                     0,
                 );
+            }
+        }
+    }
+
+    /// 3.2: `test <対象FQN>.test_<名前>` の対象FQNが存在し、テストと同じファイルにあること (E1116)。
+    fn check_tests(&mut self) {
+        let tests: Vec<usize> = self.user.iter().copied().filter(|&i| self.def(i).kw == "test").collect();
+        for i in tests {
+            let d = self.def(i);
+            let Some((target, _)) = d.name.rsplit_once('.') else { continue };
+            let file = d.file.clone();
+            let name = d.name.clone();
+            let target = target.to_string();
+            let found = self
+                .p
+                .funcs
+                .get(&target)
+                .or_else(|| self.p.types.get(&target))
+                .or_else(|| self.p.consts.get(&target))
+                .or_else(|| self.p.sigs.get(&target))
+                .copied();
+            match found {
+                None => self.diag("E1116", format!("test {} has no target definition {}", name, target), i, 0),
+                Some(j) => {
+                    if self.def(j).file != file {
+                        self.diag("E1116", format!("test {} must be in the same file as {}", name, target), i, 0);
+                    }
+                }
             }
         }
     }

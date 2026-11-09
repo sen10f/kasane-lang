@@ -1,0 +1,7 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+test t.nope.test_foo
+    core.check.is_true(true)
+end t.nope.test_foo
