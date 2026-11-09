@@ -1201,3 +1201,67 @@ fn a_closure_that_captures_by_mutation_does_not_meet_the_fn_bound() {
     );
     assert!(got.iter().any(|c| c == "E2030"), "{}", out);
 }
+
+fn trait_prefix() -> String {
+    [
+        "trait t.Shape",
+        "    fn area(self: &Self) -> u32 uses [] panics never",
+        "    fn scale(self: &Self, k: u32) -> u32 uses [] panics never",
+        "end t.Shape",
+        "",
+    ]
+    .join(&char::from(10u8).to_string())
+}
+
+fn check_with_prefix(name: &str, helper: &[&str], b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let mut prefix = trait_prefix();
+    prefix.push_str(&nl);
+    prefix.push_str(&helper.join(&nl));
+    prefix.push_str(&nl);
+    prefix.push_str(&nl);
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn a_trait_method_called_through_a_type_parameter_bound_is_checked() {
+    let (got, out) = check_with_prefix(
+        "tr_ok",
+        &[
+            "fn t.area_of[T: t.Shape](x: &T) -> u32 uses [] panics never",
+            "    x.area().wrapping_add(x.scale(2u32))",
+            "end t.area_of",
+        ],
+        &["let a = 1u32", "core.mem.drop(a)"],
+    );
+    assert!(!got.iter().any(|c| matches!(c.as_str(), "E1108" | "E2020" | "E2022" | "E2023")), "{}", out);
+}
+
+#[test]
+fn a_trait_method_through_a_bound_checks_arity_and_argument_types() {
+    let (got, out) = check_with_prefix(
+        "tr_arity",
+        &["fn t.bad[T: t.Shape](x: &T) -> u32 uses [] panics never", "    x.scale()", "end t.bad"],
+        &["let a = 1u32", "core.mem.drop(a)"],
+    );
+    assert!(got.iter().any(|c| c == "E2022"), "{}", out);
+    let (got, out) = check_with_prefix(
+        "tr_arg",
+        &["fn t.bad[T: t.Shape](x: &T) -> u32 uses [] panics never", "    x.scale(true)", "end t.bad"],
+        &["let a = 1u32", "core.mem.drop(a)"],
+    );
+    assert!(got.iter().any(|c| c == "E2023"), "{}", out);
+}
+
+#[test]
+fn a_trait_method_return_type_flows_into_the_caller() {
+    // area は u32 を返すので、u64 を返す関数の本体にそのまま置くと E2020。
+    let (got, out) = check_with_prefix(
+        "tr_ret",
+        &["fn t.bad[T: t.Shape](x: &T) -> u64 uses [] panics never", "    x.area()", "end t.bad"],
+        &["let a = 1u32", "core.mem.drop(a)"],
+    );
+    assert!(got.iter().any(|c| c == "E2020"), "{}", out);
+}

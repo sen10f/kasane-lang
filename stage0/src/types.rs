@@ -202,8 +202,8 @@ impl<'a> TypeCk<'a> {
         let gn = d.gnames();
         for (n, t) in &d.params {
             let ty = from_v(t, &gn);
-            // 関数自身の型パラメータは、本体の中では「分からない型」として扱う。
-            let ty = subst_params_unknown(&ty);
+            // 関数自身の型パラメータ (Ty::Param) は、単一化では「分からない型」と同じに働くが、
+            // メソッド呼び出しでは境界のトレイトを引くために名前を残す。
             self.scopes[0].insert(n.clone(), ty);
         }
         let value = self.infer(body);
@@ -557,6 +557,9 @@ impl<'a> TypeCk<'a> {
             }
         }
         if cands.is_empty() {
+            if let Some(t) = self.trait_bound_method(recv, name, args, line) {
+                return t;
+            }
             let exists_elsewhere = self.p.method_idx.contains_key(name);
             if complete && exists_elsewhere && !DERIVED.contains(&name) && !self.trait_methods.contains(name) {
                 let mut names: Vec<&String> = owners.iter().filter_map(|o| self.owners.get(o)).flat_map(|m| m.keys()).collect();
@@ -620,6 +623,52 @@ impl<'a> TypeCk<'a> {
         self.check_bounds(d, &map, line, false);
         let ret = from_v(&d.ret, &gn);
         self.inst(&ret, &mut map)
+    }
+
+    /// レシーバが型パラメータ `T` で、境界のトレイトがそのメソッドを宣言しているとき、トレイトのシグネチャで呼び出しを検査する。
+    fn trait_bound_method(&mut self, recv: &Ty, name: &str, args: &[Ty], line: usize) -> Option<Ty> {
+        let deep = self.deep(recv);
+        let Ty::Param(pn) = deep.strip().clone() else { return None };
+        let d = self.def();
+        let bounds: Vec<String> = d
+            .generics
+            .iter()
+            .filter(|g| g.0 == "type" && g.1 == pn)
+            .flat_map(|g| items(&g.2).iter().filter_map(|b| if let V::L(bx) = b { Some(st(&bx[0])) } else { None }).collect::<Vec<_>>())
+            .collect();
+        for tr in bounds {
+            let Some(&ti) = self.p.types.get(&tr) else { continue };
+            let td = &self.p.defs[ti];
+            let Some((_, params, ret)) = td.trait_sigs.iter().find(|s| s.0 == name) else { continue };
+            if params.len() != args.len() + 1 {
+                self.diag(
+                    "E2022",
+                    format!("method `{}` of trait {} takes {} argument(s) but {} given", name, tr, params.len().saturating_sub(1), args.len()),
+                    line,
+                );
+                return Some(Ty::Unknown);
+            }
+            let mut gn = td.gnames();
+            gn.insert("Self".to_string());
+            let mut map: HashMap<String, Ty> = HashMap::new();
+            map.insert("Self".to_string(), deep.clone());
+            for (k, a) in args.iter().enumerate() {
+                let pt = from_v(&params[k + 1].1, &gn);
+                let pt = self.inst(&pt, &mut map);
+                if let Err(e) = self.unify2(&pt, a) {
+                    if let Some((want, got)) = self.prim_conflict(&e) {
+                        self.diag(
+                            "E2023",
+                            format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
+                            line,
+                        );
+                    }
+                }
+            }
+            let r = from_v(ret, &gn);
+            return Some(self.inst(&r, &mut map));
+        }
+        None
     }
 
     /// `&mut self` のメソッドを呼ぶには、レシーバの局所変数が `let mut` か、`&mut` の参照でなければならない。

@@ -34,6 +34,8 @@ pub struct Def {
     pub init: Option<V>,
     pub has_impls: bool,
     pub methods: Vec<String>,
+    /// トレイトのメソッドのシグネチャ (名前, 引数, 戻り値)。解析できたものだけ。
+    pub trait_sigs: Vec<(String, Vec<(String, V)>, V)>,
     pub impl_trait: String,
     pub impl_for: V,
 }
@@ -197,7 +199,20 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                     }
                     let mut bp = Parser::new(line_tokens(st, 1)?);
                     bp.expect_kw("fn")?;
-                    d.methods.push(bp.name_tok()?);
+                    let mname = bp.name_tok()?;
+                    d.methods.push(mname.clone());
+                    let sig = (|| -> R<(Vec<(String, V)>, V)> {
+                        bp.generics()?;
+                        bp.expect_op("(")?;
+                        let ps = conv_params(&bp.params()?);
+                        bp.expect_op(")")?;
+                        bp.expect_op("->")?;
+                        let r = bp.ty()?;
+                        Ok((ps, r))
+                    })();
+                    if let Ok((ps, r)) = sig {
+                        d.trait_sigs.push((mname, ps, r));
+                    }
                 }
             }
             "const" | "static" => {
