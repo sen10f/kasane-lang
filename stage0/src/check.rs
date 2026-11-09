@@ -222,6 +222,7 @@ impl<'a> Checker<'a> {
         self.check_field_method();
         self.check_statics();
         self.check_tests();
+        self.check_linear();
         for &i in &user {
             let d = self.def(i);
             match d.kw.as_str() {
@@ -371,6 +372,36 @@ impl<'a> Checker<'a> {
                     at,
                     0,
                 );
+            }
+        }
+    }
+
+    /// 4.4: `linear` 型には `Clone` / `Copy` を derive できず、`core.ops.Drop` も実装できない (E2032)。
+    fn check_linear(&mut self) {
+        let idxs: Vec<usize> = self.user.clone();
+        let linear_types: HashSet<String> = idxs
+            .iter()
+            .map(|&i| self.def(i))
+            .filter(|d| matches!(d.kw.as_str(), "type" | "enum") && d.linear)
+            .map(|d| d.name.clone())
+            .collect();
+        if linear_types.is_empty() {
+            return;
+        }
+        for i in idxs {
+            let d = self.def(i);
+            if matches!(d.kw.as_str(), "type" | "enum") && d.linear {
+                for dv in d.derive.clone() {
+                    if dv == "Clone" || dv == "Copy" {
+                        self.diag("E2032", format!("linear type {} must not derive {}", d.name, dv), i, 0);
+                    }
+                }
+            }
+            if d.kw == "impl" && d.impl_trait == "core.ops.Drop" {
+                let tgt = impl_target(&d.impl_for);
+                if linear_types.contains(&tgt) {
+                    self.diag("E2032", format!("linear type {} must not implement core.ops.Drop (4.4)", tgt), i, 0);
+                }
             }
         }
     }
