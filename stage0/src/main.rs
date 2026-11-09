@@ -3,6 +3,7 @@ mod headers;
 mod lexer;
 mod check;
 mod cli;
+mod clif;
 mod cnative;
 mod explain;
 mod fixes;

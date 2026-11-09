@@ -1294,3 +1294,102 @@ fn the_stack_estimate_depends_on_the_size_of_the_locals() {
     let (got, out) = stack_pkg("stk_big", 128, "(u128, u128, u128, u128)");
     assert!(got.iter().any(|c| c == "E4012"), "{}", out);
 }
+
+fn clif_program(last_check: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.fib(n: u32) -> u32 uses [] panics never stack 4096",
+        "    if n < 2u32 {",
+        "        return n",
+        "    }",
+        "    t.fib(n.wrapping_sub(1u32)).wrapping_add(t.fib(n.wrapping_sub(2u32)))",
+        "end t.fib",
+        "",
+        "fn t.sign(x: i32) -> i32 uses [] panics never",
+        "    if x < 0i32 {",
+        "        return 0i32.wrapping_sub(1i32)",
+        "    }",
+        "    if x == 0i32 {",
+        "        return 0i32",
+        "    }",
+        "    1i32",
+        "end t.sign",
+        "",
+        "fn t.mix(a: u8, b: u8) -> u8 uses [] panics never",
+        "    a.wrapping_add(b) ^ 3u8",
+        "end t.mix",
+        "",
+        "fn t.count(limit: u32) -> u32 uses [] panics never",
+        "    let mut i = 0u32",
+        "    let mut acc = 0u32",
+        "    loop {",
+        "        i = i.wrapping_add(1u32)",
+        "        if i > limit {",
+        "            break",
+        "        }",
+        "        if i & 1u32 == 1u32 {",
+        "            continue",
+        "        }",
+        "        acc = acc.wrapping_add(i)",
+        "    }",
+        "    acc",
+        "end t.count",
+        "",
+        "fn t.both(a: bool, b: bool) -> bool uses [] panics never",
+        "    (a && !b) || (b && !a)",
+        "end t.both",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    core.check.eq(t.fib(10u32), 55u32)",
+        "    core.check.eq(t.sign(0i32.wrapping_sub(5i32)), 0i32.wrapping_sub(1i32))",
+        "    core.check.eq(t.sign(7i32), 1i32)",
+        "    core.check.eq(t.mix(250u8, 10u8), 7u8)",
+        "    core.check.eq(t.count(10u32), 30u32)",
+        "    core.check.eq(t.both(true, false), true)",
+        "    core.check.eq(t.both(true, true), false)",
+        last_check,
+        "    std.io.print_line(\"clif ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+fn build_clif(name: &str, src: &str, release: bool) -> (Tmp, Option<PathBuf>, String) {
+    let t = Tmp::new(name, src);
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_{}", std::process::id(), name));
+    let mut c = Command::new(exe());
+    c.args(["build", "--backend", "clif"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+    if release {
+        c.arg("--release");
+    }
+    let o = c.output().unwrap();
+    let out = text(&o.stdout);
+    let kind = if release { "release" } else { "debug" };
+    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let _ = fs::remove_dir_all(&cache);
+    let found = if p.exists() { Some(p) } else { None };
+    (t, found, out)
+}
+
+#[test]
+fn the_cranelift_backend_builds_and_runs_a_native_executable() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_ok_{}", release), &clif_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "clif ok");
+    }
+}
+
+#[test]
+fn a_failed_check_eq_in_a_cranelift_executable_exits_with_101() {
+    let (_t, exe_path, out) = build_clif("clif_fail", &clif_program("    core.check.eq(1u8, 2u8)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("assertion failed"), "{}", text(&o.stderr));
+    assert!(!text(&o.stdout).contains("clif ok"));
+}

@@ -381,7 +381,7 @@ fn cstr(s: &str) -> String {
     out
 }
 
-fn calls_in(v: &V, out: &mut Vec<String>) {
+pub(crate) fn calls_in(v: &V, out: &mut Vec<String>) {
     if nname(v) == "Call" && nname(&nf(v)[0]) == "Path" {
         out.push(strs(&nf(&nf(v)[0])[0]).join("."));
     }

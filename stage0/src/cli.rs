@@ -1350,6 +1350,7 @@ fn build_key(l: &Loaded, release: bool, target: &str) -> String {
 
 fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let release = args.iter().any(|a| a == "--release");
+    let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "c".into());
     let target = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)).cloned();
     let mut rep = Report::new(false);
     let root = match find_root() {
@@ -1420,7 +1421,11 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                     funcs.insert(d.name.clone(), d);
                 }
             }
-            crate::cnative::compile_native(&funcs, e, &norm(&exe), release)
+            if backend == "clif" {
+                crate::clif::compile_clif(&funcs, e, &norm(&exe), release)
+            } else {
+                crate::cnative::compile_native(&funcs, e, &norm(&exe), release)
+            }
         }
     };
     match native {
