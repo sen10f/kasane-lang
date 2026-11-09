@@ -2545,3 +2545,80 @@ fn a_wrong_iterator_result_in_a_cranelift_executable_fails_the_check() {
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
+
+fn clif_std_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.fresh() -> alloc.vec.Vec<u8, std.alloc.System>",
+        "    alloc.vec.Vec.new(std.alloc.SYSTEM)",
+        "end t.fresh",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    let arr = [1u8, 2u8, 3u8, 4u8, 5u8]",
+        "    core.check.eq(arr.len(), 5usize)",
+        "    core.check.eq(arr.get(7usize), None)",
+        "    core.check.eq(arr.first(), Some(1u8))",
+        "    core.check.eq(arr.last(), Some(5u8))",
+        "    core.check.eq(arr.contains(&3u8), true)",
+        "    core.check.eq(arr.contains(&9u8), false)",
+        "    let mid = arr.sub(1usize, 4usize)",
+        "    core.check.eq(mid, Some(&[2u8, 3u8, 4u8]))",
+        "    let mut opt = Some(5u8)",
+        "    let taken = opt.take()",
+        "    core.check.eq(taken, Some(5u8))",
+        "    core.check.eq(opt, None)",
+        "    let mut v = t.fresh()",
+        "    for k in core.iter.range(1u8, 4u8) {",
+        "        match v.push(k.wrapping_mul(10u8)) {",
+        "            Ok(_u) => 0u8",
+        "            Err(_e) => 1u8",
+        "        }",
+        "    }",
+        "    core.check.eq(v.remove(0usize), Some(10u8))",
+        "    core.check.eq(v.len(), 2usize)",
+        "    core.check.eq(v[0usize], 20u8)",
+        "    core.check.eq(v.remove(9usize), None)",
+        "    core.check.eq(u64.from_u32(7u32), 7u64)",
+        "    core.check.eq(i32.try_from_i64(5i64), Ok(5i32))",
+        "    core.check.eq(u8.try_from_i32(300i32).is_err(), true)",
+        "    core.check.eq(u8.try_from_i32(0i32 - 1i32).is_err(), true)",
+        "    core.check.eq(u8.try_from_u64(255u64), Ok(255u8))",
+        "    core.check.eq(i8.try_from_i32(200i32).is_err(), true)",
+        "    core.check.eq(i8.try_from_i32(0i32 - 128i32).is_ok(), true)",
+        "    let c = 'q'",
+        "    core.check.eq(c.to_ascii_uppercase(), 'Q')",
+        "    core.check.eq(c.to_u32(), 113u32)",
+        "    core.check.eq(char.try_from_u32(65u32), Some('A'))",
+        "    core.check.eq(char.try_from_u32(55296u32), None)",
+        "    core.check.eq('7'.is_ascii_digit(), true)",
+        "    core.check.eq('a'.is_ascii_alphabetic(), true)",
+        "    core.check.eq(' '.is_ascii_whitespace(), true)",
+        "    core.check.eq('x'.is_ascii_whitespace(), false)",
+        "    core.check.eq(3i32.to_f64(), 3.0f64)",
+        tail,
+        "    std.io.print_line(\"std ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_arrays_take_remove_conversions_and_char_methods() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_std_{}", release), &clif_std_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "std ok");
+    }
+}
+
+#[test]
+fn a_failed_conversion_check_in_a_cranelift_executable_exits_with_101() {
+    let (_t, exe_path, out) = build_clif("clif_std_bad", &clif_std_program("    core.check.eq(u8.try_from_i32(256i32).is_ok(), true)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}
