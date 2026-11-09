@@ -35,8 +35,18 @@ fn is_float(p: &str) -> bool {
     p == "f32" || p == "f64"
 }
 
+/// `&mut スカラー` を表す型名 (`mutref<u32>`)。値は要素や変数のアドレス。
+fn is_mutref(p: &str) -> bool {
+    p.starts_with("mutref<")
+}
+
+/// `mutref<T>` の `T`。
+fn mutref_inner(p: &str) -> Option<&str> {
+    p.strip_prefix("mutref<").and_then(|r| r.strip_suffix('>'))
+}
+
 fn is_scalar(p: &str) -> bool {
-    is_int(p) || p == "bool" || is_float(p)
+    is_int(p) || p == "bool" || is_float(p) || is_mutref(p)
 }
 
 /// 構造体・列挙型 (メモリ上に置く値) の型名か。
@@ -138,6 +148,10 @@ impl<'a> Cx<'a> {
                 // 不変の参照 `&scalar` は、借用の間は値が変わらないので、値そのものとして扱う。
                 if tag(t) == "ref" && !matches!(tel(t, 1), V::B(true)) {
                     return Ok(inner);
+                }
+                // `&mut scalar` は、要素や変数のアドレス (`mutref<T>`)。
+                if tag(t) == "ref" && !is_mutref(&inner) {
+                    return Ok(format!("mutref<{}>", inner));
                 }
                 return Err("mutable reference to a scalar".into());
             }
@@ -422,6 +436,7 @@ impl<'a> Cx<'a> {
             "len" => Some("usize".into()),
             "is_empty" => Some("bool".into()),
             "get" | "first" | "last" if is_scalar(elem) => self.builtin_enum("Option", &[elem.to_string()]).ok(),
+            "get_mut" if is_scalar(elem) && !is_mutref(elem) => self.builtin_enum("Option", &[format!("mutref<{}>", elem)]).ok(),
             "sub" => {
                 let sl = self.slice_of(elem);
                 self.builtin_enum("Option", &[sl]).ok()
@@ -498,6 +513,10 @@ struct FnGen<'a, 'b> {
     owners: HashMap<u32, Owner>,
     /// 参照 (`&T` / `&mut T`) である変数の番号。値のコピーではなく別名として扱う。
     refs: HashSet<u32>,
+    /// `&mut x` が取られるスカラーの局所変数の名前 (スタックのスロットに置く)
+    addr_taken: HashSet<String>,
+    /// スロットに置いた変数の番号 (変数の値はスロットのアドレス)
+    promoted: HashSet<u32>,
 }
 
 /// 解放の責任を持つ変数。`flag` が真の間だけ、スコープの終わりで解放する (移動したら偽にする)。
@@ -619,7 +638,15 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 self.ty_of(&f[1], env, expect).or_else(|| self.ty_of(&f[2], env, expect))
             }
             "Unary" => match st(&f[0]).as_str() {
-                "!" | "-" | "&" | "&mut" | "*" => self.ty_of(&f[1], env, expect),
+                "!" | "-" | "&" => self.ty_of(&f[1], env, expect),
+                "&mut" => {
+                    let t = self.ty_of(&f[1], env, expect)?;
+                    if is_agg(&t) || is_mutref(&t) { Some(t) } else { Some(format!("mutref<{}>", t)) }
+                }
+                "*" => {
+                    let t = self.ty_of(&f[1], env, None)?;
+                    Some(mutref_inner(&t).map(String::from).unwrap_or(t))
+                }
                 _ => None,
             },
             "Match" => {
@@ -633,7 +660,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
             "MCall" => {
                 let name = st(&f[1]);
-                let recv_ty = self.ty_of(&f[0], env, expect);
+                let recv_ty = self.ty_of(&f[0], env, expect).map(|t| mutref_inner(&t).map(String::from).unwrap_or(t));
                 if let Some(rt) = &recv_ty {
                     if let Some(t) = self.cx.builtin_method_ty(rt, &name) {
                         return Some(t);
@@ -949,6 +976,18 @@ impl<'a, 'b> FnGen<'a, 'b> {
         let mut env: Env = HashMap::new();
         let mut k = 0;
         self.scopes.push(vec![]);
+        {
+            let mut nodes: Vec<&V> = vec![];
+            crate::check::walk(d.body.as_ref().unwrap(), &mut nodes);
+            for n in nodes {
+                if nname(n) == "Unary" && st(&nf(n)[0]) == "&mut" && nname(&nf(n)[1]) == "Path" {
+                    let segs = strs(&nf(&nf(n)[1])[0]);
+                    if segs.len() == 1 {
+                        self.addr_taken.insert(segs[0].clone());
+                    }
+                }
+            }
+        }
         if is_agg(&self.ret_ty) && !self.entry {
             self.sret = Some(params_vals[0]);
             k = 1;
@@ -965,6 +1004,16 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 v = dst;
             }
             let var = self.new_var(&ty);
+            if !is_agg(&ty) && !is_mutref(&ty) && self.addr_taken.contains(n) {
+                // `&mut n` を取られる引数は、スロットに移す。
+                let slot = self.alloc(8, 8);
+                self.b.ins().store(MemFlags::new(), v, slot, 0);
+                let pvar = self.new_var("usize");
+                self.b.def_var(pvar, slot);
+                self.promoted.insert(pvar.as_u32());
+                env.insert(n.clone(), (pvar, ty));
+                continue;
+            }
             self.b.def_var(var, v);
             if is_agg(&ty) && tag(t) == "ref" {
                 self.refs.insert(var.as_u32());
@@ -1095,6 +1144,17 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     }
                 }
                 let var = self.new_var(&ty);
+                let lname = st(&nf(&f[0])[0]);
+                if !is_agg(&ty) && !is_mutref(&ty) && self.addr_taken.contains(&lname) {
+                    // `&mut 名前` を取られるスカラーの局所変数は、スタックのスロットに置く。
+                    let slot = self.alloc(8, 8);
+                    self.b.ins().store(MemFlags::new(), v, slot, 0);
+                    let pvar = self.new_var("usize");
+                    self.b.def_var(pvar, slot);
+                    self.promoted.insert(pvar.as_u32());
+                    env.insert(lname, (pvar, ty));
+                    return Ok(());
+                }
                 self.b.def_var(var, v);
                 if is_ref {
                     self.refs.insert(var.as_u32());
@@ -1107,6 +1167,14 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
             "Assign" => {
                 let tg = &f[0];
+                if nname(tg) == "Unary" && st(&nf(tg)[0]) == "*" {
+                    let (r, rt) = self.expr(&nf(tg)[1], env, None)?;
+                    let inner = mutref_inner(&rt).ok_or("assignment through a non-mutable reference")?.to_string();
+                    let (v, _) = self.expr(&f[1], env, Some(&inner))?;
+                    let (r, v) = (r.ok_or("bad reference")?, v.ok_or("assign of unit")?);
+                    self.b.ins().store(MemFlags::new(), v, r, 0);
+                    return Ok(());
+                }
                 if nname(tg) == "Index" {
                     let (bp, bt) = self.expr(&nf(tg)[0], env, None)?;
                     let bp = bp.ok_or("bad index base")?;
@@ -1157,6 +1225,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                             let one = self.b.ins().iconst(types::I8, 1);
                             self.b.def_var(flag, one);
                         }
+                    } else if self.promoted.contains(&var.as_u32()) {
+                        let slot = self.b.use_var(var);
+                        self.b.ins().store(MemFlags::new(), v, slot, 0);
                     } else {
                         self.b.def_var(var, v);
                     }
@@ -1298,21 +1369,21 @@ impl<'a, 'b> FnGen<'a, 'b> {
     }
 
     /// `for` の反復の元: `core.iter.range(a, b)`、`x.iter()`、`core.iter.enumerate(x.iter())`。
-    fn iter_source(&self, it: &V, env: &Env) -> Option<(V, bool)> {
+    fn iter_source(&self, it: &V, env: &Env) -> Option<(V, bool, bool)> {
         if nname(it) == "Call" && nname(&nf(it)[0]) == "Path" {
             let segs = strs(&nf(&nf(it)[0])[0]);
             let args = items(&nf(it)[1]);
             if segs == ["core", "iter", "enumerate"] && args.len() == 1 {
-                let (r, _) = self.iter_source(&args[0], env)?;
-                return Some((r, true));
+                let (r, _, m) = self.iter_source(&args[0], env)?;
+                return Some((r, true, m));
             }
             if segs.len() >= 2 && env.contains_key(&segs[0]) && matches!(segs[segs.len() - 1].as_str(), "iter" | "iter_mut") && args.is_empty() {
                 let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
-                return Some((recv, false));
+                return Some((recv, false, segs[segs.len() - 1] == "iter_mut"));
             }
         }
         if nname(it) == "MCall" && matches!(st(&nf(it)[1]).as_str(), "iter" | "iter_mut") && items(&nf(it)[2]).is_empty() {
-            return Some((nf(it)[0].clone(), false));
+            return Some((nf(it)[0].clone(), false, st(&nf(it)[1]) == "iter_mut"));
         }
         None
     }
@@ -1371,7 +1442,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
             return Ok(());
         }
         // 列の要素 `x.iter()`
-        let (recv, enumerate) = self.iter_source(it, env).ok_or("unsupported iterator in for")?;
+        let (recv, enumerate, by_mut) = self.iter_source(it, env).ok_or("unsupported iterator in for")?;
         let (sp, sty) = self.expr(&recv, env, None)?;
         let sp = sp.ok_or("bad iterable")?;
         let elem = self.cx.seq_elem(&sty).ok_or("iteration over a non-sequence")?;
@@ -1388,7 +1459,10 @@ impl<'a, 'b> FnGen<'a, 'b> {
         self.b.switch_to_block(body_b);
         let off = self.b.ins().imul_imm(i, sz as i64);
         let addr = self.b.ins().iadd(base, off);
-        let val = self.load_value(addr, &elem);
+        // `iter_mut()` のスカラー要素は、値ではなく要素のアドレス (`mutref<T>`) を束縛する。
+        let mut_scalar = by_mut && !is_agg(&elem);
+        let val = if mut_scalar { addr } else { self.load_value(addr, &elem) };
+        let bound_ty = if mut_scalar { format!("mutref<{}>", elem) } else { elem.clone() };
         let mut inner = env.clone();
         let (idx_pat, elem_pat) = if enumerate {
             if nname(pat) != "PTuple" || items(&nf(pat)[0]).len() != 2 {
@@ -1407,12 +1481,12 @@ impl<'a, 'b> FnGen<'a, 'b> {
         }
         match nname(elem_pat) {
             "PBind" => {
-                let var = self.new_var(&elem);
+                let var = self.new_var(&bound_ty);
                 self.b.def_var(var, val);
                 if is_agg(&elem) {
                     self.refs.insert(var.as_u32());
                 }
-                inner.insert(st(&nf(elem_pat)[0]), (var, elem.clone()));
+                inner.insert(st(&nf(elem_pat)[0]), (var, bound_ty.clone()));
             }
             "PWild" => {}
             _ => return Err("for pattern".into()),
@@ -1786,6 +1860,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if env.contains_key(&segs[0]) {
                     let (addr, ty) = if segs.len() == 1 {
                         let (var, ty) = env[&segs[0]].clone();
+                        if self.promoted.contains(&var.as_u32()) {
+                            let slot = self.b.use_var(var);
+                            let val = self.b.ins().load(cl(&ty), MemFlags::new(), slot, 0);
+                            return Ok((Some(val), ty));
+                        }
                         (self.b.use_var(var), ty)
                     } else {
                         self.field_addr(&segs, env)?
@@ -1986,9 +2065,58 @@ impl<'a, 'b> FnGen<'a, 'b> {
             "Unary" => {
                 let op = st(&f[0]);
                 match op.as_str() {
-                    "&" | "&mut" | "*" => {
+                    "&mut" if self.ty_of(&f[1], env, None).map_or(false, |t| !is_agg(&t)) => {
+                        // `&mut スカラー`: 変数のスロット・フィールド・要素のアドレス。
+                        let operand = &f[1];
+                        match nname(operand) {
+                            "Path" | "Field" => {
+                                let segs = place_segs(operand).ok_or("mutable reference to a non-place")?;
+                                if !env.contains_key(&segs[0]) {
+                                    return Err("mutable reference to a non-local".into());
+                                }
+                                if segs.len() == 1 {
+                                    let (var, ty) = env[&segs[0]].clone();
+                                    if !self.promoted.contains(&var.as_u32()) {
+                                        return Err("mutable reference to a local that is not addressable".into());
+                                    }
+                                    let slot = self.b.use_var(var);
+                                    return Ok((Some(slot), format!("mutref<{}>", ty)));
+                                }
+                                let (addr, fty) = self.field_addr(&segs, env)?;
+                                Ok((Some(addr), format!("mutref<{}>", fty)))
+                            }
+                            "Index" => {
+                                let (bp, bt) = self.expr(&nf(operand)[0], env, None)?;
+                                let bp = bp.ok_or("bad index base")?;
+                                let elem = self.cx.seq_elem(&bt).ok_or("indexing a non-sequence")?;
+                                let (i, _) = self.expr(&nf(operand)[1], env, Some("usize"))?;
+                                let i = i.ok_or("bad index")?;
+                                let len = self.b.ins().load(types::I64, MemFlags::new(), bp, 8);
+                                let oob = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
+                                self.guard(oob, "index out of bounds")?;
+                                let pt = self.ptr_ty();
+                                let base = self.b.ins().load(pt, MemFlags::new(), bp, 0);
+                                let sz = self.elem_size(&elem)?;
+                                let off = self.b.ins().imul_imm(i, sz as i64);
+                                let addr = self.b.ins().iadd(base, off);
+                                Ok((Some(addr), format!("mutref<{}>", elem)))
+                            }
+                            _ => Err("mutable reference to a temporary".into()),
+                        }
+                    }
+                    "*" => {
                         let (v, t) = self.expr(&f[1], env, expect)?;
-                        // 不変の参照 `&scalar` と、その参照外し `*x` は値そのもの。`&mut scalar` は未対応。
+                        if let Some(inner) = mutref_inner(&t) {
+                            let inner = inner.to_string();
+                            let r = v.ok_or("bad reference")?;
+                            let val = self.b.ins().load(cl(&inner), MemFlags::new(), r, 0);
+                            return Ok((Some(val), inner));
+                        }
+                        Ok((v, t))
+                    }
+                    "&" | "&mut" => {
+                        let (v, t) = self.expr(&f[1], env, expect)?;
+                        // 不変の参照 `&scalar` は値そのもの。
                         if !is_agg(&t) && op == "&mut" {
                             return Err("mutable reference to a scalar".into());
                         }
@@ -2174,6 +2302,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
 
     fn method_call(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
         let rty = self.ty_of(recv, env, expect);
+        if rty.as_deref().map_or(false, is_mutref) {
+            // `r.method()` (r: &mut スカラー) は `(*r).method()`
+            let deref = V::Node("Unary", vec![V::S("*".into()), recv.clone()], 0);
+            return self.method_call(&deref, name, args, env, expect);
+        }
         if let Some(rt) = &rty {
             if rt.starts_with("Option<") || rt.starts_with("Result<") {
                 if self.cx.builtin_method_ty(rt, name).is_some() {
@@ -2228,15 +2361,17 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 self.b.ins().store(MemFlags::new(), len, slot, 8);
                 Ok(Some((Some(slot), self.cx.slice_of(elem))))
             }
-            "get" | "first" | "last" => {
+            "get" | "first" | "last" | "get_mut" => {
                 if !is_scalar(elem) {
                     return Err(format!("{} on aggregate elements", name));
                 }
-                let rty = self.cx.builtin_enum("Option", &[elem.to_string()])?;
+                let by_addr = name == "get_mut";
+                let pay_ty = if by_addr { format!("mutref<{}>", elem) } else { elem.to_string() };
+                let rty = self.cx.builtin_enum("Option", &[pay_ty])?;
                 let l = self.cx.layout(&rty, 0)?;
                 let res = self.alloc(l.size, l.align);
                 let idx = match name {
-                    "get" => {
+                    "get" | "get_mut" => {
                         let (i, _) = self.expr(args.first().ok_or("get needs an index")?, env, Some("usize"))?;
                         i.ok_or("bad index")?
                     }
@@ -2255,7 +2390,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let base = self.b.ins().load(pt, MemFlags::new(), p, 0);
                 let off = self.b.ins().imul_imm(idx, sz as i64);
                 let addr = self.b.ins().iadd(base, off);
-                let val = self.b.ins().load(cl(elem), MemFlags::new(), addr, 0);
+                let val = if by_addr { addr } else { self.b.ins().load(cl(elem), MemFlags::new(), addr, 0) };
                 let poff = l.variants[1].1[0].1;
                 let dst = self.b.ins().iadd_imm(res, poff as i64);
                 self.b.ins().store(MemFlags::new(), val, dst, 0);
@@ -2596,7 +2731,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
         let is_slice = self.cx.slices.borrow().contains_key(rt);
         let elem = self.cx.seq_elem(rt).ok_or("not a sequence")?;
         let sz = self.elem_size(&elem)?;
-        if is_slice || matches!(name, "get" | "first" | "last" | "sub" | "as_slice" | "as_mut_slice") {
+        if is_slice || matches!(name, "get" | "first" | "last" | "get_mut" | "sub" | "as_slice" | "as_mut_slice") {
             if let Some(r) = self.seq_method(p, &elem, sz, is_slice, name, args, env)? {
                 return Ok(r);
             }
@@ -3034,6 +3169,8 @@ pub fn compile_clif(
                 scopes: vec![],
                 owners: HashMap::new(),
                 refs: HashSet::new(),
+                addr_taken: HashSet::new(),
+                promoted: HashSet::new(),
             };
             g.func(d, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?;
             let FnGen { mut b, .. } = g;

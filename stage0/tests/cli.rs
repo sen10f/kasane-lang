@@ -2151,3 +2151,83 @@ fn unwrap_on_none_panics_with_exit_code_101_in_a_cranelift_executable() {
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("unwrap"), "{}", text(&o.stderr));
 }
+
+fn clif_mutref_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "type t.P",
+        "    x: u32",
+        "    y: u32",
+        "end t.P",
+        "",
+        "fn t.bump(r: &mut u32) -> ()",
+        "    *r = r.wrapping_add(1u32)",
+        "end t.bump",
+        "",
+        "fn t.double_all(v: &mut [u32]) -> ()",
+        "    for i in core.iter.range(0usize, v.len()) {",
+        "        v[i] = v[i].wrapping_mul(2u32)",
+        "    }",
+        "end t.double_all",
+        "",
+        "fn t.fresh() -> alloc.vec.Vec<u32, std.alloc.System>",
+        "    alloc.vec.Vec.new(std.alloc.SYSTEM)",
+        "end t.fresh",
+        "",
+        "fn t.make(n: u32) -> alloc.vec.Vec<u32, std.alloc.System>",
+        "    let mut v = t.fresh()",
+        "    for k in core.iter.range(1u32, n.wrapping_add(1u32)) {",
+        "        match v.push(k) {",
+        "            Ok(_) => 0u8",
+        "            Err(_) => 1u8",
+        "        }",
+        "    }",
+        "    v",
+        "end t.make",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    let mut n = 5u32",
+        "    t.bump(&mut n)",
+        "    t.bump(&mut n)",
+        "    core.check.eq(n, 7u32)",
+        "    let mut p = t.P { x: 1u32, y: 2u32 }",
+        "    t.bump(&mut p.x)",
+        "    core.check.eq(p.x, 2u32)",
+        "    core.check.eq(p.y, 2u32)",
+        "    let mut v = t.make(3u32)",
+        "    t.double_all(v.as_mut_slice())",
+        "    core.check.eq(v[1usize], 4u32)",
+        "    match v.get_mut(1usize) {",
+        "        Some(slot) => t.bump(slot)",
+        "        None => core.check.eq(1u8, 2u8)",
+        "    }",
+        "    core.check.eq(v[1usize], 5u32)",
+        "    t.bump(&mut v[0usize])",
+        "    core.check.eq(v[0usize], 3u32)",
+        tail,
+        "    std.io.print_line(\"mutref ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_mutable_references_to_scalars() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_mutref_{}", release), &clif_mutref_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "mutref ok");
+    }
+}
+
+#[test]
+fn a_write_through_a_mutable_reference_is_visible_in_a_cranelift_executable() {
+    let (_t, exe_path, out) = build_clif("clif_mutref_bad", &clif_mutref_program("    core.check.eq(n, 8u32)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}
