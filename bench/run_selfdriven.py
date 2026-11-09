@@ -77,10 +77,18 @@ def ksn(args, d):
     return r.returncode, ((r.stdout or '') + (r.stderr or '')).strip()
 
 
-def feedback(d):
+def feedback(d, tests):
     rc, out = ksn(['check'], d)
     if rc == 0:
-        return None
+        # check は通った。評価側のテストを追記して実行し、失敗したらその文面を返す。
+        p = os.path.join(d, 'src', 'bench.ksnl')
+        stage, tout, _ = rb.evaluate(open(p, encoding='utf-8').read(), tests)
+        if stage == 'pass':
+            return None
+        if stage == 'test':
+            return ('`ksn check` は通りましたが、評価側のテスト (`ksn test`) が失敗しました:' + NL + '```' + NL + tout + NL + '```' + NL
+                    + NL + '課題の仕様と照らして直し、`src/bench.ksnl` を書き直し、`written` とだけ返信してください。')
+        out = tout
     codes = sorted(set(re.findall(r'(E[0-9]{4})', out)))
     text = '`ksn check` の結果:' + NL + '```' + NL + out + NL + '```' + NL
     for c in codes:
@@ -103,7 +111,7 @@ def drive(run, t, turns, rounds):
         log += NL + f'=== round {i} ===' + NL + run_claude(d, env, sid, i == 0, prompt, turns)
         if not os.path.exists(p):
             break
-        fb = feedback(d)
+        fb = feedback(d, t['tests'])
         if fb is None:
             break
         used = i + 1

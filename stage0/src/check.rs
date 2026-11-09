@@ -869,7 +869,23 @@ impl<'a> Checker<'a> {
     /// 整数の算術演算子はオーバーフローで panic する。`panics never` の関数では使えない (4.1)。
     fn int_op_may_panic(&mut self, what: &str, line: usize) {
         if self.def(self.d).panics.as_deref() == Some("never") {
-            let msg = format!("integer {} may panic on overflow; use checked_/wrapping_/saturating_ methods", what);
+            let name = match what {
+                s if s.contains("`+`") => "add",
+                s if s.contains("`-`") && s.starts_with("unary") => "neg",
+                s if s.contains("`-`") => "sub",
+                s if s.contains("`*`") => "mul",
+                s if s.contains("`/`") => "div",
+                _ => "rem",
+            };
+            let how = if name == "neg" {
+                "write `x.checked_neg()` (returns Option) or `x.wrapping_neg()`".to_string()
+            } else {
+                format!(
+                    "write `a.checked_{n}(b)` (returns Option: use `match` to handle None) or `a.wrapping_{n}(b)` / `a.saturating_{n}(b)` (return the integer)",
+                    n = name
+                )
+            };
+            let msg = format!("integer {} may panic on overflow; {}", what, how);
             self.tdiag("E4004", msg, line);
         }
     }
