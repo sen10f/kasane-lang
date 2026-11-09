@@ -20,7 +20,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, DataDescription, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use crate::check::{items, nf, nname, st, strs, tag, tel};
+use crate::check::{items, nf, nline, nname, st, strs, tag, tel};
 use crate::parser::V;
 use crate::program::{Def, Program};
 
@@ -186,7 +186,7 @@ impl<'a> Cx<'a> {
                     let (k, v) = (self.pty_owned(args[0])?, self.pty_owned(args[1])?);
                     return self.map_of(n.ends_with("BtreeMap"), &k, &v);
                 }
-                if n == "alloc.alloc.AllocError" || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.rand.Rng" {
+                if n == "alloc.alloc.AllocError" || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.rand.Rng" || n == "core.num.ParseIntError" {
                     return Ok(n);
                 }
                 if n == "Option" || n == "Result" {
@@ -384,7 +384,7 @@ impl<'a> Cx<'a> {
         if name == "std.rand.Rng" {
             return Ok(Layout { size: 8, align: 8, fields: vec![("state".into(), "u64".into(), 0)], is_enum: false, variants: vec![] });
         }
-        if name == "std.io.Error" || name == "core.str.Utf8Error" || name == "core.num.TryFromIntError" || name == "std.thread.SpawnError" {
+        if name == "std.io.Error" || name == "core.str.Utf8Error" || name == "core.num.TryFromIntError" || name == "std.thread.SpawnError" || name == "core.num.ParseIntError" {
             return Ok(Layout { size: 8, align: 8, fields: vec![], is_enum: false, variants: vec![] });
         }
         let registered = self.gen.borrow().get(name).cloned();
@@ -504,6 +504,9 @@ impl<'a> Cx<'a> {
         if is_int(recv_ty) && (name == "to_f64" || name == "to_f32") {
             return Some(if name == "to_f64" { "f64" } else { "f32" }.to_string());
         }
+        if is_int(recv_ty) && matches!(name, "leading_zeros" | "trailing_zeros" | "count_ones" | "count_zeros") {
+            return Some("u32".to_string());
+        }
         if recv_ty.starts_with("Option<") && name == "take" {
             return Some(recv_ty.to_string());
         }
@@ -531,8 +534,17 @@ impl<'a> Cx<'a> {
                 "len" => Some("usize".into()),
                 "is_empty" => Some("bool".into()),
                 "as_bytes" => Some(self.slice_of("u8")),
+                "starts_with" => Some("bool".into()),
+                "find" => self.builtin_enum("Option", &["usize".into()]).ok(),
+                "split_at" => {
+                    let t = self.tuple_of(&["str".to_string(), "str".to_string()]);
+                    self.builtin_enum("Option", &[t]).ok()
+                }
                 _ => None,
             };
+        }
+        if is_float(recv_ty) && matches!(name, "sqrt" | "floor" | "ceil" | "trunc" | "abs") {
+            return Some(recv_ty.to_string());
         }
         let slice_elem = self.slices.borrow().get(recv_ty).cloned();
         if let Some(elem) = slice_elem {
@@ -665,6 +677,8 @@ struct FnGen<'a, 'b> {
 /// イテレータの始点。
 enum Src {
     Range(V, V),
+    /// `s.chars()`: 文字列の文字 (UTF-8 を復号する)
+    Chars(V),
     /// `next` を持つ独自のイテレータ (値の式)
     Custom(V),
     /// (列の式, `iter_mut` か)
@@ -734,6 +748,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
 
     /// `P.from_S(x)` / `P.try_from_S(x)` / `char.try_from_u32(x)` の結果の型。
     fn conv_ty(&self, segs: &[String]) -> Option<String> {
+        if let [p, n] | [_, _, p, n] = segs {
+            if n == "from_str_radix" && is_int(p) {
+                return self.cx.builtin_enum("Result", &[p.clone(), "core.num.ParseIntError".into()]).ok();
+            }
+        }
         let (p, name) = match segs {
             [p, n] => (p.clone(), n.clone()),
             [c, n, p, nm] if c == "core" && n == "num" => (p.clone(), nm.clone()),
@@ -998,6 +1017,14 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 if segs == ["None"] {
                     return expect.filter(|t| t.starts_with("Option<")).map(String::from);
+                }
+                let q = self.cx.qual_segs(&segs);
+                if let Some((t, _, _)) = numeric_const(&q) {
+                    return Some(t);
+                }
+                if let Some(&ci) = self.cx.prog.consts.get(&q.join(".")) {
+                    let d = &self.cx.prog.defs[ci];
+                    return self.cx.pty_for(d, &d.ret).ok();
                 }
                 self.cx.split_variant(&segs).map(|v| v.0)
             }
@@ -1563,6 +1590,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
     }
 
     fn stmt(&mut self, s: &V, env: &mut Env, tail: bool) -> R<()> {
+        // 最初に失敗した文の行を、エラーに付ける (原因を探しやすくする)。
+        self.stmt_inner(s, env, tail).map_err(|e| if e.contains("(line ") { e } else { format!("{} (line {})", e, nline(s)) })
+    }
+
+    fn stmt_inner(&mut self, s: &V, env: &mut Env, tail: bool) -> R<()> {
         self.live();
         let f = nf(s);
         match nname(s) {
@@ -1627,6 +1659,10 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let lname = st(&nf(&f[0])[0]);
                 let known = ann.clone().or_else(|| self.ty_of(&f[3], env, None));
                 let known = known.or_else(|| self.infer_let_type(&f[3], &lname, env));
+                // 接尾辞のない浮動小数リテラルだけの初期値は f64
+                let known = known.or_else(|| {
+                    if nname(&f[3]) == "Lit" && st(&nf(&f[3])[0]) == "float" { Some("f64".to_string()) } else { None }
+                });
                 let ty = match known {
                     Some(t) if t != "void" => t,
                     _ => return Err(format!("let of unknown type: {}", lname)),
@@ -1920,16 +1956,27 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     return Some(p);
                 }
             }
+            if segs.len() >= 2 && env.contains_key(&segs[0]) && segs[segs.len() - 1] == "chars" && args.is_empty() {
+                let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
+                return Some(Pipe { src: Src::Chars(recv), stages: vec![] });
+            }
             if segs.len() >= 2 && env.contains_key(&segs[0]) && matches!(segs[segs.len() - 1].as_str(), "iter" | "iter_mut") && args.is_empty() {
                 let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
                 return Some(Pipe { src: Src::Seq(recv, segs[segs.len() - 1] == "iter_mut"), stages: vec![] });
             }
         }
+        if nname(it) == "MCall" && st(&nf(it)[1]) == "chars" && items(&nf(it)[2]).is_empty() {
+            return Some(Pipe { src: Src::Chars(nf(it)[0].clone()), stages: vec![] });
+        }
         if nname(it) == "MCall" && matches!(st(&nf(it)[1]).as_str(), "iter" | "iter_mut") && items(&nf(it)[2]).is_empty() {
             return Some(Pipe { src: Src::Seq(nf(it)[0].clone(), st(&nf(it)[1]) == "iter_mut"), stages: vec![] });
         }
-        // `next(&mut self) -> Option<T>` を持つ型の値
+        // 配列リテラルやスライスの値そのもの (`for x in [a, b, c]`)
         let t = self.ty_of(it, env, None)?;
+        if self.cx.slices.borrow().contains_key(&t) {
+            return Some(Pipe { src: Src::Seq(it.clone(), false), stages: vec![] });
+        }
+        // `next(&mut self) -> Option<T>` を持つ型の値
         if is_agg(&t) && !self.cx.needs_drop(&t) && self.funcs.contains_key(&format!("{}.next", t)) {
             return Some(Pipe { src: Src::Custom(it.clone()), stages: vec![] });
         }
@@ -2068,7 +2115,27 @@ impl<'a, 'b> FnGen<'a, 'b> {
         let limit: Value;
         // 独自のイテレータ: (値のアドレス, `next` の完全修飾名, `Option<Item>` の型)
         let mut custom: Option<(Value, String, String)> = None;
+        // `chars()`: (文字列の先頭アドレス, 1 文字ぶん進める幅を入れる変数)
+        let mut chars_state: Option<(Value, Variable)> = None;
         match &pipe.src {
+            Src::Chars(e) => {
+                let (sp, sty) = self.expr(e, env, None)?;
+                let sp = sp.ok_or("bad string")?;
+                if sty != "str" && sty != STRING {
+                    return Err("chars of a non-string".into());
+                }
+                let base = self.b.ins().load(pt, MemFlags::new(), sp, 0);
+                let len = self.b.ins().load(i64t, MemFlags::new(), sp, 8);
+                let step = self.new_var("usize");
+                let one = self.b.ins().iconst(i64t, 1);
+                self.b.def_var(step, one);
+                index_ty = i64t;
+                start = self.b.ins().iconst(i64t, 0);
+                limit = len;
+                item_ty = "char".to_string();
+                elem_info = None;
+                chars_state = Some((base, step));
+            }
             Src::Custom(e) => {
                 let (cp, ct) = self.expr(e, env, None)?;
                 let cp = cp.ok_or("bad iterator")?;
@@ -2136,6 +2203,80 @@ impl<'a, 'b> FnGen<'a, 'b> {
         self.b.switch_to_block(body_b);
         // 要素
         let (mut val, mut ty) = match &elem_info {
+            None if chars_state.is_some() => {
+                // UTF-8 を 1 文字ぶん復号して、進める幅を記録する。
+                let (base, step) = chars_state.ok_or("chars state")?;
+                let at = self.b.ins().iadd(base, i);
+                let byte = |g: &mut Self, off: i64| -> Value {
+                    let a = g.b.ins().iadd_imm(at, off);
+                    let v = g.b.ins().load(types::I8, MemFlags::new(), a, 0);
+                    g.b.ins().uextend(types::I32, v)
+                };
+                let b0 = byte(self, 0);
+                let (w1, w2, w3, w4, merge) =
+                    (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.append_block_param(merge, types::I32);
+                let (t12, t34, t3) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                let lt80 = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, b0, 0x80);
+                self.b.ins().brif(lt80, w1, &[], t12, &[]);
+                self.b.switch_to_block(t12);
+                let lte0 = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, b0, 0xE0);
+                self.b.ins().brif(lte0, w2, &[], t34, &[]);
+                self.b.switch_to_block(t34);
+                let ltf0 = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, b0, 0xF0);
+                self.b.ins().brif(ltf0, w3, &[], t3, &[]);
+                self.b.switch_to_block(t3);
+                self.b.ins().jump(w4, &[]);
+                // 1 バイト
+                self.b.switch_to_block(w1);
+                let one = self.b.ins().iconst(i64t, 1);
+                self.b.def_var(step, one);
+                self.b.ins().jump(merge, &[b0]);
+                // 2 バイト
+                self.b.switch_to_block(w2);
+                let b1 = byte(self, 1);
+                let hi = self.b.ins().band_imm(b0, 0x1F);
+                let hi = self.b.ins().ishl_imm(hi, 6);
+                let lo = self.b.ins().band_imm(b1, 0x3F);
+                let c2 = self.b.ins().bor(hi, lo);
+                let two = self.b.ins().iconst(i64t, 2);
+                self.b.def_var(step, two);
+                self.b.ins().jump(merge, &[c2]);
+                // 3 バイト
+                self.b.switch_to_block(w3);
+                let b1 = byte(self, 1);
+                let b2 = byte(self, 2);
+                let p0 = self.b.ins().band_imm(b0, 0x0F);
+                let p0 = self.b.ins().ishl_imm(p0, 12);
+                let p1 = self.b.ins().band_imm(b1, 0x3F);
+                let p1 = self.b.ins().ishl_imm(p1, 6);
+                let p2 = self.b.ins().band_imm(b2, 0x3F);
+                let c3 = self.b.ins().bor(p0, p1);
+                let c3 = self.b.ins().bor(c3, p2);
+                let three = self.b.ins().iconst(i64t, 3);
+                self.b.def_var(step, three);
+                self.b.ins().jump(merge, &[c3]);
+                // 4 バイト
+                self.b.switch_to_block(w4);
+                let b1 = byte(self, 1);
+                let b2 = byte(self, 2);
+                let b3 = byte(self, 3);
+                let q0 = self.b.ins().band_imm(b0, 0x07);
+                let q0 = self.b.ins().ishl_imm(q0, 18);
+                let q1 = self.b.ins().band_imm(b1, 0x3F);
+                let q1 = self.b.ins().ishl_imm(q1, 12);
+                let q2 = self.b.ins().band_imm(b2, 0x3F);
+                let q2 = self.b.ins().ishl_imm(q2, 6);
+                let q3 = self.b.ins().band_imm(b3, 0x3F);
+                let c4 = self.b.ins().bor(q0, q1);
+                let c4 = self.b.ins().bor(c4, q2);
+                let c4 = self.b.ins().bor(c4, q3);
+                let four = self.b.ins().iconst(i64t, 4);
+                self.b.def_var(step, four);
+                self.b.ins().jump(merge, &[c4]);
+                self.b.switch_to_block(merge);
+                (self.b.block_params(merge)[0], "char".to_string())
+            }
             None if custom.is_some() => {
                 // 独自のイテレータ: `next` を呼んで、`None` なら終わる。
                 let (cp, fq, opt_ty) = custom.clone().ok_or("custom iterator state")?;
@@ -2236,7 +2377,13 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
         }
         self.b.switch_to_block(cont);
-        let n = self.b.ins().iadd_imm(i, 1);
+        let n = match chars_state {
+            Some((_, step)) => {
+                let w = self.b.use_var(step);
+                self.b.ins().iadd(i, w)
+            }
+            None => self.b.ins().iadd_imm(i, 1),
+        };
         self.b.ins().jump(head, &[n]);
         self.b.switch_to_block(exit);
         self.term = false;
@@ -2630,6 +2777,28 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if segs == ["None"] {
                     let Some(t) = expect.filter(|t| t.starts_with("Option<")) else { return Err("None without an expected type".into()) };
                     return self.make_variant(&t.to_string(), 0, &[], env);
+                }
+                let q = self.cx.qual_segs(&segs);
+                if let Some((t, iv, fv)) = numeric_const(&q) {
+                    let c = match (iv, fv) {
+                        (Some(i), _) => self.b.ins().iconst(cl(&t), i),
+                        (_, Some(f)) => {
+                            if t == "f32" { self.b.ins().f32const(f as f32) } else { self.b.ins().f64const(f) }
+                        }
+                        _ => return Err("numeric constant".into()),
+                    };
+                    return Ok((Some(c), t));
+                }
+                if let Some(&ci) = self.cx.prog.consts.get(&q.join(".")) {
+                    // ユーザー定義の定数: 使う場所で、初期値の式を (その定数のファイルの名前で) 評価する。
+                    let d = &self.cx.prog.defs[ci];
+                    let ty = self.cx.pty_for(d, &d.ret)?;
+                    let init = d.init.clone().ok_or("constant without a value")?;
+                    let old = self.cx.file.replace(d.file.clone());
+                    let mut empty = Env::new();
+                    let r = self.expr(&init, &mut empty, Some(&ty));
+                    *self.cx.file.borrow_mut() = old;
+                    return r;
                 }
                 if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
                     return self.make_variant(&en, idx, &[], env);
@@ -4178,6 +4347,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
 
     /// `P.from_S(x)` / `P.try_from_S(x)` / `char.try_from_u32(x)` (P は整数)。変換でなければ None。
     fn conv_call(&mut self, segs: &[String], args: &[V], env: &mut Env) -> R<Option<(Option<Value>, String)>> {
+        if let [p, n] | [_, _, p, n] = segs {
+            if n == "from_str_radix" && is_int(p) && args.len() == 2 && (segs.len() == 2 || (segs[0] == "core" && segs[1] == "num")) {
+                return self.from_str_radix(p, args, env).map(Some);
+            }
+        }
         let (p, name) = match segs {
             [p, n] => (p.clone(), n.clone()),
             [c, n, p, nm] if c == "core" && n == "num" => (p.clone(), nm.clone()),
@@ -4290,6 +4464,116 @@ impl<'a, 'b> FnGen<'a, 'b> {
         Ok(None)
     }
 
+    /// `P.from_str_radix(text, radix)`: 文字列を `radix` 進数の整数として解析する (符号つきの型は先頭の `-` / `+`、符号なしは `+`)。
+    fn from_str_radix(&mut self, p: &str, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        let bits = cl(p).bits() as u32;
+        let sg = signed(p);
+        let (sv, st_) = self.expr(&args[0], env, Some("str"))?;
+        if st_ != "str" {
+            return Err("from_str_radix of a non-string".into());
+        }
+        let sv = sv.ok_or("bad string")?;
+        let (rv, _) = self.expr(&args[1], env, Some("u32"))?;
+        let rv = rv.ok_or("bad radix")?;
+        let radix = self.b.ins().uextend(i64t, rv);
+        let rty = self.cx.builtin_enum("Result", &[p.to_string(), "core.num.ParseIntError".into()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let base = self.b.ins().load(pt, MemFlags::new(), sv, 0);
+        let len = self.b.ins().load(i64t, MemFlags::new(), sv, 8);
+        let (err_b, done) = (self.b.create_block(), self.b.create_block());
+        // 空なら Err
+        let (nonempty, sign_b) = (self.b.create_block(), self.b.create_block());
+        let empty = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
+        self.b.ins().brif(empty, err_b, &[], nonempty, &[]);
+        self.b.switch_to_block(nonempty);
+        let c0 = {
+            let v = self.b.ins().load(types::I8, MemFlags::new(), base, 0);
+            self.b.ins().uextend(types::I32, v)
+        };
+        let is_minus = self.b.ins().icmp_imm(IntCC::Equal, c0, 0x2D);
+        let is_plus = self.b.ins().icmp_imm(IntCC::Equal, c0, 0x2B);
+        let neg = if sg { is_minus } else { self.b.ins().iconst(types::I8, 0) };
+        let has_sign = self.b.ins().bor(neg, is_plus);
+        let one = self.b.ins().iconst(i64t, 1);
+        let zero = self.b.ins().iconst(i64t, 0);
+        let start = self.b.ins().select(has_sign, one, zero);
+        // 符号だけなら Err
+        let only_sign = self.b.ins().icmp(IntCC::Equal, start, len);
+        self.b.ins().brif(only_sign, err_b, &[], sign_b, &[]);
+        self.b.switch_to_block(sign_b);
+        let (head, body, cont, fin) = (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(head, i64t);
+        self.b.append_block_param(head, i64t);
+        self.b.ins().jump(head, &[start, zero]);
+        self.b.switch_to_block(head);
+        let i = self.b.block_params(head)[0];
+        let acc = self.b.block_params(head)[1];
+        let more = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+        self.b.ins().brif(more, body, &[], fin, &[]);
+        self.b.switch_to_block(body);
+        let at = self.b.ins().iadd(base, i);
+        let cb = self.b.ins().load(types::I8, MemFlags::new(), at, 0);
+        let c = self.b.ins().uextend(types::I32, cb);
+        let t0 = self.b.ins().iadd_imm(c, -48);
+        let is_num = self.b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, t0, 9);
+        let lower = self.b.ins().bor_imm(c, 0x20);
+        let t1 = self.b.ins().iadd_imm(lower, -97);
+        let is_alpha = self.b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, t1, 25);
+        let t1p = self.b.ins().iadd_imm(t1, 10);
+        let bad = self.b.ins().iconst(types::I32, 255);
+        let d_alpha = self.b.ins().select(is_alpha, t1p, bad);
+        let d32 = self.b.ins().select(is_num, t0, d_alpha);
+        let d = self.b.ins().uextend(i64t, d32);
+        let valid = self.b.ins().icmp(IntCC::UnsignedLessThan, d, radix);
+        let (mul_b, _) = (self.b.create_block(), 0);
+        self.b.ins().brif(valid, mul_b, &[], err_b, &[]);
+        self.b.switch_to_block(mul_b);
+        let (m, of1) = self.b.ins().umul_overflow(acc, radix);
+        let add_b = self.b.create_block();
+        self.b.ins().brif(of1, err_b, &[], add_b, &[]);
+        self.b.switch_to_block(add_b);
+        let (a2, of2) = self.b.ins().uadd_overflow(m, d);
+        self.b.ins().brif(of2, err_b, &[], cont, &[]);
+        self.b.switch_to_block(cont);
+        let n = self.b.ins().iadd_imm(i, 1);
+        self.b.ins().jump(head, &[n, a2]);
+        // 範囲の検査と、符号
+        self.b.switch_to_block(fin);
+        let ok_range = if sg {
+            let half: u64 = 1u64 << (bits - 1);
+            // 負なら |値| <= 2^(bits-1)、正なら <= 2^(bits-1) - 1
+            let le_neg = self.b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, acc, half as i64);
+            let le_pos = self.b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, acc, (half - 1) as i64);
+            self.b.ins().select(neg, le_neg, le_pos)
+        } else if bits >= 64 {
+            self.b.ins().iconst(types::I8, 1)
+        } else {
+            let max: u64 = (1u64 << bits) - 1;
+            self.b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, acc, max as i64)
+        };
+        let ok_b = self.b.create_block();
+        self.b.ins().brif(ok_range, ok_b, &[], err_b, &[]);
+        self.b.switch_to_block(ok_b);
+        let negated = self.b.ins().ineg(acc);
+        let val64 = if sg { self.b.ins().select(neg, negated, acc) } else { acc };
+        let val = if bits < 64 { self.b.ins().ireduce(cl(p), val64) } else { val64 };
+        let poff = l.variants[0].1[0].1 as i64;
+        let dst = self.b.ins().iadd_imm(res, poff);
+        self.b.ins().store(MemFlags::new(), val, dst, 0);
+        let t0 = self.b.ins().iconst(types::I32, 0);
+        self.b.ins().store(MemFlags::new(), t0, res, 0);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(err_b);
+        let t1 = self.b.ins().iconst(types::I32, 1);
+        self.b.ins().store(MemFlags::new(), t1, res, 0);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok((Some(res), rty))
+    }
+
     /// `char` と、整数の浮動小数への変換のメソッド。
     fn scalar_method(&mut self, recv: &V, name: &str, env: &mut Env, expect: Option<&str>) -> R<Option<(Option<Value>, String)>> {
         let Some(t) = self.ty_of(recv, env, expect) else { return Ok(None) };
@@ -4347,6 +4631,41 @@ impl<'a, 'b> FnGen<'a, 'b> {
             };
             return Ok(Some((Some(r.0), r.1.to_string())));
         }
+        if is_float(&t) && matches!(name, "sqrt" | "floor" | "ceil" | "trunc" | "abs") {
+            let (x, _) = self.expr(recv, env, Some(&t))?;
+            let x = x.ok_or("bad value")?;
+            let r = match name {
+                "sqrt" => self.b.ins().sqrt(x),
+                "floor" => self.b.ins().floor(x),
+                "ceil" => self.b.ins().ceil(x),
+                "trunc" => self.b.ins().trunc(x),
+                _ => self.b.ins().fabs(x),
+            };
+            return Ok(Some((Some(r), t)));
+        }
+        if is_int(&t) && matches!(name, "leading_zeros" | "trailing_zeros" | "count_ones" | "count_zeros") {
+            let (x, _) = self.expr(recv, env, Some(&t))?;
+            let x = x.ok_or("bad value")?;
+            let bits = cl(&t).bits() as i64;
+            let r = match name {
+                "leading_zeros" => self.b.ins().clz(x),
+                "trailing_zeros" => self.b.ins().ctz(x),
+                "count_ones" => self.b.ins().popcnt(x),
+                _ => {
+                    let ones = self.b.ins().popcnt(x);
+                    let total = self.b.ins().iconst(cl(&t), bits);
+                    self.b.ins().isub(total, ones)
+                }
+            };
+            let r32 = if cl(&t).bits() < 32 {
+                self.b.ins().uextend(types::I32, r)
+            } else if cl(&t).bits() > 32 {
+                self.b.ins().ireduce(types::I32, r)
+            } else {
+                r
+            };
+            return Ok(Some((Some(r32), "u32".to_string())));
+        }
         if is_int(&t) && (name == "to_f64" || name == "to_f32") {
             let (x, _) = self.expr(recv, env, Some(&t))?;
             let x = x.ok_or("bad value")?;
@@ -4391,6 +4710,121 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 "as_bytes" => {
                     // `str` と `slice<u8>` は同じ配置 ({ptr, len}) なので、そのまま使える。
                     Ok((Some(p), self.cx.slice_of("u8")))
+                }
+                "starts_with" | "find" => {
+                    let (pv, pt_) = self.expr(args.first().ok_or("needs a pattern")?, env, Some("str"))?;
+                    if pt_ != "str" {
+                        return Err("pattern must be a str".into());
+                    }
+                    let pv = pv.ok_or("bad pattern")?;
+                    let pt = self.ptr_ty();
+                    let sp = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                    let pp = self.b.ins().load(pt, MemFlags::new(), pv, 0);
+                    let plen = self.b.ins().load(i64t, MemFlags::new(), pv, 8);
+                    let mc = self.rt.memcmp;
+                    if name == "starts_with" {
+                        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, plen, len);
+                        let (cmp_b, done) = (self.b.create_block(), self.b.create_block());
+                        self.b.append_block_param(done, types::I8);
+                        let no = self.b.ins().iconst(types::I8, 0);
+                        self.b.ins().brif(fits, cmp_b, &[], done, &[no]);
+                        self.b.switch_to_block(cmp_b);
+                        let r = self.call_rt(mc, &[sp, pp, plen])[0];
+                        let eq = self.b.ins().icmp_imm(IntCC::Equal, r, 0);
+                        self.b.ins().jump(done, &[eq]);
+                        self.b.switch_to_block(done);
+                        return Ok((Some(self.b.block_params(done)[0]), "bool".into()));
+                    }
+                    // find: 先頭から 1 バイトずつずらして比べる。見つからなければ None。
+                    let rty = self.cx.builtin_enum("Option", &["usize".into()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let poff = l.variants[1].1[0].1 as i64;
+                    let (head, body, cont, found, none, done) = (
+                        self.b.create_block(),
+                        self.b.create_block(),
+                        self.b.create_block(),
+                        self.b.create_block(),
+                        self.b.create_block(),
+                        self.b.create_block(),
+                    );
+                    self.b.append_block_param(head, i64t);
+                    self.b.append_block_param(found, i64t);
+                    let zero = self.b.ins().iconst(i64t, 0);
+                    self.b.ins().jump(head, &[zero]);
+                    self.b.switch_to_block(head);
+                    let i = self.b.block_params(head)[0];
+                    // i + plen <= len か
+                    let end = self.b.ins().iadd(i, plen);
+                    let ok = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, len);
+                    self.b.ins().brif(ok, body, &[], none, &[]);
+                    self.b.switch_to_block(body);
+                    let at = self.b.ins().iadd(sp, i);
+                    let r = self.call_rt(mc, &[at, pp, plen])[0];
+                    let eq = self.b.ins().icmp_imm(IntCC::Equal, r, 0);
+                    self.b.ins().brif(eq, found, &[i], cont, &[]);
+                    self.b.switch_to_block(cont);
+                    let n = self.b.ins().iadd_imm(i, 1);
+                    self.b.ins().jump(head, &[n]);
+                    self.b.switch_to_block(found);
+                    let at_i = self.b.block_params(found)[0];
+                    let dst = self.b.ins().iadd_imm(res, poff);
+                    self.b.ins().store(MemFlags::new(), at_i, dst, 0);
+                    let t1 = self.b.ins().iconst(types::I32, 1);
+                    self.b.ins().store(MemFlags::new(), t1, res, 0);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(none);
+                    let t0 = self.b.ins().iconst(types::I32, 0);
+                    self.b.ins().store(MemFlags::new(), t0, res, 0);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(done);
+                    return Ok((Some(res), rty));
+                }
+                "split_at" => {
+                    let (mid, _) = self.expr(args.first().ok_or("split_at needs an index")?, env, Some("usize"))?;
+                    let mid = mid.ok_or("bad index")?;
+                    let pt = self.ptr_ty();
+                    let tup = self.cx.tuple_of(&["str".to_string(), "str".to_string()]);
+                    let rty = self.cx.builtin_enum("Option", &[tup.clone()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let tl = self.cx.layout(&tup, 0)?;
+                    let sp = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                    // mid <= len かつ、文字の境界 (mid == len または、その位置のバイトが継続バイトでない)
+                    let inb = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, mid, len);
+                    let (chk, yes, no, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+                    self.b.ins().brif(inb, chk, &[], no, &[]);
+                    self.b.switch_to_block(chk);
+                    let at_end = self.b.ins().icmp(IntCC::Equal, mid, len);
+                    let rd = self.b.create_block();
+                    self.b.ins().brif(at_end, yes, &[], rd, &[]);
+                    self.b.switch_to_block(rd);
+                    let ba = self.b.ins().iadd(sp, mid);
+                    let bt = self.b.ins().load(types::I8, MemFlags::new(), ba, 0);
+                    let b32 = self.b.ins().uextend(types::I32, bt);
+                    let m = self.b.ins().band_imm(b32, 0xC0);
+                    let boundary = self.b.ins().icmp_imm(IntCC::NotEqual, m, 0x80);
+                    self.b.ins().brif(boundary, yes, &[], no, &[]);
+                    self.b.switch_to_block(no);
+                    let t0 = self.b.ins().iconst(types::I32, 0);
+                    self.b.ins().store(MemFlags::new(), t0, res, 0);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(yes);
+                    let poff = l.variants[1].1[0].1 as i64;
+                    let base = self.b.ins().iadd_imm(res, poff);
+                    let a0 = self.b.ins().iadd_imm(base, tl.fields[0].2 as i64);
+                    self.b.ins().store(MemFlags::new(), sp, a0, 0);
+                    self.b.ins().store(MemFlags::new(), mid, a0, 8);
+                    let a1 = self.b.ins().iadd_imm(base, tl.fields[1].2 as i64);
+                    let rest = self.b.ins().iadd(sp, mid);
+                    let rest_len = self.b.ins().isub(len, mid);
+                    self.b.ins().store(MemFlags::new(), rest, a1, 0);
+                    self.b.ins().store(MemFlags::new(), rest_len, a1, 8);
+                    let t1 = self.b.ins().iconst(types::I32, 1);
+                    self.b.ins().store(MemFlags::new(), t1, res, 0);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(done);
+                    return Ok((Some(res), rty));
                 }
                 _ => Err(format!("str method {}", name)),
             };
@@ -4707,6 +5141,39 @@ impl<'a, 'b> FnGen<'a, 'b> {
 fn lit_bytes(a: &V) -> Vec<u8> {
     let hex = st(&nf(a)[1]);
     (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap_or(0)).collect()
+}
+
+/// 数値型の定数 (`u8.MAX` / `core.num.i32.MIN` / `f64.EPSILON` など)。(型, 整数の値 または 浮動小数の値)
+fn numeric_const(segs: &[String]) -> Option<(String, Option<i64>, Option<f64>)> {
+    let (p, name) = match segs {
+        [p, n] => (p.as_str(), n.as_str()),
+        [c, m, p, n] if c == "core" && m == "num" => (p.as_str(), n.as_str()),
+        _ => return None,
+    };
+    if is_int(p) {
+        let bits = cl(p).bits() as u32;
+        let sg = signed(p);
+        return match name {
+            "BITS" => Some(("u32".to_string(), Some(bits as i64), None)),
+            "MAX" => Some((p.to_string(), Some(if sg { i64::MAX >> (64 - bits) } else { -1i64 }), None)),
+            "MIN" => Some((p.to_string(), Some(if sg { i64::MIN >> (64 - bits) } else { 0 }), None)),
+            _ => None,
+        };
+    }
+    if is_float(p) {
+        let is32 = p == "f32";
+        let v = match name {
+            "EPSILON" => if is32 { f32::EPSILON as f64 } else { f64::EPSILON },
+            "INFINITY" => f64::INFINITY,
+            "NEG_INFINITY" => f64::NEG_INFINITY,
+            "NAN" => f64::NAN,
+            "MAX" => if is32 { f32::MAX as f64 } else { f64::MAX },
+            "MIN_POSITIVE" => if is32 { f32::MIN_POSITIVE as f64 } else { f64::MIN_POSITIVE },
+            _ => return None,
+        };
+        return Some((p.to_string(), None, Some(v)));
+    }
+    None
 }
 
 /// `a.b.c` の形の場所 (Path か、Path の上の Field の連なり) を名前の列にする。
