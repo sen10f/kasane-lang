@@ -90,6 +90,7 @@ pub fn sc_owner(sc: &Scope, name: &str) -> Option<Scope> {
     }
     None
 }
+#[allow(dead_code)]
 pub fn sc_get(sc: &Scope, name: &str) -> Option<Val> {
     sc_owner(sc, name).map(|s| s.borrow().vars[name].clone())
 }

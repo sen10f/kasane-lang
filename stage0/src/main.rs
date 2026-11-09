@@ -33,7 +33,7 @@ fn main() {
     dev_main(args);
 }
 
-fn dev_main(args: Vec<String>) {
+fn dev_main(_args: Vec<String>) {
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 3 && args[1] == "lex" {
         let src = std::fs::read_to_string(&args[2]).expect("read");

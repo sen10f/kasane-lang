@@ -415,6 +415,7 @@ struct Matcher<'a> {
     lx: &'a Lexer,
     memo: HashMap<(usize, usize), PosSet>,
     term_cache: HashMap<String, Vec<String>>,
+    #[allow(dead_code)]
     zero: HashSet<usize>,
 }
 

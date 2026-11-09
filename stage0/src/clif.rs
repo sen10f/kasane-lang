@@ -552,7 +552,6 @@ struct FnGen<'a, 'b> {
     rt: &'a Rt,
     data_n: &'a mut usize,
     entry: bool,
-    ret: V,
     ret_ty: String,
     sret: Option<Value>,
     /// (ループの先頭, 出口, ループに入る前のスコープの深さ)
@@ -2227,11 +2226,6 @@ impl<'a, 'b> FnGen<'a, 'b> {
             return Ok((None, "void".into()));
         }
         self.expr(body, env, expect)
-    }
-
-    fn print_call(&mut self, e: &V) -> R<()> {
-        let mut env = Env::new();
-        self.print_value(&items(&nf(e)[1])[0], &mut env)
     }
 
     /// `std.io.print_line(s)`。文字列リテラルは `puts`、`str` の値は `write` で出す。
@@ -4040,7 +4034,6 @@ pub fn compile_clif(
                 rt: &rt,
                 data_n: &mut data_n,
                 entry: n == entry,
-                ret: d.ret.clone(),
                 ret_ty,
                 sret: None,
                 loops: vec![],

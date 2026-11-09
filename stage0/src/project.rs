@@ -51,6 +51,7 @@ pub fn norm(p: &Path) -> String {
 
 pub struct Source {
     pub path: String,
+    #[allow(dead_code)]
     pub module: String,
     pub text: String,
     pub lines: Vec<String>,
@@ -93,6 +94,7 @@ pub struct Package {
 }
 
 impl Package {
+    #[allow(dead_code)]
     pub fn defs(&self) -> Vec<Def> {
         self.sources.iter().flat_map(|s| s.defs.clone()).collect()
     }

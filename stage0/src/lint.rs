@@ -365,9 +365,6 @@ impl Lint {
                 let pk = prev_key.clone().unwrap();
                 self.err("order", n, format!("{} should come before {} (UTF-8 byte order)", key, pk));
             }
-            if g as i64 > prev_g {
-                prev_key = None;
-            }
             prev_g = g as i64;
             prev_key = Some(key);
         }
@@ -530,7 +527,7 @@ impl Lint {
                 let ind = l.len() - l.trim_start_matches(' ').len();
                 let s = l.trim();
                 let mut errs: Vec<String> = vec![];
-                let mut expect = |e: usize, errs: &mut Vec<String>| {
+                let expect = |e: usize, errs: &mut Vec<String>| {
                     if ind != e {
                         errs.push(format!("indent {}, expected {}", ind, e));
                     }

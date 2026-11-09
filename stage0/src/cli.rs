@@ -557,10 +557,8 @@ fn spawn_watcher(l: &Loaded) -> std::sync::mpsc::Receiver<Program> {
         }
         if restart {
             eprintln!("hot reload: header/type change, restart required");
-            restart = false;
         }
         if changed {
-            changed = false;
             let mut prog = empty_program();
             for d in &std_defs {
                 prog.add_def(d.clone());

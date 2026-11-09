@@ -268,11 +268,13 @@ pub enum Target {
 #[derive(Debug, Clone)]
 pub struct Resolved {
     pub target: Target,
+    #[allow(dead_code)]
     pub name: String,
     pub rest: Vec<String>,
 }
 
 impl Resolved {
+    #[allow(dead_code)]
     pub fn kind(&self) -> &'static str {
         match self.target {
             Target::Fn(_) => "fn",
@@ -453,6 +455,7 @@ impl Program {
     }
 }
 
+#[allow(dead_code)]
 pub fn btree<T: Ord + Clone>(xs: &HashSet<T>) -> BTreeSet<T> {
     xs.iter().cloned().collect()
 }
