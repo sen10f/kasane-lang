@@ -1670,3 +1670,89 @@ fn a_wrong_option_result_in_a_cranelift_executable_fails_the_check() {
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
+
+fn clif_vec_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "type t.Bag",
+        "    items: alloc.vec.Vec<u32, std.alloc.System>",
+        "    n: u32",
+        "end t.Bag",
+        "",
+        "fn t.fill(count: u32) -> alloc.vec.Vec<u32, std.alloc.System>",
+        "    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+        "    let mut i = 0u32",
+        "    while i < count {",
+        "        match v.push(i.wrapping_mul(i)) {",
+        "            Ok(_) => 0u8",
+        "            Err(_) => 1u8",
+        "        }",
+        "        i = i.wrapping_add(1u32)",
+        "    }",
+        "    v",
+        "end t.fill",
+        "",
+        "fn t.sum(v: &alloc.vec.Vec<u32, std.alloc.System>) -> u32",
+        "    let mut i = 0usize",
+        "    let mut acc = 0u32",
+        "    while i < v.len() {",
+        "        acc = acc.wrapping_add(v[i])",
+        "        i = i.wrapping_add(1usize)",
+        "    }",
+        "    acc",
+        "end t.sum",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    let v = t.fill(5u32)",
+        "    core.check.eq(v.len(), 5usize)",
+        "    core.check.eq(t.sum(&v), 30u32)",
+        "    let mut w: alloc.vec.Vec<u32, std.alloc.System> = t.fill(3u32)",
+        "    match w.pop() {",
+        "        Some(x) => core.check.eq(x, 4u32)",
+        "        None => core.check.eq(1u8, 2u8)",
+        "    }",
+        "    core.check.eq(w.len(), 2usize)",
+        "    core.check.eq(w.is_empty(), false)",
+        "    w.clear()",
+        "    core.check.eq(w.is_empty(), true)",
+        "    let big = t.fill(1000u32)",
+        "    core.check.eq(big.len(), 1000usize)",
+        "    core.check.eq(t.sum(&big), 332833500u32)",
+        "    let mut bag = t.Bag { items: t.fill(2u32), n: 7u32 }",
+        "    match bag.items.push(9u32) {",
+        "        Ok(_) => 0u8",
+        "        Err(_) => 1u8",
+        "    }",
+        "    core.check.eq(bag.items.len(), 3usize)",
+        "    core.check.eq(bag.items[2usize], 9u32)",
+        "    let s = \"hello\"",
+        "    core.check.eq(s.len(), 5usize)",
+        "    std.io.print_line(s)",
+        tail,
+        "    std.io.print_line(\"vec ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_vec_and_str() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_vec_{}", release), &clif_vec_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "hello\nvec ok");
+    }
+}
+
+#[test]
+fn indexing_a_vec_out_of_bounds_panics_in_a_cranelift_executable() {
+    let (_t, exe_path, out) = build_clif("clif_vec_oob", &clif_vec_program("    core.check.eq(v[9usize], 0u32)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("index out of bounds"), "{}", text(&o.stderr));
+}

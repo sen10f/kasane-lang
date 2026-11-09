@@ -81,6 +81,8 @@ struct Cx<'a> {
     types: &'a HashMap<String, &'a Def>,
     /// `Option<u32>` のような組み込みの総称列挙型の具体化: 名前 → [(バリアント名, ペイロードの型)]
     gen: RefCell<HashMap<String, Vec<(String, Vec<String>)>>>,
+    /// `alloc.vec.Vec<u32>` のような Vec の具体化: 名前 → 要素の型
+    vecs: RefCell<HashMap<String, String>>,
 }
 
 /// 構造体・列挙型のメモリ配置。
@@ -106,6 +108,9 @@ impl<'a> Cx<'a> {
                 if is_scalar(&p) {
                     return Ok(p);
                 }
+                if p == "str" {
+                    return Ok(p);
+                }
             }
             "ref" => {
                 let inner = self.pty(tel(t, 2))?;
@@ -116,6 +121,17 @@ impl<'a> Cx<'a> {
             }
             "named" => {
                 let n = st(tel(t, 1));
+                if n == "alloc.vec.Vec" {
+                    let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("Vec without an element type")?;
+                    let elem = self.pty(first)?;
+                    if elem == "void" {
+                        return Err("Vec of unit".into());
+                    }
+                    return Ok(self.vec_of(&elem));
+                }
+                if n == "alloc.alloc.AllocError" {
+                    return Ok(n);
+                }
                 if n == "Option" || n == "Result" {
                     let args: Vec<String> =
                         items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).map(|a| self.pty(a)).collect::<R<Vec<String>>>()?;
@@ -135,6 +151,27 @@ impl<'a> Cx<'a> {
     fn layout(&self, name: &str, depth: u32) -> R<Layout> {
         if depth > 8 {
             return Err(format!("recursive type {}", name));
+        }
+        if name == "str" {
+            return Ok(Layout {
+                size: 16,
+                align: 8,
+                fields: vec![("ptr".into(), "usize".into(), 0), ("len".into(), "usize".into(), 8)],
+                is_enum: false,
+                variants: vec![],
+            });
+        }
+        if self.vecs.borrow().contains_key(name) {
+            return Ok(Layout {
+                size: 24,
+                align: 8,
+                fields: vec![("ptr".into(), "usize".into(), 0), ("len".into(), "usize".into(), 8), ("cap".into(), "usize".into(), 16)],
+                is_enum: false,
+                variants: vec![],
+            });
+        }
+        if name == "alloc.alloc.AllocError" {
+            return Ok(Layout { size: 1, align: 1, fields: vec![], is_enum: false, variants: vec![] });
         }
         let registered = self.gen.borrow().get(name).cloned();
         if let Some(vs) = registered {
@@ -210,6 +247,36 @@ impl<'a> Cx<'a> {
         Ok(Layout { size: align_up(start + max_payload, max_align), align: max_align, fields: vec![], is_enum: true, variants })
     }
 
+    fn vec_of(&self, elem: &str) -> String {
+        let name = format!("alloc.vec.Vec<{}>", elem);
+        self.vecs.borrow_mut().insert(name.clone(), elem.to_string());
+        name
+    }
+
+    fn elem_of(&self, vty: &str) -> Option<String> {
+        self.vecs.borrow().get(vty).cloned()
+    }
+
+    /// 組み込み型 (str / Vec / AllocError) のメソッドの戻り値の型。
+    fn builtin_method_ty(&self, recv_ty: &str, name: &str) -> Option<String> {
+        if recv_ty == "str" {
+            return match name {
+                "len" => Some("usize".into()),
+                "is_empty" => Some("bool".into()),
+                _ => None,
+            };
+        }
+        let elem = self.elem_of(recv_ty)?;
+        match name {
+            "len" | "capacity" => Some("usize".into()),
+            "is_empty" => Some("bool".into()),
+            "clear" => Some("void".into()),
+            "pop" => self.builtin_enum("Option", &[elem]).ok(),
+            "push" => self.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()]).ok(),
+            _ => None,
+        }
+    }
+
     /// `Option<T>` / `Result<T, E>` の具体化を登録して、その名前を返す。`()` はペイロードなし。
     fn builtin_enum(&self, base: &str, args: &[String]) -> R<String> {
         let name = format!("{}<{}>", base, args.join(","));
@@ -250,6 +317,7 @@ struct Rt {
     puts: FuncId,
     write: FuncId,
     exit: FuncId,
+    realloc: FuncId,
 }
 
 struct FnGen<'a, 'b> {
@@ -338,8 +406,13 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let sfx = if matches!(f[1], V::Nil) { None } else { Some(st(&f[1])) };
                     sfx.or(expect.map(String::from)).filter(|t| is_float(t))
                 }
+                "str" => Some("str".into()),
                 _ => None,
             },
+            "Index" => {
+                let bt = self.ty_of(&f[0], env, None)?;
+                self.cx.elem_of(&bt)
+            }
             "Path" => {
                 let segs = strs(&f[0]);
                 if env.contains_key(&segs[0]) {
@@ -382,6 +455,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let name = st(&f[1]);
                 let recv_ty = self.ty_of(&f[0], env, expect);
                 if let Some(rt) = &recv_ty {
+                    if let Some(t) = self.cx.builtin_method_ty(rt, &name) {
+                        return Some(t);
+                    }
                     if is_agg(rt) {
                         return self.method_target(rt, &name).and_then(|d| self.cx.pty(&d.ret).ok());
                     }
@@ -396,6 +472,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if segs.len() >= 2 && env.contains_key(&segs[0]) {
                     let recv_ty = self.field_chain_ty(&segs[..segs.len() - 1], env)?;
                     let name = &segs[segs.len() - 1];
+                    if let Some(t) = self.cx.builtin_method_ty(&recv_ty, name) {
+                        return Some(t);
+                    }
                     if is_agg(&recv_ty) {
                         return self.method_target(&recv_ty, name).and_then(|d| self.cx.pty(&d.ret).ok());
                     }
@@ -406,6 +485,12 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 if segs.len() == 1 && matches!(segs[0].as_str(), "Some" | "Ok" | "Err") && !self.funcs.contains_key(&segs[0]) {
                     return self.ctor_type(&segs[0], items(&f[1]), env, expect);
+                }
+                if segs == ["alloc", "vec", "Vec", "new"] {
+                    return expect.filter(|t| self.cx.elem_of(t).is_some()).map(String::from);
+                }
+                if segs == ["std", "io", "print_line"] {
+                    return Some("void".into());
                 }
                 if segs == ["core", "check", "eq"] || segs == ["core", "mem", "drop"] {
                     return Some("void".into());
@@ -722,14 +807,14 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     if tail {
                         if is_ok_unit(e) || is_print(e) {
                             if is_print(e) {
-                                self.print_call(e)?;
+                                self.print_value(&items(&nf(e)[1])[0], env)?;
                             }
                             return Ok(());
                         }
                         return Err("entry tail expression".into());
                     }
                     if is_print(e) {
-                        return self.print_call(e);
+                        return self.print_value(&items(&nf(e)[1])[0], env);
                     }
                 }
                 let expect = if tail && !self.entry { Some(self.ret_ty.clone()) } else { None };
@@ -943,16 +1028,36 @@ impl<'a, 'b> FnGen<'a, 'b> {
     }
 
     fn print_call(&mut self, e: &V) -> R<()> {
-        let a = &items(&nf(e)[1])[0];
-        if nname(a) != "Lit" || st(&nf(a)[0]) != "str" {
-            return Err("print_line of non-literal".into());
+        let mut env = Env::new();
+        self.print_value(&items(&nf(e)[1])[0], &mut env)
+    }
+
+    /// `std.io.print_line(s)`。文字列リテラルは `puts`、`str` の値は `write` で出す。
+    fn print_value(&mut self, a: &V, env: &mut Env) -> R<()> {
+        if nname(a) == "Lit" && st(&nf(a)[0]) == "str" {
+            let mut bytes = lit_bytes(a);
+            bytes.push(0);
+            let p = self.string_ptr(bytes)?;
+            let id = self.rt.puts;
+            self.call_rt(id, &[p]);
+            return Ok(());
         }
-        let hex = st(&nf(a)[1]);
-        let mut bytes: Vec<u8> = (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap_or(0)).collect();
-        bytes.push(0);
-        let p = self.string_ptr(bytes)?;
-        let id = self.rt.puts;
-        self.call_rt(id, &[p]);
+        let (v, ty) = self.expr(a, env, None)?;
+        if ty != "str" {
+            return Err("print_line of a non-string".into());
+        }
+        let sv = v.ok_or("bad string")?;
+        let pt = self.ptr_ty();
+        let ptr = self.b.ins().load(pt, MemFlags::new(), sv, 0);
+        let len = self.b.ins().load(types::I64, MemFlags::new(), sv, 8);
+        let len32 = self.b.ins().ireduce(types::I32, len);
+        let fd = self.b.ins().iconst(types::I32, 1);
+        let w = self.rt.write;
+        self.call_rt(w, &[fd, ptr, len32]);
+        let nl = self.string_ptr(vec![10u8])?;
+        let one = self.b.ins().iconst(types::I32, 1);
+        let fd = self.b.ins().iconst(types::I32, 1);
+        self.call_rt(w, &[fd, nl, one]);
         Ok(())
     }
 
@@ -1015,6 +1120,16 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let c = self.b.ins().iconst(types::I8, if matches!(f[1], V::B(true)) { 1 } else { 0 });
                     Ok((Some(c), "bool".into()))
                 }
+                "str" => {
+                    let bytes = lit_bytes(e);
+                    let n = bytes.len() as i64;
+                    let ptr = self.string_ptr(bytes)?;
+                    let slot = self.alloc(16, 8);
+                    self.b.ins().store(MemFlags::new(), ptr, slot, 0);
+                    let len = self.b.ins().iconst(types::I64, n);
+                    self.b.ins().store(MemFlags::new(), len, slot, 8);
+                    Ok((Some(slot), "str".into()))
+                }
                 "float" => {
                     let Some(t) = self.ty_of(e, env, expect) else { return Err("untyped float literal".into()) };
                     let text = st(&f[2]).replace('_', "");
@@ -1050,6 +1165,22 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     return self.make_variant(&en, idx, &[], env);
                 }
                 Err(format!("path {}", segs.join(".")))
+            }
+            "Index" => {
+                let (bp, bt) = self.expr(&f[0], env, None)?;
+                let bp = bp.ok_or("bad index base")?;
+                let elem = self.cx.elem_of(&bt).ok_or("indexing a non-Vec")?;
+                let (i, _) = self.expr(&f[1], env, Some("usize"))?;
+                let i = i.ok_or("bad index")?;
+                let len = self.b.ins().load(types::I64, MemFlags::new(), bp, 8);
+                let oob = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
+                self.guard(oob, "index out of bounds")?;
+                let base = self.b.ins().load(types::I64, MemFlags::new(), bp, 0);
+                let sz = self.elem_size(&elem)?;
+                let off = self.b.ins().imul_imm(i, sz as i64);
+                let addr = self.b.ins().iadd(base, off);
+                let v = self.load_value(addr, &elem);
+                Ok((Some(v), elem))
             }
             "Field" => {
                 let segs = place_segs(e).ok_or("field of a non-place")?;
@@ -1292,6 +1423,19 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     self.expr(&args[0], env, None)?;
                     return Ok((None, "void".into()));
                 }
+                if segs == ["std", "io", "print_line"] {
+                    self.print_value(&args[0], env)?;
+                    return Ok((None, "void".into()));
+                }
+                if segs == ["alloc", "vec", "Vec", "new"] {
+                    let Some(t) = expect.filter(|t| self.cx.elem_of(t).is_some()) else { return Err("Vec.new without an element type".into()) };
+                    let v = self.alloc(24, 8);
+                    let z = self.b.ins().iconst(types::I64, 0);
+                    for off in [0, 8, 16] {
+                        self.b.ins().store(MemFlags::new(), z, v, off);
+                    }
+                    return Ok((Some(v), t.to_string()));
+                }
                 let fq = segs.join(".");
                 let Some(d) = self.funcs.get(&fq).copied() else { return Err(format!("call to {}", fq)) };
                 self.call_user(&fq, d, None, args, env)
@@ -1303,6 +1447,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
     fn method_call(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
         let rty = self.ty_of(recv, env, expect);
         if let Some(rt) = &rty {
+            if rt == "str" || self.cx.elem_of(rt).is_some() {
+                let (p, _) = self.expr(recv, env, None)?;
+                let p = p.ok_or("bad receiver")?;
+                return self.builtin_method(p, rt, name, args, env);
+            }
             if is_agg(rt) {
                 let fq = format!("{}.{}", rt, name);
                 let d = self.funcs.get(&fq).copied().ok_or_else(|| format!("method {}", fq))?;
@@ -1314,6 +1463,121 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
         }
         self.method(recv, name, args, env, expect)
+    }
+
+    fn elem_size(&self, elem: &str) -> R<u32> {
+        if is_scalar(elem) { Ok(scalar_size(elem)) } else { Ok(self.cx.layout(elem, 0)?.size) }
+    }
+
+    /// `str` と `Vec` の組み込みメソッド。`p` はレシーバの先頭アドレス。
+    fn builtin_method(&mut self, p: Value, rt: &str, name: &str, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let i64t = types::I64;
+        if rt == "str" {
+            let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+            return match name {
+                "len" => Ok((Some(len), "usize".into())),
+                "is_empty" => {
+                    let r = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
+                    Ok((Some(r), "bool".into()))
+                }
+                _ => Err(format!("str method {}", name)),
+            };
+        }
+        let elem = self.cx.elem_of(rt).ok_or("not a Vec")?;
+        let sz = self.elem_size(&elem)?;
+        match name {
+            "len" | "capacity" => {
+                let off = if name == "len" { 8 } else { 16 };
+                let v = self.b.ins().load(i64t, MemFlags::new(), p, off);
+                Ok((Some(v), "usize".into()))
+            }
+            "is_empty" => {
+                let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                let r = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
+                Ok((Some(r), "bool".into()))
+            }
+            "clear" => {
+                let z = self.b.ins().iconst(i64t, 0);
+                self.b.ins().store(MemFlags::new(), z, p, 8);
+                Ok((None, "void".into()))
+            }
+            "pop" => {
+                let rty = self.cx.builtin_enum("Option", &[elem.clone()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                let empty = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
+                let (none_b, some_b, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(empty, none_b, &[], some_b, &[]);
+                self.b.switch_to_block(none_b);
+                let t0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), t0, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(some_b);
+                let newlen = self.b.ins().iadd_imm(len, -1);
+                self.b.ins().store(MemFlags::new(), newlen, p, 8);
+                let base = self.b.ins().load(i64t, MemFlags::new(), p, 0);
+                let off = self.b.ins().imul_imm(newlen, sz as i64);
+                let addr = self.b.ins().iadd(base, off);
+                let val = self.load_value(addr, &elem);
+                let poff = l.variants[1].1[0].1;
+                let dst = self.b.ins().iadd_imm(res, poff as i64);
+                self.store_value(dst, &elem, val)?;
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok((Some(res), rty))
+            }
+            "push" => {
+                let arg = args.first().ok_or("push needs an argument")?;
+                let (v, _) = self.expr(arg, env, Some(&elem))?;
+                let v = v.ok_or("bad push value")?;
+                let rty = self.cx.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                let cap = self.b.ins().load(i64t, MemFlags::new(), p, 16);
+                let ptr0 = self.b.ins().load(i64t, MemFlags::new(), p, 0);
+                let full = self.b.ins().icmp(IntCC::Equal, len, cap);
+                let (grow, store_b, fail_b, done) =
+                    (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.append_block_param(store_b, i64t);
+                self.b.ins().brif(full, grow, &[], store_b, &[ptr0]);
+                self.b.switch_to_block(grow);
+                let four = self.b.ins().iconst(i64t, 4);
+                let dbl = self.b.ins().ishl_imm(cap, 1);
+                let cap_zero = self.b.ins().icmp_imm(IntCC::Equal, cap, 0);
+                let newcap = self.b.ins().select(cap_zero, four, dbl);
+                let bytes = self.b.ins().imul_imm(newcap, sz as i64);
+                let ra = self.rt.realloc;
+                let newptr = self.call_rt(ra, &[ptr0, bytes])[0];
+                let isnull = self.b.ins().icmp_imm(IntCC::Equal, newptr, 0);
+                let set_b = self.b.create_block();
+                self.b.ins().brif(isnull, fail_b, &[], set_b, &[]);
+                self.b.switch_to_block(set_b);
+                self.b.ins().store(MemFlags::new(), newptr, p, 0);
+                self.b.ins().store(MemFlags::new(), newcap, p, 16);
+                self.b.ins().jump(store_b, &[newptr]);
+                self.b.switch_to_block(store_b);
+                let base = self.b.block_params(store_b)[0];
+                let off = self.b.ins().imul_imm(len, sz as i64);
+                let addr = self.b.ins().iadd(base, off);
+                self.store_value(addr, &elem, v)?;
+                let newlen = self.b.ins().iadd_imm(len, 1);
+                self.b.ins().store(MemFlags::new(), newlen, p, 8);
+                let t0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), t0, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(fail_b);
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok((Some(res), rty))
+            }
+            _ => Err(format!("Vec method {}", name)),
+        }
     }
 
     fn method(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
@@ -1338,6 +1602,12 @@ impl<'a, 'b> FnGen<'a, 'b> {
         };
         Ok((Some(r), t))
     }
+}
+
+/// 文字列リテラル (`Lit str`) の中身。16 進の文字列で持っている。
+fn lit_bytes(a: &V) -> Vec<u8> {
+    let hex = st(&nf(a)[1]);
+    (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap_or(0)).collect()
 }
 
 /// `a.b.c` の形の場所 (Path か、Path の上の Field の連なり) を名前の列にする。
@@ -1393,7 +1663,7 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
-    let cx = Cx { types: type_defs, gen: RefCell::new(HashMap::new()) };
+    let cx = Cx { types: type_defs, gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
@@ -1444,7 +1714,12 @@ pub fn compile_clif(
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I32));
     let exit = module.declare_function("exit", Linkage::Import, &sig).map_err(|e| e.to_string())?;
-    let rt = Rt { puts, write, exit };
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(ptr));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(ptr));
+    let realloc = module.declare_function("realloc", Linkage::Import, &sig).map_err(|e| e.to_string())?;
+    let rt = Rt { puts, write, exit, realloc };
 
     // 関数の宣言。入口は C の `main` にする。構造体・列挙型を返す関数は、先頭に戻り値用のアドレスを取る。
     let mut ids: HashMap<String, FuncId> = HashMap::new();
