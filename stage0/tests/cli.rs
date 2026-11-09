@@ -1881,3 +1881,120 @@ fn a_wrong_string_comparison_in_a_cranelift_executable_fails_the_check() {
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
     assert!(!text(&o.stdout).contains("string ok"));
 }
+
+fn clif_slice_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.dot(a: &[u32], b: &[u32]) -> u32",
+        "    let mut acc = 0u32",
+        "    for i in core.iter.range(0usize, a.len()) {",
+        "        acc = acc.wrapping_add(a[i].wrapping_mul(b[i]))",
+        "    }",
+        "    acc",
+        "end t.dot",
+        "",
+        "fn t.first_byte(text: &str) -> u8",
+        "    match text.as_bytes().get(0usize) {",
+        "        Some(b) => *b",
+        "        None => 0u8",
+        "    }",
+        "end t.first_byte",
+        "",
+        "fn t.fresh() -> alloc.vec.Vec<u32, std.alloc.System>",
+        "    alloc.vec.Vec.new(std.alloc.SYSTEM)",
+        "end t.fresh",
+        "",
+        "fn t.index_sum(s: &[u32]) -> usize",
+        "    let mut acc = 0usize",
+        "    for (i, _x) in core.iter.enumerate(s.iter()) {",
+        "        acc = acc.wrapping_add(i)",
+        "    }",
+        "    acc",
+        "end t.index_sum",
+        "",
+        "fn t.make(n: u32) -> alloc.vec.Vec<u32, std.alloc.System>",
+        "    let mut v = t.fresh()",
+        "    for k in core.iter.range(1u32, n.wrapping_add(1u32)) {",
+        "        match v.push(k) {",
+        "            Ok(_) => 0u8",
+        "            Err(_) => 1u8",
+        "        }",
+        "    }",
+        "    v",
+        "end t.make",
+        "",
+        "fn t.pick(s: &[u32], i: usize) -> u32",
+        "    match s.get(i) {",
+        "        Some(x) => *x",
+        "        None => 999u32",
+        "    }",
+        "end t.pick",
+        "",
+        "fn t.total(v: &alloc.vec.Vec<u32, std.alloc.System>) -> u32",
+        "    let mut acc = 0u32",
+        "    for x in v.iter() {",
+        "        if *x == 3u32 {",
+        "            continue",
+        "        }",
+        "        acc = acc.wrapping_add(*x)",
+        "    }",
+        "    acc",
+        "end t.total",
+        "",
+        "fn t.zero_first(s: &mut [u32]) -> ()",
+        "    s[0usize] = 0u32",
+        "end t.zero_first",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    let v = t.make(4u32)",
+        "    let s = v.as_slice()",
+        "    core.check.eq(s.len(), 4usize)",
+        "    core.check.eq(t.dot(s, s), 30u32)",
+        "    core.check.eq(t.total(&v), 7u32)",
+        "    core.check.eq(t.index_sum(s), 6usize)",
+        "    core.check.eq(t.pick(s, 2usize), 3u32)",
+        "    core.check.eq(t.pick(s, 9usize), 999u32)",
+        "    core.check.eq(s.get(1usize), Some(2u32))",
+        "    core.check.eq(s.get(7usize), None)",
+        "    core.check.eq(s.first(), Some(1u32))",
+        "    core.check.eq(s.last(), Some(4u32))",
+        "    match s.sub(1usize, 3usize) {",
+        "        Some(part) => core.check.eq(part.len(), 2usize)",
+        "        None => core.check.eq(1u8, 2u8)",
+        "    }",
+        "    match s.sub(3usize, 9usize) {",
+        "        Some(_) => core.check.eq(1u8, 2u8)",
+        "        None => core.check.eq(1u8, 1u8)",
+        "    }",
+        "    let mut w = t.make(3u32)",
+        "    t.zero_first(w.as_mut_slice())",
+        "    core.check.eq(w[0usize], 0u32)",
+        "    core.check.eq(w[2usize], 3u32)",
+        "    core.check.eq(t.first_byte(\"A\"), 65u8)",
+        tail,
+        "    std.io.print_line(\"slice ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_slices_and_for_loops() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_slice_{}", release), &clif_slice_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "slice ok");
+    }
+}
+
+#[test]
+fn a_wrong_slice_result_in_a_cranelift_executable_fails_the_check() {
+    let (_t, exe_path, out) = build_clif("clif_slice_bad", &clif_slice_program("    core.check.eq(s.last(), Some(5u32))"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}

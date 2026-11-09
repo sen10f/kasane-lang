@@ -85,6 +85,8 @@ struct Cx<'a> {
     gen: RefCell<HashMap<String, Vec<(String, Vec<String>)>>>,
     /// `alloc.vec.Vec<u32>` のような Vec の具体化: 名前 → 要素の型
     vecs: RefCell<HashMap<String, String>>,
+    /// `slice<u8>` のようなスライスの具体化: 名前 → 要素の型
+    slices: RefCell<HashMap<String, String>>,
 }
 
 /// 構造体・列挙型のメモリ配置。
@@ -114,12 +116,21 @@ impl<'a> Cx<'a> {
                     return Ok(p);
                 }
             }
-            "ref" => {
-                let inner = self.pty(tel(t, 2))?;
+            "ref" | "slice" => {
+                let target = if tag(t) == "ref" { tel(t, 2) } else { t };
+                if tag(target) == "slice" {
+                    let elem = self.pty_owned(tel(target, 1))?;
+                    return Ok(self.slice_of(&elem));
+                }
+                let inner = self.pty(target)?;
                 if is_agg(&inner) {
                     return Ok(inner);
                 }
-                return Err("reference to a scalar".into());
+                // 不変の参照 `&scalar` は、借用の間は値が変わらないので、値そのものとして扱う。
+                if tag(t) == "ref" && !matches!(tel(t, 1), V::B(true)) {
+                    return Ok(inner);
+                }
+                return Err("mutable reference to a scalar".into());
             }
             "named" => {
                 let n = st(tel(t, 1));
@@ -152,10 +163,27 @@ impl<'a> Cx<'a> {
 
     /// 参照でない型 (フィールド・ペイロード・要素の型に使う)。参照を値として持つと所有と取り違えるため。
     fn pty_owned(&self, t: &V) -> R<String> {
-        if tag(t) == "ref" {
+        if tag(t) == "ref" || tag(t) == "slice" {
+            let r = self.pty(t)?;
+            // `&str` / `&[T]` / `&scalar` は所有を伴わないのでよい。それ以外の参照は持てない。
+            if r == "str" || r.starts_with("slice<") || !is_agg(&r) {
+                return Ok(r);
+            }
             return Err("a reference stored in a type".into());
         }
         self.pty(t)
+    }
+
+    fn slice_of(&self, elem: &str) -> String {
+        let name = format!("slice<{}>", elem);
+        self.slices.borrow_mut().insert(name.clone(), elem.to_string());
+        name
+    }
+
+    /// Vec またはスライスの要素の型。
+    fn seq_elem(&self, ty: &str) -> Option<String> {
+        let v = self.vecs.borrow().get(ty).cloned();
+        v.or_else(|| self.slices.borrow().get(ty).cloned())
     }
 
     /// 型 `ty` の値が、解放の必要なメモリ (Vec / String) を持つか。
@@ -187,6 +215,15 @@ impl<'a> Cx<'a> {
             return Err(format!("recursive type {}", name));
         }
         if name == "str" {
+            return Ok(Layout {
+                size: 16,
+                align: 8,
+                fields: vec![("ptr".into(), "usize".into(), 0), ("len".into(), "usize".into(), 8)],
+                is_enum: false,
+                variants: vec![],
+            });
+        }
+        if self.slices.borrow().contains_key(name) {
             return Ok(Layout {
                 size: 16,
                 align: 8,
@@ -297,8 +334,12 @@ impl<'a> Cx<'a> {
             return match name {
                 "len" => Some("usize".into()),
                 "is_empty" => Some("bool".into()),
+                "as_bytes" => Some(self.slice_of("u8")),
                 _ => None,
             };
+        }
+        if let Some(elem) = self.slices.borrow().get(recv_ty).cloned() {
+            return self.seq_method_ty(&elem, name);
         }
         if recv_ty == STRING {
             return match name {
@@ -311,12 +352,32 @@ impl<'a> Cx<'a> {
             };
         }
         let elem = self.elem_of(recv_ty)?;
+        if let Some(t) = self.seq_method_ty(&elem, name) {
+            if name != "len" && name != "is_empty" {
+                return Some(t);
+            }
+        }
         match name {
             "len" | "capacity" => Some("usize".into()),
             "is_empty" => Some("bool".into()),
             "clear" => Some("void".into()),
             "pop" => self.builtin_enum("Option", &[elem]).ok(),
             "push" => self.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()]).ok(),
+            _ => None,
+        }
+    }
+
+    /// スライス・Vec に共通のメソッドの戻り値の型 (要素がスカラーのときの `get` など)。
+    fn seq_method_ty(&self, elem: &str, name: &str) -> Option<String> {
+        match name {
+            "len" => Some("usize".into()),
+            "is_empty" => Some("bool".into()),
+            "get" | "first" | "last" if is_scalar(elem) => self.builtin_enum("Option", &[elem.to_string()]).ok(),
+            "sub" => {
+                let sl = self.slice_of(elem);
+                self.builtin_enum("Option", &[sl]).ok()
+            }
+            "as_slice" | "as_mut_slice" => Some(self.slice_of(elem)),
             _ => None,
         }
     }
@@ -472,7 +533,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
             },
             "Index" => {
                 let bt = self.ty_of(&f[0], env, None)?;
-                self.cx.elem_of(&bt)
+                self.cx.seq_elem(&bt)
             }
             "Path" => {
                 let segs = strs(&f[0]);
@@ -934,6 +995,27 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
             "Assign" => {
                 let tg = &f[0];
+                if nname(tg) == "Index" {
+                    let (bp, bt) = self.expr(&nf(tg)[0], env, None)?;
+                    let bp = bp.ok_or("bad index base")?;
+                    let elem = self.cx.seq_elem(&bt).ok_or("indexing a non-sequence")?;
+                    if self.cx.needs_drop(&elem) {
+                        return Err("assignment to a droppable element".into());
+                    }
+                    let (i, _) = self.expr(&nf(tg)[1], env, Some("usize"))?;
+                    let i = i.ok_or("bad index")?;
+                    let (v, _) = self.expr(&f[1], env, Some(&elem))?;
+                    let v = v.ok_or("assign of unit")?;
+                    let len = self.b.ins().load(types::I64, MemFlags::new(), bp, 8);
+                    let oob = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
+                    self.guard(oob, "index out of bounds")?;
+                    let pt = self.ptr_ty();
+                    let base = self.b.ins().load(pt, MemFlags::new(), bp, 0);
+                    let sz = self.elem_size(&elem)?;
+                    let off = self.b.ins().imul_imm(i, sz as i64);
+                    let addr = self.b.ins().iadd(base, off);
+                    return self.store_value(addr, &elem, v);
+                }
                 let Some(segs) = place_segs(tg) else { return Err("assignment target".into()) };
                 if !env.contains_key(&segs[0]) {
                     return Err("assignment target".into());
@@ -1037,6 +1119,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
             "If" => self.if_stmt(e, env, tail),
             "Match" => self.match_stmt(e, env, tail),
+            "For" => self.for_stmt(e, env),
             "While" => {
                 let (head, body, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
                 self.b.ins().jump(head, &[]);
@@ -1100,6 +1183,141 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 Ok(())
             }
         }
+    }
+
+    /// `for` の反復の元: `core.iter.range(a, b)`、`x.iter()`、`core.iter.enumerate(x.iter())`。
+    fn iter_source(&self, it: &V, env: &Env) -> Option<(V, bool)> {
+        if nname(it) == "Call" && nname(&nf(it)[0]) == "Path" {
+            let segs = strs(&nf(&nf(it)[0])[0]);
+            let args = items(&nf(it)[1]);
+            if segs == ["core", "iter", "enumerate"] && args.len() == 1 {
+                let (r, _) = self.iter_source(&args[0], env)?;
+                return Some((r, true));
+            }
+            if segs.len() >= 2 && env.contains_key(&segs[0]) && matches!(segs[segs.len() - 1].as_str(), "iter" | "iter_mut") && args.is_empty() {
+                let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
+                return Some((recv, false));
+            }
+        }
+        if nname(it) == "MCall" && matches!(st(&nf(it)[1]).as_str(), "iter" | "iter_mut") && items(&nf(it)[2]).is_empty() {
+            return Some((nf(it)[0].clone(), false));
+        }
+        None
+    }
+
+    fn for_stmt(&mut self, e: &V, env: &mut Env) -> R<()> {
+        let f = nf(e);
+        let (pat, it, body) = (&f[0], &f[1], &f[2]);
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        let (head, body_b, cont, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+        // 範囲 `core.iter.range(a, b)`
+        let range = nname(it) == "Call"
+            && nname(&nf(it)[0]) == "Path"
+            && strs(&nf(&nf(it)[0])[0]) == ["core", "iter", "range"]
+            && items(&nf(it)[1]).len() == 2;
+        if range {
+            let args = items(&nf(it)[1]);
+            let t = self
+                .ty_of(&args[0], env, None)
+                .or_else(|| self.ty_of(&args[1], env, None))
+                .filter(|t| is_int(t))
+                .ok_or("range element type")?;
+            let (a, _) = self.expr(&args[0], env, Some(&t))?;
+            let (b, _) = self.expr(&args[1], env, Some(&t))?;
+            let (a, b) = (a.ok_or("bad range")?, b.ok_or("bad range")?);
+            self.b.append_block_param(head, cl(&t));
+            self.b.ins().jump(head, &[a]);
+            self.b.switch_to_block(head);
+            let i = self.b.block_params(head)[0];
+            let cc = if signed(&t) { IntCC::SignedLessThan } else { IntCC::UnsignedLessThan };
+            let c = self.b.ins().icmp(cc, i, b);
+            self.b.ins().brif(c, body_b, &[], exit, &[]);
+            self.b.switch_to_block(body_b);
+            let mut inner = env.clone();
+            match nname(pat) {
+                "PBind" => {
+                    let var = self.new_var(&t);
+                    self.b.def_var(var, i);
+                    inner.insert(st(&nf(pat)[0]), (var, t.clone()));
+                }
+                "PWild" => {}
+                _ => return Err("for pattern".into()),
+            }
+            let depth = self.scopes.len();
+            self.loops.push((cont, exit, depth));
+            self.block(body, &mut inner, false)?;
+            self.loops.pop();
+            if !self.term {
+                self.b.ins().jump(cont, &[]);
+            }
+            self.b.switch_to_block(cont);
+            let n = self.b.ins().iadd_imm(i, 1);
+            self.b.ins().jump(head, &[n]);
+            self.b.switch_to_block(exit);
+            self.term = false;
+            return Ok(());
+        }
+        // 列の要素 `x.iter()`
+        let (recv, enumerate) = self.iter_source(it, env).ok_or("unsupported iterator in for")?;
+        let (sp, sty) = self.expr(&recv, env, None)?;
+        let sp = sp.ok_or("bad iterable")?;
+        let elem = self.cx.seq_elem(&sty).ok_or("iteration over a non-sequence")?;
+        let sz = self.elem_size(&elem)?;
+        let base = self.b.ins().load(pt, MemFlags::new(), sp, 0);
+        let len = self.b.ins().load(i64t, MemFlags::new(), sp, 8);
+        self.b.append_block_param(head, i64t);
+        let zero = self.b.ins().iconst(i64t, 0);
+        self.b.ins().jump(head, &[zero]);
+        self.b.switch_to_block(head);
+        let i = self.b.block_params(head)[0];
+        let c = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+        self.b.ins().brif(c, body_b, &[], exit, &[]);
+        self.b.switch_to_block(body_b);
+        let off = self.b.ins().imul_imm(i, sz as i64);
+        let addr = self.b.ins().iadd(base, off);
+        let val = self.load_value(addr, &elem);
+        let mut inner = env.clone();
+        let (idx_pat, elem_pat) = if enumerate {
+            if nname(pat) != "PTuple" || items(&nf(pat)[0]).len() != 2 {
+                return Err("enumerate needs a (index, item) pattern".into());
+            }
+            (Some(&items(&nf(pat)[0])[0]), &items(&nf(pat)[0])[1])
+        } else {
+            (None, pat)
+        };
+        if let Some(ip) = idx_pat {
+            if nname(ip) == "PBind" {
+                let var = self.new_var("usize");
+                self.b.def_var(var, i);
+                inner.insert(st(&nf(ip)[0]), (var, "usize".to_string()));
+            }
+        }
+        match nname(elem_pat) {
+            "PBind" => {
+                let var = self.new_var(&elem);
+                self.b.def_var(var, val);
+                if is_agg(&elem) {
+                    self.refs.insert(var.as_u32());
+                }
+                inner.insert(st(&nf(elem_pat)[0]), (var, elem.clone()));
+            }
+            "PWild" => {}
+            _ => return Err("for pattern".into()),
+        }
+        let depth = self.scopes.len();
+        self.loops.push((cont, exit, depth));
+        self.block(body, &mut inner, false)?;
+        self.loops.pop();
+        if !self.term {
+            self.b.ins().jump(cont, &[]);
+        }
+        self.b.switch_to_block(cont);
+        let n = self.b.ins().iadd_imm(i, 1);
+        self.b.ins().jump(head, &[n]);
+        self.b.switch_to_block(exit);
+        self.term = false;
+        Ok(())
     }
 
     fn if_stmt(&mut self, e: &V, env: &mut Env, tail: bool) -> R<()> {
@@ -1378,11 +1596,15 @@ impl<'a, 'b> FnGen<'a, 'b> {
         }
         for ((_, pt), a) in params.zip(args) {
             let want = self.cx.pty(pt)?;
-            let (v, _) = self.expr(a, env, Some(&want))?;
+            let (v, got) = self.expr(a, env, Some(&want))?;
+            let mut v = v.ok_or("bad argument")?;
+            if got != want {
+                v = self.coerce(v, &got, &want)?;
+            }
             if tag(pt) != "ref" {
                 self.consume(a, &want, env)?;
             }
-            vals.push(v.ok_or("bad argument")?);
+            vals.push(v);
         }
         let res = self.call_rt(id, &vals);
         Ok((out.or(res.first().copied()), rt))
@@ -1451,7 +1673,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
             "Index" => {
                 let (bp, bt) = self.expr(&f[0], env, None)?;
                 let bp = bp.ok_or("bad index base")?;
-                let elem = self.cx.elem_of(&bt).ok_or("indexing a non-Vec")?;
+                let elem = self.cx.seq_elem(&bt).ok_or("indexing a non-Vec")?;
                 let (i, _) = self.expr(&f[1], env, Some("usize"))?;
                 let i = i.ok_or("bad index")?;
                 let len = self.b.ins().load(types::I64, MemFlags::new(), bp, 8);
@@ -1520,6 +1742,13 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     .or_else(|| self.ty_of(&f[2], env, None))
                     .or_else(|| expect.map(String::from).filter(|t| is_scalar(t)))
                     .ok_or("operand type")?;
+                if t.starts_with("Option<") && matches!(op.as_str(), "==" | "!=") {
+                    let (a, _) = self.expr(&f[1], env, Some(&t))?;
+                    let (b, _) = self.expr(&f[2], env, Some(&t))?;
+                    let eq = self.option_eq(a.ok_or("bad operand")?, b.ok_or("bad operand")?, &t)?;
+                    let r = if op == "==" { eq } else { self.b.ins().bxor_imm(eq, 1) };
+                    return Ok((Some(r), "bool".into()));
+                }
                 if !is_scalar(&t) {
                     return Err("operator on an aggregate".into());
                 }
@@ -1612,8 +1841,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 match op.as_str() {
                     "&" | "&mut" | "*" => {
                         let (v, t) = self.expr(&f[1], env, expect)?;
-                        if !is_agg(&t) {
-                            return Err("reference to a scalar".into());
+                        // 不変の参照 `&scalar` と、その参照外し `*x` は値そのもの。`&mut scalar` は未対応。
+                        if !is_agg(&t) && op == "&mut" {
+                            return Err("mutable reference to a scalar".into());
                         }
                         Ok((v, t))
                     }
@@ -1695,6 +1925,14 @@ impl<'a, 'b> FnGen<'a, 'b> {
                         let (a, _) = self.expr(&args[0], env, Some("str"))?;
                         let (b, _) = self.expr(&args[1], env, Some("str"))?;
                         let eq = self.str_eq(a.ok_or("bad operand")?, b.ok_or("bad operand")?);
+                        let ne = self.b.ins().bxor_imm(eq, 1);
+                        self.guard(ne, "assertion failed")?;
+                        return Ok((None, "void".into()));
+                    }
+                    if t.starts_with("Option<") {
+                        let (a, _) = self.expr(&args[0], env, Some(&t))?;
+                        let (b, _) = self.expr(&args[1], env, Some(&t))?;
+                        let eq = self.option_eq(a.ok_or("bad operand")?, b.ok_or("bad operand")?, &t)?;
                         let ne = self.b.ins().bxor_imm(eq, 1);
                         self.guard(ne, "assertion failed")?;
                         return Ok((None, "void".into()));
@@ -1785,7 +2023,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
     fn method_call(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
         let rty = self.ty_of(recv, env, expect);
         if let Some(rt) = &rty {
-            if rt == "str" || rt == STRING || self.cx.elem_of(rt).is_some() {
+            if rt == "str" || rt == STRING || self.cx.seq_elem(rt).is_some() {
                 let (p, _) = self.expr(recv, env, None)?;
                 let p = p.ok_or("bad receiver")?;
                 return self.builtin_method(p, rt, name, args, env);
@@ -1804,6 +2042,109 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
         }
         self.method(recv, name, args, env, expect)
+    }
+
+    /// スライス・Vec に共通のメソッド。`p` は先頭アドレス (先頭の 2 語が ptr, len)。扱わないなら None。
+    fn seq_method(
+        &mut self,
+        p: Value,
+        elem: &str,
+        sz: u32,
+        is_slice: bool,
+        name: &str,
+        args: &[V],
+        env: &mut Env,
+    ) -> R<Option<(Option<Value>, String)>> {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+        match name {
+            "len" if is_slice => Ok(Some((Some(len), "usize".into()))),
+            "is_empty" if is_slice => {
+                let r = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
+                Ok(Some((Some(r), "bool".into())))
+            }
+            "as_slice" | "as_mut_slice" => {
+                let slot = self.alloc(16, 8);
+                let ptr = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                self.b.ins().store(MemFlags::new(), ptr, slot, 0);
+                self.b.ins().store(MemFlags::new(), len, slot, 8);
+                Ok(Some((Some(slot), self.cx.slice_of(elem))))
+            }
+            "get" | "first" | "last" => {
+                if !is_scalar(elem) {
+                    return Err(format!("{} on aggregate elements", name));
+                }
+                let rty = self.cx.builtin_enum("Option", &[elem.to_string()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let idx = match name {
+                    "get" => {
+                        let (i, _) = self.expr(args.first().ok_or("get needs an index")?, env, Some("usize"))?;
+                        i.ok_or("bad index")?
+                    }
+                    "first" => self.b.ins().iconst(i64t, 0),
+                    _ => self.b.ins().iadd_imm(len, -1),
+                };
+                // last の空列では len - 1 が巻き戻るが、範囲検査 (idx < len) で弾かれる。
+                let inb = self.b.ins().icmp(IntCC::UnsignedLessThan, idx, len);
+                let (yes, no, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(inb, yes, &[], no, &[]);
+                self.b.switch_to_block(no);
+                let t0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), t0, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(yes);
+                let base = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                let off = self.b.ins().imul_imm(idx, sz as i64);
+                let addr = self.b.ins().iadd(base, off);
+                let val = self.b.ins().load(cl(elem), MemFlags::new(), addr, 0);
+                let poff = l.variants[1].1[0].1;
+                let dst = self.b.ins().iadd_imm(res, poff as i64);
+                self.b.ins().store(MemFlags::new(), val, dst, 0);
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok(Some((Some(res), rty)))
+            }
+            "sub" => {
+                if args.len() != 2 {
+                    return Err("sub needs two arguments".into());
+                }
+                let sl = self.cx.slice_of(elem);
+                let rty = self.cx.builtin_enum("Option", &[sl.clone()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let (from, _) = self.expr(&args[0], env, Some("usize"))?;
+                let (to, _) = self.expr(&args[1], env, Some("usize"))?;
+                let (from, to) = (from.ok_or("bad index")?, to.ok_or("bad index")?);
+                let ok1 = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, from, to);
+                let ok2 = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, to, len);
+                let ok = self.b.ins().band(ok1, ok2);
+                let (yes, no, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(ok, yes, &[], no, &[]);
+                self.b.switch_to_block(no);
+                let t0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), t0, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(yes);
+                let base = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                let off = self.b.ins().imul_imm(from, sz as i64);
+                let np = self.b.ins().iadd(base, off);
+                let nl = self.b.ins().isub(to, from);
+                let poff = l.variants[1].1[0].1 as i64;
+                let dst = self.b.ins().iadd_imm(res, poff);
+                self.b.ins().store(MemFlags::new(), np, dst, 0);
+                self.b.ins().store(MemFlags::new(), nl, dst, 8);
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok(Some((Some(res), rty)))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// 文字列 `p` (`String`) の末尾に、`src` から `n` バイトを足す。失敗したら真 (I8) を返す。
@@ -1900,6 +2241,41 @@ impl<'a, 'b> FnGen<'a, 'b> {
         }
     }
 
+    /// 2 つの `Option<スカラー>` (アドレス) が等しければ真 (I8)。タグが同じで、`Some` なら中身も同じ。
+    fn option_eq(&mut self, a: Value, b: Value, ty: &str) -> R<Value> {
+        let l = self.cx.layout(ty, 0)?;
+        let payload = l.variants[1].1.first().cloned();
+        let ta = self.b.ins().load(types::I32, MemFlags::new(), a, 0);
+        let tb = self.b.ins().load(types::I32, MemFlags::new(), b, 0);
+        let (cmp_b, done) = (self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(done, types::I8);
+        let same = self.b.ins().icmp(IntCC::Equal, ta, tb);
+        let zero = self.b.ins().iconst(types::I8, 0);
+        self.b.ins().brif(same, cmp_b, &[], done, &[zero]);
+        self.b.switch_to_block(cmp_b);
+        let is_none = self.b.ins().icmp_imm(IntCC::Equal, ta, 0);
+        let one = self.b.ins().iconst(types::I8, 1);
+        match payload {
+            Some((pty, off)) => {
+                if !is_scalar(&pty) {
+                    return Err("Option equality on an aggregate payload".into());
+                }
+                let some_b = self.b.create_block();
+                self.b.ins().brif(is_none, done, &[one], some_b, &[]);
+                self.b.switch_to_block(some_b);
+                let va = self.b.ins().load(cl(&pty), MemFlags::new(), a, off as i32);
+                let vb = self.b.ins().load(cl(&pty), MemFlags::new(), b, off as i32);
+                let eq = if is_float(&pty) { self.b.ins().fcmp(FloatCC::Equal, va, vb) } else { self.b.ins().icmp(IntCC::Equal, va, vb) };
+                self.b.ins().jump(done, &[eq]);
+            }
+            None => {
+                self.b.ins().jump(done, &[one]);
+            }
+        }
+        self.b.switch_to_block(done);
+        Ok(self.b.block_params(done)[0])
+    }
+
     /// 2 つの `str` (アドレス) が等しければ真 (I8)。
     fn str_eq(&mut self, a: Value, b: Value) -> Value {
         let i64t = types::I64;
@@ -1922,6 +2298,22 @@ impl<'a, 'b> FnGen<'a, 'b> {
         self.b.block_params(done)[0]
     }
 
+    /// `&Vec<T>` → `&[T]`、`&String` → `&str` の暗黙の変換 (どちらも {ptr, len} を作る)。
+    fn coerce(&mut self, v: Value, from: &str, to: &str) -> R<Value> {
+        let ok = (from == STRING && to == "str")
+            || (self.cx.elem_of(from).is_some() && self.cx.slices.borrow().get(to).cloned() == self.cx.elem_of(from));
+        if !ok {
+            return Err(format!("argument of type {} where {} is expected", from, to));
+        }
+        let pt = self.ptr_ty();
+        let slot = self.alloc(16, 8);
+        let ptr = self.b.ins().load(pt, MemFlags::new(), v, 0);
+        let len = self.b.ins().load(types::I64, MemFlags::new(), v, 8);
+        self.b.ins().store(MemFlags::new(), ptr, slot, 0);
+        self.b.ins().store(MemFlags::new(), len, slot, 8);
+        Ok(slot)
+    }
+
     fn elem_size(&self, elem: &str) -> R<u32> {
         if is_scalar(elem) { Ok(scalar_size(elem)) } else { Ok(self.cx.layout(elem, 0)?.size) }
     }
@@ -1937,14 +2329,24 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let r = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
                     Ok((Some(r), "bool".into()))
                 }
+                "as_bytes" => {
+                    // `str` と `slice<u8>` は同じ配置 ({ptr, len}) なので、そのまま使える。
+                    Ok((Some(p), self.cx.slice_of("u8")))
+                }
                 _ => Err(format!("str method {}", name)),
             };
         }
         if rt == STRING {
             return self.string_method(p, name, args, env);
         }
-        let elem = self.cx.elem_of(rt).ok_or("not a Vec")?;
+        let is_slice = self.cx.slices.borrow().contains_key(rt);
+        let elem = self.cx.seq_elem(rt).ok_or("not a sequence")?;
         let sz = self.elem_size(&elem)?;
+        if is_slice || matches!(name, "get" | "first" | "last" | "sub" | "as_slice" | "as_mut_slice") {
+            if let Some(r) = self.seq_method(p, &elem, sz, is_slice, name, args, env)? {
+                return Ok(r);
+            }
+        }
         match name {
             "len" | "capacity" => {
                 let off = if name == "len" { 8 } else { 16 };
@@ -2145,7 +2547,7 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
-    let cx = Cx { types: type_defs, gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()) };
+    let cx = Cx { types: type_defs, gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
