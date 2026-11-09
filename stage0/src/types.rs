@@ -213,7 +213,7 @@ impl<'a> TypeCk<'a> {
             if let Some((want, got)) = self.prim_conflict(&err) {
                 let stmts = items(&nf(body)[0]);
                 let line = stmts.last().map(nline).unwrap_or(0);
-                self.diag("E2020", format!("type mismatch in return value: expected {}, found {}", want, got), line);
+                self.diag("E2020", format!("type mismatch in return value: expected {}, found {}{}", want, got, conv_hint(&want, &got)), line);
             }
         }
         self.check_dangling(body, &ret);
@@ -871,7 +871,7 @@ impl<'a> TypeCk<'a> {
                     if let Some((want, got)) = self.prim_conflict(&err) {
                         self.diag(
                             "E2020",
-                            format!("type mismatch in return value of closure: expected {}, found {}", want, got),
+                            format!("type mismatch in return value of closure: expected {}, found {}{}", want, got, conv_hint(&want, &got)),
                             nline(e),
                         );
                     }
@@ -910,7 +910,7 @@ impl<'a> TypeCk<'a> {
                     let ann = subst_params_unknown(&from_v(&f[2], &gn));
                     if let Err(err) = self.unify2(&ann, &rhs) {
                         if let Some((want, got)) = self.prim_conflict(&err) {
-                            self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}", want, got), nline(s));
+                            self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}{}", want, got, conv_hint(&want, &got)), nline(s));
                         }
                     }
                     ann
@@ -1359,4 +1359,18 @@ fn int_literal_problem(text: &str, ty: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// 整数型どうしの食い違いに付ける、変換の仕方の案内 (暗黙の変換も `as` もない)。
+pub(crate) fn conv_hint(want: &str, got: &str) -> String {
+    let int = |t: &str| INTS.contains(&t);
+    if want != got && int(want) && int(got) {
+        format!(
+            "; there is no implicit conversion and no `as`: write `core.num.{w}.from_{g}(x)` if {g} always fits in {w}, otherwise `core.num.{w}.try_from_{g}(x)` (returns Result)",
+            w = want,
+            g = got
+        )
+    } else {
+        String::new()
+    }
 }

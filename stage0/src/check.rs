@@ -934,7 +934,10 @@ impl<'a> Checker<'a> {
         if wt == "never" || gt == "never" {
             return;
         }
-        let msg = format!("type mismatch in {}: expected {}, found {}", what, st(tel(&w, 1)), st(tel(&g, 1)));
+        let mut msg = format!("type mismatch in {}: expected {}, found {}", what, st(tel(&w, 1)), st(tel(&g, 1)));
+        if wt == "prim" && gt == "prim" {
+            msg += &crate::types::conv_hint(&st(tel(&w, 1)), &st(tel(&g, 1)));
+        }
         if wt == "prim" && gt == "prim" && st(tel(&w, 1)) != st(tel(&g, 1)) {
             self.tdiag("E2020", msg, line);
         } else if wt == "named" && gt == "named" && st(tel(&w, 1)) != st(tel(&g, 1)) {
