@@ -2887,3 +2887,78 @@ fn a_generic_function_calls_trait_methods_of_its_concrete_type_arguments() {
     assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
     assert_eq!(text(&o.stdout).trim(), "trait generic ok");
 }
+
+fn clif_fn_bound_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.apply[F: core.ops.Fn<(u32,), u32, E, P>, E: uses, P: panics](f: F, x: u32) -> u32 uses [E] panics P",
+        "    f(x)",
+        "end t.apply",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    let triple = fn(n: u32) -> u32 capture [] {",
+        "        n.wrapping_mul(3u32)",
+        "    }",
+        "    core.check.eq(t.apply(triple, 14u32), 42u32)",
+        "    let add_one = fn(n: u32) -> u32 capture [] {",
+        "        n.wrapping_add(1u32)",
+        "    }",
+        "    core.check.eq(t.relay(add_one, 5u32), 6u32)",
+        "    let square = fn(n: u32) -> u32 capture [] {",
+        "        n.wrapping_mul(n)",
+        "    }",
+        "    core.check.eq(t.twice(square, 3u32), 81u32)",
+        "    let big = fn(n: u8) -> bool capture [] {",
+        "        n > 5u8",
+        "    }",
+        "    core.check.eq(t.map_one(7u8, big), true)",
+        "    let small = fn(n: u8) -> bool capture [] {",
+        "        n > 5u8",
+        "    }",
+        "    core.check.eq(t.map_one(3u8, small), false)",
+        "    let wide = fn(n: i32) -> i64 capture [] {",
+        "        10i64",
+        "    }",
+        "    core.check.eq(t.map_one(2i32, wide), 10i64)",
+        tail,
+        "    std.io.print_line(\"fn bound ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+        "fn t.map_one[T, U, F: core.ops.Fn<(T,), U, E, P>, E: uses, P: panics](x: T, f: F) -> U uses [E] panics P",
+        "    f(x)",
+        "end t.map_one",
+        "",
+        "fn t.relay[F: core.ops.Fn<(u32,), u32, E, P>, E: uses, P: panics](f: F, x: u32) -> u32 uses [E] panics P",
+        "    t.apply(f, x)",
+        "end t.relay",
+        "",
+        "fn t.twice[F: core.ops.Fn<(u32,), u32, E, P>, E: uses, P: panics](f: F, x: u32) -> u32 uses [E] panics P",
+        "    f(f(x))",
+        "end t.twice",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_specializes_generic_functions_for_closure_arguments() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_fnb_{}", release), &clif_fn_bound_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "fn bound ok");
+    }
+}
+
+#[test]
+fn a_wrong_closure_result_through_a_generic_function_fails_the_check() {
+    let (_t, exe_path, out) = build_clif("clif_fnb_bad", &clif_fn_bound_program("    let bad = fn(n: u32) -> u32 capture [] {
+        n
+    }
+    core.check.eq(t.apply(bad, 1u32), 2u32)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}

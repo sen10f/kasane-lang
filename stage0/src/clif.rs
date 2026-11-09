@@ -113,6 +113,29 @@ fn type_params(d: &Def) -> Vec<String> {
     d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect()
 }
 
+/// 型パラメータ `tp` の `core.ops.Fn*` 境界。
+fn fn_bound_of(d: &Def, tp: &str) -> Option<V> {
+    for g in &d.generics {
+        if g.0 == "type" && g.1 == tp {
+            for b in items(&g.2) {
+                if matches!(b, V::L(bx) if st(&bx[0]).starts_with("core.ops.Fn")) {
+                    return Some(b.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 宣言の型 `v` が型パラメータそのもの (`F` / `&F`) なら、その名前。
+fn param_type_name(v: &V) -> Option<String> {
+    match tag(v).as_str() {
+        "named" => Some(st(tel(v, 1))),
+        "ref" => param_type_name(tel(v, 2)),
+        _ => None,
+    }
+}
+
 /// 関数の1回の具体化 (単相化): 型パラメータを具体的な型に置いた版。
 #[derive(Clone)]
 struct Inst<'a> {
@@ -159,6 +182,8 @@ struct Cx<'a> {
     subst: RefCell<HashMap<String, String>>,
     /// 総称な `type` / `enum` の具体化 (`pkg.Pair<u32,bool>` → (`pkg.Pair`, [`u32`, `bool`]))
     inst_types: RefCell<HashMap<String, (String, Vec<String>)>>,
+    /// `Fn` 境界の型パラメータに渡されたクロージャ: `closure<id>` → (クロージャの式, 書かれたファイル, そのときの型パラメータの束縛)
+    closure_types: RefCell<HashMap<String, (V, String, HashMap<String, String>)>>,
 }
 
 /// 構造体・列挙型のメモリ配置。
@@ -306,6 +331,22 @@ impl<'a> Cx<'a> {
         self.pty_in(d, &HashMap::new(), t)
     }
 
+    /// クロージャの式を、`Fn` 境界の型パラメータに渡す名前 `closure<id>` として登録する (同じ式・同じ文脈は同じ名前)。
+    fn closure_ref(&self, node: &V) -> String {
+        use std::hash::{Hash, Hasher};
+        let file = self.file.borrow().clone();
+        let subst = self.subst.borrow().clone();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        node.dump().hash(&mut h);
+        file.hash(&mut h);
+        let mut kv: Vec<(&String, &String)> = subst.iter().collect();
+        kv.sort();
+        kv.hash(&mut h);
+        let name = format!("closure<{:x}>", h.finish());
+        self.closure_types.borrow_mut().insert(name.clone(), (node.clone(), file, subst));
+        name
+    }
+
     /// 総称な型 `base` に型引数 `args` を与えた具体化の名前 (`pkg.Pair<u32,bool>`)。
     fn type_inst(&self, base: &str, args: &[String]) -> String {
         let name = format!("{}<{}>", base, args.join(","));
@@ -377,9 +418,6 @@ impl<'a> Cx<'a> {
         if tps.is_empty() {
             return Some(HashMap::new());
         }
-        if d.generics.iter().any(|g| g.0 == "type" && g.2.dump().contains("Fn")) {
-            return None;
-        }
         let params: HashSet<String> = tps.iter().cloned().collect();
         let mut bind: HashMap<String, String> = HashMap::new();
         let old = self.file.replace(d.file.clone());
@@ -407,7 +445,7 @@ impl<'a> Cx<'a> {
             }
         }
         *self.file.borrow_mut() = old;
-        if ok && tps.iter().all(|p| bind.contains_key(p)) { Some(bind) } else { None }
+        if ok { Some(bind) } else { None }
     }
 
     /// 参照でない型 (フィールド・ペイロード・要素の型に使う)。参照を値として持つと所有と取り違えるため。
@@ -861,6 +899,8 @@ struct FnGen<'a, 'b, 'm> {
     rest: Vec<V>,
     /// `let f = fn(..) ..` で束縛したクロージャ (呼び出しの場所で本体を展開する)
     closures: HashMap<String, V>,
+    /// `Fn` 境界の引数として渡されたクロージャが書かれた文脈 (ファイル, 型パラメータの束縛)
+    closure_ctx: HashMap<String, (String, HashMap<String, String>)>,
     /// スロットに置いた変数の番号 (変数の値はスロットのアドレス)
     promoted: HashSet<u32>,
 }
@@ -978,10 +1018,66 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         None
     }
 
+    /// 引数の式が、クロージャの式、または `let` / 引数で束縛されたクロージャの名前なら、そのクロージャの式。
+    fn resolve_closure_node(&self, a: &V) -> Option<V> {
+        if nname(a) == "Closure" {
+            return Some(a.clone());
+        }
+        if nname(a) == "Path" && strs(&nf(a)[0]).len() == 1 {
+            return self.closures.get(&strs(&nf(a)[0])[0]).cloned();
+        }
+        None
+    }
+
     /// 呼び出しの引数の型 (わかるもの) から、総称な呼び出し先の型パラメータを決める。
+    /// `Fn` 境界の型パラメータには、渡されたクロージャ (キャプチャなし) を `closure<id>` として束縛する。
     fn callee_subst(&self, d: &Def, args: &[V], recv_ty: Option<&str>, env: &Env, expect: Option<&str>) -> Option<HashMap<String, String>> {
-        let arg_tys: Vec<Option<String>> = args.iter().map(|a| self.ty_of(a, env, None)).collect();
-        self.cx.infer_subst(d, &arg_tys, recv_ty, expect)
+        let tps = type_params(d);
+        if tps.is_empty() {
+            return Some(HashMap::new());
+        }
+        let off = if recv_ty.is_some() { 1 } else { 0 };
+        let mut closure_binds: Vec<(String, V)> = vec![];
+        let mut arg_tys: Vec<Option<String>> = vec![];
+        for (k, a) in args.iter().enumerate() {
+            let tp = d.params.get(k + off).and_then(|p| param_type_name(&p.1)).filter(|n| tps.contains(n) && fn_bound_of(d, n).is_some());
+            if let Some(tp) = tp {
+                let node = self.resolve_closure_node(a)?;
+                closure_binds.push((tp, node));
+                arg_tys.push(None);
+            } else {
+                arg_tys.push(self.ty_of(a, env, None));
+            }
+        }
+        let mut bind = self.cx.infer_subst(d, &arg_tys, recv_ty, expect)?;
+        let params: HashSet<String> = tps.iter().cloned().collect();
+        for (tp, node) in closure_binds {
+            let f = nf(&node);
+            if !items(&f[2]).is_empty() {
+                return None; // 値を取り込むクロージャは未対応
+            }
+            // クロージャの引数・戻り値の型 (クロージャが書かれた文脈で解決する)
+            let actual_args: Vec<Option<String>> = items(&f[0]).iter().map(|p| self.cx.pty(&items(p)[1]).ok()).collect();
+            let actual_ret = self.cx.pty(&f[1]).ok();
+            let name = self.cx.closure_ref(&node);
+            bind.insert(tp.clone(), name);
+            let bound = fn_bound_of(d, &tp)?;
+            let targs = tel(&bound, 1);
+            let old = self.cx.file.replace(d.file.clone());
+            let want_args = tel(&targs, 0);
+            if tag(want_args) == "tuple" {
+                for (bv, act) in items(tel(want_args, 1)).iter().zip(actual_args.iter()) {
+                    if let Some(a) = act {
+                        self.cx.unify_v(bv, a, &params, &mut bind);
+                    }
+                }
+            }
+            if let Some(r) = &actual_ret {
+                self.cx.unify_v(tel(&targs, 1), r, &params, &mut bind);
+            }
+            *self.cx.file.borrow_mut() = old;
+        }
+        if tps.iter().all(|p| bind.contains_key(p)) { Some(bind) } else { None }
     }
 
     /// 呼び出しの戻り値の型 (総称な呼び出し先は、引数の型から決める)。
@@ -1481,7 +1577,17 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 if segs.len() == 1 && self.closures.contains_key(&segs[0]) {
                     let clo = &self.closures[&segs[0]];
-                    return self.cx.pty(&nf(clo)[1]).ok();
+                    return match self.closure_ctx.get(&segs[0]) {
+                        Some((file, sub)) => {
+                            let of = self.cx.file.replace(file.clone());
+                            let os = self.cx.subst.replace(sub.clone());
+                            let r = self.cx.pty(&nf(clo)[1]).ok();
+                            *self.cx.file.borrow_mut() = of;
+                            *self.cx.subst.borrow_mut() = os;
+                            r
+                        }
+                        None => self.cx.pty(&nf(clo)[1]).ok(),
+                    };
                 }
                 if segs == ["alloc", "string", "String", "new"] {
                     return Some(STRING.to_string());
@@ -1812,6 +1918,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         }
         for (n, t) in d.params.iter() {
             let ty = self.cx.pty(t)?;
+            if ty.starts_with("closure<") {
+                // `Fn` 境界の引数: 実行時の値は持たず、呼び出し (`f(x)`) の場所で本体を展開する。
+                let reg = self.cx.closure_types.borrow().get(&ty).cloned();
+                let (node, file, sub) = reg.ok_or("unknown closure type")?;
+                self.closures.insert(n.clone(), node);
+                self.closure_ctx.insert(n.clone(), (file, sub));
+                continue;
+            }
             let mut v = params_vals[k];
             k += 1;
             if is_agg(&ty) && tag(t) != "ref" {
@@ -2270,6 +2384,24 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     /// クロージャ (式、または `let` で束縛した名前) の本体を、引数を束縛してその場に展開する。
     fn inline_closure(&mut self, clo: &V, args: &[(Value, String)], env: &Env) -> R<(Option<Value>, String)> {
+        // 関数の引数として渡されたクロージャは、渡した側の文脈 (ファイル・型パラメータの束縛) で評価する。
+        let ctx = if nname(clo) == "Path" && strs(&nf(clo)[0]).len() == 1 {
+            self.closure_ctx.get(&strs(&nf(clo)[0])[0]).cloned()
+        } else {
+            None
+        };
+        if let Some((file, sub)) = ctx {
+            let of = self.cx.file.replace(file);
+            let os = self.cx.subst.replace(sub);
+            let r = self.inline_closure_in(clo, args, env);
+            *self.cx.file.borrow_mut() = of;
+            *self.cx.subst.borrow_mut() = os;
+            return r;
+        }
+        self.inline_closure_in(clo, args, env)
+    }
+
+    fn inline_closure_in(&mut self, clo: &V, args: &[(Value, String)], env: &Env) -> R<(Option<Value>, String)> {
         let node: V = if nname(clo) == "Closure" {
             clo.clone()
         } else if nname(clo) == "Path" && strs(&nf(clo)[0]).len() == 1 {
@@ -2997,6 +3129,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         }
         for ((_, pt), a) in params.zip(args) {
             let want = self.cx.pty_in(d, &subst, pt)?;
+            if want.starts_with("closure<") {
+                continue; // クロージャは実行時の引数にしない (関数の中で本体を展開する)
+            }
             let (v, got) = self.expr(a, env, Some(&want))?;
             let mut v = v.ok_or("bad argument")?;
             if got != want {
@@ -5536,6 +5671,9 @@ fn make_sig(module: &ObjectModule, cx: &Cx, d: &Def, is_entry: bool, subst: &Has
         }
         for (_, t) in &d.params {
             let pt = cx.pty(t).map_err(|e| format!("{}: {}", d.name, e))?;
+            if pt.starts_with("closure<") {
+                continue;
+            }
             sig.params.push(AbiParam::new(if is_agg(&pt) { ptr } else { cl(&pt) }));
         }
         if is_entry {
@@ -5561,7 +5699,7 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
-    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()) };
+    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
@@ -5724,6 +5862,7 @@ pub fn compile_clif(
                 addr_taken: HashSet::new(),
                 rest: vec![],
                 closures: HashMap::new(),
+                closure_ctx: HashMap::new(),
                 promoted: HashSet::new(),
             };
             g.func(d, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?;
