@@ -186,6 +186,9 @@ struct Cx<'a> {
     gen: RefCell<HashMap<String, Vec<(String, Vec<String>)>>>,
     /// `alloc.vec.Vec<u32>` のような Vec の具体化: 名前 → 要素の型
     vecs: RefCell<HashMap<String, String>>,
+    /// `alloc.collections.VecDeque<u32>` のような VecDeque の具体化: 名前 → 要素の型。
+    /// 実体は Vec と同じ `{ptr, len, cap}` の 24 バイト (先頭の出し入れは要素をずらす)。
+    deques: RefCell<HashMap<String, String>>,
     /// `slice<u8>` のようなスライスの具体化: 名前 → 要素の型
     slices: RefCell<HashMap<String, String>>,
     /// `tuple<u32,usize>` のようなタプルの具体化: 名前 → 要素の型の列
@@ -274,6 +277,14 @@ impl<'a> Cx<'a> {
                         return Err("Vec of unit".into());
                     }
                     return Ok(self.vec_of(&elem));
+                }
+                if n == "alloc.collections.VecDeque" {
+                    let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("VecDeque without an element type")?;
+                    let elem = self.pty_owned(first)?;
+                    if elem == "void" {
+                        return Err("VecDeque of unit".into());
+                    }
+                    return Ok(self.deque_of(&elem));
                 }
                 if n == "std.thread.JoinHandle" {
                     let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("JoinHandle without a type")?;
@@ -541,7 +552,7 @@ impl<'a> Cx<'a> {
         if d > 8 || !is_agg(ty) || ty == "str" || ty == "alloc.alloc.AllocError" {
             return false;
         }
-        if ty == STRING || self.vecs.borrow().contains_key(ty) {
+        if ty == STRING || self.vecs.borrow().contains_key(ty) || self.deques.borrow().contains_key(ty) {
             return true;
         }
         match self.layout(ty, 0) {
@@ -618,7 +629,7 @@ impl<'a> Cx<'a> {
                 variants: vec![],
             });
         }
-        if name == STRING || self.vecs.borrow().contains_key(name) {
+        if name == STRING || self.vecs.borrow().contains_key(name) || self.deques.borrow().contains_key(name) {
             return Ok(Layout {
                 size: 24,
                 align: 8,
@@ -721,6 +732,16 @@ impl<'a> Cx<'a> {
         self.vecs.borrow().get(vty).cloned()
     }
 
+    fn deque_of(&self, elem: &str) -> String {
+        let name = format!("alloc.collections.VecDeque<{}>", elem);
+        self.deques.borrow_mut().insert(name.clone(), elem.to_string());
+        name
+    }
+
+    fn deque_elem(&self, ty: &str) -> Option<String> {
+        self.deques.borrow().get(ty).cloned()
+    }
+
     /// 組み込み型 (str / Vec / AllocError) のメソッドの戻り値の型。
     fn builtin_method_ty(&self, recv_ty: &str, name: &str) -> Option<String> {
         if recv_ty == "std.rand.Rng" && name == "next_u64" {
@@ -728,6 +749,15 @@ impl<'a> Cx<'a> {
         }
         if recv_ty.starts_with("joinhandle<") && name == "join" {
             return self.tuples.borrow().get(recv_ty).and_then(|v| v.first().cloned());
+        }
+        if let Some(elem) = self.deque_elem(recv_ty) {
+            return match name {
+                "len" => Some("usize".into()),
+                "is_empty" => Some("bool".into()),
+                "push_back" | "push_front" => self.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()]).ok(),
+                "pop_back" | "pop_front" => self.builtin_enum("Option", &[elem]).ok(),
+                _ => None,
+            };
         }
         if let Some((_, _, v)) = self.map_info(recv_ty) {
             return match name {
@@ -1376,6 +1406,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let is_vec_new = nname(init) == "Call"
             && nname(&nf(init)[0]) == "Path"
             && strs(&nf(&nf(init)[0])[0]) == ["alloc", "vec", "Vec", "new"];
+        let is_deque_new = nname(init) == "Call"
+            && nname(&nf(init)[0]) == "Path"
+            && strs(&nf(&nf(init)[0])[0]) == ["alloc", "collections", "VecDeque", "new"];
         let is_none = nname(init) == "Path" && strs(&nf(init)[0]) == ["None"];
         let map_kind: Option<bool> = if nname(init) == "Call" && nname(&nf(init)[0]) == "Path" {
             let sg = strs(&nf(&nf(init)[0])[0]);
@@ -1387,12 +1420,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         } else {
             None
         };
-        if !is_vec_new && !is_none && map_kind.is_none() {
+        if !is_vec_new && !is_none && map_kind.is_none() && !is_deque_new {
             return None;
         }
         let fits = |t: &str| {
             if is_vec_new {
                 self.cx.elem_of(t).is_some() && self.cx.map_info(t).is_none()
+            } else if is_deque_new {
+                self.cx.deque_elem(t).is_some()
             } else if map_kind.is_some() {
                 self.cx.map_info(t).is_some()
             } else {
@@ -1442,6 +1477,17 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         }
                     }
                 }
+                // q.push_back(x) / q.push_front(x) の x の型
+                "MCall" if is_deque_new && matches!(st(&nf(n)[1]).as_str(), "push_back" | "push_front") && items(&nf(n)[2]).len() == 1 => {
+                    let r = &nf(n)[0];
+                    if nname(r) == "Path" && strs(&nf(r)[0]) == [name.to_string()] {
+                        if let Some(t) = self.ty_of(&items(&nf(n)[2])[0], &local, None) {
+                            if t != "void" && !is_mutref(&t) {
+                                return Some(self.cx.deque_of(&t));
+                            }
+                        }
+                    }
+                }
                 // v.push(x) の x の型
                 "MCall" if is_vec_new && st(&nf(n)[1]) == "push" && items(&nf(n)[2]).len() == 1 => {
                     let r = &nf(n)[0];
@@ -1467,6 +1513,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         if let Some(t) = self.ty_of(&args[0], &local, None) {
                             if t != "void" && !is_mutref(&t) {
                                 return Some(self.cx.vec_of(&t));
+                            }
+                        }
+                    }
+                    if is_deque_new && segs.len() == 2 && segs[0] == name && matches!(segs[1].as_str(), "push_back" | "push_front") && args.len() == 1 {
+                        if let Some(t) = self.ty_of(&args[0], &local, None) {
+                            if t != "void" && !is_mutref(&t) {
+                                return Some(self.cx.deque_of(&t));
                             }
                         }
                     }
@@ -1735,6 +1788,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if segs == ["alloc", "vec", "Vec", "new"] {
                     return expect.filter(|t| self.cx.elem_of(t).is_some()).map(String::from);
                 }
+                if segs == ["alloc", "collections", "VecDeque", "new"] {
+                    return expect.filter(|t| self.cx.deque_elem(t).is_some()).map(String::from);
+                }
                 if segs == ["core", "iter", "count"] {
                     return Some("usize".into());
                 }
@@ -1987,8 +2043,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     fn drop_value(&mut self, addr: Value, ty: &str) -> R<()> {
         let i64t = types::I64;
         let pt = self.ptr_ty();
-        if ty == STRING || self.cx.elem_of(ty).is_some() {
-            if let Some(elem) = self.cx.elem_of(ty) {
+        let seq_elem = self.cx.elem_of(ty).or_else(|| self.cx.deque_elem(ty));
+        if ty == STRING || seq_elem.is_some() {
+            if let Some(elem) = seq_elem {
                 if self.cx.needs_drop(&elem) {
                     let sz = self.elem_size(&elem)? as i64;
                     let len = self.b.ins().load(i64t, MemFlags::new(), addr, 8);
@@ -4172,6 +4229,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                     return Ok((Some(v), t.to_string()));
                 }
+                // `VecDeque.new` は Vec と同じ `{ptr, len, cap}` を 0 で初期化する (先頭・末尾・容量を 0 に)。
+                if segs == ["alloc", "collections", "VecDeque", "new"] {
+                    let Some(t) = expect.filter(|t| self.cx.deque_elem(t).is_some()) else { return Err("VecDeque.new without an element type".into()) };
+                    let v = self.alloc(24, 8);
+                    let z = self.b.ins().iconst(types::I64, 0);
+                    for off in [0, 8, 16] {
+                        self.b.ins().store(MemFlags::new(), z, v, off);
+                    }
+                    return Ok((Some(v), t.to_string()));
+                }
                 let fq = segs.join(".");
                 let Some(d) = self.funcs.get(&fq).copied() else { return Err(format!("call to {}", fq)) };
                 self.call_user(&fq, d, None, args, env, expect)
@@ -4242,7 +4309,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     return self.option_method(recv, rt, name, args, env);
                 }
             }
-            if rt == "str" || rt == STRING || self.cx.seq_elem(rt).is_some() {
+            if rt == "str" || rt == STRING || self.cx.seq_elem(rt).is_some() || self.cx.deque_elem(rt).is_some() {
                 let (p, _) = self.expr(recv, env, None)?;
                 let p = p.ok_or("bad receiver")?;
                 return self.builtin_method(p, rt, name, args, env);
@@ -5610,7 +5677,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             return self.string_method(p, name, args, env);
         }
         let is_slice = self.cx.slices.borrow().contains_key(rt);
-        let elem = self.cx.seq_elem(rt).ok_or("not a sequence")?;
+        let is_deque = self.cx.deques.borrow().contains_key(rt);
+        let elem = self.cx.seq_elem(rt).or_else(|| self.cx.deque_elem(rt)).ok_or("not a sequence")?;
         let sz = self.elem_size(&elem)?;
         if is_slice || matches!(name, "get" | "first" | "last" | "get_mut" | "sub" | "as_slice" | "as_mut_slice" | "contains") {
             if let Some(r) = self.seq_method(p, &elem, sz, is_slice, name, args, env)? {
@@ -5690,7 +5758,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.switch_to_block(done);
                 Ok((Some(res), rty))
             }
-            "pop" => {
+            "pop" | "pop_back" => {
                 let rty = self.cx.builtin_enum("Option", &[elem.clone()])?;
                 let l = self.cx.layout(&rty, 0)?;
                 let res = self.alloc(l.size, l.align);
@@ -5718,7 +5786,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.switch_to_block(done);
                 Ok((Some(res), rty))
             }
-            "push" => {
+            "push" | "push_back" => {
                 let arg = args.first().ok_or("push needs an argument")?;
                 let (v, _) = self.expr(arg, env, Some(&elem))?;
                 let v = v.ok_or("bad push value")?;
@@ -5760,6 +5828,89 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.ins().store(MemFlags::new(), t0, res, 0);
                 self.b.ins().jump(done, &[]);
                 self.b.switch_to_block(fail_b);
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok((Some(res), rty))
+            }
+            // VecDeque の先頭への積み込み: 容量が足りなければ倍に確保し直してから、要素を一つ後ろへずらす。
+            "push_front" if is_deque => {
+                let arg = args.first().ok_or("push_front needs an argument")?;
+                let (v, _) = self.expr(arg, env, Some(&elem))?;
+                let v = v.ok_or("bad push value")?;
+                self.consume(arg, &elem, env)?;
+                let rty = self.cx.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                let cap = self.b.ins().load(i64t, MemFlags::new(), p, 16);
+                let ptr0 = self.b.ins().load(i64t, MemFlags::new(), p, 0);
+                let full = self.b.ins().icmp(IntCC::Equal, len, cap);
+                let (grow, store_b, fail_b, done) =
+                    (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.append_block_param(store_b, i64t);
+                self.b.ins().brif(full, grow, &[], store_b, &[ptr0]);
+                self.b.switch_to_block(grow);
+                let four = self.b.ins().iconst(i64t, 4);
+                let dbl = self.b.ins().ishl_imm(cap, 1);
+                let cap_zero = self.b.ins().icmp_imm(IntCC::Equal, cap, 0);
+                let newcap = self.b.ins().select(cap_zero, four, dbl);
+                let bytes = self.b.ins().imul_imm(newcap, sz as i64);
+                let ra = self.rt.realloc;
+                let newptr = self.call_rt(ra, &[ptr0, bytes])[0];
+                let isnull = self.b.ins().icmp_imm(IntCC::Equal, newptr, 0);
+                let set_b = self.b.create_block();
+                self.b.ins().brif(isnull, fail_b, &[], set_b, &[]);
+                self.b.switch_to_block(set_b);
+                self.b.ins().store(MemFlags::new(), newptr, p, 0);
+                self.b.ins().store(MemFlags::new(), newcap, p, 16);
+                self.b.ins().jump(store_b, &[newptr]);
+                self.b.switch_to_block(store_b);
+                let base = self.b.block_params(store_b)[0];
+                let shift = self.b.ins().imul_imm(len, sz as i64);
+                let moved = self.b.ins().iadd_imm(base, sz as i64);
+                let mm = self.rt.memmove;
+                self.call_rt(mm, &[moved, base, shift]);
+                self.store_value(base, &elem, v)?;
+                let newlen = self.b.ins().iadd_imm(len, 1);
+                self.b.ins().store(MemFlags::new(), newlen, p, 8);
+                let t0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), t0, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(fail_b);
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok((Some(res), rty))
+            }
+            // VecDeque の先頭からの取り出し: 空なら None、そうでなければ先頭を返して残りを詰める。
+            "pop_front" if is_deque => {
+                let rty = self.cx.builtin_enum("Option", &[elem.clone()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                let empty = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
+                let (none_b, some_b, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(empty, none_b, &[], some_b, &[]);
+                self.b.switch_to_block(none_b);
+                let t0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), t0, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(some_b);
+                let base = self.b.ins().load(i64t, MemFlags::new(), p, 0);
+                let val = self.load_value(base, &elem);
+                let poff = l.variants[1].1[0].1;
+                let dst = self.b.ins().iadd_imm(res, poff as i64);
+                self.store_value(dst, &elem, val)?;
+                let tail_n = self.b.ins().iadd_imm(len, -1);
+                let bytes = self.b.ins().imul_imm(tail_n, sz as i64);
+                let src = self.b.ins().iadd_imm(base, sz as i64);
+                let mm = self.rt.memmove;
+                self.call_rt(mm, &[base, src, bytes]);
+                let newlen = self.b.ins().iadd_imm(len, -1);
+                self.b.ins().store(MemFlags::new(), newlen, p, 8);
                 let t1 = self.b.ins().iconst(types::I32, 1);
                 self.b.ins().store(MemFlags::new(), t1, res, 0);
                 self.b.ins().jump(done, &[]);
@@ -6045,7 +6196,7 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
-    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()) };
+    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;

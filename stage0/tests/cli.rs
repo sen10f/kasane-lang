@@ -1817,6 +1817,162 @@ fn indexing_a_vec_out_of_bounds_panics_in_a_cranelift_executable() {
     assert!(text(&o.stderr).contains("index out of bounds"), "{}", text(&o.stderr));
 }
 
+fn clif_deque_program() -> String {
+    let nl = char::from(10u8).to_string();
+    let dq = "alloc.collections.VecDeque<u32, std.alloc.System>";
+    let dqf = "alloc.collections.VecDeque<f64, std.alloc.System>";
+    let sv = "alloc.string.String<std.alloc.System>";
+    let dqs = format!("alloc.collections.VecDeque<{}, std.alloc.System>", sv);
+    [
+        "type t.Bag".to_string(),
+        format!("    q: {}", dq),
+        "    tag: u32".to_string(),
+        "end t.Bag".to_string(),
+        String::new(),
+        format!("fn t.fresh() -> {}", dq),
+        "    alloc.collections.VecDeque.new(std.alloc.SYSTEM)".to_string(),
+        "end t.fresh".to_string(),
+        String::new(),
+        format!("fn t.fresh_f() -> {}", dqf),
+        "    alloc.collections.VecDeque.new(std.alloc.SYSTEM)".to_string(),
+        "end t.fresh_f".to_string(),
+        String::new(),
+        format!("fn t.fresh_s() -> {}", dqs),
+        "    alloc.collections.VecDeque.new(std.alloc.SYSTEM)".to_string(),
+        "end t.fresh_s".to_string(),
+        String::new(),
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may".to_string(),
+        "    let mut q = t.fresh()".to_string(),
+        "    core.check.eq(q.is_empty(), true)".to_string(),
+        "    core.check.eq(q.len(), 0usize)".to_string(),
+        "    core.check.eq(q.pop_front(), None)".to_string(),
+        "    core.check.eq(q.pop_back(), None)".to_string(),
+        "    match q.push_back(1u32) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    match q.push_back(2u32) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    match q.push_back(3u32) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    match q.push_front(0u32) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    core.check.eq(q.len(), 4usize)".to_string(),
+        "    core.check.eq(q.pop_front(), Some(0u32))".to_string(),
+        "    core.check.eq(q.pop_back(), Some(3u32))".to_string(),
+        "    core.check.eq(q.len(), 2usize)".to_string(),
+        "    match q.push_front(9u32) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    core.check.eq(q.pop_front(), Some(9u32))".to_string(),
+        "    core.check.eq(q.pop_front(), Some(1u32))".to_string(),
+        "    core.check.eq(q.pop_front(), Some(2u32))".to_string(),
+        "    core.check.eq(q.is_empty(), true)".to_string(),
+        "    // 先入れ先出し: 容量の拡張と先頭の詰めをまたいでも順序が保たれる。".to_string(),
+        "    let mut i = 0u32".to_string(),
+        "    let mut next = 0u32".to_string(),
+        "    while i < 1000u32 {".to_string(),
+        "        match q.push_back(i) {".to_string(),
+        "            Ok(_) => 0u8".to_string(),
+        "            Err(_) => 1u8".to_string(),
+        "        }".to_string(),
+        "        if i % 3u32 == 0u32 {".to_string(),
+        "            core.check.eq(q.pop_front(), Some(next))".to_string(),
+        "            next = next.wrapping_add(1u32)".to_string(),
+        "        }".to_string(),
+        "        i = i.wrapping_add(1u32)".to_string(),
+        "    }".to_string(),
+        "    while !q.is_empty() {".to_string(),
+        "        core.check.eq(q.pop_front(), Some(next))".to_string(),
+        "        next = next.wrapping_add(1u32)".to_string(),
+        "    }".to_string(),
+        "    core.check.eq(next, 1000u32)".to_string(),
+        "    // 先頭に積んで末尾から取り出す (最後に入れたものが最初に出る)。".to_string(),
+        "    let mut j = 0u32".to_string(),
+        "    while j < 500u32 {".to_string(),
+        "        match q.push_front(j) {".to_string(),
+        "            Ok(_) => 0u8".to_string(),
+        "            Err(_) => 1u8".to_string(),
+        "        }".to_string(),
+        "        j = j.wrapping_add(1u32)".to_string(),
+        "    }".to_string(),
+        "    let mut k = 0u32".to_string(),
+        "    while k < 500u32 {".to_string(),
+        "        core.check.eq(q.pop_back(), Some(k))".to_string(),
+        "        k = k.wrapping_add(1u32)".to_string(),
+        "    }".to_string(),
+        "    core.check.eq(q.is_empty(), true)".to_string(),
+        "    // 浮動小数と、解放が要る要素 (String) も Vec と同じように扱う。".to_string(),
+        "    let mut f = t.fresh_f()".to_string(),
+        "    match f.push_back(1.5f64) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    match f.push_front(0.25f64) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    core.check.eq(f.pop_back(), Some(1.5f64))".to_string(),
+        "    core.check.eq(f.len(), 1usize)".to_string(),
+        "    let mut s = t.fresh_s()".to_string(),
+        "    let a = alloc.string.String.from_str(std.alloc.SYSTEM, \"hi\").unwrap()".to_string(),
+        "    match s.push_front(a) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    let b = alloc.string.String.from_str(std.alloc.SYSTEM, \"yo\").unwrap()".to_string(),
+        "    match s.push_back(b) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    core.check.eq(s.len(), 2usize)".to_string(),
+        "    match s.pop_front() {".to_string(),
+        "        Some(x) => core.check.eq(x.as_str(), \"hi\")".to_string(),
+        "        None => core.check.eq(1u8, 2u8)".to_string(),
+        "    }".to_string(),
+        "    match s.pop_back() {".to_string(),
+        "        Some(x) => core.check.eq(x.as_str(), \"yo\")".to_string(),
+        "        None => core.check.eq(1u8, 2u8)".to_string(),
+        "    }".to_string(),
+        "    let mut bag = t.Bag { q: t.fresh(), tag: 7u32 }".to_string(),
+        "    match bag.q.push_back(5u32) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    core.check.eq(bag.q.len(), 1usize)".to_string(),
+        "    core.check.eq(bag.tag, 7u32)".to_string(),
+        "    std.io.print_line(\"deque ok\")".to_string(),
+        "    Ok(())".to_string(),
+        "end t.main".to_string(),
+        String::new(),
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_runs_vecdeque_like_the_interpreter() {
+    let src = clif_deque_program();
+    let t = Tmp::new("clif_deque_interp", &src);
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
+    assert_eq!(text(&interp.stdout).trim(), "deque ok");
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_deque_{}", release), &src, release);
+        assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    }
+}
+
 fn clif_string_program(tail: &str) -> String {
     let nl = char::from(10u8).to_string();
     let sv = "alloc.string.String<std.alloc.System>";

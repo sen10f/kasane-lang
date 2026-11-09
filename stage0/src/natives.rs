@@ -17,6 +17,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "core.iter.filter", "core.iter.enumerate", "core.iter.take", "core.iter.count", "core.iter.fold",
     "core.str.from_utf8", "alloc.vec.Vec.new", "alloc.vec.Vec.with_capacity", "alloc.string.String.new",
     "alloc.string.String.from_str", "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
+    "alloc.collections.VecDeque.new",
     "alloc.boxed.Box.new", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
@@ -546,6 +547,7 @@ impl Interp {
             "alloc.vec.Vec.with_capacity" => Ok(ok(Val::Vec(new_list(vec![])))),
             "alloc.string.String.new" => Ok(Val::StrBuf(Rc::new(RefCell::new(String::new())))),
             "alloc.string.String.from_str" => Ok(ok(Val::StrBuf(Rc::new(RefCell::new(str_of(&args[1]).unwrap_or_default()))))),
+            "alloc.collections.VecDeque.new" => Ok(Val::Vec(new_list(vec![]))),
             "alloc.collections.HashMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV { kind: "HashMap".into(), d: vec![] })))),
             "alloc.collections.BtreeMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV { kind: "BtreeMap".into(), d: vec![] })))),
             "alloc.boxed.Box.new" => Ok(ok(Val::Struct(Rc::new(StructV {
@@ -942,6 +944,20 @@ impl Interp {
                     return Ok(ok(Val::Unit));
                 }
                 "pop" => return Ok(opt(l.borrow_mut().pop())),
+                // VecDeque は Vec と同じ実体 (先頭の出し入れは O(n))。
+                "push_back" => {
+                    l.borrow_mut().push(a0);
+                    return Ok(ok(Val::Unit));
+                }
+                "push_front" => {
+                    l.borrow_mut().insert(0, a0);
+                    return Ok(ok(Val::Unit));
+                }
+                "pop_back" => return Ok(opt(l.borrow_mut().pop())),
+                "pop_front" => {
+                    let front = if l.borrow().is_empty() { None } else { Some(l.borrow_mut().remove(0)) };
+                    return Ok(opt(front));
+                }
                 "clear" => {
                     l.borrow_mut().clear();
                     return Ok(Val::Unit);
