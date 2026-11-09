@@ -796,6 +796,15 @@ impl<'a> Cx<'a> {
         if is_float(recv_ty) && matches!(name, "sqrt" | "floor" | "ceil" | "trunc" | "abs") {
             return Some(recv_ty.to_string());
         }
+        // 浮動小数から整数への切り捨て変換 `x.trunc_to_i8()` などは `Option<i8>` を返す。
+        // 128 ビット整数 (`i128` / `u128`) は未対応 (型が決まらないのでバックエンド全体をスキップ)。
+        if is_float(recv_ty) {
+            if let Some(to) = name.strip_prefix("trunc_to_") {
+                if is_int(to) {
+                    return self.builtin_enum("Option", &[to.to_string()]).ok();
+                }
+            }
+        }
         let slice_elem = self.slices.borrow().get(recv_ty).cloned();
         if let Some(elem) = slice_elem {
             return self.seq_method_ty(&elem, name);
@@ -5352,6 +5361,15 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             };
             return Ok(Some((Some(r), t)));
         }
+        if is_float(&t) {
+            if let Some(to) = name.strip_prefix("trunc_to_") {
+                if !is_int(to) {
+                    // `i128` / `u128` は未対応。呼び出し側がバックエンド全体をあきらめる。
+                    return Ok(None);
+                }
+                return self.trunc_to_int(recv, &t, to, env).map(Some);
+            }
+        }
         if is_int(&t) && matches!(name, "leading_zeros" | "trailing_zeros" | "count_ones" | "count_zeros") {
             let (x, _) = self.expr(recv, env, Some(&t))?;
             let x = x.ok_or("bad value")?;
@@ -5383,6 +5401,56 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             return Ok(Some((Some(r), if name == "to_f64" { "f64" } else { "f32" }.to_string())));
         }
         Ok(None)
+    }
+
+    /// `x.trunc_to_i8()` など (レシーバは `f32` / `f64`、`to` は整数): `Some(切り捨てた値)` を返す。
+    /// 有限で、切り捨てた値が目標の型の範囲に入るときだけ `Some`。NaN・±無限大・範囲外は `None`。
+    fn trunc_to_int(&mut self, recv: &V, ft: &str, to: &str, env: &mut Env) -> R<(Option<Value>, String)> {
+        let (x, _) = self.expr(recv, env, Some(ft))?;
+        let x = x.ok_or("bad value")?;
+        // 範囲の検査と変換は f64 で行う (`f32` の値は f64 で厳密に表せる)。インタプリタと同じ。
+        let x = if ft == "f32" { self.b.ins().fpromote(types::F64, x) } else { x };
+        let bits = cl(to).bits() as i32;
+        let sg = signed(to);
+        // 切り捨て `trunc(x)` が目標の範囲に入る条件は `min - 1 < x < max + 1`。
+        // 上限 `max + 1` は 2 の冪なので常に厳密。下限 `min - 1` は 64 ビット符号つきだけ
+        // 丸まるので、その場合は `x >= min` とする (`min - 1` と `min` の間に f64 はない)。
+        let (lo, hi, lo_strict) = if sg {
+            let half = 2f64.powi(bits - 1);
+            if bits >= 64 { (-half, half, false) } else { (-half - 1.0, half, true) }
+        } else {
+            (-1.0, 2f64.powi(bits), true)
+        };
+        let (lc, hc) = (self.b.ins().f64const(lo), self.b.ins().f64const(hi));
+        let ge = if lo_strict {
+            self.b.ins().fcmp(FloatCC::GreaterThan, x, lc)
+        } else {
+            self.b.ins().fcmp(FloatCC::GreaterThanOrEqual, x, lc)
+        };
+        let lt = self.b.ins().fcmp(FloatCC::LessThan, x, hc);
+        // NaN はどちらの比較も偽なので `None` になる。
+        let ok = self.b.ins().band(ge, lt);
+        let rty = self.cx.builtin_enum("Option", &[to.to_string()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let poff = l.variants[1].1[0].1 as i64;
+        let (some_b, none_b, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(ok, some_b, &[], none_b, &[]);
+        self.b.switch_to_block(none_b);
+        let t0 = self.b.ins().iconst(types::I32, 0);
+        self.b.ins().store(MemFlags::new(), t0, res, 0);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(some_b);
+        // 範囲内なので飽和変換でも値は変わらない。64 ビットに変換してから目標の幅に縮める。
+        let conv = if sg { self.b.ins().fcvt_to_sint_sat(types::I64, x) } else { self.b.ins().fcvt_to_uint_sat(types::I64, x) };
+        let v = if sg { self.int_cast(conv, "i64", to) } else { self.int_cast(conv, "u64", to) };
+        let dst = self.b.ins().iadd_imm(res, poff);
+        self.b.ins().store(MemFlags::new(), v, dst, 0);
+        let t1 = self.b.ins().iconst(types::I32, 1);
+        self.b.ins().store(MemFlags::new(), t1, res, 0);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok((Some(res), rty))
     }
 
     /// `&Vec<T>` → `&[T]`、`&String` → `&str` の暗黙の変換 (どちらも {ptr, len} を作る)。

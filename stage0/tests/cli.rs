@@ -2683,6 +2683,88 @@ fn a_failed_conversion_check_in_a_cranelift_executable_exits_with_101() {
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
 
+fn clif_trunc_program() -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    let nan = core.num.f64.NAN",
+        "    let inf = core.num.f64.INFINITY",
+        "    let ninf = core.num.f64.NEG_INFINITY",
+        "    t.show_u8(42.9f64)?",
+        "    t.show_u8(200.0f64)?",
+        "    t.show_u8(255.9f64)?",
+        "    t.show_u8(256.0f64)?",
+        "    t.show_u8(0.0f64 - 1.0f64)?",
+        "    t.show_u8(nan)?",
+        "    t.show_u8(inf)?",
+        "    t.show_u8(ninf)?",
+        "    t.show_i32(7.5f64)?",
+        "    t.show_i32(0.0f64 - 100.8f64)?",
+        "    t.show_i32(2147483647.9f64)?",
+        "    t.show_i32(2147483648.0f64)?",
+        "    t.show_i32(nan)?",
+        "    core.check.eq(42.9f64.trunc_to_u8(), Some(42u8))",
+        "    core.check.eq(255.9f64.trunc_to_u8(), Some(255u8))",
+        "    core.check.eq(256.0f64.trunc_to_u8(), None)",
+        "    core.check.eq(nan.trunc_to_u8(), None)",
+        "    core.check.eq(inf.trunc_to_u8(), None)",
+        "    core.check.eq(ninf.trunc_to_u8(), None)",
+        "    core.check.eq(7.5f64.trunc_to_i32(), Some(7i32))",
+        "    core.check.eq((0.0f64 - 100.8f64).trunc_to_i32(), Some(0i32 - 100i32))",
+        "    core.check.eq(2147483647.9f64.trunc_to_i32(), Some(2147483647i32))",
+        "    core.check.eq(2147483648.0f64.trunc_to_i32(), None)",
+        "    core.check.eq(nan.trunc_to_i32(), None)",
+        "    core.check.eq(200.4f64.trunc_to_u64(), Some(200u64))",
+        "    core.check.eq((0.0f64 - 1.0f64).trunc_to_i64(), Some(0i64 - 1i64))",
+        "    core.check.eq(5.9f64.trunc_to_isize(), Some(5isize))",
+        "    core.check.eq(5.9f64.trunc_to_usize(), Some(5usize))",
+        "    core.check.eq(129.0f64.trunc_to_i8(), None)",
+        "    core.check.eq((0.0f64 - 5.9f64).trunc_to_i16(), Some(0i16 - 5i16))",
+        "    core.check.eq(5.9f64.trunc_to_u16(), Some(5u16))",
+        "    core.check.eq(5.9f64.trunc_to_u32(), Some(5u32))",
+        "    core.check.eq(5.9f32.trunc_to_u32(), Some(5u32))",
+        "    std.io.print_line(\"trunc ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+        "fn t.show_i32(x: f64) -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    match x.trunc_to_i32() {",
+        "        Some(7i32) => std.io.print_line(\"i32 7\")",
+        "        Some(2147483647i32) => std.io.print_line(\"i32 max\")",
+        "        Some(_rest) => std.io.print_line(\"i32 other\")",
+        "        None => std.io.print_line(\"i32 none\")",
+        "    }",
+        "end t.show_i32",
+        "",
+        "fn t.show_u8(x: f64) -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    match x.trunc_to_u8() {",
+        "        Some(42u8) => std.io.print_line(\"u8 42\")",
+        "        Some(200u8) => std.io.print_line(\"u8 200\")",
+        "        Some(255u8) => std.io.print_line(\"u8 255\")",
+        "        Some(_rest) => std.io.print_line(\"u8 other\")",
+        "        None => std.io.print_line(\"u8 none\")",
+        "    }",
+        "end t.show_u8",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_float_to_int_truncation() {
+    for release in [false, true] {
+        let (t, exe_path, out) = build_clif(&format!("clif_trunc_{}", release), &clif_trunc_program(), release);
+        let interp = Command::new(exe()).arg("run").current_dir(&t.0).output().unwrap();
+        assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+        assert!(text(&interp.stdout).contains("u8 none"), "{}", text(&interp.stdout));
+        assert!(text(&interp.stdout).contains("i32 none"), "{}", text(&interp.stdout));
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    }
+}
+
 fn clif_map_program(tail: &str) -> String {
     let nl = char::from(10u8).to_string();
     [
