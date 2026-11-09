@@ -2446,3 +2446,28 @@ fn the_demo_example_runs_natively_through_cranelift() {
     assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ");
     let _ = fs::remove_dir_all(&cache);
 }
+
+#[test]
+fn the_json_example_runs_natively_through_cranelift() {
+    let d = root().join("examples").join("json");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_json_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    for release in [false, true] {
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "clif"]).current_dir(&d).env("KSN_CACHE_DIR", &cache);
+        if release {
+            c.arg("--release");
+        }
+        let o = c.output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        let kind = if release { "release" } else { "debug" };
+        let p = d.join("target").join(kind).join(if cfg!(windows) { "json.exe" } else { "json.native" });
+        assert!(p.exists(), "native executable missing: {}", out);
+        let r = Command::new(&p).output().unwrap();
+        assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    }
+    let _ = fs::remove_dir_all(&cache);
+}

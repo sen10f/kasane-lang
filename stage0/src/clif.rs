@@ -46,7 +46,7 @@ fn mutref_inner(p: &str) -> Option<&str> {
 }
 
 fn is_scalar(p: &str) -> bool {
-    is_int(p) || p == "bool" || is_float(p) || is_mutref(p)
+    is_int(p) || p == "bool" || p == "char" || is_float(p) || is_mutref(p)
 }
 
 /// 構造体・列挙型 (メモリ上に置く値) の型名か。
@@ -58,7 +58,7 @@ fn cl(p: &str) -> Type {
     match p {
         "i8" | "u8" | "bool" => types::I8,
         "i16" | "u16" => types::I16,
-        "i32" | "u32" => types::I32,
+        "i32" | "u32" | "char" => types::I32,
         "f32" => types::F32,
         "f64" => types::F64,
         _ => types::I64,
@@ -83,7 +83,7 @@ fn scalar_size(p: &str) -> u32 {
     match p {
         "i8" | "u8" | "bool" => 1,
         "i16" | "u16" => 2,
-        "i32" | "u32" | "f32" => 4,
+        "i32" | "u32" | "f32" | "char" => 4,
         _ => 8,
     }
 }
@@ -168,7 +168,7 @@ impl<'a> Cx<'a> {
                     }
                     return Ok(self.vec_of(&elem));
                 }
-                if n == "alloc.alloc.AllocError" || n == STRING {
+                if n == "alloc.alloc.AllocError" || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" {
                     return Ok(n);
                 }
                 if n == "Option" || n == "Result" {
@@ -333,6 +333,9 @@ impl<'a> Cx<'a> {
         if name == "alloc.alloc.AllocError" {
             return Ok(Layout { size: 1, align: 1, fields: vec![], is_enum: false, variants: vec![] });
         }
+        if name == "std.io.Error" || name == "core.str.Utf8Error" {
+            return Ok(Layout { size: 8, align: 8, fields: vec![], is_enum: false, variants: vec![] });
+        }
         let registered = self.gen.borrow().get(name).cloned();
         if let Some(vs) = registered {
             return self.enum_layout(vs, depth);
@@ -419,6 +422,10 @@ impl<'a> Cx<'a> {
 
     /// 組み込み型 (str / Vec / AllocError) のメソッドの戻り値の型。
     fn builtin_method_ty(&self, recv_ty: &str, name: &str) -> Option<String> {
+        // `derive Clone` の `clone()`: 解放が要らない型は、ビット列のコピー。
+        if name == "clone" && !is_mutref(recv_ty) && !self.needs_drop(recv_ty) && !self.types.contains_key(&format!("{}.clone", recv_ty)) {
+            return Some(recv_ty.to_string());
+        }
         if is_int(recv_ty) && name.starts_with("checked_") {
             return self.builtin_enum("Option", &[recv_ty.to_string()]).ok();
         }
@@ -451,7 +458,7 @@ impl<'a> Cx<'a> {
                 "is_empty" => Some("bool".into()),
                 "clear" => Some("void".into()),
                 "as_str" => Some("str".into()),
-                "push_str" => self.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()]).ok(),
+                "push_str" | "push" => self.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()]).ok(),
                 _ => None,
             };
         }
@@ -476,7 +483,7 @@ impl<'a> Cx<'a> {
         match name {
             "len" => Some("usize".into()),
             "is_empty" => Some("bool".into()),
-            "get" | "first" | "last" if is_scalar(elem) => self.builtin_enum("Option", &[elem.to_string()]).ok(),
+            "get" | "first" | "last" if is_scalar(elem) || !self.needs_drop(elem) => self.builtin_enum("Option", &[elem.to_string()]).ok(),
             "get_mut" if is_scalar(elem) && !is_mutref(elem) => self.builtin_enum("Option", &[format!("mutref<{}>", elem)]).ok(),
             "sub" => {
                 let sl = self.slice_of(elem);
@@ -532,6 +539,8 @@ struct Rt {
     free: FuncId,
     memcpy: FuncId,
     memcmp: FuncId,
+    /// UTF-8 の検証 (ptr, len) -> 1 (正しい) / 0
+    utf8: FuncId,
 }
 
 struct FnGen<'a, 'b> {
@@ -776,6 +785,8 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     sfx.or(expect.map(String::from)).filter(|t| is_float(t))
                 }
                 "str" => Some("str".into()),
+                "char" => Some("char".into()),
+                "byte" => Some("u8".into()),
                 _ => None,
             },
             "Index" => {
@@ -849,6 +860,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
             "MCall" => {
                 let name = st(&f[1]);
                 let recv_ty = self.ty_of(&f[0], env, expect).map(|t| mutref_inner(&t).map(String::from).unwrap_or(t));
+                if let (Some(rt), "map_err") = (&recv_ty, name.as_str()) {
+                    if let Some(a) = items(&f[2]).first() {
+                        return self.map_err_ty(rt, a, env);
+                    }
+                }
                 if let Some(rt) = &recv_ty {
                     if let Some(t) = self.cx.builtin_method_ty(rt, &name) {
                         return Some(t);
@@ -868,6 +884,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if segs.len() >= 2 && env.contains_key(&segs[0]) {
                     let recv_ty = self.field_chain_ty(&segs[..segs.len() - 1], env)?;
                     let name = &segs[segs.len() - 1];
+                    if name == "map_err" && items(&f[1]).len() == 1 {
+                        return self.map_err_ty(&recv_ty, &items(&f[1])[0], env);
+                    }
                     if let Some(t) = self.cx.builtin_method_ty(&recv_ty, name) {
                         return Some(t);
                     }
@@ -894,6 +913,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if segs == ["core", "iter", "count"] {
                     return Some("usize".into());
                 }
+                if segs == ["core", "str", "from_utf8"] {
+                    return self.cx.builtin_enum("Result", &["str".into(), "core.str.Utf8Error".into()]).ok();
+                }
                 if segs == ["core", "panic", "panic"] {
                     return Some("void".into());
                 }
@@ -911,7 +933,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     return self.cx.builtin_enum("Result", &[STRING.to_string(), "alloc.alloc.AllocError".to_string()]).ok();
                 }
                 if segs == ["std", "io", "print_line"] {
-                    return Some("void".into());
+                    return self.cx.builtin_enum("Result", &["void".into(), "std.io.Error".into()]).ok();
                 }
                 if segs == ["core", "check", "eq"] || segs == ["core", "mem", "drop"] {
                     return Some("void".into());
@@ -1147,6 +1169,28 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
             _ => false,
         }
+    }
+
+    /// `main` が `Err` を返した: 標準エラーに出して終了コード 1 で終わる。
+    fn entry_error_exit(&mut self) -> R<()> {
+        self.write_stderr(format!("Error: main returned an error{}", char::from(10u8)).as_bytes())?;
+        let code = self.b.ins().iconst(types::I32, 1);
+        let x = self.rt.exit;
+        self.call_rt(x, &[code]);
+        self.b.ins().trap(TrapCode::user(4).unwrap());
+        self.term = true;
+        Ok(())
+    }
+
+    /// 条件が真のとき `emit` が出すコード (終端する) へ分岐し、偽のときは続きへ進む。
+    fn guard_with(&mut self, cond: Value, emit: impl FnOnce(&mut Self) -> R<()>) -> R<()> {
+        let (yes, no) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(cond, yes, &[], no, &[]);
+        self.b.switch_to_block(yes);
+        emit(self)?;
+        self.b.switch_to_block(no);
+        self.term = false;
+        Ok(())
     }
 
     /// 定数のバイト列を標準エラーに書く。
@@ -1578,7 +1622,20 @@ impl<'a, 'b> FnGen<'a, 'b> {
                             }
                             return Ok(());
                         }
-                        return Err("entry tail expression".into());
+                        // 末尾が `Err(..)`、または `Result` を返す式なら、`Err` のとき終了コード 1 で終わる。
+                        if nname(e) == "Call" && nname(&nf(e)[0]) == "Path" && strs(&nf(&nf(e)[0])[0]) == ["Err"] {
+                            self.entry_error_exit()?;
+                            return Ok(());
+                        }
+                        let (v, t) = self.expr(e, env, None)?;
+                        if !t.starts_with("Result<") {
+                            return Err("entry tail expression".into());
+                        }
+                        let p = v.ok_or("bad tail value")?;
+                        let tg = self.b.ins().load(types::I32, MemFlags::new(), p, 0);
+                        let is_err = self.b.ins().icmp_imm(IntCC::NotEqual, tg, 0);
+                        self.guard_with(is_err, |g| g.entry_error_exit())?;
+                        return Ok(());
                     }
                     if is_print(e) {
                         return self.print_value(&items(&nf(e)[1])[0], env);
@@ -1941,113 +1998,109 @@ impl<'a, 'b> FnGen<'a, 'b> {
 
     // ------------------------------------------------------------ match
     /// 腕のパターンが当てはまるか調べて、当てはまれば `body`、そうでなければ `next` へ分岐する。
-    /// 当てはまった側で使う束縛を返す。パターンが必ず当てはまるなら true。
+    /// 束縛 (名前, 値, 型) を返す。パターンが必ず当てはまるなら true。入れ子のパターンにも対応する。
     fn arm_test(
         &mut self,
         pat: &V,
         scrut: Value,
         sty: &str,
-        tagv: Option<Value>,
+        _tagv: Option<Value>,
         body: Block,
         next: Block,
     ) -> R<(Vec<(String, Value, String)>, bool)> {
+        let mut binds = vec![];
+        let refutable = self.pat_chain(pat, scrut, sty, next, &mut binds)?;
+        self.b.ins().jump(body, &[]);
+        Ok((binds, !refutable))
+    }
+
+    /// パターンを値 `val` (スカラーは値、それ以外はアドレス) に当てる。外れたら `next` へ飛び、当たれば続きのブロックで続ける。
+    /// 検査が 1 つでもあれば true (必ず当てはまるのではない)。
+    fn pat_chain(&mut self, pat: &V, val: Value, ty: &str, next: Block, binds: &mut Vec<(String, Value, String)>) -> R<bool> {
         let pf = nf(pat);
         match nname(pat) {
-            "PWild" => {
-                self.b.ins().jump(body, &[]);
-                Ok((vec![], true))
-            }
+            "PWild" => Ok(false),
             "PBind" => {
-                self.b.ins().jump(body, &[]);
-                if is_agg(sty) {
-                    Ok((vec![(st(&pf[0]), scrut, sty.to_string())], true))
-                } else {
-                    Ok((vec![(st(&pf[0]), scrut, sty.to_string())], true))
-                }
+                binds.push((st(&pf[0]), val, ty.to_string()));
+                Ok(false)
             }
             "PLit" => {
-                if is_agg(sty) {
-                    return Err("literal pattern on an aggregate".into());
+                if is_agg(ty) || is_float(ty) {
+                    return Err("literal pattern on this type".into());
                 }
                 let lit = &pf[0];
-                let want = match st(&nf(lit)[0]).as_str() {
+                let want: i64 = match st(&nf(lit)[0]).as_str() {
                     "int" => int_value(&st(&nf(lit)[1]))?,
                     "bool" => {
                         if matches!(nf(lit)[1], V::B(true)) { 1 } else { 0 }
                     }
+                    "char" | "byte" => st(&nf(lit)[1]).parse().map_err(|_| "character literal")?,
                     k => return Err(format!("pattern literal {}", k)),
                 };
-                let c = self.b.ins().icmp_imm(IntCC::Equal, scrut, want);
-                self.b.ins().brif(c, body, &[], next, &[]);
-                Ok((vec![], false))
+                let c = self.b.ins().icmp_imm(IntCC::Equal, val, want);
+                let cont = self.b.create_block();
+                self.b.ins().brif(c, cont, &[], next, &[]);
+                self.b.switch_to_block(cont);
+                Ok(true)
             }
             "PTuple" => {
-                if !self.cx.tuples.borrow().contains_key(sty) {
+                if !self.cx.tuples.borrow().contains_key(ty) {
                     return Err("tuple pattern on a non-tuple".into());
                 }
-                let l = self.cx.layout(sty, 0)?;
-                let pats = items(&pf[0]);
+                let l = self.cx.layout(ty, 0)?;
+                let pats = items(&pf[0]).to_vec();
                 if pats.len() != l.fields.len() {
                     return Err("tuple pattern arity".into());
                 }
-                let mut binds = vec![];
+                let mut refutable = false;
                 for (sp, (_, fty, off)) in pats.iter().zip(l.fields.iter()) {
-                    match nname(sp) {
-                        "PBind" => {
-                            let addr = self.b.ins().iadd_imm(scrut, *off as i64);
-                            binds.push((st(&nf(sp)[0]), addr, fty.clone()));
-                        }
-                        "PWild" => {}
-                        _ => return Err("nested pattern".into()),
-                    }
+                    let addr = self.b.ins().iadd_imm(val, *off as i64);
+                    let v = self.load_value(addr, fty);
+                    refutable |= self.pat_chain(sp, v, fty, next, binds)?;
                 }
-                self.b.ins().jump(body, &[]);
-                Ok((binds, true))
+                Ok(refutable)
             }
             "PPath" | "PVariant" => {
                 let segs = strs(&pf[0]);
-                let l = self.cx.layout(sty, 0)?;
+                let l = self.cx.layout(ty, 0)?;
                 if !l.is_enum {
                     return Err("variant pattern on a struct".into());
                 }
                 let vn = segs[segs.len() - 1].clone();
                 let idx = l.variants.iter().position(|v| v.0 == vn).ok_or_else(|| format!("no variant {}", vn))?;
-                let tg = tagv.ok_or("no tag")?;
+                let tg = self.b.ins().load(types::I32, MemFlags::new(), val, 0);
                 let c = self.b.ins().icmp_imm(IntCC::Equal, tg, idx as i64);
-                // 束縛するペイロードのアドレスは、分岐の前に計算しておく (本体のブロックで読む)。
-                let mut binds = vec![];
+                let cont = self.b.create_block();
+                self.b.ins().brif(c, cont, &[], next, &[]);
+                self.b.switch_to_block(cont);
                 if nname(pat) == "PVariant" {
                     for (j, sp) in items(&pf[1]).iter().enumerate() {
                         let Some((fty, off)) = l.variants[idx].1.get(j).cloned() else {
-                            // `Ok(_)` / `Ok(())` のように、ペイロードが空 (`()`) のバリアントに対するパターン。
+                            // `Ok(_)` / `Ok(())` / `Ok(_u)`: ペイロードが空 (`()`) のバリアントに対するパターン。
                             if matches!(nname(sp), "PWild" | "PBind") || (nname(sp) == "PLit" && st(&nf(&nf(sp)[0])[0]) == "unit") {
                                 continue;
                             }
                             return Err("too many sub-patterns".into());
                         };
-                        match nname(sp) {
-                            "PBind" => {
-                                let addr = self.b.ins().iadd_imm(scrut, off as i64);
-                                binds.push((st(&nf(sp)[0]), addr, fty));
-                            }
-                            "PWild" => {}
-                            _ => return Err("nested pattern".into()),
-                        }
+                        let addr = self.b.ins().iadd_imm(val, off as i64);
+                        let v = self.load_value(addr, &fty);
+                        self.pat_chain(sp, v, &fty, next, binds)?;
                     }
                 }
-                self.b.ins().brif(c, body, &[], next, &[]);
-                Ok((binds, false))
+                Ok(true)
             }
             n => Err(format!("pattern {}", n)),
         }
     }
 
-    /// 束縛のアドレスから値を読み、新しい変数として env に入れる。
-    fn bind_arm(&mut self, binds: Vec<(String, Value, String)>, env: &mut Env, from_variant: bool) {
+    /// 束縛を env に入れる (値はそのまま新しい変数に入れる)。
+    fn bind_arm(&mut self, binds: Vec<(String, Value, String)>, env: &mut Env, _from_variant: bool) {
         for (name, v, ty) in binds {
-            let val = if from_variant { self.load_value(v, &ty) } else { v };
             let var = self.new_var(&ty);
-            self.b.def_var(var, val);
+            self.b.def_var(var, v);
+            if is_agg(&ty) {
+                self.refs.insert(var.as_u32());
+            }
             env.insert(name, (var, ty));
         }
     }
@@ -2236,6 +2289,12 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 "bool" => {
                     let c = self.b.ins().iconst(types::I8, if matches!(f[1], V::B(true)) { 1 } else { 0 });
                     Ok((Some(c), "bool".into()))
+                }
+                "char" | "byte" => {
+                    let n: i64 = st(&f[1]).parse().map_err(|_| "character literal")?;
+                    let t = if st(&f[0]) == "char" { "char" } else { "u8" };
+                    let c = self.b.ins().iconst(cl(t), n);
+                    Ok((Some(c), t.to_string()))
                 }
                 "str" => {
                     let bytes = lit_bytes(e);
@@ -2737,6 +2796,39 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     self.term = true;
                     return Ok((None, "void".into()));
                 }
+                if segs == ["core", "str", "from_utf8"] && args.len() == 1 {
+                    let (bv, bt) = self.expr(&args[0], env, None)?;
+                    let bv = bv.ok_or("bad bytes")?;
+                    let ok_elem = self.cx.seq_elem(&bt).map_or(false, |e| e == "u8");
+                    if !ok_elem {
+                        return Err("from_utf8 of a non-byte sequence".into());
+                    }
+                    let pt = self.ptr_ty();
+                    let ptr = self.b.ins().load(pt, MemFlags::new(), bv, 0);
+                    let len = self.b.ins().load(types::I64, MemFlags::new(), bv, 8);
+                    let u = self.rt.utf8;
+                    let r = self.call_rt(u, &[ptr, len])[0];
+                    let valid = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                    let rty = self.cx.builtin_enum("Result", &["str".into(), "core.str.Utf8Error".into()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let (ok_b, bad_b, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                    self.b.ins().brif(valid, ok_b, &[], bad_b, &[]);
+                    self.b.switch_to_block(ok_b);
+                    let t0 = self.b.ins().iconst(types::I32, 0);
+                    self.b.ins().store(MemFlags::new(), t0, res, 0);
+                    let poff = l.variants[0].1[0].1 as i64;
+                    let dst = self.b.ins().iadd_imm(res, poff);
+                    self.b.ins().store(MemFlags::new(), ptr, dst, 0);
+                    self.b.ins().store(MemFlags::new(), len, dst, 8);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(bad_b);
+                    let t1 = self.b.ins().iconst(types::I32, 1);
+                    self.b.ins().store(MemFlags::new(), t1, res, 0);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(done);
+                    return Ok((Some(res), rty));
+                }
                 if segs == ["core", "iter", "fold"] && args.len() == 3 {
                     let pipe = self.parse_pipe(&args[0], env).ok_or("unsupported iterator in fold")?;
                     return self.run_pipe(&pipe, env, Sink::Fold(&args[1], &args[2]));
@@ -2771,7 +2863,13 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 if segs == ["std", "io", "print_line"] {
                     self.print_value(&args[0], env)?;
-                    return Ok((None, "void".into()));
+                    // `Result<(), std.io.Error>` の `Ok(())` (標準出力への出力は失敗しない扱い)
+                    let rty = self.cx.builtin_enum("Result", &["void".into(), "std.io.Error".into()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let t0 = self.b.ins().iconst(types::I32, 0);
+                    self.b.ins().store(MemFlags::new(), t0, res, 0);
+                    return Ok((Some(res), rty));
                 }
                 if segs == ["alloc", "string", "String", "new"] {
                     let v = self.alloc(24, 8);
@@ -2839,6 +2937,22 @@ impl<'a, 'b> FnGen<'a, 'b> {
             return self.method_call(&deref, name, args, env, expect);
         }
         if let Some(rt) = &rty {
+            if name == "clone" && args.is_empty() && self.cx.builtin_method_ty(rt, "clone").is_some() && !self.funcs.contains_key(&format!("{}.clone", rt)) {
+                let (v, _) = self.expr(recv, env, None)?;
+                let v = v.ok_or("clone of unit")?;
+                if is_agg(rt) {
+                    let dst = self.alloc_for(rt)?;
+                    let size = self.cx.layout(rt, 0)?.size;
+                    self.copy_mem(dst, v, size);
+                    return Ok((Some(dst), rt.clone()));
+                }
+                return Ok((Some(v), rt.clone()));
+            }
+            if rt.starts_with("Result<") && name == "map_err" && args.len() == 1 {
+                let (p, _) = self.expr(recv, env, None)?;
+                let p = p.ok_or("bad receiver")?;
+                return self.map_err(recv, p, rt, &args[0], env);
+            }
             if rt.starts_with("Option<") || rt.starts_with("Result<") {
                 if self.cx.builtin_method_ty(rt, name).is_some() {
                     return self.option_method(recv, rt, name, args, env);
@@ -2893,8 +3007,8 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 Ok(Some((Some(slot), self.cx.slice_of(elem))))
             }
             "get" | "first" | "last" | "get_mut" => {
-                if !is_scalar(elem) {
-                    return Err(format!("{} on aggregate elements", name));
+                if !is_scalar(elem) && (name == "get_mut" || self.cx.needs_drop(elem)) {
+                    return Err(format!("{} on this kind of aggregate elements", name));
                 }
                 let by_addr = name == "get_mut";
                 let pay_ty = if by_addr { format!("mutref<{}>", elem) } else { elem.to_string() };
@@ -2921,10 +3035,15 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let base = self.b.ins().load(pt, MemFlags::new(), p, 0);
                 let off = self.b.ins().imul_imm(idx, sz as i64);
                 let addr = self.b.ins().iadd(base, off);
-                let val = if by_addr { addr } else { self.b.ins().load(cl(elem), MemFlags::new(), addr, 0) };
                 let poff = l.variants[1].1[0].1;
                 let dst = self.b.ins().iadd_imm(res, poff as i64);
-                self.b.ins().store(MemFlags::new(), val, dst, 0);
+                if is_agg(elem) {
+                    // 解放が要らない構造体・列挙型は、値のコピーを `Some` の中に置く (読むだけの参照の代わり)。
+                    self.store_value(dst, elem, addr)?;
+                } else {
+                    let val = if by_addr { addr } else { self.b.ins().load(cl(elem), MemFlags::new(), addr, 0) };
+                    self.b.ins().store(MemFlags::new(), val, dst, 0);
+                }
                 let t1 = self.b.ins().iconst(types::I32, 1);
                 self.b.ins().store(MemFlags::new(), t1, res, 0);
                 self.b.ins().jump(done, &[]);
@@ -3025,6 +3144,56 @@ impl<'a, 'b> FnGen<'a, 'b> {
         let i64t = types::I64;
         let pt = self.ptr_ty();
         match name {
+            "push" => {
+                let arg = args.first().ok_or("push needs a char")?;
+                let (cv, ct) = self.expr(arg, env, Some("char"))?;
+                if ct != "char" {
+                    return Err("String.push of a non-char".into());
+                }
+                let c = cv.ok_or("bad char")?;
+                // UTF-8 に符号化して 4 バイトの領域に置き、n バイト足す。
+                let i32t = types::I32;
+                let lt80 = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, c, 0x80);
+                let lt800 = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, c, 0x800);
+                let lt10000 = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, c, 0x10000);
+                let (one, two, three, four) = (
+                    self.b.ins().iconst(i64t, 1),
+                    self.b.ins().iconst(i64t, 2),
+                    self.b.ins().iconst(i64t, 3),
+                    self.b.ins().iconst(i64t, 4),
+                );
+                let s34 = self.b.ins().select(lt10000, three, four);
+                let s234 = self.b.ins().select(lt800, two, s34);
+                let n = self.b.ins().select(lt80, one, s234);
+                let sh6 = self.b.ins().ushr_imm(c, 6);
+                let sh12 = self.b.ins().ushr_imm(c, 12);
+                let sh18 = self.b.ins().ushr_imm(c, 18);
+                let low6 = self.b.ins().band_imm(c, 0x3f);
+                let mid6 = self.b.ins().band_imm(sh6, 0x3f);
+                let hi6 = self.b.ins().band_imm(sh12, 0x3f);
+                let b0_2 = self.b.ins().bor_imm(sh6, 0xC0);
+                let b0_3 = self.b.ins().bor_imm(sh12, 0xE0);
+                let b0_4 = self.b.ins().bor_imm(sh18, 0xF0);
+                let t34 = self.b.ins().select(lt10000, b0_3, b0_4);
+                let t234 = self.b.ins().select(lt800, b0_2, t34);
+                let b0 = self.b.ins().select(lt80, c, t234);
+                let low_c = self.b.ins().bor_imm(low6, 0x80);
+                let mid_c = self.b.ins().bor_imm(mid6, 0x80);
+                let hi_c = self.b.ins().bor_imm(hi6, 0x80);
+                let r34 = self.b.ins().select(lt10000, mid_c, hi_c);
+                let b1 = self.b.ins().select(lt800, low_c, r34);
+                let b2 = self.b.ins().select(lt10000, low_c, mid_c);
+                let b3 = low_c;
+                let slot = self.alloc(4, 1);
+                for (k, b) in [b0, b1, b2, b3].iter().enumerate() {
+                    let b8 = self.b.ins().ireduce(types::I8, *b);
+                    self.b.ins().store(MemFlags::new(), b8, slot, k as i32);
+                }
+                let _ = i32t;
+                let failed = self.string_append(p, slot, n)?;
+                let (res, rty) = self.alloc_result(failed)?;
+                return Ok((Some(res), rty));
+            }
             "len" => {
                 let v = self.b.ins().load(i64t, MemFlags::new(), p, 8);
                 Ok((Some(v), "usize".into()))
@@ -3073,8 +3242,13 @@ impl<'a, 'b> FnGen<'a, 'b> {
             // どちらも先頭の 2 語が {ptr, len}
             return Ok(self.str_eq(a, b));
         }
-        if self.cx.slices.borrow().contains_key(ty) || self.cx.elem_of(ty).is_some() {
-            return Err("equality of sequences".into());
+        if let Some(elem) = self.cx.seq_elem(ty) {
+            // 要素が整数などのスカラーの列は、長さが同じで、バイト列が同じなら等しい。
+            if !is_scalar(&elem) || is_float(&elem) || is_mutref(&elem) {
+                return Err("equality of sequences of this element type".into());
+            }
+            let sz = scalar_size(&elem) as i64;
+            return Ok(self.bytes_eq(a, b, sz));
         }
         let l = self.cx.layout(ty, 0)?;
         if !l.is_enum {
@@ -3127,6 +3301,88 @@ impl<'a, 'b> FnGen<'a, 'b> {
             let y = self.b.ins().iadd_imm(b, off as i64);
             Ok((x, y))
         }
+    }
+
+    /// `r.map_err(f)` の結果の型 (`f` は関数の名前かクロージャ)。
+    fn map_err_ty(&self, recv_ty: &str, f: &V, env: &Env) -> Option<String> {
+        if !recv_ty.starts_with("Result<") {
+            return None;
+        }
+        let l = self.cx.layout(recv_ty, 0).ok()?;
+        let ok_ty = l.variants.first()?.1.first().map(|x| x.0.clone()).unwrap_or_else(|| "void".to_string());
+        let new_err = if nname(f) == "Closure" {
+            self.cx.pty(&nf(f)[1]).ok()?
+        } else if nname(f) == "Path" && !env.contains_key(&strs(&nf(f)[0])[0]) {
+            let q = self.cx.qual_segs(&strs(&nf(f)[0])).join(".");
+            let d = self.funcs.get(&q).copied()?;
+            self.cx.pty_for(d, &d.ret).ok()?
+        } else {
+            return None;
+        };
+        self.cx.builtin_enum("Result", &[ok_ty, new_err]).ok()
+    }
+
+    /// 関数 `d` を、評価済みの値で呼ぶ。
+    fn call_fn_values(&mut self, fq: &str, d: &Def, vals: &[Value]) -> R<(Option<Value>, String)> {
+        let id = *self.ids.get(fq).ok_or("call target not declared")?;
+        let rt = self.cx.pty_for(d, &d.ret)?;
+        let mut all = vec![];
+        let mut out = None;
+        if is_agg(&rt) {
+            let p = self.alloc_for(&rt)?;
+            all.push(p);
+            out = Some(p);
+        }
+        all.extend_from_slice(vals);
+        let res = self.call_rt(id, &all);
+        Ok((out.or(res.first().copied()), rt))
+    }
+
+    /// `r.map_err(f)`: `Err(e)` を `Err(f(e))` に変える。`Ok` はそのまま。
+    fn map_err(&mut self, recv: &V, p: Value, rt: &str, f: &V, env: &mut Env) -> R<(Option<Value>, String)> {
+        let newty = self.map_err_ty(rt, f, env).ok_or("map_err with an unsupported function")?;
+        let l = self.cx.layout(rt, 0)?;
+        let nl = self.cx.layout(&newty, 0)?;
+        let ok_pay = l.variants[0].1.first().cloned();
+        let (err_ty, err_off) = l.variants[1].1.first().cloned().ok_or("map_err on an empty error")?;
+        if self.cx.needs_drop(&err_ty) {
+            return Err("map_err on a droppable error".into());
+        }
+        self.consume(recv, rt, env)?;
+        let res = self.alloc(nl.size, nl.align);
+        let tg = self.b.ins().load(types::I32, MemFlags::new(), p, 0);
+        let is_ok = self.b.ins().icmp_imm(IntCC::Equal, tg, 0);
+        let (ok_b, err_b, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(is_ok, ok_b, &[], err_b, &[]);
+        self.b.switch_to_block(ok_b);
+        let t0 = self.b.ins().iconst(types::I32, 0);
+        self.b.ins().store(MemFlags::new(), t0, res, 0);
+        if let Some((oty, ooff)) = ok_pay {
+            let src = self.b.ins().iadd_imm(p, ooff as i64);
+            let v = self.load_value(src, &oty);
+            let noff = nl.variants[0].1[0].1;
+            let dst = self.b.ins().iadd_imm(res, noff as i64);
+            self.store_value(dst, &oty, v)?;
+        }
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(err_b);
+        let esrc = self.b.ins().iadd_imm(p, err_off as i64);
+        let ev = self.load_value(esrc, &err_ty);
+        let (fv, _) = if nname(f) == "Closure" {
+            self.inline_closure(f, &[(ev, err_ty.clone())], env)?
+        } else {
+            let q = self.cx.qual_segs(&strs(&nf(f)[0])).join(".");
+            let d = self.funcs.get(&q).copied().ok_or("map_err function not found")?;
+            self.call_fn_values(&q, d, &[ev])?
+        };
+        let (nety, noff) = nl.variants[1].1.first().cloned().ok_or("map_err result type")?;
+        let dst = self.b.ins().iadd_imm(res, noff as i64);
+        self.store_value(dst, &nety, fv.ok_or("map_err function returns unit")?)?;
+        let t1 = self.b.ins().iconst(types::I32, 1);
+        self.b.ins().store(MemFlags::new(), t1, res, 0);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok((Some(res), newty))
     }
 
     /// `Option` / `Result` のメソッド: `is_some` / `is_none` / `is_ok` / `is_err` / `unwrap` / `expect` / `unwrap_or`。
@@ -3198,6 +3454,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
 
     /// 2 つの `str` (アドレス) が等しければ真 (I8)。
     fn str_eq(&mut self, a: Value, b: Value) -> Value {
+        self.bytes_eq(a, b, 1)
+    }
+
+    /// 先頭の 2 語が {ptr, len} の 2 つの列 (要素 1 つが `sz` バイト) が、長さもバイト列も同じなら真 (I8)。
+    fn bytes_eq(&mut self, a: Value, b: Value, sz: i64) -> Value {
         let i64t = types::I64;
         let pt = self.ptr_ty();
         let la = self.b.ins().load(i64t, MemFlags::new(), a, 8);
@@ -3211,7 +3472,8 @@ impl<'a, 'b> FnGen<'a, 'b> {
         self.b.ins().brif(same_len, cmp_b, &[], done, &[zero]);
         self.b.switch_to_block(cmp_b);
         let mc = self.rt.memcmp;
-        let r = self.call_rt(mc, &[pa, pb, la])[0];
+        let nbytes = if sz == 1 { la } else { self.b.ins().imul_imm(la, sz) };
+        let r = self.call_rt(mc, &[pa, pb, nbytes])[0];
         let eq = self.b.ins().icmp_imm(IntCC::Equal, r, 0);
         self.b.ins().jump(done, &[eq]);
         self.b.switch_to_block(done);
@@ -3500,6 +3762,19 @@ impl<'a, 'b> FnGen<'a, 'b> {
             let r = self.b.ins().ineg(a);
             return Ok((Some(r), t));
         }
+        if op == "shl" || op == "shr" {
+            // シフト量は `u32`。型の幅で割った余りにする (wrapping)。
+            let (amt, _) = self.expr(&args[0], env, Some("u32"))?;
+            let amt = amt.ok_or("bad shift amount")?;
+            let bits = cl(&t).bits() as i64;
+            let m = self.b.ins().band_imm(amt, bits - 1);
+            let r = match (op, signed(&t)) {
+                ("shl", _) => self.b.ins().ishl(a, m),
+                ("shr", true) => self.b.ins().sshr(a, m),
+                _ => self.b.ins().ushr(a, m),
+            };
+            return Ok((Some(r), t));
+        }
         let (b, _) = self.expr(&args[0], env, Some(&t))?;
         let b = b.ok_or("bad operand")?;
         let r = match op {
@@ -3601,6 +3876,18 @@ pub fn compile_clif(
             let segs: Vec<String> = c.split('.').map(String::from).collect();
             todo.push(cx.qual_segs(&segs).join("."));
         }
+        // 関数の名前が値として渡されている場合 (`r.map_err(json.oom)`) も拾う。
+        let mut nodes: Vec<&V> = vec![];
+        crate::check::walk(d.body.as_ref().unwrap(), &mut nodes);
+        for nd in nodes {
+            if nname(nd) == "Path" {
+                let segs = strs(&nf(nd)[0]);
+                let q = cx.qual_segs(&segs).join(".");
+                if funcs.contains_key(&q) {
+                    todo.push(q);
+                }
+            }
+        }
         // メソッド呼び出しの候補: 同じ名前を持つ、型に属する関数をすべて取り込む。
         let mut mnames = vec![];
         method_names(d.body.as_ref().unwrap(), &mut mnames);
@@ -3647,7 +3934,12 @@ pub fn compile_clif(
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I32));
     let memcmp = module.declare_function("memcmp", Linkage::Import, &sig).map_err(|e| e.to_string())?;
-    let rt = Rt { puts, write, exit, realloc, free, memcpy, memcmp };
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(ptr));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(types::I32));
+    let utf8 = module.declare_function("ksn_utf8_valid", Linkage::Local, &sig).map_err(|e| e.to_string())?;
+    let rt = Rt { puts, write, exit, realloc, free, memcpy, memcmp, utf8 };
 
     // 関数の宣言。入口は C の `main` にする。構造体・列挙型を返す関数は、先頭に戻り値用のアドレスを取る。
     let mut ids: HashMap<String, FuncId> = HashMap::new();
@@ -3677,6 +3969,7 @@ pub fn compile_clif(
 
     let mut data_n = 0usize;
     let mut fbc = FunctionBuilderContext::new();
+    define_utf8_valid(&mut module, rt.utf8, &mut fbc)?;
     for n in &order {
         let d = funcs[n];
         *cx.file.borrow_mut() = d.file.clone();
@@ -3730,6 +4023,152 @@ pub fn compile_clif(
         let err: String = String::from_utf8_lossy(&r.stderr).trim().chars().take(300).collect();
         return Err(format!("link failed: {}", err));
     }
+    Ok(())
+}
+
+/// バイト `ptr[idx]` を I32 に広げて読む。
+fn byte_at(b: &mut FunctionBuilder, ptr: Value, idx: Value) -> Value {
+    let a = b.ins().iadd(ptr, idx);
+    let v = b.ins().load(types::I8, MemFlags::new(), a, 0);
+    b.ins().uextend(types::I32, v)
+}
+
+/// 継続バイト (`10xxxxxx`) か。
+fn is_cont(b: &mut FunctionBuilder, v: Value) -> Value {
+    let m = b.ins().band_imm(v, 0xC0);
+    b.ins().icmp_imm(IntCC::Equal, m, 0x80)
+}
+
+/// `ksn_utf8_valid(ptr, len) -> i32` を定義する (正しい UTF-8 なら 1)。
+fn define_utf8_valid(module: &mut ObjectModule, id: FuncId, fbc: &mut FunctionBuilderContext) -> R<()> {
+    let mut ctx = module.make_context();
+    ctx.func.signature = module.declarations().get_function_decl(id).signature.clone();
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, fbc);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        let ptr = b.block_params(entry)[0];
+        let len = b.block_params(entry)[1];
+        let (head, body, ok, bad) = (b.create_block(), b.create_block(), b.create_block(), b.create_block());
+        b.append_block_param(head, types::I64);
+        let zero = b.ins().iconst(types::I64, 0);
+        b.ins().jump(head, &[zero]);
+        b.switch_to_block(head);
+        let i = b.block_params(head)[0];
+        let more = b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+        b.ins().brif(more, body, &[], ok, &[]);
+        b.switch_to_block(body);
+        let b0 = byte_at(&mut b, ptr, i);
+        // 1 バイト
+        let (ascii, not_ascii) = (b.create_block(), b.create_block());
+        let c_ascii = b.ins().icmp_imm(IntCC::UnsignedLessThan, b0, 0x80);
+        b.ins().brif(c_ascii, ascii, &[], not_ascii, &[]);
+        b.switch_to_block(ascii);
+        let n1 = b.ins().iadd_imm(i, 1);
+        b.ins().jump(head, &[n1]);
+        // 2 バイト (C2..DF)
+        b.switch_to_block(not_ascii);
+        let (two, not2) = (b.create_block(), b.create_block());
+        let t2 = b.ins().iadd_imm(b0, -0xC2);
+        let is2 = b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, t2, 0x1D);
+        b.ins().brif(is2, two, &[], not2, &[]);
+        b.switch_to_block(two);
+        let (two_chk, _) = (b.create_block(), 0);
+        let need = b.ins().iadd_imm(i, 1);
+        let have = b.ins().icmp(IntCC::UnsignedLessThan, need, len);
+        b.ins().brif(have, two_chk, &[], bad, &[]);
+        b.switch_to_block(two_chk);
+        let i1 = b.ins().iadd_imm(i, 1);
+        let b1 = byte_at(&mut b, ptr, i1);
+        let c1 = is_cont(&mut b, b1);
+        let next2 = b.create_block();
+        b.ins().brif(c1, next2, &[], bad, &[]);
+        b.switch_to_block(next2);
+        let n2 = b.ins().iadd_imm(i, 2);
+        b.ins().jump(head, &[n2]);
+        // 3 バイト (E0..EF)
+        b.switch_to_block(not2);
+        let (three, not3) = (b.create_block(), b.create_block());
+        let t3 = b.ins().iadd_imm(b0, -0xE0);
+        let is3 = b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, t3, 0xF);
+        b.ins().brif(is3, three, &[], not3, &[]);
+        b.switch_to_block(three);
+        let three_chk = b.create_block();
+        let need = b.ins().iadd_imm(i, 2);
+        let have = b.ins().icmp(IntCC::UnsignedLessThan, need, len);
+        b.ins().brif(have, three_chk, &[], bad, &[]);
+        b.switch_to_block(three_chk);
+        let i1 = b.ins().iadd_imm(i, 1);
+        let i2 = b.ins().iadd_imm(i, 2);
+        let b1 = byte_at(&mut b, ptr, i1);
+        let b2 = byte_at(&mut b, ptr, i2);
+        let c1 = is_cont(&mut b, b1);
+        let c2 = is_cont(&mut b, b2);
+        let both = b.ins().band(c1, c2);
+        let is_e0 = b.ins().icmp_imm(IntCC::Equal, b0, 0xE0);
+        let lt_a0 = b.ins().icmp_imm(IntCC::UnsignedLessThan, b1, 0xA0);
+        let bad_e0 = b.ins().band(is_e0, lt_a0);
+        let is_ed = b.ins().icmp_imm(IntCC::Equal, b0, 0xED);
+        let gt_9f = b.ins().icmp_imm(IntCC::UnsignedGreaterThan, b1, 0x9F);
+        let bad_ed = b.ins().band(is_ed, gt_9f);
+        let any_bad = b.ins().bor(bad_e0, bad_ed);
+        let not_bad = b.ins().bxor_imm(any_bad, 1);
+        let valid = b.ins().band(both, not_bad);
+        let next3 = b.create_block();
+        b.ins().brif(valid, next3, &[], bad, &[]);
+        b.switch_to_block(next3);
+        let n3 = b.ins().iadd_imm(i, 3);
+        b.ins().jump(head, &[n3]);
+        // 4 バイト (F0..F4)
+        b.switch_to_block(not3);
+        let four = b.create_block();
+        let t4 = b.ins().iadd_imm(b0, -0xF0);
+        let is4 = b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, t4, 4);
+        b.ins().brif(is4, four, &[], bad, &[]);
+        b.switch_to_block(four);
+        let four_chk = b.create_block();
+        let need = b.ins().iadd_imm(i, 3);
+        let have = b.ins().icmp(IntCC::UnsignedLessThan, need, len);
+        b.ins().brif(have, four_chk, &[], bad, &[]);
+        b.switch_to_block(four_chk);
+        let i1 = b.ins().iadd_imm(i, 1);
+        let i2 = b.ins().iadd_imm(i, 2);
+        let i3 = b.ins().iadd_imm(i, 3);
+        let b1 = byte_at(&mut b, ptr, i1);
+        let b2 = byte_at(&mut b, ptr, i2);
+        let b3 = byte_at(&mut b, ptr, i3);
+        let c1 = is_cont(&mut b, b1);
+        let c2 = is_cont(&mut b, b2);
+        let c3 = is_cont(&mut b, b3);
+        let c12 = b.ins().band(c1, c2);
+        let both = b.ins().band(c12, c3);
+        let is_f0 = b.ins().icmp_imm(IntCC::Equal, b0, 0xF0);
+        let lt_90 = b.ins().icmp_imm(IntCC::UnsignedLessThan, b1, 0x90);
+        let bad_f0 = b.ins().band(is_f0, lt_90);
+        let is_f4 = b.ins().icmp_imm(IntCC::Equal, b0, 0xF4);
+        let gt_8f = b.ins().icmp_imm(IntCC::UnsignedGreaterThan, b1, 0x8F);
+        let bad_f4 = b.ins().band(is_f4, gt_8f);
+        let any_bad = b.ins().bor(bad_f0, bad_f4);
+        let not_bad = b.ins().bxor_imm(any_bad, 1);
+        let valid = b.ins().band(both, not_bad);
+        let next4 = b.create_block();
+        b.ins().brif(valid, next4, &[], bad, &[]);
+        b.switch_to_block(next4);
+        let n4 = b.ins().iadd_imm(i, 4);
+        b.ins().jump(head, &[n4]);
+        // 結果
+        b.switch_to_block(ok);
+        let one = b.ins().iconst(types::I32, 1);
+        b.ins().return_(&[one]);
+        b.switch_to_block(bad);
+        let z = b.ins().iconst(types::I32, 0);
+        b.ins().return_(&[z]);
+        b.seal_all_blocks();
+        b.finalize();
+    }
+    module.define_function(id, &mut ctx).map_err(|e| format!("utf8 validator: {}", e))?;
+    module.clear_context(&mut ctx);
     Ok(())
 }
 
