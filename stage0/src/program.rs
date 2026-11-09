@@ -33,6 +33,8 @@ pub struct Def {
     pub body: Option<V>,
     pub init: Option<V>,
     pub has_impls: bool,
+    /// `impls <トレイト>` のトレイト名 (基底。`has_impls` のときだけ意味を持つ)。
+    pub impls_trait: String,
     pub methods: Vec<String>,
     /// トレイトのメソッドのシグネチャ (名前, 引数, 戻り値)。解析できたものだけ。
     pub trait_sigs: Vec<(String, Vec<(String, V)>, V)>,
@@ -142,7 +144,8 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                     p.i += 1;
                 }
                 if p.accept_kw("impls") {
-                    p.trait_ref()?;
+                    let tr = p.trait_ref()?;
+                    d.impls_trait = text(&items(&tr)[0]);
                     d.has_impls = true;
                 }
             }

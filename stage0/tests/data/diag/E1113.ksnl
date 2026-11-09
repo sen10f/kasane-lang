@@ -1,0 +1,7 @@
+type t.R pub
+    a: u8
+end t.R
+
+fn t.R.partial_cmp(self: &t.R, _other: &t.R) -> Option<core.cmp.Ordering> uses [] panics never impls core.cmp.PartialOrd<t.R>
+    None
+end t.R.partial_cmp

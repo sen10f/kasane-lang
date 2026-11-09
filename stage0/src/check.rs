@@ -218,6 +218,8 @@ impl<'a> Checker<'a> {
             }
         }
         self.check_declarations();
+        self.check_impls();
+        self.check_field_method();
         for &i in &user {
             let d = self.def(i);
             match d.kw.as_str() {
@@ -288,6 +290,109 @@ impl<'a> Checker<'a> {
                     let msg = format!("recursive type {} requires an explicit core.ops.Drop impl", d.name);
                     self.diag("E4013", msg, i, 0);
                 }
+            }
+        }
+    }
+
+    /// 3.2: `impl Tr for X` と `impls Tr` のメソッドの整合 (過不足)、`impl` 行の重複を検査する
+    /// (`spec/tools/xref.py` の impl / dup の移植)。未知トレイトは E1104 が報告する。
+    fn check_impls(&mut self) {
+        // トレイトの必須メソッド (標準ライブラリを含む全定義から)。
+        let mut req: HashMap<String, BTreeSet<String>> = HashMap::new();
+        for d in &self.p.defs {
+            if d.kw == "trait" {
+                req.insert(d.name.clone(), d.methods.iter().cloned().collect());
+            }
+        }
+        // (トレイト, owner) -> `impls` を宣言したメソッド名の集合。
+        let mut declared: HashMap<(String, String), BTreeSet<String>> = HashMap::new();
+        let mut declared_at: HashMap<(String, String), usize> = HashMap::new();
+        for &i in &self.user {
+            let d = self.def(i);
+            if d.kw == "fn" && d.has_impls {
+                let owner = d.name.rsplit_once('.').map(|(o, _)| o.to_string()).unwrap_or_default();
+                let key = (d.impls_trait.clone(), owner);
+                let meth = d.name.rsplit('.').next().unwrap_or("").to_string();
+                declared.entry(key.clone()).or_default().insert(meth);
+                declared_at.entry(key).or_insert(i);
+            }
+        }
+        let impl_lines: Vec<usize> = self.user.iter().copied().filter(|&i| self.def(i).kw == "impl").collect();
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut covered: HashSet<(String, String)> = HashSet::new();
+        for &i in &impl_lines {
+            let d = self.def(i);
+            let tb = d.impl_trait.clone();
+            if !req.contains_key(&tb) {
+                continue;
+            }
+            let tgt = impl_target(&d.impl_for);
+            let owner = prim_owner(&tgt);
+            let alt_owner = format!("{}.{}", tb, tgt.rsplit('.').next().unwrap_or(""));
+            if !seen.insert((tb.clone(), tgt.clone())) {
+                self.diag("E1114", format!("duplicate impl of {} for {}", tb, tgt), i, 0);
+            }
+            let want = req.get(&tb).cloned().unwrap_or_default();
+            let mut have = declared.get(&(tb.clone(), owner.clone())).cloned().unwrap_or_default();
+            if let Some(m) = declared.get(&(tb.clone(), alt_owner.clone())) {
+                have.extend(m.iter().cloned());
+            }
+            covered.insert((tb.clone(), owner));
+            covered.insert((tb.clone(), alt_owner));
+            if want != have {
+                self.diag(
+                    "E1112",
+                    format!(
+                        "impl {} for {}: methods [{}] != required [{}]",
+                        tb,
+                        tgt,
+                        have.iter().cloned().collect::<Vec<_>>().join(", "),
+                        want.iter().cloned().collect::<Vec<_>>().join(", ")
+                    ),
+                    i,
+                    0,
+                );
+            }
+        }
+        // 逆方向: `impls` を宣言したメソッドがあるのに対応する `impl` 行が無い。
+        for (key, ms) in &declared {
+            if !covered.contains(key) {
+                let at = declared_at.get(key).copied().unwrap_or(0);
+                self.diag(
+                    "E1113",
+                    format!(
+                        "methods [{}] impl {} on {} but no impl line exists",
+                        ms.iter().cloned().collect::<Vec<_>>().join(", "),
+                        key.0,
+                        key.1
+                    ),
+                    at,
+                    0,
+                );
+            }
+        }
+    }
+
+    /// 3.2: 型のフィールド名とメソッド名は重複できない (`ksn get <型FQN>.<名前>` を一意にするため)。
+    fn check_field_method(&mut self) {
+        let mut fields: HashMap<String, HashSet<String>> = HashMap::new();
+        for &i in &self.user {
+            let d = self.def(i);
+            if d.kw == "type" {
+                fields.insert(d.name.clone(), d.fields.iter().map(|f| f.0.clone()).collect());
+            }
+        }
+        if fields.is_empty() {
+            return;
+        }
+        let methods: Vec<usize> =
+            self.user.iter().copied().filter(|&i| self.def(i).kw == "fn" && self.def(i).is_method()).collect();
+        for i in methods {
+            let d = self.def(i);
+            let owner = d.name.rsplit_once('.').map(|(o, _)| o).unwrap_or("");
+            let meth = d.name.rsplit('.').next().unwrap_or("");
+            if fields.get(owner).map_or(false, |fs| fs.contains(meth)) {
+                self.diag("E1115", format!("method {} collides with a field of {}", d.name, owner), i, 0);
             }
         }
     }
@@ -1691,6 +1796,27 @@ pub fn format_diag(d: &Diag) -> String {
 }
 
 /// 型 `t` が名前 `name` の型を (参照・引数・タプル・配列を通して) 含むか。
+/// `impl .. for X` の対象型の基底名 (型引数を落とす)。
+fn impl_target(v: &V) -> String {
+    match tag(v).as_str() {
+        "named" | "prim" => st(tel(v, 1)),
+        "ref" | "ptr" => impl_target(tel(v, 2)),
+        _ => st(tel(v, 1)),
+    }
+}
+
+/// 基本型の所有者 FQN (impl のメソッドを置く場所。3.2 の孤児規則)。
+fn prim_owner(name: &str) -> String {
+    match name {
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+        | "f32" | "f64" => format!("core.num.{}", name),
+        "bool" => "core.bool.bool".into(),
+        "char" => "core.char.char".into(),
+        "str" => "core.str".into(),
+        other => other.to_string(),
+    }
+}
+
 /// 型の中に現れる名前つき型を集める (`ty_mentions` と同じ辺をたどる)。
 fn collect_ty_names(t: &V, out: &mut HashSet<String>) {
     match tag(t).as_str() {

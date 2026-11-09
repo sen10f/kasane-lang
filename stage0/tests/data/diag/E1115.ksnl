@@ -1,0 +1,7 @@
+type t.S pub
+    a: u8
+end t.S
+
+fn t.S.a(self: &t.S) -> u8 uses [] panics never
+    self.a
+end t.S.a

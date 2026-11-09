@@ -1,0 +1,7 @@
+type t.Q pub
+    a: u8
+end t.Q
+
+impl core.cmp.Eq for t.Q
+
+impl core.cmp.Eq for t.Q

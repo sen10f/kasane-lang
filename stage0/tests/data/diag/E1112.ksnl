@@ -1,0 +1,5 @@
+type t.P pub
+    a: u8
+end t.P
+
+impl core.cmp.PartialOrd<t.P> for t.P
