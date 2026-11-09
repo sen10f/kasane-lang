@@ -2622,3 +2622,101 @@ fn a_failed_conversion_check_in_a_cranelift_executable_exits_with_101() {
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
+
+fn clif_map_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
+        "    match m.insert(\"a\", 1u8) {",
+        "        Ok(_old) => 0u8",
+        "        Err(_e) => 1u8",
+        "    }",
+        "    match m.insert(\"b\", 2u8) {",
+        "        Ok(_old) => 0u8",
+        "        Err(_e) => 1u8",
+        "    }",
+        "    core.check.eq(m.get(\"a\"), Some(1u8))",
+        "    core.check.eq(m.get(\"zz\"), None)",
+        "    core.check.eq(m.len(), 2usize)",
+        "    core.check.eq(m.insert(\"a\", 5u8), Ok(Some(1u8)))",
+        "    core.check.eq(m.get(\"a\"), Some(5u8))",
+        "    core.check.eq(m.len(), 2usize)",
+        "    core.check.eq(m.contains_key(\"b\"), true)",
+        "    core.check.eq(m.remove(\"b\"), Some(2u8))",
+        "    core.check.eq(m.contains_key(\"b\"), false)",
+        "    core.check.eq(m.is_empty(), false)",
+        "    let mut b = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)",
+        "    let i1 = b.insert(3u8, 30u8)",
+        "    let i2 = b.insert(1u8, 10u8)",
+        "    let i3 = b.insert(3u8, 33u8)",
+        "    core.check.eq(i1, Ok(None))",
+        "    core.check.eq(i2, Ok(None))",
+        "    core.check.eq(i3, Ok(Some(30u8)))",
+        "    core.check.eq(b.len(), 2usize)",
+        "    core.check.eq(b.get(3u8), Some(33u8))",
+        "    core.check.eq(b.contains_key(2u8), false)",
+        "    core.check.eq(b.remove(1u8), Some(10u8))",
+        "    core.check.eq(b.len(), 1usize)",
+        "    let mut big = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)",
+        "    for k in core.iter.range(0u32, 50u32) {",
+        "        let key = k.wrapping_mul(7u32) % 50u32",
+        "        match big.insert(key, k) {",
+        "            Ok(_old) => 0u8",
+        "            Err(_e) => 1u8",
+        "        }",
+        "    }",
+        "    core.check.eq(big.len(), 50usize)",
+        "    core.check.eq(big.get(21u32), Some(3u32))",
+        tail,
+        "    std.io.print_line(\"map ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_hashmap_and_btreemap() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_map_{}", release), &clif_map_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "map ok");
+    }
+}
+
+#[test]
+fn a_wrong_map_lookup_in_a_cranelift_executable_fails_the_check() {
+    let (_t, exe_path, out) = build_clif("clif_map_bad", &clif_map_program("    core.check.eq(m.get(\"a\"), Some(1u8))"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}
+
+#[test]
+fn the_features_example_runs_natively_through_cranelift() {
+    let d = root().join("examples").join("features");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_feat_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    for release in [false, true] {
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "clif"]).current_dir(&d).env("KSN_CACHE_DIR", &cache);
+        if release {
+            c.arg("--release");
+        }
+        let o = c.output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        let kind = if release { "release" } else { "debug" };
+        let p = d.join("target").join(kind).join(if cfg!(windows) { "features.exe" } else { "features.native" });
+        assert!(p.exists(), "native executable missing: {}", out);
+        let r = Command::new(&p).output().unwrap();
+        assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    }
+    let _ = fs::remove_dir_all(&cache);
+}

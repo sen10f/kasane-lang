@@ -102,6 +102,8 @@ struct Cx<'a> {
     slices: RefCell<HashMap<String, String>>,
     /// `tuple<u32,usize>` のようなタプルの具体化: 名前 → 要素の型の列
     tuples: RefCell<HashMap<String, Vec<String>>>,
+    /// `hashmap<K,V>` / `btreemap<K,V>`: 名前 → (整列するか, キーの型, 値の型)。実体は組 `(K, V)` の列 (Vec と同じ配置)。
+    maps: RefCell<HashMap<String, (bool, String, String)>>,
 }
 
 /// 構造体・列挙型のメモリ配置。
@@ -168,6 +170,14 @@ impl<'a> Cx<'a> {
                     }
                     return Ok(self.vec_of(&elem));
                 }
+                if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap" {
+                    let args: Vec<&V> = items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).collect();
+                    if args.len() < 2 {
+                        return Err("map without type arguments".into());
+                    }
+                    let (k, v) = (self.pty_owned(args[0])?, self.pty_owned(args[1])?);
+                    return self.map_of(n.ends_with("BtreeMap"), &k, &v);
+                }
                 if n == "alloc.alloc.AllocError" || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" {
                     return Ok(n);
                 }
@@ -223,6 +233,29 @@ impl<'a> Cx<'a> {
             return Err("a reference stored in a type".into());
         }
         self.pty(t)
+    }
+
+    /// `HashMap` / `BtreeMap` の具体化を登録して名前を返す。キーは整数・`bool`・`char`・`&str`、値は解放が要らない型。
+    fn map_of(&self, sorted: bool, k: &str, v: &str) -> R<String> {
+        let key_ok = (is_scalar(k) && !is_float(k) && !is_mutref(k)) || k == "str";
+        if !key_ok {
+            return Err("map key type".into());
+        }
+        if sorted && k == "str" {
+            return Err("BtreeMap with str keys".into());
+        }
+        if v == "void" || self.needs_drop(v) {
+            return Err("map value type".into());
+        }
+        let name = format!("{}<{},{}>", if sorted { "btreemap" } else { "hashmap" }, k, v);
+        let tup = self.tuple_of(&[k.to_string(), v.to_string()]);
+        self.vecs.borrow_mut().insert(name.clone(), tup);
+        self.maps.borrow_mut().insert(name.clone(), (sorted, k.to_string(), v.to_string()));
+        Ok(name)
+    }
+
+    fn map_info(&self, name: &str) -> Option<(bool, String, String)> {
+        self.maps.borrow().get(name).cloned()
     }
 
     fn tuple_of(&self, elems: &[String]) -> String {
@@ -422,6 +455,19 @@ impl<'a> Cx<'a> {
 
     /// 組み込み型 (str / Vec / AllocError) のメソッドの戻り値の型。
     fn builtin_method_ty(&self, recv_ty: &str, name: &str) -> Option<String> {
+        if let Some((_, _, v)) = self.map_info(recv_ty) {
+            return match name {
+                "len" => Some("usize".into()),
+                "is_empty" | "contains_key" => Some("bool".into()),
+                "clear" => Some("void".into()),
+                "get" | "remove" => self.builtin_enum("Option", &[v]).ok(),
+                "insert" => {
+                    let o = self.builtin_enum("Option", &[v]).ok()?;
+                    self.builtin_enum("Result", &[o, "alloc.alloc.AllocError".into()]).ok()
+                }
+                _ => None,
+            };
+        }
         if recv_ty == "char" {
             return match name {
                 "to_u32" => Some("u32".into()),
@@ -704,10 +750,28 @@ impl<'a, 'b> FnGen<'a, 'b> {
             && nname(&nf(init)[0]) == "Path"
             && strs(&nf(&nf(init)[0])[0]) == ["alloc", "vec", "Vec", "new"];
         let is_none = nname(init) == "Path" && strs(&nf(init)[0]) == ["None"];
-        if !is_vec_new && !is_none {
+        let map_kind: Option<bool> = if nname(init) == "Call" && nname(&nf(init)[0]) == "Path" {
+            let sg = strs(&nf(&nf(init)[0])[0]);
+            if sg.len() == 4 && sg[0] == "alloc" && sg[1] == "collections" && sg[3] == "new" && (sg[2] == "HashMap" || sg[2] == "BtreeMap") {
+                Some(sg[2] == "BtreeMap")
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if !is_vec_new && !is_none && map_kind.is_none() {
             return None;
         }
-        let fits = |t: &str| if is_vec_new { self.cx.elem_of(t).is_some() } else { t.starts_with("Option<") };
+        let fits = |t: &str| {
+            if is_vec_new {
+                self.cx.elem_of(t).is_some() && self.cx.map_info(t).is_none()
+            } else if map_kind.is_some() {
+                self.cx.map_info(t).is_some()
+            } else {
+                t.starts_with("Option<")
+            }
+        };
         let refers = |a: &V| -> bool {
             let a = if nname(a) == "Unary" && matches!(st(&nf(a)[0]).as_str(), "&" | "&mut") { &nf(a)[1] } else { a };
             nname(a) == "Path" && strs(&nf(a)[0]) == [name.to_string()]
@@ -717,13 +781,45 @@ impl<'a, 'b> FnGen<'a, 'b> {
         for st_ in &rest {
             crate::check::walk(st_, &mut nodes);
         }
+        // 後ろの文で定義される変数 (`let` と、範囲を回す `for` の変数) の型を、順に足していく。
+        let mut local = env.clone();
+        let ph = Variable::from_u32(u32::MAX);
         for n in &nodes {
+            if nname(n) == "Let" && nname(&nf(n)[0]) == "PBind" {
+                let ann = if matches!(nf(n)[2], V::Nil) { None } else { self.cx.pty(&nf(n)[2]).ok() };
+                if let Some(t) = ann.or_else(|| self.ty_of(&nf(n)[3], &local, None)) {
+                    local.insert(st(&nf(&nf(n)[0])[0]), (ph, t));
+                }
+            }
+            if nname(n) == "For" && nname(&nf(n)[0]) == "PBind" {
+                let it = &nf(n)[1];
+                if nname(it) == "Call" && nname(&nf(it)[0]) == "Path" && strs(&nf(&nf(it)[0])[0]) == ["core", "iter", "range"] {
+                    let a = items(&nf(it)[1]);
+                    if a.len() == 2 {
+                        if let Some(t) = self.ty_of(&a[0], &local, None).or_else(|| self.ty_of(&a[1], &local, None)) {
+                            local.insert(st(&nf(&nf(n)[0])[0]), (ph, t));
+                        }
+                    }
+                }
+            }
             match nname(n) {
+                // m.insert(k, v) の k, v の型
+                "MCall" if map_kind.is_some() && st(&nf(n)[1]) == "insert" && items(&nf(n)[2]).len() == 2 => {
+                    let r = &nf(n)[0];
+                    if nname(r) == "Path" && strs(&nf(r)[0]) == [name.to_string()] {
+                        let a = items(&nf(n)[2]);
+                        if let (Some(k), Some(v)) = (self.ty_of(&a[0], &local, None), self.ty_of(&a[1], &local, None)) {
+                            if let Ok(t) = self.cx.map_of(map_kind.unwrap_or(false), &k, &v) {
+                                return Some(t);
+                            }
+                        }
+                    }
+                }
                 // v.push(x) の x の型
                 "MCall" if is_vec_new && st(&nf(n)[1]) == "push" && items(&nf(n)[2]).len() == 1 => {
                     let r = &nf(n)[0];
                     if nname(r) == "Path" && strs(&nf(r)[0]) == [name.to_string()] {
-                        if let Some(t) = self.ty_of(&items(&nf(n)[2])[0], env, None) {
+                        if let Some(t) = self.ty_of(&items(&nf(n)[2])[0], &local, None) {
                             if t != "void" && !is_mutref(&t) {
                                 return Some(self.cx.vec_of(&t));
                             }
@@ -733,8 +829,15 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 "Call" if nname(&nf(n)[0]) == "Path" => {
                     let segs = strs(&nf(&nf(n)[0])[0]);
                     let args = items(&nf(n)[1]);
+                    if map_kind.is_some() && segs.len() == 2 && segs[0] == name && segs[1] == "insert" && args.len() == 2 {
+                        if let (Some(k), Some(v)) = (self.ty_of(&args[0], &local, None), self.ty_of(&args[1], &local, None)) {
+                            if let Ok(t) = self.cx.map_of(map_kind.unwrap_or(false), &k, &v) {
+                                return Some(t);
+                            }
+                        }
+                    }
                     if is_vec_new && segs.len() == 2 && segs[0] == name && segs[1] == "push" && args.len() == 1 {
-                        if let Some(t) = self.ty_of(&args[0], env, None) {
+                        if let Some(t) = self.ty_of(&args[0], &local, None) {
                             if t != "void" && !is_mutref(&t) {
                                 return Some(self.cx.vec_of(&t));
                             }
@@ -778,7 +881,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let rhs = &nf(n)[1];
                     if nname(tg) == "Path" && strs(&nf(tg)[0]) == [name.to_string()] {
                         if nname(rhs) == "Call" && nname(&nf(rhs)[0]) == "Path" && strs(&nf(&nf(rhs)[0])[0]) == ["Some"] {
-                            if let Some(t) = self.ty_of(&items(&nf(rhs)[1])[0], env, None) {
+                            if let Some(t) = self.ty_of(&items(&nf(rhs)[1])[0], &local, None) {
                                 return self.cx.builtin_enum("Option", &[t]).ok();
                             }
                         }
@@ -964,6 +1067,14 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 if segs == ["core", "iter", "count"] {
                     return Some("usize".into());
+                }
+                if segs.len() == 4
+                    && segs[0] == "alloc"
+                    && segs[1] == "collections"
+                    && (segs[2] == "HashMap" || segs[2] == "BtreeMap")
+                    && segs[3] == "new"
+                {
+                    return expect.filter(|t| self.cx.map_info(t).is_some()).map(String::from);
                 }
                 if segs == ["core", "str", "from_utf8"] {
                     return self.cx.builtin_enum("Result", &["str".into(), "core.str.Utf8Error".into()]).ok();
@@ -2985,6 +3096,20 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     self.b.ins().store(MemFlags::new(), t0, res, 0);
                     return Ok((Some(res), rty));
                 }
+                if segs.len() == 4
+                    && segs[0] == "alloc"
+                    && segs[1] == "collections"
+                    && (segs[2] == "HashMap" || segs[2] == "BtreeMap")
+                    && segs[3] == "new"
+                {
+                    let Some(t) = expect.filter(|t| self.cx.map_info(t).is_some()) else { return Err("map.new without a type".into()) };
+                    let v = self.alloc(24, 8);
+                    let z = self.b.ins().iconst(types::I64, 0);
+                    for off in [0, 8, 16] {
+                        self.b.ins().store(MemFlags::new(), z, v, off);
+                    }
+                    return Ok((Some(v), t.to_string()));
+                }
                 if segs == ["alloc", "string", "String", "new"] {
                     let v = self.alloc(24, 8);
                     let z = self.b.ins().iconst(types::I64, 0);
@@ -3061,6 +3186,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     return Ok((Some(dst), rt.clone()));
                 }
                 return Ok((Some(v), rt.clone()));
+            }
+            if self.cx.map_info(rt).is_some() {
+                let (p, _) = self.expr(recv, env, None)?;
+                let p = p.ok_or("bad receiver")?;
+                return self.map_method(p, rt, name, args, env);
             }
             if rt.starts_with("Result<") && name == "map_err" && args.len() == 1 {
                 let (p, _) = self.expr(recv, env, None)?;
@@ -3537,6 +3667,249 @@ impl<'a, 'b> FnGen<'a, 'b> {
         self.b.ins().jump(done, &[]);
         self.b.switch_to_block(done);
         Ok((Some(res), newty))
+    }
+
+    /// 満杯なら列を広げて、1 つ入る余地を作る。(失敗したか, 先頭のアドレス) を返す。
+    fn grow_for_one(&mut self, p: Value, stride: i64) -> (Value, Value) {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+        let cap = self.b.ins().load(i64t, MemFlags::new(), p, 16);
+        let ptr0 = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        let full = self.b.ins().icmp(IntCC::Equal, len, cap);
+        let (grow, ok_b, set_b, fail_b, done) =
+            (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(done, types::I8);
+        self.b.append_block_param(done, pt);
+        self.b.ins().brif(full, grow, &[], ok_b, &[]);
+        self.b.switch_to_block(ok_b);
+        let zero = self.b.ins().iconst(types::I8, 0);
+        self.b.ins().jump(done, &[zero, ptr0]);
+        self.b.switch_to_block(grow);
+        let four = self.b.ins().iconst(i64t, 4);
+        let dbl = self.b.ins().ishl_imm(cap, 1);
+        let cap_zero = self.b.ins().icmp_imm(IntCC::Equal, cap, 0);
+        let newcap = self.b.ins().select(cap_zero, four, dbl);
+        let bytes = self.b.ins().imul_imm(newcap, stride);
+        let ra = self.rt.realloc;
+        let np = self.call_rt(ra, &[ptr0, bytes])[0];
+        let isnull = self.b.ins().icmp_imm(IntCC::Equal, np, 0);
+        self.b.ins().brif(isnull, fail_b, &[], set_b, &[]);
+        self.b.switch_to_block(set_b);
+        self.b.ins().store(MemFlags::new(), np, p, 0);
+        self.b.ins().store(MemFlags::new(), newcap, p, 16);
+        let zero = self.b.ins().iconst(types::I8, 0);
+        self.b.ins().jump(done, &[zero, np]);
+        self.b.switch_to_block(fail_b);
+        let one = self.b.ins().iconst(types::I8, 1);
+        self.b.ins().jump(done, &[one, ptr0]);
+        self.b.switch_to_block(done);
+        (self.b.block_params(done)[0], self.b.block_params(done)[1])
+    }
+
+    /// 表 `p` から、キー `key` を持つ組を探す。(見つかったか, 添字) を返す。
+    fn map_find(&mut self, p: Value, kty: &str, key: Value, koff: i64, stride: i64) -> (Value, Value) {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+        let base = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        let (head, body, cont, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(head, i64t);
+        self.b.append_block_param(done, types::I8);
+        self.b.append_block_param(done, i64t);
+        let zero = self.b.ins().iconst(i64t, 0);
+        self.b.ins().jump(head, &[zero]);
+        self.b.switch_to_block(head);
+        let i = self.b.block_params(head)[0];
+        let more = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+        let no = self.b.ins().iconst(types::I8, 0);
+        self.b.ins().brif(more, body, &[], done, &[no, i]);
+        self.b.switch_to_block(body);
+        let off = self.b.ins().imul_imm(i, stride);
+        let ea = self.b.ins().iadd(base, off);
+        let ka = self.b.ins().iadd_imm(ea, koff);
+        let eq = if kty == "str" {
+            self.bytes_eq(ka, key, 1)
+        } else {
+            let sk = self.b.ins().load(cl(kty), MemFlags::new(), ka, 0);
+            self.b.ins().icmp(IntCC::Equal, sk, key)
+        };
+        let yes = self.b.ins().iconst(types::I8, 1);
+        self.b.ins().brif(eq, done, &[yes, i], cont, &[]);
+        self.b.switch_to_block(cont);
+        let n = self.b.ins().iadd_imm(i, 1);
+        self.b.ins().jump(head, &[n]);
+        self.b.switch_to_block(done);
+        (self.b.block_params(done)[0], self.b.block_params(done)[1])
+    }
+
+    /// `HashMap` / `BtreeMap` のメソッド。実体は組の列で、検索は線形 (`BtreeMap` は挿入のときにキー順を保つ)。
+    fn map_method(&mut self, p: Value, rt: &str, name: &str, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        let (sorted, kty, vty) = self.cx.map_info(rt).ok_or("not a map")?;
+        let tup = self.cx.tuple_of(&[kty.clone(), vty.clone()]);
+        let el = self.cx.layout(&tup, 0)?;
+        let (koff, voff, stride) = (el.fields[0].2 as i64, el.fields[1].2 as i64, el.size as i64);
+        match name {
+            "len" => {
+                let v = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                return Ok((Some(v), "usize".into()));
+            }
+            "is_empty" => {
+                let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                let r = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
+                return Ok((Some(r), "bool".into()));
+            }
+            "clear" => {
+                let z = self.b.ins().iconst(i64t, 0);
+                self.b.ins().store(MemFlags::new(), z, p, 8);
+                return Ok((None, "void".into()));
+            }
+            "contains_key" | "get" | "remove" | "insert" => {}
+            _ => return Err(format!("map method {}", name)),
+        }
+        let key_arg = args.first().ok_or("map method needs a key")?;
+        let (key, kt) = self.expr(key_arg, env, Some(&kty))?;
+        if kt != kty {
+            return Err(format!("map key type mismatch: {} vs {}", kt, kty));
+        }
+        let key = key.ok_or("bad key")?;
+        let (found, idx) = self.map_find(p, &kty, key, koff, stride);
+        match name {
+            "contains_key" => Ok((Some(found), "bool".into())),
+            "get" | "remove" => {
+                let rty = self.cx.builtin_enum("Option", &[vty.clone()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let (yes, no, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(found, yes, &[], no, &[]);
+                self.b.switch_to_block(no);
+                let t0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), t0, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(yes);
+                let base = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                let off = self.b.ins().imul_imm(idx, stride);
+                let ea = self.b.ins().iadd(base, off);
+                let va = self.b.ins().iadd_imm(ea, voff);
+                let v = self.load_value(va, &vty);
+                let poff = l.variants[1].1[0].1 as i64;
+                let dst = self.b.ins().iadd_imm(res, poff);
+                self.store_value(dst, &vty, v)?;
+                if name == "remove" {
+                    let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                    let after = self.b.ins().isub(len, idx);
+                    let tail_n = self.b.ins().iadd_imm(after, -1);
+                    let bytes = self.b.ins().imul_imm(tail_n, stride);
+                    let src = self.b.ins().iadd_imm(ea, stride);
+                    let mm = self.rt.memmove;
+                    self.call_rt(mm, &[ea, src, bytes]);
+                    let newlen = self.b.ins().iadd_imm(len, -1);
+                    self.b.ins().store(MemFlags::new(), newlen, p, 8);
+                }
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok((Some(res), rty))
+            }
+            _ => {
+                // insert(key, value) -> Result<Option<V>, AllocError>
+                let varg = args.get(1).ok_or("insert needs a value")?;
+                let (val, _) = self.expr(varg, env, Some(&vty))?;
+                let val = val.ok_or("bad value")?;
+                let optty = self.cx.builtin_enum("Option", &[vty.clone()])?;
+                let ol = self.cx.layout(&optty, 0)?;
+                let rty = self.cx.builtin_enum("Result", &[optty.clone(), "alloc.alloc.AllocError".into()])?;
+                let rl = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(rl.size, rl.align);
+                let tmp = self.alloc(ol.size, ol.align);
+                let (upd, add, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(found, upd, &[], add, &[]);
+                // 既にあるキー: 値を入れ替えて、古い値を返す
+                self.b.switch_to_block(upd);
+                let base = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                let off = self.b.ins().imul_imm(idx, stride);
+                let ea = self.b.ins().iadd(base, off);
+                let va = self.b.ins().iadd_imm(ea, voff);
+                let old = self.load_value(va, &vty);
+                let opoff = ol.variants[1].1[0].1 as i64;
+                let od = self.b.ins().iadd_imm(tmp, opoff);
+                self.store_value(od, &vty, old)?;
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, tmp, 0);
+                self.store_value(va, &vty, val)?;
+                let okoff = rl.variants[0].1[0].1 as i64;
+                let rd = self.b.ins().iadd_imm(res, okoff);
+                self.store_value(rd, &optty, tmp)?;
+                let t0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), t0, res, 0);
+                self.b.ins().jump(done, &[]);
+                // 新しいキー: 余地を作って、挿入位置に入れる
+                self.b.switch_to_block(add);
+                let (failed, nbase) = self.grow_for_one(p, stride);
+                let (ins_b, err_b) = (self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(failed, err_b, &[], ins_b, &[]);
+                self.b.switch_to_block(err_b);
+                let e1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), e1, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(ins_b);
+                let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                let pos = if sorted {
+                    // キーが自分より大きい最初の位置 (なければ末尾)
+                    let (head, body, cont, found_pos) =
+                        (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+                    self.b.append_block_param(head, i64t);
+                    self.b.append_block_param(found_pos, i64t);
+                    let zero = self.b.ins().iconst(i64t, 0);
+                    self.b.ins().jump(head, &[zero]);
+                    self.b.switch_to_block(head);
+                    let i = self.b.block_params(head)[0];
+                    let more = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+                    self.b.ins().brif(more, body, &[], found_pos, &[len]);
+                    self.b.switch_to_block(body);
+                    let o = self.b.ins().imul_imm(i, stride);
+                    let a = self.b.ins().iadd(nbase, o);
+                    let ka = self.b.ins().iadd_imm(a, koff);
+                    let sk = self.b.ins().load(cl(&kty), MemFlags::new(), ka, 0);
+                    let cc = if signed(&kty) { IntCC::SignedGreaterThan } else { IntCC::UnsignedGreaterThan };
+                    let bigger = self.b.ins().icmp(cc, sk, key);
+                    self.b.ins().brif(bigger, found_pos, &[i], cont, &[]);
+                    self.b.switch_to_block(cont);
+                    let n = self.b.ins().iadd_imm(i, 1);
+                    self.b.ins().jump(head, &[n]);
+                    self.b.switch_to_block(found_pos);
+                    self.b.block_params(found_pos)[0]
+                } else {
+                    len
+                };
+                let o = self.b.ins().imul_imm(pos, stride);
+                let slot = self.b.ins().iadd(nbase, o);
+                let rest = self.b.ins().isub(len, pos);
+                let bytes = self.b.ins().imul_imm(rest, stride);
+                let dst = self.b.ins().iadd_imm(slot, stride);
+                let mm = self.rt.memmove;
+                self.call_rt(mm, &[dst, slot, bytes]);
+                let kd = self.b.ins().iadd_imm(slot, koff);
+                self.store_value(kd, &kty, key)?;
+                let vd = self.b.ins().iadd_imm(slot, voff);
+                self.store_value(vd, &vty, val)?;
+                let newlen = self.b.ins().iadd_imm(len, 1);
+                self.b.ins().store(MemFlags::new(), newlen, p, 8);
+                let n0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), n0, tmp, 0);
+                let okoff = rl.variants[0].1[0].1 as i64;
+                let rd = self.b.ins().iadd_imm(res, okoff);
+                self.store_value(rd, &optty, tmp)?;
+                let ok0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), ok0, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok((Some(res), rty))
+            }
+        }
     }
 
     /// `Option` / `Result` のメソッド: `is_some` / `is_none` / `is_ok` / `is_err` / `unwrap` / `expect` / `unwrap_or`。
@@ -4233,7 +4606,7 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
-    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()) };
+    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
