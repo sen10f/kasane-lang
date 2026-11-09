@@ -162,6 +162,7 @@ fn examples_check_fmt_and_run() {
         ("tour", "tour ok"),
         ("native", "native ok"),
         ("threads", "threads ok"),
+        ("realtime", "realtime ok"),
         ("json", "{\"name\":\"kasane\",\"tags\":[\"a\",\"b\"],\"n\":-12.5e3,\"ok\":true,\"none\":null}"),
     ];
     for (name, out) in expected {
@@ -1053,4 +1054,79 @@ fn let_annotation_and_return_value_mismatches_are_reported_once() {
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert_eq!(out.matches("type mismatch in let binding").count(), 1, "{}", out);
     assert_eq!(out.matches("type mismatch in return value").count(), 1, "{}", out);
+}
+
+// ---- std.fs (インタプリタ) ----
+
+#[test]
+fn std_fs_writes_reads_and_removes_a_file() {
+    let b = body(&[
+        "let mut f = std.fs.create(\"ksn_fs_test.txt\")?",
+        "let n = f.write(b\"hello\")?",
+        "core.check.eq(n, 5usize)",
+        "f.close()?",
+        "core.check.eq(std.fs.exists(\"ksn_fs_test.txt\"), true)",
+        "let mut g = std.fs.open(\"ksn_fs_test.txt\")?",
+        "let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+        "let m = std.fs.read_to_end(&mut g, &mut buf)?",
+        "core.check.eq(m, 5usize)",
+        "core.check.eq(buf.len(), 5usize)",
+        "g.close()?",
+        "std.fs.remove_file(\"ksn_fs_test.txt\")?",
+        "core.check.eq(std.fs.exists(\"ksn_fs_test.txt\"), false)",
+    ]);
+    let src = main_wrap("", &b).replace("uses [io.console] panics may", "uses [alloc, io.fs] panics may");
+    let t = Tmp::new("fs_rw", &src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(!t.0.join("ksn_fs_test.txt").exists());
+}
+
+#[test]
+fn std_fs_reports_a_missing_file_as_an_error_value() {
+    let b = body(&[
+        "match std.fs.open(\"no_such_file_ksn.txt\") {",
+        "    Ok(f) => {",
+        "        core.mem.drop(f.close())",
+        "    }",
+        "    Err(e) => {",
+        "        core.check.eq(e.kind, std.io.ErrorKind.NotFound)",
+        "    }",
+        "}",
+    ]);
+    let src = main_wrap("", &b).replace("uses [io.console] panics may", "uses [io.fs] panics may");
+    let t = Tmp::new("fs_missing", &src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+// ---- 呼び出しの辺 (メソッド) と、Fn 境界を持つ関数の引数 ----
+
+#[test]
+fn mutual_recursion_through_methods_requires_a_stack_declaration() {
+    let src = "type t.N\n    a: u8\nend t.N\n\n\
+               fn t.N.ping(self: &t.N) -> u8 uses [] panics never\n    self.pong()\nend t.N.ping\n\n\
+               fn t.N.pong(self: &t.N) -> u8 uses [] panics never\n    self.ping()\nend t.N.pong\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("rec_methods", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E4010"), "{}", out);
+}
+
+#[test]
+fn literals_given_to_fn_bounded_generics_are_not_flagged() {
+    // fold の初期値 `0` の型はクロージャから決まる。まだ追えないので E2027 にしない。
+    let b = body(&[
+        "let total = core.iter.fold(",
+        "    core.iter.range(0u32, 4u32),",
+        "    0,",
+        "    fn(acc: u32, x: u32) -> u32 capture [] {",
+        "        acc + x",
+        "    },",
+        ")",
+        "core.mem.drop(total)",
+    ]);
+    let t = Tmp::new("fold_lit", &main_wrap("", &b));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E2027"), "{}", out);
 }

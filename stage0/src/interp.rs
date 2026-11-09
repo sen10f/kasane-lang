@@ -23,6 +23,9 @@ pub struct Interp {
     pub out: std::io::BufWriter<std::io::Stdout>,
     pub reload: Option<std::sync::mpsc::Receiver<Program>>,
     keep: Vec<Rc<Program>>,
+    /// std.fs で開いたファイル (記述子 -> ファイル)
+    pub files: HashMap<i128, std::fs::File>,
+    pub next_fd: i128,
 }
 
 fn unhex(s: &str) -> String {
@@ -44,6 +47,8 @@ impl Interp {
             out: std::io::BufWriter::new(std::io::stdout()),
             reload: None,
             keep: vec![],
+            files: HashMap::new(),
+            next_fd: 3,
         }
     }
 

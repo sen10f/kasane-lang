@@ -20,7 +20,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.boxed.Box.new", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
-    "std.fs.create",
+    "std.fs.create", "std.fs.read_to_end",
 ];
 
 const NUM_EXTRA: &[&str] = &[
@@ -582,7 +582,53 @@ impl Interp {
             "std.rand.Rng.from_seed" => Ok(Val::Rng(Rc::new(Cell::new(if let Val::Int(i, _) = dr(&a0) { i as u64 } else { 0 })))),
             "std.rand.Rng.from_entropy" => Ok(Val::Rng(Rc::new(Cell::new(0x9E3779B97F4A7C15)))),
             "std.fs.exists" => Ok(Val::Bool(std::path::Path::new(&str_of(&a0).unwrap_or_default()).exists())),
-            "std.fs.remove_file" | "std.fs.open" | "std.fs.create" => panic("std.fs is not supported by the stage0 interpreter"),
+            "std.fs.remove_file" => {
+                let path = str_of(&a0).unwrap_or_default();
+                Ok(match std::fs::remove_file(&path) {
+                    Ok(()) => ok(Val::Unit),
+                    Err(e) => err(io_error(&e)),
+                })
+            }
+            "std.fs.open" | "std.fs.create" => {
+                let path = str_of(&a0).unwrap_or_default();
+                let r = if name == "std.fs.open" {
+                    std::fs::OpenOptions::new().read(true).open(&path)
+                } else {
+                    std::fs::File::create(&path)
+                };
+                Ok(match r {
+                    Ok(f) => {
+                        let fd = self.next_fd;
+                        self.next_fd += 1;
+                        self.files.insert(fd, f);
+                        ok(Val::Struct(Rc::new(StructV {
+                            ty: "std.fs.File".into(),
+                            f: RefCell::new(vec![("descriptor".into(), int(fd, "i32"))]),
+                        })))
+                    }
+                    Err(e) => err(io_error(&e)),
+                })
+            }
+            "std.fs.read_to_end" => {
+                use std::io::Read;
+                let Some(fd) = file_fd(&a0) else { return panic("read_to_end: not a file") };
+                let mut buf = Vec::new();
+                let res = match self.files.get_mut(&fd) {
+                    Some(f) => f.read_to_end(&mut buf),
+                    None => return Ok(err(io_error_kind("InvalidInput"))),
+                };
+                match res {
+                    Ok(n) => {
+                        if let Some(out) = args.get(1) {
+                            if let Some(l) = item_list(&dr(out)) {
+                                l.borrow_mut().extend(buf.iter().map(|b| int(*b as i128, "u8")));
+                            }
+                        }
+                        Ok(ok(int(n as i128, "usize")))
+                    }
+                    Err(e) => Ok(err(io_error(&e))),
+                }
+            }
             _ => {
                 if let Some((ty, f)) = name.split_once('.') {
                     if is_int_ty(ty) || ty == "f32" || ty == "f64" || ty == "bool" || ty == "char" {
@@ -691,6 +737,9 @@ impl Interp {
                 panic("no such method on Rng")
             }
             Val::Struct(s) => {
+                if s.ty == "std.fs.File" {
+                    return self.file_method(s, name, &args);
+                }
                 if s.ty == "std.sync.MutexGuard" && (name == "get" || name == "get_mut") {
                     return Ok(s.get("cell").unwrap());
                 }
@@ -1010,4 +1059,109 @@ impl Interp {
 #[allow(dead_code)]
 fn unused(_: &V) {
     let _ = (items, st);
+}
+
+/// std.io.Error の値を作る。
+fn io_error_kind(kind: &str) -> Val {
+    Val::Struct(Rc::new(StructV {
+        ty: "std.io.Error".into(),
+        f: RefCell::new(vec![("kind".into(), mk_enum("std.io.ErrorKind", kind, vec![])), ("code".into(), int(0, "i32"))]),
+    }))
+}
+
+fn io_error(e: &std::io::Error) -> Val {
+    use std::io::ErrorKind as K;
+    let kind = match e.kind() {
+        K::NotFound => "NotFound",
+        K::PermissionDenied => "PermissionDenied",
+        K::AlreadyExists => "AlreadyExists",
+        K::InvalidInput => "InvalidInput",
+        K::UnexpectedEof => "UnexpectedEof",
+        K::BrokenPipe => "BrokenPipe",
+        K::Interrupted => "Interrupted",
+        K::OutOfMemory => "OutOfMemory",
+        _ => "Other",
+    };
+    Val::Struct(Rc::new(StructV {
+        ty: "std.io.Error".into(),
+        f: RefCell::new(vec![
+            ("kind".into(), mk_enum("std.io.ErrorKind", kind, vec![])),
+            ("code".into(), int(e.raw_os_error().unwrap_or(0) as i128, "i32")),
+        ]),
+    }))
+}
+
+fn file_fd(v: &Val) -> Option<i128> {
+    if let Val::Struct(s) = dr(v) {
+        if s.ty == "std.fs.File" {
+            if let Some(Val::Int(fd, _)) = s.get("descriptor") {
+                return Some(fd);
+            }
+        }
+    }
+    None
+}
+
+/// `&[u8]` / `&mut [u8]` / Vec<u8> の中身をバイト列にする。
+fn bytes_of(v: &Val) -> Vec<u8> {
+    seq_items(&dr(v)).unwrap_or_default().iter().map(|x| if let Val::Int(i, _) = dr(x) { i as u8 } else { 0 }).collect()
+}
+
+impl Interp {
+    /// std.fs.File のメソッド (read / write / flush / close)。
+    fn file_method(&mut self, s: &Rc<StructV>, name: &str, args: &[Val]) -> Res {
+        use std::io::{Read, Write};
+        let Some(Val::Int(fd, _)) = s.get("descriptor") else { return panic("invalid file") };
+        match name {
+            "close" => {
+                self.files.remove(&fd);
+                Ok(ok(Val::Unit))
+            }
+            "flush" => {
+                if let Some(f) = self.files.get_mut(&fd) {
+                    let _ = f.flush();
+                }
+                Ok(ok(Val::Unit))
+            }
+            "write" => {
+                let data = bytes_of(args.first().unwrap_or(&Val::Unit));
+                match self.files.get_mut(&fd) {
+                    Some(f) => Ok(match f.write_all(&data) {
+                        Ok(()) => ok(int(data.len() as i128, "usize")),
+                        Err(e) => err(io_error(&e)),
+                    }),
+                    None => Ok(err(io_error_kind("InvalidInput"))),
+                }
+            }
+            "read" => {
+                let target = dr(args.first().unwrap_or(&Val::Unit));
+                let cap = seq_items(&target).map_or(0, |x| x.len());
+                let mut buf = vec![0u8; cap];
+                let n = match self.files.get_mut(&fd) {
+                    Some(f) => match f.read(&mut buf) {
+                        Ok(n) => n,
+                        Err(e) => return Ok(err(io_error(&e))),
+                    },
+                    None => return Ok(err(io_error_kind("InvalidInput"))),
+                };
+                match &target {
+                    Val::View(l, a, _) => {
+                        let mut l = l.borrow_mut();
+                        for (i, b) in buf[..n].iter().enumerate() {
+                            l[*a + i] = int(*b as i128, "u8");
+                        }
+                    }
+                    Val::Arr(l) | Val::Vec(l) => {
+                        let mut l = l.borrow_mut();
+                        for (i, b) in buf[..n].iter().enumerate() {
+                            l[i] = int(*b as i128, "u8");
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(ok(int(n as i128, "usize")))
+            }
+            _ => panic(format!("no method {} on File", name)),
+        }
+    }
 }

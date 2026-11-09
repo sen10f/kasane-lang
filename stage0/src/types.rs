@@ -137,6 +137,8 @@ pub struct TypeCk<'a> {
     mutable: HashSet<String>,
     /// 出てきたリテラル: (種類 "int"/"float", 綴り, 型, 行)
     lits: Vec<(&'static str, String, Ty, usize)>,
+    /// 呼び出しの辺 (呼び出し元の関数名 -> 呼び出し先の関数名)。型で解決できたメソッド呼び出しを含む。
+    pub edges: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
 impl<'a> TypeCk<'a> {
@@ -155,7 +157,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], edges: Default::default() }
     }
 
     fn def(&self) -> &'a Def {
@@ -548,6 +550,8 @@ impl<'a> TypeCk<'a> {
         let (di, owner) = fit[0].clone();
         let d = &self.p.defs[di];
         let gn = d.gnames();
+        let caller = self.def().name.clone();
+        self.edges.entry(caller).or_default().insert(d.name.clone());
         if let Some(b) = base {
             if matches!(from_v(&d.params[0].1, &gn), Ty::Ref(true, _)) {
                 self.need_mut(b, name, line);
@@ -1039,7 +1043,17 @@ impl<'a> TypeCk<'a> {
     /// 関数・関連関数の呼び出し: 型パラメータを新しい型変数にし、引数と単一化して、戻り値の型を求める。
     fn call_def(&mut self, i: usize, argt: &[Ty], line: usize) -> Ty {
         let d = &self.p.defs[i];
+        let caller = self.def().name.clone();
+        self.edges.entry(caller).or_default().insert(d.name.clone());
         let gn = d.gnames();
+        // `F: core.ops.Fn<..>` の境界を持つ関数 (fold / map など) は、クロージャの型から決まる型がある。
+        // クロージャの型はまだ追わないので、この呼び出しの引数に含まれる型変数は決まらなくてもエラーにしない。
+        let has_fn_bound = d.generics.iter().any(|g| {
+            g.0 == "type" && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]).starts_with("core.ops.Fn")))
+        });
+        if has_fn_bound {
+            argt.iter().for_each(|a| self.escape(a));
+        }
         let mut map: HashMap<String, Ty> = HashMap::new();
         for (k, a) in argt.iter().enumerate() {
             let Some(p) = d.params.get(k) else { break };

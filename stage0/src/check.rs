@@ -779,6 +779,10 @@ impl<'a> Checker<'a> {
             }
         }
         self.diags.extend(tk.diags);
+        // 型で解決できた呼び出し (メソッドを含む) の辺を、再帰・スタックの検査に加える。
+        for (from, tos) in tk.edges {
+            self.graph.entry(from).or_default().extend(tos);
+        }
         // 従来の検査と新しい型推論が同じ誤りを同じ文面で報告したときは、1 件にまとめる。
         let mut seen = HashSet::new();
         self.diags.retain(|d| seen.insert((d.file.clone(), d.code.clone(), d.fqn.clone(), d.line, d.msg.clone())));

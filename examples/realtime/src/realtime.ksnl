@@ -1,0 +1,105 @@
+enum realtime.Phase derive [Debug, Clone, Copy, PartialEq] pub
+    Idle
+    Sampling
+    Reporting
+end realtime.Phase
+
+type realtime.Ring pub
+    items: alloc.vec.Vec<u32, std.alloc.System>
+    head: usize
+    len: usize
+    cap: usize
+end realtime.Ring
+
+fn realtime.Phase.next(self: realtime.Phase) -> realtime.Phase uses [] panics never pub
+    match self {
+        realtime.Phase.Idle => realtime.Phase.Sampling
+        realtime.Phase.Sampling => realtime.Phase.Reporting
+        realtime.Phase.Reporting => realtime.Phase.Idle
+    }
+end realtime.Phase.next
+
+fn realtime.Ring.new(cap: usize) -> realtime.Ring uses [alloc] panics never pub
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < cap {
+        match items.push(0u32) {
+            Ok(_u) => {
+            }
+            Err(_e) => {
+                break
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    realtime.Ring { items: items, head: 0usize, len: 0usize, cap: cap }
+end realtime.Ring.new
+
+fn realtime.Ring.pop(self: &mut realtime.Ring) -> Option<u32> uses [] panics never pub
+    if self.len == 0usize {
+        return None
+    }
+    let v = self.items.get(self.head)
+    self.head = self.head.wrapping_add(1usize).checked_rem(self.cap).unwrap_or(0usize)
+    self.len = self.len.wrapping_sub(1usize)
+    v
+end realtime.Ring.pop
+
+fn realtime.Ring.push(self: &mut realtime.Ring, v: u32) -> bool uses [] panics never pub
+    if self.len >= self.cap {
+        return false
+    }
+    let slot = self.head.wrapping_add(self.len)
+    let idx = match self.cap {
+        0usize => 0usize
+        c => slot.checked_rem(c).unwrap_or(0usize)
+    }
+    match self.items.get_mut(idx) {
+        Some(cell) => {
+            *cell = v
+        }
+        None => {
+            return false
+        }
+    }
+    self.len = self.len.wrapping_add(1usize)
+    true
+end realtime.Ring.push
+
+fn realtime.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut ring = realtime.Ring.new(3usize)
+    core.check.eq(ring.push(10u32), true)
+    core.check.eq(ring.push(20u32), true)
+    core.check.eq(ring.push(30u32), true)
+    core.check.eq(ring.push(40u32), false)
+    core.check.eq(ring.pop(), Some(10u32))
+    core.check.eq(ring.push(40u32), true)
+    core.check.eq(ring.pop(), Some(20u32))
+    core.check.eq(realtime.triangle(10u32), 55u32)
+    core.check.eq(realtime.Phase.Idle.next(), realtime.Phase.Sampling)
+    std.io.print_line("realtime ok")
+end realtime.main
+
+fn realtime.triangle(n: u32) -> u32 uses [] panics never stack 4096 pub
+    if n == 0u32 {
+        return 0u32
+    }
+    n.wrapping_add(realtime.triangle(n.wrapping_sub(1u32)))
+end realtime.triangle
+
+test realtime.Phase.test_cycle
+    let p = realtime.Phase.Idle
+    core.check.eq(p.next().next().next(), realtime.Phase.Idle)
+end realtime.Phase.test_cycle
+
+test realtime.Ring.test_wraparound
+    let mut r = realtime.Ring.new(2usize)
+    core.check.eq(r.push(1u32), true)
+    core.check.eq(r.push(2u32), true)
+    core.check.eq(r.push(3u32), false)
+    core.check.eq(r.pop(), Some(1u32))
+    core.check.eq(r.push(3u32), true)
+    core.check.eq(r.pop(), Some(2u32))
+    core.check.eq(r.pop(), Some(3u32))
+    core.check.eq(r.pop(), None)
+end realtime.Ring.test_wraparound
