@@ -59,6 +59,8 @@ fn signed(p: &str) -> bool {
     p.starts_with('i')
 }
 
+const STRING: &str = "alloc.string.String";
+
 fn mangle(fqn: &str) -> String {
     format!("k_{}", fqn.replace('.', "_"))
 }
@@ -123,18 +125,18 @@ impl<'a> Cx<'a> {
                 let n = st(tel(t, 1));
                 if n == "alloc.vec.Vec" {
                     let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("Vec without an element type")?;
-                    let elem = self.pty(first)?;
+                    let elem = self.pty_owned(first)?;
                     if elem == "void" {
                         return Err("Vec of unit".into());
                     }
                     return Ok(self.vec_of(&elem));
                 }
-                if n == "alloc.alloc.AllocError" {
+                if n == "alloc.alloc.AllocError" || n == STRING {
                     return Ok(n);
                 }
                 if n == "Option" || n == "Result" {
                     let args: Vec<String> =
-                        items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).map(|a| self.pty(a)).collect::<R<Vec<String>>>()?;
+                        items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).map(|a| self.pty_owned(a)).collect::<R<Vec<String>>>()?;
                     return self.builtin_enum(&n, &args);
                 }
                 if let Some(d) = self.types.get(&n) {
@@ -146,6 +148,38 @@ impl<'a> Cx<'a> {
             _ => {}
         }
         Err(format!("type {}", t.dump()))
+    }
+
+    /// 参照でない型 (フィールド・ペイロード・要素の型に使う)。参照を値として持つと所有と取り違えるため。
+    fn pty_owned(&self, t: &V) -> R<String> {
+        if tag(t) == "ref" {
+            return Err("a reference stored in a type".into());
+        }
+        self.pty(t)
+    }
+
+    /// 型 `ty` の値が、解放の必要なメモリ (Vec / String) を持つか。
+    fn needs_drop(&self, ty: &str) -> bool {
+        self.needs_drop_d(ty, 0)
+    }
+
+    fn needs_drop_d(&self, ty: &str, d: u32) -> bool {
+        if d > 8 || !is_agg(ty) || ty == "str" || ty == "alloc.alloc.AllocError" {
+            return false;
+        }
+        if ty == STRING || self.vecs.borrow().contains_key(ty) {
+            return true;
+        }
+        match self.layout(ty, 0) {
+            Ok(l) => {
+                if l.is_enum {
+                    l.variants.iter().any(|v| v.1.iter().any(|(t, _)| self.needs_drop_d(t, d + 1)))
+                } else {
+                    l.fields.iter().any(|f| self.needs_drop_d(&f.1, d + 1))
+                }
+            }
+            Err(_) => false,
+        }
     }
 
     fn layout(&self, name: &str, depth: u32) -> R<Layout> {
@@ -161,7 +195,7 @@ impl<'a> Cx<'a> {
                 variants: vec![],
             });
         }
-        if self.vecs.borrow().contains_key(name) {
+        if name == STRING || self.vecs.borrow().contains_key(name) {
             return Ok(Layout {
                 size: 24,
                 align: 8,
@@ -191,7 +225,7 @@ impl<'a> Cx<'a> {
             let mut align = 1u32;
             let mut fields = vec![];
             for (n, t, _) in &d.fields {
-                let ty = self.pty(t)?;
+                let ty = self.pty_owned(t)?;
                 let (sz, al) = fsize(&ty)?;
                 off = align_up(off, al);
                 fields.push((n.clone(), ty, off));
@@ -204,7 +238,7 @@ impl<'a> Cx<'a> {
         for (vn, tys) in &d.variants {
             let mut ts = vec![];
             for t in tys {
-                ts.push(self.pty(t)?);
+                ts.push(self.pty_owned(t)?);
             }
             vs.push((vn.clone(), ts));
         }
@@ -266,6 +300,16 @@ impl<'a> Cx<'a> {
                 _ => None,
             };
         }
+        if recv_ty == STRING {
+            return match name {
+                "len" => Some("usize".into()),
+                "is_empty" => Some("bool".into()),
+                "clear" => Some("void".into()),
+                "as_str" => Some("str".into()),
+                "push_str" => self.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()]).ok(),
+                _ => None,
+            };
+        }
         let elem = self.elem_of(recv_ty)?;
         match name {
             "len" | "capacity" => Some("usize".into()),
@@ -318,6 +362,9 @@ struct Rt {
     write: FuncId,
     exit: FuncId,
     realloc: FuncId,
+    free: FuncId,
+    memcpy: FuncId,
+    memcmp: FuncId,
 }
 
 struct FnGen<'a, 'b> {
@@ -332,9 +379,23 @@ struct FnGen<'a, 'b> {
     ret: V,
     ret_ty: String,
     sret: Option<Value>,
-    loops: Vec<(Block, Block)>,
+    /// (ループの先頭, 出口, ループに入る前のスコープの深さ)
+    loops: Vec<(Block, Block, usize)>,
     term: bool,
     nvar: usize,
+    /// スコープごとの、所有する変数 (先頭アドレスを持つ変数の番号) の列。
+    scopes: Vec<Vec<u32>>,
+    owners: HashMap<u32, Owner>,
+    /// 参照 (`&T` / `&mut T`) である変数の番号。値のコピーではなく別名として扱う。
+    refs: HashSet<u32>,
+}
+
+/// 解放の責任を持つ変数。`flag` が真の間だけ、スコープの終わりで解放する (移動したら偽にする)。
+#[derive(Clone)]
+struct Owner {
+    ptr: Variable,
+    flag: Variable,
+    ty: String,
 }
 
 impl<'a, 'b> FnGen<'a, 'b> {
@@ -489,6 +550,12 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if segs == ["alloc", "vec", "Vec", "new"] {
                     return expect.filter(|t| self.cx.elem_of(t).is_some()).map(String::from);
                 }
+                if segs == ["alloc", "string", "String", "new"] {
+                    return Some(STRING.to_string());
+                }
+                if segs == ["alloc", "string", "String", "from_str"] {
+                    return self.cx.builtin_enum("Result", &[STRING.to_string(), "alloc.alloc.AllocError".to_string()]).ok();
+                }
                 if segs == ["std", "io", "print_line"] {
                     return Some("void".into());
                 }
@@ -590,6 +657,143 @@ impl<'a, 'b> FnGen<'a, 'b> {
         Ok((p, ty))
     }
 
+    // ------------------------------------------------------------ 所有と解放
+    fn register_owner(&mut self, ptr: Variable, ty: &str) {
+        let flag = self.new_var("bool");
+        let one = self.b.ins().iconst(types::I8, 1);
+        self.b.def_var(flag, one);
+        let id = ptr.as_u32();
+        self.owners.insert(id, Owner { ptr, flag, ty: ty.to_string() });
+        if let Some(sc) = self.scopes.last_mut() {
+            sc.push(id);
+        }
+    }
+
+    /// 式 `e` の根の変数が所有者なら、そのフラグ。
+    fn root_owner(&self, e: &V, env: &Env) -> Option<u32> {
+        let segs = place_segs(e)?;
+        let var = env.get(&segs[0])?.0;
+        let id = var.as_u32();
+        if self.owners.contains_key(&id) { Some(id) } else { None }
+    }
+
+    /// 値 `e` (型 `ty`) を別の持ち主へ渡す (移動)。元が所有者ならフラグを下ろす。
+    fn consume(&mut self, e: &V, ty: &str, env: &Env) -> R<()> {
+        if !is_agg(ty) || !self.cx.needs_drop(ty) || self.is_fresh(e) {
+            return Ok(());
+        }
+        match self.root_owner(e, env) {
+            Some(id) => {
+                let flag = self.owners[&id].flag;
+                let z = self.b.ins().iconst(types::I8, 0);
+                self.b.def_var(flag, z);
+                Ok(())
+            }
+            None => Err("move out of a value this function does not own".into()),
+        }
+    }
+
+    fn drop_owner_if_live(&mut self, id: u32) -> R<()> {
+        let o = self.owners[&id].clone();
+        let fl = self.b.use_var(o.flag);
+        let (d, skip) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(fl, d, &[], skip, &[]);
+        self.b.switch_to_block(d);
+        let p = self.b.use_var(o.ptr);
+        self.drop_value(p, &o.ty)?;
+        let z = self.b.ins().iconst(types::I8, 0);
+        self.b.def_var(o.flag, z);
+        self.b.ins().jump(skip, &[]);
+        self.b.switch_to_block(skip);
+        Ok(())
+    }
+
+    /// 深さ `depth` 以降のスコープの所有者をすべて (内側から) 解放する。スコープ自体は残す。
+    fn drop_scopes_from(&mut self, depth: usize) -> R<()> {
+        for i in (depth..self.scopes.len()).rev() {
+            let ids = self.scopes[i].clone();
+            for id in ids.iter().rev() {
+                self.drop_owner_if_live(*id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// アドレス `addr` にある型 `ty` の値が持つメモリを解放する。
+    fn drop_value(&mut self, addr: Value, ty: &str) -> R<()> {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        if ty == STRING || self.cx.elem_of(ty).is_some() {
+            if let Some(elem) = self.cx.elem_of(ty) {
+                if self.cx.needs_drop(&elem) {
+                    let sz = self.elem_size(&elem)? as i64;
+                    let len = self.b.ins().load(i64t, MemFlags::new(), addr, 8);
+                    let base = self.b.ins().load(pt, MemFlags::new(), addr, 0);
+                    let (head, body, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                    self.b.append_block_param(head, i64t);
+                    let zero = self.b.ins().iconst(i64t, 0);
+                    self.b.ins().jump(head, &[zero]);
+                    self.b.switch_to_block(head);
+                    let i = self.b.block_params(head)[0];
+                    let c = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+                    self.b.ins().brif(c, body, &[], exit, &[]);
+                    self.b.switch_to_block(body);
+                    let off = self.b.ins().imul_imm(i, sz);
+                    let ea = self.b.ins().iadd(base, off);
+                    self.drop_value(ea, &elem)?;
+                    let i1 = self.b.ins().iadd_imm(i, 1);
+                    self.b.ins().jump(head, &[i1]);
+                    self.b.switch_to_block(exit);
+                }
+            }
+            let ptr = self.b.ins().load(pt, MemFlags::new(), addr, 0);
+            let fr = self.rt.free;
+            self.call_rt(fr, &[ptr]);
+            return Ok(());
+        }
+        let l = self.cx.layout(ty, 0)?;
+        if !l.is_enum {
+            for (_, fty, off) in &l.fields {
+                if self.cx.needs_drop(fty) {
+                    let a = self.b.ins().iadd_imm(addr, *off as i64);
+                    self.drop_value(a, fty)?;
+                }
+            }
+            return Ok(());
+        }
+        let tg = self.b.ins().load(types::I32, MemFlags::new(), addr, 0);
+        for (idx, (_, fields)) in l.variants.iter().enumerate() {
+            if !fields.iter().any(|(t, _)| self.cx.needs_drop(t)) {
+                continue;
+            }
+            let c = self.b.ins().icmp_imm(IntCC::Equal, tg, idx as i64);
+            let (yes, next) = (self.b.create_block(), self.b.create_block());
+            self.b.ins().brif(c, yes, &[], next, &[]);
+            self.b.switch_to_block(yes);
+            for (fty, off) in fields {
+                if self.cx.needs_drop(fty) {
+                    let a = self.b.ins().iadd_imm(addr, *off as i64);
+                    self.drop_value(a, fty)?;
+                }
+            }
+            self.b.ins().jump(next, &[]);
+            self.b.switch_to_block(next);
+        }
+        Ok(())
+    }
+
+    /// 式 `e` が参照 (`&x` / 参照である変数) か。参照はコピーせず別名にする。
+    fn is_ref_expr(&self, e: &V, env: &Env) -> bool {
+        match nname(e) {
+            "Unary" => matches!(st(&nf(e)[0]).as_str(), "&" | "&mut"),
+            "Path" => {
+                let segs = strs(&nf(e)[0]);
+                segs.len() == 1 && env.get(&segs[0]).map_or(false, |v| self.refs.contains(&v.0.as_u32()))
+            }
+            _ => false,
+        }
+    }
+
     /// 条件 `bad` が真なら panic して終了コード 101 で終わる。
     fn guard(&mut self, bad: Value, msg: &str) -> R<()> {
         let (pb, ok) = (self.b.create_block(), self.b.create_block());
@@ -619,6 +823,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
     fn func(&mut self, d: &Def, params_vals: &[Value]) -> R<()> {
         let mut env: Env = HashMap::new();
         let mut k = 0;
+        self.scopes.push(vec![]);
         if is_agg(&self.ret_ty) && !self.entry {
             self.sret = Some(params_vals[0]);
             k = 1;
@@ -636,6 +841,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
             let var = self.new_var(&ty);
             self.b.def_var(var, v);
+            if is_agg(&ty) && tag(t) == "ref" {
+                self.refs.insert(var.as_u32());
+            } else if is_agg(&ty) && self.cx.needs_drop(&ty) {
+                self.register_owner(var, &ty);
+            }
             env.insert(n.clone(), (var, ty));
         }
         let stmts = items(&nf(d.body.as_ref().unwrap())[0]).to_vec();
@@ -643,6 +853,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
             self.stmt(s, &mut env, i == stmts.len() - 1)?;
         }
         if !self.term {
+            self.drop_scopes_from(0)?;
             if self.entry {
                 let z = self.b.ins().iconst(types::I32, 0);
                 self.b.ins().return_(&[z]);
@@ -657,9 +868,15 @@ impl<'a, 'b> FnGen<'a, 'b> {
 
     fn block(&mut self, b: &V, env: &mut Env, tail: bool) -> R<()> {
         let stmts = items(&nf(b)[0]).to_vec();
+        self.scopes.push(vec![]);
         for (i, s) in stmts.iter().enumerate() {
             self.stmt(s, env, tail && i == stmts.len() - 1)?;
         }
+        if !self.term {
+            let d = self.scopes.len() - 1;
+            self.drop_scopes_from(d)?;
+        }
+        self.scopes.pop();
         Ok(())
     }
 
@@ -678,14 +895,40 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 };
                 let (v, _) = self.expr(&f[3], env, Some(&ty))?;
                 let mut v = v.ok_or("let of unit")?;
-                if is_agg(&ty) && !self.is_fresh(&f[3]) {
-                    let dst = self.alloc_for(&ty)?;
-                    let size = self.cx.layout(&ty, 0)?.size;
-                    self.copy_mem(dst, v, size);
-                    v = dst;
+                let mut is_ref = false;
+                let mut owner = false;
+                if is_agg(&ty) {
+                    let drops = self.cx.needs_drop(&ty);
+                    if self.is_ref_expr(&f[3], env) {
+                        // 参照は別名のまま (コピーしない)。
+                        is_ref = true;
+                    } else if self.is_fresh(&f[3]) {
+                        owner = drops;
+                    } else if drops {
+                        // 解放が要る値を場所から取り出す = 移動。元が所有者ならフラグを下ろして、こちらが持つ。
+                        if self.root_owner(&f[3], env).is_some() {
+                            let dst = self.alloc_for(&ty)?;
+                            let size = self.cx.layout(&ty, 0)?.size;
+                            self.copy_mem(dst, v, size);
+                            self.consume(&f[3], &ty, env)?;
+                            v = dst;
+                            owner = true;
+                        }
+                    } else {
+                        let dst = self.alloc_for(&ty)?;
+                        let size = self.cx.layout(&ty, 0)?.size;
+                        self.copy_mem(dst, v, size);
+                        v = dst;
+                    }
                 }
                 let var = self.new_var(&ty);
                 self.b.def_var(var, v);
+                if is_ref {
+                    self.refs.insert(var.as_u32());
+                }
+                if owner {
+                    self.register_owner(var, &ty);
+                }
                 env.insert(st(&nf(&f[0])[0]), (var, ty));
                 Ok(())
             }
@@ -700,9 +943,26 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let (v, _) = self.expr(&f[1], env, Some(&ty))?;
                     let v = v.ok_or("assign of unit")?;
                     if is_agg(&ty) {
+                        let drops = self.cx.needs_drop(&ty);
+                        if self.refs.contains(&var.as_u32()) {
+                            return Err("assignment to a reference variable".into());
+                        }
+                        if drops {
+                            let id = var.as_u32();
+                            if !self.owners.contains_key(&id) {
+                                return Err("assignment to a droppable value this function does not own".into());
+                            }
+                            self.consume(&f[1], &ty, env)?;
+                            self.drop_owner_if_live(id)?;
+                        }
                         let dst = self.b.use_var(var);
                         let size = self.cx.layout(&ty, 0)?.size;
                         self.copy_mem(dst, v, size);
+                        if drops {
+                            let flag = self.owners[&var.as_u32()].flag;
+                            let one = self.b.ins().iconst(types::I8, 1);
+                            self.b.def_var(flag, one);
+                        }
                     } else {
                         self.b.def_var(var, v);
                     }
@@ -711,6 +971,10 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let (addr, fty) = self.field_addr(&segs, env)?;
                 let (v, _) = self.expr(&f[1], env, Some(&fty))?;
                 let v = v.ok_or("assign of unit")?;
+                if is_agg(&fty) && self.cx.needs_drop(&fty) {
+                    self.consume(&f[1], &fty, env)?;
+                    self.drop_value(addr, &fty)?;
+                }
                 self.store_value(addr, &fty, v)
             }
             _ => self.exprstmt(&f[0], env, tail),
@@ -723,10 +987,13 @@ impl<'a, 'b> FnGen<'a, 'b> {
             let dst = self.sret.ok_or("aggregate return without sret")?;
             let size = self.cx.layout(ty, 0)?.size;
             self.copy_mem(dst, v.ok_or("return value")?, size);
+            self.drop_scopes_from(0)?;
             self.b.ins().return_(&[]);
         } else if let Some(v) = v {
+            self.drop_scopes_from(0)?;
             self.b.ins().return_(&[v]);
         } else {
+            self.drop_scopes_from(0)?;
             self.b.ins().return_(&[]);
         }
         self.term = true;
@@ -738,27 +1005,32 @@ impl<'a, 'b> FnGen<'a, 'b> {
         match nname(e) {
             "Return" => {
                 if self.entry {
+                    self.drop_scopes_from(0)?;
                     let z = self.b.ins().iconst(types::I32, 0);
                     self.b.ins().return_(&[z]);
                     self.term = true;
                 } else if matches!(f[0], V::Nil) {
+                    self.drop_scopes_from(0)?;
                     self.b.ins().return_(&[]);
                     self.term = true;
                 } else {
                     let rt = self.ret_ty.clone();
                     let (v, ty) = self.expr(&f[0], env, Some(&rt))?;
+                    self.consume(&f[0], &ty, env)?;
                     self.emit_return(v, &ty)?;
                 }
                 Ok(())
             }
             "Break" => {
-                let Some(&(_, exit)) = self.loops.last() else { return Err("break outside loop".into()) };
+                let Some(&(_, exit, depth)) = self.loops.last() else { return Err("break outside loop".into()) };
+                self.drop_scopes_from(depth)?;
                 self.b.ins().jump(exit, &[]);
                 self.term = true;
                 Ok(())
             }
             "Continue" => {
-                let Some(&(head, _)) = self.loops.last() else { return Err("continue outside loop".into()) };
+                let Some(&(head, _, depth)) = self.loops.last() else { return Err("continue outside loop".into()) };
+                self.drop_scopes_from(depth)?;
                 self.b.ins().jump(head, &[]);
                 self.term = true;
                 Ok(())
@@ -772,7 +1044,8 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let (c, _) = self.expr(&f[0], env, Some("bool"))?;
                 self.b.ins().brif(c.ok_or("bad condition")?, body, &[], exit, &[]);
                 self.b.switch_to_block(body);
-                self.loops.push((head, exit));
+                let depth = self.scopes.len();
+                self.loops.push((head, exit, depth));
                 let mut inner = env.clone();
                 self.block(&f[1], &mut inner, false)?;
                 self.loops.pop();
@@ -787,7 +1060,8 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let (body, exit) = (self.b.create_block(), self.b.create_block());
                 self.b.ins().jump(body, &[]);
                 self.b.switch_to_block(body);
-                self.loops.push((body, exit));
+                let depth = self.scopes.len();
+                self.loops.push((body, exit, depth));
                 let mut inner = env.clone();
                 self.block(&f[0], &mut inner, false)?;
                 self.loops.pop();
@@ -820,6 +1094,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let expect = if tail && !self.entry { Some(self.ret_ty.clone()) } else { None };
                 let (v, ty) = self.expr(e, env, expect.as_deref())?;
                 if tail && !self.entry && ty != "void" {
+                    self.consume(e, &ty, env)?;
                     self.emit_return(v, &ty)?;
                 }
                 Ok(())
@@ -1075,6 +1350,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
         }
         for ((fty, off), a) in fields.iter().zip(args) {
             let (v, _) = self.expr(a, env, Some(fty))?;
+            self.consume(a, fty, env)?;
             let addr = self.b.ins().iadd_imm(p, *off as i64);
             self.store_value(addr, fty, v.ok_or("bad payload")?)?;
         }
@@ -1083,6 +1359,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
 
     /// 関数 `d` を呼ぶ。`recv` があれば第 1 引数 (self)。
     fn call_user(&mut self, fq: &str, d: &Def, recv: Option<Value>, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        if tag(&d.ret) == "ref" {
+            return Err("call of a function returning a reference".into());
+        }
         let id = *self.ids.get(fq).ok_or("call target not declared")?;
         let rt = self.cx.pty(&d.ret)?;
         let mut vals = vec![];
@@ -1100,6 +1379,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
         for ((_, pt), a) in params.zip(args) {
             let want = self.cx.pty(pt)?;
             let (v, _) = self.expr(a, env, Some(&want))?;
+            if tag(pt) != "ref" {
+                self.consume(a, &want, env)?;
+            }
             vals.push(v.ok_or("bad argument")?);
         }
         let res = self.call_rt(id, &vals);
@@ -1206,6 +1488,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let fname = st(&fi[0]);
                     let (_, fty, off) = l.fields.iter().find(|x| x.0 == fname).cloned().ok_or_else(|| format!("no field {}", fname))?;
                     let (v, _) = self.expr(&fi[1], env, Some(&fty))?;
+                    self.consume(&fi[1], &fty, env)?;
                     let addr = self.b.ins().iadd_imm(p, off as i64);
                     self.store_value(addr, &fty, v.ok_or("bad field")?)?;
                 }
@@ -1408,6 +1691,14 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 if segs == ["core", "check", "eq"] {
                     let t = self.ty_of(&args[0], env, None).or_else(|| self.ty_of(&args[1], env, None)).ok_or("operand type")?;
+                    if t == "str" {
+                        let (a, _) = self.expr(&args[0], env, Some("str"))?;
+                        let (b, _) = self.expr(&args[1], env, Some("str"))?;
+                        let eq = self.str_eq(a.ok_or("bad operand")?, b.ok_or("bad operand")?);
+                        let ne = self.b.ins().bxor_imm(eq, 1);
+                        self.guard(ne, "assertion failed")?;
+                        return Ok((None, "void".into()));
+                    }
                     if !is_scalar(&t) {
                         return Err("check.eq on an aggregate".into());
                     }
@@ -1420,12 +1711,59 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     return Ok((None, "void".into()));
                 }
                 if segs == ["core", "mem", "drop"] {
-                    self.expr(&args[0], env, None)?;
+                    let (_, t) = self.expr(&args[0], env, None)?;
+                    if is_agg(&t) && self.cx.needs_drop(&t) {
+                        if let Some(id) = self.root_owner(&args[0], env) {
+                            // 明示的な drop: 持ち主なら今すぐ解放する (フラグが下りる)。
+                            self.drop_owner_if_live(id)?;
+                        }
+                    }
                     return Ok((None, "void".into()));
                 }
                 if segs == ["std", "io", "print_line"] {
                     self.print_value(&args[0], env)?;
                     return Ok((None, "void".into()));
+                }
+                if segs == ["alloc", "string", "String", "new"] {
+                    let v = self.alloc(24, 8);
+                    let z = self.b.ins().iconst(types::I64, 0);
+                    for off in [0, 8, 16] {
+                        self.b.ins().store(MemFlags::new(), z, v, off);
+                    }
+                    return Ok((Some(v), STRING.to_string()));
+                }
+                if segs == ["alloc", "string", "String", "from_str"] {
+                    if args.len() != 2 {
+                        return Err("from_str arity".into());
+                    }
+                    let (sv, t) = self.expr(&args[1], env, Some("str"))?;
+                    if t != "str" {
+                        return Err("from_str of a non-str".into());
+                    }
+                    let sv = sv.ok_or("bad argument")?;
+                    let pt = self.ptr_ty();
+                    let src = self.b.ins().load(pt, MemFlags::new(), sv, 0);
+                    let n = self.b.ins().load(types::I64, MemFlags::new(), sv, 8);
+                    let tmp = self.alloc(24, 8);
+                    let z = self.b.ins().iconst(types::I64, 0);
+                    for off in [0, 8, 16] {
+                        self.b.ins().store(MemFlags::new(), z, tmp, off);
+                    }
+                    let failed = self.string_append(tmp, src, n)?;
+                    let rty = self.cx.builtin_enum("Result", &[STRING.to_string(), "alloc.alloc.AllocError".to_string()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let tg = self.b.ins().uextend(types::I32, failed);
+                    self.b.ins().store(MemFlags::new(), tg, res, 0);
+                    let (ok_b, done) = (self.b.create_block(), self.b.create_block());
+                    self.b.ins().brif(failed, done, &[], ok_b, &[]);
+                    self.b.switch_to_block(ok_b);
+                    let poff = l.variants[0].1[0].1;
+                    let dst = self.b.ins().iadd_imm(res, poff as i64);
+                    self.copy_mem(dst, tmp, 24);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(done);
+                    return Ok((Some(res), rty));
                 }
                 if segs == ["alloc", "vec", "Vec", "new"] {
                     let Some(t) = expect.filter(|t| self.cx.elem_of(t).is_some()) else { return Err("Vec.new without an element type".into()) };
@@ -1447,7 +1785,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
     fn method_call(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
         let rty = self.ty_of(recv, env, expect);
         if let Some(rt) = &rty {
-            if rt == "str" || self.cx.elem_of(rt).is_some() {
+            if rt == "str" || rt == STRING || self.cx.elem_of(rt).is_some() {
                 let (p, _) = self.expr(recv, env, None)?;
                 let p = p.ok_or("bad receiver")?;
                 return self.builtin_method(p, rt, name, args, env);
@@ -1458,11 +1796,130 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if !d.is_method() {
                     return Err(format!("{} is not a method", fq));
                 }
-                let (p, _) = self.expr(recv, env, None)?;
+                let (p, rty2) = self.expr(recv, env, None)?;
+                if tag(&d.params[0].1) != "ref" {
+                    self.consume(recv, &rty2, env)?;
+                }
                 return self.call_user(&fq, d, Some(p.ok_or("bad receiver")?), args, env);
             }
         }
         self.method(recv, name, args, env, expect)
+    }
+
+    /// 文字列 `p` (`String`) の末尾に、`src` から `n` バイトを足す。失敗したら真 (I8) を返す。
+    fn string_append(&mut self, p: Value, src: Value, n: Value) -> R<Value> {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+        let cap = self.b.ins().load(i64t, MemFlags::new(), p, 16);
+        let ptr0 = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        let need = self.b.ins().iadd(len, n);
+        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, need, cap);
+        let (grow, copy_b, fail_b, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(copy_b, pt);
+        self.b.append_block_param(done, types::I8);
+        self.b.ins().brif(fits, copy_b, &[ptr0], grow, &[]);
+        self.b.switch_to_block(grow);
+        let dbl = self.b.ins().ishl_imm(cap, 1);
+        let bigger = self.b.ins().icmp(IntCC::UnsignedGreaterThan, need, dbl);
+        let newcap = self.b.ins().select(bigger, need, dbl);
+        let ra = self.rt.realloc;
+        let np = self.call_rt(ra, &[ptr0, newcap])[0];
+        let isnull = self.b.ins().icmp_imm(IntCC::Equal, np, 0);
+        let set_b = self.b.create_block();
+        self.b.ins().brif(isnull, fail_b, &[], set_b, &[]);
+        self.b.switch_to_block(set_b);
+        self.b.ins().store(MemFlags::new(), np, p, 0);
+        self.b.ins().store(MemFlags::new(), newcap, p, 16);
+        self.b.ins().jump(copy_b, &[np]);
+        self.b.switch_to_block(copy_b);
+        let base = self.b.block_params(copy_b)[0];
+        let dst = self.b.ins().iadd(base, len);
+        let mc = self.rt.memcpy;
+        self.call_rt(mc, &[dst, src, n]);
+        self.b.ins().store(MemFlags::new(), need, p, 8);
+        let zero = self.b.ins().iconst(types::I8, 0);
+        self.b.ins().jump(done, &[zero]);
+        self.b.switch_to_block(fail_b);
+        let one = self.b.ins().iconst(types::I8, 1);
+        self.b.ins().jump(done, &[one]);
+        self.b.switch_to_block(done);
+        Ok(self.b.block_params(done)[0])
+    }
+
+    /// `Result<void, AllocError>` の値を、失敗フラグから作る。
+    fn alloc_result(&mut self, failed: Value) -> R<(Value, String)> {
+        let rty = self.cx.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let tg = self.b.ins().uextend(types::I32, failed);
+        self.b.ins().store(MemFlags::new(), tg, res, 0);
+        Ok((res, rty))
+    }
+
+    fn string_method(&mut self, p: Value, name: &str, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        match name {
+            "len" => {
+                let v = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                Ok((Some(v), "usize".into()))
+            }
+            "is_empty" => {
+                let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                let r = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
+                Ok((Some(r), "bool".into()))
+            }
+            "clear" => {
+                let z = self.b.ins().iconst(i64t, 0);
+                self.b.ins().store(MemFlags::new(), z, p, 8);
+                Ok((None, "void".into()))
+            }
+            "as_str" => {
+                let slot = self.alloc(16, 8);
+                let ptr = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                self.b.ins().store(MemFlags::new(), ptr, slot, 0);
+                self.b.ins().store(MemFlags::new(), len, slot, 8);
+                Ok((Some(slot), "str".into()))
+            }
+            "push_str" => {
+                let arg = args.first().ok_or("push_str needs an argument")?;
+                let (sv, t) = self.expr(arg, env, Some("str"))?;
+                if t != "str" {
+                    return Err("push_str of a non-str".into());
+                }
+                let sv = sv.ok_or("bad argument")?;
+                let src = self.b.ins().load(pt, MemFlags::new(), sv, 0);
+                let n = self.b.ins().load(i64t, MemFlags::new(), sv, 8);
+                let failed = self.string_append(p, src, n)?;
+                let (res, rty) = self.alloc_result(failed)?;
+                Ok((Some(res), rty))
+            }
+            _ => Err(format!("String method {}", name)),
+        }
+    }
+
+    /// 2 つの `str` (アドレス) が等しければ真 (I8)。
+    fn str_eq(&mut self, a: Value, b: Value) -> Value {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        let la = self.b.ins().load(i64t, MemFlags::new(), a, 8);
+        let lb = self.b.ins().load(i64t, MemFlags::new(), b, 8);
+        let pa = self.b.ins().load(pt, MemFlags::new(), a, 0);
+        let pb = self.b.ins().load(pt, MemFlags::new(), b, 0);
+        let (cmp_b, done) = (self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(done, types::I8);
+        let same_len = self.b.ins().icmp(IntCC::Equal, la, lb);
+        let zero = self.b.ins().iconst(types::I8, 0);
+        self.b.ins().brif(same_len, cmp_b, &[], done, &[zero]);
+        self.b.switch_to_block(cmp_b);
+        let mc = self.rt.memcmp;
+        let r = self.call_rt(mc, &[pa, pb, la])[0];
+        let eq = self.b.ins().icmp_imm(IntCC::Equal, r, 0);
+        self.b.ins().jump(done, &[eq]);
+        self.b.switch_to_block(done);
+        self.b.block_params(done)[0]
     }
 
     fn elem_size(&self, elem: &str) -> R<u32> {
@@ -1483,6 +1940,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 _ => Err(format!("str method {}", name)),
             };
         }
+        if rt == STRING {
+            return self.string_method(p, name, args, env);
+        }
         let elem = self.cx.elem_of(rt).ok_or("not a Vec")?;
         let sz = self.elem_size(&elem)?;
         match name {
@@ -1497,6 +1957,27 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 Ok((Some(r), "bool".into()))
             }
             "clear" => {
+                if self.cx.needs_drop(&elem) {
+                    // 要素を解放してから長さを 0 にする (領域は残す)。
+                    let sz = sz as i64;
+                    let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                    let base = self.b.ins().load(i64t, MemFlags::new(), p, 0);
+                    let (head, body, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                    self.b.append_block_param(head, i64t);
+                    let zero = self.b.ins().iconst(i64t, 0);
+                    self.b.ins().jump(head, &[zero]);
+                    self.b.switch_to_block(head);
+                    let i = self.b.block_params(head)[0];
+                    let c = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+                    self.b.ins().brif(c, body, &[], exit, &[]);
+                    self.b.switch_to_block(body);
+                    let off = self.b.ins().imul_imm(i, sz);
+                    let ea = self.b.ins().iadd(base, off);
+                    self.drop_value(ea, &elem)?;
+                    let i1 = self.b.ins().iadd_imm(i, 1);
+                    self.b.ins().jump(head, &[i1]);
+                    self.b.switch_to_block(exit);
+                }
                 let z = self.b.ins().iconst(i64t, 0);
                 self.b.ins().store(MemFlags::new(), z, p, 8);
                 Ok((None, "void".into()))
@@ -1533,6 +2014,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let arg = args.first().ok_or("push needs an argument")?;
                 let (v, _) = self.expr(arg, env, Some(&elem))?;
                 let v = v.ok_or("bad push value")?;
+                self.consume(arg, &elem, env)?;
                 let rty = self.cx.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()])?;
                 let l = self.cx.layout(&rty, 0)?;
                 let res = self.alloc(l.size, l.align);
@@ -1719,13 +2201,31 @@ pub fn compile_clif(
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(ptr));
     let realloc = module.declare_function("realloc", Linkage::Import, &sig).map_err(|e| e.to_string())?;
-    let rt = Rt { puts, write, exit, realloc };
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(ptr));
+    let free = module.declare_function("free", Linkage::Import, &sig).map_err(|e| e.to_string())?;
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(ptr));
+    sig.params.push(AbiParam::new(ptr));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(ptr));
+    let memcpy = module.declare_function("memcpy", Linkage::Import, &sig).map_err(|e| e.to_string())?;
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(ptr));
+    sig.params.push(AbiParam::new(ptr));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(types::I32));
+    let memcmp = module.declare_function("memcmp", Linkage::Import, &sig).map_err(|e| e.to_string())?;
+    let rt = Rt { puts, write, exit, realloc, free, memcpy, memcmp };
 
     // 関数の宣言。入口は C の `main` にする。構造体・列挙型を返す関数は、先頭に戻り値用のアドレスを取る。
     let mut ids: HashMap<String, FuncId> = HashMap::new();
     for n in &order {
         let d = funcs[n];
         let mut sig = module.make_signature();
+        if n != entry && tag(&d.ret) == "ref" {
+            return Err(format!("{}: returns a reference", d.name));
+        }
         let rty = if n == entry { "void".to_string() } else { cx.pty(&d.ret).map_err(|e| format!("{}: {}", d.name, e))? };
         if n != entry && is_agg(&rty) {
             sig.params.push(AbiParam::new(ptr));
@@ -1771,6 +2271,9 @@ pub fn compile_clif(
                 loops: vec![],
                 term: false,
                 nvar: 0,
+                scopes: vec![],
+                owners: HashMap::new(),
+                refs: HashSet::new(),
             };
             g.func(d, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?;
             let FnGen { mut b, .. } = g;

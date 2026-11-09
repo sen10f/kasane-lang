@@ -1756,3 +1756,128 @@ fn indexing_a_vec_out_of_bounds_panics_in_a_cranelift_executable() {
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("index out of bounds"), "{}", text(&o.stderr));
 }
+
+fn clif_string_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    let sv = "alloc.string.String<std.alloc.System>";
+    let vs = "alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>";
+    [
+        "type t.Doc".to_string(),
+        format!("    name: {}", sv),
+        format!("    parts: {}", vs),
+        "end t.Doc".to_string(),
+        String::new(),
+        format!("fn t.build(n: u32) -> {}", vs),
+        "    let mut v = t.fresh()".to_string(),
+        "    let mut i = 0u32".to_string(),
+        "    while i < n {".to_string(),
+        "        let g = t.greeting(\"x\")".to_string(),
+        "        match v.push(g) {".to_string(),
+        "            Ok(_) => 0u8".to_string(),
+        "            Err(_) => 1u8".to_string(),
+        "        }".to_string(),
+        "        i = i.wrapping_add(1u32)".to_string(),
+        "    }".to_string(),
+        "    v".to_string(),
+        "end t.build".to_string(),
+        String::new(),
+        "fn t.early(flag: bool) -> usize".to_string(),
+        "    let s = t.greeting(\"early\")".to_string(),
+        "    if flag {".to_string(),
+        "        return s.len()".to_string(),
+        "    }".to_string(),
+        "    let other = t.greeting(\"late\")".to_string(),
+        "    other.len().wrapping_add(s.len())".to_string(),
+        "end t.early".to_string(),
+        String::new(),
+        format!("fn t.fresh() -> {}", vs),
+        "    alloc.vec.Vec.new(std.alloc.SYSTEM)".to_string(),
+        "end t.fresh".to_string(),
+        String::new(),
+        format!("fn t.greeting(who: &str) -> {}", sv),
+        "    let mut s = alloc.string.String.new(std.alloc.SYSTEM)".to_string(),
+        "    match s.push_str(\"hello, \") {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    match s.push_str(who) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    s".to_string(),
+        "end t.greeting".to_string(),
+        String::new(),
+        "fn t.looping() -> u32".to_string(),
+        "    let mut i = 0u32".to_string(),
+        "    let mut total = 0u32".to_string(),
+        "    loop {".to_string(),
+        "        i = i.wrapping_add(1u32)".to_string(),
+        "        let _s = t.greeting(\"loop\")".to_string(),
+        "        if i > 50u32 {".to_string(),
+        "            break".to_string(),
+        "        }".to_string(),
+        "        if i & 1u32 == 1u32 {".to_string(),
+        "            continue".to_string(),
+        "        }".to_string(),
+        "        total = total.wrapping_add(1u32)".to_string(),
+        "    }".to_string(),
+        "    total".to_string(),
+        "end t.looping".to_string(),
+        String::new(),
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may".to_string(),
+        "    let g = t.greeting(\"world\")".to_string(),
+        "    std.io.print_line(g.as_str())".to_string(),
+        "    core.check.eq(g.as_str(), \"hello, world\")".to_string(),
+        "    core.check.eq(g.len(), 12usize)".to_string(),
+        "    let docs = t.build(100u32)".to_string(),
+        "    core.check.eq(docs.len(), 100usize)".to_string(),
+        "    let mut d = t.Doc { name: t.greeting(\"doc\"), parts: t.build(3u32) }".to_string(),
+        "    core.check.eq(d.name.as_str(), \"hello, doc\")".to_string(),
+        "    match d.parts.push(t.greeting(\"more\")) {".to_string(),
+        "        Ok(_) => 0u8".to_string(),
+        "        Err(_) => 1u8".to_string(),
+        "    }".to_string(),
+        "    core.check.eq(d.parts.len(), 4usize)".to_string(),
+        "    d.name = t.greeting(\"renamed\")".to_string(),
+        "    core.check.eq(d.name.as_str(), \"hello, renamed\")".to_string(),
+        "    d.parts.clear()".to_string(),
+        "    core.check.eq(d.parts.len(), 0usize)".to_string(),
+        "    core.check.eq(t.early(true), 12usize)".to_string(),
+        "    core.check.eq(t.early(false), 23usize)".to_string(),
+        "    core.check.eq(t.looping(), 25u32)".to_string(),
+        "    let moved = g".to_string(),
+        "    core.check.eq(moved.len(), 12usize)".to_string(),
+        "    let r = alloc.string.String.from_str(std.alloc.SYSTEM, \"abc\")".to_string(),
+        "    match r {".to_string(),
+        "        Ok(s) => core.check.eq(s.as_str(), \"abc\")".to_string(),
+        "        Err(_) => core.check.eq(1u8, 2u8)".to_string(),
+        "    }".to_string(),
+        "    core.mem.drop(docs)".to_string(),
+        tail.to_string(),
+        "    std.io.print_line(\"string ok\")".to_string(),
+        "    Ok(())".to_string(),
+        "end t.main".to_string(),
+        String::new(),
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_frees_owned_values_and_compiles_string() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_str_{}", release), &clif_string_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "hello, world\nstring ok");
+    }
+}
+
+#[test]
+fn a_wrong_string_comparison_in_a_cranelift_executable_fails_the_check() {
+    let (_t, exe_path, out) = build_clif("clif_str_bad", &clif_string_program("    core.check.eq(\"ab\", \"ac\")"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+    assert!(!text(&o.stdout).contains("string ok"));
+}
