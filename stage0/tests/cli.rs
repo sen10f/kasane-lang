@@ -1265,3 +1265,32 @@ fn a_trait_method_return_type_flows_into_the_caller() {
     );
     assert!(got.iter().any(|c| c == "E2020"), "{}", out);
 }
+
+fn stack_pkg(name: &str, limit: u32, local: &str) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let src = [
+        format!("fn t.deep(n: u32) -> u32 uses [] panics never stack {}", limit),
+        "    if n == 0u32 {".to_string(),
+        "        return 0u32".to_string(),
+        "    }".to_string(),
+        format!("    let keep: {} = {}", local, if local.contains("u128") { "(1u128, 2u128, 3u128, 4u128)" } else { "7u32" }),
+        "    core.mem.drop(keep)".to_string(),
+        "    t.deep(n.wrapping_sub(1u32))".to_string(),
+        "end t.deep".to_string(),
+        String::new(),
+    ]
+    .join(&nl);
+    let t = Tmp::new(name, &main_wrap(&(src + &nl), &body(&["core.mem.drop(t.deep(3u32))"])));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn the_stack_estimate_depends_on_the_size_of_the_locals() {
+    // 小さな局所変数 (u32) なら 128 バイトで足りる。
+    let (got, out) = stack_pkg("stk_small", 128, "u32");
+    assert!(!got.iter().any(|c| c == "E4012"), "{}", out);
+    // 64 バイトのタプルを持つと、同じ 128 バイトでは足りない。
+    let (got, out) = stack_pkg("stk_big", 128, "(u128, u128, u128, u128)");
+    assert!(got.iter().any(|c| c == "E4012"), "{}", out);
+}

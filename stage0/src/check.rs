@@ -1598,6 +1598,57 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 型 `t` の大きさ (バイト) の見積り。再帰する型や未知の型は 1 語から数語とする。
+    fn ty_size(&self, t: &V, depth: u32) -> u64 {
+        if is_nil(t) || depth > 6 {
+            return 8;
+        }
+        match tag(t).as_str() {
+            "prim" => match st(tel(t, 1)).as_str() {
+                "bool" | "i8" | "u8" => 1,
+                "i16" | "u16" => 2,
+                "i32" | "u32" | "f32" | "char" => 4,
+                "i128" | "u128" | "str" => 16,
+                _ => 8,
+            },
+            "ref" => match tag(tel(t, 2)).as_str() {
+                "slice" => 16,
+                "prim" if st(tel(tel(t, 2), 1)) == "str" => 16,
+                _ => 8,
+            },
+            "tuple" => items(tel(t, 1)).iter().map(|x| round8(self.ty_size(x, depth + 1))).sum(),
+            "slice" => 16,
+            "array" => {
+                let n = tel(t, 2);
+                let len = if nname(n) == "Int" { st(&nf(n)[1]).replace('_', "").parse::<u64>().unwrap_or(16) } else { 16 };
+                len.saturating_mul(self.ty_size(tel(t, 1), depth + 1).max(1))
+            }
+            "named" => {
+                let nm = st(tel(t, 1));
+                let args: Vec<&V> = items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).collect();
+                match nm.as_str() {
+                    "Option" | "Result" => 8 + args.iter().map(|a| self.ty_size(a, depth + 1)).max().unwrap_or(0),
+                    "alloc.vec.Vec" | "alloc.string.String" => 24,
+                    "alloc.boxed.Box" => 8,
+                    _ => match self.p.types.get(&nm) {
+                        Some(&i) => {
+                            let td = self.def(i);
+                            if td.kw == "enum" {
+                                8 + td.variants.iter().map(|v| v.1.iter().map(|x| round8(self.ty_size(x, depth + 1))).sum::<u64>()).max().unwrap_or(0)
+                            } else if td.kw == "type" {
+                                td.fields.iter().map(|f| round8(self.ty_size(&f.1, depth + 1))).sum()
+                            } else {
+                                8
+                            }
+                        }
+                        None => 16,
+                    },
+                }
+            }
+            _ => 8,
+        }
+    }
+
     fn go(&self, n: &str, path: &BTreeSet<String>, names: &HashMap<String, usize>, memo: &mut HashMap<String, u64>) -> u64 {
         if path.contains(n) {
             return 0;
@@ -1611,8 +1662,17 @@ impl<'a> Checker<'a> {
                 let d = self.def(i);
                 let mut all = vec![];
                 walk(d.body.as_ref().unwrap(), &mut all);
-                let lets = all.iter().filter(|x| nname(x) == "Let").count() as u64;
-                32 + 16 * (d.params.len() as u64 + lets)
+                // 戻りアドレスと保存したフレームポインタ (16) + 引数と局所変数の大きさ + 一時値の余裕 (16)。
+                // 型の注釈がない局所変数は 1 語 (8) とみなす。
+                let mut bytes: u64 = 16 + 16;
+                for p in &d.params {
+                    bytes += round8(self.ty_size(&p.1, 0));
+                }
+                for l in all.iter().filter(|x| nname(x) == "Let") {
+                    let ann = &nf(l)[2];
+                    bytes += if is_nil(ann) { 8 } else { round8(self.ty_size(ann, 0)) };
+                }
+                bytes
             }
         };
         let mut np = path.clone();
@@ -1623,6 +1683,10 @@ impl<'a> Checker<'a> {
         memo.insert(n.to_string(), r);
         r
     }
+}
+
+fn round8(n: u64) -> u64 {
+    (n + 7) / 8 * 8
 }
 
 pub fn format_diag(d: &Diag) -> String {
