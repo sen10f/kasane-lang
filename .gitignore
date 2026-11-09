@@ -7,3 +7,4 @@ bench/agent_out/
 bench/agent_prompts*/
 bench/results/
 bench/*.log
+bench/work/

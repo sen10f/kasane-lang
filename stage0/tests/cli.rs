@@ -1130,3 +1130,74 @@ fn literals_given_to_fn_bounded_generics_are_not_flagged() {
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(!codes(&out).iter().any(|c| c == "E2027"), "{}", out);
 }
+
+// ---- クロージャの型と `Fn` 境界の単一化 (types.rs) ----
+
+#[test]
+fn a_closure_meets_the_fn_bound_of_fold() {
+    // fold の B はクロージャの引数と戻り値から決まる。誤検出が出ないことを確かめる。
+    let (got, out) = check_codes(
+        "cl_fold",
+        &[
+            "let total = core.iter.fold(",
+            "    core.iter.range(0u32, 4u32),",
+            "    0u32,",
+            "    fn(acc: u32, x: u32) -> u32 capture [] {",
+            "        acc + x",
+            "    },",
+            ")",
+            "core.mem.drop(total)",
+        ],
+    );
+    assert!(!got.iter().any(|c| c.starts_with("E202") || c.starts_with("E203")), "{}", out);
+}
+
+#[test]
+fn a_closure_return_type_that_disagrees_with_the_annotation_is_rejected() {
+    let (got, out) = check_codes(
+        "cl_ret",
+        &["let f = fn(x: u8) -> u8 capture [] {", "    1u16", "}", "core.mem.drop(f(2u8))"],
+    );
+    assert!(got.iter().any(|c| c == "E2020"), "{}", out);
+    assert!(out.contains("return value of closure"), "{}", out);
+}
+
+#[test]
+fn a_closure_arity_that_disagrees_with_the_fn_bound_is_rejected() {
+    // fold の境界は `Fn<(B, T), B, E, P>` (引数 2 個)。
+    let (got, out) = check_codes(
+        "cl_arity",
+        &[
+            "let total = core.iter.fold(",
+            "    core.iter.range(0u32, 4u32),",
+            "    0u32,",
+            "    fn(acc: u32, x: u32, y: u32) -> u32 capture [] {",
+            "        acc + x + y",
+            "    },",
+            ")",
+            "core.mem.drop(total)",
+        ],
+    );
+    assert!(got.iter().any(|c| c == "E2023"), "{}", out);
+    assert!(out.contains("argument 3 of `core.iter.fold`"), "{}", out);
+}
+
+#[test]
+fn a_closure_that_captures_by_mutation_does_not_meet_the_fn_bound() {
+    let (got, out) = check_codes(
+        "cl_cap",
+        &[
+            "let mut n = 0u32",
+            "let f = fn(acc: u32, x: u32) -> u32 capture [&mut n] {",
+            "    n = acc + x",
+            "}",
+            "let total = core.iter.fold(",
+            "    core.iter.range(0u32, 4u32),",
+            "    0u32,",
+            "    f,",
+            ")",
+            "core.mem.drop(total)",
+        ],
+    );
+    assert!(got.iter().any(|c| c == "E2030"), "{}", out);
+}

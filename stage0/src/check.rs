@@ -786,6 +786,8 @@ impl<'a> Checker<'a> {
         // 従来の検査と新しい型推論が同じ誤りを同じ文面で報告したときは、1 件にまとめる。
         let mut seen = HashSet::new();
         self.diags.retain(|d| seen.insert((d.file.clone(), d.code.clone(), d.fqn.clone(), d.line, d.msg.clone())));
+        // NLL 近似: 字句的な借用検査のうち、借用がすでに死んでいると確信できる E3010 を取り消す。
+        self.nll_cancel();
         self.check_recursion();
     }
 
@@ -1107,6 +1109,47 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// nll.rs の NLL 近似: 既存の字句借用検査が報告した E3010 のうち、その位置で
+    /// 借用がすでに死んでいると確信できるものだけを報告から外す。確信できない
+    /// (ループ・クロージャ・ネストした再代入など) 場合は既存の判定をそのまま通す。
+    fn nll_cancel(&mut self) {
+        let user = self.user.clone();
+        let mut agg: BTreeMap<(String, usize, String), (usize, usize)> = BTreeMap::new();
+        for &i in &user {
+            let d = self.def(i);
+            if d.kw != "fn" {
+                continue;
+            }
+            let Some(body) = &d.body else { continue };
+            for (key, (c, t)) in crate::nll::cancellable(body) {
+                let e = agg.entry((d.name.clone(), key.0, key.1)).or_insert((0, 0));
+                e.0 += c;
+                e.1 += t;
+            }
+        }
+        if agg.is_empty() {
+            return;
+        }
+        // 診断に現れた (fqn, 行, 文面) の E3010 の個数を数える。
+        let mut seen: BTreeMap<(String, usize, String), usize> = BTreeMap::new();
+        for d in &self.diags {
+            if d.code == "E3010" {
+                *seen.entry((d.fqn.clone(), d.line, d.msg.clone())).or_default() += 1;
+            }
+        }
+        self.diags.retain(|d| {
+            if d.code != "E3010" {
+                return true;
+            }
+            let key = (d.fqn.clone(), d.line, d.msg.clone());
+            match (agg.get(&key), seen.get(&key)) {
+                // 候補全部が取り消し可能で、診断の個数が候補の数を超えないときのみ。
+                (Some((c, t)), Some(n)) if t == c && n <= c => false,
+                _ => true,
+            }
+        });
     }
 
     fn tc_stmt(&mut self, s: &V, env: &mut Env, muts: &mut BTreeSet<String>) {

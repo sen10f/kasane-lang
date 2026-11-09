@@ -28,6 +28,17 @@ pub enum Ty {
     Param(String),
     /// 推論中の型変数 (関数ごとの表の添字)
     Var(usize),
+    /// クロージャの型。`cap` は capture 節から決めた「満たせ得る最大の `Fn` 系トレイト」の近似。
+    Closure { args: Vec<Ty>, ret: Box<Ty>, cap: Cap },
+}
+
+/// クロージャの能力 (`Fn` の階順)。capture が共有参照だけなら `Fn`、`&mut` を含めば `FnMut`、
+/// 値での取り込み (`run` なし) を含めば `FnOnce` に届く。
+#[derive(Clone, Debug, PartialEq)]
+pub enum Cap {
+    Fn,
+    FnMut,
+    FnOnce,
 }
 
 impl Ty {
@@ -56,6 +67,9 @@ impl Ty {
             Ty::Array(t) => format!("[{}; _]", t.show()),
             Ty::Slice(t) => format!("[{}]", t.show()),
             Ty::Param(p) => p.clone(),
+            Ty::Closure { args, ret, .. } => {
+                format!("fn({}) -> {}", args.iter().map(|x| x.show()).collect::<Vec<_>>().join(", "), ret.show())
+            }
         }
     }
     fn has_param(&self) -> bool {
@@ -63,6 +77,7 @@ impl Ty {
             Ty::Param(_) => true,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| x.has_param()),
             Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => x.has_param(),
+            Ty::Closure { args, ret, .. } => args.iter().any(|x| x.has_param()) || ret.has_param(),
             _ => false,
         }
     }
@@ -110,6 +125,11 @@ fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
         Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| subst(x, bind)).collect()),
         Ty::Array(x) => Ty::Array(Box::new(subst(x, bind))),
         Ty::Slice(x) => Ty::Slice(Box::new(subst(x, bind))),
+        Ty::Closure { args, ret, cap } => Ty::Closure {
+            args: args.iter().map(|x| subst(x, bind)).collect(),
+            ret: Box::new(subst(ret, bind)),
+            cap: cap.clone(),
+        },
         other => other.clone(),
     }
 }
@@ -279,6 +299,10 @@ impl<'a> TypeCk<'a> {
             }
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().for_each(|x| self.escape(x)),
             Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.escape(&x),
+            Ty::Closure { args, ret, .. } => {
+                args.iter().for_each(|x| self.escape(x));
+                self.escape(&*ret);
+            }
             _ => {}
         }
     }
@@ -320,6 +344,11 @@ impl<'a> TypeCk<'a> {
             Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.deep(x)).collect()),
             Ty::Array(x) => Ty::Array(Box::new(self.deep(&x))),
             Ty::Slice(x) => Ty::Slice(Box::new(self.deep(&x))),
+            Ty::Closure { args, ret, cap } => Ty::Closure {
+                args: args.iter().map(|x| self.deep(x)).collect(),
+                ret: Box::new(self.deep(&*ret)),
+                cap,
+            },
             other => other,
         }
     }
@@ -329,6 +358,7 @@ impl<'a> TypeCk<'a> {
             Ty::Var(i) => i == v,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.occurs(v, x)),
             Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.occurs(v, &x),
+            Ty::Closure { args, ret, .. } => args.iter().any(|x| self.occurs(v, x)) || self.occurs(v, &*ret),
             _ => false,
         }
     }
@@ -407,6 +437,16 @@ impl<'a> TypeCk<'a> {
                     self.unify2(x, y)?;
                 }
                 Ok(())
+            }
+            (Ty::Closure { args: xs, ret: rx, .. }, Ty::Closure { args: ys, ret: ry, .. }) => {
+                if xs.len() != ys.len() {
+                    return Err((a.clone(), b.clone()));
+                }
+                let (xs, ys, rx, ry) = (xs.clone(), ys.clone(), (**rx).clone(), (**ry).clone());
+                for (x, y) in xs.iter().zip(&ys) {
+                    self.unify2(x, y)?;
+                }
+                self.unify2(&rx, &ry)
             }
             (Ty::Slice(x), Ty::Slice(y)) | (Ty::Slice(x), Ty::Array(y)) | (Ty::Array(x), Ty::Slice(y)) | (Ty::Array(x), Ty::Array(y)) => {
                 let (x, y) = (x.clone(), y.clone());
@@ -815,15 +855,28 @@ impl<'a> TypeCk<'a> {
                 Ty::Unit
             }
             "Closure" => {
-                self.scopes.push(HashMap::new());
+                // パラメータと戻り値の型は注釈が必須なので分かる (関数自身の型パラメータは Unknown)。
                 let gn = self.def().gnames();
+                let mut args: Vec<Ty> = vec![];
+                self.scopes.push(HashMap::new());
                 for p in items(&f[0]) {
                     let ty = subst_params_unknown(&from_v(&items(p)[1], &gn));
-                    self.bind(&st(&items(p)[0]), ty);
+                    self.bind(&st(&items(p)[0]), ty.clone());
+                    args.push(ty);
                 }
-                self.infer(&f[3]);
+                let body = self.infer(&f[3]);
                 self.scopes.pop();
-                Ty::Unknown
+                let ret = subst_params_unknown(&from_v(&f[1], &gn));
+                if let Err(err) = self.unify2(&ret, &body) {
+                    if let Some((want, got)) = self.prim_conflict(&err) {
+                        self.diag(
+                            "E2020",
+                            format!("type mismatch in return value of closure: expected {}, found {}", want, got),
+                            nline(e),
+                        );
+                    }
+                }
+                Ty::Closure { args, ret: Box::new(ret), cap: closure_cap(&f[2]) }
             }
             "Return" | "Break" | "Continue" => {
                 if nname(e) == "Return" && !is_nil(&f[0]) {
@@ -986,7 +1039,11 @@ impl<'a> TypeCk<'a> {
     fn call(&mut self, callee: &V, args: &[V], line: usize) -> Ty {
         let argt: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
         if nname(callee) != "Path" {
-            self.infer(callee);
+            // `fn(..) {..}(x)` のように、クロージャを直接呼ぶ形。
+            let t = self.infer(callee);
+            if let Some(r) = self.call_closure(&t, &argt, line) {
+                return r;
+            }
             argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;
         }
@@ -994,6 +1051,11 @@ impl<'a> TypeCk<'a> {
         // `v.items.push(x)` のように、局所変数から始まるパスはメソッド呼び出し。
         if self.lookup(&segs[0]).is_some() {
             if segs.len() < 2 {
+                // `f(x)`: クロージャを持つ局所変数の直接呼び出し。
+                let t = self.lookup(&segs[0]).unwrap();
+                if let Some(r) = self.call_closure(&t, &argt, line) {
+                    return r;
+                }
                 return Ty::Unknown;
             }
             let mut t = self.lookup(&segs[0]).unwrap();
@@ -1041,17 +1103,33 @@ impl<'a> TypeCk<'a> {
     }
 
     /// 関数・関連関数の呼び出し: 型パラメータを新しい型変数にし、引数と単一化して、戻り値の型を求める。
+    ///
+    /// `F: core.ops.Fn<Args, R, E, P>` の境界を持つ型パラメータ (fold の `F` など) にはクロージャを渡せる。
+    /// 対応する引数の型がクロージャに決まるときは、境界の引数タプル・戻り値型・capture の能力を検査する。
+    /// それ以外 (クロージャでない・型変数が解決しない) のときは従来どおり、この呼び出しに渡した
+    /// リテラルなどの型変数は決まらなくてもエラーにしない (`escape`)。
     fn call_def(&mut self, i: usize, argt: &[Ty], line: usize) -> Ty {
         let d = &self.p.defs[i];
         let caller = self.def().name.clone();
         self.edges.entry(caller).or_default().insert(d.name.clone());
         let gn = d.gnames();
-        // `F: core.ops.Fn<..>` の境界を持つ関数 (fold / map など) は、クロージャの型から決まる型がある。
-        // クロージャの型はまだ追わないので、この呼び出しの引数に含まれる型変数は決まらなくてもエラーにしない。
-        let has_fn_bound = d.generics.iter().any(|g| {
-            g.0 == "type" && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]).starts_with("core.ops.Fn")))
-        });
-        if has_fn_bound {
+        // Fn 境界を受け取る引数の位置と、渡されたクロージャの型 (決まっているものだけ)。
+        let mut fn_args: Vec<(usize, String)> = vec![];
+        let mut closures: HashMap<usize, Ty> = HashMap::new();
+        for (k, a) in argt.iter().enumerate() {
+            let Some(p) = d.params.get(k) else { break };
+            if let Ty::Param(name) = from_v(&p.1, &gn) {
+                let bounds = self.fn_bound(d, &name);
+                if !bounds.is_empty() {
+                    fn_args.push((k, name));
+                    if let t @ Ty::Closure { .. } = self.resolve(a) {
+                        closures.insert(k, t);
+                    }
+                }
+            }
+        }
+        if fn_args.len() != closures.len() {
+            // クロージャの型が追えない呼び出し: 引数の型変数は決まらなくてもエラーにしない。
             argt.iter().for_each(|a| self.escape(a));
         }
         let mut map: HashMap<String, Ty> = HashMap::new();
@@ -1072,9 +1150,140 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
+        // Fn 境界の単一化: 境界の `Args` タプルと戻り値型を、クロージャの型と比べる。
+        let mut cap_bad = false;
+        for (k, name) in &fn_args {
+            let Some(cl) = closures.get(k).cloned() else { continue };
+            let Ty::Closure { args, ret, cap } = self.deep(&cl) else { continue };
+            let bounds = self.fn_bound(d, name);
+            for b in &bounds {
+                let V::L(bx) = b else { continue };
+                let tr = st(&bx[0]);
+                if !tr.starts_with("core.ops.Fn") {
+                    continue;
+                }
+                let targs = tel(b, 1);
+                if let Ty::Tuple(want_args) = self.inst(&from_v(tel(&targs, 0), &gn), &mut map) {
+                    if args.len() != want_args.len() {
+                        self.diag(
+                            "E2023",
+                            format!(
+                                "argument {} of `{}`: expected `{}`, found `{}`",
+                                k + 1,
+                                d.name,
+                                Ty::Tuple(want_args.clone()).show(),
+                                cl.show()
+                            ),
+                            line,
+                        );
+                    } else {
+                        for (w, g) in want_args.iter().zip(&args) {
+                            if let Err(e) = self.unify2(w, g) {
+                                if let Some((want, got)) = self.type_conflict(&e) {
+                                    self.diag(
+                                        "E2023",
+                                        format!(
+                                            "argument {} of `{}`: expected `{}`, found `{}`",
+                                            k + 1,
+                                            d.name,
+                                            want,
+                                            got
+                                        ),
+                                        line,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                let want_ret = self.inst(&from_v(tel(&targs, 1), &gn), &mut map);
+                if let Err(e) = self.unify2(&want_ret, &ret) {
+                    if let Some((want, got)) = self.type_conflict(&e) {
+                        self.diag(
+                            "E2023",
+                            format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
+                            line,
+                        );
+                    }
+                }
+                // capture の能力: `Fn` は共有参照だけ、`FnMut` は値での取り込み以外まで、`FnOnce` は無条件。
+                let ok = match tr.as_str() {
+                    "core.ops.Fn" => cap == Cap::Fn,
+                    "core.ops.FnMut" => cap != Cap::FnOnce,
+                    _ => true,
+                };
+                if !ok && !cap_bad {
+                    cap_bad = true;
+                    self.diag(
+                        "E2030",
+                        format!("the trait bound `{}: {}` of {} is not satisfied by {}", name, tr, d.name, cl.show()),
+                        line,
+                    );
+                }
+            }
+        }
         self.check_bounds(d, &map, line, true);
+        // 決まらなかった型パラメータは、従来の escape-all と同じ扱いにする (リテラルの E2027 を出さない)。
+        for t in map.values() {
+            if let Ty::Var(_) = self.deep(t) {
+                self.escape(t);
+            }
+        }
         let ret = from_v(&d.ret, &gn);
         self.inst(&ret, &mut map)
+    }
+
+    /// ジェネリクス `name` の境界のうち、`core.ops.Fn*` を含む項目の列。
+    fn fn_bound(&self, d: &Def, name: &str) -> Vec<V> {
+        let mut out = vec![];
+        for g in &d.generics {
+            if g.0 == "type" && g.1 == name {
+                for b in items(&g.2) {
+                    if matches!(b, V::L(bx) if st(&bx[0]).starts_with("core.ops.Fn")) {
+                        out.push(b.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// クロージャの型での直接呼び出し (`f(x)`)。引数の個数 (E2022) と型 (E2023) を検査し、
+    /// 戻り値の型を返す。`cl` がクロージャに決まらないときは None。
+    fn call_closure(&mut self, cl: &Ty, argt: &[Ty], line: usize) -> Option<Ty> {
+        let cl = self.deep(cl);
+        let Ty::Closure { args, ret, .. } = cl else { return None };
+        if args.len() != argt.len() {
+            self.diag(
+                "E2022",
+                format!("the closure takes {} argument(s) but {} given", args.len(), argt.len()),
+                line,
+            );
+            argt.iter().for_each(|a| self.escape(a));
+            return Some(Ty::Unknown);
+        }
+        for (i, (w, g)) in args.iter().zip(argt).enumerate() {
+            if let Err(e) = self.unify2(w, g) {
+                if let Some((want, got)) = self.type_conflict(&e) {
+                    self.diag(
+                        "E2023",
+                        format!("argument {} of the closure: expected `{}`, found `{}`", i + 1, want, got),
+                        line,
+                    );
+                }
+            }
+        }
+        Some((*ret).clone())
+    }
+
+    /// 矛盾した 2 つの型が「プリミティブ同士の違い」か「Named 同士の名前違い」なら、その文字列を返す。
+    /// それ以外は誤検出のおそれがあるので None (何も言わない)。
+    fn type_conflict(&self, e: &(Ty, Ty)) -> Option<(String, String)> {
+        match (&e.0, &e.1) {
+            (Ty::Prim(a), Ty::Prim(b)) if a != b => Some((a.clone(), b.clone())),
+            (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
+            _ => None,
+        }
     }
 
     /// 式の根にある局所変数の名前 (`v` / `s.items` → `s`)。
@@ -1093,6 +1302,21 @@ impl<'a> TypeCk<'a> {
 /// 関数自身の型パラメータは、本体の中では分からない型として扱う。
 fn subst_params_unknown(t: &Ty) -> Ty {
     subst(t, &HashMap::new())
+}
+
+/// capture 節の AST (`move x` / `&x` / `&mut x` の並び) から、満たせ得る最大の能力を求める。
+/// 共有参照だけ (または空) なら `Fn`、`&mut` を含めば `FnMut`、値での取り込みを含めば `FnOnce`。
+fn closure_cap(caps: &V) -> Cap {
+    let mut cap = Cap::Fn;
+    for c in items(caps) {
+        let Some(V::S(k)) = items(c).first() else { continue };
+        match k.as_str() {
+            "move" => cap = Cap::FnOnce,
+            "&mut" if cap == Cap::Fn => cap = Cap::FnMut,
+            _ => {}
+        }
+    }
+    cap
 }
 
 /// 整数リテラルの綴り `text` が型 `ty` に収まらなければ、その説明を返す。
