@@ -2962,3 +2962,157 @@ fn a_wrong_closure_result_through_a_generic_function_fails_the_check() {
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
+
+// ---- NLL に基づく借用検査 (borrowck.rs) ----
+
+fn has_e3010(name: &str, prefix: &str, b: &[&str]) -> (bool, String) {
+    let t = Tmp::new(name, &main_wrap(prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out).iter().any(|c| c == "E3010"), out)
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_shared_borrow_is_still_used() {
+    let (bad, out) = has_e3010(
+        "nll_shared",
+        "",
+        &["let mut x = 1u8", "let r = &x", "x = 2u8", "core.check.eq(*r, 1u8)"],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_any_use_while_a_mutable_borrow_is_still_used() {
+    let (bad, out) = has_e3010(
+        "nll_mut",
+        "",
+        &["let mut x = 1u8", "let r = &mut x", "core.check.eq(x, 1u8)", "*r = 2u8"],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot use `x` while it is mutably borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_pushing_to_a_vec_while_a_reference_into_it_is_used() {
+    let (bad, out) = has_e3010(
+        "nll_first",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "match v.push(1u8) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "let first = v.first()",
+            "match v.push(2u8) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "core.check.eq(first, Some(1u8))",
+        ],
+    );
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn nll_rejects_mutating_a_vec_inside_a_loop_over_its_iterator() {
+    let (bad, out) = has_e3010(
+        "nll_iter",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "match v.push(1u8) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "for x in v.iter() {",
+            "    match v.push(*x) {",
+            "        Ok(_u) => 0u8",
+            "        Err(_e) => 1u8",
+            "    }",
+            "}",
+        ],
+    );
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_code_where_the_borrow_is_dead_before_the_conflict() {
+    // 借用の最後の使用が、変更より前にある。
+    let (bad, out) = has_e3010("nll_dead", "", &["let mut x = 1u8", "let r = &x", "core.check.eq(*r, 1u8)", "x = 2u8", "core.check.eq(x, 2u8)"]);
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_reassigned_reference_even_if_the_old_borrow_conflicts() {
+    // r は再代入される前の値をもう使わない: 古い借用は、再代入の前にすでに死んでいる。
+    let (bad, out) = has_e3010(
+        "nll_reassign",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let mut y = 2u8",
+            "let mut r = &mut x",
+            "*r = 9u8",
+            "core.check.eq(x, 9u8)",
+            "r = &mut y",
+            "*r = 3u8",
+            "core.check.eq(y, 3u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_borrow_used_only_on_the_other_branch() {
+    let (bad, out) = has_e3010(
+        "nll_branch",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let flag = true",
+            "let r = &mut x",
+            "if flag {",
+            "    *r = 5u8",
+            "} else {",
+            "    core.check.eq(1u8, 1u8)",
+            "}",
+            "x = 7u8",
+            "core.check.eq(x, 7u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_treats_distinct_fields_of_a_struct_as_disjoint() {
+    let prefix = "type t.S\n    a: u8\n    b: u8\nend t.S\n\n";
+    let (bad, out) = has_e3010(
+        "nll_fields",
+        prefix,
+        &["let mut s = t.S { a: 1u8, b: 2u8 }", "let ra = &mut s.a", "s.b = 9u8", "*ra = 3u8", "core.check.eq(s.b, 9u8)"],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_two_phase_borrows_like_push_of_len() {
+    let (bad, out) = has_e3010(
+        "nll_twophase",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "match v.push(1u8) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "match v.push(2u8) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "core.check.eq(v.len(), 2usize)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}

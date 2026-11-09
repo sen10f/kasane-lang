@@ -5,6 +5,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::program::{Def, Program, Resolved, Target};
 use crate::parser::V;
 
+#[path = "borrowck.rs"]
+mod borrowck;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Diag {
     pub file: String,
@@ -786,8 +789,6 @@ impl<'a> Checker<'a> {
         // 従来の検査と新しい型推論が同じ誤りを同じ文面で報告したときは、1 件にまとめる。
         let mut seen = HashSet::new();
         self.diags.retain(|d| seen.insert((d.file.clone(), d.code.clone(), d.fqn.clone(), d.line, d.msg.clone())));
-        // NLL 近似: 字句的な借用検査のうち、借用がすでに死んでいると確信できる E3010 を取り消す。
-        self.nll_cancel();
         self.check_recursion();
     }
 
@@ -1042,6 +1043,8 @@ impl<'a> Checker<'a> {
         self.moved.clear();
         let body = d.body.as_ref().unwrap();
         self.tc_block(body, &env, &BTreeSet::new());
+        // NLL の借用検査 (制御フローと、借用を持つ変数の生存に基づく)
+        self.borrowck(di);
         env = self.final_env.clone();
         let stmts = items(&nf(body)[0]);
         if let Some(last) = stmts.last() {
@@ -1058,117 +1061,11 @@ impl<'a> Checker<'a> {
     fn tc_block(&mut self, b: &V, env: &Env, muts: &BTreeSet<String>) {
         let mut env = env.clone();
         let mut muts = muts.clone();
-        self.borrows(b);
         for (i, s) in items(&nf(b)[0]).iter().enumerate() {
             self.tc_stmt(s, &mut env, &mut muts);
             self.discard_check(items(&nf(b)[0]), i, &env);
         }
         self.final_env = env;
-    }
-
-    fn mentions(&self, n: &V, name: &str) -> bool {
-        let mut all = vec![];
-        walk(n, &mut all);
-        all.iter().any(|x| nname(x) == "Path" && st(&items(&nf(x)[0])[0]) == name)
-    }
-
-    fn mutates(&self, n: &V, name: &str) -> bool {
-        let mut all = vec![];
-        walk(n, &mut all);
-        all.iter().any(|x| {
-            let f = nf(x);
-            match nname(x) {
-                "Assign" => nname(&f[0]) == "Path" && st(&items(&nf(&f[0])[0])[0]) == name,
-                "Unary" => {
-                    st(&f[0]) == "&mut" && nname(&f[1]) == "Path" && st(&items(&nf(&f[1])[0])[0]) == name
-                }
-                _ => false,
-            }
-        })
-    }
-
-    fn borrows(&mut self, b: &V) {
-        let sts = items(&nf(b)[0]);
-        for (i, s0) in sts.iter().enumerate() {
-            if nname(s0) != "Let" {
-                continue;
-            }
-            let f = nf(s0);
-            if nname(&f[0]) != "PBind" {
-                continue;
-            }
-            let e = &f[3];
-            if nname(e) != "Unary" || !matches!(st(&nf(e)[0]).as_str(), "&" | "&mut") {
-                continue;
-            }
-            let inner = &nf(e)[1];
-            if nname(inner) != "Path" || items(&nf(inner)[0]).len() != 1 {
-                continue;
-            }
-            let r = st(&nf(&f[0])[0]);
-            let x = st(&items(&nf(inner)[0])[0]);
-            let m = st(&nf(e)[0]) == "&mut";
-            let last = (i + 1..sts.len()).filter(|&j| self.mentions(&sts[j], &r)).max().unwrap_or(i);
-            for k in i + 1..last {
-                if self.mentions(&sts[k], &r) {
-                    continue;
-                }
-                if m && self.mentions(&sts[k], &x) {
-                    self.tdiag(
-                        "E3010",
-                        format!("cannot use `{}` while it is mutably borrowed by `{}`", x, r),
-                        nline(&sts[k]),
-                    );
-                } else if !m && self.mutates(&sts[k], &x) {
-                    self.tdiag(
-                        "E3010",
-                        format!("cannot mutate `{}` while it is borrowed by `{}`", x, r),
-                        nline(&sts[k]),
-                    );
-                }
-            }
-        }
-    }
-
-    /// nll.rs の NLL 近似: 既存の字句借用検査が報告した E3010 のうち、その位置で
-    /// 借用がすでに死んでいると確信できるものだけを報告から外す。確信できない
-    /// (ループ・クロージャ・ネストした再代入など) 場合は既存の判定をそのまま通す。
-    fn nll_cancel(&mut self) {
-        let user = self.user.clone();
-        let mut agg: BTreeMap<(String, usize, String), (usize, usize)> = BTreeMap::new();
-        for &i in &user {
-            let d = self.def(i);
-            if d.kw != "fn" {
-                continue;
-            }
-            let Some(body) = &d.body else { continue };
-            for (key, (c, t)) in crate::nll::cancellable(body) {
-                let e = agg.entry((d.name.clone(), key.0, key.1)).or_insert((0, 0));
-                e.0 += c;
-                e.1 += t;
-            }
-        }
-        if agg.is_empty() {
-            return;
-        }
-        // 診断に現れた (fqn, 行, 文面) の E3010 の個数を数える。
-        let mut seen: BTreeMap<(String, usize, String), usize> = BTreeMap::new();
-        for d in &self.diags {
-            if d.code == "E3010" {
-                *seen.entry((d.fqn.clone(), d.line, d.msg.clone())).or_default() += 1;
-            }
-        }
-        self.diags.retain(|d| {
-            if d.code != "E3010" {
-                return true;
-            }
-            let key = (d.fqn.clone(), d.line, d.msg.clone());
-            match (agg.get(&key), seen.get(&key)) {
-                // 候補全部が取り消し可能で、診断の個数が候補の数を超えないときのみ。
-                (Some((c, t)), Some(n)) if t == c && n <= c => false,
-                _ => true,
-            }
-        });
     }
 
     fn tc_stmt(&mut self, s: &V, env: &mut Env, muts: &mut BTreeSet<String>) {

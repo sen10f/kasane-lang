@@ -11,7 +11,6 @@ mod infer;
 mod fmt;
 mod grammar;
 mod lint;
-mod nll;
 mod project;
 mod interp;
 mod natives;
