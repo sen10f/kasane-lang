@@ -577,6 +577,8 @@ struct FnGen<'a, 'b> {
 /// イテレータの始点。
 enum Src {
     Range(V, V),
+    /// `next` を持つ独自のイテレータ (値の式)
+    Custom(V),
     /// (列の式, `iter_mut` か)
     Seq(V, bool),
 }
@@ -1683,6 +1685,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
         if nname(it) == "MCall" && matches!(st(&nf(it)[1]).as_str(), "iter" | "iter_mut") && items(&nf(it)[2]).is_empty() {
             return Some(Pipe { src: Src::Seq(nf(it)[0].clone(), st(&nf(it)[1]) == "iter_mut"), stages: vec![] });
         }
+        // `next(&mut self) -> Option<T>` を持つ型の値
+        let t = self.ty_of(it, env, None)?;
+        if is_agg(&t) && !self.cx.needs_drop(&t) && self.funcs.contains_key(&format!("{}.next", t)) {
+            return Some(Pipe { src: Src::Custom(it.clone()), stages: vec![] });
+        }
         None
     }
 
@@ -1816,7 +1823,27 @@ impl<'a, 'b> FnGen<'a, 'b> {
         // 始点
         let (index_ty, start, item_ty, elem_info): (Type, Value, String, Option<(Value, Value, String, bool)>);
         let limit: Value;
+        // 独自のイテレータ: (値のアドレス, `next` の完全修飾名, `Option<Item>` の型)
+        let mut custom: Option<(Value, String, String)> = None;
         match &pipe.src {
+            Src::Custom(e) => {
+                let (cp, ct) = self.expr(e, env, None)?;
+                let cp = cp.ok_or("bad iterator")?;
+                let fq = format!("{}.next", ct);
+                let d = self.funcs.get(&fq).copied().ok_or("iterator without next")?;
+                let opt_ty = self.cx.pty_for(d, &d.ret)?;
+                if !opt_ty.starts_with("Option<") {
+                    return Err("next must return an Option".into());
+                }
+                let l = self.cx.layout(&opt_ty, 0)?;
+                let item = l.variants[1].1.first().map(|x| x.0.clone()).ok_or("iterator of unit")?;
+                index_ty = i64t;
+                start = self.b.ins().iconst(i64t, 0);
+                limit = self.b.ins().iconst(i64t, -1);
+                item_ty = item;
+                elem_info = None;
+                custom = Some((cp, fq, opt_ty));
+            }
             Src::Range(a, b) => {
                 let t = self
                     .ty_of(a, env, None)
@@ -1866,6 +1893,22 @@ impl<'a, 'b> FnGen<'a, 'b> {
         self.b.switch_to_block(body_b);
         // 要素
         let (mut val, mut ty) = match &elem_info {
+            None if custom.is_some() => {
+                // 独自のイテレータ: `next` を呼んで、`None` なら終わる。
+                let (cp, fq, opt_ty) = custom.clone().ok_or("custom iterator state")?;
+                let d = self.funcs.get(&fq).copied().ok_or("iterator without next")?;
+                let (res, _) = self.call_fn_values(&fq, d, &[cp])?;
+                let res = res.ok_or("next returned nothing")?;
+                let tg = self.b.ins().load(types::I32, MemFlags::new(), res, 0);
+                let some = self.b.ins().icmp_imm(IntCC::Equal, tg, 1);
+                let got = self.b.create_block();
+                self.b.ins().brif(some, got, &[], exit, &[]);
+                self.b.switch_to_block(got);
+                let l = self.cx.layout(&opt_ty, 0)?;
+                let (ity, ioff) = l.variants[1].1[0].clone();
+                let addr = self.b.ins().iadd_imm(res, ioff as i64);
+                (self.load_value(addr, &ity), ity)
+            }
             None => (i, item_ty.clone()),
             Some((base, _, elem, by_mut)) => {
                 let sz = self.elem_size(elem)?;
@@ -3886,6 +3929,12 @@ pub fn compile_clif(
                 if funcs.contains_key(&q) {
                     todo.push(q);
                 }
+            }
+        }
+        // 独自のイテレータの `next` (`impls core.iter.Iterator<..>`) は、`for` の中に名前が現れないので、ここで取り込む。
+        for (fq, fd) in funcs.iter() {
+            if fd.has_impls && fd.is_method() && fq.ends_with(".next") {
+                todo.push(fq.clone());
             }
         }
         // メソッド呼び出しの候補: 同じ名前を持つ、型に属する関数をすべて取り込む。

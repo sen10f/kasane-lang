@@ -2471,3 +2471,77 @@ fn the_json_example_runs_natively_through_cranelift() {
     }
     let _ = fs::remove_dir_all(&cache);
 }
+
+fn clif_iterator_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "type t.Upto",
+        "    cur: u32",
+        "    stop: u32",
+        "end t.Upto",
+        "",
+        "impl core.iter.Iterator<u32, [], never> for t.Upto",
+        "fn t.Upto.next(self: &mut t.Upto) -> Option<u32> uses [] panics never impls core.iter.Iterator<u32, [], never>",
+        "    if self.cur >= self.stop {",
+        "        return None",
+        "    }",
+        "    let v = self.cur",
+        "    self.cur = self.cur.wrapping_add(1u32)",
+        "    Some(v)",
+        "end t.Upto.next",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    let mut it = t.Upto { cur: 0u32, stop: 4u32 }",
+        "    let mut acc = 0u32",
+        "    for n in it {",
+        "        acc = acc.wrapping_add(n)",
+        "    }",
+        "    core.check.eq(acc, 6u32)",
+        "    core.check.eq(it.cur, 4u32)",
+        "    let total = core.iter.fold(",
+        "        core.iter.map(",
+        "            core.iter.filter(",
+        "                t.Upto { cur: 0u32, stop: 10u32 },",
+        "                fn(x: &u32) -> bool capture [] {",
+        "                    *x > 2u32",
+        "                },",
+        "            ),",
+        "            fn(x: u32) -> u32 capture [] {",
+        "                x.wrapping_mul(2u32)",
+        "            },",
+        "        ),",
+        "        0u32,",
+        "        fn(a: u32, x: u32) -> u32 capture [] {",
+        "            a.wrapping_add(x)",
+        "        },",
+        "    )",
+        "    core.check.eq(total, 84u32)",
+        "    let long = t.Upto { cur: 5u32, stop: 100u32 }",
+        "    core.check.eq(core.iter.count(core.iter.take(long, 3usize)), 3usize)",
+        tail,
+        "    std.io.print_line(\"iterator ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_runs_user_defined_iterators() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_iter_{}", release), &clif_iterator_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "iterator ok");
+    }
+}
+
+#[test]
+fn a_wrong_iterator_result_in_a_cranelift_executable_fails_the_check() {
+    let (_t, exe_path, out) = build_clif("clif_iter_bad", &clif_iterator_program("    core.check.eq(it.cur, 5u32)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}
