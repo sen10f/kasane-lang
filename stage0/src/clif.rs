@@ -87,6 +87,8 @@ struct Cx<'a> {
     vecs: RefCell<HashMap<String, String>>,
     /// `slice<u8>` のようなスライスの具体化: 名前 → 要素の型
     slices: RefCell<HashMap<String, String>>,
+    /// `tuple<u32,usize>` のようなタプルの具体化: 名前 → 要素の型の列
+    tuples: RefCell<HashMap<String, Vec<String>>>,
 }
 
 /// 構造体・列挙型のメモリ配置。
@@ -105,6 +107,13 @@ impl<'a> Cx<'a> {
     fn pty(&self, t: &V) -> R<String> {
         if tag(t) == "tuple" && items(tel(t, 1)).is_empty() {
             return Ok("void".into());
+        }
+        if tag(t) == "tuple" {
+            let elems: Vec<String> = items(tel(t, 1)).iter().map(|x| self.pty_owned(x)).collect::<R<Vec<String>>>()?;
+            if elems.iter().any(|e| e == "void") {
+                return Err("tuple of unit".into());
+            }
+            return Ok(self.tuple_of(&elems));
         }
         match tag(t).as_str() {
             "prim" => {
@@ -174,6 +183,12 @@ impl<'a> Cx<'a> {
         self.pty(t)
     }
 
+    fn tuple_of(&self, elems: &[String]) -> String {
+        let name = format!("tuple<{}>", elems.join(","));
+        self.tuples.borrow_mut().insert(name.clone(), elems.to_vec());
+        name
+    }
+
     fn slice_of(&self, elem: &str) -> String {
         let name = format!("slice<{}>", elem);
         self.slices.borrow_mut().insert(name.clone(), elem.to_string());
@@ -222,6 +237,25 @@ impl<'a> Cx<'a> {
                 is_enum: false,
                 variants: vec![],
             });
+        }
+        let tup = self.tuples.borrow().get(name).cloned();
+        if let Some(elems) = tup {
+            let mut off = 0u32;
+            let mut align = 1u32;
+            let mut fields = vec![];
+            for (k, ty) in elems.iter().enumerate() {
+                let (sz, al) = if is_scalar(ty) {
+                    (scalar_size(ty), scalar_size(ty))
+                } else {
+                    let l = self.layout(ty, depth + 1)?;
+                    (l.size, l.align)
+                };
+                off = align_up(off, al);
+                fields.push((k.to_string(), ty.clone(), off));
+                off += sz;
+                align = align.max(al);
+            }
+            return Ok(Layout { size: align_up(off.max(1), align), align, fields, is_enum: false, variants: vec![] });
         }
         if self.slices.borrow().contains_key(name) {
             return Ok(Layout {
@@ -330,6 +364,21 @@ impl<'a> Cx<'a> {
 
     /// 組み込み型 (str / Vec / AllocError) のメソッドの戻り値の型。
     fn builtin_method_ty(&self, recv_ty: &str, name: &str) -> Option<String> {
+        if is_int(recv_ty) && name.starts_with("checked_") {
+            return self.builtin_enum("Option", &[recv_ty.to_string()]).ok();
+        }
+        if recv_ty.starts_with("Option<") || recv_ty.starts_with("Result<") {
+            let ok_idx = if recv_ty.starts_with("Option<") { 1 } else { 0 };
+            return match name {
+                "is_some" | "is_none" if ok_idx == 1 => Some("bool".into()),
+                "is_ok" | "is_err" if ok_idx == 0 => Some("bool".into()),
+                "unwrap" | "expect" | "unwrap_or" => {
+                    let l = self.layout(recv_ty, 0).ok()?;
+                    Some(l.variants.get(ok_idx)?.1.first().map(|x| x.0.clone()).unwrap_or_else(|| "void".to_string()))
+                }
+                _ => None,
+            };
+        }
         if recv_ty == "str" {
             return match name {
                 "len" => Some("usize".into()),
@@ -549,6 +598,15 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let segs = place_segs(e)?;
                 if env.contains_key(&segs[0]) { self.field_chain_ty(&segs, env) } else { None }
             }
+            "TupleE" => {
+                let want: Option<Vec<String>> = expect.and_then(|t| self.cx.tuples.borrow().get(t).cloned());
+                let mut elems = vec![];
+                for (k, x) in items(&f[0]).iter().enumerate() {
+                    let ex = want.as_ref().and_then(|w| w.get(k)).map(|s| s.as_str());
+                    elems.push(self.ty_of(x, env, ex)?);
+                }
+                Some(self.cx.tuple_of(&elems))
+            }
             "StructLit" => {
                 let n = st(&f[0]);
                 if self.cx.types.contains_key(&n) { Some(n) } else { None }
@@ -604,6 +662,12 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 if let Some((en, _, _)) = self.cx.split_variant(&segs) {
                     return Some(en);
+                }
+                if segs.len() >= 3 {
+                    if let Some((en, _, _)) = self.cx.split_variant(&segs[..segs.len() - 1]) {
+                        let name = &segs[segs.len() - 1];
+                        return self.method_target(&en, name).and_then(|d| self.cx.pty(&d.ret).ok());
+                    }
                 }
                 if segs.len() == 1 && matches!(segs[0].as_str(), "Some" | "Ok" | "Err") && !self.funcs.contains_key(&segs[0]) {
                     return self.ctor_type(&segs[0], items(&f[1]), env, expect);
@@ -692,7 +756,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
     /// 式が一時的な領域を新しく作る (コピーせず束縛してよい) か。
     fn is_fresh(&self, e: &V) -> bool {
         match nname(e) {
-            "StructLit" | "MCall" => true,
+            "StructLit" | "MCall" | "TupleE" => true,
             "Call" => !(nname(&nf(e)[0]) == "Path" && strs(&nf(&nf(e)[0])[0]).len() >= 2 && false),
             "Path" => {
                 let segs = strs(&nf(e)[0]);
@@ -945,6 +1009,54 @@ impl<'a, 'b> FnGen<'a, 'b> {
         self.live();
         let f = nf(s);
         match nname(s) {
+            "Let" if nname(&f[0]) == "PTuple" => {
+                let pats = items(&nf(&f[0])[0]).to_vec();
+                let ann = if matches!(f[2], V::Nil) { None } else { Some(self.cx.pty(&f[2])?) };
+                let ty = match ann.or_else(|| self.ty_of(&f[3], env, None)) {
+                    Some(t) if self.cx.tuples.borrow().contains_key(&t) => t,
+                    _ => return Err("destructuring of an unknown type".into()),
+                };
+                let (v, _) = self.expr(&f[3], env, Some(&ty))?;
+                let v = v.ok_or("destructuring of unit")?;
+                let l = self.cx.layout(&ty, 0)?;
+                if pats.len() != l.fields.len() {
+                    return Err("tuple pattern arity".into());
+                }
+                let fresh = self.is_fresh(&f[3]);
+                // 解放が要る要素を取り出すには、元が新しい値か、所有者の変数でなければならない。
+                let moves_out = l.fields.iter().any(|x| self.cx.needs_drop(&x.1));
+                if moves_out {
+                    if fresh {
+                    } else if self.root_owner(&f[3], env).is_some() {
+                        self.consume(&f[3], &ty, env)?;
+                    } else {
+                        return Err("destructuring a droppable value this function does not own".into());
+                    }
+                }
+                for (pt, (_, fty, off)) in pats.iter().zip(l.fields.iter()) {
+                    match nname(pt) {
+                        "PBind" => {
+                            let addr = self.b.ins().iadd_imm(v, *off as i64);
+                            let val = self.load_value(addr, fty);
+                            let var = self.new_var(fty);
+                            self.b.def_var(var, val);
+                            if is_agg(fty) && self.cx.needs_drop(fty) {
+                                self.register_owner(var, fty);
+                            } else if is_agg(fty) {
+                                // 値のコピーを持つ (元の組を書き換えても影響しない)
+                                let dst = self.alloc_for(fty)?;
+                                let size = self.cx.layout(fty, 0)?.size;
+                                self.copy_mem(dst, val, size);
+                                self.b.def_var(var, dst);
+                            }
+                            env.insert(st(&nf(pt)[0]), (var, fty.clone()));
+                        }
+                        "PWild" => {}
+                        _ => return Err("nested pattern in let".into()),
+                    }
+                }
+                Ok(())
+            }
             "Let" => {
                 if nname(&f[0]) != "PBind" {
                     return Err("destructuring let".into());
@@ -1391,6 +1503,29 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 self.b.ins().brif(c, body, &[], next, &[]);
                 Ok((vec![], false))
             }
+            "PTuple" => {
+                if !self.cx.tuples.borrow().contains_key(sty) {
+                    return Err("tuple pattern on a non-tuple".into());
+                }
+                let l = self.cx.layout(sty, 0)?;
+                let pats = items(&pf[0]);
+                if pats.len() != l.fields.len() {
+                    return Err("tuple pattern arity".into());
+                }
+                let mut binds = vec![];
+                for (sp, (_, fty, off)) in pats.iter().zip(l.fields.iter()) {
+                    match nname(sp) {
+                        "PBind" => {
+                            let addr = self.b.ins().iadd_imm(scrut, *off as i64);
+                            binds.push((st(&nf(sp)[0]), addr, fty.clone()));
+                        }
+                        "PWild" => {}
+                        _ => return Err("nested pattern".into()),
+                    }
+                }
+                self.b.ins().jump(body, &[]);
+                Ok((binds, true))
+            }
             "PPath" | "PVariant" => {
                 let segs = strs(&pf[0]);
                 let l = self.cx.layout(sty, 0)?;
@@ -1459,7 +1594,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
             self.term = false;
             let mut inner = env.clone();
             // 変数の束縛 (名前 `x` の PBind) はスクルーティニーそのもの、バリアントの束縛はペイロードのアドレス。
-            let is_variant_pat = matches!(nname(&a[0]), "PVariant");
+            let is_variant_pat = matches!(nname(&a[0]), "PVariant" | "PTuple");
             self.bind_arm(binds, &mut inner, is_variant_pat);
             match value {
                 Some((ty, end)) => {
@@ -1698,6 +1833,18 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let v = self.b.ins().load(cl(&ty), MemFlags::new(), addr, 0);
                 Ok((Some(v), ty))
             }
+            "TupleE" => {
+                let ty = self.ty_of(e, env, expect).ok_or("tuple type")?;
+                let l = self.cx.layout(&ty, 0)?;
+                let p = self.alloc(l.size, l.align);
+                for (x, (_, fty, off)) in items(&f[0]).iter().zip(l.fields.iter()) {
+                    let (v, _) = self.expr(x, env, Some(fty))?;
+                    self.consume(x, fty, env)?;
+                    let addr = self.b.ins().iadd_imm(p, *off as i64);
+                    self.store_value(addr, fty, v.ok_or("bad tuple element")?)?;
+                }
+                Ok((Some(p), ty))
+            }
             "StructLit" => {
                 let name = st(&f[0]);
                 let l = self.cx.layout(&name, 0)?;
@@ -1742,10 +1889,10 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     .or_else(|| self.ty_of(&f[2], env, None))
                     .or_else(|| expect.map(String::from).filter(|t| is_scalar(t)))
                     .ok_or("operand type")?;
-                if t.starts_with("Option<") && matches!(op.as_str(), "==" | "!=") {
+                if is_agg(&t) && matches!(op.as_str(), "==" | "!=") {
                     let (a, _) = self.expr(&f[1], env, Some(&t))?;
                     let (b, _) = self.expr(&f[2], env, Some(&t))?;
-                    let eq = self.option_eq(a.ok_or("bad operand")?, b.ok_or("bad operand")?, &t)?;
+                    let eq = self.value_eq(a.ok_or("bad operand")?, b.ok_or("bad operand")?, &t)?;
                     let r = if op == "==" { eq } else { self.b.ins().bxor_imm(eq, 1) };
                     return Ok((Some(r), "bool".into()));
                 }
@@ -1910,6 +2057,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
                     return self.make_variant(&en, idx, args, env);
                 }
+                if segs.len() >= 3 && self.cx.split_variant(&segs[..segs.len() - 1]).is_some() {
+                    // `E.V.method(..)`: 単位バリアントに対するメソッド呼び出し
+                    let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
+                    return self.method_call(&recv, &segs[segs.len() - 1], args, env, expect);
+                }
                 if segs.len() == 1 && matches!(segs[0].as_str(), "Some" | "Ok" | "Err") && !self.funcs.contains_key(&segs[0]) {
                     let Some(t) = self.ctor_type(&segs[0], args, env, expect) else { return Err("constructor without an expected type".into()) };
                     let idx = match segs[0].as_str() {
@@ -1929,10 +2081,10 @@ impl<'a, 'b> FnGen<'a, 'b> {
                         self.guard(ne, "assertion failed")?;
                         return Ok((None, "void".into()));
                     }
-                    if t.starts_with("Option<") {
+                    if is_agg(&t) {
                         let (a, _) = self.expr(&args[0], env, Some(&t))?;
                         let (b, _) = self.expr(&args[1], env, Some(&t))?;
-                        let eq = self.option_eq(a.ok_or("bad operand")?, b.ok_or("bad operand")?, &t)?;
+                        let eq = self.value_eq(a.ok_or("bad operand")?, b.ok_or("bad operand")?, &t)?;
                         let ne = self.b.ins().bxor_imm(eq, 1);
                         self.guard(ne, "assertion failed")?;
                         return Ok((None, "void".into()));
@@ -2023,6 +2175,11 @@ impl<'a, 'b> FnGen<'a, 'b> {
     fn method_call(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
         let rty = self.ty_of(recv, env, expect);
         if let Some(rt) = &rty {
+            if rt.starts_with("Option<") || rt.starts_with("Result<") {
+                if self.cx.builtin_method_ty(rt, name).is_some() {
+                    return self.option_method(recv, rt, name, args, env);
+                }
+            }
             if rt == "str" || rt == STRING || self.cx.seq_elem(rt).is_some() {
                 let (p, _) = self.expr(recv, env, None)?;
                 let p = p.ok_or("bad receiver")?;
@@ -2241,39 +2398,136 @@ impl<'a, 'b> FnGen<'a, 'b> {
         }
     }
 
-    /// 2 つの `Option<スカラー>` (アドレス) が等しければ真 (I8)。タグが同じで、`Some` なら中身も同じ。
-    fn option_eq(&mut self, a: Value, b: Value, ty: &str) -> R<Value> {
+    /// 型 `ty` の 2 つの値 (スカラーは値、それ以外はアドレス) が等しければ真 (I8)。構造体・タプル・列挙型は構造的に比べる。
+    fn value_eq(&mut self, a: Value, b: Value, ty: &str) -> R<Value> {
+        if is_scalar(ty) {
+            return Ok(if is_float(ty) { self.b.ins().fcmp(FloatCC::Equal, a, b) } else { self.b.ins().icmp(IntCC::Equal, a, b) });
+        }
+        if ty == "str" || ty == STRING {
+            // どちらも先頭の 2 語が {ptr, len}
+            return Ok(self.str_eq(a, b));
+        }
+        if self.cx.slices.borrow().contains_key(ty) || self.cx.elem_of(ty).is_some() {
+            return Err("equality of sequences".into());
+        }
         let l = self.cx.layout(ty, 0)?;
-        let payload = l.variants[1].1.first().cloned();
+        if !l.is_enum {
+            let mut acc = self.b.ins().iconst(types::I8, 1);
+            for (_, fty, off) in &l.fields {
+                let (x, y) = self.load_pair(a, b, fty, *off)?;
+                let e = self.value_eq(x, y, fty)?;
+                acc = self.b.ins().band(acc, e);
+            }
+            return Ok(acc);
+        }
+        // 列挙型: タグが同じで、そのバリアントのペイロードが等しい。
         let ta = self.b.ins().load(types::I32, MemFlags::new(), a, 0);
         let tb = self.b.ins().load(types::I32, MemFlags::new(), b, 0);
-        let (cmp_b, done) = (self.b.create_block(), self.b.create_block());
+        let done = self.b.create_block();
         self.b.append_block_param(done, types::I8);
+        let first = self.b.create_block();
         let same = self.b.ins().icmp(IntCC::Equal, ta, tb);
         let zero = self.b.ins().iconst(types::I8, 0);
-        self.b.ins().brif(same, cmp_b, &[], done, &[zero]);
-        self.b.switch_to_block(cmp_b);
-        let is_none = self.b.ins().icmp_imm(IntCC::Equal, ta, 0);
-        let one = self.b.ins().iconst(types::I8, 1);
-        match payload {
-            Some((pty, off)) => {
-                if !is_scalar(&pty) {
-                    return Err("Option equality on an aggregate payload".into());
-                }
-                let some_b = self.b.create_block();
-                self.b.ins().brif(is_none, done, &[one], some_b, &[]);
-                self.b.switch_to_block(some_b);
-                let va = self.b.ins().load(cl(&pty), MemFlags::new(), a, off as i32);
-                let vb = self.b.ins().load(cl(&pty), MemFlags::new(), b, off as i32);
-                let eq = if is_float(&pty) { self.b.ins().fcmp(FloatCC::Equal, va, vb) } else { self.b.ins().icmp(IntCC::Equal, va, vb) };
-                self.b.ins().jump(done, &[eq]);
+        self.b.ins().brif(same, first, &[], done, &[zero]);
+        self.b.switch_to_block(first);
+        for (idx, (_, fields)) in l.variants.iter().enumerate() {
+            let is_it = self.b.ins().icmp_imm(IntCC::Equal, ta, idx as i64);
+            let (yes, next) = (self.b.create_block(), self.b.create_block());
+            self.b.ins().brif(is_it, yes, &[], next, &[]);
+            self.b.switch_to_block(yes);
+            let mut acc = self.b.ins().iconst(types::I8, 1);
+            for (fty, off) in fields {
+                let (x, y) = self.load_pair(a, b, fty, *off)?;
+                let e = self.value_eq(x, y, fty)?;
+                acc = self.b.ins().band(acc, e);
             }
-            None => {
-                self.b.ins().jump(done, &[one]);
-            }
+            self.b.ins().jump(done, &[acc]);
+            self.b.switch_to_block(next);
         }
+        let one = self.b.ins().iconst(types::I8, 1);
+        self.b.ins().jump(done, &[one]);
         self.b.switch_to_block(done);
         Ok(self.b.block_params(done)[0])
+    }
+
+    /// 2 つの値の、オフセット `off` にあるフィールドを取り出す (スカラーは値、それ以外はアドレス)。
+    fn load_pair(&mut self, a: Value, b: Value, fty: &str, off: u32) -> R<(Value, Value)> {
+        if is_scalar(fty) {
+            let x = self.b.ins().load(cl(fty), MemFlags::new(), a, off as i32);
+            let y = self.b.ins().load(cl(fty), MemFlags::new(), b, off as i32);
+            Ok((x, y))
+        } else {
+            let x = self.b.ins().iadd_imm(a, off as i64);
+            let y = self.b.ins().iadd_imm(b, off as i64);
+            Ok((x, y))
+        }
+    }
+
+    /// `Option` / `Result` のメソッド: `is_some` / `is_none` / `is_ok` / `is_err` / `unwrap` / `expect` / `unwrap_or`。
+    fn option_method(&mut self, recv: &V, rt: &str, name: &str, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let (p, _) = self.expr(recv, env, None)?;
+        let p = p.ok_or("bad receiver")?;
+        let ok_idx: i64 = if rt.starts_with("Option<") { 1 } else { 0 };
+        let l = self.cx.layout(rt, 0)?;
+        let tg = self.b.ins().load(types::I32, MemFlags::new(), p, 0);
+        match name {
+            "is_some" | "is_ok" => {
+                let r = self.b.ins().icmp_imm(IntCC::Equal, tg, ok_idx);
+                return Ok((Some(r), "bool".into()));
+            }
+            "is_none" | "is_err" => {
+                let r = self.b.ins().icmp_imm(IntCC::NotEqual, tg, ok_idx);
+                return Ok((Some(r), "bool".into()));
+            }
+            _ => {}
+        }
+        // unwrap / expect / unwrap_or: 値を取り出す (所有を移す)。
+        self.consume(recv, rt, env)?;
+        let payload = l.variants[ok_idx as usize].1.first().cloned();
+        let default = if name == "unwrap_or" {
+            let a = args.first().ok_or("unwrap_or needs a default")?;
+            match &payload {
+                Some((pty, _)) => {
+                    let (d, _) = self.expr(a, env, Some(pty))?;
+                    self.consume(a, pty, env)?;
+                    d
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let is_ok = self.b.ins().icmp_imm(IntCC::Equal, tg, ok_idx);
+        let (yes, no, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        let ty = payload.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "void".to_string());
+        if ty != "void" {
+            let bt = if is_agg(&ty) { self.ptr_ty() } else { cl(&ty) };
+            self.b.append_block_param(done, bt);
+        }
+        self.b.ins().brif(is_ok, yes, &[], no, &[]);
+        self.b.switch_to_block(yes);
+        if let Some((pty, off)) = &payload {
+            let addr = self.b.ins().iadd_imm(p, *off as i64);
+            let v = self.load_value(addr, pty);
+            self.b.ins().jump(done, &[v]);
+        } else {
+            self.b.ins().jump(done, &[]);
+        }
+        self.b.switch_to_block(no);
+        if name == "unwrap_or" {
+            match default {
+                Some(d) => self.b.ins().jump(done, &[d]),
+                None => self.b.ins().jump(done, &[]),
+            };
+        } else {
+            self.fail_block("called unwrap on a None or Err value")?;
+        }
+        self.b.switch_to_block(done);
+        if ty == "void" {
+            Ok((None, ty))
+        } else {
+            Ok((Some(self.b.block_params(done)[0]), ty))
+        }
     }
 
     /// 2 つの `str` (アドレス) が等しければ真 (I8)。
@@ -2464,7 +2718,111 @@ impl<'a, 'b> FnGen<'a, 'b> {
         }
     }
 
+    /// `a.checked_add(b)` など: オーバーフロー・ゼロ除算なら `None`。
+    fn checked_method(&mut self, recv: &V, op: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
+        let t = self
+            .ty_of(recv, env, expect.filter(|e| is_int(e)))
+            .or_else(|| args.first().and_then(|a| self.ty_of(a, env, None)))
+            .filter(|t| is_int(t))
+            .ok_or("operand type")?;
+        let (a, _) = self.expr(recv, env, Some(&t))?;
+        let (b, _) = self.expr(args.first().ok_or("checked op needs an argument")?, env, Some(&t))?;
+        let (a, b) = (a.ok_or("bad operand")?, b.ok_or("bad operand")?);
+        let sg = signed(&t);
+        let rty = self.cx.builtin_enum("Option", &[t.clone()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let poff = l.variants[1].1[0].1 as i64;
+        let (some_b, none_b, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        match op {
+            "add" | "sub" | "mul" => {
+                let (r, of) = match (op, sg) {
+                    ("add", true) => self.b.ins().sadd_overflow(a, b),
+                    ("add", false) => self.b.ins().uadd_overflow(a, b),
+                    ("sub", true) => self.b.ins().ssub_overflow(a, b),
+                    ("sub", false) => self.b.ins().usub_overflow(a, b),
+                    (_, true) => self.b.ins().smul_overflow(a, b),
+                    (_, false) => self.b.ins().umul_overflow(a, b),
+                };
+                self.b.ins().brif(of, none_b, &[], some_b, &[]);
+                self.b.switch_to_block(some_b);
+                let dst = self.b.ins().iadd_imm(res, poff);
+                self.b.ins().store(MemFlags::new(), r, dst, 0);
+            }
+            "div" | "rem" => {
+                let mut bad = self.b.ins().icmp_imm(IntCC::Equal, b, 0);
+                if sg {
+                    let bits = cl(&t).bits();
+                    let min: i64 = if bits >= 64 { i64::MIN } else { -(1i64 << (bits - 1)) };
+                    let is_min = self.b.ins().icmp_imm(IntCC::Equal, a, min);
+                    let is_m1 = self.b.ins().icmp_imm(IntCC::Equal, b, -1);
+                    let both = self.b.ins().band(is_min, is_m1);
+                    bad = self.b.ins().bor(bad, both);
+                }
+                self.b.ins().brif(bad, none_b, &[], some_b, &[]);
+                self.b.switch_to_block(some_b);
+                let r = match (op, sg) {
+                    ("div", true) => self.b.ins().sdiv(a, b),
+                    ("div", false) => self.b.ins().udiv(a, b),
+                    (_, true) => self.b.ins().srem(a, b),
+                    (_, false) => self.b.ins().urem(a, b),
+                };
+                let dst = self.b.ins().iadd_imm(res, poff);
+                self.b.ins().store(MemFlags::new(), r, dst, 0);
+            }
+            _ => return Err(format!("method checked_{}", op)),
+        }
+        let t1 = self.b.ins().iconst(types::I32, 1);
+        self.b.ins().store(MemFlags::new(), t1, res, 0);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(none_b);
+        let t0 = self.b.ins().iconst(types::I32, 0);
+        self.b.ins().store(MemFlags::new(), t0, res, 0);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok((Some(res), rty))
+    }
+
+    /// `a.saturating_add(b)` など (符号なし整数のみ): 範囲を超えたら端の値に止まる。
+    fn saturating_method(&mut self, recv: &V, op: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
+        let t = self
+            .ty_of(recv, env, expect.filter(|e| is_int(e)))
+            .or_else(|| args.first().and_then(|a| self.ty_of(a, env, None)))
+            .filter(|t| is_int(t))
+            .ok_or("operand type")?;
+        if signed(&t) {
+            return Err("saturating arithmetic on a signed integer".into());
+        }
+        let (a, _) = self.expr(recv, env, Some(&t))?;
+        let (b, _) = self.expr(args.first().ok_or("saturating op needs an argument")?, env, Some(&t))?;
+        let (a, b) = (a.ok_or("bad operand")?, b.ok_or("bad operand")?);
+        let max = self.b.ins().iconst(cl(&t), -1);
+        let zero = self.b.ins().iconst(cl(&t), 0);
+        let r = match op {
+            "add" => {
+                let (r, of) = self.b.ins().uadd_overflow(a, b);
+                self.b.ins().select(of, max, r)
+            }
+            "sub" => {
+                let (r, of) = self.b.ins().usub_overflow(a, b);
+                self.b.ins().select(of, zero, r)
+            }
+            "mul" => {
+                let (r, of) = self.b.ins().umul_overflow(a, b);
+                self.b.ins().select(of, max, r)
+            }
+            _ => return Err(format!("method saturating_{}", op)),
+        };
+        Ok((Some(r), t))
+    }
+
     fn method(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
+        if let Some(op) = name.strip_prefix("checked_") {
+            return self.checked_method(recv, op, args, env, expect);
+        }
+        if let Some(op) = name.strip_prefix("saturating_") {
+            return self.saturating_method(recv, op, args, env, expect);
+        }
         let Some(op) = name.strip_prefix("wrapping_") else { return Err(format!("method {}", name)) };
         let t = self
             .ty_of(recv, env, expect)
@@ -2547,7 +2905,7 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
-    let cx = Cx { types: type_defs, gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()) };
+    let cx = Cx { types: type_defs, gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;

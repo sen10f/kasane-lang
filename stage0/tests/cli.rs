@@ -1998,3 +1998,156 @@ fn a_wrong_slice_result_in_a_cranelift_executable_fails_the_check() {
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
+
+fn clif_tuple_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "enum t.Kind derive [Debug, Clone, Copy, PartialEq]",
+        "    Dot",
+        "    Line(u32)",
+        "    Box(t.P, bool)",
+        "end t.Kind",
+        "",
+        "type t.P derive [Debug, Clone, Copy, PartialEq, Eq]",
+        "    x: i32",
+        "    y: i32",
+        "end t.P",
+        "",
+        "type t.Seg derive [Debug, Clone, Copy, PartialEq]",
+        "    a: t.P",
+        "    b: t.P",
+        "    tag: u8",
+        "end t.Seg",
+        "",
+        "fn t.divmod(a: u32, b: u32) -> (u32, u32)",
+        "    (a / b, a % b)",
+        "end t.divmod",
+        "",
+        "fn t.named(n: u32) -> (u32, alloc.string.String<std.alloc.System>)",
+        "    let mut s = alloc.string.String.new(std.alloc.SYSTEM)",
+        "    match s.push_str(\"n\") {",
+        "        Ok(_) => 0u8",
+        "        Err(_) => 1u8",
+        "    }",
+        "    (n, s)",
+        "end t.named",
+        "",
+        "fn t.swap(p: (u32, bool)) -> (bool, u32)",
+        "    let (n, flag) = p",
+        "    (flag, n)",
+        "end t.swap",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    let p = t.P { x: 1i32, y: 2i32 }",
+        "    let q = t.P { x: 1i32, y: 2i32 }",
+        "    core.check.eq(p, q)",
+        "    core.check.eq(p == t.P { x: 1i32, y: 3i32 }, false)",
+        "    let s1 = t.Seg { a: p, b: q, tag: 1u8 }",
+        "    let s2 = t.Seg { a: q, b: p, tag: 1u8 }",
+        "    core.check.eq(s1, s2)",
+        "    core.check.eq(s1 != t.Seg { a: p, b: q, tag: 2u8 }, true)",
+        "    core.check.eq(t.Kind.Line(3u32), t.Kind.Line(3u32))",
+        "    core.check.eq(t.Kind.Line(3u32) == t.Kind.Line(4u32), false)",
+        "    core.check.eq(t.Kind.Dot == t.Kind.Line(0u32), false)",
+        "    core.check.eq(t.Kind.Dot, t.Kind.Dot)",
+        "    core.check.eq(t.Kind.Box(p, true), t.Kind.Box(q, true))",
+        "    core.check.eq(t.Kind.Box(p, true) == t.Kind.Box(q, false), false)",
+        "    core.check.eq(t.divmod(17u32, 5u32), (3u32, 2u32))",
+        "    core.check.eq(t.swap((9u32, true)), (true, 9u32))",
+        "    core.check.eq(Some(p), Some(q))",
+        "    core.check.eq(\"ab\" == \"ab\", true)",
+        "    core.check.eq(\"ab\" == \"ac\", false)",
+        "    match t.divmod(20u32, 6u32) {",
+        "        (d, m) => core.check.eq(d.wrapping_add(m), 5u32)",
+        "    }",
+        "    let (k, name) = t.named(7u32)",
+        "    core.check.eq(k, 7u32)",
+        "    core.check.eq(name.as_str(), \"n\")",
+        tail,
+        "    std.io.print_line(\"tuple ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_tuples_and_structural_equality() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_tuple_{}", release), &clif_tuple_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "tuple ok");
+    }
+}
+
+#[test]
+fn unequal_structs_in_a_cranelift_executable_fail_the_check() {
+    let (_t, exe_path, out) = build_clif(
+        "clif_tuple_bad",
+        &clif_tuple_program("    core.check.eq(t.Kind.Box(p, true), t.Kind.Box(q, false))"),
+        false,
+    );
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}
+
+fn clif_methods_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "enum t.Phase derive [Debug, Clone, Copy, PartialEq]",
+        "    Idle",
+        "    Run",
+        "end t.Phase",
+        "",
+        "fn t.Phase.next(self: t.Phase) -> t.Phase uses [] panics never",
+        "    match self {",
+        "        t.Phase.Idle => t.Phase.Run",
+        "        t.Phase.Run => t.Phase.Idle",
+        "    }",
+        "end t.Phase.next",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    core.check.eq(250u8.checked_add(5u8), Some(255u8))",
+        "    core.check.eq(250u8.checked_add(6u8), None)",
+        "    core.check.eq(3u32.checked_sub(4u32), None)",
+        "    core.check.eq(9u32.checked_rem(4u32).unwrap_or(77u32), 1u32)",
+        "    core.check.eq(9u32.checked_div(0u32).unwrap_or(77u32), 77u32)",
+        "    core.check.eq(0i32.checked_sub(5i32), Some(0i32 - 5i32))",
+        "    core.check.eq(250u8.saturating_add(10u8), 255u8)",
+        "    core.check.eq(3u8.saturating_sub(9u8), 0u8)",
+        "    core.check.eq(Some(4u32).is_some(), true)",
+        "    core.check.eq(Some(4u32).unwrap(), 4u32)",
+        "    core.check.eq(t.Phase.Idle.next(), t.Phase.Run)",
+        "    core.check.eq(t.Phase.Idle.next().next(), t.Phase.Idle)",
+        tail,
+        "    std.io.print_line(\"methods ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_checked_arithmetic_and_option_methods() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_meth_{}", release), &clif_methods_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "methods ok");
+    }
+}
+
+#[test]
+fn unwrap_on_none_panics_with_exit_code_101_in_a_cranelift_executable() {
+    let (_t, exe_path, out) = build_clif("clif_unwrap", &clif_methods_program("    core.check.eq(250u8.checked_add(9u8).unwrap(), 0u8)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("unwrap"), "{}", text(&o.stderr));
+}
