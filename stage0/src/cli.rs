@@ -1422,7 +1422,14 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                 }
             }
             if backend == "clif" {
-                crate::clif::compile_clif(&funcs, e, &norm(&exe), release)
+                let mut tdefs: HashMap<String, &Def> = HashMap::new();
+                for &i in &user {
+                    let d = &prog.defs[i];
+                    if d.kw == "type" || d.kw == "enum" {
+                        tdefs.insert(d.name.clone(), d);
+                    }
+                }
+                crate::clif::compile_clif(&funcs, &tdefs, e, &norm(&exe), release)
             } else {
                 crate::cnative::compile_native(&funcs, e, &norm(&exe), release)
             }

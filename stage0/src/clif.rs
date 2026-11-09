@@ -1,14 +1,19 @@
-//! Cranelift バックエンド (stage0)。`cnative.rs` (C 経由) と同じ部分集合を、
-//! Cranelift の IR から直接オブジェクトファイルにして、C コンパイラをリンカとして使って実行ファイルにする。
+//! Cranelift バックエンド (stage0)。Cranelift の IR から直接オブジェクトファイルを作り、
+//! C コンパイラをリンカとして使って実行ファイルにする。
 //!
-//! 対応する範囲: 整数 (i8..i64 / u8..u64 / isize / usize)・bool・`let` / 代入・`if` / `while` / `loop` /
-//! `break` / `continue` / `return`・関数呼び出し・`wrapping_*`・比較・ビット演算・`&&` / `||`・
-//! `std.io.print_line("..")`・`core.check.eq`・`core.mem.drop`。それ以外は Err を返す (呼び出し側が別の経路に回す)。
+//! 対応する範囲:
+//! - 整数 (i8..i64 / u8..u64 / isize / usize)・bool・f32 / f64。
+//! - 整数の `+ - * / %` と単項 `-` は、オーバーフローとゼロ除算で panic (終了コード 101)。`wrapping_*`。
+//! - `let` / 代入・`if` / `while` / `loop` / `break` / `continue` / `return`・`match` (列挙型・整数・bool)。
+//! - 構造体 (`type`) と列挙型 (`enum`, ペイロード付き)。メモリ上に置き、値は先頭アドレスで持ち回る。
+//!   `&T` / `&mut T` も同じアドレス。関数の戻り値が構造体・列挙型のときは、呼び出し側が確保した領域に書く (sret)。
+//! - 関数呼び出し・`T.method(..)`・`std.io.print_line("..")`・`core.check.eq`・`core.mem.drop`。
+//! 総称型・文字列・Vec・`Option` / `Result`・スカラーへの参照は未対応 (Err を返し、呼び出し側が別の経路に回す)。
 
 use std::collections::{HashMap, HashSet};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, TrapCode, Type, Value};
+use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, MemFlags, StackSlotData, StackSlotKind, TrapCode, Type, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, DataDescription, FuncId, Linkage, Module};
@@ -33,6 +38,11 @@ fn is_scalar(p: &str) -> bool {
     is_int(p) || p == "bool" || is_float(p)
 }
 
+/// 構造体・列挙型 (メモリ上に置く値) の型名か。
+fn is_agg(p: &str) -> bool {
+    p != "void" && !is_scalar(p)
+}
+
 fn cl(p: &str) -> Type {
     match p {
         "i8" | "u8" | "bool" => types::I8,
@@ -52,17 +62,138 @@ fn mangle(fqn: &str) -> String {
     format!("k_{}", fqn.replace('.', "_"))
 }
 
-fn pty(t: &V) -> R<String> {
-    if tag(t) == "tuple" && items(tel(t, 1)).is_empty() {
-        return Ok("void".into());
+fn align_up(n: u32, a: u32) -> u32 {
+    (n + a - 1) / a * a
+}
+
+fn scalar_size(p: &str) -> u32 {
+    match p {
+        "i8" | "u8" | "bool" => 1,
+        "i16" | "u16" => 2,
+        "i32" | "u32" | "f32" => 4,
+        _ => 8,
     }
-    if tag(t) == "prim" {
-        let p = st(tel(t, 1));
-        if is_scalar(&p) {
-            return Ok(p);
+}
+
+/// 型の定義表とレイアウト計算。
+struct Cx<'a> {
+    types: &'a HashMap<String, &'a Def>,
+}
+
+/// 構造体・列挙型のメモリ配置。
+#[derive(Clone)]
+struct Layout {
+    size: u32,
+    align: u32,
+    /// 構造体: (フィールド名, 型, オフセット)
+    fields: Vec<(String, String, u32)>,
+    is_enum: bool,
+    /// 列挙型: (バリアント名, [(型, オフセット)])
+    variants: Vec<(String, Vec<(String, u32)>)>,
+}
+
+impl<'a> Cx<'a> {
+    fn pty(&self, t: &V) -> R<String> {
+        if tag(t) == "tuple" && items(tel(t, 1)).is_empty() {
+            return Ok("void".into());
         }
+        match tag(t).as_str() {
+            "prim" => {
+                let p = st(tel(t, 1));
+                if is_scalar(&p) {
+                    return Ok(p);
+                }
+            }
+            "ref" => {
+                let inner = self.pty(tel(t, 2))?;
+                if is_agg(&inner) {
+                    return Ok(inner);
+                }
+                return Err("reference to a scalar".into());
+            }
+            "named" => {
+                let n = st(tel(t, 1));
+                if let Some(d) = self.types.get(&n) {
+                    if d.generics.is_empty() && (d.kw == "type" || d.kw == "enum") {
+                        return Ok(n);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Err(format!("type {}", t.dump()))
     }
-    Err(format!("type {}", t.dump()))
+
+    fn layout(&self, name: &str, depth: u32) -> R<Layout> {
+        if depth > 8 {
+            return Err(format!("recursive type {}", name));
+        }
+        let d = self.types.get(name).ok_or_else(|| format!("unknown type {}", name))?;
+        let fsize = |ty: &str| -> R<(u32, u32)> {
+            if is_scalar(ty) {
+                Ok((scalar_size(ty), scalar_size(ty)))
+            } else {
+                let l = self.layout(ty, depth + 1)?;
+                Ok((l.size, l.align))
+            }
+        };
+        if d.kw == "type" {
+            let mut off = 0u32;
+            let mut align = 1u32;
+            let mut fields = vec![];
+            for (n, t, _) in &d.fields {
+                let ty = self.pty(t)?;
+                let (sz, al) = fsize(&ty)?;
+                off = align_up(off, al);
+                fields.push((n.clone(), ty, off));
+                off += sz;
+                align = align.max(al);
+            }
+            return Ok(Layout { size: align_up(off.max(1), align), align, fields, is_enum: false, variants: vec![] });
+        }
+        // 列挙型: 先頭に 4 バイトのタグ、その後ろにバリアントごとのペイロード (重ねて置く)。
+        let mut variants = vec![];
+        let mut max_align = 4u32;
+        let mut payloads: Vec<Vec<(String, u32, u32)>> = vec![];
+        for (vn, tys) in &d.variants {
+            let mut cur = 0u32;
+            let mut fs = vec![];
+            for t in tys {
+                let ty = self.pty(t)?;
+                let (sz, al) = fsize(&ty)?;
+                cur = align_up(cur, al);
+                fs.push((ty, cur, sz));
+                cur += sz;
+                max_align = max_align.max(al);
+            }
+            payloads.push(fs.iter().map(|x| (x.0.clone(), x.1, x.2)).collect());
+            variants.push((vn.clone(), cur));
+        }
+        let start = align_up(4, max_align);
+        let max_payload = variants.iter().map(|v| v.1).max().unwrap_or(0);
+        let vs = d
+            .variants
+            .iter()
+            .zip(payloads)
+            .map(|((vn, _), fs)| (vn.clone(), fs.into_iter().map(|(ty, off, _)| (ty, start + off)).collect()))
+            .collect();
+        Ok(Layout { size: align_up(start + max_payload, max_align), align: max_align, fields: vec![], is_enum: true, variants: vs })
+    }
+
+    /// `A.B.C` を (列挙型 `A.B`, バリアント `C`) に分ける。
+    fn split_variant(&self, segs: &[String]) -> Option<(String, usize, String)> {
+        if segs.len() < 2 {
+            return None;
+        }
+        let en = segs[..segs.len() - 1].join(".");
+        let d = self.types.get(&en)?;
+        if d.kw != "enum" {
+            return None;
+        }
+        let vn = segs[segs.len() - 1].clone();
+        let idx = d.variants.iter().position(|v| v.0 == vn)?;
+        Some((en, idx, vn))
+    }
 }
 
 /// ランタイムとして使う C ライブラリ関数の ID。
@@ -75,12 +206,15 @@ struct Rt {
 struct FnGen<'a, 'b> {
     b: FunctionBuilder<'b>,
     module: &'a mut ObjectModule,
+    cx: &'a Cx<'a>,
     funcs: &'a HashMap<String, &'a Def>,
     ids: &'a HashMap<String, FuncId>,
     rt: &'a Rt,
     data_n: &'a mut usize,
     entry: bool,
     ret: V,
+    ret_ty: String,
+    sret: Option<Value>,
     loops: Vec<(Block, Block)>,
     term: bool,
     nvar: usize,
@@ -94,6 +228,39 @@ impl<'a, 'b> FnGen<'a, 'b> {
             self.b.switch_to_block(nb);
             self.term = false;
         }
+    }
+
+    fn ptr_ty(&self) -> Type {
+        self.module.target_config().pointer_type()
+    }
+
+    // ------------------------------------------------------------ 型の決定 (コードを出さない)
+    fn field_chain_ty(&self, segs: &[String], env: &Env) -> Option<String> {
+        let mut ty = env.get(&segs[0])?.1.clone();
+        for f in &segs[1..] {
+            if !is_agg(&ty) {
+                return None;
+            }
+            let l = self.cx.layout(&ty, 0).ok()?;
+            ty = l.fields.iter().find(|x| &x.0 == f)?.1.clone();
+        }
+        Some(ty)
+    }
+
+    fn method_target(&self, recv_ty: &str, name: &str) -> Option<&'a Def> {
+        self.funcs.get(&format!("{}.{}", recv_ty, name)).copied()
+    }
+
+    fn body_ty(&self, body: &V, env: &Env, expect: Option<&str>) -> Option<String> {
+        if nname(body) == "Block" {
+            let stmts = items(&nf(body)[0]);
+            let last = stmts.last()?;
+            if nname(last) == "ExprStmt" {
+                return self.ty_of(&nf(last)[0], env, expect);
+            }
+            return None;
+        }
+        self.ty_of(body, env, expect)
     }
 
     fn ty_of(&self, e: &V, env: &Env, expect: Option<&str>) -> Option<String> {
@@ -113,7 +280,18 @@ impl<'a, 'b> FnGen<'a, 'b> {
             },
             "Path" => {
                 let segs = strs(&f[0]);
-                if segs.len() == 1 { env.get(&segs[0]).map(|x| x.1.clone()) } else { None }
+                if env.contains_key(&segs[0]) {
+                    return self.field_chain_ty(&segs, env);
+                }
+                self.cx.split_variant(&segs).map(|v| v.0)
+            }
+            "Field" => {
+                let segs = place_segs(e)?;
+                if env.contains_key(&segs[0]) { self.field_chain_ty(&segs, env) } else { None }
+            }
+            "StructLit" => {
+                let n = st(&f[0]);
+                if self.cx.types.contains_key(&n) { Some(n) } else { None }
             }
             "Bin" => {
                 let op = st(&f[0]);
@@ -122,26 +300,55 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 self.ty_of(&f[1], env, expect).or_else(|| self.ty_of(&f[2], env, expect))
             }
-            "Unary" if matches!(st(&f[0]).as_str(), "!" | "-") => self.ty_of(&f[1], env, expect),
-            "MCall" => self.ty_of(&f[0], env, expect).or_else(|| items(&f[2]).first().and_then(|a| self.ty_of(a, env, expect))),
+            "Unary" => match st(&f[0]).as_str() {
+                "!" | "-" | "&" | "&mut" | "*" => self.ty_of(&f[1], env, expect),
+                _ => None,
+            },
+            "Match" => {
+                for arm in items(&f[1]) {
+                    let a = items(arm);
+                    if let Some(t) = self.body_ty(&a[1], env, expect) {
+                        return Some(t);
+                    }
+                }
+                None
+            }
+            "MCall" => {
+                let name = st(&f[1]);
+                let recv_ty = self.ty_of(&f[0], env, expect);
+                if let Some(rt) = &recv_ty {
+                    if is_agg(rt) {
+                        return self.method_target(rt, &name).and_then(|d| self.cx.pty(&d.ret).ok());
+                    }
+                }
+                self.ty_of(&f[0], env, expect).or_else(|| items(&f[2]).first().and_then(|a| self.ty_of(a, env, expect)))
+            }
             "Call" => {
                 if nname(&f[0]) != "Path" {
                     return None;
                 }
                 let segs = strs(&nf(&f[0])[0]);
                 if segs.len() >= 2 && env.contains_key(&segs[0]) {
-                    let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
-                    return self.ty_of(&recv, env, expect).or_else(|| items(&f[1]).first().and_then(|a| self.ty_of(a, env, expect)));
+                    let recv_ty = self.field_chain_ty(&segs[..segs.len() - 1], env)?;
+                    let name = &segs[segs.len() - 1];
+                    if is_agg(&recv_ty) {
+                        return self.method_target(&recv_ty, name).and_then(|d| self.cx.pty(&d.ret).ok());
+                    }
+                    return Some(recv_ty);
+                }
+                if let Some((en, _, _)) = self.cx.split_variant(&segs) {
+                    return Some(en);
                 }
                 if segs == ["core", "check", "eq"] || segs == ["core", "mem", "drop"] {
                     return Some("void".into());
                 }
-                self.funcs.get(&segs.join(".")).and_then(|d| pty(&d.ret).ok())
+                self.funcs.get(&segs.join(".")).and_then(|d| self.cx.pty(&d.ret).ok())
             }
             _ => None,
         }
     }
 
+    // ------------------------------------------------------------ 補助
     fn new_var(&mut self, ty: &str) -> Variable {
         let v = Variable::from_u32(self.nvar as u32);
         self.nvar += 1;
@@ -163,8 +370,71 @@ impl<'a, 'b> FnGen<'a, 'b> {
         desc.define(bytes.into_boxed_slice());
         self.module.define_data(id, &desc).map_err(|e| e.to_string())?;
         let gv = self.module.declare_data_in_func(id, self.b.func);
-        let pt = self.module.target_config().pointer_type();
+        let pt = self.ptr_ty();
         Ok(self.b.ins().global_value(pt, gv))
+    }
+
+    /// スタック上に `size` バイトの領域を確保して、先頭アドレスを返す。
+    fn alloc(&mut self, size: u32, align: u32) -> Value {
+        let shift = align.max(1).trailing_zeros() as u8;
+        let ss = self.b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size.max(1), shift));
+        let pt = self.ptr_ty();
+        self.b.ins().stack_addr(pt, ss, 0)
+    }
+
+    fn alloc_for(&mut self, ty: &str) -> R<Value> {
+        let l = self.cx.layout(ty, 0)?;
+        Ok(self.alloc(l.size, l.align))
+    }
+
+    fn copy_mem(&mut self, dst: Value, src: Value, size: u32) {
+        let cfg = self.module.target_config();
+        self.b.emit_small_memory_copy(cfg, dst, src, size as u64, 1, 1, true, MemFlags::new());
+    }
+
+    /// 型 `ty` の値 `v` を、アドレス `addr` に書く (スカラーは store、構造体・列挙型はコピー)。
+    fn store_value(&mut self, addr: Value, ty: &str, v: Value) -> R<()> {
+        if is_agg(ty) {
+            let l = self.cx.layout(ty, 0)?;
+            self.copy_mem(addr, v, l.size);
+        } else {
+            self.b.ins().store(MemFlags::new(), v, addr, 0);
+        }
+        Ok(())
+    }
+
+    /// アドレス `addr` から型 `ty` の値を読む (構造体・列挙型はアドレスそのもの)。
+    fn load_value(&mut self, addr: Value, ty: &str) -> Value {
+        if is_agg(ty) { addr } else { self.b.ins().load(cl(ty), MemFlags::new(), addr, 0) }
+    }
+
+    /// 式が一時的な領域を新しく作る (コピーせず束縛してよい) か。
+    fn is_fresh(&self, e: &V) -> bool {
+        match nname(e) {
+            "StructLit" | "MCall" => true,
+            "Call" => !(nname(&nf(e)[0]) == "Path" && strs(&nf(&nf(e)[0])[0]).len() >= 2 && false),
+            "Path" => {
+                let segs = strs(&nf(e)[0]);
+                self.cx.split_variant(&segs).is_some()
+            }
+            _ => false,
+        }
+    }
+
+    /// `a.b.c` の最後のフィールドのアドレスと型。
+    fn field_addr(&mut self, segs: &[String], env: &Env) -> R<(Value, String)> {
+        let (var, mut ty) = env.get(&segs[0]).cloned().ok_or("not a local")?;
+        let mut p = self.b.use_var(var);
+        for f in &segs[1..] {
+            if !is_agg(&ty) {
+                return Err(format!("field {} of a scalar", f));
+            }
+            let l = self.cx.layout(&ty, 0)?;
+            let (_, fty, off) = l.fields.iter().find(|x| &x.0 == f).cloned().ok_or_else(|| format!("no field {}", f))?;
+            p = self.b.ins().iadd_imm(p, off as i64);
+            ty = fty;
+        }
+        Ok((p, ty))
     }
 
     /// 条件 `bad` が真なら panic して終了コード 101 で終わる。
@@ -192,12 +462,27 @@ impl<'a, 'b> FnGen<'a, 'b> {
         Ok(())
     }
 
+    // ------------------------------------------------------------ 関数・文
     fn func(&mut self, d: &Def, params_vals: &[Value]) -> R<()> {
         let mut env: Env = HashMap::new();
-        for (k, (n, t)) in d.params.iter().enumerate() {
-            let ty = pty(t)?;
+        let mut k = 0;
+        if is_agg(&self.ret_ty) && !self.entry {
+            self.sret = Some(params_vals[0]);
+            k = 1;
+        }
+        for (n, t) in d.params.iter() {
+            let ty = self.cx.pty(t)?;
+            let mut v = params_vals[k];
+            k += 1;
+            if is_agg(&ty) && tag(t) != "ref" {
+                // 値渡しの構造体・列挙型は、呼び出し側の領域を書き換えないよう自分の領域にコピーする。
+                let dst = self.alloc_for(&ty)?;
+                let size = self.cx.layout(&ty, 0)?.size;
+                self.copy_mem(dst, v, size);
+                v = dst;
+            }
             let var = self.new_var(&ty);
-            self.b.def_var(var, params_vals[k]);
+            self.b.def_var(var, v);
             env.insert(n.clone(), (var, ty));
         }
         let stmts = items(&nf(d.body.as_ref().unwrap())[0]).to_vec();
@@ -208,7 +493,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
             if self.entry {
                 let z = self.b.ins().iconst(types::I32, 0);
                 self.b.ins().return_(&[z]);
-            } else if pty(&self.ret)? == "void" {
+            } else if self.ret_ty == "void" {
                 self.b.ins().return_(&[]);
             } else {
                 self.b.ins().trap(TrapCode::user(2).unwrap());
@@ -233,13 +518,19 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if nname(&f[0]) != "PBind" {
                     return Err("destructuring let".into());
                 }
-                let ann = if matches!(f[2], V::Nil) { None } else { Some(pty(&f[2])?) };
+                let ann = if matches!(f[2], V::Nil) { None } else { Some(self.cx.pty(&f[2])?) };
                 let ty = match ann.clone().or_else(|| self.ty_of(&f[3], env, None)) {
                     Some(t) if t != "void" => t,
                     _ => return Err("let of unknown type".into()),
                 };
                 let (v, _) = self.expr(&f[3], env, Some(&ty))?;
-                let v = v.ok_or("let of unit")?;
+                let mut v = v.ok_or("let of unit")?;
+                if is_agg(&ty) && !self.is_fresh(&f[3]) {
+                    let dst = self.alloc_for(&ty)?;
+                    let size = self.cx.layout(&ty, 0)?.size;
+                    self.copy_mem(dst, v, size);
+                    v = dst;
+                }
                 let var = self.new_var(&ty);
                 self.b.def_var(var, v);
                 env.insert(st(&nf(&f[0])[0]), (var, ty));
@@ -247,18 +538,46 @@ impl<'a, 'b> FnGen<'a, 'b> {
             }
             "Assign" => {
                 let tg = &f[0];
-                if nname(tg) != "Path" || items(&nf(tg)[0]).len() != 1 {
+                let Some(segs) = place_segs(tg) else { return Err("assignment target".into()) };
+                if !env.contains_key(&segs[0]) {
                     return Err("assignment target".into());
                 }
-                let n = st(&items(&nf(tg)[0])[0]);
-                let Some((var, ty)) = env.get(&n).cloned() else { return Err("assignment target".into()) };
-                let (v, _) = self.expr(&f[1], env, Some(&ty))?;
+                if segs.len() == 1 {
+                    let (var, ty) = env[&segs[0]].clone();
+                    let (v, _) = self.expr(&f[1], env, Some(&ty))?;
+                    let v = v.ok_or("assign of unit")?;
+                    if is_agg(&ty) {
+                        let dst = self.b.use_var(var);
+                        let size = self.cx.layout(&ty, 0)?.size;
+                        self.copy_mem(dst, v, size);
+                    } else {
+                        self.b.def_var(var, v);
+                    }
+                    return Ok(());
+                }
+                let (addr, fty) = self.field_addr(&segs, env)?;
+                let (v, _) = self.expr(&f[1], env, Some(&fty))?;
                 let v = v.ok_or("assign of unit")?;
-                self.b.def_var(var, v);
-                Ok(())
+                self.store_value(addr, &fty, v)
             }
             _ => self.exprstmt(&f[0], env, tail),
         }
+    }
+
+    /// 戻り値を返す (構造体・列挙型は sret にコピー)。
+    fn emit_return(&mut self, v: Option<Value>, ty: &str) -> R<()> {
+        if is_agg(ty) {
+            let dst = self.sret.ok_or("aggregate return without sret")?;
+            let size = self.cx.layout(ty, 0)?.size;
+            self.copy_mem(dst, v.ok_or("return value")?, size);
+            self.b.ins().return_(&[]);
+        } else if let Some(v) = v {
+            self.b.ins().return_(&[v]);
+        } else {
+            self.b.ins().return_(&[]);
+        }
+        self.term = true;
+        Ok(())
     }
 
     fn exprstmt(&mut self, e: &V, env: &mut Env, tail: bool) -> R<()> {
@@ -268,17 +587,15 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 if self.entry {
                     let z = self.b.ins().iconst(types::I32, 0);
                     self.b.ins().return_(&[z]);
+                    self.term = true;
                 } else if matches!(f[0], V::Nil) {
                     self.b.ins().return_(&[]);
+                    self.term = true;
                 } else {
-                    let rt = pty(&self.ret)?;
-                    let (v, _) = self.expr(&f[0], env, Some(&rt))?;
-                    match v {
-                        Some(v) => self.b.ins().return_(&[v]),
-                        None => self.b.ins().return_(&[]),
-                    };
+                    let rt = self.ret_ty.clone();
+                    let (v, ty) = self.expr(&f[0], env, Some(&rt))?;
+                    self.emit_return(v, &ty)?;
                 }
-                self.term = true;
                 Ok(())
             }
             "Break" => {
@@ -294,6 +611,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 Ok(())
             }
             "If" => self.if_stmt(e, env, tail),
+            "Match" => self.match_stmt(e, env, tail),
             "While" => {
                 let (head, body, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
                 self.b.ins().jump(head, &[]);
@@ -346,11 +664,10 @@ impl<'a, 'b> FnGen<'a, 'b> {
                         return self.print_call(e);
                     }
                 }
-                let expect = if tail && !self.entry { Some(pty(&self.ret)?) } else { None };
+                let expect = if tail && !self.entry { Some(self.ret_ty.clone()) } else { None };
                 let (v, ty) = self.expr(e, env, expect.as_deref())?;
                 if tail && !self.entry && ty != "void" {
-                    self.b.ins().return_(&[v.ok_or("tail value")?]);
-                    self.term = true;
+                    self.emit_return(v, &ty)?;
                 }
                 Ok(())
             }
@@ -386,6 +703,171 @@ impl<'a, 'b> FnGen<'a, 'b> {
         Ok(())
     }
 
+    // ------------------------------------------------------------ match
+    /// 腕のパターンが当てはまるか調べて、当てはまれば `body`、そうでなければ `next` へ分岐する。
+    /// 当てはまった側で使う束縛を返す。パターンが必ず当てはまるなら true。
+    fn arm_test(
+        &mut self,
+        pat: &V,
+        scrut: Value,
+        sty: &str,
+        tagv: Option<Value>,
+        body: Block,
+        next: Block,
+    ) -> R<(Vec<(String, Value, String)>, bool)> {
+        let pf = nf(pat);
+        match nname(pat) {
+            "PWild" => {
+                self.b.ins().jump(body, &[]);
+                Ok((vec![], true))
+            }
+            "PBind" => {
+                self.b.ins().jump(body, &[]);
+                if is_agg(sty) {
+                    Ok((vec![(st(&pf[0]), scrut, sty.to_string())], true))
+                } else {
+                    Ok((vec![(st(&pf[0]), scrut, sty.to_string())], true))
+                }
+            }
+            "PLit" => {
+                if is_agg(sty) {
+                    return Err("literal pattern on an aggregate".into());
+                }
+                let lit = &pf[0];
+                let want = match st(&nf(lit)[0]).as_str() {
+                    "int" => int_value(&st(&nf(lit)[1]))?,
+                    "bool" => {
+                        if matches!(nf(lit)[1], V::B(true)) { 1 } else { 0 }
+                    }
+                    k => return Err(format!("pattern literal {}", k)),
+                };
+                let c = self.b.ins().icmp_imm(IntCC::Equal, scrut, want);
+                self.b.ins().brif(c, body, &[], next, &[]);
+                Ok((vec![], false))
+            }
+            "PPath" | "PVariant" => {
+                let segs = strs(&pf[0]);
+                let l = self.cx.layout(sty, 0)?;
+                if !l.is_enum {
+                    return Err("variant pattern on a struct".into());
+                }
+                let vn = segs[segs.len() - 1].clone();
+                let idx = l.variants.iter().position(|v| v.0 == vn).ok_or_else(|| format!("no variant {}", vn))?;
+                let tg = tagv.ok_or("no tag")?;
+                let c = self.b.ins().icmp_imm(IntCC::Equal, tg, idx as i64);
+                // 束縛するペイロードのアドレスは、分岐の前に計算しておく (本体のブロックで読む)。
+                let mut binds = vec![];
+                if nname(pat) == "PVariant" {
+                    for (j, sp) in items(&pf[1]).iter().enumerate() {
+                        let (fty, off) = l.variants[idx].1.get(j).cloned().ok_or("too many sub-patterns")?;
+                        match nname(sp) {
+                            "PBind" => {
+                                let addr = self.b.ins().iadd_imm(scrut, off as i64);
+                                binds.push((st(&nf(sp)[0]), addr, fty));
+                            }
+                            "PWild" => {}
+                            _ => return Err("nested pattern".into()),
+                        }
+                    }
+                }
+                self.b.ins().brif(c, body, &[], next, &[]);
+                Ok((binds, false))
+            }
+            n => Err(format!("pattern {}", n)),
+        }
+    }
+
+    /// 束縛のアドレスから値を読み、新しい変数として env に入れる。
+    fn bind_arm(&mut self, binds: Vec<(String, Value, String)>, env: &mut Env, from_variant: bool) {
+        for (name, v, ty) in binds {
+            let val = if from_variant { self.load_value(v, &ty) } else { v };
+            let var = self.new_var(&ty);
+            self.b.def_var(var, val);
+            env.insert(name, (var, ty));
+        }
+    }
+
+    /// `match` の共通部分。`value` が Some のとき、各腕の値をそのブロック引数に渡す。
+    fn match_common(&mut self, e: &V, env: &mut Env, tail: bool, value: Option<(&str, Block)>) -> R<()> {
+        let f = nf(e);
+        let (sv, sty) = self.expr(&f[0], env, None)?;
+        let sv = sv.ok_or("match on unit")?;
+        let tagv = if is_agg(&sty) { Some(self.b.ins().load(types::I32, MemFlags::new(), sv, 0)) } else { None };
+        let end = match value {
+            Some((_, end)) => end,
+            None => self.b.create_block(),
+        };
+        let arms = items(&f[1]).to_vec();
+        let mut covered = false;
+        for arm in &arms {
+            let a = items(arm);
+            let (body, next) = (self.b.create_block(), self.b.create_block());
+            let (binds, always) = self.arm_test(&a[0], sv, &sty, tagv, body, next)?;
+            self.b.switch_to_block(body);
+            self.term = false;
+            let mut inner = env.clone();
+            // 変数の束縛 (名前 `x` の PBind) はスクルーティニーそのもの、バリアントの束縛はペイロードのアドレス。
+            let is_variant_pat = matches!(nname(&a[0]), "PVariant");
+            self.bind_arm(binds, &mut inner, is_variant_pat);
+            match value {
+                Some((ty, end)) => {
+                    let (v, _) = self.arm_value(&a[1], &mut inner, Some(ty))?;
+                    if !self.term {
+                        match v {
+                            Some(v) => self.b.ins().jump(end, &[v]),
+                            None => self.b.ins().jump(end, &[]),
+                        };
+                    }
+                }
+                None => {
+                    if nname(&a[1]) == "Block" {
+                        self.block(&a[1], &mut inner, tail)?;
+                    } else {
+                        self.exprstmt(&a[1], &mut inner, tail)?;
+                    }
+                    if !self.term {
+                        self.b.ins().jump(end, &[]);
+                    }
+                }
+            }
+            self.b.switch_to_block(next);
+            self.term = false;
+            if always {
+                covered = true;
+                break;
+            }
+        }
+        if !covered {
+            // どの腕にも当てはまらない場合は起こらない (網羅性は検査済み)。
+            self.b.ins().trap(TrapCode::user(3).unwrap());
+        } else {
+            // 最後の腕が必ず当てはまるので、next ブロックは到達できない。
+            self.b.ins().trap(TrapCode::user(3).unwrap());
+        }
+        self.b.switch_to_block(end);
+        self.term = false;
+        Ok(())
+    }
+
+    fn match_stmt(&mut self, e: &V, env: &mut Env, tail: bool) -> R<()> {
+        self.match_common(e, env, tail, None)
+    }
+
+    /// 腕の本体 (式またはブロック) を値として評価する。
+    fn arm_value(&mut self, body: &V, env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
+        if nname(body) == "Block" {
+            let stmts = items(&nf(body)[0]).to_vec();
+            for (i, s) in stmts.iter().enumerate() {
+                if i == stmts.len() - 1 && nname(s) == "ExprStmt" {
+                    return self.expr(&nf(s)[0], env, expect);
+                }
+                self.stmt(s, env, false)?;
+            }
+            return Ok((None, "void".into()));
+        }
+        self.expr(body, env, expect)
+    }
+
     fn print_call(&mut self, e: &V) -> R<()> {
         let a = &items(&nf(e)[1])[0];
         if nname(a) != "Lit" || st(&nf(a)[0]) != "str" {
@@ -398,6 +880,50 @@ impl<'a, 'b> FnGen<'a, 'b> {
         let id = self.rt.puts;
         self.call_rt(id, &[p]);
         Ok(())
+    }
+
+    // ------------------------------------------------------------ 式
+    /// 列挙型のバリアントを作る (ペイロードの式を評価して書き込む)。
+    fn make_variant(&mut self, en: &str, idx: usize, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let l = self.cx.layout(en, 0)?;
+        let p = self.alloc(l.size, l.align);
+        let tg = self.b.ins().iconst(types::I32, idx as i64);
+        self.b.ins().store(MemFlags::new(), tg, p, 0);
+        let fields = l.variants[idx].1.clone();
+        if fields.len() != args.len() {
+            return Err("variant arity".into());
+        }
+        for ((fty, off), a) in fields.iter().zip(args) {
+            let (v, _) = self.expr(a, env, Some(fty))?;
+            let addr = self.b.ins().iadd_imm(p, *off as i64);
+            self.store_value(addr, fty, v.ok_or("bad payload")?)?;
+        }
+        Ok((Some(p), en.to_string()))
+    }
+
+    /// 関数 `d` を呼ぶ。`recv` があれば第 1 引数 (self)。
+    fn call_user(&mut self, fq: &str, d: &Def, recv: Option<Value>, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let id = *self.ids.get(fq).ok_or("call target not declared")?;
+        let rt = self.cx.pty(&d.ret)?;
+        let mut vals = vec![];
+        let mut out = None;
+        if is_agg(&rt) {
+            let p = self.alloc_for(&rt)?;
+            vals.push(p);
+            out = Some(p);
+        }
+        let mut params = d.params.iter();
+        if let Some(r) = recv {
+            params.next();
+            vals.push(r);
+        }
+        for ((_, pt), a) in params.zip(args) {
+            let want = self.cx.pty(pt)?;
+            let (v, _) = self.expr(a, env, Some(&want))?;
+            vals.push(v.ok_or("bad argument")?);
+        }
+        let res = self.call_rt(id, &vals);
+        Ok((out.or(res.first().copied()), rt))
     }
 
     fn expr(&mut self, e: &V, env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
@@ -428,12 +954,52 @@ impl<'a, 'b> FnGen<'a, 'b> {
             },
             "Path" => {
                 let segs = strs(&f[0]);
-                if segs.len() == 1 {
-                    if let Some((var, ty)) = env.get(&segs[0]).cloned() {
-                        return Ok((Some(self.b.use_var(var)), ty));
+                if env.contains_key(&segs[0]) {
+                    let (addr, ty) = if segs.len() == 1 {
+                        let (var, ty) = env[&segs[0]].clone();
+                        (self.b.use_var(var), ty)
+                    } else {
+                        self.field_addr(&segs, env)?
+                    };
+                    if segs.len() == 1 || is_agg(&ty) {
+                        return Ok((Some(if segs.len() == 1 { addr } else { addr }), ty));
                     }
+                    let v = self.b.ins().load(cl(&ty), MemFlags::new(), addr, 0);
+                    return Ok((Some(v), ty));
+                }
+                if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
+                    return self.make_variant(&en, idx, &[], env);
                 }
                 Err(format!("path {}", segs.join(".")))
+            }
+            "Field" => {
+                let segs = place_segs(e).ok_or("field of a non-place")?;
+                if !env.contains_key(&segs[0]) {
+                    return Err("field of a non-local".into());
+                }
+                let (addr, ty) = self.field_addr(&segs, env)?;
+                if is_agg(&ty) {
+                    return Ok((Some(addr), ty));
+                }
+                let v = self.b.ins().load(cl(&ty), MemFlags::new(), addr, 0);
+                Ok((Some(v), ty))
+            }
+            "StructLit" => {
+                let name = st(&f[0]);
+                let l = self.cx.layout(&name, 0)?;
+                if l.is_enum {
+                    return Err("struct literal of an enum".into());
+                }
+                let p = self.alloc(l.size, l.align);
+                for fl in items(&f[1]) {
+                    let fi = items(fl);
+                    let fname = st(&fi[0]);
+                    let (_, fty, off) = l.fields.iter().find(|x| x.0 == fname).cloned().ok_or_else(|| format!("no field {}", fname))?;
+                    let (v, _) = self.expr(&fi[1], env, Some(&fty))?;
+                    let addr = self.b.ins().iadd_imm(p, off as i64);
+                    self.store_value(addr, &fty, v.ok_or("bad field")?)?;
+                }
+                Ok((Some(p), name))
             }
             "Bin" => {
                 let op = st(&f[0]);
@@ -461,6 +1027,9 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     .or_else(|| self.ty_of(&f[2], env, None))
                     .or_else(|| expect.map(String::from).filter(|t| is_scalar(t)))
                     .ok_or("operand type")?;
+                if !is_scalar(&t) {
+                    return Err("operator on an aggregate".into());
+                }
                 let (a, _) = self.expr(&f[1], env, Some(&t))?;
                 let (b, _) = self.expr(&f[2], env, Some(&t))?;
                 let (a, b) = (a.ok_or("bad operand")?, b.ok_or("bad operand")?);
@@ -545,42 +1114,84 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 };
                 Ok((Some(r), t))
             }
-            "Unary" if st(&f[0]) == "!" => {
-                let t = self.ty_of(&f[1], env, expect).ok_or("operand type")?;
-                let (a, _) = self.expr(&f[1], env, Some(&t))?;
-                let a = a.ok_or("bad operand")?;
-                let r = if t == "bool" { self.b.ins().bxor_imm(a, 1) } else { self.b.ins().bnot(a) };
-                Ok((Some(r), t))
-            }
-            "Unary" if st(&f[0]) == "-" => {
-                let t = self.ty_of(&f[1], env, expect).ok_or("operand type")?;
-                let (a, _) = self.expr(&f[1], env, Some(&t))?;
-                let a = a.ok_or("bad operand")?;
-                if is_float(&t) {
-                    let r = self.b.ins().fneg(a);
-                    return Ok((Some(r), t));
+            "Unary" => {
+                let op = st(&f[0]);
+                match op.as_str() {
+                    "&" | "&mut" | "*" => {
+                        let (v, t) = self.expr(&f[1], env, expect)?;
+                        if !is_agg(&t) {
+                            return Err("reference to a scalar".into());
+                        }
+                        Ok((v, t))
+                    }
+                    "!" => {
+                        let t = self.ty_of(&f[1], env, expect).ok_or("operand type")?;
+                        let (a, _) = self.expr(&f[1], env, Some(&t))?;
+                        let a = a.ok_or("bad operand")?;
+                        let r = if t == "bool" { self.b.ins().bxor_imm(a, 1) } else { self.b.ins().bnot(a) };
+                        Ok((Some(r), t))
+                    }
+                    "-" => {
+                        let t = self.ty_of(&f[1], env, expect).ok_or("operand type")?;
+                        let (a, _) = self.expr(&f[1], env, Some(&t))?;
+                        let a = a.ok_or("bad operand")?;
+                        if is_float(&t) {
+                            let r = self.b.ins().fneg(a);
+                            return Ok((Some(r), t));
+                        }
+                        if !signed(&t) || t == "bool" {
+                            return Err("negation of an unsigned value".into());
+                        }
+                        let z = self.b.ins().iconst(cl(&t), 0);
+                        let (r, of) = self.b.ins().ssub_overflow(z, a);
+                        self.guard(of, "arithmetic overflow")?;
+                        Ok((Some(r), t))
+                    }
+                    o => Err(format!("unary {}", o)),
                 }
-                if !signed(&t) || t == "bool" {
-                    return Err("negation of an unsigned value".into());
-                }
-                let z = self.b.ins().iconst(cl(&t), 0);
-                let (r, of) = self.b.ins().ssub_overflow(z, a);
-                self.guard(of, "arithmetic overflow")?;
-                Ok((Some(r), t))
             }
-            "MCall" => self.method(&f[0], &st(&f[1]), items(&f[2]), env, expect),
+            "Match" => {
+                let ty = self
+                    .ty_of(e, env, expect)
+                    .or_else(|| expect.map(String::from))
+                    .ok_or("match value type")?;
+                if is_agg(&ty) {
+                    return Err("match producing an aggregate".into());
+                }
+                let end = self.b.create_block();
+                if ty != "void" {
+                    self.b.append_block_param(end, cl(&ty));
+                }
+                self.match_common(e, env, false, Some((&ty, end)))?;
+                if ty == "void" {
+                    Ok((None, ty))
+                } else {
+                    let r = self.b.block_params(end)[0];
+                    Ok((Some(r), ty))
+                }
+            }
+            "MCall" => {
+                let name = st(&f[1]);
+                self.method_call(&f[0], &name, items(&f[2]), env, expect)
+            }
             "Call" => {
                 if nname(&f[0]) != "Path" {
                     return Err("call of non-path".into());
                 }
                 let segs = strs(&nf(&f[0])[0]);
+                let args = items(&f[1]);
                 if segs.len() >= 2 && env.contains_key(&segs[0]) {
                     let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
-                    return self.method(&recv, &segs[segs.len() - 1], items(&f[1]), env, expect);
+                    return self.method_call(&recv, &segs[segs.len() - 1], args, env, expect);
                 }
-                let args = items(&f[1]);
+                if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
+                    return self.make_variant(&en, idx, args, env);
+                }
                 if segs == ["core", "check", "eq"] {
                     let t = self.ty_of(&args[0], env, None).or_else(|| self.ty_of(&args[1], env, None)).ok_or("operand type")?;
+                    if !is_scalar(&t) {
+                        return Err("check.eq on an aggregate".into());
+                    }
                     let (a, _) = self.expr(&args[0], env, Some(&t))?;
                     let (b, _) = self.expr(&args[1], env, Some(&t))?;
                     let (a, b) = (a.ok_or("bad operand")?, b.ok_or("bad operand")?);
@@ -595,19 +1206,26 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 let fq = segs.join(".");
                 let Some(d) = self.funcs.get(&fq).copied() else { return Err(format!("call to {}", fq)) };
-                let id = *self.ids.get(&fq).ok_or("call target not declared")?;
-                let mut vals = vec![];
-                for ((_, pt), a) in d.params.iter().zip(args) {
-                    let want = pty(pt)?;
-                    let (v, _) = self.expr(a, env, Some(&want))?;
-                    vals.push(v.ok_or("bad argument")?);
-                }
-                let res = self.call_rt(id, &vals);
-                let rt = pty(&d.ret)?;
-                Ok((res.first().copied(), rt))
+                self.call_user(&fq, d, None, args, env)
             }
             n => Err(format!("expression {}", n)),
         }
+    }
+
+    fn method_call(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
+        let rty = self.ty_of(recv, env, expect);
+        if let Some(rt) = &rty {
+            if is_agg(rt) {
+                let fq = format!("{}.{}", rt, name);
+                let d = self.funcs.get(&fq).copied().ok_or_else(|| format!("method {}", fq))?;
+                if !d.is_method() {
+                    return Err(format!("{} is not a method", fq));
+                }
+                let (p, _) = self.expr(recv, env, None)?;
+                return self.call_user(&fq, d, Some(p.ok_or("bad receiver")?), args, env);
+            }
+        }
+        self.method(recv, name, args, env, expect)
     }
 
     fn method(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
@@ -631,6 +1249,19 @@ impl<'a, 'b> FnGen<'a, 'b> {
             _ => return Err(format!("method {}", name)),
         };
         Ok((Some(r), t))
+    }
+}
+
+/// `a.b.c` の形の場所 (Path か、Path の上の Field の連なり) を名前の列にする。
+fn place_segs(e: &V) -> Option<Vec<String>> {
+    match nname(e) {
+        "Path" => Some(strs(&nf(e)[0])),
+        "Field" => {
+            let mut v = place_segs(&nf(e)[0])?;
+            v.push(st(&nf(e)[1]));
+            Some(v)
+        }
+        _ => None,
     }
 }
 
@@ -664,10 +1295,17 @@ fn int_value(text: &str) -> R<i64> {
     Ok(if neg { (m as i64).wrapping_neg() } else { m as i64 })
 }
 
-pub fn compile_clif(funcs: &HashMap<String, &Def>, entry: &str, out_path: &str, release: bool) -> R<()> {
+pub fn compile_clif(
+    funcs: &HashMap<String, &Def>,
+    type_defs: &HashMap<String, &Def>,
+    entry: &str,
+    out_path: &str,
+    release: bool,
+) -> R<()> {
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
+    let cx = Cx { types: type_defs };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
@@ -676,7 +1314,7 @@ pub fn compile_clif(funcs: &HashMap<String, &Def>, entry: &str, out_path: &str, 
     let mut module = ObjectModule::new(ob);
     let ptr = module.target_config().pointer_type();
 
-    // 呼び出される関数を集める。
+    // 呼び出される関数を集める。メソッド呼び出しも辿るため、`T.name` の形の関数は型の名前で拾う。
     let mut todo = vec![entry.to_string()];
     let mut seen: HashSet<String> = HashSet::new();
     let mut order = vec![];
@@ -689,7 +1327,19 @@ pub fn compile_clif(funcs: &HashMap<String, &Def>, entry: &str, out_path: &str, 
             return Err(format!("generic function {}", d.name));
         }
         order.push(n.clone());
-        crate::cnative::calls_in(d.body.as_ref().unwrap(), &mut todo);
+        let mut calls = vec![];
+        crate::cnative::calls_in(d.body.as_ref().unwrap(), &mut calls);
+        todo.extend(calls);
+        // メソッド呼び出しの候補: 同じ名前を持つ、型に属する関数をすべて取り込む。
+        let mut mnames = vec![];
+        method_names(d.body.as_ref().unwrap(), &mut mnames);
+        for m in mnames {
+            for (fq, fd) in funcs.iter() {
+                if fd.is_method() && fq.rsplit('.').next() == Some(m.as_str()) {
+                    todo.push(fq.clone());
+                }
+            }
+        }
     }
 
     // ランタイム (C ライブラリ) の宣言。
@@ -708,21 +1358,23 @@ pub fn compile_clif(funcs: &HashMap<String, &Def>, entry: &str, out_path: &str, 
     let exit = module.declare_function("exit", Linkage::Import, &sig).map_err(|e| e.to_string())?;
     let rt = Rt { puts, write, exit };
 
-    // 関数の宣言。入口は C の `main` にする。
+    // 関数の宣言。入口は C の `main` にする。構造体・列挙型を返す関数は、先頭に戻り値用のアドレスを取る。
     let mut ids: HashMap<String, FuncId> = HashMap::new();
     for n in &order {
         let d = funcs[n];
         let mut sig = module.make_signature();
+        let rty = if n == entry { "void".to_string() } else { cx.pty(&d.ret).map_err(|e| format!("{}: {}", d.name, e))? };
+        if n != entry && is_agg(&rty) {
+            sig.params.push(AbiParam::new(ptr));
+        }
         for (_, t) in &d.params {
-            sig.params.push(AbiParam::new(cl(&pty(t)?)));
+            let pt = cx.pty(t).map_err(|e| format!("{}: {}", d.name, e))?;
+            sig.params.push(AbiParam::new(if is_agg(&pt) { ptr } else { cl(&pt) }));
         }
         if n == entry {
             sig.returns.push(AbiParam::new(types::I32));
-        } else {
-            let r = pty(&d.ret)?;
-            if r != "void" {
-                sig.returns.push(AbiParam::new(cl(&r)));
-            }
+        } else if rty != "void" && !is_agg(&rty) {
+            sig.returns.push(AbiParam::new(cl(&rty)));
         }
         let (name, link) = if n == entry { ("main".to_string(), Linkage::Export) } else { (mangle(n), Linkage::Local) };
         ids.insert(n.clone(), module.declare_function(&name, link, &sig).map_err(|e| e.to_string())?);
@@ -740,15 +1392,19 @@ pub fn compile_clif(funcs: &HashMap<String, &Def>, entry: &str, out_path: &str, 
             b.append_block_params_for_function_params(eb);
             b.switch_to_block(eb);
             let params_vals = b.block_params(eb).to_vec();
+            let ret_ty = if n == entry { "void".to_string() } else { cx.pty(&d.ret)? };
             let mut g = FnGen {
                 b,
                 module: &mut module,
+                cx: &cx,
                 funcs,
                 ids: &ids,
                 rt: &rt,
                 data_n: &mut data_n,
                 entry: n == entry,
                 ret: d.ret.clone(),
+                ret_ty,
+                sret: None,
                 loops: vec![],
                 term: false,
                 nvar: 0,
@@ -772,6 +1428,23 @@ pub fn compile_clif(funcs: &HashMap<String, &Def>, entry: &str, out_path: &str, 
         return Err(format!("link failed: {}", err));
     }
     Ok(())
+}
+
+/// 本体に現れるメソッド呼び出し (`x.name(..)`) の名前を集める。
+fn method_names(v: &V, out: &mut Vec<String>) {
+    match nname(v) {
+        "MCall" => out.push(st(&nf(v)[1])),
+        "Call" if nname(&nf(v)[0]) == "Path" => {
+            let segs = strs(&nf(&nf(v)[0])[0]);
+            if segs.len() >= 2 {
+                out.push(segs[segs.len() - 1].clone());
+            }
+        }
+        _ => {}
+    }
+    for c in crate::check::children(v) {
+        method_names(c, out);
+    }
 }
 
 fn which(cmd: &str) -> bool {

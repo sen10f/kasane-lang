@@ -1365,7 +1365,7 @@ fn build_clif(name: &str, src: &str, release: bool) -> (Tmp, Option<PathBuf>, St
         c.arg("--release");
     }
     let o = c.output().unwrap();
-    let out = text(&o.stdout);
+    let out = text(&o.stdout) + &text(&o.stderr);
     let kind = if release { "release" } else { "debug" };
     let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
     let _ = fs::remove_dir_all(&cache);
@@ -1457,4 +1457,115 @@ fn overflow_and_division_by_zero_panic_with_exit_code_101_in_cranelift_executabl
         assert!(text(&o.stderr).contains(msg), "{}: {}", name, text(&o.stderr));
         assert!(!text(&o.stdout).contains("arith ok"));
     }
+}
+
+fn clif_struct_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "type t.Point derive [Copy, Clone]",
+        "    x: i32",
+        "    y: i32",
+        "end t.Point",
+        "",
+        "type t.Rect derive [Copy, Clone]",
+        "    min: t.Point",
+        "    max: t.Point",
+        "    tag: u8",
+        "end t.Rect",
+        "",
+        "enum t.Shape",
+        "    Empty",
+        "    Circle(u32)",
+        "    Square(u32, u32)",
+        "end t.Shape",
+        "",
+        "fn t.Point.sum(self: &t.Point) -> i32 uses [] panics never",
+        "    self.x.wrapping_add(self.y)",
+        "end t.Point.sum",
+        "",
+        "fn t.Point.shift(self: &mut t.Point, dx: i32) -> i32 uses [] panics never",
+        "    self.x = self.x.wrapping_add(dx)",
+        "    self.x",
+        "end t.Point.shift",
+        "",
+        "fn t.make(a: i32, b: i32) -> t.Point uses [] panics never",
+        "    t.Point { x: a, y: b }",
+        "end t.make",
+        "",
+        "fn t.width(r: t.Rect) -> i32 uses [] panics never",
+        "    r.max.x.wrapping_sub(r.min.x)",
+        "end t.width",
+        "",
+        "fn t.area(s: t.Shape) -> u32 uses [] panics never",
+        "    match s {",
+        "        t.Shape.Empty => 0u32",
+        "        t.Shape.Circle(r) => r.wrapping_mul(3u32)",
+        "        t.Shape.Square(w, h) => w.wrapping_mul(h)",
+        "    }",
+        "end t.area",
+        "",
+        "fn t.shape_of(n: u32) -> t.Shape uses [] panics never",
+        "    if n == 0u32 {",
+        "        return t.Shape.Empty",
+        "    }",
+        "    if n < 10u32 {",
+        "        return t.Shape.Circle(n)",
+        "    }",
+        "    t.Shape.Square(n, 2u32)",
+        "end t.shape_of",
+        "",
+        "fn t.classify(n: u32) -> u8 uses [] panics never",
+        "    match n {",
+        "        0u32 => 10u8",
+        "        1u32 => 20u8",
+        "        _ => 30u8",
+        "    }",
+        "end t.classify",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    let p = t.make(3i32, 4i32)",
+        "    core.check.eq(p.sum(), 7i32)",
+        "    core.check.eq(p.x, 3i32)",
+        "    let mut q = p",
+        "    core.check.eq(q.shift(10i32), 13i32)",
+        "    core.check.eq(q.x, 13i32)",
+        "    core.check.eq(p.x, 3i32)",
+        "    q.y = 99i32",
+        "    core.check.eq(q.sum(), 112i32)",
+        "    let r = t.Rect { min: p, max: q, tag: 7u8 }",
+        "    core.check.eq(t.width(r), 10i32)",
+        "    core.check.eq(r.max.y, 99i32)",
+        "    core.check.eq(t.area(t.shape_of(0u32)), 0u32)",
+        "    core.check.eq(t.area(t.shape_of(4u32)), 12u32)",
+        "    core.check.eq(t.area(t.shape_of(12u32)), 24u32)",
+        "    core.check.eq(t.area(t.Shape.Square(5u32, 6u32)), 30u32)",
+        "    core.check.eq(t.classify(0u32), 10u8)",
+        "    core.check.eq(t.classify(1u32), 20u8)",
+        "    core.check.eq(t.classify(9u32), 30u8)",
+        tail,
+        "    std.io.print_line(\"struct ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_structs_enums_match_and_methods() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_struct_{}", release), &clif_struct_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "struct ok");
+    }
+}
+
+#[test]
+fn a_wrong_struct_result_in_a_cranelift_executable_fails_the_check() {
+    let (_t, exe_path, out) = build_clif("clif_struct_bad", &clif_struct_program("    core.check.eq(t.area(t.shape_of(4u32)), 13u32)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
