@@ -38,6 +38,10 @@ pub struct Def {
     pub methods: Vec<String>,
     /// トレイトのメソッドのシグネチャ (名前, 引数, 戻り値)。解析できたものだけ。
     pub trait_sigs: Vec<(String, Vec<(String, V)>, V)>,
+    /// トレイトの `requires` スーパートレイト (基底名, 型引数)。解析できたものだけ (5.1)。
+    pub requires: Vec<(String, V)>,
+    /// ジェネリクス `[..]` を持つトレイトメソッドの名前 (dyn 安全性 5.1)。
+    pub generic_methods: Vec<String>,
     pub impl_trait: String,
     /// `extern` の `link "名前"` (省略時は FQN の末尾)
     pub link: String,
@@ -197,6 +201,18 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 p.i = 1;
                 d.name = p.fqn()?;
                 d.generics = conv_generics(&p.generics()?);
+                if p.accept_kw("requires") {
+                    loop {
+                        let tr = p.trait_ref()?;
+                        let f = items(&tr);
+                        if f.len() >= 2 {
+                            d.requires.push((text(&f[0]), f[1].clone()));
+                        }
+                        if !p.accept_op(",") {
+                            break;
+                        }
+                    }
+                }
                 for bl in &body_lines {
                     let st = bl.trim();
                     if st.is_empty() {
@@ -206,15 +222,27 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                     bp.expect_kw("fn")?;
                     let mname = bp.name_tok()?;
                     d.methods.push(mname.clone());
-                    let sig = (|| -> R<(Vec<(String, V)>, V)> {
-                        bp.generics()?;
-                        bp.expect_op("(")?;
-                        let ps = conv_params(&bp.params()?);
-                        bp.expect_op(")")?;
-                        bp.expect_op("->")?;
-                        let r = bp.ty()?;
-                        Ok((ps, r))
-                    })();
+                    let mut sig_ok = true;
+                    match bp.generics() {
+                        Ok(g) => {
+                            if !items(&g).is_empty() {
+                                d.generic_methods.push(mname.clone());
+                            }
+                        }
+                        Err(_) => sig_ok = false,
+                    }
+                    let sig = if sig_ok {
+                        (|| -> R<(Vec<(String, V)>, V)> {
+                            bp.expect_op("(")?;
+                            let ps = conv_params(&bp.params()?);
+                            bp.expect_op(")")?;
+                            bp.expect_op("->")?;
+                            let r = bp.ty()?;
+                            Ok((ps, r))
+                        })()
+                    } else {
+                        Err(String::new())
+                    };
                     if let Ok((ps, r)) = sig {
                         d.trait_sigs.push((mname, ps, r));
                     }

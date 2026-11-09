@@ -679,6 +679,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            "dyn" => self.check_dyn_types(tel(t, 1), di),
             "ref" | "ptr" => self.ty_names(tel(t, 2), di, names),
             "slice" | "array" => self.ty_names(tel(t, 1), di, names),
             "tuple" => {
@@ -693,6 +694,90 @@ impl<'a> Checker<'a> {
                 self.ty_names(tel(t, 2), di, names);
             }
             _ => {}
+        }
+    }
+
+    // ---- dyn 安全性 (5.1)
+    /// `dyn Tr` のトレイト名を trait 定義の FQN に解決する。曖昧・未定義なら None (黙る)。
+    fn resolve_trait_name(&self, nm: &str) -> Option<String> {
+        if let Some(&i) = self.p.types.get(nm) {
+            let d = &self.p.defs[i];
+            return if d.kw == "trait" { Some(d.name.clone()) } else { None };
+        }
+        if !nm.contains('.') {
+            let mut found: Option<String> = None;
+            for d in &self.p.defs {
+                if d.kw == "trait" && (d.name == nm || d.name.ends_with(&format!(".{}", nm))) {
+                    if found.is_some() {
+                        return None; // 曖昧なので黙る。
+                    }
+                    found = Some(d.name.clone());
+                }
+            }
+            return found;
+        }
+        None
+    }
+
+    fn trait_def(&self, name: &str) -> Option<&'a Def> {
+        let &i = self.p.types.get(name)?;
+        let d = &self.p.defs[i];
+        if d.kw == "trait" {
+            Some(d)
+        } else {
+            None
+        }
+    }
+
+    /// `dyn Tr` (の使用箇所) を検査する (xref.py の dyn_problems の移植)。
+    fn check_dyn_types(&mut self, trait_ref: &V, di: usize) {
+        let f = items(trait_ref);
+        if f.is_empty() {
+            return;
+        }
+        let nm = st(&f[0]);
+        let Some(base) = self.resolve_trait_name(&nm) else { return };
+        let mut problems = Vec::new();
+        let mut seen = HashSet::new();
+        self.dyn_problems(&base, &mut seen, &mut problems);
+        for p in problems {
+            self.diag("E2033", format!("dyn {} is not dyn-safe: {}", nm, p), di, 0);
+        }
+    }
+
+    /// トレイト `tr` とその推移的スーパートレイトが dyn 安全かを調べ、違反を out に足す。
+    fn dyn_problems(&self, tr: &str, seen: &mut HashSet<String>, out: &mut Vec<String>) {
+        if !seen.insert(tr.to_string()) {
+            return;
+        }
+        let Some(td) = self.trait_def(tr) else { return };
+        for meth in &td.methods {
+            if td.generic_methods.iter().any(|m| m == meth) {
+                out.push(format!("{}.{} is generic", tr, meth));
+                continue;
+            }
+            let Some((_, params, ret)) = td.trait_sigs.iter().find(|s| &s.0 == meth) else { continue };
+            let has_receiver = params.first().map_or(false, |p| p.0 == "self");
+            if has_receiver && tag(&params[0].1) == "self" {
+                out.push(format!("{}.{} takes self by value", tr, meth));
+            }
+            for p in params.iter().skip(if has_receiver { 1 } else { 0 }) {
+                if ty_has_self(&p.1) {
+                    out.push(format!("{}.{} uses Self in an argument", tr, meth));
+                    break;
+                }
+            }
+            if ty_has_self(ret) {
+                out.push(format!("{}.{} uses Self in the return type", tr, meth));
+            }
+        }
+        for (base, args) in &td.requires {
+            if items(args).iter().any(ty_has_self) {
+                out.push(format!("{} requires Self in a supertrait argument", tr));
+            }
+            if let Some(sup) = self.resolve_trait_name(base) {
+                self.dyn_problems(&sup, seen, out);
+            }
         }
     }
 
@@ -2059,6 +2144,15 @@ fn collect_ty_names(t: &V, out: &mut HashSet<String>) {
             }
         }
         _ => {}
+    }
+}
+
+/// 型 V の中に `Self` (tag "self") が現れるか (5.1 の dyn 安全性)。
+fn ty_has_self(t: &V) -> bool {
+    match t {
+        V::L(xs) => xs.first().map_or(false, |x| st(x) == "self") || xs.iter().any(ty_has_self),
+        V::Node(_, fs, _) => fs.iter().any(ty_has_self),
+        _ => false,
     }
 }
 

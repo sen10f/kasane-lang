@@ -1,0 +1,11 @@
+trait t.Base
+    fn b[T](self: &Self, x: T) -> () uses [] panics never
+end t.Base
+
+trait t.Tr requires t.Base
+    fn f(self: &Self) -> () uses [] panics never
+end t.Tr
+
+fn t.use_it(h: &dyn t.Tr) -> () uses [] panics never
+    core.mem.drop(h)
+end t.use_it

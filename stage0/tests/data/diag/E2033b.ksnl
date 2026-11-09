@@ -1,0 +1,7 @@
+trait t.Tr
+    fn f(self: Self) -> () uses [] panics never
+end t.Tr
+
+fn t.use_it(h: &dyn t.Tr) -> () uses [] panics never
+    core.mem.drop(h)
+end t.use_it
