@@ -3193,3 +3193,70 @@ fn a_wrong_value_through_a_captured_variable_fails_the_check() {
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
+
+const FFI_SRC: &str = "extern t.abs(x: i32) -> i32 link \"abs\"
+
+extern t.free(pointer: *mut u8) -> () link \"free\"
+
+extern t.malloc(size: usize) -> *mut u8 link \"malloc\"
+
+extern t.strlen(text: *const u8) -> usize link \"strlen\"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = unsafe \"libc\" \"abs of a literal\" {
+        t.abs(0i32 - 5i32)
+    }
+    core.check.eq(a, 5i32)
+    let p = unsafe \"libc\" \"allocate\" {
+        t.malloc(16usize)
+    }
+    unsafe \"libc\" \"write and read back\" {
+        core.ptr.write(p, 7u8)
+        core.ptr.write(core.ptr.add(p, 1usize), 0u8)
+        core.check.eq(core.ptr.read(p), 7u8)
+        core.check.eq(t.strlen(core.ptr.as_const(p)), 1usize)
+        t.free(p)
+    }
+    std.io.print_line(\"ffi ok\")
+    Ok(())
+end t.main
+";
+
+#[test]
+fn ffi_extern_calls_and_raw_pointers_work_natively() {
+    let t = Tmp::new("ffi_native", FFI_SRC);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi", std::process::id()));
+    let b = Command::new(exe())
+        .args(["build", "--backend", "clif"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    let bin = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    assert!(bin.exists(), "{}{}", text(&b.stdout), text(&b.stderr));
+    let r = Command::new(&bin).output().unwrap();
+    assert_eq!(text(&r.stdout), "ffi ok\n");
+}
+
+#[test]
+fn ffi_interpreter_calls_c_functions_with_integer_arguments() {
+    let src = "extern t.abs(x: i32) -> i32 link \"abs\"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = unsafe \"libc\" \"abs of a literal\" {
+        t.abs(0i32 - 7i32)
+    }
+    core.check.eq(a, 7i32)
+    std.io.print_line(\"ok\")
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("ffi_interp", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let o = run(&["run"], &t.0);
+    assert_eq!(text(&o.stdout), "ok\n", "{}", text(&o.stderr));
+}

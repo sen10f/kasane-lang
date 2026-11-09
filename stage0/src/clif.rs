@@ -45,8 +45,17 @@ fn mutref_inner(p: &str) -> Option<&str> {
     p.strip_prefix("mutref<").and_then(|r| r.strip_suffix('>'))
 }
 
+/// 生ポインタ `*const T` / `*mut T` を表す型名 (`rawptr<u8>`)。値はアドレス (64 ビット)。
+fn is_rawptr(p: &str) -> bool {
+    p.starts_with("rawptr<")
+}
+
+fn rawptr_inner(p: &str) -> Option<&str> {
+    p.strip_prefix("rawptr<").and_then(|r| r.strip_suffix('>'))
+}
+
 fn is_scalar(p: &str) -> bool {
-    is_int(p) || p == "bool" || p == "char" || is_float(p) || is_mutref(p)
+    is_int(p) || p == "bool" || p == "char" || is_float(p) || is_mutref(p) || is_rawptr(p)
 }
 
 /// 構造体・列挙型 (メモリ上に置く値) の型名か。
@@ -217,6 +226,13 @@ impl<'a> Cx<'a> {
             return Ok(self.tuple_of(&elems));
         }
         match tag(t).as_str() {
+            "never" => return Ok("void".into()),
+            "ptr" => {
+                // `*const T` / `*mut T`: 要素の型が `()` の場合 (void*) は `u8` とみなす。
+                let inner = self.pty(tel(t, 2))?;
+                let inner = if inner == "void" { "u8".to_string() } else { inner };
+                return Ok(format!("rawptr<{}>", inner));
+            }
             "prim" => {
                 let p = st(tel(t, 1));
                 if is_scalar(&p) {
@@ -1203,6 +1219,130 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok(out)
     }
 
+    /// `extern` の関数 `d` を、外部シンボルとして取り込んで呼ぶ (C の呼び出し規約)。引数・戻り値はスカラーとポインタだけ。
+    fn extern_call(&mut self, d: &Def, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let mut sig = self.module.make_signature();
+        let mut ptys = vec![];
+        for (_, t) in &d.params {
+            let pt = self.cx.pty_for(d, t)?;
+            if !is_scalar(&pt) {
+                return Err(format!("extern {}: parameter of type {}", d.name, pt));
+            }
+            sig.params.push(AbiParam::new(cl(&pt)));
+            ptys.push(pt);
+        }
+        let rty = self.cx.pty_for(d, &d.ret)?;
+        if rty != "void" && !is_scalar(&rty) {
+            return Err(format!("extern {}: return type {}", d.name, rty));
+        }
+        if rty != "void" {
+            sig.returns.push(AbiParam::new(cl(&rty)));
+        }
+        if args.len() != ptys.len() {
+            return Err(format!("extern {}: argument count", d.name));
+        }
+        let key = format!("extern:{}", d.link);
+        let cached = self.ids.borrow().get(&key).copied();
+        let id = match cached {
+            Some(id) => id,
+            None => {
+                let id = self
+                    .module
+                    .declare_function(&d.link, Linkage::Import, &sig)
+                    .map_err(|e| format!("extern {} (symbol {}): {}", d.name, d.link, e))?;
+                self.ids.borrow_mut().insert(key, id);
+                id
+            }
+        };
+        let mut vals = vec![];
+        for (a, pt) in args.iter().zip(&ptys) {
+            let (v, t) = self.expr(a, env, Some(pt))?;
+            if &t != pt {
+                return Err(format!("extern {}: argument of type {} where {} is expected", d.name, t, pt));
+            }
+            vals.push(v.ok_or("bad argument")?);
+        }
+        let res = self.call_rt(id, &vals);
+        if tag(&d.ret) == "never" {
+            self.b.ins().trap(TrapCode::user(6).unwrap());
+            self.term = true;
+        }
+        Ok((res.first().copied(), rty))
+    }
+
+    /// `core.ptr.*`: 生ポインタの操作。扱わない名前なら None。
+    fn ptr_call(&mut self, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<Option<(Option<Value>, String)>> {
+        let i64t = types::I64;
+        match (name, args.len()) {
+            ("null_mut", 0) => {
+                let t = expect.filter(|t| is_rawptr(t)).unwrap_or("rawptr<u8>").to_string();
+                let z = self.b.ins().iconst(i64t, 0);
+                Ok(Some((Some(z), t)))
+            }
+            ("is_null", 1) => {
+                let (p, _) = self.expr(&args[0], env, None)?;
+                let r = self.b.ins().icmp_imm(IntCC::Equal, p.ok_or("bad pointer")?, 0);
+                Ok(Some((Some(r), "bool".into())))
+            }
+            ("as_const", 1) | ("as_mut", 1) => {
+                let (p, t) = self.expr(&args[0], env, None)?;
+                if !is_rawptr(&t) {
+                    return Err("pointer conversion of a non-pointer".into());
+                }
+                Ok(Some((p, t)))
+            }
+            ("cast", 1) => {
+                let (p, t) = self.expr(&args[0], env, None)?;
+                if !is_rawptr(&t) {
+                    return Err("cast of a non-pointer".into());
+                }
+                let to = expect.filter(|t| is_rawptr(t)).ok_or("cast needs an expected pointer type")?.to_string();
+                Ok(Some((p, to)))
+            }
+            ("add", 2) => {
+                let (p, t) = self.expr(&args[0], env, None)?;
+                let elem = rawptr_inner(&t).ok_or("add on a non-pointer")?.to_string();
+                let (n, _) = self.expr(&args[1], env, Some("usize"))?;
+                let sz = self.elem_size(&elem)?;
+                let off = self.b.ins().imul_imm(n.ok_or("bad count")?, sz as i64);
+                let r = self.b.ins().iadd(p.ok_or("bad pointer")?, off);
+                Ok(Some((Some(r), t)))
+            }
+            ("read", 1) => {
+                let (p, t) = self.expr(&args[0], env, None)?;
+                let elem = rawptr_inner(&t).ok_or("read of a non-pointer")?.to_string();
+                let p = p.ok_or("bad pointer")?;
+                if is_agg(&elem) {
+                    let dst = self.alloc_for(&elem)?;
+                    let size = self.cx.layout(&elem, 0)?.size;
+                    self.copy_mem(dst, p, size);
+                    return Ok(Some((Some(dst), elem)));
+                }
+                let v = self.b.ins().load(cl(&elem), MemFlags::new(), p, 0);
+                Ok(Some((Some(v), elem)))
+            }
+            ("write", 2) => {
+                let (p, t) = self.expr(&args[0], env, None)?;
+                let elem = rawptr_inner(&t).ok_or("write to a non-pointer")?.to_string();
+                let (v, _) = self.expr(&args[1], env, Some(&elem))?;
+                self.consume(&args[1], &elem, env)?;
+                self.store_value(p.ok_or("bad pointer")?, &elem, v.ok_or("bad value")?)?;
+                Ok(Some((None, "void".into())))
+            }
+            ("from_mut", 1) | ("from_ref", 1) => {
+                let (v, t) = self.expr(&args[0], env, None)?;
+                if let Some(inner) = mutref_inner(&t) {
+                    return Ok(Some((v, format!("rawptr<{}>", inner))));
+                }
+                if is_agg(&t) {
+                    return Ok(Some((v, format!("rawptr<{}>", t))));
+                }
+                Err("from_ref of a scalar value (use from_mut on a mutable variable)".into())
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// 関数 `d` の具体化 (`subst` が空なら元の関数) の識別子を返す。まだ宣言していなければ宣言して、生成の待ち行列に入れる。
     fn func_id(&mut self, d: &'a Def, fq: &str, subst: &HashMap<String, String>) -> R<FuncId> {
         let tps = type_params(d);
@@ -1486,6 +1626,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 Some(self.cx.slice_of(&elem))
             }
+            "Unsafe" => self.body_ty(&f[2], env, expect),
             "TupleE" => {
                 let want: Option<Vec<String>> = expect.and_then(|t| self.cx.tuples.borrow().get(t).cloned());
                 let mut elems = vec![];
@@ -1601,6 +1742,28 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 if let Some(t) = self.conv_ty(&segs) {
                     return Some(t);
+                }
+                if segs.len() == 3 && segs[0] == "core" && segs[1] == "ptr" {
+                    let args = items(&f[1]);
+                    return match segs[2].as_str() {
+                        "null_mut" => Some(expect.filter(|t| is_rawptr(t)).unwrap_or("rawptr<u8>").to_string()),
+                        "is_null" => Some("bool".into()),
+                        "write" => Some("void".into()),
+                        "as_const" | "as_mut" | "add" => self.ty_of(args.first()?, env, None),
+                        "cast" => expect.filter(|t| is_rawptr(t)).map(String::from),
+                        "read" => self.ty_of(args.first()?, env, None).and_then(|t| rawptr_inner(&t).map(String::from)),
+                        "from_mut" | "from_ref" => {
+                            let t = self.ty_of(args.first()?, env, None)?;
+                            Some(format!("rawptr<{}>", mutref_inner(&t).unwrap_or(&t)))
+                        }
+                        _ => None,
+                    };
+                }
+                if let Some(&ei) = self.cx.prog.sigs.get(&segs.join(".")) {
+                    let ed = &self.cx.prog.defs[ei];
+                    if ed.kw == "extern" {
+                        return self.cx.pty_for(ed, &ed.ret).ok();
+                    }
                 }
                 if segs == ["std", "rand", "Rng", "from_seed"] || segs == ["std", "rand", "Rng", "from_entropy"] {
                     return Some("std.rand.Rng".into());
@@ -2366,6 +2529,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             "Block" => {
                 let mut inner = env.clone();
                 self.block(e, &mut inner, tail)
+            }
+            "Unsafe" => {
+                let mut inner = env.clone();
+                self.block(&f[2], &mut inner, tail)
             }
             _ => {
                 if self.entry {
@@ -3426,6 +3593,18 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     None => Ok((None, "void".into())),
                 }
             }
+            "Unsafe" => {
+                // `unsafe "名前" "理由" { .. }`: 本体のブロックの値。範囲を抜けるときの解放も行う。
+                self.scopes.push(vec![]);
+                let mut inner = env.clone();
+                let r = self.arm_value(&f[2], &mut inner, expect);
+                let d = self.scopes.len() - 1;
+                if r.is_ok() && !self.term {
+                    self.drop_scopes_from(d)?;
+                }
+                self.scopes.pop();
+                r
+            }
             "ArrayE" => {
                 let ty = self.ty_of(e, env, expect).ok_or("array element type")?;
                 let elem = self.cx.slices.borrow().get(&ty).cloned().ok_or("array type")?;
@@ -3802,6 +3981,17 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 if let Some(r) = self.conv_call(&segs, args, env)? {
                     return Ok(r);
+                }
+                if segs.len() == 3 && segs[0] == "core" && segs[1] == "ptr" {
+                    if let Some(r) = self.ptr_call(&segs[2], args, env, expect)? {
+                        return Ok(r);
+                    }
+                }
+                if let Some(&ei) = self.cx.prog.sigs.get(&segs.join(".")) {
+                    let ed = &self.cx.prog.defs[ei];
+                    if ed.kw == "extern" {
+                        return self.extern_call(ed, args, env);
+                    }
                 }
                 if segs == ["std", "rand", "Rng", "from_seed"] && args.len() == 1 {
                     let (sv, _) = self.expr(&args[0], env, Some("u64"))?;

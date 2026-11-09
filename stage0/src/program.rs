@@ -37,6 +37,8 @@ pub struct Def {
     /// トレイトのメソッドのシグネチャ (名前, 引数, 戻り値)。解析できたものだけ。
     pub trait_sigs: Vec<(String, Vec<(String, V)>, V)>,
     pub impl_trait: String,
+    /// `extern` の `link "名前"` (省略時は FQN の末尾)
+    pub link: String,
     pub impl_for: V,
 }
 
@@ -232,6 +234,20 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
             "extern" => {
                 p.i = 1;
                 d.name = p.fqn()?;
+                p.expect_op("(")?;
+                d.params = conv_params(&p.params()?);
+                p.expect_op(")")?;
+                p.expect_op("->")?;
+                d.ret = p.ty()?;
+                d.link = d.name.rsplit('.').next().unwrap_or("").to_string();
+                if p.cur().text == "link" {
+                    p.i += 1;
+                    let t = p.cur().text.clone();
+                    if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
+                        d.link = t[1..t.len() - 1].to_string();
+                        p.i += 1;
+                    }
+                }
             }
             "impl" => {
                 p.i = 1;
@@ -342,6 +358,9 @@ impl Program {
                     let mn = d.name.rsplit('.').next().unwrap().to_string();
                     self.method_idx.entry(mn).or_default().push(idx);
                 }
+            }
+            "extern" => {
+                self.sigs.insert(d.name.clone(), idx);
             }
             "const" | "static" => {
                 self.consts.insert(d.name.clone(), idx);

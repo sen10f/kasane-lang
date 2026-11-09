@@ -4,6 +4,7 @@ mod lexer;
 mod check;
 mod cli;
 mod clif;
+mod ffi;
 mod cnative;
 mod explain;
 mod fixes;

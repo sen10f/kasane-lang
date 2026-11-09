@@ -1,0 +1,6 @@
+extern t.abs(x: i32) -> i32 link "abs"
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.abs(1i32))
+    Ok(())
+end t.main

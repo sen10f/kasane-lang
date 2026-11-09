@@ -70,6 +70,7 @@ pub const EXPLAIN: &[(&str, &str)] = &[
     ("E4004", r#"整数の `+ - * / %` と単項 `-` はオーバーフローで panic するため、`panics never` の関数では使えない(4.1)。`checked_*` / `wrapping_*` / `saturating_*` を使う。"#),
     ("E4020", r#"`pub` の関数と `impls` の関数は `uses` / `panics` を省略できない(非 `pub` の関数だけが本体から推論される)。"#),
     ("E4013", r#"再帰を含む型には `core.ops.Drop` の明示実装が必要(5.3)。"#),
+    ("E5003", r#"`extern` の外部関数は `unsafe "名前" "理由" { .. }` ブロックの中でしか呼べない(3.8)。"#),
     ("E5001", r#"`unsafe` は `kasane.toml` の `[unsafe] modules` に列挙したモジュールでのみ使える(3.5)。"#),
     ("E9001", r#"`kasane.toml` が見つからない。"#),
     ("E9002", r#"`kasane.toml` が不正。"#),

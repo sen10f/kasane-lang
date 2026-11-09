@@ -1043,6 +1043,7 @@ impl<'a> Checker<'a> {
         self.moved.clear();
         let body = d.body.as_ref().unwrap();
         self.tc_block(body, &env, &BTreeSet::new());
+        self.check_extern_calls(di);
         // NLL の借用検査 (制御フローと、借用を持つ変数の生存に基づく)
         self.borrowck(di);
         env = self.final_env.clone();
@@ -1055,6 +1056,38 @@ impl<'a> Checker<'a> {
                     self.mismatch(&d.ret, &got, nline(last), "return value");
                 }
             }
+        }
+    }
+
+    /// `extern` の関数は `unsafe` ブロックの中でしか呼べない (3.8, E5003)。
+    fn check_extern_calls(&mut self, di: usize) {
+        let d = self.def(di);
+        let Some(body) = &d.body else { return };
+        fn scan<'b>(ck: &Checker, v: &'b V, in_unsafe: bool, file: &str, out: &mut Vec<(usize, String)>) {
+            if nname(v) == "Call" && nname(&nf(v)[0]) == "Path" && !in_unsafe {
+                let segs = strs(&nf(&nf(v)[0])[0]);
+                if let Some(r) = ck.p.resolve(&segs, file) {
+                    if let Target::Sig(i) = r.target {
+                        if r.rest.is_empty() && ck.p.defs[i].kw == "extern" {
+                            out.push((nline(v), ck.p.defs[i].name.clone()));
+                        }
+                    }
+                }
+            }
+            let iu = in_unsafe || nname(v) == "Unsafe";
+            for c in children(v) {
+                scan(ck, c, iu, file, out);
+            }
+        }
+        let mut found = vec![];
+        scan(self, body, false, &d.file, &mut found);
+        for (line, name) in found {
+            self.diag(
+                "E5003",
+                format!("the external function `{}` can only be called inside an `unsafe` block", name),
+                di,
+                line,
+            );
         }
     }
 

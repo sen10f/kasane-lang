@@ -978,6 +978,45 @@ impl Interp {
         Ok(out)
     }
 
+    /// `extern` の関数を、ホストの C ライブラリから探して呼ぶ (整数・ポインタ・`bool` の引数だけ)。
+    fn extern_call(&mut self, d: &Def, args: Vec<Val>) -> Res {
+        let mut ints = vec![];
+        for a in &args {
+            match dr(a) {
+                Val::Int(i, _) => ints.push(i as i64),
+                Val::Bool(b) => ints.push(b as i64),
+                _ => return panic(format!("extern {}: only integer, pointer and bool arguments are supported by the interpreter", d.name)),
+            }
+        }
+        let r = match crate::ffi::call(&d.link, &ints) {
+            Ok(r) => r,
+            Err(e) => return panic(format!("extern {}: {}", d.name, e)),
+        };
+        // 戻り値は、宣言の型に合わせて切り詰める。
+        let ret = &d.ret;
+        Ok(match crate::check::tag(ret).as_str() {
+            "tuple" => Val::Unit,
+            "never" => return panic(format!("extern {} returned although it is declared `!`", d.name)),
+            "ptr" => int((r as u64) as i128, "usize"),
+            "prim" => {
+                let n = crate::check::st(crate::check::tel(ret, 1));
+                match n.as_str() {
+                    "bool" => Val::Bool(r & 0xff != 0),
+                    "i8" => int((r as i8) as i128, "i8"),
+                    "i16" => int((r as i16) as i128, "i16"),
+                    "i32" => int((r as i32) as i128, "i32"),
+                    "i64" | "isize" => int(r as i128, &n),
+                    "u8" => int((r as u8) as i128, "u8"),
+                    "u16" => int((r as u16) as i128, "u16"),
+                    "u32" => int((r as u32) as i128, "u32"),
+                    "u64" | "usize" => int((r as u64) as i128, &n),
+                    _ => return panic(format!("extern {}: unsupported return type {}", d.name, n)),
+                }
+            }
+            _ => return panic(format!("extern {}: unsupported return type", d.name)),
+        })
+    }
+
     fn call_resolved(&mut self, r: &Resolved, args: Vec<Val>) -> Res {
         match &r.target {
             Target::Fn(i) => self.call_def(*i, args),
@@ -997,6 +1036,21 @@ impl Interp {
                     let mut it = args.into_iter();
                     let recv = it.next().unwrap();
                     return self.invoke_method(recv, parts[parts.len() - 1], it.collect(), None);
+                }
+                if d.kw == "extern" {
+                    return self.extern_call(d, args);
+                }
+                if d.name == "core.ptr.null_mut" {
+                    return Ok(int(0, "usize"));
+                }
+                if d.name == "core.ptr.is_null" {
+                    return Ok(Val::Bool(matches!(args.first().map(dr), Some(Val::Int(0, _)))));
+                }
+                if d.name.starts_with("core.ptr.") {
+                    return panic(format!(
+                        "{} is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`",
+                        d.name
+                    ));
                 }
                 panic(format!("function {} has no implementation in this interpreter", d.name))
             }
