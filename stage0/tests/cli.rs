@@ -1393,3 +1393,68 @@ fn a_failed_check_eq_in_a_cranelift_executable_exits_with_101() {
     assert!(text(&o.stderr).contains("assertion failed"), "{}", text(&o.stderr));
     assert!(!text(&o.stdout).contains("clif ok"));
 }
+
+fn clif_arith_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.add8(a: u8, b: u8) -> u8 uses [] panics may",
+        "    a + b",
+        "end t.add8",
+        "",
+        "fn t.mixed(a: i32, b: i32) -> i32 uses [] panics may",
+        "    (a * b - 3i32) / 2i32 + a % b",
+        "end t.mixed",
+        "",
+        "fn t.neg(a: i64) -> i64 uses [] panics may",
+        "    -a",
+        "end t.neg",
+        "",
+        "fn t.div(a: u32, b: u32) -> u32 uses [] panics may",
+        "    a / b",
+        "end t.div",
+        "",
+        "fn t.area(w: f64, h: f64) -> f64 uses [] panics never",
+        "    w * h + 0.5f64",
+        "end t.area",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    core.check.eq(t.add8(200u8, 55u8), 255u8)",
+        "    core.check.eq(t.mixed(7i32, 5i32), 16i32 + 2i32)",
+        "    core.check.eq(t.mixed(0i32 - 7i32, 5i32), 0i32 - 21i32)",
+        "    core.check.eq(t.neg(9i64), 0i64 - 9i64)",
+        "    core.check.eq(t.div(17u32, 5u32), 3u32)",
+        "    core.check.eq(t.area(1.5f64, 2.0f64), 3.5f64)",
+        "    core.check.eq(t.area(1.0f64, 1.0f64) > 1.0f64, true)",
+        tail,
+        "    std.io.print_line(\"arith ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_checked_arithmetic_and_floats() {
+    let (_t, exe_path, out) = build_clif("clif_arith", &clif_arith_program("    core.check.eq(1u8, 1u8)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "arith ok");
+}
+
+#[test]
+fn overflow_and_division_by_zero_panic_with_exit_code_101_in_cranelift_executables() {
+    for (name, tail, msg) in [
+        ("clif_ovf", "    core.check.eq(t.add8(250u8, 10u8), 4u8)", "arithmetic overflow"),
+        ("clif_div0", "    core.check.eq(t.div(1u32, 0u32), 0u32)", "division by zero"),
+        ("clif_neg", "    core.check.eq(t.neg(0i64 - 9223372036854775807i64 - 1i64), 0i64)", "arithmetic overflow"),
+    ] {
+        let (_t, exe_path, out) = build_clif(name, &clif_arith_program(tail), false);
+        let p = exe_path.unwrap_or_else(|| panic!("{}: no native executable: {}", name, out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(101), "{}: {}", name, text(&o.stderr));
+        assert!(text(&o.stderr).contains(msg), "{}: {}", name, text(&o.stderr));
+        assert!(!text(&o.stdout).contains("arith ok"));
+    }
+}

@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, TrapCode, Type, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -25,8 +25,12 @@ fn is_int(p: &str) -> bool {
     matches!(p, "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64" | "usize")
 }
 
+fn is_float(p: &str) -> bool {
+    p == "f32" || p == "f64"
+}
+
 fn is_scalar(p: &str) -> bool {
-    is_int(p) || p == "bool"
+    is_int(p) || p == "bool" || is_float(p)
 }
 
 fn cl(p: &str) -> Type {
@@ -34,6 +38,8 @@ fn cl(p: &str) -> Type {
         "i8" | "u8" | "bool" => types::I8,
         "i16" | "u16" => types::I16,
         "i32" | "u32" => types::I32,
+        "f32" => types::F32,
+        "f64" => types::F64,
         _ => types::I64,
     }
 }
@@ -99,6 +105,10 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     sfx.or(expect.map(String::from)).filter(|t| is_int(t))
                 }
                 "bool" => Some("bool".into()),
+                "float" => {
+                    let sfx = if matches!(f[1], V::Nil) { None } else { Some(st(&f[1])) };
+                    sfx.or(expect.map(String::from)).filter(|t| is_float(t))
+                }
                 _ => None,
             },
             "Path" => {
@@ -112,7 +122,7 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 self.ty_of(&f[1], env, expect).or_else(|| self.ty_of(&f[2], env, expect))
             }
-            "Unary" if st(&f[0]) == "!" => self.ty_of(&f[1], env, expect),
+            "Unary" if matches!(st(&f[0]).as_str(), "!" | "-") => self.ty_of(&f[1], env, expect),
             "MCall" => self.ty_of(&f[0], env, expect).or_else(|| items(&f[2]).first().and_then(|a| self.ty_of(a, env, expect))),
             "Call" => {
                 if nname(&f[0]) != "Path" {
@@ -157,8 +167,18 @@ impl<'a, 'b> FnGen<'a, 'b> {
         Ok(self.b.ins().global_value(pt, gv))
     }
 
-    fn fail_block(&mut self) -> R<()> {
-        let msg = b"panic: assertion failed\n".to_vec();
+    /// 条件 `bad` が真なら panic して終了コード 101 で終わる。
+    fn guard(&mut self, bad: Value, msg: &str) -> R<()> {
+        let (pb, ok) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(bad, pb, &[], ok, &[]);
+        self.b.switch_to_block(pb);
+        self.fail_block(msg)?;
+        self.b.switch_to_block(ok);
+        Ok(())
+    }
+
+    fn fail_block(&mut self, text: &str) -> R<()> {
+        let msg = format!("panic: {}{}", text, char::from(10u8)).into_bytes();
         let n = msg.len() as i64;
         let p = self.string_ptr(msg)?;
         let fd = self.b.ins().iconst(types::I32, 2);
@@ -394,6 +414,16 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let c = self.b.ins().iconst(types::I8, if matches!(f[1], V::B(true)) { 1 } else { 0 });
                     Ok((Some(c), "bool".into()))
                 }
+                "float" => {
+                    let Some(t) = self.ty_of(e, env, expect) else { return Err("untyped float literal".into()) };
+                    let text = st(&f[2]).replace('_', "");
+                    let c = if t == "f32" {
+                        self.b.ins().f32const(text.parse::<f32>().map_err(|_| format!("float literal {}", text))?)
+                    } else {
+                        self.b.ins().f64const(text.parse::<f64>().map_err(|_| format!("float literal {}", text))?)
+                    };
+                    Ok((Some(c), t))
+                }
                 k => Err(format!("literal {}", k)),
             },
             "Path" => {
@@ -434,6 +464,18 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let (a, _) = self.expr(&f[1], env, Some(&t))?;
                 let (b, _) = self.expr(&f[2], env, Some(&t))?;
                 let (a, b) = (a.ok_or("bad operand")?, b.ok_or("bad operand")?);
+                if cmp && is_float(&t) {
+                    let cc = match op.as_str() {
+                        "==" => FloatCC::Equal,
+                        "!=" => FloatCC::NotEqual,
+                        "<" => FloatCC::LessThan,
+                        "<=" => FloatCC::LessThanOrEqual,
+                        ">" => FloatCC::GreaterThan,
+                        _ => FloatCC::GreaterThanOrEqual,
+                    };
+                    let r = self.b.ins().fcmp(cc, a, b);
+                    return Ok((Some(r), "bool".into()));
+                }
                 if cmp {
                     let sg = signed(&t);
                     let cc = match (op.as_str(), sg) {
@@ -451,10 +493,54 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let r = self.b.ins().icmp(cc, a, b);
                     return Ok((Some(r), "bool".into()));
                 }
+                if is_float(&t) {
+                    let r = match op.as_str() {
+                        "+" => self.b.ins().fadd(a, b),
+                        "-" => self.b.ins().fsub(a, b),
+                        "*" => self.b.ins().fmul(a, b),
+                        "/" => self.b.ins().fdiv(a, b),
+                        _ => return Err(format!("operator {}", op)),
+                    };
+                    return Ok((Some(r), t));
+                }
+                if t == "bool" && !matches!(op.as_str(), "&" | "|" | "^") {
+                    return Err(format!("operator {} on bool", op));
+                }
+                let sg = signed(&t);
                 let r = match op.as_str() {
                     "&" => self.b.ins().band(a, b),
                     "|" => self.b.ins().bor(a, b),
                     "^" => self.b.ins().bxor(a, b),
+                    "+" | "-" | "*" => {
+                        let (r, of) = match (op.as_str(), sg) {
+                            ("+", true) => self.b.ins().sadd_overflow(a, b),
+                            ("+", false) => self.b.ins().uadd_overflow(a, b),
+                            ("-", true) => self.b.ins().ssub_overflow(a, b),
+                            ("-", false) => self.b.ins().usub_overflow(a, b),
+                            (_, true) => self.b.ins().smul_overflow(a, b),
+                            (_, false) => self.b.ins().umul_overflow(a, b),
+                        };
+                        self.guard(of, "arithmetic overflow")?;
+                        r
+                    }
+                    "/" | "%" => {
+                        let zero = self.b.ins().icmp_imm(IntCC::Equal, b, 0);
+                        self.guard(zero, "division by zero")?;
+                        if sg {
+                            let bits = cl(&t).bits();
+                            let min: i64 = if bits >= 64 { i64::MIN } else { -(1i64 << (bits - 1)) };
+                            let is_min = self.b.ins().icmp_imm(IntCC::Equal, a, min);
+                            let is_m1 = self.b.ins().icmp_imm(IntCC::Equal, b, -1);
+                            let both = self.b.ins().band(is_min, is_m1);
+                            self.guard(both, "arithmetic overflow")?;
+                        }
+                        match (op.as_str(), sg) {
+                            ("/", true) => self.b.ins().sdiv(a, b),
+                            ("/", false) => self.b.ins().udiv(a, b),
+                            (_, true) => self.b.ins().srem(a, b),
+                            (_, false) => self.b.ins().urem(a, b),
+                        }
+                    }
                     _ => return Err(format!("operator {}", op)),
                 };
                 Ok((Some(r), t))
@@ -464,6 +550,22 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let (a, _) = self.expr(&f[1], env, Some(&t))?;
                 let a = a.ok_or("bad operand")?;
                 let r = if t == "bool" { self.b.ins().bxor_imm(a, 1) } else { self.b.ins().bnot(a) };
+                Ok((Some(r), t))
+            }
+            "Unary" if st(&f[0]) == "-" => {
+                let t = self.ty_of(&f[1], env, expect).ok_or("operand type")?;
+                let (a, _) = self.expr(&f[1], env, Some(&t))?;
+                let a = a.ok_or("bad operand")?;
+                if is_float(&t) {
+                    let r = self.b.ins().fneg(a);
+                    return Ok((Some(r), t));
+                }
+                if !signed(&t) || t == "bool" {
+                    return Err("negation of an unsigned value".into());
+                }
+                let z = self.b.ins().iconst(cl(&t), 0);
+                let (r, of) = self.b.ins().ssub_overflow(z, a);
+                self.guard(of, "arithmetic overflow")?;
                 Ok((Some(r), t))
             }
             "MCall" => self.method(&f[0], &st(&f[1]), items(&f[2]), env, expect),
@@ -481,12 +583,10 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     let t = self.ty_of(&args[0], env, None).or_else(|| self.ty_of(&args[1], env, None)).ok_or("operand type")?;
                     let (a, _) = self.expr(&args[0], env, Some(&t))?;
                     let (b, _) = self.expr(&args[1], env, Some(&t))?;
-                    let c = self.b.ins().icmp(IntCC::Equal, a.ok_or("bad operand")?, b.ok_or("bad operand")?);
-                    let (ok, bad) = (self.b.create_block(), self.b.create_block());
-                    self.b.ins().brif(c, ok, &[], bad, &[]);
-                    self.b.switch_to_block(bad);
-                    self.fail_block()?;
-                    self.b.switch_to_block(ok);
+                    let (a, b) = (a.ok_or("bad operand")?, b.ok_or("bad operand")?);
+                    let c = if is_float(&t) { self.b.ins().fcmp(FloatCC::Equal, a, b) } else { self.b.ins().icmp(IntCC::Equal, a, b) };
+                    let ne = self.b.ins().bxor_imm(c, 1);
+                    self.guard(ne, "assertion failed")?;
                     return Ok((None, "void".into()));
                 }
                 if segs == ["core", "mem", "drop"] {
