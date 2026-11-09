@@ -3116,3 +3116,80 @@ fn nll_accepts_two_phase_borrows_like_push_of_len() {
     );
     assert!(!bad, "{}", out);
 }
+
+fn clif_capture_program(tail: &str) -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "type t.P",
+        "    a: u32",
+        "end t.P",
+        "",
+        "fn t.apply[F: core.ops.Fn<(u32,), u32, E, P>, E: uses, P: panics](f: F, x: u32) -> u32 uses [E] panics P",
+        "    f(x)",
+        "end t.apply",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    let base = 100u32",
+        "    let add_base = fn(n: u32) -> u32 capture [&base] {",
+        "        n.wrapping_add(base)",
+        "    }",
+        "    core.check.eq(t.apply(add_base, 5u32), 105u32)",
+        "    let k = 7u32",
+        "    let times = fn(n: u32) -> u32 capture [&k] {",
+        "        n.wrapping_mul(k)",
+        "    }",
+        "    core.check.eq(t.relay(times, 3u32), 21u32)",
+        "    let mut total = 0u32",
+        "    let acc = fn(n: u32) -> () capture [&mut total] {",
+        "        total = total.wrapping_add(n)",
+        "    }",
+        "    t.run_all(acc)",
+        "    core.check.eq(total, 6u32)",
+        "    let p = t.P { a: 9u32 }",
+        "    let read_a = fn(n: u32) -> u32 capture [&p] {",
+        "        p.a.wrapping_add(n)",
+        "    }",
+        "    core.check.eq(t.apply(read_a, 1u32), 10u32)",
+        "    let two = 2u32",
+        "    let three = 3u32",
+        "    let both = fn(n: u32) -> u32 capture [&three, &two] {",
+        "        n.wrapping_mul(two).wrapping_add(three)",
+        "    }",
+        "    core.check.eq(t.apply(both, 10u32), 23u32)",
+        tail,
+        "    std.io.print_line(\"capture ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+        "fn t.relay[F: core.ops.Fn<(u32,), u32, E, P>, E: uses, P: panics](f: F, x: u32) -> u32 uses [E] panics P",
+        "    t.apply(f, x)",
+        "end t.relay",
+        "",
+        "fn t.run_all[F: core.ops.FnMut<(u32,), (), E, P>, E: uses, P: panics](f: F) -> () uses [E] panics P",
+        "    f(1u32)",
+        "    f(2u32)",
+        "    f(3u32)",
+        "end t.run_all",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_passes_capturing_closures_to_generic_functions() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("clif_cap_{}", release), &clif_capture_program("    core.check.eq(1u8, 1u8)"), release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), "capture ok");
+    }
+}
+
+#[test]
+fn a_wrong_value_through_a_captured_variable_fails_the_check() {
+    let (_t, exe_path, out) = build_clif("clif_cap_bad", &clif_capture_program("    core.check.eq(total, 7u32)"), false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+}

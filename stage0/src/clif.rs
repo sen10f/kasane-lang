@@ -145,6 +145,11 @@ struct Inst<'a> {
     entry: bool,
 }
 
+/// 取り込んだ変数を関数に渡すときの型: `&mut` のスカラーと構造体などはアドレス、それ以外のスカラーは値。
+fn cap_abi(kind: &str, ty: &str, ptr: Type) -> Type {
+    if is_agg(ty) || (kind == "&mut" && !is_mutref(ty)) { ptr } else { cl(ty) }
+}
+
 fn mangle(fqn: &str) -> String {
     format!("k_{}", fqn.replace('.', "_"))
 }
@@ -183,7 +188,8 @@ struct Cx<'a> {
     /// 総称な `type` / `enum` の具体化 (`pkg.Pair<u32,bool>` → (`pkg.Pair`, [`u32`, `bool`]))
     inst_types: RefCell<HashMap<String, (String, Vec<String>)>>,
     /// `Fn` 境界の型パラメータに渡されたクロージャ: `closure<id>` → (クロージャの式, 書かれたファイル, そのときの型パラメータの束縛)
-    closure_types: RefCell<HashMap<String, (V, String, HashMap<String, String>)>>,
+    /// 取り込む変数も持つ: (種類 `&` / `&mut` / `move`, 名前, 型) の列
+    closure_types: RefCell<HashMap<String, (V, String, HashMap<String, String>, Vec<(String, String, String)>)>>,
 }
 
 /// 構造体・列挙型のメモリ配置。
@@ -332,7 +338,7 @@ impl<'a> Cx<'a> {
     }
 
     /// クロージャの式を、`Fn` 境界の型パラメータに渡す名前 `closure<id>` として登録する (同じ式・同じ文脈は同じ名前)。
-    fn closure_ref(&self, node: &V) -> String {
+    fn closure_ref(&self, node: &V, caps: &[(String, String, String)]) -> String {
         use std::hash::{Hash, Hasher};
         let file = self.file.borrow().clone();
         let subst = self.subst.borrow().clone();
@@ -342,8 +348,9 @@ impl<'a> Cx<'a> {
         let mut kv: Vec<(&String, &String)> = subst.iter().collect();
         kv.sort();
         kv.hash(&mut h);
+        caps.hash(&mut h);
         let name = format!("closure<{:x}>", h.finish());
-        self.closure_types.borrow_mut().insert(name.clone(), (node.clone(), file, subst));
+        self.closure_types.borrow_mut().insert(name.clone(), (node.clone(), file, subst, caps.to_vec()));
         name
     }
 
@@ -900,7 +907,7 @@ struct FnGen<'a, 'b, 'm> {
     /// `let f = fn(..) ..` で束縛したクロージャ (呼び出しの場所で本体を展開する)
     closures: HashMap<String, V>,
     /// `Fn` 境界の引数として渡されたクロージャが書かれた文脈 (ファイル, 型パラメータの束縛)
-    closure_ctx: HashMap<String, (String, HashMap<String, String>)>,
+    closure_ctx: HashMap<String, (String, HashMap<String, String>, Vec<(String, Variable, String, String)>)>,
     /// スロットに置いた変数の番号 (変数の値はスロットのアドレス)
     promoted: HashSet<u32>,
 }
@@ -1029,6 +1036,26 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         None
     }
 
+    /// クロージャ `a` (式、または名前) が取り込む変数の (種類, 名前, 型)。関数の引数として渡されて来たクロージャなら、その取り込みを引き継ぐ。
+    fn closure_caps(&self, a: &V, node: &V, env: &Env) -> Option<Vec<(String, String, String)>> {
+        if nname(a) == "Path" && strs(&nf(a)[0]).len() == 1 {
+            if let Some((_, _, caps)) = self.closure_ctx.get(&strs(&nf(a)[0])[0]) {
+                return Some(caps.iter().map(|(n, _, t, k)| (k.clone(), n.clone(), t.clone())).collect());
+            }
+        }
+        let mut out = vec![];
+        for c in items(&nf(node)[2]) {
+            let kind = st(tel(c, 0));
+            let name = st(tel(c, 1));
+            let ty = env.get(&name)?.1.clone();
+            if self.cx.needs_drop(&ty) {
+                return None; // 解放が要る値を取り込む (移す) クロージャは未対応
+            }
+            out.push((kind, name, ty));
+        }
+        Some(out)
+    }
+
     /// 呼び出しの引数の型 (わかるもの) から、総称な呼び出し先の型パラメータを決める。
     /// `Fn` 境界の型パラメータには、渡されたクロージャ (キャプチャなし) を `closure<id>` として束縛する。
     fn callee_subst(&self, d: &Def, args: &[V], recv_ty: Option<&str>, env: &Env, expect: Option<&str>) -> Option<HashMap<String, String>> {
@@ -1037,13 +1064,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             return Some(HashMap::new());
         }
         let off = if recv_ty.is_some() { 1 } else { 0 };
-        let mut closure_binds: Vec<(String, V)> = vec![];
+        let mut closure_binds: Vec<(String, V, Vec<(String, String, String)>)> = vec![];
         let mut arg_tys: Vec<Option<String>> = vec![];
         for (k, a) in args.iter().enumerate() {
             let tp = d.params.get(k + off).and_then(|p| param_type_name(&p.1)).filter(|n| tps.contains(n) && fn_bound_of(d, n).is_some());
             if let Some(tp) = tp {
                 let node = self.resolve_closure_node(a)?;
-                closure_binds.push((tp, node));
+                let caps = self.closure_caps(a, &node, env)?;
+                closure_binds.push((tp, node, caps));
                 arg_tys.push(None);
             } else {
                 arg_tys.push(self.ty_of(a, env, None));
@@ -1051,15 +1079,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         }
         let mut bind = self.cx.infer_subst(d, &arg_tys, recv_ty, expect)?;
         let params: HashSet<String> = tps.iter().cloned().collect();
-        for (tp, node) in closure_binds {
+        for (tp, node, caps) in closure_binds {
             let f = nf(&node);
-            if !items(&f[2]).is_empty() {
-                return None; // 値を取り込むクロージャは未対応
-            }
             // クロージャの引数・戻り値の型 (クロージャが書かれた文脈で解決する)
             let actual_args: Vec<Option<String>> = items(&f[0]).iter().map(|p| self.cx.pty(&items(p)[1]).ok()).collect();
             let actual_ret = self.cx.pty(&f[1]).ok();
-            let name = self.cx.closure_ref(&node);
+            let name = self.cx.closure_ref(&node, &caps);
             bind.insert(tp.clone(), name);
             let bound = fn_bound_of(d, &tp)?;
             let targs = tel(&bound, 1);
@@ -1149,6 +1174,33 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         } else {
             None
         }
+    }
+
+    /// クロージャ引数 `a` (型 `closure_ty`) が取り込む変数の、隠し引数の値。
+    fn closure_cap_values(&mut self, a: &V, closure_ty: &str, env: &Env) -> R<Vec<Value>> {
+        let caps = self.cx.closure_types.borrow().get(closure_ty).map(|x| x.3.clone()).unwrap_or_default();
+        // 関数の引数として渡されて来たクロージャは、その隠し引数の値をそのまま引き継ぐ。
+        if nname(a) == "Path" && strs(&nf(a)[0]).len() == 1 {
+            if let Some((_, _, hidden)) = self.closure_ctx.get(&strs(&nf(a)[0])[0]).cloned() {
+                return Ok(hidden.iter().map(|(_, var, _, _)| self.b.use_var(*var)).collect());
+            }
+        }
+        let mut out = vec![];
+        for (kind, name, ty) in &caps {
+            let (var, _) = env.get(name).cloned().ok_or("captured variable not found")?;
+            let v = if is_agg(ty) {
+                self.b.use_var(var)
+            } else if self.promoted.contains(&var.as_u32()) {
+                let slot = self.b.use_var(var);
+                if kind == "&mut" { slot } else { self.b.ins().load(cl(ty), MemFlags::new(), slot, 0) }
+            } else if kind == "&mut" {
+                return Err("mutable capture of a variable that is not addressable".into());
+            } else {
+                self.b.use_var(var)
+            };
+            out.push(v);
+        }
+        Ok(out)
     }
 
     /// 関数 `d` の具体化 (`subst` が空なら元の関数) の識別子を返す。まだ宣言していなければ宣言して、生成の待ち行列に入れる。
@@ -1578,7 +1630,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if segs.len() == 1 && self.closures.contains_key(&segs[0]) {
                     let clo = &self.closures[&segs[0]];
                     return match self.closure_ctx.get(&segs[0]) {
-                        Some((file, sub)) => {
+                        Some((file, sub, _)) => {
                             let of = self.cx.file.replace(file.clone());
                             let os = self.cx.subst.replace(sub.clone());
                             let r = self.cx.pty(&nf(clo)[1]).ok();
@@ -1904,6 +1956,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             let mut nodes: Vec<&V> = vec![];
             crate::check::walk(d.body.as_ref().unwrap(), &mut nodes);
             for n in nodes {
+                if nname(n) == "Closure" {
+                    for c in items(&nf(n)[2]) {
+                        if st(tel(c, 0)) == "&mut" {
+                            self.addr_taken.insert(st(tel(c, 1)));
+                        }
+                    }
+                }
                 if nname(n) == "Unary" && st(&nf(n)[0]) == "&mut" && nname(&nf(n)[1]) == "Path" {
                     let segs = strs(&nf(&nf(n)[1])[0]);
                     if segs.len() == 1 {
@@ -1921,9 +1980,24 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             if ty.starts_with("closure<") {
                 // `Fn` 境界の引数: 実行時の値は持たず、呼び出し (`f(x)`) の場所で本体を展開する。
                 let reg = self.cx.closure_types.borrow().get(&ty).cloned();
-                let (node, file, sub) = reg.ok_or("unknown closure type")?;
+                let (node, file, sub, caps) = reg.ok_or("unknown closure type")?;
+                let mut hidden = vec![];
+                for (kind, cname, cty) in &caps {
+                    let v = params_vals[k];
+                    k += 1;
+                    let abi = cap_abi(kind, cty, self.ptr_ty());
+                    let var = if abi == self.ptr_ty() && !is_agg(cty) { self.new_var("usize") } else { self.new_var(cty) };
+                    self.b.def_var(var, v);
+                    if is_agg(cty) {
+                        self.refs.insert(var.as_u32());
+                    } else if kind == "&mut" {
+                        // スカラーの `&mut` の取り込みは、アドレスを持つ変数 (読み書きはアドレス経由)
+                        self.promoted.insert(var.as_u32());
+                    }
+                    hidden.push((cname.clone(), var, cty.clone(), kind.clone()));
+                }
                 self.closures.insert(n.clone(), node);
-                self.closure_ctx.insert(n.clone(), (file, sub));
+                self.closure_ctx.insert(n.clone(), (file, sub, hidden));
                 continue;
             }
             let mut v = params_vals[k];
@@ -2390,10 +2464,15 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         } else {
             None
         };
-        if let Some((file, sub)) = ctx {
+        if let Some((file, sub, hidden)) = ctx {
             let of = self.cx.file.replace(file);
             let os = self.cx.subst.replace(sub);
-            let r = self.inline_closure_in(clo, args, env);
+            // 取り込んだ変数の名前を、隠し引数の変数に結び付ける (関数の局所変数と名前が重なっても、こちらが優先)
+            let mut env2 = env.clone();
+            for (n, var, ty, _) in &hidden {
+                env2.insert(n.clone(), (*var, ty.clone()));
+            }
+            let r = self.inline_closure_in(clo, args, &env2);
             *self.cx.file.borrow_mut() = of;
             *self.cx.subst.borrow_mut() = os;
             return r;
@@ -3130,7 +3209,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         for ((_, pt), a) in params.zip(args) {
             let want = self.cx.pty_in(d, &subst, pt)?;
             if want.starts_with("closure<") {
-                continue; // クロージャは実行時の引数にしない (関数の中で本体を展開する)
+                // クロージャそのものは実行時の引数にしない (関数の中で本体を展開する)。取り込む変数だけを渡す。
+                let cvals = self.closure_cap_values(a, &want, env)?;
+                vals.extend(cvals);
+                continue;
             }
             let (v, got) = self.expr(a, env, Some(&want))?;
             let mut v = v.ok_or("bad argument")?;
@@ -3804,7 +3886,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         let (v, t) = self.expr(a, env, Some(&pt))?;
                         vals.push((v.ok_or("bad closure argument")?, t));
                     }
-                    return self.inline_closure(&clo, &vals, env);
+                    // 名前の Path で展開する (関数の引数として渡されたクロージャの文脈・取り込み変数を使うため)
+                    return self.inline_closure(&f[0], &vals, env);
                 }
                 if segs == ["core", "mem", "drop"] {
                     let (_, t) = self.expr(&args[0], env, None)?;
@@ -5672,6 +5755,11 @@ fn make_sig(module: &ObjectModule, cx: &Cx, d: &Def, is_entry: bool, subst: &Has
         for (_, t) in &d.params {
             let pt = cx.pty(t).map_err(|e| format!("{}: {}", d.name, e))?;
             if pt.starts_with("closure<") {
+                // 取り込む変数は、隠し引数として渡す
+                let caps = cx.closure_types.borrow().get(&pt).map(|x| x.3.clone()).unwrap_or_default();
+                for (kind, _, ty) in &caps {
+                    sig.params.push(AbiParam::new(cap_abi(kind, ty, ptr)));
+                }
                 continue;
             }
             sig.params.push(AbiParam::new(if is_agg(&pt) { ptr } else { cl(&pt) }));
