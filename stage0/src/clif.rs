@@ -170,6 +170,14 @@ impl<'a> Cx<'a> {
                     }
                     return Ok(self.vec_of(&elem));
                 }
+                if n == "std.thread.JoinHandle" {
+                    let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("JoinHandle without a type")?;
+                    let inner = self.pty_owned(first)?;
+                    if inner == "void" {
+                        return Err("JoinHandle of unit".into());
+                    }
+                    return Ok(self.handle_of(&inner));
+                }
                 if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap" {
                     let args: Vec<&V> = items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).collect();
                     if args.len() < 2 {
@@ -178,7 +186,7 @@ impl<'a> Cx<'a> {
                     let (k, v) = (self.pty_owned(args[0])?, self.pty_owned(args[1])?);
                     return self.map_of(n.ends_with("BtreeMap"), &k, &v);
                 }
-                if n == "alloc.alloc.AllocError" || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" {
+                if n == "alloc.alloc.AllocError" || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.rand.Rng" {
                     return Ok(n);
                 }
                 if n == "Option" || n == "Result" {
@@ -256,6 +264,13 @@ impl<'a> Cx<'a> {
 
     fn map_info(&self, name: &str) -> Option<(bool, String, String)> {
         self.maps.borrow().get(name).cloned()
+    }
+
+    /// `std.thread.JoinHandle<T>`: 結果の `T` を 1 つ持つ値 (スレッドは `spawn` のときに同期して実行する)。
+    fn handle_of(&self, inner: &str) -> String {
+        let name = format!("joinhandle<{}>", inner);
+        self.tuples.borrow_mut().insert(name.clone(), vec![inner.to_string()]);
+        name
     }
 
     fn tuple_of(&self, elems: &[String]) -> String {
@@ -366,7 +381,10 @@ impl<'a> Cx<'a> {
         if name == "alloc.alloc.AllocError" {
             return Ok(Layout { size: 1, align: 1, fields: vec![], is_enum: false, variants: vec![] });
         }
-        if name == "std.io.Error" || name == "core.str.Utf8Error" || name == "core.num.TryFromIntError" {
+        if name == "std.rand.Rng" {
+            return Ok(Layout { size: 8, align: 8, fields: vec![("state".into(), "u64".into(), 0)], is_enum: false, variants: vec![] });
+        }
+        if name == "std.io.Error" || name == "core.str.Utf8Error" || name == "core.num.TryFromIntError" || name == "std.thread.SpawnError" {
             return Ok(Layout { size: 8, align: 8, fields: vec![], is_enum: false, variants: vec![] });
         }
         let registered = self.gen.borrow().get(name).cloned();
@@ -455,6 +473,12 @@ impl<'a> Cx<'a> {
 
     /// 組み込み型 (str / Vec / AllocError) のメソッドの戻り値の型。
     fn builtin_method_ty(&self, recv_ty: &str, name: &str) -> Option<String> {
+        if recv_ty == "std.rand.Rng" && name == "next_u64" {
+            return Some("u64".into());
+        }
+        if recv_ty.starts_with("joinhandle<") && name == "join" {
+            return self.tuples.borrow().get(recv_ty).and_then(|v| v.first().cloned());
+        }
         if let Some((_, _, v)) = self.map_info(recv_ty) {
             return match name {
                 "len" => Some("usize".into()),
@@ -905,6 +929,34 @@ impl<'a, 'b> FnGen<'a, 'b> {
         None
     }
 
+    /// パターン `pat` が型 `ty` の値に当たったときの束縛の型を、`env` に足す (コードは出さない)。
+    fn bind_types(&self, pat: &V, ty: &str, env: &mut Env) {
+        let ph = Variable::from_u32(u32::MAX);
+        match nname(pat) {
+            "PBind" => {
+                env.insert(st(&nf(pat)[0]), (ph, ty.to_string()));
+            }
+            "PTuple" => {
+                if let Ok(l) = self.cx.layout(ty, 0) {
+                    for (sp, (_, fty, _)) in items(&nf(pat)[0]).iter().zip(l.fields.iter()) {
+                        self.bind_types(sp, fty, env);
+                    }
+                }
+            }
+            "PVariant" => {
+                let segs = strs(&nf(pat)[0]);
+                if let Ok(l) = self.cx.layout(ty, 0) {
+                    if let Some(idx) = l.variants.iter().position(|v| v.0 == segs[segs.len() - 1]) {
+                        for (sp, (fty, _)) in items(&nf(pat)[1]).iter().zip(l.variants[idx].1.iter()) {
+                            self.bind_types(sp, fty, env);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn body_ty(&self, body: &V, env: &Env, expect: Option<&str>) -> Option<String> {
         if nname(body) == "Block" {
             let stmts = items(&nf(body)[0]);
@@ -1004,10 +1056,18 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 _ => None,
             },
             "Match" => {
+                // 腕の本体の型 (パターンで束縛される変数の型を足して求める)。`panic` など値を返さない腕は飛ばす。
+                let sty = self.ty_of(&f[0], env, None);
                 for arm in items(&f[1]) {
                     let a = items(arm);
-                    if let Some(t) = self.body_ty(&a[1], env, expect) {
-                        return Some(t);
+                    let mut local = env.clone();
+                    if let Some(st_) = &sty {
+                        self.bind_types(&a[0], st_, &mut local);
+                    }
+                    if let Some(t) = self.body_ty(&a[1], &local, expect) {
+                        if t != "void" {
+                            return Some(t);
+                        }
                     }
                 }
                 None
@@ -1081,6 +1141,25 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 if let Some(t) = self.conv_ty(&segs) {
                     return Some(t);
+                }
+                if segs == ["std", "rand", "Rng", "from_seed"] || segs == ["std", "rand", "Rng", "from_entropy"] {
+                    return Some("std.rand.Rng".into());
+                }
+                if segs == ["std", "thread", "spawn"] && items(&f[1]).len() == 2 {
+                    let clo = &items(&f[1])[1];
+                    let node = if nname(clo) == "Closure" {
+                        Some(clo.clone())
+                    } else if nname(clo) == "Path" && strs(&nf(clo)[0]).len() == 1 {
+                        self.closures.get(&strs(&nf(clo)[0])[0]).cloned()
+                    } else {
+                        None
+                    };
+                    let t = self.cx.pty(&nf(&node?)[1]).ok()?;
+                    if t == "void" {
+                        return None;
+                    }
+                    let hty = self.cx.handle_of(&t);
+                    return self.cx.builtin_enum("Result", &[hty, "std.thread.SpawnError".into()]).ok();
                 }
                 if segs == ["core", "panic", "panic"] {
                     return Some("void".into());
@@ -2313,13 +2392,13 @@ impl<'a, 'b> FnGen<'a, 'b> {
     }
 
     /// `match` の共通部分。`value` が Some のとき、各腕の値をそのブロック引数に渡す。
-    fn match_common(&mut self, e: &V, env: &mut Env, tail: bool, value: Option<(&str, Block)>) -> R<()> {
+    fn match_common(&mut self, e: &V, env: &mut Env, tail: bool, value: Option<(&str, Block, Option<Value>)>) -> R<()> {
         let f = nf(e);
         let (sv, sty) = self.expr(&f[0], env, None)?;
         let sv = sv.ok_or("match on unit")?;
         let tagv = if is_agg(&sty) { Some(self.b.ins().load(types::I32, MemFlags::new(), sv, 0)) } else { None };
         let end = match value {
-            Some((_, end)) => end,
+            Some((_, end, _)) => end,
             None => self.b.create_block(),
         };
         let arms = items(&f[1]).to_vec();
@@ -2335,13 +2414,21 @@ impl<'a, 'b> FnGen<'a, 'b> {
             let is_variant_pat = matches!(nname(&a[0]), "PVariant" | "PTuple");
             self.bind_arm(binds, &mut inner, is_variant_pat);
             match value {
-                Some((ty, end)) => {
+                Some((ty, end, out)) => {
                     let (v, _) = self.arm_value(&a[1], &mut inner, Some(ty))?;
                     if !self.term {
-                        match v {
-                            Some(v) => self.b.ins().jump(end, &[v]),
-                            None => self.b.ins().jump(end, &[]),
-                        };
+                        if let Some(slot) = out {
+                            // 構造体・列挙型を作る `match`: 各腕の値を結果の領域に写す。
+                            if let Some(v) = v {
+                                self.store_value(slot, ty, v)?;
+                            }
+                            self.b.ins().jump(end, &[]);
+                        } else {
+                            match v {
+                                Some(v) => self.b.ins().jump(end, &[v]),
+                                None => self.b.ins().jump(end, &[]),
+                            };
+                        }
                     }
                 }
                 None => {
@@ -2914,14 +3001,22 @@ impl<'a, 'b> FnGen<'a, 'b> {
                     .ty_of(e, env, expect)
                     .or_else(|| expect.map(String::from))
                     .ok_or("match value type")?;
-                if is_agg(&ty) {
-                    return Err("match producing an aggregate".into());
-                }
+                let out = if is_agg(&ty) {
+                    if self.cx.needs_drop(&ty) {
+                        return Err("match producing a droppable value".into());
+                    }
+                    Some(self.alloc_for(&ty)?)
+                } else {
+                    None
+                };
                 let end = self.b.create_block();
-                if ty != "void" {
+                if ty != "void" && out.is_none() {
                     self.b.append_block_param(end, cl(&ty));
                 }
-                self.match_common(e, env, false, Some((&ty, end)))?;
+                self.match_common(e, env, false, Some((&ty, end, out)))?;
+                if let Some(slot) = out {
+                    return Ok((Some(slot), ty));
+                }
                 if ty == "void" {
                     Ok((None, ty))
                 } else {
@@ -3020,6 +3115,36 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 }
                 if let Some(r) = self.conv_call(&segs, args, env)? {
                     return Ok(r);
+                }
+                if segs == ["std", "rand", "Rng", "from_seed"] && args.len() == 1 {
+                    let (sv, _) = self.expr(&args[0], env, Some("u64"))?;
+                    let slot = self.alloc(8, 8);
+                    self.b.ins().store(MemFlags::new(), sv.ok_or("bad seed")?, slot, 0);
+                    return Ok((Some(slot), "std.rand.Rng".into()));
+                }
+                if segs == ["std", "rand", "Rng", "from_entropy"] && args.is_empty() {
+                    let slot = self.alloc(8, 8);
+                    let c = self.b.ins().iconst(types::I64, 0x9E3779B97F4A7C15u64 as i64);
+                    self.b.ins().store(MemFlags::new(), c, slot, 0);
+                    return Ok((Some(slot), "std.rand.Rng".into()));
+                }
+                if segs == ["std", "thread", "spawn"] && args.len() == 2 {
+                    // スレッドは spawn のときに同期して実行する (インタプリタと同じ)。
+                    let (v, t) = self.inline_closure(&args[1], &[], env)?;
+                    let v = v.ok_or("spawn of a closure returning unit")?;
+                    let hty = self.cx.handle_of(&t);
+                    let hl = self.cx.layout(&hty, 0)?;
+                    let handle = self.alloc(hl.size, hl.align);
+                    let faddr = self.b.ins().iadd_imm(handle, hl.fields[0].2 as i64);
+                    self.store_value(faddr, &t, v)?;
+                    let rty = self.cx.builtin_enum("Result", &[hty.clone(), "std.thread.SpawnError".into()])?;
+                    let rl = self.cx.layout(&rty, 0)?;
+                    let res = self.alloc(rl.size, rl.align);
+                    let t0 = self.b.ins().iconst(types::I32, 0);
+                    self.b.ins().store(MemFlags::new(), t0, res, 0);
+                    let dst = self.b.ins().iadd_imm(res, rl.variants[0].1[0].1 as i64);
+                    self.store_value(dst, &hty, handle)?;
+                    return Ok((Some(res), rty));
                 }
                 if segs == ["core", "str", "from_utf8"] && args.len() == 1 {
                     let (bv, bt) = self.expr(&args[0], env, None)?;
@@ -3196,6 +3321,24 @@ impl<'a, 'b> FnGen<'a, 'b> {
                 let (p, _) = self.expr(recv, env, None)?;
                 let p = p.ok_or("bad receiver")?;
                 return self.map_err(recv, p, rt, &args[0], env);
+            }
+            if rt == "std.rand.Rng" && name == "next_u64" {
+                let (p, _) = self.expr(recv, env, None)?;
+                let p = p.ok_or("bad receiver")?;
+                let st0 = self.b.ins().load(types::I64, MemFlags::new(), p, 0);
+                let (ns, z) = self.splitmix(st0);
+                self.b.ins().store(MemFlags::new(), ns, p, 0);
+                return Ok((Some(z), "u64".into()));
+            }
+            if rt.starts_with("joinhandle<") && name == "join" && args.is_empty() {
+                let (p, _) = self.expr(recv, env, None)?;
+                let p = p.ok_or("bad receiver")?;
+                self.consume(recv, rt, env)?;
+                let l = self.cx.layout(rt, 0)?;
+                let (fty, off) = (l.fields[0].1.clone(), l.fields[0].2);
+                let addr = self.b.ins().iadd_imm(p, off as i64);
+                let v = self.load_value(addr, &fty);
+                return Ok((Some(v), fty));
             }
             if rt.starts_with("Option<") && name == "take" && args.is_empty() {
                 let (p, _) = self.expr(recv, env, None)?;
@@ -3667,6 +3810,20 @@ impl<'a, 'b> FnGen<'a, 'b> {
         self.b.ins().jump(done, &[]);
         self.b.switch_to_block(done);
         Ok((Some(res), newty))
+    }
+
+    /// splitmix64: (次の状態, 出力)。インタプリタの `splitmix` と同じ計算。
+    fn splitmix(&mut self, state: Value) -> (Value, Value) {
+        let s = self.b.ins().iadd_imm(state, 0x9E3779B97F4A7C15u64 as i64);
+        let a = self.b.ins().ushr_imm(s, 30);
+        let x = self.b.ins().bxor(s, a);
+        let z1 = self.b.ins().imul_imm(x, 0xBF58476D1CE4E5B9u64 as i64);
+        let b = self.b.ins().ushr_imm(z1, 27);
+        let y = self.b.ins().bxor(z1, b);
+        let z2 = self.b.ins().imul_imm(y, 0x94D049BB133111EBu64 as i64);
+        let c = self.b.ins().ushr_imm(z2, 31);
+        let out = self.b.ins().bxor(z2, c);
+        (s, out)
     }
 
     /// 満杯なら列を広げて、1 つ入る余地を作る。(失敗したか, 先頭のアドレス) を返す。
