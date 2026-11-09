@@ -1,0 +1,5 @@
+type t.Raw pub
+    p: *const u8
+end t.Raw
+
+static t.S: t.Raw = core.panic.todo()

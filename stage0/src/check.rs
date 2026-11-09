@@ -220,6 +220,7 @@ impl<'a> Checker<'a> {
         self.check_declarations();
         self.check_impls();
         self.check_field_method();
+        self.check_statics();
         for &i in &user {
             let d = self.def(i);
             match d.kw.as_str() {
@@ -371,6 +372,150 @@ impl<'a> Checker<'a> {
                 );
             }
         }
+    }
+
+    /// 3.1: `static` の型は `core.marker.Sync` かつ非線形でなければならない (E2031)。
+    /// 分からない型 (標準ライブラリの型・型パラメータなど) では何も言わない。
+    fn check_statics(&mut self) {
+        let statics: Vec<usize> = self.user.iter().copied().filter(|&i| self.def(i).kw == "static").collect();
+        if statics.is_empty() {
+            return;
+        }
+        let user_types: HashSet<String> = self
+            .user
+            .iter()
+            .map(|&i| self.def(i))
+            .filter(|d| matches!(d.kw.as_str(), "type" | "enum"))
+            .map(|d| d.name.clone())
+            .collect();
+        for i in statics {
+            let d = self.def(i);
+            let t = d.ret.clone();
+            let gn = d.gnames();
+            let name = d.name.clone();
+            if self.sync_v(&t, &gn, &user_types, &mut HashSet::new()) == Some(false) {
+                self.diag("E2031", format!("static {} must have a core.marker.Sync type (3.1)", name), i, 0);
+            }
+            if self.linear_v(&t, &gn, &user_types, &mut HashSet::new()) == Some(true) {
+                self.diag("E2031", format!("static {} must not have a linear type (3.1)", name), i, 0);
+            }
+        }
+    }
+
+    /// 型が `core.marker.Sync` を満たすか。`Some(false)` は明確に満たさない (生ポインタを含むなど)。
+    fn sync_v(
+        &self,
+        t: &V,
+        gn: &HashSet<String>,
+        user_types: &HashSet<String>,
+        seen: &mut HashSet<String>,
+    ) -> Option<bool> {
+        match tag(t).as_str() {
+            "prim" | "never" => Some(true),
+            "tuple" => {
+                let mut res = Some(true);
+                for x in items(tel(t, 1)) {
+                    res = and3(res, self.sync_v(x, gn, user_types, seen));
+                }
+                res
+            }
+            "ref" => self.sync_v(tel(t, 2), gn, user_types, seen),
+            // 生ポインタは Send でも Sync でもない (5.5)。
+            "ptr" => Some(false),
+            "slice" | "array" => self.sync_v(tel(t, 1), gn, user_types, seen),
+            "named" => {
+                let n = st(tel(t, 1));
+                if gn.contains(&n) {
+                    return None;
+                }
+                if self.has_manual_marker(&n, "core.marker.Sync") {
+                    return Some(true);
+                }
+                if !user_types.contains(&n) {
+                    return None;
+                }
+                if !seen.insert(n.clone()) {
+                    return Some(true);
+                }
+                let res = self
+                    .p
+                    .types
+                    .get(&n)
+                    .map(|&i| self.def(i))
+                    .map(|d| {
+                        let tys: Vec<&V> = if d.kw == "type" {
+                            d.fields.iter().map(|f| &f.1).collect()
+                        } else {
+                            d.variants.iter().flat_map(|v| v.1.iter()).collect()
+                        };
+                        let mut r = Some(true);
+                        for x in tys {
+                            r = and3(r, self.sync_v(x, gn, user_types, seen));
+                        }
+                        r
+                    })
+                    .unwrap_or(None);
+                seen.remove(&n);
+                res
+            }
+            _ => None,
+        }
+    }
+
+    /// 型が線形な値を含むか。`Some(true)` は明確に線形。
+    fn linear_v(
+        &self,
+        t: &V,
+        gn: &HashSet<String>,
+        user_types: &HashSet<String>,
+        seen: &mut HashSet<String>,
+    ) -> Option<bool> {
+        match tag(t).as_str() {
+            "prim" | "never" | "ptr" | "ref" => Some(false),
+            "tuple" => {
+                let mut res = Some(false);
+                for x in items(tel(t, 1)) {
+                    res = or3(res, self.linear_v(x, gn, user_types, seen));
+                }
+                res
+            }
+            "slice" | "array" => self.linear_v(tel(t, 1), gn, user_types, seen),
+            "named" => {
+                let n = st(tel(t, 1));
+                if gn.contains(&n) || !user_types.contains(&n) {
+                    return None;
+                }
+                if !seen.insert(n.clone()) {
+                    return Some(false);
+                }
+                let res = self
+                    .p
+                    .types
+                    .get(&n)
+                    .map(|&i| self.def(i))
+                    .map(|d| {
+                        let tys: Vec<&V> = if d.kw == "type" {
+                            d.fields.iter().map(|f| &f.1).collect()
+                        } else {
+                            d.variants.iter().flat_map(|v| v.1.iter()).collect()
+                        };
+                        let mut r = if d.linear { Some(true) } else { Some(false) };
+                        for x in tys {
+                            r = or3(r, self.linear_v(x, gn, user_types, seen));
+                        }
+                        r
+                    })
+                    .unwrap_or(None);
+                seen.remove(&n);
+                res
+            }
+            _ => None,
+        }
+    }
+
+    /// 手動のマーカー impl (`impl core.marker.Sync for X`) があるか。
+    fn has_manual_marker(&self, ty: &str, marker: &str) -> bool {
+        self.p.defs.iter().any(|d| d.kw == "impl" && d.impl_trait == marker && impl_target(&d.impl_for) == ty)
     }
 
     /// 3.2: 型のフィールド名とメソッド名は重複できない (`ksn get <型FQN>.<名前>` を一意にするため)。
@@ -1796,6 +1941,24 @@ pub fn format_diag(d: &Diag) -> String {
 }
 
 /// 型 `t` が名前 `name` の型を (参照・引数・タプル・配列を通して) 含むか。
+/// `Some(false)` を優先する 3 値の論理積。
+fn and3(a: Option<bool>, b: Option<bool>) -> Option<bool> {
+    match (a, b) {
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        (Some(true), Some(true)) => Some(true),
+        _ => None,
+    }
+}
+
+/// `Some(true)` を優先する 3 値の論理和。
+fn or3(a: Option<bool>, b: Option<bool>) -> Option<bool> {
+    match (a, b) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), Some(false)) => Some(false),
+        _ => None,
+    }
+}
+
 /// `impl .. for X` の対象型の基底名 (型引数を落とす)。
 fn impl_target(v: &V) -> String {
     match tag(v).as_str() {
