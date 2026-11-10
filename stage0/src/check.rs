@@ -441,7 +441,9 @@ impl<'a> Checker<'a> {
     /// 型が `Copy` か。`Some(false)` は明確に `Copy` でない (Copy を derive していないユーザー型など)。
     fn is_copy_v(&self, t: &V, user_types: &HashSet<String>) -> Option<bool> {
         match tag(t).as_str() {
-            "prim" | "never" | "ptr" | "ref" => Some(true),
+            "prim" | "never" | "ptr" => Some(true),
+            // `&T` は Copy だが `&mut T` は Copy でも Clone でもない (4.2)。
+            "ref" => Some(!matches!(tel(t, 1), V::B(true))),
             "array" | "slice" => self.is_copy_v(tel(t, 1), user_types),
             "tuple" => {
                 let mut res = Some(true);
