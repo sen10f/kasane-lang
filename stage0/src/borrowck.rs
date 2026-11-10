@@ -1,12 +1,19 @@
 //! NLL に基づく借用検査 (E3010)。関数本体を制御フローグラフの事象列に落として、
-//! (1) 参照を持つ変数の生存解析 (逆向き)、(2) どの変数がどの借用を持つかの前向きの解析、
+//! (1) 参照を持つ変数の生存解析 (逆向き)、(2) どの変数・場所がどの借用を持つかの前向きの解析、
 //! (3) 借用が生きている間の、競合するアクセスの検出、を行う。
 //!
 //! 借用の生存期間は、字句的なスコープではなく「借用を持つ変数が、そのあとで使われる経路があるか」で決まる。
 //! 借用の出どころは、`let r = &x` / `&mut x` (フィールドを含む)、借用を返すメソッド・関数の戻り値
 //! (`let first = v.first()`、`for x in v.iter()`)、`match` の被検査式、参照を取り込むクロージャ。
 //! 場所は「根の変数 + フィールドの道」で見るので、`&mut s.a` と `s.b` への代入は競合しない。
-//! 借用がコンテナ (`Vec` など) や構造体に入った場合は追わない (見落としはあっても、誤検出は出さない方針)。
+//!
+//! 構造体・コンテナに入った借用 (領域の近似) も追う: `s.f = &mut x` / `v.push(&x)` のように借用が
+//! 場所 (根の変数 + 道) に保存されたら、その保存場所を持ち主とするローンを記録する。保存場所の根の変数が
+//! 生きている間、借りた元の場所への競合するアクセスを E3010 にする。保存場所への上書き (`s.f = ...`、
+//! `v = ...`、`core.mem.drop(s.f)`) で、そこに保存されたローンは死ぬ。読み戻し (`let r = s.f`、
+//! `v.first().unwrap()`、`match m.get(k) { Some(r) => .. }`) は、既存の引き継ぎと同じ仕組みでローンが移る。
+//! 保存されたローンがいつまで生きるかは、実際の型が分からないので広めに近似する
+//! (見落としはあっても、誤検出は出さない方針)。
 
 use super::*;
 use std::collections::VecDeque;
@@ -23,9 +30,20 @@ enum Acc {
 enum Ev {
     Use(String),
     Def(String),
-    Loan { holder: String, id: usize },
-    Alias { to: String, from: String },
+    Loan { holder: Holder, id: usize },
+    Alias { to: Holder, from: Holder },
+    /// 保存場所から借用を読み戻す (`let r = s.f` など)。そこに保存されたローンは読んだ側へ移る。
+    Load { to: Holder, from_root: String, from_path: Vec<String> },
+    /// 場所の値を消費する (`core.mem.drop(s.f)`)。そこに保存されたローンは死ぬ。
+    Kill { root: String, path: Vec<String> },
     Access { root: String, path: Vec<String>, kind: Acc, line: usize },
+}
+
+/// 借用の持ち主。変数が直接持つか、場所 (根の変数 + 道) に保存されたか。
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Holder {
+    Var(String),
+    Place { root: String, path: Vec<String> },
 }
 
 struct LoanInfo {
@@ -46,6 +64,8 @@ enum Src {
     Place { root: String, path: Vec<String>, mutable: bool },
     /// 参照を持つ別の変数の借用を引き継ぐ (`let r2 = r`、`&mut *r`)
     Alias(String),
+    /// 場所に保存された借用を読み戻す (`let r = s.f`、`v.first().unwrap()`)
+    Stored { root: String, path: Vec<String> },
 }
 
 struct Low<'a> {
@@ -130,6 +150,18 @@ impl<'a> Low<'a> {
         d.ret.dump().contains("[ref ") || d.generics.iter().any(|g| g.0 == "life")
     }
 
+    /// `core.mem.drop` の呼び出しか (値を受け取って消費する組み込み)。
+    fn is_drop_fn(&self, segs: &[String]) -> bool {
+        if segs.len() < 2 {
+            return false;
+        }
+        let Some(r) = self.p.resolve(segs, &self.file) else { return false };
+        match r.target {
+            Target::Fn(i) | Target::Sig(i) => r.rest.is_empty() && self.p.defs[i].name == "core.mem.drop",
+            _ => false,
+        }
+    }
+
     /// 名前 `name` のメソッドが、レシーバを借りた結果を返すか。(借りるなら `self` が可変か)
     fn method_borrows(&self, name: &str) -> Option<bool> {
         let cands = self.p.method_idx.get(name)?;
@@ -154,10 +186,14 @@ impl<'a> Low<'a> {
                     return vec![];
                 }
                 let operand = &nf(e)[1];
-                // 再借用 `&mut *r` は r の借用を引き継ぐ
+                // 再借用 `&mut *r` は r の借用を引き継ぐ。`&mut *s.f` なら、s.f に保存された借用も読み戻す。
                 if nname(operand) == "Unary" && st(&nf(operand)[0]) == "*" {
-                    if let Some((root, _)) = self.place_of(&nf(operand)[1]) {
-                        return vec![Src::Alias(root)];
+                    if let Some((root, path)) = self.place_of(&nf(operand)[1]) {
+                        let mut out = vec![Src::Alias(root.clone())];
+                        if !path.is_empty() {
+                            out.push(Src::Stored { root, path });
+                        }
+                        return out;
                     }
                 }
                 match self.place_of(operand) {
@@ -167,8 +203,23 @@ impl<'a> Low<'a> {
             }
             "Path" => {
                 let segs = strs(&nf(e)[0]);
-                if segs.len() == 1 && self.locals.contains(&segs[0]) { vec![Src::Alias(segs[0].clone())] } else { vec![] }
+                if segs.len() == 1 && self.locals.contains(&segs[0]) {
+                    // 変数そのものの引き継ぎに加えて、変数に保存された借用 (コンテナなど) も読み戻す。
+                    vec![Src::Alias(segs[0].clone()), Src::Stored { root: segs[0].clone(), path: vec![] }]
+                } else if segs.len() >= 2 && self.locals.contains(&segs[0]) {
+                    // `s.f` は 1 つの Path (複数セグメント) として構文解析される。道の先の読み戻し。
+                    vec![Src::Stored { root: segs[0].clone(), path: segs[1..].to_vec() }]
+                } else {
+                    vec![]
+                }
             }
+            "Field" | "Index" => match self.place_of(e) {
+                // 場所の値を束縛に移す。保存された借用があれば、それも読み戻す。
+                Some((root, path)) if !path.is_empty() || nname(e) == "Index" => {
+                    vec![Src::Stored { root, path }]
+                }
+                _ => vec![],
+            },
             "Try" => self.loan_sources(&nf(e)[0]),
             "MCall" => {
                 let name = st(&nf(e)[1]);
@@ -191,7 +242,10 @@ impl<'a> Low<'a> {
                     }
                     let recv_segs = segs[..segs.len() - 1].to_vec();
                     return match self.method_borrows(&name) {
-                        Some(m) => vec![Src::Place { root: recv_segs[0].clone(), path: recv_segs[1..].to_vec(), mutable: m }],
+                        Some(m) => vec![
+                            Src::Place { root: recv_segs[0].clone(), path: recv_segs[1..].to_vec(), mutable: m },
+                            Src::Stored { root: recv_segs[0].clone(), path: recv_segs[1..].to_vec() },
+                        ],
                         None => vec![],
                     };
                 }
@@ -224,7 +278,11 @@ impl<'a> Low<'a> {
     fn method_sources(&self, recv: &V, name: &str) -> Vec<Src> {
         let Some(m) = self.method_borrows(name) else { return vec![] };
         match self.place_of(recv) {
-            Some((root, path)) => vec![Src::Place { root, path, mutable: m }],
+            Some((root, path)) => {
+                // レシーバを借りた新しい借用に加えて、レシーバの中に保存された借用も読み戻す
+                // (`v.push(&x)` のあとの `v.first().unwrap()`)。
+                vec![Src::Place { root: root.clone(), path: path.clone(), mutable: m }, Src::Stored { root, path }]
+            }
             None => {
                 // `v.iter().rev()` のように、借用を返す呼び出しの連なり
                 if matches!(nname(recv), "MCall") { self.loan_sources(recv) } else { vec![] }
@@ -233,20 +291,60 @@ impl<'a> Low<'a> {
     }
 
     /// `holder` が `srcs` の借用を持つようにする事象を出す。
-    fn hold(&mut self, n: usize, holder: &str, srcs: Vec<Src>) {
+    fn hold(&mut self, n: usize, holder: Holder, srcs: Vec<Src>) {
         for s in srcs {
             match s {
                 Src::Place { root, path, mutable } => {
                     let id = self.loans.len();
                     self.loans.push(LoanInfo { root, path, mutable });
-                    self.emit(n, Ev::Loan { holder: holder.to_string(), id });
+                    self.emit(n, Ev::Loan { holder: holder.clone(), id });
                 }
                 Src::Alias(from) => {
-                    if from != holder {
-                        self.emit(n, Ev::Alias { to: holder.to_string(), from });
+                    if Holder::Var(from.clone()) != holder {
+                        self.emit(n, Ev::Alias { to: holder.clone(), from: Holder::Var(from) });
                     }
                 }
+                Src::Stored { root, path } => {
+                    self.emit(n, Ev::Load { to: holder.clone(), from_root: root, from_path: path });
+                }
             }
+        }
+    }
+
+    /// 構造体リテラルの各フィールドに入る借用を、`root` の `base` 道の先に保存された
+    /// ローンとして記録する (`let s = t.S { f: &mut x }`、`s.f = t.S { g: &x }`)。
+    fn store_struct_lit(&mut self, n: usize, root: &str, base: &[String], lit: &V) {
+        for fld in items(&nf(lit)[1]) {
+            let it = items(fld);
+            if it.len() < 2 {
+                continue;
+            }
+            let mut p = base.to_vec();
+            p.push(st(&it[0]));
+            if nname(&it[1]) == "StructLit" {
+                let q = p.clone();
+                self.store_struct_lit(n, root, &q, &it[1]);
+                continue;
+            }
+            let srcs = self.loan_sources(&it[1]);
+            if !srcs.is_empty() {
+                self.hold(n, Holder::Place { root: root.to_string(), path: p }, srcs);
+            }
+        }
+    }
+
+    /// `push` / `insert` など、コンテナに値を入れるメソッド。値の式に入る借用を、
+    /// レシーバの場所 (根の変数 + 道) に保存されたローンとして記録する。
+    fn store_into(&mut self, n: usize, name: &str, root: &str, path: &[String], args: &[V]) {
+        let slot = match name {
+            "push" | "push_back" | "push_front" => 0,
+            "insert" => 1,
+            _ => return,
+        };
+        let Some(a) = args.get(slot) else { return };
+        let srcs = self.loan_sources(a);
+        if !srcs.is_empty() {
+            self.hold(n, Holder::Place { root: root.to_string(), path: path.to_vec() }, srcs);
         }
     }
 
@@ -275,7 +373,14 @@ impl<'a> Low<'a> {
                     if k == 0 && !srcs.is_empty() {
                         // 借用の出どころは、束縛が 1 つのときだけ (`let r = &x`)
                         let srcs2 = self.loan_sources(init);
-                        self.hold(c, b, srcs2);
+                        self.hold(c, Holder::Var(b.clone()), srcs2);
+                    }
+                }
+                // 構造体リテラルのフィールドに入る借用は、保存場所 (変数 + フィールド道) に記録する。
+                // 変数に直接持たせないのは、`s.f = ...` の上書きでローンを殺せるようにするため。
+                if nname(init) == "StructLit" && nname(&f[0]) == "PBind" {
+                    if let Some(b) = binds.first() {
+                        self.store_struct_lit(c, b, &[], init);
                     }
                 }
                 c
@@ -289,9 +394,13 @@ impl<'a> Low<'a> {
                     // `r = &y`: 古い借用はここで手放す (NLL)。新しい借用を持つ。
                     let srcs = self.loan_sources(&f[1]);
                     self.emit(c, Ev::Def(name.clone()));
-                    self.hold(c, &name, srcs);
+                    self.hold(c, Holder::Var(name.clone()), srcs);
                     // 値の代入そのものも、その変数への書き込み
-                    self.emit(c, Ev::Access { root: name, path: vec![], kind: Acc::Write, line: nline(s) });
+                    self.emit(c, Ev::Access { root: name.clone(), path: vec![], kind: Acc::Write, line: nline(s) });
+                    // `s = t.S { f: &mut y }` のように、構造体ごと新しい借用を保存することもある。
+                    if nname(&f[1]) == "StructLit" {
+                        self.store_struct_lit(c, &name, &[], &f[1]);
+                    }
                     return c;
                 }
                 // `*r = v` は r を使うだけ。`s.f = v` / `v[i] = x` は根の変数への書き込み。
@@ -301,7 +410,15 @@ impl<'a> Low<'a> {
                 let c = self.lower_index_parts(target, c);
                 if let Some((root, path)) = self.place_of(target) {
                     self.emit(c, Ev::Use(root.clone()));
-                    self.emit(c, Ev::Access { root, path, kind: Acc::Write, line: nline(s) });
+                    self.emit(c, Ev::Access { root: root.clone(), path: path.clone(), kind: Acc::Write, line: nline(s) });
+                    // 借用を場所に保存する (`s.f = &mut x` / `v[i] = &x`)。上書きなので、
+                    // 前に保存されていたローンは上の Access (書き込み) で死ぬ。
+                    let srcs = self.loan_sources(&f[1]);
+                    if !srcs.is_empty() {
+                        self.hold(c, Holder::Place { root, path }, srcs);
+                    } else if nname(&f[1]) == "StructLit" {
+                        self.store_struct_lit(c, &root, &path, &f[1]);
+                    }
                 }
                 c
             }
@@ -424,7 +541,7 @@ impl<'a> Low<'a> {
                 self.iters += 1;
                 let srcs = self.loan_sources(&f[1]);
                 self.emit(c, Ev::Def(holder.clone()));
-                self.hold(c, &holder, srcs);
+                self.hold(c, Holder::Var(holder.clone()), srcs);
                 let head = self.new_node();
                 self.edge(c, head);
                 self.emit(head, Ev::Use(holder.clone()));
@@ -436,7 +553,7 @@ impl<'a> Low<'a> {
                 for b in &binds {
                     self.emit(body, Ev::Def(b.clone()));
                     let srcs = self.loan_sources(&f[1]);
-                    self.hold(body, b, srcs);
+                    self.hold(body, Holder::Var(b.clone()), srcs);
                 }
                 self.loops.push((head, exit));
                 let end = self.lower_block(&f[2], body);
@@ -460,7 +577,7 @@ impl<'a> Low<'a> {
                     for b in &binds {
                         self.emit(an, Ev::Def(b.clone()));
                         let srcs = self.loan_sources(&f[0]);
-                        self.hold(an, b, srcs);
+                        self.hold(an, Holder::Var(b.clone()), srcs);
                     }
                     let end = self.lower_block(&a[1], an);
                     self.edge(end, join);
@@ -530,7 +647,8 @@ impl<'a> Low<'a> {
                         let root = segs[0].clone();
                         let path = segs[1..segs.len() - 1].to_vec();
                         self.emit(c, Ev::Use(root.clone()));
-                        self.emit(c, Ev::Access { root, path, kind, line: nline(e) });
+                        self.emit(c, Ev::Access { root: root.clone(), path: path.clone(), kind, line: nline(e) });
+                        self.store_into(c, &name, &root, &path, args);
                         return c;
                     }
                     if segs.len() == 1 && self.locals.contains(&segs[0]) {
@@ -542,6 +660,14 @@ impl<'a> Low<'a> {
                 let mut c = cur;
                 for a in args {
                     c = self.lower_expr(a, c);
+                }
+                // `core.mem.drop(p)`: 場所の値を消費する。そこに保存された借用はここで死ぬ。
+                if nname(callee) == "Path" && self.is_drop_fn(&strs(&nf(callee)[0])) {
+                    if let Some(arg) = args.first() {
+                        if let Some((root, path)) = self.place_of(arg) {
+                            self.emit(c, Ev::Kill { root, path });
+                        }
+                    }
                 }
                 c
             }
@@ -559,6 +685,10 @@ impl<'a> Low<'a> {
                         _ => Acc::Read,
                     };
                     self.access(c, recv, kind);
+                    // `v.push(&x)` / `m.insert(k, &x)`: レシーバの中に借用を保存する。
+                    if let Some((root, path)) = self.place_of(recv) {
+                        self.store_into(c, &name, &root, &path, args);
+                    }
                     return c;
                 }
                 let mut c = self.lower_expr(recv, cur);
@@ -668,23 +798,48 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
             break;
         }
     }
-    // ---- 前向き: どの変数がどの借用を持つか
-    type State = BTreeMap<String, BTreeSet<usize>>;
+    // ---- 前向き: どの変数・場所がどの借用を持つか
+    type State = BTreeMap<Holder, BTreeSet<usize>>;
     let mut state_in: Vec<Option<State>> = vec![None; n];
     state_in[0] = Some(State::new());
     let mut work: VecDeque<usize> = VecDeque::new();
     work.push_back(0);
     let apply = |st_: &mut State, ev: &Ev| match ev {
         Ev::Loan { holder, id } => {
-            // 同じ変数が複数の借用を持つこともある (`match` の被検査式など) ので、既存に足す。
+            // 同じ変数・場所が複数の借用を持つこともある (`match` の被検査式など) ので、既存に足す。
             st_.entry(holder.clone()).or_default().insert(*id);
         }
         Ev::Alias { to, from } => {
             let src = st_.get(from).cloned().unwrap_or_default();
             st_.entry(to.clone()).or_default().extend(src);
         }
+        Ev::Load { to, from_root, from_path } => {
+            // 保存場所から読み戻す。保存されていたローンは読んだ側へ移る (move の近似。
+            // 実際はコピーでも、消えるのは見落としでしかない)。
+            let key = Holder::Place { root: from_root.clone(), path: from_path.clone() };
+            if let Some(src) = st_.remove(&key) {
+                st_.entry(to.clone()).or_default().extend(src);
+            }
+        }
+        Ev::Kill { root, path } => kill_stored(st_, root, path),
         Ev::Def(v) => {
-            st_.remove(v);
+            st_.remove(&Holder::Var(v.clone()));
+            // 根の変数の再代入 (`v = ...`) で、その中に保存されたローンはすべて死ぬ。
+            let dead: Vec<Holder> = st_
+                .keys()
+                .filter(|h| matches!(h, Holder::Place { root, .. } if root == v))
+                .cloned()
+                .collect();
+            for h in dead {
+                st_.remove(&h);
+            }
+        }
+        Ev::Access { root, path, kind, .. } => {
+            // 場所への上書き・`&mut` で、そこに保存されたローンは死ぬ。型が分からないので広めに殺す:
+            // `v.push` のような要素を残す操作でも一度殺す (見落としはあっても、誤検出は出さない)。
+            if matches!(kind, Acc::Write | Acc::MutB) {
+                kill_stored(st_, root, path);
+            }
         }
         _ => {}
     };
@@ -741,7 +896,12 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
         for (k, ev) in node.evs.iter().enumerate() {
             if let Ev::Access { root, path, kind, line } = ev {
                 for (holder, ids) in &stt {
-                    if !live_after[k].contains(holder) {
+                    // 変数のローンは変数が、保存場所のローンは根の変数が生きている間だけ競合する。
+                    let live = match holder {
+                        Holder::Var(v) => live_after[k].contains(v),
+                        Holder::Place { root: r, .. } => live_after[k].contains(r),
+                    };
+                    if !live {
                         continue;
                     }
                     for &id in ids {
@@ -749,7 +909,11 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                         if &l.root != root || !overlaps(&l.path, path) {
                             continue;
                         }
-                        let who = if holder.starts_with("$iter") { "the loop iterator".to_string() } else { format!("`{}`", holder) };
+                        let who = match holder {
+                            Holder::Var(v) if v.starts_with("$iter") => "the loop iterator".to_string(),
+                            Holder::Var(v) => format!("`{}`", v),
+                            Holder::Place { root: r, path: p } => format!("`{}`", place_name(r, p)),
+                        };
                         if l.mutable {
                             out.push((*line, format!("cannot use `{}` while it is mutably borrowed by {}", root, who)));
                         } else if matches!(kind, Acc::Write | Acc::MutB) {
@@ -762,4 +926,30 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
         }
     }
     out
+}
+
+/// 場所 (root + path) への上書きで死ぬ保存ローンを取り除く。道が重なる (どちらかが他方の接頭辞の)
+/// 保存場所をすべて殺す。`v = ...` のような根の再代入は `Def` が、`v[0] = ...` は `Access` が来る。
+fn kill_stored(st: &mut BTreeMap<Holder, BTreeSet<usize>>, root: &str, path: &[String]) {
+    let dead: Vec<Holder> = st
+        .keys()
+        .filter(|h| match h {
+            Holder::Place { root: r, path: p } => r == root && overlaps(p, path),
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    for h in dead {
+        st.remove(&h);
+    }
+}
+
+/// 場所の表示 (`s.f`、コンテナなら `v`)。
+fn place_name(root: &str, path: &[String]) -> String {
+    let mut s = root.to_string();
+    for p in path {
+        s.push('.');
+        s.push_str(p);
+    }
+    s
 }
