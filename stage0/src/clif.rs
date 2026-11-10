@@ -765,6 +765,7 @@ impl<'a> Cx<'a> {
                 "is_empty" | "contains_key" => Some("bool".into()),
                 "clear" => Some("void".into()),
                 "get" | "remove" => self.builtin_enum("Option", &[v]).ok(),
+                "get_mut" if is_scalar(&v) && !is_mutref(&v) => self.builtin_enum("Option", &[format!("mutref<{}>", v)]).ok(),
                 "insert" => {
                     let o = self.builtin_enum("Option", &[v]).ok()?;
                     self.builtin_enum("Result", &[o, "alloc.alloc.AllocError".into()]).ok()
@@ -976,6 +977,8 @@ enum Src {
     Custom(V),
     /// (列の式, `iter_mut` か)
     Seq(V, bool),
+    /// マップの `iter()`: 要素は `(K, V)` の組の値 (保存されている順)。
+    Map(V),
 }
 
 /// イテレータの中間の段。
@@ -2675,7 +2678,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             return Some(Pipe { src: Src::Chars(nf(it)[0].clone()), stages: vec![] });
         }
         if nname(it) == "MCall" && matches!(st(&nf(it)[1]).as_str(), "iter" | "iter_mut") && items(&nf(it)[2]).is_empty() {
-            return Some(Pipe { src: Src::Seq(nf(it)[0].clone(), st(&nf(it)[1]) == "iter_mut"), stages: vec![] });
+            let recv = nf(it)[0].clone();
+            // マップの `iter()` は、保存されている組の列を順に見る (`BtreeMap` は挿入時にキー順を保つ)。
+            if self.ty_of(&recv, env, None).map_or(false, |t| self.cx.map_info(&t).is_some()) {
+                return Some(Pipe { src: Src::Map(recv), stages: vec![] });
+            }
+            return Some(Pipe { src: Src::Seq(recv, st(&nf(it)[1]) == "iter_mut"), stages: vec![] });
         }
         // 配列リテラルやスライスの値そのもの (`for x in [a, b, c]`)
         let t = self.ty_of(it, env, None)?;
@@ -2846,6 +2854,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let mut custom: Option<(Value, String, String)> = None;
         // `chars()`: (文字列の先頭アドレス, 1 文字ぶん進める幅を入れる変数)
         let mut chars_state: Option<(Value, Variable)> = None;
+        // マップの `iter()`: (先頭アドレス, キーの型, 値の型, キーのオフセット, 値のオフセット, 組の大きさ)
+        let mut map_state: Option<(Value, String, String, i64, i64, i64)> = None;
         match &pipe.src {
             Src::Chars(e) => {
                 let (sp, sty) = self.expr(e, env, None)?;
@@ -2908,6 +2918,22 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 limit = len;
                 item_ty = elem.clone();
                 elem_info = Some((base, len, elem, *by_mut));
+            }
+            Src::Map(e) => {
+                let (sp, sty) = self.expr(e, env, None)?;
+                let sp = sp.ok_or("bad iterable")?;
+                let (_sorted, kty, vty) = self.cx.map_info(&sty).ok_or("iteration over a non-map")?;
+                let tup = self.cx.tuple_of(&[kty.clone(), vty.clone()]);
+                let l = self.cx.layout(&tup, 0)?;
+                let (koff, voff, stride) = (l.fields[0].2 as i64, l.fields[1].2 as i64, l.size as i64);
+                let base = self.b.ins().load(pt, MemFlags::new(), sp, 0);
+                let len = self.b.ins().load(i64t, MemFlags::new(), sp, 8);
+                index_ty = i64t;
+                start = self.b.ins().iconst(i64t, 0);
+                limit = len;
+                item_ty = tup;
+                elem_info = None;
+                map_state = Some((base, kty, vty, koff, voff, stride));
             }
         }
         self.b.append_block_param(head, index_ty);
@@ -3021,6 +3047,24 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let (ity, ioff) = l.variants[1].1[0].clone();
                 let addr = self.b.ins().iadd_imm(res, ioff as i64);
                 (self.load_value(addr, &ity), ity)
+            }
+            None if map_state.is_some() => {
+                // マップの組を 1 つ読み、`(K, V)` の組を作る (値はコピー)。
+                let (base, kty, vty, koff, voff, stride) = map_state.clone().ok_or("map iterator state")?;
+                let off = self.b.ins().imul_imm(i, stride);
+                let ea = self.b.ins().iadd(base, off);
+                let tname = self.cx.tuple_of(&[kty.clone(), vty.clone()]);
+                let l = self.cx.layout(&tname, 0)?;
+                let slot = self.alloc(l.size, l.align);
+                let ka = self.b.ins().iadd_imm(ea, koff);
+                let kv = self.load_value(ka, &kty);
+                let kd = self.b.ins().iadd_imm(slot, l.fields[0].2 as i64);
+                self.store_value(kd, &kty, kv)?;
+                let va = self.b.ins().iadd_imm(ea, voff);
+                let vv = self.load_value(va, &vty);
+                let vd = self.b.ins().iadd_imm(slot, l.fields[1].2 as i64);
+                self.store_value(vd, &vty, vv)?;
+                (slot, tname)
             }
             None => (i, item_ty.clone()),
             Some((base, _, elem, by_mut)) => {
@@ -4877,7 +4921,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.ins().store(MemFlags::new(), z, p, 8);
                 return Ok((None, "void".into()));
             }
-            "contains_key" | "get" | "remove" | "insert" => {}
+            "contains_key" | "get" | "remove" | "get_mut" | "insert" => {}
             _ => return Err(format!("map method {}", name)),
         }
         let key_arg = args.first().ok_or("map method needs a key")?;
@@ -4889,8 +4933,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let (found, idx) = self.map_find(p, &kty, key, koff, stride);
         match name {
             "contains_key" => Ok((Some(found), "bool".into())),
-            "get" | "remove" => {
-                let rty = self.cx.builtin_enum("Option", &[vty.clone()])?;
+            "get" | "remove" | "get_mut" => {
+                // `get_mut` は `Option<&mut V>` を返す。値がスカラーのときだけ、そのアドレスを持ち回る。
+                if name == "get_mut" && !(is_scalar(&vty) && !is_mutref(&vty)) {
+                    return Err("get_mut on this map value type".into());
+                }
+                let pay_ty = if name == "get_mut" { format!("mutref<{}>", vty) } else { vty.clone() };
+                let rty = self.cx.builtin_enum("Option", &[pay_ty])?;
                 let l = self.cx.layout(&rty, 0)?;
                 let res = self.alloc(l.size, l.align);
                 let (yes, no, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
@@ -4904,10 +4953,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let off = self.b.ins().imul_imm(idx, stride);
                 let ea = self.b.ins().iadd(base, off);
                 let va = self.b.ins().iadd_imm(ea, voff);
-                let v = self.load_value(va, &vty);
                 let poff = l.variants[1].1[0].1 as i64;
                 let dst = self.b.ins().iadd_imm(res, poff);
-                self.store_value(dst, &vty, v)?;
+                if name == "get_mut" {
+                    self.b.ins().store(MemFlags::new(), va, dst, 0);
+                } else {
+                    let v = self.load_value(va, &vty);
+                    self.store_value(dst, &vty, v)?;
+                }
                 if name == "remove" {
                     let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
                     let after = self.b.ins().isub(len, idx);

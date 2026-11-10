@@ -2994,6 +2994,98 @@ fn a_wrong_map_lookup_in_a_cranelift_executable_fails_the_check() {
     assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
 }
 
+/// `HashMap` / `BtreeMap` の `get_mut` (返り値の参照からの読み書き) と、`HashMap.iter` の挿入順。
+/// `BtreeMap.iter` は仕様 (`spec/stdlib/alloc/collections.sig`) に無く、`ksn check` が E1108 で弾くので含めない。
+fn clif_map_methods_program() -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
+        "    match m.insert(3u32, 30u32) {",
+        "        Ok(_o) => 0u8",
+        "        Err(_e) => 1u8",
+        "    }",
+        "    match m.insert(1u32, 10u32) {",
+        "        Ok(_o) => 0u8",
+        "        Err(_e) => 1u8",
+        "    }",
+        "    match m.insert(2u32, 20u32) {",
+        "        Ok(_o) => 0u8",
+        "        Err(_e) => 1u8",
+        "    }",
+        "    let mut vseq = 0u32",
+        "    let mut kseq = 0u32",
+        "    for (k, v) in m.iter() {",
+        "        vseq = vseq.wrapping_mul(100u32).wrapping_add(*v)",
+        "        kseq = kseq.wrapping_mul(10u32).wrapping_add(*k)",
+        "    }",
+        "    core.check.eq(vseq, 301020u32)",
+        "    core.check.eq(kseq, 312u32)",
+        "    match m.get_mut(1u32) {",
+        "        Some(r) => {",
+        "            *r = 111u32",
+        "        }",
+        "        None => {",
+        "            core.check.eq(true, false)",
+        "        }",
+        "    }",
+        "    core.check.eq(m.get(1u32), Some(111u32))",
+        "    core.check.eq(m.get_mut(9u32).is_none(), true)",
+        "    let mut b = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)",
+        "    match b.insert(3u32, 30u32) {",
+        "        Ok(_o) => 0u8",
+        "        Err(_e) => 1u8",
+        "    }",
+        "    match b.insert(1u32, 10u32) {",
+        "        Ok(_o) => 0u8",
+        "        Err(_e) => 1u8",
+        "    }",
+        "    match b.insert(2u32, 20u32) {",
+        "        Ok(_o) => 0u8",
+        "        Err(_e) => 1u8",
+        "    }",
+        "    match b.get_mut(2u32) {",
+        "        Some(r) => {",
+        "            *r = 222u32",
+        "        }",
+        "        None => {",
+        "            core.check.eq(true, false)",
+        "        }",
+        "    }",
+        "    core.check.eq(b.get(2u32), Some(222u32))",
+        "    core.check.eq(b.get_mut(8u32).is_none(), true)",
+        "    std.io.print_line(\"map methods ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_map_get_mut_and_hashmap_iter() {
+    let t = Tmp::new("clif_map_meth", &clif_map_methods_program());
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    for release in [false, true] {
+        let cache = std::env::temp_dir().join(format!("ksn_cache_mapmeth_{}_{}", std::process::id(), release));
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "clif"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+        if release {
+            c.arg("--release");
+        }
+        let o = c.output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        let kind = if release { "release" } else { "debug" };
+        let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+        assert!(p.exists(), "native executable missing: {}", out);
+        let r = Command::new(&p).output().unwrap();
+        assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ ({})", kind);
+        let _ = fs::remove_dir_all(&cache);
+    }
+}
+
 #[test]
 fn the_features_example_runs_natively_through_cranelift() {
     let d = root().join("examples").join("features");
