@@ -4,13 +4,24 @@
 """
 
 
+def _target(name, cases):
+    """テストの対象FQN (3.2)。本体が最初に参照する `bench.<名前>` を使い、
+    無ければ課題名から作る。`test` の対象FQNは存在する定義でなければならない。"""
+    import re
+
+    body = "\n".join(l for _, lines in cases for l in lines)
+    m = re.search(r"\bbench\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", body)
+    return ".".join(m.group(0).split(".")[:2]) if m else f"bench.{name}"
+
+
 def t(name, cases):
     """test 定義を作る。cases は (テスト名, [本体の行]) の配列。"""
+    tg = _target(name, cases)
     out = []
     for n, lines in cases:
-        out.append(f"test bench.{name}.test_{n}")
+        out.append(f"test {tg}.test_{n}")
         out.extend(f"    {l}" for l in lines)
-        out.append(f"end bench.{name}.test_{n}")
+        out.append(f"end {tg}.test_{n}")
         out.append("")
     return "\n".join(out)
 
