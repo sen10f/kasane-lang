@@ -382,6 +382,21 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let tgt = impl_target(&d.impl_for);
+            // 4.3 (3.2): 孤児規則 — `impl Tr for T` は、Tr と T のどちらかがこのパッケージ内で
+            // 定義されたもののときだけ置ける。impl の置き場所自体が不正なときは、ここで報告して
+            // メソッドの過不足 (E1112) は見ない (メソッドを置ける場所がそもそも無いので E1112 では直せない)。
+            if self.orphan_violation(d, &tb, &tgt) {
+                self.diag(
+                    "E2043",
+                    format!(
+                        "impl {} for {} violates the orphan rule: neither the trait nor the type is defined in this package (3.2)",
+                        tb, tgt
+                    ),
+                    i,
+                    0,
+                );
+                continue;
+            }
             let owner = prim_owner(&tgt);
             let alt_owner = format!("{}.{}", tb, tgt.rsplit('.').next().unwrap_or(""));
             if !seen.insert((tb.clone(), tgt.clone())) {
@@ -425,6 +440,38 @@ impl<'a> Checker<'a> {
                     0,
                 );
             }
+        }
+    }
+
+    /// 4.3 (3.2): 孤児規則。`impl Tr for T` は、Tr と T のどちらか一方がこのパッケージ内で
+    /// 定義されたもののときだけ許される。対象が型パラメータ (blanket impl) のとき、名前が
+    /// 未解決のとき、名義型・基本型以外の対象 (参照・スライス・タプル・fn 型) のときは黙る (誤検出厳禁)。
+    fn orphan_violation(&self, d: &Def, tb: &str, tgt: &str) -> bool {
+        let Some(&ti) = self.p.types.get(tb) else { return false };
+        let td = self.def(ti);
+        if td.kw != "trait" {
+            return false; // トレイトでない名前はここでは扱わない。
+        }
+        if self.user.contains(&ti) {
+            return false; // このパッケージのトレイトなら常に許す。
+        }
+        // 対象が型パラメータ (blanket impl) なら黙る。
+        if d.gnames().contains(tgt) {
+            return false;
+        }
+        // 対象の形: 名義型と基本型だけが impl の対象。それ以外の形は黙る。
+        match tag(&d.impl_for).as_str() {
+            "prim" => return true, // 基本型はユーザーパッケージでは定義できない
+            "named" => {}
+            _ => return false,
+        }
+        match self.p.types.get(tgt) {
+            // このパッケージの名義型なら許す。
+            Some(&j) if self.user.contains(&j) && matches!(self.def(j).kw.as_str(), "type" | "enum") => false,
+            // 部外の型 (標準ライブラリ・依存パッケージ)。トレイトも部外なので違反。
+            Some(_) => true,
+            // 未解決の名前。
+            None => false,
         }
     }
 
@@ -909,27 +956,6 @@ impl<'a> Checker<'a> {
     }
 
     // ---- dyn 安全性 (5.1)
-    /// `dyn Tr` のトレイト名を trait 定義の FQN に解決する。曖昧・未定義なら None (黙る)。
-    fn resolve_trait_name(&self, nm: &str) -> Option<String> {
-        if let Some(&i) = self.p.types.get(nm) {
-            let d = &self.p.defs[i];
-            return if d.kw == "trait" { Some(d.name.clone()) } else { None };
-        }
-        if !nm.contains('.') {
-            let mut found: Option<String> = None;
-            for d in &self.p.defs {
-                if d.kw == "trait" && (d.name == nm || d.name.ends_with(&format!(".{}", nm))) {
-                    if found.is_some() {
-                        return None; // 曖昧なので黙る。
-                    }
-                    found = Some(d.name.clone());
-                }
-            }
-            return found;
-        }
-        None
-    }
-
     fn trait_def(&self, name: &str) -> Option<&'a Def> {
         let &i = self.p.types.get(name)?;
         let d = &self.p.defs[i];
@@ -947,7 +973,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let nm = st(&f[0]);
-        let Some(base) = self.resolve_trait_name(&nm) else { return };
+        let Some(base) = resolve_trait_fqn(self.p, &nm) else { return };
         let mut problems = Vec::new();
         let mut seen = HashSet::new();
         self.dyn_problems(&base, &mut seen, &mut problems);
@@ -986,7 +1012,7 @@ impl<'a> Checker<'a> {
             if items(args).iter().any(ty_has_self) {
                 out.push(format!("{} requires Self in a supertrait argument", tr));
             }
-            if let Some(sup) = self.resolve_trait_name(base) {
+            if let Some(sup) = resolve_trait_fqn(self.p, base) {
                 self.dyn_problems(&sup, seen, out);
             }
         }
@@ -2427,6 +2453,28 @@ fn is_self_ty(t: &V) -> bool {
         "ref" => tag(tel(t, 2)) == "self",
         _ => false,
     }
+}
+
+/// トレイト名 (`dyn Tr` の `Tr`、`requires` のスーパートレイト名など) を trait 定義の FQN に解決する。
+/// 曖昧・未定義なら None (黙る)。
+pub(crate) fn resolve_trait_fqn(p: &Program, nm: &str) -> Option<String> {
+    if let Some(&i) = p.types.get(nm) {
+        let d = &p.defs[i];
+        return if d.kw == "trait" { Some(d.name.clone()) } else { None };
+    }
+    if !nm.contains('.') {
+        let mut found: Option<String> = None;
+        for d in &p.defs {
+            if d.kw == "trait" && (d.name == nm || d.name.ends_with(&format!(".{}", nm))) {
+                if found.is_some() {
+                    return None; // 曖昧なので黙る。
+                }
+                found = Some(d.name.clone());
+            }
+        }
+        return found;
+    }
+    None
 }
 
 /// `impl .. for X` の対象型の基底名 (型引数を落とす)。
