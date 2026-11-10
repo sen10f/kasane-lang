@@ -1697,6 +1697,194 @@ fn the_stack_estimate_depends_on_the_size_of_the_locals() {
     assert!(got.iter().any(|c| c == "E4012"), "{}", out);
 }
 
+// ---- 間接呼び出しの候補計算 (5.3) ----
+
+/// `dyn` の候補計算のテストに使う前置き (型と impl 行。メソッドは各テストで渡す)。
+fn dyn_impl_prefix() -> String {
+    [
+        "type t.Circle",
+        "    r: u32",
+        "end t.Circle",
+        "",
+        "trait t.Shape",
+        "    fn area(self: &Self) -> u32 uses [] panics never",
+        "end t.Shape",
+        "",
+        "impl t.Shape for t.Circle",
+        "",
+    ]
+    .join(&char::from(10u8).to_string())
+}
+
+fn check_dyn_stack(name: &str, fns: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let src = format!("{}{}{}", dyn_impl_prefix(), fns.join(&nl), &nl);
+    let t = Tmp::new(name, &main_wrap(&src, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn recursion_through_a_dyn_object_requires_a_stack_declaration() {
+    // 5.3: `dyn` 越しの相互再帰は、impl を候補とした辺で E4010 になる。
+    let (got, out) = check_dyn_stack(
+        "dyn_rec",
+        &[
+            "fn t.Circle.area(self: &Self) -> u32 uses [] panics never impls t.Shape",
+            "    t.dispatch(self)",
+            "end t.Circle.area",
+            "",
+            "fn t.dispatch(s: &dyn t.Shape) -> u32 uses [] panics never",
+            "    s.area()",
+            "end t.dispatch",
+        ],
+    );
+    assert!(got.iter().any(|c| c == "E4010"), "{}", out);
+    assert!(out.contains("t.dispatch") && out.contains("t.Circle.area"), "{}", out);
+}
+
+#[test]
+fn a_non_recursive_dyn_call_rejects_the_stack_declaration() {
+    let (got, out) = check_dyn_stack(
+        "dyn_stk",
+        &[
+            "fn t.Circle.area(self: &Self) -> u32 uses [] panics never impls t.Shape",
+            "    1u32",
+            "end t.Circle.area",
+            "",
+            "fn t.dispatch(s: &dyn t.Shape) -> u32 uses [] panics never stack 256",
+            "    s.area()",
+            "end t.dispatch",
+        ],
+    );
+    assert!(got.iter().any(|c| c == "E4011"), "{}", out);
+    assert!(!got.iter().any(|c| c == "E4010"), "{}", out);
+}
+
+#[test]
+fn a_dyn_call_with_no_known_candidates_stays_silent() {
+    // トレイトの impl が無い (候補が計算できない) ときは、辺を足さないで黙る。
+    let nl = char::from(10u8).to_string();
+    let src = [
+        "trait t.Tr",
+        "    fn m(self: &Self) -> u32 uses [] panics never",
+        "end t.Tr",
+        "",
+        "fn t.a(h: &dyn t.Tr) -> u32 uses [] panics never",
+        "    h.m()",
+        "end t.a",
+        "",
+        "fn t.b(h: &dyn t.Tr) -> u32 uses [] panics never",
+        "    t.a(h)",
+        "end t.b",
+        "",
+    ]
+    .join(&nl);
+    let t = Tmp::new("dyn_noimpl", &main_wrap(&src, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(
+        !codes(&out).iter().any(|c| c == "E4010" || c == "E4011" || c == "E4012"),
+        "{}",
+        out
+    );
+}
+
+#[test]
+fn recursion_through_a_fn_bounded_parameter_requires_a_stack_declaration() {
+    // 5.3: `Fn` 境界のパラメータの呼び出しは、呼び出し箇所で渡されたクロージャを候補にする。
+    let nl = char::from(10u8).to_string();
+    let src = [
+        "fn t.gen[F: core.ops.Fn<(), (), [], never>](f: F) -> () uses [] panics never",
+        "    f.call(())",
+        "end t.gen",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [] panics never",
+        "    t.spin()",
+        "    Ok(())",
+        "end t.main",
+        "",
+        "fn t.spin() -> () uses [] panics never",
+        "    t.gen(fn() -> () capture [] {",
+        "        t.spin()",
+        "    })",
+        "end t.spin",
+        "",
+    ]
+    .join(&nl);
+    let t = Tmp::new("fn_rec", &main_wrap(&src, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E4010"), "{}", out);
+    assert!(out.contains("t.gen"), "{}", out);
+}
+
+#[test]
+fn a_trivial_closure_argument_keeps_the_generic_non_recursive() {
+    // 呼び出し先がパラメータを呼んでも、渡したクロージャが再帰しなければ E4010 にはならない。
+    let nl = char::from(10u8).to_string();
+    let mut src = [
+        "fn t.gen[F: core.ops.Fn<(), (), [], never>](f: F) -> () uses [] panics never",
+        "    f.call(())",
+        "end t.gen",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [] panics never",
+        "    t.gen(fn() -> () capture [] {",
+        "    })",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl);
+    let t = Tmp::new("fn_ok", &src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c.starts_with("E4")), "{}", out);
+    // 再帰しないのに `stack` を書くと E4011。
+    src = src.replace(
+        "fn t.gen[F: core.ops.Fn<(), (), [], never>](f: F) -> () uses [] panics never",
+        "fn t.gen[F: core.ops.Fn<(), (), [], never>](f: F) -> () uses [] panics never stack 64",
+    );
+    let t = Tmp::new("fn_ok_stk", &src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E4011"), "{}", out);
+}
+
+#[test]
+fn the_stack_estimate_covers_indirect_calls() {
+    // 見積りは `dyn` 越しの辺もたどる。小さすぎる宣言は E4012、十分なら出ない。
+    let (got, out) = check_dyn_stack(
+        "dyn_est",
+        &[
+            "fn t.Circle.area(self: &Self) -> u32 uses [] panics never stack 4096 impls t.Shape",
+            "    t.dispatch(self)",
+            "end t.Circle.area",
+            "",
+            "fn t.dispatch(s: &dyn t.Shape) -> u32 uses [] panics never stack 1",
+            "    s.area()",
+            "end t.dispatch",
+        ],
+    );
+    assert!(got.iter().any(|c| c == "E4012"), "{}", out);
+    assert!(!got.iter().any(|c| c == "E4010" || c == "E4011"), "{}", out);
+    let nl = char::from(10u8).to_string();
+    let src = format!(
+        "{}{}{}",
+        dyn_impl_prefix(),
+        [
+            "fn t.Circle.area(self: &Self) -> u32 uses [] panics never stack 4096 impls t.Shape",
+            "    t.dispatch(self)",
+            "end t.Circle.area",
+            "",
+            "fn t.dispatch(s: &dyn t.Shape) -> u32 uses [] panics never stack 4096",
+            "    s.area()",
+            "end t.dispatch",
+        ]
+        .join(&nl),
+        &nl
+    );
+    let t = Tmp::new("dyn_est_ok", &main_wrap(&src, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c.starts_with("E40")), "{}", out);
+}
+
 fn clif_program(last_check: &str) -> String {
     let nl = char::from(10u8).to_string();
     [
