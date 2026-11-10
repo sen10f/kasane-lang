@@ -2,22 +2,10 @@ type t.P pub
     a: u8
 end t.P
 
-type t.S pub
-    f: t.P
-    g: t.P
-end t.S
-
-fn t.take(p: t.P) -> () uses [] panics never
-    core.mem.drop(p)
-end t.take
-
-fn t.take_s(s: t.S) -> () uses [] panics never
-    core.mem.drop(s)
-end t.take_s
-
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
-    let s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }
-    t.take(s.f)
-    t.take_s(s)
+    let p = t.P { a: 1u8 }
+    let q = p
+    core.mem.drop(q)
+    core.mem.drop(p)
     Ok(())
 end t.main
