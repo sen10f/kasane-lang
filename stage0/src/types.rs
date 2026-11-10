@@ -157,6 +157,8 @@ pub struct TypeCk<'a> {
     mutable: HashSet<String>,
     /// 出てきたリテラル: (種類 "int"/"float", 綴り, 型, 行)
     lits: Vec<(&'static str, String, Ty, usize)>,
+    /// 式を置いた関数・クロージャの戻り値型の列 (`?` のエラー型の検査に使う)。
+    rets: Vec<Ty>,
     /// 呼び出しの辺 (呼び出し元の関数名 -> 呼び出し先の関数名)。型で解決できたメソッド呼び出しを含む。
     pub edges: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 }
@@ -177,7 +179,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], edges: Default::default() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default() }
     }
 
     fn def(&self) -> &'a Def {
@@ -206,11 +208,13 @@ impl<'a> TypeCk<'a> {
             // メソッド呼び出しでは境界のトレイトを引くために名前を残す。
             self.scopes[0].insert(n.clone(), ty);
         }
-        let value = self.infer(body);
-        let gn = d.gnames();
+        // `?` のエラー型の検査のため、この関数の戻り値型を覚える (クロージャはその注釈を重ねる)。
         let ret = subst_params_unknown(&from_v(&d.ret, &gn));
+        self.rets.push(ret.clone());
+        let value = self.infer(body);
+        self.rets.pop();
         if let Err(err) = self.unify2(&ret, &value) {
-            if let Some((want, got)) = self.prim_conflict(&err) {
+            if let Some((want, got)) = self.ann_conflict(&ret, &value, &err) {
                 let stmts = items(&nf(body)[0]);
                 let line = stmts.last().map(nline).unwrap_or(0);
                 self.diag("E2020", format!("type mismatch in return value: expected {}, found {}{}", want, got, conv_hint(&want, &got)), line);
@@ -796,10 +800,13 @@ impl<'a> TypeCk<'a> {
             }
             "Try" => {
                 let t = self.infer(&f[0]);
-                match self.deep(&t).strip() {
+                let inner = match self.deep(&t).strip() {
                     Ty::Named(n, a) if n == "Result" || n == "Option" => a.first().cloned().unwrap_or(Ty::Unknown),
                     _ => Ty::Unknown,
-                }
+                };
+                // 4.1: `?` はエラー型が完全一致するときだけ使える。
+                self.check_try_err(&t, nline(e));
+                inner
             }
             "Index" => {
                 let t = self.infer(&f[0]);
@@ -847,17 +854,35 @@ impl<'a> TypeCk<'a> {
             "StructLit" => {
                 let segs: Vec<String> = st(&f[0]).split('.').map(String::from).collect();
                 let fq = self.p.expand(&segs, &self.def().file).join(".");
-                let known = self.p.types.contains_key(&fq);
+                let td = self.type_def(&fq).filter(|td| td.kw == "type");
+                let Some(td) = td else {
+                    // 構造体が分からない (または type でない): フィールドの値の型は決められないので escape する。
+                    for x in items(&f[1]) {
+                        let vt = self.infer(&items(x)[1]);
+                        self.escape(&vt);
+                    }
+                    return if self.p.types.contains_key(&fq) { Ty::Named(fq, vec![]) } else { Ty::Unknown };
+                };
+                // ジェネリクスの型パラメータを新しい型変数にして、フィールドの宣言型と値の型を単一化する。
+                // 決まった型引数はリテラル式の型になり、以降のフィールド・メソッド検査に流れる。
+                let order: Vec<&String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| &g.1).collect();
+                let args: Vec<Ty> = order.iter().map(|_| self.fresh(0)).collect();
                 for x in items(&f[1]) {
                     let vt = self.infer(&items(x)[1]);
-                    let declared = if known {
-                        self.field_ty(&Ty::Named(fq.clone(), vec![]), &st(&items(x)[0]))
-                    } else {
-                        Ty::Unknown
-                    };
-                    let _ = self.unify2(&declared, &vt);
+                    let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone()), &st(&items(x)[0]));
+                    if let Err(err) = self.unify2(&declared, &vt) {
+                        if let Some((want, got)) = self.type_conflict(&err) {
+                            self.diag(
+                                "E2023",
+                                format!("field `{}` of `{}`: expected `{}`, found `{}`", st(&items(x)[0]), fq, want, got),
+                                nline(e),
+                            );
+                        }
+                    }
                 }
-                if known { Ty::Named(fq, vec![]) } else { Ty::Unknown }
+                // 型引数はここでは escape しない。あとから注釈や呼び出しで決まるかもしれない
+                // (決まらなかったリテラルは finish_literals が E2027 にする)。
+                Ty::Named(fq, args)
             }
             "TupleE" => {
                 let ts: Vec<Ty> = items(&f[0]).iter().map(|x| self.infer(x)).collect();
@@ -913,11 +938,14 @@ impl<'a> TypeCk<'a> {
                     self.bind(&st(&items(p)[0]), ty.clone());
                     args.push(ty);
                 }
-                let body = self.infer(&f[3]);
-                self.scopes.pop();
                 let ret = subst_params_unknown(&from_v(&f[1], &gn));
+                // クロージャの中の `?` は、クロージャの戻り値型のエラー型と比べる。
+                self.rets.push(ret.clone());
+                let body = self.infer(&f[3]);
+                self.rets.pop();
+                self.scopes.pop();
                 if let Err(err) = self.unify2(&ret, &body) {
-                    if let Some((want, got)) = self.prim_conflict(&err) {
+                    if let Some((want, got)) = self.ann_conflict(&ret, &body, &err) {
                         self.diag(
                             "E2020",
                             format!("type mismatch in return value of closure: expected {}, found {}{}", want, got, conv_hint(&want, &got)),
@@ -958,7 +986,7 @@ impl<'a> TypeCk<'a> {
                 let ty = if !is_nil(&f[2]) {
                     let ann = subst_params_unknown(&from_v(&f[2], &gn));
                     if let Err(err) = self.unify2(&ann, &rhs) {
-                        if let Some((want, got)) = self.prim_conflict(&err) {
+                        if let Some((want, got)) = self.ann_conflict(&ann, &rhs, &err) {
                             self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}{}", want, got, conv_hint(&want, &got)), nline(s));
                         }
                     }
@@ -1087,6 +1115,8 @@ impl<'a> TypeCk<'a> {
 
     fn call(&mut self, callee: &V, args: &[V], line: usize) -> Ty {
         let argt: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
+        // 構造体リテラルの引数: 従来の検査は型引数を見ないので、呼び出し側でも型引数の矛盾を見る。
+        let sl: Vec<bool> = args.iter().map(|a| nname(a) == "StructLit").collect();
         if nname(callee) != "Path" {
             // `fn(..) {..}(x)` のように、クロージャを直接呼ぶ形。
             let t = self.infer(callee);
@@ -1141,9 +1171,9 @@ impl<'a> TypeCk<'a> {
             }
             Target::Native(ref fq) | Target::Value(ref fq) if self.p.sigs.contains_key(fq) => {
                 let i = self.p.sigs[fq];
-                self.call_def(i, &argt, line)
+                self.call_def(i, &argt, line, &sl)
             }
-            Target::Fn(i) | Target::Sig(i) => self.call_def(i, &argt, line),
+            Target::Fn(i) | Target::Sig(i) => self.call_def(i, &argt, line, &sl),
             _ => {
                 argt.iter().for_each(|a| self.escape(a));
                 Ty::Unknown
@@ -1157,7 +1187,10 @@ impl<'a> TypeCk<'a> {
     /// 対応する引数の型がクロージャに決まるときは、境界の引数タプル・戻り値型・capture の能力を検査する。
     /// それ以外 (クロージャでない・型変数が解決しない) のときは従来どおり、この呼び出しに渡した
     /// リテラルなどの型変数は決まらなくてもエラーにしない (`escape`)。
-    fn call_def(&mut self, i: usize, argt: &[Ty], line: usize) -> Ty {
+    ///
+    /// `sl` は、各引数の式が構造体リテラルかどうか。従来の検査は構造体リテラルの型引数を見ない
+    /// (名前しか比べない) ので、同じ名前どうしの型引数の矛盾はここで報告する。
+    fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool]) -> Ty {
         let d = &self.p.defs[i];
         let caller = self.def().name.clone();
         self.edges.entry(caller).or_default().insert(d.name.clone());
@@ -1188,7 +1221,15 @@ impl<'a> TypeCk<'a> {
             let pt = self.inst(&raw, &mut map);
             if let Err(e) = self.unify2(&pt, a) {
                 // 型パラメータを含まない引数の型は従来の検査 (E2020) が見る。ここでは重複を避ける。
-                if raw.has_param() {
+                // ただし構造体リテラルの引数で、宣言と同じ型名どうしの矛盾 (型引数の違い) は、
+                // 従来の検査が名前しか比べないので黙る。ここでだけ報告する。
+                let pt = self.deep(&pt);
+                let av = self.deep(a);
+                let same_named = match (pt.strip(), av.strip()) {
+                    (Ty::Named(x, _), Ty::Named(y, _)) => x == y,
+                    _ => false,
+                };
+                if raw.has_param() || (sl.get(k).copied().unwrap_or(false) && same_named) {
                     if let Some((want, got)) = self.prim_conflict(&e) {
                         self.diag(
                             "E2023",
@@ -1332,6 +1373,73 @@ impl<'a> TypeCk<'a> {
             (Ty::Prim(a), Ty::Prim(b)) if a != b => Some((a.clone(), b.clone())),
             (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
             _ => None,
+        }
+    }
+
+    /// `let` の注釈・戻り値との矛盾を報告するときの 2 つの型の文字列。
+    ///
+    /// 従来の検査 (check.rs の `mismatch`) も同じ誤りを同じ文面で報告することがある。そのときは
+    /// check.rs の重複除去 (同じ file + code + fqn + 行 + 文面) で 1 件にまとめられるので、
+    /// ここでは文面を崩さない (プリミティブはそのまま、Named は名前だけ)。
+    /// ただし同じ型で型引数だけが違うとき (例: `W<u64>` と `W<u32>`) は従来の検査が名前しか
+    /// 見ないので報告されない。ここでだけ全体の形を示す。
+    fn ann_conflict(&self, want: &Ty, got: &Ty, err: &(Ty, Ty)) -> Option<(String, String)> {
+        let w = self.deep(want);
+        let g = self.deep(got);
+        if let (Ty::Named(n, xs), Ty::Named(m, ys)) = (w.strip(), g.strip()) {
+            if n == m && !xs.is_empty() && !ys.is_empty() && !xs.iter().any(|x| self.unresolved(x)) && !ys.iter().any(|x| self.unresolved(x)) {
+                let a = w.strip().clone();
+                let b = g.strip().clone();
+                if a.show() != b.show() {
+                    return Some((a.show(), b.show()));
+                }
+                return None;
+            }
+        }
+        match (&err.0, &err.1) {
+            (Ty::Prim(a), Ty::Prim(b)) => Some((a.clone(), b.clone())),
+            (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
+            _ => None,
+        }
+    }
+
+    /// 型の中に、まだ決まっていない型変数があれば true。推論が途切れた部分を含む型を
+    /// 全体の形として示しても役に立たないので、そのときは矛盾した箇所どうしを見せる。
+    fn unresolved(&self, t: &Ty) -> bool {
+        match self.deep(t) {
+            Ty::Var(_) => true,
+            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.unresolved(x)),
+            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.unresolved(&x),
+            Ty::Closure { args, ret, .. } => args.iter().any(|x| self.unresolved(x)) || self.unresolved(&ret),
+            _ => false,
+        }
+    }
+
+    /// 4.1: `?` はエラー型が完全一致するときだけ使える (変換は `map_err` 必須)。
+    /// `Result` のオペランドのエラー型を、式を置いた関数 (クロージャ) の戻り値型のエラー型と
+    /// 単一化して比べる。どちらかが分からないときは黙る。
+    fn check_try_err(&mut self, operand: &Ty, line: usize) {
+        let Some(want) = self.rets.last().cloned() else { return };
+        let want = self.deep(&want);
+        let Ty::Named(wn, wa) = want.strip() else { return };
+        if wn != "Result" || wa.len() < 2 {
+            return;
+        }
+        let got = self.deep(operand);
+        let Ty::Named(gn, ga) = got.strip() else { return };
+        if gn != "Result" || ga.len() < 2 {
+            return;
+        }
+        let e_want = wa[1].clone();
+        let e_got = ga[1].clone();
+        if let Err(err) = self.unify2(&e_want, &e_got) {
+            if let Some((w, g)) = self.prim_conflict(&err) {
+                self.diag(
+                    "E2020",
+                    format!("type mismatch in `?`: expected error type `{}`, found `{}`; the error type must match exactly, use `map_err`", w, g),
+                    line,
+                );
+            }
         }
     }
 
