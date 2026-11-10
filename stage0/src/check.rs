@@ -224,6 +224,7 @@ impl<'a> Checker<'a> {
             }
         }
         self.check_declarations();
+        self.check_layer_directions();
         self.check_impls();
         self.check_field_method();
         self.check_statics();
@@ -250,6 +251,13 @@ impl<'a> Checker<'a> {
                     let tys: Vec<V> = d.variants.iter().flat_map(|v| v.1.clone()).collect();
                     self.check_header_types(i, &tys);
                 }
+                // xref.py の ref (未知の型・トレイト参照) のうち、今まで見ていなかったヘッダ位置。
+                "extern" => {
+                    let mut tys: Vec<V> = d.params.iter().map(|p| p.1.clone()).collect();
+                    tys.push(d.ret.clone());
+                    self.check_header_types(i, &tys);
+                }
+                "trait" => self.check_trait_refs(i),
                 "impl" => {
                     let tr = d.impl_trait.clone();
                     if !self.p.types.contains_key(&tr) && tr != "core.marker.Send" && tr != "core.marker.Sync" {
@@ -322,6 +330,167 @@ impl<'a> Checker<'a> {
                             0,
                         ),
                     }
+                }
+            }
+            // 3.2: ジェネリクスのトレイト境界の名前が解決できるか (xref.py の ref の移植の一部)。
+            self.check_generic_bounds(i);
+        }
+    }
+
+    /// ジェネリクスのトレイト境界 (`[H: core.hash.Hasher]` など) のトレイト名が解決できるか
+    /// (xref.py の ref の移植の一部)。裸の名前は曖昧の可能性があるので黙る。
+    fn check_generic_bounds(&mut self, di: usize) {
+        let gs = self.def(di).generics.clone();
+        for (kind, _, bound) in &gs {
+            if kind != "type" {
+                continue;
+            }
+            for b in items(bound) {
+                let f = items(b);
+                if f.is_empty() {
+                    continue;
+                }
+                let base = st(&f[0]);
+                if base.contains('.') && !self.p.types.contains_key(&base) {
+                    self.diag("E1104", format!("unknown trait {}", base), di, 0);
+                }
+                if f.len() > 1 {
+                    self.check_dotted_types(di, &f[1]);
+                }
+            }
+        }
+    }
+
+    /// トレイトのヘッダの参照を検査する (xref.py の ref のうち、これまで ksn check が
+    /// 見ていなかった部分): `requires` のスーパートレイトとその型引数、トレイトメソッドの
+    /// シグネチャの型。メソッドのジェネリクス (裸の名前) は Def に残らないため、
+    /// ドット付きの名前だけを検査する。
+    fn check_trait_refs(&mut self, di: usize) {
+        let req = self.def(di).requires.clone();
+        for (base, args) in &req {
+            if base.contains('.') && !self.p.types.contains_key(base) {
+                self.diag("E1104", format!("unknown trait {}", base), di, 0);
+            }
+            self.check_dotted_types(di, args);
+        }
+        let sigs = self.def(di).trait_sigs.clone();
+        for (_, params, ret) in &sigs {
+            for (_, ty) in params {
+                self.check_dotted_types(di, ty);
+            }
+            self.check_dotted_types(di, ret);
+        }
+    }
+
+    /// 型 V の中のドット付き名前付き型が定義されているか (E1102)、`dyn` のトレイトが
+    /// 未定義なら E1104。裸の名前は (ジェネリクス引数などの可能性があるので) 検査しない。
+    fn check_dotted_types(&mut self, di: usize, t: &V) {
+        match tag(t).as_str() {
+            "named" => {
+                let nm = st(tel(t, 1));
+                if nm.contains('.') && !self.p.types.contains_key(&nm) {
+                    self.diag("E1102", format!("unknown type {}", nm), di, 0);
+                }
+                for a in items(tel(t, 2)) {
+                    if matches!(a, V::L(_)) {
+                        self.check_dotted_types(di, a);
+                    }
+                }
+            }
+            "dyn" => {
+                let f = items(tel(t, 1));
+                if !f.is_empty() {
+                    let base = st(&f[0]);
+                    if base.contains('.') && !self.p.types.contains_key(&base) {
+                        self.diag("E1104", format!("unknown trait {}", base), di, 0);
+                    }
+                    if f.len() > 1 {
+                        self.check_dotted_types(di, &f[1]);
+                    }
+                }
+            }
+            "ref" | "ptr" => self.check_dotted_types(di, tel(t, 2)),
+            "slice" | "array" => self.check_dotted_types(di, tel(t, 1)),
+            "tuple" => {
+                for x in items(tel(t, 1)) {
+                    self.check_dotted_types(di, x);
+                }
+            }
+            "fn" => {
+                for x in items(tel(t, 1)) {
+                    self.check_dotted_types(di, x);
+                }
+                self.check_dotted_types(di, tel(t, 2));
+            }
+            _ => {}
+        }
+    }
+
+    /// 8.2 の依存方向 (層規則) を検査する (`spec/tools/xref.py` の dep の移植)。
+    /// `core` / `alloc` / `std` を最上位成分に持つ定義が、より上位の層の型・トレイトを
+    /// 参照していれば E1118。方向は `std` → `alloc` → `core`。本体に取り込んだ標準
+    /// ライブラリの定義と、層の名前空間で定義されたモジュール (ユーザーパッケージの
+    /// `src/core/` 配下など) の両方が対象。ユーザー定義は層を持たないので、それ以外の
+    /// 最上位成分のときは黙る (8.1。ユーザーは3層すべてを参照できる)。
+    fn check_layer_directions(&mut self) {
+        let p = self.p;
+        for i in 0..p.defs.len() {
+            let d = &p.defs[i];
+            // `impl` の名前はヘッダ行そのもの、`import` は xref.py も検査外 (3.5)。
+            if matches!(d.kw.as_str(), "import" | "impl") {
+                continue;
+            }
+            let own_root = d.name.split('.').next().unwrap_or("");
+            let Some(own) = layer_rank(own_root) else { continue };
+            let mut refs: BTreeSet<String> = BTreeSet::new();
+            for (kind, _, bound) in &d.generics {
+                if kind != "type" {
+                    continue;
+                }
+                for b in items(bound) {
+                    if matches!(b, V::L(_)) {
+                        collect_ref_fqns(b, &mut refs);
+                    }
+                }
+            }
+            for (_, t) in &d.params {
+                collect_ref_fqns(t, &mut refs);
+            }
+            collect_ref_fqns(&d.ret, &mut refs);
+            for (_, t, _) in &d.fields {
+                collect_ref_fqns(t, &mut refs);
+            }
+            for (_, ts) in &d.variants {
+                for t in ts {
+                    collect_ref_fqns(t, &mut refs);
+                }
+            }
+            for (base, args) in &d.requires {
+                if base.contains('.') {
+                    refs.insert(base.clone());
+                }
+                collect_ref_fqns(args, &mut refs);
+            }
+            if let Some(init) = &d.init {
+                collect_ref_fqns(init, &mut refs);
+            }
+            if let Some(body) = &d.body {
+                collect_ref_fqns(body, &mut refs);
+            }
+            for r in &refs {
+                let Some(rr) = r.split('.').next() else { continue };
+                let Some(rank) = layer_rank(rr) else { continue };
+                // xref.py と同じく、解決できる参照だけが依存の証拠。未解決の参照は黙る。
+                if rank > own && p.types.contains_key(r) {
+                    self.diag(
+                        "E1118",
+                        format!(
+                            "{} must not depend on {} ({}); the dependency direction is std -> alloc -> core (8.2)",
+                            own_root, rr, r
+                        ),
+                        i,
+                        0,
+                    );
                 }
             }
         }
@@ -973,7 +1142,14 @@ impl<'a> Checker<'a> {
             return;
         }
         let nm = st(&f[0]);
-        let Some(base) = resolve_trait_fqn(self.p, &nm) else { return };
+        // xref.py の ref の移植: `dyn` のトレイトが未定義なら E1104。裸の名前は曖昧の
+        // 可能性があるので黙る (resolve_trait_fqn の規約)。
+        let Some(base) = resolve_trait_fqn(self.p, &nm) else {
+            if nm.contains('.') && !self.p.types.contains_key(&nm) {
+                self.diag("E1104", format!("unknown trait {}", nm), di, 0);
+            }
+            return;
+        };
         let mut problems = Vec::new();
         let mut seen = HashSet::new();
         self.dyn_problems(&base, &mut seen, &mut problems);
@@ -2495,6 +2671,50 @@ fn prim_owner(name: &str) -> String {
         "char" => "core.char.char".into(),
         "str" => "core.str".into(),
         other => other.to_string(),
+    }
+}
+
+/// 8.2 の層ランク。依存方向は `std` → `alloc` → `core` なので、ランクの小さい層は
+/// ランクの大きい層を参照できない。それ以外の最上位成分 (ユーザーパッケージ) は層を持たない。
+fn layer_rank(root: &str) -> Option<u8> {
+    match root {
+        "core" => Some(0),
+        "alloc" => Some(1),
+        "std" => Some(2),
+        _ => None,
+    }
+}
+
+/// 型 V・trait_ref V・本体の AST に現れるドット付き FQN (named の型、`dyn` / 境界 /
+/// `requires` のトレイト名) を集める。裸の名前 (基本型・型パラメータ) は集めない。
+fn collect_ref_fqns(t: &V, out: &mut BTreeSet<String>) {
+    match t {
+        V::L(xs) => {
+            if let Some(V::S(s)) = xs.first() {
+                if s.contains('.') {
+                    // trait_ref の先頭 (`requires` / 境界 / `dyn` のトレイト名)。
+                    out.insert(s.clone());
+                } else if s == "named" {
+                    if let Some(n) = xs.get(1) {
+                        let nm = st(n);
+                        if nm.contains('.') {
+                            out.insert(nm);
+                        }
+                    }
+                }
+            }
+            for x in xs {
+                if matches!(x, V::L(_) | V::Node(..)) {
+                    collect_ref_fqns(x, out);
+                }
+            }
+        }
+        V::Node(_, fs, _) => {
+            for f in fs {
+                collect_ref_fqns(f, out);
+            }
+        }
+        _ => {}
     }
 }
 

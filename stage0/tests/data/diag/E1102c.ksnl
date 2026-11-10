@@ -1,0 +1,5 @@
+extern t.e(x: core.nothing.Missing) -> i32
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

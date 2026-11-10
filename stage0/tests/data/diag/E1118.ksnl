@@ -1,0 +1,8 @@
+fn core.dep_x.f(e: std.io.Error) -> i32 uses [] panics never pub
+    core.mem.drop(e)
+    1i32
+end core.dep_x.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
