@@ -471,6 +471,11 @@ impl<'a> Checker<'a> {
                 }
                 collect_ref_fqns(args, &mut refs);
             }
+            // fn ヘッダの `impls <トレイト>` も層の参照。xref.py は定義テキスト全体を
+            // TYPEREF で見るので、ヘッダに書かれた impls も依存方向の対象になる (8.2)。
+            if d.impls_trait.contains('.') {
+                refs.insert(d.impls_trait.clone());
+            }
             if let Some(init) = &d.init {
                 collect_ref_fqns(init, &mut refs);
             }

@@ -126,3 +126,48 @@ fn user_modules_may_reference_all_layers() {
     let o = run(&["check"], &ok.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
 }
+
+#[test]
+fn fn_header_impls_trait_is_layer_checked() {
+    // fn ヘッダの `impls <トレイト>` も層規則の参照 (xref.py は定義テキスト全体を
+    // TYPEREF で見るので、ヘッダに書かれた impls も対象)。シグネチャ・本体には
+    // 上位層の参照を置かず、impls だけが違反になる形にする。
+    let bad = Tmp::new(
+        "core_impls_std",
+        &[
+            ("t.ksnl", MAIN),
+            (
+                "core/dep_x.ksnl",
+                "type core.dep_x.R\n    got: usize\nend core.dep_x.R\n\n\
+                 impl std.io.Read<[]> for core.dep_x.R\n\
+                 fn core.dep_x.read(self: &mut core.dep_x.R, _buffer: &mut [u8]) -> usize uses [] panics never impls std.io.Read<[]>\n    \
+                 self.got\nend core.dep_x.read\n",
+            ),
+        ],
+    );
+    let o = run(&["check", "--json"], &bad.0);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
+    let got = codes(&text(&o.stdout));
+    assert!(got.contains(&"E1118".to_string()), "{}", text(&o.stdout));
+    // この形では impls 以外の参照は層違反にならない。
+    assert_eq!(got.iter().filter(|c| **c == "E1118").count(), 1, "{}", text(&o.stdout));
+}
+
+#[test]
+fn user_root_impls_trait_is_not_layer_checked() {
+    // ユーザー定義は層を持たないので、上位層のトレイトを impls しても E1118 にならない (8.1)。
+    let ok = Tmp::new(
+        "user_impls_ok",
+        &[(
+            "t.ksnl",
+            "type t.R\n    got: usize\nend t.R\n\n\
+             impl std.io.Read<[]> for t.R\n\
+             fn t.R.read(self: &mut t.R, _buffer: &mut [u8]) -> usize uses [] panics never impls std.io.Read<[]>\n    \
+             self.got\nend t.R.read\n\n\
+             fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n",
+        )],
+    );
+    let o = run(&["check"], &ok.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    assert!(!codes(&text(&o.stdout)).contains(&"E1118".to_string()), "{}", text(&o.stdout));
+}
