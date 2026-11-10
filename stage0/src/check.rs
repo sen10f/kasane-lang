@@ -573,6 +573,14 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `core.ops.Drop` の `drop` メソッドが定義されているか (直接呼び出しの検出用)。
+    fn has_drop_trait_method(&self) -> bool {
+        self.p
+            .method_idx
+            .get("drop")
+            .map_or(false, |v| v.iter().any(|&i| self.def(i).impls_trait == "core.ops.Drop"))
+    }
+
     /// 手動のマーカー impl (`impl core.marker.Sync for X`) があるか。
     fn has_manual_marker(&self, ty: &str, marker: &str) -> bool {
         self.p.defs.iter().any(|d| d.kw == "impl" && d.impl_trait == marker && impl_target(&d.impl_for) == ty)
@@ -931,10 +939,27 @@ impl<'a> Checker<'a> {
                 let fnn = &f[0];
                 if nname(fnn) == "Path" {
                     let segs = strs(&nf(fnn)[0]);
+                    // 4.4: `core.ops.Drop.drop` は直接呼べない (二重 drop を防ぐ)。
+                    if segs.join(".") == "core.ops.Drop.drop" {
+                        self.diag(
+                            "E3004",
+                            "core.ops.Drop.drop cannot be called directly; use core.mem.drop(x)".into(),
+                            di,
+                            nline(fnn),
+                        );
+                    }
                     if locals.contains(&segs[0]) {
                         // `v.push(x)` は局所変数のメソッド呼び出し (パスとして構文解析される)。
                         if segs.len() >= 2 {
                             let name = segs[segs.len() - 1].clone();
+                            if name == "drop" && self.has_drop_trait_method() {
+                                self.diag(
+                                    "E3004",
+                                    "core.ops.Drop.drop cannot be called directly; use core.mem.drop(x)".into(),
+                                    di,
+                                    nline(fnn),
+                                );
+                            }
                             self.check_method_exists(&name, di, nline(fnn));
                         }
                         return;
@@ -971,6 +996,17 @@ impl<'a> Checker<'a> {
                 }
                 let name = st(&f[1]);
                 self.check_method_exists(&name, di, nline(e));
+                // 4.4: `core.ops.Drop.drop` (トレイトの drop) のメソッド呼び出しは直接呼べない。
+                if name == "drop" {
+                    if self.has_drop_trait_method() {
+                        self.diag(
+                            "E3004",
+                            "core.ops.Drop.drop cannot be called directly; use core.mem.drop(x)".into(),
+                            di,
+                            nline(e),
+                        );
+                    }
+                }
                 let n = items(&f[2]).len();
                 let cands: Vec<&Def> = self
                     .p

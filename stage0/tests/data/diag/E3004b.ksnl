@@ -1,0 +1,14 @@
+type t.E pub
+    x: u8
+end t.E
+
+impl core.ops.Drop for t.E
+fn t.E.drop(self: t.E) -> () uses [] panics never impls core.ops.Drop
+    ()
+end t.E.drop
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let e = t.E { x: 1u8 }
+    e.drop()
+    Ok(())
+end t.main
