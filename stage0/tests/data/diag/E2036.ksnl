@@ -1,0 +1,7 @@
+type t.Inner pub
+    x: u8
+end t.Inner
+
+type t.Outer derive [Copy, Clone] pub
+    i: t.Inner
+end t.Outer

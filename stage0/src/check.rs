@@ -223,6 +223,7 @@ impl<'a> Checker<'a> {
         self.check_statics();
         self.check_tests();
         self.check_linear();
+        self.check_derive();
         for &i in &user {
             let d = self.def(i);
             match d.kw.as_str() {
@@ -383,6 +384,81 @@ impl<'a> Checker<'a> {
                     0,
                 );
             }
+        }
+    }
+
+    /// 4.3: `derive` は生成するトレイトの `requires` が揃うときだけ可能 (E2035)。
+    /// `Copy` は全フィールドが `Copy` でなければならない (E2036)。
+    fn check_derive(&mut self) {
+        let short_to_fqn: HashMap<&str, &str> = DERIVE_TRAITS.iter().copied().collect();
+        let fqn_to_short: HashMap<&str, &str> = DERIVE_TRAITS.iter().map(|(s, f)| (*f, *s)).collect();
+        let user_types: HashSet<String> = self
+            .user
+            .iter()
+            .map(|&i| self.def(i))
+            .filter(|d| matches!(d.kw.as_str(), "type" | "enum"))
+            .map(|d| d.name.clone())
+            .collect();
+        let idxs: Vec<usize> = self.user.clone();
+        for i in idxs {
+            let d = self.def(i);
+            if !matches!(d.kw.as_str(), "type" | "enum") || d.derive.is_empty() {
+                continue;
+            }
+            let derived: HashSet<String> = d.derive.clone().into_iter().collect();
+            for dv in d.derive.clone() {
+                let Some(&fqn) = short_to_fqn.get(dv.as_str()) else { continue };
+                let Some(&ti) = self.p.types.get(fqn) else { continue };
+                for (rb, _) in self.def(ti).requires.clone() {
+                    if let Some(&rs) = fqn_to_short.get(rb.as_str()) {
+                        if !derived.contains(rs) && !self.has_manual_marker(&d.name, &rb) {
+                            self.diag(
+                                "E2035",
+                                format!("derive [{}] on {} also requires `{}`", dv, d.name, rs),
+                                i,
+                                0,
+                            );
+                        }
+                    }
+                }
+            }
+            if derived.contains("Copy") {
+                let tys: Vec<V> = if d.kw == "type" {
+                    d.fields.iter().map(|f| f.1.clone()).collect()
+                } else {
+                    d.variants.iter().flat_map(|v| v.1.clone()).collect()
+                };
+                if tys.iter().any(|t| self.is_copy_v(t, &user_types) == Some(false)) {
+                    self.diag("E2036", format!("derive [Copy] on {}: every field must be Copy", d.name), i, 0);
+                }
+            }
+        }
+    }
+
+    /// 型が `Copy` か。`Some(false)` は明確に `Copy` でない (Copy を derive していないユーザー型など)。
+    fn is_copy_v(&self, t: &V, user_types: &HashSet<String>) -> Option<bool> {
+        match tag(t).as_str() {
+            "prim" | "never" | "ptr" | "ref" => Some(true),
+            "array" | "slice" => self.is_copy_v(tel(t, 1), user_types),
+            "tuple" => {
+                let mut res = Some(true);
+                for x in items(tel(t, 1)) {
+                    res = and3(res, self.is_copy_v(x, user_types));
+                }
+                res
+            }
+            "named" => {
+                let n = st(tel(t, 1));
+                if self.has_manual_marker(&n, "core.ops.Copy") {
+                    return Some(true);
+                }
+                if !user_types.contains(&n) {
+                    return None;
+                }
+                let is_copy = self.p.types.get(&n).map(|&i| self.def(i).derive.iter().any(|x| x == "Copy")).unwrap_or(false);
+                Some(is_copy)
+            }
+            _ => None,
         }
     }
 

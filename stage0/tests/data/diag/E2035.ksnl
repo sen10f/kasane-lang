@@ -1,0 +1,3 @@
+type t.S derive [Copy] pub
+    x: u8
+end t.S
