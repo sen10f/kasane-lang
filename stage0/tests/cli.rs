@@ -798,10 +798,11 @@ fn effect_var_covariant_requires_the_whole_declared_effect() {
 
 #[test]
 fn unbound_effect_var_stays_silent() {
-    // 実引数のない呼び出し (実体化できない) と、種別が並ばない実引数は検査しない (誤検出を出さない)。
+    // 実引数のない呼び出し (実体化できない) と、種別が並ばない実引数 (効果変数 `E: uses` に
+    // 型の実引数 `u8` / `never` を渡す形) は検査しない (誤検出を出さない)。
     let src = "fn t.g[E: uses]() -> u8 uses [E] panics never pub\n    1u8\nend t.g\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
-               core.mem.drop(t.g())\n    Ok(())\nend t.main\n";
+               core.mem.drop(t.g())\n    core.mem.drop(t.g::<u8>())\n    core.mem.drop(t.g::<never>())\n    Ok(())\nend t.main\n";
     let t = Tmp::new("eff_unbound", src);
     assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
 }
