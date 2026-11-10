@@ -294,6 +294,23 @@ impl<'a> Cx<'a> {
                     }
                     return Ok(self.handle_of(&inner));
                 }
+                if n == "std.sync.Mutex" {
+                    let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("Mutex without a type")?;
+                    let inner = self.pty_owned(first)?;
+                    if inner == "void" {
+                        return Err("Mutex of unit".into());
+                    }
+                    return Ok(self.mutex_of(&inner));
+                }
+                if n == "std.sync.MutexGuard" {
+                    // `MutexGuard<'a, T>`: ライフタイムの引数を飛ばして `T` を取る。
+                    let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_)) && tag(a) != "life").ok_or("MutexGuard without a type")?;
+                    let inner = self.pty_owned(first)?;
+                    if inner == "void" {
+                        return Err("MutexGuard of unit".into());
+                    }
+                    return Ok(self.guard_of(&inner));
+                }
                 if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap" {
                     let args: Vec<&V> = items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).collect();
                     if args.len() < 2 {
@@ -525,6 +542,36 @@ impl<'a> Cx<'a> {
         name
     }
 
+    /// `std.sync.Mutex<T>`: 値 `T` を 1 つ持つ値 (同期実行なので `flag` は持たない)。実体は `{T}`。
+    fn mutex_of(&self, inner: &str) -> String {
+        let name = format!("mutex<{}>", inner);
+        self.tuples.borrow_mut().insert(name.clone(), vec![inner.to_string()]);
+        name
+    }
+
+    /// `mutex<T>` の `T`。
+    fn mutex_inner(&self, ty: &str) -> Option<String> {
+        if !ty.starts_with("mutex<") {
+            return None;
+        }
+        self.tuples.borrow().get(ty).and_then(|v| v.first().cloned())
+    }
+
+    /// `std.sync.MutexGuard<'a, T>`: 借用なので所有は持たない。実体はミューテックスの値のアドレス (型は `mutexguard<T>`)。
+    fn guard_of(&self, inner: &str) -> String {
+        let name = format!("mutexguard<{}>", inner);
+        self.tuples.borrow_mut().insert(name.clone(), vec![inner.to_string()]);
+        name
+    }
+
+    /// `mutexguard<T>` の `T`。
+    fn guard_inner(&self, ty: &str) -> Option<String> {
+        if !ty.starts_with("mutexguard<") {
+            return None;
+        }
+        self.tuples.borrow().get(ty).and_then(|v| v.first().cloned())
+    }
+
     fn tuple_of(&self, elems: &[String]) -> String {
         let name = format!("tuple<{}>", elems.join(","));
         self.tuples.borrow_mut().insert(name.clone(), elems.to_vec());
@@ -550,6 +597,10 @@ impl<'a> Cx<'a> {
 
     fn needs_drop_d(&self, ty: &str, d: u32) -> bool {
         if d > 8 || !is_agg(ty) || ty == "str" || ty == "alloc.alloc.AllocError" {
+            return false;
+        }
+        // `MutexGuard` はミューテックスの値のアドレスを借りているだけで、所有しない (二重解放を避ける)。
+        if ty.starts_with("mutexguard<") {
             return false;
         }
         if ty == STRING || self.vecs.borrow().contains_key(ty) || self.deques.borrow().contains_key(ty) {
@@ -749,6 +800,21 @@ impl<'a> Cx<'a> {
         }
         if recv_ty.starts_with("joinhandle<") && name == "join" {
             return self.tuples.borrow().get(recv_ty).and_then(|v| v.first().cloned());
+        }
+        // `std.sync.Mutex`: 同期実行なので `lock` は値のアドレスをそのままガードとして返す。
+        if let Some(inner) = self.mutex_inner(recv_ty) {
+            if name == "lock" {
+                return Some(self.guard_of(&inner));
+            }
+        }
+        // `std.sync.MutexGuard`: `get` は `&T`、`get_mut` は `&mut T`。
+        // スカラーの `&T` は値、`&mut T` はアドレス (`mutref<T>`)。構造体などはどちらもアドレス。
+        if let Some(inner) = self.guard_inner(recv_ty) {
+            return match name {
+                "get" => Some(inner),
+                "get_mut" => Some(if is_agg(&inner) { inner } else { format!("mutref<{}>", inner) }),
+                _ => None,
+            };
         }
         if let Some(elem) = self.deque_elem(recv_ty) {
             return match name {
@@ -1793,6 +1859,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 if segs == ["alloc", "collections", "VecDeque", "new"] {
                     return expect.filter(|t| self.cx.deque_elem(t).is_some()).map(String::from);
+                }
+                // `std.sync.Mutex.new(value)`: 値の型が `T`。
+                if segs == ["std", "sync", "Mutex", "new"] && items(&f[1]).len() == 1 {
+                    let inner = self.ty_of(&items(&f[1])[0], env, None)?;
+                    if inner == "void" {
+                        return None;
+                    }
+                    return Some(self.cx.mutex_of(&inner));
                 }
                 if segs == ["core", "iter", "count"] {
                     return Some("usize".into());
@@ -4283,6 +4357,20 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                     return Ok((Some(v), t.to_string()));
                 }
+                // `std.sync.Mutex.new(value)`: `{T}` の領域に値を入れる (`flag` は持たない)。
+                if segs == ["std", "sync", "Mutex", "new"] && args.len() == 1 {
+                    let inner = self.ty_of(&args[0], env, None).ok_or("Mutex.new without a value type")?;
+                    if inner == "void" {
+                        return Err("Mutex of unit".into());
+                    }
+                    let (v, _) = self.expr(&args[0], env, Some(&inner))?;
+                    self.consume(&args[0], &inner, env)?;
+                    let t = self.cx.mutex_of(&inner);
+                    let l = self.cx.layout(&t, 0)?;
+                    let p = self.alloc(l.size, l.align);
+                    self.store_value(p, &inner, v.ok_or("bad Mutex value")?)?;
+                    return Ok((Some(p), t));
+                }
                 let fq = segs.join(".");
                 let Some(d) = self.funcs.get(&fq).copied() else { return Err(format!("call to {}", fq)) };
                 self.call_user(&fq, d, None, args, env, expect)
@@ -4299,6 +4387,33 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             return self.method_call(&deref, name, args, env, expect);
         }
         if let Some(rt) = &rty {
+            // `std.sync.Mutex.lock`: 同期実行なので、値のアドレスをそのままガードとして返す。
+            if let Some(inner) = self.cx.mutex_inner(rt) {
+                if name == "lock" && args.is_empty() {
+                    let (p, _) = self.expr(recv, env, None)?;
+                    let p = p.ok_or("bad receiver")?;
+                    let l = self.cx.layout(rt, 0)?;
+                    let off = l.fields[0].2 as i64;
+                    let addr = if off == 0 { p } else { self.b.ins().iadd_imm(p, off) };
+                    return Ok((Some(addr), self.cx.guard_of(&inner)));
+                }
+            }
+            // `std.sync.MutexGuard.get` / `get_mut`: ガードは値のアドレス。
+            if let Some(inner) = self.cx.guard_inner(rt) {
+                if (name == "get" || name == "get_mut") && args.is_empty() {
+                    let (p, _) = self.expr(recv, env, None)?;
+                    let p = p.ok_or("bad receiver")?;
+                    if name == "get_mut" {
+                        // `&mut スカラー` はアドレス (`mutref<T>`)、構造体などはアドレスをそのまま。
+                        return Ok((Some(p), if is_agg(&inner) { inner } else { format!("mutref<{}>", inner) }));
+                    }
+                    if is_agg(&inner) {
+                        return Ok((Some(p), inner));
+                    }
+                    let v = self.b.ins().load(cl(&inner), MemFlags::new(), p, 0);
+                    return Ok((Some(v), inner));
+                }
+            }
             if name == "clone" && args.is_empty() && self.cx.builtin_method_ty(rt, "clone").is_some() && !self.funcs.contains_key(&format!("{}.clone", rt)) {
                 let (v, _) = self.expr(recv, env, None)?;
                 let v = v.ok_or("clone of unit")?;

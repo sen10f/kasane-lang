@@ -3086,6 +3086,50 @@ fn the_cranelift_backend_compiles_map_get_mut_and_hashmap_iter() {
     }
 }
 
+/// `std.sync.Mutex`（`spawn` と同じく同期実行）。`lock` は値のアドレスをそのままガードとして返し、
+/// `get` / `get_mut` は同じ場所を読み書きする。ガードの `Drop` は no-op。
+fn clif_sync_program() -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console, thread] panics may",
+        "    let m = std.sync.Mutex.new(5u32)",
+        "    let mut g = m.lock()",
+        "    core.check.eq(*g.get(), 5u32)",
+        "    *g.get_mut() = 42u32",
+        "    core.check.eq(*g.get(), 42u32)",
+        "    core.mem.drop(g)",
+        "    std.io.print_line(\"sync ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_cranelift_backend_compiles_mutex_lock_and_guard() {
+    let t = Tmp::new("clif_sync", &clif_sync_program());
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    for release in [false, true] {
+        let cache = std::env::temp_dir().join(format!("ksn_cache_sync_{}_{}", std::process::id(), release));
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "clif"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+        if release {
+            c.arg("--release");
+        }
+        let o = c.output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        let kind = if release { "release" } else { "debug" };
+        let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+        assert!(p.exists(), "native executable missing: {}", out);
+        let r = Command::new(&p).output().unwrap();
+        assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ ({})", kind);
+        let _ = fs::remove_dir_all(&cache);
+    }
+}
+
 #[test]
 fn the_features_example_runs_natively_through_cranelift() {
     let d = root().join("examples").join("features");
