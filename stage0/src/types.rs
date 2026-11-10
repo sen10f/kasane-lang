@@ -30,6 +30,9 @@ pub enum Ty {
     Var(usize),
     /// クロージャの型。`cap` は capture 節から決めた「満たせ得る最大の `Fn` 系トレイト」の近似。
     Closure { args: Vec<Ty>, ret: Box<Ty>, cap: Cap },
+    /// トレイトオブジェクト `dyn Tr` (5.1)。`Tr` は書かれたトレイト名で、使用箇所で trait 定義の FQN に解決する。
+    /// `dyn` は `&` / `&mut` の背後にのみ現れるので、`Ref` の中身として持つ。
+    Dyn(String),
 }
 
 /// クロージャの能力 (`Fn` の階順)。capture が共有参照だけなら `Fn`、`&mut` を含めば `FnMut`、
@@ -70,6 +73,7 @@ impl Ty {
             Ty::Closure { args, ret, .. } => {
                 format!("fn({}) -> {}", args.iter().map(|x| x.show()).collect::<Vec<_>>().join(", "), ret.show())
             }
+            Ty::Dyn(t) => format!("dyn {}", t),
         }
     }
     fn has_param(&self) -> bool {
@@ -112,6 +116,8 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
                 .collect();
             Ty::Named(name, args)
         }
+        // `dyn Tr` (のトレイト名)。型引数・効果・ライフタイムは解決の対象にしない (近似)。
+        "dyn" => Ty::Dyn(st(tel(tel(v, 1), 0))),
         _ => Ty::Unknown,
     }
 }
@@ -421,6 +427,9 @@ impl<'a> TypeCk<'a> {
             (Ty::Prim(p), Ty::Prim(q)) => {
                 if p == q { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
+            (Ty::Dyn(p), Ty::Dyn(q)) => {
+                if p == q { Ok(()) } else { Err((a.clone(), b.clone())) }
+            }
             (Ty::Named(n, xs), Ty::Named(m, ys)) => {
                 if n != m {
                     return Err((a.clone(), b.clone()));
@@ -543,6 +552,12 @@ impl<'a> TypeCk<'a> {
 
     // ------------------------------------------------------------ メソッド呼び出し
     fn call_method(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize) -> Ty {
+        // トレイトオブジェクト (5.1): `&dyn Tr` のメソッド呼び出しは、Tr とそのスーパートレイトの
+        // シグネチャで検査する (Self は `dyn Tr` 自身)。
+        let deep = self.deep(recv);
+        if let Ty::Dyn(tr) = deep.strip().clone() {
+            return self.dyn_method(&tr, &deep, base, name, args, line);
+        }
         let (owners, complete) = self.owners_for(recv);
         let mut cands: Vec<(usize, String)> = vec![];
         let escape_all = |this: &mut Self| {
@@ -669,6 +684,88 @@ impl<'a> TypeCk<'a> {
             return Some(self.inst(&r, &mut map));
         }
         None
+    }
+
+    /// `dyn Tr` のメソッド呼び出しを、トレイト (とそのスーパートレイト) のシグネチャで検査する (4.3 / 5.1)。
+    /// 引数の個数 (E2022) と型 (E2023) を検査し、戻り値の型を式へ流す。`Self` は `dyn Tr` 自身。
+    /// トレイトに無いメソッド名では黙る (名前の存在は名前ベースの従来の検査が見る)。
+    fn dyn_method(&mut self, tr: &str, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize) -> Ty {
+        let escape_all = |this: &mut Self| {
+            for a in args {
+                this.escape(a);
+            }
+        };
+        let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else {
+            escape_all(self);
+            return Ty::Unknown;
+        };
+        // トレイト自身に無ければスーパートレイト (`requires`) を推移的に辿る (5.1)。
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut queue = vec![root];
+        while let Some(cur) = queue.pop() {
+            if !seen.insert(cur.clone()) {
+                continue;
+            }
+            let Some(&ti) = self.p.types.get(&cur) else { continue };
+            let td = &self.p.defs[ti];
+            if td.kw != "trait" {
+                continue;
+            }
+            let Some((_, params, ret)) = td.trait_sigs.iter().find(|s| s.0 == name) else {
+                for (sup, _) in &td.requires {
+                    if let Some(fq) = crate::check::resolve_trait_fqn(self.p, sup) {
+                        queue.push(fq);
+                    }
+                }
+                continue;
+            };
+            if params.is_empty() {
+                // `self` の無いシグネチャは不正 (E2039 がトレイト側で報告する)。ここでは黙る。
+                escape_all(self);
+                return Ty::Unknown;
+            }
+            if params.len() != args.len() + 1 {
+                self.diag(
+                    "E2022",
+                    format!(
+                        "method `{}` of trait {} takes {} argument(s) but {} given",
+                        name,
+                        cur,
+                        params.len().saturating_sub(1),
+                        args.len()
+                    ),
+                    line,
+                );
+                escape_all(self);
+                return Ty::Unknown;
+            }
+            let mut gn = td.gnames();
+            gn.insert("Self".to_string());
+            let mut map: HashMap<String, Ty> = HashMap::new();
+            map.insert("Self".to_string(), recv.clone());
+            if let Some(b) = base {
+                if matches!(from_v(&params[0].1, &gn), Ty::Ref(true, _)) {
+                    self.need_mut(b, name, line);
+                }
+            }
+            for (k, a) in args.iter().enumerate() {
+                let pt = from_v(&params[k + 1].1, &gn);
+                let pt = self.inst(&pt, &mut map);
+                if let Err(e) = self.unify2(&pt, a) {
+                    if let Some((want, got)) = self.prim_conflict(&e) {
+                        self.diag(
+                            "E2023",
+                            format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
+                            line,
+                        );
+                    }
+                }
+            }
+            let r = from_v(ret, &gn);
+            return self.inst(&r, &mut map);
+        }
+        escape_all(self);
+        Ty::Unknown
     }
 
     /// `&mut self` のメソッドを呼ぶには、レシーバの局所変数が `let mut` か、`&mut` の参照でなければならない。

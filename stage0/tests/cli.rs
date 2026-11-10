@@ -1326,6 +1326,100 @@ fn a_trait_method_return_type_flows_into_the_caller() {
     assert!(got.iter().any(|c| c == "E2020"), "{}", out);
 }
 
+// ---- dyn トレイトメソッドの解決 (4.3 / 5.1) ----
+
+fn dyn_prefix() -> String {
+    [
+        "trait t.Shape",
+        "    fn area(self: &Self) -> u32 uses [] panics never",
+        "    fn scale(self: &Self, k: u32) -> u32 uses [] panics never",
+        "end t.Shape",
+        "",
+    ]
+    .join(&char::from(10u8).to_string())
+}
+
+fn check_with_dyn(name: &str, fns: &[&str], b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let mut prefix = dyn_prefix();
+    prefix.push_str(&nl);
+    prefix.push_str(&fns.join(&nl));
+    prefix.push_str(&nl);
+    prefix.push_str(&nl);
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn a_trait_method_called_through_a_dyn_object_is_checked() {
+    // `&dyn t.Shape` のメソッド呼び出しは、トレイトのシグネチャで解決される (誤検出があってはならない)。
+    let (got, out) = check_with_dyn(
+        "dyn_ok",
+        &[
+            "fn t.show(s: &dyn t.Shape) -> u32 uses [] panics never",
+            "    s.area().wrapping_add(s.scale(2u32))",
+            "end t.show",
+        ],
+        &["let a = 1u32", "core.mem.drop(a)"],
+    );
+    assert!(!got.iter().any(|c| matches!(c.as_str(), "E1108" | "E2020" | "E2022" | "E2023" | "E2033")), "{}", out);
+}
+
+#[test]
+fn a_dyn_method_call_checks_arity_and_argument_types() {
+    let (got, out) = check_with_dyn(
+        "dyn_arity",
+        &["fn t.bad(s: &dyn t.Shape) -> u32 uses [] panics never", "    s.scale()", "end t.bad"],
+        &["let a = 1u32", "core.mem.drop(a)"],
+    );
+    assert!(got.iter().any(|c| c == "E2022"), "{}", out);
+    let (got, out) = check_with_dyn(
+        "dyn_argty",
+        &["fn t.bad(s: &dyn t.Shape) -> u32 uses [] panics never", "    s.scale(true)", "end t.bad"],
+        &["let a = 1u32", "core.mem.drop(a)"],
+    );
+    assert!(got.iter().any(|c| c == "E2023"), "{}", out);
+}
+
+#[test]
+fn a_dyn_method_return_type_flows_into_the_caller() {
+    // area は u32 を返すので、u64 を返す関数の本体にそのまま置くと E2020。
+    let (got, out) = check_with_dyn(
+        "dyn_ret",
+        &["fn t.bad(s: &dyn t.Shape) -> u64 uses [] panics never", "    s.area()", "end t.bad"],
+        &["let a = 1u32", "core.mem.drop(a)"],
+    );
+    assert!(got.iter().any(|c| c == "E2020"), "{}", out);
+}
+
+#[test]
+fn a_dyn_method_can_come_from_a_supertrait() {
+    // 5.1: `dyn Tr` のメソッドは Tr とそのスーパートレイト (`requires`) から探す。
+    let nl = char::from(10u8).to_string();
+    let prefix = [
+        "trait t.Base",
+        "    fn base_m(self: &Self) -> u32 uses [] panics never",
+        "end t.Base",
+        "",
+        "trait t.Derived requires t.Base",
+        "    fn der_m(self: &Self, k: u32) -> u32 uses [] panics never",
+        "end t.Derived",
+        "",
+    ]
+    .join(&nl);
+    let fns = [
+        "fn t.use_d(d: &dyn t.Derived) -> u32 uses [] panics never",
+        "    d.der_m(d.base_m())",
+        "end t.use_d",
+        "",
+    ]
+    .join(&nl);
+    let t = Tmp::new("dyn_super", &main_wrap(&(prefix + &nl + &fns + &nl), &body(&["let a = 1u32", "core.mem.drop(a)"])));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c.starts_with("E2") || c == "E1108"), "{}", out);
+}
+
 fn stack_pkg(name: &str, limit: u32, local: &str) -> (Vec<String>, String) {
     let nl = char::from(10u8).to_string();
     let src = [

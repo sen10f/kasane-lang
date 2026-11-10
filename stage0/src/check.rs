@@ -909,27 +909,6 @@ impl<'a> Checker<'a> {
     }
 
     // ---- dyn 安全性 (5.1)
-    /// `dyn Tr` のトレイト名を trait 定義の FQN に解決する。曖昧・未定義なら None (黙る)。
-    fn resolve_trait_name(&self, nm: &str) -> Option<String> {
-        if let Some(&i) = self.p.types.get(nm) {
-            let d = &self.p.defs[i];
-            return if d.kw == "trait" { Some(d.name.clone()) } else { None };
-        }
-        if !nm.contains('.') {
-            let mut found: Option<String> = None;
-            for d in &self.p.defs {
-                if d.kw == "trait" && (d.name == nm || d.name.ends_with(&format!(".{}", nm))) {
-                    if found.is_some() {
-                        return None; // 曖昧なので黙る。
-                    }
-                    found = Some(d.name.clone());
-                }
-            }
-            return found;
-        }
-        None
-    }
-
     fn trait_def(&self, name: &str) -> Option<&'a Def> {
         let &i = self.p.types.get(name)?;
         let d = &self.p.defs[i];
@@ -947,7 +926,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let nm = st(&f[0]);
-        let Some(base) = self.resolve_trait_name(&nm) else { return };
+        let Some(base) = resolve_trait_fqn(self.p, &nm) else { return };
         let mut problems = Vec::new();
         let mut seen = HashSet::new();
         self.dyn_problems(&base, &mut seen, &mut problems);
@@ -986,7 +965,7 @@ impl<'a> Checker<'a> {
             if items(args).iter().any(ty_has_self) {
                 out.push(format!("{} requires Self in a supertrait argument", tr));
             }
-            if let Some(sup) = self.resolve_trait_name(base) {
+            if let Some(sup) = resolve_trait_fqn(self.p, base) {
                 self.dyn_problems(&sup, seen, out);
             }
         }
@@ -2427,6 +2406,28 @@ fn is_self_ty(t: &V) -> bool {
         "ref" => tag(tel(t, 2)) == "self",
         _ => false,
     }
+}
+
+/// トレイト名 (`dyn Tr` の `Tr`、`requires` のスーパートレイト名など) を trait 定義の FQN に解決する。
+/// 曖昧・未定義なら None (黙る)。
+pub(crate) fn resolve_trait_fqn(p: &Program, nm: &str) -> Option<String> {
+    if let Some(&i) = p.types.get(nm) {
+        let d = &p.defs[i];
+        return if d.kw == "trait" { Some(d.name.clone()) } else { None };
+    }
+    if !nm.contains('.') {
+        let mut found: Option<String> = None;
+        for d in &p.defs {
+            if d.kw == "trait" && (d.name == nm || d.name.ends_with(&format!(".{}", nm))) {
+                if found.is_some() {
+                    return None; // 曖昧なので黙る。
+                }
+                found = Some(d.name.clone());
+            }
+        }
+        return found;
+    }
+    None
 }
 
 /// `impl .. for X` の対象型の基底名 (型引数を落とす)。
