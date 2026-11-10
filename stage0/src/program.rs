@@ -21,6 +21,8 @@ pub struct Def {
     pub generics: Vec<(String, String, V)>,
     pub params: Vec<(String, V)>,
     pub ret: V,
+    /// `const fn` (コンパイル時評価可能関数)。
+    pub is_const: bool,
     pub uses: Vec<String>,
     /// `uses` / `panics` を省略した関数 (本体から推論する)。
     pub inferred: bool,
@@ -134,7 +136,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 p.expect_op(")")?;
                 p.expect_op("->")?;
                 d.ret = p.ty()?;
-                p.accept_kw("const");
+                d.is_const = p.accept_kw("const");
                 if p.is_kw("uses") {
                     p.expect_kw("uses")?;
                     d.uses = items(&p.effect_set()?).iter().map(text).collect();

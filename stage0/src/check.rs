@@ -157,6 +157,8 @@ pub struct Checker<'a> {
     pub diags: Vec<Diag>,
     cur_uses: Option<Vec<String>>,
     cur_panics: String,
+    /// いま `const fn` の本体を検査中か (呼べるのは const fn と組み込みのみ、3.2)。
+    in_const_fn: bool,
     pub unsafe_modules: Vec<String>,
     unsafe_ok: bool,
     // typeck の状態
@@ -181,6 +183,7 @@ impl<'a> Checker<'a> {
             diags: vec![],
             cur_uses: None,
             cur_panics: "may".into(),
+            in_const_fn: false,
             unsafe_modules: vec![],
             unsafe_ok: false,
             d: 0,
@@ -972,6 +975,7 @@ impl<'a> Checker<'a> {
             .unwrap_or_default();
         self.cur_uses = if test { None } else { Some(d.uses.clone()) };
         self.cur_panics = if test { "may".into() } else { d.panics.clone().unwrap_or("may".into()) };
+        self.in_const_fn = !test && d.is_const;
         self.unsafe_ok = self.module_may_use_unsafe(&d.module);
         let body = d.body.as_ref().unwrap();
         self.visit(body, &mut locals, di, test);
@@ -1125,6 +1129,15 @@ impl<'a> Checker<'a> {
                     if let Some(r) = r {
                         if matches!(r.target, Target::Fn(_) | Target::Sig(_)) && r.rest.is_empty() {
                             let callee = self.p.fn_def(&r).unwrap();
+                            // 3.2: `const fn` の本体から呼べるのは `const fn` と組み込みのみ。
+                            if self.in_const_fn && !callee.is_const {
+                                self.diag(
+                                    "E2038",
+                                    format!("`const fn` cannot call non-const fn {}", callee.name),
+                                    di,
+                                    nline(e),
+                                );
+                            }
                             let n = items(&f[1]).len();
                             if callee.params.len() != n {
                                 self.diag(

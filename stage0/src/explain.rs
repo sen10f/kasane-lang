@@ -63,6 +63,7 @@ pub const EXPLAIN: &[(&str, &str)] = &[
     ("E2035", r#"`derive` するトレイトの `requires` が揃っていない。例えば `Copy` は `Clone` を、`Eq` は `PartialEq` を、`Ord` は `Eq` と `PartialOrd` を、`Hash` は `Eq` を要する(4.3)。"#),
     ("E2036", r#"`Copy` を derive するには全フィールド(バリアントのペイロード)が `Copy` でなければならない(4.3)。"#),
     ("E2037", r#"`std.thread.spawn` に渡すクロージャは `'static` でなければならない(5.5)。局所束縛を `capture [&x]` / `[&mut x]` で参照すると 'static にならない。`move x` を使う。"#),
+    ("E2038", r#"`const fn` の本体から `const fn` でない関数を呼んでいる(3.2)。`const fn` から呼べるのは `const fn` とコンパイラ組み込みのメソッドのみ。"#),
     ("E2041", r#"`let _ = e` は禁止(4.6)。値の破棄は `core.mem.drop(x)` のみ。"#),
     ("E2042", r#"`()` 以外の値を捨てる式文はエラー(4.6)。`core.mem.drop(x)` を使う。"#),
     ("E3021", r#"省略が正規形のライフタイム宣言(入力位置にのみ現れる、または参照引数が1つ)を明示している(4.1)。"#),
