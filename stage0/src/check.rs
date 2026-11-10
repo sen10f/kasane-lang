@@ -326,6 +326,16 @@ impl<'a> Checker<'a> {
         for &i in &impl_lines {
             let d = self.def(i);
             let tb = d.impl_trait.clone();
+            // 4.3: `Fn` / `FnMut` / `FnOnce` は自動実装のみ。手動 impl はできない。
+            if matches!(tb.as_str(), "core.ops.Fn" | "core.ops.FnMut" | "core.ops.FnOnce") {
+                self.diag(
+                    "E2034",
+                    format!("manual impl of {} is not allowed; Fn* is implemented automatically (4.3)", tb),
+                    i,
+                    0,
+                );
+                continue;
+            }
             if !req.contains_key(&tb) {
                 continue;
             }
