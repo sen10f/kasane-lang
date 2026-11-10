@@ -164,6 +164,8 @@ pub struct Checker<'a> {
     // typeck の状態
     d: usize,
     names: HashSet<String>,
+    /// move 済みの場所 (根の変数 + フィールド道をドットでつないだ鍵。`s`・`s.f`・`s.a.b`) → move した行。
+    /// 鍵どうしは互いに重ならない (一方が他方の接頭辞なら記録しない)。E3002 (4.1・4.4)。
     moved: BTreeMap<String, usize>,
     final_env: HashMap<String, V>,
     graph: BTreeMap<String, BTreeSet<String>>,
@@ -174,6 +176,46 @@ pub struct Checker<'a> {
 }
 
 type Env = HashMap<String, V>;
+
+/// 場所 (根の変数 + フィールド道) を一意な鍵にする (`s`・`s.f`・`s.a.b`)。
+fn place_key(root: &str, path: &[String]) -> String {
+    let mut s = String::from(root);
+    for p in path {
+        s.push('.');
+        s.push_str(p);
+    }
+    s
+}
+
+/// 2 つの場所の鍵が重なる (一方が他方の接頭辞) か。borrowck.rs の overlaps と同じ判定 (4.1)。
+fn place_overlaps(a: &str, b: &str) -> bool {
+    a == b || a.starts_with(&format!("{b}.")) || b.starts_with(&format!("{a}."))
+}
+
+/// 型の中の型パラメータ (引数なしの named で束縛にある名前) を使用側の型引数で置き換える。
+fn subst_ty_params(t: &V, bind: &HashMap<String, V>) -> V {
+    if tag(t) == "named" {
+        let nm = st(tel(t, 1));
+        let args = items(tel(t, 2));
+        if args.is_empty() {
+            if let Some(a) = bind.get(&nm) {
+                return a.clone();
+            }
+        }
+        let new_args: Vec<V> = args.iter().map(|a| subst_ty_params(a, bind)).collect();
+        return V::L(vec![V::S("named".into()), V::S(nm), V::L(new_args)]);
+    }
+    match tag(t).as_str() {
+        "ref" | "ptr" => V::L(vec![tel(t, 0).clone(), tel(t, 1).clone(), subst_ty_params(tel(t, 2), bind)]),
+        "slice" => V::L(vec![V::S("slice".into()), subst_ty_params(tel(t, 1), bind)]),
+        "array" => V::L(vec![V::S("array".into()), subst_ty_params(tel(t, 1), bind), tel(t, 2).clone()]),
+        "tuple" => V::L(vec![
+            V::S("tuple".into()),
+            V::L(items(tel(t, 1)).iter().map(|x| subst_ty_params(x, bind)).collect()),
+        ]),
+        _ => t.clone(),
+    }
+}
 
 impl<'a> Checker<'a> {
     pub fn new(p: &'a Program, user: Vec<usize>) -> Self {
@@ -1911,7 +1953,7 @@ impl<'a> Checker<'a> {
                 pat_binds(&f[0], &mut binds);
                 for n in binds {
                     env.insert(n.clone(), if nname(&f[0]) == "PBind" { ty.clone() } else { V::Nil });
-                    self.moved.remove(&n);
+                    self.revive_place(std::slice::from_ref(&n));
                     if matches!(f[1], V::B(true)) {
                         muts.insert(n);
                     } else {
@@ -1937,8 +1979,9 @@ impl<'a> Checker<'a> {
                                 nline(s),
                             );
                         }
+                        // 代入で、その場所とその下の move 済みの部分は復活する (4.1)。
+                        self.revive_place(&segs);
                         if segs.len() == 1 {
-                            self.moved.remove(root);
                             let got = self.ty_of(&f[1], env);
                             self.mismatch(&rt, &got, nline(s), "assignment");
                         }
@@ -1956,16 +1999,102 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn use_var(&mut self, name: &str, env: &Env, line: usize, consume: bool) {
-        if let Some(&ml) = self.moved.get(name) {
-            self.tdiag("E3002", format!("use of moved value `{}` (moved at line {})", name, ml), line);
-        } else if consume {
-            if let Some(t) = env.get(name) {
-                // 参照 (特に &mut) を引数に渡すのは再借用であり、move ではない (4.2)。
-                if !is_nil(t) && !self.is_copy(t) && tag(t) != "ref" {
-                    self.moved.insert(name.to_string(), line);
-                }
+    /// 場所 (根の変数 + フィールド道) の使用を検査する (4.1。部分 move を含む)。
+    /// move 済みの場所と重なる (一方が他方の接頭辞) ときは E3002。
+    /// 重ならなければ、consume のときに型を解決して move を記録する (Copy は move にならない)。
+    fn use_place(&mut self, root: &str, path: &[String], env: &Env, line: usize, consume: bool) {
+        if let Some((mk, ml)) = self.moved_overlap(root, path) {
+            let key = place_key(root, path);
+            let msg = if mk == key {
+                format!("use of moved value `{key}` (moved at line {ml})")
+            } else if mk.len() < key.len() {
+                // 使用した場所の先祖 (全体) が move 済み
+                format!("use of moved value `{key}` (moved `{mk}` at line {ml})")
+            } else {
+                // 使用した場所の一部 (下の道) が move 済み
+                format!("use of partially moved value `{key}` (moved `{mk}` at line {ml})")
+            };
+            self.tdiag("E3002", msg, line);
+            return;
+        }
+        if consume {
+            self.record_move(root, path, env, line);
+        }
+    }
+
+    /// 使用した場所と重なる move 済みの場所を探す。moved の鍵は互いに重ならないので、
+    /// 見つかれば高々 1 つ (鍵の順で最初のもの。並び順は安定)。
+    fn moved_overlap(&self, root: &str, path: &[String]) -> Option<(String, usize)> {
+        let key = place_key(root, path);
+        self.moved.iter().find(|(k, _)| place_overlaps(k, &key)).map(|(k, &ml)| (k.clone(), ml))
+    }
+
+    /// 消費 (consume) の対象の場所を move 済みとして記録する。道の型を解決できて
+    /// Copy でなく参照越しでないときだけ記録する (型が分からない所では黙る = 記録しない)。
+    fn record_move(&mut self, root: &str, path: &[String], env: &Env, line: usize) {
+        let Some(ty) = self.place_ty(root, path, env) else { return };
+        if self.is_copy(&ty) {
+            return;
+        }
+        self.moved.insert(place_key(root, path), line);
+    }
+
+    /// 場所 (根の変数 + フィールド道) の型を env の根の型から解決する。
+    /// 分からない (型未決定・未解決の道・参照越し) ときは None (黙る)。
+    fn place_ty(&self, root: &str, path: &[String], env: &Env) -> Option<V> {
+        let t = env.get(root)?;
+        if is_nil(t) || tag(t) == "ref" {
+            return None;
+        }
+        let mut cur = t.clone();
+        for seg in path {
+            cur = self.field_ty(&cur, seg)?;
+            if tag(&cur) == "ref" {
+                return None;
             }
+        }
+        Some(cur)
+    }
+
+    /// 構造体 (named) のフィールドの型。ジェネリクス型の型パラメータは使用側の型引数で置き換える。
+    /// 構造体でない型 (enum・Option など)・未解決の道は None (黙る)。
+    fn field_ty(&self, t: &V, field: &str) -> Option<V> {
+        if tag(t) != "named" {
+            return None;
+        }
+        let nm = st(tel(t, 1));
+        let &ti = self.p.types.get(&nm)?;
+        let d = self.def(ti);
+        if d.kw != "type" {
+            return None;
+        }
+        let ty = &d.fields.iter().find(|(n, _, _)| n == field)?.1;
+        let tparams: Vec<String> = d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
+        if tparams.iter().any(|p| ty_mentions(ty, p)) {
+            // 型パラメータを含むときは、使用側の型引数の並びと合うときだけ置き換える。
+            // 合わなければ (効果などの引数が混ざるときは) 黙る。
+            let args = items(tel(t, 2));
+            if tparams.len() != args.len() {
+                return None;
+            }
+            let bind: HashMap<String, V> = tparams.into_iter().zip(args.iter().cloned()).collect();
+            return Some(subst_ty_params(ty, &bind));
+        }
+        Some(ty.clone())
+    }
+
+    /// 代入・再束縛の対象の場所とその下の move 済みの記録を消す (再代入で復活、4.1)。
+    /// `s = ..` は `s`・`s.f`・`s.f.g` を、`s.f = ..` は `s.f`・`s.f.g` を消す (兄弟は残す)。
+    fn revive_place(&mut self, segs: &[String]) {
+        let key = place_key(&segs[0], &segs[1..]);
+        let dead: Vec<String> = self
+            .moved
+            .keys()
+            .filter(|k| **k == key || k.starts_with(&format!("{key}.")))
+            .cloned()
+            .collect();
+        for k in dead {
+            self.moved.remove(&k);
         }
     }
 
@@ -1975,7 +2104,7 @@ impl<'a> Checker<'a> {
             "Path" => {
                 let segs = strs(&f[0]);
                 if env.contains_key(&segs[0]) {
-                    self.use_var(&segs[0], env, nline(e), consume && segs.len() == 1);
+                    self.use_place(&segs[0], &segs[1..], env, nline(e), consume);
                 }
             }
             "Block" => {
@@ -2015,7 +2144,10 @@ impl<'a> Checker<'a> {
                             }
                         }
                     } else {
-                        self.use_var(&segs[0], env, nline(e), false);
+                        // 呼び出し先が局所変数のとき。`v.push(x)` のようなメソッド呼び出し
+                        // (segs の最後はメソッド名) は、レシーバの場所を使うだけで move はしない (4.2)。
+                        let recv: &[String] = if segs.len() >= 2 { &segs[1..segs.len() - 1] } else { &[] };
+                        self.use_place(&segs[0], recv, env, nline(e), false);
                     }
                 } else {
                     self.tc_expr(fnn, env, muts, false);
