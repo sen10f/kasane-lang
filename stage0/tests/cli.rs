@@ -1420,6 +1420,57 @@ fn a_dyn_method_can_come_from_a_supertrait() {
     assert!(!codes(&out).iter().any(|c| c.starts_with("E2") || c == "E1108"), "{}", out);
 }
 
+#[test]
+fn the_orphan_rule_rejects_impls_of_foreign_traits_for_foreign_types() {
+    // 3.2: `impl Tr for T` は Tr と T のどちらかがこのパッケージ内の定義のときだけ置ける。
+    // 標準ライブラリのトレイトを標準ライブラリの型に実装すると E2043 (メソッドの過不足 E1112 ではなく)。
+    let nl = char::from(10u8).to_string();
+    let src = [
+        "type t.P pub",
+        "    a: u8",
+        "end t.P",
+        "",
+        "impl core.cmp.Ord for alloc.string.String",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [] panics never",
+        "    Ok(())",
+        "end t.main",
+    ]
+    .join(&nl);
+    let t = Tmp::new("orphan", &format!("{}\n", src));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    let got = codes(&out);
+    assert!(got.iter().any(|c| c == "E2043"), "{}", out);
+    assert!(!got.iter().any(|c| c == "E1112"), "{}", out);
+}
+
+#[test]
+fn the_orphan_rule_allows_impls_with_a_local_side() {
+    // 自分のトレイト → 部外の型、部外のトレイト → 自分の型、はどちらも許される。
+    let nl = char::from(10u8).to_string();
+    let src = [
+        "trait t.Tr pub",
+        "    fn m(self: &Self) -> u32 uses [] panics never",
+        "end t.Tr",
+        "",
+        "type t.P pub",
+        "    a: u8",
+        "end t.P",
+        "",
+        "impl t.Tr for alloc.string.String",
+        "",
+        "impl core.ops.Clone for t.P",
+        "",
+        "fn t.main() -> Result<(), std.io.Error> uses [] panics never",
+        "    Ok(())",
+        "end t.main",
+    ]
+    .join(&nl);
+    let t = Tmp::new("orphan_ok", &format!("{}\n", src));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E2043"), "{}", out);
+}
+
 fn stack_pkg(name: &str, limit: u32, local: &str) -> (Vec<String>, String) {
     let nl = char::from(10u8).to_string();
     let src = [

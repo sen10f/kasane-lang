@@ -382,6 +382,21 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let tgt = impl_target(&d.impl_for);
+            // 4.3 (3.2): 孤児規則 — `impl Tr for T` は、Tr と T のどちらかがこのパッケージ内で
+            // 定義されたもののときだけ置ける。impl の置き場所自体が不正なときは、ここで報告して
+            // メソッドの過不足 (E1112) は見ない (メソッドを置ける場所がそもそも無いので E1112 では直せない)。
+            if self.orphan_violation(d, &tb, &tgt) {
+                self.diag(
+                    "E2043",
+                    format!(
+                        "impl {} for {} violates the orphan rule: neither the trait nor the type is defined in this package (3.2)",
+                        tb, tgt
+                    ),
+                    i,
+                    0,
+                );
+                continue;
+            }
             let owner = prim_owner(&tgt);
             let alt_owner = format!("{}.{}", tb, tgt.rsplit('.').next().unwrap_or(""));
             if !seen.insert((tb.clone(), tgt.clone())) {
@@ -425,6 +440,38 @@ impl<'a> Checker<'a> {
                     0,
                 );
             }
+        }
+    }
+
+    /// 4.3 (3.2): 孤児規則。`impl Tr for T` は、Tr と T のどちらか一方がこのパッケージ内で
+    /// 定義されたもののときだけ許される。対象が型パラメータ (blanket impl) のとき、名前が
+    /// 未解決のとき、名義型・基本型以外の対象 (参照・スライス・タプル・fn 型) のときは黙る (誤検出厳禁)。
+    fn orphan_violation(&self, d: &Def, tb: &str, tgt: &str) -> bool {
+        let Some(&ti) = self.p.types.get(tb) else { return false };
+        let td = self.def(ti);
+        if td.kw != "trait" {
+            return false; // トレイトでない名前はここでは扱わない。
+        }
+        if self.user.contains(&ti) {
+            return false; // このパッケージのトレイトなら常に許す。
+        }
+        // 対象が型パラメータ (blanket impl) なら黙る。
+        if d.gnames().contains(tgt) {
+            return false;
+        }
+        // 対象の形: 名義型と基本型だけが impl の対象。それ以外の形は黙る。
+        match tag(&d.impl_for).as_str() {
+            "prim" => return true, // 基本型はユーザーパッケージでは定義できない
+            "named" => {}
+            _ => return false,
+        }
+        match self.p.types.get(tgt) {
+            // このパッケージの名義型なら許す。
+            Some(&j) if self.user.contains(&j) && matches!(self.def(j).kw.as_str(), "type" | "enum") => false,
+            // 部外の型 (標準ライブラリ・依存パッケージ)。トレイトも部外なので違反。
+            Some(_) => true,
+            // 未解決の名前。
+            None => false,
         }
     }
 
