@@ -759,6 +759,144 @@ fn pub_functions_must_declare_effects() {
     assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E4020"), "{}", text(&o.stdout));
 }
 
+// ---- 効果変数・panic 変数の実体化 (4.3 の単相化) と共変の解決 (5.1 の部分型) ----
+
+#[test]
+fn effect_var_is_instantiated_covariantly_per_call_site() {
+    // 階層の部分型: 呼び出し側の `uses [io, time]` は実体化した `io.fs` と `time` を覆う。
+    // 別々の効果で 2 回呼んでも、呼び出しごとに独立して検査される。
+    let src = "fn t.g[E: uses]() -> u8 uses [E] panics never pub\n    1u8\nend t.g\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [io, time] panics never\n    \
+               core.mem.drop(t.g::<[io.fs]>())\n    core.mem.drop(t.g::<[time]>())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("eff_mono_ok", src);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn effect_var_violation_is_reported_only_for_the_call_that_needs_it() {
+    // 1 つ目の実体化 (`io.fs`) が 2 つ目 (`time`) に漏れず、要求を満たす呼び出しだけが通る。
+    let src = "fn t.g[E: uses]() -> u8 uses [E] panics never pub\n    1u8\nend t.g\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [io] panics never\n    \
+               core.mem.drop(t.g::<[io.fs]>())\n    core.mem.drop(t.g::<[time]>())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("eff_mono_bad", src);
+    let o = run(&["check", "--json"], &t.0);
+    let got = codes(&text(&o.stdout));
+    assert_eq!(got.iter().filter(|c| *c == "E4001").count(), 1, "{}", text(&o.stdout));
+    assert!(!got.iter().any(|c| c == "E4002"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn effect_var_covariant_requires_the_whole_declared_effect() {
+    // 実体化した効果 `io` は `uses [io.fs]` では覆えない (io は io.fs より広い、5.1)。
+    let src = "fn t.g[E: uses]() -> u8 uses [E] panics never pub\n    1u8\nend t.g\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [io.fs] panics never\n    \
+               core.mem.drop(t.g::<[io]>())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("eff_cov_bad", src);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E4001"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn unbound_effect_var_stays_silent() {
+    // 実引数のない呼び出し (実体化できない) と、種別が並ばない実引数は検査しない (誤検出を出さない)。
+    let src = "fn t.g[E: uses]() -> u8 uses [E] panics never pub\n    1u8\nend t.g\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+               core.mem.drop(t.g())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("eff_unbound", src);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn panic_var_is_instantiated_per_call_site() {
+    // `pk::<never>()` は通る。`pk::<may>()` だけが E4002 (`never ⊑ may` は逆向きには使えない)。
+    let src = "fn t.pk[P: panics]() -> u8 uses [] panics P pub\n    1u8\nend t.pk\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+               core.mem.drop(t.pk::<never>())\n    core.mem.drop(t.pk::<may>())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("panic_mono", src);
+    let o = run(&["check", "--json"], &t.0);
+    let got = codes(&text(&o.stdout));
+    assert_eq!(got.iter().filter(|c| *c == "E4002").count(), 1, "{}", text(&o.stdout));
+    assert!(!got.iter().any(|c| c == "E4001"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn panic_var_covariant_ok_when_caller_may_panic() {
+    // `panics may` の呼び出し元は `never` の実体化も `may` の実体化も受けられる (never ⊑ may)。
+    let src = "fn t.pk[P: panics]() -> u8 uses [] panics P pub\n    1u8\nend t.pk\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    \
+               core.mem.drop(t.pk::<never>())\n    core.mem.drop(t.pk::<may>())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("panic_cov_ok", src);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn inferred_caller_receives_the_instantiated_effects() {
+    // 推論された呼び出し元も、実体化した効果 (`io.fs`) を受け取る。`uses []` の main は E4001。
+    let src = "fn t.g[E: uses]() -> u8 uses [E] panics never pub\n    1u8\nend t.g\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+               core.mem.drop(t.mid())\n    Ok(())\nend t.main\n\n\
+               fn t.mid() -> u8\n    t.g::<[io.fs]>()\nend t.mid\n";
+    let t = Tmp::new("eff_infer_bad", src);
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E4001"), "{}", out);
+    assert!(out.contains("io.fs"), "{}", out);
+    // 正例: 呼び出し側が io を宣言していれば通る。
+    let ok = src.replace("uses [] panics never\n    core.mem.drop(t.mid())", "uses [io] panics never\n    core.mem.drop(t.mid())");
+    let t = Tmp::new("eff_infer_ok", &ok);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+// ---- 定数パラメータの実体化 (4.3): 同じ定数なら同じ型、異なる定数は別単相 ----
+
+#[test]
+fn const_param_types_differ_by_value() {
+    let ok = "type t.Buf[T, const N: usize]\n    v: T\nend t.Buf\n\n\
+              fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+              let a: t.Buf<u8, 16> = t.mk16()\n    let b: t.Buf<u8, 16> = a\n    \
+              core.mem.drop(b)\n    Ok(())\nend t.main\n\n\
+              fn t.mk16() -> t.Buf<u8, 16> uses [] panics never\n    t.Buf { v: 1u8 }\nend t.mk16\n";
+    let t = Tmp::new("const_ok", ok);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+    let bad = ok.replace("let b: t.Buf<u8, 16> = a", "let b: t.Buf<u8, 32> = a");
+    let t = Tmp::new("const_bad", &bad);
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2020"), "{}", out);
+    assert!(out.contains("t.Buf<u8, 32>"), "{}", out);
+}
+
+#[test]
+fn const_param_call_site_arg_is_checked() {
+    let bad = "type t.Buf[T, const N: usize]\n    v: T\nend t.Buf\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+               let b: t.Buf<u8, 16> = t.Buf { v: 1u8 }\n    \
+               core.mem.drop(t.pick::<32>(b))\n    Ok(())\nend t.main\n\n\
+               fn t.pick[const N: usize](b: t.Buf<u8, N>) -> u8\n    b.v\nend t.pick\n";
+    let t = Tmp::new("const_call_bad", bad);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E2023"), "{}", text(&o.stdout));
+    // 正例: 同じ定数の実引数なら通る。
+    let ok = bad.replace("t.pick::<32>(b)", "t.pick::<16>(b)");
+    let t = Tmp::new("const_call_ok", &ok);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn explicit_type_args_are_respected_at_call_sites() {
+    // 明示型引数 (`f::<T>`, 4.3) は引数の型の推論に反映される。
+    let ok = "fn t.id[T](x: T) -> T\n    x\nend t.id\n\n\
+              fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+              let x = 5u8\n    let y: u8 = t.id::<u8>(x)\n    \
+              core.mem.drop(y)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("targ_ok", ok);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+    let bad = ok.replace("t.id::<u8>(x)", "t.id::<u64>(x)");
+    let t = Tmp::new("targ_bad", &bad);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E2023"), "{}", text(&o.stdout));
+}
+
 #[test]
 fn recursive_inferred_functions_reach_a_fixed_point() {
     let src = "fn t.a(n: u8) -> u8 uses [] panics never stack 4096\n    t.b(n)\nend t.a\n\n\
