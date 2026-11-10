@@ -1097,6 +1097,30 @@ impl<'a> Checker<'a> {
                             nline(fnn),
                         );
                     }
+                    // 5.5: spawn に渡すクロージャは 'static。局所束縛への参照キャプチャは不可。
+                    if self.p.expand(&segs, &self.def(di).file).join(".") == "std.thread.spawn" {
+                        if let Some(cl) = items(&f[1]).get(1) {
+                            if nname(cl) == "Closure" {
+                                for c in items(&nf(cl)[2]) {
+                                    let parts = items(c);
+                                    if parts.len() == 2 {
+                                        let kind = st(&parts[0]);
+                                        if kind == "&" || kind == "&mut" {
+                                            self.diag(
+                                                "E2037",
+                                                format!(
+                                                    "spawn closure must be 'static; cannot capture `{}` by reference",
+                                                    st(&parts[1])
+                                                ),
+                                                di,
+                                                nline(c),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     let r = self.resolve_path(&segs, di, nline(fnn));
                     if let Some(r) = r {
                         if matches!(r.target, Target::Fn(_) | Target::Sig(_)) && r.rest.is_empty() {
