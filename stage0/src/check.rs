@@ -301,6 +301,29 @@ impl<'a> Checker<'a> {
                     self.diag("E4013", msg, i, 0);
                 }
             }
+            // 3.2: トレイトの必須メソッドのレシーバは `self: Self` / `&Self` / `&mut Self` のいずれか。
+            if d.kw == "trait" {
+                for (mname, params, _ret) in &d.trait_sigs {
+                    match params.first() {
+                        Some((pname, pty)) if pname == "self" => {
+                            if !is_self_ty(pty) {
+                                self.diag(
+                                    "E2039",
+                                    format!("trait method {} must take `self: Self`, `&Self`, or `&mut Self` (3.2)", mname),
+                                    i,
+                                    0,
+                                );
+                            }
+                        }
+                        _ => self.diag(
+                            "E2039",
+                            format!("trait method {} must take `self` as its first parameter (3.2)", mname),
+                            i,
+                            0,
+                        ),
+                    }
+                }
+            }
         }
     }
 
@@ -2307,6 +2330,16 @@ fn or3(a: Option<bool>, b: Option<bool>) -> Option<bool> {
         (Some(true), _) | (_, Some(true)) => Some(true),
         (Some(false), Some(false)) => Some(false),
         _ => None,
+    }
+}
+
+/// トレイトのレシーバ型が `Self` / `&Self` / `&mut Self` か (3.2)。
+/// `Self` はパーサではタグ `"self"` になる。
+fn is_self_ty(t: &V) -> bool {
+    match tag(t).as_str() {
+        "self" => true,
+        "ref" => tag(tel(t, 2)) == "self",
+        _ => false,
     }
 }
 

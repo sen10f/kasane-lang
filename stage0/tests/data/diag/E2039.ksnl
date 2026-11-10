@@ -1,0 +1,3 @@
+trait t.Tr pub
+    fn m(self: &u8) -> u8 uses [] panics never
+end t.Tr
