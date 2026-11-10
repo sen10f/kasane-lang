@@ -29,7 +29,9 @@ pub enum Ty {
     /// 推論中の型変数 (関数ごとの表の添字)
     Var(usize),
     /// クロージャの型。`cap` は capture 節から決めた「満たせ得る最大の `Fn` 系トレイト」の近似。
-    Closure { args: Vec<Ty>, ret: Box<Ty>, cap: Cap },
+    /// `id` はクロージャ本体に対応する呼び出しグラフの節 (5.3 の間接呼び出しの候補計算に使う)。
+    /// 型注釈から組み立てた型にはない (`None`)。
+    Closure { args: Vec<Ty>, ret: Box<Ty>, cap: Cap, id: Option<String> },
     /// トレイトオブジェクト `dyn Tr` (5.1)。`Tr` は書かれたトレイト名で、使用箇所で trait 定義の FQN に解決する。
     /// `dyn` は `&` / `&mut` の背後にのみ現れるので、`Ref` の中身として持つ。
     Dyn(String),
@@ -131,10 +133,11 @@ fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
         Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| subst(x, bind)).collect()),
         Ty::Array(x) => Ty::Array(Box::new(subst(x, bind))),
         Ty::Slice(x) => Ty::Slice(Box::new(subst(x, bind))),
-        Ty::Closure { args, ret, cap } => Ty::Closure {
+        Ty::Closure { args, ret, cap, id } => Ty::Closure {
             args: args.iter().map(|x| subst(x, bind)).collect(),
             ret: Box::new(subst(ret, bind)),
             cap: cap.clone(),
+            id: id.clone(),
         },
         other => other.clone(),
     }
@@ -167,6 +170,15 @@ pub struct TypeCk<'a> {
     rets: Vec<Ty>,
     /// 呼び出しの辺 (呼び出し元の関数名 -> 呼び出し先の関数名)。型で解決できたメソッド呼び出しを含む。
     pub edges: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// 入れ子のクロージャ本体に対応する呼び出しグラフの節 (5.3)。スタックの先頭がいま推論中のクロージャ。
+    closure_nodes: Vec<String>,
+    /// クロージャ節の採番 (節名は関数名に付けて一意にする)。
+    closure_seq: usize,
+    /// (呼び出し先の FQN, 型パラメータ名) → その引数位置に渡されたクロージャの節。
+    /// `Fn` 境界のパラメータの呼び出し (5.3) の候補。分からなかったものは覚えない (黙る)。
+    fn_closures: HashMap<(String, String), Vec<String>>,
+    /// 関数の FQN → 本体の中で呼んでいる `Fn` 境界パラメータの局所名の集合 (5.3 の近似)。
+    param_called: HashMap<String, HashSet<String>>,
 }
 
 impl<'a> TypeCk<'a> {
@@ -185,7 +197,52 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new() }
+    }
+
+    /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
+    /// `f.call(..)` / `f.call_mut(..)` / `f.call_once(..)` の形のメソッド呼び出しを探す近似。
+    /// 名前で見るので、`let g = f` としたあとの `g.call(..)` は見つけられない (黙る)。
+    fn callee_calls_param(&mut self, d: &Def, param: &str) -> bool {
+        if !self.param_called.contains_key(&d.name) {
+            let mut called: HashSet<String> = HashSet::new();
+            if let Some(b) = &d.body {
+                let mut all: Vec<&V> = vec![];
+                crate::check::walk(b, &mut all);
+                for n in &all {
+                    // `f.call(..)` は、呼び出し先が `f.call` というパスの `Call` (局所変数から始まる
+                    // パスはメソッド呼び出しに解決される)。
+                    if nname(n) != "Call" {
+                        continue;
+                    }
+                    let f = nf(n);
+                    if nname(&f[0]) != "Path" {
+                        continue;
+                    }
+                    let segs = strs(&nf(&f[0])[0]);
+                    if segs.len() != 2 {
+                        continue;
+                    }
+                    if matches!(segs[1].as_str(), "call" | "call_mut" | "call_once") {
+                        called.insert(segs[0].clone());
+                    }
+                }
+            }
+            self.param_called.insert(d.name.clone(), called);
+        }
+        self.param_called.get(&d.name).map_or(false, |s| s.contains(param))
+    }
+
+    /// 呼び出しの辺を足す。クロージャの本体の中では、外側の関数 (従来どおりの近似) と
+    /// クロージャの節の両方に入る。クロージャの節は、`Fn` 境界のパラメータの呼び出し (5.3) の
+    /// 候補として使う (外側の関数だけだと、呼び出し先が分からない呼び出しの候補を表せない)。
+    fn add_edge(&mut self, to: String) {
+        let caller = self.def().name.clone();
+        self.edges.entry(caller).or_default().insert(to.clone());
+        if let Some(node) = self.closure_nodes.last() {
+            let node = node.clone();
+            self.edges.entry(node).or_default().insert(to);
+        }
     }
 
     fn def(&self) -> &'a Def {
@@ -354,10 +411,11 @@ impl<'a> TypeCk<'a> {
             Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.deep(x)).collect()),
             Ty::Array(x) => Ty::Array(Box::new(self.deep(&x))),
             Ty::Slice(x) => Ty::Slice(Box::new(self.deep(&x))),
-            Ty::Closure { args, ret, cap } => Ty::Closure {
+            Ty::Closure { args, ret, cap, id } => Ty::Closure {
                 args: args.iter().map(|x| self.deep(x)).collect(),
                 ret: Box::new(self.deep(&*ret)),
                 cap,
+                id,
             },
             other => other,
         }
@@ -612,8 +670,7 @@ impl<'a> TypeCk<'a> {
         let (di, owner) = fit[0].clone();
         let d = &self.p.defs[di];
         let gn = d.gnames();
-        let caller = self.def().name.clone();
-        self.edges.entry(caller).or_default().insert(d.name.clone());
+        self.add_edge(d.name.clone());
         if let Some(b) = base {
             if matches!(from_v(&d.params[0].1, &gn), Ty::Ref(true, _)) {
                 self.need_mut(b, name, line);
@@ -659,6 +716,17 @@ impl<'a> TypeCk<'a> {
             let Some(&ti) = self.p.types.get(&tr) else { continue };
             let td = &self.p.defs[ti];
             let Some((_, params, ret)) = td.trait_sigs.iter().find(|s| s.0 == name) else { continue };
+            // 5.3: `core.ops.Fn` 系の境界を持つパラメータの呼び出しは間接呼び出し。この関数の
+            // 呼び出し箇所で渡されたクロージャ (単一化で分かったもの) を候補の辺にする。
+            // 渡されたクロージャが分からなければ、辺を足さない (黙る)。
+            if tr.starts_with("core.ops.Fn") {
+                let key = (self.def().name.clone(), pn.clone());
+                if let Some(nodes) = self.fn_closures.get(&key) {
+                    for n in nodes.clone() {
+                        self.add_edge(n);
+                    }
+                }
+            }
             if params.len() != args.len() + 1 {
                 self.diag(
                     "E2022",
@@ -704,8 +772,9 @@ impl<'a> TypeCk<'a> {
             return Ty::Unknown;
         };
         // トレイト自身に無ければスーパートレイト (`requires`) を推移的に辿る (5.1)。
+        // `root` は 5.3 の候補計算 (impl の探索) にも使うので残しておく。
         let mut seen: HashSet<String> = HashSet::new();
-        let mut queue = vec![root];
+        let mut queue = vec![root.clone()];
         while let Some(cur) = queue.pop() {
             if !seen.insert(cur.clone()) {
                 continue;
@@ -728,6 +797,9 @@ impl<'a> TypeCk<'a> {
                 escape_all(self);
                 return Ty::Unknown;
             }
+            // 5.3: `dyn` 越しの呼び出しの候補は、`dyn Tr` の `Tr` (`root`) の impl を持つ型の
+            // メソッドすべて。impl が無ければ候補は分からないので、辺を足さない (黙る)。
+            self.add_dyn_candidates(&root, name);
             if params.len() != args.len() + 1 {
                 self.diag(
                     "E2022",
@@ -770,6 +842,31 @@ impl<'a> TypeCk<'a> {
         }
         escape_all(self);
         Ty::Unknown
+    }
+
+    /// `dyn Tr` のメソッド呼び出し (5.3) の候補: `impl Tr for T` のメソッド `name` をすべて辺にする。
+    /// トレイトの impl が無い (候補が計算できない) ときは、何も辺にしない (黙る)。
+    /// トレイト名が解決できない呼び出しは、この関数に来る前に黙って帰る。
+    fn add_dyn_candidates(&mut self, root: &str, name: &str) {
+        let mut cands: Vec<String> = vec![];
+        for (tb, tgt) in &self.p.impls {
+            if crate::check::resolve_trait_fqn(self.p, tb).as_deref() != Some(root) {
+                continue;
+            }
+            // 基本型への impl のメソッドは `core.num.u32` などが所有者になる (3.2)。
+            for owner in impl_owner_keys(tgt) {
+                if let Some(ms) = self.owners.get(&owner) {
+                    if let Some(idx) = ms.get(name) {
+                        for &i in idx {
+                            cands.push(self.p.defs[i].name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        for c in cands {
+            self.add_edge(c);
+        }
     }
 
     /// `&mut self` のメソッドを呼ぶには、レシーバの局所変数が `let mut` か、`&mut` の参照でなければならない。
@@ -1029,6 +1126,11 @@ impl<'a> TypeCk<'a> {
                 // パラメータと戻り値の型は注釈が必須なので分かる (関数自身の型パラメータは Unknown)。
                 let gn = self.def().gnames();
                 let mut args: Vec<Ty> = vec![];
+                // クロージャの本体は、呼び出しグラフの独立した節にする (5.3)。外側の関数に
+                // 帰属させる従来の辺は `add_edge` が維持するので、既存の検査は変わらない。
+                let node = format!("{}#{}", self.def().name.clone(), self.closure_seq);
+                self.closure_seq += 1;
+                self.closure_nodes.push(node.clone());
                 self.scopes.push(HashMap::new());
                 for p in items(&f[0]) {
                     let ty = subst_params_unknown(&from_v(&items(p)[1], &gn));
@@ -1041,6 +1143,7 @@ impl<'a> TypeCk<'a> {
                 let body = self.infer(&f[3]);
                 self.rets.pop();
                 self.scopes.pop();
+                self.closure_nodes.pop();
                 if let Err(err) = self.unify2(&ret, &body) {
                     if let Some((want, got)) = self.ann_conflict(&ret, &body, &err) {
                         self.diag(
@@ -1050,7 +1153,7 @@ impl<'a> TypeCk<'a> {
                         );
                     }
                 }
-                Ty::Closure { args, ret: Box::new(ret), cap: closure_cap(&f[2]) }
+                Ty::Closure { args, ret: Box::new(ret), cap: closure_cap(&f[2]), id: Some(node) }
             }
             "Return" | "Break" | "Continue" => {
                 if nname(e) == "Return" && !is_nil(&f[0]) {
@@ -1289,8 +1392,7 @@ impl<'a> TypeCk<'a> {
     /// (名前しか比べない) ので、同じ名前どうしの型引数の矛盾はここで報告する。
     fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool]) -> Ty {
         let d = &self.p.defs[i];
-        let caller = self.def().name.clone();
-        self.edges.entry(caller).or_default().insert(d.name.clone());
+        self.add_edge(d.name.clone());
         let gn = d.gnames();
         // Fn 境界を受け取る引数の位置と、渡されたクロージャの型 (決まっているものだけ)。
         let mut fn_args: Vec<(usize, String)> = vec![];
@@ -1310,6 +1412,20 @@ impl<'a> TypeCk<'a> {
         if fn_args.len() != closures.len() {
             // クロージャの型が追えない呼び出し: 引数の型変数は決まらなくてもエラーにしない。
             argt.iter().for_each(|a| self.escape(a));
+        }
+        // 5.3: `Fn` 境界のパラメータへの引数は、呼び出し先の本体がそのパラメータを呼ぶときの
+        // 間接呼び出しの候補になる。渡されたクロージャが分かって (`id`)、呼び出し先がパラメータを
+        // 呼んでいる (本体の走査の近似) ときだけ、呼び出し先からクロージャの節へ辺を足す。
+        // どちらかが分からなければ黙る (辺を足さない)。渡されたクロージャは、呼び出し先の本体の
+        // 中のパラメータ呼び出し (型に基づく解決) の候補としても覚える。
+        for (k, name) in &fn_args {
+            let Some(Ty::Closure { id: Some(node), .. }) = closures.get(k) else { continue };
+            self.fn_closures.entry((d.name.clone(), name.clone())).or_default().push(node.clone());
+            let local = d.params[*k].0.clone();
+            if self.callee_calls_param(d, &local) {
+                let callee = d.name.clone();
+                self.edges.entry(callee).or_default().insert(node.clone());
+            }
         }
         let mut map: HashMap<String, Ty> = HashMap::new();
         for (k, a) in argt.iter().enumerate() {
@@ -1341,7 +1457,7 @@ impl<'a> TypeCk<'a> {
         let mut cap_bad = false;
         for (k, name) in &fn_args {
             let Some(cl) = closures.get(k).cloned() else { continue };
-            let Ty::Closure { args, ret, cap } = self.deep(&cl) else { continue };
+            let Ty::Closure { args, ret, cap, .. } = self.deep(&cl) else { continue };
             let bounds = self.fn_bound(d, name);
             for b in &bounds {
                 let V::L(bx) = b else { continue };
@@ -1572,6 +1688,24 @@ impl<'a> TypeCk<'a> {
 /// 関数自身の型パラメータは、本体の中では分からない型として扱う。
 fn subst_params_unknown(t: &Ty) -> Ty {
     subst(t, &HashMap::new())
+}
+
+/// impl の対象型 `tgt` について、メソッドの所有者になり得る名前 (型そのものと、
+/// 基本型ならその所有者 FQN。3.2 の impl の置き場所)。
+fn impl_owner_keys(tgt: &str) -> Vec<String> {
+    let mut v = vec![tgt.to_string()];
+    let owner = match tgt {
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+        | "f32" | "f64" => format!("core.num.{}", tgt),
+        "bool" => "core.bool.bool".into(),
+        "char" => "core.char.char".into(),
+        "str" => "core.str".into(),
+        _ => String::new(),
+    };
+    if !owner.is_empty() {
+        v.push(owner);
+    }
+    v
 }
 
 /// capture 節の AST (`move x` / `&x` / `&mut x` の並び) から、満たせ得る最大の能力を求める。

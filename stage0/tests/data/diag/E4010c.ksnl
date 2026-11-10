@@ -1,0 +1,14 @@
+fn t.gen[F: core.ops.Fn<(), (), [], never>](f: F) -> () uses [] panics never
+    f.call(())
+end t.gen
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    t.spin()
+    Ok(())
+end t.main
+
+fn t.spin() -> () uses [] panics never
+    t.gen(fn() -> () capture [] {
+        t.spin()
+    })
+end t.spin

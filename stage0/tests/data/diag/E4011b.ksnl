@@ -1,0 +1,22 @@
+type t.Circle
+    r: u32
+end t.Circle
+
+trait t.Shape
+    fn area(self: &Self) -> u32 uses [] panics never
+end t.Shape
+
+impl t.Shape for t.Circle
+fn t.Circle.area(self: &Self) -> u32 uses [] panics never impls t.Shape
+    1u32
+end t.Circle.area
+
+fn t.dispatch(s: &dyn t.Shape) -> u32 uses [] panics never stack 256
+    s.area()
+end t.dispatch
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let c = t.Circle { r: 1u32 }
+    core.mem.drop(t.dispatch(&c))
+    Ok(())
+end t.main
