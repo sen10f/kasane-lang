@@ -1,0 +1,7 @@
+type t.H pub
+    f: &dyn core.nothing.Missing
+end t.H
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

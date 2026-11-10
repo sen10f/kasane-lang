@@ -1,0 +1,7 @@
+trait t.Tr requires core.nothing.Missing pub
+    fn m(self: &Self) -> i32 uses [] panics never
+end t.Tr
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
