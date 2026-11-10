@@ -1416,27 +1416,43 @@ impl<'a> TypeCk<'a> {
     }
 
     /// 4.1: `?` はエラー型が完全一致するときだけ使える (変換は `map_err` 必須)。
-    /// `Result` のオペランドのエラー型を、式を置いた関数 (クロージャ) の戻り値型のエラー型と
-    /// 単一化して比べる。どちらかが分からないときは黙る。
+    /// `?` は式を置いた関数 (クロージャ) の戻り値型へ脱糖するので、そこで受けられるのは
+    /// オペランドと同じ種類の `Option` / `Result` だけ。エラー型は単一化して比べる。
+    /// どちらかが分からないときは黙る (Cranelift バックエンドも同じ条件で拒否する)。
     fn check_try_err(&mut self, operand: &Ty, line: usize) {
-        let Some(want) = self.rets.last().cloned() else { return };
-        let want = self.deep(&want);
-        let Ty::Named(wn, wa) = want.strip() else { return };
-        if wn != "Result" || wa.len() < 2 {
-            return;
-        }
         let got = self.deep(operand);
         let Ty::Named(gn, ga) = got.strip() else { return };
-        if gn != "Result" || ga.len() < 2 {
+        if gn != "Result" && gn != "Option" {
             return;
         }
-        let e_want = wa[1].clone();
-        let e_got = ga[1].clone();
-        if let Err(err) = self.unify2(&e_want, &e_got) {
-            if let Some((w, g)) = self.prim_conflict(&err) {
+        let Some(want) = self.rets.last().cloned() else { return };
+        let want = self.deep(&want);
+        let want = want.strip().clone();
+        match want {
+            Ty::Unknown | Ty::Param(_) | Ty::Var(_) | Ty::Never => {}
+            Ty::Named(wn, wa) if wn == *gn => {
+                // 種類は一致。`Result` のエラー型が完全一致するかだけを見る。
+                if gn == "Result" && wa.len() >= 2 && ga.len() >= 2 {
+                    let e_want = wa[1].clone();
+                    let e_got = ga[1].clone();
+                    if let Err(err) = self.unify2(&e_want, &e_got) {
+                        if let Some((w, g)) = self.prim_conflict(&err) {
+                            self.diag(
+                                "E2020",
+                                format!(
+                                    "type mismatch in `?`: expected error type `{}`, found `{}`; the error type must match exactly, use `map_err`",
+                                    w, g
+                                ),
+                                line,
+                            );
+                        }
+                    }
+                }
+            }
+            other => {
                 self.diag(
                     "E2020",
-                    format!("type mismatch in `?`: expected error type `{}`, found `{}`; the error type must match exactly, use `map_err`", w, g),
+                    format!("type mismatch in `?`: the return type here is `{}`, not `{}`", other.show(), gn),
                     line,
                 );
             }

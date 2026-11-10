@@ -1276,6 +1276,43 @@ fn try_requires_the_error_type_to_match_exactly() {
     assert_eq!(out.matches("type mismatch in `?`").count(), 1, "{}", out);
 }
 
+#[test]
+fn try_in_a_closure_is_checked_against_the_closure_return_type() {
+    // fold のクロージャの中の `?` は、クロージャの戻り値型 (Result<u32, u8>) と比べる。
+    // エラー型が合っていれば誤検出なし、戻り値型が Result でなければ E2020。
+    let nl = char::from(10u8).to_string();
+    let prefix = [
+        "fn t.good() -> Result<u32, u8> uses [] panics never",
+        "    core.iter.fold(",
+        "        core.iter.range(0u32, 3u32),",
+        "        Ok(0u32),",
+        "        fn(acc: Result<u32, u8>, x: u32) -> Result<u32, u8> capture [] {",
+        "            let a = acc?",
+        "            Ok(a.wrapping_add(x))",
+        "        },",
+        "    )",
+        "end t.good",
+        "",
+        "fn t.bad() -> u32 uses [] panics never",
+        "    core.iter.fold(",
+        "        core.iter.range(0u32, 3u32),",
+        "        0u32,",
+        "        fn(acc: u32, x: u32) -> u32 capture [] {",
+        "            let r: Result<u32, u8> = Ok(x)",
+        "            let v = r?",
+        "            acc.wrapping_add(v)",
+        "        },",
+        "    )",
+        "end t.bad",
+        "",
+    ]
+    .join(&nl);
+    let t = Tmp::new("try_cl", &main_wrap(&prefix, &body(&["core.mem.drop(t.good())", "core.mem.drop(t.bad())"])));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("type mismatch in `?`: the return type here is `u32`, not `Result`"), "{}", out);
+    assert_eq!(out.matches("type mismatch in `?`").count(), 1, "{}", out);
+}
+
 // ---- std.fs (インタプリタ) ----
 
 #[test]
