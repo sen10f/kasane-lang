@@ -167,6 +167,8 @@ pub struct Checker<'a> {
     graph: BTreeMap<String, BTreeSet<String>>,
     /// 現在の関数のファイルで `import` したモジュールの末尾名 (シャドーイング検査用)。
     import_tails: HashSet<String>,
+    /// 現在の関数のファイルで `import` したモジュールの完全名 (セグメント列)。本体でのFQN参照の検出用。
+    imported_modules: Vec<Vec<String>>,
 }
 
 type Env = HashMap<String, V>;
@@ -187,6 +189,7 @@ impl<'a> Checker<'a> {
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
             import_tails: HashSet::new(),
+            imported_modules: Vec::new(),
         }
     }
 
@@ -659,6 +662,14 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// このファイルで `import` したモジュールをFQNで参照していれば、そのモジュール名を返す (3.3)。
+    fn imported_fqn(&self, segs: &[String]) -> Option<String> {
+        self.imported_modules
+            .iter()
+            .find(|m| segs.len() >= m.len() && segs[..m.len()] == m[..])
+            .map(|m| m.join("."))
+    }
+
     /// `core.ops.Drop` の `drop` メソッドが定義されているか (直接呼び出しの検出用)。
     fn has_drop_trait_method(&self) -> bool {
         self.p
@@ -939,6 +950,12 @@ impl<'a> Checker<'a> {
         // 4.1: `import` したモジュールの末尾名も可視なので、同名の束縛はシャドーイングになる。
         // 変数の解決には使わない (別集合)。
         self.import_tails = self.p.imports.get(&d.file).map(|m| m.keys().cloned().collect()).unwrap_or_default();
+        self.imported_modules = self
+            .p
+            .imports
+            .get(&d.file)
+            .map(|m| m.values().map(|v| v.split('.').map(String::from).collect()).collect())
+            .unwrap_or_default();
         self.cur_uses = if test { None } else { Some(d.uses.clone()) };
         self.cur_panics = if test { "may".into() } else { d.panics.clone().unwrap_or("may".into()) };
         self.unsafe_ok = self.module_may_use_unsafe(&d.module);
@@ -1001,6 +1018,14 @@ impl<'a> Checker<'a> {
             "Path" => {
                 let segs = strs(&f[0]);
                 if !locals.contains(&segs[0]) {
+                    if let Some(m) = self.imported_fqn(&segs) {
+                        self.diag(
+                            "E1117",
+                            format!("module {} is imported; use its short name instead of the FQN (3.3)", m),
+                            di,
+                            nline(e),
+                        );
+                    }
                     if let Some(r) = self.resolve_path(&segs, di, nline(e)) {
                         // 型の名前を値として使っている (`std.alloc.System` ではなく `std.alloc.SYSTEM`)。
                         if matches!(r.target, Target::Type(_)) && r.rest.is_empty() {
@@ -1049,6 +1074,14 @@ impl<'a> Checker<'a> {
                             self.check_method_exists(&name, di, nline(fnn));
                         }
                         return;
+                    }
+                    if let Some(m) = self.imported_fqn(&segs) {
+                        self.diag(
+                            "E1117",
+                            format!("module {} is imported; use its short name instead of the FQN (3.3)", m),
+                            di,
+                            nline(fnn),
+                        );
                     }
                     let r = self.resolve_path(&segs, di, nline(fnn));
                     if let Some(r) = r {
