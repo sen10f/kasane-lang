@@ -28,6 +28,9 @@ pub enum Ty {
     Param(String),
     /// 推論中の型変数 (関数ごとの表の添字)
     Var(usize),
+    /// 型実引数の定数リテラル (`app.arr.Buf<u8, 16>` の `16`、`Flag<true>` の `true` など) (4.3)。
+    /// リテラルどうしの一致だけを判定する (定数名との対応は評価しない)。
+    Const(String),
     /// クロージャの型。`cap` は capture 節から決めた「満たせ得る最大の `Fn` 系トレイト」の近似。
     Closure { args: Vec<Ty>, ret: Box<Ty>, cap: Cap },
     /// トレイトオブジェクト `dyn Tr` (5.1)。`Tr` は書かれたトレイト名で、使用箇所で trait 定義の FQN に解決する。
@@ -70,6 +73,7 @@ impl Ty {
             Ty::Array(t) => format!("[{}; _]", t.show()),
             Ty::Slice(t) => format!("[{}]", t.show()),
             Ty::Param(p) => p.clone(),
+            Ty::Const(c) => c.clone(),
             Ty::Closure { args, ret, .. } => {
                 format!("fn({}) -> {}", args.iter().map(|x| x.show()).collect::<Vec<_>>().join(", "), ret.show())
             }
@@ -112,7 +116,7 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
             let args: Vec<Ty> = items(tel(v, 2))
                 .iter()
                 .filter(|a| matches!(a, V::L(_)))
-                .map(|a| from_v(a, params))
+                .map(|a| const_targ(a).map_or_else(|| from_v(a, params), Ty::Const))
                 .collect();
             Ty::Named(name, args)
         }
@@ -120,6 +124,15 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
         "dyn" => Ty::Dyn(st(tel(tel(v, 1), 0))),
         _ => Ty::Unknown,
     }
+}
+
+/// 型実引数が定数リテラル (`16` / `true` / `'a'`) なら、その綴りを返す (4.3 の定数パラメータ)。
+/// 定数名 (`app.f.FOO`) は型と同じ構文で書かれるため区別できず、None にする (一致判定もしない)。
+fn const_targ(a: &V) -> Option<String> {
+    if tag(a) == "const" {
+        return Some(st(tel(a, 1)));
+    }
+    None
 }
 
 /// 型パラメータを束縛で置き換える。束縛のないものは `Unknown`。
@@ -431,6 +444,10 @@ impl<'a> TypeCk<'a> {
             (Ty::Prim(p), Ty::Prim(q)) => {
                 if p == q { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
+            // 4.3: 定数実引数は同じ定数なら同じ型、異なる定数は別単相。
+            (Ty::Const(x), Ty::Const(y)) => {
+                if x == y { Ok(()) } else { Err((a.clone(), b.clone())) }
+            }
             (Ty::Dyn(p), Ty::Dyn(q)) => {
                 if p == q { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
@@ -490,10 +507,37 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    /// 矛盾した 2 つが両方プリミティブ (リテラル型を含む) なら、診断のための文字列を返す。
+    /// 明示型引数 (`f::<..>`, 4.3) のうち型と定数の実引数を、宣言のパラメータ名に束縛する。
+    /// 効果 (`uses [..]`) と panic (`never` / `may`) の実引数は効果検査 (check.rs) で扱うのでここでは無視する。
+    /// 実引数の種別が宣言と並ばない (誤った) 呼び出しでは何も束縛しない (黙る)。
+    /// 型の実引数は、書かれた位置 (呼び出し元) の型パラメータ名で解釈する。
+    fn seed_targs(&mut self, d: &Def, targs: &[V], map: &mut HashMap<String, Ty>) {
+        if targs.is_empty() {
+            return;
+        }
+        let Some(pairs) = crate::check::align_targs(&d.generics, targs) else { return };
+        let scope = self.def().gnames();
+        for (name, kind, t) in pairs {
+            match kind {
+                "const" => {
+                    if let Some(c) = const_targ(t) {
+                        map.insert(name.to_string(), Ty::Const(c));
+                    }
+                }
+                "type" => {
+                    map.insert(name.to_string(), from_v(t, &scope));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 矛盾した 2 つが両方プリミティブ (リテラル型を含む)、または定数実引数どうしの違い
+    /// (異なる定数は別単相、4.3) なら、診断のための文字列を返す。
     fn prim_conflict(&self, e: &(Ty, Ty)) -> Option<(String, String)> {
         match (&e.0, &e.1) {
             (Ty::Prim(a), Ty::Prim(b)) => Some((a.clone(), b.clone())),
+            (Ty::Const(a), Ty::Const(b)) => Some((a.clone(), b.clone())),
             _ => None,
         }
     }
@@ -555,7 +599,7 @@ impl<'a> TypeCk<'a> {
     }
 
     // ------------------------------------------------------------ メソッド呼び出し
-    fn call_method(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize) -> Ty {
+    fn call_method(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V]) -> Ty {
         // トレイトオブジェクト (5.1): `&dyn Tr` のメソッド呼び出しは、Tr とそのスーパートレイトの
         // シグネチャで検査する (Self は `dyn Tr` 自身)。
         let deep = self.deep(recv);
@@ -620,6 +664,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let mut map: HashMap<String, Ty> = HashMap::new();
+        self.seed_targs(d, targs, &mut map);
         let self_ty = from_v(&d.params[0].1, &gn);
         let self_ty = self.inst(&self_ty, &mut map);
         let view = self.view_for(recv, &owner);
@@ -884,12 +929,12 @@ impl<'a> TypeCk<'a> {
                 _ => Ty::Unknown,
             },
             "Path" => self.path(&strs(&f[0])),
-            "Call" => self.call(&f[0], items(&f[1]), nline(e)),
+            "Call" => self.call(&f[0], items(&f[1]), nline(e), items(&f[2])),
             "MCall" => {
                 let recv = self.infer(&f[0]);
                 let args: Vec<Ty> = items(&f[2]).iter().map(|a| self.infer(a)).collect();
                 let base = self.base_local(&f[0]);
-                self.call_method(&recv, base.as_deref(), &st(&f[1]), &args, nline(e))
+                self.call_method(&recv, base.as_deref(), &st(&f[1]), &args, nline(e), items(&f[3]))
             }
             "Field" => {
                 let r = self.infer(&f[0]);
@@ -1210,7 +1255,7 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    fn call(&mut self, callee: &V, args: &[V], line: usize) -> Ty {
+    fn call(&mut self, callee: &V, args: &[V], line: usize, targs: &[V]) -> Ty {
         let argt: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
         // 構造体リテラルの引数: 従来の検査は型引数を見ないので、呼び出し側でも型引数の矛盾を見る。
         let sl: Vec<bool> = args.iter().map(|a| nname(a) == "StructLit").collect();
@@ -1238,7 +1283,7 @@ impl<'a> TypeCk<'a> {
             for s in &segs[1..segs.len() - 1] {
                 t = self.field_ty(&t, s);
             }
-            return self.call_method(&t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line);
+            return self.call_method(&t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line, targs);
         }
         let _ = &argt;
         let Some(r) = self.p.resolve(&segs, &self.def().file) else {
@@ -1268,9 +1313,9 @@ impl<'a> TypeCk<'a> {
             }
             Target::Native(ref fq) | Target::Value(ref fq) if self.p.sigs.contains_key(fq) => {
                 let i = self.p.sigs[fq];
-                self.call_def(i, &argt, line, &sl)
+                self.call_def(i, &argt, line, &sl, targs)
             }
-            Target::Fn(i) | Target::Sig(i) => self.call_def(i, &argt, line, &sl),
+            Target::Fn(i) | Target::Sig(i) => self.call_def(i, &argt, line, &sl, targs),
             _ => {
                 argt.iter().for_each(|a| self.escape(a));
                 Ty::Unknown
@@ -1287,11 +1332,16 @@ impl<'a> TypeCk<'a> {
     ///
     /// `sl` は、各引数の式が構造体リテラルかどうか。従来の検査は構造体リテラルの型引数を見ない
     /// (名前しか比べない) ので、同じ名前どうしの型引数の矛盾はここで報告する。
-    fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool]) -> Ty {
+    fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
         let d = &self.p.defs[i];
         let caller = self.def().name.clone();
         self.edges.entry(caller).or_default().insert(d.name.clone());
         let gn = d.gnames();
+        // 明示型引数 (`f::<..>`, 4.3) のうち型・定数の実引数を、宣言のパラメータに束縛する。
+        // 効果・panic の実引数は効果検査 (check.rs の inst_def_effects) で使う。
+        // 実引数が並ばない (誤った) 呼び出しでは何も束縛せず、引数からの推論に任せる (黙る)。
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        self.seed_targs(d, targs, &mut map);
         // Fn 境界を受け取る引数の位置と、渡されたクロージャの型 (決まっているものだけ)。
         let mut fn_args: Vec<(usize, String)> = vec![];
         let mut closures: HashMap<usize, Ty> = HashMap::new();
@@ -1311,7 +1361,6 @@ impl<'a> TypeCk<'a> {
             // クロージャの型が追えない呼び出し: 引数の型変数は決まらなくてもエラーにしない。
             argt.iter().for_each(|a| self.escape(a));
         }
-        let mut map: HashMap<String, Ty> = HashMap::new();
         for (k, a) in argt.iter().enumerate() {
             let Some(p) = d.params.get(k) else { break };
             let raw = from_v(&p.1, &gn);
@@ -1320,13 +1369,15 @@ impl<'a> TypeCk<'a> {
                 // 型パラメータを含まない引数の型は従来の検査 (E2020) が見る。ここでは重複を避ける。
                 // ただし構造体リテラルの引数で、宣言と同じ型名どうしの矛盾 (型引数の違い) は、
                 // 従来の検査が名前しか比べないので黙る。ここでだけ報告する。
+                // 定数実引数どうしの違い (異なる定数は別単相、4.3) も従来の検査は見ないので、ここで報告する。
                 let pt = self.deep(&pt);
                 let av = self.deep(a);
                 let same_named = match (pt.strip(), av.strip()) {
                     (Ty::Named(x, _), Ty::Named(y, _)) => x == y,
                     _ => false,
                 };
-                if raw.has_param() || (sl.get(k).copied().unwrap_or(false) && same_named) {
+                let const_mismatch = matches!((&e.0, &e.1), (Ty::Const(_), Ty::Const(_)));
+                if raw.has_param() || const_mismatch || (sl.get(k).copied().unwrap_or(false) && same_named) {
                     if let Some((want, got)) = self.prim_conflict(&e) {
                         self.diag(
                             "E2023",
@@ -1469,6 +1520,7 @@ impl<'a> TypeCk<'a> {
         match (&e.0, &e.1) {
             (Ty::Prim(a), Ty::Prim(b)) if a != b => Some((a.clone(), b.clone())),
             (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
+            (Ty::Const(a), Ty::Const(b)) if a != b => Some((a.clone(), b.clone())),
             _ => None,
         }
     }
