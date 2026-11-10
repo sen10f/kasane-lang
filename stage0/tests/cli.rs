@@ -3551,6 +3551,180 @@ fn nll_accepts_two_phase_borrows_like_push_of_len() {
     assert!(!bad, "{}", out);
 }
 
+// ---- 構造体・コンテナに保存された借用 (領域の近似) ----
+
+const NLL_REF_FIELD: &str = "type t.S['a]\n    f: &'a u8\n    b: u8\nend t.S\n\n";
+
+#[test]
+fn nll_rejects_a_mutation_while_a_borrow_is_stored_in_a_struct_field() {
+    let (bad, out) = has_e3010(
+        "nll_store_field",
+        NLL_REF_FIELD,
+        &["let mut x = 1u8", "let s = t.S { f: &x, b: 2u8 }", "x = 2u8", "core.check.eq(s.b, 2u8)"],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `s.f`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_any_use_while_a_mutable_borrow_is_stored_in_a_vec() {
+    let (bad, out) = has_e3010(
+        "nll_store_vec_mut",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "match v.push(&mut x) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "core.check.eq(x, 1u8)",
+            "core.check.eq(v.len(), 1usize)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot use `x` while it is mutably borrowed by `v`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_stored_borrow_is_used_in_a_match_arm() {
+    let (bad, out) = has_e3010(
+        "nll_store_match",
+        "",
+        &[
+            "let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "match m.insert(1u8, &x) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "match m.get(1u8) {",
+            "    Some(rr) => {",
+            "        x = 2u8",
+            "        core.check.eq(*rr, 1u8)",
+            "    }",
+            "    None => 0u8",
+            "}",
+        ],
+    );
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_after_a_stored_borrow_is_read_back() {
+    let (bad, out) = has_e3010(
+        "nll_store_read",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "match v.push(&x) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "let r = v.first().unwrap()",
+            "x = 2u8",
+            "core.check.eq(*r, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_stored_borrow_overwritten_before_the_conflict() {
+    // フィールドへの再代入で、前に保存された借用は死ぬ。
+    let (bad, out) = has_e3010(
+        "nll_store_overwrite",
+        NLL_REF_FIELD,
+        &[
+            "let mut x = 1u8",
+            "let mut y = 2u8",
+            "let mut s = t.S { f: &x, b: 2u8 }",
+            "s.f = &y",
+            "core.check.eq(x, 1u8)",
+            "core.check.eq(s.f, &y)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_vec_reassigned_before_the_conflict() {
+    // コンテナごと作り直すと、保存されていた借用は死ぬ。
+    let (bad, out) = has_e3010(
+        "nll_store_reassign",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "match v.push(&x) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "core.check.eq(x, 1u8)",
+            "core.check.eq(v.len(), 0usize)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_stored_borrow_dropped_before_the_conflict() {
+    // `core.mem.drop(s.f)` でフィールドの値を消費すると、保存された借用は死ぬ。
+    let (bad, out) = has_e3010(
+        "nll_store_drop",
+        NLL_REF_FIELD,
+        &[
+            "let mut x = 1u8",
+            "let mut s = t.S { f: &x, b: 2u8 }",
+            "core.mem.drop(s.f)",
+            "core.check.eq(x, 1u8)",
+            "core.check.eq(s.b, 2u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_mutation_after_the_storage_holder_is_dead() {
+    // 保存場所の根の変数がもう使われないなら、借りた元は自由に使える。
+    let (bad, out) = has_e3010(
+        "nll_store_dead",
+        NLL_REF_FIELD,
+        &[
+            "let mut x = 1u8",
+            "let s = t.S { f: &x, b: 2u8 }",
+            "core.check.eq(s.b, 2u8)",
+            "x = 5u8",
+            "core.check.eq(x, 5u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_of_the_borrowed_value_inside_a_loop_over_the_container() {
+    let (bad, out) = has_e3010(
+        "nll_store_loop",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "match v.push(&x) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "for r in v.iter() {",
+            "    x = 2u8",
+            "    core.check.eq(*r, 1u8)",
+            "}",
+        ],
+    );
+    assert!(bad, "{}", out);
+}
+
 fn clif_capture_program(tail: &str) -> String {
     let nl = char::from(10u8).to_string();
     [
