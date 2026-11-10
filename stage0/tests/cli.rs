@@ -4067,6 +4067,209 @@ fn nll_rejects_a_mutation_of_the_borrowed_value_inside_a_loop_over_the_container
     assert!(bad, "{}", out);
 }
 
+// ---- 部分 move の追跡 (4.1・4.4) ----
+
+fn pmove_check(name: &str, helper: &[&str], b: &[&str]) -> (bool, String) {
+    let nl = char::from(10u8).to_string();
+    let prefix = helper.join(&nl) + &nl + &nl;
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out).iter().any(|c| c == "E3002"), out)
+}
+
+fn pmove_prefix() -> Vec<&'static str> {
+    vec![
+        "type t.P",
+        "    a: u8",
+        "end t.P",
+        "",
+        "type t.S",
+        "    f: t.P",
+        "    g: t.P",
+        "end t.S",
+        "",
+        "type t.I",
+        "    b: t.P",
+        "    n: u8",
+        "end t.I",
+        "",
+        "fn t.take(p: t.P) -> () uses [] panics never",
+        "    core.mem.drop(p)",
+        "end t.take",
+        "",
+        "fn t.take_s(s: t.S) -> () uses [] panics never",
+        "    core.mem.drop(s)",
+        "end t.take_s",
+        "",
+        "fn t.take_i(x: t.I) -> () uses [] panics never",
+        "    core.mem.drop(x)",
+        "end t.take_i",
+        "",
+        "fn t.take_u(x: u8) -> () uses [] panics never",
+        "    core.mem.drop(x)",
+        "end t.take_u",
+        "",
+    ]
+}
+
+#[test]
+fn a_partial_move_makes_the_whole_value_unusable() {
+    let (bad, out) = pmove_check(
+        "pmove_whole",
+        &pmove_prefix(),
+        &[
+            "let s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }",
+            "t.take(s.f)",
+            "t.take_s(s)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("use of partially moved value `s`"), "{}", out);
+    assert!(out.contains("moved `s.f`"), "{}", out);
+}
+
+#[test]
+fn consuming_one_field_leaves_sibling_fields_usable() {
+    // s.f を消したあとでも、別のフィールド s.g の消費は OK (4.1)。
+    let (bad, out) = pmove_check(
+        "pmove_sibling",
+        &pmove_prefix(),
+        &[
+            "let s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }",
+            "t.take(s.f)",
+            "t.take(s.g)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn a_moved_field_is_revived_by_reassignment() {
+    let (bad, out) = pmove_check(
+        "pmove_revive",
+        &pmove_prefix(),
+        &[
+            "let mut s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }",
+            "t.take(s.f)",
+            "s.f = t.P { a: 3u8 }",
+            "t.take_s(s)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn a_moved_field_cannot_be_consumed_twice_until_it_is_reassigned() {
+    let (bad, out) = pmove_check(
+        "pmove_twice",
+        &pmove_prefix(),
+        &[
+            "let s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }",
+            "t.take(s.f)",
+            "t.take(s.f)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("use of moved value `s.f`"), "{}", out);
+}
+
+#[test]
+fn copy_fields_are_never_moved() {
+    // t.I.n は u8 (Copy)。何度消しても move にならない (既存の Copy 判定と整合)。
+    let (bad, out) = pmove_check(
+        "pmove_copy",
+        &pmove_prefix(),
+        &[
+            "let s = t.I { b: t.P { a: 1u8 }, n: 7u8 }",
+            "t.take_u(s.n)",
+            "t.take_u(s.n)",
+            "t.take_i(s)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nested_field_paths_are_tracked_as_places() {
+    let (bad, out) = pmove_check(
+        "pmove_nested",
+        &pmove_prefix(),
+        &[
+            "let s = t.I { b: t.P { a: 1u8 }, n: 7u8 }",
+            "t.take(s.b)",
+            "t.take(s.b)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("use of moved value `s.b`"), "{}", out);
+}
+
+#[test]
+fn a_nested_place_blocks_uses_of_its_prefixes_but_not_siblings() {
+    // s.a.b を move したあと、s.a 全体の使用は E3002、s.a.n (兄弟の道) は OK。
+    // s 全体の使用も部分 move で E3002。
+    let mut helper = pmove_prefix();
+    helper.push("type t.Out");
+    helper.push("    a: t.I");
+    helper.push("end t.Out");
+    helper.push("");
+    helper.push("fn t.take_o(x: t.Out) -> () uses [] panics never");
+    helper.push("    core.mem.drop(x)");
+    helper.push("end t.take_o");
+    helper.push("");
+    let (bad, out) = pmove_check(
+        "pmove_prefix_use",
+        &helper,
+        &[
+            "let s = t.Out { a: t.I { b: t.P { a: 1u8 }, n: 2u8 } }",
+            "t.take(s.a.b)",
+            "t.take_u(s.a.n)",
+            "t.take_i(s.a)",
+            "t.take_o(s)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("use of partially moved value `s.a`"), "{}", out);
+    assert!(out.contains("use of partially moved value `s`"), "{}", out);
+}
+
+#[test]
+fn a_field_moved_in_one_branch_is_fine_after_the_merge() {
+    // 分岐の合流は既存の move 検査の流儀: 枝の中で move しても、合流後は move として扱わない。
+    let (bad, out) = pmove_check(
+        "pmove_branch",
+        &pmove_prefix(),
+        &[
+            "let s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }",
+            "let flag = true",
+            "if flag {",
+            "    t.take(s.f)",
+            "} else {",
+            "    t.take(s.g)",
+            "}",
+            "t.take_s(s)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn reading_a_field_of_a_fully_moved_value_is_still_an_error() {
+    // 全体を move したあとのフィールドの読みは、従来どおり E3002 (鍵が s で重なる)。
+    let (bad, out) = pmove_check(
+        "pmove_after_whole",
+        &pmove_prefix(),
+        &[
+            "let s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }",
+            "t.take_s(s)",
+            "t.take(s.f)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("use of moved value `s.f`"), "{}", out);
+    assert!(out.contains("moved `s` at line"), "{}", out);
+}
+
 fn clif_capture_program(tail: &str) -> String {
     let nl = char::from(10u8).to_string();
     [
