@@ -1116,6 +1116,166 @@ fn let_annotation_and_return_value_mismatches_are_reported_once() {
     assert_eq!(out.matches("type mismatch in return value").count(), 1, "{}", out);
 }
 
+// ---- 構造体リテラルの型引数の推論 (types.rs) ----
+
+fn generic_structs_prefix() -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "type t.W[T]",
+        "    v: T",
+        "end t.W",
+        "",
+        "type t.P[T]",
+        "    a: T",
+        "    b: T",
+        "end t.P",
+        "",
+        "type t.S",
+        "    n: u32",
+        "end t.S",
+        "",
+        "fn t.read_w(w: t.W<u32>) -> u32 uses [] panics never",
+        "    w.v",
+        "end t.read_w",
+        "",
+        "fn t.read_w8(w: t.W<u8>) -> u8 uses [] panics never",
+        "    w.v",
+        "end t.read_w8",
+        "",
+    ]
+    .join(&nl)
+}
+
+fn check_with_structs(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let mut prefix = generic_structs_prefix();
+    prefix.push_str(&nl);
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn a_struct_literal_infers_the_type_arguments_of_a_generic_struct() {
+    // W { v: 1u32 } の T は u32 に決まり、以降のフィールド・呼び出しの検査に流れる。
+    // 注釈のある let は逆向きにも決める (リテラル `1` は u8 になるので E2027 にならない)。
+    let (got, out) = check_with_structs(
+        "sl_infer",
+        &[
+            "let w = t.W { v: 1u32 }",
+            "core.mem.drop(w.v + 1u32)",
+            "core.mem.drop(t.read_w(t.W { v: 2u32 }))",
+            "let w2: t.W<u8> = t.W { v: 1 }",
+            "core.mem.drop(w2.v + 1u8)",
+        ],
+    );
+    assert!(!got.iter().any(|c| c.starts_with("E202")), "{}", out);
+    assert!(!got.iter().any(|c| c == "E2010" || c == "E2011"), "{}", out);
+}
+
+#[test]
+fn a_literal_in_a_generic_struct_literal_can_be_decided_by_another_field() {
+    // a だけでは T が決まらないが、b (u32) と単一化して 1 も u32 になる。
+    let (got, out) = check_with_structs("sl_flow", &["let p = t.P { a: 1, b: 2u32 }", "core.mem.drop(p)"]);
+    assert!(!got.iter().any(|c| c == "E2027" || c == "E2023"), "{}", out);
+}
+
+#[test]
+fn an_undecided_literal_in_a_generic_struct_literal_is_an_error() {
+    // T を決める手がかりがないので、リテラルの型は決まらない (let a = 5 と同じ E2027)。
+    let (got, out) = check_with_structs("sl_undec", &["let w = t.W { v: 1 }", "core.mem.drop(w)"]);
+    assert!(got.iter().any(|c| c == "E2027"), "{}", out);
+    assert!(out.contains("cannot infer the type of the int literal `1`"), "{}", out);
+}
+
+#[test]
+fn conflicting_fields_of_a_struct_literal_are_rejected() {
+    // T は a で u8 に決まったあとで、b に u32 を入れると矛盾 (E2023)。
+    let (got, out) = check_with_structs("sl_conflict", &["let p = t.P { a: 1u8, b: 2u32 }", "core.mem.drop(p)"]);
+    assert!(got.iter().any(|c| c == "E2023"), "{}", out);
+    assert!(out.contains("field `b` of `t.P`"), "{}", out);
+    // 非ジェネリクスの構造体でも、フィールドの宣言型と一致しなければ E2023。
+    let (got, out) = check_with_structs("sl_conflict2", &["let s = t.S { n: 1u8 }", "core.mem.drop(s)"]);
+    assert!(got.iter().any(|c| c == "E2023"), "{}", out);
+    assert!(out.contains("field `n` of `t.S`"), "{}", out);
+}
+
+#[test]
+fn a_struct_literal_with_wrong_type_arguments_for_a_call_is_rejected() {
+    // リテラルの型引数は u32 と推論されるので、t.W<u8> を受ける関数には渡せない。
+    let (got, out) = check_with_structs("sl_call", &["core.mem.drop(t.read_w8(t.W { v: 1u32 }))"]);
+    assert!(got.iter().any(|c| c == "E2023"), "{}", out);
+    assert!(out.contains("argument 1 of `t.read_w8`"), "{}", out);
+}
+
+#[test]
+fn a_let_annotation_with_different_type_arguments_is_reported_with_the_full_types() {
+    // 従来の検査は名前しか比べないので、型引数の違いは新しい推論だけが報告する (1 件)。
+    let (got, out) = check_with_structs("sl_annot", &["let w: t.W<u64> = t.W { v: 1u32 }", "core.mem.drop(w)"]);
+    assert!(got.iter().any(|c| c == "E2020"), "{}", out);
+    assert!(out.contains("expected t.W<u64>, found t.W<u32>"), "{}", out);
+    assert_eq!(out.matches("type mismatch in let binding").count(), 1, "{}", out);
+}
+
+#[test]
+fn a_return_value_with_different_type_arguments_is_reported() {
+    let nl = char::from(10u8).to_string();
+    let mut prefix = generic_structs_prefix();
+    prefix.push_str(&nl);
+    prefix.push_str("fn t.bad() -> t.W<u64> uses [] panics never\n    t.W { v: 1u32 }\nend t.bad\n\n");
+    let t = Tmp::new("sl_ret", &main_wrap(&prefix, &body(&["core.mem.drop(t.bad())"])));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("type mismatch in return value: expected t.W<u64>, found t.W<u32>"), "{}", out);
+    assert_eq!(out.matches("type mismatch in return value").count(), 1, "{}", out);
+}
+
+#[test]
+fn an_option_value_in_a_result_position_is_reported_by_inference() {
+    // Some(1u8) の型は新しい推論だけが分かる。従来の検査は Option と Result を比べないので 1 件。
+    let (got, out) = check_codes("opt_res", &["let o = Some(1u8)", "let r: Result<u8, u8> = o", "core.mem.drop(r)"]);
+    assert!(got.iter().any(|c| c == "E2020"), "{}", out);
+    assert!(out.contains("expected Result, found Option"), "{}", out);
+    assert_eq!(out.matches("type mismatch in let binding").count(), 1, "{}", out);
+}
+
+#[test]
+fn an_option_value_returned_from_a_result_function_is_reported() {
+    let nl = char::from(10u8).to_string();
+    let prefix = format!(
+        "fn t.bad() -> Result<u8, u8> uses [] panics never{}    let o = Some(1u8){}    o{}end t.bad{}{}",
+        nl, nl, nl, nl, nl
+    );
+    let t = Tmp::new("opt_ret", &main_wrap(&prefix, &body(&["core.mem.drop(t.bad())"])));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("type mismatch in return value: expected Result, found Option"), "{}", out);
+    assert_eq!(out.matches("type mismatch in return value").count(), 1, "{}", out);
+}
+
+#[test]
+fn try_requires_the_error_type_to_match_exactly() {
+    // 4.1: `?` はエラー型が完全一致するときだけ使える。u32 のエラーを u8 の戻り値で `?` すると E2020。
+    let nl = char::from(10u8).to_string();
+    let prefix = [
+        "fn t.good() -> Result<(), u8> uses [] panics never",
+        "    let r: Result<(), u8> = Ok(())",
+        "    r?",
+        "    Ok(())",
+        "end t.good",
+        "",
+        "fn t.bad() -> Result<(), u8> uses [] panics never",
+        "    let r: Result<(), u32> = Ok(())",
+        "    r?",
+        "    Ok(())",
+        "end t.bad",
+        "",
+    ]
+    .join(&nl);
+    let t = Tmp::new("try_err", &main_wrap(&prefix, &body(&["core.mem.drop(t.good())", "core.mem.drop(t.bad())"])));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("type mismatch in `?`: expected error type `u8`, found `u32`"), "{}", out);
+    assert_eq!(out.matches("type mismatch in `?`").count(), 1, "{}", out);
+}
+
 // ---- std.fs (インタプリタ) ----
 
 #[test]
