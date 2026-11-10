@@ -1916,6 +1916,13 @@ impl<'a> Checker<'a> {
                             let got = self.ty_of(&f[1], env);
                             self.mismatch(&rt, &got, nline(s), "assignment");
                         }
+                    } else {
+                        // 3.1: `static` / `const` は不変で、代入できない。
+                        let ex = self.p.expand(&segs, &self.def(self.d).file);
+                        let is_const = (1..=ex.len()).rev().any(|k| self.p.consts.contains_key(&ex[..k].join(".")));
+                        if is_const {
+                            self.tdiag("E3005", format!("cannot assign to `{}`: static/const is immutable (3.1)", ex.join(".")), nline(s));
+                        }
                     }
                 }
             }

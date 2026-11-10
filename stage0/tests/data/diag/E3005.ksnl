@@ -1,0 +1,6 @@
+static t.N: u32 = 5u32
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    t.N = 6u32
+    Ok(())
+end t.main
