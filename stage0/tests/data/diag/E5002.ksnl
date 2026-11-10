@@ -1,0 +1,5 @@
+type t.E pub
+    x: u8
+end t.E
+
+impl core.marker.Send for t.E

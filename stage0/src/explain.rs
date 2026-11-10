@@ -87,6 +87,7 @@ pub const EXPLAIN: &[(&str, &str)] = &[
     ("E4013", r#"再帰を含む型(自己参照・相互再帰)には `core.ops.Drop` の明示実装が必要(5.3)。"#),
     ("E5003", r#"`extern` の外部関数は `unsafe "名前" "理由" { .. }` ブロックの中でしか呼べない(3.8)。"#),
     ("E5001", r#"`unsafe` は `kasane.toml` の `[unsafe] modules` に列挙したモジュールでのみ使える(3.5)。"#),
+    ("E5002", r#"手動の `core.marker.Send` / `Sync` impl(内部可変性の表明)は、`kasane.toml` の `[unsafe] modules` に列挙したモジュールでのみ書ける(5.5)。"#),
     ("E9001", r#"`kasane.toml` が見つからない。"#),
     ("E9002", r#"`kasane.toml` が不正。"#),
     ("E9003", r#"パッケージ名が `[a-z][a-z0-9_]*` でない。"#),

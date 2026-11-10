@@ -330,6 +330,18 @@ impl<'a> Checker<'a> {
         for &i in &impl_lines {
             let d = self.def(i);
             let tb = d.impl_trait.clone();
+            // 5.5: 手動の `Send` / `Sync` impl (内部可変性の表明) は unsafe 許可モジュールのみ。
+            if matches!(tb.as_str(), "core.marker.Send" | "core.marker.Sync") {
+                if !self.module_may_use_unsafe(&d.module) {
+                    self.diag(
+                        "E5002",
+                        format!("manual impl of {} is only allowed in an unsafe-permitted module (5.5)", tb),
+                        i,
+                        0,
+                    );
+                }
+                continue;
+            }
             // 4.3: `Fn` / `FnMut` / `FnOnce` は自動実装のみ。手動 impl はできない。
             if matches!(tb.as_str(), "core.ops.Fn" | "core.ops.FnMut" | "core.ops.FnOnce") {
                 self.diag(
