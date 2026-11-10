@@ -1436,7 +1436,7 @@ impl<'a> TypeCk<'a> {
                     let e_want = wa[1].clone();
                     let e_got = ga[1].clone();
                     if let Err(err) = self.unify2(&e_want, &e_got) {
-                        if let Some((w, g)) = self.prim_conflict(&err) {
+                        if let Some((w, g)) = self.type_conflict(&err) {
                             self.diag(
                                 "E2020",
                                 format!(
