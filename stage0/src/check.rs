@@ -651,6 +651,72 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 型が `core.marker.Send` を満たすか。`Some(false)` は明確に満たさない (5.5)。
+    /// `&T` は `T: Sync` のとき Send、`&mut T` は `T: Send` のとき Send。
+    fn send_v(
+        &self,
+        t: &V,
+        gn: &HashSet<String>,
+        user_types: &HashSet<String>,
+        seen: &mut HashSet<String>,
+    ) -> Option<bool> {
+        match tag(t).as_str() {
+            "prim" | "never" => Some(true),
+            "tuple" => {
+                let mut res = Some(true);
+                for x in items(tel(t, 1)) {
+                    res = and3(res, self.send_v(x, gn, user_types, seen));
+                }
+                res
+            }
+            "ref" => {
+                if matches!(tel(t, 1), V::B(true)) {
+                    self.send_v(tel(t, 2), gn, user_types, seen)
+                } else {
+                    self.sync_v(tel(t, 2), gn, user_types, seen)
+                }
+            }
+            "ptr" => Some(false),
+            "slice" | "array" => self.send_v(tel(t, 1), gn, user_types, seen),
+            "named" => {
+                let n = st(tel(t, 1));
+                if gn.contains(&n) {
+                    return None;
+                }
+                if self.has_manual_marker(&n, "core.marker.Send") {
+                    return Some(true);
+                }
+                if !user_types.contains(&n) {
+                    return None;
+                }
+                if !seen.insert(n.clone()) {
+                    return Some(true);
+                }
+                let res = self
+                    .p
+                    .types
+                    .get(&n)
+                    .map(|&i| self.def(i))
+                    .map(|d| {
+                        let tys: Vec<&V> = if d.kw == "type" {
+                            d.fields.iter().map(|f| &f.1).collect()
+                        } else {
+                            d.variants.iter().flat_map(|v| v.1.iter()).collect()
+                        };
+                        let mut r = Some(true);
+                        for x in tys {
+                            r = and3(r, self.send_v(x, gn, user_types, seen));
+                        }
+                        r
+                    })
+                    .unwrap_or(None);
+                seen.remove(&n);
+                res
+            }
+            _ => None,
+        }
+    }
+
     /// 型が線形な値を含むか。`Some(true)` は明確に線形。
     fn linear_v(
         &self,
@@ -1144,6 +1210,19 @@ impl<'a> Checker<'a> {
                                             );
                                         }
                                     }
+                                }
+                                // 5.5: spawn の結果型 T も `Send` でなければならない。
+                                let user_types: HashSet<String> = self
+                                    .user
+                                    .iter()
+                                    .map(|&i| self.def(i))
+                                    .filter(|d| matches!(d.kw.as_str(), "type" | "enum"))
+                                    .map(|d| d.name.clone())
+                                    .collect();
+                                if self.send_v(&nf(cl)[1], &HashSet::new(), &user_types, &mut HashSet::new())
+                                    == Some(false)
+                                {
+                                    self.diag("E2040", "spawn result type must be core.marker.Send (5.5)".into(), di, nline(cl));
                                 }
                             }
                         }
