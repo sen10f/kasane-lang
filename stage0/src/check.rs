@@ -129,6 +129,79 @@ pub(crate) fn covers(caller: &[String], eff: &str) -> bool {
     caller.iter().any(|c| eff == c || eff.starts_with(&format!("{}.", c)))
 }
 
+/// 式の中の明示型引数 (`f::<..>` の各実引数) の種別 (4.3)。
+/// "type" は型そのもの、"effects" は `uses [..]`、"panic" は `never` / `may`、
+/// "const" は定数リテラル (整数 / `bool` / `char`)、"life" はライフタイム。
+pub(crate) fn targ_kind(t: &V) -> &'static str {
+    if let V::L(fs) = t {
+        if let Some(f0) = fs.first() {
+            match st(f0).as_str() {
+                "life" => return "life",
+                "const" => return "const",
+                "panic" => return "panic",
+                "effects" => return "effects",
+                _ => {}
+            }
+        }
+    }
+    "type"
+}
+
+/// 呼び出しの明示型引数を、callee のジェネリクス宣言と順に対応させる (4.3)。
+/// 戻り値は (宣言の名前, 種別, 実引数)。実引数が供給されない残りの宣言
+/// (引数などから推論される部分) は捨てて構わない。ライフタイムの実引数は、
+/// 宣言の残りにライフタイムがあればそれに対応させ、なければ並びが崩れたとみなす。
+/// `None` になるのは、実引数が宣言より多いときと、ライフタイム実引数と他の実引数の
+/// 並びが崩れた (ライフタイム実引数に対応する宣言がない) とき。`type` ↔ `effects` /
+/// `panic` / `const` の種別不整は `None` にならず、宣言側の種別のまま対応させて
+/// 置換を試みる (結果として黙る。種別不整の呼び出しの検査はしない近似)。
+pub(crate) fn align_targs<'a>(
+    gens: &'a [(String, String, V)],
+    targs: &'a [V],
+) -> Option<Vec<(&'a str, &'a str, &'a V)>> {
+    let mut out = Vec::new();
+    let mut gi = 0usize;
+    for t in targs {
+        let k = targ_kind(t);
+        while gi < gens.len() && gens[gi].0 == "life" && k != "life" {
+            gi += 1;
+        }
+        let g = gens.get(gi)?;
+        if (k == "life") != (g.0 == "life") {
+            return None;
+        }
+        out.push((g.1.as_str(), g.0.as_str(), t));
+        gi += 1;
+    }
+    Some(out)
+}
+
+/// callee の `uses` / `panics` を、呼び出しの明示型引数で実体化する (4.3 の単相化)。
+/// 効果変数 `E` は対応する `uses [..]` 実引数の集合に、panic 変数 `P` は `never` / `may` に置き換わる。
+/// 実引数がない・対応が取れない (推論できない) ときは None。呼び出し側はそのとき
+/// 宣言のままの検査に落とす (未束縛の効果変数は `covers` が黙って通す)。
+pub(crate) fn inst_def_effects(callee: &Def, targs: &[V]) -> Option<(Vec<String>, Option<String>)> {
+    if targs.is_empty() {
+        return None;
+    }
+    let pairs = align_targs(&callee.generics, targs)?;
+    let uses: Vec<String> = callee
+        .uses
+        .iter()
+        .flat_map(|e| match pairs.iter().find(|(n, k, _)| *k == "uses" && *n == e.as_str()) {
+            // `uses [alloc, E]` は具体名と実引数の集合の和 (4.3)。
+            Some((_, _, t)) => items(tel(t, 1)).iter().map(st).collect(),
+            None => vec![e.clone()],
+        })
+        .collect();
+    let panics =
+        callee.panics.as_deref().map(|p| match pairs.iter().find(|(n, k, _)| *k == "panics" && *n == p) {
+            Some((_, _, t)) => st(tel(t, 1)),
+            None => p.to_string(),
+        });
+    Some((uses, panics))
+}
+
 const PRELUDE_TYPES: &[&str] = &["Option", "Result"];
 /// プレリュード名のFQN形 (型・パターンに書くとE1110。メソッドFQNは除く)。
 const PRELUDE_FQN: &[&str] = &[
@@ -1317,11 +1390,12 @@ impl<'a> Checker<'a> {
                                     nline(e),
                                 );
                             }
-                            self.effects(callee, di, nline(e), free);
+                            // 4.3: 明示型引数 (`f::<[io.fs], never>`) があれば効果変数を実体化する。
+                            self.effects(callee, di, nline(e), free, items(&f[2]));
                         } else if matches!(r.target, Target::Native(_)) && r.rest.is_empty() {
                             let fq = self.p.expand(&segs, "").join(".");
                             if let Some(&si) = self.p.sigs.get(&fq) {
-                                self.effects(self.def(si), di, nline(e), free);
+                                self.effects(self.def(si), di, nline(e), free, items(&f[2]));
                             }
                         }
                     }
@@ -1355,7 +1429,8 @@ impl<'a> Checker<'a> {
                     .map(|v| v.iter().map(|&i| self.def(i)).filter(|c| c.params.len() == n + 1).collect())
                     .unwrap_or_default();
                 if !cands.is_empty() {
-                    self.effects_all(&cands, di, nline(e), free);
+                    // 4.3: メソッド呼び出しの明示型引数 (`x.m::<..>`) があれば効果変数を実体化する。
+                    self.effects_all(&cands, di, nline(e), free, items(&f[3]));
                 }
             }
             "Index" => {
@@ -1562,35 +1637,51 @@ impl<'a> Checker<'a> {
     }
 
     fn violation(&self, callee: &Def) -> Option<(String, String)> {
+        self.violation_effs(&callee.name, &callee.uses, callee.panics.as_deref())
+    }
+
+    /// 呼び出し側の `uses` / `panics` が、callee の効果 (5.1 の階層の部分型) を覆うか。
+    fn violation_effs(&self, name: &str, uses: &[String], panics: Option<&str>) -> Option<(String, String)> {
         let cu = self.cur_uses.as_ref()?;
-        for eff in &callee.uses {
+        for eff in uses {
             if !covers(cu, eff) {
-                return Some(("E4001".into(), format!("{} uses effect `{}` not declared by the caller", callee.name, eff)));
+                return Some(("E4001".into(), format!("{} uses effect `{}` not declared by the caller", name, eff)));
             }
         }
-        if callee.panics.as_deref() == Some("may") && self.cur_panics == "never" {
+        if panics == Some("may") && self.cur_panics == "never" {
             return Some((
                 "E4002".into(),
-                format!("{} may panic but the caller declares `panics never`", callee.name),
+                format!("{} may panic but the caller declares `panics never`", name),
             ));
         }
         None
     }
 
-    fn effects(&mut self, callee: &Def, di: usize, line: usize, free: bool) {
+    /// 呼び出しの明示型引数 (`f::<..>`) で効果変数・panic 変数を実体化してから検査する (4.3)。
+    /// 呼び出しごとに独立なので、1 つ目の実体化が 2 つ目に漏れることはない。
+    /// 実体化できない (実引数がない・名前が並ばない) ときは、実体化せずに宣言のまま検査する
+    /// (効果変数は `covers` が黙って通す = 誤検出を出さない)。
+    fn violation_targs(&self, callee: &Def, targs: &[V]) -> Option<(String, String)> {
+        match inst_def_effects(callee, targs) {
+            Some((uses, panics)) => self.violation_effs(&callee.name, &uses, panics.as_deref()),
+            None => self.violation(callee),
+        }
+    }
+
+    fn effects(&mut self, callee: &Def, di: usize, line: usize, free: bool, targs: &[V]) {
         if free || self.cur_uses.is_none() {
             return;
         }
-        if let Some((c, m)) = self.violation(callee) {
+        if let Some((c, m)) = self.violation_targs(callee, targs) {
             self.diag(&c, m, di, line);
         }
     }
 
-    fn effects_all(&mut self, cands: &[&Def], di: usize, line: usize, free: bool) {
+    fn effects_all(&mut self, cands: &[&Def], di: usize, line: usize, free: bool, targs: &[V]) {
         if free || self.cur_uses.is_none() {
             return;
         }
-        let bad: Vec<Option<(String, String)>> = cands.iter().map(|c| self.violation(c)).collect();
+        let bad: Vec<Option<(String, String)>> = cands.iter().map(|c| self.violation_targs(c, targs)).collect();
         if bad.iter().all(|b| b.is_some()) {
             let (c, m) = bad[0].clone().unwrap();
             self.diag(&c, m, di, line);

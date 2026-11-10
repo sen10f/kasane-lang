@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::check::{covers, items, nf, nname, st, strs, walk};
+use crate::check::{covers, inst_def_effects, items, nf, nname, st, strs, walk};
 use crate::parser::V;
 use crate::program::{Def, Program, Target};
 
@@ -62,9 +62,11 @@ fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
                     continue;
                 }
                 let segs = strs(&nf(fnn)[0]);
+                // 4.3: 明示型引数 (`f::<[io.fs], never>`) があれば効果変数を実体化した和を取る。
+                let targs: &[V] = items(&f[2]);
                 if locals.contains(&segs[0]) {
                     if segs.len() >= 2 {
-                        method(p, &segs[segs.len() - 1], items(&f[1]).len(), &mut effs, &mut may);
+                        method(p, &segs[segs.len() - 1], items(&f[1]).len(), targs, &mut effs, &mut may);
                     }
                     continue;
                 }
@@ -72,13 +74,13 @@ fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
                     Some(r) => match r.target {
                         Target::Fn(_) | Target::Sig(_) if r.rest.is_empty() => {
                             if let Some(c) = p.fn_def(&r) {
-                                add(c, &mut effs, &mut may);
+                                add_callee(c, targs, &mut effs, &mut may);
                             }
                         }
                         Target::Native(_) if r.rest.is_empty() => {
                             let fq = p.expand(&segs, "").join(".");
                             if let Some(&si) = p.sigs.get(&fq) {
-                                add(&p.defs[si], &mut effs, &mut may);
+                                add_callee(&p.defs[si], targs, &mut effs, &mut may);
                             }
                         }
                         _ => {}
@@ -86,7 +88,7 @@ fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
                     None => {}
                 }
             }
-            "MCall" => method(p, &st(&f[1]), items(&f[2]).len(), &mut effs, &mut may),
+            "MCall" => method(p, &st(&f[1]), items(&f[2]).len(), items(&f[3]), &mut effs, &mut may),
             _ => {}
         }
     }
@@ -98,23 +100,37 @@ fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
 }
 
 fn add(c: &Def, effs: &mut BTreeSet<String>, may: &mut bool) {
-    for e in &c.uses {
+    add_effs(&c.uses, c.panics.as_deref(), effs, may);
+}
+
+/// 効果の集合と panic を推論結果に足す。効果変数 (E, P など) は具体的な効果ではないので無視する。
+fn add_effs(uses: &[String], panics: Option<&str>, effs: &mut BTreeSet<String>, may: &mut bool) {
+    for e in uses {
         // 効果変数 (E, P など) は具体的な効果ではない。
         if e.chars().next().map_or(false, |ch| ch.is_lowercase()) {
             effs.insert(e.clone());
         }
     }
-    if c.panics.as_deref() == Some("may") {
+    if panics == Some("may") {
         *may = true;
     }
 }
 
-fn method(p: &Program, name: &str, nargs: usize, effs: &mut BTreeSet<String>, may: &mut bool) {
+/// 呼び出し先の効果を、明示型引数で効果変数を実体化してから足す (4.3 の単相化)。
+/// 実体化できない (実引数がない・名前が並ばない) ときは宣言のまま足す。
+fn add_callee(c: &Def, targs: &[V], effs: &mut BTreeSet<String>, may: &mut bool) {
+    match inst_def_effects(c, targs) {
+        Some((uses, panics)) => add_effs(&uses, panics.as_deref(), effs, may),
+        None => add(c, effs, may),
+    }
+}
+
+fn method(p: &Program, name: &str, nargs: usize, targs: &[V], effs: &mut BTreeSet<String>, may: &mut bool) {
     if let Some(v) = p.method_idx.get(name) {
         for &i in v {
             let c = &p.defs[i];
             if c.params.len() == nargs + 1 {
-                add(c, effs, may);
+                add_callee(c, targs, effs, may);
             }
         }
     }
