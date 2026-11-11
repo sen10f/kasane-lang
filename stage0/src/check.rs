@@ -242,6 +242,9 @@ pub struct Checker<'a> {
     moved: BTreeMap<String, usize>,
     final_env: HashMap<String, V>,
     graph: BTreeMap<String, BTreeSet<String>>,
+    /// クロージャ節 (5.3 の `関数名#番号`) → そのクロージャの AST ノード。
+    /// スタック上界の見積り (E4012) が、節のフレームを関数と同じ式で計算するために使う。
+    closure_asts: BTreeMap<String, V>,
     /// 現在の関数のファイルで `import` したモジュールの末尾名 (シャドーイング検査用)。
     import_tails: HashSet<String>,
     /// 現在の関数のファイルで `import` したモジュールの完全名 (セグメント列)。本体でのFQN参照の検出用。
@@ -306,6 +309,7 @@ impl<'a> Checker<'a> {
             moved: BTreeMap::new(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
+            closure_asts: BTreeMap::new(),
             import_tails: HashSet::new(),
             imported_modules: Vec::new(),
         }
@@ -1896,6 +1900,8 @@ impl<'a> Checker<'a> {
         for (from, tos) in tk.edges {
             self.graph.entry(from).or_default().extend(tos);
         }
+        // クロージャ節のフレーム見積り (E4012) のため、節名 → クロージャ AST の対応を引き継ぐ。
+        self.closure_asts = tk.closure_asts;
         // 従来の検査と新しい型推論が同じ誤りを同じ文面で報告したときは、1 件にまとめる。
         let mut seen = HashSet::new();
         self.diags.retain(|d| seen.insert((d.file.clone(), d.code.clone(), d.fqn.clone(), d.line, d.msg.clone())));
@@ -2786,6 +2792,25 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 節のフレーム (バイト) の見積り: 戻りアドレスと保存したフレームポインタ (16)
+    /// + 引数と局所変数の大きさ + 一時値の余裕 (16)。`anns` は引数の型注釈、`body` は本体。
+    /// 型の注釈がない引数・局所変数は 1 語 (8) とみなす。本体の `let` は `walk` で拾うので、
+    /// 入れ子のクロージャの中の `let` も数に入る (呼び出し元の関数のフレームとの二重計上は、
+    /// 従来の保守的な近似の延長として許容する)。書かれた関数とクロージャ節で共通に使う。
+    fn frame_of(&self, anns: &[&V], body: &V) -> u64 {
+        let mut all = vec![];
+        walk(body, &mut all);
+        let mut bytes: u64 = 16 + 16;
+        for a in anns {
+            bytes += round8(self.ty_size(a, 0));
+        }
+        for l in all.iter().filter(|x| nname(x) == "Let") {
+            let ann = &nf(l)[2];
+            bytes += if is_nil(ann) { 8 } else { round8(self.ty_size(ann, 0)) };
+        }
+        bytes
+    }
+
     fn go(&self, n: &str, path: &BTreeSet<String>, names: &HashMap<String, usize>, memo: &mut HashMap<String, u64>) -> u64 {
         if path.contains(n) {
             return 0;
@@ -2794,23 +2819,22 @@ impl<'a> Checker<'a> {
             return v;
         }
         let frame = match names.get(n) {
-            None => 32,
             Some(&i) => {
                 let d = self.def(i);
-                let mut all = vec![];
-                walk(d.body.as_ref().unwrap(), &mut all);
-                // 戻りアドレスと保存したフレームポインタ (16) + 引数と局所変数の大きさ + 一時値の余裕 (16)。
-                // 型の注釈がない局所変数は 1 語 (8) とみなす。
-                let mut bytes: u64 = 16 + 16;
-                for p in &d.params {
-                    bytes += round8(self.ty_size(&p.1, 0));
-                }
-                for l in all.iter().filter(|x| nname(x) == "Let") {
-                    let ann = &nf(l)[2];
-                    bytes += if is_nil(ann) { 8 } else { round8(self.ty_size(ann, 0)) };
-                }
-                bytes
+                let params: Vec<&V> = d.params.iter().map(|p| &p.1).collect();
+                self.frame_of(&params, d.body.as_ref().unwrap())
             }
+            // `names` にあるのは書かれた関数だけ。それ以外の節はクロージャ節 (5.3) かもしれないので、
+            // 対応表にあれば関数と同じ式で見積る。対応が取れない節 (クロージャ以外や、AST を
+            // 覚えていないもの) は従来どおり 32 にフォールバックする (近似・黙る)。
+            None => match self.closure_asts.get(n) {
+                Some(c) if nname(c) == "Closure" && nf(c).len() >= 4 => {
+                    let f = nf(c);
+                    let params: Vec<&V> = items(&f[0]).iter().filter_map(|p| items(p).get(1)).collect();
+                    self.frame_of(&params, &f[3])
+                }
+                _ => 32,
+            },
         };
         let mut np = path.clone();
         np.insert(n.to_string());

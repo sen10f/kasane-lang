@@ -2024,6 +2024,80 @@ fn the_stack_estimate_covers_indirect_calls() {
     assert!(!codes(&out).iter().any(|c| c.starts_with("E40")), "{}", out);
 }
 
+#[test]
+fn the_stack_estimate_covers_a_closure_frame() {
+    // クロージャ節のフレームは固定の 32 ではなく、引数の型から見積る。
+    // 引数の大きい (4 × u128 = 64 バイト) クロージャ経由の再帰は、小さすぎる宣言で E4012、十分なら出ない。
+    let nl = char::from(10u8).to_string();
+    let src = |limit: &str| {
+        let spin = format!("fn t.spin() -> () uses [] panics never stack {}", limit);
+        [
+            "fn t.gen[F: core.ops.Fn<(u128, u128, u128, u128), (), [], never>](f: F) -> () uses [] panics never stack 4096",
+            "    f.call((1u128, 2u128, 3u128, 4u128))",
+            "end t.gen",
+            "",
+            "fn t.main() -> Result<(), std.io.Error> uses [] panics never",
+            "    Ok(())",
+            "end t.main",
+            "",
+            spin.as_str(),
+            "    t.gen(fn(a: u128, b: u128, c: u128, d: u128) -> () capture [] {",
+            "        t.spin()",
+            "    })",
+            "end t.spin",
+            "",
+        ]
+        .join(&nl)
+    };
+    let t = Tmp::new("closure_frame", &src("128"));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E4012"), "{}", out);
+    assert!(!codes(&out).iter().any(|c| c == "E4010" || c == "E4011"), "{}", out);
+    let t = Tmp::new("closure_frame_ok", &src("256"));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c.starts_with("E40")), "{}", out);
+}
+
+#[test]
+fn the_stack_estimate_counts_a_large_closure_body() {
+    // クロージャ節のフレームは本体の `let` も数える。本体に 64 バイトのタプルを持つクロージャ経由の
+    // 再帰は、その分だけ大きくなる (240 バイトでは足りず、4096 バイトなら足りる)。
+    let nl = char::from(10u8).to_string();
+    let src = |limit: &str| {
+        let spin = format!("fn t.spin() -> () uses [] panics never stack {}", limit);
+        [
+            "fn t.gen[F: core.ops.Fn<(), (), [], never>](f: F) -> () uses [] panics never stack 4096",
+            "    f.call(())",
+            "end t.gen",
+            "",
+            "fn t.main() -> Result<(), std.io.Error> uses [] panics never",
+            "    Ok(())",
+            "end t.main",
+            "",
+            "fn t.outer() -> () uses [] panics never stack 4096",
+            "    t.gen(fn() -> () capture [] {",
+            "        let keep: (u128, u128, u128, u128) = (1u128, 2u128, 3u128, 4u128)",
+            "        core.mem.drop(keep)",
+            "        t.spin()",
+            "    })",
+            "end t.outer",
+            "",
+            spin.as_str(),
+            "    t.outer()",
+            "end t.spin",
+            "",
+        ]
+        .join(&nl)
+    };
+    let t = Tmp::new("closure_body", &src("240"));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E4012"), "{}", out);
+    assert!(!codes(&out).iter().any(|c| c == "E4010" || c == "E4011"), "{}", out);
+    let t = Tmp::new("closure_body_ok", &src("4096"));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c.starts_with("E40")), "{}", out);
+}
+
 fn clif_program(last_check: &str) -> String {
     let nl = char::from(10u8).to_string();
     [
