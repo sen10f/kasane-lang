@@ -271,8 +271,36 @@ impl<'a> Low<'a> {
                 }
                 out
             }
+            // `match` 式の値が腕から受け取る借用を、値を受け取る側 (`let r = match ...`) へ運ぶ。
+            "Match" => self.match_value_sources(e),
             _ => vec![],
         }
+    }
+
+    /// `match` 式の値が受け取る借用の出どころ。各腕の末尾式の借用を保守的に和する
+    /// (`let r = match m.get(k) { Some(rr) => rr, None => &d }` の `r` がローンを受け取る)。
+    /// 腕の末尾が分からない・対応が取れないときは何もしない (誤検出より見落としを選ぶ)。
+    fn match_value_sources(&self, m: &V) -> Vec<Src> {
+        let mut out = vec![];
+        for arm in items(&nf(m)[1]) {
+            let a = items(arm);
+            if a.len() < 2 {
+                continue;
+            }
+            let body = &a[1];
+            // 腕の本体がブロックなら末尾の式を、そうでなければ本体そのものを見る。
+            let tail = if nname(body) == "Block" {
+                match items(&nf(body)[0]).last() {
+                    Some(t) => t,
+                    None => continue,
+                }
+            } else {
+                body
+            };
+            let tail = if nname(tail) == "ExprStmt" { &nf(tail)[0] } else { tail };
+            out.extend(self.loan_sources(tail));
+        }
+        out
     }
 
     fn method_sources(&self, recv: &V, name: &str) -> Vec<Src> {
@@ -333,6 +361,76 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// リテラルに入る借用を、`root` の `base` 道の先に保存されたローンとして記録する。
+    fn store_lit(&mut self, n: usize, root: &str, base: &[String], lit: &V) {
+        match nname(lit) {
+            "StructLit" => self.store_struct_lit(n, root, base, lit),
+            "TupleE" | "ArrayE" | "ArrayRep" => self.store_seq_lit(n, root, base, lit),
+            _ => {}
+        }
+    }
+
+    /// タプル・配列リテラルの各要素に入る借用を、`root` の `base` 道の先 (要素の添字) に
+    /// 保存されたローンとして記録する (`let t = (&x, &mut y)`、`let a = [&x, &y]`)。
+    fn store_seq_lit(&mut self, n: usize, root: &str, base: &[String], lit: &V) {
+        match nname(lit) {
+            "TupleE" | "ArrayE" => {
+                for (i, elem) in items(&nf(lit)[0]).iter().enumerate() {
+                    let mut p = base.to_vec();
+                    p.push(i.to_string());
+                    self.store_seq_elem(n, root, &p, elem);
+                }
+            }
+            // `[&x; n]` はどの要素も同じ借用を持つ。添字の道は持たせない (`a[i]` の読み戻しに合わせる)。
+            "ArrayRep" => {
+                let elem = &nf(lit)[0];
+                self.store_seq_elem(n, root, base, elem);
+            }
+            _ => {}
+        }
+    }
+
+    fn store_seq_elem(&mut self, n: usize, root: &str, p: &[String], elem: &V) {
+        if matches!(nname(elem), "TupleE" | "ArrayE" | "ArrayRep") {
+            self.store_seq_lit(n, root, p, elem);
+            return;
+        }
+        let srcs = self.loan_sources(elem);
+        if !srcs.is_empty() {
+            self.hold(n, Holder::Place { root: root.to_string(), path: p.to_vec() }, srcs);
+        }
+    }
+
+    /// `let (a, b) = t` の分解で、`t` の場所 (要素の添字) に保存されたローンを各束縛へ読み戻す。
+    /// 対応の取れないパターン (`t` が場所でない・要素が束縛でない) は何もしない。
+    fn load_destructure(&mut self, n: usize, pat: &V, init: &V) {
+        if nname(pat) != "PTuple" {
+            return;
+        }
+        let Some((root, base)) = self.place_of(init) else { return };
+        self.load_destructure_at(n, pat, &root, &base);
+    }
+
+    fn load_destructure_at(&mut self, n: usize, pat: &V, root: &str, base: &[String]) {
+        if nname(pat) != "PTuple" {
+            return;
+        }
+        for (i, ep) in items(&nf(pat)[0]).iter().enumerate() {
+            let mut p = base.to_vec();
+            p.push(i.to_string());
+            match nname(ep) {
+                "PTuple" => self.load_destructure_at(n, ep, root, &p),
+                "PBind" => {
+                    let name = st(&nf(ep)[0]);
+                    if self.locals.contains(&name) {
+                        self.emit(n, Ev::Load { to: Holder::Var(name), from_root: root.to_string(), from_path: p });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// `push` / `insert` など、コンテナに値を入れるメソッド。値の式に入る借用を、
     /// レシーバの場所 (根の変数 + 道) に保存されたローンとして記録する。
     fn store_into(&mut self, n: usize, name: &str, root: &str, path: &[String], args: &[V]) {
@@ -376,11 +474,15 @@ impl<'a> Low<'a> {
                         self.hold(c, Holder::Var(b.clone()), srcs2);
                     }
                 }
-                // 構造体リテラルのフィールドに入る借用は、保存場所 (変数 + フィールド道) に記録する。
-                // 変数に直接持たせないのは、`s.f = ...` の上書きでローンを殺せるようにするため。
-                if nname(init) == "StructLit" && nname(&f[0]) == "PBind" {
+                // 分解 `let (a, b) = t`: `t` の場所に保存されたローンを各束縛に読み戻す。
+                if nname(&f[0]) == "PTuple" && !is_nil(init) {
+                    self.load_destructure(c, &f[0], init);
+                }
+                // 構造体・タプル・配列リテラルに入る借用は、保存場所 (変数 + 道) に記録する。
+                // 変数に直接持たせないのは、`s.f = ...` / `t = ...` の上書きでローンを殺せるようにするため。
+                if matches!(nname(init), "StructLit" | "TupleE" | "ArrayE" | "ArrayRep") && nname(&f[0]) == "PBind" {
                     if let Some(b) = binds.first() {
-                        self.store_struct_lit(c, b, &[], init);
+                        self.store_lit(c, b, &[], init);
                     }
                 }
                 c
@@ -397,9 +499,9 @@ impl<'a> Low<'a> {
                     self.hold(c, Holder::Var(name.clone()), srcs);
                     // 値の代入そのものも、その変数への書き込み
                     self.emit(c, Ev::Access { root: name.clone(), path: vec![], kind: Acc::Write, line: nline(s) });
-                    // `s = t.S { f: &mut y }` のように、構造体ごと新しい借用を保存することもある。
-                    if nname(&f[1]) == "StructLit" {
-                        self.store_struct_lit(c, &name, &[], &f[1]);
+                    // `s = t.S { f: &mut y }` のように、構造体・タプル・配列ごと新しい借用を保存することもある。
+                    if matches!(nname(&f[1]), "StructLit" | "TupleE" | "ArrayE" | "ArrayRep") {
+                        self.store_lit(c, &name, &[], &f[1]);
                     }
                     return c;
                 }
@@ -416,8 +518,8 @@ impl<'a> Low<'a> {
                     let srcs = self.loan_sources(&f[1]);
                     if !srcs.is_empty() {
                         self.hold(c, Holder::Place { root, path }, srcs);
-                    } else if nname(&f[1]) == "StructLit" {
-                        self.store_struct_lit(c, &root, &path, &f[1]);
+                    } else if matches!(nname(&f[1]), "StructLit" | "TupleE" | "ArrayE" | "ArrayRep") {
+                        self.store_lit(c, &root, &path, &f[1]);
                     }
                 }
                 c
