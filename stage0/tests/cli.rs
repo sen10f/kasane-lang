@@ -644,7 +644,12 @@ fn ksn_fix_repairs_simple_diagnostics() {
         "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
         "core.mem.drop(v.pushh(1u8))",
     ]);
-    let t = Tmp::new("fix_all", &main_wrap("", &b));
+    // `Vec.push` は `alloc` を使うので、局所レシーバの効果検査 (①) を通すため main が宣言する。
+    let src = format!(
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n",
+        b
+    );
+    let t = Tmp::new("fix_all", &src);
     assert_eq!(run(&["check"], &t.0).status.code(), Some(1));
     let o = run(&["fix"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
@@ -845,6 +850,90 @@ fn inferred_caller_receives_the_instantiated_effects() {
     // 正例: 呼び出し側が io を宣言していれば通る。
     let ok = src.replace("uses [] panics never\n    core.mem.drop(t.mid())", "uses [io] panics never\n    core.mem.drop(t.mid())");
     let t = Tmp::new("eff_infer_ok", &ok);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+// ---- ① 型で解決できる局所レシーバの呼び出しの効果検査 ----
+
+#[test]
+fn local_receiver_method_effects_are_checked() {
+    // `s.m()` (`s` は局所変数) はパスとして構文解析されるが、型で解決先が一意に分かるので検査する。
+    let src = "type t.S\n    n: u32\nend t.S\n\n\
+               fn t.S.boom(self: t.S) -> u32 uses [] panics may\n    core.panic.panic(\"x\")\nend t.S.boom\n\n\
+               fn t.S.loud(self: t.S) -> u32 uses [io.console] panics never\n    1u32\nend t.S.loud\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+               let s = t.S { n: 1u32 }\n    core.mem.drop(s.boom())\n    core.mem.drop(s.loud())\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("eff_local_bad", src);
+    let o = run(&["check", "--json"], &t.0);
+    let got = codes(&text(&o.stdout));
+    assert_eq!(got.iter().filter(|c| *c == "E4002").count(), 1, "{}", text(&o.stdout));
+    assert_eq!(got.iter().filter(|c| *c == "E4001").count(), 1, "{}", text(&o.stdout));
+    // 正例: 効果を宣言していれば通る。
+    let ok = src.replace("uses [] panics never", "uses [io.console] panics may");
+    let t = Tmp::new("eff_local_ok", &ok);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn mcalls_resolved_by_the_receiver_type_are_checked_precisely() {
+    // 同名・同引数個数の候補が複数あっても、レシーバの型で 1 つに解決できれば検査する
+    // (全候補が違反のときだけ報告する従来の近似では黙っていた形)。
+    let src = "type t.R\n    n: u32\nend t.R\n\n\
+               type t.S\n    n: u32\nend t.S\n\n\
+               fn t.R.boom(self: t.R) -> u32 uses [] panics never\n    1u32\nend t.R.boom\n\n\
+               fn t.S.boom(self: t.S) -> u32 uses [] panics may\n    core.panic.panic(\"x\")\nend t.S.boom\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+               core.mem.drop(t.mk().boom())\n    Ok(())\nend t.main\n\n\
+               fn t.mk() -> t.S uses [] panics never\n    t.S { n: 1u32 }\nend t.mk\n";
+    let t = Tmp::new("eff_mcall_bad", src);
+    let o = run(&["check", "--json"], &t.0);
+    let got = codes(&text(&o.stdout));
+    assert_eq!(got.iter().filter(|c| *c == "E4002").count(), 1, "{}", text(&o.stdout));
+    assert!(!got.iter().any(|c| *c == "E4001"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn unknown_receiver_type_keeps_local_method_effects_silent() {
+    // レシーバの型が分からない (ここでは型パラメータ) ときは、解決先が決まらないので黙る。
+    let src = "type t.S\n    n: u32\nend t.S\n\n\
+               fn t.S.boom(self: t.S) -> u32 uses [] panics may\n    core.panic.panic(\"x\")\nend t.S.boom\n\n\
+               fn t.f[T](s: T) -> u32 uses [] panics never\n    s.boom()\nend t.f\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+               core.mem.drop(t.f(1u32))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("eff_local_unknown", src);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+// ---- ② `Fn` 境界に渡すクロージャの効果の推論 ----
+
+#[test]
+fn closure_argument_effects_are_inferred_at_fn_bounds() {
+    let src = "fn t.gen[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [E] panics P\n    f.call(())\nend t.gen\n\n\
+               fn t.boom() -> u32 uses [] panics may\n    core.panic.panic(\"x\")\nend t.boom\n\n\
+               fn t.loud() -> u32 uses [io.console] panics never\n    1u32\nend t.loud\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+               core.mem.drop(t.gen(fn() -> u32 capture [] {\n        t.boom()\n    }))\n    \
+               core.mem.drop(t.gen(fn() -> u32 capture [] {\n        t.loud()\n    }))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("eff_closure_bad", src);
+    let o = run(&["check", "--json"], &t.0);
+    let got = codes(&text(&o.stdout));
+    assert_eq!(got.iter().filter(|c| *c == "E4002").count(), 1, "{}", text(&o.stdout));
+    assert_eq!(got.iter().filter(|c| *c == "E4001").count(), 1, "{}", text(&o.stdout));
+    // 正例: 効果を宣言していれば通る。
+    let ok = src.replace("uses [] panics never", "uses [io.console] panics may");
+    let t = Tmp::new("eff_closure_ok", &ok);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn indirect_closure_arguments_keep_the_fn_bound_effects_silent() {
+    // クロージャを変数に束縛して渡す形、入れ子のクロージャに閉じた形は推論しない (黙る)。
+    let src = "fn t.gen[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [E] panics P\n    f.call(())\nend t.gen\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
+               let g = fn() -> u32 capture [] {\n        core.panic.panic(\"boom\")\n    }\n    \
+               core.mem.drop(t.gen(g))\n    \
+               core.mem.drop(t.gen(fn() -> u32 capture [] {\n        let h = fn() -> u32 capture [] {\n            core.panic.panic(\"inner\")\n        }\n        h()\n    }))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("eff_closure_indirect", src);
     assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
 }
 

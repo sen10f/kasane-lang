@@ -161,6 +161,31 @@ const DERIVED: &[&str] = &[
     "try_clone", "to_string", "lt", "le", "gt", "ge", "min", "max",
 ];
 
+/// 型で一意に解決できたメソッド呼び出しの記録 (効果検査 ① 用)。
+/// 解決が不確かなもの (複数候補・型不明) は記録しない (check 側は黙る)。
+pub struct ResolvedCall {
+    /// 呼び出しを含む定義の添字 (書き手)。
+    pub writer: usize,
+    /// その呼び出しが属するクロージャ節 (`None` = 定義の本体そのもの)。
+    pub scope: Option<String>,
+    /// 解決先の定義の添字 (メソッドの `Def`。native sig も含む)。
+    pub callee: usize,
+    pub line: usize,
+    /// メソッド呼び出しの明示型引数 (`x.m::<..>`)。
+    pub targs: Vec<V>,
+}
+
+/// `Fn` 境界の引数に直接書かれたクロージャの記録 (効果検査 ② 用)。
+pub struct FnClosure {
+    /// クロージャを書いた定義の添字 (書き手)。
+    pub writer: usize,
+    /// クロージャの節名 (`closure_asts` の鍵)。
+    pub node: String,
+    /// クロージャを渡した先 (`Fn` 境界を受け取る関数) の名前 (診断の文面に使う)。
+    pub callee_name: String,
+    pub line: usize,
+}
+
 pub struct TypeCk<'a> {
     p: &'a Program,
     /// 所有者 (型の FQN) → メソッド名 → 定義の添字
@@ -195,6 +220,10 @@ pub struct TypeCk<'a> {
     /// クロージャ節 (5.3 の `関数名#番号`) → そのクロージャの AST ノード。
     /// スタック上界の見積り (E4012) が、節の引数と本体の `let` からフレームを計算するために使う。
     pub closure_asts: std::collections::BTreeMap<String, V>,
+    /// 型で一意に解決できたメソッド呼び出し (効果検査 ①)。
+    pub resolved_calls: Vec<ResolvedCall>,
+    /// `Fn` 境界に直接書かれたクロージャ (効果検査 ②)。
+    pub fn_closure_args: Vec<FnClosure>,
 }
 
 impl<'a> TypeCk<'a> {
@@ -213,7 +242,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), resolved_calls: vec![], fn_closure_args: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -715,6 +744,17 @@ impl<'a> TypeCk<'a> {
             return Ty::Unknown;
         }
         let (di, owner) = fit[0].clone();
+        // 効果検査 (check.rs) のため、型で一意に解決できたメソッド呼び出しを記録する。
+        // メソッド表が完全で、引数の個数が合う候補がちょうど 1 つのときだけ (不確かなときは黙る)。
+        if fit.len() == 1 && complete {
+            self.resolved_calls.push(ResolvedCall {
+                writer: self.cur,
+                scope: self.closure_nodes.last().cloned(),
+                callee: di,
+                line,
+                targs: targs.to_vec(),
+            });
+        }
         let d = &self.p.defs[di];
         let gn = d.gnames();
         self.add_edge(d.name.clone());
@@ -1367,6 +1407,8 @@ impl<'a> TypeCk<'a> {
         let argt: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
         // 構造体リテラルの引数: 従来の検査は型引数を見ないので、呼び出し側でも型引数の矛盾を見る。
         let sl: Vec<bool> = args.iter().map(|a| nname(a) == "StructLit").collect();
+        // その位置にクロージャ式が直接書かれているか (効果検査 ② が変数経由を避けるのに使う)。
+        let cl: Vec<bool> = args.iter().map(|a| nname(a) == "Closure").collect();
         if nname(callee) != "Path" {
             // `fn(..) {..}(x)` のように、クロージャを直接呼ぶ形。
             let t = self.infer(callee);
@@ -1421,9 +1463,9 @@ impl<'a> TypeCk<'a> {
             }
             Target::Native(ref fq) | Target::Value(ref fq) if self.p.sigs.contains_key(fq) => {
                 let i = self.p.sigs[fq];
-                self.call_def(i, &argt, line, &sl, targs)
+                self.call_def(i, &argt, line, &sl, &cl, targs)
             }
-            Target::Fn(i) | Target::Sig(i) => self.call_def(i, &argt, line, &sl, targs),
+            Target::Fn(i) | Target::Sig(i) => self.call_def(i, &argt, line, &sl, &cl, targs),
             _ => {
                 argt.iter().for_each(|a| self.escape(a));
                 Ty::Unknown
@@ -1440,7 +1482,7 @@ impl<'a> TypeCk<'a> {
     ///
     /// `sl` は、各引数の式が構造体リテラルかどうか。従来の検査は構造体リテラルの型引数を見ない
     /// (名前しか比べない) ので、同じ名前どうしの型引数の矛盾はここで報告する。
-    fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
+    fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool], cl: &[bool], targs: &[V]) -> Ty {
         let d = &self.p.defs[i];
         self.add_edge(d.name.clone());
         let gn = d.gnames();
@@ -1476,6 +1518,17 @@ impl<'a> TypeCk<'a> {
         for (k, name) in &fn_args {
             let Some(Ty::Closure { id: Some(node), .. }) = closures.get(k) else { continue };
             self.fn_closures.entry((d.name.clone(), name.clone())).or_default().push(node.clone());
+            // 効果検査 ②: `Fn` 境界の引数にクロージャ式が直接書かれているときは、その本体の
+            // 推論効果を呼び出し側の宣言と比べる (check.rs)。変数経由 (`let f = ..; t.gen(f)`) や
+            // 入れ子のクロージャの中の呼び出しは対象外にする (黙る)。
+            if cl.get(*k).copied().unwrap_or(false) && self.closure_nodes.is_empty() {
+                self.fn_closure_args.push(FnClosure {
+                    writer: self.cur,
+                    node: node.clone(),
+                    callee_name: d.name.clone(),
+                    line,
+                });
+            }
             let local = d.params[*k].0.clone();
             if self.callee_calls_param(d, &local) {
                 let callee = d.name.clone();

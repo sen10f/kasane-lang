@@ -1873,6 +1873,82 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// ① 型で一意に解決できたメソッド呼び出し (`s.m(..)`) の効果を、書き手 (呼び出しを含む関数) の
+    /// 宣言と比べる。書き手が `test` のときは検査しない (既存の `effects` と同じ条件)。
+    /// クロージャの中の呼び出しは ② が本体ごと見るので、ここでは扱わない。
+    /// `MCall` 形の粗い近似 (`effects_all`) が同じ呼び出し箇所を既に報告していれば重複させない。
+    fn check_resolved_methods(&mut self, calls: &[crate::types::ResolvedCall]) {
+        for c in calls {
+            if c.scope.is_some() {
+                continue;
+            }
+            let w = self.def(c.writer);
+            if w.kw != "fn" {
+                continue;
+            }
+            let (uses, panics) = (w.uses.clone(), w.panics.clone().unwrap_or_else(|| "may".into()));
+            // 呼び出し箇所の書き手の効果で検査する (検査のあと、元の状態に戻す)。
+            let saved_u = self.cur_uses.replace(uses);
+            let saved_p = std::mem::replace(&mut self.cur_panics, panics);
+            let viol = self.violation_targs(self.def(c.callee), &c.targs);
+            self.cur_uses = saved_u;
+            self.cur_panics = saved_p;
+            let Some((code, msg)) = viol else { continue };
+            let w = self.def(c.writer);
+            let dup = self.diags.iter().any(|x| x.code == code && x.file == w.file && x.fqn == w.name && x.line == c.line);
+            if !dup {
+                self.diag(&code, msg, c.writer, c.line);
+            }
+        }
+    }
+
+    /// ② `Fn` 境界の引数に直接書かれたクロージャの本体の効果を推論し、書き手の宣言と比べる。
+    /// 推論は FQN 呼び出しと、型で一意に解決できたメソッド呼び出し (①の記録) だけを数える
+    /// (解決できない呼び出しは数えない = 見落とし側)。書き手が `test` のときは検査しない。
+    fn check_closure_args(&mut self, calls: &[crate::types::ResolvedCall], args: &[crate::types::FnClosure]) {
+        for a in args {
+            let w = self.def(a.writer);
+            if w.kw != "fn" {
+                continue;
+            }
+            let Some(body) = w.body.as_ref() else { continue };
+            let Some(cl) = self.closure_asts.get(&a.node).cloned() else { continue };
+            let locals = crate::infer::local_names(w, body);
+            let cb = &nf(&cl)[3];
+            let (uses, may) = crate::infer::body_effects(self.p, &w.file, &locals, cb, true);
+            let mut effs: BTreeSet<String> = uses.into_iter().collect();
+            let mut pan_may = may;
+            // クロージャ本体の中で型で解決できたメソッド呼び出しの効果を足す。
+            for c in calls {
+                if c.scope.as_deref() != Some(a.node.as_str()) {
+                    continue;
+                }
+                let callee = self.def(c.callee);
+                match inst_def_effects(callee, &c.targs) {
+                    Some((u, p)) => crate::infer::add_effs(&u, p.as_deref(), &mut effs, &mut pan_may),
+                    None => crate::infer::add_effs(&callee.uses, callee.panics.as_deref(), &mut effs, &mut pan_may),
+                }
+            }
+            let (w_uses, w_panics) = (w.uses.clone(), w.panics.clone().unwrap_or_else(|| "may".into()));
+            if let Some(e) = effs.iter().find(|e| !covers(&w_uses, e)) {
+                self.diag(
+                    "E4001",
+                    format!("the closure passed to `{}` uses effect `{}` not declared by the caller", a.callee_name, e),
+                    a.writer,
+                    a.line,
+                );
+            }
+            if pan_may && w_panics == "never" {
+                self.diag(
+                    "E4002",
+                    format!("the closure passed to `{}` may panic but the caller declares `panics never`", a.callee_name),
+                    a.writer,
+                    a.line,
+                );
+            }
+        }
+    }
+
     // ================================================================ TypeCk
     fn typeck(&mut self) {
         let user = self.user.clone();
@@ -1902,6 +1978,9 @@ impl<'a> Checker<'a> {
         }
         // クロージャ節のフレーム見積り (E4012) のため、節名 → クロージャ AST の対応を引き継ぐ。
         self.closure_asts = tk.closure_asts;
+        // ① 型で解決できた局所レシーバのメソッド呼び出しの効果、② `Fn` 境界に渡したクロージャの効果。
+        self.check_resolved_methods(&tk.resolved_calls);
+        self.check_closure_args(&tk.resolved_calls, &tk.fn_closure_args);
         // 従来の検査と新しい型推論が同じ誤りを同じ文面で報告したときは、1 件にまとめる。
         let mut seen = HashSet::new();
         self.diags.retain(|d| seen.insert((d.file.clone(), d.code.clone(), d.fqn.clone(), d.line, d.msg.clone())));
