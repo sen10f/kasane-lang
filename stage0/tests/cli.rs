@@ -4468,6 +4468,133 @@ fn nll_rejects_a_mutation_of_the_borrowed_value_inside_a_loop_over_the_container
     assert!(bad, "{}", out);
 }
 
+#[test]
+fn nll_rejects_a_mutation_while_a_borrow_is_carried_through_a_match_value() {
+    // 腕の束縛が持つローンは、`match` の値として返した先 (let の束縛) へ運ばれる。
+    let (bad, out) = has_e3010(
+        "nll_match_carry",
+        "",
+        &[
+            "let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "let mut y = 2u8",
+            "match m.insert(1u8, &x) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "let r = match m.get(1u8) {",
+            "    Some(rr) => rr",
+            "    None => &y",
+            "}",
+            "x = 2u8",
+            "core.check.eq(*r, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_match_binding_that_is_not_returned_as_the_value() {
+    // 腕の束縛がローンを持っていても、腕の値として返さなければ match の値はローンを持たない。
+    let (bad, out) = has_e3010(
+        "nll_match_no_carry",
+        "",
+        &[
+            "let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "match m.insert(1u8, &x) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "let n = match m.get(1u8) {",
+            "    Some(rr) => {",
+            "        core.check.eq(*rr, 1u8)",
+            "        0u8",
+            "    }",
+            "    None => 1u8",
+            "}",
+            "x = 2u8",
+            "core.check.eq(n, 0u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_borrow_is_stored_in_a_tuple() {
+    let (bad, out) = has_e3010(
+        "nll_store_tuple",
+        "",
+        &["let mut x = 1u8", "let t = (&x, 2u8)", "x = 2u8", "core.mem.drop(t)"],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `t.0`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_borrow_is_stored_in_an_array_literal() {
+    let (bad, out) = has_e3010(
+        "nll_store_array",
+        "",
+        &["let mut x = 1u8", "let a = [&x]", "x = 2u8", "core.mem.drop(a)"],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `a.0`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_after_a_tuple_is_destructured() {
+    // `let (a, b) = t` の分解で、保存されたローンは各束縛へ読み戻される。
+    let (bad, out) = has_e3010(
+        "nll_store_tuple_destructure",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (&x, 2u8)",
+            "let (a, b) = t",
+            "x = 2u8",
+            "core.check.eq(*a, 1u8)",
+            "core.check.eq(b, 2u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `a`"), "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_tuple_overwritten_before_the_conflict() {
+    // タプルごと上書きすると、保存されていた借用は死ぬ。
+    let (bad, out) = has_e3010(
+        "nll_store_tuple_overwrite",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let mut y = 2u8",
+            "let mut t = (&x, 1u8)",
+            "t = (&y, 2u8)",
+            "core.check.eq(x, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_tuple_borrow_dropped_before_the_conflict() {
+    let (bad, out) = has_e3010(
+        "nll_store_tuple_drop",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (&x, 2u8)",
+            "core.mem.drop(t)",
+            "x = 2u8",
+            "core.check.eq(x, 2u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
 // ---- 部分 move の追跡 (4.1・4.4) ----
 
 fn pmove_check(name: &str, helper: &[&str], b: &[&str]) -> (bool, String) {
