@@ -26,6 +26,10 @@ pub struct Interp {
     /// std.fs で開いたファイル (記述子 -> ファイル)
     pub files: HashMap<i128, std::fs::File>,
     pub next_fd: i128,
+    /// 生ポインタのアドレス → その指す型の名前。`extern` の `*mut T` の戻り値や `core.ptr.*` が
+    /// 作ったアドレスに付ける (`core.ptr.read` / `add` が要素の幅を知るため)。ネイティブ生成は
+    /// ポインタの静的型から知るが、インタプリタの値は型を持たないので、作った側で覚えておく。
+    ptr_elem: HashMap<i128, String>,
 }
 
 fn unhex(s: &str) -> String {
@@ -35,6 +39,106 @@ fn unhex(s: &str) -> String {
 
 fn parse_int(s: &str) -> i128 {
     s.parse::<i128>().unwrap_or_else(|_| s.parse::<u128>().map(|u| u as i128).unwrap_or(0))
+}
+
+// ------------------------------------------------------------ 生ポインタの読み書き
+/// 要素の型が分からない生ポインタの読み書きの実行時エラー。
+fn unknown_elem(name: &str) -> String {
+    format!(
+        "{}: the interpreter does not know the element type of the pointer (raw pointer memory); use `ksn build --backend clif`",
+        name
+    )
+}
+
+/// スカラーでない (構造体など) 要素の読み書きの実行時エラー。
+fn unsupported_elem(name: &str, elem: &str) -> String {
+    format!("{}: the element type `{}` is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`", name, elem)
+}
+
+/// 要素型のバイト数 (スカラーだけ)。
+fn elem_size(name: &str, elem: &str) -> Result<i128, Ctl> {
+    match elem {
+        "bool" | "i8" | "u8" => Ok(1),
+        "i16" | "u16" => Ok(2),
+        "char" | "i32" | "u32" | "f32" => Ok(4),
+        "i64" | "u64" | "isize" | "usize" | "f64" => Ok(8),
+        "i128" | "u128" => Ok(16),
+        _ => panic(unsupported_elem(name, elem)),
+    }
+}
+
+/// 型の構文 (`*mut T` の `T` など) から名前を取り出す (スカラーと名前付きの型だけ)。
+fn elem_name(t: &V) -> Option<String> {
+    match crate::check::tag(t).as_str() {
+        "prim" | "named" => Some(crate::check::st(crate::check::tel(t, 1))),
+        _ => None,
+    }
+}
+
+/// 値そのものが持っている型のタグ (`write` がポインタの要素型を知らないときの代わり)。
+fn scalar_ty(v: &Val) -> Option<&'static str> {
+    match v {
+        Val::Bool(_) => Some("bool"),
+        Val::Char(_) => Some("char"),
+        Val::F32(_) => Some("f32"),
+        Val::Float(_) => Some("f64"),
+        Val::Int(_, Some(t)) => Some(t),
+        _ => None,
+    }
+}
+
+/// アドレスから要素型 1 つぶんを読む。
+unsafe fn read_scalar(name: &str, p: i128, elem: &str) -> Res {
+    let a = p as usize as *const u8;
+    Ok(match elem {
+        "bool" => Val::Bool(std::ptr::read_unaligned(a) != 0),
+        "i8" => int(std::ptr::read_unaligned(a as *const i8) as i128, "i8"),
+        "u8" => int(std::ptr::read_unaligned(a) as i128, "u8"),
+        "i16" => int(std::ptr::read_unaligned(a as *const i16) as i128, "i16"),
+        "u16" => int(std::ptr::read_unaligned(a as *const u16) as i128, "u16"),
+        "i32" => int(std::ptr::read_unaligned(a as *const i32) as i128, "i32"),
+        "u32" => int(std::ptr::read_unaligned(a as *const u32) as i128, "u32"),
+        "i64" => int(std::ptr::read_unaligned(a as *const i64) as i128, "i64"),
+        "isize" => int(std::ptr::read_unaligned(a as *const isize) as i128, "isize"),
+        "u64" => int(std::ptr::read_unaligned(a as *const u64) as i128, "u64"),
+        "usize" => int(std::ptr::read_unaligned(a as *const usize) as i128, "usize"),
+        "i128" => int(std::ptr::read_unaligned(a as *const i128), "i128"),
+        "u128" => int(std::ptr::read_unaligned(a as *const u128) as i128, "u128"),
+        "f32" => Val::F32(std::ptr::read_unaligned(a as *const f32)),
+        "f64" => Val::Float(std::ptr::read_unaligned(a as *const f64)),
+        "char" => Val::Char(char::from_u32(std::ptr::read_unaligned(a as *const u32)).unwrap_or('\0')),
+        _ => return panic(unsupported_elem(name, elem)),
+    })
+}
+
+/// アドレスへ要素型 1 つぶんを書く (値は宣言の型に合わせて読む)。
+unsafe fn write_scalar(name: &str, p: i128, elem: &str, v: &Val) -> Result<(), Ctl> {
+    let a = p as usize as *mut u8;
+    let i = match v {
+        Val::Int(x, _) => *x,
+        Val::Bool(b) => *b as i128,
+        Val::Char(c) => *c as i128,
+        _ => 0,
+    };
+    let f = match v {
+        Val::F32(x) => *x as f64,
+        Val::Float(x) => *x,
+        Val::Int(x, _) => *x as f64,
+        _ => 0.0,
+    };
+    match elem {
+        "bool" => std::ptr::write_unaligned(a, (i != 0) as u8),
+        "i8" | "u8" => std::ptr::write_unaligned(a, i as u8),
+        "i16" | "u16" => std::ptr::write_unaligned(a as *mut u16, i as u16),
+        "i32" | "u32" => std::ptr::write_unaligned(a as *mut u32, i as u32),
+        "char" => std::ptr::write_unaligned(a as *mut u32, i as u32),
+        "i64" | "u64" | "isize" | "usize" => std::ptr::write_unaligned(a as *mut u64, i as u64),
+        "i128" | "u128" => std::ptr::write_unaligned(a as *mut u128, i as u128),
+        "f32" => std::ptr::write_unaligned(a as *mut f32, f as f32),
+        "f64" => std::ptr::write_unaligned(a as *mut f64, f),
+        _ => return panic(unsupported_elem(name, elem)),
+    }
+    Ok(())
 }
 
 impl Interp {
@@ -49,6 +153,7 @@ impl Interp {
             keep: vec![],
             files: HashMap::new(),
             next_fd: 3,
+            ptr_elem: HashMap::new(),
         }
     }
 
@@ -978,43 +1083,122 @@ impl Interp {
         Ok(out)
     }
 
-    /// `extern` の関数を、ホストの C ライブラリから探して呼ぶ (整数・ポインタ・`bool` の引数だけ)。
+    /// `extern` の関数を、ホストの C ライブラリから探して呼ぶ (整数・ポインタ・`bool`・`f32` / `f64`)。
     fn extern_call(&mut self, d: &Def, args: Vec<Val>) -> Res {
-        let mut ints = vec![];
-        for a in &args {
-            match dr(a) {
-                Val::Int(i, _) => ints.push(i as i64),
-                Val::Bool(b) => ints.push(b as i64),
-                _ => return panic(format!("extern {}: only integer, pointer and bool arguments are supported by the interpreter", d.name)),
-            }
+        let mut abi = vec![];
+        for (i, a) in args.into_iter().enumerate() {
+            // 宣言した引数の型に合わせる (整数リテラルを `f64` の引数へ、`f32` を `f64` へ、など)。
+            let v = match d.params.get(i) {
+                Some((_, t)) => self.coerce(a, t),
+                None => a,
+            };
+            abi.push(match dr(&v) {
+                Val::Int(i, _) => crate::ffi::Arg::Int(i as i64),
+                Val::Bool(b) => crate::ffi::Arg::Int(b as i64),
+                Val::F32(f) => crate::ffi::Arg::F32(f),
+                Val::Float(f) => crate::ffi::Arg::F64(f),
+                _ => {
+                    return panic(format!(
+                        "extern {}: only integer, pointer, bool and float arguments are supported by the interpreter",
+                        d.name
+                    ))
+                }
+            });
         }
-        let r = match crate::ffi::call(&d.link, &ints) {
+        let ret = &d.ret;
+        let ret_prim = if crate::check::tag(ret) == "prim" { crate::check::st(crate::check::tel(ret, 1)) } else { String::new() };
+        let float_ret = matches!(ret_prim.as_str(), "f32" | "f64");
+        let r = match crate::ffi::call(&d.link, &abi, float_ret) {
             Ok(r) => r,
             Err(e) => return panic(format!("extern {}: {}", d.name, e)),
         };
+        // 整数は GP レジスタ、浮動小数は XMM レジスタから読む (`f32` は下位 32 ビットがビットパターン)。
+        let (r, f) = match r {
+            crate::ffi::Ret::Int(x) => (x, 0.0f64),
+            crate::ffi::Ret::Sse(x) => (0, x),
+        };
         // 戻り値は、宣言の型に合わせて切り詰める。
-        let ret = &d.ret;
         Ok(match crate::check::tag(ret).as_str() {
             "tuple" => Val::Unit,
             "never" => return panic(format!("extern {} returned although it is declared `!`", d.name)),
-            "ptr" => int((r as u64) as i128, "usize"),
-            "prim" => {
-                let n = crate::check::st(crate::check::tel(ret, 1));
-                match n.as_str() {
-                    "bool" => Val::Bool(r & 0xff != 0),
-                    "i8" => int((r as i8) as i128, "i8"),
-                    "i16" => int((r as i16) as i128, "i16"),
-                    "i32" => int((r as i32) as i128, "i32"),
-                    "i64" | "isize" => int(r as i128, &n),
-                    "u8" => int((r as u8) as i128, "u8"),
-                    "u16" => int((r as u16) as i128, "u16"),
-                    "u32" => int((r as u32) as i128, "u32"),
-                    "u64" | "usize" => int((r as u64) as i128, &n),
-                    _ => return panic(format!("extern {}: unsupported return type {}", d.name, n)),
+            "ptr" => {
+                // 生ポインタの指す型を覚える (`core.ptr.read` / `add` が要素の幅を知るため)。
+                let a = (r as u64) as i128;
+                if let Some(e) = elem_name(crate::check::tel(ret, 2)) {
+                    self.ptr_elem.insert(a, e);
                 }
+                int(a, "usize")
             }
+            "prim" => match ret_prim.as_str() {
+                "bool" => Val::Bool(r & 0xff != 0),
+                "i8" => int((r as i8) as i128, "i8"),
+                "i16" => int((r as i16) as i128, "i16"),
+                "i32" => int((r as i32) as i128, "i32"),
+                "i64" | "isize" => int(r as i128, &ret_prim),
+                "u8" => int((r as u8) as i128, "u8"),
+                "u16" => int((r as u16) as i128, "u16"),
+                "u32" => int((r as u32) as i128, "u32"),
+                "u64" | "usize" => int((r as u64) as i128, &ret_prim),
+                "f32" => Val::F32(f32::from_bits(f.to_bits() as u32)),
+                "f64" => Val::Float(f),
+                _ => return panic(format!("extern {}: unsupported return type {}", d.name, ret_prim)),
+            },
             _ => return panic(format!("extern {}: unsupported return type", d.name)),
         })
+    }
+
+    /// `core.ptr.*` の native。生ポインタはアドレス (整数) として持ち、要素型は作った側が
+    /// `ptr_elem` に覚える (ネイティブ生成は静的型から知るが、インタプリタの値は型を持たない)。
+    fn ptr_native(&mut self, name: &str, args: Vec<Val>) -> Res {
+        let addr = |i: usize| match args.get(i).map(dr) {
+            Some(Val::Int(a, _)) => a,
+            _ => 0,
+        };
+        match name {
+            "core.ptr.null_mut" => {
+                // ネイティブ生成と同じ既定 (`*mut u8` 相当)。
+                self.ptr_elem.insert(0, "u8".into());
+                Ok(int(0, "usize"))
+            }
+            "core.ptr.is_null" => Ok(Val::Bool(matches!(args.first().map(dr), Some(Val::Int(0, _))))),
+            // アドレスはそのまま。`cast` の指す先の型は静的型からしか分からないので、元のままにする。
+            "core.ptr.as_const" | "core.ptr.as_mut" | "core.ptr.cast" => Ok(int(addr(0), "usize")),
+            "core.ptr.add" => {
+                let p = addr(0);
+                let elem = self.ptr_elem_of(name, p)?;
+                let q = p.wrapping_add(addr(1).wrapping_mul(elem_size(name, &elem)?));
+                self.ptr_elem.insert(q, elem);
+                Ok(int(q, "usize"))
+            }
+            "core.ptr.read" => {
+                let p = addr(0);
+                let elem = self.ptr_elem_of(name, p)?;
+                unsafe { read_scalar(name, p, &elem) }
+            }
+            "core.ptr.write" => {
+                let p = addr(0);
+                let v = args.get(1).map(dr).unwrap_or(Val::Unit);
+                // ネイティブ生成と同じく、ポインタの要素型が分かればそれで、分からなければ値の型で書く。
+                let elem = match self.ptr_elem.get(&p) {
+                    Some(e) => e.clone(),
+                    None => match scalar_ty(&v) {
+                        Some(t) => t.to_string(),
+                        None => return panic(unknown_elem(name)),
+                    },
+                };
+                unsafe { write_scalar(name, p, &elem, &v)? };
+                Ok(Val::Unit)
+            }
+            _ => panic(format!("{} is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`", name)),
+        }
+    }
+
+    /// アドレスの要素型 (ポインタを作った側が覚えたもの)。分からなければ実行時エラー。
+    fn ptr_elem_of(&self, name: &str, p: i128) -> Result<String, Ctl> {
+        match self.ptr_elem.get(&p) {
+            Some(e) => Ok(e.clone()),
+            None => panic(unknown_elem(name)),
+        }
     }
 
     fn call_resolved(&mut self, r: &Resolved, args: Vec<Val>) -> Res {
@@ -1040,17 +1224,8 @@ impl Interp {
                 if d.kw == "extern" {
                     return self.extern_call(d, args);
                 }
-                if d.name == "core.ptr.null_mut" {
-                    return Ok(int(0, "usize"));
-                }
-                if d.name == "core.ptr.is_null" {
-                    return Ok(Val::Bool(matches!(args.first().map(dr), Some(Val::Int(0, _)))));
-                }
                 if d.name.starts_with("core.ptr.") {
-                    return panic(format!(
-                        "{} is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`",
-                        d.name
-                    ));
+                    return self.ptr_native(&d.name, args);
                 }
                 panic(format!("function {} has no implementation in this interpreter", d.name))
             }

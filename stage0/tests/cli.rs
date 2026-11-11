@@ -5133,3 +5133,185 @@ end t.main
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "ok\n", "{}", text(&o.stderr));
 }
+
+/// 浮動小数の引数・戻り値と生ポインタを扱う C の関数 (共有ライブラリにして `LD_PRELOAD` する)。
+/// `bits_*` / `emit` / `ffi_done` は、値のビットパターンを 10 進で印字するための観測用。
+#[cfg(unix)]
+const FFI_FLOAT_C: &str = r#"#include <stdio.h>
+#include <stdlib.h>
+
+float add_f(float a, float b) { return a + b; }
+double add_d(double a, double b) { return a + b; }
+double mix_i(int n, double x, float y) { return (double)n + x + (double)y; }
+double mix2(double a, int b, float c, double d) { return a + (double)b + (double)c + d; }
+double six(double a, double b, double c, double d, double e, float f) { return a + b + c + d + e + (double)f; }
+double six_i(int a, int b, int c, int d, int e, int f) { return (double)(a + b + c + d + e + f); }
+int scale_i(float x) { return (int)(x * 2.0f); }
+double *alloc_d(void) { return (double *)malloc(8 * 4); }
+void store_d(double *p, double v) { *p = v; }
+double load_d(const double *p) { return *p; }
+unsigned long long bits_f(float x) { union { float f; unsigned u; } v; v.f = x; return (unsigned long long)v.u; }
+unsigned long long bits_d(double x) { union { double d; unsigned long long u; } v; v.d = x; return v.u; }
+void emit(unsigned long long v) { printf("%llu\n", v); }
+void ffi_done(void) { printf("done\n"); }
+"#;
+
+/// 同じ C の関数を呼んで、参照値を印字するドライバ (同じ `ffi.c` と一緒にビルドする)。
+#[cfg(unix)]
+const FFI_FLOAT_DRIVER_C: &str = r#"#include <stdio.h>
+#include <stdlib.h>
+
+float add_f(float, float);
+double add_d(double, double);
+double mix_i(int, double, float);
+double mix2(double, int, float, double);
+double six(double, double, double, double, double, float);
+double six_i(int, int, int, int, int, int);
+int scale_i(float);
+double *alloc_d(void);
+void store_d(double *, double);
+double load_d(const double *);
+unsigned long long bits_f(float);
+unsigned long long bits_d(double);
+void emit(unsigned long long);
+void ffi_done(void);
+
+int main(void) {
+    emit(bits_f(add_f(1.5f, 2.25f)));
+    emit(bits_d(add_d(1.5, 2.25)));
+    emit(bits_d(mix_i(3, 0.5, 0.25f)));
+    emit(bits_d(mix2(0.5, 7, 0.25f, 1.5)));
+    emit(bits_d(six(0.5, 1.5, 2.5, 3.5, 4.5, 0.25f)));
+    emit(bits_d(six_i(1, 2, 3, 4, 5, 6)));
+    emit((unsigned long long)scale_i(1.5f));
+    double *p = alloc_d();
+    store_d(p, 2.5);
+    p[1] = 3.5;
+    emit(bits_d(load_d(p)));
+    emit(bits_d(p[1]));
+    free(p);
+    ffi_done();
+    return 0;
+}
+"#;
+
+/// ドライバと同じ入力で同じ C の関数を呼ぶ Kasane のプログラム (出力を突き合わせる)。
+#[cfg(unix)]
+const FFI_FLOAT_SRC: &str = r#"extern t.add_f(a: f32, b: f32) -> f32 link "add_f"
+
+extern t.add_d(a: f64, b: f64) -> f64 link "add_d"
+
+extern t.mix_i(n: i32, x: f64, y: f32) -> f64 link "mix_i"
+
+extern t.mix2(a: f64, b: i32, c: f32, d: f64) -> f64 link "mix2"
+
+extern t.six(a: f64, b: f64, c: f64, d: f64, e: f64, f: f32) -> f64 link "six"
+
+extern t.six_i(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> f64 link "six_i"
+
+extern t.scale_i(x: f32) -> i32 link "scale_i"
+
+extern t.alloc_d() -> *mut f64 link "alloc_d"
+
+extern t.store_d(pointer: *mut f64, value: f64) -> () link "store_d"
+
+extern t.load_d(pointer: *const f64) -> f64 link "load_d"
+
+extern t.free(pointer: *mut f64) -> () link "free"
+
+extern t.bits_f(x: f32) -> u64 link "bits_f"
+
+extern t.bits_d(x: f64) -> u64 link "bits_d"
+
+extern t.emit(v: u64) -> () link "emit"
+
+extern t.ffi_done() -> () link "ffi_done"
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    unsafe "libc" "floats and raw pointers" {
+        t.emit(t.bits_f(t.add_f(1.5f32, 2.25f32)))
+        t.emit(t.bits_d(t.add_d(1.5f64, 2.25f64)))
+        t.emit(t.bits_d(t.mix_i(3i32, 0.5f64, 0.25f32)))
+        t.emit(t.bits_d(t.mix2(0.5f64, 7i32, 0.25f32, 1.5f64)))
+        t.emit(t.bits_d(t.six(0.5f64, 1.5f64, 2.5f64, 3.5f64, 4.5f64, 0.25f32)))
+        t.emit(t.bits_d(t.six_i(1i32, 2i32, 3i32, 4i32, 5i32, 6i32)))
+        t.emit(t.scale_i(1.5f32))
+        let p = t.alloc_d()
+        t.store_d(p, 2.5f64)
+        core.ptr.write(core.ptr.add(p, 1usize), 3.5f64)
+        t.emit(t.bits_d(t.load_d(p)))
+        t.emit(t.bits_d(core.ptr.read(core.ptr.add(p, 1usize))))
+        t.free(p)
+        t.ffi_done()
+    }
+    Ok(())
+end t.main
+"#;
+
+/// `cc` (無ければ `gcc` / `clang`) でコンパイルする。
+#[cfg(unix)]
+fn cc(args: &[&str], dir: &Path) -> Output {
+    let has = |c: &str| Command::new(c).arg("--version").output().map(|o| o.status.success()).unwrap_or(false);
+    let cc = ["cc", "gcc", "clang"].iter().find(|c| has(c)).expect("no C compiler (cc / gcc / clang)");
+    Command::new(cc).args(args).current_dir(dir).output().expect("spawn cc")
+}
+
+#[cfg(unix)]
+#[test]
+fn ffi_interpreter_float_calls_match_a_c_driver() {
+    let t = Tmp::new("ffi_float", FFI_FLOAT_SRC);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let dir = &t.0;
+    fs::write(dir.join("ffi.c"), FFI_FLOAT_C).unwrap();
+    fs::write(dir.join("drive.c"), FFI_FLOAT_DRIVER_C).unwrap();
+    // 同じ C の関数を呼ぶドライバをビルドして、参照値を得る。
+    let o = cc(&["-o", "drive", "drive.c", "ffi.c"], dir);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let want = text(&Command::new(dir.join("drive")).output().unwrap().stdout);
+    assert!(want.ends_with("done\n"), "{}", want);
+    // 同じ C を共有ライブラリにして、インタプリタの extern から呼ぶ。
+    let lib = dir.join("libffitest.so");
+    let o = cc(&["-shared", "-fPIC", "-o", lib.to_str().unwrap(), "ffi.c"], dir);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let o = Command::new(exe()).args(["run"]).current_dir(dir).env("LD_PRELOAD", &lib).output().unwrap();
+    assert_eq!(text(&o.stdout), want, "{}", text(&o.stderr));
+}
+
+#[test]
+fn ffi_interpreter_extern_calls_and_raw_pointers_work() {
+    let t = Tmp::new("ffi_interp_raw", FFI_SRC);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let o = run(&["run"], &t.0);
+    assert_eq!(text(&o.stdout), "ffi ok\n", "{}", text(&o.stderr));
+}
+
+#[test]
+fn ffi_interpreter_returns_floats_from_libc_math() {
+    let src = r#"extern t.sqrt(x: f64) -> f64 link "sqrt"
+
+extern t.sqrtf(x: f32) -> f32 link "sqrtf"
+
+extern t.fabsf(x: f32) -> f32 link "fabsf"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = unsafe "libc" "square root" {
+        t.sqrt(9.0f64)
+    }
+    core.check.eq(a.to_bits(), 3.0f64.to_bits())
+    let b = unsafe "libc" "square root of a float" {
+        t.sqrtf(2.25f32)
+    }
+    core.check.eq(b.to_bits(), 1.5f32.to_bits())
+    let c = unsafe "libc" "absolute value of a float" {
+        t.fabsf(0.0f32 - 2.5f32)
+    }
+    core.check.eq(c.to_bits(), 2.5f32.to_bits())
+    std.io.print_line("math ok")
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_math", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let o = run(&["run"], &t.0);
+    assert_eq!(text(&o.stdout), "math ok\n", "{}", text(&o.stderr));
+}
