@@ -4597,6 +4597,109 @@ fn reading_a_field_of_a_fully_moved_value_is_still_an_error() {
     assert!(out.contains("moved `s` at line"), "{}", out);
 }
 
+// ---- 一時値の型解決 (4.4・4.6): フィールド道と分解 ----
+
+fn temp_drop_codes(name: &str, helper: &[&str], b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let prefix = if helper.is_empty() { String::new() } else { helper.join(&nl) + &nl + &nl };
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    let c = codes(&out);
+    (c, out)
+}
+
+fn temp_drop_prefix() -> Vec<&'static str> {
+    vec![
+        "type t.L linear pub",
+        "    a: u8",
+        "end t.L",
+        "",
+        "type t.W pub",
+        "    lin: t.L",
+        "    num: u8",
+        "end t.W",
+        "",
+        "fn t.mk() -> t.W uses [] panics never",
+        "    t.W { lin: t.L { a: 1u8 }, num: 2u8 }",
+        "end t.mk",
+        "",
+        "fn t.pair() -> (t.L, u8) uses [] panics never",
+        "    (t.L { a: 1u8 }, 2u8)",
+        "end t.pair",
+        "",
+        "fn t.take(l: t.L) -> () uses [] panics never",
+        "    core.mem.drop(l)",
+        "end t.take",
+        "",
+    ]
+}
+
+#[test]
+fn a_discarded_field_access_is_reported() {
+    // 4.6: `t.mk().num` を式文で捨てると E2042 (フィールドの型を解決できるようになった経路)。
+    let (c, out) = temp_drop_codes("td_field_discard", &temp_drop_prefix(), &["t.mk().num"]);
+    assert!(c.iter().any(|x| x == "E2042"), "{}", out);
+}
+
+#[test]
+fn a_discarded_tuple_literal_is_reported() {
+    // 4.6: タプルリテラルの式文も `()` 以外なので E2042。
+    let (c, out) = temp_drop_codes("td_tuple_discard", &[], &["(1u8, 2u8)"]);
+    assert!(c.iter().any(|x| x == "E2042"), "{}", out);
+}
+
+#[test]
+fn a_unit_discard_stays_allowed() {
+    let (c, out) = temp_drop_codes("td_unit_discard", &[], &["()"]);
+    assert!(!c.iter().any(|x| x == "E2042"), "{}", out);
+}
+
+#[test]
+fn a_field_of_a_linear_type_must_be_consumed() {
+    // `t.mk().lin` の型が t.L (線形) と分かるので E3003。消費すれば出ない。
+    let (c, out) = temp_drop_codes("td_field_linear", &temp_drop_prefix(), &["let x = t.mk().lin"]);
+    assert!(c.iter().any(|x| x == "E3003"), "{}", out);
+    let (c, out) = temp_drop_codes("td_field_linear_ok", &temp_drop_prefix(), &["let x = t.mk().lin", "t.take(x)"]);
+    assert!(!c.iter().any(|x| x == "E3003"), "{}", out);
+}
+
+#[test]
+fn a_destructured_linear_element_must_be_consumed() {
+    // 分解 `let (a, b) = t.pair()` の要素型が流れ、線形要素 a の未消費が E3003。
+    let (c, out) = temp_drop_codes("td_tuple_linear", &temp_drop_prefix(), &["let (a, b) = t.pair()", "core.mem.drop(b)"]);
+    assert!(c.iter().any(|x| x == "E3003"), "{}", out);
+    assert!(out.contains("linear value `a`"), "{}", out);
+    let (c, out) = temp_drop_codes(
+        "td_tuple_linear_ok",
+        &temp_drop_prefix(),
+        &["let (a, b) = t.pair()", "t.take(a)", "core.mem.drop(b)"],
+    );
+    assert!(!c.iter().any(|x| x == "E3003"), "{}", out);
+}
+
+#[test]
+fn a_non_linear_destructured_element_is_not_reported() {
+    let helper = ["fn t.pair_u8() -> (u8, u8) uses [] panics never", "    (1u8, 2u8)", "end t.pair_u8"];
+    let (c, out) = temp_drop_codes(
+        "td_tuple_plain",
+        &helper,
+        &["let (a, b) = t.pair_u8()", "core.mem.drop(a)", "core.mem.drop(b)"],
+    );
+    assert!(!c.iter().any(|x| x == "E3003"), "{}", out);
+}
+
+#[test]
+fn a_generic_field_type_stays_unknown() {
+    // 型パラメータを含むフィールド型は決まらないので黙る (誤検出しない)。
+    let helper = ["type t.Box[T] pub", "    item: T", "end t.Box"];
+    let (c, out) = temp_drop_codes(
+        "td_field_generic",
+        &helper,
+        &["let b = t.Box { item: 1u8 }", "let x = b.item", "core.mem.drop(x)"],
+    );
+    assert!(!c.iter().any(|x| x == "E3003" || x == "E2042"), "{}", out);
+}
+
 fn clif_capture_program(tail: &str) -> String {
     let nl = char::from(10u8).to_string();
     [
