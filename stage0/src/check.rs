@@ -2100,6 +2100,31 @@ impl<'a> Checker<'a> {
                     V::Nil
                 }
             }
+            // `t.make().lin` のような非 Path レシーバのフィールド (4.4)。レシーバの型が
+            // 分かり、名前が構造体型に解決でき、フィールド型がジェネリクスを含まないときだけ返す。
+            // 決まらないときは V::Nil (黙る)。再帰 (`t.make().a.b`) はここがそのまま処理する。
+            "Field" => {
+                let recv = self.ty_of(&f[0], env);
+                if is_nil(&recv) {
+                    V::Nil
+                } else {
+                    match self.field_ty(&recv, &st(&f[1])) {
+                        Some(ft) if !self.is_generic(&ft, &self.names) => ft,
+                        _ => V::Nil,
+                    }
+                }
+            }
+            "TupleE" => {
+                let mut tys = Vec::new();
+                for x in items(&f[0]) {
+                    let t = self.ty_of(x, env);
+                    if is_nil(&t) {
+                        return V::Nil;
+                    }
+                    tys.push(t);
+                }
+                V::L(vec![V::S("tuple".into()), V::L(tys)])
+            }
             "Bin" => {
                 if matches!(st(&f[0]).as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||") {
                     V::L(vec![V::S("prim".into()), V::S("bool".into())])
@@ -2227,10 +2252,15 @@ impl<'a> Checker<'a> {
                     self.mismatch(&f[2], &got, nline(s), "let binding");
                 }
                 let ty = if !is_nil(&f[2]) { f[2].clone() } else { got };
+                // パターンに沿って束縛名の型を決める (PBind と、分解 `let (a, b) = ..`)。
+                // 決まらない束縛は下のパスで V::Nil になり、検査は黙る。
+                let mut typed: Vec<(String, V)> = vec![];
+                self.bind_pat_types(&f[0], &ty, &mut typed);
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
                 for n in binds {
-                    env.insert(n.clone(), if nname(&f[0]) == "PBind" { ty.clone() } else { V::Nil });
+                    let t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
+                    env.insert(n.clone(), t);
                     self.revive_place(std::slice::from_ref(&n));
                     if matches!(f[1], V::B(true)) {
                         muts.insert(n);
@@ -2238,8 +2268,8 @@ impl<'a> Checker<'a> {
                         muts.remove(&n);
                     }
                 }
-                if nname(&f[0]) == "PBind" {
-                    self.note_linear(&st(&nf(&f[0])[0]), &ty, nline(s));
+                for (n, t) in &typed {
+                    self.note_linear(n, t, nline(s));
                 }
             }
             "Assign" => {
@@ -2359,6 +2389,31 @@ impl<'a> Checker<'a> {
             return Some(subst_ty_params(ty, &bind));
         }
         Some(ty.clone())
+    }
+
+    /// パターン `p` を型 `ty` に照らして、束縛名とその型の組を集める (4.4 の分解)。
+    /// PBind はその型、PTuple は `ty` がタプルで要素数が一致するときだけ要素型を流す。
+    /// それ以外 (PVariant・PStruct・PRef・PLit や、型が決まらないとき) は何も入れず、
+    /// 呼び出し側の既定 (V::Nil) に任せる (型が決まらない所では黙る)。
+    fn bind_pat_types(&self, p: &V, ty: &V, out: &mut Vec<(String, V)>) {
+        match nname(p) {
+            "PBind" => out.push((st(&nf(p)[0]), ty.clone())),
+            "PTuple" => {
+                let pats = items(&nf(p)[0]);
+                let elems = if tag(ty) == "tuple" { items(tel(ty, 1)) } else { &[] };
+                let known = tag(ty) == "tuple" && elems.len() == pats.len();
+                for (i, sub) in pats.iter().enumerate() {
+                    // 要素型が決まり、ジェネリクスを含まないときだけ流す。
+                    let et = if known && !self.is_generic(&elems[i], &self.names) {
+                        elems[i].clone()
+                    } else {
+                        V::Nil
+                    };
+                    self.bind_pat_types(sub, &et, out);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// 代入・再束縛の対象の場所とその下の move 済みの記録を消す (再代入で復活、4.1)。
