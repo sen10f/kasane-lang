@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::check::{covers, inst_def_effects, items, nf, nname, st, strs, walk};
+use crate::check::{children, covers, inst_def_effects, items, nf, nname, st, strs, walk};
 use crate::parser::V;
 use crate::program::{Def, Program, Target};
 
@@ -38,12 +38,26 @@ pub fn run(p: &mut Program) {
 
 fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
     let d = &p.defs[di];
-    let mut effs: BTreeSet<String> = BTreeSet::new();
-    let mut may = false;
     let Some(body) = &d.body else { return (vec![], false) };
     let locals = local_names(d, body);
+    body_effects(p, &d.file, &locals, body, false)
+}
+
+/// 本体 AST と局所名の集合から、その本体の効果 (`uses` と `panics may`) を求める純粋関数。
+/// 関数の効果推論 (`analyze`) と、`Fn` 境界に渡すクロージャ本体の推論 (check 側) が共用する。
+/// `for_closure` のときは、型で解決できないメソッド呼び出しを効果に数えず (名前と引数個数の和で
+/// 過大評価しない)、入れ子のクロージャ本体も数えない (どちらも呼び出し側の誤検出を避けるため)。
+pub(crate) fn body_effects(
+    p: &Program,
+    file: &str,
+    locals: &BTreeSet<String>,
+    body: &V,
+    for_closure: bool,
+) -> (Vec<String>, bool) {
+    let mut effs: BTreeSet<String> = BTreeSet::new();
+    let mut may = false;
     let mut nodes: Vec<&V> = vec![];
-    walk(body, &mut nodes);
+    collect_nodes(body, &mut nodes, for_closure);
     for n in nodes {
         let f = nf(n);
         match nname(n) {
@@ -65,12 +79,12 @@ fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
                 // 4.3: 明示型引数 (`f::<[io.fs], never>`) があれば効果変数を実体化した和を取る。
                 let targs: &[V] = items(&f[2]);
                 if locals.contains(&segs[0]) {
-                    if segs.len() >= 2 {
+                    if !for_closure && segs.len() >= 2 {
                         method(p, &segs[segs.len() - 1], items(&f[1]).len(), targs, &mut effs, &mut may);
                     }
                     continue;
                 }
-                match p.resolve(&segs, &d.file) {
+                match p.resolve(&segs, file) {
                     Some(r) => match r.target {
                         Target::Fn(_) | Target::Sig(_) if r.rest.is_empty() => {
                             if let Some(c) = p.fn_def(&r) {
@@ -88,7 +102,11 @@ fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
                     None => {}
                 }
             }
-            "MCall" => method(p, &st(&f[1]), items(&f[2]).len(), items(&f[3]), &mut effs, &mut may),
+            "MCall" => {
+                if !for_closure {
+                    method(p, &st(&f[1]), items(&f[2]).len(), items(&f[3]), &mut effs, &mut may);
+                }
+            }
             _ => {}
         }
     }
@@ -99,12 +117,24 @@ fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
     (uses, may)
 }
 
+/// `body` の節を集める。`skip_closures` のときは入れ子のクロージャ本体に降りない
+/// (その中で起きる効果は、定義しただけでは呼び出し側の効果にならない)。
+fn collect_nodes<'a>(v: &'a V, out: &mut Vec<&'a V>, skip_closures: bool) {
+    out.push(v);
+    if skip_closures && nname(v) == "Closure" {
+        return;
+    }
+    for c in children(v) {
+        collect_nodes(c, out, skip_closures);
+    }
+}
+
 fn add(c: &Def, effs: &mut BTreeSet<String>, may: &mut bool) {
     add_effs(&c.uses, c.panics.as_deref(), effs, may);
 }
 
 /// 効果の集合と panic を推論結果に足す。効果変数 (E, P など) は具体的な効果ではないので無視する。
-fn add_effs(uses: &[String], panics: Option<&str>, effs: &mut BTreeSet<String>, may: &mut bool) {
+pub(crate) fn add_effs(uses: &[String], panics: Option<&str>, effs: &mut BTreeSet<String>, may: &mut bool) {
     for e in uses {
         // 効果変数 (E, P など) は具体的な効果ではない。
         if e.chars().next().map_or(false, |ch| ch.is_lowercase()) {
@@ -136,7 +166,9 @@ fn method(p: &Program, name: &str, nargs: usize, targs: &[V], effs: &mut BTreeSe
     }
 }
 
-fn local_names(d: &Def, body: &V) -> BTreeSet<String> {
+/// 本体の中で束縛される名前 (引数・`let`・`for`・`match`・クロージャの引数) の集合。
+/// 呼び出しの解決 (FQN か局所変数レシーバか) を名前で近似するために使う (過大評価 = 取りこぼし側)。
+pub(crate) fn local_names(d: &Def, body: &V) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = d.params.iter().map(|p| p.0.clone()).collect();
     let mut nodes: Vec<&V> = vec![];
     walk(body, &mut nodes);

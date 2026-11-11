@@ -1,0 +1,13 @@
+type t.S
+    n: u32
+end t.S
+
+fn t.S.loud(self: t.S) -> u32 uses [io.console] panics never
+    1u32
+end t.S.loud
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let s = t.S { n: 1u32 }
+    core.mem.drop(s.loud())
+    Ok(())
+end t.main
