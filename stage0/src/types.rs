@@ -192,6 +192,9 @@ pub struct TypeCk<'a> {
     fn_closures: HashMap<(String, String), Vec<String>>,
     /// 関数の FQN → 本体の中で呼んでいる `Fn` 境界パラメータの局所名の集合 (5.3 の近似)。
     param_called: HashMap<String, HashSet<String>>,
+    /// クロージャ節 (5.3 の `関数名#番号`) → そのクロージャの AST ノード。
+    /// スタック上界の見積り (E4012) が、節の引数と本体の `let` からフレームを計算するために使う。
+    pub closure_asts: std::collections::BTreeMap<String, V>,
 }
 
 impl<'a> TypeCk<'a> {
@@ -210,7 +213,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1175,6 +1178,8 @@ impl<'a> TypeCk<'a> {
                 // 帰属させる従来の辺は `add_edge` が維持するので、既存の検査は変わらない。
                 let node = format!("{}#{}", self.def().name.clone(), self.closure_seq);
                 self.closure_seq += 1;
+                // 節名 → クロージャ AST を覚える (E4012 が引数と本体の `let` からフレームを見積る)。
+                self.closure_asts.insert(node.clone(), e.clone());
                 self.closure_nodes.push(node.clone());
                 self.scopes.push(HashMap::new());
                 for p in items(&f[0]) {
