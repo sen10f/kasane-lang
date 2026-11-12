@@ -1747,3 +1747,13 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
     }
 }
+
+/// 試験用: パッケージ `root` を検査し、(プログラム, ユーザの定義の添字) を返す。検査が失敗すれば `None`。
+#[cfg(test)]
+pub(crate) fn checked_program_for_test(root: &Path) -> Option<(Program, Vec<usize>)> {
+    let mut rep = Report::new(false);
+    match full_check(root, &mut rep, false) {
+        Ok((_, Some(prog), user)) if !rep.fatal() => Some((prog, user)),
+        _ => None,
+    }
+}

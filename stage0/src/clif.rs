@@ -7346,3 +7346,25 @@ fn method_names(v: &V, out: &mut Vec<String>) {
 fn which(cmd: &str) -> bool {
     std::process::Command::new(cmd).arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
 }
+
+#[cfg(test)]
+/// KIR の配置の照合用 (試験専用): 型 `name` の clif の配置を返す。
+/// 戻り値は (大きさ, 整列, 構造体・タプルのフィールドのオフセット, 列挙型の各バリアントのペイロードのオフセット)。
+/// `tuple<a,b>` の形の名前は、要素の型を登録してから測る (要素に入れ子の型は書けない)。
+pub(crate) fn layout_probe(prog: &Program, name: &str) -> R<(u32, u32, Vec<u32>, Vec<Vec<u32>>)> {
+    let mut tdefs: HashMap<String, &Def> = HashMap::new();
+    for f in &prog.defs {
+        if f.kw == "type" || f.kw == "enum" {
+            tdefs.insert(f.name.clone(), f);
+        }
+    }
+    let cx = Cx { types: &tdefs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()) };
+    if let Some(inner) = name.strip_prefix("tuple<").and_then(|r| r.strip_suffix('>')) {
+        let elems: Vec<String> = inner.split(',').map(String::from).collect();
+        cx.tuple_of(&elems);
+    }
+    let l = cx.layout(name, 0)?;
+    let fields = l.fields.iter().map(|f| f.2).collect();
+    let variants = l.variants.iter().map(|v| v.1.iter().map(|x| x.1).collect()).collect();
+    Ok((l.size, l.align, fields, variants))
+}

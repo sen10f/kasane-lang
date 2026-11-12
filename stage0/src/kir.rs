@@ -41,6 +41,8 @@ pub enum Ty {
     Opt(Pay),
     /// 組み込みの `Result<T, E>` (設計_KIR.md 11 章)。値はタグ (Err か) とペイロード 1 つ。
     Res(Pay, Pay),
+    /// 集成体 (構造体・タプル・列挙型)。`Module::aggs` の添字。値は集成体の配置 (バイト列) をもつ不変の値。
+    Agg(u32),
 }
 
 /// 参照の指す先。整数と bool だけ (unit と参照は入れない)。`Ty::Ref` の中身。
@@ -90,7 +92,7 @@ impl Pointee {
             Ty::U64 => Pointee::U64,
             Ty::Usize => Pointee::Usize,
             Ty::Bool => Pointee::Bool,
-            Ty::I128 | Ty::U128 | Ty::F32 | Ty::F64 | Ty::Unit | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => return None,
+            Ty::I128 | Ty::U128 | Ty::F32 | Ty::F64 | Ty::Unit | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_) => return None,
         })
     }
 }
@@ -177,7 +179,7 @@ impl Pay {
             Ty::F64 => Pay::F64,
             Ty::Bool => Pay::Bool,
             Ty::Unit => Pay::Unit,
-            Ty::I128 | Ty::U128 | Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..) => return None,
+            Ty::I128 | Ty::U128 | Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..) | Ty::Agg(_) => return None,
         })
     }
 }
@@ -246,6 +248,7 @@ impl Ty {
             // 区切りは `,` だけ (空白を含めない)。テキスト形式の 1 語を保つため。
             Ty::Opt(p) => format!("Option<{}>", p.ty().name()),
             Ty::Res(t, e) => format!("Result<{},{}>", t.ty().name(), e.ty().name()),
+            Ty::Agg(i) => format!("agg#{}", i),
         }
     }
 
@@ -272,7 +275,7 @@ impl Ty {
 
     /// 整数型 (`i8`..`usize`、`i128` / `u128` を含む)。`bool` / `unit` / 浮動小数 / `Option` / `Result` / 参照は含まない。
     pub fn is_int(self) -> bool {
-        !matches!(self, Ty::Bool | Ty::Unit | Ty::F32 | Ty::F64 | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..))
+        !matches!(self, Ty::Bool | Ty::Unit | Ty::F32 | Ty::F64 | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_))
     }
 
     pub fn is_float(self) -> bool {
@@ -285,7 +288,7 @@ impl Ty {
 
     /// スカラー (整数・浮動小数・bool・unit)。`Option` / `Result` / 参照は含まない。`Cmp` や定数の型はこれに限る。
     pub fn is_scalar(self) -> bool {
-        !matches!(self, Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..))
+        !matches!(self, Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..) | Ty::Agg(_))
     }
 
     pub fn signed(self) -> bool {
@@ -525,6 +528,16 @@ pub enum Op {
     BitCount { k: BitK, src: Ty, a: VId },
     /// 直接呼び出し (単相インスタンスの鍵で指す)。
     Call { callee: String, args: Vec<VId> },
+    /// 集成体の構築。`variant` が `Some(k)` なら列挙型のバリアント k (先頭にタグを置く)、`None` なら構造体・タプル。
+    /// `fields` は宣言の順 (列挙型ではそのバリアントのペイロードの順)。
+    Make { variant: Option<u32>, fields: Vec<VId> },
+    /// 集成体の読み出し: バイトオフセット `off` から `Inst::ty` の値を取る。
+    Field { a: VId, off: u32 },
+    /// 構造体・タプルのフィールドを置き換えた新しい値 (元の値は変わらない)。`v` の型は `off` のフィールドの型。
+    SetField { a: VId, off: u32, v: VId },
+    /// タグを読む。被演算子が列挙型なら先頭 4 バイトの i32 (変種の添字、結果は i32)。
+    /// `Option` / `Result` なら bool (Some / Err か、結果は bool)。結果の型で区別する。
+    Tag(VId),
     /// スタックスロットの確保 (結果は `mutref<T>`、`T` は `Inst::ty` の指す先)。関数の入口ブロックに置く。
     Alloca,
     /// 参照を通した読み出し `*p` (結果の型は指す先の型)。
@@ -542,8 +555,6 @@ pub enum Op {
     Ok(VId),
     /// `Err(a)`: 結果の型 `Result<T, E>` (`a` は `E`)。
     Err(VId),
-    /// タグを読む (bool)。`Option` なら Some か、`Result` なら Err か。
-    Tag(VId),
     /// ペイロードを読む (結果の型 `Inst::ty` で読む)。タグは見ない。呼び出し側が `Tag` で確かめてから使う。
     Payload(VId),
     /// `checked_<op>` (結果の型 `Option<P>`、被演算子は `P`)。溢れと 0 除算は `None`。panic しないので `panics never` でも使える。
@@ -636,10 +647,44 @@ impl Func {
     }
 }
 
+/// 集成体の型の定義。配置は clif.rs の `layout` / `enum_layout` と同じ規則で求める (設計_KIR.md 2.3、7 章 4)。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AggDef {
+    /// 構造体・列挙型は定義の FQN、タプルは `(i32,bool)` の形。
+    pub name: String,
+    pub size: u32,
+    pub align: u32,
+    pub kind: AggKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AggKind {
+    Struct(Vec<Field>),
+    Tuple(Vec<Field>),
+    /// 先頭 4 バイトがタグ (バリアントの添字を i32 で書く)。各バリアントのペイロードは、タグの後ろに重ねて置く。
+    Enum(Vec<Variant>),
+}
+
+/// フィールド: 名前 (タプルと列挙型のペイロードでは空)、型、バイトオフセット。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Field {
+    pub name: String,
+    pub ty: Ty,
+    pub off: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Variant {
+    pub name: String,
+    pub fields: Vec<Field>,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Module {
     /// 鍵の順 (UTF-8 順) に並べる。
     pub funcs: Vec<Func>,
+    /// 集成体の型表 (`Ty::Agg` の添字)。定義は構成要素より前に並ぶ。
+    pub aggs: Vec<AggDef>,
 }
 
 impl Module {
@@ -665,7 +710,107 @@ impl Module {
                 }
             }
         }
-        Module { funcs: self.funcs.iter().filter(|f| seen.contains(&f.key)).cloned().collect() }
+        let mut m = Module {
+            funcs: self.funcs.iter().filter(|f| seen.contains(&f.key)).cloned().collect(),
+            aggs: self.aggs.clone(),
+        };
+        prune_aggs(&mut m);
+        m
+    }
+}
+
+/// 集成体の大きさ (バイト)。`Ty::Agg` は型表を引く。
+pub fn size_of(aggs: &[AggDef], t: Ty) -> u32 {
+    match t {
+        Ty::I8 | Ty::U8 | Ty::Bool => 1,
+        Ty::I16 | Ty::U16 => 2,
+        Ty::I32 | Ty::U32 | Ty::F32 => 4,
+        Ty::I64 | Ty::U64 | Ty::Isize | Ty::Usize | Ty::F64 => 8,
+        Ty::I128 | Ty::U128 => 16,
+        Ty::Unit => 0,
+        // 参照・Option・Result は集成体のフィールドに来ない (`field_ty` が拒否する)。値の幅だけ与える。
+        Ty::Ref(..) => 8,
+        Ty::Opt(_) | Ty::Res(..) => 16,
+        Ty::Agg(i) => aggs[i as usize].size,
+    }
+}
+
+/// 集成体の整列 (バイト)。スカラーは大きさと同じ (clif.rs の `scalar_size` と同じ)。
+pub fn align_of(aggs: &[AggDef], t: Ty) -> u32 {
+    match t {
+        Ty::Unit => 1,
+        Ty::Agg(i) => aggs[i as usize].align,
+        t => size_of(aggs, t),
+    }
+}
+
+/// 型表から、関数に現れない集成体を外し、残りを元の添字の順に振り直す。
+/// 集成体の構成要素の型も参照として数える。
+pub fn prune_aggs(m: &mut Module) {
+    let n = m.aggs.len();
+    let mut used = vec![false; n];
+    let mut todo: Vec<u32> = vec![];
+    fn mark(t: Ty, used: &mut [bool], todo: &mut Vec<u32>) {
+        if let Ty::Agg(i) = t {
+            if !used[i as usize] {
+                used[i as usize] = true;
+                todo.push(i);
+            }
+        }
+    }
+    for f in &m.funcs {
+        mark(f.ret, &mut used, &mut todo);
+        for b in &f.blocks {
+            for (_, t) in &b.params {
+                mark(*t, &mut used, &mut todo);
+            }
+            for i in &b.insts {
+                mark(i.ty, &mut used, &mut todo);
+            }
+        }
+    }
+    while let Some(i) = todo.pop() {
+        let fields: Vec<Ty> = match &m.aggs[i as usize].kind {
+            AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().map(|f| f.ty).collect(),
+            AggKind::Enum(vs) => vs.iter().flat_map(|v| v.fields.iter().map(|f| f.ty)).collect(),
+        };
+        for t in fields {
+            mark(t, &mut used, &mut todo);
+        }
+    }
+    let mut map = vec![u32::MAX; n];
+    let mut next = 0u32;
+    for i in 0..n {
+        if used[i] {
+            map[i] = next;
+            next += 1;
+        }
+    }
+    let remap = |t: Ty| match t {
+        Ty::Agg(i) => Ty::Agg(map[i as usize]),
+        t => t,
+    };
+    let old = std::mem::take(&mut m.aggs);
+    for (i, mut d) in old.into_iter().enumerate() {
+        if !used[i] {
+            continue;
+        }
+        match &mut d.kind {
+            AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter_mut().for_each(|f| f.ty = remap(f.ty)),
+            AggKind::Enum(vs) => vs.iter_mut().for_each(|v| v.fields.iter_mut().for_each(|f| f.ty = remap(f.ty))),
+        }
+        m.aggs.push(d);
+    }
+    for f in &mut m.funcs {
+        f.ret = remap(f.ret);
+        for b in &mut f.blocks {
+            for (_, t) in &mut b.params {
+                *t = remap(*t);
+            }
+            for i in &mut b.insts {
+                i.ty = remap(i.ty);
+            }
+        }
     }
 }
 
@@ -681,6 +826,41 @@ fn fmt_vals(vs: &[VId]) -> String {
 
 fn fmt_target(t: &Target) -> String {
     format!("b{}({})", t.0, fmt_vals(&t.1))
+}
+
+/// 型の表示。集成体は `agg#<添字>` と書く (定義は `print_module` の先頭の `agg#` 行)。
+pub fn fmt_ty(t: Ty) -> String {
+    match t {
+        Ty::Agg(i) => format!("agg#{}", i),
+        t => t.name().to_string(),
+    }
+}
+
+fn fmt_agg(i: usize, d: &AggDef) -> String {
+    let fmt_fields = |fs: &[Field]| -> String {
+        fs.iter()
+            .map(|f| {
+                let nm = if f.name.is_empty() { String::new() } else { format!("{}:", f.name) };
+                format!("{}{}@{}", nm, fmt_ty(f.ty), f.off)
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let (kind, body) = match &d.kind {
+        AggKind::Struct(fs) => ("struct", fmt_fields(fs)),
+        AggKind::Tuple(fs) => ("tuple", fmt_fields(fs)),
+        AggKind::Enum(vs) => (
+            "enum",
+            vs.iter()
+                .map(|v| {
+                    let ps: Vec<String> = v.fields.iter().map(|f| format!("{}@{}", fmt_ty(f.ty), f.off)).collect();
+                    format!("{}({})", v.name, ps.join(","))
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+    };
+    format!("agg#{} {} {} size={} align={} {{{}}}", i, kind, d.name, d.size, d.align, body)
 }
 
 /// 浮動小数の定数を、読み直すと同じ値になる十進の形で出す (`{:?}` は最短の往復表記)。
@@ -750,13 +930,22 @@ fn fmt_inst(i: &Inst) -> String {
         }
         Op::BitCount { k, src, a } => format!("{}.{} {}", k.name(), src.name(), fmt_val(*a)),
         Op::Call { callee, args } => format!("call {}({})", callee, fmt_vals(args)),
+        Op::Make { variant, fields } => {
+            let head = match variant {
+                Some(k) => format!("make.v{}", k),
+                None => "make".to_string(),
+            };
+            format!("{}({})", head, fmt_vals(fields))
+        }
+        Op::Field { a, off } => format!("field {}, +{}", fmt_val(*a), off),
+        Op::SetField { a, off, v } => format!("setfield {}, +{}, {}", fmt_val(*a), off, fmt_val(*v)),
         Op::Alloca => "alloca".to_string(),
         Op::Load(p) => format!("load {}", fmt_val(*p)),
         Op::Store { ptr, val } => format!("store {}", fmt_vals(&[*ptr, *val])),
         Op::AsShared(p) => format!("asshared {}", fmt_val(*p)),
         Op::Reborrow(p) => format!("reborrow {}", fmt_val(*p)),
     };
-    format!("%{}: {} = {}", i.dst, i.ty.name(), body)
+    format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
 }
 
 fn fmt_term(t: &Term) -> String {
@@ -780,10 +969,10 @@ pub fn print_func(f: &Func) -> String {
         uses,
         if f.may_panic { "may" } else { "never" },
         stack,
-        f.ret.name()
+        fmt_ty(f.ret)
     ));
     for (bi, b) in f.blocks.iter().enumerate() {
-        let ps: Vec<String> = b.params.iter().map(|(v, t)| format!("%{}: {}", v, t.name())).collect();
+        let ps: Vec<String> = b.params.iter().map(|(v, t)| format!("%{}: {}", v, fmt_ty(*t))).collect();
         s.push_str(&format!("  b{}({}):\n", bi, ps.join(", ")));
         for i in &b.insts {
             s.push_str("    ");
@@ -801,6 +990,13 @@ pub fn print_func(f: &Func) -> String {
 /// モジュール全体を出す。先頭に版の行、関数ごとに空行を挟む。
 pub fn print_module(m: &Module) -> String {
     let mut s = format!("{}\n", VERSION_LINE);
+    if !m.aggs.is_empty() {
+        s.push('\n');
+        for (i, d) in m.aggs.iter().enumerate() {
+            s.push_str(&fmt_agg(i, d));
+            s.push('\n');
+        }
+    }
     for f in &m.funcs {
         s.push('\n');
         s.push_str(&print_func(f));
@@ -847,7 +1043,52 @@ fn split_top(s: &str) -> Vec<&str> {
 }
 
 fn parse_ty(s: &str, line: usize) -> Result<Ty, String> {
-    Ty::parse(s.trim()).ok_or_else(|| perr(line, format!("型 {} は KIR の段階 1 にない", s.trim())))
+    let s = s.trim();
+    if let Some(n) = s.strip_prefix("agg#") {
+        return n.parse::<u32>().map(Ty::Agg).map_err(|_| perr(line, format!("集成体の番号 {} が不正", s)));
+    }
+    Ty::parse(s).ok_or_else(|| perr(line, format!("型 {} は KIR の段階 1 にない", s)))
+}
+
+fn parse_off(s: &str, line: usize) -> Result<u32, String> {
+    s.trim().strip_prefix('+').and_then(|x| x.parse::<u32>().ok()).ok_or_else(|| perr(line, format!("オフセット {} が不正", s)))
+}
+
+/// 集成体の命令 (`make` / `field` / `setfield` / `tag`) の右辺を読む。対象外なら `None`。
+fn parse_agg_rhs(rhs: &str, line: usize) -> Option<Result<Op, String>> {
+    if let Some(r) = rhs.strip_prefix("make") {
+        if r.starts_with('(') || r.starts_with(".v") {
+            let (variant, args) = match r.strip_prefix(".v") {
+                Some(x) => {
+                    let Some(open) = x.find('(') else { return Some(Err(perr(line, "make に ( がない"))) };
+                    let Ok(k) = x[..open].parse::<u32>() else { return Some(Err(perr(line, "バリアントの番号が不正"))) };
+                    (Some(k), &x[open..])
+                }
+                None => (None, r),
+            };
+            let Some(inner) = args.strip_prefix('(').and_then(|x| x.strip_suffix(')')) else {
+                return Some(Err(perr(line, "make の引数の形が不正")));
+            };
+            return Some(parse_vals(inner, line).map(|fields| Op::Make { variant, fields }));
+        }
+    }
+    if let Some(r) = rhs.strip_prefix("field ") {
+        let p: Vec<&str> = r.split(',').collect();
+        if p.len() != 2 {
+            return Some(Err(perr(line, "field の形が不正")));
+        }
+        return Some(parse_val(p[0], line).and_then(|a| Ok(Op::Field { a, off: parse_off(p[1], line)? })));
+    }
+    if let Some(r) = rhs.strip_prefix("setfield ") {
+        let p: Vec<&str> = r.split(',').collect();
+        if p.len() != 3 {
+            return Some(Err(perr(line, "setfield の形が不正")));
+        }
+        return Some(
+            parse_val(p[0], line).and_then(|a| Ok(Op::SetField { a, off: parse_off(p[1], line)?, v: parse_val(p[2], line)? })),
+        );
+    }
+    None
 }
 
 /// `b<N>(<args>)` を読む。
@@ -885,6 +1126,9 @@ fn parse_cc(s: &str) -> Option<Cc> {
 
 /// 命令の右辺 (`<mnemonic> <operands>` または `call f(args)`) を、結果の型 `ty` のもとで読む。
 fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
+    if let Some(r) = parse_agg_rhs(rhs, line) {
+        return r;
+    }
     if let Some(r) = rhs.strip_prefix("call ") {
         let open = r.find('(').ok_or_else(|| perr(line, "call に ( がない"))?;
         let close = r.rfind(')').ok_or_else(|| perr(line, "call に ) がない"))?;
@@ -1076,6 +1320,15 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
         Some((n, l)) => return Err(perr(n, format!("版が {} ではない (読めるのは {})", l, VERSION_LINE))),
         None => return Err("kir: 空の入力".to_string()),
     }
+    // 集成体の型表 (版の行の直後に `agg#<添字>` の行が並ぶ)。
+    let mut aggs: Vec<AggDef> = vec![];
+    while let Some(&(n, l)) = it.peek() {
+        if !l.starts_with("agg#") {
+            break;
+        }
+        it.next();
+        aggs.push(parse_agg_decl(n, l, aggs.len())?);
+    }
     let mut funcs = vec![];
     while let Some((n, l)) = it.next() {
         let Some(hdr) = l.strip_prefix("fn ") else {
@@ -1179,7 +1432,59 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
             blocks,
         });
     }
-    Ok(Module { funcs })
+    Ok(Module { funcs, aggs })
+}
+
+/// `agg#<k> <kind> <名前> size=<n> align=<n> {<本体>}` を読む (`k` は期待する添字)。
+fn parse_agg_decl(line_no: usize, text: &str, k: usize) -> Result<AggDef, String> {
+    let (head, body) = text.split_once(" {").ok_or_else(|| perr(line_no, "集成体の行に { がない"))?;
+    let body = body.strip_suffix('}').ok_or_else(|| perr(line_no, "集成体の行が } で終わらない"))?;
+    let toks: Vec<&str> = head.split_whitespace().collect();
+    if toks.len() != 5 || toks[0] != format!("agg#{}", k) {
+        return Err(perr(line_no, format!("集成体の宣言 {} の形が不正 (期待は agg#{})", head, k)));
+    }
+    let size = toks[3].strip_prefix("size=").and_then(|x| x.parse::<u32>().ok()).ok_or_else(|| perr(line_no, "size が不正"))?;
+    let align = toks[4].strip_prefix("align=").and_then(|x| x.parse::<u32>().ok()).ok_or_else(|| perr(line_no, "align が不正"))?;
+    let name = toks[2].to_string();
+    // 構造体は `name:ty@off`、タプルは `ty@off` を空白で区切る。
+    let fields = |body: &str| -> Result<Vec<Field>, String> {
+        body.split_whitespace()
+            .map(|t| {
+                let (nm, rest) = match t.split_once(':') {
+                    Some((n, r)) => (n.to_string(), r),
+                    None => (String::new(), t),
+                };
+                let (ty, off) = rest.split_once('@').ok_or_else(|| perr(line_no, format!("フィールド {} の形が不正", t)))?;
+                let off = off.parse::<u32>().map_err(|_| perr(line_no, format!("オフセット {} が不正", off)))?;
+                Ok(Field { name: nm, ty: parse_ty(ty, line_no)?, off })
+            })
+            .collect()
+    };
+    let kind = match toks[1] {
+        "struct" => AggKind::Struct(fields(body)?),
+        "tuple" => AggKind::Tuple(fields(body)?),
+        "enum" => {
+            let mut vs = vec![];
+            for t in body.split_whitespace() {
+                let open = t.find('(').ok_or_else(|| perr(line_no, format!("バリアント {} に ( がない", t)))?;
+                let inner = t[open + 1..]
+                    .strip_suffix(')')
+                    .ok_or_else(|| perr(line_no, format!("バリアント {} に ) がない", t)))?;
+                let mut fs = vec![];
+                if !inner.is_empty() {
+                    for p in inner.split(',') {
+                        let (ty, off) = p.split_once('@').ok_or_else(|| perr(line_no, format!("ペイロード {} の形が不正", p)))?;
+                        let off = off.parse::<u32>().map_err(|_| perr(line_no, format!("オフセット {} が不正", off)))?;
+                        fs.push(Field { name: String::new(), ty: parse_ty(ty, line_no)?, off });
+                    }
+                }
+                vs.push(Variant { name: t[..open].to_string(), fields: fs });
+            }
+            AggKind::Enum(vs)
+        }
+        other => return Err(perr(line_no, format!("集成体の種類 {} が不明", other))),
+    };
+    Ok(AggDef { name, size, align, kind })
 }
 
 // ---------------------------------------------------------------- 検証
@@ -1227,6 +1532,9 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
             let res = (|| -> Result<(), String> {
                 match &i.op {
                     Op::Const(v) => {
+                        if matches!(i.ty, Ty::Agg(_)) {
+                            return Err("集成体の型の定数は作れない".into());
+                        }
                         if matches!(i.ty, Ty::Res(..)) {
                             return Err("Result の定数はない (Ok / Err で作る)".into());
                         }
@@ -1252,14 +1560,20 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("err の被演算子の型が Result の Err 側と合わない".into());
                         }
                     }
-                    Op::Tag(a) => {
-                        if i.ty != Ty::Bool {
-                            return Err("tag の結果は bool のはず".into());
+                    Op::Tag(a) => match ty_of(*a)? {
+                        Ty::Agg(ai) => {
+                            let d = m.aggs.get(ai as usize).ok_or("集成体の番号が表にない")?;
+                            if i.ty != Ty::I32 || !matches!(d.kind, AggKind::Enum(_)) {
+                                return Err("tag は列挙型の i32 のはず".into());
+                            }
                         }
-                        if !matches!(ty_of(*a)?, Ty::Opt(_) | Ty::Res(..)) {
-                            return Err("tag の被演算子は Option か Result のはず".into());
+                        Ty::Opt(_) | Ty::Res(..) => {
+                            if i.ty != Ty::Bool {
+                                return Err("tag の結果は bool のはず".into());
+                            }
                         }
-                    }
+                        _ => return Err("tag の被演算子は集成体の列挙型・Option・Result のはず".into()),
+                    },
                     Op::Payload(a) => {
                         let ok = match ty_of(*a)? {
                             Ty::Opt(p) => p.ty() == i.ty,
@@ -1342,7 +1656,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("比較の結果は bool のはず".into());
                         }
                         if !ty.is_scalar() || *ty == Ty::Unit || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
-                            return Err(format!("型 {} の比較 {} は使えない", ty.name(), cc.name()));
+                            return Err(format!("型 {} の比較 {} は使えない", fmt_ty(*ty), cc.name()));
                         }
                         if ty_of(*a)? != *ty || ty_of(*b)? != *ty {
                             return Err("比較の被演算子の型が合わない".into());
@@ -1418,6 +1732,50 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         };
                         if ty_of(*a)? != Ty::Ref(true, q) {
                             return Err("asshared の被演算子は mutref で、指す先が同じはず".into());
+                        }
+                    }
+                    Op::Make { variant, fields } => {
+                        let Ty::Agg(ai) = i.ty else {
+                            return Err("make の結果は集成体のはず".into());
+                        };
+                        let d = m.aggs.get(ai as usize).ok_or("集成体の番号が表にない")?;
+                        let want: Vec<Ty> = match (&d.kind, variant) {
+                            (AggKind::Enum(vs), Some(k)) => {
+                                let v = vs.get(*k as usize).ok_or("バリアントの番号が不正")?;
+                                v.fields.iter().map(|f| f.ty).collect()
+                            }
+                            (AggKind::Struct(fs) | AggKind::Tuple(fs), None) => fs.iter().map(|f| f.ty).collect(),
+                            _ => return Err("make の変種の指定が集成体の種類と合わない".into()),
+                        };
+                        if want.len() != fields.len() {
+                            return Err("make の要素数が型と合わない".into());
+                        }
+                        for (a, t) in fields.iter().zip(want) {
+                            if ty_of(*a)? != t {
+                                return Err("make の要素の型が合わない".into());
+                            }
+                        }
+                    }
+                    Op::Field { a, off } => {
+                        let Ty::Agg(ai) = ty_of(*a)? else {
+                            return Err("field の対象は集成体のはず".into());
+                        };
+                        let d = m.aggs.get(ai as usize).ok_or("集成体の番号が表にない")?;
+                        if !has_field(d, *off, i.ty) {
+                            return Err(format!("{} に +{} の {} のフィールドがない", d.name, off, fmt_ty(i.ty)));
+                        }
+                    }
+                    Op::SetField { a, off, v } => {
+                        let ta = ty_of(*a)?;
+                        let Ty::Agg(ai) = ta else {
+                            return Err("setfield の対象は集成体のはず".into());
+                        };
+                        let d = m.aggs.get(ai as usize).ok_or("集成体の番号が表にない")?;
+                        if i.ty != ta || matches!(d.kind, AggKind::Enum(_)) {
+                            return Err("setfield は構造体・タプルの同じ型の値を返すはず".into());
+                        }
+                        if !has_field(d, *off, ty_of(*v)?) {
+                            return Err(format!("{} に +{} の型の合うフィールドがない", d.name, off));
                         }
                     }
                     Op::Call { callee, args } => {
@@ -1500,6 +1858,18 @@ fn operands(op: &Op) -> Vec<VId> {
         | Op::Tag(a)
         | Op::Payload(a) => vec![*a],
         Op::Call { args, .. } => args.clone(),
+        Op::Make { fields, .. } => fields.clone(),
+        Op::Field { a, .. } => vec![*a],
+        Op::SetField { a, v, .. } => vec![*a, *v],
+    }
+}
+
+/// 集成体の型 `d` に、オフセット `off` で型 `t` のフィールドがあるか (構造体・タプルは本体、列挙型は全バリアント)。
+fn has_field(d: &AggDef, off: u32, t: Ty) -> bool {
+    let hit = |fs: &[Field]| fs.iter().any(|f| f.off == off && f.ty == t);
+    match &d.kind {
+        AggKind::Struct(fs) | AggKind::Tuple(fs) => hit(fs),
+        AggKind::Enum(vs) => vs.iter().any(|v| hit(&v.fields)),
     }
 }
 
@@ -1528,6 +1898,22 @@ pub fn conv_ok(src: Ty, dst: Ty) -> bool {
 /// モジュールを検査する。違反のあった関数を (鍵, 理由) で返す。空なら正しい。
 pub fn verify_module(m: &Module) -> Vec<(String, String)> {
     let mut out = vec![];
+    // 集成体の型表: フィールドの型が表の中にあり、ユニットでないこと。
+    let n = m.aggs.len() as u32;
+    let agg_ok = |t: Ty| match t {
+        Ty::Agg(i) => i < n,
+        Ty::Unit => false,
+        _ => true,
+    };
+    for d in &m.aggs {
+        let fs: Vec<Ty> = match &d.kind {
+            AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().map(|f| f.ty).collect(),
+            AggKind::Enum(vs) => vs.iter().flat_map(|v| v.fields.iter().map(|f| f.ty)).collect(),
+        };
+        if let Some(t) = fs.into_iter().find(|t| !agg_ok(*t)) {
+            out.push((d.name.clone(), format!("{}: フィールドの型 {} が不正", d.name, fmt_ty(t))));
+        }
+    }
     let mut keys = HashSet::new();
     for f in &m.funcs {
         if !keys.insert(f.key.as_str()) {
@@ -1575,7 +1961,7 @@ mod tests {
                 },
             ],
         };
-        Module { funcs: vec![f] }
+        Module { funcs: vec![f], ..Default::default() }
     }
 
     #[test]
@@ -1611,6 +1997,66 @@ mod tests {
         assert_eq!(Ty::U64.max(), u64::MAX as i128);
     }
 
+    /// 集成体の型表 (構造体 `t.P`、列挙型 `t.S`) と、それを使う関数 (構築・読み書き・タグ・変種の構築)。
+    fn agg_sample() -> Module {
+        let p = AggDef {
+            name: "t.P".into(),
+            size: 8,
+            align: 4,
+            kind: AggKind::Struct(vec![
+                Field { name: "x".into(), ty: Ty::I32, off: 0 },
+                Field { name: "y".into(), ty: Ty::I32, off: 4 },
+            ]),
+        };
+        let s = AggDef {
+            name: "t.S".into(),
+            size: 12,
+            align: 4,
+            kind: AggKind::Enum(vec![
+                Variant { name: "Circle".into(), fields: vec![Field { name: String::new(), ty: Ty::I32, off: 4 }] },
+                Variant {
+                    name: "Rect".into(),
+                    fields: vec![
+                        Field { name: String::new(), ty: Ty::I32, off: 4 },
+                        Field { name: String::new(), ty: Ty::I32, off: 8 },
+                    ],
+                },
+                Variant { name: "Empty".into(), fields: vec![] },
+            ]),
+        };
+        let f = Func {
+            fqn: "t.f".into(),
+            key: "t.f".into(),
+            uses: vec![],
+            may_panic: false,
+            stack: None,
+            ret: Ty::I32,
+            blocks: vec![Block {
+                params: vec![(0, Ty::I32)],
+                insts: vec![
+                    Inst { dst: 1, ty: Ty::Agg(0), op: Op::Make { variant: None, fields: vec![0, 0] } },
+                    Inst { dst: 2, ty: Ty::I32, op: Op::Field { a: 1, off: 4 } },
+                    Inst { dst: 3, ty: Ty::Agg(0), op: Op::SetField { a: 1, off: 0, v: 2 } },
+                    Inst { dst: 4, ty: Ty::Agg(1), op: Op::Make { variant: Some(1), fields: vec![0, 2] } },
+                    Inst { dst: 5, ty: Ty::I32, op: Op::Tag(4) },
+                ],
+                term: Term::Ret(5),
+            }],
+        };
+        Module { funcs: vec![f], aggs: vec![p, s] }
+    }
+
+    #[test]
+    fn agg_decls_print_and_read_back() {
+        let m = agg_sample();
+        let text = print_module(&m);
+        assert!(text.contains("agg#0 struct t.P size=8 align=4 {x:i32@0 y:i32@4}"), "{}", text);
+        assert!(text.contains("agg#1 enum t.S size=12 align=4 {Circle(i32@4) Rect(i32@4,i32@8) Empty()}"), "{}", text);
+        let back = parse_module(&text).expect("parse");
+        assert_eq!(back, m);
+        assert_eq!(print_module(&back), text);
+    }
+
     /// 参照の型と命令 (`ref<T>` / `mutref<T>`、`alloca` / `load` / `store` / `asshared` / `reborrow`) の往復。
     #[test]
     fn refs_print_and_parse_round_trip() {
@@ -1634,6 +2080,31 @@ end t.w
         let m = parse_module(text).expect("parse");
         assert_eq!(print_module(&m), text);
         assert!(verify_module(&m).is_empty(), "{:?}", verify_module(&m));
+    }
+
+    #[test]
+    fn verify_rejects_a_field_that_is_not_at_the_declared_offset() {
+        let mut bad = agg_sample();
+        bad.funcs[0].blocks[0].insts[1].op = Op::Field { a: 1, off: 2 };
+        let errs = verify_module(&bad);
+        assert_eq!(errs.len(), 1, "{:?}", errs);
+        assert!(errs[0].1.contains("フィールド"), "{:?}", errs);
+    }
+
+    #[test]
+    fn prune_keeps_only_referenced_aggs_and_renumbers() {
+        // t.S (添字 1) だけを使う関数: 型表の t.P (添字 0) は外れ、t.S は添字 0 になる。
+        let mut m = agg_sample();
+        m.funcs[0].blocks[0].insts.retain(|i| !matches!(i.op, Op::Make { variant: None, .. } | Op::Field { .. } | Op::SetField { .. }));
+        m.funcs[0].blocks[0].insts[0].dst = 4;
+        m.funcs[0].blocks[0].insts[0].ty = Ty::Agg(1);
+        m.funcs[0].blocks[0].insts[1].dst = 5;
+        m.funcs[0].blocks[0].term = Term::Ret(5);
+        m.funcs[0].blocks[0].insts[0].op = Op::Make { variant: Some(1), fields: vec![0, 0] };
+        prune_aggs(&mut m);
+        assert_eq!(m.aggs.len(), 1);
+        assert_eq!(m.aggs[0].name, "t.S");
+        assert_eq!(m.funcs[0].blocks[0].insts[0].ty, Ty::Agg(0));
     }
 
     #[test]
@@ -1716,7 +2187,7 @@ end t.c
                 },
             ],
         };
-        Module { funcs: vec![f] }
+        Module { funcs: vec![f], aggs: vec![] }
     }
 
     #[test]
