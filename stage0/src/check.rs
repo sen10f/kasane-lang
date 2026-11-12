@@ -1094,6 +1094,14 @@ impl<'a> Checker<'a> {
             "slice" | "array" => self.linear_v(tel(t, 1), gn, user_types, seen),
             "named" => {
                 let n = st(tel(t, 1));
+                // 型引数に線形を含む型も線形 (4.4): `Option<線形>`・`Result<線形, _>`・`Box<線形>` など。
+                // 型引数が判断できないもの (Nil・型パラメータ) は None で、他に線形がなければ黙る。
+                let arg_res = items(tel(t, 2))
+                    .iter()
+                    .fold(Some(false), |r, a| or3(r, self.linear_v(a, gn, user_types, seen)));
+                if arg_res == Some(true) {
+                    return Some(true);
+                }
                 if gn.contains(&n) || !user_types.contains(&n) {
                     return None;
                 }
@@ -1119,7 +1127,7 @@ impl<'a> Checker<'a> {
                     })
                     .unwrap_or(None);
                 seen.remove(&n);
-                res
+                or3(res, arg_res)
             }
             _ => None,
         }
@@ -2282,11 +2290,26 @@ impl<'a> Checker<'a> {
                 let name = st(&f[0]);
                 let segs: Vec<String> = name.split('.').map(String::from).collect();
                 let fq = self.p.expand(&segs, &self.def(self.d).file).join(".");
-                if self.p.types.contains_key(&fq) {
-                    V::L(vec![V::S("named".into()), V::S(fq), V::L(vec![])])
-                } else {
-                    V::Nil
+                let Some(&ti) = self.p.types.get(&fq) else { return V::Nil };
+                // ジェネリクスの型引数は、型がそのまま型パラメータの宣言のフィールドの値から推論する
+                // (`t.Box { v: t.mk() }` の `T`)。推論できない引数は Nil (黙る)。
+                let d = self.def(ti);
+                let tparams: Vec<String> = d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
+                let mut args = vec![V::Nil; tparams.len()];
+                if d.kw == "type" && !tparams.is_empty() {
+                    for fl in items(&f[1]) {
+                        let fx = items(fl);
+                        let Some((_, decl, _)) = d.fields.iter().find(|x| x.0 == st(&fx[0])) else { continue };
+                        if tag(decl) != "named" || !items(tel(decl, 2)).is_empty() {
+                            continue;
+                        }
+                        let Some(i) = tparams.iter().position(|p| *p == st(tel(decl, 1))) else { continue };
+                        if is_nil(&args[i]) {
+                            args[i] = self.ty_of(&fx[1], env);
+                        }
+                    }
                 }
+                V::L(vec![V::S("named".into()), V::S(fq), V::L(args)])
             }
             "Bin" => {
                 if matches!(st(&f[0]).as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||") {
@@ -2316,9 +2339,19 @@ impl<'a> Checker<'a> {
                     let segs = strs(&nf(fnn)[0]);
                     if !env.contains_key(&segs[0]) {
                         if let Some(r) = self.p.resolve(&segs, &self.def(self.d).file) {
-                            if let Target::Variant(en, _) = &r.target {
-                                if self.p.types.contains_key(en) {
-                                    return V::L(vec![V::S("named".into()), V::S(en.clone()), V::L(vec![])]);
+                            if let Target::Variant(en, vn) = &r.target {
+                                // プレリュードの `Option` / `Result` は `p.types` に無いので別に通す。
+                                if self.p.types.contains_key(en) || en == "Option" || en == "Result" {
+                                    // `Some(x)`・`Ok(x)`・`Err(x)` は引数の型を型引数に入れる (4.4)。
+                                    // 分からない型引数は Nil (黙る)。
+                                    let payload = items(&nf(e)[1]).first().map(|a| self.ty_of(a, env));
+                                    let args = match (en.as_str(), vn.as_str(), payload) {
+                                        ("Option", "Some", Some(p)) => vec![p],
+                                        ("Result", "Ok", Some(p)) => vec![p, V::Nil],
+                                        ("Result", "Err", Some(p)) => vec![V::Nil, p],
+                                        _ => vec![],
+                                    };
+                                    return V::L(vec![V::S("named".into()), V::S(en.clone()), V::L(args)]);
                                 }
                             }
                             if let Target::Fn(i) = r.target {
