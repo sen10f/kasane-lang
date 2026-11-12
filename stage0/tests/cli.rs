@@ -81,6 +81,27 @@ fn clean_program_passes_check_and_fmt() {
 }
 
 #[test]
+fn linear_ok_cases_pass_check() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    assert!(!names.is_empty(), "linear_ok cases missing");
+    let mut failures = Vec::new();
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        let o = run(&["check", "--json"], &t.0);
+        let got = codes(&text(&o.stdout));
+        if o.status.code() != Some(0) || !got.is_empty() {
+            failures.push(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+
+
+#[test]
 fn fmt_check_fails_on_noncanonical_source() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never   \n    Ok(())\nend t.main\n";
     let t = Tmp::new("fmtbad", src);

@@ -2628,7 +2628,15 @@ impl<'a> Checker<'a> {
                     if env.contains_key(&segs[0]) {
                         let root = &segs[0];
                         let rt = env.get(root).cloned().unwrap_or(V::Nil);
-                        if !muts.contains(root) && root != "self" && !(!is_nil(&rt) && tag(&rt) == "ref") {
+                        // 型の分からない束縛 (match の腕などで rt == Nil) や &mut 束縛
+                        // (tag == "ref") への代入は E3001 にしない: 「分からなければ黙る」
+                        // が既存の作法。`let x = S{..}` のような値束縛 (rt が named など)
+                        // は従来どおりエラーにする。
+                        if !muts.contains(root)
+                            && root != "self"
+                            && !is_nil(&rt)
+                            && tag(&rt) != "ref"
+                        {
                             self.tdiag(
                                 "E3001",
                                 format!("cannot assign to `{}`: `{}` is not declared `mut`", segs.join("."), root),

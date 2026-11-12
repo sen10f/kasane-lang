@@ -1,0 +1,21 @@
+type t.Node derive [Debug, Clone, Copy] pub
+    v: u32
+end t.Node
+
+fn t.bump(arr: &mut [t.Node]) -> () uses [] panics never
+    match arr.get_mut(0usize) {
+        Some(nd) => {
+            nd.v = nd.v.wrapping_add(1u32)
+        }
+        None => {
+            core.mem.drop(0u8)
+        }
+    }
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut a = [t.Node { v: 1u32 }]
+    t.bump(&mut a)
+    core.check.eq(a[0usize].v, 2u32)
+    std.io.print_line("ok")
+end t.main
