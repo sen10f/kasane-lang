@@ -97,7 +97,7 @@ impl Ty {
     }
 }
 
-const INTS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"];
+pub(crate) const INTS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"];
 const FLOATS: &[&str] = &["f32", "f64"];
 
 /// 型の構文木 (V) を `Ty` にする。`params` に含まれる名前は型パラメータ。
@@ -187,7 +187,7 @@ fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
 
 const DERIVED: &[&str] = &[
     "clone", "eq", "cmp", "partial_cmp", "hash", "debug_fmt", "display_fmt", "call", "call_mut", "call_once", "drop",
-    "try_clone", "to_string",
+    "try_clone",
 ];
 
 /// 数値の基本型 (所有者 `core.num.<型>` を持つ型)。
@@ -1232,7 +1232,6 @@ impl<'a> TypeCk<'a> {
             // `<` 等と `!=` は演算子で、メソッドではない (3.2。PartialEq は eq、PartialOrd は partial_cmp のみ)。
             "eq" => Ty::Prim("bool".into()),
             "hash" => Ty::Unit,
-            "to_string" => Ty::Named("alloc.string.String".into(), vec![]),
             "cmp" => Ty::Named("core.cmp.Ordering".into(), vec![]),
             "partial_cmp" => Ty::Named("Option".into(), vec![Ty::Named("core.cmp.Ordering".into(), vec![])]),
             _ => return None,

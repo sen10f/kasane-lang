@@ -1,0 +1,6 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let n = 42i32
+    let s = n.to_string()
+    core.mem.drop(s)
+    Ok(())
+end t.main

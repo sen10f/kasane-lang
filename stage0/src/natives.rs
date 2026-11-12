@@ -34,7 +34,7 @@ const NUM_EXTRA: &[&str] = &[
 ];
 
 pub fn known_num(name: &str) -> bool {
-    ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_", "to_"].iter().any(|p| name.starts_with(p))
+    ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_"].iter().any(|p| name.starts_with(p))
         || NUM_EXTRA.contains(&name)
 }
 
@@ -712,8 +712,6 @@ impl Interp {
                         return Ok(if pick_self { v.clone() } else { dr(&a0) });
                     }
                     "hash" => return Ok(Val::Unit),
-                    // `Display` は基本型に組み込み (仕様 4.2)。`to_string` はその表示文字列。
-                    "to_string" => return Ok(Val::Str(self.display_str(v)?.into())),
                     // `core.fmt.Debug` / `Display` の組み込み実装 (仕様 4.2): 整形先の Formatter に追記する。
                     "debug_fmt" | "display_fmt" => {
                         let text = if name == "debug_fmt" { self.debug_str(v)? } else { self.display_str(v)? };
@@ -721,6 +719,14 @@ impl Interp {
                             Val::Fmt(b) => {
                                 b.borrow_mut().push_str(&text);
                                 Ok(ok(Val::Unit))
+                            }
+                            // 利用者が `core.fmt.Formatter.new(&mut buf)` で作った Formatter (spec/stdlib/core/fmt.ksnl)。
+                            // 書き込みは定義された `write_str` に任せる (バッファ溢れは Err)。
+                            f @ Val::Struct(_) => {
+                                let Some(&wi) = self.p.funcs.get("core.fmt.Formatter.write_str") else {
+                                    return panic("core.fmt.Formatter.write_str is missing".to_string());
+                                };
+                                self.call_def(wi, vec![f, Val::Str(text.into())])
                             }
                             _ => panic(format!("{} expects a Formatter", name)),
                         };
@@ -1091,8 +1097,6 @@ impl Interp {
                 Ok(some(Val::Tuple(Rc::new(vec![s_val(&s[..m]), s_val(&s[m..])]))))
             }
             "as_str" => Ok(s_val(&s)),
-            // `Display` の文字列そのもの。型は `alloc.string.String` (types.rs) なので所有の StrBuf で返す。
-            "to_string" => Ok(Val::StrBuf(Rc::new(RefCell::new(s)))),
             "push" | "push_str" | "clear" => {
                 if let Val::StrBuf(b) = v {
                     match name {

@@ -72,6 +72,27 @@ fn diagnostics_each_case_reports_its_code() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// 検査を通ってはいけないケース (tests/data/unsound/、1 ファイル 1 ケース)。`to_string` は仕様に無いので
+/// どれも E1108 で拒まれ、`check` は rc=1 になる。
+#[test]
+fn unsound_cases_are_rejected() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    assert!(names.len() >= 4, "unsound cases missing");
+    let mut failures = Vec::new();
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&stem, &fs::read_to_string(&p).unwrap());
+        let o = run(&["check", "--json"], &t.0);
+        let got = codes(&text(&o.stdout));
+        if o.status.code() != Some(1) || !got.iter().any(|c| c == "E1108") {
+            failures.push(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 #[test]
 fn clean_program_passes_check_and_fmt() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
@@ -7408,36 +7429,49 @@ end t.Phase.next
     assert!(codes(&out).iter().any(|c| c == "E2020"), "{}", out);
 }
 
-/// 基本型の `to_string` (`Display` の組み込み実装) と派生の比較 (`ne` / `partial_cmp`) は、
+/// 基本型の `Display` (`display_fmt` で `core.fmt.Formatter` に書く。仕様 4.2) と派生の比較 (`ne` / `partial_cmp`) は、
 /// インタプリタとバンドルの両方で動く (以前は "unknown integer operation" で panic していた)。
+/// `to_string` は仕様に無く検査で拒む (tests/data/unsound/)。
 #[test]
-fn scalar_to_string_and_derived_methods_run_in_interp_and_bundle() {
-    let test = "test t.main.test_scalar_to_string
+fn scalar_display_and_derived_methods_run_in_interp_and_bundle() {
+    let test = "test t.main.test_scalar_display
     let n: i64 = -7i64
-    core.check.eq(n.to_string().as_str(), \"-7\")
-    core.check.eq(n.to_string().len(), 2usize)
+    let mut buf = [0u8; 32]
+    let mut f = core.fmt.Formatter.new(&mut buf)
+    core.mem.drop(n.display_fmt(&mut f))
+    core.check.eq(core.str.from_utf8(f.written()), Ok(\"-7\"))
     let big: u32 = 4294967295u32
-    core.check.eq(big.to_string().as_str(), \"4294967295\")
+    let mut buf2 = [0u8; 16]
+    let mut f2 = core.fmt.Formatter.new(&mut buf2)
+    core.mem.drop(big.display_fmt(&mut f2))
+    core.check.eq(core.str.from_utf8(f2.written()), Ok(\"4294967295\"))
     let c: char = 'x'
-    core.check.eq(c.to_string().as_str(), \"x\")
+    let mut buf3 = [0u8; 8]
+    let mut f3 = core.fmt.Formatter.new(&mut buf3)
+    core.mem.drop(c.display_fmt(&mut f3))
+    core.check.eq(core.str.from_utf8(f3.written()), Ok(\"x\"))
     let t: bool = true
-    core.check.eq(t.to_string().as_str(), \"true\")
+    let mut buf4 = [0u8; 8]
+    let mut f4 = core.fmt.Formatter.new(&mut buf4)
+    core.mem.drop(t.display_fmt(&mut f4))
+    core.check.eq(core.str.from_utf8(f4.written()), Ok(\"true\"))
     core.check.eq(n != 3i64, true)
     core.check.eq(n.partial_cmp(&3i64).is_some(), true)
-end t.main.test_scalar_to_string
+end t.main.test_scalar_display
 ";
     let src = format!("{}\n{}", main_wrap("", ""), test);
-    let t = Tmp::new("scalar_to_string_both", &src);
+    let t = Tmp::new("scalar_display_both", &src);
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("test t.main.test_scalar_to_string ... ok (both: bundle (native skipped: "), "{}", out); // Cranelift が `as_str` 未対応: インタプリタとバンドルの比較
+    // Cranelift が Formatter のバッファ (`let` の型が決まらない) に未対応: インタプリタとバンドルの比較
+    assert!(out.contains("test t.main.test_scalar_display ... ok (both: bundle (native skipped: "), "{}", out);
 }
 
 /// `Display` の char は文字そのもの。`print_line` と `to_string` の出力を確かめる。
 #[test]
 fn char_display_prints_the_character_itself() {
-    let body = "    let c: char = 'x'\n    std.io.print_line(c)\n    std.io.print_line(c.to_string())\n    std.io.print_line(7u8.to_string())\n";
+    let body = "    let c: char = 'x'\n    std.io.print_line(c)\n    let mut buf = [0u8; 8]\n    let mut f = core.fmt.Formatter.new(&mut buf)\n    core.mem.drop(c.display_fmt(&mut f))\n    match core.str.from_utf8(f.written()) {\n        Ok(s) => std.io.print_line(s)?\n        Err(_e) => std.io.print_line(\"bad\")?\n    }\n    let n = 7u8\n    let mut buf2 = [0u8; 4]\n    let mut f2 = core.fmt.Formatter.new(&mut buf2)\n    core.mem.drop(n.display_fmt(&mut f2))\n    match core.str.from_utf8(f2.written()) {\n        Ok(s) => std.io.print_line(s)?\n        Err(_e) => std.io.print_line(\"bad\")?\n    }\n";
     let t = Tmp::new("char_display", &main_wrap("", body));
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
@@ -7607,7 +7641,7 @@ fn move_capture_that_is_only_read_meets_the_fn_bound() {
 }
 
 /// バンドル (インタプリタ同梱の起動スクリプト) が実行権限を持ち、相対パス・PATH 経由・
-/// 別ディレクトリから起動しても同梱物を exec できること。`to_string` は clif 未対応なので
+/// 別ディレクトリから起動しても同梱物を exec できること。基本型の `display_fmt` は clif 未対応なので
 /// ネイティブ生成が失敗し、バンドルへフォールバックする。
 #[cfg(unix)]
 #[test]
@@ -7615,8 +7649,14 @@ fn bundle_launcher_is_executable_and_location_independent() {
     use std::os::unix::fs::PermissionsExt;
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let n = 42u32
-    let s = n.to_string()
-    std.io.print_line(s)
+    let mut buf = [0u8; 16]
+    let mut f = core.fmt.Formatter.new(&mut buf)
+    core.mem.drop(n.display_fmt(&mut f))
+    match core.str.from_utf8(f.written()) {
+        Ok(s) => std.io.print_line(s)?
+        Err(_e) => std.io.print_line(\"bad\")?
+    }
+    Ok(())
 end t.main
 ";
     let t = Tmp::new("bundle_launcher", src);
@@ -7764,13 +7804,16 @@ end t.main.test_c_str_derived_cmp
 
 test t.main.test_d_to_string
     let s: &str = \"héllo\"
-    core.check.eq(s.to_string().as_str(), \"héllo\")
-    core.check.eq(s.to_string().len(), 6usize)
-    let mut owned = s.to_string()
+    let mut owned = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(o) => o
+        Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+    core.check.eq(owned.as_str(), \"héllo\")
+    core.check.eq(owned.len(), 6usize)
     core.mem.drop(owned.push('!'))
     core.check.eq(owned.as_str(), \"héllo!\")
     let st = alloc.string.String.new(std.alloc.SYSTEM)
-    core.check.eq(st.to_string().is_empty(), true)
+    core.check.eq(st.is_empty(), true)
 end t.main.test_d_to_string
 ";
     let src = format!("{}\n{}", main_wrap("", ""), test);
