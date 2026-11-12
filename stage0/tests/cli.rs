@@ -90,6 +90,30 @@ fn e0010_not_fired_for_tuple_variant_pattern_bindings() {
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
 }
 
+#[cfg(unix)]
+#[test]
+fn launcher_works_via_symlink() {
+    // 起動スクリプトがシンボリックリンク経由だと `cd: can't cd` に
+    // なっていた (#C)。自分の実体をシンボリックリンクを辿って求める。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"ok\")\nend t.main\n";
+    let t = Tmp::new("symlink_launcher", src);
+    assert_eq!(
+        run(&["build"], &t.0).status.code(),
+        Some(0),
+        "{}",
+        text(&run(&["build"], &t.0).stderr)
+    );
+    let launcher = t.0.join("target").join("debug").join("t");
+    assert!(launcher.is_file());
+    let link = std::env::temp_dir().join(format!("ksn_link_{}", std::process::id()));
+    let _ = fs::remove_file(&link);
+    std::os::unix::fs::symlink(&launcher, &link).unwrap();
+    let out = Command::new(&link).current_dir(&t.0).output().expect("spawn launcher via symlink");
+    let _ = fs::remove_file(&link);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("ok"), "{}", text(&out.stdout));
+}
+
 #[test]
 fn linear_ok_cases_pass_check() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
