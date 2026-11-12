@@ -1939,6 +1939,11 @@ impl<'a> Checker<'a> {
                 tk.check_def(i);
             }
         }
+        // 計測 (隠し機能): `KSN_TYPE_COVERAGE=1` のときだけ stderr に被覆率を出す (typecov.rs)。
+        if let Some(c) = tk.cov.take() {
+            let top = std::env::var("KSN_TYPE_COVERAGE_TOP").ok().and_then(|v| v.parse().ok()).unwrap_or(15);
+            crate::typecov::report(&c, top);
+        }
         self.diags.extend(tk.diags);
         // 型で解決できた呼び出しの効果 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡した
         // クロージャから推論した効果変数・panic 変数。呼び出し元の宣言と比べ、全候補が違反するときだけ報告する。
