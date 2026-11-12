@@ -14,6 +14,8 @@ pub struct Diag {
     pub code: String,
     pub fqn: String,
     pub line: usize,
+    /// 1 始まりの列 (Unicode スカラ値)。0 は「列不明」(呼び出し側で行頭の非空白に補う)。
+    pub col: usize,
     pub msg: String,
 }
 
@@ -30,11 +32,16 @@ pub(crate) fn nf(v: &V) -> &[V] {
         _ => &[],
     }
 }
+/// ノードの位置 (行と列を符号化した値)。診断にはこれをそのまま渡す。行番号だけが要るなら `nlineno`。
 pub(crate) fn nline(v: &V) -> usize {
     match v {
         V::Node(_, _, l) => *l,
         _ => 0,
     }
+}
+/// ノードの行番号 (列を除く)。
+pub(crate) fn nlineno(v: &V) -> usize {
+    crate::parser::unpack_pos(nline(v)).0
 }
 pub(crate) fn items(v: &V) -> &[V] {
     match v {
@@ -328,11 +335,13 @@ impl<'a> Checker<'a> {
     fn diag(&mut self, code: &str, msg: String, di: usize, line: usize) {
         let d = self.def(di);
         let fqn = if d.kw == "import" { "-".to_string() } else { d.name.clone() };
+        let (ln, col) = crate::parser::unpack_pos(if line != 0 { line } else { d.line });
         self.diags.push(Diag {
             file: d.file.clone(),
             code: code.into(),
             fqn,
-            line: if line != 0 { line } else { d.line },
+            line: ln,
+            col,
             msg,
         });
     }
@@ -1911,7 +1920,7 @@ impl<'a> Checker<'a> {
             self.cur_panics = saved_p;
             let Some((code, msg)) = viol else { continue };
             let w = self.def(c.writer);
-            let dup = self.diags.iter().any(|x| x.code == code && x.file == w.file && x.fqn == w.name && x.line == c.line);
+            let dup = self.diags.iter().any(|x| x.code == code && x.file == w.file && x.fqn == w.name && x.line == crate::parser::unpack_pos(c.line).0);
             if !dup {
                 self.diag(&code, msg, c.writer, c.line);
             }
@@ -1950,8 +1959,8 @@ impl<'a> Checker<'a> {
             // 同じコードで既に報告されていれば、ここでは重ねない。
             let mut cl_nodes: Vec<&V> = vec![];
             walk(&cl, &mut cl_nodes);
-            let lines: Vec<usize> = cl_nodes.iter().map(|n| nline(n)).collect();
-            let (lo, hi) = (lines.iter().copied().filter(|&l| l > 0).min().unwrap_or(a.line), lines.iter().copied().max().unwrap_or(a.line));
+            let lines: Vec<usize> = cl_nodes.iter().map(|n| nlineno(n)).collect();
+            let (lo, hi) = (lines.iter().copied().filter(|&l| l > 0).min().unwrap_or(crate::parser::unpack_pos(a.line).0), lines.iter().copied().max().unwrap_or(crate::parser::unpack_pos(a.line).0));
             let wname = w.name.clone();
             let seen = |me: &Self, code: &str| me.diags.iter().any(|d| d.code == code && d.fqn == wname && d.line >= lo && d.line <= hi);
             if seen(self, "E4001") || seen(self, "E4002") || seen(self, "E4003") || seen(self, "E4004") {
@@ -2465,6 +2474,7 @@ impl<'a> Checker<'a> {
     /// 重ならなければ、consume のときに型を解決して move を記録する (Copy は move にならない)。
     fn use_place(&mut self, root: &str, path: &[String], env: &Env, line: usize, consume: bool) {
         if let Some((mk, ml)) = self.moved_overlap(root, path) {
+            let ml = crate::parser::unpack_pos(ml).0;
             let key = place_key(root, path);
             let msg = if mk == key {
                 format!("use of moved value `{key}` (moved at line {ml})")
@@ -2889,7 +2899,7 @@ impl<'a> Checker<'a> {
                     if env.contains_key(root) {
                         self.tdiag(
                             "E3002",
-                            format!("value `{k}` is moved inside a loop (at line {line}) and would be used again in the next iteration"),
+                            format!("value `{k}` is moved inside a loop (at line {}) and would be used again in the next iteration", crate::parser::unpack_pos(*line).0),
                             *line,
                         );
                     }

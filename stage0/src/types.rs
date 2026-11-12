@@ -300,7 +300,8 @@ impl<'a> TypeCk<'a> {
 
     fn diag(&mut self, code: &str, msg: String, line: usize) {
         let d = self.def();
-        self.diags.push(Diag { file: d.file.clone(), code: code.into(), fqn: d.name.clone(), line: if line != 0 { line } else { d.line }, msg });
+        let (line, col) = crate::parser::unpack_pos(if line != 0 { line } else { d.line });
+        self.diags.push(Diag { file: d.file.clone(), code: code.into(), fqn: d.name.clone(), line, col, msg });
     }
 
     pub fn check_def(&mut self, di: usize) {

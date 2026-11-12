@@ -8,6 +8,13 @@ pub struct Tok {
     pub col: usize,
 }
 
+impl Tok {
+    /// AST ノード用の符号化済み位置 (行と列)。
+    pub fn pos(&self) -> usize {
+        crate::parser::pack_pos(self.line, self.col)
+    }
+}
+
 const PRIMS: &[&str] = &[
     "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
     "bool", "char", "str",

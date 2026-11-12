@@ -20,7 +20,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, DataDescription, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use crate::check::{items, nf, nline, nname, st, strs, tag, tel};
+use crate::check::{items, nf, nlineno, nname, st, strs, tag, tel};
 use crate::parser::V;
 use crate::program::{Def, Program};
 
@@ -2370,7 +2370,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     fn stmt(&mut self, s: &V, env: &mut Env, tail: bool) -> R<()> {
         // 最初に失敗した文の行を、エラーに付ける (原因を探しやすくする)。
-        self.stmt_inner(s, env, tail).map_err(|e| if e.contains("(line ") { e } else { format!("{} (line {})", e, nline(s)) })
+        self.stmt_inner(s, env, tail).map_err(|e| if e.contains("(line ") { e } else { format!("{} (line {})", e, nlineno(s)) })
     }
 
     fn stmt_inner(&mut self, s: &V, env: &mut Env, tail: bool) -> R<()> {

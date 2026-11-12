@@ -8,7 +8,7 @@ use std::rc::Rc;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-use crate::check::{children, nf, nline, nname, st, strs, Checker};
+use crate::check::{children, nf, nlineno, nname, st, strs, Checker};
 use crate::explain::EXPLAIN;
 use crate::fmt::{format_source, mechanical_collapse};
 use crate::grammar::{py_repr, Grammar};
@@ -103,6 +103,22 @@ fn attach_fixes(items: &mut [Item]) {
     }
 }
 
+/// 定義ヘッダの行に付く診断のうち、メッセージが名前を示すもの (未知の型・トレイト、未使用の引数) は、
+/// その名前が行の中で最初に現れる列 (1 始まり、Unicode スカラ値) を返す。
+fn header_name_col(msg: &str, line: &str) -> Option<usize> {
+    let name = ["unknown type ", "unknown trait ", "unused parameter "].iter().find_map(|p| msg.strip_prefix(p))?;
+    let name = name.split_whitespace().next()?;
+    let cs: Vec<char> = line.chars().collect();
+    let ns: Vec<char> = name.chars().collect();
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    (0..cs.len()).find(|&i| {
+        cs[i..].starts_with(&ns)
+            && (i == 0 || !(ident(cs[i - 1]) || cs[i - 1] == '.'))
+            && cs.get(i + ns.len()).map_or(true, |&c| !ident(c))
+    })
+    .map(|i| i + 1)
+}
+
 impl Report {
     fn new(json: bool) -> Report {
         Report { json, items: vec![] }
@@ -119,7 +135,23 @@ impl Report {
             fix: vec![],
         });
     }
+    /// 列が分からない診断 (col == 0) に、その行の最初の非空白文字の列を補う (行が読めなければ 1)。
+    fn fill_cols(&mut self) {
+        let mut cache: HashMap<String, Vec<String>> = HashMap::new();
+        for it in self.items.iter_mut().filter(|i| i.col == 0) {
+            let lines = it.file.as_ref().map(|f| {
+                cache
+                    .entry(f.clone())
+                    .or_insert_with(|| fs::read_to_string(f).unwrap_or_default().split('\n').map(String::from).collect())
+            });
+            let text = lines.and_then(|ls| ls.get(it.line.wrapping_sub(1)));
+            it.col = text.map_or(1, |l| {
+                header_name_col(&it.message, l).unwrap_or_else(|| l.chars().take_while(|c| *c == ' ').count() + 1)
+            });
+        }
+    }
     fn flush(&mut self) {
+        self.fill_cols();
         self.items.sort_by(|a, b| {
             (a.file.clone().unwrap_or_default(), a.line, a.col, &a.code).cmp(&(b.file.clone().unwrap_or_default(), b.line, b.col, &b.code))
         });
@@ -253,10 +285,10 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
         }
         for (i, line) in s.lines.iter().enumerate() {
             if line.contains('\t') {
-                rep.add("E0001", "tab is not allowed", Some(&fl), i + 1, 1, true);
+                rep.add("E0001", "tab is not allowed", Some(&fl), i + 1, line.chars().position(|c| c == '\t').map_or(1, |p| p + 1), true);
             }
             if line != line.trim_end_matches(' ') && !line.ends_with('\r') {
-                rep.add("E0001", "trailing whitespace", Some(&fl), i + 1, 1, true);
+                rep.add("E0001", "trailing whitespace", Some(&fl), i + 1, line.trim_end_matches(' ').chars().count() + 1, true);
             }
         }
         if !s.text.ends_with('\n') || s.text.ends_with("\n\n") {
@@ -274,11 +306,11 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             }
         }
         for (code, ln, msg) in Lint::new(relpath, &lt).run() {
-            rep.add(lint_code(&code), &msg, Some(&fl), ln, 1, !(run_mode && code == "unused"));
+            rep.add(lint_code(&code), &msg, Some(&fl), ln, 0, !(run_mode && code == "unused"));
         }
         let (ok, msg, ln) = grammar.check(&s.text);
         if !ok {
-            rep.add("E0002", &msg, Some(&fl), ln, 1, true);
+            rep.add("E0002", &msg, Some(&fl), ln, 0, true);
         }
     }
     if l.pkg.sources.iter().any(|s| s.error.is_some()) {
@@ -298,7 +330,7 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             fqn: if d.fqn == "-" { None } else { Some(d.fqn) },
             file: Some(rel(&d.file)),
             line: d.line,
-            col: 1,
+            col: d.col,
             message: d.msg,
             fix: vec![],
         });
@@ -1028,11 +1060,11 @@ fn cmd_refs(args: &[String]) -> i32 {
                                 _ => None,
                             };
                             if nm.as_deref() == Some(target.as_str()) {
-                                hits.push((f.clone(), if nline(n) != 0 { nline(n) } else { d.line }, owner.clone()));
+                                hits.push((f.clone(), if nlineno(n) != 0 { nlineno(n) } else { d.line }, owner.clone()));
                             }
                         }
                     } else if nname(n) == "MCall" && is_method && st(&fs[1]) == last {
-                        hits.push((f.clone(), if nline(n) != 0 { nline(n) } else { d.line }, format!("{} (method call by name)", owner)));
+                        hits.push((f.clone(), if nlineno(n) != 0 { nlineno(n) } else { d.line }, format!("{} (method call by name)", owner)));
                     }
                 }
             }

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
 
-use crate::check::{children as _children, items, nf, nline, nname, st, strs};
+use crate::check::{children as _children, items, nf, nlineno, nname, st, strs};
 use crate::parser::V;
 use crate::program::{Def, Program, Resolved, Target};
 use crate::value::*;
@@ -466,7 +466,7 @@ impl Interp {
                         return self.eval(&items(arm)[1], &s2);
                     }
                 }
-                panic(format!("non-exhaustive match at line {}", nline(e)))
+                panic(format!("non-exhaustive match at line {}", nlineno(e)))
             }
             "Loop" => {
                 loop {
@@ -993,7 +993,7 @@ impl Interp {
         }
         let file = sc.borrow().file.to_string();
         let Some(r) = self.p.resolve(&segs, &file) else {
-            return panic(format!("unresolved name {} (line {})", segs.join("."), nline(e)));
+            return panic(format!("unresolved name {} (line {})", segs.join("."), nlineno(e)));
         };
         self.path_value(&r, 0)
     }
@@ -1060,7 +1060,7 @@ impl Interp {
             }
             let file = sc.borrow().file.to_string();
             let Some(r) = self.p.resolve(&segs, &file) else {
-                return panic(format!("unresolved function {} (line {})", segs.join("."), nline(e)));
+                return panic(format!("unresolved function {} (line {})", segs.join("."), nlineno(e)));
             };
             if !r.rest.is_empty() {
                 let base = self.path_value(&r, 1)?;

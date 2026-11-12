@@ -5410,3 +5410,70 @@ end t.main
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "math ok\n", "{}", text(&o.stderr));
 }
+
+// ---- 診断の列 (仕様 7.1: 1 始まり、Unicode スカラ値単位)
+
+/// `--json` の出力から、コード `code` の診断の (line, col) を取り出す。
+fn pos_of(json: &str, code: &str) -> (usize, usize) {
+    let line = json.lines().find(|l| l.contains(&format!("\"code\": \"{}\"", code))).expect("diagnostic not found");
+    let num = |key: &str| -> usize {
+        let k = format!("\"{}\": ", key);
+        let rest = &line[line.find(&k).unwrap() + k.len()..];
+        rest.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap()
+    };
+    (num("line"), num("col"))
+}
+
+#[test]
+fn diagnostic_reports_column_in_the_middle_of_a_line() {
+    // `nope` は 3 行目の 18 列目から始まる (行 2 は main の本体 1 行目)。
+    let src = main_wrap("", "    let x: i32 = nope(1)\n    let y = x\n    let _z = y\n");
+    let t = Tmp::new("col_mid", &src);
+    let j = text(&run(&["check", "--json"], &t.0).stdout);
+    assert_eq!(pos_of(&j, "E1101"), (2, 18), "{}", j);
+    let p = text(&run(&["check"], &t.0).stdout);
+    assert!(p.contains("t.ksnl:2:18: E1101"), "{}", p);
+}
+
+#[test]
+fn diagnostic_column_counts_unicode_scalars_not_bytes() {
+    // 「あい」は 1 文字 3 バイトだが、列は 1 文字を 1 と数える。
+    let src = main_wrap("", "    let a = \"あい\".len() + zzz(2)\n    let _b = a\n");
+    let t = Tmp::new("col_uni", &src);
+    let j = text(&run(&["check", "--json"], &t.0).stdout);
+    // `    let a = "あい".len() + zzz(2)`: zzz は 26 文字目から (バイトなら 32)。
+    assert_eq!(pos_of(&j, "E1101"), (2, 26), "{}", j);
+}
+
+#[test]
+fn parse_error_reports_its_column() {
+    let src = main_wrap("", "    let a = \"あい\" +\n");
+    let t = Tmp::new("col_parse", &src);
+    let j = text(&run(&["check", "--json"], &t.0).stdout);
+    let (line, col) = pos_of(&j, "E0002");
+    assert_eq!((line, col), (2, 19), "{}", j);
+}
+
+#[test]
+fn header_diagnostic_reports_the_column_of_the_name() {
+    let src = "fn t.f(a: Nope) -> i32 uses [] panics never\n    1\nend t.f\n";
+    let t = Tmp::new("col_header", src);
+    let j = text(&run(&["check", "--json"], &t.0).stdout);
+    assert_eq!(pos_of(&j, "E1102"), (1, 11), "{}", j);
+}
+
+#[test]
+fn diagnostics_are_ordered_by_line_then_column() {
+    let src = main_wrap("", "    let a = zzz(1) + yyy(2)\n    let _b = a\n");
+    let t = Tmp::new("col_order", &src);
+    let j = text(&run(&["check", "--json"], &t.0).stdout);
+    let cols: Vec<usize> = j
+        .lines()
+        .filter(|l| l.contains("\"E1101\""))
+        .map(|l| {
+            let k = "\"col\": ";
+            l[l.find(k).unwrap() + k.len()..].chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap()
+        })
+        .collect();
+    assert_eq!(cols, vec![13, 22], "{}", j);
+}
