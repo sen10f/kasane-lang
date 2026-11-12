@@ -6870,3 +6870,171 @@ end t.main
     let (got, out) = neg_check("stack_fn_bound_call_ok", &src.replace("SPIN", "216"));
     assert!(got.iter().all(|c| c != "E4012"), "{}", out);
 }
+
+// ---- 修正 (fix/ffi-review): 可変長 C 関数への浮動小数の引数 / from_ref の const / extern の整数→浮動小数 ----
+
+/// 可変長の補助 C 側。`k_va_sum` は `va_arg` で double を読む (呼び出し側が `%al` を設定しないと 0 を読む)。
+const FFI_VARIADIC_SRC: &str = r#"
+#include <stdarg.h>
+#include <stdint.h>
+
+const char *k_fmt_f1(void) { return "%.1f"; }
+double k_va_sum(int32_t n, ...) {
+    va_list ap;
+    va_start(ap, n);
+    double s = 0;
+    for (int32_t i = 0; i < n; i++) s += va_arg(ap, double);
+    va_end(ap);
+    return s;
+}
+"#;
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_variadic_c_functions_receive_float_arguments() {
+    // `snprintf` (可変長) に f64 を渡すと、呼び出し側が `%al` を設定しないと値が 0 になる。
+    let src = r#"extern t.free_u8(pointer: *mut u8) -> () link "free"
+
+extern t.k_fmt_f1() -> *const u8 link "k_fmt_f1"
+
+extern t.k_va_sum(n: i32, x: f64, y: f64) -> f64 link "k_va_sum"
+
+extern t.malloc(n: usize) -> *mut u8 link "malloc"
+
+extern t.snprintf(buf: *mut u8, n: usize, fmt: *const u8, x: f64) -> i32 link "snprintf"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let buf = unsafe "libc" "allocate the output buffer" {
+        t.malloc(64usize)
+    }
+    let fmt = unsafe "libc" "format string from C" {
+        t.k_fmt_f1()
+    }
+    let n = unsafe "libc" "snprintf with a float argument" {
+        t.snprintf(buf, 64usize, fmt, 2.5f64)
+    }
+    unsafe "libc" "read the formatted text" {
+        core.check.eq(n, 3i32)
+        core.check.eq(core.ptr.read(buf), 50u8)
+        core.check.eq(core.ptr.read(core.ptr.add(buf, 1usize)), 46u8)
+        core.check.eq(core.ptr.read(core.ptr.add(buf, 2usize)), 53u8)
+    }
+    let s = unsafe "libc" "variadic C function reads doubles" {
+        t.k_va_sum(2i32, 1.5f64, 0.25f64)
+    }
+    core.check.eq(s, 1.75f64)
+    unsafe "libc" "free the buffer" {
+        t.free_u8(buf)
+    }
+    std.io.print_line("variadic ok")
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_variadic", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_VARIADIC_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "variadic ok\n");
+}
+
+#[test]
+fn ffi_from_ref_pointer_is_const_and_write_through_it_panics() {
+    // `from_ref` は読み取り専用。書き込むと 101 で止まり、不変の `x` は書き換わらない。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 41i32
+    let q: *const i32 = core.ptr.from_ref(&x)
+    unsafe "libc" "write through a const pointer" {
+        core.ptr.write(q, 42i32)
+    }
+    core.check.eq(x, 41i32)
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ffi_from_ref_const", src);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("const"), "{}", text(&r.stderr));
+}
+
+#[test]
+fn ffi_as_mut_makes_a_from_ref_pointer_writable() {
+    // `as_mut` を通したものは書ける。書き込みは元の場所 (`x`) に届く。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 41i32
+    let q: *const i32 = core.ptr.from_ref(&x)
+    let p: *mut i32 = core.ptr.as_mut(q)
+    unsafe "libc" "write through as_mut" {
+        core.ptr.write(p, 42i32)
+    }
+    core.check.eq(x, 42i32)
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ffi_as_mut_writable", src);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+}
+
+#[test]
+fn ffi_as_const_pointer_is_read_only_and_from_mut_stays_writable() {
+    // `as_const` で作った const の印は書き込みを止める。元の `from_mut` のポインタは従来どおり書ける。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    let c: *const i32 = core.ptr.as_const(p)
+    unsafe "libc" "write through the mutable pointer" {
+        core.ptr.write(p, 2i32)
+        core.check.eq(core.ptr.read(c), 2i32)
+    }
+    unsafe "libc" "write through the const pointer" {
+        core.ptr.write(c, 3i32)
+    }
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ffi_as_const_readonly", src);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("const"), "{}", text(&r.stderr));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_integer_argument_for_float_parameter_panics() {
+    // 整数の値を f32 / f64 の引数に渡すのは型が合わないので、黙って変換せず 101 で止まる。
+    let src = r#"extern t.k_half(x: f32) -> f32 link "k_half"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let h = unsafe "libc" "integer for f32" {
+        t.k_half(3i32)
+    }
+    core.check.eq(h, 1.5f32)
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_int_for_f32", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("unsupported type or value"), "{}", text(&r.stderr));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_integer_argument_for_f64_parameter_panics() {
+    let src = r#"extern t.k_scale(x: f64, n: i32, y: f64) -> f64 link "k_scale"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = unsafe "libc" "integer for f64" {
+        t.k_scale(1i32, 2i32, 0.25f64)
+    }
+    core.check.eq(a, 2.25f64)
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_int_for_f64", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("unsupported type or value"), "{}", text(&r.stderr));
+}

@@ -125,19 +125,23 @@ pub fn call_typed(symbol: &str, ints: &[i64], floats: &[FArg], ret: Ret) -> Resu
         };
         let (i0, i1, i2, i3, i4, i5) = (a(0), a(1), a(2), a(3), a(4), a(5));
         let (f0, f1, f2, f3, f4, f5, f6, f7) = (f(0), f(1), f(2), f(3), f(4), f(5), f(6), f(7));
+        // 関数型は可変長 (`, ...`) にする。System V x86_64 では、可変長の関数を呼ぶ側が `%al` に使う xmm レジスタ数を
+        // 入れる約束で、非可変長の型で呼ぶと `%al` が 0 のままになり、`snprintf` などが浮動小数の引数を読み捨てる。
+        // 名前付きの引数は可変長の型でも従来どおりレジスタに入るので、非可変長の C 関数の呼び出しも変わらない。
+        // AAPCS64 (Linux) では可変長の引数もレジスタ渡しなので同じ型で足りる (macOS arm64 の可変長の引数はスタック渡しで未対応)。
         unsafe {
             Ok(match ret {
                 Ret::Int => Out::Int(std::mem::transmute::<
                     *mut c_void,
-                    extern "C" fn(i64, i64, i64, i64, i64, i64, f64, f64, f64, f64, f64, f64, f64, f64) -> i64,
+                    unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, f64, f64, f64, f64, f64, f64, f64, f64, ...) -> i64,
                 >(p)(i0, i1, i2, i3, i4, i5, f0, f1, f2, f3, f4, f5, f6, f7)),
                 Ret::F64 => Out::F64(std::mem::transmute::<
                     *mut c_void,
-                    extern "C" fn(i64, i64, i64, i64, i64, i64, f64, f64, f64, f64, f64, f64, f64, f64) -> f64,
+                    unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, f64, f64, f64, f64, f64, f64, f64, f64, ...) -> f64,
                 >(p)(i0, i1, i2, i3, i4, i5, f0, f1, f2, f3, f4, f5, f6, f7)),
                 Ret::F32 => Out::F32(std::mem::transmute::<
                     *mut c_void,
-                    extern "C" fn(i64, i64, i64, i64, i64, i64, f64, f64, f64, f64, f64, f64, f64, f64) -> f32,
+                    unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, f64, f64, f64, f64, f64, f64, f64, f64, ...) -> f32,
                 >(p)(i0, i1, i2, i3, i4, i5, f0, f1, f2, f3, f4, f5, f6, f7)),
             })
         }

@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::check::{children as _children, items, nf, nline, nname, st, strs};
 use crate::ffi::{FArg, Out, Ret};
@@ -27,6 +27,10 @@ pub struct Interp {
     /// std.fs で開いたファイル (記述子 -> ファイル)
     pub files: HashMap<i128, std::fs::File>,
     pub next_fd: i128,
+    /// const の印を付けた場所ポインタ (`from_ref` / `as_const` の結果)。番地 -> 場所の Weak。
+    /// Weak が番地を確保しているので、印の付いた場所の番地は別の場所に再利用されない。
+    const_refs: HashMap<usize, Weak<dyn Place>>,
+    const_prune_at: usize,
 }
 
 fn unhex(s: &str) -> String {
@@ -50,7 +54,24 @@ impl Interp {
             keep: vec![],
             files: HashMap::new(),
             next_fd: 3,
+            const_refs: HashMap::new(),
+            const_prune_at: 1024,
         }
+    }
+
+    /// 場所ポインタに const の印を付けて返す。`write` は印の付いたポインタでは panic する (`as_mut` で印を外す)。
+    fn mark_const(&mut self, p: Rc<dyn Place>) -> Rc<dyn Place> {
+        if self.const_refs.len() >= self.const_prune_at {
+            self.const_refs.retain(|_, w| w.strong_count() > 0);
+            self.const_prune_at = (self.const_refs.len() * 2).max(1024);
+        }
+        self.const_refs.insert(Rc::as_ptr(&p) as *const u8 as usize, Rc::downgrade(&p));
+        p
+    }
+
+    /// 場所ポインタに const の印が付いているか。
+    fn is_const_place(&self, p: &Rc<dyn Place>) -> bool {
+        self.const_refs.get(&(Rc::as_ptr(p) as *const u8 as usize)).and_then(|w| w.upgrade()).is_some_and(|s| Rc::ptr_eq(&s, p))
     }
 
     fn def(&self, i: usize) -> &'static Def {
@@ -1013,8 +1034,7 @@ impl Interp {
                 (Some(ArgK::F64), Val::F32(x)) => floats.push(FArg::F64(*x as f64)),
                 (Some(ArgK::F32), Val::F32(x)) => floats.push(FArg::F32(*x)),
                 (Some(ArgK::F32), Val::Float(x)) => floats.push(FArg::F32(*x as f32)),
-                (Some(ArgK::F32), Val::Int(i, _)) => floats.push(FArg::F32(*i as f32)),
-                (Some(ArgK::F64), Val::Int(i, _)) => floats.push(FArg::F64(*i as f64)),
+                // 整数の値を浮動小数の引数に渡すのは型が合わないので、下の `_` で panic (f32 ← f64 の変換だけ許す)。
                 _ => return panic(format!("extern {}: argument of an unsupported type or value", d.name)),
             }
         }
@@ -1077,12 +1097,21 @@ impl Interp {
                 let tag = targs.first().and_then(prim_name).and_then(|n| ptr_tag(&n)).unwrap_or("usize");
                 Some(Ok(Val::Int(0, Some(tag))))
             }
-            ("from_mut", 1) | ("from_ref", 1) => Some(Ok(match &args[0] {
+            ("from_mut", 1) => Some(Ok(match &args[0] {
                 // `&mut x` は場所そのもの (Val::Ref) なので、同じ場所を指すポインタになる。
-                // `&x` は値の複製として評価されるため、その値を入れた新しい場所を指す (読み取り専用なので差はない)。
+                // 値として渡された場合 (`&mut` でない式など) は、その値を入れた新しい場所を指す。
                 Val::Ref(_) => args[0].clone(),
                 v => Val::Ref(Rc::new(CellPlace(RefCell::new(v.clone())))),
             })),
+            // `from_ref` は const の印を付ける。書き込みは `as_mut` を通してだけ許す。印は別名 (AliasPlace) に付けるので、
+            // 元の場所のポインタ (from_mut など) には影響しない。
+            ("from_ref", 1) => {
+                let inner: Rc<dyn Place> = match &args[0] {
+                    Val::Ref(p) => Rc::new(AliasPlace(p.clone())),
+                    v => Rc::new(CellPlace(RefCell::new(v.clone()))),
+                };
+                Some(Ok(Val::Ref(self.mark_const(inner))))
+            }
             ("cast", 1) => Some(self.cast_ptr(name, &args[0], targs)),
             _ => None,
         }
@@ -1144,6 +1173,21 @@ impl Interp {
                     return Ok(Val::Bool(matches!(args.first(), Some(Val::Int(0, _)))));
                 }
                 if d.name.starts_with("core.ptr.") {
+                    if let Some(Val::Ref(p)) = args.first() {
+                        // 場所を指すポインタの const の扱い: `as_mut` は印を外した別名、`as_const` は印を付けた別名を返す。
+                        // 印の付いた場所への `write` は panic (`from_ref` は読み取り専用)。
+                        match d.name.as_str() {
+                            "core.ptr.as_mut" => return Ok(Val::Ref(Rc::new(AliasPlace(p.clone())))),
+                            "core.ptr.as_const" => {
+                                let c = self.mark_const(Rc::new(AliasPlace(p.clone())));
+                                return Ok(Val::Ref(c));
+                            }
+                            "core.ptr.write" if self.is_const_place(p) => {
+                                return panic("core.ptr.write: the pointer is const (from from_ref or as_const); use as_mut to write through it");
+                            }
+                            _ => {}
+                        }
+                    }
                     return raw_ptr_op(&d.name, &args);
                 }
                 panic(format!("function {} has no implementation in this interpreter", d.name))
@@ -1472,7 +1516,6 @@ fn unused() {
     let _ = _children;
 }
 
-/// 整数の `+ - * / %`。オーバーフローとゼロ除算は panic (4.1)。u128 はビットパターンで保持している。
 // ------------------------------------------------------------ extern の引数・生ポインタ
 // 生ポインタは `Val::Int` のアドレスで、要素型を Ity の名前 (`*f64` など) に載せる。
 // 要素型が載らない (extern の戻り値が `*mut Struct` など) ポインタは、読み書きできない。
@@ -1554,7 +1597,20 @@ fn ref_arg_inner(args: &V) -> Option<&V> {
     (nname(a) == "Unary" && st(&nf(a)[0]) == "&").then(|| &nf(a)[1])
 }
 
+/// 同じ場所を別の名前で指すポインタ (`as_mut` / `as_const` / `from_ref` の結果)。読み書きは元の場所に通す。
+/// const の印は、この別名の `Rc` の番地に付く (`Interp::mark_const`)。
+struct AliasPlace(Rc<dyn Place>);
+impl Place for AliasPlace {
+    fn get(&self) -> Val {
+        self.0.get()
+    }
+    fn set(&self, v: Val) {
+        self.0.set(v)
+    }
+}
+
 /// 場所を指すポインタ (`from_mut` / `from_ref` の結果) の操作。アドレスを持たないので、読み書きは場所を通して行う。
+/// `as_mut` / `as_const` と、印の付いた場所への `write` は呼び出し側 (`call_resolved`) で扱う。
 fn place_ptr_op(name: &str, op: &str, p: &dyn Place, args: &[Val]) -> Res {
     match (op, args.len()) {
         ("read", 1) => Ok(p.get()),
@@ -1562,7 +1618,6 @@ fn place_ptr_op(name: &str, op: &str, p: &dyn Place, args: &[Val]) -> Res {
             p.set(args[1].clone());
             Ok(Val::Unit)
         }
-        ("as_const", 1) | ("as_mut", 1) => Ok(args[0].clone()),
         ("is_null", 1) => Ok(Val::Bool(false)),
         // 要素が 1 つしかないので、0 だけ進める加算は恒等。それ以外は配列の要素を指さないので扱えない。
         ("add", 2) if matches!(dr(&args[1]), Val::Int(0, _)) => Ok(args[0].clone()),
@@ -1688,6 +1743,7 @@ unsafe fn write_elem(addr: u64, elem: &str, v: &Val) -> Result<(), String> {
     Ok(())
 }
 
+/// 整数の `+ - * / %`。オーバーフローとゼロ除算は panic (4.1)。u128 はビットパターンで保持している。
 fn int_arith(op: &str, x: i128, y: i128, ty: Ity) -> Res {
     let name = match op {
         "+" => "add",
