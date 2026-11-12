@@ -7375,7 +7375,7 @@ end t.Phase.next
 /// 基本型の `to_string` (`Display` の組み込み実装) と派生の比較 (`ne` / `partial_cmp`) は、
 /// インタプリタとバンドルの両方で動く (以前は "unknown integer operation" で panic していた)。
 #[test]
-fn scalar_to_string_and_derived_methods_run_in_both() {
+fn scalar_to_string_and_derived_methods_run_in_interp_and_bundle() {
     let test = "test t.main.test_scalar_to_string
     let n: i64 = -7i64
     core.check.eq(n.to_string().as_str(), \"-7\")
@@ -7395,7 +7395,7 @@ end t.main.test_scalar_to_string
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("test t.main.test_scalar_to_string ... ok"), "{}", out);
+    assert!(out.contains("test t.main.test_scalar_to_string ... ok (both: bundle (native skipped: "), "{}", out); // Cranelift が `as_str` 未対応: インタプリタとバンドルの比較
 }
 
 /// `Display` の char は文字そのもの。`print_line` と `to_string` の出力を確かめる。
@@ -7698,7 +7698,7 @@ end t.bad
 /// (`eq` `ne` `cmp` `partial_cmp`) は spec/stdlib の規範どおり check が受理する。以前はいずれも
 /// インタプリタで "no method ..." の panic になっていた。インタプリタとバンドルの両方で動くことを確かめる。
 #[test]
-fn str_slice_option_result_sig_methods_run_in_both() {
+fn str_slice_option_result_sig_methods_run_in_interp_and_bundle() {
     let test = "test t.main.test_a_option_result_cmp
     let o: Option<u8> = Some(1u8)
     core.check.eq(o.eq(&Some(1u8)), true)
@@ -7743,7 +7743,8 @@ end t.main.test_d_to_string
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     for name in ["test_a_option_result_cmp", "test_b_slice_count", "test_c_str_derived_cmp", "test_d_to_string"] {
-        assert!(out.contains(&format!("t.main.{} ... ok", name)), "{}", out);
+        // Cranelift が `Option.eq` / `count` / `str.eq` / `as_str` 未対応: インタプリタとバンドルの比較 (機械語では比べていない)。
+        assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (native skipped: ", name)), "{}", out);
     }
 }
 
@@ -8108,7 +8109,7 @@ fn expr_ids_are_local_to_their_function() {
 // ---- spec/ptr-const-ne: add_const / cast_const (const を保つ加算・変換) と `ne` の撤去 (演算子 `!=` のみ)
 
 #[test]
-fn ptr_add_const_and_cast_const_keep_const_and_run_in_both() {
+fn ptr_add_const_and_cast_const_keep_const_and_run_in_interp_and_bundle() {
     // from_ref の `*const` を add_const (count 0) と cast_const::<i32, i32> で読み直す。from_mut の `*mut` を add_const で
     // const に落としたものも読める。インタプリタとネイティブの両方で同じ結果になる。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
@@ -8135,7 +8136,8 @@ end t.main.test_add_const_cast_const
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("t.main.test_add_const_cast_const ... ok"), "{}", out);
+    // Cranelift が スカラの `from_ref` 未対応: インタプリタとバンドルの比較。
+    assert!(out.contains("t.main.test_add_const_cast_const ... ok (both: bundle (native skipped: "), "{}", out);
 }
 
 #[test]
@@ -8552,9 +8554,11 @@ fn fmath_functions_agree_across_backends_and_match_known_values() {
         .unwrap();
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}", out);
-    // Cranelift のビルドが成功していること (スキップされていないこと)。
-    assert!(out.contains("native executable:"), "{}", out);
+    // 6 本とも機械語で比べていること (バンドルへ退避した「空振り」を許さない)。
+    assert_eq!(out.matches("(both: native)").count(), 6, "{}", out);
+    assert!(!out.contains("both: bundle"), "{}", out);
     assert!(out.contains("6 passed; 0 failed"), "{}", out);
+    assert!(out.contains("native 6, bundle fallback 0"), "{}", out);
     let _ = fs::remove_dir_all(&cache);
 }
 
@@ -8581,8 +8585,27 @@ fn test_both_runs_clif_tests_as_native_executables() {
     assert!(out.contains("test t.main.test_ok ... ok (both: native)"), "{}", out);
     assert!(out.contains("test t.main.test_fail ... FAILED: assertion failed: left: 1, right: 2 (both: native)"), "{}", out);
     assert!(out.contains("1 passed; 1 failed"), "{}", out);
-    assert!(!out.contains("bundle"), "{}", out);
+    assert!(!out.contains("both: bundle"), "{}", out);
     assert!(t.0.join("target").join("test-native").is_dir(), "no native test executable: {}", out);
+}
+
+#[test]
+fn test_both_compares_failure_classes_when_both_backends_fail() {
+    // 両方が失敗しても、理由の分類 (overflow / assert / ...) が違えば disagree。同じ分類なら文言が違っても一致。
+    // 分類が違うケースの判定は `src/cli.rs` の単体テスト `both_failing_with_different_classes_disagree` で確かめる。
+    let src = format!(
+        "{}\ntest t.main.test_assert\n    core.check.eq(1u8, 2u8)\nend t.main.test_assert\n\ntest t.main.test_overflow\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\nend t.main.test_overflow\n",
+        BOTH_SRC
+    );
+    let t = Tmp::new("both_class", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}{}", out, text(&o.stderr));
+    // 文言は違う (interp: `attempt to add with overflow` / native: `arithmetic overflow`) が、分類が同じなので disagree にならない。
+    assert!(out.contains("test t.main.test_overflow ... FAILED: attempt to add with overflow (both: native)"), "{}", out);
+    assert!(out.contains("test t.main.test_assert ... FAILED: assertion failed: left: 1, right: 2 (both: native)"), "{}", out);
+    assert!(!out.contains("disagree"), "{}", out);
+    assert!(out.contains("compared with: native 3, bundle fallback 0"), "{}", out);
 }
 
 #[test]
@@ -10668,6 +10691,11 @@ fn min_rem_minus_one_overflows_for_every_signed_width() {
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("5 passed; 0 failed"), "{}", out);
+    // i128 だけバンドル、他の幅は機械語で比べている。
+    for w in ["i8", "i16", "i32", "i64"] {
+        assert!(out.contains(&format!("t.main.test_{} ... ok (both: native)", w)), "{}", out);
+    }
+    assert!(out.contains("t.main.test_i128 ... ok (both: bundle (native skipped: "), "{}", out);
 }
 
 
