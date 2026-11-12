@@ -39,7 +39,7 @@ type R<T> = Result<T, String>;
 type Env = HashMap<String, (Variable, String)>;
 
 fn is_int(p: &str) -> bool {
-    matches!(p, "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64" | "usize")
+    matches!(p, "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize")
 }
 
 fn is_float(p: &str) -> bool {
@@ -79,6 +79,8 @@ fn cl(p: &str) -> Type {
         "i8" | "u8" | "bool" => types::I8,
         "i16" | "u16" => types::I16,
         "i32" | "u32" | "char" => types::I32,
+        "i64" | "u64" | "isize" | "usize" => types::I64,
+        "i128" | "u128" => types::I128,
         "f32" => types::F32,
         "f64" => types::F64,
         _ => types::I64,
@@ -187,6 +189,7 @@ fn scalar_size(p: &str) -> u32 {
         "i8" | "u8" | "bool" => 1,
         "i16" | "u16" => 2,
         "i32" | "u32" | "f32" | "char" => 4,
+        "i128" | "u128" => 16,
         _ => 8,
     }
 }
@@ -1834,10 +1837,35 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if is_agg(&t) {
                     return Ok(Some((v, format!("rawptr<{}>", t))));
                 }
+                // `from_ref(&x)`: `&` でスカラー変数のアドレスを取れば、その変数はスタックスロットに置かれる
+                // (func のアドレス取得の事前走査と `let` のスロット化)。スロットのアドレスを返す。
+                if name == "from_ref" {
+                    if let Some(addr) = self.ref_var_addr(&args[0], env)? {
+                        return Ok(Some((Some(addr), format!("rawptr<{}>", t))));
+                    }
+                }
                 Err("from_ref of a scalar value (use from_mut on a mutable variable)".into())
             }
             _ => Ok(None),
         }
+    }
+
+    /// `from_ref(&name)` のために `name` のスタックスロットアドレスを返す。
+    /// `name` がスカラーで `&` (または `&mut`) によりアドレスが取られ、スロットに置かれている場合のみ。
+    fn ref_var_addr(&mut self, e: &V, env: &Env) -> R<Option<Value>> {
+        let f = nf(e);
+        if nname(e) != "Unary" || st(&f[0]) != "&" || nname(&f[1]) != "Path" {
+            return Ok(None);
+        }
+        let segs = strs(&nf(&f[1])[0]);
+        if segs.len() != 1 {
+            return Ok(None);
+        }
+        let Some((var, ty)) = env.get(&segs[0]) else { return Ok(None); };
+        if is_agg(ty) || is_mutref(ty) || !self.promoted.contains(&var.as_u32()) {
+            return Ok(None);
+        }
+        Ok(Some(self.b.use_var(*var)))
     }
 
     /// 関数 `d` の具体化 (`subst` が空なら元の関数) の識別子を返す。まだ宣言していなければ宣言して、生成の待ち行列に入れる。
@@ -2675,7 +2703,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         }
                     }
                 }
-                if nname(n) == "Unary" && st(&nf(n)[0]) == "&mut" && nname(&nf(n)[1]) == "Path" {
+                if nname(n) == "Unary" && matches!(st(&nf(n)[0]).as_str(), "&" | "&mut") && nname(&nf(n)[1]) == "Path" {
                     let segs = strs(&nf(&nf(n)[1])[0]);
                     if segs.len() == 1 {
                         self.addr_taken.insert(segs[0].clone());
@@ -4135,7 +4163,15 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 "int" => {
                     let Some(t) = self.ty_of(e, env, expect) else { return Err("untyped integer literal".into()) };
                     let v = int_value(&st(&f[1]))?;
-                    let c = self.b.ins().iconst(cl(&t), v);
+                    // iconst の即値は 64 ビットまでなので、128 ビット整数リテラルは下位・上位を繋げる。
+                    let c = if t == "i128" || t == "u128" {
+                        // iconst の即値は 64 ビットまで。int_value は i64 なので上位は符号拡張 (v >> 63)。
+                        let lo = self.b.ins().iconst(types::I64, v as u64 as i64);
+                        let hi = self.b.ins().iconst(types::I64, v >> 63);
+                        self.b.ins().iconcat(lo, hi)
+                    } else {
+                        self.b.ins().iconst(cl(&t), v)
+                    };
                     Ok((Some(c), t))
                 }
                 "bool" => {
@@ -4197,7 +4233,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let q = self.cx.qual_segs(&segs);
                 if let Some((t, iv, fv)) = numeric_const(&q) {
                     let c = match (iv, fv) {
-                        (Some(i), _) => self.b.ins().iconst(cl(&t), i),
+                        (Some(v), _) => {
+                            if t == "i128" || t == "u128" {
+                                // iconst の即値は 64 ビットまでなので、128 ビット定数は下位・上位を繋げる。
+                                let lo = self.b.ins().iconst(types::I64, v as u64 as i64);
+                                let hi = self.b.ins().iconst(types::I64, (v >> 64) as u64 as i64);
+                                self.b.ins().iconcat(lo, hi)
+                            } else {
+                                self.b.ins().iconst(cl(&t), v as i64)
+                            }
+                        }
                         (_, Some(f)) => {
                             if t == "f32" { self.b.ins().f32const(f as f32) } else { self.b.ins().f64const(f) }
                         }
@@ -4506,6 +4551,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     return Err(format!("operator {} on bool", op));
                 }
                 let sg = signed(&t);
+                // x64 の Cranelift は 128 ビットの除算・剰余とオーバーフロー検査つきの乗算を持たない。理由付きで退避する。
+                if cl(&t).bits() > 64 && matches!(op.as_str(), "*" | "/" | "%") {
+                    return Err(format!("128-bit {} ({})", op, t));
+                }
                 let r = match op.as_str() {
                     "&" => self.b.ins().band(a, b),
                     "|" => self.b.ins().bor(a, b),
@@ -4622,7 +4671,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         if !signed(&t) || t == "bool" {
                             return Err("negation of an unsigned value".into());
                         }
-                        let z = self.b.ins().iconst(cl(&t), 0);
+                        // iconst の即値は 64 ビットまでなので、128 ビットの 0 は 64 ビットの 0 を広げて作る。
+                        let z = if cl(&t).bits() > 64 {
+                            let z64 = self.b.ins().iconst(types::I64, 0);
+                            self.b.ins().uextend(cl(&t), z64)
+                        } else {
+                            self.b.ins().iconst(cl(&t), 0)
+                        };
                         let (r, of) = self.b.ins().ssub_overflow(z, a);
                         self.guard(of, "arithmetic overflow")?;
                         Ok((Some(r), t))
@@ -6514,6 +6569,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     fn conv_call(&mut self, segs: &[String], args: &[V], env: &mut Env) -> R<Option<(Option<Value>, String)>> {
         if let [p, n] | [_, _, p, n] = segs {
             if n == "from_str_radix" && is_int(p) && args.len() == 2 && (segs.len() == 2 || (segs[0] == "core" && segs[1] == "num")) {
+                if cl(p).bits() > 64 {
+                    return Err(format!("128-bit from_str_radix ({})", p));
+                }
                 return self.from_str_radix(p, args, env).map(Some);
             }
         }
@@ -6554,6 +6612,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         }
         if !is_int(&p) {
             return Ok(None);
+        }
+        // 128 ビットが絡む変換は、64 ビット以下から 128 ビットへの `from_` (値を保つ拡張) だけを扱う。
+        // それ以外 (`try_from_*` の範囲検査は 64 ビットで行う) は理由付きで退避する。
+        let wide = |t: &str| t == "i128" || t == "u128";
+        let src_of = name.strip_prefix("try_from_").or_else(|| name.strip_prefix("from_")).unwrap_or("");
+        if (wide(&p) || wide(src_of)) && !(name.starts_with("from_") && wide(&p) && !wide(src_of)) {
+            return Err(format!("128-bit conversion {}.{}", p, name));
         }
         if let Some(src) = name.strip_prefix("from_") {
             if !is_int(src) || (cl(src).bits() > cl(&p).bits()) {
@@ -7358,6 +7423,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             .or_else(|| args.first().and_then(|a| self.ty_of(a, env, None)))
             .filter(|t| is_int(t))
             .ok_or("operand type")?;
+        // x64 の Cranelift は 128 ビットのオーバーフロー検査つき乗算・除算・剰余を持たない。
+        if cl(&t).bits() > 64 && matches!(op, "mul" | "div" | "rem") {
+            return Err(format!("128-bit checked_{} ({})", op, t));
+        }
         let (a, _) = self.expr(recv, env, Some(&t))?;
         let (b, _) = self.expr(args.first().ok_or("checked op needs an argument")?, env, Some(&t))?;
         let (a, b) = (a.ok_or("bad operand")?, b.ok_or("bad operand")?);
@@ -7383,11 +7452,19 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.ins().store(MemFlags::new(), r, dst, 0);
             }
             "div" | "rem" => {
+                let bits = cl(&t).bits();
                 let mut bad = self.b.ins().icmp_imm(IntCC::Equal, b, 0);
                 if sg {
-                    let bits = cl(&t).bits();
-                    let min: i64 = if bits >= 64 { i64::MIN } else { -(1i64 << (bits - 1)) };
-                    let is_min = self.b.ins().icmp_imm(IntCC::Equal, a, min);
+                    let is_min = if bits > 64 {
+                        // i128::MIN は imm64 に収まらないので、値として構築して比較する。
+                        let lo = self.b.ins().iconst(types::I64, 0);
+                        let hi = self.b.ins().iconst(types::I64, i64::MIN);
+                        let min = self.b.ins().iconcat(lo, hi);
+                        self.b.ins().icmp(IntCC::Equal, a, min)
+                    } else {
+                        let min: i64 = if bits >= 64 { i64::MIN } else { -(1i64 << (bits - 1)) };
+                        self.b.ins().icmp_imm(IntCC::Equal, a, min)
+                    };
                     let is_m1 = self.b.ins().icmp_imm(IntCC::Equal, b, -1);
                     let both = self.b.ins().band(is_min, is_m1);
                     bad = self.b.ins().bor(bad, both);
@@ -7426,6 +7503,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         if signed(&t) {
             return Err("saturating arithmetic on a signed integer".into());
         }
+        if cl(&t).bits() > 64 {
+            return Err(format!("128-bit saturating_{} ({})", op, t));
+        }
         let (a, _) = self.expr(recv, env, Some(&t))?;
         let (b, _) = self.expr(args.first().ok_or("saturating op needs an argument")?, env, Some(&t))?;
         let (a, b) = (a.ok_or("bad operand")?, b.ok_or("bad operand")?);
@@ -7450,6 +7530,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     }
 
     fn method(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
+        // 128 ビット整数のレシーバは、確かめたメソッドだけを扱う (他の経路は 64 ビットを前提にしている)。
+        if let Some(t) = self.ty_of(recv, env, None).filter(|t| t == "i128" || t == "u128") {
+            const OK128: &[&str] = &[
+                "wrapping_add", "wrapping_sub", "wrapping_mul", "wrapping_neg", "wrapping_shl", "wrapping_shr",
+                "checked_add", "checked_sub", "eq", "cmp", "partial_cmp",
+            ];
+            if !OK128.contains(&name) {
+                return Err(format!("128-bit method {}.{}", t, name));
+            }
+        }
         if matches!(name, "cmp" | "partial_cmp") && args.len() == 1 && self.cx.types.contains_key("core.cmp.Ordering") {
             if let Some(t) = self.ty_of(recv, env, expect).filter(|t| is_int(t) || t == "char" || t == "bool") {
                 let (a, _) = self.expr(recv, env, Some(&t))?;
@@ -7535,8 +7625,8 @@ fn lit_bytes(a: &V) -> Vec<u8> {
     (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap_or(0)).collect()
 }
 
-/// 数値型の定数 (`u8.MAX` / `core.num.i32.MIN` / `f64.EPSILON` など)。(型, 整数の値 または 浮動小数の値)
-fn numeric_const(segs: &[String]) -> Option<(String, Option<i64>, Option<f64>)> {
+/// 数値型の定数 (`u8.MAX` / `core.num.i32.MIN` / `f64.EPSILON` など)。(型, 整数値のビットパターン または 浮動小数の値)
+fn numeric_const(segs: &[String]) -> Option<(String, Option<u128>, Option<f64>)> {
     let (p, name) = match segs {
         [p, n] => (p.as_str(), n.as_str()),
         [c, m, p, n] if c == "core" && m == "num" => (p.as_str(), n.as_str()),
@@ -7546,9 +7636,9 @@ fn numeric_const(segs: &[String]) -> Option<(String, Option<i64>, Option<f64>)> 
         let bits = cl(p).bits() as u32;
         let sg = signed(p);
         return match name {
-            "BITS" => Some(("u32".to_string(), Some(bits as i64), None)),
-            "MAX" => Some((p.to_string(), Some(if sg { i64::MAX >> (64 - bits) } else { -1i64 }), None)),
-            "MIN" => Some((p.to_string(), Some(if sg { i64::MIN >> (64 - bits) } else { 0 }), None)),
+            "BITS" => Some(("u32".to_string(), Some(bits as u128), None)),
+            "MAX" => Some((p.to_string(), Some(if sg { (1u128 << (bits - 1)) - 1 } else { !0u128 >> (128 - bits) }), None)),
+            "MIN" => Some((p.to_string(), Some(if sg { 1u128 << (bits - 1) } else { 0 }), None)),
             _ => None,
         };
     }
