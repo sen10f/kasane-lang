@@ -80,6 +80,8 @@ const KNOWN_HOLES: &[&str] = &[
     "alias_mut_through_field",
     // 線形値をフィールドに持つ値を、フィールドを読むだけで捨てる (消費の判定が「名前が現れるか」のみ)。
     "linear_in_field_unconsumed",
+    // `?` で取り出した線形値 (`let _s = std.net.connect(a)?`) を消費せずに捨てる (型注釈がないと型が流れない)。
+    "linear_dropped_after_try",
     // `&u32` を `u32` として返す (型推論が参照を透過的に扱う)。
     "wrong_ref_level",
 ];
