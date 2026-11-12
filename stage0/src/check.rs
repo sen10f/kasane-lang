@@ -1869,6 +1869,23 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 型推論が残した効果検査の義務 (`types::EffCheck`) を、呼び出し元の `uses` / `panics` で検査する。
+    /// 従来の `effects` と同じ文面なので、同じ違反を両方が見つけたときは重複除去で 1 件になる。
+    fn effects_checked(&mut self, ec: &crate::types::EffCheck) {
+        let d = self.def(ec.di);
+        if d.kw != "fn" {
+            return;
+        }
+        self.cur_uses = Some(d.uses.clone());
+        self.cur_panics = d.panics.clone().unwrap_or("may".into());
+        let bad: Vec<Option<(String, String)>> =
+            ec.cands.iter().map(|(n, u, p)| self.violation_effs(n, u, p.as_deref())).collect();
+        if !bad.is_empty() && bad.iter().all(|b| b.is_some()) {
+            let (c, m) = bad[0].clone().unwrap();
+            self.diag(&c, m, ec.di, ec.line);
+        }
+    }
+
     // ================================================================ TypeCk
     fn typeck(&mut self) {
         let user = self.user.clone();
@@ -1892,6 +1909,11 @@ impl<'a> Checker<'a> {
             }
         }
         self.diags.extend(tk.diags);
+        // 型で解決できた呼び出しの効果 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡した
+        // クロージャから推論した効果変数・panic 変数。呼び出し元の宣言と比べ、全候補が違反するときだけ報告する。
+        for ec in std::mem::take(&mut tk.eff_checks) {
+            self.effects_checked(&ec);
+        }
         // 型で解決できた呼び出し (メソッドを含む) の辺を、再帰・スタックの検査に加える。
         for (from, tos) in tk.edges {
             self.graph.entry(from).or_default().extend(tos);

@@ -644,7 +644,8 @@ fn ksn_fix_repairs_simple_diagnostics() {
         "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
         "core.mem.drop(v.pushh(1u8))",
     ]);
-    let t = Tmp::new("fix_all", &main_wrap("", &b));
+    // `v.push` (局所変数レシーバ) は効果検査を通るので、main は `alloc` を宣言する。
+    let t = Tmp::new("fix_all", &main_wrap("", &b).replace("uses [io.console]", "uses [alloc, io.console]"));
     assert_eq!(run(&["check"], &t.0).status.code(), Some(1));
     let o = run(&["fix"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
@@ -4739,4 +4740,314 @@ end t.main
     fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "ok\n", "{}", text(&o.stderr));
+}
+
+// ---- 効果検査の呼び出し経路 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡すクロージャ ----
+
+/// 効果検査の呼び出し経路のテストで共通に使う定義 (`t.S` のメソッドと、`Fn` 境界を受ける `t.apply`)。
+const EFF_PRELUDE: &str = "type t.S pub
+    n: u8
+    log: alloc.vec.Vec<u8, std.alloc.System>
+end t.S
+
+fn t.S.boom(self: &t.S) -> u8 uses [] panics may pub
+    core.panic.panic(\"boom\")
+end t.S.boom
+
+fn t.S.peek(self: &t.S) -> u8 uses [] panics never pub
+    self.n
+end t.S.peek
+
+fn t.S.say(self: &t.S) -> Result<(), std.io.Error> uses [io.console] panics never pub
+    std.io.print_line(\"s\")
+end t.S.say
+
+fn t.S.with[F: core.ops.Fn<(u8,), u8, E, P>, E: uses, P: panics](self: &t.S, f: F) -> u8 uses [E] panics P pub
+    f(self.n)
+end t.S.with
+
+fn t.apply[F: core.ops.Fn<(u8,), u8, E, P>, E: uses, P: panics](f: F, x: u8) -> u8 uses [E] panics P pub
+    f(x)
+end t.apply
+
+";
+
+/// `EFF_PRELUDE` の後ろに `body` (t.apply より後ろの名前の定義) を置いたパッケージを検査し、
+/// (終了コード, 診断コードの列, 出力) を返す。
+fn eff_check(name: &str, body: &str) -> (Option<i32>, Vec<String>, String) {
+    let t = Tmp::new(name, &format!("{}{}", EFF_PRELUDE, body));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    (o.status.code(), codes(&out), out)
+}
+
+#[test]
+fn local_receiver_method_effects_are_checked() {
+    // `s.say()` (局所変数レシーバ、パスとして構文解析される形) は、型で解決した t.S.say の効果で検査される。
+    let bad = "fn t.f(s: t.S) -> Result<(), std.io.Error> uses [] panics never
+    s.say()
+end t.f
+";
+    let (code, got, out) = eff_check("eff_path_uses_bad", bad);
+    assert_eq!(code, Some(1), "{}", out);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+    assert!(out.contains("t.S.say uses effect `io.console`"), "{}", out);
+    // 正例: 呼び出し元が効果を宣言していれば通る (階層の部分型 io ⊇ io.console も)。
+    let (code, _, out) = eff_check("eff_path_uses_ok", &bad.replace("uses [] panics never", "uses [io] panics never"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn local_receiver_method_panics_are_checked() {
+    let bad = "fn t.f(s: t.S) -> u8 uses [] panics never
+    s.boom()
+end t.f
+";
+    let (_, got, out) = eff_check("eff_path_panic_bad", bad);
+    assert_eq!(got, vec!["E4002".to_string()], "{}", out);
+    assert!(out.contains("t.S.boom may panic"), "{}", out);
+    let (code, _, out) = eff_check("eff_path_panic_ok", &bad.replace("panics never", "panics may"));
+    assert_eq!(code, Some(0), "{}", out);
+    // `panics never` のメソッドは `panics never` から呼べる。
+    let (code, _, out) = eff_check("eff_path_panic_never", &bad.replace("s.boom()", "s.peek()"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn field_path_receiver_method_effects_are_checked() {
+    // `s.log.push(x)` はフィールドの型 (Vec) で解決され、`uses [alloc]` が要る。
+    let bad = "fn t.f(s: &mut t.S) -> Result<(), alloc.alloc.AllocError> uses [] panics never
+    s.log.push(1u8)
+end t.f
+";
+    let (_, got, out) = eff_check("eff_field_bad", bad);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+    assert!(out.contains("alloc.vec.Vec.push uses effect `alloc`"), "{}", out);
+    let (code, _, out) = eff_check("eff_field_ok", &bad.replace("uses []", "uses [alloc]"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn local_receiver_of_unknown_type_stays_silent() {
+    // レシーバの型が型パラメータ (トレイト境界経由の呼び出し) のときは、新しい検査は黙る。
+    let src = "fn t.f[T: t.Talk](x: &T) -> u8 uses [] panics never
+    x.talk()
+end t.f
+
+trait t.Talk pub
+    fn talk(self: &Self) -> u8 uses [] panics never
+end t.Talk
+";
+    let (code, _, out) = eff_check("eff_path_unknown", src);
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn closure_effects_instantiate_the_fn_bound_effect_var() {
+    // `Fn` 境界 (E, P) に渡したクロージャの本体の効果で `uses [E]` が実体化される (4.3)。
+    let bad = "fn t.f() -> u8 uses [] panics never
+    t.apply(
+        fn(x: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"hi\"))
+            x
+        },
+        1u8,
+    )
+end t.f
+";
+    let (_, got, out) = eff_check("eff_closure_uses_bad", bad);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+    assert!(out.contains("t.apply uses effect `io.console`"), "{}", out);
+    let (code, _, out) = eff_check("eff_closure_uses_ok", &bad.replace("uses []", "uses [io.console]"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn closure_index_instantiates_the_panic_var_as_may() {
+    // クロージャの本体の添字は panic しうるので、P は `may` に実体化される。
+    let bad = "fn t.f(v: &[u8]) -> u8 uses [] panics never
+    t.apply(
+        fn(x: u8) -> u8 capture [&v] {
+            v[0]
+        },
+        1u8,
+    )
+end t.f
+";
+    let (_, got, out) = eff_check("eff_closure_panic_bad", bad);
+    assert_eq!(got, vec!["E4002".to_string()], "{}", out);
+    let (code, _, out) = eff_check("eff_closure_panic_ok", &bad.replace("panics never", "panics may"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn closure_effects_flow_through_method_calls() {
+    // 標準ライブラリの `Option.map` (`uses [E] panics P`) と、利用者のメソッド (`t.S.with`)。
+    let bad = "fn t.f(o: Option<u8>) -> Option<u8> uses [] panics never
+    o.map(
+        fn(x: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"hi\"))
+            x
+        },
+    )
+end t.f
+
+fn t.g(s: t.S) -> u8 uses [] panics never
+    s.with(
+        fn(x: u8) -> u8 capture [] {
+            core.panic.panic(\"no\")
+        },
+    )
+end t.g
+";
+    let (_, got, out) = eff_check("eff_closure_method_bad", bad);
+    assert_eq!(got, vec!["E4001".to_string(), "E4002".to_string()], "{}", out);
+    assert!(out.contains("core.option.Option.map uses effect `io.console`"), "{}", out);
+    assert!(out.contains("t.S.with may panic"), "{}", out);
+}
+
+#[test]
+fn pure_closures_and_methods_stay_silent() {
+    // 効果のないクロージャ・メソッドは `uses [] panics never` から呼べる (誤検出なし)。
+    let ok = "fn t.f(o: Option<u8>, s: t.S) -> u8 uses [] panics never
+    let a = o.map(
+        fn(x: u8) -> u8 capture [] {
+            x.wrapping_add(1u8)
+        },
+    )
+    let k = s.peek()
+    let b = s.with(
+        fn(x: u8) -> u8 capture [] {
+            x.wrapping_mul(2u8)
+        },
+    )
+    let total = core.iter.fold(
+        core.iter.range(0u32, 5u32),
+        0u32,
+        fn(acc: u32, x: u32) -> u32 capture [] {
+            acc.wrapping_add(x)
+        },
+    )
+    core.mem.drop(total)
+    t.apply(
+        fn(x: u8) -> u8 capture [&k] {
+            x.wrapping_add(*k)
+        },
+        a.unwrap_or(b),
+    )
+end t.f
+";
+    let (code, _, out) = eff_check("eff_pure_ok", ok);
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn nested_and_let_bound_closure_effects_are_inferred() {
+    // 入れ子のクロージャの効果は、内側を受ける呼び出しを経て外側のクロージャに入る。
+    // `let` に束縛したクロージャも型 (クロージャの節) を通じて効果が分かる。
+    let bad = "fn t.f(x: u8) -> u8 uses [] panics never
+    t.apply(
+        fn(y: u8) -> u8 capture [] {
+            t.apply(
+                fn(z: u8) -> u8 capture [] {
+                    core.mem.drop(std.io.print_line(\"z\"))
+                    z
+                },
+                y,
+            )
+        },
+        x,
+    )
+end t.f
+
+fn t.g(x: u8) -> u8 uses [] panics never
+    let c = fn(y: u8) -> u8 capture [] {
+        core.mem.drop(std.io.print_line(\"y\"))
+        y
+    }
+    t.apply(c, x)
+end t.g
+";
+    let (_, got, out) = eff_check("eff_nested_bad", bad);
+    assert_eq!(got, vec!["E4001".to_string(), "E4001".to_string()], "{}", out);
+    let (code, _, out) = eff_check("eff_nested_ok", &bad.replace("uses []", "uses [io.console]"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn closure_with_unknown_effects_stays_silent() {
+    // クロージャの本体が `Fn` 境界のパラメータを呼ぶだけ (効果が分からない) なら、新しい検査は黙る。
+    // 宣言どおりの効果変数 E / P は従来どおり呼び出し側の E / P で覆われる。test の本体は検査しない。
+    let ok = "fn t.fwd[F: core.ops.Fn<(u8,), u8, E, P>, E: uses, P: panics](f: F, x: u8) -> u8 uses [E] panics P pub
+    t.apply(
+        fn(y: u8) -> u8 capture [&f] {
+            f(y)
+        },
+        x,
+    )
+end t.fwd
+
+test t.fwd.test_io
+    let s = t.S { n: 1u8, log: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+    core.mem.drop(s.say())
+    core.check.eq(t.fwd(
+        fn(z: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"t\"))
+            z
+        },
+        1u8,
+    ), 1u8)
+end t.fwd.test_io
+";
+    let (code, _, out) = eff_check("eff_unknown_closure_ok", ok);
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn inferred_caller_covers_local_method_and_closure_effects() {
+    // 効果を省略した非 pub 関数は本体から推論される (s.say() の io.console とクロージャの本体を含む)。
+    // 推論された関数自身には新しい診断が出ず、その呼び出し元が効果を受け取る。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let s = t.S { n: 1u8, log: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+    core.mem.drop(t.mid(s))
+    Ok(())
+end t.main
+
+fn t.mid(s: t.S) -> u8
+    core.mem.drop(s.say())
+    t.apply(
+        fn(x: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"m\"))
+            x
+        },
+        1u8,
+    )
+end t.mid
+";
+    let (_, got, out) = eff_check("eff_inferred_bad", src);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+    assert!(out.contains("\"fqn\": \"t.main\""), "{}", out);
+    let (code, _, out) = eff_check("eff_inferred_ok", &src.replace("uses [] panics may", "uses [io.console] panics may"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn declared_and_closure_effects_are_reported_once() {
+    // 宣言にある具体名 (io.console) とクロージャから来た同じ効果は、同じ行の 1 件にまとまる。
+    let src = "fn t.both[F: core.ops.Fn<(u8,), u8, E, P>, E: uses, P: panics](f: F) -> u8 uses [io.console, E] panics P pub
+    core.mem.drop(std.io.print_line(\"b\"))
+    f(1u8)
+end t.both
+
+fn t.f() -> u8 uses [] panics never
+    t.both(
+        fn(x: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"hi\"))
+            x
+        },
+    )
+end t.f
+";
+    let (_, got, out) = eff_check("eff_dedupe", src);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
 }

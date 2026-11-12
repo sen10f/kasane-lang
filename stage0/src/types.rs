@@ -7,7 +7,7 @@
 //! 分からない型は `Ty::Unknown` にして、そこから先は何も言わない (誤検出より取りこぼしを選ぶ)。
 //! 参照は透過的に扱う (`&T` と `T` は同じとみなす)。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::check::{edit_distance, is_nil, items, nf, nline, nname, pat_binds, st, strs, tag, tel, Diag};
 use crate::parser::V;
@@ -161,6 +161,22 @@ const DERIVED: &[&str] = &[
     "try_clone", "to_string", "lt", "le", "gt", "ge", "min", "max",
 ];
 
+/// 型で解決できた呼び出しの効果検査の義務 (5.1 / 4.3)。check.rs が、呼び出し元 `di` の
+/// `uses` / `panics` と比べる。`cands` は (呼び出し先の名前, 検査する uses, 検査する panics) の列で、
+/// すべての候補が違反するときだけ報告する (候補が複数あるときは保守側に黙る)。
+pub struct EffCheck {
+    pub di: usize,
+    pub line: usize,
+    pub cands: Vec<(String, Vec<String>, Option<String>)>,
+}
+
+/// 効果変数・panic 変数の束縛 (クロージャの本体から推論した効果、4.3)。
+#[derive(Default)]
+struct EffBind {
+    uses: HashMap<String, BTreeSet<String>>,
+    panics: HashMap<String, bool>,
+}
+
 pub struct TypeCk<'a> {
     p: &'a Program,
     /// 所有者 (型の FQN) → メソッド名 → 定義の添字
@@ -192,6 +208,13 @@ pub struct TypeCk<'a> {
     fn_closures: HashMap<(String, String), Vec<String>>,
     /// 関数の FQN → 本体の中で呼んでいる `Fn` 境界パラメータの局所名の集合 (5.3 の近似)。
     param_called: HashMap<String, HashSet<String>>,
+    /// 推論中のクロージャ本体の効果 (`closure_nodes` と同じ深さのスタック)。型で解決できた呼び出しの
+    /// 効果と添字の panic だけを足す (下からの近似。分からない呼び出しは足さない = 誤検出を出さない)。
+    eff_acc: Vec<(BTreeSet<String>, bool)>,
+    /// クロージャの節 → 本体から推論した効果 (uses, panics may か)。
+    closure_effs: HashMap<String, (BTreeSet<String>, bool)>,
+    /// 型で解決できた呼び出しの効果検査の義務 (check.rs が検査する)。
+    pub eff_checks: Vec<EffCheck>,
 }
 
 impl<'a> TypeCk<'a> {
@@ -210,7 +233,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -657,7 +680,11 @@ impl<'a> TypeCk<'a> {
     }
 
     // ------------------------------------------------------------ メソッド呼び出し
-    fn call_method(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V]) -> Ty {
+    /// `local` は局所変数から始まるパスの呼び出し (`s.m()` / `s.f.m()`) か。その形は従来の効果検査を
+    /// 通らない (パスとして構文解析される) ので、型で解決できたときに実体化した効果全体を検査する。
+    /// それ以外 (`x.f().m()` などの MCall) は従来の名前ベースの検査が宣言どおりの効果を見るので、
+    /// クロージャから推論した部分だけを検査する。
+    fn call_method(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
         // トレイトオブジェクト (5.1): `&dyn Tr` のメソッド呼び出しは、Tr とそのスーパートレイトの
         // シグネチャで検査する (Self は `dyn Tr` 自身)。
         let deep = self.deep(recv);
@@ -711,6 +738,18 @@ impl<'a> TypeCk<'a> {
             escape_all(self);
             return Ty::Unknown;
         }
+        // 効果 (4.3 / 5.1): 引数の個数が合う候補 (型で決まった所有者のメソッド) をすべて見る。
+        // 検査は全候補が違反するときだけ、クロージャの効果には全候補に共通する部分だけを足す (保守側)。
+        let effs: Vec<(String, Vec<String>, Option<String>, Vec<String>, Option<String>)> = fit
+            .iter()
+            .map(|(i, _)| {
+                let c = &self.p.defs[*i];
+                let (fu, fp, du, dm) = self.callee_effects(c, 1, args, targs);
+                let (cu, cp) = if local { (fu.clone(), fp.clone()) } else { (du, dm.then(|| "may".to_string())) };
+                (c.name.clone(), fu, fp, cu, cp)
+            })
+            .collect();
+        self.record_effects(line, effs);
         let (di, owner) = fit[0].clone();
         let d = &self.p.defs[di];
         let gn = d.gnames();
@@ -1031,7 +1070,7 @@ impl<'a> TypeCk<'a> {
                 let recv = self.infer(&f[0]);
                 let args: Vec<Ty> = items(&f[2]).iter().map(|a| self.infer(a)).collect();
                 let base = self.base_local(&f[0]);
-                self.call_method(&recv, base.as_deref(), &st(&f[1]), &args, nline(e), items(&f[3]))
+                self.call_method(&recv, base.as_deref(), &st(&f[1]), &args, nline(e), items(&f[3]), false)
             }
             "Field" => {
                 let r = self.infer(&f[0]);
@@ -1048,6 +1087,10 @@ impl<'a> TypeCk<'a> {
                 inner
             }
             "Index" => {
+                // 添字は panic しうる (クロージャの本体では、そのクロージャの `panics may` の根拠にする)。
+                if let Some(acc) = self.eff_acc.last_mut() {
+                    acc.1 = true;
+                }
                 let t = self.infer(&f[0]);
                 let idx = self.infer(&f[1]);
                 let want = Ty::Prim("usize".into());
@@ -1176,6 +1219,7 @@ impl<'a> TypeCk<'a> {
                 let node = format!("{}#{}", self.def().name.clone(), self.closure_seq);
                 self.closure_seq += 1;
                 self.closure_nodes.push(node.clone());
+                self.eff_acc.push(Default::default());
                 self.scopes.push(HashMap::new());
                 for p in items(&f[0]) {
                     let ty = subst_params_unknown(&from_v(&items(p)[1], &gn));
@@ -1189,6 +1233,9 @@ impl<'a> TypeCk<'a> {
                 self.rets.pop();
                 self.scopes.pop();
                 self.closure_nodes.pop();
+                // クロージャの `uses` / `panics` は本体から推論する (4.3)。型で解決できた呼び出しと添字だけ。
+                let effs = self.eff_acc.pop().unwrap_or_default();
+                self.closure_effs.insert(node.clone(), effs);
                 if let Err(err) = self.unify2(&ret, &body) {
                     if let Some((want, got)) = self.ann_conflict(&ret, &body, &err) {
                         self.diag(
@@ -1386,7 +1433,7 @@ impl<'a> TypeCk<'a> {
             for s in &segs[1..segs.len() - 1] {
                 t = self.field_ty(&t, s);
             }
-            return self.call_method(&t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line, targs);
+            return self.call_method(&t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line, targs, true);
         }
         let _ = &argt;
         let Some(r) = self.p.resolve(&segs, &self.def().file) else {
@@ -1438,6 +1485,11 @@ impl<'a> TypeCk<'a> {
     fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
         let d = &self.p.defs[i];
         self.add_edge(d.name.clone());
+        // 効果 (4.3 / 5.1): 宣言どおりの効果は従来の検査 (check.rs の visit) が見るので、ここでは
+        // `Fn` 境界に渡したクロージャから推論した部分だけを検査の義務にする。クロージャの中では
+        // 実体化した効果全体をそのクロージャの効果に足す。
+        let (fu, fp, du, dm) = self.callee_effects(d, 0, argt, targs);
+        self.record_effects(line, vec![(d.name.clone(), fu, fp, du, dm.then(|| "may".to_string()))]);
         let gn = d.gnames();
         // 明示型引数 (`f::<..>`, 4.3) のうち型・定数の実引数を、宣言のパラメータに束縛する。
         // 効果・panic の実引数は効果検査 (check.rs の inst_def_effects) で使う。
@@ -1600,6 +1652,112 @@ impl<'a> TypeCk<'a> {
             }
         }
         out
+    }
+
+    /// `Fn` 境界 (`F: core.ops.Fn<Args, R, E, P>`) のパラメータに渡されたクロージャの本体の効果で、
+    /// 境界の効果変数 `E`・panic 変数 `P` を束縛する (4.3 の引数からの効果推論)。
+    /// `off` は引数と宣言の引数の添字のずれ (メソッドの `self` で 1)。同じ `E` / `P` が複数の境界に
+    /// 現れるときは各実引数の和 (`P` は `may` 優先)。クロージャの型・本体の効果が分からない引数、
+    /// 境界の効果実引数が宣言の効果変数でない (`[io]` などの具体名) ものは束縛しない (黙る)。
+    fn closure_effect_bind(&self, d: &Def, off: usize, argt: &[Ty]) -> EffBind {
+        let mut out = EffBind::default();
+        let gn = d.gnames();
+        for (k, a) in argt.iter().enumerate() {
+            let Some(p) = d.params.get(k + off) else { break };
+            let Ty::Param(name) = from_v(&p.1, &gn) else { continue };
+            let bounds = self.fn_bound(d, &name);
+            if bounds.is_empty() {
+                continue;
+            }
+            let Ty::Closure { id: Some(node), .. } = self.deep(a) else { continue };
+            let Some((uses, may)) = self.closure_effs.get(&node) else { continue };
+            for b in &bounds {
+                let bt = items(tel(b, 1));
+                let var = |i: usize, kind: &str| -> Option<String> {
+                    let v = bt.get(i)?;
+                    if tag(v) != "named" || !items(tel(v, 2)).is_empty() {
+                        return None;
+                    }
+                    let nm = st(tel(v, 1));
+                    d.generics.iter().any(|g| g.0 == kind && g.1 == nm).then_some(nm)
+                };
+                if let Some(e) = var(2, "uses") {
+                    out.uses.entry(e).or_default().extend(uses.iter().cloned());
+                }
+                if let Some(pv) = var(3, "panics") {
+                    *out.panics.entry(pv).or_default() |= *may;
+                }
+            }
+        }
+        out
+    }
+
+    /// 呼び出し先 `d` の効果を実体化する。明示型引数があればそれで (check.rs と同じ `inst_def_effects`)、
+    /// なければクロージャから推論した束縛で置き換える。
+    /// 戻り値は (実体化した uses, 実体化した panics, 束縛から来た uses, 束縛から来た panic が may か)。
+    fn callee_effects(&self, d: &Def, off: usize, argt: &[Ty], targs: &[V]) -> (Vec<String>, Option<String>, Vec<String>, bool) {
+        if !targs.is_empty() {
+            let (u, p) = crate::check::inst_def_effects(d, targs).unwrap_or_else(|| (d.uses.clone(), d.panics.clone()));
+            return (u, p, vec![], false);
+        }
+        let bind = self.closure_effect_bind(d, off, argt);
+        // 宣言にある具体名 (`uses [io.console, E]` の io.console) で覆われる効果は、従来の検査が
+        // 宣言どおりに見るので、束縛から来た部分 (derived) からは除く (同じ違反の二重報告を避ける)。
+        let concrete: Vec<String> =
+            d.uses.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())).cloned().collect();
+        let mut full = vec![];
+        let mut derived = vec![];
+        for e in &d.uses {
+            match bind.uses.get(e) {
+                Some(set) => {
+                    full.extend(set.iter().cloned());
+                    derived.extend(set.iter().filter(|x| !crate::check::covers(&concrete, x)).cloned());
+                }
+                None => full.push(e.clone()),
+            }
+        }
+        let mut derived_may = false;
+        let panics = d.panics.as_deref().map(|p| match bind.panics.get(p) {
+            Some(&m) => {
+                derived_may = m;
+                if m { "may".to_string() } else { "never".to_string() }
+            }
+            None => p.to_string(),
+        });
+        (full, panics, derived, derived_may)
+    }
+
+    /// 型で解決できた呼び出しの効果を扱う。`cands` は候補ごとの (名前, 実体化した uses, 実体化した panics,
+    /// 検査する uses, 検査する panics)。クロージャの本体の中なら、すべての候補に共通する効果を
+    /// そのクロージャの効果に足す (下からの近似)。関数本体の直下なら、検査の義務を残す (test は検査しない)。
+    fn record_effects(&mut self, line: usize, cands: Vec<(String, Vec<String>, Option<String>, Vec<String>, Option<String>)>) {
+        if cands.is_empty() {
+            return;
+        }
+        if let Some(acc) = self.eff_acc.last_mut() {
+            let lower = |u: &Vec<String>| -> BTreeSet<String> {
+                u.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())).cloned().collect()
+            };
+            let mut common = lower(&cands[0].1);
+            for c in &cands[1..] {
+                let o = lower(&c.1);
+                common.retain(|e| o.contains(e));
+            }
+            acc.0.extend(common);
+            if cands.iter().all(|c| c.2.as_deref() == Some("may")) {
+                acc.1 = true;
+            }
+            return;
+        }
+        if self.def().kw == "test" {
+            return;
+        }
+        let checks: Vec<(String, Vec<String>, Option<String>)> =
+            cands.into_iter().map(|(n, _, _, u, p)| (n, u, p)).collect();
+        if checks.iter().all(|c| c.1.is_empty() && c.2.as_deref() != Some("may")) {
+            return;
+        }
+        self.eff_checks.push(EffCheck { di: self.cur, line, cands: checks });
     }
 
     /// クロージャの型での直接呼び出し (`f(x)`)。引数の個数 (E2022) と型 (E2023) を検査し、
