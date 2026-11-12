@@ -10,7 +10,7 @@
 //! - 関数呼び出し・`T.method(..)`・`std.io.print_line("..")`・`core.check.eq`・`core.mem.drop`。
 //! 総称型・文字列・Vec・`Option` / `Result`・スカラーへの参照は未対応 (Err を返し、呼び出し側が別の経路に回す)。
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 
@@ -232,8 +232,6 @@ struct Cx<'a> {
     /// `Fn` 境界の型パラメータに渡されたクロージャ: `closure<id>` → (クロージャの式, 書かれたファイル, そのときの型パラメータの束縛)
     /// 取り込む変数も持つ: (種類 `&` / `&mut` / `move`, 名前, 型) の列
     closure_types: RefCell<HashMap<String, (V, String, HashMap<String, String>, Vec<(String, String, String)>)>>,
-    /// `std.env` を使うか (使うなら `main` の最初に `argc` / `argv` をランタイムへ渡す)
-    uses_env: Cell<bool>,
     /// `dyn` の vtable のデータ (`具象型|トレイト` → データ)。(トレイト, 具象型) の組ごとに 1 つ作る。
     vtables: RefCell<HashMap<String, cranelift_module::DataId>>,
 }
@@ -923,7 +921,7 @@ impl<'a> Cx<'a> {
             "std.fs.open" | "std.fs.create" => res("std.fs.File", io),
             "std.fs.read_to_end" => res("usize", io),
             "std.fs.File.read" | "std.fs.File.write" | "std.net.TcpStream.read" | "std.net.TcpStream.write" => res("usize", io),
-            "std.fs.File.flush" | "std.fs.File.close" | "std.net.TcpStream.flush" => res("void", io),
+            "std.fs.File.flush" | "std.fs.File.sync" | "std.fs.File.close" | "std.net.TcpStream.flush" => res("void", io),
             "std.net.TcpStream.close" | "std.net.TcpListener.close" => res("void", ne),
             "std.net.connect" => res("std.net.TcpStream", ne),
             "std.net.listen" => res("std.net.TcpListener", ne),
@@ -1228,7 +1226,6 @@ impl<'a> Cx<'a> {
 /// ランタイムとして使う C ライブラリ関数の ID。
 struct Rt {
     write: FuncId,
-    exit: FuncId,
     realloc: FuncId,
     free: FuncId,
     memcpy: FuncId,
@@ -2760,6 +2757,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 (None, None, false)
             }
             "std.fs.File.flush" | "std.net.TcpStream.flush" => (None, None, false),
+            "std.fs.File.sync" => (Some(self.csys("ksn_rt_sys_sync", &[fd.ok_or("sync")?, e])?), None, true),
             "std.fs.File.read" | "std.net.TcpStream.read" => {
                 let (bv, bt) = self.expr(&args[0], env, Some("slice<u8>"))?;
                 let bv = bv.ok_or("bad buffer")?;
@@ -3719,10 +3717,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     /// `main` が `Err` を返した: 標準エラーに出して終了コード 1 で終わる。
     fn entry_error_exit(&mut self) -> R<()> {
-        self.write_stderr(format!("Error: main returned an error{}", char::from(10u8)).as_bytes())?;
-        let code = self.b.ins().iconst(types::I32, 1);
-        let x = self.rt.exit;
-        self.call_rt(x, &[code]);
+        self.crt("ksn_rt_entry_error", &[], None);
         self.b.ins().trap(TrapCode::user(4).unwrap());
         self.term = true;
         Ok(())
@@ -3739,20 +3734,6 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok(())
     }
 
-    /// 定数のバイト列を標準エラーに書く。
-    fn write_stderr(&mut self, bytes: &[u8]) -> R<()> {
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        let n = bytes.len() as i64;
-        let p = self.string_ptr(bytes.to_vec())?;
-        let fd = self.b.ins().iconst(types::I32, 2);
-        let len = self.b.ins().iconst(types::I32, n);
-        let w = self.rt.write;
-        self.call_rt(w, &[fd, p, len]);
-        Ok(())
-    }
-
     /// 条件 `bad` が真なら panic して終了コード 101 で終わる。
     fn guard(&mut self, bad: Value, msg: &str) -> R<()> {
         let (pb, ok) = (self.b.create_block(), self.b.create_block());
@@ -3763,17 +3744,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok(())
     }
 
+    /// 定数のメッセージで `ksn_rt_panic` (rt.c) を呼ぶ。戻らない。
+    fn panic_const(&mut self, bytes: &[u8]) -> R<()> {
+        let p = self.string_ptr(bytes.to_vec())?;
+        let len = self.b.ins().iconst(types::I64, bytes.len() as i64);
+        self.crt("ksn_rt_panic", &[p, len], None);
+        Ok(())
+    }
+
     fn fail_block(&mut self, text: &str) -> R<()> {
-        let msg = format!("panic: {}{}", text, char::from(10u8)).into_bytes();
-        let n = msg.len() as i64;
-        let p = self.string_ptr(msg)?;
-        let fd = self.b.ins().iconst(types::I32, 2);
-        let len = self.b.ins().iconst(types::I32, n);
-        let w = self.rt.write;
-        self.call_rt(w, &[fd, p, len]);
-        let code = self.b.ins().iconst(types::I32, 101);
-        let x = self.rt.exit;
-        self.call_rt(x, &[code]);
+        self.panic_const(text.as_bytes())?;
         self.b.ins().trap(TrapCode::user(1).unwrap());
         Ok(())
     }
@@ -3805,11 +3785,6 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         if is_agg(&self.ret_ty) && !self.entry {
             self.sret = Some(params_vals[0]);
             k = 1;
-        }
-        if self.entry && self.cx.uses_env.get() {
-            // `std.env`: `main` の `argc` / `argv` をランタイムに渡す。
-            let (argc, argv) = (params_vals[0], params_vals[1]);
-            self.crt("ksn_rt_sys_set_args", &[argc, argv], None);
         }
         for (n, t) in d.params.iter() {
             let ty = self.cx.pty(t)?;
@@ -5402,17 +5377,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.ins().brif(is_ok, cont, &[], bad, &[]);
                 self.b.switch_to_block(bad);
                 if self.entry {
-                    // main が Err を返した: 標準エラーに出して終了コード 1。
-                    let msg = format!("Error: main returned an error{}", char::from(10u8)).into_bytes();
-                    let n = msg.len() as i64;
-                    let mp = self.string_ptr(msg)?;
-                    let fd = self.b.ins().iconst(types::I32, 2);
-                    let len = self.b.ins().iconst(types::I32, n);
-                    let w = self.rt.write;
-                    self.call_rt(w, &[fd, mp, len]);
-                    let code = self.b.ins().iconst(types::I32, 1);
-                    let x = self.rt.exit;
-                    self.call_rt(x, &[code]);
+                    // main が Err を返した: ランタイム (rt.c) が標準エラーに出して終了コード 1。
+                    self.crt("ksn_rt_entry_error", &[], None);
                     self.b.ins().trap(TrapCode::user(4).unwrap());
                 } else {
                     let rt = self.ret_ty.clone();
@@ -5918,10 +5884,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 if segs == ["core", "panic", "panic"] && args.len() == 1 {
                     // メッセージを標準エラーに出して、終了コード 101 で終わる。
-                    self.write_stderr(b"panic: ")?;
                     if nname(&args[0]) == "Lit" && st(&nf(&args[0])[0]) == "str" {
                         let bytes = lit_bytes(&args[0]);
-                        self.write_stderr(&bytes)?;
+                        self.panic_const(&bytes)?;
                     } else {
                         let (sv, t) = self.expr(&args[0], env, Some("str"))?;
                         if t != "str" {
@@ -5931,15 +5896,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         let pt = self.ptr_ty();
                         let ptr = self.b.ins().load(pt, MemFlags::new(), sv, 0);
                         let len = self.b.ins().load(types::I64, MemFlags::new(), sv, 8);
-                        let len32 = self.b.ins().ireduce(types::I32, len);
-                        let fd = self.b.ins().iconst(types::I32, 2);
-                        let w = self.rt.write;
-                        self.call_rt(w, &[fd, ptr, len32]);
+                        self.crt("ksn_rt_panic", &[ptr, len], None);
                     }
-                    self.write_stderr(&[10u8])?;
-                    let code = self.b.ins().iconst(types::I32, 101);
-                    let x = self.rt.exit;
-                    self.call_rt(x, &[code]);
                     self.b.ins().trap(TrapCode::user(5).unwrap());
                     self.term = true;
                     return Ok((None, "void".into()));
@@ -8506,11 +8464,6 @@ fn make_sig(module: &ObjectModule, cx: &Cx, d: &Def, is_entry: bool, subst: &Has
             check_ref_return(cx, d).map_err(|e| format!("{}: {}", d.name, e))?;
         }
         let rty = if is_entry { "void".to_string() } else { cx.pty(&d.ret).map_err(|e| format!("{}: {}", d.name, e))? };
-        if is_entry {
-            // C の `main(int argc, char **argv)`。`std.env` が使う。
-            sig.params.push(AbiParam::new(types::I32));
-            sig.params.push(AbiParam::new(ptr));
-        }
         if !is_entry && is_agg(&rty) {
             sig.params.push(AbiParam::new(ptr));
         }
@@ -8556,7 +8509,7 @@ pub fn compile_clif(
             all_types.entry(n.to_string()).or_insert(&prog.defs[i]);
         }
     }
-    let cx = Cx { types: &all_types, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()), uses_env: Cell::new(false), vtables: RefCell::new(HashMap::new()) };
+    let cx = Cx { types: &all_types, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()), vtables: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
@@ -8616,20 +8569,6 @@ pub fn compile_clif(
         }
     }
 
-    // `std.env` を使う関数が 1 つでもあれば、`main` の最初に `argc` / `argv` をランタイムへ渡す。
-    for d in funcs.values() {
-        let Some(body) = d.body.as_ref() else { continue };
-        *cx.file.borrow_mut() = d.file.clone();
-        let mut calls = vec![];
-        crate::cnative::calls_in(body, &mut calls);
-        for c in calls {
-            let segs: Vec<String> = c.split('.').map(String::from).collect();
-            if cx.qual_segs(&segs).join(".").starts_with("std.env.") {
-                cx.uses_env.set(true);
-            }
-        }
-    }
-
     // ランタイム (C ライブラリ) の宣言。
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I32));
@@ -8637,9 +8576,6 @@ pub fn compile_clif(
     sig.params.push(AbiParam::new(types::I32));
     sig.returns.push(AbiParam::new(types::I32));
     let write = module.declare_function("write", Linkage::Import, &sig).map_err(|e| e.to_string())?;
-    let mut sig = module.make_signature();
-    sig.params.push(AbiParam::new(types::I32));
-    let exit = module.declare_function("exit", Linkage::Import, &sig).map_err(|e| e.to_string())?;
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(ptr));
     sig.params.push(AbiParam::new(types::I64));
@@ -8671,7 +8607,7 @@ pub fn compile_clif(
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(ptr));
     let memmove = module.declare_function("memmove", Linkage::Import, &sig).map_err(|e| e.to_string())?;
-    let rt = Rt { write, exit, realloc, free, memcpy, memcmp, memmove, utf8 };
+    let rt = Rt { write, realloc, free, memcpy, memcmp, memmove, utf8 };
 
     // 関数の宣言。入口は C の `main` にする。構造体・列挙型を返す関数は、先頭に戻り値用のアドレスを取る。
     let ids: RefCell<HashMap<String, FuncId>> = RefCell::new(HashMap::new());
@@ -8682,7 +8618,7 @@ pub fn compile_clif(
     for n in &order {
         let d = funcs[n];
         let sig = make_sig(&module, &cx, d, n == entry, &empty)?;
-        let (name, link) = if n == entry { ("main".to_string(), Linkage::Export) } else { (mangle(n), Linkage::Local) };
+        let (name, link) = if n == entry { ("ksn_main".to_string(), Linkage::Export) } else { (mangle(n), Linkage::Local) };
         let id = module.declare_function(&name, link, &sig).map_err(|e| e.to_string())?;
         ids.borrow_mut().insert(n.clone(), id);
         queue.push(Inst { key: n.clone(), def: d, subst: HashMap::new(), entry: n == entry, thunk: None, glue: None });
@@ -8756,19 +8692,29 @@ pub fn compile_clif(
 
     let bytes = module.finish().emit().map_err(|e| e.to_string())?;
     let opath = format!("{}.o", out_path);
-    // `ksn_rt_sys_` は OS ランタイム (sysrt.c)、それ以外の `ksn_rt_` は文字列ランタイム (strrt.c)。
+    // `ksn_rt_sys_` は OS ランタイム (sysrt.c)、`ksn_rt_thr_` はスレッド (thrrt.c)、コア (rt.c。起動・panic・スタック溢れ) は常にリンクする。
+    // それ以外の `ksn_rt_` は文字列ランタイム (strrt.c)。
     let uses_sys = bytes.windows(11).any(|w| w == b"ksn_rt_sys_");
     let uses_thr = bytes.windows(11).any(|w| w == b"ksn_rt_thr_");
-    let uses_rt = bytes
-        .windows(7)
-        .enumerate()
-        .any(|(i, w)| w == b"ksn_rt_" && bytes.get(i + 7..i + 11) != Some(b"sys_") && bytes.get(i + 7..i + 11) != Some(b"thr_"));
+    let uses_rt = bytes.windows(7).enumerate().any(|(i, w)| {
+        if w != b"ksn_rt_" {
+            return false;
+        }
+        let rest = &bytes[i + 7..];
+        let n = rest.iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_').count();
+        let name = &rest[..n];
+        !(name.starts_with(b"sys_") || name.starts_with(b"thr_") || CORE_RT_SYMS.contains(&name))
+    });
     std::fs::write(&opath, &bytes).map_err(|e| e.to_string())?;
     let cc = ["gcc", "cc", "clang"].iter().find(|c| which(c)).ok_or("no linker found (gcc / cc / clang)")?;
     // 文字列ランタイム (strrt.c) は、`ksn_rt_` の関数を使うときだけ一緒にコンパイルする。
     let rt_c = format!("{}.rt.c", out_path);
     let mut cmd = std::process::Command::new(cc);
     cmd.args(["-o", out_path, &opath]);
+    // コアランタイム (rt.c) は常にリンクする。
+    let core_c = format!("{}.core.c", out_path);
+    std::fs::write(&core_c, include_str!("rt.c")).map_err(|e| e.to_string())?;
+    cmd.args(["-O1", &core_c]);
     if uses_rt {
         std::fs::write(&rt_c, include_str!("strrt.c")).map_err(|e| e.to_string())?;
         cmd.args(["-O1", &rt_c]);
@@ -8789,6 +8735,7 @@ pub fn compile_clif(
         cmd.args(["-O1", "-pthread", &thr_c]);
     }
     let r = cmd.output();
+    let _ = std::fs::remove_file(&core_c);
     let _ = std::fs::remove_file(&rt_c);
     let _ = std::fs::remove_file(&sys_c);
     let _ = std::fs::remove_file(&thr_c);
@@ -8812,6 +8759,9 @@ fn is_cont(b: &mut FunctionBuilder, v: Value) -> Value {
     let m = b.ins().band_imm(v, 0xC0);
     b.ins().icmp_imm(IntCC::Equal, m, 0x80)
 }
+
+/// コアランタイム (rt.c) の `ksn_rt_` の名前。文字列ランタイム (strrt.c) の参照とは数えない。
+const CORE_RT_SYMS: [&[u8]; 2] = [b"panic", b"entry_error"];
 
 /// `ksn_utf8_valid(ptr, len) -> i32` を定義する (正しい UTF-8 なら 1)。
 fn define_utf8_valid(module: &mut ObjectModule, id: FuncId, fbc: &mut FunctionBuilderContext) -> R<()> {

@@ -5823,6 +5823,16 @@ fn agree_with_interpreter(name: &str, src: &str) -> String {
     text(&interp.stdout)
 }
 
+/// `File.sync` が通常ファイルで成功し、`with` の本体の `write` / `sync` のエラーが `?` で抜けても、後始末が1回走る
+/// (`/dev/full` は Linux のみ。ある環境だけ検査する)。インタプリタとネイティブの両方で通る。
+#[test]
+fn std_fs_sync_succeeds_and_errors_leave_a_with_body_through_try() {
+    let t = Tmp::new("fs_sync", include_str!("data/fs_sync.ksnl"));
+    let o = run(&["test", "--both"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stdout).contains("2 passed; 0 failed"), "{}", text(&o.stdout));
+}
+
 /// 作成・書き込み・読み戻し・削除・存在しないファイルのエラーを、インタプリタとネイティブで同じ結果にする。
 /// エラー番号は OS ごとに違うので、出力の一致は Unix だけで確かめる (Windows は動いて `fs ok` で終わることだけ)。
 #[test]
@@ -6786,6 +6796,29 @@ fn threads_a_panic_in_a_spawned_thread_aborts_the_process() {
     assert!(!text(&r.stdout).contains("not reached"));
 }
 
+/// 5.2: スタック溢れは `stack overflow` と終了コード 102 (メインスレッドでも、`spawn` したスレッドの中でも)。
+/// インタプリタとネイティブ (debug / release) で、標準出力・標準エラー・終了コードが同じ。
+#[test]
+fn threads_stack_overflow_stops_the_process_with_102_in_main_and_in_a_spawned_thread() {
+    for name in ["overflow_main", "overflow_thread"] {
+        let t = threads_pkg(name, "so");
+        let interp = run(&["run"], &t.0);
+        assert_eq!(interp.status.code(), Some(102), "{}: {}", name, text(&interp.stderr));
+        assert_eq!(text(&interp.stderr), "stack overflow\n");
+        assert_eq!(text(&interp.stdout), "start\n");
+        if cfg!(windows) {
+            continue;
+        }
+        for release in [false, true] {
+            let p = threads_build(&t, release);
+            let r = Command::new(&p).output().unwrap();
+            assert_eq!(r.status.code(), Some(102), "{} (release={}): {:?} {}", name, release, r.status, text(&r.stderr));
+            assert_eq!(text(&r.stderr), "stack overflow\n");
+            assert_eq!(text(&r.stdout), text(&interp.stdout));
+        }
+    }
+}
+
 #[test]
 fn threads_env_arguments_variables_and_time_work_natively() {
     let t = threads_pkg("env_time", "env");
@@ -7119,6 +7152,25 @@ fn ffi_a_callback_that_overflows_the_stack_stops_the_process_without_unwinding_t
     assert_eq!(i.status.code(), Some(102), "{}", text(&i.stderr));
     assert!(text(&i.stderr).contains("stack overflow"), "{}", text(&i.stderr));
     assert!(text(&i.stdout).contains("start") && !text(&i.stdout).contains("unreachable"));
+    // ネイティブも同じ (ガードページの fault をランタイムが拾う)。
+    let (out, n) = ffi_native(&t, "ffi_overflow");
+    let n = n.unwrap_or_else(|| panic!("no native executable: {}", out));
+    assert_eq!(n.status.code(), Some(102), "{}", text(&n.stderr));
+    assert_eq!(text(&n.stderr), "stack overflow\n");
+    assert_eq!(text(&n.stdout), text(&i.stdout));
+}
+
+#[cfg(unix)]
+#[test]
+fn ffi_a_real_null_dereference_still_crashes_natively_instead_of_reporting_a_stack_overflow() {
+    use std::os::unix::process::ExitStatusExt;
+    let t = ffi_pkg("ffi_null", "null_deref.ksnl");
+    let (out, n) = ffi_native(&t, "ffi_null");
+    let n = n.unwrap_or_else(|| panic!("no native executable: {}", out));
+    // スタック溢れ以外の fault は既定の動作のまま: SIGSEGV で落ちる (終了コード 102 でも 101 でもない)。
+    assert_eq!(n.status.signal(), Some(11), "code={:?} stderr={}", n.status.code(), text(&n.stderr));
+    assert!(!text(&n.stderr).contains("stack overflow"), "{}", text(&n.stderr));
+    assert_eq!(text(&n.stdout), "start\n");
 }
 
 fn ffi_check_codes(name: &str, src: &str, modules: &str) -> Vec<String> {

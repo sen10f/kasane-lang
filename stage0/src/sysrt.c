@@ -16,6 +16,7 @@
 
 #ifdef _WIN32
 #include <io.h>
+#include <windows.h>
 #else
 #include <unistd.h>
 #include <signal.h>
@@ -163,6 +164,20 @@ i64 ksn_rt_sys_close(i32 fd) {
     close(fd);
 #endif
     return 0;
+}
+
+/* 書き込んだ内容を OS に永続化させる (POSIX は fsync、Windows は FlushFileBuffers)。成功は 0。 */
+i64 ksn_rt_sys_sync(i32 fd, i32 *e) {
+#ifdef _WIN32
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE || !FlushFileBuffers(h)) return fail(e, EIO);
+    return 0;
+#else
+    int r;
+    do { r = fsync(fd); } while (r < 0 && errno == EINTR);
+    if (r < 0) return fail(e, errno);
+    return 0;
+#endif
 }
 
 /* 終端まで読んで vec (= {ptr, len, cap} の Vec<u8>) の後ろに足す。戻り値は足したバイト数。失敗時は vec の長さを変えない。 */
@@ -333,14 +348,11 @@ i64 ksn_rt_sys_local_port(i32 fd, i32 *e) {
 #include <windows.h>
 #endif
 
-static int g_argc = 0;
-static char **g_argv = 0;
-
-/* `main` の引数を覚える (entry から最初に呼ぶ)。引数 0 (プログラム名) は `std.env` の見える範囲に含めない。 */
-void ksn_rt_sys_set_args(i32 argc, char **argv) {
-    g_argc = argc;
-    g_argv = argv;
-}
+/* `main` の引数は rt.c が覚える。引数 0 (プログラム名) は `std.env` の見える範囲に含めない。 */
+extern int ksn_rt_argc;
+extern char **ksn_rt_argv;
+#define g_argc ksn_rt_argc
+#define g_argv ksn_rt_argv
 
 i64 ksn_rt_sys_arg_count(void) { return g_argc > 0 ? (i64)(g_argc - 1) : 0; }
 

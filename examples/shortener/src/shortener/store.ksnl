@@ -87,11 +87,10 @@ fn shortener.store.Store.save(self: &shortener.store.Store) -> Result<(), shorte
         return Ok(())
     }
     let text = self.render()?
-    let mut file = std.fs.create(self.path.as_str())?
-    let written = shortener.store.write_all(&mut file, text.as_str().as_bytes())
-    let closed = file.close()
-    written?
-    closed?
+    with mut file = std.fs.create(self.path.as_str())? close core.mem.drop(file.close()) {
+        shortener.store.write_all(&mut file, text.as_str().as_bytes())?
+        file.sync()?
+    }
     Ok(())
 end shortener.store.Store.save
 
@@ -246,6 +245,19 @@ test shortener.store.Store.save.test_round_trip_through_file
     core.mem.drop(std.fs.remove_file(path.as_str()))
     core.check.eq(std.fs.exists(path.as_str()), false)
 end shortener.store.Store.save.test_round_trip_through_file
+
+test shortener.store.Store.save.test_write_failure_is_reported_and_rolled_back
+    if std.fs.exists("/dev/full") {
+        match shortener.store.Store.new("/dev/full") {
+            Ok(s) => {
+                let mut store = s
+                core.check.eq(store.add("http://a.test/").is_err(), true)
+                core.check.eq(store.len(), 0usize)
+            }
+            Err(_e) => core.panic.panic("new failed")
+        }
+    }
+end shortener.store.Store.save.test_write_failure_is_reported_and_rolled_back
 
 test shortener.store.is_valid_url.test_cases
     core.check.eq(shortener.store.is_valid_url("http://a.test/"), true)

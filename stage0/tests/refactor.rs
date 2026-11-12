@@ -504,7 +504,7 @@ fn shortener_end_to_end_sequence() {
     let src = manifest().parent().unwrap().join("examples").join("shortener");
     let p = Pkg::from(&src, "shortener");
     let n = p.assert_healthy("baseline");
-    assert_eq!(n, 33);
+    assert_eq!(n, 34);
     let msg = p.rename_refused("shortener.error.Error.from_value_io_error", "shortener.error.Error.from_io");
     assert!(msg.contains("implements a trait method"), "{}", msg);
     for (old, new) in [
@@ -521,7 +521,7 @@ fn shortener_end_to_end_sequence() {
     }
     assert!(p.exists("src/shortener/shortcode.ksnl") && p.exists("src/shortener/web/router.ksnl"));
     assert!(!p.exists("src/shortener/code.ksnl") && !p.exists("src/shortener/router.ksnl"));
-    assert_eq!(p.assert_healthy("final"), 33);
+    assert_eq!(p.assert_healthy("final"), 34);
 }
 
 // ------------------------------------------------------------ 移動に伴う `pub` の補い (3.1)

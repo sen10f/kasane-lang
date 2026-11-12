@@ -1,0 +1,10 @@
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    std.io.print_line("start")
+    let p: *mut i32 = core.ptr.null_mut()
+    let v = unsafe "ptr" "null dereference (must crash, not exit 102)" {
+        core.ptr.read(p)
+    }
+    core.check.eq(v, 0i32)
+    std.io.print_line("unreachable")
+    Ok(())
+end t.main
