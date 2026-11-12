@@ -10,7 +10,7 @@ fn bench.word_count(text: &str) -> u32
     while i < bytes.len() {
         match bytes.get(i) {
             Some(c) => {
-                if bench.is_space(c) {
+                if bench.is_space(*c) {
                     in_word = false
                 } else {
                     if !in_word {

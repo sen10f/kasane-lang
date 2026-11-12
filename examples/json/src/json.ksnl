@@ -88,7 +88,7 @@ fn json.escape(src: &[u8], pos: usize) -> Result<usize, json.Error>
                 }
                 match src.get(k) {
                     Some(c) => {
-                        if !json.is_hex(c) {
+                        if !json.is_hex(*c) {
                             return Err(json.Error.BadEscape(pos))
                         }
                     }
@@ -112,7 +112,7 @@ fn json.flush(doc: &mut json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>
     let n = items.len()
     for k in core.iter.range(0usize, n) {
         match items.get(k) {
-            Some(v) => json.push_link(doc, v)?
+            Some(v) => json.push_link(doc, *v)?
             None => return Err(json.Error.Eof)
         }
     }
@@ -352,7 +352,7 @@ end json.write
 
 fn json.write_link(doc: &json.Doc, src: &[u8], slot: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), json.Error> uses [alloc] panics never stack 4096
     match doc.links.get(slot) {
-        Some(node) => json.write(doc, src, node, out)
+        Some(node) => json.write(doc, src, *node, out)
         None => Err(json.Error.Eof)
     }
 end json.write_link
