@@ -53,6 +53,16 @@ pub(crate) fn st(v: &V) -> String {
 pub(crate) fn is_nil(v: &V) -> bool {
     matches!(v, V::Nil)
 }
+/// 型の値の構造的な等しさ (`V` は `PartialEq` を持たない)。節点を含むものは等しいとみなさない (黙る方向)。
+pub(crate) fn same_v(a: &V, b: &V) -> bool {
+    match (a, b) {
+        (V::S(x), V::S(y)) | (V::N(x), V::N(y)) => x == y,
+        (V::B(x), V::B(y)) => x == y,
+        (V::L(x), V::L(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_v(p, q)),
+        (V::Nil, V::Nil) => true,
+        _ => false,
+    }
+}
 pub(crate) fn strs(v: &V) -> Vec<String> {
     items(v).iter().map(st).collect()
 }
@@ -2116,6 +2126,76 @@ impl<'a> Checker<'a> {
                     els.push(t);
                 }
                 V::L(vec![V::S("tuple".into()), V::L(els)])
+            }
+            "ArrayE" => {
+                // 配列式は要素の型がすべて同じ型に決まるときだけ型を返す (4.4)。
+                // 長さは型に入れない (型の長さは `ty_size` が既定値を使うので Nil のままでよい)。
+                let xs = items(&f[0]);
+                let Some(first) = xs.first() else { return V::Nil };
+                let el = self.ty_of(first, env);
+                if is_nil(&el) {
+                    return V::Nil;
+                }
+                for x in &xs[1..] {
+                    if !same_v(&self.ty_of(x, env), &el) {
+                        return V::Nil;
+                    }
+                }
+                V::L(vec![V::S("array".into()), el, V::Nil])
+            }
+            "Index" => {
+                // `a[i]` は配列・スライスの要素の型 (4.4)。`types.rs` の Index と同じく、
+                // 添字の型は見ない。`Vec` など別の型や、要素の型が決まらない / 型引数に依る
+                // ときは黙る (Nil)。
+                let base = self.ty_of(&f[0], env);
+                if is_nil(&base) {
+                    return V::Nil;
+                }
+                let b = self.strip(&base).clone();
+                if !matches!(tag(&b).as_str(), "array" | "slice") {
+                    return V::Nil;
+                }
+                let el = tel(&b, 1).clone();
+                if is_nil(&el) || self.is_generic(&el, &self.names) {
+                    return V::Nil;
+                }
+                el
+            }
+            "MCall" => {
+                // `x.m(..)` の戻り値 (4.4)。レシーバの型が型引数なしのユーザー型に決まり、
+                // その型のメソッドが一意に定まるときだけ戻り値の型を返す。
+                // 戻り値が型引数・`Self` を含むときは黙る。
+                let recv = self.ty_of(&f[0], env);
+                if is_nil(&recv) {
+                    return V::Nil;
+                }
+                let base = self.strip(&recv).clone();
+                if tag(&base) != "named" || !items(tel(&base, 2)).is_empty() {
+                    return V::Nil;
+                }
+                let owner = st(tel(&base, 1));
+                if !self.p.types.contains_key(&owner) {
+                    return V::Nil;
+                }
+                let name = st(&f[1]);
+                let n = items(&f[2]).len();
+                let cands: Vec<&Def> = self
+                    .p
+                    .method_idx
+                    .get(&name)
+                    .map(|v| {
+                        v.iter()
+                            .map(|&i| self.def(i))
+                            .filter(|c| {
+                                c.params.len() == n + 1 && c.name.rsplit_once('.').map_or(false, |(o, _)| o == owner)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                match cands.as_slice() {
+                    [callee] if !self.is_generic(&callee.ret, &callee.gnames()) => callee.ret.clone(),
+                    _ => V::Nil,
+                }
             }
             "StructLit" => {
                 let name = st(&f[0]);
