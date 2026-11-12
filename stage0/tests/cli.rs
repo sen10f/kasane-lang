@@ -6031,3 +6031,56 @@ fn tyof_unit_method_results_and_unknown_types_stay_silent() {
     );
     assert!(!tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E3003"), "{}", out);
 }
+
+#[test]
+fn linear_array_consumed_by_index_only_one_element_is_e3003() {
+    // `ls[1]` の消費漏れ (4.4)。配列の束縛は名前の使用があれば消費、という近似の穴を要素単位で塞ぐ。
+    let (cs, out) = tyof_codes("lin_arr_one", &["let ls = [t.get_l(), t.get_l()]", "t.eat(ls[0])"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `ls[1]` is never consumed"), "{}", out);
+}
+
+#[test]
+fn linear_array_with_a_gap_in_the_indices_is_e3003() {
+    // 添字 0 と 2 は使い、中央の 1 だけ消費しない。
+    let (cs, out) = tyof_codes(
+        "lin_arr_gap",
+        &["let ls = [t.get_l(), t.get_l(), t.get_l()]", "t.eat(ls[0])", "t.eat(ls[2])"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `ls[1]` is never consumed"), "{}", out);
+}
+
+#[test]
+fn linear_array_never_used_is_e3003() {
+    let (cs, out) = tyof_codes("lin_arr_unused", &["let ls = [t.get_l(), t.get_l()]"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `ls` is never consumed"), "{}", out);
+}
+
+#[test]
+fn linear_array_with_every_element_consumed_is_ok() {
+    let (cs, out) = tyof_codes(
+        "lin_arr_ok",
+        &["let ls = [t.get_l(), t.get_l()]", "t.eat(ls[0])", "t.eat(ls[1])"],
+    );
+    assert!(!tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+#[test]
+fn linear_array_used_as_a_whole_or_by_a_variable_index_stays_silent() {
+    // 配列全体を `for` で回す・添字に変数を使う (どの要素か判断できない) 場合は黙る。
+    let (cs, out) = tyof_codes(
+        "lin_arr_silent",
+        &[
+            "let ls = [t.get_l(), t.get_l()]",
+            "for x in ls",
+            "    t.eat(x)",
+            "end for",
+            "let us = [t.get_l(), t.get_l()]",
+            "let i = 0usize",
+            "t.eat(us[i])",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E3003"), "{}", out);
+}
