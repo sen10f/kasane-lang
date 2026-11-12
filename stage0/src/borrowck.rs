@@ -77,7 +77,15 @@ struct Low<'a> {
     loops: Vec<(usize, usize)>,
     exit: usize,
     iters: usize,
+    /// `match` 式 (節点のアドレス) → その値を持つ合成の持ち主 (`$match0` など)。
+    /// 腕の値の借用を、腕の終わりでこの持ち主に集める (`let r = match .. { .. }` で `r` へ移す)。
+    match_vals: HashMap<usize, String>,
 }
+
+/// `match` の値として腕の外へ運ぶ借用を、どの腕から集めるか。`true` は「全腕の和」
+/// (`None => &y` のような束縛を使わない腕の値も含める)。誤検出が出る場合は `false` にすると、
+/// 腕のパターンの束縛をそのまま値にする腕 (`Some(rr) => rr`) だけに後退する。
+const MATCH_VALUE_ALL_ARMS: bool = true;
 
 /// メソッドの `self` が受ける形。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -221,6 +229,11 @@ impl<'a> Low<'a> {
                 _ => vec![],
             },
             "Try" => self.loan_sources(&nf(e)[0]),
+            // `match` の値: 各腕の値の借用の和 (腕の終わりで合成の持ち主に集めてある)
+            "Match" => match self.match_vals.get(&(e as *const V as usize)) {
+                Some(h) => vec![Src::Alias(h.clone())],
+                None => vec![],
+            },
             "MCall" => {
                 let name = st(&nf(e)[1]);
                 let recv = &nf(e)[0];
@@ -326,11 +339,87 @@ impl<'a> Low<'a> {
                 self.store_struct_lit(n, root, &q, &it[1]);
                 continue;
             }
-            let srcs = self.loan_sources(&it[1]);
-            if !srcs.is_empty() {
-                self.hold(n, Holder::Place { root: root.to_string(), path: p }, srcs);
+            self.store_value(n, root, &p, &it[1]);
+        }
+    }
+
+    /// タプル・配列リテラル (`(&x, 1)`、`[&x, &y]`、`[&x; 3]`) の要素に入る借用。入れ子のリテラル
+    /// (構造体リテラルを含む) の中も集める。要素ごとの道は持たず、リテラル全体の場所に保存する
+    /// (要素への上書きは全体を殺す — 広めに殺す方針)。リテラルでなければ空。
+    fn lit_sources(&self, e: &V) -> Vec<Src> {
+        let elems: Vec<&V> = match nname(e) {
+            "TupleE" | "ArrayE" => items(&nf(e)[0]).iter().collect(),
+            "ArrayRep" => vec![&nf(e)[0]],
+            "StructLit" => items(&nf(e)[1]).iter().filter_map(|fld| items(fld).get(1)).collect(),
+            _ => return vec![],
+        };
+        let mut out = vec![];
+        for x in elems {
+            if matches!(nname(x), "TupleE" | "ArrayE" | "ArrayRep" | "StructLit") {
+                out.extend(self.lit_sources(x));
+            } else {
+                out.extend(self.loan_sources(x));
             }
         }
+        out
+    }
+
+    /// 値の式 `e` に入る借用を、場所 `root` + `path` に保存されたローンとして記録する。
+    /// 構造体リテラルはフィールドの道ごとに、タプル・配列リテラルは全体の場所に置く。
+    /// それ以外は値の式そのものの出どころ (`&x`、参照の変数など)。
+    fn store_value(&mut self, n: usize, root: &str, path: &[String], e: &V) {
+        if nname(e) == "StructLit" {
+            self.store_struct_lit(n, root, path, e);
+            return;
+        }
+        let mut srcs = self.loan_sources(e);
+        if srcs.is_empty() {
+            srcs = self.lit_sources(e);
+        }
+        if !srcs.is_empty() {
+            self.hold(n, Holder::Place { root: root.to_string(), path: path.to_vec() }, srcs);
+        }
+    }
+
+    /// `match` の腕の値 (本体が式ならその式、ブロックなら最後の式文)。値を持たない腕は `None`。
+    fn arm_tail(body: &V) -> Option<&V> {
+        match nname(body) {
+            "Block" => {
+                let last = items(&nf(body)[0]).last()?;
+                match nname(last) {
+                    "ExprStmt" => Self::arm_tail(&nf(last)[0]),
+                    "Let" | "Assign" => None,
+                    _ => Self::arm_tail(last),
+                }
+            }
+            _ => Some(body),
+        }
+    }
+
+    /// 腕の値が運ぶ借用の出どころ。`Some(rr) => rr` なら腕の束縛 (= 被検査式のローン源を引き継いだもの)、
+    /// `None => &y` なら新しい借用。`MATCH_VALUE_ALL_ARMS` が偽なら前者 (腕の束縛そのもの) だけ。
+    fn arm_value_sources(&self, arm: &[V]) -> Vec<Src> {
+        let Some(tail) = Self::arm_tail(&arm[1]) else { return vec![] };
+        if !MATCH_VALUE_ALL_ARMS {
+            let mut binds = vec![];
+            pat_binds(&arm[0], &mut binds);
+            let is_bind = nname(tail) == "Path" && {
+                let segs = strs(&nf(tail)[0]);
+                segs.len() == 1 && binds.contains(&segs[0])
+            };
+            if !is_bind {
+                return vec![];
+            }
+        }
+        self.loan_sources(tail)
+    }
+
+    /// `match` の腕の終わり `end` で、腕の値の借用を合成の持ち主 `holder` に集める。
+    /// `Def` で前の値 (ループの前の周回など) を捨ててから持たせる。合流点では全腕の和になる。
+    fn collect_arm_value(&mut self, end: usize, holder: &str, arm: &[V]) {
+        let srcs = self.arm_value_sources(arm);
+        self.emit(end, Ev::Def(holder.to_string()));
+        self.hold(end, Holder::Var(holder.to_string()), srcs);
     }
 
     /// `push` / `insert` など、コンテナに値を入れるメソッド。値の式に入る借用を、
@@ -342,10 +431,15 @@ impl<'a> Low<'a> {
             _ => return,
         };
         let Some(a) = args.get(slot) else { return };
-        let srcs = self.loan_sources(a);
-        if !srcs.is_empty() {
-            self.hold(n, Holder::Place { root: root.to_string(), path: path.to_vec() }, srcs);
+        if nname(a) == "StructLit" {
+            // 構造体リテラルを丸ごと入れる形は、要素の道を持たないので全体に置く。
+            let srcs = self.lit_sources(a);
+            if !srcs.is_empty() {
+                self.hold(n, Holder::Place { root: root.to_string(), path: path.to_vec() }, srcs);
+            }
+            return;
         }
+        self.store_value(n, root, path, a);
     }
 
     // ------------------------------------------------------------ 式・文
@@ -378,9 +472,10 @@ impl<'a> Low<'a> {
                 }
                 // 構造体リテラルのフィールドに入る借用は、保存場所 (変数 + フィールド道) に記録する。
                 // 変数に直接持たせないのは、`s.f = ...` の上書きでローンを殺せるようにするため。
-                if nname(init) == "StructLit" && nname(&f[0]) == "PBind" {
+                // タプル・配列リテラルの要素に入る借用は、変数全体の場所に記録する (`let t = (&x, 1)`)。
+                if matches!(nname(init), "StructLit" | "TupleE" | "ArrayE" | "ArrayRep") && nname(&f[0]) == "PBind" {
                     if let Some(b) = binds.first() {
-                        self.store_struct_lit(c, b, &[], init);
+                        self.store_value(c, b, &[], init);
                     }
                 }
                 c
@@ -398,8 +493,8 @@ impl<'a> Low<'a> {
                     // 値の代入そのものも、その変数への書き込み
                     self.emit(c, Ev::Access { root: name.clone(), path: vec![], kind: Acc::Write, line: nline(s) });
                     // `s = t.S { f: &mut y }` のように、構造体ごと新しい借用を保存することもある。
-                    if nname(&f[1]) == "StructLit" {
-                        self.store_struct_lit(c, &name, &[], &f[1]);
+                    if matches!(nname(&f[1]), "StructLit" | "TupleE" | "ArrayE" | "ArrayRep") {
+                        self.store_value(c, &name, &[], &f[1]);
                     }
                     return c;
                 }
@@ -413,12 +508,7 @@ impl<'a> Low<'a> {
                     self.emit(c, Ev::Access { root: root.clone(), path: path.clone(), kind: Acc::Write, line: nline(s) });
                     // 借用を場所に保存する (`s.f = &mut x` / `v[i] = &x`)。上書きなので、
                     // 前に保存されていたローンは上の Access (書き込み) で死ぬ。
-                    let srcs = self.loan_sources(&f[1]);
-                    if !srcs.is_empty() {
-                        self.hold(c, Holder::Place { root, path }, srcs);
-                    } else if nname(&f[1]) == "StructLit" {
-                        self.store_struct_lit(c, &root, &path, &f[1]);
-                    }
+                    self.store_value(c, &root, &path, &f[1]);
                 }
                 c
             }
@@ -568,6 +658,8 @@ impl<'a> Low<'a> {
                 if arms.is_empty() {
                     return c;
                 }
+                let holder = format!("$match{}", self.match_vals.len());
+                self.match_vals.insert(e as *const V as usize, holder.clone());
                 for arm in arms {
                     let a = items(arm);
                     let an = self.new_node();
@@ -580,6 +672,7 @@ impl<'a> Low<'a> {
                         self.hold(an, Holder::Var(b.clone()), srcs);
                     }
                     let end = self.lower_block(&a[1], an);
+                    self.collect_arm_value(end, &holder, a);
                     self.edge(end, join);
                 }
                 join
@@ -749,6 +842,7 @@ impl<'a> Checker<'a> {
             loops: vec![],
             exit: 0,
             iters: 0,
+            match_vals: HashMap::new(),
         };
         let entry = low.new_node();
         let exit = low.new_node();
