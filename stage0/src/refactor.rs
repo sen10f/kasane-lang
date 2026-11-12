@@ -1392,7 +1392,171 @@ pub fn refs(l: &Loaded, target: &str) -> Result<Vec<Site>, String> {
 }
 
 pub fn plan_rename(l: &Loaded, old: &str, new: &str) -> Result<Plan, String> {
-    Engine::new(l)?.plan(old, new)
+    let mut plan = Engine::new(l)?.plan(old, new)?;
+    if old.rsplit_once('.').map(|x| x.0) != new.rsplit_once('.').map(|x| x.0) {
+        fix_visibility(l, &mut plan);
+    }
+    Ok(plan)
+}
+
+// ------------------------------------------------------------ 移動に伴う `pub` の補い
+
+/// 定義 `name` のヘッダ行 (`fn a.b` / `type a.B` ...) の添字。
+fn header_line(lines: &[String], name: &str) -> Option<usize> {
+    lines.iter().position(|l| {
+        ["fn", "type", "enum", "trait", "const", "static", "extern"].iter().any(|kw| {
+            l.strip_prefix(kw)
+                .and_then(|r| r.strip_prefix(' '))
+                .and_then(|r| r.strip_prefix(name))
+                .map_or(false, |r| r.is_empty() || r.starts_with([' ', '(', '[', ':']))
+        })
+    })
+}
+
+/// 計画を (上書きとして) 適用して `ksn check` を走らせ、移動で新しく生じた「別モジュールの非 `pub` の
+/// 参照」(E1119 / E1122) を、参照される側に `pub` を足して解消する。足した定義は `plan.notes` に載せる。
+/// 最小限にするため、計画の前から出ている診断と、足しても直らないものには触れない。
+fn fix_visibility(l: &Loaded, plan: &mut Plan) {
+    use crate::project::{overlay_clear, overlay_hide, overlay_set};
+    let root = l.pkg.root.clone();
+    let before: HashSet<String> = crate::cli::check_error_lines(&root).iter().map(|x| diag_msg(x)).collect();
+    let mut added: Vec<String> = vec![];
+    for _ in 0..16 {
+        overlay_clear();
+        for c in &plan.changes {
+            if let Some(o) = &c.old_path {
+                if *o != c.new_path {
+                    overlay_hide(o);
+                }
+            }
+            overlay_set(&c.new_path, Some(c.new_text.clone()));
+        }
+        if let Some((p, _, n)) = &plan.manifest {
+            overlay_set(p, Some(n.clone()));
+        }
+        let after = crate::cli::check_error_lines(&root);
+        overlay_clear();
+        // (種別, 名前, フィールド名)
+        let mut want: Vec<(String, Option<String>)> = vec![];
+        for a in &after {
+            let m = diag_msg(a);
+            if before.contains(&m) || !(m.starts_with("E1119") || m.starts_with("E1122")) {
+                continue;
+            }
+            let body = m[6..].trim_start();
+            if let Some(r) = body.strip_prefix("field ") {
+                // field F of T is private ...
+                let mut it = r.split_whitespace();
+                let (f, _, t) = (it.next(), it.next(), it.next());
+                if let (Some(f), Some(t)) = (f, t) {
+                    want.push((t.to_string(), Some(f.to_string())));
+                }
+            } else {
+                let r = body.strip_prefix("method ").unwrap_or(body);
+                if let Some(n) = r.split_whitespace().next() {
+                    want.push((n.to_string(), None));
+                }
+            }
+        }
+        if want.is_empty() {
+            break;
+        }
+        let mut progressed = false;
+        for (name, field) in want {
+            progressed |= add_pub(l, plan, &name, field.as_deref(), &mut added);
+        }
+        if !progressed {
+            break;
+        }
+    }
+    for a in added {
+        plan.notes.push(a);
+    }
+}
+
+fn diag_msg(line: &str) -> String {
+    // "file:line: CODE: message" -> "CODE: message"
+    match line.splitn(3, ": ").collect::<Vec<_>>().as_slice() {
+        [_, rest @ ..] if rest.len() == 2 => format!("{}: {}", rest[0], rest[1]),
+        _ => line.to_string(),
+    }
+}
+
+/// 計画の中 (なければディスク) の、パッケージのソースから定義 `name` を探して `pub` を足す。
+/// `field` があれば `name` の型のそのフィールド行に足す。`impls` メソッドは、非 `pub` の型とトレイトに足す。
+fn add_pub(l: &Loaded, plan: &mut Plan, name: &str, field: Option<&str>, added: &mut Vec<String>) -> bool {
+    // 現在の本文 (計画の新しい本文を優先) を持つファイルの一覧。
+    let mut files: Vec<(String, String)> = vec![];
+    for s in &l.pkg.sources {
+        let cur = plan.changes.iter().find(|c| c.old_path.as_deref() == Some(s.path.as_str())).map(|c| c.new_text.clone());
+        files.push((s.path.clone(), cur.unwrap_or_else(|| s.text.clone())));
+    }
+    for c in &plan.changes {
+        if c.old_path.is_none() || !l.pkg.sources.iter().any(|s| Some(&s.path) == c.old_path.as_ref()) {
+            files.push((c.new_path.clone(), c.new_text.clone()));
+        }
+    }
+    // 移動先が新しいファイルのときは、変更の新パスで探す。
+    for c in &plan.changes {
+        if !files.iter().any(|f| f.0 == c.new_path) {
+            files.push((c.new_path.clone(), c.new_text.clone()));
+        }
+    }
+    let mut targets: Vec<(String, Option<String>)> = vec![(name.to_string(), field.map(String::from))];
+    // `impls` メソッドなら、可視性を決める型とトレイトのほうに足す。
+    if field.is_none() {
+        for (_, t) in &files {
+            let lines: Vec<String> = t.lines().map(String::from).collect();
+            if let Some(i) = header_line(&lines, name) {
+                if lines[i].starts_with("fn ") {
+                    if let Some(tr) = lines[i].split(" impls ").nth(1) {
+                        let tr: String = tr.split([' ', '<']).next().unwrap_or("").to_string();
+                        targets.clear();
+                        if let Some((ty, _)) = name.rsplit_once('.') {
+                            targets.push((ty.to_string(), None));
+                        }
+                        targets.push((tr, None));
+                    }
+                }
+                break;
+            }
+        }
+    }
+    let mut progressed = false;
+    for (tn, fld) in targets {
+        for (path, text) in &files {
+            let mut lines: Vec<String> = text.lines().map(String::from).collect();
+            let Some(i) = header_line(&lines, &tn) else { continue };
+            let k = match &fld {
+                None => i,
+                Some(f) => {
+                    let end = format!("end {}", tn);
+                    let Some(e) = lines[i..].iter().position(|x| *x == end) else { continue };
+                    let Some(k) = lines[i..i + e].iter().position(|x| x.trim_start().starts_with(&format!("{}:", f))) else { continue };
+                    i + k
+                }
+            };
+            if lines[k].ends_with(" pub") {
+                break;
+            }
+            lines[k].push_str(" pub");
+            let new_text = format!("{}\n", lines.join("\n"));
+            match plan.changes.iter_mut().find(|c| c.new_path == *path) {
+                Some(c) => c.new_text = new_text,
+                None => {
+                    let old_text = text.clone();
+                    plan.changes.push(FileChange { old_path: Some(path.clone()), new_path: path.clone(), old_text, new_text });
+                }
+            }
+            added.push(match &fld {
+                Some(f) => format!("made field {} of {} `pub` (it is now referenced from another module)", f, tn),
+                None => format!("made {} `pub` (it is now referenced from another module)", tn),
+            });
+            progressed = true;
+            break;
+        }
+    }
+    progressed
 }
 
 // ------------------------------------------------------------ 検証と適用
