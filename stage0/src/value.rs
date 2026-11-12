@@ -127,6 +127,54 @@ pub struct ClosureV {
     pub ret: V,
     pub body: V,
     pub scope: Scope,
+    /// `capture [..]` の (種類, 名前)。`std.thread.spawn` が取り込む値を、その時点の値で固定するのに使う。
+    pub caps: Vec<(String, String)>,
+}
+
+/// チャネルの状態 (インタプリタ)。送信側・受信側は 1 つずつ (`Sender` に clone はない)。
+/// 容量は無視する (満杯で待つことはしない。結果が実行順に依存しないプログラムでは観測できない)。
+pub struct ChanState {
+    pub q: RefCell<VecDeque<Val>>,
+    pub sender_alive: Cell<bool>,
+    pub receiver_alive: Cell<bool>,
+}
+
+/// チャネルの端。最後の参照が無くなった (= 値が落とされた) とき、その端を閉じる。
+pub struct ChanEnd {
+    pub st: Rc<ChanState>,
+    pub is_sender: bool,
+}
+
+impl Drop for ChanEnd {
+    fn drop(&mut self) {
+        if self.is_sender {
+            self.st.sender_alive.set(false);
+        } else {
+            self.st.receiver_alive.set(false);
+        }
+    }
+}
+
+/// `spawn` したスレッド (インタプリタ)。`body` は `join` かチャネルの待ちで走らせるまで保留する (走るのは 1 回、最後まで)。
+pub struct ThreadV {
+    pub body: RefCell<Option<Val>>,
+    pub result: RefCell<Option<Val>>,
+    /// 0 = 未実行、1 = 実行中、2 = 完了
+    pub state: Cell<u8>,
+}
+
+/// 値が (入れ子を含めて) チャネルの端を持つか。持つ値は、変数から別へ渡すとき元の変数を空にする (移動の近似)。
+pub fn has_chan(v: &Val, depth: u32) -> bool {
+    if depth > 4 {
+        return false;
+    }
+    match v {
+        Val::Chan(_) => true,
+        Val::Tuple(t) => t.iter().any(|x| has_chan(x, depth + 1)),
+        Val::Enum(e) => e.pl.iter().any(|x| has_chan(x, depth + 1)),
+        Val::Struct(s) => s.f.borrow().iter().any(|x| has_chan(&x.1, depth + 1)),
+        _ => false,
+    }
 }
 
 pub enum IterV {
@@ -169,9 +217,9 @@ pub enum Val {
     Map(Rc<RefCell<MapV>>),
     StrBuf(Rc<RefCell<String>>),
     Fmt(Rc<RefCell<String>>),
-    Chan(Rc<RefCell<VecDeque<Val>>>),
+    Chan(Rc<ChanEnd>),
     Mutex(Rc<CellPlace>),
-    Join(Rc<Val>),
+    Join(Rc<ThreadV>),
     Rng(Rc<Cell<u64>>),
 }
 

@@ -1,0 +1,48 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let jobs = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 1usize)
+    let (job_tx, job_rx) = jobs.map_err(t.oom)?
+    let replies = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 1usize)
+    let (reply_tx, reply_rx) = replies.map_err(t.oom)?
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move job_rx, move reply_tx] {
+            loop {
+                match job_rx.recv() {
+                    Ok(n) => {
+                        match reply_tx.send(n + 1u32) {
+                            Ok(_u) => 0u32
+                            Err(_e) => core.panic.panic("send failed")
+                        }
+                    }
+                    Err(_e) => break
+                }
+            }
+        },
+    )
+    let worker = match spawned {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let mut round = 1u32
+    while round <= 3u32 {
+        match job_tx.send(round) {
+            Ok(_u) => 0u32
+            Err(_e) => core.panic.panic("send failed")
+        }
+        match reply_rx.recv() {
+            Ok(n) => {
+                core.check.eq(n, round + 1u32)
+            }
+            Err(_e) => core.panic.panic("worker stopped")
+        }
+        round = round + 1u32
+    }
+    core.mem.drop(job_tx)
+    worker.join()
+    std.io.print_line("ping pong ok")
+    Ok(())
+end t.main
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end t.oom

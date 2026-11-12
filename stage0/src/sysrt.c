@@ -323,3 +323,78 @@ i64 ksn_rt_sys_local_port(i32 fd, i32 *e) {
 }
 
 #endif
+
+/* ---- std.env / std.time ---- */
+#include <time.h>
+#ifndef _WIN32
+#include <sched.h>
+#endif
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+static int g_argc = 0;
+static char **g_argv = 0;
+
+/* `main` の引数を覚える (entry から最初に呼ぶ)。引数 0 (プログラム名) は `std.env` の見える範囲に含めない。 */
+void ksn_rt_sys_set_args(i32 argc, char **argv) {
+    g_argc = argc;
+    g_argv = argv;
+}
+
+i64 ksn_rt_sys_arg_count(void) { return g_argc > 0 ? (i64)(g_argc - 1) : 0; }
+
+/* `std.env.arg(i)`: 範囲内なら NUL 終端の文字列 (長さは *len)、範囲外なら 0。 */
+i64 ksn_rt_sys_arg(i64 i, i64 *len) {
+    if (i < 0 || i >= ksn_rt_sys_arg_count()) return 0;
+    char *s = g_argv[i + 1];
+    *len = (i64)strlen(s);
+    return (i64)(intptr_t)s;
+}
+
+/* `std.env.var(name)`: 見つかれば値 (長さは *len)、なければ 0。 */
+i64 ksn_rt_sys_var(const u8 *name, i64 nlen, i64 *len) {
+    char buf[1024];
+    if (nlen < 0 || nlen >= (i64)sizeof buf) return 0;
+    memcpy(buf, name, (size_t)nlen);
+    buf[nlen] = 0;
+    char *v = getenv(buf);
+    if (!v) return 0;
+    *len = (i64)strlen(v);
+    return (i64)(intptr_t)v;
+}
+
+/* 単調時計 (ナノ秒)。`std.time.Instant.ticks`。 */
+u64 ksn_rt_sys_now_ns(void) {
+#ifdef _WIN32
+    LARGE_INTEGER f, c;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (u64)((c.QuadPart / f.QuadPart) * 1000000000ULL + (c.QuadPart % f.QuadPart) * 1000000000ULL / f.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000000000ULL + (u64)ts.tv_nsec;
+#endif
+}
+
+/* `std.thread.sleep(ms)` / `std.thread.yield_now()` (スレッドが無くても使える) */
+void ksn_rt_sys_sleep_ms(u64 ms) {
+#ifdef _WIN32
+    Sleep((DWORD)ms);
+#else
+    struct timespec ts;
+    ts.tv_sec = (time_t)(ms / 1000);
+    ts.tv_nsec = (long)((ms % 1000) * 1000000);
+    while (nanosleep(&ts, &ts) != 0) {
+    }
+#endif
+}
+
+void ksn_rt_sys_yield(void) {
+#ifdef _WIN32
+    SwitchToThread();
+#else
+    sched_yield();
+#endif
+}

@@ -6709,3 +6709,133 @@ fn with_linear_binding_is_not_reported_as_leaked_on_early_exits_in_the_body() {
     let body = "    let outer = t.R.new(2u32)\n    with r = t.R.new(1u32) close r.shut() {\n        if r.get() == 1u32 {\n            return Ok(())\n        }\n    }\n    outer.shut()\n";
     assert_eq!(with_codes("with_outer_leak", body), ["E3003"]);
 }
+
+// ------------------------------------------------------------ スレッド・Mutex・チャネル・std.env・std.time (実スレッド)
+
+/// `tests/data/threads/<name>.ksnl` を 1 つのパッケージとして取り込む。
+fn threads_pkg(name: &str, tag: &str) -> Tmp {
+    let src = fs::read_to_string(root().join("stage0").join("tests").join("data").join("threads").join(format!("{}.ksnl", name))).unwrap();
+    Tmp::new(&format!("thr_{}_{}", tag, name), &src)
+}
+
+/// Cranelift でビルドして実行ファイルを返す。スキップされたら (理由を付けて) 失敗にする。
+fn threads_build(t: &Tmp, release: bool) -> PathBuf {
+    let cache = std::env::temp_dir().join(format!("ksn_cache_thr_{}_{}", std::process::id(), t.0.file_name().unwrap().to_string_lossy()));
+    let mut c = Command::new(exe());
+    c.args(["build", "--backend", "clif"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+    if release {
+        c.arg("--release");
+    }
+    let o = c.output().unwrap();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+    let kind = if release { "release" } else { "debug" };
+    let p = t.0.join("target").join(kind).join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    assert!(p.exists(), "native executable missing: {}", out);
+    let _ = fs::remove_dir_all(&cache);
+    p
+}
+
+/// インタプリタと、ネイティブ (debug / release) の出力が同じで、終了コード 0 であること。
+fn threads_same_output(name: &str) {
+    if cfg!(windows) {
+        return; // 実スレッドは POSIX のみ (Windows はビルド時にスキップ)
+    }
+    let t = threads_pkg(name, "same");
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    for release in [false, true] {
+        let p = threads_build(&t, release);
+        let r = Command::new(&p).output().unwrap();
+        assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ ({})", name);
+    }
+}
+
+#[test]
+fn threads_spawn_and_join_return_the_closure_result() {
+    threads_same_output("spawn_join");
+}
+
+/// 4 つのスレッドが `static` の `Mutex` を 1 万回ずつ、長い臨界区間 (読む → 数えて待つ → 書く) で増やす。
+/// 排他が働かないと更新が失われて最後の値が 4 万に届かない (ロックを無操作にすると必ず失敗する)。
+#[test]
+fn threads_mutex_gives_mutual_exclusion() {
+    threads_same_output("mutex_counter");
+}
+
+#[test]
+fn threads_channels_carry_values_and_strings_between_threads() {
+    threads_same_output("channel");
+}
+
+#[test]
+fn threads_a_panic_in_a_spawned_thread_aborts_the_process() {
+    let t = threads_pkg("thread_panic", "panic");
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(101));
+    assert!(text(&interp.stderr).contains("panic: boom in thread"), "{}", text(&interp.stderr));
+    if cfg!(windows) {
+        return;
+    }
+    let p = threads_build(&t, false);
+    let r = Command::new(&p).output().unwrap();
+    assert_eq!(r.status.code(), Some(101));
+    assert!(text(&r.stderr).contains("panic: boom in thread"), "{}", text(&r.stderr));
+    assert!(!text(&r.stdout).contains("not reached"));
+}
+
+#[test]
+fn threads_env_arguments_variables_and_time_work_natively() {
+    let t = threads_pkg("env_time", "env");
+    let interp = Command::new(exe()).args(["run", "alpha", "b c"]).env("KSN_THREADS_TEST_VAR", "hello-env").current_dir(&t.0).output().unwrap();
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    let want = "args=2\nalpha\nb c\nno more\nhello-env\nmissing is unset\ntime ok\n";
+    assert_eq!(text(&interp.stdout), want);
+    if cfg!(windows) {
+        return;
+    }
+    for release in [false, true] {
+        let p = threads_build(&t, release);
+        let r = Command::new(&p).args(["alpha", "b c"]).env("KSN_THREADS_TEST_VAR", "hello-env").output().unwrap();
+        assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), want);
+    }
+}
+
+/// 走っているスレッドが、待っている側 (main) からの後の `send` を待つ往復の通信。ネイティブでは進むが、
+/// 単一スレッドのインタプリタには割り当てられないので、止まらずに明確なメッセージで失敗する。
+#[test]
+fn threads_interpreter_fails_clearly_when_no_single_threaded_schedule_exists() {
+    let t = threads_pkg("ping_pong", "pingpong");
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(101));
+    assert!(text(&interp.stderr).contains("deadlock"), "{}", text(&interp.stderr));
+    if cfg!(windows) {
+        return;
+    }
+    let p = threads_build(&t, false);
+    let r = Command::new(&p).output().unwrap();
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), "ping pong ok\n");
+}
+
+#[test]
+fn the_shortener_example_builds_natively_without_skips_and_matches_the_interpreter() {
+    if cfg!(windows) {
+        return;
+    }
+    let d = root().join("examples").join("shortener");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_short_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    let o = Command::new(exe()).args(["build", "--backend", "clif"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+    let p = d.join("target").join("debug").join("shortener.native");
+    let r = Command::new(&p).current_dir(&d).output().unwrap();
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), text(&interp.stdout));
+    let _ = fs::remove_dir_all(&cache);
+}

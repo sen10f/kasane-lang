@@ -1,0 +1,52 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, thread, time] panics may
+    let count = std.env.arg_count()
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("args=").map_err(t.oom)?
+    line.push_u64(u64.from_usize(count)).map_err(t.oom)?
+    std.io.print_line(line.as_str())?
+    let mut i = 0usize
+    while i < count {
+        match std.env.arg(i) {
+            Some(a) => {
+                std.io.print_line(a)?
+            }
+            None => core.panic.panic("missing argument")
+        }
+        i = i + 1usize
+    }
+    match std.env.arg(count) {
+        Some(_a) => core.panic.panic("argument past the end")
+        None => std.io.print_line("no more")?
+    }
+    match std.env.var("KSN_THREADS_TEST_VAR") {
+        Some(v) => {
+            std.io.print_line(v)?
+        }
+        None => std.io.print_line("unset")?
+    }
+    match std.env.var("KSN_THREADS_TEST_MISSING") {
+        Some(_v) => core.panic.panic("variable should be unset")
+        None => std.io.print_line("missing is unset")?
+    }
+    let first = std.time.Instant.now()
+    std.thread.sleep(20u64)
+    let waited = first.elapsed()
+    core.check.is_true(waited.as_nanos() >= 20000000u64)
+    let second = std.time.Instant.now()
+    match second.since(&first) {
+        Some(d) => {
+            core.check.is_true(d.as_nanos() >= 20000000u64)
+        }
+        None => core.panic.panic("time went backwards")
+    }
+    match first.since(&second) {
+        Some(_d) => core.panic.panic("an earlier instant must not be after a later one")
+        None => std.io.print_line("time ok")?
+    }
+    core.check.eq(std.time.Duration.from_millis(3u64).as_nanos(), 3000000u64)
+    Ok(())
+end t.main
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end t.oom

@@ -32,7 +32,23 @@ pub struct Interp {
     ptr_elem: HashMap<i128, String>,
     /// std.net のソケット表
     pub net: crate::net::NetTable,
+    /// `std.thread.spawn` したスレッド (spawn の順)。
+    ///
+    /// インタプリタは単一スレッド (値は `Rc`)。スレッドは spawn の時点では走らせず、本体を保留する。
+    /// 保留したスレッドは、(1) `join` が完了を待つとき、(2) `recv` が空のキューで待つとき、に spawn の順で 1 つずつ最後まで走らせる
+    /// (途中で切り替えない。走っている最中に別のスレッドへ制御を渡すのは、上の 2 つで待つときだけ)。
+    /// `Mutex.lock` は何もしない (各スレッドは最後まで走るので、同時に 2 つがロックを持つことはない)。
+    /// チャネルの容量は無視する (`send` は待たない)。`join` / `Mutex` / チャネルだけで通信する正しいプログラムは、
+    /// ネイティブ生成と同じ結果になる。どの順で走らせても進めないプログラム (走っているスレッドが、自分を待っている側からの
+    /// 後の `send` を `recv` で待つ往復の通信、`join` の循環、送信側が生きたままの空チャネルの `recv` など) は、
+    /// 止まらずに「deadlock」の panic で失敗する。
+    pub threads: Vec<Rc<ThreadV>>,
 }
+
+pub const DEADLOCK_JOIN: &str = "deadlock: a thread waits for itself, or two threads wait for each other (the interpreter runs each thread to completion and cannot suspend one)";
+pub const DEADLOCK_RECV: &str = "deadlock: recv() on an empty channel whose Sender is still alive, and no other thread can run \
+(native threads would block here forever; or the program needs a back-and-forth with a thread that is waiting on this one, which the \
+single-threaded interpreter cannot schedule. Drop the Sender when done sending)";
 
 fn unhex(s: &str) -> String {
     let bytes: Vec<u8> = (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap_or(0)).collect();
@@ -157,7 +173,47 @@ impl Interp {
             next_fd: 3,
             ptr_elem: HashMap::new(),
             net: Default::default(),
+            threads: vec![],
         }
+    }
+
+    /// 式 `e` が局所変数そのもの (`x`) で、その値 `v` がチャネルの端を持つなら、変数を空にする (所有権の移動の近似)。
+    /// インタプリタは値を共有して持つので、元の変数を残すと、送信側が「まだ生きている」ままになってしまう。
+    pub fn move_out(&self, e: &V, sc: &Scope, v: &Val) {
+        if nname(e) != "Path" || !has_chan(v, 0) {
+            return;
+        }
+        let segs = strs(&nf(e)[0]);
+        if segs.len() == 1 {
+            if let Some(owner) = sc_owner(sc, &segs[0]) {
+                owner.borrow_mut().vars.insert(segs[0].clone(), Val::Unit);
+            }
+        }
+    }
+
+    /// 保留中のスレッドを 1 つ (spawn の順で先頭のもの) 最後まで走らせる。走らせるものがなければ false。
+    pub fn run_one_pending(&mut self) -> Result<bool, Ctl> {
+        let Some(t) = self.threads.iter().find(|t| t.state.get() == 0).cloned() else { return Ok(false) };
+        self.run_thread(&t)?;
+        Ok(true)
+    }
+
+    pub fn run_thread(&mut self, t: &Rc<ThreadV>) -> Result<(), Ctl> {
+        match t.state.get() {
+            2 => return Ok(()),
+            1 => return panic(DEADLOCK_JOIN),
+            _ => {}
+        }
+        t.state.set(1);
+        let body = t.body.borrow_mut().take();
+        let r = match body {
+            Some(b) => self.call_value(&b, vec![])?,
+            None => Val::Unit,
+        };
+        // 本体 (取り込んだ値を持つクロージャ) はここで落ちる: 取り込んだ `Sender` はこの時点で閉じる。
+        *t.result.borrow_mut() = Some(r);
+        t.state.set(2);
+        Ok(())
     }
 
     fn def(&self, i: usize) -> &'static Def {
@@ -399,6 +455,7 @@ impl Interp {
         match nname(s) {
             "Let" => {
                 let v = self.eval(&f[3], sc)?;
+                self.move_out(&f[3], sc, &v);
                 let mut v = self.cp(v);
                 if !matches!(f[2], V::Nil) {
                     v = self.coerce(v, &f[2]);
@@ -507,7 +564,8 @@ impl Interp {
             }
             "Closure" => {
                 let params = items(&f[0]).iter().map(|p| (st(&items(p)[0]), items(p)[1].clone())).collect();
-                Ok(Val::Closure(Rc::new(ClosureV { params, ret: f[1].clone(), body: f[3].clone(), scope: sc.clone() })))
+                let caps = items(&f[2]).iter().map(|c| (st(crate::check::tel(c, 0)), st(crate::check::tel(c, 1)))).collect();
+                Ok(Val::Closure(Rc::new(ClosureV { params, ret: f[1].clone(), body: f[3].clone(), scope: sc.clone(), caps })))
             }
             "If" => {
                 if self.truthy(&f[0], sc)? {
@@ -520,6 +578,7 @@ impl Interp {
             }
             "Match" => {
                 let v = self.eval(&f[0], sc)?;
+                self.move_out(&f[0], sc, &v);
                 for arm in items(&f[1]) {
                     let s2 = new_scope(Some(sc), Rc::from(""));
                     if self.bind(&items(arm)[0], v.clone(), &s2)? {
@@ -576,6 +635,7 @@ impl Interp {
             "ExprStmt" | "Let" | "Assign" => self.exec_stmt(e, sc),
             "Try" => {
                 let v = dr(&self.eval(&f[0], sc)?);
+                self.move_out(&f[0], sc, &v);
                 if let Val::Enum(en) = &v {
                     if en.en == "Result" {
                         if en.var == "Ok" {
@@ -1128,6 +1188,12 @@ impl Interp {
                 return self.invoke_method(base, &r.rest[r.rest.len() - 1], args, None);
             }
             let args = self.eval_args(&f[1], sc)?;
+            if matches!(&r.target, Target::Native(n) if n == "core.mem.drop") {
+                // `core.mem.drop(tx)`: 変数の値を落とす (チャネルの端なら閉じる)。
+                if let (Some(a), Some(v)) = (items(&f[1]).first(), args.first()) {
+                    self.move_out(a, sc, v);
+                }
+            }
             return self.call_resolved(&r, args);
         }
         let callee = self.eval(fnn, sc)?;
@@ -1353,6 +1419,14 @@ impl Interp {
             let mut all = vec![first];
             all.extend(args);
             return self.call_def(di, all);
+        }
+        // `made.map_err(f)` のように値を消費する `Option` / `Result` のメソッド: 受け手の変数はチャネルの端を手放す。
+        if let (Val::Enum(e), Some((pe, psc))) = (&v, place) {
+            if (e.en == "Option" || e.en == "Result")
+                && !matches!(name, "is_some" | "is_none" | "is_ok" | "is_err" | "as_ref" | "as_mut" | "iter" | "clone" | "eq")
+            {
+                self.move_out(pe, psc, &v);
+            }
         }
         self.native_method(&recv, &v, name, args, place)
     }

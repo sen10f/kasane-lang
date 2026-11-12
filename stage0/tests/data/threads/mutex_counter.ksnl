@@ -1,0 +1,39 @@
+static t.COUNTER: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+fn t.adder(rounds: u32) -> std.thread.JoinHandle<(), std.alloc.System>
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move rounds] {
+            let mut i = 0u32
+            while i < rounds {
+                let mut g = t.COUNTER.lock()
+                let seen = *g.get()
+                let mut spin = 0u32
+                while spin < 300u32 {
+                    spin = spin + 1u32
+                }
+                *g.get_mut() = seen + 1u64
+                i = i + 1u32
+            }
+        },
+    )
+    match spawned {
+        Ok(handle) => handle
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.adder
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let h1 = t.adder(10000u32)
+    let h2 = t.adder(10000u32)
+    let h3 = t.adder(10000u32)
+    let h4 = t.adder(10000u32)
+    h1.join()
+    h2.join()
+    h3.join()
+    h4.join()
+    let g = t.COUNTER.lock()
+    core.check.eq(*g.get(), 40000u64)
+    std.io.print_line("counter ok")
+    Ok(())
+end t.main

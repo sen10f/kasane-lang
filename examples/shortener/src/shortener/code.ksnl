@@ -16,7 +16,7 @@ fn shortener.code.digit_char(d: u8) -> char uses [] panics never pub
 end shortener.code.digit_char
 
 fn shortener.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
-    let mut digits = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut digits: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut rest = n
     loop {
         let d = rest.checked_rem(36u64)

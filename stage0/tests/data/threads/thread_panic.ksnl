@@ -1,0 +1,16 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u32 capture [] {
+            core.panic.panic("boom in thread")
+        },
+    )
+    let handle = match spawned {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let n = handle.join()
+    std.io.print_line("not reached")
+    core.check.eq(n, 0u32)
+    Ok(())
+end t.main

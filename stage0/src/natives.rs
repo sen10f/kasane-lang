@@ -7,6 +7,7 @@ use std::rc::Rc;
 use crate::check::{items, st};
 use crate::parser::V;
 use crate::interp::Interp;
+use crate::interp::{DEADLOCK_JOIN, DEADLOCK_RECV};
 use crate::value::*;
 use crate::value::Scope;
 
@@ -32,6 +33,12 @@ const NUM_EXTRA: &[&str] = &[
     "is_ascii_digit", "is_ascii_whitespace", "len_utf8", "to_ascii_lowercase", "to_ascii_uppercase", "to_u32",
     "try_from_u32",
 ];
+
+/// プロセスの開始からの単調時計 (ナノ秒)。`std.time.Instant.ticks`。
+pub fn mono_ns() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_nanos() as u64
+}
 
 pub fn known_num(name: &str) -> bool {
     ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_", "to_"].iter().any(|p| name.starts_with(p))
@@ -490,7 +497,7 @@ impl Interp {
                 Ok(opt(self.args.get(i).map(|s| s_val(s))))
             }
             "std.env.arg_count" => Ok(usz(self.args.len())),
-            "std.env.var" => Ok(none()),
+            "std.env.var" => Ok(opt(std::env::var(str_of(&a0).unwrap_or_default()).ok().map(|s| s_val(&s)))),
             "core.iter.range" => Ok(Val::Iter(Rc::new(RefCell::new(IterV::Range { cur: dr(&args[0]), end: dr(&args[1]) })))),
             "core.iter.map" => {
                 let src = self.to_iter(&args[0])?;
@@ -568,7 +575,7 @@ impl Interp {
             })))),
             "std.time.Instant.now" => Ok(Val::Struct(Rc::new(StructV {
                 ty: "std.time.Instant".into(),
-                f: RefCell::new(vec![("ticks".into(), int(0, "u64"))]),
+                f: RefCell::new(vec![("ticks".into(), int(mono_ns() as i128, "u64"))]),
             }))),
             "std.time.Duration.from_millis" => {
                 let ms = if let Val::Int(i, _) = dr(&a0) { i } else { 0 };
@@ -578,8 +585,35 @@ impl Interp {
                 })))
             }
             "std.thread.spawn" => {
-                let r = self.call_value(&args[1], vec![])?;
-                Ok(ok(Val::Join(Rc::new(r))))
+                // クロージャの取り込み (`move x`) は、spawn の時点の値で固定する (保留している間に元の変数が変わっても影響しない)。
+                let body = match dr(&args[1]) {
+                    Val::Closure(c) => {
+                        let file = c.scope.borrow().file.clone();
+                        let snap = new_scope(None, file);
+                        for (_, name) in &c.caps {
+                            if let Some(v) = sc_get(&c.scope, name) {
+                                if has_chan(&v, 0) {
+                                    // 取り込んだチャネルの端はスレッドへ移る: 元の変数は空にする
+                                    if let Some(o) = sc_owner(&c.scope, name) {
+                                        o.borrow_mut().vars.insert(name.clone(), Val::Unit);
+                                    }
+                                }
+                                sc_declare(&snap, name, v);
+                            }
+                        }
+                        Val::Closure(Rc::new(ClosureV {
+                            params: c.params.clone(),
+                            ret: c.ret.clone(),
+                            body: c.body.clone(),
+                            scope: snap,
+                            caps: c.caps.clone(),
+                        }))
+                    }
+                    other => other,
+                };
+                let t = Rc::new(ThreadV { body: RefCell::new(Some(body)), result: RefCell::new(None), state: Cell::new(0) });
+                self.threads.push(t.clone());
+                Ok(ok(Val::Join(t)))
             }
             "std.thread.sleep" => {
                 if let Val::Int(ms, _) = dr(&a0) {
@@ -589,8 +623,10 @@ impl Interp {
             }
             "std.thread.yield_now" => Ok(Val::Unit),
             "std.sync.channel" => {
-                let q = Rc::new(RefCell::new(VecDeque::new()));
-                Ok(ok(Val::Tuple(Rc::new(vec![Val::Chan(q.clone()), Val::Chan(q)]))))
+                let st = Rc::new(ChanState { q: RefCell::new(VecDeque::new()), sender_alive: Cell::new(true), receiver_alive: Cell::new(true) });
+                let tx = Val::Chan(Rc::new(ChanEnd { st: st.clone(), is_sender: true }));
+                let rx = Val::Chan(Rc::new(ChanEnd { st, is_sender: false }));
+                Ok(ok(Val::Tuple(Rc::new(vec![tx, rx]))))
             }
             "std.sync.Mutex.new" => Ok(Val::Mutex(Rc::new(CellPlace(RefCell::new(a0))))),
             "std.rand.Rng.from_seed" => Ok(Val::Rng(Rc::new(Cell::new(if let Val::Int(i, _) = dr(&a0) { i as u64 } else { 0 })))),
@@ -713,23 +749,43 @@ impl Interp {
                 }
                 panic(format!("no method {} on iterator", name))
             }
-            Val::Join(r) => {
+            Val::Join(t) => {
                 if name == "join" {
-                    return Ok((**r).clone());
+                    // 完了するまで、保留中のスレッドを spawn の順に 1 つずつ最後まで走らせる。
+                    while t.state.get() != 2 {
+                        if t.state.get() == 1 || !self.run_one_pending()? {
+                            return panic(DEADLOCK_JOIN);
+                        }
+                    }
+                    let r = t.result.borrow().clone().unwrap_or(Val::Unit);
+                    return Ok(r);
                 }
                 panic("no such method on JoinHandle")
             }
-            Val::Chan(q) => match name {
-                "send" => {
-                    q.borrow_mut().push_back(a0);
+            Val::Chan(end) => match name {
+                "send" if end.is_sender => {
+                    if !end.st.receiver_alive.get() {
+                        let e = StructV { ty: "std.sync.SendError".into(), f: RefCell::new(vec![("value".into(), a0)]) };
+                        return Ok(err(Val::Struct(Rc::new(e))));
+                    }
+                    end.st.q.borrow_mut().push_back(a0);
                     Ok(ok(Val::Unit))
                 }
-                "recv" => {
-                    let x = q.borrow_mut().pop_front();
-                    Ok(match x {
-                        Some(x) => ok(x),
-                        None => err(Val::Struct(Rc::new(StructV { ty: "std.sync.RecvError".into(), f: RefCell::new(vec![]) }))),
-                    })
+                "recv" if !end.is_sender => {
+                    loop {
+                        let x = end.st.q.borrow_mut().pop_front();
+                        if let Some(x) = x {
+                            return Ok(ok(x));
+                        }
+                        if !end.st.sender_alive.get() {
+                            let e = StructV { ty: "std.sync.RecvError".into(), f: RefCell::new(vec![("code".into(), int(0, "u8"))]) };
+                            return Ok(err(Val::Struct(Rc::new(e))));
+                        }
+                        // 空で、送信側はまだ生きている: 保留中のスレッドを走らせて、送ってくるのを待つ。
+                        if !self.run_one_pending()? {
+                            return panic(DEADLOCK_RECV);
+                        }
+                    }
                 }
                 "drop" => Ok(Val::Unit),
                 _ => panic(format!("no method {} on channel", name)),
@@ -781,11 +837,27 @@ impl Interp {
                     "eq" => return Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
                     _ => {}
                 }
+                let nanos = |d: u64| {
+                    Val::Struct(Rc::new(StructV { ty: "std.time.Duration".into(), f: RefCell::new(vec![("nanos".into(), int(d as i128, "u64"))]) }))
+                };
+                let field = |v: &Val, n: &str| -> u64 {
+                    match v {
+                        Val::Struct(x) => match x.get(n) {
+                            Some(Val::Int(i, _)) => i as u64,
+                            _ => 0,
+                        },
+                        _ => 0,
+                    }
+                };
                 if s.ty == "std.time.Instant" && name == "elapsed" {
-                    return Ok(Val::Struct(Rc::new(StructV {
-                        ty: "std.time.Duration".into(),
-                        f: RefCell::new(vec![("nanos".into(), int(0, "u64"))]),
-                    })));
+                    return Ok(nanos(mono_ns().saturating_sub(field(v, "ticks"))));
+                }
+                if s.ty == "std.time.Instant" && name == "since" {
+                    let (a, b) = (field(v, "ticks"), field(&dr(&a0), "ticks"));
+                    return Ok(opt(if a >= b { Some(nanos(a - b)) } else { None }));
+                }
+                if s.ty == "std.time.Duration" && name == "as_nanos" {
+                    return Ok(int(field(v, "nanos") as i128, "u64"));
                 }
                 let d = self.debug_str(v)?;
                 panic(format!("no method {} found for value {}", name, d))
