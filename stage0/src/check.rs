@@ -710,12 +710,8 @@ impl<'a> Checker<'a> {
             let d = self.def(i);
             if d.kw == "fn" && d.has_impls {
                 let owner = d.name.rsplit_once('.').map(|(o, _)| o.to_string()).unwrap_or_default();
-                let key = (impl_key(&d.impls_trait, &d.impls_args), owner);
-                let mut meth = d.name.rsplit('.').next().unwrap_or("").to_string();
-                // 4.1: `core.convert.From` は同じ型に複数置くので、メソッド名は `from_value` か `from_value_<接尾辞>`。
-                if d.impls_trait == crate::program::FROM_TRAIT && meth.starts_with("from_value_") {
-                    meth = "from_value".to_string();
-                }
+                let key = (d.impls_trait.clone(), owner);
+                let meth = d.name.rsplit('.').next().unwrap_or("").to_string();
                 declared.entry(key.clone()).or_default().insert(meth);
                 declared_at.entry(key).or_insert(i);
             }
@@ -769,8 +765,8 @@ impl<'a> Checker<'a> {
             }
             let owner = prim_owner(&tgt);
             let alt_owner = format!("{}.{}", tb, tgt.rsplit('.').next().unwrap_or(""));
-            // `From` だけは型引数が違えば同じ型に複数置ける (4.1)。他は型引数が違っても 1 つ。
-            let tkey = impl_key(&tb, &d.impls_args);
+            // 同じ (トレイト, 型) は型引数が違っても 1 つ (3.2)。
+            let tkey = tb.clone();
             if !seen.insert((tkey.clone(), tgt.clone())) {
                 self.diag("E1114", format!("duplicate impl of {} for {}", tkey, tgt), i, 0);
             }
@@ -882,6 +878,54 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            // 4.3: `From` は `enum` だけで、型パラメータを持たず、ペイロードがちょうど 1 つのバリアントが要る (E2050)。
+            if derived.contains("From") {
+                let ok = d.kw == "enum"
+                    && !d.generics.iter().any(|g| g.0 == "type")
+                    && d.variants.iter().any(|v| v.1.len() == 1);
+                if !ok {
+                    let why = if d.kw != "enum" {
+                        "only an enum can derive From"
+                    } else if d.generics.iter().any(|g| g.0 == "type") {
+                        "an enum with type parameters cannot derive From"
+                    } else {
+                        "the enum has no variant with exactly one payload field"
+                    };
+                    self.diag("E2050", format!("derive [From] on {}: {}", d.name, why), i, 0);
+                }
+            }
+            // 4.3: derive した各トレイト (Copy 以外) は、フィールド・ペイロードの名義型もそのトレイトを実装していること
+            // (基本型・参照・タプル・配列は組み込み実装、型パラメータは境界が担うので見ない)。
+            {
+                let tys: Vec<V> = if d.kw == "type" {
+                    d.fields.iter().map(|f| f.1.clone()).collect()
+                } else {
+                    d.variants.iter().flat_map(|v| v.1.clone()).collect()
+                };
+                let params: HashSet<String> = d.generics.iter().map(|g| g.1.clone()).collect();
+                for dv in d.derive.clone() {
+                    if dv == "Copy" || dv == "From" {
+                        continue;
+                    }
+                    let Some(&tr) = short_to_fqn.get(dv.as_str()) else { continue };
+                    let mut missing: Vec<String> = vec![];
+                    for t in &tys {
+                        let mut named = vec![];
+                        Self::named_in(t, &mut named);
+                        for n in named {
+                            if params.contains(&n) || n == d.name || n == "Option" || n == "Result" {
+                                continue;
+                            }
+                            if self.p.types.contains_key(&n) && !self.implements(&n, tr) && !missing.contains(&n) {
+                                missing.push(n);
+                            }
+                        }
+                    }
+                    for n in missing {
+                        self.diag("E2036", format!("derive [{}] on {}: the field type {} does not implement {}", dv, d.name, n, tr), i, 0);
+                    }
+                }
+            }
             if derived.contains("Copy") {
                 let tys: Vec<V> = if d.kw == "type" {
                     d.fields.iter().map(|f| f.1.clone()).collect()
@@ -892,6 +936,24 @@ impl<'a> Checker<'a> {
                     self.diag("E2036", format!("derive [Copy] on {}: every field must be Copy", d.name), i, 0);
                 }
             }
+        }
+    }
+
+    /// 型の中に現れる名義型の FQN (参照・タプル・配列・スライス・型引数を通して)。
+    fn named_in(t: &V, out: &mut Vec<String>) {
+        match tag(t).as_str() {
+            "named" => {
+                out.push(st(tel(t, 1)));
+                for a in items(tel(t, 2)) {
+                    if matches!(a, V::L(_)) {
+                        Self::named_in(a, out);
+                    }
+                }
+            }
+            "ref" => Self::named_in(tel(t, 2), out),
+            "array" | "slice" => Self::named_in(tel(t, 1), out),
+            "tuple" => items(tel(t, 1)).iter().for_each(|x| Self::named_in(x, out)),
+            _ => {}
         }
     }
 
@@ -1057,6 +1119,12 @@ impl<'a> Checker<'a> {
             if matches!(d.kw.as_str(), "import" | "impl") {
                 continue;
             }
+            let own_root = d.module.split('.').next().unwrap_or("");
+            let in_std_layer = matches!(own_root, "core" | "alloc" | "std");
+            // 3.1: `impls` メソッドの可視性はトレイトと型の小さい方に自動で従うので、`pub` は書けない。
+            if d.kw == "fn" && d.has_impls && header_is_pub(&d.header) {
+                self.diag("E1123", format!("{} is an `impls` method: its visibility follows the trait and the type; remove `pub` (3.1)", d.name), i, 0);
+            }
             let mut refs: Vec<(String, usize)> = vec![];
             let mut hdr: BTreeSet<String> = BTreeSet::new();
             for (kind, _, bound) in &d.generics {
@@ -1105,6 +1173,13 @@ impl<'a> Checker<'a> {
                     chains.push(c);
                 }
                 for chain in chains {
+                    // 8.2: `std.sys.*` は `core` / `alloc` / `std` の外から参照できない。
+                    if !in_std_layer && chain.len() >= 2 && chain[0] == "std" && chain[1] == "sys" {
+                        if seen.insert((chain.join("."), line)) {
+                            self.diag("E1124", format!("{} is internal to the standard library (std.sys.* may only be referenced from core / alloc / std, 8.2)", chain.join(".")), i, line);
+                        }
+                        break;
+                    }
                     let hit = (1..=chain.len()).rev().find_map(|k| {
                         let n = chain[..k].join(".");
                         let j = p.funcs.get(&n).or_else(|| p.types.get(&n)).or_else(|| p.consts.get(&n)).or_else(|| p.sigs.get(&n))?;
@@ -1112,17 +1187,110 @@ impl<'a> Checker<'a> {
                     });
                     let Some((n, j)) = hit else { continue };
                     let t = &p.defs[j];
-                    if t.module == d.module
-                        || t.has_impls
+                    if t.has_impls
                         || matches!(t.module.split('.').next(), Some("core" | "alloc" | "std"))
                         || header_is_pub(&t.header)
                     {
+                        break;
+                    }
+                    // 同一モジュール内の参照は可視。`pub` な定義のヘッダが非公開の型を挙げる誤りは lint の E1010 が見る。
+                    if t.module == d.module {
                         break;
                     }
                     if seen.insert((n.clone(), line)) {
                         self.diag("E1119", format!("{} is private to module {} (add `pub` to use it from {})", n, t.module, d.module), i, line);
                     }
                     break;
+                }
+            }
+        }
+        // `import std.sys.*` も同じ (3.5 / 8.2)。
+        for &i in &self.user.clone() {
+            let d = self.def(i);
+            if d.kw == "import" && d.name.starts_with("std.sys.") && !matches!(d.module.split('.').next(), Some("core" | "alloc" | "std")) {
+                self.diag("E1124", format!("{} is internal to the standard library (std.sys.* may only be referenced from core / alloc / std, 8.2)", d.name), i, 0);
+            }
+        }
+    }
+
+    /// 3.1: メソッド呼び出し `x.m()` とフィールド参照 `x.f` の可視性 (型推論が記録したレシーバの型を使う)。
+    /// 別モジュールの型の非 `pub` なメソッドは E1119、非 `pub` なフィールドは E1122。構造体リテラルと
+    /// 構造体パターンのフィールドも E1122 (名前から型を決める)。レシーバの型が決まらない所は E2044 が別に報告する。
+    fn check_visibility_members(&mut self, log: &[crate::types::RecvSite]) {
+        let p = self.p;
+        let mut seen: BTreeSet<(usize, usize, String)> = BTreeSet::new();
+        for r in log {
+            if !self.user.contains(&r.writer) {
+                continue;
+            }
+            let w = self.def(r.writer);
+            let crate::types::Ty::Named(n, _) = r.recv.strip() else { continue };
+            if matches!(n.split('.').next(), Some("core" | "alloc" | "std")) {
+                continue;
+            }
+            let wmod = w.module.clone();
+            let msg;
+            let code;
+            if r.field {
+                let Some(&ti) = p.types.get(n.as_str()) else { continue };
+                let td = &p.defs[ti];
+                if td.kw != "type" || td.module == wmod {
+                    continue;
+                }
+                match td.fields.iter().find(|f| f.0 == r.name) {
+                    Some((_, _, false)) => {}
+                    _ => continue,
+                }
+                code = "E1122";
+                msg = format!("field {} of {} is private to module {} (add `pub` to the field to use it from {})", r.name, n, td.module, wmod);
+            } else {
+                let Some(&mi) = p.funcs.get(&format!("{}.{}", n, r.name)) else { continue };
+                let md = &p.defs[mi];
+                if md.module == wmod {
+                    continue;
+                }
+                let visible = if md.has_impls {
+                    // `impls` メソッド: トレイトと型の小さい方。
+                    let tr_pub = p.types.get(&md.impls_trait).map_or(true, |&t| {
+                        matches!(p.defs[t].module.split('.').next(), Some("core" | "alloc" | "std")) || header_is_pub(&p.defs[t].header)
+                    });
+                    let ty_pub = p.types.get(n.as_str()).map_or(true, |&t| header_is_pub(&p.defs[t].header));
+                    tr_pub && ty_pub
+                } else {
+                    header_is_pub(&md.header)
+                };
+                if visible {
+                    continue;
+                }
+                code = "E1119";
+                msg = format!("method {} is private to module {} (add `pub` to use it from {})", md.name, md.module, wmod);
+            }
+            if seen.insert((r.writer, r.pos, r.name.clone())) {
+                self.diag(code, msg, r.writer, r.pos);
+            }
+        }
+        // 構造体リテラル `t.P { f: .. }` と構造体パターン `t.P { f: a }` のフィールド。
+        for &i in &self.user.clone() {
+            let d = self.def(i);
+            let mut sites: Vec<(Vec<String>, String, usize)> = vec![];
+            if let Some(b) = &d.body {
+                collect_struct_fields(b, &mut sites);
+            }
+            if let Some(b) = &d.init {
+                collect_struct_fields(b, &mut sites);
+            }
+            for (segs, field, pos) in sites {
+                let fq = p.expand(&segs, &d.file).join(".");
+                let Some(&ti) = p.types.get(&fq) else { continue };
+                let td = &p.defs[ti];
+                if td.kw != "type" || td.module == d.module || matches!(td.module.split('.').next(), Some("core" | "alloc" | "std")) {
+                    continue;
+                }
+                if let Some((_, _, false)) = td.fields.iter().find(|f| f.0 == field) {
+                    if seen.insert((i, pos, field.clone())) {
+                        let msg = format!("field {} of {} is private to module {} (add `pub` to the field to use it from {})", field, fq, td.module, d.module);
+                        self.diag("E1122", msg, i, pos);
+                    }
                 }
             }
         }
@@ -2293,6 +2461,8 @@ impl<'a> Checker<'a> {
                 self.tc_fn(i);
             }
         }
+        let vis_log = std::mem::take(&mut tk.recv_log);
+        self.check_visibility_members(&vis_log);
         self.diags.extend(tk.diags);
         // 型で解決できた呼び出し (メソッドを含む) の辺を、再帰・スタックの検査に加える。
         for (from, tos) in tk.edges {
@@ -4102,16 +4272,6 @@ pub(crate) fn resolve_trait_fqn(p: &Program, nm: &str) -> Option<String> {
 }
 
 /// `impl .. for X` の対象型の基底名 (型引数を落とす)。
-/// `impl` 行と `impls` メソッドを突き合わせる鍵。`core.convert.From` は型引数 (変換元) まで含める。
-fn impl_key(tr: &str, args: &[V]) -> String {
-    match args.first() {
-        Some(a) if tr == crate::program::FROM_TRAIT => {
-            format!("{}<{}>", tr, crate::types::from_v(a, &HashSet::new()).show())
-        }
-        _ => tr.to_string(),
-    }
-}
-
 fn impl_target(v: &V) -> String {
     match tag(v).as_str() {
         "named" | "prim" => st(tel(v, 1)),
@@ -4219,6 +4379,49 @@ fn collect_vis_refs(t: &V, out: &mut Vec<(String, usize)>) {
                 if matches!(x, V::L(_) | V::Node(..)) {
                     collect_vis_refs(x, out);
                 }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 本体の AST から構造体リテラル・構造体パターンの (型の名前の成分, フィールド名, 位置) を集める。
+fn collect_struct_fields(t: &V, out: &mut Vec<(Vec<String>, String, usize)>) {
+    match t {
+        V::Node(n, fs, pos) => {
+            match *n {
+                "StructLit" => {
+                    if let (Some(V::S(nm)), Some(V::L(fl))) = (fs.first(), fs.get(1)) {
+                        for x in fl {
+                            if let V::L(xs) | V::Node(_, xs, _) = x {
+                                if let Some(V::S(f)) = xs.first() {
+                                    out.push((nm.split('.').map(String::from).collect(), f.clone(), *pos));
+                                }
+                            }
+                        }
+                    }
+                }
+                "PStruct" => {
+                    if let (Some(V::L(segs)), Some(V::L(fl))) = (fs.first(), fs.get(1)) {
+                        let v: Vec<String> = segs.iter().map(st).collect();
+                        for x in fl {
+                            if let V::L(xs) | V::Node(_, xs, _) = x {
+                                if let Some(V::S(f)) = xs.first() {
+                                    out.push((v.clone(), f.clone(), *pos));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for f in fs {
+                collect_struct_fields(f, out);
+            }
+        }
+        V::L(xs) => {
+            for x in xs {
+                collect_struct_fields(x, out);
             }
         }
         _ => {}

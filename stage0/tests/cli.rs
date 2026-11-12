@@ -5823,6 +5823,16 @@ fn agree_with_interpreter(name: &str, src: &str) -> String {
     text(&interp.stdout)
 }
 
+/// `File.sync` が通常ファイルで成功し、`with` の本体の `write` / `sync` のエラーが `?` で抜けても、後始末が1回走る
+/// (`/dev/full` は Linux のみ。ある環境だけ検査する)。インタプリタとネイティブの両方で通る。
+#[test]
+fn std_fs_sync_succeeds_and_errors_leave_a_with_body_through_try() {
+    let t = Tmp::new("fs_sync", include_str!("data/fs_sync.ksnl"));
+    let o = run(&["test", "--both"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stdout).contains("2 passed; 0 failed"), "{}", text(&o.stdout));
+}
+
 /// 作成・書き込み・読み戻し・削除・存在しないファイルのエラーを、インタプリタとネイティブで同じ結果にする。
 /// エラー番号は OS ごとに違うので、出力の一致は Unix だけで確かめる (Windows は動いて `fs ok` で終わることだけ)。
 #[test]
@@ -6358,12 +6368,12 @@ fn name_tools_work_on_non_canonical_source() {
     assert_eq!(c.status.code(), Some(0), "{}", text(&c.stderr));
 }
 
-// ---------------------------------------------------------------- `?` のエラー変換 (4.1 `core.convert.From`)
+// ---------------------------------------------------------------- `?` のエラー変換 (4.1 `derive [From]`)
 
-/// 変換が起きる・型が同じなら変換しない・`Option` は変わらない・変換後のエラーが元の中身を運ぶ、を
+/// 変換が起きる (バリアントで包む)・型が同じなら変換しない・`Option` は変わらない・包まれたエラーが元の中身を運ぶ、を
 /// インタプリタとネイティブ (デバッグ・リリース) が同じ結果で通る。`ksn test --both` も通る。
 #[test]
-fn try_converts_the_error_through_from_and_both_backends_agree() {
+fn try_wraps_the_error_in_a_derive_from_variant_and_both_backends_agree() {
     let src = include_str!("data/try_from.ksnl");
     let out = agree_with_interpreter("try_from", src);
     assert_eq!(out, "try-from ok\n");
@@ -6373,50 +6383,103 @@ fn try_converts_the_error_through_from_and_both_backends_agree() {
     assert!(text(&o.stdout).contains("1 passed; 0 failed"), "{}", text(&o.stdout));
 }
 
-const TRY_AB: &str = "type t.A derive [Debug, Clone, Copy] pub\n    x: u32\nend t.A\n\ntype t.B derive [Debug, Clone, Copy] pub\n    y: u32\nend t.B\n\n";
-const TRY_FG: &str = "fn t.f() -> Result<u32, t.A> uses [] panics never\n    Err(t.A { x: 1u32 })\nend t.f\n\nfn t.g() -> Result<u32, t.B> uses [] panics never\n    let n = t.f()?\n    Ok(n)\nend t.g\n";
-const TRY_B_TO_A: &str = "impl core.convert.From<t.B> for t.A\nfn t.A.from_value_b(value: t.B) -> t.A uses [] panics never impls core.convert.From<t.B>\n    t.A { x: value.y }\nend t.A.from_value_b\n\n";
+const TRY_INNER: &str = "type t.Inner derive [Debug, Clone, Copy] pub\n    x: u32\nend t.Inner\n\n";
+const TRY_FG: &str = "fn t.f() -> Result<u32, t.Inner> uses [] panics never\n    Err(t.Inner { x: 1u32 })\nend t.f\n\nfn t.g() -> Result<u32, t.Error> uses [] panics never\n    let n = t.f()?\n    Ok(n)\nend t.g\n";
 
-/// `impl` がなければ従来どおり E2020 で、`map_err` と `impl` の両方を案内する。
+/// `derive [From]` のない `enum` へは包まれず E2020 で、`V(E1)` の追加と `map_err` の両方を案内する。
 #[test]
-fn try_without_a_from_impl_reports_both_remedies() {
-    let t = Tmp::new("try_no_from", &format!("{}{}", TRY_AB, TRY_FG));
+fn try_into_an_enum_without_derive_from_reports_both_remedies() {
+    let enum_src = "enum t.Error derive [Debug] pub\n    Inner(t.Inner)\nend t.Error\n\n";
+    let t = Tmp::new("try_no_from", &format!("{}{}{}", TRY_INNER, enum_src, TRY_FG));
     let o = run(&["check", "--json"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(codes(&out), vec!["E2020".to_string()], "{}", out);
-    assert!(out.contains("write `map_err`, or declare `impl core.convert.From<t.A> for t.B`"), "{}", out);
+    assert!(out.contains("add a variant `V(t.Inner)` to `t.Error` (an enum that declares `derive [From]`), or write `map_err`"), "{}", out);
 }
 
-/// 逆向きの `From<B> for A` しかないときは、`A -> B` の `?` は通らない (逆変換・連鎖なし)。
+/// `derive [From]` があっても、`E1` を唯一のペイロードに持つバリアントがなければ E2020 (別の型のバリアントでは包まない)。
 #[test]
-fn try_does_not_use_the_reverse_conversion() {
-    let t = Tmp::new("try_reverse", &format!("{}{}{}", TRY_AB, TRY_B_TO_A, TRY_FG));
-    let o = run(&["check", "--json"], &t.0);
-    assert_eq!(codes(&text(&o.stdout)), vec!["E2020".to_string()], "{}", text(&o.stdout));
+fn try_without_a_matching_variant_is_a_type_error() {
+    let enum_src = "enum t.Error derive [Debug, From] pub\n    Other(u8)\n    Pair(t.Inner, t.Inner)\nend t.Error\n\n";
+    let t = Tmp::new("try_no_variant", &format!("{}{}{}", TRY_INNER, enum_src, TRY_FG));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert_eq!(codes(&out), vec!["E2020".to_string()], "{}", out);
 }
 
-/// クロージャ内の `?` は、クロージャの戻り値型のエラー型へ変換する (外側の関数ではない)。
+/// 同じ型を運ぶバリアントが 2 つ以上あると E2049 で、バリアント名を挙げる (黙って選ばない)。
 #[test]
-fn try_in_a_closure_converts_to_the_closure_return_type() {
-    let src = "type t.Inner derive [Debug, Clone, Copy] pub\n    code: u32 pub\nend t.Inner\n\nenum t.AppError derive [Debug, Clone, Copy, PartialEq] pub\n    Code(u32)\nend t.AppError\n\nimpl core.convert.From<t.Inner> for t.AppError\nfn t.AppError.from_value(value: t.Inner) -> t.AppError uses [] panics never impls core.convert.From<t.Inner>\n    t.AppError.Code(value.code)\nend t.AppError.from_value\n\nfn t.fail(code: u32) -> Result<u32, t.Inner> uses [] panics never\n    Err(t.Inner { code: code })\nend t.fail\n\nfn t.main() -> Result<(), t.Inner> uses [] panics may\n    let f = fn(c: u32) -> Result<u32, t.AppError> capture [] {\n        let n = t.fail(c)?\n        Ok(n)\n    }\n    core.check.eq(f(4u32), Err(t.AppError.Code(4u32)))\n    Ok(())\nend t.main\n";
+fn try_with_two_variants_carrying_the_same_type_is_ambiguous() {
+    let enum_src = "enum t.Error derive [Debug, From] pub\n    First(t.Inner)\n    Second(t.Inner)\nend t.Error\n\n";
+    let t = Tmp::new("try_ambiguous", &format!("{}{}{}", TRY_INNER, enum_src, TRY_FG));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert_eq!(codes(&out), vec!["E2049".to_string()], "{}", out);
+    assert!(out.contains("First, Second"), "{}", out);
+}
+
+/// 変換は 1 段のみ。逆向き (`E2` が持つ型から `E1` へ) は包まれない。
+#[test]
+fn try_does_not_convert_in_the_reverse_direction() {
+    let src = "enum t.Error derive [Debug, From] pub\n    Inner(t.Inner)\nend t.Error\n\nfn t.f() -> Result<u32, t.Error> uses [] panics never\n    Ok(1u32)\nend t.f\n\nfn t.g() -> Result<u32, t.Inner> uses [] panics never\n    let n = t.f()?\n    Ok(n)\nend t.g\n";
+    let t = Tmp::new("try_reverse", &format!("{}{}", TRY_INNER, src));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert_eq!(codes(&out), vec!["E2020".to_string()], "{}", out);
+}
+
+/// `derive [From]` は `enum` だけで、ペイロードが 1 つのバリアントがなければ E2050。
+#[test]
+fn derive_from_needs_an_enum_with_a_single_payload_variant() {
+    let main = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let on_type = format!("type t.W derive [From] pub\n    a: u8\nend t.W\n\n{}", main);
+    let t = Tmp::new("derive_from_type", &on_type);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert_eq!(codes(&out), vec!["E2050".to_string()], "{}", out);
+    let no_payload = format!("enum t.E derive [From] pub\n    A\n    B(u8, u8)\nend t.E\n\n{}", main);
+    let t = Tmp::new("derive_from_nopayload", &no_payload);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert_eq!(codes(&out), vec!["E2050".to_string()], "{}", out);
+    // 正しい形は通り、`ksn fmt --check` の並び (From は最後) も満たす。
+    let ok = format!("enum t.E derive [Debug, Clone, Copy, From] pub\n    A\n    B(u8)\nend t.E\n\n{}", main);
+    let t = Tmp::new("derive_from_ok", &ok);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+}
+
+/// `Copy` / `Clone` の derive の条件は、`From` のペイロードにも従来どおりかかる。
+#[test]
+fn derive_from_payloads_still_obey_the_copy_requirement() {
+    let src = "enum t.E derive [Debug, Clone, Copy, From] pub\n    A(t.N)\nend t.E\n\ntype t.N pub\n    a: u8\nend t.N\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("derive_from_copy", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).contains(&"E2036".to_string()), "{}", out);
+}
+
+/// `ksn get --derived` は、`derive [From]` が提供する変換を示す。
+#[test]
+fn get_derived_shows_the_from_conversions() {
+    let t = Tmp::new("get_derived_from", include_str!("data/try_from.ksnl"));
+    let o = run(&["get", "--derived", "t.AppError"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("// derive From for t.AppError:"), "{}", out);
+    assert!(out.contains("E1 = alloc.alloc.AllocError  =>  t.AppError.Alloc(error)"), "{}", out);
+    assert!(out.contains("E1 = t.Inner  =>  t.AppError.Code(error)"), "{}", out);
+    assert!(out.contains("E1 = u32  =>  t.AppError.Wide(error)"), "{}", out);
+    assert!(!out.contains("Plain"), "{}", out);
+    let enum_src = "enum t.Error derive [Debug, From] pub\n    First(t.Inner)\n    Second(t.Inner)\nend t.Error\n\n";
+    let t = Tmp::new("get_derived_from_amb", &format!("{}{}{}", TRY_INNER, enum_src, TRY_FG));
+    let out = text(&run(&["get", "--derived", "t.Error"], &t.0).stdout);
+    assert!(out.contains("ambiguous (First, Second)"), "{}", out);
+}
+
+/// クロージャ内の `?` は、クロージャの戻り値型のエラー型へ包む (外側の関数ではない)。
+#[test]
+fn try_in_a_closure_wraps_into_the_closure_return_type() {
+    let src = "type t.Inner derive [Debug, Clone, Copy, PartialEq] pub\n    code: u32 pub\nend t.Inner\n\nenum t.AppError derive [Debug, Clone, Copy, PartialEq, From] pub\n    Code(t.Inner)\nend t.AppError\n\nfn t.fail(code: u32) -> Result<u32, t.Inner> uses [] panics never\n    Err(t.Inner { code: code })\nend t.fail\n\nfn t.main() -> Result<(), t.Inner> uses [] panics may\n    let f = fn(c: u32) -> Result<u32, t.AppError> capture [] {\n        let n = t.fail(c)?\n        Ok(n)\n    }\n    core.check.eq(f(4u32), Err(t.AppError.Code(t.Inner { code: 4u32 })))\n    Ok(())\nend t.main\n";
     let t = Tmp::new("try_closure", src);
     let c = run(&["check", "--json"], &t.0);
     assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
-}
-
-/// `impl From` 行のないメソッドは E1113、メソッドのない `impl` 行は E1112。両方そろえば通る。
-#[test]
-fn from_impl_lines_and_methods_must_pair_up() {
-    let t = Tmp::new("from_nomethod", &format!("{}impl core.convert.From<t.B> for t.A\n", TRY_AB));
-    assert!(codes(&text(&run(&["check", "--json"], &t.0).stdout)).contains(&"E1112".to_string()));
-    let method_only = TRY_B_TO_A.replacen("impl core.convert.From<t.B> for t.A\n", "", 1);
-    let t = Tmp::new("from_noimpl", &format!("{}{}", TRY_AB, method_only));
-    assert!(codes(&text(&run(&["check", "--json"], &t.0).stdout)).contains(&"E1113".to_string()));
-    let t = Tmp::new("from_ok", &format!("{}{}\n", TRY_AB, TRY_B_TO_A.trim_end()));
-    let o = run(&["check", "--json"], &t.0);
-    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
 }
 
 // ---- `with` (4.4): 範囲を抜けるすべての経路で後始末式が 1 回だけ走る ----
@@ -6784,6 +6847,29 @@ fn threads_a_panic_in_a_spawned_thread_aborts_the_process() {
     assert_eq!(r.status.code(), Some(101));
     assert!(text(&r.stderr).contains("panic: boom in thread"), "{}", text(&r.stderr));
     assert!(!text(&r.stdout).contains("not reached"));
+}
+
+/// 5.2: スタック溢れは `stack overflow` と終了コード 102 (メインスレッドでも、`spawn` したスレッドの中でも)。
+/// インタプリタとネイティブ (debug / release) で、標準出力・標準エラー・終了コードが同じ。
+#[test]
+fn threads_stack_overflow_stops_the_process_with_102_in_main_and_in_a_spawned_thread() {
+    for name in ["overflow_main", "overflow_thread"] {
+        let t = threads_pkg(name, "so");
+        let interp = run(&["run"], &t.0);
+        assert_eq!(interp.status.code(), Some(102), "{}: {}", name, text(&interp.stderr));
+        assert_eq!(text(&interp.stderr), "stack overflow\n");
+        assert_eq!(text(&interp.stdout), "start\n");
+        if cfg!(windows) {
+            continue;
+        }
+        for release in [false, true] {
+            let p = threads_build(&t, release);
+            let r = Command::new(&p).output().unwrap();
+            assert_eq!(r.status.code(), Some(102), "{} (release={}): {:?} {}", name, release, r.status, text(&r.stderr));
+            assert_eq!(text(&r.stderr), "stack overflow\n");
+            assert_eq!(text(&r.stdout), text(&interp.stdout));
+        }
+    }
 }
 
 #[test]
@@ -7166,6 +7252,25 @@ fn ffi_a_callback_that_overflows_the_stack_stops_the_process_without_unwinding_t
     assert_eq!(i.status.code(), Some(102), "{}", text(&i.stderr));
     assert!(text(&i.stderr).contains("stack overflow"), "{}", text(&i.stderr));
     assert!(text(&i.stdout).contains("start") && !text(&i.stdout).contains("unreachable"));
+    // ネイティブも同じ (ガードページの fault をランタイムが拾う)。
+    let (out, n) = ffi_native(&t, "ffi_overflow");
+    let n = n.unwrap_or_else(|| panic!("no native executable: {}", out));
+    assert_eq!(n.status.code(), Some(102), "{}", text(&n.stderr));
+    assert_eq!(text(&n.stderr), "stack overflow\n");
+    assert_eq!(text(&n.stdout), text(&i.stdout));
+}
+
+#[cfg(unix)]
+#[test]
+fn ffi_a_real_null_dereference_still_crashes_natively_instead_of_reporting_a_stack_overflow() {
+    use std::os::unix::process::ExitStatusExt;
+    let t = ffi_pkg("ffi_null", "null_deref.ksnl");
+    let (out, n) = ffi_native(&t, "ffi_null");
+    let n = n.unwrap_or_else(|| panic!("no native executable: {}", out));
+    // スタック溢れ以外の fault は既定の動作のまま: SIGSEGV で落ちる (終了コード 102 でも 101 でもない)。
+    assert_eq!(n.status.signal(), Some(11), "code={:?} stderr={}", n.status.code(), text(&n.stderr));
+    assert!(!text(&n.stderr).contains("stack overflow"), "{}", text(&n.stderr));
+    assert_eq!(text(&n.stdout), "start\n");
 }
 
 fn ffi_check_codes(name: &str, src: &str, modules: &str) -> Vec<String> {

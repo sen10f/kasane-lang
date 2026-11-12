@@ -69,7 +69,7 @@ pub enum Cap {
 }
 
 impl Ty {
-    fn strip(&self) -> &Ty {
+    pub(crate) fn strip(&self) -> &Ty {
         let mut t = self;
         while let Ty::Ref(_, inner) = t {
             t = inner;
@@ -219,6 +219,8 @@ pub struct RecvSite {
     pub seg: usize,
     pub field: bool,
     pub recv: Ty,
+    /// メソッド名 / フィールド名 (可視性の検査 (E1119 / E1122) 用)。
+    pub name: String,
 }
 
 /// `Fn` 境界の引数に直接書かれたクロージャの記録 (効果検査 ② 用)。
@@ -1051,16 +1053,16 @@ impl<'a> TypeCk<'a> {
     }
 
     // ------------------------------------------------------------ メソッド呼び出し
-    fn log_step(&mut self, pos: usize, seg: usize, field: bool, _name: &str, recv: &Ty) {
+    fn log_step(&mut self, pos: usize, seg: usize, field: bool, name: &str, recv: &Ty) {
         if pos != 0 {
-            self.recv_log.push(RecvSite { writer: self.cur, pos, seg, field, recv: recv.clone() });
+            self.recv_log.push(RecvSite { writer: self.cur, pos, seg, field, recv: recv.clone(), name: name.to_string() });
         }
     }
 
-    fn log_recv(&mut self, f: &[V], at: usize, field: bool, _name: &str, recv: &Ty) {
+    fn log_recv(&mut self, f: &[V], at: usize, field: bool, name: &str, recv: &Ty) {
         if let Some(V::N(p)) = f.get(at) {
             if let Ok(pos) = p.parse::<usize>() {
-                self.recv_log.push(RecvSite { writer: self.cur, pos, seg: usize::MAX, field, recv: recv.clone() });
+                self.recv_log.push(RecvSite { writer: self.cur, pos, seg: usize::MAX, field, recv: recv.clone(), name: name.to_string() });
             }
         }
     }
@@ -2803,10 +2805,10 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    /// `?` のエラー変換 (4.1): 関数 (クロージャ) のエラー型 `want` が `core.convert.From<got>` を実装するとき、
-    /// 変換メソッドの FQN を返す。両方の型が確定した名義型・基本型で、同じ型でないときだけ引く
+    /// `?` のエラー変換 (4.1): 関数 (クロージャ) のエラー型 `want` が `derive [From]` の `enum` で、
+    /// `got` を唯一のペイロードに持つバリアントを引く。両方の型が確定していて同じ型でないときだけ引く
     /// (型が分からないときは None で、呼び出し側は従来どおり単一化に任せる)。
-    fn from_conversion(&mut self, want: &Ty, got: &Ty) -> Option<String> {
+    fn from_conversion(&mut self, want: &Ty, got: &Ty) -> Option<crate::program::FromVariant> {
         let want = self.deep(want);
         let got = self.deep(got);
         let Ty::Named(wn, _) = want.strip() else { return None };
@@ -2817,10 +2819,10 @@ impl<'a> TypeCk<'a> {
         if key == want.strip().show() {
             return None;
         }
-        self.p.from_impls.get(wn)?.iter().find(|(k, _)| *k == key).map(|(_, f)| f.clone())
+        Some(self.p.from_variant(wn, &key))
     }
 
-    /// 4.1: `?` はエラー型が完全一致するか、`core.convert.From` の変換があるときだけ使える。
+    /// 4.1: `?` はエラー型が完全一致するか、`derive [From]` の `enum` へ包めるときだけ使える。
     /// `?` は式を置いた関数 (クロージャ) の戻り値型へ脱糖するので、そこで受けられるのは
     /// オペランドと同じ種類の `Option` / `Result` だけ。エラー型は単一化して比べる。
     /// どちらかが分からないときは黙る (Cranelift バックエンドも同じ条件で拒否する)。
@@ -2840,16 +2842,29 @@ impl<'a> TypeCk<'a> {
                 if gn == "Result" && wa.len() >= 2 && ga.len() >= 2 {
                     let e_want = wa[1].clone();
                     let e_got = ga[1].clone();
-                    // 4.1: 型が違っても `E2: core.convert.From<E1>` の impl があれば、そのメソッドで変換する。
-                    if self.from_conversion(&e_want, &e_got).is_some() {
-                        return;
+                    // 4.1: 型が違っても `E2` が `derive [From]` で `E1` を唯一のペイロードに持つバリアントがあれば、包んで返す。
+                    match self.from_conversion(&e_want, &e_got) {
+                        Some(crate::program::FromVariant::One(_)) => return,
+                        Some(crate::program::FromVariant::Many(vs)) => {
+                            let (w, g) = (self.deep(&e_want).strip().show(), self.deep(&e_got).strip().show());
+                            self.diag(
+                                "E2049",
+                                format!(
+                                    "ambiguous `?` conversion: variants {} of `{w}` all carry `{g}`; write `map_err` to choose one",
+                                    vs.join(", "),
+                                ),
+                                line,
+                            );
+                            return;
+                        }
+                        _ => {}
                     }
                     if let Err(err) = self.unify2(&e_want, &e_got) {
                         if let Some((w, g)) = self.type_conflict(&err) {
                             self.diag(
                                 "E2020",
                                 format!(
-                                    "type mismatch in `?`: expected error type `{w}`, found `{g}`; write `map_err`, or declare `impl core.convert.From<{g}> for {w}`",
+                                    "type mismatch in `?`: expected error type `{w}`, found `{g}`; add a variant `V({g})` to `{w}` (an enum that declares `derive [From]`), or write `map_err`",
                                 ),
                                 line,
                             );

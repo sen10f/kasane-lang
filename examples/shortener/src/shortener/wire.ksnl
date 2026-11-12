@@ -9,7 +9,7 @@ fn shortener.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.ve
     for i in core.iter.range(0usize, n) {
         match chunk.get(i) {
             Some(b) => data.push(b)?
-            None => return Err(error.Error.Io)
+            None => return Err(error.io_failed())
         }
     }
     Ok(n)
@@ -52,7 +52,7 @@ fn shortener.wire.read_request(stream: &mut std.net.TcpStream) -> Result<shorten
         None => return Err(error.Error.BadRequest)
     }
     let mut body = alloc.string.String.new(std.alloc.SYSTEM)
-    body.push_bytes(body_bytes)?
+    body.push_bytes(body_bytes).map_err(error.push_failed)?
     Ok(http.Request { body: body, method: head.method, path: head.path })
 end shortener.wire.read_request
 
@@ -74,11 +74,11 @@ fn shortener.wire.write_all(stream: &mut std.net.TcpStream, data: &[u8]) -> Resu
     while sent < data.len() {
         let rest = match data.sub(sent, data.len()) {
             Some(r) => r
-            None => return Err(error.Error.Io)
+            None => return Err(error.io_failed())
         }
         let n = stream.write(rest)?
         if n == 0usize {
-            return Err(error.Error.Io)
+            return Err(error.io_failed())
         }
         sent = sent.saturating_add(n)
     }

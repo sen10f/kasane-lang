@@ -3,8 +3,8 @@ type json.Doc pub
     nodes: alloc.vec.Vec<json.Node, std.alloc.System>
 end json.Doc
 
-enum json.Error derive [Debug, Clone, PartialEq] pub
-    Alloc
+enum json.Error derive [Debug, Clone, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
     BadEscape(usize)
     BadNumber(usize)
     Eof
@@ -20,11 +20,6 @@ enum json.Node derive [Debug, Clone, Copy, PartialEq] pub
     Object(usize, usize)
     Str(usize, usize)
 end json.Node
-
-impl core.convert.From<alloc.alloc.AllocError> for json.Error
-fn json.Error.from_value(_value: alloc.alloc.AllocError) -> json.Error uses [] panics never impls core.convert.From<alloc.alloc.AllocError>
-    json.Error.Alloc
-end json.Error.from_value
 
 fn json.array(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), json.Error> uses [alloc] panics never stack 4096
     let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)

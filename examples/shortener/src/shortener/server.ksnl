@@ -31,14 +31,14 @@ end shortener.server.serve_one
 fn shortener.server.settle(handled: Result<(), shortener.error.Error>) -> Result<(), shortener.error.Error> uses [] panics never pub
     match handled {
         Ok(_u) => Ok(())
-        Err(error.Error.Alloc) => Err(error.Error.Alloc)
+        Err(error.Error.Alloc(a)) => Err(error.Error.Alloc(a))
         Err(error.Error.Full) => Err(error.Error.Full)
         Err(error.Error.Corrupt) => Err(error.Error.Corrupt)
         Err(error.Error.Mismatch) => Err(error.Error.Mismatch)
         Err(error.Error.BadRequest) => Ok(())
         Err(error.Error.Closed) => Ok(())
-        Err(error.Error.Io) => Ok(())
-        Err(error.Error.Net(_code)) => Ok(())
+        Err(error.Error.Io(_e)) => Ok(())
+        Err(error.Error.Net(_e)) => Ok(())
         Err(error.Error.TooLarge) => Ok(())
     }
 end shortener.server.settle

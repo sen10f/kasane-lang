@@ -444,6 +444,9 @@ impl Interp {
     }
 
     pub fn call_native(&mut self, name: &str, args: Vec<Val>) -> Res {
+        if self.dbg_guard {
+            self.dbg_guard_native(name)?;
+        }
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
         match name {
             "core.mem.drop" => Ok(Val::Unit),
@@ -1280,7 +1283,7 @@ pub(crate) fn bytes_of(v: &Val) -> Vec<u8> {
 }
 
 impl Interp {
-    /// std.fs.File のメソッド (read / write / flush / close)。
+    /// std.fs.File のメソッド (read / write / flush / sync / close)。
     fn file_method(&mut self, s: &Rc<StructV>, name: &str, args: &[Val]) -> Res {
         use std::io::{Read, Write};
         let Some(Val::Int(fd, _)) = s.get("descriptor") else { return panic("invalid file") };
@@ -1295,6 +1298,13 @@ impl Interp {
                 }
                 Ok(ok(Val::Unit))
             }
+            "sync" => match self.files.get_mut(&fd) {
+                Some(f) => Ok(match f.flush().and_then(|_| f.sync_all()) {
+                    Ok(()) => ok(Val::Unit),
+                    Err(e) => err(io_error(&e)),
+                }),
+                None => Ok(err(io_error_kind("InvalidInput"))),
+            },
             "write" => {
                 let data = bytes_of(args.first().unwrap_or(&Val::Unit));
                 match self.files.get_mut(&fd) {

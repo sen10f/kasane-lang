@@ -1,0 +1,44 @@
+fn t.finish(file: std.fs.File, count: &mut u32) -> () uses [io.fs] panics never
+    core.mem.drop(file.close())
+    *count = (*count).saturating_add(1u32)
+end t.finish
+
+fn t.main() -> Result<(), std.io.Error> uses [io.fs] panics never
+    Ok(())
+end t.main
+
+fn t.save(path: &str, data: &[u8], count: &mut u32) -> Result<(), std.io.Error> uses [io.fs] panics never
+    with mut file = std.fs.create(path)? close t.finish(file, count) {
+        core.mem.drop(file.write(data)?)
+        file.sync()?
+    }
+    Ok(())
+end t.save
+
+fn t.sync_only(path: &str, count: &mut u32) -> Result<(), std.io.Error> uses [io.fs] panics never
+    with mut file = std.fs.create(path)? close t.finish(file, count) {
+        file.sync()?
+    }
+    Ok(())
+end t.sync_only
+
+test t.save.test_sync_succeeds_on_a_regular_file
+    let mut count = 0u32
+    core.check.eq(t.save("ksn_fs_sync_test.txt", b"hello", &mut count), Ok(()))
+    core.check.eq(count, 1u32)
+    core.check.eq(std.fs.exists("ksn_fs_sync_test.txt"), true)
+    core.check.eq(t.sync_only("ksn_fs_sync_test.txt", &mut count), Ok(()))
+    core.check.eq(count, 2u32)
+    core.mem.drop(std.fs.remove_file("ksn_fs_sync_test.txt"))
+    core.check.eq(std.fs.exists("ksn_fs_sync_test.txt"), false)
+end t.save.test_sync_succeeds_on_a_regular_file
+
+test t.save.test_write_error_propagates_and_cleanup_runs
+    if std.fs.exists("/dev/full") {
+        let mut count = 0u32
+        core.check.eq(t.save("/dev/full", b"hello", &mut count).is_err(), true)
+        core.check.eq(count, 1u32)
+        core.check.eq(t.sync_only("/dev/full", &mut count).is_err(), true)
+        core.check.eq(count, 2u32)
+    }
+end t.save.test_write_error_propagates_and_cleanup_runs

@@ -1,3 +1,4 @@
+mod debug;
 mod defs;
 mod doc;
 mod headers;

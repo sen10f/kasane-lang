@@ -23,7 +23,11 @@ pub struct Interp {
     pub depth: usize,
     pub const_cache: HashMap<String, Val>,
     pub args: Vec<String>,
-    pub out: std::io::BufWriter<std::io::Stdout>,
+    pub out: std::io::BufWriter<Box<dyn Write>>,
+    /// `ksn debug` / `ksn dap` のデバッガ (`None` なら何も起きない。debug.rs)
+    pub dbg: Option<Box<crate::debug::Debugger>>,
+    /// デバッガが式を評価している間 true: 副作用・panic のありうる呼び出しを拒否する (debug.rs)
+    pub dbg_guard: bool,
     pub reload: Option<std::sync::mpsc::Receiver<Program>>,
     keep: Vec<Rc<Program>>,
     /// std.fs で開いたファイル (記述子 -> ファイル)
@@ -163,7 +167,9 @@ impl Interp {
             depth: 0,
             const_cache: HashMap::new(),
             args: vec![],
-            out: std::io::BufWriter::new(std::io::stdout()),
+            out: std::io::BufWriter::new(Box::new(std::io::stdout())),
+            dbg: None,
+            dbg_guard: false,
             reload: None,
             keep: vec![],
             files: HashMap::new(),
@@ -206,10 +212,18 @@ impl Interp {
         }
         t.state.set(1);
         let body = t.body.borrow_mut().take();
+        let tracing = self.dbg.is_some();
+        if tracing {
+            self.dbg_thread_enter(self.threads.iter().position(|x| Rc::ptr_eq(x, t)).unwrap_or(0));
+        }
         let r = match body {
-            Some(b) => self.call_value(&b, vec![])?,
-            None => Val::Unit,
+            Some(b) => self.call_value(&b, vec![]),
+            None => Ok(Val::Unit),
         };
+        if tracing {
+            self.dbg_thread_exit();
+        }
+        let r = r?;
         // 本体 (取り込んだ値を持つクロージャ) はここで落ちる: 取り込んだ `Sender` はこの時点で閉じる。
         *t.result.borrow_mut() = Some(r);
         t.state.set(2);
@@ -346,12 +360,22 @@ impl Interp {
             let a = self.coerce(a, pty);
             sc_declare(&sc, pn, a);
         }
+        if self.dbg_guard {
+            self.dbg_guard_def(d)?;
+        }
         self.depth += 1;
         if self.depth > 2500 {
             eprintln!("stack overflow");
             return Err(Ctl::Exit(102));
         }
+        let tracing = self.dbg.is_some();
+        if tracing {
+            self.dbg_enter(d.name.clone(), &sc, true);
+        }
         let r = self.eval_block_body(d.body.as_ref().unwrap(), &sc);
+        if tracing {
+            self.dbg_leave(&r)?;
+        }
         self.depth -= 1;
         let v = match r {
             Ok(v) => v,
@@ -362,13 +386,13 @@ impl Interp {
         Ok(self.coerce(v, &d.ret))
     }
 
-    /// 4.1: `?` のエラー変換。戻り値型が `Result<_, E2>` で `E2` が `core.convert.From<E1>` を持つとき、
-    /// 返す値が `Err(e)` で `e` の型が `E1` (`E2` と別の型) なら、`E1` 用の変換メソッドを呼んで包み直す。
+    /// 4.1: `?` のエラー変換。戻り値型が `Result<_, E2>` で `E2` が `derive [From]` の `enum` のとき、
+    /// 返す値が `Err(e)` で `e` の型が `E1` (`E2` と別の型) なら、`E1` を唯一のペイロードに持つバリアントで包み直す。
     /// 検査を通ったプログラムでは、型の違う `Err` が関数から出る経路は `?` だけなので、
-    /// `?` の位置で変換するのと同じ結果になる (変換は `uses [] panics never`)。
+    /// `?` の位置で変換するのと同じ結果になる (包むのはバリアントの構築だけで、効果もpanicもない)。
     fn convert_err(&mut self, v: Val, ret: &V, file: &str) -> Res {
         use crate::check::{tag, tel};
-        if self.p.from_impls.is_empty() || tag(ret) != "named" || st(tel(ret, 1)) != "Result" {
+        if self.p.from_enums.is_empty() || tag(ret) != "named" || st(tel(ret, 1)) != "Result" {
             return Ok(v);
         }
         let Val::Enum(en) = &v else { return Ok(v) };
@@ -381,23 +405,36 @@ impl Interp {
         }
         let segs: Vec<String> = st(tel(e2, 1)).split('.').map(String::from).collect();
         let e2name = self.p.expand(&segs, file).join(".");
-        let p = self.p.clone();
-        let Some(convs) = p.from_impls.get(&e2name) else { return Ok(v) };
-        let payload = dr(&en.pl[0]);
-        let key = match &payload {
-            Val::Struct(s) => s.ty.clone(),
-            Val::Enum(e) => e.en.clone(),
-            Val::Int(_, Some(k)) => k.to_string(),
-            Val::Bool(_) => "bool".to_string(),
-            Val::Char(_) => "char".to_string(),
-            _ => return Ok(v),
-        };
-        if key == e2name {
+        if !self.p.from_enums.contains(&e2name) {
             return Ok(v);
         }
-        let Some((_, fq)) = convs.iter().find(|(k, _)| k.split('<').next() == Some(key.as_str())) else { return Ok(v) };
-        let Some(&di) = p.funcs.get(fq) else { return Ok(v) };
-        let converted = self.call_def(di, vec![en.pl[0].clone()])?;
+        let payload = dr(&en.pl[0]);
+        let key = match &payload {
+            Val::Struct(s) => Some(s.ty.clone()),
+            Val::Enum(e) => Some(e.en.clone()),
+            Val::Int(_, Some(k)) => Some(k.to_string()),
+            Val::Bool(_) => Some("bool".to_string()),
+            Val::Char(_) => Some("char".to_string()),
+            _ => None,
+        };
+        if key.as_deref() == Some(e2name.as_str()) {
+            return Ok(v);
+        }
+        let Some(&ti) = self.p.types.get(&e2name) else { return Ok(v) };
+        let cands: Vec<&String> = self.p.defs[ti]
+            .variants
+            .iter()
+            .filter(|(_, pl)| pl.len() == 1)
+            .filter(|(_, pl)| match &key {
+                Some(k) => crate::types::from_v(&pl[0], &std::collections::HashSet::new()).show() == *k,
+                None => true,
+            })
+            .map(|(vn, _)| vn)
+            .collect();
+        // 値の型が決まらないとき (文字列・コレクションなど) は、包めるバリアントが 1 つだけのときに限る。
+        let [vn] = cands.as_slice() else { return Ok(v) };
+        let vn = (*vn).clone();
+        let converted = self.mk_variant(&e2name, &vn, vec![en.pl[0].clone()])?;
         Ok(mk_enum("Result", "Err", vec![converted]))
     }
 
@@ -405,7 +442,15 @@ impl Interp {
     pub fn call_body(&mut self, di: usize) -> Res {
         let d = self.def(di);
         let sc = new_scope(None, Rc::from(d.file.as_str()));
-        match self.eval_block_body(d.body.as_ref().unwrap(), &sc) {
+        let tracing = self.dbg.is_some();
+        if tracing {
+            self.dbg_enter(d.name.clone(), &sc, true);
+        }
+        let r = self.eval_block_body(d.body.as_ref().unwrap(), &sc);
+        if tracing {
+            self.dbg_leave(&r)?;
+        }
+        match r {
             Ok(v) => Ok(v),
             Err(Ctl::Return(v)) => Ok(v),
             Err(e) => Err(e),
@@ -421,7 +466,17 @@ impl Interp {
                     let a = self.coerce(a, pty);
                     sc_declare(&sc, pn, a);
                 }
-                let r = match self.eval(&c.body, &sc) {
+                let tracing = self.dbg.is_some();
+                if tracing {
+                    self.dbg_enter("<closure>".into(), &sc, false);
+                } else if self.dbg_guard {
+                    return panic("debugger: calling a closure is not allowed in a debugger expression");
+                }
+                let r = self.eval(&c.body, &sc);
+                if tracing {
+                    self.dbg_leave(&r)?;
+                }
+                let r = match r {
                     Ok(v) => v,
                     Err(Ctl::Return(v)) => v,
                     Err(e) => return Err(e),
@@ -461,6 +516,9 @@ impl Interp {
     }
 
     fn exec_stmt(&mut self, s: &V, sc: &Scope) -> Res {
+        if self.dbg.is_some() {
+            self.dbg_stmt(s, sc)?;
+        }
         let f = nf(s);
         match nname(s) {
             "Let" => {
@@ -1390,6 +1448,9 @@ impl Interp {
             {
                 self.move_out(pe, psc, &v);
             }
+        }
+        if self.dbg_guard {
+            self.dbg_guard_method(name)?;
         }
         self.native_method(&recv, &v, name, args, place)
     }

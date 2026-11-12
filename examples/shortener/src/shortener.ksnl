@@ -66,7 +66,7 @@ fn shortener.serve_cli() -> Result<(), shortener.error.Error> uses [alloc, env, 
         None => return Err(error.Error.BadRequest)
     }
     let count = match std.env.arg(1usize) {
-        Some(c) => usize.parse(c)?
+        Some(c) => usize.parse(c).map_err(error.bad_number)?
         None => return Err(error.Error.BadRequest)
     }
     let path = match std.env.arg(2usize) {

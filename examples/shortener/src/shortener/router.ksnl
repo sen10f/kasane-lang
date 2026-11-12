@@ -55,7 +55,7 @@ fn shortener.router.shorten(db: &mut shortener.store.Store, body: &str) -> Resul
             let out = json.link_body(code_text.as_str(), url)?
             Ok(http.json_response(201u16, out))
         }
-        Err(error.Error.Alloc) => Err(error.Error.Alloc)
+        Err(error.Error.Alloc(a)) => Err(error.Error.Alloc(a))
         Err(_other) => shortener.router.error_response(500u16, "storage failure")
     }
 end shortener.router.shorten

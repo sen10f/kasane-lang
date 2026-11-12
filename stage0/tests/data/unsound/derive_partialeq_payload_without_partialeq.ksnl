@@ -1,0 +1,12 @@
+type t.Raw
+    n: u32
+end t.Raw
+
+enum t.Wrap derive [PartialEq]
+    One(t.Raw)
+    Two
+end t.Wrap
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
