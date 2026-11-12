@@ -8178,3 +8178,143 @@ end t.f
     assert!(out.contains("use `a != b`"), "{}", out);
     assert!(!out.contains("did you mean"), "{}", out);
 }
+
+// ------------------------------------------------------------ ビルドキャッシュ (生成物・キー・バンドル)
+
+const CACHE_SRC: &str = "fn t.main() -> () uses [] panics never
+end t.main
+
+fn t.one() -> u32 uses [] panics never
+    1u32
+end t.one
+
+test t.one.test_a
+    core.check.eq(t.one(), 1u32)
+end t.one.test_a
+";
+
+/// `ksn build` を、指定したキャッシュ dir と追加の引数・環境変数で実行する。
+fn build_with_cache(ksn: &str, cwd: &Path, cache: &Path, extra: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut c = Command::new(ksn);
+    c.arg("build").args(extra).current_dir(cwd).env("KSN_CACHE_DIR", cache).env("KSN_STDLIB", root().join("spec").join("stdlib"));
+    for (k, v) in envs {
+        c.env(k, v);
+    }
+    c.output().expect("spawn ksn build")
+}
+
+#[test]
+fn cache_hit_reuses_native_artifact_without_compiling() {
+    // 1 回目は compile_clif を通り、生成物がキャッシュに入る。2 回目は同じキーで
+    // "cache hit" となり、compile_clif (KSN_TIME の印) を通らずに生成物を複製する。
+    let t = Tmp::new("cache_artifact", CACHE_SRC);
+    let cache = std::env::temp_dir().join(format!("ksn_cache_art_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let exe_file = if cfg!(windows) { "t.exe" } else { "t.native" };
+    let exe_path = t.0.join("target").join("debug").join(exe_file);
+
+    let first = build_with_cache(exe(), &t.0, &cache, &["--backend", "clif"], &[("KSN_TIME", "1")]);
+    assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
+    assert!(!text(&first.stdout).contains("cache hit"), "{}", text(&first.stdout));
+    assert!(text(&first.stderr).contains("KSN_TIME compile_clif_call_total"), "{}", text(&first.stderr));
+    let built = fs::read(&exe_path).expect("native executable after first build");
+
+    // 生成物だけ消し、キャッシュから戻ることを確かめる。
+    fs::remove_file(&exe_path).unwrap();
+    let second = build_with_cache(exe(), &t.0, &cache, &["--backend", "clif"], &[("KSN_TIME", "1")]);
+    assert_eq!(second.status.code(), Some(0), "{}", text(&second.stderr));
+    assert!(text(&second.stdout).contains("cache hit"), "{}", text(&second.stdout));
+    assert!(
+        !text(&second.stderr).contains("KSN_TIME compile_clif"),
+        "cache hit must skip compile_clif: {}",
+        text(&second.stderr)
+    );
+    assert!(text(&second.stdout).contains("native executable: "), "{}", text(&second.stdout));
+    assert_eq!(fs::read(&exe_path).expect("restored executable"), built);
+    let run = Command::new(&exe_path).output().unwrap();
+    assert_eq!(run.status.code(), Some(0));
+
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn build_key_changes_with_ksn_binary_profile_and_backend() {
+    // キーは ksn 本体のバイト列・debug/release・バックエンドで分かれる。
+    // ksn 本体の変化は、同じ実行ファイルの末尾にバイトを足した別物で代用する (Linux / Windows は末尾を無視して動く)。
+    let t = Tmp::new("cache_key", CACHE_SRC);
+    let cache = std::env::temp_dir().join(format!("ksn_cache_key_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let bin_dir = std::env::temp_dir().join(format!("ksn_cache_key_bin_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&bin_dir);
+    fs::create_dir_all(&bin_dir).unwrap();
+    let ksn_a = bin_dir.join(format!("ksn_a{}", std::env::consts::EXE_SUFFIX));
+    let ksn_b = bin_dir.join(format!("ksn_b{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(exe(), &ksn_a).unwrap();
+    fs::copy(exe(), &ksn_b).unwrap();
+    {
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new().append(true).open(&ksn_b).unwrap();
+        f.write_all(b"\0ksn-cache-key-variant\0").unwrap();
+    }
+    let (a, b) = (ksn_a.to_str().unwrap(), ksn_b.to_str().unwrap());
+    let hit = |o: &Output| text(&o.stdout).contains("cache hit");
+    let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
+    let o = build_with_cache(a, &t.0, &cache, &[], &[]);
+    ok(&o);
+    assert!(!hit(&o));
+    let o = build_with_cache(a, &t.0, &cache, &[], &[]);
+    ok(&o);
+    assert!(hit(&o), "same ksn, same profile: {}", text(&o.stdout));
+
+    // 別の ksn 本体 → 別のキー (ヒットしない)。
+    let o = build_with_cache(b, &t.0, &cache, &[], &[]);
+    ok(&o);
+    assert!(!hit(&o), "different ksn binary must not hit: {}", text(&o.stdout));
+
+    // release は別のキー。
+    let o = build_with_cache(a, &t.0, &cache, &["--release"], &[]);
+    ok(&o);
+    assert!(!hit(&o), "release must not reuse debug entry: {}", text(&o.stdout));
+    let o = build_with_cache(a, &t.0, &cache, &["--release"], &[]);
+    ok(&o);
+    assert!(hit(&o));
+
+    // バックエンドが違えば出力も違うので別のキー。
+    let o = build_with_cache(a, &t.0, &cache, &["--backend", "clif"], &[]);
+    ok(&o);
+    assert!(!hit(&o), "clif must not reuse c-backend entry: {}", text(&o.stdout));
+
+    let _ = fs::remove_dir_all(&cache);
+    let _ = fs::remove_dir_all(&bin_dir);
+}
+
+#[test]
+fn bundle_is_rebuilt_when_sources_change() {
+    // `ksn test --both` のバンドルは、ソースが変われば作り直す。
+    // 以前は target/debug に ksn があるだけで再利用され、追加したテストが "no such test" になった。
+    let t = Tmp::new("bundle_fresh", CACHE_SRC);
+    let cache = std::env::temp_dir().join(format!("ksn_cache_bundle_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let test_both = |name: &str| {
+        Command::new(exe())
+            .args(["test", "--both", name])
+            .current_dir(&t.0)
+            .env("KSN_CACHE_DIR", &cache)
+            .env("KSN_STDLIB", root().join("spec").join("stdlib"))
+            .output()
+            .unwrap()
+    };
+    let o = test_both("t.one.test_a");
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+
+    let src = format!("{}\ntest t.one.test_b\n    core.check.eq(t.one(), 1u32)\nend t.one.test_b\n", CACHE_SRC);
+    fs::write(t.0.join("src").join("t.ksnl"), src).unwrap();
+    let o = test_both("t.one.test_b");
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}", out);
+    assert!(out.contains("test t.one.test_b ... ok"), "{}", out);
+    assert!(!out.contains("no such test"), "{}", out);
+
+    let _ = fs::remove_dir_all(&cache);
+}

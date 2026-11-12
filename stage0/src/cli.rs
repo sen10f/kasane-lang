@@ -663,7 +663,11 @@ fn exe_name() -> &'static str {
 
 fn run_in_bundle(root: &Path, fqn: &str, l: &Loaded) -> Option<String> {
     let bdir = root.join("target").join("debug");
-    if !bdir.join(exe_name()).exists() && cmd_build(&[], Some(l)) != 0 {
+    // 既存のバンドルは、今のキー (ksn 本体・ソース) で作られたものだけ使う。
+    // 存在だけで判定すると、ソースや ksn を変えても古いバンドルで走ってしまう。
+    let want = build_key(l, false, "host", "c");
+    let fresh = fs::read_to_string(bdir.join(BUILD_STAMP)).map_or(false, |s| s.trim() == want);
+    if !(fresh && bdir.join(exe_name()).exists()) && cmd_build(&[], Some(l)) != 0 {
         return Some("build failed".into());
     }
     let r = std::process::Command::new(bdir.join(exe_name()))
@@ -1309,6 +1313,41 @@ fn copy_tree(src: &Path, dst: &Path, skip: &[&str]) {
     }
 }
 
+/// キャッシュ entry (ksn・stdlib・pkg) を `target/<kind>` へ複製する。
+/// 直下の `.used` と生成物ディレクトリは除く (`copy_tree` の skip は再帰するので使わない)。
+fn copy_entry(src: &Path, dst: &Path) {
+    let _ = fs::create_dir_all(dst);
+    let Ok(rd) = fs::read_dir(src) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name == ".used" || name == ARTIFACT_DIR {
+            continue;
+        }
+        let (s, d) = (e.path(), dst.join(&name));
+        if s.is_dir() {
+            copy_tree(&s, &d, &[]);
+        } else {
+            let _ = fs::copy(&s, &d);
+        }
+    }
+}
+
+/// 生成したネイティブ実行ファイルをキャッシュ entry に保存する。
+/// entry が消えた後に半端なディレクトリを作らないよう `create_dir` (非再帰) を使う。
+fn store_artifact(cdir: &Path, key: &str, exe: &Path) {
+    let cached = cdir.join(key);
+    let Some(fname) = exe.file_name() else { return };
+    let adir = cached.join(ARTIFACT_DIR);
+    if fs::create_dir(&adir).is_err() && !adir.is_dir() {
+        return;
+    }
+    let tmp = adir.join(format!("{}.tmp", fname.to_string_lossy()));
+    if fs::copy(exe, &tmp).is_ok() {
+        let _ = fs::rename(&tmp, adir.join(fname));
+    }
+    evict(cdir, key);
+}
+
 fn evict(cdir: &Path, keep: &str) {
     let limit: u64 = std::env::var("KSN_CACHE_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(2 * 1024 * 1024 * 1024);
     let Ok(rd) = fs::read_dir(cdir) else { return };
@@ -1330,10 +1369,18 @@ fn evict(cdir: &Path, keep: &str) {
     }
 }
 
-fn build_key(l: &Loaded, release: bool, target: &str) -> String {
+/// キャッシュ entry 内で生成物 (ネイティブ実行ファイル) を置く子ディレクトリ名。
+const ARTIFACT_DIR: &str = "artifact";
+/// `target/<kind>` に置く、そのビルドのキー。バンドルが今の ksn・ソースに対応するかの判定に使う。
+const BUILD_STAMP: &str = ".build-key";
+
+/// ビルドキーの内訳: 生成条件 (ksn 本体・edition・debug/release・ターゲット・バックエンド)、
+/// パッケージと依存のソース、stdlib、ksn 本体のバイト列。
+/// バックエンドは出力が違うので (clif と c) キーに入れる。
+fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
     let mut h = Sha256::new();
     let edition = l.pkg.manifest["package"].get("edition").map(|e| e.to_string()).unwrap_or_default();
-    h.update(format!("{}|{}|{}|{}", VERSION, edition, if release { "release" } else { "debug" }, target).as_bytes());
+    h.update(format!("{}|{}|{}|{}|{}", VERSION, edition, if release { "release" } else { "debug" }, target, backend).as_bytes());
     h.update(package_hash(&l.pkg.root).as_bytes());
     for dp in &l.deps {
         h.update(package_hash(&dp.root).as_bytes());
@@ -1388,7 +1435,7 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         return 1;
     }
     let kind = if release { "release" } else { "debug" };
-    let key = build_key(&l, release, &target);
+    let key = build_key(&l, release, &target, &backend);
     let cdir = cache_dir();
     let cached = cdir.join(&key);
     if cached.is_dir() {
@@ -1413,7 +1460,8 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     }
     let out = l.pkg.root.join("target").join(kind);
     let _ = fs::remove_dir_all(&out);
-    copy_tree(&cached, &out, &[".used"]);
+    copy_entry(&cached, &out);
+    let _ = fs::write(out.join(BUILD_STAMP), &key);
     let name = l.pkg.name.clone();
     // %~dp0 は常に絶対パス。sh 版は $0 (相対パス・PATH 経由の名前) を絶対パスに直してから
     // pkg へ cd する (cd 後に相対パスの $d/ksn を exec すると失敗するため)。
@@ -1436,7 +1484,11 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     let prog = prog.unwrap();
     let entry = l.pkg.entry();
     let exe = out.join(if cfg!(windows) { format!("{}.exe", name) } else { format!("{}.native", name) });
+    // キャッシュに同じキーの生成物があれば複製し、コンパイルとリンクを省く。
+    let stored = cached.join(ARTIFACT_DIR).join(exe.file_name().expect("exe has a file name"));
+    let reused = entry.is_some() && fs::copy(&stored, &exe).is_ok();
     let native: Result<(), String> = match &entry {
+        _ if reused => Ok(()),
         None => Err("library package".into()),
         Some(e) => {
             let mut funcs: HashMap<String, &Def> = HashMap::new();
@@ -1465,6 +1517,9 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
             }
         }
     };
+    if native.is_ok() && !reused {
+        store_artifact(&cdir, &key, &exe);
+    }
     match native {
         Ok(()) => println!("native executable: {}", rel(&norm(&exe))),
         Err(e) => println!("native backend skipped: {}", e),
