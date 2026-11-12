@@ -242,31 +242,26 @@ pub(crate) fn build_program(l: &Loaded) -> (Program, Vec<usize>) {
     (prog, user)
 }
 
-fn check_lock(pkg: &Package, rep: &mut Report) {
-    let deps = pkg.manifest.get("dependencies").and_then(|d| d.as_table()).cloned().unwrap_or_default();
-    let lock = pkg.root.join("kasane.lock");
-    if !deps.is_empty() && !lock.exists() {
-        rep.add("E9020", "kasane.lock is missing; run `ksn update`", Some("kasane.lock"), 1, 1, true);
-        return;
+/// lint がモジュール名を求めるための、ソースルートからの相対パス風の名前。
+/// `tests/` 配下は `<パッケージ>/tests/<名前>` にする (モジュール `<パッケージ>.tests.<名前>`)。
+fn lint_rel(s: &Source, srcroot: &str) -> String {
+    if s.is_test {
+        format!("{}.ksnl", s.module.replace('.', "/"))
+    } else {
+        s.path.strip_prefix(&format!("{}/", srcroot)).unwrap_or(&s.path).to_string()
     }
-    if lock.exists() {
-        let v: toml::Value = fs::read_to_string(&lock).unwrap_or_default().parse().unwrap_or(toml::Value::Table(Default::default()));
-        let names: Vec<String> = v
-            .get("package")
-            .and_then(|p| p.as_array())
-            .map(|a| a.iter().filter_map(|x| x.get("name").and_then(|n| n.as_str()).map(String::from)).collect())
-            .unwrap_or_default();
-        let subset = deps.keys().all(|k| names.contains(k));
-        if !subset || (deps.is_empty() && !names.is_empty()) {
-            rep.add("E9021", "kasane.toml and kasane.lock disagree; run `ksn update`", Some("kasane.lock"), 1, 1, true);
-        }
+}
+
+fn check_lock(pkg: &Package, deps: &[Package], rep: &mut Report) {
+    for (code, msg) in verify_lock(pkg, deps) {
+        rep.add(&code, &msg, Some("kasane.lock"), 1, 1, true);
     }
 }
 
 /// 構文・正規形・意味の検査。構文エラーが無ければ Program を返す。
 fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
     let l = load_all(root)?;
-    check_lock(&l.pkg, rep);
+    check_lock(&l.pkg, &l.deps, rep);
     let srcroot = norm(&l.pkg.root.join("src"));
     let grammar = Grammar::new();
     for s in &l.pkg.sources {
@@ -298,7 +293,7 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
         if !s.text.ends_with('\n') || s.text.ends_with("\n\n") {
             rep.add("E0001", "file must end with exactly one LF", Some(&fl), s.lines.len(), 1, true);
         }
-        let relpath = s.path.strip_prefix(&format!("{}/", srcroot)).unwrap_or(&s.path);
+        let relpath = &lint_rel(s, &srcroot);
         let lt = s.text.replace("\r\n", "\n");
         // 正規形でなくても、`ksn fmt` で正規形になり、その結果が検査を通るなら、並び順や空行は
         // エラーにしない (`fmt --check` が差分として報告する)。意味に関する誤りは従来どおり報告する。
@@ -324,6 +319,7 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
     let diags = {
         let mut ck = Checker::new(&prog, user.clone());
         ck.unsafe_modules = crate::project::unsafe_modules(&l.pkg.manifest);
+        ck.integration_files = l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.clone()).collect();
         ck.run();
         ck.diags
     };
@@ -563,6 +559,7 @@ fn spawn_watcher(l: &Loaded) -> std::sync::mpsc::Receiver<Program> {
         .pkg
         .sources
         .iter()
+        .filter(|s| !s.is_test)
         .map(|s| W {
             path: s.path.clone(),
             lines: s.lines.clone(),
@@ -726,7 +723,9 @@ fn exe_name() -> &'static str {
 
 fn run_in_bundle(root: &Path, fqn: &str, l: &Loaded) -> Option<String> {
     let bdir = root.join("target").join("debug");
-    if !bdir.join(exe_name()).exists() && cmd_build(&[], Some(l)) != 0 {
+    // 同梱物が今のソースから作ったものか (キーが違えば作り直す。古い同梱物でテストしない)。
+    let fresh = fs::read_to_string(bdir.join(".ksn-key")).map_or(false, |k| k.trim() == build_key(l, false, "host"));
+    if !(bdir.join(exe_name()).exists() && fresh) && cmd_build(&[], Some(l)) != 0 {
         return Some("build failed".into());
     }
     let r = std::process::Command::new(bdir.join(exe_name()))
@@ -1324,7 +1323,7 @@ fn cmd_fmt(args: &[String]) -> i32 {
                 text = nt;
             }
         }
-        let relpath = s.path.strip_prefix(&format!("{}/", srcroot)).unwrap_or(&s.path).to_string();
+        let relpath = lint_rel(s, &srcroot);
         for (code, l, m) in Lint::new(&relpath, &text.replace("\r\n", "\n")).run() {
             if code != "unused" {
                 diff = true;
@@ -1354,44 +1353,68 @@ fn cmd_explain(args: &[String]) -> i32 {
     }
 }
 
-fn cmd_update() -> i32 {
-    let (root, pkg, deps) = match find_root().and_then(|r| {
-        let p = load_package(&r)?;
-        let d = load_deps(&p)?;
-        Ok((r, p, d))
-    }) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!("ksn: {}: {}", e.code, e.msg);
-            return 2;
-        }
+fn toml_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// 既存の `kasane.lock` の `[[package]]` を名前で引く。
+fn old_lock(root: &Path) -> std::collections::HashMap<String, toml::Value> {
+    let v: toml::Value = fs::read_to_string(root.join("kasane.lock")).unwrap_or_default().parse().unwrap_or(toml::Value::Table(Default::default()));
+    v.get("package")
+        .and_then(|p| p.as_array())
+        .map(|a| a.iter().filter_map(|e| Some((e.get("name")?.as_str()?.to_string(), e.clone()))).collect())
+        .unwrap_or_default()
+}
+
+/// `ksn update [<名前>]`: 依存を再解決して `kasane.lock` を書く。git 依存は取得元から取り直してハッシュを計算する
+/// (`<名前>` を指定したときは、その依存だけを取り直し、ほかの依存は既存のロックの記録を保つ)。
+fn cmd_update(args: &[String]) -> i32 {
+    let only = args.first().cloned();
+    let fail = |e: ProjectError| {
+        eprintln!("ksn: {}: {}", e.code, e.msg);
+        2
     };
-    let m = pkg.manifest.get("dependencies").and_then(|d| d.as_table()).cloned().unwrap_or_default();
+    let (root, pkg) = match find_root().and_then(|r| load_package(&r).map(|p| (r, p))) {
+        Ok(x) => x,
+        Err(e) => return fail(e),
+    };
+    let old = old_lock(&root);
+    let mode = |n: &str| match &only {
+        None => GitMode::Fresh,
+        Some(o) if o == n => GitMode::Fresh,
+        Some(_) => GitMode::IfMissing,
+    };
+    let deps = match load_deps_with(&pkg, &mode) {
+        Ok(d) => d,
+        Err(e) => return fail(e),
+    };
+    if let Some(o) = &only {
+        if !deps.iter().any(|d| d.name == *o) {
+            return fail(ProjectError { code: "E9017".into(), msg: format!("{} is not a dependency of {}", o, pkg.name) });
+        }
+    }
     let mut lines = vec!["version = 1".to_string(), String::new()];
     let mut sorted: Vec<&Package> = deps.iter().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
     for dp in sorted {
-        let dv = m.get(&dp.name);
         lines.push("[[package]]".into());
-        lines.push(format!("name = \"{}\"", dp.name));
-        if let Some(git) = dv.and_then(|d| d.get("git")).and_then(|g| g.as_str()) {
-            let rev = dv.and_then(|d| d.get("rev")).and_then(|g| g.as_str()).unwrap_or("");
-            lines.push(format!("source = \"git+{}#{}\"", git, rev));
-            lines.push(format!("hash = \"{}\"", package_hash(&dp.root)));
-        } else {
-            let a = norm(&dp.root);
-            let b = norm(&pkg.root);
-            let p = relative_path(&a, &b);
-            lines.push(format!("source = \"path+{}\"", p));
+        lines.push(format!("name = {}", toml_str(&dp.name)));
+        lines.push(format!("source = {}", toml_str(&dp.source)));
+        if dp.source.starts_with("git+") {
+            let kept = only.as_ref().filter(|o| **o != dp.name).and_then(|_| old.get(&dp.name)).and_then(|e| e.get("hash")).and_then(|h| h.as_str()).map(String::from);
+            let hash = match kept {
+                Some(h) => h,
+                None => match try_package_hash(&dp.root) {
+                    Ok(h) => h,
+                    Err(e) => return fail(e),
+                },
+            };
+            lines.push(format!("hash = {}", toml_str(&hash)));
         }
-        let mut dn: Vec<String> = dp
-            .manifest
-            .get("dependencies")
-            .and_then(|d| d.as_table())
-            .map(|t| t.keys().cloned().collect())
-            .unwrap_or_default();
+        let mut dn: Vec<String> =
+            dp.manifest.get("dependencies").and_then(|d| d.as_table()).map(|t| t.keys().cloned().collect()).unwrap_or_default();
         dn.sort();
-        lines.push(format!("deps = [{}]", dn.iter().map(|x| format!("\"{}\"", x)).collect::<Vec<_>>().join(", ")));
+        lines.push(format!("deps = [{}]", dn.iter().map(|x| toml_str(x)).collect::<Vec<_>>().join(", ")));
         lines.push(String::new());
     }
     let text = lines.join("\n").trim_end().to_string() + "\n";
@@ -1399,53 +1422,44 @@ fn cmd_update() -> i32 {
     0
 }
 
-fn relative_path(target: &str, base: &str) -> String {
-    let t: Vec<&str> = target.split('/').collect();
-    let b: Vec<&str> = base.split('/').collect();
-    let mut i = 0;
-    while i < t.len() && i < b.len() && t[i] == b[i] {
-        i += 1;
-    }
-    let mut out: Vec<String> = vec!["..".to_string(); b.len() - i];
-    out.extend(t[i..].iter().map(|x| x.to_string()));
-    if out.is_empty() { ".".into() } else { out.join("/") }
-}
-
+/// `ksn vendor`: git 依存 (推移的なものを含む) を取得元から取り直し、`vendor/<名前>/` に複製する。
+/// `kasane.lock` に記録があれば、取得した内容がそのハッシュと一致することを確かめてから複製する。
 fn cmd_vendor() -> i32 {
+    let fail = |e: ProjectError| {
+        eprintln!("ksn: {}: {}", e.code, e.msg);
+        2
+    };
     let (root, pkg) = match find_root().and_then(|r| load_package(&r).map(|p| (r, p))) {
         Ok(x) => x,
-        Err(e) => {
-            eprintln!("ksn: {}: {}", e.code, e.msg);
-            return 2;
-        }
+        Err(e) => return fail(e),
     };
-    let deps = pkg.manifest.get("dependencies").and_then(|d| d.as_table()).cloned().unwrap_or_default();
-    for (dn, dv) in deps {
-        let Some(git) = dv.get("git").and_then(|g| g.as_str()) else { continue };
-        let dest = root.join("vendor").join(&dn);
-        if dest.is_dir() {
-            continue;
+    let deps = match load_deps_with(&pkg, &|_| GitMode::Fresh) {
+        Ok(d) => d,
+        Err(e) => return fail(e),
+    };
+    let old = old_lock(&root);
+    for dp in deps.iter().filter(|d| d.source.starts_with("git+")) {
+        let actual = match try_package_hash(&dp.root) {
+            Ok(h) => h,
+            Err(e) => return fail(e),
+        };
+        if let Some(h) = old.get(&dp.name).and_then(|e| e.get("hash")).and_then(|h| h.as_str()) {
+            if h != actual {
+                return fail(ProjectError {
+                    code: "E9022".into(),
+                    msg: format!("hash mismatch for {}: kasane.lock says {} but the fetched source has {}; not vendored", dp.name, h, actual),
+                });
+            }
         }
-        let rev = dv.get("rev").and_then(|r| r.as_str()).unwrap_or("");
-        let ok = std::process::Command::new("git").args(["clone", git, &norm(&dest)]).status().map_or(false, |s| s.success())
-            && std::process::Command::new("git").args(["-C", &norm(&dest), "checkout", rev]).status().map_or(false, |s| s.success());
-        if !ok {
-            eprintln!("ksn: failed to vendor {}", dn);
-            return 2;
-        }
+        let dest = root.join("vendor").join(&dp.name);
+        let _ = fs::remove_dir_all(&dest);
+        copy_tree(&dp.root, &dest, &[]);
+        let _ = fs::write(dest.join(".ksn-source"), format!("{}\n", dp.source));
     }
     0
 }
 
 // ------------------------------------------------------------ build
-fn cache_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("KSN_CACHE_DIR") {
-        return PathBuf::from(d);
-    }
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".ksn").join("cache")
-}
-
 fn dir_size(p: &Path) -> u64 {
     let mut n = 0;
     if let Ok(rd) = fs::read_dir(p) {
@@ -1480,7 +1494,7 @@ fn evict(cdir: &Path, keep: &str) {
     let Ok(rd) = fs::read_dir(cdir) else { return };
     let mut ents: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy() != keep)
+        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git")
         .map(|e| {
             let used = e.path().join(".used");
             let t = fs::metadata(&used).or_else(|_| e.metadata()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
@@ -1503,6 +1517,13 @@ fn build_key(l: &Loaded, release: bool, target: &str) -> String {
     h.update(package_hash(&l.pkg.root).as_bytes());
     for dp in &l.deps {
         h.update(package_hash(&dp.root).as_bytes());
+    }
+    // デバッグビルドの同梱物には `tests/` (統合テスト、3.2) が入る。リリースには入れない。
+    if !release {
+        for s in l.pkg.sources.iter().filter(|s| s.is_test) {
+            h.update(s.path.as_bytes());
+            h.update(s.text.as_bytes());
+        }
     }
     for s in &l.std {
         h.update(s.text.as_bytes());
@@ -1560,10 +1581,15 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         copy_tree(&stdlib_dir(), &tmp.join("stdlib"), &[]);
         let pk = tmp.join("pkg");
         copy_tree(&l.pkg.root, &pk, &["target", "__pycache__", ".git"]);
+        if release {
+            // 3.2: テストはリリースビルドから除外する (統合テストのファイルも同梱しない)。
+            let _ = fs::remove_dir_all(pk.join("tests"));
+        }
         for dp in &l.deps {
             copy_tree(&dp.root, &pk.join("vendor").join(&dp.name), &["target", "__pycache__", ".git"]);
         }
         let _ = fs::write(tmp.join(".used"), "");
+        let _ = fs::write(tmp.join(".ksn-key"), &key);
         fs::rename(&tmp, &cached).unwrap();
         evict(&cdir, &key);
     }
@@ -1572,13 +1598,25 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     copy_tree(&cached, &out, &[".used"]);
     let name = l.pkg.name.clone();
     let _ = fs::write(out.join(format!("{}.cmd", name)), "@echo off\r\nset KSN_STDLIB=%~dp0stdlib\r\ncd /d \"%~dp0pkg\"\r\n\"%~dp0ksn.exe\" _exec %*\r\n");
-    let _ = fs::write(out.join(&name), "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nKSN_STDLIB=\"$d/stdlib\"\nexport KSN_STDLIB\ncd \"$d/pkg\" && exec \"$d/ksn\" _exec \"$@\"\n");
+    let _ = fs::write(out.join(&name), "#!/bin/sh\nd=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nKSN_STDLIB=\"$d/stdlib\"\nexport KSN_STDLIB\ncd \"$d/pkg\" && exec \"$d/ksn\" _exec \"$@\"\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(out.join(&name), fs::Permissions::from_mode(0o755));
+    }
     let prog = prog.unwrap();
     let entry = l.pkg.entry();
     let exe = out.join(if cfg!(windows) { format!("{}.exe", name) } else { format!("{}.native", name) });
     let native: Result<(), String> = match &entry {
         None => Err("library package".into()),
         Some(e) => {
+            let test_files: std::collections::HashSet<&str> =
+                l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.as_str()).collect();
+            let mut user: Vec<usize> = user.iter().copied().filter(|&i| !test_files.contains(prog.defs[i].file.as_str())).collect();
+            // 依存パッケージの関数・型も機械語にする (到達できるものだけが出力される)。
+            let dep_files: std::collections::HashSet<&str> =
+                l.deps.iter().flat_map(|dp| dp.sources.iter().map(|s| s.path.as_str())).collect();
+            user.extend((0..prog.defs.len()).filter(|&i| dep_files.contains(prog.defs[i].file.as_str())));
             let mut funcs: HashMap<String, &Def> = HashMap::new();
             for &i in &user {
                 let d = &prog.defs[i];
@@ -1683,7 +1721,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "explain" => cmd_explain(&rest),
         "lsp" => crate::lsp::run(),
         "build" => cmd_build(&rest, None),
-        "update" => cmd_update(),
+        "update" => cmd_update(&rest),
         "vendor" => cmd_vendor(),
         "_exec" => cmd_exec(&rest),
         "--version" | "-V" => {

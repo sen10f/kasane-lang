@@ -2,7 +2,7 @@ import shortener.error
 
 const shortener.http.MAX_BODY: usize = 4096usize
 
-const shortener.http.MAX_HEAD: usize = 8192usize
+const shortener.http.MAX_HEAD: usize = 8192usize pub
 
 type shortener.http.Head pub
     content_length: usize

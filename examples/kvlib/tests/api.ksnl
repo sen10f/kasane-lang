@@ -1,0 +1,18 @@
+import kvlib.lookup
+import kvlib.parse
+
+const kvlib.tests.api.SAMPLE: &str = "# settings\nname = kasane\n\nmode=fast\nbroken line\n"
+
+test kvlib.tests.api.test_lookup_agrees_with_parse
+    let mut seen = 0usize
+    for line in kvlib.tests.api.SAMPLE.split("\n") {
+        match parse.split_line(line) {
+            Some((name, value)) => {
+                seen = seen.wrapping_add(1usize)
+                core.check.eq(lookup.find(kvlib.tests.api.SAMPLE, name), Some(value))
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    core.check.eq(seen, lookup.count(kvlib.tests.api.SAMPLE))
+end kvlib.tests.api.test_lookup_agrees_with_parse
