@@ -1697,10 +1697,18 @@ impl<'a> Checker<'a> {
             return;
         }
         // 整数の `/` `%` に wrapping_ / saturating_ の形は無い。近い名前 (`rem` は f32/f64 のもの) を出すと誤誘導する。
-        let hint = match name {
-            "wrapping_div" | "saturating_div" => Some("integer `/` has no wrapping_ or saturating_ form; use `checked_div(b)` (Option: handle None with `match`)"),
-            "wrapping_rem" | "saturating_rem" => Some("integer `%` has no wrapping_ or saturating_ form; use `checked_rem(b)` (Option: handle None with `match`)"),
+        // `<` 等は partial_cmp から導く演算子で、メソッドではない (4.3)。`lt` を近い名前 (`ln`) に誤誘導しない。
+        let op = match name {
+            "lt" => Some("<"),
+            "le" => Some("<="),
+            "gt" => Some(">"),
+            "ge" => Some(">="),
             _ => None,
+        };
+        let hint: Option<String> = match name {
+            "wrapping_div" | "saturating_div" => Some("integer `/` has no wrapping_ or saturating_ form; use `checked_div(b)` (Option: handle None with `match`)".into()),
+            "wrapping_rem" | "saturating_rem" => Some("integer `%` has no wrapping_ or saturating_ form; use `checked_rem(b)` (Option: handle None with `match`)".into()),
+            _ => op.map(|o| format!("comparison is an operator, not a method; use `a {} b` (PartialOrd, derived from partial_cmp)", o)),
         };
         if let Some(h) = hint {
             self.diag("E1108", format!("unknown method `{}`; {}", name, h), di, line);
@@ -1750,7 +1758,8 @@ impl<'a> Checker<'a> {
         let mut best: Option<(usize, String)> = None;
         for cand in self.p.method_idx.keys() {
             let d = edit_distance(name, cand);
-            let limit = (name.len().max(cand.len()) / 3).max(1);
+            // 短い名前は編集距離 1 の候補を出さない (`lt` → `ln` のような無関係な誤提案を防ぐ)。
+            let limit = name.len().max(cand.len()) / 3;
             if d <= limit && best.as_ref().map_or(true, |(bd, bn)| d < *bd || (d == *bd && cand < bn)) {
                 best = Some((d, cand.clone()));
             }

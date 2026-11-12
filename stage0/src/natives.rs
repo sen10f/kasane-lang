@@ -641,6 +641,13 @@ impl Interp {
         }
     }
 
+    /// `Ord` の提供メソッド `min` / `max` (仕様 4.3)。`cmp` に従い、等しいときは `min` が `self`、`max` が `other`。
+    fn derived_min_max(&mut self, name: &str, me: &Val, other: &Val) -> Res {
+        let c = self.v_cmp(me, other)?.unwrap_or(0);
+        let pick_self = if name == "min" { c <= 0 } else { c > 0 };
+        Ok(if pick_self { me.clone() } else { other.clone() })
+    }
+
     pub fn native_method(&mut self, recv: &Val, v: &Val, name: &str, args: Vec<Val>, place: Option<(&V, &Scope)>) -> Res {
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
         if name == "clone" || name == "try_clone" {
@@ -805,6 +812,7 @@ impl Interp {
                         return Ok(ordering(c));
                     }
                     "eq" => return Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
+                    "min" | "max" => return self.derived_min_max(name, v, &dr(&a0)),
                     _ => {}
                 }
                 if s.ty == "std.time.Instant" && name == "elapsed" {
@@ -822,6 +830,7 @@ impl Interp {
                     let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
                     Ok(ordering(c))
                 }
+                "min" | "max" => self.derived_min_max(name, v, &dr(&a0)),
                 _ => {
                     let d = self.debug_str(v)?;
                     panic(format!("no method {} found for value {}", name, d))
