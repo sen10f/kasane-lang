@@ -3831,6 +3831,107 @@ fn the_cranelift_backend_compiles_map_get_mut_and_hashmap_iter() {
     }
 }
 
+fn clif_hashmap_index_program() -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    match t.run() {",
+        "        Ok(_u) => core.check.eq(1u8, 1u8)",
+        "        Err(_e) => core.panic.panic(\"oom\")",
+        "    }",
+        "    std.io.print_line(\"index ok\")?",
+        "    Ok(())",
+        "end t.main",
+        "",
+        "fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may",
+        "    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
+        "    let mut i = 0u32",
+        "    while i < 300u32 {",
+        "        core.check.eq(m.insert(i, i.wrapping_mul(3u32))?, None)",
+        "        i = i.wrapping_add(1u32)",
+        "    }",
+        "    core.check.eq(m.len(), 300usize)",
+        "    i = 0u32",
+        "    while i < 300u32 {",
+        "        if i % 2u32 == 0u32 {",
+        "            match m.remove(&i) {",
+        "                Some(v) => core.check.eq(v, i.wrapping_mul(3u32))",
+        "                None => core.panic.panic(\"missing even\")",
+        "            }",
+        "        }",
+        "        i = i.wrapping_add(1u32)",
+        "    }",
+        "    core.check.eq(m.len(), 150usize)",
+        "    i = 0u32",
+        "    while i < 300u32 {",
+        "        match m.get(&i) {",
+        "            Some(v) => core.check.eq(*v, i.wrapping_mul(3u32))",
+        "            None => core.check.eq(i % 2u32, 0u32)",
+        "        }",
+        "        i = i.wrapping_add(1u32)",
+        "    }",
+        "    i = 0u32",
+        "    while i < 300u32 {",
+        "        if i % 2u32 == 0u32 {",
+        "            core.check.eq(m.insert(i, i.wrapping_mul(5u32))?, None)",
+        "        }",
+        "        i = i.wrapping_add(1u32)",
+        "    }",
+        "    let mut j = 0u32",
+        "    for (k, v) in m.iter() {",
+        "        let mut want_k = 0u32",
+        "        let mut want_v = 0u32",
+        "        if j < 150u32 {",
+        "            want_k = j.wrapping_mul(2u32).wrapping_add(1u32)",
+        "            want_v = want_k.wrapping_mul(3u32)",
+        "        } else {",
+        "            want_k = j.wrapping_sub(150u32).wrapping_mul(2u32)",
+        "            want_v = want_k.wrapping_mul(5u32)",
+        "        }",
+        "        core.check.eq(*k, want_k)",
+        "        core.check.eq(*v, want_v)",
+        "        j = j.wrapping_add(1u32)",
+        "    }",
+        "    core.check.eq(j, 300u32)",
+        "    let mut s = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
+        "    core.check.eq(s.insert(\"x\", 1u32)?, None)",
+        "    core.check.eq(s.insert(\"y\", 2u32)?, None)",
+        "    core.check.eq(s.insert(\"z\", 3u32)?, None)",
+        "    core.check.eq(s.remove(\"y\"), Some(2u32))",
+        "    core.check.eq(s.get(\"z\"), Some(3u32))",
+        "    core.check.eq(s.insert(\"y\", 4u32)?, None)",
+        "    core.check.eq(s.len(), 3usize)",
+        "    Ok(())",
+        "end t.run",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_hashmap_index_stays_consistent_across_growth_removal_and_reinsertion() {
+    // 索引表（ハッシュ → 組の添字）は、表が育つとき・中ほどの削除で添字が詰まるとき・再挿入のときも、
+    // 検索結果と挿入順を保つ。インタプリタと Cranelift (デバッグ) で同じ出力になる。
+    let t = Tmp::new("hm_index", &clif_hashmap_index_program());
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
+    assert_eq!(text(&interp.stdout).trim(), "index ok");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_hmindex_{}", std::process::id()));
+    let o = Command::new(exe())
+        .args(["build", "--backend", "clif"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    assert!(p.exists(), "native executable missing: {}", out);
+    let r = Command::new(&p).output().unwrap();
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    let _ = fs::remove_dir_all(&cache);
+}
+
 /// `std.sync.Mutex`（`spawn` と同じく同期実行）。`lock` は値のアドレスをそのままガードとして返し、
 /// `get` / `get_mut` は同じ場所を読み書きする。ガードの `Drop` は no-op。
 fn clif_sync_program() -> String {

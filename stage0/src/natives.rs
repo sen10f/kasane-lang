@@ -385,10 +385,10 @@ fn deep(v: &Val) -> Val {
         Val::Vec(l) => Val::Vec(new_list(l.borrow().iter().map(deep).collect())),
         Val::View(l, a, b) => Val::Arr(new_list(l.borrow()[*a..*b].iter().map(deep).collect())),
         Val::StrBuf(b) => Val::StrBuf(Rc::new(RefCell::new(b.borrow().clone()))),
-        Val::Map(m) => Val::Map(Rc::new(RefCell::new(MapV {
-            kind: m.borrow().kind.clone(),
-            d: m.borrow().d.iter().map(|(k, x)| (deep(k), deep(x))).collect(),
-        }))),
+        Val::Map(m) => Val::Map(Rc::new(RefCell::new(MapV::new(
+            &m.borrow().kind,
+            m.borrow().d.iter().map(|(k, x)| (deep(k), deep(x))).collect(),
+        )))),
         other => other.clone(),
     }
 }
@@ -545,8 +545,8 @@ impl Interp {
             "alloc.string.String.new" => Ok(Val::StrBuf(Rc::new(RefCell::new(String::new())))),
             "alloc.string.String.from_str" => Ok(ok(Val::StrBuf(Rc::new(RefCell::new(str_of(&args[1]).unwrap_or_default()))))),
             "alloc.collections.VecDeque.new" => Ok(Val::Vec(new_list(vec![]))),
-            "alloc.collections.HashMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV { kind: "HashMap".into(), d: vec![] })))),
-            "alloc.collections.BtreeMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV { kind: "BtreeMap".into(), d: vec![] })))),
+            "alloc.collections.HashMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV::new("HashMap", vec![]))))),
+            "alloc.collections.BtreeMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV::new("BtreeMap", vec![]))))),
             "alloc.boxed.Box.new" => Ok(ok(Val::Struct(Rc::new(StructV {
                 ty: "alloc.boxed.Box".into(),
                 f: RefCell::new(vec![("value".into(), args[1].clone())]),
@@ -1092,13 +1092,12 @@ impl Interp {
 
     fn map_method(&mut self, m: Rc<RefCell<MapV>>, name: &str, args: Vec<Val>) -> Res {
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
-        let find = |m: &Rc<RefCell<MapV>>, k: &Val| {
-            let hk = hkey(k);
-            m.borrow().d.iter().position(|(x, _)| hkey(x) == hk)
-        };
+        // 等価は `hkey` の一致で決める（従来の線形探索と同じ規則）。位置は索引 `idx` から引く。
+        let find = |m: &Rc<RefCell<MapV>>, k: &Val| m.borrow().idx.get(&hkey(k)).copied();
         match name {
             "insert" => {
-                let pos = find(&m, &a0);
+                let hk = hkey(&a0);
+                let pos = m.borrow().idx.get(&hk).copied();
                 let old = match pos {
                     Some(i) => {
                         let o = m.borrow().d[i].1.clone();
@@ -1106,7 +1105,10 @@ impl Interp {
                         Some(o)
                     }
                     None => {
-                        m.borrow_mut().d.push((a0, args[1].clone()));
+                        let mut mb = m.borrow_mut();
+                        let n = mb.d.len();
+                        mb.d.push((a0, args[1].clone()));
+                        mb.idx.insert(hk, n);
                         None
                     }
                 };
@@ -1115,7 +1117,21 @@ impl Interp {
             "get" => Ok(find(&m, &a0).map_or_else(none, |i| some(m.borrow().d[i].1.clone()))),
             "get_mut" => Ok(find(&m, &a0).map_or_else(none, |i| some(Val::Ref(Rc::new(MapPlace(m.clone(), i)))))),
             "contains_key" => Ok(Val::Bool(find(&m, &a0).is_some())),
-            "remove" => Ok(find(&m, &a0).map_or_else(none, |i| some(m.borrow_mut().d.remove(i).1))),
+            "remove" => {
+                let hk = hkey(&a0);
+                let Some(i) = m.borrow().idx.get(&hk).copied() else { return Ok(none()) };
+                let mut mb = m.borrow_mut();
+                let MapV { d, idx, .. } = &mut *mb;
+                let (_, v) = d.remove(i);
+                idx.remove(&hk);
+                // 後ろの組は添字が 1 つ詰まる。挿入順を保つための添字の付け替え（ハッシュは計算しない）。
+                for p in idx.values_mut() {
+                    if *p > i {
+                        *p -= 1;
+                    }
+                }
+                Ok(some(v))
+            }
             "len" => Ok(usz(m.borrow().d.len())),
             "is_empty" => Ok(Val::Bool(m.borrow().d.is_empty())),
             "iter" => {
