@@ -2024,6 +2024,81 @@ fn the_stack_estimate_covers_indirect_calls() {
     assert!(!codes(&out).iter().any(|c| c.starts_with("E40")), "{}", out);
 }
 
+/// `t.spin` が `Fn` 境界の `t.gen` 経由でクロージャから自分を呼ぶ再帰。`gen_args` は `t.gen` の
+/// 境界の引数タプル、`call` はその呼び出し、`closure` はクロージャの頭と本体の先頭の行。
+fn closure_frame_program(gen_args: &str, call: &str, closure: &[&str], declared: u32) -> String {
+    let nl = char::from(10u8).to_string();
+    let mut lines: Vec<String> = [
+        "type t.Big",
+        "    a: u128",
+        "    b: u128",
+        "    c: u128",
+        "    d: u128",
+        "end t.Big",
+        "",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    lines.push(format!(
+        "fn t.gen[F: core.ops.Fn<{}, (), [], never>](f: F) -> () uses [] panics never stack 4096",
+        gen_args
+    ));
+    lines.push(format!("    {}", call));
+    lines.push("end t.gen".into());
+    lines.push("".into());
+    lines.push("fn t.main() -> Result<(), std.io.Error> uses [] panics never".into());
+    lines.push("    t.spin()".into());
+    lines.push("    Ok(())".into());
+    lines.push("end t.main".into());
+    lines.push("".into());
+    lines.push(format!("fn t.spin() -> () uses [] panics never stack {}", declared));
+    lines.extend(closure.iter().map(|s| s.to_string()));
+    lines.push("        t.spin()".into());
+    lines.push("    })".into());
+    lines.push("end t.spin".into());
+    lines.push("".into());
+    lines.join(&nl)
+}
+
+fn closure_frame_codes(name: &str, src: &str) -> (Vec<String>, String) {
+    let t = Tmp::new(name, src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    let fmt = run(&["fmt", "--check"], &t.0);
+    assert_eq!(fmt.status.code(), Some(0), "{}", text(&fmt.stdout));
+    (codes(&out), out)
+}
+
+#[test]
+fn the_stack_estimate_sizes_the_lets_of_a_closure_frame() {
+    // 5.3: クロージャの節のフレームは 32 固定ではなく、`let` の型の大きさ (t.Big = 64) を数える。
+    // spin 96 (32 + 64) + gen 48 + クロージャ 96 + drop 32 = 272。32 固定だと 208 で宣言 240 に収まっていた。
+    let closure = [
+        "    t.gen(fn() -> () capture [] {",
+        "        let b: t.Big = t.Big { a: 0u128, b: 0u128, c: 0u128, d: 0u128 }",
+        "        core.mem.drop(b)",
+    ];
+    let (got, out) = closure_frame_codes("clo_let", &closure_frame_program("()", "f.call(())", &closure, 240));
+    assert_eq!(got, vec!["E4012".to_string()], "{}", out);
+    assert!(out.contains("estimated stack use 272 exceeds declared 240"), "{}", out);
+    let (got, out) = closure_frame_codes("clo_let_ok", &closure_frame_program("()", "f.call(())", &closure, 272));
+    assert!(got.is_empty(), "{}", out);
+}
+
+#[test]
+fn the_stack_estimate_sizes_the_parameters_of_a_closure_frame() {
+    // クロージャの引数 (b: t.Big = 64) もフレームに数える。spin 32 + gen 48 + クロージャ 96 + drop 32 = 208。
+    let gen_call = "f.call((t.Big { a: 0u128, b: 0u128, c: 0u128, d: 0u128 },))";
+    let closure = ["    t.gen(fn(b: t.Big) -> () capture [] {", "        core.mem.drop(b)"];
+    let src = closure_frame_program("(t.Big,)", gen_call, &closure, 180);
+    let (got, out) = closure_frame_codes("clo_param", &src);
+    assert_eq!(got, vec!["E4012".to_string()], "{}", out);
+    assert!(out.contains("estimated stack use 208 exceeds declared 180"), "{}", out);
+    let src = closure_frame_program("(t.Big,)", gen_call, &closure, 208);
+    let (got, out) = closure_frame_codes("clo_param_ok", &src);
+    assert!(got.is_empty(), "{}", out);
+}
+
 fn clif_program(last_check: &str) -> String {
     let nl = char::from(10u8).to_string();
     [

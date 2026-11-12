@@ -192,6 +192,9 @@ pub struct TypeCk<'a> {
     fn_closures: HashMap<(String, String), Vec<String>>,
     /// 関数の FQN → 本体の中で呼んでいる `Fn` 境界パラメータの局所名の集合 (5.3 の近似)。
     param_called: HashMap<String, HashSet<String>>,
+    /// クロージャの節 → (パラメータの型注釈, 本体)。`stack` の見積り (E4012) で、
+    /// クロージャの節のフレームを引数と `let` の型の大きさから計算するのに使う (5.3)。
+    pub closure_frames: std::collections::BTreeMap<String, (Vec<V>, V)>,
 }
 
 impl<'a> TypeCk<'a> {
@@ -210,7 +213,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_frames: Default::default() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1176,6 +1179,8 @@ impl<'a> TypeCk<'a> {
                 let node = format!("{}#{}", self.def().name.clone(), self.closure_seq);
                 self.closure_seq += 1;
                 self.closure_nodes.push(node.clone());
+                let ptys: Vec<V> = items(&f[0]).iter().map(|p| items(p).get(1).cloned().unwrap_or(V::Nil)).collect();
+                self.closure_frames.insert(node.clone(), (ptys, f[3].clone()));
                 self.scopes.push(HashMap::new());
                 for p in items(&f[0]) {
                     let ty = subst_params_unknown(&from_v(&items(p)[1], &gn));
