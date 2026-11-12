@@ -21,6 +21,15 @@ use cranelift_module::{default_libcall_names, DataDescription, FuncId, Linkage, 
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::check::{items, nf, nline, nname, st, strs, tag, tel};
+
+// [Step 0 計測用 一時コード] 単相化 (型引数の決定とインスタンスの宣言) に使った時間の累計 (ns)。
+thread_local! { static MONO_NS: std::cell::Cell<u128> = const { std::cell::Cell::new(0) }; }
+fn mono_timed<T>(f: impl FnOnce() -> T) -> T {
+    let t = std::time::Instant::now();
+    let r = f();
+    MONO_NS.with(|c| c.set(c.get() + t.elapsed().as_nanos()));
+    r
+}
 use crate::parser::V;
 use crate::program::{Def, Program};
 
@@ -1183,6 +1192,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// 呼び出しの引数の型 (わかるもの) から、総称な呼び出し先の型パラメータを決める。
     /// `Fn` 境界の型パラメータには、渡されたクロージャ (キャプチャなし) を `closure<id>` として束縛する。
     fn callee_subst(&self, d: &Def, args: &[V], recv_ty: Option<&str>, env: &Env, expect: Option<&str>) -> Option<HashMap<String, String>> {
+        mono_timed(|| self.callee_subst_raw(d, args, recv_ty, env, expect))
+    }
+
+    fn callee_subst_raw(&self, d: &Def, args: &[V], recv_ty: Option<&str>, env: &Env, expect: Option<&str>) -> Option<HashMap<String, String>> {
         let tps = type_params(d);
         if tps.is_empty() {
             return Some(HashMap::new());
@@ -1453,6 +1466,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     /// 関数 `d` の具体化 (`subst` が空なら元の関数) の識別子を返す。まだ宣言していなければ宣言して、生成の待ち行列に入れる。
     fn func_id(&mut self, d: &'a Def, fq: &str, subst: &HashMap<String, String>) -> R<FuncId> {
+        mono_timed(|| self.func_id_raw(d, fq, subst))
+    }
+
+    fn func_id_raw(&mut self, d: &'a Def, fq: &str, subst: &HashMap<String, String>) -> R<FuncId> {
         let tps = type_params(d);
         let key = if tps.is_empty() {
             fq.to_string()
@@ -6364,16 +6381,21 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
+    let tm_all = std::time::Instant::now();
+    let tm_on = std::env::var_os("KSN_TIME").is_some();
+    MONO_NS.with(|c| c.set(0));
     let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
     let isa = cranelift_native::builder().map_err(|e| e.to_string())?.finish(settings::Flags::new(flags)).map_err(|e| e.to_string())?;
+    let t_isa = tm_all.elapsed();
     let ob = ObjectBuilder::new(isa, "kasane", default_libcall_names()).map_err(|e| e.to_string())?;
     let mut module = ObjectModule::new(ob);
     let ptr = module.target_config().pointer_type();
 
     // 呼び出される関数を集める。メソッド呼び出しも辿るため、`T.name` の形の関数は型の名前で拾う。
+    let t_setup = tm_all.elapsed();
     let mut todo = vec![entry.to_string()];
     let mut seen: HashSet<String> = HashSet::new();
     let mut order = vec![];
@@ -6471,6 +6493,7 @@ pub fn compile_clif(
     let memmove = module.declare_function("memmove", Linkage::Import, &sig).map_err(|e| e.to_string())?;
     let rt = Rt { puts, write, exit, realloc, free, memcpy, memcmp, memmove, utf8 };
 
+    let t_collect = tm_all.elapsed();
     // 関数の宣言。入口は C の `main` にする。構造体・列挙型を返す関数は、先頭に戻り値用のアドレスを取る。
     let ids: RefCell<HashMap<String, FuncId>> = RefCell::new(HashMap::new());
     let pending: RefCell<Vec<Inst>> = RefCell::new(vec![]);
@@ -6485,6 +6508,7 @@ pub fn compile_clif(
         queue.push(Inst { key: n.clone(), def: d, subst: HashMap::new(), entry: n == entry });
     }
 
+    let t_declare = tm_all.elapsed();
     let mut data_n = 0usize;
     let mut fbc = FunctionBuilderContext::new();
     define_utf8_valid(&mut module, rt.utf8, &mut fbc)?;
@@ -6542,11 +6566,24 @@ pub fn compile_clif(
         queue.extend(newly);
     }
 
+    let t_codegen = tm_all.elapsed();
     let bytes = module.finish().emit().map_err(|e| e.to_string())?;
+    let t_emit = tm_all.elapsed();
     let opath = format!("{}.o", out_path);
     std::fs::write(&opath, bytes).map_err(|e| e.to_string())?;
+    let t_write = tm_all.elapsed();
     let cc = ["gcc", "cc", "clang"].iter().find(|c| which(c)).ok_or("no linker found (gcc / cc / clang)")?;
     let r = std::process::Command::new(cc).args(["-o", out_path, &opath]).output().map_err(|e| e.to_string())?;
+    let t_link = tm_all.elapsed();
+    if tm_on {
+        let mono = MONO_NS.with(|c| c.get()) as f64 / 1e6;
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+        eprintln!(
+            "KSN_TIME compile_clif: isa={:.2} collect={:.2} declare={:.2} codegen_loop={:.2} (mono_inside={:.2}) emit={:.2} write_o={:.2} link={:.2} total={:.2} [ms]; insts={} ",
+            ms(t_isa), ms(t_collect - t_setup), ms(t_declare - t_collect), ms(t_codegen - t_declare), mono,
+            ms(t_emit - t_codegen), ms(t_write - t_emit), ms(t_link - t_write), ms(t_link), ids.borrow().len()
+        );
+    }
     if !r.status.success() {
         let err: String = String::from_utf8_lossy(&r.stderr).trim().chars().take(300).collect();
         return Err(format!("link failed: {}", err));

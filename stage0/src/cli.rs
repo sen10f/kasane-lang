@@ -1421,6 +1421,7 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                 }
             }
             if backend == "clif" {
+                let t_cc = std::time::Instant::now();
                 let mut tdefs: HashMap<String, &Def> = HashMap::new();
                 for &i in &user {
                     let d = &prog.defs[i];
@@ -1428,7 +1429,11 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                         tdefs.insert(d.name.clone(), d);
                     }
                 }
-                crate::clif::compile_clif(&prog, &funcs, &tdefs, e, &norm(&exe), release)
+                let r = crate::clif::compile_clif(&prog, &funcs, &tdefs, e, &norm(&exe), release);
+                if std::env::var_os("KSN_TIME").is_some() {
+                    eprintln!("KSN_TIME compile_clif_call_total={:.2} [ms]", t_cc.elapsed().as_secs_f64() * 1e3);
+                }
+                r
             } else {
                 crate::cnative::compile_native(&funcs, e, &norm(&exe), release)
             }
