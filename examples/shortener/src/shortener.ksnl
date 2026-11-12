@@ -1,0 +1,113 @@
+import shortener.client
+import shortener.error
+import shortener.http
+import shortener.server
+import shortener.store
+
+const shortener.DEMO_DB: &str = "shortener-demo.tmp"
+
+fn shortener.announce(line: &str) -> Result<(), shortener.error.Error> uses [io.console] panics never
+    std.io.print_line(line).map_err(error.io)
+end shortener.announce
+
+fn shortener.bad_count(_e: core.num.ParseIntError) -> shortener.error.Error uses [] panics never
+    error.Error.BadRequest
+end shortener.bad_count
+
+fn shortener.demo() -> Result<(), shortener.error.Error> uses [alloc, io.console, io.fs, io.net] panics never
+    let listener = std.net.listen("127.0.0.1:0").map_err(error.net)?
+    let mut db = match store.Store.load(shortener.DEMO_DB) {
+        Ok(s) => s
+        Err(e) => {
+            core.mem.drop(listener.close())
+            return Err(e)
+        }
+    }
+    let ran = shortener.demo_script(&listener, &mut db)
+    core.mem.drop(listener.close())
+    core.mem.drop(std.fs.remove_file(shortener.DEMO_DB))
+    ran
+end shortener.demo
+
+fn shortener.demo_script(listener: &std.net.TcpListener, db: &mut shortener.store.Store) -> Result<(), shortener.error.Error> uses [alloc, io.console, io.fs, io.net] panics never
+    let url = "https://example.test/a/long/path?x=1"
+    let created = "{\"code\":\"1000\",\"url\":\"https://example.test/a/long/path?x=1\"}"
+    shortener.step(listener, db, "POST", "/shorten", url, 201u16, created)?
+    shortener.step(listener, db, "GET", "/1000", "", 302u16, created)?
+    shortener.step(listener, db, "GET", "/1001", "", 404u16, "{\"error\":\"not found\"}")?
+    shortener.step(listener, db, "GET", "/stats", "", 200u16, "{\"links\":1}")?
+    shortener.step(listener, db, "POST", "/shorten", "nope", 400u16, "{\"error\":\"invalid url\"}")?
+    shortener.step(listener, db, "DELETE", "/1000", "", 405u16, "{\"error\":\"method not allowed\"}")?
+    let junk = client.exchange(listener, db, "garbage\r\n\r\n")?
+    shortener.expect(junk.status == 400u16)?
+    shortener.announce("garbage -> 400")?
+    let reloaded = store.Store.load(shortener.DEMO_DB)?
+    shortener.expect(reloaded.len() == 1usize)?
+    shortener.expect(reloaded.lookup("1000") == Some(url))?
+    shortener.announce("persisted links reloaded: 1")
+end shortener.demo_script
+
+fn shortener.expect(ok: bool) -> Result<(), shortener.error.Error> uses [] panics never
+    if ok {
+        return Ok(())
+    }
+    Err(error.Error.Mismatch)
+end shortener.expect
+
+fn shortener.main() -> Result<(), shortener.error.Error> uses [alloc, env, io.console, io.fs, io.net] panics never
+    if std.env.arg_count() == 0usize {
+        return shortener.demo()
+    }
+    shortener.serve_cli()
+end shortener.main
+
+fn shortener.serve_cli() -> Result<(), shortener.error.Error> uses [alloc, env, io.console, io.fs, io.net] panics never
+    let address = match std.env.arg(0usize) {
+        Some(a) => a
+        None => return Err(error.Error.BadRequest)
+    }
+    let count = match std.env.arg(1usize) {
+        Some(c) => usize.parse(c).map_err(shortener.bad_count)?
+        None => return Err(error.Error.BadRequest)
+    }
+    let path = match std.env.arg(2usize) {
+        Some(p) => p
+        None => return Err(error.Error.BadRequest)
+    }
+    let listener = std.net.listen(address).map_err(error.net)?
+    let mut db = match store.Store.load(path) {
+        Ok(s) => s
+        Err(e) => {
+            core.mem.drop(listener.close())
+            return Err(e)
+        }
+    }
+    let served = server.serve(&listener, &mut db, count)
+    core.mem.drop(listener.close())
+    let n = served?
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("served ").map_err(error.oom)?
+    line.push_u64(u64.from_usize(n)).map_err(error.oom)?
+    shortener.announce(line.as_str())
+end shortener.serve_cli
+
+fn shortener.step(listener: &std.net.TcpListener, db: &mut shortener.store.Store, method: &str, path: &str, body: &str, status: u16, expected: &str) -> Result<(), shortener.error.Error> uses [alloc, io.console, io.fs, io.net] panics never
+    let request = http.build_request(method, path, body)?
+    let reply = client.exchange(listener, db, request.as_str())?
+    shortener.expect(reply.status == status)?
+    shortener.expect(reply.body.as_str() == expected)?
+    shortener.expect(status != 302u16 || !reply.location.is_empty())?
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str(method).map_err(error.oom)?
+    line.push_str(" ").map_err(error.oom)?
+    line.push_str(path).map_err(error.oom)?
+    line.push_str(" -> ").map_err(error.oom)?
+    line.push_u64(u64.from_u16(reply.status)).map_err(error.oom)?
+    line.push_str(" ").map_err(error.oom)?
+    line.push_str(reply.body.as_str()).map_err(error.oom)?
+    if !reply.location.is_empty() {
+        line.push_str(" Location: ").map_err(error.oom)?
+        line.push_str(reply.location.as_str()).map_err(error.oom)?
+    }
+    shortener.announce(line.as_str())
+end shortener.step

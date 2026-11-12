@@ -1,0 +1,11 @@
+fn t.bad(l: &std.net.TcpListener, flag: bool) -> Result<(), std.net.Error> uses [io.net] panics never
+    let s = l.accept()?
+    if flag {
+        core.mem.drop(s.close())
+    }
+    Ok(())
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -1,0 +1,145 @@
+import shortener.error
+
+const shortener.code.BASE: u32 = 36u32
+
+const shortener.code.OFFSET: u64 = 46656u64
+
+fn shortener.code.digit_char(d: u8) -> char uses [] panics never pub
+    let mut base = b'0'
+    if d >= 10u8 {
+        base = b'a'.wrapping_sub(10u8)
+    }
+    match char.try_from_u32(u32.from_u8(base.wrapping_add(d))) {
+        Some(c) => c
+        None => '?'
+    }
+end shortener.code.digit_char
+
+fn shortener.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
+    let mut digits = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rest = n
+    loop {
+        let d = rest.checked_rem(36u64)
+        match d {
+            Some(v) => {
+                match u8.try_from_u64(v) {
+                    Ok(small) => digits.push(small).map_err(error.oom)?
+                    Err(_e) => return Err(error.Error.Corrupt)
+                }
+            }
+            None => return Err(error.Error.Corrupt)
+        }
+        rest = match rest.checked_div(36u64) {
+            Some(q) => q
+            None => return Err(error.Error.Corrupt)
+        }
+        if rest == 0u64 {
+            break
+        }
+    }
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let len = digits.len()
+    for k in core.iter.range(0usize, len) {
+        let at = len.wrapping_sub(k).wrapping_sub(1usize)
+        match digits.as_slice().get(at) {
+            Some(d) => out.push(shortener.code.digit_char(d)).map_err(error.oom)?
+            None => return Err(error.Error.Corrupt)
+        }
+    }
+    Ok(out)
+end shortener.code.encode
+
+fn shortener.code.for_index(index: u64) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
+    match index.checked_add(shortener.code.OFFSET) {
+        Some(n) => shortener.code.encode(n)
+        None => Err(error.Error.Full)
+    }
+end shortener.code.for_index
+
+fn shortener.code.is_canonical(text: &str) -> bool uses [] panics never
+    if text.is_empty() {
+        return false
+    }
+    if text.len() > 12usize {
+        return false
+    }
+    if text.len() > 1usize && text.starts_with("0") {
+        return false
+    }
+    for c in text.chars() {
+        let ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')
+        if !ok {
+            return false
+        }
+    }
+    true
+end shortener.code.is_canonical
+
+fn shortener.code.to_index(text: &str) -> Option<u64> uses [] panics never pub
+    if !shortener.code.is_canonical(text) {
+        return None
+    }
+    match u64.from_str_radix(text, shortener.code.BASE) {
+        Ok(n) => n.checked_sub(shortener.code.OFFSET)
+        Err(_e) => None
+    }
+end shortener.code.to_index
+
+test shortener.code.encode.test_base36
+    match shortener.code.encode(0u64) {
+        Ok(s) => core.check.eq(s.as_str(), "0")
+        Err(_e) => core.panic.panic("encode 0")
+    }
+    match shortener.code.encode(35u64) {
+        Ok(s) => core.check.eq(s.as_str(), "z")
+        Err(_e) => core.panic.panic("encode 35")
+    }
+    match shortener.code.encode(36u64) {
+        Ok(s) => core.check.eq(s.as_str(), "10")
+        Err(_e) => core.panic.panic("encode 36")
+    }
+    match shortener.code.encode(18446744073709551615u64) {
+        Ok(s) => core.check.eq(s.as_str(), "3w5e11264sgsf")
+        Err(_e) => core.panic.panic("encode max")
+    }
+end shortener.code.encode.test_base36
+
+test shortener.code.for_index.test_sequence
+    match shortener.code.for_index(0u64) {
+        Ok(s) => core.check.eq(s.as_str(), "1000")
+        Err(_e) => core.panic.panic("index 0")
+    }
+    match shortener.code.for_index(1u64) {
+        Ok(s) => core.check.eq(s.as_str(), "1001")
+        Err(_e) => core.panic.panic("index 1")
+    }
+    match shortener.code.for_index(36u64) {
+        Ok(s) => core.check.eq(s.as_str(), "1010")
+        Err(_e) => core.panic.panic("index 36")
+    }
+    core.check.eq(shortener.code.for_index(18446744073709551615u64).is_err(), true)
+end shortener.code.for_index.test_sequence
+
+test shortener.code.to_index.test_rejects_noncanonical
+    core.check.eq(shortener.code.to_index(""), None)
+    core.check.eq(shortener.code.to_index("0"), None)
+    core.check.eq(shortener.code.to_index("zz"), None)
+    core.check.eq(shortener.code.to_index("01000"), None)
+    core.check.eq(shortener.code.to_index("10A0"), None)
+    core.check.eq(shortener.code.to_index("+1000"), None)
+    // "stats" は正当な符号 (添字 48349648)。ルータが /stats を先に判定するので衝突は約 4800 万件目まで起きない
+    core.check.eq(shortener.code.to_index("stats"), Some(48349648u64))
+    core.check.eq(shortener.code.to_index("zzzzzzzzzzzzz"), None)
+    core.check.eq(shortener.code.to_index("3w5e11264sgsg"), None)
+end shortener.code.to_index.test_rejects_noncanonical
+
+test shortener.code.to_index.test_round_trip
+    core.check.eq(shortener.code.to_index("1000"), Some(0u64))
+    core.check.eq(shortener.code.to_index("1010"), Some(36u64))
+    for i in core.iter.range(0u64, 200u64) {
+        match shortener.code.for_index(i * 7u64) {
+            Ok(s) => core.check.eq(shortener.code.to_index(s.as_str()), Some(i * 7u64))
+            Err(_e) => core.panic.panic("for_index")
+        }
+    }
+end shortener.code.to_index.test_round_trip

@@ -1,0 +1,34 @@
+enum shortener.error.Error derive [Debug, Clone, Copy, PartialEq] pub
+    Alloc
+    BadRequest
+    Closed
+    Corrupt
+    Full
+    Io
+    Mismatch
+    Net(i32)
+    TooLarge
+end shortener.error.Error
+
+fn shortener.error.io(_e: std.io.Error) -> shortener.error.Error uses [] panics never pub
+    shortener.error.Error.Io
+end shortener.error.io
+
+fn shortener.error.net(e: std.net.Error) -> shortener.error.Error uses [] panics never pub
+    shortener.error.Error.Net(e.code)
+end shortener.error.net
+
+fn shortener.error.oom(_e: alloc.alloc.AllocError) -> shortener.error.Error uses [] panics never pub
+    shortener.error.Error.Alloc
+end shortener.error.oom
+
+fn shortener.error.push_bytes(e: alloc.string.PushBytesError) -> shortener.error.Error uses [] panics never pub
+    match e {
+        alloc.string.PushBytesError.Alloc(_a) => shortener.error.Error.Alloc
+        alloc.string.PushBytesError.InvalidUtf8(_u) => shortener.error.Error.BadRequest
+    }
+end shortener.error.push_bytes
+
+fn shortener.error.utf8(_e: core.str.Utf8Error) -> shortener.error.Error uses [] panics never pub
+    shortener.error.Error.BadRequest
+end shortener.error.utf8
