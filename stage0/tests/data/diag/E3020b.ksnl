@@ -1,0 +1,7 @@
+type t.S
+    f: &u8
+end t.S
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
