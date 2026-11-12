@@ -505,8 +505,6 @@ fn shortener_end_to_end_sequence() {
     let p = Pkg::from(&src, "shortener");
     let n = p.assert_healthy("baseline");
     assert_eq!(n, 34);
-    let msg = p.rename_refused("shortener.error.Error.from_value_io_error", "shortener.error.Error.from_io");
-    assert!(msg.contains("implements a trait method"), "{}", msg);
     for (old, new) in [
         ("shortener.code.encode", "shortener.code.encode_u64"),
         ("shortener.http.build_request", "shortener.http.make_request"),

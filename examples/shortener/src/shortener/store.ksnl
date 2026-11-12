@@ -122,7 +122,7 @@ fn shortener.store.read_text(path: &str) -> Result<alloc.string.String<std.alloc
         core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
     }
     let mut text = alloc.string.String.new(std.alloc.SYSTEM)
-    text.push_bytes(data.as_slice())?
+    text.push_bytes(data.as_slice()).map_err(error.push_failed)?
     Ok(text)
 end shortener.store.read_text
 
@@ -160,11 +160,11 @@ fn shortener.store.write_all(file: &mut std.fs.File, data: &[u8]) -> Result<(), 
     while sent < data.len() {
         let rest = match data.sub(sent, data.len()) {
             Some(r) => r
-            None => return Err(error.Error.Io)
+            None => return Err(error.io_failed())
         }
         let n = file.write(rest)?
         if n == 0usize {
-            return Err(error.Error.Io)
+            return Err(error.io_failed())
         }
         sent = sent.saturating_add(n)
     }

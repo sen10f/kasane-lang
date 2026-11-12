@@ -855,6 +855,24 @@ fn derived_impls(d: &Def) -> Option<String> {
                 }
                 out.push(format!("end {}.eq", n));
             }
+            "From" => {
+                // `?` が包むバリアントを、ペイロードの型ごとに 1 行で示す (4.1)。同じ型を持つバリアントが複数あると曖昧 (E2049)。
+                out.push(format!("// derive From for {}: `e?` with `e: Result<_, E1>` wraps the error as the variant", n));
+                let keyed: Vec<(String, &String)> = d
+                    .variants
+                    .iter()
+                    .filter(|(_, pl)| pl.len() == 1)
+                    .map(|(vn, pl)| (crate::types::from_v(&pl[0], &std::collections::HashSet::new()).show(), vn))
+                    .collect();
+                for (ty, vn) in &keyed {
+                    let same: Vec<&str> = keyed.iter().filter(|(t, _)| t == ty).map(|(_, v)| v.as_str()).collect();
+                    if same.len() > 1 {
+                        out.push(format!("//     E1 = {}  =>  ambiguous ({}): `?` is an error, use map_err", ty, same.join(", ")));
+                    } else {
+                        out.push(format!("//     E1 = {}  =>  {}.{}(error)", ty, n, vn));
+                    }
+                }
+            }
             other => out.push(format!("// {}: built-in derived implementation for {}", other, n)),
         }
         out.push(String::new());

@@ -5396,24 +5396,28 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         let dst = rl.variants[1].1.first().cloned();
                         match (src, dst) {
                             (Some((st_, so)), Some((dt_, doff))) if st_ != dt_ => {
-                                // 4.1: 型が違うエラーは `core.convert.From<st_> for dt_` の変換メソッドを呼んで書き込む。
-                                let fq = self
-                                    .cx
-                                    .prog
-                                    .from_impls
-                                    .get(&dt_)
-                                    .and_then(|v| v.iter().find(|(k, _)| *k == st_))
-                                    .map(|(_, f)| f.clone())
-                                    .ok_or("? with a different error type")?;
-                                let d = self.funcs.get(&fq).copied().ok_or("? conversion function not found")?;
-                                if self.cx.needs_drop(&st_) || self.cx.pty_for(d, &d.ret)? != dt_ {
-                                    return Err("? with an unsupported error conversion".into());
+                                // 4.1: 型が違うエラーは、`derive [From]` の `enum` `dt_` で `st_` を唯一のペイロードに持つバリアントを
+                                // 作って書く (タグを置き、ペイロードをコピーするだけ)。
+                                let dl = self.cx.layout(&dt_, 0)?;
+                                let derives = self.cx.prog.from_enums.contains(&dt_);
+                                let hits: Vec<(usize, u32)> = dl
+                                    .variants
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, v)| v.1.len() == 1 && v.1[0].0 == st_)
+                                    .map(|(i, v)| (i, v.1[0].1))
+                                    .collect();
+                                let [(vidx, voff)] = hits.as_slice() else { return Err("? with a different error type".into()) };
+                                if !dl.is_enum || !derives {
+                                    return Err("? with a different error type".into());
                                 }
+                                let size = if is_scalar(&st_) { scalar_size(&st_) } else { self.cx.layout(&st_, 0)?.size };
                                 let sa = self.b.ins().iadd_imm(p, so as i64);
-                                let ev = self.load_value(sa, &st_);
-                                let (cv, _) = self.call_fn_values(&fq, d, &[ev])?;
                                 let da = self.b.ins().iadd_imm(sret, doff as i64);
-                                self.store_value(da, &dt_, cv.ok_or("? conversion returns unit")?)?;
+                                let tgv = self.b.ins().iconst(types::I32, *vidx as i64);
+                                self.b.ins().store(MemFlags::new(), tgv, da, 0);
+                                let pa = self.b.ins().iadd_imm(da, *voff as i64);
+                                self.copy_mem(pa, sa, size);
                             }
                             (Some((st_, so)), Some((_, doff))) => {
                                 let size = if is_scalar(&st_) { scalar_size(&st_) } else { self.cx.layout(&st_, 0)?.size };
