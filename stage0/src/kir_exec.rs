@@ -121,7 +121,7 @@ fn arith(op: Aop, mode: Mode, ty: Ty, x: i128, y: i128) -> Result<i128, String> 
         Aop::Sub => x.checked_sub(y),
         Aop::Mul => x.checked_mul(y),
         Aop::Div => x.checked_div(y),
-        Aop::Rem => x.checked_rem(y),
+        Aop::Rem => checked_rem(ty, x, y),
     };
     match r {
         Some(v) if ty.in_range(v) => Ok(v),
@@ -129,9 +129,17 @@ fn arith(op: Aop, mode: Mode, ty: Ty, x: i128, y: i128) -> Result<i128, String> 
     }
 }
 
+/// 整数の `checked_rem` (案 A)。符号付きの `MIN % -1` は割り算が溢れるので余りも `None`。
+/// i128 の `checked_rem` はこの組を溢れとして返さないので、型の最小値で別に判定する。
+fn checked_rem(ty: Ty, x: i128, y: i128) -> Option<i128> {
+    if ty.signed() && y == -1 && x == ty.min() {
+        return None;
+    }
+    x.checked_rem(y)
+}
+
 /// `checked_<op>` の結果 (`Option<P>` の符号化)。溢れと 0 除算は `None` (= 0)。
-/// 木走査 (`interp.rs` の整数演算) と同じ規則に合わせる: `MIN / -1` は範囲外で `None`、`MIN % -1` は `Some(0)`
-/// (木走査の `checked_rem` は i128 の剰余を型の範囲で確かめるだけ。Rust の `checked_rem` とは違う。設計_KIR.md 11 章)。
+/// 符号付きの `MIN / -1` と `MIN % -1` は溢れで `None` (案 A。木走査 `interp.rs` と同じ)。
 fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
     let crate::kir::Ty::Opt(p) = t else { return 0 };
     let pt = p.ty();
@@ -143,7 +151,7 @@ fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
         Aop::Sub => x.checked_sub(y),
         Aop::Mul => x.checked_mul(y),
         Aop::Div => x.checked_div(y),
-        Aop::Rem => x.checked_rem(y),
+        Aop::Rem => checked_rem(pt, x, y),
     };
     match r {
         Some(v) if v >= pt.min() && v <= pt.max() => TAG_BIT | payload_bits(v),
@@ -303,7 +311,7 @@ fn jump(fr: &mut Frame, m: &Module, fi: usize, t: usize, args: &[VId]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kir::{Block, Func, Inst, Ty};
+    use crate::kir::{Block, Func, Inst, Pay, Ty};
 
     #[test]
     fn arith_matches_interpreter_messages() {
@@ -313,6 +321,19 @@ mod tests {
         assert_eq!(arith(Aop::Div, Mode::Trap, Ty::I8, -128, -1), Err("attempt to divide with overflow".into()));
         assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I8, 1, 0), Err("attempt to calculate the remainder with a divisor of by zero".into()));
         assert_eq!(arith(Aop::Mul, Mode::Wrap, Ty::U8, 16, 17), Ok(16));
+    }
+
+    #[test]
+    fn min_rem_minus_one_overflows_for_every_signed_width() {
+        // 案 A: 符号付きの `MIN % -1` は割り算が溢れるので余りも溢れ (`checked_rem` は None)。
+        let rem = "attempt to calculate the remainder with overflow";
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I8, -128, -1), Err(rem.into()));
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I16, i16::MIN as i128, -1), Err(rem.into()));
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I32, i32::MIN as i128, -1), Err(rem.into()));
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I64, i64::MIN as i128, -1), Err(rem.into()));
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I128, i128::MIN, -1), Err(rem.into()));
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I8, -7, 2), Ok(-1));
+        assert_eq!(checked(Aop::Rem, Ty::Opt(Pay::I8), -128, -1), 0);
     }
 
     #[test]

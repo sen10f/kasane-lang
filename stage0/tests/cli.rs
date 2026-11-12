@@ -9097,6 +9097,7 @@ fn kir_lower_panics_and_depth_match_tree_walker() {
         ("t.divs", &["-128", "-1"], "attempt to divide with overflow"),
         ("t.divs", &["7", "0"], "attempt to divide by zero"),
         ("t.rems", &["7", "0"], "attempt to calculate the remainder with a divisor of by zero"),
+        ("t.rems", &["-128", "-1"], "attempt to calculate the remainder with overflow"),
         ("t.sub8", &["3", "4"], "attempt to subtract with overflow"),
         ("t.fact", &["21"], "attempt to multiply with overflow"),
     ];
@@ -9315,7 +9316,7 @@ const OPTRES_MAIN: &str = "fn t.main() -> Result<(), std.io.Error> uses [io.cons
     core.check.eq(t.ck_div(7i8, 0i8), None)
     core.check.eq(t.ck_div(-7i8, 2i8), Some(-3i8))
     core.check.eq(t.ck_rem(-7i8, 2i8), Some(-1i8))
-    core.check.eq(t.ck_rem(-128i8, -1i8), Some(0i8))
+    core.check.eq(t.ck_rem(-128i8, -1i8), None)
     core.check.eq(t.unit_ok(3u8), Ok(()))
     core.check.eq(t.unit_ok(12u8), Err(12u8))
     core.check.eq(t.neg(3i64), Some(-2i64))
@@ -9351,7 +9352,7 @@ fn kir_optres_values_match_tree_walker() {
         ("t.ck_div", &["7", "0"], "None"),
         ("t.ck_div", &["-7", "2"], "Some(-3)"),
         ("t.ck_rem", &["-7", "2"], "Some(-1)"),
-        ("t.ck_rem", &["-128", "-1"], "Some(0)"),
+        ("t.ck_rem", &["-128", "-1"], "None"),
         ("t.unit_ok", &["3"], "Ok(())"),
         ("t.unit_ok", &["12"], "Err(12)"),
         ("t.neg", &["3"], "Some(-2)"),
@@ -10395,4 +10396,41 @@ end t.first
     assert_eq!(o.status.code(), Some(1));
     assert!(text(&o.stderr).contains("t.first は未対応"), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("段階 1 の対象外"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn min_rem_minus_one_overflows_for_every_signed_width() {
+    // 案 A: 符号付きの `MIN % -1` は割り算が溢れるので余りも溢れ。`%` は panic (終了コード 101)、`checked_rem` と `checked_div` は None。
+    // 木走査 (`ksn run`) と参照実行器 (`ksn kir --run`) の両方で panic の文言を確かめる。
+    for w in ["i8", "i16", "i32", "i64", "i128"] {
+        let src = format!(
+            "fn t.rem(a: {w}, b: {w}) -> {w} uses [] panics may\n    a % b\nend t.rem\n\n\
+             fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    \
+             core.mem.drop(t.rem(core.num.{w}.MIN, -1{w}))\n    Ok(())\nend t.main\n",
+            w = w
+        );
+        let t = Tmp::new(&format!("min_rem_{}", w), &src);
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "{}: {}", w, text(&o.stderr));
+        assert!(text(&o.stderr).contains("panic: attempt to calculate the remainder with overflow"), "{}: {}", w, text(&o.stderr));
+        if w == "i8" {
+            let k = run(&["kir", "t.rem", "--run", "-128", "-1"], &t.0);
+            assert_eq!(k.status.code(), Some(101), "kir {}: {}", w, text(&k.stderr));
+            assert_eq!(text(&k.stderr).trim(), "panic: attempt to calculate the remainder with overflow", "kir {}", w);
+        }
+    }
+    // `checked_rem` と `checked_div` は None (`test --both` で木走査と機械語を比べる。i128 は機械語が未対応なのでバンドルで比べる)。
+    let mut src = String::from("fn t.main() -> () uses [] panics never\nend t.main\n\n");
+    for w in ["i8", "i16", "i32", "i64", "i128"] {
+        src.push_str(&format!(
+            "test t.main.test_{w}\n    let m = core.num.{w}.MIN\n    core.check.eq(m.checked_rem(-1{w}), None)\n    core.check.eq(m.checked_div(-1{w}), None)\nend t.main.test_{w}\n\n",
+            w = w
+        ));
+    }
+    let src = format!("{}\n", src.trim_end());
+    let t = Tmp::new("min_rem_checked", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("5 passed; 0 failed"), "{}", out);
 }

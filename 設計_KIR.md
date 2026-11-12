@@ -739,7 +739,7 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 
 - `verify_module`: 構築・取り出しの被演算子の型、`Option` の定数は `none` だけ、`Cmp` は scalar だけ (`Option` の同値比較は書けない)、`tag` は Option か Result の値だけ。`checked_*` は trap を持たないので `panics never` の関数で書ける。
 - 木走査との一致 (`stage0/tests/cli.rs` の `kir_optres_*`): `?` (Option と Result)、`match` (`Some(0)`、`Some(1)`、`Some(_)`、`None`、`Ok`、`Err`、`bool` の `if` の値)、`unit` のペイロード (`Result<(), u8>`)、符号付きのペイロード (`-2`)、`bool` のペイロード、Option の引数と Option の変数への代入 (ループ内)、`features.chain` と `features.checked` (examples の値)。
-- 既知の差 (木走査に合わせた): `checked_rem(MIN, -1)` は木走査と KIR とも `Some(0)` を返す。Rust の `checked_rem` は `None` を返すので、規範 (`spec/stdlib` の型の説明) と食い違う可能性がある。KIR は木走査に合わせ、この差を別に報告する。`checked_div(MIN, -1)` は両方とも `None`。
+- 解消済み (rt/min-rem-overflow): 符号付きの `MIN % -1` は割り算が溢れるので余りも溢れとする (案 A。Rust と同じ)。木走査 (`interp.rs` の `int_arith` と `natives.rs` の `checked_rem`)、KIR (`kir_exec.rs` の `arith` と `checked`)、Cranelift (`clif.rs`) で揃えた。`%` は panic (`attempt to calculate the remainder with overflow`)、`checked_rem` は `None`。`checked_div(MIN, -1)` は従来から `None`。
 
 ### 11.5 効果と結果
 

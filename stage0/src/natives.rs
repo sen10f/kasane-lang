@@ -47,13 +47,6 @@ fn pick_ty(args: &[Val], default: &str) -> &'static str {
     ity(default)
 }
 
-fn trunc_div(a: i128, b: i128) -> i128 {
-    a / b
-}
-fn trunc_rem(a: i128, b: i128) -> i128 {
-    a % b
-}
-
 fn ordering(c: i32) -> Val {
     mk_enum("core.cmp.Ordering", ["Less", "Equal", "Greater"][(c + 1) as usize], vec![])
 }
@@ -196,7 +189,14 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
                     if o == 0 {
                         return Ok(none());
                     }
-                    Some(if op == "div" { trunc_div(s, o) } else { trunc_rem(s, o) })
+                    // 符号付きの `MIN / -1` と `MIN % -1` は溢れ (案 A)。剰余は i128 では溢れないので型の最小値で判定する。
+                    if op == "rem" && signed(ty) && s == lo && o == -1 {
+                        None
+                    } else if op == "div" {
+                        s.checked_div(o)
+                    } else {
+                        s.checked_rem(o)
+                    }
                 }
                 "shl" => {
                     if o >= b {
