@@ -1,0 +1,20 @@
+import kvlib.lookup
+
+const kvapp.CONFIG: &str = "# kvapp settings\nname = kasane\nmode = fast\n" pub
+
+fn kvapp.has_name(config: &str) -> bool uses [] panics never pub
+    lookup.find(config, "name").is_some()
+end kvapp.has_name
+
+fn kvapp.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(lookup.count(kvapp.CONFIG), 2usize)
+    if kvapp.has_name(kvapp.CONFIG) {
+        return std.io.print_line("kvapp ok: name is configured")
+    }
+    std.io.print_line("kvapp: no name configured")
+end kvapp.main
+
+test kvapp.has_name.test_needs_the_name_key
+    core.check.eq(kvapp.has_name("name = world"), true)
+    core.check.eq(kvapp.has_name("mode = fast"), false)
+end kvapp.has_name.test_needs_the_name_key

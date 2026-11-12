@@ -77,9 +77,27 @@ fn overlay_get(path: &str) -> Option<String> {
     g.as_ref().filter(|m| !m.is_empty()).and_then(|m| m.get(&overlay_key(path)).cloned())
 }
 
-/// 上書きがあればそれを、なければディスクの本文を返す。
+/// 上書きがあればそれを、なければディスクの本文を返す (`overlay_hide` したパスは `None`)。
 pub fn read_text(path: &str) -> Option<String> {
-    overlay_get(path).or_else(|| fs::read_to_string(path).ok())
+    match overlay_get(path) {
+        Some(t) if t == HIDDEN => None,
+        Some(t) => Some(t),
+        None => fs::read_to_string(path).ok(),
+    }
+}
+
+/// 上書き側で「存在しない」ことにするパス (改名の検証用)。空文字の本文で表す。
+pub fn overlay_hide(path: &str) {
+    overlay_set(path, Some(HIDDEN.to_string()));
+}
+const HIDDEN: &str = "\u{0}hidden\u{0}";
+
+/// 上書きの全消去。
+pub fn overlay_clear() {
+    let mut g = OVERLAY.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = g.as_mut() {
+        m.clear();
+    }
 }
 
 fn overlay_paths_under(dir: &str) -> Vec<String> {
@@ -98,6 +116,8 @@ pub struct Source {
     pub lines: Vec<String>,
     pub defs: Vec<Def>,
     pub error: Option<PErr>,
+    /// `tests/` 配下の統合テストのファイルか (3.2)。
+    pub is_test: bool,
 }
 
 pub fn module_of(path: &str, root: &str) -> String {
@@ -120,12 +140,26 @@ impl Source {
 
     pub fn from_text(path: &str, srcdir: &str, text: String) -> Source {
         let module = module_of(path, srcdir);
+        Source::from_text_in(path, module, text, false)
+    }
+
+    /// `tests/` 配下のファイル。モジュール名は `<パッケージ>.tests.<ファイル>` (3.2 / 3.6)。
+    pub fn load_test(path: &str, testsdir: &str, pkg: &str) -> Source {
+        let text = match overlay_get(path) {
+            Some(t) => t,
+            None => String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).to_string(),
+        };
+        let module = format!("{}.tests.{}", pkg, module_of(path, testsdir));
+        Source::from_text_in(path, module, text, true)
+    }
+
+    fn from_text_in(path: &str, module: String, text: String, is_test: bool) -> Source {
         let lines = text.split('\n').map(String::from).collect();
         let (defs, error) = match load_file(path, &module, &text) {
             Ok(d) => (d, None),
             Err(e) => (vec![], Some(decode_err(&e))),
         };
-        Source { path: path.to_string(), module, text, lines, defs, error }
+        Source { path: path.to_string(), module, text, lines, defs, error, is_test }
     }
 }
 
@@ -134,6 +168,8 @@ pub struct Package {
     pub root: PathBuf,
     pub manifest: toml::Value,
     pub sources: Vec<Source>,
+    /// 依存として読んだときの取得元 (`git+<URL>#<rev>` / `path+<ルートからの相対パス>`)。ルートは空。
+    pub source: String,
 }
 
 impl Package {
@@ -148,10 +184,10 @@ impl Package {
 
 pub fn read_manifest(root: &Path) -> Result<toml::Value, ProjectError> {
     let p = root.join("kasane.toml");
-    if !p.exists() {
-        return perr("E9001", format!("kasane.toml not found in {}", norm(root)));
-    }
-    let text = fs::read_to_string(&p).unwrap_or_default();
+    let text = match read_text(&norm(&p)) {
+        Some(t) => t,
+        None => return perr("E9001", format!("kasane.toml not found in {}", norm(root))),
+    };
     text.parse::<toml::Value>().or_else(|e| perr("E9002", format!("invalid kasane.toml: {}", e)))
 }
 
@@ -194,15 +230,32 @@ pub fn validate_manifest(m: &toml::Value) -> Vec<(String, String)> {
             if BUNDLED.contains(&dn.as_str()) {
                 errs.push(e("E9004", format!("dependency name '{}' is reserved", dn)));
             }
+            if !is_name(dn) {
+                errs.push(e("E9003", format!("dependency name '{}' must match [a-z][a-z0-9_]*", dn)));
+            }
+            if name == Some(dn.as_str()) {
+                errs.push(e("E9011", format!("package {} depends on itself", dn)));
+            }
             match dv.as_table() {
                 Some(t) if t.contains_key("path") != t.contains_key("git") => {
+                    if let Some(p) = t.get("path") {
+                        if p.as_str().map_or(true, |x| x.is_empty()) {
+                            errs.push(e("E9008", format!("dependency {}: path must be a non-empty string", dn)));
+                        }
+                    }
                     if t.contains_key("git") {
+                        // URL は `git clone` の引数になるので、空やオプション風 (`-` 始まり) は受けない。
+                        if t.get("git").and_then(|g| g.as_str()).map_or(true, |u| u.is_empty() || u.starts_with('-')) {
+                            errs.push(e("E9008", format!("dependency {}: git must be a URL string", dn)));
+                        }
                         let rev_ok = t.get("rev").and_then(|r| r.as_str()).map_or(false, |r| {
                             r.len() == 40 && r.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
                         });
                         if !rev_ok {
                             errs.push(e("E9008", format!("dependency {}: git requires a 40-hex rev", dn)));
                         }
+                    } else if t.contains_key("rev") {
+                        errs.push(e("E9007", format!("unknown key dependencies.{}.rev (path dependencies take no rev)", dn)));
                     }
                     for k in t.keys() {
                         if !["path", "git", "rev"].contains(&k.as_str()) {
@@ -282,10 +335,32 @@ pub fn load_dir_sources(srcdir: &Path) -> Vec<Source> {
     ps.extend(overlay_paths_under(&sd));
     ps.sort();
     ps.dedup();
+    ps.retain(|p| overlay_get(p).map_or(true, |t| t != HIDDEN));
     ps.iter().map(|p| Source::load(p, &sd)).collect()
 }
 
+/// `<root>/tests/` 配下の統合テスト (3.2)。依存パッケージの `tests/` は読まない。
+pub fn load_test_sources(root: &Path, pkg: &str) -> Vec<Source> {
+    let td = root.join("tests");
+    let mut paths = vec![];
+    walk_files(&td, &["ksnl"], &mut paths);
+    let mut ps: Vec<String> = paths.iter().map(|p| norm(p)).collect();
+    let tds = norm(&td);
+    ps.extend(overlay_paths_under(&tds).into_iter().filter(|p| p.ends_with(".ksnl")));
+    ps.sort();
+    ps.dedup();
+    ps.iter().map(|p| Source::load_test(p, &tds, pkg)).collect()
+}
+
 pub fn load_package(root: &Path) -> Result<Package, ProjectError> {
+    let mut p = load_package_src(root)?;
+    let t = load_test_sources(&p.root, &p.name);
+    p.sources.extend(t);
+    Ok(p)
+}
+
+/// `src/` だけを読む (依存パッケージ用)。
+pub fn load_package_src(root: &Path) -> Result<Package, ProjectError> {
     let root = fs::canonicalize(root).unwrap_or(root.to_path_buf());
     let root = PathBuf::from(norm(&root).trim_start_matches("//?/"));
     let m = read_manifest(&root)?;
@@ -295,41 +370,173 @@ pub fn load_package(root: &Path) -> Result<Package, ProjectError> {
     }
     let name = m["package"]["name"].as_str().unwrap().to_string();
     let sources = load_dir_sources(&root.join("src"));
-    Ok(Package { name, root, manifest: m, sources })
+    Ok(Package { name, root, manifest: m, sources, source: String::new() })
+}
+
+// ------------------------------------------------------------ 依存の解決 (8.1)
+
+/// ビルドキャッシュのルート (`KSN_CACHE_DIR`、既定は `~/.ksn/cache`)。
+pub fn cache_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("KSN_CACHE_DIR") {
+        return PathBuf::from(d);
+    }
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".ksn").join("cache")
+}
+
+/// 取得済みの git 依存の置き場 (`<キャッシュ>/git/<URL と rev のハッシュ>`)。内容は `rev` で決まる。
+pub fn git_cache_path(url: &str, rev: &str) -> PathBuf {
+    let mut h = Sha256::new();
+    h.update(url.as_bytes());
+    h.update([0u8]);
+    h.update(rev.as_bytes());
+    let hex: String = h.finalize().iter().map(|b| format!("{:02x}", b)).collect();
+    cache_dir().join("git").join(&hex[..32])
+}
+
+fn git_cmd() -> std::process::Command {
+    let mut c = std::process::Command::new("git");
+    // 認証を尋ねて止まらない。外部コマンドを起動する転送 (`ext::`) は許さない。
+    c.env("GIT_TERMINAL_PROMPT", "0").env("GIT_ALLOW_PROTOCOL", "file:https:http:ssh:git").stdin(std::process::Stdio::null());
+    c
+}
+
+fn git_run(args: &[&str]) -> Result<String, String> {
+    match git_cmd().args(args).output() {
+        Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        Err(e) => Err(format!("cannot run git: {}", e)),
+    }
+}
+
+/// `url` の `rev` を `dest` に取り出す (`.git` は残さない。内容は `rev` のコミットのファイルだけ)。
+pub fn git_materialize(url: &str, rev: &str, dest: &Path) -> Result<(), ProjectError> {
+    let fail = |m: String| -> Result<(), ProjectError> { perr("E9018", format!("cannot fetch git dependency {}#{}: {}", url, rev, m)) };
+    let tmp = PathBuf::from(format!("{}.tmp{}", norm(dest), std::process::id()));
+    if let Some(parent) = dest.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::remove_dir_all(&tmp);
+    let t = norm(&tmp);
+    // `--` を挟み、URL がオプションとして解釈されないようにする。
+    if let Err(m) = git_run(&["clone", "--quiet", "--no-checkout", "--", url, &t]) {
+        let _ = fs::remove_dir_all(&tmp);
+        return fail(m);
+    }
+    let r = git_run(&["-C", &t, "-c", "advice.detachedHead=false", "checkout", "--quiet", rev, "--"]).and_then(|_| {
+        let head = git_run(&["-C", &t, "rev-parse", "HEAD"])?;
+        if head == rev { Ok(()) } else { Err(format!("checked out {} instead of {}", head, rev)) }
+    });
+    if let Err(m) = r {
+        let _ = fs::remove_dir_all(&tmp);
+        return fail(m);
+    }
+    let _ = fs::remove_dir_all(tmp.join(".git"));
+    let _ = fs::remove_dir_all(dest);
+    if let Err(e) = fs::rename(&tmp, dest) {
+        let _ = fs::remove_dir_all(&tmp);
+        return fail(e.to_string());
+    }
+    Ok(())
+}
+
+/// git 依存をどう取得するか。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum GitMode {
+    /// `vendor/<名前>` かキャッシュだけを使う (`check` / `build` / `test` / `run`。ネットワークに出ない)。
+    Offline,
+    /// 無いときだけ取得する。
+    IfMissing,
+    /// 必ず取得し直す (`update` / `vendor`。取得元が正で、古いキャッシュを信用しない)。
+    Fresh,
 }
 
 pub fn load_deps(pkg: &Package) -> Result<Vec<Package>, ProjectError> {
-    let mut seen: Vec<String> = vec![];
-    load_deps_rec(pkg, &mut seen)
+    load_deps_with(pkg, &|_| GitMode::Offline)
 }
 
-fn load_deps_rec(pkg: &Package, seen: &mut Vec<String>) -> Result<Vec<Package>, ProjectError> {
+/// 推移的な依存をすべて読む (ルート自身は含まない)。`mode` は依存名ごとの git の取得方法。
+pub fn load_deps_with(pkg: &Package, mode: &dyn Fn(&str) -> GitMode) -> Result<Vec<Package>, ProjectError> {
+    let mut seen: Vec<(String, String)> = vec![];
     let mut out = vec![];
-    let Some(deps) = pkg.manifest.get("dependencies").and_then(|d| d.as_table()) else { return Ok(out) };
+    resolve_rec(pkg, pkg, mode, &mut seen, &mut out)?;
+    Ok(out)
+}
+
+/// 依存 `dn` の (取得元文字列, 置き場所)。
+fn locate_dep(root: &Package, pkg: &Package, dn: &str, dv: &toml::Value, mode: &dyn Fn(&str) -> GitMode) -> Result<(String, PathBuf), ProjectError> {
+    if let Some(p) = dv.get("path").and_then(|p| p.as_str()) {
+        // 8.1: git 依存先は git 依存だけを持てる。
+        if pkg.source.starts_with("git+") {
+            return perr("E9013", format!("git dependency {} has a path dependency {}; a git dependency may only depend on git dependencies", pkg.name, dn));
+        }
+        let d = normalize_path(&pkg.root.join(p));
+        let source = format!("path+{}", relative_path(&norm(&d), &norm(&root.root)));
+        // ビルド成果物 (`target/*/pkg`) には元の `path` が無いので、複製された `vendor/<名前>` を使う。
+        let vend = root.root.join("vendor").join(dn);
+        let loc = if !d.is_dir() && vend.is_dir() { vend } else { d };
+        return Ok((source, loc));
+    }
+    let url = dv.get("git").and_then(|g| g.as_str()).unwrap_or("");
+    let rev = dv.get("rev").and_then(|g| g.as_str()).unwrap_or("");
+    let source = format!("git+{}#{}", url, rev);
+    let cache = git_cache_path(url, rev);
+    let m = mode(dn);
+    if m == GitMode::Fresh {
+        git_materialize(url, rev, &cache)?;
+        return Ok((source, cache));
+    }
+    let v = root.root.join("vendor").join(dn);
+    if v.is_dir() {
+        if let Ok(mark) = fs::read_to_string(v.join(".ksn-source")) {
+            if mark.trim() != source {
+                return perr("E9019", format!("vendor/{} was vendored from {} but kasane.toml says {}; run `ksn vendor`", dn, mark.trim(), source));
+            }
+        }
+        return Ok((source, v));
+    }
+    if cache.is_dir() {
+        return Ok((source, cache));
+    }
+    if m == GitMode::IfMissing {
+        git_materialize(url, rev, &cache)?;
+        return Ok((source, cache));
+    }
+    perr("E9010", format!("git dependency {} is not vendored or cached (run `ksn vendor` or `ksn update`)", dn))
+}
+
+fn resolve_rec(
+    root: &Package,
+    pkg: &Package,
+    mode: &dyn Fn(&str) -> GitMode,
+    seen: &mut Vec<(String, String)>,
+    out: &mut Vec<Package>,
+) -> Result<(), ProjectError> {
+    let Some(deps) = pkg.manifest.get("dependencies").and_then(|d| d.as_table()) else { return Ok(()) };
     for (dn, dv) in deps {
-        if seen.contains(dn) {
+        if *dn == root.name {
+            return perr("E9015", format!("dependency cycle: {} depends back on the root package {}", pkg.name, root.name));
+        }
+        let (source, loc) = locate_dep(root, pkg, dn, dv, mode)?;
+        if let Some((_, prev)) = seen.iter().find(|(n, _)| n == dn) {
+            // 菱形依存: 同じ取得元なら1つとして扱い、違う取得元はエラー (8.1。版の自動調停はしない)。
+            if *prev != source {
+                return perr("E9014", format!("package {} is required from two different sources: {} and {}", dn, prev, source));
+            }
             continue;
         }
-        let droot = if let Some(p) = dv.get("path").and_then(|p| p.as_str()) {
-            let joined = pkg.root.join(p);
-            normalize_path(&joined)
-        } else {
-            let v = pkg.root.join("vendor").join(dn);
-            if !v.is_dir() {
-                return perr("E9010", format!("git dependency {} is not vendored (run ksn vendor)", dn));
-            }
-            v
-        };
-        let dp = load_package(&droot)?;
+        let mut dp = load_package_src(&loc)?;
         if dp.name != *dn {
             return perr("E9011", format!("dependency {}: package name is {}", dn, dp.name));
         }
-        seen.push(dn.clone());
-        let sub = load_deps_rec(&dp, seen)?;
+        dp.source = source.clone();
+        seen.push((dn.clone(), source));
+        let mut sub = vec![];
+        resolve_rec(root, &dp, mode, seen, &mut sub)?;
         out.push(dp);
         out.extend(sub);
     }
-    Ok(out)
+    Ok(())
 }
 
 pub fn normalize_path(p: &Path) -> PathBuf {
@@ -346,7 +553,28 @@ pub fn normalize_path(p: &Path) -> PathBuf {
     out
 }
 
+/// `base` から `target` への `/` 区切りの相対パス (どちらも正規化済みの絶対パス)。
+pub fn relative_path(target: &str, base: &str) -> String {
+    let t: Vec<&str> = target.split('/').collect();
+    let b: Vec<&str> = base.split('/').collect();
+    let mut i = 0;
+    while i < t.len() && i < b.len() && t[i] == b[i] {
+        i += 1;
+    }
+    let mut out: Vec<String> = vec!["..".to_string(); b.len() - i];
+    out.extend(t[i..].iter().map(|x| x.to_string()));
+    if out.is_empty() { ".".into() } else { out.join("/") }
+}
+
+/// 8.1 のパッケージハッシュ。対象は `kasane.toml` と `src/` 配下の `*.ksnl`。
+/// パスはルートからの相対 (`/` 区切り) でバイト列順に並べ、各ファイルを
+/// 「パス, 0x00, 内容長 (u64 LE), 生バイト列」で連結して SHA-256 を取る。
 pub fn package_hash(root: &Path) -> String {
+    try_package_hash(root).unwrap_or_default()
+}
+
+/// `package_hash` に、対象にシンボリックリンクがあれば E9016 を返す検査を足したもの。
+pub fn try_package_hash(root: &Path) -> Result<String, ProjectError> {
     let mut files: Vec<String> = vec!["kasane.toml".into()];
     let mut ps = vec![];
     walk_files(&root.join("src"), &["ksnl"], &mut ps);
@@ -358,13 +586,101 @@ pub fn package_hash(root: &Path) -> String {
     files.dedup();
     let mut h = Sha256::new();
     for rel in files {
+        // ファイルそのものも、途中のディレクトリもシンボリックリンクであってはならない。
+        let mut cur = root.to_path_buf();
+        for c in rel.split('/') {
+            cur = cur.join(c);
+            if fs::symlink_metadata(&cur).map_or(false, |m| m.file_type().is_symlink()) {
+                return perr("E9016", format!("symbolic links are not allowed in a hashed package: {}", rel));
+            }
+        }
         let data = fs::read(root.join(&rel)).unwrap_or_default();
         h.update(rel.as_bytes());
         h.update([0u8]);
         h.update((data.len() as u64).to_le_bytes());
         h.update(&data);
     }
-    format!("sha256:{}", h.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>())
+    Ok(format!("sha256:{}", h.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>()))
+}
+
+/// `kasane.lock` の検査 (8.1)。`deps` は `load_deps` の結果。見つけた違反を (コード, メッセージ) で返す。
+pub fn verify_lock(pkg: &Package, deps: &[Package]) -> Vec<(String, String)> {
+    let mut errs: Vec<(String, String)> = vec![];
+    let lock = pkg.root.join("kasane.lock");
+    if !deps.is_empty() && !lock.exists() {
+        errs.push(("E9020".into(), "kasane.lock is missing; run `ksn update`".into()));
+        return errs;
+    }
+    if !lock.exists() {
+        return errs;
+    }
+    let bad = |m: String| ("E9021".to_string(), format!("kasane.toml and kasane.lock disagree: {}; run `ksn update`", m));
+    let v: toml::Value = match fs::read_to_string(&lock).unwrap_or_default().parse() {
+        Ok(v) => v,
+        Err(e) => return vec![bad(format!("invalid kasane.lock ({})", e))],
+    };
+    if v.get("version").and_then(|x| x.as_integer()) != Some(1) {
+        return vec![bad("lock version must be 1".into())];
+    }
+    let entries: Vec<&toml::Value> = v.get("package").and_then(|p| p.as_array()).map(|a| a.iter().collect()).unwrap_or_default();
+    let mut by_name: std::collections::BTreeMap<String, &toml::Value> = Default::default();
+    for e in &entries {
+        let Some(n) = e.get("name").and_then(|n| n.as_str()) else {
+            errs.push(bad("a [[package]] has no name".into()));
+            continue;
+        };
+        if by_name.insert(n.to_string(), e).is_some() {
+            errs.push(bad(format!("package {} is listed twice", n)));
+        }
+    }
+    for dp in deps {
+        if !by_name.contains_key(&dp.name) {
+            errs.push(bad(format!("package {} is missing from the lock", dp.name)));
+        }
+    }
+    for n in by_name.keys() {
+        if !deps.iter().any(|d| d.name == *n) {
+            errs.push(bad(format!("package {} is in the lock but not a dependency", n)));
+        }
+    }
+    for dp in deps {
+        let Some(e) = by_name.get(&dp.name) else { continue };
+        let lock_source = e.get("source").and_then(|s| s.as_str()).unwrap_or("(none)");
+        if lock_source != dp.source {
+            errs.push(bad(format!("source of {} is {} in kasane.toml but {} in the lock", dp.name, dp.source, lock_source)));
+        }
+        let mut want: Vec<String> =
+            dp.manifest.get("dependencies").and_then(|d| d.as_table()).map(|t| t.keys().cloned().collect()).unwrap_or_default();
+        want.sort();
+        let have: Vec<String> = e
+            .get("deps")
+            .and_then(|d| d.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        if want != have {
+            errs.push(bad(format!("deps of {} are {:?} but the lock says {:?}", dp.name, want, have)));
+        }
+        if dp.source.starts_with("git+") {
+            match try_package_hash(&dp.root) {
+                Err(e) => errs.push((e.code, e.msg)),
+                Ok(actual) => match e.get("hash").and_then(|h| h.as_str()) {
+                    None => errs.push(bad(format!("git dependency {} has no hash", dp.name))),
+                    Some(h) if h != actual => errs.push((
+                        "E9022".into(),
+                        format!(
+                            "hash mismatch for {}: kasane.lock says {} but {} has {}; the vendored copy or cache was modified (run `ksn vendor` to restore it)",
+                            dp.name,
+                            h,
+                            norm(&dp.root),
+                            actual
+                        ),
+                    )),
+                    _ => {}
+                },
+            }
+        }
+    }
+    errs
 }
 
 pub fn stdlib_dir() -> PathBuf {

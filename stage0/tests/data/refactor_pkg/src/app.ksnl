@@ -1,0 +1,21 @@
+import app.net
+import app.util
+
+fn app.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let h = net.make(2u32)
+    let big = net.make(40u32)
+    core.check.eq(util.total(&h), 6u32)
+    core.check.eq(util.kind_code(&big), 1u32)
+    core.check.eq(util.show(&h), 2u32)
+    core.check.eq(app.twice(h.len), 4u32)
+    std.io.print_line("ok")?
+    Ok(())
+end app.main
+
+fn app.twice(n: u32) -> u32 uses [] panics never pub
+    n.wrapping_mul(2u32)
+end app.twice
+
+test app.twice.test_four
+    core.check.eq(app.twice(2u32), 4u32)
+end app.twice.test_four

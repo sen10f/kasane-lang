@@ -1,0 +1,8 @@
+import kvapp
+import kvlib.lookup
+
+test kvapp.tests.config.test_bundled_config_has_a_name_and_a_mode
+    core.check.eq(lookup.count(kvapp.CONFIG), 2usize)
+    core.check.eq(lookup.find(kvapp.CONFIG, "mode"), Some("fast"))
+    core.check.eq(kvapp.has_name(kvapp.CONFIG), true)
+end kvapp.tests.config.test_bundled_config_has_a_name_and_a_mode

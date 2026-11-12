@@ -208,6 +208,19 @@ pub struct ResolvedCall {
     pub dyn_eff: Option<(String, Vec<String>, String)>,
 }
 
+/// メソッド呼び出し `x.m(..)` / フィールド参照 `x.f` のレシーバの型の記録 (`ksn rename` / `ksn refs` 用)。
+/// `pos` は名前トークンの位置 (パーサが MCall / Field の末尾の子に持たせる)。型は関数の推論が終わった時点で解決した形。
+pub struct RecvSite {
+    /// 式を含む定義の添字。
+    pub writer: usize,
+    /// MCall / Field では名前トークンの位置、局所変数から始まるパス (`x.f.m(..)`) ではパスの先頭の位置。
+    pub pos: usize,
+    /// パスの場合の、名前の添字 (MCall / Field では `usize::MAX`)。
+    pub seg: usize,
+    pub field: bool,
+    pub recv: Ty,
+}
+
 /// `Fn` 境界の引数に直接書かれたクロージャの記録 (効果検査 ② 用)。
 pub struct FnClosure {
     /// クロージャを書いた定義の添字 (書き手)。
@@ -261,6 +274,11 @@ pub struct TypeCk<'a> {
     pub resolved_calls: Vec<ResolvedCall>,
     /// `Fn` 境界に直接書かれたクロージャ (効果検査 ②)。
     pub fn_closure_args: Vec<FnClosure>,
+    /// メソッド呼び出し・フィールド参照のレシーバの型 (改名ツール用)。
+    pub recv_log: Vec<RecvSite>,
+    recv_start: usize,
+    /// いま推論している `Path` ノードの位置 (`path()` が局所変数の連鎖を記録するのに使う)。
+    path_pos: usize,
     /// `--strict-types` / `KSN_STRICT_TYPES=1`: 型が決まらない式・束縛を E2044 にする (実装計画 段階 1)。
     strict: bool,
     /// strict のとき、関数ごとに集める式・束縛の型の記録。
@@ -326,7 +344,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), resolved_calls: vec![], fn_closure_args: vec![], strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, loop_breaks: vec![], quiet_sites: HashSet::new(), local_sites: HashMap::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), resolved_calls: vec![], fn_closure_args: vec![], recv_log: vec![], recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, loop_breaks: vec![], quiet_sites: HashSet::new(), local_sites: HashMap::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -388,6 +406,7 @@ impl<'a> TypeCk<'a> {
         let d = &self.p.defs[di];
         let Some(body) = &d.body else { return };
         self.cur = di;
+        self.recv_start = self.recv_log.len();
         self.vars.clear();
         self.kinds.clear();
         self.escaped.clear();
@@ -431,6 +450,10 @@ impl<'a> TypeCk<'a> {
         self.check_unsize();
         self.report_undetermined();
         // 型変数は関数ごとの表なので、ここで解決してから外へ出す。
+        for k in self.recv_start..self.recv_log.len() {
+            let t = self.recv_log[k].recv.clone();
+            self.recv_log[k].recv = self.deep(&t);
+        }
         for (line, name, t) in std::mem::take(&mut self.let_pending) {
             let t = self.deep(&t);
             self.let_tys.insert((di, line, name), t);
@@ -1028,6 +1051,20 @@ impl<'a> TypeCk<'a> {
     }
 
     // ------------------------------------------------------------ メソッド呼び出し
+    fn log_step(&mut self, pos: usize, seg: usize, field: bool, _name: &str, recv: &Ty) {
+        if pos != 0 {
+            self.recv_log.push(RecvSite { writer: self.cur, pos, seg, field, recv: recv.clone() });
+        }
+    }
+
+    fn log_recv(&mut self, f: &[V], at: usize, field: bool, _name: &str, recv: &Ty) {
+        if let Some(V::N(p)) = f.get(at) {
+            if let Ok(pos) = p.parse::<usize>() {
+                self.recv_log.push(RecvSite { writer: self.cur, pos, seg: usize::MAX, field, recv: recv.clone() });
+            }
+        }
+    }
+
     fn call_method(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V]) -> Ty {
         let loose = std::mem::take(&mut self.arg_loose);
         // トレイトオブジェクト (5.1): `&dyn Tr` のメソッド呼び出しは、Tr とそのスーパートレイトの
@@ -1706,10 +1743,16 @@ impl<'a> TypeCk<'a> {
                 "unit" => Ty::Unit,
                 _ => Ty::Unknown,
             },
-            "Path" => self.path(&strs(&f[0])),
+            "Path" => {
+                self.path_pos = nline(e);
+                let t = self.path(&strs(&f[0]));
+                self.path_pos = 0;
+                t
+            }
             "Call" => self.call(&f[0], items(&f[1]), nline(e), items(&f[2])),
             "MCall" => {
                 let recv = self.infer(&f[0]);
+                self.log_recv(f, 4, false, &st(&f[1]), &recv);
                 let args: Vec<Ty> = items(&f[2]).iter().map(|a| self.infer(a)).collect();
                 let base = self.base_local(&f[0]);
                 self.arg_loose = items(&f[2]).iter().map(|a| self.root_loose(a)).collect();
@@ -1717,6 +1760,7 @@ impl<'a> TypeCk<'a> {
             }
             "Field" => {
                 let r = self.infer(&f[0]);
+                self.log_recv(f, 2, true, &st(&f[1]), &r);
                 self.field_ty(&r, &st(&f[1]))
             }
             "Try" => {
@@ -2189,7 +2233,9 @@ impl<'a> TypeCk<'a> {
     fn path(&mut self, segs: &[String]) -> Ty {
         if let Some(mut t) = self.lookup(&segs[0]) {
             self.dep_on_local(&segs[0]);
-            for s in &segs[1..] {
+            let pp = std::mem::take(&mut self.path_pos);
+            for (k, s) in segs[1..].iter().enumerate() {
+                self.log_step(pp, k + 1, true, s, &t);
                 t = self.field_ty(&t, s);
             }
             return t;
@@ -2289,9 +2335,11 @@ impl<'a> TypeCk<'a> {
                 return Ty::Unknown;
             }
             let mut t = self.lookup(&segs[0]).unwrap();
-            for s in &segs[1..segs.len() - 1] {
+            for (k, s) in segs[1..segs.len() - 1].iter().enumerate() {
+                self.log_step(nline(callee), k + 1, true, s, &t);
                 t = self.field_ty(&t, s);
             }
+            self.log_step(nline(callee), segs.len() - 1, false, &segs[segs.len() - 1], &t);
             self.arg_loose = loose_args;
             return self.call_method(&t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line, targs);
         }
