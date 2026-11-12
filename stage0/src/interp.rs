@@ -1438,6 +1438,10 @@ impl Interp {
         if let Some(s) = str_of(&v) {
             return Ok(s);
         }
+        // `Display` の char は文字そのもの (`Debug` の `'a'` ではない)。
+        if let Val::Char(c) = &v {
+            return Ok(c.to_string());
+        }
         if let Val::Struct(s) = &v {
             if let Some(&di) = self.p.funcs.get(&format!("{}.display_fmt", s.ty)) {
                 let fm = Rc::new(RefCell::new(String::new()));

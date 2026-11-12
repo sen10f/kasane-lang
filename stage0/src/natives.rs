@@ -148,13 +148,10 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
     if name.starts_with("from_") && !name.ends_with("_nearest") && name != "from_bits" {
         return Ok(int(iv(&x), ty));
     }
-    if name == "to_f64" {
-        return Ok(Val::Float(iv(&x) as f64));
-    }
-    if let Some(t) = name.strip_prefix("to_") {
-        if is_int_ty(t) {
-            return Ok(int(iv(&x), t));
-        }
+    // `nearest_to_f64` は sig (`core.num.<int>.nearest_to_f64`) にある。最も近い f64 へ丸める。
+    if name == "to_f64" || name == "nearest_to_f64" {
+        let v = iv(&x);
+        return Ok(Val::Float(if ty == "u128" { v as u128 as f64 } else { v as f64 }));
     }
     let s = iv(&x);
     let o = if a.len() > 1 { iv(&a[1]) } else { 0 };
@@ -659,13 +656,37 @@ impl Interp {
         }
         match v {
             Val::Bool(_) | Val::Char(_) | Val::Int(..) | Val::Float(_) | Val::F32(_) => {
+                // 派生メソッド (types.rs `derived_method` / check.rs `method_known`) の基本型への適用。
                 match name {
                     "eq" => return Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
+                    "ne" => return Ok(Val::Bool(!self.v_eq(v, &dr(&a0))?)),
                     "cmp" => {
                         let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
                         return Ok(ordering(c));
                     }
+                    "partial_cmp" => {
+                        let c = self.v_cmp(v, &dr(&a0))?;
+                        return Ok(c.map_or_else(none, |c| some(ordering(c))));
+                    }
+                    "min" | "max" if matches!(v, Val::Bool(_) | Val::Char(_)) => {
+                        let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
+                        let pick_self = if name == "min" { c <= 0 } else { c > 0 };
+                        return Ok(if pick_self { v.clone() } else { dr(&a0) });
+                    }
                     "hash" => return Ok(Val::Unit),
+                    // `Display` は基本型に組み込み (仕様 4.2)。`to_string` はその表示文字列。
+                    "to_string" => return Ok(Val::Str(self.display_str(v)?.into())),
+                    // `core.fmt.Debug` / `Display` の組み込み実装 (仕様 4.2): 整形先の Formatter に追記する。
+                    "debug_fmt" | "display_fmt" => {
+                        let text = if name == "debug_fmt" { self.debug_str(v)? } else { self.display_str(v)? };
+                        return match dr(&a0) {
+                            Val::Fmt(b) => {
+                                b.borrow_mut().push_str(&text);
+                                Ok(ok(Val::Unit))
+                            }
+                            _ => panic(format!("{} expects a Formatter", name)),
+                        };
+                    }
                     _ => {}
                 }
                 let ty = match v {
