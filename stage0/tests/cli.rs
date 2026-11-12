@@ -7399,3 +7399,58 @@ end t.f
     let out = text(&o.stdout);
     assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
 }
+
+#[test]
+fn move_capture_that_is_rewritten_does_not_meet_the_fn_bound() {
+    // `move` で捕まえた値を書き換えるクロージャは、読むだけの `Fn` を満たさない (FnMut まで)。
+    let (got, out) = check_codes(
+        "cl_move_mut",
+        &[
+            "let mut n = 0u32",
+            "let f = fn(acc: u32, x: u32) -> u32 capture [move n] {",
+            "    n = acc + x",
+            "    n",
+            "}",
+            "let total = core.iter.fold(core.iter.range(0u32, 4u32), 0u32, f)",
+            "core.mem.drop(total)",
+        ],
+    );
+    assert!(got.iter().any(|c| c == "E2030"), "{}", out);
+}
+
+#[test]
+fn move_capture_that_is_consumed_does_not_meet_the_fn_bound() {
+    // `move` で捕まえた Copy でない値を値のまま消費するクロージャは FnOnce で、Fn / FnMut を満たさない。
+    let (got, out) = check_codes(
+        "cl_move_once",
+        &[
+            "let v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let f = fn(acc: u32, x: u32) -> u32 capture [move v] {",
+            "    core.mem.drop(v)",
+            "    acc + x",
+            "}",
+            "let total = core.iter.fold(core.iter.range(0u32, 4u32), 0u32, f)",
+            "core.mem.drop(total)",
+        ],
+    );
+    assert!(got.iter().any(|c| c == "E2030"), "{}", out);
+}
+
+#[test]
+fn move_capture_that_is_only_read_meets_the_fn_bound() {
+    // `move` で捕まえても本体が読むだけ (Copy の値、メソッドのレシーバ) なら Fn を満たす (Rust と同じ)。
+    let (got, out) = check_codes(
+        "cl_move_read",
+        &[
+            "let k = 7u32",
+            "let s = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let f = fn(acc: u32, x: u32) -> u32 capture [move k, move s] {",
+            "    core.mem.drop(s.len())",
+            "    acc + x * k",
+            "}",
+            "let total = core.iter.fold(core.iter.range(0u32, 4u32), 0u32, f)",
+            "core.mem.drop(total)",
+        ],
+    );
+    assert!(!got.iter().any(|c| c == "E2030"), "{}", out);
+}

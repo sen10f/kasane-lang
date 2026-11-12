@@ -510,6 +510,131 @@ impl<'a> TypeCk<'a> {
         self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
     }
 
+    /// capture 節と本体から、満たせ得る最大の能力を求める (4.2: 捕捉の使い方で決まる)。
+    /// `&x` は共有参照なので `Fn`。`&mut x` は従来どおり `FnMut`。`move x` は、本体が `x` を変更すれば
+    /// `FnMut`、型が `Copy` でない `x` を値のまま消費すれば `FnOnce`、読むだけなら `Fn` のまま。
+    /// 型や使い方が分からないときは消費・変更しないとみなす (黙る)。
+    fn closure_cap(&self, caps: &V, body: &V) -> Cap {
+        let mut cap = Cap::Fn;
+        for c in items(caps) {
+            let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { continue };
+            match k.as_str() {
+                "move" => {
+                    let u = self.capture_use(body, n);
+                    if u.consumed {
+                        cap = Cap::FnOnce;
+                    } else if u.mutated && cap == Cap::Fn {
+                        cap = Cap::FnMut;
+                    }
+                }
+                "&mut" if cap == Cap::Fn => cap = Cap::FnMut,
+                _ => {}
+            }
+        }
+        cap
+    }
+
+    /// 本体の中での捕捉された局所 `name` の使い方。型は外側の束縛から引く (本体より外の scope にある)。
+    fn capture_use(&self, body: &V, name: &str) -> CapUse {
+        let non_copy = self.lookup(name).map(|t| self.ty_copy(&self.deep(&t))) == Some(Some(false));
+        let mut u = CapUse::default();
+        self.scan_capture(body, name, non_copy, false, &mut u);
+        u
+    }
+
+    /// `e` を走査して `name` の使い方を `u` に記録する。`borrowed` は `e` が借用・読取りの位置にあるか
+    /// (その位置の `name` は消費しない)。借用・読取りの位置は、単項演算・フィールド・添字の根・
+    /// メソッドのレシーバ・二項演算の項・代入の左辺。それ以外の位置での `name` は値として消費する。
+    fn scan_capture(&self, e: &V, name: &str, non_copy: bool, borrowed: bool, u: &mut CapUse) {
+        let f = nf(e);
+        match nname(e) {
+            "Path" => {
+                if !borrowed && non_copy && place_root_is(e, name) {
+                    u.consumed = true;
+                }
+            }
+            "Assign" => {
+                if place_root_is(&f[0], name) {
+                    u.mutated = true;
+                }
+                self.scan_capture(&f[0], name, non_copy, true, u);
+                self.scan_capture(&f[1], name, non_copy, false, u);
+            }
+            "Unary" => {
+                if st(&f[0]) == "&mut" && place_root_is(&f[1], name) {
+                    u.mutated = true;
+                }
+                self.scan_capture(&f[1], name, non_copy, true, u);
+            }
+            "Field" => self.scan_capture(&f[0], name, non_copy, true, u),
+            "Index" => {
+                self.scan_capture(&f[0], name, non_copy, true, u);
+                self.scan_capture(&f[1], name, non_copy, false, u);
+            }
+            "MCall" => {
+                self.scan_capture(&f[0], name, non_copy, true, u);
+                for a in items(&f[2]) {
+                    self.scan_capture(a, name, non_copy, false, u);
+                }
+            }
+            "Bin" => {
+                self.scan_capture(&f[1], name, non_copy, true, u);
+                self.scan_capture(&f[2], name, non_copy, true, u);
+            }
+            // 内側のクロージャは捕捉の節だけを見る。`move` で捕まえれば値を移すので消費、`&mut` なら変更。
+            "Closure" => {
+                for c in items(&f[2]) {
+                    let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { continue };
+                    if n != name {
+                        continue;
+                    }
+                    match k.as_str() {
+                        "move" if non_copy => u.consumed = true,
+                        "&mut" => u.mutated = true,
+                        _ => {}
+                    }
+                }
+            }
+            _ => {
+                for c in crate::check::children(e) {
+                    self.scan_capture(c, name, non_copy, false, u);
+                }
+            }
+        }
+    }
+
+    /// 型が `Copy` か。`Some(false)` は確実に `Copy` でない (引数なしのユーザー型で `Copy` を実装しない)。
+    /// 分からない型 (型引数つき・型変数・型パラメータ・スライスなど) は `None`。
+    fn ty_copy(&self, t: &Ty) -> Option<bool> {
+        match t {
+            Ty::Prim(_) | Ty::Unit | Ty::Never => Some(true),
+            Ty::Ref(m, _) => Some(!*m),
+            Ty::Array(x) => self.ty_copy(x),
+            Ty::Tuple(xs) => {
+                let parts: Vec<Option<bool>> = xs.iter().map(|x| self.ty_copy(x)).collect();
+                if parts.contains(&Some(false)) {
+                    Some(false)
+                } else if parts.iter().all(|p| *p == Some(true)) {
+                    Some(true)
+                } else {
+                    None
+                }
+            }
+            // `Copy` を実装しない型は、型引数があっても `Copy` でない。`Copy` を持つ型は、型引数つきなら
+            // 条件つき (`T: Copy`) かもしれないので分からない。
+            Ty::Named(n, args) if self.p.types.contains_key(n) => {
+                if !self.implements(n, "core.ops.Copy") {
+                    Some(false)
+                } else if args.is_empty() {
+                    Some(true)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn bind(&mut self, name: &str, ty: Ty) {
         if let Some(s) = self.scopes.last_mut() {
             s.insert(name.to_string(), ty);
@@ -1455,7 +1580,8 @@ impl<'a> TypeCk<'a> {
                         );
                     }
                 }
-                Ty::Closure { args, ret: Box::new(ret), cap: closure_cap(&f[2]), id: Some(node) }
+                let cap = self.closure_cap(&f[2], &f[3]);
+                Ty::Closure { args, ret: Box::new(ret), cap, id: Some(node) }
             }
             // `while` は値を持たない (unit)。条件と本体は従来どおり推論する。
             "While" => {
@@ -2261,19 +2387,22 @@ fn impl_owner_keys(tgt: &str) -> Vec<String> {
     v
 }
 
-/// capture 節の AST (`move x` / `&x` / `&mut x` の並び) から、満たせ得る最大の能力を求める。
-/// 共有参照だけ (または空) なら `Fn`、`&mut` を含めば `FnMut`、値での取り込みを含めば `FnOnce`。
-fn closure_cap(caps: &V) -> Cap {
-    let mut cap = Cap::Fn;
-    for c in items(caps) {
-        let Some(V::S(k)) = items(c).first() else { continue };
-        match k.as_str() {
-            "move" => cap = Cap::FnOnce,
-            "&mut" if cap == Cap::Fn => cap = Cap::FnMut,
-            _ => {}
-        }
+/// 本体の中で、ある捕捉された局所がどう使われるかの近似 (`TypeCk::closure_cap` 用)。
+#[derive(Default)]
+struct CapUse {
+    /// 代入・`&mut` などで変更される (FnMut)。
+    mutated: bool,
+    /// 型が `Copy` でない値として消費される (FnOnce)。
+    consumed: bool,
+}
+
+/// 式の根が局所 `name` そのもの (`name` / `name.f` / `name[i]`) か。
+fn place_root_is(e: &V, name: &str) -> bool {
+    match nname(e) {
+        "Path" => strs(&nf(e)[0]) == [name.to_string()],
+        "Field" | "Index" => place_root_is(&nf(e)[0], name),
+        _ => false,
     }
-    cap
 }
 
 /// 整数リテラルの綴り `text` が型 `ty` に収まらなければ、その説明を返す。
