@@ -1,0 +1,9 @@
+type t.Node derive [Debug, Clone, Copy] pub
+    v: u32
+end t.Node
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x = t.Node { v: 1u32 }
+    x.v = 2u32
+    Ok(())
+end t.main

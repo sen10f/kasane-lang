@@ -275,7 +275,11 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             }
         }
         for (code, ln, msg) in Lint::new(relpath, &lt).run() {
-            rep.add(lint_code(&code), &msg, Some(&fl), ln, 1, !(run_mode && code == "unused"));
+            // `order` (E0020: 定義順・群内順・uses/属性の並び順)は `ksn fmt` で
+            // 機械的に直せる違反。check では非致命的として報告し、終了コードに
+            // 影響させない (`fmt --check` が差分として検出する)。
+            let fatal = !(run_mode && code == "unused") && code != "order";
+            rep.add(lint_code(&code), &msg, Some(&fl), ln, 1, fatal);
         }
         let (ok, msg, ln) = grammar.check(&s.text);
         if !ok {
@@ -1671,6 +1675,16 @@ case "$0" in
   */*) p="$0" ;;
   *) p="$(command -v "$0")" ;;
 esac
+# $0 がシンボリックリンクなら実体を辿ってから場所を特定する。
+# `readlink -f` は macOS などに無いので、`ls -l` のリンク先を辿るループで POSIX 的に解決する。
+while [ -L "$p" ]; do
+  target="$(ls -l "$p")"
+  target="${target#* -> }"
+  case "$target" in
+    /*) p="$target" ;;
+    *) p="$(dirname "$p")/$target" ;;
+  esac
+done
 d="$(cd "$(dirname "$p")" && pwd)"
 KSN_STDLIB="$d/stdlib"
 export KSN_STDLIB

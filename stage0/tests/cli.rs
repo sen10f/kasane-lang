@@ -102,6 +102,91 @@ fn clean_program_passes_check_and_fmt() {
 }
 
 #[test]
+fn e0010_not_fired_for_tuple_variant_pattern_bindings() {
+    // `let (t.One.V(m, n), z) = (o, k)`: `re_tup` が最初の `)` で区切ると
+    // `t.One.V(m` が束縛名と誤って E0010 になる誤検出 (#B)。
+    let src = "enum t.One derive [Debug, Clone, Copy] pub\n    V(u8, u8)\nend t.One\n\nfn t.f(o: t.One, k: u8) -> u8 uses [] panics never\n    let (t.One.V(m, n), z) = (o, k)\n    m.wrapping_add(n).wrapping_add(z)\nend t.f\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.f(t.One.V(3u8, 4u8), 1u8), 8u8)\n    std.io.print_line(\"ok\")\nend t.main\n";
+    let t = Tmp::new("e0010_tup_pat", src);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+}
+
+#[test]
+fn e0010_still_fires_for_bad_names_in_tuple_lets_and_e0020_stays_non_fatal() {
+    // タプル分解の大文字の束縛名は E0010 のまま (fmt では直らない)。同じファイルの定義順の違反 (E0020) は
+    // fmt で直るので non-fatal として出る。
+    let src = "fn t.mk() -> u32 uses [] panics never\n    1u32\nend t.mk\n\nfn t.main() -> () uses [] panics never\n    let (Foo, y) = (1u32, 2u32)\n    core.mem.drop(Foo)\n    core.mem.drop(y)\nend t.main\n";
+    let t = Tmp::new("e0010_tup_upper", src);
+    let o = run(&["check"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}", out);
+    assert!(out.contains("E0010: let Foo not snake_case"), "{}", out);
+    assert!(out.contains("E0020 (non-fatal):"), "{}", out);
+}
+
+#[cfg(unix)]
+#[test]
+fn launcher_works_via_symlink() {
+    // 起動スクリプトがシンボリックリンク経由だと `cd: can't cd` に
+    // なっていた (#C)。自分の実体をシンボリックリンクを辿って求める。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"ok\")\nend t.main\n";
+    let t = Tmp::new("symlink_launcher", src);
+    assert_eq!(
+        run(&["build"], &t.0).status.code(),
+        Some(0),
+        "{}",
+        text(&run(&["build"], &t.0).stderr)
+    );
+    let launcher = t.0.join("target").join("debug").join("t");
+    assert!(launcher.is_file());
+    let link = std::env::temp_dir().join(format!("ksn_link_{}", std::process::id()));
+    let _ = fs::remove_file(&link);
+    std::os::unix::fs::symlink(&launcher, &link).unwrap();
+    let out = Command::new(&link).current_dir(&t.0).output().expect("spawn launcher via symlink");
+    let _ = fs::remove_file(&link);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("ok"), "{}", text(&out.stdout));
+}
+
+#[test]
+fn e0020_order_violation_does_not_fail_check() {
+    // 定義順・uses 並びの違反 (E0020) は ksn fmt で直せるため、check は
+    // 非致命的として終了コード 0 のままにする (#D)。fmt --check は
+    // 従来どおり検出する。
+    let unordered = "fn t.b() -> u8 uses [] panics never\n    0u8\nend t.b\n\nfn t.a() -> u8 uses [] panics never\n    0u8\nend t.a\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.a(), 0u8)\n    core.check.eq(t.b(), 0u8)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("e0020_def_order", unordered);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+
+    let uses_order = "fn t.main() -> Result<(), std.io.Error> uses [io.fs, io.console] panics may\n    Ok(())\nend t.main\n";
+    let u = Tmp::new("e0020_uses_order", uses_order);
+    let o = run(&["check"], &u.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("E0020"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn linear_ok_cases_pass_check() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    assert!(!names.is_empty(), "linear_ok cases missing");
+    let mut failures = Vec::new();
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        let o = run(&["check", "--json"], &t.0);
+        let got = codes(&text(&o.stdout));
+        if o.status.code() != Some(0) || !got.is_empty() {
+            failures.push(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+
+
+#[test]
 fn fmt_check_fails_on_noncanonical_source() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never   \n    Ok(())\nend t.main\n";
     let t = Tmp::new("fmtbad", src);
