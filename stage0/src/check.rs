@@ -1853,7 +1853,7 @@ impl<'a> Checker<'a> {
     fn method_known(&self, name: &str) -> bool {
         const DERIVED: &[&str] = &[
             "clone", "eq", "cmp", "partial_cmp", "hash", "debug_fmt", "display_fmt", "call", "call_mut",
-            "call_once", "drop", "try_clone", "to_string",
+            "call_once", "drop", "try_clone",
         ];
         const WRAPPING: &[&str] = &["add", "sub", "mul", "neg", "shl", "shr"];
         const CHECKED: &[&str] = &["add", "sub", "mul", "div", "rem", "neg", "shl", "shr", "abs"];
@@ -1865,6 +1865,8 @@ impl<'a> Checker<'a> {
         }
         self.p.method_idx.contains_key(name)
             || crate::natives::known_num(name)
+            // 廃止された `to_<整数型>` (4.5) は型検査 (types.rs `int_to_hint`) が書き換え先を案内するので、ここでは黙らせない。
+            || name.strip_prefix("to_").is_some_and(|t| crate::types::INTS.contains(&t))
             || DERIVED.contains(&name)
             || self.p.types.values().any(|&i| {
                 let d = &self.p.defs[i];

@@ -399,7 +399,7 @@ const NUM_EXTRA: &[&str] = &[
 ];
 
 fn known_num(name: &str) -> bool {
-    ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_", "to_"].iter().any(|p| name.starts_with(p))
+    ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_"].iter().any(|p| name.starts_with(p))
         || NUM_EXTRA.contains(&name)
 }
 

@@ -1,0 +1,6 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let s: &str = "abc"
+    let owned = s.to_string()
+    core.mem.drop(owned)
+    Ok(())
+end t.main
