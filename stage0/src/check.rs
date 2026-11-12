@@ -240,6 +240,10 @@ pub struct Checker<'a> {
     /// move 済みの場所 (根の変数 + フィールド道をドットでつないだ鍵。`s`・`s.f`・`s.a.b`) → move した行。
     /// 鍵どうしは互いに重ならない (一方が他方の接頭辞なら記録しない)。E3002 (4.1・4.4)。
     moved: BTreeMap<String, usize>,
+    /// 囲むループごとの (`break` 時点の move, `continue` 時点の move)。
+    loop_exits: Vec<(BTreeMap<String, usize>, BTreeMap<String, usize>)>,
+    /// 型推論 (types.rs) が決めた `let` の束縛の型。自前の `ty_of` で決まらない束縛に使う。
+    let_tys: HashMap<(usize, usize, String), crate::types::Ty>,
     final_env: HashMap<String, V>,
     graph: BTreeMap<String, BTreeSet<String>>,
     /// クロージャ節 (5.3 の `関数名#番号`) → そのクロージャの AST ノード。
@@ -307,6 +311,8 @@ impl<'a> Checker<'a> {
             d: 0,
             names: HashSet::new(),
             moved: BTreeMap::new(),
+            loop_exits: vec![],
+            let_tys: HashMap::new(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
             closure_asts: BTreeMap::new(),
@@ -1446,7 +1452,7 @@ impl<'a> Checker<'a> {
                 let names: Vec<String> = items(&f[0]).iter().map(|p| st(&items(p)[0])).collect();
                 self.shadow_check(&names, locals, di, nline(e));
                 inner.extend(names);
-                self.visit(&f[3], &mut inner, di, true);
+                self.visit(&f[3], &mut inner, di, free);
             }
             "Path" => {
                 let segs = strs(&f[0]);
@@ -1505,6 +1511,16 @@ impl<'a> Checker<'a> {
                                 );
                             }
                             self.check_method_exists(&name, di, nline(fnn));
+                        } else if !free && self.cur_uses.is_some() {
+                            // 関数ポインタ型の引数の呼び出し: 型が宣言する効果を呼び出し側が覆うこと (5.1)。
+                            if let Some((uses, pn)) = crate::infer::fn_param_effects(self.def(di), &segs[0]) {
+                                let concrete: Vec<String> =
+                                    uses.into_iter().filter(|u| u.chars().next().map_or(false, |c| c.is_lowercase())).collect();
+                                let what = format!("the function pointer `{}`", segs[0]);
+                                if let Some((c, m)) = self.violation_effs(&what, &concrete, Some(pn.as_str())) {
+                                    self.diag(&c, m, di, nline(e));
+                                }
+                            }
                         }
                         return;
                     }
@@ -1930,6 +1946,17 @@ impl<'a> Checker<'a> {
                 }
             }
             let (w_uses, w_panics) = (w.uses.clone(), w.panics.clone().unwrap_or_else(|| "may".into()));
+            // クロージャ本体は書き手の関数の一部としても検査される (visit)。本体の中の呼び出し・添字が
+            // 同じコードで既に報告されていれば、ここでは重ねない。
+            let mut cl_nodes: Vec<&V> = vec![];
+            walk(&cl, &mut cl_nodes);
+            let lines: Vec<usize> = cl_nodes.iter().map(|n| nline(n)).collect();
+            let (lo, hi) = (lines.iter().copied().filter(|&l| l > 0).min().unwrap_or(a.line), lines.iter().copied().max().unwrap_or(a.line));
+            let wname = w.name.clone();
+            let seen = |me: &Self, code: &str| me.diags.iter().any(|d| d.code == code && d.fqn == wname && d.line >= lo && d.line <= hi);
+            if seen(self, "E4001") || seen(self, "E4002") || seen(self, "E4003") || seen(self, "E4004") {
+                continue;
+            }
             if let Some(e) = effs.iter().find(|e| !covers(&w_uses, e)) {
                 self.diag(
                     "E4001",
@@ -1957,18 +1984,20 @@ impl<'a> Checker<'a> {
                 self.check_elision(i);
             }
         }
-        for &i in &user {
-            let d = self.def(i);
-            if d.kw == "fn" && d.body.is_some() {
-                self.tc_fn(i);
-            }
-        }
         // 型付きの式推論に基づく検査 (レシーバの型によるメソッドの存在・引数の個数と型)。
+        // 所有権の検査 (tc_fn) が `let` の束縛の型を使うので、先に走らせる。
         let mut tk = crate::types::TypeCk::new(self.p);
         for &i in &user {
             let d = self.def(i);
             if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" {
                 tk.check_def(i);
+            }
+        }
+        self.let_tys = std::mem::take(&mut tk.let_tys);
+        for &i in &user {
+            let d = self.def(i);
+            if d.kw == "fn" && d.body.is_some() {
+                self.tc_fn(i);
             }
         }
         self.diags.extend(tk.diags);
@@ -2107,8 +2136,34 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 型が線形か (4.4): `linear` と宣言された型、または線形な値を含む型
+    /// (フィールド・バリアントのペイロード・タプル要素・配列要素・型引数)。
     fn is_linear(&self, t: &V) -> bool {
-        tag(t) == "named" && self.p.types.get(&st(tel(t, 1))).map_or(false, |&i| self.def(i).linear)
+        self.is_linear_in(t, &mut HashSet::new())
+    }
+
+    fn is_linear_in(&self, t: &V, seen: &mut HashSet<String>) -> bool {
+        match tag(t).as_str() {
+            "tuple" => items(tel(t, 1)).iter().any(|x| self.is_linear_in(x, seen)),
+            "array" => self.is_linear_in(tel(t, 1), seen),
+            "named" => {
+                let name = st(tel(t, 1));
+                if items(tel(t, 2)).iter().any(|a| matches!(a, V::L(_)) && self.is_linear_in(a, seen)) {
+                    return true;
+                }
+                let Some(&i) = self.p.types.get(&name) else { return false };
+                let d = self.def(i);
+                if d.linear {
+                    return true;
+                }
+                if !seen.insert(name) {
+                    return false;
+                }
+                d.fields.iter().any(|f| self.is_linear_in(&f.1, seen))
+                    || d.variants.iter().any(|v| v.1.iter().any(|x| self.is_linear_in(x, seen)))
+            }
+            _ => false,
+        }
     }
 
     fn tdiag(&mut self, code: &str, msg: String, line: usize) {
@@ -2338,7 +2393,13 @@ impl<'a> Checker<'a> {
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
                 for n in binds {
-                    let t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
+                    let mut t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
+                    if is_nil(&t) {
+                        // 自前で決まらない束縛は、型推論の結果を使う (未決定の部分を含む型は使わない)。
+                        if let Some(ty) = self.let_tys.get(&(self.d, nline(s), n.clone())) {
+                            t = crate::types::TypeCk::to_v(ty).unwrap_or(V::Nil);
+                        }
+                    }
                     env.insert(n.clone(), t);
                     self.revive_place(std::slice::from_ref(&n));
                     if matches!(f[1], V::B(true)) {
@@ -2349,6 +2410,19 @@ impl<'a> Checker<'a> {
                 }
                 for (n, t) in &typed {
                     self.note_linear(n, t, nline(s));
+                }
+                // 型推論で型が決まった束縛も、線形なら消費を要求する。
+                let mut names = vec![];
+                pat_binds(&f[0], &mut names);
+                for n in names {
+                    if typed.iter().any(|(m, _)| *m == n) {
+                        continue;
+                    }
+                    if let Some(t) = env.get(&n).cloned() {
+                        if !is_nil(&t) {
+                            self.note_linear(&n, &t, nline(s));
+                        }
+                    }
                 }
             }
             "Assign" => {
@@ -2491,6 +2565,37 @@ impl<'a> Checker<'a> {
                     self.bind_pat_types(sub, &et, out);
                 }
             }
+            "PVariant" => {
+                // `Some(p)` / `Ok(p)` / `Err(p)` と、ジェネリクスでないユーザー定義 enum のバリアント。
+                // 参照越しの照合 (スクラティニーが `&T`) は所有しないので流さない。
+                let f = nf(p);
+                let segs = strs(&f[0]);
+                let subs = items(&f[1]);
+                let Some(vname) = segs.last() else { return };
+                if tag(ty) != "named" {
+                    return;
+                }
+                let tname = st(tel(ty, 1));
+                let targs: Vec<&V> = items(tel(ty, 2)).iter().filter(|a| matches!(a, V::L(_))).collect();
+                let payload: Vec<V> = match (tname.as_str(), vname.as_str()) {
+                    ("Option", "Some") => targs.first().map(|t| vec![(*t).clone()]).unwrap_or_default(),
+                    ("Result", "Ok") => targs.first().map(|t| vec![(*t).clone()]).unwrap_or_default(),
+                    ("Result", "Err") => targs.get(1).map(|t| vec![(*t).clone()]).unwrap_or_default(),
+                    _ => match self.p.types.get(&tname) {
+                        Some(&i) if self.def(i).generics.is_empty() => {
+                            self.def(i).variants.iter().find(|v| &v.0 == vname).map(|v| v.1.clone()).unwrap_or_default()
+                        }
+                        _ => vec![],
+                    },
+                };
+                if payload.len() != subs.len() {
+                    return;
+                }
+                for (sub, pt) in subs.iter().zip(payload.iter()) {
+                    let pt = if self.is_generic(pt, &self.names) { V::Nil } else { pt.clone() };
+                    self.bind_pat_types(sub, &pt, out);
+                }
+            }
             _ => {}
         }
     }
@@ -2528,6 +2633,13 @@ impl<'a> Checker<'a> {
                 }
             }
             "If" | "Match" | "Loop" | "While" | "For" => self.branchy(e, env, muts),
+            "Break" | "Continue" => {
+                // ループを抜ける / 次の周回へ入る時点の move を、囲むループに渡す。
+                let cur = self.moved.clone();
+                if let Some((breaks, continues)) = self.loop_exits.last_mut() {
+                    Self::union_moves(if nname(e) == "Break" { breaks } else { continues }, &cur);
+                }
+            }
             "Closure" => {
                 let mut sub = env.clone();
                 for p in items(&f[0]) {
@@ -2558,8 +2670,11 @@ impl<'a> Checker<'a> {
                     } else {
                         // 呼び出し先が局所変数のとき。`v.push(x)` のようなメソッド呼び出し
                         // (segs の最後はメソッド名) は、レシーバの場所を使うだけで move はしない (4.2)。
+                        // ただし `self` を値で受けるメソッド (`self: T`) はレシーバを消費する (4.4)。
+                        // レシーバの型とメソッドが一意に分かるときだけ消費として扱う。
                         let recv: &[String] = if segs.len() >= 2 { &segs[1..segs.len() - 1] } else { &[] };
-                        self.use_place(&segs[0], recv, env, nline(e), false);
+                        let by_value = segs.len() >= 2 && self.method_takes_self_by_value(&segs[0], recv, &segs[segs.len() - 1], env);
+                        self.use_place(&segs[0], recv, env, nline(e), by_value);
                     }
                 } else {
                     self.tc_expr(fnn, env, muts, false);
@@ -2626,62 +2741,168 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 場所 `root.path` の型のメソッド `name` が、`self` を値で受けるか。
+    /// レシーバの型が分からない・メソッドが見つからないときは `false` (消費として扱わない)。
+    fn method_takes_self_by_value(&self, root: &str, path: &[String], name: &str, env: &Env) -> bool {
+        let Some(ty) = self.place_ty(root, path, env) else { return false };
+        if tag(&ty) != "named" {
+            return false;
+        }
+        let tname = match st(tel(&ty, 1)).as_str() {
+            "Option" => "core.option.Option".to_string(),
+            "Result" => "core.result.Result".to_string(),
+            n => n.to_string(),
+        };
+        let fq = format!("{}.{}", tname, name);
+        let def = self.p.funcs.get(&fq).or_else(|| self.p.sigs.get(&fq)).map(|&i| self.def(i));
+        match def.and_then(|d| d.params.first()) {
+            Some((pn, pt)) => pn == "self" && tag(pt) != "ref",
+            None => false,
+        }
+    }
+
+    /// 式を評価し終えたあとに、後続の文へ制御が進まないか (`return` / `break` / `continue` / panic)。
+    /// 分からない形は `false` (進むとみなす = move を合流に残す側)。
+    fn diverges(&self, e: &V) -> bool {
+        let f = nf(e);
+        match nname(e) {
+            "Return" | "Break" | "Continue" => true,
+            "ExprStmt" => self.diverges(&f[0]),
+            "Block" => items(&f[0]).iter().any(|s| self.diverges(s)),
+            "If" => !is_nil(&f[2]) && self.diverges(&f[1]) && self.diverges(&f[2]),
+            "Match" => {
+                let arms = items(&f[1]);
+                !arms.is_empty() && arms.iter().all(|a| self.diverges(&items(a)[1]))
+            }
+            "Call" if nname(&f[0]) == "Path" => {
+                let fq = self.p.expand(&strs(&nf(&f[0])[0]), &self.def(self.d).file).join(".");
+                fq == "core.panic.panic" || fq == "core.panic.todo"
+            }
+            _ => false,
+        }
+    }
+
+    /// move の集合の和 (同じ場所は先に記録した行を残す)。
+    fn union_moves(into: &mut BTreeMap<String, usize>, from: &BTreeMap<String, usize>) {
+        for (k, v) in from {
+            into.entry(k.clone()).or_insert(*v);
+        }
+    }
+
+    /// 分岐とループでの move の合流 (4.1)。どれかの枝で move された場所は、合流後は move 済みとして
+    /// 扱う (後続へ進まない枝は除く)。ループの外で宣言した値を本体で move し、そのまま次の周回に
+    /// 入る経路があれば E3002 (2 周目で move 済みの値を使うことになる)。
     fn branchy(&mut self, e: &V, env: &Env, muts: &BTreeSet<String>) {
         let f = nf(e);
-        let saved = self.moved.clone();
         match nname(e) {
             "If" => {
                 self.tc_expr(&f[0], env, muts, false);
+                let base = self.moved.clone();
                 self.tc_expr(&f[1], env, muts, false);
                 let a = self.moved.clone();
-                self.moved = saved.clone();
+                let a_div = self.diverges(&f[1]);
+                self.moved = base.clone();
+                let mut b_div = false;
                 if !is_nil(&f[2]) {
                     self.tc_expr(&f[2], env, muts, false);
+                    b_div = self.diverges(&f[2]);
                 }
-                let mut m = saved.clone();
-                for (k, v) in a {
-                    if saved.contains_key(&k) {
-                        m.insert(k, v);
-                    }
+                let b = self.moved.clone();
+                let mut m = base;
+                if !a_div {
+                    Self::union_moves(&mut m, &a);
+                }
+                if !b_div {
+                    Self::union_moves(&mut m, &b);
                 }
                 self.moved = m;
             }
             "Match" => {
                 self.tc_expr(&f[0], env, muts, false);
                 let base = self.moved.clone();
+                let mut merged = base.clone();
+                // スクラティニーの型が分かれば、腕の束縛に型を流す (線形値の未消費 E3003 のため)。
+                let sty = self.ty_of(&f[0], env);
                 for arm in items(&f[1]) {
                     self.moved = base.clone();
                     let mut inner = env.clone();
                     let mut b = vec![];
                     pat_binds(&items(arm)[0], &mut b);
+                    let mut typed: Vec<(String, V)> = vec![];
+                    if !is_nil(&sty) {
+                        self.bind_pat_types(&items(arm)[0], &sty, &mut typed);
+                    }
                     for n in b {
-                        inner.insert(n, V::Nil);
+                        let t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
+                        inner.insert(n, t);
+                    }
+                    for (n, t) in &typed {
+                        self.note_linear(n, t, nline(arm));
                     }
                     self.tc_expr(&items(arm)[1], &inner, muts, false);
+                    if !self.diverges(&items(arm)[1]) {
+                        let end = self.moved.clone();
+                        Self::union_moves(&mut merged, &end);
+                    }
                 }
-                self.moved = base;
+                self.moved = merged;
                 self.exhaustive(e, env);
             }
-            "For" => {
-                self.tc_expr(&f[1], env, muts, true);
-                let mut inner = env.clone();
-                let mut b = vec![];
-                pat_binds(&f[0], &mut b);
-                for n in b {
-                    inner.insert(n, V::Nil);
-                }
-                self.tc_expr(&f[2], &inner, muts, false);
-                self.moved = saved;
-            }
             n => {
-                let body = if n == "While" {
-                    self.tc_expr(&f[0], env, muts, false);
-                    &f[1]
-                } else {
-                    &f[0]
+                let mut inner = env.clone();
+                let body = match n {
+                    "For" => {
+                        // 反復子の式は move 済みの使用を検査するが、`for` 自体は反復子を move 済みに
+                        // しない (従来どおり。`for x in it` のあとの `it` の扱いは仕様が未規定で、
+                        // 実行系は `it` をその場で進める)。
+                        let before = self.moved.clone();
+                        self.tc_expr(&f[1], env, muts, true);
+                        self.moved = before;
+                        let mut b = vec![];
+                        pat_binds(&f[0], &mut b);
+                        for x in b {
+                            inner.insert(x, V::Nil);
+                        }
+                        &f[2]
+                    }
+                    "While" => {
+                        self.tc_expr(&f[0], env, muts, false);
+                        &f[1]
+                    }
+                    _ => &f[0],
                 };
-                self.tc_expr(body, env, muts, false);
-                self.moved = saved;
+                let base = self.moved.clone();
+                self.loop_exits.push((BTreeMap::new(), BTreeMap::new()));
+                self.tc_expr(body, &inner, muts, false);
+                let (breaks, continues) = self.loop_exits.pop().unwrap_or_default();
+                let end = self.moved.clone();
+                // 次の周回へ入る経路: 本体の末尾 (後続へ進むとき) と `continue`。
+                let mut back = continues;
+                if !self.diverges(body) {
+                    Self::union_moves(&mut back, &end);
+                }
+                for (k, line) in &back {
+                    if base.contains_key(k) {
+                        continue;
+                    }
+                    let root = k.split('.').next().unwrap_or(k);
+                    if env.contains_key(root) {
+                        self.tdiag(
+                            "E3002",
+                            format!("value `{k}` is moved inside a loop (at line {line}) and would be used again in the next iteration"),
+                            *line,
+                        );
+                    }
+                }
+                // ループを抜ける経路: `break`、および条件・反復子による終了 (`loop` にはない)。
+                let mut out = base;
+                Self::union_moves(&mut out, &breaks);
+                if n != "Loop" {
+                    Self::union_moves(&mut out, &back);
+                }
+                // 本体の中で宣言した束縛は、ループの外では見えない。
+                out.retain(|k, _| env.contains_key(k.split('.').next().unwrap_or(k)));
+                self.moved = out;
             }
         }
     }

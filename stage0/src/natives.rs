@@ -1151,7 +1151,7 @@ impl Interp {
             }
             "read" => {
                 let target = dr(args.first().unwrap_or(&Val::Unit));
-                let cap = seq_items(&target).map_or(0, |x| x.len());
+                let cap = seq_len(&target).unwrap_or(0);
                 let mut buf = vec![0u8; cap];
                 let n = match self.files.get_mut(&fd) {
                     Some(f) => match f.read(&mut buf) {

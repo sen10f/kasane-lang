@@ -1,0 +1,17 @@
+type t.Wrap
+    v: alloc.vec.Vec<u32, std.alloc.System>
+end t.Wrap
+
+fn t.bad(flag: Option<u32>) -> usize uses [alloc] panics never
+    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match flag {
+        Some(_n) => core.mem.drop(t.Wrap { v: v })
+        None => {
+        }
+    }
+    v.len()
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -1,0 +1,12 @@
+fn t.bad(v: &[u32]) -> &u32 uses [] panics never
+    let tmp = 3u32
+    let r = &tmp
+    match v.get(0usize) {
+        Some(_q) => r
+        None => r
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

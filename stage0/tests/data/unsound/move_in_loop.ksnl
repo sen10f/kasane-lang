@@ -1,0 +1,17 @@
+type t.Wrap
+    v: alloc.vec.Vec<u32, std.alloc.System>
+end t.Wrap
+
+fn t.bad() -> usize uses [alloc] panics never
+    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut n = 0usize
+    while n < 3usize {
+        let w = t.Wrap { v: v }
+        n = n.wrapping_add(w.v.len()).wrapping_add(1usize)
+    }
+    n
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

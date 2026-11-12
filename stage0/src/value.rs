@@ -300,6 +300,32 @@ pub fn seq_items(v: &Val) -> Option<Vec<Val>> {
     }
 }
 
+/// 列の長さ (要素を複製しない)。
+pub fn seq_len(v: &Val) -> Option<usize> {
+    match v {
+        Val::Arr(l) | Val::Vec(l) => Some(l.borrow().len()),
+        Val::View(_, a, b) => Some(b - a),
+        Val::Tuple(t) => Some(t.len()),
+        _ => None,
+    }
+}
+
+/// 列の `i` 番目の要素 (その 1 要素だけを複製する)。
+pub fn seq_get(v: &Val, i: usize) -> Option<Val> {
+    match v {
+        Val::Arr(l) | Val::Vec(l) => l.borrow().get(i).cloned(),
+        Val::View(l, a, b) => {
+            if i < b - a {
+                l.borrow().get(a + i).cloned()
+            } else {
+                None
+            }
+        }
+        Val::Tuple(t) => t.get(i).cloned(),
+        _ => None,
+    }
+}
+
 pub fn str_of(v: &Val) -> Option<String> {
     match dr(v) {
         Val::Str(s) => Some(s.to_string()),

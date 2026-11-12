@@ -72,6 +72,42 @@ fn diagnostics_each_case_reports_its_code() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// 通ってはいけないコード (`tests/data/unsound/`)。1 ファイル 1 ケースで、どれも `ksn check` が
+/// 失敗しなければならない。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
+/// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
+const KNOWN_HOLES: &[&str] = &[
+    // `&mut x` を 1 つの式の中で 2 回取り、構造体の別々のフィールドに入れる (借用検査が式の中を見ない)。
+    "alias_mut_through_field",
+    // 線形値をフィールドに持つ値を、フィールドを読むだけで捨てる (消費の判定が「名前が現れるか」のみ)。
+    "linear_in_field_unconsumed",
+    // `&u32` を `u32` として返す (型推論が参照を透過的に扱う)。
+    "wrong_ref_level",
+];
+
+#[test]
+fn unsound_programs_are_rejected() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    assert!(names.len() >= 16, "unsound cases missing");
+    let mut failures = Vec::new();
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("unsound_{}", stem), &fs::read_to_string(&p).unwrap());
+        let o = run(&["check", "--json"], &t.0);
+        let rejected = o.status.code() == Some(1);
+        let hole = KNOWN_HOLES.contains(&stem.as_str());
+        if hole && rejected {
+            failures.push(format!("{}: now rejected; remove it from KNOWN_HOLES", stem));
+        } else if !hole && !rejected {
+            failures.push(format!("{}: passes check but must be rejected (rc={:?})", stem, o.status.code()));
+        }
+        // 整形の違反で落ちているのではないこと (意味の誤りとして報告されること)。
+        assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{} is not canonical", stem);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 #[test]
 fn clean_program_passes_check_and_fmt() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
@@ -859,8 +895,8 @@ fn inferred_caller_receives_the_instantiated_effects() {
 fn local_receiver_method_effects_are_checked() {
     // `s.m()` (`s` は局所変数) はパスとして構文解析されるが、型で解決先が一意に分かるので検査する。
     let src = "type t.S\n    n: u32\nend t.S\n\n\
-               fn t.S.boom(self: t.S) -> u32 uses [] panics may\n    core.panic.panic(\"x\")\nend t.S.boom\n\n\
-               fn t.S.loud(self: t.S) -> u32 uses [io.console] panics never\n    1u32\nend t.S.loud\n\n\
+               fn t.S.boom(self: &t.S) -> u32 uses [] panics may\n    core.panic.panic(\"x\")\nend t.S.boom\n\n\
+               fn t.S.loud(self: &t.S) -> u32 uses [io.console] panics never\n    1u32\nend t.S.loud\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
                let s = t.S { n: 1u32 }\n    core.mem.drop(s.boom())\n    core.mem.drop(s.loud())\n    Ok(())\nend t.main\n";
     let t = Tmp::new("eff_local_bad", src);
@@ -926,15 +962,23 @@ fn closure_argument_effects_are_inferred_at_fn_bounds() {
 }
 
 #[test]
-fn indirect_closure_arguments_keep_the_fn_bound_effects_silent() {
-    // クロージャを変数に束縛して渡す形、入れ子のクロージャに閉じた形は推論しない (黙る)。
+fn indirect_closure_bodies_count_toward_the_enclosing_function() {
+    // クロージャを変数に束縛して渡す形、入れ子のクロージャに閉じた形も、本体は囲む関数の一部として
+    // 検査する (fail-closed。以前は推論せず黙っていた)。
     let src = "fn t.gen[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [E] panics P\n    f.call(())\nend t.gen\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
                let g = fn() -> u32 capture [] {\n        core.panic.panic(\"boom\")\n    }\n    \
                core.mem.drop(t.gen(g))\n    \
                core.mem.drop(t.gen(fn() -> u32 capture [] {\n        let h = fn() -> u32 capture [] {\n            core.panic.panic(\"inner\")\n        }\n        h()\n    }))\n    Ok(())\nend t.main\n";
     let t = Tmp::new("eff_closure_indirect", src);
-    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+    let o = run(&["check", "--json"], &t.0);
+    let got = codes(&text(&o.stdout));
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(got.iter().filter(|c| *c == "E4002").count(), 2, "{}", text(&o.stdout));
+    // 正例: 囲む関数が `panics may` なら通る。
+    let ok = src.replace("uses [] panics never\n    let g", "uses [] panics may\n    let g");
+    let t = Tmp::new("eff_closure_indirect_ok", &ok);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0), "{}", text(&run(&["check", "--json"], &t.0).stdout));
 }
 
 // ---- 定数パラメータの実体化 (4.3): 同じ定数なら同じ型、異なる定数は別単相 ----
@@ -4851,8 +4895,8 @@ fn a_nested_place_blocks_uses_of_its_prefixes_but_not_siblings() {
 }
 
 #[test]
-fn a_field_moved_in_one_branch_is_fine_after_the_merge() {
-    // 分岐の合流は既存の move 検査の流儀: 枝の中で move しても、合流後は move として扱わない。
+fn a_field_moved_in_a_branch_stays_moved_after_the_merge() {
+    // 分岐の合流: どれかの枝で move された場所は、合流後も move 済み (以前は合流で忘れていた)。
     let (bad, out) = pmove_check(
         "pmove_branch",
         &pmove_prefix(),
@@ -4865,6 +4909,57 @@ fn a_field_moved_in_one_branch_is_fine_after_the_merge() {
             "    t.take(s.g)",
             "}",
             "t.take_s(s)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("use of partially moved value `s`"), "{}", out);
+}
+
+#[test]
+fn a_move_in_a_diverging_branch_does_not_reach_the_merge() {
+    // 後続へ進まない枝 (`return`) の中の move は、合流後に持ち越さない。
+    let (bad, out) = pmove_check(
+        "pmove_branch_div",
+        &pmove_prefix(),
+        &[
+            "let s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }",
+            "let flag = true",
+            "if flag {",
+            "    t.take_s(s)",
+            "    return Ok(())",
+            "}",
+            "t.take_s(s)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn a_value_moved_in_a_loop_body_is_an_error_on_the_next_iteration() {
+    let (bad, out) = pmove_check(
+        "pmove_loop",
+        &pmove_prefix(),
+        &[
+            "let s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }",
+            "let mut n = 0u8",
+            "while n < 2u8 {",
+            "    t.take_s(s)",
+            "    n = n.wrapping_add(1u8)",
+            "}",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("moved inside a loop"), "{}", out);
+    // 正例: move のあとに必ず `break` するなら、次の周回はない。
+    let (bad, out) = pmove_check(
+        "pmove_loop_break",
+        &pmove_prefix(),
+        &[
+            "let s = t.S { f: t.P { a: 1u8 }, g: t.P { a: 2u8 } }",
+            "loop {",
+            "    t.take_s(s)",
+            "    break",
+            "}",
         ],
     );
     assert!(!bad, "{}", out);

@@ -40,7 +40,39 @@ fn analyze(p: &Program, di: usize) -> (Vec<String>, bool) {
     let d = &p.defs[di];
     let Some(body) = &d.body else { return (vec![], false) };
     let locals = local_names(d, body);
-    body_effects(p, &d.file, &locals, body, false)
+    let (uses, mut may) = body_effects(p, &d.file, &locals, body, false);
+    // 関数ポインタ型の引数 (`f: fn(..) -> .. uses [..] panics ..`) の呼び出しは、その型の効果を持つ。
+    let mut effs: BTreeSet<String> = uses.into_iter().collect();
+    let mut nodes: Vec<&V> = vec![];
+    collect_nodes(body, &mut nodes, false);
+    for n in nodes {
+        if nname(n) != "Call" || nname(&nf(n)[0]) != "Path" {
+            continue;
+        }
+        let segs = strs(&nf(&nf(n)[0])[0]);
+        if segs.len() == 1 {
+            if let Some((u, pn)) = fn_param_effects(d, &segs[0]) {
+                add_effs(&u, Some(pn.as_str()), &mut effs, &mut may);
+            }
+        }
+    }
+    (effs.into_iter().collect(), may)
+}
+
+/// 引数 `name` が関数ポインタ型なら、その型が宣言する (`uses`, `panics`) を返す。
+/// `panics` が panic 変数 (`P`) のときは、実体が分からないので保守的に `may` とする。
+pub(crate) fn fn_param_effects(d: &Def, name: &str) -> Option<(Vec<String>, String)> {
+    let (_, t) = d.params.iter().find(|(n, _)| n == name)?;
+    let mut t = t;
+    while crate::check::tag(t) == "ref" {
+        t = crate::check::tel(t, 2);
+    }
+    if crate::check::tag(t) != "fn" {
+        return None;
+    }
+    let uses = strs(crate::check::tel(t, 3));
+    let pn = crate::check::st(crate::check::tel(t, 4));
+    Some((uses, if pn == "never" { "never".into() } else { "may".into() }))
 }
 
 /// 本体 AST と局所名の集合から、その本体の効果 (`uses` と `panics may`) を求める純粋関数。

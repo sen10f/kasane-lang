@@ -551,11 +551,12 @@ impl Interp {
                     Val::Int(x, _) => x,
                     _ => return panic("bad index"),
                 };
-                let items = seq_items(&b).unwrap_or_default();
-                if i < 0 || i as usize >= items.len() {
-                    return panic(format!("index out of bounds: the len is {} but the index is {}", items.len(), i));
+                // 要素を 1 つだけ取り出す (列全体を複製しない)。
+                let len = seq_len(&b).unwrap_or(0);
+                if i < 0 || i as usize >= len {
+                    return panic(format!("index out of bounds: the len is {} but the index is {}", len, i));
                 }
-                Ok(items[i as usize].clone())
+                Ok(seq_get(&b, i as usize).unwrap_or(Val::Unit))
             }
             "Call" => self.e_call(e, sc),
             "MCall" => {
