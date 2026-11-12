@@ -242,7 +242,7 @@ impl<'a> TypeCk<'a> {
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
-    /// `f.call(..)` / `f.call_mut(..)` / `f.call_once(..)` の形のメソッド呼び出しを探す近似。
+    /// `f(..)` / `f.call(..)` / `f.call_mut(..)` / `f.call_once(..)` の形の呼び出しを探す近似。
     /// 名前で見るので、`let g = f` としたあとの `g.call(..)` は見つけられない (黙る)。
     fn callee_calls_param(&mut self, d: &Def, param: &str) -> bool {
         if !self.param_called.contains_key(&d.name) {
@@ -261,10 +261,10 @@ impl<'a> TypeCk<'a> {
                         continue;
                     }
                     let segs = strs(&nf(&f[0])[0]);
-                    if segs.len() != 2 {
-                        continue;
-                    }
-                    if matches!(segs[1].as_str(), "call" | "call_mut" | "call_once") {
+                    // `f(x)` (局所名の直接呼び出し) と `f.call(..)` の両方を、パラメータの呼び出しとして見る。
+                    // 前者は `Fn` 境界の値の普通の呼び出しで、後者は 5.3 の検査 (E4010c) が使う形。
+                    let direct = segs.len() == 1;
+                    if direct || (segs.len() == 2 && matches!(segs[1].as_str(), "call" | "call_mut" | "call_once")) {
                         called.insert(segs[0].clone());
                     }
                 }
@@ -1688,7 +1688,11 @@ impl<'a> TypeCk<'a> {
                 continue;
             }
             let Ty::Closure { id: Some(node), .. } = self.deep(a) else { continue };
-            let Some((uses, may, _)) = self.closure_effs.get(&node) else { continue };
+            let Some((uses, may, unsure)) = self.closure_effs.get(&node) else { continue };
+            // 確実でない効果 (推論された関数の上からの近似を含む) は、効果変数の束縛に使わない (黙る)。
+            if *unsure {
+                continue;
+            }
             for b in &bounds {
                 let bt = items(tel(b, 1));
                 let var = |i: usize, kind: &str| -> Option<String> {
@@ -1836,6 +1840,11 @@ impl<'a> TypeCk<'a> {
         if self.def().kw == "test" {
             return;
         }
+        // 推論された関数 (infer.rs) の効果は上からの近似 (名前の全候補の和を含みうる) なので、
+        // 宣言された効果と同じ確かさでは検査しない (黙る)。
+        if cands.iter().any(|c| self.inferred_def(&c.0)) {
+            return;
+        }
         let checks: Vec<(String, Vec<String>, Option<String>)> =
             cands.into_iter().map(|(n, _, _, u, p)| (n, u, p)).collect();
         if checks.iter().all(|c| c.1.is_empty() && c.2.as_deref() != Some("may")) {
@@ -1848,7 +1857,12 @@ impl<'a> TypeCk<'a> {
     /// 戻り値の型を返す。`cl` がクロージャに決まらないときは None。
     fn call_closure(&mut self, cl: &Ty, argt: &[Ty], line: usize) -> Option<Ty> {
         let cl = self.deep(cl);
-        let Ty::Closure { args, ret, .. } = cl else { return None };
+        let Ty::Closure { args, ret, id, .. } = cl else { return None };
+        // 直接呼び出し (`let g = fn..; g(x)`) は、呼び出し元からクロージャの節への辺になる (5.3)。
+        // 節の本体の呼び出しは書かれた関数に帰属するが、節そのもののフレームを数えるには辺が要る。
+        if let Some(node) = id {
+            self.add_edge(node);
+        }
         if args.len() != argt.len() {
             self.diag(
                 "E2022",
