@@ -2081,8 +2081,41 @@ impl<'a> Checker<'a> {
                 _ => V::Nil,
             },
             "Path" => {
-                let segs = items(&f[0]);
-                if segs.len() == 1 { env.get(&st(&segs[0])).cloned().unwrap_or(V::Nil) } else { V::Nil }
+                let segs = strs(&f[0]);
+                let Some(root) = env.get(&segs[0]) else { return V::Nil };
+                // `s.f.g` (根が局所変数のフィールド道) は構造体定義のフィールドをたどる (4.4)。
+                // 参照越しは自動参照外しでたどる。途中で分からなければ黙る (Nil)。
+                let mut cur = root.clone();
+                for seg in &segs[1..] {
+                    if is_nil(&cur) {
+                        return V::Nil;
+                    }
+                    let base = self.strip(&cur).clone();
+                    cur = self.field_ty(&base, seg).unwrap_or(V::Nil);
+                }
+                cur
+            }
+            "Field" => {
+                // 一時値のフィールド (`t.make().lin`、4.4)。受け手の型が決まり、
+                // 構造体のフィールドとして解決できるときだけ型を返す (分からなければ黙る)。
+                let recv = self.ty_of(&f[0], env);
+                if is_nil(&recv) {
+                    return V::Nil;
+                }
+                let base = self.strip(&recv).clone();
+                self.field_ty(&base, &st(&f[1])).unwrap_or(V::Nil)
+            }
+            "TupleE" => {
+                // タプル式は要素の型がすべて決まるときだけ型を返す (4.4)。
+                let mut els = vec![];
+                for x in items(&f[0]) {
+                    let t = self.ty_of(x, env);
+                    if is_nil(&t) {
+                        return V::Nil;
+                    }
+                    els.push(t);
+                }
+                V::L(vec![V::S("tuple".into()), V::L(els)])
             }
             "StructLit" => {
                 let name = st(&f[0]);
@@ -2234,6 +2267,13 @@ impl<'a> Checker<'a> {
                 }
                 if nname(&f[0]) == "PBind" {
                     self.note_linear(&st(&nf(&f[0])[0]), &ty, nline(s));
+                } else {
+                    // タプル・構造体の分解で束縛した線形な値も消費を要する (4.4)。
+                    let mut tb = vec![];
+                    self.pat_typed_binds(&f[0], &ty, &mut tb);
+                    for (n, t) in tb {
+                        self.note_linear(&n, &t, nline(s));
+                    }
                 }
             }
             "Assign" => {
@@ -2629,14 +2669,105 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 型が線形か (4.4): `linear` と宣言された型、または線形な値を含む型
+    /// (フィールド・バリアントのペイロード・タプル要素・配列要素)。明確に線形のときだけ true
+    /// (型パラメータ・標準ライブラリの型など分からないものは false = 黙る)。
+    fn contains_linear(&self, t: &V) -> bool {
+        if is_nil(t) {
+            return false;
+        }
+        if self.is_linear(t) {
+            return true;
+        }
+        let user_types: HashSet<String> = self
+            .user
+            .iter()
+            .map(|&i| self.def(i))
+            .filter(|d| matches!(d.kw.as_str(), "type" | "enum"))
+            .map(|d| d.name.clone())
+            .collect();
+        self.linear_v(t, &self.names, &user_types, &mut HashSet::new()) == Some(true)
+    }
+
+    /// `let` のパターンの束縛と型の組 (タプル・構造体の分解、4.4)。型が分からない所は返さない。
+    fn pat_typed_binds(&self, p: &V, ty: &V, out: &mut Vec<(String, V)>) {
+        if is_nil(ty) {
+            return;
+        }
+        match nname(p) {
+            "PBind" => out.push((st(&nf(p)[0]), ty.clone())),
+            "PTuple" => {
+                if tag(ty) != "tuple" {
+                    return;
+                }
+                let ps = items(&nf(p)[0]);
+                let ts = items(tel(ty, 1));
+                if ps.len() != ts.len() {
+                    return;
+                }
+                for (x, t) in ps.iter().zip(ts) {
+                    self.pat_typed_binds(x, t, out);
+                }
+            }
+            "PStruct" => {
+                // パターンの型名と値の型名 (末尾成分) が一致するときだけたどる。
+                if tag(ty) != "named" {
+                    return;
+                }
+                let segs = strs(&nf(p)[0]);
+                let tn = st(tel(ty, 1));
+                if tn.rsplit('.').next() != segs.last().map(|x| x.as_str()) {
+                    return;
+                }
+                for fl in items(&nf(p)[1]) {
+                    let fx = items(fl);
+                    if let Some(ft) = self.field_ty(ty, &st(&fx[0])) {
+                        self.pat_typed_binds(&fx[1], &ft, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn note_linear(&mut self, name: &str, ty: &V, line: usize) {
-        if !self.is_linear(ty) {
+        if !self.contains_linear(ty) {
             return;
         }
         let body = self.def(self.d).body.as_ref().unwrap();
         let mut all = vec![];
         walk(body, &mut all);
-        if !all.iter().any(|x| nname(x) == "Path" && st(&items(&nf(x)[0])[0]) == name) {
+        let uses: Vec<Vec<String>> = all
+            .iter()
+            .filter(|x| nname(x) == "Path")
+            .map(|x| strs(&nf(x)[0]))
+            .filter(|segs| segs[0] == name)
+            .collect();
+        // 宣言が linear な型・構造体以外 (タプル・enum) は従来どおり、名前の使用があれば消費とみなす。
+        // linear と宣言されていない構造体が線形なフィールドを含む場合は (4.4)、全体の使用
+        // (`w`・メソッド呼び出し `w.m(..)`) か、線形なフィールドすべての使用 (`w.lin`) を要求する。
+        let struct_fields: Option<Vec<String>> = if self.is_linear(ty) || tag(ty) != "named" {
+            None
+        } else {
+            self.p
+                .types
+                .get(&st(tel(ty, 1)))
+                .map(|&i| self.def(i))
+                .filter(|d| d.kw == "type")
+                .map(|d| d.fields.iter().map(|f| f.0.clone()).collect())
+        };
+        let consumed = match struct_fields {
+            None => !uses.is_empty(),
+            Some(fields) => {
+                let whole = uses.iter().any(|segs| segs.len() == 1 || !fields.contains(&segs[1]));
+                whole
+                    || fields.iter().all(|fname| {
+                        let lin = self.field_ty(ty, fname).map_or(true, |ft| self.contains_linear(&ft));
+                        !lin || uses.iter().any(|segs| segs[1] == *fname)
+                    })
+            }
+        };
+        if !consumed {
             self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
         }
     }
