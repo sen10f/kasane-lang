@@ -575,7 +575,7 @@ impl<'a> Engine<'a> {
                 }
                 if self.bound_reaches(&text, &op.trait_fqn) { Decision::Hit } else { Decision::Skip }
             }
-            Ty::Dyn(tr) => {
+            Ty::Dyn(tr, _) => {
                 if op.kind != Kind::TraitMethod || field {
                     return Decision::Skip;
                 }
