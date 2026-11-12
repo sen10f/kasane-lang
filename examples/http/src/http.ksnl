@@ -139,26 +139,13 @@ fn http.digit_text(d: usize) -> &'static str
 end http.digit_text
 
 fn http.exchange(listener: &std.net.TcpListener, address: &str) -> Result<usize, http.Error> uses [alloc, io.net] panics may
-    let mut client = std.net.connect(address)?
-    let mut server = match listener.accept() {
-        Ok(s) => s
-        Err(e) => {
-            core.mem.drop(client.close())
-            return Err(http.Error.from_value_net_error(e))
+    with mut client = std.net.connect(address)? close core.mem.drop(client.close()) {
+        with mut server = listener.accept()? close core.mem.drop(server.close()) {
+            http.client_send(&mut client, address)?
+            http.server(&mut server)?
+            http.client_receive(&mut client)
         }
     }
-    let sent = http.client_send(&mut client, address)
-    let served = match sent {
-        Ok(_u) => http.server(&mut server)
-        Err(send_error) => Err(send_error)
-    }
-    let received = match served {
-        Ok(_u) => http.client_receive(&mut client)
-        Err(serve_error) => Err(serve_error)
-    }
-    core.mem.drop(server.close())
-    core.mem.drop(client.close())
-    received
 end http.exchange
 
 fn http.find_end(buf: &[u8]) -> Option<usize>
@@ -185,22 +172,12 @@ fn http.has_prefix(buf: &[u8], at: usize, lit: &[u8]) -> bool
 end http.has_prefix
 
 fn http.main() -> Result<(), http.Error> uses [alloc, io.console, io.net] panics may
-    let listener = std.net.listen("127.0.0.1:0")?
-    let port = match listener.local_port() {
-        Ok(p) => p
-        Err(e) => {
-            core.mem.drop(listener.close())
-            return Err(http.Error.from_value_net_error(e))
-        }
+    let length = with listener = std.net.listen("127.0.0.1:0")? close core.mem.drop(listener.close()) {
+        let port = listener.local_port()?
+        let mut address = alloc.string.String.new(std.alloc.SYSTEM)
+        http.build_address(&mut address, port)?
+        http.exchange(&listener, address.as_str())?
     }
-    let mut address = alloc.string.String.new(std.alloc.SYSTEM)
-    let built = http.build_address(&mut address, port)
-    let result = match built {
-        Ok(_u) => http.exchange(&listener, address.as_str())
-        Err(e) => Err(e)
-    }
-    core.mem.drop(listener.close())
-    let length = result?
     let mut line = alloc.string.String.new(std.alloc.SYSTEM)
     line.push_str("200 OK, body bytes: ")?
     http.append_decimal(&mut line, length)?
