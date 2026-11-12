@@ -1,0 +1,65 @@
+const loops.EXPECT_PRIMES: u32 = 17984u32
+
+const loops.EXPECT_SUM: u64 = 499999500000u64
+
+const loops.N_SIEVE: usize = 200000usize
+
+const loops.N_SUM: u64 = 1000000u64
+
+fn loops.count_primes(n: usize) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics may pub
+    let mut flags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut k = 0usize
+    while k < n {
+        flags.push(true)?
+        k = k.wrapping_add(1usize)
+    }
+    flags[0usize] = false
+    flags[1usize] = false
+    let mut p = 2usize
+    while p.wrapping_mul(p) < n {
+        let is_prime = match flags.get(p) {
+            Some(b) => *b
+            None => false
+        }
+        if is_prime {
+            let mut m = p.wrapping_mul(p)
+            while m < n {
+                flags[m] = false
+                m = m.wrapping_add(p)
+            }
+        }
+        p = p.wrapping_add(1usize)
+    }
+    let mut count = 0u32
+    let mut q = 0usize
+    while q < n {
+        let is_prime = match flags.get(q) {
+            Some(b) => *b
+            None => false
+        }
+        if is_prime {
+            count = count.wrapping_add(1u32)
+        }
+        q = q.wrapping_add(1usize)
+    }
+    Ok(count)
+end loops.count_primes
+
+fn loops.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    core.check.eq(loops.sum_to(loops.N_SUM), loops.EXPECT_SUM)
+    match loops.count_primes(loops.N_SIEVE) {
+        Ok(c) => core.check.eq(c, loops.EXPECT_PRIMES)
+        Err(_e) => core.panic.panic("oom")
+    }
+    Ok(())
+end loops.main
+
+fn loops.sum_to(n: u64) -> u64 uses [] panics never pub
+    let mut acc = 0u64
+    let mut i = 0u64
+    while i < n {
+        acc = acc.wrapping_add(i)
+        i = i.wrapping_add(1u64)
+    }
+    acc
+end loops.sum_to

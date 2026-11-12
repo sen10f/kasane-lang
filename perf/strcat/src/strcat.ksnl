@@ -1,0 +1,21 @@
+const strcat.EXPECT_LEN: usize = 400000usize
+
+const strcat.N: usize = 200000usize
+
+fn strcat.build(n: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < n {
+        s.push_str("ab")?
+        i = i.wrapping_add(1usize)
+    }
+    Ok(s.len())
+end strcat.build
+
+fn strcat.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    match strcat.build(strcat.N) {
+        Ok(len) => core.check.eq(len, strcat.EXPECT_LEN)
+        Err(_e) => core.panic.panic("oom")
+    }
+    Ok(())
+end strcat.main

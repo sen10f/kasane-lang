@@ -1,0 +1,57 @@
+const vecops.EXPECT_AFTER: u64 = 944997750000u64
+
+const vecops.EXPECT_BEFORE: u64 = 314999250000u64
+
+const vecops.N: usize = 300000usize
+
+fn vecops.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    match vecops.run(vecops.N) {
+        Ok((before, after)) => {
+            core.check.eq(before, vecops.EXPECT_BEFORE)
+            core.check.eq(after, vecops.EXPECT_AFTER)
+        }
+        Err(_e) => core.panic.panic("oom")
+    }
+    Ok(())
+end vecops.main
+
+fn vecops.run(n: usize) -> Result<(u64, u64), alloc.alloc.AllocError> uses [alloc] panics may pub
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    let mut k = 1u64
+    while i < n {
+        v.push(k)?
+        i = i.wrapping_add(1usize)
+        k = k.wrapping_add(7u64)
+    }
+    let mut before = 0u64
+    i = 0usize
+    while i < n {
+        let x = match v.get(i) {
+            Some(e) => *e
+            None => 0u64
+        }
+        before = before.wrapping_add(x)
+        i = i.wrapping_add(1usize)
+    }
+    i = 0usize
+    while i < n {
+        let x = match v.get(i) {
+            Some(e) => *e
+            None => 0u64
+        }
+        v[i] = x.wrapping_mul(3u64)
+        i = i.wrapping_add(1usize)
+    }
+    let mut after = 0u64
+    i = 0usize
+    while i < n {
+        let x = match v.get(i) {
+            Some(e) => *e
+            None => 0u64
+        }
+        after = after.wrapping_add(x)
+        i = i.wrapping_add(1usize)
+    }
+    Ok((before, after))
+end vecops.run

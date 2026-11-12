@@ -1,0 +1,42 @@
+const structs.EXPECT_ACC: i64 = 255318i64
+
+const structs.N: u64 = 200000u64
+
+type structs.Body pub
+    x: i64
+    y: i64
+    vx: i64
+    vy: i64
+end structs.Body
+
+fn structs.Body.energy(self: &structs.Body) -> i64 uses [] panics never pub
+    self.x.wrapping_mul(3i64).wrapping_add(self.y)
+end structs.Body.energy
+
+fn structs.Body.step(self: &mut structs.Body) -> () uses [] panics never pub
+    self.x = self.x.wrapping_add(self.vx)
+    self.y = self.y.wrapping_add(self.vy)
+    if self.x > 1000i64 || self.x < -1000i64 {
+        self.vx = self.vx.wrapping_neg()
+    }
+    if self.y > 1000i64 || self.y < -1000i64 {
+        self.vy = self.vy.wrapping_neg()
+    }
+end structs.Body.step
+
+fn structs.main() -> Result<(), std.io.Error> uses [] panics may
+    core.check.eq(structs.run(structs.N), structs.EXPECT_ACC)
+    Ok(())
+end structs.main
+
+fn structs.run(n: u64) -> i64 uses [] panics never pub
+    let mut b = structs.Body { x: 0i64, y: 0i64, vx: 7i64, vy: -5i64 }
+    let mut acc = 0i64
+    let mut i = 0u64
+    while i < n {
+        b.step()
+        acc = acc.wrapping_add(b.energy())
+        i = i.wrapping_add(1u64)
+    }
+    acc
+end structs.run

@@ -1,0 +1,15 @@
+const fib.EXPECT: u64 = 196418u64
+
+const fib.N: u64 = 27u64
+
+fn fib.fib(n: u64) -> u64 uses [] panics never stack 4096 pub
+    if n < 2u64 {
+        return n
+    }
+    fib.fib(n.wrapping_sub(1u64)).wrapping_add(fib.fib(n.wrapping_sub(2u64)))
+end fib.fib
+
+fn fib.main() -> Result<(), std.io.Error> uses [] panics may
+    core.check.eq(fib.fib(fib.N), fib.EXPECT)
+    Ok(())
+end fib.main
