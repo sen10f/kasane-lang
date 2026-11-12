@@ -6031,3 +6031,176 @@ fn tyof_unit_method_results_and_unknown_types_stay_silent() {
     );
     assert!(!tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E3003"), "{}", out);
 }
+
+// ---- 借用の残り: 分解 (let (a, b) = t、match t { (a, b) => .. }) での保存ローンの読み戻し ----
+
+#[test]
+fn nll_rejects_a_mutation_while_a_let_destructured_binding_carries_a_stored_borrow() {
+    // `let t = (&x, 1u8)` に保存したローンは、分解した束縛 `a` に伝わる (要素ごとの道は無いので全体の和)。
+    let (bad, out) = has_e3010(
+        "nll_destr_let",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (&x, 1u8)",
+            "let (a, n) = t",
+            "x = 3u8",
+            "core.check.eq(*a, 1u8)",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `a`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_destructured_literal_binding_carries_the_borrow() {
+    // リテラルを直接分解する `let (a, n) = (&x, 1u8)` も、束縛 `a` が借用を持つ。
+    let (bad, out) = has_e3010(
+        "nll_destr_lit",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let (a, n) = (&x, 1u8)",
+            "x = 3u8",
+            "core.check.eq(*a, 1u8)",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `a`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_match_destructured_binding_carries_the_stored_borrow() {
+    // `match t { (a, n) => .. }` の腕の束縛 `a` も、保存された借用を持つ。
+    let (bad, out) = has_e3010(
+        "nll_destr_match",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (&x, 1u8)",
+            "match t {",
+            "    (a, n) => {",
+            "        x = 3u8",
+            "        core.check.eq(*a, 1u8)",
+            "    }",
+            "}",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `a`"), "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_destructured_binding_that_is_dead_before_the_mutation() {
+    // 分解の束縛 `a` を使い終えてから書き換えるなら、借用は死んでいて黙る。
+    let (bad, out) = has_e3010(
+        "nll_destr_dead",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (&x, 1u8)",
+            "let (a, n) = t",
+            "core.check.eq(*a, 1u8)",
+            "x = 3u8",
+            "core.check.eq(x, 3u8)",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_destructured_binding_that_only_copies_the_value_out() {
+    // 束縛から値をコピー (`*a`) して取り出し、その後は束縛を使わなければ、書き換えは許される。
+    let (bad, out) = has_e3010(
+        "nll_destr_copy",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (&x, 1u8)",
+            "let (a, n) = t",
+            "let v = *a",
+            "x = 3u8",
+            "core.check.eq(v, 1u8)",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_destructured_tuple_without_any_borrow() {
+    // 借用を含まないタプル (`(1u8, 2u8)`) の分解は、無関係な変数の書き換えで黙る。
+    let (bad, out) = has_e3010(
+        "nll_destr_nolo",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (1u8, 2u8)",
+            "let (a, b) = t",
+            "x = 3u8",
+            "core.check.eq(a + b, 3u8)",
+            "core.check.eq(x, 3u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_destructured_binding_after_the_tuple_was_overwritten() {
+    // `t` を書き換えると、前に保存された `&x` のローンは死ぬ。新しい `&y` だけが分解の束縛に移る。
+    let (bad, out) = has_e3010(
+        "nll_destr_overwrite",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let mut y = 2u8",
+            "let mut t = (&x, 1u8)",
+            "t = (&y, 2u8)",
+            "let (a, n) = t",
+            "x = 3u8",
+            "core.check.eq(*a, 2u8)",
+            "core.check.eq(n, 2u8)",
+            "y = 4u8",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_struct_destructured_field_carries_a_stored_borrow() {
+    // 構造体のフィールドに保存された借用は、名前の道をたどって分解の束縛 `r` に伝わる。
+    let (bad, out) = has_e3010(
+        "nll_destr_struct",
+        NLL_REF_FIELD,
+        &[
+            "let mut x = 1u8",
+            "let s = t.S { f: &x, b: 2u8 }",
+            "let t.S { f: r, b: n } = s",
+            "x = 2u8",
+            "core.check.eq(*r, 1u8)",
+            "core.check.eq(n, 2u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_copy_element_of_a_literal_destructured_while_the_borrow_is_mutated() {
+    // `(&x, 1u8)` の分解で、借用を持つ要素 `a` は死んでおり、コピー値の `n` だけを後で使うなら黙る。
+    let (bad, out) = has_e3010(
+        "nll_destr_lit_copy",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let (a, n) = (&x, 1u8)",
+            "core.check.eq(*a, 1u8)",
+            "x = 3u8",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
