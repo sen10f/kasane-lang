@@ -7399,3 +7399,56 @@ end t.f
     let out = text(&o.stdout);
     assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
 }
+
+/// `str` / `String` の `to_string`、スライス `Iter.count`、`&str` / `&[T]` / Option / Result の派生比較
+/// (`eq` `ne` `cmp` `partial_cmp`) は spec/stdlib の規範どおり check が受理する。以前はいずれも
+/// インタプリタで "no method ..." の panic になっていた。インタプリタとバンドルの両方で動くことを確かめる。
+#[test]
+fn str_slice_option_result_sig_methods_run_in_both() {
+    let test = "test t.main.test_a_option_result_cmp
+    let o: Option<u8> = Some(1u8)
+    core.check.eq(o.eq(&Some(1u8)), true)
+    core.check.eq(o.cmp(&None) == core.cmp.Ordering.Greater, true)
+    let r: Result<u8, u8> = Ok(1u8)
+    core.check.eq(r.ne(&Err(1u8)), true)
+end t.main.test_a_option_result_cmp
+
+test t.main.test_b_slice_count
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.push(1u8)
+    v.push(2u8)
+    core.check.eq(v.iter().count(), 2usize)
+    let mut it = v.iter()
+    core.mem.drop(it.next())
+    core.check.eq(it.count(), 1usize)
+end t.main.test_b_slice_count
+
+test t.main.test_c_str_derived_cmp
+    let s: &str = \"ab\"
+    let t: &str = \"ac\"
+    core.check.eq(s.eq(&t), false)
+    core.check.eq(s.ne(&t), true)
+    core.check.eq(s.cmp(&t) == core.cmp.Ordering.Less, true)
+    core.check.eq(s.partial_cmp(&t).is_some(), true)
+end t.main.test_c_str_derived_cmp
+
+test t.main.test_d_to_string
+    let s: &str = \"héllo\"
+    core.check.eq(s.to_string().as_str(), \"héllo\")
+    core.check.eq(s.to_string().len(), 6usize)
+    let mut owned = s.to_string()
+    owned.push('!')
+    core.check.eq(owned.as_str(), \"héllo!\")
+    let st = alloc.string.String.new(std.alloc.SYSTEM)
+    core.check.eq(st.to_string().is_empty(), true)
+end t.main.test_d_to_string
+";
+    let src = format!("{}\n{}", main_wrap("", ""), test);
+    let t = Tmp::new("str_slice_option_result_sig", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    for name in ["test_a_option_result_cmp", "test_b_slice_count", "test_c_str_derived_cmp", "test_d_to_string"] {
+        assert!(out.contains(&format!("t.main.{} ... ok", name)), "{}", out);
+    }
+}
