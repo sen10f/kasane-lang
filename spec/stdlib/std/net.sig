@@ -16,6 +16,7 @@ end std.net.TcpStream
 
 fn std.net.TcpListener.accept(self: &std.net.TcpListener) -> Result<std.net.TcpStream, std.net.Error> uses [io.net] panics never pub
 fn std.net.TcpListener.close(self: std.net.TcpListener) -> Result<(), std.net.Error> uses [io.net] panics never pub
+fn std.net.TcpListener.local_port(self: &std.net.TcpListener) -> Result<u16, std.net.Error> uses [io.net] panics never pub
 fn std.net.TcpStream.close(self: std.net.TcpStream) -> Result<(), std.net.Error> uses [io.net] panics never pub
 impl std.io.Write<[io.net]> for std.net.TcpStream
 fn std.net.TcpStream.flush(self: &mut std.net.TcpStream) -> Result<(), std.io.Error> uses [io.net] panics never impls std.io.Write<[io.net]>

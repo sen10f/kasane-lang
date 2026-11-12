@@ -21,7 +21,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.boxed.Box.new", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
-    "std.fs.create", "std.fs.read_to_end",
+    "std.fs.create", "std.fs.read_to_end", "std.net.connect", "std.net.listen",
 ];
 
 const NUM_EXTRA: &[&str] = &[
@@ -631,6 +631,7 @@ impl Interp {
                     Err(e) => Ok(err(io_error(&e))),
                 }
             }
+            "std.net.connect" | "std.net.listen" => self.net_native(name, &args),
             _ => {
                 if let Some((ty, f)) = name.split_once('.') {
                     if is_int_ty(ty) || ty == "f32" || ty == "f64" || ty == "bool" || ty == "char" {
@@ -739,6 +740,9 @@ impl Interp {
                 panic("no such method on Rng")
             }
             Val::Struct(s) => {
+                if s.ty.starts_with("std.net.Tcp") {
+                    return self.net_method(s, name, &args);
+                }
                 if s.ty == "std.fs.File" {
                     return self.file_method(s, name, &args);
                 }
@@ -1085,7 +1089,7 @@ fn io_error_kind(kind: &str) -> Val {
     }))
 }
 
-fn io_error(e: &std::io::Error) -> Val {
+pub(crate) fn io_error(e: &std::io::Error) -> Val {
     use std::io::ErrorKind as K;
     let kind = match e.kind() {
         K::NotFound => "NotFound",
@@ -1119,7 +1123,7 @@ fn file_fd(v: &Val) -> Option<i128> {
 }
 
 /// `&[u8]` / `&mut [u8]` / Vec<u8> の中身をバイト列にする。
-fn bytes_of(v: &Val) -> Vec<u8> {
+pub(crate) fn bytes_of(v: &Val) -> Vec<u8> {
     seq_items(&dr(v)).unwrap_or_default().iter().map(|x| if let Val::Int(i, _) = dr(x) { i as u8 } else { 0 }).collect()
 }
 

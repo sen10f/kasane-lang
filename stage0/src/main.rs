@@ -15,6 +15,7 @@ mod lint;
 mod project;
 mod interp;
 mod natives;
+mod net;
 mod value;
 mod parser;
 mod program;
