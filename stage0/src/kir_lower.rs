@@ -16,6 +16,10 @@ use crate::parser::{nid, V};
 use crate::program::{Def, Program, Target as Tgt};
 use crate::types::{from_v, ExprTy, Ty as Src, TypeCk};
 
+// 組み込みの Option / Result の下ろし (子モジュール。親の非公開の項目を使う)。
+#[path = "kir_lower_enum.rs"]
+mod enum_lower;
+
 type LR<T> = Result<T, String>;
 
 /// 下ろしの結果: 対象になった関数と、未対応の関数 (鍵, 理由)。
@@ -45,7 +49,7 @@ fn conv(t: &Src) -> Option<Ty> {
     match t {
         Src::Prim(s) => Ty::parse(s).filter(|t| *t != Ty::Unit),
         Src::Unit => Some(Ty::Unit),
-        _ => None,
+        _ => enum_lower::conv_builtin(t),
     }
 }
 
@@ -330,6 +334,8 @@ impl<'a> Lw<'a> {
             "Break" => self.jump_loop(e, true),
             "Continue" => self.jump_loop(e, false),
             "Return" => self.ret_(e),
+            "Match" => self.match_(e),
+            "Try" => self.try_(e),
             other => self.err(nline(e), format!("式 {} は段階 1 の対象外", other)),
         }
     }
@@ -364,6 +370,9 @@ impl<'a> Lw<'a> {
         if segs.len() == 1 {
             if let Some(s) = self.lookup(&segs[0]) {
                 return Ok(self.slots[s].0);
+            }
+            if segs[0] == "None" {
+                return self.none_val(e);
             }
         }
         if !matches!(nf(e).get(1), Some(V::Nil) | None) {
@@ -512,6 +521,9 @@ impl<'a> Lw<'a> {
     }
 
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = self.builtin_call(e) {
+            return r;
+        }
         let f = nf(e);
         let line = nline(e);
         if !matches!(f.get(2), Some(V::Nil) | None) {
@@ -589,6 +601,9 @@ impl<'a> Lw<'a> {
 
     /// `e.m(args)` (受け手が式の形)。整数の `wrapping_add` / `wrapping_sub` / `wrapping_mul` だけを扱う。
     fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = self.builtin_mcall(e) {
+            return r;
+        }
         let f = nf(e);
         let line = nline(e);
         if !matches!(f.get(3), Some(V::Nil) | None) {
