@@ -7906,9 +7906,127 @@ end t.main.test_d_to_string
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    for name in ["test_a_option_result_cmp", "test_b_slice_count", "test_c_str_derived_cmp", "test_d_to_string"] {
-        // Cranelift が `Option.eq` / `count` / `str.eq` / `as_str` 未対応: インタプリタとバンドルの比較 (機械語では比べていない)。
-        assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (native skipped: ", name)), "{}", out);
+    for name in ["test_a_option_result_cmp", "test_b_slice_count", "test_c_str_derived_cmp"] {
+        // 機械語とインタプリタの結果が一致する。
+        assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
+    }
+    // `as_str` は Cranelift が未対応: インタプリタとバンドルの比較 (機械語では比べていない)。
+    assert!(out.contains("t.main.test_d_to_string ... ok (both: bundle (native skipped: "), "{}", out);
+}
+
+#[test]
+fn derived_cmp_and_iter_count_boundaries_run_native() {
+    // `Option` / `Result` / `str` の派生の比較 (None < Some、Ok < Err、ペイロードは辞書順、str は UTF-8 バイト列の辞書順) と
+    // `v.iter()` の `next` / `count` の境界を、機械語とインタプリタで比べる。
+    let test = r#"test t.main.test_e_option_boundaries
+    let none: Option<i8> = None
+    let a: Option<i8> = Some(-1i8)
+    let b: Option<i8> = Some(1i8)
+    core.check.eq(none.cmp(&none) == core.cmp.Ordering.Equal, true)
+    core.check.eq(none.cmp(&a) == core.cmp.Ordering.Less, true)
+    core.check.eq(a.cmp(&none) == core.cmp.Ordering.Greater, true)
+    core.check.eq(a.cmp(&a) == core.cmp.Ordering.Equal, true)
+    core.check.eq(a.cmp(&b) == core.cmp.Ordering.Less, true)
+    core.check.eq(b.cmp(&a) == core.cmp.Ordering.Greater, true)
+    core.check.eq(none.eq(&none), true)
+    core.check.eq(none.eq(&a), false)
+    core.check.eq(a != b, true)
+    core.check.eq(a != a, false)
+    let big: Option<u8> = Some(255u8)
+    let small: Option<u8> = Some(1u8)
+    core.check.eq(big.cmp(&small) == core.cmp.Ordering.Greater, true)
+    let sa: Option<&str> = Some("ab")
+    let sb: Option<&str> = Some("abc")
+    core.check.eq(sa.cmp(&sb) == core.cmp.Ordering.Less, true)
+    core.check.eq(sb.cmp(&sa) == core.cmp.Ordering.Greater, true)
+    core.check.eq(sa.eq(&sb), false)
+    let pa: Option<core.cmp.Ordering> = sa.partial_cmp(&sb)
+    core.check.eq(pa.is_some(), true)
+end t.main.test_e_option_boundaries
+
+test t.main.test_f_result_boundaries
+    let ok1: Result<u8, u8> = Ok(1u8)
+    let ok2: Result<u8, u8> = Ok(2u8)
+    let er0: Result<u8, u8> = Err(0u8)
+    let er9: Result<u8, u8> = Err(9u8)
+    core.check.eq(ok1.cmp(&ok1) == core.cmp.Ordering.Equal, true)
+    core.check.eq(ok1.cmp(&ok2) == core.cmp.Ordering.Less, true)
+    core.check.eq(ok2.cmp(&ok1) == core.cmp.Ordering.Greater, true)
+    core.check.eq(ok2.cmp(&er0) == core.cmp.Ordering.Less, true)
+    core.check.eq(er0.cmp(&ok2) == core.cmp.Ordering.Greater, true)
+    core.check.eq(er0.cmp(&er9) == core.cmp.Ordering.Less, true)
+    core.check.eq(er9.cmp(&er0) == core.cmp.Ordering.Greater, true)
+    core.check.eq(er9.cmp(&er9) == core.cmp.Ordering.Equal, true)
+    core.check.eq(ok1.eq(&ok1), true)
+    core.check.eq(ok1.eq(&er0), false)
+    core.check.eq(ok1 != Ok(1u8), false)
+    core.check.eq(er0 != Err(1u8), true)
+end t.main.test_f_result_boundaries
+
+test t.main.test_g_str_boundaries
+    let empty: &str = ""
+    let a: &str = "a"
+    let ab: &str = "ab"
+    let abc: &str = "abc"
+    let b: &str = "b"
+    core.check.eq(empty.cmp(&empty) == core.cmp.Ordering.Equal, true)
+    core.check.eq(empty.cmp(&a) == core.cmp.Ordering.Less, true)
+    core.check.eq(a.cmp(&empty) == core.cmp.Ordering.Greater, true)
+    core.check.eq(ab.cmp(&abc) == core.cmp.Ordering.Less, true)
+    core.check.eq(abc.cmp(&ab) == core.cmp.Ordering.Greater, true)
+    core.check.eq(abc.cmp(&b) == core.cmp.Ordering.Less, true)
+    core.check.eq(b.cmp(&abc) == core.cmp.Ordering.Greater, true)
+    core.check.eq(abc.cmp(&abc) == core.cmp.Ordering.Equal, true)
+    core.check.eq(ab.eq(&abc), false)
+    core.check.eq(abc.eq(&abc), true)
+    core.check.eq(empty.eq(&empty), true)
+    core.check.eq(ab != abc, true)
+    core.check.eq(abc != abc, false)
+    let e1: &str = "é"
+    let e2: &str = "f"
+    let e3: &str = "あ"
+    let e4: &str = "い"
+    let e5: &str = "éa"
+    core.check.eq(e1.cmp(&e2) == core.cmp.Ordering.Greater, true)
+    core.check.eq(e2.cmp(&e1) == core.cmp.Ordering.Less, true)
+    core.check.eq(e3.cmp(&e4) == core.cmp.Ordering.Less, true)
+    core.check.eq(e1.cmp(&e5) == core.cmp.Ordering.Less, true)
+    core.check.eq(e1.cmp(&e1) == core.cmp.Ordering.Equal, true)
+    core.check.eq(e1.eq(&e1), true)
+    core.check.eq(e1.eq(&e5), false)
+    let p = ab.partial_cmp(&abc)
+    core.check.eq(p.is_some(), true)
+    core.check.eq(p.unwrap() == core.cmp.Ordering.Less, true)
+end t.main.test_g_str_boundaries
+
+test t.main.test_h_count_boundaries
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.check.eq(v.iter().count(), 0usize)
+    let mut it0 = v.iter()
+    core.check.eq(it0.next().is_none(), true)
+    core.check.eq(it0.count(), 0usize)
+    core.mem.drop(v.push(7u32))
+    core.mem.drop(v.push(8u32))
+    core.mem.drop(v.push(9u32))
+    let mut it = v.iter()
+    core.check.eq(it.next().unwrap(), 7u32)
+    core.check.eq(it.next().unwrap(), 8u32)
+    core.check.eq(it.count(), 1usize)
+    let mut it2 = v.iter()
+    core.mem.drop(it2.next())
+    core.mem.drop(it2.next())
+    core.mem.drop(it2.next())
+    core.check.eq(it2.next().is_none(), true)
+    core.check.eq(it2.count(), 0usize)
+end t.main.test_h_count_boundaries
+"#;
+    let src = format!("{}\n{}", main_wrap("", ""), test);
+    let t = Tmp::new("derived_cmp_boundaries", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    for name in ["test_e_option_boundaries", "test_f_result_boundaries", "test_g_str_boundaries", "test_h_count_boundaries"] {
+        assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
     }
 }
 
