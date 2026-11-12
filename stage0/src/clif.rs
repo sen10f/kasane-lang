@@ -2369,7 +2369,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// 式が一時的な領域を新しく作る (コピーせず束縛してよい) か。
     fn is_fresh(&self, e: &V) -> bool {
         match nname(e) {
-            "StructLit" | "MCall" | "TupleE" | "ArrayE" => true,
+            "StructLit" | "MCall" | "TupleE" | "ArrayE" | "Match" => true,
             "Try" => self.is_fresh(&nf(e)[0]),
             "Call" => !(nname(&nf(e)[0]) == "Path" && strs(&nf(&nf(e)[0])[0]).len() >= 2 && false),
             "Path" => {
@@ -3736,6 +3736,115 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         }
     }
 
+    /// 新しい値のスクルーティニーの束縛: 解放が要る値は腕の所有になる (領域を写して所有者にする)。
+    fn bind_arm_owned(&mut self, binds: Vec<(String, Value, String)>, env: &mut Env) -> R<()> {
+        let mut plain = vec![];
+        for (name, v, ty) in binds {
+            if is_agg(&ty) && self.cx.needs_drop(&ty) {
+                let dst = self.alloc_for(&ty)?;
+                let size = self.cx.layout(&ty, 0)?.size;
+                self.copy_mem(dst, v, size);
+                let var = self.new_var(&ty);
+                self.b.def_var(var, dst);
+                self.register_owner(var, &ty);
+                env.insert(name, (var, ty));
+            } else {
+                plain.push((name, v, ty));
+            }
+        }
+        self.bind_arm(plain, env, false);
+        Ok(())
+    }
+
+    /// 新しい値のスクルーティニーで、腕が束縛しなかった解放要の部分を腕に入った時点で解放する。
+    /// 束縛 (`PBind`) された部分は `bind_arm_owned` が持つ。入れ子の解放要のパターンは退避する。
+    fn drop_unbound_payload(&mut self, pat: &V, val: Value, ty: &str) -> R<()> {
+        match nname(pat) {
+            "PBind" => Ok(()),
+            "PWild" => {
+                if self.cx.needs_drop(ty) {
+                    self.drop_value(val, ty)?;
+                }
+                Ok(())
+            }
+            "PPath" | "PVariant" => {
+                let segs = strs(&nf(pat)[0]);
+                let l = self.cx.layout(ty, 0)?;
+                if !l.is_enum {
+                    return Err("variant pattern on a struct".into());
+                }
+                let vn = segs[segs.len() - 1].clone();
+                let idx = l.variants.iter().position(|v| v.0 == vn).ok_or_else(|| format!("no variant {}", vn))?;
+                let pats = if nname(pat) == "PVariant" { items(&nf(pat)[1]).to_vec() } else { vec![] };
+                for (j, (fty, off)) in l.variants[idx].1.clone().iter().enumerate() {
+                    if !self.cx.needs_drop(fty) {
+                        continue;
+                    }
+                    let a = self.b.ins().iadd_imm(val, *off as i64);
+                    match pats.get(j) {
+                        Some(sp) => self.drop_unbound_field(sp, a, fty)?,
+                        None => self.drop_value(a, fty)?,
+                    }
+                }
+                Ok(())
+            }
+            "PTuple" => {
+                let l = self.cx.layout(ty, 0)?;
+                let pats = items(&nf(pat)[0]).to_vec();
+                if pats.len() != l.fields.len() {
+                    return Err("tuple pattern arity".into());
+                }
+                for (sp, (_, fty, off)) in pats.iter().zip(l.fields.clone().iter()) {
+                    if self.cx.needs_drop(fty) {
+                        let a = self.b.ins().iadd_imm(val, *off as i64);
+                        self.drop_unbound_field(sp, a, fty)?;
+                    }
+                }
+                Ok(())
+            }
+            _ => Err("nested pattern on a droppable value in match".into()),
+        }
+    }
+
+    /// 解放要のペイロードの 1 つ: 束縛なら腕の所有 (何もしない)、`_` なら解放する。
+    fn drop_unbound_field(&mut self, sp: &V, addr: Value, fty: &str) -> R<()> {
+        match nname(sp) {
+            "PBind" => Ok(()),
+            "PWild" => self.drop_value(addr, fty),
+            _ => Err("nested pattern on a droppable payload in match".into()),
+        }
+    }
+
+    /// 解放要の値を返す腕: 値は新しい値か、この腕が所有する局所 (移動する)。それ以外は退避する。
+    fn arm_result_moves(&mut self, body: &V, ty: &str, env: &Env) -> R<()> {
+        let te = if nname(body) == "Block" {
+            match items(&nf(body)[0]).last() {
+                Some(s) if nname(s) == "ExprStmt" => nf(s)[0].clone(),
+                _ => return Err("match arm without a value".into()),
+            }
+        } else {
+            body.clone()
+        };
+        if self.is_fresh(&te) {
+            return Ok(());
+        }
+        if nname(&te) == "Path" && place_segs(&te).map_or(false, |s| s.len() == 1) {
+            return self.consume(&te, ty, env);
+        }
+        Err("match arm value this function does not own".into())
+    }
+
+    /// 腕の局所の解放 (腕が `return` / `break` で抜けていなければ) と、腕のスコープを閉じる。
+    fn end_arm_scope(&mut self, depth: usize, owned: bool) -> R<()> {
+        if owned {
+            if !self.term {
+                self.drop_scopes_from(depth)?;
+            }
+            self.scopes.pop();
+        }
+        Ok(())
+    }
+
     /// `match` の共通部分。`value` が Some のとき、各腕の値をそのブロック引数に渡す。
     fn match_common(&mut self, e: &V, env: &mut Env, tail: bool, value: Option<(&str, Block, Option<Value>)>) -> R<()> {
         let f = nf(e);
@@ -3746,6 +3855,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             Some((_, end, _)) => end,
             None => self.b.create_block(),
         };
+        // 所有の扱い:
+        // - `scrut_owned`: スクルーティニーが新しい値 (一時的な領域)。腕が束縛した解放要の値はその腕が持ち、
+        //   束縛されなかった解放要のペイロードは腕に入った時点で解放する。
+        // - `result_owned`: 結果が解放要の値。各腕の値は新しい値か、その腕が所有する局所 (移動する)。
+        // どちらでもない `match` は、従来どおり束縛を参照として扱う。
+        let scrut_owned = self.is_fresh(&f[0]) && self.cx.needs_drop(&sty);
+        let result_owned = value.map_or(false, |(t, _, _)| is_agg(t) && self.cx.needs_drop(t));
+        let owned_mode = scrut_owned || result_owned;
         let arms = items(&f[1]).to_vec();
         let mut covered = false;
         for arm in &arms {
@@ -3755,25 +3872,40 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             self.b.switch_to_block(body);
             self.term = false;
             let mut inner = env.clone();
-            // 変数の束縛 (名前 `x` の PBind) はスクルーティニーそのもの、バリアントの束縛はペイロードのアドレス。
-            let is_variant_pat = matches!(nname(&a[0]), "PVariant" | "PTuple");
-            self.bind_arm(binds, &mut inner, is_variant_pat);
+            let arm_depth = self.scopes.len();
+            if owned_mode {
+                self.scopes.push(vec![]);
+            }
+            if scrut_owned {
+                self.bind_arm_owned(binds, &mut inner)?;
+                self.drop_unbound_payload(&a[0], sv, &sty)?;
+            } else {
+                // 変数の束縛 (名前 `x` の PBind) はスクルーティニーそのもの、バリアントの束縛はペイロードのアドレス。
+                let is_variant_pat = matches!(nname(&a[0]), "PVariant" | "PTuple");
+                self.bind_arm(binds, &mut inner, is_variant_pat);
+            }
             match value {
                 Some((ty, end, out)) => {
                     let (v, _) = self.arm_value(&a[1], &mut inner, Some(ty))?;
                     if !self.term {
+                        if result_owned {
+                            self.arm_result_moves(&a[1], ty, &inner)?;
+                        }
                         if let Some(slot) = out {
-                            // 構造体・列挙型を作る `match`: 各腕の値を結果の領域に写す。
-                            if let Some(v) = v {
-                                self.store_value(slot, ty, v)?;
-                            }
+                            // 構造体・列挙型を作る `match`: 各腕の値を結果の領域に写す (腕の局所を解放する前に写す)。
+                            let v = v.ok_or("match arm without a value")?;
+                            self.store_value(slot, ty, v)?;
+                            self.end_arm_scope(arm_depth, owned_mode)?;
                             self.b.ins().jump(end, &[]);
                         } else {
+                            self.end_arm_scope(arm_depth, owned_mode)?;
                             match v {
                                 Some(v) => self.b.ins().jump(end, &[v]),
                                 None => self.b.ins().jump(end, &[]),
                             };
                         }
+                    } else {
+                        self.end_arm_scope(arm_depth, owned_mode)?;
                     }
                 }
                 None => {
@@ -3782,6 +3914,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     } else {
                         self.exprstmt(&a[1], &mut inner, tail)?;
                     }
+                    self.end_arm_scope(arm_depth, owned_mode)?;
                     if !self.term {
                         self.b.ins().jump(end, &[]);
                     }
@@ -4401,14 +4534,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     .ty_of(e, env, expect)
                     .or_else(|| expect.map(String::from))
                     .ok_or("match value type")?;
-                let out = if is_agg(&ty) {
-                    if self.cx.needs_drop(&ty) {
-                        return Err("match producing a droppable value".into());
-                    }
-                    Some(self.alloc_for(&ty)?)
-                } else {
-                    None
-                };
+                // 構造体・列挙型の値は結果の領域に写す。解放が要る値も、各腕は新しい値か所有する局所を渡すので、
+                // 結果は新しい所有者 (`let` など) が受け取る (`is_fresh`)。
+                let out = if is_agg(&ty) { Some(self.alloc_for(&ty)?) } else { None };
                 let end = self.b.create_block();
                 if ty != "void" && out.is_none() {
                     self.b.append_block_param(end, cl(&ty));
