@@ -11002,9 +11002,11 @@ fn min_rem_minus_one_overflows_for_every_signed_width() {
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("5 passed; 0 failed"), "{}", out);
-    for w in ["i8", "i16", "i32", "i64", "i128"] {
+    for w in ["i8", "i16", "i32", "i64"] {
         assert!(out.contains(&format!("t.main.test_{} ... ok (both: native)", w)), "{}", out);
     }
+    // x64 の Cranelift は 128 ビットの除算・剰余を持たないので、i128 はバンドルで比べる (誤った値を出さない)。
+    assert!(out.contains("t.main.test_i128 ... ok (both: bundle (native skipped: "), "{}", out);
 }
 
 #[test]
@@ -11338,4 +11340,79 @@ fn untyped_int_literals_take_their_inferred_type_in_the_tree_walker() {
     let o = run(&["run"], &t2.0);
     assert_eq!(o.status.code(), Some(101), "{}{}", text(&o.stdout), text(&o.stderr));
     assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
+}
+
+/// clif の 128 ビット整数: 確かめた演算 (比較・wrapping・checked_add / sub・単項 `-`・`from_*` の拡張) だけを機械語にし、
+/// 除算・剰余・乗算・`try_from_*` など 64 ビットを前提にした経路は理由付きで退避する。以前は `checked_div` が
+/// `Some(被除数)` を返す誤った機械語になっていた。どのテストも、インタプリタと食い違わない。
+#[test]
+fn clif_128_bit_integers_are_native_only_where_supported() {
+    let src = r#"fn t.main() -> () uses [] panics never
+end t.main
+
+test t.main.test_a_div
+    let x: i128 = 100i128
+    core.check.eq(x.checked_div(7i128), Some(14i128))
+end t.main.test_a_div
+
+test t.main.test_b_rem
+    let x: u128 = 100u128
+    core.check.eq(x.checked_rem(7u128), Some(2u128))
+end t.main.test_b_rem
+
+test t.main.test_c_ops
+    let x: i128 = 100i128
+    let y: i128 = 7i128
+    core.check.eq(x / y, 14i128)
+    core.check.eq(x % y, 2i128)
+end t.main.test_c_ops
+
+test t.main.test_d_mul
+    let x: i128 = 100000000000i128
+    core.check.eq(x * x, 10000000000000000000000i128)
+    core.check.eq(x.checked_mul(x), Some(10000000000000000000000i128))
+    core.check.eq(x.wrapping_mul(3i128), 300000000000i128)
+end t.main.test_d_mul
+
+test t.main.test_e_cmp_shift
+    let x: u128 = core.num.u128.MAX
+    core.check.eq(x > 5u128, true)
+    core.check.eq(x.wrapping_add(1u128), 0u128)
+    core.check.eq(core.num.i32.MIN < 0i32, true)
+    core.check.eq(core.num.i8.MIN, -128i8)
+    core.check.eq(core.num.i16.MAX, 32767i16)
+end t.main.test_e_cmp_shift
+
+test t.main.test_f_neg_conv
+    let x: i128 = 5i128
+    core.check.eq(-x, -5i128)
+    let y: i128 = i128.from_i64(-7i64)
+    core.check.eq(y, -7i128)
+    let z: u128 = u128.from_u64(18446744073709551615u64)
+    core.check.eq(z.wrapping_add(1u128) > z, true)
+end t.main.test_f_neg_conv
+
+test t.main.test_g_try_conv
+    let big: u128 = core.num.u128.MAX
+    core.check.eq(u8.try_from_u128(big).is_err(), true)
+end t.main.test_g_try_conv
+"#;
+    let t = Tmp::new("clif_i128_scope", src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("7 passed; 0 failed"), "{}", out);
+    assert!(!out.contains("disagree"), "{}", out);
+    for name in ["test_e_cmp_shift", "test_f_neg_conv"] {
+        assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
+    }
+    for (name, why) in [
+        ("test_a_div", "128-bit method i128.checked_div"),
+        ("test_b_rem", "128-bit method u128.checked_rem"),
+        ("test_c_ops", "128-bit / (i128)"),
+        ("test_d_mul", "128-bit * (i128)"),
+        ("test_g_try_conv", "128-bit conversion u8.try_from_u128"),
+    ] {
+        assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (native skipped: t.main.{}: {}", name, name, why)), "{}", out);
+    }
 }

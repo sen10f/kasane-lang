@@ -4317,6 +4317,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     return Err(format!("operator {} on bool", op));
                 }
                 let sg = signed(&t);
+                // x64 の Cranelift は 128 ビットの除算・剰余とオーバーフロー検査つきの乗算を持たない。理由付きで退避する。
+                if cl(&t).bits() > 64 && matches!(op.as_str(), "*" | "/" | "%") {
+                    return Err(format!("128-bit {} ({})", op, t));
+                }
                 let r = match op.as_str() {
                     "&" => self.b.ins().band(a, b),
                     "|" => self.b.ins().bor(a, b),
@@ -4433,7 +4437,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         if !signed(&t) || t == "bool" {
                             return Err("negation of an unsigned value".into());
                         }
-                        let z = self.b.ins().iconst(cl(&t), 0);
+                        // iconst の即値は 64 ビットまでなので、128 ビットの 0 は 64 ビットの 0 を広げて作る。
+                        let z = if cl(&t).bits() > 64 {
+                            let z64 = self.b.ins().iconst(types::I64, 0);
+                            self.b.ins().uextend(cl(&t), z64)
+                        } else {
+                            self.b.ins().iconst(cl(&t), 0)
+                        };
                         let (r, of) = self.b.ins().ssub_overflow(z, a);
                         self.guard(of, "arithmetic overflow")?;
                         Ok((Some(r), t))
@@ -5932,6 +5942,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     fn conv_call(&mut self, segs: &[String], args: &[V], env: &mut Env) -> R<Option<(Option<Value>, String)>> {
         if let [p, n] | [_, _, p, n] = segs {
             if n == "from_str_radix" && is_int(p) && args.len() == 2 && (segs.len() == 2 || (segs[0] == "core" && segs[1] == "num")) {
+                if cl(p).bits() > 64 {
+                    return Err(format!("128-bit from_str_radix ({})", p));
+                }
                 return self.from_str_radix(p, args, env).map(Some);
             }
         }
@@ -5972,6 +5985,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         }
         if !is_int(&p) {
             return Ok(None);
+        }
+        // 128 ビットが絡む変換は、64 ビット以下から 128 ビットへの `from_` (値を保つ拡張) だけを扱う。
+        // それ以外 (`try_from_*` の範囲検査は 64 ビットで行う) は理由付きで退避する。
+        let wide = |t: &str| t == "i128" || t == "u128";
+        let src_of = name.strip_prefix("try_from_").or_else(|| name.strip_prefix("from_")).unwrap_or("");
+        if (wide(&p) || wide(src_of)) && !(name.starts_with("from_") && wide(&p) && !wide(src_of)) {
+            return Err(format!("128-bit conversion {}.{}", p, name));
         }
         if let Some(src) = name.strip_prefix("from_") {
             if !is_int(src) || (cl(src).bits() > cl(&p).bits()) {
@@ -6776,6 +6796,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             .or_else(|| args.first().and_then(|a| self.ty_of(a, env, None)))
             .filter(|t| is_int(t))
             .ok_or("operand type")?;
+        // x64 の Cranelift は 128 ビットのオーバーフロー検査つき乗算・除算・剰余を持たない。
+        if cl(&t).bits() > 64 && matches!(op, "mul" | "div" | "rem") {
+            return Err(format!("128-bit checked_{} ({})", op, t));
+        }
         let (a, _) = self.expr(recv, env, Some(&t))?;
         let (b, _) = self.expr(args.first().ok_or("checked op needs an argument")?, env, Some(&t))?;
         let (a, b) = (a.ok_or("bad operand")?, b.ok_or("bad operand")?);
@@ -6801,8 +6825,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.ins().store(MemFlags::new(), r, dst, 0);
             }
             "div" | "rem" => {
-                let mut bad = self.b.ins().icmp_imm(IntCC::Equal, b, 0);
                 let bits = cl(&t).bits();
+                let mut bad = self.b.ins().icmp_imm(IntCC::Equal, b, 0);
                 if sg {
                     let is_min = if bits > 64 {
                         // i128::MIN は imm64 に収まらないので、値として構築して比較する。
@@ -6820,21 +6844,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 self.b.ins().brif(bad, none_b, &[], some_b, &[]);
                 self.b.switch_to_block(some_b);
-                // i128/u128 には x64 に除算・剰余命令が無い。オーバーフロー済みなら none に達するため、
-                // この some 側は未到達: ダミーの `a` を置く。
                 let r = match (op, sg) {
-                    ("div", true) => {
-                        if bits > 64 { a } else { self.b.ins().sdiv(a, b) }
-                    }
-                    ("div", false) => {
-                        if bits > 64 { a } else { self.b.ins().udiv(a, b) }
-                    }
-                    (_, true) => {
-                        if bits > 64 { a } else { self.b.ins().srem(a, b) }
-                    }
-                    (_, false) => {
-                        if bits > 64 { a } else { self.b.ins().urem(a, b) }
-                    }
+                    ("div", true) => self.b.ins().sdiv(a, b),
+                    ("div", false) => self.b.ins().udiv(a, b),
+                    (_, true) => self.b.ins().srem(a, b),
+                    (_, false) => self.b.ins().urem(a, b),
                 };
                 let dst = self.b.ins().iadd_imm(res, poff);
                 self.b.ins().store(MemFlags::new(), r, dst, 0);
@@ -6862,6 +6876,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         if signed(&t) {
             return Err("saturating arithmetic on a signed integer".into());
         }
+        if cl(&t).bits() > 64 {
+            return Err(format!("128-bit saturating_{} ({})", op, t));
+        }
         let (a, _) = self.expr(recv, env, Some(&t))?;
         let (b, _) = self.expr(args.first().ok_or("saturating op needs an argument")?, env, Some(&t))?;
         let (a, b) = (a.ok_or("bad operand")?, b.ok_or("bad operand")?);
@@ -6886,6 +6903,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     }
 
     fn method(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
+        // 128 ビット整数のレシーバは、確かめたメソッドだけを扱う (他の経路は 64 ビットを前提にしている)。
+        if let Some(t) = self.ty_of(recv, env, None).filter(|t| t == "i128" || t == "u128") {
+            const OK128: &[&str] = &[
+                "wrapping_add", "wrapping_sub", "wrapping_mul", "wrapping_neg", "wrapping_shl", "wrapping_shr",
+                "checked_add", "checked_sub", "eq", "cmp", "partial_cmp",
+            ];
+            if !OK128.contains(&name) {
+                return Err(format!("128-bit method {}.{}", t, name));
+            }
+        }
         if let Some(r) = self.scalar_method(recv, name, args, env, expect)? {
             return Ok(r);
         }
