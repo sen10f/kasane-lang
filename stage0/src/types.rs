@@ -1200,6 +1200,16 @@ impl<'a> TypeCk<'a> {
     /// 対応するトレイトを持たないのに使ったとき E1108 (true を返す)。宣言 (`p.types`) のある型だけを見る。
     /// 型変数・型パラメータ・宣言のない型は黙る。Vec / String は 4.2 の表どおり比較のトレイトを持たない。
     fn cmp_trait_missing(&mut self, recv: &Ty, name: &str, line: usize) -> bool {
+        // 浮動小数は `Partial*` だけを実装し、`Eq` / `Ord` / `Hash` は実装しない (4.3)。
+        if let Ty::Prim(p) = self.deep(recv).strip() {
+            if matches!(p.as_str(), "f32" | "f64") && matches!(name, "cmp" | "hash") {
+                let tr = if name == "cmp" { "core.cmp.Ord" } else { "core.hash.Hash" };
+                let msg = format!("unknown method `{}` on `{}`: floating-point types do not implement `{}` (use `partial_cmp`)", name, p, tr);
+                self.diag("E1108", msg, line);
+                return true;
+            }
+            return false;
+        }
         let Some(tr) = cmp_trait(name) else { return false };
         let Ty::Named(ty, _) = self.deep(recv).strip().clone() else { return false };
         if self.implements(&ty, tr) {

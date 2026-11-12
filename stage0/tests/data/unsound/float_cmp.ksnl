@@ -1,0 +1,7 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 1.0f64
+    let b = 2.0f64
+    let o = a.cmp(&b)
+    core.mem.drop(o)
+    Ok(())
+end t.main

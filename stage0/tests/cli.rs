@@ -72,8 +72,8 @@ fn diagnostics_each_case_reports_its_code() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// 検査を通ってはいけないケース (tests/data/unsound/、1 ファイル 1 ケース)。`to_string` は仕様に無いので
-/// どれも E1108 で拒まれ、`check` は rc=1 になる。
+/// 検査を通ってはいけないケース (tests/data/unsound/、1 ファイル 1 ケース)。`to_string` は仕様に無く、
+/// 浮動小数は `Ord` を持たない (4.3) ので、どれも E1108 で拒まれ、`check` は rc=1 になる。
 #[test]
 fn unsound_cases_are_rejected() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound");
