@@ -1,0 +1,8 @@
+fn t.f(a: u8) -> u32 uses [] panics never
+    a.to_u32()
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.f(1u8))
+    Ok(())
+end t.main

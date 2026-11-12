@@ -7299,3 +7299,103 @@ fn integer_width_conversion_uses_from_not_to() {
     let t = Tmp::new("int_from", &main_wrap("", "    core.check.eq(u32.from_u8(200u8), 200u32)\n"));
     assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
 }
+
+#[test]
+fn int_to_conversion_is_e1108_with_from_fix() {
+    // 整数の `to_<整数型>` は廃止 (4.5)。幅が広がる変換は `u32.from_u8(x)` を案内し、機械適用できる修正を付ける。
+    let bad = "fn t.widen(x: u8) -> u32 uses [] panics never
+    x.to_u32()
+end t.widen
+
+";
+    let t = Tmp::new("int_to_conversion_bad", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("u32.from_u8(x)"), "{}", out);
+    assert!(out.contains("\"replace\": \"u32.from_u8(x)\""), "{}", out);
+    // 狭める変換には Result の `try_from_*` を案内する (修正は付けない: 型が変わるため)。
+    let narrow = "fn t.narrow(x: u32) -> u8 uses [] panics never
+    x.to_u8()
+end t.narrow
+
+";
+    let t = Tmp::new("int_to_conversion_narrow", &main_wrap(narrow, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(out.contains("u8.try_from_u32(x)"), "{}", out);
+    assert!(!out.contains("\"replace\": \"u8.try_from"), "{}", out);
+}
+
+#[test]
+fn int_conversions_that_exist_are_clean() {
+    // 正しい形: `from_*` / `try_from_*`、`to_f64`、char の `to_u32`。どれも E1108 にしない。
+    let ok = "fn t.a(x: u8) -> u32 uses [] panics never
+    u32.from_u8(x)
+end t.a
+
+fn t.b(x: u32) -> Result<u8, core.num.TryFromIntError> uses [] panics never
+    u8.try_from_u32(x)
+end t.b
+
+fn t.c(x: u8) -> f64 uses [] panics never
+    x.to_f64()
+end t.c
+
+fn t.d(c: char) -> u32 uses [] panics never
+    c.to_u32()
+end t.d
+
+";
+    assert_all_typed("int_conversion_ok_typed", &main_wrap(ok, ""));
+    let t = Tmp::new("int_conversion_ok", &main_wrap(ok, ""));
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn float_literal_method_without_context_is_e2027() {
+    // `let a = 9.0` の型が文脈から決まらないままメソッドを呼ぶ: 仕様どおり E2027。
+    let bad = "fn t.root() -> f64 uses [] panics never
+    let a = 9.0
+    a.sqrt()
+end t.root
+
+";
+    let t = Tmp::new("float_method_no_context", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2027"), "{}", out);
+    // 接尾辞を付ければ型が決まる。後から型が決まる場合は E2027 にしない。
+    let ok = "fn t.suffixed() -> f64 uses [] panics never
+    let a = 9.0f64
+    a.sqrt()
+end t.suffixed
+
+fn t.later(b: f32) -> f32 uses [] panics never
+    let a = 9.0
+    let r = a.sqrt()
+    let s: f32 = a
+    b
+end t.later
+
+";
+    let t = Tmp::new("float_method_context", &main_wrap(ok, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E2027"), "{}", out);
+}
+
+#[test]
+fn derived_ordering_operators_are_not_methods() {
+    // `<` 等は partial_cmp から導く演算子で、メソッドではない (3.2)。`lt` などは E1108。
+    let bad = "fn t.f(a: u8, b: u8) -> bool uses [] panics never
+    a.lt(b)
+end t.f
+
+";
+    let t = Tmp::new("derived_lt_is_not_method", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+}
