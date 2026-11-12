@@ -4740,3 +4740,59 @@ end t.main
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "ok\n", "{}", text(&o.stderr));
 }
+
+// ---- FQN の構造体・バリアントパターンのパス成分を束縛として数えない (誤検出 E1020 の回帰) ----
+
+#[test]
+fn unused_binding_in_fqn_struct_pattern_is_e1020() {
+    // 陽性: `let t.L { a: x, .. }` の `x` が本当に未使用なら E1020 (パス `t` ではなく `x` を指す)。
+    let prefix = "type t.L pub\n    a: u8\n    b: u8\nend t.L\n\n\
+                  fn t.pick(l: t.L) -> u8 uses [] panics never\n    let t.L { a: x, b: _ } = l\n    0u8\nend t.pick\n\n";
+    let t = Tmp::new("fqn_struct_unused_pos", &main_wrap(prefix, ""));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("unused variable x"), "{}", text(&o.stdout));
+    assert!(!text(&o.stdout).contains("unused variable t"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn fqn_struct_pattern_path_is_not_an_unused_binding() {
+    // 陰性: パターンの `t.L` 以外に `t.` が現れない関数でも、パス先頭 `t` を未使用変数にしない。
+    let prefix = "type t.L pub\n    a: u8\n    b: u8\nend t.L\n\n\
+                  fn t.first(l: t.L) -> u8 uses [] panics never\n    let t.L { a: x, b: _ } = l\n    x\nend t.first\n\n";
+    let t = Tmp::new("fqn_struct_pattern_neg", &main_wrap(prefix, "    core.check.eq(t.first(t.L { a: 3u8, b: 4u8 }), 3u8)\n"));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn fqn_variant_pattern_path_is_not_an_unused_binding() {
+    // 陰性: match 腕のバリアントパス `t.Op.Num(n)` の成分 (`t`) は束縛ではなく、`n` が使われていれば E1020 にならない。
+    let prefix = "enum t.Op pub\n    Num(u8)\n    Zero\nend t.Op\n\n\
+                  fn t.val(o: t.Op) -> u8 uses [] panics never\n    match o {\n        t.Op.Num(n) => n\n        t.Op.Zero => 0u8\n    }\nend t.val\n\n";
+    let t = Tmp::new("fqn_variant_pattern_neg", &main_wrap(prefix, "    core.check.eq(t.val(t.Op.Num(5u8)), 5u8)\n"));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn unused_binding_in_match_variant_arm_is_e1020() {
+    // 陽性: match 腕のバリアントの束縛 `n` が未使用なら E1020 (パス成分の除外で陽性を失わないこと)。
+    let prefix = "enum t.Op pub\n    Num(u8)\n    Zero\nend t.Op\n\n\
+                  fn t.val(o: t.Op) -> u8 uses [] panics never\n    match o {\n        t.Op.Num(n) => 0u8\n        t.Op.Zero => 0u8\n    }\nend t.val\n\n";
+    let t = Tmp::new("fqn_variant_arm_unused_pos", &main_wrap(prefix, ""));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("unused pattern binding n"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn nested_field_pattern_is_not_a_bogus_snake_case_name() {
+    // 入れ子パターン `a: t.Op.Num(q)` の文字列全体を束縛名として E0010 にしない。
+    let prefix = "enum t.Op pub\n    Num(u8)\n    Zero\nend t.Op\n\n\
+                  type t.L pub\n    a: t.Op\n    b: u8\nend t.L\n\n\
+                  fn t.get(l: t.L) -> u8 uses [] panics never\n    let t.L { a: t.Op.Num(q), b: b } = l\n    b\nend t.get\n\n";
+    let t = Tmp::new("nested_field_pattern", &main_wrap(prefix, ""));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E0010"), "{}", text(&o.stdout));
+}
