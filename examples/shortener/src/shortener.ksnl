@@ -3,6 +3,7 @@ import shortener.error
 import shortener.http
 import shortener.server
 import shortener.store
+import shortener.wire
 
 const shortener.DEMO_DB: &str = "shortener-demo.tmp"
 
@@ -15,18 +16,12 @@ fn shortener.bad_count(_e: core.num.ParseIntError) -> shortener.error.Error uses
 end shortener.bad_count
 
 fn shortener.demo() -> Result<(), shortener.error.Error> uses [alloc, io.console, io.fs, io.net] panics never
-    let listener = std.net.listen("127.0.0.1:0").map_err(error.net)?
-    let mut db = match store.Store.load(shortener.DEMO_DB) {
-        Ok(s) => s
-        Err(e) => {
-            core.mem.drop(listener.close())
-            return Err(e)
-        }
+    with listener = wire.listen("127.0.0.1:0")? close core.mem.drop(listener.close()) {
+        let mut db = store.Store.load(shortener.DEMO_DB)?
+        let ran = shortener.demo_script(&listener, &mut db)
+        core.mem.drop(std.fs.remove_file(shortener.DEMO_DB))
+        ran
     }
-    let ran = shortener.demo_script(&listener, &mut db)
-    core.mem.drop(listener.close())
-    core.mem.drop(std.fs.remove_file(shortener.DEMO_DB))
-    ran
 end shortener.demo
 
 fn shortener.demo_script(listener: &std.net.TcpListener, db: &mut shortener.store.Store) -> Result<(), shortener.error.Error> uses [alloc, io.console, io.fs, io.net] panics never
@@ -74,17 +69,10 @@ fn shortener.serve_cli() -> Result<(), shortener.error.Error> uses [alloc, env, 
         Some(p) => p
         None => return Err(error.Error.BadRequest)
     }
-    let listener = std.net.listen(address).map_err(error.net)?
-    let mut db = match store.Store.load(path) {
-        Ok(s) => s
-        Err(e) => {
-            core.mem.drop(listener.close())
-            return Err(e)
-        }
+    let n = with listener = wire.listen(address)? close core.mem.drop(listener.close()) {
+        let mut db = store.Store.load(path)?
+        server.serve(&listener, &mut db, count)?
     }
-    let served = server.serve(&listener, &mut db, count)
-    core.mem.drop(listener.close())
-    let n = served?
     let mut line = alloc.string.String.new(std.alloc.SYSTEM)
     line.push_str("served ").map_err(error.oom)?
     line.push_u64(u64.from_usize(n)).map_err(error.oom)?

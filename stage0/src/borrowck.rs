@@ -730,6 +730,14 @@ impl<'a> Low<'a> {
             }
             "Block" => self.lower_block(e, cur),
             "Unsafe" => self.lower_block(&f[2], cur),
+            // `with 名前 = 初期化式 close 後始末式 { 本体 }`: 本体のあとに後始末式が続く経路で近似する
+            // (本体の `return` / `?` は出口へ直接つなぐので、その経路の後始末は追わない)。
+            "With" => {
+                let c = self.lower_expr(&f[2], cur);
+                self.emit(c, Ev::Def(st(&nf(&f[0])[0])));
+                let end = self.lower_block(&f[4], c);
+                self.lower_expr(&f[3], end)
+            }
             "Call" => {
                 let callee = &f[0];
                 let args = items(&f[1]);
@@ -827,7 +835,7 @@ impl<'a> Checker<'a> {
         walk(body, &mut all);
         for n in &all {
             match nname(n) {
-                "Let" | "For" => {
+                "Let" | "For" | "With" => {
                     let mut b = vec![];
                     pat_binds(&nf(n)[0], &mut b);
                     locals.extend(b);

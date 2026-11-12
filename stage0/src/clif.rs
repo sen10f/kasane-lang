@@ -1065,6 +1065,9 @@ struct FnGen<'a, 'b, 'm> {
     nvar: usize,
     /// スコープごとの、所有する変数 (先頭アドレスを持つ変数の番号) の列。
     scopes: Vec<Vec<u32>>,
+    /// `with` の後始末式: (登録したスコープの深さ, 後始末式, 登録時点の環境)。`drop_scopes_from` が、
+    /// そのスコープを抜けるすべての経路 (`return` / `?` / `break` / `continue` / 末尾) で式を展開する。
+    defers: Vec<(usize, V, Env)>,
     owners: HashMap<u32, Owner>,
     /// 参照 (`&T` / `&mut T`) である変数の番号。値のコピーではなく別名として扱う。
     refs: HashSet<u32>,
@@ -1570,6 +1573,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     local.insert(st(&nf(&nf(n)[0])[0]), (ph, t));
                 }
             }
+            if nname(n) == "With" {
+                if let Some(t) = self.ty_of(&nf(n)[2], &local, None) {
+                    local.insert(st(&nf(&nf(n)[0])[0]), (ph, t));
+                }
+            }
             if nname(n) == "For" && nname(&nf(n)[0]) == "PBind" {
                 let it = &nf(n)[1];
                 if nname(it) == "Call" && nname(&nf(it)[0]) == "Path" && strs(&nf(&nf(it)[0])[0]) == ["core", "iter", "range"] {
@@ -1819,6 +1827,23 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 Some(self.cx.slice_of(&elem))
             }
             "Unsafe" => self.body_ty(&f[2], env, expect),
+            "With" => {
+                let t = self.ty_of(&f[2], env, None)?;
+                let mut inner = env.clone();
+                let ph = Variable::from_u32(u32::MAX);
+                inner.insert(st(&nf(&f[0])[0]), (ph, t));
+                // 本体の `let` の型も足してから、末尾の式の型を求める。
+                for s in items(&nf(&f[4])[0]) {
+                    let sf = nf(s);
+                    if nname(s) == "Let" && nname(&sf[0]) == "PBind" {
+                        let ann = if matches!(sf[2], V::Nil) { None } else { self.cx.pty(&sf[2]).ok() };
+                        if let Some(t) = ann.or_else(|| self.ty_of(&sf[3], &inner, None)) {
+                            inner.insert(st(&nf(&sf[0])[0]), (ph, t));
+                        }
+                    }
+                }
+                self.body_ty(&f[4], &inner, expect)
+            }
             "TupleE" => {
                 let want: Option<Vec<String>> = expect.and_then(|t| self.cx.tuples.borrow().get(t).cloned());
                 let mut elems = vec![];
@@ -2392,6 +2417,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// 深さ `depth` 以降のスコープの所有者をすべて (内側から) 解放する。スコープ自体は残す。
     fn drop_scopes_from(&mut self, depth: usize) -> R<()> {
         for i in (depth..self.scopes.len()).rev() {
+            // `with` の後始末式は、同じスコープの所有者の解放より先に走る (束縛は後始末が消費する)。
+            let cleanups: Vec<(V, Env)> =
+                self.defers.iter().rev().filter(|d| d.0 == i).map(|d| (d.1.clone(), d.2.clone())).collect();
+            for (cleanup, mut cenv) in cleanups {
+                self.exprstmt(&cleanup, &mut cenv, false)?;
+            }
             let ids = self.scopes[i].clone();
             for id in ids.iter().rev() {
                 self.drop_owner_if_live(*id)?;
@@ -4129,6 +4160,34 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                     None => Ok((None, "void".into())),
                 }
+            }
+            "With" => {
+                // `with 名前 = 初期化式 close 後始末式 { 本体 }` (4.4)。束縛をスコープに置き、後始末式を
+                // `defers` に登録する。本体を抜けるすべての経路で `drop_scopes_from` が展開する。
+                if crate::check::cleanup_exit(&f[3]).is_some() {
+                    return Err("return / break / continue / ? in a with cleanup".into());
+                }
+                let saved_rest = std::mem::replace(&mut self.rest, items(&nf(&f[4])[0]).to_vec());
+                self.scopes.push(vec![]);
+                let d = self.scopes.len() - 1;
+                let mut inner = env.clone();
+                let bind = V::Node("Let", vec![f[0].clone(), f[1].clone(), V::Nil, f[2].clone()], crate::check::nline(e));
+                let r0 = self.stmt_inner(&bind, &mut inner, false);
+                self.rest = saved_rest;
+                r0?;
+                self.defers.push((d, f[3].clone(), inner.clone()));
+                self.scopes.push(vec![]);
+                let r = self.arm_value(&f[4], &mut inner, expect);
+                if r.is_ok() && !self.term {
+                    self.drop_scopes_from(d + 1)?;
+                }
+                self.scopes.pop();
+                if r.is_ok() && !self.term {
+                    self.drop_scopes_from(d)?;
+                }
+                self.defers.pop();
+                self.scopes.pop();
+                r
             }
             "Unsafe" => {
                 // `unsafe "名前" "理由" { .. }`: 本体のブロックの値。範囲を抜けるときの解放も行う。
@@ -7191,6 +7250,7 @@ pub fn compile_clif(
                 term: false,
                 nvar: 0,
                 scopes: vec![],
+                defers: vec![],
                 owners: HashMap::new(),
                 refs: HashSet::new(),
                 addr_taken: HashSet::new(),

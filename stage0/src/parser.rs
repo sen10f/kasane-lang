@@ -748,6 +748,7 @@ impl Parser {
                     let b = self.block()?;
                     return Ok(ndl(c.pos(), "Unsafe", vec![V::S(name), V::S(why), b]));
                 }
+                "with" => return self.with_expr(),
                 "fn" => return self.closure(),
                 _ => {}
             },
@@ -880,6 +881,26 @@ impl Parser {
         self.expect_op("]")?;
         let body = self.block()?;
         Ok(ndl(ln, "Closure", vec![ps, ret, V::L(caps), body]))
+    }
+
+    /// `with [mut] 名前 = 初期化式 close 後始末式 { 本体 }` (4.4)。
+    /// ノード: `With [PBind(名前), mut, 初期化式, 後始末式, 本体ブロック]`。
+    pub(crate) fn with_expr(&mut self) -> R<V> {
+        let c = self.cur().clone();
+        self.expect_kw("with")?;
+        let m = self.accept_kw("mut");
+        let nc = self.cur().clone();
+        if nc.kind != "ident" {
+            return self.err("expected a binding name after `with`");
+        }
+        self.i += 1;
+        self.expect_op("=")?;
+        let init = self.expr(false)?;
+        self.expect_kw("close")?;
+        let cleanup = self.expr(true)?;
+        let body = self.block()?;
+        let pat = ndl(nc.pos(), "PBind", vec![V::S(nc.text), V::B(false)]);
+        Ok(ndl(c.pos(), "With", vec![pat, V::B(m), init, cleanup, body]))
     }
 
     pub(crate) fn if_expr(&mut self) -> R<V> {

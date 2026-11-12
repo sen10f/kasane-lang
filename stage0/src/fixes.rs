@@ -111,7 +111,7 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
                 let Some(m) = re.find(text) else { return vec![] };
                 return vec![span(file, line, text, m.start(), m.start() + name.len(), format!("_{}", name))];
             }
-            let re = Regex::new(&format!(r"\blet (mut )?({})\b", regex::escape(name))).unwrap();
+            let re = Regex::new(&format!(r"\b(?:let|with) (mut )?({})\b", regex::escape(name))).unwrap();
             let mut n = line;
             while let Some(text) = get(n) {
                 if n > line && text.starts_with("end ") {

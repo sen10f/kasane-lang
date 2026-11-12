@@ -10,7 +10,7 @@ use crate::program::{load_file, Def};
 pub const RESERVED_NAMES: &[&str] = &[
     "fn", "type", "enum", "trait", "impl", "const", "static", "extern", "test", "end", "import", "let", "mut", "if",
     "else", "match", "loop", "while", "for", "in", "break", "continue", "return", "true", "false", "self", "Self",
-    "pub", "uses", "panics", "stack", "impls", "derive", "linear", "layout", "requires", "unsafe", "move", "capture",
+    "pub", "uses", "panics", "stack", "impls", "derive", "linear", "layout", "requires", "unsafe", "move", "with", "capture",
     "dyn", "blanket", "link", "never", "may", "async", "await", "where", "ref", "as", "i8", "i16", "i32", "i64",
     "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64", "bool", "char", "str", "core", "alloc",
     "std",

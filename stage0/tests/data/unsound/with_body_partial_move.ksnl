@@ -1,0 +1,17 @@
+type t.Box
+    s: alloc.string.String<std.alloc.System>
+end t.Box
+
+fn t.bad(b: t.Box) -> () uses [] panics never
+    with b2 = b close core.mem.drop(b2) {
+        t.take(b2.s)
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.take(s: alloc.string.String<std.alloc.System>) -> () uses [] panics never
+    core.mem.drop(s)
+end t.take

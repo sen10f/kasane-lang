@@ -221,7 +221,7 @@ pub fn scan(text: &str) -> Vec<Hit> {
             }
         }
         // 構造体リテラルを複数行に折り返している: `bench.Stack {` で行が終わる。
-        if t.ends_with('{') && !matches!(first, "if" | "while" | "for" | "loop" | "match" | "else" | "fn" | "impl" | "trait" | "enum" | "type" | "unsafe") {
+        if t.ends_with('{') && !matches!(first, "if" | "while" | "for" | "loop" | "match" | "else" | "fn" | "impl" | "trait" | "enum" | "type" | "unsafe" | "with") {
             let before = t[..t.len() - 1].trim_end();
             let last = before.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
             if last.chars().next().map_or(false, |c| c.is_uppercase()) {

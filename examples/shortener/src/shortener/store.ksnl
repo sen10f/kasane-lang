@@ -117,12 +117,10 @@ fn shortener.store.is_valid_url(url: &str) -> bool uses [] panics never pub
 end shortener.store.is_valid_url
 
 fn shortener.store.read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc, io.fs] panics never
-    let mut file = std.fs.open(path).map_err(error.io)?
     let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let read = std.fs.read_to_end(&mut file, &mut data).map_err(error.io)
-    let closed = file.close().map_err(error.io)
-    core.mem.drop(read?)
-    closed?
+    with mut file = std.fs.open(path).map_err(error.io)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut data).map_err(error.io)?)
+    }
     let mut text = alloc.string.String.new(std.alloc.SYSTEM)
     text.push_bytes(data.as_slice()).map_err(error.push_bytes)?
     Ok(text)

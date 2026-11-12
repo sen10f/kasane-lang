@@ -1776,6 +1776,26 @@ impl<'a> TypeCk<'a> {
                 if self.loop_breaks.pop() == Some(true) { Ty::Unit } else { Ty::Never }
             }
             "Unsafe" => self.infer(&f[2]),
+            // `with 名前 = 初期化式 close 後始末式 { 本体 }` (4.4): 値は本体の値。後始末式は `()` でなければならない。
+            "With" => {
+                let init = self.infer(&f[2]);
+                let src = self.last_site;
+                self.scopes.push(HashMap::new());
+                if matches!(f[1], V::B(true)) {
+                    self.mutable.insert(st(&nf(&f[0])[0]));
+                }
+                self.bind_pat_from(&f[0], &init, src, nline(e));
+                if let Some(t) = self.lookup(&st(&nf(&f[0])[0])) {
+                    self.let_pending.push((nline(e), st(&nf(&f[0])[0]), t));
+                }
+                let body = self.infer(&f[4]);
+                let cl = self.infer(&f[3]);
+                if let Ty::Named(..) | Ty::Prim(_) | Ty::Tuple(_) | Ty::Ref(..) = self.deep(&cl) {
+                    self.diag("E2045", format!("the `close` expression of `with` must have type (), found {}", self.deep(&cl).show()), nline(&f[3]));
+                }
+                self.scopes.pop();
+                body
+            }
             "ArrayRep" => {
                 let t = self.infer(&f[0]);
                 let n = self.infer(&f[1]);

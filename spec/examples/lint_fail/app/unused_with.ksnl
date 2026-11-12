@@ -1,0 +1,5 @@
+fn app.unused_with.f(path: &str) -> Result<(), std.io.Error> uses [io.fs] panics never pub
+    with file = std.fs.open(path)? close core.mem.drop(path) {
+        Ok(())
+    }
+end app.unused_with.f

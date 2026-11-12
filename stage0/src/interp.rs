@@ -391,6 +391,21 @@ impl Interp {
             "Lit" => Ok(self.lit(e)),
             "Block" => self.eval_block(e, sc),
             "Unsafe" => self.eval_block(&f[2], sc),
+            // `with 名前 = 初期化式 close 後始末式 { 本体 }` (4.4): 本体を抜けるあらゆる経路 (値・`return` /
+            // `?` / `break` / `continue`) で、後始末式をちょうど 1 回、出口の値を決めたあとに実行する。
+            // panic とプロセス終了は巻き戻さない (後始末なし)。初期化式が失敗したら束縛も後始末もない。
+            "With" => {
+                let v = self.eval(&f[2], sc)?;
+                let v = self.cp(v);
+                let s2 = new_scope(Some(sc), Rc::from(""));
+                self.bind(&f[0], v, &s2)?;
+                let r = self.eval(&f[4], &s2);
+                if matches!(r, Err(Ctl::Panic(_)) | Err(Ctl::Exit(_))) {
+                    return r;
+                }
+                self.eval(&f[3], &s2)?;
+                r
+            }
             "TupleE" => {
                 let mut out = vec![];
                 for x in items(&f[0]) {

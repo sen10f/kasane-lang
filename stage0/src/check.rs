@@ -7,6 +7,9 @@ use crate::parser::V;
 
 #[path = "borrowck.rs"]
 mod borrowck;
+#[path = "with_check.rs"]
+mod with_check;
+pub(crate) use with_check::cleanup_exit;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Diag {
@@ -1655,6 +1658,7 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
+            "With" => self.visit_with(e, locals, di, free),
             "Unsafe" => {
                 if !self.unsafe_ok {
                     self.diag("E5001", "unsafe is only allowed in modules listed in [unsafe] modules".into(), di, nline(e));
@@ -2643,6 +2647,7 @@ impl<'a> Checker<'a> {
                 }
             }
             "If" | "Match" | "Loop" | "While" | "For" => self.branchy(e, env, muts),
+            "With" => self.tc_with(e, env, muts),
             "Break" | "Continue" => {
                 // ループを抜ける / 次の周回へ入る時点の move を、囲むループに渡す。
                 let cur = self.moved.clone();

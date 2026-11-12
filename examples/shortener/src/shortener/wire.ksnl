@@ -3,6 +3,18 @@ import shortener.http
 
 const shortener.wire.MAX_REPLY: usize = 65536usize
 
+fn shortener.wire.accept(listener: &std.net.TcpListener) -> Result<std.net.TcpStream, shortener.error.Error> uses [io.net] panics never pub
+    listener.accept().map_err(error.net)
+end shortener.wire.accept
+
+fn shortener.wire.connect(address: &str) -> Result<std.net.TcpStream, shortener.error.Error> uses [io.net] panics never pub
+    std.net.connect(address).map_err(error.net)
+end shortener.wire.connect
+
+fn shortener.wire.listen(address: &str) -> Result<std.net.TcpListener, shortener.error.Error> uses [io.net] panics never pub
+    std.net.listen(address).map_err(error.net)
+end shortener.wire.listen
+
 fn shortener.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, shortener.error.Error> uses [alloc, io.net] panics never
     let mut chunk = [0u8; 512]
     let n = stream.read(&mut chunk).map_err(error.io)?

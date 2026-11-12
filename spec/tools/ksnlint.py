@@ -341,10 +341,18 @@ class Lint:
                         self.err('indent', n, 'unbalanced closing bracket')
                     else:
                         expect(stack[-1][1]); stack.pop()
+                    # `) {` と `)? close g(` は、閉じと同じ行で次の波括弧・括弧を開く
+                    if s.endswith('{'):
+                        stack.append(('brace', ind))
+                    elif s.endswith(('(', '[')):
+                        stack.append(('wrap', ind))
                     continue
                 if s.startswith('.'):
                     expect(stmt_base + 4)
-                    if s.endswith(('(', '[')):
+                    if s.endswith('{'):
+                        # `with .. = a` の次の `.b()? close c() {` のように、チェーンの最後の行が波括弧を開く
+                        stack.append(('brace', stmt_base))
+                    elif s.endswith(('(', '[')):
                         stack.append(('wrap', ind))
                     continue
                 in_wrap = bool(stack) and stack[-1][0] == 'wrap'
@@ -410,6 +418,8 @@ class Lint:
                 if nm:
                     names.append(('param', nm))
         for m in re.finditer(r'\bfor ([a-z_][a-z0-9_]*) in\b', body):
+            names.append(('let', m.group(1)))
+        for m in re.finditer(r'\bwith (?:mut )?([a-z_][a-z0-9_]*) =', body):
             names.append(('let', m.group(1)))
         return names, body
 

@@ -22,7 +22,7 @@ const PRIMS: &[&str] = &[
 const KEYWORDS: &[&str] = &[
     "fn", "type", "enum", "trait", "impl", "const", "static", "extern", "test", "end", "import", "let", "mut",
     "if", "else", "match", "loop", "while", "for", "in", "break", "continue", "return", "true", "false", "self",
-    "Self", "pub", "uses", "panics", "unsafe", "move",
+    "Self", "pub", "uses", "panics", "unsafe", "move", "with",
     "dyn", "blanket", "never", "may", "async", "await", "where", "ref", "as",
 ];
 const OPS2: &[&str] = &["=>", "->", "==", "!=", "<=", ">=", "&&", "||", "::"];
@@ -239,5 +239,5 @@ fn check_escape(chars: &[char], j: usize, ln: usize) -> Result<(), String> {
 
 /// ヘッダ位置でのみ特別な意味を持つ語。識別子としても使える (文脈キーワード)。
 pub fn is_contextual(w: &str) -> bool {
-    matches!(w, "stack" | "impls" | "derive" | "linear" | "layout" | "requires" | "capture" | "link")
+    matches!(w, "stack" | "impls" | "derive" | "linear" | "layout" | "requires" | "capture" | "link" | "close")
 }

@@ -5919,3 +5919,285 @@ fn the_http_example_runs_natively_through_cranelift() {
     }
     let _ = fs::remove_dir_all(&cache);
 }
+
+// ---- `with` (4.4): 範囲を抜けるすべての経路で後始末式が 1 回だけ走る ----
+
+/// 後始末の順序・回数を標準出力に出す、`with` の全経路 (末尾・`return`・`?`・`break` / `continue`・入れ子・
+/// 初期化の失敗) を通るプログラム。
+const WITH_PROGRAM: &str = r#"type t.R
+    id: u32
+end t.R
+
+fn t.R.get(self: &t.R) -> u32
+    self.id
+end t.R.get
+
+fn t.R.new(id: u32) -> t.R
+    if id == 1u32 {
+        std.io.print_line("open 1")
+    } else {
+        if id == 2u32 {
+            std.io.print_line("open 2")
+        } else {
+            std.io.print_line("open")
+        }
+    }
+    t.R { id: id }
+end t.R.new
+
+fn t.R.open(id: u32) -> Result<t.R, u8>
+    if id == 0u32 {
+        return Err(9u8)
+    }
+    Ok(t.R.new(id))
+end t.R.open
+
+fn t.R.shut(self: t.R) -> ()
+    if self.id == 1u32 {
+        std.io.print_line("shut 1")
+    } else {
+        if self.id == 2u32 {
+            std.io.print_line("shut 2")
+        } else {
+            std.io.print_line("shut")
+        }
+    }
+    core.mem.drop(self.id)
+end t.R.shut
+
+fn t.early_return(n: u32) -> u32
+    with r = t.R.new(1u32) close r.shut() {
+        if n == 0u32 {
+            return 100u32
+        }
+        r.get().wrapping_add(n)
+    }
+end t.early_return
+
+fn t.fail(n: u32) -> Result<u32, u8>
+    if n == 0u32 {
+        return Err(7u8)
+    }
+    Ok(n)
+end t.fail
+
+fn t.in_loops(n: u32) -> u32
+    with r = t.R.new(1u32) close r.shut() {
+        for i in core.iter.range(0u32, 5u32) {
+            let mut j = 0u32
+            while j < 5u32 {
+                if i == n {
+                    return i.wrapping_mul(10u32).wrapping_add(j)
+                }
+                j = j.wrapping_add(1u32)
+            }
+        }
+        r.get()
+    }
+end t.in_loops
+
+fn t.loop_exits() -> u32
+    let mut total = 0u32
+    for i in core.iter.range(0u32, 5u32) {
+        with r = t.R.new(i.wrapping_add(1u32)) close r.shut() {
+            if i == 1u32 {
+                continue
+            }
+            if i == 3u32 {
+                break
+            }
+            total = total.wrapping_add(r.get())
+        }
+    }
+    total
+end t.loop_exits
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.early_return(0u32), 100u32)
+    core.check.eq(t.early_return(2u32), 3u32)
+    core.check.eq(t.in_loops(2u32), 20u32)
+    core.check.eq(t.in_loops(9u32), 1u32)
+    core.check.eq(t.nested(5u32), Ok(8u32))
+    core.check.eq(t.nested(0u32), Err(7u8))
+    core.check.eq(t.tail_unit(0u32), Err(9u8))
+    core.check.eq(t.tail_unit(4u32), Ok(()))
+    core.check.eq(t.loop_exits(), 4u32)
+    Ok(())
+end t.main
+
+fn t.nested(n: u32) -> Result<u32, u8>
+    let v = with a = t.R.open(1u32)? close a.shut() {
+        let w = with b = t.R.open(2u32)? close b.shut() {
+            let c = t.fail(n)?
+            c.wrapping_add(b.get())
+        }
+        w.wrapping_add(a.get())
+    }
+    Ok(v)
+end t.nested
+
+fn t.tail_unit(n: u32) -> Result<(), u8>
+    with r = t.R.open(n)? close r.shut() {
+        core.mem.drop(r.get())
+        Ok(())
+    }
+end t.tail_unit
+"#;
+
+const WITH_EXPECTED: &str = "open 1\nshut 1\nopen 1\nshut 1\nopen 1\nshut 1\nopen 1\nshut 1\nopen 1\nopen 2\nshut 2\nshut 1\nopen 1\nopen 2\nshut 2\nshut 1\nopen\nshut\nopen 1\nshut 1\nopen 2\nshut 2\nopen\nshut\nopen\nshut\n";
+
+#[test]
+fn with_is_checked_formatted_and_runs_its_cleanup_on_every_exit_path() {
+    let t = Tmp::new("with_paths", WITH_PROGRAM);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout), WITH_EXPECTED);
+}
+
+#[test]
+fn with_cleanup_runs_the_same_way_in_a_cranelift_executable() {
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("with_native_{}", release), WITH_PROGRAM, release);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout), WITH_EXPECTED);
+    }
+}
+
+#[test]
+fn with_test_runs_in_both_the_interpreter_and_native_with_ksn_test_both() {
+    // `ksn test --both`: 1 テスト = 1 プロセス。本体が `?` で抜けても後始末が走ることを `test` の中で確かめる。
+    let src = format!(
+        "{}\ntest t.nested.test_cleanup_on_question_mark\n    core.check.eq(t.nested(0u32), Err(7u8))\n    core.check.eq(t.nested(5u32), Ok(8u32))\nend t.nested.test_cleanup_on_question_mark\n",
+        WITH_PROGRAM
+    );
+    let t = Tmp::new("with_test_both", &src);
+    let o = run(&["test", "--both"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn with_does_not_run_its_cleanup_on_panic() {
+    // 5.2: panic は巻き戻さない。後始末は走らず、終了コードは 101。
+    let body = r#"fn t.shut(n: u32) -> () uses [io.console] panics never
+    std.io.print_line("shut")
+    core.mem.drop(n)
+end t.shut
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    with n = 1u32 close t.shut(n) {
+        std.io.print_line("body")
+        core.panic.panic("boom")
+    }
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("with_panic", body);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout), "body\n");
+    let (_t2, exe_path, out) = build_clif("with_panic_native", body, false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout), "body\n");
+}
+
+/// `with` の診断の確認用。`t.R` と、その `get` / `shut` / `status` / `bump` を足した上に `main` の本体を置く。
+fn with_main(body: &str) -> String {
+    format!(
+        "type t.R linear\n    id: u32\nend t.R\n\nfn t.R.bump(self: &mut t.R) -> () uses [] panics never\n    self.id = self.id.wrapping_add(1u32)\nend t.R.bump\n\nfn t.R.get(self: &t.R) -> u32 uses [] panics never\n    self.id\nend t.R.get\n\nfn t.R.new(id: u32) -> t.R uses [] panics never\n    t.R {{ id: id }}\nend t.R.new\n\nfn t.R.shut(self: t.R) -> () uses [] panics never\n    let t.R {{ id: id }} = self\n    core.mem.drop(id)\nend t.R.shut\n\nfn t.R.status(self: t.R) -> Result<(), u8> uses [] panics never\n    let t.R {{ id: id }} = self\n    core.mem.drop(id)\n    Ok(())\nend t.R.status\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n{}    Ok(())\nend t.main\n",
+        body
+    )
+}
+
+fn with_codes(name: &str, body: &str) -> Vec<String> {
+    let t = Tmp::new(name, &with_main(body));
+    let o = run(&["check", "--json"], &t.0);
+    codes(&text(&o.stdout))
+}
+
+#[test]
+fn with_accepts_a_linear_binding_consumed_by_its_cleanup() {
+    let body = "    with mut r = t.R.new(1u32) close r.shut() {\n        r.bump()\n        core.mem.drop(r.get())\n    }\n";
+    assert_eq!(with_codes("with_ok", body), Vec::<String>::new());
+}
+
+#[test]
+fn with_cleanup_must_consume_the_binding() {
+    let b = "    with r = t.R.new(1u32) close core.mem.drop(r.get()) {\n        core.mem.drop(r.get())\n    }\n";
+    assert_eq!(with_codes("with_noconsume", b), ["E3007"]);
+    // 分岐の中だけで消費する書き方も不可 (偽の枝で線形値が漏れる)。
+    let b = "    with r = t.R.new(1u32) close if true {\n        r.shut()\n    } {\n        core.mem.drop(r.get())\n    }\n";
+    assert_eq!(with_codes("with_cond", b), ["E3007"]);
+}
+
+#[test]
+fn with_cleanup_must_have_type_unit() {
+    let b = "    with r = t.R.new(1u32) close r.status() {\n        core.mem.drop(r.get())\n    }\n";
+    assert_eq!(with_codes("with_nonunit", b), ["E2045"]);
+}
+
+#[test]
+fn with_body_cannot_move_or_borrow_out_the_binding() {
+    let b = "    with r = t.R.new(1u32) close r.shut() {\n        core.mem.drop(r.status())\n    }\n";
+    assert_eq!(with_codes("with_moved", b), ["E3006"]);
+    let b = "    with mut r = t.R.new(1u32) close r.shut() {\n        r = t.R.new(2u32)\n    }\n";
+    assert_eq!(with_codes("with_reassigned", b), ["E3006"]);
+    // 借りるだけ (`&mut self` のメソッド) は許す。ただし `with mut` が要る。
+    let b = "    with r = t.R.new(1u32) close r.shut() {\n        r.bump()\n    }\n";
+    assert_eq!(with_codes("with_bump_immutable", b), ["E3031"]);
+}
+
+#[test]
+fn with_cleanup_cannot_leave_early() {
+    let b = "    with r = t.R.new(1u32) close core.mem.drop(r.status()?) {\n        core.mem.drop(r.get())\n    }\n";
+    assert_eq!(with_codes("with_cleanup_try", b), ["E3008"]);
+}
+
+#[test]
+fn with_binding_is_not_visible_after_the_block_and_cannot_shadow() {
+    let b = "    with r = t.R.new(1u32) close r.shut() {\n        core.mem.drop(r.get())\n    }\n    core.mem.drop(r.get())\n";
+    assert_eq!(with_codes("with_scope", b), ["E1101"]);
+    let b = "    let r = 1u32\n    with r = t.R.new(1u32) close r.shut() {\n        core.mem.drop(r.get())\n    }\n    core.mem.drop(r)\n";
+    assert_eq!(with_codes("with_shadow", b), ["E1021"]);
+}
+
+#[test]
+fn with_is_a_reserved_word_but_close_is_not() {
+    // `with` は識別子に使えない (構文エラー)。
+    for (name, src) in [
+        ("with_ident_let", "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let with = 1u32\n    core.mem.drop(with)\n    Ok(())\nend t.main\n"),
+        ("with_ident_param", "fn t.f(with: u32) -> u32 uses [] panics never\n    with\nend t.f\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n"),
+    ] {
+        let t = Tmp::new(name, src);
+        let o = run(&["check", "--json"], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}", name);
+        assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E0002"), "{}: {}", name, text(&o.stdout));
+    }
+    // `close` は `with` の位置でだけ意味を持つ文脈キーワード: 変数・メソッド・フィールドの名前に使える。
+    let ok = "type t.Door\n    close: u32\nend t.Door\n\nfn t.Door.close(self: &t.Door) -> u32 uses [] panics never\n    self.close\nend t.Door.close\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    let close = t.Door { close: 3u32 }\n    core.check.eq(close.close(), 3u32)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("close_ident", ok);
+    // フィールド名とメソッド名の重複 (E1115) は別の規則なので、メソッド名とフィールド名は分ける。
+    let ok2 = ok.replace("    close: u32", "    shut: u32").replace("self.close\n", "self.shut\n").replace("t.Door { close: 3u32 }", "t.Door { shut: 3u32 }");
+    let t2 = Tmp::new("close_ident2", &ok2);
+    let _ = t;
+    assert_eq!(run(&["check"], &t2.0).status.code(), Some(0), "{}", text(&run(&["check"], &t2.0).stdout));
+    assert_eq!(run(&["run"], &t2.0).status.code(), Some(0));
+}
+
+#[test]
+fn with_header_may_wrap_at_call_arguments_and_the_format_is_stable() {
+    let src = "type t.R\n    id: u32\nend t.R\n\nfn t.R.open(a: u32, b: u32) -> Result<t.R, u8> uses [] panics never\n    Ok(t.R { id: a.wrapping_add(b) })\nend t.R.open\n\nfn t.R.shut(self: t.R, n: u32) -> () uses [] panics never\n    core.mem.drop(self.id.wrapping_add(n))\nend t.R.shut\n\nfn t.main() -> Result<(), u8> uses [] panics never\n    let v = with r = t.R.open(\n        1u32,\n        2u32,\n    )? close t.R.shut(\n        r,\n        3u32,\n    ) {\n        4u32\n    }\n    core.mem.drop(v)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("with_wrap", src);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}", text(&run(&["check"], &t.0).stdout));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+    // 1 行ブロックは不可 (`{` の直後は必ず改行)。
+    let one = "fn t.main() -> Result<(), u8> uses [] panics never\n    with n = 1u32 close core.mem.drop(n) { Ok(()) }\nend t.main\n";
+    let t = Tmp::new("with_oneline", one);
+    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(1));
+}

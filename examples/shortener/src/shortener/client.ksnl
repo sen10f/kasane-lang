@@ -10,52 +10,34 @@ fn shortener.client.address(port: u16) -> Result<alloc.string.String<std.alloc.S
     Ok(out)
 end shortener.client.address
 
-fn shortener.client.converse(stream: &mut std.net.TcpStream, listener: &std.net.TcpListener, db: &mut shortener.store.Store, request: &str) -> Result<shortener.http.Reply, shortener.error.Error> uses [alloc, io.fs, io.net] panics never
-    wire.write_all(stream, request.as_bytes())?
-    server.serve_one(listener, db)?
-    let raw = wire.read_to_close(stream)?
-    http.parse_reply(raw.as_slice())
-end shortener.client.converse
-
 fn shortener.client.exchange(listener: &std.net.TcpListener, db: &mut shortener.store.Store, request: &str) -> Result<shortener.http.Reply, shortener.error.Error> uses [alloc, io.fs, io.net] panics never pub
     let port = listener.local_port().map_err(error.net)?
     let target = shortener.client.address(port)?
-    let mut stream = std.net.connect(target.as_str()).map_err(error.net)?
-    let result = shortener.client.converse(&mut stream, listener, db, request)
-    core.mem.drop(stream.close())
-    result
+    with mut stream = wire.connect(target.as_str())? close core.mem.drop(stream.close()) {
+        wire.write_all(&mut stream, request.as_bytes())?
+        server.serve_one(listener, db)?
+        let raw = wire.read_to_close(&mut stream)?
+        http.parse_reply(raw.as_slice())
+    }
 end shortener.client.exchange
-
-fn shortener.client.queued_inner(first: &mut std.net.TcpStream, second: &mut std.net.TcpStream, listener: &std.net.TcpListener, db: &mut shortener.store.Store, one: &str, two: &str) -> Result<(shortener.http.Reply, shortener.http.Reply), shortener.error.Error> uses [alloc, io.fs, io.net] panics never
-    wire.write_all(first, one.as_bytes())?
-    wire.write_all(second, two.as_bytes())?
-    core.mem.drop(server.serve(listener, db, 2usize)?)
-    let raw_one = wire.read_to_close(first)?
-    let raw_two = wire.read_to_close(second)?
-    let reply_one = http.parse_reply(raw_one.as_slice())?
-    let reply_two = http.parse_reply(raw_two.as_slice())?
-    Ok((reply_one, reply_two))
-end shortener.client.queued_inner
 
 fn shortener.client.queued_pair(listener: &std.net.TcpListener, db: &mut shortener.store.Store) -> Result<(shortener.http.Reply, shortener.http.Reply), shortener.error.Error> uses [alloc, io.fs, io.net] panics never pub
     let port = listener.local_port().map_err(error.net)?
     let target = shortener.client.address(port)?
     let one = http.build_request("POST", "/shorten", "http://q.test/1")?
     let two = http.build_request("POST", "/shorten", "http://q.test/2")?
-    let mut first = std.net.connect(target.as_str()).map_err(error.net)?
-    let mut second = match std.net.connect(target.as_str()) {
-        Ok(s) => s
-        Err(e) => {
-            core.mem.drop(first.close())
-            return Err(error.net(e))
+    with mut first = wire.connect(target.as_str())? close core.mem.drop(first.close()) {
+        with mut second = wire.connect(target.as_str())? close core.mem.drop(second.close()) {
+            wire.write_all(&mut first, one.as_bytes())?
+            wire.write_all(&mut second, two.as_bytes())?
+            core.mem.drop(server.serve(listener, db, 2usize)?)
+            let raw_one = wire.read_to_close(&mut first)?
+            let raw_two = wire.read_to_close(&mut second)?
+            let reply_one = http.parse_reply(raw_one.as_slice())?
+            let reply_two = http.parse_reply(raw_two.as_slice())?
+            Ok((reply_one, reply_two))
         }
     }
-    let a = one.as_str()
-    let b = two.as_str()
-    let result = shortener.client.queued_inner(&mut first, &mut second, listener, db, a, b)
-    core.mem.drop(first.close())
-    core.mem.drop(second.close())
-    result
 end shortener.client.queued_pair
 
 fn shortener.client.test_listen() -> std.net.TcpListener uses [io.net] panics may

@@ -212,7 +212,7 @@ pub(crate) fn local_names(d: &Def, body: &V) -> BTreeSet<String> {
                 crate::check::pat_binds(&f[0], &mut b);
                 out.extend(b);
             }
-            "For" => {
+            "For" | "With" => {
                 let mut b = vec![];
                 crate::check::pat_binds(&f[0], &mut b);
                 out.extend(b);

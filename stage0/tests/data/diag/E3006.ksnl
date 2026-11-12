@@ -1,0 +1,31 @@
+type t.R pub
+    id: u32
+end t.R
+
+fn t.R.get(self: &t.R) -> u32 uses [] panics never pub
+    self.id
+end t.R.get
+
+fn t.R.name(self: &t.R) -> &str uses [] panics never pub
+    "r"
+end t.R.name
+
+fn t.R.new(id: u32) -> t.R uses [] panics never pub
+    t.R { id: id }
+end t.R.new
+
+fn t.R.shut(self: t.R) -> () uses [] panics never pub
+    core.mem.drop(self.id)
+end t.R.shut
+
+fn t.R.status(self: t.R) -> Result<(), u8> uses [] panics never pub
+    core.mem.drop(self.id)
+    Ok(())
+end t.R.status
+
+fn t.main() -> Result<(), u8> uses [] panics never
+    with r = t.R.new(1u32) close r.shut() {
+        core.mem.drop(r.status())
+    }
+    Ok(())
+end t.main

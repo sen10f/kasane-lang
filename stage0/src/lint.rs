@@ -557,9 +557,19 @@ impl Lint {
                         expect(stack.last().unwrap().1, &mut errs);
                         stack.pop();
                     }
+                    // `) {` (`if f(` / `with .. close f(` の折り返しの閉じ) と `)? close g(` は、同じ行で次の波括弧・括弧を開く。
+                    if s.ends_with('{') {
+                        stack.push(("brace", ind));
+                    } else if s.ends_with('(') || s.ends_with('[') {
+                        stack.push(("wrap", ind));
+                    }
                 } else if s.starts_with('.') {
                     expect(stmt_base + 4, &mut errs);
-                    if s.ends_with('(') || s.ends_with('[') {
+                    if s.ends_with('{') {
+                        // `with .. = a` の次の `.b()? close c() {` のように、チェーンの最後の行が波括弧を開く。
+                        // 閉じは文頭の行と同じ深さ。
+                        stack.push(("brace", stmt_base));
+                    } else if s.ends_with('(') || s.ends_with('[') {
                         stack.push(("wrap", ind));
                     }
                 } else {
@@ -632,7 +642,8 @@ impl Lint {
         for m in re_let.captures_iter(&body) {
             let end = m.get(0).unwrap().end();
             let rest = body[end..].trim_start();
-            if rest.starts_with('{') {
+            // `let t.Res { .. } = x` の FQN の先頭成分 (`t`) は束縛ではない。
+            if rest.starts_with('{') || (rest.starts_with('.') && !rest.starts_with("..")) {
                 continue;
             }
             names.push(("let", m[1].to_string()));
@@ -665,6 +676,11 @@ impl Lint {
         }
         let re_for = Regex::new(r"\bfor ([a-z_][a-z0-9_]*) in\b").unwrap();
         for m in re_for.captures_iter(&body) {
+            names.push(("let", m[1].to_string()));
+        }
+        // `with [mut] 名前 = ..` (4.4)。後始末式が名前を使うので、宣言とあわせて 2 回以上現れる。
+        let re_with = Regex::new(r"\bwith (?:mut )?([a-z_][a-z0-9_]*) =").unwrap();
+        for m in re_with.captures_iter(&body) {
             names.push(("let", m[1].to_string()));
         }
         (names, body)
