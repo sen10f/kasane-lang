@@ -2851,6 +2851,51 @@ fn the_cranelift_backend_runs_vecdeque_like_the_interpreter() {
     }
 }
 
+/// 文字列の拡張 (`ends_with` `contains` `trim*` `strip_*` `split_once` `rfind` `eq_ignore_ascii_case` `split`、
+/// `parse`、`String` の `push_u64` `push_i64` `push_bytes` `replace` `join`) を、インタプリタと Cranelift の
+/// 両方で、同じ検査 (`tests/data/str_ext.ksnl`) に通す。
+#[test]
+fn string_extensions_agree_between_interpreter_and_cranelift() {
+    let src = include_str!("data/str_ext.ksnl");
+    let t = Tmp::new("str_ext_interp", src);
+    let check = run(&["check"], &t.0);
+    assert_eq!(check.status.code(), Some(0), "{}{}", text(&check.stdout), text(&check.stderr));
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
+    assert_eq!(text(&interp.stdout).trim(), "str ext ok");
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("str_ext_{}", release), src, release);
+        assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    }
+}
+
+/// `split` を変数に持って `next()` で進める書き方はインタプリタだけ。ネイティブは「skipped」で退く。
+#[test]
+fn a_split_iterator_held_in_a_variable_is_interpreter_only() {
+    let src = [
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
+        "    let mut it = \"a,b\".split(\",\")",
+        "    core.check.eq(it.next(), Some(\"a\"))",
+        "    core.check.eq(it.next(), Some(\"b\"))",
+        "    core.check.eq(it.next(), None)",
+        "    std.io.print_line(\"it ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join("\n");
+    let t = Tmp::new("str_split_var", &src);
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
+    assert_eq!(text(&interp.stdout).trim(), "it ok");
+    let (_t, exe_path, out) = build_clif("str_split_var_clif", &src, false);
+    assert!(exe_path.is_none() && out.contains("native backend skipped"), "expected a skip: {}", out);
+}
+
 fn clif_string_program(tail: &str) -> String {
     let nl = char::from(10u8).to_string();
     let sv = "alloc.string.String<std.alloc.System>";

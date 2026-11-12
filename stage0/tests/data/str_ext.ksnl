@@ -1,0 +1,184 @@
+fn t.pieces(text: &str, sep: &str) -> usize uses [] panics never
+    let mut n = 0usize
+    for p in text.split(sep) {
+        n = n.wrapping_add(1usize)
+        if p.is_empty() {
+            n = n.wrapping_add(100usize)
+        }
+    }
+    n
+end t.pieces
+
+fn t.joined(text: &str, sep: &str) -> usize uses [] panics never
+    let mut total = 0usize
+    for p in text.split(sep) {
+        total = total.wrapping_mul(10usize).wrapping_add(p.len())
+    }
+    total
+end t.joined
+
+fn t.first_piece_is(text: &str, sep: &str, want: &str) -> bool uses [] panics never
+    let mut ok = false
+    let mut first = true
+    for p in text.split(sep) {
+        if first {
+            ok = p == want
+            first = false
+        }
+    }
+    ok
+end t.first_piece_is
+
+fn t.last_piece_is(text: &str, sep: &str, want: &str) -> bool uses [] panics never
+    let mut ok = false
+    for p in text.split(sep) {
+        ok = p == want
+    }
+    ok
+end t.last_piece_is
+
+fn t.fmt_u(v: u64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_u64(v)?
+    Ok(s)
+end t.fmt_u
+
+fn t.fmt_i(v: i64) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_i64(v)?
+    Ok(s)
+end t.fmt_i
+
+fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    // ends_with / contains
+    core.check.eq("hello".ends_with("llo"), true)
+    core.check.eq("hello".ends_with("hell"), false)
+    core.check.eq("hello".ends_with(""), true)
+    core.check.eq("".ends_with("a"), false)
+    core.check.eq("lo".ends_with("hello"), false)
+    core.check.eq("héllo wörld".ends_with("wörld"), true)
+    core.check.eq("hello".contains("ell"), true)
+    core.check.eq("hello".contains("elo"), false)
+    core.check.eq("hello".contains(""), true)
+    core.check.eq("".contains("a"), false)
+    core.check.eq("日本語テキスト".contains("語テ"), true)
+    // trim
+    core.check.eq("  a b \t\n".trim(), "a b")
+    core.check.eq("  a b \t\n".trim_start(), "a b \t\n")
+    core.check.eq("  a b \t\n".trim_end(), "  a b")
+    core.check.eq("".trim(), "")
+    core.check.eq("  \r\n ".trim(), "")
+    core.check.eq("abc".trim(), "abc")
+    core.check.eq(" 日本 ".trim(), "日本")
+    // strip_prefix / strip_suffix
+    core.check.eq("foo/bar".strip_prefix("foo/"), Some("bar"))
+    core.check.eq("foo/bar".strip_prefix("bar"), None)
+    core.check.eq("foo/bar".strip_prefix(""), Some("foo/bar"))
+    core.check.eq("foo".strip_prefix("foo"), Some(""))
+    core.check.eq("".strip_prefix("a"), None)
+    core.check.eq("foo/bar".strip_suffix("/bar"), Some("foo"))
+    core.check.eq("foo/bar".strip_suffix("foo"), None)
+    core.check.eq("bar".strip_suffix("bar"), Some(""))
+    core.check.eq("日本語".strip_suffix("語"), Some("日本"))
+    // split_once
+    core.check.eq("key=value".split_once("="), Some(("key", "value")))
+    core.check.eq("=value".split_once("="), Some(("", "value")))
+    core.check.eq("key=".split_once("="), Some(("key", "")))
+    core.check.eq("a=b=c".split_once("="), Some(("a", "b=c")))
+    core.check.eq("novalue".split_once("="), None)
+    core.check.eq("".split_once("="), None)
+    core.check.eq("a=b".split_once(""), None)
+    core.check.eq("名前：値".split_once("："), Some(("名前", "値")))
+    core.check.eq("a, b".split_once(", "), Some(("a", "b")))
+    // rfind
+    core.check.eq("abcabc".rfind("bc"), Some(4usize))
+    core.check.eq("abcabc".find("bc"), Some(1usize))
+    core.check.eq("abcabc".rfind("x"), None)
+    core.check.eq("abc".rfind(""), Some(3usize))
+    core.check.eq("".rfind("a"), None)
+    core.check.eq("日本日本".rfind("日"), Some(6usize))
+    // eq_ignore_ascii_case
+    core.check.eq("HeLLo".eq_ignore_ascii_case("hello"), true)
+    core.check.eq("hello".eq_ignore_ascii_case("hellp"), false)
+    core.check.eq("hello".eq_ignore_ascii_case("hell"), false)
+    core.check.eq("".eq_ignore_ascii_case(""), true)
+    core.check.eq("É".eq_ignore_ascii_case("é"), false)
+    // split
+    core.check.eq(t.pieces("a,b,c", ","), 3usize)
+    core.check.eq(t.pieces("", ","), 101usize)
+    core.check.eq(t.pieces(",", ","), 202usize)
+    core.check.eq(t.pieces(",a,", ","), 203usize)
+    core.check.eq(t.pieces("a,,b", ","), 103usize)
+    core.check.eq(t.pieces("abc", ","), 1usize)
+    core.check.eq(t.pieces("abc", ""), 1usize)
+    core.check.eq(t.pieces("a::b::c", "::"), 3usize)
+    core.check.eq(t.pieces("a:::b", "::"), 2usize)
+    core.check.eq(t.pieces("日本、語、", "、"), 103usize)
+    core.check.eq(t.joined("12,345,6", ","), 231usize)
+    core.check.eq(t.first_piece_is("x=1", "=", "x"), true)
+    core.check.eq(t.last_piece_is("a,b,", ",", ""), true)
+    core.check.eq(t.last_piece_is("a,b,c", ",", "c"), true)
+    core.check.eq(t.first_piece_is(",b", ",", ""), true)
+    // parse
+    core.check.eq(i32.parse("-42"), Ok(-42i32))
+    core.check.eq(u8.parse("255"), Ok(255u8))
+    core.check.eq(u8.parse("256").is_err(), true)
+    core.check.eq(u64.parse("18446744073709551615"), Ok(18446744073709551615u64))
+    core.check.eq(i64.parse("-9223372036854775808"), Ok(-9223372036854775808i64))
+    core.check.eq(i32.parse("").is_err(), true)
+    core.check.eq(i32.parse("12a").is_err(), true)
+    core.check.eq(usize.parse("0"), Ok(0usize))
+    // push_u64 / push_i64
+    core.check.eq(t.fmt_u(0u64)?.as_str(), "0")
+    core.check.eq(t.fmt_u(1234567890u64)?.as_str(), "1234567890")
+    core.check.eq(t.fmt_u(18446744073709551615u64)?.as_str(), "18446744073709551615")
+    core.check.eq(t.fmt_i(0i64)?.as_str(), "0")
+    core.check.eq(t.fmt_i(-1i64)?.as_str(), "-1")
+    core.check.eq(t.fmt_i(9223372036854775807i64)?.as_str(), "9223372036854775807")
+    core.check.eq(t.fmt_i(-9223372036854775808i64)?.as_str(), "-9223372036854775808")
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("n=")?
+    line.push_i64(i64.from_i32(-17i32))?
+    line.push(' ')?
+    line.push_u64(u64.from_usize(line.len()))?
+    core.check.eq(line.as_str(), "n=-17 6")
+    // String でも str のメソッドが使える
+    core.check.eq(line.as_str().ends_with("6"), true)
+    core.check.eq(line.contains("-17"), true)
+    core.check.eq(line.trim(), "n=-17 6")
+    // push_bytes
+    let mut b = alloc.string.String.new(std.alloc.SYSTEM)
+    core.check.eq(b.push_bytes("héy".as_bytes()).is_ok(), true)
+    core.check.eq(b.push_bytes("".as_bytes()).is_ok(), true)
+    let bad = [255u8, 66u8]
+    core.check.eq(b.push_bytes(&bad).is_err(), true)
+    core.check.eq(b.as_str(), "héy")
+    // replace
+    core.check.eq(alloc.string.String.replace(std.alloc.SYSTEM, "a-b-c", "-", "+")?.as_str(), "a+b+c")
+    core.check.eq(alloc.string.String.replace(std.alloc.SYSTEM, "a-b-c", "-", "")?.as_str(), "abc")
+    core.check.eq(alloc.string.String.replace(std.alloc.SYSTEM, "abc", "x", "y")?.as_str(), "abc")
+    core.check.eq(alloc.string.String.replace(std.alloc.SYSTEM, "abc", "", "y")?.as_str(), "abc")
+    core.check.eq(alloc.string.String.replace(std.alloc.SYSTEM, "", "a", "b")?.as_str(), "")
+    core.check.eq(alloc.string.String.replace(std.alloc.SYSTEM, "aaa", "aa", "b")?.as_str(), "ba")
+    core.check.eq(alloc.string.String.replace(std.alloc.SYSTEM, "日本語日本", "日", "月月")?.as_str(), "月月本語月月本")
+    core.check.eq(alloc.string.String.replace(std.alloc.SYSTEM, "abc", "abc", "")?.as_str(), "")
+    // join
+    let parts = ["a", "bb", "", "ccc"]
+    core.check.eq(alloc.string.String.join(std.alloc.SYSTEM, &parts, ", ")?.as_str(), "a, bb, , ccc")
+    let one = ["solo"]
+    core.check.eq(alloc.string.String.join(std.alloc.SYSTEM, &one, ", ")?.as_str(), "solo")
+    match parts.sub(0usize, 0usize) {
+        Some(empty) => core.check.eq(alloc.string.String.join(std.alloc.SYSTEM, empty, ", ")?.as_str(), "")
+        None => core.check.eq(1u8, 2u8)
+    }
+    let jp = ["日本", "語"]
+    core.check.eq(alloc.string.String.join(std.alloc.SYSTEM, &jp, "・")?.as_str(), "日本・語")
+    core.check.eq(alloc.string.String.join(std.alloc.SYSTEM, &parts, "")?.as_str(), "abbccc")
+    Ok(())
+end t.run
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.run().is_ok(), true)
+    std.io.print_line("str ext ok")
+    Ok(())
+end t.main
