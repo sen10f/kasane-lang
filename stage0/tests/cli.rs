@@ -7157,3 +7157,46 @@ end t.bad
     assert!(codes(&out).iter().any(|c| c == "E2023"), "{}", out);
     assert!(out.contains("argument 1 of the closure"), "{}", out);
 }
+
+/// 基本型の `to_string` (`Display` の組み込み実装) と派生の比較 (`ne` / `partial_cmp`) は、
+/// インタプリタとバンドルの両方で動く (以前は "unknown integer operation" で panic していた)。
+#[test]
+fn scalar_to_string_and_derived_methods_run_in_both() {
+    let test = "test t.main.test_scalar_to_string
+    let n: i64 = -7i64
+    core.check.eq(n.to_string().as_str(), \"-7\")
+    core.check.eq(n.to_string().len(), 2usize)
+    let big: u32 = 4294967295u32
+    core.check.eq(big.to_string().as_str(), \"4294967295\")
+    let c: char = 'x'
+    core.check.eq(c.to_string().as_str(), \"x\")
+    let t: bool = true
+    core.check.eq(t.to_string().as_str(), \"true\")
+    core.check.eq(n.ne(&3i64), true)
+    core.check.eq(n.partial_cmp(&3i64).is_some(), true)
+end t.main.test_scalar_to_string
+";
+    let src = format!("{}\n{}", main_wrap("", ""), test);
+    let t = Tmp::new("scalar_to_string_both", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_scalar_to_string ... ok"), "{}", out);
+}
+
+/// `Display` の char は文字そのもの。`print_line` と `to_string` の出力を確かめる。
+#[test]
+fn char_display_prints_the_character_itself() {
+    let body = "    let c: char = 'x'\n    std.io.print_line(c)\n    std.io.print_line(c.to_string())\n    std.io.print_line(7u8.to_string())\n";
+    let t = Tmp::new("char_display", &main_wrap("", body));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout), "x\nx\n7\n");
+}
+
+/// 整数の幅変換は `from_*` / `try_from_*` (仕様 4.5)。`to_<整数型>` は持たない。
+#[test]
+fn integer_width_conversion_uses_from_not_to() {
+    let t = Tmp::new("int_from", &main_wrap("", "    core.check.eq(u32.from_u8(200u8), 200u32)\n"));
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
+}
