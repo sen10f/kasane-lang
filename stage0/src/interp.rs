@@ -2054,6 +2054,10 @@ fn int_arith(op: &str, x: i128, y: i128, ty: Ity) -> Res {
             None => overflow(),
         };
     }
+    // 符号付きの `MIN % -1` は割り算が溢れるので余りも溢れ (案 A。Rust と同じ)。i128 の `checked_rem` は溢れを見ないので型で確かめる。
+    if op == "%" && y == -1 && ty.is_some_and(|t| signed(t) && x == tmin(t)) {
+        return overflow();
+    }
     let r = match op {
         "+" => x.checked_add(y),
         "-" => x.checked_sub(y),
