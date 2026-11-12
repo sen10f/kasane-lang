@@ -962,7 +962,21 @@ impl Interp {
                 let args = self.eval_args(&f[1], sc)?;
                 return self.invoke_method(base, &r.rest[r.rest.len() - 1], args, None);
             }
-            let args = self.eval_args(&f[1], sc)?;
+            // `from_ref(&x)` は `x` の場所を指す。`&x` を値として評価すると複製になり、以後の書き込みが見えなくなる。
+            let args = match (&r.target, ref_arg_inner(&f[1])) {
+                (Target::Sig(i), Some(inner)) if self.def(*i).name == "core.ptr.from_ref" => vec![self.eval_place(inner, sc)?],
+                _ => self.eval_args(&f[1], sc)?,
+            };
+            if let Target::Sig(i) = &r.target {
+                let name = self.def(*i).name.clone();
+                if name.starts_with("core.ptr.") {
+                    // 型引数 (`core.ptr.cast::<T, U>`) は呼び出し式の Path の 2 つ目の成分にある。
+                    let targs = items(&nf(fnn)[1]).to_vec();
+                    if let Some(out) = self.typed_ptr_op(&name, &args, &targs) {
+                        return out;
+                    }
+                }
+            }
             return self.call_resolved(&r, args);
         }
         let callee = self.eval(fnn, sc)?;
@@ -988,6 +1002,9 @@ impl Interp {
         let mut ints = vec![];
         let mut floats = vec![];
         for (a, (_, pt)) in args.iter().zip(&d.params) {
+            if matches!(a, Val::Ref(_)) && crate::check::tag(pt) == "ptr" {
+                return panic(format!("extern {}: a pointer to a Kasane place (from from_mut / from_ref) cannot be passed to C", d.name));
+            }
             let v = dr(a);
             match (arg_kind(pt), &v) {
                 (Some(ArgK::Int), Val::Int(i, _)) => ints.push(*i as i64),
@@ -1051,6 +1068,51 @@ impl Interp {
         })
     }
 
+    /// 型引数や値の種類 (生アドレス / 場所) で動きが決まる `core.ptr.*`。対象外なら `None` (呼び出し側で通常の経路へ)。
+    fn typed_ptr_op(&mut self, name: &str, args: &[Val], targs: &[V]) -> Option<Res> {
+        let op = name.strip_prefix("core.ptr.")?;
+        match (op, args.len()) {
+            ("null_mut", 0) => {
+                // 要素型が分かれば、null にも要素型を載せる (型引数が無ければ従来どおり usize の 0)。
+                let tag = targs.first().and_then(prim_name).and_then(|n| ptr_tag(&n)).unwrap_or("usize");
+                Some(Ok(Val::Int(0, Some(tag))))
+            }
+            ("from_mut", 1) | ("from_ref", 1) => Some(Ok(match &args[0] {
+                // `&mut x` は場所そのもの (Val::Ref) なので、同じ場所を指すポインタになる。
+                // `&x` は値の複製として評価されるため、その値を入れた新しい場所を指す (読み取り専用なので差はない)。
+                Val::Ref(_) => args[0].clone(),
+                v => Val::Ref(Rc::new(CellPlace(RefCell::new(v.clone())))),
+            })),
+            ("cast", 1) => Some(self.cast_ptr(name, &args[0], targs)),
+            _ => None,
+        }
+    }
+
+    /// `core.ptr.cast::<T, U>(p)`。生アドレスは要素型の Ity だけ付け替える。場所を指すポインタは T と U が同じときだけ恒等 (幅の違う読み替えは再現できない)。
+    fn cast_ptr(&mut self, name: &str, p: &Val, targs: &[V]) -> Res {
+        let Some(to_t) = targs.get(1) else {
+            return panic(format!("{}: the target type needs an explicit type argument (`{}::<T, U>`)", name, name));
+        };
+        let to = prim_name(to_t);
+        match p {
+            Val::Ref(_) => {
+                let from = targs.first().and_then(prim_name);
+                if from.is_some() && from == to {
+                    Ok(p.clone())
+                } else {
+                    panic(format!("{}: a pointer to a Kasane place can only be cast to the same type in the interpreter", name))
+                }
+            }
+            _ => match to.as_deref().and_then(ptr_tag) {
+                Some(t) => match dr(p) {
+                    Val::Int(x, _) => Ok(Val::Int(x, Some(t))),
+                    _ => panic(format!("{}: the argument is not a raw pointer", name)),
+                },
+                None => panic(format!("{}: only scalar pointee types are supported by the interpreter", name)),
+            },
+        }
+    }
+
     fn call_resolved(&mut self, r: &Resolved, args: Vec<Val>) -> Res {
         match &r.target {
             Target::Fn(i) => self.call_def(*i, args),
@@ -1078,7 +1140,8 @@ impl Interp {
                     return Ok(int(0, "usize"));
                 }
                 if d.name == "core.ptr.is_null" {
-                    return Ok(Val::Bool(matches!(args.first().map(dr), Some(Val::Int(0, _)))));
+                    // 場所を指すポインタ (`Val::Ref`) は null にならない。dr で中身を見ると誤判定する。
+                    return Ok(Val::Bool(matches!(args.first(), Some(Val::Int(0, _)))));
                 }
                 if d.name.starts_with("core.ptr.") {
                     return raw_ptr_op(&d.name, &args);
@@ -1479,17 +1542,46 @@ fn raw_ptr(v: &Val) -> Result<(u64, &'static str), String> {
     match dr(v) {
         Val::Int(a, Some(t)) => match ptr_elem(t) {
             Some(e) => Ok((a as u64, e)),
-            None => Err("the pointer's element type is unknown to the interpreter (only scalar pointees from extern declarations are supported)".into()),
+            None => Err("the pointer's element type is unknown to the interpreter (a pointer from an extern declaration or core.ptr.null_mut::<T>() / core.ptr.cast::<T, U>() with a scalar T)".into()),
         },
         _ => Err("the argument is not a raw pointer".into()),
+    }
+}
+
+/// 引数が `&e` ひとつだけなら、`e` を返す。
+fn ref_arg_inner(args: &V) -> Option<&V> {
+    let [a] = items(args) else { return None };
+    (nname(a) == "Unary" && st(&nf(a)[0]) == "&").then(|| &nf(a)[1])
+}
+
+/// 場所を指すポインタ (`from_mut` / `from_ref` の結果) の操作。アドレスを持たないので、読み書きは場所を通して行う。
+fn place_ptr_op(name: &str, op: &str, p: &dyn Place, args: &[Val]) -> Res {
+    match (op, args.len()) {
+        ("read", 1) => Ok(p.get()),
+        ("write", 2) => {
+            p.set(args[1].clone());
+            Ok(Val::Unit)
+        }
+        ("as_const", 1) | ("as_mut", 1) => Ok(args[0].clone()),
+        ("is_null", 1) => Ok(Val::Bool(false)),
+        // 要素が 1 つしかないので、0 だけ進める加算は恒等。それ以外は配列の要素を指さないので扱えない。
+        ("add", 2) if matches!(dr(&args[1]), Val::Int(0, _)) => Ok(args[0].clone()),
+        _ => panic(format!(
+            "{} is not supported for a pointer to a single place (only read, write, as_const, as_mut, is_null, add by 0)",
+            name
+        )),
     }
 }
 
 /// `core.ptr.*` の操作 (`null_mut` / `is_null` は呼び出し側で扱う)。読み書きはホストのメモリに直接触れる。
 fn raw_ptr_op(name: &str, args: &[Val]) -> Res {
     let op = name.strip_prefix("core.ptr.").unwrap_or(name);
+    if let Some(Val::Ref(p)) = args.first() {
+        // 場所を指すポインタは dr で中身に潜らず、場所として扱う。
+        return place_ptr_op(name, op, p.as_ref(), args);
+    }
     match (op, args.len()) {
-        ("as_const", 1) | ("as_mut", 1) => Ok(dr(&args[0])),
+        ("as_const", 1) | ("as_mut", 1) => Ok(args[0].clone()),
         ("add", 2) => {
             let (a, e) = match raw_ptr(&args[0]) {
                 Ok(x) => x,
@@ -1503,23 +1595,23 @@ fn raw_ptr_op(name: &str, args: &[Val]) -> Res {
             Ok(Val::Int(r as i128, Some(ptr_tag(e).unwrap_or("usize"))))
         }
         ("read", 1) => {
+            if matches!(args[0], Val::Int(0, _)) {
+                return panic(format!("{}: null pointer dereference", name));
+            }
             let (a, e) = match raw_ptr(&args[0]) {
                 Ok(x) => x,
                 Err(m) => return panic(format!("{}: {}", name, m)),
             };
-            if a == 0 {
-                return panic(format!("{}: null pointer dereference", name));
-            }
             Ok(unsafe { read_elem(a, e) })
         }
         ("write", 2) => {
+            if matches!(args[0], Val::Int(0, _)) {
+                return panic(format!("{}: null pointer dereference", name));
+            }
             let (a, e) = match raw_ptr(&args[0]) {
                 Ok(x) => x,
                 Err(m) => return panic(format!("{}: {}", name, m)),
             };
-            if a == 0 {
-                return panic(format!("{}: null pointer dereference", name));
-            }
             if let Err(m) = unsafe { write_elem(a, e, &dr(&args[1])) } {
                 return panic(format!("{}: {}", name, m));
             }

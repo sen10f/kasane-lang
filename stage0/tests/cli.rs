@@ -6031,3 +6031,151 @@ fn tyof_unit_method_results_and_unknown_types_stay_silent() {
     );
     assert!(!tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E3003"), "{}", out);
 }
+
+// ---- rt/interp-ptr-more: null_mut::<T>() / cast::<T, U>() / from_mut / from_ref (インタプリタ) ----
+
+/// `unsafe` を許す `t` で `src` を実行する (`ksn run`)。
+fn run_unsafe_pkg(name: &str, src: &str) -> (Tmp, Output) {
+    let t = Tmp::new(name, src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let r = run(&["run"], &t.0);
+    (t, r)
+}
+
+#[test]
+fn ptr_more_place_pointers_alias_their_places_and_null_is_detected() {
+    // from_mut / from_ref は場所を指す。書き込みは場所に届き、from_ref は後の書き込みも見る。null_mut::<T>() は is_null で null と分かる。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 41i32
+    let n: *mut i32 = core.ptr.null_mut::<i32>()
+    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    let q: *const i32 = core.ptr.from_ref(&x)
+    unsafe "libc" "place pointers" {
+        core.check.eq(core.ptr.is_null(n), true)
+        core.check.eq(core.ptr.is_null(p), false)
+        core.ptr.write(p, 42i32)
+        core.check.eq(core.ptr.read(p), 42i32)
+        core.check.eq(core.ptr.read(core.ptr.as_const(p)), 42i32)
+        core.check.eq(core.ptr.read(core.ptr.add(q, 0usize)), 42i32)
+        core.check.eq(core.ptr.read(core.ptr.cast::<i32, i32>(q)), 42i32)
+    }
+    std.io.print_line("place ok")
+    core.check.eq(x, 42i32)
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ptr_more_place", src);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "place ok\n");
+}
+
+#[test]
+fn ptr_more_null_read_panics_with_null_dereference() {
+    // 要素型が分かる null でも、読むと null 参照として 101 で止まる。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    unsafe "libc" "read null" {
+        core.check.eq(core.ptr.read(core.ptr.null_mut::<i32>()), 0i32)
+    }
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ptr_more_null_read", src);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("null pointer dereference"), "{}", text(&r.stderr));
+}
+
+#[test]
+fn ptr_more_cast_of_place_pointer_to_other_type_panics() {
+    // 場所を指すポインタを幅の違う型へ読み替えることはできない (同じ型への cast は陽性テストで恒等として通る)。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    unsafe "libc" "cast place" {
+        let b: *mut u8 = core.ptr.cast::<i32, u8>(core.ptr.from_mut(&mut x))
+        core.check.eq(core.ptr.read(b), 1u8)
+    }
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ptr_more_cast_place", src);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("can only be cast to the same type"), "{}", text(&r.stderr));
+}
+
+#[test]
+fn ptr_more_cast_without_type_argument_panics() {
+    // 戻り値の型注釈からは要素型を推論しない (インタプリタは型引数しか見ない)。誤った要素型で黙って読まないよう 101 で止まる。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    unsafe "libc" "cast without targs" {
+        let b: *mut u8 = core.ptr.cast(core.ptr.from_mut(&mut x))
+        core.check.eq(core.ptr.read(b), 1u8)
+    }
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ptr_more_cast_notarg", src);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("explicit type argument"), "{}", text(&r.stderr));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ptr_more_cast_reinterprets_c_memory_and_null_goes_to_c() {
+    // C が確保した i32 の領域を `cast::<i32, u8>` で読み替えると、リトルエンディアンのバイト列になる。
+    // `null_mut::<f64>()` は C へ 0 として渡る (C 側は n = 0 なので読まない)。
+    let src = r#"extern t.k_sum_f64(values: *const f64, n: usize) -> f64 link "k_sum_f64"
+
+extern t.k_alloc_i32(n: usize) -> *mut i32 link "k_alloc_i32"
+
+extern t.free_i32(pointer: *mut i32) -> () link "free"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let p = unsafe "libc" "allocate" {
+        t.k_alloc_i32(1usize)
+    }
+    unsafe "libc" "cast and read bytes" {
+        core.ptr.write(p, 67305985i32)
+        let b: *mut u8 = core.ptr.cast::<i32, u8>(p)
+        core.check.eq(core.ptr.read(b), 1u8)
+        core.check.eq(core.ptr.read(core.ptr.add(b, 1usize)), 2u8)
+        core.check.eq(core.ptr.read(core.ptr.add(b, 2usize)), 3u8)
+        core.check.eq(core.ptr.read(core.ptr.add(b, 3usize)), 4u8)
+        core.check.eq(core.ptr.read(core.ptr.cast::<u8, i32>(b)), 67305985i32)
+        t.free_i32(p)
+    }
+    unsafe "libc" "null to C" {
+        core.check.eq(t.k_sum_f64(core.ptr.null_mut::<f64>(), 0usize), 0.0f64)
+    }
+    std.io.print_line("cast ok")
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ptr_more_c_cast", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "cast ok\n");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ptr_more_place_pointer_cannot_be_passed_to_c() {
+    // from_mut の結果 (場所を指すポインタ) を extern に渡すと、アドレスが無いので実行時パニック (101)。
+    let src = r#"extern t.k_sum_i32(values: *const i32, n: usize) -> i32 link "k_sum_i32"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 5i32
+    unsafe "libc" "place to C" {
+        core.check.eq(t.k_sum_i32(core.ptr.as_const(core.ptr.from_mut(&mut x)), 1usize), 5i32)
+    }
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ptr_more_place_to_c", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("cannot be passed to C"), "{}", text(&r.stderr));
+}
