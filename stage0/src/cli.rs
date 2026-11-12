@@ -705,6 +705,7 @@ fn cmd_test(args: &[String]) -> i32 {
         .collect();
     tests.sort_by(|&a, &b| prog.defs[a].name.cmp(&prog.defs[b].name));
     let mut failed = 0;
+    let (mut n_native, mut n_bundle) = (0, 0);
     for ti in &tests {
         let name = prog.defs[*ti].name.clone();
         let mut results: Vec<Option<String>> = vec![];
@@ -735,7 +736,13 @@ fn cmd_test(args: &[String]) -> i32 {
             }
         }
         let suffix = if label.is_empty() { String::new() } else { format!(" ({})", label) };
-        if results.len() > 1 && results[0].is_none() != results[1].is_none() {
+        if other == "native" {
+            n_native += 1;
+        } else if other == "bundle" {
+            n_bundle += 1;
+        }
+        let disagree = results.len() > 1 && backends_disagree(&results[0], &results[1]);
+        if disagree {
             failed += 1;
             println!("test {} ... FAILED: interpreter and {} disagree: {}{}", name, other, py_opt_list(&results), suffix);
         } else if results.iter().all(|r| r.is_none()) {
@@ -746,7 +753,43 @@ fn cmd_test(args: &[String]) -> i32 {
         }
     }
     println!("\n{} passed; {} failed", tests.len() - failed, failed);
+    if both {
+        println!("compared with: native {}, bundle fallback {}", n_native, n_bundle);
+    }
     if failed > 0 { 1 } else { 0 }
+}
+
+/// 成否が違う、または両方失敗でも理由の分類が違えば不一致。
+fn backends_disagree(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (None, None) => false,
+        (Some(a), Some(b)) => fail_class(a) != fail_class(b),
+        _ => true,
+    }
+}
+
+/// 失敗理由を、バックエンドの文言の違いによらない分類にする。
+/// インタプリタは `attempt to add with overflow` / `assertion failed: left: .., right: ..`、機械語は
+/// `arithmetic overflow` / `assertion failed` と書く。文言を揃えずに分類で比べる (組み込みの文言を各所で変えるより小さい)。
+fn fail_class(msg: &str) -> String {
+    let m = msg.trim().trim_start_matches("panic: ");
+    if let Some(c) = m.strip_prefix("exit(").and_then(|r| r.strip_suffix(')')).or_else(|| m.strip_prefix("exit ")) {
+        return format!("exit {}", c);
+    }
+    let kind = if m.contains("overflow") {
+        "overflow"
+    } else if m.contains("assertion failed") {
+        "assert"
+    } else if m.contains("unwrap") || m.contains("expect") {
+        "unwrap"
+    } else if m.contains("by zero") {
+        "divide"
+    } else if m.contains("out of bounds") {
+        "index"
+    } else {
+        "other"
+    };
+    kind.to_string()
 }
 
 fn py_opt_list(rs: &[Option<String>]) -> String {
@@ -1755,5 +1798,30 @@ pub(crate) fn checked_program_for_test(root: &Path) -> Option<(Program, Vec<usiz
     match full_check(root, &mut rep, false) {
         Ok((_, Some(prog), user)) if !rep.fatal() => Some((prog, user)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod both_tests {
+    use super::*;
+    fn s(x: &str) -> Option<String> {
+        Some(x.to_string())
+    }
+    #[test]
+    fn both_failing_with_different_classes_disagree() {
+        // 文言が違っても分類が同じなら一致。
+        assert!(!backends_disagree(&s("attempt to add with overflow"), &s("panic: arithmetic overflow")));
+        assert!(!backends_disagree(&s("assertion failed: left: 1, right: 2"), &s("panic: assertion failed")));
+        assert!(!backends_disagree(&s("called `Option::unwrap()` on a `None` value"), &s("panic: called unwrap on a None or Err value")));
+        assert!(!backends_disagree(&s("attempt to divide by zero"), &s("panic: division by zero")));
+        // 両方失敗でも、分類が違えば不一致。
+        assert!(backends_disagree(&s("attempt to add with overflow"), &s("panic: assertion failed")));
+        assert!(backends_disagree(&s("assertion failed: left: 1, right: 2"), &s("panic: arithmetic overflow")));
+        assert!(backends_disagree(&s("called `Option::unwrap()` on a `None` value"), &s("panic: index out of bounds")));
+        assert!(backends_disagree(&s("exit(3)"), &s("exit 4")));
+        assert!(!backends_disagree(&s("exit(3)"), &s("exit 3")));
+        // 片方だけ失敗。
+        assert!(backends_disagree(&None, &s("panic: assertion failed")));
+        assert!(!backends_disagree(&None, &None));
     }
 }

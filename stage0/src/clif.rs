@@ -941,6 +941,15 @@ impl<'a> Cx<'a> {
         if is_float(recv_ty) && matches!(name, "sqrt" | "floor" | "ceil" | "trunc" | "abs" | "sin" | "cos" | "tan" | "exp" | "ln" | "atan2" | "powi") {
             return Some(recv_ty.to_string());
         }
+        if is_float(recv_ty) && matches!(name, "is_nan" | "is_finite") {
+            return Some("bool".into());
+        }
+        if is_float(recv_ty) && name == "to_bits" {
+            return Some(if recv_ty == "f32" { "u32" } else { "u64" }.into());
+        }
+        if recv_ty == "f64" && name == "nearest_to_f32" {
+            return Some("f32".into());
+        }
         // 浮動小数から整数への切り捨て変換 `x.trunc_to_i8()` などは `Option<i8>` を返す。
         // 128 ビット整数 (`i128` / `u128`) は未対応 (型が決まらないのでバックエンド全体をスキップ)。
         if is_float(recv_ty) {
@@ -2286,7 +2295,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if segs == ["std", "io", "print_line"] {
                     return self.cx.builtin_enum("Result", &["void".into(), "std.io.Error".into()]).ok();
                 }
-                if segs == ["core", "check", "eq"] || segs == ["core", "mem", "drop"] {
+                if segs == ["core", "check", "eq"] || segs == ["core", "check", "is_true"] || segs == ["core", "mem", "drop"] {
                     return Some("void".into());
                 }
                 self.funcs.get(&segs.join(".")).and_then(|d| self.call_ret_ty(d, None, items(&f[1]), env, expect))
@@ -4446,6 +4455,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     };
                     return self.make_variant(&t, idx, args, env);
                 }
+                if segs == ["core", "check", "is_true"] && args.len() == 1 {
+                    let (a, _) = self.expr(&args[0], env, Some("bool"))?;
+                    let ne = self.b.ins().bxor_imm(a.ok_or("bad operand")?, 1);
+                    self.guard(ne, "assertion failed")?;
+                    return Ok((None, "void".into()));
+                }
                 if segs == ["core", "check", "eq"] {
                     let t = self.ty_of(&args[0], env, None).or_else(|| self.ty_of(&args[1], env, None)).ok_or("operand type")?;
                     if t == "str" {
@@ -6184,6 +6199,23 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             };
             let r = if t == "f32" { self.b.ins().fdemote(types::F32, r) } else { r };
             return Ok(Some((Some(r), t)));
+        }
+        if is_float(&t) && matches!(name, "is_nan" | "is_finite" | "to_bits") || (t == "f64" && name == "nearest_to_f32") {
+            let (x, _) = self.expr(recv, env, Some(&t))?;
+            let x = x.ok_or("bad value")?;
+            return Ok(Some(match name {
+                "is_nan" => (Some(self.b.ins().fcmp(FloatCC::NotEqual, x, x)), "bool".to_string()),
+                "is_finite" => {
+                    let a = self.b.ins().fabs(x);
+                    let inf = if t == "f32" { self.b.ins().f32const(f32::INFINITY) } else { self.b.ins().f64const(f64::INFINITY) };
+                    (Some(self.b.ins().fcmp(FloatCC::LessThan, a, inf)), "bool".to_string())
+                }
+                "to_bits" => {
+                    let it = if t == "f32" { types::I32 } else { types::I64 };
+                    (Some(self.b.ins().bitcast(it, MemFlags::new(), x)), if t == "f32" { "u32" } else { "u64" }.to_string())
+                }
+                _ => (Some(self.b.ins().fdemote(types::F32, x)), "f32".to_string()),
+            }));
         }
         if is_float(&t) && matches!(name, "sqrt" | "floor" | "ceil" | "trunc" | "abs") {
             let (x, _) = self.expr(recv, env, Some(&t))?;
