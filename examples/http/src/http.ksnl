@@ -135,11 +135,11 @@ fn http.exchange(listener: &std.net.TcpListener, address: &str) -> Result<usize,
     let sent = http.client_send(&mut client, address)
     let served = match sent {
         Ok(_u) => http.server(&mut server)
-        Err(e) => Err(e)
+        Err(send_error) => Err(send_error)
     }
     let received = match served {
         Ok(_u) => http.client_receive(&mut client)
-        Err(e) => Err(e)
+        Err(serve_error) => Err(serve_error)
     }
     core.mem.drop(server.close())
     core.mem.drop(client.close())

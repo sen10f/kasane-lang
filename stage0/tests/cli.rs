@@ -5409,6 +5409,8 @@ end t.main
     fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "math ok\n", "{}", text(&o.stderr));
+}
+
 // ---- std.net (インタプリタ) ----
 
 /// ポート番号を `127.0.0.1:<port>` に整形する補助 (テスト用ソースの共通部分)。
@@ -5529,7 +5531,7 @@ fn std_net_checker_accepts_consumed_streams_and_rejects_dropped_ones() {
     let t = Tmp::new("net_linear_ok", good);
     let o = run(&["check", "--json"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
-    let bad = "fn t.f(addr: &str) -> Result<(), std.net.Error> uses [io.net] panics never\n    let _s = std.net.connect(addr)?\n    Ok(())\nend t.f\n\n\
+    let bad = "fn t.f(addr: &str) -> Result<(), std.net.Error> uses [io.net] panics never\n    let _s: std.net.TcpStream = std.net.connect(addr)?\n    Ok(())\nend t.f\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     let t = Tmp::new("net_linear_leak", bad);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
