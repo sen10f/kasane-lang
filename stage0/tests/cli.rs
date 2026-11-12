@@ -5919,3 +5919,132 @@ fn the_http_example_runs_natively_through_cranelift() {
     }
     let _ = fs::remove_dir_all(&cache);
 }
+
+// ---- 3.3: 名前の参照形。`check` はどちらの形も受け入れ、`fmt` が正規形にする。
+
+const SN_LIB: &str = "type t.lib.Item pub\n    n: u8 pub\nend t.lib.Item\n\nfn t.lib.make() -> t.lib.Item uses [] panics never pub\n    t.lib.Item { n: 1u8 }\nend t.lib.make\n";
+
+const SN_CANON: &str = "import t.lib\n\nfn t.get(x: &t.lib.Item) -> u8 uses [] panics never\n    x.n\nend t.get\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let item = lib.make()\n    let n = t.get(&item)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
+
+fn sn_pkg(name: &str, src: &str) -> Tmp {
+    let t = Tmp::new(name, src);
+    fs::create_dir_all(t.0.join("src/t")).unwrap();
+    fs::write(t.0.join("src/t/lib.ksnl"), SN_LIB).unwrap();
+    t
+}
+
+fn sn_main(t: &Tmp) -> String {
+    text(&fs::read(t.0.join("src/t.ksnl")).unwrap())
+}
+
+/// 非正規形のソースが check を通り、fmt で期待の正規形になり、冪等で、正規形が check / fmt --check を通る。
+fn sn_roundtrip(name: &str, src: &str, want: &str) {
+    let t = sn_pkg(name, src);
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}: check: {}{}", name, text(&c.stdout), text(&c.stderr));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(1), "{}: fmt --check must report a diff", name);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0), "{}", name);
+    assert_eq!(sn_main(&t), want, "{}: fmt result", name);
+    let again = run(&["fmt"], &t.0);
+    assert_eq!(sn_main(&t), want, "{}: fmt must be idempotent", name);
+    assert!(!text(&again.stdout).contains("reformatted"), "{}", text(&again.stdout));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}: canonical form must pass check", name);
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", name);
+}
+
+#[test]
+fn short_names_canonical_source_passes() {
+    let t = sn_pkg("sn_canon", SN_CANON);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn short_form_of_an_imported_type_in_a_header_is_accepted_and_fmt_makes_it_fqn() {
+    let src = SN_CANON.replace("x: &t.lib.Item", "x: &lib.Item");
+    sn_roundtrip("sn_hdr_short", &src, SN_CANON);
+}
+
+#[test]
+fn fqn_of_an_imported_module_in_a_body_is_accepted_and_fmt_shortens_it() {
+    let src = SN_CANON.replace("lib.make()", "t.lib.make()");
+    sn_roundtrip("sn_body_fqn", &src, SN_CANON);
+    // 型注釈・構造体リテラルの中でも短縮される。
+    let src = SN_CANON.replace("let item = lib.make()", "let item: t.lib.Item = t.lib.Item { n: 2u8 }");
+    let want = SN_CANON.replace("let item = lib.make()", "let item: lib.Item = lib.Item { n: 2u8 }");
+    sn_roundtrip("sn_body_fqn_ty", &src, &want);
+}
+
+#[test]
+fn an_import_used_only_through_a_header_is_accepted_and_fmt_removes_it() {
+    let hdr = "fn t.get(x: &lib.Item) -> u8 uses [] panics never\n    x.n\nend t.get\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let want = "fn t.get(x: &t.lib.Item) -> u8 uses [] panics never\n    x.n\nend t.get\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    sn_roundtrip("sn_hdr_only_short", &format!("import t.lib\n\n{}", hdr), want);
+    // ヘッダの FQN だけが参照する import も、check は未使用にせず、fmt が外す。
+    sn_roundtrip("sn_hdr_only_fqn", &format!("import t.lib\n\n{}", want), want);
+}
+
+#[test]
+fn both_forms_together_and_an_unrelated_unused_import_is_still_reported() {
+    let src = SN_CANON.replace("x: &t.lib.Item", "x: &lib.Item").replace("lib.make()", "t.lib.make()");
+    sn_roundtrip("sn_both", &src, SN_CANON);
+    // 何からも参照されない import は E1020 のまま (fmt は意味の誤りを隠さない)。
+    let none = "import t.lib\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = sn_pkg("sn_unused", none);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).contains(&"E1020".to_string()), "{}", text(&o.stdout));
+    run(&["fmt"], &t.0);
+    assert_eq!(sn_main(&t), none);
+}
+
+#[test]
+fn fqn_of_a_module_that_is_not_imported_stays_as_it_is() {
+    let src = SN_CANON.replace("import t.lib\n\n", "").replace("lib.make()", "t.lib.make()");
+    let t = sn_pkg("sn_not_imported", &src);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+    run(&["fmt"], &t.0);
+    assert_eq!(sn_main(&t), src);
+}
+
+#[test]
+fn a_header_short_form_needs_its_import_and_a_local_binding_keeps_its_meaning() {
+    // import なしの短縮形は未定義の型。
+    let src = SN_CANON.replace("import t.lib\n\n", "").replace("x: &t.lib.Item", "x: &lib.Item").replace("lib.make()", "t.lib.make()");
+    let t = sn_pkg("sn_no_import", &src);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).contains(&"E1102".to_string()), "{}", text(&o.stdout));
+    // import 末尾名と同名の局所束縛はシャドーイング (E1021)。header / 本体で解決が分かれることはない。
+    let src = SN_CANON.replace("let n = t.get(&item)", "let lib = t.get(&item)\n    let n = lib");
+    let t = sn_pkg("sn_shadow", &src);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).contains(&"E1021".to_string()), "{}", text(&o.stdout));
+}
+
+#[test]
+fn imports_with_the_same_last_segment_stay_an_error_in_both_forms() {
+    let t = Tmp::new("sn_collide", "import t.a.util\nimport t.b.util\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n");
+    fs::create_dir_all(t.0.join("src/t/a")).unwrap();
+    fs::create_dir_all(t.0.join("src/t/b")).unwrap();
+    let f = |m: &str| format!("fn t.{m}.util.f() -> u8 uses [] panics never\n    1u8\nend t.{m}.util.f\n");
+    fs::write(t.0.join("src/t/a/util.ksnl"), f("a")).unwrap();
+    fs::write(t.0.join("src/t/b/util.ksnl"), f("b")).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).contains(&"E1111".to_string()), "{}", text(&o.stdout));
+}
+
+#[test]
+fn name_tools_work_on_non_canonical_source() {
+    let src = SN_CANON.replace("x: &t.lib.Item", "x: &lib.Item").replace("lib.make()", "t.lib.make()");
+    let t = sn_pkg("sn_tools", &src);
+    let g = run(&["get", "t.get"], &t.0);
+    assert_eq!(g.status.code(), Some(0), "{}", text(&g.stderr));
+    assert!(text(&g.stdout).contains("fn t.get("), "{}", text(&g.stdout));
+    let s = run(&["sig", "t.get"], &t.0);
+    assert_eq!(s.status.code(), Some(0), "{}", text(&s.stderr));
+    let r = run(&["refs", "t.lib.make"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert!(text(&r.stdout).contains("t.main"), "{}", text(&r.stdout));
+    let c = run(&["context", "t.main"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}", text(&c.stderr));
+}

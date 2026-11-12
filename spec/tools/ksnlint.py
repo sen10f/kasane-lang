@@ -458,7 +458,8 @@ class Lint:
             if it['kw'] != 'import':
                 continue
             tail = it['name'].split('.')[-1]
-            if not re.search(r'(?<![A-Za-z0-9_.])' + re.escape(tail) + r'\.', text):
+            # 3.3: 短縮形でも FQN でも、ヘッダでも本体でも、参照があれば使用済み。
+            if not any(re.search(r'(?<![A-Za-z0-9_.])' + re.escape(n) + r'\.', text) for n in (tail, it['name'])):
                 self.err('unused', it['line'] + 1, f'unused import {it["name"]}')
 
     def check_pub(self, items):
