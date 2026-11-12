@@ -28,9 +28,11 @@ pub enum Ty {
     Usize,
     Bool,
     Unit,
+    /// 生のアドレス (ヒープ・フレーム・静的領域の先頭)。`ptr` と書く。算術と比較はしない (値は 0 が null)。
+    Ptr,
 }
 
-const ALL_TYS: [Ty; 12] = [
+const ALL_TYS: [Ty; 13] = [
     Ty::I8,
     Ty::I16,
     Ty::I32,
@@ -43,6 +45,7 @@ const ALL_TYS: [Ty; 12] = [
     Ty::Usize,
     Ty::Bool,
     Ty::Unit,
+    Ty::Ptr,
 ];
 
 impl Ty {
@@ -60,6 +63,7 @@ impl Ty {
             Ty::Usize => "usize",
             Ty::Bool => "bool",
             Ty::Unit => "unit",
+            Ty::Ptr => "ptr",
         }
     }
 
@@ -68,7 +72,7 @@ impl Ty {
     }
 
     pub fn is_int(self) -> bool {
-        !matches!(self, Ty::Bool | Ty::Unit)
+        !matches!(self, Ty::Bool | Ty::Unit | Ty::Ptr)
     }
 
     pub fn signed(self) -> bool {
@@ -189,6 +193,24 @@ pub enum Op {
     Bool(BoolOp, VId, VId),
     /// 直接呼び出し (単相インスタンスの鍵で指す)。
     Call { callee: String, args: Vec<VId> },
+    /// フレームの領域 (`size` バイト、0 にはしない)。関数が戻るときに解放される。結果は `ptr`。
+    FrameBytes { size: u32 },
+    /// 静的な読み取り専用のバイト列の先頭。結果は `ptr`。同じ命令は常に同じアドレスを返す。
+    StaticBytes(Vec<u8>),
+    /// `p + off` (`off` は usize の値。境界は見ない)。結果は `ptr`。
+    PtrAdd { p: VId, off: VId },
+    /// `p + off` から `Inst::ty` の幅で読む (リトルエンディアン)。
+    MemLoad { p: VId, off: u32 },
+    /// `p + off` へ `v` (型 `ty`) を書く。結果は unit。
+    MemStore { ty: Ty, p: VId, off: u32, v: VId },
+    /// ヒープの確保 (`size` バイト、usize の値)。結果は `ptr`。`uses [alloc]` の関数だけ。
+    HeapAlloc(VId),
+    /// ヒープの再確保: 先頭 `min(旧, 新)` バイトを複写して旧い領域を解放する。`p` が `null` なら `malloc` と同じ。結果は `ptr`。`uses [alloc]` のみ。
+    HeapRealloc { p: VId, size: VId },
+    /// 解放。`null` (0) は何もしない。結果は unit。
+    HeapFree(VId),
+    /// 添字の境界検査: `i < len` でなければ panic (文言は木走査の添字と同じ)。結果は unit。`panics may` のときだけ。
+    IndexCheck { i: VId, len: VId },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -328,6 +350,22 @@ fn fmt_inst(i: &Inst) -> String {
             format!("{}.bool {}", n, fmt_vals(&[*a, *b]))
         }
         Op::Call { callee, args } => format!("call {}({})", callee, fmt_vals(args)),
+        Op::FrameBytes { size } => format!("frame.bytes {}", size),
+        Op::StaticBytes(bytes) => {
+            let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+            if hex.is_empty() {
+                "static.bytes".to_string()
+            } else {
+                format!("static.bytes {}", hex)
+            }
+        }
+        Op::PtrAdd { p, off } => format!("ptr.add {}, {}", fmt_val(*p), fmt_val(*off)),
+        Op::MemLoad { p, off } => format!("mem.load.{} {} +{}", i.ty.name(), fmt_val(*p), off),
+        Op::MemStore { ty, p, off, v } => format!("mem.store.{} {} +{}, {}", ty.name(), fmt_val(*p), off, fmt_val(*v)),
+        Op::HeapAlloc(n) => format!("heap.alloc {}", fmt_val(*n)),
+        Op::HeapRealloc { p, size } => format!("heap.realloc {}, {}", fmt_val(*p), fmt_val(*size)),
+        Op::HeapFree(p) => format!("heap.free {}", fmt_val(*p)),
+        Op::IndexCheck { i, len } => format!("index.check {}, {}", fmt_val(*i), fmt_val(*len)),
     };
     format!("%{}: {} = {}", i.dst, i.ty.name(), body)
 }
@@ -468,6 +506,7 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
                 (Ty::Bool, "true") => 1,
                 (Ty::Bool, "false") => 0,
                 (Ty::Unit, "()") => 0,
+                (Ty::Ptr, x) => x.parse::<i128>().map_err(|_| perr(line, format!("ポインタの定数 {} が不正", x)))?,
                 (t, x) if t.is_int() => x.parse::<i128>().map_err(|_| perr(line, format!("整数 {} が不正", x)))?,
                 _ => return Err(perr(line, format!("型 {} の定数 {} が不正", ty.name(), rest))),
             };
@@ -499,8 +538,58 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             let mode = if *m == "wrap" { Mode::Wrap } else { Mode::Trap };
             Ok(Op::Arith { op: parse_aop(name).unwrap(), mode, a: v[0], b: v[1] })
         }
+        ("frame", ["bytes"]) if ty == Ty::Ptr => {
+            let n = rest.trim().parse::<u32>().map_err(|_| perr(line, format!("frame.bytes の大きさ {} が不正", rest)))?;
+            Ok(Op::FrameBytes { size: n })
+        }
+        ("static", ["bytes"]) if ty == Ty::Ptr => {
+            let t = rest.trim();
+            if t.len() % 2 != 0 {
+                return Err(perr(line, "static.bytes の 16 進数が奇数長"));
+            }
+            let bytes: Result<Vec<u8>, String> = (0..t.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&t[i..i + 2], 16).map_err(|_| perr(line, format!("static.bytes の 16 進数 {} が不正", t))))
+                .collect();
+            Ok(Op::StaticBytes(bytes?))
+        }
+        ("ptr", ["add"]) if ty == Ty::Ptr => {
+            let v = operands(2)?;
+            Ok(Op::PtrAdd { p: v[0], off: v[1] })
+        }
+        ("mem", ["load", t]) => {
+            same_ty(t)?;
+            let (p, off) = parse_mem(rest, line)?;
+            Ok(Op::MemLoad { p, off })
+        }
+        ("mem", ["store", t]) => {
+            let vty = parse_ty(t, line)?;
+            if ty != Ty::Unit {
+                return Err(perr(line, "mem.store の結果は unit のはず"));
+            }
+            let (m, v) = rest.split_once(',').ok_or_else(|| perr(line, "mem.store に , がない"))?;
+            let (p, off) = parse_mem(m, line)?;
+            Ok(Op::MemStore { ty: vty, p, off, v: parse_val(v, line)? })
+        }
+        ("heap", ["free"]) if ty == Ty::Unit => Ok(Op::HeapFree(parse_val(rest, line)?)),
+        ("heap", ["alloc"]) if ty == Ty::Ptr => Ok(Op::HeapAlloc(parse_val(rest, line)?)),
+        ("heap", ["realloc"]) if ty == Ty::Ptr => {
+            let v = operands(2)?;
+            Ok(Op::HeapRealloc { p: v[0], size: v[1] })
+        }
+        ("index", ["check"]) if ty == Ty::Unit => {
+            let v = operands(2)?;
+            Ok(Op::IndexCheck { i: v[0], len: v[1] })
+        }
         _ => Err(perr(line, format!("命令 {} が不明", head))),
     }
+}
+
+/// `%p +off` (メモリの番地) を読む。
+fn parse_mem(s: &str, line: usize) -> Result<(VId, u32), String> {
+    let (p, off) = s.trim().split_once(" +").ok_or_else(|| perr(line, format!("番地 {} が %p +off の形でない", s)))?;
+    let off = off.trim().parse::<u32>().map_err(|_| perr(line, format!("オフセット {} が不正", off)))?;
+    Ok((parse_val(p, line)?, off))
 }
 
 fn parse_inst(line_no: usize, text: &str) -> Result<Inst, String> {
@@ -697,7 +786,11 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
         for i in &b.insts {
             let res = (|| -> Result<(), String> {
                 match &i.op {
-                    Op::Const(_) => {}
+                    Op::Const(v) => {
+                        if i.ty == Ty::Ptr && *v != 0 {
+                            return Err("ポインタの定数は null (0) だけ".into());
+                        }
+                    }
                     Op::Arith { op, mode, a, b } => {
                         if !i.ty.is_int() {
                             return Err(format!("算術の結果の型 {} は整数ではない", i.ty.name()));
@@ -716,7 +809,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if i.ty != Ty::Bool {
                             return Err("比較の結果は bool のはず".into());
                         }
-                        if *ty == Ty::Unit || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
+                        if *ty == Ty::Unit || *ty == Ty::Ptr || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
                             return Err(format!("型 {} の比較 {} は使えない", ty.name(), cc.name()));
                         }
                         if ty_of(*a)? != *ty || ty_of(*b)? != *ty {
@@ -742,6 +835,60 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                     Op::Bool(_, a, b) => {
                         if i.ty != Ty::Bool || ty_of(*a)? != Ty::Bool || ty_of(*b)? != Ty::Bool {
                             return Err("論理演算は bool のはず".into());
+                        }
+                    }
+                    Op::FrameBytes { size } => {
+                        if i.ty != Ty::Ptr || *size == 0 {
+                            return Err("frame.bytes は ptr の型で、大きさは 1 以上のはず".into());
+                        }
+                    }
+                    Op::StaticBytes(_) => {
+                        if i.ty != Ty::Ptr {
+                            return Err("static.bytes は ptr の型のはず".into());
+                        }
+                    }
+                    Op::PtrAdd { p, off } => {
+                        if i.ty != Ty::Ptr || ty_of(*p)? != Ty::Ptr || ty_of(*off)? != Ty::Usize {
+                            return Err("ptr.add は ptr と usize の被演算子のはず".into());
+                        }
+                    }
+                    Op::MemLoad { p, .. } => {
+                        if i.ty == Ty::Unit || ty_of(*p)? != Ty::Ptr {
+                            return Err("load は ptr から読むはず (結果は unit 以外)".into());
+                        }
+                    }
+                    Op::MemStore { ty, p, v, .. } => {
+                        if i.ty != Ty::Unit || *ty == Ty::Unit || ty_of(*p)? != Ty::Ptr || ty_of(*v)? != *ty {
+                            return Err("store の型が合わない".into());
+                        }
+                    }
+                    Op::HeapAlloc(n) => {
+                        if i.ty != Ty::Ptr || ty_of(*n)? != Ty::Usize {
+                            return Err("malloc は usize の大きさで、結果は ptr のはず".into());
+                        }
+                        if !f.uses.iter().any(|u| u == "alloc") {
+                            return Err("確保 (malloc) は uses [alloc] の関数だけ".into());
+                        }
+                    }
+                    Op::HeapRealloc { p, size } => {
+                        if i.ty != Ty::Ptr || ty_of(*p)? != Ty::Ptr || ty_of(*size)? != Ty::Usize {
+                            return Err("realloc は ptr と usize の被演算子のはず".into());
+                        }
+                        if !f.uses.iter().any(|u| u == "alloc") {
+                            return Err("再確保 (realloc) は uses [alloc] の関数だけ".into());
+                        }
+                    }
+                    Op::HeapFree(p) => {
+                        if i.ty != Ty::Unit || ty_of(*p)? != Ty::Ptr {
+                            return Err("free は ptr を解放するはず".into());
+                        }
+                    }
+                    Op::IndexCheck { i: ix, len } => {
+                        if !f.may_panic {
+                            return Err("panics never の関数に添字の境界検査".into());
+                        }
+                        if i.ty != Ty::Unit || ty_of(*ix)? != Ty::Usize || ty_of(*len)? != Ty::Usize {
+                            return Err("添字の境界検査は usize の被演算子のはず".into());
                         }
                     }
                     Op::Call { callee, args } => {
@@ -799,7 +946,13 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
 
 fn operands(op: &Op) -> Vec<VId> {
     match op {
-        Op::Const(_) => vec![],
+        Op::Const(_) | Op::FrameBytes { .. } | Op::StaticBytes(_) => vec![],
+        Op::PtrAdd { p, off } => vec![*p, *off],
+        Op::MemLoad { p, .. } | Op::HeapFree(p) => vec![*p],
+        Op::HeapAlloc(n) => vec![*n],
+        Op::HeapRealloc { p, size } => vec![*p, *size],
+        Op::MemStore { p, v, .. } => vec![*p, *v],
+        Op::IndexCheck { i, len } => vec![*i, *len],
         Op::Arith { a, b, .. } | Op::Cmp { a, b, .. } | Op::Bool(_, a, b) => vec![*a, *b],
         Op::Neg { a } | Op::Not(a) => vec![*a],
         Op::Call { args, .. } => args.clone(),
@@ -821,6 +974,29 @@ pub fn verify_module(m: &Module) -> Vec<(String, String)> {
     }
     out
 }
+
+/// 記憶域の命令を全部使う関数 (確保・格納・読み出し・再確保・解放・境界検査・フレームの領域・静的な領域)。
+#[cfg(test)]
+pub(crate) const MEM_TEXT: &str = "kir 1
+
+fn t.mem key=t.mem uses=[alloc] panics=may stack=- ret=u64
+  b0():
+    %0: usize = const.usize 16
+    %1: ptr = heap.alloc %0
+    %2: u64 = const.u64 77
+    %3: unit = mem.store.u64 %1 +8, %2
+    %4: ptr = heap.realloc %1, %0
+    %5: u64 = mem.load.u64 %4 +8
+    %6: usize = const.usize 3
+    %7: unit = index.check %6, %0
+    %8: ptr = frame.bytes 24
+    %9: ptr = static.bytes 6869
+    %10: ptr = ptr.add %9, %6
+    %11: unit = mem.store.ptr %8 +0, %10
+    %12: unit = heap.free %4
+    ret %5
+end t.mem
+";
 
 #[cfg(test)]
 mod tests {
@@ -882,6 +1058,30 @@ mod tests {
     #[test]
     fn parse_rejects_other_versions() {
         assert!(parse_module("kir 2\n").is_err());
+    }
+
+
+    #[test]
+    fn memory_ops_print_parse_and_verify() {
+        let m = parse_module(MEM_TEXT).expect("parse");
+        assert_eq!(print_module(&m), MEM_TEXT);
+        assert!(verify_module(&m).is_empty(), "{:?}", verify_module(&m));
+    }
+
+    #[test]
+    fn memory_ops_are_checked_by_effects_and_types() {
+        // 確保は uses [alloc] の関数だけ
+        let no_alloc = MEM_TEXT.replace("uses=[alloc]", "uses=[]");
+        let errs = verify_module(&parse_module(&no_alloc).expect("parse"));
+        assert!(errs.iter().any(|(_, e)| e.contains("uses [alloc]")), "{:?}", errs);
+        // 境界検査は panics may の関数だけ
+        let never = MEM_TEXT.replace("panics=may", "panics=never").replace("uses=[alloc]", "uses=[alloc]");
+        let errs = verify_module(&parse_module(&never).expect("parse"));
+        assert!(errs.iter().any(|(_, e)| e.contains("境界検査")), "{:?}", errs);
+        // 格納の型と値の型が合わない
+        let bad = MEM_TEXT.replace("store.u64 %1 +8, %2", "store.u32 %1 +8, %2");
+        let errs = verify_module(&parse_module(&bad).expect("parse"));
+        assert!(errs.iter().any(|(_, e)| e.contains("store")), "{:?}", errs);
     }
 
     #[test]

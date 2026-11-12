@@ -13,6 +13,7 @@ mod fmath;
 mod kir;
 mod kir_exec;
 mod kir_lower;
+mod kir_lower_coll;
 mod fmt;
 mod grammar;
 mod lint;

@@ -14,9 +14,10 @@ use crate::check::{is_nil, items, nf, nline, nname, st, strs};
 use crate::kir::{self, Aop, Block, BoolOp, Cc, Func, Inst, Mode, Module, Op, Term, Ty, VId};
 use crate::parser::{nid, V};
 use crate::program::{Def, Program, Target as Tgt};
+use crate::kir_lower_coll::{self as coll, CollCx};
 use crate::types::{from_v, ExprTy, Ty as Src, TypeCk};
 
-type LR<T> = Result<T, String>;
+pub(crate) type LR<T> = Result<T, String>;
 
 /// 下ろしの結果: 対象になった関数と、未対応の関数 (鍵, 理由)。
 pub struct Lowered {
@@ -41,7 +42,7 @@ fn is_candidate(d: &Def) -> bool {
 }
 
 /// 推論済みの型を段階 1 の型へ写す。対象外の型は `None`。
-fn conv(t: &Src) -> Option<Ty> {
+pub(crate) fn conv(t: &Src) -> Option<Ty> {
     match t {
         Src::Prim(s) => Ty::parse(s).filter(|t| *t != Ty::Unit),
         Src::Unit => Some(Ty::Unit),
@@ -93,44 +94,48 @@ fn path1(v: &V) -> Option<String> {
 }
 
 /// 文の結果。`Div` は制御がそこで終わった (以降は到達しない) ことを表す。
-enum St {
+pub(crate) enum St {
     Div,
     Unit,
     Val(VId),
 }
 
-struct BlockB {
-    params: Vec<(VId, Ty)>,
-    insts: Vec<Inst>,
-    term: Option<Term>,
+pub(crate) struct BlockB {
+    pub(crate) params: Vec<(VId, Ty)>,
+    pub(crate) insts: Vec<Inst>,
+    pub(crate) term: Option<Term>,
     /// この block へ入る辺の数 (0 なら到達しない)。
-    preds: usize,
+    pub(crate) preds: usize,
 }
 
-struct LoopCx {
-    header: usize,
-    exit: usize,
-    slots: Vec<usize>,
+pub(crate) struct LoopCx {
+    pub(crate) header: usize,
+    pub(crate) exit: usize,
+    pub(crate) slots: Vec<usize>,
+    /// break / continue が後始末する最初のスコープの番号 (これより内側の所有値を解放する)。
+    pub(crate) depth: usize,
 }
 
-struct Lw<'a> {
-    p: &'a Program,
-    tys: &'a BTreeMap<(String, u32), ExprTy>,
-    def: &'a Def,
-    blocks: Vec<BlockB>,
-    cur: Option<usize>,
+pub(crate) struct Lw<'a> {
+    pub(crate) p: &'a Program,
+    pub(crate) tys: &'a BTreeMap<(String, u32), ExprTy>,
+    pub(crate) def: &'a Def,
+    pub(crate) blocks: Vec<BlockB>,
+    pub(crate) cur: Option<usize>,
     /// 値番号 → 型 (VId は 0 から順に振る)。
-    vty: Vec<Ty>,
+    pub(crate) vty: Vec<Ty>,
     /// スロット → (現在の値, 型)。
-    slots: Vec<(VId, Ty)>,
-    scopes: Vec<Vec<(String, usize)>>,
-    loops: Vec<LoopCx>,
-    callees: BTreeSet<String>,
-    ret: Ty,
+    pub(crate) slots: Vec<(VId, Ty)>,
+    pub(crate) scopes: Vec<Vec<(String, usize)>>,
+    pub(crate) loops: Vec<LoopCx>,
+    pub(crate) callees: BTreeSet<String>,
+    pub(crate) ret: Ty,
+    /// コレクション・文字列・クロージャの下ろし (kir_lower_coll.rs) の状態。
+    pub(crate) coll: CollCx,
 }
 
 impl<'a> Lw<'a> {
-    fn new(p: &'a Program, tys: &'a BTreeMap<(String, u32), ExprTy>, def: &'a Def) -> Lw<'a> {
+    pub(crate) fn new(p: &'a Program, tys: &'a BTreeMap<(String, u32), ExprTy>, def: &'a Def) -> Lw<'a> {
         Lw {
             p,
             tys,
@@ -143,22 +148,23 @@ impl<'a> Lw<'a> {
             loops: vec![],
             callees: BTreeSet::new(),
             ret: Ty::Unit,
+            coll: CollCx::default(),
         }
     }
 
     // ------------------------------------------------ 基本操作
 
-    fn err<T>(&self, line: usize, msg: impl Into<String>) -> LR<T> {
+    pub(crate) fn err<T>(&self, line: usize, msg: impl Into<String>) -> LR<T> {
         Err(format!("行 {}: {}", line, msg.into()))
     }
 
-    fn new_val(&mut self, t: Ty) -> VId {
+    pub(crate) fn new_val(&mut self, t: Ty) -> VId {
         self.vty.push(t);
         (self.vty.len() - 1) as VId
     }
 
     /// ブロックを作る。引数の値番号も返す。
-    fn new_block(&mut self, params: &[Ty]) -> (usize, Vec<VId>) {
+    pub(crate) fn new_block(&mut self, params: &[Ty]) -> (usize, Vec<VId>) {
         let ids: Vec<VId> = params.iter().map(|t| self.new_val(*t)).collect();
         let ps = ids.iter().copied().zip(params.iter().copied()).collect();
         self.blocks.push(BlockB { params: ps, insts: vec![], term: None, preds: 0 });
@@ -166,48 +172,48 @@ impl<'a> Lw<'a> {
     }
 
     /// 現在のブロックに命令を置く。`cur` が無いのは下ろしの不変条件の違反なので、ここでは止める。
-    fn emit(&mut self, ty: Ty, op: Op) -> VId {
+    pub(crate) fn emit(&mut self, ty: Ty, op: Op) -> VId {
         let v = self.new_val(ty);
         let cur = self.cur.expect("KIR 下ろしの内部不変条件: 到達しないブロックへ命令を置いた");
         self.blocks[cur].insts.push(Inst { dst: v, ty, op });
         v
     }
 
-    fn unit(&mut self) -> VId {
+    pub(crate) fn unit(&mut self) -> VId {
         self.emit(Ty::Unit, Op::Const(0))
     }
 
-    fn terminate(&mut self, t: Term) {
+    pub(crate) fn terminate(&mut self, t: Term) {
         let cur = self.cur.take().expect("KIR 下ろしの内部不変条件: 終端命令を二重に置いた");
         self.blocks[cur].term = Some(t);
     }
 
-    fn goto(&mut self, t: usize, args: Vec<VId>) {
+    pub(crate) fn goto(&mut self, t: usize, args: Vec<VId>) {
         self.blocks[t].preds += 1;
         self.terminate(Term::Br((t, args)));
     }
 
-    fn branch(&mut self, c: VId, a: (usize, Vec<VId>), b: (usize, Vec<VId>)) {
+    pub(crate) fn branch(&mut self, c: VId, a: (usize, Vec<VId>), b: (usize, Vec<VId>)) {
         self.blocks[a.0].preds += 1;
         self.blocks[b.0].preds += 1;
         self.terminate(Term::BrIf(c, a, b));
     }
 
-    fn vty(&self, v: VId) -> Ty {
+    pub(crate) fn vty(&self, v: VId) -> Ty {
         self.vty[v as usize]
     }
 
-    fn new_slot(&mut self, v: VId, t: Ty) -> usize {
+    pub(crate) fn new_slot(&mut self, v: VId, t: Ty) -> usize {
         self.slots.push((v, t));
         self.slots.len() - 1
     }
 
-    fn bind(&mut self, name: &str, v: VId, t: Ty) {
+    pub(crate) fn bind(&mut self, name: &str, v: VId, t: Ty) {
         let s = self.new_slot(v, t);
         self.scopes.last_mut().expect("スコープ").push((name.to_string(), s));
     }
 
-    fn lookup(&self, name: &str) -> Option<usize> {
+    pub(crate) fn lookup(&self, name: &str) -> Option<usize> {
         for sc in self.scopes.iter().rev() {
             if let Some((_, s)) = sc.iter().rev().find(|(n, _)| n == name) {
                 return Some(*s);
@@ -216,12 +222,12 @@ impl<'a> Lw<'a> {
         None
     }
 
-    fn vals_of(&self, slots: &[usize]) -> Vec<VId> {
+    pub(crate) fn vals_of(&self, slots: &[usize]) -> Vec<VId> {
         slots.iter().map(|s| self.slots[*s].0).collect()
     }
 
     /// 木の中で代入される (現在の有効範囲で見える) スロットを、出現順に集める。
-    fn assigned(&self, nodes: &[&V]) -> Vec<usize> {
+    pub(crate) fn assigned(&self, nodes: &[&V]) -> Vec<usize> {
         let mut names = vec![];
         for n in nodes {
             scan_assigns(n, &mut names);
@@ -239,7 +245,7 @@ impl<'a> Lw<'a> {
 
     // ------------------------------------------------ 型表
 
-    fn src_ty(&self, e: &V) -> LR<Src> {
+    pub(crate) fn src_ty(&self, e: &V) -> LR<Src> {
         let line = nline(e);
         let id = nid(e);
         match self.tys.get(&(self.def.name.clone(), id)) {
@@ -249,8 +255,18 @@ impl<'a> Lw<'a> {
     }
 
     /// 式の型 (段階 1 の型)。対象外・未確定なら理由付きで止める。
-    fn ty_of(&self, e: &V) -> LR<Ty> {
-        let t = self.src_ty(e)?;
+    pub(crate) fn ty_of(&self, e: &V) -> LR<Ty> {
+        // 型表が未確定の局所変数 (`for` の変数など) は、スロットの型で補う。
+        let t = match self.src_ty(e) {
+            Ok(t) if t != Src::Unknown => t,
+            r => match coll::local_slot_ty(self, e) {
+                Some(x) => return Ok(x),
+                None => r?,
+            },
+        };
+        if let Some(x) = coll::value_ty(&t) {
+            return Ok(x);
+        }
         match conv(&t) {
             Some(x) => Ok(x),
             None => self.err(nline(e), format!("型 {} は段階 1 の対象外", show(&t))),
@@ -259,7 +275,7 @@ impl<'a> Lw<'a> {
 
     // ------------------------------------------------ 関数全体
 
-    fn lower(mut self) -> LR<(Func, BTreeSet<String>)> {
+    pub(crate) fn lower(mut self) -> LR<Vec<(Func, BTreeSet<String>)>> {
         let d = self.def;
         let gn = HashSet::new();
         let body = d.body.as_ref().expect("候補は本体を持つ");
@@ -295,11 +311,12 @@ impl<'a> Lw<'a> {
         let mut uses = d.uses.clone();
         uses.sort();
         uses.dedup();
-        let blocks = self
+        let mut blocks: Vec<Block> = self
             .blocks
             .into_iter()
             .map(|b| Block { params: b.params, insts: b.insts, term: b.term.unwrap_or(Term::Unreachable) })
             .collect();
+        coll::finish(&mut blocks, std::mem::take(&mut self.coll.allocas));
         let f = Func {
             fqn: d.name.clone(),
             key: d.name.clone(),
@@ -309,13 +326,15 @@ impl<'a> Lw<'a> {
             ret,
             blocks,
         };
-        Ok((f, self.callees))
+        let mut out = std::mem::take(&mut self.coll.extra);
+        out.insert(0, (f, self.callees));
+        Ok(out)
     }
 
     // ------------------------------------------------ 式
 
     /// 式を下ろす。`None` は制御がその先へ進まないこと (return / break / continue など) を表す。
-    fn expr(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn expr(&mut self, e: &V) -> LR<Option<VId>> {
         match nname(e) {
             "Lit" => self.lit(e).map(Some),
             "Path" => self.path_val(e).map(Some),
@@ -330,11 +349,14 @@ impl<'a> Lw<'a> {
             "Break" => self.jump_loop(e, true),
             "Continue" => self.jump_loop(e, false),
             "Return" => self.ret_(e),
+            "Index" => coll::index_read(self, e),
+            "For" => coll::for_expr(self, e),
+            "Closure" => coll::closure_lit(self, e),
             other => self.err(nline(e), format!("式 {} は段階 1 の対象外", other)),
         }
     }
 
-    fn lit(&mut self, e: &V) -> LR<VId> {
+    pub(crate) fn lit(&mut self, e: &V) -> LR<VId> {
         let f = nf(e);
         let line = nline(e);
         match st(&f[0]).as_str() {
@@ -354,15 +376,17 @@ impl<'a> Lw<'a> {
                 Ok(self.emit(Ty::Bool, Op::Const(b as i128)))
             }
             "unit" => Ok(self.unit()),
+            "str" => coll::str_lit(self, e),
             other => self.err(line, format!("リテラル {} は段階 1 の対象外", other)),
         }
     }
 
-    fn path_val(&mut self, e: &V) -> LR<VId> {
+    pub(crate) fn path_val(&mut self, e: &V) -> LR<VId> {
         let segs = strs(&nf(e)[0]);
         let line = nline(e);
         if segs.len() == 1 {
             if let Some(s) = self.lookup(&segs[0]) {
+                coll::check_value_use(self, s, line)?;
                 return Ok(self.slots[s].0);
             }
         }
@@ -376,7 +400,7 @@ impl<'a> Lw<'a> {
     }
 
     /// 整数か bool のリテラルで書かれた定数 (`const f.N: u64 = 27u64`) だけを値として扱う。
-    fn const_val(&mut self, ci: usize, e: &V) -> LR<VId> {
+    pub(crate) fn const_val(&mut self, ci: usize, e: &V) -> LR<VId> {
         let c = &self.p.defs[ci];
         let ty = self.ty_of(e)?;
         match c.init.as_ref() {
@@ -391,7 +415,7 @@ impl<'a> Lw<'a> {
         }
     }
 
-    fn bin(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn bin(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
         let op = st(&f[0]);
@@ -456,7 +480,7 @@ impl<'a> Lw<'a> {
     }
 
     /// `a && b` / `a || b`。右辺は必要なときだけ評価する。
-    fn short_circuit(&mut self, is_or: bool, l: &V, r: &V, line: usize) -> LR<Option<VId>> {
+    pub(crate) fn short_circuit(&mut self, is_or: bool, l: &V, r: &V, line: usize) -> LR<Option<VId>> {
         let Some(a) = self.expr(l)? else { return Ok(None) };
         if self.vty(a) != Ty::Bool {
             return self.err(line, "論理演算の被演算子が bool ではない");
@@ -483,7 +507,7 @@ impl<'a> Lw<'a> {
         Ok(Some(jp[0]))
     }
 
-    fn unary(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn unary(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
         let op = st(&f[0]);
@@ -511,7 +535,10 @@ impl<'a> Lw<'a> {
         }
     }
 
-    fn call(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn call(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = coll::try_call(self, e) {
+            return r;
+        }
         let f = nf(e);
         let line = nline(e);
         if !matches!(f.get(2), Some(V::Nil) | None) {
@@ -588,7 +615,10 @@ impl<'a> Lw<'a> {
     }
 
     /// `e.m(args)` (受け手が式の形)。整数の `wrapping_add` / `wrapping_sub` / `wrapping_mul` だけを扱う。
-    fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = coll::try_mcall(self, e) {
+            return r;
+        }
         let f = nf(e);
         let line = nline(e);
         if !matches!(f.get(3), Some(V::Nil) | None) {
@@ -614,7 +644,7 @@ impl<'a> Lw<'a> {
     }
 
     /// `{ 文... 末尾の式 }`。末尾が式文なら、その値が block の値になる。
-    fn block(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn block(&mut self, e: &V) -> LR<Option<VId>> {
         let stmts = items(&nf(e)[0]);
         self.scopes.push(vec![]);
         let mut out: Option<VId> = None;
@@ -638,17 +668,18 @@ impl<'a> Lw<'a> {
                 }
             }
         }
+        if stmts.is_empty() {
+            out = Some(self.unit());
+        }
+        coll::block_end(self, out, nline(e))?;
         self.scopes.pop();
         if diverged {
             return Ok(None);
         }
-        if stmts.is_empty() {
-            out = Some(self.unit());
-        }
         Ok(out)
     }
 
-    fn stmt(&mut self, s: &V) -> LR<St> {
+    pub(crate) fn stmt(&mut self, s: &V) -> LR<St> {
         let f = nf(s);
         let line = nline(s);
         match nname(s) {
@@ -661,16 +692,21 @@ impl<'a> Lw<'a> {
                 let Some(v) = self.expr(&f[3])? else { return Ok(St::Div) };
                 let t = self.vty(v);
                 self.bind(&name, v, t);
+                coll::after_let(self, &name, &f[3])?;
                 Ok(St::Unit)
             }
             "Assign" => {
                 let target = &f[0];
+                if nname(target) == "Index" {
+                    return coll::assign_index(self, s);
+                }
                 let Some(name) = path1(target) else {
                     return self.err(line, "代入先は名前だけ段階 1 の対象");
                 };
                 let Some(s_idx) = self.lookup(&name) else {
                     return self.err(line, format!("代入先 {} が見つからない", name));
                 };
+                coll::check_assign(self, s_idx, line)?;
                 let Some(v) = self.expr(&f[1])? else { return Ok(St::Div) };
                 if self.vty(v) != self.slots[s_idx].1 {
                     return self.err(line, "代入の型が変数の型と違う");
@@ -686,7 +722,7 @@ impl<'a> Lw<'a> {
         }
     }
 
-    fn if_(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn if_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
         let Some(c) = self.expr(&f[0])? else { return Ok(None) };
@@ -696,7 +732,7 @@ impl<'a> Lw<'a> {
         // 結果の型。両枝とも発散するなら `!` で、結果の値は持たない。unit の値は合流の引数に載せない。
         let res: Option<Ty> = match self.src_ty(e)? {
             Src::Never => None,
-            t => Some(conv(&t).ok_or_else(|| format!("行 {}: if の型 {} は段階 1 の対象外", line, show(&t)))?),
+            t => Some(coll::value_ty(&t).or_else(|| conv(&t)).ok_or_else(|| format!("行 {}: if の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
         let carry = matches!(res, Some(t) if t != Ty::Unit);
         let slots = self.assigned(&[&f[1], &f[2]]);
@@ -749,20 +785,20 @@ impl<'a> Lw<'a> {
         Ok(Some(if carry { jp[0] } else { self.unit() }))
     }
 
-    fn while_(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn while_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let slots = self.assigned(&[&f[1]]);
         self.loop_common(Some(&f[0]), &f[1], slots, e)
     }
 
-    fn loop_(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn loop_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let slots = self.assigned(&[&f[0]]);
         self.loop_common(None, &f[0], slots, e)
     }
 
     /// `while` と `loop` の共通部分。先頭ブロックは代入される変数を引数に持つ。
-    fn loop_common(&mut self, cond: Option<&V>, body: &V, slots: Vec<usize>, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn loop_common(&mut self, cond: Option<&V>, body: &V, slots: Vec<usize>, e: &V) -> LR<Option<VId>> {
         let tys: Vec<Ty> = slots.iter().map(|s| self.slots[*s].1).collect();
         let entry = self.vals_of(&slots);
         let (hb, hp) = self.new_block(&tys);
@@ -783,7 +819,7 @@ impl<'a> Lw<'a> {
             self.branch(cv, (bb, vec![]), (xb, exit_args));
             body_start = bb;
         }
-        self.loops.push(LoopCx { header: hb, exit: xb, slots: slots.clone() });
+        self.loops.push(LoopCx { header: hb, exit: xb, slots: slots.clone(), depth: self.scopes.len() });
         self.cur = Some(body_start);
         let r = self.expr(body)?;
         if r.is_some() {
@@ -801,17 +837,18 @@ impl<'a> Lw<'a> {
         Ok(Some(self.unit()))
     }
 
-    fn jump_loop(&mut self, e: &V, is_break: bool) -> LR<Option<VId>> {
+    pub(crate) fn jump_loop(&mut self, e: &V, is_break: bool) -> LR<Option<VId>> {
         let Some(lc) = self.loops.last() else {
             return self.err(nline(e), "ループの外の break / continue");
         };
-        let (target, slots) = (if is_break { lc.exit } else { lc.header }, lc.slots.clone());
+        let (target, slots, depth) = (if is_break { lc.exit } else { lc.header }, lc.slots.clone(), lc.depth);
+        coll::drop_from(self, depth);
         let args = self.vals_of(&slots);
         self.goto(target, args);
         Ok(None)
     }
 
-    fn ret_(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(crate) fn ret_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
         let v = if matches!(f[0], V::Nil) {
@@ -825,6 +862,8 @@ impl<'a> Lw<'a> {
         if self.vty(v) != self.ret {
             return self.err(line, "return の値の型が戻り値の型と違う");
         }
+        coll::check_not_owned(self, v, line)?;
+        coll::drop_from(self, 0);
         self.terminate(Term::Ret(v));
         Ok(None)
     }
@@ -858,10 +897,13 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
             continue;
         }
         match Lw::new(p, &tys, d).lower() {
-            Ok(x) => ok.push(x),
+            Ok(x) => ok.extend(x),
             Err(why) => bad.push((d.name.clone(), why)),
         }
     }
+    // 同じ単相インスタンスを、別々の呼び出し元が下ろしていることがある (内容は同じ)。鍵の重複は先の一つだけ残す。
+    let mut seen: HashSet<String> = HashSet::new();
+    ok.retain(|(f, _)| seen.insert(f.key.clone()));
     let funcs = loop {
         let keys: HashSet<String> = ok.iter().map(|(f, _)| f.key.clone()).collect();
         let mut drop: Vec<(String, String)> = vec![];

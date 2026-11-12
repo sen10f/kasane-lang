@@ -677,6 +677,33 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 - 段階 1 の対象外の型と構文を広げる順序: (1) 浮動小数と整数のビット演算、(2) 整数のメソッド、(3) 集成体 (構造体・列挙型・タプル) とレイアウト、(4) 参照とスライス、(5) `Result` と `?`。(3) から先は段階 2 の VM の設計と一緒に決める。
 - 段階 2 (VM) への入口: `Module` は関数の表として使える形にしてある。次は `vm/` でバイトコードへ写し、`kir_exec` と結果を比べる差分テスト (`vm_parity`) を作る。
 
+### 10.7 コレクション・文字列・クロージャ (kir/collections)
+
+ブランチ `kir/collections` (`9f0ad58` から分岐)。段階 1 の対象に、ヒープ (clif と同じ実メモリ表現)、`Vec` / `String` / `&str`、`for`、添字、捕獲のないクロージャと、その `Fn` 境界の関数への単相化を加えた。既定の挙動 (`ksn run` / `ksn build` / `ksn check` の出力) は変えていない。
+
+- 型と命令 (`kir.rs`): 型 `ptr` (生のアドレス。算術と比較はしない)。命令は `frame.bytes` (フレームの領域)、`static.bytes` (静的なバイト列)、`ptr.add`、`mem.load.T` / `mem.store.T` (オフセット付き、リトルエンディアン)、`heap.alloc` / `heap.realloc` / `heap.free` (確保・再確保・解放)、`index.check` (添字の境界検査)。命令名は段階 1 の参照 (`alloca` `load` `store`) と衝突しないよう接頭辞を分けた。確保は `uses [alloc]` の関数だけ、境界検査は `panics may` の関数だけ検査が通る。
+- 実行器 (`kir_exec.rs`): バイト列のヒープ。解放済みの領域は再利用せず、二重解放・解放後のアクセス・範囲外のアクセスは内部の誤り (`Err`) にする。`frame.bytes` は関数が戻るときに解放する。正常終了時に解放されていない領域があれば `Err` にし、所有の下ろしの誤りを検出する。`static.bytes` は命令の位置ごとに 1 回だけ確保し、解放しない。
+- 表現: `Vec<T>` と `String` は {ptr, len, cap} の 24 バイトのヘッダ、`&str` は {ptr, len} の 16 バイトのヘッダ (clif の `layout` と同じ)。KIR の値はヘッダのアドレス。ヘッダはフレームの `frame.bytes` に置く。所有するバッファは、スコープの終わり・`return`・`break` / `continue` で `heap.free` を後入れ先出しに発行する。
+- 移動はしない: `let w = v` や値としての受け渡し・ブロックの値・戻り値は拒否する。`for x in v` は `v` を借りて反復するだけで、解放は `v` の寿命の終わりに行う (観測できない違いだけ生じる)。
+- 型表の補い: 添字の式と `for` の変数は型表で `_` のままなので、下ろしは要素型を Vec の種類 (`let` の型と `Vec.new` の型表) から取る。局所変数の型が型表で未確定のときは、スロットの型で補う (`ty_of`)。
+- 下ろし (`kir_lower_coll.rs`): `Vec::new(std.alloc.SYSTEM)`、`String::new(...)`、`x.len()` / `x.is_empty()`、`v[i]` の読み書き、`for i in core.iter.range(a, b)` (`break` / `continue` / `return` と代入を含む)、`for x in v` (要素型が分かる Vec)、`str` リテラル、捕獲のないクロージャ (`let` で束縛した呼び出しと、`Fn` 境界の関数への受け渡し)。`Fn` 境界の関数は、渡されたクロージャごとに単相インスタンス (鍵 `関数<クロージャの鍵>`) を作る。クロージャの鍵は `関数#c式ID`。
+
+検証: `kir::tests` に記憶域の命令の往復と検査 (2 本)、`kir_exec::tests` に確保・解放・再確保・リーク・二重解放・範囲外・フレームの解放・境界検査・静的領域 (6 本)、`stage0/tests/cli.rs` 末尾の `kir_coll_*` (5 本: 木走査との値の一致 16 ケース、添字の panic の文言、単相化、対象外の理由、ダンプ)。
+
+結果: 同じ入力の対象の関数数は、試験用のパッケージ (`cli.rs` の `KIR_COLL_FNS`、候補 14 本) で 0 本から 14 本になり、単相インスタンス 1 本と捕獲のないクロージャの関数 2 本が加わった。examples 7 本と perf の対象の数は変わらない (前後とも 5 本): それらの関数は `Result` の戻り値、参照、`capture [&k]` を使うため。`ksn check` の出力は examples 7 本でバイト一致。
+
+未対応 (このブランチの項目。理由と次の作業):
+
+| 項目 | 理由 | 次の作業 |
+| --- | --- | --- |
+| `Vec::push` / `pop` / `get` / `insert` / `remove` / `reserve` / `with_capacity`、`String::push_str` / `push` | 戻り値が `Result` / `Option` (参照を含む) | Option / Result の段階で対応する。push の展開 (grow は `heap.realloc` と `mem.store`、添字は `index.check`) は既存の命令で書ける |
+| `as_str` / `as_slice` / `&[T]` の値、`&str` の引数 | 参照 | 参照の段階 (参照の型は入っている) |
+| `capture [&x]` を持つクロージャ | 参照の捕獲 | 参照の段階。捕獲の値を追加の引数で渡す |
+| `Vec` / `String` の値の移動 (`let w = v`、値の受け渡し、ブロックの値、戻り値) | 所有の移動 (drop フラグ) が未実装 | 移動の追跡 |
+| `str` の比較 (`==` など) | 比較の下ろし (バイト列の比較) が未実装 | 段階 2 までに `mem` 系の比較を足す |
+| `for` の対象が `core.iter.range` と要素型の分かる Vec 以外 (イテレータ、配列リテラル) | Iterator / 配列の型が段階 1 の外 | Iterator の段階 |
+| 要素型が決まらない Vec | 型表の `_` (`push` が入るまで、型推論は要素型を決めない) | Option / Result の段階と型推論の完全化 (7 章 4) |
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
