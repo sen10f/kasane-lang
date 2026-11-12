@@ -2179,10 +2179,14 @@ impl<'a> TypeCk<'a> {
             self.unify_fn_bound(d, *k, name, &cl, &mut map, line, &mut cap_bad);
         }
         self.check_bounds(d, &map, line, true);
-        // 決まらなかった型パラメータは、従来の escape-all と同じ扱いにする (リテラルの E2027 を出さない)。
+        // 決まらなかった型パラメータは escape する (分からない型と同じ扱い)。ただし数値リテラル由来の
+        // 型変数 (kind != 0) は escape しない。`t.id(5)` の `5` は、後から決まればそれに従い、最後まで
+        // 決まらなければ finish_literals が E2027 にする。
         for t in map.values() {
-            if let Ty::Var(_) = self.deep(t) {
-                self.escape(t);
+            if let Ty::Var(v) = self.deep(t) {
+                if self.kinds[v] == 0 {
+                    self.escape(t);
+                }
             }
         }
         let ret = from_v(&d.ret, &gn);

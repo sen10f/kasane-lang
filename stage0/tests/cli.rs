@@ -8500,3 +8500,37 @@ fn type_field_reference_with_declared_or_static_lifetime_is_accepted() {
     let (bad, out) = field_elision("field_value", "type t.S\n    f: u8\nend t.S\n\n");
     assert!(!bad, "{}", out);
 }
+
+// ---- ジェネリクス引数に渡した未決定のリテラル (E2027) ----
+
+/// `fn t.id[T](x: T) -> T` を定義し、その下に `main` の本体を置く。
+fn generic_id_check(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let prefix = "fn t.id[T](x: T) -> T uses [] panics never\n    x\nend t.id\n\n";
+    let t = Tmp::new(name, &main_wrap(prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn an_undecided_literal_passed_to_a_generic_parameter_is_an_error() {
+    // T を決める手がかりがない。`5` の型はどこからも決まらないので E2027 (従来は黙っていた)。
+    let (got, out) = generic_id_check("gen_lit_undec", &["core.mem.drop(t.id(5))"]);
+    assert!(got.iter().any(|c| c == "E2027"), "{}", out);
+    assert!(out.contains("cannot infer the type of the int literal `5`"), "{}", out);
+    let (got, out) = generic_id_check("gen_lit_float", &["core.mem.drop(t.id(2.5))"]);
+    assert!(got.iter().any(|c| c == "E2027"), "{}", out);
+    assert!(out.contains("float literal `2.5`"), "{}", out);
+}
+
+#[test]
+fn a_generic_literal_decided_later_is_not_an_error() {
+    // 型は後から決まる: 注釈付き let、後の単一化、明示型引数、別の演算との一致。
+    let (got, out) = generic_id_check("gen_lit_ann", &["let a: u8 = t.id(5)", "core.mem.drop(a)"]);
+    assert!(!got.iter().any(|c| c == "E2027" || c == "E2026"), "{}", out);
+    let (got, out) = generic_id_check("gen_lit_later", &["let x = t.id(5)", "let y: u8 = x", "core.mem.drop(y)"]);
+    assert!(!got.iter().any(|c| c == "E2027" || c == "E2026"), "{}", out);
+    let (got, out) = generic_id_check("gen_lit_targ", &["core.mem.drop(t.id::<u8>(5))"]);
+    assert!(!got.iter().any(|c| c == "E2027" || c == "E2026"), "{}", out);
+    let (got, out) = generic_id_check("gen_lit_add", &["let x = t.id(5)", "core.mem.drop(x + 1u8)"]);
+    assert!(!got.iter().any(|c| c == "E2027"), "{}", out);
+}
