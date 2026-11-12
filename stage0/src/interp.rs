@@ -23,7 +23,11 @@ pub struct Interp {
     pub depth: usize,
     pub const_cache: HashMap<String, Val>,
     pub args: Vec<String>,
-    pub out: std::io::BufWriter<std::io::Stdout>,
+    pub out: std::io::BufWriter<Box<dyn Write>>,
+    /// `ksn debug` / `ksn dap` のデバッガ (`None` なら何も起きない。debug.rs)
+    pub dbg: Option<Box<crate::debug::Debugger>>,
+    /// デバッガが式を評価している間 true: 副作用・panic のありうる呼び出しを拒否する (debug.rs)
+    pub dbg_guard: bool,
     pub reload: Option<std::sync::mpsc::Receiver<Program>>,
     keep: Vec<Rc<Program>>,
     /// std.fs で開いたファイル (記述子 -> ファイル)
@@ -163,7 +167,9 @@ impl Interp {
             depth: 0,
             const_cache: HashMap::new(),
             args: vec![],
-            out: std::io::BufWriter::new(std::io::stdout()),
+            out: std::io::BufWriter::new(Box::new(std::io::stdout())),
+            dbg: None,
+            dbg_guard: false,
             reload: None,
             keep: vec![],
             files: HashMap::new(),
@@ -206,10 +212,18 @@ impl Interp {
         }
         t.state.set(1);
         let body = t.body.borrow_mut().take();
+        let tracing = self.dbg.is_some();
+        if tracing {
+            self.dbg_thread_enter(self.threads.iter().position(|x| Rc::ptr_eq(x, t)).unwrap_or(0));
+        }
         let r = match body {
-            Some(b) => self.call_value(&b, vec![])?,
-            None => Val::Unit,
+            Some(b) => self.call_value(&b, vec![]),
+            None => Ok(Val::Unit),
         };
+        if tracing {
+            self.dbg_thread_exit();
+        }
+        let r = r?;
         // 本体 (取り込んだ値を持つクロージャ) はここで落ちる: 取り込んだ `Sender` はこの時点で閉じる。
         *t.result.borrow_mut() = Some(r);
         t.state.set(2);
@@ -346,12 +360,22 @@ impl Interp {
             let a = self.coerce(a, pty);
             sc_declare(&sc, pn, a);
         }
+        if self.dbg_guard {
+            self.dbg_guard_def(d)?;
+        }
         self.depth += 1;
         if self.depth > 2500 {
             eprintln!("stack overflow");
             return Err(Ctl::Exit(102));
         }
+        let tracing = self.dbg.is_some();
+        if tracing {
+            self.dbg_enter(d.name.clone(), &sc, true);
+        }
         let r = self.eval_block_body(d.body.as_ref().unwrap(), &sc);
+        if tracing {
+            self.dbg_leave(&r)?;
+        }
         self.depth -= 1;
         let v = match r {
             Ok(v) => v,
@@ -405,7 +429,15 @@ impl Interp {
     pub fn call_body(&mut self, di: usize) -> Res {
         let d = self.def(di);
         let sc = new_scope(None, Rc::from(d.file.as_str()));
-        match self.eval_block_body(d.body.as_ref().unwrap(), &sc) {
+        let tracing = self.dbg.is_some();
+        if tracing {
+            self.dbg_enter(d.name.clone(), &sc, true);
+        }
+        let r = self.eval_block_body(d.body.as_ref().unwrap(), &sc);
+        if tracing {
+            self.dbg_leave(&r)?;
+        }
+        match r {
             Ok(v) => Ok(v),
             Err(Ctl::Return(v)) => Ok(v),
             Err(e) => Err(e),
@@ -421,7 +453,17 @@ impl Interp {
                     let a = self.coerce(a, pty);
                     sc_declare(&sc, pn, a);
                 }
-                let r = match self.eval(&c.body, &sc) {
+                let tracing = self.dbg.is_some();
+                if tracing {
+                    self.dbg_enter("<closure>".into(), &sc, false);
+                } else if self.dbg_guard {
+                    return panic("debugger: calling a closure is not allowed in a debugger expression");
+                }
+                let r = self.eval(&c.body, &sc);
+                if tracing {
+                    self.dbg_leave(&r)?;
+                }
+                let r = match r {
                     Ok(v) => v,
                     Err(Ctl::Return(v)) => v,
                     Err(e) => return Err(e),
@@ -461,6 +503,9 @@ impl Interp {
     }
 
     fn exec_stmt(&mut self, s: &V, sc: &Scope) -> Res {
+        if self.dbg.is_some() {
+            self.dbg_stmt(s, sc)?;
+        }
         let f = nf(s);
         match nname(s) {
             "Let" => {
@@ -1388,6 +1433,9 @@ impl Interp {
             {
                 self.move_out(pe, psc, &v);
             }
+        }
+        if self.dbg_guard {
+            self.dbg_guard_method(name)?;
         }
         self.native_method(&recv, &v, name, args, place)
     }

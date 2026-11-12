@@ -444,6 +444,9 @@ impl Interp {
     }
 
     pub fn call_native(&mut self, name: &str, args: Vec<Val>) -> Res {
+        if self.dbg_guard {
+            self.dbg_guard_native(name)?;
+        }
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
         match name {
             "core.mem.drop" => Ok(Val::Unit),

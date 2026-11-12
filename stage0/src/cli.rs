@@ -492,6 +492,32 @@ fn run_args(args: &[String]) -> (bool, bool, Vec<String>) {
     (json, watch, rest)
 }
 
+/// デバッガ用の読み込み: 検査して Program を作る。致命的な診断があれば、その本文を Err で返す。
+pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
+    let mut rep = Report::new(false);
+    let root = find_root().map_err(|e| format!("ksn: {}: {}", e.code, e.msg))?;
+    let (l, prog, user) = full_check(&root, &mut rep, true).map_err(|e| format!("ksn: {}: {}", e.code, e.msg))?;
+    rep.finish();
+    if rep.fatal() {
+        let lines: Vec<String> = rep
+            .items
+            .iter()
+            .filter(|it| it.fatal)
+            .map(|it| match &it.file {
+                Some(f) => format!("{}:{}:{}: {}: {}", f, it.line, it.col, it.code, it.message),
+                None => format!("<project>: {}: {}", it.code, it.message),
+            })
+            .collect();
+        return Err(lines.join("\n"));
+    }
+    let prog = Rc::new(prog.unwrap());
+    let entry_name = l.pkg.entry().unwrap_or_default();
+    let entry = prog.funcs.get(&entry_name).copied();
+    let tests: Vec<usize> = user.iter().copied().filter(|&i| prog.defs[i].kw == "test").collect();
+    let user_files = user.iter().map(|&i| prog.defs[i].file.clone()).collect();
+    Ok(crate::debug::Target { prog, entry, entry_name, tests, user_files })
+}
+
 fn cmd_run(args: &[String]) -> i32 {
     let (json, watch, rest) = run_args(args);
     let mut rep = Report::new(json);
@@ -641,6 +667,17 @@ fn spawn_watcher(l: &Loaded) -> std::sync::mpsc::Receiver<Program> {
 }
 
 fn cmd_test(args: &[String]) -> i32 {
+    // `ksn test --debug [--json] <テスト名>`: そのテスト 1 つをデバッガの下で走らせる (debug.rs)
+    if args.iter().any(|a| a == "--debug") {
+        let name = args.iter().find(|a| !a.starts_with("--"));
+        let Some(name) = name else {
+            eprintln!("usage: ksn test --debug [--json] <test FQN>");
+            return 2;
+        };
+        let mut dargs: Vec<String> = args.iter().filter(|a| *a == "--json").cloned().collect();
+        dargs.extend(["--test".to_string(), name.clone()]);
+        return crate::debug::cmd_debug(&dargs);
+    }
     let mut both = false;
     let mut prefix: Option<String> = None;
     for a in args {
@@ -1626,6 +1663,8 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "context" => cmd_context(&rest),
         "explain" => cmd_explain(&rest),
         "lsp" => crate::lsp::run(),
+        "debug" => crate::debug::cmd_debug(&rest),
+        "dap" => crate::debug::cmd_dap(),
         "build" => cmd_build(&rest, None),
         "update" => cmd_update(&rest),
         "vendor" => cmd_vendor(),
@@ -1636,7 +1675,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
         _ => {
             eprintln!(
-                "usage: ksn <new|check|fix|todo|context|fmt|run|test|build|get|sig|doc|refs|rename|explain|lsp|update|vendor> [args]"
+                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|refs|rename|explain|lsp|update|vendor> [args]"
             );
             2
         }
