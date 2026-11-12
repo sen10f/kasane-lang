@@ -8932,3 +8932,287 @@ fn ffi_struct_by_value_is_refused_outside_x86_64_linux() {
     assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
     assert!(text(&r.stderr).contains("x86_64"), "{}", text(&r.stderr));
 }
+
+// ---------------------------------------------------------------- KIR 段階 1 (設計_KIR.md 5 章)
+
+/// 段階 1 の対象になる関数 (整数・bool・let・代入・if・while・loop・break・continue・return・wrapping_*)。
+const KIR_FNS: &str = "fn t.gcd(a: u64, b: u64) -> u64 uses [] panics may
+    let mut x = a
+    let mut y = b
+    while y != 0u64 {
+        let r = x % y
+        x = y
+        y = r
+    }
+    x
+end t.gcd
+
+fn t.classify(n: i32) -> i32 uses [] panics may
+    let mut r = 0i32
+    if n < 0i32 {
+        r = -1i32
+    } else if n == 0i32 {
+        r = 0i32
+    } else {
+        r = 1i32
+    }
+    r
+end t.classify
+
+fn t.early(n: u32) -> u32 uses [] panics may
+    if n > 10u32 {
+        return n - 10u32
+    }
+    n * 2u32
+end t.early
+
+fn t.loopy(n: u32) -> u32 uses [] panics may
+    let mut i = 0u32
+    let mut acc = 0u32
+    loop {
+        if i >= n {
+            break
+        }
+        i = i + 1u32
+        if i % 2u32 == 0u32 {
+            continue
+        }
+        acc = acc + i
+    }
+    acc
+end t.loopy
+
+fn t.andor(a: bool, b: bool, n: i64) -> bool uses [] panics may
+    let x = a && n > 0i64
+    let y = b && n < -5i64
+    x || y
+end t.andor
+
+fn t.fact(n: u64) -> u64 uses [] panics may
+    if n <= 1u64 {
+        return 1u64
+    }
+    n * t.fact(n - 1u64)
+end t.fact
+
+fn t.negate(x: i8) -> i8 uses [] panics may
+    -x
+end t.negate
+
+fn t.divs(a: i8, b: i8) -> i8 uses [] panics may
+    a / b
+end t.divs
+
+fn t.rems(a: i8, b: i8) -> i8 uses [] panics may
+    a % b
+end t.rems
+
+fn t.wrap(a: u8, b: u8) -> u8 uses [] panics never
+    a.wrapping_mul(b).wrapping_add(a)
+end t.wrap
+
+fn t.sub8(a: u8, b: u8) -> u8 uses [] panics may
+    a - b
+end t.sub8
+
+fn t.assign_in_branch(n: i32) -> i32 uses [] panics may
+    let mut x = 1i32
+    let mut y = 2i32
+    if n > 0i32 {
+        x = x + n
+    } else {
+        y = y - n
+    }
+    x * 100i32 + y
+end t.assign_in_branch
+
+fn t.nested(n: i32) -> i32 uses [] panics may
+    let mut total = 0i32
+    let mut i = 0i32
+    while i < n {
+        let mut j = 0i32
+        while true {
+            if j > i {
+                break
+            }
+            total = total + j
+            j = j + 1i32
+        }
+        i = i + 1i32
+    }
+    total
+end t.nested
+
+fn t.down(n: u64) -> u64 uses [] panics may
+    if n == 0u64 {
+        return 0u64
+    }
+    1u64 + t.down(n - 1u64)
+end t.down
+";
+
+/// `KIR_FNS` に `main` を付けたパッケージを作る。
+fn kir_pkg(name: &str, main_body: &str) -> Tmp {
+    Tmp::new(name, &format!("{}{}", KIR_FNS, main_wrap("", main_body)))
+}
+
+#[test]
+fn kir_lower_values_match_tree_walker() {
+    // 木走査 (`ksn run`) で `core.check.eq` が通ること、参照実行器 (`ksn kir --run`) の値が期待どおりであること。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.gcd", &["48", "18"], "6u64", "6"),
+        ("t.classify", &["-7"], "-1i32", "-1"),
+        ("t.classify", &["0"], "0i32", "0"),
+        ("t.early", &["25"], "15u32", "15"),
+        ("t.early", &["4"], "8u32", "8"),
+        ("t.loopy", &["10"], "25u32", "25"),
+        ("t.fact", &["20"], "2432902008176640000u64", "2432902008176640000"),
+        ("t.negate", &["5"], "-5i8", "-5"),
+        ("t.wrap", &["200", "3"], "32u8", "32"),
+        ("t.sub8", &["9", "4"], "5u8", "5"),
+        ("t.assign_in_branch", &["3"], "402i32", "402"),
+        ("t.assign_in_branch", &["-3"], "105i32", "105"),
+        ("t.nested", &["5"], "20i32", "20"),
+        ("t.andor", &["true", "true", "3"], "true", "true"),
+        ("t.andor", &["false", "true", "-6"], "true", "true"),
+        ("t.andor", &["false", "false", "1"], "false", "false"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = kir_pkg(&format!("kir_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_lower_panics_and_depth_match_tree_walker() {
+    // panic の文言と終了コード (101)、呼び出し深さの超過 (102) が木走査と一致すること。
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.negate", &["-128"], "attempt to negate with overflow"),
+        ("t.divs", &["-128", "-1"], "attempt to divide with overflow"),
+        ("t.divs", &["7", "0"], "attempt to divide by zero"),
+        ("t.rems", &["7", "0"], "attempt to calculate the remainder with a divisor of by zero"),
+        ("t.sub8", &["3", "4"], "attempt to subtract with overflow"),
+        ("t.fact", &["21"], "attempt to multiply with overflow"),
+    ];
+    for (i, (f, args, msg)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = kir_pkg(&format!("kir_panic_{}", i), &format!("    let _x = {}\n", call));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "tree-walker: {}", call);
+        assert!(text(&o.stderr).contains(&format!("panic: {}", msg)), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir: {}", call);
+        assert_eq!(text(&k.stderr).trim(), format!("panic: {}", msg), "kir: {}", call);
+    }
+    // 深さの超過: 木走査と同じく 102 と "stack overflow"
+    let t = kir_pkg("kir_depth", "    let _x = t.down(5000u64)\n");
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(102));
+    let k = run(&["kir", "t.down", "--run", "5000"], &t.0);
+    assert_eq!(k.status.code(), Some(102));
+    assert!(text(&k.stderr).contains("stack overflow"), "{}", text(&k.stderr));
+    let ok = run(&["kir", "t.down", "--run", "2000"], &t.0);
+    assert_eq!(text(&ok.stdout).trim(), "2000");
+}
+
+#[test]
+fn kir_lower_prints_a_module_that_reads_back() {
+    // `ksn kir <FQN>` は内部で往復 (出力 → 読み込み → 出力) と検査を確かめてから出す (失敗なら終了コード 3)。
+    let t = kir_pkg("kir_text", "    core.check.eq(t.gcd(4u64, 2u64), 2u64)\n");
+    let o = run(&["kir", "t.gcd"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.starts_with("kir 1\n\nfn t.gcd key=t.gcd uses=[] panics=may stack=- ret=u64\n"), "{}", out);
+    assert!(out.contains("br_if %") && out.contains("end t.gcd\n"), "{}", out);
+    // 呼び先を含む関数は、呼び先も同じ部分モジュールに入る
+    let o = run(&["kir", "t.fact"], &t.0);
+    let out = text(&o.stdout);
+    assert!(out.contains("fn t.fact key=t.fact") && out.contains("call t.fact("), "{}", out);
+}
+
+#[test]
+fn kir_lower_reports_unsupported_constructs_with_a_reason() {
+    // 段階 1 の対象外 (`&str` の引数) は、理由を付けて拒否する。対象の関数は出さない。
+    let src = "fn t.len_of(_s: &str) -> usize uses [] panics never
+    5usize
+end t.len_of
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("kir_unsupported", src);
+    let o = run(&["kir", "t.len_of"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let err = text(&o.stderr);
+    assert!(err.contains("t.len_of は未対応") && err.contains("段階 1 の対象外"), "{}", err);
+}
+
+#[test]
+fn kir_lower_dump_on_check_is_hidden_behind_the_env_var() {
+    // `KSN_DUMP_KIR=1 ksn check` だけ KIR を stderr に出す。通常の check の出力は変えない。
+    let t = kir_pkg("kir_dump", "    core.check.eq(t.gcd(4u64, 2u64), 2u64)\n");
+    let plain = run(&["check"], &t.0);
+    let dumped = Command::new(exe())
+        .args(["check"])
+        .current_dir(&t.0)
+        .env("KSN_DUMP_KIR", "1")
+        .output()
+        .expect("spawn ksn");
+    assert_eq!(dumped.status.code(), plain.status.code());
+    assert_eq!(dumped.stdout, plain.stdout);
+    let err = text(&dumped.stderr);
+    assert!(err.contains("kir 1\n") && err.contains("fn t.gcd key=t.gcd"), "{}", err);
+    assert!(err.contains("kir: 未対応 t.main"), "{}", err);
+    assert!(!text(&plain.stderr).contains("kir 1"));
+}
+
+#[test]
+fn kir_lower_examples_and_perf_functions_match_tree_walker() {
+    // examples と perf の段階 1 の対象関数。木走査の期待値は各パッケージの `main` (core.check.eq) と同じ数学的な値。
+    // 木走査は同じ入力を `ksn run` で通ること (main の検査) を先に確かめ、KIR の値を比べる。
+    let cases: &[(&str, &str, &[&str], &str)] = &[
+        ("examples/demo", "demo.fib", &["10"], "55"),
+        ("examples/demo", "demo.fib", &["20"], "6765"),
+        ("examples/native", "native.half", &["9"], "4"),
+        ("examples/native", "native.half", &["0"], "0"),
+        ("examples/realtime", "realtime.triangle", &["10"], "55"),
+        ("perf/fib", "fib.fib", &["27"], "196418"),
+        ("perf/loops", "loops.sum_to", &["1000000"], "499999500000"),
+        ("perf/loops", "loops.sum_to", &["1000"], "499500"),
+    ];
+    for (dir, f, args, want) in cases {
+        let d = root().join(dir);
+        assert_eq!(run(&["check"], &d).status.code(), Some(0), "{} check", dir);
+        assert_eq!(run(&["run"], &d).status.code(), Some(0), "{} run (tree-walker)", dir);
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &d);
+        assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+#[test]
+fn kir_lower_rejects_checked_methods_and_aggregates_with_a_reason() {
+    // `checked_*` は `Option<T>` を返すので段階 1 の型に入らない。理由を付けて拒否する。
+    let src = "fn t.ck(a: u8, b: u8) -> u8 uses [] panics never
+    match a.checked_add(b) {
+        Some(v) => v
+        None => 0u8
+    }
+end t.ck
+";
+    let t = Tmp::new("kir_checked", src);
+    let o = run(&["kir", "t.ck"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("t.ck は未対応"), "{}", text(&o.stderr));
+}

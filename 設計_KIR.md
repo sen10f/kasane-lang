@@ -620,6 +620,63 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 - ジェネリクスの本体の型は単相化前の型 (`Ty::Param`) を含む。降格の時に型引数を代入する (第 2.5)。型表自体は単相化前の一つだけを持つ。
 - 型表の入口は `TypeCk` (検査の中) だけ。KIR 側から使うため、検査の結果として取り出す経路は段階 1 で作る。
 
+## 10. 段階 1 の実装 (kir/lower-1)
+
+ブランチ `kir/lower-1`。第 5 章の段階 1 のうち、データ型・テキスト形式・下ろし・参照実行器・隠し表示を実装した。既定の挙動 (`ksn run` / `ksn build` / `ksn check` の出力) は変えていない。
+
+### 10.1 ファイルの配置
+
+第 5 章の案 (`kir/mod.rs` などの階層) から変えた。現行の `stage0/src` は平らな構成なので、同じ層に置く。
+
+- `stage0/src/kir.rs`: 型 (`Ty`)、命令 (`Op` / `Inst` / `Term`)、関数 (`Func`)、モジュール (`Module`)、テキストの出力 (`print_module`) と読み込み (`parse_module`)、検査 (`verify_module`)。
+- `stage0/src/kir_lower.rs`: 型表 (`TypeCk::tytab`) 付きの AST から KIR を作る (`lower_user`)。対象外の関数は理由を付けて未対応にする。隠し表示 `dump_hidden`。
+- `stage0/src/kir_exec.rs`: KIR の参照実行器 (`run`)。明示的なフレーム列で呼び出しを持ち、Rust の再帰を使わない。深さの上限は木走査と同じ 2500 (終了コード 102)。
+- `stage0/src/cli.rs`: `ksn kir <FQN> [--run <引数>...]` (隠し機能)、`cmd_check` から `dump_hidden` を呼ぶ。
+
+### 10.2 対応範囲
+
+- 型: `i8` `i16` `i32` `i64` `isize`、`u8` `u16` `u32` `u64` `usize`、`bool`、`unit`。
+- 文: `let` (`mut` を含む)、単純な変数への代入、式文、`if` / `else if` / `else`、`while`、`loop`、`break`、`continue`、`return`。
+- 式: 整数と bool のリテラル、局所変数、整数の `const`、`+ - * / %` (溢れと 0 除算は panic。文言は木走査と同じ)、比較 (`== != < <= > >=`)、`&&` `||` (短絡)、単項 `-`、`wrapping_add` / `wrapping_sub` / `wrapping_mul`、同じ単相の関数の呼び出し (引数の型は一致が必要)。
+- 効果: `panics never` の関数には trap の命令が現れない (`verify_module` が検査する)。`uses` は宣言の値をそのまま写す。段階 1 の式には副作用を起こす組み込みが無いので、対象の関数は実質的に `uses []` だけになる。
+- テキスト形式: `kir 1` の版行。版が違えば読み込みを拒否する (7 章 18)。関数は FQN の順に出す。
+
+### 10.3 検査と未対応の扱い
+
+- 型は `TypeCk` の型表だけを使い、推測しない。型表に無い式、型が未確定の式は未対応とする。
+- 下ろしの後に `verify_module` を通す。検査に失敗した関数は未対応にする。
+- 呼び先が未対応の関数は、呼び出し元も未対応にする (呼び先が無いと実行できないため)。
+- `ksn kir <FQN>` は、出力を読み直して同じ文字列になり、検査も通ることを確かめてから出す。確かめられなければ終了コード 3 (内部エラー)。
+
+### 10.4 確認した結果
+
+- 単体テスト: `kir::tests` 6 本 (往復、版の拒否、`never` の trap 検出、溢れ文言の一致)。
+- 統合テスト (`stage0/tests/cli.rs` 末尾): `kir_lower_values_match_tree_walker` (16 ケース)、`kir_lower_panics_and_depth_match_tree_walker` (panic の文言、終了コード 101、深さの超過 102)、`kir_lower_prints_a_module_that_reads_back`、`kir_lower_reports_unsupported_constructs_with_a_reason`、`kir_lower_dump_on_check_is_hidden_behind_the_env_var`、`kir_lower_examples_and_perf_functions_match_tree_walker`、`kir_lower_rejects_checked_methods_and_aggregates_with_a_reason`。
+- 木走査との一致: `perf/fib` の `fib.fib`、`perf/loops` の `loops.sum_to`、`examples/demo` の `demo.fib`、`examples/native` の `native.half`、`examples/realtime` の `realtime.triangle` を、`ksn run` と `ksn kir --run` の両方で確かめた (値は各パッケージの `main` の検査と一致)。
+- 降格の範囲: examples 7 本のユーザ関数の候補 40 件のうち、降格できたのは 3 件 (`demo.fib`、`native.half`、`realtime.triangle`)。残り 37 件は未対応で、理由は下の 10.5 のとおり。
+- `KSN_DUMP_KIR=1 ksn check` は、stderr に KIR と `kir: 未対応 <FQN>: <理由>` の行を出す。通常の `ksn check` の出力と終了コードは変えない。
+
+### 10.5 未対応の一覧
+
+未対応 37 件の理由を、先頭の理由 1 つで分類した (examples 7 本の `KSN_DUMP_KIR=1 ksn check` の出力による。候補 40 件のうち降格できた 3 件を除く)。
+
+| 理由 | 件数 | 例 | 次の作業 |
+|---|---:|---|---|
+| 引数・戻り値の型が段階 1 の外 (参照 17、`Result` 9、名前付きの型 4) | 30 | `json.array` (`&json.Doc`)、`demo.main` (`Result<(), std.io.Error>`) | 集成体・参照・`Result` の型を型表に足す (第 2.3)。段階 2 以降 |
+| 整数のビット演算 (`& \| ^ << >>`) | 3 | `features.collatz`、`native.collatz`、`tour.loops` | 演算子の下ろしを足す。命令は既存の `Op` に無いので追加が要る |
+| 整数のメソッド (`saturating_add` など) | 1 | `tour.ints` | `wrapping_*` 以外は段階 3 以降。`checked_*` は `Option<T>` を返すので集成体の型が要る |
+| `f64` | 1 | `tour.floats` | 浮動小数の型と命令を足す |
+| その他 (バイト文字リテラル、列挙子の呼び出し) | 2 | `json.is_hex`、`tour.shapes` | リテラルの型と、列挙子の値の下ろし |
+
+`checked_*` の拒否は `stage0/tests/cli.rs` の `kir_lower_rejects_checked_methods_and_aggregates_with_a_reason` で確かめる。
+
+### 10.6 残った問題と次の作業
+
+- 冗長な命令: 文として使う式の unit 定数 (`%3: unit = const.unit ()`) と、値を渡すだけの空ブロック (`b2(): br b3()`) が残る。動作は正しい。段階 3 の不要コード除去と空ブロックの統合で消す。
+- `ksn kir --json` (LLM 向けの形式) は未実装 (第 2.7)。
+- 段階 1 の対象外の型と構文を広げる順序: (1) 浮動小数と整数のビット演算、(2) 整数のメソッド、(3) 集成体 (構造体・列挙型・タプル) とレイアウト、(4) 参照とスライス、(5) `Result` と `?`。(3) から先は段階 2 の VM の設計と一緒に決める。
+- 段階 2 (VM) への入口: `Module` は関数の表として使える形にしてある。次は `vm/` でバイトコードへ写し、`kir_exec` と結果を比べる差分テスト (`vm_parity`) を作る。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
