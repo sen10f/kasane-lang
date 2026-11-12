@@ -633,17 +633,32 @@ fn cmd_test(args: &[String]) -> i32 {
             Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
             _ => None,
         });
+        // `--both` の相手は機械語 (Cranelift の実行ファイル)。作れない機能を含むテストだけバンドルに落とす。
+        let mut other = "";
+        let mut label = String::new();
         if both {
-            results.push(run_in_bundle(&root, &name, &l));
+            match build_native_test(&root, &prog, &user, *ti) {
+                Ok(exe) => {
+                    results.push(run_native_test(&root, &exe));
+                    other = "native";
+                    label = "both: native".into();
+                }
+                Err(why) => {
+                    results.push(run_in_bundle(&root, &name, &l));
+                    other = "bundle";
+                    label = format!("both: bundle (native skipped: {})", why.lines().next().unwrap_or("").trim());
+                }
+            }
         }
+        let suffix = if label.is_empty() { String::new() } else { format!(" ({})", label) };
         if results.len() > 1 && results[0].is_none() != results[1].is_none() {
             failed += 1;
-            println!("test {} ... FAILED: interpreter and bundle disagree: {}", name, py_opt_list(&results));
+            println!("test {} ... FAILED: interpreter and {} disagree: {}{}", name, other, py_opt_list(&results), suffix);
         } else if results.iter().all(|r| r.is_none()) {
-            println!("test {} ... ok", name);
+            println!("test {} ... ok{}", name, suffix);
         } else {
             failed += 1;
-            println!("test {} ... FAILED: {}", name, results.iter().flatten().next().unwrap());
+            println!("test {} ... FAILED: {}{}", name, results.iter().flatten().next().unwrap(), suffix);
         }
     }
     println!("\n{} passed; {} failed", tests.len() - failed, failed);
@@ -676,6 +691,49 @@ fn run_in_bundle(root: &Path, fqn: &str, l: &Loaded) -> Option<String> {
         .current_dir(bdir.join("pkg"))
         .output();
     match r {
+        Ok(o) if o.status.success() => None,
+        Ok(o) => {
+            let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            Some(if e.is_empty() { format!("exit {}", o.status.code().unwrap_or(-1)) } else { e })
+        }
+        Err(e) => Some(e.to_string()),
+    }
+}
+
+/// `test --both` の機械語側: テスト `ti` を入口にして Cranelift で実行ファイルを作る (`target/test-native/`)。
+/// 作れなければ理由を返す (clif が未対応の機能、リンカが無い、など)。テストごとに 1 つ作る。
+fn build_native_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> Result<PathBuf, String> {
+    let d = &prog.defs[ti];
+    let mut funcs: HashMap<String, &Def> = HashMap::new();
+    let mut tdefs: HashMap<String, &Def> = HashMap::new();
+    for &i in user {
+        let f = &prog.defs[i];
+        if f.kw == "fn" && f.body.is_some() {
+            funcs.insert(f.name.clone(), f);
+        }
+        if f.kw == "type" || f.kw == "enum" {
+            tdefs.insert(f.name.clone(), f);
+        }
+    }
+    funcs.insert(d.name.clone(), d);
+    let dir = root.join("target").join("test-native");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem: String = d.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' { c } else { '_' }).collect();
+    let exe = dir.join(format!("{}_{}{}", ti, stem, if cfg!(windows) { ".exe" } else { ".native" }));
+    let _ = fs::remove_file(&exe);
+    let out = norm(&exe);
+    // clif は未対応の形に出会うと Err を返す。万一それ以外で落ちても、バンドルへ戻すだけにする。
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::clif::compile_clif(prog, &funcs, &tdefs, &d.name, &out, false)));
+    match r {
+        Ok(Ok(())) => Ok(exe),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("internal compiler error".into()),
+    }
+}
+
+/// 機械語のテストを 1 プロセスで走らせる。インタプリタと同じ形 (成功は None、失敗は理由) で返す。
+fn run_native_test(root: &Path, exe: &Path) -> Option<String> {
+    match std::process::Command::new(exe).current_dir(root).output() {
         Ok(o) if o.status.success() => None,
         Ok(o) => {
             let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
