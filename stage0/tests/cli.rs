@@ -8508,51 +8508,6 @@ fn type_field_reference_with_declared_or_static_lifetime_is_accepted() {
 fn generic_id_check(name: &str, b: &[&str]) -> (Vec<String>, String) {
     let prefix = "fn t.id[T](x: T) -> T uses [] panics never\n    x\nend t.id\n\n";
     let t = Tmp::new(name, &main_wrap(prefix, &body(b)));
-}
-
-// ---- 型引数に線形を含む型の束縛 (4.4): `Option` / `Result` / ジェネリック構造体 ----
-
-/// `tdrop_prefix` に、型引数の線形検査の試験用の定義を足して検査する。
-fn lin_arg_codes(name: &str, b: &[&str]) -> (Vec<String>, String) {
-    let nl = char::from(10u8).to_string();
-    let mut pre: Vec<&str> = tdrop_prefix();
-    pre.extend_from_slice(&[
-        "type t.Pair[A, B]",
-        "    a: A",
-        "    b: B",
-        "end t.Pair",
-        "",
-        "fn t.eat_opt(o: Option<t.L>) -> () uses [] panics never",
-        "    match o {",
-        "        Some(x) => {",
-        "            t.eat(x)",
-        "        }",
-        "        None => {",
-        "            core.mem.drop(0u8)",
-        "        }",
-        "    }",
-        "end t.eat_opt",
-        "",
-        "fn t.eat_box(b: t.Box<t.L>) -> () uses [] panics never",
-        "    let t.Box { v: x } = b",
-        "    t.eat(x)",
-        "end t.eat_box",
-        "",
-        "fn t.mk_opt() -> Option<t.L> uses [] panics never",
-        "    let o = Some(t.get_l())",
-        "    o",
-        "end t.mk_opt",
-        "",
-        "fn t.res_try() -> Result<(), u8> uses [] panics never",
-        "    let r: Result<t.L, u8> = Ok(t.get_l())",
-        "    let l = r?",
-        "    t.eat(l)",
-        "    Ok(())",
-        "end t.res_try",
-        "",
-    ]);
-    let prefix = pre.join(&nl) + &nl + &nl;
-    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     (codes(&out), out)
 }
@@ -9259,6 +9214,53 @@ end t.ck
     let o = run(&["kir", "t.ck"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     assert!(text(&o.stderr).contains("t.ck は未対応"), "{}", text(&o.stderr));
+}
+
+// ---- 型引数に線形を含む型の束縛 (4.4): `Option` / `Result` / ジェネリック構造体 ----
+
+/// `tdrop_prefix` に、型引数の線形検査の試験用の定義を足して検査する。
+fn lin_arg_codes(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let mut pre: Vec<&str> = tdrop_prefix();
+    pre.extend_from_slice(&[
+        "type t.Pair[A, B]",
+        "    a: A",
+        "    b: B",
+        "end t.Pair",
+        "",
+        "fn t.eat_opt(o: Option<t.L>) -> () uses [] panics never",
+        "    match o {",
+        "        Some(x) => {",
+        "            t.eat(x)",
+        "        }",
+        "        None => {",
+        "            core.mem.drop(0u8)",
+        "        }",
+        "    }",
+        "end t.eat_opt",
+        "",
+        "fn t.eat_box(b: t.Box<t.L>) -> () uses [] panics never",
+        "    let t.Box { v: x } = b",
+        "    t.eat(x)",
+        "end t.eat_box",
+        "",
+        "fn t.mk_opt() -> Option<t.L> uses [] panics never",
+        "    let o = Some(t.get_l())",
+        "    o",
+        "end t.mk_opt",
+        "",
+        "fn t.res_try() -> Result<(), u8> uses [] panics never",
+        "    let r: Result<t.L, u8> = Ok(t.get_l())",
+        "    let l = r?",
+        "    t.eat(l)",
+        "    Ok(())",
+        "end t.res_try",
+        "",
+    ]);
+    let prefix = pre.join(&nl) + &nl + &nl;
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
 }
 
 #[test]
