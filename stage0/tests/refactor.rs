@@ -523,3 +523,71 @@ fn shortener_end_to_end_sequence() {
     assert!(!p.exists("src/shortener/code.ksnl") && !p.exists("src/shortener/router.ksnl"));
     assert_eq!(p.assert_healthy("final"), 33);
 }
+
+// ------------------------------------------------------------ 移動に伴う `pub` の補い (3.1)
+
+/// 移動すると別モジュールから非 `pub` の定義・フィールドを参照することになる 3 モジュールのパッケージ。
+fn vis_fixture(name: &str) -> Pkg {
+    let src = std::env::temp_dir().join(format!("ksn_refactor_vis_src_{}_{}", std::process::id(), name));
+    let _ = fs::remove_dir_all(&src);
+    fs::create_dir_all(src.join("src/v")).unwrap();
+    fs::write(src.join("kasane.toml"), "[package]\nname = \"v\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"v.main\"\n\n[dependencies]\n").unwrap();
+    fs::write(src.join("kasane.lock"), "version = 1\n").unwrap();
+    fs::write(
+        src.join("src/v.ksnl"),
+        "import v.shape\n\nfn v.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    let s = shape.make(3u32)\n    core.check.eq(shape.area(&s), 9u32)\n    core.check.eq(shape.side_twice(&s), 6u32)\n    std.io.print_line(\"ok\")?\n    Ok(())\nend v.main\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("src/v/shape.ksnl"),
+        "const v.shape.SCALE: u32 = 1u32\n\ntype v.shape.Sq pub\n    side: u32\nend v.shape.Sq\n\nfn v.shape.area(s: &v.shape.Sq) -> u32 uses [] panics never pub\n    v.shape.mul(s.side, s.side)\nend v.shape.area\n\nfn v.shape.make(side: u32) -> v.shape.Sq uses [] panics never pub\n    v.shape.Sq { side: side }\nend v.shape.make\n\nfn v.shape.mul(a: u32, b: u32) -> u32 uses [] panics never\n    a.wrapping_mul(b).wrapping_mul(v.shape.SCALE)\nend v.shape.mul\n\nfn v.shape.side_twice(s: &v.shape.Sq) -> u32 uses [] panics never pub\n    s.side.wrapping_mul(2u32).wrapping_mul(v.shape.SCALE)\nend v.shape.side_twice\n",
+    )
+    .unwrap();
+    fs::write(src.join("src/v/other.ksnl"), "fn v.other.one() -> u32 uses [] panics never pub\n    1u32\nend v.other.one\n").unwrap();
+    let p = Pkg::from(&src, name);
+    let _ = fs::remove_dir_all(&src);
+    p
+}
+
+#[test]
+fn moving_a_definition_makes_it_pub_when_the_old_module_still_uses_it() {
+    // app.twice を移すと app.main (元のモジュール) から参照される。以前は手で `pub` を付ける必要があった。
+    let p = Pkg::fixture("move_adds_pub");
+    let d = p.ksn(&["rename", "--dry-run", "app.twice", "app.util.twice"]);
+    assert_eq!(d.status.code(), Some(0), "{}{}", text(&d.stdout), text(&d.stderr));
+    // 計画 (--dry-run の差分) に `pub` が入り、標準エラーに報告が出る。
+    assert!(text(&d.stdout).contains("+fn app.util.twice(n: u32) -> u32 uses [] panics never pub"), "{}", text(&d.stdout));
+    assert!(text(&d.stderr).contains("made app.util.twice `pub`"), "{}", text(&d.stderr));
+    p.rename_ok("app.twice", "app.util.twice");
+    assert!(p.read("src/app/util.ksnl").contains("panics never pub\n    n.wrapping_mul(2u32)\nend app.util.twice"));
+}
+
+#[test]
+fn moving_a_definition_makes_the_private_things_it_uses_pub() {
+    // shape.area は同モジュールの非 pub の関数 mul を呼び、非 pub のフィールド side を読む。
+    // area を other に移すと、mul と side だけに pub が付く (SCALE は mul からしか使われないので付かない)。
+    let p = vis_fixture("move_uses_private");
+    p.rename_ok("v.shape.area", "v.other.area");
+    let shape = p.read("src/v/shape.ksnl");
+    assert!(shape.contains("fn v.shape.mul(a: u32, b: u32) -> u32 uses [] panics never pub"), "{}", shape);
+    assert!(!shape.contains("const v.shape.SCALE: u32 = 1u32 pub"), "{}", shape);
+    assert!(shape.contains("    side: u32 pub"), "{}", shape);
+    let other = p.read("src/v/other.ksnl");
+    assert!(other.contains("fn v.other.area") && other.contains("shape.mul("), "{}", other);
+}
+
+#[test]
+fn moving_a_definition_makes_a_const_and_a_field_it_uses_pub() {
+    // side_twice は shape の非 pub の定数 SCALE と、非 pub のフィールド side を使う。other へ移すと両方に pub が付く。
+    let p = vis_fixture("move_const");
+    let d = p.ksn(&["rename", "--dry-run", "v.shape.side_twice", "v.other.side_twice"]);
+    assert_eq!(d.status.code(), Some(0), "{}{}", text(&d.stdout), text(&d.stderr));
+    let err = text(&d.stderr);
+    assert!(err.contains("made v.shape.SCALE `pub`") && err.contains("made field side of v.shape.Sq `pub`"), "{}", err);
+    p.rename_ok("v.shape.side_twice", "v.other.side_twice");
+    let shape = p.read("src/v/shape.ksnl");
+    assert!(shape.contains("const v.shape.SCALE: u32 = 1u32 pub"), "{}", shape);
+    assert!(shape.contains("    side: u32 pub"), "{}", shape);
+    // mul は shape の中だけで使われ続けるので pub にしない (最小)。
+    assert!(!shape.contains("fn v.shape.mul(a: u32, b: u32) -> u32 uses [] panics never pub"), "{}", shape);
+}

@@ -5,9 +5,9 @@ const shortener.http.MAX_BODY: usize = 4096usize
 const shortener.http.MAX_HEAD: usize = 8192usize pub
 
 type shortener.http.Head pub
-    content_length: usize
-    method: shortener.http.Method
-    path: alloc.string.String<std.alloc.System>
+    content_length: usize pub
+    method: shortener.http.Method pub
+    path: alloc.string.String<std.alloc.System> pub
 end shortener.http.Head
 
 enum shortener.http.Method derive [Debug, Clone, Copy, PartialEq] pub
@@ -17,21 +17,21 @@ enum shortener.http.Method derive [Debug, Clone, Copy, PartialEq] pub
 end shortener.http.Method
 
 type shortener.http.Reply pub
-    body: alloc.string.String<std.alloc.System>
-    location: alloc.string.String<std.alloc.System>
-    status: u16
+    body: alloc.string.String<std.alloc.System> pub
+    location: alloc.string.String<std.alloc.System> pub
+    status: u16 pub
 end shortener.http.Reply
 
 type shortener.http.Request pub
-    body: alloc.string.String<std.alloc.System>
-    method: shortener.http.Method
-    path: alloc.string.String<std.alloc.System>
+    body: alloc.string.String<std.alloc.System> pub
+    method: shortener.http.Method pub
+    path: alloc.string.String<std.alloc.System> pub
 end shortener.http.Request
 
 type shortener.http.Response pub
-    body: alloc.string.String<std.alloc.System>
-    location: alloc.string.String<std.alloc.System>
-    status: u16
+    body: alloc.string.String<std.alloc.System> pub
+    location: alloc.string.String<std.alloc.System> pub
+    status: u16 pub
 end shortener.http.Response
 
 fn shortener.http.build_request(method: &str, path: &str, body: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
