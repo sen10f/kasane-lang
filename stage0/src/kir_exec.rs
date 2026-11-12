@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::kir::{Aop, BoolOp, Cc, Mode, Module, Op, Term, VId};
+use crate::kir::{size_of, AggDef, AggKind, Aop, BoolOp, Cc, Field, Mode, Module, Op, Term, Ty, VId};
 
 /// 木走査インタプリタの呼び出し深さの上限 (`interp.rs` の `depth > 2500`)。
 const MAX_DEPTH: usize = 2500;
@@ -28,6 +28,42 @@ struct Frame {
     vals: Vec<i128>,
     /// 呼び出し元で結果を受ける値番号。
     dst: Option<VId>,
+    /// この呼び出しが始まったときの集成体の置き場の長さ (戻るときにここまで切り詰める)。
+    hbase: usize,
+}
+
+/// 集成体の値の読み出し: `t` の値を、バイト列 `buf` の `off` から取る (集成体は置き場に複製して、その添字を返す)。
+fn read_scalar(buf: &[u8], off: usize, t: Ty) -> i128 {
+    match t {
+        Ty::Bool => (buf[off] != 0) as i128,
+        Ty::Unit => 0,
+        _ => {
+            let n = size_of(&[], t) as usize;
+            let mut raw = [0u8; 16];
+            raw[..n].copy_from_slice(&buf[off..off + n]);
+            t.wrap(u128::from_le_bytes(raw) as i128)
+        }
+    }
+}
+
+/// 値 `v` (スカラー、または置き場の添字の集成体) を、バイト列 `buf` の `off` に書く。
+fn write_val(buf: &mut [u8], off: usize, aggs: &[AggDef], t: Ty, v: i128, heap: &[Vec<u8>]) {
+    if let Ty::Agg(_) = t {
+        let src = &heap[v as usize];
+        buf[off..off + src.len()].copy_from_slice(src);
+    } else {
+        let n = size_of(aggs, t) as usize;
+        let bytes = (v as u128).to_le_bytes();
+        buf[off..off + n].copy_from_slice(&bytes[..n]);
+    }
+}
+
+/// 構造体・タプルのオフセット `off` のフィールドの型。
+fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
+    match &d.kind {
+        AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().find(|f: &&Field| f.off == off).map(|f| f.ty),
+        AggKind::Enum(_) => None,
+    }
 }
 
 /// 整数の算術。結果は型の範囲内に収まる値か、panic の文言。
@@ -89,14 +125,19 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
         return Err(format!("関数 {} の引数の個数が違う", key));
     }
     let counts: Vec<usize> = m.funcs.iter().map(|f| f.value_count()).collect();
-    let enter = |f: usize, args: &[i128], dst: Option<VId>| -> Frame {
+    // 集成体の置き場: 集成体の値は、ここにバイト列として置き、値 (i128) はその添字で表す。値は不変。
+    let mut heap: Vec<Vec<u8>> = vec![];
+    if matches!(m.funcs[entry].ret, Ty::Agg(_)) || m.funcs[entry].params().iter().any(|(_, t)| matches!(t, Ty::Agg(_))) {
+        return Err(format!("関数 {} は集成体を引数・戻り値に持つ (この入口では扱えない)", key));
+    }
+    let enter = |f: usize, args: &[i128], dst: Option<VId>, hbase: usize| -> Frame {
         let mut vals = vec![0i128; counts[f]];
         for ((v, _), a) in m.funcs[f].params().iter().zip(args.iter()) {
             vals[*v as usize] = *a;
         }
-        Frame { f, blk: 0, ip: 0, vals, dst }
+        Frame { f, blk: 0, ip: 0, vals, dst, hbase }
     };
-    let mut stack = vec![enter(entry, args, None)];
+    let mut stack = vec![enter(entry, args, None, 0)];
     loop {
         let top = stack.len() - 1;
         let (fi, bi, ip) = (stack[top].f, stack[top].blk, stack[top].ip);
@@ -141,8 +182,61 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         return Err(format!("呼び先 {} がない", callee));
                     };
                     let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
-                    stack.push(enter(ci, &argv, Some(inst.dst)));
+                    stack.push(enter(ci, &argv, Some(inst.dst), heap.len()));
                     continue;
+                }
+                Op::Make { variant, fields } => {
+                    let Ty::Agg(ai) = inst.ty else {
+                        return Err("make の結果が集成体でない".to_string());
+                    };
+                    let d = &m.aggs[ai as usize];
+                    let mut buf = vec![0u8; d.size as usize];
+                    let fdefs: &[Field] = match (&d.kind, variant) {
+                        (AggKind::Enum(vs), Some(k)) => {
+                            buf[0..4].copy_from_slice(&(*k as i32).to_le_bytes());
+                            &vs[*k as usize].fields
+                        }
+                        (AggKind::Struct(fs) | AggKind::Tuple(fs), None) => fs,
+                        _ => return Err("make の変種が集成体の種類と合わない".to_string()),
+                    };
+                    for (fd, a) in fdefs.iter().zip(fields) {
+                        let v = get(&stack[top], a);
+                        write_val(&mut buf, fd.off as usize, &m.aggs, fd.ty, v, &heap);
+                    }
+                    heap.push(buf);
+                    (heap.len() - 1) as i128
+                }
+                Op::Field { a, off } => {
+                    let h = get(&stack[top], a) as usize;
+                    let o = *off as usize;
+                    match inst.ty {
+                        Ty::Agg(ai) => {
+                            let n = m.aggs[ai as usize].size as usize;
+                            let sub = heap[h][o..o + n].to_vec();
+                            heap.push(sub);
+                            (heap.len() - 1) as i128
+                        }
+                        t => read_scalar(&heap[h], o, t),
+                    }
+                }
+                Op::SetField { a, off, v } => {
+                    let h = get(&stack[top], a) as usize;
+                    let Ty::Agg(ai) = inst.ty else {
+                        return Err("setfield の結果が集成体でない".to_string());
+                    };
+                    let d = &m.aggs[ai as usize];
+                    let Some(fty) = field_ty_at(d, *off) else {
+                        return Err("setfield のフィールドがない".to_string());
+                    };
+                    let mut buf = heap[h].clone();
+                    let vv = get(&stack[top], v);
+                    write_val(&mut buf, *off as usize, &m.aggs, fty, vv, &heap);
+                    heap.push(buf);
+                    (heap.len() - 1) as i128
+                }
+                Op::Tag(a) => {
+                    let h = get(&stack[top], a) as usize;
+                    i32::from_le_bytes([heap[h][0], heap[h][1], heap[h][2], heap[h][3]]) as i128
                 }
             };
             stack[top].vals[inst.dst as usize] = result;
@@ -161,8 +255,17 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 }
             }
             Term::Ret(v) => {
-                let val = stack[top].vals[*v as usize];
+                let mut val = stack[top].vals[*v as usize];
                 let done = stack.pop().expect("フレーム");
+                // 戻る関数が作った集成体は捨てる。戻り値の集成体だけは、呼び出し元の置き場へ複製して残す。
+                if let Ty::Agg(_) = func.ret {
+                    let blob = heap[val as usize].clone();
+                    heap.truncate(done.hbase);
+                    heap.push(blob);
+                    val = (heap.len() - 1) as i128;
+                } else {
+                    heap.truncate(done.hbase);
+                }
                 match stack.last_mut() {
                     None => return Ok(Outcome::Value(val)),
                     Some(caller) => {
@@ -221,7 +324,7 @@ mod tests {
                 term: Term::Ret(2),
             }],
         };
-        Module { funcs: vec![f] }
+        Module { funcs: vec![f], ..Default::default() }
     }
 
     #[test]

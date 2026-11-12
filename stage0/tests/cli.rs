@@ -9531,3 +9531,252 @@ end t.Q.go
     let (_code, got, out) = eff_check_with("impl_eff_quiet", IMPL_EFF_PRELUDE, body);
     assert!(!got.iter().any(|c| c == "E4021"), "{}", out);
 }
+
+// ---- 集成体 (構造体・タプル・列挙型) の下ろし (設計_KIR.md 2.3、kir/aggregates) ----
+
+/// 構築・フィールドの読み書き・列挙型の変種と `match` の束縛・タプルの束縛・ループ・腕の中の代入を含む。
+/// `t.run_*` は整数だけを引数に取るので、`ksn kir <FQN> --run` で呼べる。`t.main` は木走査の検査。
+const KIR_AGG_SRC: &str = r#"type t.Box
+    p: t.Pt
+    ok: bool
+    n: i64
+end t.Box
+
+type t.Pt
+    x: i32
+    y: i32
+end t.Pt
+
+enum t.Sh
+    Circle(i64)
+    Rect(i64, i64)
+    Tag(bool, i64)
+    Empty
+end t.Sh
+
+fn t.area(s: t.Sh) -> i64 uses [] panics never
+    match s {
+        t.Sh.Circle(r) => r.wrapping_mul(3i64)
+        t.Sh.Rect(w, h) => w.wrapping_mul(h)
+        t.Sh.Tag(b, n) => {
+            if b {
+                n
+            } else {
+                0i64
+            }
+        }
+        t.Sh.Empty => 0i64
+    }
+end t.area
+
+fn t.area_of(c: i64) -> i64 uses [] panics never
+    t.area(t.Sh.Rect(c, 2i64)).wrapping_add(t.area(t.Sh.Tag(true, c)))
+end t.area_of
+
+fn t.arm(s: t.Sh) -> i64 uses [] panics never
+    let mut cur = 1i64
+    let mut sh = s
+    match sh {
+        t.Sh.Circle(r) => {
+            sh = t.Sh.Empty
+            cur = r
+        }
+        t.Sh.Rect(_, _) => {
+            cur = 2i64
+        }
+        t.Sh.Tag(_, _) => {
+            cur = 3i64
+        }
+        t.Sh.Empty => {
+            cur = 4i64
+        }
+    }
+    match sh {
+        t.Sh.Circle(_) => cur
+        t.Sh.Rect(_, _) => cur
+        t.Sh.Tag(_, _) => cur
+        t.Sh.Empty => cur.wrapping_add(100i64)
+    }
+end t.arm
+
+fn t.box_n(bx: t.Box) -> i64 uses [] panics never
+    if bx.ok {
+        bx.n.wrapping_add(10i64)
+    } else {
+        bx.n
+    }
+end t.box_n
+
+fn t.first(pr: (i32, bool)) -> i32 uses [] panics never
+    match pr {
+        (x, true) => x
+        (x, false) => 0i32
+    }
+end t.first
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.area(t.Sh.Circle(4i64)), 12i64)
+    core.check.eq(t.area(t.Sh.Rect(3i64, 5i64)), 15i64)
+    core.check.eq(t.area(t.Sh.Tag(true, 9i64)), 9i64)
+    core.check.eq(t.area(t.Sh.Tag(false, 9i64)), 0i64)
+    core.check.eq(t.area(t.Sh.Empty), 0i64)
+    core.check.eq(t.box_n(t.mk_box(1i32, 2i32, true)), 15i64)
+    core.check.eq(t.px(t.mk_box(1i32, 2i32, true)), 1002i32)
+    core.check.eq(t.first(t.pair(7i32)), 7i32)
+    core.check.eq(t.area(t.pick(t.Sh.Circle(6i64))), 36i64)
+    core.check.eq(t.walk(4i32), 604i32)
+    core.check.eq(t.arm(t.Sh.Circle(8i64)), 108i64)
+    core.check.eq(t.arm(t.Sh.Rect(8i64, 1i64)), 2i64)
+    core.check.eq(t.tup(9i32), 9i32)
+    core.check.eq(t.area_of(4i64), 12i64)
+    core.check.eq(t.run_arm(8i64), 108i64)
+    core.check.eq(t.run_arm2(8i64), 2i64)
+    core.check.eq(t.run_box(1i32, 2i32), 15i64)
+    core.check.eq(t.run_first(7i32), 7i32)
+    core.check.eq(t.run_pick(6i64), 36i64)
+    core.check.eq(t.run_px(1i32, 2i32), 1002i32)
+    core.check.eq(t.run_tag(true, 9i64), 9i64)
+    core.check.eq(t.run_tag(false, 9i64), 0i64)
+    Ok(())
+end t.main
+
+fn t.mk_box(a: i32, b: i32, f: bool) -> t.Box uses [] panics never
+    let p = t.Pt { x: a, y: b }
+    t.Box { p: p, ok: f, n: 5i64 }
+end t.mk_box
+
+fn t.pair(a: i32) -> (i32, bool) uses [] panics never
+    (a, true)
+end t.pair
+
+fn t.pick(s: t.Sh) -> t.Sh uses [] panics never
+    match s {
+        t.Sh.Circle(r) => t.Sh.Rect(r, r)
+        t.Sh.Rect(w, h) => t.Sh.Rect(w, h)
+        t.Sh.Tag(b, n) => t.Sh.Tag(b, n)
+        t.Sh.Empty => t.Sh.Empty
+    }
+end t.pick
+
+fn t.px(bx: t.Box) -> i32 uses [] panics never
+    bx.p.x.wrapping_mul(1000i32).wrapping_add(bx.p.y)
+end t.px
+
+fn t.run_arm(c: i64) -> i64 uses [] panics never
+    t.arm(t.Sh.Circle(c))
+end t.run_arm
+
+fn t.run_arm2(c: i64) -> i64 uses [] panics never
+    t.arm(t.Sh.Rect(c, 1i64))
+end t.run_arm2
+
+fn t.run_box(a: i32, b: i32) -> i64 uses [] panics never
+    t.box_n(t.mk_box(a, b, true))
+end t.run_box
+
+fn t.run_first(a: i32) -> i32 uses [] panics never
+    t.first(t.pair(a))
+end t.run_first
+
+fn t.run_pick(c: i64) -> i64 uses [] panics never
+    t.area(t.pick(t.Sh.Circle(c)))
+end t.run_pick
+
+fn t.run_px(a: i32, b: i32) -> i32 uses [] panics never
+    t.px(t.mk_box(a, b, false))
+end t.run_px
+
+fn t.run_tag(b: bool, c: i64) -> i64 uses [] panics never
+    t.area(t.Sh.Tag(b, c))
+end t.run_tag
+
+fn t.tup(a: i32) -> i32 uses [] panics never
+    let (x, ok) = t.pair(a)
+    if ok {
+        x
+    } else {
+        0i32
+    }
+end t.tup
+
+fn t.walk(n: i32) -> i32 uses [] panics never
+    let mut acc = t.Pt { x: 0i32, y: 0i32 }
+    let mut i = 0i32
+    while i < n {
+        acc.x = acc.x.wrapping_add(i)
+        acc.y = acc.y.wrapping_add(1i32)
+        i = i.wrapping_add(1i32)
+    }
+    acc.x.wrapping_mul(100i32).wrapping_add(acc.y)
+end t.walk
+"#;
+
+#[test]
+fn kir_agg_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の検査が通ること、参照実行器 (`ksn kir --run`) の値が同じ期待値であること。
+    let t = Tmp::new("kir_agg_values", KIR_AGG_SRC);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.run_arm", &["8"], "108"),
+        ("t.run_arm2", &["8"], "2"),
+        ("t.run_box", &["1", "2"], "15"),
+        ("t.run_first", &["7"], "7"),
+        ("t.run_pick", &["6"], "36"),
+        ("t.run_px", &["1", "2"], "1002"),
+        ("t.run_tag", &["true", "9"], "9"),
+        ("t.run_tag", &["false", "9"], "0"),
+        ("t.walk", &["4"], "604"),
+        ("t.walk", &["10"], "4510"),
+        ("t.tup", &["9"], "9"),
+        ("t.area_of", &["4"], "12"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+#[test]
+fn kir_agg_module_text_declares_the_layout() {
+    // 型の宣言の行 (大きさ・整列・フィールドのオフセット) と、本体の命令が出る。出力は読み直せる (cmd_kir が確かめる)。
+    let t = Tmp::new("kir_agg_text", KIR_AGG_SRC);
+    let o = run(&["kir", "t.walk"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("agg#0 struct t.Pt size=8 align=4 {x:i32@0 y:i32@4}"), "{}", out);
+    assert!(out.contains("= setfield %"), "{}", out);
+}
+
+#[test]
+fn kir_agg_refuses_generic_types_with_a_reason() {
+    // 型引数付きの型は段階 1 の型に入らない (単相化した配置をまだ持たない)。その関数は理由付きで未対応になる。
+    let src = "type t.G[T]
+    v: T
+end t.G
+
+fn t.gv(_g: t.G<i32>) -> i32 uses [] panics never
+    0i32
+end t.gv
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("kir_agg_refuse", src);
+    let o = run(&["kir", "t.gv"], &t.0);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("t.gv は未対応"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn kir_agg_entry_with_an_aggregate_value_is_refused() {
+    // 入口 (`--run`) は整数と bool の引数・戻り値だけ。集成体の関数は表示だけできる。
+    let t = Tmp::new("kir_agg_entry", KIR_AGG_SRC);
+    let o = run(&["kir", "t.mk_box", "--run", "1", "2", "true"], &t.0);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("集成体を引数・戻り値に持つ"), "{}", text(&o.stderr));
+}
