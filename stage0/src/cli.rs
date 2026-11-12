@@ -341,13 +341,98 @@ fn is_pkg_name(s: &str) -> bool {
 
 fn cmd_check(json: bool) -> i32 {
     let mut rep = Report::new(json);
-    match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|_| ())) {
+    match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|(_, prog, user)| crate::kir_lower::dump_hidden(prog.as_ref(), &user))) {
         Ok(()) => {}
         Err(e) => rep.add(&e.code, &e.msg, None, 1, 1, true),
     }
     attach_fixes(&mut rep.items);
     rep.flush();
     if rep.fatal() { 1 } else { 0 }
+}
+
+/// `ksn kir <FQN> [--run <引数>...]` (隠し機能、設計_KIR.md 段階 1)。
+/// 関数の KIR を出す。`--run` を付けると、出した KIR を読み直して参照実行器で走らせる (木走査の `ksn run` と結果を比べるため)。
+fn cmd_kir(rest: &[String]) -> i32 {
+    let Some(fqn) = rest.first() else {
+        eprintln!("usage: ksn kir <FQN> [--run <args>...]");
+        return 2;
+    };
+    let run = rest.get(1).is_some_and(|s| s == "--run");
+    let mut rep = Report::new(false);
+    let (prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false)) {
+        Ok((_, Some(prog), user)) if !rep.fatal() => (prog, user),
+        Ok(_) => {
+            rep.flush();
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 2;
+        }
+    };
+    let lo = crate::kir_lower::lower_user(&prog, &user);
+    if lo.module.find(fqn).is_none() {
+        match lo.unsupported.iter().find(|(k, _)| k == fqn) {
+            Some((_, why)) => eprintln!("ksn kir: {} は未対応: {}", fqn, why),
+            None => eprintln!("ksn kir: {} はユーザの関数ではない", fqn),
+        }
+        return 1;
+    }
+    let text = crate::kir::print_module(&lo.module.reachable(fqn));
+    // 出力は必ず読み直せること (往復) と検査を通ることを確かめてから使う。
+    let back = match crate::kir::parse_module(&text) {
+        Ok(m) if crate::kir::print_module(&m) == text && crate::kir::verify_module(&m).is_empty() => m,
+        Ok(_) => {
+            eprintln!("ksn kir: 内部エラー: KIR の往復または検査が一致しない");
+            return 3;
+        }
+        Err(e) => {
+            eprintln!("ksn kir: 内部エラー: {}", e);
+            return 3;
+        }
+    };
+    if !run {
+        print!("{}", text);
+        return 0;
+    }
+    let mut args = vec![];
+    for a in &rest[2..] {
+        let v = match a.as_str() {
+            "true" => 1,
+            "false" => 0,
+            s => match s.parse::<i128>() {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("ksn kir: 引数 {} は整数か bool のはず", s);
+                    return 2;
+                }
+            },
+        };
+        args.push(v);
+    }
+    let ret = back.find(fqn).map(|f| f.ret);
+    match crate::kir_exec::run(&back, fqn, &args) {
+        Ok(crate::kir_exec::Outcome::Value(v)) => {
+            match ret {
+                Some(crate::kir::Ty::Bool) => println!("{}", v != 0),
+                Some(crate::kir::Ty::Unit) => println!("()"),
+                _ => println!("{}", v),
+            }
+            0
+        }
+        Ok(crate::kir_exec::Outcome::Panic(m)) => {
+            eprintln!("panic: {}", m);
+            101
+        }
+        Ok(crate::kir_exec::Outcome::StackOverflow) => {
+            eprintln!("stack overflow");
+            102
+        }
+        Err(e) => {
+            eprintln!("ksn kir: {}", e);
+            2
+        }
+    }
 }
 
 /// `ksn todo`: `core.panic.todo()` の呼び出し (未実装の穴) を一覧する。
@@ -1533,6 +1618,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "todo" => cmd_todo(),
         "context" => cmd_context(&rest),
         "explain" => cmd_explain(&rest),
+        "kir" => cmd_kir(&rest),
         "build" => cmd_build(&rest, None),
         "update" => cmd_update(),
         "vendor" => cmd_vendor(),
