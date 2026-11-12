@@ -8318,3 +8318,53 @@ fn bundle_is_rebuilt_when_sources_change() {
 
     let _ = fs::remove_dir_all(&cache);
 }
+
+// ---- 4.1 シャドーイング: 関数ヘッダの引数名と `import` 末尾名の衝突 (E1021) ----
+
+const SHADOW_UTIL: &str = "fn t.util.f() -> u8 uses [] panics never\n    1u8\nend t.util.f\n";
+
+#[test]
+fn shadow_header_arg_vs_import_tail_is_e1021() {
+    // 本体の束縛 (let) と同じく、引数名が import 末尾名と同じならシャドーイング。
+    let t = Tmp::new("shadow_hdr_pos", &main_wrap("", ""));
+    fs::create_dir_all(t.0.join("src/t")).unwrap();
+    fs::write(t.0.join("src/t/util.ksnl"), SHADOW_UTIL).unwrap();
+    fs::write(
+        t.0.join("src").join("t.ksnl"),
+        "import t.util\n\nfn t.g(util: u8) -> u8 uses [] panics never\n    util\nend t.g\n\n\
+         fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(t.g(util.f()))\n    Ok(())\nend t.main\n",
+    )
+    .unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1021"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn shadow_header_arg_without_import_is_clean() {
+    // import が無ければ、同じ引数名でもシャドーイングではない。
+    let t = Tmp::new(
+        "shadow_hdr_neg",
+        "fn t.g(util: u8) -> u8 uses [] panics never\n    util\nend t.g\n\n\
+         fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(t.g(1u8))\n    Ok(())\nend t.main\n",
+    );
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1021"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn shadow_header_arg_vs_import_of_other_file_is_clean() {
+    // `import` は宣言されたファイルの中だけで可視。別ファイルの関数の引数名は衝突しない。
+    let t = Tmp::new("shadow_hdr_other", &main_wrap("", ""));
+    fs::create_dir_all(t.0.join("src/t")).unwrap();
+    fs::write(t.0.join("src/t/util.ksnl"), SHADOW_UTIL).unwrap();
+    fs::write(
+        t.0.join("src").join("t.ksnl"),
+        "import t.util\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(util.f())\n    Ok(())\nend t.main\n",
+    )
+    .unwrap();
+    fs::write(t.0.join("src/t/other.ksnl"), "fn t.other.g(util: u8) -> u8 uses [] panics never\n    util\nend t.other.g\n")
+        .unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1021"), "{}", text(&o.stdout));
+}
