@@ -1,0 +1,12 @@
+fn t.bad(l: &std.net.TcpListener) -> Result<(), std.net.Error> uses [alloc, io.net] panics never
+    let s = l.accept()?
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match v.push(s) {
+        Ok(_u) => Ok(())
+        Err(_e) => Ok(())
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

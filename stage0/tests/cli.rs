@@ -84,6 +84,12 @@ const KNOWN_HOLES: &[&str] = &[
     "linear_dropped_after_try",
     // `&u32` を `u32` として返す (型推論が参照を透過的に扱う)。
     "wrong_ref_level",
+    // 線形値を一部の分岐でしか消費しない (`if flag { s.close() }`)。未使用でなければ漏れを検出しない。
+    "linear_leak_one_branch",
+    // `core.mem.drop(s)` で線形値 (TcpStream) をそのまま捨てられる (`drop[T]` は線形でない T 用のはず)。
+    "linear_dropped_by_mem_drop",
+    // 線形値を `Vec<T>` に `push` できる (Vec の T は線形でないはず)。Vec が落ちると閉じられない。
+    "linear_pushed_into_vec",
 ];
 
 #[test]
