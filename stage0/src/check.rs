@@ -242,6 +242,9 @@ pub struct Checker<'a> {
     moved: BTreeMap<String, usize>,
     final_env: HashMap<String, V>,
     graph: BTreeMap<String, BTreeSet<String>>,
+    /// 呼び出しグラフのクロージャの節 (`関数名#番号`) → (パラメータの型注釈, 本体)。
+    /// `stack` の見積り (E4012) でクロージャの節のフレームを計算するのに使う (5.3)。
+    closure_frames: BTreeMap<String, (Vec<V>, V)>,
     /// 現在の関数のファイルで `import` したモジュールの末尾名 (シャドーイング検査用)。
     import_tails: HashSet<String>,
     /// 現在の関数のファイルで `import` したモジュールの完全名 (セグメント列)。本体でのFQN参照の検出用。
@@ -306,6 +309,7 @@ impl<'a> Checker<'a> {
             moved: BTreeMap::new(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
+            closure_frames: BTreeMap::new(),
             import_tails: HashSet::new(),
             imported_modules: Vec::new(),
         }
@@ -1896,6 +1900,7 @@ impl<'a> Checker<'a> {
         for (from, tos) in tk.edges {
             self.graph.entry(from).or_default().extend(tos);
         }
+        self.closure_frames = tk.closure_frames;
         // 従来の検査と新しい型推論が同じ誤りを同じ文面で報告したときは、1 件にまとめる。
         let mut seen = HashSet::new();
         self.diags.retain(|d| seen.insert((d.file.clone(), d.code.clone(), d.fqn.clone(), d.line, d.msg.clone())));
@@ -2786,6 +2791,23 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 1 つのフレームの大きさの見積り: 戻りアドレスと保存したフレームポインタ (16) + 引数と局所変数の
+    /// 大きさ + 一時値の余裕 (16)。型の注釈がない局所変数 (とパラメータ) は 1 語 (8) とみなす。
+    /// 本体の `let` は入れ子のクロージャの中のものも数える (多めに見積もる側の近似)。
+    fn frame_size<'v>(&self, params: impl Iterator<Item = &'v V>, body: &V) -> u64 {
+        let mut all = vec![];
+        walk(body, &mut all);
+        let mut bytes: u64 = 16 + 16;
+        for p in params {
+            bytes += round8(self.ty_size(p, 0));
+        }
+        for l in all.iter().filter(|x| nname(x) == "Let") {
+            let ann = &nf(l)[2];
+            bytes += if is_nil(ann) { 8 } else { round8(self.ty_size(ann, 0)) };
+        }
+        bytes
+    }
+
     fn go(&self, n: &str, path: &BTreeSet<String>, names: &HashMap<String, usize>, memo: &mut HashMap<String, u64>) -> u64 {
         if path.contains(n) {
             return 0;
@@ -2794,23 +2816,16 @@ impl<'a> Checker<'a> {
             return v;
         }
         let frame = match names.get(n) {
-            None => 32,
             Some(&i) => {
                 let d = self.def(i);
-                let mut all = vec![];
-                walk(d.body.as_ref().unwrap(), &mut all);
-                // 戻りアドレスと保存したフレームポインタ (16) + 引数と局所変数の大きさ + 一時値の余裕 (16)。
-                // 型の注釈がない局所変数は 1 語 (8) とみなす。
-                let mut bytes: u64 = 16 + 16;
-                for p in &d.params {
-                    bytes += round8(self.ty_size(&p.1, 0));
-                }
-                for l in all.iter().filter(|x| nname(x) == "Let") {
-                    let ann = &nf(l)[2];
-                    bytes += if is_nil(ann) { 8 } else { round8(self.ty_size(ann, 0)) };
-                }
-                bytes
+                self.frame_size(d.params.iter().map(|p| &p.1), d.body.as_ref().unwrap())
             }
+            // クロージャの節 (5.3) も、関数と同じく引数と `let` の型の大きさから見積もる。
+            None => match self.closure_frames.get(n) {
+                Some((ps, body)) => self.frame_size(ps.iter(), body),
+                // 本体の分からない呼び出し先 (外部の関数など) は従来どおり 32 バイト。
+                None => 32,
+            },
         };
         let mut np = path.clone();
         np.insert(n.to_string());
