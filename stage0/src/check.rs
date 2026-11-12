@@ -1696,6 +1696,16 @@ impl<'a> Checker<'a> {
         if self.method_known(name) {
             return;
         }
+        // 整数の `/` `%` に wrapping_ / saturating_ の形は無い。近い名前 (`rem` は f32/f64 のもの) を出すと誤誘導する。
+        let hint = match name {
+            "wrapping_div" | "saturating_div" => Some("integer `/` has no wrapping_ or saturating_ form; use `checked_div(b)` (Option: handle None with `match`)"),
+            "wrapping_rem" | "saturating_rem" => Some("integer `%` has no wrapping_ or saturating_ form; use `checked_rem(b)` (Option: handle None with `match`)"),
+            _ => None,
+        };
+        if let Some(h) = hint {
+            self.diag("E1108", format!("unknown method `{}`; {}", name, h), di, line);
+            return;
+        }
         let msg = match self.nearest_method(name) {
             Some(n) => format!("unknown method `{}`; did you mean `{}`?", name, n),
             None => format!("unknown method `{}`", name),
@@ -2032,15 +2042,32 @@ impl<'a> Checker<'a> {
                 s if s.contains("`/`") => "div",
                 _ => "rem",
             };
-            let how = if name == "neg" {
-                "write `x.checked_neg()` (returns Option) or `x.wrapping_neg()`".to_string()
-            } else {
-                format!(
-                    "write `a.checked_{n}(b)` (returns Option: use `match` to handle None) or `a.wrapping_{n}(b)` / `a.saturating_{n}(b)` (return the integer)",
-                    n = name
-                )
+            // `/` と `%` は 0 で割ると panic し、wrapping_/saturating_ の形は無い (num.sig)。
+            // 具体的な置き換えと、関数ヘッダを `panics may` にする選択肢の両方を示す。
+            let (cause, how, note) = match name {
+                "neg" => (
+                    "on overflow",
+                    "write `x.checked_neg()` (Option: handle None with `match`) or `x.wrapping_neg()` (returns the integer)".to_string(),
+                    String::new(),
+                ),
+                "div" | "rem" => (
+                    "(division by zero or overflow)",
+                    format!("write `a.checked_{n}(b)` (Option: handle None with `match`)", n = name),
+                    format!(" (`wrapping_{n}` and `saturating_{n}` do not exist)", n = name),
+                ),
+                _ => (
+                    "on overflow",
+                    format!(
+                        "write `a.checked_{n}(b)` (Option: handle None with `match`), `a.wrapping_{n}(b)` or `a.saturating_{n}(b)` (return the integer)",
+                        n = name
+                    ),
+                    String::new(),
+                ),
             };
-            let msg = format!("integer {} may panic on overflow; {}", what, how);
+            let msg = format!(
+                "integer {} may panic {}; {}, or declare `panics may` on the function header{}",
+                what, cause, how, note
+            );
             self.tdiag("E4004", msg, line);
         }
     }
