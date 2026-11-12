@@ -203,6 +203,7 @@ fn build_program(l: &Loaded) -> (Program, Vec<usize>) {
         }
     }
     crate::infer::run(&mut prog);
+    crate::infer::annotate_int_lits(&mut prog, &user);
     (prog, user)
 }
 
@@ -651,12 +652,15 @@ fn spawn_watcher(l: &Loaded) -> std::sync::mpsc::Receiver<Program> {
             for d in &dep_defs {
                 prog.add_def(d.clone());
             }
+            let mut user = vec![];
             for w in &ws {
                 for d in &w.defs {
+                    user.push(prog.defs.len());
                     prog.add_def(d.clone());
                 }
             }
             crate::infer::run(&mut prog);
+            crate::infer::annotate_int_lits(&mut prog, &user);
             if tx.send(prog).is_err() {
                 return;
             }

@@ -10911,3 +10911,78 @@ fn kir_coll_dump_shows_drops_and_static_data() {
     let s = run(&["kir", "t.str_len"], &t.0);
     assert!(text(&s.stdout).contains("static.bytes 68c3a96c6c6f"), "{}", text(&s.stdout));
 }
+
+// ---- 型が決まった接尾辞なし整数リテラル: 木走査も型表の型で計算する (レビュー #1) ----
+
+/// 辞書順 (count, dbl, main, plus, wrapped) に並べた定義。`main` の本体だけ差し替える。
+fn lit_src(main_body: &str) -> String {
+    format!(
+        "fn t.count(n: u32) -> u8 uses [] panics may
+    let mut c = 0
+    let mut i = 0u32
+    while i < n {{
+        c = c + 1
+        i = i + 1u32
+    }}
+    c
+end t.count
+
+fn t.dbl(a: u8) -> u8 uses [] panics never
+    let z = if a > 1u8 {{
+        200
+    }} else {{
+        a
+    }}
+    z.wrapping_add(z)
+end t.dbl
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+{}    Ok(())
+end t.main
+
+fn t.plus(o: Option<u8>) -> u8 uses [] panics may
+    let w = o.unwrap_or(255)
+    w + 1
+end t.plus
+
+fn t.wrapped(o: Option<u8>) -> u8 uses [] panics never
+    let w = o.unwrap_or(255)
+    w.wrapping_add(1)
+end t.wrapped
+
+test t.dbl.test_lit
+    core.check.eq(t.dbl(5u8), 144u8)
+end t.dbl.test_lit
+
+test t.wrapped.test_lit
+    core.check.eq(t.wrapped(None), 0u8)
+end t.wrapped.test_lit
+",
+        main_body
+    )
+}
+
+#[test]
+fn untyped_int_literals_take_their_inferred_type_in_the_tree_walker() {
+    // 3 形とも、木走査 (`run` / `test`)・KIR (`kir --run`)・機械語 (`test --both`) の結果が一致する。
+    let t = Tmp::new("lit_types", &lit_src("    let _x = t.count(300u32)\n"));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
+    let k = run(&["kir", "t.count", "--run", "300"], &t.0);
+    assert_eq!(k.status.code(), Some(101));
+    assert!(text(&k.stderr).contains("panic: attempt to add with overflow"), "{}", text(&k.stderr));
+    assert_eq!(text(&run(&["kir", "t.count", "--run", "200"], &t.0).stdout).trim(), "200");
+    assert_eq!(text(&run(&["kir", "t.dbl", "--run", "5"], &t.0).stdout).trim(), "144");
+    for args in [&["test"][..], &["test", "--both"][..]] {
+        let o = run(args, &t.0);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{:?}\n{}{}", args, out, text(&o.stderr));
+        assert!(out.contains("2 passed; 0 failed"), "{:?}\n{}", args, out);
+    }
+    // `w + 1` (`w` は u8 の 255): 木走査も overflow で panic する。
+    let t2 = Tmp::new("lit_types_plus", &lit_src("    let _x = t.plus(None)\n"));
+    let o = run(&["run"], &t2.0);
+    assert_eq!(o.status.code(), Some(101), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
+}
