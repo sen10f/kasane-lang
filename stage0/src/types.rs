@@ -213,9 +213,11 @@ pub struct TypeCk<'a> {
     pub closure_frames: std::collections::BTreeMap<String, (Vec<V>, V)>,
     /// 推論中のクロージャ本体の効果 (`closure_nodes` と同じ深さのスタック)。型で解決できた呼び出しの
     /// 効果と添字の panic だけを足す (下からの近似。分からない呼び出しは足さない = 誤検出を出さない)。
-    eff_acc: Vec<(BTreeSet<String>, bool)>,
-    /// クロージャの節 → 本体から推論した効果 (uses, panics may か)。
-    closure_effs: HashMap<String, (BTreeSet<String>, bool)>,
+    /// 3 つ目は「推論が確実でない」印 (推論された関数 `infer.rs` の効果を含む呼び出しがあった、
+    /// または内側の確実でないクロージャを含む)。確実でない効果は境界の検査 (`check_closure_bounds`) に使わない。
+    eff_acc: Vec<(BTreeSet<String>, bool, bool)>,
+    /// クロージャの節 → 本体から推論した効果 (uses, panics may か, 確実でないか)。
+    closure_effs: HashMap<String, (BTreeSet<String>, bool, bool)>,
     /// 型で解決できた呼び出しの効果検査の義務 (check.rs が検査する)。
     pub eff_checks: Vec<EffCheck>,
 }
@@ -743,6 +745,10 @@ impl<'a> TypeCk<'a> {
         }
         // 効果 (4.3 / 5.1): 引数の個数が合う候補 (型で決まった所有者のメソッド) をすべて見る。
         // 検査は全候補が違反するときだけ、クロージャの効果には全候補に共通する部分だけを足す (保守側)。
+        // 候補が 1 つに決まるときだけ、`Fn` 境界の具体的な効果とクロージャの効果を比べる (5.1 / 4.3)。
+        if let [(di, _)] = fit.as_slice() {
+            self.check_closure_bounds(&self.p.defs[*di], 1, args, line);
+        }
         let effs: Vec<(String, Vec<String>, Option<String>, Vec<String>, Option<String>)> = fit
             .iter()
             .map(|(i, _)| {
@@ -1240,6 +1246,12 @@ impl<'a> TypeCk<'a> {
                 self.closure_nodes.pop();
                 // クロージャの `uses` / `panics` は本体から推論する (4.3)。型で解決できた呼び出しと添字だけ。
                 let effs = self.eff_acc.pop().unwrap_or_default();
+                // 内側のクロージャが確実でないなら、それを含む外側のクロージャも確実でない。
+                if effs.2 {
+                    if let Some(outer) = self.eff_acc.last_mut() {
+                        outer.2 = true;
+                    }
+                }
                 self.closure_effs.insert(node.clone(), effs);
                 if let Err(err) = self.unify2(&ret, &body) {
                     if let Some((want, got)) = self.ann_conflict(&ret, &body, &err) {
@@ -1490,6 +1502,7 @@ impl<'a> TypeCk<'a> {
     fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
         let d = &self.p.defs[i];
         self.add_edge(d.name.clone());
+        self.check_closure_bounds(d, 0, argt, line);
         // 効果 (4.3 / 5.1): 宣言どおりの効果は従来の検査 (check.rs の visit) が見るので、ここでは
         // `Fn` 境界に渡したクロージャから推論した部分だけを検査の義務にする。クロージャの中では
         // 実体化した効果全体をそのクロージャの効果に足す。
@@ -1675,7 +1688,7 @@ impl<'a> TypeCk<'a> {
                 continue;
             }
             let Ty::Closure { id: Some(node), .. } = self.deep(a) else { continue };
-            let Some((uses, may)) = self.closure_effs.get(&node) else { continue };
+            let Some((uses, may, _)) = self.closure_effs.get(&node) else { continue };
             for b in &bounds {
                 let bt = items(tel(b, 1));
                 let var = |i: usize, kind: &str| -> Option<String> {
@@ -1695,6 +1708,64 @@ impl<'a> TypeCk<'a> {
             }
         }
         out
+    }
+
+    /// 推論された関数 (`infer.rs` の上からの近似) の名前か。
+    fn inferred_def(&self, name: &str) -> bool {
+        self.p.defs.iter().any(|d| d.inferred && d.name == name)
+    }
+
+    /// `Fn` 境界の効果実引数が具体的な名前 (`[]` / `[io.console]`) や `never` のとき、渡したクロージャの
+    /// 確実な効果がそれを超えないかを検査する (4.3)。クロージャの効果は下からの近似 (確実に含まれる効果
+    /// だけ) なので、超えていれば境界の違反、分からなければ黙る。境界の効果変数 (`E` / `P`) は
+    /// `closure_effect_bind` が扱うので、ここでは具体名の部分だけを見る。
+    fn check_closure_bounds(&mut self, d: &Def, off: usize, argt: &[Ty], line: usize) {
+        let gn = d.gnames();
+        let mut out: Vec<(&'static str, String)> = vec![];
+        for (k, a) in argt.iter().enumerate() {
+            let Some(p) = d.params.get(k + off) else { break };
+            let Ty::Param(name) = from_v(&p.1, &gn) else { continue };
+            let bounds = self.fn_bound(d, &name);
+            if bounds.is_empty() {
+                continue;
+            }
+            let Ty::Closure { id: Some(node), .. } = self.deep(a) else { continue };
+            let Some((uses, may, unsure)) = self.closure_effs.get(&node) else { continue };
+            if *unsure {
+                continue;
+            }
+            for b in &bounds {
+                let bt = items(tel(b, 1));
+                if let Some(v) = bt.get(2).filter(|v| tag(v) == "effects") {
+                    let bl: Vec<String> = items(tel(v, 1)).iter().map(st).collect();
+                    // 効果変数 (大文字) を含む境界は、ここでは検査しない。
+                    if bl.iter().all(|e| e.chars().next().map_or(false, |c| c.is_lowercase())) {
+                        for e in uses.iter().filter(|e| !crate::check::covers(&bl, e)) {
+                            out.push((
+                                "E4001",
+                                format!(
+                                    "closure passed to `{}` uses effect `{}` outside the `Fn` bound's effects [{}]",
+                                    d.name,
+                                    e,
+                                    bl.join(", ")
+                                ),
+                            ));
+                        }
+                    }
+                }
+                if let Some(v) = bt.get(3).filter(|v| tag(v) == "panic") {
+                    if st(tel(v, 1)) == "never" && *may {
+                        out.push((
+                            "E4002",
+                            format!("closure passed to `{}` may panic but the `Fn` bound declares `panics never`", d.name),
+                        ));
+                    }
+                }
+            }
+        }
+        for (c, m) in out {
+            self.diag(c, m, line);
+        }
     }
 
     /// 呼び出し先 `d` の効果を実体化する。明示型引数があればそれで (check.rs と同じ `inst_def_effects`)、
@@ -1739,18 +1810,26 @@ impl<'a> TypeCk<'a> {
         if cands.is_empty() {
             return;
         }
-        if let Some(acc) = self.eff_acc.last_mut() {
+        if !self.eff_acc.is_empty() {
             let lower = |u: &Vec<String>| -> BTreeSet<String> {
                 u.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())).cloned().collect()
             };
+            // 推論された関数の効果は上からの近似 (infer.rs) なので、それが効果を足すときは確実でないとする。
+            let unsure = cands.iter().any(|c| {
+                self.inferred_def(&c.0) && (!lower(&c.1).is_empty() || c.2.as_deref() == Some("may"))
+            });
             let mut common = lower(&cands[0].1);
             for c in &cands[1..] {
                 let o = lower(&c.1);
                 common.retain(|e| o.contains(e));
             }
-            acc.0.extend(common);
-            if cands.iter().all(|c| c.2.as_deref() == Some("may")) {
-                acc.1 = true;
+            let all_may = cands.iter().all(|c| c.2.as_deref() == Some("may"));
+            if let Some(acc) = self.eff_acc.last_mut() {
+                acc.0.extend(common);
+                if all_may {
+                    acc.1 = true;
+                }
+                acc.2 |= unsure;
             }
             return;
         }
