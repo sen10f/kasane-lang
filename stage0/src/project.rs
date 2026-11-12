@@ -49,6 +49,47 @@ pub fn norm(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
+// ------------------------------------------------------------ 未保存バッファの上書き (ksn lsp 用)
+// パスごとに「ディスクの代わりに読む本文」を持つ。空の間は従来どおりディスクだけを読む。
+static OVERLAY: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
+
+fn overlay_key(path: &str) -> String {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        norm(p)
+    } else {
+        norm(&std::env::current_dir().unwrap_or_default().join(p))
+    }
+}
+
+/// 上書き本文を設定する (`None` で解除)。
+pub fn overlay_set(path: &str, text: Option<String>) {
+    let mut g = OVERLAY.lock().unwrap_or_else(|e| e.into_inner());
+    let m = g.get_or_insert_with(Default::default);
+    match text {
+        Some(t) => m.insert(overlay_key(path), t),
+        None => m.remove(&overlay_key(path)),
+    };
+}
+
+fn overlay_get(path: &str) -> Option<String> {
+    let g = OVERLAY.lock().unwrap_or_else(|e| e.into_inner());
+    g.as_ref().filter(|m| !m.is_empty()).and_then(|m| m.get(&overlay_key(path)).cloned())
+}
+
+/// 上書きがあればそれを、なければディスクの本文を返す。
+pub fn read_text(path: &str) -> Option<String> {
+    overlay_get(path).or_else(|| fs::read_to_string(path).ok())
+}
+
+fn overlay_paths_under(dir: &str) -> Vec<String> {
+    let g = OVERLAY.lock().unwrap_or_else(|e| e.into_inner());
+    let pre = format!("{}/", dir);
+    g.as_ref()
+        .map(|m| m.keys().filter(|k| k.starts_with(&pre) && (k.ends_with(".ksnl") || k.ends_with(".ksnh"))).cloned().collect())
+        .unwrap_or_default()
+}
+
 pub struct Source {
     pub path: String,
     #[allow(dead_code)]
@@ -70,8 +111,10 @@ pub fn module_of(path: &str, root: &str) -> String {
 
 impl Source {
     pub fn load(path: &str, srcdir: &str) -> Source {
-        let bytes = fs::read(path).unwrap_or_default();
-        let text = String::from_utf8_lossy(&bytes).to_string();
+        let text = match overlay_get(path) {
+            Some(t) => t,
+            None => String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).to_string(),
+        };
         Source::from_text(path, srcdir, text)
     }
 
@@ -235,8 +278,10 @@ pub fn load_dir_sources(srcdir: &Path) -> Vec<Source> {
     let mut paths = vec![];
     walk_files(srcdir, &["ksnl", "ksnh"], &mut paths);
     let mut ps: Vec<String> = paths.iter().map(|p| norm(p)).collect();
-    ps.sort();
     let sd = norm(srcdir);
+    ps.extend(overlay_paths_under(&sd));
+    ps.sort();
+    ps.dedup();
     ps.iter().map(|p| Source::load(p, &sd)).collect()
 }
 

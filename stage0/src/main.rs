@@ -13,6 +13,7 @@ mod infer;
 mod fmt;
 mod grammar;
 mod lint;
+mod lsp;
 mod project;
 mod interp;
 mod natives;
