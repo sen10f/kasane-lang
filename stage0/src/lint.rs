@@ -632,7 +632,8 @@ impl Lint {
         for m in re_let.captures_iter(&body) {
             let end = m.get(0).unwrap().end();
             let rest = body[end..].trim_start();
-            if rest.starts_with('{') {
+            // `let t.L { .. }` / `let t.V(..)` のパターン先頭のパス成分（`t`）は束縛ではない。
+            if rest.starts_with('{') || rest.starts_with('.') {
                 continue;
             }
             names.push(("let", m[1].to_string()));
@@ -649,8 +650,13 @@ impl Lint {
         let re_st = Regex::new(r"\blet [A-Za-z0-9_.]+ \{([^}]*)\}").unwrap();
         for m in re_st.captures_iter(&body) {
             for f in m[1].split(',') {
+                // フィールドの束縛先が単純な識別子のときだけ束縛とみなす（入れ子パターン `a: t.V(x)`・
+                // リテラル `a: 1u8` の文字列全体を名前として数えない）。
                 if let Some((_, v)) = f.split_once(':') {
-                    names.push(("let", v.split(':').next().unwrap().trim().to_string()));
+                    let v = v.split(':').next().unwrap().trim();
+                    if !v.is_empty() && v.chars().all(word_char) && !v.starts_with(|c: char| c.is_ascii_digit()) {
+                        names.push(("let", v.to_string()));
+                    }
                 }
             }
         }
