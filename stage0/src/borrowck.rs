@@ -77,14 +77,15 @@ struct Low<'a> {
     loops: Vec<(usize, usize)>,
     exit: usize,
     iters: usize,
-    /// `match` 式 (節点のアドレス) → その値を持つ合成の持ち主 (`$match0` など)。
-    /// 腕の値の借用を、腕の終わりでこの持ち主に集める (`let r = match .. { .. }` で `r` へ移す)。
-    match_vals: HashMap<usize, String>,
+    /// 値を持つ式 (`match` / `if`-else / ブロック式。節点のアドレス) → その値を持つ合成の持ち主 (`$val0` など)。
+    /// 各枝・各腕の値の借用を、枝の終わりでこの持ち主に集める (`let r = if .. { .. } else { .. }` で `r` へ移す)。
+    value_vals: HashMap<usize, String>,
 }
 
-/// `match` の値として腕の外へ運ぶ借用を、どの腕から集めるか。`true` は「全腕の和」
-/// (`None => &y` のような束縛を使わない腕の値も含める)。誤検出が出る場合は `false` にすると、
-/// 腕のパターンの束縛をそのまま値にする腕 (`Some(rr) => rr`) だけに後退する。
+/// 値を持つ式 (`match` の腕、`if` の枝、ブロック式) の値として外へ運ぶ借用を、どの枝から集めるか。
+/// `true` は「全枝の和」(`None => &y` や `else { &y }` のような束縛を使わない枝の値も含める)。
+/// 誤検出が出る場合は `false` にすると、枝のパターンの束縛をそのまま値にする腕 (`Some(rr) => rr`)
+/// だけに後退する (束縛を持たない `if` / ブロックの値は、この場合どれも運ばない)。
 const MATCH_VALUE_ALL_ARMS: bool = true;
 
 /// メソッドの `self` が受ける形。
@@ -229,8 +230,8 @@ impl<'a> Low<'a> {
                 _ => vec![],
             },
             "Try" => self.loan_sources(&nf(e)[0]),
-            // `match` の値: 各腕の値の借用の和 (腕の終わりで合成の持ち主に集めてある)
-            "Match" => match self.match_vals.get(&(e as *const V as usize)) {
+            // 値を持つ式: 各枝・各腕の値の借用の和 (枝の終わりで合成の持ち主に集めてある)
+            "Match" | "If" | "Block" => match self.value_vals.get(&(e as *const V as usize)) {
                 Some(h) => vec![Src::Alias(h.clone())],
                 None => vec![],
             },
@@ -396,13 +397,19 @@ impl<'a> Low<'a> {
         }
     }
 
-    /// 腕の値が運ぶ借用の出どころ。`Some(rr) => rr` なら腕の束縛 (= 被検査式のローン源を引き継いだもの)、
-    /// `None => &y` なら新しい借用。`MATCH_VALUE_ALL_ARMS` が偽なら前者 (腕の束縛そのもの) だけ。
-    fn arm_value_sources(&self, arm: &[V]) -> Vec<Src> {
-        let Some(tail) = Self::arm_tail(&arm[1]) else { return vec![] };
+    /// 値を持つ式 `e` (`match` / `if`-else / ブロック式) の持ち主を作って登録する。
+    fn value_holder(&mut self, e: &V) -> String {
+        let holder = format!("$val{}", self.value_vals.len());
+        self.value_vals.insert(e as *const V as usize, holder.clone());
+        holder
+    }
+
+    /// 枝の値 `body` が運ぶ借用の出どころ。`Some(rr) => rr` なら腕の束縛 (= 被検査式のローン源を引き継いだもの)、
+    /// `None => &y` / `else { &y }` なら新しい借用。`MATCH_VALUE_ALL_ARMS` が偽なら、
+    /// 枝の束縛 `binds` をそのまま値にする枝 (`Some(rr) => rr`) だけ。
+    fn value_sources(&self, binds: &[String], body: &V) -> Vec<Src> {
+        let Some(tail) = Self::arm_tail(body) else { return vec![] };
         if !MATCH_VALUE_ALL_ARMS {
-            let mut binds = vec![];
-            pat_binds(&arm[0], &mut binds);
             let is_bind = nname(tail) == "Path" && {
                 let segs = strs(&nf(tail)[0]);
                 segs.len() == 1 && binds.contains(&segs[0])
@@ -414,10 +421,10 @@ impl<'a> Low<'a> {
         self.loan_sources(tail)
     }
 
-    /// `match` の腕の終わり `end` で、腕の値の借用を合成の持ち主 `holder` に集める。
-    /// `Def` で前の値 (ループの前の周回など) を捨ててから持たせる。合流点では全腕の和になる。
-    fn collect_arm_value(&mut self, end: usize, holder: &str, arm: &[V]) {
-        let srcs = self.arm_value_sources(arm);
+    /// 枝の終わり `end` で、枝の値の借用を合成の持ち主 `holder` に集める。
+    /// `Def` で前の値 (ループの前の周回など) を捨ててから持たせる。合流点では全枝の和になる。
+    fn collect_value(&mut self, end: usize, holder: &str, binds: &[String], body: &V) {
+        let srcs = self.value_sources(binds, body);
         self.emit(end, Ev::Def(holder.to_string()));
         self.hold(end, Holder::Var(holder.to_string()), srcs);
     }
@@ -595,9 +602,17 @@ impl<'a> Low<'a> {
                 let (then_n, else_n, join) = (self.new_node(), self.new_node(), self.new_node());
                 self.edge(c, then_n);
                 self.edge(c, else_n);
+                // `else` のある `if` は値を持つ: 両枝の末尾の値の借用を、枝の終わりで合成の持ち主に集める
+                let holder = if is_nil(&f[2]) { None } else { Some(self.value_holder(e)) };
                 let t_end = self.lower_block(&f[1], then_n);
+                if let Some(h) = &holder {
+                    self.collect_value(t_end, h, &[], &f[1]);
+                }
                 self.edge(t_end, join);
                 let e_end = if is_nil(&f[2]) { else_n } else { self.lower_block(&f[2], else_n) };
+                if let Some(h) = &holder {
+                    self.collect_value(e_end, h, &[], &f[2]);
+                }
                 self.edge(e_end, join);
                 join
             }
@@ -658,8 +673,7 @@ impl<'a> Low<'a> {
                 if arms.is_empty() {
                     return c;
                 }
-                let holder = format!("$match{}", self.match_vals.len());
-                self.match_vals.insert(e as *const V as usize, holder.clone());
+                let holder = self.value_holder(e);
                 for arm in arms {
                     let a = items(arm);
                     let an = self.new_node();
@@ -672,7 +686,7 @@ impl<'a> Low<'a> {
                         self.hold(an, Holder::Var(b.clone()), srcs);
                     }
                     let end = self.lower_block(&a[1], an);
-                    self.collect_arm_value(end, &holder, a);
+                    self.collect_value(end, &holder, &binds, &a[1]);
                     self.edge(end, join);
                 }
                 join
@@ -719,7 +733,13 @@ impl<'a> Low<'a> {
                 }
                 cur
             }
-            "Block" => self.lower_block(e, cur),
+            "Block" => {
+                // ブロック式の値: 末尾の式の借用を、ブロックの終わりで合成の持ち主に集める
+                let holder = self.value_holder(e);
+                let end = self.lower_block(e, cur);
+                self.collect_value(end, &holder, &[], e);
+                end
+            }
             "Unsafe" => self.lower_block(&f[2], cur),
             "Call" => {
                 let callee = &f[0];
@@ -842,7 +862,7 @@ impl<'a> Checker<'a> {
             loops: vec![],
             exit: 0,
             iters: 0,
-            match_vals: HashMap::new(),
+            value_vals: HashMap::new(),
         };
         let entry = low.new_node();
         let exit = low.new_node();

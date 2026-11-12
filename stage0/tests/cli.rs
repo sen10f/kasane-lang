@@ -4946,3 +4946,159 @@ end t.main
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "ok\n", "{}", text(&o.stderr));
 }
+
+// ---- 借用の残り: if の値・ブロック式の値を通じた運搬 ----
+
+#[test]
+fn nll_rejects_a_mutation_while_an_if_value_carries_the_borrow() {
+    // `let r = if c { &x } else { &y }`: 両枝の和なので、then 枝の借用 (x) も r が持つ。
+    let (bad, out) = has_e3010(
+        "nll_if_val_then",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let b = true",
+            "let r = if b {",
+            "    &x",
+            "} else {",
+            "    &y",
+            "}",
+            "x = 3u8",
+            "core.check.eq(*r, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_borrowed_by_the_else_branch_of_an_if_value() {
+    let (bad, out) = has_e3010(
+        "nll_if_val_else",
+        "",
+        &[
+            "let x = 1u8",
+            "let mut y = 2u8",
+            "let b = false",
+            "let r = if b {",
+            "    &x",
+            "} else {",
+            "    &y",
+            "}",
+            "y = 3u8",
+            "core.check.eq(*r, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `y` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_block_value_carries_the_borrow() {
+    // `let r = { &x }`: ブロック式の末尾の式の借用が r に移る。
+    let (bad, out) = has_e3010(
+        "nll_block_val",
+        "",
+        &["let mut x = 1u8", "let r = {", "    &x", "}", "x = 3u8", "core.check.eq(*r, 1u8)"],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_an_if_value_nested_in_a_match_arm_carries_a_borrow() {
+    // 腕の中の `if` の値 (then 枝の `&x`) が match の値を経て r に移る。
+    let (bad, out) = has_e3010(
+        "nll_if_val_nested",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 9u8",
+            "let c = true",
+            "let r = match c {",
+            "    true => if c {",
+            "        &x",
+            "    } else {",
+            "        &y",
+            "    }",
+            "    false => &y",
+            "}",
+            "x = 2u8",
+            "core.check.eq(*r, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_accepts_an_if_value_that_copies_out_of_the_borrow() {
+    // 枝の値が `*r0` (コピー) なら、if の値は借用を運ばない。
+    let (bad, out) = has_e3010(
+        "nll_if_val_copy",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let r0 = &x",
+            "let b = true",
+            "let n = if b {",
+            "    *r0",
+            "} else {",
+            "    0u8",
+            "}",
+            "x = 3u8",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_an_if_value_that_is_dead_before_the_mutation() {
+    let (bad, out) = has_e3010(
+        "nll_if_val_dead",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let b = true",
+            "let r = if b {",
+            "    &x",
+            "} else {",
+            "    &y",
+            "}",
+            "core.check.eq(*r, 1u8)",
+            "x = 3u8",
+            "core.check.eq(x, 3u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_an_if_value_inside_a_loop_when_the_borrow_dies_before_the_mutation() {
+    // 毎周回の `if` の値は枝の終わりで入れ替わる。前の周回の借用 (x) は次の周回の値 (y) に漏れない。
+    let (bad, out) = has_e3010(
+        "nll_if_val_loop",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let mut i = 0u8",
+            "let mut acc = 0u8",
+            "while i < 3u8 {",
+            "    let r = if i == 0u8 {",
+            "        &x",
+            "    } else {",
+            "        &y",
+            "    }",
+            "    acc = acc + *r",
+            "    x = x + 1u8",
+            "    i = i + 1u8",
+            "}",
+            "core.check.eq(acc, 5u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
