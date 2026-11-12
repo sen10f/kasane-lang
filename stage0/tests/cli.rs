@@ -5281,11 +5281,10 @@ fn tdrop_destructured_linear_values_that_are_consumed_are_ok() {
 
 #[test]
 fn tdrop_unknown_field_types_stay_silent() {
-    // 型引数を推論するジェネリクス構造体リテラル (`t.Box { v: .. }`) は型引数が決まらないので
-    // フィールドの型を返さず黙る。型の分からない要素を含むタプルも黙る。
+    // 型の分からない要素を含むタプル・フィールドの型が線形でないジェネリクス構造体リテラルは黙る。
     let (cs, out) = tdrop_codes(
         "tdrop_silent",
-        &["let b = t.Box { v: 1u8 }", "b.v", "(b.v, 1u8)", "let _bl = t.Box { v: t.get_l() }", "core.mem.drop(b)"],
+        &["let b = t.Box { v: 1u8 }", "core.mem.drop(b.v)", "core.mem.drop((b.v, 1u8))", "core.mem.drop(b)"],
     );
     assert!(!tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E3003"), "{}", out);
 }
@@ -8509,6 +8508,51 @@ fn type_field_reference_with_declared_or_static_lifetime_is_accepted() {
 fn generic_id_check(name: &str, b: &[&str]) -> (Vec<String>, String) {
     let prefix = "fn t.id[T](x: T) -> T uses [] panics never\n    x\nend t.id\n\n";
     let t = Tmp::new(name, &main_wrap(prefix, &body(b)));
+}
+
+// ---- 型引数に線形を含む型の束縛 (4.4): `Option` / `Result` / ジェネリック構造体 ----
+
+/// `tdrop_prefix` に、型引数の線形検査の試験用の定義を足して検査する。
+fn lin_arg_codes(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let mut pre: Vec<&str> = tdrop_prefix();
+    pre.extend_from_slice(&[
+        "type t.Pair[A, B]",
+        "    a: A",
+        "    b: B",
+        "end t.Pair",
+        "",
+        "fn t.eat_opt(o: Option<t.L>) -> () uses [] panics never",
+        "    match o {",
+        "        Some(x) => {",
+        "            t.eat(x)",
+        "        }",
+        "        None => {",
+        "            core.mem.drop(0u8)",
+        "        }",
+        "    }",
+        "end t.eat_opt",
+        "",
+        "fn t.eat_box(b: t.Box<t.L>) -> () uses [] panics never",
+        "    let t.Box { v: x } = b",
+        "    t.eat(x)",
+        "end t.eat_box",
+        "",
+        "fn t.mk_opt() -> Option<t.L> uses [] panics never",
+        "    let o = Some(t.get_l())",
+        "    o",
+        "end t.mk_opt",
+        "",
+        "fn t.res_try() -> Result<(), u8> uses [] panics never",
+        "    let r: Result<t.L, u8> = Ok(t.get_l())",
+        "    let l = r?",
+        "    t.eat(l)",
+        "    Ok(())",
+        "end t.res_try",
+        "",
+    ]);
+    let prefix = pre.join(&nl) + &nl + &nl;
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     (codes(&out), out)
 }
@@ -9215,4 +9259,94 @@ end t.ck
     let o = run(&["kir", "t.ck"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     assert!(text(&o.stderr).contains("t.ck は未対応"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn lin_option_of_linear_left_unconsumed_is_e3003() {
+    let (cs, out) = lin_arg_codes("lin_opt_unused", &["let o = Some(t.get_l())"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `o` is never consumed"), "{}", out);
+}
+
+#[test]
+fn lin_result_with_a_linear_ok_left_unconsumed_is_e3003() {
+    let (cs, out) = lin_arg_codes("lin_res_unused", &["let r: Result<t.L, u8> = Ok(t.get_l())"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `r` is never consumed"), "{}", out);
+}
+
+#[test]
+fn lin_generic_literal_with_a_linear_arg_left_unconsumed_is_e3003() {
+    // 型引数の推論: `t.Box { v: t.get_l() }` は `t.Box<t.L>` (線形)。
+    let (cs, out) = lin_arg_codes("lin_box_unused", &["let _bl = t.Box { v: t.get_l() }"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `_bl` is never consumed"), "{}", out);
+}
+
+#[test]
+fn lin_generic_struct_with_an_unconsumed_linear_field_is_e3003() {
+    let (cs, out) = lin_arg_codes(
+        "lin_pair_unused",
+        &["let p = t.Pair { a: t.get_l(), b: 1u8 }", "core.mem.drop(p.b)"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+#[test]
+fn lin_option_consumed_by_match_passed_or_moved_is_ok() {
+    let (cs, out) = lin_arg_codes(
+        "lin_opt_ok",
+        &[
+            "let o = Some(t.get_l())",
+            "match o {",
+            "    Some(x) => {",
+            "        t.eat(x)",
+            "    }",
+            "    None => {",
+            "        core.mem.drop(0u8)",
+            "    }",
+            "}",
+            "let p = Some(t.get_l())",
+            "t.eat_opt(p)",
+            "let q = Some(t.get_l())",
+            "let q2 = q",
+            "t.eat_opt(q2)",
+            "let m = t.mk_opt()",
+            "t.eat_opt(m)",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E3003") && !tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn lin_result_try_and_generic_literal_consumed_are_ok() {
+    let (cs, out) = lin_arg_codes(
+        "lin_res_box_ok",
+        &[
+            "let b = t.Box { v: t.get_l() }",
+            "t.eat_box(b)",
+            "let p = t.Pair { a: t.get_l(), b: 1u8 }",
+            "t.eat(p.a)",
+            "core.mem.drop(p.b)",
+            "let n: Option<u8> = Some(1u8)",
+            "core.mem.drop(n)",
+            "let r: Result<u8, t.L> = Err(t.get_l())",
+            "match r {",
+            "    Ok(v) => {",
+            "        core.mem.drop(v)",
+            "    }",
+            "    Err(e) => {",
+            "        t.eat(e)",
+            "    }",
+            "}",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E3003") && !tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn discarding_an_option_or_result_value_is_e2042() {
+    // 型引数が決まる `Some(x)` / `Ok(x)` の値を式文で捨てると 4.6 の E2042 (`()` 以外を捨てる)。
+    let (cs, out) = lin_arg_codes("lin_discard_opt", &["Some(1u8)", "Ok(1u8)"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
 }
