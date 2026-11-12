@@ -7620,6 +7620,7 @@ end t.main
     let _ = fs::remove_dir_all(&cache);
 }
 
+#[test]
 fn kir_iter_adapters_are_typed_through_the_impl() {
     // `map` / `filter` の結果の E・P (効果・panic の実引数) は型変数にならない。`enumerate` / `take` / `count` の
     // `T` は、境界 `I: Iterator<T, E, P>` の I の impl (`Range` / `Enumerate` / 利用者の型) から決まる (型変数 0)。
@@ -7747,6 +7748,7 @@ end t.main.test_d_to_string
     }
 }
 
+#[test]
 fn comparison_method_names_hint_the_operator_not_a_near_name() {
     // `lt` 等は演算子 (4.3) で、`ln` のような近い名前を提案しない。
     let bad = "fn t.f(a: u8, b: u8) -> bool uses [] panics never
@@ -8535,6 +8537,7 @@ fn a_generic_literal_decided_later_is_not_an_error() {
     assert!(!got.iter().any(|c| c == "E2027"), "{}", out);
 }
 
+#[test]
 fn fmath_functions_agree_across_backends_and_match_known_values() {
     // 数学関数 (`fmath`) は、インタプリタと Cranelift で同じビット列を返し、既知の値に近い。
     // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値、9 関数の総和 (ビット列の突き合わせ)。
