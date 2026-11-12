@@ -20,19 +20,19 @@ pub struct Diag {
 // ---------------------------------------------------------------- V の読み取り補助
 pub(crate) fn nname(v: &V) -> &str {
     match v {
-        V::Node(n, _, _) => n,
+        V::Node(n, _, _, _) => n,
         _ => "",
     }
 }
 pub(crate) fn nf(v: &V) -> &[V] {
     match v {
-        V::Node(_, f, _) => f,
+        V::Node(_, f, _, _) => f,
         _ => &[],
     }
 }
 pub(crate) fn nline(v: &V) -> usize {
     match v {
-        V::Node(_, _, l) => *l,
+        V::Node(_, _, l, _) => *l,
         _ => 0,
     }
 }
@@ -1944,6 +1944,10 @@ impl<'a> Checker<'a> {
             let top = std::env::var("KSN_TYPE_COVERAGE_TOP").ok().and_then(|v| v.parse().ok()).unwrap_or(15);
             crate::typecov::report(&c, top);
         }
+        // 確認 (隠し機能): `KSN_DUMP_TYPES=1` のとき式 ID ごとの型表を stderr に出す (types.rs `dump_types`)。
+        if std::env::var_os("KSN_DUMP_TYPES").is_some() {
+            eprint!("{}", tk.dump_types());
+        }
         self.diags.extend(tk.diags);
         // 型で解決できた呼び出しの効果 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡した
         // クロージャから推論した効果変数・panic 変数。呼び出し元の宣言と比べ、全候補が違反するときだけ報告する。
@@ -3279,7 +3283,7 @@ fn collect_ref_fqns(t: &V, out: &mut BTreeSet<String>) {
                 }
             }
         }
-        V::Node(_, fs, _) => {
+        V::Node(_, fs, _, _) => {
             for f in fs {
                 collect_ref_fqns(f, out);
             }
@@ -3314,7 +3318,7 @@ fn collect_ty_names(t: &V, out: &mut HashSet<String>) {
 fn ty_has_self(t: &V) -> bool {
     match t {
         V::L(xs) => xs.first().map_or(false, |x| st(x) == "self") || xs.iter().any(ty_has_self),
-        V::Node(_, fs, _) => fs.iter().any(ty_has_self),
+        V::Node(_, fs, _, _) => fs.iter().any(ty_has_self),
         _ => false,
     }
 }

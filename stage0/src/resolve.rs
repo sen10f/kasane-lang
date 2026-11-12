@@ -172,7 +172,7 @@ impl Program {
 /// 木を前順で辿り、名前を持つノード(Path / StructLit / パターンの経路)の segs を集める。
 pub fn collect_paths(v: &V, out: &mut Vec<Vec<String>>) {
     match v {
-        V::Node(name, fs, _) => {
+        V::Node(name, fs, _, _) => {
             match *name {
                 "Path" | "PPath" | "PVariant" | "PStruct" => {
                     if let Some(V::L(xs)) = fs.first() {

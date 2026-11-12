@@ -478,7 +478,7 @@ end demo.fib
 
 ### 8.6 計測から得た設計への注意
 
-- 式の識別子: 計測はノードの AST のアドレスで同じ式を見分けている。これは検査の間だけ有効で、KIR の入力には使えない。第 7 章 5 の `V::Node` への式 ID を入れる必要がある。
+- 式の識別子: 計測はノードの AST のアドレスで同じ式を見分けている。これは検査の間だけ有効で、KIR の入力には使えない。第 7 章 5 の `V::Node` への式 ID を入れる必要がある。→ 9 章で解消 (式 ID に移した)。
 - 所有者の不一致 (8.4 の注) は、型検査の既存の欠陥である。KIR の前提を待たずに直す価値がある。ただし既定の診断が変わるので、単独のコミットで扱う。
 
 ### 8.7 完全化 第 1 段の結果
@@ -544,6 +544,48 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 黙る側に残したもの: 腕どうしの型が一致しないとき (`Some(v) => Ok(v)` と `None => Some(1u8)`) は `join_arm` が黙る。従来も報告していない。報告すると新しい診断になるので、別の段で扱う。
 
 回帰テスト: `stage0/tests/cli.rs` 末尾の `kir_method_fn_bound_is_unified_with_the_argument` / `kir_match_and_if_arms_share_their_type` / `kir_method_on_unit_variant_is_resolved`。`assert_all_typed` (未知 0・型変数 0) と、真の誤りの E2023 / E2020 を確かめる。`cargo test --release` は全緑 (cli 321 本ほか)。
+
+## 9. 式 ID と型表 (段階 1 の土台、実装)
+
+ブランチ `kir/expr-ids` (`claude/handover-work-i7ll7p` から分岐)。第 2.4 と第 7 章 5 の実装。既定の診断・出力は変えていない。
+
+### 9.1 式 ID の置き場所と振り方
+
+- 置き場所: `V::Node(&'static str, Vec<V>, usize, u32)` の第 4 成分 (`u32`)。`nd` / `ndl` は 0 を入れる。
+- 採用理由:
+  - 3 成分のパターンは `_` を 1 つ足すだけで直る (`check.rs` の読み取り補助 `nname` / `nf` / `nline` と、`resolve.rs`、`parser.rs`)。コンパイラが全箇所を検査するので、直し漏れで黙って誤るおそれがない。
+  - 行番号 (usize) に式 ID を詰める案は採らない。`nline` を読む側が詰めた値を行番号として読む危険があり、見えない結合になるため。
+  - 別の表 (ノード → ID) は、ノードの同一性を保つ鍵がないので作れない (アドレスは検査の間だけ有効。8.6)。
+- 振り方: `parser::parse_body` が本体を作った直後に `number_nodes` で前順に 1 から振る。
+  - 本体ごとに振り直すので、ある関数を編集しても他の関数の番号は変わらない (第 2.6 の関数単位の差し替えに合う。`expr_ids_are_local_to_their_function` で固定)。
+  - 同じソースからは同じ番号になる (`expr_ids_and_type_table_are_stable_for_same_source` で固定)。
+  - 0 は未採番。本体の外で作った合成ノード (`clif.rs` などが作る `Path` など) は 0 のままで、型表に入らない。
+- 第 7 章 5 の懸念 (先行順の番号は書き換えで崩れる) への対応: 番号は解析の時に一度だけ振り、保存する (位置から派生させない)。KIR の書き換えでノードを足すときは、既存の番号を振り直さず、その本体の最大値 + 1 から振る。この規則は段階 3 の最適化パスで使う。
+- 鍵: 式 ID は本体の中でだけ一意。KIR で式を指すときは (関数の FQN, 式 ID) の組を使う。
+
+### 9.2 型表
+
+- 場所: `TypeCk::tytab: BTreeMap<(String, u32), ExprTy>` (`types.rs`)。`ExprTy` は `kind` (種別)、`line`、`ty` (`Ty`)。
+- 記録: `TypeCk::infer` の薄いラッパーで、推論した式の種別・行・型を、関数の検査の終わりに型変数を解決 (`deep`) して移す (`flush_expr_types`)。同じ式を再推論したら後の結果が残る (計測と同じ作法)。
+- 常時記録しているのは、KIR の入口を型表に一本化するため (第 7 章 4)。コストは式ごとの `Ty` の複製 1 回。
+- 取り出す API: `TypeCk::expr_type(fqn, id)`、`TypeCk::dump_types()`。確定かどうかは `ExprTy::ty` で判定する (未知・型変数・型パラメータを含むものは未確定。`typecov::classify` と同じ分類)。
+- 確認の方法: `KSN_DUMP_TYPES=1 ksn check` で、stderr に `FQN<TAB>#id<TAB>種別<TAB>line N<TAB>型` を (FQN, 式 ID) の順に出す。既定では何も出さない。
+
+### 9.3 被覆率の計測を式 ID に移した
+
+- `typecov::Rec::key` と `subject` を AST アドレスから式 ID に変えた。アドレスは検査の間しか有効でなかった (8.6 の注。ここで解消)。
+- 結果: examples 7 本で `ksn check` の出力と `KSN_TYPE_COVERAGE=1 ksn check` の出力が、変更の前後でバイト一致。
+
+### 9.4 変更の範囲と検証
+
+- 変更ファイル: `parser.rs` (ID の成分、`nid`、`number_nodes`、本体の採番)、`types.rs` (型表と API)、`typecov.rs` (キーの変更)、`check.rs` (ダンプの 3 行と `V::Node` パターン)、ほか `V::Node` のパターンと構築 (`clif.rs` 5、`interp.rs` 2、`cnative.rs` 1、`resolve.rs` 1)。
+- テスト: `stage0/tests/cli.rs` 末尾の `expr_ids_and_type_table_are_stable_for_same_source` / `type_table_records_each_expression_type` / `expr_ids_are_local_to_their_function`。`cargo test --release` は全緑 (cli 331 本、xref_layers 5 本)。
+
+### 9.5 残り (次の段階で決める)
+
+- 型表に未確定 (未知・型変数) の式が残るとき、その関数を降格するか。第 6 章 4 の未決を段階 1 で決める。
+- ジェネリクスの本体の型は単相化前の型 (`Ty::Param`) を含む。降格の時に型引数を代入する (第 2.5)。型表自体は単相化前の一つだけを持つ。
+- 型表の入口は `TypeCk` (検査の中) だけ。KIR 側から使うため、検査の結果として取り出す経路は段階 1 で作る。
 
 ## 付録: 参照した箇所 (主要)
 

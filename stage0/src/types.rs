@@ -7,7 +7,7 @@
 //! 分からない型は `Ty::Unknown` にして、そこから先は何も言わない (誤検出より取りこぼしを選ぶ)。
 //! 参照は透過的に扱う (`&T` と `T` は同じとみなす)。
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::check::{edit_distance, is_nil, items, nf, nline, nname, pat_binds, st, strs, tag, tel, Diag};
 use crate::parser::V;
@@ -177,6 +177,17 @@ struct EffBind {
     panics: HashMap<String, bool>,
 }
 
+/// 式 ID の型表の 1 件 (設計_KIR.md 2.4 / 7 章 4)。関数の検査の終わりに型変数を解決した型を持つ。
+#[derive(Clone, Debug)]
+pub struct ExprTy {
+    /// ノードの種別 (`Call` / `Lit` など)。
+    pub kind: String,
+    /// 式の行 (ソースの行)。
+    pub line: usize,
+    /// 解決後の型。未知・型変数が残りうる (分からない型は黙る方針)。
+    pub ty: Ty,
+}
+
 pub struct TypeCk<'a> {
     p: &'a Program,
     /// 所有者 (型の FQN) → メソッド名 → 定義の添字
@@ -222,6 +233,10 @@ pub struct TypeCk<'a> {
     pub eff_checks: Vec<EffCheck>,
     /// 型推論の被覆率の計測 (`KSN_TYPE_COVERAGE=1` のときだけ `Some`。typecov.rs)。
     pub cov: Option<crate::typecov::Cov>,
+    /// 型表の未解決分: 式 ID → (種別, 行, 型)。いま推論中の関数の分で、`check_def` の終わりに解決して `tytab` へ移す。
+    expr_pending: HashMap<u32, (String, usize, Ty)>,
+    /// 型表: (関数の FQN, 式 ID) → 型。式 ID 0 (未採番のノード) は入れない。`expr_type` / `dump_types` で読む。
+    pub tytab: BTreeMap<(String, u32), ExprTy>,
 }
 
 impl<'a> TypeCk<'a> {
@@ -241,7 +256,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_frames: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_frames: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -302,6 +317,7 @@ impl<'a> TypeCk<'a> {
         let d = &self.p.defs[di];
         let Some(body) = &d.body else { return };
         self.cur = di;
+        self.expr_pending.clear();
         self.vars.clear();
         self.kinds.clear();
         self.escaped.clear();
@@ -329,7 +345,33 @@ impl<'a> TypeCk<'a> {
         }
         self.check_dangling(body, &ret);
         self.finish_literals();
+        self.flush_expr_types();
         self.cov_flush();
+    }
+
+    /// 型表: この関数で推論した式の型を、型変数を解決して `tytab` に移す (同じ式 ID は最後の推論の結果)。
+    fn flush_expr_types(&mut self) {
+        let fqn = self.def().name.clone();
+        for (id, (kind, line, t)) in std::mem::take(&mut self.expr_pending) {
+            let ty = self.deep(&t);
+            self.tytab.insert((fqn.clone(), id), ExprTy { kind, line, ty });
+        }
+    }
+
+    /// 型表から、関数 `fqn` の式 ID `id` の型を引く。段階 1 (KIR の降格) の入口で使う。
+    #[allow(dead_code)]
+    pub fn expr_type(&self, fqn: &str, id: u32) -> Option<&ExprTy> {
+        self.tytab.get(&(fqn.to_string(), id))
+    }
+
+    /// 型表を 1 行 1 式で文字列にする (`KSN_DUMP_TYPES=1 ksn check` が stderr に出す)。
+    /// 並びは (FQN, 式 ID) の順なので、同じソースからは同じ出力になる。
+    pub fn dump_types(&self) -> String {
+        let mut out = String::new();
+        for ((fqn, id), e) in &self.tytab {
+            out.push_str(&format!("{}\t#{}\t{}\tline {}\t{}\n", fqn, id, e.kind, e.line, e.ty.show()));
+        }
+        out
     }
 
     /// 計測: この関数で記録した式の型を、型変数を解決してから分類し、集計に入れる (typecov.rs)。
@@ -395,11 +437,11 @@ impl<'a> TypeCk<'a> {
             _ => {}
         }
         let rec = crate::typecov::Rec {
-            key: e as *const V as usize,
+            key: crate::parser::nid(e) as usize,
             kind,
             detail,
             ty: t.clone(),
-            subject: subject.map(|s| s as *const V as usize),
+            subject: subject.map(|s| crate::parser::nid(s) as usize),
             local,
             loc: format!("{}:{}", self.def().file, nline(e)),
         };
@@ -1205,6 +1247,10 @@ impl<'a> TypeCk<'a> {
     /// 式を推論する。計測が有効なら結果を記録する (`cov_record`)。本体は `infer_node`。
     fn infer(&mut self, e: &V) -> Ty {
         let t = self.infer_node(e);
+        let id = crate::parser::nid(e);
+        if id != 0 {
+            self.expr_pending.insert(id, (nname(e).to_string(), nline(e), t.clone()));
+        }
         if self.cov.is_some() {
             self.cov_record(e, &t);
         }

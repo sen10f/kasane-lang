@@ -315,7 +315,7 @@ impl<'a> Gen<'a> {
                 }
                 let segs = strs(&nf(fnn)[0]);
                 if segs.len() >= 2 && env.contains_key(&segs[0]) {
-                    let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
+                    let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0, 0);
                     return self.method(&recv, &segs[segs.len() - 1], items(&f[1]), env, expect);
                 }
                 let args = items(&f[1]);
