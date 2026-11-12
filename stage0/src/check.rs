@@ -1938,6 +1938,9 @@ impl<'a> Checker<'a> {
             if self.def(i).kw == "fn" {
                 self.check_elision(i);
             }
+            if matches!(self.def(i).kw.as_str(), "type" | "enum") {
+                self.check_field_elision(i);
+            }
         }
         for &i in &user {
             let d = self.def(i);
@@ -2009,6 +2012,20 @@ impl<'a> Checker<'a> {
                 0,
             );
         }
+    }
+
+    /// 4.1: `type` / `enum` のフィールド・バリアントの参照は、ライフタイムを省略できない (`'static` も明示)。
+    fn check_field_elision(&mut self, di: usize) {
+        let d = self.def(di);
+        if d.elided_refs.is_empty() {
+            return;
+        }
+        let msg = format!(
+            "{}: lifetime of the reference in `{}` cannot be elided; declare it (for example `&'a T` with `['a]`)",
+            d.name,
+            d.elided_refs.join("`, `")
+        );
+        self.diag("E3020", msg, di, 0);
     }
 
     fn strip<'b>(&self, mut t: &'b V) -> &'b V {

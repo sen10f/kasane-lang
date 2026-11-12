@@ -8462,3 +8462,41 @@ fn shadow_header_arg_vs_import_of_other_file_is_clean() {
     let o = run(&["check", "--json"], &t.0);
     assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1021"), "{}", text(&o.stdout));
 }
+
+// ---- 型定義のフィールドの参照は、ライフタイムを省略できない (4.1 / E3020) ----
+
+fn field_elision(name: &str, prefix: &str) -> (bool, String) {
+    let t = Tmp::new(name, &main_wrap(prefix, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out).iter().any(|c| c == "E3020"), out)
+}
+
+#[test]
+fn type_field_reference_without_lifetime_is_rejected() {
+    let (bad, out) = field_elision("field_elided", "type t.S\n    f: &u8\nend t.S\n\n");
+    assert!(bad, "{}", out);
+    assert!(out.contains("lifetime of the reference in `f` cannot be elided"), "{}", out);
+}
+
+#[test]
+fn enum_variant_reference_without_lifetime_is_rejected() {
+    let (bad, out) = field_elision("field_elided_enum", "enum t.E\n    A(&u8)\n    B\nend t.E\n\n");
+    assert!(bad, "{}", out);
+    assert!(out.contains("lifetime of the reference in `A` cannot be elided"), "{}", out);
+}
+
+#[test]
+fn nested_field_reference_without_lifetime_is_rejected() {
+    let (bad, out) = field_elision("field_elided_array", "type t.S\n    f: [&u8; 2]\nend t.S\n\n");
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn type_field_reference_with_declared_or_static_lifetime_is_accepted() {
+    let (bad, out) = field_elision("field_declared", NLL_REF_FIELD);
+    assert!(!bad, "{}", out);
+    let (bad, out) = field_elision("field_static", "type t.S\n    f: &'static u8\n    b: u8\nend t.S\n\n");
+    assert!(!bad, "{}", out);
+    let (bad, out) = field_elision("field_value", "type t.S\n    f: u8\nend t.S\n\n");
+    assert!(!bad, "{}", out);
+}

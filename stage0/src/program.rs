@@ -32,6 +32,8 @@ pub struct Def {
     pub linear: bool,
     pub fields: Vec<(String, V, bool)>,
     pub variants: Vec<(String, Vec<V>)>,
+    /// `type` / `enum` のフィールド・バリアントのうち、参照のライフタイムを省略したものの名前 (4.1 / E3020)。
+    pub elided_refs: Vec<String>,
     pub body: Option<V>,
     pub init: Option<V>,
     pub has_impls: bool,
@@ -92,6 +94,23 @@ fn line_tokens(line: &str, ln: usize) -> R<Vec<lexer::Tok>> {
         t.line = ln;
     }
     Ok(toks)
+}
+
+/// 型のトークン列に、ライフタイムを省略した参照 (`&T` / `&&T`) があるか (4.1)。
+/// `fn` 型と `dyn` 型の内側は省略規則の対象外として、そこから先は調べない (黙る)。
+fn has_elided_ref(toks: &[lexer::Tok]) -> bool {
+    for (k, t) in toks.iter().enumerate() {
+        if t.kind == "kw" && (t.text == "fn" || t.text == "dyn") {
+            return false;
+        }
+        if t.kind == "op" && t.text == "&&" {
+            return true;
+        }
+        if t.kind == "op" && t.text == "&" && !toks.get(k + 1).is_some_and(|n| n.kind == "life") {
+            return true;
+        }
+    }
+    false
 }
 
 fn ends_with_pub(line: &str) -> bool {
@@ -185,18 +204,26 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                     if sp.kw == "type" {
                         let fnm = bp.name_tok()?;
                         bp.expect_op(":")?;
+                        let start = bp.i;
                         let t = bp.ty()?;
+                        if has_elided_ref(&bp.t[start..bp.i]) {
+                            d.elided_refs.push(fnm.clone());
+                        }
                         let pb = bp.accept_kw("pub");
                         d.fields.push((fnm, t, pb));
                     } else {
                         let vn = bp.name_tok()?;
                         let mut tys = Vec::new();
+                        let start = bp.i;
                         if bp.accept_op("(") {
                             tys.push(bp.ty()?);
                             while bp.accept_op(",") {
                                 tys.push(bp.ty()?);
                             }
                             bp.expect_op(")")?;
+                        }
+                        if has_elided_ref(&bp.t[start..bp.i]) {
+                            d.elided_refs.push(vn.clone());
                         }
                         d.variants.push((vn, tys));
                     }
