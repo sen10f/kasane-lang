@@ -82,16 +82,6 @@ fn diagnostics_each_case_reports_its_code() {
 const KNOWN_HOLES: &[&str] = &[
     // `&mut x` を 1 つの式の中で 2 回取り、構造体の別々のフィールドに入れる (借用検査が式の中を見ない)。
     "alias_mut_through_field",
-    // 線形値をフィールドに持つ値を、フィールドを読むだけで捨てる (消費の判定が「名前が現れるか」のみ)。
-    "linear_in_field_unconsumed",
-    // `?` で取り出した線形値 (`let _s = std.net.connect(a)?`) を消費せずに捨てる (型注釈がないと型が流れない)。
-    "linear_dropped_after_try",
-    // 線形値を一部の分岐でしか消費しない (`if flag { s.close() }`)。未使用でなければ漏れを検出しない。
-    "linear_leak_one_branch",
-    // `core.mem.drop(s)` で線形値 (TcpStream) をそのまま捨てられる (`drop[T]` は線形でない T 用のはず)。
-    "linear_dropped_by_mem_drop",
-    // 線形値を `Vec<T>` に `push` できる (Vec の T は線形でないはず)。Vec が落ちると閉じられない。
-    "linear_pushed_into_vec",
 ];
 
 #[test]
@@ -116,6 +106,42 @@ fn unsound_programs_are_rejected() {
         assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{} is not canonical", stem);
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// `unsound/linear_*` は、線形型の診断 (E3002 / E3003 / E3006) で落ちなければならない
+/// (別の診断で落ちているだけのケースを許さない)。
+#[test]
+fn linear_corpus_is_rejected_for_linear_reasons() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound");
+    let mut n = 0;
+    for e in fs::read_dir(&dir).unwrap() {
+        let p = e.unwrap().path();
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        if !stem.starts_with("linear_") {
+            continue;
+        }
+        n += 1;
+        let t = Tmp::new(&format!("linear_why_{}", stem), &fs::read_to_string(&p).unwrap());
+        let out = text(&run(&["check", "--json"], &t.0).stdout);
+        assert!(codes(&out).iter().any(|c| matches!(c.as_str(), "E3002" | "E3003" | "E3006")), "{}: {}", stem, out);
+    }
+    assert!(n >= 20, "linear cases missing");
+}
+
+/// 線形値を全経路で消費している正しいコード (`tests/data/linear_ok/`) は `ksn check` を通る。
+#[test]
+fn correct_linear_programs_are_accepted() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    assert!(names.len() >= 8, "linear_ok cases missing");
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("linear_ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        let o = run(&["check", "--json"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "{}: {}", stem, text(&o.stdout));
+        assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{} is not canonical", stem);
+    }
 }
 
 /// E2044 (型が決まらない式・束縛) は opt-in。既定では出ず、`--strict-types` と `KSN_STRICT_TYPES=1` の
@@ -1656,13 +1682,25 @@ fn try_in_a_closure_is_checked_against_the_closure_return_type() {
 fn std_fs_writes_reads_and_removes_a_file() {
     let b = body(&[
         "let mut f = std.fs.create(\"ksn_fs_test.txt\")?",
-        "let n = f.write(b\"hello\")?",
+        "let n = match f.write(b\"hello\") {",
+        "    Ok(n) => n",
+        "    Err(_e) => {",
+        "        core.mem.drop(f.close())",
+        "        return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 1i32 })",
+        "    }",
+        "}",
         "core.check.eq(n, 5usize)",
         "f.close()?",
         "core.check.eq(std.fs.exists(\"ksn_fs_test.txt\"), true)",
         "let mut g = std.fs.open(\"ksn_fs_test.txt\")?",
         "let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)",
-        "let m = std.fs.read_to_end(&mut g, &mut buf)?",
+        "let m = match std.fs.read_to_end(&mut g, &mut buf) {",
+        "    Ok(m) => m",
+        "    Err(_e) => {",
+        "        core.mem.drop(g.close())",
+        "        return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 2i32 })",
+        "    }",
+        "}",
         "core.check.eq(m, 5usize)",
         "core.check.eq(buf.len(), 5usize)",
         "g.close()?",
@@ -5654,11 +5692,18 @@ fn std_net_loopback_round_trip() {
         "let addr = t.addr(port)",
         "let mut client = match std.net.connect(addr.as_str()) {",
         "    Ok(c) => c",
-        "    Err(_e) => return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 2i32 })",
+        "    Err(_e) => {",
+        "        core.mem.drop(listener.close())",
+        "        return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 2i32 })",
+        "    }",
         "}",
         "let mut server = match listener.accept() {",
         "    Ok(s) => s",
-        "    Err(_e) => return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 3i32 })",
+        "    Err(_e) => {",
+        "        core.mem.drop(client.close())",
+        "        core.mem.drop(listener.close())",
+        "        return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 3i32 })",
+        "    }",
         "}",
         "core.check.eq(client.write(b\"ping\").is_ok(), true)",
         "let mut buf = [0u8; 16]",
