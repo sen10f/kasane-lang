@@ -63,6 +63,13 @@ pub(crate) fn same_v(a: &V, b: &V) -> bool {
         _ => false,
     }
 }
+/// 添字が整数リテラル (10 進) のときその値。それ以外は None。
+pub(crate) fn lit_index(e: &V) -> Option<usize> {
+    if nname(e) != "Lit" || st(&nf(e)[0]) != "int" {
+        return None;
+    }
+    st(&nf(e)[1]).parse::<usize>().ok()
+}
 pub(crate) fn strs(v: &V) -> Vec<String> {
     items(v).iter().map(st).collect()
 }
@@ -2373,7 +2380,10 @@ impl<'a> Checker<'a> {
                     }
                 }
                 if nname(&f[0]) == "PBind" {
-                    self.note_linear(&st(&nf(&f[0])[0]), &ty, nline(s));
+                    let name = st(&nf(&f[0])[0]);
+                    if !self.note_linear_array(&name, &f[3], &ty, nline(s)) {
+                        self.note_linear(&name, &ty, nline(s));
+                    }
                 } else {
                     // タプル・構造体の分解で束縛した線形な値も消費を要する (4.4)。
                     let mut tb = vec![];
@@ -2877,6 +2887,58 @@ impl<'a> Checker<'a> {
         if !consumed {
             self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
         }
+    }
+
+    /// 線形な要素を持つ配列リテラルの束縛 (4.4)。要素を整数リテラルの添字 (`ls[0]`) でしか
+    /// 使わないとき、使われていない添字の要素を E3003 とする。配列全体の使用 (渡す・返す・
+    /// `for` で回す・添字に変数を使う等) や、判断できない添字があれば黙る。
+    /// この関数で扱ったとき true (呼び出し側は `note_linear` を省く)。
+    fn note_linear_array(&mut self, name: &str, init: &V, ty: &V, line: usize) -> bool {
+        if tag(ty) != "array" || nname(init) != "ArrayE" {
+            return false;
+        }
+        let el = tel(ty, 1);
+        if is_nil(el) || !self.contains_linear(el) {
+            return false;
+        }
+        let n = items(&nf(init)[0]).len();
+        let body = self.def(self.d).body.as_ref().unwrap();
+        let mut all = vec![];
+        walk(body, &mut all);
+        let total = all
+            .iter()
+            .filter(|x| nname(x) == "Path" && strs(&nf(x)[0]).first().map(|s| s.as_str()) == Some(name))
+            .count();
+        let mut used: HashSet<usize> = HashSet::new();
+        let mut index_uses = 0;
+        let mut unknown = false;
+        for x in all.iter().filter(|x| nname(x) == "Index") {
+            let b = &nf(x)[0];
+            let base_is_name = nname(b) == "Path" && {
+                let segs = strs(&nf(b)[0]);
+                segs.len() == 1 && segs[0] == name
+            };
+            if !base_is_name {
+                continue;
+            }
+            index_uses += 1;
+            match lit_index(&nf(x)[1]) {
+                Some(i) if i < n => {
+                    used.insert(i);
+                }
+                _ => unknown = true,
+            }
+        }
+        // 配列全体の使用があるとき (`index_uses != total`) や、添字が判断できないときは黙る。
+        if unknown || index_uses != total {
+            return true;
+        }
+        if total == 0 {
+            self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
+        } else if let Some(i) = (0..n).find(|i| !used.contains(i)) {
+            self.tdiag("E3003", format!("linear value `{}[{}]` is never consumed", name, i), line);
+        }
+        true
     }
 
     fn implements(&self, ty: &str, tr: &str) -> bool {
