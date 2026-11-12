@@ -5684,3 +5684,175 @@ fn std_net_calls_require_the_io_net_effect() {
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(codes(&out).iter().any(|c| c == "E4001"), "{}", out);
 }
+
+// ---- std.fs / std.net / 参照を返す関数 (Cranelift) ----
+
+/// プログラムをインタプリタと Cranelift (debug / release) で、それぞれ一時ディレクトリの中で動かして、
+/// 標準出力と終了コードが一致することを確かめる。インタプリタの標準出力を返す。
+fn agree_with_interpreter(name: &str, src: &str) -> String {
+    let t = Tmp::new(&format!("{}_interp", name), src);
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
+    for release in [false, true] {
+        let (bt, exe_path, out) = build_clif(&format!("{}_{}", name, release), src, release);
+        assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).current_dir(&bt.0).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout), text(&interp.stdout), "native and interpreter outputs differ (release: {})", release);
+    }
+    text(&interp.stdout)
+}
+
+/// 作成・書き込み・読み戻し・削除・存在しないファイルのエラーを、インタプリタとネイティブで同じ結果にする。
+/// エラー番号は OS ごとに違うので、出力の一致は Unix だけで確かめる (Windows は動いて `fs ok` で終わることだけ)。
+#[test]
+fn std_fs_round_trip_agrees_between_interpreter_and_cranelift() {
+    let src = include_str!("data/native_fs.ksnl");
+    if cfg!(unix) {
+        let out = agree_with_interpreter("native_fs", src);
+        assert!(out.contains("written: 11\n"), "{}", out);
+        assert!(out.contains("first byte: 104\n"), "{}", out);
+        assert!(out.contains("at end of file: 0\n"), "{}", out);
+        assert!(out.contains("exists after remove: 0\n"), "{}", out);
+        assert!(out.contains("open missing: kind 1 code 2\n"), "{}", out);
+        assert!(out.ends_with("fs ok\n"), "{}", out);
+    } else {
+        for release in [false, true] {
+            let (bt, exe_path, out) = build_clif(&format!("native_fs_win_{}", release), src, release);
+            let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+            let o = Command::new(&p).current_dir(&bt.0).output().unwrap();
+            assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+            assert!(text(&o.stdout).ends_with("fs ok\n"));
+        }
+    }
+}
+
+/// 3000 回の open / close が、記述子の上限を小さくしても失敗しない (記述子が漏れない)。作ったファイルは残らない。
+#[cfg(unix)]
+#[test]
+fn std_fs_does_not_leak_descriptors_in_a_native_loop() {
+    let src = include_str!("data/native_fs.ksnl");
+    let (bt, exe_path, out) = build_clif("native_fs_leak", src, false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new("sh")
+        .args(["-c", "ulimit -n 40 && exec \"$0\"", p.to_str().unwrap()])
+        .current_dir(&bt.0)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stdout).contains("bytes moved in the loop: 18000\n"), "{}", text(&o.stdout));
+    for left in ["ksn_native_fs.txt", "ksn_native_fs_many.txt"] {
+        assert!(!bt.0.join(left).exists(), "{} was left behind", left);
+    }
+}
+
+/// ループバックの往復 (ポート 0 で bind、`local_port`、connect、accept、write、read、close、終端の read) と、
+/// connect / accept の繰り返し。
+#[cfg(unix)]
+#[test]
+fn std_net_loopback_round_trip_agrees_between_interpreter_and_cranelift() {
+    let out = agree_with_interpreter("native_net", include_str!("data/native_net.ksnl"));
+    assert!(out.contains("server received: 4\nfirst byte: 112\n"), "{}", out);
+    assert!(out.contains("client received: 5\nread at end of stream: 0\n"), "{}", out);
+    assert!(out.contains("bytes moved in the loop: 1200\n"), "{}", out);
+    assert!(out.ends_with("net ok\n"), "{}", out);
+}
+
+/// connect / accept を 600 回繰り返しても、記述子の上限を小さくして失敗しない (記述子が漏れない)。
+#[cfg(unix)]
+#[test]
+fn std_net_does_not_leak_descriptors_in_a_native_loop() {
+    let src = include_str!("data/native_net.ksnl");
+    let (bt, exe_path, out) = build_clif("native_net_leak", src, false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new("sh").args(["-c", "ulimit -n 40 && exec \"$0\"", p.to_str().unwrap()]).current_dir(&bt.0).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stdout).ends_with("net ok\n"), "{}", text(&o.stdout));
+}
+
+/// 閉じたポートへの connect、使用中のポートへの bind、不正なアドレスが、エラー値になる (番号を含めて同じ)。
+#[cfg(unix)]
+#[test]
+fn std_net_errors_agree_between_interpreter_and_cranelift() {
+    let out = agree_with_interpreter("native_net_err", include_str!("data/native_net_err.ksnl"));
+    assert!(out.contains("bad address code: -1\n"), "{}", out);
+    assert!(out.contains("bad port code: -1\n"), "{}", out);
+    assert!(out.contains("connect to a closed port code: "), "{}", out);
+    assert!(out.ends_with("net errors ok\n"), "{}", out);
+}
+
+/// `std.net` は Windows では未対応で、ビルド時に理由を付けて退く (誤ったコードを作らない)。
+#[cfg(windows)]
+#[test]
+fn std_net_is_skipped_by_the_native_backend_on_windows() {
+    let (_t, exe_path, out) = build_clif("native_net_win", include_str!("data/native_net.ksnl"), false);
+    assert!(exe_path.is_none() && out.contains("native backend skipped") && out.contains("Windows"), "{}", out);
+}
+
+/// `&str` / `&[T]` / `&スカラー` を返す関数。返す式が、リテラルか参照の引数 (に `as_str` / `trim` をつないだもの) のとき。
+#[test]
+fn functions_returning_references_agree_between_interpreter_and_cranelift() {
+    let out = agree_with_interpreter("native_ref", include_str!("data/native_ref.ksnl"));
+    assert_eq!(out, "one, and\n");
+}
+
+/// `defs` の関数を `main` から呼ぶ (呼ばれない関数はネイティブ生成の対象にならない)。`call` は呼び出しの文。
+fn skip_reason_for(name: &str, defs: &str, call: &str) -> String {
+    let src = format!(
+        "{}\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    std.io.print_line(\"unused\")\nend t.main\n",
+        defs, call
+    );
+    let (_t, exe_path, out) = build_clif(name, &src, false);
+    assert!(exe_path.is_none(), "expected a skip, but built: {}", out);
+    out
+}
+
+/// 持ち主を移す・ぶら下がる恐れのある参照を返す関数は、理由を付けて退く。
+#[test]
+fn unsound_reference_returns_are_skipped_with_a_reason() {
+    // ローカルの変数を経由する形は、リテラルや引数に由来すると判断できないので退く
+    let out = skip_reason_for("ref_local", "fn t.word(text: &str) -> &str\n    let inner = text.trim()\n    inner\nend t.word\n", "    core.mem.drop(t.word(\"a\"))\n");
+    assert!(out.contains("native backend skipped: t.word: returns a reference that may not outlive the function"), "{}", out);
+    // 所有する型への参照
+    let out = skip_reason_for(
+        "ref_string",
+        "fn t.view(s: &alloc.string.String<std.alloc.System>) -> &alloc.string.String<std.alloc.System>\n    s\nend t.view\n",
+        "    let s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(t.view(&s))\n",
+    );
+    assert!(out.contains("native backend skipped: t.view: returns a reference to an aggregate"), "{}", out);
+    // 構造体への参照
+    let out = skip_reason_for("ref_struct", "type t.P\n    a: u8\nend t.P\n\nfn t.first(p: &t.P) -> &t.P\n    p\nend t.first\n", "    let p = t.P { a: 1u8 }\n    core.mem.drop(t.first(&p))\n");
+    assert!(out.contains("native backend skipped: t.first: returns a reference to an aggregate"), "{}", out);
+    // 可変参照
+    let out = skip_reason_for("ref_mut", "fn t.bump(x: &mut u32) -> &mut u32\n    x\nend t.bump\n", "    let mut x = 1u32\n    core.mem.drop(t.bump(&mut x))\n");
+    assert!(out.contains("native backend skipped: t.bump: returns a mutable reference"), "{}", out);
+}
+
+/// 例 `examples/http` (ループバックの HTTP 往復) が、ネイティブでも `ksn run` と同じ出力・終了コードになる。
+#[cfg(unix)]
+#[test]
+fn the_http_example_runs_natively_through_cranelift() {
+    let d = root().join("examples").join("http");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_http_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    for release in [false, true] {
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "clif"]).current_dir(&d).env("KSN_CACHE_DIR", &cache);
+        if release {
+            c.arg("--release");
+        }
+        let o = c.output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+        let kind = if release { "release" } else { "debug" };
+        let p = d.join("target").join(kind).join("http.native");
+        assert!(p.exists(), "native executable missing: {}", out);
+        let r = Command::new(&p).output().unwrap();
+        assert_eq!(r.status.code(), interp.status.code(), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    }
+    let _ = fs::remove_dir_all(&cache);
+}
