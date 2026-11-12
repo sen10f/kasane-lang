@@ -689,6 +689,22 @@ impl<'a> Cx<'a> {
                 variants: vec![],
             });
         }
+        if self.maps.borrow().contains_key(name) {
+            // 表の頭: 組の列 {ptr, len, cap} に、索引表 {itab, icap} を足す (HashMap のみ索引を使う)。
+            return Ok(Layout {
+                size: 40,
+                align: 8,
+                fields: vec![
+                    ("ptr".into(), "usize".into(), 0),
+                    ("len".into(), "usize".into(), 8),
+                    ("cap".into(), "usize".into(), 16),
+                    ("itab".into(), "usize".into(), 24),
+                    ("icap".into(), "usize".into(), 32),
+                ],
+                is_enum: false,
+                variants: vec![],
+            });
+        }
         if name == STRING || self.vecs.borrow().contains_key(name) || self.deques.borrow().contains_key(name) {
             return Ok(Layout {
                 size: 24,
@@ -1001,6 +1017,7 @@ struct Rt {
     write: FuncId,
     exit: FuncId,
     realloc: FuncId,
+    calloc: FuncId,
     free: FuncId,
     memcpy: FuncId,
     memcmp: FuncId,
@@ -2164,6 +2181,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             let ptr = self.b.ins().load(pt, MemFlags::new(), addr, 0);
             let fr = self.rt.free;
             self.call_rt(fr, &[ptr]);
+            if self.cx.map_info(ty).is_some() {
+                // 索引表 (BtreeMap では null なので free は何もしない)
+                let itab = self.b.ins().load(pt, MemFlags::new(), addr, 24);
+                self.call_rt(fr, &[itab]);
+            }
             return Ok(());
         }
         let l = self.cx.layout(ty, 0)?;
@@ -4307,9 +4329,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     && segs[3] == "new"
                 {
                     let Some(t) = expect.filter(|t| self.cx.map_info(t).is_some()) else { return Err("map.new without a type".into()) };
-                    let v = self.alloc(24, 8);
+                    let v = self.alloc(40, 8);
                     let z = self.b.ins().iconst(types::I64, 0);
-                    for off in [0, 8, 16] {
+                    for off in [0, 8, 16, 24, 32] {
                         self.b.ins().store(MemFlags::new(), z, v, off);
                     }
                     return Ok((Some(v), t.to_string()));
@@ -5030,7 +5052,178 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         (self.b.block_params(done)[0], self.b.block_params(done)[1])
     }
 
-    /// `HashMap` / `BtreeMap` のメソッド。実体は組の列で、検索は線形 (`BtreeMap` は挿入のときにキー順を保つ)。
+    /// キー `k` のハッシュ (I64)。`&str` のキーは文字列の住所 (ptr, len) を渡し、整数・`bool`・`char` は値を渡す。
+    /// 等価 (`bytes_eq` / 整数の `icmp`) と同じく、キーの内容か値のビット列だけから決まる。
+    fn hash_key(&mut self, kty: &str, v: Value) -> Value {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        if kty == "str" {
+            // FNV-1a (64 ビット) をバイト列に掛ける。末尾で上位ビットを下位へ混ぜる。
+            let ptr = self.b.ins().load(pt, MemFlags::new(), v, 0);
+            let len = self.b.ins().load(i64t, MemFlags::new(), v, 8);
+            let (head, body, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+            self.b.append_block_param(head, i64t);
+            self.b.append_block_param(head, i64t);
+            self.b.append_block_param(exit, i64t);
+            let zero = self.b.ins().iconst(i64t, 0);
+            let basis = self.b.ins().iconst(i64t, 0xcbf2_9ce4_8422_2325u64 as i64);
+            self.b.ins().jump(head, &[zero, basis]);
+            self.b.switch_to_block(head);
+            let i = self.b.block_params(head)[0];
+            let h = self.b.block_params(head)[1];
+            let more = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+            self.b.ins().brif(more, body, &[], exit, &[h]);
+            self.b.switch_to_block(body);
+            let a = self.b.ins().iadd(ptr, i);
+            let byte = self.b.ins().load(types::I8, MemFlags::new(), a, 0);
+            let bx = self.b.ins().uextend(i64t, byte);
+            let x = self.b.ins().bxor(h, bx);
+            let hn = self.b.ins().imul_imm(x, 0x0100_0000_01b3);
+            let i1 = self.b.ins().iadd_imm(i, 1);
+            self.b.ins().jump(head, &[i1, hn]);
+            self.b.switch_to_block(exit);
+            let hv = self.b.block_params(exit)[0];
+            let s = self.b.ins().ushr_imm(hv, 29);
+            self.b.ins().bxor(hv, s)
+        } else {
+            // 値を 64 ビットへ広げ、黄金比の乗算のあと上位ビットを下位へ混ぜる。
+            let ty = self.b.func.dfg.value_type(v);
+            let x = if ty.bits() < 64 { self.b.ins().uextend(i64t, v) } else { v };
+            let k = self.b.ins().iconst(i64t, 0x9E37_79B9_7F4A_7C15u64 as i64);
+            let m = self.b.ins().imul(x, k);
+            let s = self.b.ins().ushr_imm(m, 32);
+            self.b.ins().bxor(m, s)
+        }
+    }
+
+    /// 索引表 `itab` (要素数 `icap`) の全要素を 0 (空き) にする。
+    fn index_zero(&mut self, itab: Value, icap: Value) {
+        let i64t = types::I64;
+        let (head, body, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(head, i64t);
+        let zero = self.b.ins().iconst(i64t, 0);
+        self.b.ins().jump(head, &[zero]);
+        self.b.switch_to_block(head);
+        let j = self.b.block_params(head)[0];
+        let more = self.b.ins().icmp(IntCC::UnsignedLessThan, j, icap);
+        self.b.ins().brif(more, body, &[], exit, &[]);
+        self.b.switch_to_block(body);
+        let off = self.b.ins().ishl_imm(j, 3);
+        let a = self.b.ins().iadd(itab, off);
+        let z = self.b.ins().iconst(i64t, 0);
+        self.b.ins().store(MemFlags::new(), z, a, 0);
+        let j1 = self.b.ins().iadd_imm(j, 1);
+        self.b.ins().jump(head, &[j1]);
+        self.b.switch_to_block(exit);
+    }
+
+    /// 索引表 (`itab`, 要素数 `mask + 1`) へ、値 `val` (組の添字 + 1) をハッシュ `hv` の位置から空きまで進んで入れる。
+    /// 呼んだあとは、入れた位置のブロックにいる。
+    fn index_put(&mut self, itab: Value, mask: Value, hv: Value, val: Value) {
+        let i64t = types::I64;
+        let (head, next, put) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(head, i64t);
+        let h0 = self.b.ins().band(hv, mask);
+        self.b.ins().jump(head, &[h0]);
+        self.b.switch_to_block(head);
+        let h = self.b.block_params(head)[0];
+        let off = self.b.ins().ishl_imm(h, 3);
+        let sa = self.b.ins().iadd(itab, off);
+        let slot = self.b.ins().load(i64t, MemFlags::new(), sa, 0);
+        let empty = self.b.ins().icmp_imm(IntCC::Equal, slot, 0);
+        self.b.ins().brif(empty, put, &[], next, &[]);
+        self.b.switch_to_block(next);
+        let h1 = self.b.ins().iadd_imm(h, 1);
+        let hn = self.b.ins().band(h1, mask);
+        self.b.ins().jump(head, &[hn]);
+        self.b.switch_to_block(put);
+        self.b.ins().store(MemFlags::new(), val, sa, 0);
+    }
+
+    /// 組の先頭 `count` 個を、空の索引表 (`p` の itab / icap) へ入れる。キーは組の中の値 (`str` は住所) から取る。
+    fn index_rebuild_entries(&mut self, p: Value, kty: &str, koff: i64, stride: i64, count: Value) {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        let base = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        let itab = self.b.ins().load(pt, MemFlags::new(), p, 24);
+        let icap = self.b.ins().load(i64t, MemFlags::new(), p, 32);
+        let mask = self.b.ins().iadd_imm(icap, -1);
+        let (head, body, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(head, i64t);
+        let zero = self.b.ins().iconst(i64t, 0);
+        self.b.ins().jump(head, &[zero]);
+        self.b.switch_to_block(head);
+        let i = self.b.block_params(head)[0];
+        let more = self.b.ins().icmp(IntCC::UnsignedLessThan, i, count);
+        self.b.ins().brif(more, body, &[], exit, &[]);
+        self.b.switch_to_block(body);
+        let off = self.b.ins().imul_imm(i, stride);
+        let ea = self.b.ins().iadd(base, off);
+        let ka = self.b.ins().iadd_imm(ea, koff);
+        let kv = if kty == "str" { ka } else { self.b.ins().load(cl(kty), MemFlags::new(), ka, 0) };
+        let hv = self.hash_key(kty, kv);
+        let one = self.b.ins().iadd_imm(i, 1);
+        self.index_put(itab, mask, hv, one);
+        let i1 = self.b.ins().iadd_imm(i, 1);
+        self.b.ins().jump(head, &[i1]);
+        self.b.switch_to_block(exit);
+    }
+
+    /// 索引表で `key` を探す。(見つかったか (I8), 組の添字 (I64)) を返す。表が無い (`icap` = 0) なら見つからない。
+    fn index_find(&mut self, p: Value, kty: &str, key: Value, koff: i64, stride: i64) -> (Value, Value) {
+        let i64t = types::I64;
+        let pt = self.ptr_ty();
+        let icap = self.b.ins().load(i64t, MemFlags::new(), p, 32);
+        let (probe, none_b, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(done, types::I8);
+        self.b.append_block_param(done, i64t);
+        let has = self.b.ins().icmp_imm(IntCC::NotEqual, icap, 0);
+        self.b.ins().brif(has, probe, &[], none_b, &[]);
+        self.b.switch_to_block(none_b);
+        let n8 = self.b.ins().iconst(types::I8, 0);
+        let n64 = self.b.ins().iconst(i64t, 0);
+        self.b.ins().jump(done, &[n8, n64]);
+        self.b.switch_to_block(probe);
+        let itab = self.b.ins().load(pt, MemFlags::new(), p, 24);
+        let base = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        let mask = self.b.ins().iadd_imm(icap, -1);
+        let hv = self.hash_key(kty, key);
+        let h0 = self.b.ins().band(hv, mask);
+        let (head, body, cont) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(head, i64t);
+        self.b.ins().jump(head, &[h0]);
+        self.b.switch_to_block(head);
+        let h = self.b.block_params(head)[0];
+        let off = self.b.ins().ishl_imm(h, 3);
+        let sa = self.b.ins().iadd(itab, off);
+        let slot = self.b.ins().load(i64t, MemFlags::new(), sa, 0);
+        let empty = self.b.ins().icmp_imm(IntCC::Equal, slot, 0);
+        let z8 = self.b.ins().iconst(types::I8, 0);
+        let z64 = self.b.ins().iconst(i64t, 0);
+        self.b.ins().brif(empty, done, &[z8, z64], body, &[]);
+        self.b.switch_to_block(body);
+        let e = self.b.ins().iadd_imm(slot, -1);
+        let eo = self.b.ins().imul_imm(e, stride);
+        let ea = self.b.ins().iadd(base, eo);
+        let ka = self.b.ins().iadd_imm(ea, koff);
+        let eq = if kty == "str" {
+            self.bytes_eq(ka, key, 1)
+        } else {
+            let sk = self.b.ins().load(cl(kty), MemFlags::new(), ka, 0);
+            self.b.ins().icmp(IntCC::Equal, sk, key)
+        };
+        let yes = self.b.ins().iconst(types::I8, 1);
+        self.b.ins().brif(eq, done, &[yes, e], cont, &[]);
+        self.b.switch_to_block(cont);
+        let h1 = self.b.ins().iadd_imm(h, 1);
+        let hn = self.b.ins().band(h1, mask);
+        self.b.ins().jump(head, &[hn]);
+        self.b.switch_to_block(done);
+        (self.b.block_params(done)[0], self.b.block_params(done)[1])
+    }
+
+    /// `HashMap` / `BtreeMap` のメソッド。実体は挿入順の組の列 (`BtreeMap` は挿入のときにキー順を保つ)。
+    /// `HashMap` は組の列の上に索引表 (`itab`) を持ち、検索を平均 O(1) にする。
     fn map_method(&mut self, p: Value, rt: &str, name: &str, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
         let i64t = types::I64;
         let pt = self.ptr_ty();
@@ -5051,18 +5244,29 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             "clear" => {
                 let z = self.b.ins().iconst(i64t, 0);
                 self.b.ins().store(MemFlags::new(), z, p, 8);
+                // 索引表も捨てる（icap = 0 は「索引なし」。次の挿入で作り直す）
+                let it = self.b.ins().load(pt, MemFlags::new(), p, 24);
+                let fr = self.rt.free;
+                self.call_rt(fr, &[it]);
+                self.b.ins().store(MemFlags::new(), z, p, 24);
+                self.b.ins().store(MemFlags::new(), z, p, 32);
                 return Ok((None, "void".into()));
             }
             "contains_key" | "get" | "remove" | "get_mut" | "insert" => {}
             _ => return Err(format!("map method {}", name)),
         }
+        let hashed = !sorted;
         let key_arg = args.first().ok_or("map method needs a key")?;
         let (key, kt) = self.expr(key_arg, env, Some(&kty))?;
         if kt != kty {
             return Err(format!("map key type mismatch: {} vs {}", kt, kty));
         }
         let key = key.ok_or("bad key")?;
-        let (found, idx) = self.map_find(p, &kty, key, koff, stride);
+        let (found, idx) = if hashed {
+            self.index_find(p, &kty, key, koff, stride)
+        } else {
+            self.map_find(p, &kty, key, koff, stride)
+        };
         match name {
             "contains_key" => Ok((Some(found), "bool".into())),
             "get" | "remove" | "get_mut" => {
@@ -5103,6 +5307,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     self.call_rt(mm, &[ea, src, bytes]);
                     let newlen = self.b.ins().iadd_imm(len, -1);
                     self.b.ins().store(MemFlags::new(), newlen, p, 8);
+                    if hashed {
+                        // 後ろの組の添字が詰まったので、索引を作り直す（同じ大きさの表を zero で埋めてから入れ直す）
+                        let it = self.b.ins().load(pt, MemFlags::new(), p, 24);
+                        let ic = self.b.ins().load(i64t, MemFlags::new(), p, 32);
+                        self.index_zero(it, ic);
+                        self.index_rebuild_entries(p, &kty, koff, stride, newlen);
+                    }
                 }
                 let t1 = self.b.ins().iconst(types::I32, 1);
                 self.b.ins().store(MemFlags::new(), t1, res, 0);
@@ -5146,7 +5357,38 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.switch_to_block(add);
                 let (failed, nbase) = self.grow_for_one(p, stride);
                 let (ins_b, err_b) = (self.b.create_block(), self.b.create_block());
-                self.b.ins().brif(failed, err_b, &[], ins_b, &[]);
+                if hashed {
+                    // 索引表は負荷率 3/4 を超えたら倍にして入れ直す（入れ直しは追加の前の組だけ）
+                    let (idx_b, grow_b, set_b) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                    self.b.ins().brif(failed, err_b, &[], idx_b, &[]);
+                    self.b.switch_to_block(idx_b);
+                    let len0 = self.b.ins().load(i64t, MemFlags::new(), p, 8);
+                    let icap0 = self.b.ins().load(i64t, MemFlags::new(), p, 32);
+                    let len1 = self.b.ins().iadd_imm(len0, 1);
+                    let lhs = self.b.ins().imul_imm(len1, 4);
+                    let rhs = self.b.ins().imul_imm(icap0, 3);
+                    let need = self.b.ins().icmp(IntCC::UnsignedGreaterThan, lhs, rhs);
+                    self.b.ins().brif(need, grow_b, &[], ins_b, &[]);
+                    self.b.switch_to_block(grow_b);
+                    let eight = self.b.ins().iconst(i64t, 8);
+                    let dbl = self.b.ins().ishl_imm(icap0, 1);
+                    let cap_zero = self.b.ins().icmp_imm(IntCC::Equal, icap0, 0);
+                    let newicap = self.b.ins().select(cap_zero, eight, dbl);
+                    let ca = self.rt.calloc;
+                    let nt = self.call_rt(ca, &[newicap, eight])[0];
+                    let isnull = self.b.ins().icmp_imm(IntCC::Equal, nt, 0);
+                    self.b.ins().brif(isnull, err_b, &[], set_b, &[]);
+                    self.b.switch_to_block(set_b);
+                    let old = self.b.ins().load(pt, MemFlags::new(), p, 24);
+                    let fr = self.rt.free;
+                    self.call_rt(fr, &[old]);
+                    self.b.ins().store(MemFlags::new(), nt, p, 24);
+                    self.b.ins().store(MemFlags::new(), newicap, p, 32);
+                    self.index_rebuild_entries(p, &kty, koff, stride, len0);
+                    self.b.ins().jump(ins_b, &[]);
+                } else {
+                    self.b.ins().brif(failed, err_b, &[], ins_b, &[]);
+                }
                 self.b.switch_to_block(err_b);
                 let e1 = self.b.ins().iconst(types::I32, 1);
                 self.b.ins().store(MemFlags::new(), e1, res, 0);
@@ -5194,6 +5436,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.store_value(vd, &vty, val)?;
                 let newlen = self.b.ins().iadd_imm(len, 1);
                 self.b.ins().store(MemFlags::new(), newlen, p, 8);
+                if hashed {
+                    // 新しい組の添字 (+1) を索引表へ入れる
+                    let it = self.b.ins().load(pt, MemFlags::new(), p, 24);
+                    let ic = self.b.ins().load(i64t, MemFlags::new(), p, 32);
+                    let mask = self.b.ins().iadd_imm(ic, -1);
+                    let hv = self.hash_key(&kty, key);
+                    self.index_put(it, mask, hv, newlen);
+                }
                 let n0 = self.b.ins().iconst(types::I32, 0);
                 self.b.ins().store(MemFlags::new(), n0, tmp, 0);
                 let okoff = rl.variants[0].1[0].1 as i64;
@@ -6466,6 +6716,11 @@ pub fn compile_clif(
     sig.returns.push(AbiParam::new(ptr));
     let realloc = module.declare_function("realloc", Linkage::Import, &sig).map_err(|e| e.to_string())?;
     let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(ptr));
+    let calloc = module.declare_function("calloc", Linkage::Import, &sig).map_err(|e| e.to_string())?;
+    let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(ptr));
     let free = module.declare_function("free", Linkage::Import, &sig).map_err(|e| e.to_string())?;
     let mut sig = module.make_signature();
@@ -6491,7 +6746,7 @@ pub fn compile_clif(
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(ptr));
     let memmove = module.declare_function("memmove", Linkage::Import, &sig).map_err(|e| e.to_string())?;
-    let rt = Rt { puts, write, exit, realloc, free, memcpy, memcmp, memmove, utf8 };
+    let rt = Rt { puts, write, exit, realloc, calloc, free, memcpy, memcmp, memmove, utf8 };
 
     let t_collect = tm_all.elapsed();
     // 関数の宣言。入口は C の `main` にする。構造体・列挙型を返す関数は、先頭に戻り値用のアドレスを取る。

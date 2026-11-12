@@ -140,9 +140,20 @@ pub enum IterV {
     User { place: Rc<dyn Place>, def: usize },
 }
 
+/// `HashMap` / `BtreeMap` の実体。`d` は挿入順の組の列で、反復順はこれに従う（規範）。
+/// `idx` は `hkey` から `d` の添字への索引で、検索を平均 O(1) にする。`d` と常に対応する。
 pub struct MapV {
     pub kind: String,
     pub d: Vec<(Val, Val)>,
+    pub idx: HashMap<String, usize>,
+}
+
+impl MapV {
+    /// 組の列から表を作る（索引も作り直す）。
+    pub fn new(kind: &str, d: Vec<(Val, Val)>) -> MapV {
+        let idx = d.iter().enumerate().map(|(i, (k, _))| (hkey(k), i)).collect();
+        MapV { kind: kind.into(), d, idx }
+    }
 }
 
 #[derive(Clone)]

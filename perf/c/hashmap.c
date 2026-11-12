@@ -1,6 +1,6 @@
 /* perf/hashmap の C 版: 整数キーの挿入と検索。
- * 参照の表は配列で持つ（検索は O(1)）。Kasane 側の HashMap は実体が
- * 組の列で検索が線形なので、両者は同じ結果を返すが速度は大きく違う。 */
+ * 参照の表は配列で持つ（検索は O(1)）。Kasane 側の HashMap は挿入順の組の列に
+ * ハッシュの索引表を付けて検索する（平均 O(1)）。両者は同じ結果を返す。 */
 #include "common.h"
 
 int main(int argc, char **argv) {
