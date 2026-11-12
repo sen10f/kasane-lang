@@ -15,7 +15,7 @@ bash scripts/setup.sh --bench # さらに NVIDIA NIM ベンチの準備確認 (A
 
 必要なもの: Rust (cargo)、gcc か clang (ネイティブ生成のリンクと C ランタイムのコンパイル)、Python 3.10 以上、git。Go は任意 (`bench/http` の比較用)。
 
-クラウドの開発環境では `.env` を使わず、`.env.example` の変数を環境のシークレットとして登録する。ビルド後の `ksn` は `stage0/target/release/ksn`、`ksn.sh` / `ksn.cmd` はそれを起動する。
+クラウドの開発環境（Claude Code のクラウド）では、環境設定の「セットアップスクリプト」に `scripts/cloud-setup.sh` の中身を貼り（または `bash scripts/cloud-setup.sh` を指定し）、「環境変数」に `.env.cloud.example` の内容を貼って `NVIDIA_API_KEY` の値を入れる。ネットワークは crates.io・rustup（Rust が無い環境のみ）・`integrate.api.nvidia.com`（ベンチのみ）への外向きの通信が要る。ビルド後の `ksn` は `stage0/target/release/ksn`、`ksn.sh` / `ksn.cmd` はそれを起動する。
 
 ## コマンド
 
