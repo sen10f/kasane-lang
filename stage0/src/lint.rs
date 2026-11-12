@@ -660,6 +660,36 @@ impl Lint {
                 }
             }
         }
+        // `let t.V(x, _) = ..` のバリアント分解: 引数のうち単純な識別子 (小文字始まり) だけを束縛とみなす。
+        // 入れ子のパターン `t.W(..)`・リテラル・大文字の名前は数えない (黙る)。
+        let re_letv = Regex::new(r"\blet ([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\(").unwrap();
+        for m in re_letv.captures_iter(&body) {
+            let open = m.get(0).unwrap().end() - 1;
+            let mut depth = 0i32;
+            let mut close = None;
+            for (k, ch) in body[open..].char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(open + k);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(close) = close else { continue };
+            for arg in split_top(&body[open + 1..close], ',') {
+                let plain = arg.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+                    && arg.chars().all(word_char)
+                    && arg != "_";
+                if plain {
+                    names.push(("let", arg));
+                }
+            }
+        }
         let re_fn = Regex::new(r"\bfn\(([^)]*)\)").unwrap();
         for m in re_fn.captures_iter(&body) {
             for p in split_top(&m[1], ',') {
@@ -673,7 +703,24 @@ impl Lint {
         for m in re_for.captures_iter(&body) {
             names.push(("let", m[1].to_string()));
         }
-        (names, body)
+        // 構造体パターンのフィールドラベル (`b` in `let t.L { b: b } = l`) は変数の使用ではない。
+        // 使用回数を数える前に空白へ置き換え、束縛名と同じラベルを使用として数えないようにする。
+        // (置換は ASCII の `{` `,` `:` の位置だけで行うので UTF-8 の境界は壊れない。)
+        let mut bytes = body.clone().into_bytes();
+        for m in re_st.captures_iter(&body) {
+            let g = m.get(1).unwrap();
+            let mut off = g.start();
+            for f in g.as_str().split(',') {
+                if let Some(c) = f.find(':') {
+                    for b in &mut bytes[off..off + c] {
+                        *b = b' ';
+                    }
+                }
+                off += f.len() + 1;
+            }
+        }
+        let count_body = String::from_utf8(bytes).unwrap_or_else(|_| body.clone());
+        (names, count_body)
     }
 
     fn check_names_and_unused(&mut self, items: &[Item]) {
