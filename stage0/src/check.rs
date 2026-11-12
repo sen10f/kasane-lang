@@ -243,6 +243,8 @@ pub struct Checker<'a> {
     /// いま `const fn` の本体を検査中か (呼べるのは const fn と組み込みのみ、3.2)。
     in_const_fn: bool,
     pub unsafe_modules: Vec<String>,
+    /// `tests/` 配下 (統合テスト、3.2) のファイルパス。ここに属する定義には別の規則を当てる。
+    pub integration_files: HashSet<String>,
     unsafe_ok: bool,
     // typeck の状態
     d: usize,
@@ -341,6 +343,7 @@ impl<'a> Checker<'a> {
             cur_panics: "may".into(),
             in_const_fn: false,
             unsafe_modules: vec![],
+            integration_files: HashSet::new(),
             unsafe_ok: false,
             d: 0,
             names: HashSet::new(),
@@ -394,6 +397,8 @@ impl<'a> Checker<'a> {
         self.check_field_method();
         self.check_statics();
         self.check_tests();
+        self.check_integration_files();
+        self.check_visibility();
         self.check_linear();
         self.check_linear_type_args();
         self.check_derive();
@@ -992,6 +997,119 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 3.2 / 3.6: `tests/` の統合テストの規則 (E1120) と、`src/` が予約名前空間
+    /// `<パッケージ>.tests` を使っていないこと (E1121)。
+    fn check_integration_files(&mut self) {
+        let mut reported: BTreeSet<String> = BTreeSet::new();
+        for &i in &self.user.clone() {
+            let d = self.def(i);
+            if self.integration_files.contains(&d.file) {
+                if d.kw == "extern" {
+                    self.diag("E1120", format!("`extern` is not allowed in tests/ ({})", d.name), i, 0);
+                } else if !matches!(d.kw.as_str(), "import" | "impl" | "test") && header_is_pub(&d.header) {
+                    self.diag("E1120", format!("{} in tests/ must not be `pub` (3.2)", d.name), i, 0);
+                }
+            } else if d.kw != "import" && d.module.split('.').nth(1) == Some("tests") && reported.insert(d.module.clone()) {
+                self.diag(
+                    "E1121",
+                    format!("module {} is reserved for integration tests (tests/); rename it (3.6)", d.module),
+                    i,
+                    0,
+                );
+            }
+        }
+    }
+
+    /// 3.1: 可視性は2段階 (省略 = 同一モジュール内、`pub` = 全パッケージ)。別モジュールの
+    /// 非 `pub` な定義を FQN (または `import` 済みの短縮形) で参照すると E1119。
+    /// 名前ベースの近似: 解決できる fn / 型 / const / extern の参照だけを見る。メソッド呼び出し
+    /// (`x.m()`) とフィールドは型が要るので見ない (黙る)。標準ライブラリは対象外。
+    fn check_visibility(&mut self) {
+        let p = self.p;
+        let mut tails: HashMap<&str, HashMap<String, String>> = HashMap::new();
+        for d in &p.defs {
+            if d.kw == "import" {
+                if let Some(t) = d.name.rsplit('.').next() {
+                    tails.entry(d.file.as_str()).or_default().insert(t.to_string(), d.name.clone());
+                }
+            }
+        }
+        for &i in &self.user.clone() {
+            let d = self.def(i);
+            if matches!(d.kw.as_str(), "import" | "impl") {
+                continue;
+            }
+            let mut refs: Vec<(String, usize)> = vec![];
+            let mut hdr: BTreeSet<String> = BTreeSet::new();
+            for (kind, _, bound) in &d.generics {
+                if kind == "type" {
+                    for b in items(bound) {
+                        if matches!(b, V::L(_)) {
+                            collect_ref_fqns(b, &mut hdr);
+                        }
+                    }
+                }
+            }
+            for (_, t) in &d.params {
+                collect_ref_fqns(t, &mut hdr);
+            }
+            collect_ref_fqns(&d.ret, &mut hdr);
+            for (_, t, _) in &d.fields {
+                collect_ref_fqns(t, &mut hdr);
+            }
+            for (_, ts) in &d.variants {
+                for t in ts {
+                    collect_ref_fqns(t, &mut hdr);
+                }
+            }
+            for (base, args) in &d.requires {
+                hdr.insert(base.clone());
+                collect_ref_fqns(args, &mut hdr);
+            }
+            if d.has_impls {
+                hdr.insert(d.impls_trait.clone());
+            }
+            refs.extend(hdr.into_iter().map(|r| (r, 0)));
+            if let Some(init) = &d.init {
+                collect_vis_refs(init, &mut refs);
+            }
+            if let Some(body) = &d.body {
+                collect_vis_refs(body, &mut refs);
+            }
+            let imp = tails.get(d.file.as_str());
+            let mut seen: BTreeSet<(String, usize)> = BTreeSet::new();
+            for (r, line) in refs {
+                let segs: Vec<&str> = r.split('.').collect();
+                let mut chains = vec![segs.iter().map(|x| x.to_string()).collect::<Vec<_>>()];
+                if let Some(full) = imp.and_then(|m| m.get(segs[0])) {
+                    let mut c: Vec<String> = full.split('.').map(String::from).collect();
+                    c.extend(segs[1..].iter().map(|x| x.to_string()));
+                    chains.push(c);
+                }
+                for chain in chains {
+                    let hit = (1..=chain.len()).rev().find_map(|k| {
+                        let n = chain[..k].join(".");
+                        let j = p.funcs.get(&n).or_else(|| p.types.get(&n)).or_else(|| p.consts.get(&n)).or_else(|| p.sigs.get(&n))?;
+                        Some((n, *j))
+                    });
+                    let Some((n, j)) = hit else { continue };
+                    let t = &p.defs[j];
+                    if t.module == d.module
+                        || t.has_impls
+                        || matches!(t.module.split('.').next(), Some("core" | "alloc" | "std"))
+                        || header_is_pub(&t.header)
+                    {
+                        break;
+                    }
+                    if seen.insert((n.clone(), line)) {
+                        self.diag("E1119", format!("{} is private to module {} (add `pub` to use it from {})", n, t.module, d.module), i, line);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     /// 3.2: `test <対象FQN>.test_<名前>` の対象FQNが存在し、テストと同じファイルにあること (E1116)。
     fn check_tests(&mut self) {
         let tests: Vec<usize> = self.user.iter().copied().filter(|&i| self.def(i).kw == "test").collect();
@@ -1001,6 +1119,18 @@ impl<'a> Checker<'a> {
             let file = d.file.clone();
             let name = d.name.clone();
             let target = target.to_string();
+            if self.integration_files.contains(&file) {
+                // 統合テスト (3.2): 対象は定義ではなくテストファイル自身のモジュール。
+                if target != d.module {
+                    self.diag(
+                        "E1116",
+                        format!("integration test {} must be named {}.test_<name> (3.2)", name, d.module),
+                        i,
+                        0,
+                    );
+                }
+                continue;
+            }
             let found = self
                 .p
                 .funcs
@@ -3914,6 +4044,55 @@ fn collect_ref_fqns(t: &V, out: &mut BTreeSet<String>) {
         V::Node(_, fs, _) => {
             for f in fs {
                 collect_ref_fqns(f, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 定義ヘッダの末尾が `pub` か。
+fn header_is_pub(h: &str) -> bool {
+    h.split_whitespace().last() == Some("pub")
+}
+
+/// 本体・初期化式の AST から、可視性の検査 (E1119) が見る名前参照 (パス・構造体リテラル・
+/// バリアントパターン・型注釈の名前つき型) を (名前, 位置) で集める。
+fn collect_vis_refs(t: &V, out: &mut Vec<(String, usize)>) {
+    match t {
+        V::Node(n, fs, pos) => {
+            match *n {
+                "Path" | "PVariant" => {
+                    if let Some(V::L(segs)) = fs.first() {
+                        let v: Vec<String> = segs.iter().map(st).collect();
+                        if v.len() > 1 {
+                            out.push((v.join("."), *pos));
+                        }
+                    }
+                }
+                "StructLit" => {
+                    if let Some(V::S(nm)) = fs.first() {
+                        if nm.contains('.') {
+                            out.push((nm.clone(), *pos));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for f in fs {
+                collect_vis_refs(f, out);
+            }
+        }
+        V::L(xs) => {
+            let mut hdr: BTreeSet<String> = BTreeSet::new();
+            if matches!(xs.first(), Some(V::S(s)) if s == "named" || s.contains('.')) {
+                collect_ref_fqns(t, &mut hdr);
+                out.extend(hdr.into_iter().map(|r| (r, 0)));
+                return;
+            }
+            for x in xs {
+                if matches!(x, V::L(_) | V::Node(..)) {
+                    collect_vis_refs(x, out);
+                }
             }
         }
         _ => {}
