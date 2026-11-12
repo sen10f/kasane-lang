@@ -9,6 +9,7 @@ mod cnative;
 mod explain;
 mod fixes;
 mod infer;
+mod fmath;
 mod fmt;
 mod grammar;
 mod lint;

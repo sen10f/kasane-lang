@@ -21,6 +21,7 @@ use cranelift_module::{default_libcall_names, DataDescription, FuncId, Linkage, 
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::check::{items, nf, nline, nname, st, strs, tag, tel};
+use crate::fmath;
 
 // [Step 0 計測用 一時コード] 単相化 (型引数の決定とインスタンスの宣言) に使った時間の累計 (ns)。
 thread_local! { static MONO_NS: std::cell::Cell<u128> = const { std::cell::Cell::new(0) }; }
@@ -915,7 +916,7 @@ impl<'a> Cx<'a> {
                 _ => None,
             };
         }
-        if is_float(recv_ty) && matches!(name, "sqrt" | "floor" | "ceil" | "trunc" | "abs") {
+        if is_float(recv_ty) && matches!(name, "sqrt" | "floor" | "ceil" | "trunc" | "abs" | "sin" | "cos" | "tan" | "exp" | "ln" | "atan2" | "powi") {
             return Some(recv_ty.to_string());
         }
         // 浮動小数から整数への切り捨て変換 `x.trunc_to_i8()` などは `Option<i8>` を返す。
@@ -1024,6 +1025,97 @@ struct Rt {
     memmove: FuncId,
     /// UTF-8 の検証 (ptr, len) -> 1 (正しい) / 0
     utf8: FuncId,
+}
+
+/// `fmath` の演算を Cranelift の IR の命令に下ろす。`f64` の値は `F64`、整数は `I64`、
+/// 真偽は `fcmp` / `icmp` の結果 (`I8`) で表す。`f32` の値は使わない (呼び出し側で `fpromote` する)。
+struct ClifOps<'x, 'f> {
+    b: RefCell<&'x mut FunctionBuilder<'f>>,
+}
+
+impl<'x, 'f> ClifOps<'x, 'f> {
+    fn new(b: &'x mut FunctionBuilder<'f>) -> Self {
+        ClifOps { b: RefCell::new(b) }
+    }
+}
+
+impl fmath::Ops for ClifOps<'_, '_> {
+    type F = Value;
+    type I = Value;
+    type B = Value;
+    fn c(&self, v: f64) -> Value {
+        self.b.borrow_mut().ins().f64const(v)
+    }
+    fn ic(&self, v: i64) -> Value {
+        self.b.borrow_mut().ins().iconst(types::I64, v)
+    }
+    fn add(&self, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().fadd(a, b)
+    }
+    fn sub(&self, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().fsub(a, b)
+    }
+    fn mul(&self, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().fmul(a, b)
+    }
+    fn div(&self, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().fdiv(a, b)
+    }
+    fn neg(&self, a: Value) -> Value {
+        self.b.borrow_mut().ins().fneg(a)
+    }
+    fn floor(&self, a: Value) -> Value {
+        self.b.borrow_mut().ins().floor(a)
+    }
+    fn lt(&self, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().fcmp(FloatCC::LessThan, a, b)
+    }
+    fn gt(&self, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().fcmp(FloatCC::GreaterThan, a, b)
+    }
+    fn eq(&self, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().fcmp(FloatCC::Equal, a, b)
+    }
+    fn ne(&self, a: Value, b: Value) -> Value {
+        // `FloatCC::NotEqual` は順序なしの場合も真 (NaN で真になる)。
+        self.b.borrow_mut().ins().fcmp(FloatCC::NotEqual, a, b)
+    }
+    fn sel(&self, c: Value, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().select(c, a, b)
+    }
+    fn isel(&self, c: Value, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().select(c, a, b)
+    }
+    fn to_i(&self, a: Value) -> Value {
+        self.b.borrow_mut().ins().fcvt_to_sint_sat(types::I64, a)
+    }
+    fn from_i(&self, a: Value) -> Value {
+        self.b.borrow_mut().ins().fcvt_from_sint(types::F64, a)
+    }
+    fn bits(&self, a: Value) -> Value {
+        self.b.borrow_mut().ins().bitcast(types::I64, MemFlags::new(), a)
+    }
+    fn from_bits(&self, a: Value) -> Value {
+        self.b.borrow_mut().ins().bitcast(types::F64, MemFlags::new(), a)
+    }
+    fn iadd(&self, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().iadd(a, b)
+    }
+    fn isub(&self, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().isub(a, b)
+    }
+    fn iand(&self, a: Value, b: Value) -> Value {
+        self.b.borrow_mut().ins().band(a, b)
+    }
+    fn ishr(&self, a: Value, n: u32) -> Value {
+        self.b.borrow_mut().ins().ushr_imm(a, n as i64)
+    }
+    fn ishl(&self, a: Value, n: u32) -> Value {
+        self.b.borrow_mut().ins().ishl_imm(a, n as i64)
+    }
+    fn nz(&self, a: Value) -> Value {
+        self.b.borrow_mut().ins().icmp_imm(IntCC::NotEqual, a, 0)
+    }
 }
 
 struct FnGen<'a, 'b, 'm> {
@@ -5795,7 +5887,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     }
 
     /// `char` と、整数の浮動小数への変換のメソッド。
-    fn scalar_method(&mut self, recv: &V, name: &str, env: &mut Env, expect: Option<&str>) -> R<Option<(Option<Value>, String)>> {
+    fn scalar_method(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<Option<(Option<Value>, String)>> {
         let Some(t) = self.ty_of(recv, env, expect) else { return Ok(None) };
         if t == "char" {
             if self.cx.builtin_method_ty("char", name).is_none() {
@@ -5850,6 +5942,39 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 _ => return Ok(None),
             };
             return Ok(Some((Some(r.0), r.1.to_string())));
+        }
+        if is_float(&t) && matches!(name, "sin" | "cos" | "tan" | "exp" | "ln" | "atan2" | "powi") {
+            // 超越関数は `fmath` の演算列を IR に展開する (インタプリタと同じビット列になる)。
+            // `f32` は `f64` へ広げて計算し、結果を `f32` へ丸める (`fmath` の方針)。
+            let (x, _) = self.expr(recv, env, Some(&t))?;
+            let x = x.ok_or("bad value")?;
+            let x = if t == "f32" { self.b.ins().fpromote(types::F64, x) } else { x };
+            let r = match name {
+                "atan2" => {
+                    let (y, _) = self.expr(&args[0], env, Some(&t))?;
+                    let y = y.ok_or("bad value")?;
+                    let y = if t == "f32" { self.b.ins().fpromote(types::F64, y) } else { y };
+                    fmath::atan2(&ClifOps::new(&mut self.b), x, y)
+                }
+                "powi" => {
+                    let (n, _) = self.expr(&args[0], env, Some("i32"))?;
+                    let n = n.ok_or("bad value")?;
+                    let n = self.b.ins().sextend(types::I64, n);
+                    fmath::powi(&ClifOps::new(&mut self.b), x, n)
+                }
+                _ => {
+                    let ops = ClifOps::new(&mut self.b);
+                    match name {
+                        "sin" => fmath::sin(&ops, x),
+                        "cos" => fmath::cos(&ops, x),
+                        "tan" => fmath::tan(&ops, x),
+                        "exp" => fmath::exp(&ops, x),
+                        _ => fmath::ln(&ops, x),
+                    }
+                }
+            };
+            let r = if t == "f32" { self.b.ins().fdemote(types::F32, r) } else { r };
+            return Ok(Some((Some(r), t)));
         }
         if is_float(&t) && matches!(name, "sqrt" | "floor" | "ceil" | "trunc" | "abs") {
             let (x, _) = self.expr(recv, env, Some(&t))?;
@@ -6455,7 +6580,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     }
 
     fn method(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
-        if let Some(r) = self.scalar_method(recv, name, env, expect)? {
+        if let Some(r) = self.scalar_method(recv, name, args, env, expect)? {
             return Ok(r);
         }
         if let Some(op) = name.strip_prefix("checked_") {

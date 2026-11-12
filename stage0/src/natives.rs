@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::check::{items, st};
+use crate::fmath;
 use crate::parser::V;
 use crate::interp::Interp;
 use crate::value::*;
@@ -299,11 +300,12 @@ fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
         "sqrt" => simple(|v| if v >= 0.0 { v.sqrt() } else { f64::NAN }),
         "floor" => simple(f64::floor),
         "ceil" => simple(f64::ceil),
-        "sin" => simple(f64::sin),
-        "cos" => simple(f64::cos),
-        "tan" => simple(f64::tan),
-        "exp" => simple(|v| if v < 709.78 { v.exp() } else { f64::INFINITY }),
-        "ln" => simple(|v| if v > 0.0 { v.ln() } else if v == 0.0 { f64::NEG_INFINITY } else { f64::NAN }),
+        // 超越関数は自前実装 (`fmath`)。f32 は呼び出し側で f32 へ丸める。
+        "sin" => Ok(Val::Float(fmath::sin(&fmath::Host, x))),
+        "cos" => Ok(Val::Float(fmath::cos(&fmath::Host, x))),
+        "tan" => Ok(Val::Float(fmath::tan(&fmath::Host, x))),
+        "exp" => Ok(Val::Float(fmath::exp(&fmath::Host, x))),
+        "ln" => Ok(Val::Float(fmath::ln(&fmath::Host, x))),
         "trunc" => simple(f64::trunc),
         "round_ties_even" => simple(|v| {
             let r = v.round();
@@ -314,9 +316,9 @@ fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
         "is_finite" => Ok(Val::Bool(!(x.is_nan() || x.is_infinite()))),
         "max" => Ok(Val::Float(x.max(y))),
         "min" => Ok(Val::Float(x.min(y))),
-        "powi" => Ok(Val::Float(x.powi(y as i32))),
+        "powi" => Ok(Val::Float(fmath::powi(&fmath::Host, x, y as i64))),
         "rem" => Ok(Val::Float(if y != 0.0 { x % y } else { f64::NAN })),
-        "atan2" => Ok(Val::Float(x.atan2(y))),
+        "atan2" => Ok(Val::Float(fmath::atan2(&fmath::Host, x, y))),
         _ => panic(format!("unknown float operation {}.{}", ty, name)),
     }
 }
