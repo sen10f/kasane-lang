@@ -48,6 +48,8 @@ pub struct Def {
     /// `extern` の `link "名前"` (省略時は FQN の末尾)
     pub link: String,
     pub impl_for: V,
+    /// `impl` の実装するトレイトの型引数 (`core.iter.Iterator<T, E, P>` の `T, E, P` の並び)。型検査の境界解決に使う。
+    pub impl_targs: V,
 }
 
 impl Def {
@@ -119,6 +121,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
             header: l.to_string(),
             ret: V::Nil,
             impl_for: V::Nil,
+            impl_targs: V::Nil,
             ..Default::default()
         };
         let body_lines: Vec<&str> = if sp.end_line > 0 { lines[sp.line..sp.end_line - 1].to_vec() } else { vec![] };
@@ -287,6 +290,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 d.generics = conv_generics(&p.generics()?);
                 let tr = p.trait_ref()?;
                 d.impl_trait = text(&items(&tr)[0]);
+                d.impl_targs = items(&tr)[1].clone();
                 p.expect_kw("for")?;
                 d.impl_for = p.ty()?;
                 d.name = l.to_string();

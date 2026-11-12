@@ -128,6 +128,28 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
     }
 }
 
+/// 効果 (`uses`) と panic (`panics`) のジェネリクスの実引数に使う印。型ではないので型変数にせず、
+/// 一致の判定だけに使う (同じ印どうしは一致し、他の型とは一致しない)。表示は `_`。
+const EFFECT_ARG: &str = "_";
+
+/// 効果・panic のジェネリクス (`E: uses`, `P: panics`) を、呼び出しごとの印で束縛する。
+/// 結果の型 (`Filter<I, F, T, E, P>` など) に残るこれらの引数が型変数として未解決のまま残らないようにする。
+fn seed_effects(d: &Def, map: &mut HashMap<String, Ty>) {
+    for g in &d.generics {
+        if g.0 == "uses" || g.0 == "panics" {
+            map.entry(g.1.clone()).or_insert_with(|| Ty::Named(EFFECT_ARG.into(), vec![]));
+        }
+    }
+}
+
+/// `impl` の対象型 (`impl_for`) の先頭の型名。名前付きの型 (`named`) だけ返す。
+fn impl_head(v: &V) -> Option<String> {
+    match v {
+        V::L(xs) if matches!(xs.first(), Some(V::S(k)) if k == "named") => Some(st(&xs[1])),
+        _ => None,
+    }
+}
+
 /// 型実引数が定数リテラル (`16` / `true` / `'a'`) なら、その綴りを返す (4.3 の定数パラメータ)。
 /// 定数名 (`app.f.FOO`) は型と同じ構文で書かれるため区別できず、None にする (一致判定もしない)。
 fn const_targ(a: &V) -> Option<String> {
@@ -1006,6 +1028,7 @@ impl<'a> TypeCk<'a> {
         }
         let mut map: HashMap<String, Ty> = HashMap::new();
         self.seed_targs(d, targs, &mut map);
+        seed_effects(d, &mut map);
         let self_ty = from_v(&d.params[0].1, &gn);
         let self_ty = self.inst(&self_ty, &mut map);
         let view = self.view_for(recv, &owner);
@@ -1025,6 +1048,7 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
+        self.resolve_impl_bounds(d, &mut map);
         // Fn 境界 (6 の 1): `map_err(f)` などの引数のクロージャ・関数項目を、境界の引数・戻り値と単一化する
         // (`call_def` と同じ検査)。宣言の添字は `self` の分だけずれる。
         let mut cap_bad = false;
@@ -1313,6 +1337,77 @@ impl<'a> TypeCk<'a> {
                         format!("the trait bound `{}: {}` of {} is not satisfied by {}", g.1, tr, d.name, t.show()),
                         line,
                     );
+                }
+            }
+        }
+    }
+
+    /// 型の中に未解決の型変数があるか。
+    fn has_var(&self, t: &Ty) -> bool {
+        match self.deep(t) {
+            Ty::Var(_) => true,
+            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.has_var(x)),
+            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.has_var(&x),
+            Ty::Closure { args, ret, .. } => args.iter().any(|x| self.has_var(x)) || self.has_var(&ret),
+            _ => false,
+        }
+    }
+
+    /// 型パラメータの境界 `T: Tr<A..>` (`Fn` 系と marker を除く) の型引数が、まだ未解決の型変数を含むとき、
+    /// `T` の具体型 (名前付きの型) が実装する `impl Tr<B..> for T'` の `B..` と `A..` を単一化する。
+    /// 例: `core.iter.enumerate(it)` の `T` は `I: Iterator<T, E, P>` の `I` (`Range<i32>`) の impl
+    /// (`Iterator<T, [], never> for Range<T>`) から決まる。候補が 1 つでないときや単一化の失敗は黙る。
+    fn resolve_impl_bounds(&mut self, d: &Def, map: &mut HashMap<String, Ty>) {
+        let p: &'a Program = self.p;
+        let gn = d.gnames();
+        for g in &d.generics {
+            if g.0 != "type" {
+                continue;
+            }
+            let Some(recv) = map.get(&g.1).cloned() else { continue };
+            let recv = self.deep(&recv);
+            let Ty::Named(rn, _) = recv.strip().clone() else { continue };
+            for b in items(&g.2) {
+                let V::L(bx) = b else { continue };
+                let tr = st(&bx[0]);
+                if tr.starts_with("core.ops.Fn") || tr == "core.marker.Send" || tr == "core.marker.Sync" {
+                    continue;
+                }
+                let targs = items(tel(b, 1));
+                if targs.is_empty() {
+                    continue;
+                }
+                let mut want = vec![];
+                for a in targs {
+                    let t = from_v(a, &gn);
+                    want.push(self.inst(&t, map));
+                }
+                if !want.iter().any(|t| self.has_var(t)) {
+                    continue;
+                }
+                let cands: Vec<usize> = p
+                    .defs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, x)| x.kw == "impl" && x.impl_trait == tr && impl_head(&x.impl_for).as_deref() == Some(rn.as_str()))
+                    .map(|(i, _)| i)
+                    .collect();
+                if cands.len() != 1 {
+                    continue;
+                }
+                let imp = &p.defs[cands[0]];
+                let ign = imp.gnames();
+                let mut im: HashMap<String, Ty> = HashMap::new();
+                seed_effects(imp, &mut im);
+                let for_t = from_v(&imp.impl_for, &ign);
+                let for_t = self.inst(&for_t, &mut im);
+                if self.unify2(&for_t, &recv).is_err() {
+                    continue;
+                }
+                for (w, a) in want.iter().zip(items(&imp.impl_targs)) {
+                    let it = from_v(a, &ign);
+                    let it = self.inst(&it, &mut im);
+                    let _ = self.unify2(w, &it);
                 }
             }
         }
@@ -1875,6 +1970,7 @@ impl<'a> TypeCk<'a> {
         // 実引数が並ばない (誤った) 呼び出しでは何も束縛せず、引数からの推論に任せる (黙る)。
         let mut map: HashMap<String, Ty> = HashMap::new();
         self.seed_targs(d, targs, &mut map);
+        seed_effects(d, &mut map);
         // Fn 境界を受け取る引数の位置と、渡されたクロージャの型 (決まっているものだけ)。
         let mut fn_args: Vec<(usize, String)> = vec![];
         let mut closures: HashMap<usize, Ty> = HashMap::new();
@@ -1935,6 +2031,9 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
+        // 境界の型引数 (`I: Iterator<T, ..>` の `T`) を、受け取った引数の型の impl から決める。
+        // Fn 境界より先にやり、クロージャの引数型との食い違いは Fn 境界の検査 (E2023) が報告する。
+        self.resolve_impl_bounds(d, &mut map);
         // Fn 境界の単一化: 境界の `Args` タプルと戻り値型を、クロージャの型と比べる。
         let mut cap_bad = false;
         for (k, name) in &fn_args {
