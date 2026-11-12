@@ -79,6 +79,11 @@ fn signed(p: &str) -> bool {
 }
 
 const STRING: &str = "alloc.string.String";
+/// `String` に対しても `str` として呼べる、`str` のメソッド。
+const STR_METHODS: &[&str] = &[
+    "ends_with", "contains", "eq_ignore_ascii_case", "trim", "trim_start", "trim_end", "strip_prefix", "strip_suffix", "rfind", "split_once",
+    "find", "starts_with", "split_at",
+];
 
 /// `Name<a,b>` の `Name`。
 fn base_of(ty: &str) -> &str {
@@ -319,7 +324,7 @@ impl<'a> Cx<'a> {
                     let (k, v) = (self.pty_owned(args[0])?, self.pty_owned(args[1])?);
                     return self.map_of(n.ends_with("BtreeMap"), &k, &v);
                 }
-                if n == "alloc.alloc.AllocError" || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.rand.Rng" || n == "core.num.ParseIntError" {
+                if n == "alloc.alloc.AllocError" || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.rand.Rng" || n == "core.num.ParseIntError" || n == "alloc.string.PushBytesError" {
                     return Ok(n);
                 }
                 if n == "Option" || n == "Result" {
@@ -695,7 +700,7 @@ impl<'a> Cx<'a> {
         if name == "std.rand.Rng" {
             return Ok(Layout { size: 8, align: 8, fields: vec![("state".into(), "u64".into(), 0)], is_enum: false, variants: vec![] });
         }
-        if name == "std.io.Error" || name == "core.str.Utf8Error" || name == "core.num.TryFromIntError" || name == "std.thread.SpawnError" || name == "core.num.ParseIntError" {
+        if name == "std.io.Error" || name == "core.str.Utf8Error" || name == "core.num.TryFromIntError" || name == "std.thread.SpawnError" || name == "core.num.ParseIntError" || name == "alloc.string.PushBytesError" {
             return Ok(Layout { size: 8, align: 8, fields: vec![], is_enum: false, variants: vec![] });
         }
         let registered = self.gen.borrow().get(name).cloned();
@@ -881,7 +886,14 @@ impl<'a> Cx<'a> {
                 "len" => Some("usize".into()),
                 "is_empty" => Some("bool".into()),
                 "as_bytes" => Some(self.slice_of("u8")),
-                "starts_with" => Some("bool".into()),
+                "starts_with" | "ends_with" | "contains" | "eq_ignore_ascii_case" => Some("bool".into()),
+                "trim" | "trim_start" | "trim_end" => Some("str".into()),
+                "strip_prefix" | "strip_suffix" => self.builtin_enum("Option", &["str".into()]).ok(),
+                "rfind" => self.builtin_enum("Option", &["usize".into()]).ok(),
+                "split_once" => {
+                    let t = self.tuple_of(&["str".to_string(), "str".to_string()]);
+                    self.builtin_enum("Option", &[t]).ok()
+                }
                 "find" => self.builtin_enum("Option", &["usize".into()]).ok(),
                 "split_at" => {
                     let t = self.tuple_of(&["str".to_string(), "str".to_string()]);
@@ -907,7 +919,13 @@ impl<'a> Cx<'a> {
             return self.seq_method_ty(&elem, name);
         }
         if recv_ty == STRING {
+            // `str` のメソッドは、先頭の 2 語が `{ptr, len}` の `String` にもそのまま使える。
+            if STR_METHODS.contains(&name) {
+                return self.builtin_method_ty("str", name);
+            }
             return match name {
+                "push_u64" | "push_i64" => self.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()]).ok(),
+                "push_bytes" => self.builtin_enum("Result", &["void".into(), "alloc.string.PushBytesError".into()]).ok(),
                 "len" => Some("usize".into()),
                 "is_empty" => Some("bool".into()),
                 "clear" => Some("void".into()),
@@ -1039,6 +1057,8 @@ enum Src {
     Range(V, V),
     /// `s.chars()`: 文字列の文字 (UTF-8 を復号する)
     Chars(V),
+    /// `s.split(sep)`: 区切りで分けた断片 (`str`)
+    Split(V, V),
     /// `next` を持つ独自のイテレータ (値の式)
     Custom(V),
     /// (列の式, `iter_mut` か)
@@ -1111,7 +1131,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// `P.from_S(x)` / `P.try_from_S(x)` / `char.try_from_u32(x)` の結果の型。
     fn conv_ty(&self, segs: &[String]) -> Option<String> {
         if let [p, n] | [_, _, p, n] = segs {
-            if n == "from_str_radix" && is_int(p) {
+            if (n == "from_str_radix" || n == "parse") && is_int(p) {
                 return self.cx.builtin_enum("Result", &[p.clone(), "core.num.ParseIntError".into()]).ok();
             }
         }
@@ -1949,6 +1969,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if segs == ["alloc", "string", "String", "new"] {
                     return Some(STRING.to_string());
                 }
+                if segs == ["alloc", "string", "String", "replace"] || segs == ["alloc", "string", "String", "join"] {
+                    return self.cx.builtin_enum("Result", &[STRING.to_string(), "alloc.alloc.AllocError".to_string()]).ok();
+                }
                 if segs == ["alloc", "string", "String", "from_str"] {
                     return self.cx.builtin_enum("Result", &[STRING.to_string(), "alloc.alloc.AllocError".to_string()]).ok();
                 }
@@ -1970,6 +1993,57 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         self.nvar += 1;
         self.b.declare_var(v, cl(ty));
         v
+    }
+
+    /// 文字列ランタイム (`strrt.c`) の関数 `name` を呼ぶ。引数の型は値から決める。
+    fn crt(&mut self, name: &str, args: &[Value], ret: Option<Type>) -> Option<Value> {
+        let mut sig = self.module.make_signature();
+        for a in args {
+            sig.params.push(AbiParam::new(self.b.func.dfg.value_type(*a)));
+        }
+        if let Some(r) = ret {
+            sig.returns.push(AbiParam::new(r));
+        }
+        let id = self.module.declare_function(name, Linkage::Import, &sig).ok()?;
+        self.call_rt(id, args).first().copied()
+    }
+
+    /// 引数の式を `str` として評価して、(先頭アドレス, 長さ) を返す。
+    fn str_arg(&mut self, a: &V, env: &mut Env) -> R<(Value, Value)> {
+        let (v, t) = self.expr(a, env, Some("str"))?;
+        if t != "str" && t != STRING {
+            return Err("string argument expected".into());
+        }
+        let v = v.ok_or("bad argument")?;
+        let pt = self.ptr_ty();
+        let ptr = self.b.ins().load(pt, MemFlags::new(), v, 0);
+        let len = self.b.ins().load(types::I64, MemFlags::new(), v, 8);
+        Ok((ptr, len))
+    }
+
+    /// `Option<usize>` を、見つかった位置 (負なら None) から作る。
+    fn opt_index(&mut self, idx: Value) -> R<(Option<Value>, String)> {
+        let rty = self.cx.builtin_enum("Option", &["usize".into()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let found = self.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, idx, 0);
+        let tg = self.b.ins().uextend(types::I32, found);
+        self.b.ins().store(MemFlags::new(), tg, res, 0);
+        let poff = l.variants[1].1[0].1 as i64;
+        self.b.ins().store(MemFlags::new(), idx, res, poff as i32);
+        Ok((Some(res), rty))
+    }
+
+    /// 作りかけの `String` (`tmp`) と失敗フラグから `Result<String, AllocError>` を作る。
+    fn string_result(&mut self, tmp: Value, failed: Value) -> R<(Option<Value>, String)> {
+        let rty = self.cx.builtin_enum("Result", &[STRING.to_string(), "alloc.alloc.AllocError".to_string()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let tg = self.b.ins().uextend(types::I32, failed);
+        self.b.ins().store(MemFlags::new(), tg, res, 0);
+        let dst = self.b.ins().iadd_imm(res, l.variants[0].1[0].1 as i64);
+        self.copy_mem(dst, tmp, 24);
+        Ok((Some(res), rty))
     }
 
     fn call_rt(&mut self, id: FuncId, args: &[Value]) -> Vec<Value> {
@@ -2739,6 +2813,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     return Some(p);
                 }
             }
+            if segs.len() >= 2 && env.contains_key(&segs[0]) && segs[segs.len() - 1] == "split" && args.len() == 1 {
+                let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
+                if self.ty_of(&recv, env, None).map_or(false, |t| t == "str" || t == STRING) {
+                    return Some(Pipe { src: Src::Split(recv, args[0].clone()), stages: vec![] });
+                }
+            }
             if segs.len() >= 2 && env.contains_key(&segs[0]) && segs[segs.len() - 1] == "chars" && args.is_empty() {
                 let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
                 return Some(Pipe { src: Src::Chars(recv), stages: vec![] });
@@ -2746,6 +2826,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             if segs.len() >= 2 && env.contains_key(&segs[0]) && matches!(segs[segs.len() - 1].as_str(), "iter" | "iter_mut") && args.is_empty() {
                 let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
                 return Some(Pipe { src: Src::Seq(recv, segs[segs.len() - 1] == "iter_mut"), stages: vec![] });
+            }
+        }
+        if nname(it) == "MCall" && st(&nf(it)[1]) == "split" && items(&nf(it)[2]).len() == 1 {
+            if self.ty_of(&nf(it)[0], env, None).map_or(false, |t| t == "str" || t == STRING) {
+                return Some(Pipe { src: Src::Split(nf(it)[0].clone(), items(&nf(it)[2])[0].clone()), stages: vec![] });
             }
         }
         if nname(it) == "MCall" && st(&nf(it)[1]) == "chars" && items(&nf(it)[2]).is_empty() {
@@ -2928,9 +3013,31 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let mut custom: Option<(Value, String, String)> = None;
         // `chars()`: (文字列の先頭アドレス, 1 文字ぶん進める幅を入れる変数)
         let mut chars_state: Option<(Value, Variable)> = None;
+        // `split()`: (先頭アドレス, 全体の長さ, 区切りの先頭, 区切りの長さ, 次の断片までの幅を入れる変数)
+        let mut split_state: Option<(Value, Value, Value, Value, Variable)> = None;
         // マップの `iter()`: (先頭アドレス, キーの型, 値の型, キーのオフセット, 値のオフセット, 組の大きさ)
         let mut map_state: Option<(Value, String, String, i64, i64, i64)> = None;
         match &pipe.src {
+            Src::Split(e, sep) => {
+                let (sp, sty) = self.expr(e, env, None)?;
+                let sp = sp.ok_or("bad string")?;
+                if sty != "str" && sty != STRING {
+                    return Err("split of a non-string".into());
+                }
+                let base = self.b.ins().load(pt, MemFlags::new(), sp, 0);
+                let len = self.b.ins().load(i64t, MemFlags::new(), sp, 8);
+                let (pp, pl) = self.str_arg(sep, env)?;
+                let step = self.new_var("usize");
+                let one = self.b.ins().iconst(i64t, 1);
+                self.b.def_var(step, one);
+                index_ty = i64t;
+                start = self.b.ins().iconst(i64t, 0);
+                // 断片の数は区切りの数 + 1。最後の断片の次の位置は len + 1 にして終わらせる。
+                limit = self.b.ins().iadd_imm(len, 1);
+                item_ty = "str".to_string();
+                elem_info = None;
+                split_state = Some((base, len, pp, pl, step));
+            }
             Src::Chars(e) => {
                 let (sp, sty) = self.expr(e, env, None)?;
                 let sp = sp.ok_or("bad string")?;
@@ -3106,6 +3213,23 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.switch_to_block(merge);
                 (self.b.block_params(merge)[0], "char".to_string())
             }
+            None if split_state.is_some() => {
+                let (base, len, pp, pl, step) = split_state.ok_or("split state")?;
+                let r = self.crt("ksn_rt_split_find", &[base, len, i, pp, pl], Some(i64t)).ok_or("split")?;
+                let found = self.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, r, 0);
+                let end = self.b.ins().select(found, r, len);
+                let slot = self.alloc(16, 8);
+                let at = self.b.ins().iadd(base, i);
+                let plen = self.b.ins().isub(end, i);
+                self.b.ins().store(MemFlags::new(), at, slot, 0);
+                self.b.ins().store(MemFlags::new(), plen, slot, 8);
+                let with_sep = self.b.ins().iadd(plen, pl);
+                let past = self.b.ins().isub(len, i);
+                let past = self.b.ins().iadd_imm(past, 1);
+                let w = self.b.ins().select(found, with_sep, past);
+                self.b.def_var(step, w);
+                (slot, "str".to_string())
+            }
             None if custom.is_some() => {
                 // 独自のイテレータ: `next` を呼んで、`None` なら終わる。
                 let (cp, fq, opt_ty) = custom.clone().ok_or("custom iterator state")?;
@@ -3224,12 +3348,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             }
         }
         self.b.switch_to_block(cont);
-        let n = match chars_state {
-            Some((_, step)) => {
+        let n = match (chars_state, split_state) {
+            (Some((_, step)), _) | (_, Some((_, _, _, _, step))) => {
                 let w = self.b.use_var(step);
                 self.b.ins().iadd(i, w)
             }
-            None => self.b.ins().iadd_imm(i, 1),
+            _ => self.b.ins().iadd_imm(i, 1),
         };
         self.b.ins().jump(head, &[n]);
         self.b.switch_to_block(exit);
@@ -4305,6 +4429,30 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                     return Ok((Some(v), STRING.to_string()));
                 }
+                if segs == ["alloc", "string", "String", "replace"] && args.len() == 4 {
+                    let (sp, sl) = self.str_arg(&args[1], env)?;
+                    let (fp, fl) = self.str_arg(&args[2], env)?;
+                    let (tp, tl) = self.str_arg(&args[3], env)?;
+                    let tmp = self.alloc(24, 8);
+                    let failed = self.crt("ksn_rt_replace", &[tmp, sp, sl, fp, fl, tp, tl], Some(types::I32)).ok_or("replace")?;
+                    let failed = self.b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                    return self.string_result(tmp, failed);
+                }
+                if segs == ["alloc", "string", "String", "join"] && args.len() == 3 {
+                    let (pv, pty) = self.expr(&args[1], env, None)?;
+                    let pv = pv.ok_or("bad parts")?;
+                    if self.cx.seq_elem(&pty).as_deref() != Some("str") {
+                        return Err("join of a non-str sequence".into());
+                    }
+                    let (sp, sl) = self.str_arg(&args[2], env)?;
+                    let pt = self.ptr_ty();
+                    let base = self.b.ins().load(pt, MemFlags::new(), pv, 0);
+                    let n = self.b.ins().load(types::I64, MemFlags::new(), pv, 8);
+                    let tmp = self.alloc(24, 8);
+                    let failed = self.crt("ksn_rt_join", &[tmp, base, n, sp, sl], Some(types::I32)).ok_or("join")?;
+                    let failed = self.b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                    return self.string_result(tmp, failed);
+                }
                 if segs == ["alloc", "string", "String", "from_str"] {
                     if args.len() != 2 {
                         return Err("from_str arity".into());
@@ -4733,6 +4881,50 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let failed = self.string_append(p, slot, n)?;
                 let (res, rty) = self.alloc_result(failed)?;
                 return Ok((Some(res), rty));
+            }
+            "push_u64" | "push_i64" => {
+                let arg = args.first().ok_or("needs a number")?;
+                let want = if name == "push_u64" { "u64" } else { "i64" };
+                let (v, t) = self.expr(arg, env, Some(want))?;
+                if t != want {
+                    return Err(format!("{} of a non-{}", name, want));
+                }
+                let v = v.ok_or("bad number")?;
+                let buf = self.alloc(24, 8);
+                let f = if name == "push_u64" { "ksn_rt_fmt_u64" } else { "ksn_rt_fmt_i64" };
+                let n = self.crt(f, &[buf, v], Some(i64t)).ok_or("fmt")?;
+                let failed = self.string_append(p, buf, n)?;
+                let (res, rty) = self.alloc_result(failed)?;
+                Ok((Some(res), rty))
+            }
+            "push_bytes" => {
+                let arg = args.first().ok_or("push_bytes needs bytes")?;
+                let (bv, bt) = self.expr(arg, env, None)?;
+                let bv = bv.ok_or("bad bytes")?;
+                if self.cx.seq_elem(&bt).as_deref() != Some("u8") {
+                    return Err("push_bytes of a non-byte sequence".into());
+                }
+                let src = self.b.ins().load(pt, MemFlags::new(), bv, 0);
+                let n = self.b.ins().load(i64t, MemFlags::new(), bv, 8);
+                let u = self.rt.utf8;
+                let r = self.call_rt(u, &[src, n])[0];
+                let valid = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                let rty = self.cx.builtin_enum("Result", &["void".into(), "alloc.string.PushBytesError".into()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let (ok_b, bad_b, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(valid, ok_b, &[], bad_b, &[]);
+                self.b.switch_to_block(bad_b);
+                let one = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), one, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(ok_b);
+                let failed = self.string_append(p, src, n)?;
+                let tg = self.b.ins().uextend(types::I32, failed);
+                self.b.ins().store(MemFlags::new(), tg, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok((Some(res), rty))
             }
             "len" => {
                 let v = self.b.ins().load(i64t, MemFlags::new(), p, 8);
@@ -5301,7 +5493,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// `P.from_S(x)` / `P.try_from_S(x)` / `char.try_from_u32(x)` (P は整数)。変換でなければ None。
     fn conv_call(&mut self, segs: &[String], args: &[V], env: &mut Env) -> R<Option<(Option<Value>, String)>> {
         if let [p, n] | [_, _, p, n] = segs {
-            if n == "from_str_radix" && is_int(p) && args.len() == 2 && (segs.len() == 2 || (segs[0] == "core" && segs[1] == "num")) {
+            if (n == "parse" && args.len() == 1 || n == "from_str_radix" && args.len() == 2) && is_int(p) && (segs.len() == 2 || (segs[0] == "core" && segs[1] == "num")) {
                 return self.from_str_radix(p, args, env).map(Some);
             }
         }
@@ -5428,9 +5620,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             return Err("from_str_radix of a non-string".into());
         }
         let sv = sv.ok_or("bad string")?;
-        let (rv, _) = self.expr(&args[1], env, Some("u32"))?;
-        let rv = rv.ok_or("bad radix")?;
-        let radix = self.b.ins().uextend(i64t, rv);
+        let radix = if args.len() == 1 {
+            // `parse`: 10 進
+            self.b.ins().iconst(i64t, 10)
+        } else {
+            let (rv, _) = self.expr(&args[1], env, Some("u32"))?;
+            let rv = rv.ok_or("bad radix")?;
+            self.b.ins().uextend(i64t, rv)
+        };
         let rty = self.cx.builtin_enum("Result", &[p.to_string(), "core.num.ParseIntError".into()])?;
         let l = self.cx.layout(&rty, 0)?;
         let res = self.alloc(l.size, l.align);
@@ -5711,9 +5908,83 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// `str` と `Vec` の組み込みメソッド。`p` はレシーバの先頭アドレス。
     fn builtin_method(&mut self, p: Value, rt: &str, name: &str, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
         let i64t = types::I64;
-        if rt == "str" {
+        if rt == "str" || (rt == STRING && STR_METHODS.contains(&name)) {
             let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
             return match name {
+                "ends_with" | "contains" | "eq_ignore_ascii_case" | "rfind" => {
+                    let (pp, pl) = self.str_arg(args.first().ok_or("needs an argument")?, env)?;
+                    let pt = self.ptr_ty();
+                    let sp = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                    match name {
+                        "rfind" => {
+                            let r = self.crt("ksn_rt_rfind", &[sp, len, pp, pl], Some(i64t)).ok_or("rfind")?;
+                            self.opt_index(r)
+                        }
+                        "contains" => {
+                            let r = self.crt("ksn_rt_find", &[sp, len, pp, pl], Some(i64t)).ok_or("contains")?;
+                            let b = self.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, r, 0);
+                            Ok((Some(b), "bool".into()))
+                        }
+                        _ => {
+                            let f = if name == "ends_with" { "ksn_rt_ends_with" } else { "ksn_rt_eq_nocase" };
+                            let r = self.crt(f, &[sp, len, pp, pl], Some(types::I32)).ok_or("str method")?;
+                            let b = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                            Ok((Some(b), "bool".into()))
+                        }
+                    }
+                }
+                "trim" | "trim_start" | "trim_end" => {
+                    let pt = self.ptr_ty();
+                    let sp = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                    let mode = self.b.ins().iconst(types::I32, match name { "trim_start" => 1, "trim_end" => 2, _ => 3 });
+                    let out = self.alloc(16, 8);
+                    self.crt("ksn_rt_trim", &[sp, len, mode, out], None);
+                    Ok((Some(out), "str".into()))
+                }
+                "strip_prefix" | "strip_suffix" => {
+                    let (pp, pl) = self.str_arg(args.first().ok_or("needs an argument")?, env)?;
+                    let pt = self.ptr_ty();
+                    let sp = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                    let rty = self.cx.builtin_enum("Option", &["str".into()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let out = self.b.ins().iadd_imm(res, l.variants[1].1[0].1 as i64);
+                    let mode = self.b.ins().iconst(types::I32, if name == "strip_prefix" { 1 } else { 2 });
+                    let r = self.crt("ksn_rt_strip", &[sp, len, pp, pl, mode, out], Some(types::I32)).ok_or("strip")?;
+                    self.b.ins().store(MemFlags::new(), r, res, 0);
+                    Ok((Some(res), rty))
+                }
+                "split_once" => {
+                    let (pp, pl) = self.str_arg(args.first().ok_or("needs an argument")?, env)?;
+                    let pt = self.ptr_ty();
+                    let sp = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                    let zero = self.b.ins().iconst(i64t, 0);
+                    let idx = self.crt("ksn_rt_split_find", &[sp, len, zero, pp, pl], Some(i64t)).ok_or("split_once")?;
+                    let tup = self.cx.tuple_of(&["str".to_string(), "str".to_string()]);
+                    let rty = self.cx.builtin_enum("Option", &[tup.clone()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let tl = self.cx.layout(&tup, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let found = self.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, idx, 0);
+                    let (yes, done) = (self.b.create_block(), self.b.create_block());
+                    let tg = self.b.ins().uextend(types::I32, found);
+                    self.b.ins().store(MemFlags::new(), tg, res, 0);
+                    self.b.ins().brif(found, yes, &[], done, &[]);
+                    self.b.switch_to_block(yes);
+                    let base = self.b.ins().iadd_imm(res, l.variants[1].1[0].1 as i64);
+                    let a0 = self.b.ins().iadd_imm(base, tl.fields[0].2 as i64);
+                    self.b.ins().store(MemFlags::new(), sp, a0, 0);
+                    self.b.ins().store(MemFlags::new(), idx, a0, 8);
+                    let a1 = self.b.ins().iadd_imm(base, tl.fields[1].2 as i64);
+                    let skip = self.b.ins().iadd(idx, pl);
+                    let rest = self.b.ins().iadd(sp, skip);
+                    let rest_len = self.b.ins().isub(len, skip);
+                    self.b.ins().store(MemFlags::new(), rest, a1, 0);
+                    self.b.ins().store(MemFlags::new(), rest_len, a1, 8);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(done);
+                    Ok((Some(res), rty))
+                }
                 "len" => Ok((Some(len), "usize".into())),
                 "is_empty" => {
                     let r = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
@@ -6544,9 +6815,20 @@ pub fn compile_clif(
 
     let bytes = module.finish().emit().map_err(|e| e.to_string())?;
     let opath = format!("{}.o", out_path);
-    std::fs::write(&opath, bytes).map_err(|e| e.to_string())?;
+    let uses_rt = bytes.windows(7).any(|w| w == b"ksn_rt_");
+    std::fs::write(&opath, &bytes).map_err(|e| e.to_string())?;
     let cc = ["gcc", "cc", "clang"].iter().find(|c| which(c)).ok_or("no linker found (gcc / cc / clang)")?;
-    let r = std::process::Command::new(cc).args(["-o", out_path, &opath]).output().map_err(|e| e.to_string())?;
+    // 文字列ランタイム (strrt.c) は、`ksn_rt_` の関数を使うときだけ一緒にコンパイルする。
+    let rt_c = format!("{}.rt.c", out_path);
+    let mut cmd = std::process::Command::new(cc);
+    cmd.args(["-o", out_path, &opath]);
+    if uses_rt {
+        std::fs::write(&rt_c, include_str!("strrt.c")).map_err(|e| e.to_string())?;
+        cmd.args(["-O1", &rt_c]);
+    }
+    let r = cmd.output();
+    let _ = std::fs::remove_file(&rt_c);
+    let r = r.map_err(|e| e.to_string())?;
     if !r.status.success() {
         let err: String = String::from_utf8_lossy(&r.stderr).trim().chars().take(300).collect();
         return Err(format!("link failed: {}", err));

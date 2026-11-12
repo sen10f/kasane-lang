@@ -16,7 +16,8 @@ pub const NATIVE_NAMES: &[&str] = &[
     "std.process.abort", "std.env.arg", "std.env.arg_count", "std.env.var", "core.iter.range", "core.iter.map",
     "core.iter.filter", "core.iter.enumerate", "core.iter.take", "core.iter.count", "core.iter.fold",
     "core.str.from_utf8", "alloc.vec.Vec.new", "alloc.vec.Vec.with_capacity", "alloc.string.String.new",
-    "alloc.string.String.from_str", "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
+    "alloc.string.String.from_str", "alloc.string.String.replace", "alloc.string.String.join",
+    "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
     "alloc.collections.VecDeque.new",
     "alloc.boxed.Box.new", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
@@ -25,7 +26,7 @@ pub const NATIVE_NAMES: &[&str] = &[
 ];
 
 const NUM_EXTRA: &[&str] = &[
-    "abs", "max", "min", "count_ones", "leading_zeros", "trailing_zeros", "successor", "to_f64", "from_str_radix",
+    "abs", "max", "min", "count_ones", "leading_zeros", "trailing_zeros", "successor", "to_f64", "from_str_radix", "parse",
     "to_bits", "from_bits", "rem", "sqrt", "floor", "ceil", "sin", "cos", "tan", "exp", "ln", "powi", "trunc",
     "round_ties_even", "is_nan", "is_finite", "atan2", "nearest_to_f32", "then_some", "is_ascii_alphabetic",
     "is_ascii_digit", "is_ascii_whitespace", "len_utf8", "to_ascii_lowercase", "to_ascii_uppercase", "to_u32",
@@ -113,9 +114,9 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
         Val::Float(f) => *f as i128,
         _ => 0,
     };
-    if name == "from_str_radix" {
+    if name == "from_str_radix" || name == "parse" {
         let text = str_of(&x).unwrap_or_default();
-        let radix = iv(&a[1]) as u32;
+        let radix = if name == "parse" { 10 } else { iv(&a[1]) as u32 };
         let ty = ity(ty);
         if ty == "u128" {
             return Ok(match u128::from_str_radix(&text, radix) {
@@ -547,6 +548,17 @@ impl Interp {
             "alloc.vec.Vec.with_capacity" => Ok(ok(Val::Vec(new_list(vec![])))),
             "alloc.string.String.new" => Ok(Val::StrBuf(Rc::new(RefCell::new(String::new())))),
             "alloc.string.String.from_str" => Ok(ok(Val::StrBuf(Rc::new(RefCell::new(str_of(&args[1]).unwrap_or_default()))))),
+            "alloc.string.String.replace" => {
+                let (text, from, to) = (str_of(&args[1]).unwrap_or_default(), str_of(&args[2]).unwrap_or_default(), str_of(&args[3]).unwrap_or_default());
+                // 空の `from` は置き換えず、そのまま複製する。
+                let out = if from.is_empty() { text } else { text.replace(&from, &to) };
+                Ok(ok(Val::StrBuf(Rc::new(RefCell::new(out)))))
+            }
+            "alloc.string.String.join" => {
+                let parts: Vec<String> = seq_items(&dr(&args[1])).unwrap_or_default().iter().map(|x| str_of(x).unwrap_or_default()).collect();
+                let sep = str_of(&args[2]).unwrap_or_default();
+                Ok(ok(Val::StrBuf(Rc::new(RefCell::new(parts.join(&sep))))))
+            }
             "alloc.collections.VecDeque.new" => Ok(Val::Vec(new_list(vec![]))),
             "alloc.collections.HashMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV { kind: "HashMap".into(), d: vec![] })))),
             "alloc.collections.BtreeMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV { kind: "BtreeMap".into(), d: vec![] })))),
@@ -1006,7 +1018,56 @@ impl Interp {
                 }
                 Ok(some(Val::Tuple(Rc::new(vec![s_val(&s[..m]), s_val(&s[m..])]))))
             }
+            "ends_with" => Ok(Val::Bool(s.ends_with(&sarg(&a0)))),
+            "contains" => Ok(Val::Bool(s.contains(&sarg(&a0)))),
+            "rfind" => Ok(s.rfind(&sarg(&a0)).map_or_else(none, |i| some(usz(i)))),
+            "eq_ignore_ascii_case" => Ok(Val::Bool(s.eq_ignore_ascii_case(&sarg(&a0)))),
+            // 空白は ASCII の空白 (スペース, \t, \n, \r, \x0C) だけ。
+            "trim" => Ok(s_val(s.trim_matches(|c: char| c.is_ascii_whitespace()))),
+            "trim_start" => Ok(s_val(s.trim_start_matches(|c: char| c.is_ascii_whitespace()))),
+            "trim_end" => Ok(s_val(s.trim_end_matches(|c: char| c.is_ascii_whitespace()))),
+            "strip_prefix" => Ok(s.strip_prefix(sarg(&a0).as_str()).map_or_else(none, |r| some(s_val(r)))),
+            "strip_suffix" => Ok(s.strip_suffix(sarg(&a0).as_str()).map_or_else(none, |r| some(s_val(r)))),
+            "split_once" => {
+                let sep = sarg(&a0);
+                // 空の区切りは「見つからない」として扱う。
+                Ok(match s.find(&sep).filter(|_| !sep.is_empty()) {
+                    Some(i) => some(Val::Tuple(Rc::new(vec![s_val(&s[..i]), s_val(&s[i + sep.len()..])]))),
+                    None => none(),
+                })
+            }
+            "split" => {
+                let sep = sarg(&a0);
+                // 空の区切りでは分割せず、全体を 1 つの断片として返す。
+                let pieces: Vec<Val> = if sep.is_empty() { vec![s_val(&s)] } else { s.split(sep.as_str()).map(s_val).collect() };
+                Ok(Val::Iter(Rc::new(RefCell::new(IterV::Pre { items: pieces, i: 0 }))))
+            }
             "as_str" => Ok(s_val(&s)),
+            "push_u64" | "push_i64" | "push_bytes" => {
+                let Val::StrBuf(b) = v else { return panic(format!("no method {} on str", name)) };
+                if name == "push_bytes" {
+                    let bytes: Vec<u8> = seq_items(&dr(a0.as_ref().unwrap_or(&Val::Unit))).unwrap_or_default().iter().map(|x| if let Val::Int(i, _) = x { *i as u8 } else { 0 }).collect();
+                    return Ok(match String::from_utf8(bytes) {
+                        Ok(t) => {
+                            b.borrow_mut().push_str(&t);
+                            ok(Val::Unit)
+                        }
+                        Err(e) => err(mk_enum(
+                            "alloc.string.PushBytesError",
+                            "InvalidUtf8",
+                            vec![Val::Struct(Rc::new(StructV {
+                                ty: "core.str.Utf8Error".into(),
+                                f: RefCell::new(vec![("valid_up_to".into(), usz(e.utf8_error().valid_up_to()))]),
+                            }))],
+                        )),
+                    });
+                }
+                if let Some(Val::Int(n, _)) = a0 {
+                    // u64 は Val::Int(i128) にそのまま入るので、符号つき / なしを区別せず 10 進に直せる。
+                    b.borrow_mut().push_str(&n.to_string());
+                }
+                Ok(ok(Val::Unit))
+            }
             "push" | "push_str" | "clear" => {
                 if let Val::StrBuf(b) = v {
                     match name {
@@ -1070,6 +1131,11 @@ impl Interp {
             _ => panic(format!("no method {} on map", name)),
         }
     }
+}
+
+/// 文字列の引数 (なければ空)。
+fn sarg(a: &Option<Val>) -> String {
+    a.as_ref().and_then(str_of).unwrap_or_default()
 }
 
 #[allow(dead_code)]
