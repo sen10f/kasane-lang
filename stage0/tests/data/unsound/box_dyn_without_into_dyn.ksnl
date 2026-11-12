@@ -1,0 +1,22 @@
+import alloc.boxed
+
+trait t.Shape
+    fn area(self: &Self) -> i64 uses [] panics never
+end t.Shape
+
+type t.Sq
+    side: i64
+end t.Sq
+
+impl t.Shape for t.Sq
+fn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape
+    self.side
+end t.Sq.area
+
+fn t.bad(s: t.Sq) -> Result<alloc.boxed.Box<dyn t.Shape + 'static, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    boxed.Box.new(std.alloc.SYSTEM, s)
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

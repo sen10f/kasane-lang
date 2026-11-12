@@ -123,6 +123,16 @@ fn split_ty_args(ty: &str) -> Option<(String, Vec<String>)> {
     Some((ty[..i].to_string(), out))
 }
 
+/// `dyn Tr` / `box<dyn Tr>` の `Tr` (トレイトの FQN)。
+fn dyn_tr_of(ty: &str) -> Option<&str> {
+    ty.strip_prefix("dyn ").or_else(|| ty.strip_prefix("box<dyn ").and_then(|r| r.strip_suffix('>')))
+}
+
+/// `box<T>` の `T`。
+fn box_inner(ty: &str) -> Option<&str> {
+    ty.strip_prefix("box<").and_then(|r| r.strip_suffix('>'))
+}
+
 /// 定義 `d` の型パラメータの名前 (ライフタイムや効果の変数は除く)。
 fn type_params(d: &Def) -> Vec<String> {
     d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect()
@@ -160,6 +170,8 @@ struct Inst<'a> {
     entry: bool,
     /// `std.thread.spawn` のクロージャ本体をスレッドの入口 (`void entry(void *env)`) として生成するときの情報
     thunk: Option<Rc<Thunk>>,
+    /// `dyn` の vtable が持つ drop glue (型名を持つ。引数は値のアドレス 1 つで戻り値なし)。
+    glue: Option<String>,
 }
 
 /// スレッドの入口の生成情報。環境ブロックは [結果 (size = `res_size`)] + 取り込んだ値 (`caps` の各オフセット)。
@@ -222,6 +234,8 @@ struct Cx<'a> {
     closure_types: RefCell<HashMap<String, (V, String, HashMap<String, String>, Vec<(String, String, String)>)>>,
     /// `std.env` を使うか (使うなら `main` の最初に `argc` / `argv` をランタイムへ渡す)
     uses_env: Cell<bool>,
+    /// `dyn` の vtable のデータ (`具象型|トレイト` → データ)。(トレイト, 具象型) の組ごとに 1 つ作る。
+    vtables: RefCell<HashMap<String, cranelift_module::DataId>>,
 }
 
 /// 構造体・列挙型のメモリ配置。
@@ -250,6 +264,16 @@ impl<'a> Cx<'a> {
         }
         match tag(t).as_str() {
             "never" => return Ok("void".into()),
+            // `dyn Tr` は `{データ, vtable}` の 16 バイト (`&dyn` / `&mut dyn` / `Box<dyn>` の本体)。
+            "dyn" => {
+                let nm = st(tel(tel(t, 1), 0));
+                let fq = crate::check::resolve_trait_fqn(self.prog, &nm).ok_or("dyn of an unknown trait")?;
+                let td = self.prog.types.get(&fq).map(|&i| &self.prog.defs[i]).ok_or("dyn of an unknown trait")?;
+                if td.generics.iter().any(|g| g.0 == "type") {
+                    return Err("dyn of a trait with type parameters".into());
+                }
+                return Ok(format!("dyn {}", fq));
+            }
             "ptr" => {
                 // `*const T` / `*mut T`: 要素の型が `()` の場合 (void*) は `u8` とみなす。
                 let inner = self.pty(tel(t, 2))?;
@@ -289,6 +313,30 @@ impl<'a> Cx<'a> {
                 let n = st(tel(t, 1));
                 if let Some(r) = self.subst.borrow().get(&n) {
                     return Ok(r.clone());
+                }
+                if n == "alloc.boxed.Box" {
+                    // `Box<T, A>`: ヒープの `T` を指す 8 バイト。`Box<dyn Tr, A>` は `{データ, vtable}` の 16 バイト。
+                    // 確保は C ライブラリの `realloc` / `free` なので、アロケータは `std.alloc.System` だけ。
+                    let args: Vec<&V> = items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_)) && tag(a) != "life").collect();
+                    if args.len() != 2 {
+                        return Err("Box without type arguments".into());
+                    }
+                    let an = st(tel(args[1], 1));
+                    let a_ok = match self.subst.borrow().get(&an) {
+                        Some(r) => r == "std.alloc.System",
+                        None => self.qual_name(&an) == "std.alloc.System",
+                    };
+                    if !a_ok {
+                        return Err("Box with an allocator other than std.alloc.System".into());
+                    }
+                    if tag(args[0]) == "dyn" {
+                        return Ok(format!("box<{}>", self.pty(args[0])?));
+                    }
+                    let inner = self.pty_owned(args[0])?;
+                    if !is_agg(&inner) || inner == "void" || inner == "str" || inner.starts_with("slice<") {
+                        return Err("Box of a scalar or an unsized type".into());
+                    }
+                    return Ok(format!("box<{}>", inner));
                 }
                 if n == "alloc.vec.Vec" {
                     let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("Vec without an element type")?;
@@ -650,6 +698,10 @@ impl<'a> Cx<'a> {
         if d > 8 || !is_agg(ty) || ty == "str" || ty == "alloc.alloc.AllocError" {
             return false;
         }
+        // `Box` はヒープを所有する (落とすと中身を破棄して解放する)。
+        if ty.starts_with("box<") {
+            return true;
+        }
         // ガード (落とすとロックを解く) とチャネルの両端 (落とすと端を閉じる) は、落とす処理が要る所有者。
         if ty.starts_with("mutexguard<") || ty.starts_with("sender<") || ty.starts_with("receiver<") {
             return true;
@@ -702,6 +754,19 @@ impl<'a> Cx<'a> {
                 is_enum: false,
                 variants: vec![],
             });
+        }
+        // `dyn Tr` と `Box<dyn Tr>`: `{データ, vtable}`。`Box<T>`: `{ポインタ}`。
+        if name.starts_with("dyn ") || name.starts_with("box<dyn ") {
+            return Ok(Layout {
+                size: 16,
+                align: 8,
+                fields: vec![("data".into(), "usize".into(), 0), ("vtable".into(), "usize".into(), 8)],
+                is_enum: false,
+                variants: vec![],
+            });
+        }
+        if name.starts_with("box<") {
+            return Ok(Layout { size: 8, align: 8, fields: vec![("ptr".into(), "usize".into(), 0)], is_enum: false, variants: vec![] });
         }
         let tup = self.tuples.borrow().get(name).cloned();
         if let Some(elems) = tup {
@@ -1065,6 +1130,65 @@ impl<'a> Cx<'a> {
     }
 
     /// `Option<T>` / `Result<T, E>` の具体化を登録して、その名前を返す。`()` はペイロードなし。
+    /// トレイト `tr` とスーパートレイトのメソッドを、vtable の順 (トレイト自身 → スーパートレイトの幅優先) に並べる。
+    /// 各要素は (メソッド名, 宣言したトレイトの定義の添字)。
+    fn dyn_flat(&self, tr: &str) -> R<Vec<(String, usize)>> {
+        let mut out: Vec<(String, usize)> = vec![];
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut q = vec![tr.to_string()];
+        let mut qi = 0;
+        while qi < q.len() {
+            let cur = q[qi].clone();
+            qi += 1;
+            if !seen.insert(cur.clone()) {
+                continue;
+            }
+            let Some(&ti) = self.prog.types.get(&cur) else { continue };
+            let td = &self.prog.defs[ti];
+            if td.kw != "trait" {
+                continue;
+            }
+            for m in &td.methods {
+                if !out.iter().any(|x| &x.0 == m) {
+                    out.push((m.clone(), ti));
+                }
+            }
+            for (sup, _) in &td.requires {
+                if let Some(fq) = crate::check::resolve_trait_fqn(self.prog, sup) {
+                    q.push(fq);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// `dyn Tr` / `Box<dyn Tr>` 越しのメソッド `name` の (引数の型の木 (`self` を除く), 戻り値の型の木, 宣言したトレイトの定義の添字)。
+    fn dyn_sig(&self, tr: &str, name: &str) -> Option<(Vec<V>, V, usize)> {
+        let flat = self.dyn_flat(tr).ok()?;
+        let (_, ti) = flat.iter().find(|x| x.0 == name)?;
+        let td = &self.prog.defs[*ti];
+        let sig = td.trait_sigs.iter().find(|s| s.0 == name)?;
+        if sig.1.first().map_or(true, |p| p.0 != "self") {
+            return None;
+        }
+        Some((sig.1[1..].iter().map(|p| p.1.clone()).collect(), sig.2.clone(), *ti))
+    }
+
+    /// `dyn Tr` / `Box<dyn Tr>` / `Box<T>` に対するメソッド `name` の戻り値の型 (`Box` 自身の `as_ref` / `as_mut` を含む)。
+    fn dyn_ret_ty(&self, rt: &str, name: &str) -> Option<String> {
+        if let Some(inner) = box_inner(rt) {
+            if name == "as_ref" || name == "as_mut" {
+                return Some(inner.to_string());
+            }
+        }
+        let tr = dyn_tr_of(rt)?;
+        let (_, ret, ti) = self.dyn_sig(tr, name)?;
+        let old = self.file.replace(self.prog.defs[ti].file.clone());
+        let r = self.pty(&ret).ok();
+        *self.file.borrow_mut() = old;
+        r
+    }
+
     fn builtin_enum(&self, base: &str, args: &[String]) -> R<String> {
         let name = format!("{}<{}>", base, args.join(","));
         let payload = |t: &String| if t == "void" { vec![] } else { vec![t.clone()] };
@@ -1618,7 +1742,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let sym = format!("{}_{}", mangle(&key), self.ids.borrow().len());
         let id = self.module.declare_function(&sym, Linkage::Local, &sig).map_err(|e| e.to_string())?;
         self.ids.borrow_mut().insert(key.clone(), id);
-        self.pending.borrow_mut().push(Inst { key, def: d, subst: subst.clone(), entry: false, thunk: None });
+        self.pending.borrow_mut().push(Inst { key, def: d, subst: subst.clone(), entry: false, thunk: None, glue: None });
         Ok(id)
     }
 
@@ -1899,7 +2023,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.variant_enum_type(&en, idx, &[], env, expect)
             }
             "Field" => {
-                let segs = place_segs(e)?;
+                let Some(segs) = place_segs(e) else {
+                    // 場所でない式 (`v[i].f` など) のフィールド: 基底の型のレイアウトから引く。
+                    let bt = self.ty_of(&f[0], env, None)?;
+                    let l = self.cx.layout(&bt, 0).ok()?;
+                    let fname = st(&f[1]);
+                    return l.fields.iter().find(|x| x.0 == fname).map(|x| x.1.clone());
+                };
                 if env.contains_key(&segs[0]) { self.field_chain_ty(&segs, env) } else { None }
             }
             "Try" => {
@@ -2001,6 +2131,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                 }
                 if let Some(rt) = &recv_ty {
+                    if let Some(t) = self.cx.dyn_ret_ty(rt, &name) {
+                        return Some(t);
+                    }
                     if let Some(t) = self.cx.builtin_method_ty(rt, &name) {
                         return Some(t);
                     }
@@ -2021,6 +2154,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     let name = &segs[segs.len() - 1];
                     if name == "map_err" && items(&f[1]).len() == 1 {
                         return self.map_err_ty(&recv_ty, &items(&f[1])[0], env);
+                    }
+                    if let Some(t) = self.cx.dyn_ret_ty(&recv_ty, name) {
+                        return Some(t);
                     }
                     if let Some(t) = self.cx.builtin_method_ty(&recv_ty, name) {
                         return Some(t);
@@ -2052,6 +2188,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 if segs == ["alloc", "collections", "VecDeque", "new"] {
                     return expect.filter(|t| self.cx.deque_elem(t).is_some()).map(String::from);
+                }
+                if segs == ["alloc", "boxed", "Box", "new"] && items(&f[1]).len() == 2 {
+                    let inner = self.ty_of(&items(&f[1])[1], env, None)?;
+                    if !is_agg(&inner) || inner == "void" {
+                        return None;
+                    }
+                    return self.cx.builtin_enum("Result", &[format!("box<{}>", inner), "alloc.alloc.AllocError".to_string()]).ok();
+                }
+                if segs == ["alloc", "boxed", "Box", "into_dyn"] && items(&f[1]).len() == 1 {
+                    return expect.filter(|t| t.starts_with("box<dyn ")).map(String::from);
                 }
                 // `std.sync.Mutex.new(value)`: 値の型が `T`。
                 if segs == ["std", "sync", "Mutex", "new"] && items(&f[1]).len() == 1 {
@@ -2505,7 +2651,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         self.ids.borrow_mut().insert(sym.clone(), id);
         let thunk = Thunk { node: node.clone(), caps: caps.clone(), ret: rty.clone() };
         let subst = self.cx.subst.borrow().clone();
-        self.pending.borrow_mut().push(Inst { key: sym, def: self.def, subst, entry: false, thunk: Some(Rc::new(thunk)) });
+        self.pending.borrow_mut().push(Inst { key: sym, def: self.def, subst, entry: false, thunk: Some(Rc::new(thunk)), glue: None });
 
         let zero = self.b.ins().iconst(pt, 0);
         let sz = self.b.ins().iconst(types::I64, total as i64);
@@ -3035,6 +3181,27 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     fn drop_value(&mut self, addr: Value, ty: &str) -> R<()> {
         let i64t = types::I64;
         let pt = self.ptr_ty();
+        // `Box<T>`: 中身を破棄してから解放する。`Box<dyn Tr>`: vtable の drop glue (具象型の破棄) を呼んでから解放する。
+        if let Some(inner) = box_inner(ty) {
+            let fr = self.rt.free;
+            if inner.starts_with("dyn ") {
+                let data = self.b.ins().load(pt, MemFlags::new(), addr, 0);
+                let vt = self.b.ins().load(pt, MemFlags::new(), addr, 8);
+                let glue = self.b.ins().load(pt, MemFlags::new(), vt, 0);
+                let mut sig = self.module.make_signature();
+                sig.params.push(AbiParam::new(pt));
+                let sr = self.b.import_signature(sig);
+                self.b.ins().call_indirect(sr, glue, &[data]);
+                self.call_rt(fr, &[data]);
+            } else {
+                let p = self.b.ins().load(pt, MemFlags::new(), addr, 0);
+                if self.cx.needs_drop(inner) {
+                    self.drop_value(p, inner)?;
+                }
+                self.call_rt(fr, &[p]);
+            }
+            return Ok(());
+        }
         // MutexGuard: ロックを解く。Sender / Receiver: 端を閉じる (受信側は溜まった値も解放する)。
         if self.cx.guard_inner(ty).is_some() {
             let m = self.b.ins().load(pt, MemFlags::new(), addr, 0);
@@ -3121,6 +3288,158 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             self.b.switch_to_block(next);
         }
         Ok(())
+    }
+
+    /// vtable が持つ drop glue (値のアドレスを受けて、型 `ty` の値を破棄する関数) の識別子。なければ宣言して待ち行列に足す。
+    fn glue_id(&mut self, ty: &str) -> R<FuncId> {
+        let key = format!("glue:{}", ty);
+        if let Some(&id) = self.ids.borrow().get(&key) {
+            return Ok(id);
+        }
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(self.ptr_ty()));
+        let sym = format!("ksn_glue_{}", self.ids.borrow().len());
+        let id = self.module.declare_function(&sym, Linkage::Local, &sig).map_err(|e| e.to_string())?;
+        self.ids.borrow_mut().insert(key.clone(), id);
+        self.pending.borrow_mut().push(Inst { key, def: self.def, subst: HashMap::new(), entry: false, thunk: None, glue: Some(ty.to_string()) });
+        Ok(id)
+    }
+
+    /// drop glue の本体: 引数の値のアドレスにある `ty` の値を破棄して戻る。
+    fn glue_body(&mut self, ty: &str, params_vals: &[Value]) -> R<()> {
+        if self.cx.needs_drop(ty) {
+            self.drop_value(params_vals[0], ty)?;
+        }
+        self.b.ins().return_(&[]);
+        self.term = true;
+        Ok(())
+    }
+
+    /// (具象型 `conc`, トレイト `tr`) の vtable のアドレス。レイアウトは `[drop glue, size, align, メソッド...]` (各 8 バイト。
+    /// メソッドは `dyn_flat` の順)。組ごとに 1 つ、読み取り専用のデータとして作る。
+    fn vtable_for(&mut self, conc: &str, tr: &str) -> R<Value> {
+        let key = format!("{}|{}", conc, tr);
+        let pt = self.ptr_ty();
+        let existing = self.cx.vtables.borrow().get(&key).copied();
+        let id = match existing {
+            Some(id) => id,
+            None => {
+                if !is_agg(conc) || !self.cx.types.contains_key(conc) {
+                    return Err(format!("dyn {} for the type {} (only structs and enums can be erased)", tr, conc));
+                }
+                let flat = self.cx.dyn_flat(tr)?;
+                let l = self.cx.layout(conc, 0)?;
+                let mut fids = vec![];
+                for (m, _) in &flat {
+                    let fq = format!("{}.{}", conc, m);
+                    let d = self.funcs.get(&fq).copied().ok_or_else(|| format!("{} has no method {} for dyn {}", conc, m, tr))?;
+                    if !d.is_method() || !type_params(d).is_empty() {
+                        return Err(format!("{}: generic or non-method implementation of a dyn method", fq));
+                    }
+                    fids.push(self.func_id(d, &fq, &HashMap::new())?);
+                }
+                let glue = self.glue_id(conc)?;
+                let mut bytes = vec![0u8; 24 + 8 * flat.len()];
+                bytes[8..16].copy_from_slice(&(l.size as u64).to_le_bytes());
+                bytes[16..24].copy_from_slice(&(l.align as u64).to_le_bytes());
+                let name = format!("ksn_vtable_{}", *self.data_n);
+                *self.data_n += 1;
+                let id = self.module.declare_data(&name, Linkage::Local, false, false).map_err(|e| e.to_string())?;
+                let mut desc = DataDescription::new();
+                desc.define(bytes.into_boxed_slice());
+                let gr = self.module.declare_func_in_data(glue, &mut desc);
+                desc.write_function_addr(0, gr);
+                for (i, fid) in fids.iter().enumerate() {
+                    let fr = self.module.declare_func_in_data(*fid, &mut desc);
+                    desc.write_function_addr((24 + 8 * i) as u32, fr);
+                }
+                self.module.define_data(id, &desc).map_err(|e| e.to_string())?;
+                self.cx.vtables.borrow_mut().insert(key, id);
+                id
+            }
+        };
+        let gv = self.module.declare_data_in_func(id, self.b.func);
+        Ok(self.b.ins().global_value(pt, gv))
+    }
+
+    /// `Box<T>` の値 `v` (式 `arg`) を、変換先 `want` (`box<dyn Tr>`) の `{データ, vtable}` にする。元の `Box` の所有は移る。
+    fn into_dyn_value(&mut self, arg: &V, v: Value, ty: &str, want: &str, env: &Env) -> R<(Option<Value>, String)> {
+        if ty == want {
+            return Ok((Some(v), ty.to_string()));
+        }
+        let tr = dyn_tr_of(want).ok_or("Box.into_dyn: the target is not a Box<dyn ..>")?.to_string();
+        let inner = box_inner(ty).ok_or("Box.into_dyn of a value that is not a Box")?.to_string();
+        if inner.starts_with("dyn ") {
+            return Err("Box.into_dyn between different dyn types".into());
+        }
+        let pt = self.ptr_ty();
+        let vt = self.vtable_for(&inner, &tr)?;
+        let data = self.b.ins().load(pt, MemFlags::new(), v, 0);
+        self.consume(arg, ty, env)?;
+        let slot = self.alloc(16, 8);
+        self.b.ins().store(MemFlags::new(), data, slot, 0);
+        self.b.ins().store(MemFlags::new(), vt, slot, 8);
+        Ok((Some(slot), want.to_string()))
+    }
+
+    /// `dyn Tr` / `Box<dyn Tr>` 越しのメソッド呼び出し: vtable から関数のアドレスを読んで間接呼び出しする。
+    fn dyn_call(&mut self, recv: &V, rt: &str, name: &str, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let tr = dyn_tr_of(rt).ok_or("not a dyn")?.to_string();
+        let flat = self.cx.dyn_flat(&tr)?;
+        let idx = flat.iter().position(|x| x.0 == name).ok_or_else(|| format!("method {} of dyn {}", name, tr))?;
+        let (ptys, ret, ti) = self.cx.dyn_sig(&tr, name).ok_or("signature of a dyn method")?;
+        if ptys.len() != args.len() {
+            return Err("dyn call arity".into());
+        }
+        let old = self.cx.file.replace(self.cx.prog.defs[ti].file.clone());
+        let tys: R<(Vec<String>, String)> = (|| {
+            let mut v = vec![];
+            for p in &ptys {
+                v.push(self.cx.pty(p)?);
+            }
+            Ok((v, self.cx.pty(&ret)?))
+        })();
+        *self.cx.file.borrow_mut() = old;
+        let (want_tys, rty) = tys?;
+        if want_tys.iter().any(|t| t.starts_with("closure<")) {
+            return Err("dyn method with a closure parameter".into());
+        }
+        let (fat, _) = self.expr(recv, env, None)?;
+        let fat = fat.ok_or("bad dyn receiver")?;
+        let pt = self.ptr_ty();
+        let data = self.b.ins().load(pt, MemFlags::new(), fat, 0);
+        let vt = self.b.ins().load(pt, MemFlags::new(), fat, 8);
+        let fnp = self.b.ins().load(pt, MemFlags::new(), vt, (24 + 8 * idx) as i32);
+        let mut sig = self.module.make_signature();
+        let mut vals = vec![];
+        let mut out = None;
+        if is_agg(&rty) {
+            sig.params.push(AbiParam::new(pt));
+            let p = self.alloc_for(&rty)?;
+            vals.push(p);
+            out = Some(p);
+        }
+        sig.params.push(AbiParam::new(pt));
+        vals.push(data);
+        for ((a, want), pv) in args.iter().zip(&want_tys).zip(&ptys) {
+            let (v, got) = self.expr(a, env, Some(want))?;
+            let mut v = v.ok_or("bad argument")?;
+            if got != *want {
+                v = self.coerce(v, &got, want)?;
+            }
+            if tag(pv) != "ref" {
+                self.consume(a, want, env)?;
+            }
+            sig.params.push(AbiParam::new(if is_agg(want) { pt } else { cl(want) }));
+            vals.push(v);
+        }
+        if rty != "void" && !is_agg(&rty) {
+            sig.returns.push(AbiParam::new(cl(&rty)));
+        }
+        let sr = self.b.import_signature(sig);
+        let c = self.b.ins().call_indirect(sr, fnp, &vals);
+        let res = self.b.inst_results(c).to_vec();
+        Ok((out.or(res.first().copied()), rty))
     }
 
     /// 式 `e` が参照 (`&x` / 参照である変数) か。参照はコピーせず別名にする。
@@ -3403,9 +3722,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         && nname(&nf(&f[3])[0]) == "Path"
                         && strs(&nf(&nf(&f[3])[0])[0]).len() >= 2
                         && strs(&nf(&nf(&f[3])[0])[0]).last().map(String::as_str) == Some("lock"));
-                let (v, _) = self.expr(&f[3], env, Some(&ty))?;
+                let (v, got) = self.expr(&f[3], env, Some(&ty))?;
                 self.let_lock = false;
                 let mut v = v.ok_or("let of unit")?;
+                if got != ty && [&got, &ty].iter().any(|t| dyn_tr_of(t).is_some()) {
+                    v = self.coerce(v, &got, &ty)?;
+                }
                 let mut is_ref = false;
                 let mut owner = false;
                 if is_agg(&ty) {
@@ -4769,7 +5091,23 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 Ok((Some(v), elem))
             }
             "Field" => {
-                let segs = place_segs(e).ok_or("field of a non-place")?;
+                let Some(segs) = place_segs(e) else {
+                    // 場所でない式 (`v[i].f` など) のフィールド: 基底のアドレスにフィールドのオフセットを足す。
+                    let (bv, bty) = self.expr(&f[0], env, None)?;
+                    let bv = bv.ok_or("field of a unit value")?;
+                    if !is_agg(&bty) {
+                        return Err("field of a scalar".into());
+                    }
+                    let l = self.cx.layout(&bty, 0)?;
+                    let fname = st(&f[1]);
+                    let (_, fty, off) = l.fields.iter().find(|x| x.0 == fname).cloned().ok_or_else(|| format!("no field {}", fname))?;
+                    let addr = self.b.ins().iadd_imm(bv, off as i64);
+                    if is_agg(&fty) {
+                        return Ok((Some(addr), fty));
+                    }
+                    let v = self.b.ins().load(cl(&fty), MemFlags::new(), addr, 0);
+                    return Ok((Some(v), fty));
+                };
                 if !env.contains_key(&segs[0]) {
                     return Err("field of a non-local".into());
                 }
@@ -5552,6 +5890,45 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                     return Ok((Some(v), t.to_string()));
                 }
+                // `alloc.boxed.Box.new(allocator, value)`: ヒープに値を置く。確保は `realloc` で、失敗は `Err(AllocError)`。
+                if segs == ["alloc", "boxed", "Box", "new"] && args.len() == 2 {
+                    let inner = self.ty_of(&args[1], env, None).ok_or("Box.new without a value type")?;
+                    if !is_agg(&inner) || inner == "void" || inner == "str" || inner.starts_with("slice<") || dyn_tr_of(&inner).is_some() {
+                        return Err("Box of a scalar or an unsized type".into());
+                    }
+                    let (v, _) = self.expr(&args[1], env, Some(&inner))?;
+                    let v = v.ok_or("bad Box value")?;
+                    self.consume(&args[1], &inner, env)?;
+                    let size = self.cx.layout(&inner, 0)?.size as i64;
+                    let pt = self.ptr_ty();
+                    let nullp = self.b.ins().iconst(pt, 0);
+                    let sz = self.b.ins().iconst(types::I64, size.max(1));
+                    let rf = self.rt.realloc;
+                    let p = self.call_rt(rf, &[nullp, sz])[0];
+                    let failed = self.b.ins().icmp_imm(IntCC::Equal, p, 0);
+                    let boxty = format!("box<{}>", inner);
+                    let rty = self.cx.builtin_enum("Result", &[boxty, "alloc.alloc.AllocError".to_string()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let tg = self.b.ins().uextend(types::I32, failed);
+                    self.b.ins().store(MemFlags::new(), tg, res, 0);
+                    let (ok_b, done) = (self.b.create_block(), self.b.create_block());
+                    self.b.ins().brif(failed, done, &[], ok_b, &[]);
+                    self.b.switch_to_block(ok_b);
+                    self.store_value(p, &inner, v)?;
+                    let dst = self.b.ins().iadd_imm(res, l.variants[0].1[0].1 as i64);
+                    self.b.ins().store(MemFlags::new(), p, dst, 0);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(done);
+                    return Ok((Some(res), rty));
+                }
+                // `alloc.boxed.Box.into_dyn(b)`: `Box<T>` → `Box<dyn Tr>`。変換先は期待型から決まる。
+                if segs == ["alloc", "boxed", "Box", "into_dyn"] && args.len() == 1 {
+                    let want = expect.filter(|t| t.starts_with("box<dyn ")).map(String::from).ok_or("Box.into_dyn: the target type is unknown (add a type annotation)")?;
+                    let (v, ty) = self.expr(&args[0], env, None)?;
+                    let v = v.ok_or("bad Box value")?;
+                    return self.into_dyn_value(&args[0], v, &ty, &want, env);
+                }
                 // `std.sync.Mutex.new(value)`: `{ロック語 (0 = 解放), T}` の領域を作る。
                 if segs == ["std", "sync", "Mutex", "new"] && args.len() == 1 {
                     if cfg!(windows) {
@@ -5593,6 +5970,32 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             return self.method_call(&deref, name, args, env, expect);
         }
         if let Some(rt) = &rty {
+            // `dyn Tr` / `Box<dyn Tr>` 越しの呼び出し (vtable) と、`Box` 自身のメソッド。
+            if dyn_tr_of(rt).is_some() || box_inner(rt).is_some() {
+                let rt = rt.clone();
+                if let Some(inner) = box_inner(&rt) {
+                    if (name == "as_ref" || name == "as_mut") && args.is_empty() {
+                        let (p, _) = self.expr(recv, env, None)?;
+                        let p = p.ok_or("bad receiver")?;
+                        if inner.starts_with("dyn ") {
+                            return Ok((Some(p), inner.to_string()));
+                        }
+                        let pt = self.ptr_ty();
+                        let q = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                        return Ok((Some(q), inner.to_string()));
+                    }
+                    if name == "into_dyn" && args.is_empty() {
+                        let want = expect.filter(|t| t.starts_with("box<dyn ")).map(String::from).ok_or("Box.into_dyn: the target type is unknown (add a type annotation)")?;
+                        let (p, ty) = self.expr(recv, env, None)?;
+                        let p = p.ok_or("bad receiver")?;
+                        return self.into_dyn_value(recv, p, &ty, &want, env);
+                    }
+                    if !inner.starts_with("dyn ") {
+                        return Err(format!("method {} on a Box", name));
+                    }
+                }
+                return self.dyn_call(recv, &rt, name, args, env);
+            }
             // `std.sync.Mutex.lock`: ロックを取り、ミューテックスのアドレスを持つガード (所有者。落とすとロックを解く) を返す。
             // ガードは `let g = m.lock()` で束ねたときだけ許す (束ねない一時値は解放の時点が決まらず、ロックを握り続けるため)。
             if let Some(inner) = self.cx.mutex_inner(rt) {
@@ -7023,6 +7426,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     /// `&Vec<T>` → `&[T]`、`&String` → `&str` の暗黙の変換 (どちらも {ptr, len} を作る)。
     fn coerce(&mut self, v: Value, from: &str, to: &str) -> R<Value> {
+        // `&T` / `&mut T` → `&dyn Tr` / `&mut dyn Tr` (4.2): `{データ, vtable}` を作る。
+        if let Some(tr) = to.strip_prefix("dyn ") {
+            if !from.starts_with("dyn ") && is_agg(from) {
+                let vt = self.vtable_for(from, tr)?;
+                let slot = self.alloc(16, 8);
+                self.b.ins().store(MemFlags::new(), v, slot, 0);
+                self.b.ins().store(MemFlags::new(), vt, slot, 8);
+                return Ok(slot);
+            }
+        }
         let ok = (from == STRING && to == "str")
             || (self.cx.elem_of(from).is_some() && self.cx.slices.borrow().get(to).cloned() == self.cx.elem_of(from));
         if !ok {
@@ -7880,7 +8293,7 @@ pub fn compile_clif(
             all_types.entry(n.to_string()).or_insert(&prog.defs[i]);
         }
     }
-    let cx = Cx { types: &all_types, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()), uses_env: Cell::new(false) };
+    let cx = Cx { types: &all_types, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()), uses_env: Cell::new(false), vtables: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
@@ -8009,7 +8422,7 @@ pub fn compile_clif(
         let (name, link) = if n == entry { ("main".to_string(), Linkage::Export) } else { (mangle(n), Linkage::Local) };
         let id = module.declare_function(&name, link, &sig).map_err(|e| e.to_string())?;
         ids.borrow_mut().insert(n.clone(), id);
-        queue.push(Inst { key: n.clone(), def: d, subst: HashMap::new(), entry: n == entry, thunk: None });
+        queue.push(Inst { key: n.clone(), def: d, subst: HashMap::new(), entry: n == entry, thunk: None, glue: None });
     }
 
     let mut data_n = 0usize;
@@ -8032,7 +8445,7 @@ pub fn compile_clif(
             b.append_block_params_for_function_params(eb);
             b.switch_to_block(eb);
             let params_vals = b.block_params(eb).to_vec();
-            let ret_ty = if inst.entry || inst.thunk.is_some() { "void".to_string() } else { cx.pty(&d.ret)? };
+            let ret_ty = if inst.entry || inst.thunk.is_some() || inst.glue.is_some() { "void".to_string() } else { cx.pty(&d.ret)? };
             let mut g = FnGen {
                 b,
                 module: &mut module,
@@ -8062,9 +8475,10 @@ pub fn compile_clif(
                 closure_ctx: HashMap::new(),
                 promoted: HashSet::new(),
             };
-            match &inst.thunk {
-                Some(th) => g.thunk_body(th, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?,
-                None => g.func(d, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?,
+            match (&inst.thunk, &inst.glue) {
+                (_, Some(ty)) => g.glue_body(ty, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?,
+                (Some(th), None) => g.thunk_body(th, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?,
+                (None, None) => g.func(d, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?,
             }
             let FnGen { mut b, .. } = g;
             b.seal_all_blocks();

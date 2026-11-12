@@ -49,6 +49,9 @@ pub struct Def {
     pub requires: Vec<(String, V)>,
     /// ジェネリクス `[..]` を持つトレイトメソッドの名前 (dyn 安全性 5.1)。
     pub generic_methods: Vec<String>,
+    /// トレイトのメソッドの宣言した効果 (名前, `uses` の要素 (効果名・効果変数), `panics` (`never` / `may` / panic 変数))。
+    /// `dyn Tr<E, P>` 越しの呼び出しの効果検査 (5.1) に使う。
+    pub trait_effs: Vec<(String, Vec<String>, String)>,
     pub impl_trait: String,
     /// `extern` の `link "名前"` (省略時は FQN の末尾)
     pub link: String,
@@ -239,6 +242,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                         }
                         Err(_) => sig_ok = false,
                     }
+                    let mut effs: Option<(Vec<String>, String)> = None;
                     let sig = if sig_ok {
                         (|| -> R<(Vec<(String, V)>, V)> {
                             bp.expect_op("(")?;
@@ -246,12 +250,22 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                             bp.expect_op(")")?;
                             bp.expect_op("->")?;
                             let r = bp.ty()?;
+                            if bp.is_kw("uses") {
+                                bp.expect_kw("uses")?;
+                                let u: Vec<String> = items(&bp.effect_set()?).iter().map(text).collect();
+                                bp.expect_kw("panics")?;
+                                let pn = bp.panic_val()?;
+                                effs = Some((u, pn));
+                            }
                             Ok((ps, r))
                         })()
                     } else {
                         Err(String::new())
                     };
                     if let Ok((ps, r)) = sig {
+                        if let Some((u, pn)) = effs {
+                            d.trait_effs.push((mname.clone(), u, pn));
+                        }
                         d.trait_sigs.push((mname, ps, r));
                     }
                 }

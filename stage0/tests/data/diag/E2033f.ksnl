@@ -1,0 +1,10 @@
+trait t.Bad
+    fn dup[T](self: &Self, x: T) -> () uses [] panics never
+end t.Bad
+
+fn t.f(b: &alloc.boxed.Box<dyn t.Bad + 'static, std.alloc.System>) -> () uses [] panics never
+    core.mem.drop(b)
+end t.f
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    std.io.print_line("x")
+end t.main

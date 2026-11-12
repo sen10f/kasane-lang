@@ -44,8 +44,19 @@ pub enum Ty {
     /// 型注釈から組み立てた型にはない (`None`)。
     Closure { args: Vec<Ty>, ret: Box<Ty>, cap: Cap, id: Option<String> },
     /// トレイトオブジェクト `dyn Tr` (5.1)。`Tr` は書かれたトレイト名で、使用箇所で trait 定義の FQN に解決する。
-    /// `dyn` は `&` / `&mut` の背後にのみ現れるので、`Ref` の中身として持つ。
-    Dyn(String),
+    /// `dyn` は `&` / `&mut` の背後か `alloc.boxed.Box` の第1型引数にのみ現れる (`Ref` / `Box` の中身として持つ)。
+    /// 2 つ目は `dyn Tr<E, P>` の型引数 (効果・panic の実引数を実体化するのに使う。型の同一性には入れない)。
+    Dyn(String, TArgs),
+}
+
+/// `dyn Tr<..>` の型引数 (書かれたままの構文木)。どの値も等しいとみなす (型の比較に影響させない)。
+#[derive(Clone, Debug)]
+pub struct TArgs(pub Vec<V>);
+
+impl PartialEq for TArgs {
+    fn eq(&self, _: &TArgs) -> bool {
+        true
+    }
 }
 
 /// クロージャの能力 (`Fn` の階順)。capture が共有参照だけなら `Fn`、`&mut` を含めば `FnMut`、
@@ -87,7 +98,7 @@ impl Ty {
             Ty::Closure { args, ret, .. } => {
                 format!("fn({}) -> {}", args.iter().map(|x| x.show()).collect::<Vec<_>>().join(", "), ret.show())
             }
-            Ty::Dyn(t) => format!("dyn {}", t),
+            Ty::Dyn(t, _) => format!("dyn {}", t),
         }
     }
     fn has_param(&self) -> bool {
@@ -143,7 +154,7 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
             Ty::Named(name, args)
         }
         // `dyn Tr` (のトレイト名)。型引数・効果・ライフタイムは解決の対象にしない (近似)。
-        "dyn" => Ty::Dyn(st(tel(tel(v, 1), 0))),
+        "dyn" => Ty::Dyn(st(tel(tel(v, 1), 0)), TArgs(items(tel(tel(v, 1), 1)).to_vec())),
         _ => Ty::Unknown,
     }
 }
@@ -193,6 +204,8 @@ pub struct ResolvedCall {
     pub line: usize,
     /// メソッド呼び出しの明示型引数 (`x.m::<..>`)。
     pub targs: Vec<V>,
+    /// `dyn Tr<E, P>` 越しの呼び出しのとき: (表示名, 実体化した `uses`, 実体化した `panics`)。`callee` はトレイトの定義。
+    pub dyn_eff: Option<(String, Vec<String>, String)>,
 }
 
 /// `Fn` 境界の引数に直接書かれたクロージャの記録 (効果検査 ② 用)。
@@ -264,6 +277,8 @@ pub struct TypeCk<'a> {
     loose: HashSet<String>,
     /// 直後の呼び出しの各実引数が、参照の段数が決まらない束縛を根に持つか。
     arg_loose: Vec<bool>,
+    /// `Box.into_dyn` の呼び出しの (元の `T`, 変換先 `D`, 行)。関数の推論が終わってから検査する。
+    unsize: Vec<(Ty, Ty, usize)>,
     pat_line: usize,
     /// 入れ子のループごとの「`break` があったか」。
     loop_breaks: Vec<bool>,
@@ -311,7 +326,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), resolved_calls: vec![], fn_closure_args: vec![], strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], pat_line: 0, loop_breaks: vec![], quiet_sites: HashSet::new(), local_sites: HashMap::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), resolved_calls: vec![], fn_closure_args: vec![], strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, loop_breaks: vec![], quiet_sites: HashSet::new(), local_sites: HashMap::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -413,6 +428,7 @@ impl<'a> TypeCk<'a> {
         }
         self.check_dangling(body, &ret);
         self.finish_literals();
+        self.check_unsize();
         self.report_undetermined();
         // 型変数は関数ごとの表なので、ここで解決してから外へ出す。
         for (line, name, t) in std::mem::take(&mut self.let_pending) {
@@ -840,7 +856,7 @@ impl<'a> TypeCk<'a> {
             (Ty::Const(x), Ty::Const(y)) => {
                 if x == y { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
-            (Ty::Dyn(p), Ty::Dyn(q)) => {
+            (Ty::Dyn(p, _), Ty::Dyn(q, _)) => {
                 if p == q { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
             (Ty::Named(n, xs), Ty::Named(m, ys)) => {
@@ -848,6 +864,10 @@ impl<'a> TypeCk<'a> {
                     return Err((a.clone(), b.clone()));
                 }
                 let (xs, ys) = (xs.clone(), ys.clone());
+                // `Box<dyn Tr>` と `Box<T>` は別の型 (変換は `Box.into_dyn` で明示する。5.1)。
+                if n == "alloc.boxed.Box" && self.box_dyn_mismatch(&xs, &ys) {
+                    return Err((a.clone(), b.clone()));
+                }
                 for (x, y) in xs.iter().zip(&ys) {
                     self.unify2(x, y)?;
                 }
@@ -1013,8 +1033,17 @@ impl<'a> TypeCk<'a> {
         // トレイトオブジェクト (5.1): `&dyn Tr` のメソッド呼び出しは、Tr とそのスーパートレイトの
         // シグネチャで検査する (Self は `dyn Tr` 自身)。
         let deep = self.deep(recv);
-        if let Ty::Dyn(tr) = deep.strip().clone() {
-            return self.dyn_method(&tr, &deep, base, name, args, line);
+        if let Ty::Dyn(tr, ta) = deep.strip().clone() {
+            return self.dyn_method(&tr, &ta, &deep, base, name, args, line);
+        }
+        // `Box<dyn Tr, A>` のレシーバは、`Tr` のメソッドを探す (自動参照外し。4.2 / 5.1)。`Box` 自身のメソッド
+        // (`as_ref` / `as_mut` / `into_inner`) は、型の側の定義を使う。
+        if let Ty::Named(n, a) = deep.strip().clone() {
+            if n == "alloc.boxed.Box" && !matches!(name, "as_ref" | "as_mut" | "into_inner" | "drop") {
+                if let Some(Ty::Dyn(tr, ta)) = a.first().map(|x| self.deep(x)) {
+                    return self.dyn_method(&tr, &ta, &Ty::Dyn(tr.clone(), ta.clone()), base, name, args, line);
+                }
+            }
         }
         let (owners, complete) = self.owners_for(recv);
         let mut cands: Vec<(usize, String)> = vec![];
@@ -1100,6 +1129,7 @@ impl<'a> TypeCk<'a> {
                 callee: di,
                 line,
                 targs: targs.to_vec(),
+                dyn_eff: None,
             });
         }
         let d = &self.p.defs[di];
@@ -1147,7 +1177,9 @@ impl<'a> TypeCk<'a> {
         }
         self.check_bounds(d, &map, line, false);
         let ret = from_v(&d.ret, &gn);
-        self.inst(&ret, &mut map)
+        let r = self.inst(&ret, &mut map);
+        self.box_hooks(d, &map, line);
+        r
     }
 
     /// `name: core.ops.Fn*<(A..), R, ..>` の境界の引数・戻り値を、渡されたクロージャ `cl` の型と単一化する
@@ -1383,7 +1415,7 @@ impl<'a> TypeCk<'a> {
     /// `dyn Tr` のメソッド呼び出しを、トレイト (とそのスーパートレイト) のシグネチャで検査する (4.3 / 5.1)。
     /// 引数の個数 (E2022) と型 (E2023) を検査し、戻り値の型を式へ流す。`Self` は `dyn Tr` 自身。
     /// トレイトに無いメソッド名では黙る (名前の存在は名前ベースの従来の検査が見る)。
-    fn dyn_method(&mut self, tr: &str, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize) -> Ty {
+    fn dyn_method(&mut self, tr: &str, dargs: &TArgs, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize) -> Ty {
         let escape_all = |this: &mut Self| {
             for a in args {
                 this.escape(a);
@@ -1422,6 +1454,20 @@ impl<'a> TypeCk<'a> {
             // 5.3: `dyn` 越しの呼び出しの候補は、`dyn Tr` の `Tr` (`root`) の impl を持つ型の
             // メソッドすべて。impl が無ければ候補は分からないので、辺を足さない (黙る)。
             self.add_dyn_candidates(&root, name);
+            // 5.1: `dyn Tr<E, P>` 越しの呼び出しの効果は、メソッドの宣言 `uses [E] panics P` を型引数で実体化したもの。
+            // 型引数のないトレイトの具体的な効果 (`uses [io.console]`) はそのまま使う。実引数が分からなければ変数のまま
+            // (効果検査は未束縛の変数を黙って通す)。
+            if let Some((_, u, pn)) = td.trait_effs.iter().find(|e| e.0 == name) {
+                let (u2, p2) = crate::check::inst_effects(&td.generics, if cur == root { &dargs.0 } else { &[] }, u, pn);
+                self.resolved_calls.push(ResolvedCall {
+                    writer: self.cur,
+                    scope: self.closure_nodes.last().cloned(),
+                    callee: ti,
+                    line,
+                    targs: vec![],
+                    dyn_eff: Some((format!("{}.{} (through dyn)", cur, name), u2, p2)),
+                });
+            }
             if params.len() != args.len() + 1 {
                 self.diag(
                     "E2022",
@@ -1549,6 +1595,50 @@ impl<'a> TypeCk<'a> {
                         line,
                     );
                 }
+            }
+        }
+    }
+
+    /// `alloc.boxed.Box.into_dyn` (変換先と `T: Tr` は関数の推論が終わってから検査する) と、
+    /// `dyn` の `into_inner` (E2046) の印を付ける (5.1)。
+    fn box_hooks(&mut self, d: &Def, map: &HashMap<String, Ty>, line: usize) {
+        match d.name.as_str() {
+            "alloc.boxed.Box.into_dyn" => {
+                if let (Some(t), Some(dd)) = (map.get("T"), map.get("D")) {
+                    self.unsize.push((t.clone(), dd.clone(), line));
+                }
+            }
+            "alloc.boxed.Box.into_inner" => {
+                if let Some(t) = map.get("T") {
+                    if matches!(self.deep(t), Ty::Dyn(..)) {
+                        self.diag("E2046", "`into_inner` cannot move a `dyn` value out of a `Box`".into(), line);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `Box.into_dyn` の変換先と元の型を検査する (関数の推論が終わってから)。
+    fn check_unsize(&mut self) {
+        for (t, d, line) in std::mem::take(&mut self.unsize) {
+            let (t, d) = (self.deep(&t), self.deep(&d));
+            let Ty::Dyn(tr, _) = &d else {
+                if matches!(d, Ty::Named(..) | Ty::Prim(_) | Ty::Tuple(_)) {
+                    self.diag("E2046", format!("`Box.into_dyn` must produce a `Box<dyn ..>`, found `{}`", d.show()), line);
+                }
+                continue;
+            };
+            let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else { continue };
+            let Ty::Named(n, _) = t.strip() else { continue };
+            let Some(&i) = self.p.types.get(n) else { continue };
+            if !self.p.impls.iter().any(|(tb, tgt)| tgt == n && crate::check::resolve_trait_fqn(self.p, tb).as_deref() == Some(root.as_str())) {
+                self.diag("E2046", format!("`{}` does not implement the trait `{}`", n, root), line);
+            }
+            let def = &self.p.defs[i];
+            let has_ref = def.fields.iter().any(|f| v_has_ref(&f.1)) || def.variants.iter().any(|v| v.1.iter().any(v_has_ref));
+            if has_ref {
+                self.diag("E2046", format!("`{}` holds a reference, so it cannot be boxed as `dyn {} + 'static`", n, root), line);
             }
         }
     }
@@ -2472,7 +2562,9 @@ impl<'a> TypeCk<'a> {
             }
         }
         let ret = from_v(&d.ret, &gn);
-        self.inst(&ret, &mut map)
+        let r = self.inst(&ret, &mut map);
+        self.box_hooks(d, &map, line);
+        r
     }
 
     /// ジェネリクス `name` の境界のうち、`core.ops.Fn*` を含む項目の列。
@@ -2545,8 +2637,19 @@ impl<'a> TypeCk<'a> {
 
     /// 矛盾した 2 つの型が「プリミティブ同士の違い」か「Named 同士の名前違い」なら、その文字列を返す。
     /// それ以外は誤検出のおそれがあるので None (何も言わない)。
+    /// `Box<X, ..>` と `Box<Y, ..>` の第1型引数の一方だけが `dyn` か (どちらも決まっているとき)。
+    fn box_dyn_mismatch(&self, xs: &[Ty], ys: &[Ty]) -> bool {
+        let (Some(x), Some(y)) = (xs.first(), ys.first()) else { return false };
+        let (x, y) = (self.deep(x), self.deep(y));
+        let known = |t: &Ty| !matches!(t, Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Never);
+        known(&x) && known(&y) && matches!(x, Ty::Dyn(..)) != matches!(y, Ty::Dyn(..))
+    }
+
     fn type_conflict(&self, e: &(Ty, Ty)) -> Option<(String, String)> {
         match (&e.0, &e.1) {
+            (Ty::Named(a, xs), Ty::Named(b, ys)) if a == b && a == "alloc.boxed.Box" && self.box_dyn_mismatch(xs, ys) => {
+                Some((e.0.show(), e.1.show()))
+            }
             (Ty::Prim(a), Ty::Prim(b)) if a != b => Some((a.clone(), b.clone())),
             (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
             (Ty::Const(a), Ty::Const(b)) if a != b => Some((a.clone(), b.clone())),
@@ -2852,5 +2955,13 @@ pub(crate) fn conv_hint(want: &str, got: &str) -> String {
             w = want,
             g = got
         )
+    }
+}
+
+/// 型 V の中に参照 (`&T` / `&mut T`) があるか ('static でないことの近似。5.1 の `Box<dyn>`)。
+fn v_has_ref(v: &V) -> bool {
+    match v {
+        V::L(xs) => tag(v) == "ref" || xs.iter().any(v_has_ref),
+        _ => false,
     }
 }

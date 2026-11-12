@@ -298,6 +298,7 @@ fn examples_check_fmt_and_run() {
         ("native", "native ok"),
         ("threads", "threads ok"),
         ("realtime", "realtime ok"),
+        ("plugins", "plugins ok"),
         ("json", "{\"name\":\"kasane\",\"tags\":[\"a\",\"b\"],\"n\":-12.5e3,\"ok\":true,\"none\":null}"),
     ];
     for (name, out) in expected {
@@ -6837,5 +6838,156 @@ fn the_shortener_example_builds_natively_without_skips_and_matches_the_interpret
     let r = Command::new(&p).current_dir(&d).output().unwrap();
     assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
     assert_eq!(text(&r.stdout), text(&interp.stdout));
+    let _ = fs::remove_dir_all(&cache);
+}
+
+// ---------------------------------------------------------------- Box<dyn Tr> (5.1)
+
+/// `tests/data/box_dyn.ksnl` の `CHURN_N` (箱を作って捨てる回数) を決めたソース。
+fn box_dyn_source(churn: u32) -> String {
+    include_str!("data/box_dyn.ksnl").replace("CHURN_NI", &format!("{}i64", churn)).replace("CHURN_N", &format!("{}u32", churn))
+}
+
+/// `Vec<Box<dyn Shape>>` (2 種類の具象型 + `String` を持つ型)・`&dyn` / `&mut dyn` の引数・`&mut self` のメソッドを、
+/// インタプリタと Cranelift (debug / release) で同じ結果にする。ネイティブは skip してはならない。
+#[test]
+fn box_dyn_agrees_between_interpreter_and_cranelift() {
+    let src = box_dyn_source(2000);
+    let t = Tmp::new("box_dyn_interp", &src);
+    let check = run(&["check"], &t.0);
+    assert_eq!(check.status.code(), Some(0), "{}{}", text(&check.stdout), text(&check.stderr));
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
+    assert_eq!(text(&interp.stdout), "box dyn ok\n");
+    if cfg!(windows) {
+        return;
+    }
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("box_dyn_{}", release), &src, release);
+        assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        assert_eq!(text(&o.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    }
+}
+
+/// `Box<dyn Tr>` が `String` を持つ具象型を入れたまま捨てられても、漏れず・二重に解放されない。
+/// (1) `malloc` / `realloc` / `free` を数える `LD_PRELOAD` の小さな共有ライブラリで、確保と解放が同数であること、
+/// (2) 300 万回作って捨てるプログラムを、仮想メモリを 64 MiB に絞って最後まで走らせること
+/// (漏れれば 1 回 100 バイト近く × 300 万回で枯渇する。二重解放なら glibc が abort する)。
+#[test]
+fn native_box_dyn_frees_every_allocation_exactly_once() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let cc = ["gcc", "cc", "clang"].iter().find(|c| Command::new(c).arg("--version").output().is_ok());
+    let Some(cc) = cc else { return };
+    let dir = std::env::temp_dir().join(format!("ksn_malloc_count_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let c_path = dir.join("malloc_count.c");
+    let so_path = dir.join("malloc_count.so");
+    fs::write(&c_path, include_str!("data/malloc_count.c")).unwrap();
+    let r = Command::new(cc).args(["-shared", "-fPIC", "-O1", "-o"]).arg(&so_path).arg(&c_path).arg("-ldl").output().unwrap();
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    for release in [false, true] {
+        let (_t, exe_path, out) = build_clif(&format!("box_dyn_cnt_{}", release), &box_dyn_source(3000), release);
+        assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+        let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+        let o = Command::new(&p).env("LD_PRELOAD", &so_path).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+        let err = text(&o.stderr);
+        let line = err.lines().find(|l| l.starts_with("allocs=")).unwrap_or_else(|| panic!("no counter output: {}", err));
+        let nums: Vec<i64> = line.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).map(|s| s.parse().unwrap()).collect();
+        assert_eq!(nums[0], nums[1], "allocations and frees differ ({}): leak or double free", line);
+        // 1 回ごとに `String` と `Box` の 2 回確保する。
+        assert!(nums[0] >= 2 * 3000, "the loop allocated too little ({})", line);
+    }
+    let (_t, exe_path, out) = build_clif("box_dyn_limit", &box_dyn_source(3_000_000), true);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new("sh").args(["-c", "ulimit -v 65536 && exec \"$0\""]).arg(&p).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout), "box dyn ok\n");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// 効果は `dyn Tr<E, P>` の型引数で検査する (`&dyn` でも `Box<dyn>` でも)。型の誤りはそのコードだけが出る。
+#[test]
+fn box_dyn_diagnostics_report_exactly_their_codes() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("effect_dyn_ref", include_str!("data/diag/E4001d.ksnl"), "E4001"),
+        ("effect_dyn_box", include_str!("data/diag/E4002e.ksnl"), "E4002"),
+        ("dyn_unsafe_in_box", include_str!("data/diag/E2033f.ksnl"), "E2033"),
+        ("linear_in_box", include_str!("data/diag/E3006c.ksnl"), "E3006"),
+        ("into_dyn_missing_impl", include_str!("data/diag/E2046.ksnl"), "E2046"),
+        ("into_dyn_not_dyn", include_str!("data/diag/E2046b.ksnl"), "E2046"),
+        ("into_dyn_reference", include_str!("data/diag/E2046c.ksnl"), "E2046"),
+        ("dyn_in_vec", include_str!("data/diag/E2047.ksnl"), "E2047"),
+        ("box_dyn_without_static", include_str!("data/diag/E2047b.ksnl"), "E2047"),
+    ];
+    let mut failures = vec![];
+    for (name, src, code) in cases {
+        let t = Tmp::new(name, src);
+        let o = run(&["check", "--json"], &t.0);
+        let got = codes(&text(&o.stdout));
+        if o.status.code() != Some(1) || got.is_empty() || got.iter().any(|c| c != code) {
+            failures.push(format!("{}: expected only {}, got {:?}", name, code, got));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// ネイティブで作れない形 (スカラーの `Box`) は、skip の理由を出して退く (誤ったコードを出さない)。
+#[test]
+fn native_box_of_a_scalar_is_skipped_with_a_reason() {
+    if cfg!(windows) {
+        return;
+    }
+    let src = [
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    match alloc.boxed.Box.new(std.alloc.SYSTEM, 4i64) {",
+        "        Ok(b) => core.check.eq(*b.as_ref(), 4i64)",
+        "        Err(_e) => core.panic.panic(\"oom\")",
+        "    }",
+        "    std.io.print_line(\"scalar box ok\")",
+        "    Ok(())",
+        "end t.main",
+        "",
+    ]
+    .join("\n");
+    let t = Tmp::new("box_scalar", &src);
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
+    let (_t, exe_path, out) = build_clif("box_scalar_clif", &src, false);
+    assert!(exe_path.is_none() && out.contains("native backend skipped") && out.contains("Box of a scalar"), "expected a skip: {}", out);
+}
+
+/// `examples/plugins` (`Vec<Slot>` の `Box<dyn Handler>`) は、ネイティブで skip なしに作れ、インタプリタと同じ出力になる。
+#[test]
+fn the_plugins_example_builds_natively_without_skips_and_matches_the_interpreter() {
+    if cfg!(windows) {
+        return;
+    }
+    let d = root().join("examples").join("plugins");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_plugins_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let interp = Command::new(exe()).arg("run").current_dir(&d).output().unwrap();
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    assert_eq!(text(&interp.stdout), "start\nstop\nplugins ok\n");
+    for release in [false, true] {
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "clif"]).current_dir(&d).env("KSN_CACHE_DIR", &cache);
+        if release {
+            c.arg("--release");
+        }
+        let o = c.output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+        let p = d.join("target").join(if release { "release" } else { "debug" }).join("plugins.native");
+        let r = Command::new(&p).current_dir(&d).output().unwrap();
+        assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), text(&interp.stdout));
+    }
     let _ = fs::remove_dir_all(&cache);
 }

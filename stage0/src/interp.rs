@@ -1401,6 +1401,15 @@ impl Interp {
                 }
             }
         }
+        // `Box<dyn Tr>` のレシーバは中身の値で呼ぶ (自動参照外し。5.1)。`&mut self` のメソッドは中身の場所を渡す。
+        if d.is_none() {
+            if let Val::Struct(s) = &v {
+                if s.ty == "alloc.boxed.Box" && !matches!(name, "as_ref" | "as_mut" | "into_inner" | "into_dyn" | "clone" | "try_clone") {
+                    let inner = Val::Ref(Rc::new(FieldPlace(s.clone(), "value".into())));
+                    return self.invoke_method(inner, name, args, None);
+                }
+            }
+        }
         if let Some(di) = d {
             let def = self.def(di);
             let selfty = &def.params[0].1;

@@ -20,7 +20,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.string.String.from_str", "alloc.string.String.replace", "alloc.string.String.join",
     "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
     "alloc.collections.VecDeque.new",
-    "alloc.boxed.Box.new", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
+    "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
     "std.fs.create", "std.fs.read_to_end", "std.net.connect", "std.net.listen",
@@ -569,6 +569,8 @@ impl Interp {
             "alloc.collections.VecDeque.new" => Ok(Val::Vec(new_list(vec![]))),
             "alloc.collections.HashMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV { kind: "HashMap".into(), d: vec![] })))),
             "alloc.collections.BtreeMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV { kind: "BtreeMap".into(), d: vec![] })))),
+            // `Box<T>` → `Box<dyn Tr>` (5.1): 実行系の値は型を持たないので、そのまま返す。
+            "alloc.boxed.Box.into_dyn" => Ok(args[0].clone()),
             "alloc.boxed.Box.new" => Ok(ok(Val::Struct(Rc::new(StructV {
                 ty: "alloc.boxed.Box".into(),
                 f: RefCell::new(vec![("value".into(), args[1].clone())]),
@@ -821,8 +823,8 @@ impl Interp {
                     if name == "as_ref" || name == "as_mut" {
                         return Ok(Val::Ref(Rc::new(FieldPlace(s.clone(), "value".into()))));
                     }
-                    if name == "into_inner" {
-                        return Ok(s.get("value").unwrap());
+                    if name == "into_inner" || name == "into_dyn" {
+                        return Ok(if name == "into_dyn" { v.clone() } else { s.get("value").unwrap() });
                     }
                 }
                 match name {

@@ -1,0 +1,10 @@
+trait t.Handler[E: uses, P: panics]
+    fn handle(self: &Self) -> () uses [E] panics P
+end t.Handler
+
+fn t.run(h: &alloc.boxed.Box<dyn t.Handler<[], may> + 'static, std.alloc.System>) -> () uses [] panics never
+    h.handle()
+end t.run
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    std.io.print_line("x")
+end t.main

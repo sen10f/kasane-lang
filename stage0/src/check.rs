@@ -212,6 +212,24 @@ pub(crate) fn inst_def_effects(callee: &Def, targs: &[V]) -> Option<(Vec<String>
     Some((uses, panics))
 }
 
+/// トレイトのメソッドの宣言した効果 (`uses` の要素と `panics`) を、`dyn Tr<E, P>` の型引数で実体化する (5.1)。
+/// 型引数に対応のない効果変数は、変数のまま残す (`covers` が黙って通す)。
+pub(crate) fn inst_effects(gens: &[(String, String, V)], targs: &[V], uses: &[String], panics: &str) -> (Vec<String>, String) {
+    let pairs = align_targs(gens, targs).unwrap_or_default();
+    let u: Vec<String> = uses
+        .iter()
+        .flat_map(|e| match pairs.iter().find(|(n, k, _)| *k == "uses" && *n == e.as_str()) {
+            Some((_, _, t)) => items(tel(t, 1)).iter().map(st).collect(),
+            None => vec![e.clone()],
+        })
+        .collect();
+    let p = match pairs.iter().find(|(n, k, _)| *k == "panics" && *n == panics) {
+        Some((_, _, t)) => st(tel(t, 1)),
+        None => panics.to_string(),
+    };
+    (u, p)
+}
+
 const PRELUDE_TYPES: &[&str] = &["Option", "Result"];
 /// プレリュード名のFQN形 (型・パターンに書くとE1110。メソッドFQNは除く)。
 const PRELUDE_FQN: &[&str] = &[
@@ -1064,12 +1082,21 @@ impl<'a> Checker<'a> {
             }
             "ref" => self.sync_v(tel(t, 2), gn, user_types, seen),
             // 生ポインタは Send でも Sync でもない (5.5)。
+            "dyn" => self.dyn_marker(tel(t, 1), "core.marker.Sync"),
             "ptr" => Some(false),
             "slice" | "array" => self.sync_v(tel(t, 1), gn, user_types, seen),
             "named" => {
                 let n = st(tel(t, 1));
                 if gn.contains(&n) {
                     return None;
+                }
+                // `alloc.boxed.Box<T, A>` は `T` と `A` に従う (`T` が `dyn Tr` のときは `Tr` の `requires`。5.5)。
+                if n == "alloc.boxed.Box" {
+                    let mut r = Some(true);
+                    for x in items(tel(t, 2)).iter().filter(|x| matches!(x, V::L(_)) && tag(x) != "life") {
+                        r = and3(r, self.sync_v(x, gn, user_types, seen));
+                    }
+                    return r;
                 }
                 if self.has_manual_marker(&n, "core.marker.Sync") {
                     return Some(true);
@@ -1105,6 +1132,29 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `dyn Tr` が `core.marker.Send` / `Sync` を満たすか: `Tr` の `requires` (スーパートレイトを推移的に辿る) に含むときだけ (5.5)。
+    fn dyn_marker(&self, trait_ref: &V, marker: &str) -> Option<bool> {
+        let f = items(trait_ref);
+        let root = resolve_trait_fqn(self.p, &st(f.first()?))?;
+        let mut seen = HashSet::new();
+        let mut stack = vec![root];
+        while let Some(cur) = stack.pop() {
+            if !seen.insert(cur.clone()) {
+                continue;
+            }
+            let Some(td) = self.trait_def(&cur) else { continue };
+            for (sup, _) in &td.requires {
+                if sup == marker {
+                    return Some(true);
+                }
+                if let Some(fq) = resolve_trait_fqn(self.p, sup) {
+                    stack.push(fq);
+                }
+            }
+        }
+        Some(false)
+    }
+
     /// 型が `core.marker.Send` を満たすか。`Some(false)` は明確に満たさない (5.5)。
     /// `&T` は `T: Sync` のとき Send、`&mut T` は `T: Send` のとき Send。
     fn send_v(
@@ -1130,12 +1180,21 @@ impl<'a> Checker<'a> {
                     self.sync_v(tel(t, 2), gn, user_types, seen)
                 }
             }
+            "dyn" => self.dyn_marker(tel(t, 1), "core.marker.Send"),
             "ptr" => Some(false),
             "slice" | "array" => self.send_v(tel(t, 1), gn, user_types, seen),
             "named" => {
                 let n = st(tel(t, 1));
                 if gn.contains(&n) {
                     return None;
+                }
+                // `alloc.boxed.Box<T, A>` は `T` と `A` に従う (`T` が `dyn Tr` のときは `Tr` の `requires`。5.5)。
+                if n == "alloc.boxed.Box" {
+                    let mut r = Some(true);
+                    for x in items(tel(t, 2)).iter().filter(|x| matches!(x, V::L(_)) && tag(x) != "life") {
+                        r = and3(r, self.send_v(x, gn, user_types, seen));
+                    }
+                    return r;
                 }
                 if self.has_manual_marker(&n, "core.marker.Send") {
                     return Some(true);
@@ -1330,13 +1389,28 @@ impl<'a> Checker<'a> {
                 } else if !self.p.types.contains_key(&nm) {
                     self.diag("E1102", format!("unknown type {}", nm), di, 0);
                 }
-                for a in items(tel(t, 2)) {
-                    if matches!(tag(a).as_str(), "named" | "ref" | "tuple" | "array" | "slice" | "prim") {
+                for (k, a) in items(tel(t, 2)).iter().enumerate() {
+                    if tag(a) == "dyn" {
+                        // `dyn` は `alloc.boxed.Box` の第1型引数にだけ置ける。ライフタイム境界は `'static` のみ (5.1)。
+                        if nm == "alloc.boxed.Box" && k == 0 {
+                            if st(tel(a, 2)) != "'static" {
+                                self.diag("E2047", "`Box<dyn ..>` must be written `dyn Tr + 'static`".into(), di, 0);
+                            }
+                            self.check_dyn_types(tel(a, 1), di);
+                        } else {
+                            self.diag("E2047", "`dyn` may appear only behind `&` / `&mut` or as the first type argument of `alloc.boxed.Box`".into(), di, 0);
+                            self.check_dyn_types(tel(a, 1), di);
+                        }
+                    } else if matches!(tag(a).as_str(), "named" | "ref" | "tuple" | "array" | "slice" | "prim") {
                         self.ty_names(a, di, names);
                     }
                 }
             }
-            "dyn" => self.check_dyn_types(tel(t, 1), di),
+            "dyn" => {
+                self.diag("E2047", "`dyn` may appear only behind `&` / `&mut` or as the first type argument of `alloc.boxed.Box`".into(), di, 0);
+                self.check_dyn_types(tel(t, 1), di);
+            }
+            "ref" if tag(tel(t, 2)) == "dyn" => self.check_dyn_types(tel(tel(t, 2), 1), di),
             "ref" | "ptr" => self.ty_names(tel(t, 2), di, names),
             "slice" | "array" => self.ty_names(tel(t, 1), di, names),
             "tuple" => {
@@ -1985,7 +2059,10 @@ impl<'a> Checker<'a> {
             // 呼び出し箇所の書き手の効果で検査する (検査のあと、元の状態に戻す)。
             let saved_u = self.cur_uses.replace(uses);
             let saved_p = std::mem::replace(&mut self.cur_panics, panics);
-            let viol = self.violation_targs(self.def(c.callee), &c.targs);
+            let viol = match &c.dyn_eff {
+                Some((name, u, pn)) => self.violation_effs(name, u, Some(pn.as_str())),
+                None => self.violation_targs(self.def(c.callee), &c.targs),
+            };
             self.cur_uses = saved_u;
             self.cur_panics = saved_p;
             let Some((code, msg)) = viol else { continue };
@@ -2016,6 +2093,10 @@ impl<'a> Checker<'a> {
             // クロージャ本体の中で型で解決できたメソッド呼び出しの効果を足す。
             for c in calls {
                 if c.scope.as_deref() != Some(a.node.as_str()) {
+                    continue;
+                }
+                if let Some((_, u, pn)) = &c.dyn_eff {
+                    crate::infer::add_effs(u, Some(pn.as_str()), &mut effs, &mut pan_may);
                     continue;
                 }
                 let callee = self.def(c.callee);

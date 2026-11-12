@@ -1,0 +1,155 @@
+import alloc.boxed
+import alloc.vec
+
+trait t.Tagged
+    fn tag(self: &Self) -> i64 uses [] panics never
+end t.Tagged
+
+trait t.Shape requires t.Tagged
+    fn area(self: &Self) -> i64 uses [] panics never
+    fn grow(self: &mut Self) -> () uses [] panics never
+end t.Shape
+
+type t.Named
+    name: alloc.string.String
+    n: i64
+end t.Named
+
+type t.Rect
+    w: i64
+    h: i64
+end t.Rect
+
+type t.Reg
+    items: vec.Vec<boxed.Box<dyn t.Shape + 'static, std.alloc.System>, std.alloc.System>
+end t.Reg
+
+type t.Sq
+    side: i64
+end t.Sq
+
+impl t.Tagged for t.Named
+fn t.Named.tag(self: &t.Named) -> i64 uses [] panics never impls t.Tagged
+    100i64
+end t.Named.tag
+
+impl t.Tagged for t.Rect
+fn t.Rect.tag(self: &t.Rect) -> i64 uses [] panics never impls t.Tagged
+    20i64
+end t.Rect.tag
+
+impl t.Tagged for t.Sq
+fn t.Sq.tag(self: &t.Sq) -> i64 uses [] panics never impls t.Tagged
+    3i64
+end t.Sq.tag
+
+impl t.Shape for t.Named
+fn t.Named.area(self: &t.Named) -> i64 uses [] panics never impls t.Shape
+    self.n
+end t.Named.area
+
+fn t.Named.grow(self: &mut t.Named) -> () uses [] panics never impls t.Shape
+    self.n = self.n.wrapping_add(10i64)
+end t.Named.grow
+
+impl t.Shape for t.Rect
+fn t.Rect.area(self: &t.Rect) -> i64 uses [] panics never impls t.Shape
+    self.w.wrapping_mul(self.h)
+end t.Rect.area
+
+fn t.Rect.grow(self: &mut t.Rect) -> () uses [] panics never impls t.Shape
+    self.w = self.w.wrapping_add(1i64)
+end t.Rect.grow
+
+impl t.Shape for t.Sq
+fn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape
+    self.side.wrapping_mul(self.side)
+end t.Sq.area
+
+fn t.Sq.grow(self: &mut t.Sq) -> () uses [] panics never impls t.Shape
+    self.side = self.side.wrapping_add(1i64)
+end t.Sq.grow
+
+fn t.Reg.add[S: t.Shape](self: &mut t.Reg, s: S) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let b = boxed.Box.new(std.alloc.SYSTEM, s)?
+    self.items.push(boxed.Box.into_dyn(b))?
+    Ok(())
+end t.Reg.add
+
+fn t.Reg.grow_all(self: &mut t.Reg) -> () uses [] panics may
+    let mut i = 0usize
+    while i < self.items.len() {
+        self.items[i].grow()
+        i = i.wrapping_add(1usize)
+    }
+end t.Reg.grow_all
+
+fn t.Reg.new() -> t.Reg uses [] panics never
+    t.Reg { items: vec.Vec.new(std.alloc.SYSTEM) }
+end t.Reg.new
+
+fn t.Reg.tags(self: &t.Reg) -> i64 uses [] panics never
+    let mut sum = 0i64
+    for b in self.items.iter() {
+        sum = sum.wrapping_add(b.tag())
+    }
+    sum
+end t.Reg.tags
+
+fn t.Reg.total(self: &t.Reg) -> i64 uses [] panics never
+    let mut sum = 0i64
+    for b in self.items.iter() {
+        sum = sum.wrapping_add(b.area())
+    }
+    sum
+end t.Reg.total
+
+fn t.bump(s: &mut dyn t.Shape + 'static) -> () uses [] panics never
+    s.grow()
+end t.bump
+
+fn t.churn(count: u32) -> Result<i64, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut i = 0u32
+    let mut acc = 0i64
+    while i < count {
+        let name = alloc.string.String.from_str(std.alloc.SYSTEM, "hello box")?
+        let b = boxed.Box.new(std.alloc.SYSTEM, t.Named { name: name, n: 3i64 })?
+        let d: boxed.Box<dyn t.Shape + 'static, std.alloc.System> = boxed.Box.into_dyn(b)
+        acc = acc.wrapping_add(d.area())
+        i = i.wrapping_add(1u32)
+    }
+    Ok(acc)
+end t.churn
+
+fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc, io.console] panics may
+    let mut reg = t.Reg.new()
+    reg.add(t.Sq { side: 3i64 })?
+    reg.add(t.Rect { w: 2i64, h: 5i64 })?
+    let name = alloc.string.String.from_str(std.alloc.SYSTEM, "named")?
+    reg.add(t.Named { name: name, n: 7i64 })?
+    core.check.eq(reg.total(), 9i64 + 10i64 + 7i64)
+    core.check.eq(reg.tags(), 123i64)
+    reg.grow_all()
+    core.check.eq(reg.total(), 16i64 + 15i64 + 17i64)
+    let mut sq = t.Sq { side: 4i64 }
+    t.bump(&mut sq)
+    core.check.eq(sq.side, 5i64)
+    let first = t.show(&sq)
+    core.check.eq(first, 25i64)
+    let total = t.churn(CHURN_N)?
+    core.check.eq(total, 3i64 * 1i64 * CHURN_NI)
+    std.io.print_line("box dyn ok")
+    Ok(())
+end t.run
+
+fn t.show(s: &dyn t.Shape + 'static) -> i64 uses [] panics never
+    s.area()
+end t.show
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    match t.run() {
+        Ok(_u) => core.check.is_true(true)
+        Err(_e) => core.panic.panic("out of memory")
+    }
+    Ok(())
+end t.main

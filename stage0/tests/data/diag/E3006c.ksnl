@@ -1,0 +1,23 @@
+trait t.Shape
+    fn area(self: &Self) -> i64 uses [] panics never
+end t.Shape
+
+type t.Sq
+    side: i64
+end t.Sq
+
+impl t.Shape for t.Sq
+fn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape
+    self.side
+end t.Sq.area
+
+type t.Tok linear
+    n: i64
+end t.Tok
+
+fn t.mk(k: t.Tok) -> Result<alloc.boxed.Box<t.Tok, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    alloc.boxed.Box.new(std.alloc.SYSTEM, k)
+end t.mk
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    std.io.print_line("x")
+end t.main
