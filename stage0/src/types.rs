@@ -736,8 +736,9 @@ impl<'a> TypeCk<'a> {
         let t = self.deep(t);
         match t.strip() {
             Ty::Prim(p) if p == "str" => (vec!["core.str".into()], true),
-            Ty::Prim(p) if p == "bool" => (vec!["core.bool".into()], false),
-            Ty::Prim(p) if p == "char" => (vec!["core.char".into()], false),
+            // sig の所有者は `core.bool.bool` / `core.char.char` (型名を末尾に重ねた FQN。`core.num.u8` と違う形)。
+            Ty::Prim(p) if p == "bool" => (vec!["core.bool.bool".into()], false),
+            Ty::Prim(p) if p == "char" => (vec!["core.char.char".into()], false),
             Ty::Prim(p) => (vec![format!("core.num.{}", p)], false),
             Ty::Slice(_) | Ty::Array(_) => (vec!["core.slice".into(), "core.array".into()], true),
             Ty::Named(n, _) => match n.as_str() {
@@ -791,6 +792,9 @@ impl<'a> TypeCk<'a> {
         }
         if cands.is_empty() {
             if let Some(t) = self.trait_bound_method(recv, name, args, line) {
+                return t;
+            }
+            if let Some(t) = self.derived_method(recv, name, args) {
                 return t;
             }
             let exists_elsewhere = self.p.method_idx.contains_key(name);
@@ -872,6 +876,32 @@ impl<'a> TypeCk<'a> {
         self.check_bounds(d, &map, line, false);
         let ret = from_v(&d.ret, &gn);
         self.inst(&ret, &mut map)
+    }
+
+    /// 派生トレイト (`DERIVED`) のメソッドの戻り値。所有者の sig にメソッドがないときだけ使う。
+    /// `Self` はレシーバの型 (参照は透過)。戻り値が分からない名前 (`call` など) は None (黙る)。
+    /// `min` / `max` の引数は `Self` と単一化し、それ以外の引数は従来どおり escape する。
+    fn derived_method(&mut self, recv: &Ty, name: &str, args: &[Ty]) -> Option<Ty> {
+        let self_ty = self.deep(recv).strip().clone();
+        let ret = match name {
+            "clone" => self_ty,
+            "min" | "max" => {
+                for a in args {
+                    let _ = self.unify2(&self_ty, a);
+                }
+                return Some(self_ty);
+            }
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" => Ty::Prim("bool".into()),
+            "hash" => Ty::Unit,
+            "to_string" => Ty::Named("alloc.string.String".into(), vec![]),
+            "cmp" => Ty::Named("core.cmp.Ordering".into(), vec![]),
+            "partial_cmp" => Ty::Named("Option".into(), vec![Ty::Named("core.cmp.Ordering".into(), vec![])]),
+            _ => return None,
+        };
+        for a in args {
+            self.escape(a);
+        }
+        Some(ret)
     }
 
     /// レシーバが型パラメータ `T` で、境界のトレイトがそのメソッドを宣言しているとき、トレイトのシグネチャで呼び出しを検査する。
@@ -1353,6 +1383,18 @@ impl<'a> TypeCk<'a> {
                 }
                 Ty::Closure { args, ret: Box::new(ret), cap: closure_cap(&f[2]), id: Some(node) }
             }
+            // `while` は値を持たない (unit)。条件と本体は従来どおり推論する。
+            "While" => {
+                self.infer(&f[0]);
+                self.infer(&f[1]);
+                Ty::Unit
+            }
+            // `loop` の値は `break` の値で決まる。ただし文法の `break` は値を取らない (`Break` は子を持たない)
+            // ので、この loop を抜ける `break` があれば unit、なければ発散 (`!`) とする。
+            "Loop" => {
+                self.infer(&f[0]);
+                if has_break_out(&f[0]) { Ty::Unit } else { Ty::Never }
+            }
             "Return" | "Break" | "Continue" => {
                 if nname(e) == "Return" && !is_nil(&f[0]) {
                     let v = self.infer(&f[0]);
@@ -1495,6 +1537,7 @@ impl<'a> TypeCk<'a> {
         match self.p.resolve(segs, &self.def().file) {
             Some(r) if r.rest.is_empty() => match r.target {
                 Target::Const(i) => from_v(&self.p.defs[i].ret, &HashSet::new()),
+                Target::Fn(i) | Target::Sig(i) => self.fn_item_ty(i),
                 Target::Variant(en, vn) => {
                     if en == "Option" && vn == "None" {
                         let v = self.fresh(0);
@@ -1509,6 +1552,21 @@ impl<'a> TypeCk<'a> {
             },
             _ => Ty::Unknown,
         }
+    }
+
+    /// 関数項目を値として使う (`map_err(json.oom)`) ときの関数型。引数と戻り値は宣言の型から取り、
+    /// 型パラメータを含むものは Unknown にする (そこから先は黙る)。`id` を持たないので、クロージャの
+    /// 本体に基づく効果の検査 (`closure_effect_bind` / `check_closure_bounds`) の対象にはならない。
+    /// メソッド (`self` を持つ定義) は、`Self` の解決が要るので Unknown にする。
+    fn fn_item_ty(&self, i: usize) -> Ty {
+        let d = &self.p.defs[i];
+        if d.is_method() {
+            return Ty::Unknown;
+        }
+        let gn = d.gnames();
+        let args = d.params.iter().map(|p| subst_params_unknown(&from_v(&p.1, &gn))).collect();
+        let ret = subst_params_unknown(&from_v(&d.ret, &gn));
+        Ty::Closure { args, ret: Box::new(ret), cap: Cap::Fn, id: None }
     }
 
     fn call(&mut self, callee: &V, args: &[V], line: usize, targs: &[V]) -> Ty {
@@ -2085,6 +2143,20 @@ impl<'a> TypeCk<'a> {
 /// 関数自身の型パラメータは、本体の中では分からない型として扱う。
 fn subst_params_unknown(t: &Ty) -> Ty {
     subst(t, &HashMap::new())
+}
+
+/// `e` (`loop` の本体) の中に、その `loop` を抜ける `break` があるか。入れ子の `loop` と `for` / `while` の
+/// 本体、クロージャの中の `break` は別の loop (または不正な位置) のものなので数えない。
+/// `while` の条件と `for` の反復子は、外側の loop の中にあるので数える。
+fn has_break_out(e: &V) -> bool {
+    match nname(e) {
+        "Break" => return true,
+        "Loop" | "Closure" => return false,
+        "While" => return has_break_out(&nf(e)[0]),
+        "For" => return has_break_out(&nf(e)[1]),
+        _ => {}
+    }
+    crate::check::children(e).into_iter().any(has_break_out)
 }
 
 /// impl の対象型 `tgt` について、メソッドの所有者になり得る名前 (型そのものと、

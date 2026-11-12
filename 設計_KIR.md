@@ -481,6 +481,38 @@ end demo.fib
 - 式の識別子: 計測はノードの AST のアドレスで同じ式を見分けている。これは検査の間だけ有効で、KIR の入力には使えない。第 7 章 5 の `V::Node` への式 ID を入れる必要がある。
 - 所有者の不一致 (8.4 の注) は、型検査の既存の欠陥である。KIR の前提を待たずに直す価値がある。ただし既定の診断が変わるので、単独のコミットで扱う。
 
+### 8.7 完全化 第 1 段の結果
+
+ブランチ `kir/type-complete-1` (`claude/handover-work-i7ll7p` から分岐)。8.5 の S / M のうち次の 4 つを `stage0/src/types.rs` で塞いだ。
+
+- **型規則 (`while` / `loop`)**: `while` は unit。`loop` は、その loop を抜ける `break` があれば unit、なければ `!` (発散)。文法の `break` は値を取らない (`Break` は子を持たず、仕様でも `!` 式) ので、「break 値の型」の規則は入れていない。`has_break_out` が、入れ子の loop・`for` / `while` の本体・クロージャの中の `break` を数えないようにしている。
+- **派生メソッド (`derived_method`)**: 所有者の sig にメソッドがないときだけ使う。`clone` / `min` / `max` はレシーバの型 (Self)、`eq` `ne` `lt` `le` `gt` `ge` は bool、`hash` は unit、`to_string` は String、`cmp` は `core.cmp.Ordering`、`partial_cmp` は `Option<Ordering>`。それ以外 (`call` など) は戻り値を決めず黙る。
+- **所有者 (`owners_for`)**: char / bool の所有者を `core.char.char` / `core.bool.bool` にした。これで `c.to_u32()` や `b.then_some(..)` が引ける。
+- **関数項目 (`fn_item_ty`)**: メソッドでない定義を値として使うと (`let f = t.double`、`map_err(json.oom)`)、宣言の引数と戻り値からクロージャ型 (`Ty::Closure`、`cap` は Fn、`id` なし) を作る。型パラメータを含む部分は Unknown。`id` がないので、クロージャ本体に基づく効果の検査 (`closure_effect_bind` / `check_closure_bounds`) には入らない。メソッド (`self` を持つ定義) は `Self` の解決が要るので対象外。
+
+被覆率 (`KSN_TYPE_COVERAGE=1 ksn check`、計測対象は examples 7 本と bench/reference 9 本。前回の 8.2 と同じ分け方で、前後とも一致を確認した):
+
+| 対象 | 式 | 確定 (前 → 後) | 確定率 (前 → 後) | 型変数 (前 → 後) | 未知 根 / 伝播 (前 → 後) |
+|---|---:|---:|---:|---:|---:|
+| examples 7 本 | 1771 | 1699 → 1732 | 95.9% → 97.8% | 30 → 30 | 33 / 9 → 1 / 8 |
+| bench/reference 9 本 | 519 | 511 → 517 | 98.5% → 99.6% | 1 → 1 | 7 / 0 → 1 / 0 |
+| 合計 (examples + bench) | 2290 | 2210 → 2249 | 96.5% → 98.2% | 31 → 31 | 40 / 9 → 2 / 8 |
+
+spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していない。上の合計に含めた 2345 件の数字 (8.2 と同じ分母) では、確定は 2265 → 2304 (96.6% → 98.2%) と読む。stdlib の式に while / loop / char のメソッドがあれば、そこも型が付くはずだが、確かめていない。
+
+残りの未知 10 件 (根 2 件と、そこから伝播した 8 件):
+
+- 根 2 件は 8.5 の M の行のまま。`realtime.Phase.Idle.next` (列挙型の変種を経由したメソッド) と、sig にない `u8` の `.to_u32()` (natives.rs と sig の突き合わせが要る)。
+- 伝播 8 件は、`examples/tour/src/tour.ksnl:18` の `let a = 9.0` (浮動小数リテラルの型が呼び出し時点で未確定) から来ている。8.5 の「浮動小数リテラル」の行 (M) と同じ。
+
+型変数 31 件は変わらなかった。`map_err` 6 件は、関数項目が入ったので引数 (`F`) は決まるが、エラー型 `Y` は決まらない。`call_method` は `Fn` 境界の引数型・戻り値型を単一化しない (`call_def` だけがする) ためで、ここは次段の候補。
+
+**既定の診断の変化**: examples 7 本と bench/reference 9 本の `ksn check` は、前後とも出力なし (rc 0) で、変化はない。`owners_for` の修正は既存の対象では新しい診断を出さなかった。念のため、正しい書き方のプローブ (char / bool のメソッド、派生メソッドの `min` / `max` / `eq` / `cmp` の `match`、`filter` と `map` に関数項目を渡す形、`&` 引数の関数項目) を 3 本作って確かめ、誤検出はなかった。真の誤りは新しく報告される: `let n: char = c.to_u32()` (E2020)、`let b: bool = a.clone()` (E2020)、関数項目の引数の型違い `f(true)` (E2023 "argument 1 of the closure")、引数の個数違い `f(1u32, 2u32)` (E2022)。
+
+黙る (取りこぼす) 側に残したもの: char / bool の引数の個数違い (`c.to_u32(1u8)`) は E2022 にしない (所有者の表が完全でないとみなす。`complete` は従来どおり false)。`core.iter.map` の `Fn` 境界で、反復子の要素型が決まらないときの引数型の不一致も黙る (クロージャの場合も同じ)。
+
+回帰テスト: `stage0/tests/cli.rs` 末尾の `kir_*` 4 本。`assert_all_typed` は `KSN_TYPE_COVERAGE=1` の出力で「未知 0・型変数 0」を確かめる。`cargo test --release` は全緑 (cli 318 本ほか)。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。

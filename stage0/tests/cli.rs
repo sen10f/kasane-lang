@@ -7038,3 +7038,122 @@ end t.main
     assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
     assert!(text(&r.stderr).contains("unsupported type or value"), "{}", text(&r.stderr));
 }
+
+// ---- 型推論の完全化 第 1 段 (設計_KIR.md 第 8 章 8.5): while / loop、派生メソッド、char / bool、関数項目 ----
+
+/// 型推論の被覆計測 (`KSN_TYPE_COVERAGE=1`) で、未知の式が 0 件であることを確かめる。
+/// 型が決まらない式があれば、ここで落ちる (型規則の欠落の回帰)。
+fn assert_all_typed(name: &str, src: &str) {
+    let t = Tmp::new(name, src);
+    let o = Command::new(exe()).arg("check").env("KSN_TYPE_COVERAGE", "1").current_dir(&t.0).output().expect("spawn ksn");
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let err = text(&o.stderr);
+    assert!(err.contains("型変数 0 / 未知 0 (0.0%, うち根 0)"), "{}", err);
+}
+
+#[test]
+fn kir_while_and_loop_have_types() {
+    let fns = "fn t.spin(n: u32) -> u32 uses [] panics never
+    let mut i = 0u32
+    loop {
+        i = i.wrapping_add(1u32)
+        if i > n {
+            break
+        }
+    }
+    i
+end t.spin
+
+fn t.count(n: u32) -> u32 uses [] panics never
+    let mut i = 0u32
+    while i < n {
+        i = i.wrapping_add(1u32)
+    }
+    i
+end t.count
+
+fn t.forever(n: u32) -> u32 uses [] panics never
+    loop {
+        if n == 0u32 {
+            return 1u32
+        }
+    }
+end t.forever
+
+";
+    assert_all_typed("kir_loop_types", &main_wrap(fns, "    core.check.eq(t.spin(3u32), 4u32)\n    core.check.eq(t.count(3u32), 3u32)\n"));
+}
+
+#[test]
+fn kir_derived_methods_return_self_or_the_declared_type() {
+    // `clone` は Self (u32) を返すので、bool の注釈と食い違う。派生メソッドの戻り値の型が効いている。
+    let fns = "fn t.derived(a: u32) -> bool uses [] panics never
+    let b: bool = a.clone()
+    b
+end t.derived
+
+";
+    let t = Tmp::new("kir_derived_clone", &main_wrap(fns, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}", out);
+    assert!(codes(&out).iter().any(|c| c == "E2020"), "{}", out);
+}
+
+#[test]
+fn kir_char_and_bool_methods_are_resolved() {
+    let fns = "fn t.chars() -> u32 uses [] panics never
+    let c = 'a'
+    let b = true
+    let u = c.to_u32()
+    core.mem.drop(b.then_some(1u8))
+    core.mem.drop(c.to_ascii_uppercase())
+    u
+end t.chars
+
+";
+    assert_all_typed("kir_char_bool_typed", &main_wrap(fns, "    core.check.eq(t.chars(), 97u32)\n"));
+    // 戻り値の型が sig どおりに決まる (u32 を char の注釈に入れると E2020)。
+    let bad = "fn t.bad() -> char uses [] panics never
+    let c = 'a'
+    let n: char = c.to_u32()
+    n
+end t.bad
+
+";
+    let t = Tmp::new("kir_char_ret_mismatch", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2020"), "{}", out);
+}
+
+#[test]
+fn kir_function_item_as_value_has_a_function_type() {
+    let fns = "fn t.double(x: u32) -> u32 uses [] panics never
+    x.wrapping_add(x)
+end t.double
+
+fn t.apply() -> u32 uses [] panics never
+    let f = t.double
+    f(3u32)
+end t.apply
+
+";
+    assert_all_typed("kir_fn_item_typed", &main_wrap(fns, "    core.check.eq(t.apply(), 6u32)\n"));
+    // 関数項目の引数の型が宣言と違えば、クロージャの呼び出しとして E2023 にする。
+    let bad = "fn t.double(x: u32) -> u32 uses [] panics never
+    x.wrapping_add(x)
+end t.double
+
+fn t.bad() -> u32 uses [] panics never
+    let f = t.double
+    f(true)
+end t.bad
+
+";
+    let t = Tmp::new("kir_fn_item_arg_mismatch", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2023"), "{}", out);
+    assert!(out.contains("argument 1 of the closure"), "{}", out);
+}
