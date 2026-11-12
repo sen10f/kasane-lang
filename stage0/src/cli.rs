@@ -8,14 +8,13 @@ use std::rc::Rc;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-use crate::check::{children, nf, nlineno, nname, st, strs, Checker};
+use crate::check::Checker;
 use crate::explain::EXPLAIN;
 use crate::fmt::{format_source, mechanical_collapse};
 use crate::grammar::{py_repr, Grammar};
 use crate::interp::Interp;
 use crate::lint::Lint;
 use crate::natives::NATIVE_NAMES;
-use crate::parser::V;
 use crate::program::{Def, Program};
 use crate::project::*;
 use crate::value::Ctl;
@@ -1088,13 +1087,6 @@ fn fqn_boundary(text: &str, i: usize, len: usize, tail_dot_ok: bool) -> bool {
         && (tail_dot_ok || !(after == Some('.') && second.next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_')))
 }
 
-fn walk_all<'a>(v: &'a V, out: &mut Vec<&'a V>) {
-    out.push(v);
-    for c in children(v) {
-        walk_all(c, out);
-    }
-}
-
 fn cmd_refs(args: &[String]) -> i32 {
     let Some(target) = args.first() else {
         eprintln!("ksn: usage: ksn refs <FQN>");
@@ -1114,144 +1106,32 @@ fn cmd_refs(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let (prog, _) = build_program(&l);
-    for (f, ln, who) in refs_hits(&l, &prog, target) {
-        println!("{}:{}: {}", f, ln, who);
+    match crate::refactor::refs(&l, target) {
+        Ok(sites) => {
+            for s in sites {
+                println!("{}:{}:{}: {} [{}]", rel(&s.file), s.line, s.col, s.owner, s.kind);
+            }
+            0
+        }
+        Err(m) => {
+            eprintln!("ksn: {}", m);
+            1
+        }
     }
-    0
 }
 
-/// `target` (FQN) を参照する箇所 (ファイル (cwd 相対), 行, 参照元) の一覧。`ksn refs` と LSP が共有する。
-pub(crate) fn refs_hits(l: &Loaded, prog: &Program, target: &String) -> Vec<(String, usize, String)> {
-    let last = target.rsplit('.').next().unwrap().to_string();
-    let tdef = prog.funcs.get(target).or(prog.sigs.get(target)).map(|&i| &prog.defs[i]);
-    let is_method = tdef.map_or(false, |d| d.is_method());
-    let mut hits: Vec<(String, usize, String)> = vec![];
-    for s in &l.pkg.sources {
-        let f = rel(&s.path);
-        for d in &s.defs {
-            if d.kw == "import" {
-                if d.name == *target {
-                    hits.push((f.clone(), d.line, "(import)".into()));
-                }
-                continue;
-            }
-            if d.kw == "impl" {
-                if fqn_occurs(&d.header, target, false) {
-                    hits.push((f.clone(), d.line, "(impl)".into()));
-                }
-                continue;
-            }
-            if d.name == *target {
-                continue;
-            }
-            let owner = d.name.clone();
-            let hdr: String = if d.kw != "fn" {
-                d.header.splitn(3, ' ').last().unwrap_or("").to_string()
-            } else {
-                d.header.get(format!("fn {}", d.name).len()..).unwrap_or("").to_string()
-            };
-            if fqn_occurs(&hdr, target, false) {
-                hits.push((f.clone(), d.line, owner.clone()));
-            }
-            let roots: Vec<&V> = match (&d.body, &d.init) {
-                (Some(b), _) => vec![b],
-                (None, Some(i)) if d.kw == "const" || d.kw == "static" => vec![i],
-                _ => vec![],
-            };
-            for r in roots {
-                let mut all = vec![];
-                walk_all(r, &mut all);
-                for n in all {
-                    let fs = nf(n);
-                    let segs: Option<Vec<String>> = match nname(n) {
-                        "Path" | "PPath" | "PVariant" | "PStruct" => Some(strs(&fs[0])),
-                        "StructLit" => Some(st(&fs[0]).split('.').map(String::from).collect()),
-                        _ => None,
-                    };
-                    if let Some(segs) = segs {
-                        if let Some(rr) = prog.resolve(&segs, &d.file) {
-                            let nm = match rr.target {
-                                crate::program::Target::Fn(i) | crate::program::Target::Sig(i) | crate::program::Target::Const(i) | crate::program::Target::Type(i) => {
-                                    Some(prog.defs[i].name.clone())
-                                }
-                                _ => None,
-                            };
-                            if nm.as_deref() == Some(target.as_str()) {
-                                hits.push((f.clone(), if nlineno(n) != 0 { nlineno(n) } else { d.line }, owner.clone()));
-                            }
-                        }
-                    } else if nname(n) == "MCall" && is_method && st(&fs[1]) == last {
-                        hits.push((f.clone(), if nlineno(n) != 0 { nlineno(n) } else { d.line }, format!("{} (method call by name)", owner)));
-                    }
-                }
-            }
-        }
+/// `ksn check` と同じ検査を走らせ、致命的な診断の一覧 ("file:line: code: message") を返す。
+/// 改名の検証 (改名の前後で診断が増えないこと) に使う。
+pub(crate) fn check_error_lines(root: &Path) -> Vec<String> {
+    let mut rep = Report::new(false);
+    if let Err(e) = full_check(root, &mut rep, false) {
+        return vec![format!("{}: {}", e.code, e.msg)];
     }
-    hits.sort();
-    hits.dedup();
-    hits
-}
-
-/// `old` (FQN) が名前として現れる位置 (バイト範囲)。
-pub(crate) fn fqn_spans(text: &str, old: &str) -> Vec<(usize, usize)> {
-    let mut out: Vec<(usize, usize)> = vec![];
-    let mut last = 0;
-    for (i, _) in text.match_indices(old) {
-        if i < last {
-            continue;
-        }
-        let w = |c: char| c.is_alphanumeric() || c == '_';
-        let before = text[..i].chars().next_back();
-        let after = text[i + old.len()..].chars().next();
-        if before.map_or(true, |c| !(w(c) || c == '.')) && after.map_or(true, |c| !w(c)) {
-            out.push((i, i + old.len()));
-            last = i + old.len();
-        }
-    }
-    out
-}
-
-fn replace_fqn(text: &str, old: &str, new: &str) -> String {
-    let mut out = String::new();
-    let mut last = 0;
-    for (i, e) in fqn_spans(text, old) {
-        out.push_str(&text[last..i]);
-        out.push_str(new);
-        last = e;
-    }
-    out.push_str(&text[last..]);
-    out
-}
-
-/// 改名の検証と変更計画: (パッケージ本体の `sources` の添字, 変更後の本文)。`ksn rename` と LSP が共有する。
-pub(crate) fn rename_plan(l: &Loaded, old: &str, new: &str) -> Result<Vec<(usize, String)>, String> {
-    if !Regex::new(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$").unwrap().is_match(new) {
-        return Err("invalid new name".into());
-    }
-    let mut srcs: Vec<&Source> = l.pkg.sources.iter().collect();
-    for dp in &l.deps {
-        srcs.extend(dp.sources.iter());
-    }
-    match find_def(&srcs, old) {
-        Some(Found::Def(..)) => {}
-        _ => return Err(format!("{} not found", old)),
-    }
-    for s in &srcs {
-        for d in &s.defs {
-            if d.name == new || d.name.starts_with(&format!("{}.", new)) {
-                return Err(format!("collision with existing definition {}", d.name));
-            }
-        }
-    }
-    let mut changes = vec![];
-    for (i, s) in l.pkg.sources.iter().enumerate() {
-        let nt = replace_fqn(&s.text, old, new);
-        if nt != s.text {
-            changes.push((i, nt));
-        }
-    }
-    Ok(changes)
+    rep.items
+        .iter()
+        .filter(|i| i.fatal)
+        .map(|i| format!("{}:{}: {}: {}", i.file.clone().unwrap_or_default(), i.line, i.code, i.message))
+        .collect()
 }
 
 fn cmd_rename(args: &[String]) -> i32 {
@@ -1262,32 +1142,58 @@ fn cmd_rename(args: &[String]) -> i32 {
         return 2;
     }
     let (old, new) = (pos[0], pos[1]);
-    let ev = match load_everything() {
-        Ok(e) => e,
+    let root = match find_root() {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("ksn: {}: {}", e.code, e.msg);
             return 1;
         }
     };
-    let changes: Vec<(&Source, String)> = match rename_plan(&ev.l, old, new) {
-        Ok(c) => c.into_iter().map(|(i, nt)| (&ev.l.pkg.sources[i], nt)).collect(),
+    let l = match load_all(&root) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let plan = match crate::refactor::plan_rename(&l, old, new) {
+        Ok(p) => p,
         Err(m) => {
             eprintln!("ksn: {}", m);
             return 1;
         }
     };
-    for (s, _) in &changes {
-        println!("update {}", rel(&s.path));
+    if let Err(m) = crate::refactor::verify(&root, &plan) {
+        eprintln!("ksn: {}", m);
+        return 1;
+    }
+    for c in &plan.changes {
+        match &c.old_path {
+            Some(o) if *o != c.new_path => println!("move {} -> {}", rel(o), rel(&c.new_path)),
+            _ => println!("update {}", rel(&c.new_path)),
+        }
+    }
+    if let Some((p, _, _)) = &plan.manifest {
+        println!("update {}", rel(p));
+    }
+    for n in &plan.notes {
+        eprintln!("ksn: note: {}", n);
     }
     if dry {
-        for (s, nt) in &changes {
-            let diff = similar::TextDiff::from_lines(s.text.as_str(), nt.as_str());
-            print!("{}", diff.unified_diff().header(&rel(&s.path), &rel(&s.path)));
+        for c in &plan.changes {
+            let diff = similar::TextDiff::from_lines(c.old_text.as_str(), c.new_text.as_str());
+            let oldh = c.old_path.as_deref().map(rel).unwrap_or_default();
+            print!("{}", diff.unified_diff().header(&oldh, &rel(&c.new_path)));
+        }
+        if let Some((p, o, n)) = &plan.manifest {
+            let diff = similar::TextDiff::from_lines(o.as_str(), n.as_str());
+            print!("{}", diff.unified_diff().header(&rel(p), &rel(p)));
         }
         return 0;
     }
-    for (s, nt) in changes {
-        fs::write(&s.path, nt).unwrap();
+    if let Err(m) = crate::refactor::apply(&plan) {
+        eprintln!("ksn: {}", m);
+        return 1;
     }
     0
 }

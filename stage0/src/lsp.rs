@@ -54,6 +54,30 @@ fn scalar_of(line: &str, utf16: usize) -> usize {
     line.chars().count()
 }
 
+/// `text` を `new` にする、行単位の差分による最小の TextEdit の列。
+fn line_diff_edits(text: &str, new: &str) -> Vec<Value> {
+    let diff = similar::TextDiff::from_lines(text, new);
+    let mut starts = vec![0usize];
+    for (i, c) in text.char_indices() {
+        if c == '\n' {
+            starts.push(i + 1);
+        }
+    }
+    let off = |i: usize| starts.get(i).copied().filter(|_| i < starts.len() && starts[i] <= text.len()).unwrap_or(text.len());
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    let mut edits = vec![];
+    for op in diff.ops() {
+        let (tag, o, n) = op.as_tag_tuple();
+        if matches!(tag, similar::DiffTag::Equal) {
+            continue;
+        }
+        let (a, b) = (off(o.start), off(o.end));
+        let repl: String = new_lines[n.start..n.end].concat();
+        edits.push(json!({"range": {"start": byte_pos(text, a), "end": byte_pos(text, b)}, "newText": repl}));
+    }
+    edits
+}
+
 fn lines_of(text: &str) -> Vec<&str> {
     text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect()
 }
@@ -289,6 +313,8 @@ struct Server {
     rootless: HashSet<String>,
     initialized: bool,
     shutdown: bool,
+    /// クライアントが WorkspaceEdit のファイル操作 (rename) を扱えるか (initialize の `capabilities` から)。
+    can_rename_files: bool,
 }
 
 /// 位置から見つけた記号。
@@ -372,7 +398,7 @@ fn doc_comment(s: &Source, d: &Def) -> String {
 
 impl Server {
     fn new() -> Server {
-        Server { docs: HashMap::new(), roots: HashMap::new(), rootless: HashSet::new(), initialized: false, shutdown: false }
+        Server { docs: HashMap::new(), roots: HashMap::new(), rootless: HashSet::new(), initialized: false, shutdown: false, can_rename_files: false }
     }
 
     // ---------------------------------------------------- 検査と診断の配信
@@ -590,6 +616,18 @@ impl Server {
         let lines = lines_of(&text);
         let Some(ltxt) = lines.get(line) else { return Ok(None) };
         let idx = scalar_of(ltxt, ch);
+        // `import a.b` の行は、モジュール `a.b` そのもの (改名・参照の対象)。
+        if let Some(m) = ltxt.strip_prefix("import ") {
+            let name = m.trim_end();
+            let start = "import ".chars().count();
+            let end = start + name.chars().count();
+            if idx >= start && idx <= end {
+                let Some((l, _)) = self.ctx(&root) else { return Ok(None) };
+                if l.pkg.sources.iter().any(|s| s.module == name) {
+                    return Ok(Some(Located { root, fqns: vec![name.to_string()], line, seg_start: start, seg_end: end, tok_start: start }));
+                }
+            }
+        }
         let Some((segs, ss, se, ts, dot_before)) = token_at(ltxt, idx) else { return Ok(None) };
         let Some((_, prog)) = self.ctx(&root) else { return Ok(None) };
         let mut fqns: Vec<String> = vec![];
@@ -697,39 +735,23 @@ impl Server {
         let root = loc.root.clone();
         Self::enter(&root);
         let Some((l, prog)) = self.ctx(&root) else { return Ok(Value::Null) };
-        let hits = cli::refs_hits(l, prog, &target);
+        let _ = prog;
+        let sites = crate::refactor::refs(l, &target).map_err(|m| (REQUEST_FAILED, m))?;
         let mut out: Vec<Value> = vec![];
         let mut texts: HashMap<String, String> = HashMap::new();
-        for (f, ln, _who) in hits {
-            let path = norm(&root.join(&f));
+        for st in sites {
+            // `end` 行と、書き換えない言及は参照に含めない。定義そのものは includeDeclaration のときだけ。
+            if st.kind == "end" || st.new.is_none() && st.kind.starts_with("doc comment") {
+                continue;
+            }
+            if st.kind == "definition" && !decl {
+                continue;
+            }
+            let path = st.file.clone();
             let text = texts.entry(path.clone()).or_insert_with(|| crate::project::read_text(&path).unwrap_or_default());
             let lines = lines_of(text);
-            let li = ln.saturating_sub(1);
-            let lt = lines.get(li).copied().unwrap_or("");
-            let mut spans: Vec<(usize, usize)> =
-                cli::fqn_spans(lt, &target).into_iter().map(|(a, b)| (lt[..a].chars().count(), lt[..b].chars().count())).collect();
-            if spans.is_empty() {
-                let last = target.rsplit('.').next().unwrap_or(&target);
-                spans = lt
-                    .match_indices(last)
-                    .filter(|(i, _)| {
-                        !lt[..*i].chars().next_back().map_or(false, is_ident) && !lt[i + last.len()..].chars().next().map_or(false, is_ident)
-                    })
-                    .map(|(i, _)| (lt[..i].chars().count(), lt[..i + last.len()].chars().count()))
-                    .collect();
-            }
-            if spans.is_empty() {
-                spans.push((lt.chars().take_while(|c| *c == ' ').count(), lt.chars().count()));
-            }
-            for (a, b) in spans {
-                out.push(json!({"uri": path_to_uri(&path), "range": line_range(&lines, li, a, b)}));
-            }
-        }
-        if decl {
-            let srcs = Self::sources(l);
-            if let Some(Found::Def(d, s)) = cli::find_def(&srcs, &target) {
-                out.push(Self::def_location(s, d.line, &d.name));
-            }
+            let li = st.line.saturating_sub(1);
+            out.push(json!({"uri": path_to_uri(&path), "range": line_range(&lines, li, st.col - 1, st.end_col - 1)}));
         }
         Ok(Value::Array(out))
     }
@@ -744,7 +766,7 @@ impl Server {
         let fqn = loc.fqns[0].clone();
         let Some((l, _)) = self.ctx(&loc.root) else { return Err(no()) };
         // カーソルが FQN の最後のセグメントにあること、定義がこのパッケージのものであること。
-        let in_pkg = l.pkg.sources.iter().any(|s| s.defs.iter().any(|d| d.name == fqn && kind_ok(&d.kw)));
+        let in_pkg = l.pkg.sources.iter().any(|s| s.module == fqn || s.defs.iter().any(|d| d.name == fqn && kind_ok(&d.kw)));
         if !in_pkg {
             return Err(no());
         }
@@ -760,29 +782,59 @@ impl Server {
                   "placeholder": fqn.rsplit('.').next().unwrap_or(&fqn)}))
     }
 
-    /// 改名: FQN の最後のセグメントだけを変える。ファイルの移動を伴う改名 (モジュール名の変更) は対象外。
+    /// 改名。`newName` が識別子 1 個なら FQN の最後のセグメントだけを変え、
+    /// `a.b.c` のように `.` を含めば新しい FQN として扱う (別モジュールへの移動)。
+    /// ファイルの移動を伴うときは WorkspaceEdit の `documentChanges` (rename 操作) で返す。
     fn rename(&mut self, p: &Value) -> Resp {
         let uri = param_uri(p)?;
         let new_name = p.get("newName").and_then(|n| n.as_str()).ok_or((INVALID_PARAMS, "newName is required".to_string()))?;
-        if new_name.is_empty() || !new_name.chars().all(is_ident) || new_name.chars().next().map_or(true, |c| c.is_ascii_digit()) {
-            return Err((REQUEST_FAILED, format!("改名後の名前が不正です: {} (識別子 1 個のみ。モジュールの移動を伴う改名は未対応)", new_name)));
+        let seg_ok = |s: &str| !s.is_empty() && s.chars().all(is_ident) && !s.chars().next().map_or(true, |c| c.is_ascii_digit());
+        if !new_name.split('.').all(seg_ok) {
+            return Err((REQUEST_FAILED, format!("改名後の名前が不正です: {}", new_name)));
         }
         let (loc, old) = self.rename_target(&uri, p)?;
-        let new = match old.rsplit_once('.') {
-            Some((h, _)) => format!("{}.{}", h, new_name),
-            None => new_name.to_string(),
+        let new = if new_name.contains('.') {
+            new_name.to_string()
+        } else {
+            match old.rsplit_once('.') {
+                Some((h, _)) => format!("{}.{}", h, new_name),
+                None => new_name.to_string(),
+            }
         };
+        let can_move = self.can_rename_files;
         let root = loc.root.clone();
         let Some((l, _)) = self.ctx(&root) else { return Ok(Value::Null) };
-        let plan = cli::rename_plan(l, &old, &new).map_err(|m| (REQUEST_FAILED, m))?;
+        let plan = crate::refactor::plan_rename(l, &old, &new).map_err(|m| (REQUEST_FAILED, m))?;
+        crate::refactor::verify(&root, &plan).map_err(|m| (REQUEST_FAILED, m))?;
+        let moves = plan.changes.iter().any(|c| c.old_path.as_deref().map_or(false, |o| o != c.new_path));
+        if moves && !can_move {
+            return Err((REQUEST_FAILED, "この改名はファイルの移動を伴いますが、クライアントがファイル操作 (WorkspaceEdit の rename) を扱えません。`ksn rename` を使ってください".to_string()));
+        }
+        let mut doc_changes: Vec<Value> = vec![];
         let mut changes = serde_json::Map::new();
-        for (i, _) in plan {
-            let s = &l.pkg.sources[i];
-            let edits: Vec<Value> = cli::fqn_spans(&s.text, &old)
-                .into_iter()
-                .map(|(a, b)| json!({"range": {"start": byte_pos(&s.text, a), "end": byte_pos(&s.text, b)}, "newText": new}))
-                .collect();
-            changes.insert(path_to_uri(&s.path), Value::Array(edits));
+        let mut file_ops: Vec<Value> = vec![];
+        let mut manifest_note = false;
+        for c in &plan.changes {
+            let from = c.old_path.clone().unwrap_or_else(|| c.new_path.clone());
+            let edits = line_diff_edits(&c.old_text, &c.new_text);
+            if from != c.new_path {
+                file_ops.push(json!({"kind": "rename", "oldUri": path_to_uri(&from), "newUri": path_to_uri(&c.new_path)}));
+            }
+            if !edits.is_empty() {
+                doc_changes.push(json!({"textDocument": {"uri": path_to_uri(&from), "version": null}, "edits": edits}));
+                changes.insert(path_to_uri(&from), Value::Array(edits));
+            }
+        }
+        if let Some((mp, mo, mn)) = &plan.manifest {
+            // kasane.toml の変更 (entry / [unsafe] modules)。
+            doc_changes.push(json!({"textDocument": {"uri": path_to_uri(mp), "version": null}, "edits": line_diff_edits(mo, mn)}));
+            changes.insert(path_to_uri(mp), Value::Array(line_diff_edits(mo, mn)));
+            manifest_note = true;
+        }
+        let _ = manifest_note;
+        if moves {
+            doc_changes.extend(file_ops);
+            return Ok(json!({"documentChanges": doc_changes}));
         }
         Ok(json!({"changes": changes}))
     }
@@ -805,26 +857,7 @@ impl Server {
         if nt == text {
             return Ok(json!([]));
         }
-        // 行単位の差分から最小の置換にする。
-        let diff = similar::TextDiff::from_lines(text.as_str(), nt.as_str());
-        let mut starts = vec![0usize];
-        for (i, c) in text.char_indices() {
-            if c == '\n' {
-                starts.push(i + 1);
-            }
-        }
-        let off = |i: usize| starts.get(i).copied().filter(|_| i < starts.len() && starts[i] <= text.len()).unwrap_or(text.len());
-        let new_lines: Vec<&str> = nt.split_inclusive('\n').collect();
-        let mut edits = vec![];
-        for op in diff.ops() {
-            let (tag, o, n) = op.as_tag_tuple();
-            if matches!(tag, similar::DiffTag::Equal) {
-                continue;
-            }
-            let (a, b) = (off(o.start), off(o.end));
-            let repl: String = new_lines[n.start..n.end].concat();
-            edits.push(json!({"range": {"start": byte_pos(&text, a), "end": byte_pos(&text, b)}, "newText": repl}));
-        }
+        let edits = line_diff_edits(&text, &nt);
         Ok(Value::Array(edits))
     }
 
@@ -929,8 +962,12 @@ impl Server {
     }
 
     // ---------------------------------------------------- ディスパッチ
-    fn initialize(&mut self) -> Resp {
+    fn initialize(&mut self, p: &Value) -> Resp {
         self.initialized = true;
+        let ws = p.pointer("/capabilities/workspace/workspaceEdit");
+        let ops = ws.and_then(|w| w.get("resourceOperations")).and_then(|r| r.as_array()).map_or(false, |a| a.iter().any(|x| x == "rename"));
+        let dc = ws.and_then(|w| w.get("documentChanges")).and_then(|b| b.as_bool()).unwrap_or(false);
+        self.can_rename_files = ops && dc;
         Ok(json!({
             "capabilities": {
                 "textDocumentSync": {"openClose": true, "change": 1, "save": {"includeText": false}},
@@ -949,7 +986,7 @@ impl Server {
 
     fn request(&mut self, method: &str, p: &Value) -> Resp {
         match method {
-            "initialize" => self.initialize(),
+            "initialize" => self.initialize(p),
             "shutdown" => {
                 self.shutdown = true;
                 Ok(Value::Null)

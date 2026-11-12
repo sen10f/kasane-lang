@@ -15,6 +15,7 @@ mod grammar;
 mod lint;
 mod lsp;
 mod project;
+mod refactor;
 mod interp;
 mod natives;
 mod net;
