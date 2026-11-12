@@ -5021,3 +5021,169 @@ end t.main
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "ok\n", "{}", text(&o.stderr));
 }
+
+// ---- 一時値の解放の残り: Field・タプルの型解決と E2042 / E3003 (4.4・4.6) ----
+
+fn tdrop_codes(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let prefix = tdrop_prefix().join(&nl) + &nl + &nl;
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+fn tdrop_prefix() -> Vec<&'static str> {
+    vec![
+        "type t.Box[T]",
+        "    v: T",
+        "end t.Box",
+        "",
+        "type t.L linear pub",
+        "    a: u8",
+        "end t.L",
+        "",
+        "type t.P",
+        "    a: u8",
+        "end t.P",
+        "",
+        "type t.W",
+        "    lin: t.L",
+        "    n: u8",
+        "end t.W",
+        "",
+        "fn t.eat(l: t.L) -> () uses [] panics never",
+        "    let t.L { a: a } = l",
+        "    core.mem.drop(a)",
+        "end t.eat",
+        "",
+        "fn t.eat_w(w: t.W) -> () uses [] panics never",
+        "    let t.W { lin: lin, n: n } = w",
+        "    t.eat(lin)",
+        "    core.mem.drop(n)",
+        "end t.eat_w",
+        "",
+        "fn t.get_l() -> t.L uses [] panics never",
+        "    t.L { a: 1u8 }",
+        "end t.get_l",
+        "",
+        "fn t.get_p() -> t.P uses [] panics never",
+        "    t.P { a: 3u8 }",
+        "end t.get_p",
+        "",
+        "fn t.get_w() -> t.W uses [] panics never",
+        "    t.W { lin: t.get_l(), n: 2u8 }",
+        "end t.get_w",
+        "",
+    ]
+}
+
+fn tdrop_has(cs: &[String], c: &str) -> bool {
+    cs.iter().any(|x| x == c)
+}
+
+#[test]
+fn tdrop_discarding_a_field_of_a_temporary_is_e2042() {
+    // `t.get_w().lin` は Field の道。受け手の型 (t.W) からフィールドの型 (t.L) を解決する。
+    let (cs, out) = tdrop_codes("tdrop_field", &["t.get_w().lin"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+    assert!(out.contains("core.mem.drop(t.get_w().lin)"), "{}", out);
+}
+
+#[test]
+fn tdrop_discarding_a_tuple_of_temporaries_is_e2042() {
+    let (cs, out) = tdrop_codes("tdrop_tuple", &["(t.get_l(), 1u8)"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tdrop_discarding_a_local_field_path_is_e2042() {
+    // 複数セグメントの Path (`p.a`) も根の型からフィールドの型をたどる。
+    let (cs, out) = tdrop_codes("tdrop_path", &["let p = t.P { a: 1u8 }", "p.a"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tdrop_struct_with_an_unconsumed_linear_field_is_e3003() {
+    // t.W は linear と宣言していないが線形なフィールドを含むので線形 (4.4)。
+    // 非線形なフィールド w.n だけを使っても w.lin は消費されていない。
+    let (cs, out) = tdrop_codes(
+        "tdrop_wfield",
+        &["let w = t.W { lin: t.get_l(), n: 1u8 }", "core.mem.drop(w.n)"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `w` is never consumed"), "{}", out);
+}
+
+#[test]
+fn tdrop_consuming_the_linear_field_or_the_whole_struct_is_ok() {
+    let (cs, out) = tdrop_codes(
+        "tdrop_wfield_ok",
+        &[
+            "let w = t.W { lin: t.get_l(), n: 1u8 }",
+            "t.eat(w.lin)",
+            "let w2 = t.get_w()",
+            "t.eat_w(w2)",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+#[test]
+fn tdrop_tuple_destructuring_leaves_a_linear_value_unconsumed() {
+    let (cs, out) = tdrop_codes(
+        "tdrop_ptuple",
+        &["let (a, b) = (t.get_l(), 1u8)", "core.mem.drop(b)"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `a` is never consumed"), "{}", out);
+}
+
+#[test]
+fn tdrop_tuple_binding_with_a_linear_element_is_e3003() {
+    let (cs, out) = tdrop_codes("tdrop_tuple_bind", &["let _p = (t.get_l(), 1u8)"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+#[test]
+fn tdrop_struct_destructuring_leaves_a_linear_field_unconsumed() {
+    let (cs, out) = tdrop_codes(
+        "tdrop_pstruct",
+        &["let t.W { lin: l, n: n } = t.get_w()", "core.mem.drop(n)"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `l` is never consumed"), "{}", out);
+}
+
+#[test]
+fn tdrop_destructured_linear_values_that_are_consumed_are_ok() {
+    let (cs, out) = tdrop_codes(
+        "tdrop_destr_ok",
+        &[
+            "let (a, b) = (t.get_l(), 1u8)",
+            "t.eat(a)",
+            "core.mem.drop(b)",
+            "let t.W { lin: l, n: n } = t.get_w()",
+            "t.eat(l)",
+            "core.mem.drop(n)",
+            "let x: u8 = t.get_p().a",
+            "core.mem.drop(x)",
+            "core.mem.drop((1u8, 2u8))",
+        ],
+    );
+    assert!(
+        !tdrop_has(&cs, "E3003") && !tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E2020"),
+        "{}",
+        out
+    );
+}
+
+#[test]
+fn tdrop_unknown_field_types_stay_silent() {
+    // 型引数を推論するジェネリクス構造体リテラル (`t.Box { v: .. }`) は型引数が決まらないので
+    // フィールドの型を返さず黙る。型の分からない要素を含むタプルも黙る。
+    let (cs, out) = tdrop_codes(
+        "tdrop_silent",
+        &["let b = t.Box { v: 1u8 }", "b.v", "(b.v, 1u8)", "let _bl = t.Box { v: t.get_l() }", "core.mem.drop(b)"],
+    );
+    assert!(!tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E3003"), "{}", out);
+}
