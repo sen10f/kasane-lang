@@ -8,16 +8,35 @@
 //! (代入) は、合流点・ループの先頭・脱出先のブロック引数で渡す。代入される変数の集合は
 //! 構文から求め、その集合だけを引数にする。
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::check::{is_nil, items, nf, nline, nname, st, strs};
 use crate::kir::{self, Aop, Block, BoolOp, Cc, Func, Inst, Mode, Module, Op, Term, Ty, VId};
 use crate::parser::{nid, V};
 use crate::program::{Def, Program, Target as Tgt};
-use crate::kir_lower_coll::{self as coll, CollCx};
 use crate::types::{from_v, ExprTy, Ty as Src, TypeCk};
 
-pub(crate) type LR<T> = Result<T, String>;
+/// 数値の下ろし (浮動小数・128 ビット・ビット演算・数値のメソッド)。子モジュールとして `Lw` の非公開の関数を使う。
+#[path = "kir_lower_scalar.rs"]
+mod scalar;
+#[path = "kir_lower_refs.rs"]
+mod refs;
+use refs::RefCx;
+// 組み込みの Option / Result の下ろし (子モジュール。親の非公開の項目を使う)。
+#[path = "kir_lower_enum.rs"]
+mod enum_lower;
+
+// コレクション・文字列・クロージャの下ろし (子モジュール。`Lw` の非公開の項目を使う)。
+#[path = "kir_lower_coll.rs"]
+mod coll;
+use coll::CollCx;
+
+type LR<T> = Result<T, String>;
+
+// 集成体 (構造体・タプル・列挙型) の下ろし。子モジュールなので、この file の非公開の部品を使う。
+#[path = "kir_lower_agg.rs"]
+mod agg;
 
 /// 下ろしの結果: 対象になった関数と、未対応の関数 (鍵, 理由)。
 pub struct Lowered {
@@ -38,15 +57,17 @@ fn type_table(p: &Program, user: &[usize]) -> BTreeMap<(String, u32), ExprTy> {
 }
 
 fn is_candidate(d: &Def) -> bool {
-    d.kw == "fn" && d.body.is_some() && !d.is_method() && d.generics.is_empty()
+    // ライフタイムだけの宣言は型引数ではない (型は変えない)。型引数があるものは単相化していないので対象外。
+    d.kw == "fn" && d.body.is_some() && !d.is_method() && d.generics.iter().all(|g| g.0 == "life")
 }
 
 /// 推論済みの型を段階 1 の型へ写す。対象外の型は `None`。
-pub(crate) fn conv(t: &Src) -> Option<Ty> {
+fn conv(t: &Src) -> Option<Ty> {
     match t {
         Src::Prim(s) => Ty::parse(s).filter(|t| *t != Ty::Unit),
         Src::Unit => Some(Ty::Unit),
-        _ => None,
+        Src::Ref(m, x) => refs::conv_ref(*m, x),
+        _ => enum_lower::conv_builtin(t),
     }
 }
 
@@ -67,7 +88,7 @@ fn scan_assigns(v: &V, out: &mut Vec<String>) {
     match v {
         V::Node(n, fs, _, _) => {
             if *n == "Assign" {
-                if let Some(name) = fs.first().and_then(path1) {
+                if let Some(name) = fs.first().and_then(path_base) {
                     out.push(name);
                 }
             }
@@ -93,53 +114,66 @@ fn path1(v: &V) -> Option<String> {
     (segs.len() == 1).then(|| segs[0].clone())
 }
 
+/// 経路の先頭の名前 (`x` も `x.f.g` も `x`)。代入の対象の局所変数を求める。
+fn path_base(v: &V) -> Option<String> {
+    if nname(v) != "Path" {
+        return None;
+    }
+    strs(&nf(v)[0]).first().cloned()
+}
+
 /// 文の結果。`Div` は制御がそこで終わった (以降は到達しない) ことを表す。
-pub(crate) enum St {
+enum St {
     Div,
     Unit,
     Val(VId),
 }
 
-pub(crate) struct BlockB {
-    pub(crate) params: Vec<(VId, Ty)>,
-    pub(crate) insts: Vec<Inst>,
-    pub(crate) term: Option<Term>,
+struct BlockB {
+    params: Vec<(VId, Ty)>,
+    insts: Vec<Inst>,
+    term: Option<Term>,
     /// この block へ入る辺の数 (0 なら到達しない)。
-    pub(crate) preds: usize,
+    preds: usize,
 }
 
-pub(crate) struct LoopCx {
-    pub(crate) header: usize,
-    pub(crate) exit: usize,
-    pub(crate) slots: Vec<usize>,
+struct LoopCx {
+    header: usize,
+    exit: usize,
+    slots: Vec<usize>,
     /// break / continue が後始末する最初のスコープの番号 (これより内側の所有値を解放する)。
-    pub(crate) depth: usize,
+    depth: usize,
 }
 
-pub(crate) struct Lw<'a> {
-    pub(crate) p: &'a Program,
-    pub(crate) tys: &'a BTreeMap<(String, u32), ExprTy>,
-    pub(crate) def: &'a Def,
-    pub(crate) blocks: Vec<BlockB>,
-    pub(crate) cur: Option<usize>,
+struct Lw<'a> {
+    p: &'a Program,
+    tys: &'a BTreeMap<(String, u32), ExprTy>,
+    def: &'a Def,
+    /// 集成体の型表 (全関数で共有。`lower_user` が作る)。
+    aggs: &'a RefCell<agg::AggTab>,
+    blocks: Vec<BlockB>,
+    cur: Option<usize>,
     /// 値番号 → 型 (VId は 0 から順に振る)。
-    pub(crate) vty: Vec<Ty>,
+    vty: Vec<Ty>,
     /// スロット → (現在の値, 型)。
-    pub(crate) slots: Vec<(VId, Ty)>,
-    pub(crate) scopes: Vec<Vec<(String, usize)>>,
-    pub(crate) loops: Vec<LoopCx>,
-    pub(crate) callees: BTreeSet<String>,
-    pub(crate) ret: Ty,
+    slots: Vec<(VId, Ty)>,
+    scopes: Vec<Vec<(String, usize)>>,
+    loops: Vec<LoopCx>,
+    callees: BTreeSet<String>,
+    ret: Ty,
+    /// 参照の下ろしの状態 (kir_lower_refs.rs)。
+    rf: RefCx,
     /// コレクション・文字列・クロージャの下ろし (kir_lower_coll.rs) の状態。
-    pub(crate) coll: CollCx,
+    coll: CollCx,
 }
 
 impl<'a> Lw<'a> {
-    pub(crate) fn new(p: &'a Program, tys: &'a BTreeMap<(String, u32), ExprTy>, def: &'a Def) -> Lw<'a> {
+    fn new(p: &'a Program, tys: &'a BTreeMap<(String, u32), ExprTy>, aggs: &'a RefCell<agg::AggTab>, def: &'a Def) -> Lw<'a> {
         Lw {
             p,
             tys,
             def,
+            aggs,
             blocks: vec![],
             cur: None,
             vty: vec![],
@@ -148,23 +182,24 @@ impl<'a> Lw<'a> {
             loops: vec![],
             callees: BTreeSet::new(),
             ret: Ty::Unit,
+            rf: RefCx::default(),
             coll: CollCx::default(),
         }
     }
 
     // ------------------------------------------------ 基本操作
 
-    pub(crate) fn err<T>(&self, line: usize, msg: impl Into<String>) -> LR<T> {
+    fn err<T>(&self, line: usize, msg: impl Into<String>) -> LR<T> {
         Err(format!("行 {}: {}", line, msg.into()))
     }
 
-    pub(crate) fn new_val(&mut self, t: Ty) -> VId {
+    fn new_val(&mut self, t: Ty) -> VId {
         self.vty.push(t);
         (self.vty.len() - 1) as VId
     }
 
     /// ブロックを作る。引数の値番号も返す。
-    pub(crate) fn new_block(&mut self, params: &[Ty]) -> (usize, Vec<VId>) {
+    fn new_block(&mut self, params: &[Ty]) -> (usize, Vec<VId>) {
         let ids: Vec<VId> = params.iter().map(|t| self.new_val(*t)).collect();
         let ps = ids.iter().copied().zip(params.iter().copied()).collect();
         self.blocks.push(BlockB { params: ps, insts: vec![], term: None, preds: 0 });
@@ -172,48 +207,57 @@ impl<'a> Lw<'a> {
     }
 
     /// 現在のブロックに命令を置く。`cur` が無いのは下ろしの不変条件の違反なので、ここでは止める。
-    pub(crate) fn emit(&mut self, ty: Ty, op: Op) -> VId {
+    fn emit(&mut self, ty: Ty, op: Op) -> VId {
         let v = self.new_val(ty);
         let cur = self.cur.expect("KIR 下ろしの内部不変条件: 到達しないブロックへ命令を置いた");
         self.blocks[cur].insts.push(Inst { dst: v, ty, op });
         v
     }
 
-    pub(crate) fn unit(&mut self) -> VId {
+    fn unit(&mut self) -> VId {
         self.emit(Ty::Unit, Op::Const(0))
     }
 
-    pub(crate) fn terminate(&mut self, t: Term) {
+    fn terminate(&mut self, t: Term) {
         let cur = self.cur.take().expect("KIR 下ろしの内部不変条件: 終端命令を二重に置いた");
         self.blocks[cur].term = Some(t);
     }
 
-    pub(crate) fn goto(&mut self, t: usize, args: Vec<VId>) {
+    fn goto(&mut self, t: usize, args: Vec<VId>) {
         self.blocks[t].preds += 1;
         self.terminate(Term::Br((t, args)));
     }
 
-    pub(crate) fn branch(&mut self, c: VId, a: (usize, Vec<VId>), b: (usize, Vec<VId>)) {
+    fn branch(&mut self, c: VId, a: (usize, Vec<VId>), b: (usize, Vec<VId>)) {
         self.blocks[a.0].preds += 1;
         self.blocks[b.0].preds += 1;
         self.terminate(Term::BrIf(c, a, b));
     }
 
-    pub(crate) fn vty(&self, v: VId) -> Ty {
+    fn vty(&self, v: VId) -> Ty {
         self.vty[v as usize]
     }
 
-    pub(crate) fn new_slot(&mut self, v: VId, t: Ty) -> usize {
+    fn new_slot(&mut self, v: VId, t: Ty) -> usize {
         self.slots.push((v, t));
         self.slots.len() - 1
     }
 
-    pub(crate) fn bind(&mut self, name: &str, v: VId, t: Ty) {
+    fn bind(&mut self, name: &str, v: VId, t: Ty) {
         let s = self.new_slot(v, t);
         self.scopes.last_mut().expect("スコープ").push((name.to_string(), s));
     }
 
-    pub(crate) fn lookup(&self, name: &str) -> Option<usize> {
+    /// `match` の振り分け: 対象が `Option` / `Result` なら `match_` (タグの判定)、それ以外は `match_e` (集成体・スカラーの腕)。
+    fn match_any(&mut self, e: &V) -> LR<Option<VId>> {
+        let scrut = nf(e)[0].clone();
+        match self.src_ty(&scrut)? {
+            Src::Named(n, _) if n == "Option" || n == "Result" => self.match_(e),
+            _ => self.match_e(e),
+        }
+    }
+
+    fn lookup(&self, name: &str) -> Option<usize> {
         for sc in self.scopes.iter().rev() {
             if let Some((_, s)) = sc.iter().rev().find(|(n, _)| n == name) {
                 return Some(*s);
@@ -222,12 +266,12 @@ impl<'a> Lw<'a> {
         None
     }
 
-    pub(crate) fn vals_of(&self, slots: &[usize]) -> Vec<VId> {
+    fn vals_of(&self, slots: &[usize]) -> Vec<VId> {
         slots.iter().map(|s| self.slots[*s].0).collect()
     }
 
     /// 木の中で代入される (現在の有効範囲で見える) スロットを、出現順に集める。
-    pub(crate) fn assigned(&self, nodes: &[&V]) -> Vec<usize> {
+    fn assigned(&self, nodes: &[&V]) -> Vec<usize> {
         let mut names = vec![];
         for n in nodes {
             scan_assigns(n, &mut names);
@@ -235,7 +279,7 @@ impl<'a> Lw<'a> {
         let mut out: Vec<usize> = vec![];
         for n in names {
             if let Some(s) = self.lookup(&n) {
-                if !out.contains(&s) {
+                if !out.contains(&s) && !self.rf.is_mem(self.slots[s].0) {
                     out.push(s);
                 }
             }
@@ -245,7 +289,7 @@ impl<'a> Lw<'a> {
 
     // ------------------------------------------------ 型表
 
-    pub(crate) fn src_ty(&self, e: &V) -> LR<Src> {
+    fn src_ty(&self, e: &V) -> LR<Src> {
         let line = nline(e);
         let id = nid(e);
         match self.tys.get(&(self.def.name.clone(), id)) {
@@ -255,7 +299,7 @@ impl<'a> Lw<'a> {
     }
 
     /// 式の型 (段階 1 の型)。対象外・未確定なら理由付きで止める。
-    pub(crate) fn ty_of(&self, e: &V) -> LR<Ty> {
+    fn ty_of(&self, e: &V) -> LR<Ty> {
         // 型表が未確定の局所変数 (`for` の変数など) は、スロットの型で補う。
         let t = match self.src_ty(e) {
             Ok(t) if t != Src::Unknown => t,
@@ -267,7 +311,7 @@ impl<'a> Lw<'a> {
         if let Some(x) = coll::value_ty(&t) {
             return Ok(x);
         }
-        match conv(&t) {
+        match self.conv_t(&t) {
             Some(x) => Ok(x),
             None => self.err(nline(e), format!("型 {} は段階 1 の対象外", show(&t))),
         }
@@ -275,13 +319,13 @@ impl<'a> Lw<'a> {
 
     // ------------------------------------------------ 関数全体
 
-    pub(crate) fn lower(mut self) -> LR<Vec<(Func, BTreeSet<String>)>> {
+    fn lower(mut self) -> LR<Vec<(Func, BTreeSet<String>)>> {
         let d = self.def;
         let gn = HashSet::new();
         let body = d.body.as_ref().expect("候補は本体を持つ");
         let mut params = vec![];
         for (_, t) in &d.params {
-            match conv(&from_v(t, &gn)) {
+            match self.conv_t(&from_v(t, &gn)) {
                 Some(x) => params.push(x),
                 None => return Err(format!("引数の型 {} は段階 1 の対象外", show(&from_v(t, &gn)))),
             }
@@ -289,7 +333,7 @@ impl<'a> Lw<'a> {
         let ret = if is_nil(&d.ret) {
             Ty::Unit
         } else {
-            match conv(&from_v(&d.ret, &gn)) {
+            match self.conv_t(&from_v(&d.ret, &gn)) {
                 Some(x) => x,
                 None => return Err(format!("戻り値の型 {} は段階 1 の対象外", show(&from_v(&d.ret, &gn)))),
             }
@@ -298,9 +342,10 @@ impl<'a> Lw<'a> {
         let (b0, pv) = self.new_block(&params);
         debug_assert_eq!(b0, 0);
         self.cur = Some(0);
+        self.rf.begin(body);
         self.scopes.push(vec![]);
         for ((name, _), (v, t)) in d.params.iter().zip(pv.iter().zip(params.iter())) {
-            self.bind(name, *v, *t);
+            self.bind_let(name, *v, *t);
         }
         if let Some(v) = self.expr(body)? {
             if self.vty(v) != ret {
@@ -311,6 +356,7 @@ impl<'a> Lw<'a> {
         let mut uses = d.uses.clone();
         uses.sort();
         uses.dedup();
+        self.flush_allocas();
         let mut blocks: Vec<Block> = self
             .blocks
             .into_iter()
@@ -334,7 +380,7 @@ impl<'a> Lw<'a> {
     // ------------------------------------------------ 式
 
     /// 式を下ろす。`None` は制御がその先へ進まないこと (return / break / continue など) を表す。
-    pub(crate) fn expr(&mut self, e: &V) -> LR<Option<VId>> {
+    fn expr(&mut self, e: &V) -> LR<Option<VId>> {
         match nname(e) {
             "Lit" => self.lit(e).map(Some),
             "Path" => self.path_val(e).map(Some),
@@ -349,6 +395,9 @@ impl<'a> Lw<'a> {
             "Break" => self.jump_loop(e, true),
             "Continue" => self.jump_loop(e, false),
             "Return" => self.ret_(e),
+            "StructLit" | "TupleE" | "Field" => self.agg_expr(e),
+            "Match" => self.match_any(e),
+            "Try" => self.try_(e),
             "Index" => coll::index_read(self, e),
             "For" => coll::for_expr(self, e),
             "Closure" => coll::closure_lit(self, e),
@@ -356,7 +405,7 @@ impl<'a> Lw<'a> {
         }
     }
 
-    pub(crate) fn lit(&mut self, e: &V) -> LR<VId> {
+    fn lit(&mut self, e: &V) -> LR<VId> {
         let f = nf(e);
         let line = nline(e);
         match st(&f[0]).as_str() {
@@ -366,7 +415,7 @@ impl<'a> Lw<'a> {
                     return self.err(line, "整数リテラルの型が整数ではない");
                 }
                 let v = parse_int(&f[1]).ok_or_else(|| format!("行 {}: 整数リテラルが扱えない", line))?;
-                if v < ty.min() || v > ty.max() {
+                if !ty.in_range(v) {
                     return self.err(line, format!("整数リテラルが {} の範囲にない", ty.name()));
                 }
                 Ok(self.emit(ty, Op::Const(v)))
@@ -376,18 +425,29 @@ impl<'a> Lw<'a> {
                 Ok(self.emit(Ty::Bool, Op::Const(b as i128)))
             }
             "unit" => Ok(self.unit()),
+            "float" => self.float_lit(e),
             "str" => coll::str_lit(self, e),
             other => self.err(line, format!("リテラル {} は段階 1 の対象外", other)),
         }
     }
 
-    pub(crate) fn path_val(&mut self, e: &V) -> LR<VId> {
+    fn path_val(&mut self, e: &V) -> LR<VId> {
         let segs = strs(&nf(e)[0]);
         let line = nline(e);
         if segs.len() == 1 {
             if let Some(s) = self.lookup(&segs[0]) {
                 coll::check_value_use(self, s, line)?;
-                return Ok(self.slots[s].0);
+                return Ok(self.read_slot(s));
+            }
+            if segs[0] == "None" {
+                return self.none_val(e);
+            }
+        }
+        // `x.f.g`: 局所変数 x のフィールドの読み出し
+        if segs.len() > 1 {
+            if let Some(s) = self.lookup(&segs[0]) {
+                let base = self.read_slot(s);
+                return self.field_path(base, &segs[1..], line);
             }
         }
         if !matches!(nf(e).get(1), Some(V::Nil) | None) {
@@ -395,18 +455,19 @@ impl<'a> Lw<'a> {
         }
         match self.p.resolve(&segs, &self.def.file).map(|r| r.target) {
             Some(Tgt::Const(ci)) => self.const_val(ci, e),
+            Some(Tgt::Variant(en, vn)) => self.variant_value(&en, &vn, line),
             _ => self.err(line, format!("名前 {} は段階 1 の対象外", segs.join("."))),
         }
     }
 
     /// 整数か bool のリテラルで書かれた定数 (`const f.N: u64 = 27u64`) だけを値として扱う。
-    pub(crate) fn const_val(&mut self, ci: usize, e: &V) -> LR<VId> {
+    fn const_val(&mut self, ci: usize, e: &V) -> LR<VId> {
         let c = &self.p.defs[ci];
         let ty = self.ty_of(e)?;
         match c.init.as_ref() {
             Some(init) if nname(init) == "Lit" && st(&nf(init)[0]) == "int" && ty.is_int() => {
                 let v = parse_int(&nf(init)[1]).ok_or_else(|| "定数の値が扱えない".to_string())?;
-                if v < ty.min() || v > ty.max() {
+                if !ty.in_range(v) {
                     return self.err(nline(e), "定数の値が型の範囲にない");
                 }
                 Ok(self.emit(ty, Op::Const(v)))
@@ -415,7 +476,10 @@ impl<'a> Lw<'a> {
         }
     }
 
-    pub(crate) fn bin(&mut self, e: &V) -> LR<Option<VId>> {
+    fn bin(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(done) = self.scalar_bin(e)? {
+            return Ok(done);
+        }
         let f = nf(e);
         let line = nline(e);
         let op = st(&f[0]);
@@ -437,7 +501,7 @@ impl<'a> Lw<'a> {
                     ">" => Cc::Gt,
                     _ => Cc::Ge,
                 };
-                if t == Ty::Unit || (t == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
+                if t.is_ref() || t == Ty::Unit || (t == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
                     return self.err(line, format!("型 {} の比較は段階 1 の対象外", t.name()));
                 }
                 Ok(Some(self.emit(Ty::Bool, Op::Cmp { cc, ty: t, a, b })))
@@ -480,7 +544,7 @@ impl<'a> Lw<'a> {
     }
 
     /// `a && b` / `a || b`。右辺は必要なときだけ評価する。
-    pub(crate) fn short_circuit(&mut self, is_or: bool, l: &V, r: &V, line: usize) -> LR<Option<VId>> {
+    fn short_circuit(&mut self, is_or: bool, l: &V, r: &V, line: usize) -> LR<Option<VId>> {
         let Some(a) = self.expr(l)? else { return Ok(None) };
         if self.vty(a) != Ty::Bool {
             return self.err(line, "論理演算の被演算子が bool ではない");
@@ -507,7 +571,10 @@ impl<'a> Lw<'a> {
         Ok(Some(jp[0]))
     }
 
-    pub(crate) fn unary(&mut self, e: &V) -> LR<Option<VId>> {
+    fn unary(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(done) = self.scalar_unary(e)? {
+            return Ok(done);
+        }
         let f = nf(e);
         let line = nline(e);
         let op = st(&f[0]);
@@ -521,7 +588,7 @@ impl<'a> Lw<'a> {
                     return self.err(line, "panics never の関数に単項 - (溢れの検査が要る)");
                 }
                 let Some(a) = self.expr(&f[1])? else { return Ok(None) };
-                Ok(Some(self.emit(t, Op::Neg { a })))
+                Ok(Some(self.emit(t, Op::Neg { a, mode: Mode::Trap })))
             }
             "!" => {
                 let t = self.ty_of(e)?;
@@ -531,12 +598,20 @@ impl<'a> Lw<'a> {
                 let Some(a) = self.expr(&f[1])? else { return Ok(None) };
                 Ok(Some(self.emit(Ty::Bool, Op::Not(a))))
             }
+            "&" | "&mut" => self.addr_of(e),
+            "*" => self.deref(e),
             other => self.err(line, format!("単項演算子 {} は段階 1 の対象外", other)),
         }
     }
 
-    pub(crate) fn call(&mut self, e: &V) -> LR<Option<VId>> {
+    fn call(&mut self, e: &V) -> LR<Option<VId>> {
         if let Some(r) = coll::try_call(self, e) {
+            return r;
+        }
+        if let Some(done) = self.scalar_call(e)? {
+            return Ok(done);
+        }
+        if let Some(r) = self.builtin_call(e) {
             return r;
         }
         let f = nf(e);
@@ -550,18 +625,21 @@ impl<'a> Lw<'a> {
         }
         let segs = strs(&nf(callee)[0]);
         let args = items(&f[1]);
-        // `x.m(..)`: 局所変数 x の整数メソッド (wrapping_* だけ)
-        if segs.len() == 2 {
+        // `x.m(..)` / `x.f.m(..)`: 局所変数 x (またはそのフィールド) の整数メソッド (wrapping_* だけ)
+        if segs.len() >= 2 {
             if let Some(s) = self.lookup(&segs[0]) {
-                let (recv, rt) = self.slots[s];
-                let aop = match segs[1].as_str() {
+                let base = self.read_slot(s);
+                let recv = if segs.len() > 2 { self.field_path(base, &segs[1..segs.len() - 1], line)? } else { base };
+                let rt = self.vty(recv);
+                let meth = segs[segs.len() - 1].clone();
+                let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,
                     "wrapping_sub" => Aop::Sub,
                     "wrapping_mul" => Aop::Mul,
                     m => return self.err(line, format!("メソッド {} は段階 1 の対象外", m)),
                 };
                 if !rt.is_int() || args.len() != 1 {
-                    return self.err(line, format!("メソッド {} の受け手や引数が段階 1 の対象外", segs[1]));
+                    return self.err(line, format!("メソッド {} の受け手や引数が段階 1 の対象外", meth));
                 }
                 let Some(b) = self.expr(&args[0])? else { return Ok(None) };
                 if self.vty(b) != rt {
@@ -571,6 +649,10 @@ impl<'a> Lw<'a> {
             }
         }
         let target = self.p.resolve(&segs, &self.def.file).map(|r| r.target);
+        if let Some(Tgt::Variant(en, vn)) = &target {
+            let (en, vn) = (en.clone(), vn.clone());
+            return self.variant_call(e, &en, &vn);
+        }
         let Some(Tgt::Fn(di)) = target else {
             return self.err(line, format!("呼び出し {} は段階 1 の対象外", segs.join(".")));
         };
@@ -581,7 +663,7 @@ impl<'a> Lw<'a> {
         let gn = HashSet::new();
         let mut pts = vec![];
         for (_, t) in &cd.params {
-            match conv(&from_v(t, &gn)) {
+            match self.conv_t(&from_v(t, &gn)) {
                 Some(x) => pts.push(x),
                 None => return self.err(line, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name)),
             }
@@ -589,7 +671,7 @@ impl<'a> Lw<'a> {
         let rt = if is_nil(&cd.ret) {
             Ty::Unit
         } else {
-            match conv(&from_v(&cd.ret, &gn)) {
+            match self.conv_t(&from_v(&cd.ret, &gn)) {
                 Some(x) => x,
                 None => return self.err(line, format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name)),
             }
@@ -605,6 +687,7 @@ impl<'a> Lw<'a> {
                 None => return Ok(None),
             }
         }
+        let vs = self.coerce_args(vs, &pts);
         for (v, pt) in vs.iter().zip(pts.iter()) {
             if self.vty(*v) != *pt {
                 return self.err(line, format!("呼び先 {} の引数の型が合わない", name));
@@ -615,8 +698,14 @@ impl<'a> Lw<'a> {
     }
 
     /// `e.m(args)` (受け手が式の形)。整数の `wrapping_add` / `wrapping_sub` / `wrapping_mul` だけを扱う。
-    pub(crate) fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
+    fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
         if let Some(r) = coll::try_mcall(self, e) {
+            return r;
+        }
+        if let Some(done) = self.scalar_mcall(e)? {
+            return Ok(done);
+        }
+        if let Some(r) = self.builtin_mcall(e) {
             return r;
         }
         let f = nf(e);
@@ -644,7 +733,7 @@ impl<'a> Lw<'a> {
     }
 
     /// `{ 文... 末尾の式 }`。末尾が式文なら、その値が block の値になる。
-    pub(crate) fn block(&mut self, e: &V) -> LR<Option<VId>> {
+    fn block(&mut self, e: &V) -> LR<Option<VId>> {
         let stmts = items(&nf(e)[0]);
         self.scopes.push(vec![]);
         let mut out: Option<VId> = None;
@@ -679,29 +768,38 @@ impl<'a> Lw<'a> {
         Ok(out)
     }
 
-    pub(crate) fn stmt(&mut self, s: &V) -> LR<St> {
+    fn stmt(&mut self, s: &V) -> LR<St> {
         let f = nf(s);
         let line = nline(s);
         match nname(s) {
             "Let" => {
                 let pat = &f[0];
-                if nname(pat) != "PBind" || matches!(nf(pat).get(1), Some(V::B(true))) {
+                if nname(pat) != "PBind" {
+                    return self.let_pat(pat, &f[3]);
+                }
+                if matches!(nf(pat).get(1), Some(V::B(true))) {
                     return self.err(line, "let の束縛はただの名前だけ段階 1 の対象");
                 }
                 let name = st(&nf(pat)[0]);
                 let Some(v) = self.expr(&f[3])? else { return Ok(St::Div) };
                 let t = self.vty(v);
-                self.bind(&name, v, t);
+                self.bind_let(&name, v, t);
                 coll::after_let(self, &name, &f[3])?;
                 Ok(St::Unit)
             }
             "Assign" => {
                 let target = &f[0];
+                if nname(target) == "Unary" {
+                    return self.store_deref(target, &f[1], line);
+                }
                 if nname(target) == "Index" {
                     return coll::assign_index(self, s);
                 }
                 let Some(name) = path1(target) else {
-                    return self.err(line, "代入先は名前だけ段階 1 の対象");
+                    if nname(target) == "Path" && strs(&nf(target)[0]).len() > 1 {
+                        return self.assign_path(target, &f[1], line);
+                    }
+                    return self.err(line, "代入先は名前かフィールドだけ段階 1 の対象");
                 };
                 let Some(s_idx) = self.lookup(&name) else {
                     return self.err(line, format!("代入先 {} が見つからない", name));
@@ -711,7 +809,7 @@ impl<'a> Lw<'a> {
                 if self.vty(v) != self.slots[s_idx].1 {
                     return self.err(line, "代入の型が変数の型と違う");
                 }
-                self.slots[s_idx].0 = v;
+                self.assign_slot(s_idx, v);
                 Ok(St::Unit)
             }
             "ExprStmt" => match self.expr(&f[0])? {
@@ -722,7 +820,7 @@ impl<'a> Lw<'a> {
         }
     }
 
-    pub(crate) fn if_(&mut self, e: &V) -> LR<Option<VId>> {
+    fn if_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
         let Some(c) = self.expr(&f[0])? else { return Ok(None) };
@@ -732,7 +830,7 @@ impl<'a> Lw<'a> {
         // 結果の型。両枝とも発散するなら `!` で、結果の値は持たない。unit の値は合流の引数に載せない。
         let res: Option<Ty> = match self.src_ty(e)? {
             Src::Never => None,
-            t => Some(coll::value_ty(&t).or_else(|| conv(&t)).ok_or_else(|| format!("行 {}: if の型 {} は段階 1 の対象外", line, show(&t)))?),
+            t => Some(coll::value_ty(&t).or_else(|| self.conv_t(&t)).ok_or_else(|| format!("行 {}: if の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
         let carry = matches!(res, Some(t) if t != Ty::Unit);
         let slots = self.assigned(&[&f[1], &f[2]]);
@@ -785,20 +883,20 @@ impl<'a> Lw<'a> {
         Ok(Some(if carry { jp[0] } else { self.unit() }))
     }
 
-    pub(crate) fn while_(&mut self, e: &V) -> LR<Option<VId>> {
+    fn while_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let slots = self.assigned(&[&f[1]]);
         self.loop_common(Some(&f[0]), &f[1], slots, e)
     }
 
-    pub(crate) fn loop_(&mut self, e: &V) -> LR<Option<VId>> {
+    fn loop_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let slots = self.assigned(&[&f[0]]);
         self.loop_common(None, &f[0], slots, e)
     }
 
     /// `while` と `loop` の共通部分。先頭ブロックは代入される変数を引数に持つ。
-    pub(crate) fn loop_common(&mut self, cond: Option<&V>, body: &V, slots: Vec<usize>, e: &V) -> LR<Option<VId>> {
+    fn loop_common(&mut self, cond: Option<&V>, body: &V, slots: Vec<usize>, e: &V) -> LR<Option<VId>> {
         let tys: Vec<Ty> = slots.iter().map(|s| self.slots[*s].1).collect();
         let entry = self.vals_of(&slots);
         let (hb, hp) = self.new_block(&tys);
@@ -837,7 +935,7 @@ impl<'a> Lw<'a> {
         Ok(Some(self.unit()))
     }
 
-    pub(crate) fn jump_loop(&mut self, e: &V, is_break: bool) -> LR<Option<VId>> {
+    fn jump_loop(&mut self, e: &V, is_break: bool) -> LR<Option<VId>> {
         let Some(lc) = self.loops.last() else {
             return self.err(nline(e), "ループの外の break / continue");
         };
@@ -848,7 +946,7 @@ impl<'a> Lw<'a> {
         Ok(None)
     }
 
-    pub(crate) fn ret_(&mut self, e: &V) -> LR<Option<VId>> {
+    fn ret_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
         let v = if matches!(f[0], V::Nil) {
@@ -889,6 +987,7 @@ fn parse_int(v: &V) -> Option<i128> {
 /// ユーザの関数を下ろす。呼び先が未対応・検査違反の関数は、その呼び出し元とともに外す。
 pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
     let tys = type_table(p, user);
+    let aggs = RefCell::new(agg::AggTab::new(user));
     let mut ok: Vec<(Func, BTreeSet<String>)> = vec![];
     let mut bad: Vec<(String, String)> = vec![];
     for &i in user {
@@ -896,7 +995,7 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
         if !is_candidate(d) {
             continue;
         }
-        match Lw::new(p, &tys, d).lower() {
+        match Lw::new(p, &tys, &aggs, d).lower() {
             Ok(x) => ok.extend(x),
             Err(why) => bad.push((d.name.clone(), why)),
         }
@@ -913,7 +1012,7 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
             }
         }
         if drop.is_empty() {
-            let m = Module { funcs: ok.iter().map(|(f, _)| f.clone()).collect() };
+            let m = Module { funcs: ok.iter().map(|(f, _)| f.clone()).collect(), aggs: aggs.borrow().defs.clone() };
             for (key, msg) in kir::verify_module(&m) {
                 drop.push((key, format!("下ろしの検査に失敗: {}", msg)));
             }
@@ -927,7 +1026,9 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
     let mut funcs = funcs;
     funcs.sort_by(|a, b| a.key.cmp(&b.key));
     bad.sort();
-    Lowered { module: Module { funcs }, unsupported: bad }
+    let mut module = Module { funcs, aggs: aggs.into_inner().defs };
+    kir::prune_aggs(&mut module);
+    Lowered { module, unsupported: bad }
 }
 
 /// `KSN_DUMP_KIR=1 ksn check` のときだけ、KIR と未対応の一覧を stderr に出す (隠し機能)。

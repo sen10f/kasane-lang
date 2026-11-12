@@ -1,4 +1,4 @@
-//! KIR の下ろし: `Vec` / `String` / `&str` / `for` / 添字 / クロージャ (設計_KIR.md 10.7、kir/collections)。
+//! KIR の下ろし: `Vec` / `String` / `&str` / `for` / 添字 / クロージャ (設計_KIR.md 10.9、kir/collections)。
 //!
 //! ヒープは clif と同じ実メモリ表現を使う。`Vec<T>` と `String` は {ptr, len, cap} の 24 バイトのヘッダ、
 //! `&str` は {ptr, len} の 16 バイトのヘッダ。KIR の値は「ヘッダのアドレス」(`ptr` 型) で表し、
@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::check::{is_nil, items, nf, nline, nname, st, strs};
 use crate::kir::{Aop, Block, Cc, Func, Inst, Mode, Op, Term, Ty, VId};
-use crate::kir_lower::{conv, Lw, St, LR};
+use super::{conv, Lw, St, LR};
 use crate::parser::{nid, V};
 use crate::program::Target;
 use crate::types::{from_v, Ty as Src};
@@ -346,7 +346,7 @@ fn generic_call(lw: &mut Lw, e: &V, di: usize) -> LR<Option<VId>> {
     lw.callees.insert(key.clone());
     if !lw.coll.instances.contains(&key) {
         lw.coll.instances.insert(key.clone());
-        let mut child = Lw::new(lw.p, lw.tys, cd);
+        let mut child = Lw::new(lw.p, lw.tys, lw.aggs, cd);
         child.coll.instances = std::mem::take(&mut lw.coll.instances);
         let r = lower_instance(&mut child, cd, &key, &tnames, &bound);
         lw.coll.instances = std::mem::take(&mut child.coll.instances);
@@ -412,12 +412,13 @@ fn lower_instance(
             child.coll.kinds.insert(s, k);
         } else {
             let t = conv(&from_v(pt, tnames)).expect("上で検査済み");
-            child.bind(pname, pv[vi], t);
+            child.bind_let(pname, pv[vi], t);
             vi += 1;
         }
     }
     child.ret = ret_ty(cd, tnames).ok_or_else(|| format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name))?;
     let body = cd.body.as_ref().expect("候補は本体を持つ");
+    child.rf.begin(body);
     if let Some(v) = child.expr(body)? {
         if child.vty(v) != child.ret {
             return child.err(nline(body), "本体の値の型が戻り値の型と合わない");
@@ -428,6 +429,7 @@ fn lower_instance(
     let mut uses: Vec<String> = cd.uses.iter().filter(|u| !cd.generics.iter().any(|g| g.1 == **u)).cloned().collect();
     uses.sort();
     uses.dedup();
+    child.flush_allocas();
     let mut blocks: Vec<Block> = std::mem::take(&mut child.blocks)
         .into_iter()
         .map(|b| Block { params: b.params, insts: b.insts, term: b.term.unwrap_or(Term::Unreachable) })
@@ -688,7 +690,7 @@ fn counted(lw: &mut Lw, line: usize, c: Counted, name: Option<String>, body: &V)
             }
         }
     }
-    lw.loops.push(crate::kir_lower::LoopCx { header: ib, exit: xb, slots: slots.clone(), depth });
+    lw.loops.push(super::LoopCx { header: ib, exit: xb, slots: slots.clone(), depth });
     let r = lw.expr(body)?;
     if r.is_some() {
         let args = lw.vals_of(&slots);
@@ -752,15 +754,16 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         return lw.err(line, "クロージャの引数の個数が型と合わない");
     }
     let key = closure_key(lw, nid(e));
-    let mut child = Lw::new(lw.p, lw.tys, lw.def);
+    let mut child = Lw::new(lw.p, lw.tys, lw.aggs, lw.def);
     child.coll.prefix = lw.coll.prefix.clone();
     child.ret = rt;
     let (b0, pv) = child.new_block(&ats);
     debug_assert_eq!(b0, 0);
     child.cur = Some(0);
+    child.rf.begin(&f[3]);
     child.scopes.push(vec![]);
     for ((n, v), t) in names.iter().zip(pv.iter()).zip(ats.iter()) {
-        child.bind(n, *v, *t);
+        child.bind_let(n, *v, *t);
     }
     if let Some(v) = child.expr(&f[3])? {
         if child.vty(v) != rt {
@@ -768,6 +771,7 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         }
         child.terminate(Term::Ret(v));
     }
+    child.flush_allocas();
     let mut blocks: Vec<Block> = child
         .blocks
         .into_iter()

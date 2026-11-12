@@ -2,17 +2,19 @@
 //!
 //! 目的は、木走査インタプリタ (`interp.rs`) と出力・終了コード・panic の文言が一致することを確かめる基準を作ること。
 //! 速さは求めない。呼び出しは明示的なフレーム列で持ち、Rust の再帰を使わない。深さの上限は木走査と同じ 2500 (終了コード 102)。
+//! 浮動小数と 128 ビット整数の規則は `kir_scalar.rs` にある。
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::kir::{Aop, BoolOp, Cc, Mode, Module, Op, Term, Ty, VId};
+use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Mode, Module, Op, Term, Ty, TAG_BIT, VId};
+use crate::kir_scalar;
 
 /// 木走査インタプリタの呼び出し深さの上限 (`interp.rs` の `depth > 2500`)。
 const MAX_DEPTH: usize = 2500;
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
-    /// 正常終了。値は型に応じた整数 (bool は 0 / 1、unit は 0)。
+    /// 正常終了。値は型に応じた符号化 (整数はその値、`u128` はビットパターン、浮動小数はビット列、bool は 0 / 1、unit は 0、Option / Result はタグ bit とペイロード。`show_value` で読む)。
     Value(i128),
     /// 実行時 panic (文言は木走査と同じ)。
     Panic(String),
@@ -28,6 +30,10 @@ struct Frame {
     vals: Vec<i128>,
     /// 呼び出し元で結果を受ける値番号。
     dst: Option<VId>,
+    /// この呼び出しが始まったときの集成体の置き場の長さ (戻るときにここまで切り詰める)。
+    hbase: usize,
+    /// この呼び出しが始まったときのセル列の長さ (返るときに切り詰める)。
+    mem_base: usize,
     /// この関数の `frame.bytes` で確保した領域の先頭。関数が戻るときに解放する。
     allocs: Vec<i128>,
 }
@@ -35,9 +41,10 @@ struct Frame {
 /// アドレスの基準値 (0 は null として空けておく)。
 const BASE: i128 = 0x1000;
 
-/// 仮想のヒープ。`clif` と同じく {ptr, len, cap} の実メモリを、バイト列の上で表す。
+/// 仮想のバイト記憶: `ptr` が指す領域 (ヒープ・フレームの領域・静的な領域)。
+/// `clif` と同じく {ptr, len, cap} の実メモリを、バイト列の上で表す。集成体の置き場 (`heap`) とは別。
 /// 解放済みの領域は再利用しない (誤用の検出を優先する)。生存する領域は `live` で、静的な領域は `pinned` で区別する。
-struct Heap {
+struct ByteMem {
     mem: Vec<u8>,
     /// 先頭アドレス → 領域。
     blocks: BTreeMap<i128, Blk>,
@@ -50,9 +57,9 @@ struct Blk {
     pinned: bool,
 }
 
-impl Heap {
-    fn new() -> Heap {
-        Heap { mem: vec![], blocks: BTreeMap::new() }
+impl ByteMem {
+    fn new() -> ByteMem {
+        ByteMem { mem: vec![], blocks: BTreeMap::new() }
     }
 
     fn alloc(&mut self, size: usize, pinned: bool) -> i128 {
@@ -76,9 +83,9 @@ impl Heap {
     fn read(&self, addr: i128, ty: Ty) -> Result<i128, String> {
         let n = width(ty);
         let at = self.locate(addr, n)?;
-        let mut buf = [0u8; 8];
+        let mut buf = [0u8; 16];
         buf[..n].copy_from_slice(&self.mem[at..at + n]);
-        let u = u64::from_le_bytes(buf) as i128;
+        let u = u128::from_le_bytes(buf) as i128;
         Ok(match ty {
             Ty::Bool => (u != 0) as i128,
             Ty::Ptr => u,
@@ -89,7 +96,7 @@ impl Heap {
     fn write(&mut self, addr: i128, ty: Ty, v: i128) -> Result<(), String> {
         let n = width(ty);
         let at = self.locate(addr, n)?;
-        let bytes = (v as u64).to_le_bytes();
+        let bytes = (v as u128).to_le_bytes();
         self.mem[at..at + n].copy_from_slice(&bytes[..n]);
         Ok(())
     }
@@ -116,20 +123,17 @@ impl Heap {
 
     /// `old` の内容を先頭から複写した、新しい大きさ `size` の領域を作って旧い領域を解放する (`old` が 0 なら確保だけ)。
     fn realloc(&mut self, old: i128, size: usize) -> Result<i128, String> {
-        let new = self.alloc(size, false);
         if old == 0 {
-            return Ok(new);
+            return Ok(self.alloc(size, false));
         }
-        let (old_size, live) = match self.blocks.get(&old) {
-            Some(b) if b.live && !b.pinned => (b.size, true),
-            _ => (0, false),
+        let old_size = match self.blocks.get(&old) {
+            Some(b) if b.live && !b.pinned => b.size,
+            _ => return Err(format!("不正な再確保 {:#x}", old)),
         };
-        if !live {
-            return Err(format!("不正な再確保 {:#x}", old));
-        }
         let n = old_size.min(size);
         let src = self.locate(old, n)?;
         let bytes: Vec<u8> = self.mem[src..src + n].to_vec();
+        let new = self.alloc(size, false);
         self.write_bytes(new, &bytes)?;
         self.free(old)?;
         Ok(new)
@@ -148,7 +152,7 @@ impl Heap {
     }
 }
 
-/// 型の幅 (バイト)。`unit` は持たない。
+/// バイト記憶の 1 語の幅 (バイト)。`unit` は持たない (verify が拒む)。
 fn width(ty: Ty) -> usize {
     match ty {
         Ty::Bool => 1,
@@ -157,8 +161,88 @@ fn width(ty: Ty) -> usize {
     }
 }
 
+/// 集成体の値の読み出し: `t` の値を、バイト列 `buf` の `off` から取る (集成体は置き場に複製して、その添字を返す)。
+fn read_scalar(buf: &[u8], off: usize, t: Ty) -> i128 {
+    match t {
+        Ty::Bool => (buf[off] != 0) as i128,
+        Ty::Unit => 0,
+        _ => {
+            let n = size_of(&[], t) as usize;
+            let mut raw = [0u8; 16];
+            raw[..n].copy_from_slice(&buf[off..off + n]);
+            t.wrap(u128::from_le_bytes(raw) as i128)
+        }
+    }
+}
+
+const DIV_ZERO: &str = "attempt to divide by zero";
+const REM_ZERO: &str = "attempt to calculate the remainder with a divisor of by zero";
+
+/// `u128` の算術 (値はビットパターン)。
+fn arith_u128(op: Aop, mode: Mode, x: u128, y: u128) -> Result<u128, String> {
+    match mode {
+        Mode::Wrap => Ok(match op {
+            Aop::Add => x.wrapping_add(y),
+            Aop::Sub => x.wrapping_sub(y),
+            _ => x.wrapping_mul(y),
+        }),
+        Mode::Sat => Ok(match op {
+            Aop::Add => x.saturating_add(y),
+            Aop::Sub => x.saturating_sub(y),
+            _ => x.saturating_mul(y),
+        }),
+        Mode::Trap => {
+            if matches!(op, Aop::Div | Aop::Rem) && y == 0 {
+                return Err(if op == Aop::Div { DIV_ZERO.to_string() } else { REM_ZERO.to_string() });
+            }
+            let r = match op {
+                Aop::Add => x.checked_add(y),
+                Aop::Sub => x.checked_sub(y),
+                Aop::Mul => x.checked_mul(y),
+                Aop::Div => x.checked_div(y),
+                Aop::Rem => x.checked_rem(y),
+            };
+            r.ok_or_else(|| overflow_msg(op))
+        }
+    }
+}
+
+/// 値 `v` (スカラー、または置き場の添字の集成体) を、バイト列 `buf` の `off` に書く。
+fn write_val(buf: &mut [u8], off: usize, aggs: &[AggDef], t: Ty, v: i128, heap: &[Vec<u8>]) {
+    if let Ty::Agg(_) = t {
+        let src = &heap[v as usize];
+        buf[off..off + src.len()].copy_from_slice(src);
+    } else {
+        let n = size_of(aggs, t) as usize;
+        let bytes = (v as u128).to_le_bytes();
+        buf[off..off + n].copy_from_slice(&bytes[..n]);
+    }
+}
+
+/// 構造体・タプルのオフセット `off` のフィールドの型。
+fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
+    match &d.kind {
+        AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().find(|f: &&Field| f.off == off).map(|f| f.ty),
+        AggKind::Enum(_) => None,
+    }
+}
+
+fn overflow_msg(op: Aop) -> String {
+    match op {
+        Aop::Add => "attempt to add with overflow",
+        Aop::Sub => "attempt to subtract with overflow",
+        Aop::Mul => "attempt to multiply with overflow",
+        Aop::Div => "attempt to divide with overflow",
+        Aop::Rem => "attempt to calculate the remainder with overflow",
+    }
+    .to_string()
+}
+
 /// 整数の算術。結果は型の範囲内に収まる値か、panic の文言。
-fn arith(op: Aop, mode: Mode, ty: crate::kir::Ty, x: i128, y: i128) -> Result<i128, String> {
+fn arith(op: Aop, mode: Mode, ty: Ty, x: i128, y: i128) -> Result<i128, String> {
+    if ty == Ty::U128 {
+        return arith_u128(op, mode, x as u128, y as u128).map(|v| v as i128);
+    }
     if mode == Mode::Wrap {
         let r = match op {
             Aop::Add => x.wrapping_add(y),
@@ -167,42 +251,72 @@ fn arith(op: Aop, mode: Mode, ty: crate::kir::Ty, x: i128, y: i128) -> Result<i1
         };
         return Ok(ty.wrap(r));
     }
+    if mode == Mode::Sat {
+        // 16 ビット以下と i128 の両方を扱う。i128 の溢れは結果の符号で飽和する方向を決める (和と差は x の符号、積は符号の積)。
+        let r = match op {
+            Aop::Add => x.checked_add(y),
+            Aop::Sub => x.checked_sub(y),
+            _ => x.checked_mul(y),
+        };
+        let neg = match op {
+            Aop::Add | Aop::Sub => x < 0,
+            _ => (x < 0) != (y < 0),
+        };
+        return Ok(match r {
+            Some(v) => v.clamp(ty.min(), ty.max()),
+            None => {
+                if neg {
+                    ty.min()
+                } else {
+                    ty.max()
+                }
+            }
+        });
+    }
     if matches!(op, Aop::Div | Aop::Rem) && y == 0 {
         // 文言は木走査 (interp.rs の `int_arith`) と同じにする。剰余の文言は木走査の誤植 (`of by zero`) を写している。
-        return Err(if op == Aop::Div {
-            "attempt to divide by zero".to_string()
-        } else {
-            "attempt to calculate the remainder with a divisor of by zero".to_string()
-        });
+        return Err(if op == Aop::Div { DIV_ZERO.to_string() } else { REM_ZERO.to_string() });
     }
     let r = match op {
         Aop::Add => x.checked_add(y),
         Aop::Sub => x.checked_sub(y),
         Aop::Mul => x.checked_mul(y),
         Aop::Div => x.checked_div(y),
-        Aop::Rem => x.checked_rem(y),
+        Aop::Rem => checked_rem(ty, x, y),
     };
     match r {
-        Some(v) if v >= ty.min() && v <= ty.max() => Ok(v),
-        _ => Err(match op {
-            Aop::Add => "attempt to add with overflow",
-            Aop::Sub => "attempt to subtract with overflow",
-            Aop::Mul => "attempt to multiply with overflow",
-            Aop::Div => "attempt to divide with overflow",
-            Aop::Rem => "attempt to calculate the remainder with overflow",
-        }
-        .to_string()),
+        Some(v) if ty.in_range(v) => Ok(v),
+        _ => Err(overflow_msg(op)),
     }
 }
 
-fn compare(cc: Cc, x: i128, y: i128) -> bool {
-    match cc {
-        Cc::Eq => x == y,
-        Cc::Ne => x != y,
-        Cc::Lt => x < y,
-        Cc::Le => x <= y,
-        Cc::Gt => x > y,
-        Cc::Ge => x >= y,
+/// 整数の `checked_rem` (案 A)。符号付きの `MIN % -1` は割り算が溢れるので余りも `None`。
+/// i128 の `checked_rem` はこの組を溢れとして返さないので、型の最小値で別に判定する。
+fn checked_rem(ty: Ty, x: i128, y: i128) -> Option<i128> {
+    if ty.signed() && y == -1 && x == ty.min() {
+        return None;
+    }
+    x.checked_rem(y)
+}
+
+/// `checked_<op>` の結果 (`Option<P>` の符号化)。溢れと 0 除算は `None` (= 0)。
+/// 符号付きの `MIN / -1` と `MIN % -1` は溢れで `None` (案 A。木走査 `interp.rs` と同じ)。
+fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
+    let crate::kir::Ty::Opt(p) = t else { return 0 };
+    let pt = p.ty();
+    if matches!(op, Aop::Div | Aop::Rem) && y == 0 {
+        return 0;
+    }
+    let r = match op {
+        Aop::Add => x.checked_add(y),
+        Aop::Sub => x.checked_sub(y),
+        Aop::Mul => x.checked_mul(y),
+        Aop::Div => x.checked_div(y),
+        Aop::Rem => checked_rem(pt, x, y),
+    };
+    match r {
+        Some(v) if v >= pt.min() && v <= pt.max() => TAG_BIT | payload_bits(v),
+        _ => 0,
     }
 }
 
@@ -216,17 +330,24 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
         return Err(format!("関数 {} の引数の個数が違う", key));
     }
     let counts: Vec<usize> = m.funcs.iter().map(|f| f.value_count()).collect();
-    let enter = |f: usize, args: &[i128], dst: Option<VId>| -> Frame {
+    // 集成体の置き場: 集成体の値は、ここにバイト列として置き、値 (i128) はその添字で表す。値は不変。
+    let mut heap: Vec<Vec<u8>> = vec![];
+    if matches!(m.funcs[entry].ret, Ty::Agg(_)) || m.funcs[entry].params().iter().any(|(_, t)| matches!(t, Ty::Agg(_))) {
+        return Err(format!("関数 {} は集成体を引数・戻り値に持つ (この入口では扱えない)", key));
+    }
+    let enter = |f: usize, args: &[i128], dst: Option<VId>, hbase: usize, mem_base: usize| -> Frame {
         let mut vals = vec![0i128; counts[f]];
         for ((v, _), a) in m.funcs[f].params().iter().zip(args.iter()) {
             vals[*v as usize] = *a;
         }
-        Frame { f, blk: 0, ip: 0, vals, dst, allocs: vec![] }
+        Frame { f, blk: 0, ip: 0, vals, dst, hbase, mem_base, allocs: vec![] }
     };
-    let mut stack = vec![enter(entry, args, None)];
-    let mut heap = Heap::new();
-    // 静的な領域 (`data`) は、命令の位置ごとに 1 回だけ確保する。
+    // 参照の指すセル。`alloca` が 1 セル確保し、その番号がアドレスになる。呼び出しの終わりに切り詰める。
+    let mut mem: Vec<i128> = vec![];
+    // バイト記憶 (`ptr` の領域)。静的な領域 (`static.bytes`) は、命令の位置ごとに 1 回だけ確保する。
+    let mut bm = ByteMem::new();
     let mut statics: HashMap<(usize, usize, usize), i128> = HashMap::new();
+    let mut stack = vec![enter(entry, args, None, 0, 0)];
     loop {
         let top = stack.len() - 1;
         let (fi, bi, ip) = (stack[top].f, stack[top].blk, stack[top].ip);
@@ -239,30 +360,30 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
             let result: i128 = match &inst.op {
                 Op::Const(v) => *v,
                 Op::FrameBytes { size } => {
-                    let a = heap.alloc(*size as usize, false);
+                    let a = bm.alloc(*size as usize, false);
                     stack[top].allocs.push(a);
                     a
                 }
                 Op::StaticBytes(bytes) => match statics.get(&(fi, bi, ip)) {
                     Some(a) => *a,
                     None => {
-                        let a = heap.alloc(bytes.len(), true);
-                        heap.write_bytes(a, bytes)?;
+                        let a = bm.alloc(bytes.len(), true);
+                        bm.write_bytes(a, bytes)?;
                         statics.insert((fi, bi, ip), a);
                         a
                     }
                 },
                 Op::PtrAdd { p, off } => get(&stack[top], p) + get(&stack[top], off),
-                Op::MemLoad { p, off } => heap.read(get(&stack[top], p) + *off as i128, inst.ty)?,
+                Op::MemLoad { p, off } => bm.read(get(&stack[top], p) + *off as i128, inst.ty)?,
                 Op::MemStore { ty, p, off, v } => {
                     let (a, x) = (get(&stack[top], p) + *off as i128, get(&stack[top], v));
-                    heap.write(a, *ty, x)?;
+                    bm.write(a, *ty, x)?;
                     0
                 }
-                Op::HeapAlloc(n) => heap.alloc(get(&stack[top], n) as usize, false),
-                Op::HeapRealloc { p, size } => heap.realloc(get(&stack[top], p), get(&stack[top], size) as usize)?,
+                Op::HeapAlloc(n) => bm.alloc(get(&stack[top], n) as usize, false),
+                Op::HeapRealloc { p, size } => bm.realloc(get(&stack[top], p), get(&stack[top], size) as usize)?,
                 Op::HeapFree(p) => {
-                    heap.free(get(&stack[top], p))?;
+                    bm.free(get(&stack[top], p))?;
                     0
                 }
                 Op::IndexCheck { i, len } => {
@@ -279,24 +400,49 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         Err(msg) => return Ok(Outcome::Panic(msg)),
                     }
                 }
-                Op::Cmp { cc, a, b, .. } => compare(*cc, get(&stack[top], a), get(&stack[top], b)) as i128,
-                Op::Neg { a } => {
+                Op::FArith { op, a, b } => kir_scalar::farith(*op, inst.ty, get(&stack[top], a), get(&stack[top], b)),
+                Op::Cmp { cc, ty, a, b } => kir_scalar::cmp(*cc, *ty, get(&stack[top], a), get(&stack[top], b)) as i128,
+                Op::Shift { left, a, n } => kir_scalar::shift(*left, inst.ty, get(&stack[top], a), get(&stack[top], n)),
+                Op::MinMax { max, a, b } => kir_scalar::minmax(*max, inst.ty, get(&stack[top], a), get(&stack[top], b)),
+                Op::FUn { f, src, a } => kir_scalar::funary(*f, *src, inst.ty, get(&stack[top], a)),
+                Op::FBin { f, a, b } => kir_scalar::fbin(*f, inst.ty, get(&stack[top], a), get(&stack[top], b)),
+                Op::Conv { src, a } => kir_scalar::conv(*src, inst.ty, get(&stack[top], a)),
+                Op::Bitcast { a, .. } => get(&stack[top], a),
+                Op::BitCount { k, src, a } => kir_scalar::bitcount(*k, *src, get(&stack[top], a)),
+                Op::Neg { a, mode } => {
                     let x = get(&stack[top], a);
-                    if x == inst.ty.min() {
-                        return Ok(Outcome::Panic("attempt to negate with overflow".to_string()));
+                    match mode {
+                        Mode::Wrap => kir_scalar::wrap_neg(inst.ty, x),
+                        _ => {
+                            if x == inst.ty.min() {
+                                return Ok(Outcome::Panic("attempt to negate with overflow".to_string()));
+                            }
+                            -x
+                        }
                     }
-                    -x
                 }
-                Op::Not(a) => (get(&stack[top], a) == 0) as i128,
+                Op::Not(a) => {
+                    let x = get(&stack[top], a);
+                    if inst.ty == Ty::Bool {
+                        (x == 0) as i128
+                    } else {
+                        kir_scalar::not_int(inst.ty, x)
+                    }
+                }
                 Op::Bool(bop, a, b) => {
-                    let (x, y) = (get(&stack[top], a) != 0, get(&stack[top], b) != 0);
-                    let r = match bop {
+                    // bool は 0 / 1 なので、ビット演算がそのまま論理演算になる。整数は符号拡張した 1 語なので、型の範囲の値を保つ。
+                    let (x, y) = (get(&stack[top], a), get(&stack[top], b));
+                    match bop {
                         BoolOp::And => x & y,
                         BoolOp::Or => x | y,
                         BoolOp::Xor => x ^ y,
-                    };
-                    r as i128
+                    }
                 }
+                Op::Some(a) => TAG_BIT | payload_bits(get(&stack[top], a)),
+                Op::Ok(a) => payload_bits(get(&stack[top], a)),
+                Op::Err(a) => TAG_BIT | payload_bits(get(&stack[top], a)),
+                Op::Payload(a) => payload_of(inst.ty, get(&stack[top], a)),
+                Op::Checked { op, a, b } => checked(*op, inst.ty, get(&stack[top], a), get(&stack[top], b)),
                 Op::Call { callee, args } => {
                     if stack.len() >= MAX_DEPTH {
                         return Ok(Outcome::StackOverflow);
@@ -305,9 +451,79 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         return Err(format!("呼び先 {} がない", callee));
                     };
                     let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
-                    stack.push(enter(ci, &argv, Some(inst.dst)));
+                    stack.push(enter(ci, &argv, Some(inst.dst), heap.len(), mem.len()));
                     continue;
                 }
+                Op::Make { variant, fields } => {
+                    let Ty::Agg(ai) = inst.ty else {
+                        return Err("make の結果が集成体でない".to_string());
+                    };
+                    let d = &m.aggs[ai as usize];
+                    let mut buf = vec![0u8; d.size as usize];
+                    let fdefs: &[Field] = match (&d.kind, variant) {
+                        (AggKind::Enum(vs), Some(k)) => {
+                            buf[0..4].copy_from_slice(&(*k as i32).to_le_bytes());
+                            &vs[*k as usize].fields
+                        }
+                        (AggKind::Struct(fs) | AggKind::Tuple(fs), None) => fs,
+                        _ => return Err("make の変種が集成体の種類と合わない".to_string()),
+                    };
+                    for (fd, a) in fdefs.iter().zip(fields) {
+                        let v = get(&stack[top], a);
+                        write_val(&mut buf, fd.off as usize, &m.aggs, fd.ty, v, &heap);
+                    }
+                    heap.push(buf);
+                    (heap.len() - 1) as i128
+                }
+                Op::Field { a, off } => {
+                    let h = get(&stack[top], a) as usize;
+                    let o = *off as usize;
+                    match inst.ty {
+                        Ty::Agg(ai) => {
+                            let n = m.aggs[ai as usize].size as usize;
+                            let sub = heap[h][o..o + n].to_vec();
+                            heap.push(sub);
+                            (heap.len() - 1) as i128
+                        }
+                        t => read_scalar(&heap[h], o, t),
+                    }
+                }
+                Op::SetField { a, off, v } => {
+                    let h = get(&stack[top], a) as usize;
+                    let Ty::Agg(ai) = inst.ty else {
+                        return Err("setfield の結果が集成体でない".to_string());
+                    };
+                    let d = &m.aggs[ai as usize];
+                    let Some(fty) = field_ty_at(d, *off) else {
+                        return Err("setfield のフィールドがない".to_string());
+                    };
+                    let mut buf = heap[h].clone();
+                    let vv = get(&stack[top], v);
+                    write_val(&mut buf, *off as usize, &m.aggs, fty, vv, &heap);
+                    heap.push(buf);
+                    (heap.len() - 1) as i128
+                }
+                Op::Tag(a) => {
+                    // 結果の型で区別する: i32 なら集成体の列挙型 (置き場の添字)、bool なら Option / Result (タグのビット)。
+                    let v = get(&stack[top], a);
+                    if inst.ty == Ty::I32 {
+                        let h = v as usize;
+                        i32::from_le_bytes([heap[h][0], heap[h][1], heap[h][2], heap[h][3]]) as i128
+                    } else {
+                        (v & TAG_BIT != 0) as i128
+                    }
+                }
+                Op::Alloca => {
+                    mem.push(0);
+                    (mem.len() - 1) as i128
+                }
+                Op::Load(p) => mem[get(&stack[top], p) as usize],
+                Op::Store { ptr, val } => {
+                    let (a, v) = (get(&stack[top], ptr), get(&stack[top], val));
+                    mem[a as usize] = v;
+                    0
+                }
+                Op::AsShared(p) | Op::Reborrow(p) => get(&stack[top], p),
             };
             stack[top].vals[inst.dst as usize] = result;
             continue;
@@ -325,15 +541,25 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 }
             }
             Term::Ret(v) => {
-                let val = stack[top].vals[*v as usize];
+                let mut val = stack[top].vals[*v as usize];
                 let done = stack.pop().expect("フレーム");
                 for a in &done.allocs {
-                    heap.release(*a);
+                    bm.release(*a);
                 }
+                // 戻る関数が作った集成体は捨てる。戻り値の集成体だけは、呼び出し元の置き場へ複製して残す。
+                if let Ty::Agg(_) = func.ret {
+                    let blob = heap[val as usize].clone();
+                    heap.truncate(done.hbase);
+                    heap.push(blob);
+                    val = (heap.len() - 1) as i128;
+                } else {
+                    heap.truncate(done.hbase);
+                }
+                mem.truncate(done.mem_base);
                 match stack.last_mut() {
                     None => {
                         // 正常終了では、解放されていない領域があってはならない (所有の下ろしの誤り)。
-                        let n = heap.leaks();
+                        let n = bm.leaks();
                         if n > 0 {
                             return Err(format!("解放されていない領域が {} 個ある", n));
                         }
@@ -365,7 +591,7 @@ fn jump(fr: &mut Frame, m: &Module, fi: usize, t: usize, args: &[VId]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kir::{Block, Func, Inst, Ty};
+    use crate::kir::{Block, Func, Inst, Pay, Ty};
 
     #[test]
     fn arith_matches_interpreter_messages() {
@@ -375,6 +601,31 @@ mod tests {
         assert_eq!(arith(Aop::Div, Mode::Trap, Ty::I8, -128, -1), Err("attempt to divide with overflow".into()));
         assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I8, 1, 0), Err("attempt to calculate the remainder with a divisor of by zero".into()));
         assert_eq!(arith(Aop::Mul, Mode::Wrap, Ty::U8, 16, 17), Ok(16));
+    }
+
+    #[test]
+    fn min_rem_minus_one_overflows_for_every_signed_width() {
+        // 案 A: 符号付きの `MIN % -1` は割り算が溢れるので余りも溢れ (`checked_rem` は None)。
+        let rem = "attempt to calculate the remainder with overflow";
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I8, -128, -1), Err(rem.into()));
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I16, i16::MIN as i128, -1), Err(rem.into()));
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I32, i32::MIN as i128, -1), Err(rem.into()));
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I64, i64::MIN as i128, -1), Err(rem.into()));
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I128, i128::MIN, -1), Err(rem.into()));
+        assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I8, -7, 2), Ok(-1));
+        assert_eq!(checked(Aop::Rem, Ty::Opt(Pay::I8), -128, -1), 0);
+    }
+
+    #[test]
+    fn arith_saturates_and_handles_128_bits() {
+        assert_eq!(arith(Aop::Add, Mode::Sat, Ty::U8, 250, 10), Ok(255));
+        assert_eq!(arith(Aop::Sub, Mode::Sat, Ty::U8, 3, 10), Ok(0));
+        assert_eq!(arith(Aop::Add, Mode::Sat, Ty::I128, i128::MIN, i128::MIN), Ok(i128::MIN));
+        assert_eq!(arith(Aop::Add, Mode::Sat, Ty::I128, i128::MAX, 1), Ok(i128::MAX));
+        assert_eq!(arith(Aop::Mul, Mode::Sat, Ty::I128, i128::MIN, 2), Ok(i128::MIN));
+        // u128 の最大値 (-1 のビットパターン) に 1 を足すと panic、wrap は 0
+        assert_eq!(arith(Aop::Add, Mode::Trap, Ty::U128, -1, 1), Err("attempt to add with overflow".into()));
+        assert_eq!(arith(Aop::Add, Mode::Wrap, Ty::U128, -1, 1), Ok(0));
     }
 
     /// `fn f(n: u64) -> u64`: 引数を 1 つ減らして呼ぶ再帰 (深さの検査用)。
@@ -395,7 +646,7 @@ mod tests {
                 term: Term::Ret(2),
             }],
         };
-        Module { funcs: vec![f] }
+        Module { funcs: vec![f], ..Default::default() }
     }
 
     /// テキストの 1 関数のモジュールを実行する (鍵は関数名)。

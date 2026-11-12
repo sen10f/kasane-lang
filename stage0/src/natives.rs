@@ -47,13 +47,6 @@ fn pick_ty(args: &[Val], default: &str) -> &'static str {
     ity(default)
 }
 
-fn trunc_div(a: i128, b: i128) -> i128 {
-    a / b
-}
-fn trunc_rem(a: i128, b: i128) -> i128 {
-    a % b
-}
-
 fn ordering(c: i32) -> Val {
     mk_enum("core.cmp.Ordering", ["Less", "Equal", "Greater"][(c + 1) as usize], vec![])
 }
@@ -196,7 +189,14 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
                     if o == 0 {
                         return Ok(none());
                     }
-                    Some(if op == "div" { trunc_div(s, o) } else { trunc_rem(s, o) })
+                    // 符号付きの `MIN / -1` と `MIN % -1` は溢れ (案 A)。剰余は i128 では溢れないので型の最小値で判定する。
+                    if op == "rem" && signed(ty) && s == lo && o == -1 {
+                        None
+                    } else if op == "div" {
+                        s.checked_div(o)
+                    } else {
+                        s.checked_rem(o)
+                    }
                 }
                 "shl" => {
                     if o >= b {
@@ -225,7 +225,13 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
                 "neg" => s.checked_neg(),
                 _ => return panic(format!("unknown integer operation {}.{}", ty, name)),
             };
-            return Ok(int(r.map_or(if (op == "sub" && o > 0) || (op == "neg" && s > 0) { lo } else { hi }, |v| v.clamp(lo, hi)), ty));
+            // 溢れの方向は真の結果の符号で決まる (和と差は被演算子 s の符号、積は符号の積、符号の反転は s が最小値のときだけ溢れて正になる)。
+            let below = match op {
+                "add" | "sub" => s < 0,
+                "mul" => (s < 0) != (o < 0),
+                _ => false,
+            };
+            return Ok(int(r.map_or(if below { lo } else { hi }, |v| v.clamp(lo, hi)), ty));
         }
         _ => {}
     }
@@ -255,16 +261,18 @@ fn float_op(name: &str, ty: &str, a: &[Val]) -> Res {
 }
 
 fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
+    // u128 はビットパターンで持つので、符号なしとして広げる。
+    let int_f64 = |i: i128, t: Option<&str>| if t == Some("u128") { i as u128 as f64 } else { i as f64 };
     let x = match a.first() {
         Some(Val::Float(f)) => *f,
         Some(Val::F32(f)) => *f as f64,
-        Some(Val::Int(i, _)) => *i as f64,
+        Some(Val::Int(i, t)) => int_f64(*i, *t),
         _ => 0.0,
     };
     let y = match a.get(1) {
         Some(Val::Float(f)) => *f,
         Some(Val::F32(f)) => *f as f64,
-        Some(Val::Int(i, _)) => *i as f64,
+        Some(Val::Int(i, t)) => int_f64(*i, *t),
         _ => 0.0,
     };
     if name == "from_bits" {

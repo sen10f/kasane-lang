@@ -631,13 +631,18 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 - `stage0/src/kir.rs`: 型 (`Ty`)、命令 (`Op` / `Inst` / `Term`)、関数 (`Func`)、モジュール (`Module`)、テキストの出力 (`print_module`) と読み込み (`parse_module`)、検査 (`verify_module`)。
 - `stage0/src/kir_lower.rs`: 型表 (`TypeCk::tytab`) 付きの AST から KIR を作る (`lower_user`)。対象外の関数は理由を付けて未対応にする。隠し表示 `dump_hidden`。
 - `stage0/src/kir_exec.rs`: KIR の参照実行器 (`run`)。明示的なフレーム列で呼び出しを持ち、Rust の再帰を使わない。深さの上限は木走査と同じ 2500 (終了コード 102)。
+- `stage0/src/kir_scalar.rs` (kir/scalars): 数値の意味 (浮動小数の演算と関数、`u128` の比較、シフト、変換、ビットの数え上げ)。木走査と同じ式を使う。
+- `stage0/src/kir_lower_scalar.rs` (kir/scalars): 数値の下ろし。`kir_lower.rs` の子モジュール (`#[path]`) で、`kir_lower.rs` 側には振り分けの 1 行ずつのフックだけを置く。
 - `stage0/src/cli.rs`: `ksn kir <FQN> [--run <引数>...]` (隠し機能)、`cmd_check` から `dump_hidden` を呼ぶ。
 
 ### 10.2 対応範囲
 
-- 型: `i8` `i16` `i32` `i64` `isize`、`u8` `u16` `u32` `u64` `usize`、`bool`、`unit`。
+- 型: `i8` `i16` `i32` `i64` `i128` `isize`、`u8` `u16` `u32` `u64` `u128` `usize`、`f32` `f64`、`bool`、`unit`。値は `i128` の 1 語で持つ (`u128` はビットパターン、浮動小数はビット列)。
 - 文: `let` (`mut` を含む)、単純な変数への代入、式文、`if` / `else if` / `else`、`while`、`loop`、`break`、`continue`、`return`。
-- 式: 整数と bool のリテラル、局所変数、整数の `const`、`+ - * / %` (溢れと 0 除算は panic。文言は木走査と同じ)、比較 (`== != < <= > >=`)、`&&` `||` (短絡)、単項 `-`、`wrapping_add` / `wrapping_sub` / `wrapping_mul`、同じ単相の関数の呼び出し (引数の型は一致が必要)。
+- 式: 整数・浮動小数・bool のリテラル、局所変数、整数の `const`、`+ - * / %` (整数は溢れと 0 除算が panic。文言は木走査と同じ。浮動小数の `+ - * /` は panic しない)、比較 (`== != < <= > >=`、浮動小数は IEEE の順序)、`&&` `||` (短絡)、整数と bool の `& | ^`、単項 `-` (整数と浮動小数)、整数と bool の `!`、同じ単相の関数の呼び出し (引数の型は一致が必要)。
+- 整数のメソッド: `wrapping_add` / `sub` / `mul` / `neg` / `shl` / `shr`、`saturating_add` / `sub` / `mul` / `neg`、`count_ones` / `leading_zeros` / `trailing_zeros`、`max` / `min`。`checked_*` / `try_from_*` / `trunc_to_*` / `successor` と `from_str_radix` は `Option` / `Result` を返すので対象外。
+- 浮動小数のメソッド: `abs` `sqrt` `floor` `ceil` `trunc` `round_ties_even` `sin` `cos` `tan` `exp` `ln` (自前の `fmath` を木走査と同じ式で使う)、`is_nan` `is_finite`、`min` `max` `rem` `atan2` `powi`、`to_bits` / `from_bits`。
+- 変換: `from_<int>` (値を保つ組だけ)、`from_<int>_nearest` と `to_f64` / `nearest_to_f64`、`nearest_to_f32` / `to_f64` (`f32` と `f64` の間)。`from_<int>_nearest` の `f32` は木走査と同じく `f64` を経由して丸める。
 - 効果: `panics never` の関数には trap の命令が現れない (`verify_module` が検査する)。`uses` は宣言の値をそのまま写す。段階 1 の式には副作用を起こす組み込みが無いので、対象の関数は実質的に `uses []` だけになる。
 - テキスト形式: `kir 1` の版行。版が違えば読み込みを拒否する (7 章 18)。関数は FQN の順に出す。
 
@@ -651,33 +656,66 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 ### 10.4 確認した結果
 
 - 単体テスト: `kir::tests` 6 本 (往復、版の拒否、`never` の trap 検出、溢れ文言の一致)。
-- 統合テスト (`stage0/tests/cli.rs` 末尾): `kir_lower_values_match_tree_walker` (16 ケース)、`kir_lower_panics_and_depth_match_tree_walker` (panic の文言、終了コード 101、深さの超過 102)、`kir_lower_prints_a_module_that_reads_back`、`kir_lower_reports_unsupported_constructs_with_a_reason`、`kir_lower_dump_on_check_is_hidden_behind_the_env_var`、`kir_lower_examples_and_perf_functions_match_tree_walker`、`kir_lower_rejects_checked_methods_and_aggregates_with_a_reason`。
+- 統合テスト (`stage0/tests/cli.rs` 末尾): `kir_lower_values_match_tree_walker` (16 ケース)、`kir_lower_panics_and_depth_match_tree_walker` (panic の文言、終了コード 101、深さの超過 102)、`kir_lower_prints_a_module_that_reads_back`、`kir_lower_reports_unsupported_constructs_with_a_reason`、`kir_lower_dump_on_check_is_hidden_behind_the_env_var`、`kir_lower_examples_and_perf_functions_match_tree_walker`。
 - 木走査との一致: `perf/fib` の `fib.fib`、`perf/loops` の `loops.sum_to`、`examples/demo` の `demo.fib`、`examples/native` の `native.half`、`examples/realtime` の `realtime.triangle` を、`ksn run` と `ksn kir --run` の両方で確かめた (値は各パッケージの `main` の検査と一致)。
-- 降格の範囲: examples 7 本のユーザ関数の候補 40 件のうち、降格できたのは 3 件 (`demo.fib`、`native.half`、`realtime.triangle`)。残り 37 件は未対応で、理由は下の 10.5 のとおり。
-- `KSN_DUMP_KIR=1 ksn check` は、stderr に KIR と `kir: 未対応 <FQN>: <理由>` の行を出す。通常の `ksn check` の出力と終了コードは変えない。
+- 降格の範囲: examples 7 本のユーザ関数の候補 40 件のうち、降格できたのは 12 件 (`demo.fib`、`demo.shape.area`、`features.apply`、`features.chain`、`features.checked`、`features.collatz`、`native.collatz`、`native.half`、`realtime.triangle`、`tour.floats`、`tour.ints`、`tour.loops`)。残り 28 件は未対応。(段階 1 の基線は 3 件、kir/scalars 単独は 7 件、kir/option-result 単独は 5 件、kir/aggregates 単独は 4 件。4 ブランチを統合した後の数で、理由別の内訳は下の 10.5 の表 (統合前の数) のまま。)
+- `KSN_DUMP_KIR=1 ksn check` は、stderr に KIR と `kir: 未対応 <FQN>: <理由>` の行を出す。通常の `ksn check` の出力と終了コードは変えない (examples 7 本の `ksn check` の出力は、拡張の前後で同一)。
+- 数値の拡張 (kir/scalars) の確認: `stage0/tests/cli.rs` 末尾の `kir_scalar_ints_match_tree_walker`、`kir_scalar_floats_and_wide_ints_match_tree_walker` (超越関数・`f32` の結果はビット列で木走査と比べる)、`kir_scalar_text_reads_back_with_float_and_bit_ops`、`kir_scalar_reports_unsupported_numeric_methods_with_a_reason`。`kir_scalar.rs` の単体テスト 5 本。
+- 木走査の修正 (`natives.rs`、参照実行器との一致のため): (a) `i128` の `saturating_*` は、溢れた方向を結果の符号で決める (負側の溢れが `MAX` になっていた)。(b) `u128` の値を `f32` / `f64` へ変換するとき、符号付きとして広げていた (`from_u128_nearest` など)。どちらも狭い整数型には影響しない。
 
 ### 10.5 未対応の一覧
 
-未対応 37 件の理由を、先頭の理由 1 つで分類した (examples 7 本の `KSN_DUMP_KIR=1 ksn check` の出力による。候補 40 件のうち降格できた 3 件を除く)。
+統合後 (kir/collections を含む全ブランチ) の未対応は 28 件。候補 40 件のうち 12 件は降格できた (examples 7 本の `KSN_DUMP_KIR=1 ksn check` の出力)。理由は先頭の理由 1 つで分類した。統合前の kir/collections 単独では未対応 37 件、降格 3 件だった。
 
 | 理由 | 件数 | 例 | 次の作業 |
 |---|---:|---|---|
-| 引数・戻り値の型が段階 1 の外 (参照 17、`Result` 9、名前付きの型 4) | 30 | `json.array` (`&json.Doc`)、`demo.main` (`Result<(), std.io.Error>`) | 集成体・参照・`Result` の型を型表に足す (第 2.3)。段階 2 以降 |
-| 整数のビット演算 (`& \| ^ << >>`) | 3 | `features.collatz`、`native.collatz`、`tour.loops` | 演算子の下ろしを足す。命令は既存の `Op` に無いので追加が要る |
-| 整数のメソッド (`saturating_add` など) | 1 | `tour.ints` | `wrapping_*` 以外は段階 3 以降。`checked_*` は `Option<T>` を返すので集成体の型が要る |
-| `f64` | 1 | `tour.floats` | 浮動小数の型と命令を足す |
-| その他 (バイト文字リテラル、列挙子の呼び出し) | 2 | `json.is_hex`、`tour.shapes` | リテラルの型と、列挙子の値の下ろし |
+| 引数の型が段階 1 の外: 参照 (指す先が名前付きの型 11、スライス 3、`str` 2、`String` の `&mut` 1) | 17 | `json.array` (`&mut json.Doc`)、`json.digits` (`&[u8]`)、`json.parse` (`&str`) | 名前付きの型・スライス・`str` を指す参照 (10.8 の未対応)。第 2.3 の型表に載せる作業と一緒に決める |
+| 戻り値が名前付きの E を持つ `Result` | 7 | `demo.main` (`Result<(), std.io.Error>`) | 名前付きの E を持つ `Result` (段階 2 以降) |
+| 名前付きの型 (利用者の型以外、または型表に無い型) | 2 | `realtime.Ring.new` (`realtime.Ring`)、`json.oom` (`alloc.alloc.AllocError`) | 標準の型の配置と、型表への登録 |
+| その他 (バイト文字リテラル、`for` の対象の形) | 2 | `json.is_hex` (`b'…'`)、`tour.shapes` (`for` の対象が range でも要素型の分かる Vec でもない) | byte リテラルの型、イテレータと配列の `for` (Iterator の段階) |
 
-`checked_*` の拒否は `stage0/tests/cli.rs` の `kir_lower_rejects_checked_methods_and_aggregates_with_a_reason` で確かめる。
+集成体の行 (利用者の構造体・列挙型・タプル) は 10.7 の後では降格できる。
+数値の未対応のうち examples の外のものは、`trunc_to_*` / `try_from_*` / `successor` / `from_str_radix` (`Option` か `Result` を返す) と、`checked_neg` / `checked_shl` / `checked_shr` (第 11 章)。いずれも集成体の型が要る。
+
+`checked_*` (`checked_add` / `sub` / `mul` / `div` / `rem`) の拒否と下ろしは `stage0/tests/cli.rs` の `kir_optres_*` で確かめる。
 
 ### 10.6 残った問題と次の作業
 
 - 冗長な命令: 文として使う式の unit 定数 (`%3: unit = const.unit ()`) と、値を渡すだけの空ブロック (`b2(): br b3()`) が残る。動作は正しい。段階 3 の不要コード除去と空ブロックの統合で消す。
 - `ksn kir --json` (LLM 向けの形式) は未実装 (第 2.7)。
-- 段階 1 の対象外の型と構文を広げる順序: (1) 浮動小数と整数のビット演算、(2) 整数のメソッド、(3) 集成体 (構造体・列挙型・タプル) とレイアウト、(4) 参照とスライス、(5) `Result` と `?`。(3) から先は段階 2 の VM の設計と一緒に決める。
+- 段階 1 の対象外の型と構文を広げる順序: (1) 浮動小数と整数のビット演算と整数のメソッド (kir/scalars で完了。`i128` / `u128` も入った)、(2) 組み込みの `Option` / `Result` と `checked_*` の 5 種、`?` (kir/option-result で完了。第 11 章)、(3) 集成体 (構造体・列挙型・タプル) とレイアウト (10.7 で完了)、(4) スライスと、名前付きの型を指す参照 (指す先がスカラーの参照は 10.8 で済んだ)、(5) 名前付きの E を持つ `Result`。(4) から先は段階 2 の VM の設計と一緒に決める。
 - 段階 2 (VM) への入口: `Module` は関数の表として使える形にしてある。次は `vm/` でバイトコードへ写し、`kir_exec` と結果を比べる差分テスト (`vm_parity`) を作る。
 
-### 10.7 コレクション・文字列・クロージャ (kir/collections)
+### 10.7 集成体の下ろし (kir/aggregates)
+
+ブランチ `kir/aggregates` (`claude/handover-work-i7ll7p` から分岐)。段階 1 の対象に、利用者が定義した構造体 (`type`)、タプル、列挙型 (`enum`、ペイロード付きの変種を含む) を加えた。`Option` と `Result` は別担当のため対象外。
+
+- 型: `Ty::Agg(u32)` (型表 `Module::aggs` の添字)。`Ty` は `Copy` のまま。型表は `print_module` の先頭に `agg#<k> <struct|tuple|enum> <名前> size=<n> align=<n> {…}` の行で出る。未使用の型は `prune_aggs` が外し、残りを元の順に振り直す。
+- 配置: clif.rs の `layout` / `enum_layout` と同じ規則 (構造体・タプルは宣言の順、列挙型は先頭 4 バイトのタグ (i32、変種の添字) の後ろにペイロードを重ねる)。clif 側の `layout_probe` (clif.rs 末尾、試験専用) と照合する単体テスト `kir_agg_layout_matches_clif` (`kir_lower_agg.rs`) が、入れ子の構造体、整列の違うフィールド、バリアントごとに違う大きさの列挙型、タプルについて、大きさ・整列・オフセットの一致を確かめる。
+- 値は不変。集成体の値は配置どおりのバイト列を指す。フィールドの書き換えは `setfield` で新しい値を作り、変数へ代入し直す。2.2 の `alloca` / `load` / `store` は使わない (値の別名を作らず、代入の合流を既存のブロック引数の仕組みに乗せるため)。
+- 命令: `make(%a, %b)` (構造体・タプル)、`make.vK(...)` (列挙型の変種 K)、`field %a, +off` (読み出し)、`setfield %a, +off, %v` (書き換え)、`tag %a` (変種の添字、i32)。`field` / `setfield` のオフセットは型表のレイアウトから得る (名前では引かない)。
+- 下ろし: `kir_lower_agg.rs` (`kir_lower.rs` の子モジュール。非公開の部品をそのまま使う)。構造体リテラル、タプル、`x.f.g` の読み出し、`x.f = v` の代入、変種の構築 (`E.V(...)`、`E.V`)、`let` の束縛パターン、`match` (変種・タプル・構造体・整数と bool のリテラル・束縛・`_`)。`match` は腕ごとに試験 (タグの比較) を連ねて下ろし、代入された変数は `if` と同じく合流のブロック引数で渡す。
+- 対象外 (理由付きで未対応): 利用者のパッケージ以外の型 (標準の型は clif が特別扱いする配置を持つ。例 `alloc.alloc.AllocError` は大きさ 1)、型引数付きの型、参照、ユニット型のフィールド、`Option` / `Result`。再帰的な型は検査器が `core.ops.Drop` を要求する (E4013) ので、この段階の下ろしには届かない。
+- 検査 (`verify_module`): 構築の要素の型と個数、`field` / `setfield` のオフセットと型 (`has_field`)、`tag` の型 (i32 と列挙型)、型表の参照の範囲、集成体の定数と集成体の比較の拒否。
+- 実行器 (`kir_exec.rs`): 集成体は実行の置き場 (バイト列の表) に置き、値は添字 (i128) で持つ。関数から戻るときは、戻り値の集成体だけを呼び出し元の置き場へ複製し、その関数の分は切り詰める。`ksn kir --run` の入口は整数と bool の引数・戻り値だけ (集成体の入口は理由付きで拒否)。
+- 結果: examples 7 本で `KSN_DUMP_KIR=1 ksn check` が降格した関数は、40 候補のうち 3 件から 4 件になった (`demo.shape.area` が増えた)。7 本とも `ksn check` の出力と終了コードは変わらない。
+- テスト: `kir::tests` の 3 本 (宣言の往復、フィールドのオフセットの検査、型表の整理)、`kir_agg_layout_matches_clif`、`stage0/tests/cli.rs` の `kir_agg_*` 4 本 (木走査と参照実行器の値の一致、宣言の行、対象外の理由、入口の拒否)。
+- 次の作業: 列挙型の `match` の腕ごとの試験を、タグの分岐表 (`switch`) に下ろす。組み込みの `Option` / `Result` を型表に載せる作業は別担当の型と合わせる。
+
+### 10.8 参照 (kir/refs)
+
+ブランチ `kir/refs` (`claude/handover-work-i7ll7p` から分岐)。`&T` / `&mut T` (`T` は整数と bool)、`*r` の読み、`*r = v` の書き込み、参照を引数と戻り値に取る関数を下ろす。`kir_lower_refs.rs` (`kir_lower.rs` の子モジュール) に置き、`kir_lower.rs` には呼び出し点ごとの 1 行の振り分けと、状態を持つ字段 1 つだけを足した。
+
+- 型: `ref<T>` / `mutref<T>` (`Ty::Ref`)。指す先は `Pointee` (整数と bool)。`Ty` は `Copy` を保つため、中身は `Ty` ではなく `Pointee` にした。値は常にアドレス (参照実行器ではセルの番号)。clif の規約 (スカラーの `&T` は値) とは違う。
+- 命令: `alloca` (入口ブロックに置く。結果は `mutref<T>`)、`load %p` (結果は指す先の型)、`store %p, %v` (`mutref` だけ。結果は unit)、`asshared %p` (`&mut` を `&` にする)、`reborrow %p` (`&mut` の複製。スタックスロットの番号と参照の値を区別するために置く)。
+- 局所変数: 関数の中で `&x` / `&mut x` と書かれた名前は、スタックスロットに置く (読みは `load`、書きは `store`)。それ以外の局所は従来どおり SSA の値。`&` で式のままの値 (`&(a + b)`) は一時のスロットに入れてから取る。
+- 実行器: 呼び出しごとにセルの配列を持ち、返るときに切り詰める。`alloca` は入口ブロックでだけ行うので、ループの中でセルは増えない。
+- 検査 (`verify_module`): `store` は `mutref` だけ、`load` は指す先の型と一致、`asshared` / `reborrow` は同じ指す先、参照どうしの比較は禁止。借用の検査は前提としてしない。
+- 候補の判定 (`is_candidate`): ライフタイムだけの宣言 (`fn t.pick['a](...)`) は型引数ではないので候補に入れた。型引数があるものは従来どおり対象外。
+- 木走査との一致: `stage0/tests/cli.rs` の `kir_refs_values_match_tree_walker` (16 ケース: 参照を引数に取る関数、戻り値の参照、一時のアドレス、ループ・分岐・`break` と `return` の中での `&mut`、再帰)、`kir_refs_panics_match_tree_walker` (参照の先での溢れの文言と終了コード 101)。`kir_refs_text_shows_slots_and_reference_types` は出力の形と読み直しを、`kir_refs_reference_to_unsupported_pointee_keeps_its_reason` は指す先が名前付きの型・`str` のときの理由を確かめる。`kir.rs` の `refs_print_and_parse_round_trip` と `refs_verify_rejects_...` は命令の往復と検査を確かめる。
+- 降格の範囲 (examples 7 本の候補 40 件): refs の単独では 3 件のまま (`demo.fib`、`native.half`、`realtime.triangle`)。統合後の件数は 11.5 を見る。examples の参照は、すべて名前付きの型 (`&json.Doc`、`&mut alloc.string.String`)、スライス (`&[u8]`)、`str` (`&str`) を指すので、この段階で増える関数はない。`KSN_DUMP_KIR=1 ksn check` の出力 (未対応の理由を含む) も変わらない。examples の `ksn check` の出力も変わらない。
+- 未対応のまま残すもの: 指す先が名前付きの型・スライス・`str` の参照、参照を指す参照 (`&&T`)、参照どうしの比較。
+### 10.9 コレクション・文字列・クロージャ (kir/collections)
 
 ブランチ `kir/collections` (`9f0ad58` から分岐)。段階 1 の対象に、ヒープ (clif と同じ実メモリ表現)、`Vec` / `String` / `&str`、`for`、添字、捕獲のないクロージャと、その `Fn` 境界の関数への単相化を加えた。既定の挙動 (`ksn run` / `ksn build` / `ksn check` の出力) は変えていない。
 
@@ -703,6 +741,57 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 | `str` の比較 (`==` など) | 比較の下ろし (バイト列の比較) が未実装 | 段階 2 までに `mem` 系の比較を足す |
 | `for` の対象が `core.iter.range` と要素型の分かる Vec 以外 (イテレータ、配列リテラル) | Iterator / 配列の型が段階 1 の外 | Iterator の段階 |
 | 要素型が決まらない Vec | 型表の `_` (`push` が入るまで、型推論は要素型を決めない) | Option / Result の段階と型推論の完全化 (7 章 4) |
+
+## 11. 組み込みの Option / Result と checked_* (kir/option-result)
+
+ブランチ `kir/option-result` (`claude/handover-work-i7ll7p` から分岐)。第 10 章 10.6 の (2) の実装。名前付きの型 (構造体・ユーザ enum) は別の作業なので、ここでは組み込みの `Option<P>` と `Result<T, E>` だけを扱う (P、T、E は段階 1 のスカラー)。
+
+### 11.1 値の表現 (タグ + ペイロード)
+
+- 型: `Ty::Opt(Pay)` (`Option<P>`)、`Ty::Res(Pay, Pay)` (`Result<T, E>`)。`Pay` は整数・`bool`・`unit` だけを持つ列挙で、ネストした Option や集成体は型として書けない。`Ty` は `Copy` のまま保つ (型表の `TyId` を導入せずに済む)。
+- 値の論理的な形: 1 つの SSA 値が「タグ 1 bit + ペイロード 1 つ」を持つ。
+  - `Option<P>`: タグ = Some か。`None` はタグ 0 (ペイロードは読まない)。
+  - `Result<T, E>`: タグ = Err か。`Ok(t)` はタグ 0、`Err(e)` はタグ 1。ペイロードは `T` か `E` のどちらかで、タグで決まる (同じ場所を共有する)。
+  - ペイロードは 64 ビット以下のスカラー。`bool` は 0 / 1、`unit` は 0、整数は 2 の補数の下位 64 ビット。
+- 参照実行器 (`kir_exec`) の符号化: `i128` 1 スロット。bit 64 がタグ、bit 0..63 がペイロード (`TAG_BIT` と `PAY_MASK`、`payload_bits` / `payload_of`)。`None` は 0、`Some(0)` は bit 64 が立った値なので、ペイロードが 0 でも両者は区別される。`show_value` が型に従って `Some(..)` / `None` / `Ok(..)` / `Err(..)` に読む。
+- 注意: この `i128` 符号化は参照実行器だけの都合である。VM・Cranelift・LLVM は第 2.3 章の集成体のバイト配置 (タグとペイロードを別の位置に置く) を使う。VM の値の表現は段階 2 で決める。ここでは KIR の型と意味だけを決めている。
+
+### 11.2 テキスト形式
+
+- 型名は空白なし: `Option<u32>`、`Result<u8,u8>`、`Result<unit,u8>`。`Result` の 2 つの型は `,` で区切る。
+- 命令 (結果の型は `%n: T = ...` の `T`):
+
+| 命令 | 型 (結果) | 意味 |
+|---|---|---|
+| `const.Option<P> none` | `Option<P>` | `None` (符号化 0)。`Option` の定数は `none` だけ |
+| `some %a` | `Option<P>` | `Some(a)` (`a` は `P`) |
+| `ok %a` | `Result<T,E>` | `Ok(a)` (`a` は `T`) |
+| `err %a` | `Result<T,E>` | `Err(a)` (`a` は `E`) |
+| `tag %a` | `bool` | Option は Some か、Result は Err か |
+| `payload %a` | `P` | ペイロードを型 `P` で読む。タグは見ない (呼び出し側が `tag` で確かめる) |
+| `checked.<op> %a, %b` | `Option<P>` | `checked_<op>`。溢れと 0 除算は `None`。`panics never` でも使える |
+
+- ブロック引数の並びは `<...>` の中の `,` を区切りと見なさない (`split_top`)。
+
+### 11.3 下ろしの規則 (`kir_lower_enum.rs`)
+
+- 子モジュールとして `kir_lower.rs` に読み込む (`#[path]`)。親の非公開の項目 (`Lw` と変数・ブロックの操作) を使うので、親の構造は広げていない。親の変更は、型の写し (`conv`)、`expr` の振り分け (`Match` / `Try`)、`path_val` (`None`)、`call` / `mcall` の先頭の 1 行ずつ。
+- 構築: `Some(a)`、`Ok(a)`、`Err(a)`、`None` (型表の型で決める)。
+- `match`: 腕ごとに「判定 (bool の値) → 本体」を作り、本体の結果と代入された変数を合流のブロック引数で渡す (`if` と同じ作法)。判定は `tag` と `payload` の値から組み立てる (タグを見ずに読んでも害はない)。`Some(p)` は `tag && p`、`Ok(p)` は `!tag && p`、`Err(p)` は `tag && p`、`None` は `!tag`、整数と bool のリテラルは `icmp.eq`、`_` と名前は常に真。最後の腕は判定を省く。網羅性は型検査が見る前提。
+- `e?`: `Option` は `None` を `Ret` に、`Result` は `Err(e)` を戻り値の型で作り直して `Ret` する。変換はしない (仕様 4.1 の「`Result` と `?` (変換なし)」)。`Result` の E が戻り値の E と違う形は対象外 (理由付きで未対応)。
+- `checked_add` / `checked_sub` / `checked_mul` / `checked_div` / `checked_rem` (受け手は整数の局所変数か式)。他の `checked_*` (`checked_neg` `checked_shl` `checked_shr`) は未対応。
+
+### 11.4 検証と木走査との一致
+
+- `verify_module`: 構築・取り出しの被演算子の型、`Option` の定数は `none` だけ、`Cmp` は scalar だけ (`Option` の同値比較は書けない)、`tag` は Option か Result の値だけ。`checked_*` は trap を持たないので `panics never` の関数で書ける。
+- 木走査との一致 (`stage0/tests/cli.rs` の `kir_optres_*`): `?` (Option と Result)、`match` (`Some(0)`、`Some(1)`、`Some(_)`、`None`、`Ok`、`Err`、`bool` の `if` の値)、`unit` のペイロード (`Result<(), u8>`)、符号付きのペイロード (`-2`)、`bool` のペイロード、Option の引数と Option の変数への代入 (ループ内)、`features.chain` と `features.checked` (examples の値)。
+- 解消済み (rt/min-rem-overflow): 符号付きの `MIN % -1` は割り算が溢れるので余りも溢れとする (案 A。Rust と同じ)。木走査 (`interp.rs` の `int_arith` と `natives.rs` の `checked_rem`)、KIR (`kir_exec.rs` の `arith` と `checked`)、Cranelift (`clif.rs`) で揃えた。`%` は panic (`attempt to calculate the remainder with overflow`)、`checked_rem` は `None`。`checked_div(MIN, -1)` は従来から `None`。
+
+### 11.5 効果と結果
+
+- 下ろしの結果: examples 7 本で降格できた関数は、単独では 3 件から 5 件に増えた (`features.chain`、`features.checked`)。kir/scalars と統合した後は 10 件 (`tour.ints` が加わる)、未対応は 30 件。`ksn check` の出力と終了コードは変わらない (統合前の kir/scalars とバイト一致)。
+- 残りの未対応 (第 10 章 10.5 の表に対応): 参照 (`&json.Doc` など) 17、名前付きの E を持つ `Result` 7、名前付きの型 4、その他 2。
+- 未対応のまま: `Option` の中の集成体・`Option<Option<_>>`、`Result` の E の変換を伴う `?`、`checked_neg` / `checked_shl` / `checked_shr`、`Option` / `Result` の同値比較・`Option` の定数 (`none` 以外)。
 
 ## 付録: 参照した箇所 (主要)
 

@@ -414,9 +414,8 @@ fn cmd_kir(rest: &[String]) -> i32 {
     match crate::kir_exec::run(&back, fqn, &args) {
         Ok(crate::kir_exec::Outcome::Value(v)) => {
             match ret {
-                Some(crate::kir::Ty::Bool) => println!("{}", v != 0),
-                Some(crate::kir::Ty::Unit) => println!("()"),
-                _ => println!("{}", v),
+                Some(t) => println!("{}", crate::kir::show_value(t, v)),
+                None => println!("{}", v),
             }
             0
         }
@@ -1746,5 +1745,15 @@ pub fn main_cli(args: Vec<String>) -> i32 {
             );
             2
         }
+    }
+}
+
+/// 試験用: パッケージ `root` を検査し、(プログラム, ユーザの定義の添字) を返す。検査が失敗すれば `None`。
+#[cfg(test)]
+pub(crate) fn checked_program_for_test(root: &Path) -> Option<(Program, Vec<usize>)> {
+    let mut rep = Report::new(false);
+    match full_check(root, &mut rep, false) {
+        Ok((_, Some(prog), user)) if !rep.fatal() => Some((prog, user)),
+        _ => None,
     }
 }
