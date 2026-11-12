@@ -894,6 +894,38 @@ impl<'a> Checker<'a> {
                     self.diag("E2050", format!("derive [From] on {}: {}", d.name, why), i, 0);
                 }
             }
+            // 4.3: derive した各トレイト (Copy 以外) は、フィールド・ペイロードの名義型もそのトレイトを実装していること
+            // (基本型・参照・タプル・配列は組み込み実装、型パラメータは境界が担うので見ない)。
+            {
+                let tys: Vec<V> = if d.kw == "type" {
+                    d.fields.iter().map(|f| f.1.clone()).collect()
+                } else {
+                    d.variants.iter().flat_map(|v| v.1.clone()).collect()
+                };
+                let params: HashSet<String> = d.generics.iter().map(|g| g.1.clone()).collect();
+                for dv in d.derive.clone() {
+                    if dv == "Copy" || dv == "From" {
+                        continue;
+                    }
+                    let Some(&tr) = short_to_fqn.get(dv.as_str()) else { continue };
+                    let mut missing: Vec<String> = vec![];
+                    for t in &tys {
+                        let mut named = vec![];
+                        Self::named_in(t, &mut named);
+                        for n in named {
+                            if params.contains(&n) || n == d.name || n == "Option" || n == "Result" {
+                                continue;
+                            }
+                            if self.p.types.contains_key(&n) && !self.implements(&n, tr) && !missing.contains(&n) {
+                                missing.push(n);
+                            }
+                        }
+                    }
+                    for n in missing {
+                        self.diag("E2036", format!("derive [{}] on {}: the field type {} does not implement {}", dv, d.name, n, tr), i, 0);
+                    }
+                }
+            }
             if derived.contains("Copy") {
                 let tys: Vec<V> = if d.kw == "type" {
                     d.fields.iter().map(|f| f.1.clone()).collect()
@@ -904,6 +936,24 @@ impl<'a> Checker<'a> {
                     self.diag("E2036", format!("derive [Copy] on {}: every field must be Copy", d.name), i, 0);
                 }
             }
+        }
+    }
+
+    /// 型の中に現れる名義型の FQN (参照・タプル・配列・スライス・型引数を通して)。
+    fn named_in(t: &V, out: &mut Vec<String>) {
+        match tag(t).as_str() {
+            "named" => {
+                out.push(st(tel(t, 1)));
+                for a in items(tel(t, 2)) {
+                    if matches!(a, V::L(_)) {
+                        Self::named_in(a, out);
+                    }
+                }
+            }
+            "ref" => Self::named_in(tel(t, 2), out),
+            "array" | "slice" => Self::named_in(tel(t, 1), out),
+            "tuple" => items(tel(t, 1)).iter().for_each(|x| Self::named_in(x, out)),
+            _ => {}
         }
     }
 

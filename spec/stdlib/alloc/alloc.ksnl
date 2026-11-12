@@ -1,4 +1,4 @@
-type alloc.alloc.AllocError derive [Debug, Clone, Copy] pub
+type alloc.alloc.AllocError derive [Debug, Clone, Copy, PartialEq, Eq] pub
     code: u32
 end alloc.alloc.AllocError
 
