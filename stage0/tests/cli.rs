@@ -8286,6 +8286,35 @@ fn build_with_cache(ksn: &str, cwd: &Path, cache: &Path, extra: &[&str], envs: &
 }
 
 #[test]
+fn concurrent_builds_with_the_same_key_both_succeed() {
+    // 同じキー (同じソースの別のパッケージ dir) を同じキャッシュへ並行にビルドしても、どちらも成功する。
+    // 以前は作業用の `<key>.tmp` を共有して互いに消し合い、`fs::rename(..).unwrap()` で panic しえた。
+    let a = Tmp::new("cache_race_a", CACHE_SRC);
+    let b = Tmp::new("cache_race_b", CACHE_SRC);
+    for round in 0..4 {
+        let cache = std::env::temp_dir().join(format!("ksn_cache_race_{}_{}", std::process::id(), round));
+        let _ = fs::remove_dir_all(&cache);
+        let spawn = |dir: &Path| {
+            Command::new(exe())
+                .args(["build", "--backend", "clif"])
+                .current_dir(dir)
+                .env("KSN_CACHE_DIR", &cache)
+                .env("KSN_STDLIB", root().join("spec").join("stdlib"))
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+        let (pa, pb) = (spawn(&a.0), spawn(&b.0));
+        let (oa, ob) = (pa.wait_with_output().unwrap(), pb.wait_with_output().unwrap());
+        let _ = fs::remove_dir_all(&cache);
+        for o in [&oa, &ob] {
+            assert_eq!(o.status.code(), Some(0), "round {}: {}{}", round, text(&o.stdout), text(&o.stderr));
+        }
+    }
+}
+
+#[test]
 fn cache_hit_reuses_native_artifact_without_compiling() {
     // 1 回目は compile_clif を通り、生成物がキャッシュに入る。2 回目は同じキーで
     // "cache hit" となり、compile_clif (KSN_TIME の印) を通らずに生成物を複製する。

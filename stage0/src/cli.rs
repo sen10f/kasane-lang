@@ -1631,7 +1631,8 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         let _ = fs::write(cached.join(".used"), "");
         println!("cache hit");
     } else {
-        let tmp = cdir.join(format!("{}.tmp", key));
+        // 一時ディレクトリはプロセスごと (同じキーの並行ビルドが互いの作業中のものを消さない)。
+        let tmp = cdir.join(format!("{}.tmp{}", key, std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
         if let Ok(exe) = std::env::current_exe() {
@@ -1644,7 +1645,14 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
             copy_tree(&dp.root, &pk.join("vendor").join(&dp.name), &["target", "__pycache__", ".git"]);
         }
         let _ = fs::write(tmp.join(".used"), "");
-        fs::rename(&tmp, &cached).unwrap();
+        if let Err(e) = fs::rename(&tmp, &cached) {
+            // 同じキーを並行にビルドした別のプロセスが先に置いた。中身は同じなので、それを使う。
+            let _ = fs::remove_dir_all(&tmp);
+            if !cached.is_dir() {
+                eprintln!("ksn: cannot store the build in the cache {}: {}", cached.display(), e);
+                return 1;
+            }
+        }
         evict(&cdir, &key);
     }
     let out = l.pkg.root.join("target").join(kind);
