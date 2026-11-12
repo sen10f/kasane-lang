@@ -7518,7 +7518,7 @@ end t.Phase.next
 /// インタプリタとバンドルの両方で動く (以前は "unknown integer operation" で panic していた)。
 /// `to_string` は仕様に無く検査で拒む (tests/data/unsound/)。
 #[test]
-fn scalar_display_and_derived_methods_run_in_interp_and_bundle() {
+fn scalar_display_and_derived_methods_run_in_both() {
     let test = "test t.main.test_scalar_display
     let n: i64 = -7i64
     let mut buf = [0u8; 32]
@@ -7549,8 +7549,69 @@ end t.main.test_scalar_display
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    // Cranelift が Formatter のバッファ (`let` の型が決まらない) に未対応: インタプリタとバンドルの比較
-    assert!(out.contains("test t.main.test_scalar_display ... ok (both: bundle (native skipped: "), "{}", out);
+    assert!(out.contains("test t.main.test_scalar_display ... ok (both: native)"), "{}", out);
+}
+
+/// Formatter の境界: i64.MIN / u64.MAX / 0 / マルチバイトの char / バッファがちょうど・不足 / debug の char。
+#[test]
+fn formatter_edge_cases_run_natively() {
+    let test = r#"test t.main.test_fmt_edges
+    let mn = core.num.i64.MIN
+    let mx = core.num.u64.MAX
+    let m5 = -5i8
+    let mut b1 = [0u8; 32]
+    let mut f1 = core.fmt.Formatter.new(&mut b1)
+    core.mem.drop(mn.display_fmt(&mut f1))
+    core.check.eq(core.str.from_utf8(f1.written()), Ok("-9223372036854775808"))
+    let mut b2 = [0u8; 32]
+    let mut f2 = core.fmt.Formatter.new(&mut b2)
+    core.mem.drop(mx.display_fmt(&mut f2))
+    core.check.eq(core.str.from_utf8(f2.written()), Ok("18446744073709551615"))
+    let z = 0u8
+    let mut b3 = [0u8; 4]
+    let mut f3 = core.fmt.Formatter.new(&mut b3)
+    core.mem.drop(z.display_fmt(&mut f3))
+    core.check.eq(core.str.from_utf8(f3.written()), Ok("0"))
+    let ce = 'é'
+    let ca = 'あ'
+    let mut b4 = [0u8; 5]
+    let mut f4 = core.fmt.Formatter.new(&mut b4)
+    core.mem.drop(ce.display_fmt(&mut f4))
+    core.mem.drop(ca.display_fmt(&mut f4))
+    core.check.eq(core.str.from_utf8(f4.written()), Ok("éあ"))
+    let mut b5 = [0u8; 8]
+    let mut f5 = core.fmt.Formatter.new(&mut b5)
+    core.check.is_true(f5.written().len() == 0usize)
+    core.check.is_true(core.fmt.Formatter.write_str(&mut f5, "12345678").is_ok())
+    core.check.is_true(core.fmt.Formatter.write_str(&mut f5, "9").is_err())
+    core.check.eq(core.str.from_utf8(f5.written()), Ok("12345678"))
+    let big = 12345i32
+    let mut b6 = [0u8; 3]
+    let mut f6 = core.fmt.Formatter.new(&mut b6)
+    core.check.is_true(big.display_fmt(&mut f6).is_err())
+    core.check.eq(core.str.from_utf8(f6.written()), Ok(""))
+    let cx = 'x'
+    let cn = '\n'
+    let cq = '\''
+    let ca2 = 'あ'
+    let tt = true
+    let mut b7 = [0u8; 32]
+    let mut f7 = core.fmt.Formatter.new(&mut b7)
+    core.mem.drop(cx.debug_fmt(&mut f7))
+    core.mem.drop(cn.debug_fmt(&mut f7))
+    core.mem.drop(cq.debug_fmt(&mut f7))
+    core.mem.drop(ca2.debug_fmt(&mut f7))
+    core.mem.drop(tt.debug_fmt(&mut f7))
+    core.mem.drop(m5.debug_fmt(&mut f7))
+    core.check.eq(core.str.from_utf8(f7.written()), Ok("'x''\\n''\\'''あ'true-5"))
+end t.main.test_fmt_edges
+"#;
+    let src = format!("{}\n{}", main_wrap("", ""), test);
+    let t = Tmp::new("fmt_edges_both", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_fmt_edges ... ok (both: native)"), "{}", out);
 }
 
 /// `Display` の char は文字そのもの。`print_line` と `to_string` の出力を確かめる。

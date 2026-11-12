@@ -945,6 +945,12 @@ impl<'a> Cx<'a> {
         if name == "clone" && !is_mutref(recv_ty) && !self.needs_drop(recv_ty) && !self.types.contains_key(&format!("{}.clone", recv_ty)) {
             return Some(recv_ty.to_string());
         }
+        if matches!(name, "cmp" | "partial_cmp") && (is_int(recv_ty) || recv_ty == "char" || recv_ty == "bool") && self.types.contains_key("core.cmp.Ordering") {
+            return if name == "cmp" { Some("core.cmp.Ordering".into()) } else { self.builtin_enum("Option", &["core.cmp.Ordering".into()]).ok() };
+        }
+        if matches!(name, "display_fmt" | "debug_fmt") && (is_int(recv_ty) || recv_ty == "char" || recv_ty == "bool") {
+            return self.builtin_enum("Result", &["void".into(), "core.fmt.Error".into()]).ok();
+        }
         if is_int(recv_ty) && name.starts_with("checked_") {
             return self.builtin_enum("Option", &[recv_ty.to_string()]).ok();
         }
@@ -1035,10 +1041,11 @@ impl<'a> Cx<'a> {
             "get" | "first" | "last" if is_scalar(elem) || !self.needs_drop(elem) => self.builtin_enum("Option", &[elem.to_string()]).ok(),
             "contains" if is_scalar(elem) && !is_mutref(elem) => Some("bool".into()),
             "get_mut" if is_scalar(elem) && !is_mutref(elem) => self.builtin_enum("Option", &[format!("mutref<{}>", elem)]).ok(),
-            "sub" => {
+            "sub" | "sub_mut" => {
                 let sl = self.slice_of(elem);
                 self.builtin_enum("Option", &[sl]).ok()
             }
+            "copy_from" if !self.needs_drop(elem) => self.builtin_enum("Result", &["void".into(), "core.slice.LengthError".into()]).ok(),
             "as_slice" | "as_mut_slice" => Some(self.slice_of(elem)),
             _ => None,
         }
@@ -2138,6 +2145,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let want = expect.and_then(|t| self.cx.slices.borrow().get(t).cloned());
                 let first = items(&f[0]).first()?;
                 let elem = self.ty_of(first, env, want.as_deref())?;
+                if elem == "void" {
+                    return None;
+                }
+                Some(self.cx.slice_of(&elem))
+            }
+            "ArrayRep" => {
+                let want = expect.and_then(|t| self.cx.slices.borrow().get(t).cloned());
+                let elem = self.ty_of(&f[0], env, want.as_deref())?;
                 if elem == "void" {
                     return None;
                 }
@@ -3953,7 +3968,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                 }
                 None => {
-                    if nname(&a[1]) == "Block" {
+                    let unit_bind = nname(&a[1]) == "Path" && {
+                        // `Ok(done) => done` の `done` は `()` の束縛 (値を持たない): 何もしない
+                        let segs = strs(&nf(&a[1])[0]);
+                        segs.len() == 1 && !inner.contains_key(&segs[0])
+                    };
+                    if unit_bind {
+                    } else if nname(&a[1]) == "Block" {
                         self.block(&a[1], &mut inner, tail)?;
                     } else {
                         self.exprstmt(&a[1], &mut inner, tail)?;
@@ -4062,7 +4083,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         env: &mut Env,
         expect: Option<&str>,
     ) -> R<(Option<Value>, String)> {
-        if tag(&d.ret) == "ref" {
+        if tag(&d.ret) == "ref" && tag(tel(&d.ret, 2)) != "slice" {
             return Err("call of a function returning a reference".into());
         }
         let recv_ty = recv.as_ref().map(|r| r.1.clone());
@@ -4337,6 +4358,42 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.ins().store(MemFlags::new(), len, slot, 8);
                 Ok((Some(slot), ty))
             }
+            "ArrayRep" => {
+                // `[x; N]`: N は整数リテラルだけ。要素を N 個ならべた領域を作り、(ptr, len) のスライスとして持つ。
+                let ty = self.ty_of(e, env, expect).ok_or("array element type")?;
+                let elem = self.cx.slices.borrow().get(&ty).cloned().ok_or("array type")?;
+                if self.cx.needs_drop(&elem) {
+                    return Err("array of droppable elements".into());
+                }
+                let n: u32 = match &f[1] {
+                    V::N(s) => s.replace('_', "").parse().map_err(|_| "array length")?,
+                    _ => return Err("array length that is not a literal".into()),
+                };
+                let sz = self.elem_size(&elem)?;
+                let (x, _) = self.expr(&f[0], env, Some(&elem))?;
+                let x = x.ok_or("bad array element")?;
+                let buf = self.alloc((sz * n).max(1), if is_agg(&elem) { 8 } else { sz.max(1) });
+                let (head, body, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.append_block_param(head, types::I64);
+                let zero = self.b.ins().iconst(types::I64, 0);
+                self.b.ins().jump(head, &[zero]);
+                self.b.switch_to_block(head);
+                let i = self.b.block_params(head)[0];
+                let more = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, i, n as i64);
+                self.b.ins().brif(more, body, &[], done, &[]);
+                self.b.switch_to_block(body);
+                let off = self.b.ins().imul_imm(i, sz as i64);
+                let addr = self.b.ins().iadd(buf, off);
+                self.store_value(addr, &elem, x)?;
+                let next = self.b.ins().iadd_imm(i, 1);
+                self.b.ins().jump(head, &[next]);
+                self.b.switch_to_block(done);
+                let slot = self.alloc(16, 8);
+                self.b.ins().store(MemFlags::new(), buf, slot, 0);
+                let len = self.b.ins().iconst(types::I64, n as i64);
+                self.b.ins().store(MemFlags::new(), len, slot, 8);
+                Ok((Some(slot), ty))
+            }
             "TupleE" => {
                 let ty = self.ty_of(e, env, expect).ok_or("tuple type")?;
                 let l = self.cx.layout(&ty, 0)?;
@@ -4572,6 +4629,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                     o => Err(format!("unary {}", o)),
                 }
+            }
+            "Return" => {
+                // `match` の腕の値として書いた `return x`: 関数を抜けるので値は持たない (呼び出し側は `term` を見る)。
+                self.exprstmt(e, env, false)?;
+                Ok((None, "void".into()))
             }
             "Match" => {
                 let ty = self
@@ -5132,7 +5194,42 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.switch_to_block(done);
                 Ok(Some((Some(self.b.block_params(done)[0]), "bool".into())))
             }
-            "sub" => {
+            "copy_from" if is_slice && !self.cx.needs_drop(elem) => {
+                // 長さが違えば Err(LengthError { expected: 自分の長さ })。同じなら要素を写す。
+                if args.len() != 1 {
+                    return Err("copy_from needs one argument".into());
+                }
+                let rty = self.cx.builtin_enum("Result", &["void".into(), "core.slice.LengthError".into()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let (src, _) = self.expr(&args[0], env, None)?;
+                let src = src.ok_or("bad source")?;
+                let sptr = self.b.ins().load(pt, MemFlags::new(), src, 0);
+                let slen = self.b.ins().load(i64t, MemFlags::new(), src, 8);
+                let same = self.b.ins().icmp(IntCC::Equal, slen, len);
+                let (yes, no, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(same, yes, &[], no, &[]);
+                self.b.switch_to_block(yes);
+                let dptr = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                let bytes = self.b.ins().imul_imm(len, sz as i64);
+                let mm = self.rt.memmove;
+                self.call_rt(mm, &[dptr, sptr, bytes]);
+                let t0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), t0, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(no);
+                let le = self.cx.layout("core.slice.LengthError", 0)?;
+                let eoff = le.fields.iter().find(|x| x.0 == "expected").ok_or("LengthError.expected")?.2;
+                let poff = l.variants[1].1[0].1 as i64;
+                let dst = self.b.ins().iadd_imm(res, poff + eoff as i64);
+                self.b.ins().store(MemFlags::new(), len, dst, 0);
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok(Some((Some(res), rty)))
+            }
+            "sub" | "sub_mut" => {
                 if args.len() != 2 {
                     return Err("sub needs two arguments".into());
                 }
@@ -5169,6 +5266,182 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// `buf_end` の手前へ、`n` (符号なし 64 ビット) を `base` 進数で右詰めに書く (0 なら "0")。先頭の位置を返す。
+    fn emit_digits(&mut self, n: Value, base: i64, buf_end: Value) -> Value {
+        let pt = self.ptr_ty();
+        let (head, done) = (self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(head, pt);
+        self.b.append_block_param(head, types::I64);
+        self.b.append_block_param(done, pt);
+        self.b.ins().jump(head, &[buf_end, n]);
+        self.b.switch_to_block(head);
+        let (p, m) = (self.b.block_params(head)[0], self.b.block_params(head)[1]);
+        let d = self.b.ins().urem_imm(m, base);
+        let q = self.b.ins().udiv_imm(m, base);
+        let is_dec = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, d, 10);
+        let dec = self.b.ins().iadd_imm(d, 0x30);
+        let hex = self.b.ins().iadd_imm(d, 0x61 - 10);
+        let ch = self.b.ins().select(is_dec, dec, hex);
+        let ch = self.b.ins().ireduce(types::I8, ch);
+        let p2 = self.b.ins().iadd_imm(p, -1);
+        self.b.ins().store(MemFlags::new(), ch, p2, 0);
+        self.b.ins().brif(q, head, &[p2, q], done, &[p2]);
+        self.b.switch_to_block(done);
+        self.b.block_params(done)[0]
+    }
+
+    /// 文字 `c` (`I32`) を UTF-8 にして `dst` へ書く。バイト数 (`I64`) を返す。
+    fn emit_utf8(&mut self, c: Value, dst: Value) -> Value {
+        let done = self.b.create_block();
+        self.b.append_block_param(done, types::I64);
+        let c64 = self.b.ins().uextend(types::I64, c);
+        let mut cur = self.b.current_block().unwrap();
+        for (k, limit) in [0x80i64, 0x800, 0x10000, i64::MAX].into_iter().enumerate() {
+            let _ = cur;
+            let (this, next) = (self.b.create_block(), self.b.create_block());
+            let lt = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, c64, limit);
+            self.b.ins().brif(lt, this, &[], next, &[]);
+            self.b.switch_to_block(this);
+            let n = k as i64 + 1;
+            let lead: i64 = [0x00, 0xC0, 0xE0, 0xF0][k];
+            for j in 0..=k {
+                let shift = 6 * (k - j) as i64;
+                let part = if shift > 0 { self.b.ins().ushr_imm(c64, shift) } else { c64 };
+                let part = if j == 0 {
+                    if k == 0 { part } else { self.b.ins().bor_imm(part, lead) }
+                } else {
+                    let m = self.b.ins().band_imm(part, 0x3f);
+                    self.b.ins().bor_imm(m, 0x80)
+                };
+                let byte = self.b.ins().ireduce(types::I8, part);
+                self.b.ins().store(MemFlags::new(), byte, dst, j as i32);
+            }
+            let len = self.b.ins().iconst(types::I64, n);
+            self.b.ins().jump(done, &[len]);
+            self.b.switch_to_block(next);
+            cur = next;
+        }
+        // 到達しない (最後の limit は常に真)
+        self.b.ins().trap(TrapCode::unwrap_user(1));
+        self.b.switch_to_block(done);
+        self.b.block_params(done)[0]
+    }
+
+    /// 整数・char・bool の `display_fmt` / `debug_fmt`。文字列を作って `Formatter.push_bytes` に渡す。
+    fn scalar_fmt(&mut self, recv: &V, t: &str, debug: bool, fargs: &V, env: &mut Env) -> R<(Option<Value>, String)> {
+        let push = *self.funcs.get("core.fmt.Formatter.push_bytes").ok_or("core.fmt.Formatter is not available")?;
+        let pt = self.ptr_ty();
+        let (v, _) = self.expr(recv, env, Some(t))?;
+        let v = v.ok_or("bad operand")?;
+        let (fv, fty) = self.expr(fargs, env, None)?;
+        let fv = fv.ok_or("bad formatter")?;
+        if fty != "core.fmt.Formatter" {
+            return Err("display_fmt of a non-Formatter".into());
+        }
+        let slice = self.alloc(16, 8);
+        let buf = self.alloc(48, 1);
+        if t == "bool" {
+            let (pt_true, pt_false) = (self.string_ptr(b"true".to_vec())?, self.string_ptr(b"false".to_vec())?);
+            let p = self.b.ins().select(v, pt_true, pt_false);
+            let n4 = self.b.ins().iconst(types::I64, 4);
+            let n5 = self.b.ins().iconst(types::I64, 5);
+            let n = self.b.ins().select(v, n4, n5);
+            self.b.ins().store(MemFlags::new(), p, slice, 0);
+            self.b.ins().store(MemFlags::new(), n, slice, 8);
+        } else if t == "char" {
+            let start = if debug { 1 } else { 0 };
+            let body = self.b.ins().iadd_imm(buf, start);
+            let len = if debug {
+                // Rust の `{:?}`: \0 \t \r \n \\ \' と制御文字 (\u{..}) を書き換え、それ以外はそのまま。
+                let c64 = self.b.ins().uextend(types::I64, v);
+                let mut letter = self.b.ins().iconst(types::I64, 0);
+                for (code, ch) in [(0i64, b'0'), (9, b't'), (13, b'r'), (10, b'n'), (92, b'\\'), (39, b'\'')] {
+                    let hit = self.b.ins().icmp_imm(IntCC::Equal, c64, code);
+                    let l = self.b.ins().iconst(types::I64, ch as i64);
+                    letter = self.b.ins().select(hit, l, letter);
+                }
+                let (simple, other, ctl, raw, merge) =
+                    (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.append_block_param(merge, types::I64);
+                self.b.ins().brif(letter, simple, &[], other, &[]);
+                self.b.switch_to_block(simple);
+                let bs = self.b.ins().iconst(types::I8, 0x5c);
+                self.b.ins().store(MemFlags::new(), bs, body, 0);
+                let l8 = self.b.ins().ireduce(types::I8, letter);
+                self.b.ins().store(MemFlags::new(), l8, body, 1);
+                let two = self.b.ins().iconst(types::I64, 2);
+                self.b.ins().jump(merge, &[two]);
+                self.b.switch_to_block(other);
+                let lo = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, c64, 0x20);
+                let del = self.b.ins().icmp_imm(IntCC::Equal, c64, 0x7f);
+                let is_ctl = self.b.ins().bor(lo, del);
+                self.b.ins().brif(is_ctl, ctl, &[], raw, &[]);
+                self.b.switch_to_block(ctl);
+                // \u{16 進}
+                let tmp = self.alloc(16, 1);
+                let tmp_end = self.b.ins().iadd_imm(tmp, 16);
+                let hs = self.emit_digits(c64, 16, tmp_end);
+                let hn = self.b.ins().isub(tmp_end, hs);
+                for (j, ch) in [0x5c_i64, 0x75, 0x7b].into_iter().enumerate() {
+                    let x = self.b.ins().iconst(types::I8, ch);
+                    self.b.ins().store(MemFlags::new(), x, body, j as i32);
+                }
+                let dst = self.b.ins().iadd_imm(body, 3);
+                let mc = self.rt.memcpy;
+                self.call_rt(mc, &[dst, hs, hn]);
+                let tail = self.b.ins().iadd(dst, hn);
+                let close = self.b.ins().iconst(types::I8, 0x7d);
+                self.b.ins().store(MemFlags::new(), close, tail, 0);
+                let total = self.b.ins().iadd_imm(hn, 4);
+                self.b.ins().jump(merge, &[total]);
+                self.b.switch_to_block(raw);
+                let n = self.emit_utf8(v, body);
+                self.b.ins().jump(merge, &[n]);
+                self.b.switch_to_block(merge);
+                self.b.block_params(merge)[0]
+            } else {
+                self.emit_utf8(v, body)
+            };
+            let len = if debug {
+                let q = self.b.ins().iconst(types::I8, 0x27);
+                self.b.ins().store(MemFlags::new(), q, buf, 0);
+                let at = self.b.ins().iadd(body, len);
+                self.b.ins().store(MemFlags::new(), q, at, 0);
+                self.b.ins().iadd_imm(len, 2)
+            } else {
+                len
+            };
+            self.b.ins().store(MemFlags::new(), buf, slice, 0);
+            self.b.ins().store(MemFlags::new(), len, slice, 8);
+        } else {
+            let wide = if cl(t) == types::I64 {
+                v
+            } else if signed(t) {
+                self.b.ins().sextend(types::I64, v)
+            } else {
+                self.b.ins().uextend(types::I64, v)
+            };
+            let end = self.b.ins().iadd_imm(buf, 48);
+            let neg = if signed(t) { self.b.ins().icmp_imm(IntCC::SignedLessThan, wide, 0) } else { self.b.ins().iconst(types::I8, 0) };
+            let flipped = self.b.ins().ineg(wide);
+            let mag = self.b.ins().select(neg, flipped, wide);
+            let start = self.emit_digits(mag, 10, end);
+            let minus = self.b.ins().iconst(types::I8, 0x2d);
+            let at = self.b.ins().iadd_imm(start, -1);
+            self.b.ins().store(MemFlags::new(), minus, at, 0);
+            let neg64 = self.b.ins().uextend(pt, neg);
+            let start = self.b.ins().isub(start, neg64);
+            let len = self.b.ins().isub(end, start);
+            self.b.ins().store(MemFlags::new(), start, slice, 0);
+            self.b.ins().store(MemFlags::new(), len, slice, 8);
+        }
+        let rty = self.cx.builtin_enum("Result", &["void".into(), "core.fmt.Error".into()])?;
+        let id = self.func_id(push, "core.fmt.Formatter.push_bytes", &HashMap::new())?;
+        let out = self.alloc_for(&rty)?;
+        self.call_rt(id, &[out, fv, slice]);
+        Ok((Some(out), rty))
     }
 
     /// 文字列 `p` (`String`) の末尾に、`src` から `n` バイトを足す。失敗したら真 (I8) を返す。
@@ -6837,7 +7110,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let is_deque = self.cx.deques.borrow().contains_key(rt);
         let elem = self.cx.seq_elem(rt).or_else(|| self.cx.deque_elem(rt)).ok_or("not a sequence")?;
         let sz = self.elem_size(&elem)?;
-        if is_slice || matches!(name, "get" | "first" | "last" | "get_mut" | "sub" | "as_slice" | "as_mut_slice" | "contains" | "iter") {
+        if is_slice || matches!(name, "get" | "first" | "last" | "get_mut" | "sub" | "sub_mut" | "as_slice" | "as_mut_slice" | "contains" | "iter") {
             if let Some(r) = self.seq_method(p, &elem, sz, is_slice, name, args, env)? {
                 return Ok(r);
             }
@@ -7177,6 +7450,40 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     }
 
     fn method(&mut self, recv: &V, name: &str, args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
+        if matches!(name, "cmp" | "partial_cmp") && args.len() == 1 && self.cx.types.contains_key("core.cmp.Ordering") {
+            if let Some(t) = self.ty_of(recv, env, expect).filter(|t| is_int(t) || t == "char" || t == "bool") {
+                let (a, _) = self.expr(recv, env, Some(&t))?;
+                let (c, _) = self.expr(&args[0], env, Some(&t))?;
+                let (a, c) = (a.ok_or("bad operand")?, c.ok_or("bad operand")?);
+                let (lt_cc, gt_cc) = if signed(&t) { (IntCC::SignedLessThan, IntCC::SignedGreaterThan) } else { (IntCC::UnsignedLessThan, IntCC::UnsignedGreaterThan) };
+                let lt = self.b.ins().icmp(lt_cc, a, c);
+                let gt = self.b.ins().icmp(gt_cc, a, c);
+                let lt = self.b.ins().uextend(types::I32, lt);
+                let gt = self.b.ins().uextend(types::I32, gt);
+                // Less = 0, Equal = 1, Greater = 2
+                let tg = self.b.ins().isub(gt, lt);
+                let tg = self.b.ins().iadd_imm(tg, 1);
+                let ol = self.cx.layout("core.cmp.Ordering", 0)?;
+                let ord = self.alloc(ol.size, ol.align);
+                self.b.ins().store(MemFlags::new(), tg, ord, 0);
+                if name == "cmp" {
+                    return Ok((Some(ord), "core.cmp.Ordering".into()));
+                }
+                let rty = self.cx.builtin_enum("Option", &["core.cmp.Ordering".into()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                let dst = self.b.ins().iadd_imm(res, l.variants[1].1[0].1 as i64);
+                self.store_value(dst, "core.cmp.Ordering", ord)?;
+                return Ok((Some(res), rty));
+            }
+        }
+        if matches!(name, "display_fmt" | "debug_fmt") && args.len() == 1 {
+            if let Some(t) = self.ty_of(recv, env, expect).filter(|t| is_int(t) || t == "char" || t == "bool") {
+                return self.scalar_fmt(recv, &t, name == "debug_fmt", &args[0], env);
+            }
+        }
         if let Some(r) = self.scalar_method(recv, name, args, env, expect)? {
             return Ok(r);
         }
@@ -7311,7 +7618,7 @@ fn make_sig(module: &ObjectModule, cx: &Cx, d: &Def, is_entry: bool, subst: &Has
     let olds = cx.subst.replace(subst.clone());
     let r = (|| -> R<cranelift_codegen::ir::Signature> {
         let mut sig = module.make_signature();
-        if !is_entry && tag(&d.ret) == "ref" {
+        if !is_entry && tag(&d.ret) == "ref" && tag(tel(&d.ret, 2)) != "slice" {
             return Err(format!("{}: returns a reference", d.name));
         }
         let rty = if is_entry { "void".to_string() } else { cx.pty(&d.ret).map_err(|e| format!("{}: {}", d.name, e))? };

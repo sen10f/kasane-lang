@@ -837,6 +837,21 @@ fn run_in_bundle(root: &Path, fqn: &str, l: &Loaded) -> Option<String> {
 
 /// `test --both` の機械語側: テスト `ti` を入口にして Cranelift で実行ファイルを作る (`target/test-native/`)。
 /// 作れなければ理由を返す (clif が未対応の機能、リンカが無い、など)。テストごとに 1 つ作る。
+/// Kasane で書かれた標準ライブラリ `core.fmt` (Formatter) の定義を、Cranelift の対象に加える。
+fn add_fmt_std<'a>(prog: &'a Program, funcs: &mut HashMap<String, &'a Def>, tdefs: &mut HashMap<String, &'a Def>) {
+    for d in &prog.defs {
+        if !(d.name.starts_with("core.fmt.") || d.name == "core.slice.LengthError" || d.name == "core.cmp.Ordering") {
+            continue;
+        }
+        if d.kw == "fn" && d.body.is_some() {
+            funcs.insert(d.name.clone(), d);
+        }
+        if d.kw == "type" || d.kw == "enum" {
+            tdefs.insert(d.name.clone(), d);
+        }
+    }
+}
+
 fn build_native_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> Result<PathBuf, String> {
     let d = &prog.defs[ti];
     let mut funcs: HashMap<String, &Def> = HashMap::new();
@@ -851,6 +866,7 @@ fn build_native_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> 
         }
     }
     funcs.insert(d.name.clone(), d);
+    add_fmt_std(prog, &mut funcs, &mut tdefs);
     let dir = root.join("target").join("test-native");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stem: String = d.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' { c } else { '_' }).collect();
@@ -1718,6 +1734,7 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
                         tdefs.insert(d.name.clone(), d);
                     }
                 }
+                add_fmt_std(&prog, &mut funcs, &mut tdefs);
                 let r = crate::clif::compile_clif(&prog, &funcs, &tdefs, e, &norm(&exe), release);
                 if std::env::var_os("KSN_TIME").is_some() {
                     eprintln!("KSN_TIME compile_clif_call_total={:.2} [ms]", t_cc.elapsed().as_secs_f64() * 1e3);
