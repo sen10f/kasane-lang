@@ -2779,11 +2779,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
             }
             if segs.len() >= 2 && env.contains_key(&segs[0]) && segs[segs.len() - 1] == "chars" && args.is_empty() {
-                let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
+                let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0, 0);
                 return Some(Pipe { src: Src::Chars(recv), stages: vec![] });
             }
             if segs.len() >= 2 && env.contains_key(&segs[0]) && matches!(segs[segs.len() - 1].as_str(), "iter" | "iter_mut") && args.is_empty() {
-                let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
+                let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0, 0);
                 return Some(Pipe { src: Src::Seq(recv, segs[segs.len() - 1] == "iter_mut"), stages: vec![] });
             }
         }
@@ -4124,7 +4124,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let segs = if env.contains_key(&segs[0]) { segs } else { self.cx.qual_segs(&segs) };
                 let args = items(&f[1]);
                 if segs.len() >= 2 && env.contains_key(&segs[0]) {
-                    let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
+                    let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0, 0);
                     return self.method_call(&recv, &segs[segs.len() - 1], args, env, expect);
                 }
                 if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
@@ -4133,7 +4133,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 if segs.len() >= 3 && self.cx.split_variant(&segs[..segs.len() - 1]).is_some() {
                     // `E.V.method(..)`: 単位バリアントに対するメソッド呼び出し
-                    let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0);
+                    let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0, 0);
                     return self.method_call(&recv, &segs[segs.len() - 1], args, env, expect);
                 }
                 if segs.len() == 1 && matches!(segs[0].as_str(), "Some" | "Ok" | "Err") && !self.funcs.contains_key(&segs[0]) {
@@ -4422,7 +4422,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let rty = self.ty_of(recv, env, expect);
         if rty.as_deref().map_or(false, is_mutref) {
             // `r.method()` (r: &mut スカラー) は `(*r).method()`
-            let deref = V::Node("Unary", vec![V::S("*".into()), recv.clone()], 0);
+            let deref = V::Node("Unary", vec![V::S("*".into()), recv.clone()], 0, 0);
             return self.method_call(&deref, name, args, env, expect);
         }
         if let Some(rt) = &rty {

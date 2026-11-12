@@ -8031,3 +8031,75 @@ end t.main
     let out = raw_ptr_check("raw_ptr_ref_silent", src);
     assert!(!codes(&out).iter().any(|c| c == "E2020" || c == "E2023"), "{}", out);
 }
+
+// ---------------------------------------------------------------- 式 ID と型表 (設計_KIR.md 段階 1)
+
+const ADD1: &str = "fn t.add1(a: u8) -> u8 uses [] panics never
+    let b: u8 = a
+    b.wrapping_add(1)
+end t.add1
+
+";
+
+/// `KSN_DUMP_TYPES=1 ksn check` の stderr。
+fn dump_types(dir: &Path) -> String {
+    let o = Command::new(exe()).arg("check").env("KSN_DUMP_TYPES", "1").current_dir(dir).output().expect("spawn ksn");
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    text(&o.stderr)
+}
+
+/// 型表の 1 行 (`FQN \t #id \t 種別 \t line N \t 型`) を (FQN, 式 ID, 種別, 型) に分ける。
+fn type_rows(dump: &str) -> Vec<(String, u32, String, String)> {
+    dump.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            if f.len() != 5 {
+                return None;
+            }
+            let id = f[1].strip_prefix('#')?.parse().ok()?;
+            Some((f[0].to_string(), id, f[2].to_string(), f[4].to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn expr_ids_and_type_table_are_stable_for_same_source() {
+    let t = Tmp::new("expr_ids_stable", &main_wrap(ADD1, ""));
+    // 既定では stderr に何も出さない (既存の出力は変えない)
+    let plain = run(&["check"], &t.0);
+    assert_eq!(text(&plain.stderr), "");
+    let a = dump_types(&t.0);
+    let b = dump_types(&t.0);
+    assert!(!a.is_empty());
+    assert_eq!(a, b);
+}
+
+#[test]
+fn type_table_records_each_expression_type() {
+    let t = Tmp::new("type_table_rows", &main_wrap(ADD1, ""));
+    let rows = type_rows(&dump_types(&t.0));
+    let add1: Vec<_> = rows.iter().filter(|r| r.0 == "t.add1").collect();
+    // `a` (Path)、`1` (Lit)、`b.wrapping_add(1)` (パスの呼び出し Call) はすべて u8
+    assert!(add1.iter().any(|r| r.2 == "Path" && r.3 == "u8"), "{:?}", add1);
+    assert!(add1.iter().any(|r| r.2 == "Lit" && r.3 == "u8"), "{:?}", add1);
+    assert!(add1.iter().any(|r| r.2 == "Call" && r.3 == "u8"), "{:?}", add1);
+    // 式 ID は 1 から振られ、関数の中で重複しない
+    let mut ids: Vec<u32> = add1.iter().map(|r| r.1).collect();
+    assert!(ids.iter().all(|&i| i >= 1));
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), add1.len());
+}
+
+#[test]
+fn expr_ids_are_local_to_their_function() {
+    // `t.main` の本体を変えても、`t.add1` の式 ID と型は変わらない (ホットリロードで関数単位に振り直せる)。
+    let a = Tmp::new("expr_ids_local_a", &main_wrap(ADD1, ""));
+    let b = Tmp::new("expr_ids_local_b", &main_wrap(ADD1, "    let _c: u8 = t.add1(2)\n    let _d: u8 = t.add1(3)\n"));
+    let pick = |t: &Tmp| -> Vec<(u32, String, String)> {
+        type_rows(&dump_types(&t.0)).into_iter().filter(|r| r.0 == "t.add1").map(|r| (r.1, r.2, r.3)).collect()
+    };
+    let (ra, rb) = (pick(&a), pick(&b));
+    assert!(!ra.is_empty());
+    assert_eq!(ra, rb);
+}

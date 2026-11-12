@@ -327,7 +327,7 @@ impl Interp {
                     V::N(s) => parse_int(s) as usize,
                     V::L(xs) if xs.len() == 2 => {
                         let segs: Vec<V> = st(&xs[1]).split('.').map(|x| V::S(x.to_string())).collect();
-                        let p = V::Node("Path", vec![V::L(segs), V::Nil], 0);
+                        let p = V::Node("Path", vec![V::L(segs), V::Nil], 0, 0);
                         match dr(&self.eval(&p, sc)?) {
                             Val::Int(x, _) => x as usize,
                             _ => 0,
@@ -971,6 +971,7 @@ impl Interp {
                 let place_path = V::Node(
                     "Path",
                     vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil],
+                    0,
                     0,
                 );
                 return self.invoke_method(base, &segs[segs.len() - 1], args, Some((&place_path, sc)));
