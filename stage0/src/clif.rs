@@ -4102,10 +4102,27 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         let src = l.variants[1].1.first().cloned();
                         let dst = rl.variants[1].1.first().cloned();
                         match (src, dst) {
-                            (Some((st_, so)), Some((dt_, doff))) => {
-                                if st_ != dt_ {
-                                    return Err("? with a different error type".into());
+                            (Some((st_, so)), Some((dt_, doff))) if st_ != dt_ => {
+                                // 4.1: 型が違うエラーは `core.convert.From<st_> for dt_` の変換メソッドを呼んで書き込む。
+                                let fq = self
+                                    .cx
+                                    .prog
+                                    .from_impls
+                                    .get(&dt_)
+                                    .and_then(|v| v.iter().find(|(k, _)| *k == st_))
+                                    .map(|(_, f)| f.clone())
+                                    .ok_or("? with a different error type")?;
+                                let d = self.funcs.get(&fq).copied().ok_or("? conversion function not found")?;
+                                if self.cx.needs_drop(&st_) || self.cx.pty_for(d, &d.ret)? != dt_ {
+                                    return Err("? with an unsupported error conversion".into());
                                 }
+                                let sa = self.b.ins().iadd_imm(p, so as i64);
+                                let ev = self.load_value(sa, &st_);
+                                let (cv, _) = self.call_fn_values(&fq, d, &[ev])?;
+                                let da = self.b.ins().iadd_imm(sret, doff as i64);
+                                self.store_value(da, &dt_, cv.ok_or("? conversion returns unit")?)?;
+                            }
+                            (Some((st_, so)), Some((_, doff))) => {
                                 let size = if is_scalar(&st_) { scalar_size(&st_) } else { self.cx.layout(&st_, 0)?.size };
                                 let sa = self.b.ins().iadd_imm(p, so as i64);
                                 let da = self.b.ins().iadd_imm(sret, doff as i64);

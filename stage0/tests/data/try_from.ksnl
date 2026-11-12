@@ -1,0 +1,81 @@
+enum t.AppError derive [Debug, Clone, Copy, PartialEq] pub
+    Alloc
+    Code(u32)
+    Wide(u32)
+end t.AppError
+
+type t.Inner derive [Debug, Clone, Copy, PartialEq] pub
+    code: u32 pub
+end t.Inner
+
+impl core.convert.From<alloc.alloc.AllocError> for t.AppError
+fn t.AppError.from_value_alloc_error(_value: alloc.alloc.AllocError) -> t.AppError uses [] panics never impls core.convert.From<alloc.alloc.AllocError>
+    t.AppError.Alloc
+end t.AppError.from_value_alloc_error
+
+impl core.convert.From<t.Inner> for t.AppError
+fn t.AppError.from_value_inner(value: t.Inner) -> t.AppError uses [] panics never impls core.convert.From<t.Inner>
+    t.AppError.Code(value.code)
+end t.AppError.from_value_inner
+
+impl core.convert.From<u32> for t.AppError
+fn t.AppError.from_value_u32(value: u32) -> t.AppError uses [] panics never impls core.convert.From<u32>
+    t.AppError.Wide(value)
+end t.AppError.from_value_u32
+
+fn t.fail(code: u32) -> Result<u32, t.Inner> uses [] panics never
+    if code == 0u32 {
+        return Ok(1u32)
+    }
+    Err(t.Inner { code: code })
+end t.fail
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.run(0u32), Ok(11u32))
+    core.check.eq(t.run(7u32), Err(t.AppError.Code(7u32)))
+    core.check.eq(t.same(5u32), Err(t.Inner { code: 5u32 }))
+    core.check.eq(t.wide(3u32), Err(t.AppError.Wide(3u32)))
+    core.check.eq(t.wide(0u32), Ok(0u32))
+    core.check.eq(t.opt(None), None)
+    core.check.eq(t.opt(Some(3u32)), Some(3u32))
+    core.check.eq(t.push_one(), Ok(()))
+    std.io.print_line("try-from ok")
+end t.main
+
+fn t.opt(x: Option<u32>) -> Option<u32> uses [] panics never
+    let n = x?
+    Some(n)
+end t.opt
+
+fn t.pass(code: u32) -> Result<u32, u32> uses [] panics never
+    if code == 0u32 {
+        return Ok(0u32)
+    }
+    Err(code)
+end t.pass
+
+fn t.push_one() -> Result<(), t.AppError> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.push(1u8)?
+    v.push(2u8)?
+    Ok(())
+end t.push_one
+
+fn t.run(code: u32) -> Result<u32, t.AppError> uses [] panics never
+    let n = t.fail(code)?
+    Ok(n.wrapping_add(10u32))
+end t.run
+
+fn t.same(code: u32) -> Result<u32, t.Inner> uses [] panics never
+    let n = t.fail(code)?
+    Ok(n)
+end t.same
+
+fn t.wide(code: u32) -> Result<u32, t.AppError> uses [] panics never
+    let n = t.pass(code)?
+    Ok(n)
+end t.wide
+
+test t.run.test_converted
+    core.check.eq(t.run(7u32), Err(t.AppError.Code(7u32)))
+end t.run.test_converted

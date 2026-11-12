@@ -8,8 +8,8 @@ end shortener.store.Store
 
 fn shortener.store.Store.add(self: &mut shortener.store.Store, url: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc, io.fs] panics never pub
     let code_text = code.for_index(u64.from_usize(self.urls.len()))?
-    let copy = alloc.string.String.from_str(std.alloc.SYSTEM, url).map_err(error.oom)?
-    self.urls.push(copy).map_err(error.oom)?
+    let copy = alloc.string.String.from_str(std.alloc.SYSTEM, url)?
+    self.urls.push(copy)?
     match self.save() {
         Ok(_u) => Ok(code_text)
         Err(e) => {
@@ -29,7 +29,7 @@ fn shortener.store.Store.load(path: &str) -> Result<shortener.store.Store, short
         let text = shortener.store.read_text(path)?
         store.parse_into(text.as_str())?
     }
-    store.path = alloc.string.String.from_str(std.alloc.SYSTEM, path).map_err(error.oom)?
+    store.path = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
     Ok(store)
 end shortener.store.Store.load
 
@@ -43,7 +43,7 @@ fn shortener.store.Store.lookup(self: &shortener.store.Store, code_text: &str) -
 end shortener.store.Store.lookup
 
 fn shortener.store.Store.new(path: &str) -> Result<shortener.store.Store, shortener.error.Error> uses [alloc] panics never pub
-    let saved = alloc.string.String.from_str(std.alloc.SYSTEM, path).map_err(error.oom)?
+    let saved = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
     Ok(shortener.store.Store { path: saved, urls: alloc.vec.Vec.new(std.alloc.SYSTEM) })
 end shortener.store.Store.new
 
@@ -58,8 +58,8 @@ fn shortener.store.Store.parse_into(self: &mut shortener.store.Store, text: &str
             if expected.as_str() != code_text || !shortener.store.is_valid_url(url) {
                 return Err(error.Error.Corrupt)
             }
-            let copy = alloc.string.String.from_str(std.alloc.SYSTEM, url).map_err(error.oom)?
-            self.urls.push(copy).map_err(error.oom)?
+            let copy = alloc.string.String.from_str(std.alloc.SYSTEM, url)?
+            self.urls.push(copy)?
         }
     }
     Ok(())
@@ -71,10 +71,10 @@ fn shortener.store.Store.render(self: &shortener.store.Store) -> Result<alloc.st
         let code_text = code.for_index(u64.from_usize(i))?
         match self.urls.as_slice().get(i) {
             Some(url) => {
-                out.push_str(code_text.as_str()).map_err(error.oom)?
-                out.push_str(" ").map_err(error.oom)?
-                out.push_str(url.as_str()).map_err(error.oom)?
-                out.push_str("\n").map_err(error.oom)?
+                out.push_str(code_text.as_str())?
+                out.push_str(" ")?
+                out.push_str(url.as_str())?
+                out.push_str("\n")?
             }
             None => return Err(error.Error.Corrupt)
         }
@@ -87,11 +87,12 @@ fn shortener.store.Store.save(self: &shortener.store.Store) -> Result<(), shorte
         return Ok(())
     }
     let text = self.render()?
-    let mut file = std.fs.create(self.path.as_str()).map_err(error.io)?
+    let mut file = std.fs.create(self.path.as_str())?
     let written = shortener.store.write_all(&mut file, text.as_str().as_bytes())
-    let closed = file.close().map_err(error.io)
+    let closed = file.close()
     written?
-    closed
+    closed?
+    Ok(())
 end shortener.store.Store.save
 
 fn shortener.store.is_valid_url(url: &str) -> bool uses [] panics never pub
@@ -117,14 +118,14 @@ fn shortener.store.is_valid_url(url: &str) -> bool uses [] panics never pub
 end shortener.store.is_valid_url
 
 fn shortener.store.read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc, io.fs] panics never
-    let mut file = std.fs.open(path).map_err(error.io)?
+    let mut file = std.fs.open(path)?
     let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let read = std.fs.read_to_end(&mut file, &mut data).map_err(error.io)
-    let closed = file.close().map_err(error.io)
+    let read = std.fs.read_to_end(&mut file, &mut data)
+    let closed = file.close()
     core.mem.drop(read?)
     closed?
     let mut text = alloc.string.String.new(std.alloc.SYSTEM)
-    text.push_bytes(data.as_slice()).map_err(error.push_bytes)?
+    text.push_bytes(data.as_slice())?
     Ok(text)
 end shortener.store.read_text
 
@@ -164,13 +165,14 @@ fn shortener.store.write_all(file: &mut std.fs.File, data: &[u8]) -> Result<(), 
             Some(r) => r
             None => return Err(error.Error.Io)
         }
-        let n = file.write(rest).map_err(error.io)?
+        let n = file.write(rest)?
         if n == 0usize {
             return Err(error.Error.Io)
         }
         sent = sent.saturating_add(n)
     }
-    file.flush().map_err(error.io)
+    file.flush()?
+    Ok(())
 end shortener.store.write_all
 
 test shortener.store.Store.add.test_assigns_sequential_codes

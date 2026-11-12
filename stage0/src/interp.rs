@@ -292,7 +292,47 @@ impl Interp {
             Err(Ctl::Return(v)) => v,
             Err(e) => return Err(e),
         };
+        let v = self.convert_err(v, &d.ret, &d.file)?;
         Ok(self.coerce(v, &d.ret))
+    }
+
+    /// 4.1: `?` のエラー変換。戻り値型が `Result<_, E2>` で `E2` が `core.convert.From<E1>` を持つとき、
+    /// 返す値が `Err(e)` で `e` の型が `E1` (`E2` と別の型) なら、`E1` 用の変換メソッドを呼んで包み直す。
+    /// 検査を通ったプログラムでは、型の違う `Err` が関数から出る経路は `?` だけなので、
+    /// `?` の位置で変換するのと同じ結果になる (変換は `uses [] panics never`)。
+    fn convert_err(&mut self, v: Val, ret: &V, file: &str) -> Res {
+        use crate::check::{tag, tel};
+        if self.p.from_impls.is_empty() || tag(ret) != "named" || st(tel(ret, 1)) != "Result" {
+            return Ok(v);
+        }
+        let Val::Enum(en) = &v else { return Ok(v) };
+        if en.en != "Result" || en.var != "Err" || en.pl.is_empty() {
+            return Ok(v);
+        }
+        let Some(e2) = items(tel(ret, 2)).get(1) else { return Ok(v) };
+        if tag(e2) != "named" {
+            return Ok(v);
+        }
+        let segs: Vec<String> = st(tel(e2, 1)).split('.').map(String::from).collect();
+        let e2name = self.p.expand(&segs, file).join(".");
+        let p = self.p.clone();
+        let Some(convs) = p.from_impls.get(&e2name) else { return Ok(v) };
+        let payload = dr(&en.pl[0]);
+        let key = match &payload {
+            Val::Struct(s) => s.ty.clone(),
+            Val::Enum(e) => e.en.clone(),
+            Val::Int(_, Some(k)) => k.to_string(),
+            Val::Bool(_) => "bool".to_string(),
+            Val::Char(_) => "char".to_string(),
+            _ => return Ok(v),
+        };
+        if key == e2name {
+            return Ok(v);
+        }
+        let Some((_, fq)) = convs.iter().find(|(k, _)| k.split('<').next() == Some(key.as_str())) else { return Ok(v) };
+        let Some(&di) = p.funcs.get(fq) else { return Ok(v) };
+        let converted = self.call_def(di, vec![en.pl[0].clone()])?;
+        Ok(mk_enum("Result", "Err", vec![converted]))
     }
 
     /// テスト本体など、引数なしの本体だけを実行する。
@@ -320,6 +360,8 @@ impl Interp {
                     Err(Ctl::Return(v)) => v,
                     Err(e) => return Err(e),
                 };
+                let file = c.scope.borrow().file.clone();
+                let r = self.convert_err(r, &c.ret, &file)?;
                 Ok(self.coerce(r, &c.ret))
             }
             Val::Func(i) => self.call_def(*i, args),

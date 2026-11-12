@@ -5919,3 +5919,64 @@ fn the_http_example_runs_natively_through_cranelift() {
     }
     let _ = fs::remove_dir_all(&cache);
 }
+
+// ---------------------------------------------------------------- `?` のエラー変換 (4.1 `core.convert.From`)
+
+/// 変換が起きる・型が同じなら変換しない・`Option` は変わらない・変換後のエラーが元の中身を運ぶ、を
+/// インタプリタとネイティブ (デバッグ・リリース) が同じ結果で通る。`ksn test --both` も通る。
+#[test]
+fn try_converts_the_error_through_from_and_both_backends_agree() {
+    let src = include_str!("data/try_from.ksnl");
+    let out = agree_with_interpreter("try_from", src);
+    assert_eq!(out, "try-from ok\n");
+    let t = Tmp::new("try_from_both", src);
+    let o = run(&["test", "--both"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stdout).contains("1 passed; 0 failed"), "{}", text(&o.stdout));
+}
+
+const TRY_AB: &str = "type t.A derive [Debug, Clone, Copy] pub\n    x: u32\nend t.A\n\ntype t.B derive [Debug, Clone, Copy] pub\n    y: u32\nend t.B\n\n";
+const TRY_FG: &str = "fn t.f() -> Result<u32, t.A> uses [] panics never\n    Err(t.A { x: 1u32 })\nend t.f\n\nfn t.g() -> Result<u32, t.B> uses [] panics never\n    let n = t.f()?\n    Ok(n)\nend t.g\n";
+const TRY_B_TO_A: &str = "impl core.convert.From<t.B> for t.A\nfn t.A.from_value_b(value: t.B) -> t.A uses [] panics never impls core.convert.From<t.B>\n    t.A { x: value.y }\nend t.A.from_value_b\n\n";
+
+/// `impl` がなければ従来どおり E2020 で、`map_err` と `impl` の両方を案内する。
+#[test]
+fn try_without_a_from_impl_reports_both_remedies() {
+    let t = Tmp::new("try_no_from", &format!("{}{}", TRY_AB, TRY_FG));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(codes(&out), vec!["E2020".to_string()], "{}", out);
+    assert!(out.contains("write `map_err`, or declare `impl core.convert.From<t.A> for t.B`"), "{}", out);
+}
+
+/// 逆向きの `From<B> for A` しかないときは、`A -> B` の `?` は通らない (逆変換・連鎖なし)。
+#[test]
+fn try_does_not_use_the_reverse_conversion() {
+    let t = Tmp::new("try_reverse", &format!("{}{}{}", TRY_AB, TRY_B_TO_A, TRY_FG));
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(codes(&text(&o.stdout)), vec!["E2020".to_string()], "{}", text(&o.stdout));
+}
+
+/// クロージャ内の `?` は、クロージャの戻り値型のエラー型へ変換する (外側の関数ではない)。
+#[test]
+fn try_in_a_closure_converts_to_the_closure_return_type() {
+    let src = "type t.Inner derive [Debug, Clone, Copy] pub\n    code: u32 pub\nend t.Inner\n\nenum t.AppError derive [Debug, Clone, Copy, PartialEq] pub\n    Code(u32)\nend t.AppError\n\nimpl core.convert.From<t.Inner> for t.AppError\nfn t.AppError.from_value(value: t.Inner) -> t.AppError uses [] panics never impls core.convert.From<t.Inner>\n    t.AppError.Code(value.code)\nend t.AppError.from_value\n\nfn t.fail(code: u32) -> Result<u32, t.Inner> uses [] panics never\n    Err(t.Inner { code: code })\nend t.fail\n\nfn t.main() -> Result<(), t.Inner> uses [] panics may\n    let f = fn(c: u32) -> Result<u32, t.AppError> capture [] {\n        let n = t.fail(c)?\n        Ok(n)\n    }\n    core.check.eq(f(4u32), Err(t.AppError.Code(4u32)))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("try_closure", src);
+    let c = run(&["check", "--json"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+/// `impl From` 行のないメソッドは E1113、メソッドのない `impl` 行は E1112。両方そろえば通る。
+#[test]
+fn from_impl_lines_and_methods_must_pair_up() {
+    let t = Tmp::new("from_nomethod", &format!("{}impl core.convert.From<t.B> for t.A\n", TRY_AB));
+    assert!(codes(&text(&run(&["check", "--json"], &t.0).stdout)).contains(&"E1112".to_string()));
+    let method_only = TRY_B_TO_A.replacen("impl core.convert.From<t.B> for t.A\n", "", 1);
+    let t = Tmp::new("from_noimpl", &format!("{}{}", TRY_AB, method_only));
+    assert!(codes(&text(&run(&["check", "--json"], &t.0).stdout)).contains(&"E1113".to_string()));
+    let t = Tmp::new("from_ok", &format!("{}{}\n", TRY_AB, TRY_B_TO_A.trim_end()));
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+}

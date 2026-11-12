@@ -1,0 +1,3 @@
+trait core.convert.From[T] pub
+    fn from_value(value: T) -> Self uses [] panics never
+end core.convert.From
