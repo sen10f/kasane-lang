@@ -324,7 +324,10 @@ impl<'a> Cx<'a> {
                     let (k, v) = (self.pty_owned(args[0])?, self.pty_owned(args[1])?);
                     return self.map_of(n.ends_with("BtreeMap"), &k, &v);
                 }
-                if n == "alloc.alloc.AllocError" || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.rand.Rng" || n == "core.num.ParseIntError" || n == "alloc.string.PushBytesError" {
+                if cfg!(windows) && n.starts_with("std.net.") {
+                    return Err("std.net is not supported by the native backend on Windows".into());
+                }
+                if n == "alloc.alloc.AllocError" || n == STRING || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.rand.Rng" || n == "core.num.ParseIntError" || n == "alloc.string.PushBytesError" {
                     return Ok(n);
                 }
                 if n == "Option" || n == "Result" {
@@ -700,7 +703,7 @@ impl<'a> Cx<'a> {
         if name == "std.rand.Rng" {
             return Ok(Layout { size: 8, align: 8, fields: vec![("state".into(), "u64".into(), 0)], is_enum: false, variants: vec![] });
         }
-        if name == "std.io.Error" || name == "core.str.Utf8Error" || name == "core.num.TryFromIntError" || name == "std.thread.SpawnError" || name == "core.num.ParseIntError" || name == "alloc.string.PushBytesError" {
+        if name == "core.str.Utf8Error" || name == "core.num.TryFromIntError" || name == "std.thread.SpawnError" || name == "core.num.ParseIntError" || name == "alloc.string.PushBytesError" {
             return Ok(Layout { size: 8, align: 8, fields: vec![], is_enum: false, variants: vec![] });
         }
         let registered = self.gen.borrow().get(name).cloned();
@@ -799,7 +802,32 @@ impl<'a> Cx<'a> {
     }
 
     /// 組み込み型 (str / Vec / AllocError) のメソッドの戻り値の型。
+    /// `std.fs` / `std.net` の関数・メソッド (完全修飾名) の戻り値の型。対象外なら None。
+    /// 本体は `FnGen::sys_call` (OS 呼び出しは `sysrt.c`)。
+    fn sys_ret(&self, fq: &str) -> Option<String> {
+        let io = "std.io.Error";
+        let ne = "std.net.Error";
+        let res = |ok: &str, er: &str| self.builtin_enum("Result", &[ok.to_string(), er.to_string()]).ok();
+        match fq {
+            "std.fs.exists" => Some("bool".into()),
+            "std.fs.remove_file" => res("void", io),
+            "std.fs.open" | "std.fs.create" => res("std.fs.File", io),
+            "std.fs.read_to_end" => res("usize", io),
+            "std.fs.File.read" | "std.fs.File.write" | "std.net.TcpStream.read" | "std.net.TcpStream.write" => res("usize", io),
+            "std.fs.File.flush" | "std.fs.File.close" | "std.net.TcpStream.flush" => res("void", io),
+            "std.net.TcpStream.close" | "std.net.TcpListener.close" => res("void", ne),
+            "std.net.connect" => res("std.net.TcpStream", ne),
+            "std.net.listen" => res("std.net.TcpListener", ne),
+            "std.net.TcpListener.accept" => res("std.net.TcpStream", ne),
+            "std.net.TcpListener.local_port" => res("u16", ne),
+            _ => None,
+        }
+    }
+
     fn builtin_method_ty(&self, recv_ty: &str, name: &str) -> Option<String> {
+        if let Some(t) = self.sys_ret(&format!("{}.{}", recv_ty, name)) {
+            return Some(t);
+        }
         if recv_ty == "std.rand.Rng" && name == "next_u64" {
             return Some("u64".into());
         }
@@ -1612,6 +1640,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                             }
                         }
                     }
+                    // `std.fs.read_to_end(&mut file, &mut v)`: v は Vec<u8>
+                    if is_vec_new && args.len() == 2 && refers(&args[1]) && self.cx.qual_segs(&segs) == ["std", "fs", "read_to_end"] {
+                        return Some(self.cx.vec_of("u8"));
+                    }
                     // 関数の引数に渡される: その引数の型
                     if let Some(d) = self.funcs.get(&segs.join(".")).copied() {
                         for (k, a) in args.iter().enumerate() {
@@ -1728,6 +1760,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     sfx.or(expect.map(String::from)).filter(|t| is_float(t))
                 }
                 "str" => Some("str".into()),
+                "bstr" => Some(self.cx.slice_of("u8")),
                 "char" => Some("char".into()),
                 "byte" => Some("u8".into()),
                 _ => None,
@@ -1772,6 +1805,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let want = expect.and_then(|t| self.cx.slices.borrow().get(t).cloned());
                 let first = items(&f[0]).first()?;
                 let elem = self.ty_of(first, env, want.as_deref())?;
+                if elem == "void" {
+                    return None;
+                }
+                Some(self.cx.slice_of(&elem))
+            }
+            "ArrayRep" => {
+                let want = expect.and_then(|t| self.cx.slices.borrow().get(t).cloned());
+                let elem = self.ty_of(&f[0], env, want.as_deref())?;
                 if elem == "void" {
                     return None;
                 }
@@ -1930,6 +1971,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if segs == ["std", "rand", "Rng", "from_seed"] || segs == ["std", "rand", "Rng", "from_entropy"] {
                     return Some("std.rand.Rng".into());
                 }
+                if let Some(t) = self.cx.sys_ret(&segs.join(".")) {
+                    return Some(t);
+                }
                 if segs == ["std", "thread", "spawn"] && items(&f[1]).len() == 2 {
                     let clo = &items(&f[1])[1];
                     let node = if nname(clo) == "Closure" {
@@ -1978,7 +2022,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if segs == ["std", "io", "print_line"] {
                     return self.cx.builtin_enum("Result", &["void".into(), "std.io.Error".into()]).ok();
                 }
-                if segs == ["core", "check", "eq"] || segs == ["core", "mem", "drop"] {
+                if segs == ["core", "check", "eq"] || segs == ["core", "check", "is_true"] || segs == ["core", "mem", "drop"] {
                     return Some("void".into());
                 }
                 self.funcs.get(&segs.join(".")).and_then(|d| self.call_ret_ty(d, None, items(&f[1]), env, expect))
@@ -2046,6 +2090,172 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok((Some(res), rty))
     }
 
+    /// OS ランタイム (`sysrt.c`) の関数 `name` を呼ぶ。
+    fn csys(&mut self, name: &str, args: &[Value]) -> R<Value> {
+        self.crt(name, args, Some(types::I64)).ok_or_else(|| format!("runtime call {}", name))
+    }
+
+    /// `Result<ok, err>` を作る。`failed` が None なら必ず `Ok`。失敗のときのエラーは `e` ({kind, code} の 2 語) から取る
+    /// (`std.net.Error` は code だけ)。`ok_val` は成功時のペイロード (ハンドルは記述子の `i32`)。
+    fn sys_result(&mut self, rty: &str, failed: Option<Value>, ok_val: Option<Value>, e: Value) -> R<(Option<Value>, String)> {
+        let l = self.cx.layout(rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let ok_off = l.variants[0].1.first().map(|x| x.1);
+        let store_ok = |g: &mut Self| {
+            let t0 = g.b.ins().iconst(types::I32, 0);
+            g.b.ins().store(MemFlags::new(), t0, res, 0);
+            if let (Some(v), Some(off)) = (ok_val, ok_off) {
+                g.b.ins().store(MemFlags::new(), v, res, off as i32);
+            }
+        };
+        let Some(failed) = failed else {
+            store_ok(self);
+            return Ok((Some(res), rty.to_string()));
+        };
+        let (eb, ob, mb) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(failed, eb, &[], ob, &[]);
+        self.b.switch_to_block(eb);
+        let (ety, eoff) = l.variants[1].1.first().cloned().ok_or("sys error payload")?;
+        let t1 = self.b.ins().iconst(types::I32, 1);
+        self.b.ins().store(MemFlags::new(), t1, res, 0);
+        if ety == "std.net.Error" {
+            let code = self.b.ins().load(types::I32, MemFlags::new(), e, 4);
+            self.b.ins().store(MemFlags::new(), code, res, eoff as i32);
+        } else {
+            let kind = self.b.ins().load(types::I32, MemFlags::new(), e, 0);
+            let code = self.b.ins().load(types::I32, MemFlags::new(), e, 4);
+            self.b.ins().store(MemFlags::new(), kind, res, eoff as i32);
+            self.b.ins().store(MemFlags::new(), code, res, eoff as i32 + 4);
+        }
+        self.b.ins().jump(mb, &[]);
+        self.b.switch_to_block(ob);
+        store_ok(self);
+        self.b.ins().jump(mb, &[]);
+        self.b.switch_to_block(mb);
+        Ok((Some(res), rty.to_string()))
+    }
+
+    /// `std.fs` / `std.net` の関数とメソッド。記述子を持つハンドル構造体の先頭 4 バイトが記述子。
+    /// 実際の OS 呼び出しは `sysrt.c`。インタプリタ (natives.rs / net.rs) と戻り値・エラーの種類・終端の約束が同じ。
+    /// `recv` が None で名前がメソッドなら、第 1 引数が受け手。対象外の名前は Ok(None)。
+    fn sys_call(&mut self, fq: &str, recv: Option<&V>, args: &[V], env: &mut Env) -> R<Option<(Option<Value>, String)>> {
+        let Some(rty) = self.cx.sys_ret(fq) else { return Ok(None) };
+        if cfg!(windows) && fq.starts_with("std.net.") {
+            return Err("std.net is not supported by the native backend on Windows".into());
+        }
+        let is_method = fq.rsplit('.').nth(1).map_or(false, |t| matches!(t, "File" | "TcpStream" | "TcpListener"));
+        let (recv, args) = match (recv, is_method) {
+            (Some(r), _) => (Some(r), args),
+            (None, true) => match args.split_first() {
+                Some((r, rest)) => (Some(r), rest),
+                None => return Err(format!("{} without a receiver", fq)),
+            },
+            (None, false) => (None, args),
+        };
+        let want = match fq {
+            "std.fs.read_to_end" => 2,
+            "std.fs.exists" | "std.fs.remove_file" | "std.fs.open" | "std.fs.create" | "std.net.connect" | "std.net.listen" | "std.fs.File.read"
+            | "std.fs.File.write" | "std.net.TcpStream.read" | "std.net.TcpStream.write" => 1,
+            _ => 0,
+        };
+        if args.len() != want {
+            return Err(format!("{}: wrong number of arguments", fq));
+        }
+        let i32t = types::I32;
+        let e = self.alloc(8, 4);
+        let neg = |g: &mut Self, r: Value| g.b.ins().icmp_imm(IntCC::SignedLessThan, r, 0);
+        // 受け手 (ハンドル) の記述子
+        let fd = match recv {
+            Some(r) => {
+                let (h, _) = self.expr(r, env, None)?;
+                let h = h.ok_or("bad handle")?;
+                Some(self.b.ins().load(i32t, MemFlags::new(), h, 0))
+            }
+            None => None,
+        };
+        let (r, ok_val, check): (Option<Value>, Option<Value>, bool) = match fq {
+            "std.fs.exists" => {
+                let (p, n) = self.str_arg(&args[0], env)?;
+                let r = self.csys("ksn_rt_sys_exists", &[p, n])?;
+                let r = self.b.ins().ireduce(i32t, r);
+                let b = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                return Ok(Some((Some(b), "bool".into())));
+            }
+            "std.fs.remove_file" => {
+                let (p, n) = self.str_arg(&args[0], env)?;
+                (Some(self.csys("ksn_rt_sys_remove", &[p, n, e])?), None, true)
+            }
+            "std.fs.open" | "std.fs.create" => {
+                let (p, n) = self.str_arg(&args[0], env)?;
+                let create = self.b.ins().iconst(i32t, if fq == "std.fs.create" { 1 } else { 0 });
+                let r = self.csys("ksn_rt_sys_open", &[p, n, create, e])?;
+                let fdv = self.b.ins().ireduce(i32t, r);
+                (Some(r), Some(fdv), true)
+            }
+            "std.net.connect" | "std.net.listen" => {
+                let (p, n) = self.str_arg(&args[0], env)?;
+                let name = if fq == "std.net.connect" { "ksn_rt_sys_connect" } else { "ksn_rt_sys_listen" };
+                let r = self.csys(name, &[p, n, e])?;
+                let fdv = self.b.ins().ireduce(i32t, r);
+                (Some(r), Some(fdv), true)
+            }
+            "std.net.TcpListener.accept" => {
+                let r = self.csys("ksn_rt_sys_accept", &[fd.ok_or("accept")?, e])?;
+                let fdv = self.b.ins().ireduce(i32t, r);
+                (Some(r), Some(fdv), true)
+            }
+            "std.net.TcpListener.local_port" => {
+                let r = self.csys("ksn_rt_sys_local_port", &[fd.ok_or("local_port")?, e])?;
+                let port = self.b.ins().ireduce(types::I16, r);
+                (Some(r), Some(port), true)
+            }
+            "std.fs.File.close" | "std.net.TcpStream.close" | "std.net.TcpListener.close" => {
+                self.csys("ksn_rt_sys_close", &[fd.ok_or("close")?])?;
+                (None, None, false)
+            }
+            "std.fs.File.flush" | "std.net.TcpStream.flush" => (None, None, false),
+            "std.fs.File.read" | "std.net.TcpStream.read" => {
+                let (bv, bt) = self.expr(&args[0], env, Some("slice<u8>"))?;
+                let bv = bv.ok_or("bad buffer")?;
+                if self.cx.seq_elem(&bt).as_deref() != Some("u8") {
+                    return Err("read into a buffer that is not [u8]".into());
+                }
+                let pt = self.ptr_ty();
+                let ptr = self.b.ins().load(pt, MemFlags::new(), bv, 0);
+                let len = self.b.ins().load(types::I64, MemFlags::new(), bv, 8);
+                let r = self.csys("ksn_rt_sys_read", &[fd.ok_or("read")?, ptr, len, e])?;
+                (Some(r), Some(r), true)
+            }
+            "std.fs.File.write" | "std.net.TcpStream.write" => {
+                let (bv, bt) = self.expr(&args[0], env, Some("slice<u8>"))?;
+                let bv = bv.ok_or("bad buffer")?;
+                if bt != "str" && self.cx.seq_elem(&bt).as_deref() != Some("u8") {
+                    return Err("write of a buffer that is not [u8]".into());
+                }
+                let pt = self.ptr_ty();
+                let ptr = self.b.ins().load(pt, MemFlags::new(), bv, 0);
+                let len = self.b.ins().load(types::I64, MemFlags::new(), bv, 8);
+                let r = self.csys("ksn_rt_sys_write", &[fd.ok_or("write")?, ptr, len, e])?;
+                (Some(r), Some(r), true)
+            }
+            "std.fs.read_to_end" => {
+                let (fv, _) = self.expr(&args[0], env, None)?;
+                let fv = fv.ok_or("bad file")?;
+                let fdv = self.b.ins().load(i32t, MemFlags::new(), fv, 0);
+                let (vv, vt) = self.expr(&args[1], env, None)?;
+                let vv = vv.ok_or("bad output")?;
+                if self.cx.elem_of(&vt).as_deref() != Some("u8") {
+                    return Err("read_to_end into a vector that is not Vec<u8>".into());
+                }
+                let r = self.csys("ksn_rt_sys_read_to_end", &[fdv, vv, e])?;
+                (Some(r), Some(r), true)
+            }
+            _ => return Ok(None),
+        };
+        let failed = if check { r.map(|r| neg(self, r)) } else { None };
+        Ok(Some(self.sys_result(&rty, failed, ok_val, e)?))
+    }
+
     fn call_rt(&mut self, id: FuncId, args: &[Value]) -> Vec<Value> {
         let fr = self.module.declare_func_in_func(id, self.b.func);
         let c = self.b.ins().call(fr, args);
@@ -2101,7 +2311,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// 式が一時的な領域を新しく作る (コピーせず束縛してよい) か。
     fn is_fresh(&self, e: &V) -> bool {
         match nname(e) {
-            "StructLit" | "MCall" | "TupleE" | "ArrayE" => true,
+            "StructLit" | "MCall" | "TupleE" | "ArrayE" | "ArrayRep" => true,
             "Try" => self.is_fresh(&nf(e)[0]),
             "Call" => !(nname(&nf(e)[0]) == "Path" && strs(&nf(&nf(e)[0])[0]).len() >= 2 && false),
             "Path" => {
@@ -2653,6 +2863,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     /// 戻り値を返す (構造体・列挙型は sret にコピー)。
     fn emit_return(&mut self, v: Option<Value>, ty: &str) -> R<()> {
+        // `&String` / `&Vec<T>` を `&str` / `&[T]` として返すときは、{ptr, len} の組に直してから書く (戻り値の領域は 16 バイト)。
+        let ret = self.ret_ty.clone();
+        let (v, ty) = match v {
+            Some(x) if !self.entry && ty != ret && (ty == STRING || self.cx.elem_of(ty).is_some()) && (ret == "str" || self.cx.slices.borrow().contains_key(&ret)) => {
+                (Some(self.coerce(x, ty, &ret)?), ret.as_str())
+            }
+            other => (other, ty),
+        };
         if is_agg(ty) {
             let dst = self.sret.ok_or("aggregate return without sret")?;
             let size = self.cx.layout(ty, 0)?.size;
@@ -3659,7 +3877,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         expect: Option<&str>,
     ) -> R<(Option<Value>, String)> {
         if tag(&d.ret) == "ref" {
-            return Err("call of a function returning a reference".into());
+            check_ref_return(self.cx, d)?;
         }
         let recv_ty = recv.as_ref().map(|r| r.1.clone());
         let subst = if type_params(d).is_empty() {
@@ -3732,6 +3950,17 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     let len = self.b.ins().iconst(types::I64, n);
                     self.b.ins().store(MemFlags::new(), len, slot, 8);
                     Ok((Some(slot), "str".into()))
+                }
+                "bstr" => {
+                    // `b"..."`: 静的なバイト列を指す `&[u8]`
+                    let bytes: Vec<u8> = items(&f[1]).iter().map(|x| st(x).parse::<u32>().unwrap_or(0) as u8).collect();
+                    let n = bytes.len() as i64;
+                    let ptr = self.string_ptr(bytes)?;
+                    let slot = self.alloc(16, 8);
+                    self.b.ins().store(MemFlags::new(), ptr, slot, 0);
+                    let len = self.b.ins().iconst(types::I64, n);
+                    self.b.ins().store(MemFlags::new(), len, slot, 8);
+                    Ok((Some(slot), self.cx.slice_of("u8")))
                 }
                 "float" => {
                     let Some(t) = self.ty_of(e, env, expect) else { return Err("untyped float literal".into()) };
@@ -3926,6 +4155,51 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     let (v, _) = self.expr(x, env, Some(&elem))?;
                     let addr = self.b.ins().iadd_imm(buf, (k as u32 * sz) as i64);
                     self.store_value(addr, &elem, v.ok_or("bad array element")?)?;
+                }
+                let slot = self.alloc(16, 8);
+                self.b.ins().store(MemFlags::new(), buf, slot, 0);
+                let len = self.b.ins().iconst(types::I64, n as i64);
+                self.b.ins().store(MemFlags::new(), len, slot, 8);
+                Ok((Some(slot), ty))
+            }
+            "ArrayRep" => {
+                // `[x; N]`: N は整数リテラル。要素はスカラーで、スタックに置ける大きさだけ対応する。
+                let V::N(count) = &f[1] else { return Err("array length that is not a literal".into()) };
+                let n: u32 = count.replace('_', "").parse().map_err(|_| "array length")?;
+                let ty = self.ty_of(e, env, expect).ok_or("array element type")?;
+                let elem = self.cx.slices.borrow().get(&ty).cloned().ok_or("array type")?;
+                if !is_scalar(&elem) {
+                    return Err("repeated array of non-scalar elements".into());
+                }
+                let sz = self.elem_size(&elem)?;
+                if (sz as u64) * (n as u64) > 65536 {
+                    return Err("array too large for the stack".into());
+                }
+                let (v, _) = self.expr(&f[0], env, Some(&elem))?;
+                let v = v.ok_or("bad array element")?;
+                let buf = self.alloc((sz * n).max(1), sz.max(1));
+                if n <= 8 {
+                    for k in 0..n {
+                        self.b.ins().store(MemFlags::new(), v, buf, (k * sz) as i32);
+                    }
+                } else {
+                    let iv = self.new_var("usize");
+                    let z = self.b.ins().iconst(types::I64, 0);
+                    self.b.def_var(iv, z);
+                    let (head, body, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                    self.b.ins().jump(head, &[]);
+                    self.b.switch_to_block(head);
+                    let i = self.b.use_var(iv);
+                    let more = self.b.ins().icmp_imm(IntCC::UnsignedLessThan, i, n as i64);
+                    self.b.ins().brif(more, body, &[], exit, &[]);
+                    self.b.switch_to_block(body);
+                    let off = self.b.ins().imul_imm(i, sz as i64);
+                    let addr = self.b.ins().iadd(buf, off);
+                    self.b.ins().store(MemFlags::new(), v, addr, 0);
+                    let next = self.b.ins().iadd_imm(i, 1);
+                    self.b.def_var(iv, next);
+                    self.b.ins().jump(head, &[]);
+                    self.b.switch_to_block(exit);
                 }
                 let slot = self.alloc(16, 8);
                 self.b.ins().store(MemFlags::new(), buf, slot, 0);
@@ -4230,6 +4504,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     };
                     return self.make_variant(&t, idx, args, env);
                 }
+                if segs == ["core", "check", "is_true"] && args.len() == 1 {
+                    let (c, _) = self.expr(&args[0], env, Some("bool"))?;
+                    let c = c.ok_or("bad condition")?;
+                    let bad = self.b.ins().bxor_imm(c, 1);
+                    self.guard(bad, "assertion failed")?;
+                    return Ok((None, "void".into()));
+                }
                 if segs == ["core", "check", "eq"] {
                     let t = self.ty_of(&args[0], env, None).or_else(|| self.ty_of(&args[1], env, None)).ok_or("operand type")?;
                     if t == "str" {
@@ -4288,6 +4569,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     return Ok((None, "void".into()));
                 }
                 if let Some(r) = self.conv_call(&segs, args, env)? {
+                    return Ok(r);
+                }
+                if let Some(r) = self.sys_call(&segs.join("."), None, args, env)? {
                     return Ok(r);
                 }
                 if segs.len() == 3 && segs[0] == "core" && segs[1] == "ptr" {
@@ -4523,6 +4807,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let Some(d) = self.funcs.get(&fq).copied() else { return Err(format!("call to {}", fq)) };
                 self.call_user(&fq, d, None, args, env, expect)
             }
+            // `match` の腕などで値の位置に現れる `return` / `break` / `continue`: 文として出して、値は無い。
+            "Return" | "Break" | "Continue" => {
+                self.exprstmt(e, env, false)?;
+                Ok((None, "void".into()))
+            }
             n => Err(format!("expression {}", n)),
         }
     }
@@ -4582,6 +4871,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let (p, _) = self.expr(recv, env, None)?;
                 let p = p.ok_or("bad receiver")?;
                 return self.map_err(recv, p, rt, &args[0], env);
+            }
+            if self.cx.sys_ret(&format!("{}.{}", rt, name)).is_some() {
+                if let Some(r) = self.sys_call(&format!("{}.{}", rt, name), Some(recv), args, env)? {
+                    return Ok(r);
+                }
             }
             if rt == "std.rand.Rng" && name == "next_u64" {
                 let (p, _) = self.expr(recv, env, None)?;
@@ -6587,6 +6881,103 @@ fn int_value(text: &str) -> R<i64> {
 }
 
 /// 関数 `d` (型パラメータは `subst` で具体化した版) の Cranelift のシグネチャ。
+/// 参照を返す関数を受け付けてよいか調べる。受け付けるのは、持ち主を移さない (解放が要らない) 次の形だけ。
+/// - `&スカラー`: 値そのものとして返る (借用の間は値が変わらない)。
+/// - `&str` / `&[T]`: `{ptr, len}` の組が返る。指す先が関数の外に残るものだけ受け付ける。つまり返す式が
+///   文字列・バイト列リテラル、参照型の引数、またはその引数に `as_str` / `trim` などをつないだもの。
+///   ローカル変数や、この関数が作った値を指すものは受け付けない (ぶら下がり参照になる)。
+///
+/// `&mut`、`&String` / `&Vec` / `&構造体` などの参照は、持ち主を二重に解放したり、値のコピーが別名にならなかったり
+/// するので、理由を付けて未対応にする。
+fn check_ref_return(cx: &Cx, d: &Def) -> R<()> {
+    if matches!(tel(&d.ret, 1), V::B(true)) {
+        return Err("returns a mutable reference".into());
+    }
+    let target = tel(&d.ret, 2);
+    let is_seq = tag(target) == "slice" || (tag(target) == "prim" && st(tel(target, 1)) == "str");
+    if !is_seq {
+        let inner = cx.pty(target)?;
+        if is_scalar(&inner) && !is_mutref(&inner) {
+            return Ok(());
+        }
+        return Err("returns a reference to an aggregate (only &str, &[T] and references to scalars are supported)".into());
+    }
+    let Some(body) = d.body.as_ref() else { return Ok(()) };
+    let refs: HashSet<String> = d.params.iter().filter(|(_, t)| tag(t) == "ref").map(|(n, _)| n.clone()).collect();
+    let mut leaves: Vec<&V> = vec![];
+    ref_leaves(body, &mut leaves);
+    let mut nodes: Vec<&V> = vec![];
+    crate::check::walk(body, &mut nodes);
+    for n in nodes {
+        if nname(n) == "Return" && !matches!(nf(n)[0], V::Nil) {
+            ref_leaves(&nf(n)[0], &mut leaves);
+        }
+    }
+    for l in leaves {
+        if !ref_rooted(l, &refs) {
+            return Err("returns a reference that may not outlive the function (only string literals and reference parameters, optionally through as_str / as_bytes / as_slice / trim, are supported)".into());
+        }
+    }
+    Ok(())
+}
+
+/// 関数本体の値になる式 (末尾の式。`if` / `match` / ブロックの腕の末尾も含む)。`return` は別に拾う。
+fn ref_leaves<'v>(e: &'v V, out: &mut Vec<&'v V>) {
+    match nname(e) {
+        "Block" => {
+            if let Some(last) = items(&nf(e)[0]).last() {
+                ref_leaves(last, out);
+            }
+        }
+        "ExprStmt" => ref_leaves(&nf(e)[0], out),
+        "If" => {
+            ref_leaves(&nf(e)[1], out);
+            if !matches!(nf(e)[2], V::Nil) {
+                ref_leaves(&nf(e)[2], out);
+            }
+        }
+        "Match" => {
+            for arm in items(&nf(e)[1]) {
+                if let Some(b) = items(arm).get(1) {
+                    ref_leaves(b, out);
+                }
+            }
+        }
+        "Unsafe" => ref_leaves(&nf(e)[2], out),
+        // 戻らない式。値にならないので何も足さない。
+        "Return" | "Break" | "Continue" => {}
+        "Call" if nname(&nf(e)[0]) == "Path" && matches!(strs(&nf(&nf(e)[0])[0]).as_slice(), [a, b, _] if a == "core" && b == "panic") => {}
+        _ => out.push(e),
+    }
+}
+
+/// 返す式 `e` が、関数の外に残るものを指すか (`refs` は参照型の引数の名前)。
+fn ref_rooted(e: &V, refs: &HashSet<String>) -> bool {
+    match nname(e) {
+        "Lit" => matches!(st(&nf(e)[0]).as_str(), "str" | "bstr"),
+        "Path" => {
+            let segs = strs(&nf(e)[0]);
+            segs.len() == 1 && refs.contains(&segs[0])
+        }
+        "Unary" => matches!(st(&nf(e)[0]).as_str(), "&" | "&mut") && ref_rooted(&nf(e)[1], refs),
+        // `x.as_str()` は、受け手が変数のとき `Call(Path[x, as_str])` の形になる。
+        "Call" => {
+            let callee = &nf(e)[0];
+            if nname(callee) != "Path" || !items(&nf(e)[1]).is_empty() {
+                return false;
+            }
+            let segs = strs(&nf(callee)[0]);
+            segs.len() == 2 && refs.contains(&segs[0]) && matches!(segs[1].as_str(), "as_str" | "as_bytes" | "as_slice" | "trim" | "trim_start" | "trim_end")
+        }
+        "MCall" => {
+            matches!(st(&nf(e)[1]).as_str(), "as_str" | "as_bytes" | "as_slice" | "trim" | "trim_start" | "trim_end")
+                && items(&nf(e)[2]).is_empty()
+                && ref_rooted(&nf(e)[0], refs)
+        }
+        _ => false,
+    }
+}
+
 fn make_sig(module: &ObjectModule, cx: &Cx, d: &Def, is_entry: bool, subst: &HashMap<String, String>) -> R<cranelift_codegen::ir::Signature> {
     let ptr = module.target_config().pointer_type();
     let old = cx.file.replace(d.file.clone());
@@ -6594,7 +6985,7 @@ fn make_sig(module: &ObjectModule, cx: &Cx, d: &Def, is_entry: bool, subst: &Has
     let r = (|| -> R<cranelift_codegen::ir::Signature> {
         let mut sig = module.make_signature();
         if !is_entry && tag(&d.ret) == "ref" {
-            return Err(format!("{}: returns a reference", d.name));
+            check_ref_return(cx, d).map_err(|e| format!("{}: {}", d.name, e))?;
         }
         let rty = if is_entry { "void".to_string() } else { cx.pty(&d.ret).map_err(|e| format!("{}: {}", d.name, e))? };
         if !is_entry && is_agg(&rty) {
@@ -6635,7 +7026,14 @@ pub fn compile_clif(
     if !funcs.contains_key(entry) {
         return Err("entry not found".into());
     }
-    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()) };
+    // std.fs / std.net のハンドルとエラー型は、標準ライブラリの宣言から取って、利用者の型と同じように配置する。
+    let mut all_types = type_defs.clone();
+    for n in ["std.io.Error", "std.io.ErrorKind", "std.net.Error", "std.fs.File", "std.net.TcpStream", "std.net.TcpListener"] {
+        if let Some(&i) = prog.types.get(n) {
+            all_types.entry(n.to_string()).or_insert(&prog.defs[i]);
+        }
+    }
+    let cx = Cx { types: &all_types, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
@@ -6815,7 +7213,9 @@ pub fn compile_clif(
 
     let bytes = module.finish().emit().map_err(|e| e.to_string())?;
     let opath = format!("{}.o", out_path);
-    let uses_rt = bytes.windows(7).any(|w| w == b"ksn_rt_");
+    // `ksn_rt_sys_` は OS ランタイム (sysrt.c)、それ以外の `ksn_rt_` は文字列ランタイム (strrt.c)。
+    let uses_sys = bytes.windows(11).any(|w| w == b"ksn_rt_sys_");
+    let uses_rt = bytes.windows(7).enumerate().any(|(i, w)| w == b"ksn_rt_" && bytes.get(i + 7..i + 11) != Some(b"sys_"));
     std::fs::write(&opath, &bytes).map_err(|e| e.to_string())?;
     let cc = ["gcc", "cc", "clang"].iter().find(|c| which(c)).ok_or("no linker found (gcc / cc / clang)")?;
     // 文字列ランタイム (strrt.c) は、`ksn_rt_` の関数を使うときだけ一緒にコンパイルする。
@@ -6826,8 +7226,14 @@ pub fn compile_clif(
         std::fs::write(&rt_c, include_str!("strrt.c")).map_err(|e| e.to_string())?;
         cmd.args(["-O1", &rt_c]);
     }
+    let sys_c = format!("{}.sys.c", out_path);
+    if uses_sys {
+        std::fs::write(&sys_c, include_str!("sysrt.c")).map_err(|e| e.to_string())?;
+        cmd.args(["-O1", &sys_c]);
+    }
     let r = cmd.output();
     let _ = std::fs::remove_file(&rt_c);
+    let _ = std::fs::remove_file(&sys_c);
     let r = r.map_err(|e| e.to_string())?;
     if !r.status.success() {
         let err: String = String::from_utf8_lossy(&r.stderr).trim().chars().take(300).collect();
