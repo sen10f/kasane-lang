@@ -8687,3 +8687,245 @@ end t.quiet_var
     assert_eq!(code, Some(0), "{}", out);
     assert!(got.is_empty(), "{}", out);
 }
+
+// ---- extern の構造体の値渡し・値の戻り値 (x86_64 SysV の分類。16 バイト以下はレジスタ、超えるものはメモリ渡し・sret)
+
+/// 構造体を値で渡す・返す C 側。`Eight` は INTEGER 1 つ、`Dbl2` は SSE 2 つ、`Mixed` は INTEGER + SSE、`Big3` は 24 バイト (メモリ)。
+const FFI_STRUCT_C_SRC: &str = r#"
+#include <stdint.h>
+typedef struct { int32_t a; int32_t b; } Eight;
+typedef struct { double x; double y; } Dbl2;
+typedef struct { int64_t a; double b; } Mixed;
+typedef struct { double x; int64_t y; } MixedRev;
+typedef struct { float x; float y; } Flt2;
+typedef struct { int64_t a, b, c; } Big3;
+typedef struct { uint8_t a; uint8_t b; int16_t c; } Small;
+Eight k_eight_add(Eight p, int32_t k) { Eight r = { p.a + k, p.b + k }; return r; }
+Dbl2 k_dbl_scale(Dbl2 p, double s) { Dbl2 r = { p.x * s, p.y * s }; return r; }
+Mixed k_mixed_bump(Mixed p, int64_t n) { Mixed r = { p.a + n, p.b * 2.0 }; return r; }
+MixedRev k_mixed_rev_bump(MixedRev p) { MixedRev r = { p.x + 1.0, p.y - 1 }; return r; }
+Flt2 k_flt_twice(Flt2 p) { Flt2 r = { p.x * 2.0f, p.y * 2.0f }; return r; }
+int64_t k_big_sum(Big3 p, int64_t n) { return p.a + p.b + p.c + n; }
+Big3 k_big_make(int64_t a) { Big3 r = { a, a * 2, a * 3 }; return r; }
+Small k_small_bump(Small p) { Small r = { p.a + 1, p.b + 2, p.c - 3 }; return r; }
+int64_t k_seven(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, Big3 p, int64_t z) {
+    return a + 2*b + 3*c + 4*d + 5*e + 6*f + 7*g + 10*p.a + 100*p.b + 1000*p.c + 10000*z;
+}
+double k_sum_then(double a, Dbl2 p, double b) { return a + p.x * 10.0 + p.y * 100.0 + b * 1000.0; }
+"#;
+
+const FFI_STRUCT_SRC: &str = r#"type t.Big3 layout c pub
+    a: i64
+    b: i64
+    c: i64
+end t.Big3
+
+type t.Dbl2 layout c pub
+    x: f64
+    y: f64
+end t.Dbl2
+
+type t.Eight layout c pub
+    a: i32
+    b: i32
+end t.Eight
+
+type t.Flt2 layout c pub
+    x: f32
+    y: f32
+end t.Flt2
+
+type t.Mixed layout c pub
+    a: i64
+    b: f64
+end t.Mixed
+
+type t.MixedRev layout c pub
+    x: f64
+    y: i64
+end t.MixedRev
+
+type t.Small layout c pub
+    a: u8
+    b: u8
+    c: i16
+end t.Small
+
+extern t.k_big_make(a: i64) -> t.Big3 link "k_big_make"
+
+extern t.k_big_sum(p: t.Big3, n: i64) -> i64 link "k_big_sum"
+
+extern t.k_dbl_scale(p: t.Dbl2, s: f64) -> t.Dbl2 link "k_dbl_scale"
+
+extern t.k_eight_add(p: t.Eight, k: i32) -> t.Eight link "k_eight_add"
+
+extern t.k_flt_twice(p: t.Flt2) -> t.Flt2 link "k_flt_twice"
+
+extern t.k_mixed_bump(p: t.Mixed, n: i64) -> t.Mixed link "k_mixed_bump"
+
+extern t.k_mixed_rev_bump(p: t.MixedRev) -> t.MixedRev link "k_mixed_rev_bump"
+
+extern t.k_seven(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, p: t.Big3, z: i64) -> i64 link "k_seven"
+
+extern t.k_small_bump(p: t.Small) -> t.Small link "k_small_bump"
+
+extern t.k_sum_then(a: f64, p: t.Dbl2, b: f64) -> f64 link "k_sum_then"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let e = unsafe "libc" "eight" {
+        t.k_eight_add(t.Eight { a: 1i32, b: 2i32 }, 10i32)
+    }
+    core.check.eq(e.a, 11i32)
+    core.check.eq(e.b, 12i32)
+    let d = unsafe "libc" "dbl2" {
+        t.k_dbl_scale(t.Dbl2 { x: 1.5f64, y: 2.0f64 }, 2.0f64)
+    }
+    core.check.eq(d.x, 3.0f64)
+    core.check.eq(d.y, 4.0f64)
+    let m = unsafe "libc" "mixed" {
+        t.k_mixed_bump(t.Mixed { a: 5i64, b: 1.25f64 }, 7i64)
+    }
+    core.check.eq(m.a, 12i64)
+    core.check.eq(m.b, 2.5f64)
+    let mr = unsafe "libc" "mixed rev" {
+        t.k_mixed_rev_bump(t.MixedRev { x: 0.5f64, y: 9i64 })
+    }
+    core.check.eq(mr.x, 1.5f64)
+    core.check.eq(mr.y, 8i64)
+    let f = unsafe "libc" "flt2" {
+        t.k_flt_twice(t.Flt2 { x: 1.5f32, y: 0.25f32 })
+    }
+    core.check.eq(f.x, 3.0f32)
+    core.check.eq(f.y, 0.5f32)
+    let s = unsafe "libc" "big3 argument" {
+        t.k_big_sum(t.Big3 { a: 1i64, b: 2i64, c: 3i64 }, 4i64)
+    }
+    core.check.eq(s, 10i64)
+    let b = unsafe "libc" "big3 result (sret)" {
+        t.k_big_make(5i64)
+    }
+    core.check.eq(b.a, 5i64)
+    core.check.eq(b.b, 10i64)
+    core.check.eq(b.c, 15i64)
+    let sm = unsafe "libc" "small" {
+        t.k_small_bump(t.Small { a: 1u8, b: 2u8, c: 10i16 })
+    }
+    core.check.eq(sm.a, 2u8)
+    core.check.eq(sm.b, 4u8)
+    core.check.eq(sm.c, 7i16)
+    let sv = unsafe "libc" "stack arguments" {
+        t.k_seven(
+            1i64,
+            1i64,
+            1i64,
+            1i64,
+            1i64,
+            1i64,
+            1i64,
+            t.Big3 { a: 1i64, b: 1i64, c: 1i64 },
+            1i64,
+        )
+    }
+    core.check.eq(sv, 11138i64)
+    let st = unsafe "libc" "double arguments around a struct" {
+        t.k_sum_then(1.0f64, t.Dbl2 { x: 1.0f64, y: 1.0f64 }, 1.0f64)
+    }
+    core.check.eq(st, 1111.0f64)
+    std.io.print_line("struct ffi ok")
+    Ok(())
+end t.main
+"#;
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn ffi_interpreter_passes_and_returns_structs_by_value() {
+    let t = Tmp::new("ffi_struct_interp", FFI_STRUCT_SRC);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_STRUCT_C_SRC);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "struct ffi ok\n");
+}
+
+/// libc だけを使う構造体の extern (補助 C ライブラリが要らないので、`ksn build --backend clif` の実行ファイルでも検査できる):
+/// `div` は 8 バイトを rax で、`ldiv` は 16 バイトを rax:rdx で返す。`inet_ntoa` は `struct in_addr` (4 バイト) を値で受ける。
+const FFI_LIBC_STRUCT_SRC: &str = r#"type t.DivT layout c pub
+    quot: i32
+    rem: i32
+end t.DivT
+
+type t.InAddr layout c pub
+    s_addr: u32
+end t.InAddr
+
+type t.LongDiv layout c pub
+    quot: i64
+    rem: i64
+end t.LongDiv
+
+extern t.div(numer: i32, denom: i32) -> t.DivT link "div"
+
+extern t.inet_ntoa(a: t.InAddr) -> *mut u8 link "inet_ntoa"
+
+extern t.ldiv(numer: i64, denom: i64) -> t.LongDiv link "ldiv"
+
+extern t.strlen(text: *const u8) -> usize link "strlen"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let d = unsafe "libc" "div returns a struct in rax" {
+        t.div(17i32, 5i32)
+    }
+    core.check.eq(d.quot, 3i32)
+    core.check.eq(d.rem, 2i32)
+    let l = unsafe "libc" "ldiv returns a struct in rax:rdx" {
+        t.ldiv(0i64 - 17i64, 5i64)
+    }
+    core.check.eq(l.quot, 0i64 - 3i64)
+    core.check.eq(l.rem, 0i64 - 2i64)
+    let s = unsafe "libc" "inet_ntoa takes a struct by value" {
+        t.inet_ntoa(t.InAddr { s_addr: 16777343u32 })
+    }
+    let n = unsafe "libc" "strlen of the C string" {
+        t.strlen(core.ptr.as_const(s))
+    }
+    core.check.eq(n, 9usize)
+    std.io.print_line("libc struct ok")
+    Ok(())
+end t.main
+"#;
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn ffi_struct_by_value_works_on_both_backends_with_libc() {
+    let t = Tmp::new("ffi_struct_libc", FFI_LIBC_STRUCT_SRC);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let r = run(&["run"], &t.0);
+    assert_eq!(text(&r.stdout), "libc struct ok\n", "{}", text(&r.stderr));
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_struct", std::process::id()));
+    let b = Command::new(exe())
+        .args(["build", "--backend", "clif"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    let bin = t.0.join("target").join("debug").join("t.native");
+    assert!(bin.exists(), "{}{}", text(&b.stdout), text(&b.stderr));
+    let r = Command::new(&bin).output().unwrap();
+    assert_eq!(text(&r.stdout), "libc struct ok\n");
+}
+
+#[test]
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+fn ffi_struct_by_value_is_refused_outside_x86_64_linux() {
+    // 構造体の値渡しは x86_64 SysV だけで扱う。ほかの環境では黙って壊れず、明示のエラーにする。
+    let t = Tmp::new("ffi_struct_refused", FFI_LIBC_STRUCT_SRC);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("x86_64"), "{}", text(&r.stderr));
+}

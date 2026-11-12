@@ -31,6 +31,8 @@ pub struct Def {
     pub derive: Vec<String>,
     pub linear: bool,
     pub fields: Vec<(String, V, bool)>,
+    /// `type` ヘッダの `layout c` (C 互換配置。3.8 の構造体の値渡し・値の戻り値に必要)。
+    pub layout_c: bool,
     pub variants: Vec<(String, Vec<V>)>,
     /// `type` / `enum` のフィールド・バリアントのうち、参照のライフタイムを省略したものの名前 (4.1 / E3020)。
     pub elided_refs: Vec<String>,
@@ -185,7 +187,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 d.name = p.fqn()?;
                 d.generics = conv_generics(&p.generics()?);
                 if p.accept_kw("layout") {
-                    p.name_tok()?;
+                    d.layout_c = p.name_tok()? == "c";
                 }
                 if p.accept_kw("derive") {
                     p.expect_op("[")?;
