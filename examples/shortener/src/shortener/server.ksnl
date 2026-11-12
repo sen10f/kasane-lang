@@ -25,6 +25,10 @@ fn shortener.server.serve_one(listener: &std.net.TcpListener, db: &mut shortener
     let handled = with mut stream = listener.accept()? close core.mem.drop(stream.close()) {
         shortener.server.respond(&mut stream, db)
     }
+    shortener.server.settle(handled)
+end shortener.server.serve_one
+
+fn shortener.server.settle(handled: Result<(), shortener.error.Error>) -> Result<(), shortener.error.Error> uses [] panics never pub
     match handled {
         Ok(_u) => Ok(())
         Err(error.Error.Alloc) => Err(error.Error.Alloc)
@@ -37,4 +41,4 @@ fn shortener.server.serve_one(listener: &std.net.TcpListener, db: &mut shortener
         Err(error.Error.Net(_code)) => Ok(())
         Err(error.Error.TooLarge) => Ok(())
     }
-end shortener.server.serve_one
+end shortener.server.settle

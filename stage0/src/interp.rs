@@ -1215,6 +1215,8 @@ impl Interp {
         let mut out = vec![];
         for a in items(args) {
             let v = self.eval(a, sc)?;
+            // チャネルの端を値で渡すのは移動: 呼び出し側の変数を空にする (残すと、送信側が閉じない)。
+            self.move_out(a, sc, &v);
             out.push(self.cp(v));
         }
         Ok(out)
