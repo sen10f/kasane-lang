@@ -480,6 +480,17 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// 同じ型になるべき 2 つの式 (`if` の両枝、`match` の腕) の型を一致させる。結果は報告しない
+    /// (不一致は別の検査が見る)。分からない型 (未知・型パラメータ) とは一致させない。そうしないと
+    /// 型変数が escape され、本来決まるはずの型変数の診断が消えるため。
+    fn join_arm(&mut self, a: &Ty, b: &Ty) {
+        let unknown = |t: &Ty| matches!(t, Ty::Unknown | Ty::Param(_));
+        if unknown(&self.resolve(a)) || unknown(&self.resolve(b)) {
+            return;
+        }
+        let _ = self.unify2(a, b);
+    }
+
     fn escape(&mut self, t: &Ty) {
         match self.resolve(t) {
             Ty::Var(v) => {
@@ -871,6 +882,19 @@ impl<'a> TypeCk<'a> {
                         );
                     }
                 }
+            }
+        }
+        // Fn 境界 (6 の 1): `map_err(f)` などの引数のクロージャ・関数項目を、境界の引数・戻り値と単一化する
+        // (`call_def` と同じ検査)。宣言の添字は `self` の分だけずれる。
+        let mut cap_bad = false;
+        for (k, a) in args.iter().enumerate() {
+            let Some(p) = d.params.get(k + 1) else { break };
+            let Ty::Param(pname) = from_v(&p.1, &gn) else { continue };
+            if self.fn_bound(d, &pname).is_empty() {
+                continue;
+            }
+            if let cl @ Ty::Closure { .. } = self.resolve(a) {
+                self.unify_fn_bound(d, k, &pname, &cl, &mut map, line, &mut cap_bad);
             }
         }
         self.check_bounds(d, &map, line, false);
@@ -1309,8 +1333,16 @@ impl<'a> TypeCk<'a> {
             "If" => {
                 self.infer(&f[0]);
                 let a = self.infer(&f[1]);
-                let b = if is_nil(&f[2]) { Ty::Unit } else { self.infer(&f[2]) };
-                if a == Ty::Never { b } else { a }
+                let has_else = !is_nil(&f[2]);
+                let b = if has_else { self.infer(&f[2]) } else { Ty::Unit };
+                if a == Ty::Never {
+                    return b;
+                }
+                // 6 の 2: 両方の枝は同じ型になる。`Ok(..)` と `Err(..)` の枝の型変数は、互いに一致させて決まる。
+                if has_else && b != Ty::Never {
+                    self.join_arm(&a, &b);
+                }
+                a
             }
             "Match" => {
                 let s = self.infer(&f[0]);
@@ -1320,8 +1352,14 @@ impl<'a> TypeCk<'a> {
                     self.bind_pat(&items(arm)[0], &s);
                     let t = self.infer(&items(arm)[1]);
                     self.scopes.pop();
-                    if out == Ty::Unknown && t != Ty::Never {
+                    if t == Ty::Never {
+                        continue;
+                    }
+                    if out == Ty::Unknown {
                         out = t;
+                    } else {
+                        // 6 の 2: 他の腕と型を一致させる (`Some(v) => Ok(v)` と `None => Err(a)` など)。
+                        self.join_arm(&out, &t);
                     }
                 }
                 out
@@ -1604,6 +1642,20 @@ impl<'a> TypeCk<'a> {
             argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;
         };
+        // 6 の 3: `Enum.Variant.m()` は、ペイロードのない変種の値 (型 `Enum`) へのメソッド呼び出し。
+        // 型引数のない列挙型の変種だけを扱う (それ以外は従来どおり黙る)。
+        if r.rest.len() == 1 {
+            if let Target::Variant(en, vn) = &r.target {
+                let unit_variant = self.type_def(en).is_some_and(|td| {
+                    td.generics.iter().all(|g| g.0 != "type") && td.variants.iter().any(|v| &v.0 == vn && v.1.is_empty())
+                });
+                if unit_variant && self.p.types.contains_key(en) {
+                    let recv = Ty::Named(en.clone(), vec![]);
+                    let m = r.rest[0].clone();
+                    return self.call_method(&recv, None, &m, &argt, line, targs, false);
+                }
+            }
+        }
         if !r.rest.is_empty() {
             argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;
@@ -1725,73 +1777,7 @@ impl<'a> TypeCk<'a> {
         let mut cap_bad = false;
         for (k, name) in &fn_args {
             let Some(cl) = closures.get(k).cloned() else { continue };
-            let Ty::Closure { args, ret, cap, .. } = self.deep(&cl) else { continue };
-            let bounds = self.fn_bound(d, name);
-            for b in &bounds {
-                let V::L(bx) = b else { continue };
-                let tr = st(&bx[0]);
-                if !tr.starts_with("core.ops.Fn") {
-                    continue;
-                }
-                let targs = tel(b, 1);
-                if let Ty::Tuple(want_args) = self.inst(&from_v(tel(&targs, 0), &gn), &mut map) {
-                    if args.len() != want_args.len() {
-                        self.diag(
-                            "E2023",
-                            format!(
-                                "argument {} of `{}`: expected `{}`, found `{}`",
-                                k + 1,
-                                d.name,
-                                Ty::Tuple(want_args.clone()).show(),
-                                cl.show()
-                            ),
-                            line,
-                        );
-                    } else {
-                        for (w, g) in want_args.iter().zip(&args) {
-                            if let Err(e) = self.unify2(w, g) {
-                                if let Some((want, got)) = self.type_conflict(&e) {
-                                    self.diag(
-                                        "E2023",
-                                        format!(
-                                            "argument {} of `{}`: expected `{}`, found `{}`",
-                                            k + 1,
-                                            d.name,
-                                            want,
-                                            got
-                                        ),
-                                        line,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                let want_ret = self.inst(&from_v(tel(&targs, 1), &gn), &mut map);
-                if let Err(e) = self.unify2(&want_ret, &ret) {
-                    if let Some((want, got)) = self.type_conflict(&e) {
-                        self.diag(
-                            "E2023",
-                            format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
-                            line,
-                        );
-                    }
-                }
-                // capture の能力: `Fn` は共有参照だけ、`FnMut` は値での取り込み以外まで、`FnOnce` は無条件。
-                let ok = match tr.as_str() {
-                    "core.ops.Fn" => cap == Cap::Fn,
-                    "core.ops.FnMut" => cap != Cap::FnOnce,
-                    _ => true,
-                };
-                if !ok && !cap_bad {
-                    cap_bad = true;
-                    self.diag(
-                        "E2030",
-                        format!("the trait bound `{}: {}` of {} is not satisfied by {}", name, tr, d.name, cl.show()),
-                        line,
-                    );
-                }
-            }
+            self.unify_fn_bound(d, *k, name, &cl, &mut map, line, &mut cap_bad);
         }
         self.check_bounds(d, &map, line, true);
         // 決まらなかった型パラメータは、従来の escape-all と同じ扱いにする (リテラルの E2027 を出さない)。
@@ -1802,6 +1788,68 @@ impl<'a> TypeCk<'a> {
         }
         let ret = from_v(&d.ret, &gn);
         self.inst(&ret, &mut map)
+    }
+
+    /// `Fn` 境界を持つ型パラメータ `name` に渡されたクロージャ (または関数項目) の型 `cl` を、
+    /// 境界の `Args` タプル・戻り値型・capture の能力と単一化する。関数呼び出し (`call_def`) と
+    /// メソッド呼び出し (`call_method`) で共通に使う。`k` は引数の添字 (0 始まり。メッセージは 1 始まり)。
+    /// `cap_bad` は、この呼び出しで E2030 を出し済みかどうか (同じ呼び出しで 2 回出さない)。
+    #[allow(clippy::too_many_arguments)]
+    fn unify_fn_bound(&mut self, d: &Def, k: usize, name: &str, cl: &Ty, map: &mut HashMap<String, Ty>, line: usize, cap_bad: &mut bool) {
+        let gn = d.gnames();
+        let Ty::Closure { args, ret, cap, .. } = self.deep(cl) else { return };
+        let bounds = self.fn_bound(d, name);
+        for b in &bounds {
+            let V::L(bx) = b else { continue };
+            let tr = st(&bx[0]);
+            if !tr.starts_with("core.ops.Fn") {
+                continue;
+            }
+            let targs = tel(b, 1);
+            if let Ty::Tuple(want_args) = self.inst(&from_v(tel(&targs, 0), &gn), map) {
+                if args.len() != want_args.len() {
+                    self.diag(
+                        "E2023",
+                        format!(
+                            "argument {} of `{}`: expected `{}`, found `{}`",
+                            k + 1,
+                            d.name,
+                            Ty::Tuple(want_args.clone()).show(),
+                            cl.show()
+                        ),
+                        line,
+                    );
+                } else {
+                    for (w, g) in want_args.iter().zip(&args) {
+                        if let Err(e) = self.unify2(w, g) {
+                            if let Some((want, got)) = self.type_conflict(&e) {
+                                self.diag(
+                                    "E2023",
+                                    format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
+                                    line,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            let want_ret = self.inst(&from_v(tel(&targs, 1), &gn), map);
+            if let Err(e) = self.unify2(&want_ret, &ret) {
+                if let Some((want, got)) = self.type_conflict(&e) {
+                    self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got), line);
+                }
+            }
+            // capture の能力: `Fn` は共有参照だけ、`FnMut` は値での取り込み以外まで、`FnOnce` は無条件。
+            let ok = match tr.as_str() {
+                "core.ops.Fn" => cap == Cap::Fn,
+                "core.ops.FnMut" => cap != Cap::FnOnce,
+                _ => true,
+            };
+            if !ok && !*cap_bad {
+                *cap_bad = true;
+                self.diag("E2030", format!("the trait bound `{}: {}` of {} is not satisfied by {}", name, tr, d.name, cl.show()), line);
+            }
+        }
     }
 
     /// ジェネリクス `name` の境界のうち、`core.ops.Fn*` を含む項目の列。
