@@ -69,7 +69,7 @@ pub enum Cap {
 }
 
 impl Ty {
-    fn strip(&self) -> &Ty {
+    pub(crate) fn strip(&self) -> &Ty {
         let mut t = self;
         while let Ty::Ref(_, inner) = t {
             t = inner;
@@ -219,6 +219,8 @@ pub struct RecvSite {
     pub seg: usize,
     pub field: bool,
     pub recv: Ty,
+    /// メソッド名 / フィールド名 (可視性の検査 (E1119 / E1122) 用)。
+    pub name: String,
 }
 
 /// `Fn` 境界の引数に直接書かれたクロージャの記録 (効果検査 ② 用)。
@@ -1051,16 +1053,16 @@ impl<'a> TypeCk<'a> {
     }
 
     // ------------------------------------------------------------ メソッド呼び出し
-    fn log_step(&mut self, pos: usize, seg: usize, field: bool, _name: &str, recv: &Ty) {
+    fn log_step(&mut self, pos: usize, seg: usize, field: bool, name: &str, recv: &Ty) {
         if pos != 0 {
-            self.recv_log.push(RecvSite { writer: self.cur, pos, seg, field, recv: recv.clone() });
+            self.recv_log.push(RecvSite { writer: self.cur, pos, seg, field, recv: recv.clone(), name: name.to_string() });
         }
     }
 
-    fn log_recv(&mut self, f: &[V], at: usize, field: bool, _name: &str, recv: &Ty) {
+    fn log_recv(&mut self, f: &[V], at: usize, field: bool, name: &str, recv: &Ty) {
         if let Some(V::N(p)) = f.get(at) {
             if let Ok(pos) = p.parse::<usize>() {
-                self.recv_log.push(RecvSite { writer: self.cur, pos, seg: usize::MAX, field, recv: recv.clone() });
+                self.recv_log.push(RecvSite { writer: self.cur, pos, seg: usize::MAX, field, recv: recv.clone(), name: name.to_string() });
             }
         }
     }

@@ -647,3 +647,96 @@ fn two_package_example_and_shortener_pass_all_commands() {
     let o = w.ksn(&["test", "--both"], &ex.join("shortener"));
     assert!(all(&o).contains("34 passed; 0 failed"), "{}", all(&o));
 }
+
+// ------------------------------------------------------------ 可視性 (3.1): メソッド・フィールド・std.sys
+
+const VIS_SUB: &str = "\
+enum t.sub.Color derive [Debug, Clone, Copy, PartialEq]
+    Red
+end t.sub.Color
+
+type t.sub.P pub
+    x: u32
+    y: u32 pub
+end t.sub.P
+
+trait t.sub.Tr
+    fn tr_m(self: &Self) -> u32 uses [] panics never
+end t.sub.Tr
+
+impl t.sub.Tr for t.sub.P
+fn t.sub.P.tr_m(self: &t.sub.P) -> u32 uses [] panics never impls t.sub.Tr
+    self.x
+end t.sub.P.tr_m
+
+fn t.sub.P.make() -> t.sub.P uses [] panics never pub
+    t.sub.P { x: 1u32, y: 2u32 }
+end t.sub.P.make
+
+fn t.sub.P.secret(self: &t.sub.P) -> u32 uses [] panics never
+    self.x
+end t.sub.P.secret
+
+fn t.sub.P.shown(self: &t.sub.P) -> u32 uses [] panics never pub
+    self.x
+end t.sub.P.shown
+";
+
+fn vis_main(stmts: &str) -> String {
+    format!(
+        "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    let p = t.sub.P.make()\n{}    std.io.print_line(\"x\")\nend t.main\n",
+        stmts
+    )
+}
+
+/// 2 モジュールのパッケージを作って `ksn check` し、(終了コード, 出力) を返す。
+fn vis_check(name: &str, main: &str, sub: &str) -> (i32, String) {
+    let w = Work::new(name);
+    let root = w.path("t");
+    make_pkg(&root, "t", true, "", &[("src/t.ksnl", main), ("src/t/sub.ksnl", sub)]);
+    let o = w.ksn(&["check"], &root);
+    (o.status.code().unwrap_or(-1), all(&o))
+}
+
+#[test]
+fn visibility_of_members_across_modules() {
+    // 公開されたものだけを使うなら通る。
+    let ok = vis_main("    core.check.eq(p.y, 2u32)\n    core.check.eq(p.shown(), 1u32)\n");
+    let (rc, out) = vis_check("vis_ok", &ok, VIS_SUB);
+    assert_eq!(rc, 0, "{}", out);
+    // (本体の文, 期待するコード)
+    let bad: &[(&str, &str)] = &[
+        ("    core.check.eq(p.x, 1u32)\n", "E1122"),
+        ("    let q = t.sub.P { x: 1u32, y: 2u32 }\n    core.check.eq(q.y, 2u32)\n", "E1122"),
+        ("    match p {\n        t.sub.P { x: a, y: b } => core.check.eq(a, b)\n    }\n", "E1122"),
+        ("    core.check.eq(p.secret(), 1u32)\n", "E1119"),
+        // `impls` メソッドはトレイトが非 `pub` なので別モジュールからは呼べない。
+        ("    core.check.eq(p.tr_m(), 1u32)\n", "E1119"),
+        // バリアントは enum の可視性に従う。
+        ("    core.check.eq(t.sub.Color.Red == t.sub.Color.Red, true)\n", "E1119"),
+    ];
+    for (k, (stmts, code)) in bad.iter().enumerate() {
+        let (rc, out) = vis_check(&format!("vis_bad{}", k), &vis_main(stmts), VIS_SUB);
+        assert_eq!(rc, 1, "{}: {}", stmts, out);
+        assert!(out.contains(code), "{}: expected {}: {}", stmts, code, out);
+    }
+    // `pub` を付ければ通る。
+    let fixed = VIS_SUB
+        .replace("    x: u32\n", "    x: u32 pub\n")
+        .replace("-> u32 uses [] panics never\n    self.x\nend t.sub.P.secret", "-> u32 uses [] panics never pub\n    self.x\nend t.sub.P.secret");
+    let main = vis_main("    core.check.eq(p.x, 1u32)\n    core.check.eq(p.secret(), 1u32)\n");
+    let (rc, out) = vis_check("vis_fixed", &main, &fixed);
+    assert_eq!(rc, 0, "{}", out);
+}
+
+#[test]
+fn std_sys_is_not_referenceable_from_user_packages() {
+    let main = "import std.sys.os\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"x\")\nend t.main\n";
+    let (rc, out) = vis_check("std_sys_import", main, "");
+    assert_eq!(rc, 1, "{}", out);
+    assert!(out.contains("E1124"), "{}", out);
+    let main2 = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.sys.os.getpid()\n    std.io.print_line(\"x\")\nend t.main\n";
+    let (rc, out) = vis_check("std_sys_fqn", main2, "");
+    assert_eq!(rc, 1, "{}", out);
+    assert!(out.contains("E1124"), "{}", out);
+}

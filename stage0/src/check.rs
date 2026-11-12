@@ -1069,6 +1069,12 @@ impl<'a> Checker<'a> {
             if matches!(d.kw.as_str(), "import" | "impl") {
                 continue;
             }
+            let own_root = d.module.split('.').next().unwrap_or("");
+            let in_std_layer = matches!(own_root, "core" | "alloc" | "std");
+            // 3.1: `impls` メソッドの可視性はトレイトと型の小さい方に自動で従うので、`pub` は書けない。
+            if d.kw == "fn" && d.has_impls && header_is_pub(&d.header) {
+                self.diag("E1123", format!("{} is an `impls` method: its visibility follows the trait and the type; remove `pub` (3.1)", d.name), i, 0);
+            }
             let mut refs: Vec<(String, usize)> = vec![];
             let mut hdr: BTreeSet<String> = BTreeSet::new();
             for (kind, _, bound) in &d.generics {
@@ -1117,6 +1123,13 @@ impl<'a> Checker<'a> {
                     chains.push(c);
                 }
                 for chain in chains {
+                    // 8.2: `std.sys.*` は `core` / `alloc` / `std` の外から参照できない。
+                    if !in_std_layer && chain.len() >= 2 && chain[0] == "std" && chain[1] == "sys" {
+                        if seen.insert((chain.join("."), line)) {
+                            self.diag("E1124", format!("{} is internal to the standard library (std.sys.* may only be referenced from core / alloc / std, 8.2)", chain.join(".")), i, line);
+                        }
+                        break;
+                    }
                     let hit = (1..=chain.len()).rev().find_map(|k| {
                         let n = chain[..k].join(".");
                         let j = p.funcs.get(&n).or_else(|| p.types.get(&n)).or_else(|| p.consts.get(&n)).or_else(|| p.sigs.get(&n))?;
@@ -1124,17 +1137,110 @@ impl<'a> Checker<'a> {
                     });
                     let Some((n, j)) = hit else { continue };
                     let t = &p.defs[j];
-                    if t.module == d.module
-                        || t.has_impls
+                    if t.has_impls
                         || matches!(t.module.split('.').next(), Some("core" | "alloc" | "std"))
                         || header_is_pub(&t.header)
                     {
+                        break;
+                    }
+                    // 同一モジュール内の参照は可視。`pub` な定義のヘッダが非公開の型を挙げる誤りは lint の E1010 が見る。
+                    if t.module == d.module {
                         break;
                     }
                     if seen.insert((n.clone(), line)) {
                         self.diag("E1119", format!("{} is private to module {} (add `pub` to use it from {})", n, t.module, d.module), i, line);
                     }
                     break;
+                }
+            }
+        }
+        // `import std.sys.*` も同じ (3.5 / 8.2)。
+        for &i in &self.user.clone() {
+            let d = self.def(i);
+            if d.kw == "import" && d.name.starts_with("std.sys.") && !matches!(d.module.split('.').next(), Some("core" | "alloc" | "std")) {
+                self.diag("E1124", format!("{} is internal to the standard library (std.sys.* may only be referenced from core / alloc / std, 8.2)", d.name), i, 0);
+            }
+        }
+    }
+
+    /// 3.1: メソッド呼び出し `x.m()` とフィールド参照 `x.f` の可視性 (型推論が記録したレシーバの型を使う)。
+    /// 別モジュールの型の非 `pub` なメソッドは E1119、非 `pub` なフィールドは E1122。構造体リテラルと
+    /// 構造体パターンのフィールドも E1122 (名前から型を決める)。レシーバの型が決まらない所は E2044 が別に報告する。
+    fn check_visibility_members(&mut self, log: &[crate::types::RecvSite]) {
+        let p = self.p;
+        let mut seen: BTreeSet<(usize, usize, String)> = BTreeSet::new();
+        for r in log {
+            if !self.user.contains(&r.writer) {
+                continue;
+            }
+            let w = self.def(r.writer);
+            let crate::types::Ty::Named(n, _) = r.recv.strip() else { continue };
+            if matches!(n.split('.').next(), Some("core" | "alloc" | "std")) {
+                continue;
+            }
+            let wmod = w.module.clone();
+            let msg;
+            let code;
+            if r.field {
+                let Some(&ti) = p.types.get(n.as_str()) else { continue };
+                let td = &p.defs[ti];
+                if td.kw != "type" || td.module == wmod {
+                    continue;
+                }
+                match td.fields.iter().find(|f| f.0 == r.name) {
+                    Some((_, _, false)) => {}
+                    _ => continue,
+                }
+                code = "E1122";
+                msg = format!("field {} of {} is private to module {} (add `pub` to the field to use it from {})", r.name, n, td.module, wmod);
+            } else {
+                let Some(&mi) = p.funcs.get(&format!("{}.{}", n, r.name)) else { continue };
+                let md = &p.defs[mi];
+                if md.module == wmod {
+                    continue;
+                }
+                let visible = if md.has_impls {
+                    // `impls` メソッド: トレイトと型の小さい方。
+                    let tr_pub = p.types.get(&md.impls_trait).map_or(true, |&t| {
+                        matches!(p.defs[t].module.split('.').next(), Some("core" | "alloc" | "std")) || header_is_pub(&p.defs[t].header)
+                    });
+                    let ty_pub = p.types.get(n.as_str()).map_or(true, |&t| header_is_pub(&p.defs[t].header));
+                    tr_pub && ty_pub
+                } else {
+                    header_is_pub(&md.header)
+                };
+                if visible {
+                    continue;
+                }
+                code = "E1119";
+                msg = format!("method {} is private to module {} (add `pub` to use it from {})", md.name, md.module, wmod);
+            }
+            if seen.insert((r.writer, r.pos, r.name.clone())) {
+                self.diag(code, msg, r.writer, r.pos);
+            }
+        }
+        // 構造体リテラル `t.P { f: .. }` と構造体パターン `t.P { f: a }` のフィールド。
+        for &i in &self.user.clone() {
+            let d = self.def(i);
+            let mut sites: Vec<(Vec<String>, String, usize)> = vec![];
+            if let Some(b) = &d.body {
+                collect_struct_fields(b, &mut sites);
+            }
+            if let Some(b) = &d.init {
+                collect_struct_fields(b, &mut sites);
+            }
+            for (segs, field, pos) in sites {
+                let fq = p.expand(&segs, &d.file).join(".");
+                let Some(&ti) = p.types.get(&fq) else { continue };
+                let td = &p.defs[ti];
+                if td.kw != "type" || td.module == d.module || matches!(td.module.split('.').next(), Some("core" | "alloc" | "std")) {
+                    continue;
+                }
+                if let Some((_, _, false)) = td.fields.iter().find(|f| f.0 == field) {
+                    if seen.insert((i, pos, field.clone())) {
+                        let msg = format!("field {} of {} is private to module {} (add `pub` to the field to use it from {})", field, fq, td.module, d.module);
+                        self.diag("E1122", msg, i, pos);
+                    }
                 }
             }
         }
@@ -2305,6 +2411,8 @@ impl<'a> Checker<'a> {
                 self.tc_fn(i);
             }
         }
+        let vis_log = std::mem::take(&mut tk.recv_log);
+        self.check_visibility_members(&vis_log);
         self.diags.extend(tk.diags);
         // 型で解決できた呼び出し (メソッドを含む) の辺を、再帰・スタックの検査に加える。
         for (from, tos) in tk.edges {
@@ -4176,6 +4284,49 @@ fn collect_vis_refs(t: &V, out: &mut Vec<(String, usize)>) {
                 if matches!(x, V::L(_) | V::Node(..)) {
                     collect_vis_refs(x, out);
                 }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 本体の AST から構造体リテラル・構造体パターンの (型の名前の成分, フィールド名, 位置) を集める。
+fn collect_struct_fields(t: &V, out: &mut Vec<(Vec<String>, String, usize)>) {
+    match t {
+        V::Node(n, fs, pos) => {
+            match *n {
+                "StructLit" => {
+                    if let (Some(V::S(nm)), Some(V::L(fl))) = (fs.first(), fs.get(1)) {
+                        for x in fl {
+                            if let V::L(xs) | V::Node(_, xs, _) = x {
+                                if let Some(V::S(f)) = xs.first() {
+                                    out.push((nm.split('.').map(String::from).collect(), f.clone(), *pos));
+                                }
+                            }
+                        }
+                    }
+                }
+                "PStruct" => {
+                    if let (Some(V::L(segs)), Some(V::L(fl))) = (fs.first(), fs.get(1)) {
+                        let v: Vec<String> = segs.iter().map(st).collect();
+                        for x in fl {
+                            if let V::L(xs) | V::Node(_, xs, _) = x {
+                                if let Some(V::S(f)) = xs.first() {
+                                    out.push((v.clone(), f.clone(), *pos));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for f in fs {
+                collect_struct_fields(f, out);
+            }
+        }
+        V::L(xs) => {
+            for x in xs {
+                collect_struct_fields(x, out);
             }
         }
         _ => {}

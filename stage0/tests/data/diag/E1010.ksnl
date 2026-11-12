@@ -1,0 +1,11 @@
+type t.Hidden
+    n: i64
+end t.Hidden
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    std.io.print_line("x")
+end t.main
+
+fn t.make() -> t.Hidden uses [] panics never pub
+    t.Hidden { n: 1i64 }
+end t.make
