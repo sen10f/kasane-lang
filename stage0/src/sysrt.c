@@ -333,14 +333,11 @@ i64 ksn_rt_sys_local_port(i32 fd, i32 *e) {
 #include <windows.h>
 #endif
 
-static int g_argc = 0;
-static char **g_argv = 0;
-
-/* `main` の引数を覚える (entry から最初に呼ぶ)。引数 0 (プログラム名) は `std.env` の見える範囲に含めない。 */
-void ksn_rt_sys_set_args(i32 argc, char **argv) {
-    g_argc = argc;
-    g_argv = argv;
-}
+/* `main` の引数は rt.c が覚える。引数 0 (プログラム名) は `std.env` の見える範囲に含めない。 */
+extern int ksn_rt_argc;
+extern char **ksn_rt_argv;
+#define g_argc ksn_rt_argc
+#define g_argv ksn_rt_argv
 
 i64 ksn_rt_sys_arg_count(void) { return g_argc > 0 ? (i64)(g_argc - 1) : 0; }
 
