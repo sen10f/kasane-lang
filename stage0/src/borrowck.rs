@@ -332,8 +332,9 @@ impl<'a> Low<'a> {
     /// 分解 (`let (a, b) = e` / `match e { (a, b) => .. }`) の束縛に、右辺の借用を伝える。
     /// タプルの要素は内部の道 `#i` (`store_value`)、構造体のフィールドは名前の道に保存されているので、
     /// 部分パターンごとに対応する要素・フィールドの借用だけを持たせる (コピー値の要素は黙る)。
-    /// 型や出どころが分からない所は、右辺全体の借用を束縛すべてに持たせる (保守的な和)。
-    fn hold_pat(&mut self, n: usize, pat: &V, e: &V) {
+    /// 道が分からない形 (関数の戻り値などを分解する `let (a, n) = t.f(&x)`) は何もしない (`false` を返す。
+    /// 呼び出し側が従来の読み戻しに任せる)。右辺全体の借用を全束縛に配ることはしない (誤検出を出さない)。
+    fn hold_pat(&mut self, n: usize, pat: &V, e: &V) -> bool {
         match nname(pat) {
             "PTuple" => {
                 let subs = items(&nf(pat)[0]);
@@ -343,7 +344,7 @@ impl<'a> Low<'a> {
                         for (s, x) in subs.iter().zip(elems.iter()) {
                             self.hold_pat(n, s, x);
                         }
-                        return;
+                        return true;
                     }
                 }
                 if let Some((root, path)) = self.place_of(e) {
@@ -352,7 +353,7 @@ impl<'a> Low<'a> {
                         p.push(format!("#{}", i));
                         self.hold_place(n, s, &root, &p);
                     }
-                    return;
+                    return true;
                 }
             }
             "PStruct" => {
@@ -372,7 +373,7 @@ impl<'a> Low<'a> {
                             self.hold_pat(n, &fp[1], &items(x)[1]);
                         }
                     }
-                    return;
+                    return true;
                 }
                 if let Some((root, path)) = self.place_of(e) {
                     for fl in fields {
@@ -384,12 +385,18 @@ impl<'a> Low<'a> {
                         p.push(st(&fp[0]));
                         self.hold_place(n, &fp[1], &root, &p);
                     }
-                    return;
+                    return true;
                 }
             }
             _ => {}
         }
+        // 部分パターンが分解でない葉 (`a`・`_`・バリアントなど) は、与えられた式の借用をその束縛に伝える。
+        // 分解の形が分からない複合パターンは何もしない。
+        if matches!(nname(pat), "PTuple" | "PStruct") {
+            return false;
+        }
         self.hold_whole(n, pat, e);
+        true
     }
 
     /// 保存場所 `root` + `path` の値を分解した束縛 (部分パターン `pat`) に、その場所の借用を写す。
@@ -811,13 +818,14 @@ impl<'a> Low<'a> {
                     self.edge(c, an);
                     let mut binds = vec![];
                     pat_binds(&a[0], &mut binds);
-                    if matches!(nname(&a[0]), "PTuple" | "PStruct") {
-                        // 分解の腕は、被検査式の借用 (保存されたローンを含む) を束縛全体に伝える。
+                    // 分解の腕は、部分パターンごとに要素・フィールドの借用を伝える。形が分からなければ従来どおり。
+                    let known = matches!(nname(&a[0]), "PTuple" | "PStruct") && {
                         for b in &binds {
                             self.emit(an, Ev::Def(b.clone()));
                         }
-                        self.hold_pat(an, &a[0], &f[0]);
-                    } else {
+                        self.hold_pat(an, &a[0], &f[0])
+                    };
+                    if !known {
                         for b in &binds {
                             self.emit(an, Ev::Def(b.clone()));
                             let srcs = self.loan_sources(&f[0]);

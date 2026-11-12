@@ -6204,3 +6204,21 @@ fn nll_accepts_a_copy_element_of_a_literal_destructured_while_the_borrow_is_muta
     );
     assert!(!bad, "{}", out);
 }
+
+#[test]
+fn nll_accepts_a_destructured_call_result_when_the_source_is_mutated_before_the_copy_is_used() {
+    // 道が分からない分解 (関数の戻り値 `t.pick(&x)`) は、右辺全体の借用を束縛に配らない (従来どおり黙る)。
+    // `n` はコピー値なので、`x` を書き換えたあとに使っても E3010 にしない。
+    let prefix = "fn t.apick(r: &u8) -> (&u8, u8) uses [] panics never\n    (r, 1u8)\nend t.apick\n\n";
+    let (bad, out) = has_e3010(
+        "nll_destr_call_neg",
+        prefix,
+        &[
+            "let mut x = 1u8",
+            "let (_, n) = t.apick(&x)",
+            "x = 3u8",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
