@@ -5,14 +5,14 @@
 
 use std::collections::HashMap;
 
-use crate::kir::{Aop, BoolOp, Cc, Mode, Module, Op, Term, VId};
+use crate::kir::{payload_bits, payload_of, Aop, BoolOp, Cc, Mode, Module, Op, Term, VId, TAG_BIT};
 
 /// 木走査インタプリタの呼び出し深さの上限 (`interp.rs` の `depth > 2500`)。
 const MAX_DEPTH: usize = 2500;
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
-    /// 正常終了。値は型に応じた整数 (bool は 0 / 1、unit は 0)。
+    /// 正常終了。値は型に応じた符号化 (整数、bool は 0 / 1、unit は 0、Option / Result はタグ bit とペイロード。`show_value` で読む)。
     Value(i128),
     /// 実行時 panic (文言は木走査と同じ)。
     Panic(String),
@@ -67,6 +67,28 @@ fn arith(op: Aop, mode: Mode, ty: crate::kir::Ty, x: i128, y: i128) -> Result<i1
             Aop::Rem => "attempt to calculate the remainder with overflow",
         }
         .to_string()),
+    }
+}
+
+/// `checked_<op>` の結果 (`Option<P>` の符号化)。溢れと 0 除算は `None` (= 0)。
+/// 木走査 (`interp.rs` の整数演算) と同じ規則に合わせる: `MIN / -1` は範囲外で `None`、`MIN % -1` は `Some(0)`
+/// (木走査の `checked_rem` は i128 の剰余を型の範囲で確かめるだけ。Rust の `checked_rem` とは違う。設計_KIR.md 11 章)。
+fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
+    let crate::kir::Ty::Opt(p) = t else { return 0 };
+    let pt = p.ty();
+    if matches!(op, Aop::Div | Aop::Rem) && y == 0 {
+        return 0;
+    }
+    let r = match op {
+        Aop::Add => x.checked_add(y),
+        Aop::Sub => x.checked_sub(y),
+        Aop::Mul => x.checked_mul(y),
+        Aop::Div => x.checked_div(y),
+        Aop::Rem => x.checked_rem(y),
+    };
+    match r {
+        Some(v) if v >= pt.min() && v <= pt.max() => TAG_BIT | payload_bits(v),
+        _ => 0,
     }
 }
 
@@ -137,6 +159,12 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     };
                     r as i128
                 }
+                Op::Some(a) => TAG_BIT | payload_bits(get(&stack[top], a)),
+                Op::Ok(a) => payload_bits(get(&stack[top], a)),
+                Op::Err(a) => TAG_BIT | payload_bits(get(&stack[top], a)),
+                Op::Tag(a) => (get(&stack[top], a) & TAG_BIT != 0) as i128,
+                Op::Payload(a) => payload_of(inst.ty, get(&stack[top], a)),
+                Op::Checked { op, a, b } => checked(*op, inst.ty, get(&stack[top], a), get(&stack[top], b)),
                 Op::Call { callee, args } => {
                     if stack.len() >= MAX_DEPTH {
                         return Ok(Outcome::StackOverflow);

@@ -8539,7 +8539,7 @@ fn a_generic_literal_decided_later_is_not_an_error() {
 #[test]
 fn fmath_functions_agree_across_backends_and_match_known_values() {
     // 数学関数 (`fmath`) は、インタプリタと Cranelift で同じビット列を返し、既知の値に近い。
-    // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値、9 関数の総和 (ビット列の突き合わせ)。
+    // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値 (atan2 の ±∞ / NaN 組を含む)、9 関数の総和 (ビット列の突き合わせ)。
     let t = Tmp::new("fmath_both", include_str!("data/fmath_both.ksnl"));
     let cache = std::env::temp_dir().join(format!("ksn_cache_fmath_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
@@ -8554,7 +8554,7 @@ fn fmath_functions_agree_across_backends_and_match_known_values() {
     assert_eq!(o.status.code(), Some(0), "{}", out);
     // Cranelift のビルドが成功していること (スキップされていないこと)。
     assert!(out.contains("native executable:"), "{}", out);
-    assert!(out.contains("5 passed; 0 failed"), "{}", out);
+    assert!(out.contains("6 passed; 0 failed"), "{}", out);
     let _ = fs::remove_dir_all(&cache);
 }
 
@@ -9201,19 +9201,231 @@ fn kir_lower_examples_and_perf_functions_match_tree_walker() {
 }
 
 #[test]
-fn kir_lower_rejects_checked_methods_and_aggregates_with_a_reason() {
-    // `checked_*` は `Option<T>` を返すので段階 1 の型に入らない。理由を付けて拒否する。
-    let src = "fn t.ck(a: u8, b: u8) -> u8 uses [] panics never
-    match a.checked_add(b) {
-        Some(v) => v
-        None => 0u8
-    }
-end t.ck
+fn kir_lower_rejects_aggregates_with_a_reason() {
+    // タプル (集成体) は段階 1 の型に入らない。理由を付けて拒否する。
+    // (`Option` / `Result` と `checked_*` は kir_optres_* で扱う。)
+    let src = "fn t.pair(a: u8, b: u8) -> (u8, u8) uses [] panics never
+    (a, b)
+end t.pair
 ";
-    let t = Tmp::new("kir_checked", src);
-    let o = run(&["kir", "t.ck"], &t.0);
+    let t = Tmp::new("kir_aggregate", src);
+    let o = run(&["kir", "t.pair"], &t.0);
     assert_eq!(o.status.code(), Some(1));
-    assert!(text(&o.stderr).contains("t.ck は未対応"), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("t.pair は未対応"), "{}", text(&o.stderr));
+}
+
+// ---- 組み込みの Option / Result と checked_* (設計_KIR.md 11 章) ----
+
+/// Option / Result の試験用の関数。`main` の検査 (木走査) と `ksn kir --run` の両方で使う。
+const OPTRES_SRC: &str = r#"fn t.half(n: u32) -> Option<u32> uses [] panics may
+    if n % 2u32 == 0u32 {
+        Some(n / 2u32)
+    } else {
+        None
+    }
+end t.half
+
+fn t.first_half(n: u32) -> Option<u32> uses [] panics may
+    let h = t.half(n)?
+    let q = t.half(h)?
+    Some(q + 1u32)
+end t.first_half
+
+fn t.classify(o: Option<u32>) -> u32 uses [] panics never
+    match o {
+        Some(0u32) => 100u32
+        Some(1u32) => 101u32
+        Some(_) => 1u32
+        None => 2u32
+    }
+end t.classify
+
+fn t.cls(n: u32) -> u32 uses [] panics may
+    t.classify(t.half(n))
+end t.cls
+
+fn t.last_even(n: u32) -> Option<u32> uses [] panics may
+    let mut best = None
+    let mut i = 0u32
+    while i < n {
+        if i % 2u32 == 0u32 {
+            best = Some(i)
+        }
+        i = i + 1u32
+    }
+    best
+end t.last_even
+
+fn t.chained(a: i8, b: i8) -> Option<i8> uses [] panics never
+    let s = a.checked_mul(b)?
+    s.checked_sub(1i8)
+end t.chained
+
+fn t.ck_div(a: i8, b: i8) -> Option<i8> uses [] panics never
+    a.checked_div(b)
+end t.ck_div
+
+fn t.ck_rem(a: i8, b: i8) -> Option<i8> uses [] panics never
+    a.checked_rem(b)
+end t.ck_rem
+
+fn t.unit_ok(x: u8) -> Result<(), u8> uses [] panics never
+    if x > 10u8 {
+        return Err(x)
+    }
+    Ok(())
+end t.unit_ok
+
+fn t.neg(x: i64) -> Option<i64> uses [] panics never
+    Some(x.wrapping_sub(5i64))
+end t.neg
+
+fn t.pos(x: i32) -> Option<bool> uses [] panics never
+    Some(x > 0i32)
+end t.pos
+
+fn t.nothing() -> Option<u8> uses [] panics never
+    None
+end t.nothing
+
+fn t.pick(flag: bool) -> Result<u16, u16> uses [] panics never
+    let r = if flag {
+        Ok(7u16)
+    } else {
+        Err(9u16)
+    }
+    r
+end t.pick
+"#;
+
+const OPTRES_MAIN: &str = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.half(8u32), Some(4u32))
+    core.check.eq(t.half(7u32), None)
+    core.check.eq(t.first_half(8u32), Some(3u32))
+    core.check.eq(t.first_half(6u32), None)
+    core.check.eq(t.cls(8u32), 1u32)
+    core.check.eq(t.cls(0u32), 100u32)
+    core.check.eq(t.cls(2u32), 101u32)
+    core.check.eq(t.cls(7u32), 2u32)
+    core.check.eq(t.last_even(5u32), Some(4u32))
+    core.check.eq(t.last_even(0u32), None)
+    core.check.eq(t.chained(3i8, 4i8), Some(11i8))
+    core.check.eq(t.chained(100i8, 2i8), None)
+    core.check.eq(t.ck_div(-128i8, -1i8), None)
+    core.check.eq(t.ck_div(7i8, 0i8), None)
+    core.check.eq(t.ck_div(-7i8, 2i8), Some(-3i8))
+    core.check.eq(t.ck_rem(-7i8, 2i8), Some(-1i8))
+    core.check.eq(t.ck_rem(-128i8, -1i8), Some(0i8))
+    core.check.eq(t.unit_ok(3u8), Ok(()))
+    core.check.eq(t.unit_ok(12u8), Err(12u8))
+    core.check.eq(t.neg(3i64), Some(-2i64))
+    core.check.eq(t.pos(-4i32), Some(false))
+    core.check.eq(t.pos(4i32), Some(true))
+    core.check.eq(t.nothing(), None)
+    core.check.eq(t.pick(true), Ok(7u16))
+    core.check.eq(t.pick(false), Err(9u16))
+    Ok(())
+end t.main
+";
+
+#[test]
+fn kir_optres_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の main の検査が通ること、参照実行器 (`ksn kir --run`) の値が木走査の値と同じ表示であること。
+    let t = Tmp::new("kir_optres_values", &format!("{}\n{}", OPTRES_SRC, OPTRES_MAIN));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.half", &["8"], "Some(4)"),
+        ("t.half", &["7"], "None"),
+        ("t.first_half", &["8"], "Some(3)"),
+        ("t.first_half", &["6"], "None"),
+        ("t.cls", &["8"], "1"),
+        ("t.cls", &["0"], "100"),
+        ("t.cls", &["2"], "101"),
+        ("t.cls", &["7"], "2"),
+        ("t.last_even", &["5"], "Some(4)"),
+        ("t.last_even", &["0"], "None"),
+        ("t.chained", &["3", "4"], "Some(11)"),
+        ("t.chained", &["100", "2"], "None"),
+        ("t.ck_div", &["-128", "-1"], "None"),
+        ("t.ck_div", &["7", "0"], "None"),
+        ("t.ck_div", &["-7", "2"], "Some(-3)"),
+        ("t.ck_rem", &["-7", "2"], "Some(-1)"),
+        ("t.ck_rem", &["-128", "-1"], "Some(0)"),
+        ("t.unit_ok", &["3"], "Ok(())"),
+        ("t.unit_ok", &["12"], "Err(12)"),
+        ("t.neg", &["3"], "Some(-2)"),
+        ("t.pos", &["-4"], "Some(false)"),
+        ("t.pos", &["4"], "Some(true)"),
+        ("t.nothing", &[], "None"),
+        ("t.pick", &["true"], "Ok(7)"),
+        ("t.pick", &["false"], "Err(9)"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+#[test]
+fn kir_optres_prints_tagged_types_and_reads_back() {
+    // `ksn kir` は出力を読み直して検査を通してから出す (終了コード 0 なら往復と検査が通っている)。
+    let t = Tmp::new("kir_optres_text", &format!("{}\n{}", OPTRES_SRC, OPTRES_MAIN));
+    let o = run(&["kir", "t.half"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("fn t.half key=t.half uses=[] panics=may stack=- ret=Option<u32>"), "{}", out);
+    assert!(out.contains("= some %") && out.contains("= const.Option<u32> none"), "{}", out);
+    let o = run(&["kir", "t.first_half"], &t.0);
+    assert!(text(&o.stdout).contains("= tag %") && text(&o.stdout).contains("= payload %"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.nothing"], &t.0);
+    assert!(text(&o.stdout).contains("const.Option<u8> none"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.pick"], &t.0);
+    assert!(text(&o.stdout).contains("ret=Result<u16,u16>"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn kir_optres_rejects_checked_neg_and_tuples_with_a_reason() {
+    // `checked_neg` と、`Option` の中の集成体 (タプル) は段階 1 の対象外。理由を付けて拒否する。
+    let src = "fn t.neg(x: i8) -> Option<i8> uses [] panics never
+    x.checked_neg()
+end t.neg
+
+fn t.pr(x: u8) -> Option<(u8, u8)> uses [] panics never
+    Some((x, x))
+end t.pr
+";
+    let t = Tmp::new("kir_optres_reject", src);
+    let o = run(&["kir", "t.neg"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("checked_neg は段階 1 の対象外"), "{}", text(&o.stderr));
+    let o = run(&["kir", "t.pr"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("t.pr は未対応") && text(&o.stderr).contains("段階 1 の対象外"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn kir_optres_examples_features_match_tree_walker() {
+    // examples/features の `chain` (`?` と `Result`) と `checked` (`checked_add` と `match`)。
+    let d = root().join("examples/features");
+    assert_eq!(run(&["run"], &d).status.code(), Some(0), "features run (tree-walker)");
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("features.chain", &["250", "4"], "Ok(255)"),
+        ("features.chain", &["255", "1"], "Err(255)"),
+        ("features.chain", &["200", "56"], "Err(200)"),
+        ("features.checked", &["200", "55"], "Ok(255)"),
+        ("features.checked", &["200", "56"], "Err(200)"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &d);
+        assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
 }
 
 // ---- 型引数に線形を含む型の束縛 (4.4): `Option` / `Result` / ジェネリック構造体 ----

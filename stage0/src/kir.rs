@@ -1,7 +1,7 @@
 //! KIR: 型付き・単相化済みの中間表現 (設計_KIR.md 2 章、段階 1)。
 //!
 //! - 1 関数 = 1 つの単相インスタンス (`key`)。値は SSA (`%n` は 1 回だけ定義) で、制御の合流はブロック引数で渡す。
-//! - 段階 1 の型は整数 (`i8`..`i64`、`isize`、`u8`..`u64`、`usize`) と `bool`、`unit` だけ。128 ビット整数と集成体は未対応。
+//! - 型は整数 (`i8`..`i64`、`isize`、`u8`..`u64`、`usize`)、`bool`、`unit` と、組み込みの `Option<P>` / `Result<T, E>` (ペイロードはスカラー。設計_KIR.md 11 章)。128 ビット整数と他の集成体は未対応。
 //! - テキスト形式は `kir 1` (設計_KIR.md 7 章 18: 版が違えば読み込みを拒否する)。
 //!   `print_module` の出力を `parse_module` で読み直すと、同じ構造になり、もう一度 `print_module` すると同じ文字列になる。
 //! - `verify_module` は SSA の一意性、型、ブロック引数の個数、効果 (trap の有無、`uses`、`panics`) を検査する。
@@ -31,6 +31,10 @@ pub enum Ty {
     /// 参照 `ref<T>` (false) / `mutref<T>` (true)。値はアドレス (参照実行器ではセルの番号)。
     /// 指す先はスカラー (整数と bool) だけ。`Ty` は `Copy` を保つため、中身は `Ty` ではなく `Pointee` にする。
     Ref(bool, Pointee),
+    /// 組み込みの `Option<P>` (設計_KIR.md 11 章)。値はタグ (Some か) とペイロード 1 つ。
+    Opt(Pay),
+    /// 組み込みの `Result<T, E>` (設計_KIR.md 11 章)。値はタグ (Err か) とペイロード 1 つ。
+    Res(Pay, Pay),
 }
 
 /// 参照の指す先。整数と bool だけ (unit と参照は入れない)。`Ty::Ref` の中身。
@@ -80,9 +84,27 @@ impl Pointee {
             Ty::U64 => Pointee::U64,
             Ty::Usize => Pointee::Usize,
             Ty::Bool => Pointee::Bool,
-            Ty::Unit | Ty::Ref(..) => return None,
+            Ty::Unit | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => return None,
         })
     }
+}
+
+/// Option / Result のペイロードの型。スカラーだけ (ネストした Option や集成体は持てない)。
+/// `Ty` が `Copy` のままで入れ子を作れないように、スカラーを別の列挙で持つ。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pay {
+    I8,
+    I16,
+    I32,
+    I64,
+    Isize,
+    U8,
+    U16,
+    U32,
+    U64,
+    Usize,
+    Bool,
+    Unit,
 }
 
 const ALL_TYS: [Ty; 12] = [
@@ -100,42 +122,142 @@ const ALL_TYS: [Ty; 12] = [
     Ty::Unit,
 ];
 
+/// Option / Result の値の中で、タグを置く bit (Option は 1 = Some、Result は 1 = Err)。
+pub const TAG_BIT: i128 = 1 << 64;
+/// ペイロードの bit (下位 64 ビット)。
+pub const PAY_MASK: i128 = (1 << 64) - 1;
+
+impl Pay {
+    pub fn ty(self) -> Ty {
+        match self {
+            Pay::I8 => Ty::I8,
+            Pay::I16 => Ty::I16,
+            Pay::I32 => Ty::I32,
+            Pay::I64 => Ty::I64,
+            Pay::Isize => Ty::Isize,
+            Pay::U8 => Ty::U8,
+            Pay::U16 => Ty::U16,
+            Pay::U32 => Ty::U32,
+            Pay::U64 => Ty::U64,
+            Pay::Usize => Ty::Usize,
+            Pay::Bool => Ty::Bool,
+            Pay::Unit => Ty::Unit,
+        }
+    }
+
+    /// スカラーの型なら対応する `Pay`。`Option` / `Result` / 参照は `None`。
+    pub fn of(t: Ty) -> Option<Pay> {
+        Some(match t {
+            Ty::I8 => Pay::I8,
+            Ty::I16 => Pay::I16,
+            Ty::I32 => Pay::I32,
+            Ty::I64 => Pay::I64,
+            Ty::Isize => Pay::Isize,
+            Ty::U8 => Pay::U8,
+            Ty::U16 => Pay::U16,
+            Ty::U32 => Pay::U32,
+            Ty::U64 => Pay::U64,
+            Ty::Usize => Pay::Usize,
+            Ty::Bool => Pay::Bool,
+            Ty::Unit => Pay::Unit,
+            Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..) => return None,
+        })
+    }
+}
+
+/// ペイロードの値 (`v` は `Option` / `Result` の値全体の符号化) を、型 `t` の値に読み直す。
+/// タグは見ない。bool は 0 / 1、unit は 0、整数は下位 64 ビットを型の範囲へ写す。
+pub fn payload_of(t: Ty, v: i128) -> i128 {
+    match t {
+        Ty::Bool => v & 1,
+        Ty::Unit => 0,
+        _ => t.wrap(v & PAY_MASK),
+    }
+}
+
+/// ペイロードの符号化: 整数・bool を下位 64 ビットの 2 の補数で持つ。
+pub fn payload_bits(v: i128) -> i128 {
+    v & PAY_MASK
+}
+
+/// 値を型に従って人が読む形にする (`ksn kir --run` の表示と同じ)。
+pub fn show_value(t: Ty, v: i128) -> String {
+    match t {
+        Ty::Bool => (v != 0).to_string(),
+        Ty::Unit => "()".to_string(),
+        Ty::Opt(p) => {
+            if v & TAG_BIT != 0 {
+                format!("Some({})", show_value(p.ty(), payload_of(p.ty(), v)))
+            } else {
+                "None".to_string()
+            }
+        }
+        Ty::Res(t0, e0) => {
+            if v & TAG_BIT != 0 {
+                format!("Err({})", show_value(e0.ty(), payload_of(e0.ty(), v)))
+            } else {
+                format!("Ok({})", show_value(t0.ty(), payload_of(t0.ty(), v)))
+            }
+        }
+        _ => v.to_string(),
+    }
+}
+
 impl Ty {
     pub fn name(self) -> String {
-        let s = match self {
-            Ty::I8 => "i8",
-            Ty::I16 => "i16",
-            Ty::I32 => "i32",
-            Ty::I64 => "i64",
-            Ty::Isize => "isize",
-            Ty::U8 => "u8",
-            Ty::U16 => "u16",
-            Ty::U32 => "u32",
-            Ty::U64 => "u64",
-            Ty::Usize => "usize",
-            Ty::Bool => "bool",
-            Ty::Unit => "unit",
-            Ty::Ref(m, p) => return format!("{}<{}>", if m { "mutref" } else { "ref" }, p.ty().name()),
-        };
-        s.to_string()
+        match self {
+            Ty::I8 => "i8".into(),
+            Ty::I16 => "i16".into(),
+            Ty::I32 => "i32".into(),
+            Ty::I64 => "i64".into(),
+            Ty::Isize => "isize".into(),
+            Ty::U8 => "u8".into(),
+            Ty::U16 => "u16".into(),
+            Ty::U32 => "u32".into(),
+            Ty::U64 => "u64".into(),
+            Ty::Usize => "usize".into(),
+            Ty::Bool => "bool".into(),
+            Ty::Unit => "unit".into(),
+            Ty::Ref(m, p) => format!("{}<{}>", if m { "mutref" } else { "ref" }, p.ty().name()),
+            // 区切りは `,` だけ (空白を含めない)。テキスト形式の 1 語を保つため。
+            Ty::Opt(p) => format!("Option<{}>", p.ty().name()),
+            Ty::Res(t, e) => format!("Result<{},{}>", t.ty().name(), e.ty().name()),
+        }
     }
 
     pub fn parse(s: &str) -> Option<Ty> {
+        if let Some(x) = ALL_TYS.iter().copied().find(|t| t.name() == s) {
+            return Some(x);
+        }
+        let pay = |x: &str| Pay::of(ALL_TYS.iter().copied().find(|t| t.name() == x)?);
+        if let Some(inner) = s.strip_prefix("Option<").and_then(|r| r.strip_suffix('>')) {
+            return pay(inner).map(Ty::Opt);
+        }
+        if let Some(inner) = s.strip_prefix("Result<").and_then(|r| r.strip_suffix('>')) {
+            let (a, b) = inner.split_once(',')?;
+            return Some(Ty::Res(pay(a)?, pay(b)?));
+        }
         if let Some(inner) = s.strip_prefix("ref<").and_then(|r| r.strip_suffix('>')) {
             return Pointee::of(Ty::parse(inner)?).map(|p| Ty::Ref(false, p));
         }
         if let Some(inner) = s.strip_prefix("mutref<").and_then(|r| r.strip_suffix('>')) {
             return Pointee::of(Ty::parse(inner)?).map(|p| Ty::Ref(true, p));
         }
-        ALL_TYS.iter().copied().find(|t| t.name() == s)
+        None
     }
 
+    /// 整数型 (`i8`..`usize`)。`bool` / `unit` / `Option` / `Result` / 参照は含まない。
     pub fn is_int(self) -> bool {
-        !matches!(self, Ty::Bool | Ty::Unit | Ty::Ref(..))
+        !matches!(self, Ty::Bool | Ty::Unit | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..))
     }
 
     pub fn is_ref(self) -> bool {
         matches!(self, Ty::Ref(..))
+    }
+
+    /// スカラー (整数・bool・unit)。`Option` / `Result` / 参照は含まない。`Cmp` や定数の型はこれに限る。
+    pub fn is_scalar(self) -> bool {
+        !matches!(self, Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..))
     }
 
     pub fn signed(self) -> bool {
@@ -267,6 +389,18 @@ pub enum Op {
     /// `mutref<T>` を同じアドレスの別の値として複製する。スタックスロットの値番号と、参照の値を
     /// 取り違えないために使う (スロットの番号を参照の値に流用すると、読み書きの区別がつかなくなる)。
     Reborrow(VId),
+    /// `Some(a)`: 結果の型 `Option<P>` (`a` は `P`)。`None` は `Const(0)` (型 `Option<P>`)。
+    Some(VId),
+    /// `Ok(a)`: 結果の型 `Result<T, E>` (`a` は `T`)。
+    Ok(VId),
+    /// `Err(a)`: 結果の型 `Result<T, E>` (`a` は `E`)。
+    Err(VId),
+    /// タグを読む (bool)。`Option` なら Some か、`Result` なら Err か。
+    Tag(VId),
+    /// ペイロードを読む (結果の型 `Inst::ty` で読む)。タグは見ない。呼び出し側が `Tag` で確かめてから使う。
+    Payload(VId),
+    /// `checked_<op>` (結果の型 `Option<P>`、被演算子は `P`)。溢れと 0 除算は `None`。panic しないので `panics never` でも使える。
+    Checked { op: Aop, a: VId, b: VId },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -386,10 +520,17 @@ fn fmt_inst(i: &Inst) -> String {
             let lit = match i.ty {
                 Ty::Bool => (if *v != 0 { "true" } else { "false" }).to_string(),
                 Ty::Unit => "()".to_string(),
+                Ty::Opt(_) => "none".to_string(),
                 _ => v.to_string(),
             };
             format!("const.{} {}", i.ty.name(), lit)
         }
+        Op::Some(a) => format!("some {}", fmt_val(*a)),
+        Op::Ok(a) => format!("ok {}", fmt_val(*a)),
+        Op::Err(a) => format!("err {}", fmt_val(*a)),
+        Op::Tag(a) => format!("tag {}", fmt_val(*a)),
+        Op::Payload(a) => format!("payload {}", fmt_val(*a)),
+        Op::Checked { op, a, b } => format!("checked.{} {}", op.name(), fmt_vals(&[*a, *b])),
         Op::Arith { op, mode, a, b } => {
             let m = if *mode == Mode::Wrap { "wrap" } else { "trap" };
             format!("{}.{}.{} {}", op.name(), i.ty.name(), m, fmt_vals(&[*a, *b]))
@@ -482,6 +623,26 @@ fn parse_vals(s: &str, line: usize) -> Result<Vec<VId>, String> {
     s.split(',').map(|x| parse_val(x, line)).collect()
 }
 
+/// `,` で割る。`<...>` の中の `,` (`Result<i64,bool>`) では割らない。
+fn split_top(s: &str) -> Vec<&str> {
+    let mut out = vec![];
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
 fn parse_ty(s: &str, line: usize) -> Result<Ty, String> {
     Ty::parse(s.trim()).ok_or_else(|| perr(line, format!("型 {} は KIR の段階 1 にない", s.trim())))
 }
@@ -551,10 +712,20 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
                 (Ty::Bool, "true") => 1,
                 (Ty::Bool, "false") => 0,
                 (Ty::Unit, "()") => 0,
+                (Ty::Opt(_), "none") => 0,
                 (t, x) if t.is_int() => x.parse::<i128>().map_err(|_| perr(line, format!("整数 {} が不正", x)))?,
                 _ => return Err(perr(line, format!("型 {} の定数 {} が不正", ty.name(), rest))),
             };
             Ok(Op::Const(v))
+        }
+        ("some", []) => Ok(Op::Some(operands(1)?[0])),
+        ("ok", []) => Ok(Op::Ok(operands(1)?[0])),
+        ("err", []) => Ok(Op::Err(operands(1)?[0])),
+        ("tag", []) => Ok(Op::Tag(operands(1)?[0])),
+        ("payload", []) => Ok(Op::Payload(operands(1)?[0])),
+        ("checked", [name]) if parse_aop(name).is_some() => {
+            let v = operands(2)?;
+            Ok(Op::Checked { op: parse_aop(name).unwrap(), a: v[0], b: v[1] })
         }
         ("icmp", [cc, t]) => {
             let cc = parse_cc(cc).ok_or_else(|| perr(line, format!("比較 {} が不正", cc)))?;
@@ -706,7 +877,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
                 let inner = &rest[open + 1..rest.len() - 2];
                 let mut ps = vec![];
                 if !inner.trim().is_empty() {
-                    for p in inner.split(',') {
+                    for p in split_top(inner) {
                         let (v, ty) = p.split_once(':').ok_or_else(|| perr(ln, "ブロック引数の形が不正"))?;
                         ps.push((parse_val(v, ln)?, parse_ty(ty, ln)?));
                     }
@@ -788,7 +959,56 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
         for i in &b.insts {
             let res = (|| -> Result<(), String> {
                 match &i.op {
-                    Op::Const(_) => {}
+                    Op::Const(v) => {
+                        if matches!(i.ty, Ty::Res(..)) {
+                            return Err("Result の定数はない (Ok / Err で作る)".into());
+                        }
+                        if matches!(i.ty, Ty::Opt(_)) && *v != 0 {
+                            return Err("Option の定数は none (0) だけ".into());
+                        }
+                    }
+                    Op::Some(a) => {
+                        let Ty::Opt(p) = i.ty else { return Err("some の結果は Option のはず".into()) };
+                        if ty_of(*a)? != p.ty() {
+                            return Err("some の被演算子の型が Option の要素と合わない".into());
+                        }
+                    }
+                    Op::Ok(a) => {
+                        let Ty::Res(t, _) = i.ty else { return Err("ok の結果は Result のはず".into()) };
+                        if ty_of(*a)? != t.ty() {
+                            return Err("ok の被演算子の型が Result の Ok 側と合わない".into());
+                        }
+                    }
+                    Op::Err(a) => {
+                        let Ty::Res(_, e) = i.ty else { return Err("err の結果は Result のはず".into()) };
+                        if ty_of(*a)? != e.ty() {
+                            return Err("err の被演算子の型が Result の Err 側と合わない".into());
+                        }
+                    }
+                    Op::Tag(a) => {
+                        if i.ty != Ty::Bool {
+                            return Err("tag の結果は bool のはず".into());
+                        }
+                        if !matches!(ty_of(*a)?, Ty::Opt(_) | Ty::Res(..)) {
+                            return Err("tag の被演算子は Option か Result のはず".into());
+                        }
+                    }
+                    Op::Payload(a) => {
+                        let ok = match ty_of(*a)? {
+                            Ty::Opt(p) => p.ty() == i.ty,
+                            Ty::Res(t, e) => t.ty() == i.ty || e.ty() == i.ty,
+                            _ => false,
+                        };
+                        if !ok {
+                            return Err("payload の結果の型が被演算子のペイロードの型と合わない".into());
+                        }
+                    }
+                    Op::Checked { a, b, .. } => {
+                        let Ty::Opt(p) = i.ty else { return Err("checked の結果は Option のはず".into()) };
+                        if ty_of(*a)? != p.ty() || ty_of(*b)? != p.ty() {
+                            return Err("checked の被演算子の型が Option の要素と合わない".into());
+                        }
+                    }
                     Op::Arith { op, mode, a, b } => {
                         if !i.ty.is_int() {
                             return Err(format!("算術の結果の型 {} は整数ではない", i.ty.name()));
@@ -807,7 +1027,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if i.ty != Ty::Bool {
                             return Err("比較の結果は bool のはず".into());
                         }
-                        if ty.is_ref() || *ty == Ty::Unit || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
+                        if !ty.is_scalar() || *ty == Ty::Unit || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
                             return Err(format!("型 {} の比較 {} は使えない", ty.name(), cc.name()));
                         }
                         if ty_of(*a)? != *ty || ty_of(*b)? != *ty {
@@ -928,8 +1148,8 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
 fn operands(op: &Op) -> Vec<VId> {
     match op {
         Op::Const(_) | Op::Alloca => vec![],
-        Op::Arith { a, b, .. } | Op::Cmp { a, b, .. } | Op::Bool(_, a, b) => vec![*a, *b],
-        Op::Neg { a } | Op::Not(a) | Op::Load(a) | Op::AsShared(a) | Op::Reborrow(a) => vec![*a],
+        Op::Arith { a, b, .. } | Op::Cmp { a, b, .. } | Op::Bool(_, a, b) | Op::Checked { a, b, .. } => vec![*a, *b],
+        Op::Neg { a } | Op::Not(a) | Op::Load(a) | Op::AsShared(a) | Op::Reborrow(a) | Op::Some(a) | Op::Ok(a) | Op::Err(a) | Op::Tag(a) | Op::Payload(a) => vec![*a],
         Op::Store { ptr, val } => vec![*ptr, *val],
         Op::Call { args, .. } => args.clone(),
     }
@@ -1088,5 +1308,93 @@ end t.c
         let errs = verify_module(&parse_module(cmp).expect("parse"));
         assert_eq!(errs.len(), 1, "{:?}", errs);
         assert!(errs[0].1.contains("使えない"), "{:?}", errs);
+    }
+
+    /// Option / Result を含むモジュール: 型の表示と読み直し、ブロック引数の `Result<i64,bool>` (区切りの `,`) を確かめる。
+    fn enum_sample() -> Module {
+        let f = Func {
+            fqn: "t.pick".into(),
+            key: "t.pick".into(),
+            uses: vec![],
+            may_panic: false,
+            stack: None,
+            ret: Ty::Res(Pay::U16, Pay::U16),
+            blocks: vec![
+                Block {
+                    params: vec![(0, Ty::Bool)],
+                    insts: vec![
+                        Inst { dst: 1, ty: Ty::Res(Pay::I64, Pay::Bool), op: Op::Ok(2) },
+                        Inst { dst: 2, ty: Ty::I64, op: Op::Const(3) },
+                    ],
+                    term: Term::BrIf(0, (1, vec![1]), (2, vec![])),
+                },
+                Block {
+                    params: vec![(3, Ty::Res(Pay::I64, Pay::Bool))],
+                    insts: vec![
+                        Inst { dst: 4, ty: Ty::Opt(Pay::I64), op: Op::Some(2) },
+                        Inst { dst: 5, ty: Ty::Opt(Pay::I64), op: Op::Const(0) },
+                        Inst { dst: 6, ty: Ty::Opt(Pay::I64), op: Op::Checked { op: Aop::Add, a: 2, b: 2 } },
+                        Inst { dst: 7, ty: Ty::Bool, op: Op::Tag(6) },
+                        Inst { dst: 8, ty: Ty::I64, op: Op::Payload(6) },
+                    ],
+                    term: Term::Ret(9),
+                },
+                Block {
+                    params: vec![],
+                    insts: vec![Inst { dst: 9, ty: Ty::Res(Pay::U16, Pay::U16), op: Op::Err(10) }, Inst { dst: 10, ty: Ty::U16, op: Op::Const(9) }],
+                    term: Term::Unreachable,
+                },
+            ],
+        };
+        Module { funcs: vec![f] }
+    }
+
+    #[test]
+    fn enum_types_print_and_read_back() {
+        let m = enum_sample();
+        let text = print_module(&m);
+        assert!(text.contains("ret=Result<u16,u16>"), "{}", text);
+        assert!(text.contains("b0(%0: bool):") && text.contains("b1(%3: Result<i64,bool>):"), "{}", text);
+        assert!(text.contains("%5: Option<i64> = const.Option<i64> none"), "{}", text);
+        assert!(text.contains("%6: Option<i64> = checked.add %2, %2"), "{}", text);
+        let back = parse_module(&text).expect("parse");
+        assert_eq!(back, m);
+        assert_eq!(print_module(&back), text);
+    }
+
+    #[test]
+    fn verify_rejects_misused_enum_ops() {
+        // 比較は scalar だけ
+        let mut bad = enum_sample();
+        bad.funcs[0].blocks[1].insts.push(Inst { dst: 20, ty: Ty::Bool, op: Op::Cmp { cc: Cc::Eq, ty: Ty::Opt(Pay::I64), a: 4, b: 5 } });
+        assert!(verify_module(&bad).iter().any(|(_, e)| e.contains("比較")), "{:?}", verify_module(&bad));
+        // None 以外の Option 定数はない
+        let mut bad = enum_sample();
+        bad.funcs[0].blocks[1].insts[1].op = Op::Const(1);
+        assert!(verify_module(&bad).iter().any(|(_, e)| e.contains("none")), "{:?}", verify_module(&bad));
+        // ok の被演算子は Ok 側の型
+        let mut bad = enum_sample();
+        bad.funcs[0].blocks[0].insts[0].op = Op::Ok(0);
+        assert!(!verify_module(&bad).is_empty());
+        // tag は Option / Result だけ
+        let mut bad = enum_sample();
+        bad.funcs[0].blocks[1].insts[3].op = Op::Tag(2);
+        assert!(verify_module(&bad).iter().any(|(_, e)| e.contains("tag")), "{:?}", verify_module(&bad));
+        // checked は panics never でも使える (trap を持たない)
+        let mut ok = enum_sample();
+        ok.funcs[0].may_panic = false;
+        assert!(verify_module(&ok).is_empty(), "{:?}", verify_module(&ok));
+    }
+
+    #[test]
+    fn enum_payload_encoding_round_trips() {
+        // 符号付きのペイロードは下位 64 ビットの 2 の補数で持ち、型で読み直す
+        let v = TAG_BIT | payload_bits(-1);
+        assert_eq!(payload_of(Ty::I64, v), -1);
+        assert_eq!(show_value(Ty::Opt(Pay::I64), v), "Some(-1)");
+        assert_eq!(show_value(Ty::Opt(Pay::I64), 0), "None");
+        assert_eq!(show_value(Ty::Res(Pay::U8, Pay::Bool), payload_bits(1)), "Ok(1)");
+        assert_eq!(show_value(Ty::Res(Pay::U8, Pay::Bool), TAG_BIT | 1), "Err(true)");
+        assert_eq!(show_value(Ty::Res(Pay::Unit, Pay::U8), 0), "Ok(())");
     }
 }

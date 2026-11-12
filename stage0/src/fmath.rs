@@ -151,6 +151,8 @@ const PIO2_HI: f64 = 1.570_796_326_734_125_6;
 const PIO2_LO: f64 = 6.077_100_506_506_192e-11;
 const PI_HI: f64 = 3.141_592_653_589_793_1;
 const PI_LO: f64 = 1.224_646_799_147_353_2e-16;
+/// 3π/4 の f64 最近似 (正しく丸めた値。`atan2(±∞, -∞)` の結果)。
+const THREE_PI_4: f64 = 2.356_194_490_192_344_928_846_982_537_459_627_163;
 /// atan の縮小に使う π/2 と π/4 (それぞれ f64 の最近似と残り)。
 const ATAN_PIO2_HI: f64 = 1.570_796_326_794_896_6;
 const ATAN_PIO2_LO: f64 = 6.123_233_995_736_766e-17;
@@ -309,10 +311,11 @@ pub fn ln<O: Ops>(o: &O, x: O::F) -> O::F {
     let t = o.mul(s, s);
     let lnm = o.mul(s, horner(o, t, &ln_coefs()));
     let res = o.add(o.mul(ef, o.c(LN2_HI)), o.add(lnm, o.mul(ef, o.c(LN2_LO))));
-    // 特殊値: ln(±0) = -inf、x < 0 は NaN、ln(inf) = inf、NaN は NaN。
+    // 特殊値: ln(±0) = -inf、x < 0 は NaN、ln(inf) = inf、NaN は NaN (上の経路では有限値になるので明示する)。
     let res = o.sel(o.eq(x, o.c(0.0)), o.c(f64::NEG_INFINITY), res);
     let res = o.sel(o.lt(x, o.c(0.0)), o.c(f64::NAN), res);
     let res = o.sel(o.eq(x, o.c(f64::INFINITY)), o.c(f64::INFINITY), res);
+    let res = o.sel(o.ne(x, x), o.c(f64::NAN), res);
     canon(o, res)
 }
 
@@ -354,6 +357,12 @@ pub fn atan<O: Ops>(o: &O, x: O::F) -> O::F {
     canon(o, o.sel(neg, o.neg(r), r))
 }
 
+/// `|v| == ∞` (符号ビットを外して比べる)。
+fn is_inf<O: Ops>(o: &O, v: O::F) -> O::B {
+    let a = o.from_bits(o.iand(o.bits(v), o.ic(0x7fff_ffff_ffff_ffff)));
+    o.eq(a, o.c(f64::INFINITY))
+}
+
 /// `atan2(y, x)` (Rust の `y.atan2(x)` と同じ引数順)。
 pub fn atan2<O: Ops>(o: &O, y: O::F, x: O::F) -> O::F {
     let x_zero = o.eq(x, o.c(0.0));
@@ -370,6 +379,15 @@ pub fn atan2<O: Ops>(o: &O, y: O::F, x: O::F) -> O::F {
     let half = o.sel(y_neg, o.c(-std::f64::consts::FRAC_PI_2), o.c(std::f64::consts::FRAC_PI_2));
     let y_zero = o.eq(y, o.c(0.0));
     let r = o.sel(x_zero, o.sel(y_zero, r, half), r);
+    // y == ±∞ は x が有限なら ±π/2 (x が ±∞ なら ±π/4 か ±3π/4)。割り算に任せず直接定める。
+    let y_inf = is_inf(o, y);
+    let x_inf = is_inf(o, x);
+    let mag = o.sel(x_neg, o.c(THREE_PI_4), o.c(std::f64::consts::FRAC_PI_4));
+    let both = o.sel(y_neg, o.neg(mag), mag);
+    let r = o.sel(y_inf, o.sel(x_inf, both, half), r);
+    // NaN はどちらの引数でも NaN (上の分岐で ±π/2 になる場合も含めて上書きする)。
+    let r = o.sel(o.ne(y, y), o.c(f64::NAN), r);
+    let r = o.sel(o.ne(x, x), o.c(f64::NAN), r);
     canon(o, r)
 }
 
@@ -499,5 +517,149 @@ mod tests {
         for (i, w) in worst.iter().enumerate() {
             assert!(*w <= 1, "f32 function {i} has error {w} ulp");
         }
+    }
+
+    /// ビット一致 (NaN は NaN 同士で一致とみなす。±0 の符号は区別する)。
+    fn same(a: f64, b: f64) -> bool {
+        if a.is_nan() || b.is_nan() {
+            a.is_nan() && b.is_nan()
+        } else {
+            a.to_bits() == b.to_bits()
+        }
+    }
+
+    /// C の Annex F (IEEE 754 の atan2 / sin / cos / tan / exp / log / pow の特殊値) との照合。
+    #[test]
+    fn special_values_match_c_annex_f() {
+        let h = Host;
+        let inf = f64::INFINITY;
+        let nan = f64::NAN;
+        let pi = std::f64::consts::PI;
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        let quarter_pi = std::f64::consts::FRAC_PI_4;
+        let three_quarter_pi = 2.356_194_490_192_344_928_846_982_537_459_627_163_f64;
+        let mut bad: Vec<String> = Vec::new();
+        let mut check = |name: &str, got: f64, want: f64| {
+            if !same(got, want) {
+                bad.push(format!(
+                    "{name}: got {got:?} ({:#x}), want {want:?} ({:#x})",
+                    got.to_bits(),
+                    want.to_bits()
+                ));
+            }
+        };
+        // atan2(y, x)。
+        let atan2_cases: [(f64, f64, f64); 37] = [
+            (0.0, 0.0, 0.0),
+            (0.0, -0.0, pi),
+            (-0.0, 0.0, -0.0),
+            (-0.0, -0.0, -pi),
+            (0.0, 1.0, 0.0),
+            (-0.0, 1.0, -0.0),
+            (0.0, -1.0, pi),
+            (-0.0, -1.0, -pi),
+            (1.0, 0.0, half_pi),
+            (-1.0, 0.0, -half_pi),
+            (1.0, -0.0, half_pi),
+            (-1.0, -0.0, -half_pi),
+            (1.0, -inf, pi),
+            (-1.0, -inf, -pi),
+            (0.0, -inf, pi),
+            (-0.0, -inf, -pi),
+            (1.0, inf, 0.0),
+            (-1.0, inf, -0.0),
+            (0.0, inf, 0.0),
+            (-0.0, inf, -0.0),
+            (inf, 1.0, half_pi),
+            (inf, -1.0, half_pi),
+            (-inf, 1.0, -half_pi),
+            (-inf, -1.0, -half_pi),
+            (inf, 0.0, half_pi),
+            (-inf, -0.0, -half_pi),
+            (inf, inf, quarter_pi),
+            (inf, -inf, three_quarter_pi),
+            (-inf, inf, -quarter_pi),
+            (-inf, -inf, -three_quarter_pi),
+            (nan, 1.0, nan),
+            (1.0, nan, nan),
+            (nan, 0.0, nan),
+            (nan, -0.0, nan),
+            (0.0, nan, nan),
+            (inf, nan, nan),
+            (nan, inf, nan),
+        ];
+        for (y, x, want) in atan2_cases {
+            check(&format!("atan2({y:?}, {x:?})"), atan2(&h, y, x), want);
+        }
+        // atan(±0, ±∞, NaN)。
+        check("atan(-0)", atan(&h, -0.0), -0.0);
+        check("atan(0)", atan(&h, 0.0), 0.0);
+        check("atan(inf)", atan(&h, inf), half_pi);
+        check("atan(-inf)", atan(&h, -inf), -half_pi);
+        check("atan(NaN)", atan(&h, nan), nan);
+        // 三角関数。
+        check("sin(-0)", sin(&h, -0.0), -0.0);
+        check("sin(0)", sin(&h, 0.0), 0.0);
+        check("cos(-0)", cos(&h, -0.0), 1.0);
+        check("cos(0)", cos(&h, 0.0), 1.0);
+        check("tan(-0)", tan(&h, -0.0), -0.0);
+        check("tan(0)", tan(&h, 0.0), 0.0);
+        for f in [sin as fn(&Host, f64) -> f64, cos, tan] {
+            check("trig(inf)", f(&h, inf), nan);
+            check("trig(-inf)", f(&h, -inf), nan);
+            check("trig(NaN)", f(&h, nan), nan);
+        }
+        // exp。
+        check("exp(0)", exp(&h, 0.0), 1.0);
+        check("exp(-0)", exp(&h, -0.0), 1.0);
+        check("exp(inf)", exp(&h, inf), inf);
+        check("exp(-inf)", exp(&h, -inf), 0.0);
+        check("exp(NaN)", exp(&h, nan), nan);
+        check("exp(710)", exp(&h, 710.0), inf);
+        check("exp(1000)", exp(&h, 1000.0), inf);
+        check("exp(-746)", exp(&h, -746.0), 0.0);
+        check("exp(-1000)", exp(&h, -1000.0), 0.0);
+        for x in [709.782_712_893_384_f64, -708.0, 700.0, -700.0] {
+            let got = exp(&h, x);
+            assert!(
+                ulp_f64(got, x.exp()) <= 2,
+                "exp({x}) = {got:?}, std {:?}",
+                x.exp()
+            );
+        }
+        // ln。
+        check("ln(0)", ln(&h, 0.0), -inf);
+        check("ln(-0)", ln(&h, -0.0), -inf);
+        check("ln(1)", ln(&h, 1.0), 0.0);
+        check("ln(inf)", ln(&h, inf), inf);
+        check("ln(-inf)", ln(&h, -inf), nan);
+        check("ln(-1)", ln(&h, -1.0), nan);
+        check("ln(-tiny)", ln(&h, -5e-324), nan);
+        check("ln(NaN)", ln(&h, nan), nan);
+        // powi (Rust の powi と C の pow(x, 整数) に合わせる)。
+        check("powi(NaN, 0)", powi(&h, nan, 0), 1.0);
+        check("powi(NaN, 1)", powi(&h, nan, 1), nan);
+        check("powi(NaN, -1)", powi(&h, nan, -1), nan);
+        check("powi(0, 0)", powi(&h, 0.0, 0), 1.0);
+        check("powi(-0, 3)", powi(&h, -0.0, 3), -0.0);
+        check("powi(-0, 2)", powi(&h, -0.0, 2), 0.0);
+        check("powi(0, -1)", powi(&h, 0.0, -1), inf);
+        check("powi(-0, -1)", powi(&h, -0.0, -1), -inf);
+        check("powi(-0, -2)", powi(&h, -0.0, -2), inf);
+        check("powi(inf, 3)", powi(&h, inf, 3), inf);
+        check("powi(-inf, 3)", powi(&h, -inf, 3), -inf);
+        check("powi(-inf, 2)", powi(&h, -inf, 2), inf);
+        check("powi(inf, -1)", powi(&h, inf, -1), 0.0);
+        check("powi(-inf, -1)", powi(&h, -inf, -1), -0.0);
+        check("powi(-inf, -2)", powi(&h, -inf, -2), 0.0);
+        check("powi(2, 2000)", powi(&h, 2.0, 2000), inf);
+        check("powi(-2, 2001)", powi(&h, -2.0, 2001), -inf);
+        check("powi(0.5, 2000)", powi(&h, 0.5, 2000), 0.0);
+        check("powi(NaN, 2)", powi(&h, nan, 2), nan);
+        assert!(
+            bad.is_empty(),
+            "special values differ from C:\n{}",
+            bad.join("\n")
+        );
     }
 }
