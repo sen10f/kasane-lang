@@ -35,6 +35,28 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
     let get = |n: usize| lines.get(n.wrapping_sub(1)).map(|s| s.as_str());
     match code {
         "E1108" => {
+            // 整数の `to_<整数型>` (types.rs の int_to_hint): `r.to_u32()` を `u32.from_u8(r)` にする。
+            // 受け手は直前の単純な名前だけ、呼び出しはその行に 1 回だけのときに限る。
+            let conv = Regex::new(r"unknown method `(to_[a-z0-9]+)` on `[a-z0-9]+`; use `([a-z0-9]+)\.(from_[a-z0-9]+)\(x\)` \(lossless\)").unwrap();
+            if let Some(c) = conv.captures(msg) {
+                let Some(text) = get(line) else { return vec![] };
+                let call = format!(".{}()", &c[1]);
+                if text.matches(&call).count() != 1 {
+                    return vec![];
+                }
+                let at = text.find(&call).unwrap();
+                let head = &text[..at];
+                let ident_len: usize = head.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').map(char::len_utf8).sum();
+                if ident_len == 0 {
+                    return vec![];
+                }
+                let start = at - ident_len;
+                let recv = &head[start..];
+                if recv.starts_with(|c: char| c.is_ascii_digit()) || head[..start].ends_with(|c: char| c == '.' || c.is_alphanumeric() || c == '_') {
+                    return vec![];
+                }
+                return vec![span(file, line, text, start, at + call.len(), format!("{}.{}({})", &c[2], &c[3], recv))];
+            }
             // unknown method `X`; did you mean `Y`?
             let re = Regex::new(r"unknown method `([^`]+)`; did you mean `([^`]+)`").unwrap();
             let Some(c) = re.captures(msg) else { return vec![] };

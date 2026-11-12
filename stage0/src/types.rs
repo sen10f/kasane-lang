@@ -158,7 +158,7 @@ fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
 
 const DERIVED: &[&str] = &[
     "clone", "eq", "ne", "cmp", "partial_cmp", "hash", "debug_fmt", "display_fmt", "call", "call_mut", "call_once", "drop",
-    "try_clone", "to_string", "lt", "le", "gt", "ge", "min", "max",
+    "try_clone", "to_string", "min", "max",
 ];
 
 /// 型で解決できた呼び出しの効果検査の義務 (5.1 / 4.3)。check.rs が、呼び出し元 `di` の
@@ -802,6 +802,14 @@ impl<'a> TypeCk<'a> {
             }
         }
         if cands.is_empty() {
+            // 整数の `to_<整数型>` は廃止された変換名 (4.5)。整数どうしの変換は `from_*` / `try_from_*` で書く。
+            if let Ty::Prim(p) = deep.strip() {
+                if let Some(msg) = self.int_to_hint(p, name) {
+                    self.diag("E1108", msg, line);
+                    escape_all(self);
+                    return Ty::Unknown;
+                }
+            }
             if let Some(t) = self.trait_bound_method(recv, name, args, line) {
                 return t;
             }
@@ -821,6 +829,14 @@ impl<'a> TypeCk<'a> {
                 let hint = best.map(|(_, n)| format!("; did you mean `{}`?", n)).unwrap_or_default();
                 let shown = self.deep(recv).strip().show();
                 self.diag("E1108", format!("type `{}` has no method `{}`{}", shown, name, hint), line);
+            }
+            // 型が決まらない数値リテラルのメソッド呼び出し (`let a = 9.0; a.sqrt()`)。レシーバの型変数は escape
+            // しないので、呼び出しの後で型が決まればそれに従い、決まらなければ finish_literals が E2027 にする。
+            if matches!(deep.strip(), Ty::Var(v) if self.kinds[*v] != 0) {
+                for a in args {
+                    self.escape(a);
+                }
+                return Ty::Unknown;
             }
             escape_all(self);
             return Ty::Unknown;
@@ -902,6 +918,25 @@ impl<'a> TypeCk<'a> {
         self.inst(&ret, &mut map)
     }
 
+    /// 整数型 `recv` の `to_<整数型>` 呼び出しへの E1108 の文面。対象が整数型名のときだけ Some。
+    /// 幅が広がって失われない変換は `u32.from_u8(x)` (sig にあれば)、それ以外は `u8.try_from_u32(x)` (Result) を示す。
+    /// 同じ型への `to_` は変換が要らない。文面の形は fixes.rs が機械的に読むので変えるときは合わせる。
+    fn int_to_hint(&self, recv: &str, name: &str) -> Option<String> {
+        let target = name.strip_prefix("to_")?;
+        if !INTS.contains(&target) || !INTS.contains(&recv) {
+            return None;
+        }
+        if target == recv {
+            return Some(format!("unknown method `{}` on `{}`; the value is already `{}`, so no conversion is needed", name, recv, recv));
+        }
+        let from = format!("core.num.{}.from_{}", target, recv);
+        if self.p.funcs.contains_key(&from) || self.p.sigs.contains_key(&from) {
+            Some(format!("unknown method `{}` on `{}`; use `{}.from_{}(x)` (lossless)", name, recv, target, recv))
+        } else {
+            Some(format!("unknown method `{}` on `{}`; use `{}.try_from_{}(x)` (returns Result)", name, recv, target, recv))
+        }
+    }
+
     /// 派生トレイト (`DERIVED`) のメソッドの戻り値。所有者の sig にメソッドがないときだけ使う。
     /// `Self` はレシーバの型 (参照は透過)。戻り値が分からない名前 (`call` など) は None (黙る)。
     /// `min` / `max` の引数は `Self` と単一化し、それ以外の引数は従来どおり escape する。
@@ -915,7 +950,8 @@ impl<'a> TypeCk<'a> {
                 }
                 return Some(self_ty);
             }
-            "eq" | "ne" | "lt" | "le" | "gt" | "ge" => Ty::Prim("bool".into()),
+            // `<` 等は `partial_cmp` から導く演算子で、メソッドではない (3.2。PartialOrd は partial_cmp のみ)。
+            "eq" | "ne" => Ty::Prim("bool".into()),
             "hash" => Ty::Unit,
             "to_string" => Ty::Named("alloc.string.String".into(), vec![]),
             "cmp" => Ty::Named("core.cmp.Ordering".into(), vec![]),

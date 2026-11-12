@@ -1,0 +1,9 @@
+fn t.f() -> f64 uses [] panics never
+    let a = 9.0
+    a.sqrt()
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.f())
+    Ok(())
+end t.main
