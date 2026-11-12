@@ -65,7 +65,7 @@ impl Ty {
         }
         t
     }
-    fn show(&self) -> String {
+    pub(crate) fn show(&self) -> String {
         match self {
             Ty::Unknown | Ty::Var(_) => "_".into(),
             Ty::Never => "!".into(),
@@ -2632,7 +2632,24 @@ impl<'a> TypeCk<'a> {
         }
     }
 
-    /// 4.1: `?` はエラー型が完全一致するときだけ使える (変換は `map_err` 必須)。
+    /// `?` のエラー変換 (4.1): 関数 (クロージャ) のエラー型 `want` が `core.convert.From<got>` を実装するとき、
+    /// 変換メソッドの FQN を返す。両方の型が確定した名義型・基本型で、同じ型でないときだけ引く
+    /// (型が分からないときは None で、呼び出し側は従来どおり単一化に任せる)。
+    fn from_conversion(&mut self, want: &Ty, got: &Ty) -> Option<String> {
+        let want = self.deep(want);
+        let got = self.deep(got);
+        let Ty::Named(wn, _) = want.strip() else { return None };
+        if self.unresolved(got.strip()) {
+            return None;
+        }
+        let key = got.strip().show();
+        if key == want.strip().show() {
+            return None;
+        }
+        self.p.from_impls.get(wn)?.iter().find(|(k, _)| *k == key).map(|(_, f)| f.clone())
+    }
+
+    /// 4.1: `?` はエラー型が完全一致するか、`core.convert.From` の変換があるときだけ使える。
     /// `?` は式を置いた関数 (クロージャ) の戻り値型へ脱糖するので、そこで受けられるのは
     /// オペランドと同じ種類の `Option` / `Result` だけ。エラー型は単一化して比べる。
     /// どちらかが分からないときは黙る (Cranelift バックエンドも同じ条件で拒否する)。
@@ -2652,13 +2669,16 @@ impl<'a> TypeCk<'a> {
                 if gn == "Result" && wa.len() >= 2 && ga.len() >= 2 {
                     let e_want = wa[1].clone();
                     let e_got = ga[1].clone();
+                    // 4.1: 型が違っても `E2: core.convert.From<E1>` の impl があれば、そのメソッドで変換する。
+                    if self.from_conversion(&e_want, &e_got).is_some() {
+                        return;
+                    }
                     if let Err(err) = self.unify2(&e_want, &e_got) {
                         if let Some((w, g)) = self.type_conflict(&err) {
                             self.diag(
                                 "E2020",
                                 format!(
-                                    "type mismatch in `?`: expected error type `{}`, found `{}`; the error type must match exactly, use `map_err`",
-                                    w, g
+                                    "type mismatch in `?`: expected error type `{w}`, found `{g}`; write `map_err`, or declare `impl core.convert.From<{g}> for {w}`",
                                 ),
                                 line,
                             );

@@ -5,10 +5,10 @@ const shortener.wire.MAX_REPLY: usize = 65536usize
 
 fn shortener.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, shortener.error.Error> uses [alloc, io.net] panics never
     let mut chunk = [0u8; 512]
-    let n = stream.read(&mut chunk).map_err(error.io)?
+    let n = stream.read(&mut chunk)?
     for i in core.iter.range(0usize, n) {
         match chunk.get(i) {
-            Some(b) => data.push(b).map_err(error.oom)?
+            Some(b) => data.push(b)?
             None => return Err(error.Error.Io)
         }
     }
@@ -52,7 +52,7 @@ fn shortener.wire.read_request(stream: &mut std.net.TcpStream) -> Result<shorten
         None => return Err(error.Error.BadRequest)
     }
     let mut body = alloc.string.String.new(std.alloc.SYSTEM)
-    body.push_bytes(body_bytes).map_err(error.push_bytes)?
+    body.push_bytes(body_bytes)?
     Ok(http.Request { body: body, method: head.method, path: head.path })
 end shortener.wire.read_request
 
@@ -76,11 +76,12 @@ fn shortener.wire.write_all(stream: &mut std.net.TcpStream, data: &[u8]) -> Resu
             Some(r) => r
             None => return Err(error.Error.Io)
         }
-        let n = stream.write(rest).map_err(error.io)?
+        let n = stream.write(rest)?
         if n == 0usize {
             return Err(error.Error.Io)
         }
         sent = sent.saturating_add(n)
     }
-    stream.flush().map_err(error.io)
+    stream.flush()?
+    Ok(())
 end shortener.wire.write_all

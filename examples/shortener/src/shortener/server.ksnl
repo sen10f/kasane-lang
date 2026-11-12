@@ -22,7 +22,7 @@ fn shortener.server.serve(listener: &std.net.TcpListener, db: &mut shortener.sto
 end shortener.server.serve
 
 fn shortener.server.serve_one(listener: &std.net.TcpListener, db: &mut shortener.store.Store) -> Result<(), shortener.error.Error> uses [alloc, io.fs, io.net] panics never pub
-    let mut stream = listener.accept().map_err(error.net)?
+    let mut stream = listener.accept()?
     let handled = shortener.server.respond(&mut stream, db)
     core.mem.drop(stream.close())
     match handled {

@@ -36,13 +36,13 @@ end shortener.http.Response
 
 fn shortener.http.build_request(method: &str, path: &str, body: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    out.push_str(method).map_err(error.oom)?
-    out.push_str(" ").map_err(error.oom)?
-    out.push_str(path).map_err(error.oom)?
-    out.push_str(" HTTP/1.1\r\nHost: localhost\r\nContent-Length: ").map_err(error.oom)?
-    out.push_u64(u64.from_usize(body.len())).map_err(error.oom)?
-    out.push_str("\r\nConnection: close\r\n\r\n").map_err(error.oom)?
-    out.push_str(body).map_err(error.oom)?
+    out.push_str(method)?
+    out.push_str(" ")?
+    out.push_str(path)?
+    out.push_str(" HTTP/1.1\r\nHost: localhost\r\nContent-Length: ")?
+    out.push_u64(u64.from_usize(body.len()))?
+    out.push_str("\r\nConnection: close\r\n\r\n")?
+    out.push_str(body)?
     Ok(out)
 end shortener.http.build_request
 
@@ -141,7 +141,7 @@ fn shortener.http.parse_content_length(head: &str) -> Result<usize, shortener.er
 end shortener.http.parse_content_length
 
 fn shortener.http.parse_head(head: &[u8]) -> Result<shortener.http.Head, shortener.error.Error> uses [alloc] panics never pub
-    let text = core.str.from_utf8(head).map_err(error.utf8)?
+    let text = core.str.from_utf8(head)?
     let (line, headers) = match text.split_once("\r\n") {
         Some(pair) => pair
         None => return Err(error.Error.BadRequest)
@@ -168,7 +168,7 @@ fn shortener.http.parse_head(head: &[u8]) -> Result<shortener.http.Head, shorten
         return Err(error.Error.BadRequest)
     }
     let content_length = shortener.http.parse_content_length(headers)?
-    let owned = alloc.string.String.from_str(std.alloc.SYSTEM, path).map_err(error.oom)?
+    let owned = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
     Ok(shortener.http.Head { content_length: content_length, method: method, path: owned })
 end shortener.http.parse_head
 
@@ -181,7 +181,7 @@ fn shortener.http.parse_reply(raw: &[u8]) -> Result<shortener.http.Reply, shorte
         Some(pair) => pair
         None => return Err(error.Error.BadRequest)
     }
-    let head = core.str.from_utf8(head_bytes).map_err(error.utf8)?
+    let head = core.str.from_utf8(head_bytes)?
     let (status_line, headers) = match head.split_once("\r\n") {
         Some(pair) => pair
         None => return Err(error.Error.BadRequest)
@@ -202,10 +202,10 @@ fn shortener.http.parse_reply(raw: &[u8]) -> Result<shortener.http.Reply, shorte
         return Err(error.Error.BadRequest)
     }
     let mut body = alloc.string.String.new(std.alloc.SYSTEM)
-    body.push_bytes(body_bytes).map_err(error.push_bytes)?
+    body.push_bytes(body_bytes)?
     let mut location = alloc.string.String.new(std.alloc.SYSTEM)
     match shortener.http.header_value(headers, "location") {
-        Some(v) => location.push_str(v).map_err(error.oom)?
+        Some(v) => location.push_str(v)?
         None => core.mem.drop(0u8)
     }
     Ok(shortener.http.Reply { body: body, location: location, status: status })
@@ -225,26 +225,26 @@ fn shortener.http.reason(status: u16) -> &'static str uses [] panics never pub
 end shortener.http.reason
 
 fn shortener.http.redirect_response(location: &str, body: alloc.string.String<std.alloc.System>) -> Result<shortener.http.Response, shortener.error.Error> uses [alloc] panics never pub
-    let place = alloc.string.String.from_str(std.alloc.SYSTEM, location).map_err(error.oom)?
+    let place = alloc.string.String.from_str(std.alloc.SYSTEM, location)?
     Ok(shortener.http.Response { body: body, location: place, status: 302u16 })
 end shortener.http.redirect_response
 
 fn shortener.http.render_response(response: &shortener.http.Response) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    out.push_str("HTTP/1.1 ").map_err(error.oom)?
-    out.push_u64(u64.from_u16(response.status)).map_err(error.oom)?
-    out.push_str(" ").map_err(error.oom)?
-    out.push_str(shortener.http.reason(response.status)).map_err(error.oom)?
-    out.push_str("\r\nContent-Type: application/json\r\nContent-Length: ").map_err(error.oom)?
-    out.push_u64(u64.from_usize(response.body.len())).map_err(error.oom)?
-    out.push_str("\r\n").map_err(error.oom)?
+    out.push_str("HTTP/1.1 ")?
+    out.push_u64(u64.from_u16(response.status))?
+    out.push_str(" ")?
+    out.push_str(shortener.http.reason(response.status))?
+    out.push_str("\r\nContent-Type: application/json\r\nContent-Length: ")?
+    out.push_u64(u64.from_usize(response.body.len()))?
+    out.push_str("\r\n")?
     if !response.location.is_empty() {
-        out.push_str("Location: ").map_err(error.oom)?
-        out.push_str(response.location.as_str()).map_err(error.oom)?
-        out.push_str("\r\n").map_err(error.oom)?
+        out.push_str("Location: ")?
+        out.push_str(response.location.as_str())?
+        out.push_str("\r\n")?
     }
-    out.push_str("Connection: close\r\n\r\n").map_err(error.oom)?
-    out.push_str(response.body.as_str()).map_err(error.oom)?
+    out.push_str("Connection: close\r\n\r\n")?
+    out.push_str(response.body.as_str())?
     Ok(out)
 end shortener.http.render_response
 

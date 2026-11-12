@@ -5,8 +5,8 @@ import shortener.wire
 
 fn shortener.client.address(port: u16) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    out.push_str("127.0.0.1:").map_err(error.oom)?
-    out.push_u64(u64.from_u16(port)).map_err(error.oom)?
+    out.push_str("127.0.0.1:")?
+    out.push_u64(u64.from_u16(port))?
     Ok(out)
 end shortener.client.address
 
@@ -18,9 +18,9 @@ fn shortener.client.converse(stream: &mut std.net.TcpStream, listener: &std.net.
 end shortener.client.converse
 
 fn shortener.client.exchange(listener: &std.net.TcpListener, db: &mut shortener.store.Store, request: &str) -> Result<shortener.http.Reply, shortener.error.Error> uses [alloc, io.fs, io.net] panics never pub
-    let port = listener.local_port().map_err(error.net)?
+    let port = listener.local_port()?
     let target = shortener.client.address(port)?
-    let mut stream = std.net.connect(target.as_str()).map_err(error.net)?
+    let mut stream = std.net.connect(target.as_str())?
     let result = shortener.client.converse(&mut stream, listener, db, request)
     core.mem.drop(stream.close())
     result
@@ -38,16 +38,16 @@ fn shortener.client.queued_inner(first: &mut std.net.TcpStream, second: &mut std
 end shortener.client.queued_inner
 
 fn shortener.client.queued_pair(listener: &std.net.TcpListener, db: &mut shortener.store.Store) -> Result<(shortener.http.Reply, shortener.http.Reply), shortener.error.Error> uses [alloc, io.fs, io.net] panics never pub
-    let port = listener.local_port().map_err(error.net)?
+    let port = listener.local_port()?
     let target = shortener.client.address(port)?
     let one = http.build_request("POST", "/shorten", "http://q.test/1")?
     let two = http.build_request("POST", "/shorten", "http://q.test/2")?
-    let mut first = std.net.connect(target.as_str()).map_err(error.net)?
+    let mut first = std.net.connect(target.as_str())?
     let mut second = match std.net.connect(target.as_str()) {
         Ok(s) => s
         Err(e) => {
             core.mem.drop(first.close())
-            return Err(error.net(e))
+            return Err(error.Error.from_value_net_error(e))
         }
     }
     let a = one.as_str()
