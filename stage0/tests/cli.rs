@@ -9743,3 +9743,246 @@ end t.Q.go
     let (_code, got, out) = eff_check_with("impl_eff_quiet", IMPL_EFF_PRELUDE, body);
     assert!(!got.iter().any(|c| c == "E4021"), "{}", out);
 }
+
+// ---- 参照 (設計_KIR.md 段階 1: `&T` / `&mut T`、`*r`、`*r = v`。kir_lower_refs.rs) ----
+
+/// 参照を使う関数と、整数の引数だけで呼べる包み (`t.w_*`)。`t.main` は含まない。
+const REFS_FNS: &str = "fn t.bump(p: &mut i32) -> () uses [] panics may
+    *p = *p + 1i32
+end t.bump
+
+fn t.twice(n: i32) -> i32 uses [] panics may
+    let mut a = n
+    t.bump(&mut a)
+    t.bump(&mut a)
+    a
+end t.twice
+
+fn t.peek(r: &i32) -> i32 uses [] panics never
+    *r
+end t.peek
+
+fn t.peek_mut(a: &mut i32) -> i32 uses [] panics never
+    t.peek(a)
+end t.peek_mut
+
+fn t.sum2(a: &i32, b: &i32) -> i32 uses [] panics may
+    *a + *b
+end t.sum2
+
+fn t.swap(a: &mut i32, b: &mut i32) -> () uses [] panics never
+    let tmp = *a
+    *a = *b
+    *b = tmp
+end t.swap
+
+fn t.pick['a](a: &'a i32, b: &'a i32, first: bool) -> &'a i32 uses [] panics never
+    if first {
+        a
+    } else {
+        b
+    }
+end t.pick
+
+fn t.temp() -> i32 uses [] panics may
+    let r = &(3i32 + 4i32)
+    *r * 2i32
+end t.temp
+
+fn t.loop_bump(n: i32) -> i32 uses [] panics may
+    let mut total = 0i32
+    let mut i = 0i32
+    while i < n {
+        t.bump(&mut total)
+        i = i + 1i32
+    }
+    total
+end t.loop_bump
+
+fn t.bump_w(p: &mut i32) -> () uses [] panics never
+    let s = (*p).wrapping_add(1i32)
+    *p = s
+end t.bump_w
+
+fn t.down(p: &mut i32, n: i32) -> () uses [] panics never stack 128
+    if n > 0i32 {
+        t.bump_w(p)
+        t.down(p, n.wrapping_sub(1i32))
+    }
+end t.down
+
+fn t.assign_branch(n: i32) -> i32 uses [] panics may
+    let mut x = 0i32
+    if n > 0i32 {
+        x = n
+    } else {
+        x = 0i32 - n
+    }
+    let r = &mut x
+    *r = *r * 10i32
+    x
+end t.assign_branch
+
+fn t.wrap_ref(v: u8) -> u8 uses [] panics never
+    let mut w = v
+    let s = w.wrapping_add(200u8)
+    let r = &mut w
+    *r = s
+    w
+end t.wrap_ref
+
+fn t.bump8(p: &mut u8) -> () uses [] panics may
+    *p = *p + 100u8
+end t.bump8
+
+fn t.overflow_via_ref(v: u8) -> u8 uses [] panics may
+    let mut w = v
+    t.bump8(&mut w)
+    w
+end t.overflow_via_ref
+
+fn t.reborrow_read(r: &mut i32) -> i32 uses [] panics never
+    let s: &i32 = &*r
+    *s
+end t.reborrow_read
+
+fn t.early(n: i32) -> i32 uses [] panics may
+    let mut total = 0i32
+    let mut i = 0i32
+    while true {
+        if i > n {
+            break
+        }
+        total = total + i
+        let v = t.peek(&total)
+        if v > 100i32 {
+            return v
+        }
+        i = i + 1i32
+    }
+    total
+end t.early
+
+fn t.mixed(n: i32) -> i32 uses [] panics may
+    let mut acc = 1i32
+    let r = &mut acc
+    let mut k = 0i32
+    while k < n {
+        *r = *r + 2i32
+        k = k + 1i32
+    }
+    acc = acc + 1i32
+    t.peek(&acc) + t.reborrow_read(&mut acc)
+end t.mixed
+
+fn t.w_swap(a: i32, b: i32) -> i32 uses [] panics never
+    let mut x = a
+    let mut y = b
+    t.swap(&mut x, &mut y)
+    x.wrapping_mul(10i32).wrapping_add(y)
+end t.w_swap
+
+fn t.w_pick(a: i32, b: i32, first: bool) -> i32 uses [] panics never
+    let x = a
+    let y = b
+    *t.pick(&x, &y, first)
+end t.w_pick
+
+fn t.w_peek(n: i32) -> i32 uses [] panics never
+    let mut x = n
+    t.peek_mut(&mut x)
+end t.w_peek
+
+fn t.w_down(n: i32) -> i32 uses [] panics never
+    let mut d = 0i32
+    t.down(&mut d, n)
+    d
+end t.w_down
+
+fn t.w_sum(a: i32, b: i32) -> i32 uses [] panics may
+    let x = a
+    let y = b
+    t.sum2(&x, &y)
+end t.w_sum
+";
+
+/// 参照を使う関数の包みのパッケージを作る。
+fn refs_pkg(name: &str, main_body: &str) -> Tmp {
+    Tmp::new(name, &format!("{}{}", REFS_FNS, main_wrap("", main_body)))
+}
+
+#[test]
+fn kir_refs_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の `core.check.eq` が通ること、参照実行器 (`ksn kir --run`) の値が期待どおりであること。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.twice", &["5"], "7i32", "7"),
+        ("t.loop_bump", &["6"], "6i32", "6"),
+        ("t.temp", &[], "14i32", "14"),
+        ("t.assign_branch", &["3"], "30i32", "30"),
+        ("t.assign_branch", &["-2"], "20i32", "20"),
+        ("t.wrap_ref", &["100"], "44u8", "44"),
+        ("t.early", &["3"], "6i32", "6"),
+        ("t.early", &["20"], "105i32", "105"),
+        ("t.mixed", &["3"], "16i32", "16"),
+        ("t.w_swap", &["1", "2"], "21i32", "21"),
+        ("t.w_pick", &["2", "7", "false"], "7i32", "7"),
+        ("t.w_pick", &["2", "7", "true"], "2i32", "2"),
+        ("t.w_peek", &["10"], "10i32", "10"),
+        ("t.w_down", &["4"], "4i32", "4"),
+        ("t.w_down", &["0"], "0i32", "0"),
+        ("t.w_sum", &["3", "4"], "7i32", "7"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = refs_pkg(&format!("kir_refs_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).lines().last().unwrap_or("").trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_refs_panics_match_tree_walker() {
+    // 参照の先への書き込みで起きた溢れは、木走査と同じ文言と終了コード (101) になること。
+    let t = refs_pkg("kir_refs_panic", "    let _x = t.overflow_via_ref(200u8)\n");
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "tree-walker\n{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
+    let k = run(&["kir", "t.overflow_via_ref", "--run", "200"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stderr).trim(), "panic: attempt to add with overflow");
+}
+
+#[test]
+fn kir_refs_text_shows_slots_and_reference_types() {
+    // 出力は `kir 1` の形で、読み直して検査が通る (cli の内部検査)。スタックスロット・参照の複製・参照の型が見える。
+    let t = refs_pkg("kir_refs_text", "    let _x = t.twice(1i32)\n");
+    let o = run(&["kir", "t.assign_branch"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    for want in ["alloca", "store %", "load %", "reborrow %", "%2: mutref<i32> = alloca"] {
+        assert!(s.contains(want), "missing `{}` in:\n{}", want, s);
+    }
+    let p = run(&["kir", "t.pick"], &t.0);
+    assert_eq!(p.status.code(), Some(0), "{}", text(&p.stderr));
+    assert!(text(&p.stdout).contains("ret=ref<i32>"), "{}", text(&p.stdout));
+}
+
+#[test]
+fn kir_refs_reference_to_unsupported_pointee_keeps_its_reason() {
+    // 指す先が整数と bool でない参照 (`&str`) は、従来どおり理由付きで未対応になる。
+    let src = "fn t.first(s: &str) -> u8 uses [] panics never
+    let _t = s
+    0u8
+end t.first
+";
+    let t = Tmp::new("kir_refs_str", src);
+    let o = run(&["kir", "t.first"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("t.first は未対応"), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("段階 1 の対象外"), "{}", text(&o.stderr));
+}

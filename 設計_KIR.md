@@ -662,7 +662,7 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 
 | 理由 | 件数 | 例 | 次の作業 |
 |---|---:|---|---|
-| 引数・戻り値の型が段階 1 の外 (参照 17、名前付きの E を持つ `Result` 7、名前付きの型 4) | 28 | `json.array` (`&json.Doc`)、`demo.main` (`Result<(), std.io.Error>`) | 参照・集成体の型を型表に足す (第 2.3)。`Result` の E が名前付きの型 (`std.io.Error`) なのは集成体の型の対応 (段階 2 以降) |
+| 引数・戻り値の型が段階 1 の外 (参照 17、名前付きの E を持つ `Result` 7、名前付きの型 4) | 28 | `json.array` (`&json.Doc`)、`demo.main` (`Result<(), std.io.Error>`) | 集成体の型を型表に足す (第 2.3)。参照は指す先がスカラーのものだけ 10.7 で扱う (examples には該当が無い)。残りは名前付きの型・スライス・`str` と、名前付きの E を持つ `Result` で、段階 2 以降 |
 | 整数のビット演算 (`& \| ^ << >>`) | 3 | `features.collatz`、`native.collatz`、`tour.loops` | 演算子の下ろしを足す。命令は既存の `Op` に無いので追加が要る |
 | 整数のメソッド (`saturating_add` など) | 1 | `tour.ints` | `wrapping_*` と `checked_add` / `checked_sub` / `checked_mul` / `checked_div` / `checked_rem` は段階 1 で対応 (第 11 章)。残りは `saturating_*` と `checked_neg` / `checked_shl` / `checked_shr` で、段階 3 以降 |
 | `f64` | 1 | `tour.floats` | 浮動小数の型と命令を足す |
@@ -674,9 +674,22 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 
 - 冗長な命令: 文として使う式の unit 定数 (`%3: unit = const.unit ()`) と、値を渡すだけの空ブロック (`b2(): br b3()`) が残る。動作は正しい。段階 3 の不要コード除去と空ブロックの統合で消す。
 - `ksn kir --json` (LLM 向けの形式) は未実装 (第 2.7)。
-- 段階 1 の対象外の型と構文を広げる順序: (1) 浮動小数と整数のビット演算、(2) 整数のメソッド、(3) 集成体 (構造体・列挙型・タプル) とレイアウト、(4) 参照とスライス、(5) `Result` と `?`。(5) は組み込みの `Option` / `Result` (スカラーのペイロード) として第 11 章で対応した。名前付きの E の `Result` は (3) に従う。(3) から先は段階 2 の VM の設計と一緒に決める。
+- 段階 1 の対象外の型と構文を広げる順序: (1) 浮動小数と整数のビット演算、(2) 整数のメソッド、(3) 集成体 (構造体・列挙型・タプル) とレイアウト、(4) スライスと、名前付きの型を指す参照 (指す先がスカラーの参照は 10.7 で済んだ)、(5) `Result` と `?`。(5) は組み込みの `Option` / `Result` (スカラーのペイロード) として第 11 章で対応した。名前付きの E の `Result` は (3) に従う。(3) から先は段階 2 の VM の設計と一緒に決める。
 - 段階 2 (VM) への入口: `Module` は関数の表として使える形にしてある。次は `vm/` でバイトコードへ写し、`kir_exec` と結果を比べる差分テスト (`vm_parity`) を作る。
 
+### 10.7 参照 (kir/refs)
+
+ブランチ `kir/refs` (`claude/handover-work-i7ll7p` から分岐)。`&T` / `&mut T` (`T` は整数と bool)、`*r` の読み、`*r = v` の書き込み、参照を引数と戻り値に取る関数を下ろす。`kir_lower_refs.rs` (`kir_lower.rs` の子モジュール) に置き、`kir_lower.rs` には呼び出し点ごとの 1 行の振り分けと、状態を持つ字段 1 つだけを足した。
+
+- 型: `ref<T>` / `mutref<T>` (`Ty::Ref`)。指す先は `Pointee` (整数と bool)。`Ty` は `Copy` を保つため、中身は `Ty` ではなく `Pointee` にした。値は常にアドレス (参照実行器ではセルの番号)。clif の規約 (スカラーの `&T` は値) とは違う。
+- 命令: `alloca` (入口ブロックに置く。結果は `mutref<T>`)、`load %p` (結果は指す先の型)、`store %p, %v` (`mutref` だけ。結果は unit)、`asshared %p` (`&mut` を `&` にする)、`reborrow %p` (`&mut` の複製。スタックスロットの番号と参照の値を区別するために置く)。
+- 局所変数: 関数の中で `&x` / `&mut x` と書かれた名前は、スタックスロットに置く (読みは `load`、書きは `store`)。それ以外の局所は従来どおり SSA の値。`&` で式のままの値 (`&(a + b)`) は一時のスロットに入れてから取る。
+- 実行器: 呼び出しごとにセルの配列を持ち、返るときに切り詰める。`alloca` は入口ブロックでだけ行うので、ループの中でセルは増えない。
+- 検査 (`verify_module`): `store` は `mutref` だけ、`load` は指す先の型と一致、`asshared` / `reborrow` は同じ指す先、参照どうしの比較は禁止。借用の検査は前提としてしない。
+- 候補の判定 (`is_candidate`): ライフタイムだけの宣言 (`fn t.pick['a](...)`) は型引数ではないので候補に入れた。型引数があるものは従来どおり対象外。
+- 木走査との一致: `stage0/tests/cli.rs` の `kir_refs_values_match_tree_walker` (16 ケース: 参照を引数に取る関数、戻り値の参照、一時のアドレス、ループ・分岐・`break` と `return` の中での `&mut`、再帰)、`kir_refs_panics_match_tree_walker` (参照の先での溢れの文言と終了コード 101)。`kir_refs_text_shows_slots_and_reference_types` は出力の形と読み直しを、`kir_refs_reference_to_unsupported_pointee_keeps_its_reason` は指す先が名前付きの型・`str` のときの理由を確かめる。`kir.rs` の `refs_print_and_parse_round_trip` と `refs_verify_rejects_...` は命令の往復と検査を確かめる。
+- 降格の範囲 (examples 7 本の候補 40 件): refs の単独では 3 件のまま (`demo.fib`、`native.half`、`realtime.triangle`)。統合後の件数は 11.5 を見る。examples の参照は、すべて名前付きの型 (`&json.Doc`、`&mut alloc.string.String`)、スライス (`&[u8]`)、`str` (`&str`) を指すので、この段階で増える関数はない。`KSN_DUMP_KIR=1 ksn check` の出力 (未対応の理由を含む) も変わらない。examples の `ksn check` の出力も変わらない。
+- 未対応のまま残すもの: 指す先が名前付きの型・スライス・`str` の参照、参照を指す参照 (`&&T`)、参照どうしの比較。
 ## 11. 組み込みの Option / Result と checked_* (kir/option-result)
 
 ブランチ `kir/option-result` (`claude/handover-work-i7ll7p` から分岐)。第 10 章 10.6 の (5) の実装。名前付きの型 (構造体・ユーザ enum) は別の作業なので、ここでは組み込みの `Option<P>` と `Result<T, E>` だけを扱う (P、T、E は段階 1 のスカラー)。
