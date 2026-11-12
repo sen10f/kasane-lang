@@ -111,6 +111,10 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
         let text = str_of(&x).unwrap_or_default();
         let radix = iv(&a[1]) as u32;
         let ty = ity(ty);
+        // 符号なしは `-` を受け付けない (`-0` も Err)。`+` は符号つきと同じく受け付ける (Rust と同じ、機械語と同じ)。
+        if !ty.starts_with('i') && text.starts_with('-') {
+            return Ok(err(parse_err(0)));
+        }
         if ty == "u128" {
             return Ok(match u128::from_str_radix(&text, radix) {
                 Ok(v) => ok(int(v as i128, ty)),
@@ -251,6 +255,17 @@ fn float_op(name: &str, ty: &str, a: &[Val]) -> Res {
             return Ok(Val::F32(*x as f32));
         }
     }
+    // f32 のビット列は f64 へ広げずに扱う。広げると signaling NaN が quiet NaN に変わる (KIR の Bitcast は保つ)。
+    if name == "to_bits" && f32mode {
+        if let Some(Val::F32(x)) = a.first() {
+            return Ok(int(x.to_bits() as i128, "u32"));
+        }
+    }
+    if name == "from_bits" && ty == "f32" {
+        if let Some(Val::Int(n, _)) = a.first() {
+            return Ok(Val::F32(f32::from_bits(*n as u32)));
+        }
+    }
     let r = float_op_f64(name, ty, a)?;
     if f32mode {
         if let Val::Float(x) = r {
@@ -304,8 +319,9 @@ fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
         }
     };
     match name {
-        "abs" => simple(f64::abs),
-        "sqrt" => simple(|v| if v >= 0.0 { v.sqrt() } else { f64::NAN }),
+        // abs / sqrt は IEEE 754 の演算そのもの (機械語の fabs / sqrt と同じ): -inf の abs は +inf、負と -inf の sqrt は NaN、-0 の sqrt は -0。
+        "abs" => Ok(Val::Float(x.abs())),
+        "sqrt" => Ok(Val::Float(x.sqrt())),
         "floor" => simple(f64::floor),
         "ceil" => simple(f64::ceil),
         // 超越関数は自前実装 (`fmath`)。f32 は呼び出し側で f32 へ丸める。

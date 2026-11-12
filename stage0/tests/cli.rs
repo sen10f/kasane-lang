@@ -10331,6 +10331,107 @@ fn kir_scalar_floats_and_wide_ints_match_tree_walker() {
     }
 }
 
+/// 無限大・NaN・符号つきゼロの特殊値を確かめる関数 (C Annex F / IEEE 754 どおりの値を返す)。
+const FLOAT_SPECIAL_FNS: &str = "fn t.ninf() -> f64 uses [] panics never
+    -(1000.0f64.exp())
+end t.ninf
+
+fn t.abs_ninf64() -> u64 uses [] panics never
+    t.ninf().abs().to_bits()
+end t.abs_ninf64
+
+fn t.sqrt_ninf64() -> bool uses [] panics never
+    t.ninf().sqrt().is_nan()
+end t.sqrt_ninf64
+
+fn t.sqrt_neg64() -> bool uses [] panics never
+    let x = -2.0f64
+    x.sqrt().is_nan()
+end t.sqrt_neg64
+
+fn t.sqrt_nzero64() -> u64 uses [] panics never
+    let z = 0.0f64
+    (-z).sqrt().to_bits()
+end t.sqrt_nzero64
+
+fn t.sqrt_inf64() -> u64 uses [] panics never
+    (1000.0f64.exp()).sqrt().to_bits()
+end t.sqrt_inf64
+
+fn t.abs_ninf32() -> u32 uses [] panics never
+    let x = -(1000.0f32.exp())
+    x.abs().to_bits()
+end t.abs_ninf32
+
+fn t.sqrt_ninf32() -> bool uses [] panics never
+    let x = -(1000.0f32.exp())
+    x.sqrt().is_nan()
+end t.sqrt_ninf32
+
+fn t.nan32_bits() -> u32 uses [] panics never
+    f32.from_bits(2139095041u32).to_bits()
+end t.nan32_bits
+
+fn t.nan64_bits() -> u64 uses [] panics never
+    f64.from_bits(9218868437227405313u64).to_bits()
+end t.nan64_bits
+";
+
+/// (関数, 木走査の期待値 (Kasane の式), 参照実行器の期待値 (`ksn kir --run` の表示))。
+const FLOAT_SPECIAL_CASES: &[(&str, &str, &str)] = &[
+    ("t.abs_ninf64", "9218868437227405312u64", "9218868437227405312"), // abs(-inf) は +inf
+    ("t.sqrt_ninf64", "true", "true"),                                  // sqrt(-inf) は NaN
+    ("t.sqrt_neg64", "true", "true"),                                   // sqrt(負) は NaN
+    ("t.sqrt_nzero64", "9223372036854775808u64", "9223372036854775808"), // sqrt(-0) は -0
+    ("t.sqrt_inf64", "9218868437227405312u64", "9218868437227405312"),  // sqrt(+inf) は +inf
+    ("t.abs_ninf32", "2139095040u32", "2139095040"),                    // f32 の abs(-inf) は +inf
+    ("t.sqrt_ninf32", "true", "true"),
+    ("t.nan32_bits", "2139095041u32", "2139095041"), // f32 の signaling NaN のビットは保つ
+    ("t.nan64_bits", "9218868437227405313u64", "9218868437227405313"),
+];
+
+#[test]
+fn float_specials_follow_ieee_on_both_backends() {
+    // 木走査 (`ksn run`) と KIR (`ksn kir --run`) の両方で、無限大・NaN・符号つきゼロの値が IEEE 754 どおりであること。
+    for (i, (f, want, kwant)) in FLOAT_SPECIAL_CASES.iter().enumerate() {
+        let body = format!("    core.check.eq({}(), {})\n", f, want);
+        let t = Tmp::new(&format!("float_special_{}", i), &format!("{}{}", FLOAT_SPECIAL_FNS, main_wrap("", &body)));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", f, text(&o.stderr));
+        let k = run(&["kir", *f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", f);
+    }
+}
+
+#[test]
+fn float_specials_and_unsigned_from_str_radix_agree_with_native() {
+    // 機械語 (`test --both`) で比べられる形だけを書く: 値の比較 (`!=` で NaN、`1.0 / x` で -0 を判別)。
+    // clif は `to_bits` / `is_nan` を持たないので、それらは上の `float_specials_follow_ieee_on_both_backends` で確かめる。
+    // 符号なしは `-` を受け付けない (`-0` も Err、Rust と同じ)。`+` は受け付ける。
+    let mut src = String::from(FLOAT_SPECIAL_FNS);
+    src.push_str("fn t.pinf() -> f64 uses [] panics never\n    1000.0f64.exp()\nend t.pinf\n\nfn t.main() -> () uses [] panics never\nend t.main\n");
+    let checks: Vec<String> = vec![
+        "core.check.eq(t.ninf().abs(), t.pinf())".into(),
+        "core.check.eq(t.ninf().sqrt() != t.ninf().sqrt(), true)".into(),
+        "core.check.eq((-2.0f64).sqrt() != (-2.0f64).sqrt(), true)".into(),
+        "core.check.eq(t.pinf().sqrt(), t.pinf())".into(),
+        "core.check.eq(1.0f64 / (-(0.0f64)).sqrt() < 0.0f64, true)".into(),
+        "core.check.eq(u8.from_str_radix(\"-0\", 10u32) != Ok(0u8), true)".into(),
+        "core.check.eq(u8.from_str_radix(\"+7\", 10u32), Ok(7u8))".into(),
+        "core.check.eq(i8.from_str_radix(\"-0\", 10u32), Ok(0i8))".into(),
+    ];
+    for (i, c) in checks.iter().enumerate() {
+        src.push_str(&format!("\ntest t.main.test_{}\n    {}\nend t.main.test_{}\n", i, c, i));
+    }
+    let t = Tmp::new("float_specials_both", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains(&format!("{} passed; 0 failed", checks.len())), "{}", out);
+    assert_eq!(out.matches("(both: native)").count(), checks.len(), "{}", out);
+}
+
 #[test]
 fn kir_agg_module_text_declares_the_layout() {
     // 型の宣言の行 (大きさ・整列・フィールドのオフセット) と、本体の命令が出る。出力は読み直せる (cmd_kir が確かめる)。
