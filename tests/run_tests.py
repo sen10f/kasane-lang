@@ -31,6 +31,11 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'spec', 'tools', 'c
                    capture_output=True, text=True, encoding='utf-8')
 step('spec/tools/check_all.py', r.returncode == 0, r.stdout[-800:])
 
+# 3. LLM ベンチの参照解 (bench/reference/*.ksnl) が今の検査器で通ること
+r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'verify_reference.py')],
+                   capture_output=True, text=True, encoding='utf-8', errors='replace')
+step('bench/verify_reference.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
+
 # 2. Rust 版のビルドと cargo test
 r = subprocess.run(['cargo', 'build', '--release'], cwd=os.path.join(ROOT, 'stage0'), capture_output=True, text=True,
                    encoding='utf-8', errors='replace')
