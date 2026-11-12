@@ -115,6 +115,23 @@ fn launcher_works_via_symlink() {
 }
 
 #[test]
+fn e0020_order_violation_does_not_fail_check() {
+    // 定義順・uses 並びの違反 (E0020) は ksn fmt で直せるため、check は
+    // 非致命的として終了コード 0 のままにする (#D)。fmt --check は
+    // 従来どおり検出する。
+    let unordered = "fn t.b() -> u8 uses [] panics never\n    0u8\nend t.b\n\nfn t.a() -> u8 uses [] panics never\n    0u8\nend t.a\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.a(), 0u8)\n    core.check.eq(t.b(), 0u8)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("e0020_def_order", unordered);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+
+    let uses_order = "fn t.main() -> Result<(), std.io.Error> uses [io.fs, io.console] panics may\n    Ok(())\nend t.main\n";
+    let u = Tmp::new("e0020_uses_order", uses_order);
+    let o = run(&["check"], &u.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("E0020"), "{}", text(&o.stdout));
+}
+
+#[test]
 fn linear_ok_cases_pass_check() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
     let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
