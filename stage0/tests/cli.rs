@@ -76,8 +76,9 @@ fn diagnostics_each_case_reports_its_code() {
 /// 失敗しなければならない。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
 /// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
 const KNOWN_HOLES: &[&str] = &[
-    // `&mut x` を 1 つの式の中で 2 回取り、構造体の別々のフィールドに入れる (借用検査が式の中を見ない)。
-    "alias_mut_through_field",
+    // 借用を持つ変数 (`let w = t.mk(&x)`) のフィールドを読み戻す (`let r = w.r`) と、借用が読んだ側へ移らない
+    // (変数の型が分からないので、`w.n` のような Copy の値と区別できず、移すと誤検出になる)。
+    "boundary_field_read_back",
     // 線形値をフィールドに持つ値を、フィールドを読むだけで捨てる (消費の判定が「名前が現れるか」のみ)。
     "linear_in_field_unconsumed",
     // `?` で取り出した線形値 (`let _s = std.net.connect(a)?`) を消費せずに捨てる (型注釈がないと型が流れない)。
@@ -5992,4 +5993,192 @@ fn call_arguments_keep_reference_levels() {
     let pat = "match &Some(x) {\n        Some(p) => {\n            core.mem.drop(t.val(p))\n            core.mem.drop(t.rf(p))\n        }\n        None => ()\n    }";
     let pat_src = main_wrap(prefix, &format!("    let x = 1u8\n    {}\n", pat));
     assert!(codes_of("arg_pat_loose", &pat_src).is_empty());
+}
+
+// ---- 式の中の借用・クロージャ・関数境界・コンテナ (borrowck.rs) ----
+
+/// 診断が 1 件もないこと (他の検査も含めて) を確かめる。
+fn nll_clean(name: &str, prefix: &str, b: &[&str]) {
+    let src = main_wrap(prefix, &body(b)).replace("uses [io.console]", "uses [alloc, io.console]");
+    let t = Tmp::new(name, &src);
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}: {}", name, text(&o.stdout));
+}
+
+const NLL_FNS: &str = "type t.P['a]\n    a: &'a mut u8\n    b: &'a mut u8\nend t.P\n\n\
+    type t.S\n    a: u8\n    b: u8\nend t.S\n\n\
+    fn t.f_pair['a](a: &'a mut u8, b: &'a mut u8) -> t.P<'a> uses [] panics never\n    t.P { a: a, b: b }\nend t.f_pair\n\n\
+    fn t.f_pick['a, 'b](x: &'a u8, _y: &'b u8) -> &'a u8 uses [] panics never\n    x\nend t.f_pick\n\n\
+    fn t.f_two(a: &mut u8, b: &mut u8) -> () uses [] panics never\n    *a = 1u8\n    *b = 2u8\nend t.f_two\n\n\
+    fn t.f_use(a: &u8, b: &u8) -> () uses [] panics never\n    core.mem.drop(a)\n    core.mem.drop(b)\nend t.f_use\n\n";
+
+#[test]
+fn nll_expr_accepts_disjoint_and_shared_borrows_in_one_expression() {
+    nll_clean(
+        "nll_expr_ok",
+        NLL_FNS,
+        &[
+            "let mut s = t.S { a: 1u8, b: 2u8 }",
+            "t.f_two(&mut s.a, &mut s.b)",
+            "let p = t.P { a: &mut s.a, b: &mut s.b }",
+            "*p.a = 5u8",
+            "*p.b = 6u8",
+            "let x = 1u8",
+            "t.f_use(&x, &x)",
+            "let arr = [&x, &x]",
+            "core.check.eq(arr.len(), 2usize)",
+            "let mut y = 1u8",
+            "t.f_two(&mut y, &mut s.a)",
+            "t.f_two(&mut y, &mut s.a)",
+            "core.check.eq(s.a, 1u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_expr_accepts_two_phase_push_of_len() {
+    nll_clean(
+        "nll_expr_twophase",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "match v.push(1usize) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "match v.push(v.len()) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "core.check.eq(v.len(), 2usize)",
+        ],
+    );
+}
+
+#[test]
+fn nll_expr_accepts_a_borrow_that_ends_before_the_conflicting_access() {
+    nll_clean(
+        "nll_expr_ended",
+        NLL_FNS,
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let r = t.f_pick(&x, &y)",
+            "core.check.eq(*r, 1u8)",
+            "x = 3u8",
+            "core.check.eq(x, 3u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_boundary_follows_only_the_arguments_the_header_returns() {
+    // `f_pick` の戻り値は第 1 引数にだけ由来する。第 2 引数への書き込みは、戻り値が生きていても通る。
+    nll_clean(
+        "nll_boundary_other_arg",
+        NLL_FNS,
+        &["let x = 1u8", "let mut y = 2u8", "let r = t.f_pick(&x, &y)", "y = 3u8", "core.check.eq(*r, 1u8)", "core.check.eq(y, 3u8)"],
+    );
+    let (bad, out) = has_e3010(
+        "nll_boundary_first_arg",
+        NLL_FNS,
+        &["let mut x = 1u8", "let y = 2u8", "let r = t.f_pick(&x, &y)", "x = 3u8", "core.check.eq(*r, 1u8)"],
+    );
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn nll_boundary_struct_result_keeps_the_argument_borrows() {
+    let (bad, out) = has_e3010(
+        "nll_boundary_struct",
+        NLL_FNS,
+        &["let mut a = 1u8", "let mut b = 2u8", "let p = t.f_pair(&mut a, &mut b)", "a = 3u8", "*p.b = 4u8"],
+    );
+    assert!(bad, "{}", out);
+    // 戻り値を使い終えてから触る分には通る。
+    nll_clean(
+        "nll_boundary_struct_ok",
+        NLL_FNS,
+        &["let mut a = 1u8", "let mut b = 2u8", "let p = t.f_pair(&mut a, &mut b)", "*p.b = 4u8", "a = 3u8", "core.check.eq(a, 3u8)"],
+    );
+}
+
+#[test]
+fn nll_closure_dead_before_the_captured_variable_is_mutated() {
+    nll_clean(
+        "nll_closure_dead",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let c = fn() -> u8 capture [&x] {",
+            "    x",
+            "}",
+            "core.check.eq(c(), 1u8)",
+            "x = 2u8",
+            "let d = fn() -> () capture [&mut x] {",
+            "    x = 3u8",
+            "}",
+            "d()",
+            "core.check.eq(x, 3u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_closure_body_may_read_a_shared_capture_and_write_a_mut_capture() {
+    nll_clean(
+        "nll_closure_body_ok",
+        "",
+        &[
+            "let x = 1u8",
+            "let mut y = 2u8",
+            "let c = fn() -> u8 capture [&x, &mut y] {",
+            "    y = x",
+            "    y",
+            "}",
+            "core.check.eq(c(), 1u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_store_keeps_every_borrow_pushed_into_one_container() {
+    nll_clean(
+        "nll_store_two_ok",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "match v.push(&y) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "match v.push(&y) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "core.check.eq(v.len(), 2usize)",
+            "x = 2u8",
+            "core.check.eq(x, 2u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_mem_replace_with_a_dead_holder_is_accepted() {
+    nll_clean(
+        "nll_mem_replace_ok",
+        "type t.H\n    r: &'static u8\nend t.H\n\n",
+        &[
+            "let a = 1u8",
+            "let mut x = 2u8",
+            "let mut h = t.H { r: &a }",
+            "let old = core.mem.replace(&mut h.r, &x)",
+            "core.check.eq(*h.r, 2u8)",
+            "core.check.eq(*old, 1u8)",
+            "x = 3u8",
+            "core.check.eq(x, 3u8)",
+        ],
+    );
 }

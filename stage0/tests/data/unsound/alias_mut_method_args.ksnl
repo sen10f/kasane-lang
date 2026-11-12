@@ -1,0 +1,19 @@
+type t.S
+    n: u32
+end t.S
+
+fn t.S.two(self: &t.S, a: &mut u32, b: &mut u32) -> () uses [] panics never
+    *a = self.n
+    *b = self.n
+end t.S.two
+
+fn t.bad() -> u32 uses [] panics never
+    let s = t.S { n: 1u32 }
+    let mut x = 1u32
+    s.two(&mut x, &mut x)
+    x
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -2660,6 +2660,13 @@ impl<'a> Checker<'a> {
                 self.tc_block(&f[3], &sub, muts);
                 self.final_env = fe;
                 self.moved = saved;
+                // 取り込みは作った時点で行われる: `move x` は x を move し (Copy は除く)、`&x` / `&mut x` は使うだけ。
+                for c in items(&f[2]) {
+                    let name = st(tel(c, 1));
+                    if env.contains_key(&name) {
+                        self.use_place(&name, &[], env, nline(e), st(tel(c, 0)) == "move");
+                    }
+                }
             }
             "Call" => {
                 let mut callee: Option<&Def> = None;
