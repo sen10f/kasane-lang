@@ -1,0 +1,132 @@
+fn t.drain(first: std.sync.Receiver<std.net.TcpStream>) -> u32 uses [io.net, thread] panics never
+    let mut rx = first
+    let mut sum = 0u32
+    loop {
+        match rx.recv() {
+            Ok(stream) => {
+                sum = sum.wrapping_add(t.handle(stream))
+            }
+            Err(_e) => match rx.close() {
+                Ok(_u) => break
+                Err(back) => {
+                    rx = back
+                }
+            }
+        }
+    }
+    sum
+end t.drain
+
+fn t.handle(stream: std.net.TcpStream) -> u32 uses [io.net] panics never
+    core.mem.drop(stream.close())
+    1u32
+end t.handle
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.net, thread] panics may
+    t.ok_unit(t.threads())
+    let mut i = 0u32
+    while i < ROUNDS_N {
+        t.ok_unit(t.round())
+        i = i + 1u32
+    }
+    std.io.print_line("channel rounds ok")
+end t.main
+
+fn t.message(i: u32) -> alloc.string.String uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    match s.push_str("hello") {
+        Ok(_u) => 0u32
+        Err(_e) => core.panic.panic("oom")
+    }
+    match s.push_u64(u64.from_u32(i)) {
+        Ok(_u) => 0u32
+        Err(_e) => core.panic.panic("oom")
+    }
+    s
+end t.message
+
+fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
+    match r {
+        Ok(_u) => {
+        }
+        Err(_e) => core.panic.panic("unexpected error")
+    }
+end t.ok_unit
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end t.oom
+
+fn t.produce(tx: std.sync.Sender<alloc.string.String>, count: u32) -> () uses [alloc, thread] panics may
+    let mut i = 1u32
+    while i <= count {
+        match tx.send(t.message(i)) {
+            Ok(_u) => 0u32
+            Err(_e) => core.panic.panic("send failed")
+        }
+        i = i + 1u32
+    }
+end t.produce
+
+fn t.round() -> Result<(), std.io.Error> uses [alloc, io.net, thread] panics may
+    let made = std.sync.channel::<alloc.string.String, std.alloc.System>(std.alloc.SYSTEM, 8usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let tx_b = tx.clone()
+    let rx_b = rx.clone()
+    t.produce(tx, 2u32)
+    t.produce(tx_b, 3u32)
+    match rx_b.recv() {
+        Ok(s) => core.check.eq(s.len(), 6usize)
+        Err(_e) => core.panic.panic("recv failed")
+    }
+    core.mem.drop(rx)
+    core.mem.drop(rx_b)
+    let lin = std.sync.channel::<std.net.TcpStream, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let (lin_tx, lin_rx) = lin.map_err(t.oom)?
+    let lin_rx_b = lin_rx.clone()
+    let lin_tx_b = lin_tx.clone()
+    core.mem.drop(lin_tx)
+    core.mem.drop(lin_tx_b)
+    core.check.eq(t.drain(lin_rx), 0u32)
+    core.check.eq(t.drain(lin_rx_b), 0u32)
+    Ok(())
+end t.round
+
+fn t.threads() -> Result<(), std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<alloc.string.String, std.alloc.System>(std.alloc.SYSTEM, 4usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let tx_b = tx.clone()
+    let first = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move tx] {
+            t.produce(tx, 5u32)
+        },
+    )
+    let second = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move tx_b] {
+            t.produce(tx_b, 5u32)
+        },
+    )
+    let producer_a = match first {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let producer_b = match second {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let mut total = 0usize
+    loop {
+        match rx.recv() {
+            Ok(s) => {
+                total = total + s.len()
+            }
+            Err(_e) => break
+        }
+    }
+    producer_a.join()
+    producer_b.join()
+    core.check.eq(total, 2usize * (5usize * 6usize))
+    Ok(())
+end t.threads
