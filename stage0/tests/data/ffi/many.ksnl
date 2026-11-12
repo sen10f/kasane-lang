@@ -1,0 +1,74 @@
+type t.Acc layout c derive [Clone, Copy]
+    total: i64
+    count: i32
+end t.Acc
+
+type t.Big layout c derive [Clone, Copy]
+    a: i64
+    b: i64
+    c: i64
+end t.Big
+
+type t.Small layout c derive [Clone, Copy]
+    a: i32
+    b: i32
+end t.Small
+
+extern t.apply_dbl(f: fn(f64, f32, i32) -> f64 uses [] panics never, a: f64, b: f32, c: i32) -> f64 link "LIB:apply_dbl"
+
+extern t.many(a: i64, b: i32, c: f64, d: f32, e: i64, f: i32, g: f64, h: i64, i: i64, j: f64, k: i32, l: f32, m: f64, n: f64, o: f64, p: f64, q: f64, r: f64) -> f64 link "LIB:many"
+
+extern t.run_ticks(n: i32, f: fn(i32, *mut t.Acc) -> () uses [] panics never, user: *mut t.Acc) -> () link "LIB:run_ticks"
+
+extern t.spill(a: i64, b: i64, c: i64, d: i64, e: i64, s: t.Small, f: i64) -> i64 link "LIB:spill"
+
+extern t.spill_big(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, big: t.Big, g: i64) -> i64 link "LIB:spill_big"
+
+fn t.dbl(a: f64, _b: f32, _c: i32) -> f64 uses [] panics never
+    a
+end t.dbl
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let (a, b, c, d, e, f) = (1i64, 2i32, 3.0f64, 4.0f32, 5i64, 6i32)
+    let (g, h, i, j, k, l) = (7.0f64, 8i64, 9i64, 10.0f64, 11i32, 12.0f32)
+    let (m, n, o, p, q, r) = (13.0f64, 14.0f64, 15.0f64, 16.0f64, 17.0f64, 18.0f64)
+    let total = unsafe "ffi" "many arguments" {
+        t.many(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r)
+    }
+    core.check.is_true(total == 2109.0f64)
+    let sp = unsafe "ffi" "struct that does not fit the registers" {
+        t.spill(1i64, 2i64, 3i64, 4i64, 5i64, t.Small { a: 6i32, b: 7i32 }, 8i64)
+    }
+    core.check.eq(sp, 7623i64)
+    let sb = unsafe "ffi" "memory struct after many ints" {
+        t.spill_big(1i64, 2i64, 3i64, 4i64, 5i64, 6i64, t.Big { a: 7i64, b: 8i64, c: 9i64 }, 10i64)
+    }
+    core.check.eq(sb, 11008i64)
+    let mut acc = t.Acc { total: 0i64, count: 0i32 }
+    let user = core.ptr.from_mut(&mut acc)
+    unsafe "ffi" "callback with user data" {
+        t.run_ticks(4i32, t.tick, user)
+    }
+    core.check.eq(acc.total, 40i64)
+    core.check.eq(acc.count, 10i32)
+    let fd = unsafe "ffi" "float callback" {
+        t.apply_dbl(t.dbl, 2.5f64, 1.0f32, 3i32)
+    }
+    core.check.is_true(fd == 3.5f64)
+    let fe = unsafe "ffi" "closure callback" {
+        t.apply_dbl(fn(x: f64, y: f32, z: i32) -> f64 capture [] {
+            x
+        }, 4.0f64, 1.0f32, 3i32)
+    }
+    core.check.is_true(fe == 5.0f64)
+    std.io.print_line("many ok")
+    Ok(())
+end t.main
+
+fn t.tick(i: i32, user: *mut t.Acc) -> () uses [] panics never
+    unsafe "ffi" "accumulate through the user data" {
+        let cur: t.Acc = core.ptr.read(user)
+        let total = cur.total.wrapping_add(10i64)
+        core.ptr.write(user, t.Acc { total: total, count: cur.count.wrapping_add(i) })
+    }
+end t.tick

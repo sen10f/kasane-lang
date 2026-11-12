@@ -6991,3 +6991,250 @@ fn the_plugins_example_builds_natively_without_skips_and_matches_the_interpreter
     }
     let _ = fs::remove_dir_all(&cache);
 }
+
+// ---- FFI の完成 (コールバック・`layout c` の構造体の値渡し・多数の引数・動的ロード。3.8)
+
+#[cfg(unix)]
+fn ffi_data(name: &str) -> String {
+    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/ffi").join(name)).unwrap()
+}
+
+/// `tests/data/ffi/ffi_lib.c` をこのテスト用の共有ライブラリにして、`LIB:` をそのパスに置き換えた
+/// Kasane のソースで一時パッケージ (`[unsafe] modules = ["t"]`) を作る。
+#[cfg(unix)]
+fn ffi_pkg(name: &str, data: &str) -> Tmp {
+    let t = Tmp::new(name, "");
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let c = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/ffi/ffi_lib.c");
+    let lib = t.0.join("libffitest.so");
+    let o = cc(&["-shared", "-fPIC", "-o", lib.to_str().unwrap(), c.to_str().unwrap()], &t.0);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let src = ffi_data(data).replace("LIB:", &format!("{}:", lib.to_str().unwrap()));
+    fs::write(t.0.join("src").join("t.ksnl"), src).unwrap();
+    t
+}
+
+/// ネイティブ生成してから実行する。(ビルドの出力, 実行結果)。スキップされたら実行結果は None。
+#[cfg(unix)]
+fn ffi_native(t: &Tmp, name: &str) -> (String, Option<Output>) {
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_{}", std::process::id(), name));
+    let b = Command::new(exe()).args(["build", "--backend", "clif"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    let out = text(&b.stdout) + &text(&b.stderr);
+    let bin = t.0.join("target").join("debug").join("t.native");
+    if !bin.exists() {
+        return (out, None);
+    }
+    (out, Some(Command::new(&bin).current_dir(&t.0).output().unwrap()))
+}
+
+/// インタプリタとネイティブで、同じ出力・同じ終了コードになる (どちらも成功)。
+#[cfg(unix)]
+fn ffi_both_ok(name: &str, data: &str, want: &str) {
+    let t = ffi_pkg(name, data);
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
+    let i = run(&["run"], &t.0);
+    assert_eq!(i.status.code(), Some(0), "interpreter: {}", text(&i.stderr));
+    assert_eq!(text(&i.stdout), want);
+    let (out, n) = ffi_native(&t, name);
+    assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+    let n = n.unwrap_or_else(|| panic!("no native executable: {}", out));
+    assert_eq!(n.status.code(), Some(0), "native: {}", text(&n.stderr));
+    assert_eq!(text(&n.stdout), want);
+}
+
+#[cfg(unix)]
+#[test]
+fn ffi_structs_by_value_by_pointer_as_returns_and_nested_match_between_backends() {
+    // INTEGER (Small) / SSE (Vec2, Vec2d, F3) / 混在 (Mixed, Nested, Padded) / MEMORY (Big, 24 バイト)、
+    // 返り値・ポインタ渡し (`*mut Small`)・入れ子 (`Nested`)。動的ロード (`link "lib:name"`) で呼ぶ。
+    ffi_both_ok("ffi_structs", "structs.ksnl", "struct ok\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn ffi_many_arguments_callbacks_and_user_data_match_between_backends() {
+    // 整数 6 本・浮動小数 8 本を超える 18 引数、レジスタが足りなくなる位置の構造体、
+    // ユーザーデータのポインタを通したコールバックの累積、`f64` / `f32` / `i32` のコールバック、クロージャのコールバック。
+    ffi_both_ok("ffi_many", "many.ksnl", "many ok\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn ffi_qsort_sorts_a_kasane_slice_with_a_kasane_comparator_in_both_backends() {
+    ffi_both_ok("ffi_qsort", "qsort.ksnl", "qsort ok\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn ffi_unit_tests_run_in_both_the_interpreter_and_the_native_bundle() {
+    let t = ffi_pkg("ffi_unit", "unit.ksnl");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_unit", std::process::id()));
+    let o = Command::new(exe()).args(["test", "--both"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stdout).contains("1 passed; 0 failed"), "{}", text(&o.stdout));
+}
+
+#[cfg(unix)]
+#[test]
+fn ffi_a_missing_library_or_symbol_is_a_defined_panic_with_exit_code_101() {
+    for (name, data, needle) in [
+        ("ffi_nolib", "missing_lib.ksnl", "cannot load the shared library"),
+        ("ffi_nosym", "missing_symbol.ksnl", "was not found in"),
+    ] {
+        let t = ffi_pkg(name, data);
+        let i = run(&["run"], &t.0);
+        assert_eq!(i.status.code(), Some(101), "interpreter: {}", text(&i.stderr));
+        assert!(text(&i.stderr).contains(needle), "{}", text(&i.stderr));
+        assert!(text(&i.stdout).contains("before"));
+        let (out, n) = ffi_native(&t, name);
+        let n = n.unwrap_or_else(|| panic!("no native executable: {}", out));
+        assert_eq!(n.status.code(), Some(101), "native: {}", text(&n.stderr));
+        assert!(text(&n.stderr).contains(needle), "{}", text(&n.stderr));
+        assert!(text(&n.stdout).contains("before"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn ffi_fixed_arrays_in_layout_c_structs_work_in_the_interpreter_and_skip_natively_with_a_reason() {
+    let t = ffi_pkg("ffi_arrays", "arrays.ksnl");
+    let i = run(&["run"], &t.0);
+    assert_eq!(i.status.code(), Some(0), "{}", text(&i.stderr));
+    assert_eq!(text(&i.stdout), "arrays ok\n");
+    let (out, n) = ffi_native(&t, "ffi_arrays");
+    assert!(n.is_none(), "native unexpectedly built: {}", out);
+    assert!(out.contains("native backend skipped") && out.contains("fixed-size array"), "{}", out);
+}
+
+#[cfg(unix)]
+#[test]
+fn ffi_a_callback_that_overflows_the_stack_stops_the_process_without_unwinding_through_c() {
+    // 5.2: スタックオーバーフローは panic ではなく異常終了 (インタプリタは 102 と `stack overflow`)。
+    // C のフレームを越えて巻き戻さない。
+    let t = ffi_pkg("ffi_overflow", "stack_overflow.ksnl");
+    let i = run(&["run"], &t.0);
+    assert_eq!(i.status.code(), Some(102), "{}", text(&i.stderr));
+    assert!(text(&i.stderr).contains("stack overflow"), "{}", text(&i.stderr));
+    assert!(text(&i.stdout).contains("start") && !text(&i.stdout).contains("unreachable"));
+}
+
+fn ffi_check_codes(name: &str, src: &str, modules: &str) -> Vec<String> {
+    let t = Tmp::new(name, src);
+    if !modules.is_empty() {
+        fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"{}\"]\n", TOML, modules)).unwrap();
+    }
+    let o = run(&["check", "--json"], &t.0);
+    let mut c = codes(&text(&o.stdout));
+    c.dedup();
+    c
+}
+
+#[test]
+fn ffi_boundary_diagnostics_report_exactly_their_own_code() {
+    let main = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    // E5004: 関数型 (C のコールバック) が `uses [] panics never` でない
+    let e = format!("extern t.each(f: fn(i32) -> i32 uses [io.console] panics may) -> () link \"each\"\n\n{}", main);
+    assert_eq!(ffi_check_codes("ffi_e5004", &e, "t"), ["E5004"]);
+    // E5005: 渡した関数が `panics may`
+    let f = "extern t.each(f: fn(i32) -> i32 uses [] panics never) -> () link \"each\"\n\n\
+             fn t.twice(x: i32) -> i32 uses [] panics may\n    x\nend t.twice\n\n\
+             fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    unsafe \"ffi\" \"callback\" {\n        t.each(t.twice)\n    }\n    Ok(())\nend t.main\n";
+    assert_eq!(ffi_check_codes("ffi_e5005", f, "t"), ["E5005"]);
+    // E5005: panic するクロージャ
+    let g = "extern t.each(f: fn(i32) -> i32 uses [] panics never) -> () link \"each\"\n\n\
+             fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    unsafe \"ffi\" \"callback\" {\n        t.each(fn(x: i32) -> i32 capture [] {\n            core.panic.panic(\"boom\")\n        })\n    }\n    Ok(())\nend t.main\n";
+    assert!(ffi_check_codes("ffi_e5005c", g, "t").contains(&"E5005".to_string()));
+    // E5006: `layout c` のフィールドが C の型でない
+    let h = format!("type t.Rec layout c\n    name: alloc.string.String<std.alloc.System>\nend t.Rec\n\n{}", main);
+    assert_eq!(ffi_check_codes("ffi_e5006", &h, "t"), ["E5006"]);
+    // E5007: `layout c` でない構造体を `extern` に渡す
+    let i = format!("type t.Pair\n    a: i32\n    b: i32\nend t.Pair\n\nextern t.take(p: t.Pair) -> () link \"take\"\n\n{}", main);
+    assert_eq!(ffi_check_codes("ffi_e5007", &i, "t"), ["E5007"]);
+    // 正しい形は通る (`layout c` の構造体と効果なしのコールバック)
+    let ok = format!(
+        "type t.Pair layout c derive [Clone, Copy]\n    a: i32\n    b: i32\nend t.Pair\n\n\
+         extern t.take(p: t.Pair, f: fn(i32) -> i32 uses [] panics never) -> () link \"take\"\n\n{}",
+        main
+    );
+    assert!(ffi_check_codes("ffi_ok", &ok, "t").is_empty());
+}
+
+#[test]
+fn ffi_unsafe_permission_errors_are_still_enforced_with_callbacks_and_structs() {
+    // E5003: `extern` の呼び出しは `unsafe` ブロックの中だけ (コールバックを渡す呼び出しでも)
+    let a = "extern t.each(f: fn(i32) -> i32 uses [] panics never) -> () link \"each\"\n\n\
+             fn t.id(x: i32) -> i32 uses [] panics never\n    x\nend t.id\n\n\
+             fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    t.each(t.id)\n    Ok(())\nend t.main\n";
+    assert_eq!(ffi_check_codes("ffi_e5003", a, "t"), ["E5003"]);
+    // E5001: `[unsafe] modules` にないモジュールでは `unsafe` ブロックが使えない
+    let b = a.replace("    t.each(t.id)\n", "    unsafe \"ffi\" \"callback\" {\n        t.each(t.id)\n    }\n");
+    assert_eq!(ffi_check_codes("ffi_e5001", &b, ""), ["E5001"]);
+    assert!(ffi_check_codes("ffi_permitted", &b, "t").is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_ffi_example_checks_formats_tests_and_runs_the_same_in_both_backends() {
+    // examples/ffi: libc の `qsort` (Kasane の比較関数) と libm の `cbrt` (動的ロード)。C の準備なしで動く。
+    let d = root().join("examples").join("ffi");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_example", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    assert_eq!(run(&["check"], &d).status.code(), Some(0));
+    assert_eq!(run(&["fmt", "--check"], &d).status.code(), Some(0));
+    let t = Command::new(exe()).args(["test", "--both"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    assert_eq!(t.status.code(), Some(0), "{}{}", text(&t.stdout), text(&t.stderr));
+    let interp = run(&["run"], &d);
+    assert_eq!(text(&interp.stdout), "ffi ok\n", "{}", text(&interp.stderr));
+    let b = Command::new(exe()).args(["build", "--backend", "clif"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    let out = text(&b.stdout) + &text(&b.stderr);
+    assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+    let n = Command::new(d.join("target").join("debug").join("ffi.native")).current_dir(&d).output().unwrap();
+    assert_eq!(text(&n.stdout), text(&interp.stdout));
+    let _ = fs::remove_dir_all(d.join("target"));
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[cfg(unix)]
+fn copy_dir(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for e in fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if e.file_type().unwrap().is_dir() {
+            if e.file_name() != "target" {
+                copy_dir(&src, &dst);
+            }
+        } else {
+            fs::copy(&src, &dst).unwrap();
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_ffi_shapes_example_builds_its_c_library_and_passes_in_both_backends() {
+    // examples/ffi/shapes: 同梱の C (c/shapes.c) を build.sh で共有ライブラリにして、動的ロードで呼ぶ。
+    // 構造体の値渡し・値返し (MEMORY / INTEGER / SSE)・ポインタ渡し・ユーザーデータ付きのコールバック。
+    let d = std::env::temp_dir().join(format!("ksn_shapes_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&d);
+    copy_dir(&root().join("examples").join("ffi").join("shapes"), &d);
+    let o = Command::new("sh").arg("build.sh").current_dir(&d).output().unwrap();
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_shapes", std::process::id()));
+    assert_eq!(run(&["check"], &d).status.code(), Some(0));
+    assert_eq!(run(&["fmt", "--check"], &d).status.code(), Some(0));
+    let t = Command::new(exe()).args(["test", "--both"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    assert_eq!(t.status.code(), Some(0), "{}{}", text(&t.stdout), text(&t.stderr));
+    let interp = run(&["run"], &d);
+    assert_eq!(text(&interp.stdout), "shapes ok\n", "{}", text(&interp.stderr));
+    let b = Command::new(exe()).args(["build", "--backend", "clif"]).current_dir(&d).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    let out = text(&b.stdout) + &text(&b.stderr);
+    assert!(!out.contains("skipped"), "native backend skipped: {}", out);
+    let n = Command::new(d.join("target").join("debug").join("shapes.native")).current_dir(&d).output().unwrap();
+    assert_eq!(text(&n.stdout), text(&interp.stdout));
+    let _ = fs::remove_dir_all(&d);
+    let _ = fs::remove_dir_all(&cache);
+}

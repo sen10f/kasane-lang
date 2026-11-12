@@ -33,6 +33,8 @@ pub struct Def {
     pub stack: Option<u64>,
     pub derive: Vec<String>,
     pub linear: bool,
+    /// `type` の `layout c` (C 互換の配置。3.8)
+    pub layout_c: bool,
     pub fields: Vec<(String, V, bool)>,
     pub variants: Vec<(String, Vec<V>)>,
     pub body: Option<V>,
@@ -53,7 +55,8 @@ pub struct Def {
     /// `dyn Tr<E, P>` 越しの呼び出しの効果検査 (5.1) に使う。
     pub trait_effs: Vec<(String, Vec<String>, String)>,
     pub impl_trait: String,
-    /// `extern` の `link "名前"` (省略時は FQN の末尾)
+    /// `extern` の `link "名前"` (省略時は FQN の末尾)。`link "ライブラリ:名前"` は、共有ライブラリを実行時に
+    /// `dlopen` / `LoadLibrary` して `名前` を引く (3.8)。
     pub link: String,
     pub impl_for: V,
 }
@@ -170,6 +173,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 d.generics = conv_generics(&p.generics()?);
                 if p.accept_kw("layout") {
                     p.name_tok()?;
+                    d.layout_c = true;
                 }
                 if p.accept_kw("derive") {
                     p.expect_op("[")?;

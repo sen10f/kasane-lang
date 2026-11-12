@@ -398,3 +398,53 @@ void ksn_rt_sys_yield(void) {
     sched_yield();
 #endif
 }
+
+/* ---- FFI の動的ロード: `extern ... link "lib:name"` (3.8) ----
+ * 共有ライブラリを `dlopen` (Windows は `LoadLibraryA`) して、シンボルを引く。同じ (ライブラリ, 名前) は 1 度だけ引く。
+ * 読み込めない・見つからないときは panic と同じ扱い: メッセージを標準エラーに出して終了コード 101 (インタプリタと同じ)。 */
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
+#include <stdio.h>
+
+void *ksn_rt_sys_dlsym(const char *lib, const char *sym) {
+    enum { N = 64 };
+    static struct { const char *lib; const char *sym; void *h; void *p; } tab[N];
+    static int n = 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(tab[i].lib, lib) == 0 && strcmp(tab[i].sym, sym) == 0) return tab[i].p;
+    }
+    void *h = 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(tab[i].lib, lib) == 0) h = tab[i].h;
+    }
+    void *p = 0;
+#ifdef _WIN32
+    if (!h) h = (void *)LoadLibraryA(lib);
+    if (!h) {
+        fprintf(stderr, "panic: cannot load the shared library `%s`\n", lib);
+        exit(101);
+    }
+    p = (void *)GetProcAddress((HMODULE)h, sym);
+#else
+    if (!h) h = dlopen(lib, RTLD_NOW);
+    if (!h) {
+        const char *why = dlerror();
+        fprintf(stderr, "panic: cannot load the shared library `%s`%s%s\n", lib, why ? ": " : "", why ? why : "");
+        exit(101);
+    }
+    p = dlsym(h, sym);
+#endif
+    if (!p) {
+        fprintf(stderr, "panic: symbol `%s` was not found in `%s`\n", sym, lib);
+        exit(101);
+    }
+    if (n < N) {
+        tab[n].lib = lib;
+        tab[n].sym = sym;
+        tab[n].h = h;
+        tab[n].p = p;
+        n++;
+    }
+    return p;
+}

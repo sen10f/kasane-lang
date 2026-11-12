@@ -1,0 +1,54 @@
+extern ffi.cbrt(x: f64) -> f64 link "libm.so.6:cbrt"
+
+extern ffi.qsort(base: *mut i32, n: usize, size: usize, cmp: fn(*const i32, *const i32) -> i32 uses [] panics never) -> () link "qsort"
+
+fn ffi.ascending(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read the left element" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read the right element" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end ffi.ascending
+
+fn ffi.cube_root(x: f64) -> f64 uses [] panics never
+    unsafe "libm" "cbrt is loaded from libm at run time" {
+        ffi.cbrt(x)
+    }
+end ffi.cube_root
+
+fn ffi.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut v = [5i32, 3i32, 9i32, 1i32, 7i32]
+    ffi.sort_ints(&mut v)
+    core.check.eq(v[0], 1i32)
+    core.check.eq(v[4], 9i32)
+    core.check.is_true(ffi.cube_root(1.0f64) == 1.0f64)
+    std.io.print_line("ffi ok")
+end ffi.main
+
+fn ffi.sort_ints(values: &mut [i32]) -> () uses [] panics never
+    let n = values.len()
+    let p = core.ptr.from_mut(values)
+    unsafe "sort" "qsort calls the Kasane comparator" {
+        ffi.qsort(p, n, 4usize, ffi.ascending)
+    }
+end ffi.sort_ints
+
+test ffi.cube_root.test_cube_root
+    core.check.is_true(ffi.cube_root(8.0f64) == 2.0f64)
+end ffi.cube_root.test_cube_root
+
+test ffi.sort_ints.test_sorted
+    let mut v = [3i32, 2i32, 1i32]
+    ffi.sort_ints(&mut v)
+    core.check.eq(v[0], 1i32)
+    core.check.eq(v[1], 2i32)
+    core.check.eq(v[2], 3i32)
+end ffi.sort_ints.test_sorted

@@ -1,0 +1,22 @@
+type t.Small layout c derive [Clone, Copy]
+    a: i32
+    b: i32
+end t.Small
+
+extern t.small_add(a: t.Small, b: t.Small) -> t.Small link "LIB:small_add"
+
+fn t.add(a: t.Small, b: t.Small) -> t.Small uses [] panics never
+    unsafe "ffi" "add two structs in C" {
+        t.small_add(a, b)
+    }
+end t.add
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line("unit")
+end t.main
+
+test t.add.test_sum
+    let s = t.add(t.Small { a: 1i32, b: 2i32 }, t.Small { a: 3i32, b: 4i32 })
+    core.check.eq(s.a, 4i32)
+    core.check.eq(s.b, 6i32)
+end t.add.test_sum
