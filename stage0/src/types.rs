@@ -190,6 +190,24 @@ const DERIVED: &[&str] = &[
     "try_clone", "to_string",
 ];
 
+/// 数値の基本型 (所有者 `core.num.<型>` を持つ型)。
+fn is_num_prim(p: &str) -> bool {
+    matches!(
+        p,
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "f32" | "f64"
+    )
+}
+
+/// 比較のメソッド・演算子が要求するトレイト (4.3)。`a.eq(b)` と `a == b` は `PartialEq`、`a.partial_cmp(b)` と `<` 等は `PartialOrd`、`a.cmp(b)` は `Ord`。
+fn cmp_trait(name: &str) -> Option<&'static str> {
+    match name {
+        "eq" | "==" | "!=" => Some("core.cmp.PartialEq"),
+        "partial_cmp" | "<" | "<=" | ">" | ">=" => Some("core.cmp.PartialOrd"),
+        "cmp" => Some("core.cmp.Ord"),
+        _ => None,
+    }
+}
+
 /// 型で解決できた呼び出しの効果検査の義務 (5.1 / 4.3)。check.rs が、呼び出し元 `di` の
 /// `uses` / `panics` と比べる。`cands` は (呼び出し先の名前, 検査する uses, 検査する panics) の列で、
 /// すべての候補が違反するときだけ報告する (候補が複数あるときは保守側に黙る)。
@@ -959,7 +977,14 @@ impl<'a> TypeCk<'a> {
             // sig の所有者は `core.bool.bool` / `core.char.char` (型名を末尾に重ねた FQN。`core.num.u8` と違う形)。
             Ty::Prim(p) if p == "bool" => (vec!["core.bool.bool".into()], false),
             Ty::Prim(p) if p == "char" => (vec!["core.char.char".into()], false),
-            Ty::Prim(p) => (vec![format!("core.num.{}", p)], false),
+            // 数値型は sig (`core.num.<型>`) がそのメソッドの全て (4.2 の組み込み実装を含む)。型が決まった
+            // 受け手では sig のメソッドだけを正とする: 名前ベースの natives (NUM_EXTRA) は整数と浮動小数を混ぜるので
+            // `u8.sqrt` を通してしまう。sig が無い型は従来どおり黙る。
+            Ty::Prim(p) => {
+                let owner = format!("core.num.{}", p);
+                let complete = is_num_prim(p) && self.owners.contains_key(&owner);
+                (vec![owner], complete)
+            }
             Ty::Slice(_) | Ty::Array(_) => (vec!["core.slice".into(), "core.array".into()], true),
             Ty::Named(n, _) => match n.as_str() {
                 "Option" => (vec!["core.option.Option".into()], true),
@@ -1018,6 +1043,10 @@ impl<'a> TypeCk<'a> {
                     escape_all(self);
                     return Ty::Unknown;
                 }
+            }
+            if self.cmp_trait_missing(recv, name, line) {
+                escape_all(self);
+                return Ty::Unknown;
             }
             if let Some(t) = self.trait_bound_method(recv, name, args, line) {
                 return t;
@@ -1165,6 +1194,24 @@ impl<'a> TypeCk<'a> {
             Ty::Named(n, _) => self.p.types.get(n).map_or(true, |&i| self.p.defs[i].derive.iter().any(|x| x == "Ord")),
             _ => true,
         }
+    }
+
+    /// 比較のメソッド (`eq` / `cmp` / `partial_cmp`) または比較演算子 (`==` `<` など) を、受け手の利用者型・標準の型が
+    /// 対応するトレイトを持たないのに使ったとき E1108 (true を返す)。宣言 (`p.types`) のある型だけを見る。
+    /// 型変数・型パラメータ・宣言のない型は黙る。Vec / String は 4.2 の表どおり比較のトレイトを持たない。
+    fn cmp_trait_missing(&mut self, recv: &Ty, name: &str, line: usize) -> bool {
+        let Some(tr) = cmp_trait(name) else { return false };
+        let Ty::Named(ty, _) = self.deep(recv).strip().clone() else { return false };
+        if self.implements(&ty, tr) {
+            return false;
+        }
+        let msg = if matches!(name, "eq" | "cmp" | "partial_cmp") {
+            format!("unknown method `{}` on `{}`: the type does not implement `{}` (derive it or write an impl)", name, ty, tr)
+        } else {
+            format!("operator `{}` on `{}`: the type does not implement `{}` (derive it or write an impl)", name, ty, tr)
+        };
+        self.diag("E1108", msg, line);
+        true
     }
 
     /// 派生トレイト (`DERIVED`) のメソッドの戻り値。所有者の sig にメソッドがないときだけ使う。
@@ -1623,6 +1670,8 @@ impl<'a> TypeCk<'a> {
                         self.diag("E2024", format!("operands of `{}` have different types: `{}` and `{}`", op, l, r), nline(e));
                     }
                 }
+                // 比較演算子は PartialEq / PartialOrd に対応する (3.2 / 4.3)。受け手の型が持たなければ E1108 (メソッド形と揃える)。
+                self.cmp_trait_missing(&a, &op, nline(e));
                 match op.as_str() {
                     "==" | "!=" | "<" | "<=" | ">" | ">=" => Ty::Prim("bool".into()),
                     _ => a,

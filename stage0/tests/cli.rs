@@ -8318,3 +8318,97 @@ fn bundle_is_rebuilt_when_sources_change() {
 
     let _ = fs::remove_dir_all(&cache);
 }
+
+#[test]
+fn numeric_methods_are_checked_against_the_receiver_type_sig() {
+    // `sqrt` は f32/f64 の sig にだけある。名前が他の型にあっても、型が決まった u8 の受け手では E1108。
+    // 引数の個数も受け手の型の sig で検査する (E2022)。sig にあるメソッドは通る。
+    let bad = "fn t.f(a: u8, b: u8) -> u8 uses [] panics never
+    a.sqrt(b)
+end t.f
+
+fn t.g(a: u8, b: u8) -> Option<u8> uses [] panics never
+    a.checked_add(b, b)
+end t.g
+
+";
+    let t = Tmp::new("num_sig_methods_bad", &main_wrap(bad, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108") && out.contains("type `u8` has no method `sqrt`"), "{}", out);
+    assert!(codes(&out).iter().any(|c| c == "E2022"), "{}", out);
+
+    let ok = "fn t.f(a: u8, b: u8, x: f64) -> bool uses [] panics never
+    let c = a.cmp(b) == core.cmp.Ordering.Less
+    a.checked_add(b).is_some() && c && a < b && x.sqrt() > 0.0 && a.min(b) == a
+end t.f
+
+";
+    let t = Tmp::new("num_sig_methods_ok", &main_wrap(ok, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E1108" || c == "E2022"), "{}", out);
+}
+
+#[test]
+fn vec_and_string_have_no_comparison_traits() {
+    // 4.2 の表どおり Vec / String は比較のトレイトを持たない (sig にも impl が無い)。
+    // メソッド形 (`eq` `cmp` `partial_cmp`) と演算子 (`==` `<`) はどちらも E1108。
+    let bad = "fn t.v(a: &alloc.vec.Vec<u8, std.alloc.System>, b: &alloc.vec.Vec<u8, std.alloc.System>) -> bool uses [] panics never
+    a.eq(b)
+end t.v
+
+fn t.s(a: alloc.string.String<std.alloc.System>, b: alloc.string.String<std.alloc.System>) -> bool uses [] panics never
+    a == b
+end t.s
+
+fn t.c(a: &alloc.vec.Vec<u8, std.alloc.System>, b: &alloc.vec.Vec<u8, std.alloc.System>) -> bool uses [] panics never
+    a.cmp(b) == core.cmp.Ordering.Equal
+end t.c
+
+fn t.p(a: &alloc.string.String<std.alloc.System>, b: &alloc.string.String<std.alloc.System>) -> bool uses [] panics never
+    a.partial_cmp(b).is_some()
+end t.p
+
+";
+    let t = Tmp::new("vec_string_cmp_bad", &main_wrap(bad, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("unknown method `eq` on `alloc.vec.Vec`: the type does not implement `core.cmp.PartialEq`"), "{}", out);
+    assert!(out.contains("operator `==` on `alloc.string.String`: the type does not implement `core.cmp.PartialEq`"), "{}", out);
+    assert!(out.contains("unknown method `cmp` on `alloc.vec.Vec`: the type does not implement `core.cmp.Ord`"), "{}", out);
+    assert!(out.contains("unknown method `partial_cmp` on `alloc.string.String`: the type does not implement `core.cmp.PartialOrd`"), "{}", out);
+    assert!(codes(&out).iter().filter(|c| *c == "E1108").count() >= 4, "{}", out);
+}
+
+#[test]
+fn comparison_on_user_types_needs_the_derived_or_implemented_trait() {
+    // 派生していない利用者型の `==` / `eq` は E1108。`derive [PartialEq, PartialOrd]` の型と
+    // 型パラメータの境界 (`T: core.cmp.PartialEq`) は通る。
+    let bad = "type t.P pub
+    a: u8
+end t.P
+
+fn t.f(a: t.P, b: t.P) -> bool uses [] panics never
+    a == b || a.eq(b)
+end t.f
+
+";
+    let t = Tmp::new("user_cmp_bad", &main_wrap(bad, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("operator `==` on `t.P`") && out.contains("unknown method `eq` on `t.P`"), "{}", out);
+
+    let ok = "type t.Q derive [PartialEq, PartialOrd] pub
+    a: u8
+end t.Q
+
+fn t.f(a: t.Q, b: t.Q) -> bool uses [] panics never
+    a == b && a.eq(b) && a < b && a.partial_cmp(b).is_some()
+end t.f
+
+fn t.g[T: core.cmp.PartialEq](a: &T, b: &T) -> bool uses [] panics never
+    a.eq(b)
+end t.g
+
+";
+    let t = Tmp::new("user_cmp_ok", &main_wrap(ok, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+}
