@@ -81,6 +81,16 @@ fn clean_program_passes_check_and_fmt() {
 }
 
 #[test]
+fn e0010_not_fired_for_tuple_variant_pattern_bindings() {
+    // `let (t.One.V(m, n), z) = (o, k)`: `re_tup` が最初の `)` で区切ると
+    // `t.One.V(m` が束縛名と誤って E0010 になる誤検出 (#B)。
+    let src = "enum t.One derive [Debug, Clone, Copy] pub\n    V(u8, u8)\nend t.One\n\nfn t.f(o: t.One, k: u8) -> u8 uses [] panics never\n    let (t.One.V(m, n), z) = (o, k)\n    m.wrapping_add(n).wrapping_add(z)\nend t.f\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.f(t.One.V(3u8, 4u8), 1u8), 8u8)\n    std.io.print_line(\"ok\")\nend t.main\n";
+    let t = Tmp::new("e0010_tup_pat", src);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+}
+
+#[test]
 fn linear_ok_cases_pass_check() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
     let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();

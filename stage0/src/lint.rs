@@ -128,6 +128,57 @@ fn split_top(s: &str, sep: char) -> Vec<String> {
     out
 }
 
+/// `let (a, t.V(b, _), (c, d)) = ..` の分解パターンから束縛名を集める。
+/// 単純な識別子だけを束縛とし、`path(args)` のバリアント分解や入れ子タプルは
+/// 中身の単純な識別子だけを束縛とする (リテラルや `_` は黙る)。
+fn tuple_let_binds(s: &str, names: &mut Vec<(&'static str, String)>) {
+    for part in split_top(s, ',') {
+        let part = part.trim();
+        if part.is_empty() || part == "_" {
+            continue;
+        }
+        if let Some(paren) = part.find('(') {
+            if part.ends_with(')') && part[..paren].chars().all(|c| word_char(c) || c == '.') {
+                // `t.One.V(m, n)` のバリアント分解: 対応する `)` までを引数とする。
+                let mut depth = 0i32;
+                let mut end = None;
+                for (k, ch) in part[paren..].char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = Some(paren + k);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(end) = end {
+                    tuple_let_binds(&part[paren + 1..end], names);
+                    continue;
+                }
+            }
+        }
+        if part.starts_with('(') && part.ends_with(')') {
+            tuple_let_binds(&part[1..part.len() - 1], names);
+            continue;
+        }
+        if is_plain_bind(part) {
+            names.push(("let", part.to_string()));
+        }
+    }
+}
+
+/// 束縛として数える単純な識別子: 小文字または `_` で始まり、英数字と `_` のみ (`_` 単体は除く)。
+fn is_plain_bind(s: &str) -> bool {
+    !s.is_empty()
+        && s != "_"
+        && s.chars().all(word_char)
+        && matches!(s.chars().next(), Some(c) if c.is_ascii_lowercase() || c == '_')
+}
+
 fn bracket(s: &str, start: usize) -> String {
     let mut d = 0;
     for (i, ch) in s[start..].char_indices() {
@@ -638,14 +689,30 @@ impl Lint {
             }
             names.push(("let", m[1].to_string()));
         }
-        let re_tup = Regex::new(r"\blet \(([^)]*)\)").unwrap();
-        for m in re_tup.captures_iter(&body) {
-            for nm in m[1].split(',') {
-                let nm = nm.trim();
-                if !nm.is_empty() {
-                    names.push(("let", nm.to_string()));
+        // `let (a, t.V(b, _), c) = ..` のタプル分解。`[^)]*` は最初の `)` で区切って
+        // `t.V(m` のような破片を名前と誤るため、入れ子のカッコを数えてトップレベル
+        // の `,` で分ける。単純な識別子だけを束縛とし、`path(args)` のバリアント
+        // 分解は引数の中の単純な識別子だけを束縛とする。
+        let re_let_tup = Regex::new(r"\blet \(").unwrap();
+        for m in re_let_tup.find_iter(&body) {
+            let open = m.end() - 1;
+            let mut depth = 0i32;
+            let mut close = None;
+            for (k, ch) in body[open..].char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(open + k);
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
+            let Some(close) = close else { continue };
+            tuple_let_binds(&body[open + 1..close], &mut names);
         }
         let re_st = Regex::new(r"\blet [A-Za-z0-9_.]+ \{([^}]*)\}").unwrap();
         for m in re_st.captures_iter(&body) {
