@@ -504,15 +504,15 @@ mod tests {
         };
         for x in f32_grid(-20.0, 20.0, 40_000) {
             let xf = x as f64;
-            worst[0] = worst[0].max(ulp_f32((sin(&h, x as f64) as f32), xf.sin() as f32));
-            worst[1] = worst[1].max(ulp_f32((cos(&h, x as f64) as f32), xf.cos() as f32));
-            worst[2] = worst[2].max(ulp_f32((exp(&h, x as f64) as f32), xf.exp() as f32));
+            worst[0] = worst[0].max(ulp_f32(sin(&h, x as f64) as f32, xf.sin() as f32));
+            worst[1] = worst[1].max(ulp_f32(cos(&h, x as f64) as f32, xf.cos() as f32));
+            worst[2] = worst[2].max(ulp_f32(exp(&h, x as f64) as f32, xf.exp() as f32));
         }
         for x in f32_grid(1e-4, 1e4, 40_000) {
-            worst[3] = worst[3].max(ulp_f32((ln(&h, x as f64) as f32), (x as f64).ln() as f32));
+            worst[3] = worst[3].max(ulp_f32(ln(&h, x as f64) as f32, (x as f64).ln() as f32));
         }
         for x in f32_grid(-10.0, 10.0, 20_000) {
-            worst[4] = worst[4].max(ulp_f32((atan(&h, x as f64) as f32), (x as f64).atan() as f32));
+            worst[4] = worst[4].max(ulp_f32(atan(&h, x as f64) as f32, (x as f64).atan() as f32));
         }
         for (i, w) in worst.iter().enumerate() {
             assert!(*w <= 1, "f32 function {i} has error {w} ulp");
