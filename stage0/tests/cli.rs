@@ -90,6 +90,19 @@ fn e0010_not_fired_for_tuple_variant_pattern_bindings() {
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
 }
 
+#[test]
+fn e0010_still_fires_for_bad_names_in_tuple_lets_and_e0020_stays_non_fatal() {
+    // タプル分解の大文字の束縛名は E0010 のまま (fmt では直らない)。同じファイルの定義順の違反 (E0020) は
+    // fmt で直るので non-fatal として出る。
+    let src = "fn t.mk() -> u32 uses [] panics never\n    1u32\nend t.mk\n\nfn t.main() -> () uses [] panics never\n    let (Foo, y) = (1u32, 2u32)\n    core.mem.drop(Foo)\n    core.mem.drop(y)\nend t.main\n";
+    let t = Tmp::new("e0010_tup_upper", src);
+    let o = run(&["check"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}", out);
+    assert!(out.contains("E0010: let Foo not snake_case"), "{}", out);
+    assert!(out.contains("E0020 (non-fatal):"), "{}", out);
+}
+
 #[cfg(unix)]
 #[test]
 fn launcher_works_via_symlink() {

@@ -171,12 +171,13 @@ fn tuple_let_binds(s: &str, names: &mut Vec<(&'static str, String)>) {
     }
 }
 
-/// 束縛として数える単純な識別子: 小文字または `_` で始まり、英数字と `_` のみ (`_` 単体は除く)。
+/// 束縛として数える単純な識別子: 英字または `_` で始まり、英数字と `_` のみ (`_` 単体と数値リテラルは除く)。
+/// 大文字で始まる名前も束縛 (バリアントは FQN で書くので `.` を含む)。命名の検査 (E0010) の対象にする。
 fn is_plain_bind(s: &str) -> bool {
     !s.is_empty()
         && s != "_"
         && s.chars().all(word_char)
-        && matches!(s.chars().next(), Some(c) if c.is_ascii_lowercase() || c == '_')
+        && matches!(s.chars().next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
 }
 
 fn bracket(s: &str, start: usize) -> String {
