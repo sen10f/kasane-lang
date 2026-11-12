@@ -10398,10 +10398,22 @@ end t.nan32_bits
 fn t.nan64_bits() -> u64 uses [] panics never
     f64.from_bits(9218868437227405313u64).to_bits()
 end t.nan64_bits
+
+fn t.rte_nhalf64() -> u64 uses [] panics never
+    let x = -0.5f64
+    x.round_ties_even().to_bits()
+end t.rte_nhalf64
+
+fn t.rte_half32() -> u32 uses [] panics never
+    let x = 2.5f32
+    x.round_ties_even().to_bits()
+end t.rte_half32
 ";
 
 /// (関数, 木走査の期待値 (Kasane の式), 参照実行器の期待値 (`ksn kir --run` の表示))。
 const FLOAT_SPECIAL_CASES: &[(&str, &str, &str)] = &[
+    ("t.rte_nhalf64", "9223372036854775808u64", "9223372036854775808"), // round_ties_even(-0.5) は -0
+    ("t.rte_half32", "1073741824u32", "1073741824"),                    // round_ties_even(2.5f32) は 2
     ("t.abs_ninf64", "9218868437227405312u64", "9218868437227405312"), // abs(-inf) は +inf
     ("t.sqrt_ninf64", "true", "true"),                                  // sqrt(-inf) は NaN
     ("t.sqrt_neg64", "true", "true"),                                   // sqrt(負) は NaN

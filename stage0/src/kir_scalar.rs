@@ -71,14 +71,7 @@ fn fun64(op: FUn, x: f64) -> f64 {
         FUn::Floor => simple(f64::floor),
         FUn::Ceil => simple(f64::ceil),
         FUn::Trunc => simple(f64::trunc),
-        FUn::RoundEven => simple(|v| {
-            let r = v.round();
-            if (v - v.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
-                r - v.signum()
-            } else {
-                r
-            }
-        }),
+        FUn::RoundEven => simple(f64::round_ties_even),
         FUn::Sin => fmath::sin(&fmath::Host, x),
         FUn::Cos => fmath::cos(&fmath::Host, x),
         FUn::Tan => fmath::tan(&fmath::Host, x),

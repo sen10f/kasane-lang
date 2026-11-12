@@ -331,10 +331,8 @@ fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
         "exp" => Ok(Val::Float(fmath::exp(&fmath::Host, x))),
         "ln" => Ok(Val::Float(fmath::ln(&fmath::Host, x))),
         "trunc" => simple(f64::trunc),
-        "round_ties_even" => simple(|v| {
-            let r = v.round();
-            if (v - v.trunc()).abs() == 0.5 && r % 2.0 != 0.0 { r - v.signum() } else { r }
-        }),
+        // IEEE 754 roundTiesToEven (-0.5 は -0、機械語の nearest と同じ)。
+        "round_ties_even" => simple(f64::round_ties_even),
         "nearest_to_f32" => simple(|v| v),
         "is_nan" => Ok(Val::Bool(x.is_nan())),
         "is_finite" => Ok(Val::Bool(!(x.is_nan() || x.is_infinite()))),
