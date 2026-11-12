@@ -21,6 +21,7 @@ use cranelift_module::{default_libcall_names, DataDescription, FuncId, Linkage, 
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::check::{items, nf, nline, nname, st, strs, tag, tel};
+use crate::ffi::{classify, Class, Leaf, Loc, Placer, INT_REGS, SSE_REGS};
 
 // [Step 0 計測用 一時コード] 単相化 (型引数の決定とインスタンスの宣言) に使った時間の累計 (ns)。
 thread_local! { static MONO_NS: std::cell::Cell<u128> = const { std::cell::Cell::new(0) }; }
@@ -625,6 +626,27 @@ impl<'a> Cx<'a> {
             }
             Err(_) => false,
         }
+    }
+
+    /// `layout c` の構造体 `name` の C 配置: 大きさと、中のスカラーの並び (構造体の先頭からのオフセット付き)。
+    /// スカラーは整数・`bool`・浮動小数・生ポインタだけ (それ以外の型のフィールドは C 互換でないので拒否する)。
+    fn c_struct(&self, name: &str) -> R<(u32, Vec<Leaf>)> {
+        let base = self.inst_types.borrow().get(name).map(|x| x.0.clone()).unwrap_or_else(|| name.to_string());
+        let d = self.types.get(&base).ok_or_else(|| format!("unknown type {}", name))?;
+        if d.kw != "type" || !d.layout_c || !d.gnames().is_empty() {
+            return Err(format!("{} is not a non-generic `layout c` structure", name));
+        }
+        let l = self.layout(name, 0)?;
+        let mut leaves = vec![];
+        for (_, fty, off) in &l.fields {
+            if is_int(fty) || fty.as_str() == "bool" || is_float(fty) || is_rawptr(fty) {
+                leaves.push(Leaf { off: *off, size: scalar_size(fty), float: is_float(fty) });
+            } else {
+                let (_, sub) = self.c_struct(fty).map_err(|_| format!("field of type {} in {} has no C representation", fty, name))?;
+                leaves.extend(sub.into_iter().map(|lf| Leaf { off: off + lf.off, ..lf }));
+            }
+        }
+        Ok((l.size, leaves))
     }
 
     fn layout(&self, name: &str, depth: u32) -> R<Layout> {
@@ -1357,8 +1379,17 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok(out)
     }
 
-    /// `extern` の関数 `d` を、外部シンボルとして取り込んで呼ぶ (C の呼び出し規約)。引数・戻り値はスカラーとポインタだけ。
+    /// `extern` の関数 `d` を、外部シンボルとして取り込んで呼ぶ (C の呼び出し規約)。引数・戻り値はスカラーとポインタ。
+    /// 構造体 (`layout c`) の値渡し・値の戻り値は `extern_call_abi` で扱う。
     fn extern_call(&mut self, d: &Def, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let mut all_tys = vec![];
+        for (_, t) in &d.params {
+            all_tys.push(self.cx.pty_for(d, t)?);
+        }
+        let rty0 = self.cx.pty_for(d, &d.ret)?;
+        if all_tys.iter().chain(std::iter::once(&rty0)).any(|t| t != "void" && is_agg(t)) {
+            return self.extern_call_abi(d, args, env, &all_tys, &rty0);
+        }
         let mut sig = self.module.make_signature();
         let mut ptys = vec![];
         for (_, t) in &d.params {
@@ -1406,6 +1437,180 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             self.term = true;
         }
         Ok((res.first().copied(), rty))
+    }
+
+    /// 構造体 (`layout c`) を値で渡す・値で返す `extern` の呼び出し (x86_64 SysV)。引数と戻り値の場所は `ffi::Placer` で決める
+    /// (16 バイト以下は eightbyte ごとに INTEGER / SSE のレジスタ、残りは全部スタック、16 バイト超と戻り値の sret は領域へのポインタ)。
+    /// 呼び出しは、整数 6・浮動小数 8 のレジスタとスタックのワードを、すべて宣言の順の I64 / F64 の引数として並べる。
+    /// 余りのレジスタは 0 にする (呼ばれた側は読まない)。スタックのワードは、レジスタを使い切った後に宣言の順に積まれる。
+    fn extern_call_abi(&mut self, d: &Def, args: &[V], env: &mut Env, ptys: &[String], rty: &str) -> R<(Option<Value>, String)> {
+        if !cfg!(all(unix, target_arch = "x86_64")) {
+            return Err(format!("extern {}: a structure passed or returned by value is supported only on x86_64 Unix", d.name));
+        }
+        if args.len() != ptys.len() {
+            return Err(format!("extern {}: argument count", d.name));
+        }
+        let ret_info = if rty != "void" && is_agg(rty) {
+            let (size, leaves) = self.cx.c_struct(rty)?;
+            if size == 0 {
+                return Err(format!("extern {}: a zero-sized structure cannot cross the C boundary", d.name));
+            }
+            Some((size, classify(size, &leaves)))
+        } else {
+            if rty != "void" && !is_scalar(rty) {
+                return Err(format!("extern {}: return type {}", d.name, rty));
+            }
+            None
+        };
+        let sret = matches!(ret_info, Some((_, None)));
+        let dst = match ret_info {
+            Some(_) => Some(self.alloc_for(rty)?),
+            None => None,
+        };
+        let mut placer = Placer::new(sret);
+        // 引数の 1 ワード (I64 のビット列) とその場所。sret の領域のポインタを先頭の整数レジスタに置く。
+        let mut placed: Vec<(Loc, Value)> = vec![];
+        if let (true, Some(p)) = (sret, dst) {
+            placed.push((Loc::Int(0), p));
+        }
+        for (i, a) in args.iter().enumerate() {
+            let pt = ptys[i].clone();
+            let (v, t) = self.expr(a, env, Some(&pt))?;
+            if t != pt {
+                return Err(format!("extern {}: argument of type {} where {} is expected", d.name, t, pt));
+            }
+            let v = v.ok_or("bad argument")?;
+            if is_agg(&pt) {
+                self.consume(a, &pt, env)?;
+                let (size, leaves) = self.cx.c_struct(&pt)?;
+                if size == 0 {
+                    return Err(format!("extern {}: a zero-sized structure cannot cross the C boundary", d.name));
+                }
+                let classes = classify(size, &leaves);
+                let locs = placer.place(classes.as_deref(), size);
+                for (k, loc) in locs.into_iter().enumerate() {
+                    let n = (size - 8 * k as u32).min(8);
+                    let w = self.load_word(v, 8 * k as u32, n);
+                    placed.push((loc, w));
+                }
+            } else {
+                let w = if pt == "f64" {
+                    self.b.ins().bitcast(types::I64, MemFlags::new(), v)
+                } else if pt == "f32" {
+                    let bits = self.b.ins().bitcast(types::I32, MemFlags::new(), v);
+                    self.b.ins().uextend(types::I64, bits)
+                } else if cl(&pt) == types::I64 {
+                    v
+                } else if matches!(pt.as_str(), "i8" | "i16" | "i32") {
+                    self.b.ins().sextend(types::I64, v)
+                } else {
+                    self.b.ins().uextend(types::I64, v)
+                };
+                let class = if is_float(&pt) { Class::Sse } else { Class::Int };
+                let locs = placer.place(Some(&[class]), 8);
+                placed.push((locs[0], w));
+            }
+        }
+        let nstack = placer.stack_words();
+        let zero = self.b.ins().iconst(types::I64, 0);
+        let zf = self.b.ins().bitcast(types::F64, MemFlags::new(), zero);
+        let mut ints = vec![zero; INT_REGS];
+        let mut sses = vec![zf; SSE_REGS];
+        let mut stack = vec![zero; nstack];
+        for (loc, w) in placed {
+            match loc {
+                Loc::Int(k) => ints[k] = w,
+                Loc::Sse(k) => sses[k] = self.b.ins().bitcast(types::F64, MemFlags::new(), w),
+                Loc::Stack(k) => stack[k] = w,
+            }
+        }
+        let mut sig = self.module.make_signature();
+        for _ in 0..INT_REGS {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        for _ in 0..SSE_REGS {
+            sig.params.push(AbiParam::new(types::F64));
+        }
+        for _ in 0..nstack {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        match &ret_info {
+            None if rty != "void" => sig.returns.push(AbiParam::new(cl(rty))),
+            None => {}
+            Some((_, None)) => {}
+            Some((_, Some(cs))) => {
+                for c in cs {
+                    sig.returns.push(AbiParam::new(if *c == Class::Int { types::I64 } else { types::F64 }));
+                }
+            }
+        }
+        let key = format!("extern:{}", d.link);
+        let cached = self.ids.borrow().get(&key).copied();
+        let id = match cached {
+            Some(id) => id,
+            None => {
+                let id = self
+                    .module
+                    .declare_function(&d.link, Linkage::Import, &sig)
+                    .map_err(|e| format!("extern {} (symbol {}): {}", d.name, d.link, e))?;
+                self.ids.borrow_mut().insert(key, id);
+                id
+            }
+        };
+        let mut all = ints;
+        all.extend(sses);
+        all.extend(stack);
+        let res = self.call_rt(id, &all);
+        match (ret_info, dst) {
+            (Some((size, classes)), Some(dst)) => {
+                if let Some(cs) = classes {
+                    for (k, c) in cs.iter().enumerate() {
+                        let w = if *c == Class::Int {
+                            res[k]
+                        } else {
+                            self.b.ins().bitcast(types::I64, MemFlags::new(), res[k])
+                        };
+                        let n = (size - 8 * k as u32).min(8);
+                        self.store_word(dst, 8 * k as u32, n, w);
+                    }
+                }
+                Ok((Some(dst), rty.to_string()))
+            }
+            _ => {
+                if tag(&d.ret) == "never" {
+                    self.b.ins().trap(TrapCode::user(6).unwrap());
+                    self.term = true;
+                }
+                Ok((res.first().copied(), rty.to_string()))
+            }
+        }
+    }
+
+    /// 構造体のメモリ `p` の `off` から、`n` バイト (1〜8) を I64 のビット列として読む (リトルエンディアン、残りは 0)。
+    fn load_word(&mut self, p: Value, off: u32, n: u32) -> Value {
+        if n == 8 {
+            return self.b.ins().load(types::I64, MemFlags::new(), p, off as i32);
+        }
+        let mut acc = self.b.ins().iconst(types::I64, 0);
+        for i in (0..n).rev() {
+            let byte = self.b.ins().load(types::I8, MemFlags::new(), p, (off + i) as i32);
+            let wide = self.b.ins().uextend(types::I64, byte);
+            let sh = self.b.ins().ishl_imm(acc, 8);
+            acc = self.b.ins().bor(sh, wide);
+        }
+        acc
+    }
+
+    /// I64 のビット列 `w` の下位 `n` バイト (1〜8) を、メモリ `p` の `off` から書く (リトルエンディアン)。
+    fn store_word(&mut self, p: Value, off: u32, n: u32, w: Value) {
+        if n == 8 {
+            self.b.ins().store(MemFlags::new(), w, p, off as i32);
+            return;
+        }
+        for i in 0..n {
+            let sh = self.b.ins().ushr_imm(w, 8 * i as i64);
+            self.b.ins().istore8(MemFlags::new(), sh, p, (off + i) as i32);
+        }
     }
 
     /// `core.ptr.*`: 生ポインタの操作。扱わない名前なら None。

@@ -6,7 +6,7 @@ use std::io::Write;
 use std::rc::{Rc, Weak};
 
 use crate::check::{children as _children, items, nf, nline, nname, st, strs};
-use crate::ffi::{FArg, Out, Ret};
+use crate::ffi::{classify, words, Class, FArg, Leaf, Loc, Out, Placer, Ret, INT_REGS, SSE_REGS};
 use crate::parser::V;
 use crate::program::{Def, Program, Resolved, Target};
 use crate::value::*;
@@ -1016,50 +1016,116 @@ impl Interp {
         Ok(out)
     }
 
-    /// `extern` の関数を、ホストの C ライブラリから探して呼ぶ。引数・戻り値は整数・`bool`・ポインタ・`f32` / `f64`。
-    /// 宣言の型で引数の渡し方 (整数レジスタか浮動小数レジスタか) と戻り値の読み方を決める。
+    /// `extern` の関数を、ホストの C ライブラリから探して呼ぶ (C の呼び出し規約、x86_64 SysV の分類)。
+    /// 引数・戻り値は整数・`bool`・ポインタ・`f32` / `f64` と、`layout c` の構造体 (値渡し・値の戻り値。16 バイトを超えるものはメモリ渡し・sret)。
+    /// 宣言の型で各引数の場所 (整数・浮動小数のレジスタかスタック) と戻り値の読み方を決める。
     fn extern_call(&mut self, d: &Def, args: Vec<Val>) -> Res {
         if args.len() != d.params.len() {
             return panic(format!("extern {}: argument count", d.name));
         }
-        let mut ints = vec![];
-        let mut floats = vec![];
+        let uses_agg = crate::check::tag(&d.ret) == "named" || d.params.iter().any(|(_, t)| crate::check::tag(t) == "named");
+        if uses_agg && !cfg!(all(unix, target_arch = "x86_64")) {
+            return panic(format!("extern {}: a structure passed or returned by value is supported by the interpreter only on x86_64 Unix", d.name));
+        }
+        // 戻り値の構造体の C 配置。eightbyte の分類が None (16 バイト超・レジスタに入らない) はメモリ渡し (sret)。
+        let ret_layout = if crate::check::tag(&d.ret) == "named" {
+            match self.c_layout(&d.ret) {
+                Ok(l) if l.size > 0 => Some(l),
+                Ok(_) => return panic(format!("extern {}: a zero-sized structure cannot cross the C boundary", d.name)),
+                Err(e) => return panic(format!("extern {}: {}", d.name, e)),
+            }
+        } else {
+            None
+        };
+        let ret_classes = ret_layout.as_ref().and_then(|l| classify(l.size, &l.leaves));
+        let sret = ret_layout.is_some() && ret_classes.is_none();
+        let mut sret_buf = vec![0u64; ret_layout.as_ref().map_or(0, |l| words(l.size))];
+        let mut regs = CallRegs { ints: [0; INT_REGS], floats: [FArg::F64(0.0); SSE_REGS], stack: vec![] };
+        let mut placer = Placer::new(sret);
+        if sret {
+            regs.ints[0] = sret_buf.as_mut_ptr() as i64;
+        }
         for (a, (_, pt)) in args.iter().zip(&d.params) {
             if matches!(a, Val::Ref(_)) && crate::check::tag(pt) == "ptr" {
                 return panic(format!("extern {}: a pointer to a Kasane place (from from_mut / from_ref) cannot be passed to C", d.name));
             }
             let v = dr(a);
-            match (arg_kind(pt), &v) {
-                (Some(ArgK::Int), Val::Int(i, _)) => ints.push(*i as i64),
-                (Some(ArgK::Int), Val::Bool(b)) => ints.push(*b as i64),
-                (Some(ArgK::F64), Val::Float(x)) => floats.push(FArg::F64(*x)),
-                (Some(ArgK::F64), Val::F32(x)) => floats.push(FArg::F64(*x as f64)),
-                (Some(ArgK::F32), Val::F32(x)) => floats.push(FArg::F32(*x)),
-                (Some(ArgK::F32), Val::Float(x)) => floats.push(FArg::F32(*x as f32)),
+            if crate::check::tag(pt) == "named" {
+                let l = match self.c_layout(pt) {
+                    Ok(l) if l.size > 0 => l,
+                    Ok(_) => return panic(format!("extern {}: a zero-sized structure cannot cross the C boundary", d.name)),
+                    Err(e) => return panic(format!("extern {}: {}", d.name, e)),
+                };
+                let mut buf = vec![0u8; words(l.size) * 8];
+                if let Err(e) = self.c_write(&v, pt, &mut buf, 0) {
+                    return panic(format!("extern {}: {}", d.name, e));
+                }
+                let classes = classify(l.size, &l.leaves);
+                let locs = placer.place(classes.as_deref(), l.size);
+                for (k, loc) in locs.into_iter().enumerate() {
+                    let w = u64::from_le_bytes(buf[8 * k..8 * k + 8].try_into().unwrap());
+                    regs.put(loc, Word::Bits(w));
+                }
+                continue;
+            }
+            let (class, word) = match (arg_kind(pt), &v) {
+                (Some(ArgK::Int), Val::Int(i, _)) => (Class::Int, Word::I(*i as i64)),
+                (Some(ArgK::Int), Val::Bool(b)) => (Class::Int, Word::I(*b as i64)),
+                (Some(ArgK::F64), Val::Float(x)) => (Class::Sse, Word::Bits(x.to_bits())),
+                (Some(ArgK::F64), Val::F32(x)) => (Class::Sse, Word::Bits((*x as f64).to_bits())),
+                (Some(ArgK::F32), Val::F32(x)) => (Class::Sse, Word::F32(*x)),
+                (Some(ArgK::F32), Val::Float(x)) => (Class::Sse, Word::F32(*x as f32)),
                 // 整数の値を浮動小数の引数に渡すのは型が合わないので、下の `_` で panic (f32 ← f64 の変換だけ許す)。
                 _ => return panic(format!("extern {}: argument of an unsupported type or value", d.name)),
-            }
+            };
+            let size = if matches!(word, Word::F32(_)) { 4 } else { 8 };
+            let locs = placer.place(Some(&[class]), size);
+            regs.put(locs[0], word);
         }
         let ret = &d.ret;
-        let rk = match crate::check::tag(ret).as_str() {
-            "tuple" | "ptr" => Ret::Int,
-            "never" => return panic(format!("extern {} returned although it is declared `!`", d.name)),
-            "prim" => match crate::check::st(crate::check::tel(ret, 1)).as_str() {
-                "f32" => Ret::F32,
-                "f64" => Ret::F64,
-                n if is_int_ty(n) || n == "bool" => Ret::Int,
-                n => return panic(format!("extern {}: unsupported return type {}", d.name, n)),
+        let rk = match (&ret_layout, &ret_classes) {
+            (Some(_), None) => Ret::Int,
+            (Some(_), Some(cs)) => match cs.as_slice() {
+                [Class::Int] => Ret::Int,
+                [Class::Sse] => Ret::F64,
+                [c0, c1] => Ret::Pair(*c0, *c1),
+                _ => return panic(format!("extern {}: unexpected structure classification", d.name)),
             },
-            _ => return panic(format!("extern {}: unsupported return type", d.name)),
+            (None, _) => match crate::check::tag(ret).as_str() {
+                "tuple" | "ptr" => Ret::Int,
+                "never" => return panic(format!("extern {} returned although it is declared `!`", d.name)),
+                "prim" => match crate::check::st(crate::check::tel(ret, 1)).as_str() {
+                    "f32" => Ret::F32,
+                    "f64" => Ret::F64,
+                    n if is_int_ty(n) || n == "bool" => Ret::Int,
+                    n => return panic(format!("extern {}: unsupported return type {}", d.name, n)),
+                },
+                _ => return panic(format!("extern {}: unsupported return type", d.name)),
+            },
         };
-        let out = match crate::ffi::call_typed(&d.link, &ints, &floats, rk) {
+        let out = match crate::ffi::call_typed(&d.link, &regs.ints, &regs.floats, &regs.stack, rk) {
             Ok(o) => o,
             Err(e) => return panic(format!("extern {}: {}", d.name, e)),
         };
+        if ret_layout.is_some() {
+            // 構造体の戻り値: レジスタの eightbyte かメモリ (sret の領域) から、C 配置のバイト列を組んで読む。
+            let bytes: Vec<u8> = match (out, sret) {
+                (_, true) => sret_buf.iter().flat_map(|w| w.to_le_bytes()).collect(),
+                (Out::Pair(a, b), false) => a.to_le_bytes().into_iter().chain(b.to_le_bytes()).collect(),
+                (Out::Int(r), false) => r.to_le_bytes().to_vec(),
+                (Out::F64(x), false) => x.to_bits().to_le_bytes().to_vec(),
+                _ => return panic(format!("extern {}: unexpected structure result", d.name)),
+            };
+            return match self.c_read(ret, &bytes, 0) {
+                Ok(v) => Ok(v),
+                Err(e) => panic(format!("extern {}: {}", d.name, e)),
+            };
+        }
         let r = match out {
             Out::F32(x) => return Ok(Val::F32(x)),
             Out::F64(x) => return Ok(Val::Float(x)),
             Out::Int(r) => r,
+            Out::Pair(..) => return panic(format!("extern {}: unexpected two-word result", d.name)),
         };
         // 戻り値は、宣言の型に合わせて切り詰める。
         Ok(match crate::check::tag(ret).as_str() {
@@ -1575,6 +1641,206 @@ fn elem_size(elem: &str) -> u64 {
 /// 型が `prim` (スカラー名) なら、その名前。
 fn prim_name(t: &V) -> Option<String> {
     (crate::check::tag(t) == "prim").then(|| crate::check::st(crate::check::tel(t, 1)))
+}
+
+/// `layout c` の型の C 配置: 大きさ・整列・中のスカラーの並び (オフセット付き)。
+#[derive(Clone)]
+struct CLayout {
+    size: u32,
+    align: u32,
+    leaves: Vec<Leaf>,
+}
+
+/// 1 つの引数・戻り値のワード (レジスタかスタックに置く前の値)。
+#[derive(Clone, Copy)]
+enum Word {
+    I(i64),
+    F32(f32),
+    /// `f64` の 64 ビット、または構造体の eightbyte のビット列。
+    Bits(u64),
+}
+
+/// `extern` 呼び出しの引数の並び (レジスタの番号順と、スタックのワード)。
+struct CallRegs {
+    ints: [i64; INT_REGS],
+    floats: [FArg; SSE_REGS],
+    stack: Vec<i64>,
+}
+
+impl CallRegs {
+    fn put(&mut self, loc: Loc, w: Word) {
+        let bits = match w {
+            Word::I(v) => v,
+            Word::F32(x) => x.to_bits() as i64,
+            Word::Bits(b) => b as i64,
+        };
+        match loc {
+            Loc::Int(k) => self.ints[k] = bits,
+            Loc::Sse(k) => {
+                self.floats[k] = match w {
+                    Word::F32(x) => FArg::F32(x),
+                    _ => FArg::F64(f64::from_bits(bits as u64)),
+                }
+            }
+            Loc::Stack(k) => {
+                if self.stack.len() <= k {
+                    self.stack.resize(k + 1, 0);
+                }
+                self.stack[k] = bits;
+            }
+        }
+    }
+}
+
+fn align_up(x: u32, a: u32) -> u32 {
+    x.div_ceil(a) * a
+}
+
+/// 整数型の名前から (大きさ, 符号付きか)。
+fn int_layout(n: &str) -> Option<(usize, bool)> {
+    Some(match n {
+        "i8" => (1, true),
+        "u8" => (1, false),
+        "i16" => (2, true),
+        "u16" => (2, false),
+        "i32" => (4, true),
+        "u32" => (4, false),
+        "i64" | "isize" => (8, true),
+        "u64" | "usize" => (8, false),
+        _ => return None,
+    })
+}
+
+impl Interp {
+    /// 型 `ty` の C 配置。スカラー・ポインタと、`layout c` の構造体 (中のフィールドも C 互換の型) だけを扱う。
+    fn c_layout(&self, ty: &V) -> Result<CLayout, String> {
+        let scalar = |size: u32, float: bool| CLayout { size, align: size, leaves: vec![Leaf { off: 0, size, float }] };
+        match crate::check::tag(ty).as_str() {
+            "prim" => {
+                let n = crate::check::st(crate::check::tel(ty, 1));
+                match n.as_str() {
+                    "bool" => Ok(scalar(1, false)),
+                    "f32" => Ok(scalar(4, true)),
+                    "f64" => Ok(scalar(8, true)),
+                    _ => match int_layout(&n) {
+                        Some((size, _)) => Ok(scalar(size as u32, false)),
+                        None => Err(format!("type {} has no C representation", n)),
+                    },
+                }
+            }
+            "ptr" => Ok(scalar(8, false)),
+            "named" => Ok(self.c_fields(&crate::check::st(crate::check::tel(ty, 1)))?.1),
+            _ => Err("this type has no C representation".into()),
+        }
+    }
+
+    /// `layout c` の構造体 `fqn` のフィールド (名前・型・オフセット) と、構造体全体の C 配置。
+    fn c_fields(&self, fqn: &str) -> Result<(Vec<(String, V, u32)>, CLayout), String> {
+        let Some(&i) = self.p.types.get(fqn) else {
+            return Err(format!("unknown type {}", fqn));
+        };
+        let def = &self.p.defs[i];
+        if def.kw != "type" || !def.layout_c || !def.gnames().is_empty() {
+            return Err(format!("{} is not a non-generic `layout c` structure", fqn));
+        }
+        let (mut off, mut align) = (0u32, 1u32);
+        let (mut fields, mut leaves) = (vec![], vec![]);
+        for (n, t, _) in &def.fields {
+            let l = self.c_layout(t)?;
+            off = align_up(off, l.align);
+            leaves.extend(l.leaves.iter().map(|lf| Leaf { off: off + lf.off, ..*lf }));
+            fields.push((n.clone(), t.clone(), off));
+            off += l.size;
+            align = align.max(l.align);
+        }
+        let size = align_up(off, align);
+        Ok((fields, CLayout { size, align, leaves }))
+    }
+
+    /// 値 `v` を型 `ty` の C 配置で `buf` の `off` から書く。
+    fn c_write(&self, v: &Val, ty: &V, buf: &mut [u8], off: usize) -> Result<(), String> {
+        let v = dr(v);
+        let unsupported = || "argument of an unsupported type or value".to_string();
+        match (crate::check::tag(ty).as_str(), &v) {
+            ("prim", _) => {
+                let n = crate::check::st(crate::check::tel(ty, 1));
+                match (n.as_str(), &v) {
+                    ("bool", Val::Bool(b)) => buf[off] = *b as u8,
+                    ("f32", Val::F32(x)) => buf[off..off + 4].copy_from_slice(&x.to_le_bytes()),
+                    ("f32", Val::Float(x)) => buf[off..off + 4].copy_from_slice(&(*x as f32).to_le_bytes()),
+                    ("f64", Val::Float(x)) => buf[off..off + 8].copy_from_slice(&x.to_le_bytes()),
+                    ("f64", Val::F32(x)) => buf[off..off + 8].copy_from_slice(&(*x as f64).to_le_bytes()),
+                    (_, Val::Int(x, _)) => match int_layout(&n) {
+                        Some((size, _)) => buf[off..off + size].copy_from_slice(&x.to_le_bytes()[..size]),
+                        None => return Err(unsupported()),
+                    },
+                    _ => return Err(unsupported()),
+                }
+                Ok(())
+            }
+            ("ptr", Val::Int(a, _)) => {
+                buf[off..off + 8].copy_from_slice(&(*a as u64).to_le_bytes());
+                Ok(())
+            }
+            ("named", Val::Struct(s)) => {
+                let (fields, _) = self.c_fields(&crate::check::st(crate::check::tel(ty, 1)))?;
+                for (n, fty, foff) in fields {
+                    let fv = s.get(&n).ok_or_else(unsupported)?;
+                    self.c_write(&fv, &fty, buf, off + foff as usize)?;
+                }
+                Ok(())
+            }
+            _ => Err(unsupported()),
+        }
+    }
+
+    /// `buf` の `off` から、型 `ty` の C 配置の値を読む (整数は型の符号で広げる)。
+    fn c_read(&self, ty: &V, buf: &[u8], off: usize) -> Result<Val, String> {
+        match crate::check::tag(ty).as_str() {
+            "prim" => {
+                let n = crate::check::st(crate::check::tel(ty, 1));
+                let word = |size: usize| -> [u8; 8] {
+                    let mut b = [0u8; 8];
+                    b[..size].copy_from_slice(&buf[off..off + size]);
+                    b
+                };
+                Ok(match n.as_str() {
+                    "bool" => Val::Bool(buf[off] != 0),
+                    "f32" => Val::F32(f32::from_le_bytes(word(4)[..4].try_into().unwrap())),
+                    "f64" => Val::Float(f64::from_le_bytes(word(8))),
+                    _ => {
+                        let Some((size, signed)) = int_layout(&n) else {
+                            return Err(format!("type {} has no C representation", n));
+                        };
+                        let raw = u64::from_le_bytes(word(size));
+                        let x: i128 = if signed && size < 8 && (raw >> (8 * size - 1)) & 1 == 1 {
+                            raw as i128 - (1i128 << (8 * size))
+                        } else if signed {
+                            raw as i64 as i128
+                        } else {
+                            raw as i128
+                        };
+                        int(x, &n)
+                    }
+                })
+            }
+            "ptr" => {
+                let addr = u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
+                let elem = prim_name(&crate::check::tel(ty, 2));
+                Ok(Val::Int(addr as i128, elem.as_deref().and_then(ptr_tag)))
+            }
+            "named" => {
+                let fqn = crate::check::st(crate::check::tel(ty, 1));
+                let (fields, _) = self.c_fields(&fqn)?;
+                let mut f = vec![];
+                for (n, fty, foff) in fields {
+                    f.push((n, self.c_read(&fty, buf, off + foff as usize)?));
+                }
+                Ok(Val::Struct(Rc::new(StructV { ty: fqn, f: RefCell::new(f) })))
+            }
+            _ => Err("this type has no C representation".into()),
+        }
+    }
 }
 
 /// extern の引数を渡すレジスタの種類。
