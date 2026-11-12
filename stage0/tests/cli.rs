@@ -9426,3 +9426,108 @@ fn tdisc_generic_element_type_stays_silent() {
     let (lines, out) = tdisc_lines("tdisc_generic", extra, &["t.drop_top(&mut v)"]);
     assert!(lines.is_empty(), "{}", out);
 }
+
+// ---- impl のメソッドの効果はトレイト宣言の効果を超えない (4.3 / 5.1, E4021)
+
+const IMPL_EFF_PRELUDE: &str = "trait t.Act pub
+    fn act(self: &Self) -> u8 uses [io.console] panics never
+end t.Act
+
+trait t.Gen[E: uses, P: panics] pub
+    fn go(self: &Self) -> u8 uses [E] panics P
+end t.Gen
+
+type t.Q pub
+    n: u8
+end t.Q
+
+type t.S pub
+    n: u8
+end t.S
+
+type t.T pub
+    n: u8
+end t.T
+
+type t.W pub
+    n: u8
+end t.W
+
+type t.X pub
+    n: u8
+end t.X
+
+type t.Y pub
+    n: u8
+end t.Y
+
+type t.Z pub
+    n: u8
+end t.Z
+
+";
+
+#[test]
+fn impl_method_effects_within_the_trait_declaration_pass() {
+    // 陰性 (通る): 階層の部分型 (`io` ⊇ `io.console`)、トレイトの効果変数を impl の実引数で置き換えた上での包含、
+    // `may` の宣言に対する `never` / `may` の実装、`never` の宣言に対する `never` の実装。
+    let body = "impl t.Act for t.S
+fn t.S.act(self: &t.S) -> u8 uses [io.console] panics never impls t.Act
+    self.n
+end t.S.act
+
+impl t.Gen<[io], may> for t.T
+fn t.T.go(self: &t.T) -> u8 uses [io.fs] panics may impls t.Gen<[io], may>
+    self.n
+end t.T.go
+
+impl t.Gen<[io.console], never> for t.W
+fn t.W.go(self: &t.W) -> u8 uses [io.console] panics never impls t.Gen<[io.console], never>
+    self.n
+end t.W.go
+";
+    let (code, got, out) = eff_check_with("impl_eff_ok", IMPL_EFF_PRELUDE, body);
+    assert_eq!(code, Some(0), "{}", out);
+    assert!(got.is_empty(), "{}", out);
+}
+
+#[test]
+fn impl_method_effects_beyond_the_trait_declaration_are_rejected() {
+    // 陽性 (E4021): 宣言の `uses` に覆われない効果 (`alloc`)、トレイトの効果変数を実引数 `[]` で置き換えた後の
+    // 効果 (`io`)、トレイトが `panics never` の impl の `panics may`。
+    let body = "impl t.Act for t.X
+fn t.X.act(self: &t.X) -> u8 uses [alloc, io.console] panics never impls t.Act
+    self.n
+end t.X.act
+
+impl t.Gen<[io.console], never> for t.Y
+fn t.Y.go(self: &t.Y) -> u8 uses [io.console] panics may impls t.Gen<[io.console], never>
+    self.n
+end t.Y.go
+
+impl t.Gen<[], never> for t.Z
+fn t.Z.go(self: &t.Z) -> u8 uses [io] panics never impls t.Gen<[], never>
+    self.n
+end t.Z.go
+";
+    let (code, got, out) = eff_check_with("impl_eff_bad", IMPL_EFF_PRELUDE, body);
+    assert_eq!(code, Some(1), "{}", out);
+    let want: Vec<String> = ["E4021", "E4021", "E4021"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(got, want, "{}", out);
+    assert!(out.contains("t.X.act uses effect `alloc` not declared by trait method t.Act.act"), "{}", out);
+    assert!(out.contains("t.Z.go uses effect `io` not declared by trait method t.Gen.go"), "{}", out);
+    assert!(out.contains("t.Y.go may panic but trait method t.Gen.go declares `panics never`"), "{}", out);
+}
+
+#[test]
+fn impl_method_effects_with_unbound_trait_variables_stay_silent() {
+    // 陰性 (黙る): impl の実引数が効果変数 (`E`) のとき、トレイトの効果は束縛できず分からないので、
+    // impl のメソッドの具体的な効果 (`io`) も検査しない。
+    let body = "impl[E: uses, P: panics] t.Gen<E, P> for t.Q
+fn t.Q.go[E: uses, P: panics](self: &t.Q) -> u8 uses [io, E] panics P impls t.Gen<E, P>
+    self.n
+end t.Q.go
+";
+    let (_code, got, out) = eff_check_with("impl_eff_quiet", IMPL_EFF_PRELUDE, body);
+    assert!(!got.iter().any(|c| c == "E4021"), "{}", out);
+}

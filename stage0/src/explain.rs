@@ -91,6 +91,7 @@ pub const EXPLAIN: &[(&str, &str)] = &[
     ("E4003", r#"添字は範囲外でpanicするため `panics never` では使えない(`.get(i)` を使う)。"#),
     ("E4004", r#"整数の `+ - *` と単項 `-` はオーバーフローで、`/` `%` は 0 で割ると panic するため、`panics never` の関数では使えない(4.1)。`+ - *` は `checked_*` / `wrapping_*` / `saturating_*` で置き換える。`/` `%` は `checked_div` / `checked_rem` (Option) だけで、`wrapping_div` などは存在しない。関数ヘッダを `panics may` にすれば使える。"#),
     ("E4020", r#"`pub` の関数と `impls` の関数は `uses` / `panics` を省略できない(非 `pub` の関数だけが本体から推論される)。"#),
+    ("E4021", r#"`impl` のメソッドの効果が、トレイトのメソッドの宣言を超えている。`uses` は宣言の `uses` のいずれかに覆われる必要がある(階層の部分型。宣言が `io.console` なら impl は `io.console` かその部分集合)。トレイトが `panics never` なら impl も `panics never` でなければならない。トレイトの効果変数は impl 行の実引数で置き換えて比べる(4.3 / 5.1)。"#),
     ("E4013", r#"再帰を含む型(自己参照・相互再帰)には `core.ops.Drop` の明示実装が必要(5.3)。"#),
     ("E5003", r#"`extern` の外部関数は `unsafe "名前" "理由" { .. }` ブロックの中でしか呼べない(3.8)。"#),
     ("E5001", r#"`unsafe` は `kasane.toml` の `[unsafe] modules` に列挙したモジュールでのみ使える(3.5)。"#),
