@@ -10669,3 +10669,245 @@ fn min_rem_minus_one_overflows_for_every_signed_width() {
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("5 passed; 0 failed"), "{}", out);
 }
+
+
+// ---- KIR の段階 1 の拡張: Vec・String・&str・for・添字・クロージャ (kir/collections、設計_KIR.md 10.9) ----
+
+/// コレクション系の試験用の関数。値は木走査 (`ksn run`) と参照実行器 (`ksn kir --run`) で比べる。
+const KIR_COLL_FNS: &str = "fn t.vlen() -> usize uses [] panics may
+    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.len()
+end t.vlen
+
+fn t.vempty() -> bool uses [] panics never
+    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.is_empty()
+end t.vempty
+
+fn t.str_len() -> usize uses [] panics never
+    let s = \"héllo\"
+    s.len()
+end t.str_len
+
+fn t.string_len() -> usize uses [] panics never
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.len()
+end t.string_len
+
+fn t.pick(c: bool) -> usize uses [] panics never
+    let s = if c {
+        \"ab\"
+    } else {
+        \"cde\"
+    }
+    s.len()
+end t.pick
+
+fn t.sum_skip(n: usize) -> usize uses [] panics may
+    let mut total = 0usize
+    for i in core.iter.range(0usize, n) {
+        if i == 3usize {
+            continue
+        }
+        total = total + i
+    }
+    total
+end t.sum_skip
+
+fn t.first_at(n: usize) -> usize uses [] panics may
+    let mut k = 0usize
+    for i in core.iter.range(0usize, n) {
+        let s = alloc.string.String.new(std.alloc.SYSTEM)
+        if i == 2usize {
+            return k.wrapping_add(s.len())
+        }
+        k = k.wrapping_add(i)
+    }
+    k
+end t.first_at
+
+fn t.brk(n: u32) -> u32 uses [] panics may
+    let mut last = 0u32
+    for i in core.iter.range(0u32, n) {
+        last = i
+        if i == 4u32 {
+            break
+        }
+    }
+    last
+end t.brk
+
+fn t.empty_loop(n: u32) -> u32 uses [] panics may
+    let v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut total = n
+    for x in v {
+        if x == 7u32 {
+            return 99u32
+        }
+        total = total.wrapping_add(x)
+    }
+    total
+end t.empty_loop
+
+fn t.find(n: usize) -> usize uses [] panics may
+    let mut i = 0usize
+    while i < 10usize {
+        for j in core.iter.range(0usize, 10usize) {
+            if i.wrapping_mul(j) == n {
+                return i.wrapping_add(j)
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    0usize
+end t.find
+
+fn t.nested(n: usize) -> usize uses [] panics may
+    let mut total = 0usize
+    for i in core.iter.range(0usize, n) {
+        let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        if !v.is_empty() {
+            continue
+        }
+        for j in core.iter.range(0usize, i) {
+            if j == 2usize {
+                break
+            }
+            total = total + j
+        }
+        total = total + 100usize
+    }
+    total
+end t.nested
+
+fn t.idx_empty() -> u8 uses [] panics may
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v[5usize]
+end t.idx_empty
+
+fn t.clos_let() -> u32 uses [] panics never
+    let add = fn(a: u32, b: u32) -> u32 capture [] {
+        a.wrapping_add(b)
+    }
+    let k = add(3u32, 4u32)
+    add(k, 1u32)
+end t.clos_let
+
+fn t.apply_n[F: core.ops.Fn<(u64,), u64, E, P>, E: uses, P: panics](f: F, n: u64) -> u64 uses [E] panics P
+    let mut acc = 0u64
+    let mut i = 0u64
+    while i < n {
+        acc = acc.wrapping_add(f(i))
+        i = i.wrapping_add(1u64)
+    }
+    acc
+end t.apply_n
+
+fn t.total(n: u64) -> u64 uses [] panics may
+    t.apply_n(
+        fn(x: u64) -> u64 capture [] {
+            x.wrapping_mul(3u64).wrapping_add(1u64)
+        },
+        n,
+    )
+end t.total
+
+";
+
+/// `KIR_COLL_FNS` に `main` を付けたパッケージを作る。
+fn kir_coll_pkg(name: &str, main_body: &str) -> Tmp {
+    Tmp::new(name, &format!("{}{}", KIR_COLL_FNS, main_wrap("", main_body)))
+}
+
+#[test]
+fn kir_coll_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の `core.check.eq` が通り、参照実行器 (`ksn kir --run`) の値が期待どおりであること。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.vlen", &[], "0usize", "0"),
+        ("t.vempty", &[], "true", "true"),
+        ("t.str_len", &[], "6usize", "6"),
+        ("t.string_len", &[], "0usize", "0"),
+        ("t.pick", &["true"], "2usize", "2"),
+        ("t.pick", &["false"], "3usize", "3"),
+        ("t.sum_skip", &["5"], "7usize", "7"),
+        ("t.sum_skip", &["0"], "0usize", "0"),
+        ("t.first_at", &["5"], "1usize", "1"),
+        ("t.first_at", &["1"], "0usize", "0"),
+        ("t.brk", &["10"], "4u32", "4"),
+        ("t.brk", &["3"], "2u32", "2"),
+        ("t.find", &["6"], "7usize", "7"),
+        ("t.find", &["97"], "0usize", "0"),
+        ("t.nested", &["4"], "402usize", "402"),
+        ("t.empty_loop", &["4"], "4u32", "4"),
+        ("t.clos_let", &[], "8u32", "8"),
+        ("t.total", &["10"], "145u64", "145"),
+        ("t.total", &["0"], "0u64", "0"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = kir_coll_pkg(&format!("kir_coll_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_coll_index_panics_like_tree_walker() {
+    // 空の Vec の添字は木走査と同じ文言で panic する (終了コード 101)。
+    let t = kir_coll_pkg("kir_coll_index_panic", "    let _x = t.idx_empty()\n");
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "tree-walker");
+    assert!(text(&o.stderr).contains("panic: index out of bounds: the len is 0 but the index is 5"), "{}", text(&o.stderr));
+    let k = run(&["kir", "t.idx_empty", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir: {}", text(&k.stderr));
+    assert_eq!(text(&k.stderr).trim(), "panic: index out of bounds: the len is 0 but the index is 5");
+}
+
+#[test]
+fn kir_coll_closure_is_monomorphized_per_closure() {
+    // `Fn` 境界の関数は、渡された捕獲のないクロージャごとに 1 つの単相インスタンスになる。
+    let t = kir_coll_pkg("kir_coll_mono", "    core.check.eq(t.total(3u64), 12u64)\n");
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
+    let o = run(&["kir", "t.total"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("fn t.apply_n key=t.apply_n<t.total#c") && out.contains("call t.apply_n<t.total#c"), "{}", out);
+    assert!(out.contains("fn t.total#c") && out.contains("end t.total#c"), "{}", out);
+}
+
+#[test]
+fn kir_coll_reports_unsupported_constructs_with_a_reason() {
+    // Vec の push (Result)、所有の移動、capture を持つクロージャは、理由を付けて拒否する。
+    let cases: &[(&str, &str, &str)] = &[
+        ("t.push_one", "    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let _r = v.push(1u8)\n    v.len()\n", "push は段階 1 の対象外"),
+        ("t.moved", "    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let w = v\n    w.len()\n", "所有の移動"),
+        ("t.captured", "    let k = 7usize\n    let f = fn(x: usize) -> usize capture [&k] {\n        x.wrapping_mul(*k)\n    }\n    f(1usize)\n", "capture を持つ"),
+    ];
+    for (i, (f, body, why)) in cases.iter().enumerate() {
+        let src = format!(
+            "fn {}() -> usize uses [alloc] panics may\n{}end {}\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n",
+            f, body, f
+        );
+        let t = Tmp::new(&format!("kir_coll_reason_{}", i), &src);
+        let o = run(&["kir", f], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}", f);
+        assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
+    }
+}
+
+#[test]
+fn kir_coll_dump_shows_drops_and_static_data() {
+    // 所有値の解放は `free` の命令として見える。文字列リテラルは `data` の静的な領域。
+    let t = kir_coll_pkg("kir_coll_dump", "    core.check.eq(t.vlen(), 0usize)\n");
+    let o = run(&["kir", "t.vlen"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("frame.bytes 24") && out.contains("heap.free %") && out.contains("mem.load.usize %"), "{}", out);
+    let s = run(&["kir", "t.str_len"], &t.0);
+    assert!(text(&s.stdout).contains("static.bytes 68c3a96c6c6f"), "{}", text(&s.stdout));
+}

@@ -4,7 +4,7 @@
 //! 速さは求めない。呼び出しは明示的なフレーム列で持ち、Rust の再帰を使わない。深さの上限は木走査と同じ 2500 (終了コード 102)。
 //! 浮動小数と 128 ビット整数の規則は `kir_scalar.rs` にある。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Mode, Module, Op, Term, Ty, TAG_BIT, VId};
 use crate::kir_scalar;
@@ -34,6 +34,131 @@ struct Frame {
     hbase: usize,
     /// この呼び出しが始まったときのセル列の長さ (返るときに切り詰める)。
     mem_base: usize,
+    /// この関数の `frame.bytes` で確保した領域の先頭。関数が戻るときに解放する。
+    allocs: Vec<i128>,
+}
+
+/// アドレスの基準値 (0 は null として空けておく)。
+const BASE: i128 = 0x1000;
+
+/// 仮想のバイト記憶: `ptr` が指す領域 (ヒープ・フレームの領域・静的な領域)。
+/// `clif` と同じく {ptr, len, cap} の実メモリを、バイト列の上で表す。集成体の置き場 (`heap`) とは別。
+/// 解放済みの領域は再利用しない (誤用の検出を優先する)。生存する領域は `live` で、静的な領域は `pinned` で区別する。
+struct ByteMem {
+    mem: Vec<u8>,
+    /// 先頭アドレス → 領域。
+    blocks: BTreeMap<i128, Blk>,
+}
+
+struct Blk {
+    off: usize,
+    size: usize,
+    live: bool,
+    pinned: bool,
+}
+
+impl ByteMem {
+    fn new() -> ByteMem {
+        ByteMem { mem: vec![], blocks: BTreeMap::new() }
+    }
+
+    fn alloc(&mut self, size: usize, pinned: bool) -> i128 {
+        let off = self.mem.len();
+        self.mem.resize(off + size.max(1), 0);
+        let addr = BASE + off as i128;
+        self.blocks.insert(addr, Blk { off, size, live: true, pinned });
+        addr
+    }
+
+    /// `addr` から `n` バイトが生存する領域の内側にあるとき、`mem` 上の位置を返す。
+    fn locate(&self, addr: i128, n: usize) -> Result<usize, String> {
+        let bad = || format!("不正なメモリアクセス {:#x} ({} バイト)", addr, n);
+        let (&start, b) = self.blocks.range(..=addr).next_back().ok_or_else(bad)?;
+        if !b.live || addr + n as i128 > start + b.size as i128 {
+            return Err(bad());
+        }
+        Ok(b.off + (addr - start) as usize)
+    }
+
+    fn read(&self, addr: i128, ty: Ty) -> Result<i128, String> {
+        let n = width(ty);
+        let at = self.locate(addr, n)?;
+        let mut buf = [0u8; 16];
+        buf[..n].copy_from_slice(&self.mem[at..at + n]);
+        let u = u128::from_le_bytes(buf) as i128;
+        Ok(match ty {
+            Ty::Bool => (u != 0) as i128,
+            Ty::Ptr => u,
+            _ => ty.wrap(u),
+        })
+    }
+
+    fn write(&mut self, addr: i128, ty: Ty, v: i128) -> Result<(), String> {
+        let n = width(ty);
+        let at = self.locate(addr, n)?;
+        let bytes = (v as u128).to_le_bytes();
+        self.mem[at..at + n].copy_from_slice(&bytes[..n]);
+        Ok(())
+    }
+
+    fn write_bytes(&mut self, addr: i128, bytes: &[u8]) -> Result<(), String> {
+        let at = self.locate(addr, bytes.len())?;
+        self.mem[at..at + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+
+    /// 解放 (`null` は何もしない)。二重解放や静的領域の解放は誤用として `Err` にする。
+    fn free(&mut self, addr: i128) -> Result<(), String> {
+        if addr == 0 {
+            return Ok(());
+        }
+        match self.blocks.get_mut(&addr) {
+            Some(b) if b.live && !b.pinned => {
+                b.live = false;
+                Ok(())
+            }
+            _ => Err(format!("不正な解放 {:#x}", addr)),
+        }
+    }
+
+    /// `old` の内容を先頭から複写した、新しい大きさ `size` の領域を作って旧い領域を解放する (`old` が 0 なら確保だけ)。
+    fn realloc(&mut self, old: i128, size: usize) -> Result<i128, String> {
+        if old == 0 {
+            return Ok(self.alloc(size, false));
+        }
+        let old_size = match self.blocks.get(&old) {
+            Some(b) if b.live && !b.pinned => b.size,
+            _ => return Err(format!("不正な再確保 {:#x}", old)),
+        };
+        let n = old_size.min(size);
+        let src = self.locate(old, n)?;
+        let bytes: Vec<u8> = self.mem[src..src + n].to_vec();
+        let new = self.alloc(size, false);
+        self.write_bytes(new, &bytes)?;
+        self.free(old)?;
+        Ok(new)
+    }
+
+    /// フレームの終わりの解放 (誤用の検査は行わない: 戻り値に含まれない領域だけが対象)。
+    fn release(&mut self, addr: i128) {
+        if let Some(b) = self.blocks.get_mut(&addr) {
+            b.live = false;
+        }
+    }
+
+    /// 生存する (解放されていない、静的でない) 領域の数。
+    fn leaks(&self) -> usize {
+        self.blocks.values().filter(|b| b.live && !b.pinned).count()
+    }
+}
+
+/// バイト記憶の 1 語の幅 (バイト)。`unit` は持たない (verify が拒む)。
+fn width(ty: Ty) -> usize {
+    match ty {
+        Ty::Bool => 1,
+        Ty::Ptr => 8,
+        t => (t.bits() / 8) as usize,
+    }
 }
 
 /// 集成体の値の読み出し: `t` の値を、バイト列 `buf` の `off` から取る (集成体は置き場に複製して、その添字を返す)。
@@ -215,10 +340,13 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
         for ((v, _), a) in m.funcs[f].params().iter().zip(args.iter()) {
             vals[*v as usize] = *a;
         }
-        Frame { f, blk: 0, ip: 0, vals, dst, hbase, mem_base }
+        Frame { f, blk: 0, ip: 0, vals, dst, hbase, mem_base, allocs: vec![] }
     };
     // 参照の指すセル。`alloca` が 1 セル確保し、その番号がアドレスになる。呼び出しの終わりに切り詰める。
     let mut mem: Vec<i128> = vec![];
+    // バイト記憶 (`ptr` の領域)。静的な領域 (`static.bytes`) は、命令の位置ごとに 1 回だけ確保する。
+    let mut bm = ByteMem::new();
+    let mut statics: HashMap<(usize, usize, usize), i128> = HashMap::new();
     let mut stack = vec![enter(entry, args, None, 0, 0)];
     loop {
         let top = stack.len() - 1;
@@ -231,6 +359,40 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
             let get = |fr: &Frame, v: &VId| fr.vals[*v as usize];
             let result: i128 = match &inst.op {
                 Op::Const(v) => *v,
+                Op::FrameBytes { size } => {
+                    let a = bm.alloc(*size as usize, false);
+                    stack[top].allocs.push(a);
+                    a
+                }
+                Op::StaticBytes(bytes) => match statics.get(&(fi, bi, ip)) {
+                    Some(a) => *a,
+                    None => {
+                        let a = bm.alloc(bytes.len(), true);
+                        bm.write_bytes(a, bytes)?;
+                        statics.insert((fi, bi, ip), a);
+                        a
+                    }
+                },
+                Op::PtrAdd { p, off } => get(&stack[top], p) + get(&stack[top], off),
+                Op::MemLoad { p, off } => bm.read(get(&stack[top], p) + *off as i128, inst.ty)?,
+                Op::MemStore { ty, p, off, v } => {
+                    let (a, x) = (get(&stack[top], p) + *off as i128, get(&stack[top], v));
+                    bm.write(a, *ty, x)?;
+                    0
+                }
+                Op::HeapAlloc(n) => bm.alloc(get(&stack[top], n) as usize, false),
+                Op::HeapRealloc { p, size } => bm.realloc(get(&stack[top], p), get(&stack[top], size) as usize)?,
+                Op::HeapFree(p) => {
+                    bm.free(get(&stack[top], p))?;
+                    0
+                }
+                Op::IndexCheck { i, len } => {
+                    let (ix, n) = (get(&stack[top], i), get(&stack[top], len));
+                    if ix >= n {
+                        return Ok(Outcome::Panic(format!("index out of bounds: the len is {} but the index is {}", n, ix)));
+                    }
+                    0
+                }
                 Op::Arith { op, mode, a, b } => {
                     let (x, y) = (get(&stack[top], a), get(&stack[top], b));
                     match arith(*op, *mode, inst.ty, x, y) {
@@ -381,6 +543,9 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
             Term::Ret(v) => {
                 let mut val = stack[top].vals[*v as usize];
                 let done = stack.pop().expect("フレーム");
+                for a in &done.allocs {
+                    bm.release(*a);
+                }
                 // 戻る関数が作った集成体は捨てる。戻り値の集成体だけは、呼び出し元の置き場へ複製して残す。
                 if let Ty::Agg(_) = func.ret {
                     let blob = heap[val as usize].clone();
@@ -392,7 +557,14 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 }
                 mem.truncate(done.mem_base);
                 match stack.last_mut() {
-                    None => return Ok(Outcome::Value(val)),
+                    None => {
+                        // 正常終了では、解放されていない領域があってはならない (所有の下ろしの誤り)。
+                        let n = bm.leaks();
+                        if n > 0 {
+                            return Err(format!("解放されていない領域が {} 個ある", n));
+                        }
+                        return Ok(Outcome::Value(val));
+                    }
                     Some(caller) => {
                         if let Some(d) = done.dst {
                             caller.vals[d as usize] = val;
@@ -475,6 +647,110 @@ mod tests {
             }],
         };
         Module { funcs: vec![f], ..Default::default() }
+    }
+
+    /// テキストの 1 関数のモジュールを実行する (鍵は関数名)。
+    fn exec(text: &str, key: &str) -> Result<Outcome, String> {
+        let m = crate::kir::parse_module(text).expect("parse");
+        run(&m, key, &[])
+    }
+
+    #[test]
+    fn heap_round_trip_and_realloc_keep_contents() {
+        let t = crate::kir::MEM_TEXT;
+        assert_eq!(exec(t, "t.mem"), Ok(Outcome::Value(77)));
+    }
+
+    #[test]
+    fn leaks_and_bad_frees_are_reported() {
+        let leak = "kir 1
+
+fn t.leak key=t.leak uses=[alloc] panics=never stack=- ret=unit
+  b0():
+    %0: usize = const.usize 8
+    %1: ptr = heap.alloc %0
+    %2: unit = const.unit ()
+    ret %2
+end t.leak
+";
+        assert_eq!(exec(leak, "t.leak"), Err("解放されていない領域が 1 個ある".to_string()));
+        let twice = leak.replace("    %2: unit = const.unit ()\n    ret %2", "    %2: unit = heap.free %1\n    %3: unit = heap.free %1\n    ret %2")
+            .replace("t.leak", "t.twice");
+        assert!(exec(&twice, "t.twice").unwrap_err().contains("不正な解放"));
+    }
+
+    #[test]
+    fn out_of_bounds_access_is_an_internal_error() {
+        let src = "kir 1
+
+fn t.oob key=t.oob uses=[alloc] panics=never stack=- ret=u8
+  b0():
+    %0: usize = const.usize 2
+    %1: ptr = heap.alloc %0
+    %2: usize = const.usize 2
+    %3: ptr = ptr.add %1, %2
+    %4: u8 = mem.load.u8 %3 +0
+    %5: unit = heap.free %1
+    ret %4
+end t.oob
+";
+        assert!(exec(src, "t.oob").unwrap_err().contains("不正なメモリアクセス"));
+    }
+
+    #[test]
+    fn frame_allocas_are_released_on_return() {
+        let src = "kir 1
+
+fn t.inner key=t.inner uses=[] panics=never stack=- ret=u8
+  b0():
+    %0: ptr = frame.bytes 4
+    %1: u8 = const.u8 9
+    %2: unit = mem.store.u8 %0 +3, %1
+    %3: u8 = mem.load.u8 %0 +3
+    ret %3
+end t.inner
+
+fn t.outer key=t.outer uses=[] panics=never stack=- ret=u8
+  b0():
+    %0: u8 = call t.inner()
+    ret %0
+end t.outer
+";
+        assert_eq!(exec(src, "t.outer"), Ok(Outcome::Value(9)));
+    }
+
+    #[test]
+    fn bounds_check_reports_the_interpreter_message() {
+        let src = "kir 1
+
+fn t.bc key=t.bc uses=[] panics=may stack=- ret=unit
+  b0():
+    %0: usize = const.usize 2
+    %1: usize = const.usize 5
+    %2: unit = index.check %1, %0
+    ret %2
+end t.bc
+";
+        assert_eq!(
+            exec(src, "t.bc"),
+            Ok(Outcome::Panic("index out of bounds: the len is 2 but the index is 5".to_string()))
+        );
+    }
+
+    #[test]
+    fn data_is_static_and_not_a_leak() {
+        let src = "kir 1
+
+fn t.d key=t.d uses=[] panics=never stack=- ret=u8
+  b0():
+    %0: ptr = static.bytes 0102
+    %1: usize = const.usize 1
+    %2: ptr = ptr.add %0, %1
+    %3: u8 = mem.load.u8 %2 +0
+    ret %3
+end t.d
+";
+        assert_eq!(exec(src, "t.d"), Ok(Outcome::Value(2)));
     }
 
     #[test]

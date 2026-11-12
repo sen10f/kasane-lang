@@ -665,12 +665,14 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 
 ### 10.5 未対応の一覧
 
-未対応 30 件の理由を、先頭の理由 1 つで分類した (examples 7 本の `KSN_DUMP_KIR=1 ksn check` の出力による。候補 40 件のうち降格できた 10 件を除く)。初版 (`kir/lower-1`) では未対応 37 件だった。拡張 (kir/scalars の数値、kir/option-result の `Option` / `Result` と `checked_*`) で、ビット演算・数値のメソッド・`f64`・`match` の各 1 行 (計 5 件) が消えた。
+統合後 (kir/collections を含む全ブランチ) の未対応は 28 件。候補 40 件のうち 12 件は降格できた (examples 7 本の `KSN_DUMP_KIR=1 ksn check` の出力)。理由は先頭の理由 1 つで分類した。統合前の kir/collections 単独では未対応 37 件、降格 3 件だった。
 
 | 理由 | 件数 | 例 | 次の作業 |
 |---|---:|---|---|
-| 引数・戻り値の型が段階 1 の外 (参照 17、名前付きの E を持つ `Result` 7、名前付きの型 4) | 28 | `json.array` (`&json.Doc`)、`demo.main` (`Result<(), std.io.Error>`) | 集成体の型を型表に足す (第 2.3)。参照は指す先がスカラーのものだけ 10.7 で扱う (examples には該当が無い)。残りは名前付きの型・スライス・`str` と、名前付きの E を持つ `Result` で、段階 2 以降 |
-| その他 (バイト文字リテラル、列挙子の呼び出し) | 2 | `json.is_hex`、`tour.shapes` | リテラルの型と、列挙子の値の下ろし |
+| 引数の型が段階 1 の外: 参照 (指す先が名前付きの型 11、スライス 3、`str` 2、`String` の `&mut` 1) | 17 | `json.array` (`&mut json.Doc`)、`json.digits` (`&[u8]`)、`json.parse` (`&str`) | 名前付きの型・スライス・`str` を指す参照 (10.8 の未対応)。第 2.3 の型表に載せる作業と一緒に決める |
+| 戻り値が名前付きの E を持つ `Result` | 7 | `demo.main` (`Result<(), std.io.Error>`) | 名前付きの E を持つ `Result` (段階 2 以降) |
+| 名前付きの型 (利用者の型以外、または型表に無い型) | 2 | `realtime.Ring.new` (`realtime.Ring`)、`json.oom` (`alloc.alloc.AllocError`) | 標準の型の配置と、型表への登録 |
+| その他 (バイト文字リテラル、`for` の対象の形) | 2 | `json.is_hex` (`b'…'`)、`tour.shapes` (`for` の対象が range でも要素型の分かる Vec でもない) | byte リテラルの型、イテレータと配列の `for` (Iterator の段階) |
 
 集成体の行 (利用者の構造体・列挙型・タプル) は 10.7 の後では降格できる。
 数値の未対応のうち examples の外のものは、`trunc_to_*` / `try_from_*` / `successor` / `from_str_radix` (`Option` か `Result` を返す) と、`checked_neg` / `checked_shl` / `checked_shr` (第 11 章)。いずれも集成体の型が要る。
@@ -713,6 +715,33 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 - 木走査との一致: `stage0/tests/cli.rs` の `kir_refs_values_match_tree_walker` (16 ケース: 参照を引数に取る関数、戻り値の参照、一時のアドレス、ループ・分岐・`break` と `return` の中での `&mut`、再帰)、`kir_refs_panics_match_tree_walker` (参照の先での溢れの文言と終了コード 101)。`kir_refs_text_shows_slots_and_reference_types` は出力の形と読み直しを、`kir_refs_reference_to_unsupported_pointee_keeps_its_reason` は指す先が名前付きの型・`str` のときの理由を確かめる。`kir.rs` の `refs_print_and_parse_round_trip` と `refs_verify_rejects_...` は命令の往復と検査を確かめる。
 - 降格の範囲 (examples 7 本の候補 40 件): refs の単独では 3 件のまま (`demo.fib`、`native.half`、`realtime.triangle`)。統合後の件数は 11.5 を見る。examples の参照は、すべて名前付きの型 (`&json.Doc`、`&mut alloc.string.String`)、スライス (`&[u8]`)、`str` (`&str`) を指すので、この段階で増える関数はない。`KSN_DUMP_KIR=1 ksn check` の出力 (未対応の理由を含む) も変わらない。examples の `ksn check` の出力も変わらない。
 - 未対応のまま残すもの: 指す先が名前付きの型・スライス・`str` の参照、参照を指す参照 (`&&T`)、参照どうしの比較。
+### 10.9 コレクション・文字列・クロージャ (kir/collections)
+
+ブランチ `kir/collections` (`9f0ad58` から分岐)。段階 1 の対象に、ヒープ (clif と同じ実メモリ表現)、`Vec` / `String` / `&str`、`for`、添字、捕獲のないクロージャと、その `Fn` 境界の関数への単相化を加えた。既定の挙動 (`ksn run` / `ksn build` / `ksn check` の出力) は変えていない。
+
+- 型と命令 (`kir.rs`): 型 `ptr` (生のアドレス。算術と比較はしない)。命令は `frame.bytes` (フレームの領域)、`static.bytes` (静的なバイト列)、`ptr.add`、`mem.load.T` / `mem.store.T` (オフセット付き、リトルエンディアン)、`heap.alloc` / `heap.realloc` / `heap.free` (確保・再確保・解放)、`index.check` (添字の境界検査)。命令名は段階 1 の参照 (`alloca` `load` `store`) と衝突しないよう接頭辞を分けた。確保は `uses [alloc]` の関数だけ、境界検査は `panics may` の関数だけ検査が通る。
+- 実行器 (`kir_exec.rs`): バイト列のヒープ。解放済みの領域は再利用せず、二重解放・解放後のアクセス・範囲外のアクセスは内部の誤り (`Err`) にする。`frame.bytes` は関数が戻るときに解放する。正常終了時に解放されていない領域があれば `Err` にし、所有の下ろしの誤りを検出する。`static.bytes` は命令の位置ごとに 1 回だけ確保し、解放しない。
+- 表現: `Vec<T>` と `String` は {ptr, len, cap} の 24 バイトのヘッダ、`&str` は {ptr, len} の 16 バイトのヘッダ (clif の `layout` と同じ)。KIR の値はヘッダのアドレス。ヘッダはフレームの `frame.bytes` に置く。所有するバッファは、スコープの終わり・`return`・`break` / `continue` で `heap.free` を後入れ先出しに発行する。
+- 移動はしない: `let w = v` や値としての受け渡し・ブロックの値・戻り値は拒否する。`for x in v` は `v` を借りて反復するだけで、解放は `v` の寿命の終わりに行う (観測できない違いだけ生じる)。
+- 型表の補い: 添字の式と `for` の変数は型表で `_` のままなので、下ろしは要素型を Vec の種類 (`let` の型と `Vec.new` の型表) から取る。局所変数の型が型表で未確定のときは、スロットの型で補う (`ty_of`)。
+- 下ろし (`kir_lower_coll.rs`): `Vec::new(std.alloc.SYSTEM)`、`String::new(...)`、`x.len()` / `x.is_empty()`、`v[i]` の読み書き、`for i in core.iter.range(a, b)` (`break` / `continue` / `return` と代入を含む)、`for x in v` (要素型が分かる Vec)、`str` リテラル、捕獲のないクロージャ (`let` で束縛した呼び出しと、`Fn` 境界の関数への受け渡し)。`Fn` 境界の関数は、渡されたクロージャごとに単相インスタンス (鍵 `関数<クロージャの鍵>`) を作る。クロージャの鍵は `関数#c式ID`。
+
+検証: `kir::tests` に記憶域の命令の往復と検査 (2 本)、`kir_exec::tests` に確保・解放・再確保・リーク・二重解放・範囲外・フレームの解放・境界検査・静的領域 (6 本)、`stage0/tests/cli.rs` 末尾の `kir_coll_*` (5 本: 木走査との値の一致 16 ケース、添字の panic の文言、単相化、対象外の理由、ダンプ)。
+
+結果: 同じ入力の対象の関数数は、試験用のパッケージ (`cli.rs` の `KIR_COLL_FNS`、候補 14 本) で 0 本から 14 本になり、単相インスタンス 1 本と捕獲のないクロージャの関数 2 本が加わった。examples 7 本と perf の対象の数は変わらない (前後とも 5 本): それらの関数は `Result` の戻り値、参照、`capture [&k]` を使うため。`ksn check` の出力は examples 7 本でバイト一致。
+
+未対応 (このブランチの項目。理由と次の作業):
+
+| 項目 | 理由 | 次の作業 |
+| --- | --- | --- |
+| `Vec::push` / `pop` / `get` / `insert` / `remove` / `reserve` / `with_capacity`、`String::push_str` / `push` | 戻り値が `Result` / `Option` (参照を含む) | Option / Result の段階で対応する。push の展開 (grow は `heap.realloc` と `mem.store`、添字は `index.check`) は既存の命令で書ける |
+| `as_str` / `as_slice` / `&[T]` の値、`&str` の引数 | 参照 | 参照の段階 (参照の型は入っている) |
+| `capture [&x]` を持つクロージャ | 参照の捕獲 | 参照の段階。捕獲の値を追加の引数で渡す |
+| `Vec` / `String` の値の移動 (`let w = v`、値の受け渡し、ブロックの値、戻り値) | 所有の移動 (drop フラグ) が未実装 | 移動の追跡 |
+| `str` の比較 (`==` など) | 比較の下ろし (バイト列の比較) が未実装 | 段階 2 までに `mem` 系の比較を足す |
+| `for` の対象が `core.iter.range` と要素型の分かる Vec 以外 (イテレータ、配列リテラル) | Iterator / 配列の型が段階 1 の外 | Iterator の段階 |
+| 要素型が決まらない Vec | 型表の `_` (`push` が入るまで、型推論は要素型を決めない) | Option / Result の段階と型推論の完全化 (7 章 4) |
+
 ## 11. 組み込みの Option / Result と checked_* (kir/option-result)
 
 ブランチ `kir/option-result` (`claude/handover-work-i7ll7p` から分岐)。第 10 章 10.6 の (2) の実装。名前付きの型 (構造体・ユーザ enum) は別の作業なので、ここでは組み込みの `Option<P>` と `Result<T, E>` だけを扱う (P、T、E は段階 1 のスカラー)。

@@ -27,6 +27,11 @@ use refs::RefCx;
 #[path = "kir_lower_enum.rs"]
 mod enum_lower;
 
+// コレクション・文字列・クロージャの下ろし (子モジュール。`Lw` の非公開の項目を使う)。
+#[path = "kir_lower_coll.rs"]
+mod coll;
+use coll::CollCx;
+
 type LR<T> = Result<T, String>;
 
 // 集成体 (構造体・タプル・列挙型) の下ろし。子モジュールなので、この file の非公開の部品を使う。
@@ -136,6 +141,8 @@ struct LoopCx {
     header: usize,
     exit: usize,
     slots: Vec<usize>,
+    /// break / continue が後始末する最初のスコープの番号 (これより内側の所有値を解放する)。
+    depth: usize,
 }
 
 struct Lw<'a> {
@@ -156,6 +163,8 @@ struct Lw<'a> {
     ret: Ty,
     /// 参照の下ろしの状態 (kir_lower_refs.rs)。
     rf: RefCx,
+    /// コレクション・文字列・クロージャの下ろし (kir_lower_coll.rs) の状態。
+    coll: CollCx,
 }
 
 impl<'a> Lw<'a> {
@@ -174,6 +183,7 @@ impl<'a> Lw<'a> {
             callees: BTreeSet::new(),
             ret: Ty::Unit,
             rf: RefCx::default(),
+            coll: CollCx::default(),
         }
     }
 
@@ -290,7 +300,17 @@ impl<'a> Lw<'a> {
 
     /// 式の型 (段階 1 の型)。対象外・未確定なら理由付きで止める。
     fn ty_of(&self, e: &V) -> LR<Ty> {
-        let t = self.src_ty(e)?;
+        // 型表が未確定の局所変数 (`for` の変数など) は、スロットの型で補う。
+        let t = match self.src_ty(e) {
+            Ok(t) if t != Src::Unknown => t,
+            r => match coll::local_slot_ty(self, e) {
+                Some(x) => return Ok(x),
+                None => r?,
+            },
+        };
+        if let Some(x) = coll::value_ty(&t) {
+            return Ok(x);
+        }
         match self.conv_t(&t) {
             Some(x) => Ok(x),
             None => self.err(nline(e), format!("型 {} は段階 1 の対象外", show(&t))),
@@ -299,7 +319,7 @@ impl<'a> Lw<'a> {
 
     // ------------------------------------------------ 関数全体
 
-    fn lower(mut self) -> LR<(Func, BTreeSet<String>)> {
+    fn lower(mut self) -> LR<Vec<(Func, BTreeSet<String>)>> {
         let d = self.def;
         let gn = HashSet::new();
         let body = d.body.as_ref().expect("候補は本体を持つ");
@@ -337,11 +357,12 @@ impl<'a> Lw<'a> {
         uses.sort();
         uses.dedup();
         self.flush_allocas();
-        let blocks = self
+        let mut blocks: Vec<Block> = self
             .blocks
             .into_iter()
             .map(|b| Block { params: b.params, insts: b.insts, term: b.term.unwrap_or(Term::Unreachable) })
             .collect();
+        coll::finish(&mut blocks, std::mem::take(&mut self.coll.allocas));
         let f = Func {
             fqn: d.name.clone(),
             key: d.name.clone(),
@@ -351,7 +372,9 @@ impl<'a> Lw<'a> {
             ret,
             blocks,
         };
-        Ok((f, self.callees))
+        let mut out = std::mem::take(&mut self.coll.extra);
+        out.insert(0, (f, self.callees));
+        Ok(out)
     }
 
     // ------------------------------------------------ 式
@@ -375,6 +398,9 @@ impl<'a> Lw<'a> {
             "StructLit" | "TupleE" | "Field" => self.agg_expr(e),
             "Match" => self.match_any(e),
             "Try" => self.try_(e),
+            "Index" => coll::index_read(self, e),
+            "For" => coll::for_expr(self, e),
+            "Closure" => coll::closure_lit(self, e),
             other => self.err(nline(e), format!("式 {} は段階 1 の対象外", other)),
         }
     }
@@ -400,6 +426,7 @@ impl<'a> Lw<'a> {
             }
             "unit" => Ok(self.unit()),
             "float" => self.float_lit(e),
+            "str" => coll::str_lit(self, e),
             other => self.err(line, format!("リテラル {} は段階 1 の対象外", other)),
         }
     }
@@ -409,6 +436,7 @@ impl<'a> Lw<'a> {
         let line = nline(e);
         if segs.len() == 1 {
             if let Some(s) = self.lookup(&segs[0]) {
+                coll::check_value_use(self, s, line)?;
                 return Ok(self.read_slot(s));
             }
             if segs[0] == "None" {
@@ -577,6 +605,9 @@ impl<'a> Lw<'a> {
     }
 
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = coll::try_call(self, e) {
+            return r;
+        }
         if let Some(done) = self.scalar_call(e)? {
             return Ok(done);
         }
@@ -668,6 +699,9 @@ impl<'a> Lw<'a> {
 
     /// `e.m(args)` (受け手が式の形)。整数の `wrapping_add` / `wrapping_sub` / `wrapping_mul` だけを扱う。
     fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = coll::try_mcall(self, e) {
+            return r;
+        }
         if let Some(done) = self.scalar_mcall(e)? {
             return Ok(done);
         }
@@ -723,12 +757,13 @@ impl<'a> Lw<'a> {
                 }
             }
         }
+        if stmts.is_empty() {
+            out = Some(self.unit());
+        }
+        coll::block_end(self, out, nline(e))?;
         self.scopes.pop();
         if diverged {
             return Ok(None);
-        }
-        if stmts.is_empty() {
-            out = Some(self.unit());
         }
         Ok(out)
     }
@@ -749,12 +784,16 @@ impl<'a> Lw<'a> {
                 let Some(v) = self.expr(&f[3])? else { return Ok(St::Div) };
                 let t = self.vty(v);
                 self.bind_let(&name, v, t);
+                coll::after_let(self, &name, &f[3])?;
                 Ok(St::Unit)
             }
             "Assign" => {
                 let target = &f[0];
                 if nname(target) == "Unary" {
                     return self.store_deref(target, &f[1], line);
+                }
+                if nname(target) == "Index" {
+                    return coll::assign_index(self, s);
                 }
                 let Some(name) = path1(target) else {
                     if nname(target) == "Path" && strs(&nf(target)[0]).len() > 1 {
@@ -765,6 +804,7 @@ impl<'a> Lw<'a> {
                 let Some(s_idx) = self.lookup(&name) else {
                     return self.err(line, format!("代入先 {} が見つからない", name));
                 };
+                coll::check_assign(self, s_idx, line)?;
                 let Some(v) = self.expr(&f[1])? else { return Ok(St::Div) };
                 if self.vty(v) != self.slots[s_idx].1 {
                     return self.err(line, "代入の型が変数の型と違う");
@@ -790,7 +830,7 @@ impl<'a> Lw<'a> {
         // 結果の型。両枝とも発散するなら `!` で、結果の値は持たない。unit の値は合流の引数に載せない。
         let res: Option<Ty> = match self.src_ty(e)? {
             Src::Never => None,
-            t => Some(self.conv_t(&t).ok_or_else(|| format!("行 {}: if の型 {} は段階 1 の対象外", line, show(&t)))?),
+            t => Some(coll::value_ty(&t).or_else(|| self.conv_t(&t)).ok_or_else(|| format!("行 {}: if の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
         let carry = matches!(res, Some(t) if t != Ty::Unit);
         let slots = self.assigned(&[&f[1], &f[2]]);
@@ -877,7 +917,7 @@ impl<'a> Lw<'a> {
             self.branch(cv, (bb, vec![]), (xb, exit_args));
             body_start = bb;
         }
-        self.loops.push(LoopCx { header: hb, exit: xb, slots: slots.clone() });
+        self.loops.push(LoopCx { header: hb, exit: xb, slots: slots.clone(), depth: self.scopes.len() });
         self.cur = Some(body_start);
         let r = self.expr(body)?;
         if r.is_some() {
@@ -899,7 +939,8 @@ impl<'a> Lw<'a> {
         let Some(lc) = self.loops.last() else {
             return self.err(nline(e), "ループの外の break / continue");
         };
-        let (target, slots) = (if is_break { lc.exit } else { lc.header }, lc.slots.clone());
+        let (target, slots, depth) = (if is_break { lc.exit } else { lc.header }, lc.slots.clone(), lc.depth);
+        coll::drop_from(self, depth);
         let args = self.vals_of(&slots);
         self.goto(target, args);
         Ok(None)
@@ -919,6 +960,8 @@ impl<'a> Lw<'a> {
         if self.vty(v) != self.ret {
             return self.err(line, "return の値の型が戻り値の型と違う");
         }
+        coll::check_not_owned(self, v, line)?;
+        coll::drop_from(self, 0);
         self.terminate(Term::Ret(v));
         Ok(None)
     }
@@ -953,10 +996,13 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
             continue;
         }
         match Lw::new(p, &tys, &aggs, d).lower() {
-            Ok(x) => ok.push(x),
+            Ok(x) => ok.extend(x),
             Err(why) => bad.push((d.name.clone(), why)),
         }
     }
+    // 同じ単相インスタンスを、別々の呼び出し元が下ろしていることがある (内容は同じ)。鍵の重複は先の一つだけ残す。
+    let mut seen: HashSet<String> = HashSet::new();
+    ok.retain(|(f, _)| seen.insert(f.key.clone()));
     let funcs = loop {
         let keys: HashSet<String> = ok.iter().map(|(f, _)| f.key.clone()).collect();
         let mut drop: Vec<(String, String)> = vec![];
