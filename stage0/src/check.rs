@@ -116,6 +116,64 @@ pub(crate) fn walk<'a>(v: &'a V, out: &mut Vec<&'a V>) {
     }
 }
 
+/// 型表 (`types.rs` の `tytab`) から、メソッド呼び出し (`v.pop();`) の式文で、戻り値が `()` / `!` 以外に
+/// 決まる行を集める (4.6, E2042)。`ty_of` は標準ライブラリのジェネリック型のメソッドの戻り値を決められないので、
+/// その戻り値 (レシーバの型引数を sig の戻り値型に代入した型) を型表から取る。
+/// 関数呼び出し・字段の捨ては対象外 (`discard_check` の担当で、従来どおり黙る形もある)。
+/// ブロックの最後の文 (ブロックの値) は捨てない。型に未知・型変数・型パラメータ・クロージャが
+/// 残るものは黙る (誤検出を出さない)。
+fn discarded_by_type(tk: &crate::types::TypeCk, d: &Def) -> Vec<usize> {
+    let Some(body) = &d.body else { return vec![] };
+    let mut all = vec![];
+    walk(body, &mut all);
+    // 局所名 (引数と `PBind`)。`v.pop()` は `Call` の経路 `["v", "pop"]` として parse され、先頭が
+    // 局所名のものだけがレシーバのあるメソッド呼び出し (型検査器の `call` と同じ判定)。
+    let mut locals: std::collections::HashSet<String> = d.params.iter().map(|p| p.0.clone()).collect();
+    for v in &all {
+        if nname(v) == "PBind" {
+            locals.insert(st(&nf(v)[0]));
+        }
+    }
+    let is_method_call = |e: &V| match nname(e) {
+        "MCall" => true,
+        "Call" => {
+            let callee = &nf(e)[0];
+            nname(callee) == "Path" && {
+                let segs = strs(&nf(callee)[0]);
+                segs.len() >= 2 && locals.contains(&segs[0])
+            }
+        }
+        _ => false,
+    };
+    let mut lines = vec![];
+    for b in all.iter().filter(|v| nname(v) == "Block") {
+        let stmts = items(&nf(b)[0]);
+        for s in stmts.iter().take(stmts.len().saturating_sub(1)) {
+            if nname(s) != "ExprStmt" || !is_method_call(&nf(s)[0]) {
+                continue;
+            }
+            let Some(et) = tk.expr_type(&d.name, crate::parser::nid(&nf(s)[0])) else { continue };
+            let unit = matches!(et.ty, crate::types::Ty::Unit | crate::types::Ty::Never)
+                || matches!(&et.ty, crate::types::Ty::Tuple(xs) if xs.is_empty());
+            if !unit && ty_fully_known(&et.ty) {
+                lines.push(nline(s));
+            }
+        }
+    }
+    lines
+}
+
+/// 型が具体的に決まっているか (未知・型変数・型パラメータ・クロージャを含まない)。
+fn ty_fully_known(t: &crate::types::Ty) -> bool {
+    use crate::types::Ty;
+    match t {
+        Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Closure { .. } => false,
+        Ty::Never | Ty::Unit | Ty::Prim(_) | Ty::Const(_) | Ty::Dyn(_) => true,
+        Ty::Named(_, xs) | Ty::Tuple(xs) => xs.iter().all(ty_fully_known),
+        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => ty_fully_known(x),
+    }
+}
+
 pub(crate) fn is_pat(v: &V) -> bool {
     matches!(nname(v), "PWild" | "PBind" | "PLit" | "PPath" | "PTuple" | "PVariant" | "PStruct" | "PRef")
 }
@@ -1958,6 +2016,17 @@ impl<'a> Checker<'a> {
         // 確認 (隠し機能): `KSN_DUMP_TYPES=1` のとき式 ID ごとの型表を stderr に出す (types.rs `dump_types`)。
         if std::env::var_os("KSN_DUMP_TYPES").is_some() {
             eprint!("{}", tk.dump_types());
+        }
+        // 4.6 (型表): 型推論が型を決めた式文の捨て。`ty_of` では決まらない形 (標準ライブラリの
+        // ジェネリック型のメソッドの戻り値、`v.pop();` の `Option` など) をここで拾う。
+        for &i in &user {
+            let d = self.def(i);
+            if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" {
+                self.d = i;
+                for line in discarded_by_type(&tk, d) {
+                    self.tdiag("E2042", "a value other than () is discarded; use core.mem.drop(x)".into(), line);
+                }
+            }
         }
         self.diags.extend(tk.diags);
         // 型で解決できた呼び出しの効果 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡した
