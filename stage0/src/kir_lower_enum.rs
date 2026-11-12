@@ -60,7 +60,8 @@ impl<'a> Lw<'a> {
         }
         if segs.len() == 2 && checked_op(&segs[1]).is_some() {
             if let Some(s) = self.lookup(&segs[0]) {
-                let recv = self.slots[s].0;
+                // 参照を取られた局所は `load` を通して値を読む (`read_slot`)。
+                let recv = self.read_slot(s);
                 let args = items(&f[1]).to_vec();
                 return Some(self.checked_with(e, recv, &segs[1], &args));
             }

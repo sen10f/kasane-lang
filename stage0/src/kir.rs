@@ -1,7 +1,9 @@
 //! KIR: 型付き・単相化済みの中間表現 (設計_KIR.md 2 章、段階 1)。
 //!
 //! - 1 関数 = 1 つの単相インスタンス (`key`)。値は SSA (`%n` は 1 回だけ定義) で、制御の合流はブロック引数で渡す。
-//! - 型は整数 (`i8`..`i64`、`isize`、`u8`..`u64`、`usize`)、`bool`、`unit` と、組み込みの `Option<P>` / `Result<T, E>` (ペイロードはスカラー。設計_KIR.md 11 章)。128 ビット整数と他の集成体は未対応。
+//! - 型は整数 (`i8`..`i128`、`isize`、`u8`..`u128`、`usize`)、浮動小数 (`f32` / `f64`)、`bool`、`unit`、参照 (`ref<T>` / `mutref<T>`)、
+//!   組み込みの `Option<P>` / `Result<T, E>` (ペイロードはスカラー。設計_KIR.md 11 章)。集成体は未対応。
+//!   値は全部 `i128` の 1 語で持つ。`u128` はビットパターン、浮動小数は IEEE のビット列 (`f32` は下位 32 ビット)。
 //! - テキスト形式は `kir 1` (設計_KIR.md 7 章 18: 版が違えば読み込みを拒否する)。
 //!   `print_module` の出力を `parse_module` で読み直すと、同じ構造になり、もう一度 `print_module` すると同じ文字列になる。
 //! - `verify_module` は SSA の一意性、型、ブロック引数の個数、効果 (trap の有無、`uses`、`panics`) を検査する。
@@ -20,12 +22,16 @@ pub enum Ty {
     I16,
     I32,
     I64,
+    I128,
     Isize,
     U8,
     U16,
     U32,
     U64,
+    U128,
     Usize,
+    F32,
+    F64,
     Bool,
     Unit,
     /// 参照 `ref<T>` (false) / `mutref<T>` (true)。値はアドレス (参照実行器ではセルの番号)。
@@ -84,12 +90,13 @@ impl Pointee {
             Ty::U64 => Pointee::U64,
             Ty::Usize => Pointee::Usize,
             Ty::Bool => Pointee::Bool,
-            Ty::Unit | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => return None,
+            Ty::I128 | Ty::U128 | Ty::F32 | Ty::F64 | Ty::Unit | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => return None,
         })
     }
 }
 
 /// Option / Result のペイロードの型。スカラーだけ (ネストした Option や集成体は持てない)。
+/// 128 ビット整数は値の枠 (下位 64 ビットと tag の bit) に入らないので持てない (`Pay::of` が `None`)。浮動小数は 64 ビット以内なので持てる。
 /// `Ty` が `Copy` のままで入れ子を作れないように、スカラーを別の列挙で持つ。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pay {
@@ -103,21 +110,27 @@ pub enum Pay {
     U32,
     U64,
     Usize,
+    F32,
+    F64,
     Bool,
     Unit,
 }
 
-const ALL_TYS: [Ty; 12] = [
+const ALL_TYS: [Ty; 16] = [
     Ty::I8,
     Ty::I16,
     Ty::I32,
     Ty::I64,
+    Ty::I128,
     Ty::Isize,
     Ty::U8,
     Ty::U16,
     Ty::U32,
     Ty::U64,
+    Ty::U128,
     Ty::Usize,
+    Ty::F32,
+    Ty::F64,
     Ty::Bool,
     Ty::Unit,
 ];
@@ -140,6 +153,8 @@ impl Pay {
             Pay::U32 => Ty::U32,
             Pay::U64 => Ty::U64,
             Pay::Usize => Ty::Usize,
+            Pay::F32 => Ty::F32,
+            Pay::F64 => Ty::F64,
             Pay::Bool => Ty::Bool,
             Pay::Unit => Ty::Unit,
         }
@@ -158,9 +173,11 @@ impl Pay {
             Ty::U32 => Pay::U32,
             Ty::U64 => Pay::U64,
             Ty::Usize => Pay::Usize,
+            Ty::F32 => Pay::F32,
+            Ty::F64 => Pay::F64,
             Ty::Bool => Pay::Bool,
             Ty::Unit => Pay::Unit,
-            Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..) => return None,
+            Ty::I128 | Ty::U128 | Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..) => return None,
         })
     }
 }
@@ -185,6 +202,9 @@ pub fn show_value(t: Ty, v: i128) -> String {
     match t {
         Ty::Bool => (v != 0).to_string(),
         Ty::Unit => "()".to_string(),
+        Ty::U128 => (v as u128).to_string(),
+        Ty::F32 => f32::from_bits(v as u32).to_string(),
+        Ty::F64 => f64::from_bits(v as u64).to_string(),
         Ty::Opt(p) => {
             if v & TAG_BIT != 0 {
                 format!("Some({})", show_value(p.ty(), payload_of(p.ty(), v)))
@@ -210,12 +230,16 @@ impl Ty {
             Ty::I16 => "i16".into(),
             Ty::I32 => "i32".into(),
             Ty::I64 => "i64".into(),
+            Ty::I128 => "i128".into(),
             Ty::Isize => "isize".into(),
             Ty::U8 => "u8".into(),
             Ty::U16 => "u16".into(),
             Ty::U32 => "u32".into(),
             Ty::U64 => "u64".into(),
+            Ty::U128 => "u128".into(),
             Ty::Usize => "usize".into(),
+            Ty::F32 => "f32".into(),
+            Ty::F64 => "f64".into(),
             Ty::Bool => "bool".into(),
             Ty::Unit => "unit".into(),
             Ty::Ref(m, p) => format!("{}<{}>", if m { "mutref" } else { "ref" }, p.ty().name()),
@@ -246,22 +270,26 @@ impl Ty {
         None
     }
 
-    /// 整数型 (`i8`..`usize`)。`bool` / `unit` / `Option` / `Result` / 参照は含まない。
+    /// 整数型 (`i8`..`usize`、`i128` / `u128` を含む)。`bool` / `unit` / 浮動小数 / `Option` / `Result` / 参照は含まない。
     pub fn is_int(self) -> bool {
-        !matches!(self, Ty::Bool | Ty::Unit | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..))
+        !matches!(self, Ty::Bool | Ty::Unit | Ty::F32 | Ty::F64 | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..))
+    }
+
+    pub fn is_float(self) -> bool {
+        matches!(self, Ty::F32 | Ty::F64)
     }
 
     pub fn is_ref(self) -> bool {
         matches!(self, Ty::Ref(..))
     }
 
-    /// スカラー (整数・bool・unit)。`Option` / `Result` / 参照は含まない。`Cmp` や定数の型はこれに限る。
+    /// スカラー (整数・浮動小数・bool・unit)。`Option` / `Result` / 参照は含まない。`Cmp` や定数の型はこれに限る。
     pub fn is_scalar(self) -> bool {
         !matches!(self, Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..))
     }
 
     pub fn signed(self) -> bool {
-        matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize)
+        matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::I128 | Ty::Isize)
     }
 
     /// 整数の幅 (ビット)。`isize` / `usize` は 64 ビット。
@@ -269,30 +297,45 @@ impl Ty {
         match self {
             Ty::I8 | Ty::U8 => 8,
             Ty::I16 | Ty::U16 => 16,
-            Ty::I32 | Ty::U32 => 32,
+            Ty::I32 | Ty::U32 | Ty::F32 => 32,
+            Ty::I128 | Ty::U128 => 128,
             _ => 64,
         }
     }
 
+    /// 最小値。`u128` は 0。
     pub fn min(self) -> i128 {
-        if self.signed() {
-            -(1i128 << (self.bits() - 1))
-        } else {
-            0
+        match self {
+            Ty::I128 => i128::MIN,
+            t if t.signed() => -(1i128 << (t.bits() - 1)),
+            _ => 0,
         }
     }
 
+    /// 最大値。`u128` の最大値は `i128` で表せないので、ビットパターン (-1) を返す (木走査 `tmax` と同じ)。
     pub fn max(self) -> i128 {
-        if self.signed() {
-            (1i128 << (self.bits() - 1)) - 1
-        } else {
-            (1i128 << self.bits()) - 1
+        match self {
+            Ty::I128 => i128::MAX,
+            Ty::U128 => -1,
+            t if t.signed() => (1i128 << (t.bits() - 1)) - 1,
+            t => (1i128 << t.bits()) - 1,
         }
     }
 
-    /// 2 の補数の切り捨て (`wrapping_*` の結果を型の範囲に収める)。
+    /// 整数の値 `v` が型の範囲にあるか。`u128` は値 (ビットパターン) を範囲外とみなさない (`v` が非負のとき、呼び出し側が確かめる)。
+    pub fn in_range(self, v: i128) -> bool {
+        match self {
+            Ty::U128 => v >= 0,
+            _ => v >= self.min() && v <= self.max(),
+        }
+    }
+
+    /// 2 の補数の切り捨て (`wrapping_*` の結果を型の範囲に収める)。128 ビットは値をそのまま持つ。
     pub fn wrap(self, v: i128) -> i128 {
         let b = self.bits();
+        if b == 128 {
+            return v;
+        }
         let x = v & ((1i128 << b) - 1);
         if self.signed() && (x >> (b - 1)) & 1 == 1 {
             x - (1i128 << b)
@@ -324,11 +367,99 @@ impl Aop {
     }
 }
 
-/// 溢れの扱い。`Wrap` は `wrapping_*` (溢れを切り捨てる)、`Trap` は `+ - * / %` (溢れで panic。現行どおり)。
+/// 溢れの扱い。`Wrap` は `wrapping_*` (溢れを切り捨てる)、`Trap` は `+ - * / %` (溢れで panic。現行どおり)、
+/// `Sat` は `saturating_*` (型の範囲に飽和させる)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Wrap,
     Trap,
+    Sat,
+}
+
+/// 浮動小数の 1 引数の演算 (`f32` は `f64` へ広げて計算し、結果を `f32` へ丸める。木走査と同じ)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FUn {
+    Neg,
+    Abs,
+    Sqrt,
+    Floor,
+    Ceil,
+    Trunc,
+    RoundEven,
+    Sin,
+    Cos,
+    Tan,
+    Exp,
+    Ln,
+    IsNan,
+    IsFinite,
+}
+
+impl FUn {
+    pub fn name(self) -> &'static str {
+        match self {
+            FUn::Neg => "fneg",
+            FUn::Abs => "fabs",
+            FUn::Sqrt => "fsqrt",
+            FUn::Floor => "ffloor",
+            FUn::Ceil => "fceil",
+            FUn::Trunc => "ftrunc",
+            FUn::RoundEven => "fround_even",
+            FUn::Sin => "fsin",
+            FUn::Cos => "fcos",
+            FUn::Tan => "ftan",
+            FUn::Exp => "fexp",
+            FUn::Ln => "fln",
+            FUn::IsNan => "fis_nan",
+            FUn::IsFinite => "fis_finite",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<FUn> {
+        const ALL: [FUn; 14] = [
+            FUn::Neg,
+            FUn::Abs,
+            FUn::Sqrt,
+            FUn::Floor,
+            FUn::Ceil,
+            FUn::Trunc,
+            FUn::RoundEven,
+            FUn::Sin,
+            FUn::Cos,
+            FUn::Tan,
+            FUn::Exp,
+            FUn::Ln,
+            FUn::IsNan,
+            FUn::IsFinite,
+        ];
+        ALL.iter().copied().find(|f| f.name() == s)
+    }
+}
+
+/// 浮動小数の 2 引数の演算。`Powi` の第 2 引数だけは `i32` (指数)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FBin {
+    Max,
+    Min,
+    Rem,
+    Atan2,
+    Powi,
+}
+
+impl FBin {
+    pub fn name(self) -> &'static str {
+        match self {
+            FBin::Max => "fmax",
+            FBin::Min => "fmin",
+            FBin::Rem => "frem",
+            FBin::Atan2 => "fatan2",
+            FBin::Powi => "fpowi",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<FBin> {
+        [FBin::Max, FBin::Min, FBin::Rem, FBin::Atan2, FBin::Powi].into_iter().find(|f| f.name() == s)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -370,12 +501,28 @@ pub enum Op {
     Arith { op: Aop, mode: Mode, a: VId, b: VId },
     /// 比較。`ty` は被演算子の型 (結果は `bool`)。
     Cmp { cc: Cc, ty: Ty, a: VId, b: VId },
-    /// 単項マイナス (符号付き整数。溢れで trap)。
-    Neg { a: VId },
-    /// `bool` の否定。
+    /// 単項マイナス (整数)。`Trap` は符号付き整数で溢れを panic、`Wrap` は `wrapping_neg` (全整数)。
+    Neg { a: VId, mode: Mode },
+    /// 浮動小数の算術 `+ - * /` (panic しない)。結果の型 (`Inst::ty`) が演算の型。`Aop::Rem` は使わない。
+    FArith { op: Aop, a: VId, b: VId },
+    /// 整数のシフト (`wrapping_shl` / `wrapping_shr`)。量 `n` は `u32`。量は型幅で剰余する。
+    Shift { left: bool, a: VId, n: VId },
+    /// 整数の `max` / `min`。
+    MinMax { max: bool, a: VId, b: VId },
+    /// 浮動小数の 1 引数の演算。`src` は被演算子の型 (`IsNan` などは結果が `bool`)。
+    FUn { f: FUn, src: Ty, a: VId },
+    /// 浮動小数の 2 引数の演算 (`Powi` だけは第 2 引数が `i32`)。
+    FBin { f: FBin, a: VId, b: VId },
+    /// 数値の変換。`src` から結果の型 (`Inst::ty`) へ。整数どうしは値を保つ (型の範囲に入る場合だけ検査が通す)。
+    Conv { src: Ty, a: VId },
+    /// ビット列の再解釈 (`to_bits` / `from_bits`)。`src` と結果の型は同じ幅。値はそのまま。
+    Bitcast { src: Ty, a: VId },
+    /// `bool` の否定 (`not.bool`) と整数のビット反転 (`not.<int>`)。
     Not(VId),
-    /// `bool` の非短絡の論理演算 (`& | ^`)。
+    /// 非短絡の論理・ビット演算 (`& | ^`)。`bool` と整数の両方。
     Bool(BoolOp, VId, VId),
+    /// ビットの数え上げ (`count_ones` / `leading_zeros` / `trailing_zeros`)。結果は `u32`。`src` は被演算子の整数型。
+    BitCount { k: BitK, src: Ty, a: VId },
     /// 直接呼び出し (単相インスタンスの鍵で指す)。
     Call { callee: String, args: Vec<VId> },
     /// スタックスロットの確保 (結果は `mutref<T>`、`T` は `Inst::ty` の指す先)。関数の入口ブロックに置く。
@@ -401,6 +548,28 @@ pub enum Op {
     Payload(VId),
     /// `checked_<op>` (結果の型 `Option<P>`、被演算子は `P`)。溢れと 0 除算は `None`。panic しないので `panics never` でも使える。
     Checked { op: Aop, a: VId, b: VId },
+}
+
+/// `BitCount` の種類。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitK {
+    Ones,
+    Leading,
+    Trailing,
+}
+
+impl BitK {
+    pub fn name(self) -> &'static str {
+        match self {
+            BitK::Ones => "count_ones",
+            BitK::Leading => "leading_zeros",
+            BitK::Trailing => "trailing_zeros",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<BitK> {
+        [BitK::Ones, BitK::Leading, BitK::Trailing].into_iter().find(|k| k.name() == s)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -514,12 +683,22 @@ fn fmt_target(t: &Target) -> String {
     format!("b{}({})", t.0, fmt_vals(&t.1))
 }
 
+/// 浮動小数の定数を、読み直すと同じ値になる十進の形で出す (`{:?}` は最短の往復表記)。
+fn fmt_float_const(ty: Ty, bits: i128) -> String {
+    match ty {
+        Ty::F32 => format!("{:?}", f32::from_bits(bits as u32)),
+        _ => format!("{:?}", f64::from_bits(bits as u64)),
+    }
+}
+
 fn fmt_inst(i: &Inst) -> String {
     let body = match &i.op {
         Op::Const(v) => {
             let lit = match i.ty {
                 Ty::Bool => (if *v != 0 { "true" } else { "false" }).to_string(),
                 Ty::Unit => "()".to_string(),
+                Ty::U128 => (*v as u128).to_string(),
+                Ty::F32 | Ty::F64 => fmt_float_const(i.ty, *v),
                 Ty::Opt(_) => "none".to_string(),
                 _ => v.to_string(),
             };
@@ -532,20 +711,44 @@ fn fmt_inst(i: &Inst) -> String {
         Op::Payload(a) => format!("payload {}", fmt_val(*a)),
         Op::Checked { op, a, b } => format!("checked.{} {}", op.name(), fmt_vals(&[*a, *b])),
         Op::Arith { op, mode, a, b } => {
-            let m = if *mode == Mode::Wrap { "wrap" } else { "trap" };
+            let m = match mode {
+                Mode::Wrap => "wrap",
+                Mode::Trap => "trap",
+                Mode::Sat => "sat",
+            };
             format!("{}.{}.{} {}", op.name(), i.ty.name(), m, fmt_vals(&[*a, *b]))
         }
-        Op::Cmp { cc, ty, a, b } => format!("icmp.{}.{} {}", cc.name(), ty.name(), fmt_vals(&[*a, *b])),
-        Op::Neg { a } => format!("neg.{}.trap {}", i.ty.name(), fmt_val(*a)),
-        Op::Not(a) => format!("not.bool {}", fmt_val(*a)),
+        Op::Cmp { cc, ty, a, b } => {
+            let p = if ty.is_float() { "fcmp" } else { "icmp" };
+            format!("{}.{}.{} {}", p, cc.name(), ty.name(), fmt_vals(&[*a, *b]))
+        }
+        Op::Neg { a, mode } => {
+            let m = if *mode == Mode::Wrap { "wrap" } else { "trap" };
+            format!("neg.{}.{} {}", i.ty.name(), m, fmt_val(*a))
+        }
+        Op::FArith { op, a, b } => format!("f{}.{} {}", op.name(), i.ty.name(), fmt_vals(&[*a, *b])),
+        Op::Shift { left, a, n } => {
+            let m = if *left { "shl" } else { "shr" };
+            format!("{}.{}.wrap {}", m, i.ty.name(), fmt_vals(&[*a, *n]))
+        }
+        Op::MinMax { max, a, b } => {
+            let m = if *max { "max" } else { "min" };
+            format!("{}.{} {}", m, i.ty.name(), fmt_vals(&[*a, *b]))
+        }
+        Op::FUn { f, src, a } => format!("{}.{} {}", f.name(), src.name(), fmt_val(*a)),
+        Op::FBin { f, a, b } => format!("{}.{} {}", f.name(), i.ty.name(), fmt_vals(&[*a, *b])),
+        Op::Conv { src, a } => format!("conv.{}.{} {}", i.ty.name(), src.name(), fmt_val(*a)),
+        Op::Bitcast { src, a } => format!("bitcast.{}.{} {}", i.ty.name(), src.name(), fmt_val(*a)),
+        Op::Not(a) => format!("not.{} {}", i.ty.name(), fmt_val(*a)),
         Op::Bool(op, a, b) => {
             let n = match op {
                 BoolOp::And => "and",
                 BoolOp::Or => "or",
                 BoolOp::Xor => "xor",
             };
-            format!("{}.bool {}", n, fmt_vals(&[*a, *b]))
+            format!("{}.{} {}", n, i.ty.name(), fmt_vals(&[*a, *b]))
         }
+        Op::BitCount { k, src, a } => format!("{}.{} {}", k.name(), src.name(), fmt_val(*a)),
         Op::Call { callee, args } => format!("call {}({})", callee, fmt_vals(args)),
         Op::Alloca => "alloca".to_string(),
         Op::Load(p) => format!("load {}", fmt_val(*p)),
@@ -712,8 +915,11 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
                 (Ty::Bool, "true") => 1,
                 (Ty::Bool, "false") => 0,
                 (Ty::Unit, "()") => 0,
+                (Ty::U128, x) => x.parse::<u128>().map_err(|_| perr(line, format!("整数 {} が不正", x)))? as i128,
                 (Ty::Opt(_), "none") => 0,
                 (t, x) if t.is_int() => x.parse::<i128>().map_err(|_| perr(line, format!("整数 {} が不正", x)))?,
+                (Ty::F32, x) => x.parse::<f32>().map_err(|_| perr(line, format!("浮動小数 {} が不正", x)))?.to_bits() as i128,
+                (Ty::F64, x) => x.parse::<f64>().map_err(|_| perr(line, format!("浮動小数 {} が不正", x)))?.to_bits() as i128,
                 _ => return Err(perr(line, format!("型 {} の定数 {} が不正", ty.name(), rest))),
             };
             Ok(Op::Const(v))
@@ -727,18 +933,26 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             let v = operands(2)?;
             Ok(Op::Checked { op: parse_aop(name).unwrap(), a: v[0], b: v[1] })
         }
-        ("icmp", [cc, t]) => {
+        (p @ ("icmp" | "fcmp"), [cc, t]) => {
             let cc = parse_cc(cc).ok_or_else(|| perr(line, format!("比較 {} が不正", cc)))?;
             let oty = parse_ty(t, line)?;
+            if (p == "fcmp") != oty.is_float() {
+                return Err(perr(line, format!("{} の被演算子の型 {} と命令が合わない", p, oty.name())));
+            }
             let v = operands(2)?;
             Ok(Op::Cmp { cc, ty: oty, a: v[0], b: v[1] })
         }
-        ("neg", [t, "trap"]) => {
+        ("neg", [t, m]) if matches!(*m, "trap" | "wrap") => {
             same_ty(t)?;
-            Ok(Op::Neg { a: operands(1)?[0] })
+            let mode = if *m == "wrap" { Mode::Wrap } else { Mode::Trap };
+            Ok(Op::Neg { a: operands(1)?[0], mode })
         }
-        ("not", ["bool"]) => Ok(Op::Not(operands(1)?[0])),
-        (name @ ("and" | "or" | "xor"), ["bool"]) => {
+        ("not", [t]) => {
+            same_ty(t)?;
+            Ok(Op::Not(operands(1)?[0]))
+        }
+        (name @ ("and" | "or" | "xor"), [t]) => {
+            same_ty(t)?;
             let op = match name {
                 "and" => BoolOp::And,
                 "or" => BoolOp::Or,
@@ -747,11 +961,64 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             let v = operands(2)?;
             Ok(Op::Bool(op, v[0], v[1]))
         }
-        (name, [t, m]) if parse_aop(name).is_some() && matches!(*m, "wrap" | "trap") => {
+        (name, [t, m]) if parse_aop(name).is_some() && matches!(*m, "wrap" | "trap" | "sat") => {
             same_ty(t)?;
             let v = operands(2)?;
-            let mode = if *m == "wrap" { Mode::Wrap } else { Mode::Trap };
+            let mode = match *m {
+                "wrap" => Mode::Wrap,
+                "trap" => Mode::Trap,
+                _ => Mode::Sat,
+            };
             Ok(Op::Arith { op: parse_aop(name).unwrap(), mode, a: v[0], b: v[1] })
+        }
+        (name, [t]) if name.starts_with('f') && matches!(parse_aop(&name[1..]), Some(Aop::Add | Aop::Sub | Aop::Mul | Aop::Div)) => {
+            same_ty(t)?;
+            let v = operands(2)?;
+            Ok(Op::FArith { op: parse_aop(&name[1..]).unwrap(), a: v[0], b: v[1] })
+        }
+        (name @ ("shl" | "shr"), [t, "wrap"]) => {
+            same_ty(t)?;
+            let v = operands(2)?;
+            Ok(Op::Shift { left: name == "shl", a: v[0], n: v[1] })
+        }
+        (name @ ("max" | "min"), [t]) if Ty::parse(t).is_some_and(|x| x.is_int()) => {
+            same_ty(t)?;
+            let v = operands(2)?;
+            Ok(Op::MinMax { max: name == "max", a: v[0], b: v[1] })
+        }
+        (name, [t]) if FUn::parse(name).is_some() => {
+            let f = FUn::parse(name).unwrap();
+            let src = parse_ty(t, line)?;
+            if !src.is_float() {
+                return Err(perr(line, format!("{} の被演算子は浮動小数のはず", name)));
+            }
+            if matches!(f, FUn::IsNan | FUn::IsFinite) {
+                if ty != Ty::Bool {
+                    return Err(perr(line, format!("{} の結果は bool のはず", name)));
+                }
+            } else {
+                same_ty(t)?;
+            }
+            Ok(Op::FUn { f, src, a: operands(1)?[0] })
+        }
+        (name, [t]) if FBin::parse(name).is_some() => {
+            same_ty(t)?;
+            let v = operands(2)?;
+            Ok(Op::FBin { f: FBin::parse(name).unwrap(), a: v[0], b: v[1] })
+        }
+        (name, [t]) if BitK::parse(name).is_some() => {
+            let k = BitK::parse(name).unwrap();
+            let src = parse_ty(t, line)?;
+            if !src.is_int() || ty != Ty::U32 {
+                return Err(perr(line, format!("{} は整数の被演算子と u32 の結果のはず", name)));
+            }
+            Ok(Op::BitCount { k, src, a: operands(1)?[0] })
+        }
+        ("conv" | "bitcast", [dst, src]) => {
+            same_ty(dst)?;
+            let src = parse_ty(src, line)?;
+            let a = operands(1)?[0];
+            Ok(if mn == "conv" { Op::Conv { src, a } } else { Op::Bitcast { src, a } })
         }
         ("alloca", []) => Ok(Op::Alloca),
         ("load", []) => Ok(Op::Load(operands(1)?[0])),
@@ -1013,14 +1280,61 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if !i.ty.is_int() {
                             return Err(format!("算術の結果の型 {} は整数ではない", i.ty.name()));
                         }
-                        if *mode == Mode::Wrap && !matches!(op, Aop::Add | Aop::Sub | Aop::Mul) {
-                            return Err(format!("{} に wrap は使えない", op.name()));
+                        if *mode != Mode::Trap && !matches!(op, Aop::Add | Aop::Sub | Aop::Mul) {
+                            return Err(format!("{} に {} は使えない", op.name(), if *mode == Mode::Wrap { "wrap" } else { "sat" }));
                         }
                         if *mode == Mode::Trap && !f.may_panic {
                             return Err("panics never の関数に trap 付きの算術".into());
                         }
                         if ty_of(*a)? != i.ty || ty_of(*b)? != i.ty {
                             return Err("算術の被演算子の型が結果と合わない".into());
+                        }
+                    }
+                    Op::FArith { op, a, b } => {
+                        if !i.ty.is_float() || !matches!(op, Aop::Add | Aop::Sub | Aop::Mul | Aop::Div) {
+                            return Err("浮動小数の算術は f32 / f64 の + - * / だけ".into());
+                        }
+                        if ty_of(*a)? != i.ty || ty_of(*b)? != i.ty {
+                            return Err("浮動小数の被演算子の型が結果と合わない".into());
+                        }
+                    }
+                    Op::Shift { a, n, .. } => {
+                        if !i.ty.is_int() || ty_of(*a)? != i.ty || ty_of(*n)? != Ty::U32 {
+                            return Err("シフトは整数どうし (量は u32) のはず".into());
+                        }
+                    }
+                    Op::MinMax { a, b, .. } => {
+                        if !i.ty.is_int() || ty_of(*a)? != i.ty || ty_of(*b)? != i.ty {
+                            return Err("max / min は同じ整数型のはず".into());
+                        }
+                    }
+                    Op::FUn { f: fun, src, a } => {
+                        if !src.is_float() || ty_of(*a)? != *src {
+                            return Err("浮動小数の単項演算の被演算子の型が合わない".into());
+                        }
+                        let want = if matches!(fun, FUn::IsNan | FUn::IsFinite) { Ty::Bool } else { *src };
+                        if i.ty != want {
+                            return Err(format!("{} の結果の型は {} のはず", fun.name(), want.name()));
+                        }
+                    }
+                    Op::FBin { f: fb, a, b } => {
+                        if !i.ty.is_float() || ty_of(*a)? != i.ty {
+                            return Err("浮動小数の 2 引数演算の被演算子の型が合わない".into());
+                        }
+                        let bt = if *fb == FBin::Powi { Ty::I32 } else { i.ty };
+                        if ty_of(*b)? != bt {
+                            return Err(format!("{} の第 2 引数の型は {} のはず", fb.name(), bt.name()));
+                        }
+                    }
+                    Op::Conv { src, a } => {
+                        if ty_of(*a)? != *src || !conv_ok(*src, i.ty) {
+                            return Err(format!("{} から {} への変換は使えない", src.name(), i.ty.name()));
+                        }
+                    }
+                    Op::Bitcast { src, a } => {
+                        let ok = matches!((src, i.ty), (Ty::F64, Ty::U64) | (Ty::U64, Ty::F64) | (Ty::F32, Ty::U32) | (Ty::U32, Ty::F32));
+                        if !ok || ty_of(*a)? != *src {
+                            return Err(format!("{} から {} へのビット再解釈は使えない", src.name(), i.ty.name()));
                         }
                     }
                     Op::Cmp { cc, ty, a, b } => {
@@ -1034,25 +1348,39 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("比較の被演算子の型が合わない".into());
                         }
                     }
-                    Op::Neg { a } => {
-                        if !(i.ty.is_int() && i.ty.signed()) {
-                            return Err("符号なし整数や bool の単項 - は使えない".into());
+                    Op::BitCount { src, a, .. } => {
+                        if !src.is_int() || i.ty != Ty::U32 || ty_of(*a)? != *src {
+                            return Err("count_ones などは整数の被演算子と u32 の結果のはず".into());
                         }
-                        if !f.may_panic {
-                            return Err("panics never の関数に trap 付きの neg".into());
+                    }
+                    Op::Neg { a, mode } => {
+                        if !i.ty.is_int() {
+                            return Err("単項 - は整数の型のはず".into());
+                        }
+                        match mode {
+                            Mode::Trap => {
+                                if !i.ty.signed() {
+                                    return Err("符号なし整数の単項 - は使えない".into());
+                                }
+                                if !f.may_panic {
+                                    return Err("panics never の関数に trap 付きの neg".into());
+                                }
+                            }
+                            Mode::Wrap => {}
+                            Mode::Sat => return Err("neg に sat は使えない".into()),
                         }
                         if ty_of(*a)? != i.ty {
                             return Err("neg の被演算子の型が合わない".into());
                         }
                     }
                     Op::Not(a) => {
-                        if i.ty != Ty::Bool || ty_of(*a)? != Ty::Bool {
-                            return Err("not は bool のはず".into());
+                        if !(i.ty == Ty::Bool || i.ty.is_int()) || ty_of(*a)? != i.ty {
+                            return Err("not は bool か整数のはず".into());
                         }
                     }
                     Op::Bool(_, a, b) => {
-                        if i.ty != Ty::Bool || ty_of(*a)? != Ty::Bool || ty_of(*b)? != Ty::Bool {
-                            return Err("論理演算は bool のはず".into());
+                        if !(i.ty == Ty::Bool || i.ty.is_int()) || ty_of(*a)? != i.ty || ty_of(*b)? != i.ty {
+                            return Err("論理・ビット演算は同じ bool か整数の型のはず".into());
                         }
                     }
                     Op::Alloca => {
@@ -1148,11 +1476,53 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
 fn operands(op: &Op) -> Vec<VId> {
     match op {
         Op::Const(_) | Op::Alloca => vec![],
-        Op::Arith { a, b, .. } | Op::Cmp { a, b, .. } | Op::Bool(_, a, b) | Op::Checked { a, b, .. } => vec![*a, *b],
-        Op::Neg { a } | Op::Not(a) | Op::Load(a) | Op::AsShared(a) | Op::Reborrow(a) | Op::Some(a) | Op::Ok(a) | Op::Err(a) | Op::Tag(a) | Op::Payload(a) => vec![*a],
+        Op::Arith { a, b, .. }
+        | Op::Cmp { a, b, .. }
+        | Op::Bool(_, a, b)
+        | Op::Checked { a, b, .. }
+        | Op::FArith { a, b, .. }
+        | Op::MinMax { a, b, .. }
+        | Op::FBin { a, b, .. } => vec![*a, *b],
+        Op::Shift { a, n, .. } => vec![*a, *n],
         Op::Store { ptr, val } => vec![*ptr, *val],
+        Op::Neg { a, .. }
+        | Op::Not(a)
+        | Op::FUn { a, .. }
+        | Op::Conv { a, .. }
+        | Op::Bitcast { a, .. }
+        | Op::BitCount { a, .. }
+        | Op::Load(a)
+        | Op::AsShared(a)
+        | Op::Reborrow(a)
+        | Op::Some(a)
+        | Op::Ok(a)
+        | Op::Err(a)
+        | Op::Tag(a)
+        | Op::Payload(a) => vec![*a],
         Op::Call { args, .. } => args.clone(),
     }
+}
+
+/// 整数 `src` の値の集合が、整数 `dst` に含まれるか (`from_*` の変換は値を保つ組だけ許す)。
+fn int_into(src: Ty, dst: Ty) -> bool {
+    if src == Ty::U128 {
+        return false;
+    }
+    if dst == Ty::U128 {
+        return !src.signed();
+    }
+    if dst == Ty::I128 {
+        return true;
+    }
+    src.bits() <= 64 && src.min() >= dst.min() && src.max() <= dst.max()
+}
+
+/// 変換 `src -> dst` が KIR にあるか。整数どうしは `int_into`、整数・浮動小数から浮動小数へ、`f32` と `f64` の間。
+pub fn conv_ok(src: Ty, dst: Ty) -> bool {
+    if src.is_int() && dst.is_int() {
+        return int_into(src, dst);
+    }
+    (src.is_int() && dst.is_float()) || (src == Ty::F32 && dst == Ty::F64) || (src == Ty::F64 && dst == Ty::F32)
 }
 
 /// モジュールを検査する。違反のあった関数を (鍵, 理由) で返す。空なら正しい。

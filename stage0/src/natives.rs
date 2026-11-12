@@ -225,7 +225,13 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
                 "neg" => s.checked_neg(),
                 _ => return panic(format!("unknown integer operation {}.{}", ty, name)),
             };
-            return Ok(int(r.map_or(if (op == "sub" && o > 0) || (op == "neg" && s > 0) { lo } else { hi }, |v| v.clamp(lo, hi)), ty));
+            // 溢れの方向は真の結果の符号で決まる (和と差は被演算子 s の符号、積は符号の積、符号の反転は s が最小値のときだけ溢れて正になる)。
+            let below = match op {
+                "add" | "sub" => s < 0,
+                "mul" => (s < 0) != (o < 0),
+                _ => false,
+            };
+            return Ok(int(r.map_or(if below { lo } else { hi }, |v| v.clamp(lo, hi)), ty));
         }
         _ => {}
     }
@@ -255,16 +261,18 @@ fn float_op(name: &str, ty: &str, a: &[Val]) -> Res {
 }
 
 fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
+    // u128 はビットパターンで持つので、符号なしとして広げる。
+    let int_f64 = |i: i128, t: Option<&str>| if t == Some("u128") { i as u128 as f64 } else { i as f64 };
     let x = match a.first() {
         Some(Val::Float(f)) => *f,
         Some(Val::F32(f)) => *f as f64,
-        Some(Val::Int(i, _)) => *i as f64,
+        Some(Val::Int(i, t)) => int_f64(*i, *t),
         _ => 0.0,
     };
     let y = match a.get(1) {
         Some(Val::Float(f)) => *f,
         Some(Val::F32(f)) => *f as f64,
-        Some(Val::Int(i, _)) => *i as f64,
+        Some(Val::Int(i, t)) => int_f64(*i, *t),
         _ => 0.0,
     };
     if name == "from_bits" {
