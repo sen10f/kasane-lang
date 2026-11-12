@@ -220,6 +220,8 @@ pub struct TypeCk<'a> {
     closure_effs: HashMap<String, (BTreeSet<String>, bool, bool)>,
     /// 型で解決できた呼び出しの効果検査の義務 (check.rs が検査する)。
     pub eff_checks: Vec<EffCheck>,
+    /// 型推論の被覆率の計測 (`KSN_TYPE_COVERAGE=1` のときだけ `Some`。typecov.rs)。
+    pub cov: Option<crate::typecov::Cov>,
 }
 
 impl<'a> TypeCk<'a> {
@@ -238,7 +240,8 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_frames: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![] }
+        let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_frames: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -326,6 +329,83 @@ impl<'a> TypeCk<'a> {
         }
         self.check_dangling(body, &ret);
         self.finish_literals();
+        self.cov_flush();
+    }
+
+    /// 計測: この関数で記録した式の型を、型変数を解決してから分類し、集計に入れる (typecov.rs)。
+    /// 未知の根は、子 (レシーバなど) が既知なのに未知になったもの。
+    fn cov_flush(&mut self) {
+        let Some(mut cov) = self.cov.take() else { return };
+        let recs = cov.take_pending();
+        let cls: HashMap<usize, crate::typecov::Cls> = recs.iter().map(|r| (r.key, crate::typecov::classify(&self.deep(&r.ty)))).collect();
+        for r in &recs {
+            let c = cls[&r.key];
+            let unk = |s: &crate::typecov::Cls| matches!(s, crate::typecov::Cls::Unknown | crate::typecov::Cls::Var);
+            let local_unk = r.local.as_ref().map_or(false, |t| unk(&crate::typecov::classify(&self.deep(t))));
+            let propagated = c == crate::typecov::Cls::Unknown && (local_unk || r.subject.and_then(|k| cls.get(&k)).map_or(false, unk));
+            cov.add(r, c, !propagated);
+        }
+        self.cov = Some(cov);
+    }
+
+    /// 計測: `infer_node` の結果を記録する。種別と原因の手掛かりは AST から取る。
+    fn cov_record(&mut self, e: &V, t: &Ty) {
+        let kind = nname(e).to_string();
+        let f = nf(e);
+        let mut detail = String::new();
+        let mut subject: Option<&V> = None;
+        let mut local: Option<Ty> = None;
+        if !crate::typecov::HANDLED.contains(&kind.as_str()) {
+            detail = "規則なし".into();
+        }
+        match kind.as_str() {
+            "Path" => {
+                // 先頭が局所変数なら、残りは `path()` が型からのフィールドとしてたどる (型は変数から来る)。
+                let segs = strs(&f[0]);
+                local = self.lookup(&segs[0]);
+                detail = segs.join(".");
+            }
+            "Lit" => detail = st(&f[0]),
+            "Call" => {
+                if nname(&f[0]) == "Path" {
+                    let segs = strs(&nf(&f[0])[0]);
+                    detail = segs.join(".");
+                    local = self.lookup(&segs[0]);
+                } else {
+                    detail = "(式の呼び出し)".into();
+                }
+            }
+            "MCall" | "Field" => {
+                detail = format!(".{}", st(&f[1]));
+                subject = Some(&f[0]);
+            }
+            "Try" | "Index" => subject = Some(&f[0]),
+            "Unary" => {
+                detail = st(&f[0]);
+                subject = Some(&f[1]);
+            }
+            "Bin" => {
+                detail = st(&f[0]);
+                subject = Some(&f[1]);
+            }
+            "Block" => {
+                subject = items(&f[0]).last().filter(|s| nname(s) == "ExprStmt").map(|s| &nf(s)[0]);
+            }
+            "If" => subject = Some(&f[1]),
+            _ => {}
+        }
+        let rec = crate::typecov::Rec {
+            key: e as *const V as usize,
+            kind,
+            detail,
+            ty: t.clone(),
+            subject: subject.map(|s| s as *const V as usize),
+            local,
+            loc: format!("{}:{}", self.def().file, nline(e)),
+        };
+        if let Some(c) = self.cov.as_mut() {
+            c.record(rec);
+        }
     }
 
     /// 戻り値が参照のとき、局所変数 (引数以外) への参照を返していないか。
@@ -1032,7 +1112,16 @@ impl<'a> TypeCk<'a> {
     }
 
     // ------------------------------------------------------------ 式
+    /// 式を推論する。計測が有効なら結果を記録する (`cov_record`)。本体は `infer_node`。
     fn infer(&mut self, e: &V) -> Ty {
+        let t = self.infer_node(e);
+        if self.cov.is_some() {
+            self.cov_record(e, &t);
+        }
+        t
+    }
+
+    fn infer_node(&mut self, e: &V) -> Ty {
         let f = nf(e);
         match nname(e) {
             "Block" => {
