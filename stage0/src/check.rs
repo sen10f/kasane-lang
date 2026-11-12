@@ -1399,6 +1399,9 @@ impl<'a> Checker<'a> {
         // 4.1: `import` したモジュールの末尾名も可視なので、同名の束縛はシャドーイングになる。
         // 変数の解決には使わない (別集合)。
         self.import_tails = self.p.imports.get(&d.file).map(|m| m.keys().cloned().collect()).unwrap_or_default();
+        // 関数ヘッダの引数名も、`import` の末尾名と同名ならシャドーイング (E1021)。本体の束縛と同じ扱い。
+        let params: Vec<String> = d.params.iter().map(|p| p.0.clone()).collect();
+        self.shadow_check(&params, &HashSet::new(), di, 0);
         self.imported_modules = self
             .p
             .imports
