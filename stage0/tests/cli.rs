@@ -4394,6 +4394,212 @@ fn nll_rejects_a_mutation_of_the_borrowed_value_inside_a_loop_over_the_container
     assert!(bad, "{}", out);
 }
 
+// ---- 借用の残り: match の値を通じた運搬、タプル・配列リテラルへの保存 ----
+
+const NLL_PUSH1: [&str; 5] =
+    ["let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "match v.push(1u8) {", "    Ok(_u) => 0u8", "    Err(_e) => 1u8", "}"];
+const NLL_PUSH2: [&str; 4] = ["match v.push(2u8) {", "    Ok(_u) => 0u8", "    Err(_e) => 1u8", "}"];
+
+fn nll_lines(parts: &[&[&'static str]]) -> Vec<&'static str> {
+    parts.concat()
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_match_value_carries_the_arm_binding_borrow() {
+    // `let r = match v.first() { Some(rr) => rr, .. }`: 被検査式のローンが腕の束縛を経て r に移る。
+    let b = nll_lines(&[
+        &NLL_PUSH1,
+        &["let y = 9u8", "let r = match v.first() {", "    Some(rr) => rr", "    None => &y", "}"],
+        &NLL_PUSH2,
+        &["core.check.eq(*r, 1u8)"],
+    ]);
+    let (bad, out) = has_e3010("nll_match_val_bind", "", &b);
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `v` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_borrowed_by_any_arm_of_a_match_value() {
+    // 両腕の和: どちらの腕の借用も r が持つ。
+    let (bad, out) = has_e3010(
+        "nll_match_val_arms",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let b = true",
+            "let r = match b {",
+            "    true => &x",
+            "    false => &y",
+            "}",
+            "x = 3u8",
+            "core.check.eq(*r, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_nested_match_value_carries_a_borrow() {
+    let b = nll_lines(&[
+        &NLL_PUSH1,
+        &[
+            "let y = 9u8",
+            "let b = true",
+            "let r = match b {",
+            "    true => match v.first() {",
+            "        Some(rr) => rr",
+            "        None => &y",
+            "    }",
+            "    false => &y",
+            "}",
+        ],
+        &NLL_PUSH2,
+        &["core.check.eq(*r, 1u8)"],
+    ]);
+    let (bad, out) = has_e3010("nll_match_val_nested", "", &b);
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_match_value_that_copies_out_of_the_borrow() {
+    // 腕の値が `*rr` (コピー) なら、match の値は借用を運ばない。
+    let b = nll_lines(&[
+        &NLL_PUSH1,
+        &["let n = match v.first() {", "    Some(rr) => *rr", "    None => 0u8", "}"],
+        &NLL_PUSH2,
+        &["core.check.eq(n, 1u8)"],
+    ]);
+    let (bad, out) = has_e3010("nll_match_val_copy", "", &b);
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_match_value_that_is_dead_before_the_mutation() {
+    let b = nll_lines(&[
+        &NLL_PUSH1,
+        &["let y = 9u8", "let r = match v.first() {", "    Some(rr) => rr", "    None => &y", "}", "core.check.eq(*r, 1u8)"],
+        &NLL_PUSH2,
+        &["core.check.eq(v.len(), 2usize)"],
+    ]);
+    let (bad, out) = has_e3010("nll_match_val_dead", "", &b);
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_match_value_inside_a_loop_without_leaking_the_previous_iteration() {
+    let b = nll_lines(&[
+        &NLL_PUSH1,
+        &[
+            "let mut i = 0u8",
+            "while i < 3u8 {",
+            "    let n = match v.first() {",
+            "        Some(rr) => *rr",
+            "        None => 0u8",
+            "    }",
+            "    match v.push(n) {",
+            "        Ok(_u) => 0u8",
+            "        Err(_e) => 1u8",
+            "    }",
+            "    i = i + 1u8",
+            "}",
+            "core.check.eq(v.len(), 4usize)",
+        ],
+    ]);
+    let (bad, out) = has_e3010("nll_match_val_loop", "", &b);
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_borrow_is_stored_in_a_tuple_literal() {
+    let (bad, out) =
+        has_e3010("nll_store_tuple", "", &["let mut x = 1u8", "let t = (&x, 1u8)", "x = 2u8", "let _u = t"]);
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `t`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_borrow_is_stored_in_an_array_literal() {
+    let (bad, out) = has_e3010(
+        "nll_store_array",
+        "",
+        &["let mut x = 1u8", "let y = 2u8", "let a = [&x, &y]", "x = 5u8", "core.check.eq(*a[1], 2u8)"],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `a`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_tuple_with_a_borrow_is_pushed_into_a_vec() {
+    let (bad, out) = has_e3010(
+        "nll_store_push_tuple",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "match v.push((&x, 1u8)) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "x = 2u8",
+            "core.check.eq(v.len(), 1usize)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `v`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_inside_a_loop_over_an_array_literal_of_borrows() {
+    let (bad, out) = has_e3010(
+        "nll_store_array_iter",
+        "",
+        &["let mut x = 1u8", "let y = 2u8", "let a = [&x, &y]", "for r in a.iter() {", "    x = 5u8", "    core.check.eq(**r, 2u8)", "}"],
+    );
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_tuple_literal_that_holds_no_borrow_or_is_dead() {
+    let (bad, out) = has_e3010(
+        "nll_store_tuple_ok",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (x, 1u8)",
+            "let t2 = (&x, 1u8)",
+            "let _u = t2",
+            "x = 2u8",
+            "let _w = t",
+            "core.check.eq(x, 2u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_an_array_literal_overwritten_before_the_conflict() {
+    // 変数の再代入・要素の上書きで、保存されていた借用は死ぬ。
+    let (bad, out) = has_e3010(
+        "nll_store_array_ok",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let mut a = [&x, &y]",
+            "a = [&y, &y]",
+            "let mut c = [&x]",
+            "c[0] = &y",
+            "x = 5u8",
+            "core.check.eq(*a[0], 2u8)",
+            "core.check.eq(*c[0], 2u8)",
+            "core.check.eq(x, 5u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
 // ---- 部分 move の追跡 (4.1・4.4) ----
 
 fn pmove_check(name: &str, helper: &[&str], b: &[&str]) -> (bool, String) {
