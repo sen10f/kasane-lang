@@ -36,6 +36,11 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'verify_re
                    capture_output=True, text=True, encoding='utf-8', errors='replace')
 step('bench/verify_reference.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
 
+# 3b. LLM ベンチのハーネス (モック API でリトライ・採点・invalid 判定を検査。外部には接続しない)
+r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'test_harness.py')],
+                   capture_output=True, text=True, encoding='utf-8', errors='replace')
+step('bench/test_harness.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
+
 # 2. Rust 版のビルドと cargo test
 r = subprocess.run(['cargo', 'build', '--release'], cwd=os.path.join(ROOT, 'stage0'), capture_output=True, text=True,
                    encoding='utf-8', errors='replace')
