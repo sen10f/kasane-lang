@@ -1511,7 +1511,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         if args.len() != ptys.len() {
             return Err(format!("extern {}: argument count", d.name));
         }
-        let key = format!("extern:{}", d.link);
+        // 同じシンボルを別のシグネチャで宣言したとき、先の宣言を流用しない (declare_function が食い違いを報告し、バンドルへ退避する)。
+        let key = format!("extern:{}:{}", d.link, sig);
         let cached = self.ids.borrow().get(&key).copied();
         let id = match cached {
             Some(id) => id,
@@ -1645,7 +1646,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
             }
         }
-        let key = format!("extern:{}", d.link);
+        // 同じシンボルを別のシグネチャで宣言したとき、先の宣言を流用しない (declare_function が食い違いを報告し、バンドルへ退避する)。
+        let key = format!("extern:{}:{}", d.link, sig);
         let cached = self.ids.borrow().get(&key).copied();
         let id = match cached {
             Some(id) => id,

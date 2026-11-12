@@ -5106,6 +5106,42 @@ fn ffi_extern_calls_and_raw_pointers_work_natively() {
 }
 
 #[test]
+fn ffi_same_symbol_with_two_signatures_falls_back_without_a_crash() {
+    // 同じ link 名を別のシグネチャで 2 つ宣言しても、clif は先の宣言を流用しない (流用すると Cranelift が内部で panic した)。
+    // 食い違いは理由付きで報告され、バンドルへ退避する。
+    let src = "extern t.abs32(x: i32) -> i32 link \"abs\"
+
+extern t.abs64(x: i64) -> i64 link \"abs\"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = unsafe \"libc\" \"a\" {
+        t.abs32(0i32 - 5i32)
+    }
+    let b = unsafe \"libc\" \"b\" {
+        t.abs64(0i64 - 6i64)
+    }
+    core.check.eq(a, 5i32)
+    core.check.eq(b, 6i64)
+    std.io.print_line(\"ok\")
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("ffi_dup_symbol", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_dup", std::process::id()));
+    let b = Command::new(exe())
+        .args(["build", "--backend", "clif"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    let all = format!("{}{}", text(&b.stdout), text(&b.stderr));
+    assert!(!all.contains("panicked"), "{}", all);
+    assert!(all.contains("incompatible with previous declaration"), "{}", all);
+}
+
+#[test]
 fn ffi_interpreter_calls_c_functions_with_integer_arguments() {
     let src = "extern t.abs(x: i32) -> i32 link \"abs\"
 
