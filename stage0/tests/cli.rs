@@ -6031,3 +6031,136 @@ fn tyof_unit_method_results_and_unknown_types_stay_silent() {
     );
     assert!(!tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E3003"), "{}", out);
 }
+
+// 具体的な効果実引数を持つ `Fn` 境界 (`[]` / `[io]` / `never` / `may`) の検査 (4.3 / 5.1)。
+// 境界の検査は、渡したクロージャの確実な効果と境界の具体名を比べる (呼び出し元の `uses` とは別)。
+// 定義の並びは UTF-8 順 (E0020) にしてある。`BOUND_BAD` の呼び出し元 3 本だけが違反する。
+const BOUND_BAD: &str = r#"fn t.bad_let(s: t.S, x: u8) -> u8 uses [io] panics never
+    let c = fn(y: u8) -> u8 capture [&s] {
+        core.mem.drop(s.say())
+        y
+    }
+    t.bnd_none(c, x)
+end t.bad_let
+
+fn t.bad_panic(s: t.S, x: u8) -> u8 uses [] panics never
+    t.bnd_none(
+        fn(y: u8) -> u8 capture [&s] {
+            s.boom()
+        },
+        x,
+    )
+end t.bad_panic
+
+"#;
+
+// 境界の定義・推論された関数・覆われる / 効果のない呼び出し元・メソッド (どれも黙る)。
+const BOUND_REST: &str = r#"fn t.bnd_io[F: core.ops.Fn<(u8,), u8, [io], never>](f: F, x: u8) -> u8 uses [] panics never pub
+    f(x)
+end t.bnd_io
+
+fn t.bnd_may[F: core.ops.Fn<(u8,), u8, [], may>](f: F, x: u8) -> u8 uses [] panics never pub
+    f(x)
+end t.bnd_may
+
+fn t.bnd_none[F: core.ops.Fn<(u8,), u8, [], never>](f: F, x: u8) -> u8 uses [] panics never pub
+    f(x)
+end t.bnd_none
+
+fn t.inf_io(x: u8) -> u8
+    core.mem.drop(std.io.print_line("i"))
+    x
+end t.inf_io
+
+fn t.ok_infer(x: u8) -> u8 uses [] panics never
+    t.bnd_none(
+        fn(y: u8) -> u8 capture [] {
+            t.inf_io(y)
+        },
+        x,
+    )
+end t.ok_infer
+
+fn t.ok_io(s: t.S, x: u8) -> u8 uses [io] panics never
+    t.bnd_io(
+        fn(y: u8) -> u8 capture [&s] {
+            core.mem.drop(s.say())
+            y
+        },
+        x,
+    )
+end t.ok_io
+
+fn t.ok_may(s: t.S, x: u8) -> u8 uses [] panics never
+    t.bnd_may(
+        fn(y: u8) -> u8 capture [&s] {
+            s.boom()
+        },
+        x,
+    )
+end t.ok_may
+
+fn t.ok_pure(s: t.S, x: u8) -> u8 uses [] panics never
+    t.bnd_none(
+        fn(y: u8) -> u8 capture [&s] {
+            s.peek()
+        },
+        x,
+    )
+end t.ok_pure
+"#;
+
+#[test]
+fn concrete_fn_bound_effects_are_checked_against_the_closure() {
+    // 境界が具体的な `[]` / `never` を持つのに、渡したクロージャの確実な効果がそれを超える。
+    // 呼び出し元が `uses [io]` でも境界の違反は報告する (let に束縛したクロージャ・メソッド形も)。
+    let body = format!("{}{}", BOUND_BAD, BOUND_REST);
+    let (_, got, out) = eff_check("eff_bound_bad", &body);
+    assert_eq!(got, vec!["E4001".to_string(), "E4002".to_string()], "{}", out);
+    assert!(out.contains("closure passed to `t.bnd_none` uses effect `io.console` outside the `Fn` bound's effects []"), "{}", out);
+    assert!(out.contains("closure passed to `t.bnd_none` may panic but the `Fn` bound declares `panics never`"), "{}", out);
+}
+
+#[test]
+fn concrete_fn_bound_is_checked_on_method_calls() {
+    // メソッド形 (`s.run(..)`、レシーバの型で解決した候補が 1 つ) も、境界の具体名を超える効果を報告する。
+    let src = "type t.S pub
+    n: u8
+end t.S
+
+fn t.S.run[F: core.ops.Fn<(u8,), u8, [], never>](self: &t.S, f: F) -> u8 uses [] panics never pub
+    f(self.n)
+end t.S.run
+
+fn t.bad_method(s: t.S) -> u8 uses [io] panics never
+    s.run(
+        fn(y: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"m\"))
+            y
+        },
+    )
+end t.bad_method
+
+fn t.ok_method(s: t.S) -> u8 uses [] panics never
+    s.run(
+        fn(y: u8) -> u8 capture [] {
+            y
+        },
+    )
+end t.ok_method
+";
+    let t = Tmp::new("eff_bound_method", src);
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    let got = codes(&out);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+    assert!(out.contains("closure passed to `t.S.run` uses effect `io.console`"), "{}", out);
+}
+
+#[test]
+fn concrete_fn_bound_effects_that_cover_the_closure_stay_silent() {
+    // 境界が覆う効果 (`io` ⊇ `io.console`)・`may` 境界・効果のないクロージャ・確実でない効果
+    // (推論された関数を呼ぶクロージャ) は黙る (下からの近似: 誤検出を出さない)。
+    let (code, _, out) = eff_check("eff_bound_ok", BOUND_REST);
+    assert_eq!(code, Some(0), "{}", out);
+}
