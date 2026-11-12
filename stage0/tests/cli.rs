@@ -6636,3 +6636,89 @@ fn e1108_for_wrapping_or_saturating_div_rem_points_to_checked_forms() {
     assert!(!out.contains("did you mean `rem`"), "{}", out);
     assert!(!out.contains("did you mean `saturating_add`"), "{}", out);
 }
+
+// ---- 分解の誤検出 (コピー値の束縛に借用を付けない): 道が分かる分解と、関数の戻り値の分解 ----
+
+/// 診断が 1 つも出ないことを確かめる (陰性テスト用)。
+fn no_diagnostics(name: &str, prefix: &str, b: &[&str]) -> String {
+    let t = Tmp::new(name, &main_wrap(prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).is_empty(), "{}", out);
+    out
+}
+
+#[test]
+fn nll_accepts_a_copy_element_of_a_destructured_call_result_held_in_a_variable() {
+    // `let p = t.apick(&x)` の p は x の借用を持つが、分解した `n` はコピー値なので黙る。
+    let prefix = "fn t.apick(r: &u8) -> (&u8, u8) uses [] panics never\n    (r, 1u8)\nend t.apick\n\n";
+    no_diagnostics(
+        "nll_destr_call_var_neg",
+        prefix,
+        &[
+            "let mut x = 1u8",
+            "let p = t.apick(&x)",
+            "let (a, n) = p",
+            "core.check.eq(*a, 1u8)",
+            "x = 3u8",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_accepts_a_copy_element_of_a_moved_call_result_destructured_later() {
+    // `let t2 = t0` で move してから分解しても、コピー値 `n` には借用を付けない。
+    let prefix = "fn t.apick(r: &u8) -> (&u8, u8) uses [] panics never\n    (r, 1u8)\nend t.apick\n\n";
+    no_diagnostics(
+        "nll_destr_call_move_neg",
+        prefix,
+        &[
+            "let mut x = 1u8",
+            "let t0 = t.apick(&x)",
+            "let t2 = t0",
+            "let (a, n) = t2",
+            "core.check.eq(*a, 1u8)",
+            "x = 3u8",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_accepts_a_copy_field_of_a_moved_struct_destructured_later() {
+    // 構造体 `let s2 = s` で move してから分解しても、コピーのフィールド `b` (n) には借用を付けない。
+    // 借用を持つフィールド `f` (r) は、書き換えより前に使い終えている。
+    no_diagnostics(
+        "nll_destr_struct_move_neg",
+        NLL_REF_FIELD,
+        &[
+            "let mut x = 1u8",
+            "let s = t.S { f: &x, b: 2u8 }",
+            "let s2 = s",
+            "let t.S { f: r, b: n } = s2",
+            "core.check.eq(*r, 1u8)",
+            "x = 2u8",
+            "core.check.eq(n, 2u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_accepts_a_copy_element_of_a_match_on_a_call_result_while_the_source_is_mutated() {
+    // 形が分からない scrutinee (関数呼び出し) の腕の束縛 `n` は、右辺の借用を受け取らない。
+    let prefix = "fn t.apick(r: &u8) -> (&u8, u8) uses [] panics never\n    (r, 1u8)\nend t.apick\n\n";
+    no_diagnostics(
+        "nll_match_call_neg",
+        prefix,
+        &[
+            "let mut x = 1u8",
+            "match t.apick(&x) {",
+            "    (a, n) => {",
+            "        core.check.eq(*a, 1u8)",
+            "        x = 3u8",
+            "        core.check.eq(n, 1u8)",
+            "    }",
+            "}",
+        ],
+    );
+}
