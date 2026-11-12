@@ -3,6 +3,7 @@
 
 使い方:
   python bench/run_bench.py [--docs full|none] [--repairs 3] [--tasks gcd,fib] [--model gemma-4-12b-it]
+  BENCH_API_KEY (無ければ NVIDIA_API_KEY) があれば Authorization: Bearer で送る (例: --base https://integrate.api.nvidia.com --model nvidia/nemotron-3.5-lightning-30b-a3b)
 
 各課題で、モデルに実装を書かせ、`ksn check` と `ksn test` (評価側が追記したテスト) に通るかを見る。
 失敗したら診断をモデルに返し、最大 --repairs 回まで書き直させる。結果は bench/results/ に保存する。
@@ -38,7 +39,11 @@ INTRO_NONE = """あなたは Kasane というプログラミング言語のコ�
 
 def chat(base, model, messages, max_tokens, timeout):
     body = json.dumps({'model': model, 'messages': messages, 'temperature': 0.2, 'max_tokens': max_tokens}).encode()
-    req = urllib.request.Request(base + '/v1/chat/completions', data=body, headers={'Content-Type': 'application/json'})
+    headers = {'Content-Type': 'application/json'}
+    key = os.environ.get('BENCH_API_KEY') or os.environ.get('NVIDIA_API_KEY')
+    if key:
+        headers['Authorization'] = 'Bearer ' + key
+    req = urllib.request.Request(base + '/v1/chat/completions', data=body, headers=headers)
     t = time.time()
     r = json.load(urllib.request.urlopen(req, timeout=timeout))
     msg = r['choices'][0]['message']
