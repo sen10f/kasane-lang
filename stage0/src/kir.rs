@@ -28,6 +28,61 @@ pub enum Ty {
     Usize,
     Bool,
     Unit,
+    /// 参照 `ref<T>` (false) / `mutref<T>` (true)。値はアドレス (参照実行器ではセルの番号)。
+    /// 指す先はスカラー (整数と bool) だけ。`Ty` は `Copy` を保つため、中身は `Ty` ではなく `Pointee` にする。
+    Ref(bool, Pointee),
+}
+
+/// 参照の指す先。整数と bool だけ (unit と参照は入れない)。`Ty::Ref` の中身。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pointee {
+    I8,
+    I16,
+    I32,
+    I64,
+    Isize,
+    U8,
+    U16,
+    U32,
+    U64,
+    Usize,
+    Bool,
+}
+
+impl Pointee {
+    pub fn ty(self) -> Ty {
+        match self {
+            Pointee::I8 => Ty::I8,
+            Pointee::I16 => Ty::I16,
+            Pointee::I32 => Ty::I32,
+            Pointee::I64 => Ty::I64,
+            Pointee::Isize => Ty::Isize,
+            Pointee::U8 => Ty::U8,
+            Pointee::U16 => Ty::U16,
+            Pointee::U32 => Ty::U32,
+            Pointee::U64 => Ty::U64,
+            Pointee::Usize => Ty::Usize,
+            Pointee::Bool => Ty::Bool,
+        }
+    }
+
+    /// 指す先に使える型なら、その `Pointee`。unit と参照は `None`。
+    pub fn of(t: Ty) -> Option<Pointee> {
+        Some(match t {
+            Ty::I8 => Pointee::I8,
+            Ty::I16 => Pointee::I16,
+            Ty::I32 => Pointee::I32,
+            Ty::I64 => Pointee::I64,
+            Ty::Isize => Pointee::Isize,
+            Ty::U8 => Pointee::U8,
+            Ty::U16 => Pointee::U16,
+            Ty::U32 => Pointee::U32,
+            Ty::U64 => Pointee::U64,
+            Ty::Usize => Pointee::Usize,
+            Ty::Bool => Pointee::Bool,
+            Ty::Unit | Ty::Ref(..) => return None,
+        })
+    }
 }
 
 const ALL_TYS: [Ty; 12] = [
@@ -46,8 +101,8 @@ const ALL_TYS: [Ty; 12] = [
 ];
 
 impl Ty {
-    pub fn name(self) -> &'static str {
-        match self {
+    pub fn name(self) -> String {
+        let s = match self {
             Ty::I8 => "i8",
             Ty::I16 => "i16",
             Ty::I32 => "i32",
@@ -60,15 +115,27 @@ impl Ty {
             Ty::Usize => "usize",
             Ty::Bool => "bool",
             Ty::Unit => "unit",
-        }
+            Ty::Ref(m, p) => return format!("{}<{}>", if m { "mutref" } else { "ref" }, p.ty().name()),
+        };
+        s.to_string()
     }
 
     pub fn parse(s: &str) -> Option<Ty> {
+        if let Some(inner) = s.strip_prefix("ref<").and_then(|r| r.strip_suffix('>')) {
+            return Pointee::of(Ty::parse(inner)?).map(|p| Ty::Ref(false, p));
+        }
+        if let Some(inner) = s.strip_prefix("mutref<").and_then(|r| r.strip_suffix('>')) {
+            return Pointee::of(Ty::parse(inner)?).map(|p| Ty::Ref(true, p));
+        }
         ALL_TYS.iter().copied().find(|t| t.name() == s)
     }
 
     pub fn is_int(self) -> bool {
-        !matches!(self, Ty::Bool | Ty::Unit)
+        !matches!(self, Ty::Bool | Ty::Unit | Ty::Ref(..))
+    }
+
+    pub fn is_ref(self) -> bool {
+        matches!(self, Ty::Ref(..))
     }
 
     pub fn signed(self) -> bool {
@@ -189,6 +256,17 @@ pub enum Op {
     Bool(BoolOp, VId, VId),
     /// 直接呼び出し (単相インスタンスの鍵で指す)。
     Call { callee: String, args: Vec<VId> },
+    /// スタックスロットの確保 (結果は `mutref<T>`、`T` は `Inst::ty` の指す先)。関数の入口ブロックに置く。
+    Alloca,
+    /// 参照を通した読み出し `*p` (結果の型は指す先の型)。
+    Load(VId),
+    /// 参照を通した書き込み `*p = v` (`p` は `mutref<T>`、`v` は `T`。結果は unit)。
+    Store { ptr: VId, val: VId },
+    /// `&mut T` を `&T` として使う (同じアドレス。結果は `ref<T>`)。
+    AsShared(VId),
+    /// `mutref<T>` を同じアドレスの別の値として複製する。スタックスロットの値番号と、参照の値を
+    /// 取り違えないために使う (スロットの番号を参照の値に流用すると、読み書きの区別がつかなくなる)。
+    Reborrow(VId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -328,6 +406,11 @@ fn fmt_inst(i: &Inst) -> String {
             format!("{}.bool {}", n, fmt_vals(&[*a, *b]))
         }
         Op::Call { callee, args } => format!("call {}({})", callee, fmt_vals(args)),
+        Op::Alloca => "alloca".to_string(),
+        Op::Load(p) => format!("load {}", fmt_val(*p)),
+        Op::Store { ptr, val } => format!("store {}", fmt_vals(&[*ptr, *val])),
+        Op::AsShared(p) => format!("asshared {}", fmt_val(*p)),
+        Op::Reborrow(p) => format!("reborrow {}", fmt_val(*p)),
     };
     format!("%{}: {} = {}", i.dst, i.ty.name(), body)
 }
@@ -499,6 +582,14 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             let mode = if *m == "wrap" { Mode::Wrap } else { Mode::Trap };
             Ok(Op::Arith { op: parse_aop(name).unwrap(), mode, a: v[0], b: v[1] })
         }
+        ("alloca", []) => Ok(Op::Alloca),
+        ("load", []) => Ok(Op::Load(operands(1)?[0])),
+        ("store", []) => {
+            let v = operands(2)?;
+            Ok(Op::Store { ptr: v[0], val: v[1] })
+        }
+        ("asshared", []) => Ok(Op::AsShared(operands(1)?[0])),
+        ("reborrow", []) => Ok(Op::Reborrow(operands(1)?[0])),
         _ => Err(perr(line, format!("命令 {} が不明", head))),
     }
 }
@@ -716,7 +807,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if i.ty != Ty::Bool {
                             return Err("比較の結果は bool のはず".into());
                         }
-                        if *ty == Ty::Unit || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
+                        if ty.is_ref() || *ty == Ty::Unit || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
                             return Err(format!("型 {} の比較 {} は使えない", ty.name(), cc.name()));
                         }
                         if ty_of(*a)? != *ty || ty_of(*b)? != *ty {
@@ -742,6 +833,43 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                     Op::Bool(_, a, b) => {
                         if i.ty != Ty::Bool || ty_of(*a)? != Ty::Bool || ty_of(*b)? != Ty::Bool {
                             return Err("論理演算は bool のはず".into());
+                        }
+                    }
+                    Op::Alloca => {
+                        if !matches!(i.ty, Ty::Ref(true, _)) {
+                            return Err("alloca の結果は mutref のはず".into());
+                        }
+                    }
+                    Op::Load(p) => {
+                        let Ty::Ref(_, q) = ty_of(*p)? else {
+                            return Err("load の被演算子は参照のはず".into());
+                        };
+                        if q.ty() != i.ty {
+                            return Err("load の結果の型が指す先の型と合わない".into());
+                        }
+                    }
+                    Op::Store { ptr, val } => {
+                        if i.ty != Ty::Unit {
+                            return Err("store の結果は unit のはず".into());
+                        }
+                        let vt = ty_of(*val)?;
+                        match ty_of(*ptr)? {
+                            Ty::Ref(true, q) if q.ty() == vt => {}
+                            Ty::Ref(false, _) => return Err("共有参照 ref<T> への store は使えない".into()),
+                            _ => return Err("store の被演算子の型が合わない".into()),
+                        }
+                    }
+                    Op::Reborrow(a) => {
+                        if !matches!(i.ty, Ty::Ref(true, _)) || ty_of(*a)? != i.ty {
+                            return Err("reborrow は mutref を同じ型で複製するだけのはず".into());
+                        }
+                    }
+                    Op::AsShared(a) => {
+                        let Ty::Ref(false, q) = i.ty else {
+                            return Err("asshared の結果は ref のはず".into());
+                        };
+                        if ty_of(*a)? != Ty::Ref(true, q) {
+                            return Err("asshared の被演算子は mutref で、指す先が同じはず".into());
                         }
                     }
                     Op::Call { callee, args } => {
@@ -799,9 +927,10 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
 
 fn operands(op: &Op) -> Vec<VId> {
     match op {
-        Op::Const(_) => vec![],
+        Op::Const(_) | Op::Alloca => vec![],
         Op::Arith { a, b, .. } | Op::Cmp { a, b, .. } | Op::Bool(_, a, b) => vec![*a, *b],
-        Op::Neg { a } | Op::Not(a) => vec![*a],
+        Op::Neg { a } | Op::Not(a) | Op::Load(a) | Op::AsShared(a) | Op::Reborrow(a) => vec![*a],
+        Op::Store { ptr, val } => vec![*ptr, *val],
         Op::Call { args, .. } => args.clone(),
     }
 }
@@ -890,5 +1019,74 @@ mod tests {
         assert_eq!(Ty::I8.wrap(128), -128);
         assert_eq!(Ty::I8.min(), -128);
         assert_eq!(Ty::U64.max(), u64::MAX as i128);
+    }
+
+    /// 参照の型と命令 (`ref<T>` / `mutref<T>`、`alloca` / `load` / `store` / `asshared` / `reborrow`) の往復。
+    #[test]
+    fn refs_print_and_parse_round_trip() {
+        let text = "kir 1
+
+fn t.r key=t.r uses=[] panics=never stack=- ret=ref<i32>
+  b0(%0: ref<i32>):
+    ret %0
+end t.r
+
+fn t.w key=t.w uses=[] panics=never stack=- ret=i32
+  b0(%0: i32):
+    %1: mutref<i32> = alloca
+    %2: unit = store %1, %0
+    %3: mutref<i32> = reborrow %1
+    %4: ref<i32> = asshared %3
+    %5: i32 = load %4
+    ret %5
+end t.w
+";
+        let m = parse_module(text).expect("parse");
+        assert_eq!(print_module(&m), text);
+        assert!(verify_module(&m).is_empty(), "{:?}", verify_module(&m));
+    }
+
+    #[test]
+    fn refs_verify_rejects_stores_through_shared_refs_and_wrong_loads() {
+        // 共有参照 ref<T> への store は使えない
+        let shared = "kir 1
+
+fn t.s key=t.s uses=[] panics=never stack=- ret=unit
+  b0(%0: ref<i32>):
+    %1: i32 = const.i32 1
+    %2: unit = store %0, %1
+    %3: unit = const.unit ()
+    ret %3
+end t.s
+";
+        let errs = verify_module(&parse_module(shared).expect("parse"));
+        assert_eq!(errs.len(), 1, "{:?}", errs);
+        assert!(errs[0].1.contains("共有参照"), "{:?}", errs);
+
+        // 指す先と違う型で読む load は使えない
+        let wrong = "kir 1
+
+fn t.l key=t.l uses=[] panics=never stack=- ret=i64
+  b0(%0: ref<i32>):
+    %1: i64 = load %0
+    ret %1
+end t.l
+";
+        let errs = verify_module(&parse_module(wrong).expect("parse"));
+        assert_eq!(errs.len(), 1, "{:?}", errs);
+        assert!(errs[0].1.contains("load の結果の型"), "{:?}", errs);
+
+        // 比較は参照どうしでは行わない (アドレスの比較は値の比較ではない)
+        let cmp = "kir 1
+
+fn t.c key=t.c uses=[] panics=never stack=- ret=bool
+  b0(%0: ref<i32>, %1: ref<i32>):
+    %2: bool = icmp.eq.ref<i32> %0, %1
+    ret %2
+end t.c
+";
+        let errs = verify_module(&parse_module(cmp).expect("parse"));
+        assert_eq!(errs.len(), 1, "{:?}", errs);
+        assert!(errs[0].1.contains("使えない"), "{:?}", errs);
     }
 }

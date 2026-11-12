@@ -28,6 +28,8 @@ struct Frame {
     vals: Vec<i128>,
     /// 呼び出し元で結果を受ける値番号。
     dst: Option<VId>,
+    /// この呼び出しが始まったときのセル列の長さ (返るときに切り詰める)。
+    mem_base: usize,
 }
 
 /// 整数の算術。結果は型の範囲内に収まる値か、panic の文言。
@@ -89,14 +91,16 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
         return Err(format!("関数 {} の引数の個数が違う", key));
     }
     let counts: Vec<usize> = m.funcs.iter().map(|f| f.value_count()).collect();
-    let enter = |f: usize, args: &[i128], dst: Option<VId>| -> Frame {
+    let enter = |f: usize, args: &[i128], dst: Option<VId>, mem_base: usize| -> Frame {
         let mut vals = vec![0i128; counts[f]];
         for ((v, _), a) in m.funcs[f].params().iter().zip(args.iter()) {
             vals[*v as usize] = *a;
         }
-        Frame { f, blk: 0, ip: 0, vals, dst }
+        Frame { f, blk: 0, ip: 0, vals, dst, mem_base }
     };
-    let mut stack = vec![enter(entry, args, None)];
+    // 参照の指すセル。`alloca` が 1 セル確保し、その番号がアドレスになる。呼び出しの終わりに切り詰める。
+    let mut mem: Vec<i128> = vec![];
+    let mut stack = vec![enter(entry, args, None, 0)];
     loop {
         let top = stack.len() - 1;
         let (fi, bi, ip) = (stack[top].f, stack[top].blk, stack[top].ip);
@@ -141,9 +145,20 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         return Err(format!("呼び先 {} がない", callee));
                     };
                     let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
-                    stack.push(enter(ci, &argv, Some(inst.dst)));
+                    stack.push(enter(ci, &argv, Some(inst.dst), mem.len()));
                     continue;
                 }
+                Op::Alloca => {
+                    mem.push(0);
+                    (mem.len() - 1) as i128
+                }
+                Op::Load(p) => mem[get(&stack[top], p) as usize],
+                Op::Store { ptr, val } => {
+                    let (a, v) = (get(&stack[top], ptr), get(&stack[top], val));
+                    mem[a as usize] = v;
+                    0
+                }
+                Op::AsShared(p) | Op::Reborrow(p) => get(&stack[top], p),
             };
             stack[top].vals[inst.dst as usize] = result;
             continue;
@@ -163,6 +178,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
             Term::Ret(v) => {
                 let val = stack[top].vals[*v as usize];
                 let done = stack.pop().expect("フレーム");
+                mem.truncate(done.mem_base);
                 match stack.last_mut() {
                     None => return Ok(Outcome::Value(val)),
                     Some(caller) => {
