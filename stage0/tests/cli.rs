@@ -6605,3 +6605,34 @@ fn nll_accepts_a_destructured_call_result_when_the_source_is_mutated_before_the_
     );
     assert!(!bad, "{}", out);
 }
+
+#[test]
+fn e4004_for_div_and_rem_offers_only_the_checked_form() {
+    // 整数の `/` `%` には checked_ の形しかない (num.sig)。wrapping_/saturating_ を置き換えとして案内しない。
+    for (op, m) in [("/", "div"), ("%", "rem")] {
+        let f = format!("fn t.q(a: u32, b: u32) -> u32 uses [] panics never\n    a {} b\nend t.q\n\n", op);
+        let t = Tmp::new(&format!("e4004_{}", m), &main_wrap(&f, ""));
+        let out = text(&run(&["check", "--json"], &t.0).stdout);
+        assert!(codes(&out).iter().any(|c| c == "E4004"), "{}", out);
+        assert!(out.contains(&format!("write `a.checked_{}(b)`", m)), "{}", out);
+        assert!(out.contains("declare `panics may` on the function header"), "{}", out);
+        assert!(!out.contains(&format!("a.wrapping_{}", m)), "{}", out);
+        assert!(!out.contains(&format!("a.saturating_{}", m)), "{}", out);
+    }
+    let ex = run(&["explain", "E4004"], &root());
+    assert!(text(&ex.stdout).contains("checked_div"), "{}", text(&ex.stdout));
+}
+
+#[test]
+fn e1108_for_wrapping_or_saturating_div_rem_points_to_checked_forms() {
+    // 存在しない `wrapping_rem` などに、誤った近い名前 (`rem` は f32/f64 のもの、`saturating_add`) を出さない。
+    let f = "fn t.q(a: u32, b: u32) -> u32 uses [] panics never\n    let x = a.wrapping_rem(b)\n    a.saturating_div(x)\nend t.q\n\n";
+    let t = Tmp::new("e1108_int_divrem", &main_wrap(f, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("unknown method `wrapping_rem`; integer `%`"), "{}", out);
+    assert!(out.contains("use `checked_rem(b)`"), "{}", out);
+    assert!(out.contains("unknown method `saturating_div`; integer `/`"), "{}", out);
+    assert!(out.contains("use `checked_div(b)`"), "{}", out);
+    assert!(!out.contains("did you mean `rem`"), "{}", out);
+    assert!(!out.contains("did you mean `saturating_add`"), "{}", out);
+}
