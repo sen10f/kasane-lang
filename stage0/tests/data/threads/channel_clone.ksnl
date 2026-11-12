@@ -1,0 +1,79 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let made = std.sync.channel::<alloc.string.String, std.alloc.System>(std.alloc.SYSTEM, 4usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let tx_b = tx.clone()
+    let first = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move tx] {
+            t.produce(tx, 25u32)
+        },
+    )
+    let second = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move tx_b] {
+            t.produce(tx_b, 25u32)
+        },
+    )
+    let producer_a = match first {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let producer_b = match second {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let mut total = 0usize
+    loop {
+        match rx.recv() {
+            Ok(s) => {
+                total = total + s.len()
+            }
+            Err(_e) => break
+        }
+    }
+    producer_a.join()
+    producer_b.join()
+    core.check.eq(total, 2usize * (9usize * 6usize + 16usize * 7usize))
+    let left = std.sync.channel::<alloc.string.String, std.alloc.System>(std.alloc.SYSTEM, 8usize)
+    let (left_tx, left_rx) = left.map_err(t.oom)?
+    let left_rx_b = left_rx.clone()
+    let left_tx_b = left_tx.clone()
+    t.produce(left_tx, 3u32)
+    core.mem.drop(left_rx)
+    match left_rx_b.recv() {
+        Ok(s) => core.check.eq(s.len(), 6usize)
+        Err(_e) => core.panic.panic("recv failed")
+    }
+    core.mem.drop(left_tx_b)
+    core.mem.drop(left_rx_b)
+    std.io.print_line("channel clone ok")
+    Ok(())
+end t.main
+
+fn t.message(i: u32) -> alloc.string.String uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    match s.push_str("hello") {
+        Ok(_u) => 0u32
+        Err(_e) => core.panic.panic("oom")
+    }
+    match s.push_u64(u64.from_u32(i)) {
+        Ok(_u) => 0u32
+        Err(_e) => core.panic.panic("oom")
+    }
+    s
+end t.message
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end t.oom
+
+fn t.produce(tx: std.sync.Sender<alloc.string.String>, count: u32) -> () uses [alloc, thread] panics may
+    let mut i = 1u32
+    while i <= count {
+        match tx.send(t.message(i)) {
+            Ok(_u) => 0u32
+            Err(_e) => core.panic.panic("send failed")
+        }
+        i = i + 1u32
+    }
+end t.produce

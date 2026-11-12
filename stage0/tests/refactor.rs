@@ -504,7 +504,7 @@ fn shortener_end_to_end_sequence() {
     let src = manifest().parent().unwrap().join("examples").join("shortener");
     let p = Pkg::from(&src, "shortener");
     let n = p.assert_healthy("baseline");
-    assert_eq!(n, 34);
+    assert_eq!(n, 35);
     for (old, new) in [
         ("shortener.code.encode", "shortener.code.encode_u64"),
         ("shortener.http.build_request", "shortener.http.make_request"),
@@ -519,7 +519,7 @@ fn shortener_end_to_end_sequence() {
     }
     assert!(p.exists("src/shortener/shortcode.ksnl") && p.exists("src/shortener/web/router.ksnl"));
     assert!(!p.exists("src/shortener/code.ksnl") && !p.exists("src/shortener/router.ksnl"));
-    assert_eq!(p.assert_healthy("final"), 34);
+    assert_eq!(p.assert_healthy("final"), 35);
 }
 
 // ------------------------------------------------------------ 移動に伴う `pub` の補い (3.1)

@@ -628,9 +628,9 @@ impl Interp {
             }
             "std.thread.yield_now" => Ok(Val::Unit),
             "std.sync.channel" => {
-                let st = Rc::new(ChanState { q: RefCell::new(VecDeque::new()), sender_alive: Cell::new(true), receiver_alive: Cell::new(true) });
-                let tx = Val::Chan(Rc::new(ChanEnd { st: st.clone(), is_sender: true }));
-                let rx = Val::Chan(Rc::new(ChanEnd { st, is_sender: false }));
+                let st = Rc::new(ChanState { q: RefCell::new(VecDeque::new()), senders: Cell::new(0), receivers: Cell::new(0) });
+                let tx = Val::Chan(Rc::new(ChanEnd::new(st.clone(), true)));
+                let rx = Val::Chan(Rc::new(ChanEnd::new(st, false)));
                 Ok(ok(Val::Tuple(Rc::new(vec![tx, rx]))))
             }
             "std.sync.Mutex.new" => Ok(Val::Mutex(Rc::new(CellPlace(RefCell::new(a0))))),
@@ -700,6 +700,10 @@ impl Interp {
 
     pub fn native_method(&mut self, recv: &Val, v: &Val, name: &str, args: Vec<Val>, place: Option<(&V, &Scope)>) -> Res {
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
+        // `Sender.clone` / `Receiver.clone`: 同じチャネルの端をもう 1 つ増やす。
+        if let (Val::Chan(end), "clone") = (v, name) {
+            return Ok(Val::Chan(Rc::new(ChanEnd::new(end.st.clone(), end.is_sender))));
+        }
         if name == "clone" || name == "try_clone" {
             let c = if matches!(v, Val::Closure(_) | Val::Func(_)) { v.clone() } else { deep(v) };
             return Ok(if name == "try_clone" { ok(c) } else { c });
@@ -769,7 +773,7 @@ impl Interp {
             }
             Val::Chan(end) => match name {
                 "send" if end.is_sender => {
-                    if !end.st.receiver_alive.get() {
+                    if end.st.receivers.get() == 0 {
                         let e = StructV { ty: "std.sync.SendError".into(), f: RefCell::new(vec![("value".into(), a0)]) };
                         return Ok(err(Val::Struct(Rc::new(e))));
                     }
@@ -782,7 +786,7 @@ impl Interp {
                         if let Some(x) = x {
                             return Ok(ok(x));
                         }
-                        if !end.st.sender_alive.get() {
+                        if end.st.senders.get() == 0 {
                             let e = StructV { ty: "std.sync.RecvError".into(), f: RefCell::new(vec![("code".into(), int(0, "u8"))]) };
                             return Ok(err(Val::Struct(Rc::new(e))));
                         }
@@ -791,6 +795,14 @@ impl Interp {
                             return panic(DEADLOCK_RECV);
                         }
                     }
+                }
+                // `Receiver.close`: ほかに受信側があれば畳んで Ok、最後でキューが空なら閉じて Ok、値が残っていれば受信側を返す。
+                "close" if !end.is_sender => {
+                    if end.st.receivers.get() > 1 || end.st.q.borrow().is_empty() {
+                        end.release();
+                        return Ok(ok(Val::Unit));
+                    }
+                    Ok(err(v.clone()))
                 }
                 "drop" => Ok(Val::Unit),
                 _ => panic(format!("no method {} on channel", name)),

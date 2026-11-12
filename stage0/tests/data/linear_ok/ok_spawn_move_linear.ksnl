@@ -1,0 +1,70 @@
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.close(r: t.Res) -> u32 uses [] panics never
+    match r {
+        t.Res { id: id } => id
+    }
+end t.close
+
+fn t.drain(first: std.sync.Receiver<t.Res>) -> u32 uses [thread] panics never
+    let mut rx = first
+    let mut sum = 0u32
+    loop {
+        match rx.recv() {
+            Ok(r) => {
+                sum = sum.wrapping_add(t.close(r))
+            }
+            Err(_e) => match rx.close() {
+                Ok(_u) => break
+                Err(back) => {
+                    rx = back
+                }
+            }
+        }
+    }
+    sum
+end t.drain
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.open() -> t.Res uses [] panics never
+    t.Res { id: 1u32 }
+end t.open
+
+fn t.pool(rx: std.sync.Receiver<t.Res>, tx: std.sync.Sender<t.Res>) -> u32 uses [alloc, thread] panics may
+    let more = rx.clone()
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u32 capture [move more] {
+            t.drain(more)
+        },
+    )
+    match tx.send(t.open()) {
+        Ok(_u) => 0u32
+        Err(back) => t.close(back.value)
+    }
+    core.mem.drop(tx)
+    let own = t.drain(rx)
+    match spawned {
+        Ok(h) => own.wrapping_add(h.join())
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.pool
+
+fn t.return_resource() -> u32 uses [alloc, thread] panics may
+    let r = t.open()
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> t.Res capture [move r] {
+            r
+        },
+    )
+    match spawned {
+        Ok(h) => t.close(h.join())
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.return_resource

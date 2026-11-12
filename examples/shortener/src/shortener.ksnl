@@ -1,6 +1,7 @@
 import shortener.client
 import shortener.error
 import shortener.http
+import shortener.pool
 import shortener.server
 import shortener.store
 
@@ -45,14 +46,21 @@ fn shortener.expect(ok: bool) -> Result<(), shortener.error.Error> uses [] panic
     Err(error.Error.Mismatch)
 end shortener.expect
 
-fn shortener.main() -> Result<(), shortener.error.Error> uses [alloc, env, io.console, io.fs, io.net] panics never
+fn shortener.main() -> Result<(), shortener.error.Error> uses [alloc, env, io.console, io.fs, io.net, thread] panics may
     if std.env.arg_count() == 0usize {
         return shortener.demo()
     }
     shortener.serve_cli()
 end shortener.main
 
-fn shortener.serve_cli() -> Result<(), shortener.error.Error> uses [alloc, env, io.console, io.fs, io.net] panics never
+fn shortener.report(n: usize) -> Result<(), shortener.error.Error> uses [alloc, io.console] panics never
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("served ")?
+    line.push_u64(u64.from_usize(n))?
+    shortener.announce(line.as_str())
+end shortener.report
+
+fn shortener.serve_cli() -> Result<(), shortener.error.Error> uses [alloc, env, io.console, io.fs, io.net, thread] panics may
     let address = match std.env.arg(0usize) {
         Some(a) => a
         None => return Err(error.Error.BadRequest)
@@ -65,15 +73,32 @@ fn shortener.serve_cli() -> Result<(), shortener.error.Error> uses [alloc, env, 
         Some(p) => p
         None => return Err(error.Error.BadRequest)
     }
-    let n = with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
-        let mut db = store.Store.load(path)?
-        server.serve(&listener, &mut db, count)?
+    // 4 つ目の引数 (ワーカー数) があれば、受け付けた接続をワーカーのスレッドに渡して並行に処理する (0 または省略で 1 接続ずつ)。
+    let workers = match std.env.arg(3usize) {
+        Some(w) => usize.parse(w).map_err(error.bad_number)?
+        None => 0usize
     }
-    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
-    line.push_str("served ")?
-    line.push_u64(u64.from_usize(n))?
-    shortener.announce(line.as_str())
+    if workers == 0usize {
+        let n = shortener.serve_in_turn(address, count, path)?
+        return shortener.report(n)
+    }
+    let n = shortener.serve_pooled(address, count, path, workers)?
+    shortener.report(n)
 end shortener.serve_cli
+
+fn shortener.serve_in_turn(address: &str, count: usize, path: &str) -> Result<usize, shortener.error.Error> uses [alloc, io.fs, io.net] panics never
+    with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
+        let mut db = store.Store.load(path)?
+        server.serve(&listener, &mut db, count)
+    }
+end shortener.serve_in_turn
+
+fn shortener.serve_pooled(address: &str, count: usize, path: &str, workers: usize) -> Result<usize, shortener.error.Error> uses [alloc, io.fs, io.net, thread] panics may
+    with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
+        let db = store.Store.load(path)?
+        pool.serve(&listener, db, count, workers)
+    }
+end shortener.serve_pooled
 
 fn shortener.step(listener: &std.net.TcpListener, db: &mut shortener.store.Store, method: &str, path: &str, body: &str, status: u16, expected: &str) -> Result<(), shortener.error.Error> uses [alloc, io.console, io.fs, io.net] panics never
     let request = http.build_request(method, path, body)?

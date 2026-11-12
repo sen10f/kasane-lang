@@ -1,5 +1,24 @@
 import shortener.http
 
+const shortener.tests.loopback.POOL_DB: &str = "shortener-test-pool.tmp"
+
+fn shortener.tests.loopback.fan_out(listener: &std.net.TcpListener, target: &str, left: usize, total: usize, workers: usize) -> Result<usize, shortener.error.Error> uses [alloc, io.fs, io.net, thread] panics may
+    if left == 0usize {
+        let db = shortener.store.Store.load(shortener.tests.loopback.POOL_DB)?
+        return shortener.pool.serve(listener, db, total, workers)
+    }
+    let request = http.build_request("POST", "/shorten", "http://pool.test/x")?
+    with mut client = std.net.connect(target)? close core.mem.drop(client.close()) {
+        shortener.wire.write_all(&mut client, request.as_bytes())?
+        let rest = left - 1usize
+        let served = shortener.tests.loopback.fan_out(listener, target, rest, total, workers)?
+        let raw = shortener.wire.read_to_close(&mut client)?
+        let reply = http.parse_reply(raw.as_slice())?
+        core.check.eq(reply.status, 201u16)
+        Ok(served)
+    }
+end shortener.tests.loopback.fan_out
+
 fn shortener.tests.loopback.listen() -> std.net.TcpListener uses [io.net] panics may
     match std.net.listen("127.0.0.1:0") {
         Ok(l) => l
@@ -85,3 +104,27 @@ test shortener.tests.loopback.test_shorten_and_fetch
     core.check.eq(stats.body.as_str(), "{\"links\":1}")
     core.check.eq(denied.status, 405u16)
 end shortener.tests.loopback.test_shorten_and_fetch
+
+test shortener.tests.loopback.test_worker_pool_serves_concurrent_connections
+    core.mem.drop(std.fs.remove_file(shortener.tests.loopback.POOL_DB))
+    let listener = shortener.tests.loopback.listen()
+    let port = match listener.local_port() {
+        Ok(p) => p
+        Err(_e) => core.panic.panic("port")
+    }
+    let target = match shortener.client.address(port) {
+        Ok(a) => a
+        Err(_e) => core.panic.panic("address")
+    }
+    match shortener.tests.loopback.fan_out(&listener, target.as_str(), 12usize, 12usize, 3usize) {
+        Ok(n) => core.check.eq(n, 12usize)
+        Err(_e) => core.panic.panic("fan out")
+    }
+    core.mem.drop(listener.close())
+    let reloaded = match shortener.store.Store.load(shortener.tests.loopback.POOL_DB) {
+        Ok(r) => r
+        Err(_e) => core.panic.panic("reload")
+    }
+    core.check.eq(reloaded.len(), 12usize)
+    core.mem.drop(std.fs.remove_file(shortener.tests.loopback.POOL_DB))
+end shortener.tests.loopback.test_worker_pool_serves_concurrent_connections

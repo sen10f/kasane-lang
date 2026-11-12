@@ -6907,6 +6907,59 @@ fn threads_interpreter_fails_clearly_when_no_single_threaded_schedule_exists() {
     assert_eq!(text(&r.stdout), "ping pong ok\n");
 }
 
+/// 線形値 (`TcpStream`) を `spawn` のクロージャへ move し、返す。`Receiver` を複製して複数のワーカーが 1 つのキューから
+/// 接続を取り合い、`close` で残りを受け取る。容量 1 のチャネルを持ち回して共有の状態を守る。
+#[test]
+fn threads_linear_values_move_between_threads_and_through_channels() {
+    threads_same_output("linear");
+}
+
+/// `Sender` / `Receiver` の `clone`: 複数の送信側が 1 つのチャネルに送り、受信側は最後の 1 つだけが残りを破棄する。
+#[test]
+fn threads_channel_ends_clone_and_share_one_queue() {
+    threads_same_output("channel_clone");
+}
+
+/// チャネルの端を複製・`close`・破棄しても、漏れも二重解放もない。`malloc` / `free` を数える `LD_PRELOAD` で、
+/// 周回数を 5 倍の 80 倍にしても「確保 - 解放」が変わらないことを調べる (スレッドを起こすたびに libc 内部の確保が 1〜2 件ずれるので、
+/// 絶対値ではなく周回の数に比例して増えないこと = 1 周ごとの漏れがないことを見る。二重解放なら glibc が abort する)。
+/// 1 周は、複製した `Sender` / `Receiver` で文字列を送り、最後の受信側が残りを破棄する経路と、線形な値の受信側を `close` する経路。
+#[test]
+fn native_channel_clone_and_close_free_every_allocation_exactly_once() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let cc = ["gcc", "cc", "clang"].iter().find(|c| Command::new(c).arg("--version").output().is_ok());
+    let Some(cc) = cc else { return };
+    let dir = std::env::temp_dir().join(format!("ksn_malloc_count_thr_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let c_path = dir.join("malloc_count.c");
+    let so_path = dir.join("malloc_count.so");
+    fs::write(&c_path, include_str!("data/malloc_count.c")).unwrap();
+    let r = Command::new(cc).args(["-shared", "-fPIC", "-O1", "-o"]).arg(&so_path).arg(&c_path).arg("-ldl").output().unwrap();
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    let src = include_str!("data/threads/channel_rounds.ksnl");
+    for release in [false, true] {
+        let mut balance = vec![];
+        for rounds in [5u32, 400u32] {
+            let t = Tmp::new(&format!("thr_rounds_{}_{}", release, rounds), &src.replace("ROUNDS_N", &format!("{}u32", rounds)));
+            let p = threads_build(&t, release);
+            let o = Command::new(&p).env("LD_PRELOAD", &so_path).output().unwrap();
+            assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+            assert_eq!(text(&o.stdout), "channel rounds ok\n");
+            let err = text(&o.stderr);
+            let line = err.lines().find(|l| l.starts_with("allocs=")).unwrap_or_else(|| panic!("no counter output: {}", err));
+            let nums: Vec<i64> = line.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).map(|s| s.parse().unwrap()).collect();
+            // 1 周あたり、チャネルが 2 つ (本体 + バッファ) と文字列 5 件の確保がある (10 件弱)。
+            assert!(nums[0] >= i64::from(rounds) * 8, "too few allocations ({})", line);
+            balance.push(nums[0] - nums[1]);
+        }
+        assert_eq!(balance[0], balance[1], "allocations minus frees grew with the number of rounds ({:?}): leak or double free", balance);
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_shortener_example_builds_natively_without_skips_and_matches_the_interpreter() {
     if cfg!(windows) {

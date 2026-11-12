@@ -645,7 +645,7 @@ fn two_package_example_and_shortener_pass_all_commands() {
     let r = Command::new(app.join("target/debug/kvapp.native")).output().unwrap();
     assert!(String::from_utf8_lossy(&r.stdout).contains("kvapp ok"), "native build of kvapp: {}", all(&o));
     let o = w.ksn(&["test", "--both"], &ex.join("shortener"));
-    assert!(all(&o).contains("34 passed; 0 failed"), "{}", all(&o));
+    assert!(all(&o).contains("35 passed; 0 failed"), "{}", all(&o));
 }
 
 // ------------------------------------------------------------ 可視性 (3.1): メソッド・フィールド・std.sys
