@@ -62,6 +62,10 @@ fn diagnostics_each_case_reports_its_code() {
     for p in names {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let code = &stem[..5];
+        // E2044 は `--strict-types` のときだけ出るので、専用のテスト (strict_types_*) が見る。
+        if code == "E2044" {
+            continue;
+        }
         let t = Tmp::new(&stem, &fs::read_to_string(&p).unwrap());
         let o = run(&["check", "--json"], &t.0);
         let got = codes(&text(&o.stdout));
@@ -82,8 +86,6 @@ const KNOWN_HOLES: &[&str] = &[
     "linear_in_field_unconsumed",
     // `?` で取り出した線形値 (`let _s = std.net.connect(a)?`) を消費せずに捨てる (型注釈がないと型が流れない)。
     "linear_dropped_after_try",
-    // `&u32` を `u32` として返す (型推論が参照を透過的に扱う)。
-    "wrong_ref_level",
     // 線形値を一部の分岐でしか消費しない (`if flag { s.close() }`)。未使用でなければ漏れを検出しない。
     "linear_leak_one_branch",
     // `core.mem.drop(s)` で線形値 (TcpStream) をそのまま捨てられる (`drop[T]` は線形でない T 用のはず)。
@@ -114,6 +116,61 @@ fn unsound_programs_are_rejected() {
         assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{} is not canonical", stem);
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// E2044 (型が決まらない式・束縛) は opt-in。既定では出ず、`--strict-types` と `KSN_STRICT_TYPES=1` の
+/// どちらでも出る。ケースはそれ 1 件だけで、他の診断を伴わない。
+#[test]
+fn strict_types_reports_undetermined_types_only_when_enabled() {
+    let src = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/diag/E2044.ksnl")).unwrap();
+    let t = Tmp::new("strict_types", &src);
+    // 既定: 通る。
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    // フラグ: E2044 だけ。
+    let o = run(&["check", "--json", "--strict-types"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(codes(&text(&o.stdout)), vec!["E2044"], "{}", text(&o.stdout));
+    // 環境変数でも同じ。
+    let o = Command::new(exe()).args(["check", "--json"]).env("KSN_STRICT_TYPES", "1").current_dir(&t.0).output().unwrap();
+    assert_eq!(codes(&text(&o.stdout)), vec!["E2044"]);
+    // 注釈を書けば通る。
+    let fixed = src.replace("let n = None", "let n: Option<u32> = None");
+    let t2 = Tmp::new("strict_types_fixed", &fixed);
+    let o = run(&["check", "--json", "--strict-types"], &t2.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+}
+
+/// 型が決まっていくこと自体の確認: 推論の不足だった典型の形が、strict で E2044 にならない。
+#[test]
+fn strict_types_accepts_inferable_programs() {
+    let src = "\
+fn t.pick[T](flag: bool, a: T, b: T) -> T
+    if flag {
+        return a
+    }
+    b
+end t.pick
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let o = Some(1u32)
+    let r = o.map(fn(x: u32) -> u32 capture [] {
+        x.wrapping_add(1u32)
+    })
+    let mut i = 0u32
+    while i < 3u32 {
+        i = i.wrapping_add(1u32)
+    }
+    let mut w = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(w.push(t.pick(true, 1u8, 2u8)))
+    core.mem.drop(v.push(r.unwrap_or(0u32)))
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("strict_ok", src);
+    let o = run(&["check", "--json", "--strict-types"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E2044"), "{}", text(&o.stdout));
 }
 
 #[test]

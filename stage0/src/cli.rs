@@ -1651,7 +1651,12 @@ pub fn main_cli(args: Vec<String>) -> i32 {
                 2
             }
         },
-        "check" => cmd_check(rest.iter().any(|a| a == "--json")),
+        "check" => {
+            if rest.iter().any(|a| a == "--strict-types") {
+                crate::types::set_strict_types(true);
+            }
+            cmd_check(rest.iter().any(|a| a == "--json"))
+        }
         "run" => cmd_run(&rest),
         "test" => cmd_test(&rest),
         "get" => cmd_get(&rest),

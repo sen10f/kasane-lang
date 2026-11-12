@@ -27,7 +27,7 @@ fn tour.csv_sum(line: &str) -> i64 uses [] panics never pub
 end tour.csv_sum
 
 fn tour.floats() -> f64 uses [] panics never pub
-    let a = 9.0
+    let a = 9.0f64
     let b = a.sqrt()
     let c = b * 2.0 + 1.5
     c.floor()

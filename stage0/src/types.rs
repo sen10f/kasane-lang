@@ -4,8 +4,11 @@
 //! コンテナの要素型 (`let mut v = Vec.new()` を `v.push(1u8)` で決める) を、関数の中で伝播する。
 //! 検査: レシーバの型によるメソッドの存在 (E1108)・引数の個数 (E2022)・プリミティブ引数の型 (E2023)、
 //! 演算子の両辺の型の不一致 (E2024)、添字の型 (E2025)。
-//! 分からない型は `Ty::Unknown` にして、そこから先は何も言わない (誤検出より取りこぼしを選ぶ)。
-//! 参照は透過的に扱う (`&T` と `T` は同じとみなす)。
+//! 分からない型は `Ty::Unknown` にして、既定ではそこから先は何も言わない (誤検出より取りこぼしを選ぶ)。
+//! 方針は「分からなければ落とす」へ移行中 (実装計画 1.2 / 段階 1): `ksn check --strict-types`
+//! (または `KSN_STRICT_TYPES=1`) では、関数の推論が終わっても型が決まらない式・束縛を E2044 にする。
+//! 参照は単一化の中では透過的に扱う (`&T` と `T` は同じとみなす)。参照の段数の食い違いは、
+//! 値が要る所への参照 (`&u32` を `u32` として返す・`let` の注釈に入れる) だけを `ref_level_conflict` が見る。
 
 use std::collections::{HashMap, HashSet};
 
@@ -103,6 +106,10 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
     match tag(v).as_str() {
         "prim" => Ty::Prim(st(tel(v, 1))),
         "never" => Ty::Never,
+        // 生ポインタ `*const T` / `*mut T` (FFI)。参照とは別の名義型として扱う。
+        "ptr" => Ty::Named(if matches!(tel(v, 1), V::B(true)) { "*mut".into() } else { "*const".into() }, vec![from_v(tel(v, 2), params)]),
+        // トレイト宣言の中の `Self` (使う側で、呼び出しごとの型に置き換える)。
+        "self" => Ty::Param("Self".into()),
         "tuple" => {
             let xs: Vec<Ty> = items(tel(v, 1)).iter().map(|x| from_v(x, params)).collect();
             if xs.is_empty() { Ty::Unit } else { Ty::Tuple(xs) }
@@ -110,6 +117,13 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
         "array" => Ty::Array(Box::new(from_v(tel(v, 1), params))),
         "slice" => Ty::Slice(Box::new(from_v(tel(v, 1), params))),
         "ref" => Ty::Ref(matches!(tel(v, 1), V::B(true)), Box::new(from_v(tel(v, 2), params))),
+        // 関数ポインタ型 `fn(A) -> R uses [..] panics ..`。効果は型の同一性に入れない (効果検査が見る)。
+        "fn" => Ty::Closure {
+            args: items(tel(v, 1)).iter().map(|x| from_v(x, params)).collect(),
+            ret: Box::new(from_v(tel(v, 2), params)),
+            cap: Cap::Fn,
+            id: None,
+        },
         "named" => {
             let name = st(tel(v, 1));
             if params.contains(&name) {
@@ -117,8 +131,9 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
             }
             let args: Vec<Ty> = items(tel(v, 2))
                 .iter()
-                .filter(|a| matches!(a, V::L(_)))
-                .map(|a| const_targ(a).map_or_else(|| from_v(a, params), Ty::Const))
+                .filter(|a| matches!(a, V::L(_)) && tag(a) != "life")
+                // 型実引数に書かれた効果・panic の実引数は、型の同一性に入れない (定数と同じ「どれでもよい」印)。
+                .map(|a| if matches!(tag(a).as_str(), "effects" | "panic") { Ty::Const("effect".into()) } else { const_targ(a).map_or_else(|| from_v(a, params), Ty::Const) })
                 .collect();
             Ty::Named(name, args)
         }
@@ -228,6 +243,44 @@ pub struct TypeCk<'a> {
     pub resolved_calls: Vec<ResolvedCall>,
     /// `Fn` 境界に直接書かれたクロージャ (効果検査 ②)。
     pub fn_closure_args: Vec<FnClosure>,
+    /// `--strict-types` / `KSN_STRICT_TYPES=1`: 型が決まらない式・束縛を E2044 にする (実装計画 段階 1)。
+    strict: bool,
+    /// strict のとき、関数ごとに集める式・束縛の型の記録。
+    sites: Vec<Site>,
+    /// 推論中の式の記録の添字の列 (先頭が最も内側)。
+    site_stack: Vec<usize>,
+    /// 直前に推論し終えた式の記録 (let の右辺から束縛へ原因をたどるのに使う)。
+    last_site: Option<usize>,
+    /// いま束縛しているパターンの値の出どころの記録と行。
+    pat_src: Option<usize>,
+    pat_line: usize,
+    /// 入れ子のループごとの「`break` があったか」。
+    loop_breaks: Vec<bool>,
+    /// 名前が解決できない式 (別の診断が報告するので E2044 にしない)。
+    quiet_sites: HashSet<usize>,
+    /// 局所変数の名前 → 束縛の記録 (使用箇所から原因の束縛へたどる)。
+    local_sites: HashMap<String, usize>,
+}
+
+/// strict モードで集める、式または束縛の型の記録。
+struct Site {
+    line: usize,
+    what: String,
+    ty: Ty,
+    /// 型が決まらない原因になり得る下位の記録 (子の式、束縛の右辺)。
+    deps: Vec<usize>,
+}
+
+static STRICT_TYPES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `ksn check --strict-types` から有効にする。
+pub fn set_strict_types(on: bool) {
+    STRICT_TYPES.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// strict モードか (フラグ、または環境変数 `KSN_STRICT_TYPES=1`)。
+pub fn strict_types() -> bool {
+    STRICT_TYPES.load(std::sync::atomic::Ordering::Relaxed) || std::env::var("KSN_STRICT_TYPES").map_or(false, |v| v == "1")
 }
 
 impl<'a> TypeCk<'a> {
@@ -246,7 +299,7 @@ impl<'a> TypeCk<'a> {
                 trait_methods.extend(d.methods.iter().cloned());
             }
         }
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), resolved_calls: vec![], fn_closure_args: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), resolved_calls: vec![], fn_closure_args: vec![], strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_line: 0, loop_breaks: vec![], quiet_sites: HashSet::new(), local_sites: HashMap::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -313,6 +366,14 @@ impl<'a> TypeCk<'a> {
         self.escaped.clear();
         self.mutable.clear();
         self.lits.clear();
+        self.sites.clear();
+        self.site_stack.clear();
+        self.last_site = None;
+        self.pat_src = None;
+        self.pat_line = 0;
+        self.loop_breaks.clear();
+        self.quiet_sites.clear();
+        self.local_sites.clear();
         self.scopes = vec![HashMap::new()];
         let gn = d.gnames();
         for (n, t) in &d.params {
@@ -322,7 +383,7 @@ impl<'a> TypeCk<'a> {
             self.scopes[0].insert(n.clone(), ty);
         }
         // `?` のエラー型の検査のため、この関数の戻り値型を覚える (クロージャはその注釈を重ねる)。
-        let ret = subst_params_unknown(&from_v(&d.ret, &gn));
+        let ret = from_v(&d.ret, &gn);
         self.rets.push(ret.clone());
         let value = self.infer(body);
         self.rets.pop();
@@ -333,12 +394,93 @@ impl<'a> TypeCk<'a> {
                 self.diag("E2020", format!("type mismatch in return value: expected {}, found {}{}", want, got, conv_hint(&want, &got)), line);
             }
         }
+        if let Some((want, got)) = self.ref_level_conflict(&ret, &value) {
+            let stmts = items(&nf(body)[0]);
+            let line = stmts.last().map(nline).unwrap_or(0);
+            self.diag("E2020", format!("type mismatch in return value: expected {}, found {}; there is no implicit dereference: write `*` to read the value", want, got), line);
+        }
         self.check_dangling(body, &ret);
         self.finish_literals();
+        self.report_undetermined();
         // 型変数は関数ごとの表なので、ここで解決してから外へ出す。
         for (line, name, t) in std::mem::take(&mut self.let_pending) {
             let t = self.deep(&t);
             self.let_tys.insert((di, line, name), t);
+        }
+    }
+
+    /// 型の中に、決まっていない部分 (`Unknown` / 未解決の型変数) があれば true。
+    /// 接尾辞のない数値リテラルの型変数は E2027 が見るので、ここでは数えない (escape されたものだけ数える)。
+    fn undetermined(&self, t: &Ty) -> bool {
+        match self.deep(t) {
+            Ty::Unknown => true,
+            Ty::Var(v) => self.kinds[v] == 0 || self.escaped.contains(&v),
+            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.undetermined(x)),
+            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.undetermined(&x),
+            Ty::Closure { args, ret, .. } => args.iter().any(|x| self.undetermined(x)) || self.undetermined(&ret),
+            _ => false,
+        }
+    }
+
+    /// strict: 関数の推論が終わった時点で型が決まっていない式・束縛を E2044 にする。
+    /// 原因の連鎖 (下位の式が決まらないので上位も決まらない) は根の 1 件だけを報告する。
+    fn report_undetermined(&mut self) {
+        let sites = std::mem::take(&mut self.sites);
+        if !self.strict {
+            return;
+        }
+        let und: Vec<bool> = sites.iter().map(|s| self.undetermined(&s.ty)).collect();
+        let mut seen: HashSet<(usize, String)> = HashSet::new();
+        for (i, s) in sites.iter().enumerate() {
+            if und[i] && !self.quiet_sites.contains(&i) && !s.deps.iter().any(|&d| und[d]) && seen.insert((s.line, s.what.clone())) {
+                let shown = self.deep(&s.ty).show();
+                self.diag(
+                    "E2044",
+                    format!("cannot determine the type of {} (inferred so far: `{}`): add a type annotation", s.what, shown),
+                    s.line,
+                );
+            }
+        }
+    }
+
+    /// いま推論中の式の型は局所変数 `name` の型に依存する (決まらない原因は束縛の側にある)。
+    fn dep_on_local(&mut self, name: &str) {
+        if let (Some(&top), Some(&b)) = (self.site_stack.last(), self.local_sites.get(name)) {
+            self.sites[top].deps.push(b);
+        }
+    }
+
+    /// いま推論中の式を、E2044 の対象から外す (名前が解決できないなど、別の診断が報告する誤り)。
+    fn quiet_here(&mut self) {
+        if let Some(&i) = self.site_stack.last() {
+            self.quiet_sites.insert(i);
+        }
+    }
+
+    fn new_site(&mut self, line: usize, what: String, ty: Ty) -> usize {
+        let id = self.sites.len();
+        self.sites.push(Site { line, what, ty, deps: vec![] });
+        if let Some(&parent) = self.site_stack.last() {
+            self.sites[parent].deps.push(id);
+        }
+        id
+    }
+
+    /// 式の説明 (E2044 の文面と、原因別の集計に使う)。
+    fn describe(&self, e: &V) -> String {
+        let f = nf(e);
+        match nname(e) {
+            "Path" => format!("the path `{}`", strs(&f[0]).join(".")),
+            "Call" => match nname(&f[0]) {
+                "Path" => format!("the call to `{}`", strs(&nf(&f[0])[0]).join(".")),
+                _ => "the call of an expression".to_string(),
+            },
+            "MCall" => format!("the method call `.{}(..)`", st(&f[1])),
+            "Field" => format!("the field access `.{}`", st(&f[1])),
+            "Lit" => format!("the {} literal", st(&f[0])),
+            "Bin" => format!("the `{}` expression", st(&f[0])),
+            "Unary" => format!("the `{}` expression", st(&f[0])),
+            n => format!("the `{}` expression", n),
         }
     }
 
@@ -352,6 +494,7 @@ impl<'a> TypeCk<'a> {
             Ty::Array(x) => V::L(vec![s("array"), Self::to_v(x)?]),
             Ty::Slice(x) => V::L(vec![s("slice"), Self::to_v(x)?]),
             Ty::Ref(m, x) => V::L(vec![s("ref"), V::B(*m), Self::to_v(x).unwrap_or(V::Nil)]),
+            Ty::Named(n, args) if (n == "*mut" || n == "*const") && args.len() == 1 => V::L(vec![s("ptr"), V::B(n == "*mut"), Self::to_v(&args[0])?]),
             Ty::Named(n, args) => V::L(vec![s("named"), s(n), V::L(args.iter().map(Self::to_v).collect::<Option<Vec<V>>>()?)]),
             _ => return None,
         })
@@ -520,6 +663,13 @@ impl<'a> TypeCk<'a> {
     }
 
     fn bind(&mut self, name: &str, ty: Ty) {
+        if self.strict {
+            let id = self.new_site(self.pat_line, format!("the binding `{}`", name), ty.clone());
+            if let Some(src) = self.pat_src {
+                self.sites[id].deps.push(src);
+            }
+            self.local_sites.insert(name.to_string(), id);
+        }
         if let Some(s) = self.scopes.last_mut() {
             s.insert(name.to_string(), ty);
         }
@@ -575,6 +725,15 @@ impl<'a> TypeCk<'a> {
     /// 2 つの型を等しくする。矛盾したら、その箇所の 2 つの型を返す。参照は透過的。
     fn unify2(&mut self, a: &Ty, b: &Ty) -> Result<(), (Ty, Ty)> {
         let (a, b) = (self.resolve(a), self.resolve(b));
+        // 型パラメータ (本体の中では「どれかの型」) と一般の型変数は、変数を型パラメータに束縛して決める。
+        // リテラルの型変数 (整数・浮動小数) は従来どおり決めない。
+        if let (Ty::Var(x), Ty::Param(_)) | (Ty::Param(_), Ty::Var(x)) = (&a, &b) {
+            if self.kinds[*x] == 0 {
+                let t = if matches!(a, Ty::Param(_)) { a.clone() } else { b.clone() };
+                self.vars[*x] = Some(t);
+                return Ok(());
+            }
+        }
         if matches!(a, Ty::Unknown | Ty::Param(_)) {
             self.escape(&b);
         }
@@ -698,6 +857,16 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// 効果・panic の型パラメータ (`E: uses`, `P: panics`) は型の同一性に関与しないので、
+    /// どれでもよい印 (`Const("effect")`) に束縛しておく (未解決の型変数として残さない)。
+    fn seed_effect_params(d: &Def, map: &mut HashMap<String, Ty>) {
+        for g in &d.generics {
+            if g.0 == "uses" || g.0 == "panics" {
+                map.entry(g.1.clone()).or_insert_with(|| Ty::Const("effect".into()));
+            }
+        }
+    }
+
     /// 明示型引数 (`f::<..>`, 4.3) のうち型と定数の実引数を、宣言のパラメータ名に束縛する。
     /// 効果 (`uses [..]`) と panic (`never` / `may`) の実引数は効果検査 (check.rs) で扱うのでここでは無視する。
     /// 実引数の種別が宣言と並ばない (誤った) 呼び出しでは何も束縛しない (黙る)。
@@ -761,8 +930,8 @@ impl<'a> TypeCk<'a> {
         let t = self.deep(t);
         match t.strip() {
             Ty::Prim(p) if p == "str" => (vec!["core.str".into()], true),
-            Ty::Prim(p) if p == "bool" => (vec!["core.bool".into()], false),
-            Ty::Prim(p) if p == "char" => (vec!["core.char".into()], false),
+            Ty::Prim(p) if p == "bool" => (vec!["core.bool.bool".into()], false),
+            Ty::Prim(p) if p == "char" => (vec!["core.char.char".into()], false),
             Ty::Prim(p) => (vec![format!("core.num.{}", p)], false),
             Ty::Slice(_) | Ty::Array(_) => (vec!["core.slice".into(), "core.array".into()], true),
             Ty::Named(n, _) => match n.as_str() {
@@ -812,6 +981,9 @@ impl<'a> TypeCk<'a> {
         }
         if cands.is_empty() {
             if let Some(t) = self.trait_bound_method(recv, name, args, line) {
+                return t;
+            }
+            if let Some(t) = self.derived_method(recv, name, args) {
                 return t;
             }
             let exists_elsewhere = self.p.method_idx.contains_key(name);
@@ -866,6 +1038,7 @@ impl<'a> TypeCk<'a> {
         }
         let mut map: HashMap<String, Ty> = HashMap::new();
         self.seed_targs(d, targs, &mut map);
+        Self::seed_effect_params(d, &mut map);
         let self_ty = from_v(&d.params[0].1, &gn);
         let self_ty = self.inst(&self_ty, &mut map);
         let view = self.view_for(recv, &owner);
@@ -885,9 +1058,44 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
+        // `F: core.ops.FnOnce<(A,), R, ..>` の境界を持つ引数にクロージャが渡されたら、
+        // 境界の引数・戻り値の型変数 (`Option.map` の `U` など) をクロージャの型で決める。
+        for (k, a) in args.iter().enumerate() {
+            let raw = from_v(&d.params[k + 1].1, &gn);
+            if let Ty::Param(pn) = &raw {
+                if let cl @ Ty::Closure { .. } = self.deep(a) {
+                    self.bind_fn_bound(d, pn, &cl, &mut map, &gn);
+                }
+            }
+        }
         self.check_bounds(d, &map, line, false);
         let ret = from_v(&d.ret, &gn);
         self.inst(&ret, &mut map)
+    }
+
+    /// `name: core.ops.Fn*<(A..), R, ..>` の境界の引数・戻り値を、渡されたクロージャ `cl` の型と単一化する
+    /// (矛盾は報告しない。型変数を決めるためだけに使う)。
+    fn bind_fn_bound(&mut self, d: &Def, name: &str, cl: &Ty, map: &mut HashMap<String, Ty>, gn: &HashSet<String>) {
+        let Ty::Closure { args, ret, .. } = cl else { return };
+        for b in self.fn_bound(d, name) {
+            let ta = items(tel(&b, 1));
+            if let Some(a0) = ta.first() {
+                let want = self.inst(&bound_targ(a0, gn), map);
+                match want {
+                    Ty::Tuple(ws) => {
+                        for (w, g) in ws.iter().zip(args) {
+                            let _ = self.unify2(w, g);
+                        }
+                    }
+                    Ty::Unit => {}
+                    _ => {}
+                }
+            }
+            if let Some(r) = ta.get(1) {
+                let want = self.inst(&bound_targ(r, gn), map);
+                let _ = self.unify2(&want, ret);
+            }
+        }
     }
 
     /// レシーバが型パラメータ `T` で、境界のトレイトがそのメソッドを宣言しているとき、トレイトのシグネチャで呼び出しを検査する。
@@ -928,16 +1136,36 @@ impl<'a> TypeCk<'a> {
         let deep = self.deep(recv);
         let Ty::Param(pn) = deep.strip().clone() else { return None };
         let d = self.def();
-        let bounds: Vec<String> = d
-            .generics
-            .iter()
-            .filter(|g| g.0 == "type" && g.1 == pn)
-            .flat_map(|g| items(&g.2).iter().filter_map(|b| if let V::L(bx) = b { Some(st(&bx[0])) } else { None }).collect::<Vec<_>>())
-            .collect();
-        for tr in bounds {
+        // 境界 (トレイト名, 型実引数) の列。スーパートレイト (`requires`) も推移的に辿る。
+        let gn_caller = d.gnames();
+        let mut queue: Vec<(String, Vec<Ty>)> = vec![];
+        for g in d.generics.iter().filter(|g| g.0 == "type" && g.1 == pn) {
+            for b in items(&g.2) {
+                if let V::L(bx) = b {
+                    let targs: Vec<Ty> = items(tel(b, 1)).iter().filter(|a| matches!(a, V::L(_)) && tag(a) != "life").map(|a| bound_targ(a, &gn_caller)).collect();
+                    queue.push((st(&bx[0]), targs));
+                }
+            }
+        }
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut qi = 0;
+        while qi < queue.len() {
+            let (tr, targs) = queue[qi].clone();
+            qi += 1;
+            if !seen.insert(tr.clone()) {
+                continue;
+            }
             let Some(&ti) = self.p.types.get(&tr) else { continue };
             let td = &self.p.defs[ti];
-            let Some((_, params, ret)) = td.trait_sigs.iter().find(|s| s.0 == name) else { continue };
+            let Some((_, params, ret)) = td.trait_sigs.iter().find(|s| s.0 == name) else {
+                for (sup, sargs) in &td.requires {
+                    let Some(fq) = crate::check::resolve_trait_fqn(self.p, sup) else { continue };
+                    let tgn = td.gnames();
+                    let sa: Vec<Ty> = items(sargs).iter().filter(|a| matches!(a, V::L(_)) && tag(a) != "life").map(|a| bound_targ(a, &tgn)).collect();
+                    queue.push((fq, sa));
+                }
+                continue;
+            };
             // 5.3: `core.ops.Fn` 系の境界を持つパラメータの呼び出しは間接呼び出し。この関数の
             // 呼び出し箇所で渡されたクロージャ (単一化で分かったもの) を候補の辺にする。
             // 渡されたクロージャが分からなければ、辺を足さない (黙る)。
@@ -961,6 +1189,16 @@ impl<'a> TypeCk<'a> {
             gn.insert("Self".to_string());
             let mut map: HashMap<String, Ty> = HashMap::new();
             map.insert("Self".to_string(), deep.clone());
+            Self::seed_effect_params(td, &mut map);
+            // トレイトの型パラメータ (`Fn<Args, R, ..>` の `R` など) を、境界に書かれた実引数に束縛する。
+            // 実引数の `Self` (スーパートレイトの `PartialEq<Self>`) は、レシーバの型。
+            let tparams: Vec<&(String, String, V)> = td.generics.iter().filter(|g| g.0 != "life").collect();
+            for (g, a) in tparams.iter().zip(&targs) {
+                if g.0 == "type" {
+                    let a = if *a == Ty::Param("Self".into()) { deep.clone() } else { a.clone() };
+                    map.insert(g.1.clone(), a);
+                }
+            }
             for (k, a) in args.iter().enumerate() {
                 let pt = from_v(&params[k + 1].1, &gn);
                 let pt = self.inst(&pt, &mut map);
@@ -978,6 +1216,91 @@ impl<'a> TypeCk<'a> {
             return Some(self.inst(&r, &mut map));
         }
         None
+    }
+
+    /// トレイトを実装する型 (またはその導出) のメソッドで、型の側に定義がないもの
+    /// (`clone` / `eq` / `cmp` / `to_string` など) を、トレイトのシグネチャで解く。
+    /// `Self` はレシーバの参照を外した型。
+    fn derived_method(&mut self, recv: &Ty, name: &str, args: &[Ty]) -> Option<Ty> {
+        if !DERIVED.contains(&name) || matches!(name, "call" | "call_mut" | "call_once") {
+            return None;
+        }
+        let deep = self.deep(recv);
+        let self_ty = deep.strip().clone();
+        if matches!(self_ty, Ty::Unknown | Ty::Var(_)) {
+            return None;
+        }
+        let mut found: Vec<&'a Def> = vec![];
+        let mut keys: Vec<&String> = self.p.types.keys().collect();
+        keys.sort();
+        for k in keys {
+            let td = &self.p.defs[self.p.types[k]];
+            if td.kw == "trait" && td.trait_sigs.iter().any(|s| s.0 == name && s.1.len() == args.len() + 1) {
+                found.push(td);
+            }
+        }
+        let td = *found.first()?;
+        let (_, params, ret) = td.trait_sigs.iter().find(|s| s.0 == name)?;
+        let mut gn = td.gnames();
+        gn.insert("Self".to_string());
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        map.insert("Self".to_string(), self_ty.clone());
+        Self::seed_effect_params(td, &mut map);
+        // 比較系のトレイトの `Rhs` は、既定では `Self`。
+        for g in td.generics.iter().filter(|g| g.0 == "type") {
+            map.entry(g.1.clone()).or_insert_with(|| self_ty.clone());
+        }
+        for (k, a) in args.iter().enumerate() {
+            let pt = from_v(&params[k + 1].1, &gn);
+            let pt = self.inst(&pt, &mut map);
+            let _ = self.unify2(&pt, a);
+        }
+        let r = from_v(ret, &gn);
+        Some(self.inst(&r, &mut map))
+    }
+
+    /// `for x in it` の要素の型。配列・スライス・`Vec` はその要素、それ以外は `next` の戻り値 `Option<T>` の `T`。
+    fn iter_elem(&mut self, it: &Ty) -> Ty {
+        let deep = self.deep(it);
+        match deep.strip() {
+            Ty::Array(x) | Ty::Slice(x) => return (**x).clone(),
+            Ty::Named(n, a) if n == "alloc.vec.Vec" => return a.first().cloned().unwrap_or(Ty::Unknown),
+            _ => {}
+        }
+        if let Ty::Param(pn) = deep.strip() {
+            let d = self.def();
+            let gn = d.gnames();
+            for g in d.generics.iter().filter(|g| g.0 == "type" && &g.1 == pn) {
+                for b in items(&g.2) {
+                    if matches!(b, V::L(bx) if st(&bx[0]) == "core.iter.Iterator") {
+                        if let Some(a0) = items(tel(b, 1)).first() {
+                            return bound_targ(a0, &gn);
+                        }
+                    }
+                }
+            }
+        }
+        let (owners, _) = self.owners_for(&deep);
+        for o in &owners {
+            let Some(&di) = self.owners.get(o).and_then(|m| m.get("next")).and_then(|v| v.first()) else { continue };
+            let d = &self.p.defs[di];
+            if d.params.len() != 1 {
+                continue;
+            }
+            let gn = d.gnames();
+            let mut map: HashMap<String, Ty> = HashMap::new();
+            Self::seed_effect_params(d, &mut map);
+            let self_ty = self.inst(&from_v(&d.params[0].1, &gn), &mut map);
+            let view = self.view_for(&deep, o);
+            let _ = self.unify2(&self_ty, &view);
+            let ret = self.inst(&from_v(&d.ret, &gn), &mut map);
+            if let Ty::Named(n, a) = self.deep(&ret) {
+                if n == "Option" {
+                    return a.first().cloned().unwrap_or(Ty::Unknown);
+                }
+            }
+        }
+        Ty::Unknown
     }
 
     /// `dyn Tr` のメソッド呼び出しを、トレイト (とそのスーパートレイト) のシグネチャで検査する (4.3 / 5.1)。
@@ -1041,6 +1364,7 @@ impl<'a> TypeCk<'a> {
             gn.insert("Self".to_string());
             let mut map: HashMap<String, Ty> = HashMap::new();
             map.insert("Self".to_string(), recv.clone());
+            Self::seed_effect_params(td, &mut map);
             if let Some(b) = base {
                 if matches!(from_v(&params[0].1, &gn), Ty::Ref(true, _)) {
                     self.need_mut(b, name, line);
@@ -1162,6 +1486,19 @@ impl<'a> TypeCk<'a> {
 
     // ------------------------------------------------------------ 式
     fn infer(&mut self, e: &V) -> Ty {
+        if !self.strict {
+            return self.infer_inner(e);
+        }
+        let id = self.new_site(nline(e), self.describe(e), Ty::Unknown);
+        self.site_stack.push(id);
+        let t = self.infer_inner(e);
+        self.site_stack.pop();
+        self.sites[id].ty = t.clone();
+        self.last_site = Some(id);
+        t
+    }
+
+    fn infer_inner(&mut self, e: &V) -> Ty {
         let f = nf(e);
         match nname(e) {
             "Block" => {
@@ -1235,6 +1572,7 @@ impl<'a> TypeCk<'a> {
                 }
                 match self.deep(&t).strip() {
                     Ty::Array(x) | Ty::Slice(x) => (**x).clone(),
+                    Ty::Named(n, a) if n == "alloc.vec.Vec" => a.first().cloned().unwrap_or(Ty::Unknown),
                     _ => Ty::Unknown,
                 }
             }
@@ -1243,9 +1581,11 @@ impl<'a> TypeCk<'a> {
                 match st(&f[0]).as_str() {
                     "&" => Ty::Ref(false, Box::new(t)),
                     "&mut" => Ty::Ref(true, Box::new(t)),
+                    // 参照は透過的なので、参照でない型の `*` も同じ型 (型が決まらないときは Unknown)。
                     "*" => match self.resolve(&t) {
                         Ty::Ref(_, x) => *x,
-                        _ => Ty::Unknown,
+                        Ty::Unknown => Ty::Unknown,
+                        other => other,
                     },
                     _ => t,
                 }
@@ -1267,7 +1607,8 @@ impl<'a> TypeCk<'a> {
                         self.check_cmp_bound(&a, &op, nline(e));
                         Ty::Prim("bool".into())
                     }
-                    _ => a,
+                    // 算術演算の結果は値 (参照は透過的に扱うので、左辺の参照を外す)。
+                    _ => self.deep(&a).strip().clone(),
                 }
             }
             "StructLit" => {
@@ -1318,32 +1659,43 @@ impl<'a> TypeCk<'a> {
             "If" => {
                 self.infer(&f[0]);
                 let a = self.infer(&f[1]);
-                let b = if is_nil(&f[2]) { Ty::Unit } else { self.infer(&f[2]) };
+                if is_nil(&f[2]) {
+                    return Ty::Unit;
+                }
+                let b = self.infer(&f[2]);
+                // 枝の型を単一化する (どちらかが `Ok(v)` / `Err(e)` / `None` のように片側しか決めないことがある)。
+                let _ = self.unify2(&a, &b);
                 if a == Ty::Never { b } else { a }
             }
             "Match" => {
                 let s = self.infer(&f[0]);
+                let src = self.last_site;
                 let mut out = Ty::Unknown;
                 for arm in items(&f[1]) {
                     self.scopes.push(HashMap::new());
-                    self.bind_pat(&items(arm)[0], &s);
+                    self.bind_pat_from(&items(arm)[0], &s, src, nline(&items(arm)[0]));
                     let t = self.infer(&items(arm)[1]);
                     self.scopes.pop();
-                    if out == Ty::Unknown && t != Ty::Never {
-                        out = t;
+                    if t != Ty::Never {
+                        if out == Ty::Unknown {
+                            out = t;
+                        } else {
+                            let _ = self.unify2(&out, &t);
+                        }
                     }
                 }
-                out
+                // 腕がすべて発散するなら、match 自身も発散する。
+                if out == Ty::Unknown && !items(&f[1]).is_empty() { Ty::Never } else { out }
             }
             "For" => {
                 let it = self.infer(&f[1]);
+                let src = self.last_site;
                 self.scopes.push(HashMap::new());
-                let elem = match self.deep(&it).strip() {
-                    Ty::Named(n, a) if n == "core.iter.Range" => a.first().cloned().unwrap_or(Ty::Unknown),
-                    _ => Ty::Unknown,
-                };
-                self.bind_pat(&f[0], &elem);
+                let elem = self.iter_elem(&it);
+                self.bind_pat_from(&f[0], &elem, src, nline(e));
+                self.loop_breaks.push(false);
                 self.infer(&f[2]);
+                self.loop_breaks.pop();
                 self.scopes.pop();
                 Ty::Unit
             }
@@ -1360,11 +1712,11 @@ impl<'a> TypeCk<'a> {
                 self.closure_nodes.push(node.clone());
                 self.scopes.push(HashMap::new());
                 for p in items(&f[0]) {
-                    let ty = subst_params_unknown(&from_v(&items(p)[1], &gn));
+                    let ty = from_v(&items(p)[1], &gn);
                     self.bind(&st(&items(p)[0]), ty.clone());
                     args.push(ty);
                 }
-                let ret = subst_params_unknown(&from_v(&f[1], &gn));
+                let ret = from_v(&f[1], &gn);
                 // クロージャの中の `?` は、クロージャの戻り値型のエラー型と比べる。
                 self.rets.push(ret.clone());
                 let body = self.infer(&f[3]);
@@ -1383,11 +1735,16 @@ impl<'a> TypeCk<'a> {
                 Ty::Closure { args, ret: Box::new(ret), cap: closure_cap(&f[2]), id: Some(node) }
             }
             "Return" | "Break" | "Continue" => {
+                if nname(e) == "Break" {
+                    if let Some(b) = self.loop_breaks.last_mut() {
+                        *b = true;
+                    }
+                }
                 if nname(e) == "Return" && !is_nil(&f[0]) {
                     let v = self.infer(&f[0]);
                     let d = self.def();
                     let gn = d.gnames();
-                    let ret = subst_params_unknown(&from_v(&d.ret, &gn));
+                    let ret = from_v(&d.ret, &gn);
                     // クロージャの中の `return` は、クロージャの戻り値型と比べる (関数のものではない)。
                     let ret = if self.closure_nodes.is_empty() { ret } else { self.rets.last().cloned().unwrap_or(Ty::Unknown) };
                     if let Err(err) = self.unify2(&ret, &v) {
@@ -1399,11 +1756,34 @@ impl<'a> TypeCk<'a> {
                             );
                         }
                     }
+                    if let Some((want, got)) = self.ref_level_conflict(&ret, &v) {
+                        self.diag("E2020", format!("type mismatch in return value: expected {}, found {}; there is no implicit dereference: write `*` to read the value", want, got), nline(e));
+                    }
                 }
                 Ty::Never
             }
+            "While" => {
+                self.infer(&f[0]);
+                self.loop_breaks.push(false);
+                self.infer(&f[1]);
+                self.loop_breaks.pop();
+                Ty::Unit
+            }
+            "Loop" => {
+                self.loop_breaks.push(false);
+                self.infer(&f[0]);
+                // `break` のない `loop` は戻らない。
+                if self.loop_breaks.pop() == Some(true) { Ty::Unit } else { Ty::Never }
+            }
+            "Unsafe" => self.infer(&f[2]),
+            "ArrayRep" => {
+                let t = self.infer(&f[0]);
+                let n = self.infer(&f[1]);
+                let _ = self.unify2(&Ty::Prim("usize".into()), &n);
+                Ty::Array(Box::new(t))
+            }
             _ => {
-                // While / Loop / Unsafe / その他: 子の式をたどる (パターンは除く)。
+                // その他: 子の式をたどる (パターンは除く)。
                 for c in crate::check::children(e) {
                     if !crate::check::is_pat(c) {
                         self.infer(c);
@@ -1419,13 +1799,17 @@ impl<'a> TypeCk<'a> {
         match nname(s) {
             "Let" => {
                 let rhs = self.infer(&f[3]);
+                let src = self.last_site;
                 let gn = self.def().gnames();
                 let ty = if !is_nil(&f[2]) {
-                    let ann = subst_params_unknown(&from_v(&f[2], &gn));
+                    let ann = from_v(&f[2], &gn);
                     if let Err(err) = self.unify2(&ann, &rhs) {
                         if let Some((want, got)) = self.ann_conflict(&ann, &rhs, &err) {
                             self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}{}", want, got, conv_hint(&want, &got)), nline(s));
                         }
+                    }
+                    if let Some((want, got)) = self.ref_level_conflict(&ann, &rhs) {
+                        self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}; there is no implicit dereference: write `*` to read the value", want, got), nline(s));
                     }
                     ann
                 } else {
@@ -1436,7 +1820,7 @@ impl<'a> TypeCk<'a> {
                     pat_binds(&f[0], &mut b);
                     self.mutable.extend(b);
                 }
-                self.bind_pat(&f[0], &ty);
+                self.bind_pat_from(&f[0], &ty, src, nline(s));
                 let mut names = vec![];
                 pat_binds(&f[0], &mut names);
                 for n in names {
@@ -1465,11 +1849,27 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// 値の出どころの記録 (`src`) と行を覚えてから、パターンを束縛する。
+    fn bind_pat_from(&mut self, pat: &V, ty: &Ty, src: Option<usize>, line: usize) {
+        let saved = (self.pat_src, self.pat_line);
+        self.pat_src = src;
+        self.pat_line = line;
+        self.bind_pat(pat, ty);
+        (self.pat_src, self.pat_line) = saved;
+    }
+
     fn bind_pat(&mut self, pat: &V, ty: &Ty) {
         let f = nf(pat);
         match nname(pat) {
             "PBind" => self.bind(&st(&f[0]), ty.clone()),
-            "PRef" => self.bind_pat(&f[0], ty),
+            // `&p` パターン: 参照を一段外した型で中身を束縛する。
+            "PRef" => {
+                let inner = match self.resolve(ty) {
+                    Ty::Ref(_, x) => *x,
+                    other => other,
+                };
+                self.bind_pat(&f[0], &inner)
+            }
             "PTuple" => {
                 let ts: Vec<Ty> = match self.deep(ty).strip() {
                     Ty::Tuple(ts) => ts.clone(),
@@ -1480,8 +1880,38 @@ impl<'a> TypeCk<'a> {
                     self.bind_pat(p, &t);
                 }
             }
+            "PStruct" => {
+                // `t.Point { x: a, y: b }`: 構造体の宣言から、各フィールドの型を流す。
+                let segs = strs(&f[0]);
+                let mut fty: Option<(String, Ty)> = None;
+                if let Some(r) = self.p.resolve(&segs, &self.def().file) {
+                    if let (Target::Type(i), true) = (&r.target, r.rest.is_empty()) {
+                        let td = &self.p.defs[*i];
+                        if td.kw == "type" {
+                            let n = td.generics.iter().filter(|g| g.0 == "type").count();
+                            let args: Vec<Ty> = (0..n).map(|_| self.fresh(0)).collect();
+                            let t = Ty::Named(td.name.clone(), args);
+                            let _ = self.unify2(ty, &t);
+                            fty = Some((td.name.clone(), t));
+                        }
+                    }
+                }
+                for fp in items(&f[1]) {
+                    let fname = st(&items(fp)[0]);
+                    let t = match &fty {
+                        Some((_, st_ty)) => {
+                            let scrut = self.deep(ty);
+                            let base = if matches!(scrut.strip(), Ty::Named(..)) { scrut } else { st_ty.clone() };
+                            self.field_ty(&base, &fname)
+                        }
+                        None => Ty::Unknown,
+                    };
+                    self.bind_pat(&items(fp)[1], &t);
+                }
+            }
             "PVariant" => {
                 let segs = strs(&f[0]);
+                self.shape_for_variant(&segs, ty);
                 let payload: Vec<Ty> = self.variant_payload(&segs, ty);
                 for (i, p) in items(&f[1]).iter().enumerate() {
                     let t = payload.get(i).cloned().unwrap_or(Ty::Unknown);
@@ -1495,6 +1925,33 @@ impl<'a> TypeCk<'a> {
                     self.bind(&n, Ty::Unknown);
                 }
             }
+        }
+    }
+
+    /// パターンの列挙子が決める型の形 (`Some(_)` なら `Option<_>`) に、値の型を合わせる。
+    /// 値の型がまだ決まっていない (型変数の) ときに、ペイロードの型を取り出せるようにする。
+    fn shape_for_variant(&mut self, segs: &[String], ty: &Ty) {
+        let name = segs.last().cloned().unwrap_or_default();
+        let want = if segs.len() == 1 && matches!(name.as_str(), "Some" | "None") {
+            let v = self.fresh(0);
+            Some(Ty::Named("Option".into(), vec![v]))
+        } else if segs.len() == 1 && matches!(name.as_str(), "Ok" | "Err") {
+            let (a, b) = (self.fresh(0), self.fresh(0));
+            Some(Ty::Named("Result".into(), vec![a, b]))
+        } else if let Some(r) = self.p.resolve(segs, &self.def().file) {
+            match r.target {
+                Target::Variant(en, _) if self.p.types.contains_key(&en) => {
+                    let n = self.type_def(&en).map_or(0, |td| td.generics.iter().filter(|g| g.0 == "type").count());
+                    let args: Vec<Ty> = (0..n).map(|_| self.fresh(0)).collect();
+                    Some(Ty::Named(en, args))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(w) = want {
+            let _ = self.unify2(&w, ty);
         }
     }
 
@@ -1533,12 +1990,17 @@ impl<'a> TypeCk<'a> {
     /// パス式の型。局所変数 (+ フィールド連鎖) か、定数、列挙子。
     fn path(&mut self, segs: &[String]) -> Ty {
         if let Some(mut t) = self.lookup(&segs[0]) {
+            self.dep_on_local(&segs[0]);
             for s in &segs[1..] {
                 t = self.field_ty(&t, s);
             }
             return t;
         }
         match self.p.resolve(segs, &self.def().file) {
+            None => {
+                self.quiet_here();
+                Ty::Unknown
+            }
             Some(r) if r.rest.is_empty() => match r.target {
                 Target::Const(i) => from_v(&self.p.defs[i].ret, &HashSet::new()),
                 Target::Variant(en, vn) => {
@@ -1546,15 +2008,52 @@ impl<'a> TypeCk<'a> {
                         let v = self.fresh(0);
                         Ty::Named("Option".into(), vec![v])
                     } else if self.p.types.contains_key(&en) {
-                        Ty::Named(en, vec![])
+                        self.variant_ctor(&en, &vn, &[])
                     } else {
                         Ty::Unknown
                     }
+                }
+                // 関数をそのまま値として渡す (`map_err(json.oom)`): 関数ポインタ型。
+                Target::Fn(i) | Target::Sig(i) => self.fn_item_ty(i),
+                Target::Native(ref fq) | Target::Value(ref fq) if self.p.sigs.contains_key(fq) => {
+                    let i = self.p.sigs[fq];
+                    self.fn_item_ty(i)
                 }
                 _ => Ty::Unknown,
             },
             _ => Ty::Unknown,
         }
+    }
+
+    /// 関数定義 `i` を値として使うときの型 (型パラメータは新しい型変数にする)。
+    fn fn_item_ty(&mut self, i: usize) -> Ty {
+        let d = &self.p.defs[i];
+        let gn = d.gnames();
+        let mut map: HashMap<String, Ty> = HashMap::new();
+        Self::seed_effect_params(d, &mut map);
+        let args: Vec<Ty> = d.params.iter().map(|p| from_v(&p.1, &gn)).collect::<Vec<_>>().iter().map(|t| self.inst(t, &mut map)).collect();
+        let ret = self.inst(&from_v(&d.ret, &gn), &mut map);
+        Ty::Closure { args, ret: Box::new(ret), cap: Cap::Fn, id: None }
+    }
+
+    /// ユーザー定義の enum の列挙子 `en.vn(args)` の型。型パラメータは新しい型変数にし、
+    /// ペイロードの宣言型と実引数を単一化して決める。
+    fn variant_ctor(&mut self, en: &str, vn: &str, argt: &[Ty]) -> Ty {
+        let Some(td) = self.type_def(en) else { return Ty::Named(en.to_string(), vec![]) };
+        let gn = td.gnames();
+        let order: Vec<&String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| &g.1).collect();
+        let targs: Vec<Ty> = order.iter().map(|_| self.fresh(0)).collect();
+        if let Some((_, payload)) = td.variants.iter().find(|v| v.0 == vn) {
+            let mut bind = HashMap::new();
+            for (n, a) in order.iter().zip(&targs) {
+                bind.insert((*n).clone(), a.clone());
+            }
+            for (pt, a) in payload.iter().zip(argt) {
+                let declared = subst(&from_v(pt, &gn), &bind);
+                let _ = self.unify2(&declared, a);
+            }
+        }
+        Ty::Named(en.to_string(), targs)
     }
 
     fn call(&mut self, callee: &V, args: &[V], line: usize, targs: &[V]) -> Ty {
@@ -1575,11 +2074,18 @@ impl<'a> TypeCk<'a> {
         let segs = strs(&nf(callee)[0]);
         // `v.items.push(x)` のように、局所変数から始まるパスはメソッド呼び出し。
         if self.lookup(&segs[0]).is_some() {
+            self.dep_on_local(&segs[0]);
             if segs.len() < 2 {
                 // `f(x)`: クロージャを持つ局所変数の直接呼び出し。
                 let t = self.lookup(&segs[0]).unwrap();
                 if let Some(r) = self.call_closure(&t, &argt, line) {
                     return r;
+                }
+                // `F: core.ops.Fn<(A,), R, E, P>` の境界を持つ型パラメータの値の呼び出し。
+                if let Some(cl) = self.fn_bound_closure(&t) {
+                    if let Some(r) = self.call_closure(&cl, &argt, line) {
+                        return r;
+                    }
                 }
                 return Ty::Unknown;
             }
@@ -1591,10 +2097,17 @@ impl<'a> TypeCk<'a> {
         }
         let _ = &argt;
         let Some(r) = self.p.resolve(&segs, &self.def().file) else {
+            self.quiet_here();
             argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;
         };
         if !r.rest.is_empty() {
+            // `m.Enum.Variant.method(..)` / `m.CONST.method(..)`: 値に対するメソッド呼び出し。
+            if r.rest.len() == 1 && matches!(r.target, Target::Variant(..) | Target::Const(_)) {
+                let prefix = &segs[..segs.len() - 1];
+                let recv = self.path(prefix);
+                return self.call_method(&recv, None, &r.rest[0], &argt, line, targs);
+            }
             argt.iter().for_each(|a| self.escape(a));
             return Ty::Unknown;
         }
@@ -1611,7 +2124,7 @@ impl<'a> TypeCk<'a> {
                         let t = self.fresh(0);
                         Ty::Named("Result".into(), vec![t, a0])
                     }
-                    _ if self.p.types.contains_key(&en) => Ty::Named(en, vec![]),
+                    _ if self.p.types.contains_key(&en) => self.variant_ctor(&en, &vn, &argt),
                     _ => Ty::Unknown,
                 }
             }
@@ -1645,6 +2158,7 @@ impl<'a> TypeCk<'a> {
         // 実引数が並ばない (誤った) 呼び出しでは何も束縛せず、引数からの推論に任せる (黙る)。
         let mut map: HashMap<String, Ty> = HashMap::new();
         self.seed_targs(d, targs, &mut map);
+        Self::seed_effect_params(d, &mut map);
         // Fn 境界を受け取る引数の位置と、渡されたクロージャの型 (決まっているものだけ)。
         let mut fn_args: Vec<(usize, String)> = vec![];
         let mut closures: HashMap<usize, Ty> = HashMap::new();
@@ -1714,6 +2228,23 @@ impl<'a> TypeCk<'a> {
                         );
                     }
                 }
+            }
+        }
+        // `I: core.iter.Iterator<T, ..>` の境界: 引数 `I` の型が分かれば、その要素の型を `T` に結びつける。
+        for g in &d.generics {
+            if g.0 != "type" {
+                continue;
+            }
+            for b in items(&g.2) {
+                let V::L(bx) = b else { continue };
+                if st(&bx[0]) != "core.iter.Iterator" {
+                    continue;
+                }
+                let Some(first) = items(tel(b, 1)).first() else { continue };
+                let (Some(it), true) = (map.get(&g.1).cloned(), true) else { continue };
+                let want = self.inst(&from_v(first, &gn), &mut map);
+                let elem = self.iter_elem(&it);
+                let _ = self.unify2(&want, &elem);
             }
         }
         // Fn 境界の単一化: 境界の `Args` タプルと戻り値型を、クロージャの型と比べる。
@@ -1842,6 +2373,31 @@ impl<'a> TypeCk<'a> {
         Some((*ret).clone())
     }
 
+    /// 型パラメータ `F` に `core.ops.Fn*<(A..), R, ..>` の境界があるとき、その引数・戻り値の型でできたクロージャ型。
+    fn fn_bound_closure(&self, t: &Ty) -> Option<Ty> {
+        let Ty::Param(pn) = self.deep(t).strip().clone() else { return None };
+        let d = self.def();
+        let gn = d.gnames();
+        for g in d.generics.iter().filter(|g| g.0 == "type" && g.1 == pn) {
+            for b in items(&g.2) {
+                let V::L(bx) = b else { continue };
+                if !st(&bx[0]).starts_with("core.ops.Fn") {
+                    continue;
+                }
+                let ta = items(tel(b, 1));
+                let (Some(a0), Some(r)) = (ta.first(), ta.get(1)) else { continue };
+                let Ty::Tuple(args) = bound_targ(a0, &gn) else {
+                    if bound_targ(a0, &gn) == Ty::Unit {
+                        return Some(Ty::Closure { args: vec![], ret: Box::new(bound_targ(r, &gn)), cap: Cap::Fn, id: None });
+                    }
+                    continue;
+                };
+                return Some(Ty::Closure { args, ret: Box::new(bound_targ(r, &gn)), cap: Cap::Fn, id: None });
+            }
+        }
+        None
+    }
+
     /// 矛盾した 2 つの型が「プリミティブ同士の違い」か「Named 同士の名前違い」なら、その文字列を返す。
     /// それ以外は誤検出のおそれがあるので None (何も言わない)。
     fn type_conflict(&self, e: &(Ty, Ty)) -> Option<(String, String)> {
@@ -1850,6 +2406,33 @@ impl<'a> TypeCk<'a> {
             (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
             (Ty::Const(a), Ty::Const(b)) if a != b => Some((a.clone(), b.clone())),
             _ => None,
+        }
+    }
+
+    /// 参照の段数の食い違い (4.2: 暗黙に許すのは `&mut T` → `&T`、再借用、`&[T; N]` → `&[T]`、`&T` → `&dyn Tr` だけ)。
+    /// 値 (`want`) が要る所に参照 (`got`) を渡した形 (`&u32` を `u32` として返す) を見つけて、診断用の
+    /// 2 つの型の文字列を返す。型が決まっていない・型パラメータを含む場合は黙る。
+    /// 逆向き (参照が要る所に値) は、パターン束縛が外側の参照を落とす近似があるので見ない。
+    fn ref_level_conflict(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
+        let w = self.deep(want);
+        let g = self.deep(got);
+        if self.undetermined(&w) || self.undetermined(&g) || w.has_param() || g.has_param() {
+            return None;
+        }
+        fn value_like(t: &Ty) -> bool {
+            matches!(t, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_) | Ty::Unit)
+        }
+        let (mut wi, mut gi) = (&w, &g);
+        // 参照の段数を揃えて比べる。
+        loop {
+            match (wi, gi) {
+                (Ty::Ref(_, a), Ty::Ref(_, b)) => {
+                    wi = a;
+                    gi = b;
+                }
+                (x, Ty::Ref(..)) if value_like(x) => return Some((w.show(), g.show())),
+                _ => return None,
+            }
         }
     }
 
@@ -1949,10 +2532,16 @@ impl<'a> TypeCk<'a> {
     }
 }
 
-/// 関数自身の型パラメータは、本体の中では分からない型として扱う。
-fn subst_params_unknown(t: &Ty) -> Ty {
-    subst(t, &HashMap::new())
+/// トレイト境界の型実引数 (`core.ops.Fn<(&T,), bool, E, P>` の各項) を型にする。
+/// `Self` は `Param("Self")`、効果・panic の実引数は「どれでもよい」印。
+fn bound_targ(a: &V, params: &HashSet<String>) -> Ty {
+    match tag(a).as_str() {
+        "effects" | "panic" => Ty::Const("effect".into()),
+        "named" if st(tel(a, 1)) == "Self" => Ty::Param("Self".into()),
+        _ => const_targ(a).map_or_else(|| from_v(a, params), Ty::Const),
+    }
 }
+
 
 /// impl の対象型 `tgt` について、メソッドの所有者になり得る名前 (型そのものと、
 /// 基本型ならその所有者 FQN。3.2 の impl の置き場所)。
