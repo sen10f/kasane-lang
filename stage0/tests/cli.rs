@@ -7709,8 +7709,8 @@ end t.main.test_a_option_result_cmp
 
 test t.main.test_b_slice_count
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    v.push(1u8)
-    v.push(2u8)
+    core.mem.drop(v.push(1u8))
+    core.mem.drop(v.push(2u8))
     core.check.eq(v.iter().count(), 2usize)
     let mut it = v.iter()
     core.mem.drop(it.next())
@@ -7731,7 +7731,7 @@ test t.main.test_d_to_string
     core.check.eq(s.to_string().as_str(), \"héllo\")
     core.check.eq(s.to_string().len(), 6usize)
     let mut owned = s.to_string()
-    owned.push('!')
+    core.mem.drop(owned.push('!'))
     core.check.eq(owned.as_str(), \"héllo!\")
     let st = alloc.string.String.new(std.alloc.SYSTEM)
     core.check.eq(st.to_string().is_empty(), true)
@@ -9351,4 +9351,78 @@ fn discarding_an_option_or_result_value_is_e2042() {
     // 型引数が決まる `Some(x)` / `Ok(x)` の値を式文で捨てると 4.6 の E2042 (`()` 以外を捨てる)。
     let (cs, out) = lin_arg_codes("lin_discard_opt", &["Some(1u8)", "Ok(1u8)"]);
     assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+// ---- 4.6 (型表): 標準ライブラリのジェネリック型のメソッドの戻り値を捨てる式文 (E2042) ----
+
+/// `Vec<u8>` の値 `v` を作る本体 (`alloc` の効果を使うので main は `uses [alloc, io.console]`)。
+fn tdisc_src(extra: &str, b: &[&str]) -> String {
+    format!(
+        "{}fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let mut v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n{}    Ok(())\nend t.main\n",
+        extra,
+        body(b)
+    )
+}
+
+/// E2042 の診断が出た行 (1 診断 1 行の JSON の "line")。
+fn e2042_lines(out: &str) -> Vec<usize> {
+    out.lines()
+        .filter(|l| l.starts_with('{') && l.contains("\"E2042\""))
+        .filter_map(|l| {
+            let i = l.find("\"line\": ")? + 8;
+            let rest = &l[i..];
+            rest[..rest.find(|c: char| !c.is_ascii_digit())?].parse().ok()
+        })
+        .collect()
+}
+
+fn tdisc_lines(name: &str, extra: &str, b: &[&str]) -> (Vec<usize>, String) {
+    let t = Tmp::new(name, &tdisc_src(extra, b));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (e2042_lines(&out), out)
+}
+
+#[test]
+fn tdisc_discarding_option_from_generic_method_is_e2042() {
+    // `v.pop()` の戻り値は `Option<u8>` (型引数 T を Vec の型引数から代入して決まる)。`()` ではない。
+    // 行 3 が `v.pop()` (行 1 は fn、行 2 は let)。
+    let (lines, out) = tdisc_lines("tdisc_pop", "", &["v.pop()", "v.clear()"]);
+    assert_eq!(lines, vec![3], "{}", out);
+}
+
+#[test]
+fn tdisc_discarding_scalar_from_generic_method_is_e2042() {
+    // `len` は usize を返す (型引数に依らない戻り値も、型表で決まる)。
+    let (lines, out) = tdisc_lines("tdisc_len", "", &["v.len()"]);
+    assert_eq!(lines, vec![3], "{}", out);
+}
+
+#[test]
+fn tdisc_unit_returning_generic_methods_are_silent() {
+    // `clear` / `truncate` は `()` を返すので、捨てても診断は出ない (陰性)。
+    let (lines, out) = tdisc_lines("tdisc_unit", "", &["v.clear()", "v.truncate(0usize)"]);
+    assert!(lines.is_empty(), "{}", out);
+}
+
+#[test]
+fn tdisc_discarding_result_from_push_is_e2042() {
+    // `push` は `Result<(), AllocError>` を返すので、`()` 以外を捨てることになる (4.6)。
+    let (lines, out) = tdisc_lines("tdisc_push", "", &["v.push(1u8)"]);
+    assert_eq!(lines, vec![3], "{}", out);
+}
+
+#[test]
+fn tdisc_last_statement_of_a_block_is_not_discarded() {
+    // ブロックの最後の式文はブロックの値なので捨てない (関数の戻り値は別の検査)。
+    let extra = "fn t.last(v: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Option<u8> uses [] panics never\n    v.pop()\nend t.last\n";
+    let (lines, out) = tdisc_lines("tdisc_last", extra, &["let o = t.last(&mut v)", "core.mem.drop(o)"]);
+    assert!(lines.is_empty(), "{}", out);
+}
+
+#[test]
+fn tdisc_generic_element_type_stays_silent() {
+    // 要素の型 T が決まらない (型パラメータ) ときは黙る。
+    let extra = "fn t.drop_top[T](v: &mut alloc.vec.Vec<T, std.alloc.System>) -> () uses [] panics never\n    v.pop()\n    ()\nend t.drop_top\n";
+    let (lines, out) = tdisc_lines("tdisc_generic", extra, &["t.drop_top(&mut v)"]);
+    assert!(lines.is_empty(), "{}", out);
 }
