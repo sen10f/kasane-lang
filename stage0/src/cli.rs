@@ -39,14 +39,14 @@ fn lint_code(c: &str) -> &'static str {
 
 // ------------------------------------------------------------ 診断
 pub struct Item {
-    code: String,
-    fatal: bool,
-    fqn: Option<String>,
-    file: Option<String>,
-    line: usize,
-    col: usize,
-    message: String,
-    fix: Vec<crate::fixes::Fix>,
+    pub code: String,
+    pub fatal: bool,
+    pub fqn: Option<String>,
+    pub file: Option<String>,
+    pub line: usize,
+    pub col: usize,
+    pub message: String,
+    pub fix: Vec<crate::fixes::Fix>,
 }
 
 pub struct Report {
@@ -98,7 +98,7 @@ fn attach_fixes(items: &mut [Item]) {
         let Some(file) = it.file.clone() else { continue };
         let lines = cache
             .entry(file.clone())
-            .or_insert_with(|| fs::read_to_string(&file).unwrap_or_default().split(char::from(10u8)).map(String::from).collect());
+            .or_insert_with(|| read_text(&file).unwrap_or_default().split(char::from(10u8)).map(String::from).collect());
         it.fix = crate::fixes::fixes_for(&it.code, &it.message, &file, it.line, it.col, lines);
     }
 }
@@ -142,7 +142,7 @@ impl Report {
             let lines = it.file.as_ref().map(|f| {
                 cache
                     .entry(f.clone())
-                    .or_insert_with(|| fs::read_to_string(f).unwrap_or_default().split('\n').map(String::from).collect())
+                    .or_insert_with(|| read_text(f).unwrap_or_default().split('\n').map(String::from).collect())
             });
             let text = lines.and_then(|ls| ls.get(it.line.wrapping_sub(1)));
             it.col = text.map_or(1, |l| {
@@ -150,11 +150,15 @@ impl Report {
             });
         }
     }
-    fn flush(&mut self) {
+    /// 列の補完と安定した並べ替え (出力はしない)。
+    fn finish(&mut self) {
         self.fill_cols();
         self.items.sort_by(|a, b| {
             (a.file.clone().unwrap_or_default(), a.line, a.col, &a.code).cmp(&(b.file.clone().unwrap_or_default(), b.line, b.col, &b.code))
         });
+    }
+    fn flush(&mut self) {
+        self.finish();
         for it in &self.items {
             if self.json {
                 println!(
@@ -198,7 +202,7 @@ pub struct Loaded {
     pub std: Vec<Source>,
 }
 
-fn load_all(root: &Path) -> Result<Loaded, ProjectError> {
+pub(crate) fn load_all(root: &Path) -> Result<Loaded, ProjectError> {
     let pkg = load_package(root)?;
     let deps = load_deps(&pkg)?;
     Ok(Loaded { pkg, deps, std: load_stdlib() })
@@ -213,7 +217,7 @@ fn empty_program() -> Program {
 }
 
 /// std + 依存 + 本体の順に登録する。返す添字は本体の定義。
-fn build_program(l: &Loaded) -> (Program, Vec<usize>) {
+pub(crate) fn build_program(l: &Loaded) -> (Program, Vec<usize>) {
     let mut prog = empty_program();
     for s in &l.std {
         for d in &s.defs {
@@ -369,6 +373,28 @@ fn cmd_new(name: &str) -> i32 {
 fn is_pkg_name(s: &str) -> bool {
     let mut cs = s.chars();
     matches!(cs.next(), Some(c) if c.is_ascii_lowercase()) && cs.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// `ksn lsp` 用の検査結果。`check --json` と同じ診断 (修正案つき・並べ替え済み)。
+pub struct Analysis {
+    pub items: Vec<Item>,
+    /// 読み込みに成功したとき: 読み込んだパッケージ一式と、構文エラーが無ければ検査済みの Program。
+    pub loaded: Option<(Loaded, Option<Program>)>,
+}
+
+/// パッケージ `root` を検査して診断を返す (出力はしない。ソースは `overlay_set` の上書きを優先して読む)。
+pub fn analyze(root: &Path) -> Analysis {
+    let mut rep = Report::new(false);
+    let loaded = match full_check(root, &mut rep, false) {
+        Ok((l, p, _)) => Some((l, p)),
+        Err(e) => {
+            rep.add(&e.code, &e.msg, None, 1, 1, true);
+            None
+        }
+    };
+    attach_fixes(&mut rep.items);
+    rep.finish();
+    Analysis { items: rep.items, loaded }
 }
 
 fn cmd_check(json: bool) -> i32 {
@@ -735,12 +761,13 @@ fn load_everything() -> Result<Everything, ProjectError> {
     Ok(Everything { l })
 }
 
-enum Found<'a> {
+pub(crate) enum Found<'a> {
     Def(&'a Def, &'a Source),
+    #[allow(dead_code)]
     Line(&'a Source, usize),
 }
 
-fn find_def<'a>(srcs: &[&'a Source], fqn: &str) -> Option<Found<'a>> {
+pub(crate) fn find_def<'a>(srcs: &[&'a Source], fqn: &str) -> Option<Found<'a>> {
     for s in srcs {
         for d in &s.defs {
             if d.name == fqn && matches!(d.kw.as_str(), "fn" | "type" | "enum" | "trait" | "test" | "const" | "static" | "extern") {
@@ -776,7 +803,7 @@ fn find_def<'a>(srcs: &[&'a Source], fqn: &str) -> Option<Found<'a>> {
     None
 }
 
-fn def_start(s: &Source, d: &Def) -> usize {
+pub(crate) fn def_start(s: &Source, d: &Def) -> usize {
     let mut i = d.line - 1;
     while i > 0 && s.lines[i - 1].starts_with("//") {
         i -= 1;
@@ -963,7 +990,7 @@ fn cmd_sig(args: &[String]) -> i32 {
 }
 
 /// `(?<![\w.])OLD(?![\w])(?!\.[A-Za-z_])` に一致するか。
-fn fqn_occurs(text: &str, target: &str, tail_dot_ok: bool) -> bool {
+pub(crate) fn fqn_occurs(text: &str, target: &str, tail_dot_ok: bool) -> bool {
     text.match_indices(target).any(|(i, _)| fqn_boundary(text, i, target.len(), tail_dot_ok))
 }
 fn fqn_boundary(text: &str, i: usize, len: usize, tail_dot_ok: bool) -> bool {
@@ -1005,6 +1032,14 @@ fn cmd_refs(args: &[String]) -> i32 {
         }
     };
     let (prog, _) = build_program(&l);
+    for (f, ln, who) in refs_hits(&l, &prog, target) {
+        println!("{}:{}: {}", f, ln, who);
+    }
+    0
+}
+
+/// `target` (FQN) を参照する箇所 (ファイル (cwd 相対), 行, 参照元) の一覧。`ksn refs` と LSP が共有する。
+pub(crate) fn refs_hits(l: &Loaded, prog: &Program, target: &String) -> Vec<(String, usize, String)> {
     let last = target.rsplit('.').next().unwrap().to_string();
     let tdef = prog.funcs.get(target).or(prog.sigs.get(target)).map(|&i| &prog.defs[i]);
     let is_method = tdef.map_or(false, |d| d.is_method());
@@ -1072,14 +1107,12 @@ fn cmd_refs(args: &[String]) -> i32 {
     }
     hits.sort();
     hits.dedup();
-    for (f, ln, who) in hits {
-        println!("{}:{}: {}", f, ln, who);
-    }
-    0
+    hits
 }
 
-fn replace_fqn(text: &str, old: &str, new: &str) -> String {
-    let mut out = String::new();
+/// `old` (FQN) が名前として現れる位置 (バイト範囲)。
+pub(crate) fn fqn_spans(text: &str, old: &str) -> Vec<(usize, usize)> {
+    let mut out: Vec<(usize, usize)> = vec![];
     let mut last = 0;
     for (i, _) in text.match_indices(old) {
         if i < last {
@@ -1089,13 +1122,53 @@ fn replace_fqn(text: &str, old: &str, new: &str) -> String {
         let before = text[..i].chars().next_back();
         let after = text[i + old.len()..].chars().next();
         if before.map_or(true, |c| !(w(c) || c == '.')) && after.map_or(true, |c| !w(c)) {
-            out.push_str(&text[last..i]);
-            out.push_str(new);
+            out.push((i, i + old.len()));
             last = i + old.len();
         }
     }
+    out
+}
+
+fn replace_fqn(text: &str, old: &str, new: &str) -> String {
+    let mut out = String::new();
+    let mut last = 0;
+    for (i, e) in fqn_spans(text, old) {
+        out.push_str(&text[last..i]);
+        out.push_str(new);
+        last = e;
+    }
     out.push_str(&text[last..]);
     out
+}
+
+/// 改名の検証と変更計画: (パッケージ本体の `sources` の添字, 変更後の本文)。`ksn rename` と LSP が共有する。
+pub(crate) fn rename_plan(l: &Loaded, old: &str, new: &str) -> Result<Vec<(usize, String)>, String> {
+    if !Regex::new(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$").unwrap().is_match(new) {
+        return Err("invalid new name".into());
+    }
+    let mut srcs: Vec<&Source> = l.pkg.sources.iter().collect();
+    for dp in &l.deps {
+        srcs.extend(dp.sources.iter());
+    }
+    match find_def(&srcs, old) {
+        Some(Found::Def(..)) => {}
+        _ => return Err(format!("{} not found", old)),
+    }
+    for s in &srcs {
+        for d in &s.defs {
+            if d.name == new || d.name.starts_with(&format!("{}.", new)) {
+                return Err(format!("collision with existing definition {}", d.name));
+            }
+        }
+    }
+    let mut changes = vec![];
+    for (i, s) in l.pkg.sources.iter().enumerate() {
+        let nt = replace_fqn(&s.text, old, new);
+        if nt != s.text {
+            changes.push((i, nt));
+        }
+    }
+    Ok(changes)
 }
 
 fn cmd_rename(args: &[String]) -> i32 {
@@ -1113,36 +1186,13 @@ fn cmd_rename(args: &[String]) -> i32 {
             return 1;
         }
     };
-    if !Regex::new(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$").unwrap().is_match(new) {
-        eprintln!("ksn: invalid new name");
-        return 1;
-    }
-    let mut srcs: Vec<&Source> = ev.l.pkg.sources.iter().collect();
-    for dp in &ev.l.deps {
-        srcs.extend(dp.sources.iter());
-    }
-    match find_def(&srcs, old) {
-        Some(Found::Def(..)) => {}
-        _ => {
-            eprintln!("ksn: {} not found", old);
+    let changes: Vec<(&Source, String)> = match rename_plan(&ev.l, old, new) {
+        Ok(c) => c.into_iter().map(|(i, nt)| (&ev.l.pkg.sources[i], nt)).collect(),
+        Err(m) => {
+            eprintln!("ksn: {}", m);
             return 1;
         }
-    }
-    for s in &srcs {
-        for d in &s.defs {
-            if d.name == **new || d.name.starts_with(&format!("{}.", new)) {
-                eprintln!("ksn: collision with existing definition {}", d.name);
-                return 1;
-            }
-        }
-    }
-    let mut changes: Vec<(&Source, String)> = vec![];
-    for s in &ev.l.pkg.sources {
-        let nt = replace_fqn(&s.text, old, new);
-        if nt != s.text {
-            changes.push((s, nt));
-        }
-    }
+    };
     for (s, _) in &changes {
         println!("update {}", rel(&s.path));
     }
@@ -1534,6 +1584,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "todo" => cmd_todo(),
         "context" => cmd_context(&rest),
         "explain" => cmd_explain(&rest),
+        "lsp" => crate::lsp::run(),
         "build" => cmd_build(&rest, None),
         "update" => cmd_update(),
         "vendor" => cmd_vendor(),
@@ -1544,7 +1595,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
         _ => {
             eprintln!(
-                "usage: ksn <new|check|fix|todo|context|fmt|run|test|build|get|sig|refs|rename|explain|update|vendor> [args]"
+                "usage: ksn <new|check|fix|todo|context|fmt|run|test|build|get|sig|refs|rename|explain|lsp|update|vendor> [args]"
             );
             2
         }
