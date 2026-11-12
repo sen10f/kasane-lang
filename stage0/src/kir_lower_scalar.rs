@@ -239,7 +239,12 @@ impl<'a> Lw<'a> {
         let args = items(&f[1]);
         let Ok(res) = self.ty_of(e) else { return Ok(None) };
         if let Some(s) = self.lookup(&segs[0]) {
-            let (recv, rt) = self.slots[s];
+            // 参照を取られた局所 (スタックスロット) は、読み出しの `load` を通す (`read_slot`)。
+            let rt = self.slots[s].1;
+            if num_plan(rt, &segs[1], args.len()).is_none() {
+                return Ok(None);
+            }
+            let recv = self.read_slot(s);
             return self.num_method(line, recv, rt, res, &segs[1], args);
         }
         let Some(dst) = Ty::parse(&segs[0]) else { return Ok(None) };

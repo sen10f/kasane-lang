@@ -48,6 +48,60 @@ fn t.special() -> bool uses [] panics never
     ok_inf && ok_ln && (-big).exp() == 0.0f64
 end t.special
 
+fn t.same(a: f64, b: f64) -> bool uses [] panics never
+    let na = a.is_nan()
+    let nb = b.is_nan()
+    (na && nb) || (!na && !nb && a.to_bits() == b.to_bits())
+end t.same
+
+fn t.special_bits() -> bool uses [] panics never
+    let inf = 1000.0f64.exp()
+    let ninf = -inf
+    let zero = 0.0f64
+    let nzero = -zero
+    let nan = inf - inf
+    let pi = 3.141592653589793f64
+    let hpi = 1.5707963267948966f64
+    let qpi = 0.7853981633974483f64
+    let tqpi = 2.356194490192344928846982537459627163f64
+    let mut ok = true
+    ok = ok && t.same(zero.atan2(nzero), pi)
+    ok = ok && t.same(nzero.atan2(zero), nzero)
+    ok = ok && t.same(nzero.atan2(nzero), -pi)
+    ok = ok && t.same(zero.atan2(-1.0f64), pi)
+    ok = ok && t.same(nzero.atan2(-1.0f64), -pi)
+    ok = ok && t.same(1.0f64.atan2(zero), hpi)
+    ok = ok && t.same((-1.0f64).atan2(nzero), -hpi)
+    ok = ok && t.same(1.0f64.atan2(ninf), pi)
+    ok = ok && t.same(1.0f64.atan2(inf), zero)
+    ok = ok && t.same((-1.0f64).atan2(inf), nzero)
+    ok = ok && t.same(inf.atan2(1.0f64), hpi)
+    ok = ok && t.same(ninf.atan2(-1.0f64), -hpi)
+    ok = ok && t.same(inf.atan2(inf), qpi)
+    ok = ok && t.same(inf.atan2(ninf), tqpi)
+    ok = ok && t.same(ninf.atan2(inf), -qpi)
+    ok = ok && t.same(ninf.atan2(ninf), -tqpi)
+    ok = ok && t.same(inf.atan2(-1.0f64), hpi)
+    ok = ok && t.same(nan.atan2(zero), nan)
+    ok = ok && t.same(nan.atan2(nzero), nan)
+    ok = ok && t.same(inf.atan2(nan), nan)
+    ok = ok && t.same(zero.sin(), zero) && t.same(nzero.sin(), nzero)
+    ok = ok && t.same(nzero.tan(), nzero) && t.same(nzero.cos(), 1.0f64)
+    ok = ok && t.same(inf.sin(), nan) && t.same(ninf.cos(), nan) && t.same(ninf.tan(), nan)
+    ok = ok && t.same(nan.exp(), nan) && t.same(inf.exp(), inf) && t.same(ninf.exp(), zero)
+    ok = ok && t.same(zero.ln(), ninf) && t.same(nzero.ln(), ninf)
+    ok = ok && t.same(inf.ln(), inf) && t.same(ninf.ln(), nan) && t.same(nan.ln(), nan)
+    ok = ok && t.same((-1.0f64).ln(), nan)
+    ok = ok && t.same(nan.powi(0i32), 1.0f64) && t.same(nan.powi(1i32), nan)
+    ok = ok && t.same(nzero.powi(3i32), nzero) && t.same(nzero.powi(2i32), zero)
+    ok = ok && t.same(zero.powi(-1i32), inf) && t.same(nzero.powi(-1i32), ninf)
+    ok = ok && t.same(nzero.powi(-2i32), inf)
+    ok = ok && t.same(inf.powi(-1i32), zero) && t.same(ninf.powi(-1i32), nzero)
+    ok = ok && t.same(ninf.powi(3i32), ninf) && t.same(ninf.powi(2i32), inf)
+    ok = ok && t.same(2.0f64.powi(2000i32), inf) && t.same(0.5f64.powi(2000i32), zero)
+    ok
+end t.special_bits
+
 fn t.sweep32() -> u32 uses [] panics never
     let mut acc = 2166136261u32
     let mut k = 0u32
@@ -98,6 +152,10 @@ end t.known_f64.test_v
 test t.special.test_v
     core.check.is_true(t.special())
 end t.special.test_v
+
+test t.special_bits.test_v
+    core.check.is_true(t.special_bits())
+end t.special_bits.test_v
 
 test t.sweep32.test_v
     core.check.eq(t.sweep32(), 1388949062u32)

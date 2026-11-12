@@ -414,12 +414,8 @@ fn cmd_kir(rest: &[String]) -> i32 {
     match crate::kir_exec::run(&back, fqn, &args) {
         Ok(crate::kir_exec::Outcome::Value(v)) => {
             match ret {
-                Some(crate::kir::Ty::Bool) => println!("{}", v != 0),
-                Some(crate::kir::Ty::Unit) => println!("()"),
-                Some(crate::kir::Ty::U128) => println!("{}", v as u128),
-                Some(crate::kir::Ty::F64) => println!("{}", f64::from_bits(v as u64)),
-                Some(crate::kir::Ty::F32) => println!("{}", f32::from_bits(v as u32)),
-                _ => println!("{}", v),
+                Some(t) => println!("{}", crate::kir::show_value(t, v)),
+                None => println!("{}", v),
             }
             0
         }

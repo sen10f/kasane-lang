@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::kir::{Aop, BoolOp, Mode, Module, Op, Term, Ty, VId};
+use crate::kir::{payload_bits, payload_of, Aop, BoolOp, Mode, Module, Op, Term, Ty, TAG_BIT, VId};
 use crate::kir_scalar;
 
 /// 木走査インタプリタの呼び出し深さの上限 (`interp.rs` の `depth > 2500`)。
@@ -14,7 +14,7 @@ const MAX_DEPTH: usize = 2500;
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
-    /// 正常終了。値は型に応じた 1 語 (整数はその値、`u128` はビットパターン、浮動小数はビット列、bool は 0 / 1、unit は 0)。
+    /// 正常終了。値は型に応じた符号化 (整数はその値、`u128` はビットパターン、浮動小数はビット列、bool は 0 / 1、unit は 0、Option / Result はタグ bit とペイロード。`show_value` で読む)。
     Value(i128),
     /// 実行時 panic (文言は木走査と同じ)。
     Panic(String),
@@ -30,6 +30,8 @@ struct Frame {
     vals: Vec<i128>,
     /// 呼び出し元で結果を受ける値番号。
     dst: Option<VId>,
+    /// この呼び出しが始まったときのセル列の長さ (返るときに切り詰める)。
+    mem_base: usize,
 }
 
 const DIV_ZERO: &str = "attempt to divide by zero";
@@ -127,6 +129,28 @@ fn arith(op: Aop, mode: Mode, ty: Ty, x: i128, y: i128) -> Result<i128, String> 
     }
 }
 
+/// `checked_<op>` の結果 (`Option<P>` の符号化)。溢れと 0 除算は `None` (= 0)。
+/// 木走査 (`interp.rs` の整数演算) と同じ規則に合わせる: `MIN / -1` は範囲外で `None`、`MIN % -1` は `Some(0)`
+/// (木走査の `checked_rem` は i128 の剰余を型の範囲で確かめるだけ。Rust の `checked_rem` とは違う。設計_KIR.md 11 章)。
+fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
+    let crate::kir::Ty::Opt(p) = t else { return 0 };
+    let pt = p.ty();
+    if matches!(op, Aop::Div | Aop::Rem) && y == 0 {
+        return 0;
+    }
+    let r = match op {
+        Aop::Add => x.checked_add(y),
+        Aop::Sub => x.checked_sub(y),
+        Aop::Mul => x.checked_mul(y),
+        Aop::Div => x.checked_div(y),
+        Aop::Rem => x.checked_rem(y),
+    };
+    match r {
+        Some(v) if v >= pt.min() && v <= pt.max() => TAG_BIT | payload_bits(v),
+        _ => 0,
+    }
+}
+
 /// 鍵 `key` の関数を引数 `args` で実行する。鍵が無い・引数の個数が違う場合は `Err`。
 pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     let index: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
@@ -137,14 +161,16 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
         return Err(format!("関数 {} の引数の個数が違う", key));
     }
     let counts: Vec<usize> = m.funcs.iter().map(|f| f.value_count()).collect();
-    let enter = |f: usize, args: &[i128], dst: Option<VId>| -> Frame {
+    let enter = |f: usize, args: &[i128], dst: Option<VId>, mem_base: usize| -> Frame {
         let mut vals = vec![0i128; counts[f]];
         for ((v, _), a) in m.funcs[f].params().iter().zip(args.iter()) {
             vals[*v as usize] = *a;
         }
-        Frame { f, blk: 0, ip: 0, vals, dst }
+        Frame { f, blk: 0, ip: 0, vals, dst, mem_base }
     };
-    let mut stack = vec![enter(entry, args, None)];
+    // 参照の指すセル。`alloca` が 1 セル確保し、その番号がアドレスになる。呼び出しの終わりに切り詰める。
+    let mut mem: Vec<i128> = vec![];
+    let mut stack = vec![enter(entry, args, None, 0)];
     loop {
         let top = stack.len() - 1;
         let (fi, bi, ip) = (stack[top].f, stack[top].blk, stack[top].ip);
@@ -201,6 +227,12 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         BoolOp::Xor => x ^ y,
                     }
                 }
+                Op::Some(a) => TAG_BIT | payload_bits(get(&stack[top], a)),
+                Op::Ok(a) => payload_bits(get(&stack[top], a)),
+                Op::Err(a) => TAG_BIT | payload_bits(get(&stack[top], a)),
+                Op::Tag(a) => (get(&stack[top], a) & TAG_BIT != 0) as i128,
+                Op::Payload(a) => payload_of(inst.ty, get(&stack[top], a)),
+                Op::Checked { op, a, b } => checked(*op, inst.ty, get(&stack[top], a), get(&stack[top], b)),
                 Op::Call { callee, args } => {
                     if stack.len() >= MAX_DEPTH {
                         return Ok(Outcome::StackOverflow);
@@ -209,9 +241,20 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         return Err(format!("呼び先 {} がない", callee));
                     };
                     let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
-                    stack.push(enter(ci, &argv, Some(inst.dst)));
+                    stack.push(enter(ci, &argv, Some(inst.dst), mem.len()));
                     continue;
                 }
+                Op::Alloca => {
+                    mem.push(0);
+                    (mem.len() - 1) as i128
+                }
+                Op::Load(p) => mem[get(&stack[top], p) as usize],
+                Op::Store { ptr, val } => {
+                    let (a, v) = (get(&stack[top], ptr), get(&stack[top], val));
+                    mem[a as usize] = v;
+                    0
+                }
+                Op::AsShared(p) | Op::Reborrow(p) => get(&stack[top], p),
             };
             stack[top].vals[inst.dst as usize] = result;
             continue;
@@ -231,6 +274,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
             Term::Ret(v) => {
                 let val = stack[top].vals[*v as usize];
                 let done = stack.pop().expect("フレーム");
+                mem.truncate(done.mem_base);
                 match stack.last_mut() {
                     None => return Ok(Outcome::Value(val)),
                     Some(caller) => {
