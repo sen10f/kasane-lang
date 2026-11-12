@@ -1347,6 +1347,16 @@ fn build_key(l: &Loaded, release: bool, target: &str) -> String {
     h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// 実行権限を付ける (Unix のみ。Windows は拡張子 .exe / .cmd で起動されるので不要)。
+#[cfg(unix)]
+fn set_exec(p: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(p, fs::Permissions::from_mode(0o755));
+}
+
+#[cfg(not(unix))]
+fn set_exec(_p: &Path) {}
+
 fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let release = args.iter().any(|a| a == "--release");
     let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "c".into());
@@ -1405,8 +1415,24 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let _ = fs::remove_dir_all(&out);
     copy_tree(&cached, &out, &[".used"]);
     let name = l.pkg.name.clone();
+    // %~dp0 は常に絶対パス。sh 版は $0 (相対パス・PATH 経由の名前) を絶対パスに直してから
+    // pkg へ cd する (cd 後に相対パスの $d/ksn を exec すると失敗するため)。
     let _ = fs::write(out.join(format!("{}.cmd", name)), "@echo off\r\nset KSN_STDLIB=%~dp0stdlib\r\ncd /d \"%~dp0pkg\"\r\n\"%~dp0ksn.exe\" _exec %*\r\n");
-    let _ = fs::write(out.join(&name), "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nKSN_STDLIB=\"$d/stdlib\"\nexport KSN_STDLIB\ncd \"$d/pkg\" && exec \"$d/ksn\" _exec \"$@\"\n");
+    let launcher = out.join(&name);
+    let _ = fs::write(
+        &launcher,
+        r#"#!/bin/sh
+case "$0" in
+  */*) p="$0" ;;
+  *) p="$(command -v "$0")" ;;
+esac
+d="$(cd "$(dirname "$p")" && pwd)"
+KSN_STDLIB="$d/stdlib"
+export KSN_STDLIB
+cd "$d/pkg" && exec "$d/ksn" _exec "$@"
+"#,
+    );
+    set_exec(&launcher);
     let prog = prog.unwrap();
     let entry = l.pkg.entry();
     let exe = out.join(if cfg!(windows) { format!("{}.exe", name) } else { format!("{}.native", name) });
