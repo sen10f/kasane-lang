@@ -94,6 +94,7 @@ impl Ty {
 }
 
 const INTS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"];
+const FLOATS: &[&str] = &["f32", "f64"];
 
 /// 型の構文木 (V) を `Ty` にする。`params` に含まれる名前は型パラメータ。
 pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
@@ -158,7 +159,7 @@ fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
 
 const DERIVED: &[&str] = &[
     "clone", "eq", "ne", "cmp", "partial_cmp", "hash", "debug_fmt", "display_fmt", "call", "call_mut", "call_once", "drop",
-    "try_clone", "to_string", "min", "max",
+    "try_clone", "to_string",
 ];
 
 /// 型で解決できた呼び出しの効果検査の義務 (5.1 / 4.3)。check.rs が、呼び出し元 `di` の
@@ -824,7 +825,7 @@ impl<'a> TypeCk<'a> {
                 let best = names
                     .iter()
                     .map(|n| (edit_distance(name, n), *n))
-                    .filter(|(d, n)| *d <= (name.len().max(n.len()) / 3).max(1) || n.contains(name) || name.contains(n.as_str()))
+                    .filter(|(d, n)| *d <= name.len().max(n.len()) / 3 || n.contains(name) || name.contains(n.as_str()))
                     .min_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(b.1)));
                 let hint = best.map(|(_, n)| format!("; did you mean `{}`?", n)).unwrap_or_default();
                 let shown = self.deep(recv).strip().show();
@@ -918,12 +919,22 @@ impl<'a> TypeCk<'a> {
         self.inst(&ret, &mut map)
     }
 
-    /// 整数型 `recv` の `to_<整数型>` 呼び出しへの E1108 の文面。対象が整数型名のときだけ Some。
-    /// 幅が広がって失われない変換は `u32.from_u8(x)` (sig にあれば)、それ以外は `u8.try_from_u32(x)` (Result) を示す。
+    /// 整数型・浮動小数型 `recv` の `to_<整数型>` 呼び出しへの E1108 の文面。対象が整数型名のときだけ Some。
+    /// 整数どうしは、幅が広がって失われない変換 `u32.from_u8(x)` (sig にあれば) か、それ以外 `u8.try_from_u32(x)` (Result) を示す。
+    /// 浮動小数は切り捨てて範囲外を None にする `x.trunc_to_u32()` (Option) を示す。機械適用はしない (型が Option に変わる)。
     /// 同じ型への `to_` は変換が要らない。文面の形は fixes.rs が機械的に読むので変えるときは合わせる。
     fn int_to_hint(&self, recv: &str, name: &str) -> Option<String> {
         let target = name.strip_prefix("to_")?;
-        if !INTS.contains(&target) || !INTS.contains(&recv) {
+        if !INTS.contains(&target) {
+            return None;
+        }
+        if FLOATS.contains(&recv) {
+            return Some(format!(
+                "unknown method `{}` on `{}`; use `x.trunc_to_{}()` (returns Option: truncates toward zero, None if out of range or NaN)",
+                name, recv, target
+            ));
+        }
+        if !INTS.contains(&recv) {
             return None;
         }
         if target == recv {
@@ -937,6 +948,15 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// `Ord` の提供メソッド (`min` / `max`) を持つか。基本型と未確定の型は黙って通す (保守側)。
+    /// 利用者の型・標準の型は `derive` に `Ord` があるときだけ持つ。
+    fn ord_provides(&self, t: &Ty) -> bool {
+        match t {
+            Ty::Named(n, _) => self.p.types.get(n).map_or(true, |&i| self.p.defs[i].derive.iter().any(|x| x == "Ord")),
+            _ => true,
+        }
+    }
+
     /// 派生トレイト (`DERIVED`) のメソッドの戻り値。所有者の sig にメソッドがないときだけ使う。
     /// `Self` はレシーバの型 (参照は透過)。戻り値が分からない名前 (`call` など) は None (黙る)。
     /// `min` / `max` の引数は `Self` と単一化し、それ以外の引数は従来どおり escape する。
@@ -944,6 +964,8 @@ impl<'a> TypeCk<'a> {
         let self_ty = self.deep(recv).strip().clone();
         let ret = match name {
             "clone" => self_ty,
+            // `min` / `max` は `Ord` の提供メソッド (仕様 4.3)。`Ord` を持たない利用者の型には無い (E1108 は型検査が出す)。
+            "min" | "max" if !self.ord_provides(&self_ty) => return None,
             "min" | "max" => {
                 for a in args {
                     let _ = self.unify2(&self_ty, a);

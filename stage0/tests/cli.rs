@@ -7399,3 +7399,99 @@ end t.f
     let out = text(&o.stdout);
     assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
 }
+
+#[test]
+fn comparison_method_names_hint_the_operator_not_a_near_name() {
+    // `lt` 等は演算子 (4.3) で、`ln` のような近い名前を提案しない。
+    let bad = "fn t.f(a: u8, b: u8) -> bool uses [] panics never
+    a.lt(b)
+end t.f
+
+fn t.g(a: u8, b: u8) -> bool uses [] panics never
+    a.ge(b)
+end t.g
+
+";
+    let t = Tmp::new("cmp_method_hint", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("use `a < b`"), "{}", out);
+    assert!(out.contains("use `a >= b`"), "{}", out);
+    assert!(!out.contains("did you mean"), "{}", out);
+}
+
+#[test]
+fn float_to_int_method_is_e1108_with_trunc_hint() {
+    // 浮動小数の `to_<整数型>` は廃止された変換名。切り捨て・範囲外 None の `trunc_to_*` (Option) を案内する。
+    // 型が Option に変わるので機械適用の修正は付けない。
+    let bad = "fn t.g(x: f64) -> u32 uses [] panics never
+    x.to_u32()
+end t.g
+
+fn t.h(x: f32) -> u8 uses [] panics never
+    x.to_u8()
+end t.h
+
+";
+    let t = Tmp::new("float_to_int_bad", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(codes(&out).iter().filter(|c| *c == "E1108").count(), 2, "{}", out);
+    assert!(out.contains("x.trunc_to_u32()"), "{}", out);
+    assert!(out.contains("x.trunc_to_u8()"), "{}", out);
+    assert!(!out.contains("\"replace\""), "{}", out);
+    // 正しい形 (`trunc_to_*` と、浮動小数どうしの `to_f64`) は E1108 にしない。
+    let ok = "fn t.g(x: f64) -> Option<u32> uses [] panics never
+    x.trunc_to_u32()
+end t.g
+
+fn t.h(x: f32) -> f64 uses [] panics never
+    x.to_f64()
+end t.h
+
+";
+    let t = Tmp::new("float_to_int_ok", &main_wrap(ok, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+}
+
+#[test]
+fn derived_ord_min_max_check_and_run() {
+    // `Ord` を derive した型の `min` / `max` は Self を返す (仕様 4.3)。等しいとき min は self、max は other。
+    // `Ord` を derive しない型では E1108 (型検査が「メソッドがない」と出す)。
+    let ok = "type t.P derive [Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord]
+    x: u8
+end t.P
+
+fn t.pick(a: t.P, b: t.P) -> t.P uses [] panics never
+    a.min(b)
+end t.pick
+
+";
+    let body = "    core.check.eq(t.pick(t.P { x: 3u8 }, t.P { x: 5u8 }).x, 3u8)
+    core.check.eq(t.P { x: 3u8 }.max(t.P { x: 5u8 }).x, 5u8)
+";
+    let src = main_wrap(ok, body).replace("uses [io.console] panics may", "uses [] panics may");
+    let t = Tmp::new("derived_ord_min_max", &src);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1108"), "{}", text(&o.stdout));
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+
+    let bad = "type t.Q derive [Debug, Clone, Copy, PartialEq]
+    x: u8
+end t.Q
+
+fn t.pick(a: t.Q, b: t.Q) -> t.Q uses [] panics never
+    a.min(b)
+end t.pick
+
+";
+    let t = Tmp::new("derived_min_without_ord", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("has no method `min`"), "{}", out);
+}
