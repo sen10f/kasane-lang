@@ -1,4 +1,5 @@
 mod defs;
+mod doc;
 mod headers;
 mod lexer;
 mod check;

@@ -962,6 +962,85 @@ fn cmd_sig(args: &[String]) -> i32 {
     }
 }
 
+/// `ksn doc [--std] [--private]`: 静的 HTML の API ドキュメントを `target/doc/` に生成する (生成器は doc.rs)。
+fn cmd_doc(args: &[String]) -> i32 {
+    for a in args {
+        if a != "--std" && a != "--private" {
+            eprintln!("ksn: usage: ksn doc [--std] [--private]");
+            return 2;
+        }
+    }
+    let std_only = args.iter().any(|a| a == "--std");
+    let private = args.iter().any(|a| a == "--private");
+    let root = match find_root() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let l = match load_all(&root) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let (prog, _) = build_program(&l);
+    // build_program は std -> 依存 -> 本体の順に定義を登録する。同じ順で推論済みの定義と対応づける。
+    let mut std_items = vec![];
+    let mut pkg_items = vec![];
+    let mut k = 0;
+    for s in &l.std {
+        for _ in &s.defs {
+            std_items.push(crate::doc::Item { d: &prog.defs[k], lines: &s.lines });
+            k += 1;
+        }
+    }
+    for dp in &l.deps {
+        for s in &dp.sources {
+            k += s.defs.len();
+        }
+    }
+    for s in &l.pkg.sources {
+        for _ in &s.defs {
+            pkg_items.push(crate::doc::Item { d: &prog.defs[k], lines: &s.lines });
+            k += 1;
+        }
+    }
+    let out = root.join("target").join("doc");
+    let std_dir = out.join("std");
+    let (dir, pages) = if std_only {
+        let cfg = crate::doc::Config { title: "標準ライブラリ", is_std: true, private, std_link: None };
+        (std_dir, crate::doc::generate(&std_items, &cfg))
+    } else {
+        let name = l.pkg.name.clone();
+        let link = if std_dir.join("index.html").exists() { Some(&std_items[..]) } else { None };
+        let cfg = crate::doc::Config { title: &name, is_std: false, private, std_link: link };
+        (out, crate::doc::generate(&pkg_items, &cfg))
+    };
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!("ksn: cannot create {}: {}", norm(&dir), e);
+        return 1;
+    }
+    // 古いページ (消えたモジュール) を残さない。
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            if e.path().extension().map_or(false, |x| x == "html") {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    for (f, html) in &pages {
+        if let Err(e) = fs::write(dir.join(f), html) {
+            eprintln!("ksn: cannot write {}: {}", f, e);
+            return 1;
+        }
+    }
+    println!("{}", norm(&dir.join("index.html")));
+    0
+}
+
 /// `(?<![\w.])OLD(?![\w])(?!\.[A-Za-z_])` に一致するか。
 fn fqn_occurs(text: &str, target: &str, tail_dot_ok: bool) -> bool {
     text.match_indices(target).any(|(i, _)| fqn_boundary(text, i, target.len(), tail_dot_ok))
@@ -1527,6 +1606,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "test" => cmd_test(&rest),
         "get" => cmd_get(&rest),
         "sig" => cmd_sig(&rest),
+        "doc" => cmd_doc(&rest),
         "refs" => cmd_refs(&rest),
         "rename" => cmd_rename(&rest),
         "fmt" => cmd_fmt(&rest),
@@ -1544,7 +1624,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
         _ => {
             eprintln!(
-                "usage: ksn <new|check|fix|todo|context|fmt|run|test|build|get|sig|refs|rename|explain|update|vendor> [args]"
+                "usage: ksn <new|check|fix|todo|context|fmt|run|test|build|get|sig|doc|refs|rename|explain|update|vendor> [args]"
             );
             2
         }
