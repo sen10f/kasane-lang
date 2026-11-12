@@ -30,6 +30,8 @@ pub struct Interp {
     /// 作ったアドレスに付ける (`core.ptr.read` / `add` が要素の幅を知るため)。ネイティブ生成は
     /// ポインタの静的型から知るが、インタプリタの値は型を持たないので、作った側で覚えておく。
     ptr_elem: HashMap<i128, String>,
+    /// std.net のソケット表
+    pub net: crate::net::NetTable,
 }
 
 fn unhex(s: &str) -> String {
@@ -154,6 +156,7 @@ impl Interp {
             files: HashMap::new(),
             next_fd: 3,
             ptr_elem: HashMap::new(),
+            net: Default::default(),
         }
     }
 

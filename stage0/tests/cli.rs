@@ -5409,4 +5409,138 @@ end t.main
     fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
     let o = run(&["run"], &t.0);
     assert_eq!(text(&o.stdout), "math ok\n", "{}", text(&o.stderr));
+// ---- std.net (インタプリタ) ----
+
+/// ポート番号を `127.0.0.1:<port>` に整形する補助 (テスト用ソースの共通部分)。
+const NET_ADDR_FN: &str = r#"fn t.addr(port: u16) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("127.0.0.1:"))
+    let n = usize.from_u16(port)
+    let digits = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    let mut unit = 10000usize
+    let mut started = false
+    while unit > 0usize {
+        let d = (n / unit) % 10usize
+        if d > 0usize || started || unit == 1usize {
+            started = true
+            match digits.get(d) {
+                Some(t) => core.mem.drop(s.push_str(t))
+                None => core.mem.drop(0u8)
+            }
+        }
+        unit = unit / 10usize
+    }
+    s
+end t.addr
+
+"#;
+
+#[test]
+fn std_net_loopback_round_trip() {
+    // ポート 0 で bind し、listen backlog のおかげで connect を accept より先に行える。
+    let b = body(&[
+        "let listener = match std.net.listen(\"127.0.0.1:0\") {",
+        "    Ok(l) => l",
+        "    Err(_e) => return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 1i32 })",
+        "}",
+        "let port = match listener.local_port() {",
+        "    Ok(p) => p",
+        "    Err(_e) => 0u16",
+        "}",
+        "core.check.is_true(port > 0u16)",
+        "let addr = t.addr(port)",
+        "let mut client = match std.net.connect(addr.as_str()) {",
+        "    Ok(c) => c",
+        "    Err(_e) => return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 2i32 })",
+        "}",
+        "let mut server = match listener.accept() {",
+        "    Ok(s) => s",
+        "    Err(_e) => return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 3i32 })",
+        "}",
+        "core.check.eq(client.write(b\"ping\").is_ok(), true)",
+        "let mut buf = [0u8; 16]",
+        "let n = match server.read(&mut buf) {",
+        "    Ok(n) => n",
+        "    Err(_e) => 0usize",
+        "}",
+        "core.check.eq(n, 4usize)",
+        "core.check.eq(buf.get(0usize), Some(112u8))",
+        "core.check.eq(server.write(b\"pong!\").is_ok(), true)",
+        "core.mem.drop(server.close())",
+        "let mut buf2 = [0u8; 16]",
+        "let m = match client.read(&mut buf2) {",
+        "    Ok(m) => m",
+        "    Err(_e) => 0usize",
+        "}",
+        "core.check.eq(m, 5usize)",
+        "let eof = match client.read(&mut buf2) {",
+        "    Ok(k) => k",
+        "    Err(_e) => 99usize",
+        "}",
+        "core.check.eq(eof, 0usize)",
+        "core.mem.drop(client.close())",
+        "core.mem.drop(listener.close())",
+    ]);
+    let src = format!("{}{}", NET_ADDR_FN, main_wrap("", &b)).replace("uses [io.console] panics may", "uses [alloc, io.console, io.net] panics may");
+    let t = Tmp::new("net_rt", &src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn std_net_connect_to_a_closed_port_is_an_error_value() {
+    // bind したポートを close してから connect する (そのポートは待ち受け無し)。
+    let b = body(&[
+        "let listener = match std.net.listen(\"127.0.0.1:0\") {",
+        "    Ok(l) => l",
+        "    Err(_e) => return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 1i32 })",
+        "}",
+        "let port = match listener.local_port() {",
+        "    Ok(p) => p",
+        "    Err(_e) => 0u16",
+        "}",
+        "core.mem.drop(listener.close())",
+        "let addr = t.addr(port)",
+        "match std.net.connect(addr.as_str()) {",
+        "    Ok(c) => {",
+        "        core.mem.drop(c.close())",
+        "        core.panic.panic(\"connect to a closed port must fail\")",
+        "    }",
+        "    Err(e) => core.check.is_true(e.code != 0i32)",
+        "}",
+        "match std.net.connect(\"not an address\") {",
+        "    Ok(c) => {",
+        "        core.mem.drop(c.close())",
+        "        core.panic.panic(\"bad address must fail\")",
+        "    }",
+        "    Err(_e) => core.mem.drop(0u8)",
+        "}",
+    ]);
+    let src = format!("{}{}", NET_ADDR_FN, main_wrap("", &b)).replace("uses [io.console] panics may", "uses [alloc, io.console, io.net] panics may");
+    let t = Tmp::new("net_closed", &src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn std_net_checker_accepts_consumed_streams_and_rejects_dropped_ones() {
+    let good = "fn t.f(addr: &str) -> Result<(), std.net.Error> uses [io.net] panics never\n    let s = std.net.connect(addr)?\n    s.close()\nend t.f\n\n\
+                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("net_linear_ok", good);
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let bad = "fn t.f(addr: &str) -> Result<(), std.net.Error> uses [io.net] panics never\n    let _s = std.net.connect(addr)?\n    Ok(())\nend t.f\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("net_linear_leak", bad);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E3003"), "{}", out);
+}
+
+#[test]
+fn std_net_calls_require_the_io_net_effect() {
+    let src = "fn t.f(addr: &str) -> Result<(), std.net.Error> uses [] panics never\n    let s = std.net.connect(addr)?\n    s.close()\nend t.f\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("net_effect", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E4001"), "{}", out);
 }
