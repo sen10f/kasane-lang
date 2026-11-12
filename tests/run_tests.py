@@ -84,7 +84,7 @@ step('rust ksn: second build hits the cache', 'cache hit' in r.stdout, r.stdout 
 shutil.rmtree(os.path.join(d, 'target'), ignore_errors=True)
 d = os.path.join(ROOT, 'examples', 'demo')
 r = subprocess.run([RSEXE, 'test', '--both'], cwd=d, capture_output=True, text=True, encoding='utf-8', env=envc)
-step('rust ksn: test --both (interpreter and bundle agree)', r.returncode == 0, r.stdout + r.stderr)
+step('rust ksn: test --both (interpreter and native agree)', r.returncode == 0 and '(both: native)' in r.stdout, r.stdout + r.stderr)
 shutil.rmtree(os.path.join(d, 'target'), ignore_errors=True)
 shutil.rmtree(cache2, ignore_errors=True)
 

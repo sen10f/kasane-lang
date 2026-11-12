@@ -8555,3 +8555,43 @@ fn fmath_functions_agree_across_backends_and_match_known_values() {
     assert!(out.contains("5 passed; 0 failed"), "{}", out);
     let _ = fs::remove_dir_all(&cache);
 }
+
+// ---- `test --both`: 機械語 (Cranelift の実行ファイル) との比較と、バンドルへの退避 ----
+
+const BOTH_SRC: &str = "fn t.main() -> () uses [] panics never
+end t.main
+
+test t.main.test_ok
+    core.check.eq(1u8, 1u8)
+end t.main.test_ok
+";
+
+#[test]
+fn test_both_runs_clif_tests_as_native_executables() {
+    let src = format!("{}\ntest t.main.test_fail\n    core.check.eq(1u8, 2u8)\nend t.main.test_fail\n", BOTH_SRC);
+    let t = Tmp::new("both_native", &src);
+    // `--both` を付けなければ、出力の形式は従来どおり (注記なし)。
+    let plain = run(&["test"], &t.0);
+    assert!(text(&plain.stdout).contains("test t.main.test_ok ... ok\n"), "{}", text(&plain.stdout));
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_ok ... ok (both: native)"), "{}", out);
+    assert!(out.contains("test t.main.test_fail ... FAILED: assertion failed: left: 1, right: 2 (both: native)"), "{}", out);
+    assert!(out.contains("1 passed; 1 failed"), "{}", out);
+    assert!(!out.contains("bundle"), "{}", out);
+    assert!(t.0.join("target").join("test-native").is_dir(), "no native test executable: {}", out);
+}
+
+#[test]
+fn test_both_falls_back_to_the_bundle_for_a_test_clif_cannot_build() {
+    // 128 ビット整数は clif が未対応。このテストだけバンドルで比べ、理由を出力に書く。
+    let src = format!("{}\ntest t.main.test_wide\n    let x: i128 = 5i128\n    core.check.eq(x, 5i128)\nend t.main.test_wide\n", BOTH_SRC);
+    let t = Tmp::new("both_bundle", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_ok ... ok (both: native)"), "{}", out);
+    assert!(out.contains("test t.main.test_wide ... ok (both: bundle (native skipped: "), "{}", out);
+    assert!(out.contains("2 passed; 0 failed"), "{}", out);
+}

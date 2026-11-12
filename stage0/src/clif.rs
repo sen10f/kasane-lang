@@ -2823,6 +2823,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                             return Ok(());
                         }
                         let (v, t) = self.expr(e, env, None)?;
+                        // 末尾が `()` の式 (テストの本体の `core.check.eq(..)` など) は、インタプリタと同じく終了コード 0。
+                        if t == "void" {
+                            return Ok(());
+                        }
                         if !t.starts_with("Result<") {
                             return Err("entry tail expression".into());
                         }
