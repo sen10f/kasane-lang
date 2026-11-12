@@ -6,6 +6,7 @@ use std::io::Write;
 use std::rc::Rc;
 
 use crate::check::{children as _children, items, nf, nline, nname, st, strs};
+use crate::ffi::{FArg, Out, Ret};
 use crate::parser::V;
 use crate::program::{Def, Program, Resolved, Target};
 use crate::value::*;
@@ -978,27 +979,61 @@ impl Interp {
         Ok(out)
     }
 
-    /// `extern` の関数を、ホストの C ライブラリから探して呼ぶ (整数・ポインタ・`bool` の引数だけ)。
+    /// `extern` の関数を、ホストの C ライブラリから探して呼ぶ。引数・戻り値は整数・`bool`・ポインタ・`f32` / `f64`。
+    /// 宣言の型で引数の渡し方 (整数レジスタか浮動小数レジスタか) と戻り値の読み方を決める。
     fn extern_call(&mut self, d: &Def, args: Vec<Val>) -> Res {
+        if args.len() != d.params.len() {
+            return panic(format!("extern {}: argument count", d.name));
+        }
         let mut ints = vec![];
-        for a in &args {
-            match dr(a) {
-                Val::Int(i, _) => ints.push(i as i64),
-                Val::Bool(b) => ints.push(b as i64),
-                _ => return panic(format!("extern {}: only integer, pointer and bool arguments are supported by the interpreter", d.name)),
+        let mut floats = vec![];
+        for (a, (_, pt)) in args.iter().zip(&d.params) {
+            let v = dr(a);
+            match (arg_kind(pt), &v) {
+                (Some(ArgK::Int), Val::Int(i, _)) => ints.push(*i as i64),
+                (Some(ArgK::Int), Val::Bool(b)) => ints.push(*b as i64),
+                (Some(ArgK::F64), Val::Float(x)) => floats.push(FArg::F64(*x)),
+                (Some(ArgK::F64), Val::F32(x)) => floats.push(FArg::F64(*x as f64)),
+                (Some(ArgK::F32), Val::F32(x)) => floats.push(FArg::F32(*x)),
+                (Some(ArgK::F32), Val::Float(x)) => floats.push(FArg::F32(*x as f32)),
+                (Some(ArgK::F32), Val::Int(i, _)) => floats.push(FArg::F32(*i as f32)),
+                (Some(ArgK::F64), Val::Int(i, _)) => floats.push(FArg::F64(*i as f64)),
+                _ => return panic(format!("extern {}: argument of an unsupported type or value", d.name)),
             }
         }
-        let r = match crate::ffi::call(&d.link, &ints) {
-            Ok(r) => r,
+        let ret = &d.ret;
+        let rk = match crate::check::tag(ret).as_str() {
+            "tuple" | "ptr" => Ret::Int,
+            "never" => return panic(format!("extern {} returned although it is declared `!`", d.name)),
+            "prim" => match crate::check::st(crate::check::tel(ret, 1)).as_str() {
+                "f32" => Ret::F32,
+                "f64" => Ret::F64,
+                n if is_int_ty(n) || n == "bool" => Ret::Int,
+                n => return panic(format!("extern {}: unsupported return type {}", d.name, n)),
+            },
+            _ => return panic(format!("extern {}: unsupported return type", d.name)),
+        };
+        let out = match crate::ffi::call_typed(&d.link, &ints, &floats, rk) {
+            Ok(o) => o,
             Err(e) => return panic(format!("extern {}: {}", d.name, e)),
         };
+        let r = match out {
+            Out::F32(x) => return Ok(Val::F32(x)),
+            Out::F64(x) => return Ok(Val::Float(x)),
+            Out::Int(r) => r,
+        };
         // 戻り値は、宣言の型に合わせて切り詰める。
-        let ret = &d.ret;
         Ok(match crate::check::tag(ret).as_str() {
             "tuple" => Val::Unit,
-            "never" => return panic(format!("extern {} returned although it is declared `!`", d.name)),
-            "ptr" => int((r as u64) as i128, "usize"),
-            "prim" => {
+            "ptr" => {
+                // ポインタの要素型が分かる (スカラーの `*mut T`) なら、値に要素型を載せる。
+                let elem = prim_name(&crate::check::tel(ret, 2));
+                match elem.as_deref().and_then(ptr_tag) {
+                    Some(t) => Val::Int((r as u64) as i128, Some(t)),
+                    None => Val::Int((r as u64) as i128, Some("usize")),
+                }
+            }
+            _ => {
                 let n = crate::check::st(crate::check::tel(ret, 1));
                 match n.as_str() {
                     "bool" => Val::Bool(r & 0xff != 0),
@@ -1013,7 +1048,6 @@ impl Interp {
                     _ => return panic(format!("extern {}: unsupported return type {}", d.name, n)),
                 }
             }
-            _ => return panic(format!("extern {}: unsupported return type", d.name)),
         })
     }
 
@@ -1047,10 +1081,7 @@ impl Interp {
                     return Ok(Val::Bool(matches!(args.first().map(dr), Some(Val::Int(0, _)))));
                 }
                 if d.name.starts_with("core.ptr.") {
-                    return panic(format!(
-                        "{} is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`",
-                        d.name
-                    ));
+                    return raw_ptr_op(&d.name, &args);
                 }
                 panic(format!("function {} has no implementation in this interpreter", d.name))
             }
@@ -1379,6 +1410,192 @@ fn unused() {
 }
 
 /// 整数の `+ - * / %`。オーバーフローとゼロ除算は panic (4.1)。u128 はビットパターンで保持している。
+// ------------------------------------------------------------ extern の引数・生ポインタ
+// 生ポインタは `Val::Int` のアドレスで、要素型を Ity の名前 (`*f64` など) に載せる。
+// 要素型が載らない (extern の戻り値が `*mut Struct` など) ポインタは、読み書きできない。
+
+/// 生ポインタの要素型と、ポインタ値の Ity 名の対応。扱うのはスカラーだけ。
+const PTR_TAGS: &[(&str, &str)] = &[
+    ("i8", "*i8"),
+    ("i16", "*i16"),
+    ("i32", "*i32"),
+    ("i64", "*i64"),
+    ("isize", "*isize"),
+    ("u8", "*u8"),
+    ("u16", "*u16"),
+    ("u32", "*u32"),
+    ("u64", "*u64"),
+    ("usize", "*usize"),
+    ("f32", "*f32"),
+    ("f64", "*f64"),
+    ("bool", "*bool"),
+];
+
+fn ptr_tag(elem: &str) -> Option<&'static str> {
+    PTR_TAGS.iter().find(|(e, _)| *e == elem).map(|(_, t)| *t)
+}
+
+fn ptr_elem(tag: &str) -> Option<&'static str> {
+    PTR_TAGS.iter().find(|(_, t)| *t == tag).map(|(e, _)| *e)
+}
+
+fn elem_size(elem: &str) -> u64 {
+    match elem {
+        "i8" | "u8" | "bool" => 1,
+        "i16" | "u16" => 2,
+        "i32" | "u32" | "f32" => 4,
+        _ => 8,
+    }
+}
+
+/// 型が `prim` (スカラー名) なら、その名前。
+fn prim_name(t: &V) -> Option<String> {
+    (crate::check::tag(t) == "prim").then(|| crate::check::st(crate::check::tel(t, 1)))
+}
+
+/// extern の引数を渡すレジスタの種類。
+#[derive(Clone, Copy)]
+enum ArgK {
+    Int,
+    F32,
+    F64,
+}
+
+fn arg_kind(t: &V) -> Option<ArgK> {
+    match crate::check::tag(t).as_str() {
+        "ptr" => Some(ArgK::Int),
+        "prim" => match crate::check::st(crate::check::tel(t, 1)).as_str() {
+            "f32" => Some(ArgK::F32),
+            "f64" => Some(ArgK::F64),
+            n if is_int_ty(n) || n == "bool" => Some(ArgK::Int),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 生ポインタの値から (アドレス, 要素型) を取る。
+fn raw_ptr(v: &Val) -> Result<(u64, &'static str), String> {
+    match dr(v) {
+        Val::Int(a, Some(t)) => match ptr_elem(t) {
+            Some(e) => Ok((a as u64, e)),
+            None => Err("the pointer's element type is unknown to the interpreter (only scalar pointees from extern declarations are supported)".into()),
+        },
+        _ => Err("the argument is not a raw pointer".into()),
+    }
+}
+
+/// `core.ptr.*` の操作 (`null_mut` / `is_null` は呼び出し側で扱う)。読み書きはホストのメモリに直接触れる。
+fn raw_ptr_op(name: &str, args: &[Val]) -> Res {
+    let op = name.strip_prefix("core.ptr.").unwrap_or(name);
+    match (op, args.len()) {
+        ("as_const", 1) | ("as_mut", 1) => Ok(dr(&args[0])),
+        ("add", 2) => {
+            let (a, e) = match raw_ptr(&args[0]) {
+                Ok(x) => x,
+                Err(m) => return panic(format!("{}: {}", name, m)),
+            };
+            let n = match dr(&args[1]) {
+                Val::Int(n, _) => n as u64,
+                _ => return panic(format!("{}: the count is not an integer", name)),
+            };
+            let r = a.wrapping_add(n.wrapping_mul(elem_size(e)));
+            Ok(Val::Int(r as i128, Some(ptr_tag(e).unwrap_or("usize"))))
+        }
+        ("read", 1) => {
+            let (a, e) = match raw_ptr(&args[0]) {
+                Ok(x) => x,
+                Err(m) => return panic(format!("{}: {}", name, m)),
+            };
+            if a == 0 {
+                return panic(format!("{}: null pointer dereference", name));
+            }
+            Ok(unsafe { read_elem(a, e) })
+        }
+        ("write", 2) => {
+            let (a, e) = match raw_ptr(&args[0]) {
+                Ok(x) => x,
+                Err(m) => return panic(format!("{}: {}", name, m)),
+            };
+            if a == 0 {
+                return panic(format!("{}: null pointer dereference", name));
+            }
+            if let Err(m) = unsafe { write_elem(a, e, &dr(&args[1])) } {
+                return panic(format!("{}: {}", name, m));
+            }
+            Ok(Val::Unit)
+        }
+        _ => panic(format!(
+            "{} is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`",
+            name
+        )),
+    }
+}
+
+/// 要素型 `elem` の値を、アドレス `addr` から読む。
+///
+/// # Safety
+/// `addr` は読んでよい `elem` の領域を指していること (extern が返したポインタの責任)。
+unsafe fn read_elem(addr: u64, elem: &'static str) -> Val {
+    let p = addr as usize as *const u8;
+    match elem {
+        "i8" => Val::Int(std::ptr::read_unaligned(p as *const i8) as i128, Some("i8")),
+        "i16" => Val::Int(std::ptr::read_unaligned(p as *const i16) as i128, Some("i16")),
+        "i32" => Val::Int(std::ptr::read_unaligned(p as *const i32) as i128, Some("i32")),
+        "i64" => Val::Int(std::ptr::read_unaligned(p as *const i64) as i128, Some("i64")),
+        "isize" => Val::Int(std::ptr::read_unaligned(p as *const isize) as i128, Some("isize")),
+        "u8" => Val::Int(std::ptr::read_unaligned(p) as i128, Some("u8")),
+        "u16" => Val::Int(std::ptr::read_unaligned(p as *const u16) as i128, Some("u16")),
+        "u32" => Val::Int(std::ptr::read_unaligned(p as *const u32) as i128, Some("u32")),
+        "u64" => Val::Int(std::ptr::read_unaligned(p as *const u64) as i128, Some("u64")),
+        "usize" => Val::Int(std::ptr::read_unaligned(p as *const usize) as i128, Some("usize")),
+        "f32" => Val::F32(std::ptr::read_unaligned(p as *const f32)),
+        "f64" => Val::Float(std::ptr::read_unaligned(p as *const f64)),
+        _ => Val::Bool(std::ptr::read_unaligned(p) != 0),
+    }
+}
+
+/// 要素型 `elem` の値を、アドレス `addr` へ書く。整数は要素の幅に切り詰める。
+///
+/// # Safety
+/// `addr` は書いてよい `elem` の領域を指していること。
+unsafe fn write_elem(addr: u64, elem: &str, v: &Val) -> Result<(), String> {
+    let p = addr as usize as *mut u8;
+    let int: Option<i128> = match v {
+        Val::Int(x, _) => Some(*x),
+        Val::Bool(b) => Some(*b as i128),
+        _ => None,
+    };
+    let flt: Option<f64> = match v {
+        Val::Float(x) => Some(*x),
+        Val::F32(x) => Some(*x as f64),
+        Val::Int(x, _) => Some(*x as f64),
+        _ => None,
+    };
+    let not_scalar = || Err("the value to write is not a scalar".to_string());
+    match elem {
+        "f32" | "f64" => {
+            let Some(x) = flt else { return not_scalar() };
+            if elem == "f32" {
+                std::ptr::write_unaligned(p as *mut f32, x as f32);
+            } else {
+                std::ptr::write_unaligned(p as *mut f64, x);
+            }
+        }
+        _ => {
+            let Some(x) = int else { return not_scalar() };
+            match elem {
+                "bool" => std::ptr::write_unaligned(p, (x != 0) as u8),
+                "i8" | "u8" => std::ptr::write_unaligned(p, x as u8),
+                "i16" | "u16" => std::ptr::write_unaligned(p as *mut u16, x as u16),
+                "i32" | "u32" => std::ptr::write_unaligned(p as *mut u32, x as u32),
+                _ => std::ptr::write_unaligned(p as *mut u64, x as u64),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn int_arith(op: &str, x: i128, y: i128, ty: Ity) -> Res {
     let name = match op {
         "+" => "add",

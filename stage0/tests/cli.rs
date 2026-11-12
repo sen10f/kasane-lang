@@ -5498,3 +5498,181 @@ end t.f
     let (_, got, out) = eff_check("eff_dedupe", src);
     assert_eq!(got, vec!["E4001".to_string()], "{}", out);
 }
+
+// ---------------------------------------------------------------- インタプリタの extern (f32/f64・ポインタ read/write/add)
+
+/// 補助 C 側。共有ライブラリにして、`LD_PRELOAD` で `ksn run` に差し込む (インタプリタは dlsym で見つける)。
+const FFI_C_SRC: &str = r#"
+#include <stdint.h>
+#include <stdlib.h>
+
+double k_scale(double x, int32_t n, double y) { return x * n + y; }
+float k_half(float x) { return x * 0.5f; }
+double k_mix(int32_t a, float b, double c, int64_t d) { return a + b + c + d; }
+float k_mix_f32(float a, int32_t b, float c, double d) { return a + b + c + (float)d; }
+double *k_alloc_f64(size_t n) { return calloc(n, sizeof(double)); }
+float *k_alloc_f32(size_t n) { return calloc(n, sizeof(float)); }
+int32_t *k_alloc_i32(size_t n) { return calloc(n, sizeof(int32_t)); }
+double k_sum_f64(const double *p, size_t n) {
+    double s = 0;
+    for (size_t i = 0; i < n; i++) s += p[i];
+    return s;
+}
+void k_fill_f32(float *p, size_t n, float v) {
+    for (size_t i = 0; i < n; i++) p[i] = v + (float)i;
+}
+int32_t k_sum_i32(const int32_t *p, size_t n) {
+    int32_t s = 0;
+    for (size_t i = 0; i < n; i++) s += p[i];
+    return s;
+}
+"#;
+
+fn c_compiler() -> Option<&'static str> {
+    ["cc", "gcc", "clang"].into_iter().find(|c| Command::new(c).arg("--version").output().map(|o| o.status.success()).unwrap_or(false))
+}
+
+/// `src` を共有ライブラリ `libksn_helpers.so` にして、そのパスを返す。
+fn build_c_helpers(dir: &Path, src: &str) -> PathBuf {
+    let cc = c_compiler().expect("a C compiler (cc / gcc / clang) is required for the FFI tests");
+    let c = dir.join("helpers.c");
+    fs::write(&c, src).unwrap();
+    let so = dir.join("libksn_helpers.so");
+    let o = Command::new(cc).args(["-shared", "-fPIC", "-O1", "-o"]).arg(&so).arg(&c).output().unwrap();
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    so
+}
+
+/// `ksn run` を、補助 C ライブラリを `LD_PRELOAD` で差し込んだ環境で実行する。
+fn run_with_c_helpers(dir: &Path, so: &Path) -> Output {
+    Command::new(exe()).arg("run").current_dir(dir).env("LD_PRELOAD", so).output().unwrap()
+}
+
+const FFI_FLOAT_SRC: &str = r#"extern t.k_scale(x: f64, n: i32, y: f64) -> f64 link "k_scale"
+
+extern t.k_half(x: f32) -> f32 link "k_half"
+
+extern t.k_mix(a: i32, b: f32, c: f64, d: i64) -> f64 link "k_mix"
+
+extern t.k_mix_f32(a: f32, b: i32, c: f32, d: f64) -> f32 link "k_mix_f32"
+
+extern t.k_alloc_f64(n: usize) -> *mut f64 link "k_alloc_f64"
+
+extern t.k_alloc_f32(n: usize) -> *mut f32 link "k_alloc_f32"
+
+extern t.k_sum_f64(values: *const f64, n: usize) -> f64 link "k_sum_f64"
+
+extern t.k_fill_f32(values: *mut f32, n: usize, v: f32) -> () link "k_fill_f32"
+
+extern t.free_f64(pointer: *mut f64) -> () link "free"
+
+extern t.free_f32(pointer: *mut f32) -> () link "free"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = unsafe "libc" "f64 argument and result" {
+        t.k_scale(1.5f64, 2i32, 0.25f64)
+    }
+    core.check.eq(a, 3.25f64)
+    let h = unsafe "libc" "f32 argument and result" {
+        t.k_half(3.0f32)
+    }
+    core.check.eq(h, 1.5f32)
+    let m = unsafe "libc" "mixed integer and float arguments" {
+        t.k_mix(1i32, 0.5f32, 0.25f64, 1000i64)
+    }
+    core.check.eq(m, 1001.75f64)
+    let mf = unsafe "libc" "mixed f32 and f64 arguments" {
+        t.k_mix_f32(1.0f32, 2i32, 0.5f32, 0.25f64)
+    }
+    core.check.eq(mf, 3.75f32)
+    let p = unsafe "libc" "allocate f64 values" {
+        t.k_alloc_f64(3usize)
+    }
+    unsafe "libc" "write, add and read f64 values" {
+        core.ptr.write(p, 1.5f64)
+        core.ptr.write(core.ptr.add(p, 1usize), 2.25f64)
+        core.ptr.write(core.ptr.add(p, 2usize), 0.25f64)
+        core.check.eq(core.ptr.read(core.ptr.add(p, 1usize)), 2.25f64)
+        core.check.eq(t.k_sum_f64(core.ptr.as_const(p), 3usize), 4.0f64)
+    }
+    let q = unsafe "libc" "allocate f32 values" {
+        t.k_alloc_f32(4usize)
+    }
+    unsafe "libc" "C writes f32 values, Kasane reads them" {
+        t.k_fill_f32(q, 4usize, 0.5f32)
+        core.check.eq(core.ptr.read(core.ptr.add(q, 3usize)), 3.5f32)
+    }
+    unsafe "libc" "free the buffers" {
+        t.free_f64(p)
+        t.free_f32(q)
+    }
+    std.io.print_line("ffi float ok")
+    Ok(())
+end t.main
+"#;
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_interpreter_passes_and_returns_floats_and_reads_writes_pointers() {
+    let t = Tmp::new("ffi_float", FFI_FLOAT_SRC);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "ffi float ok\n");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_interpreter_float_mismatch_fails_at_runtime() {
+    let src = r#"extern t.k_half(x: f32) -> f32 link "k_half"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let h = unsafe "libc" "f32 result" {
+        t.k_half(3.0f32)
+    }
+    core.check.eq(h, 2.0f32)
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_float_bad", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_interpreter_writes_and_reads_i32_pointers_across_c() {
+    let src = r#"extern t.k_sum_i32(values: *const i32, n: usize) -> i32 link "k_sum_i32"
+
+extern t.k_alloc_i32(n: usize) -> *mut i32 link "k_alloc_i32"
+
+extern t.free_i32(pointer: *mut i32) -> () link "free"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let p = unsafe "libc" "allocate i32 values" {
+        t.k_alloc_i32(3usize)
+    }
+    unsafe "libc" "write i32 values through the pointer" {
+        core.ptr.write(p, 0i32 - 5i32)
+        core.ptr.write(core.ptr.add(p, 1usize), 7i32)
+        core.ptr.write(core.ptr.add(p, 2usize), 100i32)
+        core.check.eq(core.ptr.read(p), 0i32 - 5i32)
+        core.check.eq(t.k_sum_i32(core.ptr.as_const(p), 3usize), 102i32)
+        t.free_i32(p)
+    }
+    std.io.print_line("i32 ok")
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_i32_ptr", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "i32 ok\n");
+}
