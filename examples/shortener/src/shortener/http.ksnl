@@ -141,7 +141,7 @@ fn shortener.http.parse_content_length(head: &str) -> Result<usize, shortener.er
 end shortener.http.parse_content_length
 
 fn shortener.http.parse_head(head: &[u8]) -> Result<shortener.http.Head, shortener.error.Error> uses [alloc] panics never pub
-    let text = core.str.from_utf8(head)?
+    let text = core.str.from_utf8(head).map_err(error.bad_text)?
     let (line, headers) = match text.split_once("\r\n") {
         Some(pair) => pair
         None => return Err(error.Error.BadRequest)
@@ -181,7 +181,7 @@ fn shortener.http.parse_reply(raw: &[u8]) -> Result<shortener.http.Reply, shorte
         Some(pair) => pair
         None => return Err(error.Error.BadRequest)
     }
-    let head = core.str.from_utf8(head_bytes)?
+    let head = core.str.from_utf8(head_bytes).map_err(error.bad_text)?
     let (status_line, headers) = match head.split_once("\r\n") {
         Some(pair) => pair
         None => return Err(error.Error.BadRequest)
@@ -202,7 +202,7 @@ fn shortener.http.parse_reply(raw: &[u8]) -> Result<shortener.http.Reply, shorte
         return Err(error.Error.BadRequest)
     }
     let mut body = alloc.string.String.new(std.alloc.SYSTEM)
-    body.push_bytes(body_bytes)?
+    body.push_bytes(body_bytes).map_err(error.push_failed)?
     let mut location = alloc.string.String.new(std.alloc.SYSTEM)
     match shortener.http.header_value(headers, "location") {
         Some(v) => location.push_str(v)?

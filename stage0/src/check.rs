@@ -710,12 +710,8 @@ impl<'a> Checker<'a> {
             let d = self.def(i);
             if d.kw == "fn" && d.has_impls {
                 let owner = d.name.rsplit_once('.').map(|(o, _)| o.to_string()).unwrap_or_default();
-                let key = (impl_key(&d.impls_trait, &d.impls_args), owner);
-                let mut meth = d.name.rsplit('.').next().unwrap_or("").to_string();
-                // 4.1: `core.convert.From` は同じ型に複数置くので、メソッド名は `from_value` か `from_value_<接尾辞>`。
-                if d.impls_trait == crate::program::FROM_TRAIT && meth.starts_with("from_value_") {
-                    meth = "from_value".to_string();
-                }
+                let key = (d.impls_trait.clone(), owner);
+                let meth = d.name.rsplit('.').next().unwrap_or("").to_string();
                 declared.entry(key.clone()).or_default().insert(meth);
                 declared_at.entry(key).or_insert(i);
             }
@@ -769,8 +765,8 @@ impl<'a> Checker<'a> {
             }
             let owner = prim_owner(&tgt);
             let alt_owner = format!("{}.{}", tb, tgt.rsplit('.').next().unwrap_or(""));
-            // `From` だけは型引数が違えば同じ型に複数置ける (4.1)。他は型引数が違っても 1 つ。
-            let tkey = impl_key(&tb, &d.impls_args);
+            // 同じ (トレイト, 型) は型引数が違っても 1 つ (3.2)。
+            let tkey = tb.clone();
             if !seen.insert((tkey.clone(), tgt.clone())) {
                 self.diag("E1114", format!("duplicate impl of {} for {}", tkey, tgt), i, 0);
             }
@@ -882,6 +878,54 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            // 4.3: `From` は `enum` だけで、型パラメータを持たず、ペイロードがちょうど 1 つのバリアントが要る (E2050)。
+            if derived.contains("From") {
+                let ok = d.kw == "enum"
+                    && !d.generics.iter().any(|g| g.0 == "type")
+                    && d.variants.iter().any(|v| v.1.len() == 1);
+                if !ok {
+                    let why = if d.kw != "enum" {
+                        "only an enum can derive From"
+                    } else if d.generics.iter().any(|g| g.0 == "type") {
+                        "an enum with type parameters cannot derive From"
+                    } else {
+                        "the enum has no variant with exactly one payload field"
+                    };
+                    self.diag("E2050", format!("derive [From] on {}: {}", d.name, why), i, 0);
+                }
+            }
+            // 4.3: derive した各トレイト (Copy 以外) は、フィールド・ペイロードの名義型もそのトレイトを実装していること
+            // (基本型・参照・タプル・配列は組み込み実装、型パラメータは境界が担うので見ない)。
+            {
+                let tys: Vec<V> = if d.kw == "type" {
+                    d.fields.iter().map(|f| f.1.clone()).collect()
+                } else {
+                    d.variants.iter().flat_map(|v| v.1.clone()).collect()
+                };
+                let params: HashSet<String> = d.generics.iter().map(|g| g.1.clone()).collect();
+                for dv in d.derive.clone() {
+                    if dv == "Copy" || dv == "From" {
+                        continue;
+                    }
+                    let Some(&tr) = short_to_fqn.get(dv.as_str()) else { continue };
+                    let mut missing: Vec<String> = vec![];
+                    for t in &tys {
+                        let mut named = vec![];
+                        Self::named_in(t, &mut named);
+                        for n in named {
+                            if params.contains(&n) || n == d.name || n == "Option" || n == "Result" {
+                                continue;
+                            }
+                            if self.p.types.contains_key(&n) && !self.implements(&n, tr) && !missing.contains(&n) {
+                                missing.push(n);
+                            }
+                        }
+                    }
+                    for n in missing {
+                        self.diag("E2036", format!("derive [{}] on {}: the field type {} does not implement {}", dv, d.name, n, tr), i, 0);
+                    }
+                }
+            }
             if derived.contains("Copy") {
                 let tys: Vec<V> = if d.kw == "type" {
                     d.fields.iter().map(|f| f.1.clone()).collect()
@@ -892,6 +936,24 @@ impl<'a> Checker<'a> {
                     self.diag("E2036", format!("derive [Copy] on {}: every field must be Copy", d.name), i, 0);
                 }
             }
+        }
+    }
+
+    /// 型の中に現れる名義型の FQN (参照・タプル・配列・スライス・型引数を通して)。
+    fn named_in(t: &V, out: &mut Vec<String>) {
+        match tag(t).as_str() {
+            "named" => {
+                out.push(st(tel(t, 1)));
+                for a in items(tel(t, 2)) {
+                    if matches!(a, V::L(_)) {
+                        Self::named_in(a, out);
+                    }
+                }
+            }
+            "ref" => Self::named_in(tel(t, 2), out),
+            "array" | "slice" => Self::named_in(tel(t, 1), out),
+            "tuple" => items(tel(t, 1)).iter().for_each(|x| Self::named_in(x, out)),
+            _ => {}
         }
     }
 
@@ -4165,16 +4227,6 @@ pub(crate) fn resolve_trait_fqn(p: &Program, nm: &str) -> Option<String> {
 }
 
 /// `impl .. for X` の対象型の基底名 (型引数を落とす)。
-/// `impl` 行と `impls` メソッドを突き合わせる鍵。`core.convert.From` は型引数 (変換元) まで含める。
-fn impl_key(tr: &str, args: &[V]) -> String {
-    match args.first() {
-        Some(a) if tr == crate::program::FROM_TRAIT => {
-            format!("{}<{}>", tr, crate::types::from_v(a, &HashSet::new()).show())
-        }
-        _ => tr.to_string(),
-    }
-}
-
 fn impl_target(v: &V) -> String {
     match tag(v).as_str() {
         "named" | "prim" => st(tel(v, 1)),

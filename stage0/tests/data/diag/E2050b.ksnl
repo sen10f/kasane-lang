@@ -1,0 +1,8 @@
+enum t.Error derive [From] pub
+    Empty
+    Pair(u8, u8)
+end t.Error
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
