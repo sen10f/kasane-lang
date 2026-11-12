@@ -21,6 +21,9 @@
 #include <string.h>
 #include <time.h>
 
+void ksn_rt_thread_init(void);
+void ksn_rt_thread_fini(void);
+
 typedef struct {
     pthread_t t;
     void (*entry)(void *);
@@ -29,7 +32,9 @@ typedef struct {
 
 static void *thr_main(void *p) {
     ksn_thr *h = (ksn_thr *)p;
+    ksn_rt_thread_init(); /* 代替シグナルスタックとスタック溢れの判定 (rt.c) */
     h->entry(h->env);
+    ksn_rt_thread_fini();
     return 0;
 }
 
