@@ -7157,3 +7157,102 @@ end t.bad
     assert!(codes(&out).iter().any(|c| c == "E2023"), "{}", out);
     assert!(out.contains("argument 1 of the closure"), "{}", out);
 }
+
+// ---- 型推論の完全化 第 2 段 (設計_KIR.md 第 8 章 8.7): メソッドの Fn 境界、腕どうしの型、列挙子のメソッド ----
+
+#[test]
+fn kir_method_fn_bound_is_unified_with_the_argument() {
+    // `map_err(t.code)` の関数項目の引数 (bool) と戻り値 (u32) が、メソッドの Fn 境界と単一化される。
+    // 結果の型は `Ok(k)` の枝と一致して決まる (型変数 0)。
+    let fns = "fn t.code(e: bool) -> u32 uses [] panics never
+    if e {
+        1u32
+    } else {
+        2u32
+    }
+end t.code
+
+fn t.wrap(r: Result<u8, bool>, k: u8) -> Result<u8, u32> uses [] panics never
+    if k == 0u8 {
+        r.map_err(t.code)
+    } else {
+        Ok(k)
+    }
+end t.wrap
+
+";
+    assert_all_typed("kir_map_err_typed", &main_wrap(fns, ""));
+    // 関数項目の引数の型 (bool) と Result のエラー型 (u8) が違えば、メソッドの引数の検査として E2023。
+    let bad = "fn t.code(e: bool) -> u32 uses [] panics never
+    if e {
+        1u32
+    } else {
+        2u32
+    }
+end t.code
+
+fn t.bad(r: Result<u8, u8>) -> Result<u8, u32> uses [] panics never
+    r.map_err(t.code)
+end t.bad
+
+";
+    let t = Tmp::new("kir_map_err_arg_mismatch", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2023"), "{}", out);
+}
+
+#[test]
+fn kir_match_and_if_arms_share_their_type() {
+    // `Ok` / `Err` / `None` の型引数は、同じ式の他の枝や戻り値型から決まる。
+    let fns = "fn t.checked(a: u8, b: u8) -> Result<u8, u8> uses [] panics never
+    match a.checked_add(b) {
+        Some(v) => Ok(v)
+        None => Err(a)
+    }
+end t.checked
+
+fn t.pick(a: u8) -> Option<u8> uses [] panics never
+    if a == 0u8 {
+        None
+    } else {
+        Some(a)
+    }
+end t.pick
+
+fn t.unwrap_or_zero(o: Option<u8>) -> u8 uses [] panics never
+    match o {
+        Some(v) => v
+        None => return 0u8
+    }
+end t.unwrap_or_zero
+
+";
+    assert_all_typed("kir_arms_typed", &main_wrap(fns, ""));
+}
+
+#[test]
+fn kir_method_on_unit_variant_is_resolved() {
+    // `t.Phase.Idle.next()` は、変種の値 (型 `t.Phase`) へのメソッド呼び出し。
+    let enum_and_next = "enum t.Phase derive [Debug, Clone, Copy, PartialEq]
+    Idle
+    Busy
+end t.Phase
+
+fn t.Phase.next(self: t.Phase) -> t.Phase uses [] panics never
+    match self {
+        t.Phase.Idle => t.Phase.Busy
+        t.Phase.Busy => t.Phase.Idle
+    }
+end t.Phase.next
+
+";
+    let fns = format!("{}fn t.after_idle() -> t.Phase uses [] panics never\n    t.Phase.Idle.next()\nend t.after_idle\n\n", enum_and_next);
+    assert_all_typed("kir_unit_variant_method_typed", &main_wrap(&fns, ""));
+    // 戻り値の型 (t.Phase) と注釈 (bool) が違えば、E2020。
+    let bad = format!("{}fn t.bad() -> bool uses [] panics never\n    let b: bool = t.Phase.Idle.next()\n    b\nend t.bad\n\n", enum_and_next);
+    let t = Tmp::new("kir_unit_variant_mismatch", &main_wrap(&bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2020"), "{}", out);
+}

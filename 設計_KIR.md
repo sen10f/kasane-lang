@@ -513,6 +513,38 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 
 回帰テスト: `stage0/tests/cli.rs` 末尾の `kir_*` 4 本。`assert_all_typed` は `KSN_TYPE_COVERAGE=1` の出力で「未知 0・型変数 0」を確かめる。`cargo test --release` は全緑 (cli 318 本ほか)。
 
+### 8.8 完全化 第 2 段の結果
+
+ブランチ `kir/type-complete-2` (`claude/handover-work-i7ll7p` の `f03ad0a` から分岐)。8.7 の残りのうち、`stage0/src/types.rs` で塞げたものを次に示す。
+
+- **メソッドの Fn 境界 (map_err の 6 件)**: `call_method` も、`Fn` 境界を持つ型パラメータに渡されたクロージャ・関数項目の型を、境界の引数タプル・戻り値型・capture の能力と単一化するようになった。検査は `call_def` と共通の `unify_fn_bound` に移した (E2023 / E2030 の文言は従来どおり)。`out.push_str(..).map_err(json.oom)` のエラー型が決まる。
+- **腕どうしの型 (Ok / Err / None の 19 件)**: `if` の両枝と `match` の腕 (発散する `Never` の腕を除く) を `join_arm` で一致させる。報告はしない (不一致は既存の検査に任せる)。未知・型パラメータとは一致させない (そうすると型変数が escape され、E2027 の判定が変わるため)。`Some(v) => Ok(v)` と `None => Err(a)` のような型変数は、この一致と関数の戻り値型との単一化で決まる。
+- **列挙子経由のメソッド (`realtime.Phase.Idle.next()`)**: 型引数のない列挙型の、ペイロードのない変種を値として、そのメソッドを `call_method` で解決する。`Enum.Variant.m()` の戻り値型を検査する。
+
+このパスで残したもの (黙る側のまま、または報告のみ):
+
+- **`u8.to_u32()` (bench digit_sum.ksnl:19)**: sig に無い。runtime (natives.rs) は `to_<整数型>` を受けるが、spec/stdlib の生成規則 (`spec/tools/gen_num_sig.py` の `to_f64` / `to_bits` / `trunc_to_*`) と、簡易仕様書 (整数↔整数は `from_*` / `try_from_*`、`to_*` は整数↔浮動小数) のどちらにも無い。sig に足すなら生成規則と仕様の両方を決める必要があるので、未実施。
+- **浮動小数リテラルの既定型 (tour.ksnl:18)**: 報告のみ。簡易仕様書は「接尾辞がなく文脈から決まらなければエラー」とし、既定型 (`f64`) を定めていない。既定を入れると仕様の変更になる。なお、`let a = 9.0` のあと `a.sqrt()` は、仕様どおりなら E2027 になるべき例だが、レシーバへのメソッド呼び出しが型変数を escape するので現状は黙る (既存の取りこぼし。診断を変えないため直していない)。
+- **`core.iter.map` / `filter` の型変数 (features.ksnl:98-99、2 件)**: `I: core.iter.Iterator<T, E, P>` の `T` を、`core.iter.Range` などの impl の型引数から決める必要がある (境界からの型引数の解決)。L 相当で、本段の範囲外。
+
+被覆率 (`KSN_TYPE_COVERAGE=1 ksn check`。対象は 8.2 と同じく examples 7 本と bench/reference 9 本。bench は課題のテストを連結した形で計る。前後とも 8.7 の数字を再現することを確認した):
+
+| 対象 | 式 | 確定 (前 → 後) | 確定率 (前 → 後) | 型変数 (前 → 後) | 未知 根 / 伝播 (前 → 後) |
+|---|---:|---:|---:|---:|---:|
+| examples 7 本 | 1771 | 1732 → 1758 | 97.8% → 99.3% | 30 → 5 | 1 / 8 → 0 / 8 |
+| bench/reference 9 本 | 519 | 517 → 518 | 99.6% → 99.8% | 1 → 0 | 1 / 0 → 1 / 0 |
+| 合計 | 2290 | 2249 → 2276 | 98.2% → 99.4% | 31 → 5 | 2 / 8 → 1 / 8 |
+
+残りの型変数 5 件は `features.ksnl` の iter (2) と `tour.ksnl:18` の浮動小数 (3)、未知の根 1 件は `u8.to_u32` で、いずれも上の「残したもの」。伝播の未知 8 件は、tour.ksnl:18 の浮動小数と features.ksnl の iter から来ている。
+
+**既定の診断の変化**: examples 7 本と bench/reference 9 本の `ksn check` の出力 (診断・終了コード・計測の行を除く) は、前後とも一致 (16 対象すべて)。新しく出る診断はゼロ。
+
+新しく検出するようになった真の誤りは、回帰テストで確かめた 2 種: メソッドの Fn 境界の引数型の違い (`r.map_err(f)` で `f` が `bool` を取るのに `Result<u8, u8>`、E2023)、列挙子メソッドの戻り値型と注釈の違い (`let b: bool = t.Phase.Idle.next()`、E2020)。誤検出は、正しい書き方 (`Option.and_then` / `Result.map` / `Result.map_err` の関数項目とクロージャ、`match` の `return` の腕、`if` / `match` の両枝が一致する形) の探索プログラムで出なかった。
+
+黙る側に残したもの: 腕どうしの型が一致しないとき (`Some(v) => Ok(v)` と `None => Some(1u8)`) は `join_arm` が黙る。従来も報告していない。報告すると新しい診断になるので、別の段で扱う。
+
+回帰テスト: `stage0/tests/cli.rs` 末尾の `kir_method_fn_bound_is_unified_with_the_argument` / `kir_match_and_if_arms_share_their_type` / `kir_method_on_unit_variant_is_resolved`。`assert_all_typed` (未知 0・型変数 0) と、真の誤りの E2023 / E2020 を確かめる。`cargo test --release` は全緑 (cli 321 本ほか)。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
