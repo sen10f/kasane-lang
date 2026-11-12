@@ -2825,6 +2825,8 @@ impl<'a> Checker<'a> {
                 if !b_div {
                     Self::union_moves(&mut m, &b);
                 }
+                // 枝の中で宣言した束縛は、合流後には見えない (同じ名前の別の束縛と混同しない)。
+                m.retain(|k, _| env.contains_key(k.split('.').next().unwrap_or(k)));
                 self.moved = m;
             }
             "Match" => {
@@ -2844,6 +2846,8 @@ impl<'a> Checker<'a> {
                     }
                     for n in b {
                         let t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
+                        // 腕の束縛は新しい値。以前の同名の束縛の move 記録を引き継がない。
+                        self.revive_place(std::slice::from_ref(&n));
                         inner.insert(n, t);
                     }
                     for (n, t) in &typed {
@@ -2855,6 +2859,8 @@ impl<'a> Checker<'a> {
                         Self::union_moves(&mut merged, &end);
                     }
                 }
+                // 腕の束縛は、合流後には見えない。
+                merged.retain(|k, _| env.contains_key(k.split('.').next().unwrap_or(k)));
                 self.moved = merged;
                 self.exhaustive(e, env);
             }

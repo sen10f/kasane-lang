@@ -4935,6 +4935,30 @@ fn a_move_in_a_diverging_branch_does_not_reach_the_merge() {
 }
 
 #[test]
+fn arm_bindings_with_the_same_name_do_not_share_move_state() {
+    // 兄弟の腕・後続の `match` で同じ名前を束縛しても、前の腕での move を引き継がない。
+    let (bad, out) = pmove_check(
+        "pmove_arm_names",
+        &pmove_prefix(),
+        &[
+            "let a = Some(t.P { a: 1u8 })",
+            "let b = Some(t.P { a: 2u8 })",
+            "match a {",
+            "    Some(e) => t.take(e)",
+            "    None => {",
+            "    }",
+            "}",
+            "match b {",
+            "    Some(e) => t.take(e)",
+            "    None => {",
+            "    }",
+            "}",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
 fn a_value_moved_in_a_loop_body_is_an_error_on_the_next_iteration() {
     let (bad, out) = pmove_check(
         "pmove_loop",
