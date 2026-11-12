@@ -5267,6 +5267,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         if self.cx.seq_elem(ty).is_some() {
             return Err("ordering of sequences".into());
         }
+        // 手書きの `cmp` / `partial_cmp` を持つ型は、構造的な順序と違いうる (4.3)。退避する。
+        if ["cmp", "partial_cmp"].iter().any(|m| self.funcs.contains_key(&format!("{}.{}", base_of(ty), m))) {
+            return Err(format!("ordering of {} with a user-defined cmp", ty));
+        }
         let l = self.cx.layout(ty, 0)?;
         if !l.is_enum {
             return self.cmp_fields(a, b, &l.fields.iter().map(|f| (f.1.clone(), f.2)).collect::<Vec<_>>());
@@ -5364,6 +5368,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             }
             let sz = scalar_size(&elem) as i64;
             return Ok(self.bytes_eq(a, b, sz));
+        }
+        // 手書きの `eq` を持つ型は、構造的に比べると意味が変わる (派生の比較はペイロードの実装を使う。4.3)。退避する。
+        if self.funcs.contains_key(&format!("{}.eq", base_of(ty))) {
+            return Err(format!("equality of {} with a user-defined eq", ty));
         }
         let l = self.cx.layout(ty, 0)?;
         if !l.is_enum {

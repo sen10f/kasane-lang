@@ -637,22 +637,61 @@ impl Interp {
         panic(format!("bad operands for {}", op))
     }
 
+    /// 等値 (`==` / `eq`)。手書きの `eq` を持つ型はそれを呼ぶ。派生の比較 (構造体・列挙型・`Option` / `Result`・タプル・列) は
+    /// 要素ごとにこの関数を再帰で呼ぶので、入れ子の利用者型の `eq` も使われる (4.3)。
     pub fn v_eq(&mut self, a: &Val, b: &Val) -> Result<bool, Ctl> {
-        if let Val::Struct(s) = a {
-            if let Some(&di) = self.p.funcs.get(&format!("{}.eq", s.ty)) {
-                let r = self.call_def(di, vec![a.clone(), b.clone()])?;
-                return Ok(matches!(r, Val::Bool(true)));
-            }
-        }
-        if let Val::Enum(en) = a {
-            if en.en != "Option" && en.en != "Result" {
-                if let Some(&di) = self.p.funcs.get(&format!("{}.eq", en.en)) {
+        let (a, b) = (dr(a), dr(b));
+        match (&a, &b) {
+            (Val::Struct(x), Val::Struct(y)) => {
+                if let Some(&di) = self.p.funcs.get(&format!("{}.eq", x.ty)) {
                     let r = self.call_def(di, vec![a.clone(), b.clone()])?;
                     return Ok(matches!(r, Val::Bool(true)));
                 }
+                if x.ty != y.ty {
+                    return Ok(false);
+                }
+                let xs: Vec<(String, Val)> = x.f.borrow().clone();
+                for (k, v) in xs {
+                    let Some(w) = y.get(&k) else { return Ok(false) };
+                    if !self.v_eq(&v, &w)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
             }
+            (Val::Enum(x), Val::Enum(y)) => {
+                if x.en != "Option" && x.en != "Result" {
+                    if let Some(&di) = self.p.funcs.get(&format!("{}.eq", x.en)) {
+                        let r = self.call_def(di, vec![a.clone(), b.clone()])?;
+                        return Ok(matches!(r, Val::Bool(true)));
+                    }
+                }
+                if x.var != y.var || x.en != y.en || x.pl.len() != y.pl.len() {
+                    return Ok(false);
+                }
+                for (p, q) in x.pl.iter().zip(&y.pl) {
+                    if !self.v_eq(p, q)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            _ if str_of(&a).is_none() => match (seq_items(&a), seq_items(&b)) {
+                (Some(x), Some(y)) => {
+                    if x.len() != y.len() {
+                        return Ok(false);
+                    }
+                    for (p, q) in x.iter().zip(&y) {
+                        if !self.v_eq(p, q)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                }
+                _ => Ok(veq(&a, &b)),
+            },
+            _ => Ok(veq(&a, &b)),
         }
-        Ok(veq(a, b))
     }
 
     fn order_of(&self, en: &str) -> Box<dyn Fn(&str, &str) -> (usize, usize)> {
@@ -682,9 +721,17 @@ impl Interp {
         0
     }
 
+    /// 順序 (-1 / 0 / 1、NaN は None)。手書きの `partial_cmp` / `cmp` を持つ型はそれを呼ぶ。派生の順序は、列挙子は
+    /// その型の宣言順、ペイロード・フィールド・列の要素は辞書順で、要素ごとにこの関数を再帰で呼ぶ (4.3)。
     pub fn v_cmp(&mut self, a: &Val, b: &Val) -> Result<Option<i32>, Ctl> {
-        if let Val::Struct(s) = a {
-            if let Some(&di) = self.p.funcs.get(&format!("{}.partial_cmp", s.ty)) {
+        let (a, b) = (dr(a), dr(b));
+        let user_ty = match &a {
+            Val::Struct(s) => Some(s.ty.clone()),
+            Val::Enum(e) if e.en != "Option" && e.en != "Result" => Some(e.en.clone()),
+            _ => None,
+        };
+        if let Some(ty) = &user_ty {
+            if let Some(&di) = self.p.funcs.get(&format!("{}.partial_cmp", ty)) {
                 let r = self.call_def(di, vec![a.clone(), b.clone()])?;
                 if let Val::Enum(e) = &r {
                     if e.var == "None" {
@@ -693,16 +740,41 @@ impl Interp {
                     return Ok(Some(Self::ordering(&e.pl[0])));
                 }
             }
-            if let Some(&di) = self.p.funcs.get(&format!("{}.cmp", s.ty)) {
+            if let Some(&di) = self.p.funcs.get(&format!("{}.cmp", ty)) {
                 let r = self.call_def(di, vec![a.clone(), b.clone()])?;
                 return Ok(Some(Self::ordering(&r)));
             }
         }
-        let order = match a {
-            Val::Enum(e) => self.order_of(&e.en),
-            _ => self.order_of(""),
-        };
-        Ok(vcmp(a, b, &*order))
+        match (&a, &b) {
+            (Val::Enum(x), Val::Enum(y)) => {
+                if x.var != y.var {
+                    let (ia, ib) = self.order_of(&x.en)(&x.var, &y.var);
+                    return Ok(Some(if ia < ib { -1 } else { 1 }));
+                }
+                let (xs, ys) = (x.pl.clone(), y.pl.clone());
+                self.cmp_seq(&xs, &ys)
+            }
+            (Val::Struct(x), Val::Struct(y)) => {
+                let xs: Vec<Val> = x.f.borrow().iter().map(|(_, v)| v.clone()).collect();
+                let ys: Vec<Val> = y.f.borrow().iter().map(|(_, v)| v.clone()).collect();
+                self.cmp_seq(&xs, &ys)
+            }
+            _ if str_of(&a).is_none() => match (seq_items(&a), seq_items(&b)) {
+                (Some(x), Some(y)) => self.cmp_seq(&x, &y),
+                _ => Ok(vcmp(&a, &b, &*self.order_of(""))),
+            },
+            _ => Ok(vcmp(&a, &b, &*self.order_of(""))),
+        }
+    }
+
+    fn cmp_seq(&mut self, x: &[Val], y: &[Val]) -> Result<Option<i32>, Ctl> {
+        for (p, q) in x.iter().zip(y) {
+            match self.v_cmp(p, q)? {
+                Some(0) => {}
+                r => return Ok(r),
+            }
+        }
+        Ok(Some((x.len() > y.len()) as i32 - (x.len() < y.len()) as i32))
     }
 
     // ------------------------------------------------------------ 場所・代入

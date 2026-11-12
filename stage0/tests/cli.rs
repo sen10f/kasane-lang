@@ -11438,3 +11438,69 @@ fn untyped_int_literals_take_their_inferred_type_in_the_tree_walker() {
     assert_eq!(o.status.code(), Some(101), "{}{}", text(&o.stdout), text(&o.stderr));
     assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
 }
+
+/// 派生の比較 (`Option` の `eq` / `cmp`) は、ペイロードの利用者型の手書きの `eq` / `cmp` を使い、列挙子の順序は
+/// その列挙型の宣言順 (4.3)。木走査は以前、入れ子を構造的に比べ、`Option` の中の列挙型の順序を取り違えていた。
+/// clif は手書きの比較を持つ型を構造的に比べないよう退避する。
+#[test]
+fn derived_comparisons_use_nested_user_impls_and_declared_variant_order() {
+    let src = r#"enum t.E derive [Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord] pub
+    B
+    A
+end t.E
+
+type t.P derive [Debug, Clone, Copy] pub
+    x: u8
+    y: u8
+end t.P
+
+impl core.cmp.Eq for t.P
+
+impl core.cmp.Ord for t.P
+fn t.P.cmp(self: &t.P, other: &t.P) -> core.cmp.Ordering uses [] panics never impls core.cmp.Ord
+    if self.x > other.x {
+        core.cmp.Ordering.Less
+    } else if self.x < other.x {
+        core.cmp.Ordering.Greater
+    } else {
+        core.cmp.Ordering.Equal
+    }
+end t.P.cmp
+
+impl core.cmp.PartialEq<t.P> for t.P
+fn t.P.eq(self: &t.P, other: &t.P) -> bool uses [] panics never impls core.cmp.PartialEq<t.P>
+    self.x == other.x
+end t.P.eq
+
+impl core.cmp.PartialOrd<t.P> for t.P
+fn t.P.partial_cmp(self: &t.P, other: &t.P) -> Option<core.cmp.Ordering> uses [] panics never impls core.cmp.PartialOrd<t.P>
+    Some(self.cmp(other))
+end t.P.partial_cmp
+
+fn t.main() -> () uses [] panics never
+end t.main
+
+test t.main.test_nested_enum_order
+    let b: Option<t.E> = Some(t.E.B)
+    let a: Option<t.E> = Some(t.E.A)
+    core.check.eq(b.cmp(&a) == core.cmp.Ordering.Less, true)
+    core.check.eq(a.cmp(&b) == core.cmp.Ordering.Greater, true)
+end t.main.test_nested_enum_order
+
+test t.main.test_nested_user_cmp
+    let a: Option<t.P> = Some(t.P { x: 1u8, y: 1u8 })
+    let b: Option<t.P> = Some(t.P { x: 2u8, y: 1u8 })
+    core.check.eq(a.cmp(&b) == core.cmp.Ordering.Greater, true)
+    let c: Option<t.P> = Some(t.P { x: 1u8, y: 9u8 })
+    core.check.eq(a == c, true)
+    core.check.eq(a.eq(&c), true)
+end t.main.test_nested_user_cmp
+"#;
+    let t = Tmp::new("nested_user_cmp", src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("2 passed; 0 failed"), "{}", out);
+    assert!(out.contains("t.main.test_nested_enum_order ... ok (both: native)"), "{}", out);
+    assert!(out.contains("ordering of t.P with a user-defined cmp"), "{}", out);
+}
