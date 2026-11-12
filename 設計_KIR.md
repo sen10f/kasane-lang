@@ -545,6 +545,39 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 
 回帰テスト: `stage0/tests/cli.rs` 末尾の `kir_method_fn_bound_is_unified_with_the_argument` / `kir_match_and_if_arms_share_their_type` / `kir_method_on_unit_variant_is_resolved`。`assert_all_typed` (未知 0・型変数 0) と、真の誤りの E2023 / E2020 を確かめる。`cargo test --release` は全緑 (cli 321 本ほか)。
 
+### 8.9 完全化 第 3 段の結果: 境界の型引数と効果の印
+
+ブランチ `kir/iter-types` (`claude/handover-work-i7ll7p` の `520c719` から分岐)。8.8 の残り (`core.iter.map` / `filter` の型変数) を `types.rs` で塞いだ。
+
+**原因の訂正**: 8.8 は `T` が決まらないと書いたが、このブランチで計った残り 2 件 (features.ksnl:98-99) の原因は `T` ではなかった。`T` はクロージャの引数型 (`&i32` / `i32`) から既に決まっていた。残っていたのは結果型 `Filter<I, F, T, E, P>` / `Map<I, F, T, U, E, P>` の効果・panic の実引数 `E`・`P` で、効果は型ではないので、どの呼び出しも束縛せず型変数のまま残っていた。
+
+変更 (汎用の仕組みで、map/filter 専用の特例はない):
+
+- **効果・panic の実引数の印** (`seed_effects`): `E: uses` / `P: panics` のジェネリクスは、呼び出しごとに型変数ではなく印 (`Named("_")`) で束縛する。印どうしは一致し、他の型とは一致しない。表示は `_`。
+- **境界の型引数の impl 解決** (`resolve_impl_bounds`): 型パラメータの境界 `T: Tr<A..>` (`Fn` 系と marker を除く) の `A..` に未解決の型変数があるとき、`T` の具体型 (名前付き) を対象にした `impl Tr<B..> for T'` を探し、`T'` と `B..` を単一化する。候補が 1 つでないとき、単一化が失敗したときは黙る。Fn 境界より先に行うので、要素型の食い違いは Fn 境界の検査 (E2023) が報告する。`impl` の `Def` に実装するトレイトの型引数 (`impl_targs`、`program.rs`) を持たせた。
+- `call_def` (関数) と `call_method` (メソッド) の両方に入れた。
+
+被覆率 (`KSN_TYPE_COVERAGE=1 ksn check`。対象は 8.1 と同じ。前 = `520c719`、後 = 本ブランチ):
+
+| 対象 | 式 | 確定 (前 → 後) | 型変数 (前 → 後) | 未知 (前 → 後) |
+|---|---:|---:|---:|---:|
+| examples 7 本 | 1771 | 1767 → 1769 | 2 → 0 | 2 → 2 |
+| うち features | 226 | 223 → 225 | 2 → 0 | 1 → 1 |
+| bench/reference 9 本 | 519 | 519 → 519 | 0 → 0 | 0 → 0 |
+
+前の数字は 8.7 と一致しない (前の 8.7 の計測は、その後 `520c719` に入った merge (check/spec-int-float など) より前の版で行ったため。ここでは `520c719` 自体を前として計り直した)。残った未知 2 件 (features 1、tour 1) は今回触れていない (前後で同じ)。
+
+**診断の変化**: examples 7 本と bench/reference 9 本の `ksn check` の出力 (診断・終了コード。計測の行を除く) は、前後で一致 (16 対象すべて)。新しく出る診断はゼロ。
+
+新しく出るようになる診断 (計測用の探索パッケージで確かめた。examples と bench には無い。いずれも真の誤り):
+
+- `core.iter.filter(range(0i32, n), fn(x: &u8) ...)`: E2023 (`range` の要素型 i32 と、クロージャの引数 u8)。
+- `core.iter.map(利用者の Upto (u32), fn(x: i32) -> i32)`: E2023 (要素型 u32 と i32)。
+
+回帰テスト: `stage0/tests/cli.rs` 末尾の `kir_iter_adapters_are_typed_through_the_impl` (正しい `map` / `filter` / `fold` の連鎖、`enumerate` / `take` / `count` の連鎖、利用者の `Iterator` を `fold` に渡す形。`assert_all_typed` で無診断・型変数 0) と `kir_iter_adapter_element_type_mismatch_is_reported` (E2023)。`cargo test --release` は全緑 (cli 330 本ほか)。
+
+**黙る側に残したもの**: `let h: u8 = core.iter.map(...)` のように、名前付きの型と原始型の不一致は、従来どおり `let` の注釈の検査 (プリミティブどうしの E2020) が見ないので黙る。印 `_` は型変数ではないので被覆率では確定として数え、診断の文面に出るときだけ `_` と表示される。`call_method` の境界解決は、今の sig に境界付きのメソッドがイテレータで無いため、この計測では通っていない。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。

@@ -7399,3 +7399,78 @@ end t.f
     let out = text(&o.stdout);
     assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
 }
+
+#[test]
+fn kir_iter_adapters_are_typed_through_the_impl() {
+    // `map` / `filter` の結果の E・P (効果・panic の実引数) は型変数にならない。`enumerate` / `take` / `count` の
+    // `T` は、境界 `I: Iterator<T, E, P>` の I の impl (`Range` / `Enumerate` / 利用者の型) から決まる (型変数 0)。
+    let fns = "type t.Upto pub
+    cur: u32
+    stop: u32
+end t.Upto
+
+impl core.iter.Iterator<u32, [], never> for t.Upto
+fn t.Upto.next(self: &mut t.Upto) -> Option<u32> uses [] panics never impls core.iter.Iterator<u32, [], never>
+    if self.cur < self.stop {
+        let v = self.cur
+        self.cur = self.cur.wrapping_add(1u32)
+        Some(v)
+    } else {
+        None
+    }
+end t.Upto.next
+
+fn t.chain(n: i32) -> i32 uses [] panics never
+    core.iter.fold(
+        core.iter.map(
+            core.iter.filter(
+                core.iter.range(0i32, n),
+                fn(x: &i32) -> bool capture [] {
+                    *x > 2i32
+                },
+            ),
+            fn(x: i32) -> i32 capture [] {
+                x.wrapping_mul(2i32)
+            },
+        ),
+        0i32,
+        fn(a: i32, x: i32) -> i32 capture [] {
+            a.wrapping_add(x)
+        },
+    )
+end t.chain
+
+fn t.count_it() -> usize uses [] panics never
+    core.iter.count(core.iter.enumerate(core.iter.take(core.iter.range(0u8, 9u8), 2usize)))
+end t.count_it
+
+fn t.user_sum() -> u32 uses [] panics never
+    core.iter.fold(t.Upto { cur: 0u32, stop: 4u32 }, 0u32, fn(a: u32, x: u32) -> u32 capture [] {
+        a.wrapping_add(x)
+    })
+end t.user_sum
+
+";
+    assert_all_typed("kir_iter_adapters_typed", &main_wrap(fns, ""));
+}
+
+#[test]
+fn kir_iter_adapter_element_type_mismatch_is_reported() {
+    // 境界の要素型 (`range(0i32, ..)` の `T` = i32) と、フィルタのクロージャの引数型 (`&u8`) が違えば E2023。
+    let bad = "fn t.bad(n: i32) -> usize uses [] panics never
+    core.iter.count(
+        core.iter.filter(
+            core.iter.range(0i32, n),
+            fn(x: &u8) -> bool capture [] {
+                *x > 2u8
+            },
+        ),
+    )
+end t.bad
+
+";
+    let t = Tmp::new("kir_iter_filter_arg_mismatch", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2023"), "{}", out);
+}
