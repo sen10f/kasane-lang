@@ -7454,3 +7454,52 @@ fn move_capture_that_is_only_read_meets_the_fn_bound() {
     );
     assert!(!got.iter().any(|c| c == "E2030"), "{}", out);
 }
+
+/// バンドル (インタプリタ同梱の起動スクリプト) が実行権限を持ち、相対パス・PATH 経由・
+/// 別ディレクトリから起動しても同梱物を exec できること。`to_string` は clif 未対応なので
+/// ネイティブ生成が失敗し、バンドルへフォールバックする。
+#[cfg(unix)]
+#[test]
+fn bundle_launcher_is_executable_and_location_independent() {
+    use std::os::unix::fs::PermissionsExt;
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let n = 42u32
+    let s = n.to_string()
+    std.io.print_line(s)
+end t.main
+";
+    let t = Tmp::new("bundle_launcher", src);
+    let cache = std::env::temp_dir().join(format!("ksn_bundle_cache_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let o = Command::new(exe())
+        .args(["build", "--release"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let rel_dir = Path::new("target").join("release");
+    let rel_dir_abs = t.0.join(&rel_dir);
+    let launcher = rel_dir_abs.join("t");
+    let mode = fs::metadata(&launcher).expect("launcher exists").permissions().mode();
+    assert!(mode & 0o111 != 0, "launcher is not executable: mode {:o}", mode);
+
+    let check = |o: Output, how: &str| {
+        assert_eq!(o.status.code(), Some(0), "{}: {}", how, text(&o.stderr));
+        assert_eq!(text(&o.stdout), "42\n", "{}", how);
+    };
+    // 1. パッケージ直下から相対パスで起動
+    check(Command::new(rel_dir.join("t")).current_dir(&t.0).output().unwrap(), "relative path");
+    // 2. 親ディレクトリから、パッケージを含む相対パスで起動
+    let parent = t.0.parent().unwrap().to_path_buf();
+    let pkg_name = t.0.file_name().unwrap().to_os_string();
+    let via_parent = Path::new(&pkg_name).join(&rel_dir).join("t");
+    check(Command::new(&via_parent).current_dir(&parent).output().unwrap(), "relative path from parent");
+    // 3. 無関係なディレクトリから絶対パスで起動
+    check(Command::new(&launcher).current_dir(&cache).output().unwrap(), "absolute path");
+    // 4. PATH 経由 (bare name。$0 にスラッシュが無い場合の解決)
+    let path = format!("{}:{}", rel_dir_abs.display(), std::env::var("PATH").unwrap_or_default());
+    check(Command::new("t").env("PATH", path).current_dir(&cache).output().unwrap(), "PATH lookup");
+
+    let _ = fs::remove_dir_all(&cache);
+}
