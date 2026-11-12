@@ -8539,7 +8539,7 @@ fn a_generic_literal_decided_later_is_not_an_error() {
 #[test]
 fn fmath_functions_agree_across_backends_and_match_known_values() {
     // 数学関数 (`fmath`) は、インタプリタと Cranelift で同じビット列を返し、既知の値に近い。
-    // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値、9 関数の総和 (ビット列の突き合わせ)。
+    // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値 (atan2 の ±∞ / NaN 組を含む)、9 関数の総和 (ビット列の突き合わせ)。
     let t = Tmp::new("fmath_both", include_str!("data/fmath_both.ksnl"));
     let cache = std::env::temp_dir().join(format!("ksn_cache_fmath_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
@@ -8554,7 +8554,7 @@ fn fmath_functions_agree_across_backends_and_match_known_values() {
     assert_eq!(o.status.code(), Some(0), "{}", out);
     // Cranelift のビルドが成功していること (スキップされていないこと)。
     assert!(out.contains("native executable:"), "{}", out);
-    assert!(out.contains("5 passed; 0 failed"), "{}", out);
+    assert!(out.contains("6 passed; 0 failed"), "{}", out);
     let _ = fs::remove_dir_all(&cache);
 }
 
