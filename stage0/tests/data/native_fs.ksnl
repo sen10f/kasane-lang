@@ -1,3 +1,11 @@
+fn t.flag(label: &str, b: bool) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    if b {
+        t.show(label, 1i64)
+    } else {
+        t.show(label, 0i64)
+    }
+end t.flag
+
 fn t.kind_num(k: std.io.ErrorKind) -> i64 uses [] panics never
     match k {
         std.io.ErrorKind.NotFound => 1i64
@@ -12,40 +20,44 @@ fn t.kind_num(k: std.io.ErrorKind) -> i64 uses [] panics never
     }
 end t.kind_num
 
-fn t.show(label: &str, n: i64) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-    core.mem.drop(s.push_str(label))
-    core.mem.drop(s.push_str(": "))
-    core.mem.drop(s.push_i64(n))
-    std.io.print_line(s.as_str())
-end t.show
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
+    t.round_trip()?
+    t.many()?
+    std.io.print_line("fs ok")
+end t.main
 
-fn t.show_err(label: &str, e: std.io.Error) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-    core.mem.drop(s.push_str(label))
-    core.mem.drop(s.push_str(": kind "))
-    core.mem.drop(s.push_i64(t.kind_num(e.kind)))
-    core.mem.drop(s.push_str(" code "))
-    core.mem.drop(s.push_i64(i64.from_i32(e.code)))
-    std.io.print_line(s.as_str())
-end t.show_err
-
-fn t.flag(label: &str, b: bool) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    if b {
-        t.show(label, 1i64)
-    } else {
-        t.show(label, 0i64)
+fn t.many() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
+    let mut i = 0usize
+    let mut total = 0usize
+    while i < 3000usize {
+        let mut f = std.fs.create("ksn_native_fs_many.txt")?
+        total = total + f.write(b"abc")?
+        f.close()?
+        let mut g = std.fs.open("ksn_native_fs_many.txt")?
+        let mut rest = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        total = total + std.fs.read_to_end(&mut g, &mut rest)?
+        g.close()?
+        i = i + 1usize
     }
-end t.flag
+    std.fs.remove_file("ksn_native_fs_many.txt")?
+    t.show("bytes moved in the loop", t.num(total))
+end t.many
+
+fn t.num(n: usize) -> i64 uses [] panics never
+    match i64.try_from_usize(n) {
+        Ok(v) => v
+        Err(_e) => -1i64
+    }
+end t.num
 
 fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
     let mut f = std.fs.create("ksn_native_fs.txt")?
     let n = f.write(b"hello, file")?
-    t.show("written", i64.from_usize(n))?
+    t.show("written", t.num(n))?
     f.flush()?
     let mut probe = [0u8; 4]
     match f.read(&mut probe) {
-        Ok(k) => t.show("read from a write-only file", i64.from_usize(k))?
+        Ok(k) => t.show("read from a write-only file", t.num(k))?
         Err(e) => t.show_err("read from a write-only file", e)?
     }
     f.close()?
@@ -53,23 +65,23 @@ fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] pa
     let mut g = std.fs.open("ksn_native_fs.txt")?
     let mut chunk = [0u8; 4]
     let first = g.read(&mut chunk)?
-    t.show("first chunk", i64.from_usize(first))?
+    t.show("first chunk", t.num(first))?
     match chunk.get(0usize) {
-        Some(b) => t.show("first byte", i64.from_u8(b))?
+        Some(b) => t.show("first byte", i64.from_u8(*b))?
         None => t.show("first byte", 0i64)?
     }
     match g.write(b"x") {
-        Ok(k) => t.show("write to a read-only file", i64.from_usize(k))?
+        Ok(k) => t.show("write to a read-only file", t.num(k))?
         Err(e) => t.show_err("write to a read-only file", e)?
     }
     let mut rest = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let m = std.fs.read_to_end(&mut g, &mut rest)?
-    t.show("rest", i64.from_usize(m))?
-    t.show("rest length", i64.from_usize(rest.len()))?
+    t.show("rest", t.num(m))?
+    t.show("rest length", t.num(rest.len()))?
     let eof = g.read(&mut chunk)?
-    t.show("at end of file", i64.from_usize(eof))?
+    t.show("at end of file", t.num(eof))?
     let again = std.fs.read_to_end(&mut g, &mut rest)?
-    t.show("read_to_end at end", i64.from_usize(again))?
+    t.show("read_to_end at end", t.num(again))?
     g.close()?
     std.fs.remove_file("ksn_native_fs.txt")?
     t.flag("exists after remove", std.fs.exists("ksn_native_fs.txt"))?
@@ -104,25 +116,20 @@ fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] pa
     Ok(())
 end t.round_trip
 
-fn t.many() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
-    let mut i = 0usize
-    let mut total = 0usize
-    while i < 3000usize {
-        let mut f = std.fs.create("ksn_native_fs_many.txt")?
-        total = total + f.write(b"abc")?
-        f.close()?
-        let mut g = std.fs.open("ksn_native_fs_many.txt")?
-        let mut rest = alloc.vec.Vec.new(std.alloc.SYSTEM)
-        total = total + std.fs.read_to_end(&mut g, &mut rest)?
-        g.close()?
-        i = i + 1usize
-    }
-    std.fs.remove_file("ksn_native_fs_many.txt")?
-    t.show("bytes moved in the loop", i64.from_usize(total))
-end t.many
+fn t.show(label: &str, n: i64) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": "))
+    core.mem.drop(s.push_i64(n))
+    std.io.print_line(s.as_str())
+end t.show
 
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
-    t.round_trip()?
-    t.many()?
-    std.io.print_line("fs ok")
-end t.main
+fn t.show_err(label: &str, e: std.io.Error) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": kind "))
+    core.mem.drop(s.push_i64(t.kind_num(e.kind)))
+    core.mem.drop(s.push_str(" code "))
+    core.mem.drop(s.push_i64(i64.from_i32(e.code)))
+    std.io.print_line(s.as_str())
+end t.show_err

@@ -42,7 +42,7 @@ fn shortener.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>
     for k in core.iter.range(0usize, len) {
         let at = len.wrapping_sub(k).wrapping_sub(1usize)
         match digits.as_slice().get(at) {
-            Some(d) => out.push(shortener.code.digit_char(d)).map_err(error.oom)?
+            Some(d) => out.push(shortener.code.digit_char(*d)).map_err(error.oom)?
             None => return Err(error.Error.Corrupt)
         }
     }

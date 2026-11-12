@@ -327,7 +327,12 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
         ck.run();
         ck.diags
     };
+    // 同じ呼び出しに対する E1108 は、名前だけの検査と型に基づく検査が両方出しうる。最初の 1 件だけ残す。
+    let mut seen_1108: std::collections::HashSet<(String, usize, usize)> = Default::default();
     for d in diags {
+        if d.code == "E1108" && !seen_1108.insert((d.file.clone(), d.line, d.col)) {
+            continue;
+        }
         rep.items.push(Item {
             code: d.code,
             fatal: true,
@@ -1642,7 +1647,17 @@ fn cmd_exec(args: &[String]) -> i32 {
 
 // ------------------------------------------------------------ エントリ
 pub fn main_cli(args: Vec<String>) -> i32 {
-    let rest: Vec<String> = args[1..].to_vec();
+    // E2044 (型が決まらない) は既定で有効。`--no-strict-types` で旧来の挙動に戻す (移行用)。
+    // `--strict-types` は受け付けるだけで何も変えない。どちらも全コマンド共通 (check / build / test / run)。
+    let mut rest: Vec<String> = args[1..].to_vec();
+    // `--` より後ろはプログラムへの引数なので触らない。
+    let cut = rest.iter().position(|a| a == "--").unwrap_or(rest.len());
+    if rest[..cut].iter().any(|a| a == "--no-strict-types") {
+        crate::types::set_strict_types(false);
+    }
+    let tail = rest.split_off(cut);
+    rest.retain(|a| a != "--no-strict-types" && a != "--strict-types");
+    rest.extend(tail);
     match args[0].as_str() {
         "new" => match rest.first() {
             Some(n) => cmd_new(n),
@@ -1652,9 +1667,6 @@ pub fn main_cli(args: Vec<String>) -> i32 {
             }
         },
         "check" => {
-            if rest.iter().any(|a| a == "--strict-types") {
-                crate::types::set_strict_types(true);
-            }
             cmd_check(rest.iter().any(|a| a == "--json"))
         }
         "run" => cmd_run(&rest),

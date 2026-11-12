@@ -35,7 +35,7 @@ end shortener.store.Store.load
 
 fn shortener.store.Store.lookup(self: &shortener.store.Store, code_text: &str) -> Option<&str> uses [] panics never pub
     let index = code.to_index(code_text)?
-    let at = usize.try_from_u64(index).ok()?
+    let at = usize.from_u64(index)
     match self.urls.as_slice().get(at) {
         Some(url) => Some(url.as_str())
         None => None

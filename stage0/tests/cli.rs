@@ -62,10 +62,6 @@ fn diagnostics_each_case_reports_its_code() {
     for p in names {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let code = &stem[..5];
-        // E2044 は `--strict-types` のときだけ出るので、専用のテスト (strict_types_*) が見る。
-        if code == "E2044" {
-            continue;
-        }
         let t = Tmp::new(&stem, &fs::read_to_string(&p).unwrap());
         let o = run(&["check", "--json"], &t.0);
         let got = codes(&text(&o.stdout));
@@ -118,26 +114,37 @@ fn unsound_programs_are_rejected() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// E2044 (型が決まらない式・束縛) は opt-in。既定では出ず、`--strict-types` と `KSN_STRICT_TYPES=1` の
-/// どちらでも出る。ケースはそれ 1 件だけで、他の診断を伴わない。
+/// E2044 (型が決まらない式・束縛) は既定で有効。`--no-strict-types` と `KSN_STRICT_TYPES=0` で旧来の
+/// 「黙る」挙動に戻り、`--strict-types` と `KSN_STRICT_TYPES=1` は受け付けるが何も変えない。
+/// ケースはそれ 1 件だけで、他の診断を伴わない。
 #[test]
-fn strict_types_reports_undetermined_types_only_when_enabled() {
+fn strict_types_is_the_default_and_can_be_turned_off() {
     let src = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/diag/E2044.ksnl")).unwrap();
     let t = Tmp::new("strict_types", &src);
-    // 既定: 通る。
+    // 既定: E2044 だけ。
     let o = run(&["check", "--json"], &t.0);
-    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
-    // フラグ: E2044 だけ。
-    let o = run(&["check", "--json", "--strict-types"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     assert_eq!(codes(&text(&o.stdout)), vec!["E2044"], "{}", text(&o.stdout));
-    // 環境変数でも同じ。
+    // 旧フラグ・環境変数 (1) は何も変えない。
+    let o = run(&["check", "--json", "--strict-types"], &t.0);
+    assert_eq!(codes(&text(&o.stdout)), vec!["E2044"]);
     let o = Command::new(exe()).args(["check", "--json"]).env("KSN_STRICT_TYPES", "1").current_dir(&t.0).output().unwrap();
     assert_eq!(codes(&text(&o.stdout)), vec!["E2044"]);
+    // 逃げ道: `--no-strict-types` と `KSN_STRICT_TYPES=0` で通る。
+    let o = run(&["check", "--json", "--no-strict-types"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let o = Command::new(exe()).args(["check", "--json"]).env("KSN_STRICT_TYPES", "0").current_dir(&t.0).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    // build / test / run も同じ既定 (E2044 で止まる) で、逃げ道も効く。
+    for cmd in ["build", "test", "run"] {
+        let o = run(&[cmd], &t.0);
+        assert!(text(&o.stderr).contains("E2044") || text(&o.stdout).contains("E2044"), "{}: {}{}", cmd, text(&o.stdout), text(&o.stderr));
+        assert_ne!(o.status.code(), Some(0), "{}", cmd);
+    }
     // 注釈を書けば通る。
     let fixed = src.replace("let n = None", "let n: Option<u32> = None");
     let t2 = Tmp::new("strict_types_fixed", &fixed);
-    let o = run(&["check", "--json", "--strict-types"], &t2.0);
+    let o = run(&["check", "--json"], &t2.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
 }
 
@@ -169,7 +176,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
 end t.main
 ";
     let t = Tmp::new("strict_ok", src);
-    let o = run(&["check", "--json", "--strict-types"], &t.0);
+    let o = run(&["check", "--json"], &t.0);
     assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E2044"), "{}", text(&o.stdout));
 }
 
@@ -994,15 +1001,17 @@ fn mcalls_resolved_by_the_receiver_type_are_checked_precisely() {
 }
 
 #[test]
-fn unknown_receiver_type_keeps_local_method_effects_silent() {
-    // レシーバの型が分からない (ここでは型パラメータ) ときは、解決先が決まらないので黙る。
+fn method_on_unbounded_type_parameter_is_unknown_method_not_an_effect() {
+    // 境界のない型パラメータのレシーバは、メソッドを持たない (E1108)。解決先が決まらないので、
+    // 他の型の同名メソッドの効果 (E4002) は持ち込まない。
     let src = "type t.S\n    n: u32\nend t.S\n\n\
                fn t.S.boom(self: t.S) -> u32 uses [] panics may\n    core.panic.panic(\"x\")\nend t.S.boom\n\n\
                fn t.f[T](s: T) -> u32 uses [] panics never\n    s.boom()\nend t.f\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
                core.mem.drop(t.f(1u32))\n    Ok(())\nend t.main\n";
     let t = Tmp::new("eff_local_unknown", src);
-    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(codes(&text(&o.stdout)), vec!["E1108"], "{}", text(&o.stdout));
 }
 
 // ---- ② `Fn` 境界に渡すクロージャの効果の推論 ----
@@ -5627,7 +5636,7 @@ const NET_ADDR_FN: &str = r#"fn t.addr(port: u16) -> alloc.string.String<std.all
         if d > 0usize || started || unit == 1usize {
             started = true
             match digits.get(d) {
-                Some(t) => core.mem.drop(s.push_str(t))
+                Some(t) => core.mem.drop(s.push_str(*t))
                 None => core.mem.drop(0u8)
             }
         }
@@ -5918,4 +5927,69 @@ fn the_http_example_runs_natively_through_cranelift() {
         assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ");
     }
     let _ = fs::remove_dir_all(&cache);
+}
+
+// ---- 既定の fail-closed: メソッドの存在と参照の段数 ----
+
+fn codes_of(name: &str, src: &str) -> Vec<String> {
+    let t = Tmp::new(name, src);
+    codes(&text(&run(&["check", "--json"], &t.0).stdout))
+}
+
+#[test]
+fn unbounded_type_parameter_has_no_methods_but_bounds_give_them() {
+    // 境界なし: 型パラメータからはメソッドを呼べない (E1108)。
+    let bad = "fn t.f[T](s: &T) -> usize uses [] panics never\n    s.len()\nend t.f\n\n";
+    assert!(codes_of("tp_bad", &main_wrap(bad, "")).contains(&"E1108".to_string()));
+    // 導出されるメソッドでも、境界なしなら E1108 (`clone` は `Clone` の境界が要る)。
+    let bad2 = "fn t.f[T](s: &T) -> T uses [] panics never\n    s.clone()\nend t.f\n\n";
+    assert!(codes_of("tp_bad2", &main_wrap(bad2, "")).contains(&"E1108".to_string()));
+    // 境界のスーパートレイト (`Copy` の `requires core.ops.Clone`) が宣言するメソッドは呼べる。
+    let ok = "fn t.f[T: core.ops.Copy](s: &T) -> T uses [] panics never\n    s.clone()\nend t.f\n\n";
+    assert!(codes_of("tp_ok", &main_wrap(ok, "")).is_empty());
+}
+
+#[test]
+fn undeclared_primitive_conversions_are_rejected_with_the_infallible_one_suggested() {
+    // 規範にない `usize.try_from_u64` は E1101 (実行系が受け付けても)。必ず収まる `from_u64` を案内し、E2044 は重ねない。
+    let src = "fn t.f(n: u64) -> usize uses [] panics never\n    match usize.try_from_u64(n) {\n        Ok(v) => v\n        Err(_e) => 0usize\n    }\nend t.f\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.f(1u64))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("undeclared_conv", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    let got = codes(&out);
+    assert_eq!(got, vec!["E1101".to_string()], "{}", out);
+    assert!(out.contains("usize.from_u64"), "{}", out);
+}
+
+#[test]
+fn primitive_receivers_reject_methods_missing_from_the_signatures() {
+    let b = |l: &str| main_wrap("", &format!("    let x = 1u8\n    {}\n", l));
+    // 実行系は受け付けるが `core/num.sig` にない。
+    assert_eq!(codes_of("prim_to_u32", &b("core.mem.drop(x.to_u32())")), vec!["E1108"]);
+    // 綴り違いには近い名前を示す。
+    let t = Tmp::new("prim_typo", &b("core.mem.drop(x.wrapping_ad(1u8))"));
+    let o = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(o.contains("E1108") && o.contains("did you mean `wrapping_add`"), "{}", o);
+    // 宣言されているメソッドは通る。
+    assert!(codes_of("prim_ok", &b("core.mem.drop(x.wrapping_add(1u8))")).is_empty());
+}
+
+#[test]
+fn call_arguments_keep_reference_levels() {
+    let prefix = "fn t.val(a: u8) -> u8 uses [] panics never\n    a\nend t.val\n\n\
+                  fn t.rf(a: &u8) -> u8 uses [] panics never\n    *a\nend t.rf\n\n\
+                  fn t.sl(a: &[u8]) -> usize uses [] panics never\n    a.len()\nend t.sl\n\n";
+    let run_body = |l: &str| {
+        main_wrap(prefix, &format!("    let x = 1u8\n    let mut m = 2u8\n    let r = &x\n    let arr = [1u8, 2u8]\n    {}\n", l))
+    };
+    // 値が要る所に参照 / 参照が要る所に値 (自動参照も自動参照外しもない)。
+    assert!(codes_of("arg_ref_for_val", &run_body("core.mem.drop(t.val(r))")).contains(&"E2023".to_string()));
+    assert!(codes_of("arg_val_for_ref", &run_body("core.mem.drop(t.rf(x))")).contains(&"E2023".to_string()));
+    // 許す暗黙の調整: 参照どうし・`&mut T` → `&T`・`&[T; N]` → `&[T]`・明示の `*` / `&`。
+    let ok = "core.mem.drop(t.val(*r))\n    core.mem.drop(t.rf(r))\n    core.mem.drop(t.rf(&mut m))\n    core.mem.drop(t.rf(&x))\n    core.mem.drop(t.sl(&arr))";
+    assert!(codes_of("arg_ref_ok", &run_body(ok)).is_empty());
+    // 参照越しの分解で得た名前は参照の段数が決まらない (仕様 4.2 は束縛の段数を定めない) ので、どちらにも使える。
+    let pat = "match &Some(x) {\n        Some(p) => {\n            core.mem.drop(t.val(p))\n            core.mem.drop(t.rf(p))\n        }\n        None => ()\n    }";
+    let pat_src = main_wrap(prefix, &format!("    let x = 1u8\n    {}\n", pat));
+    assert!(codes_of("arg_pat_loose", &pat_src).is_empty());
 }
