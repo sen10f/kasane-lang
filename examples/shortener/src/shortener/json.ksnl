@@ -3,28 +3,28 @@ import shortener.error
 
 fn shortener.json.error_body(message: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    out.push_str("{\"error\":").map_err(error.oom)?
+    out.push_str("{\"error\":")?
     shortener.json.push_quoted(&mut out, message)?
-    out.push_str("}").map_err(error.oom)?
+    out.push_str("}")?
     Ok(out)
 end shortener.json.error_body
 
 fn shortener.json.escape_into(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), shortener.error.Error> uses [alloc] panics never pub
     for c in text.chars() {
         if c == '"' {
-            out.push_str("\\\"").map_err(error.oom)?
+            out.push_str("\\\"")?
         } else if c == '\\' {
-            out.push_str("\\\\").map_err(error.oom)?
+            out.push_str("\\\\")?
         } else if c == '\n' {
-            out.push_str("\\n").map_err(error.oom)?
+            out.push_str("\\n")?
         } else if c == '\r' {
-            out.push_str("\\r").map_err(error.oom)?
+            out.push_str("\\r")?
         } else if c == '\t' {
-            out.push_str("\\t").map_err(error.oom)?
+            out.push_str("\\t")?
         } else if c.to_u32() < 32u32 {
             shortener.json.push_control(out, c.to_u32())?
         } else {
-            out.push(c).map_err(error.oom)?
+            out.push(c)?
         }
     }
     Ok(())
@@ -32,41 +32,41 @@ end shortener.json.escape_into
 
 fn shortener.json.link_body(code: &str, url: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    out.push_str("{\"code\":").map_err(error.oom)?
+    out.push_str("{\"code\":")?
     shortener.json.push_quoted(&mut out, code)?
-    out.push_str(",\"url\":").map_err(error.oom)?
+    out.push_str(",\"url\":")?
     shortener.json.push_quoted(&mut out, url)?
-    out.push_str("}").map_err(error.oom)?
+    out.push_str("}")?
     Ok(out)
 end shortener.json.link_body
 
 fn shortener.json.push_control(out: &mut alloc.string.String<std.alloc.System>, unit: u32) -> Result<(), shortener.error.Error> uses [alloc] panics never
-    out.push_str("\\u00").map_err(error.oom)?
+    out.push_str("\\u00")?
     let high = unit.wrapping_shr(4u32)
     let low = unit & 15u32
     match u8.try_from_u32(high) {
-        Ok(d) => out.push(code.digit_char(d)).map_err(error.oom)?
+        Ok(d) => out.push(code.digit_char(d))?
         Err(_e) => return Err(error.Error.Corrupt)
     }
     match u8.try_from_u32(low) {
-        Ok(d) => out.push(code.digit_char(d)).map_err(error.oom)?
+        Ok(d) => out.push(code.digit_char(d))?
         Err(_e) => return Err(error.Error.Corrupt)
     }
     Ok(())
 end shortener.json.push_control
 
 fn shortener.json.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), shortener.error.Error> uses [alloc] panics never
-    out.push_str("\"").map_err(error.oom)?
+    out.push_str("\"")?
     shortener.json.escape_into(out, text)?
-    out.push_str("\"").map_err(error.oom)?
+    out.push_str("\"")?
     Ok(())
 end shortener.json.push_quoted
 
 fn shortener.json.stats_body(links: usize) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
-    out.push_str("{\"links\":").map_err(error.oom)?
-    out.push_u64(u64.from_usize(links)).map_err(error.oom)?
-    out.push_str("}").map_err(error.oom)?
+    out.push_str("{\"links\":")?
+    out.push_u64(u64.from_usize(links))?
+    out.push_str("}")?
     Ok(out)
 end shortener.json.stats_body
 

@@ -1,0 +1,15 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    t.unit(true)
+end t.main
+
+fn t.say() -> () uses [alloc, io.console] panics may
+    core.mem.drop(std.io.print_line("x"))
+end t.say
+
+fn t.unit(b: bool) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    if b {
+        t.say()
+    } else {
+        t.say()
+    }
+end t.unit

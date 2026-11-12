@@ -2,7 +2,9 @@
 
 use regex::Regex;
 
+use crate::lexer::{self, Tok};
 use crate::program::load_file;
+use std::collections::HashSet;
 
 const DERIVE_ORDER: &[&str] = &["Debug", "Clone", "Copy", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash"];
 
@@ -34,6 +36,178 @@ pub fn mechanical_collapse(text: &str) -> String {
         res.push(l);
     }
     res.join("\n") + "\n"
+}
+
+/// 名前の参照形 (3.3): ヘッダでは FQN、本体では import 済みモジュールの短縮形が正規形。
+#[derive(Clone, Copy, PartialEq)]
+enum Ctx {
+    Header,
+    Body,
+}
+
+struct Imp {
+    tail: String,
+    full: Vec<String>,
+}
+
+#[derive(Default)]
+struct Refs {
+    /// 本体 (正規形では短縮形) から参照された import の末尾名。
+    body: HashSet<String>,
+    /// ヘッダから参照された import の末尾名 (短縮形・FQN どちらでも)。
+    header: HashSet<String>,
+}
+
+fn name_tok(t: &Tok) -> bool {
+    matches!(t.kind, "ident" | "upper" | "prim") || (t.kind == "kw" && matches!(t.text.as_str(), "self" | "Self"))
+}
+
+/// `a.b.c` の形の名前 (トークン列の区間と各成分)。直前が `.` のもの (メソッド連鎖) は含めない。
+fn chains(toks: &[Tok]) -> Vec<(usize, usize, Vec<String>)> {
+    let mut out = vec![];
+    let mut i = 0;
+    while i < toks.len() {
+        if !name_tok(&toks[i]) {
+            i += 1;
+            continue;
+        }
+        let after_dot = i > 0 && toks[i - 1].kind == "op" && toks[i - 1].text == ".";
+        let mut j = i;
+        let mut segs = vec![toks[i].text.clone()];
+        while j + 2 < toks.len()
+            && toks[j + 1].kind == "op"
+            && toks[j + 1].text == "."
+            && toks[j + 1].col == toks[j].col + toks[j].text.chars().count()
+            && name_tok(&toks[j + 2])
+            && toks[j + 2].col == toks[j + 1].col + 1
+        {
+            segs.push(toks[j + 2].text.clone());
+            j += 2;
+        }
+        if !after_dot {
+            out.push((i, j + 1, segs));
+        }
+        i = j + 1;
+    }
+    out
+}
+
+/// `uses [..]` の角括弧の中 (効果名。モジュール名ではない) のトークン。
+fn effect_tokens(toks: &[Tok]) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    let mut i = 0;
+    while i + 1 < toks.len() {
+        if toks[i].kind == "kw" && toks[i].text == "uses" && toks[i + 1].text == "[" {
+            let mut depth = 0;
+            let mut j = i + 1;
+            while j < toks.len() {
+                match toks[j].text.as_str() {
+                    "[" => depth += 1,
+                    "]" => depth -= 1,
+                    _ => {}
+                }
+                out.insert(j);
+                if depth == 0 {
+                    break;
+                }
+                j += 1;
+            }
+            i = j;
+        }
+        i += 1;
+    }
+    out
+}
+
+fn lex_line(line: &str) -> Option<Vec<Tok>> {
+    if line.trim_start().starts_with("//") {
+        return None;
+    }
+    lexer::lex(&format!("{}\n", line)).ok()
+}
+
+/// 1行の名前を正規形にする。`mode_at` はトークン位置ごとの文脈 (定数の `=` の前後で変わる)。
+fn rewrite_line(line: &str, header: bool, imps: &[Imp], keep: &HashSet<String>, refs: &mut Refs) -> String {
+    let Some(toks) = lex_line(line) else { return line.to_string() };
+    let eff = effect_tokens(&toks);
+    let eq = toks.iter().position(|t| t.kind == "op" && t.text == "=");
+    let const_like = header && matches!(toks.first(), Some(t) if t.kind == "kw" && matches!(t.text.as_str(), "const" | "static"));
+    // 定義名 (行頭キーワードの直後) は参照ではない。
+    let skip_name = header
+        && matches!(toks.first(), Some(t) if t.kind == "kw"
+            && matches!(t.text.as_str(), "fn" | "type" | "enum" | "trait" | "const" | "static" | "extern" | "test"));
+    let mut reps: Vec<(usize, usize, String)> = vec![];
+    for (a, _, segs) in chains(&toks) {
+        if eff.contains(&a) || (skip_name && a == 1) || segs.len() < 2 {
+            continue;
+        }
+        let ctx = if const_like && eq.map_or(false, |e| a > e) {
+            Ctx::Body
+        } else if header {
+            Ctx::Header
+        } else {
+            Ctx::Body
+        };
+        let by_tail = imps.iter().find(|m| m.tail == segs[0]);
+        let col0 = toks[a].col - 1;
+        let len0 = segs[0].chars().count();
+        match ctx {
+            Ctx::Header => {
+                if let Some(m) = by_tail {
+                    if !keep.contains(&segs[0]) {
+                        refs.header.insert(m.tail.clone());
+                        reps.push((col0, col0 + len0, m.full.join(".")));
+                    }
+                } else if let Some(m) = imps.iter().find(|m| segs.len() > m.full.len() && segs[..m.full.len()] == m.full[..]) {
+                    refs.header.insert(m.tail.clone());
+                }
+            }
+            Ctx::Body => {
+                if let Some(m) = by_tail {
+                    refs.body.insert(m.tail.clone());
+                } else if let Some(m) = imps
+                    .iter()
+                    .filter(|m| segs.len() > m.full.len() && segs[..m.full.len()] == m.full[..])
+                    .max_by_key(|m| m.full.len())
+                {
+                    refs.body.insert(m.tail.clone());
+                    if !keep.contains(&segs[0]) {
+                        let end_tok = a + 2 * (m.full.len() - 1);
+                        let end = toks[end_tok].col - 1 + toks[end_tok].text.chars().count();
+                        reps.push((col0, end, m.tail.clone()));
+                    }
+                }
+            }
+        }
+    }
+    if reps.is_empty() {
+        return line.to_string();
+    }
+    let mut chars: Vec<char> = line.chars().collect();
+    reps.sort_by(|x, y| y.0.cmp(&x.0));
+    for (s, e, r) in reps {
+        chars.splice(s..e, r.chars());
+    }
+    chars.into_iter().collect()
+}
+
+/// 本体で局所束縛と衝突しうる先頭成分 (単独で現れる識別子)。これらで始まる FQN は短縮しない。
+fn isolated_idents(lines: &[String]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for l in lines {
+        let Some(toks) = lex_line(l) else { continue };
+        for (i, t) in toks.iter().enumerate() {
+            if t.kind != "ident" {
+                continue;
+            }
+            let dot_before = i > 0 && toks[i - 1].kind == "op" && toks[i - 1].text == ".";
+            let dot_after = toks.get(i + 1).map_or(false, |n| n.kind == "op" && n.text == "." && n.col == t.col + t.text.chars().count());
+            if !dot_before && !dot_after {
+                out.insert(t.text.clone());
+            }
+        }
+    }
+    out
 }
 
 fn fix_derive(header: &str) -> String {
@@ -72,8 +246,51 @@ pub fn format_source(text: &str, path: &str) -> String {
         Ok(d) => d,
         Err(_) => return joined,
     };
+    // 3.3: 名前の参照形を正規形にする (ヘッダは FQN、本体は import 済みモジュールの短縮形)。
+    let mut lines = lines;
+    let imps: Vec<Imp> = defs
+        .iter()
+        .filter(|d| d.kw == "import")
+        .map(|d| Imp { tail: d.name.rsplit('.').next().unwrap().to_string(), full: d.name.split('.').map(String::from).collect() })
+        .collect();
+    let mut dropped: HashSet<usize> = HashSet::new();
+    if !imps.is_empty() {
+        let mut refs = Refs::default();
+        for d in &defs {
+            if matches!(d.kw.as_str(), "import" | "end") || d.line == 0 {
+                continue;
+            }
+            let hkeep = d.gnames();
+            let end = if d.end_line > 0 { d.end_line - 1 } else { d.line };
+            let body_mode = matches!(d.kw.as_str(), "fn" | "test");
+            let span: Vec<String> = lines[d.line - 1..end].to_vec();
+            let iso = isolated_idents(&span);
+            for k in d.line - 1..end {
+                let header = k == d.line - 1 || !body_mode;
+                let keep: HashSet<String> = if !header {
+                    iso.clone()
+                } else if matches!(d.kw.as_str(), "const" | "static") {
+                    hkeep.union(&iso).cloned().collect()
+                } else {
+                    hkeep.clone()
+                };
+                lines[k] = rewrite_line(&lines[k], header, &imps, &keep, &mut refs);
+            }
+        }
+        for d in &defs {
+            if d.kw == "import" {
+                let tail = d.name.rsplit('.').next().unwrap();
+                if refs.header.contains(tail) && !refs.body.contains(tail) {
+                    dropped.insert(d.line);
+                }
+            }
+        }
+    }
     let mut items: Vec<It> = vec![];
     for d in &defs {
+        if dropped.contains(&d.line) {
+            continue;
+        }
         let mut s = d.line - 1;
         while s > 0 && lines[s - 1].starts_with("//") {
             s -= 1;

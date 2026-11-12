@@ -252,6 +252,15 @@ pub struct Checker<'a> {
     moved: BTreeMap<String, usize>,
     /// 囲むループごとの (`break` 時点の move, `continue` 時点の move)。
     loop_exits: Vec<(BTreeMap<String, usize>, BTreeMap<String, usize>)>,
+    /// 線形値の消費義務 (4.4)。束縛を宣言順に積む (線形でない束縛もシャドーイングの目印として積む)。
+    lin: Vec<Lin>,
+    /// 現在の関数 / クロージャが見る `lin` の下限 (クロージャの外の束縛は、本体の `return` で漏れとしない)。
+    lin_floor: usize,
+    lin_in_closure: bool,
+    /// 直前のクロージャ式が、未消費の線形値を `move` で取り込んだか (その `let` の束縛が線形になる)。
+    lin_closure_took: bool,
+    /// 囲むループごとの、`break` / `continue` 時点の義務の状態。
+    lin_loops: Vec<LinLoop>,
     /// 型推論 (types.rs) が決めた `let` の束縛の型。自前の `ty_of` で決まらない束縛に使う。
     let_tys: HashMap<(usize, usize, String), crate::types::Ty>,
     final_env: HashMap<String, V>,
@@ -261,11 +270,26 @@ pub struct Checker<'a> {
     closure_asts: BTreeMap<String, V>,
     /// 現在の関数のファイルで `import` したモジュールの末尾名 (シャドーイング検査用)。
     import_tails: HashSet<String>,
-    /// 現在の関数のファイルで `import` したモジュールの完全名 (セグメント列)。本体でのFQN参照の検出用。
-    imported_modules: Vec<Vec<String>>,
 }
 
 type Env = HashMap<String, V>;
+
+/// 線形値の消費義務の 1 件 (4.4)。`live` は「線形で、まだ消費されていない」。
+#[derive(Clone)]
+struct Lin {
+    name: String,
+    /// 宣言の位置 (パック済み)
+    line: usize,
+    linear: bool,
+    live: bool,
+}
+
+/// ループ 1 つぶんの、`break` / `continue` 時点の義務の状態 (説明, 状態)。
+struct LinLoop {
+    base: usize,
+    breaks: Vec<(String, Vec<Lin>)>,
+    conts: Vec<(String, Vec<Lin>)>,
+}
 
 /// 場所 (根の変数 + フィールド道) を一意な鍵にする (`s`・`s.f`・`s.a.b`)。
 fn place_key(root: &str, path: &[String]) -> String {
@@ -322,12 +346,16 @@ impl<'a> Checker<'a> {
             names: HashSet::new(),
             moved: BTreeMap::new(),
             loop_exits: vec![],
+            lin: vec![],
+            lin_floor: 0,
+            lin_in_closure: false,
+            lin_closure_took: false,
+            lin_loops: vec![],
             let_tys: HashMap::new(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
             closure_asts: BTreeMap::new(),
             import_tails: HashSet::new(),
-            imported_modules: Vec::new(),
         }
     }
 
@@ -367,6 +395,7 @@ impl<'a> Checker<'a> {
         self.check_statics();
         self.check_tests();
         self.check_linear();
+        self.check_linear_type_args();
         self.check_derive();
         for &i in &user {
             let d = self.def(i);
@@ -655,8 +684,12 @@ impl<'a> Checker<'a> {
             let d = self.def(i);
             if d.kw == "fn" && d.has_impls {
                 let owner = d.name.rsplit_once('.').map(|(o, _)| o.to_string()).unwrap_or_default();
-                let key = (d.impls_trait.clone(), owner);
-                let meth = d.name.rsplit('.').next().unwrap_or("").to_string();
+                let key = (impl_key(&d.impls_trait, &d.impls_args), owner);
+                let mut meth = d.name.rsplit('.').next().unwrap_or("").to_string();
+                // 4.1: `core.convert.From` は同じ型に複数置くので、メソッド名は `from_value` か `from_value_<接尾辞>`。
+                if d.impls_trait == crate::program::FROM_TRAIT && meth.starts_with("from_value_") {
+                    meth = "from_value".to_string();
+                }
                 declared.entry(key.clone()).or_default().insert(meth);
                 declared_at.entry(key).or_insert(i);
             }
@@ -710,16 +743,18 @@ impl<'a> Checker<'a> {
             }
             let owner = prim_owner(&tgt);
             let alt_owner = format!("{}.{}", tb, tgt.rsplit('.').next().unwrap_or(""));
-            if !seen.insert((tb.clone(), tgt.clone())) {
-                self.diag("E1114", format!("duplicate impl of {} for {}", tb, tgt), i, 0);
+            // `From` だけは型引数が違えば同じ型に複数置ける (4.1)。他は型引数が違っても 1 つ。
+            let tkey = impl_key(&tb, &d.impls_args);
+            if !seen.insert((tkey.clone(), tgt.clone())) {
+                self.diag("E1114", format!("duplicate impl of {} for {}", tkey, tgt), i, 0);
             }
             let want = req.get(&tb).cloned().unwrap_or_default();
-            let mut have = declared.get(&(tb.clone(), owner.clone())).cloned().unwrap_or_default();
-            if let Some(m) = declared.get(&(tb.clone(), alt_owner.clone())) {
+            let mut have = declared.get(&(tkey.clone(), owner.clone())).cloned().unwrap_or_default();
+            if let Some(m) = declared.get(&(tkey.clone(), alt_owner.clone())) {
                 have.extend(m.iter().cloned());
             }
-            covered.insert((tb.clone(), owner));
-            covered.insert((tb.clone(), alt_owner));
+            covered.insert((tkey.clone(), owner));
+            covered.insert((tkey, alt_owner));
             if want != have {
                 self.diag(
                     "E1112",
@@ -860,6 +895,67 @@ impl<'a> Checker<'a> {
                 Some(is_copy)
             }
             _ => None,
+        }
+    }
+
+    /// 4.4・8.3: 定義の型 (フィールド・バリアントのペイロード・仮引数・戻り値) に書かれた型に、
+    /// 線形な型を `linear` でない型パラメータへの実引数として渡しているものがないか (`Vec<TcpStream, A>` など)。
+    fn check_linear_type_args(&mut self) {
+        for i in self.user.clone() {
+            let d = self.def(i);
+            let mut tys: Vec<V> = d.fields.iter().map(|f| f.1.clone()).collect();
+            tys.extend(d.variants.iter().flat_map(|v| v.1.iter().cloned()));
+            tys.extend(d.params.iter().map(|p| p.1.clone()));
+            tys.push(d.ret.clone());
+            let gn = d.gnames();
+            for t in tys {
+                if !is_nil(&t) && !self.is_generic(&t, &gn) {
+                    self.check_ty_linear_args(&t, i, 0);
+                }
+            }
+        }
+    }
+
+    /// 型 `t` の中の、非線形の型パラメータに線形な型を渡している適用を E3006 にする。
+    fn check_ty_linear_args(&mut self, t: &V, di: usize, line: usize) {
+        match tag(t).as_str() {
+            "named" => {
+                let n = st(tel(t, 1));
+                let args: Vec<V> = items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_))).cloned().collect();
+                if let Some(&ti) = self.p.types.get(&n) {
+                    let d = self.def(ti);
+                    let params: Vec<&(String, String, V)> = d.generics.iter().filter(|g| g.0 == "type").collect();
+                    if params.len() == args.len() {
+                        for (g, a) in params.iter().zip(&args) {
+                            let declared_linear = items(&g.2).iter().any(|b| matches!(b, V::S(x) if x == "linear"));
+                            if !declared_linear && self.is_linear(a) {
+                                self.diag(
+                                    "E3006",
+                                    format!(
+                                        "linear type {} is given for the type parameter `{}` of {}, which is not declared `linear` (4.4)",
+                                        if tag(a) == "named" { st(tel(a, 1)) } else { "(tuple)".to_string() },
+                                        g.1,
+                                        n
+                                    ),
+                                    di,
+                                    line,
+                                );
+                            }
+                        }
+                    }
+                }
+                for a in &args {
+                    self.check_ty_linear_args(a, di, line);
+                }
+            }
+            "ref" | "ptr" => self.check_ty_linear_args(tel(t, 2), di, line),
+            "slice" | "array" => self.check_ty_linear_args(tel(t, 1), di, line),
+            "tuple" => {
+                for x in items(tel(t, 1)) {
+                    self.check_ty_linear_args(x, di, line);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1124,14 +1220,6 @@ impl<'a> Checker<'a> {
             }
             _ => None,
         }
-    }
-
-    /// このファイルで `import` したモジュールをFQNで参照していれば、そのモジュール名を返す (3.3)。
-    fn imported_fqn(&self, segs: &[String]) -> Option<String> {
-        self.imported_modules
-            .iter()
-            .find(|m| segs.len() >= m.len() && segs[..m.len()] == m[..])
-            .map(|m| m.join("."))
     }
 
     /// `core.ops.Drop` の `drop` メソッドが定義されているか (直接呼び出しの検出用)。
@@ -1400,12 +1488,6 @@ impl<'a> Checker<'a> {
         // 4.1: `import` したモジュールの末尾名も可視なので、同名の束縛はシャドーイングになる。
         // 変数の解決には使わない (別集合)。
         self.import_tails = self.p.imports.get(&d.file).map(|m| m.keys().cloned().collect()).unwrap_or_default();
-        self.imported_modules = self
-            .p
-            .imports
-            .get(&d.file)
-            .map(|m| m.values().map(|v| v.split('.').map(String::from).collect()).collect())
-            .unwrap_or_default();
         self.cur_uses = if test { None } else { Some(d.uses.clone()) };
         self.cur_panics = if test { "may".into() } else { d.panics.clone().unwrap_or("may".into()) };
         self.in_const_fn = !test && d.is_const;
@@ -1469,14 +1551,6 @@ impl<'a> Checker<'a> {
             "Path" => {
                 let segs = strs(&f[0]);
                 if !locals.contains(&segs[0]) {
-                    if let Some(m) = self.imported_fqn(&segs) {
-                        self.diag(
-                            "E1117",
-                            format!("module {} is imported; use its short name instead of the FQN (3.3)", m),
-                            di,
-                            nline(e),
-                        );
-                    }
                     if let Some(r) = self.resolve_path(&segs, di, nline(e)) {
                         // 型の名前を値として使っている (`std.alloc.System` ではなく `std.alloc.SYSTEM`)。
                         if matches!(r.target, Target::Type(_)) && r.rest.is_empty() {
@@ -1535,14 +1609,6 @@ impl<'a> Checker<'a> {
                             }
                         }
                         return;
-                    }
-                    if let Some(m) = self.imported_fqn(&segs) {
-                        self.diag(
-                            "E1117",
-                            format!("module {} is imported; use its short name instead of the FQN (3.3)", m),
-                            di,
-                            nline(fnn),
-                        );
                     }
                     // 5.5: spawn に渡すクロージャは 'static。局所束縛への参照キャプチャは不可。
                     if self.p.expand(&segs, &self.def(di).file).join(".") == "std.thread.spawn" {
@@ -2329,8 +2395,18 @@ impl<'a> Checker<'a> {
         let mut env: Env = d.params.iter().cloned().collect();
         self.graph.entry(d.name.clone()).or_default();
         self.moved.clear();
+        self.lin.clear();
+        self.lin_floor = 0;
+        self.lin_in_closure = false;
+        self.lin_loops.clear();
+        for (pn, pt) in &d.params {
+            if !self.is_generic(pt, &self.names) {
+                self.lin_declare(pn, pt, 0);
+            }
+        }
         let body = d.body.as_ref().unwrap();
         self.tc_block(body, &env, &BTreeSet::new());
+        self.lin_scope_end(0, "when the function ends");
         self.check_extern_calls(di);
         // NLL の借用検査 (制御フローと、借用を持つ変数の生存に基づく)
         self.borrowck(di);
@@ -2379,30 +2455,53 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 関数 / クロージャの本体のブロック。末尾の式は値として返る (消費)。
     fn tc_block(&mut self, b: &V, env: &Env, muts: &BTreeSet<String>) {
-        let mut env = env.clone();
-        let mut muts = muts.clone();
-        for (i, s) in items(&nf(b)[0]).iter().enumerate() {
-            self.tc_stmt(s, &mut env, &mut muts);
-            self.discard_check(items(&nf(b)[0]), i, &env);
-        }
-        self.final_env = env;
+        self.final_env = self.tc_stmts(b, env, muts, true);
     }
 
-    fn tc_stmt(&mut self, s: &V, env: &mut Env, muts: &mut BTreeSet<String>) {
+    /// 文の並びを検査する。`consume` は、ブロックの値 (末尾の式) が値として渡る位置か。
+    /// ブロックの中で宣言した線形値は、ブロックの終わりまでに消費されていなければならない (4.4)。
+    fn tc_stmts(&mut self, b: &V, env: &Env, muts: &BTreeSet<String>, consume: bool) -> Env {
+        let mut env = env.clone();
+        let mut muts = muts.clone();
+        let base = self.lin.len();
+        let stmts = items(&nf(b)[0]);
+        for (i, s) in stmts.iter().enumerate() {
+            self.tc_stmt(s, &mut env, &mut muts, consume && i + 1 == stmts.len());
+            self.discard_check(stmts, i, &env);
+        }
+        if stmts.iter().any(|s| self.diverges(s)) {
+            // 後続へ進まないブロック: 漏れは `return` / `break` / `continue` の地点で報告済み。
+            self.lin.truncate(base);
+        } else {
+            self.lin_scope_end(base, "when its scope ends");
+        }
+        env
+    }
+
+    fn tc_stmt(&mut self, s: &V, env: &mut Env, muts: &mut BTreeSet<String>, tail: bool) {
         let f = nf(s);
         match nname(s) {
             "Let" => {
+                self.lin_closure_took = false;
                 self.tc_expr(&f[3], env, muts, true);
+                let took = nname(&f[3]) == "Closure" && self.lin_closure_took;
+                self.lin_closure_took = false;
                 let got = self.ty_of(&f[3], env);
                 if !is_nil(&f[2]) {
                     self.mismatch(&f[2], &got, nline(s), "let binding");
+                    if !self.is_generic(&f[2], &self.names) {
+                        let t = f[2].clone();
+                        self.check_ty_linear_args(&t, self.d, nline(s));
+                    }
                 }
                 let ty = if !is_nil(&f[2]) { f[2].clone() } else { got };
                 // パターンに沿って束縛名の型を決める (PBind と、分解 `let (a, b) = ..`)。
                 // 決まらない束縛は下のパスで V::Nil になり、検査は黙る。
                 let mut typed: Vec<(String, V)> = vec![];
                 self.bind_pat_types(&f[0], &ty, &mut typed);
+                self.lin_wild(&typed, nline(s));
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
                 for n in binds {
@@ -2421,19 +2520,17 @@ impl<'a> Checker<'a> {
                         muts.remove(&n);
                     }
                 }
-                for (n, t) in &typed {
-                    self.note_linear(n, t, nline(s));
-                }
-                // 型推論で型が決まった束縛も、線形なら消費を要求する。
+                // 線形な束縛は消費の義務を負う (4.4)。型が決まらない束縛は義務なし (黙る)。
                 let mut names = vec![];
                 pat_binds(&f[0], &mut names);
                 for n in names {
-                    if typed.iter().any(|(m, _)| *m == n) {
-                        continue;
-                    }
-                    if let Some(t) = env.get(&n).cloned() {
-                        if !is_nil(&t) {
-                            self.note_linear(&n, &t, nline(s));
+                    let t = env.get(&n).cloned().unwrap_or(V::Nil);
+                    self.lin_declare(&n, &t, nline(s));
+                    // 線形値を `move` で取り込んだクロージャは、それ自体が線形 (4.4)。呼ぶと消費される。
+                    if took && nname(&f[0]) == "PBind" {
+                        if let Some(l) = self.lin.last_mut() {
+                            l.linear = true;
+                            l.live = true;
                         }
                     }
                 }
@@ -2456,6 +2553,20 @@ impl<'a> Checker<'a> {
                         // 代入で、その場所とその下の move 済みの部分は復活する (4.1)。
                         self.revive_place(&segs);
                         if segs.len() == 1 {
+                            // 線形な変数への再代入: 古い値が残っていれば漏れ。新しい値の義務を負う。
+                            if let Some(i) = self.lin_find(root) {
+                                if self.lin[i].linear {
+                                    if self.lin[i].live {
+                                        let (ln, dl) = (nlineno(s), crate::parser::unpack_pos(self.lin[i].line).0);
+                                        self.tdiag(
+                                            "E3003",
+                                            format!("linear value `{root}` (declared at line {dl}) is not consumed before the assignment at line {ln} overwrites it"),
+                                            nline(s),
+                                        );
+                                    }
+                                    self.lin[i].live = true;
+                                }
+                            }
                             let got = self.ty_of(&f[1], env);
                             self.mismatch(&rt, &got, nline(s), "assignment");
                         }
@@ -2469,7 +2580,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            _ => self.tc_expr(&f[0], env, muts, false),
+            _ => self.tc_expr(&f[0], env, muts, tail),
         }
     }
 
@@ -2494,6 +2605,7 @@ impl<'a> Checker<'a> {
         }
         if consume {
             self.record_move(root, path, env, line);
+            self.lin_consume_place(root, path, env);
         }
     }
 
@@ -2576,6 +2688,9 @@ impl<'a> Checker<'a> {
                     } else {
                         V::Nil
                     };
+                    if nname(sub) == "PWild" && !is_nil(&et) {
+                        out.push(("_".to_string(), et.clone()));
+                    }
                     self.bind_pat_types(sub, &et, out);
                 }
             }
@@ -2607,6 +2722,9 @@ impl<'a> Checker<'a> {
                 }
                 for (sub, pt) in subs.iter().zip(payload.iter()) {
                     let pt = if self.is_generic(pt, &self.names) { V::Nil } else { pt.clone() };
+                    if nname(sub) == "PWild" && !is_nil(&pt) {
+                        out.push(("_".to_string(), pt.clone()));
+                    }
                     self.bind_pat_types(sub, &pt, out);
                 }
             }
@@ -2639,35 +2757,76 @@ impl<'a> Checker<'a> {
                 }
             }
             "Block" => {
-                let mut inner = env.clone();
-                let mut im = muts.clone();
-                for (i, s) in items(&f[0]).iter().enumerate() {
-                    self.tc_stmt(s, &mut inner, &mut im);
-                    self.discard_check(items(&f[0]), i, &inner);
-                }
+                self.tc_stmts(e, env, muts, consume);
             }
-            "If" | "Match" | "Loop" | "While" | "For" => self.branchy(e, env, muts),
-            "With" => self.tc_with(e, env, muts),
+            "If" | "Match" | "Loop" | "While" | "For" => self.branchy(e, env, muts, consume),
+            "With" => self.tc_with(e, env, muts, consume),
             "Break" | "Continue" => {
                 // ループを抜ける / 次の周回へ入る時点の move を、囲むループに渡す。
                 let cur = self.moved.clone();
                 if let Some((breaks, continues)) = self.loop_exits.last_mut() {
                     Self::union_moves(if nname(e) == "Break" { breaks } else { continues }, &cur);
                 }
+                // ループの中で宣言した線形値が未消費なら、この経路で漏れる (4.4)。
+                if let Some(base) = self.lin_loops.last().map(|l| l.base) {
+                    let is_break = nname(e) == "Break";
+                    let ln = nlineno(e);
+                    let how = if is_break {
+                        format!("when the `break` at line {ln} leaves the loop")
+                    } else {
+                        format!("when the `continue` at line {ln} starts the next iteration")
+                    };
+                    self.lin_leaks(base, nline(e), &how);
+                    let snap = self.lin[..base.min(self.lin.len())].to_vec();
+                    let desc = format!("the `{}` at line {ln}", if is_break { "break" } else { "continue" });
+                    if let Some(lp) = self.lin_loops.last_mut() {
+                        if is_break { &mut lp.breaks } else { &mut lp.conts }.push((desc, snap));
+                    }
+                }
             }
             "Closure" => {
                 let mut sub = env.clone();
+                // `move` キャプチャした線形値の義務は、クロージャに移る (4.4)。
+                for c in items(&f[2]) {
+                    if items(c).first().map(st).as_deref() == Some("move") && self.lin_consume_name(&st(&items(c)[1])) {
+                        self.lin_closure_took = true;
+                    }
+                }
+                let saved_lin = (self.lin_floor, self.lin_in_closure, std::mem::take(&mut self.lin_loops));
+                self.lin_floor = self.lin.len();
+                self.lin_in_closure = true;
                 for p in items(&f[0]) {
-                    sub.insert(st(&items(p)[0]), items(p)[1].clone());
+                    let (pn, pt) = (st(&items(p)[0]), items(p)[1].clone());
+                    sub.insert(pn.clone(), pt.clone());
+                    self.lin_declare(&pn, &pt, nline(e));
                 }
                 let saved = self.moved.clone();
                 let fe = self.final_env.clone();
                 self.tc_block(&f[3], &sub, muts);
+                let fl = self.lin_floor;
+                self.lin_scope_end(fl, "when the closure ends");
                 self.final_env = fe;
                 self.moved = saved;
+                // 取り込みは作った時点で行われる: `move x` は x を move し (Copy は除く)、`&x` / `&mut x` は使うだけ。
+                for c in items(&f[2]) {
+                    let name = st(tel(c, 1));
+                    if env.contains_key(&name) {
+                        self.use_place(&name, &[], env, nline(e), st(tel(c, 0)) == "move");
+                    }
+                }
+                self.lin_floor = saved_lin.0;
+                self.lin_in_closure = saved_lin.1;
+                self.lin_loops = saved_lin.2;
+            }
+            "Try" => {
+                self.tc_expr(&f[0], env, muts, true);
+                // `?` はエラー側で関数 (クロージャ) から早期 return する。
+                let fl = self.lin_floor;
+                self.lin_leaks(fl, nline(e), &format!("when `?` returns early at line {}", nlineno(e)));
             }
             "Call" => {
                 let mut callee: Option<&Def> = None;
+                let mut lin_callee: Option<(&Def, usize)> = None;
                 let fnn = &f[0];
                 if nname(fnn) == "Path" {
                     let segs = strs(&nf(fnn)[0]);
@@ -2676,13 +2835,29 @@ impl<'a> Checker<'a> {
                             if let Target::Fn(i) = r.target {
                                 if r.rest.is_empty() {
                                     callee = Some(self.def(i));
+                                    lin_callee = Some((self.def(i), 0));
                                     let cn = self.def(i).name.clone();
                                     let cur = self.def(self.d).name.clone();
                                     self.graph.entry(cur).or_default().insert(cn);
                                 }
+                            } else if r.rest.is_empty() {
+                                // 標準ライブラリの関数 (`core.mem.drop`、`Box.new` など。組み込みを含む):
+                                // 線形な引数の検査だけ行う。
+                                let sig = match &r.target {
+                                    Target::Sig(i) => Some(*i),
+                                    Target::Native(n) => self.p.sigs.get(n).copied(),
+                                    _ => None,
+                                };
+                                if let Some(i) = sig.filter(|&i| self.def(i).kw == "fn") {
+                                    lin_callee = Some((self.def(i), 0));
+                                }
                             }
                         }
                     } else {
+                        if segs.len() == 1 {
+                            // 局所変数の関数値を呼ぶ。線形なクロージャは呼ぶと消費される (一度きりの呼び出し)。
+                            self.lin_consume_name(&segs[0]);
+                        }
                         // 呼び出し先が局所変数のとき。`v.push(x)` のようなメソッド呼び出し
                         // (segs の最後はメソッド名) は、レシーバの場所を使うだけで move はしない (4.2)。
                         // ただし `self` を値で受けるメソッド (`self: T`) はレシーバを消費する (4.4)。
@@ -2690,6 +2865,13 @@ impl<'a> Checker<'a> {
                         let recv: &[String] = if segs.len() >= 2 { &segs[1..segs.len() - 1] } else { &[] };
                         let by_value = segs.len() >= 2 && self.method_takes_self_by_value(&segs[0], recv, &segs[segs.len() - 1], env);
                         self.use_place(&segs[0], recv, env, nline(e), by_value);
+                        if segs.len() >= 2 {
+                            if let Some(md) = self.method_def(&segs[0], recv, &segs[segs.len() - 1], env) {
+                                if md.is_method() {
+                                    lin_callee = Some((md, 1));
+                                }
+                            }
+                        }
                     }
                 } else {
                     self.tc_expr(fnn, env, muts, false);
@@ -2708,6 +2890,9 @@ impl<'a> Checker<'a> {
                 }
                 if let Some(c) = callee {
                     self.check_bounds(c, items(&f[1]), env, nline(e));
+                }
+                if let Some((c, off)) = lin_callee {
+                    self.check_linear_args(c, off, items(&f[1]), env, nline(e));
                 }
             }
             "MCall" => {
@@ -2745,6 +2930,9 @@ impl<'a> Checker<'a> {
                 if !is_nil(&f[0]) {
                     self.tc_expr(&f[0], env, muts, true);
                 }
+                let fl = self.lin_floor;
+                let what = if self.lin_in_closure { "the closure" } else { "the function" };
+                self.lin_leaks(fl, nline(e), &format!("when {what} returns early at line {}", nlineno(e)));
             }
             _ => {
                 for c in children(e) {
@@ -2759,9 +2947,17 @@ impl<'a> Checker<'a> {
     /// 場所 `root.path` の型のメソッド `name` が、`self` を値で受けるか。
     /// レシーバの型が分からない・メソッドが見つからないときは `false` (消費として扱わない)。
     fn method_takes_self_by_value(&self, root: &str, path: &[String], name: &str, env: &Env) -> bool {
-        let Some(ty) = self.place_ty(root, path, env) else { return false };
+        match self.method_def(root, path, name, env).and_then(|d| d.params.first()) {
+            Some((pn, pt)) => pn == "self" && tag(pt) != "ref",
+            None => false,
+        }
+    }
+
+    /// 場所 `root.path` の型のメソッド `name` の定義。レシーバの型・メソッドが分からなければ None。
+    fn method_def(&self, root: &str, path: &[String], name: &str, env: &Env) -> Option<&'a Def> {
+        let ty = self.place_ty(root, path, env)?;
         if tag(&ty) != "named" {
-            return false;
+            return None;
         }
         let tname = match st(tel(&ty, 1)).as_str() {
             "Option" => "core.option.Option".to_string(),
@@ -2769,11 +2965,7 @@ impl<'a> Checker<'a> {
             n => n.to_string(),
         };
         let fq = format!("{}.{}", tname, name);
-        let def = self.p.funcs.get(&fq).or_else(|| self.p.sigs.get(&fq)).map(|&i| self.def(i));
-        match def.and_then(|d| d.params.first()) {
-            Some((pn, pt)) => pn == "self" && tag(pt) != "ref",
-            None => false,
-        }
+        self.p.funcs.get(&fq).or_else(|| self.p.sigs.get(&fq)).map(|&i| self.def(i))
     }
 
     /// 式を評価し終えたあとに、後続の文へ制御が進まないか (`return` / `break` / `continue` / panic)。
@@ -2807,21 +2999,35 @@ impl<'a> Checker<'a> {
     /// 分岐とループでの move の合流 (4.1)。どれかの枝で move された場所は、合流後は move 済みとして
     /// 扱う (後続へ進まない枝は除く)。ループの外で宣言した値を本体で move し、そのまま次の周回に
     /// 入る経路があれば E3002 (2 周目で move 済みの値を使うことになる)。
-    fn branchy(&mut self, e: &V, env: &Env, muts: &BTreeSet<String>) {
+    fn branchy(&mut self, e: &V, env: &Env, muts: &BTreeSet<String>, consume: bool) {
         let f = nf(e);
         match nname(e) {
             "If" => {
                 self.tc_expr(&f[0], env, muts, false);
                 let base = self.moved.clone();
-                self.tc_expr(&f[1], env, muts, false);
+                let (lbase, lstate) = (self.lin.len(), self.lin.clone());
+                let ln = nlineno(e);
+                self.tc_expr(&f[1], env, muts, consume);
                 let a = self.moved.clone();
                 let a_div = self.diverges(&f[1]);
+                self.lin.truncate(lbase);
+                let la = std::mem::replace(&mut self.lin, lstate.clone());
                 self.moved = base.clone();
                 let mut b_div = false;
                 if !is_nil(&f[2]) {
-                    self.tc_expr(&f[2], env, muts, false);
+                    self.tc_expr(&f[2], env, muts, consume);
                     b_div = self.diverges(&f[2]);
                 }
+                self.lin.truncate(lbase);
+                let mut inputs = vec![];
+                if !a_div {
+                    inputs.push((format!("the `if` at line {ln} is true"), la));
+                }
+                if !b_div {
+                    inputs.push((format!("the `if` at line {ln} is false"), self.lin.clone()));
+                }
+                self.lin = lstate;
+                self.lin_merge(inputs, lbase, nline(e));
                 let b = self.moved.clone();
                 let mut m = base;
                 if !a_div {
@@ -2840,7 +3046,17 @@ impl<'a> Checker<'a> {
                 let mut merged = base.clone();
                 // スクラティニーの型が分かれば、腕の束縛に型を流す (線形値の未消費 E3003 のため)。
                 let sty = self.ty_of(&f[0], env);
+                // 線形値を `match` する (パターンで分解する) と、その値は消費される。
+                if nname(&f[0]) == "Path" {
+                    let segs = strs(&nf(&f[0])[0]);
+                    if env.contains_key(&segs[0]) {
+                        self.lin_consume_place(&segs[0], &segs[1..], env);
+                    }
+                }
+                let (lbase, lstate) = (self.lin.len(), self.lin.clone());
+                let mut inputs = vec![];
                 for arm in items(&f[1]) {
+                    self.lin = lstate.clone();
                     self.moved = base.clone();
                     let mut inner = env.clone();
                     let mut b = vec![];
@@ -2848,22 +3064,28 @@ impl<'a> Checker<'a> {
                     let mut typed: Vec<(String, V)> = vec![];
                     if !is_nil(&sty) {
                         self.bind_pat_types(&items(arm)[0], &sty, &mut typed);
+                        self.lin_wild(&typed, nline(&items(arm)[0]));
                     }
                     for n in b {
                         let t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
                         // 腕の束縛は新しい値。以前の同名の束縛の move 記録を引き継がない。
                         self.revive_place(std::slice::from_ref(&n));
+                        self.lin_declare(&n, &t, nline(arm));
                         inner.insert(n, t);
                     }
-                    for (n, t) in &typed {
-                        self.note_linear(n, t, nline(arm));
-                    }
-                    self.tc_expr(&items(arm)[1], &inner, muts, false);
-                    if !self.diverges(&items(arm)[1]) {
+                    self.tc_expr(&items(arm)[1], &inner, muts, consume);
+                    let div = self.diverges(&items(arm)[1]);
+                    if div {
+                        self.lin.truncate(lbase);
+                    } else {
+                        self.lin_scope_end(lbase, "when the `match` arm ends");
+                        inputs.push((format!("the `match` arm at line {} is taken", nlineno(&items(arm)[0])), self.lin.clone()));
                         let end = self.moved.clone();
                         Self::union_moves(&mut merged, &end);
                     }
                 }
+                self.lin = lstate;
+                self.lin_merge(inputs, lbase, nline(e));
                 // 腕の束縛は、合流後には見えない。
                 merged.retain(|k, _| env.contains_key(k.split('.').next().unwrap_or(k)));
                 self.moved = merged;
@@ -2871,6 +3093,7 @@ impl<'a> Checker<'a> {
             }
             n => {
                 let mut inner = env.clone();
+                let mut loop_binds = false;
                 let body = match n {
                     "For" => {
                         // 反復子の式は move 済みの使用を検査するが、`for` 自体は反復子を move 済みに
@@ -2884,6 +3107,7 @@ impl<'a> Checker<'a> {
                         for x in b {
                             inner.insert(x, V::Nil);
                         }
+                        loop_binds = true;
                         &f[2]
                     }
                     "While" => {
@@ -2893,8 +3117,43 @@ impl<'a> Checker<'a> {
                     _ => &f[0],
                 };
                 let base = self.moved.clone();
+                let (lbase, lstate) = (self.lin.len(), self.lin.clone());
+                self.lin_loops.push(LinLoop { base: lbase, breaks: vec![], conts: vec![] });
+                if loop_binds {
+                    let mut b = vec![];
+                    pat_binds(&f[0], &mut b);
+                    for x in b {
+                        self.lin_declare(&x, &V::Nil, nline(e));
+                    }
+                }
                 self.loop_exits.push((BTreeMap::new(), BTreeMap::new()));
                 self.tc_expr(body, &inner, muts, false);
+                let body_div = self.diverges(body);
+                if body_div {
+                    self.lin.truncate(lbase);
+                } else {
+                    self.lin_scope_end(lbase, "when the loop body ends");
+                }
+                let lp = self.lin_loops.pop().unwrap();
+                let ln = nlineno(e);
+                let mut inputs = vec![];
+                if n != "Loop" {
+                    inputs.push((format!("the loop at line {ln} runs zero times"), lstate.clone()));
+                    if !body_div {
+                        inputs.push((format!("the loop at line {ln} finishes an iteration"), self.lin.clone()));
+                    }
+                    inputs.extend(lp.conts);
+                }
+                inputs.extend(lp.breaks);
+                self.lin = lstate;
+                if inputs.is_empty() {
+                    // `break` のない `loop`: 後ろへは進まない。
+                    for x in self.lin.iter_mut() {
+                        x.live = false;
+                    }
+                } else {
+                    self.lin_merge(inputs, lbase, nline(e));
+                }
                 let (breaks, continues) = self.loop_exits.pop().unwrap_or_default();
                 let end = self.moved.clone();
                 // 次の周回へ入る経路: 本体の末尾 (後続へ進むとき) と `continue`。
@@ -3011,15 +3270,167 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn note_linear(&mut self, name: &str, ty: &V, line: usize) {
-        if !self.is_linear(ty) {
+    /// 束縛を宣言する。線形な型なら消費の義務を負う (4.4)。線形でない束縛 (型が決まらないものを含む) も、
+    /// 同名の外側の束縛を隠す目印として積む。
+    fn lin_declare(&mut self, name: &str, ty: &V, line: usize) {
+        let linear = !is_nil(ty) && self.is_linear(ty);
+        self.lin.push(Lin { name: name.to_string(), line, linear, live: linear });
+    }
+
+    /// パターンの `_` が線形な値を受けている (捨てている) か。`bind_pat_types` は、入れ子の `_` を
+    /// 名前 `_` の組として返す。
+    fn lin_wild(&mut self, typed: &[(String, V)], line: usize) {
+        for (n, t) in typed {
+            if n == "_" && self.is_linear(t) {
+                self.tdiag("E3003", "a linear value matched by the pattern `_` is discarded without being consumed".into(), line);
+            }
+        }
+    }
+
+    /// 名前が指す (最も内側の) 束縛。現在の関数 / クロージャの範囲だけを見る。
+    fn lin_find(&self, name: &str) -> Option<usize> {
+        (self.lin_floor..self.lin.len()).rev().find(|&i| self.lin[i].name == name)
+    }
+
+    /// 名前の束縛を消費済みにする。未消費の線形値だったら true。
+    fn lin_consume_name(&mut self, name: &str) -> bool {
+        if let Some(i) = self.lin_find(name) {
+            if self.lin[i].linear {
+                let was = self.lin[i].live;
+                self.lin[i].live = false;
+                return was;
+            }
+        }
+        false
+    }
+
+    /// 場所の値を値として渡した (move した)。場所の型が線形なら、根の束縛の義務が移る。
+    /// 線形でない部分 (`s.len` のような読み出し) は消費にならない。
+    fn lin_consume_place(&mut self, root: &str, path: &[String], env: &Env) {
+        if path.is_empty() {
+            self.lin_consume_name(root);
+        } else if let Some(t) = self.place_ty(root, path, env) {
+            if self.is_linear(&t) {
+                self.lin_consume_name(root);
+            }
+        }
+    }
+
+    /// `from` 以降の束縛のうち未消費の線形値を、この経路で漏れるものとして報告する (束縛は残す)。
+    fn lin_leaks(&mut self, from: usize, line: usize, how: &str) {
+        let from = from.max(self.lin_floor);
+        let leaks: Vec<(String, usize)> =
+            self.lin.iter().skip(from).filter(|x| x.live).map(|x| (x.name.clone(), x.line)).collect();
+        for (name, decl) in leaks {
+            let dl = crate::parser::unpack_pos(decl).0;
+            self.tdiag("E3003", format!("linear value `{name}` (declared at line {dl}) is not consumed {how}"), line);
+        }
+    }
+
+    /// スコープの終わり: `base` 以降の束縛を取り除き、未消費の線形値を報告する (宣言の位置で)。
+    fn lin_scope_end(&mut self, base: usize, how: &str) {
+        let base = base.min(self.lin.len());
+        let gone = self.lin.split_off(base);
+        for x in gone.into_iter().filter(|x| x.live) {
+            self.tdiag("E3003", format!("linear value `{}` is not consumed {how}", x.name), x.line);
+        }
+    }
+
+    /// 分岐の合流。外側の束縛 (先頭 `base` 件) が、ある経路では消費済みで別の経路では未消費なら、
+    /// 未消費の経路ごとに E3003。報告した束縛は消費済みとして続ける。
+    fn lin_merge(&mut self, inputs: Vec<(String, Vec<Lin>)>, base: usize, line: usize) {
+        if inputs.is_empty() {
             return;
         }
-        let body = self.def(self.d).body.as_ref().unwrap();
-        let mut all = vec![];
-        walk(body, &mut all);
-        if !all.iter().any(|x| nname(x) == "Path" && st(&items(&nf(x)[0])[0]) == name) {
-            self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
+        let mut res: Vec<Lin> = inputs[0].1[..base].to_vec();
+        for i in 0..base {
+            let lives: Vec<bool> = inputs.iter().map(|x| x.1[i].live).collect();
+            let all = lives.iter().all(|&b| b);
+            if !all && lives.iter().any(|&b| b) {
+                let (name, decl) = (res[i].name.clone(), crate::parser::unpack_pos(res[i].line).0);
+                for (k, (desc, _)) in inputs.iter().enumerate() {
+                    if lives[k] {
+                        self.tdiag(
+                            "E3003",
+                            format!("linear value `{name}` (declared at line {decl}) is not consumed on the path where {desc}"),
+                            line,
+                        );
+                    }
+                }
+            }
+            res[i].live = all;
+        }
+        self.lin = res;
+    }
+
+    /// 型パラメータが `linear` と宣言されていない関数に、線形な値を渡していないか (4.4・8.3)。
+    /// `off` は、引数列に対する仮引数列のずれ (`v.push(x)` の `self` で 1)。仮引数の型と実引数の型を
+    /// 構造で突き合わせ、線形でない型パラメータに線形な型が束縛されるとき E3006。
+    fn check_linear_args(&mut self, c: &Def, off: usize, args: &[V], env: &Env, line: usize) {
+        let nonlin: HashSet<String> = c
+            .generics
+            .iter()
+            .filter(|g| g.0 == "type" && !items(&g.2).iter().any(|b| matches!(b, V::S(x) if x == "linear")))
+            .map(|g| g.1.clone())
+            .collect();
+        if nonlin.is_empty() {
+            return;
+        }
+        for (i, a) in args.iter().enumerate() {
+            let Some((_, pt)) = c.params.get(i + off) else { break };
+            let at = self.ty_of(a, env);
+            if is_nil(&at) {
+                continue;
+            }
+            let mut hit = vec![];
+            self.lin_unify(pt, &at, &nonlin, &mut hit);
+            if let Some((p, t)) = hit.first() {
+                self.tdiag(
+                    "E3006",
+                    format!(
+                        "linear value of type {t} is passed for the type parameter `{p}` of {}, which is not declared `linear` (4.4)",
+                        c.name
+                    ),
+                    line,
+                );
+            }
+        }
+    }
+
+    /// 仮引数の型 `pt` と実引数の型 `at` を構造で突き合わせ、線形でない型パラメータ (`nonlin`) に
+    /// 線形な型が当たった組 (パラメータ名, 型の表示) を `out` に集める。
+    fn lin_unify(&self, pt: &V, at: &V, nonlin: &HashSet<String>, out: &mut Vec<(String, String)>) {
+        match tag(pt).as_str() {
+            "named" => {
+                let n = st(tel(pt, 1));
+                let pargs: Vec<&V> = items(tel(pt, 2)).iter().filter(|a| matches!(a, V::L(_))).collect();
+                if pargs.is_empty() && nonlin.contains(&n) {
+                    if self.is_linear(at) {
+                        let shown = if tag(at) == "named" { st(tel(at, 1)) } else { "(tuple)".to_string() };
+                        out.push((n, shown));
+                    }
+                    return;
+                }
+                if tag(at) == "named" && st(tel(at, 1)) == n {
+                    let aargs: Vec<&V> = items(tel(at, 2)).iter().filter(|a| matches!(a, V::L(_))).collect();
+                    if aargs.len() == pargs.len() {
+                        for (p, a) in pargs.iter().zip(aargs) {
+                            self.lin_unify(p, a, nonlin, out);
+                        }
+                    }
+                }
+            }
+            "ref" => {
+                let inner = if tag(at) == "ref" { tel(at, 2) } else { at };
+                self.lin_unify(tel(pt, 2), inner, nonlin, out);
+            }
+            "tuple" if tag(at) == "tuple" && items(tel(pt, 1)).len() == items(tel(at, 1)).len() => {
+                for (p, a) in items(tel(pt, 1)).iter().zip(items(tel(at, 1))) {
+                    self.lin_unify(p, a, nonlin, out);
+                }
+            }
+            "array" | "slice" if tag(at) == tag(pt) => self.lin_unify(tel(pt, 1), tel(at, 1), nonlin, out),
+            _ => {}
         }
     }
 
@@ -3282,6 +3693,16 @@ pub(crate) fn resolve_trait_fqn(p: &Program, nm: &str) -> Option<String> {
 }
 
 /// `impl .. for X` の対象型の基底名 (型引数を落とす)。
+/// `impl` 行と `impls` メソッドを突き合わせる鍵。`core.convert.From` は型引数 (変換元) まで含める。
+fn impl_key(tr: &str, args: &[V]) -> String {
+    match args.first() {
+        Some(a) if tr == crate::program::FROM_TRAIT => {
+            format!("{}<{}>", tr, crate::types::from_v(a, &HashSet::new()).show())
+        }
+        _ => tr.to_string(),
+    }
+}
+
 fn impl_target(v: &V) -> String {
     match tag(v).as_str() {
         "named" | "prim" => st(tel(v, 1)),

@@ -1,0 +1,12 @@
+fn t.bad() -> u32 uses [] panics never
+    let mut x = 1u32
+    let c = fn() -> u32 capture [&x] {
+        x
+    }
+    x = 2u32
+    c()
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

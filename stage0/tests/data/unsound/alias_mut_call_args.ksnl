@@ -1,0 +1,14 @@
+fn t.a_two(a: &mut u32, b: &mut u32) -> () uses [] panics never
+    *a = 1u32
+    *b = 2u32
+end t.a_two
+
+fn t.bad() -> u32 uses [] panics never
+    let mut x = 1u32
+    t.a_two(&mut x, &mut x)
+    x
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

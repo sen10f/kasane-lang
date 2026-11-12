@@ -1,0 +1,15 @@
+fn t.a_pick['a, 'b](_x: &'a u32, y: &'b u32) -> &'b u32 uses [] panics never
+    y
+end t.a_pick
+
+fn t.bad() -> u32 uses [] panics never
+    let a = 1u32
+    let mut b = 2u32
+    let r = t.a_pick(&a, &b)
+    b = 3u32
+    *r
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

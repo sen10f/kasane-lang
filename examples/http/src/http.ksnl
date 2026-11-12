@@ -12,9 +12,20 @@ type http.Request derive [Debug, Clone, Copy, PartialEq] pub
     path_start: usize
 end http.Request
 
-fn http.accept(listener: &std.net.TcpListener) -> Result<std.net.TcpStream, http.Error> uses [io.net] panics never
-    listener.accept().map_err(http.net_error)
-end http.accept
+impl core.convert.From<alloc.alloc.AllocError> for http.Error
+fn http.Error.from_value_alloc_error(_value: alloc.alloc.AllocError) -> http.Error uses [] panics never impls core.convert.From<alloc.alloc.AllocError>
+    http.Error.Alloc
+end http.Error.from_value_alloc_error
+
+impl core.convert.From<std.io.Error> for http.Error
+fn http.Error.from_value_io_error(_value: std.io.Error) -> http.Error uses [] panics never impls core.convert.From<std.io.Error>
+    http.Error.Io
+end http.Error.from_value_io_error
+
+impl core.convert.From<std.net.Error> for http.Error
+fn http.Error.from_value_net_error(value: std.net.Error) -> http.Error uses [] panics never impls core.convert.From<std.net.Error>
+    http.Error.Net(value.code)
+end http.Error.from_value_net_error
 
 fn http.append_decimal(out: &mut alloc.string.String<std.alloc.System>, n: usize) -> Result<(), http.Error>
     let mut unit = 1usize
@@ -24,7 +35,7 @@ fn http.append_decimal(out: &mut alloc.string.String<std.alloc.System>, n: usize
     let mut rest = n
     while unit > 0usize {
         let digit = rest / unit
-        out.push_str(http.digit_text(digit)).map_err(http.oom)?
+        out.push_str(http.digit_text(digit))?
         rest = rest % unit
         unit = unit / 10usize
     }
@@ -32,26 +43,26 @@ fn http.append_decimal(out: &mut alloc.string.String<std.alloc.System>, n: usize
 end http.append_decimal
 
 fn http.build_address(out: &mut alloc.string.String<std.alloc.System>, port: u16) -> Result<(), http.Error>
-    out.push_str("127.0.0.1:").map_err(http.oom)?
+    out.push_str("127.0.0.1:")?
     http.append_decimal(out, usize.from_u16(port))
 end http.build_address
 
 fn http.build_request(out: &mut alloc.string.String<std.alloc.System>, path: &str, host: &str) -> Result<(), http.Error>
-    out.push_str("GET ").map_err(http.oom)?
-    out.push_str(path).map_err(http.oom)?
-    out.push_str(" HTTP/1.1\r\nHost: ").map_err(http.oom)?
-    out.push_str(host).map_err(http.oom)?
-    out.push_str("\r\nConnection: close\r\n\r\n").map_err(http.oom)?
+    out.push_str("GET ")?
+    out.push_str(path)?
+    out.push_str(" HTTP/1.1\r\nHost: ")?
+    out.push_str(host)?
+    out.push_str("\r\nConnection: close\r\n\r\n")?
     Ok(())
 end http.build_request
 
 fn http.build_response(out: &mut alloc.string.String<std.alloc.System>, status: &str, body: &str) -> Result<(), http.Error>
-    out.push_str("HTTP/1.1 ").map_err(http.oom)?
-    out.push_str(status).map_err(http.oom)?
-    out.push_str("\r\nContent-Type: text/plain\r\nContent-Length: ").map_err(http.oom)?
+    out.push_str("HTTP/1.1 ")?
+    out.push_str(status)?
+    out.push_str("\r\nContent-Type: text/plain\r\nContent-Length: ")?
     http.append_decimal(out, body.len())?
-    out.push_str("\r\nConnection: close\r\n\r\n").map_err(http.oom)?
-    out.push_str(body).map_err(http.oom)?
+    out.push_str("\r\nConnection: close\r\n\r\n")?
+    out.push_str(body)?
     Ok(())
 end http.build_response
 
@@ -79,10 +90,6 @@ fn http.client_send(stream: &mut std.net.TcpStream, host: &str) -> Result<(), ht
     http.build_request(&mut request, "/hello", host)?
     http.write_all(stream, request.as_str().as_bytes())
 end http.client_send
-
-fn http.connect(address: &str) -> Result<std.net.TcpStream, http.Error> uses [io.net] panics never
-    std.net.connect(address).map_err(http.net_error)
-end http.connect
 
 fn http.content_length(buf: &[u8], head_end: usize) -> Result<usize, http.Error>
     let key = b"Content-Length: "
@@ -132,13 +139,26 @@ fn http.digit_text(d: usize) -> &'static str
 end http.digit_text
 
 fn http.exchange(listener: &std.net.TcpListener, address: &str) -> Result<usize, http.Error> uses [alloc, io.net] panics may
-    with mut client = http.connect(address)? close core.mem.drop(client.close()) {
-        with mut server = http.accept(listener)? close core.mem.drop(server.close()) {
-            http.client_send(&mut client, address)?
-            http.server(&mut server)?
-            http.client_receive(&mut client)
+    let mut client = std.net.connect(address)?
+    let mut server = match listener.accept() {
+        Ok(s) => s
+        Err(e) => {
+            core.mem.drop(client.close())
+            return Err(http.Error.from_value_net_error(e))
         }
     }
+    let sent = http.client_send(&mut client, address)
+    let served = match sent {
+        Ok(_u) => http.server(&mut server)
+        Err(send_error) => Err(send_error)
+    }
+    let received = match served {
+        Ok(_u) => http.client_receive(&mut client)
+        Err(serve_error) => Err(serve_error)
+    }
+    core.mem.drop(server.close())
+    core.mem.drop(client.close())
+    received
 end http.exchange
 
 fn http.find_end(buf: &[u8]) -> Option<usize>
@@ -164,37 +184,31 @@ fn http.has_prefix(buf: &[u8], at: usize, lit: &[u8]) -> bool
     true
 end http.has_prefix
 
-fn http.io_error(_e: std.io.Error) -> http.Error
-    http.Error.Io
-end http.io_error
-
-fn http.listen(address: &str) -> Result<std.net.TcpListener, http.Error> uses [io.net] panics never
-    std.net.listen(address).map_err(http.net_error)
-end http.listen
-
 fn http.main() -> Result<(), http.Error> uses [alloc, io.console, io.net] panics may
-    let length = with listener = http.listen("127.0.0.1:0")? close core.mem.drop(listener.close()) {
-        let port = listener.local_port().map_err(http.net_error)?
-        let mut address = alloc.string.String.new(std.alloc.SYSTEM)
-        http.build_address(&mut address, port)?
-        http.exchange(&listener, address.as_str())?
+    let listener = std.net.listen("127.0.0.1:0")?
+    let port = match listener.local_port() {
+        Ok(p) => p
+        Err(e) => {
+            core.mem.drop(listener.close())
+            return Err(http.Error.from_value_net_error(e))
+        }
     }
+    let mut address = alloc.string.String.new(std.alloc.SYSTEM)
+    let built = http.build_address(&mut address, port)
+    let result = match built {
+        Ok(_u) => http.exchange(&listener, address.as_str())
+        Err(e) => Err(e)
+    }
+    core.mem.drop(listener.close())
+    let length = result?
     let mut line = alloc.string.String.new(std.alloc.SYSTEM)
-    line.push_str("200 OK, body bytes: ").map_err(http.oom)?
+    line.push_str("200 OK, body bytes: ")?
     http.append_decimal(&mut line, length)?
     match std.io.print_line(line.as_str()) {
         Ok(_u) => Ok(())
         Err(_e) => Err(http.Error.Io)
     }
 end http.main
-
-fn http.net_error(e: std.net.Error) -> http.Error
-    http.Error.Net(e.code)
-end http.net_error
-
-fn http.oom(_e: alloc.alloc.AllocError) -> http.Error
-    http.Error.Alloc
-end http.oom
 
 fn http.parse_request_line(buf: &[u8]) -> Result<http.Request, http.Error>
     if !http.has_prefix(buf, 0usize, b"GET /") {
@@ -231,13 +245,13 @@ end http.read_body
 
 fn http.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<(), http.Error> uses [alloc, io.net] panics may
     let mut chunk = [0u8; 64]
-    let n = stream.read(&mut chunk).map_err(http.io_error)?
+    let n = stream.read(&mut chunk)?
     if n == 0usize {
         return Err(http.Error.Closed)
     }
     for i in core.iter.range(0usize, n) {
         match chunk.get(i) {
-            Some(b) => data.push(b).map_err(http.oom)?
+            Some(b) => data.push(b)?
             None => return Err(http.Error.Io)
         }
     }
@@ -276,11 +290,12 @@ fn http.server(stream: &mut std.net.TcpStream) -> Result<usize, http.Error> uses
 end http.server
 
 fn http.write_all(stream: &mut std.net.TcpStream, data: &[u8]) -> Result<(), http.Error> uses [io.net] panics never
-    let n = stream.write(data).map_err(http.io_error)?
+    let n = stream.write(data)?
     if n != data.len() {
         return Err(http.Error.Io)
     }
-    stream.flush().map_err(http.io_error)
+    stream.flush()?
+    Ok(())
 end http.write_all
 
 test http.find_end.test_finds_blank_line

@@ -775,9 +775,11 @@ impl Lint {
                     format!("import tail `{}` collides with another import; use the FQN instead", tail),
                 );
             }
-            let needle = format!("{}.", tail);
-            let used = text.match_indices(&needle).any(|(i, _)| {
-                text[..i].chars().next_back().map_or(true, |c| !(word_char(c) || c == '.'))
+            // 3.3: 短縮形 (`net.f`) でも FQN (`app.net.f`) でも、ヘッダでも本体でも、参照があれば使用済み。
+            let used = [format!("{}.", tail), format!("{}.", it.name)].iter().any(|needle| {
+                text.match_indices(needle.as_str()).any(|(i, _)| {
+                    text[..i].chars().next_back().map_or(true, |c| !(word_char(c) || c == '.'))
+                })
             });
             if !used {
                 self.err("unused", it.line + 1, format!("unused import {}", it.name));

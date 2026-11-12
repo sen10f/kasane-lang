@@ -8,6 +8,9 @@ use crate::parser::{parse_body, Parser, V};
 
 pub type R<T> = Result<T, String>;
 
+/// `?` が型の違うエラーを変換するときに使うトレイト (4.1)。
+pub const FROM_TRAIT: &str = "core.convert.From";
+
 #[derive(Debug, Clone, Default)]
 pub struct Def {
     pub kw: String,
@@ -37,6 +40,8 @@ pub struct Def {
     pub has_impls: bool,
     /// `impls <トレイト>` のトレイト名 (基底。`has_impls` のときだけ意味を持つ)。
     pub impls_trait: String,
+    /// `impls <トレイト><型引数>` の型引数 (`core.convert.From<E1>` の `E1`)。
+    pub impls_args: Vec<V>,
     pub methods: Vec<String>,
     /// トレイトのメソッドのシグネチャ (名前, 引数, 戻り値)。解析できたものだけ。
     pub trait_sigs: Vec<(String, Vec<(String, V)>, V)>,
@@ -152,6 +157,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 if p.accept_kw("impls") {
                     let tr = p.trait_ref()?;
                     d.impls_trait = text(&items(&tr)[0]);
+                    d.impls_args = items(&items(&tr)[1]).to_vec();
                     d.has_impls = true;
                 }
             }
@@ -287,6 +293,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 d.generics = conv_generics(&p.generics()?);
                 let tr = p.trait_ref()?;
                 d.impl_trait = text(&items(&tr)[0]);
+                d.impls_args = items(&items(&tr)[1]).to_vec();
                 p.expect_kw("for")?;
                 d.impl_for = p.ty()?;
                 d.name = l.to_string();
@@ -299,7 +306,126 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
         }
         out.push(d);
     }
+    normalize_short_names(&mut out);
     Ok(out)
+}
+
+/// 3.3: import 済みモジュールの短縮形 (`net.Error`) を FQN (`app.net.Error`) に展開する。
+/// ヘッダの型・トレイト参照と本体の型注釈に適用し、以後の検査は常に FQN だけを見る。
+/// 解決順: ジェネリクス名 > import 末尾名 (先頭成分が一致) > そのまま (FQN)。
+fn normalize_short_names(defs: &mut [Def]) {
+    let mut imps: HashMap<String, String> = HashMap::new();
+    for d in defs.iter() {
+        if d.kw == "import" {
+            imps.insert(d.name.rsplit('.').next().unwrap().to_string(), d.name.clone());
+        }
+    }
+    if imps.is_empty() {
+        return;
+    }
+    for d in defs.iter_mut() {
+        if d.kw == "import" {
+            continue;
+        }
+        let gn = d.gnames();
+        let ex = |name: &str| -> String { expand_short(name, &imps, &gn) };
+        for g in d.generics.iter_mut() {
+            if let V::L(bs) = &mut g.2 {
+                for b in bs.iter_mut() {
+                    norm_trait_ref(b, &ex);
+                }
+            }
+        }
+        for p in d.params.iter_mut() {
+            norm_types(&mut p.1, &ex);
+        }
+        norm_types(&mut d.ret, &ex);
+        norm_types(&mut d.impl_for, &ex);
+        for f in d.fields.iter_mut() {
+            norm_types(&mut f.1, &ex);
+        }
+        for v in d.variants.iter_mut() {
+            for t in v.1.iter_mut() {
+                norm_types(t, &ex);
+            }
+        }
+        for s in d.trait_sigs.iter_mut() {
+            for p in s.1.iter_mut() {
+                norm_types(&mut p.1, &ex);
+            }
+            norm_types(&mut s.2, &ex);
+        }
+        for r in d.requires.iter_mut() {
+            r.0 = ex(&r.0);
+            norm_types(&mut r.1, &ex);
+        }
+        if !d.impl_trait.is_empty() {
+            d.impl_trait = ex(&d.impl_trait);
+        }
+        if !d.impls_trait.is_empty() {
+            d.impls_trait = ex(&d.impls_trait);
+        }
+        if let Some(b) = d.body.as_mut() {
+            norm_types(b, &ex);
+        }
+        if let Some(b) = d.init.as_mut() {
+            norm_types(b, &ex);
+        }
+    }
+}
+
+fn expand_short(name: &str, imps: &HashMap<String, String>, generics: &HashSet<String>) -> String {
+    let Some((first, rest)) = name.split_once('.') else { return name.to_string() };
+    if generics.contains(first) {
+        return name.to_string();
+    }
+    match imps.get(first) {
+        Some(full) => format!("{}.{}", full, rest),
+        None => name.to_string(),
+    }
+}
+
+fn norm_trait_ref(v: &mut V, ex: &dyn Fn(&str) -> String) {
+    if let V::L(xs) = v {
+        if xs.len() == 2 {
+            if let V::S(n) = &xs[0] {
+                xs[0] = V::S(ex(n));
+            }
+            norm_types(&mut xs[1], ex);
+        }
+    }
+}
+
+/// 型の木 (本体の式の木を含む) の `named` と `dyn` の名前を展開する。
+fn norm_types(v: &mut V, ex: &dyn Fn(&str) -> String) {
+    match v {
+        V::L(xs) => {
+            let tag = match xs.first() {
+                Some(V::S(t)) => t.clone(),
+                _ => String::new(),
+            };
+            if tag == "named" && xs.len() == 3 && matches!(xs[2], V::L(_)) {
+                if let V::S(n) = &xs[1] {
+                    xs[1] = V::S(ex(n));
+                }
+            } else if tag == "dyn" && xs.len() == 3 && matches!(xs[1], V::L(_)) {
+                if let V::L(tr) = &mut xs[1] {
+                    if let Some(V::S(n)) = tr.first() {
+                        tr[0] = V::S(ex(n));
+                    }
+                }
+            }
+            for x in xs.iter_mut() {
+                norm_types(x, ex);
+            }
+        }
+        V::Node(_, fs, _) => {
+            for f in fs.iter_mut() {
+                norm_types(f, ex);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -375,6 +501,9 @@ pub struct Program {
     pub imports: HashMap<String, HashMap<String, String>>,
     pub method_idx: HashMap<String, Vec<usize>>,
     pub impls: HashSet<(String, String)>,
+    /// `core.convert.From<E1> for E2` の変換メソッド (4.1 の `?`)。E2 の FQN → [(E1 の型表記, メソッドの FQN)]。
+    /// `?` が型の違うエラーを受けるとき、検査・インタプリタ・ネイティブ生成がここを引く。
+    pub from_impls: HashMap<String, Vec<(String, String)>>,
 }
 
 impl Program {
@@ -386,6 +515,12 @@ impl Program {
                     self.funcs.insert(d.name.clone(), idx);
                 } else {
                     self.sigs.insert(d.name.clone(), idx);
+                }
+                if d.has_impls && d.impls_trait == FROM_TRAIT && d.body.is_some() {
+                    if let (Some((owner, _)), Some(src)) = (d.name.rsplit_once('.'), d.impls_args.first()) {
+                        let key = crate::types::from_v(src, &HashSet::new()).show();
+                        self.from_impls.entry(owner.to_string()).or_default().push((key, d.name.clone()));
+                    }
                 }
                 if d.is_method() {
                     let mn = d.name.rsplit('.').next().unwrap().to_string();

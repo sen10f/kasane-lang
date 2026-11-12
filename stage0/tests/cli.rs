@@ -62,10 +62,6 @@ fn diagnostics_each_case_reports_its_code() {
     for p in names {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let code = &stem[..5];
-        // E2044 は `--strict-types` のときだけ出るので、専用のテスト (strict_types_*) が見る。
-        if code == "E2044" {
-            continue;
-        }
         let t = Tmp::new(&stem, &fs::read_to_string(&p).unwrap());
         let o = run(&["check", "--json"], &t.0);
         let got = codes(&text(&o.stdout));
@@ -80,18 +76,9 @@ fn diagnostics_each_case_reports_its_code() {
 /// 失敗しなければならない。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
 /// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
 const KNOWN_HOLES: &[&str] = &[
-    // `&mut x` を 1 つの式の中で 2 回取り、構造体の別々のフィールドに入れる (借用検査が式の中を見ない)。
-    "alias_mut_through_field",
-    // 線形値をフィールドに持つ値を、フィールドを読むだけで捨てる (消費の判定が「名前が現れるか」のみ)。
-    "linear_in_field_unconsumed",
-    // `?` で取り出した線形値 (`let _s = std.net.connect(a)?`) を消費せずに捨てる (型注釈がないと型が流れない)。
-    "linear_dropped_after_try",
-    // 線形値を一部の分岐でしか消費しない (`if flag { s.close() }`)。未使用でなければ漏れを検出しない。
-    "linear_leak_one_branch",
-    // `core.mem.drop(s)` で線形値 (TcpStream) をそのまま捨てられる (`drop[T]` は線形でない T 用のはず)。
-    "linear_dropped_by_mem_drop",
-    // 線形値を `Vec<T>` に `push` できる (Vec の T は線形でないはず)。Vec が落ちると閉じられない。
-    "linear_pushed_into_vec",
+    // 借用を持つ変数 (`let w = t.mk(&x)`) のフィールドを読み戻す (`let r = w.r`) と、借用が読んだ側へ移らない
+    // (変数の型が分からないので、`w.n` のような Copy の値と区別できず、移すと誤検出になる)。
+    "boundary_field_read_back",
 ];
 
 #[test]
@@ -118,26 +105,73 @@ fn unsound_programs_are_rejected() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// E2044 (型が決まらない式・束縛) は opt-in。既定では出ず、`--strict-types` と `KSN_STRICT_TYPES=1` の
-/// どちらでも出る。ケースはそれ 1 件だけで、他の診断を伴わない。
+/// `unsound/linear_*` は、線形型の診断 (E3002 / E3003 / E3006) で落ちなければならない
+/// (別の診断で落ちているだけのケースを許さない)。
 #[test]
-fn strict_types_reports_undetermined_types_only_when_enabled() {
+fn linear_corpus_is_rejected_for_linear_reasons() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound");
+    let mut n = 0;
+    for e in fs::read_dir(&dir).unwrap() {
+        let p = e.unwrap().path();
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        if !stem.starts_with("linear_") {
+            continue;
+        }
+        n += 1;
+        let t = Tmp::new(&format!("linear_why_{}", stem), &fs::read_to_string(&p).unwrap());
+        let out = text(&run(&["check", "--json"], &t.0).stdout);
+        assert!(codes(&out).iter().any(|c| matches!(c.as_str(), "E3002" | "E3003" | "E3006")), "{}: {}", stem, out);
+    }
+    assert!(n >= 20, "linear cases missing");
+}
+
+/// 線形値を全経路で消費している正しいコード (`tests/data/linear_ok/`) は `ksn check` を通る。
+#[test]
+fn correct_linear_programs_are_accepted() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    assert!(names.len() >= 8, "linear_ok cases missing");
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("linear_ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        let o = run(&["check", "--json"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "{}: {}", stem, text(&o.stdout));
+        assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{} is not canonical", stem);
+    }
+}
+
+/// E2044 (型が決まらない式・束縛) は既定で有効。`--no-strict-types` と `KSN_STRICT_TYPES=0` で旧来の
+/// 「黙る」挙動に戻り、`--strict-types` と `KSN_STRICT_TYPES=1` は受け付けるが何も変えない。
+/// ケースはそれ 1 件だけで、他の診断を伴わない。
+#[test]
+fn strict_types_is_the_default_and_can_be_turned_off() {
     let src = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/diag/E2044.ksnl")).unwrap();
     let t = Tmp::new("strict_types", &src);
-    // 既定: 通る。
+    // 既定: E2044 だけ。
     let o = run(&["check", "--json"], &t.0);
-    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
-    // フラグ: E2044 だけ。
-    let o = run(&["check", "--json", "--strict-types"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     assert_eq!(codes(&text(&o.stdout)), vec!["E2044"], "{}", text(&o.stdout));
-    // 環境変数でも同じ。
+    // 旧フラグ・環境変数 (1) は何も変えない。
+    let o = run(&["check", "--json", "--strict-types"], &t.0);
+    assert_eq!(codes(&text(&o.stdout)), vec!["E2044"]);
     let o = Command::new(exe()).args(["check", "--json"]).env("KSN_STRICT_TYPES", "1").current_dir(&t.0).output().unwrap();
     assert_eq!(codes(&text(&o.stdout)), vec!["E2044"]);
+    // 逃げ道: `--no-strict-types` と `KSN_STRICT_TYPES=0` で通る。
+    let o = run(&["check", "--json", "--no-strict-types"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let o = Command::new(exe()).args(["check", "--json"]).env("KSN_STRICT_TYPES", "0").current_dir(&t.0).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    // build / test / run も同じ既定 (E2044 で止まる) で、逃げ道も効く。
+    for cmd in ["build", "test", "run"] {
+        let o = run(&[cmd], &t.0);
+        assert!(text(&o.stderr).contains("E2044") || text(&o.stdout).contains("E2044"), "{}: {}{}", cmd, text(&o.stdout), text(&o.stderr));
+        assert_ne!(o.status.code(), Some(0), "{}", cmd);
+    }
     // 注釈を書けば通る。
     let fixed = src.replace("let n = None", "let n: Option<u32> = None");
     let t2 = Tmp::new("strict_types_fixed", &fixed);
-    let o = run(&["check", "--json", "--strict-types"], &t2.0);
+    let o = run(&["check", "--json"], &t2.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
 }
 
@@ -169,7 +203,7 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
 end t.main
 ";
     let t = Tmp::new("strict_ok", src);
-    let o = run(&["check", "--json", "--strict-types"], &t.0);
+    let o = run(&["check", "--json"], &t.0);
     assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E2044"), "{}", text(&o.stdout));
 }
 
@@ -994,15 +1028,17 @@ fn mcalls_resolved_by_the_receiver_type_are_checked_precisely() {
 }
 
 #[test]
-fn unknown_receiver_type_keeps_local_method_effects_silent() {
-    // レシーバの型が分からない (ここでは型パラメータ) ときは、解決先が決まらないので黙る。
+fn method_on_unbounded_type_parameter_is_unknown_method_not_an_effect() {
+    // 境界のない型パラメータのレシーバは、メソッドを持たない (E1108)。解決先が決まらないので、
+    // 他の型の同名メソッドの効果 (E4002) は持ち込まない。
     let src = "type t.S\n    n: u32\nend t.S\n\n\
                fn t.S.boom(self: t.S) -> u32 uses [] panics may\n    core.panic.panic(\"x\")\nend t.S.boom\n\n\
                fn t.f[T](s: T) -> u32 uses [] panics never\n    s.boom()\nend t.f\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    \
                core.mem.drop(t.f(1u32))\n    Ok(())\nend t.main\n";
     let t = Tmp::new("eff_local_unknown", src);
-    assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(codes(&text(&o.stdout)), vec!["E1108"], "{}", text(&o.stdout));
 }
 
 // ---- ② `Fn` 境界に渡すクロージャの効果の推論 ----
@@ -1656,13 +1692,25 @@ fn try_in_a_closure_is_checked_against_the_closure_return_type() {
 fn std_fs_writes_reads_and_removes_a_file() {
     let b = body(&[
         "let mut f = std.fs.create(\"ksn_fs_test.txt\")?",
-        "let n = f.write(b\"hello\")?",
+        "let n = match f.write(b\"hello\") {",
+        "    Ok(n) => n",
+        "    Err(_e) => {",
+        "        core.mem.drop(f.close())",
+        "        return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 1i32 })",
+        "    }",
+        "}",
         "core.check.eq(n, 5usize)",
         "f.close()?",
         "core.check.eq(std.fs.exists(\"ksn_fs_test.txt\"), true)",
         "let mut g = std.fs.open(\"ksn_fs_test.txt\")?",
         "let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)",
-        "let m = std.fs.read_to_end(&mut g, &mut buf)?",
+        "let m = match std.fs.read_to_end(&mut g, &mut buf) {",
+        "    Ok(m) => m",
+        "    Err(_e) => {",
+        "        core.mem.drop(g.close())",
+        "        return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 2i32 })",
+        "    }",
+        "}",
         "core.check.eq(m, 5usize)",
         "core.check.eq(buf.len(), 5usize)",
         "g.close()?",
@@ -5627,7 +5675,7 @@ const NET_ADDR_FN: &str = r#"fn t.addr(port: u16) -> alloc.string.String<std.all
         if d > 0usize || started || unit == 1usize {
             started = true
             match digits.get(d) {
-                Some(t) => core.mem.drop(s.push_str(t))
+                Some(t) => core.mem.drop(s.push_str(*t))
                 None => core.mem.drop(0u8)
             }
         }
@@ -5654,11 +5702,18 @@ fn std_net_loopback_round_trip() {
         "let addr = t.addr(port)",
         "let mut client = match std.net.connect(addr.as_str()) {",
         "    Ok(c) => c",
-        "    Err(_e) => return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 2i32 })",
+        "    Err(_e) => {",
+        "        core.mem.drop(listener.close())",
+        "        return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 2i32 })",
+        "    }",
         "}",
         "let mut server = match listener.accept() {",
         "    Ok(s) => s",
-        "    Err(_e) => return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 3i32 })",
+        "    Err(_e) => {",
+        "        core.mem.drop(client.close())",
+        "        core.mem.drop(listener.close())",
+        "        return Err(std.io.Error { kind: std.io.ErrorKind.Other, code: 3i32 })",
+        "    }",
         "}",
         "core.check.eq(client.write(b\"ping\").is_ok(), true)",
         "let mut buf = [0u8; 16]",
@@ -5920,6 +5975,449 @@ fn the_http_example_runs_natively_through_cranelift() {
     let _ = fs::remove_dir_all(&cache);
 }
 
+// ---- 既定の fail-closed: メソッドの存在と参照の段数 ----
+
+fn codes_of(name: &str, src: &str) -> Vec<String> {
+    let t = Tmp::new(name, src);
+    codes(&text(&run(&["check", "--json"], &t.0).stdout))
+}
+
+#[test]
+fn unbounded_type_parameter_has_no_methods_but_bounds_give_them() {
+    // 境界なし: 型パラメータからはメソッドを呼べない (E1108)。
+    let bad = "fn t.f[T](s: &T) -> usize uses [] panics never\n    s.len()\nend t.f\n\n";
+    assert!(codes_of("tp_bad", &main_wrap(bad, "")).contains(&"E1108".to_string()));
+    // 導出されるメソッドでも、境界なしなら E1108 (`clone` は `Clone` の境界が要る)。
+    let bad2 = "fn t.f[T](s: &T) -> T uses [] panics never\n    s.clone()\nend t.f\n\n";
+    assert!(codes_of("tp_bad2", &main_wrap(bad2, "")).contains(&"E1108".to_string()));
+    // 境界のスーパートレイト (`Copy` の `requires core.ops.Clone`) が宣言するメソッドは呼べる。
+    let ok = "fn t.f[T: core.ops.Copy](s: &T) -> T uses [] panics never\n    s.clone()\nend t.f\n\n";
+    assert!(codes_of("tp_ok", &main_wrap(ok, "")).is_empty());
+}
+
+#[test]
+fn undeclared_primitive_conversions_are_rejected_with_the_infallible_one_suggested() {
+    // 規範にない `usize.try_from_u64` は E1101 (実行系が受け付けても)。必ず収まる `from_u64` を案内し、E2044 は重ねない。
+    let src = "fn t.f(n: u64) -> usize uses [] panics never\n    match usize.try_from_u64(n) {\n        Ok(v) => v\n        Err(_e) => 0usize\n    }\nend t.f\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    core.mem.drop(t.f(1u64))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("undeclared_conv", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    let got = codes(&out);
+    assert_eq!(got, vec!["E1101".to_string()], "{}", out);
+    assert!(out.contains("usize.from_u64"), "{}", out);
+}
+
+#[test]
+fn primitive_receivers_reject_methods_missing_from_the_signatures() {
+    let b = |l: &str| main_wrap("", &format!("    let x = 1u8\n    {}\n", l));
+    // 実行系は受け付けるが `core/num.sig` にない。
+    assert_eq!(codes_of("prim_to_u32", &b("core.mem.drop(x.to_u32())")), vec!["E1108"]);
+    // 綴り違いには近い名前を示す。
+    let t = Tmp::new("prim_typo", &b("core.mem.drop(x.wrapping_ad(1u8))"));
+    let o = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(o.contains("E1108") && o.contains("did you mean `wrapping_add`"), "{}", o);
+    // 宣言されているメソッドは通る。
+    assert!(codes_of("prim_ok", &b("core.mem.drop(x.wrapping_add(1u8))")).is_empty());
+}
+
+#[test]
+fn call_arguments_keep_reference_levels() {
+    let prefix = "fn t.val(a: u8) -> u8 uses [] panics never\n    a\nend t.val\n\n\
+                  fn t.rf(a: &u8) -> u8 uses [] panics never\n    *a\nend t.rf\n\n\
+                  fn t.sl(a: &[u8]) -> usize uses [] panics never\n    a.len()\nend t.sl\n\n";
+    let run_body = |l: &str| {
+        main_wrap(prefix, &format!("    let x = 1u8\n    let mut m = 2u8\n    let r = &x\n    let arr = [1u8, 2u8]\n    {}\n", l))
+    };
+    // 値が要る所に参照 / 参照が要る所に値 (自動参照も自動参照外しもない)。
+    assert!(codes_of("arg_ref_for_val", &run_body("core.mem.drop(t.val(r))")).contains(&"E2023".to_string()));
+    assert!(codes_of("arg_val_for_ref", &run_body("core.mem.drop(t.rf(x))")).contains(&"E2023".to_string()));
+    // 許す暗黙の調整: 参照どうし・`&mut T` → `&T`・`&[T; N]` → `&[T]`・明示の `*` / `&`。
+    let ok = "core.mem.drop(t.val(*r))\n    core.mem.drop(t.rf(r))\n    core.mem.drop(t.rf(&mut m))\n    core.mem.drop(t.rf(&x))\n    core.mem.drop(t.sl(&arr))";
+    assert!(codes_of("arg_ref_ok", &run_body(ok)).is_empty());
+    // 参照越しの分解で得た名前は参照の段数が決まらない (仕様 4.2 は束縛の段数を定めない) ので、どちらにも使える。
+    let pat = "match &Some(x) {\n        Some(p) => {\n            core.mem.drop(t.val(p))\n            core.mem.drop(t.rf(p))\n        }\n        None => ()\n    }";
+    let pat_src = main_wrap(prefix, &format!("    let x = 1u8\n    {}\n", pat));
+    assert!(codes_of("arg_pat_loose", &pat_src).is_empty());
+}
+
+// ---- 式の中の借用・クロージャ・関数境界・コンテナ (borrowck.rs) ----
+
+/// 診断が 1 件もないこと (他の検査も含めて) を確かめる。
+fn nll_clean(name: &str, prefix: &str, b: &[&str]) {
+    let src = main_wrap(prefix, &body(b)).replace("uses [io.console]", "uses [alloc, io.console]");
+    let t = Tmp::new(name, &src);
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}: {}", name, text(&o.stdout));
+}
+
+const NLL_FNS: &str = "type t.P['a]\n    a: &'a mut u8\n    b: &'a mut u8\nend t.P\n\n\
+    type t.S\n    a: u8\n    b: u8\nend t.S\n\n\
+    fn t.f_pair['a](a: &'a mut u8, b: &'a mut u8) -> t.P<'a> uses [] panics never\n    t.P { a: a, b: b }\nend t.f_pair\n\n\
+    fn t.f_pick['a, 'b](x: &'a u8, _y: &'b u8) -> &'a u8 uses [] panics never\n    x\nend t.f_pick\n\n\
+    fn t.f_two(a: &mut u8, b: &mut u8) -> () uses [] panics never\n    *a = 1u8\n    *b = 2u8\nend t.f_two\n\n\
+    fn t.f_use(a: &u8, b: &u8) -> () uses [] panics never\n    core.mem.drop(a)\n    core.mem.drop(b)\nend t.f_use\n\n";
+
+#[test]
+fn nll_expr_accepts_disjoint_and_shared_borrows_in_one_expression() {
+    nll_clean(
+        "nll_expr_ok",
+        NLL_FNS,
+        &[
+            "let mut s = t.S { a: 1u8, b: 2u8 }",
+            "t.f_two(&mut s.a, &mut s.b)",
+            "let p = t.P { a: &mut s.a, b: &mut s.b }",
+            "*p.a = 5u8",
+            "*p.b = 6u8",
+            "let x = 1u8",
+            "t.f_use(&x, &x)",
+            "let arr = [&x, &x]",
+            "core.check.eq(arr.len(), 2usize)",
+            "let mut y = 1u8",
+            "t.f_two(&mut y, &mut s.a)",
+            "t.f_two(&mut y, &mut s.a)",
+            "core.check.eq(s.a, 1u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_expr_accepts_two_phase_push_of_len() {
+    nll_clean(
+        "nll_expr_twophase",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "match v.push(1usize) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "match v.push(v.len()) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "core.check.eq(v.len(), 2usize)",
+        ],
+    );
+}
+
+#[test]
+fn nll_expr_accepts_a_borrow_that_ends_before_the_conflicting_access() {
+    nll_clean(
+        "nll_expr_ended",
+        NLL_FNS,
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let r = t.f_pick(&x, &y)",
+            "core.check.eq(*r, 1u8)",
+            "x = 3u8",
+            "core.check.eq(x, 3u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_boundary_follows_only_the_arguments_the_header_returns() {
+    // `f_pick` の戻り値は第 1 引数にだけ由来する。第 2 引数への書き込みは、戻り値が生きていても通る。
+    nll_clean(
+        "nll_boundary_other_arg",
+        NLL_FNS,
+        &["let x = 1u8", "let mut y = 2u8", "let r = t.f_pick(&x, &y)", "y = 3u8", "core.check.eq(*r, 1u8)", "core.check.eq(y, 3u8)"],
+    );
+    let (bad, out) = has_e3010(
+        "nll_boundary_first_arg",
+        NLL_FNS,
+        &["let mut x = 1u8", "let y = 2u8", "let r = t.f_pick(&x, &y)", "x = 3u8", "core.check.eq(*r, 1u8)"],
+    );
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn nll_boundary_struct_result_keeps_the_argument_borrows() {
+    let (bad, out) = has_e3010(
+        "nll_boundary_struct",
+        NLL_FNS,
+        &["let mut a = 1u8", "let mut b = 2u8", "let p = t.f_pair(&mut a, &mut b)", "a = 3u8", "*p.b = 4u8"],
+    );
+    assert!(bad, "{}", out);
+    // 戻り値を使い終えてから触る分には通る。
+    nll_clean(
+        "nll_boundary_struct_ok",
+        NLL_FNS,
+        &["let mut a = 1u8", "let mut b = 2u8", "let p = t.f_pair(&mut a, &mut b)", "*p.b = 4u8", "a = 3u8", "core.check.eq(a, 3u8)"],
+    );
+}
+
+#[test]
+fn nll_closure_dead_before_the_captured_variable_is_mutated() {
+    nll_clean(
+        "nll_closure_dead",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let c = fn() -> u8 capture [&x] {",
+            "    x",
+            "}",
+            "core.check.eq(c(), 1u8)",
+            "x = 2u8",
+            "let d = fn() -> () capture [&mut x] {",
+            "    x = 3u8",
+            "}",
+            "d()",
+            "core.check.eq(x, 3u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_closure_body_may_read_a_shared_capture_and_write_a_mut_capture() {
+    nll_clean(
+        "nll_closure_body_ok",
+        "",
+        &[
+            "let x = 1u8",
+            "let mut y = 2u8",
+            "let c = fn() -> u8 capture [&x, &mut y] {",
+            "    y = x",
+            "    y",
+            "}",
+            "core.check.eq(c(), 1u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_store_keeps_every_borrow_pushed_into_one_container() {
+    nll_clean(
+        "nll_store_two_ok",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "match v.push(&y) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "match v.push(&y) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "core.check.eq(v.len(), 2usize)",
+            "x = 2u8",
+            "core.check.eq(x, 2u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_mem_replace_with_a_dead_holder_is_accepted() {
+    nll_clean(
+        "nll_mem_replace_ok",
+        "type t.H\n    r: &'static u8\nend t.H\n\n",
+        &[
+            "let a = 1u8",
+            "let mut x = 2u8",
+            "let mut h = t.H { r: &a }",
+            "let old = core.mem.replace(&mut h.r, &x)",
+            "core.check.eq(*h.r, 2u8)",
+            "core.check.eq(*old, 1u8)",
+            "x = 3u8",
+            "core.check.eq(x, 3u8)",
+        ],
+    );
+}
+
+// ---- 3.3: 名前の参照形。`check` はどちらの形も受け入れ、`fmt` が正規形にする。
+
+const SN_LIB: &str = "type t.lib.Item pub\n    n: u8 pub\nend t.lib.Item\n\nfn t.lib.make() -> t.lib.Item uses [] panics never pub\n    t.lib.Item { n: 1u8 }\nend t.lib.make\n";
+
+const SN_CANON: &str = "import t.lib\n\nfn t.get(x: &t.lib.Item) -> u8 uses [] panics never\n    x.n\nend t.get\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    let item = lib.make()\n    let n = t.get(&item)\n    core.mem.drop(n)\n    Ok(())\nend t.main\n";
+
+fn sn_pkg(name: &str, src: &str) -> Tmp {
+    let t = Tmp::new(name, src);
+    fs::create_dir_all(t.0.join("src/t")).unwrap();
+    fs::write(t.0.join("src/t/lib.ksnl"), SN_LIB).unwrap();
+    t
+}
+
+fn sn_main(t: &Tmp) -> String {
+    text(&fs::read(t.0.join("src/t.ksnl")).unwrap())
+}
+
+/// 非正規形のソースが check を通り、fmt で期待の正規形になり、冪等で、正規形が check / fmt --check を通る。
+fn sn_roundtrip(name: &str, src: &str, want: &str) {
+    let t = sn_pkg(name, src);
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}: check: {}{}", name, text(&c.stdout), text(&c.stderr));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(1), "{}: fmt --check must report a diff", name);
+    assert_eq!(run(&["fmt"], &t.0).status.code(), Some(0), "{}", name);
+    assert_eq!(sn_main(&t), want, "{}: fmt result", name);
+    let again = run(&["fmt"], &t.0);
+    assert_eq!(sn_main(&t), want, "{}: fmt must be idempotent", name);
+    assert!(!text(&again.stdout).contains("reformatted"), "{}", text(&again.stdout));
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0), "{}: canonical form must pass check", name);
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{}", name);
+}
+
+#[test]
+fn short_names_canonical_source_passes() {
+    let t = sn_pkg("sn_canon", SN_CANON);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn short_form_of_an_imported_type_in_a_header_is_accepted_and_fmt_makes_it_fqn() {
+    let src = SN_CANON.replace("x: &t.lib.Item", "x: &lib.Item");
+    sn_roundtrip("sn_hdr_short", &src, SN_CANON);
+}
+
+#[test]
+fn fqn_of_an_imported_module_in_a_body_is_accepted_and_fmt_shortens_it() {
+    let src = SN_CANON.replace("lib.make()", "t.lib.make()");
+    sn_roundtrip("sn_body_fqn", &src, SN_CANON);
+    // 型注釈・構造体リテラルの中でも短縮される。
+    let src = SN_CANON.replace("let item = lib.make()", "let item: t.lib.Item = t.lib.Item { n: 2u8 }");
+    let want = SN_CANON.replace("let item = lib.make()", "let item: lib.Item = lib.Item { n: 2u8 }");
+    sn_roundtrip("sn_body_fqn_ty", &src, &want);
+}
+
+#[test]
+fn an_import_used_only_through_a_header_is_accepted_and_fmt_removes_it() {
+    let hdr = "fn t.get(x: &lib.Item) -> u8 uses [] panics never\n    x.n\nend t.get\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let want = "fn t.get(x: &t.lib.Item) -> u8 uses [] panics never\n    x.n\nend t.get\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    sn_roundtrip("sn_hdr_only_short", &format!("import t.lib\n\n{}", hdr), want);
+    // ヘッダの FQN だけが参照する import も、check は未使用にせず、fmt が外す。
+    sn_roundtrip("sn_hdr_only_fqn", &format!("import t.lib\n\n{}", want), want);
+}
+
+#[test]
+fn both_forms_together_and_an_unrelated_unused_import_is_still_reported() {
+    let src = SN_CANON.replace("x: &t.lib.Item", "x: &lib.Item").replace("lib.make()", "t.lib.make()");
+    sn_roundtrip("sn_both", &src, SN_CANON);
+    // 何からも参照されない import は E1020 のまま (fmt は意味の誤りを隠さない)。
+    let none = "import t.lib\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = sn_pkg("sn_unused", none);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).contains(&"E1020".to_string()), "{}", text(&o.stdout));
+    run(&["fmt"], &t.0);
+    assert_eq!(sn_main(&t), none);
+}
+
+#[test]
+fn fqn_of_a_module_that_is_not_imported_stays_as_it_is() {
+    let src = SN_CANON.replace("import t.lib\n\n", "").replace("lib.make()", "t.lib.make()");
+    let t = sn_pkg("sn_not_imported", &src);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+    assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
+    run(&["fmt"], &t.0);
+    assert_eq!(sn_main(&t), src);
+}
+
+#[test]
+fn a_header_short_form_needs_its_import_and_a_local_binding_keeps_its_meaning() {
+    // import なしの短縮形は未定義の型。
+    let src = SN_CANON.replace("import t.lib\n\n", "").replace("x: &t.lib.Item", "x: &lib.Item").replace("lib.make()", "t.lib.make()");
+    let t = sn_pkg("sn_no_import", &src);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).contains(&"E1102".to_string()), "{}", text(&o.stdout));
+    // import 末尾名と同名の局所束縛はシャドーイング (E1021)。header / 本体で解決が分かれることはない。
+    let src = SN_CANON.replace("let n = t.get(&item)", "let lib = t.get(&item)\n    let n = lib");
+    let t = sn_pkg("sn_shadow", &src);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).contains(&"E1021".to_string()), "{}", text(&o.stdout));
+}
+
+#[test]
+fn imports_with_the_same_last_segment_stay_an_error_in_both_forms() {
+    let t = Tmp::new("sn_collide", "import t.a.util\nimport t.b.util\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n");
+    fs::create_dir_all(t.0.join("src/t/a")).unwrap();
+    fs::create_dir_all(t.0.join("src/t/b")).unwrap();
+    let f = |m: &str| format!("fn t.{m}.util.f() -> u8 uses [] panics never\n    1u8\nend t.{m}.util.f\n");
+    fs::write(t.0.join("src/t/a/util.ksnl"), f("a")).unwrap();
+    fs::write(t.0.join("src/t/b/util.ksnl"), f("b")).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).contains(&"E1111".to_string()), "{}", text(&o.stdout));
+}
+
+#[test]
+fn name_tools_work_on_non_canonical_source() {
+    let src = SN_CANON.replace("x: &t.lib.Item", "x: &lib.Item").replace("lib.make()", "t.lib.make()");
+    let t = sn_pkg("sn_tools", &src);
+    let g = run(&["get", "t.get"], &t.0);
+    assert_eq!(g.status.code(), Some(0), "{}", text(&g.stderr));
+    assert!(text(&g.stdout).contains("fn t.get("), "{}", text(&g.stdout));
+    let s = run(&["sig", "t.get"], &t.0);
+    assert_eq!(s.status.code(), Some(0), "{}", text(&s.stderr));
+    let r = run(&["refs", "t.lib.make"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert!(text(&r.stdout).contains("t.main"), "{}", text(&r.stdout));
+    let c = run(&["context", "t.main"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}", text(&c.stderr));
+}
+
+// ---------------------------------------------------------------- `?` のエラー変換 (4.1 `core.convert.From`)
+
+/// 変換が起きる・型が同じなら変換しない・`Option` は変わらない・変換後のエラーが元の中身を運ぶ、を
+/// インタプリタとネイティブ (デバッグ・リリース) が同じ結果で通る。`ksn test --both` も通る。
+#[test]
+fn try_converts_the_error_through_from_and_both_backends_agree() {
+    let src = include_str!("data/try_from.ksnl");
+    let out = agree_with_interpreter("try_from", src);
+    assert_eq!(out, "try-from ok\n");
+    let t = Tmp::new("try_from_both", src);
+    let o = run(&["test", "--both"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stdout).contains("1 passed; 0 failed"), "{}", text(&o.stdout));
+}
+
+const TRY_AB: &str = "type t.A derive [Debug, Clone, Copy] pub\n    x: u32\nend t.A\n\ntype t.B derive [Debug, Clone, Copy] pub\n    y: u32\nend t.B\n\n";
+const TRY_FG: &str = "fn t.f() -> Result<u32, t.A> uses [] panics never\n    Err(t.A { x: 1u32 })\nend t.f\n\nfn t.g() -> Result<u32, t.B> uses [] panics never\n    let n = t.f()?\n    Ok(n)\nend t.g\n";
+const TRY_B_TO_A: &str = "impl core.convert.From<t.B> for t.A\nfn t.A.from_value_b(value: t.B) -> t.A uses [] panics never impls core.convert.From<t.B>\n    t.A { x: value.y }\nend t.A.from_value_b\n\n";
+
+/// `impl` がなければ従来どおり E2020 で、`map_err` と `impl` の両方を案内する。
+#[test]
+fn try_without_a_from_impl_reports_both_remedies() {
+    let t = Tmp::new("try_no_from", &format!("{}{}", TRY_AB, TRY_FG));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(codes(&out), vec!["E2020".to_string()], "{}", out);
+    assert!(out.contains("write `map_err`, or declare `impl core.convert.From<t.A> for t.B`"), "{}", out);
+}
+
+/// 逆向きの `From<B> for A` しかないときは、`A -> B` の `?` は通らない (逆変換・連鎖なし)。
+#[test]
+fn try_does_not_use_the_reverse_conversion() {
+    let t = Tmp::new("try_reverse", &format!("{}{}{}", TRY_AB, TRY_B_TO_A, TRY_FG));
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(codes(&text(&o.stdout)), vec!["E2020".to_string()], "{}", text(&o.stdout));
+}
+
+/// クロージャ内の `?` は、クロージャの戻り値型のエラー型へ変換する (外側の関数ではない)。
+#[test]
+fn try_in_a_closure_converts_to_the_closure_return_type() {
+    let src = "type t.Inner derive [Debug, Clone, Copy] pub\n    code: u32 pub\nend t.Inner\n\nenum t.AppError derive [Debug, Clone, Copy, PartialEq] pub\n    Code(u32)\nend t.AppError\n\nimpl core.convert.From<t.Inner> for t.AppError\nfn t.AppError.from_value(value: t.Inner) -> t.AppError uses [] panics never impls core.convert.From<t.Inner>\n    t.AppError.Code(value.code)\nend t.AppError.from_value\n\nfn t.fail(code: u32) -> Result<u32, t.Inner> uses [] panics never\n    Err(t.Inner { code: code })\nend t.fail\n\nfn t.main() -> Result<(), t.Inner> uses [] panics may\n    let f = fn(c: u32) -> Result<u32, t.AppError> capture [] {\n        let n = t.fail(c)?\n        Ok(n)\n    }\n    core.check.eq(f(4u32), Err(t.AppError.Code(4u32)))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("try_closure", src);
+    let c = run(&["check", "--json"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "{}{}", text(&c.stdout), text(&c.stderr));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+/// `impl From` 行のないメソッドは E1113、メソッドのない `impl` 行は E1112。両方そろえば通る。
+#[test]
+fn from_impl_lines_and_methods_must_pair_up() {
+    let t = Tmp::new("from_nomethod", &format!("{}impl core.convert.From<t.B> for t.A\n", TRY_AB));
+    assert!(codes(&text(&run(&["check", "--json"], &t.0).stdout)).contains(&"E1112".to_string()));
+    let method_only = TRY_B_TO_A.replacen("impl core.convert.From<t.B> for t.A\n", "", 1);
+    let t = Tmp::new("from_noimpl", &format!("{}{}", TRY_AB, method_only));
+    assert!(codes(&text(&run(&["check", "--json"], &t.0).stdout)).contains(&"E1113".to_string()));
+    let t = Tmp::new("from_ok", &format!("{}{}\n", TRY_AB, TRY_B_TO_A.trim_end()));
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+}
+
 // ---- `with` (4.4): 範囲を抜けるすべての経路で後始末式が 1 回だけ走る ----
 
 /// 後始末の順序・回数を標準出力に出す、`with` の全経路 (末尾・`return`・`?`・`break` / `continue`・入れ子・
@@ -6130,10 +6628,10 @@ fn with_accepts_a_linear_binding_consumed_by_its_cleanup() {
 #[test]
 fn with_cleanup_must_consume_the_binding() {
     let b = "    with r = t.R.new(1u32) close core.mem.drop(r.get()) {\n        core.mem.drop(r.get())\n    }\n";
-    assert_eq!(with_codes("with_noconsume", b), ["E3007"]);
+    assert_eq!(with_codes("with_noconsume", b), ["E3041"]);
     // 分岐の中だけで消費する書き方も不可 (偽の枝で線形値が漏れる)。
     let b = "    with r = t.R.new(1u32) close if true {\n        r.shut()\n    } {\n        core.mem.drop(r.get())\n    }\n";
-    assert_eq!(with_codes("with_cond", b), ["E3007"]);
+    assert_eq!(with_codes("with_cond", b), ["E3041"]);
 }
 
 #[test]
@@ -6145,9 +6643,9 @@ fn with_cleanup_must_have_type_unit() {
 #[test]
 fn with_body_cannot_move_or_borrow_out_the_binding() {
     let b = "    with r = t.R.new(1u32) close r.shut() {\n        core.mem.drop(r.status())\n    }\n";
-    assert_eq!(with_codes("with_moved", b), ["E3006"]);
+    assert_eq!(with_codes("with_moved", b), ["E3040"]);
     let b = "    with mut r = t.R.new(1u32) close r.shut() {\n        r = t.R.new(2u32)\n    }\n";
-    assert_eq!(with_codes("with_reassigned", b), ["E3006"]);
+    assert_eq!(with_codes("with_reassigned", b), ["E3040"]);
     // 借りるだけ (`&mut self` のメソッド) は許す。ただし `with mut` が要る。
     let b = "    with r = t.R.new(1u32) close r.shut() {\n        r.bump()\n    }\n";
     assert_eq!(with_codes("with_bump_immutable", b), ["E3031"]);
@@ -6156,7 +6654,7 @@ fn with_body_cannot_move_or_borrow_out_the_binding() {
 #[test]
 fn with_cleanup_cannot_leave_early() {
     let b = "    with r = t.R.new(1u32) close core.mem.drop(r.status()?) {\n        core.mem.drop(r.get())\n    }\n";
-    assert_eq!(with_codes("with_cleanup_try", b), ["E3008"]);
+    assert_eq!(with_codes("with_cleanup_try", b), ["E3042"]);
 }
 
 #[test]
@@ -6200,4 +6698,14 @@ fn with_header_may_wrap_at_call_arguments_and_the_format_is_stable() {
     let one = "fn t.main() -> Result<(), u8> uses [] panics never\n    with n = 1u32 close core.mem.drop(n) { Ok(()) }\nend t.main\n";
     let t = Tmp::new("with_oneline", one);
     assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(1));
+}
+
+#[test]
+fn with_linear_binding_is_not_reported_as_leaked_on_early_exits_in_the_body() {
+    // 線形な束縛は、本体の `return` / `break` / `continue` のどの出口でも後始末が消費する (4.4)。
+    let body = "    loop {\n        with r = t.R.new(1u32) close r.shut() {\n            if r.get() == 1u32 {\n                break\n            }\n            if r.get() == 2u32 {\n                continue\n            }\n            return Ok(())\n        }\n    }\n";
+    assert_eq!(with_codes("with_linear_exits", body), Vec::<String>::new());
+    // 外側の線形値は、本体の早期 return で従来どおり漏れとして報告される。
+    let body = "    let outer = t.R.new(2u32)\n    with r = t.R.new(1u32) close r.shut() {\n        if r.get() == 1u32 {\n            return Ok(())\n        }\n    }\n    outer.shut()\n";
+    assert_eq!(with_codes("with_outer_leak", body), ["E3003"]);
 }

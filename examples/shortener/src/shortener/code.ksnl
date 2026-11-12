@@ -23,7 +23,7 @@ fn shortener.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>
         match d {
             Some(v) => {
                 match u8.try_from_u64(v) {
-                    Ok(small) => digits.push(small).map_err(error.oom)?
+                    Ok(small) => digits.push(small)?
                     Err(_e) => return Err(error.Error.Corrupt)
                 }
             }
@@ -42,7 +42,7 @@ fn shortener.code.encode(n: u64) -> Result<alloc.string.String<std.alloc.System>
     for k in core.iter.range(0usize, len) {
         let at = len.wrapping_sub(k).wrapping_sub(1usize)
         match digits.as_slice().get(at) {
-            Some(d) => out.push(shortener.code.digit_char(d)).map_err(error.oom)?
+            Some(d) => out.push(shortener.code.digit_char(*d))?
             None => return Err(error.Error.Corrupt)
         }
     }

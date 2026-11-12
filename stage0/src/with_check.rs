@@ -3,9 +3,12 @@
 //!
 //! AST: `With [PBind(名前), mut, 初期化式, 後始末式, 本体ブロック]`。
 //! 検査 (すべて「型が決まらない所では黙る」作法に従う):
-//! - E3006: 本体で束縛を消費している (move・値渡し・`self` を値で受けるメソッド)。後始末が use after move になる。
-//! - E3007: 後始末式が束縛を消費していない。
-//! - E3008: 後始末式の中に `return` / `break` / `continue` / `?` がある (後始末は必ず最後まで走る)。
+//! - E3040: 本体で束縛を消費している (move・値渡し・`self` を値で受けるメソッド)。後始末が use after move になる。
+//! - E3041: 後始末式が束縛を消費していない。
+//! - E3042: 後始末式の中に `return` / `break` / `continue` / `?` がある (後始末は必ず最後まで走る)。
+//! - E3043: 本体の値が束縛から借りた参照 (後始末のあとに残る)。
+//! - 線形値の消費義務 (check.rs の `self.lin`): `with` の束縛は `lin_declare` しない。後始末式が全出口で消費するので、
+//!   本体の `?` / `return` / `break` / `continue` の漏れ報告 (`lin_leaks`) に載らない。外側の線形値は従来どおり。
 //! - E2045 (後始末式が `()` でない) は型推論 (types.rs の `With` の枝) が報告する。
 //!
 //! 効果 (`uses`) と panic は、後始末式も囲む関数の本体の一部なので、既存の呼び出し検査がそのまま数える。
@@ -25,7 +28,7 @@ impl<'a> Checker<'a> {
         self.visit(&f[4], &mut inner, di, free);
         if let Some((what, line)) = cleanup_exit(&f[3]) {
             self.diag(
-                "E3008",
+                "E3042",
                 format!("`{}` is not allowed in the `close` expression of `with`; cleanup always runs to the end (4.4)", what),
                 di,
                 line,
@@ -34,7 +37,7 @@ impl<'a> Checker<'a> {
     }
 
     /// 型・所有権の走査 (`tc_expr`) の `With` の枝。
-    pub(super) fn tc_with(&mut self, e: &V, env: &Env, muts: &BTreeSet<String>) {
+    pub(super) fn tc_with(&mut self, e: &V, env: &Env, muts: &BTreeSet<String>, consume: bool) {
         let f = nf(e);
         let name = st(&nf(&f[0])[0]);
         self.tc_expr(&f[2], env, muts, true);
@@ -54,25 +57,25 @@ impl<'a> Checker<'a> {
             inner_muts.remove(&name);
         }
         self.revive_place(std::slice::from_ref(&name));
-        self.tc_expr(&f[4], &inner, &inner_muts, false);
+        self.tc_expr(&f[4], &inner, &inner_muts, consume);
         // 型が分かり、Copy でも参照でもない束縛だけを検査する。
         let checkable = !is_nil(&ty) && tag(&ty) != "ref" && !self.is_copy(&ty);
         if checkable {
             if let Some(line) = self.consuming_use(&f[4], &name, &inner, false, false) {
                 self.tdiag(
-                    "E3006",
+                    "E3040",
                     format!("`{}` cannot be moved or reassigned in the `with` body; the `close` expression consumes it (4.4)", name),
                     line,
                 );
             }
         }
-        // 本体の値 (末尾の式) が束縛から借りた参照なら、後始末のあとに残る (E3009)。
+        // 本体の値 (末尾の式) が束縛から借りた参照なら、後始末のあとに残る (E3043)。
         if checkable {
             let mut leaves: Vec<&V> = vec![];
             tail_leaves(&f[4], &mut leaves);
             if let Some(line) = leaves.iter().find(|l| self.borrows_from(l, &name, &inner)).map(|l| nline(l)) {
                 self.tdiag(
-                    "E3009",
+                    "E3043",
                     format!("the `with` body value borrows from `{}`, which the `close` expression consumes (4.4)", name),
                     line,
                 );
@@ -82,7 +85,7 @@ impl<'a> Checker<'a> {
         self.revive_place(std::slice::from_ref(&name));
         self.tc_expr(&f[3], &inner, &inner_muts, false);
         if checkable && self.consuming_use(&f[3], &name, &inner, true, true).is_none() {
-            self.tdiag("E3007", format!("the `close` expression of `with` must consume `{}` (4.4)", name), nline(&f[3]));
+            self.tdiag("E3041", format!("the `close` expression of `with` must consume `{}` (4.4)", name), nline(&f[3]));
         }
         self.revive_place(std::slice::from_ref(&name));
     }
