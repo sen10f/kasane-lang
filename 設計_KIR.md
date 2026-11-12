@@ -631,13 +631,18 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 - `stage0/src/kir.rs`: 型 (`Ty`)、命令 (`Op` / `Inst` / `Term`)、関数 (`Func`)、モジュール (`Module`)、テキストの出力 (`print_module`) と読み込み (`parse_module`)、検査 (`verify_module`)。
 - `stage0/src/kir_lower.rs`: 型表 (`TypeCk::tytab`) 付きの AST から KIR を作る (`lower_user`)。対象外の関数は理由を付けて未対応にする。隠し表示 `dump_hidden`。
 - `stage0/src/kir_exec.rs`: KIR の参照実行器 (`run`)。明示的なフレーム列で呼び出しを持ち、Rust の再帰を使わない。深さの上限は木走査と同じ 2500 (終了コード 102)。
+- `stage0/src/kir_scalar.rs` (kir/scalars): 数値の意味 (浮動小数の演算と関数、`u128` の比較、シフト、変換、ビットの数え上げ)。木走査と同じ式を使う。
+- `stage0/src/kir_lower_scalar.rs` (kir/scalars): 数値の下ろし。`kir_lower.rs` の子モジュール (`#[path]`) で、`kir_lower.rs` 側には振り分けの 1 行ずつのフックだけを置く。
 - `stage0/src/cli.rs`: `ksn kir <FQN> [--run <引数>...]` (隠し機能)、`cmd_check` から `dump_hidden` を呼ぶ。
 
 ### 10.2 対応範囲
 
-- 型: `i8` `i16` `i32` `i64` `isize`、`u8` `u16` `u32` `u64` `usize`、`bool`、`unit`。
+- 型: `i8` `i16` `i32` `i64` `i128` `isize`、`u8` `u16` `u32` `u64` `u128` `usize`、`f32` `f64`、`bool`、`unit`。値は `i128` の 1 語で持つ (`u128` はビットパターン、浮動小数はビット列)。
 - 文: `let` (`mut` を含む)、単純な変数への代入、式文、`if` / `else if` / `else`、`while`、`loop`、`break`、`continue`、`return`。
-- 式: 整数と bool のリテラル、局所変数、整数の `const`、`+ - * / %` (溢れと 0 除算は panic。文言は木走査と同じ)、比較 (`== != < <= > >=`)、`&&` `||` (短絡)、単項 `-`、`wrapping_add` / `wrapping_sub` / `wrapping_mul`、同じ単相の関数の呼び出し (引数の型は一致が必要)。
+- 式: 整数・浮動小数・bool のリテラル、局所変数、整数の `const`、`+ - * / %` (整数は溢れと 0 除算が panic。文言は木走査と同じ。浮動小数の `+ - * /` は panic しない)、比較 (`== != < <= > >=`、浮動小数は IEEE の順序)、`&&` `||` (短絡)、整数と bool の `& | ^`、単項 `-` (整数と浮動小数)、整数と bool の `!`、同じ単相の関数の呼び出し (引数の型は一致が必要)。
+- 整数のメソッド: `wrapping_add` / `sub` / `mul` / `neg` / `shl` / `shr`、`saturating_add` / `sub` / `mul` / `neg`、`count_ones` / `leading_zeros` / `trailing_zeros`、`max` / `min`。`checked_*` / `try_from_*` / `trunc_to_*` / `successor` と `from_str_radix` は `Option` / `Result` を返すので対象外。
+- 浮動小数のメソッド: `abs` `sqrt` `floor` `ceil` `trunc` `round_ties_even` `sin` `cos` `tan` `exp` `ln` (自前の `fmath` を木走査と同じ式で使う)、`is_nan` `is_finite`、`min` `max` `rem` `atan2` `powi`、`to_bits` / `from_bits`。
+- 変換: `from_<int>` (値を保つ組だけ)、`from_<int>_nearest` と `to_f64` / `nearest_to_f64`、`nearest_to_f32` / `to_f64` (`f32` と `f64` の間)。`from_<int>_nearest` の `f32` は木走査と同じく `f64` を経由して丸める。
 - 効果: `panics never` の関数には trap の命令が現れない (`verify_module` が検査する)。`uses` は宣言の値をそのまま写す。段階 1 の式には副作用を起こす組み込みが無いので、対象の関数は実質的に `uses []` だけになる。
 - テキスト形式: `kir 1` の版行。版が違えば読み込みを拒否する (7 章 18)。関数は FQN の順に出す。
 
@@ -653,20 +658,22 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 - 単体テスト: `kir::tests` 6 本 (往復、版の拒否、`never` の trap 検出、溢れ文言の一致)。
 - 統合テスト (`stage0/tests/cli.rs` 末尾): `kir_lower_values_match_tree_walker` (16 ケース)、`kir_lower_panics_and_depth_match_tree_walker` (panic の文言、終了コード 101、深さの超過 102)、`kir_lower_prints_a_module_that_reads_back`、`kir_lower_reports_unsupported_constructs_with_a_reason`、`kir_lower_dump_on_check_is_hidden_behind_the_env_var`、`kir_lower_examples_and_perf_functions_match_tree_walker`、`kir_lower_rejects_checked_methods_and_aggregates_with_a_reason`。
 - 木走査との一致: `perf/fib` の `fib.fib`、`perf/loops` の `loops.sum_to`、`examples/demo` の `demo.fib`、`examples/native` の `native.half`、`examples/realtime` の `realtime.triangle` を、`ksn run` と `ksn kir --run` の両方で確かめた (値は各パッケージの `main` の検査と一致)。
-- 降格の範囲: examples 7 本のユーザ関数の候補 40 件のうち、降格できたのは 3 件 (`demo.fib`、`native.half`、`realtime.triangle`)。残り 37 件は未対応で、理由は下の 10.5 のとおり。
-- `KSN_DUMP_KIR=1 ksn check` は、stderr に KIR と `kir: 未対応 <FQN>: <理由>` の行を出す。通常の `ksn check` の出力と終了コードは変えない。
+- 降格の範囲: examples 7 本のユーザ関数の候補 40 件のうち、降格できたのは 7 件 (`demo.fib`、`features.collatz`、`native.collatz`、`native.half`、`realtime.triangle`、`tour.floats`、`tour.loops`)。残り 33 件は未対応で、理由は下の 10.5 のとおり。(段階 1 の基線は 3 件。)
+- `KSN_DUMP_KIR=1 ksn check` は、stderr に KIR と `kir: 未対応 <FQN>: <理由>` の行を出す。通常の `ksn check` の出力と終了コードは変えない (examples 7 本の `ksn check` の出力は、拡張の前後で同一)。
+- 数値の拡張 (kir/scalars) の確認: `stage0/tests/cli.rs` 末尾の `kir_scalar_ints_match_tree_walker`、`kir_scalar_floats_and_wide_ints_match_tree_walker` (超越関数・`f32` の結果はビット列で木走査と比べる)、`kir_scalar_text_reads_back_with_float_and_bit_ops`、`kir_scalar_reports_unsupported_numeric_methods_with_a_reason`。`kir_scalar.rs` の単体テスト 5 本。
+- 木走査の修正 (`natives.rs`、参照実行器との一致のため): (a) `i128` の `saturating_*` は、溢れた方向を結果の符号で決める (負側の溢れが `MAX` になっていた)。(b) `u128` の値を `f32` / `f64` へ変換するとき、符号付きとして広げていた (`from_u128_nearest` など)。どちらも狭い整数型には影響しない。
 
 ### 10.5 未対応の一覧
 
-未対応 37 件の理由を、先頭の理由 1 つで分類した (examples 7 本の `KSN_DUMP_KIR=1 ksn check` の出力による。候補 40 件のうち降格できた 3 件を除く)。
+未対応 33 件の理由を、先頭の理由 1 つで分類した (examples 7 本の `KSN_DUMP_KIR=1 ksn check` の出力による。候補 40 件のうち降格できた 7 件を除く)。拡張前は 37 件 (ビット演算・数値のメソッド・`f64` の 3 行が、拡張で消えた分)。
 
 | 理由 | 件数 | 例 | 次の作業 |
 |---|---:|---|---|
 | 引数・戻り値の型が段階 1 の外 (参照 17、`Result` 9、名前付きの型 4) | 30 | `json.array` (`&json.Doc`)、`demo.main` (`Result<(), std.io.Error>`) | 集成体・参照・`Result` の型を型表に足す (第 2.3)。段階 2 以降 |
-| 整数のビット演算 (`& \| ^ << >>`) | 3 | `features.collatz`、`native.collatz`、`tour.loops` | 演算子の下ろしを足す。命令は既存の `Op` に無いので追加が要る |
-| 整数のメソッド (`saturating_add` など) | 1 | `tour.ints` | `wrapping_*` 以外は段階 3 以降。`checked_*` は `Option<T>` を返すので集成体の型が要る |
-| `f64` | 1 | `tour.floats` | 浮動小数の型と命令を足す |
+| `match` (`checked_*` の `Option` を受ける) | 1 | `tour.ints` | 集成体 (`Option`) の型と `match` の下ろし。`checked_*` も同時に扱う |
 | その他 (バイト文字リテラル、列挙子の呼び出し) | 2 | `json.is_hex`、`tour.shapes` | リテラルの型と、列挙子の値の下ろし |
+
+残った数値の未対応は、`tour.ints` の `checked_*` (`Option`) と、`trunc_to_*` / `try_from_*` / `successor` / `from_str_radix` (`Option` か `Result`)。いずれも集成体の型が要る。
 
 `checked_*` の拒否は `stage0/tests/cli.rs` の `kir_lower_rejects_checked_methods_and_aggregates_with_a_reason` で確かめる。
 
@@ -674,7 +681,7 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 
 - 冗長な命令: 文として使う式の unit 定数 (`%3: unit = const.unit ()`) と、値を渡すだけの空ブロック (`b2(): br b3()`) が残る。動作は正しい。段階 3 の不要コード除去と空ブロックの統合で消す。
 - `ksn kir --json` (LLM 向けの形式) は未実装 (第 2.7)。
-- 段階 1 の対象外の型と構文を広げる順序: (1) 浮動小数と整数のビット演算、(2) 整数のメソッド、(3) 集成体 (構造体・列挙型・タプル) とレイアウト、(4) 参照とスライス、(5) `Result` と `?`。(3) から先は段階 2 の VM の設計と一緒に決める。
+- 段階 1 の対象外の型と構文を広げる順序: (1) 浮動小数と整数のビット演算 (kir/scalars で完了。`i128` / `u128` と数値のメソッドも入った。残りは `Option` を返すもの)、(2) 集成体 (構造体・列挙型・タプル) とレイアウト、(3) 参照とスライス、(4) `Result` と `?`。(2) から先は段階 2 の VM の設計と一緒に決める。
 - 段階 2 (VM) への入口: `Module` は関数の表として使える形にしてある。次は `vm/` でバイトコードへ写し、`kir_exec` と結果を比べる差分テスト (`vm_parity`) を作る。
 
 ## 付録: 参照した箇所 (主要)

@@ -2,17 +2,19 @@
 //!
 //! 目的は、木走査インタプリタ (`interp.rs`) と出力・終了コード・panic の文言が一致することを確かめる基準を作ること。
 //! 速さは求めない。呼び出しは明示的なフレーム列で持ち、Rust の再帰を使わない。深さの上限は木走査と同じ 2500 (終了コード 102)。
+//! 浮動小数と 128 ビット整数の規則は `kir_scalar.rs` にある。
 
 use std::collections::HashMap;
 
-use crate::kir::{Aop, BoolOp, Cc, Mode, Module, Op, Term, VId};
+use crate::kir::{Aop, BoolOp, Mode, Module, Op, Term, Ty, VId};
+use crate::kir_scalar;
 
 /// 木走査インタプリタの呼び出し深さの上限 (`interp.rs` の `depth > 2500`)。
 const MAX_DEPTH: usize = 2500;
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
-    /// 正常終了。値は型に応じた整数 (bool は 0 / 1、unit は 0)。
+    /// 正常終了。値は型に応じた 1 語 (整数はその値、`u128` はビットパターン、浮動小数はビット列、bool は 0 / 1、unit は 0)。
     Value(i128),
     /// 実行時 panic (文言は木走査と同じ)。
     Panic(String),
@@ -30,8 +32,54 @@ struct Frame {
     dst: Option<VId>,
 }
 
+const DIV_ZERO: &str = "attempt to divide by zero";
+const REM_ZERO: &str = "attempt to calculate the remainder with a divisor of by zero";
+
+/// `u128` の算術 (値はビットパターン)。
+fn arith_u128(op: Aop, mode: Mode, x: u128, y: u128) -> Result<u128, String> {
+    match mode {
+        Mode::Wrap => Ok(match op {
+            Aop::Add => x.wrapping_add(y),
+            Aop::Sub => x.wrapping_sub(y),
+            _ => x.wrapping_mul(y),
+        }),
+        Mode::Sat => Ok(match op {
+            Aop::Add => x.saturating_add(y),
+            Aop::Sub => x.saturating_sub(y),
+            _ => x.saturating_mul(y),
+        }),
+        Mode::Trap => {
+            if matches!(op, Aop::Div | Aop::Rem) && y == 0 {
+                return Err(if op == Aop::Div { DIV_ZERO.to_string() } else { REM_ZERO.to_string() });
+            }
+            let r = match op {
+                Aop::Add => x.checked_add(y),
+                Aop::Sub => x.checked_sub(y),
+                Aop::Mul => x.checked_mul(y),
+                Aop::Div => x.checked_div(y),
+                Aop::Rem => x.checked_rem(y),
+            };
+            r.ok_or_else(|| overflow_msg(op))
+        }
+    }
+}
+
+fn overflow_msg(op: Aop) -> String {
+    match op {
+        Aop::Add => "attempt to add with overflow",
+        Aop::Sub => "attempt to subtract with overflow",
+        Aop::Mul => "attempt to multiply with overflow",
+        Aop::Div => "attempt to divide with overflow",
+        Aop::Rem => "attempt to calculate the remainder with overflow",
+    }
+    .to_string()
+}
+
 /// 整数の算術。結果は型の範囲内に収まる値か、panic の文言。
-fn arith(op: Aop, mode: Mode, ty: crate::kir::Ty, x: i128, y: i128) -> Result<i128, String> {
+fn arith(op: Aop, mode: Mode, ty: Ty, x: i128, y: i128) -> Result<i128, String> {
+    if ty == Ty::U128 {
+        return arith_u128(op, mode, x as u128, y as u128).map(|v| v as i128);
+    }
     if mode == Mode::Wrap {
         let r = match op {
             Aop::Add => x.wrapping_add(y),
@@ -40,13 +88,31 @@ fn arith(op: Aop, mode: Mode, ty: crate::kir::Ty, x: i128, y: i128) -> Result<i1
         };
         return Ok(ty.wrap(r));
     }
+    if mode == Mode::Sat {
+        // 16 ビット以下と i128 の両方を扱う。i128 の溢れは結果の符号で飽和する方向を決める (和と差は x の符号、積は符号の積)。
+        let r = match op {
+            Aop::Add => x.checked_add(y),
+            Aop::Sub => x.checked_sub(y),
+            _ => x.checked_mul(y),
+        };
+        let neg = match op {
+            Aop::Add | Aop::Sub => x < 0,
+            _ => (x < 0) != (y < 0),
+        };
+        return Ok(match r {
+            Some(v) => v.clamp(ty.min(), ty.max()),
+            None => {
+                if neg {
+                    ty.min()
+                } else {
+                    ty.max()
+                }
+            }
+        });
+    }
     if matches!(op, Aop::Div | Aop::Rem) && y == 0 {
         // 文言は木走査 (interp.rs の `int_arith`) と同じにする。剰余の文言は木走査の誤植 (`of by zero`) を写している。
-        return Err(if op == Aop::Div {
-            "attempt to divide by zero".to_string()
-        } else {
-            "attempt to calculate the remainder with a divisor of by zero".to_string()
-        });
+        return Err(if op == Aop::Div { DIV_ZERO.to_string() } else { REM_ZERO.to_string() });
     }
     let r = match op {
         Aop::Add => x.checked_add(y),
@@ -56,26 +122,8 @@ fn arith(op: Aop, mode: Mode, ty: crate::kir::Ty, x: i128, y: i128) -> Result<i1
         Aop::Rem => x.checked_rem(y),
     };
     match r {
-        Some(v) if v >= ty.min() && v <= ty.max() => Ok(v),
-        _ => Err(match op {
-            Aop::Add => "attempt to add with overflow",
-            Aop::Sub => "attempt to subtract with overflow",
-            Aop::Mul => "attempt to multiply with overflow",
-            Aop::Div => "attempt to divide with overflow",
-            Aop::Rem => "attempt to calculate the remainder with overflow",
-        }
-        .to_string()),
-    }
-}
-
-fn compare(cc: Cc, x: i128, y: i128) -> bool {
-    match cc {
-        Cc::Eq => x == y,
-        Cc::Ne => x != y,
-        Cc::Lt => x < y,
-        Cc::Le => x <= y,
-        Cc::Gt => x > y,
-        Cc::Ge => x >= y,
+        Some(v) if ty.in_range(v) => Ok(v),
+        _ => Err(overflow_msg(op)),
     }
 }
 
@@ -115,23 +163,43 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         Err(msg) => return Ok(Outcome::Panic(msg)),
                     }
                 }
-                Op::Cmp { cc, a, b, .. } => compare(*cc, get(&stack[top], a), get(&stack[top], b)) as i128,
-                Op::Neg { a } => {
+                Op::FArith { op, a, b } => kir_scalar::farith(*op, inst.ty, get(&stack[top], a), get(&stack[top], b)),
+                Op::Cmp { cc, ty, a, b } => kir_scalar::cmp(*cc, *ty, get(&stack[top], a), get(&stack[top], b)) as i128,
+                Op::Shift { left, a, n } => kir_scalar::shift(*left, inst.ty, get(&stack[top], a), get(&stack[top], n)),
+                Op::MinMax { max, a, b } => kir_scalar::minmax(*max, inst.ty, get(&stack[top], a), get(&stack[top], b)),
+                Op::FUn { f, src, a } => kir_scalar::funary(*f, *src, inst.ty, get(&stack[top], a)),
+                Op::FBin { f, a, b } => kir_scalar::fbin(*f, inst.ty, get(&stack[top], a), get(&stack[top], b)),
+                Op::Conv { src, a } => kir_scalar::conv(*src, inst.ty, get(&stack[top], a)),
+                Op::Bitcast { a, .. } => get(&stack[top], a),
+                Op::BitCount { k, src, a } => kir_scalar::bitcount(*k, *src, get(&stack[top], a)),
+                Op::Neg { a, mode } => {
                     let x = get(&stack[top], a);
-                    if x == inst.ty.min() {
-                        return Ok(Outcome::Panic("attempt to negate with overflow".to_string()));
+                    match mode {
+                        Mode::Wrap => kir_scalar::wrap_neg(inst.ty, x),
+                        _ => {
+                            if x == inst.ty.min() {
+                                return Ok(Outcome::Panic("attempt to negate with overflow".to_string()));
+                            }
+                            -x
+                        }
                     }
-                    -x
                 }
-                Op::Not(a) => (get(&stack[top], a) == 0) as i128,
+                Op::Not(a) => {
+                    let x = get(&stack[top], a);
+                    if inst.ty == Ty::Bool {
+                        (x == 0) as i128
+                    } else {
+                        kir_scalar::not_int(inst.ty, x)
+                    }
+                }
                 Op::Bool(bop, a, b) => {
-                    let (x, y) = (get(&stack[top], a) != 0, get(&stack[top], b) != 0);
-                    let r = match bop {
+                    // bool は 0 / 1 なので、ビット演算がそのまま論理演算になる。整数は符号拡張した 1 語なので、型の範囲の値を保つ。
+                    let (x, y) = (get(&stack[top], a), get(&stack[top], b));
+                    match bop {
                         BoolOp::And => x & y,
                         BoolOp::Or => x | y,
                         BoolOp::Xor => x ^ y,
-                    };
-                    r as i128
+                    }
                 }
                 Op::Call { callee, args } => {
                     if stack.len() >= MAX_DEPTH {
@@ -201,6 +269,18 @@ mod tests {
         assert_eq!(arith(Aop::Div, Mode::Trap, Ty::I8, -128, -1), Err("attempt to divide with overflow".into()));
         assert_eq!(arith(Aop::Rem, Mode::Trap, Ty::I8, 1, 0), Err("attempt to calculate the remainder with a divisor of by zero".into()));
         assert_eq!(arith(Aop::Mul, Mode::Wrap, Ty::U8, 16, 17), Ok(16));
+    }
+
+    #[test]
+    fn arith_saturates_and_handles_128_bits() {
+        assert_eq!(arith(Aop::Add, Mode::Sat, Ty::U8, 250, 10), Ok(255));
+        assert_eq!(arith(Aop::Sub, Mode::Sat, Ty::U8, 3, 10), Ok(0));
+        assert_eq!(arith(Aop::Add, Mode::Sat, Ty::I128, i128::MIN, i128::MIN), Ok(i128::MIN));
+        assert_eq!(arith(Aop::Add, Mode::Sat, Ty::I128, i128::MAX, 1), Ok(i128::MAX));
+        assert_eq!(arith(Aop::Mul, Mode::Sat, Ty::I128, i128::MIN, 2), Ok(i128::MIN));
+        // u128 の最大値 (-1 のビットパターン) に 1 を足すと panic、wrap は 0
+        assert_eq!(arith(Aop::Add, Mode::Trap, Ty::U128, -1, 1), Err("attempt to add with overflow".into()));
+        assert_eq!(arith(Aop::Add, Mode::Wrap, Ty::U128, -1, 1), Ok(0));
     }
 
     /// `fn f(n: u64) -> u64`: 引数を 1 つ減らして呼ぶ再帰 (深さの検査用)。

@@ -9531,3 +9531,413 @@ end t.Q.go
     let (_code, got, out) = eff_check_with("impl_eff_quiet", IMPL_EFF_PRELUDE, body);
     assert!(!got.iter().any(|c| c == "E4021"), "{}", out);
 }
+
+// ---- KIR の数値 (浮動小数・128 ビット・ビット演算・シフト・数値のメソッド・変換): kir_scalar_* ----
+
+/// 数値の関数の試験用の定義。名前の順に並べる (E0020)。`t.main` は呼び出し側が最後に付ける。
+const SCALAR_FNS: &str = "fn t.a_band(a: u32, b: u32) -> u32 uses [] panics never
+    a & b
+end t.a_band
+
+fn t.a_big() -> i128 uses [] panics never
+    let a = 170141183460469231731687303715884105727i128
+    a.wrapping_add(1i128)
+end t.a_big
+
+fn t.a_bnot8(a: u8) -> u8 uses [] panics never
+    !a
+end t.a_bnot8
+
+fn t.a_bnoti(a: i32) -> i32 uses [] panics never
+    !a
+end t.a_bnoti
+
+fn t.a_cnt(a: u32) -> u32 uses [] panics never
+    a.count_ones()
+end t.a_cnt
+
+fn t.a_conv1() -> i64 uses [] panics never
+    i64.from_i8(-5i8)
+end t.a_conv1
+
+fn t.a_conv2() -> f64 uses [] panics never
+    f64.from_i32_nearest(7i32)
+end t.a_conv2
+
+fn t.a_conv3() -> u64 uses [] panics never
+    f64.from_bits(4607182418800017408u64).to_bits()
+end t.a_conv3
+
+fn t.a_conv4() -> u32 uses [] panics never
+    0.1f64.nearest_to_f32().to_bits()
+end t.a_conv4
+
+fn t.a_f32trig() -> u32 uses [] panics never
+    let x = 0.7f32
+    (x.sin() + x.exp() * x).to_bits()
+end t.a_f32trig
+
+fn t.a_fl1() -> f64 uses [] panics never
+    let a = 9.0f64
+    let b = a.sqrt()
+    let c = b * 2.0 + 1.5
+    c.floor()
+end t.a_fl1
+
+fn t.a_fromu128() -> f64 uses [] panics never
+    f64.from_u128_nearest(0u128.wrapping_sub(1u128))
+end t.a_fromu128
+
+fn t.a_lz(a: u16) -> u32 uses [] panics never
+    a.leading_zeros()
+end t.a_lz
+
+fn t.a_max(a: i64, b: i64) -> i64 uses [] panics never
+    a.max(b)
+end t.a_max
+
+fn t.a_nan() -> bool uses [] panics never
+    let n = 0.0f64 / 0.0f64
+    n == n
+end t.a_nan
+
+fn t.a_sat(a: u8, b: u8) -> u8 uses [] panics never
+    a.saturating_add(b)
+end t.a_sat
+
+fn t.a_satadd128() -> i128 uses [] panics never
+    let a = -170141183460469231731687303715884105727i128
+    a.saturating_add(-10i128)
+end t.a_satadd128
+
+fn t.a_satneg(a: i8) -> i8 uses [] panics never
+    a.saturating_neg()
+end t.a_satneg
+
+fn t.a_satneg128() -> i128 uses [] panics never
+    let a = -170141183460469231731687303715884105727i128
+    a.saturating_sub(10i128)
+end t.a_satneg128
+
+fn t.a_shl8(a: u8, n: u32) -> u8 uses [] panics never
+    a.wrapping_shl(n)
+end t.a_shl8
+
+fn t.a_shri8(a: i8, n: u32) -> i8 uses [] panics never
+    a.wrapping_shr(n)
+end t.a_shri8
+
+fn t.a_trig() -> u64 uses [] panics never
+    let x = 0.7f64
+    (x.sin() + x.cos() * x.tan() + x.exp() + x.ln() + x.atan2(0.3f64) + x.powi(5i32)).to_bits()
+end t.a_trig
+
+fn t.a_tz(a: i32) -> u32 uses [] panics never
+    a.trailing_zeros()
+end t.a_tz
+
+fn t.a_ucmp() -> bool uses [] panics never
+    t.a_umax() > 1u128
+end t.a_ucmp
+
+fn t.a_umax() -> u128 uses [] panics never
+    0u128.wrapping_sub(1u128)
+end t.a_umax
+
+fn t.a_wneg(a: u8) -> u8 uses [] panics never
+    a.wrapping_neg()
+end t.a_wneg
+
+fn t.a_wshr64(a: u64, n: u32) -> u64 uses [] panics never
+    a.wrapping_shr(n)
+end t.a_wshr64
+";
+
+/// `SCALAR_FNS` に `main` (本体 `body`) を付けたパッケージを作る。
+fn scalar_pkg(name: &str, body: &str) -> Tmp {
+    Tmp::new(
+        name,
+        &format!("{}fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n{}    Ok(())\nend t.main\n", SCALAR_FNS, body),
+    )
+}
+
+#[test]
+fn kir_scalar_ints_match_tree_walker() {
+    // (関数, 木走査の引数 (接尾辞付き), 参照実行器の引数, 木走査の期待値, 参照実行器の期待値)
+    let cases: &[(&str, &[&str], &[&str], &str, &str)] = &[
+        ("t.a_band", &["12u32", "10u32"], &["12", "10"], "8u32", "8"),
+        ("t.a_bnot8", &["0u8"], &["0"], "255u8", "255"),
+        ("t.a_bnoti", &["5i32"], &["5"], "-6i32", "-6"),
+        ("t.a_shl8", &["129u8", "9u32"], &["129", "9"], "2u8", "2"),
+        ("t.a_shri8", &["-128i8", "9u32"], &["-128", "9"], "-64i8", "-64"),
+        ("t.a_sat", &["250u8", "10u8"], &["250", "10"], "255u8", "255"),
+        ("t.a_satneg", &["-128i8"], &["-128"], "127i8", "127"),
+        ("t.a_cnt", &["61680u32"], &["61680"], "8u32", "8"),
+        ("t.a_lz", &["1u16"], &["1"], "15u32", "15"),
+        ("t.a_tz", &["0i32"], &["0"], "32u32", "32"),
+        ("t.a_max", &["-3i64", "2i64"], &["-3", "2"], "2i64", "2"),
+        ("t.a_wneg", &["1u8"], &["1"], "255u8", "255"),
+        ("t.a_wshr64", &["18446744073709551615u64", "60u32"], &["18446744073709551615", "60"], "15u64", "15"),
+    ];
+    for (i, (f, targs, kargs, want, kwant)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, targs.join(", "));
+        let t = scalar_pkg(&format!("kir_scalar_int_{}", i), &format!("    core.check.eq({}, {})\n", call, want));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut ka = vec!["kir", *f, "--run"];
+        ka.extend(kargs.iter().copied());
+        let k = run(&ka, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_scalar_floats_and_wide_ints_match_tree_walker() {
+    // 木走査で `core.check.eq` が通ること (値は木走査の結果と同じ)、参照実行器の値が期待どおりであること。
+    // 超越関数と f32 の値はビット列で比べる (fmath を含むので、木走査と 1 ビットも違わないことを確かめる)。
+    // (関数, 木走査で呼ぶ式, 木走査の期待値, 参照実行器の期待値)
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("t.a_fl1", "t.a_fl1()", "7.0f64", "7"),
+        ("t.a_nan", "t.a_nan()", "false", "false"),
+        ("t.a_trig", "t.a_trig()", "4616504293205964284u64", "4616504293205964284"),
+        ("t.a_f32trig", "t.a_f32trig()", "1073967664u32", "1073967664"),
+        ("t.a_conv4", "t.a_conv4()", "1036831949u32", "1036831949"),
+        ("t.a_conv2", "t.a_conv2()", "7.0f64", "7"),
+        ("t.a_conv3", "t.a_conv3()", "4607182418800017408u64", "4607182418800017408"),
+        ("t.a_conv1", "t.a_conv1()", "-5i64", "-5"),
+        ("t.a_fromu128", "t.a_fromu128()", "3.402823669209385e38f64", "340282366920938500000000000000000000000"),
+        ("t.a_big", "t.a_big()", "-170141183460469231731687303715884105728i128", "-170141183460469231731687303715884105728"),
+        ("t.a_umax", "t.a_umax().wrapping_add(2u128)", "1u128", "340282366920938463463374607431768211455"),
+        ("t.a_ucmp", "t.a_ucmp()", "true", "true"),
+        ("t.a_satadd128", "t.a_satadd128()", "-170141183460469231731687303715884105728i128", "-170141183460469231731687303715884105728"),
+        ("t.a_satneg128", "t.a_satneg128()", "-170141183460469231731687303715884105728i128", "-170141183460469231731687303715884105728"),
+    ];
+    for (i, (f, call, want, kwant)) in cases.iter().enumerate() {
+        let t = scalar_pkg(&format!("kir_scalar_float_{}", i), &format!("    core.check.eq({}, {})\n", call, want));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let k = run(&["kir", *f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", f);
+    }
+}
+
+#[test]
+fn kir_scalar_text_reads_back_with_float_and_bit_ops() {
+    // `ksn kir` は出力を読み直して同じ文字列になることを確かめてから出す。浮動小数の命令と再解釈の表記を含む。
+    let t = scalar_pkg("kir_scalar_text", "");
+    let o = run(&["kir", "t.a_trig"], &t.0);
+
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("fsin.f64"), "{}", out);
+    assert!(out.contains("fpowi.f64"), "{}", out);
+    assert!(out.contains("bitcast.u64.f64"), "{}", out);
+}
+
+#[test]
+fn kir_scalar_reports_unsupported_numeric_methods_with_a_reason() {
+    // `trunc_to_*` は `Option` を返すので段階 1 の型に入らない。理由を付けて拒否する。
+    let src = "fn t.a_tr(a: f64) -> bool uses [] panics never
+    match a.trunc_to_i32() {
+        Some(_v) => true
+        None => false
+    }
+end t.a_tr
+";
+    let t = Tmp::new("kir_scalar_unsupported", src);
+    let o = run(&["kir", "t.a_tr"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("t.a_tr は未対応"), "{}", text(&o.stderr));
+}
+
+// ---- 数値の組み合わせの探索 (NaN・符号付き零・丸め・飽和・128 ビットの境界): kir_scalar_probes_* ----
+
+/// 数値の関数の探索用の定義。名前の順 (E0020)。main は別に付ける。
+const SCALAR_PROBES: &str = r#"fn t.q01() -> u32 uses [] panics never
+    let a = 1.1f32
+    let b = 3.3f32
+    (a * b - a / b + a - b).to_bits()
+end t.q01
+
+fn t.q02() -> u32 uses [] panics never
+    let z = 0.0f32
+    (1.0f32 / z).to_bits()
+end t.q02
+
+fn t.q03() -> u64 uses [] panics never
+    let x = 2.5f64
+    (-x).abs().to_bits()
+end t.q03
+
+fn t.q04() -> u64 uses [] panics never
+    let n = 0.0f64 / 0.0f64
+    n.max(1.0f64).to_bits()
+end t.q04
+
+fn t.q05() -> u64 uses [] panics never
+    let x = 7.5f64
+    x.rem(2.0f64).to_bits()
+end t.q05
+
+fn t.q06() -> u64 uses [] panics never
+    let x = 2.5f64
+    let y = 3.5f64
+    (x.round_ties_even() + y.round_ties_even()).to_bits()
+end t.q06
+
+fn t.q07() -> u64 uses [] panics never
+    let x = -2.5f64
+    (x.floor() * 100.0f64 + x.ceil() * 10.0f64 + x.trunc()).to_bits()
+end t.q07
+
+fn t.q08() -> bool uses [] panics never
+    let n = 0.0f64 / 0.0f64
+    let i = 1.0f64 / 0.0f64
+    n.is_nan() && !i.is_finite()
+end t.q08
+
+fn t.q09() -> u64 uses [] panics never
+    2.0f64.powi(-3i32).to_bits()
+end t.q09
+
+fn t.q10() -> u64 uses [] panics never
+    let x = 12.5f64
+    (x.sin() * x.cos() + x.tan() - x.exp().ln()).to_bits()
+end t.q10
+
+fn t.q11() -> u32 uses [] panics never
+    let x = 0.1f32
+    (x.to_f64() * 3.0f64).nearest_to_f32().to_bits()
+end t.q11
+
+fn t.q12() -> i128 uses [] panics never
+    let a = -170141183460469231731687303715884105727i128
+    a.wrapping_neg()
+end t.q12
+
+fn t.q13() -> u128 uses [] panics never
+    let a = 0u128
+    (!a).wrapping_add(2u128)
+end t.q13
+
+fn t.q14() -> u32 uses [] panics never
+    let a = -1i8
+    a.leading_zeros().wrapping_add((-1i128).count_ones())
+end t.q14
+
+fn t.q15() -> u32 uses [] panics never
+    let a = 0i64
+    a.trailing_zeros()
+end t.q15
+
+fn t.q16() -> i128 uses [] panics never
+    let a = -256i128
+    a.wrapping_shr(4u32)
+end t.q16
+
+fn t.q17() -> u128 uses [] panics never
+    let a = 0u128.wrapping_sub(1u128)
+    let b = a.wrapping_shr(1u32)
+    b.min(a)
+end t.q17
+
+fn t.q18() -> i64 uses [] panics never
+    i64.from_u32(4000000000u32)
+end t.q18
+
+fn t.q19() -> usize uses [] panics never
+    usize.from_u8(255u8)
+end t.q19
+
+fn t.q20() -> u64 uses [] panics never
+    f64.from_i64_nearest(9007199254740993i64).to_bits()
+end t.q20
+
+fn t.q21() -> u32 uses [] panics never
+    f32.from_i32_nearest(16777217i32).to_bits()
+end t.q21
+
+fn t.q22() -> u64 uses [] panics never
+    let a = -7i32
+    a.to_f64().to_bits()
+end t.q22
+
+fn t.q23() -> i8 uses [] panics never
+    let a = -128i8
+    a.saturating_mul(-1i8).wrapping_add(a.saturating_sub(1i8))
+end t.q23
+
+fn t.q24() -> u32 uses [] panics never
+    let a = 1u32
+    a.wrapping_shl(35u32)
+end t.q24
+
+fn t.q25() -> bool uses [] panics never
+    let x = 1.0f32
+    let y = 2.0f32
+    (x < y) && (y >= 2.0f32) && (x != y)
+end t.q25
+
+fn t.q26() -> bool uses [] panics never
+    0.0f32 == -0.0f32
+end t.q26
+
+fn t.q27() -> u64 uses [] panics never
+    let x = 1.0e300f64
+    (x * x).to_bits()
+end t.q27
+
+fn t.q28() -> i64 uses [] panics never
+    let a = 5i64
+    a.wrapping_mul(-3i64).max(a.wrapping_neg())
+end t.q28
+"#;
+
+#[test]
+fn kir_scalar_probes_match_tree_walker() {
+    // (関数, 木走査の期待値, 参照実行器の期待値)。木走査の期待値は参照実行器の値と同じであることを、別々の経路で確かめる。
+    let cases: &[(&str, &str, &str)] = &[
+        ("t.q01", "1066164118u32", "1066164118"),
+        ("t.q02", "2139095040u32", "2139095040"),
+        ("t.q03", "4612811918334230528u64", "4612811918334230528"),
+        ("t.q04", "4607182418800017408u64", "4607182418800017408"),
+        ("t.q05", "4609434218613702656u64", "4609434218613702656"),
+        ("t.q06", "4618441417868443648u64", "4618441417868443648"),
+        ("t.q07", "13867744336952688640u64", "13867744336952688640"),
+        ("t.q08", "true", "true"),
+        ("t.q09", "4593671619917905920u64", "4593671619917905920"),
+        ("t.q10", "13846673201326737920u64", "13846673201326737920"),
+        ("t.q11", "1050253722u32", "1050253722"),
+        ("t.q12", "170141183460469231731687303715884105727i128", "170141183460469231731687303715884105727"),
+        ("t.q13", "1u128", "1"),
+        ("t.q14", "128u32", "128"),
+        ("t.q15", "64u32", "64"),
+        ("t.q16", "-16i128", "-16"),
+        ("t.q17", "170141183460469231731687303715884105727u128", "170141183460469231731687303715884105727"),
+        ("t.q18", "4000000000i64", "4000000000"),
+        ("t.q19", "255usize", "255"),
+        ("t.q20", "4845873199050653696u64", "4845873199050653696"),
+        ("t.q21", "1266679808u32", "1266679808"),
+        ("t.q22", "13842939354630062080u64", "13842939354630062080"),
+        ("t.q23", "-1i8", "-1"),
+        ("t.q24", "8u32", "8"),
+        ("t.q25", "true", "true"),
+        ("t.q26", "true", "true"),
+        ("t.q27", "9218868437227405312u64", "9218868437227405312"),
+        ("t.q28", "-5i64", "-5"),
+    ];
+    let mut main = String::new();
+    for (f, want, _) in cases {
+        main.push_str(&format!("    core.check.eq({}(), {})\n", f, want));
+    }
+    let t = Tmp::new("kir_scalar_probes", &format!("fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n{}    Ok(())\nend t.main\n\n{}", main, SCALAR_PROBES));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker:\n{}", text(&o.stderr));
+    for (f, _, want) in cases {
+        let k = run(&["kir", *f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", f);
+    }
+}

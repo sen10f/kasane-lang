@@ -16,6 +16,10 @@ use crate::parser::{nid, V};
 use crate::program::{Def, Program, Target as Tgt};
 use crate::types::{from_v, ExprTy, Ty as Src, TypeCk};
 
+/// 数値の下ろし (浮動小数・128 ビット・ビット演算・数値のメソッド)。子モジュールとして `Lw` の非公開の関数を使う。
+#[path = "kir_lower_scalar.rs"]
+mod scalar;
+
 type LR<T> = Result<T, String>;
 
 /// 下ろしの結果: 対象になった関数と、未対応の関数 (鍵, 理由)。
@@ -344,7 +348,7 @@ impl<'a> Lw<'a> {
                     return self.err(line, "整数リテラルの型が整数ではない");
                 }
                 let v = parse_int(&f[1]).ok_or_else(|| format!("行 {}: 整数リテラルが扱えない", line))?;
-                if v < ty.min() || v > ty.max() {
+                if !ty.in_range(v) {
                     return self.err(line, format!("整数リテラルが {} の範囲にない", ty.name()));
                 }
                 Ok(self.emit(ty, Op::Const(v)))
@@ -354,6 +358,7 @@ impl<'a> Lw<'a> {
                 Ok(self.emit(Ty::Bool, Op::Const(b as i128)))
             }
             "unit" => Ok(self.unit()),
+            "float" => self.float_lit(e),
             other => self.err(line, format!("リテラル {} は段階 1 の対象外", other)),
         }
     }
@@ -382,7 +387,7 @@ impl<'a> Lw<'a> {
         match c.init.as_ref() {
             Some(init) if nname(init) == "Lit" && st(&nf(init)[0]) == "int" && ty.is_int() => {
                 let v = parse_int(&nf(init)[1]).ok_or_else(|| "定数の値が扱えない".to_string())?;
-                if v < ty.min() || v > ty.max() {
+                if !ty.in_range(v) {
                     return self.err(nline(e), "定数の値が型の範囲にない");
                 }
                 Ok(self.emit(ty, Op::Const(v)))
@@ -392,6 +397,9 @@ impl<'a> Lw<'a> {
     }
 
     fn bin(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(done) = self.scalar_bin(e)? {
+            return Ok(done);
+        }
         let f = nf(e);
         let line = nline(e);
         let op = st(&f[0]);
@@ -484,6 +492,9 @@ impl<'a> Lw<'a> {
     }
 
     fn unary(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(done) = self.scalar_unary(e)? {
+            return Ok(done);
+        }
         let f = nf(e);
         let line = nline(e);
         let op = st(&f[0]);
@@ -497,7 +508,7 @@ impl<'a> Lw<'a> {
                     return self.err(line, "panics never の関数に単項 - (溢れの検査が要る)");
                 }
                 let Some(a) = self.expr(&f[1])? else { return Ok(None) };
-                Ok(Some(self.emit(t, Op::Neg { a })))
+                Ok(Some(self.emit(t, Op::Neg { a, mode: Mode::Trap })))
             }
             "!" => {
                 let t = self.ty_of(e)?;
@@ -512,6 +523,9 @@ impl<'a> Lw<'a> {
     }
 
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(done) = self.scalar_call(e)? {
+            return Ok(done);
+        }
         let f = nf(e);
         let line = nline(e);
         if !matches!(f.get(2), Some(V::Nil) | None) {
@@ -589,6 +603,9 @@ impl<'a> Lw<'a> {
 
     /// `e.m(args)` (受け手が式の形)。整数の `wrapping_add` / `wrapping_sub` / `wrapping_mul` だけを扱う。
     fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(done) = self.scalar_mcall(e)? {
+            return Ok(done);
+        }
         let f = nf(e);
         let line = nline(e);
         if !matches!(f.get(3), Some(V::Nil) | None) {
