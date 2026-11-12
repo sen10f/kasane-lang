@@ -5888,3 +5888,146 @@ fn nll_accepts_an_if_value_inside_a_loop_when_the_borrow_dies_before_the_mutatio
     );
     assert!(!bad, "{}", out);
 }
+
+// `ty_of` の Index・MCall・ArrayE の型解決 (4.4)。`tdrop_prefix` に、メソッドを持つ型を足して使う。
+fn tyof_codes(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    // 定義の並びは UTF-8 のバイト順 (E0020)。Maker・Other の型は `t.P` の前、
+    // そのメソッドは `t.eat` の前に差し込む。
+    let maker_types = [
+        "type t.Maker",
+        "    k: u8",
+        "end t.Maker",
+        "",
+        "type t.Other",
+        "    k: u8",
+        "end t.Other",
+        "",
+    ];
+    let maker_fns = [
+        "fn t.Maker.make_l(self: &t.Maker) -> t.L uses [] panics never",
+        "    t.L { a: self.k }",
+        "end t.Maker.make_l",
+        "",
+        "fn t.Maker.make_w(self: &t.Maker) -> t.W uses [] panics never",
+        "    t.W { lin: t.L { a: self.k }, n: self.k }",
+        "end t.Maker.make_w",
+        "",
+        "fn t.Maker.touch(self: &t.Maker) -> () uses [] panics never",
+        "    ()",
+        "end t.Maker.touch",
+        "",
+        // 同じ名前のメソッドを別の型が持つ (戻り値は ()): 所有者で絞らないと一意に定まらない。
+        "fn t.Other.make_l(self: &t.Other) -> () uses [] panics never",
+        "    ()",
+        "end t.Other.make_l",
+        "",
+    ];
+    let mut pre: Vec<&str> = vec![];
+    for l in tdrop_prefix() {
+        if l == "type t.P" {
+            pre.extend(maker_types.iter().copied());
+        }
+        if l == "fn t.eat(l: t.L) -> () uses [] panics never" {
+            pre.extend(maker_fns.iter().copied());
+        }
+        pre.push(l);
+    }
+    // メソッドのレシーバに式を使う (`t.lmaker().m()`)。局所変数 `m.m()` は Call として解析されるため。
+    // `t.lmaker` は `t.get_w` の後ろ (定義の並びは UTF-8 のバイト順)。
+    pre.extend([
+        "fn t.lmaker() -> t.Maker uses [] panics never",
+        "    t.Maker { k: 1u8 }",
+        "end t.lmaker",
+        "",
+    ]);
+    let prefix = pre.join(&nl) + &nl;
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn tyof_discarding_a_method_result_is_e2042() {
+    // レシーバの式の型 (t.Maker) からメソッドを一意に定め、戻り値 (t.L) を解決する。
+    // t.Other の同名メソッドは戻り値が () なので、所有者で絞らないと黙ってしまう。
+    let (cs, out) = tyof_codes("tyof_mcall", &["t.lmaker().make_l()"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_field_of_a_method_result_is_resolved() {
+    // MCall → Field の道: `make_w()` の戻り値 (t.W) の `lin` (t.L) を捨てる。
+    let (cs, out) = tyof_codes("tyof_mcall_field", &["t.lmaker().make_w().lin"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_method_result_binding_with_unconsumed_linear_is_e3003() {
+    // 束縛の型が MCall の戻り値から決まるので、線形なフィールドの消費漏れが見える (E3003)。
+    let (cs, out) = tyof_codes(
+        "tyof_mcall_bind",
+        &["let w = t.lmaker().make_w()", "core.mem.drop(w.n)"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `w` is never consumed"), "{}", out);
+}
+
+#[test]
+fn tyof_method_result_consumed_is_ok() {
+    let (cs, out) = tyof_codes(
+        "tyof_mcall_ok",
+        &[
+            "let w = t.lmaker().make_w()",
+            "t.eat(w.lin)",
+            "core.mem.drop(w.n)",
+            "let l = t.lmaker().make_l()",
+            "t.eat(l)",
+            "t.lmaker().touch()",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E3003") && !tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_discarding_an_array_literal_is_e2042() {
+    let (cs, out) = tyof_codes("tyof_array", &["[1u8, 2u8]"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_discarding_an_index_is_e2042() {
+    let (cs, out) = tyof_codes("tyof_index", &["let a = [1u8, 2u8]", "a[0]"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_index_of_an_array_of_structs_then_field_is_resolved() {
+    // Index → Field の道: 要素 (t.P) の `a` (u8) を捨てる。
+    let (cs, out) = tyof_codes("tyof_index_field", &["let a = [t.P { a: 1u8 }, t.P { a: 2u8 }]", "a[0].a"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_index_through_a_reference_is_resolved() {
+    let (cs, out) = tyof_codes("tyof_index_ref", &["let a = [1u8, 2u8]", "let r = &a", "r[1]"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_unit_method_results_and_unknown_types_stay_silent() {
+    // 戻り値が () のメソッド、型の決まらない要素 (型なし整数リテラル)・存在しないメソッドは黙る。
+    let (cs, out) = tyof_codes(
+        "tyof_silent",
+        &[
+            "t.lmaker().touch()",
+            "t.lmaker().nosuch()",
+            "let a = [1, 2]",
+            "a[0]",
+            "[1, 2]",
+            "let b = [t.lmaker().touch(), t.lmaker().touch()]",
+            "core.mem.drop(b[0])",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E3003"), "{}", out);
+}
