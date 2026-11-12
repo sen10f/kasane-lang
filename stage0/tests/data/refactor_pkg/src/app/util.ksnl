@@ -1,0 +1,27 @@
+import app.net
+
+fn app.util.kind_code(h: &app.net.Header) -> u32 uses [] panics never pub
+    match h.kind {
+        net.Kind.Big => 1u32
+        net.Kind.Small => 0u32
+    }
+end app.util.kind_code
+
+fn app.util.parsed(len: u32) -> Result<u32, u32> uses [] panics never pub
+    let h = net.parse(len).map_err(net.fail)?
+    Ok(h.len)
+end app.util.parsed
+
+fn app.util.show[T: app.net.Describe](x: &T) -> u32 uses [] panics never pub
+    x.describe()
+end app.util.show
+
+fn app.util.total(h: &app.net.Header) -> u32 uses [] panics never pub
+    h.double().wrapping_add(h.len)
+end app.util.total
+
+test app.util.total.test_total
+    let h = net.make(3u32)
+    core.check.eq(app.util.total(&h), 9u32)
+    core.check.eq(app.util.parsed(5u32), Ok(5u32))
+end app.util.total.test_total

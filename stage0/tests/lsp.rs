@@ -372,6 +372,101 @@ fn rename_with_prepare() {
     c.shutdown();
 }
 
+const TWO_MAIN: &str = "\
+import t.util
+
+fn t.main() -> u32 uses [] panics never pub
+    util.inc(1u32)
+end t.main
+";
+
+const TWO_UTIL: &str = "\
+fn t.util.inc(a: u32) -> u32 uses [] panics never pub
+    a.wrapping_add(1u32)
+end t.util.inc
+";
+
+impl Tmp {
+    /// 2 ファイルのパッケージ (t と t.util)。
+    fn two(name: &str) -> Tmp {
+        let t = Tmp::new(name, TWO_MAIN);
+        fs::create_dir_all(t.file("src/t")).unwrap();
+        fs::write(t.file("src/t/util.ksnl"), TWO_UTIL).unwrap();
+        t
+    }
+}
+
+fn initialize_with_file_ops(c: &mut Client, root: &Path) {
+    let r = c.call(
+        "initialize",
+        json!({"processId": null, "rootUri": format!("file://{}", root.display()),
+               "capabilities": {"workspace": {"workspaceEdit": {"documentChanges": true, "resourceOperations": ["rename"]}}}}),
+    );
+    assert_eq!(r["capabilities"]["renameProvider"]["prepareProvider"], true);
+    c.notify("initialized", json!({}));
+}
+
+#[test]
+fn rename_touching_two_files() {
+    let t = Tmp::two("rename2");
+    let main = t.uri("src/t.ksnl");
+    let util = t.uri("src/t/util.ksnl");
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&main, TWO_MAIN);
+    // `util.inc` の `inc` (短縮形の呼び出し) に置いて改名する。
+    let w = c.call("textDocument/rename", json!({"textDocument": tdoc(&main), "position": {"line": 3, "character": 10}, "newName": "bump"}));
+    let changes = &w["changes"];
+    assert_eq!(changes.as_object().unwrap().len(), 2, "{}", w);
+    let m = apply(TWO_MAIN, &changes[&main]);
+    assert!(m.contains("    util.bump(1u32)"), "{}", m);
+    let u = apply(TWO_UTIL, &changes[&util]);
+    assert!(u.contains("fn t.util.bump(") && u.contains("end t.util.bump"), "{}", u);
+    // 参照 (includeDeclaration なし) は呼び出し 1 件だけ。
+    let r = c.call("textDocument/references", json!({"textDocument": tdoc(&main), "position": {"line": 3, "character": 10}, "context": {"includeDeclaration": false}}));
+    assert_eq!(r.as_array().unwrap().len(), 1, "{}", r);
+    c.shutdown();
+}
+
+#[test]
+fn rename_module_returns_a_file_rename_operation() {
+    let t = Tmp::two("renamemod");
+    let main = t.uri("src/t.ksnl");
+    // ファイル操作を扱えないクライアントには、断る。
+    let mut c = Client::start();
+    c.initialize(&t.0);
+    c.open(&main, TWO_MAIN);
+    let e = c.call_raw("textDocument/rename", json!({"textDocument": tdoc(&main), "position": {"line": 0, "character": 10}, "newName": "t.tools"}));
+    assert!(e.get("error").is_some(), "{}", e);
+    c.shutdown();
+    // 扱えるクライアントには documentChanges で、編集とファイルの移動を返す。
+    let t = Tmp::two("renamemod2");
+    let main = t.uri("src/t.ksnl");
+    let util = t.uri("src/t/util.ksnl");
+    let mut c = Client::start();
+    initialize_with_file_ops(&mut c, &t.0);
+    c.open(&main, TWO_MAIN);
+    let p = c.call("textDocument/prepareRename", at(&main, 0, 10));
+    assert_eq!(p["placeholder"], "util");
+    let w = c.call("textDocument/rename", json!({"textDocument": tdoc(&main), "position": {"line": 0, "character": 10}, "newName": "t.tools"}));
+    let dc = w["documentChanges"].as_array().unwrap_or_else(|| panic!("{}", w));
+    let ops: Vec<&Value> = dc.iter().filter(|x| x.get("kind").is_some()).collect();
+    assert_eq!(ops.len(), 1, "{}", w);
+    assert_eq!(ops[0]["kind"], "rename");
+    assert_eq!(ops[0]["oldUri"], util.as_str());
+    assert_eq!(ops[0]["newUri"], t.uri("src/t/tools.ksnl").as_str());
+    let edit_of = |uri: &str| dc.iter().find(|x| x["textDocument"]["uri"] == uri).map(|x| x["edits"].clone());
+    let m = apply(TWO_MAIN, &edit_of(&main).unwrap());
+    assert!(m.contains("import t.tools") && m.contains("tools.inc(1u32)"), "{}", m);
+    let u = apply(TWO_UTIL, &edit_of(&util).unwrap());
+    assert!(u.contains("fn t.tools.inc(") && u.contains("end t.tools.inc"), "{}", u);
+    // 編集は元のファイル (旧 URI) に対するもので、移動の操作より前に並ぶ。
+    let pos_edit = dc.iter().position(|x| x["textDocument"]["uri"] == util.as_str()).unwrap();
+    let pos_op = dc.iter().position(|x| x.get("kind").is_some()).unwrap();
+    assert!(pos_edit < pos_op);
+    c.shutdown();
+}
+
 #[test]
 fn formatting_and_symbols() {
     // 定義の並びが正規形でないソース (fn の後に type)。

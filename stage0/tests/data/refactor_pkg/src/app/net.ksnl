@@ -1,0 +1,49 @@
+const app.net.MAX_LEN: u32 = 16u32
+
+trait app.net.Describe pub
+    fn describe(self: &Self) -> u32 uses [] panics never
+end app.net.Describe
+
+type app.net.Header derive [Debug, Clone, Copy, PartialEq] pub
+    kind: app.net.Kind pub
+    len: u32 pub
+end app.net.Header
+
+enum app.net.Kind derive [Debug, Clone, Copy, PartialEq] pub
+    Big
+    Small
+end app.net.Kind
+
+impl app.net.Describe for app.net.Header
+fn app.net.Header.describe(self: &app.net.Header) -> u32 uses [] panics never impls app.net.Describe
+    self.len
+end app.net.Header.describe
+
+fn app.net.Header.double(self: &app.net.Header) -> u32 uses [] panics never pub
+    self.len.wrapping_mul(2u32)
+end app.net.Header.double
+
+fn app.net.fail(e: u32) -> u32 uses [] panics never pub
+    e
+end app.net.fail
+
+fn app.net.make(len: u32) -> app.net.Header uses [] panics never pub
+    let kind = match len > app.net.MAX_LEN {
+        true => app.net.Kind.Big
+        false => app.net.Kind.Small
+    }
+    app.net.Header { kind: kind, len: len }
+end app.net.make
+
+fn app.net.parse(len: u32) -> Result<app.net.Header, u32> uses [] panics never pub
+    match len > 100u32 {
+        true => Err(len)
+        false => Ok(app.net.make(len))
+    }
+end app.net.parse
+
+test app.net.make.test_small
+    let h = app.net.make(2u32)
+    core.check.eq(h.double(), 4u32)
+    core.check.eq(h.kind, app.net.Kind.Small)
+end app.net.make.test_small

@@ -240,6 +240,11 @@ struct It {
 }
 
 pub fn format_source(text: &str, path: &str) -> String {
+    format_source_with(text, path, true)
+}
+
+/// `canon` が偽なら、名前の参照形 (3.3) は書き換えず、定義の並びと空行だけを整える (`ksn rename` 用)。
+pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
     let lines = mechanical(text);
     let joined = lines.join("\n") + "\n";
     let defs = match load_file(path, "", &joined) {
@@ -254,7 +259,7 @@ pub fn format_source(text: &str, path: &str) -> String {
         .map(|d| Imp { tail: d.name.rsplit('.').next().unwrap().to_string(), full: d.name.split('.').map(String::from).collect() })
         .collect();
     let mut dropped: HashSet<usize> = HashSet::new();
-    if !imps.is_empty() {
+    if canon && !imps.is_empty() {
         let mut refs = Refs::default();
         for d in &defs {
             if matches!(d.kw.as_str(), "import" | "end") || d.line == 0 {

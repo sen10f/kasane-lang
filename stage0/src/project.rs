@@ -77,9 +77,27 @@ fn overlay_get(path: &str) -> Option<String> {
     g.as_ref().filter(|m| !m.is_empty()).and_then(|m| m.get(&overlay_key(path)).cloned())
 }
 
-/// 上書きがあればそれを、なければディスクの本文を返す。
+/// 上書きがあればそれを、なければディスクの本文を返す (`overlay_hide` したパスは `None`)。
 pub fn read_text(path: &str) -> Option<String> {
-    overlay_get(path).or_else(|| fs::read_to_string(path).ok())
+    match overlay_get(path) {
+        Some(t) if t == HIDDEN => None,
+        Some(t) => Some(t),
+        None => fs::read_to_string(path).ok(),
+    }
+}
+
+/// 上書き側で「存在しない」ことにするパス (改名の検証用)。空文字の本文で表す。
+pub fn overlay_hide(path: &str) {
+    overlay_set(path, Some(HIDDEN.to_string()));
+}
+const HIDDEN: &str = "\u{0}hidden\u{0}";
+
+/// 上書きの全消去。
+pub fn overlay_clear() {
+    let mut g = OVERLAY.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = g.as_mut() {
+        m.clear();
+    }
 }
 
 fn overlay_paths_under(dir: &str) -> Vec<String> {
@@ -148,10 +166,10 @@ impl Package {
 
 pub fn read_manifest(root: &Path) -> Result<toml::Value, ProjectError> {
     let p = root.join("kasane.toml");
-    if !p.exists() {
-        return perr("E9001", format!("kasane.toml not found in {}", norm(root)));
-    }
-    let text = fs::read_to_string(&p).unwrap_or_default();
+    let text = match read_text(&norm(&p)) {
+        Some(t) => t,
+        None => return perr("E9001", format!("kasane.toml not found in {}", norm(root))),
+    };
     text.parse::<toml::Value>().or_else(|e| perr("E9002", format!("invalid kasane.toml: {}", e)))
 }
 
@@ -282,6 +300,7 @@ pub fn load_dir_sources(srcdir: &Path) -> Vec<Source> {
     ps.extend(overlay_paths_under(&sd));
     ps.sort();
     ps.dedup();
+    ps.retain(|p| overlay_get(p).map_or(true, |t| t != HIDDEN));
     ps.iter().map(|p| Source::load(p, &sd)).collect()
 }
 

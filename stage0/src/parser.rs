@@ -641,6 +641,7 @@ impl Parser {
             match c.text.as_str() {
                 "." => {
                     self.i += 1;
+                    let name_pos = self.cur().pos();
                     let nm = self.name_tok()?;
                     let mut targs = V::Nil;
                     if self.is_op("::") {
@@ -649,9 +650,9 @@ impl Parser {
                     }
                     if self.is_op("(") {
                         let args = self.call_args()?;
-                        e = ndl(anchor(c.pos(), &e), "MCall", vec![e, V::S(nm), args, targs]);
+                        e = ndl(anchor(c.pos(), &e), "MCall", vec![e, V::S(nm), args, targs, V::N(name_pos.to_string())]);
                     } else {
-                        e = ndl(anchor(c.pos(), &e), "Field", vec![e, V::S(nm)]);
+                        e = ndl(anchor(c.pos(), &e), "Field", vec![e, V::S(nm), V::N(name_pos.to_string())]);
                     }
                 }
                 "(" => {
