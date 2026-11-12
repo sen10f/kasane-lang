@@ -300,6 +300,32 @@ pub fn seq_items(v: &Val) -> Option<Vec<Val>> {
     }
 }
 
+/// 列の長さ (Arr / Vec / View / Tuple)。列でなければ None。複製はしない。
+pub fn seq_len(v: &Val) -> Option<usize> {
+    match v {
+        Val::Arr(l) | Val::Vec(l) => Some(l.borrow().len()),
+        Val::View(_, a, b) => Some(b - a),
+        Val::Tuple(t) => Some(t.len()),
+        _ => None,
+    }
+}
+
+/// 列の i 番目の要素だけを複製して返す (範囲外・列でない場合は None)。O(1)。
+pub fn seq_elem(v: &Val, i: usize) -> Option<Val> {
+    match v {
+        Val::Arr(l) | Val::Vec(l) => l.borrow().get(i).cloned(),
+        Val::View(l, a, b) => {
+            if i < b - a {
+                l.borrow().get(a + i).cloned()
+            } else {
+                None
+            }
+        }
+        Val::Tuple(t) => t.get(i).cloned(),
+        _ => None,
+    }
+}
+
 pub fn str_of(v: &Val) -> Option<String> {
     match dr(v) {
         Val::Str(s) => Some(s.to_string()),
