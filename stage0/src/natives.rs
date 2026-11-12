@@ -647,6 +647,14 @@ impl Interp {
             let c = if matches!(v, Val::Closure(_) | Val::Func(_)) { v.clone() } else { deep(v) };
             return Ok(if name == "try_clone" { ok(c) } else { c });
         }
+        // 派生比較メソッド: `&str`・`&[T]`・`[T; N]` (構成要素が比較できるとき) と Option / Result (derive)。
+        // 演算子 `==` `<` 等と同じ `v_eq` / `v_cmp` に委ねる (spec 3.2 / 8.3)。
+        if matches!(name, "eq" | "ne" | "cmp" | "partial_cmp")
+            && (matches!(v, Val::Str(_) | Val::StrBuf(_) | Val::Arr(_) | Val::Vec(_) | Val::View(..))
+                || matches!(v, Val::Enum(e) if e.en == "Option" || e.en == "Result"))
+        {
+            return self.derived_cmp(v, name, &a0);
+        }
         if matches!(v, Val::Closure(_) | Val::Func(_)) {
             if matches!(name, "call" | "call_mut" | "call_once") {
                 let a = seq_items(&dr(&a0)).unwrap_or_default();
@@ -718,6 +726,19 @@ impl Interp {
             Val::Iter(it) => {
                 if name == "next" {
                     return self.iter_next(&it.clone());
+                }
+                // core.slice.Iter.count (spec/stdlib/core/slice.sig): 残りを消費して数える。
+                if name == "count" {
+                    let src = it.clone();
+                    let mut n = 0;
+                    loop {
+                        let o = self.iter_next(&src)?;
+                        if matches!(&o, Val::Enum(e) if e.var == "None") {
+                            break;
+                        }
+                        n += 1;
+                    }
+                    return Ok(usz(n));
                 }
                 panic(format!("no method {} on iterator", name))
             }
@@ -880,6 +901,17 @@ impl Interp {
         }
     }
 
+    /// `eq` / `ne` / `cmp` / `partial_cmp` のメソッド形。演算子と同じ比較を使う。
+    fn derived_cmp(&mut self, v: &Val, name: &str, a0: &Val) -> Res {
+        let b = dr(a0);
+        match name {
+            "eq" => Ok(Val::Bool(self.v_eq(v, &b)?)),
+            "ne" => Ok(Val::Bool(!self.v_eq(v, &b)?)),
+            "cmp" => Ok(ordering(self.v_cmp(v, &b)?.unwrap_or(0))),
+            _ => Ok(self.v_cmp(v, &b)?.map_or_else(none, |c| some(ordering(c)))),
+        }
+    }
+
     fn seq_method(&mut self, v: &Val, name: &str, args: Vec<Val>) -> Res {
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
         let idx = |a: &Val| if let Val::Int(i, _) = dr(a) { i } else { -1 };
@@ -1028,6 +1060,8 @@ impl Interp {
                 Ok(some(Val::Tuple(Rc::new(vec![s_val(&s[..m]), s_val(&s[m..])]))))
             }
             "as_str" => Ok(s_val(&s)),
+            // `Display` の文字列そのもの。型は `alloc.string.String` (types.rs) なので所有の StrBuf で返す。
+            "to_string" => Ok(Val::StrBuf(Rc::new(RefCell::new(s)))),
             "push" | "push_str" | "clear" => {
                 if let Val::StrBuf(b) = v {
                     match name {
