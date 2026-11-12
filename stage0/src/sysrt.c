@@ -16,6 +16,7 @@
 
 #ifdef _WIN32
 #include <io.h>
+#include <windows.h>
 #else
 #include <unistd.h>
 #include <signal.h>
@@ -163,6 +164,20 @@ i64 ksn_rt_sys_close(i32 fd) {
     close(fd);
 #endif
     return 0;
+}
+
+/* 書き込んだ内容を OS に永続化させる (POSIX は fsync、Windows は FlushFileBuffers)。成功は 0。 */
+i64 ksn_rt_sys_sync(i32 fd, i32 *e) {
+#ifdef _WIN32
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE || !FlushFileBuffers(h)) return fail(e, EIO);
+    return 0;
+#else
+    int r;
+    do { r = fsync(fd); } while (r < 0 && errno == EINTR);
+    if (r < 0) return fail(e, errno);
+    return 0;
+#endif
 }
 
 /* 終端まで読んで vec (= {ptr, len, cap} の Vec<u8>) の後ろに足す。戻り値は足したバイト数。失敗時は vec の長さを変えない。 */

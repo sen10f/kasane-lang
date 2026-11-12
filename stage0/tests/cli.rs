@@ -5823,6 +5823,16 @@ fn agree_with_interpreter(name: &str, src: &str) -> String {
     text(&interp.stdout)
 }
 
+/// `File.sync` が通常ファイルで成功し、`with` の本体の `write` / `sync` のエラーが `?` で抜けても、後始末が1回走る
+/// (`/dev/full` は Linux のみ。ある環境だけ検査する)。インタプリタとネイティブの両方で通る。
+#[test]
+fn std_fs_sync_succeeds_and_errors_leave_a_with_body_through_try() {
+    let t = Tmp::new("fs_sync", include_str!("data/fs_sync.ksnl"));
+    let o = run(&["test", "--both"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stdout).contains("2 passed; 0 failed"), "{}", text(&o.stdout));
+}
+
 /// 作成・書き込み・読み戻し・削除・存在しないファイルのエラーを、インタプリタとネイティブで同じ結果にする。
 /// エラー番号は OS ごとに違うので、出力の一致は Unix だけで確かめる (Windows は動いて `fs ok` で終わることだけ)。
 #[test]

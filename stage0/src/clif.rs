@@ -923,7 +923,7 @@ impl<'a> Cx<'a> {
             "std.fs.open" | "std.fs.create" => res("std.fs.File", io),
             "std.fs.read_to_end" => res("usize", io),
             "std.fs.File.read" | "std.fs.File.write" | "std.net.TcpStream.read" | "std.net.TcpStream.write" => res("usize", io),
-            "std.fs.File.flush" | "std.fs.File.close" | "std.net.TcpStream.flush" => res("void", io),
+            "std.fs.File.flush" | "std.fs.File.sync" | "std.fs.File.close" | "std.net.TcpStream.flush" => res("void", io),
             "std.net.TcpStream.close" | "std.net.TcpListener.close" => res("void", ne),
             "std.net.connect" => res("std.net.TcpStream", ne),
             "std.net.listen" => res("std.net.TcpListener", ne),
@@ -2760,6 +2760,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 (None, None, false)
             }
             "std.fs.File.flush" | "std.net.TcpStream.flush" => (None, None, false),
+            "std.fs.File.sync" => (Some(self.csys("ksn_rt_sys_sync", &[fd.ok_or("sync")?, e])?), None, true),
             "std.fs.File.read" | "std.net.TcpStream.read" => {
                 let (bv, bt) = self.expr(&args[0], env, Some("slice<u8>"))?;
                 let bv = bv.ok_or("bad buffer")?;
