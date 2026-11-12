@@ -91,6 +91,10 @@ fn signed(p: &str) -> bool {
 
 const STRING: &str = "alloc.string.String";
 
+/// 比較の結果 `core.cmp.Ordering` (Less / Equal / Greater。タグ 0 / 1 / 2 の単位列挙型)。
+const ORD: &str = "core.cmp.Ordering";
+const ORD_VARIANTS: [&str; 3] = ["Less", "Equal", "Greater"];
+
 /// `Name<a,b>` の `Name`。
 fn base_of(ty: &str) -> &str {
     match ty.find('<') {
@@ -330,7 +334,7 @@ impl<'a> Cx<'a> {
                     let (k, v) = (self.pty_owned(args[0])?, self.pty_owned(args[1])?);
                     return self.map_of(n.ends_with("BtreeMap"), &k, &v);
                 }
-                if n == "alloc.alloc.AllocError" || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.rand.Rng" || n == "core.num.ParseIntError" {
+                if n == "alloc.alloc.AllocError" || n == ORD || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.rand.Rng" || n == "core.num.ParseIntError" {
                     return Ok(n);
                 }
                 if n == "Option" || n == "Result" {
@@ -703,6 +707,19 @@ impl<'a> Cx<'a> {
             }
             return Ok(Layout { size: align_up(off.max(1), align), align, fields, is_enum: false, variants: vec![] });
         }
+        if name == ORD {
+            return self.enum_layout(ORD_VARIANTS.iter().map(|v| (v.to_string(), vec![])).collect(), depth);
+        }
+        // `seqiter<T>`: `v.iter()` が返す、残りの要素の {ptr, len}
+        if name.starts_with("seqiter<") {
+            return Ok(Layout {
+                size: 16,
+                align: 8,
+                fields: vec![("ptr".into(), "usize".into(), 0), ("len".into(), "usize".into(), 8)],
+                is_enum: false,
+                variants: vec![],
+            });
+        }
         if self.slices.borrow().contains_key(name) {
             return Ok(Layout {
                 size: 16,
@@ -843,6 +860,25 @@ impl<'a> Cx<'a> {
 
     /// 組み込み型 (str / Vec / AllocError) のメソッドの戻り値の型。
     fn builtin_method_ty(&self, recv_ty: &str, name: &str) -> Option<String> {
+        // 派生の比較 (4.3): `Option` / `Result` / `str` / `String` の `eq` / `ne` / `cmp` / `partial_cmp`。
+        if (recv_ty.starts_with("Option<") || recv_ty.starts_with("Result<") || recv_ty == "str" || recv_ty == STRING) && !self.types.contains_key(&format!("{}.{}", recv_ty, name)) {
+            match name {
+                "eq" | "ne" => return Some("bool".into()),
+                "cmp" => return Some(ORD.into()),
+                "partial_cmp" => return self.builtin_enum("Option", &[ORD.into()]).ok(),
+                _ => {}
+            }
+        }
+        // `v.iter()` (スカラー要素) が返すイテレータの値: `next` / `count`
+        if let Some((b, a)) = split_ty_args(recv_ty) {
+            if b == "seqiter" && a.len() == 1 {
+                return match name {
+                    "next" => self.builtin_enum("Option", &[a[0].clone()]).ok(),
+                    "count" => Some("usize".into()),
+                    _ => None,
+                };
+            }
+        }
         if recv_ty == "std.rand.Rng" && name == "next_u64" {
             return Some("u64".into());
         }
@@ -995,6 +1031,7 @@ impl<'a> Cx<'a> {
         match name {
             "len" => Some("usize".into()),
             "is_empty" => Some("bool".into()),
+            "iter" if is_scalar(elem) && !is_mutref(elem) => Some(format!("seqiter<{}>", elem)),
             "get" | "first" | "last" if is_scalar(elem) || !self.needs_drop(elem) => self.builtin_enum("Option", &[elem.to_string()]).ok(),
             "contains" if is_scalar(elem) && !is_mutref(elem) => Some("bool".into()),
             "get_mut" if is_scalar(elem) && !is_mutref(elem) => self.builtin_enum("Option", &[format!("mutref<{}>", elem)]).ok(),
@@ -1033,6 +1070,10 @@ impl<'a> Cx<'a> {
             return None;
         }
         let en = segs[..segs.len() - 1].join(".");
+        if en == ORD {
+            let idx = ORD_VARIANTS.iter().position(|v| *v == segs[segs.len() - 1])?;
+            return Some((en, idx, ORD_VARIANTS[idx].to_string()));
+        }
         let d = self.types.get(&en)?;
         if d.kw != "enum" {
             return None;
@@ -1425,6 +1466,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     /// 総称な列挙型 `en` のバリアント `idx` を作る式の型 (期待される型か、引数の型から具体化する)。
     fn variant_enum_type(&self, en: &str, idx: usize, args: &[V], env: &Env, expect: Option<&str>) -> Option<String> {
+        if en == ORD {
+            return Some(en.to_string());
+        }
         let d = *self.cx.types.get(en)?;
         let tps = type_params(d);
         if tps.is_empty() {
@@ -4787,6 +4831,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let p = p.ok_or("bad receiver")?;
                 return self.map_method(p, rt, name, args, env);
             }
+            if matches!(name, "eq" | "ne" | "cmp" | "partial_cmp") && args.len() == 1 && self.cx.builtin_method_ty(rt, name).is_some() {
+                return self.cmp_method(recv, rt, name, &args[0], env);
+            }
+            if rt.starts_with("seqiter<") && args.is_empty() && matches!(name, "next" | "count") {
+                return self.seqiter_method(recv, rt, name, env);
+            }
             if rt.starts_with("Result<") && name == "map_err" && args.len() == 1 {
                 let (p, _) = self.expr(recv, env, None)?;
                 let p = p.ok_or("bad receiver")?;
@@ -4865,6 +4915,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             "is_empty" if is_slice => {
                 let r = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
                 Ok(Some((Some(r), "bool".into())))
+            }
+            "iter" if args.is_empty() && is_scalar(elem) && !is_mutref(elem) => {
+                let slot = self.alloc(16, 8);
+                let ptr = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                self.b.ins().store(MemFlags::new(), ptr, slot, 0);
+                self.b.ins().store(MemFlags::new(), len, slot, 8);
+                Ok(Some((Some(slot), format!("seqiter<{}>", elem))))
             }
             "as_slice" | "as_mut_slice" => {
                 let slot = self.alloc(16, 8);
@@ -5128,6 +5185,167 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             }
             _ => Err(format!("String method {}", name)),
         }
+    }
+
+    /// `eq` / `ne` / `cmp` / `partial_cmp` (`Option` / `Result` / `str` / `String`)。派生の比較で、`None < Some`・`Ok < Err`・
+    /// ペイロードは辞書順・`str` は UTF-8 バイト列の辞書順。比べられない型 (浮動小数・列を含むなど) は Err で退避する。
+    fn cmp_method(&mut self, recv: &V, rt: &str, name: &str, arg: &V, env: &mut Env) -> R<(Option<Value>, String)> {
+        if self.cx.needs_drop(rt) && rt != STRING {
+            return Err(format!("{} of a droppable type", name));
+        }
+        let (a, _) = self.expr(recv, env, None)?;
+        let a = a.ok_or("bad receiver")?;
+        let (b, bt) = self.expr(arg, env, Some(rt))?;
+        let b = b.ok_or("bad argument")?;
+        let strish = |t: &str| t == "str" || t == STRING;
+        if bt != rt && !(strish(rt) && strish(&bt)) {
+            return Err(format!("argument of type {} where {} is expected", bt, rt));
+        }
+        match name {
+            "eq" | "ne" => {
+                let e = self.value_eq(a, b, rt)?;
+                let r = if name == "ne" { self.b.ins().bxor_imm(e, 1) } else { e };
+                Ok((Some(r), "bool".into()))
+            }
+            _ => {
+                let c = self.cmp_values(a, b, rt)?;
+                let ord = self.alloc(4, 4);
+                let tg = self.b.ins().iadd_imm(c, 1);
+                self.b.ins().store(MemFlags::new(), tg, ord, 0);
+                if name == "cmp" {
+                    return Ok((Some(ord), ORD.into()));
+                }
+                let oty = self.cx.builtin_enum("Option", &[ORD.into()])?;
+                let l = self.cx.layout(&oty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                let off = l.variants[1].1[0].1 as i32;
+                self.b.ins().store(MemFlags::new(), tg, res, off);
+                Ok((Some(res), oty))
+            }
+        }
+    }
+
+    /// `l` (小なり) と `g` (大なり) の真偽 (I8) から、-1 / 0 / 1 (I32) を作る。
+    fn sign_of(&mut self, l: Value, g: Value) -> Value {
+        let lx = self.b.ins().uextend(types::I32, l);
+        let gx = self.b.ins().uextend(types::I32, g);
+        self.b.ins().isub(gx, lx)
+    }
+
+    /// 型 `ty` の 2 つの値 (スカラーは値、それ以外はアドレス) の派生の順序。-1 / 0 / 1 (I32)。
+    fn cmp_values(&mut self, a: Value, b: Value, ty: &str) -> R<Value> {
+        let i32t = types::I32;
+        if is_scalar(ty) {
+            if is_float(ty) || is_mutref(ty) || is_rawptr(ty) {
+                return Err(format!("ordering of {}", ty));
+            }
+            let (lt, gt) = if signed(ty) { (IntCC::SignedLessThan, IntCC::SignedGreaterThan) } else { (IntCC::UnsignedLessThan, IntCC::UnsignedGreaterThan) };
+            let l = self.b.ins().icmp(lt, a, b);
+            let g = self.b.ins().icmp(gt, a, b);
+            return Ok(self.sign_of(l, g));
+        }
+        if ty == "str" || ty == STRING {
+            let pt = self.ptr_ty();
+            let la = self.b.ins().load(types::I64, MemFlags::new(), a, 8);
+            let lb = self.b.ins().load(types::I64, MemFlags::new(), b, 8);
+            let pa = self.b.ins().load(pt, MemFlags::new(), a, 0);
+            let pb = self.b.ins().load(pt, MemFlags::new(), b, 0);
+            let shorter = self.b.ins().icmp(IntCC::UnsignedLessThan, la, lb);
+            let n = self.b.ins().select(shorter, la, lb);
+            let mc = self.rt.memcmp;
+            let r = self.call_rt(mc, &[pa, pb, n])[0];
+            let rl = self.b.ins().icmp_imm(IntCC::SignedLessThan, r, 0);
+            let rg = self.b.ins().icmp_imm(IntCC::SignedGreaterThan, r, 0);
+            let by_bytes = self.sign_of(rl, rg);
+            let g2 = self.b.ins().icmp(IntCC::UnsignedGreaterThan, la, lb);
+            let by_len = self.sign_of(shorter, g2);
+            let differ = self.b.ins().icmp_imm(IntCC::NotEqual, by_bytes, 0);
+            return Ok(self.b.ins().select(differ, by_bytes, by_len));
+        }
+        if self.cx.seq_elem(ty).is_some() {
+            return Err("ordering of sequences".into());
+        }
+        let l = self.cx.layout(ty, 0)?;
+        if !l.is_enum {
+            return self.cmp_fields(a, b, &l.fields.iter().map(|f| (f.1.clone(), f.2)).collect::<Vec<_>>());
+        }
+        // 列挙型: タグ (宣言順) を比べ、同じなら、そのバリアントのペイロードを辞書順に比べる。
+        let ta = self.b.ins().load(i32t, MemFlags::new(), a, 0);
+        let tb = self.b.ins().load(i32t, MemFlags::new(), b, 0);
+        let (done, first, diff) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(done, i32t);
+        let same = self.b.ins().icmp(IntCC::Equal, ta, tb);
+        self.b.ins().brif(same, first, &[], diff, &[]);
+        self.b.switch_to_block(diff);
+        let tl = self.b.ins().icmp(IntCC::UnsignedLessThan, ta, tb);
+        let tg = self.b.ins().icmp(IntCC::UnsignedGreaterThan, ta, tb);
+        let s = self.sign_of(tl, tg);
+        self.b.ins().jump(done, &[s]);
+        self.b.switch_to_block(first);
+        for (idx, (_, fields)) in l.variants.iter().enumerate() {
+            let is_it = self.b.ins().icmp_imm(IntCC::Equal, ta, idx as i64);
+            let (yes, next) = (self.b.create_block(), self.b.create_block());
+            self.b.ins().brif(is_it, yes, &[], next, &[]);
+            self.b.switch_to_block(yes);
+            let c = self.cmp_fields(a, b, fields)?;
+            self.b.ins().jump(done, &[c]);
+            self.b.switch_to_block(next);
+        }
+        let z = self.b.ins().iconst(i32t, 0);
+        self.b.ins().jump(done, &[z]);
+        self.b.switch_to_block(done);
+        Ok(self.b.block_params(done)[0])
+    }
+
+    /// 2 つの値の、(型, オフセット) で並んだフィールドを、先頭から辞書順に比べる。
+    fn cmp_fields(&mut self, a: Value, b: Value, fields: &[(String, u32)]) -> R<Value> {
+        let mut acc = self.b.ins().iconst(types::I32, 0);
+        for (fty, off) in fields.iter().rev() {
+            let (x, y) = self.load_pair(a, b, fty, *off)?;
+            let c = self.cmp_values(x, y, fty)?;
+            let nz = self.b.ins().icmp_imm(IntCC::NotEqual, c, 0);
+            acc = self.b.ins().select(nz, c, acc);
+        }
+        Ok(acc)
+    }
+
+    /// `v.iter()` が返したイテレータの値 (`seqiter<T>`、残りの {ptr, len}) の `next` / `count`。
+    fn seqiter_method(&mut self, recv: &V, rt: &str, name: &str, env: &mut Env) -> R<(Option<Value>, String)> {
+        let (p, _) = self.expr(recv, env, None)?;
+        let p = p.ok_or("bad receiver")?;
+        let len = self.b.ins().load(types::I64, MemFlags::new(), p, 8);
+        if name == "count" {
+            return Ok((Some(len), "usize".into()));
+        }
+        let elem = split_ty_args(rt).and_then(|x| x.1.first().cloned()).ok_or("bad iterator type")?;
+        let sz = self.elem_size(&elem)?;
+        let rty = self.cx.builtin_enum("Option", &[elem.clone()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let pt = self.ptr_ty();
+        let ptr = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        let (some, none, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        let empty = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
+        self.b.ins().brif(empty, none, &[], some, &[]);
+        self.b.switch_to_block(some);
+        let v = self.load_value(ptr, &elem);
+        let dst = self.b.ins().iadd_imm(res, l.variants[1].1[0].1 as i64);
+        self.store_value(dst, &elem, v)?;
+        let t1 = self.b.ins().iconst(types::I32, 1);
+        self.b.ins().store(MemFlags::new(), t1, res, 0);
+        let np = self.b.ins().iadd_imm(ptr, sz as i64);
+        let nl = self.b.ins().iadd_imm(len, -1);
+        self.b.ins().store(MemFlags::new(), np, p, 0);
+        self.b.ins().store(MemFlags::new(), nl, p, 8);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(none);
+        let t0 = self.b.ins().iconst(types::I32, 0);
+        self.b.ins().store(MemFlags::new(), t0, res, 0);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok((Some(res), rty))
     }
 
     /// 型 `ty` の 2 つの値 (スカラーは値、それ以外はアドレス) が等しければ真 (I8)。構造体・タプル・列挙型は構造的に比べる。
@@ -6483,7 +6701,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let is_deque = self.cx.deques.borrow().contains_key(rt);
         let elem = self.cx.seq_elem(rt).or_else(|| self.cx.deque_elem(rt)).ok_or("not a sequence")?;
         let sz = self.elem_size(&elem)?;
-        if is_slice || matches!(name, "get" | "first" | "last" | "get_mut" | "sub" | "as_slice" | "as_mut_slice" | "contains") {
+        if is_slice || matches!(name, "get" | "first" | "last" | "get_mut" | "sub" | "as_slice" | "as_mut_slice" | "contains" | "iter") {
             if let Some(r) = self.seq_method(p, &elem, sz, is_slice, name, args, env)? {
                 return Ok(r);
             }
