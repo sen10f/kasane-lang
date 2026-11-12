@@ -423,8 +423,9 @@ impl<'a> Low<'a> {
             _ => {
                 let mut binds = vec![];
                 pat_binds(pat, &mut binds);
+                // 道の先の要素だけを写す。根の変数が直接持つローン (`let p = f(&x)` の p) は、
+                // 要素の道が分からないので束縛へ配らない (コピー値の要素に借用を付けて誤検出しないため)。
                 for b in binds {
-                    self.emit(n, Ev::Alias { to: Holder::Var(b.clone()), from: Holder::Var(root.to_string()) });
                     self.emit(n, Ev::Peek { to: Holder::Var(b), root: root.to_string(), path: path.to_vec() });
                 }
             }
@@ -828,8 +829,13 @@ impl<'a> Low<'a> {
                     if !known {
                         for b in &binds {
                             self.emit(an, Ev::Def(b.clone()));
-                            let srcs = self.loan_sources(&f[0]);
-                            self.hold(an, Holder::Var(b.clone()), srcs);
+                            // 形が分からない分解 (`(a, n) => ..` を関数呼び出しの戻り値に対して行う) は、
+                            // 右辺の借用を束縛へ配らない (`let (a, n) = f(&x)` と同じく黙る)。
+                            // バリアントの中身 (`Some(rr) => rr`) は右辺の借用そのものなので従来どおり伝える。
+                            if !matches!(nname(&a[0]), "PTuple" | "PStruct") {
+                                let srcs = self.loan_sources(&f[0]);
+                                self.hold(an, Holder::Var(b.clone()), srcs);
+                            }
                         }
                     }
                     let end = self.lower_block(&a[1], an);
