@@ -1248,16 +1248,23 @@ impl<'a> TypeCk<'a> {
         let deep = self.deep(recv);
         let Ty::Param(pn) = deep.strip().clone() else { return None };
         let d = self.def();
-        let bounds: Vec<String> = d
+        // 境界は (トレイト名, 境界の実引数の列)。実引数はトレイトの型パラメータ列の順 (効果の実体化に使う)。
+        let bounds: Vec<(String, Vec<V>)> = d
             .generics
             .iter()
             .filter(|g| g.0 == "type" && g.1 == pn)
-            .flat_map(|g| items(&g.2).iter().filter_map(|b| if let V::L(bx) = b { Some(st(&bx[0])) } else { None }).collect::<Vec<_>>())
+            .flat_map(|g| {
+                items(&g.2)
+                    .iter()
+                    .filter_map(|b| if let V::L(bx) = b { Some((st(&bx[0]), items(tel(b, 1)).to_vec())) } else { None })
+                    .collect::<Vec<_>>()
+            })
             .collect();
-        for tr in bounds {
+        for (tr, bargs) in bounds {
             let Some(&ti) = self.p.types.get(&tr) else { continue };
             let td = &self.p.defs[ti];
             let Some((_, params, ret)) = td.trait_sigs.iter().find(|s| s.0 == name) else { continue };
+            let eff = Self::trait_effects_inst(td, name, &bargs);
             // 5.3: `core.ops.Fn` 系の境界を持つパラメータの呼び出しは間接呼び出し。この関数の
             // 呼び出し箇所で渡されたクロージャ (単一化で分かったもの) を候補の辺にする。
             // 渡されたクロージャが分からなければ、辺を足さない (黙る)。
@@ -1294,10 +1301,59 @@ impl<'a> TypeCk<'a> {
                     }
                 }
             }
+            if let Some((u, p)) = eff {
+                self.check_trait_effects(format!("{}.{}", tr, name), u, p, line);
+            }
             let r = from_v(ret, &gn);
             return Some(self.inst(&r, &mut map));
         }
         None
+    }
+
+    /// トレイトのメソッド `name` の宣言された効果 (`uses` / `panics`) を、境界の実引数 `bargs` で実体化する
+    /// (4.3 / 5.1)。トレイトの効果変数 (`E: uses`) は、対応する実引数が具体的な `uses [..]` / `never` / `may` の
+    /// ときだけ束縛し、束縛が分からない効果変数は落とす（黙る）。戻り値は具体名だけの uses と、確定した panics。
+    /// 宣言の効果が無い (`uses` を書いていない) メソッドは `None`。
+    fn trait_effects_inst(td: &Def, name: &str, bargs: &[V]) -> Option<(Vec<String>, Option<String>)> {
+        let (_, us, pv) = td.trait_effs.iter().find(|e| e.0 == name)?;
+        let mut bind_u: HashMap<String, Vec<String>> = HashMap::new();
+        let mut bind_p: HashMap<String, String> = HashMap::new();
+        for (k, g) in td.generics.iter().enumerate() {
+            let Some(a) = bargs.get(k) else { continue };
+            match g.0.as_str() {
+                "uses" if tag(a) == "effects" => {
+                    bind_u.insert(g.1.clone(), items(tel(a, 1)).iter().map(st).collect());
+                }
+                "panics" if tag(a) == "panic" => {
+                    bind_p.insert(g.1.clone(), st(tel(a, 1)));
+                }
+                _ => {}
+            }
+        }
+        let concrete = |e: &String| e.chars().next().map_or(false, |c| c.is_lowercase());
+        let mut eu: Vec<String> = vec![];
+        for e in us {
+            if concrete(e) {
+                eu.push(e.clone());
+            } else if let Some(set) = bind_u.get(e) {
+                eu.extend(set.iter().filter(|x| concrete(x)).cloned());
+            }
+        }
+        let ep = match pv.as_str() {
+            "never" | "may" => Some(pv.clone()),
+            v => bind_p.get(v).cloned(),
+        };
+        Some((eu, ep))
+    }
+
+    /// トレイト経由の呼び出し (境界・`dyn`) の効果を、呼び出し元の宣言と比べる。型の決まらない・推論された
+    /// 関数の中・クロージャの本体の中では黙る（クロージャの効果は確実に含まれる効果だけを足すため、
+    /// トレイトの宣言の効果 (上限) は足さない）。
+    fn check_trait_effects(&mut self, name: String, uses: Vec<String>, panics: Option<String>, line: usize) {
+        if !self.eff_acc.is_empty() || self.def().inferred {
+            return;
+        }
+        self.record_effects(line, vec![(name, uses.clone(), panics.clone(), uses, panics)]);
     }
 
     /// `dyn Tr` のメソッド呼び出しを、トレイト (とそのスーパートレイト) のシグネチャで検査する (4.3 / 5.1)。
@@ -1378,6 +1434,12 @@ impl<'a> TypeCk<'a> {
                         );
                     }
                 }
+            }
+            // 効果 (5.1): `dyn Tr` の型引数は `Ty::Dyn` が持たないので、トレイトの効果変数は束縛せず落とす (黙る)。
+            // 具体名と `never` / `may` の宣言で検査する。
+            let eff = Self::trait_effects_inst(td, name, &[]);
+            if let Some((u, p)) = eff {
+                self.check_trait_effects(format!("{}.{}", cur, name), u, p, line);
             }
             let r = from_v(ret, &gn);
             return self.inst(&r, &mut map);

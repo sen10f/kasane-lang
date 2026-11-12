@@ -42,6 +42,9 @@ pub struct Def {
     pub methods: Vec<String>,
     /// トレイトのメソッドのシグネチャ (名前, 引数, 戻り値)。解析できたものだけ。
     pub trait_sigs: Vec<(String, Vec<(String, V)>, V)>,
+    /// トレイトのメソッドの宣言された効果 (名前, uses, panics)。`uses` / `panics` を書いたシグネチャだけ (4.3 / 5.1)。
+    /// 効果変数 (大文字) を含みうる。トレイト境界・`dyn` 経由の呼び出しの効果検査に使う。
+    pub trait_effs: Vec<(String, Vec<String>, String)>,
     /// トレイトの `requires` スーパートレイト (基底名, 型引数)。解析できたものだけ (5.1)。
     pub requires: Vec<(String, V)>,
     /// ジェネリクス `[..]` を持つトレイトメソッドの名前 (dyn 安全性 5.1)。
@@ -264,18 +267,30 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                         Err(_) => sig_ok = false,
                     }
                     let sig = if sig_ok {
-                        (|| -> R<(Vec<(String, V)>, V)> {
+                        (|| -> R<(Vec<(String, V)>, V, Option<(Vec<String>, String)>)> {
                             bp.expect_op("(")?;
                             let ps = conv_params(&bp.params()?);
                             bp.expect_op(")")?;
                             bp.expect_op("->")?;
                             let r = bp.ty()?;
-                            Ok((ps, r))
+                            // `uses [..] panics P` は省略できない (3.2) が、書かれていなければ効果は分からないものとして残さない。
+                            let eff = if bp.is_kw("uses") {
+                                bp.expect_kw("uses")?;
+                                let u: Vec<String> = items(&bp.effect_set()?).iter().map(text).collect();
+                                bp.expect_kw("panics")?;
+                                Some((u, bp.panic_val()?))
+                            } else {
+                                None
+                            };
+                            Ok((ps, r, eff))
                         })()
                     } else {
                         Err(String::new())
                     };
-                    if let Ok((ps, r)) = sig {
+                    if let Ok((ps, r, eff)) = sig {
+                        if let Some((u, pv)) = eff {
+                            d.trait_effs.push((mname.clone(), u, pv));
+                        }
                         d.trait_sigs.push((mname, ps, r));
                     }
                 }

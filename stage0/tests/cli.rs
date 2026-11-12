@@ -8595,3 +8595,95 @@ fn test_both_falls_back_to_the_bundle_for_a_test_clif_cannot_build() {
     assert!(out.contains("test t.main.test_wide ... ok (both: bundle (native skipped: "), "{}", out);
     assert!(out.contains("2 passed; 0 failed"), "{}", out);
 }
+
+/// トレイト経由の呼び出し (境界・`dyn`) の効果の検査 (4.3 / 5.1)。トレイトのメソッドの宣言 (`uses` / `panics`) で比べる。
+const TRAIT_EFF_PRELUDE: &str = "trait t.Act pub
+    fn act(self: &Self) -> u8 uses [io.console] panics never
+    fn boom(self: &Self) -> u8 uses [] panics may
+end t.Act
+
+trait t.Gen[E: uses, P: panics] pub
+    fn go(self: &Self) -> u8 uses [E] panics P
+end t.Gen
+
+";
+
+/// `prelude` (トレイトの定義) の後ろに `body` を置いたパッケージを検査する (`eff_check` の一般形)。
+fn eff_check_with(name: &str, prelude: &str, body: &str) -> (Option<i32>, Vec<String>, String) {
+    let t = Tmp::new(name, &format!("{}{}", prelude, body));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    (o.status.code(), codes(&out), out)
+}
+
+#[test]
+fn trait_bound_and_dyn_call_effects_are_checked() {
+    // 陽性: 境界・`dyn` 越しの呼び出しの宣言された効果を、呼び出し元が覆っていないとき E4001 / E4002。
+    let body = "fn t.bad_bound_concrete[A: t.Gen<[io.console], never>](a: &A) -> u8 uses [] panics never
+    a.go()
+end t.bad_bound_concrete
+
+fn t.bad_bound_panic[A: t.Gen<[], may>](a: &A) -> u8 uses [] panics never
+    a.go()
+end t.bad_bound_panic
+
+fn t.bad_dyn_act(a: &dyn t.Act) -> u8 uses [] panics never
+    a.act()
+end t.bad_dyn_act
+
+fn t.bad_dyn_boom(a: &dyn t.Act) -> u8 uses [io] panics never
+    a.boom()
+end t.bad_dyn_boom
+";
+    let (code, got, out) = eff_check_with("trait_eff_bad", TRAIT_EFF_PRELUDE, body);
+    assert_eq!(code, Some(1), "{}", out);
+    let want: Vec<String> = ["E4001", "E4002", "E4001", "E4002"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(got, want, "{}", out);
+    assert!(out.contains("t.Gen.go uses effect `io.console`"), "{}", out);
+    assert!(out.contains("t.Gen.go may panic"), "{}", out);
+    assert!(out.contains("t.Act.act uses effect `io.console`"), "{}", out);
+    assert!(out.contains("t.Act.boom may panic"), "{}", out);
+}
+
+#[test]
+fn trait_bound_and_dyn_call_effects_pass_when_declared() {
+    // 正例: 呼び出し元が宣言を覆う (階層の部分型 io ⊇ io.console、may 宣言) ときは通る。
+    let body = "fn t.ok_bound_concrete[A: t.Gen<[io.console], never>](a: &A) -> u8 uses [io] panics never
+    a.go()
+end t.ok_bound_concrete
+
+fn t.ok_dyn_act(a: &dyn t.Act) -> u8 uses [io] panics never
+    a.act()
+end t.ok_dyn_act
+
+fn t.ok_dyn_boom(a: &dyn t.Act) -> u8 uses [] panics may
+    a.boom()
+end t.ok_dyn_boom
+";
+    let (code, got, out) = eff_check_with("trait_eff_ok", TRAIT_EFF_PRELUDE, body);
+    assert_eq!(code, Some(0), "{}", out);
+    assert!(got.is_empty(), "{}", out);
+}
+
+#[test]
+fn trait_call_effects_stay_silent_when_unknown() {
+    // 陰性 (黙る): 効果変数の束縛が分からない境界、推論された関数、クロージャの本体。
+    let body = "fn t.quiet_closure(a: &dyn t.Act) -> u8 uses [] panics never
+    let f = fn(x: u8) -> u8 capture [&a] {
+        a.act()
+    }
+    f(1)
+end t.quiet_closure
+
+fn t.quiet_inferred(a: &dyn t.Act) -> u8
+    a.act()
+end t.quiet_inferred
+
+fn t.quiet_var[A: t.Gen<E, P>, E: uses, P: panics](a: &A) -> u8 uses [E] panics P
+    a.go()
+end t.quiet_var
+";
+    let (code, got, out) = eff_check_with("trait_eff_quiet", TRAIT_EFF_PRELUDE, body);
+    assert_eq!(code, Some(0), "{}", out);
+    assert!(got.is_empty(), "{}", out);
+}
