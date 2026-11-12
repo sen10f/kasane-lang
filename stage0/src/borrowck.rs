@@ -34,6 +34,9 @@ enum Ev {
     Alias { to: Holder, from: Holder },
     /// 保存場所から借用を読み戻す (`let r = s.f` など)。そこに保存されたローンは読んだ側へ移る。
     Load { to: Holder, from_root: String, from_path: Vec<String> },
+    /// 保存場所から借用を写す (コピー。保存場所のローンは残す)。分解の束縛に使う。
+    /// 道が重なる保存場所をすべて対象にする (タプルの要素は内部の道 `#i` に入っている)。
+    Peek { to: Holder, root: String, path: Vec<String> },
     /// 場所の値を消費する (`core.mem.drop(s.f)`)。そこに保存されたローンは死ぬ。
     Kill { root: String, path: Vec<String> },
     Access { root: String, path: Vec<String>, kind: Acc, line: usize },
@@ -59,6 +62,7 @@ struct Node {
 }
 
 /// 借用の出どころ。
+#[derive(Clone)]
 enum Src {
     /// `&x.f` / `&mut x.f` などで作る新しい借用
     Place { root: String, path: Vec<String>, mutable: bool },
@@ -325,6 +329,124 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 分解 (`let (a, b) = e` / `match e { (a, b) => .. }`) の束縛に、右辺の借用を伝える。
+    /// タプルの要素は内部の道 `#i` (`store_value`)、構造体のフィールドは名前の道に保存されているので、
+    /// 部分パターンごとに対応する要素・フィールドの借用だけを持たせる (コピー値の要素は黙る)。
+    /// 道が分からない形 (関数の戻り値などを分解する `let (a, n) = t.f(&x)`) は何もしない (`false` を返す。
+    /// 呼び出し側が従来の読み戻しに任せる)。右辺全体の借用を全束縛に配ることはしない (誤検出を出さない)。
+    fn hold_pat(&mut self, n: usize, pat: &V, e: &V) -> bool {
+        match nname(pat) {
+            "PTuple" => {
+                let subs = items(&nf(pat)[0]);
+                if nname(e) == "TupleE" {
+                    let elems = items(&nf(e)[0]);
+                    if elems.len() == subs.len() {
+                        for (s, x) in subs.iter().zip(elems.iter()) {
+                            self.hold_pat(n, s, x);
+                        }
+                        return true;
+                    }
+                }
+                if let Some((root, path)) = self.place_of(e) {
+                    for (i, s) in subs.iter().enumerate() {
+                        let mut p = path.clone();
+                        p.push(format!("#{}", i));
+                        self.hold_place(n, s, &root, &p);
+                    }
+                    return true;
+                }
+            }
+            "PStruct" => {
+                let fields = items(&nf(pat)[1]);
+                if nname(e) == "StructLit" {
+                    for fl in fields {
+                        let fp = items(fl);
+                        if fp.len() < 2 {
+                            continue;
+                        }
+                        let fname = st(&fp[0]);
+                        let val = items(&nf(e)[1]).iter().find(|x| {
+                            let it = items(x);
+                            it.len() >= 2 && st(&it[0]) == fname
+                        });
+                        if let Some(x) = val {
+                            self.hold_pat(n, &fp[1], &items(x)[1]);
+                        }
+                    }
+                    return true;
+                }
+                if let Some((root, path)) = self.place_of(e) {
+                    for fl in fields {
+                        let fp = items(fl);
+                        if fp.len() < 2 {
+                            continue;
+                        }
+                        let mut p = path.clone();
+                        p.push(st(&fp[0]));
+                        self.hold_place(n, &fp[1], &root, &p);
+                    }
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        // 部分パターンが分解でない葉 (`a`・`_`・バリアントなど) は、与えられた式の借用をその束縛に伝える。
+        // 分解の形が分からない複合パターンは何もしない。
+        if matches!(nname(pat), "PTuple" | "PStruct") {
+            return false;
+        }
+        self.hold_whole(n, pat, e);
+        true
+    }
+
+    /// 保存場所 `root` + `path` の値を分解した束縛 (部分パターン `pat`) に、その場所の借用を写す。
+    fn hold_place(&mut self, n: usize, pat: &V, root: &str, path: &[String]) {
+        match nname(pat) {
+            "PTuple" => {
+                for (i, s) in items(&nf(pat)[0]).iter().enumerate() {
+                    let mut p = path.to_vec();
+                    p.push(format!("#{}", i));
+                    self.hold_place(n, s, root, &p);
+                }
+            }
+            "PStruct" => {
+                for fl in items(&nf(pat)[1]) {
+                    let fp = items(fl);
+                    if fp.len() < 2 {
+                        continue;
+                    }
+                    let mut p = path.to_vec();
+                    p.push(st(&fp[0]));
+                    self.hold_place(n, &fp[1], root, &p);
+                }
+            }
+            _ => {
+                let mut binds = vec![];
+                pat_binds(pat, &mut binds);
+                for b in binds {
+                    self.emit(n, Ev::Alias { to: Holder::Var(b.clone()), from: Holder::Var(root.to_string()) });
+                    self.emit(n, Ev::Peek { to: Holder::Var(b), root: root.to_string(), path: path.to_vec() });
+                }
+            }
+        }
+    }
+
+    /// 分解の部分パターン `pat` (要素・フィールドの道が分からない形) の束縛に、右辺 `e` の借用の和を伝える。
+    fn hold_whole(&mut self, n: usize, pat: &V, e: &V) {
+        let mut srcs = self.loan_sources(e);
+        srcs.extend(self.lit_sources(e));
+        let mut binds = vec![];
+        pat_binds(pat, &mut binds);
+        for b in binds {
+            for s in srcs.iter().cloned() {
+                match s {
+                    Src::Stored { root, path } => self.emit(n, Ev::Peek { to: Holder::Var(b.clone()), root, path }),
+                    other => self.hold(n, Holder::Var(b.clone()), vec![other]),
+                }
+            }
+        }
+    }
+
     /// 構造体リテラルの各フィールドに入る借用を、`root` の `base` 道の先に保存された
     /// ローンとして記録する (`let s = t.S { f: &mut x }`、`s.f = t.S { g: &x }`)。
     fn store_struct_lit(&mut self, n: usize, root: &str, base: &[String], lit: &V) {
@@ -369,9 +491,21 @@ impl<'a> Low<'a> {
     /// 構造体リテラルはフィールドの道ごとに、タプル・配列リテラルは全体の場所に置く。
     /// それ以外は値の式そのものの出どころ (`&x`、参照の変数など)。
     fn store_value(&mut self, n: usize, root: &str, path: &[String], e: &V) {
-        if nname(e) == "StructLit" {
-            self.store_struct_lit(n, root, path, e);
-            return;
+        match nname(e) {
+            "StructLit" => {
+                self.store_struct_lit(n, root, path, e);
+                return;
+            }
+            // タプルの要素は内部の道 `#i` に置く (分解のとき要素ごとに読めるように)。
+            "TupleE" => {
+                for (i, x) in items(&nf(e)[0]).iter().enumerate() {
+                    let mut p = path.to_vec();
+                    p.push(format!("#{}", i));
+                    self.store_value(n, root, &p, x);
+                }
+                return;
+            }
+            _ => {}
         }
         let mut srcs = self.loan_sources(e);
         if srcs.is_empty() {
@@ -484,6 +618,10 @@ impl<'a> Low<'a> {
                     if let Some(b) = binds.first() {
                         self.store_value(c, b, &[], init);
                     }
+                }
+                // 分解の束縛 (`let (a, b) = t`) は、右辺の要素・フィールドの借用 (保存されたローンを含む) を伝える。
+                if matches!(nname(&f[0]), "PTuple" | "PStruct") && !is_nil(init) {
+                    self.hold_pat(c, &f[0], init);
                 }
                 c
             }
@@ -680,10 +818,19 @@ impl<'a> Low<'a> {
                     self.edge(c, an);
                     let mut binds = vec![];
                     pat_binds(&a[0], &mut binds);
-                    for b in &binds {
-                        self.emit(an, Ev::Def(b.clone()));
-                        let srcs = self.loan_sources(&f[0]);
-                        self.hold(an, Holder::Var(b.clone()), srcs);
+                    // 分解の腕は、部分パターンごとに要素・フィールドの借用を伝える。形が分からなければ従来どおり。
+                    let known = matches!(nname(&a[0]), "PTuple" | "PStruct") && {
+                        for b in &binds {
+                            self.emit(an, Ev::Def(b.clone()));
+                        }
+                        self.hold_pat(an, &a[0], &f[0])
+                    };
+                    if !known {
+                        for b in &binds {
+                            self.emit(an, Ev::Def(b.clone()));
+                            let srcs = self.loan_sources(&f[0]);
+                            self.hold(an, Holder::Var(b.clone()), srcs);
+                        }
                     }
                     let end = self.lower_block(&a[1], an);
                     self.collect_value(end, &holder, &binds, &a[1]);
@@ -929,10 +1076,24 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
         }
         Ev::Load { to, from_root, from_path } => {
             // 保存場所から読み戻す。保存されていたローンは読んだ側へ移る (move の近似。
-            // 実際はコピーでも、消えるのは見落としでしかない)。
-            let key = Holder::Place { root: from_root.clone(), path: from_path.clone() };
-            if let Some(src) = st_.remove(&key) {
+            // 実際はコピーでも、消えるのは見落としでしかない)。道が重なる保存場所 (タプルの要素の道 `#i` を含む)
+            // はすべて対象にする。
+            for src in take_overlapping(st_, from_root, from_path) {
                 st_.entry(to.clone()).or_default().extend(src);
+            }
+        }
+        Ev::Peek { to, root, path } => {
+            // 保存場所の借用を写す (保存場所のローンは残す)。
+            let mut acc: BTreeSet<usize> = BTreeSet::new();
+            for (h, ids) in st_.iter() {
+                if let Holder::Place { root: r, path: p } = h {
+                    if r == root && overlaps(p, path) {
+                        acc.extend(ids.iter().copied());
+                    }
+                }
+            }
+            if !acc.is_empty() {
+                st_.entry(to.clone()).or_default().extend(acc);
             }
         }
         Ev::Kill { root, path } => kill_stored(st_, root, path),
@@ -1058,10 +1219,23 @@ fn kill_stored(st: &mut BTreeMap<Holder, BTreeSet<usize>>, root: &str, path: &[S
     }
 }
 
-/// 場所の表示 (`s.f`、コンテナなら `v`)。
+/// 道が重なる保存場所 (`root` の下) をすべて取り除き、そこに保存されていたローンの集合を返す (読み戻し用)。
+fn take_overlapping(st: &mut BTreeMap<Holder, BTreeSet<usize>>, root: &str, path: &[String]) -> Vec<BTreeSet<usize>> {
+    let keys: Vec<Holder> = st
+        .keys()
+        .filter(|h| match h {
+            Holder::Place { root: r, path: p } => r == root && overlaps(p, path),
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    keys.iter().filter_map(|h| st.remove(h)).collect()
+}
+
+/// 場所の表示 (`s.f`、コンテナなら `v`)。タプルの要素の内部の道 `#i` は表示しない。
 fn place_name(root: &str, path: &[String]) -> String {
     let mut s = root.to_string();
-    for p in path {
+    for p in path.iter().filter(|p| !p.starts_with('#')) {
         s.push('.');
         s.push_str(p);
     }
