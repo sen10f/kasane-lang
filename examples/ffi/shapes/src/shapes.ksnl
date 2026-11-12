@@ -1,0 +1,98 @@
+type shapes.Acc layout c derive [Clone, Copy]
+    count: i32
+    sum: f64
+end shapes.Acc
+
+type shapes.Point layout c derive [Clone, Copy]
+    x: f64
+    y: f64
+end shapes.Point
+
+type shapes.Rect layout c derive [Clone, Copy]
+    min: shapes.Point
+    max: shapes.Point
+end shapes.Rect
+
+type shapes.Size layout c derive [Clone, Copy]
+    w: i32
+    h: i32
+end shapes.Size
+
+extern shapes.rect_area(r: shapes.Rect) -> f64 link "./libshapes.so:rect_area"
+
+extern shapes.rect_each_vertex(r: shapes.Rect, f: fn(f64, f64, *mut shapes.Acc) -> () uses [] panics never, user: *mut shapes.Acc) -> () link "./libshapes.so:rect_each_vertex"
+
+extern shapes.rect_from(a: shapes.Point, b: shapes.Point) -> shapes.Rect link "./libshapes.so:rect_from"
+
+extern shapes.rect_grow(r: *mut shapes.Rect, d: f64) -> () link "./libshapes.so:rect_grow"
+
+extern shapes.size_area(s: shapes.Size) -> i32 link "./libshapes.so:size_area"
+
+extern shapes.size_make(w: i32, h: i32) -> shapes.Size link "./libshapes.so:size_make"
+
+fn shapes.area(r: shapes.Rect) -> f64 uses [] panics never
+    unsafe "shapes" "struct by value (MEMORY class: 32 bytes)" {
+        shapes.rect_area(r)
+    }
+end shapes.area
+
+fn shapes.area_of_size(w: i32, h: i32) -> i32 uses [] panics never
+    unsafe "shapes" "a small struct returned in a register" {
+        shapes.size_area(shapes.size_make(w, h))
+    }
+end shapes.area_of_size
+
+fn shapes.grown(r: shapes.Rect, d: f64) -> shapes.Rect uses [] panics never
+    let mut copy = r
+    let p = core.ptr.from_mut(&mut copy)
+    unsafe "shapes" "struct by pointer" {
+        shapes.rect_grow(p, d)
+    }
+    copy
+end shapes.grown
+
+fn shapes.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let r = shapes.rect(0.0f64, 0.0f64, 3.0f64, 2.0f64)
+    core.check.is_true(shapes.area(r) == 6.0f64)
+    core.check.is_true(shapes.area(shapes.grown(r, 1.0f64)) == 20.0f64)
+    let stats = shapes.vertex_stats(r)
+    core.check.eq(stats.count, 4i32)
+    core.check.is_true(stats.sum == 10.0f64)
+    core.check.eq(shapes.area_of_size(6i32, 7i32), 42i32)
+    std.io.print_line("shapes ok")
+end shapes.main
+
+fn shapes.rect(x0: f64, y0: f64, x1: f64, y1: f64) -> shapes.Rect uses [] panics never
+    let a = shapes.Point { x: x0, y: y0 }
+    let b = shapes.Point { x: x1, y: y1 }
+    unsafe "shapes" "structs by value, returned in registers or memory" {
+        shapes.rect_from(a, b)
+    }
+end shapes.rect
+
+fn shapes.vertex(x: f64, y: f64, user: *mut shapes.Acc) -> () uses [] panics never
+    unsafe "callback" "accumulate through the user data pointer" {
+        let acc: shapes.Acc = core.ptr.read(user)
+        let sum = acc.sum + x + y
+        core.ptr.write(user, shapes.Acc { count: acc.count.wrapping_add(1i32), sum: sum })
+    }
+end shapes.vertex
+
+fn shapes.vertex_stats(r: shapes.Rect) -> shapes.Acc uses [] panics never
+    let mut acc = shapes.Acc { count: 0i32, sum: 0.0f64 }
+    let p = core.ptr.from_mut(&mut acc)
+    unsafe "shapes" "callback with user data" {
+        shapes.rect_each_vertex(r, shapes.vertex, p)
+    }
+    acc
+end shapes.vertex_stats
+
+test shapes.area.test_area
+    core.check.is_true(shapes.area(shapes.rect(1.0f64, 1.0f64, 4.0f64, 5.0f64)) == 12.0f64)
+end shapes.area.test_area
+
+test shapes.vertex_stats.test_vertices
+    let s = shapes.vertex_stats(shapes.rect(0.0f64, 0.0f64, 1.0f64, 1.0f64))
+    core.check.eq(s.count, 4i32)
+    core.check.is_true(s.sum == 4.0f64)
+end shapes.vertex_stats.test_vertices

@@ -250,6 +250,7 @@ impl<'a> Cx<'a> {
         }
         match tag(t).as_str() {
             "never" => return Ok("void".into()),
+            "array" => return Err("a fixed-size array type `[T; N]` (for example a field of a `layout c` struct) is not supported by the native backend yet; the interpreter supports it".into()),
             "ptr" => {
                 // `*const T` / `*mut T`: 要素の型が `()` の場合 (void*) は `u8` とみなす。
                 let inner = self.pty(tel(t, 2))?;
@@ -1479,55 +1480,308 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok(out)
     }
 
-    /// `extern` の関数 `d` を、外部シンボルとして取り込んで呼ぶ (C の呼び出し規約)。引数・戻り値はスカラーとポインタだけ。
+    /// C に渡す型 `ty` (スカラー・生ポインタ・`layout c` の構造体) の葉のスカラーを、(オフセット, 大きさ, 浮動小数か) で並べる。
+    fn c_flat(&self, d: &Def, ty: &str, base: u32, out: &mut Vec<(u32, u32, bool)>, depth: u32) -> R<()> {
+        if depth > 8 {
+            return Err(format!("extern {}: type {} is nested too deeply", d.name, ty));
+        }
+        if is_mutref(ty) {
+            return Err(format!("extern {}: a mutable reference to a scalar is not a C type (use a raw pointer)", d.name));
+        }
+        if is_scalar(ty) {
+            out.push((base, scalar_size(ty), is_float(ty)));
+            return Ok(());
+        }
+        let ok = self.cx.types.get(ty).is_some_and(|t| t.kw == "type" && t.layout_c);
+        if !ok {
+            return Err(format!("extern {}: the struct {} is not `layout c`, so it cannot cross the C boundary", d.name, ty));
+        }
+        let l = self.cx.layout(ty, 0)?;
+        for (_, fty, off) in &l.fields {
+            self.c_flat(d, fty, base + off, out, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    /// `extern` の関数 `d` を、外部シンボルとして取り込んで呼ぶ。C の呼び出し規約 (System V AMD64 の分類に従った、
+    /// 構造体の値渡し・値返しを含む)。`link "lib:name"` は、実行時に共有ライブラリから引く (失敗は終了コード 101)。
+    /// 関数型の引数は、Kasane の関数かキャプチャなしのクロージャの C 用の入口のアドレスを渡す。
     fn extern_call(&mut self, d: &Def, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
-        let mut sig = self.module.make_signature();
-        let mut ptys = vec![];
-        for (_, t) in &d.params {
-            let pt = self.cx.pty_for(d, t)?;
-            if !is_scalar(&pt) {
-                return Err(format!("extern {}: parameter of type {}", d.name, pt));
-            }
-            sig.params.push(AbiParam::new(cl(&pt)));
-            ptys.push(pt);
-        }
-        let rty = self.cx.pty_for(d, &d.ret)?;
-        if rty != "void" && !is_scalar(&rty) {
-            return Err(format!("extern {}: return type {}", d.name, rty));
-        }
-        if rty != "void" {
-            sig.returns.push(AbiParam::new(cl(&rty)));
-        }
-        if args.len() != ptys.len() {
+        use cranelift_codegen::ir::ArgumentPurpose;
+        if args.len() != d.params.len() {
             return Err(format!("extern {}: argument count", d.name));
         }
-        let key = format!("extern:{}", d.link);
-        let cached = self.ids.borrow().get(&key).copied();
-        let id = match cached {
-            Some(id) => id,
+        let ptr_t = self.ptr_ty();
+        let (lib, sym) = crate::ffi::split_link(&d.link);
+        let agg_ok = cfg!(all(target_arch = "x86_64", not(windows)));
+        let mut sig = self.module.make_signature();
+        let rty = self.cx.pty_for(d, &d.ret)?;
+        // 戻り値: スカラーはそのまま、構造体は 16 バイト以下ならレジスタ (8 バイトごとに INTEGER / SSE)、
+        // それより大きければ戻り先のアドレスを最初の引数に取る。
+        let mut ret_regs: Vec<bool> = vec![];
+        let mut ret_mem = false;
+        let (mut gp, mut sse) = (0usize, 0usize);
+        if rty != "void" && is_agg(&rty) {
+            if !agg_ok {
+                return Err(format!("extern {}: returning a struct by value is native-supported on x86_64 only", d.name));
+            }
+            let mut flat = vec![];
+            self.c_flat(d, &rty, 0, &mut flat, 0)?;
+            let size = self.cx.layout(&rty, 0)?.size;
+            match crate::ffi::classify_flat(&flat, size) {
+                crate::ffi::Pass::Memory => {
+                    ret_mem = true;
+                    sig.params.push(AbiParam::new(ptr_t));
+                    sig.returns.push(AbiParam::new(ptr_t));
+                    gp += 1;
+                }
+                crate::ffi::Pass::Regs(cls) => {
+                    for c in &cls {
+                        sig.returns.push(AbiParam::new(if *c { types::F64 } else { types::I64 }));
+                    }
+                    ret_regs = cls;
+                }
+            }
+        } else if rty != "void" {
+            if !is_scalar(&rty) {
+                return Err(format!("extern {}: return type {}", d.name, rty));
+            }
+            sig.returns.push(AbiParam::new(cl(&rty)));
+        }
+        // 引数の振り分け
+        enum K {
+            Scalar(String),
+            Callback,
+            Regs(String, Vec<bool>),
+            Stack(String),
+        }
+        let mut kinds: Vec<K> = vec![];
+        for (_, t) in &d.params {
+            if tag(t) == "fn" {
+                gp += 1;
+                sig.params.push(AbiParam::new(ptr_t));
+                kinds.push(K::Callback);
+                continue;
+            }
+            let pt = self.cx.pty_for(d, t)?;
+            if is_scalar(&pt) {
+                if is_mutref(&pt) {
+                    return Err(format!("extern {}: parameter of type {}", d.name, pt));
+                }
+                if is_float(&pt) {
+                    sse += 1;
+                } else {
+                    gp += 1;
+                }
+                // 8 ビット・16 ビットの整数は、C の慣習どおり 32 ビットまで拡張して渡す
+                let p = AbiParam::new(cl(&pt));
+                sig.params.push(match pt.as_str() {
+                    "i8" | "i16" => p.sext(),
+                    "u8" | "u16" | "bool" => p.uext(),
+                    _ => p,
+                });
+                kinds.push(K::Scalar(pt));
+                continue;
+            }
+            if !agg_ok {
+                return Err(format!("extern {}: passing a struct by value is native-supported on x86_64 only", d.name));
+            }
+            let mut flat = vec![];
+            self.c_flat(d, &pt, 0, &mut flat, 0)?;
+            let size = self.cx.layout(&pt, 0)?.size;
+            match crate::ffi::classify_flat(&flat, size) {
+                crate::ffi::Pass::Regs(cls) if gp + cls.iter().filter(|c| !**c).count() <= 6 && sse + cls.iter().filter(|c| **c).count() <= 8 => {
+                    for c in &cls {
+                        if *c {
+                            sse += 1;
+                        } else {
+                            gp += 1;
+                        }
+                        sig.params.push(AbiParam::new(if *c { types::F64 } else { types::I64 }));
+                    }
+                    kinds.push(K::Regs(pt, cls));
+                }
+                _ => {
+                    // メモリ (または、レジスタが足りないとき): 引数領域へコピーして渡す
+                    let padded = size.div_ceil(8) * 8;
+                    sig.params.push(AbiParam::special(ptr_t, ArgumentPurpose::StructArgument(padded)));
+                    kinds.push(K::Stack(pt));
+                }
+            }
+        }
+        // 引数の評価
+        let mut vals: Vec<Value> = vec![];
+        let ret_buf = if ret_mem { Some(self.alloc_for(&rty)?) } else { None };
+        if let Some(b) = ret_buf {
+            vals.push(b);
+        }
+        for ((a, (_, t)), k) in args.iter().zip(&d.params).zip(&kinds) {
+            match k {
+                K::Callback => vals.push(self.callback_addr(d, a, t)?),
+                K::Scalar(pt) => {
+                    let (v, got) = self.expr(a, env, Some(pt))?;
+                    if &got != pt {
+                        return Err(format!("extern {}: argument of type {} where {} is expected", d.name, got, pt));
+                    }
+                    vals.push(v.ok_or("bad argument")?);
+                }
+                K::Regs(pt, _) | K::Stack(pt) => {
+                    let (v, got) = self.expr(a, env, Some(pt))?;
+                    if &got != pt {
+                        return Err(format!("extern {}: argument of type {} where {} is expected", d.name, got, pt));
+                    }
+                    let v = v.ok_or("bad argument")?;
+                    let size = self.cx.layout(pt, 0)?.size;
+                    // 0 で埋めた 8 バイト単位の領域へ写す (末尾の余白を読まないため)
+                    let padded = size.div_ceil(8) * 8;
+                    let tmp = self.alloc(padded.max(8), 8);
+                    let zero = self.b.ins().iconst(types::I64, 0);
+                    for i in 0..padded.div_ceil(8) {
+                        self.b.ins().store(MemFlags::new(), zero, tmp, (i * 8) as i32);
+                    }
+                    self.copy_mem(tmp, v, size);
+                    match k {
+                        K::Regs(_, cls) => {
+                            for (i, c) in cls.iter().enumerate() {
+                                let ty = if *c { types::F64 } else { types::I64 };
+                                vals.push(self.b.ins().load(ty, MemFlags::new(), tmp, (i * 8) as i32));
+                            }
+                        }
+                        _ => vals.push(tmp),
+                    }
+                }
+            }
+        }
+        let results: Vec<Value> = match lib {
             None => {
-                let id = self
-                    .module
-                    .declare_function(&d.link, Linkage::Import, &sig)
-                    .map_err(|e| format!("extern {} (symbol {}): {}", d.name, d.link, e))?;
-                self.ids.borrow_mut().insert(key, id);
-                id
+                let key = format!("extern:{}", d.link);
+                let cached = self.ids.borrow().get(&key).copied();
+                let id = match cached {
+                    Some(id) => id,
+                    None => {
+                        let id = self
+                            .module
+                            .declare_function(sym, Linkage::Import, &sig)
+                            .map_err(|e| format!("extern {} (symbol {}): {}", d.name, d.link, e))?;
+                        self.ids.borrow_mut().insert(key, id);
+                        id
+                    }
+                };
+                self.call_rt(id, &vals)
+            }
+            Some(lib) => {
+                // 動的ロード: 実行時に `dlopen` / `dlsym` (ランタイムの `ksn_rt_sys_dlsym`)。見つからなければ panic (終了コード 101)。
+                let mut lb = lib.as_bytes().to_vec();
+                lb.push(0);
+                let mut sb = sym.as_bytes().to_vec();
+                sb.push(0);
+                let lp = self.string_ptr(lb)?;
+                let sp = self.string_ptr(sb)?;
+                let f = self.crt("ksn_rt_sys_dlsym", &[lp, sp], Some(ptr_t)).ok_or("dlsym")?;
+                let sr = self.b.import_signature(sig);
+                let c = self.b.ins().call_indirect(sr, f, &vals);
+                self.b.inst_results(c).to_vec()
             }
         };
-        let mut vals = vec![];
-        for (a, pt) in args.iter().zip(&ptys) {
-            let (v, t) = self.expr(a, env, Some(pt))?;
-            if &t != pt {
-                return Err(format!("extern {}: argument of type {} where {} is expected", d.name, t, pt));
-            }
-            vals.push(v.ok_or("bad argument")?);
-        }
-        let res = self.call_rt(id, &vals);
         if tag(&d.ret) == "never" {
             self.b.ins().trap(TrapCode::user(6).unwrap());
             self.term = true;
         }
-        Ok((res.first().copied(), rty))
+        if ret_mem {
+            return Ok((ret_buf, rty));
+        }
+        if !ret_regs.is_empty() {
+            let size = self.cx.layout(&rty, 0)?.size;
+            let tmp = self.alloc(size.div_ceil(8).max(1) * 8, 8);
+            for (i, v) in results.iter().enumerate() {
+                self.b.ins().store(MemFlags::new(), *v, tmp, (i * 8) as i32);
+            }
+            return Ok((Some(tmp), rty));
+        }
+        Ok((results.first().copied(), rty))
+    }
+
+    /// 関数型の引数 (C のコールバック) の実引数 `a` から、C の関数ポインタ (Kasane の関数の C 用の入口) を作る。
+    /// `a` は関数への道 (`app.cmp`) かキャプチャなしのクロージャ式で、型は宣言の関数型 `fnty` の引数・戻り値と同じでなければならない。
+    /// 引数・戻り値はスカラー・生ポインタ・`()` だけ (構造体の値渡しは対象外)。
+    fn callback_addr(&mut self, d: &Def, a: &V, fnty: &V) -> R<Value> {
+        let ptr_t = self.ptr_ty();
+        let mut ptys = vec![];
+        for p in items(tel(fnty, 1)) {
+            let t = self.cx.pty_for(d, p)?;
+            if !is_scalar(&t) || is_mutref(&t) {
+                return Err(format!("extern {}: a callback parameter of type {} (only scalars and raw pointers)", d.name, t));
+            }
+            ptys.push(t);
+        }
+        let rty = self.cx.pty_for(d, tel(fnty, 2))?;
+        if rty != "void" && (!is_scalar(&rty) || is_mutref(&rty)) {
+            return Err(format!("extern {}: a callback return type {}", d.name, rty));
+        }
+        let id = if nname(a) == "Path" {
+            let segs = strs(&nf(a)[0]);
+            if segs.len() == 1 && (self.closure_ctx.contains_key(&segs[0]) || self.closures.contains_key(&segs[0])) {
+                return Err(format!("extern {}: a closure variable cannot be passed to C (write the closure at the call or pass a function)", d.name));
+            }
+            let q = self.cx.qual_segs(&segs).join(".");
+            let fd: &'a Def = *self.funcs.get(&q).ok_or_else(|| format!("extern {}: the callback `{}` is not a function", d.name, q))?;
+            if !type_params(fd).is_empty() {
+                return Err(format!("extern {}: the callback `{}` is generic", d.name, q));
+            }
+            let mut ok = fd.params.len() == ptys.len();
+            if ok {
+                for ((_, t), want) in fd.params.iter().zip(&ptys) {
+                    ok = ok && self.cx.pty_for(fd, t).ok().as_ref() == Some(want);
+                }
+                ok = ok && self.cx.pty_for(fd, &fd.ret).ok().as_ref() == Some(&rty);
+            }
+            if !ok {
+                return Err(format!("extern {}: the callback `{}` does not match the parameter's function type", d.name, q));
+            }
+            self.func_id(fd, &q, &HashMap::new())?
+        } else if nname(a) == "Closure" {
+            let f = nf(a);
+            if !items(&f[2]).is_empty() {
+                return Err(format!("extern {}: a closure passed to C cannot capture variables", d.name));
+            }
+            let mut nodes: Vec<&V> = vec![];
+            crate::check::walk(&f[3], &mut nodes);
+            if nodes.iter().any(|n| matches!(nname(n), "Return" | "Try")) {
+                return Err(format!("extern {}: `return` or `?` inside a callback closure", d.name));
+            }
+            if items(&f[0]).len() != ptys.len() {
+                return Err(format!("extern {}: the callback closure does not match the parameter's function type", d.name));
+            }
+            for (p, want) in items(&f[0]).iter().zip(&ptys) {
+                let t = self.cx.pty(&items(p)[1])?;
+                if &t != want {
+                    return Err(format!("extern {}: the callback closure's parameter type {} differs from {}", d.name, t, want));
+                }
+            }
+            let crty = self.cx.pty(&f[1])?;
+            if crty != rty {
+                return Err(format!("extern {}: the callback closure does not match the parameter's function type", d.name));
+            }
+            // クロージャを、同じファイルの `fn` として合成する (本体は通常の関数と同じ経路で生成する)
+            let sym = format!("ksn_cb_{}", self.ids.borrow().len());
+            let cd: &'a Def = Box::leak(Box::new(Def {
+                kw: "fn".into(),
+                name: sym.clone(),
+                file: self.def.file.clone(),
+                module: self.def.module.clone(),
+                params: items(&f[0]).iter().map(|p| (st(&items(p)[0]), items(p)[1].clone())).collect(),
+                ret: f[1].clone(),
+                body: Some(f[3].clone()),
+                panics: Some("never".into()),
+                ..Default::default()
+            }));
+            let sub = self.cx.subst.borrow().clone();
+            self.func_id(cd, &sym, &sub)?
+        } else {
+            return Err(format!("extern {}: a function-typed argument must be a function or a closure written at the call", d.name));
+        };
+        let fr = self.module.declare_func_in_func(id, self.b.func);
+        Ok(self.b.ins().func_addr(ptr_t, fr))
     }
 
     /// `core.ptr.*`: 生ポインタの操作。扱わない名前なら None。
@@ -1593,6 +1847,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let (v, t) = self.expr(&args[0], env, None)?;
                 if let Some(inner) = mutref_inner(&t) {
                     return Ok(Some((v, format!("rawptr<{}>", inner))));
+                }
+                // 配列・スライス・`Vec<T>` は、先頭の要素を指す (`*mut T`)。C に配列を渡す形 (インタプリタと同じ意味)。
+                let seq_elem = self.cx.elem_of(&t).or_else(|| self.cx.slices.borrow().get(&t).cloned());
+                if let Some(e) = seq_elem {
+                    let pt = self.ptr_ty();
+                    let p = self.b.ins().load(pt, MemFlags::new(), v.ok_or("bad pointer")?, 0);
+                    return Ok(Some((Some(p), format!("rawptr<{}>", e))));
                 }
                 if is_agg(&t) {
                     return Ok(Some((v, format!("rawptr<{}>", t))));
@@ -2089,7 +2350,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         "read" => self.ty_of(args.first()?, env, None).and_then(|t| rawptr_inner(&t).map(String::from)),
                         "from_mut" | "from_ref" => {
                             let t = self.ty_of(args.first()?, env, None)?;
-                            Some(format!("rawptr<{}>", mutref_inner(&t).unwrap_or(&t)))
+                            // 配列・スライス・`Vec<T>` は先頭の要素を指す (`ptr_call` と同じ)
+                            let seq = self.cx.elem_of(&t).or_else(|| self.cx.slices.borrow().get(&t).cloned());
+                            Some(format!("rawptr<{}>", seq.as_deref().unwrap_or_else(|| mutref_inner(&t).unwrap_or(&t))))
                         }
                         _ => None,
                     };
@@ -8100,6 +8363,10 @@ pub fn compile_clif(
     if uses_sys {
         std::fs::write(&sys_c, include_str!("sysrt.c")).map_err(|e| e.to_string())?;
         cmd.args(["-O1", &sys_c]);
+        // 動的ロード (`link "lib:name"`) は dlopen / dlsym を使う (古い glibc では libdl が別)。
+        if !cfg!(windows) && bytes.windows(16).any(|w| w == b"ksn_rt_sys_dlsym") {
+            cmd.arg("-ldl");
+        }
     }
     // スレッドランタイム (thrrt.c) は POSIX スレッドを使うので `-pthread` を付ける。
     let thr_c = format!("{}.thr.c", out_path);

@@ -1,0 +1,45 @@
+type t.Arr3 layout c derive [Clone, Copy]
+    v: [i32; 3]
+end t.Arr3
+
+type t.Deep layout c derive [Clone, Copy]
+    s: t.Small
+    v: t.Vec2
+    t: f64
+end t.Deep
+
+type t.Small layout c derive [Clone, Copy]
+    a: i32
+    b: i32
+end t.Small
+
+type t.Vec2 layout c derive [Clone, Copy]
+    x: f32
+    y: f32
+end t.Vec2
+
+extern t.arr3_make(x: i32) -> t.Arr3 link "LIB:arr3_make"
+
+extern t.arr3_sum(a: t.Arr3) -> i32 link "LIB:arr3_sum"
+
+extern t.deep_sum(d: t.Deep) -> f64 link "LIB:deep_sum"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = unsafe "ffi" "array in a struct, returned" {
+        t.arr3_make(10i32)
+    }
+    core.check.eq(a.v[2], 12i32)
+    let s = unsafe "ffi" "array in a struct, passed" {
+        t.arr3_sum(t.Arr3 { v: [1i32, 2i32, 3i32] })
+    }
+    core.check.eq(s, 6i32)
+    let small = t.Small { a: 1i32, b: 2i32 }
+    let vec = t.Vec2 { x: 0.5f32, y: 0.25f32 }
+    let d = t.Deep { s: small, v: vec, t: 4.0f64 }
+    let sum = unsafe "ffi" "nested structs" {
+        t.deep_sum(d)
+    }
+    core.check.is_true(sum == 7.75f64)
+    std.io.print_line("arrays ok")
+    Ok(())
+end t.main

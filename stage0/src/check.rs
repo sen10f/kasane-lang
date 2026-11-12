@@ -412,16 +412,19 @@ impl<'a> Checker<'a> {
                 "type" => {
                     let tys: Vec<V> = d.fields.iter().map(|f| f.1.clone()).collect();
                     self.check_header_types(i, &tys);
+                    self.check_layout_c(i);
                 }
                 "enum" => {
                     let tys: Vec<V> = d.variants.iter().flat_map(|v| v.1.clone()).collect();
                     self.check_header_types(i, &tys);
+                    self.check_layout_c(i);
                 }
                 // xref.py の ref (未知の型・トレイト参照) のうち、今まで見ていなかったヘッダ位置。
                 "extern" => {
                     let mut tys: Vec<V> = d.params.iter().map(|p| p.1.clone()).collect();
                     tys.push(d.ret.clone());
                     self.check_header_types(i, &tys);
+                    self.check_extern_sig(i);
                 }
                 "trait" => self.check_trait_refs(i),
                 "impl" => {
@@ -2408,6 +2411,7 @@ impl<'a> Checker<'a> {
         self.tc_block(body, &env, &BTreeSet::new());
         self.lin_scope_end(0, "when the function ends");
         self.check_extern_calls(di);
+        self.check_callback_args(di);
         // NLL の借用検査 (制御フローと、借用を持つ変数の生存に基づく)
         self.borrowck(di);
         env = self.final_env.clone();
@@ -2420,6 +2424,155 @@ impl<'a> Checker<'a> {
                     self.mismatch(&d.ret, &got, nline(last), "return value");
                 }
             }
+        }
+    }
+
+    /// 型 `t` を C の型として使えない理由 (使えるなら None)。`array_ok` は、配列を値として許すか
+    /// (`layout c` の構造体のフィールドは可、`extern` の引数・戻り値は不可: C では配列は渡せず、ポインタになる)。
+    /// 型が決まらない (名前を解決できない) ときは黙る。
+    fn c_type_problem(&self, t: &V, file: &str, array_ok: bool) -> Option<String> {
+        match tag(t).as_str() {
+            "prim" => {
+                let p = st(tel(t, 1));
+                if matches!(p.as_str(), "str" | "i128" | "u128") {
+                    Some(format!("`{}` has no C counterpart", p))
+                } else {
+                    None
+                }
+            }
+            "ptr" | "fn" | "never" => None,
+            "tuple" if items(tel(t, 1)).is_empty() => None,
+            "tuple" => Some("a tuple is not a C type".into()),
+            "array" if array_ok => self.c_type_problem(tel(t, 1), file, true),
+            "array" => Some("an array is not passed by value in C (pass a pointer)".into()),
+            "ref" | "slice" => Some("a reference or slice is not a C type (use a raw pointer)".into()),
+            "named" => {
+                let name = st(tel(t, 1));
+                let segs: Vec<String> = name.split('.').map(String::from).collect();
+                let full = self.p.expand(&segs, file).join(".");
+                match self.p.types.get(&full) {
+                    Some(&i) => {
+                        let d = &self.p.defs[i];
+                        if d.kw == "type" && d.layout_c {
+                            None
+                        } else {
+                            Some(format!("`{}` is not a `layout c` struct", full))
+                        }
+                    }
+                    None if matches!(name.as_str(), "Option" | "Result") => Some(format!("`{}` is not a C type", name)),
+                    None => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// 3.8: `extern` の引数・戻り値の型が C の型であること (E5007)、関数型 (C のコールバック) が
+    /// `uses [] panics never` であること (E5004)。
+    fn check_extern_sig(&mut self, di: usize) {
+        let d = self.def(di);
+        let mut tys: Vec<V> = d.params.iter().map(|p| p.1.clone()).collect();
+        tys.push(d.ret.clone());
+        for t in &tys {
+            if tag(t) == "fn" {
+                let (uses, pn) = (strs(tel(t, 3)), st(tel(t, 4)));
+                if !uses.is_empty() || pn != "never" {
+                    self.diag(
+                        "E5004",
+                        format!(
+                            "{}: a function type that crosses the C boundary must be `uses [] panics never` (C cannot carry effects or panics)",
+                            d.name
+                        ),
+                        di,
+                        0,
+                    );
+                }
+                for x in items(tel(t, 1)).iter().chain(std::iter::once(tel(t, 2))) {
+                    if let Some(why) = self.c_type_problem(x, &d.file, false) {
+                        self.diag("E5007", format!("{}: the callback signature is not C-compatible: {}", d.name, why), di, 0);
+                    }
+                }
+            } else if let Some(why) = self.c_type_problem(t, &d.file, false) {
+                self.diag("E5007", format!("{}: the signature is not C-compatible: {}", d.name, why), di, 0);
+            }
+        }
+    }
+
+    /// 3.8: `layout c` の型は、フィールドがすべて C の型 (整数・浮動小数・`bool`・`char`・生ポインタ・関数型・
+    /// 配列・入れ子の `layout c` の構造体) の、ジェネリクスなしの構造体 (E5006)。
+    fn check_layout_c(&mut self, di: usize) {
+        let d = self.def(di);
+        if !d.layout_c {
+            return;
+        }
+        if d.kw != "type" {
+            self.diag("E5006", format!("{}: `layout c` applies to a struct (`type`), not to an enum", d.name), di, 0);
+            return;
+        }
+        if d.generics.iter().any(|g| g.0 != "life") {
+            self.diag("E5006", format!("{}: a `layout c` struct cannot be generic", d.name), di, 0);
+        }
+        if d.fields.is_empty() {
+            self.diag("E5006", format!("{}: a `layout c` struct needs at least one field (C has no empty structs)", d.name), di, 0);
+        }
+        for (n, t, _) in &d.fields {
+            if let Some(why) = self.c_type_problem(t, &d.file, true) {
+                self.diag("E5006", format!("{}: the field `{}` is not a C type: {}", d.name, n, why), di, 0);
+            }
+        }
+    }
+
+    /// 3.8: C に渡す関数型の引数 (関数・クロージャ) は `uses [] panics never` を満たすこと (E5005)。
+    /// 関数への道は宣言 (推論した効果を含む) を、クロージャ式は本体の効果を見る。キャプチャを持つクロージャも不可 (E5005)。
+    fn check_callback_args(&mut self, di: usize) {
+        let d = self.def(di);
+        let Some(body) = &d.body else { return };
+        let mut nodes: Vec<&V> = vec![];
+        walk(body, &mut nodes);
+        let mut found: Vec<(usize, String)> = vec![];
+        for n in nodes {
+            if nname(n) != "Call" || nname(&nf(n)[0]) != "Path" {
+                continue;
+            }
+            let segs = strs(&nf(&nf(n)[0])[0]);
+            let Some(r) = self.p.resolve(&segs, &d.file) else { continue };
+            let Target::Sig(i) = r.target else { continue };
+            let ext = &self.p.defs[i];
+            if !r.rest.is_empty() || ext.kw != "extern" {
+                continue;
+            }
+            for (a, (_, pt)) in items(&nf(n)[1]).iter().zip(ext.params.iter()) {
+                if tag(pt) != "fn" {
+                    continue;
+                }
+                match nname(a) {
+                    "Path" => {
+                        let asegs = strs(&nf(a)[0]);
+                        if let Some(ar) = self.p.resolve(&asegs, &d.file) {
+                            if let (Target::Fn(fi), true) = (&ar.target, ar.rest.is_empty()) {
+                                let cd = &self.p.defs[*fi];
+                                if !cd.uses.is_empty() || cd.panics.as_deref() != Some("never") {
+                                    found.push((nline(a), format!("the callback `{}` must be declared `uses [] panics never`", cd.name)));
+                                }
+                            }
+                        }
+                    }
+                    "Closure" => {
+                        if !items(&nf(a)[2]).is_empty() {
+                            found.push((nline(a), "a closure passed to C cannot capture variables (write `capture []`)".into()));
+                        }
+                        let locals = crate::infer::local_names(d, body);
+                        let (uses, may) = crate::infer::body_effects(self.p, &d.file, &locals, &nf(a)[3], true);
+                        if !uses.is_empty() || may {
+                            found.push((nline(a), "the closure passed to C must be `uses [] panics never`".into()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (line, msg) in found {
+            self.diag("E5005", msg, di, line);
         }
     }
 

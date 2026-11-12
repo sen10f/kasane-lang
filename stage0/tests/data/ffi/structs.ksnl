@@ -1,0 +1,165 @@
+type t.Acc layout c derive [Clone, Copy]
+    total: i64
+    count: i32
+end t.Acc
+
+type t.Arr3 layout c derive [Clone, Copy]
+    v: [i32; 3]
+end t.Arr3
+
+type t.Big layout c derive [Clone, Copy]
+    a: i64
+    b: i64
+    c: i64
+end t.Big
+
+type t.F3 layout c derive [Clone, Copy]
+    a: f32
+    b: f32
+    c: f32
+end t.F3
+
+type t.Mixed layout c derive [Clone, Copy]
+    a: i64
+    b: f64
+end t.Mixed
+
+type t.Nested layout c derive [Clone, Copy]
+    s: t.Small
+    d: f64
+end t.Nested
+
+type t.Padded layout c derive [Clone, Copy]
+    c: i8
+    s: i16
+    i: i32
+    d: f64
+end t.Padded
+
+type t.Small layout c derive [Clone, Copy]
+    a: i32
+    b: i32
+end t.Small
+
+type t.Vec2 layout c derive [Clone, Copy]
+    x: f32
+    y: f32
+end t.Vec2
+
+type t.Vec2d layout c derive [Clone, Copy]
+    x: f64
+    y: f64
+end t.Vec2d
+
+extern t.big_make(a: i64) -> t.Big link "LIB:big_make"
+
+extern t.big_scale(b: t.Big, k: i64) -> t.Big link "LIB:big_scale"
+
+extern t.big_sum(b: t.Big) -> i64 link "LIB:big_sum"
+
+extern t.f3_make(a: f32) -> t.F3 link "LIB:f3_make"
+
+extern t.f3_sum(f: t.F3) -> f32 link "LIB:f3_sum"
+
+extern t.mixed_make(a: i64, b: f64) -> t.Mixed link "LIB:mixed_make"
+
+extern t.mixed_sum(m: t.Mixed) -> f64 link "LIB:mixed_sum"
+
+extern t.nested_make(a: i32, b: i32, d: f64) -> t.Nested link "LIB:nested_make"
+
+extern t.nested_sum(n: t.Nested) -> f64 link "LIB:nested_sum"
+
+extern t.padded_make(c: i8, s: i16, i: i32, d: f64) -> t.Padded link "LIB:padded_make"
+
+extern t.padded_sum(p: t.Padded) -> f64 link "LIB:padded_sum"
+
+extern t.small_add(a: t.Small, b: t.Small) -> t.Small link "LIB:small_add"
+
+extern t.small_free(s: *mut t.Small) -> () link "LIB:small_free"
+
+extern t.small_inc(s: *mut t.Small) -> () link "LIB:small_inc"
+
+extern t.small_new(a: i32, b: i32) -> *mut t.Small link "LIB:small_new"
+
+extern t.vec2_scale(v: t.Vec2, k: f32) -> t.Vec2 link "LIB:vec2_scale"
+
+extern t.vec2d_add(a: t.Vec2d, b: t.Vec2d) -> t.Vec2d link "LIB:vec2d_add"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let s = unsafe "ffi" "small" {
+        t.small_add(t.Small { a: 1i32, b: 2i32 }, t.Small { a: 10i32, b: 20i32 })
+    }
+    core.check.eq(s.a, 11i32)
+    core.check.eq(s.b, 22i32)
+    let v = unsafe "ffi" "sse" {
+        t.vec2_scale(t.Vec2 { x: 1.5f32, y: 2.0f32 }, 2.0f32)
+    }
+    core.check.is_true(v.x == 3.0f32)
+    core.check.is_true(v.y == 4.0f32)
+    let w = unsafe "ffi" "sse2" {
+        t.vec2d_add(t.Vec2d { x: 1.0f64, y: 2.0f64 }, t.Vec2d { x: 0.5f64, y: 0.25f64 })
+    }
+    core.check.is_true(w.x == 1.5f64)
+    core.check.is_true(w.y == 2.25f64)
+    let m = unsafe "ffi" "mixed" {
+        t.mixed_make(7i64, 0.5f64)
+    }
+    core.check.eq(m.a, 7i64)
+    let ms = unsafe "ffi" "mixed sum" {
+        t.mixed_sum(m)
+    }
+    core.check.is_true(ms == 7.5f64)
+    let b = unsafe "ffi" "big" {
+        t.big_make(5i64)
+    }
+    core.check.eq(b.c, 15i64)
+    core.check.eq(unsafe "ffi" "big sum" {
+        t.big_sum(b)
+    }, 30i64)
+    let b2 = unsafe "ffi" "big scale" {
+        t.big_scale(b, 3i64)
+    }
+    core.check.eq(b2.b, 30i64)
+    let n = unsafe "ffi" "nested" {
+        t.nested_make(1i32, 2i32, 0.5f64)
+    }
+    core.check.eq(n.s.b, 2i32)
+    let ns = unsafe "ffi" "nested sum" {
+        t.nested_sum(n)
+    }
+    core.check.is_true(ns == 3.5f64)
+    let p = unsafe "ffi" "padded" {
+        t.padded_make(3i8, 4i16, 5i32, 0.5f64)
+    }
+    core.check.eq(p.s, 4i16)
+    let ps = unsafe "ffi" "padded sum" {
+        t.padded_sum(p)
+    }
+    core.check.is_true(ps == 12.5f64)
+    let f = unsafe "ffi" "f3" {
+        t.f3_make(1.0f32)
+    }
+    core.check.is_true(f.c == 3.0f32)
+    let fs = unsafe "ffi" "f3 sum" {
+        t.f3_sum(f)
+    }
+    core.check.is_true(fs == 6.0f32)
+    let mut local = t.Small { a: 1i32, b: 1i32 }
+    unsafe "ffi" "by pointer" {
+        t.small_inc(core.ptr.from_mut(&mut local))
+    }
+    core.check.eq(local.a, 2i32)
+    core.check.eq(local.b, 11i32)
+    let heap: *mut t.Small = unsafe "ffi" "returned pointer" {
+        t.small_new(7i32, 8i32)
+    }
+    unsafe "ffi" "read through pointer" {
+        t.small_inc(heap)
+        let back: t.Small = core.ptr.read(heap)
+        core.check.eq(back.a, 8i32)
+        core.check.eq(back.b, 18i32)
+        t.small_free(heap)
+    }
+    std.io.print_line("struct ok")
+    Ok(())
+end t.main

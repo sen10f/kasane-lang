@@ -1,0 +1,10 @@
+[package]
+name = "shapes"
+version = "0.1.0"
+edition = 1
+entry = "shapes.main"
+
+[dependencies]
+
+[unsafe]
+modules = ["shapes"]
