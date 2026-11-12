@@ -7387,7 +7387,7 @@ fn scalar_to_string_and_derived_methods_run_in_both() {
     core.check.eq(c.to_string().as_str(), \"x\")
     let t: bool = true
     core.check.eq(t.to_string().as_str(), \"true\")
-    core.check.eq(n.ne(&3i64), true)
+    core.check.eq(n != 3i64, true)
     core.check.eq(n.partial_cmp(&3i64).is_some(), true)
 end t.main.test_scalar_to_string
 ";
@@ -7704,7 +7704,7 @@ fn str_slice_option_result_sig_methods_run_in_both() {
     core.check.eq(o.eq(&Some(1u8)), true)
     core.check.eq(o.cmp(&None) == core.cmp.Ordering.Greater, true)
     let r: Result<u8, u8> = Ok(1u8)
-    core.check.eq(r.ne(&Err(1u8)), true)
+    core.check.eq(r != Err(1u8), true)
 end t.main.test_a_option_result_cmp
 
 test t.main.test_b_slice_count
@@ -7721,7 +7721,7 @@ test t.main.test_c_str_derived_cmp
     let s: &str = \"ab\"
     let t: &str = \"ac\"
     core.check.eq(s.eq(&t), false)
-    core.check.eq(s.ne(&t), true)
+    core.check.eq(s != t, true)
     core.check.eq(s.cmp(&t) == core.cmp.Ordering.Less, true)
     core.check.eq(s.partial_cmp(&t).is_some(), true)
 end t.main.test_c_str_derived_cmp
@@ -8102,4 +8102,79 @@ fn expr_ids_are_local_to_their_function() {
     let (ra, rb) = (pick(&a), pick(&b));
     assert!(!ra.is_empty());
     assert_eq!(ra, rb);
+}
+
+// ---- spec/ptr-const-ne: add_const / cast_const (const を保つ加算・変換) と `ne` の撤去 (演算子 `!=` のみ)
+
+#[test]
+fn ptr_add_const_and_cast_const_keep_const_and_run_in_both() {
+    // from_ref の `*const` を add_const (count 0) と cast_const::<i32, i32> で読み直す。from_mut の `*mut` を add_const で
+    // const に落としたものも読める。インタプリタとネイティブの両方で同じ結果になる。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    Ok(())
+end t.main
+
+test t.main.test_add_const_cast_const
+    let mut m: i32 = 7i32
+    let p: *mut i32 = core.ptr.from_mut(&mut m)
+    let x: i32 = 41i32
+    let q: *const i32 = core.ptr.from_ref(&x)
+    let r: *const i32 = core.ptr.add_const(q, 0usize)
+    let c: *const i32 = core.ptr.cast_const::<i32, i32>(r)
+    let w: *const i32 = core.ptr.add_const(p, 0usize)
+    unsafe "libc" "read through the const helpers" {
+        core.check.eq(core.ptr.read(r), 41i32)
+        core.check.eq(core.ptr.read(c), 41i32)
+        core.check.eq(core.ptr.read(w), 7i32)
+    }
+end t.main.test_add_const_cast_const
+"#;
+    let t = Tmp::new("ptr_add_const_both", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("t.main.test_add_const_cast_const ... ok"), "{}", out);
+}
+
+#[test]
+fn ptr_add_rejects_const_argument_and_add_const_accepts_it() {
+    // `add` は `*mut` を取るので `*const` (from_ref) を渡すと E2023。`add_const` なら同じ引数が通る。
+    let bad = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let q: *const i32 = core.ptr.from_ref(&x)
+    let r = core.ptr.add(q, 0usize)
+    core.check.eq(core.ptr.is_null(r), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("ptr_add_mut_rejects_const", bad);
+    assert!(out.contains("E2023") && out.contains("expected `*mut i32`, found `*const i32`"), "{}", out);
+
+    let ok = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let q: *const i32 = core.ptr.from_ref(&x)
+    let r: *const i32 = core.ptr.add_const(q, 0usize)
+    core.check.eq(core.ptr.is_null(r), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("ptr_add_const_ok", ok);
+    assert!(!codes(&out).iter().any(|c| c == "E2020" || c == "E2023"), "{}", out);
+}
+
+#[test]
+fn ne_method_is_e1108_with_the_operator_hint() {
+    // `ne` は派生メソッドではない (3.2 / 4.3)。`a.ne(b)` は E1108 で `a != b` を案内し、近い名前は出さない。
+    let bad = "fn t.f(a: u8, b: u8) -> bool uses [] panics never
+    a.ne(b)
+end t.f
+
+";
+    let t = Tmp::new("ne_method_hint", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("use `a != b`"), "{}", out);
+    assert!(!out.contains("did you mean"), "{}", out);
 }

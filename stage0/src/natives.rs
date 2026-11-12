@@ -656,7 +656,7 @@ impl Interp {
         }
         // 派生比較メソッド: `&str`・`&[T]`・`[T; N]` (構成要素が比較できるとき) と Option / Result (derive)。
         // 演算子 `==` `<` 等と同じ `v_eq` / `v_cmp` に委ねる (spec 3.2 / 8.3)。
-        if matches!(name, "eq" | "ne" | "cmp" | "partial_cmp")
+        if matches!(name, "eq" | "cmp" | "partial_cmp")
             && (matches!(v, Val::Str(_) | Val::StrBuf(_) | Val::Arr(_) | Val::Vec(_) | Val::View(..))
                 || matches!(v, Val::Enum(e) if e.en == "Option" || e.en == "Result"))
         {
@@ -674,7 +674,6 @@ impl Interp {
                 // 派生メソッド (types.rs `derived_method` / check.rs `method_known`) の基本型への適用。
                 match name {
                     "eq" => return Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
-                    "ne" => return Ok(Val::Bool(!self.v_eq(v, &dr(&a0))?)),
                     "cmp" => {
                         let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
                         return Ok(ordering(c));
@@ -910,12 +909,11 @@ impl Interp {
         }
     }
 
-    /// `eq` / `ne` / `cmp` / `partial_cmp` のメソッド形。演算子と同じ比較を使う。
+    /// `eq` / `cmp` / `partial_cmp` のメソッド形。演算子と同じ比較を使う。
     fn derived_cmp(&mut self, v: &Val, name: &str, a0: &Val) -> Res {
         let b = dr(a0);
         match name {
             "eq" => Ok(Val::Bool(self.v_eq(v, &b)?)),
-            "ne" => Ok(Val::Bool(!self.v_eq(v, &b)?)),
             "cmp" => Ok(ordering(self.v_cmp(v, &b)?.unwrap_or(0))),
             _ => Ok(self.v_cmp(v, &b)?.map_or_else(none, |c| some(ordering(c)))),
         }

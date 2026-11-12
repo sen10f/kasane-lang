@@ -1429,7 +1429,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 Ok(Some((p, t)))
             }
-            ("cast", 1) => {
+            ("cast", 1) | ("cast_const", 1) => {
                 let (p, t) = self.expr(&args[0], env, None)?;
                 if !is_rawptr(&t) {
                     return Err("cast of a non-pointer".into());
@@ -1437,7 +1437,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let to = expect.filter(|t| is_rawptr(t)).ok_or("cast needs an expected pointer type")?.to_string();
                 Ok(Some((p, to)))
             }
-            ("add", 2) => {
+            ("add", 2) | ("add_const", 2) => {
                 let (p, t) = self.expr(&args[0], env, None)?;
                 let elem = rawptr_inner(&t).ok_or("add on a non-pointer")?.to_string();
                 let (n, _) = self.expr(&args[1], env, Some("usize"))?;
@@ -1925,8 +1925,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         "null_mut" => Some(expect.filter(|t| is_rawptr(t)).unwrap_or("rawptr<u8>").to_string()),
                         "is_null" => Some("bool".into()),
                         "write" => Some("void".into()),
-                        "as_const" | "as_mut" | "add" => self.ty_of(args.first()?, env, None),
-                        "cast" => expect.filter(|t| is_rawptr(t)).map(String::from),
+                        "as_const" | "as_mut" | "add" | "add_const" => self.ty_of(args.first()?, env, None),
+                        "cast" | "cast_const" => expect.filter(|t| is_rawptr(t)).map(String::from),
                         "read" => self.ty_of(args.first()?, env, None).and_then(|t| rawptr_inner(&t).map(String::from)),
                         "from_mut" | "from_ref" => {
                             let t = self.ty_of(args.first()?, env, None)?;

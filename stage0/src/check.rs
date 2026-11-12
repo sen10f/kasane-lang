@@ -1698,6 +1698,7 @@ impl<'a> Checker<'a> {
         }
         // 整数の `/` `%` に wrapping_ / saturating_ の形は無い。近い名前 (`rem` は f32/f64 のもの) を出すと誤誘導する。
         // `<` 等は partial_cmp から導く演算子で、メソッドではない (4.3)。`lt` を近い名前 (`ln`) に誤誘導しない。
+        // `ne` も同じく演算子 (`!=`、`eq` の否定) で、メソッドではない (4.3)。
         let op = match name {
             "lt" => Some("<"),
             "le" => Some("<="),
@@ -1708,6 +1709,7 @@ impl<'a> Checker<'a> {
         let hint: Option<String> = match name {
             "wrapping_div" | "saturating_div" => Some("integer `/` has no wrapping_ or saturating_ form; use `checked_div(b)` (Option: handle None with `match`)".into()),
             "wrapping_rem" | "saturating_rem" => Some("integer `%` has no wrapping_ or saturating_ form; use `checked_rem(b)` (Option: handle None with `match`)".into()),
+            "ne" => Some("comparison is an operator, not a method; use `a != b` (the negation of `eq`)".into()),
             _ => op.map(|o| format!("comparison is an operator, not a method; use `a {} b` (PartialOrd, derived from partial_cmp)", o)),
         };
         if let Some(h) = hint {
@@ -1723,7 +1725,7 @@ impl<'a> Checker<'a> {
 
     fn method_known(&self, name: &str) -> bool {
         const DERIVED: &[&str] = &[
-            "clone", "eq", "ne", "cmp", "partial_cmp", "hash", "debug_fmt", "display_fmt", "call", "call_mut",
+            "clone", "eq", "cmp", "partial_cmp", "hash", "debug_fmt", "display_fmt", "call", "call_mut",
             "call_once", "drop", "try_clone", "to_string",
         ];
         const WRAPPING: &[&str] = &["add", "sub", "mul", "neg", "shl", "shr"];

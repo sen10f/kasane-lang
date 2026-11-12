@@ -1115,6 +1115,11 @@ impl Interp {
                 Some(Ok(Val::Ref(self.mark_const(inner))))
             }
             ("cast", 1) => Some(self.cast_ptr(name, &args[0], targs)),
+            // `cast_const` は `cast` と同じ変換の結果に const の印を付ける (場所のポインタは印の付いた別名を返す)。
+            ("cast_const", 1) => Some(match self.cast_ptr(name, &args[0], targs) {
+                Ok(Val::Ref(p)) => Ok(Val::Ref(self.mark_const(Rc::new(AliasPlace(p))))),
+                other => other,
+            }),
             _ => None,
         }
     }
@@ -1183,6 +1188,13 @@ impl Interp {
                             "core.ptr.as_const" => {
                                 let c = self.mark_const(Rc::new(AliasPlace(p.clone())));
                                 return Ok(Val::Ref(c));
+                            }
+                            // 場所のポインタの add_const は count 0 の恒等のみ (raw_ptr_op)。結果に const の印を付ける。
+                            "core.ptr.add_const" => {
+                                return match raw_ptr_op(&d.name, &args)? {
+                                    Val::Ref(q) => Ok(Val::Ref(self.mark_const(Rc::new(AliasPlace(q))))),
+                                    v => Ok(v),
+                                };
                             }
                             "core.ptr.write" if self.is_const_place(p) => {
                                 return panic("core.ptr.write: the pointer is const (from from_ref or as_const); use as_mut to write through it");
@@ -1626,7 +1638,7 @@ fn place_ptr_op(name: &str, op: &str, p: &dyn Place, args: &[Val]) -> Res {
         }
         ("is_null", 1) => Ok(Val::Bool(false)),
         // 要素が 1 つしかないので、0 だけ進める加算は恒等。それ以外は配列の要素を指さないので扱えない。
-        ("add", 2) if matches!(dr(&args[1]), Val::Int(0, _)) => Ok(args[0].clone()),
+        ("add" | "add_const", 2) if matches!(dr(&args[1]), Val::Int(0, _)) => Ok(args[0].clone()),
         _ => panic(format!(
             "{} is not supported for a pointer to a single place (only read, write, as_const, as_mut, is_null, add by 0)",
             name
@@ -1643,7 +1655,7 @@ fn raw_ptr_op(name: &str, args: &[Val]) -> Res {
     }
     match (op, args.len()) {
         ("as_const", 1) | ("as_mut", 1) => Ok(args[0].clone()),
-        ("add", 2) => {
+        ("add" | "add_const", 2) => {
             let (a, e) = match raw_ptr(&args[0]) {
                 Ok(x) => x,
                 Err(m) => return panic(format!("{}: {}", name, m)),
