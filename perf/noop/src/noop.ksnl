@@ -1,0 +1,3 @@
+fn noop.main() -> Result<(), std.io.Error> uses [] panics may
+    Ok(())
+end noop.main
