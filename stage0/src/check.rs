@@ -2441,6 +2441,10 @@ impl<'a> Checker<'a> {
             "array" => self.is_linear_in(tel(t, 1), seen),
             "named" => {
                 let name = st(tel(t, 1));
+                // `Sender<T>` は `T` が線形でも線形にならない (落としてよい。キューの値の持ち主は受信側。5.5)。
+                if name == "std.sync.Sender" {
+                    return false;
+                }
                 if items(tel(t, 2)).iter().any(|a| matches!(a, V::L(_)) && self.is_linear_in(a, seen)) {
                     return true;
                 }
@@ -2574,10 +2578,20 @@ impl<'a> Checker<'a> {
                     _ => V::Nil,
                 }
             }
+            "MCall" => {
+                let recv = self.ty_of(&f[0], env);
+                self.thread_method_ty(&recv, &st(&f[1]))
+            }
             "Call" => {
                 let fnn = &f[0];
                 if nname(fnn) == "Path" {
                     let segs = strs(&nf(fnn)[0]);
+                    // `rx.recv()` のような局所変数のメソッド呼び出し (パスの形で表れる)
+                    if segs.len() == 2 {
+                        if let Some(t) = env.get(&segs[0]) {
+                            return self.thread_method_ty(t, &segs[1]);
+                        }
+                    }
                     if !env.contains_key(&segs[0]) {
                         if let Some(r) = self.p.resolve(&segs, &self.def(self.d).file) {
                             if let Target::Variant(en, _) = &r.target {
@@ -2598,6 +2612,29 @@ impl<'a> Checker<'a> {
                 }
                 V::Nil
             }
+            _ => V::Nil,
+        }
+    }
+
+    /// スレッド間でやり取りする線形値の型 (5.5): `recv` / `close` / `send` / `clone` / `join` の結果型。
+    /// 受け取った線形値のパターン束縛 (`Ok(r) => ..`) が消費の義務を負うために必要。分からなければ `V::Nil`。
+    fn thread_method_ty(&self, recv: &V, name: &str) -> V {
+        if is_nil(recv) {
+            return V::Nil;
+        }
+        let r = self.strip(recv).clone();
+        if tag(&r) != "named" {
+            return V::Nil;
+        }
+        let targs: Vec<V> = items(tel(&r, 2)).iter().filter(|a| matches!(a, V::L(_))).cloned().collect();
+        let named = |n: &str, a: Vec<V>| V::L(vec![V::S("named".into()), V::S(n.into()), V::L(a)]);
+        let unit = V::L(vec![V::S("tuple".into()), V::L(vec![])]);
+        match (st(tel(&r, 1)).as_str(), name, targs.first()) {
+            ("std.sync.Receiver", "recv", Some(t)) => named("Result", vec![t.clone(), named("std.sync.RecvError", vec![])]),
+            ("std.sync.Receiver", "close", Some(_)) => named("Result", vec![unit, r.clone()]),
+            ("std.sync.Receiver" | "std.sync.Sender", "clone", Some(_)) => r.clone(),
+            ("std.sync.Sender", "send", Some(t)) => named("Result", vec![unit, named("std.sync.SendError", vec![t.clone()])]),
+            ("std.thread.JoinHandle", "join", Some(t)) => t.clone(),
             _ => V::Nil,
         }
     }
@@ -3151,14 +3188,20 @@ impl<'a> Checker<'a> {
             "Closure" => {
                 let mut sub = env.clone();
                 // `move` キャプチャした線形値の義務は、クロージャに移る (4.4)。
+                let mut taken: Vec<(String, usize)> = vec![];
                 for c in items(&f[2]) {
                     if items(c).first().map(st).as_deref() == Some("move") && self.lin_consume_name(&st(&items(c)[1])) {
                         self.lin_closure_took = true;
+                        taken.push((st(&items(c)[1]), nline(c)));
                     }
                 }
                 let saved_lin = (self.lin_floor, self.lin_in_closure, std::mem::take(&mut self.lin_loops));
                 self.lin_floor = self.lin.len();
                 self.lin_in_closure = true;
+                // 移った義務は本体が負う: 取り込んだ名前を本体の線形な束縛として宣言し、全経路で消費しているかを検査する。
+                for (name, line) in taken {
+                    self.lin.push(Lin { name, line, linear: true, live: true });
+                }
                 for p in items(&f[0]) {
                     let (pn, pt) = (st(&items(p)[0]), items(p)[1].clone());
                     sub.insert(pn.clone(), pt.clone());
@@ -3407,7 +3450,8 @@ impl<'a> Checker<'a> {
             "Match" => {
                 self.tc_expr(&f[0], env, muts, false);
                 let base = self.moved.clone();
-                let mut merged = base.clone();
+                // 腕の終わりの move の和。各腕は `base` から始まるので、全腕が同じ場所を復活させれば (`rx = back`) 復活が残る。
+                let mut merged: Option<BTreeMap<String, usize>> = None;
                 // スクラティニーの型が分かれば、腕の束縛に型を流す (線形値の未消費 E3003 のため)。
                 let sty = self.ty_of(&f[0], env);
                 // 線形値を `match` する (パターンで分解する) と、その値は消費される。
@@ -3445,9 +3489,10 @@ impl<'a> Checker<'a> {
                         self.lin_scope_end(lbase, "when the `match` arm ends");
                         inputs.push((format!("the `match` arm at line {} is taken", nlineno(&items(arm)[0])), self.lin.clone()));
                         let end = self.moved.clone();
-                        Self::union_moves(&mut merged, &end);
+                        Self::union_moves(merged.get_or_insert_with(BTreeMap::new), &end);
                     }
                 }
+                let mut merged = merged.unwrap_or(base);
                 self.lin = lstate;
                 self.lin_merge(inputs, lbase, nline(e));
                 // 腕の束縛は、合流後には見えない。

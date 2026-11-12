@@ -6821,6 +6821,53 @@ fn threads_interpreter_fails_clearly_when_no_single_threaded_schedule_exists() {
     assert_eq!(text(&r.stdout), "ping pong ok\n");
 }
 
+/// 線形値 (`TcpStream`) を `spawn` のクロージャへ move し、返す。`Receiver` を複製して複数のワーカーが 1 つのキューから
+/// 接続を取り合い、`close` で残りを受け取る。容量 1 のチャネルを持ち回して共有の状態を守る。
+#[test]
+fn threads_linear_values_move_between_threads_and_through_channels() {
+    threads_same_output("linear");
+}
+
+/// `Sender` / `Receiver` の `clone`: 複数の送信側が 1 つのチャネルに送り、受信側は最後の 1 つだけが残りを破棄する。
+#[test]
+fn threads_channel_ends_clone_and_share_one_queue() {
+    threads_same_output("channel_clone");
+}
+
+/// チャネルの端を複製しても、確保と解放が同数 (漏れも二重解放もない)。`malloc` / `free` を数える `LD_PRELOAD` で調べる。
+#[test]
+fn native_channel_clone_and_linear_pool_free_every_allocation_exactly_once() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let cc = ["gcc", "cc", "clang"].iter().find(|c| Command::new(c).arg("--version").output().is_ok());
+    let Some(cc) = cc else { return };
+    let dir = std::env::temp_dir().join(format!("ksn_malloc_count_thr_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let c_path = dir.join("malloc_count.c");
+    let so_path = dir.join("malloc_count.so");
+    fs::write(&c_path, include_str!("data/malloc_count.c")).unwrap();
+    let r = Command::new(cc).args(["-shared", "-fPIC", "-O1", "-o"]).arg(&so_path).arg(&c_path).arg("-ldl").output().unwrap();
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    for name in ["channel_clone", "linear"] {
+        let t = threads_pkg(name, "alloc");
+        for release in [false, true] {
+            let p = threads_build(&t, release);
+            for _ in 0..3 {
+                let o = Command::new(&p).env("LD_PRELOAD", &so_path).output().unwrap();
+                assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+                let err = text(&o.stderr);
+                let line = err.lines().find(|l| l.starts_with("allocs=")).unwrap_or_else(|| panic!("no counter output: {}", err));
+                let nums: Vec<i64> = line.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).map(|s| s.parse().unwrap()).collect();
+                assert_eq!(nums[0], nums[1], "{}: allocations and frees differ ({}): leak or double free", name, line);
+                assert!(nums[0] >= 10, "{}: too few allocations ({})", name, line);
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_shortener_example_builds_natively_without_skips_and_matches_the_interpreter() {
     if cfg!(windows) {

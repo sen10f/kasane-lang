@@ -25,20 +25,20 @@ static void init(void) {
 void *malloc(size_t n) {
     if (in_init) { void *p = boot + boot_used; boot_used += (n + 15) & ~15UL; return p; }
     init();
-    allocs++;
+    __atomic_fetch_add(&allocs, 1, __ATOMIC_RELAXED);
     return real_malloc(n);
 }
 
 void *realloc(void *p, size_t n) {
     init();
-    if (p == NULL) allocs++;
+    if (p == NULL) __atomic_fetch_add(&allocs, 1, __ATOMIC_RELAXED);
     return real_realloc(p, n);
 }
 
 void free(void *p) {
     if ((char *)p >= boot && (char *)p < boot + sizeof boot) return;
     init();
-    if (p != NULL) frees++;
+    if (p != NULL) __atomic_fetch_add(&frees, 1, __ATOMIC_RELAXED);
     real_free(p);
 }
 

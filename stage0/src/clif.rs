@@ -704,7 +704,15 @@ impl<'a> Cx<'a> {
             return true;
         }
         // ガード (落とすとロックを解く) とチャネルの両端 (落とすと端を閉じる) は、落とす処理が要る所有者。
-        if ty.starts_with("mutexguard<") || ty.starts_with("sender<") || ty.starts_with("receiver<") {
+        if ty.starts_with("mutexguard<") || ty.starts_with("sender<") {
+            return true;
+        }
+        // 線形な値を運ぶ受信側は線形 (4.4)。落とす処理は持たず、`close` で消費される (検査が全経路で保証する)。
+        // 所有者にしないので、`match` の腕の束縛からも (`Err(back) => rx = back`) 動かせる。
+        if let Some(t) = self.receiver_inner(ty) {
+            return !self.is_linear_ty(&t, 0);
+        }
+        if ty.starts_with("receiver<") {
             return true;
         }
         if ty == STRING || self.vecs.borrow().contains_key(ty) || self.deques.borrow().contains_key(ty) {
@@ -716,6 +724,34 @@ impl<'a> Cx<'a> {
                     l.variants.iter().any(|v| v.1.iter().any(|(t, _)| self.needs_drop_d(t, d + 1)))
                 } else {
                     l.fields.iter().any(|f| self.needs_drop_d(&f.1, d + 1))
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// 型 `ty` が線形か (4.4): 標準の線形な型 (`TcpStream` / `TcpListener` / `File`)、`linear` と宣言された型、それらを含む型。
+    fn is_linear_ty(&self, ty: &str, d: u32) -> bool {
+        if d > 6 {
+            return false;
+        }
+        if matches!(ty, "std.net.TcpStream" | "std.net.TcpListener" | "std.fs.File") {
+            return true;
+        }
+        if let Some(def) = self.types.get(ty) {
+            if def.linear {
+                return true;
+            }
+        }
+        if !is_agg(ty) || ty == "str" {
+            return false;
+        }
+        match self.layout(ty, 0) {
+            Ok(l) => {
+                if l.is_enum {
+                    l.variants.iter().any(|v| v.1.iter().any(|(t, _)| self.is_linear_ty(t, d + 1)))
+                } else {
+                    l.fields.iter().any(|f| self.is_linear_ty(&f.1, d + 1))
                 }
             }
             Err(_) => false,
@@ -962,6 +998,13 @@ impl<'a> Cx<'a> {
             if let Some(t) = self.receiver_inner(recv_ty) {
                 return self.builtin_enum("Result", &[t, "std.sync.RecvError".to_string()]).ok();
             }
+        }
+        // `Sender.clone` / `Receiver.clone`: 同じ型 (端がもう 1 つ増える)。`Receiver.close`: `Result<(), Receiver<T>>`。
+        if name == "clone" && (self.sender_inner(recv_ty).is_some() || self.receiver_inner(recv_ty).is_some()) {
+            return Some(recv_ty.to_string());
+        }
+        if name == "close" && self.receiver_inner(recv_ty).is_some() {
+            return self.builtin_enum("Result", &["void".to_string(), recv_ty.to_string()]).ok();
         }
         // `std.sync.Mutex.lock`: ロックを取って、ミューテックスのアドレスを持つガードを返す。
         if let Some(inner) = self.mutex_inner(recv_ty) {
@@ -3125,6 +3168,39 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok((Some(res), rty))
     }
 
+    /// `tx.clone()` / `rx.clone()`: 同じチャネルへの端をもう 1 つ増やす (確保しない)。
+    fn chan_clone(&mut self, recv: &V, ty: &str, is_sender: bool, env: &mut Env) -> R<(Option<Value>, String)> {
+        let (p, _) = self.expr(recv, env, None)?;
+        let p = p.ok_or("bad receiver")?;
+        let pt = self.ptr_ty();
+        let ch = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        self.crt(if is_sender { "ksn_rt_thr_sender_clone" } else { "ksn_rt_thr_receiver_clone" }, &[ch], None);
+        let dst = self.alloc(8, 8);
+        self.b.ins().store(MemFlags::new(), ch, dst, 0);
+        Ok((Some(dst), ty.to_string()))
+    }
+
+    /// `rx.close()` -> `Result<(), Receiver<T>>`。ほかに受信側があるか、最後でキューが空なら端を畳んで `Ok(())`。
+    /// 最後の受信側でキューに値が残っていれば閉じずに `Err(受信側)` で返す (残りは呼び出し側が受け取る)。
+    fn chan_close(&mut self, recv: &V, ty: &str, env: &mut Env) -> R<(Option<Value>, String)> {
+        let (p, _) = self.expr(recv, env, None)?;
+        let p = p.ok_or("bad receiver")?;
+        let pt = self.ptr_ty();
+        let ch = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        let r = self.crt("ksn_rt_thr_receiver_close", &[ch], Some(types::I64)).ok_or("close")?;
+        let rty = self.cx.builtin_enum("Result", &["void".into(), ty.to_string()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let failed = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+        let tg = self.b.ins().uextend(types::I32, failed);
+        self.b.ins().store(MemFlags::new(), tg, res, 0);
+        // `Ok` では使わない場所なので、`Err` のペイロード (受信側) をそのまま書いてよい。
+        self.b.ins().store(MemFlags::new(), ch, res, l.variants[1].1[0].1 as i32);
+        // 受信側は結果へ移った (閉じたなら C ランタイムが手放した)。呼び出し側の変数はもう落とさない。
+        self.consume(recv, ty, env)?;
+        Ok((Some(res), rty))
+    }
+
     /// `rx.recv()`: キューが空で送信側が生きている間は待つ。空で送信側が落ちていれば `Err(RecvError)`。
     fn chan_recv(&mut self, recv: &V, t: &str, env: &mut Env) -> R<(Option<Value>, String)> {
         let (p, _) = self.expr(recv, env, None)?;
@@ -3478,9 +3554,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         }
         if let Some(t) = self.cx.receiver_inner(ty) {
             let ch = self.b.ins().load(pt, MemFlags::new(), addr, 0);
+            // 受信側を数から外す。最後の受信側だけが、溜まった値を破棄する (ほかの受信側がいる間は値を取り合う相手が残る)。
+            let last = self.crt("ksn_rt_thr_receiver_leave", &[ch], Some(i64t)).ok_or("receiver_leave")?;
             if self.cx.needs_drop(&t) {
                 let tmp = self.alloc_for(&t)?;
-                let (head, body, exit) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                let (drain, head, body, exit) =
+                    (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(last, drain, &[], exit, &[]);
+                self.b.switch_to_block(drain);
                 self.b.ins().jump(head, &[]);
                 self.b.switch_to_block(head);
                 let r = self.crt("ksn_rt_thr_try_pop", &[ch, tmp], Some(i64t)).ok_or("try_pop")?;
@@ -3490,7 +3571,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.ins().jump(head, &[]);
                 self.b.switch_to_block(exit);
             }
-            self.crt("ksn_rt_thr_receiver_drop", &[ch], None);
+            self.crt("ksn_rt_thr_receiver_release", &[ch], None);
             return Ok(());
         }
         let seq_elem = self.cx.elem_of(ty).or_else(|| self.cx.deque_elem(ty));
@@ -6298,10 +6379,19 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if name == "send" && args.len() == 1 {
                     return self.chan_send(recv, &t, &args[0], env);
                 }
+                if name == "clone" && args.is_empty() {
+                    return self.chan_clone(recv, rt, true, env);
+                }
             }
             if let Some(t) = self.cx.receiver_inner(rt) {
                 if name == "recv" && args.is_empty() {
                     return self.chan_recv(recv, &t, env);
+                }
+                if name == "clone" && args.is_empty() {
+                    return self.chan_clone(recv, rt, false, env);
+                }
+                if name == "close" && args.is_empty() {
+                    return self.chan_close(recv, rt, env);
                 }
             }
             if name == "clone" && args.is_empty() && self.cx.builtin_method_ty(rt, "clone").is_some() && !self.funcs.contains_key(&format!("{}.clone", rt)) {

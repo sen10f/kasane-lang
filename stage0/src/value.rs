@@ -131,27 +131,40 @@ pub struct ClosureV {
     pub caps: Vec<(String, String)>,
 }
 
-/// チャネルの状態 (インタプリタ)。送信側・受信側は 1 つずつ (`Sender` に clone はない)。
-/// 容量は無視する (満杯で待つことはしない。結果が実行順に依存しないプログラムでは観測できない)。
+/// チャネルの状態 (インタプリタ)。送信側・受信側は `clone` で増える (端の参照数を数える)。
+/// 端の数が 0 になった側は閉じたとみなす。容量は無視する (満杯で待つことはしない。結果が実行順に依存しないプログラムでは観測できない)。
 pub struct ChanState {
     pub q: RefCell<VecDeque<Val>>,
-    pub sender_alive: Cell<bool>,
-    pub receiver_alive: Cell<bool>,
+    pub senders: Cell<usize>,
+    pub receivers: Cell<usize>,
 }
 
-/// チャネルの端。最後の参照が無くなった (= 値が落とされた) とき、その端を閉じる。
+/// チャネルの端 (論理的な 1 つ)。最後の参照が無くなった (= 値が落とされた) とき、その端を閉じる。
+/// `close` で先に畳んだ端は `closed` を立て、落とされたときに二重に数えない。
 pub struct ChanEnd {
     pub st: Rc<ChanState>,
     pub is_sender: bool,
+    pub closed: Cell<bool>,
+}
+
+impl ChanEnd {
+    pub fn new(st: Rc<ChanState>, is_sender: bool) -> ChanEnd {
+        let n = if is_sender { &st.senders } else { &st.receivers };
+        n.set(n.get() + 1);
+        ChanEnd { st, is_sender, closed: Cell::new(false) }
+    }
+    /// 端を 1 つ畳む (まだ畳んでいなければ)。
+    pub fn release(&self) {
+        if !self.closed.replace(true) {
+            let n = if self.is_sender { &self.st.senders } else { &self.st.receivers };
+            n.set(n.get() - 1);
+        }
+    }
 }
 
 impl Drop for ChanEnd {
     fn drop(&mut self) {
-        if self.is_sender {
-            self.st.sender_alive.set(false);
-        } else {
-            self.st.receiver_alive.set(false);
-        }
+        self.release();
     }
 }
 
