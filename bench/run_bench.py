@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -45,7 +46,16 @@ def chat(base, model, messages, max_tokens, timeout):
         headers['Authorization'] = 'Bearer ' + key
     req = urllib.request.Request(base + '/v1/chat/completions', data=body, headers=headers)
     t = time.time()
-    r = json.load(urllib.request.urlopen(req, timeout=timeout))
+    # 接続断・5xx・429 は待って再試行する (リモート API の一時的な失敗を課題の失敗にしない)
+    for i in range(5):
+        try:
+            r = json.load(urllib.request.urlopen(req, timeout=timeout))
+            break
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+            code = getattr(e, 'code', None)
+            if i == 4 or (code is not None and code < 500 and code != 429):
+                raise
+            time.sleep(15 * 2 ** i)
     msg = r['choices'][0]['message']
     return (msg.get('content') or ''), r.get('usage', {}), time.time() - t, r['choices'][0].get('finish_reason')
 
