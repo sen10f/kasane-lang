@@ -65,8 +65,9 @@ fn fun64(op: FUn, x: f64) -> f64 {
         }
     };
     match op {
-        FUn::Abs => simple(f64::abs),
-        FUn::Sqrt => simple(|v| if v >= 0.0 { v.sqrt() } else { f64::NAN }),
+        // IEEE 754 の演算そのもの (木走査の `natives.rs` と同じ。機械語の fabs / sqrt と同じ)。
+        FUn::Abs => x.abs(),
+        FUn::Sqrt => x.sqrt(),
         FUn::Floor => simple(f64::floor),
         FUn::Ceil => simple(f64::ceil),
         FUn::Trunc => simple(f64::trunc),
