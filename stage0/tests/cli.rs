@@ -6636,3 +6636,151 @@ fn e1108_for_wrapping_or_saturating_div_rem_points_to_checked_forms() {
     assert!(!out.contains("did you mean `rem`"), "{}", out);
     assert!(!out.contains("did you mean `saturating_add`"), "{}", out);
 }
+
+// ---- 効果検査・stack の誤検出 (推論された関数・確実でないクロージャ・直接呼び出しのフレーム) ----
+
+/// `src` を `t` パッケージとして検査し、診断コードの列と出力を返す (陰性・陽性の両方で使う)。
+fn neg_check(name: &str, src: &str) -> (Vec<String>, String) {
+    let t = Tmp::new(name, src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+/// 効果を宣言しない `t.h` / `t.B.k` (推論される) と、`t.B.m` (効果なし) / `t.A.m` (`io.console`) の共通部分。
+const INFERRED_PRELUDE: &str = "type t.A pub
+    n: u8
+end t.A
+
+type t.B pub
+    n: u8
+end t.B
+
+fn t.A.m(self: &t.A) -> Result<(), std.io.Error> uses [io.console] panics never pub
+    std.io.print_line(\"a\")
+end t.A.m
+
+fn t.B.m(self: &t.B) -> u8 uses [] panics never pub
+    self.n
+end t.B.m
+
+";
+
+#[test]
+fn inferred_callee_inside_a_closure_does_not_bind_the_fn_bound_effect() {
+    // `t.h` は効果を宣言しないので推論される。推論は名前の全候補 (`m` の `t.A.m` を含む) の和で
+    // `io.console` を過大に持つ。その効果を載せたクロージャは確実でないので、`apply` の `E` を
+    // `io.console` に束縛せず、`uses []` の `t.main` から E4001 を出さない (黙る)。
+    let src = format!(
+        "{}{}",
+        INFERRED_PRELUDE,
+        "fn t.h(b: &t.B) -> u8
+    b.m()
+    0
+end t.h
+
+fn t.apply[F: core.ops.Fn<(&t.B,), u8, E, P>, E: uses, P: panics](f: F, b: &t.B) -> u8 uses [E] panics P pub
+    f(b)
+end t.apply
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let b = t.B { n: 0u8 }
+    let r = t.apply(fn(x: &t.B) -> u8 capture [] {
+        t.h(x)
+    }, &b)
+    core.mem.drop(r)
+    Ok(())
+end t.main
+"
+    );
+    let (got, out) = neg_check("neg_inferred_fn_bound", &src);
+    assert!(got.iter().all(|c| !c.starts_with("E4")), "{}", out);
+}
+
+#[test]
+fn inferred_callee_of_a_local_receiver_stays_silent() {
+    // `b.k()` の `t.B.k` は効果を宣言しない推論された関数。その推論は上からの近似なので、
+    // `uses []` の `t.main` から E4001 を出さない (宣言された効果の呼び出しだけ検査する)。
+    let src = format!(
+        "{}{}",
+        INFERRED_PRELUDE,
+        "fn t.B.k(self: &t.B) -> u8
+    self.m()
+end t.B.k
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let b = t.B { n: 0u8 }
+    let r = b.k()
+    core.mem.drop(r)
+    Ok(())
+end t.main
+"
+    );
+    let (got, out) = neg_check("neg_inferred_local_recv", &src);
+    assert!(got.iter().all(|c| !c.starts_with("E4")), "{}", out);
+}
+
+#[test]
+fn stack_closure_frame_of_a_direct_call_is_counted() {
+    // `g(..)` の直接呼び出しのクロージャの節 (引数 t.Big = 64 + 32) はフレームに数える。
+    // spin 48 + クロージャ 96 + core.mem.drop 32 = 176 (変更前は 80: 節が辺で届かず数えられなかった)。
+    let src = "type t.Big
+    a: u128
+    b: u128
+    c: u128
+    d: u128
+end t.Big
+
+fn t.spin(n: u8) -> () uses [] panics never stack 100
+    let g = fn(b: t.Big) -> () capture [] {
+        core.mem.drop(b)
+        t.spin(0u8)
+    }
+    g(t.Big { a: 0u128, b: 0u128, c: 0u128, d: 0u128 })
+end t.spin
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    t.spin(1u8)
+    Ok(())
+end t.main
+";
+    let (got, out) = neg_check("stack_direct_closure", src);
+    assert!(got.iter().any(|c| c == "E4012"), "{}", out);
+    assert!(out.contains("estimated stack use 176 exceeds declared 100"), "{}", out);
+    let (got, out) = neg_check("stack_direct_closure_ok", &src.replace("stack 100", "stack 176"));
+    assert!(got.iter().all(|c| c != "E4012"), "{}", out);
+}
+
+#[test]
+fn stack_closure_passed_to_a_fn_bound_called_as_f_of_x_is_a_candidate() {
+    // `f(x)` の形で `Fn` 境界のパラメータを呼ぶ `t.gen` は、渡したクロージャの節へ辺を持つ (5.3)。
+    // そのため t.spin -> t.gen -> クロージャ -> t.spin は再帰になる (変更前は辺がなく、E4010 も
+    // E4012 の見積り 88 も出なかった)。spin の見積りは 216 (spin 40 + gen 48 + クロージャ 96 + drop 32)。
+    let src = "type t.Big
+    a: u128
+    b: u128
+    c: u128
+    d: u128
+end t.Big
+
+fn t.gen[F: core.ops.Fn<(t.Big,), (), [], never>](f: F) -> () uses [] panics never stack 1024
+    f(t.Big { a: 0u128, b: 0u128, c: 0u128, d: 0u128 })
+end t.gen
+
+fn t.spin(n: u8) -> () uses [] panics never stack SPIN
+    t.gen(fn(b: t.Big) -> () capture [] {
+        core.mem.drop(b)
+        t.spin(0u8)
+    })
+end t.spin
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    t.spin(1u8)
+    Ok(())
+end t.main
+";
+    let (got, out) = neg_check("stack_fn_bound_call", &src.replace("SPIN", "215"));
+    assert_eq!(got.iter().filter(|c| *c == "E4012").count(), 1, "{}", out);
+    assert!(out.contains("t.spin: estimated stack use 216 exceeds declared 215"), "{}", out);
+    let (got, out) = neg_check("stack_fn_bound_call_ok", &src.replace("SPIN", "216"));
+    assert!(got.iter().all(|c| c != "E4012"), "{}", out);
+}
