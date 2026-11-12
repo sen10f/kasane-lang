@@ -16,7 +16,7 @@ fn bench.digit_sum(text: &str) -> Result<u32, bench.ParseError>
                 if c < 48u8 || c > 57u8 {
                     return Err(bench.ParseError.BadChar(c))
                 }
-                total = total + (c - 48u8).to_u32()
+                total = total + u32.from_u8(c - 48u8)
             }
             None => break
         }
