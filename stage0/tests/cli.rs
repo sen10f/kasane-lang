@@ -8539,7 +8539,7 @@ fn a_generic_literal_decided_later_is_not_an_error() {
 #[test]
 fn fmath_functions_agree_across_backends_and_match_known_values() {
     // 数学関数 (`fmath`) は、インタプリタと Cranelift で同じビット列を返し、既知の値に近い。
-    // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値、9 関数の総和 (ビット列の突き合わせ)。
+    // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値 (atan2 の ±∞ / NaN 組を含む)、9 関数の総和 (ビット列の突き合わせ)。
     let t = Tmp::new("fmath_both", include_str!("data/fmath_both.ksnl"));
     let cache = std::env::temp_dir().join(format!("ksn_cache_fmath_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
@@ -8554,7 +8554,7 @@ fn fmath_functions_agree_across_backends_and_match_known_values() {
     assert_eq!(o.status.code(), Some(0), "{}", out);
     // Cranelift のビルドが成功していること (スキップされていないこと)。
     assert!(out.contains("native executable:"), "{}", out);
-    assert!(out.contains("5 passed; 0 failed"), "{}", out);
+    assert!(out.contains("6 passed; 0 failed"), "{}", out);
     let _ = fs::remove_dir_all(&cache);
 }
 
@@ -9200,20 +9200,218 @@ fn kir_lower_examples_and_perf_functions_match_tree_walker() {
     }
 }
 
-#[test]
-fn kir_lower_rejects_checked_methods_and_aggregates_with_a_reason() {
-    // `checked_*` は `Option<T>` を返すので段階 1 の型に入らない。理由を付けて拒否する。
-    let src = "fn t.ck(a: u8, b: u8) -> u8 uses [] panics never
-    match a.checked_add(b) {
-        Some(v) => v
-        None => 0u8
+// ---- 組み込みの Option / Result と checked_* (設計_KIR.md 11 章) ----
+
+/// Option / Result の試験用の関数。`main` の検査 (木走査) と `ksn kir --run` の両方で使う。
+const OPTRES_SRC: &str = r#"fn t.half(n: u32) -> Option<u32> uses [] panics may
+    if n % 2u32 == 0u32 {
+        Some(n / 2u32)
+    } else {
+        None
     }
-end t.ck
+end t.half
+
+fn t.first_half(n: u32) -> Option<u32> uses [] panics may
+    let h = t.half(n)?
+    let q = t.half(h)?
+    Some(q + 1u32)
+end t.first_half
+
+fn t.classify(o: Option<u32>) -> u32 uses [] panics never
+    match o {
+        Some(0u32) => 100u32
+        Some(1u32) => 101u32
+        Some(_) => 1u32
+        None => 2u32
+    }
+end t.classify
+
+fn t.cls(n: u32) -> u32 uses [] panics may
+    t.classify(t.half(n))
+end t.cls
+
+fn t.last_even(n: u32) -> Option<u32> uses [] panics may
+    let mut best = None
+    let mut i = 0u32
+    while i < n {
+        if i % 2u32 == 0u32 {
+            best = Some(i)
+        }
+        i = i + 1u32
+    }
+    best
+end t.last_even
+
+fn t.chained(a: i8, b: i8) -> Option<i8> uses [] panics never
+    let s = a.checked_mul(b)?
+    s.checked_sub(1i8)
+end t.chained
+
+fn t.ck_div(a: i8, b: i8) -> Option<i8> uses [] panics never
+    a.checked_div(b)
+end t.ck_div
+
+fn t.ck_rem(a: i8, b: i8) -> Option<i8> uses [] panics never
+    a.checked_rem(b)
+end t.ck_rem
+
+fn t.unit_ok(x: u8) -> Result<(), u8> uses [] panics never
+    if x > 10u8 {
+        return Err(x)
+    }
+    Ok(())
+end t.unit_ok
+
+fn t.neg(x: i64) -> Option<i64> uses [] panics never
+    Some(x.wrapping_sub(5i64))
+end t.neg
+
+fn t.pos(x: i32) -> Option<bool> uses [] panics never
+    Some(x > 0i32)
+end t.pos
+
+fn t.nothing() -> Option<u8> uses [] panics never
+    None
+end t.nothing
+
+fn t.pick(flag: bool) -> Result<u16, u16> uses [] panics never
+    let r = if flag {
+        Ok(7u16)
+    } else {
+        Err(9u16)
+    }
+    r
+end t.pick
+"#;
+
+const OPTRES_MAIN: &str = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.half(8u32), Some(4u32))
+    core.check.eq(t.half(7u32), None)
+    core.check.eq(t.first_half(8u32), Some(3u32))
+    core.check.eq(t.first_half(6u32), None)
+    core.check.eq(t.cls(8u32), 1u32)
+    core.check.eq(t.cls(0u32), 100u32)
+    core.check.eq(t.cls(2u32), 101u32)
+    core.check.eq(t.cls(7u32), 2u32)
+    core.check.eq(t.last_even(5u32), Some(4u32))
+    core.check.eq(t.last_even(0u32), None)
+    core.check.eq(t.chained(3i8, 4i8), Some(11i8))
+    core.check.eq(t.chained(100i8, 2i8), None)
+    core.check.eq(t.ck_div(-128i8, -1i8), None)
+    core.check.eq(t.ck_div(7i8, 0i8), None)
+    core.check.eq(t.ck_div(-7i8, 2i8), Some(-3i8))
+    core.check.eq(t.ck_rem(-7i8, 2i8), Some(-1i8))
+    core.check.eq(t.ck_rem(-128i8, -1i8), Some(0i8))
+    core.check.eq(t.unit_ok(3u8), Ok(()))
+    core.check.eq(t.unit_ok(12u8), Err(12u8))
+    core.check.eq(t.neg(3i64), Some(-2i64))
+    core.check.eq(t.pos(-4i32), Some(false))
+    core.check.eq(t.pos(4i32), Some(true))
+    core.check.eq(t.nothing(), None)
+    core.check.eq(t.pick(true), Ok(7u16))
+    core.check.eq(t.pick(false), Err(9u16))
+    Ok(())
+end t.main
 ";
-    let t = Tmp::new("kir_checked", src);
-    let o = run(&["kir", "t.ck"], &t.0);
+
+#[test]
+fn kir_optres_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の main の検査が通ること、参照実行器 (`ksn kir --run`) の値が木走査の値と同じ表示であること。
+    let t = Tmp::new("kir_optres_values", &format!("{}\n{}", OPTRES_SRC, OPTRES_MAIN));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.half", &["8"], "Some(4)"),
+        ("t.half", &["7"], "None"),
+        ("t.first_half", &["8"], "Some(3)"),
+        ("t.first_half", &["6"], "None"),
+        ("t.cls", &["8"], "1"),
+        ("t.cls", &["0"], "100"),
+        ("t.cls", &["2"], "101"),
+        ("t.cls", &["7"], "2"),
+        ("t.last_even", &["5"], "Some(4)"),
+        ("t.last_even", &["0"], "None"),
+        ("t.chained", &["3", "4"], "Some(11)"),
+        ("t.chained", &["100", "2"], "None"),
+        ("t.ck_div", &["-128", "-1"], "None"),
+        ("t.ck_div", &["7", "0"], "None"),
+        ("t.ck_div", &["-7", "2"], "Some(-3)"),
+        ("t.ck_rem", &["-7", "2"], "Some(-1)"),
+        ("t.ck_rem", &["-128", "-1"], "Some(0)"),
+        ("t.unit_ok", &["3"], "Ok(())"),
+        ("t.unit_ok", &["12"], "Err(12)"),
+        ("t.neg", &["3"], "Some(-2)"),
+        ("t.pos", &["-4"], "Some(false)"),
+        ("t.pos", &["4"], "Some(true)"),
+        ("t.nothing", &[], "None"),
+        ("t.pick", &["true"], "Ok(7)"),
+        ("t.pick", &["false"], "Err(9)"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+#[test]
+fn kir_optres_prints_tagged_types_and_reads_back() {
+    // `ksn kir` は出力を読み直して検査を通してから出す (終了コード 0 なら往復と検査が通っている)。
+    let t = Tmp::new("kir_optres_text", &format!("{}\n{}", OPTRES_SRC, OPTRES_MAIN));
+    let o = run(&["kir", "t.half"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("fn t.half key=t.half uses=[] panics=may stack=- ret=Option<u32>"), "{}", out);
+    assert!(out.contains("= some %") && out.contains("= const.Option<u32> none"), "{}", out);
+    let o = run(&["kir", "t.first_half"], &t.0);
+    assert!(text(&o.stdout).contains("= tag %") && text(&o.stdout).contains("= payload %"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.nothing"], &t.0);
+    assert!(text(&o.stdout).contains("const.Option<u8> none"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.pick"], &t.0);
+    assert!(text(&o.stdout).contains("ret=Result<u16,u16>"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn kir_optres_rejects_checked_neg_and_tuples_with_a_reason() {
+    // `checked_neg` と、`Option` の中の集成体 (タプル) は段階 1 の対象外。理由を付けて拒否する。
+    let src = "fn t.neg(x: i8) -> Option<i8> uses [] panics never
+    x.checked_neg()
+end t.neg
+
+fn t.pr(x: u8) -> Option<(u8, u8)> uses [] panics never
+    Some((x, x))
+end t.pr
+";
+    let t = Tmp::new("kir_optres_reject", src);
+    let o = run(&["kir", "t.neg"], &t.0);
     assert_eq!(o.status.code(), Some(1));
-    assert!(text(&o.stderr).contains("t.ck は未対応"), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("checked_neg は段階 1 の対象外"), "{}", text(&o.stderr));
+    let o = run(&["kir", "t.pr"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("t.pr は未対応") && text(&o.stderr).contains("段階 1 の対象外"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn kir_optres_examples_features_match_tree_walker() {
+    // examples/features の `chain` (`?` と `Result`) と `checked` (`checked_add` と `match`)。
+    let d = root().join("examples/features");
+    assert_eq!(run(&["run"], &d).status.code(), Some(0), "features run (tree-walker)");
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("features.chain", &["250", "4"], "Ok(255)"),
+        ("features.chain", &["255", "1"], "Err(255)"),
+        ("features.chain", &["200", "56"], "Err(200)"),
+        ("features.checked", &["200", "55"], "Ok(255)"),
+        ("features.checked", &["200", "56"], "Err(200)"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &d);
+        assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
 }
 
 // ---- 型引数に線形を含む型の束縛 (4.4): `Option` / `Result` / ジェネリック構造体 ----
@@ -9740,6 +9938,398 @@ fn kir_agg_values_match_tree_walker() {
     }
 }
 
+// ---- KIR の数値 (浮動小数・128 ビット・ビット演算・シフト・数値のメソッド・変換): kir_scalar_* ----
+
+/// 数値の関数の試験用の定義。名前の順に並べる (E0020)。`t.main` は呼び出し側が最後に付ける。
+const SCALAR_FNS: &str = "fn t.a_band(a: u32, b: u32) -> u32 uses [] panics never
+    a & b
+end t.a_band
+
+fn t.a_big() -> i128 uses [] panics never
+    let a = 170141183460469231731687303715884105727i128
+    a.wrapping_add(1i128)
+end t.a_big
+
+fn t.a_bnot8(a: u8) -> u8 uses [] panics never
+    !a
+end t.a_bnot8
+
+fn t.a_bnoti(a: i32) -> i32 uses [] panics never
+    !a
+end t.a_bnoti
+
+fn t.a_cnt(a: u32) -> u32 uses [] panics never
+    a.count_ones()
+end t.a_cnt
+
+fn t.a_conv1() -> i64 uses [] panics never
+    i64.from_i8(-5i8)
+end t.a_conv1
+
+fn t.a_conv2() -> f64 uses [] panics never
+    f64.from_i32_nearest(7i32)
+end t.a_conv2
+
+fn t.a_conv3() -> u64 uses [] panics never
+    f64.from_bits(4607182418800017408u64).to_bits()
+end t.a_conv3
+
+fn t.a_conv4() -> u32 uses [] panics never
+    0.1f64.nearest_to_f32().to_bits()
+end t.a_conv4
+
+fn t.a_f32trig() -> u32 uses [] panics never
+    let x = 0.7f32
+    (x.sin() + x.exp() * x).to_bits()
+end t.a_f32trig
+
+fn t.a_fl1() -> f64 uses [] panics never
+    let a = 9.0f64
+    let b = a.sqrt()
+    let c = b * 2.0 + 1.5
+    c.floor()
+end t.a_fl1
+
+fn t.a_fromu128() -> f64 uses [] panics never
+    f64.from_u128_nearest(0u128.wrapping_sub(1u128))
+end t.a_fromu128
+
+fn t.a_lz(a: u16) -> u32 uses [] panics never
+    a.leading_zeros()
+end t.a_lz
+
+fn t.a_max(a: i64, b: i64) -> i64 uses [] panics never
+    a.max(b)
+end t.a_max
+
+fn t.a_nan() -> bool uses [] panics never
+    let n = 0.0f64 / 0.0f64
+    n == n
+end t.a_nan
+
+fn t.a_sat(a: u8, b: u8) -> u8 uses [] panics never
+    a.saturating_add(b)
+end t.a_sat
+
+fn t.a_satadd128() -> i128 uses [] panics never
+    let a = -170141183460469231731687303715884105727i128
+    a.saturating_add(-10i128)
+end t.a_satadd128
+
+fn t.a_satneg(a: i8) -> i8 uses [] panics never
+    a.saturating_neg()
+end t.a_satneg
+
+fn t.a_satneg128() -> i128 uses [] panics never
+    let a = -170141183460469231731687303715884105727i128
+    a.saturating_sub(10i128)
+end t.a_satneg128
+
+fn t.a_shl8(a: u8, n: u32) -> u8 uses [] panics never
+    a.wrapping_shl(n)
+end t.a_shl8
+
+fn t.a_shri8(a: i8, n: u32) -> i8 uses [] panics never
+    a.wrapping_shr(n)
+end t.a_shri8
+
+fn t.a_trig() -> u64 uses [] panics never
+    let x = 0.7f64
+    (x.sin() + x.cos() * x.tan() + x.exp() + x.ln() + x.atan2(0.3f64) + x.powi(5i32)).to_bits()
+end t.a_trig
+
+fn t.a_tz(a: i32) -> u32 uses [] panics never
+    a.trailing_zeros()
+end t.a_tz
+
+fn t.a_ucmp() -> bool uses [] panics never
+    t.a_umax() > 1u128
+end t.a_ucmp
+
+fn t.a_umax() -> u128 uses [] panics never
+    0u128.wrapping_sub(1u128)
+end t.a_umax
+
+fn t.a_wneg(a: u8) -> u8 uses [] panics never
+    a.wrapping_neg()
+end t.a_wneg
+
+fn t.a_wshr64(a: u64, n: u32) -> u64 uses [] panics never
+    a.wrapping_shr(n)
+end t.a_wshr64
+";
+
+/// `SCALAR_FNS` に `main` (本体 `body`) を付けたパッケージを作る。
+fn scalar_pkg(name: &str, body: &str) -> Tmp {
+    Tmp::new(
+        name,
+        &format!("{}fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n{}    Ok(())\nend t.main\n", SCALAR_FNS, body),
+    )
+}
+
+#[test]
+fn kir_scalar_ints_match_tree_walker() {
+    // (関数, 木走査の引数 (接尾辞付き), 参照実行器の引数, 木走査の期待値, 参照実行器の期待値)
+    let cases: &[(&str, &[&str], &[&str], &str, &str)] = &[
+        ("t.a_band", &["12u32", "10u32"], &["12", "10"], "8u32", "8"),
+        ("t.a_bnot8", &["0u8"], &["0"], "255u8", "255"),
+        ("t.a_bnoti", &["5i32"], &["5"], "-6i32", "-6"),
+        ("t.a_shl8", &["129u8", "9u32"], &["129", "9"], "2u8", "2"),
+        ("t.a_shri8", &["-128i8", "9u32"], &["-128", "9"], "-64i8", "-64"),
+        ("t.a_sat", &["250u8", "10u8"], &["250", "10"], "255u8", "255"),
+        ("t.a_satneg", &["-128i8"], &["-128"], "127i8", "127"),
+        ("t.a_cnt", &["61680u32"], &["61680"], "8u32", "8"),
+        ("t.a_lz", &["1u16"], &["1"], "15u32", "15"),
+        ("t.a_tz", &["0i32"], &["0"], "32u32", "32"),
+        ("t.a_max", &["-3i64", "2i64"], &["-3", "2"], "2i64", "2"),
+        ("t.a_wneg", &["1u8"], &["1"], "255u8", "255"),
+        ("t.a_wshr64", &["18446744073709551615u64", "60u32"], &["18446744073709551615", "60"], "15u64", "15"),
+    ];
+    for (i, (f, targs, kargs, want, kwant)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, targs.join(", "));
+        let t = scalar_pkg(&format!("kir_scalar_int_{}", i), &format!("    core.check.eq({}, {})\n", call, want));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut ka = vec!["kir", *f, "--run"];
+        ka.extend(kargs.iter().copied());
+        let k = run(&ka, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", call);
+    }
+}
+
+// ---- 参照 (設計_KIR.md 段階 1: `&T` / `&mut T`、`*r`、`*r = v`。kir_lower_refs.rs) ----
+
+/// 参照を使う関数と、整数の引数だけで呼べる包み (`t.w_*`)。`t.main` は含まない。
+const REFS_FNS: &str = "fn t.bump(p: &mut i32) -> () uses [] panics may
+    *p = *p + 1i32
+end t.bump
+
+fn t.twice(n: i32) -> i32 uses [] panics may
+    let mut a = n
+    t.bump(&mut a)
+    t.bump(&mut a)
+    a
+end t.twice
+
+fn t.peek(r: &i32) -> i32 uses [] panics never
+    *r
+end t.peek
+
+fn t.peek_mut(a: &mut i32) -> i32 uses [] panics never
+    t.peek(a)
+end t.peek_mut
+
+fn t.sum2(a: &i32, b: &i32) -> i32 uses [] panics may
+    *a + *b
+end t.sum2
+
+fn t.swap(a: &mut i32, b: &mut i32) -> () uses [] panics never
+    let tmp = *a
+    *a = *b
+    *b = tmp
+end t.swap
+
+fn t.pick['a](a: &'a i32, b: &'a i32, first: bool) -> &'a i32 uses [] panics never
+    if first {
+        a
+    } else {
+        b
+    }
+end t.pick
+
+fn t.temp() -> i32 uses [] panics may
+    let r = &(3i32 + 4i32)
+    *r * 2i32
+end t.temp
+
+fn t.loop_bump(n: i32) -> i32 uses [] panics may
+    let mut total = 0i32
+    let mut i = 0i32
+    while i < n {
+        t.bump(&mut total)
+        i = i + 1i32
+    }
+    total
+end t.loop_bump
+
+fn t.bump_w(p: &mut i32) -> () uses [] panics never
+    let s = (*p).wrapping_add(1i32)
+    *p = s
+end t.bump_w
+
+fn t.down(p: &mut i32, n: i32) -> () uses [] panics never stack 128
+    if n > 0i32 {
+        t.bump_w(p)
+        t.down(p, n.wrapping_sub(1i32))
+    }
+end t.down
+
+fn t.assign_branch(n: i32) -> i32 uses [] panics may
+    let mut x = 0i32
+    if n > 0i32 {
+        x = n
+    } else {
+        x = 0i32 - n
+    }
+    let r = &mut x
+    *r = *r * 10i32
+    x
+end t.assign_branch
+
+fn t.wrap_ref(v: u8) -> u8 uses [] panics never
+    let mut w = v
+    let s = w.wrapping_add(200u8)
+    let r = &mut w
+    *r = s
+    w
+end t.wrap_ref
+
+fn t.bump8(p: &mut u8) -> () uses [] panics may
+    *p = *p + 100u8
+end t.bump8
+
+fn t.overflow_via_ref(v: u8) -> u8 uses [] panics may
+    let mut w = v
+    t.bump8(&mut w)
+    w
+end t.overflow_via_ref
+
+fn t.reborrow_read(r: &mut i32) -> i32 uses [] panics never
+    let s: &i32 = &*r
+    *s
+end t.reborrow_read
+
+fn t.early(n: i32) -> i32 uses [] panics may
+    let mut total = 0i32
+    let mut i = 0i32
+    while true {
+        if i > n {
+            break
+        }
+        total = total + i
+        let v = t.peek(&total)
+        if v > 100i32 {
+            return v
+        }
+        i = i + 1i32
+    }
+    total
+end t.early
+
+fn t.mixed(n: i32) -> i32 uses [] panics may
+    let mut acc = 1i32
+    let r = &mut acc
+    let mut k = 0i32
+    while k < n {
+        *r = *r + 2i32
+        k = k + 1i32
+    }
+    acc = acc + 1i32
+    t.peek(&acc) + t.reborrow_read(&mut acc)
+end t.mixed
+
+fn t.w_swap(a: i32, b: i32) -> i32 uses [] panics never
+    let mut x = a
+    let mut y = b
+    t.swap(&mut x, &mut y)
+    x.wrapping_mul(10i32).wrapping_add(y)
+end t.w_swap
+
+fn t.w_pick(a: i32, b: i32, first: bool) -> i32 uses [] panics never
+    let x = a
+    let y = b
+    *t.pick(&x, &y, first)
+end t.w_pick
+
+fn t.w_peek(n: i32) -> i32 uses [] panics never
+    let mut x = n
+    t.peek_mut(&mut x)
+end t.w_peek
+
+fn t.w_down(n: i32) -> i32 uses [] panics never
+    let mut d = 0i32
+    t.down(&mut d, n)
+    d
+end t.w_down
+
+fn t.w_sum(a: i32, b: i32) -> i32 uses [] panics may
+    let x = a
+    let y = b
+    t.sum2(&x, &y)
+end t.w_sum
+";
+
+/// 参照を使う関数の包みのパッケージを作る。
+fn refs_pkg(name: &str, main_body: &str) -> Tmp {
+    Tmp::new(name, &format!("{}{}", REFS_FNS, main_wrap("", main_body)))
+}
+
+#[test]
+fn kir_refs_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の `core.check.eq` が通ること、参照実行器 (`ksn kir --run`) の値が期待どおりであること。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.twice", &["5"], "7i32", "7"),
+        ("t.loop_bump", &["6"], "6i32", "6"),
+        ("t.temp", &[], "14i32", "14"),
+        ("t.assign_branch", &["3"], "30i32", "30"),
+        ("t.assign_branch", &["-2"], "20i32", "20"),
+        ("t.wrap_ref", &["100"], "44u8", "44"),
+        ("t.early", &["3"], "6i32", "6"),
+        ("t.early", &["20"], "105i32", "105"),
+        ("t.mixed", &["3"], "16i32", "16"),
+        ("t.w_swap", &["1", "2"], "21i32", "21"),
+        ("t.w_pick", &["2", "7", "false"], "7i32", "7"),
+        ("t.w_pick", &["2", "7", "true"], "2i32", "2"),
+        ("t.w_peek", &["10"], "10i32", "10"),
+        ("t.w_down", &["4"], "4i32", "4"),
+        ("t.w_down", &["0"], "0i32", "0"),
+        ("t.w_sum", &["3", "4"], "7i32", "7"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = refs_pkg(&format!("kir_refs_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).lines().last().unwrap_or("").trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_scalar_floats_and_wide_ints_match_tree_walker() {
+    // 木走査で `core.check.eq` が通ること (値は木走査の結果と同じ)、参照実行器の値が期待どおりであること。
+    // 超越関数と f32 の値はビット列で比べる (fmath を含むので、木走査と 1 ビットも違わないことを確かめる)。
+    // (関数, 木走査で呼ぶ式, 木走査の期待値, 参照実行器の期待値)
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("t.a_fl1", "t.a_fl1()", "7.0f64", "7"),
+        ("t.a_nan", "t.a_nan()", "false", "false"),
+        ("t.a_trig", "t.a_trig()", "4616504293205964284u64", "4616504293205964284"),
+        ("t.a_f32trig", "t.a_f32trig()", "1073967664u32", "1073967664"),
+        ("t.a_conv4", "t.a_conv4()", "1036831949u32", "1036831949"),
+        ("t.a_conv2", "t.a_conv2()", "7.0f64", "7"),
+        ("t.a_conv3", "t.a_conv3()", "4607182418800017408u64", "4607182418800017408"),
+        ("t.a_conv1", "t.a_conv1()", "-5i64", "-5"),
+        ("t.a_fromu128", "t.a_fromu128()", "3.402823669209385e38f64", "340282366920938500000000000000000000000"),
+        ("t.a_big", "t.a_big()", "-170141183460469231731687303715884105728i128", "-170141183460469231731687303715884105728"),
+        ("t.a_umax", "t.a_umax().wrapping_add(2u128)", "1u128", "340282366920938463463374607431768211455"),
+        ("t.a_ucmp", "t.a_ucmp()", "true", "true"),
+        ("t.a_satadd128", "t.a_satadd128()", "-170141183460469231731687303715884105728i128", "-170141183460469231731687303715884105728"),
+        ("t.a_satneg128", "t.a_satneg128()", "-170141183460469231731687303715884105728i128", "-170141183460469231731687303715884105728"),
+    ];
+    for (i, (f, call, want, kwant)) in cases.iter().enumerate() {
+        let t = scalar_pkg(&format!("kir_scalar_float_{}", i), &format!("    core.check.eq({}, {})\n", call, want));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let k = run(&["kir", *f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", f);
+    }
+}
+
 #[test]
 fn kir_agg_module_text_declares_the_layout() {
     // 型の宣言の行 (大きさ・整列・フィールドのオフセット) と、本体の命令が出る。出力は読み直せる (cmd_kir が確かめる)。
@@ -9779,4 +10369,265 @@ fn kir_agg_entry_with_an_aggregate_value_is_refused() {
     let o = run(&["kir", "t.mk_box", "--run", "1", "2", "true"], &t.0);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("集成体を引数・戻り値に持つ"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn kir_scalar_text_reads_back_with_float_and_bit_ops() {
+    // `ksn kir` は出力を読み直して同じ文字列になることを確かめてから出す。浮動小数の命令と再解釈の表記を含む。
+    let t = scalar_pkg("kir_scalar_text", "");
+    let o = run(&["kir", "t.a_trig"], &t.0);
+
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("fsin.f64"), "{}", out);
+    assert!(out.contains("fpowi.f64"), "{}", out);
+    assert!(out.contains("bitcast.u64.f64"), "{}", out);
+}
+
+#[test]
+fn kir_scalar_reports_unsupported_numeric_methods_with_a_reason() {
+    // `trunc_to_*` は `Option` を返すので段階 1 の型に入らない。理由を付けて拒否する。
+    let src = "fn t.a_tr(a: f64) -> bool uses [] panics never
+    match a.trunc_to_i32() {
+        Some(_v) => true
+        None => false
+    }
+end t.a_tr
+";
+    let t = Tmp::new("kir_scalar_unsupported", src);
+    let o = run(&["kir", "t.a_tr"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("t.a_tr は未対応"), "{}", text(&o.stderr));
+}
+
+// ---- 数値の組み合わせの探索 (NaN・符号付き零・丸め・飽和・128 ビットの境界): kir_scalar_probes_* ----
+
+/// 数値の関数の探索用の定義。名前の順 (E0020)。main は別に付ける。
+const SCALAR_PROBES: &str = r#"fn t.q01() -> u32 uses [] panics never
+    let a = 1.1f32
+    let b = 3.3f32
+    (a * b - a / b + a - b).to_bits()
+end t.q01
+
+fn t.q02() -> u32 uses [] panics never
+    let z = 0.0f32
+    (1.0f32 / z).to_bits()
+end t.q02
+
+fn t.q03() -> u64 uses [] panics never
+    let x = 2.5f64
+    (-x).abs().to_bits()
+end t.q03
+
+fn t.q04() -> u64 uses [] panics never
+    let n = 0.0f64 / 0.0f64
+    n.max(1.0f64).to_bits()
+end t.q04
+
+fn t.q05() -> u64 uses [] panics never
+    let x = 7.5f64
+    x.rem(2.0f64).to_bits()
+end t.q05
+
+fn t.q06() -> u64 uses [] panics never
+    let x = 2.5f64
+    let y = 3.5f64
+    (x.round_ties_even() + y.round_ties_even()).to_bits()
+end t.q06
+
+fn t.q07() -> u64 uses [] panics never
+    let x = -2.5f64
+    (x.floor() * 100.0f64 + x.ceil() * 10.0f64 + x.trunc()).to_bits()
+end t.q07
+
+fn t.q08() -> bool uses [] panics never
+    let n = 0.0f64 / 0.0f64
+    let i = 1.0f64 / 0.0f64
+    n.is_nan() && !i.is_finite()
+end t.q08
+
+fn t.q09() -> u64 uses [] panics never
+    2.0f64.powi(-3i32).to_bits()
+end t.q09
+
+fn t.q10() -> u64 uses [] panics never
+    let x = 12.5f64
+    (x.sin() * x.cos() + x.tan() - x.exp().ln()).to_bits()
+end t.q10
+
+fn t.q11() -> u32 uses [] panics never
+    let x = 0.1f32
+    (x.to_f64() * 3.0f64).nearest_to_f32().to_bits()
+end t.q11
+
+fn t.q12() -> i128 uses [] panics never
+    let a = -170141183460469231731687303715884105727i128
+    a.wrapping_neg()
+end t.q12
+
+fn t.q13() -> u128 uses [] panics never
+    let a = 0u128
+    (!a).wrapping_add(2u128)
+end t.q13
+
+fn t.q14() -> u32 uses [] panics never
+    let a = -1i8
+    a.leading_zeros().wrapping_add((-1i128).count_ones())
+end t.q14
+
+fn t.q15() -> u32 uses [] panics never
+    let a = 0i64
+    a.trailing_zeros()
+end t.q15
+
+fn t.q16() -> i128 uses [] panics never
+    let a = -256i128
+    a.wrapping_shr(4u32)
+end t.q16
+
+fn t.q17() -> u128 uses [] panics never
+    let a = 0u128.wrapping_sub(1u128)
+    let b = a.wrapping_shr(1u32)
+    b.min(a)
+end t.q17
+
+fn t.q18() -> i64 uses [] panics never
+    i64.from_u32(4000000000u32)
+end t.q18
+
+fn t.q19() -> usize uses [] panics never
+    usize.from_u8(255u8)
+end t.q19
+
+fn t.q20() -> u64 uses [] panics never
+    f64.from_i64_nearest(9007199254740993i64).to_bits()
+end t.q20
+
+fn t.q21() -> u32 uses [] panics never
+    f32.from_i32_nearest(16777217i32).to_bits()
+end t.q21
+
+fn t.q22() -> u64 uses [] panics never
+    let a = -7i32
+    a.to_f64().to_bits()
+end t.q22
+
+fn t.q23() -> i8 uses [] panics never
+    let a = -128i8
+    a.saturating_mul(-1i8).wrapping_add(a.saturating_sub(1i8))
+end t.q23
+
+fn t.q24() -> u32 uses [] panics never
+    let a = 1u32
+    a.wrapping_shl(35u32)
+end t.q24
+
+fn t.q25() -> bool uses [] panics never
+    let x = 1.0f32
+    let y = 2.0f32
+    (x < y) && (y >= 2.0f32) && (x != y)
+end t.q25
+
+fn t.q26() -> bool uses [] panics never
+    0.0f32 == -0.0f32
+end t.q26
+
+fn t.q27() -> u64 uses [] panics never
+    let x = 1.0e300f64
+    (x * x).to_bits()
+end t.q27
+
+fn t.q28() -> i64 uses [] panics never
+    let a = 5i64
+    a.wrapping_mul(-3i64).max(a.wrapping_neg())
+end t.q28
+"#;
+
+#[test]
+fn kir_scalar_probes_match_tree_walker() {
+    // (関数, 木走査の期待値, 参照実行器の期待値)。木走査の期待値は参照実行器の値と同じであることを、別々の経路で確かめる。
+    let cases: &[(&str, &str, &str)] = &[
+        ("t.q01", "1066164118u32", "1066164118"),
+        ("t.q02", "2139095040u32", "2139095040"),
+        ("t.q03", "4612811918334230528u64", "4612811918334230528"),
+        ("t.q04", "4607182418800017408u64", "4607182418800017408"),
+        ("t.q05", "4609434218613702656u64", "4609434218613702656"),
+        ("t.q06", "4618441417868443648u64", "4618441417868443648"),
+        ("t.q07", "13867744336952688640u64", "13867744336952688640"),
+        ("t.q08", "true", "true"),
+        ("t.q09", "4593671619917905920u64", "4593671619917905920"),
+        ("t.q10", "13846673201326737920u64", "13846673201326737920"),
+        ("t.q11", "1050253722u32", "1050253722"),
+        ("t.q12", "170141183460469231731687303715884105727i128", "170141183460469231731687303715884105727"),
+        ("t.q13", "1u128", "1"),
+        ("t.q14", "128u32", "128"),
+        ("t.q15", "64u32", "64"),
+        ("t.q16", "-16i128", "-16"),
+        ("t.q17", "170141183460469231731687303715884105727u128", "170141183460469231731687303715884105727"),
+        ("t.q18", "4000000000i64", "4000000000"),
+        ("t.q19", "255usize", "255"),
+        ("t.q20", "4845873199050653696u64", "4845873199050653696"),
+        ("t.q21", "1266679808u32", "1266679808"),
+        ("t.q22", "13842939354630062080u64", "13842939354630062080"),
+        ("t.q23", "-1i8", "-1"),
+        ("t.q24", "8u32", "8"),
+        ("t.q25", "true", "true"),
+        ("t.q26", "true", "true"),
+        ("t.q27", "9218868437227405312u64", "9218868437227405312"),
+        ("t.q28", "-5i64", "-5"),
+    ];
+    let mut main = String::new();
+    for (f, want, _) in cases {
+        main.push_str(&format!("    core.check.eq({}(), {})\n", f, want));
+    }
+    let t = Tmp::new("kir_scalar_probes", &format!("fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n{}    Ok(())\nend t.main\n\n{}", main, SCALAR_PROBES));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker:\n{}", text(&o.stderr));
+    for (f, _, want) in cases {
+        let k = run(&["kir", *f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", f);
+    }
+}
+
+#[test]
+fn kir_refs_panics_match_tree_walker() {
+    // 参照の先への書き込みで起きた溢れは、木走査と同じ文言と終了コード (101) になること。
+    let t = refs_pkg("kir_refs_panic", "    let _x = t.overflow_via_ref(200u8)\n");
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "tree-walker\n{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
+    let k = run(&["kir", "t.overflow_via_ref", "--run", "200"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stderr).trim(), "panic: attempt to add with overflow");
+}
+
+#[test]
+fn kir_refs_text_shows_slots_and_reference_types() {
+    // 出力は `kir 1` の形で、読み直して検査が通る (cli の内部検査)。スタックスロット・参照の複製・参照の型が見える。
+    let t = refs_pkg("kir_refs_text", "    let _x = t.twice(1i32)\n");
+    let o = run(&["kir", "t.assign_branch"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    for want in ["alloca", "store %", "load %", "reborrow %", "%2: mutref<i32> = alloca"] {
+        assert!(s.contains(want), "missing `{}` in:\n{}", want, s);
+    }
+    let p = run(&["kir", "t.pick"], &t.0);
+    assert_eq!(p.status.code(), Some(0), "{}", text(&p.stderr));
+    assert!(text(&p.stdout).contains("ret=ref<i32>"), "{}", text(&p.stdout));
+}
+
+#[test]
+fn kir_refs_reference_to_unsupported_pointee_keeps_its_reason() {
+    // 指す先が整数と bool でない参照 (`&str`) は、従来どおり理由付きで未対応になる。
+    let src = "fn t.first(s: &str) -> u8 uses [] panics never
+    let _t = s
+    0u8
+end t.first
+";
+    let t = Tmp::new("kir_refs_str", src);
+    let o = run(&["kir", "t.first"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("t.first は未対応"), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("段階 1 の対象外"), "{}", text(&o.stderr));
 }

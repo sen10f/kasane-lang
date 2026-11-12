@@ -118,6 +118,7 @@ impl AggTab {
     fn field_ty(&mut self, p: &Program, file: &str, t: &Src) -> Result<Ty, String> {
         match self.lower_ty(p, file, t)? {
             Ty::Unit => Err("ユニット型のフィールドは段階 1 の対象外".to_string()),
+            Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => Err("参照・Option・Result のフィールドは段階 1 の対象外".to_string()),
             x => Ok(x),
         }
     }
@@ -218,7 +219,6 @@ impl<'a> Lw<'a> {
                 let name = st(&f[1]);
                 self.field_of(b, &name, nline(e)).map(Some)
             }
-            "Match" => self.match_e(e),
             other => self.err(nline(e), format!("式 {} は段階 1 の対象外", other)),
         }
     }
@@ -373,7 +373,7 @@ impl<'a> Lw<'a> {
         };
         let Some(v) = self.expr(rhs)? else { return Ok(St::Div) };
         // chain[j] は segs[..=j] の値 (最後の名前の手前まで)
-        let mut chain = vec![self.slots[s].0];
+        let mut chain = vec![self.read_slot(s)];
         for name in &segs[1..segs.len() - 1] {
             let p = *chain.last().expect("鎖");
             let nv = self.field_of(p, name, line)?;
@@ -386,7 +386,7 @@ impl<'a> Lw<'a> {
         if self.vty(newv) != self.slots[s].1 {
             return self.err(line, "代入の型が変数の型と違う");
         }
-        self.slots[s].0 = newv;
+        self.assign_slot(s, newv);
         Ok(St::Unit)
     }
 
@@ -543,7 +543,7 @@ impl<'a> Lw<'a> {
 
     /// `match e { p => body ... }`。腕は順に試し、最初に当たった腕の値が結果になる。
     /// 代入された変数は `if` と同じく合流のブロック引数で渡す。
-    fn match_e(&mut self, e: &V) -> LR<Option<VId>> {
+    pub(super) fn match_e(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
         let Some(sv) = self.expr(&f[0])? else { return Ok(None) };
