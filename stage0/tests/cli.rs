@@ -6031,3 +6031,52 @@ fn tyof_unit_method_results_and_unknown_types_stay_silent() {
     );
     assert!(!tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E3003"), "{}", out);
 }
+
+// ---- パターンの未使用束縛: let の括弧バリアントとフィールドラベル (E1020 の見落とし・誤検出の回帰) ----
+
+#[test]
+fn unused_binding_in_let_variant_pattern_is_e1020() {
+    // 陽性: `let t.Box.Val(x) = b` の `x` が未使用なら E1020 (パス成分 `t`・`Box` ではなく `x` を指す)。
+    let prefix = "enum t.Box pub\n    Val(u8)\nend t.Box\n\n\
+                  fn t.pick(b: t.Box) -> u8 uses [] panics never\n    let t.Box.Val(x) = b\n    0u8\nend t.pick\n\n";
+    let t = Tmp::new("let_variant_unused_pos", &main_wrap(prefix, ""));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("unused variable x"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn let_variant_pattern_used_or_wildcard_is_not_e1020() {
+    // 陰性: 括弧バリアントの束縛 `x` が使われていれば、`_` の引数と同様に E1020 にしない。
+    let prefix = "enum t.Box pub\n    Val(u8)\nend t.Box\n\n\
+                  fn t.get(b: t.Box) -> u8 uses [] panics never\n    let t.Box.Val(x) = b\n    x\nend t.get\n\n\
+                  fn t.zero(b: t.Box) -> u8 uses [] panics never\n    let t.Box.Val(_) = b\n    0u8\nend t.zero\n\n";
+    let t = Tmp::new(
+        "let_variant_used_neg",
+        &main_wrap(prefix, "    core.check.eq(t.get(t.Box.Val(5u8)), 5u8)\n    core.check.eq(t.zero(t.Box.Val(5u8)), 0u8)\n"),
+    );
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn unused_binding_named_like_field_label_is_e1020() {
+    // 陽性: `let t.L { a: a, b: b }` で `b` が未使用なら、フィールドラベル `b` を使用として数えず E1020。
+    let prefix = "type t.L pub\n    a: u8\n    b: u8\nend t.L\n\n\
+                  fn t.first(l: t.L) -> u8 uses [] panics never\n    let t.L { a: a, b: b } = l\n    a\nend t.first\n\n";
+    let t = Tmp::new("struct_label_unused_pos", &main_wrap(prefix, ""));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("unused variable b"), "{}", text(&o.stdout));
+    assert!(!text(&o.stdout).contains("unused variable a"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn struct_pattern_field_label_same_as_used_binding_is_not_e1020() {
+    // 陰性: ラベルと束縛名が同じ `b: b` でも、束縛 `b` が使われていれば E1020 にしない (`a: _` も対象外)。
+    let prefix = "type t.L pub\n    a: u8\n    b: u8\nend t.L\n\n\
+                  fn t.second(l: t.L) -> u8 uses [] panics never\n    let t.L { a: _, b: b } = l\n    b\nend t.second\n\n";
+    let t = Tmp::new("struct_label_used_neg", &main_wrap(prefix, "    core.check.eq(t.second(t.L { a: 1u8, b: 7u8 }), 7u8)\n"));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+}
