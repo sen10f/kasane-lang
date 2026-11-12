@@ -39,7 +39,7 @@ type R<T> = Result<T, String>;
 type Env = HashMap<String, (Variable, String)>;
 
 fn is_int(p: &str) -> bool {
-    matches!(p, "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32" | "u64" | "usize")
+    matches!(p, "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize")
 }
 
 fn is_float(p: &str) -> bool {
@@ -79,6 +79,8 @@ fn cl(p: &str) -> Type {
         "i8" | "u8" | "bool" => types::I8,
         "i16" | "u16" => types::I16,
         "i32" | "u32" | "char" => types::I32,
+        "i64" | "u64" | "isize" | "usize" => types::I64,
+        "i128" | "u128" => types::I128,
         "f32" => types::F32,
         "f64" => types::F64,
         _ => types::I64,
@@ -183,6 +185,7 @@ fn scalar_size(p: &str) -> u32 {
         "i8" | "u8" | "bool" => 1,
         "i16" | "u16" => 2,
         "i32" | "u32" | "f32" | "char" => 4,
+        "i128" | "u128" => 16,
         _ => 8,
     }
 }
@@ -1783,10 +1786,35 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if is_agg(&t) {
                     return Ok(Some((v, format!("rawptr<{}>", t))));
                 }
+                // `from_ref(&x)`: `&` でスカラー変数のアドレスを取れば、その変数はスタックスロットに置かれる
+                // (func のアドレス取得の事前走査と `let` のスロット化)。スロットのアドレスを返す。
+                if name == "from_ref" {
+                    if let Some(addr) = self.ref_var_addr(&args[0], env)? {
+                        return Ok(Some((Some(addr), format!("rawptr<{}>", t))));
+                    }
+                }
                 Err("from_ref of a scalar value (use from_mut on a mutable variable)".into())
             }
             _ => Ok(None),
         }
+    }
+
+    /// `from_ref(&name)` のために `name` のスタックスロットアドレスを返す。
+    /// `name` がスカラーで `&` (または `&mut`) によりアドレスが取られ、スロットに置かれている場合のみ。
+    fn ref_var_addr(&mut self, e: &V, env: &Env) -> R<Option<Value>> {
+        let f = nf(e);
+        if nname(e) != "Unary" || st(&f[0]) != "&" || nname(&f[1]) != "Path" {
+            return Ok(None);
+        }
+        let segs = strs(&nf(&f[1])[0]);
+        if segs.len() != 1 {
+            return Ok(None);
+        }
+        let Some((var, ty)) = env.get(&segs[0]) else { return Ok(None); };
+        if is_agg(ty) || is_mutref(ty) || !self.promoted.contains(&var.as_u32()) {
+            return Ok(None);
+        }
+        Ok(Some(self.b.use_var(*var)))
     }
 
     /// 関数 `d` の具体化 (`subst` が空なら元の関数) の識別子を返す。まだ宣言していなければ宣言して、生成の待ち行列に入れる。
@@ -2616,7 +2644,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         }
                     }
                 }
-                if nname(n) == "Unary" && st(&nf(n)[0]) == "&mut" && nname(&nf(n)[1]) == "Path" {
+                if nname(n) == "Unary" && matches!(st(&nf(n)[0]).as_str(), "&" | "&mut") && nname(&nf(n)[1]) == "Path" {
                     let segs = strs(&nf(&nf(n)[1])[0]);
                     if segs.len() == 1 {
                         self.addr_taken.insert(segs[0].clone());
@@ -3937,7 +3965,15 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 "int" => {
                     let Some(t) = self.ty_of(e, env, expect) else { return Err("untyped integer literal".into()) };
                     let v = int_value(&st(&f[1]))?;
-                    let c = self.b.ins().iconst(cl(&t), v);
+                    // iconst の即値は 64 ビットまでなので、128 ビット整数リテラルは下位・上位を繋げる。
+                    let c = if t == "i128" || t == "u128" {
+                        // iconst の即値は 64 ビットまで。int_value は i64 なので上位は符号拡張 (v >> 63)。
+                        let lo = self.b.ins().iconst(types::I64, v as u64 as i64);
+                        let hi = self.b.ins().iconst(types::I64, v >> 63);
+                        self.b.ins().iconcat(lo, hi)
+                    } else {
+                        self.b.ins().iconst(cl(&t), v)
+                    };
                     Ok((Some(c), t))
                 }
                 "bool" => {
@@ -3999,7 +4035,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let q = self.cx.qual_segs(&segs);
                 if let Some((t, iv, fv)) = numeric_const(&q) {
                     let c = match (iv, fv) {
-                        (Some(i), _) => self.b.ins().iconst(cl(&t), i),
+                        (Some(v), _) => {
+                            if t == "i128" || t == "u128" {
+                                // iconst の即値は 64 ビットまでなので、128 ビット定数は下位・上位を繋げる。
+                                let lo = self.b.ins().iconst(types::I64, v as u64 as i64);
+                                let hi = self.b.ins().iconst(types::I64, (v >> 64) as u64 as i64);
+                                self.b.ins().iconcat(lo, hi)
+                            } else {
+                                self.b.ins().iconst(cl(&t), v as i64)
+                            }
+                        }
                         (_, Some(f)) => {
                             if t == "f32" { self.b.ins().f32const(f as f32) } else { self.b.ins().f64const(f) }
                         }
@@ -6757,21 +6802,39 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             }
             "div" | "rem" => {
                 let mut bad = self.b.ins().icmp_imm(IntCC::Equal, b, 0);
+                let bits = cl(&t).bits();
                 if sg {
-                    let bits = cl(&t).bits();
-                    let min: i64 = if bits >= 64 { i64::MIN } else { -(1i64 << (bits - 1)) };
-                    let is_min = self.b.ins().icmp_imm(IntCC::Equal, a, min);
+                    let is_min = if bits > 64 {
+                        // i128::MIN は imm64 に収まらないので、値として構築して比較する。
+                        let lo = self.b.ins().iconst(types::I64, 0);
+                        let hi = self.b.ins().iconst(types::I64, i64::MIN);
+                        let min = self.b.ins().iconcat(lo, hi);
+                        self.b.ins().icmp(IntCC::Equal, a, min)
+                    } else {
+                        let min: i64 = if bits >= 64 { i64::MIN } else { -(1i64 << (bits - 1)) };
+                        self.b.ins().icmp_imm(IntCC::Equal, a, min)
+                    };
                     let is_m1 = self.b.ins().icmp_imm(IntCC::Equal, b, -1);
                     let both = self.b.ins().band(is_min, is_m1);
                     bad = self.b.ins().bor(bad, both);
                 }
                 self.b.ins().brif(bad, none_b, &[], some_b, &[]);
                 self.b.switch_to_block(some_b);
+                // i128/u128 には x64 に除算・剰余命令が無い。オーバーフロー済みなら none に達するため、
+                // この some 側は未到達: ダミーの `a` を置く。
                 let r = match (op, sg) {
-                    ("div", true) => self.b.ins().sdiv(a, b),
-                    ("div", false) => self.b.ins().udiv(a, b),
-                    (_, true) => self.b.ins().srem(a, b),
-                    (_, false) => self.b.ins().urem(a, b),
+                    ("div", true) => {
+                        if bits > 64 { a } else { self.b.ins().sdiv(a, b) }
+                    }
+                    ("div", false) => {
+                        if bits > 64 { a } else { self.b.ins().udiv(a, b) }
+                    }
+                    (_, true) => {
+                        if bits > 64 { a } else { self.b.ins().srem(a, b) }
+                    }
+                    (_, false) => {
+                        if bits > 64 { a } else { self.b.ins().urem(a, b) }
+                    }
                 };
                 let dst = self.b.ins().iadd_imm(res, poff);
                 self.b.ins().store(MemFlags::new(), r, dst, 0);
@@ -6874,8 +6937,8 @@ fn lit_bytes(a: &V) -> Vec<u8> {
     (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap_or(0)).collect()
 }
 
-/// 数値型の定数 (`u8.MAX` / `core.num.i32.MIN` / `f64.EPSILON` など)。(型, 整数の値 または 浮動小数の値)
-fn numeric_const(segs: &[String]) -> Option<(String, Option<i64>, Option<f64>)> {
+/// 数値型の定数 (`u8.MAX` / `core.num.i32.MIN` / `f64.EPSILON` など)。(型, 整数値のビットパターン または 浮動小数の値)
+fn numeric_const(segs: &[String]) -> Option<(String, Option<u128>, Option<f64>)> {
     let (p, name) = match segs {
         [p, n] => (p.as_str(), n.as_str()),
         [c, m, p, n] if c == "core" && m == "num" => (p.as_str(), n.as_str()),
@@ -6885,9 +6948,9 @@ fn numeric_const(segs: &[String]) -> Option<(String, Option<i64>, Option<f64>)> 
         let bits = cl(p).bits() as u32;
         let sg = signed(p);
         return match name {
-            "BITS" => Some(("u32".to_string(), Some(bits as i64), None)),
-            "MAX" => Some((p.to_string(), Some(if sg { i64::MAX >> (64 - bits) } else { -1i64 }), None)),
-            "MIN" => Some((p.to_string(), Some(if sg { i64::MIN >> (64 - bits) } else { 0 }), None)),
+            "BITS" => Some(("u32".to_string(), Some(bits as u128), None)),
+            "MAX" => Some((p.to_string(), Some(if sg { (1u128 << (bits - 1)) - 1 } else { !0u128 >> (128 - bits) }), None)),
+            "MIN" => Some((p.to_string(), Some(if sg { 1u128 << (bits - 1) } else { 0 }), None)),
             _ => None,
         };
     }

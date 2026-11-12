@@ -8273,9 +8273,10 @@ fn expr_ids_are_local_to_their_function() {
 // ---- spec/ptr-const-ne: add_const / cast_const (const を保つ加算・変換) と `ne` の撤去 (演算子 `!=` のみ)
 
 #[test]
-fn ptr_add_const_and_cast_const_keep_const_and_run_in_interp_and_bundle() {
+fn ptr_add_const_and_cast_const_keep_const_and_run_in_both() {
     // from_ref の `*const` を add_const (count 0) と cast_const::<i32, i32> で読み直す。from_mut の `*mut` を add_const で
-    // const に落としたものも読める。インタプリタとネイティブの両方で同じ結果になる。
+    // const に落としたものも読める。不変のスカラー変数 `x` の `from_ref(&x)` も、スタックスロットのアドレスとして扱い、
+    // インタプリタとネイティブの両方で同じ結果になる。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     Ok(())
 end t.main
@@ -8300,8 +8301,7 @@ end t.main.test_add_const_cast_const
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    // Cranelift が スカラの `from_ref` 未対応: インタプリタとバンドルの比較。
-    assert!(out.contains("t.main.test_add_const_cast_const ... ok (both: bundle (native skipped: "), "{}", out);
+    assert!(out.contains("t.main.test_add_const_cast_const ... ok (both: native)"), "{}", out);
 }
 
 #[test]
@@ -8803,15 +8803,20 @@ fn test_both_compares_failure_classes_when_both_backends_fail() {
 
 #[test]
 fn test_both_falls_back_to_the_bundle_for_a_test_clif_cannot_build() {
-    // 128 ビット整数は clif が未対応。このテストだけバンドルで比べ、理由を出力に書く。
-    let src = format!("{}\ntest t.main.test_wide\n    let x: i128 = 5i128\n    core.check.eq(x, 5i128)\nend t.main.test_wide\n", BOTH_SRC);
+    // 128 ビット整数は clif で扱えるようになった (native)。まだ clif が扱えない機能 (Vec など) のテストだけバンドルで比べる。
+    let src = format!(
+        "{}\ntest t.main.test_wide\n    let x: i128 = 5i128\n    core.check.eq(x, 5i128)\nend t.main.test_wide\n\
+         test t.main.test_vec\n    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.check.eq(v.len(), 0usize)\nend t.main.test_vec\n",
+        BOTH_SRC
+    );
     let t = Tmp::new("both_bundle", &src);
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("test t.main.test_ok ... ok (both: native)"), "{}", out);
-    assert!(out.contains("test t.main.test_wide ... ok (both: bundle (native skipped: "), "{}", out);
-    assert!(out.contains("2 passed; 0 failed"), "{}", out);
+    assert!(out.contains("test t.main.test_wide ... ok (both: native)"), "{}", out);
+    assert!(out.contains("test t.main.test_vec ... ok (both: bundle (native skipped: "), "{}", out);
+    assert!(out.contains("3 passed; 0 failed"), "{}", out);
 }
 
 /// トレイト経由の呼び出し (境界・`dyn`) の効果の検査 (4.3 / 5.1)。トレイトのメソッドの宣言 (`uses` / `panics`) で比べる。
@@ -10997,11 +11002,25 @@ fn min_rem_minus_one_overflows_for_every_signed_width() {
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("5 passed; 0 failed"), "{}", out);
-    // i128 だけバンドル、他の幅は機械語で比べている。
-    for w in ["i8", "i16", "i32", "i64"] {
+    for w in ["i8", "i16", "i32", "i64", "i128"] {
         assert!(out.contains(&format!("t.main.test_{} ... ok (both: native)", w)), "{}", out);
     }
-    assert!(out.contains("t.main.test_i128 ... ok (both: bundle (native skipped: "), "{}", out);
+}
+
+#[test]
+fn i128_u128_checked_and_wrapping_native() {
+    // i128 / u128 の極値 (MIN / MAX) での checked_add / wrapping_add なども機械語で比べる。
+    let src = "fn t.main() -> () uses [] panics never\nend t.main\n\n\
+        test t.main.test_i128_min\n    let m = core.num.i128.MIN\n    core.check.eq(m.wrapping_sub(1i128), core.num.i128.MAX)\n    core.check.eq(m.checked_add(-1i128), None)\nend t.main.test_i128_min\n\n\
+        test t.main.test_u128_max\n    let m = core.num.u128.MAX\n    core.check.eq(m.wrapping_add(1u128), 0u128)\n    core.check.eq(m.checked_add(1u128), None)\nend t.main.test_u128_max\n";
+    let t = Tmp::new("i128_u128_checked_wrapping", src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("2 passed; 0 failed"), "{}", out);
+    for name in ["t.main.test_i128_min", "t.main.test_u128_max"] {
+        assert!(out.contains(&format!("{name} ... ok (both: native)")), "{}", out);
+    }
 }
 
 
