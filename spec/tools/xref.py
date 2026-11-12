@@ -9,6 +9,7 @@
   method     同一の型に同名メソッドが複数ある (トレイト間を含む) (3.2)
   field      型のフィールド名とメソッド名が衝突する (3.2)
   dyn        `dyn Tr` を使うトレイトが dyn 安全でない (ジェネリックメソッド、Self の値渡し/戻り値) (5.1)
+  effect     impl のメソッドの効果がトレイト宣言の効果を超える (uses の包含、トレイトが never なら panics) (4.3 / 5.1, E4021)
 """
 import os
 import re
@@ -32,12 +33,26 @@ def base_of(text):
     return re.split(r'[<\[ ]', text.strip(), 1)[0]
 
 
+def split_list(text):
+    """`io.fs, time` -> ['io.fs', 'time']（効果集合の要素）"""
+    return [x.strip() for x in text.split(',') if x.strip()]
+
+
+def covered(caller, eff):
+    """ksn check の covers と同じ: 効果変数 (大文字) は覆う扱い。具体名は階層の部分型 (io ⊇ io.fs)。"""
+    if eff[:1].isupper():
+        return True
+    return any(eff == c or eff.startswith(c + '.') for c in caller)
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8')
     root, files = sys.argv[1], sys.argv[2:]
     errs = []
     types, traits, fields, trait_methods = set(), set(), {}, {}
     trait_requires, trait_requires_raw = {}, {}
+    trait_gen = {}       # トレイト -> [(型パラメータ名, 種別)]。種別は uses / panics / type
+    trait_effs = {}      # トレイト -> {メソッド: (uses の要素, panics)} (宣言された効果だけ)
     all_items = []
     for f in files:
         lint = Lint(f, root)
@@ -55,10 +70,16 @@ def main():
                 trait_requires[nm] = [base_of(x) for x in lint.split_top(mr.group(1))] if mr else []
                 trait_requires_raw[nm] = lint.split_top(mr.group(1)) if mr else []
                 trait_methods[nm] = {}
+                mg = re.search(r'\[(.*)\]', it['text'])
+                trait_gen[nm] = [(x.split(':')[0].strip(), x.split(':')[1].strip() if ':' in x else 'type')
+                                 for x in (lint.split_top(mg.group(1)) if mg else [])]
                 for l in it['body']:
                     m = re.match(r'\s+fn (\w+)(\[.*?\])?\((.*)$', l)
                     if m:
                         trait_methods[nm][m.group(1)] = l.strip()
+                        me = re.search(r' uses \[(.*?)\] panics (\w+)\s*$', l)
+                        if me:
+                            trait_effs.setdefault(nm, {})[m.group(1)] = (split_list(me.group(1)), me.group(2))
     known = types | traits
 
     def err(code, f, n, msg):
@@ -68,6 +89,8 @@ def main():
     impl_where = {}      # (trait_base, owner) -> (file, line) 最初のメソッド
     impl_lines = []      # (file, line, trait_base, target_base, owner)
     owner_methods = {}   # owner -> {method: trait_base or None}
+    impl_args = {}       # (trait_base, owner) -> impl 行の実引数 (文字列のリスト)
+    impl_fn_effs = {}    # (trait_base, owner) -> {method: (uses, panics, file, line)}  宣言された効果だけ
     for f, its in all_items:
         for it in its:
             n = it['line'] + 1
@@ -84,6 +107,12 @@ def main():
                 tb, gb = base_of(tr), base_of(tg)
                 owner = PRIM_HOME.get(gb, gb)
                 impl_lines.append((f, n, tb, gb, owner))
+                # 実引数 (`Read<[io.fs]>` の `[io.fs]`)。効果の規則 (4.3 / 5.1) に使う。
+                targs = []
+                if '<' in tr and '>' in tr:
+                    targs = lint.split_top(tr[tr.index('<') + 1:tr.rindex('>')])
+                impl_args[(tb, owner)] = targs
+                impl_args[(tb, f'{tb}.{gb.split(".")[-1]}')] = targs
             if it['kw'] == 'fn':
                 nm = it['name']
                 owner, meth = nm.rsplit('.', 1)
@@ -96,6 +125,10 @@ def main():
                 if trait:
                     impl_pairs.setdefault((trait, owner), set()).add(meth)
                     impl_where.setdefault((trait, owner), (f, n))
+                    me = re.search(r' uses \[(.*?)\] panics (\w+)', text)
+                    if me:
+                        impl_fn_effs.setdefault((trait, owner), {})[meth] = (
+                            split_list(me.group(1)), me.group(2), f, n)
                 if owner in fields and meth in fields[owner]:
                     err('field', f, n, f'method {meth} collides with field of {owner}')
                 if mi and trait not in traits:
@@ -123,6 +156,41 @@ def main():
         if key not in declared:
             f, n = impl_where[key]
             err('impl', f, n, f'methods {sorted(ms)} impl {key[0]} on {key[1]} but no impl line exists')
+
+    # 効果 (4.3 / 5.1, ksn check の E4021 の参照実装): impl のメソッドの uses はトレイト宣言の uses に覆われ、
+    # トレイトが panics never なら impl も never。トレイトの効果変数は impl 行の実引数で置き換える。
+    # 束縛できない効果変数が残るとき、宣言の無いメソッドでは黙る。
+    for (tb, owner), ms in impl_fn_effs.items():
+        if tb not in traits or (tb, owner) not in impl_args:
+            continue
+        args = impl_args[(tb, owner)]
+        bind_u, bind_p = {}, {}
+        for (gname, gkind), a in zip(trait_gen.get(tb, []), args):
+            if gkind == 'uses' and a.startswith('[') and a.endswith(']'):
+                bind_u[gname] = split_list(a[1:-1])
+            elif gkind == 'panics' and a in ('never', 'may'):
+                bind_p[gname] = a
+        for meth, (iu, ip, f, n) in ms.items():
+            decl = trait_effs.get(tb, {}).get(meth)
+            if decl is None:
+                continue
+            us, pv = decl
+            tu, unknown = [], False
+            for e in us:
+                if not e[:1].isupper():
+                    tu.append(e)
+                elif e in bind_u and all(not x[:1].isupper() for x in bind_u[e]):
+                    tu.extend(bind_u[e])
+                else:
+                    unknown = True
+            tp = pv if pv in ('never', 'may') else bind_p.get(pv)
+            if not unknown:
+                for e in iu:
+                    if not covered(tu, e):
+                        err('effect', f, n, f'{owner}.{meth} uses effect `{e}` not declared by trait method {tb}.{meth}')
+                        break
+            if tp == 'never' and ip == 'may':
+                err('effect', f, n, f'{owner}.{meth} may panic but trait method {tb}.{meth} declares `panics never`')
 
     # dyn 安全性 (5.1): ジェネリクスなし、レシーバ以外の引数と戻り値に Self なし、Self の値渡しレシーバなし。
     # スーパートレイトも同じ条件を満たす必要がある。

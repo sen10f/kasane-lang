@@ -721,6 +721,8 @@ impl<'a> Checker<'a> {
         let impl_lines: Vec<usize> = self.user.iter().copied().filter(|&i| self.def(i).kw == "impl").collect();
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut covered: HashSet<(String, String)> = HashSet::new();
+        // (トレイト, owner) -> その impl 行の def 番号。メソッドの効果を impl の実引数で実体化する (E4021)。
+        let mut impl_of: HashMap<(String, String), usize> = HashMap::new();
         for &i in &impl_lines {
             let d = self.def(i);
             let tb = d.impl_trait.clone();
@@ -775,6 +777,8 @@ impl<'a> Checker<'a> {
             if let Some(m) = declared.get(&(tb.clone(), alt_owner.clone())) {
                 have.extend(m.iter().cloned());
             }
+            impl_of.entry((tb.clone(), owner.clone())).or_insert(i);
+            impl_of.entry((tb.clone(), alt_owner.clone())).or_insert(i);
             covered.insert((tb.clone(), owner));
             covered.insert((tb.clone(), alt_owner));
             if want != have {
@@ -808,6 +812,60 @@ impl<'a> Checker<'a> {
                     0,
                 );
             }
+        }
+        self.check_impl_method_effects(&impl_of);
+    }
+
+    /// 4.3 / 5.1: impl のメソッドの効果はトレイト宣言の効果を超えない (E4021)。
+    /// `uses`: impl の具体的な効果は、トレイトの宣言の `uses` のいずれかに覆われる (階層の部分型)。
+    /// `panics`: トレイトが `panics never` なら impl も `never` (`never ⊑ may`)。
+    /// トレイトの効果変数は impl 行の実引数で置き換えて比べる。束縛できない変数が残るとき、
+    /// 効果変数を含む impl の効果、宣言の無いトレイトのメソッドでは黙る (誤検出を出さない)。
+    /// 推論された関数は効果が宣言されていないので対象外。トレイトにメソッド単位の `stack` は無いので、
+    /// stack の上界の規則は設けない。
+    fn check_impl_method_effects(&mut self, impl_of: &HashMap<(String, String), usize>) {
+        let mut found: Vec<(usize, String)> = vec![];
+        for &i in &self.user {
+            let d = self.def(i);
+            if d.kw != "fn" || !d.has_impls || d.inferred {
+                continue;
+            }
+            let owner = d.name.rsplit_once('.').map(|(o, _)| o.to_string()).unwrap_or_default();
+            let Some(&ii) = impl_of.get(&(d.impls_trait.clone(), owner)) else { continue };
+            let Some(&ti) = self.p.types.get(&d.impls_trait) else { continue };
+            let td = self.def(ti);
+            if td.kw != "trait" {
+                continue;
+            }
+            let meth = d.name.rsplit('.').next().unwrap_or("");
+            let targs = items(&self.def(ii).impl_targs).to_vec();
+            let Some((tu, tp)) = trait_effect_bounds(td, meth, &targs) else { continue };
+            let tname = format!("{}.{}", td.name, meth);
+            if let Some(tu) = tu {
+                for e in &d.uses {
+                    if e.chars().next().map_or(false, |c| c.is_lowercase()) && !covers(&tu, e) {
+                        found.push((
+                            i,
+                            format!(
+                                "{} uses effect `{}` not declared by trait method {}",
+                                d.name, e, tname
+                            ),
+                        ));
+                        break;
+                    }
+                }
+            }
+            if let Some(tp) = tp {
+                if d.panics.as_deref() == Some("may") && tp == "never" {
+                    found.push((
+                        i,
+                        format!("{} may panic but trait method {} declares `panics never`", d.name, tname),
+                    ));
+                }
+            }
+        }
+        for (i, msg) in found {
+            self.diag("E4021", msg, i, 0);
         }
     }
 
@@ -3379,6 +3437,45 @@ fn prim_owner(name: &str) -> String {
         "str" => "core.str".into(),
         other => other.to_string(),
     }
+}
+
+/// トレイトのメソッド `meth` の宣言された効果を、impl 行の実引数 `targs` (トレイトの型パラメータ列の順) で実体化する
+/// (4.3 / 5.1)。戻り値は (uses の具体名、panics)。束縛できない効果変数が残る要素は `uses` 全体を `None` にする
+/// (分からないので黙る)。宣言の `uses` / `panics` を書いていないメソッドは外側の `None`。
+fn trait_effect_bounds(td: &Def, meth: &str, targs: &[V]) -> Option<(Option<Vec<String>>, Option<String>)> {
+    let (_, us, pv) = td.trait_effs.iter().find(|e| e.0 == meth)?;
+    let mut bind_u: HashMap<String, Vec<String>> = HashMap::new();
+    let mut bind_p: HashMap<String, String> = HashMap::new();
+    for (k, g) in td.generics.iter().enumerate() {
+        let Some(a) = targs.get(k) else { continue };
+        match g.0.as_str() {
+            "uses" if tag(a) == "effects" => {
+                bind_u.insert(g.1.clone(), items(tel(a, 1)).iter().map(st).collect());
+            }
+            "panics" if tag(a) == "panic" => {
+                bind_p.insert(g.1.clone(), st(tel(a, 1)));
+            }
+            _ => {}
+        }
+    }
+    let concrete = |e: &String| e.chars().next().map_or(false, |c| c.is_lowercase());
+    let mut eu: Vec<String> = vec![];
+    let mut unknown = false;
+    for e in us {
+        if concrete(e) {
+            eu.push(e.clone());
+        } else {
+            match bind_u.get(e) {
+                Some(set) if set.iter().all(concrete) => eu.extend(set.iter().cloned()),
+                _ => unknown = true,
+            }
+        }
+    }
+    let ep = match pv.as_str() {
+        "never" | "may" => Some(pv.clone()),
+        v => bind_p.get(v).cloned(),
+    };
+    Some((if unknown { None } else { Some(eu) }, ep))
 }
 
 /// 8.2 の層ランク。依存方向は `std` → `alloc` → `core` なので、ランクの小さい層は

@@ -1,0 +1,12 @@
+type t.Ui
+    n: u8
+end t.Ui
+
+trait t.Act
+    fn act(self: &Self) -> u8 uses [io.console] panics never
+end t.Act
+
+impl t.Act for t.Ui
+fn t.Ui.act(self: &t.Ui) -> u8 uses [io] panics never impls t.Act
+    self.n
+end t.Ui.act
