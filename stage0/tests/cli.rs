@@ -7859,7 +7859,7 @@ end t.bad
 /// (`eq` `ne` `cmp` `partial_cmp`) は spec/stdlib の規範どおり check が受理する。以前はいずれも
 /// インタプリタで "no method ..." の panic になっていた。インタプリタとバンドルの両方で動くことを確かめる。
 #[test]
-fn str_slice_option_result_sig_methods_run_in_interp_and_bundle() {
+fn str_slice_option_result_sig_methods_run_in_both() {
     let test = "test t.main.test_a_option_result_cmp
     let o: Option<u8> = Some(1u8)
     core.check.eq(o.eq(&Some(1u8)), true)
@@ -7910,8 +7910,8 @@ end t.main.test_d_to_string
         // 機械語とインタプリタの結果が一致する。
         assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
     }
-    // `as_str` は Cranelift が未対応: インタプリタとバンドルの比較 (機械語では比べていない)。
-    assert!(out.contains("t.main.test_d_to_string ... ok (both: bundle (native skipped: "), "{}", out);
+    // 解放が要る値を作る `match` (`Ok(o) => o` / `Err(_e) => ..`) は機械語で動き、インタプリタと一致する。
+    assert!(out.contains("t.main.test_d_to_string ... ok (both: native)"), "{}", out);
 }
 
 #[test]
@@ -8028,6 +8028,122 @@ end t.main.test_h_count_boundaries
     for name in ["test_e_option_boundaries", "test_f_result_boundaries", "test_g_str_boundaries", "test_h_count_boundaries"] {
         assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
     }
+}
+
+/// 解放が要る値を返す `match` (腕が Vec / String を返す、解放が要る payload を束縛する・捨てる、腕の `return`、
+/// 繰り返し) が機械語でも動き、インタプリタと一致する。二重解放や解放漏れがあれば機械語側が落ちるか、
+/// 10 万回の繰り返しで結果が合わなくなる。
+#[test]
+fn match_producing_droppable_values_runs_natively() {
+    let pick = r#"fn t.pick(s: &str) -> alloc.string.String uses [alloc] panics never
+    match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(o) => return o
+        Err(_e) => return alloc.string.String.new(std.alloc.SYSTEM)
+    }
+end t.pick
+
+"#;
+    let tests = r#"test t.main.test_e_vec_arms
+    let n = 1u8
+    let mut v: alloc.vec.Vec<u8, std.alloc.System> = match n {
+        0u8 => alloc.vec.Vec.new(std.alloc.SYSTEM)
+        _ => alloc.vec.Vec.new(std.alloc.SYSTEM)
+    }
+    core.mem.drop(v.push(7u8))
+    core.check.eq(v.len(), 1usize)
+end t.main.test_e_vec_arms
+
+test t.main.test_f_block_arm_moves_local
+    let n = 1u8
+    let v: alloc.vec.Vec<u8, std.alloc.System> = match n {
+        0u8 => alloc.vec.Vec.new(std.alloc.SYSTEM)
+        _ => {
+            let mut w: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            core.mem.drop(w.push(5u8))
+            w
+        }
+    }
+    core.check.eq(v.len(), 1usize)
+end t.main.test_f_block_arm_moves_local
+
+test t.main.test_g_unused_payloads
+    let s: &str = "abc"
+    let a = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(_o) => 1usize
+        Err(_e) => 0usize
+    }
+    core.check.eq(a, 1usize)
+    let b = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(_) => 2usize
+        Err(_e) => 0usize
+    }
+    core.check.eq(b, 2usize)
+    let c = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(o) => o.len()
+        Err(_e) => 9usize
+    }
+    core.check.eq(c, 3usize)
+end t.main.test_g_unused_payloads
+
+test t.main.test_h_loop_100k
+    let mut i = 0usize
+    let mut total = 0usize
+    while i < 100000usize {
+        let s = match alloc.string.String.from_str(std.alloc.SYSTEM, "héllo") {
+            Ok(o) => o
+            Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        total = total + s.len()
+        i = i + 1usize
+    }
+    core.check.eq(total, 600000usize)
+end t.main.test_h_loop_100k
+
+test t.main.test_i_return_from_arm
+    let s = t.pick("xy")
+    core.check.eq(s.len(), 2usize)
+    let e = t.pick("")
+    core.check.eq(e.is_empty(), true)
+end t.main.test_i_return_from_arm
+
+test t.main.test_k_place_scrutinee_fresh_arms
+    let r = alloc.string.String.from_str(std.alloc.SYSTEM, "xy")
+    let s = match r {
+        Ok(_o) => alloc.string.String.new(std.alloc.SYSTEM)
+        Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+    core.check.eq(s.is_empty(), true)
+end t.main.test_k_place_scrutinee_fresh_arms
+"#;
+    let src = format!("{}\n{}", main_wrap(pick, ""), tests);
+    let t = Tmp::new("match_droppable_native", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert_eq!(out.matches("(both: native)").count(), 6, "{}", out);
+    assert!(!out.contains("both: bundle"), "{}", out);
+    assert!(out.contains("6 passed; 0 failed"), "{}", out);
+}
+
+/// 解放が要る値を持つ場所 (`let` の局所) から移動する `match` は、所有の扱いを持たないので退避する。
+/// 退避の理由が出て、バンドルでも正しく動く。
+#[test]
+fn match_moving_out_of_a_place_scrutinee_falls_back_with_reason() {
+    let tests = r#"test t.main.test_j_place_scrutinee_moves
+    let r = alloc.string.String.from_str(std.alloc.SYSTEM, "x")
+    let s = match r {
+        Ok(o) => o
+        Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+    core.check.eq(s.len(), 1usize)
+end t.main.test_j_place_scrutinee_moves
+"#;
+    let src = format!("{}\n{}", main_wrap("", ""), tests);
+    let t = Tmp::new("match_place_fallback", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("t.main.test_j_place_scrutinee_moves ... ok (both: bundle (native skipped: "), "{}", out);
 }
 
 #[test]
