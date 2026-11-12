@@ -10,8 +10,8 @@ fn t.fail(code: i32) -> std.io.Error
 end t.fail
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics may
-    t.round_trip()?
-    t.many()?
+    t.ok_unit(t.round_trip())
+    t.ok_unit(t.many())
     std.io.print_line("net ok")
 end t.main
 
@@ -30,21 +30,22 @@ fn t.many() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics 
     while i < 600usize {
         let mut client = match std.net.connect(addr.as_str()) {
             Ok(c) => c
-            Err(_e) => return Err(t.fail(2i32))
+            Err(_e) => core.panic.panic("connect failed")
         }
         let mut server = match listener.accept() {
             Ok(s) => s
-            Err(_e) => return Err(t.fail(3i32))
+            Err(_e) => core.panic.panic("accept failed")
         }
-        total = total + client.write(b"x")?
+        total = total + t.ok_size(client.write(b"x"))
         core.mem.drop(client.close())
         let mut one = [0u8; 4]
-        total = total + server.read(&mut one)?
+        total = total + t.ok_size(server.read(&mut one))
         core.mem.drop(server.close())
         i = i + 1usize
     }
     core.mem.drop(listener.close())
     t.show("bytes moved in the loop", t.num(total))
+    Ok(())
 end t.many
 
 fn t.num(n: usize) -> i64 uses [] panics never
@@ -53,6 +54,21 @@ fn t.num(n: usize) -> i64 uses [] panics never
         Err(_e) => -1i64
     }
 end t.num
+
+fn t.ok_size(r: Result<usize, std.io.Error>) -> usize uses [] panics may
+    match r {
+        Ok(v) => v
+        Err(_e) => core.panic.panic("unexpected I/O error")
+    }
+end t.ok_size
+
+fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
+    match r {
+        Ok(_u) => {
+        }
+        Err(_e) => core.panic.panic("unexpected I/O error")
+    }
+end t.ok_unit
 
 fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics may
     let listener = match std.net.listen("127.0.0.1:0") {
@@ -67,57 +83,57 @@ fn t.round_trip() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] p
     let addr = t.addr(port)
     let mut client = match std.net.connect(addr.as_str()) {
         Ok(c) => c
-        Err(_e) => return Err(t.fail(2i32))
+        Err(_e) => core.panic.panic("connect failed")
     }
     let mut server = match listener.accept() {
         Ok(s) => s
-        Err(_e) => return Err(t.fail(3i32))
+        Err(_e) => core.panic.panic("accept failed")
     }
     let sent = match client.write(b"ping") {
         Ok(w) => w
         Err(_e) => 0usize
     }
-    t.show("client sent", t.num(sent))?
+    t.show("client sent", t.num(sent))
     match client.flush() {
-        Ok(_u) => t.show("flush", 1i64)?
-        Err(_e) => t.show("flush", 0i64)?
+        Ok(_u) => t.show("flush", 1i64)
+        Err(_e) => t.show("flush", 0i64)
     }
     let mut buf = [0u8; 16]
     let n = match server.read(&mut buf) {
         Ok(n) => n
         Err(_e) => 0usize
     }
-    t.show("server received", t.num(n))?
+    t.show("server received", t.num(n))
     match buf.get(0usize) {
-        Some(b) => t.show("first byte", i64.from_u8(*b))?
-        None => t.show("first byte", 0i64)?
+        Some(b) => t.show("first byte", i64.from_u8(*b))
+        None => t.show("first byte", 0i64)
     }
     let replied = match server.write(b"pong!") {
         Ok(w) => w
         Err(_e) => 0usize
     }
-    t.show("server sent", t.num(replied))?
+    t.show("server sent", t.num(replied))
     core.mem.drop(server.close())
     let mut buf2 = [0u8; 16]
     let m = match client.read(&mut buf2) {
         Ok(m) => m
         Err(_e) => 0usize
     }
-    t.show("client received", t.num(m))?
+    t.show("client received", t.num(m))
     let eof = match client.read(&mut buf2) {
         Ok(k) => t.num(k)
         Err(_e) => 99i64
     }
-    t.show("read at end of stream", eof)?
+    t.show("read at end of stream", eof)
     core.mem.drop(client.close())
     core.mem.drop(listener.close())
     Ok(())
 end t.round_trip
 
-fn t.show(label: &str, n: i64) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics may
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     core.mem.drop(s.push_str(label))
     core.mem.drop(s.push_str(": "))
     core.mem.drop(s.push_i64(n))
-    std.io.print_line(s.as_str())
+    core.mem.drop(std.io.print_line(s.as_str()))
 end t.show

@@ -5,18 +5,6 @@ fn t.addr(port: u16) -> alloc.string.String<std.alloc.System> uses [alloc] panic
     s
 end t.addr
 
-fn t.show(label: &str, n: i64) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
-    core.mem.drop(s.push_str(label))
-    core.mem.drop(s.push_str(": "))
-    core.mem.drop(s.push_i64(n))
-    std.io.print_line(s.as_str())
-end t.show
-
-fn t.fail(code: i32) -> std.io.Error
-    std.io.Error { kind: std.io.ErrorKind.Other, code: code }
-end t.fail
-
 fn t.closed_port() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics may
     let listener = match std.net.listen("127.0.0.1:0") {
         Ok(l) => l
@@ -31,44 +19,64 @@ fn t.closed_port() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] 
     match std.net.listen(busy.as_str()) {
         Ok(other) => {
             core.mem.drop(other.close())
-            t.show("second bind", 0i64)?
+            t.show("second bind", 0i64)
         }
-        Err(e) => t.show("second bind code", i64.from_i32(e.code))?
+        Err(e) => t.show("second bind code", i64.from_i32(e.code))
     }
     core.mem.drop(listener.close())
     let addr = t.addr(port)
     match std.net.connect(addr.as_str()) {
         Ok(c) => {
             core.mem.drop(c.close())
-            t.show("connect to a closed port", 0i64)?
+            t.show("connect to a closed port", 0i64)
         }
-        Err(e) => t.show("connect to a closed port code", i64.from_i32(e.code))?
+        Err(e) => t.show("connect to a closed port code", i64.from_i32(e.code))
     }
     match std.net.connect("not an address") {
         Ok(c) => {
             core.mem.drop(c.close())
-            t.show("bad address", 0i64)?
+            t.show("bad address", 0i64)
         }
-        Err(e) => t.show("bad address code", i64.from_i32(e.code))?
+        Err(e) => t.show("bad address code", i64.from_i32(e.code))
     }
     match std.net.connect("127.0.0.1:99999") {
         Ok(c) => {
             core.mem.drop(c.close())
-            t.show("bad port", 0i64)?
+            t.show("bad port", 0i64)
         }
-        Err(e) => t.show("bad port code", i64.from_i32(e.code))?
+        Err(e) => t.show("bad port code", i64.from_i32(e.code))
     }
     match std.net.listen("127.0.0.1") {
         Ok(l) => {
             core.mem.drop(l.close())
-            t.show("address without a port", 0i64)?
+            t.show("address without a port", 0i64)
         }
-        Err(e) => t.show("address without a port code", i64.from_i32(e.code))?
+        Err(e) => t.show("address without a port code", i64.from_i32(e.code))
     }
     Ok(())
 end t.closed_port
 
+fn t.fail(code: i32) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.Other, code: code }
+end t.fail
+
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics may
-    t.closed_port()?
+    t.ok_unit(t.closed_port())
     std.io.print_line("net errors ok")
 end t.main
+
+fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
+    match r {
+        Ok(_u) => {
+        }
+        Err(_e) => core.panic.panic("unexpected I/O error")
+    }
+end t.ok_unit
+
+fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": "))
+    core.mem.drop(s.push_i64(n))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show

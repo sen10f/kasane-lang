@@ -753,6 +753,17 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// 構造の種類 (単一化で矛盾を判定できるもの)。分からない・変換の余地があるものは None。
+    fn concrete_kind(t: &Ty) -> Option<&'static str> {
+        match t {
+            Ty::Unit => Some("unit"),
+            Ty::Prim(_) => Some("prim"),
+            Ty::Tuple(_) => Some("tuple"),
+            Ty::Named(n, _) if n != "alloc.vec.Vec" && n != "alloc.string.String" => Some("named"),
+            _ => None,
+        }
+    }
+
     /// 2 つの型を等しくする。矛盾したら、その箇所の 2 つの型を返す。参照は透過的。
     fn unify2(&mut self, a: &Ty, b: &Ty) -> Result<(), (Ty, Ty)> {
         let (a, b) = (self.resolve(a), self.resolve(b));
@@ -864,7 +875,12 @@ impl<'a> TypeCk<'a> {
                 self.unify2(&x, &y)
             }
             (Ty::Unit, Ty::Unit) => Ok(()),
-            _ => Ok(()), // 構造が違うものは、近似の限界かもしれないので何も言わない
+            // 構造が確定していて種類が違う組 (`()` と `Result<..>`、整数とタプルなど) は矛盾 (fail-closed)。
+            // `Vec` / `String` はスライス・`str` として扱われる場所があるので、ここでは対象にしない。
+            (x, y) if Self::concrete_kind(x).is_some() && Self::concrete_kind(y).is_some() && Self::concrete_kind(x) != Self::concrete_kind(y) => {
+                Err((a.clone(), b.clone()))
+            }
+            _ => Ok(()), // それ以外の構造の違いは、近似の限界かもしれないので何も言わない
         }
     }
 
@@ -2597,6 +2613,9 @@ impl<'a> TypeCk<'a> {
         match (&err.0, &err.1) {
             (Ty::Prim(a), Ty::Prim(b)) => Some((a.clone(), b.clone())),
             (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
+            // `()` と値の型の食い違い (`-> Result<..>` の関数が `()` で終わるなど)。
+            (Ty::Unit, x @ (Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_))) => Some(("()".into(), x.show())),
+            (x @ (Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_)), Ty::Unit) => Some((x.show(), "()".into())),
             _ => None,
         }
     }
