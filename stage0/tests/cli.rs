@@ -6158,8 +6158,9 @@ fn ptr_more_place_pointers_alias_their_places_and_null_is_detected() {
         core.ptr.write(p, 42i32)
         core.check.eq(core.ptr.read(p), 42i32)
         core.check.eq(core.ptr.read(core.ptr.as_const(p)), 42i32)
-        core.check.eq(core.ptr.read(core.ptr.add(q, 0usize)), 42i32)
-        core.check.eq(core.ptr.read(core.ptr.cast::<i32, i32>(q)), 42i32)
+        core.check.eq(core.ptr.read(q), 42i32)
+        core.check.eq(core.ptr.read(core.ptr.add(p, 0usize)), 42i32)
+        core.check.eq(core.ptr.read(core.ptr.cast::<i32, i32>(p)), 42i32)
     }
     std.io.print_line("place ok")
     core.check.eq(x, 42i32)
@@ -6939,8 +6940,8 @@ end t.main
 }
 
 #[test]
-fn ffi_from_ref_pointer_is_const_and_write_through_it_panics() {
-    // `from_ref` は読み取り専用。書き込むと 101 で止まり、不変の `x` は書き換わらない。
+fn ffi_from_ref_pointer_is_const_and_write_through_it_is_rejected() {
+    // `from_ref` は `*const` を返し、`core.ptr.write` は `*mut` を取る。書き込みは検査の段階で止まり、実行に届かない。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let x: i32 = 41i32
     let q: *const i32 = core.ptr.from_ref(&x)
@@ -6952,8 +6953,8 @@ fn ffi_from_ref_pointer_is_const_and_write_through_it_panics() {
 end t.main
 "#;
     let (_t, r) = run_unsafe_pkg("ffi_from_ref_const", src);
-    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
-    assert!(text(&r.stderr).contains("const"), "{}", text(&r.stderr));
+    assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stdout).contains("E2023") && text(&r.stdout).contains("`*const i32`"), "{}", text(&r.stdout));
 }
 
 #[test]
@@ -6976,7 +6977,7 @@ end t.main
 
 #[test]
 fn ffi_as_const_pointer_is_read_only_and_from_mut_stays_writable() {
-    // `as_const` で作った const の印は書き込みを止める。元の `from_mut` のポインタは従来どおり書ける。
+    // `as_const` で作った `*const` は読めるが、書き込みは `*mut` を要求する検査で止まる (下のテスト)。元の `from_mut` のポインタは従来どおり書けて読める。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut x: i32 = 1i32
     let p: *mut i32 = core.ptr.from_mut(&mut x)
@@ -6985,15 +6986,29 @@ fn ffi_as_const_pointer_is_read_only_and_from_mut_stays_writable() {
         core.ptr.write(p, 2i32)
         core.check.eq(core.ptr.read(c), 2i32)
     }
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ffi_as_const_readonly", src);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+}
+
+#[test]
+fn ffi_write_through_as_const_pointer_is_rejected() {
+    // `as_const` で作った `*const` への書き込みは、`*mut` を取る `core.ptr.write` の検査で E2023 になる。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    let c: *const i32 = core.ptr.as_const(p)
     unsafe "libc" "write through the const pointer" {
         core.ptr.write(c, 3i32)
     }
     Ok(())
 end t.main
 "#;
-    let (_t, r) = run_unsafe_pkg("ffi_as_const_readonly", src);
-    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
-    assert!(text(&r.stderr).contains("const"), "{}", text(&r.stderr));
+    let (_t, r) = run_unsafe_pkg("ffi_as_const_write_rejected", src);
+    assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stdout).contains("E2023") && text(&r.stdout).contains("`*mut i32`"), "{}", text(&r.stdout));
 }
 
 #[test]
@@ -7398,4 +7413,194 @@ end t.f
     let o = run(&["check", "--json"], &t.0);
     let out = text(&o.stdout);
     assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+}
+
+// ---- check/raw-ptr-types: 生ポインタの型 (`*const T` / `*mut T`) を型検査が見る ----
+
+/// `unsafe` を許したパッケージを `check --json` にかけ、出力文字列を返す (1 診断 1 行の JSON)。
+fn raw_ptr_check(name: &str, src: &str) -> String {
+    let t = Tmp::new(name, src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    text(&o.stdout)
+}
+
+#[test]
+fn raw_ptr_annotations_accept_the_correct_forms_without_errors() {
+    // 正しい書き方: from_mut / from_ref / null_mut / as_const / as_mut / cast、`*mut` → `*const` の暗黙の縮小、読み書き。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    let c: *const i32 = core.ptr.as_const(p)
+    let q: *const i32 = core.ptr.from_ref(&x)
+    let m: *mut i32 = core.ptr.as_mut(q)
+    let n: *mut i32 = core.ptr.null_mut::<i32>()
+    let b: *mut u8 = core.ptr.cast::<i32, u8>(p)
+    let r: *const u8 = b
+    let u: *const i32 = p
+    unsafe \"libc\" \"correct forms\" {
+        core.ptr.write(m, 2i32)
+        core.check.eq(core.ptr.read(c), 2i32)
+        core.check.eq(core.ptr.is_null(n), true)
+        core.check.eq(core.ptr.read(u), 2i32)
+        core.check.eq(core.ptr.read(r), 2u8)
+    }
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_ok", src);
+    assert!(!codes(&out).iter().any(|c| c == "E2020" || c == "E2023"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_let_annotation_rejects_a_plain_value() {
+    // `let s: *mut i32 = 5i32`: 値をポインタの注釈へ入れると E2020。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let s: *mut i32 = 5i32
+    core.check.eq(core.ptr.is_null(s), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_val", src);
+    assert!(out.contains("E2020") && out.contains("expected *mut i32, found i32"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_let_annotation_rejects_const_into_mut() {
+    // `let r: *mut i32 = core.ptr.from_ref(&x)`: `from_ref` は `*const` を返すので、`*mut` の注釈は E2020。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let r: *mut i32 = core.ptr.from_ref(&x)
+    core.check.eq(core.ptr.is_null(r), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_const_to_mut", src);
+    assert!(out.contains("E2020") && out.contains("expected *mut i32, found *const i32"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_let_annotation_rejects_a_different_element_type() {
+    // 要素型が確定して食い違う (`*const u8` と `*const i32`) のは E2020。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let r: *const u8 = core.ptr.from_ref(&x)
+    core.check.eq(core.ptr.is_null(r), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_elem", src);
+    assert!(out.contains("E2020") && out.contains("expected *const u8, found *const i32"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_pointer_is_not_a_plain_integer_annotation() {
+    // ポインタを整数の注釈へ入れるのは E2020 (`core.ptr.null_mut::<i32>()` を `i32` へ)。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let n: i32 = core.ptr.null_mut::<i32>()
+    core.check.eq(n, 0i32)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_to_int", src);
+    assert!(out.contains("E2020") && out.contains("expected i32, found *mut i32"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_unsuffixed_literal_is_not_a_pointer() {
+    // 整数リテラルをポインタの注釈へ入れるのは E2020 (型は `{integer}`)。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let q: *mut i32 = 5
+    core.check.eq(core.ptr.is_null(q), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_literal", src);
+    assert!(out.contains("E2020") && out.contains("expected *mut i32, found {integer}"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_const_argument_to_mut_parameter_is_rejected() {
+    // 宣言が `*mut i32` の関数へ `from_ref` (const) の値を渡すと E2023。
+    let src = "fn t.take(p: *mut i32) -> () uses [] panics never
+    core.check.eq(core.ptr.is_null(p), false)
+end t.take
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    t.take(core.ptr.from_ref(&x))
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_arg", src);
+    assert!(out.contains("E2023") && out.contains("expected `*mut i32`, found `*const i32`"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_mut_argument_to_const_parameter_is_accepted() {
+    // `*mut` → `*const` の縮小は暗黙に許す (宣言が `*const` の関数へ `*mut` を渡す)。
+    let src = "fn t.look(p: *const i32) -> i32 uses [] panics never
+    core.ptr.read(p)
+end t.look
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    unsafe \"libc\" \"read through a mutable pointer\" {
+        core.check.eq(t.look(p), 1i32)
+    }
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_mut_to_const", src);
+    assert!(!codes(&out).iter().any(|c| c == "E2020" || c == "E2023"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_return_value_mismatch_is_rejected() {
+    // 戻り値が `*mut` の関数で `from_ref` (const) を返すと E2020 (戻り値)。
+    let src = "fn t.back(x: &i32) -> *mut i32 uses [] panics never
+    core.ptr.from_ref(x)
+end t.back
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let r = t.back(&x)
+    core.check.eq(core.ptr.is_null(r), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_ret", src);
+    assert!(out.contains("E2020") && out.contains("type mismatch in return value: expected *mut i32, found *const i32"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_extern_mut_parameter_rejects_a_const_pointer() {
+    // extern 宣言の `*mut u8` 引数へ `*const u8` (from_ref) を渡すと E2023。
+    let src = "extern t.free(pointer: *mut u8) -> () link \"free\"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let b: u8 = 1u8
+    unsafe \"libc\" \"free a const pointer\" {
+        t.free(core.ptr.from_ref(&b))
+    }
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_extern", src);
+    assert!(out.contains("E2023") && out.contains("expected `*mut u8`, found `*const u8`"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_reference_to_pointer_annotation_stays_silent() {
+    // 参照は透過的に扱う方針なので、`&x` を `*const` の注釈へ入れても黙る (取りこぼしを選ぶ)。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let s: *const i32 = &x
+    core.check.eq(core.ptr.is_null(s), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_ref_silent", src);
+    assert!(!codes(&out).iter().any(|c| c == "E2020" || c == "E2023"), "{}", out);
 }

@@ -21,6 +21,9 @@ pub enum Ty {
     Prim(String),
     Named(String, Vec<Ty>),
     Ref(bool, Box<Ty>),
+    /// 生ポインタ `*const T` (false) / `*mut T` (true) (3.8)。`&T` とは別の型で、暗黙には相互変換しない
+    /// (`*mut` → `*const` の縮小だけ暗黙に許す。`*const` → `*mut` は `core.ptr.as_mut` のみ)。
+    Ptr(bool, Box<Ty>),
     Tuple(Vec<Ty>),
     Array(Box<Ty>),
     Slice(Box<Ty>),
@@ -71,6 +74,7 @@ impl Ty {
                 }
             }
             Ty::Ref(m, t) => format!("&{}{}", if *m { "mut " } else { "" }, t.show()),
+            Ty::Ptr(m, t) => format!("{} {}", if *m { "*mut" } else { "*const" }, t.show()),
             Ty::Tuple(ts) => format!("({})", ts.iter().map(|x| x.show()).collect::<Vec<_>>().join(", ")),
             Ty::Array(t) => format!("[{}; _]", t.show()),
             Ty::Slice(t) => format!("[{}]", t.show()),
@@ -86,7 +90,7 @@ impl Ty {
         match self {
             Ty::Param(_) => true,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| x.has_param()),
-            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => x.has_param(),
+            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => x.has_param(),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| x.has_param()) || ret.has_param(),
             _ => false,
         }
@@ -110,6 +114,7 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
         "array" => Ty::Array(Box::new(from_v(tel(v, 1), params))),
         "slice" => Ty::Slice(Box::new(from_v(tel(v, 1), params))),
         "ref" => Ty::Ref(matches!(tel(v, 1), V::B(true)), Box::new(from_v(tel(v, 2), params))),
+        "ptr" => Ty::Ptr(matches!(tel(v, 1), V::B(true)), Box::new(from_v(tel(v, 2), params))),
         "named" => {
             let name = st(tel(v, 1));
             if params.contains(&name) {
@@ -143,6 +148,7 @@ fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
         Ty::Param(p) => bind.get(p).cloned().unwrap_or(Ty::Unknown),
         Ty::Named(n, a) => Ty::Named(n.clone(), a.iter().map(|x| subst(x, bind)).collect()),
         Ty::Ref(m, x) => Ty::Ref(*m, Box::new(subst(x, bind))),
+        Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(subst(x, bind))),
         Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| subst(x, bind)).collect()),
         Ty::Array(x) => Ty::Array(Box::new(subst(x, bind))),
         Ty::Slice(x) => Ty::Slice(Box::new(subst(x, bind))),
@@ -497,7 +503,7 @@ impl<'a> TypeCk<'a> {
                 self.escaped.insert(v);
             }
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().for_each(|x| self.escape(x)),
-            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.escape(&x),
+            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => self.escape(&x),
             Ty::Closure { args, ret, .. } => {
                 args.iter().for_each(|x| self.escape(x));
                 self.escape(&*ret);
@@ -540,6 +546,7 @@ impl<'a> TypeCk<'a> {
         match self.resolve(t) {
             Ty::Named(n, a) => Ty::Named(n, a.iter().map(|x| self.deep(x)).collect()),
             Ty::Ref(m, x) => Ty::Ref(m, Box::new(self.deep(&x))),
+            Ty::Ptr(m, x) => Ty::Ptr(m, Box::new(self.deep(&x))),
             Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.deep(x)).collect()),
             Ty::Array(x) => Ty::Array(Box::new(self.deep(&x))),
             Ty::Slice(x) => Ty::Slice(Box::new(self.deep(&x))),
@@ -557,7 +564,7 @@ impl<'a> TypeCk<'a> {
         match self.resolve(t) {
             Ty::Var(i) => i == v,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.occurs(v, x)),
-            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.occurs(v, &x),
+            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => self.occurs(v, &x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.occurs(v, x)) || self.occurs(v, &*ret),
             _ => false,
         }
@@ -614,6 +621,17 @@ impl<'a> TypeCk<'a> {
                 self.vars[*x] = Some(t);
                 Ok(())
             }
+            // 生ポインタと参照は暗黙に変換しない。ただし参照は透過的に扱う方針なので、ここでは黙る。
+            (Ty::Ptr(..), Ty::Ref(..)) | (Ty::Ref(..), Ty::Ptr(..)) => Ok(()),
+            // 要素型は不変。可変性は向きがあるので、ここでは違いを矛盾として返し、
+            // 呼び出し側 (`ptr_mismatch`) が `*mut` → `*const` の許される向きかどうかを決める。
+            (Ty::Ptr(m, x), Ty::Ptr(n, y)) => {
+                let (m, n) = (*m, *n);
+                let (x, y) = (x.clone(), y.clone());
+                self.unify2(&x, &y).map_err(|_| (a.clone(), b.clone()))?;
+                if m == n { Ok(()) } else { Err((a.clone(), b.clone())) }
+            }
+            (Ty::Ptr(..), Ty::Prim(_) | Ty::Named(..)) | (Ty::Prim(_) | Ty::Named(..), Ty::Ptr(..)) => Err((a.clone(), b.clone())),
             (Ty::Ref(_, x), y) | (y, Ty::Ref(_, x)) => {
                 let (x, y) = (x.clone(), y.clone());
                 self.unify2(&x, &y)
@@ -677,6 +695,7 @@ impl<'a> TypeCk<'a> {
             }
             Ty::Named(n, a) => Ty::Named(n.clone(), a.iter().map(|x| self.inst(x, map)).collect()),
             Ty::Ref(m, x) => Ty::Ref(*m, Box::new(self.inst(x, map))),
+            Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(self.inst(x, map))),
             Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.inst(x, map)).collect()),
             Ty::Array(x) => Ty::Array(Box::new(self.inst(x, map))),
             Ty::Slice(x) => Ty::Slice(Box::new(self.inst(x, map))),
@@ -890,7 +909,7 @@ impl<'a> TypeCk<'a> {
             let pt = self.inst(&pt, &mut map);
             if let Err(e) = self.unify2(&pt, a) {
                 if fit.len() == 1 {
-                    if let Some((want, got)) = self.prim_conflict(&e) {
+                    if let Some((want, got)) = self.prim_conflict(&e).or_else(|| self.ptr_mismatch(&pt, a)) {
                         self.diag(
                             "E2023",
                             format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
@@ -1798,8 +1817,10 @@ impl<'a> TypeCk<'a> {
                     _ => false,
                 };
                 let const_mismatch = matches!((&e.0, &e.1), (Ty::Const(_), Ty::Const(_)));
-                if raw.has_param() || const_mismatch || (sl.get(k).copied().unwrap_or(false) && same_named) {
-                    if let Some((want, got)) = self.prim_conflict(&e) {
+                // 生ポインタの取り違え (`*const` を `*mut` の引数へ、ポインタと値など) は宣言に型パラメータがなくても報告する。
+                let ptr = self.ptr_mismatch(&pt, &av);
+                if raw.has_param() || const_mismatch || ptr.is_some() || (sl.get(k).copied().unwrap_or(false) && same_named) {
+                    if let Some((want, got)) = self.prim_conflict(&e).or(ptr) {
                         self.diag(
                             "E2023",
                             format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
@@ -2117,6 +2138,55 @@ impl<'a> TypeCk<'a> {
         Some((*ret).clone())
     }
 
+    /// 生ポインタが絡む矛盾 (`want` = 注釈・宣言の型、`got` = 実際の型) の 2 つの型の文字列。
+    /// 報告するのは、`*const` を `*mut` に渡す (`as_mut` を通していない)、要素型が確定して食い違う、
+    /// ポインタと確定したプリミティブ・構造体の型を取り違える、の 3 つだけ。型が途中で決まらないもの、
+    /// 参照との組み合わせ、型パラメータや未知の型を含むものは黙る。
+    fn ptr_mismatch(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
+        let w = self.deep(want);
+        let g = self.deep(got);
+        match (&w, &g) {
+            (Ty::Ptr(wm, wx), Ty::Ptr(gm, gx)) => {
+                if *wm && !*gm {
+                    return Some((w.show(), g.show()));
+                }
+                let (wx, gx) = (self.deep(wx), self.deep(gx));
+                if self.open(&wx) || self.open(&gx) {
+                    return None;
+                }
+                if wx != gx { Some((w.show(), g.show())) } else { None }
+            }
+            (Ty::Ptr(..), o) => self.plain_show(o).map(|s| (w.show(), s)),
+            (o, Ty::Ptr(..)) => self.plain_show(o).map(|s| (s, g.show())),
+            _ => None,
+        }
+    }
+
+    /// 型の中に、まだ決まっていない・分からない部分 (型変数・未知・型パラメータ・参照・クロージャ・`dyn`) があれば true。
+    fn open(&self, t: &Ty) -> bool {
+        match self.deep(t) {
+            Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Ref(..) | Ty::Closure { .. } | Ty::Dyn(_) | Ty::Never => true,
+            Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.open(x)),
+            Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => self.open(&x),
+            _ => false,
+        }
+    }
+
+    /// ポインタとの取り違えを報告する、確定したプリミティブ・構造体・リテラルの型の文字列。
+    fn plain_show(&self, t: &Ty) -> Option<String> {
+        let d = self.deep(t);
+        match &d {
+            Ty::Prim(p) => Some(p.clone()),
+            Ty::Named(..) => Some(d.show()),
+            Ty::Var(v) => match self.kinds[*v] {
+                1 => Some("{integer}".into()),
+                2 => Some("{float}".into()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// 矛盾した 2 つの型が「プリミティブ同士の違い」か「Named 同士の名前違い」なら、その文字列を返す。
     /// それ以外は誤検出のおそれがあるので None (何も言わない)。
     fn type_conflict(&self, e: &(Ty, Ty)) -> Option<(String, String)> {
@@ -2136,6 +2206,9 @@ impl<'a> TypeCk<'a> {
     /// ただし同じ型で型引数だけが違うとき (例: `W<u64>` と `W<u32>`) は従来の検査が名前しか
     /// 見ないので報告されない。ここでだけ全体の形を示す。
     fn ann_conflict(&self, want: &Ty, got: &Ty, err: &(Ty, Ty)) -> Option<(String, String)> {
+        if let Some(p) = self.ptr_mismatch(want, got) {
+            return Some(p);
+        }
         let w = self.deep(want);
         let g = self.deep(got);
         if let (Ty::Named(n, xs), Ty::Named(m, ys)) = (w.strip(), g.strip()) {
@@ -2161,7 +2234,7 @@ impl<'a> TypeCk<'a> {
         match self.deep(t) {
             Ty::Var(_) => true,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.unresolved(x)),
-            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.unresolved(&x),
+            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => self.unresolved(&x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.unresolved(x)) || self.unresolved(&ret),
             _ => false,
         }
