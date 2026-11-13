@@ -14645,6 +14645,27 @@ fn kir_scalar_ints_match_tree_walker() {
     }
 }
 
+/// `const t.CONFIG: &str = "..."` のような文字列定数を下ろし、使う場所で値を作る。
+/// `ksn run` と `ksn kir --run` と `--native` が一致すること。
+/// 依存パッケージで定義された定数でも同じ経路 (`resolve` → `const_val`) を通る。
+const CONST_STR_FNS: &str = "const t.CONFIG: &str = \"hello, kasane\" pub\n\nfn t.len_cfg() -> usize uses [] panics never\n    let s = t.CONFIG\n    s.len()\nend t.len_cfg\n\n";
+
+fn const_str_pkg(name: &str, body: &str) -> Tmp {
+    Tmp::new(name, &format!("{}{}", CONST_STR_FNS, main_wrap("", body)))
+}
+
+#[test]
+fn kir_const_str_match_tree_walker() {
+    // 木走査で定数の文字列と長さが正しいこと、参照実行器 / ネイティブでも同じ値になること。
+    let t = const_str_pkg("kir_const_str", "    std.io.print_line(t.CONFIG)\n    core.check.eq(t.len_cfg(), 13usize)\n");
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", "kir_const_str", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "hello, kasane", "tree-walker 出力");
+    let k = kir_run(&["kir", "t.len_cfg", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", "kir_const_str", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "13", "kir 値");
+}
+
 // ---- 参照 (設計_KIR.md 段階 1: `&T` / `&mut T`、`*r`、`*r = v`。kir_lower_refs.rs) ----
 
 /// 参照を使う関数と、整数の引数だけで呼べる包み (`t.w_*`)。`t.main` は含まない。
