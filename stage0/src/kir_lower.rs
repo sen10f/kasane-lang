@@ -418,6 +418,11 @@ impl<'a> Lw<'a> {
         self.scopes.push(vec![]);
         for ((name, pt), (v, t)) in d.params.iter().zip(pv.iter().zip(params.iter())) {
             coll::bind_param(&mut self, name, *v, *t, &from_v(pt, &gn));
+            // `&[T; N]` / `&mut [T; N]` のパラメータ: 長さ N は型から分かる (ptr にするだけ)。
+            if let Some(n) = coll::ref_array_len(pt) {
+                let s = self.lookup(name).expect("直後に束縛したパラメータ");
+                self.coll.arr_len.insert(s, n);
+            }
         }
         if let Some(v) = self.expr(body)? {
             if self.vty(v) != ret {

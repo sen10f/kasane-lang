@@ -245,6 +245,22 @@ pub(crate) fn local_slot(lw: &Lw, e: &V) -> Option<usize> {
     lw.lookup(&segs[0])
 }
 
+/// `&[T; N]` / `&mut [T; N]` の型 V (`["ref", B, ["array", elem, N]]`) から N を取る。
+/// 型表の `Src::Array` には長さが入らないので、元の型 V から読む。
+pub(crate) fn ref_array_len(pt: &V) -> Option<u32> {
+    let V::L(fs) = pt else { return None };
+    if fs.len() < 3 || st(&fs[0]) != "ref" { return None; }
+    let V::L(inner) = &fs[2] else { return None };
+    if inner.is_empty() || st(&inner[0]) != "array" { return None; }
+    let V::N(n) = &inner[2] else { return None };
+    n.parse::<u32>().ok()
+}
+
+/// `&[T; N]` のパラメータのスロット `s` の長さ N。
+pub(crate) fn arr_len_of(lw: &Lw, s: usize) -> Option<u32> {
+    lw.coll.arr_len.get(&s).copied()
+}
+
 /// 受け手の種類。局所変数はスロットの種類、それ以外は型表の型から決める。
 fn kind_of_expr(lw: &Lw, e: &V) -> Option<Kind> {
     if let Some(s) = local_slot(lw, e) {
@@ -1365,6 +1381,11 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
         return lw.err(line, "型引数付きのメソッドは段階 1 の対象外");
     }
     let hdr = lw.slots[s].0;
+    // `&[T; N]` / `&mut [T; N]` のパラメータの `len()`: 長さ N は型から分かる。
+    if m == "len" && matches!(kind, Kind::Slice(_)) && lw.slots[s].1 == Ty::Ptr {
+        let n = arr_len_of(lw, s).expect("&[T; N] のパラメータに arr_len が入っている");
+        return Ok(Some(lw.emit(Ty::Usize, Op::Const(n as i128))));
+    }
     if matches!(kind, Kind::Map(_)) {
         return super::map_lower::method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
     }
@@ -1618,11 +1639,13 @@ fn fat_len(lw: &mut Lw, v: VId) -> VId {
     lw.emit(Ty::Usize, Op::Field { a: v, off: 8 })
 }
 
-/// 添字・反復の対象の置き場: Vec はヘッダのアドレス、スライスは `fat` の値。
+/// 添字・反復の対象の置き場: Vec はヘッダのアドレス、スライスは `fat` の値、
+/// 固定長配列への参照 (`&[T; N]` / `&mut [T; N]`) は生ポインタ (長さ N は型から分かる)。
 #[derive(Clone, Copy)]
 pub(super) enum Seq {
     Hdr(VId),
     Fat(VId),
+    Ptr(VId, u32),
 }
 
 impl Seq {
@@ -1644,6 +1667,13 @@ impl Seq {
                 }
                 let base = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
                 (len, base)
+            }
+            Seq::Ptr(p, n) => {
+                let len = lw.emit(Ty::Usize, Op::Const(n as i128));
+                if let Some(i) = check {
+                    lw.emit(Ty::Unit, Op::IndexCheck { i, len });
+                }
+                (len, p)
             }
         }
     }
@@ -1669,6 +1699,11 @@ fn vec_place(lw: &Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
     if let Some(s) = local_slot(lw, e) {
         match lw.coll.kinds.get(&s) {
             Some(Kind::Vec(Some(elem))) => return Ok((Seq::Hdr(lw.slots[s].0), *elem)),
+            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
+                // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+                let n = lw.coll.arr_len[&s];
+                return Ok((Seq::Ptr(lw.slots[s].0, n), *elem));
+            }
             Some(Kind::Slice(Some(elem))) => return Ok((Seq::Fat(lw.slots[s].0), *elem)),
             _ => {}
         }
