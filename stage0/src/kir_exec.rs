@@ -466,7 +466,7 @@ pub(crate) fn overflow_msg(op: Aop) -> String {
 }
 
 /// 整数の算術。結果は型の範囲内に収まる値か、panic の文言。
-fn arith(op: Aop, mode: Mode, ty: Ty, x: i128, y: i128) -> Result<i128, String> {
+pub(crate) fn arith(op: Aop, mode: Mode, ty: Ty, x: i128, y: i128) -> Result<i128, String> {
     if ty == Ty::U128 {
         return arith_u128(op, mode, x as u128, y as u128).map(|v| v as i128);
     }
@@ -583,7 +583,7 @@ fn parse_int(bytes: &[u8], radix: u32, bits: u32, is_signed: bool) -> (u8, u64, 
             return (1, 0, 0);
         }
         if v > (lim - d) / radix {
-            return if bits == 128 { (1, 0, 0) } else { (2, 0, 0) };
+            return (2, 0, 0); // 溢れは型の幅によらず種類 1
         }
         v = v * radix + d;
     }

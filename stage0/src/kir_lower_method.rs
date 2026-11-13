@@ -456,7 +456,8 @@ impl<'a> Lw<'a> {
                 if all_scalar {
                     return Ok(Some(val));
                 }
-                return Ok(None);
+                // `Ok(None)` は「式が発散する」の意味なので使わない (Fable の最終レビュー B2)。
+                return self.err(line, "clone の対象のペイロードに集成体がある (段階 1 の対象外)");
             }
         };
         let mut new_fields = vec![];
@@ -468,7 +469,7 @@ impl<'a> Lw<'a> {
                 let nfv = self.clone_owned_field(line, fv, f.ty)?;
                 new_fields.push(nfv);
             } else {
-                return Ok(None);
+                return self.err(line, "clone の対象の欄に入れ子の集成体がある (段階 1 の対象外)");
             }
         }
         Ok(Some(self.emit(Ty::Agg(ai), Op::Make { variant: None, fields: new_fields })))

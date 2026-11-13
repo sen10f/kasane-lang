@@ -535,6 +535,12 @@ def kir_run(ksn, root, fqn, args):
     return rc, out.decode(errors="replace"), err.decode(errors="replace")
 
 
+def kir_run_opt(ksn, root, fqn, args):
+    """最適化 (`--opt`) した KIR を参照実行器で走らせる (畳み込みの誤りを見つける)。"""
+    rc, out, err = sh([ksn, "kir", fqn, "--opt", "--run"] + [str(a) for a in args], cwd=root, timeout=120)
+    return rc, out.decode(errors="replace"), err.decode(errors="replace")
+
+
 def kir_native(ksn, root, fqn, args, asan=False):
     env = dict(os.environ)
     if asan:
@@ -558,6 +564,11 @@ def compare(ksn, root, params, ret, args):
         results["kir"] = ("unsupported", rc, err.strip())
     else:
         results["kir"] = normalize(rc, out, err)
+    rc, out, err = kir_run_opt(ksn, root, fqn, args)
+    if "未対応" in err:
+        results["kir_opt"] = ("unsupported", rc, err.strip())
+    else:
+        results["kir_opt"] = normalize(rc, out, err)
     rc, out, err = kir_native(ksn, root, fqn, args, asan=False)
     results["native"] = kir_status(rc, err, out, err)
     rc, out, err = kir_native(ksn, root, fqn, args, asan=True)

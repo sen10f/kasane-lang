@@ -18872,3 +18872,37 @@ fn lifetime_declared_only_in_inputs_is_e3021_unless_it_ties_inputs() {
         assert_eq!(o.contains("E3021"), want, "{}: {}", tag, o);
     }
 }
+
+/// Fable の最終レビュー: B1 (`split` の区切りが対象より長い)、B3 (機械語の `from_str_radix` が 0x10〜0x19 を数字に読む)、
+/// M2 (i128 に入らない桁数のエラーの種類は溢れ = 1)。木走査・参照実行器・機械語・ASan で比べる。
+#[test]
+fn final_review_split_long_sep_and_radix_edges() {
+    let fns = "fn t.sp(k: u32) -> u64 uses [] panics may\n    let mut n = 0u64\n    let s = if k == 0u32 {\n        \"a\"\n    } else {\n        \"\"\n    }\n    for p in s.split(\"\\r\\n\") {\n        n = n.wrapping_mul(10u64).wrapping_add(u64.from_usize(p.len())).wrapping_add(1u64)\n    }\n    n\nend t.sp\n\n\
+fn t.ctl(k: u32) -> u64 uses [] panics never\n    let s = if k == 0u32 {\n        \"\\u{11}2\"\n    } else {\n        \"\\u{19}\"\n    }\n    match u8.from_str_radix(s, 10u32) {\n        Ok(v) => u64.from_u8(v)\n        Err(e) => 1000u64.wrapping_add(u64.from_u8(e.kind))\n    }\nend t.ctl\n\n\
+fn t.over(k: u32) -> u64 uses [] panics never\n    let s = if k == 0u32 {\n        \"1111111111111111111111111111111111111111\"\n    } else {\n        \"18446744073709551616\"\n    }\n    match u64.from_str_radix(s, 10u32) {\n        Ok(_v) => 7u64\n        Err(e) => 1000u64.wrapping_add(u64.from_u8(e.kind))\n    }\nend t.over\n";
+    kir_review_cases("final_sp", fns, "t.sp", &[(&["0"], "t.sp(0u32)", "2u64", "2"), (&["1"], "t.sp(1u32)", "1u64", "1")]);
+    kir_review_cases("final_ctl", fns, "t.ctl", &[(&["0"], "t.ctl(0u32)", "1000u64", "1000"), (&["1"], "t.ctl(1u32)", "1000u64", "1000")]);
+    kir_review_cases("final_over", fns, "t.over", &[(&["0"], "t.over(0u32)", "1001u64", "1001"), (&["1"], "t.over(1u32)", "1001u64", "1001")]);
+}
+
+/// Fable の最終レビュー B2: 欄 (ペイロード) に集成体を持つ型の `clone()` は、`unreachable` に下ろさず未対応にする。
+#[test]
+fn final_review_nested_clone_is_unsupported_not_unreachable() {
+    let src = "type t.P derive [Clone, Copy] pub\n    x: u32\nend t.P\n\ntype t.Seg derive [Clone] pub\n    a: t.P\n    n: u32\nend t.Seg\n\n\
+fn t.c(k: u32) -> u32 uses [] panics never\n    let g = t.Seg { a: t.P { x: k }, n: 1u32 }\n    let h = g.clone()\n    h.a.x.wrapping_add(h.n)\nend t.c\n\n\
+fn t.main() -> () uses [] panics may\n    core.check.eq(t.c(4u32), 5u32)\nend t.main\n";
+    let t = Tmp::new("final_nested_clone", src);
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
+    let k = run(&["kir", "t.c", "--run", "4"], &t.0);
+    assert!(text(&k.stderr).contains("未対応"), "{}{}", text(&k.stdout), text(&k.stderr));
+}
+
+/// Fable の最終レビュー M1: `--opt` の定数の畳み込みの `saturating_*` は型の最小・最大で切る (参照実行器と同じ算術)。
+#[test]
+fn final_review_opt_folds_saturating_like_the_reference() {
+    let fns = "fn t.s(k: u32) -> u64 uses [] panics never\n    let a = 200u8.saturating_add(100u8)\n    let b = 0u32.saturating_sub(1u32)\n    let c = -100i8.saturating_sub(100i8)\n    let d = u64.from_u8(a).wrapping_add(u64.from_u32(b))\n    d.wrapping_add(u64.from_u32(c.count_ones())).wrapping_add(u64.from_u32(k))\nend t.s\n";
+    kir_review_cases("final_sat", fns, "t.s", &[(&["0"], "t.s(0u32)", "256u64", "256")]);
+    let t = Tmp::new("final_sat_opt", &format!("{}\nfn t.main() -> () uses [] panics never\nend t.main\n", fns));
+    let k = kir_run(&["kir", "t.s", "--opt", "--run", "0"], &t.0);
+    assert_eq!(text(&k.stdout).trim(), "256", "{}", text(&k.stderr));
+}

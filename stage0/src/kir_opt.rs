@@ -572,8 +572,9 @@ fn fold_inst(f: &crate::kir::Func, inst: &Inst) -> Option<Inst> {
         Op::Arith { op, mode, a, b } => {
             let (x, y) = const_args(f, inst, *a, *b)?;
             match mode {
-                Mode::Wrap => Some(Op::Const(arith_wrap(*op, inst.ty, x, y))),
-                Mode::Sat => Some(Op::Const(arith_sat(*op, inst.ty, x, y))),
+                // 畳み込みは参照実行器と同じ算術を使う (別に書くと食い違う。Fable の最終レビュー M1 の saturating)。
+                // 参照実行器が Err (0 での除算など) を返すときは畳まない。
+                Mode::Wrap | Mode::Sat => crate::kir_exec::arith(*op, *mode, inst.ty, x, y).ok().map(Op::Const),
                 Mode::Trap => None, // 溢れ・0除算で panic するので畳まない
             }
         }
@@ -683,31 +684,6 @@ fn const_of(f: &crate::kir::Func, v: VId) -> Option<i128> {
 }
 
 // ---- 整数演算の畳み込み (wrap / sat) ----
-
-fn arith_wrap(op: Aop, ty: Ty, x: i128, y: i128) -> i128 {
-    match op {
-        Aop::Add => ty.wrap(x.wrapping_add(y)),
-        Aop::Sub => ty.wrap(x.wrapping_sub(y)),
-        Aop::Mul => ty.wrap(x.wrapping_mul(y)),
-        Aop::Div => {
-            let q = if y == 0 { 0 } else { x.wrapping_div(y) };
-            ty.wrap(q)
-        }
-        Aop::Rem => {
-            let r = if y == 0 { 0 } else { x.wrapping_rem(y) };
-            ty.wrap(r)
-        }
-    }
-}
-
-fn arith_sat(op: Aop, ty: Ty, x: i128, y: i128) -> i128 {
-    match op {
-        Aop::Add => ty.wrap(x.saturating_add(y)),
-        Aop::Sub => ty.wrap(x.saturating_sub(y)),
-        Aop::Mul => ty.wrap(x.saturating_mul(y)),
-        Aop::Div | Aop::Rem => ty.wrap(x.wrapping_div(y)), // sat で div/rem は無いので wrap と同じ
-    }
-}
 
 fn wrap_neg(ty: Ty, x: i128) -> i128 {
     ty.wrap(x.wrapping_neg())
