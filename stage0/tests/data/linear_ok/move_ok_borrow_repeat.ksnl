@@ -1,0 +1,19 @@
+type t.S pub
+    v: u32
+end t.S
+
+fn t.look(s: &t.S) -> u32 uses [] panics never
+    s.v
+end t.look
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let s = t.S { v: 1u32 }
+    let mut i = 0u8
+    while i < 3u8 {
+        core.mem.drop(t.look(&s))
+        i = i.wrapping_add(1u8)
+    }
+    core.mem.drop(t.look(&s))
+    core.mem.drop(t.look(&s))
+    Ok(())
+end t.main

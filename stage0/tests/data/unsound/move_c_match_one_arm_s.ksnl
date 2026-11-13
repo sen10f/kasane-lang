@@ -1,0 +1,19 @@
+// expect: E3002
+type t.S pub
+    v: u32
+end t.S
+
+fn t.eat(s: t.S) -> u32 uses [] panics never
+    s.v
+end t.eat
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let s = t.S { v: 1u32 }
+    let o: Option<u8> = Some(1u8)
+    match o {
+        Some(_) => core.mem.drop(t.eat(s))
+        None => core.mem.drop(0u8)
+    }
+    core.mem.drop(s.v)
+    Ok(())
+end t.main

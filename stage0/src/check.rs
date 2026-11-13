@@ -342,6 +342,13 @@ pub struct Checker<'a> {
     /// `tc_expr` 時点では Vec 等の基の型が `Nil` なので、型表 (`tytab`) が確定した
     /// `typeck()` の後処理で要素型を引いて E3002 を出す (4.1)。
     index_consumes: Vec<(String, u32, String, usize)>,
+    /// 型表 (`TypeCk::tytab`) の写し。`tc_fn` より前に作り、注釈のない `let` の型を引くのに使う (4.1)。
+    mv_types: BTreeMap<(String, u32), crate::types::ExprTy>,
+    /// 注釈がなく env で型が決まらない `let` 変数 → 型表で引いた型 (move の追跡用)。
+    let_ty: HashMap<String, crate::types::Ty>,
+    /// 実行中のループごとの、`break` / `continue` に達した時点の move 済みの集合 (4.1)。
+    loop_breaks: Vec<Vec<BTreeMap<String, usize>>>,
+    loop_conts: Vec<Vec<BTreeMap<String, usize>>>,
     final_env: HashMap<String, V>,
     /// 現在の関数で、線形な値を `move` で取り込んだクロージャに束縛した名前 (4.4)。型が付かないので別に持つ。
     lin_closures: HashSet<String>,
@@ -412,6 +419,10 @@ impl<'a> Checker<'a> {
             names: HashSet::new(),
             moved: BTreeMap::new(),
             index_consumes: Vec::new(),
+            mv_types: BTreeMap::new(),
+            let_ty: HashMap::new(),
+            loop_breaks: Vec::new(),
+            loop_conts: Vec::new(),
             final_env: HashMap::new(),
             lin_closures: HashSet::new(),
             graph: BTreeMap::new(),
@@ -2099,13 +2110,8 @@ impl<'a> Checker<'a> {
                 self.check_field_elision(i);
             }
         }
-        for &i in &user {
-            let d = self.def(i);
-            if d.kw == "fn" && d.body.is_some() {
-                self.tc_fn(i);
-            }
-        }
         // 型付きの式推論に基づく検査 (レシーバの型によるメソッドの存在・引数の個数と型)。
+        // 型表は move の追跡 (`tc_fn`) も使うので、先に作る。
         let mut tk = crate::types::TypeCk::new(self.p);
         for &i in &user {
             let d = self.def(i);
@@ -2113,6 +2119,14 @@ impl<'a> Checker<'a> {
                 tk.check_def(i);
             }
         }
+        self.mv_types = std::mem::take(&mut tk.tytab);
+        for &i in &user {
+            let d = self.def(i);
+            if d.kw == "fn" && d.body.is_some() {
+                self.tc_fn(i);
+            }
+        }
+        tk.tytab = std::mem::take(&mut self.mv_types);
         // `a[i]` で Copy でない要素を値として取り出した (consume した) 場所を、型表で
         // 要素型を引いて E3002 にする (4.1)。型が分からない (Vec 等の基が Nil、型引数依存等)
         // ときは黙る。
@@ -2607,6 +2621,9 @@ impl<'a> Checker<'a> {
         let mut env: Env = d.params.iter().cloned().collect();
         self.graph.entry(d.name.clone()).or_default();
         self.moved.clear();
+        self.let_ty.clear();
+        self.loop_breaks.clear();
+        self.loop_conts.clear();
         self.lin_closures.clear();
         let body = d.body.as_ref().unwrap();
         self.tc_block(body, &env, &BTreeSet::new());
@@ -2699,6 +2716,14 @@ impl<'a> Checker<'a> {
                 for n in binds {
                     env.insert(n.clone(), if nname(&f[0]) == "PBind" { ty.clone() } else { V::Nil });
                     self.revive_place(std::slice::from_ref(&n));
+                    // 注釈も env の型もない `let x = ..` は、型表で初期化式の型を引く (4.1)。
+                    self.let_ty.remove(&n);
+                    if nname(&f[0]) == "PBind" && is_nil(&ty) {
+                        let key = (self.def(self.d).name.clone(), nid(&f[3]));
+                        if let Some(et) = self.mv_types.get(&key) {
+                            self.let_ty.insert(n.clone(), et.ty.clone());
+                        }
+                    }
                     if matches!(f[1], V::B(true)) {
                         muts.insert(n);
                     } else {
@@ -2805,7 +2830,17 @@ impl<'a> Checker<'a> {
     /// 消費 (consume) の対象の場所を move 済みとして記録する。道の型を解決できて
     /// Copy でなく参照越しでないときだけ記録する (型が分からない所では黙る = 記録しない)。
     fn record_move(&mut self, root: &str, path: &[String], env: &Env, line: usize) {
-        let Some(ty) = self.place_ty(root, path, env) else { return };
+        let Some(ty) = self.place_ty(root, path, env) else {
+            // env で型が決まらない `let` 変数の全体は、型表の型で判定する (参照・Copy・未知は黙る)。
+            if path.is_empty() && env.get(root).map_or(true, is_nil) {
+                if let Some(t) = self.let_ty.get(root) {
+                    if !matches!(t, crate::types::Ty::Ref(..)) && !self.is_copy_ty(t) {
+                        self.moved.insert(place_key(root, path), line);
+                    }
+                }
+            }
+            return;
+        };
         if self.is_copy(&ty) {
             return;
         }
@@ -2895,10 +2930,30 @@ impl<'a> Checker<'a> {
                     sub.insert(st(&items(p)[0]), items(p)[1].clone());
                 }
                 let saved = self.moved.clone();
+                let saved_lt = self.let_ty.clone();
+                for p in items(&f[0]) {
+                    self.unbind(&st(&items(p)[0]));
+                }
                 let fe = self.final_env.clone();
                 self.tc_block(&f[3], &sub, muts);
                 self.final_env = fe;
                 self.moved = saved;
+                self.let_ty = saved_lt;
+                // `capture [move s]` は、クロージャを作る時点で `s` を move する (4.1)。
+                for c in items(&f[2]) {
+                    if let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) {
+                        if k.as_str() == "move" && env.contains_key(n) {
+                            self.use_place(n, &[], env, nline(e), true);
+                        }
+                    }
+                }
+            }
+            "Break" | "Continue" => {
+                let m = self.moved.clone();
+                let st = if nname(e) == "Break" { &mut self.loop_breaks } else { &mut self.loop_conts };
+                if let Some(top) = st.last_mut() {
+                    top.push(m);
+                }
             }
             "Call" => {
                 let mut callee: Option<&Def> = None;
@@ -3011,36 +3066,106 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 名前 `n` を新しく束縛する (match の腕・for・クロージャの引数)。その名前の move 済みの記録と
+    /// `let` の型の記録を消す (別の変数になるので、前の move を引き継がない)。
+    fn unbind(&mut self, n: &str) {
+        self.let_ty.remove(n);
+        self.revive_place(&[n.to_string()]);
+    }
+
+    /// 式が必ず制御を抜ける (`return` / `break` / `continue` で終わる) か。move の合流で、
+    /// 抜ける枝の move は合流の先へ持ち越さないために使う。
+    fn diverges(e: &V) -> bool {
+        match nname(e) {
+            "Return" | "Break" | "Continue" => true,
+            "Block" => items(&nf(e)[0]).iter().any(|s| nname(s) == "ExprStmt" && Self::diverges(&nf(s)[0])),
+            "If" => !is_nil(&nf(e)[2]) && Self::diverges(&nf(e)[1]) && Self::diverges(&nf(e)[2]),
+            "Match" => {
+                let arms = items(&nf(e)[1]);
+                !arms.is_empty() && arms.iter().all(|a| Self::diverges(&items(a)[1]))
+            }
+            _ => false,
+        }
+    }
+
+    /// move 済みの集合の合併 (どれかの経路で move 済みなら move 済み)。
+    fn union_moved(a: &mut BTreeMap<String, usize>, b: &BTreeMap<String, usize>) {
+        for (k, v) in b {
+            a.entry(k.clone()).or_insert(*v);
+        }
+    }
+
+    /// ループの本体を 1 周ぶん検査する。返り値は (本体の終わりの集合 (抜けるなら None), break の集合, continue の集合)。
+    fn loop_pass(
+        &mut self,
+        e: &V,
+        env: &Env,
+        muts: &BTreeSet<String>,
+    ) -> (Option<BTreeMap<String, usize>>, Vec<BTreeMap<String, usize>>, Vec<BTreeMap<String, usize>>) {
+        let f = nf(e);
+        self.loop_breaks.push(vec![]);
+        self.loop_conts.push(vec![]);
+        let (body, inner) = match nname(e) {
+            "For" => {
+                let mut inner = env.clone();
+                let mut b = vec![];
+                pat_binds(&f[0], &mut b);
+                for n in b {
+                    self.unbind(&n);
+                    inner.insert(n, V::Nil);
+                }
+                (&f[2], inner)
+            }
+            "While" => {
+                self.tc_expr(&f[0], env, muts, false);
+                (&f[1], env.clone())
+            }
+            _ => (&f[0], env.clone()),
+        };
+        self.tc_expr(body, &inner, muts, false);
+        let end = if Self::diverges(body) { None } else { Some(self.moved.clone()) };
+        let brk = self.loop_breaks.pop().unwrap_or_default();
+        let cont = self.loop_conts.pop().unwrap_or_default();
+        (end, brk, cont)
+    }
+
     fn branchy(&mut self, e: &V, env: &Env, muts: &BTreeSet<String>) {
         let f = nf(e);
-        let saved = self.moved.clone();
         match nname(e) {
             "If" => {
                 self.tc_expr(&f[0], env, muts, false);
+                let saved = self.moved.clone();
                 self.tc_expr(&f[1], env, muts, false);
                 let a = self.moved.clone();
                 self.moved = saved.clone();
                 if !is_nil(&f[2]) {
                     self.tc_expr(&f[2], env, muts, false);
                 }
-                let mut m = saved.clone();
-                for (k, v) in a {
-                    if saved.contains_key(&k) {
-                        m.insert(k, v);
+                let b = std::mem::take(&mut self.moved);
+                let (a_div, b_div) = (Self::diverges(&f[1]), !is_nil(&f[2]) && Self::diverges(&f[2]));
+                self.moved = match (a_div, b_div) {
+                    (true, true) => saved,
+                    (true, false) => b,
+                    (false, true) => a,
+                    (false, false) => {
+                        let mut m = a;
+                        Self::union_moved(&mut m, &b);
+                        m
                     }
-                }
-                self.moved = m;
+                };
             }
             "Match" => {
                 self.tc_expr(&f[0], env, muts, false);
                 let scrut_ty = self.ty_of(&f[0], env);
                 let base = self.moved.clone();
+                let mut out: Option<BTreeMap<String, usize>> = None;
                 for arm in items(&f[1]) {
                     self.moved = base.clone();
                     let mut inner = env.clone();
                     let mut b = vec![];
                     pat_binds(&items(arm)[0], &mut b);
                     for n in b {
+                        self.unbind(&n);
                         inner.insert(n, V::Nil);
                     }
                     // 腕のパターンで束縛した線形な値 (`Some(l)` の `l`) は、その腕の中で消費する (4.4)。
@@ -3054,30 +3179,52 @@ impl<'a> Checker<'a> {
                         }
                     }
                     self.tc_expr(&items(arm)[1], &inner, muts, false);
+                    if !Self::diverges(&items(arm)[1]) {
+                        let cur = std::mem::take(&mut self.moved);
+                        match &mut out {
+                            Some(o) => Self::union_moved(o, &cur),
+                            None => out = Some(cur),
+                        }
+                    }
                 }
-                self.moved = base;
+                self.moved = out.unwrap_or(base);
                 self.exhaustive(e, env);
             }
-            "For" => {
-                self.tc_expr(&f[1], env, muts, true);
-                let mut inner = env.clone();
-                let mut b = vec![];
-                pat_binds(&f[0], &mut b);
-                for n in b {
-                    inner.insert(n, V::Nil);
-                }
-                self.tc_expr(&f[2], &inner, muts, false);
-                self.moved = saved;
-            }
             n => {
-                let body = if n == "While" {
-                    self.tc_expr(&f[0], env, muts, false);
-                    &f[1]
-                } else {
-                    &f[0]
-                };
-                self.tc_expr(body, env, muts, false);
-                self.moved = saved;
+                // ループ。本体の終わり (と continue) の状態は次の周の頭に戻るので、2 周ぶん検査して
+                // 外の値を move したまま次の周に入るものを見つける (診断は同じ文面なら重複除去される)。
+                if n == "For" {
+                    // 反復子の式の move は残さない (`for x in v` の後の `v` の使用は従来どおり許す)。
+                    let before = self.moved.clone();
+                    self.tc_expr(&f[1], env, muts, true);
+                    self.moved = before;
+                }
+                let pre = self.moved.clone();
+                let (mut end, mut brk, mut cont) = self.loop_pass(e, env, muts);
+                let mut back = BTreeMap::new();
+                for m in end.iter().chain(cont.iter()) {
+                    Self::union_moved(&mut back, m);
+                }
+                if back.keys().any(|k| !pre.contains_key(k)) {
+                    let mut entry = pre.clone();
+                    Self::union_moved(&mut entry, &back);
+                    self.moved = entry;
+                    (end, brk, cont) = self.loop_pass(e, env, muts);
+                    for m in end.iter().chain(cont.iter()) {
+                        Self::union_moved(&mut back, m);
+                    }
+                }
+                let mut exit = BTreeMap::new();
+                if n != "Loop" {
+                    exit = pre.clone();
+                    Self::union_moved(&mut exit, &back);
+                } else if brk.is_empty() {
+                    exit = pre.clone();
+                }
+                for m in &brk {
+                    Self::union_moved(&mut exit, m);
+                }
+                self.moved = exit;
             }
         }
     }
