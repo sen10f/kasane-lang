@@ -471,6 +471,7 @@ impl<'a> Gen<'a> {
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg(name, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, false),
             (Src::Tuple(_), _) => Err("タプルの Debug 表示は未対応".to_string()),
+            (Src::Ref(_, inner), t) => self.need(inner, t, file),
             (other, t) => Err(format!("型 {} ({}) の Debug 表示は未対応", show(other), t.name())),
         }
     }
@@ -490,6 +491,7 @@ impl<'a> Gen<'a> {
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg_eq(name, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, true),
             (Src::Prim(_), t) if t.is_float() => Err(format!("型 {} の比較は未対応 (浮動小数は失敗の文言に値を出せない)", t.name())),
+            (Src::Ref(_, inner), t) => self.need_eq(inner, t, file),
             (other, t) => Err(format!("型 {} ({}) の比較は未対応", show(other), t.name())),
         }
     }
