@@ -47,20 +47,27 @@ pub enum Ty {
     Agg(u32),
 }
 
-/// 参照の指す先。整数と bool だけ (unit と参照は入れない)。`Ty::Ref` の中身。
+/// 参照の指す先。整数・浮動小数・bool・集成体 (unit・ptr・参照・Option・Result は入れない)。`Ty::Ref` の中身。
+/// 値はバイト記憶のアドレス。指す先の配置は集成体なら型表のとおり、スカラーなら幅のとおり (設計_KIR.md 10.10)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pointee {
     I8,
     I16,
     I32,
     I64,
+    I128,
     Isize,
     U8,
     U16,
     U32,
     U64,
+    U128,
     Usize,
+    F32,
+    F64,
     Bool,
+    /// 集成体 (型表 `Module::aggs` の添字)。
+    Agg(u32),
 }
 
 impl Pointee {
@@ -70,31 +77,41 @@ impl Pointee {
             Pointee::I16 => Ty::I16,
             Pointee::I32 => Ty::I32,
             Pointee::I64 => Ty::I64,
+            Pointee::I128 => Ty::I128,
             Pointee::Isize => Ty::Isize,
             Pointee::U8 => Ty::U8,
             Pointee::U16 => Ty::U16,
             Pointee::U32 => Ty::U32,
             Pointee::U64 => Ty::U64,
+            Pointee::U128 => Ty::U128,
             Pointee::Usize => Ty::Usize,
+            Pointee::F32 => Ty::F32,
+            Pointee::F64 => Ty::F64,
             Pointee::Bool => Ty::Bool,
+            Pointee::Agg(i) => Ty::Agg(i),
         }
     }
 
-    /// 指す先に使える型なら、その `Pointee`。unit と参照は `None`。
+    /// 指す先に使える型なら、その `Pointee`。unit・ptr・参照・Option・Result は `None`。
     pub fn of(t: Ty) -> Option<Pointee> {
         Some(match t {
             Ty::I8 => Pointee::I8,
             Ty::I16 => Pointee::I16,
             Ty::I32 => Pointee::I32,
             Ty::I64 => Pointee::I64,
+            Ty::I128 => Pointee::I128,
             Ty::Isize => Pointee::Isize,
             Ty::U8 => Pointee::U8,
             Ty::U16 => Pointee::U16,
             Ty::U32 => Pointee::U32,
             Ty::U64 => Pointee::U64,
+            Ty::U128 => Pointee::U128,
             Ty::Usize => Pointee::Usize,
+            Ty::F32 => Pointee::F32,
+            Ty::F64 => Pointee::F64,
             Ty::Bool => Pointee::Bool,
-            Ty::I128 | Ty::U128 | Ty::F32 | Ty::F64 | Ty::Unit | Ty::Ptr | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_) => return None,
+            Ty::Agg(i) => Pointee::Agg(i),
+            Ty::Unit | Ty::Ptr | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => return None,
         })
     }
 }
@@ -259,6 +276,9 @@ impl Ty {
     pub fn parse(s: &str) -> Option<Ty> {
         if let Some(x) = ALL_TYS.iter().copied().find(|t| t.name() == s) {
             return Some(x);
+        }
+        if let Some(n) = s.strip_prefix("agg#") {
+            return n.parse::<u32>().ok().map(Ty::Agg);
         }
         let pay = |x: &str| Pay::of(ALL_TYS.iter().copied().find(|t| t.name() == x)?);
         if let Some(inner) = s.strip_prefix("Option<").and_then(|r| r.strip_suffix('>')) {
@@ -548,6 +568,9 @@ pub enum Op {
     Load(VId),
     /// 参照を通した書き込み `*p = v` (`p` は `mutref<T>`、`v` は `T`。結果は unit)。
     Store { ptr: VId, val: VId },
+    /// フィールドのアドレス: `a` (`ref<agg>` / `mutref<agg>`) の構造体のバイトオフセット `off` のフィールドを指す参照。
+    /// 結果は同じ可変性の `ref<F>` / `mutref<F>` (`F` はそのフィールドの型)。タプルと列挙型には使わない。
+    FieldAddr { a: VId, off: u32 },
     /// `&mut T` を `&T` として使う (同じアドレス。結果は `ref<T>`)。
     AsShared(VId),
     /// `mutref<T>` を同じアドレスの別の値として複製する。スタックスロットの値番号と、参照の値を
@@ -773,6 +796,10 @@ pub fn prune_aggs(m: &mut Module) {
     let mut used = vec![false; n];
     let mut todo: Vec<u32> = vec![];
     fn mark(t: Ty, used: &mut [bool], todo: &mut Vec<u32>) {
+        let t = match t {
+            Ty::Ref(_, Pointee::Agg(i)) => Ty::Agg(i),
+            t => t,
+        };
         if let Ty::Agg(i) = t {
             if !used[i as usize] {
                 used[i as usize] = true;
@@ -810,6 +837,7 @@ pub fn prune_aggs(m: &mut Module) {
     }
     let remap = |t: Ty| match t {
         Ty::Agg(i) => Ty::Agg(map[i as usize]),
+        Ty::Ref(m, Pointee::Agg(i)) => Ty::Ref(m, Pointee::Agg(map[i as usize])),
         t => t,
     };
     let old = std::mem::take(&mut m.aggs);
@@ -964,6 +992,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::Alloca => "alloca".to_string(),
         Op::Load(p) => format!("load {}", fmt_val(*p)),
         Op::Store { ptr, val } => format!("store {}", fmt_vals(&[*ptr, *val])),
+        Op::FieldAddr { a, off } => format!("fieldaddr {}, +{}", fmt_val(*a), off),
         Op::AsShared(p) => format!("asshared {}", fmt_val(*p)),
         Op::Reborrow(p) => format!("reborrow {}", fmt_val(*p)),
         Op::FrameBytes { size } => format!("frame.bytes {}", size),
@@ -1116,6 +1145,13 @@ fn parse_agg_rhs(rhs: &str, line: usize) -> Option<Result<Op, String>> {
             return Some(Err(perr(line, "field の形が不正")));
         }
         return Some(parse_val(p[0], line).and_then(|a| Ok(Op::Field { a, off: parse_off(p[1], line)? })));
+    }
+    if let Some(r) = rhs.strip_prefix("fieldaddr ") {
+        let p: Vec<&str> = r.split(',').collect();
+        if p.len() != 2 {
+            return Some(Err(perr(line, "fieldaddr の形が不正")));
+        }
+        return Some(parse_val(p[0], line).and_then(|a| Ok(Op::FieldAddr { a, off: parse_off(p[1], line)? })));
     }
     if let Some(r) = rhs.strip_prefix("setfield ") {
         let p: Vec<&str> = r.split(',').collect();
@@ -1818,6 +1854,21 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("reborrow は mutref を同じ型で複製するだけのはず".into());
                         }
                     }
+                    Op::FieldAddr { a, off } => {
+                        let Ty::Ref(mt, Pointee::Agg(ai)) = ty_of(*a)? else {
+                            return Err("fieldaddr の対象は集成体への参照のはず".into());
+                        };
+                        let d = m.aggs.get(ai as usize).ok_or("集成体の番号が表にない")?;
+                        if matches!(d.kind, AggKind::Enum(_)) {
+                            return Err("fieldaddr は構造体・タプルだけ (列挙型には使わない)".into());
+                        }
+                        let Ty::Ref(rm, q) = i.ty else {
+                            return Err("fieldaddr の結果は参照のはず".into());
+                        };
+                        if rm != mt || !has_field(d, *off, q.ty()) {
+                            return Err(format!("{} に +{} の {} のフィールドがない (可変性も同じはず)", d.name, off, fmt_ty(q.ty())));
+                        }
+                    }
                     Op::AsShared(a) => {
                         let Ty::Ref(false, q) = i.ty else {
                             return Err("asshared の結果は ref のはず".into());
@@ -2016,7 +2067,7 @@ fn operands(op: &Op) -> Vec<VId> {
         | Op::Payload(a) => vec![*a],
         Op::Call { args, .. } => args.clone(),
         Op::Make { fields, .. } => fields.clone(),
-        Op::Field { a, .. } => vec![*a],
+        Op::Field { a, .. } | Op::FieldAddr { a, .. } => vec![*a],
         Op::SetField { a, v, .. } => vec![*a, *v],
     }
 }

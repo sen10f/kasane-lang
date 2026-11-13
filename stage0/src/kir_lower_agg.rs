@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::check::{items, nf, nline, nname, st, strs};
-use crate::kir::{align_of, size_of, AggDef, AggKind, Field, Op, Term, Ty, VId, Variant};
+use crate::kir::{align_of, size_of, AggDef, AggKind, Field, Op, Pointee, Term, Ty, VId, Variant};
 use crate::parser::V;
 use crate::program::{Program, Target as Tgt};
 use crate::types::{from_v, Ty as Src};
@@ -110,12 +110,60 @@ impl AggTab {
                 }
                 self.intern_tuple(elems)
             }
+            // 集成体への参照 `&S` / `&mut S` (スカラーへの参照は上の `conv` が済ませている)。
+            Src::Ref(m, inner) if matches!(&**inner, Src::Named(..) | Src::Tuple(_)) => match self.lower_ty(p, file, inner)? {
+                Ty::Agg(i) => Ok(Ty::Ref(*m, Pointee::Agg(i))),
+                _ => Err(format!("参照の指す先 {} は段階 1 の対象外", show(inner))),
+            },
             other => Err(format!("型 {} は段階 1 の対象外", show(other))),
+        }
+    }
+
+    /// `&str` / スライスの値 (`{ptr, len}` の 16 バイトの構造体。設計_KIR.md 10.10)。名前は `fat` (利用者の型は FQN で `.` を含むので衝突しない)。
+    pub fn fat(&mut self) -> Ty {
+        if let Some(&i) = self.by_name.get("fat") {
+            return Ty::Agg(i);
+        }
+        let fields = vec![
+            Field { name: "ptr".to_string(), ty: Ty::Ptr, off: 0 },
+            Field { name: "len".to_string(), ty: Ty::Usize, off: 8 },
+        ];
+        self.push("fat".to_string(), 16, 8, AggKind::Struct(fields))
+    }
+
+    /// `Vec<T>` / `String` のヘッダ `{ptr, len, cap}` (24 バイト)。構造体のフィールドに埋め込む形 (clif の配置と同じ)。名前は `vec`。
+    pub fn vec_hdr(&mut self) -> Ty {
+        if let Some(&i) = self.by_name.get("vec") {
+            return Ty::Agg(i);
+        }
+        let fields = vec![
+            Field { name: "ptr".to_string(), ty: Ty::Ptr, off: 0 },
+            Field { name: "len".to_string(), ty: Ty::Usize, off: 8 },
+            Field { name: "cap".to_string(), ty: Ty::Usize, off: 16 },
+        ];
+        self.push("vec".to_string(), 24, 8, AggKind::Struct(fields))
+    }
+
+    /// 集成体 `t` が (入れ子を含めて) Vec / String のヘッダを持つか。持つ値は所有物なので、値渡し・戻り値には使えない。
+    pub fn owns_vec(&self, t: Ty) -> bool {
+        let Ty::Agg(i) = t else { return false };
+        let d = &self.defs[i as usize];
+        if d.name == "vec" {
+            return true;
+        }
+        match &d.kind {
+            AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| self.owns_vec(f.ty)),
+            AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| self.owns_vec(f.ty))),
         }
     }
 
     /// フィールド・要素の型。ユニット型は値を置けないので拒否する。
     fn field_ty(&mut self, p: &Program, file: &str, t: &Src) -> Result<Ty, String> {
+        if let Src::Named(n, _) = t {
+            if n == "alloc.vec.Vec" || n == "alloc.string.String" {
+                return Ok(self.vec_hdr());
+            }
+        }
         match self.lower_ty(p, file, t)? {
             Ty::Unit => Err("ユニット型のフィールドは段階 1 の対象外".to_string()),
             Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => Err("参照・Option・Result のフィールドは段階 1 の対象外".to_string()),
@@ -291,6 +339,14 @@ impl<'a> Lw<'a> {
 
     /// 構造体のフィールドの読み出し (`field`)。
     pub(super) fn field_of(&mut self, base: VId, name: &str, line: usize) -> LR<VId> {
+        // 参照を通した読み出し `r.f`: フィールドのアドレスを取って読む。
+        if let Ty::Ref(_, Pointee::Agg(_)) = self.vty(base) {
+            let addr = self.field_addr(base, name, line)?;
+            let Ty::Ref(_, p) = self.vty(addr) else {
+                return self.err(line, "フィールドのアドレスが参照でない");
+            };
+            return Ok(self.emit(p.ty(), Op::Load(addr)));
+        }
         let (_, d) = self.agg_of(base, line)?;
         let AggKind::Struct(fs) = &d.kind else {
             return self.err(line, format!("{} は構造体でないのでフィールド {} を読めない", d.name, name));
@@ -299,6 +355,48 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("フィールド {} がない", name));
         };
         Ok(self.emit(fd.ty, Op::Field { a: base, off: fd.off }))
+    }
+
+    /// 集成体への参照 `base` の構造体のフィールド `name` へのアドレス (`fieldaddr`)。可変性は `base` と同じ。
+    pub(super) fn field_addr(&mut self, base: VId, name: &str, line: usize) -> LR<VId> {
+        let Ty::Ref(m, Pointee::Agg(ai)) = self.vty(base) else {
+            return self.err(line, "フィールドのアドレスの対象が集成体への参照でない");
+        };
+        let d = self.agg_def(ai);
+        let AggKind::Struct(fs) = &d.kind else {
+            return self.err(line, format!("{} は構造体でないのでフィールド {} のアドレスを取れない", d.name, name));
+        };
+        let Some(fd) = fs.iter().find(|x| x.name == name) else {
+            return self.err(line, format!("フィールド {} がない", name));
+        };
+        let Some(p) = Pointee::of(fd.ty) else {
+            return self.err(line, format!("フィールド {} の型 {} への参照は段階 1 の対象外", name, crate::kir::fmt_ty(fd.ty)));
+        };
+        Ok(self.emit(Ty::Ref(m, p), Op::FieldAddr { a: base, off: fd.off }))
+    }
+
+    /// `x.f.v.len()` / `x.f.v.is_empty()` (`v` は Vec / String のフィールド): ヘッダの `len` を読む。扱えない形なら `None`。
+    pub(super) fn vec_field_len(&mut self, s: usize, segs: &[String], line: usize) -> LR<Option<VId>> {
+        let base = self.slots[s].0;
+        let mut cur = match self.vty(base) {
+            Ty::Ref(_, Pointee::Agg(_)) => base,
+            _ if self.is_mem_val(base) => base,
+            _ => return Ok(None),
+        };
+        for name in &segs[1..segs.len() - 1] {
+            cur = self.field_addr(cur, name, line)?;
+        }
+        let Ty::Ref(_, Pointee::Agg(k)) = self.vty(cur) else { return Ok(None) };
+        if self.agg_def(k).name != "vec" {
+            return Ok(None);
+        }
+        let la = self.field_addr(cur, "len", line)?;
+        let len = self.emit(Ty::Usize, Op::Load(la));
+        if segs[segs.len() - 1] == "is_empty" {
+            let zero = self.emit(Ty::Usize, Op::Const(0));
+            return Ok(Some(self.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty: Ty::Usize, a: len, b: zero })));
+        }
+        Ok(Some(len))
     }
 
     /// `x.f.g` の形の名前 (局所変数が先頭) のフィールドをたどる。
@@ -372,8 +470,28 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("代入先 {} が見つからない", segs[0]));
         };
         let Some(v) = self.expr(rhs)? else { return Ok(St::Div) };
+        let base0 = self.read_slot(s);
+        // 参照を通した代入 `r.f.g = v`: フィールドのアドレスをたどって書く (参照は可変のものだけ)。
+        if let Ty::Ref(m, Pointee::Agg(_)) = self.vty(base0) {
+            if !m {
+                return self.err(line, "共有参照 &T を通した代入は段階 1 の対象外");
+            }
+            let mut cur = base0;
+            for name in &segs[1..segs.len() - 1] {
+                cur = self.field_addr(cur, name, line)?;
+            }
+            let last = self.field_addr(cur, &segs[segs.len() - 1], line)?;
+            let Ty::Ref(_, p) = self.vty(last) else {
+                return self.err(line, "フィールドのアドレスが参照でない");
+            };
+            if p.ty() != self.vty(v) {
+                return self.err(line, "フィールドへの代入の型が違う");
+            }
+            self.emit(Ty::Unit, Op::Store { ptr: last, val: v });
+            return Ok(St::Unit);
+        }
         // chain[j] は segs[..=j] の値 (最後の名前の手前まで)
-        let mut chain = vec![self.read_slot(s)];
+        let mut chain = vec![base0];
         for name in &segs[1..segs.len() - 1] {
             let p = *chain.last().expect("鎖");
             let nv = self.field_of(p, name, line)?;
