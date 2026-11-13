@@ -189,6 +189,24 @@ fn test_engine_both_compares_tree_walker_and_vm() {
     assert_eq!(r.code, Some(2), "{}{}", r.out, r.err);
 }
 
+#[test]
+fn std_net_runs_in_the_vm_and_matches_tree_walker() {
+    // `std.net` の命令 (listen / connect / accept / read / write / close / local_port) は VM で実際に走る (退避しない)。
+    let dir = std::env::temp_dir().join(format!("ksn_vm_net_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("kasane.toml"), "[package]\nname = \"vmnet\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n").unwrap();
+    fs::write(dir.join("kasane.lock"), "version = 1\n").unwrap();
+    fs::copy(root().join("stage0/tests/data/vm/net_loopback.ksnl"), dir.join("src/t.ksnl")).unwrap();
+    let tree = ksn(&["run"], &dir, 60);
+    let vm = ksn(&["run", "--engine=vm"], &dir, 60);
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(tree.code, Some(0), "{}{}", tree.out, tree.err);
+    assert_eq!(skipped(&vm), None, "VM が退避した: {}", vm.err);
+    assert_eq!((vm.code, &vm.out, &vm.err), (tree.code, &tree.out, &tree.err));
+    
+}
+
 /// Rust の通常の文字列リテラルの中身 (引用符の内側) をその値にする。
 fn unescape(s: &str) -> String {
     let mut o = String::new();

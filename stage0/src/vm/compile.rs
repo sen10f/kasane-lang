@@ -350,14 +350,14 @@ impl<'a> Fc<'a> {
             Op::EnvArgCount => Ins::EnvArgCount { d },
             Op::EnvArg { index } => Ins::EnvArg { d, i: self.s(*index) },
             Op::EnvVar { name } => Ins::EnvVar { d, name: self.s(*name) },
-            Op::NetListen { .. }
-            | Op::NetConnect { .. }
-            | Op::NetAccept { .. }
-            | Op::NetRead { .. }
-            | Op::NetWrite { .. }
-            | Op::NetFlush { .. }
-            | Op::NetClose { .. }
-            | Op::NetLocalPort { .. } => return Err("std.net の命令は VM 未対応".into()),
+            Op::NetListen { addr } => Ins::NetListen { d, addr: self.s(*addr) },
+            Op::NetConnect { addr } => Ins::NetConnect { d, addr: self.s(*addr) },
+            Op::NetAccept { sock } => Ins::NetAccept { d, sock: self.s(*sock) },
+            Op::NetRead { sock, buf, len } => Ins::NetRead { d, sock: self.s(*sock), buf: self.s(*buf), len: self.s(*len) },
+            Op::NetWrite { sock, buf, len } => Ins::NetWrite { d, sock: self.s(*sock), buf: self.s(*buf), len: self.s(*len) },
+            Op::NetFlush { sock } => Ins::NetFlush { d, sock: self.s(*sock) },
+            Op::NetClose { sock } => Ins::NetClose { d, sock: self.s(*sock) },
+            Op::NetLocalPort { sock } => Ins::NetLocalPort { d, sock: self.s(*sock) },
             // C のコールバックに VM の関数を渡すには機械語のトランポリンが要る。それまでは木走査へ退避する。
             Op::FnPtr { .. } => return Err("関数ポインタ (FnPtr) の命令は VM 未対応".into()),
         };

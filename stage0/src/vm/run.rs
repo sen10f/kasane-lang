@@ -48,6 +48,14 @@ pub struct Vm<'a> {
     pub capture: Option<Vec<u8>>,
     /// プログラムへの引数 (`std.env.arg`。プログラム名は含まない)。
     pub args: Vec<String>,
+    /// `std.net` のソケット表 (記述子 → ソケット)。
+    socks: std::collections::HashMap<i128, NetSock>,
+    next_fd: i128,
+}
+
+enum NetSock {
+    Listener(std::net::TcpListener),
+    Stream(std::net::TcpStream),
 }
 
 #[inline(always)]
@@ -69,7 +77,7 @@ fn addr(a: i128, n: usize) -> Result<*mut u8, String> {
 
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![] }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0 }
     }
 
     /// ためた stdout を流す。
@@ -125,6 +133,19 @@ impl<'a> Vm<'a> {
         b[0..8].copy_from_slice(&(p as u64).to_le_bytes());
         b[8..16].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
         self.heap.push(b);
+        (self.heap.len() - 1) as i128
+    }
+
+    fn new_fd(&mut self, sock: NetSock) -> i128 {
+        let fd = self.next_fd;
+        self.next_fd += 1;
+        self.socks.insert(fd, sock);
+        fd
+    }
+
+    /// 記述子 `fd` を持つ集成体 (`i32` 1 つ) を置き場に作り、その添字を返す。
+    fn desc(&mut self, fd: i128) -> i128 {
+        self.heap.push((fd as i32).to_le_bytes().to_vec());
         (self.heap.len() - 1) as i128
     }
 
@@ -556,6 +577,72 @@ impl<'a> Vm<'a> {
                         }
                         Err(_) => w!(*d, 0),
                     }
+                }
+                Ins::NetListen { d, addr } | Ins::NetConnect { d, addr } => {
+                    let bytes = self.fat_bytes(r!(*addr))?;
+                    let a = std::str::from_utf8(bytes).unwrap_or("");
+                    let is_listen = matches!(ins, Ins::NetListen { .. });
+                    let res = if is_listen { std::net::TcpListener::bind(a).map(NetSock::Listener) } else { std::net::TcpStream::connect(a).map(NetSock::Stream) };
+                    match res {
+                        Ok(sock) => {
+                            let fd = self.new_fd(sock);
+                            w!(*d, self.desc(fd));
+                        }
+                        Err(e) => {
+                            let v = kir_exec::io_error_value(&prog.aggs, &mut self.heap, crate::natives::io_kind_name(&e), e.raw_os_error().unwrap_or(0))?;
+                            w!(*d, TAG_BIT | v);
+                        }
+                    }
+                }
+                Ins::NetAccept { d, sock } => {
+                    let fd = r!(*sock);
+                    let Some(NetSock::Listener(l)) = self.socks.get_mut(&fd) else { return Err(format!("無効なソケット記述子 {}", fd)) };
+                    match l.accept() {
+                        Ok((st, _)) => {
+                            let nfd = self.new_fd(NetSock::Stream(st));
+                            w!(*d, self.desc(nfd));
+                        }
+                        Err(e) => {
+                            let v = kir_exec::io_error_value(&prog.aggs, &mut self.heap, crate::natives::io_kind_name(&e), e.raw_os_error().unwrap_or(0))?;
+                            w!(*d, TAG_BIT | v);
+                        }
+                    }
+                }
+                Ins::NetRead { d, sock, buf, len } => {
+                    use std::io::Read;
+                    let (fd, p, n) = (r!(*sock), r!(*buf), r!(*len) as usize);
+                    let Some(NetSock::Stream(st)) = self.socks.get_mut(&fd) else { return Err(format!("読み出しできるのはストリームソケットだけ: {}", fd)) };
+                    let mut tmp = vec![0u8; n];
+                    let nr = st.read(&mut tmp).map_err(|e| format!("read: {e}"))?;
+                    if nr > 0 {
+                        unsafe { std::ptr::copy_nonoverlapping(tmp.as_ptr(), addr(p, nr)?, nr) };
+                    }
+                    w!(*d, nr as i128);
+                }
+                Ins::NetWrite { d, sock, buf, len } => {
+                    use std::io::Write;
+                    let (fd, p, n) = (r!(*sock), r!(*buf), r!(*len) as usize);
+                    let Some(NetSock::Stream(st)) = self.socks.get_mut(&fd) else { return Err(format!("書き込みできるのはストリームソケットだけ: {}", fd)) };
+                    let bytes: &[u8] = if n == 0 { &[] } else { unsafe { std::slice::from_raw_parts(addr(p, n)? as *const u8, n) } };
+                    st.write_all(bytes).map_err(|e| format!("write: {e}"))?;
+                    w!(*d, n as i128);
+                }
+                Ins::NetFlush { d, sock } => {
+                    use std::io::Write;
+                    let fd = r!(*sock);
+                    let Some(NetSock::Stream(st)) = self.socks.get_mut(&fd) else { return Err(format!("flush できるのはストリームソケットだけ: {}", fd)) };
+                    st.flush().map_err(|e| format!("flush: {e}"))?;
+                    w!(*d, 0);
+                }
+                Ins::NetClose { d, sock } => {
+                    let fd = r!(*sock);
+                    self.socks.remove(&fd);
+                    w!(*d, 0);
+                }
+                Ins::NetLocalPort { d, sock } => {
+                    let fd = r!(*sock);
+                    let Some(NetSock::Listener(l)) = self.socks.get(&fd) else { return Err(format!("local_port できるのはリスナーソケットだけ: {}", fd)) };
+                    w!(*d, l.local_addr().map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?);
                 }
                 Ins::ParseInt { d, s, radix, ty } => {
                     let t = prog.tys[*ty as usize];

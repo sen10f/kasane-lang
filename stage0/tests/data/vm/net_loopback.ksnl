@@ -1,0 +1,58 @@
+fn t.net_roundtrip() -> () uses [alloc, io.net] panics may
+    match std.net.listen("127.0.0.1:0") {
+        Ok(l) => {
+            let port = match l.local_port() {
+                Ok(p) => p
+                Err(_e) => core.panic.panic("local_port failed")
+            }
+            core.check.eq((port == 0u16), false)
+            let mut address = alloc.string.String.new(std.alloc.SYSTEM)
+            match address.push_str("127.0.0.1:") {
+                Ok(_u) => ()
+                Err(_e) => core.panic.panic("push_str failed")
+            }
+            match address.push_u64(u64.from_u16(port)) {
+                Ok(_u) => ()
+                Err(_e) => core.panic.panic("push_u64 failed")
+            }
+            let a = address.as_str()
+            match std.net.connect(a) {
+                Ok(c) => {
+                    let mut s = c
+                    match s.write("hello".as_bytes()) {
+                        Ok(_n) => ()
+                        Err(_e) => core.panic.panic("write failed")
+                    }
+                    match s.close() {
+                        Ok(_u) => ()
+                        Err(_e) => core.panic.panic("close failed")
+                    }
+                }
+                Err(_e) => core.panic.panic("connect failed")
+            }
+            match l.accept() {
+                Ok(accepted) => {
+                    let mut s2 = accepted
+                    match s2.write("hi".as_bytes()) {
+                        Ok(_n) => ()
+                        Err(_e) => core.panic.panic("server write failed")
+                    }
+                    match s2.close() {
+                        Ok(_u) => ()
+                        Err(_e) => core.panic.panic("close2 failed")
+                    }
+                }
+                Err(_e) => core.panic.panic("accept failed")
+            }
+            match l.close() {
+                Ok(_u) => ()
+                Err(_e) => core.panic.panic("close3 failed")
+            }
+        }
+        Err(_e) => core.panic.panic("listen failed")
+    }
+end t.net_roundtrip
+
+fn t.main() -> () uses [alloc, io.net] panics may
+    t.net_roundtrip()
+end t.main
