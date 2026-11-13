@@ -1740,6 +1740,20 @@ impl<'a> Checker<'a> {
                         }
                     }
                     let r = self.resolve_path(&segs, di, nline(fnn));
+                    // 規範 (spec/stdlib/core/num*.sig) に無い数値の変換 `u32.from_usize_nearest(x)` などは、
+                    // 名前解決が接頭辞 `from_` で通すので、ここで E1108 にする (実行時の未知の整数演算を防ぐ)。
+                    if let Some(rr) = r.as_ref().filter(|rr| rr.kind() == "native" && rr.rest.is_empty()) {
+                        let fq = if rr.name.starts_with("core.num.") { rr.name.clone() } else { format!("core.num.{}", rr.name) };
+                        if self.num_conv_missing(&fq) {
+                            let short = fq.strip_prefix("core.num.").unwrap_or(&fq);
+                            self.diag(
+                                "E1108",
+                                format!("unknown method `{}`; it is not in the standard library (spec/stdlib/core/num*.sig)", short),
+                                di,
+                                nline(fnn),
+                            );
+                        }
+                    }
                     if let Some(r) = r {
                         if matches!(r.target, Target::Fn(_) | Target::Sig(_)) && r.rest.is_empty() {
                             let callee = self.p.fn_def(&r).unwrap();
@@ -1858,6 +1872,17 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// `core.num.<整数型 / f32 / f64>.from_X` / `try_from_X` の静的な呼び出しで、規範 (sig) にも定義にも無いもの。
+    fn num_conv_missing(&self, fq: &str) -> bool {
+        let Some(rest) = fq.strip_prefix("core.num.") else { return false };
+        let Some((ty, name)) = rest.split_once('.') else { return false };
+        let num_ty = crate::types::INTS.contains(&ty) || matches!(ty, "f32" | "f64");
+        num_ty
+            && (name.starts_with("from_") || name.starts_with("try_from_"))
+            && !self.p.sigs.contains_key(fq)
+            && !self.p.funcs.contains_key(fq)
     }
 
     /// 呼ばれたメソッド名が、どこにも定義・宣言されていなければ E1108 (近い名前を提案する)。
