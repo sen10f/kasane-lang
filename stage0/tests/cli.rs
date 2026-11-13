@@ -12288,9 +12288,9 @@ fn kir_coll_closure_is_monomorphized_per_closure() {
 
 #[test]
 fn kir_coll_reports_unsupported_constructs_with_a_reason() {
-    // `Vec` の `pop` (Option)、capture を持つクロージャは、理由を付けて拒否する (`push` と移動は 13 章で下ろせる)。
+    // `Vec` の `remove` (Option)、capture を持つクロージャは、理由を付けて拒否する (`push` / `pop` と移動は 13 章で下ろせる)。
     let cases: &[(&str, &str, &str)] = &[
-        ("t.pop_one", "    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let _r = v.pop()\n    v.len()\n", "pop は段階 1 の対象外"),
+        ("t.remove_one", "    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let _r = v.remove(0usize)\n    v.len()\n", "remove は段階 1 の対象外"),
         ("t.captured", "    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let f = fn(x: usize) -> usize capture [move v] {\n        x\n    }\n    f(1usize)\n", "取り込みは段階 1 の対象外"),
     ];
     for (i, (f, body, why)) in cases.iter().enumerate() {
@@ -13620,19 +13620,347 @@ fn kir_closure_captures_and_iter_pipes_match_tree_walker() {
     }
 }
 
+const KIR_OWN2_FNS: &str = "type t.Ring
+    items: alloc.vec.Vec<u32, std.alloc.System>
+    head: usize
+    len: usize
+    cap: usize
+end t.Ring
+
+type t.Pair
+    a: alloc.vec.Vec<u32, std.alloc.System>
+    name: alloc.string.String<std.alloc.System>
+    n: usize
+end t.Pair
+
+fn t.make(n: u32) -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        match v.push(i) {
+            Ok(_u) => {
+            }
+            Err(_e) => {
+                break
+            }
+        }
+        i = i.wrapping_add(1u32)
+    }
+    v
+end t.make
+
+fn t.pair(n: u32) -> t.Pair uses [alloc] panics never
+    t.Pair { a: t.make(n), name: alloc.string.String.new(std.alloc.SYSTEM), n: 3usize }
+end t.pair
+
+fn t.str_build(n: usize) -> usize uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < n {
+        match s.push_str(\"ab\") {
+            Ok(_u) => {
+            }
+            Err(_e) => {
+                break
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    s.len()
+end t.str_build
+
+fn t.sum_bytes(s: &str) -> u32 uses [] panics never
+    let b = s.as_bytes()
+    let mut acc = 0u32
+    for x in b {
+        acc = acc.wrapping_add(u32.from_u8(x))
+    }
+    acc
+end t.sum_bytes
+
+fn t.str_chars() -> u32 uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push('a'))
+    core.mem.drop(s.push('é'))
+    core.mem.drop(s.push('€'))
+    core.mem.drop(s.push('😀'))
+    core.mem.drop(s.push_str(\"xyz\"))
+    t.sum_bytes(s.as_str())
+end t.str_chars
+
+fn t.str_chars_len() -> usize uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push('a'))
+    core.mem.drop(s.push('é'))
+    core.mem.drop(s.push('€'))
+    core.mem.drop(s.push('😀'))
+    core.mem.drop(s.push_str(\"xyz\"))
+    s.len()
+end t.str_chars_len
+
+fn t.pop_sum(n: u32) -> u32 uses [alloc] panics never
+    let mut v = t.make(n)
+    let mut total = 0u32
+    loop {
+        match v.pop() {
+            Some(x) => {
+                total = total.wrapping_add(x)
+            }
+            None => {
+                break
+            }
+        }
+    }
+    total
+end t.pop_sum
+
+fn t.clear_run(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.make(n)
+    v.clear()
+    core.mem.drop(v.push(5u32))
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"hello\"))
+    s.clear()
+    core.mem.drop(s.push_str(\"hi\"))
+    v.len().wrapping_add(s.len())
+end t.clear_run
+
+fn t.ring_new(cap: usize) -> t.Ring uses [alloc] panics never
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < cap {
+        match items.push(0u32) {
+            Ok(_u) => {
+            }
+            Err(_e) => {
+                break
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    t.Ring { items: items, head: 0usize, len: 0usize, cap: cap }
+end t.ring_new
+
+fn t.ring_pop(self: &mut t.Ring) -> Option<u32> uses [] panics never
+    if self.len == 0usize {
+        return None
+    }
+    let v = self.items.get(self.head)
+    self.head = self.head.wrapping_add(1usize).checked_rem(self.cap).unwrap_or(0usize)
+    self.len = self.len.wrapping_sub(1usize)
+    v
+end t.ring_pop
+
+fn t.ring_push(self: &mut t.Ring, v: u32) -> bool uses [] panics never
+    if self.len >= self.cap {
+        return false
+    }
+    let slot = self.head.wrapping_add(self.len)
+    let idx = match self.cap {
+        0usize => 0usize
+        c => slot.checked_rem(c).unwrap_or(0usize)
+    }
+    match self.items.get_mut(idx) {
+        Some(cell) => {
+            *cell = v
+        }
+        None => {
+            return false
+        }
+    }
+    self.len = self.len.wrapping_add(1usize)
+    true
+end t.ring_push
+
+fn t.ring_run(cap: usize) -> u32 uses [alloc] panics never
+    let mut r = t.ring_new(cap)
+    let mut total = 0u32
+    let mut i = 0u32
+    while i < 7u32 {
+        if t.ring_push(&mut r, i.wrapping_add(10u32)) {
+            total = total.wrapping_add(1u32)
+        }
+        if i == 4u32 {
+            match t.ring_pop(&mut r) {
+                Some(x) => {
+                    total = total.wrapping_add(x)
+                }
+                None => {
+                }
+            }
+        }
+        i = i.wrapping_add(1u32)
+    }
+    loop {
+        match t.ring_pop(&mut r) {
+            Some(x) => {
+                total = total.wrapping_mul(3u32).wrapping_add(x)
+            }
+            None => {
+                break
+            }
+        }
+    }
+    total
+end t.ring_run
+
+fn t.pair_run(n: u32) -> usize uses [alloc] panics never
+    let mut p = t.pair(n)
+    core.mem.drop(p.a.push(9u32))
+    core.mem.drop(p.name.push_str(\"héllo\"))
+    core.mem.drop(p.name.push('!'))
+    p.a.len().wrapping_add(p.name.len()).wrapping_add(p.n)
+end t.pair_run
+
+fn t.pair_param(p: t.Pair) -> usize uses [alloc] panics never
+    let mut q = p
+    core.mem.drop(q.name.push_str(\"abc\"))
+    core.mem.drop(q.a.push(1u32))
+    q.a.len().wrapping_add(q.name.len())
+end t.pair_param
+
+fn t.pair_param_run(n: u32) -> usize uses [alloc] panics never
+    t.pair_param(t.pair(n))
+end t.pair_param_run
+
+fn t.destruct(n: u32) -> usize uses [alloc] panics never
+    let (a, b) = (t.make(n), t.make(2u32))
+    a.len().wrapping_add(b.len())
+end t.destruct
+
+fn t.destruct_partial(n: u32) -> usize uses [alloc] panics never
+    let (a, _) = (t.make(n), t.make(3u32))
+    a.len()
+end t.destruct_partial
+
+fn t.destruct_none(n: u32) -> usize uses [alloc] panics never
+    let (_, _) = (t.make(n), t.make(3u32))
+    7usize
+end t.destruct_none
+
+fn t.destruct_struct(n: u32) -> usize uses [alloc] panics never
+    let p = t.pair(n)
+    let t.Pair { a: x, n: k, name: _ } = p
+    x.len().wrapping_add(k)
+end t.destruct_struct
+
+fn t.destruct_struct_both(n: u32) -> usize uses [alloc] panics never
+    let t.Pair { a: x, n: k, name: s } = t.pair(n)
+    x.len().wrapping_add(k).wrapping_add(s.len())
+end t.destruct_struct_both
+
+fn t.match_partial(n: u32, some: bool) -> usize uses [alloc] panics never
+    let o: Option<t.Pair> = if some {
+        Some(t.pair(n))
+    } else {
+        None
+    }
+    match o {
+        Some(t.Pair { a: x, n: _, name: _ }) => x.len()
+        None => 99usize
+    }
+end t.match_partial
+
+fn t.match_struct_partial(n: u32) -> usize uses [alloc] panics never
+    match t.pair(n) {
+        t.Pair { a: x, n: _, name: _ } => x.len()
+    }
+end t.match_struct_partial
+
+fn t.field_move(n: u32) -> usize uses [alloc] panics never
+    let p = t.pair(n)
+    let w = p.a
+    w.len().wrapping_add(p.n)
+end t.field_move
+
+fn t.field_move_reassign(n: u32) -> usize uses [alloc] panics never
+    let mut p = t.pair(n)
+    let w = p.a
+    p.a = t.make(2u32)
+    w.len().wrapping_add(p.a.len())
+end t.field_move_reassign
+
+fn t.field_ret(p: t.Pair) -> alloc.vec.Vec<u32, std.alloc.System> uses [] panics never
+    p.a
+end t.field_ret
+
+fn t.field_ret_run(n: u32) -> usize uses [alloc] panics never
+    let v = t.field_ret(t.pair(n))
+    v.len()
+end t.field_ret_run
+
+fn t.field_move_str(n: u32) -> usize uses [alloc] panics never
+    let mut p = t.pair(n)
+    core.mem.drop(p.name.push_str(\"xy\"))
+    let s = p.name
+    s.len().wrapping_add(p.a.len())
+end t.field_move_str
+
+";
+
+#[test]
+fn kir_own_more_match_tree_walker() {
+    // 所有の周りの残り (設計_KIR.md 13.7): `push_str` / `push(char)` / `pop` / `clear`、構造体のフィールドの Vec / String の
+    // メソッド (`&mut self` と値の構造体)、`get_mut`、所有物を持つ値の分解、フィールドからの移動。木走査と同じ値になり、
+    // 参照実行器が漏れ・二重解放を内部エラーにしないこと (`--run` と `--native` の両方)。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.str_build", &["0"], "0usize", "0"),
+        ("t.str_build", &["1000"], "2000usize", "2000"),
+        ("t.str_chars", &[], "2031u32", "2031"),
+        ("t.str_chars_len", &[], "13usize", "13"),
+        ("t.pop_sum", &["0"], "0u32", "0"),
+        ("t.pop_sum", &["6"], "15u32", "15"),
+        ("t.clear_run", &["4"], "3usize", "3"),
+        ("t.ring_run", &["3"], "528u32", "528"),
+        ("t.ring_run", &["0"], "0u32", "0"),
+        ("t.pair_run", &["2"], "13usize", "13"),
+        ("t.pair_param_run", &["2"], "6usize", "6"),
+        ("t.destruct", &["4"], "6usize", "6"),
+        ("t.destruct_partial", &["4"], "4usize", "4"),
+        ("t.destruct_none", &["4"], "7usize", "7"),
+        ("t.destruct_struct", &["4"], "7usize", "7"),
+        ("t.destruct_struct_both", &["4"], "7usize", "7"),
+        ("t.match_partial", &["4", "true"], "4usize", "4"),
+        ("t.match_partial", &["4", "false"], "99usize", "99"),
+        ("t.match_struct_partial", &["5"], "5usize", "5"),
+        ("t.field_move", &["4"], "7usize", "7"),
+        ("t.field_move_reassign", &["4"], "6usize", "6"),
+        ("t.field_ret_run", &["5"], "5usize", "5"),
+        ("t.field_move_str", &["3"], "5usize", "5"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.iter().map(|a| match *a {
+            "true" | "false" => a.to_string(),
+            n if *f == "t.str_build" || *f == "t.ring_run" => format!("{}usize", n),
+            n => format!("{}u32", n),
+        }).collect::<Vec<_>>().join(", "));
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_own_more_{}", i), &format!("{}{}", KIR_OWN2_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
 #[test]
 fn kir_own_reports_unsupported_moves_with_a_reason() {
-    // フィールドからの移動 (部分的な移動)、所有物を持つ値の分解は、誤った KIR を出さず理由を付けて拒否する。
+    // 参照を通したフィールドの移動 (借用の中身を移す)、一時の値のフィールドの移動、所有物を持つ `unwrap_or` は、
+    // 誤った KIR を出さず理由を付けて拒否する。
     let cases: &[(&str, &str, &str)] = &[
         (
-            "type t.B\n    items: alloc.vec.Vec<u8, std.alloc.System>\nend t.B\n\nfn t.f(b: t.B) -> usize uses [] panics never\n    let w = b.items\n    w.len()\nend t.f\n",
+            "type t.B\n    items: alloc.vec.Vec<u8, std.alloc.System>\nend t.B\n\nfn t.f(b: &mut t.B) -> usize uses [] panics never\n    let w = b.items\n    w.len()\nend t.f\n",
             "t.f",
-            "フィールドからの Vec / String の移動",
+            "参照を通したフィールドの移動",
         ),
         (
-            "fn t.f() -> usize uses [] panics never\n    let (a, b) = (alloc.vec.Vec.new(std.alloc.SYSTEM), 1usize)\n    let v: alloc.vec.Vec<u8, std.alloc.System> = a\n    b.wrapping_add(v.len())\nend t.f\n",
+            "type t.B\n    items: alloc.vec.Vec<u8, std.alloc.System>\nend t.B\n\nfn t.mk() -> t.B uses [alloc] panics never\n    t.B { items: alloc.vec.Vec.new(std.alloc.SYSTEM) }\nend t.mk\n\nfn t.f() -> usize uses [alloc] panics never\n    let w = t.mk().items\n    w.len()\nend t.f\n",
             "t.f",
-            "分解",
+            "一時の値のフィールド",
         ),
         (
             "fn t.f(o: Option<alloc.vec.Vec<u8, std.alloc.System>>) -> usize uses [] panics never\n    o.unwrap_or(alloc.vec.Vec.new(std.alloc.SYSTEM)).len()\nend t.f\n",

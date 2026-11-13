@@ -1987,6 +1987,17 @@ impl<'a> TypeCk<'a> {
                     self.bind_pat(p, &t);
                 }
             }
+            // 構造体のパターン `S { f: p, .. }`: フィールドの型を部分パターンへ渡す (設計_KIR.md 13.7。分解した変数の型が決まる)。
+            "PStruct" => {
+                for it in items(&f[1]) {
+                    if let V::L(xs) = it {
+                        if xs.len() == 2 {
+                            let t = self.field_ty(ty, &st(&xs[0]));
+                            self.bind_pat(&xs[1], &t);
+                        }
+                    }
+                }
+            }
             "PVariant" => {
                 let segs = strs(&f[0]);
                 let payload: Vec<Ty> = self.variant_payload(&segs, ty);

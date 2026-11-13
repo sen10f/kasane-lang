@@ -298,7 +298,7 @@ impl<'a> Lw<'a> {
                 test = nb;
             }
             self.cur = Some(bb);
-            super::coll::scrut_arm(self, &sc, i, s);
+            super::coll::scrut_arm(self, &sc, i, pat, s)?;
             if let Some(v) = self.expr(body)? {
                 if let Some(t) = res {
                     if self.vty(v) != t {

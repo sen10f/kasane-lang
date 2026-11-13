@@ -319,7 +319,7 @@ impl<'a> Lw<'a> {
         self.aggs.borrow_mut().lower_ty(self.p, &self.def.file, t)
     }
 
-    fn agg_def(&self, ai: u32) -> AggDef {
+    pub(super) fn agg_def(&self, ai: u32) -> AggDef {
         self.aggs.borrow().defs[ai as usize].clone()
     }
 
@@ -342,7 +342,11 @@ impl<'a> Lw<'a> {
                 let name = st(&f[1]);
                 let v = self.field_of(b, &name, nline(e))?;
                 if super::coll::owns(self, self.vty(v)) {
-                    return self.err(nline(e), "構造体のフィールドからの Vec / String の移動は段階 1 の対象外 (参照で使う)");
+                    // 局所変数から始まるフィールドの連なりなら、所有物を移し出す (部分的な移動)。それ以外 (一時の値のフィールド) は未対応。
+                    if let Some((s, names)) = super::own::chain_of(self, e) {
+                        return Ok(Some(super::coll::field_move(self, s, &names, nline(e))?));
+                    }
+                    return self.err(nline(e), "一時の値のフィールドからの所有物の移動は段階 1 の対象外");
                 }
                 if super::coll::owns(self, self.vty(b)) && super::coll::val_slot(self, &f[0]).is_none() {
                     let bt = self.vty(b);
@@ -539,10 +543,21 @@ impl<'a> Lw<'a> {
     pub(super) fn let_pat(&mut self, pat: &V, init: &V) -> LR<St> {
         let Some(v) = self.expr(init)? else { return Ok(St::Div) };
         let t = self.vty(v);
-        if super::coll::owns(self, t) {
-            return self.err(nline(pat), "所有物を持つ値の分解 (let パターン) は段階 1 の対象外");
-        }
         let binds = self.pat(pat, v, t, None)?;
+        if super::coll::owns(self, t) {
+            // 所有物を持つ値の分解: 束縛した部分は変数が所有し、束縛しなかった所有物は分解の時点で解放する (設計_KIR.md 13.7)。
+            let mut srcs = std::collections::BTreeMap::new();
+            if let Ok(ss) = self.src_ty(init) {
+                super::coll::pat_srcs(self, pat, &ss, &mut srcs);
+            }
+            for (n, bv, bt) in binds {
+                self.coll.hint = srcs.get(&n).cloned();
+                super::coll::bind_owned(self, &n, bv, bt);
+                self.coll.hint = None;
+            }
+            super::coll::drop_unbound(self, pat, v, t)?;
+            return Ok(St::Unit);
+        }
         for (n, bv, bt) in binds {
             self.bind(&n, bv, bt);
         }
@@ -561,6 +576,12 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("代入先 {} が見つからない", segs[0]));
         };
         let Some(v) = self.expr(rhs)? else { return Ok(St::Div) };
+        self.store_segs(s, &segs, v, line, true)
+    }
+
+    /// `segs` (局所変数 `s` から始まる) のフィールドへ値 `v` を書く。`drop_old` なら所有物の古い値を先に解放する
+    /// (メソッドが書き換えたヘッダを戻すときは、同じバッファなので解放しない)。
+    pub(super) fn store_segs(&mut self, s: usize, segs: &[String], v: VId, line: usize, drop_old: bool) -> LR<St> {
         let base0 = self.read_slot(s);
         // 参照を通した代入 `r.f.g = v`: フィールドのアドレスをたどって書く (参照は可変のものだけ)。
         if let Ty::Ref(m, Pointee::Agg(_)) = self.vty(base0) {
@@ -579,7 +600,7 @@ impl<'a> Lw<'a> {
                 return self.err(line, "フィールドへの代入の型が違う");
             }
             // 所有物のフィールドは、古い値を解放してから書く。
-            if super::coll::owns(self, p.ty()) {
+            if drop_old && super::coll::owns(self, p.ty()) {
                 let old = self.emit(p.ty(), Op::Load(last));
                 super::coll::drop_value(self, old, p.ty());
             }
@@ -597,7 +618,7 @@ impl<'a> Lw<'a> {
         let last_old = {
             let parent = *chain.last().expect("鎖");
             let old = self.field_of(parent, &segs[segs.len() - 1], line)?;
-            super::coll::owns(self, self.vty(old)).then_some(old)
+            (drop_old && super::coll::owns(self, self.vty(old))).then_some(old)
         };
         if let Some(old) = last_old {
             let ot = self.vty(old);
@@ -865,6 +886,7 @@ impl<'a> Lw<'a> {
             .collect::<Result<_, _>>()?;
         let bodies: Vec<&V> = arms.iter().map(|(_, b)| *b).collect();
         let pats: Vec<&V> = arms.iter().map(|(p, _)| *p).collect();
+        let scrut_src = self.src_ty(&f[0]).ok();
         let sc = super::coll::scrut_begin(self, &f[0], sv, &pats)?;
         let slots = self.assigned(&bodies);
         let slot_tys: Vec<Ty> = slots.iter().map(|s| self.slots[*s].1).collect();
@@ -877,10 +899,16 @@ impl<'a> Lw<'a> {
             self.slots = saved.clone();
             let binds = self.pat(pat, sv, sty, Some(next))?;
             self.scopes.push(vec![]);
-            for (n, v, t) in binds {
-                super::coll::bind_owned(self, &n, v, t);
+            let mut srcs = std::collections::BTreeMap::new();
+            if let Some(ss) = &scrut_src {
+                super::coll::pat_srcs(self, pat, ss, &mut srcs);
             }
-            super::coll::scrut_arm(self, &sc, i, sv);
+            for (n, v, t) in binds {
+                self.coll.hint = srcs.get(&n).cloned();
+                super::coll::bind_owned(self, &n, v, t);
+                self.coll.hint = None;
+            }
+            super::coll::scrut_arm(self, &sc, i, pat, sv)?;
             if let Some(v) = self.expr(body)? {
                 if let Some(t) = res {
                     if self.vty(v) != t && carry {
