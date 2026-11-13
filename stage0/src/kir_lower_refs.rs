@@ -262,6 +262,8 @@ impl<'a> Lw<'a> {
                 let t = p.ty();
                 Ok(Some(self.emit(t, Op::Load(r))))
             }
+            // `get` / `for (k, v) in m.iter()` で束縛した `&スカラー` は値で持つ (設計_KIR.md 10.10 / 16 章)。`*` は値そのもの。
+            t if t.is_scalar() => Ok(Some(r)),
             _ => self.err(line, "* の被演算子が参照でない"),
         }
     }

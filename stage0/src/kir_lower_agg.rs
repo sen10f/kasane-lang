@@ -119,7 +119,7 @@ impl AggTab {
             }
             // 値渡しの `Vec` / `String` は 24 バイトのヘッダ `vec` の値 (所有の移動。設計_KIR.md 13 章)。
             // 参照 (`&Vec` など) は下の腕に入れず、借用のヘッダのアドレス (`ptr`) として `sig_ty` が受ける。
-            Src::Named(name, _) if name == "alloc.vec.Vec" || name == "alloc.string.String" => Ok(self.vec_hdr()),
+            Src::Named(name, _) if name == "alloc.vec.Vec" || name == "alloc.string.String" || name == "alloc.collections.HashMap" => Ok(self.vec_hdr()),
             Src::Named(name, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
             Src::Named(name, args) => {
                 if !args.is_empty() {
@@ -140,7 +140,7 @@ impl AggTab {
                 self.intern_tuple(elems)
             }
             // 集成体への参照 `&S` / `&mut S` (スカラーへの参照は上の `conv` が済ませている)。
-            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String") => {
+            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String" || n == "alloc.collections.HashMap") => {
                 Err("Vec / String への参照はヘッダのアドレスで渡す".to_string())
             }
             Src::Ref(m, inner) if matches!(&**inner, Src::Named(..) | Src::Tuple(_)) => match self.lower_ty(p, file, inner)? {
@@ -230,7 +230,7 @@ impl AggTab {
     /// フィールド・要素の型。ユニット型は値を置けないので拒否する。
     fn field_ty(&mut self, p: &Program, file: &str, t: &Src) -> Result<Ty, String> {
         if let Src::Named(n, _) = t {
-            if n == "alloc.vec.Vec" || n == "alloc.string.String" {
+            if n == "alloc.vec.Vec" || n == "alloc.string.String" || n == "alloc.collections.HashMap" {
                 return Ok(self.vec_hdr());
             }
         }

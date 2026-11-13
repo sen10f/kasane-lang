@@ -13752,3 +13752,336 @@ fn kir_closure_reports_unsupported_captures_with_a_reason() {
         assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
     }
 }
+
+// ---- HashMap (設計_KIR.md 16 章、kir/hashmap) ----
+
+const KIR_MAP_FNS: &str = r##"fn t.add_one(m: &mut alloc.collections.HashMap<u32, u32, std.alloc.System>, k: u32) -> bool uses [alloc] panics may
+    match m.insert(k, k.wrapping_mul(2u32)) {
+        Ok(Some(_old)) => false
+        Ok(None) => true
+        Err(_e) => core.panic.panic("oom")
+    }
+end t.add_one
+
+fn t.build(n: u32) -> alloc.collections.HashMap<u32, u32, std.alloc.System> uses [alloc] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(t.add_one(&mut m, i % 40u32))
+        i = i.wrapping_add(1u32)
+    }
+    m
+end t.build
+
+// 挿入と削除を繰り返す (墓標と作り直し)
+fn t.churn(n: u32) -> u32 uses [alloc] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    let mut acc = 0u32
+    while i < n {
+        match m.insert(i, i) {
+            Ok(_old) => 0u8
+            Err(_e) => core.panic.panic("oom")
+        }
+        if i >= 4u32 {
+            match m.remove(&(i.wrapping_sub(4u32))) {
+                Some(v) => {
+                    acc = acc.wrapping_add(v)
+                }
+                None => core.panic.panic("missing")
+            }
+        }
+        i = i.wrapping_add(1u32)
+    }
+    for (k, _v) in m.iter() {
+        acc = acc.wrapping_mul(7u32).wrapping_add(*k)
+    }
+    acc
+end t.churn
+
+fn t.fill(n: u32) -> u32 uses [alloc] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        match m.insert(i, i.wrapping_mul(3u32).wrapping_add(1u32)) {
+            Ok(_old) => 0u8
+            Err(_e) => core.panic.panic("oom")
+        }
+        i = i.wrapping_add(1u32)
+    }
+    let mut acc = 0u32
+    let mut k = 0u32
+    while k < n.wrapping_mul(2u32) {
+        match m.get(&k) {
+            Some(v) => {
+                acc = acc.wrapping_add(*v)
+            }
+            None => {
+                acc = acc.wrapping_add(1000000u32)
+            }
+        }
+        k = k.wrapping_add(1u32)
+    }
+    acc
+end t.fill
+
+fn t.len_after(n: u32) -> usize uses [alloc] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        match m.insert(i % 7u32, i) {
+            Ok(_old) => 0u8
+            Err(_e) => core.panic.panic("oom")
+        }
+        i = i.wrapping_add(1u32)
+    }
+    m.len()
+end t.len_after
+
+
+fn t.missing(n: u32) -> u32 uses [alloc] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut acc = 0u32
+    if m.is_empty() {
+        acc = 1u32
+    }
+    match m.remove(&5u32) {
+        Some(_v) => core.panic.panic("phantom")
+        None => {
+            acc = acc.wrapping_add(10u32)
+        }
+    }
+    let mut i = 0u32
+    while i < n {
+        match m.insert(i, i) {
+            Ok(_old) => 0u8
+            Err(_e) => core.panic.panic("oom")
+        }
+        i = i.wrapping_add(1u32)
+    }
+    if m.contains_key(&(n.wrapping_add(3u32))) {
+        acc = acc.wrapping_add(100u32)
+    }
+    if m.contains_key(&2u32) {
+        acc = acc.wrapping_add(1000u32)
+    }
+    match m.get(&n) {
+        Some(_v) => core.panic.panic("phantom")
+        None => {
+            acc = acc.wrapping_add(10000u32)
+        }
+    }
+    acc
+end t.missing
+
+fn t.moved(n: u32) -> u32 uses [alloc] panics may
+    let m = t.build(n)
+    let mut acc = 0u32
+    for (k, v) in m.iter() {
+        acc = acc.wrapping_add(*k).wrapping_add(*v)
+    }
+    acc
+end t.moved
+
+// 削除・再挿入・反復順 (挿入順、削除後も相対順を保つ、再挿入は末尾)
+fn t.order(n: u32) -> u32 uses [alloc] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        match m.insert(i.wrapping_mul(7919u32), i) {
+            Ok(_old) => 0u8
+            Err(_e) => core.panic.panic("oom")
+        }
+        i = i.wrapping_add(1u32)
+    }
+    i = 0u32
+    while i < n {
+        if i % 3u32 == 0u32 {
+            match m.remove(&i.wrapping_mul(7919u32)) {
+                Some(v) => core.check.eq(v, i)
+                None => core.panic.panic("missing")
+            }
+        }
+        i = i.wrapping_add(1u32)
+    }
+    i = 0u32
+    while i < n {
+        if i % 6u32 == 0u32 {
+            match m.insert(i.wrapping_mul(7919u32), i.wrapping_add(1u32)) {
+                Ok(_old) => core.mem.drop(_old)
+                Err(_e) => core.panic.panic("oom")
+            }
+        }
+        i = i.wrapping_add(1u32)
+    }
+    let mut acc = 0u32
+    for (k, v) in m.iter() {
+        acc = acc.wrapping_mul(31u32).wrapping_add(*k).wrapping_add(v.wrapping_mul(3u32))
+    }
+    acc
+end t.order
+
+fn t.overwrite(n: u32) -> u32 uses [alloc] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut acc = 0u32
+    let mut i = 0u32
+    while i < n {
+        match m.insert(i % 5u32, i.wrapping_add(10u32)) {
+            Ok(Some(old)) => {
+                acc = acc.wrapping_add(old)
+            }
+            Ok(None) => {
+                acc = acc.wrapping_add(1u32)
+            }
+            Err(_e) => core.panic.panic("oom")
+        }
+        i = i.wrapping_add(1u32)
+    }
+    acc
+end t.overwrite
+
+fn t.signed(n: i32) -> i32 uses [alloc] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut i = 0i32
+    while i < n {
+        match m.insert(0i32.wrapping_sub(i), i) {
+            Ok(_old) => 0u8
+            Err(_e) => core.panic.panic("oom")
+        }
+        i = i.wrapping_add(1i32)
+    }
+    let mut acc = 0i32
+    i = 0i32
+    while i < n {
+        match m.get(&(0i32.wrapping_sub(i))) {
+            Some(v) => {
+                acc = acc.wrapping_add(*v)
+            }
+            None => core.panic.panic("missing")
+        }
+        i = i.wrapping_add(1i32)
+    }
+    acc
+end t.signed
+
+fn t.strs(_n: u32) -> u32 uses [alloc] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    match m.insert("alpha", 1u32) {
+        Ok(_old) => 0u8
+        Err(_e) => core.panic.panic("oom")
+    }
+    match m.insert("beta", 2u32) {
+        Ok(_old) => 0u8
+        Err(_e) => core.panic.panic("oom")
+    }
+    match m.insert("alpha", 10u32) {
+        Ok(_old) => 0u8
+        Err(_e) => core.panic.panic("oom")
+    }
+    let mut acc = 0u32
+    match m.get("alpha") {
+        Some(v) => {
+            acc = acc.wrapping_add(*v)
+        }
+        None => core.panic.panic("missing")
+    }
+    match m.get("gamma") {
+        Some(_v) => core.panic.panic("phantom")
+        None => {
+            acc = acc.wrapping_add(100u32)
+        }
+    }
+    if m.contains_key("beta") {
+        acc = acc.wrapping_add(1000u32)
+    }
+    match m.remove("beta") {
+        Some(v) => {
+            acc = acc.wrapping_add(v.wrapping_mul(10000u32))
+        }
+        None => core.panic.panic("missing")
+    }
+    for (k, v) in m.iter() {
+        acc = acc.wrapping_add(*v)
+    }
+    acc
+end t.strs
+"##;
+
+fn kir_map_pkg(name: &str, main_body: &str) -> Tmp {
+    let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", main_body);
+    Tmp::new(name, &format!("{}\n{}", KIR_MAP_FNS, main))
+}
+
+#[test]
+fn kir_map_values_match_tree_walker() {
+    // 挿入・上書き (古い値が返る)・削除・再挿入 (末尾へ)・成長 (1 万件)・反復順 (挿入順)・存在しないキー・墓標と作り直し・
+    // 符号付きと `&str` のキー・`&mut` の借用と値の戻り。参照実行器は漏れ・二重解放・範囲外を内部エラーにする。
+    // 期待値の書いた場所は木走査の `core.check.eq` で確かめ、`--run` と `--native` (LLVM) の両方で同じ値になること。
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("t.fill", "0", "u32", "0"),
+        ("t.fill", "100", "u32", "100014950"),
+        ("t.fill", "2000", "u32", "2005999000"),
+        ("t.fill", "10000", "u32", "1560060408"),
+        ("t.len_after", "0", "usize", "0"),
+        ("t.len_after", "50", "usize", "7"),
+        ("t.overwrite", "20", "u32", "260"),
+        ("t.order", "0", "u32", "0"),
+        ("t.order", "30", "u32", "1121038567"),
+        ("t.order", "1000", "u32", "2683877213"),
+        ("t.missing", "0", "u32", "10011"),
+        ("t.missing", "10", "u32", "11011"),
+        ("t.churn", "3", "u32", "9"),
+        ("t.churn", "100", "u32", "10987026"),
+        ("t.churn", "3000", "u32", "2183374384"),
+        ("t.signed", "20", "i32", "190"),
+        ("t.strs", "1", "u32", "21120"),
+        ("t.moved", "0", "u32", "0"),
+        ("t.moved", "7", "u32", "63"),
+        ("t.moved", "100", "u32", "2340"),
+    ];
+    for (i, (f, arg, ty, want)) in cases.iter().enumerate() {
+        let call = format!("{}({}{})", f, arg, if *f == "t.len_after" { "u32" } else { ty_arg(f) });
+        let t = kir_map_pkg(&format!("kir_map_values_{}", i), &format!("    core.check.eq({}, {}{})\n", call, want, ty));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let k = kir_run(&["kir", f, "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+/// `kir_map_values_match_tree_walker` の引数の型 (`t.signed` だけ `i32`、他は `u32`)。
+fn ty_arg(f: &str) -> &'static str {
+    if f == "t.signed" {
+        "i32"
+    } else {
+        "u32"
+    }
+}
+
+#[test]
+fn kir_map_reports_unsupported_methods_with_a_reason() {
+    let t = Tmp::new("kir_map_get_mut", "fn t.bump(n: u32) -> u32 uses [alloc] panics may
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    match m.insert(1u32, n) {
+        Ok(_old) => 0u8
+        Err(_e) => core.panic.panic(\"oom\")
+    }
+    match m.get_mut(&1u32) {
+        Some(v) => {
+            *v = n.wrapping_add(1u32)
+        }
+        None => core.panic.panic(\"none\")
+    }
+    n
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.bump(3u32), 3u32)
+    Ok(())
+end t.main
+");
+    let o = run(&["kir", "t.bump", "--run", "3"], &t.0);
+    assert_ne!(o.status.code(), Some(0));
+    assert!(text(&o.stderr).contains("HashMap::get_mut は段階 1 の対象外"), "{}", text(&o.stderr));
+}
