@@ -19447,6 +19447,7 @@ fn llvm_builds_of_real_packages_match_run() {
         "examples/more_coll",
         "examples/more_str",
         "examples/native",
+        "examples/plugins",
         "examples/realtime",
         "perf/closure",
         "perf/fib",
@@ -21369,4 +21370,318 @@ end t.w
     let k = run(&["kir", "t.w", "--run"], &t.0);
     assert_ne!(k.status.code(), Some(0));
     assert!(text(&k.stderr).contains("uses のパラメータ (E) を持つので、単相化は対象外"), "{}", text(&k.stderr));
+}
+
+
+// ---- Box<T> と Box<dyn Tr> (設計_KIR.md 21 章、kir/box-dyn) ----
+
+/// `Box` / `dyn` の試験用の関数。
+const KIR_DYN_FNS: &str = r#"import alloc.boxed
+import alloc.vec
+
+trait t.Shape[E: uses, P: panics] pub
+    fn area(self: &Self) -> u32 uses [E] panics P
+    fn grow(self: &mut Self, by: u32) -> u32 uses [E] panics P
+end t.Shape
+
+type t.Sq
+    s: u32
+end t.Sq
+
+type t.Rect
+    w: u32
+    h: u32
+    tag: alloc.string.String
+end t.Rect
+
+type t.Slot
+    h: alloc.boxed.Box<dyn t.Shape<[], never> + 'static, std.alloc.System>
+end t.Slot
+
+impl t.Shape<[], never> for t.Sq
+fn t.Sq.area(self: &t.Sq) -> u32 uses [] panics never impls t.Shape<[], never>
+    self.s.wrapping_mul(self.s)
+end t.Sq.area
+fn t.Sq.grow(self: &mut t.Sq, by: u32) -> u32 uses [] panics never impls t.Shape<[], never>
+    self.s = self.s.wrapping_add(by)
+    self.s
+end t.Sq.grow
+
+impl t.Shape<[], never> for t.Rect
+fn t.Rect.area(self: &t.Rect) -> u32 uses [] panics never impls t.Shape<[], never>
+    self.w.wrapping_mul(self.h)
+end t.Rect.area
+fn t.Rect.grow(self: &mut t.Rect, by: u32) -> u32 uses [] panics never impls t.Shape<[], never>
+    self.w = self.w.wrapping_add(by)
+    self.w
+end t.Rect.grow
+
+fn t.box_u32(n: u32) -> u32 uses [alloc] panics may
+    match boxed.Box.new(std.alloc.SYSTEM, n) {
+        Ok(bx) => {
+            let r = *bx.as_ref()
+            r.wrapping_add(1u32)
+        }
+        Err(_e) => 0u32
+    }
+end t.box_u32
+
+fn t.box_inner(n: u32) -> u32 uses [alloc] panics may
+    match boxed.Box.new(std.alloc.SYSTEM, n) {
+        Ok(bx) => bx.into_inner()
+        Err(_e) => 0u32
+    }
+end t.box_inner
+
+fn t.box_mut_r(n: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut bx = boxed.Box.new(std.alloc.SYSTEM, n)?
+    let r = bx.as_mut()
+    *r = r.wrapping_add(10u32)
+    Ok(*bx.as_ref())
+end t.box_mut_r
+
+fn t.box_mut(n: u32) -> u32 uses [alloc] panics may
+    match t.box_mut_r(n) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.box_mut
+
+fn t.box_string_r(n: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < n {
+        s.push_str("ab")?
+        i = i.wrapping_add(1usize)
+    }
+    let bx = boxed.Box.new(std.alloc.SYSTEM, s)?
+    Ok(bx.as_ref().len())
+end t.box_string_r
+
+fn t.box_string(n: usize) -> usize uses [alloc] panics may
+    match t.box_string_r(n) {
+        Ok(v) => v
+        Err(_e) => 0usize
+    }
+end t.box_string
+
+fn t.slot_sq(s: u32) -> Result<t.Slot, alloc.alloc.AllocError> uses [alloc] panics never
+    let b = boxed.Box.new(std.alloc.SYSTEM, t.Sq { s: s })?
+    Ok(t.Slot { h: boxed.Box.into_dyn(b) })
+end t.slot_sq
+
+fn t.slot_rect(w: u32) -> Result<t.Slot, alloc.alloc.AllocError> uses [alloc] panics never
+    let tag = alloc.string.String.new(std.alloc.SYSTEM)
+    let b = boxed.Box.new(std.alloc.SYSTEM, t.Rect { w: w, h: 2u32, tag: tag })?
+    Ok(t.Slot { h: boxed.Box.into_dyn(b) })
+end t.slot_rect
+
+fn t.dyn_one_r(pick: bool) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut total = 0u32
+    if pick {
+        let mut s = t.slot_sq(3u32)?
+        total = total.wrapping_add(s.h.grow(1u32))
+        total = total.wrapping_add(s.h.area())
+    } else {
+        let s = t.slot_rect(5u32)?
+        total = total.wrapping_add(s.h.area())
+    }
+    Ok(total)
+end t.dyn_one_r
+
+fn t.dyn_one(pick: bool) -> u32 uses [alloc] panics may
+    match t.dyn_one_r(pick) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.dyn_one
+
+fn t.dyn_vec_r(n: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics may
+    let mut v = vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        if i % 2u32 == 0u32 {
+            v.push(t.slot_sq(i)?)?
+        } else {
+            v.push(t.slot_rect(i)?)?
+        }
+        i = i.wrapping_add(1u32)
+    }
+    let mut total = 0u32
+    let mut j = 0usize
+    while j < v.len() {
+        total = total.wrapping_add(v[j].h.area())
+        j = j.wrapping_add(1usize)
+    }
+    Ok(total)
+end t.dyn_vec_r
+
+fn t.dyn_vec(n: u32) -> u32 uses [alloc] panics may
+    match t.dyn_vec_r(n) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.dyn_vec
+
+fn t.slot_rect_tag(w: u32, n: usize) -> Result<t.Slot, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut tag = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < n {
+        tag.push_str("xy")?
+        i = i.wrapping_add(1usize)
+    }
+    let b = boxed.Box.new(std.alloc.SYSTEM, t.Rect { w: w, h: 3u32, tag: tag })?
+    Ok(t.Slot { h: boxed.Box.into_dyn(b) })
+end t.slot_rect_tag
+
+fn t.rect_str_r(w: u32, n: usize) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = t.slot_rect_tag(w, n)?
+    let g = s.h.grow(2u32)
+    Ok(g.wrapping_add(s.h.area()))
+end t.rect_str_r
+
+fn t.rect_str(w: u32, n: usize) -> u32 uses [alloc] panics may
+    match t.rect_str_r(w, n) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.rect_str
+
+fn t.consume(b: alloc.boxed.Box<u32, std.alloc.System>) -> u32 uses [] panics never
+    *b.as_ref()
+end t.consume
+
+fn t.make_box(n: u32) -> Result<alloc.boxed.Box<u32, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let b = boxed.Box.new(std.alloc.SYSTEM, n)?
+    Ok(b)
+end t.make_box
+
+fn t.box_move_r(n: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let b = t.make_box(n)?
+    let c = t.make_box(n.wrapping_add(1u32))?
+    let first = t.consume(b)
+    Ok(first.wrapping_add(*c.as_ref()))
+end t.box_move_r
+
+fn t.box_move(n: u32) -> u32 uses [alloc] panics may
+    match t.box_move_r(n) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.box_move
+
+fn t.box_struct_r(s: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let b = boxed.Box.new(std.alloc.SYSTEM, t.Sq { s: s })?
+    let sq = b.into_inner()
+    Ok(sq.s)
+end t.box_struct_r
+
+fn t.box_struct(s: u32) -> u32 uses [alloc] panics may
+    match t.box_struct_r(s) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.box_struct
+
+fn t.box_rect_r(w: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut tag = alloc.string.String.new(std.alloc.SYSTEM)
+    tag.push_str("hello")?
+    let b = boxed.Box.new(std.alloc.SYSTEM, t.Rect { w: w, h: 2u32, tag: tag })?
+    Ok(b.as_ref().w)
+end t.box_rect_r
+
+fn t.box_rect(w: u32) -> u32 uses [alloc] panics may
+    match t.box_rect_r(w) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.box_rect
+
+"#;
+
+#[test]
+fn kir_box_dyn_match_tree_walker() {
+    // `Box<u32>` / `Box<String>` / `Box<構造体>`、`Box<dyn Tr>` の 2 つの実装の呼び分け、`Vec<Box<dyn Tr>>`、移動と解放。
+    // 木走査と同じ値になり、参照実行器が漏れ・二重解放を内部エラーにせず、`--native` と ASan も何も出さないこと。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.box_u32", &["4u32"], "5u32", "5"),
+        ("t.box_inner", &["7u32"], "7u32", "7"),
+        ("t.box_mut", &["5u32"], "15u32", "15"),
+        ("t.box_string", &["0usize"], "0usize", "0"),
+        ("t.box_string", &["3usize"], "6usize", "6"),
+        ("t.box_struct", &["9u32"], "9u32", "9"),
+        ("t.box_rect", &["7u32"], "7u32", "7"),
+        ("t.box_move", &["6u32"], "13u32", "13"),
+        ("t.dyn_one", &["true"], "20u32", "20"),
+        ("t.dyn_one", &["false"], "10u32", "10"),
+        ("t.rect_str", &["4u32", "3usize"], "24u32", "24"),
+        ("t.rect_str", &["4u32", "0usize"], "24u32", "24"),
+        ("t.dyn_vec", &["0u32"], "0u32", "0"),
+        ("t.dyn_vec", &["5u32"], "28u32", "28"),
+        ("t.dyn_vec", &["40u32"], "10680u32", "10680"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_box_dyn_{}", i), &format!("{}{}", KIR_DYN_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}{}", call, text(&o.stdout), text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        // 入口の引数は接尾辞なしの数 (`4u32` → `4`)
+        let plain: Vec<String> = args
+            .iter()
+            .map(|a| if *a == "true" || *a == "false" { a.to_string() } else { a.split(|c: char| c.is_alphabetic()).next().unwrap().to_string() })
+            .collect();
+        kargs.extend(plain.iter().map(|s| s.as_str()));
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_box_dyn_dispatch_uses_a_per_trait_helper_without_new_ops() {
+    // `dyn` のメソッド呼び出しは vtable の番号で分岐する補助関数 `dyn.call.<Tr>.<m>`、解放は `dyn.drop`。
+    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.dyn_vec(5u32), 28u32)\n    std.io.print_line(\"ok\")\nend t.main\n";
+    let t = Tmp::new("kir_box_dyn_dump", &format!("{}{}", KIR_DYN_FNS, main));
+    let o = run(&["kir", "t.dyn_vec"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let d = text(&o.stdout);
+    assert!(d.contains("call dyn.call.t.Shape.area("), "{}", d);
+    assert!(d.contains("call dyn.drop("), "{}", d);
+    assert!(d.contains("dynbox<t.Shape>"), "{}", d);
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    assert_eq!(b.status.code(), Some(0), "{}{}", text(&b.stdout), text(&b.stderr));
+    assert!(!text(&b.stdout).contains("llvm backend skipped"), "{}", text(&b.stdout));
+}
+
+#[test]
+fn kir_box_dyn_reports_unsupported_with_a_reason() {
+    // `Box<dyn>` から `&dyn` を作る `as_ref` は対象外。誤った KIR を出さず理由を付けて拒否する。
+    let tail = "
+fn t.via_ref_r() -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let s = t.slot_sq(3u32)?
+    let r = s.h.as_ref()
+    Ok(r.area())
+end t.via_ref_r
+
+fn t.via_ref() -> u32 uses [alloc] panics never
+    match t.via_ref_r() {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.via_ref
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.via_ref(), 9u32)
+    std.io.print_line(\"ok\")
+end t.main
+";
+    let t = Tmp::new("kir_box_dyn_reject", &format!("{}{}", KIR_DYN_FNS, tail));
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "tree-walker: {}{}", text(&r.stdout), text(&r.stderr));
+    let k = run(&["kir", "t.via_ref_r"], &t.0);
+    assert_ne!(k.status.code(), Some(0), "{}", text(&k.stdout));
+    assert!(text(&k.stderr).contains("Box<dyn> の as_ref"), "{}", text(&k.stderr));
 }
