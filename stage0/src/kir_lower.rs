@@ -44,6 +44,10 @@ mod method_lower;
 // `std.thread.spawn` / `JoinHandle.join` の下ろし (子モジュール)。
 #[path = "kir_lower_thread.rs"]
 mod thread_lower;
+#[path = "kir_lower_sync.rs"]
+mod sync_lower;
+#[path = "kir_lower_chan.rs"]
+mod chan_lower;
 // 型引数付きの関数・メソッドの単相化 (子モジュール)。
 #[path = "kir_lower_mono.rs"]
 mod mono;
@@ -799,6 +803,12 @@ impl<'a> Lw<'a> {
         if let Some(r) = self.unwrap_path(e) {
             return r;
         }
+        if let Some(r) = sync_lower::sync_call(self, e) {
+            return r;
+        }
+        if let Some(r) = chan_lower::chan_call(self, e) {
+            return r;
+        }
         if let Some(r) = self.user_path_call(e) {
             return r;
         }
@@ -1465,6 +1475,9 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
             Err(why) => bad.push((d.name.clone(), why)),
         }
     }
+    // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
+    thread_lower::finish(&mut ok);
+    chan_lower::finish(&mut ok);
     // `extern` 宣言を KIR の関数宣言 (本体なし) にする。リンク名は `Func.link` に持つ。
     for &i in user {
         let d = &p.defs[i];

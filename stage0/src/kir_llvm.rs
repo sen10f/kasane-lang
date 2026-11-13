@@ -1664,6 +1664,14 @@ impl<'a> Fe<'a> {
                 self.decl("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)".into());
                 self.line(format!("call void @llvm.memset.p0.i64(ptr {}, i8 0, i64 {}, i1 false)", d, size));
             }
+            Op::GlobalBytes { name, size } => {
+                let g = format!("@\"ksn.g.{}\"", name);
+                let def = format!("{} = internal global [{} x i8] zeroinitializer, align 16\n", g, size);
+                if !self.cx.globals.contains(&def) {
+                    self.cx.globals.push_str(&def);
+                }
+                self.line(format!("{} = getelementptr i8, ptr {}, i64 0", d, g));
+            }
             Op::StaticBytes(bytes) => {
                 let g = format!("ksn.s.{}.{}", self.fi, i.dst);
                 let esc: String = bytes.iter().map(|b| format!("\\{:02X}", b)).collect();

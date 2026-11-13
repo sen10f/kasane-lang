@@ -176,6 +176,8 @@ pub struct Prog {
     pub strs: Vec<String>,
     pub makes: Vec<MakeInfo>,
     pub ext: Vec<Func>,
+    /// `global.bytes` の領域 (名前 → アドレス。プログラムごとに 1 つ、解放しない)。
+    pub globals: std::collections::HashMap<String, usize>,
 }
 
 impl Prog {

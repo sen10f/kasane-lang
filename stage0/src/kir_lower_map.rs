@@ -64,24 +64,24 @@ impl Shape {
 
 // ------------------------------------------------ 補助の関数を組み立てる道具
 
-struct Fb {
+pub(super) struct Fb {
     blocks: Vec<(Vec<(VId, Ty)>, Vec<Inst>, Option<Term>)>,
     n: u32,
     cur: usize,
 }
 
 impl Fb {
-    fn new(params: &[Ty]) -> Fb {
+    pub(super) fn new(params: &[Ty]) -> Fb {
         let ps = params.iter().enumerate().map(|(i, t)| (i as VId, *t)).collect();
         Fb { blocks: vec![(ps, vec![], None)], n: params.len() as u32, cur: 0 }
     }
-    fn emit(&mut self, ty: Ty, op: Op) -> VId {
+    pub(super) fn emit(&mut self, ty: Ty, op: Op) -> VId {
         let dst = self.n;
         self.n += 1;
         self.blocks[self.cur].1.push(Inst { dst, ty, op });
         dst
     }
-    fn block(&mut self, params: &[Ty]) -> (usize, Vec<VId>) {
+    pub(super) fn block(&mut self, params: &[Ty]) -> (usize, Vec<VId>) {
         let ids: Vec<VId> = params
             .iter()
             .map(|_| {
@@ -92,49 +92,49 @@ impl Fb {
         self.blocks.push((ids.iter().copied().zip(params.iter().copied()).collect(), vec![], None));
         (self.blocks.len() - 1, ids)
     }
-    fn term(&mut self, t: Term) {
+    pub(super) fn term(&mut self, t: Term) {
         self.blocks[self.cur].2 = Some(t);
     }
-    fn goto(&mut self, b: usize, args: Vec<VId>) {
+    pub(super) fn goto(&mut self, b: usize, args: Vec<VId>) {
         self.term(Term::Br((b, args)));
     }
-    fn at(&mut self, b: usize) {
+    pub(super) fn at(&mut self, b: usize) {
         self.cur = b;
     }
-    fn c(&mut self, ty: Ty, v: i128) -> VId {
+    pub(super) fn c(&mut self, ty: Ty, v: i128) -> VId {
         self.emit(ty, Op::Const(v))
     }
-    fn cmp(&mut self, cc: Cc, a: VId, b: VId) -> VId {
+    pub(super) fn cmp(&mut self, cc: Cc, a: VId, b: VId) -> VId {
         self.emit(Ty::Bool, Op::Cmp { cc, ty: Ty::Usize, a, b })
     }
-    fn br_if(&mut self, c: VId, t: usize, e: usize) {
+    pub(super) fn br_if(&mut self, c: VId, t: usize, e: usize) {
         self.term(Term::BrIf(c, (t, vec![]), (e, vec![])));
     }
-    fn add(&mut self, a: VId, b: VId) -> VId {
+    pub(super) fn add(&mut self, a: VId, b: VId) -> VId {
         self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a, b })
     }
-    fn sub(&mut self, a: VId, b: VId) -> VId {
+    pub(super) fn sub(&mut self, a: VId, b: VId) -> VId {
         self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a, b })
     }
-    fn mul(&mut self, a: VId, b: VId) -> VId {
+    pub(super) fn mul(&mut self, a: VId, b: VId) -> VId {
         self.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a, b })
     }
-    fn and(&mut self, a: VId, b: VId) -> VId {
+    pub(super) fn and(&mut self, a: VId, b: VId) -> VId {
         self.emit(Ty::Usize, Op::Bool(BoolOp::And, a, b))
     }
-    fn xor(&mut self, a: VId, b: VId) -> VId {
+    pub(super) fn xor(&mut self, a: VId, b: VId) -> VId {
         self.emit(Ty::Usize, Op::Bool(BoolOp::Xor, a, b))
     }
-    fn load(&mut self, ty: Ty, p: VId, off: i128) -> VId {
+    pub(super) fn load(&mut self, ty: Ty, p: VId, off: i128) -> VId {
         self.emit(ty, Op::MemLoad { p, off: off as u32 })
     }
-    fn store(&mut self, ty: Ty, p: VId, off: i128, v: VId) {
+    pub(super) fn store(&mut self, ty: Ty, p: VId, off: i128, v: VId) {
         self.emit(Ty::Unit, Op::MemStore { ty, p, off: off as u32, v });
     }
-    fn padd(&mut self, p: VId, off: VId) -> VId {
+    pub(super) fn padd(&mut self, p: VId, off: VId) -> VId {
         self.emit(Ty::Ptr, Op::PtrAdd { p, off })
     }
-    fn build(self, key: &str, uses: &[&str], ret: Ty) -> Func {
+    pub(super) fn build(self, key: &str, uses: &[&str], ret: Ty) -> Func {
         Func {
             fqn: key.to_string(),
             key: key.to_string(),
@@ -147,7 +147,7 @@ impl Fb {
         }
     }
     /// 組 `i` (添字) の番地: `buf + ENT0 + i*esz`。
-    fn entry(&mut self, buf: VId, i: VId, esz: i128) -> VId {
+    pub(super) fn entry(&mut self, buf: VId, i: VId, esz: i128) -> VId {
         let k = self.c(Ty::Usize, esz);
         let o = self.mul(i, k);
         let e0 = self.c(Ty::Usize, ENT0);
