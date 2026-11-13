@@ -447,7 +447,7 @@ fn cmd_kir(rest: &[String]) -> i32 {
     }
     let text = crate::kir::print_module(&lo.module.reachable(fqn));
     // 出力は必ず読み直せること (往復) と検査を通ることを確かめてから使う。
-    let back = match crate::kir::parse_module(&text) {
+    let _back = match crate::kir::parse_module(&text) {
         Ok(m) if crate::kir::print_module(&m) == text && crate::kir::verify_module(&m).is_empty() => m,
         Ok(m) => {
             eprintln!("ksn kir: 内部エラー: KIR の往復または検査が一致しない");
@@ -465,7 +465,7 @@ fn cmd_kir(rest: &[String]) -> i32 {
         }
     };
     if llvm {
-        return match crate::kir_llvm::emit(&back, fqn) {
+        return match crate::kir_llvm::emit(&lo.module.reachable(fqn), fqn) {
             Ok(ll) => {
                 print!("{}", ll);
                 0
@@ -495,15 +495,15 @@ fn cmd_kir(rest: &[String]) -> i32 {
         };
         args.push(v);
     }
-    let ret = back.find(fqn).map(|f| f.ret);
+    let ret = lo.module.reachable(fqn).find(fqn).map(|f| f.ret);
     let show = |v: i128| match ret {
         Some(t) => println!("{}", crate::kir::show_value(t, v)),
         None => println!("{}", v),
     };
     if native {
-        return kir_native(&root, &back, fqn, &args, show);
+        return kir_native(&root, &lo.module.reachable(fqn), fqn, &args, show);
     }
-    match crate::kir_exec::run(&back, fqn, &args) {
+    match crate::kir_exec::run(&lo.module.reachable(fqn), fqn, &args) {
         Ok(crate::kir_exec::Outcome::Value(v)) => {
             show(v);
             0
