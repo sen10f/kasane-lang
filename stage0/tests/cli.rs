@@ -18349,6 +18349,7 @@ fn llvm_builds_of_real_packages_match_run() {
     }
     for pkg in [
         "examples/demo",
+        "examples/features",
         "examples/json",
         "examples/more_coll",
         "examples/more_str",

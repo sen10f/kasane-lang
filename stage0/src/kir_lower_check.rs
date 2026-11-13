@@ -108,6 +108,18 @@ impl<'a> Lw<'a> {
         Ok(Some(self.emit(Ty::Unit, Op::Const(0))))
     }
 
+    /// 集成体型 `ty` (元の型 `src`) の等しさ関数 `<型>.$eq` を (まだなければ) 生成し、その鍵を返す。
+    /// `bin()` の `==`/`!=` で集成体を比べるために使う。
+    pub(super) fn agg_eq_key(&mut self, src: &Src, ty: Ty, file: &str) -> Result<String, String> {
+        let mut g = Gen::new(self.p, self.aggs);
+        let eq = g.need_eq(src, ty, file)?;
+        for (f, c) in std::mem::take(&mut g.out) {
+            self.coll.extra.push((f, c));
+        }
+        self.callees.insert(eq.clone());
+        Ok(eq)
+    }
+
     fn check_true(&mut self, e: &V) -> LR<Option<VId>> {
         let line = nline(e);
         let args = items(&nf(e)[1]);
