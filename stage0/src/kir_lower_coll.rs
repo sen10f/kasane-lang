@@ -94,6 +94,9 @@ pub(crate) struct CollCx {
     pub(crate) peek_field: bool,
     /// 下ろしたクロージャの式 ID → (取り込みの値, その型)。`closure_kind_from_table` が読む。
     pub(crate) caps: BTreeMap<u32, (Vec<VId>, Vec<Ty>)>,
+    /// `std.thread.spawn` で保留されたクロージャの (鍵, 取り込み値) の列。FIFO = spawn 順。
+    /// `join` が先頭を取り出してクロージャ本体を呼ぶ (設計_KIR.md スレッド章)。
+    pub(crate) pending_spawns: Vec<super::thread_lower::Site>,
 }
 
 /// 型表の式の型 (式 ID が 0 なら無い)。
@@ -2285,7 +2288,7 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let func = Func {
         fqn: key.clone(),
         key,
-        uses: vec![],
+        uses: lw.def.uses.clone(),
         may_panic: lw.def.panics.as_deref() != Some("never"),
         stack: None,
         ret: rt,

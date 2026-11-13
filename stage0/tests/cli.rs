@@ -6460,7 +6460,7 @@ fn try_does_not_convert_in_the_reverse_direction() {
 /// `derive [From]` は `enum` だけで、ペイロードが 1 つのバリアントがなければ E2050。
 #[test]
 fn derive_from_needs_an_enum_with_a_single_payload_variant() {
-    let main = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     let on_type = format!("type t.W derive [From] pub\n    a: u8\nend t.W\n\n{}", main);
     let t = Tmp::new("derive_from_type", &on_type);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
@@ -7324,7 +7324,7 @@ fn ffi_check_codes(name: &str, src: &str, modules: &str) -> Vec<String> {
 
 #[test]
 fn ffi_boundary_diagnostics_report_exactly_their_own_code() {
-    let main = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     // E5004: 関数型 (C のコールバック) が `uses [] panics never` でない
     let e = format!("extern t.each(f: fn(i32) -> i32 uses [io.console] panics may) -> () link \"each\"\n\n{}", main);
     assert_eq!(ffi_check_codes("ffi_e5004", &e, "t"), ["E5004"]);
@@ -13165,6 +13165,159 @@ fn kir_method_mut_receivers_match_tree_walker() {
     }
 }
 
+const THREAD_SRC: &str = r#"fn t.in_order() -> u64 uses [alloc, io.console, thread] panics may
+    let a = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [] {
+        10u64
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let b = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [] {
+        20u64
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let x = a.join()
+    let y = b.join()
+    x.wrapping_mul(100u64).wrapping_add(y)
+end t.in_order
+
+fn t.reversed() -> u64 uses [alloc, io.console, thread] panics may
+    let a = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [] {
+        10u64
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let b = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [] {
+        20u64
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let c = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [] {
+        30u64
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let z = c.join()
+    let y = b.join()
+    let x = a.join()
+    x.wrapping_mul(10000u64).wrapping_add(y.wrapping_mul(100u64)).wrapping_add(z)
+end t.reversed
+
+fn t.say(n: u32) -> u32 uses [io.console] panics may
+    std.io.print_line("thread")
+    n
+end t.say
+
+fn t.order_print() -> u32 uses [alloc, io.console, thread] panics may
+    let a = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u32 capture [] {
+        t.say(1u32)
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let b = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u32 capture [] {
+        t.say(2u32)
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let c = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u32 capture [] {
+        t.say(3u32)
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    std.io.print_line("spawned")
+    let r = b.join()
+    std.io.print_line("joined b")
+    let ra = a.join()
+    let rc = c.join()
+    std.io.print_line("joined all")
+    ra.wrapping_mul(100u32).wrapping_add(r.wrapping_mul(10u32)).wrapping_add(rc)
+end t.order_print
+
+fn t.moved(k: u32) -> u32 uses [alloc, thread] panics may
+    let mut n = k
+    let h = match std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u32 capture [move n] {
+            n.wrapping_mul(2u32)
+        },
+    ) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    n = 100u32
+    let r = h.join()
+    r.wrapping_add(n)
+end t.moved
+
+fn t.string_result() -> usize uses [alloc, thread] panics may
+    let h = match std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> alloc.string.String<std.alloc.System> capture [] {
+            let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+            core.mem.drop(s.push_str("hello"))
+            s
+        },
+    ) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let s = h.join()
+    let n = s.len()
+    core.mem.drop(s)
+    n
+end t.string_result
+
+fn t.vec_result() -> usize uses [alloc, thread] panics may
+    let h = match std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> alloc.vec.Vec<u32, std.alloc.System> capture [] {
+            let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            core.mem.drop(v.push(5u32))
+            core.mem.drop(v.push(6u32))
+            core.mem.drop(v.push(7u32))
+            v
+        },
+    ) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let v = h.join()
+    let n = v.len()
+    core.mem.drop(v)
+    n
+end t.vec_result
+"#;
+
+#[test]
+fn kir_thread_spawn_join_match_tree_walker() {
+    // join の順 (生成順・逆順)、join の時まで走らない遅延、join しないハンドル、結果が Vec / String、move の取り込み。
+    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    core.check.eq(t.in_order(), 1020u64)\n    core.check.eq(t.reversed(), 102030u64)\n    core.check.eq(t.order_print(), 123u32)\n    core.check.eq(t.moved(1u32), 102u32)\n    core.check.eq(t.string_result(), 5usize)\n    core.check.eq(t.vec_result(), 3usize)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_thread", &format!("{}{}", THREAD_SRC, main));
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(0), "tree-walker main\n{}{}", text(&tw.stdout), text(&tw.stderr));
+    let tw_out = text(&tw.stdout);
+    for (f, want) in [("t.in_order", "1020"), ("t.reversed", "102030"), ("t.moved", "102"), ("t.string_result", "5"), ("t.vec_result", "3")] {
+        let args: Vec<&str> = if f == "t.moved" { vec!["kir", f, "--run", "1"] } else { vec!["kir", f, "--run"] };
+        let k = kir_run(&args, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+    // 出力の順 (spawn の時は何も出ず、b を join すると a, b の順に走り、c は c の join の時に走る) を木走査の表示と比べる。
+    let k = kir_run(&["kir", "t.order_print", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir order_print\n{}", text(&k.stderr));
+    let want = ["spawned", "thread", "thread", "joined b", "thread", "joined all"];
+    assert_eq!(tw_out.lines().collect::<Vec<_>>(), want, "木走査: join の時に生成順で走る");
+    assert_eq!(text(&k.stdout).lines().collect::<Vec<_>>(), [&want[..], &["123"][..]].concat(), "kir の表示が木走査と違う");
+}
+
 const ARRAY_SRC: &str = r#"fn t.sum_lit() -> u32 uses [] panics never pub
     let mut s = 0u32
     for x in [1u32, 2u32, 3u32] {
@@ -18859,7 +19012,7 @@ fn derive_clone_on_string_or_vec_field_is_e2036() {
 /// 1 回だけ現れる宣言は省略が正規形で E3021 (`'ab` は `'a` と別の名前として数える)。
 #[test]
 fn lifetime_declared_only_in_inputs_is_e3021_unless_it_ties_inputs() {
-    let main = "fn t.main() -> () uses [] panics never\nend t.main\n";
+    let main = "\nfn t.main() -> () uses [] panics never\nend t.main\n";
     let cases = [
         ("once", "fn t.f['a](x: &'a u32) -> u32 uses [] panics never\n    *x\nend t.f\n", true),
         ("once_two_refs", "fn t.f['a](x: &'a u32, y: &u32) -> u32 uses [] panics never\n    x.wrapping_add(*y)\nend t.f\n", true),
