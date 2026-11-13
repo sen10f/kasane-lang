@@ -916,10 +916,21 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let Some(f) = files.get_mut(&fd) else {
                         return Err(format!("読み出しできるのはファイル記述子だけ: {}", fd));
                     };
+                    // 読みの失敗は `Err(std.io.Error)` の値にする (LLVM の `errno` の経路と同じ)。中断 (EINTR) は読み直す。
                     let mut vec = vec![0u8; n as usize];
-                    let nr = f.read(&mut vec).map_err(|e| format!("read: {e}"))?;
-                    bm.write_bytes(p, &vec[..nr])?;
-                    nr as i128
+                    let res = loop {
+                        match f.read(&mut vec) {
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                            r => break r,
+                        }
+                    };
+                    match res {
+                        Ok(nr) => {
+                            bm.write_bytes(p, &vec[..nr])?;
+                            nr as i128
+                        }
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    }
                 }
                 Op::FsWrite { fd, buf, len } => {
                     let (fd, p, n) = (

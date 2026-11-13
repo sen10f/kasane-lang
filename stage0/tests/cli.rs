@@ -12824,6 +12824,91 @@ end t.main
 }
 
 #[test]
+fn kir_fs_read_to_end_matches_tree_walker() {
+    // `std.fs.read_to_end` を KIR に下ろす (`fs.read` の繰り返しと、Vec<u8> の再確保 `reserve`)。
+    // 既存の要素 (3 バイト) の後ろへ足す。空・小さい・初期の伸び (4096) ちょうど・再確保が何度も起きる大きさで、
+    // 木走査・`--run`・`--native` (ASan 込み) が同じ総数と同じバイト列 (重み付きの合計) を返すこと。
+    // 読めない (ディレクトリ) ときは Err を返し、この呼び出しで足したバイトは残さないこと。
+    let tmp = Tmp::new("kir_read_to_end_tmp", "fn t.main() -> u32 uses [] panics may\n    0u32\nend t.main\n");
+    for (label, n) in [("empty", 0usize), ("small", 5), ("chunk", 4096), ("grow", 10_000), ("big", 300_000)] {
+        let file = tmp.0.join(format!("read_{label}.bin"));
+        let bytes: Vec<u8> = (0..n).map(|i| ((i * 37 + 11) % 251) as u8).collect();
+        fs::write(&file, &bytes).unwrap();
+        let path_str = file.to_string_lossy().replace('\\', "/");
+        let mut seq: Vec<u8> = vec![1, 2, 3];
+        seq.extend_from_slice(&bytes);
+        let want = seq.iter().fold(0u8, |acc, b| acc.wrapping_mul(31).wrapping_add(*b));
+        let total = n + 3;
+        let src = format!(
+            r#"
+fn t.main() -> u32 uses [alloc, io.fs] panics may
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(data.push(1u8))
+    core.mem.drop(data.push(2u8))
+    core.mem.drop(data.push(3u8))
+    with mut file = match std.fs.open("{path_str}") {{
+        Ok(f) => f
+        Err(_) => return 1u32
+    }} close core.mem.drop(file.close()) {{
+        match std.fs.read_to_end(&mut file, &mut data) {{
+            Ok(k) => {{
+                core.check.eq(k, {n}usize)
+            }}
+            Err(_) => {{
+                return 2u32
+            }}
+        }}
+    }}
+    core.check.eq(data.len(), {total}usize)
+    let mut acc = 0u8
+    for b in &data {{
+        acc = acc.wrapping_mul(31u8).wrapping_add(*b)
+    }}
+    core.check.eq(acc, {want}u8)
+    0u32
+end t.main
+"#
+        );
+        let t = Tmp::new(&format!("kir_read_to_end_{label}"), &src);
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "{label}: tree-walker: {}\n{}", text(&o.stdout), text(&o.stderr));
+        let k = kir_run(&["kir", "t.main", "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "{label}: kir: {}\n{}", text(&k.stdout), text(&k.stderr));
+    }
+    // 読めない: ディレクトリは開けても読めない (EISDIR)。Err を返し、足したバイトは残らない。
+    let dir_str = tmp.0.to_string_lossy().replace('\\', "/");
+    let src = format!(
+        r#"
+fn t.main() -> u32 uses [alloc, io.fs] panics may
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(data.push(1u8))
+    core.mem.drop(data.push(2u8))
+    core.mem.drop(data.push(3u8))
+    with mut file = match std.fs.open("{dir_str}") {{
+        Ok(f) => f
+        Err(_) => return 1u32
+    }} close core.mem.drop(file.close()) {{
+        match std.fs.read_to_end(&mut file, &mut data) {{
+            Ok(_) => {{
+                return 4u32
+            }}
+            Err(_) => {{
+            }}
+        }}
+    }}
+    core.check.eq(data.len(), 3usize)
+    0u32
+end t.main
+"#
+    );
+    let t = Tmp::new("kir_read_to_end_dir", &src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "dir: tree-walker: {}\n{}", text(&o.stdout), text(&o.stderr));
+    let k = kir_run(&["kir", "t.main", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "dir: kir: {}\n{}", text(&k.stdout), text(&k.stderr));
+}
+
+#[test]
 fn kir_lower_panics_and_depth_match_tree_walker() {
     // panic の文言と終了コード (101)、呼び出し深さの超過 (102) が木走査と一致すること。
     let cases: &[(&str, &[&str], &str)] = &[

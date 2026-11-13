@@ -173,7 +173,7 @@ fn add(lw: &mut Lw, ty: Ty, a: VId, b: VId) -> VId {
 }
 
 /// 容量が `len + extra` バイトに足りなければ、`max(cap * 2 + 4, len + extra)` に広げる (要素はバイト)。
-fn reserve(lw: &mut Lw, h: VId, extra: VId) {
+pub(super) fn reserve(lw: &mut Lw, h: VId, extra: VId) {
     let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
     let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
     let need = add(lw, Ty::Usize, len, extra);
