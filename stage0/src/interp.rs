@@ -1046,60 +1046,96 @@ impl Interp {
         0
     }
 
-    /// 順序 (-1 / 0 / 1、NaN は None)。手書きの `partial_cmp` / `cmp` を持つ型はそれを呼ぶ。派生の順序は、列挙子は
-    /// その型の宣言順、ペイロード・フィールド・列の要素は辞書順で、要素ごとにこの関数を再帰で呼ぶ (4.3)。
+    /// 演算子 `<` 等の順序 (-1 / 0 / 1、NaN は None)。`<` は `partial_cmp` から導く (4.3): 手書きの `partial_cmp` があればそれを呼び、
+    /// なければ派生の順序 (列挙子は宣言順、フィールド・ペイロード・列の要素は辞書順)。
     pub fn v_cmp(&mut self, a: &Val, b: &Val) -> Result<Option<i32>, Ctl> {
+        self.ord_of(a, b, false, false)
+    }
+
+    /// 順序の本体。`total` が真なら `cmp` の規則 (`min` / `max` が従う)、偽なら `partial_cmp` の規則。
+    /// `derived_top` が真なら、派生の `cmp` / `partial_cmp` の入口なので、利用者の型の最上位では手書きのメソッドを引かず
+    /// フィールドごとに比べる (手書きの `partial_cmp` が派生の `cmp` を呼ぶときに無限に再帰しないため)。
+    /// 入れ子の要素は、どの入口でも手書きのメソッドを使う (4.3)。
+    fn ord_of(&mut self, a: &Val, b: &Val, total: bool, derived_top: bool) -> Result<Option<i32>, Ctl> {
         let (a, b) = (dr(a), dr(b));
-        let user_ty = match &a {
-            Val::Struct(s) => Some(s.ty.clone()),
-            Val::Enum(e) if e.en != "Option" && e.en != "Result" => Some(e.en.clone()),
-            _ => None,
-        };
-        if let Some(ty) = &user_ty {
-            if let Some(&di) = self.p.funcs.get(&format!("{}.partial_cmp", ty)) {
-                let r = self.call_def(di, vec![a.clone(), b.clone()])?;
-                if let Val::Enum(e) = &r {
-                    if e.var == "None" {
-                        return Ok(None);
-                    }
-                    return Ok(Some(Self::ordering(&e.pl[0])));
-                }
-            }
-            if let Some(&di) = self.p.funcs.get(&format!("{}.cmp", ty)) {
-                let r = self.call_def(di, vec![a.clone(), b.clone()])?;
-                return Ok(Some(Self::ordering(&r)));
+        if !derived_top {
+            if let Some(r) = self.user_ord(&a, &b, total)? {
+                return Ok(r);
             }
         }
-        match (&a, &b) {
+        self.ord_fields(&a, &b, total)
+    }
+
+    /// 利用者の型の手書きの `partial_cmp` (`total` なら `cmp`) を呼ぶ。持たなければ `None`。
+    fn user_ord(&mut self, a: &Val, b: &Val, total: bool) -> Result<Option<Option<i32>>, Ctl> {
+        let ty = match a {
+            Val::Struct(s) => s.ty.clone(),
+            Val::Enum(e) if e.en != "Option" && e.en != "Result" => e.en.clone(),
+            _ => return Ok(None),
+        };
+        let name = if total { "cmp" } else { "partial_cmp" };
+        let Some(&di) = self.p.funcs.get(&format!("{}.{}", ty, name)) else { return Ok(None) };
+        let r = self.call_def(di, vec![a.clone(), b.clone()])?;
+        Ok(Some(match &r {
+            Val::Enum(e) if !total => {
+                if e.var == "None" {
+                    None
+                } else {
+                    Some(Self::ordering(&e.pl[0]))
+                }
+            }
+            _ => Some(Self::ordering(&r)),
+        }))
+    }
+
+    /// 派生の順序 (手書きのメソッドは最上位で引かない)。構造体のフィールドは型定義の宣言順の辞書式 (4.3)。
+    fn ord_fields(&mut self, a: &Val, b: &Val, total: bool) -> Result<Option<i32>, Ctl> {
+        match (a, b) {
             (Val::Enum(x), Val::Enum(y)) => {
                 if x.var != y.var {
                     let (ia, ib) = self.order_of(&x.en)(&x.var, &y.var);
                     return Ok(Some(if ia < ib { -1 } else { 1 }));
                 }
                 let (xs, ys) = (x.pl.clone(), y.pl.clone());
-                self.cmp_seq(&xs, &ys)
+                self.cmp_seq(&xs, &ys, total)
             }
             (Val::Struct(x), Val::Struct(y)) => {
-                let xs: Vec<Val> = x.f.borrow().iter().map(|(_, v)| v.clone()).collect();
-                let ys: Vec<Val> = y.f.borrow().iter().map(|(_, v)| v.clone()).collect();
-                self.cmp_seq(&xs, &ys)
+                // 型定義の宣言順 (`fields`) で並べる。定義が無いとき (標準の型) は格納順。
+                let names: Vec<String> = match self.p.types.get(&x.ty) {
+                    Some(&i) => self.p.defs[i].fields.iter().map(|f| f.0.clone()).collect(),
+                    None => x.f.borrow().iter().map(|(k, _)| k.clone()).collect(),
+                };
+                let xs: Vec<Val> = names.iter().map(|n| x.get(n).unwrap_or(Val::Unit)).collect();
+                let ys: Vec<Val> = names.iter().map(|n| y.get(n).unwrap_or(Val::Unit)).collect();
+                self.cmp_seq(&xs, &ys, total)
             }
-            _ if str_of(&a).is_none() => match (seq_items(&a), seq_items(&b)) {
-                (Some(x), Some(y)) => self.cmp_seq(&x, &y),
-                _ => Ok(vcmp(&a, &b, &*self.order_of(""))),
+            _ if str_of(a).is_none() => match (seq_items(a), seq_items(b)) {
+                (Some(x), Some(y)) => self.cmp_seq(&x, &y, total),
+                _ => Ok(vcmp(a, b, &*self.order_of(""))),
             },
-            _ => Ok(vcmp(&a, &b, &*self.order_of(""))),
+            _ => Ok(vcmp(a, b, &*self.order_of(""))),
         }
     }
 
-    fn cmp_seq(&mut self, x: &[Val], y: &[Val]) -> Result<Option<i32>, Ctl> {
+    /// 辞書式の比較。要素は、その比較の規則 (`total`) で手書きのメソッドを使いながら比べる。
+    fn cmp_seq(&mut self, x: &[Val], y: &[Val], total: bool) -> Result<Option<i32>, Ctl> {
         for (p, q) in x.iter().zip(y) {
-            match self.v_cmp(p, q)? {
+            match self.ord_of(p, q, total, false)? {
                 Some(0) => {}
                 r => return Ok(r),
             }
         }
         Ok(Some((x.len() > y.len()) as i32 - (x.len() < y.len()) as i32))
+    }
+
+    /// 派生の `cmp` / `partial_cmp` のメソッド形 (利用者の型の最上位は手書きを引かない)。
+    pub fn v_cmp_derived(&mut self, a: &Val, b: &Val, total: bool) -> Result<Option<i32>, Ctl> {
+        self.ord_of(a, b, total, true)
+    }
+
+    /// `min` / `max` (`Ord` の提供メソッド) の比較。`cmp` の規則に従い、手書きの `cmp` があればそれを使う。
+    pub fn v_cmp_total(&mut self, a: &Val, b: &Val) -> Result<Option<i32>, Ctl> {
+        self.ord_of(a, b, true, false)
     }
 
     // ------------------------------------------------------------ 場所・代入

@@ -15676,6 +15676,104 @@ end t.main.test_nested_user_cmp
     assert!(out.contains("ordering of t.P with a user-defined cmp"), "{}", out);
 }
 
+/// 派生の順序 (`<` / `partial_cmp`) は、構造体のフィールドを型定義の宣言順に辞書式で比べる (4.3)。構造体リテラルに
+/// 書いた順では比べない。入れ子 (`Option` の中) でも同じ。以前は格納順 (リテラルの順) で比べ、`x < y` を取り違えていた。
+#[test]
+fn derived_order_compares_fields_in_declaration_order() {
+    let src = r#"type t.P derive [Clone, Copy, PartialEq, PartialOrd] pub
+    a: u8
+    b: u8
+end t.P
+
+fn t.main() -> () uses [] panics may
+    let x = t.P { b: 1u8, a: 2u8 }
+    let y = t.P { a: 1u8, b: 9u8 }
+    core.check.eq(x < y, false)
+    core.check.eq(x > y, true)
+    core.check.eq(x.partial_cmp(&y) == Some(core.cmp.Ordering.Greater), true)
+    let ox: Option<t.P> = Some(x)
+    let oy: Option<t.P> = Some(y)
+    core.check.eq(ox.partial_cmp(&oy) == Some(core.cmp.Ordering.Greater), true)
+end t.main
+"#;
+    let t = Tmp::new("derived_order_decl", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+/// 派生の `cmp` / `partial_cmp` の入口は、利用者の型の最上位で手書きのメソッドを引かない (4.3)。手書きの `partial_cmp` が
+/// 派生の `cmp` を呼んでも無限に再帰しない (以前は `stack overflow`)。逆向き (手書きの `cmp` → 派生の `partial_cmp`) も、
+/// 派生の辞書式 (`partial_cmp` と `<`) で比べ、手書きの `cmp` は `cmp` の呼び出しでだけ使う。
+#[test]
+fn derived_cmp_entry_does_not_recurse_into_handwritten_methods() {
+    let src = r#"type t.K derive [PartialEq, Eq, Ord] pub
+    v: u8
+end t.K
+
+impl core.cmp.PartialOrd<t.K> for t.K
+fn t.K.partial_cmp(self: &t.K, other: &t.K) -> Option<core.cmp.Ordering> uses [] panics never impls core.cmp.PartialOrd<t.K>
+    Some(self.cmp(other))
+end t.K.partial_cmp
+
+type t.R derive [PartialEq, Eq, PartialOrd] pub
+    v: u8
+end t.R
+
+impl core.cmp.Ord for t.R
+fn t.R.cmp(self: &t.R, other: &t.R) -> core.cmp.Ordering uses [] panics never impls core.cmp.Ord
+    if self.v > other.v {
+        core.cmp.Ordering.Less
+    } else if self.v < other.v {
+        core.cmp.Ordering.Greater
+    } else {
+        core.cmp.Ordering.Equal
+    }
+end t.R.cmp
+
+fn t.main() -> () uses [] panics may
+    let a = t.K { v: 1u8 }
+    let b = t.K { v: 2u8 }
+    core.check.eq(a.cmp(&b) == core.cmp.Ordering.Less, true)
+    core.check.eq(a < b, true)
+    let c = t.R { v: 1u8 }
+    let d = t.R { v: 2u8 }
+    core.check.eq(c.partial_cmp(&d) == Some(core.cmp.Ordering.Less), true)
+    core.check.eq(c < d, true)
+    core.check.eq(c.cmp(&d) == core.cmp.Ordering.Greater, true)
+end t.main
+"#;
+    let t = Tmp::new("derived_cmp_entry", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(!text(&o.stderr).contains("stack overflow"), "{}", text(&o.stderr));
+}
+
+/// f32 の `abs` は符号ビットを落とすだけ (ビットのまま)。木走査も KIR も、signaling NaN のビットを保つ。f64 へ広げると
+/// quiet NaN に変わっていた (0x7f800001 → 0x7fc00001)。KIR は参照実行器と `--native` の結果も一致すること。
+#[test]
+fn f32_abs_keeps_signaling_nan_bits() {
+    let src = r#"fn t.absbits(x: f32) -> u32 uses [] panics never
+    x.abs().to_bits()
+end t.absbits
+
+fn t.main() -> () uses [] panics may
+    let s: f32 = core.num.f32.from_bits(2139095041u32)
+    core.check.eq(s.abs().to_bits(), 2139095041u32)
+    core.check.eq((-s).abs().to_bits(), 2139095041u32)
+    core.check.eq(t.absbits(s), 2139095041u32)
+end t.main
+"#;
+    let t = Tmp::new("f32_abs_snan", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    // 0x7f800001 と 0xff800001 (負の signaling NaN) の abs は、どちらも 0x7f800001 のまま。
+    for arg in ["2139095041", "4286578689"] {
+        let k = kir_run(&["kir", "t.absbits", "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", arg, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "2139095041", "kir abs of bits {}", arg);
+    }
+}
+
 /// clif の 128 ビット整数: 確かめた演算 (比較・wrapping・checked_add / sub・単項 `-`・`from_*` の拡張) だけを機械語にし、
 /// 除算・剰余・乗算・`try_from_*` など 64 ビットを前提にした経路は理由付きで退避する。以前は `checked_div` が
 /// `Some(被除数)` を返す誤った機械語になっていた。どのテストも、インタプリタと食い違わない。
