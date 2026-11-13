@@ -72,8 +72,8 @@ fn diagnostics_each_case_reports_its_code() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// 検査を通ってはいけないケース (tests/data/unsound/、1 ファイル 1 ケース)。`to_string` は仕様に無く、
-/// 浮動小数は `Ord` を持たない (4.3) ので、どれも E1108 で拒まれ、`check` は rc=1 になる。
+/// 検査を通ってはいけないケース (tests/data/unsound/、1 ファイル 1 ケース)。1 行目の
+/// `// expect: Exxxx` に期待する診断コードを書く。`check` は rc=1 で、そのコードを含まなければならない。
 #[test]
 fn unsound_cases_are_rejected() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound");
@@ -83,11 +83,17 @@ fn unsound_cases_are_rejected() {
     let mut failures = Vec::new();
     for p in names {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&stem, &fs::read_to_string(&p).unwrap());
+        let src = fs::read_to_string(&p).unwrap();
+        let Some(want) = src.lines().next().and_then(|l| l.strip_prefix("// expect: ")) else {
+            failures.push(format!("{}: line 1 must be `// expect: Exxxx`", stem));
+            continue;
+        };
+        let want = want.trim().to_string();
+        let t = Tmp::new(&stem, &src);
         let o = run(&["check", "--json"], &t.0);
         let got = codes(&text(&o.stdout));
-        if o.status.code() != Some(1) || !got.iter().any(|c| c == "E1108") {
-            failures.push(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got));
+        if o.status.code() != Some(1) || !got.iter().any(|c| *c == want) {
+            failures.push(format!("{}: want {} rc={:?} codes={:?}", stem, want, o.status.code(), got));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
