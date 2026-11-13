@@ -1,0 +1,23 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    let tmp = t.mk()
+    let r = t.same(&tmp)
+    let z = t.mk()
+    core.mem.drop(t.peek(r))
+    core.mem.drop(tmp)
+    core.mem.drop(z)
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("x"))
+    s
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek
+
+fn t.same(s: &alloc.string.String) -> &alloc.string.String uses [] panics never
+    s
+end t.same

@@ -1,0 +1,11 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let x = 1u8
+    match &Some(x) {
+        Some(p) => {
+            let n = *p
+            core.mem.drop(n)
+        }
+        None => ()
+    }
+    Ok(())
+end t.main

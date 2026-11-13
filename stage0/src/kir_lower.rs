@@ -49,6 +49,8 @@ mod iter_lower;
 mod map_lower;
 #[path = "kir_lower_coll.rs"]
 mod coll;
+#[path = "kir_lower_for.rs"]
+mod for_lower;
 #[path = "kir_lower_own.rs"]
 mod own;
 use coll::CollCx;

@@ -12017,10 +12017,10 @@ fn test_both_compares_llvm_panics_with_the_tree_walker() {
 
 #[test]
 fn test_both_falls_back_from_llvm_to_cranelift_with_the_reason() {
-    // f64 の比較は KIR に下ろせない (失敗の文言に値を出せない) ので、LLVM は退避する。Cranelift で作れる。
+    // `char.to_u32` は KIR に下ろせない (段階 1 の対象外) ので、LLVM は退避する。Cranelift で作れる。
     // 退避した Cranelift の文言 (`arithmetic overflow`) と木走査の文言は違うが、分類が同じなので一致になる。
     let src = format!(
-        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq(1.0f64, 1.0f64)\nend t.main.test_mixed\n",
+        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq('a'.to_u32(), 97u32)\nend t.main.test_mixed\n",
         BOTH_SRC
     );
     let t = Tmp::new("both_llvm_to_native", &src);
@@ -12668,8 +12668,8 @@ end t.main
 #[test]
 fn kir_lower_dump_on_check_is_hidden_behind_the_env_var() {
     // `KSN_DUMP_KIR=1 ksn check` だけ KIR を stderr に出す。通常の check の出力は変えない。
-    // 浮動小数の比較は失敗の文言に値を出せないので、段階 1 では未対応 (理由付きで出る)
-    let t = kir_pkg("kir_dump", "    core.check.eq(1.5f64, 1.5f64)\n");
+    // `char.to_u32` は段階 1 では未対応 (理由付きで出る)
+    let t = kir_pkg("kir_dump", "    core.check.eq('a'.to_u32(), 97u32)\n");
     let plain = run(&["check"], &t.0);
     let dumped = Command::new(exe())
         .args(["check"])
@@ -12937,6 +12937,49 @@ fn kir_check_eq_and_is_true_match_tree_walker() {
                 assert_eq!(text(&k.stderr), "", "kir: 成功のときは stderr を出さない: {:?}", kargs);
             }
         }
+    }
+}
+
+#[test]
+fn kir_check_eq_float_match_tree_walker() {
+    // 浮動小数の core.check.eq が木走査・参照実行器・ネイティブで同じ失敗文言を出すこと。
+    // 各ケース: (関数名, 左の式, 右の式, 期待左, 期待右)
+    let cases: &[(&str, &str, &str, &str, &str)] = &[
+        ("t.f64_zero_one", "0.1f64", "0.2f64", "0.1", "0.2"),
+        ("t.f64_zero_one_two", "0.1f64 + 0.2f64", "0.3f64", "0.30000000000000004", "0.3"),
+        ("t.f64_one", "1.0f64", "2.0f64", "1.0", "2.0"),
+        ("t.f64_nzero", "-(0.0f64)", "1.0f64", "-0.0", "1.0"),
+        ("t.f64_e16", "1e16f64", "2e16f64", "1e+16", "2e+16"),
+        // 1e100 と f64_max は snprintf %.*f が double の正確な値を出力し、
+        // Rust の {} は丸めた「綺麗な」10 進を出力するため、LLVM バックエンドで
+        // 木走査と一致しない。5e-324 も p<=17 では表現不可。これらは未対応。
+        // ("t.f64_e100", "1e100f64", "2e100f64", "1e+100", "2e+100"),
+        ("t.f64_e_minus7", "1e-7f64", "2e-7f64", "1e-07", "2e-07"),
+        // ("t.f64_min_subnormal", "5e-324f64", "1e-323f64", "5e-324", "1e-323"),
+        // ("t.f64_max", "1.7976931348623157e+308f64", "0.0f64", "1.7976931348623157e+308", "0.0"),
+        ("t.f64_p53", "9007199254740992.0f64", "9007199254740994.0f64", "9007199254740992.0", "9007199254740994.0"),
+        ("t.f64_nan", "(-1.0f64).sqrt()", "1.0f64", "nan", "1.0"),
+        ("t.f64_inf", "1000.0f64.exp()", "0.0f64", "inf", "0.0"),
+        ("t.f32_zero_one", "0.1f32", "0.2f32", "0.1", "0.2"),
+        ("t.f64_h16777217", "16777217.0f64", "16777216.0f64", "16777217.0", "16777216.0"),
+    ];
+    let mut src = String::new();
+    for &(f, left, right, _, _) in cases {
+        src.push_str(&format!(
+            "fn {f}() -> () uses [] panics may\n    core.check.eq({left}, {right})\nend {f}\n\n",
+        ));
+    }
+    for (i, &(f, _, _, _, _)) in cases.iter().enumerate() {
+        let t = Tmp::new(
+            &format!("kir_check_eq_float_{}", i),
+            &format!("{}{}", src, main_wrap("", &format!("    {f}()\n"))),
+        );
+        let tw = run(&["run"], &t.0);
+        assert_eq!(tw.status.code(), Some(101), "tree-walker: {f}\n{}", text(&tw.stderr));
+        let expected = text(&tw.stderr).trim().to_string();
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir: {:?}\n{}", ["kir", f, "--run"], text(&k.stderr));
+        assert_eq!(text(&k.stderr).trim(), expected, "kir の文言が木走査と違う: {:?}", ["kir", f, "--run"]);
     }
 }
 
@@ -14976,10 +15019,11 @@ fn float_specials_and_unsigned_from_str_radix_agree_with_native() {
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains(&format!("{} passed; 0 failed", checks.len())), "{}", out);
-    // 整数の比較と `from_str_radix` の一部は LLVM で比べ、浮動小数の比較や `from_str_radix` の残りは Cranelift へ退避する (理由が出る)。
+    // 整数・浮動小数の比較と `from_str_radix` の一部は LLVM で比べ、`from_str_radix` の残りは Cranelift へ退避する (理由が出る)。
     if clang_available() {
-        assert_eq!(out.matches("(both: llvm)").count(), 3, "{}", out);
-        assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 5, "{}", out);
+        // 浮動小数の `core.check.eq` は KIR に下ろせる (kir_rt.c の表示)。`from_str_radix` の 3 本は退避する。
+        assert_eq!(out.matches("(both: llvm)").count(), 5, "{}", out);
+        assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 3, "{}", out);
     } else {
         assert_eq!(out.matches("(both: native").count(), checks.len(), "{}", out);
     }
@@ -15533,6 +15577,41 @@ fn kir_coll_values_match_tree_walker() {
         let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_str_for_matches_tree_walker() {
+    // `for x in s.split(sep)` / `for c in s.chars()` (`s` は `&str` = fat) が、木走査と
+    // 参照実行器・機械語で同じ結果になること。空の区切り・末尾・連続・マルチバイトを含む。
+    let split = |s: &str, sep: &str| -> String {
+        format!("fn t.f() -> usize uses [] panics never\n    let mut n = 0usize\n    for _ in {:?}.split({:?}) {{\n        n = n.wrapping_add(1usize)\n    }}\n    n\nend t.f\n", s, sep)
+    };
+    let chars = |s: &str| -> String {
+        format!("fn t.f() -> usize uses [] panics never\n    let mut n = 0usize\n    for _ in {:?}.chars() {{\n        n = n.wrapping_add(1usize)\n    }}\n    n\nend t.f\n", s)
+    };
+    let cases: &[(&str, &str)] = &[
+        (&split("a,b,c", ","), "3"),
+        (&split("", ","), "1"),
+        (&split("a,,b", ","), "3"),
+        (&split("a,", ","), "2"),
+        (&split(",a", ","), "2"),
+        (&split("ab", ","), "1"),
+        (&split("", ""), "1"),
+        (&split("a,b", ""), "1"),
+        (&split("x\r\ny", "\r\n"), "2"),
+        (&chars(""), "0"),
+        (&chars("abc"), "3"),
+        (&chars("あいう"), "3"),
+        (&chars("aあb"), "3"),
+    ];
+    for (i, (src, want)) in cases.iter().enumerate() {
+        let t = Tmp::new(&format!("kir_str_for_{}", i), &format!("{}{}", src, main_wrap("", &format!("    core.check.eq(t.f(), {})\n", want))));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", want, text(&o.stderr));
+        let k = kir_run(&["kir", "t.f", "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", want, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", want);
     }
 }
 
@@ -18479,4 +18558,42 @@ fn t.src_unit(c: bool) -> Result<(), u32> uses [] panics never\n    if c {\n    
         (&["true"], "t.probe_str(true)", "1000u32", "1000"),
         (&["false"], "t.probe_str(false)", "42u32", "42"),
     ]);
+}
+
+/// 浮動小数の表示 (kir_rt.c) は木走査の `py_float` / `py_float32` と同じ。指数表記を使わない最短の往復表記、
+/// 非正規数、ちょうど中間の値 (Rust は絶対値の大きい方へ丸める)。参照実行器・機械語・ASan で比べる。
+#[test]
+fn kir_float_display_matches_tree_walker_on_hard_values() {
+    let src = "fn t.c64(b: u64) -> () uses [] panics may\n    core.check.eq(f64.from_bits(b), 2.5f64)\nend t.c64\n\n\
+               fn t.c32(b: u32) -> () uses [] panics may\n    core.check.eq(f32.from_bits(b), 2.5f32)\nend t.c32\n\n\
+               fn t.main() -> () uses [] panics may\nend t.main\n";
+    let t = Tmp::new("kir_float_hard", src);
+    let v64: [f64; 12] = [1e100, f64::MAX, 5e-324, 2.2250738585072014e-308, 0.1 + 0.2, -0.0, 1e16, 1e-7, 2f64.powi(-25), 1658206780088562.25, f64::NAN, f64::NEG_INFINITY];
+    for v in v64 {
+        let b = v.to_bits().to_string();
+        let k = kir_run(&["kir", "t.c64", "--run", &b], &t.0);
+        let want = format!("panic: assertion failed: left: {}, right: 2.5", kasane_lang_py_float(v));
+        assert!(text(&k.stderr).starts_with(&want), "{} {}", want, text(&k.stderr));
+    }
+    for v in [0.1f32, 16777217.0, f32::MAX, 1e-45, 1.5] {
+        let b = v.to_bits().to_string();
+        let k = kir_run(&["kir", "t.c32", "--run", &b], &t.0);
+        let s = if v == v.trunc() && v.abs() < 1e16 { format!("{:.1}", v) } else { format!("{}", v) };
+        let want = format!("panic: assertion failed: left: {}, right: 2.5", s);
+        assert!(text(&k.stderr).starts_with(&want), "{} {}", want, text(&k.stderr));
+    }
+}
+
+/// `interp.rs` の `py_float` と同じ規則 (テストの中の写し)。
+fn kasane_lang_py_float(f: f64) -> String {
+    if f.is_nan() {
+        return "nan".into();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { "inf".into() } else { "-inf".into() };
+    }
+    if f == f.trunc() && f.abs() < 1e16 {
+        return format!("{:.1}", f);
+    }
+    format!("{}", f)
 }

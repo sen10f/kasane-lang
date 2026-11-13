@@ -1786,6 +1786,10 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             return user_iter(lw, e, it, s, di, name, &f[2]);
         }
     }
+    // `for x in s.split(sep)` / `for c in s.chars()` (`s` は `&str` = fat)。
+    if let Some(r) = super::for_lower::try_str_for(lw, e)? {
+        return Ok(Some(r));
+    }
     lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数・利用者の反復子の変数だけ段階 1 の対象")
 }
 

@@ -178,6 +178,8 @@ struct Ctx {
     write: bool,
     /// `eprint` 命令を使う (`@ksn.eprint` を出す。エラーは捨てる)。
     eprint: bool,
+    /// `FmtFloat` 命令を使う (浮動小数の書式化補助関数を出す)。
+    fmt_float: bool,
 }
 
 impl Ctx {
@@ -222,7 +224,8 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     let Some(ef) = m.find(entry) else {
         return Err(format!("関数 {} がない", entry));
     };
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false };
+    let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -261,6 +264,12 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     ] {
         cx.decls.insert(d.to_string());
     }
+    if cx.fmt_float {
+        cx.decls.insert("declare i32 @snprintf(ptr, i64, ptr, ...)".to_string());
+        cx.decls.insert("declare i64 @strlen(ptr)".to_string());
+        cx.decls.insert("declare double @strtod(ptr, ptr)".to_string());
+        cx.decls.insert("declare float @strtof(ptr, ptr)".to_string());
+    }
     let mut out = String::from("; ksn kir llvm 1\n\n");
     for d in &cx.decls {
         out.push_str(d);
@@ -283,6 +292,9 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     }
     out.push_str("define private void @ksn.panic.index(i64 %len, i64 %ix) noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.index, i64 %len, i64 %ix)\n  call void @exit(i32 101)\n  unreachable\n}\n\n");
     out.push_str("define private void @ksn.overflow() noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.so)\n  call void @exit(i32 102)\n  unreachable\n}\n");
+    if cx.fmt_float {
+        out.push_str(&fmt_float_helpers());
+    }
     if cx.write {
         out.push_str(&write_helper(&m.aggs)?);
     }
@@ -386,7 +398,19 @@ fn write_helper(aggs: &[AggDef]) -> R<String> {
     Ok(s)
 }
 
-// ---------------------------------------------------------------- 入口 (main)
+/// 浮動小数の書式化は、C の実行時補助 `kir_rt.c` の `ksn_fmt_f64` / `ksn_fmt_f32` に任せる (設計_KIR.md 17.11)。
+/// 規則は `py_float` / `py_float32` と同じ。結果は静的バッファへのポインタ (NUL 終端)。
+fn fmt_float_helpers() -> String {
+    "declare ptr @ksn_fmt_f64(double)\ndeclare ptr @ksn_fmt_f32(float)\n".to_string()
+}
+
+/// C の実行時補助 (`kir_rt.c`) の本文。生成した IR が `@ksn_fmt_` を呼ぶときだけ、clang に一緒に渡す。
+pub const RUNTIME_C: &str = include_str!("kir_rt.c");
+
+/// IR が C の実行時補助を要するか。
+pub fn needs_runtime(ll: &str) -> bool {
+    ll.contains("@ksn_fmt_")
+}
 
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
     // 入口は語 1 つ (128 ビット) で受け渡しするので、枠が 64 ビットの Option / Result と整数・bool・浮動小数だけ扱う。
@@ -1223,6 +1247,29 @@ impl<'a> Fe<'a> {
                     self.label(&k);
                     Ok(())
                 }
+                Op::FmtFloat { bits, a } => {
+                    self.cx.fmt_float = true;
+                    let (func, arg_ty) = if *bits == 64 {
+                        ("@ksn_fmt_f64", "double")
+                    } else {
+                        ("@ksn_fmt_f32", "float")
+                    };
+                    let fp = self.t(format!("call ptr {}({} {})", func, arg_ty, self.r(*a)));
+                    self.cx.decl("declare i64 @strlen(ptr)".to_string());
+                    let len = self.t(format!("call i64 @strlen(ptr {})", fp));
+                    let fp_i = self.t(format!("ptrtoint ptr {} to i64", fp));
+                    let ptr_i128 = self.t(format!("zext i64 {} to i128", fp_i));
+                    let len_i128 = self.t(format!("zext i64 {} to i128", len));
+                    let len_shl = self.t(format!("shl i128 {}, 64", len_i128));
+                    let fat = self.t(format!("or i128 {}, {}", len_shl, ptr_i128));
+                    self.cx.eprint = true;
+                    self.cx.decl("declare i64 @write(i32, ptr, i64)".to_string());
+                    let pi = self.extract(&fat, 128, 0, 64);
+                    let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                    let n = self.extract(&fat, 128, 8, 64);
+                    self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
+                    Ok(())
+                }
                 _ => Ok(()),
             };
         }
@@ -1456,6 +1503,28 @@ impl<'a> Fe<'a> {
                 let ok = self.t(format!("icmp eq i64 {}, 0", r));
                 let tag = self.t(format!("xor i1 {}, true", ok));
                 self.pack(&d, 64, &tag, &r);
+            }
+            Op::FmtFloat { bits, a } => {
+                self.cx.fmt_float = true;
+                let (func, arg_ty) = if *bits == 64 {
+                    ("@ksn_fmt_f64", "double")
+                } else {
+                    ("@ksn_fmt_f32", "float")
+                };
+                let fp = self.t(format!("call ptr {}({} {})", func, arg_ty, self.r(*a)));
+                self.cx.decl("declare i64 @strlen(ptr)".to_string());
+                self.cx.decl("declare i32 @snprintf(ptr, i64, ptr, ...)".to_string());
+                let len = self.t(format!("call i64 @strlen(ptr {})", fp));
+                let ptr_i128 = self.t(format!("zext i64 {} to i128", fp));
+                let len_i128 = self.t(format!("zext i64 {} to i128", len));
+                let len_shl = self.t(format!("shl i128 {}, 64", len_i128));
+                let fat = self.t(format!("or i128 {}, {}", len_shl, ptr_i128));
+                self.cx.eprint = true;
+                self.cx.decl("declare i64 @write(i32, ptr, i64)".to_string());
+                let pi = self.extract(&fat, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let n = self.extract(&fat, 128, 8, 64);
+                self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
             }
             Op::HeapAlloc(n) => {
                 let nv = self.r(*n);
