@@ -1,5 +1,5 @@
 fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
-    match std.fs.create("/tmp/opencode/rsrc.txt") {
+    match std.fs.create("rsrc.txt") {
         Ok(f) => {
             let mut g = f
             match g.write("hi".as_bytes()) {
@@ -17,7 +17,7 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] pani
         }
         Err(_e) => ()
     }
-    let n = bench.resource("/tmp/opencode/rsrc.txt")?
+    let n = bench.resource("rsrc.txt")?
     core.check.eq(n, 2usize)
     std.io.print_line("resource ok")?
     Ok(())

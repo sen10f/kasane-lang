@@ -1,39 +1,19 @@
-fn bench.insertion_sort(xs: &mut alloc.vec.Vec<u32, std.alloc.System>) -> () uses [alloc] panics never pub
-    let mut i = 1usize
+fn bench.at(xs: &alloc.vec.Vec<u32, std.alloc.System>, i: usize) -> u32 uses [] panics never
+    *xs.as_slice().get(i).unwrap_or(&0u32)
+end bench.at
+
+fn bench.insertion_sort(xs: &mut alloc.vec.Vec<u32, std.alloc.System>) -> () uses [] panics never pub
     let n = xs.len()
+    let mut i = 1usize
     while i < n {
-        match xs.as_slice().get(i) {
-            Some(key) => {
-                let mut j = i.wrapping_sub(1usize)
-                while j > 0usize {
-                    match xs.as_slice().get(j) {
-                        Some(v) => {
-                            if *v > *key {
-                                match xs.as_mut_slice().get_mut(j.wrapping_add(1usize)) {
-                                    Some(nxt) => {
-                                        *nxt = *v
-                                        ()
-                                    }
-                                    None => ()
-                                }
-                                j = j.wrapping_sub(1usize)
-                            } else {
-                                break
-                            }
-                        }
-                        None => break
-                    }
-                }
-                match xs.as_mut_slice().get_mut(j.wrapping_add(1usize)) {
-                    Some(pos) => {
-                        *pos = *key
-                        ()
-                    }
-                    None => ()
-                }
-            }
-            None => break
+        let key = bench.at(xs, i)
+        let mut j = i
+        while j > 0usize && bench.at(xs, j.wrapping_sub(1usize)) > key {
+            let prev = bench.at(xs, j.wrapping_sub(1usize))
+            bench.set(xs, j, prev)
+            j = j.wrapping_sub(1usize)
         }
+        bench.set(xs, j, key)
         i = i.wrapping_add(1usize)
     }
 end bench.insertion_sort
@@ -64,6 +44,18 @@ fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(v.len(), 5usize)
     core.check.eq(*v.as_slice().get(0usize).unwrap_or(&0u32), 1u32)
     core.check.eq(*v.as_slice().get(4usize).unwrap_or(&0u32), 9u32)
+    core.check.eq(bench.at(&v, 1usize), 2u32)
+    core.check.eq(bench.at(&v, 2usize), 3u32)
+    core.check.eq(bench.at(&v, 3usize), 5u32)
     std.io.print_line("sort ok")?
     Ok(())
 end bench.main
+
+fn bench.set(xs: &mut alloc.vec.Vec<u32, std.alloc.System>, i: usize, x: u32) -> () uses [] panics never
+    match xs.as_mut_slice().get_mut(i) {
+        Some(p) => {
+            *p = x
+        }
+        None => ()
+    }
+end bench.set
