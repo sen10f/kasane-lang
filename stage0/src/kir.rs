@@ -2008,6 +2008,13 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
     let ty_of = |v: VId| -> Result<Ty, String> {
         tys.get(&v).copied().ok_or_else(|| format!("{}: %{} が定義されていない", f.key, v))
     };
+    // 定数の定義 (除数が正の定数の `/` `%` は 0 除算も `MIN / -1` も起こさないので trap しない)。
+    let consts: HashMap<VId, i128> = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|i| if let Op::Const(v) = &i.op { Some((i.dst, *v)) } else { None })
+        .collect();
     let callees: HashMap<&str, &Func> = m.funcs.iter().map(|g| (g.key.as_str(), g)).collect();
     let fu: HashSet<&str> = f.uses.iter().map(|s| s.as_str()).collect();
     let check_target = |t: &Target| -> Result<(), String> {
@@ -2098,7 +2105,8 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if *mode != Mode::Trap && !matches!(op, Aop::Add | Aop::Sub | Aop::Mul) {
                             return Err(format!("{} に {} は使えない", op.name(), if *mode == Mode::Wrap { "wrap" } else { "sat" }));
                         }
-                        if *mode == Mode::Trap && !f.may_panic {
+                        let safe_div = matches!(op, Aop::Div | Aop::Rem) && consts.get(b).map_or(false, |&c| c > 0);
+                        if *mode == Mode::Trap && !f.may_panic && !safe_div {
                             return Err("panics never の関数に trap 付きの算術".into());
                         }
                         if ty_of(*a)? != i.ty || ty_of(*b)? != i.ty {
