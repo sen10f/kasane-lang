@@ -1,0 +1,77 @@
+const t.LIMIT: u32 = 7u32
+
+type t.Buf
+    n: usize
+end t.Buf
+
+type t.H['a]
+    r: &'a alloc.string.String
+end t.H
+
+type t.S
+    name: alloc.string.String
+    other: alloc.string.String
+end t.S
+
+type t.Tok
+    kind: &'static str
+    n: usize
+end t.Tok
+
+fn t.Buf.push(self: &mut t.Buf, s: &alloc.string.String) -> () uses [] panics never
+    self.n = self.n.wrapping_add(s.len())
+end t.Buf.push
+
+fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
+    let t.S { name: name, other: _o } = self
+    name
+end t.S.into_name
+
+fn t.add(b: &mut t.Buf, s: &alloc.string.String) -> () uses [] panics never
+    b.push(s)
+end t.add
+
+fn t.classify(s: &alloc.string.String) -> t.Tok uses [] panics never
+    t.Tok { kind: "word", n: s.len() }
+end t.classify
+
+fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line(s.as_str()))
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut b = t.Buf { n: 0usize }
+    let s = t.mk()
+    t.add(&mut b, &s)
+    t.consume(s)
+    core.check.eq(b.n, 33usize)
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello, this is a long heap string"))
+    s
+end t.mk
+
+fn t.mks() -> t.S uses [alloc] panics never
+    t.S { name: t.mk(), other: t.mk() }
+end t.mks
+
+fn t.peek(s: &alloc.string.String) -> usize uses [io.console] panics never
+    core.mem.drop(std.io.print_line(s.as_str()))
+    s.len()
+end t.peek
+
+fn t.pick[T](a: &T) -> &T uses [] panics never
+    a
+end t.pick
+
+fn t.same(s: &alloc.string.String) -> &alloc.string.String uses [] panics never
+    s
+end t.same
+
+fn t.wrap(s: &alloc.string.String) -> t.H uses [] panics never
+    t.H { r: s }
+end t.wrap

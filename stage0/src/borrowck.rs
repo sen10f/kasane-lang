@@ -175,6 +175,13 @@ impl<'a> Low<'a> {
         (op == "&" || op == "&mut") && self.place_of(&f[1]).is_none()
     }
 
+    /// 式 `e` の評価で一時値 (`$temp` への貸し出し) が作られるか。
+    /// `match` / `for` / `if` / `while` の対象式の中の `$temp` は、その文の終わりまで
+    /// 生きる (仕様 4.2)。
+    fn has_temp(&self, e: &V) -> bool {
+        self.loan_sources(e).iter().any(|s| matches!(s, Src::Place { root, .. } if root == "$temp"))
+    }
+
     // ------------------------------------------------------------ メソッド・関数の署名
     /// 名前 `name` のメソッドの `self` の受け方 (すべての候補が一致するとき)。
     fn self_mode(&self, name: &str) -> SelfMode {
@@ -215,7 +222,12 @@ impl<'a> Low<'a> {
         let Some(r) = self.p.resolve(&segs, &self.file) else { return false };
         let Target::Type(di) = r.target else { return false };
         let td = &self.p.defs[di];
-        td.fields.iter().any(|(_, ty, _)| Self::ty_contains_ref(ty))
+        // 欄の参照が `&'static` (ライフタイムを明示し、構造体にライフタイム・ジェネリクを持たず、
+        // エリジードでもない) なら、戻り値は呼び出し元を借りない。
+        let life_generic = td.generics.iter().any(|g| g.0 == "life");
+        td.fields.iter().any(|(name, ty, _)| {
+            Self::ty_contains_ref(ty) && (td.elided_refs.contains(name) || life_generic)
+        })
     }
 
     /// 型表現 `ty` が、どこかで参照 (`&T` / `&mut T`) を含むか。
@@ -1247,6 +1259,12 @@ impl<'a> Low<'a> {
                 self.edge(head, exit);
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
+                // `for x in <式に一時値を含むイテレータ>` の一時値は `for` 文の終わりまで生きる。
+                if self.has_temp(&f[1]) {
+                    for b in &binds {
+                        self.temp_extended.insert(b.clone());
+                    }
+                }
                 for b in &binds {
                     self.emit(body, Ev::Def(b.clone()));
                     self.emit(body, Ev::ScopeAdd(b.clone()));
@@ -1278,9 +1296,9 @@ impl<'a> Low<'a> {
                     self.edge(c, an);
                     let mut binds = vec![];
                     pat_binds(&a[0], &mut binds);
-                    // `match &<一時値> { .. }` では、腕の束縛が持つ一時値の寿命が `match`
-                    // 全体の終わりまで延びる。
-                    if self.is_direct_temp_ref(&f[0]) {
+                    // `match <一時値を含む式> { .. }` では、腕の束縛が持つ一時値の寿命が
+                    // `match` 全体の終わりまで延びる (仕様 4.2)。
+                    if self.has_temp(&f[0]) {
                         for b in &binds {
                             self.temp_extended.insert(b.clone());
                         }
@@ -1487,6 +1505,21 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// パラメータ `p` の型が標準のコレクション (`&mut alloc.vec.Vec<..>` / `& alloc.collections.HashMap<..>` など)
+    /// への参照か。利用者の型 (t.Buf など) は対象外。
+    fn is_std_collection_param(d: &Def, p: usize) -> bool {
+        let mut ty = &d.params[p].1;
+        if tag(ty) == "ref" {
+            ty = tel(ty, 2);
+        }
+        let V::L(parts) = ty else { return false };
+        let [V::S(_), V::S(name), ..] = parts.as_slice() else { return false };
+        matches!(name.as_str(),
+            "alloc.vec.Vec" | "alloc.collections.HashMap" | "alloc.collections.BtreeMap"
+            | "alloc.collections.VecDeque" | "alloc.collections.LinkedList"
+            | "alloc.collections.BTreeSet" | "alloc.collections.HashSet")
+    }
+
     /// `v.push(&s)` / `s.f = &x` のように、別の引数が指す先 (`&mut` 引数の中の Vec 要素や
     /// 構造体の欄) に参照を保存するとき、両者に同じ名前付きライフタイムが宣言されていなければ
     /// (行, 文面) の診断を返す (§4.1 の省略規則)。ライフタイムが書かれていないと要素の寿命と
@@ -1541,6 +1574,10 @@ impl<'a> Low<'a> {
         let mut flagged: BTreeSet<(usize, usize, usize)> = BTreeSet::new();
         let mut check_store = |p: usize, value: &V, line: usize| {
             let Some(q) = self.store_source(value, &param_of, &is_ref, &inits) else { return };
+            // `&'static` 値を保存するのは寿命に制約されず常に安全。
+            if is_ref[q] && ptexts[q].contains("'static") {
+                return;
+            }
             if lt[p].intersection(&lt[q]).next().is_none() {
                 flagged.insert((line, p, q));
             }
@@ -1601,6 +1638,11 @@ impl<'a> Low<'a> {
                     let slot = if name == "insert" { 1 } else { 0 };
                     let Some(value) = args.get(slot) else { continue };
                     let Some(&p) = param_of.get(root.as_str()) else { continue };
+                    // 標準のコレクション (alloc.vec.Vec / alloc.collections.HashMap など) への
+                    // push/insert だけを検査する。利用者の型のメソッドは対象外。
+                    if !Self::is_std_collection_param(d, p) {
+                        continue;
+                    }
                     check_store(p, value, line);
                 }
                 "Assign" => {
