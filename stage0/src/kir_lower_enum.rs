@@ -11,9 +11,11 @@
 //! 対象外の形に出会ったら理由を付けて止める。親はその関数を「未対応」にする。
 
 use crate::check::{items, nf, nlineno as nline, nname, st, strs};
-use crate::kir::{Aop, BoolOp, Cc, Op, Pay, Term, Ty, VId};
+use crate::kir::{AggKind, Aop, BoolOp, Cc, Op, Pay, Term, Ty, VId};
 use crate::parser::V;
-use crate::types::Ty as Src;
+use crate::program::FromVariant;
+use crate::types::{from_v, Ty as Src};
+use std::collections::HashSet;
 
 use super::{conv, parse_int, show, Lw, LR};
 
@@ -433,7 +435,47 @@ impl<'a> Lw<'a> {
                 self.cur = Some(okb);
                 Ok(Some(self.emit(t0.ty(), Op::Payload(v))))
             }
+            // `Result<T, E1>` の `?` を `Result<U, E2>` (E1 ≠ E2) で使う。E2 が `derive [From]`
+            // でペイロードがちょうど E1 の変種 V をちょうど 1 つ持つとき、エラーを
+            // `E2.V(err)` に包む (仕様 4.1)。`kir_lower_agg.rs` の `variant_make` と同じ
+            // 列挙体の構築を使う。所有物を持つ E1 はペイロードとして移し出す。
+            (Ty::Res(t0, e0), Ty::Res(_, e1)) => self.try_conv(e, v, vt, rt, t0, e0, e1),
             _ => self.err(line, format!("? の値の型 {} は戻り値の型 {} と対応しない (段階 1 の対象外)", vt.name(), rt.name())),
         }
+    }
+
+    /// `Result<T, E1>` の `?` を `Result<U, E2>` (E1 ≠ E2) で使うときのエラー変換。
+    /// `E2.V(err)` を作って `Err` に包む。できなければ「対応しない」で止める。
+    fn try_conv(&mut self, e: &V, v: VId, vt: Ty, rt: Ty, t0: Pay, e0: Pay, e1: Pay) -> LR<Option<VId>> {
+        let line = nline(e);
+        let unsupported = || {
+            self.err(line, format!("? の値の型 {} は戻り値の型 {} と対応しない (段階 1 の対象外)", vt.name(), rt.name()))
+        };
+        // `?` の値の型 `Result<T, E1>` の E1 と、戻り値の型 `Result<U, E2>` の E2。
+        let from = match self.src_ty(&nf(e)[0])? {
+            Src::Named(_, args) if args.len() == 2 => args[1].show(),
+            _ => return unsupported(),
+        };
+        let to = match from_v(&self.def.ret, &HashSet::new()) {
+            Src::Named(_, args) if args.len() == 2 => args[1].show(),
+            _ => return unsupported(),
+        };
+        let FromVariant::One(variant) = self.p.from_variant(&to, &from) else { return unsupported() };
+        let Pay::Agg(ai2) = e1 else { return unsupported() };
+        let d = self.agg_def(ai2);
+        let AggKind::Enum(vs) = &d.kind else { return unsupported() };
+        let Some(k) = vs.iter().position(|x| x.name == variant) else { return unsupported() };
+        let tag = self.emit(Ty::Bool, Op::Tag(v));
+        let (okb, _) = self.new_block(&[]);
+        let (errb, _) = self.new_block(&[]);
+        self.branch(tag, (errb, vec![]), (okb, vec![]));
+        self.cur = Some(errb);
+        let ep = self.emit(e0.ty(), Op::Payload(v));      // E1 の値を `v` から移し出す
+        let agg = self.emit(Ty::Agg(ai2), Op::Make { variant: Some(k as u32), fields: vec![ep] });  // E2.V(err)
+        let r = self.emit(rt, Op::Err(agg));
+        super::coll::drop_from(self, 0);
+        self.terminate(Term::Ret(r));
+        self.cur = Some(okb);
+        Ok(Some(self.emit(t0.ty(), Op::Payload(v))))
     }
 }
