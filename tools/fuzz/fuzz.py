@@ -37,14 +37,24 @@ def sh(cmd, cwd=None, env=None, timeout=120):
     return p.returncode, p.stdout, p.stderr
 
 
-INT_TYPES = ["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"]
-UNSIGNED = ["u8", "u16", "u32", "u64", "usize"]
-SIGNED = ["i8", "i16", "i32", "i64", "isize"]
+INT_TYPES = ["u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"]
+UNSIGNED = ["u8", "u16", "u32", "u64"]
+SIGNED = ["i8", "i16", "i32", "i64"]
 BOOL = ["bool"]
-FLOAT = ["f32", "f64"]
+FLOAT = ["f64"]
 SCALAR = INT_TYPES + BOOL + FLOAT
 RET_TYPES = ["u64", "i64"]
 MAX_LINE = 100
+
+# 構造体・列挙体の定義（生成器が出す Kasane ソースの先頭に並べる）
+STRUCTS = [
+    ("Pair", [("a", "u64"), ("b", "i64")]),
+    ("Triple", [("x", "u32"), ("y", "i32"), ("z", "u64")]),
+]
+ENUMS = [
+    ("Flag", [("A", None), ("B", None)]),
+    ("Pick", [("One", "u64"), ("Two", "i64"), ("None_", None)]),
+]
 
 
 def lit(rng, t):
@@ -59,224 +69,344 @@ def lit(rng, t):
     die("unknown type " + t)
 
 
-def binop(rng, a, b, t):
-    if t in UNSIGNED + SIGNED:
-        op = rng.choice(["+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!="])
-        if op in ["<", ">", "<=", ">=", "==", "!="]:
-            return "(%s %s %s)" % (a, op, b), "bool"
-        return "(%s.wrapping_%s(%s))" % (a, {"+": "add", "-": "sub", "*": "mul",
-                                             "/": "div", "%": "rem"}[op], b), t
-    if t == "bool":
-        op = rng.choice(["&&", "||", "==", "!="])
+def decl_block(rng):
+    """構造体・列挙体の定義ブロック（0～1 個）。(lines, 宣言された構造体名リスト)"""
+    lines = []
+    structs = []
+    if rng.random() < 0.6:
+        sname, fields = rng.choice(STRUCTS)
+        structs.append(sname)
+        lines.append("type fuzz.%s" % sname)
+        for fname, ft in fields:
+            lines.append("    %s: %s" % (fname, ft))
+        lines.append("end fuzz.%s" % sname)
+        lines.append("")
+    if rng.random() < 0.6:
+        ename, variants = rng.choice(ENUMS)
+        lines.append("enum fuzz.%s" % ename)
+        for vname, pt in variants:
+            if pt is None:
+                lines.append("    %s" % vname)
+            else:
+                lines.append("    %s(%s)" % (vname, pt))
+        lines.append("end fuzz.%s" % ename)
+        lines.append("")
+    return lines, structs
+
+
+def int_binop(rng, a, b, t):
+    op = rng.choice(["+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!="])
+    if op in ["<", ">", "<=", ">=", "==", "!="]:
         return "(%s %s %s)" % (a, op, b), "bool"
-    if t in FLOAT:
-        op = rng.choice(["+", "-", "*", "/", "<", ">", "<=", ">=", "==", "!="])
-        return "(%s %s %s)" % (a, op, b), ("bool" if op in ["<", ">", "<=", ">=", "==", "!="] else t)
-    die("unknown type " + t)
+    return "(%s.wrapping_%s(%s))" % (a, {"+": "add", "-": "sub", "*": "mul",
+                                         "/": "div", "%": "rem"}[op], b), t
 
 
-def unop(rng, a, t):
-    if t in UNSIGNED + SIGNED:
-        op = rng.choice(["wrapping_neg", "checked_neg"])
-        if op == "checked_neg":
-            return "(match %s.checked_neg() { Some(c) => c None => 0%s })" % (a, t), t
+def int_method(rng, a, t):
+    m = rng.choice(["wrapping_add", "wrapping_sub", "wrapping_mul",
+                    "wrapping_neg", "checked_add", "checked_sub", "checked_mul",
+                    "saturating_add", "saturating_sub", "saturating_mul"])
+    if m in ["checked_add", "checked_sub", "checked_mul"]:
+        b = lit(rng, t)
+        return "(match %s.%s(%s) { Some(c) => c None => 0%s })" % (a, m, b, "" if t in SIGNED else "u64"), t
+    if m == "wrapping_neg":
         return "(%s.wrapping_neg())" % a, t
-    if t == "bool":
-        return "(!%s)" % a, "bool"
-    if t in FLOAT:
-        return "(-%s)" % a, t
-    die("unknown type " + t)
+    b = lit(rng, t)
+    return "(%s.%s(%s))" % (a, m, b), t
 
 
-def shift(rng, a, t):
+def shift_expr(rng, a, t):
     if t in UNSIGNED:
         amt = lit(rng, "u32")
         op = rng.choice(["wrapping_shl", "wrapping_shr"])
         return "(%s.%s(%s))" % (a, op, amt), t
-    die("no shift for " + t)
+    return a, t
 
 
-def checked_binop(rng, a, b, t):
+def float_expr(rng, a, b):
+    op = rng.choice(["+", "-", "*", "/", "<", ">", "<=", ">=", "==", "!="])
+    return "(%s %s %s)" % (a, op, b), ("bool" if op in ["<", ">", "<=", ">=", "==", "!="] else "f64")
+
+
+def str_expr(rng, s1, s2):
+    op = rng.choice(["==", "!="])
+    return "(%s %s %s)" % (s1, op, s2), "bool"
+
+
+def lit_f64(rng):
+    return "%.1ff64" % rng.uniform(-10, 10)
+
+
+def scalar_expr(rng, t):
+    """型 t の値式（リテラル or 演算）。"""
     if t in UNSIGNED + SIGNED:
-        op = rng.choice(["checked_add", "checked_sub", "checked_mul", "checked_div", "checked_rem"])
-        return "(match %s.%s(%s) { Some(c) => c None => 0u64 })" % (a, op, b), t
-    die("no checked for " + t)
-
-
-def num_conv(rng, v, src, dst):
-    if src == dst:
-        return v
-    if src in INT_TYPES and dst in INT_TYPES:
-        return "%s.from_%s(%s)" % (dst, src, v)
-    if src == "f64" and dst == "u64":
-        return "%s.to_bits()" % v
-    if src == "u64" and dst == "f64":
-        return "%s.nearest_to_f64()" % v
-    die("no conv %s->%s" % (src, dst))
-
-
-def vec_stmt(rng, vname, etype):
-    # 返す文リストと、最後に得られる値式 (Option<etype>)
-    n = rng.randint(0, 3)
-    stmts = []
-    for _ in range(n):
-        stmts.append("    core.mem.drop(match %s.push(%s) { Ok(_u) => () Err(_e) => core.panic.panic(\"oom\") })" % (vname, lit(rng, etype)))
-    idx = lit(rng, "usize")
-    stmts.append("    let _g = %s.get(%s)" % (vname, idx))
-    return stmts, "_g"
-
-
-def enum_match(rng, var, etype, branches):
-    # bool / Option 等の match 本体。branches: [(pattern, expr, type)]
-    lines = ["    match %s {" % var]
-    for pat, expr, bt in branches:
-        lines.append("        %s => %s" % (pat, expr))
-    lines.append("    }")
-    return lines
-
-
-def gen_body(rng, depth, ret, seq, tail, vecs):
-    lines = []
-    n = rng.randint(1, 4)
-    def ebool():
+        a = lit(rng, t); b = lit(rng, t)
+        r = rng.random()
+        if r < 0.25:
+            return "(%s %s %s)" % (a, rng.choice(["+", "-", "*", "/", "%"]), b), t
+        if r < 0.5:
+            return int_method(rng, a, t)
+        if r < 0.65:
+            return shift_expr(rng, a, t)
+        if r < 0.75:
+            op = rng.choice(["<", ">", "<=", ">=", "==", "!="])
+            return "(%s %s %s)" % (a, op, b), "bool"
+        return lit(rng, t), t
+    if t == "bool":
         if rng.random() < 0.5:
-            return lit(rng, "bool")
-        return "(%s == %s)" % (lit(rng, "u64"), lit(rng, "u64"))
+            return lit(rng, "bool"), "bool"
+        return "(%s == %s)" % (lit(rng, "u64"), lit(rng, "u64")), "bool"
+    if t == "f64":
+        if rng.random() < 0.5:
+            return lit_f64(rng), "f64"
+        return float_expr(rng, lit_f64(rng), lit_f64(rng))
+    die("unknown type " + t)
 
+
+def str_concat(rng, s):
+    op = rng.choice(["push_str", "push_u64"])
+    if op == "push_str":
+        return "core.mem.drop(%s.push_str(\"x\"))" % s
+    return "core.mem.drop(%s.push_u64(42u64))" % s
+
+
+def gen_fn(rng, name, params, ret, fns, depth, structs):
+    """1 関数の本体行リスト。structs はこのプログラムで宣言された構造体名。"""
+    lines = []
+    locals_ = []  # (name, type, is_mut) 関数レベル
+    ctr = [0]
+    n = rng.randint(2, 5)
     for _ in range(n):
-        kind = rng.choice(["if", "while", "match", "vec", "panic"])
-        if kind == "if":
-            c = ebool()
-            then = ["    " + ln for ln in gen_body(rng, depth + 1, ret, seq, False, vecs)]
-            el_ = ["    " + ln for ln in gen_body(rng, depth + 1, ret, seq, False, vecs)]
+        kind = rng.choice(["let", "if", "while", "match", "call", "field", "str", "float", "panic", "div0", "oob", "unwrap"])
+        if kind == "let":
+            scalar_types = INT_TYPES + BOOL + FLOAT + ["alloc.vec.Vec<u64, std.alloc.System>", "alloc.string.String<std.alloc.System>", "&str"]
+            struct_types = ["fuzz.%s" % s for s in structs]
+            t = rng.choice(scalar_types + struct_types)
+            mut = "mut " if rng.random() < 0.5 else ""
+            vname = "v%d" % len(locals_)
+            locals_.append((vname, t, mut == "mut "))
+            if t == "fuzz.Pair":
+                init = "fuzz.Pair { a: 1u64, b: 2i64 }"
+            elif t == "fuzz.Triple":
+                init = "fuzz.Triple { x: 1u32, y: 2i32, z: 3u64 }"
+            else:
+                init = lit(rng, t) if t in INT_TYPES + BOOL + FLOAT else ("alloc.vec.Vec.new(std.alloc.SYSTEM)" if t.startswith("alloc.vec.Vec") else ("alloc.string.String.new(std.alloc.SYSTEM)" if t.startswith("alloc.string.String") else "\"hi\""))
+            lines.append("    let %s%s = %s" % (mut, vname, init))
+        elif kind == "if":
+            c, _ = scalar_expr(rng, "bool")
+            then = gen_fn_block(rng, fns, 8, ctr)
+            el_ = gen_fn_block(rng, fns, 8, ctr)
             lines.append("    if %s {" % c)
             lines.extend(then)
             lines.append("    } else {")
             lines.extend(el_)
             lines.append("    }")
         elif kind == "while" and depth < 2:
-            c = ebool()
-            body = ["    " + ln for ln in gen_body(rng, depth + 1, ret, seq, False, vecs)]
+            c, _ = scalar_expr(rng, "bool")
+            body = gen_fn_block(rng, fns, 8, ctr)
             lines.append("    while %s {" % c)
             lines.extend(body)
             lines.append("        break")
             lines.append("    }")
-        elif kind == "match" and depth < 2:
-            c = lit(rng, "bool")
-            lines.append("    core.mem.drop(match %s {" % c)
+        elif kind == "match":
+            cands = [(n, t) for n, t in params] + [(n, t) for n, t, _ in locals_]
+            cands = [(n, t) for n, t in cands if t == "bool"]
+            if not cands:
+                continue
+            var, _ = rng.choice(cands)
+            lines.append("    core.mem.drop(match %s {" % var)
             lines.append("        true => ()")
             lines.append("        false => ()")
             lines.append("    })")
-        elif kind == "vec" and depth == 0:
-            etype = rng.choice(["u64", "i64", "u32", "i32"])
-            seq[0] += 1
-            vname = "vec%d" % seq[0]
-            vecs.append((vname, etype))
-            lines.append("    let mut %s = alloc.vec.Vec.new(std.alloc.SYSTEM)" % vname)
-            for _ in range(rng.randint(1, 3)):
-                lines.append("    core.mem.drop(match %s.push(%s) {" % (vname, lit(rng, etype)))
-                lines.append("        Ok(_u) => ()")
-                lines.append("        Err(_e) => ()")
-                lines.append("    })")
-            idx = lit(rng, "usize")
-            lines.append("    core.mem.drop(match %s.get(%s) {" % (vname, idx))
-            lines.append("        Some(_c) => ()")
-            lines.append("        None => ()")
-            lines.append("    })")
+        elif kind == "call" and fns:
+            fname, fparams, fret = rng.choice(fns)
+            args = []
+            ok = True
+            for pn, pt in fparams:
+                pool = [p for p, pt2 in params if pt2 == pt] + [n for n, t, _ in locals_ if t == pt]
+                if pt in INT_TYPES + BOOL + FLOAT:
+                    pool.append(lit(rng, pt))
+                if not pool:
+                    ok = False
+                    break
+                args.append(rng.choice(pool))
+            if not ok:
+                continue
+            lines.append("    let r%d = fuzz.%s(%s)" % (len(locals_), fname, ", ".join(args)))
+            locals_.append(("r%d" % len(locals_), fret, False))
+        elif kind == "field" and locals_:
+            struct_fields = {sname: dict(fields) for sname, fields in STRUCTS}
+            cands = [(n, t, m) for n, t, m in locals_ if t in struct_fields]
+            if not cands:
+                continue
+            vname, vt, mut = rng.choice(cands)
+            fname, ft = rng.choice(list(struct_fields[vt].items()))
+            if mut and rng.random() < 0.5:
+                val = lit(rng, ft) if ft in INT_TYPES + BOOL else "0u64"
+                lines.append("    %s.%s = %s" % (vname, fname, val))
+            else:
+                lines.append("    let a%d = %s.%s" % (len(locals_), vname, fname))
+                locals_.append(("a%d" % len(locals_), ft, False))
+        elif kind == "str":
+            strs = [n for n, t, _ in locals_ if t.startswith("alloc.string.String")]
+            if not strs:
+                continue
+            sname = rng.choice(strs)
+            lines.append("    %s" % str_concat(rng, sname))
+        elif kind == "float":
+            a = lit_f64(rng); b = lit_f64(rng)
+            lines.append("    let f%d = (%s * %s).to_bits()" % (len(locals_), a, b))
+            locals_.append(("f%d" % len(locals_), "u64", False))
         elif kind == "panic":
-            lines.append("    core.panic.panic(\"boom\")")
-    if tail:
-        lines.append("    %s" % ret_expr(rng, ret, vecs))
+            if rng.random() < 0.5:
+                lines.append("    core.panic.panic(\"boom\")")
+        elif kind == "div0":
+            idx = len(locals_)
+            lines.append("    let d%d = 1u64 / 0u64" % idx)
+            locals_.append(("d%d" % idx, "u64", False))
+        elif kind == "oob":
+            lines.append("    core.mem.drop(0u64)")
+        elif kind == "unwrap":
+            idx = len(locals_)
+            lines.append("    let u%d: Option<u64> = None" % idx)
+            locals_.append(("u%d" % idx, "Option<u64>", False))
+            lines.append("    core.mem.drop(u%d.unwrap())" % idx)
+    # 戻り値（tail）。ret と同じ型のパラメータを使う。tail は常に最後の式。
+    tail_line = None
+    if ret in INT_TYPES:
+        same = [p for p, t in params if t == ret]
+        if same:
+            tail = same[0]
+            for p in same[1:]:
+                tail = "%s.wrapping_add(%s)" % (tail, p)
+            tail_line = "    %s" % tail
+            used = set(same)
+        else:
+            tail_line = "    %s" % lit(rng, ret)
+            used = set()
+    elif ret == "bool":
+        same = [p for p, t in params if t == "bool"]
+        if same:
+            tail_line = "    %s" % same[0]
+            used = set(same)
+        else:
+            tail_line = "    %s" % lit(rng, "bool")
+            used = set()
+    else:  # f64
+        tail_line = "    %s" % lit_f64(rng)
+        used = set()
+    # 使われていないパラメータと全関数レベルローカルを drop（tail の直前）
+    for p, _ in params:
+        if p not in used:
+            lines.append("    core.mem.drop(%s)" % p)
+    for n, _, _ in locals_:
+        lines.append("    core.mem.drop(%s)" % n)
+    lines.append(tail_line)
     return lines
 
 
-def mform(scrut, arms):
-    lines = ["(match %s {" % scrut]
-    for pat, ex in arms:
-        lines.append("        %s => %s" % (pat, ex))
-    lines.append("    })")
-    return "\n".join(lines)
-
-
-def ret_expr(rng, ret, vecs):
-    r = rng.random()
-    if ret in INT_TYPES and vecs and r < 0.25:
-        cand = [(v, t) for (v, t) in vecs if t == ret]
-        if cand:
-            v, _ = rng.choice(cand); idx = lit(rng, "usize")
-            zero = "0u64" if ret in UNSIGNED else "0i64"
-            return mform("%s.get(%s)" % (v, idx), [("Some(c)", "*c"), ("None", zero)])
-    if ret in INT_TYPES:
-        if r < 0.18:
-            return lit(rng, ret)
-        if r < 0.34:
-            a = lit(rng, ret); b = lit(rng, ret); op = rng.choice(["+", "-", "*", "/", "%"])
-            return "(%s %s %s)" % (a, op, b)
-        if r < 0.50:
-            a = lit(rng, ret); b = lit(rng, ret); op = rng.choice(["wrapping_add", "wrapping_sub", "wrapping_mul"])
-            return "(%s.%s(%s))" % (a, op, b)
-        if r < 0.70:
-            a = lit(rng, ret); amt = lit(rng, "u32"); op = rng.choice(["wrapping_shl", "wrapping_shr"])
-            return "(%s.%s(%s))" % (a, op, amt)
-        if r < 0.82:
-            return "(%s.wrapping_neg())" % lit(rng, ret)
-        if r < 0.94:
-            return mform(lit(rng, "bool"), [("true", lit(rng, ret)), ("false", lit(rng, ret))])
-        return lit(rng, ret)
-    # ret == "bool"
-    if r < 0.3:
-        return lit(rng, "bool")
-    if r < 0.6:
-        return "(%s == %s)" % (lit(rng, "u64"), lit(rng, "u64"))
-    if r < 0.85:
-        return "(%s %s %s)" % (lit(rng, "bool"), rng.choice(["&&", "||"]), lit(rng, "bool"))
-    return mform(lit(rng, "bool"), [("true", lit(rng, "bool")), ("false", lit(rng, "bool"))])
-
-
-def eliteral(rng, t):
-    if t == "bool":
-        return lit(rng, "bool"), "bool"
-    if t in FLOAT:
-        return lit(rng, t), t
-    if t in INT_TYPES:
-        if rng.random() < 0.3:
-            op = rng.choice(["+", "-", "*", "/", "%"])
-            return "(%s %s %s)" % (lit(rng, t), op, lit(rng, t)), t
-        return lit(rng, t), t
-    return lit(rng, t), t
-
-
-def ebinop(rng, t):
-    return eliteral(rng, t)
+def gen_fn_block(rng, fns, indent, ctr):
+    """if/while 本体。ブロックローカルは末尾で drop し、bare 式は使わない。"""
+    sp = " " * indent
+    lines = []
+    locals_ = []
+    n = rng.randint(1, 3)
+    for _ in range(n):
+        kind = rng.choice(["let", "expr", "match"])
+        if kind == "let":
+            t = rng.choice(INT_TYPES + BOOL)
+            vname = "blk%d" % ctr[0]; ctr[0] += 1
+            locals_.append(vname)
+            lines.append("%slet %s = %s" % (sp, vname, lit(rng, t)))
+        elif kind == "expr":
+            lines.append("%score.mem.drop(0u64)" % sp)
+        elif kind == "match":
+            lines.append("%score.mem.drop(match true {" % sp)
+            lines.append("%s    true => ()" % sp)
+            lines.append("%s    false => ()" % sp)
+            lines.append("%s})" % sp)
+    for v in locals_:
+        lines.append("%score.mem.drop(%s)" % (sp, v))
+    if not lines:
+        lines.append("%score.mem.drop(0u64)" % sp)
+    return lines
 
 
 def gen_program(rng, pid):
-    nparam = rng.randint(1, 3)
-    params = [("_xp%d" % i, rng.choice(INT_TYPES)) for i in range(nparam)]
-    ret = rng.choice(RET_TYPES)
-    uses = "uses [alloc]"
-    body = gen_body(rng, 0, ret, [0], True, [])
-    target_lines = ["fn fuzz.target(%s) -> %s %s panics may" % (
-        ", ".join("%s: %s" % p for p in params), ret, uses)]
-    target_lines.extend(body)
-    target_lines.append("end fuzz.target")
-    for ln in target_lines:
-        if len(ln) > MAX_LINE:
-            return None  # 生成器の誤り：捨てる
-    main_lits = [lit(rng, pt) for _, pt in params]
-    main_args_vals = [int(re.search(r"-?\d+", m).group(0)) for m in main_lits]
+    decl_lines, declared_structs = decl_block(rng)
+    # decl_block は空行で区切られた複数ブロックを返すので再構成
+    decl_text = "\n".join(decl_lines).strip()
+    decl_items = []
+    if decl_text:
+        for blk in decl_text.split("\n\n"):
+            blk = blk.strip()
+            if blk:
+                decl_items.append(blk)
+    # 項目名（FQN）でソート（check の定義順エラーを防ぐ）
+    decl_items.sort(key=lambda b: b.splitlines()[0].split()[-1])
+
+    nfn = rng.randint(2, 4)
+    fns = []
+    all_int = INT_TYPES + BOOL + FLOAT
+    for fi in range(nfn):
+        nparam = rng.randint(0, 3)
+        if fi == 0:
+            params = [("p%d" % i, rng.choice(INT_TYPES)) for i in range(nparam)]
+        else:
+            params = [("p%d" % i, rng.choice(INT_TYPES + BOOL + FLOAT)) for i in range(nparam)]
+        ret = rng.choice(RET_TYPES + ["bool", "f64"])
+        fname = "target" if fi == 0 else "fn%d" % fi
+        fns.append((fname, params, ret))
+
+    # 関数定義を構築（target=fns[0]）。順番は後でソート。
+    fn_items = []
+    target = fns[0]
+    for fname, fparams, fret in fns:
+        flines = ["fn fuzz.%s(%s) -> %s uses [alloc] panics may" % (fname, ", ".join("%s: %s" % p for p in fparams), fret)]
+        if fname == target[0]:
+            body = gen_fn(rng, "target", fparams, fret, [f for f in fns if f[0] != fname], 0, declared_structs)
+        else:
+            body = gen_fn(rng, fname, fparams, fret, fns, 0, declared_structs)
+        flines.extend(body)
+        flines.append("end fuzz.%s" % fname)
+        fn_items.append("\n".join(flines))
+    fn_items.sort(key=lambda b: b.split("\n")[0].split()[-1])
+
+    all_items = decl_items + fn_items  # 型/列挙体を先に、関数を後に
+    for it in all_items:
+        for ln in it.split("\n"):
+            if len(ln) > MAX_LINE:
+                return None  # 生成器の誤り：捨てる
+
+    main_lits = [lit(rng, pt) for _, pt in target[1]]
     main_args = ", ".join(main_lits)
-    push = "push_i64" if ret in SIGNED else "push_u64"
+    ret = target[2]
+    if ret in UNSIGNED:
+        push = "core.mem.drop(s.push_u64(fuzz.target(%s)))" % main_args
+    elif ret in SIGNED:
+        push = "core.mem.drop(s.push_i64(fuzz.target(%s)))" % main_args
+    elif ret == "bool":
+        push = ("core.mem.drop(s.push_u64((match fuzz.target(%s) { true => 1u64 false => 0u64 })))" % main_args)
+    else:  # f64 -> to_bits() で整数として出力
+        push = ["    let t = fuzz.target(%s)" % main_args,
+                "    core.mem.drop(s.push_u64(t.to_bits()))"]
     main_lines = [
         "fn fuzz.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
         "    let mut s = alloc.string.String.new(std.alloc.SYSTEM)",
-        "    core.mem.drop(s.%s(fuzz.target(%s)))" % (push, main_args),
+    ]
+    if isinstance(push, list):
+        main_lines.extend(push)
+    else:
+        main_lines.append("    %s" % push)
+    main_lines += [
         "    std.io.print_line(s.as_str())?",
         "    Ok(())",
         "end fuzz.main",
     ]
-    src = "\n".join(main_lines) + "\n\n" + "\n".join(target_lines) + "\n"
-    return src, params, ret, main_args_vals
+    main_item = "\n".join(main_lines)
+    # main も定義順の対象（型/関数の後ろに固定）
+    src = "\n\n".join(all_items + [main_item]) + "\n"
+    return src, target[1], ret, main_lits
 
 
 def make_pkg(tmpdir, seed, pid):
@@ -290,7 +420,8 @@ def make_pkg(tmpdir, seed, pid):
     res = gen_program(rng, pid)
     if res is None:
         return None
-    src, params, ret, main_args_vals = res
+    src, params, ret, main_lits = res
+    main_args_vals = [int(re.search(r"-?\d+", m).group(0)) for m in main_lits]
     with open(os.path.join(root, "src", "fuzz.ksnl"), "w") as f:
         f.write(src)
     return root, params, ret, src, main_args_vals
