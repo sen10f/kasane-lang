@@ -1,3 +1,4 @@
+// expect: E1108
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let f = 1.5f64
     let s = f.to_string()

@@ -1,0 +1,19 @@
+type t.L linear pub
+    v: u32
+end t.L
+
+fn t.eat(l: t.L) -> () uses [] panics never
+    let t.L { v: v } = l
+    core.mem.drop(v)
+end t.eat
+
+fn t.main() -> () uses [] panics never
+    let l = t.L { v: 1u32 }
+    let v = t.peek(&l)
+    core.mem.drop(v)
+    t.eat(l)
+end t.main
+
+fn t.peek(l: &t.L) -> u32 uses [] panics never
+    l.v
+end t.peek

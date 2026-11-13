@@ -1,0 +1,13 @@
+// expect: E3003
+type t.L linear pub
+    v: u32
+end t.L
+
+fn t.main() -> () uses [] panics never
+    let l = t.L { v: 1u32 }
+    let f = fn() -> u32 capture [move l] {
+        l.v
+    }
+    let x = f()
+    core.mem.drop(x)
+end t.main

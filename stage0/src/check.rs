@@ -316,6 +316,8 @@ pub struct Checker<'a> {
     /// 鍵どうしは互いに重ならない (一方が他方の接頭辞なら記録しない)。E3002 (4.1・4.4)。
     moved: BTreeMap<String, usize>,
     final_env: HashMap<String, V>,
+    /// 現在の関数で、線形な値を `move` で取り込んだクロージャに束縛した名前 (4.4)。型が付かないので別に持つ。
+    lin_closures: HashSet<String>,
     graph: BTreeMap<String, BTreeSet<String>>,
     /// 呼び出しグラフのクロージャの節 (`関数名#番号`) → (パラメータの型注釈, 本体)。
     /// `stack` の見積り (E4012) でクロージャの節のフレームを計算するのに使う (5.3)。
@@ -383,6 +385,7 @@ impl<'a> Checker<'a> {
             names: HashSet::new(),
             moved: BTreeMap::new(),
             final_env: HashMap::new(),
+            lin_closures: HashSet::new(),
             graph: BTreeMap::new(),
             closure_frames: BTreeMap::new(),
             import_tails: HashSet::new(),
@@ -2527,6 +2530,7 @@ impl<'a> Checker<'a> {
         let mut env: Env = d.params.iter().cloned().collect();
         self.graph.entry(d.name.clone()).or_default();
         self.moved.clear();
+        self.lin_closures.clear();
         let body = d.body.as_ref().unwrap();
         self.tc_block(body, &env, &BTreeSet::new());
         self.check_extern_calls(di);
@@ -2597,6 +2601,12 @@ impl<'a> Checker<'a> {
                     self.mismatch(&f[2], &got, nline(s), "let binding");
                 }
                 let ty = if !is_nil(&f[2]) { f[2].clone() } else { got };
+                // 線形な値を `move` で取り込むクロージャ (4.4)。その束縛は線形なクロージャ。
+                let clo_caps = if nname(&f[0]) == "PBind" && nname(&f[3]) == "Closure" {
+                    self.linear_move_caps(&f[3], env)
+                } else {
+                    vec![]
+                };
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
                 for n in binds {
@@ -2610,8 +2620,14 @@ impl<'a> Checker<'a> {
                 }
                 if nname(&f[0]) == "PBind" {
                     let name = st(&nf(&f[0])[0]);
-                    if !self.note_linear_array(&name, &f[3], &ty, nline(s)) {
-                        self.note_linear(&name, &ty, nline(s));
+                    if !clo_caps.is_empty() {
+                        self.lin_closures.insert(name.clone());
+                        self.note_linear_closure(&name, &f[3], &clo_caps, nline(s));
+                    } else {
+                        self.lin_closures.remove(&name);
+                        if !self.note_linear_array(&name, &f[3], &ty, nline(s)) {
+                            self.note_linear(&name, &ty, nline(s));
+                        }
                     }
                 } else {
                     // タプル・構造体の分解で束縛した線形な値も消費を要する (4.4)。
@@ -2796,6 +2812,12 @@ impl<'a> Checker<'a> {
             "Call" => {
                 let mut callee: Option<&Def> = None;
                 let fnn = &f[0];
+                // 4.4: `core.mem.drop(x)` は `x` が非線形のときだけ。線形な値は消費を要する (E3003)。
+                if nname(fnn) == "Path" && strs(&nf(fnn)[0]).join(".") == "core.mem.drop" {
+                    if let Some(a) = items(&f[1]).first() {
+                        self.check_drop_linear(a, env, nline(e));
+                    }
+                }
                 if nname(fnn) == "Path" {
                     let segs = strs(&nf(fnn)[0]);
                     if !env.contains_key(&segs[0]) {
@@ -3091,12 +3113,7 @@ impl<'a> Checker<'a> {
         let body = self.def(self.d).body.as_ref().unwrap();
         let mut all = vec![];
         walk(body, &mut all);
-        let uses: Vec<Vec<String>> = all
-            .iter()
-            .filter(|x| nname(x) == "Path")
-            .map(|x| strs(&nf(x)[0]))
-            .filter(|segs| segs[0] == name)
-            .collect();
+        let uses = Self::linear_uses(&all, name, None, true);
         // 宣言が linear な型・構造体以外 (タプル・enum) は従来どおり、名前の使用があれば消費とみなす。
         // linear と宣言されていない構造体が線形なフィールドを含む場合は (4.4)、全体の使用
         // (`w`・メソッド呼び出し `w.m(..)`) か、線形なフィールドすべての使用 (`w.lin`) を要求する。
@@ -3123,6 +3140,97 @@ impl<'a> Checker<'a> {
         };
         if !consumed {
             self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
+        }
+    }
+
+    /// 線形な名前 `name` の、本体の中での消費になりうる使用の経路 (4.4)。`&x` / `&mut x` で直接
+    /// 貸すだけの使用は消費ではない。`move` のキャプチャ (内側のクロージャも含む) は消費。
+    /// `fn_once` が `Some(false)` (`Fn` / `FnMut` のクロージャ) のとき、`f()` の呼び出しは消費にしない。
+    /// `field_reads` が false のとき、フィールドの読み (`x.f` で呼ばれていない) は消費にしない。
+    fn linear_uses(all: &[&V], name: &str, fn_once: Option<bool>, field_reads: bool) -> Vec<Vec<String>> {
+        let borrowed: HashSet<*const V> = all
+            .iter()
+            .filter(|x| nname(x) == "Unary" && matches!(st(&nf(x)[0]).as_str(), "&" | "&mut"))
+            .map(|x| &nf(x)[1] as *const V)
+            .collect();
+        let callees: HashSet<*const V> = all
+            .iter()
+            .filter(|x| nname(x) == "Call")
+            .map(|x| &nf(x)[0] as *const V)
+            .collect();
+        let mut out = vec![];
+        for x in all {
+            let p = *x as *const V;
+            match nname(x) {
+                "Path" => {
+                    let segs = strs(&nf(x)[0]);
+                    if segs[0] != name || borrowed.contains(&p) {
+                        continue;
+                    }
+                    let callee = callees.contains(&p);
+                    if fn_once == Some(false) && callee && segs.len() == 1 {
+                        continue;
+                    }
+                    if !field_reads && !callee && segs.len() > 1 {
+                        continue;
+                    }
+                    out.push(segs);
+                }
+                "Closure" => {
+                    for c in items(&nf(x)[2]) {
+                        let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { continue };
+                        if k.as_str() == "move" && n == name {
+                            out.push(vec![name.to_string()]);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// クロージャ式の `move` キャプチャのうち、取り込んだ値が線形なもの (4.4)。
+    fn linear_move_caps(&self, clo: &V, env: &Env) -> Vec<String> {
+        items(&nf(clo)[2])
+            .iter()
+            .filter_map(|c| {
+                let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { return None };
+                let lin = env.get(n).map_or(false, |t| self.contains_linear(t));
+                (k.as_str() == "move" && lin).then(|| n.clone())
+            })
+            .collect()
+    }
+
+    /// 線形な値を `move` で取り込んだクロージャを `name` に束縛した (4.4)。`name` は線形な値。
+    /// 呼び出し `name()` は、本体が線形な取り込みを消費する (FnOnce) ときだけ消費とみなす。
+    /// `core.mem.drop(name)` は tc_expr の検査で E3003。消費されなければ E3003。
+    fn note_linear_closure(&mut self, name: &str, clo: &V, caps: &[String], line: usize) {
+        let mut inner = vec![];
+        walk(&nf(clo)[3], &mut inner);
+        let fn_once = caps.iter().any(|c| !Self::linear_uses(&inner, c, None, false).is_empty());
+        let body = self.def(self.d).body.as_ref().unwrap();
+        let mut all = vec![];
+        walk(body, &mut all);
+        if Self::linear_uses(&all, name, Some(fn_once), true).is_empty() {
+            self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
+        }
+    }
+
+    /// `core.mem.drop(a)` の引数 `a` が線形な値なら E3003 (4.4: `drop` は非線形のときだけ)。
+    /// 型が分からないもの (型パラメータ・未知の型) は黙る。
+    fn check_drop_linear(&mut self, a: &V, env: &Env, line: usize) {
+        let (linear, what) = match nname(a) {
+            "Closure" => (!self.linear_move_caps(a, env).is_empty(), "a closure capturing a linear value".to_string()),
+            "Path" if strs(&nf(a)[0]).len() == 1 && env.contains_key(&strs(&nf(a)[0])[0]) => {
+                let n = strs(&nf(a)[0])[0].clone();
+                let lin = self.lin_closures.contains(&n) || self.contains_linear(&env[&n]);
+                (lin, format!("linear value `{}`", n))
+            }
+            _ => (self.contains_linear(&self.ty_of(a, env)), "linear value".to_string()),
+        };
+        if linear {
+            self.tdiag("E3003", format!("{} cannot be passed to core.mem.drop; consume it (4.4)", what), line);
         }
     }
 

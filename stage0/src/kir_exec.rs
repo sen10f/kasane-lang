@@ -179,8 +179,8 @@ fn read_scalar(buf: &[u8], off: usize, t: Ty) -> i128 {
     }
 }
 
-const DIV_ZERO: &str = "attempt to divide by zero";
-const REM_ZERO: &str = "attempt to calculate the remainder with a divisor of by zero";
+pub(crate) const DIV_ZERO: &str = "attempt to divide by zero";
+pub(crate) const REM_ZERO: &str = "attempt to calculate the remainder with a divisor of by zero";
 
 /// `u128` の算術 (値はビットパターン)。
 fn arith_u128(op: Aop, mode: Mode, x: u128, y: u128) -> Result<u128, String> {
@@ -231,7 +231,7 @@ fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
     }
 }
 
-fn overflow_msg(op: Aop) -> String {
+pub(crate) fn overflow_msg(op: Aop) -> String {
     match op {
         Aop::Add => "attempt to add with overflow",
         Aop::Sub => "attempt to subtract with overflow",
