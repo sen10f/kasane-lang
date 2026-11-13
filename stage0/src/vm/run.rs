@@ -1,15 +1,17 @@
 //! VM の実行ループ (設計_KIR.md 4.2 / 4.3)。呼び出しは明示的なフレーム列 (Rust の再帰を使わない)。
 //!
-//! 意味は参照実行器 (`kir_exec.rs`) と同じ: 値の符号化、panic の文言、呼び出し深さの上限 (2500、超えたら 102)、
-//! 集成体の置き場 (`heap`) と戻るときの複製 (`relocate`)。違いは次の 3 点:
+//! 意味は参照実行器 (`kir_exec.rs`) と同じ: panic の文言、呼び出し深さの上限 (2500、超えたら 102)。値の表現は `bc.rs` の先頭の通り
+//! (8 バイトのスロット、集成体と `Option` / `Result` はフレームの中のスロット列。置き場も戻るときの複製もない)。違いは次の 3 点:
 //! - バイト記憶は実メモリ (`malloc` / `realloc` / `free` の実アドレス。7 章 1 の決定)。仮想アドレスの検査・未初期化の検出・漏れの検査はしない
 //!   (null 付近のアドレスだけは内部エラーにする)。
 //! - 定義される前の読みを検出しない (検査は `verify_module` の責務)。
 //! - stdout は書き込みをためて、終了・panic・stderr への出力の前に流す。
 
+#![allow(unused_unsafe)]
+
 use super::bc::*;
 use crate::interp::{py_float, py_float32};
-use crate::kir::{payload_bits, payload_of, Aop, Mode, Ty, PAY_MASK, TAG_BIT};
+use crate::kir::{payload_of, Aop, Mode, Ty, TAG_BIT};
 use crate::kir_exec::{self, Outcome};
 use crate::kir_scalar;
 
@@ -73,20 +75,17 @@ struct Frame {
     base: u32,
     /// 呼び出し元で結果を受けるスロット。
     dst: S,
-    /// 呼び出し先が始まったときの集成体の置き場の長さ・フレームの領域の数。
-    hbase: usize,
+    /// 呼び出し先が始まったときのフレームの領域の数。
     abase: usize,
 }
 
 pub struct Vm<'a> {
     #[allow(dead_code)]
     prog: &'a Prog,
-    regs: Vec<i128>,
+    regs: Vec<u64>,
     frames: Vec<Frame>,
-    /// 集成体の置き場 (値は添字)。
-    pub heap: Vec<Vec<u8>>,
-    /// 捨てた置き場の項目の `Vec<u8>` (確保し直さないための再利用の入れ物)。
-    pool: Vec<Vec<u8>>,
+    /// 最後に戻った関数の戻り値 (`ret_w` スロット)。
+    pub result: Vec<u64>,
     /// 関数のフレームの領域 (`frame.bytes` / `alloca`)。戻るときに解放する。
     allocs: Vec<*mut std::ffi::c_void>,
     out: Vec<u8>,
@@ -116,41 +115,97 @@ enum NetSock {
 }
 
 #[inline(always)]
-fn cc_eval(cc: crate::kir::Cc, x: i128, y: i128) -> bool {
-    use crate::kir::Cc;
-    match cc {
-        Cc::Eq => x == y,
-        Cc::Ne => x != y,
-        Cc::Lt => x < y,
-        Cc::Le => x <= y,
-        Cc::Gt => x > y,
-        Cc::Ge => x >= y,
-    }
-}
-
-#[inline(always)]
 fn fast_lo_hi(t: u8) -> (i128, i128) {
     (LO[t as usize], HI[t as usize])
 }
 
-fn bad_addr(a: i128, n: usize) -> String {
+fn bad_addr(a: u64, n: usize) -> String {
     format!("不正なメモリアクセス {:#x} ({} バイト)", a, n)
 }
 
 #[inline(always)]
-fn addr(a: i128, n: usize) -> Result<*mut u8, String> {
-    if (a as u128).wrapping_sub(0x1000) > (u64::MAX - 0x1000) as u128 {
+fn addr(a: u64, n: usize) -> Result<*mut u8, String> {
+    if a < 0x1000 {
         return Err(bad_addr(a, n));
     }
     Ok(a as usize as *mut u8)
 }
 
+/// スロットの表現 → 参照実行器の `i128` の符号化 (型 `t`)。
+#[inline(always)]
+fn rd(rp: *mut u64, t: Ty, s: usize) -> i128 {
+    unsafe {
+        match t {
+            Ty::I128 | Ty::U128 => (((*rp.add(s + 1) as u128) << 64) | *rp.add(s) as u128) as i128,
+            t if t.signed() => *rp.add(s) as i64 as i128,
+            _ => *rp.add(s) as i128,
+        }
+    }
+}
+
+/// 参照実行器の `i128` の符号化 → スロットの表現 (型 `t`)。
+#[inline(always)]
+fn wr(rp: *mut u64, t: Ty, s: usize, v: i128) {
+    unsafe {
+        match t {
+            Ty::I128 | Ty::U128 => {
+                *rp.add(s) = v as u64;
+                *rp.add(s + 1) = (v >> 64) as u64;
+            }
+            _ => *rp.add(s) = v as u64,
+        }
+    }
+}
+
+/// アドレス `a` から `k` の幅で読む (128 ビットは呼び出し側が 2 語で読む)。
+#[inline(always)]
+unsafe fn ld_k(a: *const u8, k: LK) -> u64 {
+    match k {
+        LK::U8 => *a as u64,
+        LK::I8 => *(a as *const i8) as i64 as u64,
+        LK::Bool => (*a != 0) as u64,
+        LK::U16 => (a as *const u16).read_unaligned() as u64,
+        LK::I16 => (a as *const i16).read_unaligned() as i64 as u64,
+        LK::U32 => (a as *const u32).read_unaligned() as u64,
+        LK::I32 => (a as *const i32).read_unaligned() as i64 as u64,
+        LK::U64 | LK::I64 | LK::I128 => (a as *const u64).read_unaligned(),
+    }
+}
+
+/// `bytes` を `d` から始まるスロット列に書く (末尾のスロットの余りは 0)。
+fn put_bytes(rp: *mut u64, d: usize, bytes: &[u8]) {
+    let ns = (bytes.len() + 7) / 8;
+    unsafe {
+        for i in 0..ns {
+            *rp.add(d + i) = 0;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), rp.add(d) as *mut u8, bytes.len());
+    }
+}
+
+/// `std.io.Error { kind, code }` のバイト列 (型表の `std.io.Error` と、その `kind` の列挙型を探す)。
+fn io_error_bytes(aggs: &[crate::kir::AggDef], kind: &str, code: i32) -> Result<Vec<u8>, String> {
+    use crate::kir::AggKind;
+    let d = aggs.iter().find(|d| d.name == "std.io.Error").ok_or("型表に std.io.Error がない")?;
+    let AggKind::Struct(fs) = &d.kind else { return Err("std.io.Error が構造体でない".into()) };
+    let (Some(kf), Some(cf)) = (fs.iter().find(|f| f.name == "kind"), fs.iter().find(|f| f.name == "code")) else {
+        return Err("std.io.Error に kind と code がない".into());
+    };
+    let Ty::Agg(ki) = kf.ty else { return Err("std.io.Error.kind が列挙型でない".into()) };
+    let kd = &aggs[ki as usize];
+    let AggKind::Enum(vs) = &kd.kind else { return Err("std.io.ErrorKind が列挙型でない".into()) };
+    let vi = vs.iter().position(|v| v.name == kind).ok_or_else(|| format!("ErrorKind に {} がない", kind))?;
+    let mut buf = vec![0u8; d.size as usize];
+    buf[kf.off as usize..kf.off as usize + 4].copy_from_slice(&(vi as i32).to_le_bytes());
+    buf[cf.off as usize..cf.off as usize + 4].copy_from_slice(&code.to_le_bytes());
+    Ok(buf)
+}
+
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], pool: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], result: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
     }
 
-    /// ためた stdout を流す。
     /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
     pub fn panic_location(&self) -> Option<String> {
         let (vi, fi, pc) = self.panic_at?;
@@ -163,11 +218,7 @@ impl<'a> Vm<'a> {
         Some(format!("in {} at {}:{}", f.key, crate::cli::rel(&f.file), line))
     }
 
-    fn recycle(&mut self, blobs: Vec<Vec<u8>>) {
-        let room = 512usize.saturating_sub(self.pool.len());
-        self.pool.extend(blobs.into_iter().take(room));
-    }
-
+    /// ためた stdout を流す。
     pub fn flush(&mut self) {
         use std::io::Write;
         if !self.out.is_empty() {
@@ -211,29 +262,32 @@ impl<'a> Vm<'a> {
         let prog: &Prog = unsafe { &*self.vers[vi as usize] };
         let cf = &prog.funcs[ci as usize];
         let (mut gi, mut si) = (0, 0);
-        let mut args = vec![];
+        let mut args: Vec<u64> = vec![];
         for t in &cf.ptys {
             args.push(match t {
                 Ty::F32 | Ty::F64 => {
                     si += 1;
-                    sse[si - 1] as i128 & if *t == Ty::F32 { 0xffff_ffff } else { u64::MAX as i128 }
+                    sse[si - 1] & if *t == Ty::F32 { 0xffff_ffff } else { u64::MAX }
                 }
                 Ty::Ptr => {
                     gi += 1;
-                    gp[gi - 1] as i128
+                    gp[gi - 1]
                 }
                 t => {
                     gi += 1;
-                    t.wrap(gp[gi - 1] as i128)
+                    t.wrap(gp[gi - 1] as i128) as u64
                 }
             });
         }
         let ret = cf.ret;
         match self.exec(vi, ci, &args, true) {
-            Ok(Outcome::Value(v)) => match ret {
-                Ty::F32 | Ty::F64 => (0, v as u64),
-                _ => (v as i64 as u64, 0),
-            },
+            Ok(Outcome::Value(_)) => {
+                let v = self.result.first().copied().unwrap_or(0);
+                match ret {
+                    Ty::F32 | Ty::F64 => (0, v),
+                    _ => (v, 0),
+                }
+            }
             // コールバックは `panics never`。C のフレームを越えて巻き戻せない異常は、その場でプロセスを止める。
             Ok(Outcome::Panic(m)) => self.die(101, Some(format!("panic: {}", m))),
             Ok(Outcome::Abort) => self.die(101, None),
@@ -250,22 +304,22 @@ impl<'a> Vm<'a> {
         std::process::exit(code)
     }
 
-    fn fat(&self, h: i128) -> Result<(i128, usize), String> {
-        let b = self.heap.get(h as usize).filter(|b| b.len() >= 16).ok_or("fat の項目が不正")?;
-        let ptr = i64::from_le_bytes(b[0..8].try_into().expect("fat の ptr")) as i128;
-        let len = u64::from_le_bytes(b[8..16].try_into().expect("fat の len")) as usize;
-        Ok((ptr, len))
+    /// スロット `s` から始まる fat (`{ptr, len}`) のバイト列。
+    fn fat_bytes(rp: *mut u64, s: usize) -> Result<&'static [u8], String> {
+        let (p, n) = unsafe { (*rp.add(s), *rp.add(s + 1) as usize) };
+        if n == 0 {
+            return Ok(&[]);
+        }
+        let ptr = addr(p, n)?;
+        // SAFETY: KIR の検査済みの fat は、生きている領域の `len` バイトを指す。
+        Ok(unsafe { std::slice::from_raw_parts(ptr as *const u8, n) })
     }
 
-    /// `bytes` を複写した (解放しない) 領域を指す fat を置き場に作り、その添字を返す。
-    fn leak_fat(&mut self, bytes: &[u8]) -> i128 {
+    /// `bytes` を複写した (解放しない) 領域を指す fat (`ptr`, `len`) を返す。
+    fn leak_fat(bytes: &[u8]) -> (u64, u64) {
         let p = unsafe { malloc(bytes.len().max(1)) } as *mut u8;
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len()) };
-        let mut b = vec![0u8; 16];
-        b[0..8].copy_from_slice(&(p as u64).to_le_bytes());
-        b[8..16].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
-        self.heap.push(b);
-        (self.heap.len() - 1) as i128
+        (p as u64, bytes.len() as u64)
     }
 
     fn new_fd(&mut self, sock: NetSock) -> i128 {
@@ -275,24 +329,8 @@ impl<'a> Vm<'a> {
         fd
     }
 
-    /// 記述子 `fd` を持つ集成体 (`i32` 1 つ) を置き場に作り、その添字を返す。
-    fn desc(&mut self, fd: i128) -> i128 {
-        self.heap.push((fd as i32).to_le_bytes().to_vec());
-        (self.heap.len() - 1) as i128
-    }
-
-    fn fat_bytes(&self, h: i128) -> Result<&'static [u8], String> {
-        let (p, n) = self.fat(h)?;
-        if n == 0 {
-            return Ok(&[]);
-        }
-        let ptr = addr(p, n)?;
-        // SAFETY: KIR の検査済みの fat は、生きている領域の `len` バイトを指す。
-        Ok(unsafe { std::slice::from_raw_parts(ptr as *const u8, n) })
-    }
-
-    /// 関数 `key` を引数 `args` で実行する。同じ `Vm` で続けて呼べる (置き場は戻り値が指す項目だけ残る)。
-    pub fn run(&mut self, key: &str, args: &[i128]) -> Result<Outcome, String> {
+    /// 関数 `key` を引数 `args` (スロットの列) で実行する。同じ `Vm` で続けて呼べる。戻り値は `result`。
+    pub fn run(&mut self, key: &str, args: &[u64]) -> Result<Outcome, String> {
         let vi = (self.vers.len() - 1) as u32;
         let prog: &Prog = unsafe { &*self.vers[vi as usize] };
         let Some(entry) = prog.find(key) else {
@@ -300,7 +338,7 @@ impl<'a> Vm<'a> {
         };
         let f0 = &prog.funcs[entry];
         if args.len() != f0.nparams as usize {
-            return Err(format!("関数 {} の引数の個数が違う", key));
+            return Err(format!("関数 {} の引数のスロット数が違う", key));
         }
         if f0.nslots == 0 && f0.code.is_empty() {
             return Err(format!("関数 {} は本体がない", key));
@@ -313,7 +351,7 @@ impl<'a> Vm<'a> {
 
     /// 版 `vi` の関数 `entry` を走らせる。`nested` は、C の関数 (`CallExt`) から呼び戻された (コールバック) とき。
     /// その場合は、呼び出し元のフレームの上 (`self.top`) にフレームを積み、呼び出し元のフレーム列・領域には触らない。
-    fn exec(&mut self, vi: u32, entry: u32, args: &[i128], nested: bool) -> Result<Outcome, String> {
+    fn exec(&mut self, vi: u32, entry: u32, args: &[u64], nested: bool) -> Result<Outcome, String> {
         let saved = if nested { Some(std::mem::take(&mut self.frames)) } else { None };
         let r = self.exec_inner(vi, entry, args, nested);
         if let Some(fr) = saved {
@@ -322,11 +360,10 @@ impl<'a> Vm<'a> {
         r
     }
 
-    fn exec_inner(&mut self, mut vi: u32, entry: u32, args: &[i128], nested: bool) -> Result<Outcome, String> {
+    fn exec_inner(&mut self, mut vi: u32, entry: u32, args: &[u64], nested: bool) -> Result<Outcome, String> {
         let mut prog: &Prog = unsafe { &*self.vers[vi as usize] };
         let entry = entry as usize;
         let f0 = &prog.funcs[entry];
-        let top_hbase = self.heap.len();
         let top_abase = self.allocs.len();
         let mut fi = entry as u32;
         let mut f = f0;
@@ -338,7 +375,7 @@ impl<'a> Vm<'a> {
         for (i, a) in args.iter().enumerate() {
             self.regs[base + i] = *a;
         }
-        let mut rp: *mut i128 = unsafe { self.regs.as_mut_ptr().add(base) };
+        let mut rp: *mut u64 = unsafe { self.regs.as_mut_ptr().add(base) };
         macro_rules! r {
             ($s:expr) => {
                 unsafe { *rp.add($s as usize) }
@@ -346,9 +383,24 @@ impl<'a> Vm<'a> {
         }
         macro_rules! w {
             ($s:expr, $v:expr) => {{
-                let v = $v;
+                let v: u64 = $v;
                 unsafe { *rp.add($s as usize) = v }
             }};
+        }
+        macro_rules! rdv {
+            ($t:expr, $s:expr) => {
+                rd(rp, $t, $s as usize)
+            };
+        }
+        macro_rules! wrv {
+            ($t:expr, $s:expr, $v:expr) => {
+                wr(rp, $t, $s as usize, $v)
+            };
+        }
+        macro_rules! tyof {
+            ($i:expr) => {
+                prog.tys[*$i as usize]
+            };
         }
         macro_rules! panic_out {
             ($m:expr) => {{
@@ -365,51 +417,54 @@ impl<'a> Vm<'a> {
                 prof_count(ins);
             }
             match ins {
-                Ins::ConstI { d, v } => w!(*d, *v as i128),
-                Ins::ConstW { d, k } => w!(*d, prog.wide[*k as usize]),
+                Ins::ConstI { d, v } => w!(*d, *v as u64),
+                Ins::ConstW { d, k } => w!(*d, prog.wide[*k as usize] as u64),
+                Ins::Const128 { d, k } => wrv!(Ty::U128, *d, prog.wide[*k as usize]),
+                Ins::Zero { d, n } => unsafe { std::ptr::write_bytes(rp.add(*d as usize), 0, *n as usize) },
                 Ins::Mov { d, s } => w!(*d, r!(*s)),
-                Ins::AddImm { d, a, imm } => w!(*d, r!(*a) + *imm as i128),
-                Ins::PtrAdd { d, p, off } => w!(*d, r!(*p) + r!(*off)),
+                Ins::MovN { d, s, n } => unsafe { std::ptr::copy(rp.add(*s as usize), rp.add(*d as usize), *n as usize) },
+                Ins::AddImm { d, a, imm } => w!(*d, r!(*a).wrapping_add(*imm as u64)),
+                Ins::PtrAdd { d, p, off } => w!(*d, r!(*p).wrapping_add(r!(*off))),
                 Ins::AddTI { d, a, t, imm } => {
-                    let v = r!(*a) + *imm as i128;
+                    let v = ldv(*t, r!(*a)) + *imm as i128;
                     let (lo, hi) = fast_lo_hi(*t);
                     if v < lo || v > hi {
                         panic_out!(kir_exec::overflow_msg(Aop::Add));
                     }
-                    w!(*d, v);
+                    w!(*d, v as u64);
                 }
                 Ins::SubTI { d, a, t, imm } => {
-                    let v = r!(*a) - *imm as i128;
+                    let v = ldv(*t, r!(*a)) - *imm as i128;
                     let (lo, hi) = fast_lo_hi(*t);
                     if v < lo || v > hi {
                         panic_out!(kir_exec::overflow_msg(Aop::Sub));
                     }
-                    w!(*d, v);
+                    w!(*d, v as u64);
                 }
                 Ins::MulTI { d, a, t, imm } => {
-                    let v = r!(*a).wrapping_mul(*imm as i128);
+                    let v = ldv(*t, r!(*a)).wrapping_mul(*imm as i128);
                     let (lo, hi) = fast_lo_hi(*t);
                     if v < lo || v > hi {
                         panic_out!(kir_exec::overflow_msg(Aop::Mul));
                     }
-                    w!(*d, v);
+                    w!(*d, v as u64);
                 }
-                Ins::AddWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_add(*imm as i128))),
-                Ins::SubWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_sub(*imm as i128))),
-                Ins::MulWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_mul(*imm as i128))),
-                Ins::CmpII { d, a, cc, imm } => w!(*d, cc_eval(*cc, r!(*a), *imm as i128) as i128),
-                Ins::JCmpNotI { cc, a, imm, to } => {
-                    if !cc_eval(*cc, r!(*a), *imm as i128) {
+                Ins::AddWI { d, a, t, imm } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_add(*imm as i128))),
+                Ins::SubWI { d, a, t, imm } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_sub(*imm as i128))),
+                Ins::MulWI { d, a, t, imm } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_mul(*imm as i128))),
+                Ins::CmpII { d, a, cx, imm } => w!(*d, cx_eval(*cx, r!(*a), *imm as i64 as u64) as u64),
+                Ins::JCmpNotI { cx, a, imm, to } => {
+                    if !cx_eval(*cx, r!(*a), *imm as i64 as u64) {
                         pc = *to as usize;
                     }
                 }
-                Ins::JCmp { cc, a, b, to } => {
-                    if cc_eval(*cc, r!(*a), r!(*b)) {
+                Ins::JCmp { cx, a, b, to } => {
+                    if cx_eval(*cx, r!(*a), r!(*b)) {
                         pc = *to as usize;
                     }
                 }
-                Ins::JCmpI { cc, a, imm, to } => {
-                    if cc_eval(*cc, r!(*a), *imm as i128) {
+                Ins::JCmpI { cx, a, imm, to } => {
+                    if cx_eval(*cx, r!(*a), *imm as i64 as u64) {
                         pc = *to as usize;
                     }
                 }
@@ -424,85 +479,93 @@ impl<'a> Vm<'a> {
                         pc = *to as usize;
                     }
                 }
-                Ins::JCmpNot { cc, a, b, to } => {
-                    let (x, y) = (r!(*a), r!(*b));
-                    let t = match cc {
-                        crate::kir::Cc::Eq => x == y,
-                        crate::kir::Cc::Ne => x != y,
-                        crate::kir::Cc::Lt => x < y,
-                        crate::kir::Cc::Le => x <= y,
-                        crate::kir::Cc::Gt => x > y,
-                        crate::kir::Cc::Ge => x >= y,
-                    };
-                    if !t {
+                Ins::JCmpNot { cx, a, b, to } => {
+                    if !cx_eval(*cx, r!(*a), r!(*b)) {
                         pc = *to as usize;
                     }
                 }
                 Ins::AddT { d, a, b, t } => {
-                    let v = r!(*a) + r!(*b);
+                    let v = ldv(*t, r!(*a)) + ldv(*t, r!(*b));
                     let (lo, hi) = fast_lo_hi(*t);
                     if v < lo || v > hi {
                         panic_out!(kir_exec::overflow_msg(Aop::Add));
                     }
-                    w!(*d, v);
+                    w!(*d, v as u64);
                 }
                 Ins::SubT { d, a, b, t } => {
-                    let v = r!(*a) - r!(*b);
+                    let v = ldv(*t, r!(*a)) - ldv(*t, r!(*b));
                     let (lo, hi) = fast_lo_hi(*t);
                     if v < lo || v > hi {
                         panic_out!(kir_exec::overflow_msg(Aop::Sub));
                     }
-                    w!(*d, v);
+                    w!(*d, v as u64);
                 }
                 Ins::MulT { d, a, b, t } => {
                     let (lo, hi) = fast_lo_hi(*t);
-                    match r!(*a).checked_mul(r!(*b)) {
-                        Some(v) if v >= lo && v <= hi => w!(*d, v),
+                    match ldv(*t, r!(*a)).checked_mul(ldv(*t, r!(*b))) {
+                        Some(v) if v >= lo && v <= hi => w!(*d, v as u64),
                         _ => panic_out!(kir_exec::overflow_msg(Aop::Mul)),
                     }
                 }
-                Ins::AddW { d, a, b, t } => w!(*d, wrap_fast(*t, r!(*a).wrapping_add(r!(*b)))),
-                Ins::SubW { d, a, b, t } => w!(*d, wrap_fast(*t, r!(*a).wrapping_sub(r!(*b)))),
-                Ins::MulW { d, a, b, t } => w!(*d, wrap_fast(*t, r!(*a).wrapping_mul(r!(*b)))),
-                Ins::WrapT { d, a, t } => w!(*d, wrap_fast(*t, r!(*a))),
-                Ins::Arith { d, a, b, op, mode, ty } => match kir_exec::arith(*op, *mode, prog.tys[*ty as usize], r!(*a), r!(*b)) {
-                    Ok(v) => w!(*d, v),
-                    Err(m) => panic_out!(m),
-                },
-                Ins::CmpI { d, a, b, cc } => {
-                    let (x, y) = (r!(*a), r!(*b));
-                    let t = match cc {
-                        crate::kir::Cc::Eq => x == y,
-                        crate::kir::Cc::Ne => x != y,
-                        crate::kir::Cc::Lt => x < y,
-                        crate::kir::Cc::Le => x <= y,
-                        crate::kir::Cc::Gt => x > y,
-                        crate::kir::Cc::Ge => x >= y,
-                    };
-                    w!(*d, t as i128);
+                Ins::AddW { d, a, b, t } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_add(ldv(*t, r!(*b))))),
+                Ins::SubW { d, a, b, t } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_sub(ldv(*t, r!(*b))))),
+                Ins::MulW { d, a, b, t } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_mul(ldv(*t, r!(*b))))),
+                Ins::WrapT { d, a, t } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)))),
+                Ins::Arith { d, a, b, op, mode, ty } => {
+                    let t = tyof!(ty);
+                    match kir_exec::arith(*op, *mode, t, rdv!(t, *a), rdv!(t, *b)) {
+                        Ok(v) => wrv!(t, *d, v),
+                        Err(m) => panic_out!(m),
+                    }
                 }
-                Ins::Cmp { d, a, b, cc, ty } => w!(*d, kir_scalar::cmp(*cc, prog.tys[*ty as usize], r!(*a), r!(*b)) as i128),
+                Ins::CmpI { d, a, b, cx } => w!(*d, cx_eval(*cx, r!(*a), r!(*b)) as u64),
+                Ins::Cmp { d, a, b, cc, ty } => {
+                    let t = tyof!(ty);
+                    w!(*d, kir_scalar::cmp(*cc, t, rdv!(t, *a), rdv!(t, *b)) as u64)
+                }
                 Ins::Neg { d, a, mode, ty } => {
-                    let t = prog.tys[*ty as usize];
-                    let x = r!(*a);
+                    let t = tyof!(ty);
+                    let x = rdv!(t, *a);
                     match mode {
-                        Mode::Wrap => w!(*d, kir_scalar::wrap_neg(t, x)),
+                        Mode::Wrap => wrv!(t, *d, kir_scalar::wrap_neg(t, x)),
                         _ => {
                             if x == t.min() {
                                 panic_out!("attempt to negate with overflow".to_string());
                             }
-                            w!(*d, -x);
+                            wrv!(t, *d, -x);
                         }
                     }
                 }
-                Ins::FArith { d, a, b, op, ty } => w!(*d, kir_scalar::farith(*op, prog.tys[*ty as usize], r!(*a), r!(*b))),
-                Ins::Shift { d, a, n, left, ty } => w!(*d, kir_scalar::shift(*left, prog.tys[*ty as usize], r!(*a), r!(*n))),
-                Ins::MinMax { d, a, b, max, ty } => w!(*d, kir_scalar::minmax(*max, prog.tys[*ty as usize], r!(*a), r!(*b))),
-                Ins::FUn { d, a, f: fu, src, res } => w!(*d, kir_scalar::funary(*fu, prog.tys[*src as usize], prog.tys[*res as usize], r!(*a))),
-                Ins::FBin { d, a, b, f: fb, res } => w!(*d, kir_scalar::fbin(*fb, prog.tys[*res as usize], r!(*a), r!(*b))),
-                Ins::Conv { d, a, src, dst } => w!(*d, kir_scalar::conv(prog.tys[*src as usize], prog.tys[*dst as usize], r!(*a))),
-                Ins::NotB { d, a } => w!(*d, (r!(*a) == 0) as i128),
-                Ins::NotI { d, a, ty } => w!(*d, kir_scalar::not_int(prog.tys[*ty as usize], r!(*a))),
+                Ins::FArith { d, a, b, op, ty } => {
+                    let t = tyof!(ty);
+                    wrv!(t, *d, kir_scalar::farith(*op, t, rdv!(t, *a), rdv!(t, *b)))
+                }
+                Ins::Shift { d, a, n, left, ty } => {
+                    let t = tyof!(ty);
+                    wrv!(t, *d, kir_scalar::shift(*left, t, rdv!(t, *a), rdv!(Ty::U32, *n)))
+                }
+                Ins::MinMax { d, a, b, max, ty } => {
+                    let t = tyof!(ty);
+                    wrv!(t, *d, kir_scalar::minmax(*max, t, rdv!(t, *a), rdv!(t, *b)))
+                }
+                Ins::FUn { d, a, f: fu, src, res } => {
+                    let (st, rt) = (tyof!(src), tyof!(res));
+                    wrv!(rt, *d, kir_scalar::funary(*fu, st, rt, rdv!(st, *a)))
+                }
+                Ins::FBin { d, a, b, f: fb, res } => {
+                    let rt = tyof!(res);
+                    let bt = if *fb == crate::kir::FBin::Powi { Ty::I32 } else { rt };
+                    wrv!(rt, *d, kir_scalar::fbin(*fb, rt, rdv!(rt, *a), rdv!(bt, *b)))
+                }
+                Ins::Conv { d, a, src, dst } => {
+                    let (st, dt) = (tyof!(src), tyof!(dst));
+                    wrv!(dt, *d, kir_scalar::conv(st, dt, rdv!(st, *a)))
+                }
+                Ins::NotB { d, a } => w!(*d, (r!(*a) == 0) as u64),
+                Ins::NotI { d, a, ty } => {
+                    let t = tyof!(ty);
+                    wrv!(t, *d, kir_scalar::not_int(t, rdv!(t, *a)))
+                }
                 Ins::BitOp { d, a, b, k } => {
                     let (x, y) = (r!(*a), r!(*b));
                     w!(*d, match k {
@@ -511,8 +574,31 @@ impl<'a> Vm<'a> {
                         _ => x ^ y,
                     });
                 }
-                Ins::BitCount { d, a, k, src } => w!(*d, kir_scalar::bitcount(*k, prog.tys[*src as usize], r!(*a))),
-                Ins::Checked { d, a, b, op, ty } => w!(*d, kir_exec::checked(*op, prog.tys[*ty as usize], r!(*a), r!(*b))),
+                Ins::BitOp128 { d, a, b, k } => {
+                    let (x, y) = (rdv!(Ty::U128, *a), rdv!(Ty::U128, *b));
+                    wrv!(Ty::U128, *d, match k {
+                        0 => x & y,
+                        1 => x | y,
+                        _ => x ^ y,
+                    });
+                }
+                Ins::BitCount { d, a, k, src } => {
+                    let t = tyof!(src);
+                    w!(*d, kir_scalar::bitcount(*k, t, rdv!(t, *a)) as u64)
+                }
+                Ins::Checked { d, a, b, op, ty } => {
+                    let ot = tyof!(ty);
+                    let Ty::Opt(p) = ot else { return Err("checked の結果は Option のはず".to_string()) };
+                    let pt = p.ty();
+                    let old = kir_exec::checked(*op, ot, rdv!(pt, *a), rdv!(pt, *b));
+                    if old & TAG_BIT != 0 {
+                        w!(*d, 1);
+                        w!(*d + 1, payload_of(pt, old) as u64);
+                    } else {
+                        w!(*d, 0);
+                        w!(*d + 1, 0);
+                    }
+                }
                 Ins::Call { f: ci, d, argp, argn } => {
                     if self.frames.len() + 1 >= MAX_DEPTH {
                         self.flush();
@@ -529,12 +615,18 @@ impl<'a> Vm<'a> {
                         rp = unsafe { self.regs.as_mut_ptr().add(base) };
                     }
                     // 引数を新しいフレームの先頭へ写す。
+                    let mut at = f.nslots as usize;
                     for k in 0..*argn as usize {
-                        let s = unsafe { *f.pool.get_unchecked(*argp as usize + k) };
-                        let v = r!(s);
-                        unsafe { *rp.add(f.nslots as usize + k) = v };
+                        let e = unsafe { *f.pool.get_unchecked(*argp as usize + k) };
+                        let (s, n) = ((e & 0xffff) as usize, (e >> 16) as usize);
+                        if n == 1 {
+                            unsafe { *rp.add(at) = *rp.add(s) };
+                        } else {
+                            unsafe { std::ptr::copy_nonoverlapping(rp.add(s), rp.add(at), n) };
+                        }
+                        at += n;
                     }
-                    self.frames.push(Frame { v: vi, f: fi, pc: pc as u32, base: base as u32, dst: *d, hbase: self.heap.len(), abase: self.allocs.len() });
+                    self.frames.push(Frame { v: vi, f: fi, pc: pc as u32, base: base as u32, dst: *d, abase: self.allocs.len() });
                     fi = ci;
                     vi = cvi;
                     prog = cprog;
@@ -546,7 +638,13 @@ impl<'a> Vm<'a> {
                 }
                 Ins::CallExt { e, d, argp, argn } => {
                     let func = &prog.ext[*e as usize];
-                    let argv: Vec<i128> = (0..*argn as usize).map(|k| r!(f.pool[*argp as usize + k])).collect();
+                    let ps = func.params();
+                    let argv: Vec<i128> = (0..*argn as usize)
+                        .map(|k| {
+                            let ent = f.pool[*argp as usize + k];
+                            rdv!(ps[k].1, ent & 0xffff)
+                        })
+                        .collect();
                     // C から呼び戻された (コールバック) とき、この `Vm` の上にフレームを積む。
                     self.top = base + f.nslots as usize;
                     let prev = CUR_VM.with(|c| c.replace(self as *mut Vm<'a> as *mut Vm<'static>));
@@ -554,40 +652,29 @@ impl<'a> Vm<'a> {
                     CUR_VM.with(|c| c.set(prev));
                     // コールバックが `regs` を伸ばしたかもしれない。
                     rp = unsafe { self.regs.as_mut_ptr().add(base) };
-                    w!(*d, v?);
+                    w!(*d, v? as u64);
                 }
                 Ins::Ret { v } => {
-                    let mut val = r!(*v);
-                    let (hbase, abase) = match self.frames.last() {
-                        Some(fr) => (fr.hbase, fr.abase),
-                        None => (top_hbase, top_abase),
+                    let abase = match self.frames.last() {
+                        Some(fr) => fr.abase,
+                        None => top_abase,
                     };
                     if self.allocs.len() > abase {
                         for p in self.allocs.drain(abase..) {
                             unsafe { free(p) };
                         }
                     }
-                    // 戻る関数が作った置き場の項目は捨てる。戻り値が参照する項目だけは、呼び出し元の置き場へ複製して残す。
-                    if f.ret_heap {
-                        let blobs = self.heap.split_off(hbase);
-                        let mut out: Vec<Vec<u8>> = vec![];
-                        val = kir_exec::relocate(f.ret, val, &blobs, hbase, &mut out);
-                        self.heap.extend(out);
-                        self.recycle(blobs);
-                    } else if self.heap.len() > hbase {
-                        let room = 512usize.saturating_sub(self.pool.len());
-                        let n = (self.heap.len() - hbase).min(room);
-                        let from = self.heap.len() - n;
-                        self.pool.extend(self.heap.drain(from..));
-                        self.heap.truncate(hbase);
-                    }
+                    let n = f.ret_w as usize;
+                    let src = unsafe { rp.add(*v as usize) };
                     match self.frames.pop() {
                         None => {
+                            self.result.clear();
+                            self.result.extend_from_slice(unsafe { std::slice::from_raw_parts(src, n) });
                             if !nested {
                                 self.flush();
                                 prof_report();
                             }
-                            return Ok(Outcome::Value(val));
+                            return Ok(Outcome::Value(0));
                         }
                         Some(fr) => {
                             fi = fr.f;
@@ -600,7 +687,11 @@ impl<'a> Vm<'a> {
                             base = fr.base as usize;
                             rp = unsafe { self.regs.as_mut_ptr().add(base) };
                             if fr.dst != NO_SLOT {
-                                w!(fr.dst, val);
+                                if n == 1 {
+                                    unsafe { *rp.add(fr.dst as usize) = *src };
+                                } else {
+                                    unsafe { std::ptr::copy_nonoverlapping(src, rp.add(fr.dst as usize), n) };
+                                }
                             }
                         }
                     }
@@ -627,209 +718,177 @@ impl<'a> Vm<'a> {
                     let Some(a) = crate::ffi::trampoline(crate::ffi::VM_SLOT_BASE + slot) else {
                         return Err("コールバック (C に渡す関数) は x86_64 Linux だけで使える".to_string());
                     };
-                    w!(*d, a as i128);
+                    w!(*d, a as u64);
                 }
                 Ins::Unreachable => return Err("到達しないブロックに入った".to_string()),
                 Ins::Make { d, info, argp } => {
                     let mi = &prog.makes[*info as usize];
-                    let mut buf = self.pool.pop().unwrap_or_default();
-                    buf.clear();
-                    buf.resize(mi.size as usize, 0);
-                    if let Some(k) = mi.variant {
-                        buf[0..4].copy_from_slice(&(k as i32).to_le_bytes());
-                    }
-                    for (k, (off, t)) in mi.fields.iter().enumerate() {
-                        let v = r!(f.pool[*argp as usize + k]);
-                        kir_exec::write_val(&mut buf, *off as usize, &prog.aggs, *t, v, &self.heap);
-                    }
-                    self.heap.push(buf);
-                    w!(*d, (self.heap.len() - 1) as i128);
-                }
-                Ins::Field { d, a, off, ty } => {
-                    let t = prog.tys[*ty as usize];
-                    let h = r!(*a) as usize;
-                    let o = *off as usize;
-                    // タグが別の腕の値を、判定の前に読むことがある (`Option<Vec>` の `None` のペイロード)。項目が無い・短いときは 0 として読む。
-                    let need = prog.ty_size[*ty as usize] as usize;
-                    let ok = matches!(self.heap.get(h), Some(b) if b.len() >= o + need);
-                    let v = match t {
-                        Ty::Agg(ai) => {
-                            let n = prog.aggs[ai as usize].size as usize;
-                            let mut sub = self.pool.pop().unwrap_or_default();
-                            sub.clear();
-                            if ok {
-                                sub.extend_from_slice(&self.heap[h][o..o + n]);
-                            } else {
-                                sub.resize(n, 0);
-                            }
-                            self.heap.push(sub);
-                            (self.heap.len() - 1) as i128
+                    unsafe {
+                        let dp = rp.add(*d as usize) as *mut u8;
+                        std::ptr::write_bytes(dp, 0, mi.nslots as usize * 8);
+                        if let Some(k) = mi.variant {
+                            (dp as *mut i32).write_unaligned(k as i32);
                         }
-                        t => {
-                            if ok {
-                                kir_exec::read_scalar(&self.heap[h], o, t)
-                            } else {
-                                kir_exec::read_scalar(&[0u8; 16], 0, t)
-                            }
+                        for (k, (off, nb)) in mi.fields.iter().enumerate() {
+                            let e = *f.pool.get_unchecked(*argp as usize + k);
+                            let sp = rp.add((e & 0xffff) as usize) as *const u8;
+                            std::ptr::copy(sp, dp.add(*off as usize), *nb as usize);
                         }
-                    };
-                    w!(*d, v);
+                    }
                 }
-                Ins::SetField { d, a, v, off, agg } => {
-                    let h = r!(*a) as usize;
-                    let dd = &prog.aggs[*agg as usize];
-                    let Some(fty) = kir_exec::field_ty_at(dd, *off) else {
-                        return Err("setfield のフィールドがない".to_string());
-                    };
-                    let mut buf = self.pool.pop().unwrap_or_default();
-                    buf.clear();
-                    buf.extend_from_slice(&self.heap[h]);
-                    kir_exec::write_val(&mut buf, *off as usize, &prog.aggs, fty, r!(*v), &self.heap);
-                    self.heap.push(buf);
-                    w!(*d, (self.heap.len() - 1) as i128);
-                }
+                Ins::FieldS { d, a, off, k } => unsafe {
+                    let p = (rp.add(*a as usize) as *const u8).add(*off as usize);
+                    if *k == LK::I128 {
+                        let (lo, hi) = ((p as *const u64).read_unaligned(), (p.add(8) as *const u64).read_unaligned());
+                        w!(*d, lo);
+                        w!(*d + 1, hi);
+                    } else {
+                        w!(*d, ld_k(p, *k));
+                    }
+                },
+                Ins::FieldA { d, a, off, nb } => unsafe {
+                    let ns = ((*nb as usize + 7) / 8).max(1);
+                    let sp = (rp.add(*a as usize) as *const u8).add(*off as usize);
+                    // 先に読み出し元を読む (`d` と重なってもよいように `copy`)。
+                    *rp.add(*d as usize + ns - 1) = 0;
+                    std::ptr::copy(sp, rp.add(*d as usize) as *mut u8, *nb as usize);
+                },
+                Ins::SetField { d, a, v, off, ns, nb } => unsafe {
+                    std::ptr::copy(rp.add(*a as usize), rp.add(*d as usize), *ns as usize);
+                    std::ptr::copy(rp.add(*v as usize) as *const u8, (rp.add(*d as usize) as *mut u8).add(*off as usize), *nb as usize);
+                },
                 Ins::TagEnum { d, a } => {
-                    let h = r!(*a) as usize;
-                    let b = &self.heap[h];
-                    w!(*d, i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as i128);
+                    let t = unsafe { (rp.add(*a as usize) as *const i32).read() };
+                    w!(*d, t as i64 as u64);
                 }
-                Ins::TagOpt { d, a } => w!(*d, (r!(*a) & TAG_BIT != 0) as i128),
-                Ins::Some { d, a, pay } => {
-                    let Ty::Opt(p) = prog.tys[*pay as usize] else { return Err("some の結果は Option のはず".to_string()) };
-                    let v = kir_exec::pay_word(p, r!(*a), &mut self.heap);
-                    w!(*d, TAG_BIT | v);
-                }
-                Ins::Ok { d, a, pay } => {
-                    let Ty::Res(t0, _) = prog.tys[*pay as usize] else { return Err("ok の結果は Result のはず".to_string()) };
-                    let v = kir_exec::pay_word(t0, r!(*a), &mut self.heap);
-                    w!(*d, v);
-                }
-                Ins::Err { d, a, pay } => {
-                    let Ty::Res(_, e0) = prog.tys[*pay as usize] else { return Err("err の結果は Result のはず".to_string()) };
-                    let v = kir_exec::pay_word(e0, r!(*a), &mut self.heap);
-                    w!(*d, TAG_BIT | v);
-                }
-                Ins::Payload { d, a, ty } => w!(*d, kir_exec::pay_read(prog.tys[*ty as usize], r!(*a) & PAY_MASK, &self.heap)),
+                Ins::TagOpt { d, a } => w!(*d, (r!(*a) != 0) as u64),
+                Ins::WrapN { d, a, n, tag } => unsafe {
+                    if *n == 1 {
+                        let x = r!(*a);
+                        w!(*d, *tag as u64);
+                        w!(*d + 1, x);
+                    } else {
+                        std::ptr::copy(rp.add(*a as usize), rp.add(*d as usize + 1), *n as usize);
+                        w!(*d, *tag as u64);
+                    }
+                },
+                Ins::Payload1 { d, a } => w!(*d, r!(*a + 1)),
+                Ins::PayloadN { d, a, n } => unsafe {
+                    std::ptr::copy(rp.add(*a as usize + 1), rp.add(*d as usize), *n as usize);
+                },
                 Ins::FrameBytes { d, size } => {
                     let p = unsafe { calloc((*size as usize).max(1), 1) };
                     self.allocs.push(p);
-                    w!(*d, p as usize as i128);
+                    w!(*d, p as usize as u64);
                 }
                 Ins::Load { d, p, off, k } => {
-                    let a = addr(r!(*p) + *off as i128, 1)?;
+                    let a = addr(r!(*p).wrapping_add(*off as u64), 1)?;
                     // SAFETY: KIR の検査済みの参照・ptr は、生きている領域の十分な幅を指す。
-                    let v: i128 = unsafe {
-                        match k {
-                            LK::U8 => *a as i128,
-                            LK::I8 => *(a as *const i8) as i128,
-                            LK::Bool => (*a != 0) as i128,
-                            LK::U16 => (a as *const u16).read_unaligned() as i128,
-                            LK::I16 => (a as *const i16).read_unaligned() as i128,
-                            LK::U32 => (a as *const u32).read_unaligned() as i128,
-                            LK::I32 => (a as *const i32).read_unaligned() as i128,
-                            LK::U64 => (a as *const u64).read_unaligned() as i128,
-                            LK::I64 => (a as *const i64).read_unaligned() as i128,
-                            LK::I128 => (a as *const i128).read_unaligned(),
+                    unsafe {
+                        if *k == LK::I128 {
+                            w!(*d, (a as *const u64).read_unaligned());
+                            w!(*d + 1, (a.add(8) as *const u64).read_unaligned());
+                        } else {
+                            w!(*d, ld_k(a, *k));
                         }
-                    };
-                    w!(*d, v);
+                    }
                 }
                 Ins::LoadU64 { d, p, off } => {
-                    let a = addr(r!(*p) + *off as i128, 8)?;
-                    w!(*d, unsafe { (a as *const u64).read_unaligned() } as i128);
+                    let a = addr(r!(*p).wrapping_add(*off as u64), 8)?;
+                    w!(*d, unsafe { (a as *const u64).read_unaligned() });
                 }
                 Ins::LoadI64 { d, p, off } => {
-                    let a = addr(r!(*p) + *off as i128, 8)?;
-                    w!(*d, unsafe { (a as *const i64).read_unaligned() } as i128);
+                    let a = addr(r!(*p).wrapping_add(*off as u64), 8)?;
+                    w!(*d, unsafe { (a as *const u64).read_unaligned() });
                 }
                 Ins::LoadU32 { d, p, off } => {
-                    let a = addr(r!(*p) + *off as i128, 4)?;
-                    w!(*d, unsafe { (a as *const u32).read_unaligned() } as i128);
+                    let a = addr(r!(*p).wrapping_add(*off as u64), 4)?;
+                    w!(*d, unsafe { (a as *const u32).read_unaligned() } as u64);
                 }
                 Ins::LoadI32 { d, p, off } => {
-                    let a = addr(r!(*p) + *off as i128, 4)?;
-                    w!(*d, unsafe { (a as *const i32).read_unaligned() } as i128);
+                    let a = addr(r!(*p).wrapping_add(*off as u64), 4)?;
+                    w!(*d, unsafe { (a as *const i32).read_unaligned() } as i64 as u64);
                 }
                 Ins::LoadU8 { d, p, off } => {
-                    let a = addr(r!(*p) + *off as i128, 1)?;
-                    w!(*d, unsafe { *a } as i128);
+                    let a = addr(r!(*p).wrapping_add(*off as u64), 1)?;
+                    w!(*d, unsafe { *a } as u64);
                 }
                 Ins::Store64 { p, off, v } => {
-                    let a = addr(r!(*p) + *off as i128, 8)?;
+                    let a = addr(r!(*p).wrapping_add(*off as u64), 8)?;
                     let xv = r!(*v);
-                    unsafe { (a as *mut u64).write_unaligned(xv as u64) };
+                    unsafe { (a as *mut u64).write_unaligned(xv) };
                 }
                 Ins::Store8 { p, off, v } => {
-                    let a = addr(r!(*p) + *off as i128, 1)?;
+                    let a = addr(r!(*p).wrapping_add(*off as u64), 1)?;
                     let xv = r!(*v);
                     unsafe { *a = xv as u8 };
                 }
                 Ins::LoadX { d, p, x, off, k } => {
-                    let a = addr(r!(*p) + r!(*x) + *off as i128, 1)?;
-                    let v: i128 = unsafe {
-                        match k {
-                            LK::U8 => *a as i128,
-                            LK::I8 => *(a as *const i8) as i128,
-                            LK::Bool => (*a != 0) as i128,
-                            LK::U16 => (a as *const u16).read_unaligned() as i128,
-                            LK::I16 => (a as *const i16).read_unaligned() as i128,
-                            LK::U32 => (a as *const u32).read_unaligned() as i128,
-                            LK::I32 => (a as *const i32).read_unaligned() as i128,
-                            LK::U64 => (a as *const u64).read_unaligned() as i128,
-                            LK::I64 => (a as *const i64).read_unaligned() as i128,
-                            LK::I128 => (a as *const i128).read_unaligned(),
+                    let a = addr(r!(*p).wrapping_add(r!(*x)).wrapping_add(*off as u64), 1)?;
+                    unsafe {
+                        if *k == LK::I128 {
+                            w!(*d, (a as *const u64).read_unaligned());
+                            w!(*d + 1, (a.add(8) as *const u64).read_unaligned());
+                        } else {
+                            w!(*d, ld_k(a, *k));
                         }
-                    };
-                    w!(*d, v);
+                    }
                 }
                 Ins::StoreX { p, x, off, v, w: wd } => {
-                    let a = addr(r!(*p) + r!(*x) + *off as i128, *wd as usize)?;
+                    let a = addr(r!(*p).wrapping_add(r!(*x)).wrapping_add(*off as u64), *wd as usize)?;
                     let xv = r!(*v);
                     unsafe {
                         match wd {
                             1 => *a = xv as u8,
                             2 => (a as *mut u16).write_unaligned(xv as u16),
                             4 => (a as *mut u32).write_unaligned(xv as u32),
-                            8 => (a as *mut u64).write_unaligned(xv as u64),
-                            _ => (a as *mut u128).write_unaligned(xv as u128),
+                            8 => (a as *mut u64).write_unaligned(xv),
+                            _ => {
+                                (a as *mut u64).write_unaligned(xv);
+                                (a.add(8) as *mut u64).write_unaligned(r!(*v + 1));
+                            }
                         }
                     }
                 }
                 Ins::LoadAgg { d, p, size } => {
                     let n = *size as usize;
                     let a = addr(r!(*p), n)?;
-                    let blob = unsafe { std::slice::from_raw_parts(a as *const u8, n) }.to_vec();
-                    self.heap.push(blob);
-                    w!(*d, (self.heap.len() - 1) as i128);
+                    unsafe {
+                        *rp.add(*d as usize + ((n + 7) / 8).max(1) - 1) = 0;
+                        std::ptr::copy(a as *const u8, rp.add(*d as usize) as *mut u8, n);
+                    }
                 }
                 Ins::Store { p, off, v, w: wd } => {
-                    let a = addr(r!(*p) + *off as i128, *wd as usize)?;
+                    let a = addr(r!(*p).wrapping_add(*off as u64), *wd as usize)?;
                     let x = r!(*v);
                     unsafe {
                         match wd {
                             1 => *a = x as u8,
                             2 => (a as *mut u16).write_unaligned(x as u16),
                             4 => (a as *mut u32).write_unaligned(x as u32),
-                            8 => (a as *mut u64).write_unaligned(x as u64),
-                            _ => (a as *mut u128).write_unaligned(x as u128),
+                            8 => (a as *mut u64).write_unaligned(x),
+                            _ => {
+                                (a as *mut u64).write_unaligned(x);
+                                (a.add(8) as *mut u64).write_unaligned(r!(*v + 1));
+                            }
                         }
                     }
                 }
-                Ins::StoreAgg { p, v } => {
-                    let blob = &self.heap[r!(*v) as usize];
-                    let a = addr(r!(*p), blob.len())?;
-                    unsafe { std::ptr::copy_nonoverlapping(blob.as_ptr(), a, blob.len()) };
+                Ins::StoreAgg { p, v, size } => {
+                    let n = *size as usize;
+                    let a = addr(r!(*p), n)?;
+                    unsafe { std::ptr::copy(rp.add(*v as usize) as *const u8, a, n) };
                 }
                 Ins::HeapAlloc { d, n } => {
                     let nn = (r!(*n) as usize).max(1);
                     let p = unsafe { malloc(nn) };
-                    w!(*d, p as usize as i128);
+                    w!(*d, p as usize as u64);
                 }
                 Ins::HeapRealloc { d, p, n } => {
                     let old = r!(*p);
                     let nn = (r!(*n) as usize).max(1);
                     let q = unsafe { realloc(old as usize as *mut std::ffi::c_void, nn) };
-                    w!(*d, q as usize as i128);
+                    w!(*d, q as usize as u64);
                 }
                 Ins::HeapFree { p } => {
                     let a = r!(*p);
@@ -848,13 +907,13 @@ impl<'a> Vm<'a> {
                     let pa = r!(*p);
                     let bytes: &[u8] = if n == 0 { &[] } else { unsafe { std::slice::from_raw_parts(addr(pa, n)? as *const u8, n) } };
                     w!(*d, match std::str::from_utf8(bytes) {
-                        Ok(_) => n as i128,
-                        Err(e) => e.valid_up_to() as i128,
+                        Ok(_) => n as u64,
+                        Err(e) => e.valid_up_to() as u64,
                     });
                 }
-                Ins::Panic { msg, arg } => {
+                Ins::Panic { msg, arg, aty } => {
                     let m = &prog.strs[*msg as usize];
-                    let m = if *arg == NO_SLOT { m.clone() } else { format!("{}: {}", m, r!(*arg)) };
+                    let m = if *arg == NO_SLOT { m.clone() } else { format!("{}: {}", m, rdv!(tyof!(aty), *arg)) };
                     panic_out!(m);
                 }
                 Ins::Abort => {
@@ -863,128 +922,137 @@ impl<'a> Vm<'a> {
                     return Ok(Outcome::Abort);
                 }
                 Ins::Write { d, fd, data } => {
-                    let bytes = self.fat_bytes(r!(*data))?;
-                    match self.out_write(r!(*fd), bytes) {
+                    let bytes = Self::fat_bytes(rp, *data as usize)?;
+                    match self.out_write(r!(*fd) as i32 as i128, bytes) {
                         Ok(()) => w!(*d, 0),
                         Err(e) => {
-                            let v = kir_exec::io_error_value(&prog.aggs, &mut self.heap, crate::natives::io_kind_name(&e), e.raw_os_error().unwrap_or(0))?;
-                            w!(*d, TAG_BIT | v);
+                            let b = io_error_bytes(&prog.aggs, crate::natives::io_kind_name(&e), e.raw_os_error().unwrap_or(0))?;
+                            w!(*d, 1);
+                            put_bytes(rp, *d as usize + 1, &b);
                         }
                     }
                 }
                 Ins::Eprint { data } => {
-                    let bytes = self.fat_bytes(r!(*data))?;
+                    let bytes = Self::fat_bytes(rp, *data as usize)?;
                     self.err_write(bytes);
                 }
                 Ins::FmtFloat { a, bits } => {
                     let x = r!(*a);
-                    let s = if *bits == 32 { py_float32(f32::from_bits(x as u32)) } else { py_float(f64::from_bits(x as u64)) };
+                    let s = if *bits == 32 { py_float32(f32::from_bits(x as u32)) } else { py_float(f64::from_bits(x)) };
                     self.err_write(s.as_bytes());
                 }
                 Ins::EnvArgCount { d } => {
-                    w!(*d, self.args.len() as i128);
+                    w!(*d, self.args.len() as u64);
                 }
                 Ins::EnvArg { d, i } => {
                     let i = r!(*i) as usize;
                     if i >= self.args.len() {
                         w!(*d, 0);
                     } else {
-                        let a = self.args[i].clone();
-                        let h = self.leak_fat(a.as_bytes());
-                        w!(*d, TAG_BIT | h);
+                        let (p, n) = Self::leak_fat(self.args[i].as_bytes());
+                        w!(*d, 1);
+                        w!(*d + 1, p);
+                        w!(*d + 2, n);
                     }
                 }
                 Ins::EnvVar { d, name } => {
-                    let bytes = self.fat_bytes(r!(*name))?;
+                    let bytes = Self::fat_bytes(rp, *name as usize)?;
                     match std::env::var(std::str::from_utf8(bytes).unwrap_or("")) {
                         Ok(v) => {
-                            let h = self.leak_fat(v.as_bytes());
-                            w!(*d, TAG_BIT | h);
+                            let (p, n) = Self::leak_fat(v.as_bytes());
+                            w!(*d, 1);
+                            w!(*d + 1, p);
+                            w!(*d + 2, n);
                         }
                         Err(_) => w!(*d, 0),
                     }
                 }
                 Ins::NetListen { d, addr } | Ins::NetConnect { d, addr } => {
-                    let bytes = self.fat_bytes(r!(*addr))?;
+                    let bytes = Self::fat_bytes(rp, *addr as usize)?;
                     let a = std::str::from_utf8(bytes).unwrap_or("");
                     let is_listen = matches!(ins, Ins::NetListen { .. });
                     let res = if is_listen { std::net::TcpListener::bind(a).map(NetSock::Listener) } else { std::net::TcpStream::connect(a).map(NetSock::Stream) };
                     match res {
                         Ok(sock) => {
                             let fd = self.new_fd(sock);
-                            w!(*d, self.desc(fd));
+                            w!(*d, 0);
+                            w!(*d + 1, fd as i32 as u32 as u64);
                         }
                         Err(e) => {
                             // listen / connect / accept の失敗は `std.net.Error` (`{ code: i32 }`。kir_exec と同じ。kir/net-refs)。
-                            let v = kir_exec::net_error_agg(&mut self.heap, e.raw_os_error().unwrap_or(-1))?;
-                            w!(*d, TAG_BIT | v);
+                            w!(*d, 1);
+                            w!(*d + 1, e.raw_os_error().unwrap_or(-1) as u32 as u64);
                         }
                     }
                 }
                 Ins::NetAccept { d, sock } => {
-                    let fd = r!(*sock);
+                    let fd = r!(*sock) as i32 as i128;
                     let Some(NetSock::Listener(l)) = self.socks.get_mut(&fd) else { return Err(format!("無効なソケット記述子 {}", fd)) };
                     match l.accept() {
                         Ok((st, _)) => {
                             let nfd = self.new_fd(NetSock::Stream(st));
-                            w!(*d, self.desc(nfd));
+                            w!(*d, 0);
+                            w!(*d + 1, nfd as i32 as u32 as u64);
                         }
                         Err(e) => {
-                            // listen / connect / accept の失敗は `std.net.Error` (`{ code: i32 }`。kir_exec と同じ。kir/net-refs)。
-                            let v = kir_exec::net_error_agg(&mut self.heap, e.raw_os_error().unwrap_or(-1))?;
-                            w!(*d, TAG_BIT | v);
+                            w!(*d, 1);
+                            w!(*d + 1, e.raw_os_error().unwrap_or(-1) as u32 as u64);
                         }
                     }
                 }
                 Ins::NetRead { d, sock, buf, len } => {
                     use std::io::Read;
-                    let (fd, p, n) = (r!(*sock), r!(*buf), r!(*len) as usize);
+                    let (fd, p, n) = (r!(*sock) as i32 as i128, r!(*buf), r!(*len) as usize);
                     let Some(NetSock::Stream(st)) = self.socks.get_mut(&fd) else { return Err(format!("読み出しできるのはストリームソケットだけ: {}", fd)) };
                     let mut tmp = vec![0u8; n];
                     let nr = st.read(&mut tmp).map_err(|e| format!("read: {e}"))?;
                     if nr > 0 {
                         unsafe { std::ptr::copy_nonoverlapping(tmp.as_ptr(), addr(p, nr)?, nr) };
                     }
-                    w!(*d, nr as i128);
+                    w!(*d, 0);
+                    w!(*d + 1, nr as u64);
                 }
                 Ins::NetWrite { d, sock, buf, len } => {
                     use std::io::Write;
-                    let (fd, p, n) = (r!(*sock), r!(*buf), r!(*len) as usize);
+                    let (fd, p, n) = (r!(*sock) as i32 as i128, r!(*buf), r!(*len) as usize);
                     let Some(NetSock::Stream(st)) = self.socks.get_mut(&fd) else { return Err(format!("書き込みできるのはストリームソケットだけ: {}", fd)) };
                     let bytes: &[u8] = if n == 0 { &[] } else { unsafe { std::slice::from_raw_parts(addr(p, n)? as *const u8, n) } };
                     st.write_all(bytes).map_err(|e| format!("write: {e}"))?;
-                    w!(*d, n as i128);
+                    w!(*d, 0);
+                    w!(*d + 1, n as u64);
                 }
                 Ins::NetFlush { d, sock } => {
                     use std::io::Write;
-                    let fd = r!(*sock);
+                    let fd = r!(*sock) as i32 as i128;
                     let Some(NetSock::Stream(st)) = self.socks.get_mut(&fd) else { return Err(format!("flush できるのはストリームソケットだけ: {}", fd)) };
                     st.flush().map_err(|e| format!("flush: {e}"))?;
                     w!(*d, 0);
                 }
                 Ins::NetClose { d, sock } => {
-                    let fd = r!(*sock);
+                    let fd = r!(*sock) as i32 as i128;
                     self.socks.remove(&fd);
                     w!(*d, 0);
                 }
                 Ins::NetLocalPort { d, sock } => {
-                    let fd = r!(*sock);
+                    let fd = r!(*sock) as i32 as i128;
                     let Some(NetSock::Listener(l)) = self.socks.get(&fd) else { return Err(format!("local_port できるのはリスナーソケットだけ: {}", fd)) };
-                    w!(*d, l.local_addr().map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?);
+                    let port = l.local_addr().map(|a| a.port() as u64).map_err(|e| format!("local_port: {e}"))?;
+                    w!(*d, 0);
+                    w!(*d + 1, port);
                 }
                 Ins::ParseInt { d, s, radix, ty } => {
-                    let t = prog.tys[*ty as usize];
-                    let bytes = self.fat_bytes(r!(*s))?;
+                    let t = tyof!(ty);
+                    let bytes = Self::fat_bytes(rp, *s as usize)?;
                     let (ret, lo, hi) = kir_exec::parse_int(bytes, r!(*radix) as u32, t.bits(), t.signed());
                     if ret == 0 {
                         let v = ((hi as u128) << 64) | (lo as u128);
                         let bits = t.bits();
                         let mask = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
-                        w!(*d, (v & mask) as u64 as i128);
+                        w!(*d, 0);
+                        w!(*d + 1, t.wrap(((v & mask) as u64) as i128) as u64);
                     } else {
-                        let kind = (ret - 1) as u8;
-                        self.heap.push(vec![kind]);
-                        w!(*d, TAG_BIT | (self.heap.len() - 1) as i128);
+                        w!(*d, 1);
+                        w!(*d + 1, (ret - 1) as u64);
                     }
                 }
             }
@@ -993,6 +1061,6 @@ impl<'a> Vm<'a> {
 }
 
 #[allow(dead_code)]
-fn _unused(_: i128) -> i128 {
-    payload_bits(0) + payload_of(Ty::Unit, 0)
+fn _unused() -> i128 {
+    0
 }

@@ -37,13 +37,17 @@ fn swap_cc(cc: Cc) -> Cc {
 
 /// 整数 (浮動小数と `u128` を除く) の比較の定数の被演算子: `(もう一方の値, 比較, 即値, 定数の値)`。
 fn imm_cmp(cc: Cc, oty: Ty, a: VId, b: VId, cv: &HashMap<VId, i32>) -> Option<(VId, Cc, i32, VId)> {
-    if oty.is_float() || oty == Ty::U128 {
+    if oty.is_float() || wide128(oty) {
         return None;
     }
     if let Some(c) = cv.get(&b) {
         return Some((a, cc, *c, b));
     }
     cv.get(&a).map(|c| (b, swap_cc(cc), *c, a))
+}
+
+fn wide128(t: Ty) -> bool {
+    matches!(t, Ty::I128 | Ty::U128)
 }
 
 /// 比較の被演算子 (レジスタ同士、またはレジスタと即値)。
@@ -53,6 +57,8 @@ enum CmpOpnd {
     Ri(S, i32),
 }
 
+/// 呼び先の VFunc の入れ物 (`ret_w` などは `compile_func` が決める)。
+
 /// KIR のモジュール全体をバイトコードにする。
 pub fn compile(m: &Module, lines: &HashMap<String, crate::kir_lower::FnLines>) -> Result<Prog, String> {
     let mut prog = Prog { aggs: m.aggs.clone(), ..Default::default() };
@@ -60,7 +66,7 @@ pub fn compile(m: &Module, lines: &HashMap<String, crate::kir_lower::FnLines>) -
     for f in &m.funcs {
         let vf = if f.link.is_some() {
             // `extern` 宣言 (本体なし)。呼び出しは `CallExt` になる。
-            VFunc { key: f.key.clone(), code: vec![], pool: vec![], marks: vec![], file: String::new(), nslots: 0, nparams: f.params().len() as u32, ptys: f.params().iter().map(|(_, t)| *t).collect(), ret: f.ret, ret_heap: false }
+            VFunc { key: f.key.clone(), code: vec![], pool: vec![], marks: vec![], file: String::new(), nslots: 0, nparams: f.params().iter().map(|(_, t)| slots_of(&m.aggs, *t)).sum(), ptys: f.params().iter().map(|(_, t)| *t).collect(), ret: f.ret, ret_w: slots_of(&m.aggs, f.ret) }
         } else {
             compile_func(m, &index, &mut prog, f, lines.get(&f.key)).map_err(|e| format!("{}: {}", f.key, e))?
         };
@@ -75,8 +81,6 @@ fn tyi(prog: &mut Prog, t: Ty) -> u32 {
         Some(i) => i as u32,
         None => {
             prog.tys.push(t);
-            let n = size_of(&prog.aggs, t);
-            prog.ty_size.push(n);
             (prog.tys.len() - 1) as u32
         }
     }
@@ -169,14 +173,14 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
         for (v, t) in &b.params {
             if slot[*v as usize] == u32::MAX {
                 slot[*v as usize] = next;
-                next += 1;
+                next += slots_of(&m.aggs, *t);
             }
             vty[*v as usize] = *t;
         }
         for i in &b.insts {
             if slot[i.dst as usize] == u32::MAX {
                 slot[i.dst as usize] = next;
-                next += 1;
+                next += slots_of(&m.aggs, i.ty);
             }
             vty[i.dst as usize] = i.ty;
             for v in crate::kir::operands(&i.op) {
@@ -275,10 +279,10 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
         marks: fc.marks,
         file: fl.map(|x| x.file.clone()).unwrap_or_default(),
         nslots: fc.nslots + fc.temps,
-        nparams: f.params().len() as u32,
+        nparams: f.params().iter().map(|(_, t)| slots_of(&m.aggs, *t)).sum(),
         ptys: f.params().iter().map(|(_, t)| *t).collect(),
         ret: f.ret,
-        ret_heap: crate::kir_exec::has_heap(f.ret),
+        ret_w: slots_of(&m.aggs, f.ret),
     })
 }
 
@@ -303,9 +307,15 @@ impl<'a> Fc<'a> {
         let p = self.pool.len() as u32;
         for v in vs {
             let s = self.s(*v);
-            self.pool.push(s as u32);
+            let n = slots_of(&self.m.aggs, self.vty[*v as usize]);
+            self.pool.push(pool_ent(s, n));
         }
         (p, vs.len() as u32)
+    }
+
+    /// 型 `t` の値のスロット数。
+    fn w(&self, t: Ty) -> u32 {
+        slots_of(&self.m.aggs, t)
     }
 
     /// ブロック `insts` の中で畳み込める `fieldaddr` を `folded` に入れる。
@@ -374,12 +384,25 @@ impl<'a> Fc<'a> {
         };
         let i = match &inst.op {
             Op::Const(_) if self.skip_const.contains(&inst.dst) => return Ok(()),
-            Op::Const(v) => match i64::try_from(*v) {
-                Ok(x) => Ins::ConstI { d, v: x },
-                Err(_) => {
-                    self.prog.wide.push(*v);
-                    Ins::ConstW { d, k: (self.prog.wide.len() - 1) as u32 }
+            Op::Const(v) => match ty {
+                Ty::Opt(_) | Ty::Res(..) => {
+                    if *v != 0 {
+                        return Err("Option / Result の 0 以外の定数は VM 未対応".into());
+                    }
+                    Ins::Zero { d, n: self.w(ty) as u16 }
                 }
+                Ty::Agg(_) => return Err("集成体の定数は VM 未対応".into()),
+                Ty::I128 | Ty::U128 => {
+                    self.prog.wide.push(*v);
+                    Ins::Const128 { d, k: (self.prog.wide.len() - 1) as u32 }
+                }
+                _ => match i64::try_from(*v) {
+                    Ok(x) => Ins::ConstI { d, v: x },
+                    Err(_) => {
+                        self.prog.wide.push(*v);
+                        Ins::ConstW { d, k: (self.prog.wide.len() - 1) as u32 }
+                    }
+                },
             },
             Op::Arith { op, mode, a, b } => {
                 if let Some((x, imm, _)) = imm_arith(*op, *mode, ty, *a, *b, &self.cv) {
@@ -410,16 +433,17 @@ impl<'a> Fc<'a> {
             Op::Cmp { cc, ty: oty, a, b } => {
                 if let Some((x, cc, imm, _)) = imm_cmp(*cc, *oty, *a, *b, &self.cv) {
                     let a = self.s(x);
-                    self.code.push(Ins::CmpII { d, a, cc, imm });
+                    let cx = cx_of(cc, oty.signed());
+                    self.code.push(Ins::CmpII { d, a, cx, imm });
                     self.last_cmp = Some((inst.dst, self.code.len() - 1));
                     return Ok(());
                 }
                 let (a, b) = (self.s(*a), self.s(*b));
-                if oty.is_float() || *oty == Ty::U128 {
+                if oty.is_float() || wide128(*oty) {
                     Ins::Cmp { d, a, b, cc: *cc, ty: self.ty_of(*oty) }
                 } else {
                     // 次の `br_if` が融合できるように覚えておく。
-                    self.code.push(Ins::CmpI { d, a, b, cc: *cc });
+                    self.code.push(Ins::CmpI { d, a, b, cx: cx_of(*cc, oty.signed()) });
                     self.last_cmp = Some((inst.dst, self.code.len() - 1));
                     return Ok(());
                 }
@@ -432,12 +456,10 @@ impl<'a> Fc<'a> {
             Op::FBin { f, a, b } => Ins::FBin { d, a: self.s(*a), b: self.s(*b), f: *f, res: self.ty_of(ty) },
             Op::Conv { src, a } => {
                 let a = self.s(*a);
-                if src.is_int() && ty.is_int() {
-                    if ty.bits() < src.bits() {
-                        match fast_ti(ty) {
-                            Some(t) => Ins::WrapT { d, a, t },
-                            None => Ins::Conv { d, a, src: self.ty_of(*src), dst: self.ty_of(ty) },
-                        }
+                if src.is_int() && ty.is_int() && !wide128(*src) && !wide128(ty) {
+                    // `kir_scalar::conv` と同じ: 狭める変換と符号の変わる変換は型の範囲へ切り詰める。
+                    if ty.bits() < src.bits() || src.signed() != ty.signed() {
+                        Ins::WrapT { d, a, t: fast_ti(ty).unwrap() }
                     } else {
                         Ins::Mov { d, s: a }
                     }
@@ -445,7 +467,13 @@ impl<'a> Fc<'a> {
                     Ins::Conv { d, a, src: self.ty_of(*src), dst: self.ty_of(ty) }
                 }
             }
-            Op::Bitcast { a, .. } => Ins::Mov { d, s: self.s(*a) },
+            Op::Bitcast { a, .. } => {
+                if wide128(ty) {
+                    Ins::MovN { d, s: self.s(*a), n: 2 }
+                } else {
+                    Ins::Mov { d, s: self.s(*a) }
+                }
+            }
             Op::Not(a) => {
                 let a = self.s(*a);
                 if ty == Ty::Bool {
@@ -461,7 +489,11 @@ impl<'a> Fc<'a> {
                     Or => 1,
                     Xor => 2,
                 };
-                Ins::BitOp { d, a: self.s(*a), b: self.s(*b), k }
+                if wide128(ty) {
+                    Ins::BitOp128 { d, a: self.s(*a), b: self.s(*b), k }
+                } else {
+                    Ins::BitOp { d, a: self.s(*a), b: self.s(*b), k }
+                }
             }
             Op::BitCount { k, src, a } => Ins::BitCount { d, a: self.s(*a), k: *k, src: self.ty_of(*src) },
             Op::Checked { op, a, b } => Ins::Checked { d, a: self.s(*a), b: self.s(*b), op: *op, ty: self.ty_of(ty) },
@@ -487,15 +519,28 @@ impl<'a> Fc<'a> {
                     _ => return Err("make の変種が集成体の種類と合わない".into()),
                 };
                 let n = fdefs.len().min(fields.len());
-                let info = MakeInfo { size: dd.size, variant: *variant, fields: fdefs.iter().take(n).map(|f| (f.off, f.ty)).collect() };
+                let info = MakeInfo { nslots: self.w(ty), variant: *variant, fields: fdefs.iter().take(n).map(|f| (f.off, size_of(&self.m.aggs, f.ty))).collect() };
                 self.prog.makes.push(info);
                 let (argp, _) = self.pool_slots(&fields[..n]);
                 Ins::Make { d, info: (self.prog.makes.len() - 1) as u32, argp }
             }
-            Op::Field { a, off } => Ins::Field { d, a: self.s(*a), off: *off, ty: self.ty_of(ty) },
+            Op::Field { a, off } => match ty {
+                Ty::Agg(ai) => Ins::FieldA { d, a: self.s(*a), off: *off, nb: self.m.aggs[ai as usize].size },
+                Ty::Unit => Ins::ConstI { d, v: 0 },
+                t => {
+                    let Some(k) = lk(t) else { return Err(format!("field の型 {} が読めない", t.name())) };
+                    Ins::FieldS { d, a: self.s(*a), off: *off, k }
+                }
+            },
             Op::SetField { a, off, v } => {
                 let Ty::Agg(ai) = ty else { return Err("setfield の結果が集成体でない".into()) };
-                Ins::SetField { d, a: self.s(*a), v: self.s(*v), off: *off, agg: ai }
+                let dd = &self.m.aggs[ai as usize];
+                let Some(fty) = crate::kir_exec::field_ty_at(dd, *off) else { return Err("setfield のフィールドがない".into()) };
+                let nb = size_of(&self.m.aggs, fty);
+                if nb > u16::MAX as u32 || self.w(ty) > u16::MAX as u32 {
+                    return Err("setfield の集成体が大きすぎる".into());
+                }
+                Ins::SetField { d, a: self.s(*a), v: self.s(*v), off: *off, ns: self.w(ty) as u16, nb: nb as u16 }
             }
             Op::Tag(a) => {
                 let a = self.s(*a);
@@ -506,18 +551,21 @@ impl<'a> Fc<'a> {
                 }
             }
             Op::Some(a) => {
-                let Ty::Opt(_) = ty else { return Err("some の結果は Option のはず".into()) };
-                Ins::Some { d, a: self.s(*a), pay: self.ty_of(ty) }
+                let Ty::Opt(p) = ty else { return Err("some の結果は Option のはず".into()) };
+                Ins::WrapN { d, a: self.s(*a), n: self.w(p.ty()) as u16, tag: 1 }
             }
             Op::Ok(a) => {
-                let Ty::Res(..) = ty else { return Err("ok の結果は Result のはず".into()) };
-                Ins::Ok { d, a: self.s(*a), pay: self.ty_of(ty) }
+                let Ty::Res(t0, _) = ty else { return Err("ok の結果は Result のはず".into()) };
+                Ins::WrapN { d, a: self.s(*a), n: self.w(t0.ty()) as u16, tag: 0 }
             }
             Op::Err(a) => {
-                let Ty::Res(..) = ty else { return Err("err の結果は Result のはず".into()) };
-                Ins::Err { d, a: self.s(*a), pay: self.ty_of(ty) }
+                let Ty::Res(_, e0) = ty else { return Err("err の結果は Result のはず".into()) };
+                Ins::WrapN { d, a: self.s(*a), n: self.w(e0.ty()) as u16, tag: 1 }
             }
-            Op::Payload(a) => Ins::Payload { d, a: self.s(*a), ty: self.ty_of(ty) },
+            Op::Payload(a) => match self.w(ty) {
+                1 => Ins::Payload1 { d, a: self.s(*a) },
+                n => Ins::PayloadN { d, a: self.s(*a), n: n as u16 },
+            },
             Op::Alloca => {
                 let Ty::Ref(_, p) = ty else { return Err("alloca の結果が参照でない".into()) };
                 Ins::FrameBytes { d, size: size_of(&self.m.aggs, p.ty()) }
@@ -580,9 +628,9 @@ impl<'a> Fc<'a> {
                 }
             },
             Op::Store { ptr, val } => match self.vty[*val as usize] {
-                Ty::Agg(_) => {
+                Ty::Agg(ai) => {
                     self.unfold(*ptr);
-                    Ins::StoreAgg { p: self.s(*ptr), v: self.s(*val) }
+                    Ins::StoreAgg { p: self.s(*ptr), v: self.s(*val), size: self.m.aggs[ai as usize].size }
                 }
                 t => {
                     let Some(w) = width(t) else { return Err(format!("store の型 {} が書けない", t.name())) };
@@ -610,7 +658,11 @@ impl<'a> Fc<'a> {
             Op::Utf8Valid { p, len } => Ins::Utf8Valid { d, p: self.s(*p), len: self.s(*len) },
             Op::Panic { msg, arg } => {
                 self.prog.strs.push(msg.clone());
-                Ins::Panic { msg: (self.prog.strs.len() - 1) as u32, arg: arg.map(|a| self.s(a)).unwrap_or(NO_SLOT) }
+                let aty = match arg {
+                    Some(a) => self.vty[*a as usize],
+                    None => Ty::Unit,
+                };
+                Ins::Panic { msg: (self.prog.strs.len() - 1) as u32, arg: arg.map(|a| self.s(a)).unwrap_or(NO_SLOT), aty: self.ty_of(aty) }
             }
             Op::Abort => Ins::Abort,
             Op::Write { fd, data } => Ins::Write { d, fd: self.s(*fd), data: self.s(*data) },
@@ -652,32 +704,46 @@ impl<'a> Fc<'a> {
         Ok(())
     }
 
+    /// 移動 `d <- s` (`n` スロット)。
+    fn mov(&mut self, d: S, s: S, n: u32) {
+        if n == 1 {
+            self.push(Ins::Mov { d, s });
+        } else {
+            self.push(Ins::MovN { d, s, n: n as u16 });
+        }
+    }
+
     /// 辺の引数の受け渡し (並列代入)。移動の前の値で受け取る必要があるとき (後の引数が前の移動先を読む) だけ、一時のスロットを通す。
     fn edge(&mut self, args: &[VId], params: &[(VId, Ty)]) {
-        let pairs: Vec<(S, S)> = params.iter().zip(args).map(|((p, _), a)| (self.s(*p), self.s(*a))).filter(|(d, s)| d != s).collect();
+        let pairs: Vec<(S, S, u32)> = params.iter().zip(args).map(|((p, t), a)| (self.s(*p), self.s(*a), self.w(*t))).filter(|(d, s, _)| d != s).collect();
         let hazard = (0..pairs.len()).any(|i| (i + 1..pairs.len()).any(|j| pairs[i].0 == pairs[j].1));
         if !hazard {
-            for (d, s) in pairs {
-                self.push(Ins::Mov { d, s });
+            for (d, s, n) in pairs {
+                self.mov(d, s, n);
             }
             return;
         }
         let base = self.nslots;
-        if base + pairs.len() as u32 > MAX_SLOTS {
+        let total: u32 = pairs.iter().map(|p| p.2).sum();
+        if base + total > MAX_SLOTS {
             self.temps = MAX_SLOTS + 1; // 呼び出し元が上限超過として退避させる
             return;
         }
-        self.temps = self.temps.max(pairs.len() as u32);
-        for (k, (_, s)) in pairs.iter().enumerate() {
-            self.push(Ins::Mov { d: (base + k as u32) as S, s: *s });
+        self.temps = self.temps.max(total);
+        let mut at = base;
+        let mut tmp = vec![];
+        for (_, s, n) in pairs.iter() {
+            self.mov(at as S, *s, *n);
+            tmp.push(at);
+            at += n;
         }
-        for (k, (d, _)) in pairs.iter().enumerate() {
-            self.push(Ins::Mov { d: *d, s: (base + k as u32) as S });
+        for (k, (d, _, n)) in pairs.iter().enumerate() {
+            self.mov(*d, tmp[k] as S, *n);
         }
     }
 
     /// ブロック `h` が「(定数を除いて) 整数の比較 1 つ + 引数のない分岐」だけなら、その比較と分岐先 (真・偽)。
-    fn thread_target(&self, f: &Func, h: usize) -> Option<((Cc, CmpOpnd), usize, usize)> {
+    fn thread_target(&self, f: &Func, h: usize) -> Option<((Cx, CmpOpnd), usize, usize)> {
         let b = &f.blocks[h];
         let Term::BrIf(c, (t1, a1), (t2, a2)) = &b.term else { return None };
         if !a1.is_empty() || !a2.is_empty() || self.uses[*c as usize] != 1 {
@@ -689,12 +755,12 @@ impl<'a> Fc<'a> {
             return None;
         }
         let Op::Cmp { cc, ty: oty, a, b: bb } = &i.op else { return None };
-        if oty.is_float() || *oty == Ty::U128 {
+        if oty.is_float() || wide128(*oty) {
             return None;
         }
         let cmp = match imm_cmp(*cc, *oty, *a, *bb, &self.cv) {
-            Some((x, cc, imm, _)) => (cc, CmpOpnd::Ri(self.s(x), imm)),
-            None => (*cc, CmpOpnd::Rr(self.s(*a), self.s(*bb))),
+            Some((x, cc, imm, _)) => (cx_of(cc, oty.signed()), CmpOpnd::Ri(self.s(x), imm)),
+            None => (cx_of(*cc, oty.signed()), CmpOpnd::Rr(self.s(*a), self.s(*bb))),
         };
         Some((cmp, *t1, *t2))
     }
@@ -707,8 +773,8 @@ impl<'a> Fc<'a> {
             if let Some((cmp, t1, t2)) = self.thread_target(f, to) {
                 patches.push((self.code.len(), t1));
                 match cmp {
-                    (cc, CmpOpnd::Rr(a, b)) => self.push(Ins::JCmp { cc, a, b, to: 0 }),
-                    (cc, CmpOpnd::Ri(a, imm)) => self.push(Ins::JCmpI { cc, a, imm, to: 0 }),
+                    (cx, CmpOpnd::Rr(a, b)) => self.push(Ins::JCmp { cx, a, b, to: 0 }),
+                    (cx, CmpOpnd::Ri(a, imm)) => self.push(Ins::JCmpI { cx, a, imm, to: 0 }),
                 }
                 if !(fall && t2 == from + 1) {
                     patches.push((self.code.len(), t2));
@@ -738,13 +804,13 @@ impl<'a> Fc<'a> {
                 let fused = match self.last_cmp {
                     Some((v, at)) if v == *c && self.uses[*c as usize] == 1 && at + 1 == self.code.len() => {
                         match self.code[at].clone() {
-                            Ins::CmpI { cc, a, b, .. } => {
+                            Ins::CmpI { cx, a, b, .. } => {
                                 self.code.pop();
-                                Some((cc, CmpOpnd::Rr(a, b)))
+                                Some((cx, CmpOpnd::Rr(a, b)))
                             }
-                            Ins::CmpII { cc, a, imm, .. } => {
+                            Ins::CmpII { cx, a, imm, .. } => {
                                 self.code.pop();
-                                Some((cc, CmpOpnd::Ri(a, imm)))
+                                Some((cx, CmpOpnd::Ri(a, imm)))
                             }
                             _ => None,
                         }
@@ -759,8 +825,8 @@ impl<'a> Fc<'a> {
                 let jump_true = nm2 != 0 && nm1 == 0 || nm1 == 0 && nm2 == 0 && *t1 != bi + 1 && *t2 == bi + 1;
                 if jump_true {
                     match fused {
-                        Some((cc, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmp { cc, a, b, to: 0 }),
-                        Some((cc, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpI { cc, a, imm, to: 0 }),
+                        Some((cx, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmp { cx, a, b, to: 0 }),
+                        Some((cx, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpI { cx, a, imm, to: 0 }),
                         None => {
                             let c = self.s(*c);
                             self.push(Ins::JmpIf { c, to: 0 })
@@ -770,8 +836,8 @@ impl<'a> Fc<'a> {
                     self.jump_to(f, bi, *t2, a2, true, patches);
                 } else if nm2 == 0 {
                     match fused {
-                        Some((cc, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmpNot { cc, a, b, to: 0 }),
-                        Some((cc, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpNotI { cc, a, imm, to: 0 }),
+                        Some((cx, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmpNot { cx, a, b, to: 0 }),
+                        Some((cx, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpNotI { cx, a, imm, to: 0 }),
                         None => {
                             let c = self.s(*c);
                             self.push(Ins::JmpIfNot { c, to: 0 })
@@ -781,8 +847,8 @@ impl<'a> Fc<'a> {
                     self.jump_to(f, bi, *t1, a1, true, patches);
                 } else {
                     match fused {
-                        Some((cc, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmpNot { cc, a, b, to: 0 }),
-                        Some((cc, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpNotI { cc, a, imm, to: 0 }),
+                        Some((cx, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmpNot { cx, a, b, to: 0 }),
+                        Some((cx, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpNotI { cx, a, imm, to: 0 }),
                         None => {
                             let c = self.s(*c);
                             self.push(Ins::JmpIfNot { c, to: 0 })
