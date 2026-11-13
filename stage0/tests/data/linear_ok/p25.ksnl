@@ -1,3 +1,9 @@
+const t.LIMIT: u32 = 7u32
+
+type t.Buf
+    n: usize
+end t.Buf
+
 type t.H['a]
     r: &'a alloc.string.String
 end t.H
@@ -11,12 +17,6 @@ type t.Tok
     kind: &'static str
     n: usize
 end t.Tok
-
-type t.Buf
-    n: usize
-end t.Buf
-
-const t.LIMIT: u32 = 7u32
 
 fn t.Buf.push(self: &mut t.Buf, s: &alloc.string.String) -> () uses [] panics never
     self.n = self.n.wrapping_add(s.len())
@@ -35,6 +35,19 @@ fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
     core.mem.drop(std.io.print_line(s.as_str()))
     core.mem.drop(s)
 end t.consume
+
+fn t.evens(a: &[u32]) -> &[u32] uses [] panics never
+    a
+end t.evens
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut n = 0u32
+    for x in t.evens(&[1u32, 2u32, 3u32]) {
+        n = n + *x
+    }
+    core.check.eq(n, 6u32)
+    Ok(())
+end t.main
 
 fn t.mk() -> alloc.string.String uses [alloc] panics never
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
@@ -62,16 +75,3 @@ end t.same
 fn t.wrap(s: &alloc.string.String) -> t.H uses [] panics never
     t.H { r: s }
 end t.wrap
-
-fn t.evens(a: &[u32]) -> &[u32] uses [] panics never
-    a
-end t.evens
-
-fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    let mut n = 0u32
-    for x in t.evens(&[1u32, 2u32, 3u32]) {
-        n = n + *x
-    }
-    core.check.eq(n, 6u32)
-    Ok(())
-end t.main
