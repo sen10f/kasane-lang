@@ -238,3 +238,54 @@ pub(crate) fn local_names(d: &Def, body: &V) -> BTreeSet<String> {
 fn is_float_lit(e: &V) -> bool {
     nname(e) == "Lit" && st(&nf(e)[0]) == "float"
 }
+
+/// 型表で整数型に決まった接尾辞なしの整数リテラルへ、その型を接尾辞として書き戻す。
+/// 木走査のインタプリタは型表を見ないので、これがないと `let mut c = 0` のような式が型なしで計算され、
+/// 溢れ検査や wrapping が KIR・機械語と食い違う。型が整数に決まらないものは触らない (黙る)。
+/// 対象は `user` の添字の fn / test だけ (std と依存は触らない)。
+pub fn annotate_int_lits(p: &mut Program, user: &[usize]) {
+    use std::collections::HashMap;
+    let mut tk = crate::types::TypeCk::new(p);
+    for &i in user {
+        let d = &p.defs[i];
+        if matches!(d.kw.as_str(), "fn" | "test") && d.body.is_some() {
+            tk.check_def(i);
+        }
+    }
+    let mut want: HashMap<&str, HashMap<u32, String>> = HashMap::new();
+    for ((fqn, id), e) in &tk.tytab {
+        if e.kind == "Lit" {
+            if let crate::types::Ty::Prim(s) = &e.ty {
+                if matches!(s.as_str(), "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize") {
+                    want.entry(fqn.as_str()).or_default().insert(*id, s.clone());
+                }
+            }
+        }
+    }
+    let todo: Vec<(usize, HashMap<u32, String>)> =
+        user.iter().filter_map(|&i| want.get(p.defs[i].name.as_str()).map(|m| (i, m.clone()))).collect();
+    drop(want);
+    drop(tk);
+    for (i, m) in todo {
+        if let Some(b) = p.defs[i].body.as_mut() {
+            fill(b, &m);
+        }
+    }
+}
+
+fn fill(v: &mut V, m: &std::collections::HashMap<u32, String>) {
+    match v {
+        V::Node(kind, fs, _, id) => {
+            if *kind == "Lit" && fs.len() > 2 && matches!(&fs[0], V::S(k) if k == "int") && matches!(fs[2], V::Nil) {
+                if let Some(t) = m.get(id) {
+                    fs[2] = V::S(t.clone());
+                }
+            }
+            for c in fs.iter_mut() {
+                fill(c, m);
+            }
+        }
+        V::L(xs) => xs.iter_mut().for_each(|c| fill(c, m)),
+        _ => {}
+    }
+}

@@ -21,7 +21,7 @@ const NUM_EXTRA: &[&str] = &[
 ];
 
 fn known_num(name: &str) -> bool {
-    ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_", "to_"]
+    ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_"]
         .iter()
         .any(|p| name.starts_with(p))
         || NUM_EXTRA.contains(&name)
@@ -172,7 +172,7 @@ impl Program {
 /// 木を前順で辿り、名前を持つノード(Path / StructLit / パターンの経路)の segs を集める。
 pub fn collect_paths(v: &V, out: &mut Vec<Vec<String>>) {
     match v {
-        V::Node(name, fs, _) => {
+        V::Node(name, fs, _, _) => {
             match *name {
                 "Path" | "PPath" | "PVariant" | "PStruct" => {
                     if let Some(V::L(xs)) = fs.first() {

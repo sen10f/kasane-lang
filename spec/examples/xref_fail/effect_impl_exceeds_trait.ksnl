@@ -1,0 +1,12 @@
+trait app.effect_impl.Act pub
+    fn act(self: &Self) -> u8 uses [io.console] panics never
+end app.effect_impl.Act
+
+type app.effect_impl.Ui pub
+    n: u8
+end app.effect_impl.Ui
+
+impl app.effect_impl.Act for app.effect_impl.Ui
+fn app.effect_impl.Ui.act(self: &app.effect_impl.Ui) -> u8 uses [io] panics never impls app.effect_impl.Act
+    self.n
+end app.effect_impl.Ui.act

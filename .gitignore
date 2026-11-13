@@ -10,3 +10,4 @@ bench/*.log
 bench/work/
 *.so
 .env
+perf/results/

@@ -238,6 +238,7 @@ pub(crate) fn build_program(l: &Loaded) -> (Program, Vec<usize>) {
         }
     }
     crate::infer::run(&mut prog);
+    crate::infer::annotate_int_lits(&mut prog, &user);
     (prog, user)
 }
 
@@ -304,7 +305,11 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             }
         }
         for (code, ln, msg) in Lint::new(relpath, &lt).run() {
-            rep.add(lint_code(&code), &msg, Some(&fl), ln, 0, !(run_mode && code == "unused"));
+            // `order` (E0020: 定義順・群内順・uses/属性の並び順)は `ksn fmt` で
+            // 機械的に直せる違反。check では非致命的として報告し、終了コードに
+            // 影響させない (`fmt --check` が差分として検出する)。
+            let fatal = !(run_mode && code == "unused") && code != "order";
+            rep.add(lint_code(&code), &msg, Some(&fl), ln, 0, fatal);
         }
         let (ok, msg, ln) = grammar.check(&s.text);
         if !ok {
@@ -399,13 +404,207 @@ pub fn analyze(root: &Path) -> Analysis {
 
 fn cmd_check(json: bool) -> i32 {
     let mut rep = Report::new(json);
-    match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|_| ())) {
+    match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|(_, prog, user)| crate::kir_lower::dump_hidden(prog.as_ref(), &user))) {
         Ok(()) => {}
         Err(e) => rep.add(&e.code, &e.msg, None, 1, 1, true),
     }
     attach_fixes(&mut rep.items);
     rep.flush();
     if rep.fatal() { 1 } else { 0 }
+}
+
+/// `ksn kir <FQN> [--run|--native <引数>... | --llvm]` (隠し機能、設計_KIR.md 段階 1 と 4)。
+/// 関数の KIR を出す。`--run` を付けると、出した KIR を読み直して参照実行器で走らせる (木走査の `ksn run` と結果を比べるため)。
+/// `--llvm` は LLVM IR (`.ll`) を出し、`--native` は clang で実行ファイルを作って走らせる (表示と終了コードは `--run` と同じ)。
+fn cmd_kir(rest: &[String]) -> i32 {
+    let Some(fqn) = rest.first() else {
+        eprintln!("usage: ksn kir <FQN> [--run|--native <args>... | --llvm]");
+        return 2;
+    };
+    let mode = rest.get(1).map(|s| s.as_str());
+    let run = mode == Some("--run");
+    let native = mode == Some("--native");
+    let llvm = mode == Some("--llvm");
+    let mut rep = Report::new(false);
+    let (root, prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|x| (r, x))) {
+        Ok((r, (_, Some(prog), user))) if !rep.fatal() => (r, prog, user),
+        Ok(_) => {
+            rep.flush();
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 2;
+        }
+    };
+    let lo = crate::kir_lower::lower_user(&prog, &user);
+    if lo.module.find(fqn).is_none() {
+        match lo.unsupported.iter().find(|(k, _)| k == fqn) {
+            Some((_, why)) => eprintln!("ksn kir: {} は未対応: {}", fqn, why),
+            None => eprintln!("ksn kir: {} はユーザの関数ではない", fqn),
+        }
+        return 1;
+    }
+    let text = crate::kir::print_module(&lo.module.reachable(fqn));
+    // 出力は必ず読み直せること (往復) と検査を通ることを確かめてから使う。
+    let back = match crate::kir::parse_module(&text) {
+        Ok(m) if crate::kir::print_module(&m) == text && crate::kir::verify_module(&m).is_empty() => m,
+        Ok(_) => {
+            eprintln!("ksn kir: 内部エラー: KIR の往復または検査が一致しない");
+            return 3;
+        }
+        Err(e) => {
+            eprintln!("ksn kir: 内部エラー: {}", e);
+            return 3;
+        }
+    };
+    if llvm {
+        return match crate::kir_llvm::emit(&back, fqn) {
+            Ok(ll) => {
+                print!("{}", ll);
+                0
+            }
+            Err(e) => {
+                eprintln!("ksn kir: --llvm: {}", e);
+                2
+            }
+        };
+    }
+    if !run && !native {
+        print!("{}", text);
+        return 0;
+    }
+    let mut args = vec![];
+    for a in &rest[2..] {
+        let v = match a.as_str() {
+            "true" => 1,
+            "false" => 0,
+            s => match s.parse::<i128>() {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("ksn kir: 引数 {} は整数か bool のはず", s);
+                    return 2;
+                }
+            },
+        };
+        args.push(v);
+    }
+    let ret = back.find(fqn).map(|f| f.ret);
+    let show = |v: i128| match ret {
+        Some(t) => println!("{}", crate::kir::show_value(t, v)),
+        None => println!("{}", v),
+    };
+    if native {
+        return kir_native(&root, &back, fqn, &args, show);
+    }
+    match crate::kir_exec::run(&back, fqn, &args) {
+        Ok(crate::kir_exec::Outcome::Value(v)) => {
+            show(v);
+            0
+        }
+        Ok(crate::kir_exec::Outcome::Panic(m)) => {
+            eprintln!("panic: {}", m);
+            101
+        }
+        Ok(crate::kir_exec::Outcome::Abort) => 101,
+        Ok(crate::kir_exec::Outcome::StackOverflow) => {
+            eprintln!("stack overflow");
+            102
+        }
+        Err(e) => {
+            eprintln!("ksn kir: {}", e);
+            2
+        }
+    }
+}
+
+/// `ksn kir <FQN> --native`: KIR から LLVM IR を作り、clang で `target/kir-native/` に実行ファイルを作って走らせる。
+/// 実行ファイルは結果を 16 進の 2 語 (下位・上位) で出すので、ここで `show_value` の表示にする。
+/// 同じ `.ll` (内容の FNV-1a で名前を付ける) の実行ファイルは作り直さない。
+fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], show: impl Fn(i128)) -> i32 {
+    let ll = match crate::kir_llvm::emit(m, fqn) {
+        Ok(ll) => ll,
+        Err(e) => {
+            eprintln!("ksn kir: --native: {}", e);
+            return 2;
+        }
+    };
+    let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let dir = root.join("target").join("kir-native");
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!("ksn kir: --native: {} を作れない: {}", dir.display(), e);
+        return 2;
+    }
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in ll.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+    let exe = dir.join(format!("{:016x}{}", h, if cfg!(windows) { ".exe" } else { "" }));
+    if !exe.exists() {
+        let src = dir.join(format!("{:016x}.ll", h));
+        if let Err(e) = fs::write(&src, &ll) {
+            eprintln!("ksn kir: --native: {} を書けない: {}", src.display(), e);
+            return 2;
+        }
+        let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
+        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module", "-x", "ir"]).arg(&src).arg("-o").arg(&tmp).arg("-lm").output();
+        match o {
+            Err(e) => {
+                eprintln!("ksn kir: --native には clang が必要です ({} を起動できない: {})", clang, e);
+                return 2;
+            }
+            Ok(o) if !o.status.success() => {
+                eprintln!("ksn kir: --native: clang が失敗した ({}): {}", src.display(), String::from_utf8_lossy(&o.stderr).trim());
+                let _ = fs::remove_file(&tmp);
+                return 3;
+            }
+            Ok(_) => {}
+        }
+        if let Err(e) = fs::rename(&tmp, &exe) {
+            eprintln!("ksn kir: --native: {}", e);
+            return 2;
+        }
+    }
+    let mut cmd = std::process::Command::new(&exe);
+    for a in args {
+        let u = *a as u128;
+        cmd.arg(format!("{:x}", u as u64)).arg(format!("{:x}", (u >> 64) as u64));
+    }
+    let o = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("ksn kir: --native: 実行できない: {}", e);
+            return 2;
+        }
+    };
+    eprint!("{}", String::from_utf8_lossy(&o.stderr));
+    match o.status.code() {
+        Some(0) => {
+            // 標準出力の最後の `\x01` から後ろが結果 (16 進の 2 語)。その前は、プログラム自身の出力 (`write`)。
+            let raw = String::from_utf8_lossy(&o.stdout).to_string();
+            let (prog_out, out) = match raw.rfind('\x01') {
+                Some(i) => (&raw[..i], &raw[i + 1..]),
+                None => ("", raw.as_str()),
+            };
+            print!("{}", prog_out);
+            let mut it = out.split_whitespace().map(|w| u64::from_str_radix(w, 16));
+            match (it.next(), it.next()) {
+                (Some(Ok(lo)), Some(Ok(hi))) => {
+                    show((((hi as u128) << 64) | lo as u128) as i128);
+                    0
+                }
+                _ => {
+                    eprintln!("ksn kir: --native: 実行ファイルの出力が読めない: {}", out.trim());
+                    3
+                }
+            }
+        }
+        Some(c) => c,
+        None => {
+            eprintln!("ksn kir: --native: 実行ファイルが異常終了した ({:?})", o.status);
+            3
+        }
+    }
 }
 
 /// `ksn todo`: `core.panic.todo()` の呼び出し (未実装の穴) を一覧する。
@@ -652,12 +851,15 @@ fn spawn_watcher(l: &Loaded) -> std::sync::mpsc::Receiver<Program> {
             for d in &dep_defs {
                 prog.add_def(d.clone());
             }
+            let mut user = vec![];
             for w in &ws {
                 for d in &w.defs {
+                    user.push(prog.defs.len());
                     prog.add_def(d.clone());
                 }
             }
             crate::infer::run(&mut prog);
+            crate::infer::annotate_int_lits(&mut prog, &user);
             if tx.send(prog).is_err() {
                 return;
             }
@@ -717,6 +919,7 @@ fn cmd_test(args: &[String]) -> i32 {
         .collect();
     tests.sort_by(|&a, &b| prog.defs[a].name.cmp(&prog.defs[b].name));
     let mut failed = 0;
+    let (mut n_native, mut n_bundle) = (0, 0);
     for ti in &tests {
         let name = prog.defs[*ti].name.clone();
         let mut results: Vec<Option<String>> = vec![];
@@ -729,21 +932,78 @@ fn cmd_test(args: &[String]) -> i32 {
             Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
             _ => None,
         });
+        // `--both` の相手は機械語 (Cranelift の実行ファイル)。作れない機能を含むテストだけバンドルに落とす。
+        let mut other = "";
+        let mut label = String::new();
         if both {
-            results.push(run_in_bundle(&root, &name, &l));
+            match build_native_test(&root, &prog, &user, *ti) {
+                Ok(exe) => {
+                    results.push(run_native_test(&root, &exe));
+                    other = "native";
+                    label = "both: native".into();
+                }
+                Err(why) => {
+                    results.push(run_in_bundle(&root, &name, &l));
+                    other = "bundle";
+                    label = format!("both: bundle (native skipped: {})", why.lines().next().unwrap_or("").trim());
+                }
+            }
         }
-        if results.len() > 1 && results[0].is_none() != results[1].is_none() {
+        let suffix = if label.is_empty() { String::new() } else { format!(" ({})", label) };
+        if other == "native" {
+            n_native += 1;
+        } else if other == "bundle" {
+            n_bundle += 1;
+        }
+        let disagree = results.len() > 1 && backends_disagree(&results[0], &results[1]);
+        if disagree {
             failed += 1;
-            println!("test {} ... FAILED: interpreter and bundle disagree: {}", name, py_opt_list(&results));
+            println!("test {} ... FAILED: interpreter and {} disagree: {}{}", name, other, py_opt_list(&results), suffix);
         } else if results.iter().all(|r| r.is_none()) {
-            println!("test {} ... ok", name);
+            println!("test {} ... ok{}", name, suffix);
         } else {
             failed += 1;
-            println!("test {} ... FAILED: {}", name, results.iter().flatten().next().unwrap());
+            println!("test {} ... FAILED: {}{}", name, results.iter().flatten().next().unwrap(), suffix);
         }
     }
     println!("\n{} passed; {} failed", tests.len() - failed, failed);
+    if both {
+        println!("compared with: native {}, bundle fallback {}", n_native, n_bundle);
+    }
     if failed > 0 { 1 } else { 0 }
+}
+
+/// 成否が違う、または両方失敗でも理由の分類が違えば不一致。
+fn backends_disagree(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (None, None) => false,
+        (Some(a), Some(b)) => fail_class(a) != fail_class(b),
+        _ => true,
+    }
+}
+
+/// 失敗理由を、バックエンドの文言の違いによらない分類にする。
+/// インタプリタは `attempt to add with overflow` / `assertion failed: left: .., right: ..`、機械語は
+/// `arithmetic overflow` / `assertion failed` と書く。文言を揃えずに分類で比べる (組み込みの文言を各所で変えるより小さい)。
+fn fail_class(msg: &str) -> String {
+    let m = msg.trim().trim_start_matches("panic: ");
+    if let Some(c) = m.strip_prefix("exit(").and_then(|r| r.strip_suffix(')')).or_else(|| m.strip_prefix("exit ")) {
+        return format!("exit {}", c);
+    }
+    let kind = if m.contains("overflow") {
+        "overflow"
+    } else if m.contains("assertion failed") {
+        "assert"
+    } else if m.contains("unwrap") || m.contains("expect") {
+        "unwrap"
+    } else if m.contains("by zero") {
+        "divide"
+    } else if m.contains("out of bounds") {
+        "index"
+    } else {
+        "other"
+    };
+    kind.to_string()
 }
 
 fn py_opt_list(rs: &[Option<String>]) -> String {
@@ -759,9 +1019,11 @@ fn exe_name() -> &'static str {
 
 fn run_in_bundle(root: &Path, fqn: &str, l: &Loaded) -> Option<String> {
     let bdir = root.join("target").join("debug");
-    // 同梱物が今のソースから作ったものか (キーが違えば作り直す。古い同梱物でテストしない)。
-    let fresh = fs::read_to_string(bdir.join(".ksn-key")).map_or(false, |k| k.trim() == build_key(l, false, "host"));
-    if !(bdir.join(exe_name()).exists() && fresh) && cmd_build(&[], Some(l)) != 0 {
+    // 既存のバンドルは、今のキー (ksn 本体・ソース) で作られたものだけ使う。
+    // 存在だけで判定すると、ソースや ksn を変えても古いバンドルで走ってしまう。
+    let want = build_key(l, false, "host", "c");
+    let fresh = fs::read_to_string(bdir.join(BUILD_STAMP)).map_or(false, |s| s.trim() == want);
+    if !(fresh && bdir.join(exe_name()).exists()) && cmd_build(&[], Some(l)) != 0 {
         return Some("build failed".into());
     }
     let r = std::process::Command::new(bdir.join(exe_name()))
@@ -770,6 +1032,65 @@ fn run_in_bundle(root: &Path, fqn: &str, l: &Loaded) -> Option<String> {
         .current_dir(bdir.join("pkg"))
         .output();
     match r {
+        Ok(o) if o.status.success() => None,
+        Ok(o) => {
+            let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            Some(if e.is_empty() { format!("exit {}", o.status.code().unwrap_or(-1)) } else { e })
+        }
+        Err(e) => Some(e.to_string()),
+    }
+}
+
+/// `test --both` の機械語側: テスト `ti` を入口にして Cranelift で実行ファイルを作る (`target/test-native/`)。
+/// 作れなければ理由を返す (clif が未対応の機能、リンカが無い、など)。テストごとに 1 つ作る。
+/// Kasane で書かれた標準ライブラリ `core.fmt` (Formatter) の定義を、Cranelift の対象に加える。
+fn add_fmt_std<'a>(prog: &'a Program, funcs: &mut HashMap<String, &'a Def>, tdefs: &mut HashMap<String, &'a Def>) {
+    for d in &prog.defs {
+        if !(d.name.starts_with("core.fmt.") || d.name == "core.slice.LengthError" || d.name == "core.cmp.Ordering") {
+            continue;
+        }
+        if d.kw == "fn" && d.body.is_some() {
+            funcs.insert(d.name.clone(), d);
+        }
+        if d.kw == "type" || d.kw == "enum" {
+            tdefs.insert(d.name.clone(), d);
+        }
+    }
+}
+
+fn build_native_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> Result<PathBuf, String> {
+    let d = &prog.defs[ti];
+    let mut funcs: HashMap<String, &Def> = HashMap::new();
+    let mut tdefs: HashMap<String, &Def> = HashMap::new();
+    for &i in user {
+        let f = &prog.defs[i];
+        if f.kw == "fn" && f.body.is_some() {
+            funcs.insert(f.name.clone(), f);
+        }
+        if f.kw == "type" || f.kw == "enum" {
+            tdefs.insert(f.name.clone(), f);
+        }
+    }
+    funcs.insert(d.name.clone(), d);
+    add_fmt_std(prog, &mut funcs, &mut tdefs);
+    let dir = root.join("target").join("test-native");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem: String = d.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' { c } else { '_' }).collect();
+    let exe = dir.join(format!("{}_{}{}", ti, stem, if cfg!(windows) { ".exe" } else { ".native" }));
+    let _ = fs::remove_file(&exe);
+    let out = norm(&exe);
+    // clif は未対応の形に出会うと Err を返す。万一それ以外で落ちても、バンドルへ戻すだけにする。
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::clif::compile_clif(prog, &funcs, &tdefs, &d.name, &out, false)));
+    match r {
+        Ok(Ok(())) => Ok(exe),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("internal compiler error".into()),
+    }
+}
+
+/// 機械語のテストを 1 プロセスで走らせる。インタプリタと同じ形 (成功は None、失敗は理由) で返す。
+fn run_native_test(root: &Path, exe: &Path) -> Option<String> {
+    match std::process::Command::new(exe).current_dir(root).output() {
         Ok(o) if o.status.success() => None,
         Ok(o) => {
             let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
@@ -1450,6 +1771,41 @@ fn copy_tree(src: &Path, dst: &Path, skip: &[&str]) {
     }
 }
 
+/// キャッシュ entry (ksn・stdlib・pkg) を `target/<kind>` へ複製する。
+/// 直下の `.used` と生成物ディレクトリは除く (`copy_tree` の skip は再帰するので使わない)。
+fn copy_entry(src: &Path, dst: &Path) {
+    let _ = fs::create_dir_all(dst);
+    let Ok(rd) = fs::read_dir(src) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name == ".used" || name == ARTIFACT_DIR {
+            continue;
+        }
+        let (s, d) = (e.path(), dst.join(&name));
+        if s.is_dir() {
+            copy_tree(&s, &d, &[]);
+        } else {
+            let _ = fs::copy(&s, &d);
+        }
+    }
+}
+
+/// 生成したネイティブ実行ファイルをキャッシュ entry に保存する。
+/// entry が消えた後に半端なディレクトリを作らないよう `create_dir` (非再帰) を使う。
+fn store_artifact(cdir: &Path, key: &str, exe: &Path) {
+    let cached = cdir.join(key);
+    let Some(fname) = exe.file_name() else { return };
+    let adir = cached.join(ARTIFACT_DIR);
+    if fs::create_dir(&adir).is_err() && !adir.is_dir() {
+        return;
+    }
+    let tmp = adir.join(format!("{}.tmp", fname.to_string_lossy()));
+    if fs::copy(exe, &tmp).is_ok() {
+        let _ = fs::rename(&tmp, adir.join(fname));
+    }
+    evict(cdir, key);
+}
+
 fn evict(cdir: &Path, keep: &str) {
     let limit: u64 = std::env::var("KSN_CACHE_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(2 * 1024 * 1024 * 1024);
     let Ok(rd) = fs::read_dir(cdir) else { return };
@@ -1471,10 +1827,18 @@ fn evict(cdir: &Path, keep: &str) {
     }
 }
 
-fn build_key(l: &Loaded, release: bool, target: &str) -> String {
+/// キャッシュ entry 内で生成物 (ネイティブ実行ファイル) を置く子ディレクトリ名。
+const ARTIFACT_DIR: &str = "artifact";
+/// `target/<kind>` に置く、そのビルドのキー。バンドルが今の ksn・ソースに対応するかの判定に使う。
+const BUILD_STAMP: &str = ".build-key";
+
+/// ビルドキーの内訳: 生成条件 (ksn 本体・edition・debug/release・ターゲット・バックエンド)、
+/// パッケージと依存のソース、stdlib、ksn 本体のバイト列。
+/// バックエンドは出力が違うので (clif と c) キーに入れる。
+fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
     let mut h = Sha256::new();
     let edition = l.pkg.manifest["package"].get("edition").map(|e| e.to_string()).unwrap_or_default();
-    h.update(format!("{}|{}|{}|{}", VERSION, edition, if release { "release" } else { "debug" }, target).as_bytes());
+    h.update(format!("{}|{}|{}|{}|{}", VERSION, edition, if release { "release" } else { "debug" }, target, backend).as_bytes());
     h.update(package_hash(&l.pkg.root).as_bytes());
     for dp in &l.deps {
         h.update(package_hash(&dp.root).as_bytes());
@@ -1494,6 +1858,16 @@ fn build_key(l: &Loaded, release: bool, target: &str) -> String {
     }
     h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
 }
+
+/// 実行権限を付ける (Unix のみ。Windows は拡張子 .exe / .cmd で起動されるので不要)。
+#[cfg(unix)]
+fn set_exec(p: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(p, fs::Permissions::from_mode(0o755));
+}
+
+#[cfg(not(unix))]
+fn set_exec(_p: &Path) {}
 
 fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let release = args.iter().any(|a| a == "--release");
@@ -1526,14 +1900,15 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         return 1;
     }
     let kind = if release { "release" } else { "debug" };
-    let key = build_key(&l, release, &target);
+    let key = build_key(&l, release, &target, &backend);
     let cdir = cache_dir();
     let cached = cdir.join(&key);
     if cached.is_dir() {
         let _ = fs::write(cached.join(".used"), "");
         println!("cache hit");
     } else {
-        let tmp = cdir.join(format!("{}.tmp", key));
+        // 一時ディレクトリはプロセスごと (同じキーの並行ビルドが互いの作業中のものを消さない)。
+        let tmp = cdir.join(format!("{}.tmp{}", key, std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
         if let Ok(exe) = std::env::current_exe() {
@@ -1550,25 +1925,57 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
             copy_tree(&dp.root, &pk.join("vendor").join(&dp.name), &["target", "__pycache__", ".git"]);
         }
         let _ = fs::write(tmp.join(".used"), "");
-        let _ = fs::write(tmp.join(".ksn-key"), &key);
-        fs::rename(&tmp, &cached).unwrap();
+        if let Err(e) = fs::rename(&tmp, &cached) {
+            // 同じキーを並行にビルドした別のプロセスが先に置いた。中身は同じなので、それを使う。
+            let _ = fs::remove_dir_all(&tmp);
+            if !cached.is_dir() {
+                eprintln!("ksn: cannot store the build in the cache {}: {}", cached.display(), e);
+                return 1;
+            }
+        }
         evict(&cdir, &key);
     }
     let out = l.pkg.root.join("target").join(kind);
     let _ = fs::remove_dir_all(&out);
-    copy_tree(&cached, &out, &[".used"]);
+    copy_entry(&cached, &out);
+    let _ = fs::write(out.join(BUILD_STAMP), &key);
     let name = l.pkg.name.clone();
+    // %~dp0 は常に絶対パス。sh 版は $0 (相対パス・PATH 経由の名前) を絶対パスに直してから
+    // pkg へ cd する (cd 後に相対パスの $d/ksn を exec すると失敗するため)。
     let _ = fs::write(out.join(format!("{}.cmd", name)), "@echo off\r\nset KSN_STDLIB=%~dp0stdlib\r\ncd /d \"%~dp0pkg\"\r\n\"%~dp0ksn.exe\" _exec %*\r\n");
-    let _ = fs::write(out.join(&name), "#!/bin/sh\nd=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nKSN_STDLIB=\"$d/stdlib\"\nexport KSN_STDLIB\ncd \"$d/pkg\" && exec \"$d/ksn\" _exec \"$@\"\n");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(out.join(&name), fs::Permissions::from_mode(0o755));
-    }
+    let launcher = out.join(&name);
+    let _ = fs::write(
+        &launcher,
+        r#"#!/bin/sh
+case "$0" in
+  */*) p="$0" ;;
+  *) p="$(command -v "$0")" ;;
+esac
+# $0 がシンボリックリンクなら実体を辿ってから場所を特定する。
+# `readlink -f` は macOS などに無いので、`ls -l` のリンク先を辿るループで POSIX 的に解決する。
+while [ -L "$p" ]; do
+  target="$(ls -l "$p")"
+  target="${target#* -> }"
+  case "$target" in
+    /*) p="$target" ;;
+    *) p="$(dirname "$p")/$target" ;;
+  esac
+done
+d="$(cd "$(dirname "$p")" && pwd)"
+KSN_STDLIB="$d/stdlib"
+export KSN_STDLIB
+cd "$d/pkg" && exec "$d/ksn" _exec "$@"
+"#,
+    );
+    set_exec(&launcher);
     let prog = prog.unwrap();
     let entry = l.pkg.entry();
     let exe = out.join(if cfg!(windows) { format!("{}.exe", name) } else { format!("{}.native", name) });
+    // キャッシュに同じキーの生成物があれば複製し、コンパイルとリンクを省く。
+    let stored = cached.join(ARTIFACT_DIR).join(exe.file_name().expect("exe has a file name"));
+    let reused = entry.is_some() && fs::copy(&stored, &exe).is_ok();
     let native: Result<(), String> = match &entry {
+        _ if reused => Ok(()),
         None => Err("library package".into()),
         Some(e) => {
             let test_files: std::collections::HashSet<&str> =
@@ -1585,7 +1992,16 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                     funcs.insert(d.name.clone(), d);
                 }
             }
-            if backend == "clif" {
+            if backend == "llvm" {
+                match build_llvm(&prog, &user, e, &exe, release) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        println!("llvm backend skipped: {}; falling back to the default backend", why);
+                        crate::cnative::compile_native(&funcs, e, &norm(&exe), release)
+                    }
+                }
+            } else if backend == "clif" {
+                let t_cc = std::time::Instant::now();
                 let mut tdefs: HashMap<String, &Def> = HashMap::new();
                 for &i in &user {
                     let d = &prog.defs[i];
@@ -1593,18 +2009,68 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
                         tdefs.insert(d.name.clone(), d);
                     }
                 }
-                crate::clif::compile_clif(&prog, &funcs, &tdefs, e, &norm(&exe), release)
+                add_fmt_std(&prog, &mut funcs, &mut tdefs);
+                let r = crate::clif::compile_clif(&prog, &funcs, &tdefs, e, &norm(&exe), release);
+                if std::env::var_os("KSN_TIME").is_some() {
+                    eprintln!("KSN_TIME compile_clif_call_total={:.2} [ms]", t_cc.elapsed().as_secs_f64() * 1e3);
+                }
+                r
             } else {
                 crate::cnative::compile_native(&funcs, e, &norm(&exe), release)
             }
         }
     };
+    if native.is_ok() && !reused {
+        store_artifact(&cdir, &key, &exe);
+    }
     match native {
         Ok(()) => println!("native executable: {}", rel(&norm(&exe))),
         Err(e) => println!("native backend skipped: {}", e),
     }
     println!("built {} ({}, target {}; portable interpreter bundle)", rel(&norm(&out)), kind, target);
     0
+}
+
+/// `ksn build --backend llvm`: 入口の関数から届く関数すべてを KIR に下ろし、LLVM IR を作って clang で実行ファイルにする (設計_KIR.md 12.3)。
+/// 下ろせない関数が 1 つでもあれば、理由を `Err` で返す (呼び出し側が既定の経路へ退避する)。
+fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool) -> Result<(), String> {
+    let lo = crate::kir_lower::lower_program(prog, user, Some(entry));
+    if lo.module.find(entry).is_none() {
+        // 理由の鎖 (`呼び先 X が未対応`) をたどって、根の理由を出す。
+        let mut key = entry.to_string();
+        let mut why = String::from("理由不明");
+        for _ in 0..64 {
+            let Some((_, w)) = lo.unsupported.iter().find(|(k, _)| *k == key) else { break };
+            why = format!("{}: {}", key, w);
+            match w.strip_prefix("呼び先 ").and_then(|r| r.strip_suffix(" が未対応")) {
+                Some(next) => key = next.to_string(),
+                None => break,
+            }
+        }
+        return Err(format!("{} を KIR に下ろせない ({})", entry, why));
+    }
+    if std::env::var_os("KSN_DUMP_KIR").is_some() {
+        for (f, why) in &lo.unsupported {
+            eprintln!("kir: 未対応 {}: {}", f, why);
+        }
+    }
+    let m = lo.module.reachable_from(&[entry, crate::kir_lower::debug::ENTRY_DEBUG]);
+    let ll = crate::kir_llvm::emit_program(&m, entry)?;
+    clang_ll(&ll, exe, if release { "-O2" } else { "-O1" })
+}
+
+/// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。
+fn clang_ll(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
+    let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let src = exe.with_extension("ll.tmp");
+    fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
+    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module", "-x", "ir"]).arg(&src).arg("-o").arg(exe).arg("-lm").output();
+    let _ = fs::remove_file(&src);
+    match o {
+        Err(e) => Err(format!("clang を起動できない ({}: {})", clang, e)),
+        Ok(o) if !o.status.success() => Err(format!("clang が失敗した: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        Ok(_) => Ok(()),
+    }
 }
 
 /// ビルド成果物の実行入口 (内部コマンド)。
@@ -1683,6 +2149,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "lsp" => crate::lsp::run(),
         "debug" => crate::debug::cmd_debug(&rest),
         "dap" => crate::debug::cmd_dap(),
+        "kir" => cmd_kir(&rest),
         "build" => cmd_build(&rest, None),
         "update" => cmd_update(&rest),
         "vendor" => cmd_vendor(),
@@ -1697,5 +2164,40 @@ pub fn main_cli(args: Vec<String>) -> i32 {
             );
             2
         }
+    }
+}
+
+/// 試験用: パッケージ `root` を検査し、(プログラム, ユーザの定義の添字) を返す。検査が失敗すれば `None`。
+#[cfg(test)]
+pub(crate) fn checked_program_for_test(root: &Path) -> Option<(Program, Vec<usize>)> {
+    let mut rep = Report::new(false);
+    match full_check(root, &mut rep, false) {
+        Ok((_, Some(prog), user)) if !rep.fatal() => Some((prog, user)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod both_tests {
+    use super::*;
+    fn s(x: &str) -> Option<String> {
+        Some(x.to_string())
+    }
+    #[test]
+    fn both_failing_with_different_classes_disagree() {
+        // 文言が違っても分類が同じなら一致。
+        assert!(!backends_disagree(&s("attempt to add with overflow"), &s("panic: arithmetic overflow")));
+        assert!(!backends_disagree(&s("assertion failed: left: 1, right: 2"), &s("panic: assertion failed")));
+        assert!(!backends_disagree(&s("called `Option::unwrap()` on a `None` value"), &s("panic: called unwrap on a None or Err value")));
+        assert!(!backends_disagree(&s("attempt to divide by zero"), &s("panic: division by zero")));
+        // 両方失敗でも、分類が違えば不一致。
+        assert!(backends_disagree(&s("attempt to add with overflow"), &s("panic: assertion failed")));
+        assert!(backends_disagree(&s("assertion failed: left: 1, right: 2"), &s("panic: arithmetic overflow")));
+        assert!(backends_disagree(&s("called `Option::unwrap()` on a `None` value"), &s("panic: index out of bounds")));
+        assert!(backends_disagree(&s("exit(3)"), &s("exit 4")));
+        assert!(!backends_disagree(&s("exit(3)"), &s("exit 3")));
+        // 片方だけ失敗。
+        assert!(backends_disagree(&None, &s("panic: assertion failed")));
+        assert!(!backends_disagree(&None, &None));
     }
 }

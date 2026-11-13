@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::program::{Def, Program, Resolved, Target};
-use crate::parser::V;
+use crate::parser::{V, nid};
 
 #[path = "borrowck.rs"]
 mod borrowck;
@@ -25,20 +25,20 @@ pub struct Diag {
 // ---------------------------------------------------------------- V の読み取り補助
 pub(crate) fn nname(v: &V) -> &str {
     match v {
-        V::Node(n, _, _) => n,
+        V::Node(n, _, _, _) => n,
         _ => "",
     }
 }
 pub(crate) fn nf(v: &V) -> &[V] {
     match v {
-        V::Node(_, f, _) => f,
+        V::Node(_, f, _, _) => f,
         _ => &[],
     }
 }
 /// ノードの位置 (行と列を符号化した値)。診断にはこれをそのまま渡す。行番号だけが要るなら `nlineno`。
 pub(crate) fn nline(v: &V) -> usize {
     match v {
-        V::Node(_, _, l) => *l,
+        V::Node(_, _, l, _) => *l,
         _ => 0,
     }
 }
@@ -62,6 +62,46 @@ pub(crate) fn st(v: &V) -> String {
 }
 pub(crate) fn is_nil(v: &V) -> bool {
     matches!(v, V::Nil)
+}
+/// 型の値の構造的な等しさ (`V` は `PartialEq` を持たない)。節点を含むものは等しいとみなさない (黙る方向)。
+pub(crate) fn same_v(a: &V, b: &V) -> bool {
+    match (a, b) {
+        (V::S(x), V::S(y)) | (V::N(x), V::N(y)) => x == y,
+        (V::B(x), V::B(y)) => x == y,
+        (V::L(x), V::L(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_v(p, q)),
+        (V::Nil, V::Nil) => true,
+        _ => false,
+    }
+}
+/// 添字が整数リテラル (10 進) のときその値。それ以外は None。
+pub(crate) fn lit_index(e: &V) -> Option<usize> {
+    if nname(e) != "Lit" || st(&nf(e)[0]) != "int" {
+        return None;
+    }
+    st(&nf(e)[1]).parse::<usize>().ok()
+}
+
+/// 診断メッセージ用にインデックス式 `a[i]` を `a[0usize]` 風にレンダリングする。
+/// 解釈できない部分は `dump()` による近似で済ませる。
+pub(crate) fn index_text(e: &V) -> String {
+    let f = nf(e);
+    let seg = |x: &V| -> String {
+        if nname(x) == "Path" {
+            return strs(&nf(x)[0]).join(".");
+        }
+        if nname(x) == "Lit" {
+            let ps = nf(x);
+            let mut s = st(ps.get(1).unwrap_or(&V::Nil));
+            if let Some(sfx) = ps.get(2) {
+                if !is_nil(sfx) {
+                    s.push_str(&st(sfx));
+                }
+            }
+            return s;
+        }
+        x.dump()
+    };
+    format!("{}[{}]", seg(&f[0]), seg(&f[1]))
 }
 pub(crate) fn strs(v: &V) -> Vec<String> {
     items(v).iter().map(st).collect()
@@ -106,6 +146,64 @@ pub(crate) fn walk<'a>(v: &'a V, out: &mut Vec<&'a V>) {
     out.push(v);
     for c in children(v) {
         walk(c, out);
+    }
+}
+
+/// 型表 (`types.rs` の `tytab`) から、メソッド呼び出し (`v.pop();`) の式文で、戻り値が `()` / `!` 以外に
+/// 決まる行を集める (4.6, E2042)。`ty_of` は標準ライブラリのジェネリック型のメソッドの戻り値を決められないので、
+/// その戻り値 (レシーバの型引数を sig の戻り値型に代入した型) を型表から取る。
+/// 関数呼び出し・字段の捨ては対象外 (`discard_check` の担当で、従来どおり黙る形もある)。
+/// ブロックの最後の文 (ブロックの値) は捨てない。型に未知・型変数・型パラメータ・クロージャが
+/// 残るものは黙る (誤検出を出さない)。
+fn discarded_by_type(tk: &crate::types::TypeCk, d: &Def) -> Vec<usize> {
+    let Some(body) = &d.body else { return vec![] };
+    let mut all = vec![];
+    walk(body, &mut all);
+    // 局所名 (引数と `PBind`)。`v.pop()` は `Call` の経路 `["v", "pop"]` として parse され、先頭が
+    // 局所名のものだけがレシーバのあるメソッド呼び出し (型検査器の `call` と同じ判定)。
+    let mut locals: std::collections::HashSet<String> = d.params.iter().map(|p| p.0.clone()).collect();
+    for v in &all {
+        if nname(v) == "PBind" {
+            locals.insert(st(&nf(v)[0]));
+        }
+    }
+    let is_method_call = |e: &V| match nname(e) {
+        "MCall" => true,
+        "Call" => {
+            let callee = &nf(e)[0];
+            nname(callee) == "Path" && {
+                let segs = strs(&nf(callee)[0]);
+                segs.len() >= 2 && locals.contains(&segs[0])
+            }
+        }
+        _ => false,
+    };
+    let mut lines = vec![];
+    for b in all.iter().filter(|v| nname(v) == "Block") {
+        let stmts = items(&nf(b)[0]);
+        for s in stmts.iter().take(stmts.len().saturating_sub(1)) {
+            if nname(s) != "ExprStmt" || !is_method_call(&nf(s)[0]) {
+                continue;
+            }
+            let Some(et) = tk.expr_type(&d.name, crate::parser::nid(&nf(s)[0])) else { continue };
+            let unit = matches!(et.ty, crate::types::Ty::Unit | crate::types::Ty::Never)
+                || matches!(&et.ty, crate::types::Ty::Tuple(xs) if xs.is_empty());
+            if !unit && ty_fully_known(&et.ty) {
+                lines.push(nline(s));
+            }
+        }
+    }
+    lines
+}
+
+/// 型が具体的に決まっているか (未知・型変数・型パラメータ・クロージャを含まない)。
+fn ty_fully_known(t: &crate::types::Ty) -> bool {
+    use crate::types::Ty;
+    match t {
+        Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Closure { .. } => false,
+        Ty::Never | Ty::Unit | Ty::Prim(_) | Ty::Const(_) | Ty::Dyn(..) => true,
+        Ty::Named(_, xs) | Ty::Tuple(xs) => xs.iter().all(ty_fully_known),
+        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => ty_fully_known(x),
     }
 }
 
@@ -283,6 +381,12 @@ pub struct Checker<'a> {
     lin_loops: Vec<LinLoop>,
     /// 型推論 (types.rs) が決めた `let` の束縛の型。自前の `ty_of` で決まらない束縛に使う。
     let_tys: HashMap<(usize, usize, String), crate::types::Ty>,
+    /// `a[i]` で要素を move した (consume された) 添字式の (関数名, 式 ID)。
+    /// `tc_expr` 時点では Vec 等の基の型が `Nil` なので、型表 (`tytab`) が確定した
+    /// `typeck()` の後処理で要素型を引いて E3002 を出す (4.1)。
+    index_consumes: Vec<(String, u32, String, usize)>,
+    /// 型表 (`TypeCk::tytab`) の写し。`tc_fn` より前に作り、注釈のない `let` の型を引くのに使う (4.1)。
+    mv_types: BTreeMap<(String, u32), crate::types::ExprTy>,
     final_env: HashMap<String, V>,
     graph: BTreeMap<String, BTreeSet<String>>,
     /// クロージャ節 (5.3 の `関数名#番号`) → そのクロージャの AST ノード。
@@ -373,6 +477,8 @@ impl<'a> Checker<'a> {
             lin_closure_took: false,
             lin_loops: vec![],
             let_tys: HashMap::new(),
+            index_consumes: Vec::new(),
+            mv_types: BTreeMap::new(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
             closure_asts: BTreeMap::new(),
@@ -719,6 +825,8 @@ impl<'a> Checker<'a> {
         let impl_lines: Vec<usize> = self.user.iter().copied().filter(|&i| self.def(i).kw == "impl").collect();
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut covered: HashSet<(String, String)> = HashSet::new();
+        // (トレイト, owner) -> その impl 行の def 番号。メソッドの効果を impl の実引数で実体化する (E4021)。
+        let mut impl_of: HashMap<(String, String), usize> = HashMap::new();
         for &i in &impl_lines {
             let d = self.def(i);
             let tb = d.impl_trait.clone();
@@ -775,6 +883,8 @@ impl<'a> Checker<'a> {
             if let Some(m) = declared.get(&(tkey.clone(), alt_owner.clone())) {
                 have.extend(m.iter().cloned());
             }
+            impl_of.entry((tkey.clone(), owner.clone())).or_insert(i);
+            impl_of.entry((tkey.clone(), alt_owner.clone())).or_insert(i);
             covered.insert((tkey.clone(), owner));
             covered.insert((tkey, alt_owner));
             if want != have {
@@ -808,6 +918,60 @@ impl<'a> Checker<'a> {
                     0,
                 );
             }
+        }
+        self.check_impl_method_effects(&impl_of);
+    }
+
+    /// 4.3 / 5.1: impl のメソッドの効果はトレイト宣言の効果を超えない (E4021)。
+    /// `uses`: impl の具体的な効果は、トレイトの宣言の `uses` のいずれかに覆われる (階層の部分型)。
+    /// `panics`: トレイトが `panics never` なら impl も `never` (`never ⊑ may`)。
+    /// トレイトの効果変数は impl 行の実引数で置き換えて比べる。束縛できない変数が残るとき、
+    /// 効果変数を含む impl の効果、宣言の無いトレイトのメソッドでは黙る (誤検出を出さない)。
+    /// 推論された関数は効果が宣言されていないので対象外。トレイトにメソッド単位の `stack` は無いので、
+    /// stack の上界の規則は設けない。
+    fn check_impl_method_effects(&mut self, impl_of: &HashMap<(String, String), usize>) {
+        let mut found: Vec<(usize, String)> = vec![];
+        for &i in &self.user {
+            let d = self.def(i);
+            if d.kw != "fn" || !d.has_impls || d.inferred {
+                continue;
+            }
+            let owner = d.name.rsplit_once('.').map(|(o, _)| o.to_string()).unwrap_or_default();
+            let Some(&ii) = impl_of.get(&(d.impls_trait.clone(), owner)) else { continue };
+            let Some(&ti) = self.p.types.get(&d.impls_trait) else { continue };
+            let td = self.def(ti);
+            if td.kw != "trait" {
+                continue;
+            }
+            let meth = d.name.rsplit('.').next().unwrap_or("");
+            let targs = items(&self.def(ii).impl_targs).to_vec();
+            let Some((tu, tp)) = trait_effect_bounds(td, meth, &targs) else { continue };
+            let tname = format!("{}.{}", td.name, meth);
+            if let Some(tu) = tu {
+                for e in &d.uses {
+                    if e.chars().next().map_or(false, |c| c.is_lowercase()) && !covers(&tu, e) {
+                        found.push((
+                            i,
+                            format!(
+                                "{} uses effect `{}` not declared by trait method {}",
+                                d.name, e, tname
+                            ),
+                        ));
+                        break;
+                    }
+                }
+            }
+            if let Some(tp) = tp {
+                if d.panics.as_deref() == Some("may") && tp == "never" {
+                    found.push((
+                        i,
+                        format!("{} may panic but trait method {} declares `panics never`", d.name, tname),
+                    ));
+                }
+            }
+        }
+        for (i, msg) in found {
+            self.diag("E4021", msg, i, 0);
         }
     }
 
@@ -1551,6 +1715,14 @@ impl<'a> Checker<'a> {
             "slice" | "array" => self.linear_v(tel(t, 1), gn, user_types, seen),
             "named" => {
                 let n = st(tel(t, 1));
+                // 型引数に線形を含む型も線形 (4.4): `Option<線形>`・`Result<線形, _>`・`Box<線形>` など。
+                // 型引数が判断できないもの (Nil・型パラメータ) は None で、他に線形がなければ黙る。
+                let arg_res = items(tel(t, 2))
+                    .iter()
+                    .fold(Some(false), |r, a| or3(r, self.linear_v(a, gn, user_types, seen)));
+                if arg_res == Some(true) {
+                    return Some(true);
+                }
                 if gn.contains(&n) || !user_types.contains(&n) {
                     return None;
                 }
@@ -1576,7 +1748,7 @@ impl<'a> Checker<'a> {
                     })
                     .unwrap_or(None);
                 seen.remove(&n);
-                res
+                or3(res, arg_res)
             }
             _ => None,
         }
@@ -1863,6 +2035,9 @@ impl<'a> Checker<'a> {
         // 4.1: `import` したモジュールの末尾名も可視なので、同名の束縛はシャドーイングになる。
         // 変数の解決には使わない (別集合)。
         self.import_tails = self.p.imports.get(&d.file).map(|m| m.keys().cloned().collect()).unwrap_or_default();
+        // 関数ヘッダの引数名も、`import` の末尾名と同名ならシャドーイング (E1021)。本体の束縛と同じ扱い。
+        let params: Vec<String> = d.params.iter().map(|p| p.0.clone()).collect();
+        self.shadow_check(&params, &HashSet::new(), di, 0);
         self.cur_uses = if test { None } else { Some(d.uses.clone()) };
         self.cur_panics = if test { "may".into() } else { d.panics.clone().unwrap_or("may".into()) };
         self.in_const_fn = !test && d.is_const;
@@ -1921,7 +2096,7 @@ impl<'a> Checker<'a> {
                 let names: Vec<String> = items(&f[0]).iter().map(|p| st(&items(p)[0])).collect();
                 self.shadow_check(&names, locals, di, nline(e));
                 inner.extend(names);
-                self.visit(&f[3], &mut inner, di, free);
+                self.visit(&f[3], &mut inner, di, true);
             }
             "Path" => {
                 let segs = strs(&f[0]);
@@ -2149,6 +2324,26 @@ impl<'a> Checker<'a> {
         if self.method_known(name) {
             return;
         }
+        // 整数の `/` `%` に wrapping_ / saturating_ の形は無い。近い名前 (`rem` は f32/f64 のもの) を出すと誤誘導する。
+        // `<` 等は partial_cmp から導く演算子で、メソッドではない (4.3)。`lt` を近い名前 (`ln`) に誤誘導しない。
+        // `ne` も同じく演算子 (`!=`、`eq` の否定) で、メソッドではない (4.3)。
+        let op = match name {
+            "lt" => Some("<"),
+            "le" => Some("<="),
+            "gt" => Some(">"),
+            "ge" => Some(">="),
+            _ => None,
+        };
+        let hint: Option<String> = match name {
+            "wrapping_div" | "saturating_div" => Some("integer `/` has no wrapping_ or saturating_ form; use `checked_div(b)` (Option: handle None with `match`)".into()),
+            "wrapping_rem" | "saturating_rem" => Some("integer `%` has no wrapping_ or saturating_ form; use `checked_rem(b)` (Option: handle None with `match`)".into()),
+            "ne" => Some("comparison is an operator, not a method; use `a != b` (the negation of `eq`)".into()),
+            _ => op.map(|o| format!("comparison is an operator, not a method; use `a {} b` (PartialOrd, derived from partial_cmp)", o)),
+        };
+        if let Some(h) = hint {
+            self.diag("E1108", format!("unknown method `{}`; {}", name, h), di, line);
+            return;
+        }
         let msg = match self.nearest_method(name) {
             Some(n) => format!("unknown method `{}`; did you mean `{}`?", name, n),
             None => format!("unknown method `{}`", name),
@@ -2158,8 +2353,8 @@ impl<'a> Checker<'a> {
 
     fn method_known(&self, name: &str) -> bool {
         const DERIVED: &[&str] = &[
-            "clone", "eq", "ne", "cmp", "partial_cmp", "hash", "debug_fmt", "display_fmt", "call", "call_mut",
-            "call_once", "drop", "try_clone", "to_string",
+            "clone", "eq", "cmp", "partial_cmp", "hash", "debug_fmt", "display_fmt", "call", "call_mut",
+            "call_once", "drop", "try_clone",
         ];
         const WRAPPING: &[&str] = &["add", "sub", "mul", "neg", "shl", "shr"];
         const CHECKED: &[&str] = &["add", "sub", "mul", "div", "rem", "neg", "shl", "shr", "abs"];
@@ -2171,6 +2366,8 @@ impl<'a> Checker<'a> {
         }
         self.p.method_idx.contains_key(name)
             || crate::natives::known_num(name)
+            // 廃止された `to_<整数型>` (4.5) は型検査 (types.rs `int_to_hint`) が書き換え先を案内するので、ここでは黙らせない。
+            || name.strip_prefix("to_").is_some_and(|t| crate::types::INTS.contains(&t))
             || DERIVED.contains(&name)
             || self.p.types.values().any(|&i| {
                 let d = &self.p.defs[i];
@@ -2193,7 +2390,8 @@ impl<'a> Checker<'a> {
         let mut best: Option<(usize, String)> = None;
         for cand in self.p.method_idx.keys() {
             let d = edit_distance(name, cand);
-            let limit = (name.len().max(cand.len()) / 3).max(1);
+            // 短い名前は編集距離 1 の候補を出さない (`lt` → `ln` のような無関係な誤提案を防ぐ)。
+            let limit = name.len().max(cand.len()) / 3;
             if d <= limit && best.as_ref().map_or(true, |(bd, bn)| d < *bd || (d == *bd && cand < bn)) {
                 best = Some((d, cand.clone()));
             }
@@ -2353,7 +2551,8 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let w = self.def(c.writer);
-            if w.kw != "fn" {
+            // 効果を推論する関数 (宣言のない `inferred`) が書き手でも解決先でも、宣言の効果ではないので検査しない (黙る)。
+            if w.kw != "fn" || w.inferred || self.def(c.callee).inferred {
                 continue;
             }
             let (uses, panics) = (w.uses.clone(), w.panics.clone().unwrap_or_else(|| "may".into()));
@@ -2375,65 +2574,20 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// ② `Fn` 境界の引数に直接書かれたクロージャの本体の効果を推論し、書き手の宣言と比べる。
-    /// 推論は FQN 呼び出しと、型で一意に解決できたメソッド呼び出し (①の記録) だけを数える
-    /// (解決できない呼び出しは数えない = 見落とし側)。書き手が `test` のときは検査しない。
-    fn check_closure_args(&mut self, calls: &[crate::types::ResolvedCall], args: &[crate::types::FnClosure]) {
-        for a in args {
-            let w = self.def(a.writer);
-            if w.kw != "fn" {
-                continue;
-            }
-            let Some(body) = w.body.as_ref() else { continue };
-            let Some(cl) = self.closure_asts.get(&a.node).cloned() else { continue };
-            let locals = crate::infer::local_names(w, body);
-            let cb = &nf(&cl)[3];
-            let (uses, may) = crate::infer::body_effects(self.p, &w.file, &locals, cb, true);
-            let mut effs: BTreeSet<String> = uses.into_iter().collect();
-            let mut pan_may = may;
-            // クロージャ本体の中で型で解決できたメソッド呼び出しの効果を足す。
-            for c in calls {
-                if c.scope.as_deref() != Some(a.node.as_str()) {
-                    continue;
-                }
-                if let Some((_, u, pn)) = &c.dyn_eff {
-                    crate::infer::add_effs(u, Some(pn.as_str()), &mut effs, &mut pan_may);
-                    continue;
-                }
-                let callee = self.def(c.callee);
-                match inst_def_effects(callee, &c.targs) {
-                    Some((u, p)) => crate::infer::add_effs(&u, p.as_deref(), &mut effs, &mut pan_may),
-                    None => crate::infer::add_effs(&callee.uses, callee.panics.as_deref(), &mut effs, &mut pan_may),
-                }
-            }
-            let (w_uses, w_panics) = (w.uses.clone(), w.panics.clone().unwrap_or_else(|| "may".into()));
-            // クロージャ本体は書き手の関数の一部としても検査される (visit)。本体の中の呼び出し・添字が
-            // 同じコードで既に報告されていれば、ここでは重ねない。
-            let mut cl_nodes: Vec<&V> = vec![];
-            walk(&cl, &mut cl_nodes);
-            let lines: Vec<usize> = cl_nodes.iter().map(|n| nlineno(n)).collect();
-            let (lo, hi) = (lines.iter().copied().filter(|&l| l > 0).min().unwrap_or(crate::parser::unpack_pos(a.line).0), lines.iter().copied().max().unwrap_or(crate::parser::unpack_pos(a.line).0));
-            let wname = w.name.clone();
-            let seen = |me: &Self, code: &str| me.diags.iter().any(|d| d.code == code && d.fqn == wname && d.line >= lo && d.line <= hi);
-            if seen(self, "E4001") || seen(self, "E4002") || seen(self, "E4003") || seen(self, "E4004") {
-                continue;
-            }
-            if let Some(e) = effs.iter().find(|e| !covers(&w_uses, e)) {
-                self.diag(
-                    "E4001",
-                    format!("the closure passed to `{}` uses effect `{}` not declared by the caller", a.callee_name, e),
-                    a.writer,
-                    a.line,
-                );
-            }
-            if pan_may && w_panics == "never" {
-                self.diag(
-                    "E4002",
-                    format!("the closure passed to `{}` may panic but the caller declares `panics never`", a.callee_name),
-                    a.writer,
-                    a.line,
-                );
-            }
+    /// 型推論が残した効果検査の義務 (`types::EffCheck`) を、呼び出し元の `uses` / `panics` で検査する。
+    /// 従来の `effects` と同じ文面なので、同じ違反を両方が見つけたときは重複除去で 1 件になる。
+    fn effects_checked(&mut self, ec: &crate::types::EffCheck) {
+        let d = self.def(ec.di);
+        if d.kw != "fn" {
+            return;
+        }
+        self.cur_uses = Some(d.uses.clone());
+        self.cur_panics = d.panics.clone().unwrap_or("may".into());
+        let bad: Vec<Option<(String, String)>> =
+            ec.cands.iter().map(|(n, u, p)| self.violation_effs(n, u, p.as_deref())).collect();
+        if !bad.is_empty() && bad.iter().all(|b| b.is_some()) {
+            let (c, m) = bad[0].clone().unwrap();
+            self.diag(&c, m, ec.di, ec.line);
         }
     }
 
@@ -2444,9 +2598,12 @@ impl<'a> Checker<'a> {
             if self.def(i).kw == "fn" {
                 self.check_elision(i);
             }
+            if matches!(self.def(i).kw.as_str(), "type" | "enum") {
+                self.check_field_elision(i);
+            }
         }
         // 型付きの式推論に基づく検査 (レシーバの型によるメソッドの存在・引数の個数と型)。
-        // 所有権の検査 (tc_fn) が `let` の束縛の型を使うので、先に走らせる。
+        // 型表は move の追跡 (`tc_fn`) も使うので、先に作る。
         let mut tk = crate::types::TypeCk::new(self.p);
         for &i in &user {
             let d = self.def(i);
@@ -2455,6 +2612,7 @@ impl<'a> Checker<'a> {
             }
         }
         self.let_tys = std::mem::take(&mut tk.let_tys);
+        self.mv_types = std::mem::take(&mut tk.tytab);
         for &i in &user {
             let d = self.def(i);
             if d.kw == "fn" && d.body.is_some() {
@@ -2463,16 +2621,68 @@ impl<'a> Checker<'a> {
         }
         let vis_log = std::mem::take(&mut tk.recv_log);
         self.check_visibility_members(&vis_log);
+        tk.tytab = std::mem::take(&mut self.mv_types);
+        // `a[i]` で Copy でない要素を値として取り出した (consume した) 場所を、型表で
+        // 要素型を引いて E3002 にする (4.1)。型が分からない (Vec 等の基が Nil、型引数依存等)
+        // ときは黙る。
+        for (fqn, nid, text, line) in self.index_consumes.clone() {
+            let Some(et) = tk.tytab.get(&(fqn.clone(), nid)) else { continue };
+            // 基が参照 (`&[T]` / `&Vec<T>`) なら剥がして要素型を見る。
+            let mut base = &et.ty;
+            while let crate::types::Ty::Ref(_, inner) = base {
+                base = inner.as_ref();
+            }
+            let el = match base {
+                crate::types::Ty::Array(el) | crate::types::Ty::Slice(el) => Some(el.as_ref()),
+                crate::types::Ty::Named(_, args) => args.first(),
+                _ => None,
+            };
+            let Some(el) = el else { continue };
+            if !self.is_copy_ty(el) {
+                self.tdiag(
+                    "E3002",
+                    format!(
+                        "cannot move out of `{}`: the element is not Copy; borrow it with `&{}` or use `get`",
+                        &text, &text
+                    ),
+                    line,
+                );
+            }
+        }
+        // 計測 (隠し機能): `KSN_TYPE_COVERAGE=1` のときだけ stderr に被覆率を出す (typecov.rs)。
+        if let Some(c) = tk.cov.take() {
+            let top = std::env::var("KSN_TYPE_COVERAGE_TOP").ok().and_then(|v| v.parse().ok()).unwrap_or(15);
+            crate::typecov::report(&c, top);
+        }
+        // 確認 (隠し機能): `KSN_DUMP_TYPES=1` のとき式 ID ごとの型表を stderr に出す (types.rs `dump_types`)。
+        if std::env::var_os("KSN_DUMP_TYPES").is_some() {
+            eprint!("{}", tk.dump_types());
+        }
+        // 4.6 (型表): 型推論が型を決めた式文の捨て。`ty_of` では決まらない形 (標準ライブラリの
+        // ジェネリック型のメソッドの戻り値、`v.pop();` の `Option` など) をここで拾う。
+        for &i in &user {
+            let d = self.def(i);
+            if (d.kw == "fn" && d.body.is_some()) || d.kw == "test" {
+                self.d = i;
+                for line in discarded_by_type(&tk, d) {
+                    self.tdiag("E2042", "a value other than () is discarded; use core.mem.drop(x)".into(), line);
+                }
+            }
+        }
         self.diags.extend(tk.diags);
+        // 型で解決できた呼び出しの効果 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡した
+        // クロージャから推論した効果変数・panic 変数。呼び出し元の宣言と比べ、全候補が違反するときだけ報告する。
+        for ec in std::mem::take(&mut tk.eff_checks) {
+            self.effects_checked(&ec);
+        }
         // 型で解決できた呼び出し (メソッドを含む) の辺を、再帰・スタックの検査に加える。
         for (from, tos) in tk.edges {
             self.graph.entry(from).or_default().extend(tos);
         }
         // クロージャ節のフレーム見積り (E4012) のため、節名 → クロージャ AST の対応を引き継ぐ。
         self.closure_asts = tk.closure_asts;
-        // ① 型で解決できた局所レシーバのメソッド呼び出しの効果、② `Fn` 境界に渡したクロージャの効果。
+        // 型で解決できた局所レシーバのメソッド呼び出し・`dyn` 越しの呼び出しの効果 (クロージャの効果は `eff_checks`)。
         self.check_resolved_methods(&tk.resolved_calls);
-        self.check_closure_args(&tk.resolved_calls, &tk.fn_closure_args);
         // 従来の検査と新しい型推論が同じ誤りを同じ文面で報告したときは、1 件にまとめる。
         let mut seen = HashSet::new();
         self.diags.retain(|d| seen.insert((d.file.clone(), d.code.clone(), d.fqn.clone(), d.line, d.msg.clone())));
@@ -2509,6 +2719,20 @@ impl<'a> Checker<'a> {
                 0,
             );
         }
+    }
+
+    /// 4.1: `type` / `enum` のフィールド・バリアントの参照は、ライフタイムを省略できない (`'static` も明示)。
+    fn check_field_elision(&mut self, di: usize) {
+        let d = self.def(di);
+        if d.elided_refs.is_empty() {
+            return;
+        }
+        let msg = format!(
+            "{}: lifetime of the reference in `{}` cannot be elided; declare it (for example `&'a T` with `['a]`)",
+            d.name,
+            d.elided_refs.join("`, `")
+        );
+        self.diag("E3020", msg, di, 0);
     }
 
     fn strip<'b>(&self, mut t: &'b V) -> &'b V {
@@ -2554,6 +2778,28 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `Ty` が Copy か。`is_copy` の `Ty` 版。未知の型・型パラメータは黙る (true)。
+    fn is_copy_ty(&self, t: &crate::types::Ty) -> bool {
+        match t {
+            crate::types::Ty::Unknown | crate::types::Ty::Var(_) | crate::types::Ty::Param(_) => true,
+            crate::types::Ty::Never | crate::types::Ty::Unit | crate::types::Ty::Prim(_) => true,
+            crate::types::Ty::Ref(mut_, _) => !mut_,
+            crate::types::Ty::Tuple(xs) => xs.iter().all(|x| self.is_copy_ty(x)),
+            crate::types::Ty::Named(nm, args) => {
+                if nm == "Option" || nm == "Result" {
+                    return args.iter().all(|a| self.is_copy_ty(a));
+                }
+                self.p
+                    .types
+                    .get(nm)
+                    .map_or(false, |&i| self.def(i).derive.iter().any(|x| x == "Copy"))
+            }
+            crate::types::Ty::Array(el) | crate::types::Ty::Slice(el) => self.is_copy_ty(el),
+            crate::types::Ty::Ptr(_, _) | crate::types::Ty::Const(_) | crate::types::Ty::Dyn(..) => true,
+            crate::types::Ty::Closure { .. } => true,
+        }
+    }
+
     /// 整数の算術演算子はオーバーフローで panic する。`panics never` の関数では使えない (4.1)。
     fn int_op_may_panic(&mut self, what: &str, line: usize) {
         if self.def(self.d).panics.as_deref() == Some("never") {
@@ -2565,15 +2811,32 @@ impl<'a> Checker<'a> {
                 s if s.contains("`/`") => "div",
                 _ => "rem",
             };
-            let how = if name == "neg" {
-                "write `x.checked_neg()` (returns Option) or `x.wrapping_neg()`".to_string()
-            } else {
-                format!(
-                    "write `a.checked_{n}(b)` (returns Option: use `match` to handle None) or `a.wrapping_{n}(b)` / `a.saturating_{n}(b)` (return the integer)",
-                    n = name
-                )
+            // `/` と `%` は 0 で割ると panic し、wrapping_/saturating_ の形は無い (num.sig)。
+            // 具体的な置き換えと、関数ヘッダを `panics may` にする選択肢の両方を示す。
+            let (cause, how, note) = match name {
+                "neg" => (
+                    "on overflow",
+                    "write `x.checked_neg()` (Option: handle None with `match`) or `x.wrapping_neg()` (returns the integer)".to_string(),
+                    String::new(),
+                ),
+                "div" | "rem" => (
+                    "(division by zero or overflow)",
+                    format!("write `a.checked_{n}(b)` (Option: handle None with `match`)", n = name),
+                    format!(" (`wrapping_{n}` and `saturating_{n}` do not exist)", n = name),
+                ),
+                _ => (
+                    "on overflow",
+                    format!(
+                        "write `a.checked_{n}(b)` (Option: handle None with `match`), `a.wrapping_{n}(b)` or `a.saturating_{n}(b)` (return the integer)",
+                        n = name
+                    ),
+                    String::new(),
+                ),
             };
-            let msg = format!("integer {} may panic on overflow; {}", what, how);
+            let msg = format!(
+                "integer {} may panic {}; {}, or declare `panics may` on the function header{}",
+                what, cause, how, note
+            );
             self.tdiag("E4004", msg, line);
         }
     }
@@ -2688,43 +2951,143 @@ impl<'a> Checker<'a> {
                 _ => V::Nil,
             },
             "Path" => {
-                let segs = items(&f[0]);
-                if segs.len() == 1 { env.get(&st(&segs[0])).cloned().unwrap_or(V::Nil) } else { V::Nil }
-            }
-            "StructLit" => {
-                let name = st(&f[0]);
-                let segs: Vec<String> = name.split('.').map(String::from).collect();
-                let fq = self.p.expand(&segs, &self.def(self.d).file).join(".");
-                if self.p.types.contains_key(&fq) {
-                    V::L(vec![V::S("named".into()), V::S(fq), V::L(vec![])])
-                } else {
-                    V::Nil
+                let segs = strs(&f[0]);
+                let Some(root) = env.get(&segs[0]) else { return V::Nil };
+                // `s.f.g` (根が局所変数のフィールド道) は構造体定義のフィールドをたどる (4.4)。
+                // 参照越しは自動参照外しでたどる。途中で分からなければ黙る (Nil)。
+                let mut cur = root.clone();
+                for seg in &segs[1..] {
+                    if is_nil(&cur) {
+                        return V::Nil;
+                    }
+                    let base = self.strip(&cur).clone();
+                    cur = self.field_ty(&base, seg).unwrap_or(V::Nil);
                 }
+                cur
             }
-            // `t.make().lin` のような非 Path レシーバのフィールド (4.4)。レシーバの型が
-            // 分かり、名前が構造体型に解決でき、フィールド型がジェネリクスを含まないときだけ返す。
-            // 決まらないときは V::Nil (黙る)。再帰 (`t.make().a.b`) はここがそのまま処理する。
             "Field" => {
+                // 一時値のフィールド (`t.make().lin`、4.4)。受け手の型が決まり、
+                // 構造体のフィールドとして解決できるときだけ型を返す (分からなければ黙る)。
                 let recv = self.ty_of(&f[0], env);
                 if is_nil(&recv) {
-                    V::Nil
-                } else {
-                    match self.field_ty(&recv, &st(&f[1])) {
-                        Some(ft) if !self.is_generic(&ft, &self.names) => ft,
-                        _ => V::Nil,
-                    }
+                    return V::Nil;
+                }
+                let base = self.strip(&recv).clone();
+                match self.field_ty(&base, &st(&f[1])) {
+                    Some(ft) if !self.is_generic(&ft, &self.names) => ft,
+                    _ => V::Nil,
                 }
             }
             "TupleE" => {
-                let mut tys = Vec::new();
+                // タプル式は要素の型がすべて決まるときだけ型を返す (4.4)。
+                let mut els = vec![];
                 for x in items(&f[0]) {
                     let t = self.ty_of(x, env);
                     if is_nil(&t) {
                         return V::Nil;
                     }
-                    tys.push(t);
+                    els.push(t);
                 }
-                V::L(vec![V::S("tuple".into()), V::L(tys)])
+                V::L(vec![V::S("tuple".into()), V::L(els)])
+            }
+            "ArrayE" => {
+                // 配列式は要素の型がすべて同じ型に決まるときだけ型を返す (4.4)。
+                // 長さは型に入れない (型の長さは `ty_size` が既定値を使うので Nil のままでよい)。
+                let xs = items(&f[0]);
+                let Some(first) = xs.first() else { return V::Nil };
+                let el = self.ty_of(first, env);
+                if is_nil(&el) {
+                    return V::Nil;
+                }
+                for x in &xs[1..] {
+                    if !same_v(&self.ty_of(x, env), &el) {
+                        return V::Nil;
+                    }
+                }
+                V::L(vec![V::S("array".into()), el, V::Nil])
+            }
+            "Index" => {
+                // `a[i]` は配列・スライスの要素の型 (4.4)。`types.rs` の Index と同じく、
+                // 添字の型は見ない。`Vec` など別の型や、要素の型が決まらない / 型引数に依る
+                // ときは黙る (Nil)。
+                let base = self.ty_of(&f[0], env);
+                if is_nil(&base) {
+                    return V::Nil;
+                }
+                let b = self.strip(&base).clone();
+                if !matches!(tag(&b).as_str(), "array" | "slice") {
+                    return V::Nil;
+                }
+                let el = tel(&b, 1).clone();
+                if is_nil(&el) || self.is_generic(&el, &self.names) {
+                    return V::Nil;
+                }
+                el
+            }
+            "MCall" => {
+                // `x.m(..)` の戻り値 (4.4)。レシーバの型が型引数なしのユーザー型に決まり、
+                // その型のメソッドが一意に定まるときだけ戻り値の型を返す。
+                // 戻り値が型引数・`Self` を含むときは黙る。
+                let recv = self.ty_of(&f[0], env);
+                if is_nil(&recv) {
+                    return V::Nil;
+                }
+                let th = self.thread_method_ty(&recv, &st(&f[1]));
+                if !is_nil(&th) {
+                    return th;
+                }
+                let base = self.strip(&recv).clone();
+                if tag(&base) != "named" || !items(tel(&base, 2)).is_empty() {
+                    return V::Nil;
+                }
+                let owner = st(tel(&base, 1));
+                if !self.p.types.contains_key(&owner) {
+                    return V::Nil;
+                }
+                let name = st(&f[1]);
+                let n = items(&f[2]).len();
+                let cands: Vec<&Def> = self
+                    .p
+                    .method_idx
+                    .get(&name)
+                    .map(|v| {
+                        v.iter()
+                            .map(|&i| self.def(i))
+                            .filter(|c| {
+                                c.params.len() == n + 1 && c.name.rsplit_once('.').map_or(false, |(o, _)| o == owner)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                match cands.as_slice() {
+                    [callee] if !self.is_generic(&callee.ret, &callee.gnames()) => callee.ret.clone(),
+                    _ => V::Nil,
+                }
+            }
+            "StructLit" => {
+                let name = st(&f[0]);
+                let segs: Vec<String> = name.split('.').map(String::from).collect();
+                let fq = self.p.expand(&segs, &self.def(self.d).file).join(".");
+                let Some(&ti) = self.p.types.get(&fq) else { return V::Nil };
+                // ジェネリクスの型引数は、型がそのまま型パラメータの宣言のフィールドの値から推論する
+                // (`t.Box { v: t.mk() }` の `T`)。推論できない引数は Nil (黙る)。
+                let d = self.def(ti);
+                let tparams: Vec<String> = d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
+                let mut args = vec![V::Nil; tparams.len()];
+                if d.kw == "type" && !tparams.is_empty() {
+                    for fl in items(&f[1]) {
+                        let fx = items(fl);
+                        let Some((_, decl, _)) = d.fields.iter().find(|x| x.0 == st(&fx[0])) else { continue };
+                        if tag(decl) != "named" || !items(tel(decl, 2)).is_empty() {
+                            continue;
+                        }
+                        let Some(i) = tparams.iter().position(|p| *p == st(tel(decl, 1))) else { continue };
+                        if is_nil(&args[i]) {
+                            args[i] = self.ty_of(&fx[1], env);
+                        }
+                    }
+                }
+                V::L(vec![V::S("named".into()), V::S(fq), V::L(args)])
             }
             "Bin" => {
                 if matches!(st(&f[0]).as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||") {
@@ -2748,10 +3111,6 @@ impl<'a> Checker<'a> {
                     _ => V::Nil,
                 }
             }
-            "MCall" => {
-                let recv = self.ty_of(&f[0], env);
-                self.thread_method_ty(&recv, &st(&f[1]))
-            }
             "Call" => {
                 let fnn = &f[0];
                 if nname(fnn) == "Path" {
@@ -2764,9 +3123,19 @@ impl<'a> Checker<'a> {
                     }
                     if !env.contains_key(&segs[0]) {
                         if let Some(r) = self.p.resolve(&segs, &self.def(self.d).file) {
-                            if let Target::Variant(en, _) = &r.target {
-                                if self.p.types.contains_key(en) {
-                                    return V::L(vec![V::S("named".into()), V::S(en.clone()), V::L(vec![])]);
+                            if let Target::Variant(en, vn) = &r.target {
+                                // プレリュードの `Option` / `Result` は `p.types` に無いので別に通す。
+                                if self.p.types.contains_key(en) || en == "Option" || en == "Result" {
+                                    // `Some(x)`・`Ok(x)`・`Err(x)` は引数の型を型引数に入れる (4.4)。
+                                    // 分からない型引数は Nil (黙る)。
+                                    let payload = items(&nf(e)[1]).first().map(|a| self.ty_of(a, env));
+                                    let args = match (en.as_str(), vn.as_str(), payload) {
+                                        ("Option", "Some", Some(p)) => vec![p],
+                                        ("Result", "Ok", Some(p)) => vec![p, V::Nil],
+                                        ("Result", "Err", Some(p)) => vec![V::Nil, p],
+                                        _ => vec![],
+                                    };
+                                    return V::L(vec![V::S("named".into()), V::S(en.clone()), V::L(args)]);
                                 }
                             }
                             if let Target::Fn(i) = r.target {
@@ -2835,6 +3204,11 @@ impl<'a> Checker<'a> {
         env = self.final_env.clone();
         let stmts = items(&nf(body)[0]);
         if let Some(last) = stmts.last() {
+            // 関数の末尾の値 `a[i]` は、要素を呼び出し元へ move する (4.1)。`return a[i]` と同じ扱い。
+            if nname(last) == "ExprStmt" && nname(&nf(last)[0]) == "Index" && !is_nil(&d.ret) && tag(&d.ret) != "unit" {
+                let e = &nf(last)[0];
+                self.index_consumes.push((d.name.clone(), nid(&nf(e)[0]), index_text(e), nline(e)));
+            }
             if nname(last) == "ExprStmt" {
                 let names = self.names.clone();
                 if !is_nil(&d.ret) && !self.is_generic(&d.ret, &names) {
@@ -3096,6 +3470,12 @@ impl<'a> Checker<'a> {
                 pat_binds(&f[0], &mut names);
                 for n in names {
                     let t = env.get(&n).cloned().unwrap_or(V::Nil);
+                    // 線形な要素を持つ配列リテラルの束縛は、要素を添字ごとに調べる (`note_linear_array`)。
+                    // 束縛そのものは線形としない (添字での取り出しを `ls` の消費漏れにしない)。
+                    if nname(&f[0]) == "PBind" && self.note_linear_array(&n, &f[3], &t, nline(s)) {
+                        self.lin_declare(&n, &V::Nil, nline(s));
+                        continue;
+                    }
                     self.lin_declare(&n, &t, nline(s));
                     // 線形値を `move` で取り込んだクロージャは、それ自体が線形 (4.4)。呼ぶと消費される。
                     if took && nname(&f[0]) == "PBind" {
@@ -3114,7 +3494,15 @@ impl<'a> Checker<'a> {
                     if env.contains_key(&segs[0]) {
                         let root = &segs[0];
                         let rt = env.get(root).cloned().unwrap_or(V::Nil);
-                        if !muts.contains(root) && root != "self" && !(!is_nil(&rt) && tag(&rt) == "ref") {
+                        // 型の分からない束縛 (match の腕などで rt == Nil) や &mut 束縛
+                        // (tag == "ref") への代入は E3001 にしない: 「分からなければ黙る」
+                        // が既存の作法。`let x = S{..}` のような値束縛 (rt が named など)
+                        // は従来どおりエラーにする。
+                        if !muts.contains(root)
+                            && root != "self"
+                            && !is_nil(&rt)
+                            && tag(&rt) != "ref"
+                        {
                             self.tdiag(
                                 "E3001",
                                 format!("cannot assign to `{}`: `{}` is not declared `mut`", segs.join("."), root),
@@ -3378,6 +3766,9 @@ impl<'a> Checker<'a> {
                     self.lin_declare(&pn, &pt, nline(e));
                 }
                 let saved = self.moved.clone();
+                for p in items(&f[0]) {
+                    self.revive_place(&[st(&items(p)[0])]);
+                }
                 let fe = self.final_env.clone();
                 self.tc_block(&f[3], &sub, muts);
                 let fl = self.lin_floor;
@@ -3510,6 +3901,24 @@ impl<'a> Checker<'a> {
                 let fl = self.lin_floor;
                 let what = if self.lin_in_closure { "the closure" } else { "the function" };
                 self.lin_leaks(fl, nline(e), &format!("when {what} returns early at line {}", nlineno(e)));
+            }
+            "Index" => {
+                // `a[i]` で Copy でない要素を値として取り出す (move) は 4.1 に反する (E3002)。
+                // `&a[i]`/`&mut a[i]` は消費 (consume=false) にならないので対象外。
+                // 要素の型は型表 (`tytab`) で後から引く (tc_expr 時点では Vec 等が解決しないため)。
+                // 即時には記録だけしておく。
+                if consume {
+                    let base_nid = nid(&f[0]);
+                    self.index_consumes.push((
+                        self.def(self.d).name.clone(),
+                        base_nid,
+                        index_text(e),
+                        nline(e),
+                    ));
+                }
+                // 添字演算は基の場所を move しない (参照として扱う)。
+                self.tc_expr(&f[0], env, muts, false);
+                self.tc_expr(&f[1], env, muts, false);
             }
             _ => {
                 for c in children(e) {
@@ -3906,12 +4315,64 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 線形な要素を持つ配列リテラルの束縛 (4.4)。要素を整数リテラルの添字 (`ls[0]`) でしか
+    /// 使わないとき、使われていない添字の要素を E3003 とする。配列全体の使用 (渡す・返す・
+    /// `for` で回す・添字に変数を使う等) や、判断できない添字があれば黙る。
+    /// この関数で扱ったとき true (呼び出し側は束縛を線形にしない)。
+    fn note_linear_array(&mut self, name: &str, init: &V, ty: &V, line: usize) -> bool {
+        if tag(ty) != "array" || nname(init) != "ArrayE" {
+            return false;
+        }
+        let el = tel(ty, 1);
+        if is_nil(el) || !self.is_linear(el) {
+            return false;
+        }
+        let n = items(&nf(init)[0]).len();
+        let body = self.def(self.d).body.as_ref().unwrap();
+        let mut all = vec![];
+        walk(body, &mut all);
+        let total = all
+            .iter()
+            .filter(|x| nname(x) == "Path" && strs(&nf(x)[0]).first().map(|s| s.as_str()) == Some(name))
+            .count();
+        let mut used: HashSet<usize> = HashSet::new();
+        let mut index_uses = 0;
+        let mut unknown = false;
+        for x in all.iter().filter(|x| nname(x) == "Index") {
+            let b = &nf(x)[0];
+            let base_is_name = nname(b) == "Path" && {
+                let segs = strs(&nf(b)[0]);
+                segs.len() == 1 && segs[0] == name
+            };
+            if !base_is_name {
+                continue;
+            }
+            index_uses += 1;
+            match lit_index(&nf(x)[1]) {
+                Some(i) if i < n => {
+                    used.insert(i);
+                }
+                _ => unknown = true,
+            }
+        }
+        // 配列全体の使用があるとき (`index_uses != total`) や、添字が判断できないときは黙る。
+        if unknown || index_uses != total {
+            return true;
+        }
+        if total == 0 {
+            self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
+        } else if let Some(i) = (0..n).find(|i| !used.contains(i)) {
+            self.tdiag("E3003", format!("linear value `{}[{}]` is never consumed", name, i), line);
+        }
+        true
+    }
+
     /// スコープの終わり: `base` 以降の束縛を取り除き、未消費の線形値を報告する (宣言の位置で)。
     fn lin_scope_end(&mut self, base: usize, how: &str) {
         let base = base.min(self.lin.len());
         let gone = self.lin.split_off(base);
         for x in gone.into_iter().filter(|x| x.live) {
-            self.tdiag("E3003", format!("linear value `{}` is not consumed {how}", x.name), x.line);
+            self.tdiag("E3003", format!("linear value `{}` is never consumed {how}", x.name), x.line);
         }
     }
 
@@ -3959,6 +4420,23 @@ impl<'a> Checker<'a> {
             let Some((_, pt)) = c.params.get(i + off) else { break };
             let at = self.ty_of(a, env);
             if is_nil(&at) {
+                // 型が付かない線形な値 (線形な値を `move` で取り込んだクロージャを束縛した名前) も、
+                // 線形でない型パラメータには渡せない (`core.mem.drop(f)`)。
+                if nname(a) == "Path" && tag(pt) == "named" && items(tel(pt, 2)).is_empty() && nonlin.contains(&st(tel(pt, 1))) {
+                    let segs = strs(&nf(a)[0]);
+                    if segs.len() == 1 && self.lin_find(&segs[0]).is_some_and(|k| self.lin[k].linear) {
+                        self.tdiag(
+                            "E3006",
+                            format!(
+                                "linear closure `{}` is passed for the type parameter `{}` of {}, which is not declared `linear` (4.4)",
+                                segs[0],
+                                st(tel(pt, 1)),
+                                c.name
+                            ),
+                            line,
+                        );
+                    }
+                }
                 continue;
             }
             let mut hit = vec![];
@@ -4292,6 +4770,45 @@ fn prim_owner(name: &str) -> String {
     }
 }
 
+/// トレイトのメソッド `meth` の宣言された効果を、impl 行の実引数 `targs` (トレイトの型パラメータ列の順) で実体化する
+/// (4.3 / 5.1)。戻り値は (uses の具体名、panics)。束縛できない効果変数が残る要素は `uses` 全体を `None` にする
+/// (分からないので黙る)。宣言の `uses` / `panics` を書いていないメソッドは外側の `None`。
+fn trait_effect_bounds(td: &Def, meth: &str, targs: &[V]) -> Option<(Option<Vec<String>>, Option<String>)> {
+    let (_, us, pv) = td.trait_effs.iter().find(|e| e.0 == meth)?;
+    let mut bind_u: HashMap<String, Vec<String>> = HashMap::new();
+    let mut bind_p: HashMap<String, String> = HashMap::new();
+    for (k, g) in td.generics.iter().enumerate() {
+        let Some(a) = targs.get(k) else { continue };
+        match g.0.as_str() {
+            "uses" if tag(a) == "effects" => {
+                bind_u.insert(g.1.clone(), items(tel(a, 1)).iter().map(st).collect());
+            }
+            "panics" if tag(a) == "panic" => {
+                bind_p.insert(g.1.clone(), st(tel(a, 1)));
+            }
+            _ => {}
+        }
+    }
+    let concrete = |e: &String| e.chars().next().map_or(false, |c| c.is_lowercase());
+    let mut eu: Vec<String> = vec![];
+    let mut unknown = false;
+    for e in us {
+        if concrete(e) {
+            eu.push(e.clone());
+        } else {
+            match bind_u.get(e) {
+                Some(set) if set.iter().all(concrete) => eu.extend(set.iter().cloned()),
+                _ => unknown = true,
+            }
+        }
+    }
+    let ep = match pv.as_str() {
+        "never" | "may" => Some(pv.clone()),
+        v => bind_p.get(v).cloned(),
+    };
+    Some((if unknown { None } else { Some(eu) }, ep))
+}
+
 /// 8.2 の層ランク。依存方向は `std` → `alloc` → `core` なので、ランクの小さい層は
 /// ランクの大きい層を参照できない。それ以外の最上位成分 (ユーザーパッケージ) は層を持たない。
 fn layer_rank(root: &str) -> Option<u8> {
@@ -4327,7 +4844,7 @@ fn collect_ref_fqns(t: &V, out: &mut BTreeSet<String>) {
                 }
             }
         }
-        V::Node(_, fs, _) => {
+        V::Node(_, fs, _, _) => {
             for f in fs {
                 collect_ref_fqns(f, out);
             }
@@ -4345,7 +4862,7 @@ fn header_is_pub(h: &str) -> bool {
 /// バリアントパターン・型注釈の名前つき型) を (名前, 位置) で集める。
 fn collect_vis_refs(t: &V, out: &mut Vec<(String, usize)>) {
     match t {
-        V::Node(n, fs, pos) => {
+        V::Node(n, fs, pos, _) => {
             match *n {
                 "Path" | "PVariant" => {
                     if let Some(V::L(segs)) = fs.first() {
@@ -4388,12 +4905,12 @@ fn collect_vis_refs(t: &V, out: &mut Vec<(String, usize)>) {
 /// 本体の AST から構造体リテラル・構造体パターンの (型の名前の成分, フィールド名, 位置) を集める。
 fn collect_struct_fields(t: &V, out: &mut Vec<(Vec<String>, String, usize)>) {
     match t {
-        V::Node(n, fs, pos) => {
+        V::Node(n, fs, pos, _) => {
             match *n {
                 "StructLit" => {
                     if let (Some(V::S(nm)), Some(V::L(fl))) = (fs.first(), fs.get(1)) {
                         for x in fl {
-                            if let V::L(xs) | V::Node(_, xs, _) = x {
+                            if let V::L(xs) | V::Node(_, xs, _, _) = x {
                                 if let Some(V::S(f)) = xs.first() {
                                     out.push((nm.split('.').map(String::from).collect(), f.clone(), *pos));
                                 }
@@ -4405,7 +4922,7 @@ fn collect_struct_fields(t: &V, out: &mut Vec<(Vec<String>, String, usize)>) {
                     if let (Some(V::L(segs)), Some(V::L(fl))) = (fs.first(), fs.get(1)) {
                         let v: Vec<String> = segs.iter().map(st).collect();
                         for x in fl {
-                            if let V::L(xs) | V::Node(_, xs, _) = x {
+                            if let V::L(xs) | V::Node(_, xs, _, _) = x {
                                 if let Some(V::S(f)) = xs.first() {
                                     out.push((v.clone(), f.clone(), *pos));
                                 }
@@ -4454,7 +4971,7 @@ fn collect_ty_names(t: &V, out: &mut HashSet<String>) {
 fn ty_has_self(t: &V) -> bool {
     match t {
         V::L(xs) => xs.first().map_or(false, |x| st(x) == "self") || xs.iter().any(ty_has_self),
-        V::Node(_, fs, _) => fs.iter().any(ty_has_self),
+        V::Node(_, fs, _, _) => fs.iter().any(ty_has_self),
         _ => false,
     }
 }

@@ -1,0 +1,19 @@
+type t.S pub
+    v: u32
+end t.S
+
+fn t.eat(s: t.S) -> u32 uses [] panics never
+    s.v
+end t.eat
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let n = 5u32
+    core.mem.drop(n)
+    core.mem.drop(n)
+    let c = true
+    while c {
+        core.mem.drop(n)
+        break
+    }
+    Ok(())
+end t.main

@@ -1,0 +1,4 @@
+fn t.main() -> () uses [] panics may
+    let mut a = [1u8, 2u8]
+    a[0usize] = 9u8
+end t.main

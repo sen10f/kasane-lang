@@ -73,7 +73,8 @@ fn diagnostics_each_case_reports_its_code() {
 }
 
 /// 通ってはいけないコード (`tests/data/unsound/`)。1 ファイル 1 ケースで、どれも `ksn check` が
-/// 失敗しなければならない。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
+/// 失敗しなければならない。1 行目が `// expect: Exxxx` のファイルは、そのコードの診断で落ちることも確かめる
+/// (別の診断で落ちているだけのケースを許さない)。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
 /// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
 const KNOWN_HOLES: &[&str] = &[
     // 借用を持つ変数 (`let w = t.mk(&x)`) のフィールドを読み戻す (`let r = w.r`) と、借用が読んだ側へ移らない
@@ -90,7 +91,8 @@ fn unsound_programs_are_rejected() {
     let mut failures = Vec::new();
     for p in names {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&format!("unsound_{}", stem), &fs::read_to_string(&p).unwrap());
+        let src = fs::read_to_string(&p).unwrap();
+        let t = Tmp::new(&format!("unsound_{}", stem), &src);
         let o = run(&["check", "--json"], &t.0);
         let rejected = o.status.code() == Some(1);
         let hole = KNOWN_HOLES.contains(&stem.as_str());
@@ -98,6 +100,11 @@ fn unsound_programs_are_rejected() {
             failures.push(format!("{}: now rejected; remove it from KNOWN_HOLES", stem));
         } else if !hole && !rejected {
             failures.push(format!("{}: passes check but must be rejected (rc={:?})", stem, o.status.code()));
+        } else if let Some(want) = src.lines().next().and_then(|l| l.strip_prefix("// expect: ")) {
+            let got = codes(&text(&o.stdout));
+            if !hole && !got.iter().any(|c| *c == want.trim()) {
+                failures.push(format!("{}: want {} codes={:?}", stem, want.trim(), got));
+            }
         }
         // 整形の違反で落ちているのではないこと (意味の誤りとして報告されること)。
         assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{} is not canonical", stem);
@@ -214,6 +221,8 @@ fn clean_program_passes_check_and_fmt() {
     assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
     assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0));
 }
+
+
 
 #[test]
 fn fmt_check_fails_on_noncanonical_source() {
@@ -4821,7 +4830,7 @@ fn nll_rejects_a_mutation_while_a_borrow_is_stored_in_a_tuple() {
         &["let mut x = 1u8", "let t = (&x, 2u8)", "x = 2u8", "core.mem.drop(t)"],
     );
     assert!(bad, "{}", out);
-    assert!(out.contains("cannot mutate `x` while it is borrowed by `t.0`"), "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `t`"), "{}", out);
 }
 
 #[test]
@@ -4832,7 +4841,7 @@ fn nll_rejects_a_mutation_while_a_borrow_is_stored_in_an_array_literal() {
         &["let mut x = 1u8", "let a = [&x]", "x = 2u8", "core.mem.drop(a)"],
     );
     assert!(bad, "{}", out);
-    assert!(out.contains("cannot mutate `x` while it is borrowed by `a.0`"), "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `a`"), "{}", out);
 }
 
 #[test]
@@ -7395,4 +7404,9113 @@ fn the_ffi_shapes_example_builds_its_c_library_and_passes_in_both_backends() {
     assert_eq!(text(&n.stdout), text(&interp.stdout));
     let _ = fs::remove_dir_all(&d);
     let _ = fs::remove_dir_all(&cache);
+}
+
+/// clang が使えるか (使えなければ、`--native` の比較は飛ばして理由を一度だけ出す)。
+fn clang_available() -> bool {
+    use std::sync::OnceLock;
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        let ok = Command::new("clang").arg("--version").output().map(|o| o.status.success()).unwrap_or(false);
+        if !ok {
+            eprintln!("skip: clang が PATH に無いので、`ksn kir --native` との比較は飛ばす");
+        }
+        ok
+    })
+}
+
+/// `ksn kir <FQN> --run ...` を走らせ、clang があれば同じ引数の `--native` (LLVM IR を clang で実行ファイルにする) も走らせて、
+/// 終了コード・標準出力 (表示)・panic の文言 (標準エラー) が参照実行器と一致することを確かめる。`--run` の結果を返す。
+fn kir_run(args: &[&str], cwd: &Path) -> Output {
+    let r = run(args, cwd);
+    if !clang_available() {
+        return r;
+    }
+    let native_args: Vec<&str> = args.iter().map(|a| if *a == "--run" { "--native" } else { *a }).collect();
+    let n = run(&native_args, cwd);
+    assert_eq!(n.status.code(), r.status.code(), "native: 終了コードが違う {:?}\n{}", args, text(&n.stderr));
+    assert_eq!(text(&n.stdout), text(&r.stdout), "native: 表示が違う {:?}", args);
+    if matches!(r.status.code(), Some(101) | Some(102)) {
+        assert_eq!(text(&n.stderr), text(&r.stderr), "native: panic の文言が違う {:?}", args);
+    }
+    r
+}
+
+
+#[test]
+fn e0010_not_fired_for_tuple_variant_pattern_bindings() {
+    // `let (t.One.V(m, n), z) = (o, k)`: `re_tup` が最初の `)` で区切ると
+    // `t.One.V(m` が束縛名と誤って E0010 になる誤検出 (#B)。
+    let src = "enum t.One derive [Debug, Clone, Copy] pub\n    V(u8, u8)\nend t.One\n\nfn t.f(o: t.One, k: u8) -> u8 uses [] panics never\n    let (t.One.V(m, n), z) = (o, k)\n    m.wrapping_add(n).wrapping_add(z)\nend t.f\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.f(t.One.V(3u8, 4u8), 1u8), 8u8)\n    std.io.print_line(\"ok\")\nend t.main\n";
+    let t = Tmp::new("e0010_tup_pat", src);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+}
+
+#[test]
+fn e0010_still_fires_for_bad_names_in_tuple_lets_and_e0020_stays_non_fatal() {
+    // タプル分解の大文字の束縛名は E0010 のまま (fmt では直らない)。同じファイルの定義順の違反 (E0020) は
+    // fmt で直るので non-fatal として出る。
+    let src = "fn t.mk() -> u32 uses [] panics never\n    1u32\nend t.mk\n\nfn t.main() -> () uses [] panics never\n    let (Foo, y) = (1u32, 2u32)\n    core.mem.drop(Foo)\n    core.mem.drop(y)\nend t.main\n";
+    let t = Tmp::new("e0010_tup_upper", src);
+    let o = run(&["check"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}", out);
+    assert!(out.contains("E0010: let Foo not snake_case"), "{}", out);
+    assert!(out.contains("E0020 (non-fatal):"), "{}", out);
+}
+
+#[cfg(unix)]
+#[test]
+fn launcher_works_via_symlink() {
+    // 起動スクリプトがシンボリックリンク経由だと `cd: can't cd` に
+    // なっていた (#C)。自分の実体をシンボリックリンクを辿って求める。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"ok\")\nend t.main\n";
+    let t = Tmp::new("symlink_launcher", src);
+    assert_eq!(
+        run(&["build"], &t.0).status.code(),
+        Some(0),
+        "{}",
+        text(&run(&["build"], &t.0).stderr)
+    );
+    let launcher = t.0.join("target").join("debug").join("t");
+    assert!(launcher.is_file());
+    let link = std::env::temp_dir().join(format!("ksn_link_{}", std::process::id()));
+    let _ = fs::remove_file(&link);
+    std::os::unix::fs::symlink(&launcher, &link).unwrap();
+    let out = Command::new(&link).current_dir(&t.0).output().expect("spawn launcher via symlink");
+    let _ = fs::remove_file(&link);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("ok"), "{}", text(&out.stdout));
+}
+
+#[test]
+fn e0020_order_violation_does_not_fail_check() {
+    // 定義順・uses 並びの違反 (E0020) は ksn fmt で直せるため、check は
+    // 非致命的として終了コード 0 のままにする (#D)。fmt --check は
+    // 従来どおり検出する。
+    let unordered = "fn t.b() -> u8 uses [] panics never\n    0u8\nend t.b\n\nfn t.a() -> u8 uses [] panics never\n    0u8\nend t.a\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.a(), 0u8)\n    core.check.eq(t.b(), 0u8)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("e0020_def_order", unordered);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+
+    let uses_order = "fn t.main() -> Result<(), std.io.Error> uses [io.fs, io.console] panics may\n    Ok(())\nend t.main\n";
+    let u = Tmp::new("e0020_uses_order", uses_order);
+    let o = run(&["check"], &u.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("E0020"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn linear_ok_cases_pass_check() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    assert!(!names.is_empty(), "linear_ok cases missing");
+    let mut failures = Vec::new();
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        let o = run(&["check", "--json"], &t.0);
+        let got = codes(&text(&o.stdout));
+        if o.status.code() != Some(0) || !got.is_empty() {
+            failures.push(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// 木走査: 取り込みは作る時点で決まる (4.3)。外側の後の書き換えは見えない。
+#[test]
+fn move_capture_copies_the_value_when_the_closure_is_made() {
+    run_ok(
+        "clo_move_copy",
+        &body(&[
+            "let mut x = 1u64",
+            "let f = fn() -> u64 capture [move x] {",
+            "    x",
+            "}",
+            "x = 5u64",
+            "core.check.eq(f(), 1u64)",
+            "core.check.eq(x, 5u64)",
+        ]),
+    );
+}
+
+// 木走査: `&x` は共有で、本体の `*x` で読める。
+#[test]
+fn shared_capture_reads_through_the_reference() {
+    run_ok(
+        "clo_shared_read",
+        &body(&[
+            "let base = 3u64",
+            "let f = fn() -> u64 capture [&base] {",
+            "    *base + 1u64",
+            "}",
+            "core.check.eq(f(), 4u64)",
+        ]),
+    );
+}
+
+// 木走査: `&mut x` の本体では `*x = v` が外側の `x` へ書く (KIR と同じ)。
+#[test]
+fn mut_ref_capture_writes_through_deref_assignment() {
+    run_ok(
+        "clo_mut_deref",
+        &body(&[
+            "let mut x = 1u64",
+            "let f = fn(v: u64) -> () capture [&mut x] {",
+            "    *x = v",
+            "}",
+            "f(7u64)",
+            "core.check.eq(x, 7u64)",
+        ]),
+    );
+}
+
+// 木走査: `&mut x` の本体で `x = v` と書いても、仕様の「本体で `a` と書く」形として外側へ書く。
+#[test]
+fn mut_ref_capture_writes_through_plain_name_assignment() {
+    run_ok(
+        "clo_mut_name",
+        &body(&[
+            "let mut x = 1u64",
+            "let g = fn(v: u64) -> () capture [&mut x] {",
+            "    x = v",
+            "}",
+            "g(9u64)",
+            "core.check.eq(x, 9u64)",
+        ]),
+    );
+}
+
+// 木走査: `move` で取り込んだ値は、クロージャの呼び出しをまたいで残る (FnMut の状態)。外側は変わらない。
+#[test]
+fn move_captured_state_persists_across_calls_without_touching_the_outer() {
+    run_ok(
+        "clo_move_state",
+        &body(&[
+            "let mut n = 0u64",
+            "let mut inc = fn() -> u64 capture [move n] {",
+            "    n = n + 1u64",
+            "    n",
+            "}",
+            "core.check.eq(inc(), 1u64)",
+            "core.check.eq(inc(), 2u64)",
+            "core.check.eq(n, 0u64)",
+        ]),
+    );
+}
+
+// 規範 (sig) にある数値の変換は、静的な呼び出しで通る。規範に無い `from_` は E1108 (下)。
+#[test]
+fn sig_listed_numeric_conversions_run() {
+    run_ok(
+        "num_conv_ok",
+        &body(&[
+            "core.check.eq(u32.from_u8(3u8), 3u32)",
+            "core.check.eq(f64.from_usize_nearest(3usize), 3.0f64)",
+            "core.check.eq(f32.from_u32_nearest(3u32), 3.0f32)",
+            "core.check.eq(u8.try_from_u32(300u32).is_err(), true)",
+        ]),
+    );
+}
+
+// 規範 (spec/stdlib/core/num*.sig) に無い `P.from_X` は、整数では E1101 (f32 / f64 にだけある `_nearest`)。
+#[test]
+fn numeric_from_name_not_in_the_stdlib_is_reported() {
+    let (got, out) = check_codes("num_conv_bad", &["core.mem.drop(u32.from_usize_nearest(3usize))"]);
+    assert!(got.iter().any(|c| c == "E1101"), "{}", out);
+    assert!(out.contains("u32.from_usize_nearest"), "{}", out);
+}
+
+/// `t.spin` が `Fn` 境界の `t.gen` 経由でクロージャから自分を呼ぶ再帰。`gen_args` は `t.gen` の
+/// 境界の引数タプル、`call` はその呼び出し、`closure` はクロージャの頭と本体の先頭の行。
+fn closure_frame_program(gen_args: &str, call: &str, closure: &[&str], declared: u32) -> String {
+    let nl = char::from(10u8).to_string();
+    let mut lines: Vec<String> = [
+        "type t.Big",
+        "    a: u128",
+        "    b: u128",
+        "    c: u128",
+        "    d: u128",
+        "end t.Big",
+        "",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    lines.push(format!(
+        "fn t.gen[F: core.ops.Fn<{}, (), [], never>](f: F) -> () uses [] panics never stack 4096",
+        gen_args
+    ));
+    lines.push(format!("    {}", call));
+    lines.push("end t.gen".into());
+    lines.push("".into());
+    lines.push("fn t.main() -> Result<(), std.io.Error> uses [] panics never".into());
+    lines.push("    t.spin()".into());
+    lines.push("    Ok(())".into());
+    lines.push("end t.main".into());
+    lines.push("".into());
+    lines.push(format!("fn t.spin() -> () uses [] panics never stack {}", declared));
+    lines.extend(closure.iter().map(|s| s.to_string()));
+    lines.push("        t.spin()".into());
+    lines.push("    })".into());
+    lines.push("end t.spin".into());
+    lines.push("".into());
+    lines.join(&nl)
+}
+
+fn closure_frame_codes(name: &str, src: &str) -> (Vec<String>, String) {
+    let t = Tmp::new(name, src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    let fmt = run(&["fmt", "--check"], &t.0);
+    assert_eq!(fmt.status.code(), Some(0), "{}", text(&fmt.stdout));
+    (codes(&out), out)
+}
+
+#[test]
+fn the_stack_estimate_sizes_the_lets_of_a_closure_frame() {
+    // 5.3: クロージャの節のフレームは 32 固定ではなく、`let` の型の大きさ (t.Big = 64) を数える。
+    // spin 96 (32 + 64) + gen 48 + クロージャ 96 + drop 32 = 272。32 固定だと 208 で宣言 240 に収まっていた。
+    let closure = [
+        "    t.gen(fn() -> () capture [] {",
+        "        let b: t.Big = t.Big { a: 0u128, b: 0u128, c: 0u128, d: 0u128 }",
+        "        core.mem.drop(b)",
+    ];
+    let (got, out) = closure_frame_codes("clo_let", &closure_frame_program("()", "f.call(())", &closure, 240));
+    assert_eq!(got, vec!["E4012".to_string()], "{}", out);
+    assert!(out.contains("estimated stack use 272 exceeds declared 240"), "{}", out);
+    let (got, out) = closure_frame_codes("clo_let_ok", &closure_frame_program("()", "f.call(())", &closure, 272));
+    assert!(got.is_empty(), "{}", out);
+}
+
+#[test]
+fn the_stack_estimate_sizes_the_parameters_of_a_closure_frame() {
+    // クロージャの引数 (b: t.Big = 64) もフレームに数える。spin 32 + gen 48 + クロージャ 96 + drop 32 = 208。
+    let gen_call = "f.call((t.Big { a: 0u128, b: 0u128, c: 0u128, d: 0u128 },))";
+    let closure = ["    t.gen(fn(b: t.Big) -> () capture [] {", "        core.mem.drop(b)"];
+    let src = closure_frame_program("(t.Big,)", gen_call, &closure, 180);
+    let (got, out) = closure_frame_codes("clo_param", &src);
+    assert_eq!(got, vec!["E4012".to_string()], "{}", out);
+    assert!(out.contains("estimated stack use 208 exceeds declared 180"), "{}", out);
+    let src = closure_frame_program("(t.Big,)", gen_call, &closure, 208);
+    let (got, out) = closure_frame_codes("clo_param_ok", &src);
+    assert!(got.is_empty(), "{}", out);
+}
+
+fn clif_hashmap_index_program() -> String {
+    let nl = char::from(10u8).to_string();
+    [
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    match t.run() {",
+        "        Ok(_u) => core.check.eq(1u8, 1u8)",
+        "        Err(_e) => core.panic.panic(\"oom\")",
+        "    }",
+        "    std.io.print_line(\"index ok\")?",
+        "    Ok(())",
+        "end t.main",
+        "",
+        "fn t.run() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may",
+        "    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
+        "    let mut i = 0u32",
+        "    while i < 300u32 {",
+        "        core.check.eq(m.insert(i, i.wrapping_mul(3u32))?, None)",
+        "        i = i.wrapping_add(1u32)",
+        "    }",
+        "    core.check.eq(m.len(), 300usize)",
+        "    i = 0u32",
+        "    while i < 300u32 {",
+        "        if i % 2u32 == 0u32 {",
+        "            match m.remove(&i) {",
+        "                Some(v) => core.check.eq(v, i.wrapping_mul(3u32))",
+        "                None => core.panic.panic(\"missing even\")",
+        "            }",
+        "        }",
+        "        i = i.wrapping_add(1u32)",
+        "    }",
+        "    core.check.eq(m.len(), 150usize)",
+        "    i = 0u32",
+        "    while i < 300u32 {",
+        "        match m.get(&i) {",
+        "            Some(v) => core.check.eq(*v, i.wrapping_mul(3u32))",
+        "            None => core.check.eq(i % 2u32, 0u32)",
+        "        }",
+        "        i = i.wrapping_add(1u32)",
+        "    }",
+        "    i = 0u32",
+        "    while i < 300u32 {",
+        "        if i % 2u32 == 0u32 {",
+        "            core.check.eq(m.insert(i, i.wrapping_mul(5u32))?, None)",
+        "        }",
+        "        i = i.wrapping_add(1u32)",
+        "    }",
+        "    let mut j = 0u32",
+        "    for (k, v) in m.iter() {",
+        "        let mut want_k = 0u32",
+        "        let mut want_v = 0u32",
+        "        if j < 150u32 {",
+        "            want_k = j.wrapping_mul(2u32).wrapping_add(1u32)",
+        "            want_v = want_k.wrapping_mul(3u32)",
+        "        } else {",
+        "            want_k = j.wrapping_sub(150u32).wrapping_mul(2u32)",
+        "            want_v = want_k.wrapping_mul(5u32)",
+        "        }",
+        "        core.check.eq(*k, want_k)",
+        "        core.check.eq(*v, want_v)",
+        "        j = j.wrapping_add(1u32)",
+        "    }",
+        "    core.check.eq(j, 300u32)",
+        "    let mut s = alloc.collections.HashMap.new(std.alloc.SYSTEM)",
+        "    core.check.eq(s.insert(\"x\", 1u32)?, None)",
+        "    core.check.eq(s.insert(\"y\", 2u32)?, None)",
+        "    core.check.eq(s.insert(\"z\", 3u32)?, None)",
+        "    core.check.eq(s.remove(\"y\"), Some(2u32))",
+        "    core.check.eq(s.get(\"z\"), Some(3u32))",
+        "    core.check.eq(s.insert(\"y\", 4u32)?, None)",
+        "    core.check.eq(s.len(), 3usize)",
+        "    Ok(())",
+        "end t.run",
+        "",
+    ]
+    .join(&nl)
+}
+
+#[test]
+fn the_hashmap_index_stays_consistent_across_growth_removal_and_reinsertion() {
+    // 索引表（ハッシュ → 組の添字）は、表が育つとき・中ほどの削除で添字が詰まるとき・再挿入のときも、
+    // 検索結果と挿入順を保つ。インタプリタと Cranelift (デバッグ) で同じ出力になる。
+    let t = Tmp::new("hm_index", &clif_hashmap_index_program());
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
+    assert_eq!(text(&interp.stdout).trim(), "index ok");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_hmindex_{}", std::process::id()));
+    let o = Command::new(exe())
+        .args(["build", "--backend", "clif"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    assert!(p.exists(), "native executable missing: {}", out);
+    let r = Command::new(&p).output().unwrap();
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), text(&interp.stdout), "native and interpreter outputs differ");
+    let _ = fs::remove_dir_all(&cache);
+}
+
+// ---- 借用の残り: match の値を通じた運搬、タプル・配列リテラルへの保存 ----
+
+const NLL_PUSH1: [&str; 5] =
+    ["let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)", "match v.push(1u8) {", "    Ok(_u) => 0u8", "    Err(_e) => 1u8", "}"];
+const NLL_PUSH2: [&str; 4] = ["match v.push(2u8) {", "    Ok(_u) => 0u8", "    Err(_e) => 1u8", "}"];
+
+fn nll_lines(parts: &[&[&'static str]]) -> Vec<&'static str> {
+    parts.concat()
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_match_value_carries_the_arm_binding_borrow() {
+    // `let r = match v.first() { Some(rr) => rr, .. }`: 被検査式のローンが腕の束縛を経て r に移る。
+    let b = nll_lines(&[
+        &NLL_PUSH1,
+        &["let y = 9u8", "let r = match v.first() {", "    Some(rr) => rr", "    None => &y", "}"],
+        &NLL_PUSH2,
+        &["core.check.eq(*r, 1u8)"],
+    ]);
+    let (bad, out) = has_e3010("nll_match_val_bind", "", &b);
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `v` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_borrowed_by_any_arm_of_a_match_value() {
+    // 両腕の和: どちらの腕の借用も r が持つ。
+    let (bad, out) = has_e3010(
+        "nll_match_val_arms",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let b = true",
+            "let r = match b {",
+            "    true => &x",
+            "    false => &y",
+            "}",
+            "x = 3u8",
+            "core.check.eq(*r, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_nested_match_value_carries_a_borrow() {
+    let b = nll_lines(&[
+        &NLL_PUSH1,
+        &[
+            "let y = 9u8",
+            "let b = true",
+            "let r = match b {",
+            "    true => match v.first() {",
+            "        Some(rr) => rr",
+            "        None => &y",
+            "    }",
+            "    false => &y",
+            "}",
+        ],
+        &NLL_PUSH2,
+        &["core.check.eq(*r, 1u8)"],
+    ]);
+    let (bad, out) = has_e3010("nll_match_val_nested", "", &b);
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_match_value_that_copies_out_of_the_borrow() {
+    // 腕の値が `*rr` (コピー) なら、match の値は借用を運ばない。
+    let b = nll_lines(&[
+        &NLL_PUSH1,
+        &["let n = match v.first() {", "    Some(rr) => *rr", "    None => 0u8", "}"],
+        &NLL_PUSH2,
+        &["core.check.eq(n, 1u8)"],
+    ]);
+    let (bad, out) = has_e3010("nll_match_val_copy", "", &b);
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_match_value_that_is_dead_before_the_mutation() {
+    let b = nll_lines(&[
+        &NLL_PUSH1,
+        &["let y = 9u8", "let r = match v.first() {", "    Some(rr) => rr", "    None => &y", "}", "core.check.eq(*r, 1u8)"],
+        &NLL_PUSH2,
+        &["core.check.eq(v.len(), 2usize)"],
+    ]);
+    let (bad, out) = has_e3010("nll_match_val_dead", "", &b);
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_match_value_inside_a_loop_without_leaking_the_previous_iteration() {
+    let b = nll_lines(&[
+        &NLL_PUSH1,
+        &[
+            "let mut i = 0u8",
+            "while i < 3u8 {",
+            "    let n = match v.first() {",
+            "        Some(rr) => *rr",
+            "        None => 0u8",
+            "    }",
+            "    match v.push(n) {",
+            "        Ok(_u) => 0u8",
+            "        Err(_e) => 1u8",
+            "    }",
+            "    i = i + 1u8",
+            "}",
+            "core.check.eq(v.len(), 4usize)",
+        ],
+    ]);
+    let (bad, out) = has_e3010("nll_match_val_loop", "", &b);
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_borrow_is_stored_in_a_tuple_literal() {
+    let (bad, out) =
+        has_e3010("nll_store_tuple_lit", "", &["let mut x = 1u8", "let t = (&x, 1u8)", "x = 2u8", "let _u = t"]);
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `t`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_tuple_with_a_borrow_is_pushed_into_a_vec() {
+    let (bad, out) = has_e3010(
+        "nll_store_push_tuple",
+        "",
+        &[
+            "let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let mut x = 1u8",
+            "match v.push((&x, 1u8)) {",
+            "    Ok(_u) => 0u8",
+            "    Err(_e) => 1u8",
+            "}",
+            "x = 2u8",
+            "core.check.eq(v.len(), 1usize)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `v`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_inside_a_loop_over_an_array_literal_of_borrows() {
+    let (bad, out) = has_e3010(
+        "nll_store_array_iter",
+        "",
+        &["let mut x = 1u8", "let y = 2u8", "let a = [&x, &y]", "for r in a.iter() {", "    x = 5u8", "    core.check.eq(**r, 2u8)", "}"],
+    );
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_tuple_literal_that_holds_no_borrow_or_is_dead() {
+    let (bad, out) = has_e3010(
+        "nll_store_tuple_ok",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (x, 1u8)",
+            "let t2 = (&x, 1u8)",
+            "let _u = t2",
+            "x = 2u8",
+            "let _w = t",
+            "core.check.eq(x, 2u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_an_array_literal_overwritten_before_the_conflict() {
+    // 変数の再代入・要素の上書きで、保存されていた借用は死ぬ。
+    let (bad, out) = has_e3010(
+        "nll_store_array_ok",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let mut a = [&x, &y]",
+            "a = [&y, &y]",
+            "let mut c = [&x]",
+            "c[0] = &y",
+            "x = 5u8",
+            "core.check.eq(*a[0], 2u8)",
+            "core.check.eq(*c[0], 2u8)",
+            "core.check.eq(x, 5u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn ffi_same_symbol_with_two_signatures_falls_back_without_a_crash() {
+    // 同じ link 名を別のシグネチャで 2 つ宣言しても、clif は先の宣言を流用しない (流用すると Cranelift が内部で panic した)。
+    // 食い違いは理由付きで報告され、バンドルへ退避する。
+    let src = "extern t.abs32(x: i32) -> i32 link \"abs\"
+
+extern t.abs64(x: i64) -> i64 link \"abs\"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = unsafe \"libc\" \"a\" {
+        t.abs32(0i32 - 5i32)
+    }
+    let b = unsafe \"libc\" \"b\" {
+        t.abs64(0i64 - 6i64)
+    }
+    core.check.eq(a, 5i32)
+    core.check.eq(b, 6i64)
+    std.io.print_line(\"ok\")
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("ffi_dup_symbol", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_dup", std::process::id()));
+    let b = Command::new(exe())
+        .args(["build", "--backend", "clif"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    let all = format!("{}{}", text(&b.stdout), text(&b.stderr));
+    assert!(!all.contains("panicked"), "{}", all);
+    assert!(all.contains("incompatible with previous declaration"), "{}", all);
+}
+
+// ---- 一時値の解放の残り: Field・タプルの型解決と E2042 / E3003 (4.4・4.6) ----
+
+fn tdrop_codes(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let prefix = tdrop_prefix().join(&nl) + &nl + &nl;
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+fn tdrop_prefix() -> Vec<&'static str> {
+    vec![
+        "type t.Box[T]",
+        "    v: T",
+        "end t.Box",
+        "",
+        "type t.L linear pub",
+        "    a: u8",
+        "end t.L",
+        "",
+        "type t.P",
+        "    a: u8",
+        "end t.P",
+        "",
+        "type t.W",
+        "    lin: t.L",
+        "    n: u8",
+        "end t.W",
+        "",
+        "fn t.eat(l: t.L) -> () uses [] panics never",
+        "    let t.L { a: a } = l",
+        "    core.mem.drop(a)",
+        "end t.eat",
+        "",
+        "fn t.eat_w(w: t.W) -> () uses [] panics never",
+        "    let t.W { lin: lin, n: n } = w",
+        "    t.eat(lin)",
+        "    core.mem.drop(n)",
+        "end t.eat_w",
+        "",
+        "fn t.get_l() -> t.L uses [] panics never",
+        "    t.L { a: 1u8 }",
+        "end t.get_l",
+        "",
+        "fn t.get_p() -> t.P uses [] panics never",
+        "    t.P { a: 3u8 }",
+        "end t.get_p",
+        "",
+        "fn t.get_w() -> t.W uses [] panics never",
+        "    t.W { lin: t.get_l(), n: 2u8 }",
+        "end t.get_w",
+        "",
+    ]
+}
+
+fn tdrop_has(cs: &[String], c: &str) -> bool {
+    cs.iter().any(|x| x == c)
+}
+
+#[test]
+fn tdrop_discarding_a_field_of_a_temporary_is_e2042() {
+    // `t.get_w().lin` は Field の道。受け手の型 (t.W) からフィールドの型 (t.L) を解決する。
+    let (cs, out) = tdrop_codes("tdrop_field", &["t.get_w().lin"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+    assert!(out.contains("core.mem.drop(t.get_w().lin)"), "{}", out);
+}
+
+#[test]
+fn tdrop_discarding_a_tuple_of_temporaries_is_e2042() {
+    let (cs, out) = tdrop_codes("tdrop_tuple", &["(t.get_l(), 1u8)"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tdrop_discarding_a_local_field_path_is_e2042() {
+    // 複数セグメントの Path (`p.a`) も根の型からフィールドの型をたどる。
+    let (cs, out) = tdrop_codes("tdrop_path", &["let p = t.P { a: 1u8 }", "p.a"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tdrop_struct_with_an_unconsumed_linear_field_is_e3003() {
+    // t.W は linear と宣言していないが線形なフィールドを含むので線形 (4.4)。
+    // 非線形なフィールド w.n だけを使っても w.lin は消費されていない。
+    let (cs, out) = tdrop_codes(
+        "tdrop_wfield",
+        &["let w = t.W { lin: t.get_l(), n: 1u8 }", "core.mem.drop(w.n)"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `w` is never consumed"), "{}", out);
+}
+
+#[test]
+fn tdrop_consuming_the_linear_field_or_the_whole_struct_is_ok() {
+    let (cs, out) = tdrop_codes(
+        "tdrop_wfield_ok",
+        &[
+            "let w = t.W { lin: t.get_l(), n: 1u8 }",
+            "t.eat(w.lin)",
+            "let w2 = t.get_w()",
+            "t.eat_w(w2)",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+#[test]
+fn tdrop_tuple_destructuring_leaves_a_linear_value_unconsumed() {
+    let (cs, out) = tdrop_codes(
+        "tdrop_ptuple",
+        &["let (a, b) = (t.get_l(), 1u8)", "core.mem.drop(b)"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `a` is never consumed"), "{}", out);
+}
+
+#[test]
+fn tdrop_tuple_binding_with_a_linear_element_is_e3003() {
+    let (cs, out) = tdrop_codes("tdrop_tuple_bind", &["let _p = (t.get_l(), 1u8)"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+#[test]
+fn tdrop_struct_destructuring_leaves_a_linear_field_unconsumed() {
+    let (cs, out) = tdrop_codes(
+        "tdrop_pstruct",
+        &["let t.W { lin: l, n: n } = t.get_w()", "core.mem.drop(n)"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `l` is never consumed"), "{}", out);
+}
+
+#[test]
+fn tdrop_destructured_linear_values_that_are_consumed_are_ok() {
+    let (cs, out) = tdrop_codes(
+        "tdrop_destr_ok",
+        &[
+            "let (a, b) = (t.get_l(), 1u8)",
+            "t.eat(a)",
+            "core.mem.drop(b)",
+            "let t.W { lin: l, n: n } = t.get_w()",
+            "t.eat(l)",
+            "core.mem.drop(n)",
+            "let x: u8 = t.get_p().a",
+            "core.mem.drop(x)",
+            "core.mem.drop((1u8, 2u8))",
+        ],
+    );
+    assert!(
+        !tdrop_has(&cs, "E3003") && !tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E2020"),
+        "{}",
+        out
+    );
+}
+
+#[test]
+fn tdrop_unknown_field_types_stay_silent() {
+    // 型の分からない要素を含むタプル・フィールドの型が線形でないジェネリクス構造体リテラルは黙る。
+    let (cs, out) = tdrop_codes(
+        "tdrop_silent",
+        &["let b = t.Box { v: 1u8 }", "core.mem.drop(b.v)", "core.mem.drop((b.v, 1u8))", "core.mem.drop(b)"],
+    );
+    assert!(!tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+// ---- 効果検査の呼び出し経路 (5.1 / 4.3): 局所変数レシーバの `s.m()` と、`Fn` 境界に渡すクロージャ ----
+
+/// 効果検査の呼び出し経路のテストで共通に使う定義 (`t.S` のメソッドと、`Fn` 境界を受ける `t.apply`)。
+const EFF_PRELUDE: &str = "type t.S pub
+    n: u8
+    log: alloc.vec.Vec<u8, std.alloc.System>
+end t.S
+
+fn t.S.boom(self: &t.S) -> u8 uses [] panics may pub
+    core.panic.panic(\"boom\")
+end t.S.boom
+
+fn t.S.peek(self: &t.S) -> u8 uses [] panics never pub
+    self.n
+end t.S.peek
+
+fn t.S.say(self: &t.S) -> Result<(), std.io.Error> uses [io.console] panics never pub
+    std.io.print_line(\"s\")
+end t.S.say
+
+fn t.S.via[F: core.ops.Fn<(u8,), u8, E, P>, E: uses, P: panics](self: &t.S, f: F) -> u8 uses [E] panics P pub
+    f(self.n)
+end t.S.via
+
+fn t.apply[F: core.ops.Fn<(u8,), u8, E, P>, E: uses, P: panics](f: F, x: u8) -> u8 uses [E] panics P pub
+    f(x)
+end t.apply
+
+";
+
+/// `EFF_PRELUDE` の後ろに `body` (t.apply より後ろの名前の定義) を置いたパッケージを検査し、
+/// (終了コード, 診断コードの列, 出力) を返す。
+fn eff_check(name: &str, body: &str) -> (Option<i32>, Vec<String>, String) {
+    let t = Tmp::new(name, &format!("{}{}", EFF_PRELUDE, body));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    (o.status.code(), codes(&out), out)
+}
+
+#[test]
+fn local_receiver_method_panics_are_checked() {
+    let bad = "fn t.f(s: t.S) -> u8 uses [] panics never
+    s.boom()
+end t.f
+";
+    let (_, got, out) = eff_check("eff_path_panic_bad", bad);
+    assert_eq!(got, vec!["E4002".to_string()], "{}", out);
+    assert!(out.contains("t.S.boom may panic"), "{}", out);
+    let (code, _, out) = eff_check("eff_path_panic_ok", &bad.replace("panics never", "panics may"));
+    assert_eq!(code, Some(0), "{}", out);
+    // `panics never` のメソッドは `panics never` から呼べる。
+    let (code, _, out) = eff_check("eff_path_panic_never", &bad.replace("s.boom()", "s.peek()"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn field_path_receiver_method_effects_are_checked() {
+    // `s.log.push(x)` はフィールドの型 (Vec) で解決され、`uses [alloc]` が要る。
+    let bad = "fn t.f(s: &mut t.S) -> Result<(), alloc.alloc.AllocError> uses [] panics never
+    s.log.push(1u8)
+end t.f
+";
+    let (_, got, out) = eff_check("eff_field_bad", bad);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+    assert!(out.contains("alloc.vec.Vec.push uses effect `alloc`"), "{}", out);
+    let (code, _, out) = eff_check("eff_field_ok", &bad.replace("uses []", "uses [alloc]"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn local_receiver_of_unknown_type_stays_silent() {
+    // レシーバの型が型パラメータ (トレイト境界経由の呼び出し) のときは、新しい検査は黙る。
+    let src = "fn t.f[T: t.Talk](x: &T) -> u8 uses [] panics never
+    x.talk()
+end t.f
+
+trait t.Talk pub
+    fn talk(self: &Self) -> u8 uses [] panics never
+end t.Talk
+";
+    let (code, _, out) = eff_check("eff_path_unknown", src);
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn closure_effects_instantiate_the_fn_bound_effect_var() {
+    // `Fn` 境界 (E, P) に渡したクロージャの本体の効果で `uses [E]` が実体化される (4.3)。
+    let bad = "fn t.f() -> u8 uses [] panics never
+    t.apply(
+        fn(x: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"hi\"))
+            x
+        },
+        1u8,
+    )
+end t.f
+";
+    let (_, got, out) = eff_check("eff_closure_uses_bad", bad);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+    assert!(out.contains("t.apply uses effect `io.console`"), "{}", out);
+    let (code, _, out) = eff_check("eff_closure_uses_ok", &bad.replace("uses []", "uses [io.console]"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn closure_index_instantiates_the_panic_var_as_may() {
+    // クロージャの本体の添字は panic しうるので、P は `may` に実体化される。
+    let bad = "fn t.f(v: &[u8]) -> u8 uses [] panics never
+    t.apply(
+        fn(x: u8) -> u8 capture [&v] {
+            v[0]
+        },
+        1u8,
+    )
+end t.f
+";
+    let (_, got, out) = eff_check("eff_closure_panic_bad", bad);
+    assert_eq!(got, vec!["E4002".to_string()], "{}", out);
+    let (code, _, out) = eff_check("eff_closure_panic_ok", &bad.replace("panics never", "panics may"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn closure_effects_flow_through_method_calls() {
+    // 標準ライブラリの `Option.map` (`uses [E] panics P`) と、利用者のメソッド (`t.S.with`)。
+    let bad = "fn t.f(o: Option<u8>) -> Option<u8> uses [] panics never
+    o.map(
+        fn(x: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"hi\"))
+            x
+        },
+    )
+end t.f
+
+fn t.g(s: t.S) -> u8 uses [] panics never
+    s.via(
+        fn(x: u8) -> u8 capture [] {
+            core.panic.panic(\"no\")
+        },
+    )
+end t.g
+";
+    let (_, got, out) = eff_check("eff_closure_method_bad", bad);
+    assert_eq!(got, vec!["E4001".to_string(), "E4002".to_string()], "{}", out);
+    assert!(out.contains("core.option.Option.map uses effect `io.console`"), "{}", out);
+    assert!(out.contains("t.S.via may panic"), "{}", out);
+}
+
+#[test]
+fn pure_closures_and_methods_stay_silent() {
+    // 効果のないクロージャ・メソッドは `uses [] panics never` から呼べる (誤検出なし)。
+    let ok = "fn t.f(o: Option<u8>, s: t.S) -> u8 uses [] panics never
+    let a = o.map(
+        fn(x: u8) -> u8 capture [] {
+            x.wrapping_add(1u8)
+        },
+    )
+    let k = s.peek()
+    let b = s.via(
+        fn(x: u8) -> u8 capture [] {
+            x.wrapping_mul(2u8)
+        },
+    )
+    let total = core.iter.fold(
+        core.iter.range(0u32, 5u32),
+        0u32,
+        fn(acc: u32, x: u32) -> u32 capture [] {
+            acc.wrapping_add(x)
+        },
+    )
+    core.mem.drop(total)
+    t.apply(
+        fn(x: u8) -> u8 capture [&k] {
+            x.wrapping_add(*k)
+        },
+        a.unwrap_or(b),
+    )
+end t.f
+";
+    let (code, _, out) = eff_check("eff_pure_ok", ok);
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn nested_and_let_bound_closure_effects_are_inferred() {
+    // 入れ子のクロージャの効果は、内側を受ける呼び出しを経て外側のクロージャに入る。
+    // `let` に束縛したクロージャも型 (クロージャの節) を通じて効果が分かる。
+    let bad = "fn t.f(x: u8) -> u8 uses [] panics never
+    t.apply(
+        fn(y: u8) -> u8 capture [] {
+            t.apply(
+                fn(z: u8) -> u8 capture [] {
+                    core.mem.drop(std.io.print_line(\"z\"))
+                    z
+                },
+                y,
+            )
+        },
+        x,
+    )
+end t.f
+
+fn t.g(x: u8) -> u8 uses [] panics never
+    let c = fn(y: u8) -> u8 capture [] {
+        core.mem.drop(std.io.print_line(\"y\"))
+        y
+    }
+    t.apply(c, x)
+end t.g
+";
+    let (_, got, out) = eff_check("eff_nested_bad", bad);
+    assert_eq!(got, vec!["E4001".to_string(), "E4001".to_string()], "{}", out);
+    let (code, _, out) = eff_check("eff_nested_ok", &bad.replace("uses []", "uses [io.console]"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn closure_with_unknown_effects_stays_silent() {
+    // クロージャの本体が `Fn` 境界のパラメータを呼ぶだけ (効果が分からない) なら、新しい検査は黙る。
+    // 宣言どおりの効果変数 E / P は従来どおり呼び出し側の E / P で覆われる。test の本体は検査しない。
+    let ok = "fn t.fwd[F: core.ops.Fn<(u8,), u8, E, P>, E: uses, P: panics](f: F, x: u8) -> u8 uses [E] panics P pub
+    t.apply(
+        fn(y: u8) -> u8 capture [&f] {
+            f(y)
+        },
+        x,
+    )
+end t.fwd
+
+test t.fwd.test_io
+    let s = t.S { n: 1u8, log: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+    core.mem.drop(s.say())
+    core.check.eq(t.fwd(
+        fn(z: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"t\"))
+            z
+        },
+        1u8,
+    ), 1u8)
+end t.fwd.test_io
+";
+    let (code, _, out) = eff_check("eff_unknown_closure_ok", ok);
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn inferred_caller_covers_local_method_and_closure_effects() {
+    // 効果を省略した非 pub 関数は本体から推論される (s.say() の io.console とクロージャの本体を含む)。
+    // 推論された関数自身には新しい診断が出ず、その呼び出し元が効果を受け取る。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let s = t.S { n: 1u8, log: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+    core.mem.drop(t.mid(s))
+    Ok(())
+end t.main
+
+fn t.mid(s: t.S) -> u8
+    core.mem.drop(s.say())
+    t.apply(
+        fn(x: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"m\"))
+            x
+        },
+        1u8,
+    )
+end t.mid
+";
+    let (_, got, out) = eff_check("eff_inferred_bad", src);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+    assert!(out.contains("\"fqn\": \"t.main\""), "{}", out);
+    let (code, _, out) = eff_check("eff_inferred_ok", &src.replace("uses [] panics may", "uses [io.console] panics may"));
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+#[test]
+fn declared_and_closure_effects_are_reported_once() {
+    // 宣言にある具体名 (io.console) とクロージャから来た同じ効果は、同じ行の 1 件にまとまる。
+    let src = "fn t.both[F: core.ops.Fn<(u8,), u8, E, P>, E: uses, P: panics](f: F) -> u8 uses [io.console, E] panics P pub
+    core.mem.drop(std.io.print_line(\"b\"))
+    f(1u8)
+end t.both
+
+fn t.f() -> u8 uses [] panics never
+    t.both(
+        fn(x: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"hi\"))
+            x
+        },
+    )
+end t.f
+";
+    let (_, got, out) = eff_check("eff_dedupe", src);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+}
+
+// ---------------------------------------------------------------- インタプリタの extern (f32/f64・ポインタ read/write/add)
+
+/// 補助 C 側。共有ライブラリにして、`LD_PRELOAD` で `ksn run` に差し込む (インタプリタは dlsym で見つける)。
+const FFI_C_SRC: &str = r#"
+#include <stdint.h>
+#include <stdlib.h>
+
+double k_scale(double x, int32_t n, double y) { return x * n + y; }
+float k_half(float x) { return x * 0.5f; }
+double k_mix(int32_t a, float b, double c, int64_t d) { return a + b + c + d; }
+float k_mix_f32(float a, int32_t b, float c, double d) { return a + b + c + (float)d; }
+double *k_alloc_f64(size_t n) { return calloc(n, sizeof(double)); }
+float *k_alloc_f32(size_t n) { return calloc(n, sizeof(float)); }
+int32_t *k_alloc_i32(size_t n) { return calloc(n, sizeof(int32_t)); }
+double k_sum_f64(const double *p, size_t n) {
+    double s = 0;
+    for (size_t i = 0; i < n; i++) s += p[i];
+    return s;
+}
+void k_fill_f32(float *p, size_t n, float v) {
+    for (size_t i = 0; i < n; i++) p[i] = v + (float)i;
+}
+int32_t k_sum_i32(const int32_t *p, size_t n) {
+    int32_t s = 0;
+    for (size_t i = 0; i < n; i++) s += p[i];
+    return s;
+}
+"#;
+
+fn c_compiler() -> Option<&'static str> {
+    ["cc", "gcc", "clang"].into_iter().find(|c| Command::new(c).arg("--version").output().map(|o| o.status.success()).unwrap_or(false))
+}
+
+/// `src` を共有ライブラリ `libksn_helpers.so` にして、そのパスを返す。
+fn build_c_helpers(dir: &Path, src: &str) -> PathBuf {
+    let cc = c_compiler().expect("a C compiler (cc / gcc / clang) is required for the FFI tests");
+    let c = dir.join("helpers.c");
+    fs::write(&c, src).unwrap();
+    let so = dir.join("libksn_helpers.so");
+    let o = Command::new(cc).args(["-shared", "-fPIC", "-O1", "-o"]).arg(&so).arg(&c).output().unwrap();
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    so
+}
+
+/// `ksn run` を、補助 C ライブラリを `LD_PRELOAD` で差し込んだ環境で実行する。
+fn run_with_c_helpers(dir: &Path, so: &Path) -> Output {
+    Command::new(exe()).arg("run").current_dir(dir).env("LD_PRELOAD", so).output().unwrap()
+}
+
+const FFI_FLOAT_SRC_M: &str = r#"extern t.k_scale(x: f64, n: i32, y: f64) -> f64 link "k_scale"
+
+extern t.k_half(x: f32) -> f32 link "k_half"
+
+extern t.k_mix(a: i32, b: f32, c: f64, d: i64) -> f64 link "k_mix"
+
+extern t.k_mix_f32(a: f32, b: i32, c: f32, d: f64) -> f32 link "k_mix_f32"
+
+extern t.k_alloc_f64(n: usize) -> *mut f64 link "k_alloc_f64"
+
+extern t.k_alloc_f32(n: usize) -> *mut f32 link "k_alloc_f32"
+
+extern t.k_sum_f64(values: *const f64, n: usize) -> f64 link "k_sum_f64"
+
+extern t.k_fill_f32(values: *mut f32, n: usize, v: f32) -> () link "k_fill_f32"
+
+extern t.free_f64(pointer: *mut f64) -> () link "free"
+
+extern t.free_f32(pointer: *mut f32) -> () link "free"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = unsafe "libc" "f64 argument and result" {
+        t.k_scale(1.5f64, 2i32, 0.25f64)
+    }
+    core.check.eq(a, 3.25f64)
+    let h = unsafe "libc" "f32 argument and result" {
+        t.k_half(3.0f32)
+    }
+    core.check.eq(h, 1.5f32)
+    let m = unsafe "libc" "mixed integer and float arguments" {
+        t.k_mix(1i32, 0.5f32, 0.25f64, 1000i64)
+    }
+    core.check.eq(m, 1001.75f64)
+    let mf = unsafe "libc" "mixed f32 and f64 arguments" {
+        t.k_mix_f32(1.0f32, 2i32, 0.5f32, 0.25f64)
+    }
+    core.check.eq(mf, 3.75f32)
+    let p = unsafe "libc" "allocate f64 values" {
+        t.k_alloc_f64(3usize)
+    }
+    unsafe "libc" "write, add and read f64 values" {
+        core.ptr.write(p, 1.5f64)
+        core.ptr.write(core.ptr.add(p, 1usize), 2.25f64)
+        core.ptr.write(core.ptr.add(p, 2usize), 0.25f64)
+        core.check.eq(core.ptr.read(core.ptr.add(p, 1usize)), 2.25f64)
+        core.check.eq(t.k_sum_f64(core.ptr.as_const(p), 3usize), 4.0f64)
+    }
+    let q = unsafe "libc" "allocate f32 values" {
+        t.k_alloc_f32(4usize)
+    }
+    unsafe "libc" "C writes f32 values, Kasane reads them" {
+        t.k_fill_f32(q, 4usize, 0.5f32)
+        core.check.eq(core.ptr.read(core.ptr.add(q, 3usize)), 3.5f32)
+    }
+    unsafe "libc" "free the buffers" {
+        t.free_f64(p)
+        t.free_f32(q)
+    }
+    std.io.print_line("ffi float ok")
+    Ok(())
+end t.main
+"#;
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_interpreter_passes_and_returns_floats_and_reads_writes_pointers() {
+    let t = Tmp::new("ffi_float_m", FFI_FLOAT_SRC_M);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "ffi float ok\n");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_interpreter_float_mismatch_fails_at_runtime() {
+    let src = r#"extern t.k_half(x: f32) -> f32 link "k_half"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let h = unsafe "libc" "f32 result" {
+        t.k_half(3.0f32)
+    }
+    core.check.eq(h, 2.0f32)
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_float_bad", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_interpreter_writes_and_reads_i32_pointers_across_c() {
+    let src = r#"extern t.k_sum_i32(values: *const i32, n: usize) -> i32 link "k_sum_i32"
+
+extern t.k_alloc_i32(n: usize) -> *mut i32 link "k_alloc_i32"
+
+extern t.free_i32(pointer: *mut i32) -> () link "free"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let p = unsafe "libc" "allocate i32 values" {
+        t.k_alloc_i32(3usize)
+    }
+    unsafe "libc" "write i32 values through the pointer" {
+        core.ptr.write(p, 0i32 - 5i32)
+        core.ptr.write(core.ptr.add(p, 1usize), 7i32)
+        core.ptr.write(core.ptr.add(p, 2usize), 100i32)
+        core.check.eq(core.ptr.read(p), 0i32 - 5i32)
+        core.check.eq(t.k_sum_i32(core.ptr.as_const(p), 3usize), 102i32)
+        t.free_i32(p)
+    }
+    std.io.print_line("i32 ok")
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_i32_ptr", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "i32 ok\n");
+}
+
+// ---- FQN の構造体・バリアントパターンのパス成分を束縛として数えない (誤検出 E1020 の回帰) ----
+
+#[test]
+fn unused_binding_in_fqn_struct_pattern_is_e1020() {
+    // 陽性: `let t.L { a: x, .. }` の `x` が本当に未使用なら E1020 (パス `t` ではなく `x` を指す)。
+    let prefix = "type t.L pub\n    a: u8\n    b: u8\nend t.L\n\n\
+                  fn t.pick(l: t.L) -> u8 uses [] panics never\n    let t.L { a: x, b: _ } = l\n    0u8\nend t.pick\n\n";
+    let t = Tmp::new("fqn_struct_unused_pos", &main_wrap(prefix, ""));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("unused variable x"), "{}", text(&o.stdout));
+    assert!(!text(&o.stdout).contains("unused variable t"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn fqn_struct_pattern_path_is_not_an_unused_binding() {
+    // 陰性: パターンの `t.L` 以外に `t.` が現れない関数でも、パス先頭 `t` を未使用変数にしない。
+    let prefix = "type t.L pub\n    a: u8\n    b: u8\nend t.L\n\n\
+                  fn t.first(l: t.L) -> u8 uses [] panics never\n    let t.L { a: x, b: _ } = l\n    x\nend t.first\n\n";
+    let t = Tmp::new("fqn_struct_pattern_neg", &main_wrap(prefix, "    core.check.eq(t.first(t.L { a: 3u8, b: 4u8 }), 3u8)\n"));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn fqn_variant_pattern_path_is_not_an_unused_binding() {
+    // 陰性: match 腕のバリアントパス `t.Op.Num(n)` の成分 (`t`) は束縛ではなく、`n` が使われていれば E1020 にならない。
+    let prefix = "enum t.Op pub\n    Num(u8)\n    Zero\nend t.Op\n\n\
+                  fn t.val(o: t.Op) -> u8 uses [] panics never\n    match o {\n        t.Op.Num(n) => n\n        t.Op.Zero => 0u8\n    }\nend t.val\n\n";
+    let t = Tmp::new("fqn_variant_pattern_neg", &main_wrap(prefix, "    core.check.eq(t.val(t.Op.Num(5u8)), 5u8)\n"));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn unused_binding_in_match_variant_arm_is_e1020() {
+    // 陽性: match 腕のバリアントの束縛 `n` が未使用なら E1020 (パス成分の除外で陽性を失わないこと)。
+    let prefix = "enum t.Op pub\n    Num(u8)\n    Zero\nend t.Op\n\n\
+                  fn t.val(o: t.Op) -> u8 uses [] panics never\n    match o {\n        t.Op.Num(n) => 0u8\n        t.Op.Zero => 0u8\n    }\nend t.val\n\n";
+    let t = Tmp::new("fqn_variant_arm_unused_pos", &main_wrap(prefix, ""));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("unused pattern binding n"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn nested_field_pattern_is_not_a_bogus_snake_case_name() {
+    // 入れ子パターン `a: t.Op.Num(q)` の文字列全体を束縛名として E0010 にしない。
+    let prefix = "enum t.Op pub\n    Num(u8)\n    Zero\nend t.Op\n\n\
+                  type t.L pub\n    a: t.Op\n    b: u8\nend t.L\n\n\
+                  fn t.get(l: t.L) -> u8 uses [] panics never\n    let t.L { a: t.Op.Num(q), b: b } = l\n    b\nend t.get\n\n";
+    let t = Tmp::new("nested_field_pattern", &main_wrap(prefix, ""));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E0010"), "{}", text(&o.stdout));
+}
+
+// ---- 借用の残り: if の値・ブロック式の値を通じた運搬 ----
+
+#[test]
+fn nll_rejects_a_mutation_while_an_if_value_carries_the_borrow() {
+    // `let r = if c { &x } else { &y }`: 両枝の和なので、then 枝の借用 (x) も r が持つ。
+    let (bad, out) = has_e3010(
+        "nll_if_val_then",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let b = true",
+            "let r = if b {",
+            "    &x",
+            "} else {",
+            "    &y",
+            "}",
+            "x = 3u8",
+            "core.check.eq(*r, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_borrowed_by_the_else_branch_of_an_if_value() {
+    let (bad, out) = has_e3010(
+        "nll_if_val_else",
+        "",
+        &[
+            "let x = 1u8",
+            "let mut y = 2u8",
+            "let b = false",
+            "let r = if b {",
+            "    &x",
+            "} else {",
+            "    &y",
+            "}",
+            "y = 3u8",
+            "core.check.eq(*r, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `y` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_block_value_carries_the_borrow() {
+    // `let r = { &x }`: ブロック式の末尾の式の借用が r に移る。
+    let (bad, out) = has_e3010(
+        "nll_block_val",
+        "",
+        &["let mut x = 1u8", "let r = {", "    &x", "}", "x = 3u8", "core.check.eq(*r, 1u8)"],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_an_if_value_nested_in_a_match_arm_carries_a_borrow() {
+    // 腕の中の `if` の値 (then 枝の `&x`) が match の値を経て r に移る。
+    let (bad, out) = has_e3010(
+        "nll_if_val_nested",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 9u8",
+            "let c = true",
+            "let r = match c {",
+            "    true => if c {",
+            "        &x",
+            "    } else {",
+            "        &y",
+            "    }",
+            "    false => &y",
+            "}",
+            "x = 2u8",
+            "core.check.eq(*r, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_accepts_an_if_value_that_copies_out_of_the_borrow() {
+    // 枝の値が `*r0` (コピー) なら、if の値は借用を運ばない。
+    let (bad, out) = has_e3010(
+        "nll_if_val_copy",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let r0 = &x",
+            "let b = true",
+            "let n = if b {",
+            "    *r0",
+            "} else {",
+            "    0u8",
+            "}",
+            "x = 3u8",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_an_if_value_that_is_dead_before_the_mutation() {
+    let (bad, out) = has_e3010(
+        "nll_if_val_dead",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let b = true",
+            "let r = if b {",
+            "    &x",
+            "} else {",
+            "    &y",
+            "}",
+            "core.check.eq(*r, 1u8)",
+            "x = 3u8",
+            "core.check.eq(x, 3u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_an_if_value_inside_a_loop_when_the_borrow_dies_before_the_mutation() {
+    // 毎周回の `if` の値は枝の終わりで入れ替わる。前の周回の借用 (x) は次の周回の値 (y) に漏れない。
+    let (bad, out) = has_e3010(
+        "nll_if_val_loop",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let y = 2u8",
+            "let mut i = 0u8",
+            "let mut acc = 0u8",
+            "while i < 3u8 {",
+            "    let r = if i == 0u8 {",
+            "        &x",
+            "    } else {",
+            "        &y",
+            "    }",
+            "    acc = acc + *r",
+            "    x = x + 1u8",
+            "    i = i + 1u8",
+            "}",
+            "core.check.eq(acc, 5u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+// `ty_of` の Index・MCall・ArrayE の型解決 (4.4)。`tdrop_prefix` に、メソッドを持つ型を足して使う。
+fn tyof_codes(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    // 定義の並びは UTF-8 のバイト順 (E0020)。Maker・Other の型は `t.P` の前、
+    // そのメソッドは `t.eat` の前に差し込む。
+    let maker_types = [
+        "type t.Maker",
+        "    k: u8",
+        "end t.Maker",
+        "",
+        "type t.Other",
+        "    k: u8",
+        "end t.Other",
+        "",
+    ];
+    let maker_fns = [
+        "fn t.Maker.make_l(self: &t.Maker) -> t.L uses [] panics never",
+        "    t.L { a: self.k }",
+        "end t.Maker.make_l",
+        "",
+        "fn t.Maker.make_w(self: &t.Maker) -> t.W uses [] panics never",
+        "    t.W { lin: t.L { a: self.k }, n: self.k }",
+        "end t.Maker.make_w",
+        "",
+        "fn t.Maker.touch(self: &t.Maker) -> () uses [] panics never",
+        "    ()",
+        "end t.Maker.touch",
+        "",
+        // 同じ名前のメソッドを別の型が持つ (戻り値は ()): 所有者で絞らないと一意に定まらない。
+        "fn t.Other.make_l(self: &t.Other) -> () uses [] panics never",
+        "    ()",
+        "end t.Other.make_l",
+        "",
+    ];
+    let mut pre: Vec<&str> = vec![];
+    for l in tdrop_prefix() {
+        if l == "type t.P" {
+            pre.extend(maker_types.iter().copied());
+        }
+        if l == "fn t.eat(l: t.L) -> () uses [] panics never" {
+            pre.extend(maker_fns.iter().copied());
+        }
+        pre.push(l);
+    }
+    // メソッドのレシーバに式を使う (`t.lmaker().m()`)。局所変数 `m.m()` は Call として解析されるため。
+    // `t.lmaker` は `t.get_w` の後ろ (定義の並びは UTF-8 のバイト順)。
+    pre.extend([
+        "fn t.lmaker() -> t.Maker uses [] panics never",
+        "    t.Maker { k: 1u8 }",
+        "end t.lmaker",
+        "",
+    ]);
+    let prefix = pre.join(&nl) + &nl;
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn tyof_discarding_a_method_result_is_e2042() {
+    // レシーバの式の型 (t.Maker) からメソッドを一意に定め、戻り値 (t.L) を解決する。
+    // t.Other の同名メソッドは戻り値が () なので、所有者で絞らないと黙ってしまう。
+    let (cs, out) = tyof_codes("tyof_mcall", &["t.lmaker().make_l()"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_field_of_a_method_result_is_resolved() {
+    // MCall → Field の道: `make_w()` の戻り値 (t.W) の `lin` (t.L) を捨てる。
+    let (cs, out) = tyof_codes("tyof_mcall_field", &["t.lmaker().make_w().lin"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_method_result_binding_with_unconsumed_linear_is_e3003() {
+    // 束縛の型が MCall の戻り値から決まるので、線形なフィールドの消費漏れが見える (E3003)。
+    let (cs, out) = tyof_codes(
+        "tyof_mcall_bind",
+        &["let w = t.lmaker().make_w()", "core.mem.drop(w.n)"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `w` is never consumed"), "{}", out);
+}
+
+#[test]
+fn tyof_method_result_consumed_is_ok() {
+    let (cs, out) = tyof_codes(
+        "tyof_mcall_ok",
+        &[
+            "let w = t.lmaker().make_w()",
+            "t.eat(w.lin)",
+            "core.mem.drop(w.n)",
+            "let l = t.lmaker().make_l()",
+            "t.eat(l)",
+            "t.lmaker().touch()",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E3003") && !tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_discarding_an_array_literal_is_e2042() {
+    let (cs, out) = tyof_codes("tyof_array", &["[1u8, 2u8]"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_discarding_an_index_is_e2042() {
+    let (cs, out) = tyof_codes("tyof_index", &["let a = [1u8, 2u8]", "a[0]"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_index_of_an_array_of_structs_then_field_is_resolved() {
+    // Index → Field の道: 要素 (t.P) の `a` (u8) を捨てる。
+    let (cs, out) = tyof_codes("tyof_index_field", &["let a = [t.P { a: 1u8 }, t.P { a: 2u8 }]", "a[0].a"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_index_through_a_reference_is_resolved() {
+    let (cs, out) = tyof_codes("tyof_index_ref", &["let a = [1u8, 2u8]", "let r = &a", "r[1]"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn tyof_unit_method_results_and_unknown_types_stay_silent() {
+    // 戻り値が () のメソッド、型の決まらない要素 (型なし整数リテラル)・存在しないメソッドは黙る。
+    let (cs, out) = tyof_codes(
+        "tyof_silent",
+        &[
+            "t.lmaker().touch()",
+            "t.lmaker().nosuch()",
+            "let a = [1, 2]",
+            "a[0]",
+            "[1, 2]",
+            "let b = [t.lmaker().touch(), t.lmaker().touch()]",
+            "core.mem.drop(b[0])",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E2042") && !tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+// ---- パターンの未使用束縛: let の括弧バリアントとフィールドラベル (E1020 の見落とし・誤検出の回帰) ----
+
+#[test]
+fn unused_binding_in_let_variant_pattern_is_e1020() {
+    // 陽性: `let t.Box.Val(x) = b` の `x` が未使用なら E1020 (パス成分 `t`・`Box` ではなく `x` を指す)。
+    let prefix = "enum t.Box pub\n    Val(u8)\nend t.Box\n\n\
+                  fn t.pick(b: t.Box) -> u8 uses [] panics never\n    let t.Box.Val(x) = b\n    0u8\nend t.pick\n\n";
+    let t = Tmp::new("let_variant_unused_pos", &main_wrap(prefix, ""));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("unused variable x"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn let_variant_pattern_used_or_wildcard_is_not_e1020() {
+    // 陰性: 括弧バリアントの束縛 `x` が使われていれば、`_` の引数と同様に E1020 にしない。
+    let prefix = "enum t.Box pub\n    Val(u8)\nend t.Box\n\n\
+                  fn t.get(b: t.Box) -> u8 uses [] panics never\n    let t.Box.Val(x) = b\n    x\nend t.get\n\n\
+                  fn t.zero(b: t.Box) -> u8 uses [] panics never\n    let t.Box.Val(_) = b\n    0u8\nend t.zero\n\n";
+    let t = Tmp::new(
+        "let_variant_used_neg",
+        &main_wrap(prefix, "    core.check.eq(t.get(t.Box.Val(5u8)), 5u8)\n    core.check.eq(t.zero(t.Box.Val(5u8)), 0u8)\n"),
+    );
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn unused_binding_named_like_field_label_is_e1020() {
+    // 陽性: `let t.L { a: a, b: b }` で `b` が未使用なら、フィールドラベル `b` を使用として数えず E1020。
+    let prefix = "type t.L pub\n    a: u8\n    b: u8\nend t.L\n\n\
+                  fn t.first(l: t.L) -> u8 uses [] panics never\n    let t.L { a: a, b: b } = l\n    a\nend t.first\n\n";
+    let t = Tmp::new("struct_label_unused_pos", &main_wrap(prefix, ""));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+    assert!(text(&o.stdout).contains("unused variable b"), "{}", text(&o.stdout));
+    assert!(!text(&o.stdout).contains("unused variable a"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn struct_pattern_field_label_same_as_used_binding_is_not_e1020() {
+    // 陰性: ラベルと束縛名が同じ `b: b` でも、束縛 `b` が使われていれば E1020 にしない (`a: _` も対象外)。
+    let prefix = "type t.L pub\n    a: u8\n    b: u8\nend t.L\n\n\
+                  fn t.second(l: t.L) -> u8 uses [] panics never\n    let t.L { a: _, b: b } = l\n    b\nend t.second\n\n";
+    let t = Tmp::new("struct_label_used_neg", &main_wrap(prefix, "    core.check.eq(t.second(t.L { a: 1u8, b: 7u8 }), 7u8)\n"));
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn linear_array_consumed_by_index_only_one_element_is_e3003() {
+    // `ls[1]` の消費漏れ (4.4)。配列の束縛は名前の使用があれば消費、という近似の穴を要素単位で塞ぐ。
+    let (cs, out) = tyof_codes("lin_arr_one", &["let ls = [t.get_l(), t.get_l()]", "t.eat(ls[0])"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `ls[1]` is never consumed"), "{}", out);
+}
+
+#[test]
+fn linear_array_with_a_gap_in_the_indices_is_e3003() {
+    // 添字 0 と 2 は使い、中央の 1 だけ消費しない。
+    let (cs, out) = tyof_codes(
+        "lin_arr_gap",
+        &["let ls = [t.get_l(), t.get_l(), t.get_l()]", "t.eat(ls[0])", "t.eat(ls[2])"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `ls[1]` is never consumed"), "{}", out);
+}
+
+#[test]
+fn linear_array_never_used_is_e3003() {
+    let (cs, out) = tyof_codes("lin_arr_unused", &["let ls = [t.get_l(), t.get_l()]"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `ls` is never consumed"), "{}", out);
+}
+
+#[test]
+fn linear_array_with_every_element_consumed_is_ok() {
+    let (cs, out) = tyof_codes(
+        "lin_arr_ok",
+        &["let ls = [t.get_l(), t.get_l()]", "t.eat(ls[0])", "t.eat(ls[1])"],
+    );
+    assert!(!tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+#[test]
+fn linear_array_used_as_a_whole_or_by_a_variable_index_stays_silent() {
+    // 配列全体を `for` で回す・添字に変数を使う (どの要素か判断できない) 場合は黙る。
+    let (cs, out) = tyof_codes(
+        "lin_arr_silent",
+        &[
+            "let ls = [t.get_l(), t.get_l()]",
+            "for x in ls",
+            "    t.eat(x)",
+            "end for",
+            "let us = [t.get_l(), t.get_l()]",
+            "let i = 0usize",
+            "t.eat(us[i])",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+// ---- rt/interp-ptr-more: null_mut::<T>() / cast::<T, U>() / from_mut / from_ref (インタプリタ) ----
+
+/// `unsafe` を許す `t` で `src` を実行する (`ksn run`)。
+fn run_unsafe_pkg(name: &str, src: &str) -> (Tmp, Output) {
+    let t = Tmp::new(name, src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let r = run(&["run"], &t.0);
+    (t, r)
+}
+
+#[test]
+fn ptr_more_place_pointers_alias_their_places_and_null_is_detected() {
+    // from_mut / from_ref は場所を指す。書き込みは場所に届き、from_ref は後の書き込みも見る。null_mut::<T>() は is_null で null と分かる。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 41i32
+    let n: *mut i32 = core.ptr.null_mut::<i32>()
+    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    let q: *const i32 = core.ptr.from_ref(&x)
+    unsafe "libc" "place pointers" {
+        core.check.eq(core.ptr.is_null(n), true)
+        core.check.eq(core.ptr.is_null(p), false)
+        core.ptr.write(p, 42i32)
+        core.check.eq(core.ptr.read(p), 42i32)
+        core.check.eq(core.ptr.read(core.ptr.as_const(p)), 42i32)
+        core.check.eq(core.ptr.read(q), 42i32)
+        core.check.eq(core.ptr.read(core.ptr.add(p, 0usize)), 42i32)
+        core.check.eq(core.ptr.read(core.ptr.cast::<i32, i32>(p)), 42i32)
+    }
+    std.io.print_line("place ok")
+    core.check.eq(x, 42i32)
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ptr_more_place", src);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "place ok\n");
+}
+
+#[test]
+fn ptr_more_null_read_panics_with_null_dereference() {
+    // 要素型が分かる null でも、読むと null 参照として 101 で止まる。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    unsafe "libc" "read null" {
+        core.check.eq(core.ptr.read(core.ptr.null_mut::<i32>()), 0i32)
+    }
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ptr_more_null_read", src);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("null pointer dereference"), "{}", text(&r.stderr));
+}
+
+#[test]
+fn ptr_more_cast_of_place_pointer_reinterprets_the_pinned_bytes() {
+    // `from_mut` の結果は C に見せる写し (ピン) を指すので、幅の違う型への `cast` は、そのバイト列の読み替えになる
+    // (リトルエンディアン: i32 の 1 は先頭の u8 が 1)。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    unsafe "libc" "cast place" {
+        let b: *mut u8 = core.ptr.cast::<i32, u8>(core.ptr.from_mut(&mut x))
+        core.check.eq(core.ptr.read(b), 1u8)
+    }
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ptr_more_cast_place", src);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+}
+
+#[test]
+fn ptr_more_cast_without_type_argument_panics() {
+    // 戻り値の型注釈からは要素型を推論しない (インタプリタは型引数しか見ない)。誤った要素型で黙って読まないよう 101 で止まる。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    unsafe "libc" "cast without targs" {
+        let b: *mut u8 = core.ptr.cast(core.ptr.from_mut(&mut x))
+        core.check.eq(core.ptr.read(b), 1u8)
+    }
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ptr_more_cast_notarg", src);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("explicit type argument"), "{}", text(&r.stderr));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ptr_more_cast_reinterprets_c_memory_and_null_goes_to_c() {
+    // C が確保した i32 の領域を `cast::<i32, u8>` で読み替えると、リトルエンディアンのバイト列になる。
+    // `null_mut::<f64>()` は C へ 0 として渡る (C 側は n = 0 なので読まない)。
+    let src = r#"extern t.k_sum_f64(values: *const f64, n: usize) -> f64 link "k_sum_f64"
+
+extern t.k_alloc_i32(n: usize) -> *mut i32 link "k_alloc_i32"
+
+extern t.free_i32(pointer: *mut i32) -> () link "free"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let p = unsafe "libc" "allocate" {
+        t.k_alloc_i32(1usize)
+    }
+    unsafe "libc" "cast and read bytes" {
+        core.ptr.write(p, 67305985i32)
+        let b: *mut u8 = core.ptr.cast::<i32, u8>(p)
+        core.check.eq(core.ptr.read(b), 1u8)
+        core.check.eq(core.ptr.read(core.ptr.add(b, 1usize)), 2u8)
+        core.check.eq(core.ptr.read(core.ptr.add(b, 2usize)), 3u8)
+        core.check.eq(core.ptr.read(core.ptr.add(b, 3usize)), 4u8)
+        core.check.eq(core.ptr.read(core.ptr.cast::<u8, i32>(b)), 67305985i32)
+        t.free_i32(p)
+    }
+    unsafe "libc" "null to C" {
+        core.check.eq(t.k_sum_f64(core.ptr.null_mut::<f64>(), 0usize), 0.0f64)
+    }
+    std.io.print_line("cast ok")
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ptr_more_c_cast", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "cast ok\n");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ptr_more_place_pointer_is_passed_to_c_as_a_pinned_copy() {
+    // `from_mut` の結果 (C に見せる写しを指すポインタ) は、そのまま extern に渡せる (3.8: 呼び出しの前後で元の値と同期する)。
+    let src = r#"extern t.k_sum_i32(values: *const i32, n: usize) -> i32 link "k_sum_i32"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 5i32
+    unsafe "libc" "place to C" {
+        core.check.eq(t.k_sum_i32(core.ptr.as_const(core.ptr.from_mut(&mut x)), 1usize), 5i32)
+    }
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ptr_more_place_to_c", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+}
+
+// 具体的な効果実引数を持つ `Fn` 境界 (`[]` / `[io]` / `never` / `may`) の検査 (4.3 / 5.1)。
+// 境界の検査は、渡したクロージャの確実な効果と境界の具体名を比べる (呼び出し元の `uses` とは別)。
+// 定義の並びは UTF-8 順 (E0020) にしてある。`BOUND_BAD` の呼び出し元 3 本だけが違反する。
+const BOUND_BAD: &str = r#"fn t.bad_let(s: t.S, x: u8) -> u8 uses [io] panics never
+    let c = fn(y: u8) -> u8 capture [&s] {
+        core.mem.drop(s.say())
+        y
+    }
+    t.bnd_none(c, x)
+end t.bad_let
+
+fn t.bad_panic(s: t.S, x: u8) -> u8 uses [] panics never
+    t.bnd_none(
+        fn(y: u8) -> u8 capture [&s] {
+            s.boom()
+        },
+        x,
+    )
+end t.bad_panic
+
+"#;
+
+// 境界の定義・推論された関数・覆われる / 効果のない呼び出し元・メソッド (どれも黙る)。
+const BOUND_REST: &str = r#"fn t.bnd_io[F: core.ops.Fn<(u8,), u8, [io], never>](f: F, x: u8) -> u8 uses [] panics never pub
+    f(x)
+end t.bnd_io
+
+fn t.bnd_may[F: core.ops.Fn<(u8,), u8, [], may>](f: F, x: u8) -> u8 uses [] panics never pub
+    f(x)
+end t.bnd_may
+
+fn t.bnd_none[F: core.ops.Fn<(u8,), u8, [], never>](f: F, x: u8) -> u8 uses [] panics never pub
+    f(x)
+end t.bnd_none
+
+fn t.inf_io(x: u8) -> u8
+    core.mem.drop(std.io.print_line("i"))
+    x
+end t.inf_io
+
+fn t.ok_infer(x: u8) -> u8 uses [] panics never
+    t.bnd_none(
+        fn(y: u8) -> u8 capture [] {
+            t.inf_io(y)
+        },
+        x,
+    )
+end t.ok_infer
+
+fn t.ok_io(s: t.S, x: u8) -> u8 uses [io] panics never
+    t.bnd_io(
+        fn(y: u8) -> u8 capture [&s] {
+            core.mem.drop(s.say())
+            y
+        },
+        x,
+    )
+end t.ok_io
+
+fn t.ok_may(s: t.S, x: u8) -> u8 uses [] panics never
+    t.bnd_may(
+        fn(y: u8) -> u8 capture [&s] {
+            s.boom()
+        },
+        x,
+    )
+end t.ok_may
+
+fn t.ok_pure(s: t.S, x: u8) -> u8 uses [] panics never
+    t.bnd_none(
+        fn(y: u8) -> u8 capture [&s] {
+            s.peek()
+        },
+        x,
+    )
+end t.ok_pure
+"#;
+
+#[test]
+fn concrete_fn_bound_effects_are_checked_against_the_closure() {
+    // 境界が具体的な `[]` / `never` を持つのに、渡したクロージャの確実な効果がそれを超える。
+    // 呼び出し元が `uses [io]` でも境界の違反は報告する (let に束縛したクロージャ・メソッド形も)。
+    let body = format!("{}{}", BOUND_BAD, BOUND_REST);
+    let (_, got, out) = eff_check("eff_bound_bad", &body);
+    assert_eq!(got, vec!["E4001".to_string(), "E4002".to_string()], "{}", out);
+    assert!(out.contains("closure passed to `t.bnd_none` uses effect `io.console` outside the `Fn` bound's effects []"), "{}", out);
+    assert!(out.contains("closure passed to `t.bnd_none` may panic but the `Fn` bound declares `panics never`"), "{}", out);
+}
+
+#[test]
+fn concrete_fn_bound_is_checked_on_method_calls() {
+    // メソッド形 (`s.run(..)`、レシーバの型で解決した候補が 1 つ) も、境界の具体名を超える効果を報告する。
+    let src = "type t.S pub
+    n: u8
+end t.S
+
+fn t.S.run[F: core.ops.Fn<(u8,), u8, [], never>](self: &t.S, f: F) -> u8 uses [] panics never pub
+    f(self.n)
+end t.S.run
+
+fn t.bad_method(s: t.S) -> u8 uses [io] panics never
+    s.run(
+        fn(y: u8) -> u8 capture [] {
+            core.mem.drop(std.io.print_line(\"m\"))
+            y
+        },
+    )
+end t.bad_method
+
+fn t.ok_method(s: t.S) -> u8 uses [] panics never
+    s.run(
+        fn(y: u8) -> u8 capture [] {
+            y
+        },
+    )
+end t.ok_method
+";
+    let t = Tmp::new("eff_bound_method", src);
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    let got = codes(&out);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+    assert!(out.contains("closure passed to `t.S.run` uses effect `io.console`"), "{}", out);
+}
+
+#[test]
+fn concrete_fn_bound_effects_that_cover_the_closure_stay_silent() {
+    // 境界が覆う効果 (`io` ⊇ `io.console`)・`may` 境界・効果のないクロージャ・確実でない効果
+    // (推論された関数を呼ぶクロージャ) は黙る (下からの近似: 誤検出を出さない)。
+    let (code, _, out) = eff_check("eff_bound_ok", BOUND_REST);
+    assert_eq!(code, Some(0), "{}", out);
+}
+
+// ---- 借用の残り: 分解 (let (a, b) = t、match t { (a, b) => .. }) での保存ローンの読み戻し ----
+
+#[test]
+fn nll_rejects_a_mutation_while_a_let_destructured_binding_carries_a_stored_borrow() {
+    // `let t = (&x, 1u8)` に保存したローンは、分解した束縛 `a` に伝わる (要素ごとの道は無いので全体の和)。
+    let (bad, out) = has_e3010(
+        "nll_destr_let",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (&x, 1u8)",
+            "let (a, n) = t",
+            "x = 3u8",
+            "core.check.eq(*a, 1u8)",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `a`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_destructured_literal_binding_carries_the_borrow() {
+    // リテラルを直接分解する `let (a, n) = (&x, 1u8)` も、束縛 `a` が借用を持つ。
+    let (bad, out) = has_e3010(
+        "nll_destr_lit",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let (a, n) = (&x, 1u8)",
+            "x = 3u8",
+            "core.check.eq(*a, 1u8)",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `a`"), "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_match_destructured_binding_carries_the_stored_borrow() {
+    // `match t { (a, n) => .. }` の腕の束縛 `a` も、保存された借用を持つ。
+    let (bad, out) = has_e3010(
+        "nll_destr_match",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (&x, 1u8)",
+            "match t {",
+            "    (a, n) => {",
+            "        x = 3u8",
+            "        core.check.eq(*a, 1u8)",
+            "    }",
+            "}",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `a`"), "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_destructured_binding_that_is_dead_before_the_mutation() {
+    // 分解の束縛 `a` を使い終えてから書き換えるなら、借用は死んでいて黙る。
+    let (bad, out) = has_e3010(
+        "nll_destr_dead",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (&x, 1u8)",
+            "let (a, n) = t",
+            "core.check.eq(*a, 1u8)",
+            "x = 3u8",
+            "core.check.eq(x, 3u8)",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_destructured_binding_that_only_copies_the_value_out() {
+    // 束縛から値をコピー (`*a`) して取り出し、その後は束縛を使わなければ、書き換えは許される。
+    let (bad, out) = has_e3010(
+        "nll_destr_copy",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (&x, 1u8)",
+            "let (a, n) = t",
+            "let v = *a",
+            "x = 3u8",
+            "core.check.eq(v, 1u8)",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_destructured_tuple_without_any_borrow() {
+    // 借用を含まないタプル (`(1u8, 2u8)`) の分解は、無関係な変数の書き換えで黙る。
+    let (bad, out) = has_e3010(
+        "nll_destr_nolo",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let t = (1u8, 2u8)",
+            "let (a, b) = t",
+            "x = 3u8",
+            "core.check.eq(a + b, 3u8)",
+            "core.check.eq(x, 3u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_destructured_binding_after_the_tuple_was_overwritten() {
+    // `t` を書き換えると、前に保存された `&x` のローンは死ぬ。新しい `&y` だけが分解の束縛に移る。
+    let (bad, out) = has_e3010(
+        "nll_destr_overwrite",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let mut y = 2u8",
+            "let mut t = (&x, 1u8)",
+            "t = (&y, 2u8)",
+            "let (a, n) = t",
+            "x = 3u8",
+            "core.check.eq(*a, 2u8)",
+            "core.check.eq(n, 2u8)",
+            "y = 4u8",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_rejects_a_mutation_while_a_struct_destructured_field_carries_a_stored_borrow() {
+    // 構造体のフィールドに保存された借用は、名前の道をたどって分解の束縛 `r` に伝わる。
+    let (bad, out) = has_e3010(
+        "nll_destr_struct",
+        NLL_REF_FIELD,
+        &[
+            "let mut x = 1u8",
+            "let s = t.S { f: &x, b: 2u8 }",
+            "let t.S { f: r, b: n } = s",
+            "x = 2u8",
+            "core.check.eq(*r, 1u8)",
+            "core.check.eq(n, 2u8)",
+        ],
+    );
+    assert!(bad, "{}", out);
+    assert!(out.contains("cannot mutate `x` while it is borrowed by `r`"), "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_copy_element_of_a_literal_destructured_while_the_borrow_is_mutated() {
+    // `(&x, 1u8)` の分解で、借用を持つ要素 `a` は死んでおり、コピー値の `n` だけを後で使うなら黙る。
+    let (bad, out) = has_e3010(
+        "nll_destr_lit_copy",
+        "",
+        &[
+            "let mut x = 1u8",
+            "let (a, n) = (&x, 1u8)",
+            "core.check.eq(*a, 1u8)",
+            "x = 3u8",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn nll_accepts_a_destructured_call_result_when_the_source_is_mutated_before_the_copy_is_used() {
+    // 道が分からない分解 (関数の戻り値 `t.pick(&x)`) は、右辺全体の借用を束縛に配らない (従来どおり黙る)。
+    // `n` はコピー値なので、`x` を書き換えたあとに使っても E3010 にしない。
+    let prefix = "fn t.apick(r: &u8) -> (&u8, u8) uses [] panics never\n    (r, 1u8)\nend t.apick\n\n";
+    let (bad, out) = has_e3010(
+        "nll_destr_call_neg",
+        prefix,
+        &[
+            "let mut x = 1u8",
+            "let (_, n) = t.apick(&x)",
+            "x = 3u8",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+    assert!(!bad, "{}", out);
+}
+
+#[test]
+fn e4004_for_div_and_rem_offers_only_the_checked_form() {
+    // 整数の `/` `%` には checked_ の形しかない (num.sig)。wrapping_/saturating_ を置き換えとして案内しない。
+    for (op, m) in [("/", "div"), ("%", "rem")] {
+        let f = format!("fn t.q(a: u32, b: u32) -> u32 uses [] panics never\n    a {} b\nend t.q\n\n", op);
+        let t = Tmp::new(&format!("e4004_{}", m), &main_wrap(&f, ""));
+        let out = text(&run(&["check", "--json"], &t.0).stdout);
+        assert!(codes(&out).iter().any(|c| c == "E4004"), "{}", out);
+        assert!(out.contains(&format!("write `a.checked_{}(b)`", m)), "{}", out);
+        assert!(out.contains("declare `panics may` on the function header"), "{}", out);
+        assert!(!out.contains(&format!("a.wrapping_{}", m)), "{}", out);
+        assert!(!out.contains(&format!("a.saturating_{}", m)), "{}", out);
+    }
+    let ex = run(&["explain", "E4004"], &root());
+    assert!(text(&ex.stdout).contains("checked_div"), "{}", text(&ex.stdout));
+}
+
+#[test]
+fn e1108_for_wrapping_or_saturating_div_rem_points_to_checked_forms() {
+    // 存在しない `wrapping_rem` などに、誤った近い名前 (`rem` は f32/f64 のもの、`saturating_add`) を出さない。
+    let f = "fn t.q(a: u32, b: u32) -> u32 uses [] panics never\n    let x = a.wrapping_rem(b)\n    a.saturating_div(x)\nend t.q\n\n";
+    let t = Tmp::new("e1108_int_divrem", &main_wrap(f, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("unknown method `wrapping_rem`; integer `%`"), "{}", out);
+    assert!(out.contains("use `checked_rem(b)`"), "{}", out);
+    assert!(out.contains("unknown method `saturating_div`; integer `/`"), "{}", out);
+    assert!(out.contains("use `checked_div(b)`"), "{}", out);
+    assert!(!out.contains("did you mean `rem`"), "{}", out);
+    assert!(!out.contains("did you mean `saturating_add`"), "{}", out);
+}
+
+// ---- 分解の誤検出 (コピー値の束縛に借用を付けない): 道が分かる分解と、関数の戻り値の分解 ----
+
+/// 診断が 1 つも出ないことを確かめる (陰性テスト用)。
+fn no_diagnostics(name: &str, prefix: &str, b: &[&str]) -> String {
+    let t = Tmp::new(name, &main_wrap(prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).is_empty(), "{}", out);
+    out
+}
+
+#[test]
+fn nll_accepts_a_copy_element_of_a_destructured_call_result_held_in_a_variable() {
+    // `let p = t.apick(&x)` の p は x の借用を持つが、分解した `n` はコピー値なので黙る。
+    let prefix = "fn t.apick(r: &u8) -> (&u8, u8) uses [] panics never\n    (r, 1u8)\nend t.apick\n\n";
+    no_diagnostics(
+        "nll_destr_call_var_neg",
+        prefix,
+        &[
+            "let mut x = 1u8",
+            "let p = t.apick(&x)",
+            "let (a, n) = p",
+            "core.check.eq(*a, 1u8)",
+            "x = 3u8",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_accepts_a_copy_element_of_a_moved_call_result_destructured_later() {
+    // `let t2 = t0` で move してから分解しても、コピー値 `n` には借用を付けない。
+    let prefix = "fn t.apick(r: &u8) -> (&u8, u8) uses [] panics never\n    (r, 1u8)\nend t.apick\n\n";
+    no_diagnostics(
+        "nll_destr_call_move_neg",
+        prefix,
+        &[
+            "let mut x = 1u8",
+            "let t0 = t.apick(&x)",
+            "let t2 = t0",
+            "let (a, n) = t2",
+            "core.check.eq(*a, 1u8)",
+            "x = 3u8",
+            "core.check.eq(n, 1u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_accepts_a_copy_field_of_a_moved_struct_destructured_later() {
+    // 構造体 `let s2 = s` で move してから分解しても、コピーのフィールド `b` (n) には借用を付けない。
+    // 借用を持つフィールド `f` (r) は、書き換えより前に使い終えている。
+    no_diagnostics(
+        "nll_destr_struct_move_neg",
+        NLL_REF_FIELD,
+        &[
+            "let mut x = 1u8",
+            "let s = t.S { f: &x, b: 2u8 }",
+            "let s2 = s",
+            "let t.S { f: r, b: n } = s2",
+            "core.check.eq(*r, 1u8)",
+            "x = 2u8",
+            "core.check.eq(n, 2u8)",
+        ],
+    );
+}
+
+#[test]
+fn nll_accepts_a_copy_element_of_a_match_on_a_call_result_while_the_source_is_mutated() {
+    // 形が分からない scrutinee (関数呼び出し) の腕の束縛 `n` は、右辺の借用を受け取らない。
+    let prefix = "fn t.apick(r: &u8) -> (&u8, u8) uses [] panics never\n    (r, 1u8)\nend t.apick\n\n";
+    no_diagnostics(
+        "nll_match_call_neg",
+        prefix,
+        &[
+            "let mut x = 1u8",
+            "match t.apick(&x) {",
+            "    (a, n) => {",
+            "        core.check.eq(*a, 1u8)",
+            "        x = 3u8",
+            "        core.check.eq(n, 1u8)",
+            "    }",
+            "}",
+        ],
+    );
+}
+
+// ---- 効果検査・stack の誤検出 (推論された関数・確実でないクロージャ・直接呼び出しのフレーム) ----
+
+/// `src` を `t` パッケージとして検査し、診断コードの列と出力を返す (陰性・陽性の両方で使う)。
+fn neg_check(name: &str, src: &str) -> (Vec<String>, String) {
+    let t = Tmp::new(name, src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+/// 効果を宣言しない `t.h` / `t.B.k` (推論される) と、`t.B.m` (効果なし) / `t.A.m` (`io.console`) の共通部分。
+const INFERRED_PRELUDE: &str = "type t.A pub
+    n: u8
+end t.A
+
+type t.B pub
+    n: u8
+end t.B
+
+fn t.A.m(self: &t.A) -> Result<(), std.io.Error> uses [io.console] panics never pub
+    std.io.print_line(\"a\")
+end t.A.m
+
+fn t.B.m(self: &t.B) -> u8 uses [] panics never pub
+    self.n
+end t.B.m
+
+";
+
+#[test]
+fn inferred_callee_inside_a_closure_does_not_bind_the_fn_bound_effect() {
+    // `t.h` は効果を宣言しないので推論される。推論は名前の全候補 (`m` の `t.A.m` を含む) の和で
+    // `io.console` を過大に持つ。その効果を載せたクロージャは確実でないので、`apply` の `E` を
+    // `io.console` に束縛せず、`uses []` の `t.main` から E4001 を出さない (黙る)。
+    let src = format!(
+        "{}{}",
+        INFERRED_PRELUDE,
+        "fn t.h(b: &t.B) -> u8
+    b.m()
+    0
+end t.h
+
+fn t.apply[F: core.ops.Fn<(&t.B,), u8, E, P>, E: uses, P: panics](f: F, b: &t.B) -> u8 uses [E] panics P pub
+    f(b)
+end t.apply
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let b = t.B { n: 0u8 }
+    let r = t.apply(fn(x: &t.B) -> u8 capture [] {
+        t.h(x)
+    }, &b)
+    core.mem.drop(r)
+    Ok(())
+end t.main
+"
+    );
+    let (got, out) = neg_check("neg_inferred_fn_bound", &src);
+    assert!(got.iter().all(|c| !c.starts_with("E4")), "{}", out);
+}
+
+#[test]
+fn inferred_callee_of_a_local_receiver_stays_silent() {
+    // `b.k()` の `t.B.k` は効果を宣言しない推論された関数。その推論は上からの近似なので、
+    // `uses []` の `t.main` から E4001 を出さない (宣言された効果の呼び出しだけ検査する)。
+    let src = format!(
+        "{}{}",
+        INFERRED_PRELUDE,
+        "fn t.B.k(self: &t.B) -> u8
+    self.m()
+end t.B.k
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let b = t.B { n: 0u8 }
+    let r = b.k()
+    core.mem.drop(r)
+    Ok(())
+end t.main
+"
+    );
+    let (got, out) = neg_check("neg_inferred_local_recv", &src);
+    assert!(got.iter().all(|c| !c.starts_with("E4")), "{}", out);
+}
+
+#[test]
+fn stack_closure_frame_of_a_direct_call_is_counted() {
+    // `g(..)` の直接呼び出しのクロージャの節 (引数 t.Big = 64 + 32) はフレームに数える。
+    // spin 48 + クロージャ 96 + core.mem.drop 32 = 176 (変更前は 80: 節が辺で届かず数えられなかった)。
+    let src = "type t.Big
+    a: u128
+    b: u128
+    c: u128
+    d: u128
+end t.Big
+
+fn t.spin(n: u8) -> () uses [] panics never stack 100
+    let g = fn(b: t.Big) -> () capture [] {
+        core.mem.drop(b)
+        t.spin(0u8)
+    }
+    g(t.Big { a: 0u128, b: 0u128, c: 0u128, d: 0u128 })
+end t.spin
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    t.spin(1u8)
+    Ok(())
+end t.main
+";
+    let (got, out) = neg_check("stack_direct_closure", src);
+    assert!(got.iter().any(|c| c == "E4012"), "{}", out);
+    assert!(out.contains("estimated stack use 176 exceeds declared 100"), "{}", out);
+    let (got, out) = neg_check("stack_direct_closure_ok", &src.replace("stack 100", "stack 176"));
+    assert!(got.iter().all(|c| c != "E4012"), "{}", out);
+}
+
+#[test]
+fn stack_closure_passed_to_a_fn_bound_called_as_f_of_x_is_a_candidate() {
+    // `f(x)` の形で `Fn` 境界のパラメータを呼ぶ `t.gen` は、渡したクロージャの節へ辺を持つ (5.3)。
+    // そのため t.spin -> t.gen -> クロージャ -> t.spin は再帰になる (変更前は辺がなく、E4010 も
+    // E4012 の見積り 88 も出なかった)。spin の見積りは 216 (spin 40 + gen 48 + クロージャ 96 + drop 32)。
+    let src = "type t.Big
+    a: u128
+    b: u128
+    c: u128
+    d: u128
+end t.Big
+
+fn t.gen[F: core.ops.Fn<(t.Big,), (), [], never>](f: F) -> () uses [] panics never stack 1024
+    f(t.Big { a: 0u128, b: 0u128, c: 0u128, d: 0u128 })
+end t.gen
+
+fn t.spin(n: u8) -> () uses [] panics never stack SPIN
+    t.gen(fn(b: t.Big) -> () capture [] {
+        core.mem.drop(b)
+        t.spin(0u8)
+    })
+end t.spin
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    t.spin(1u8)
+    Ok(())
+end t.main
+";
+    let (got, out) = neg_check("stack_fn_bound_call", &src.replace("SPIN", "215"));
+    assert_eq!(got.iter().filter(|c| *c == "E4012").count(), 1, "{}", out);
+    assert!(out.contains("t.spin: estimated stack use 216 exceeds declared 215"), "{}", out);
+    let (got, out) = neg_check("stack_fn_bound_call_ok", &src.replace("SPIN", "216"));
+    assert!(got.iter().all(|c| c != "E4012"), "{}", out);
+}
+
+// ---- 修正 (fix/ffi-review): 可変長 C 関数への浮動小数の引数 / from_ref の const / extern の整数→浮動小数 ----
+
+/// 可変長の補助 C 側。`k_va_sum` は `va_arg` で double を読む (呼び出し側が `%al` を設定しないと 0 を読む)。
+const FFI_VARIADIC_SRC: &str = r#"
+#include <stdarg.h>
+#include <stdint.h>
+
+const char *k_fmt_f1(void) { return "%.1f"; }
+double k_va_sum(int32_t n, ...) {
+    va_list ap;
+    va_start(ap, n);
+    double s = 0;
+    for (int32_t i = 0; i < n; i++) s += va_arg(ap, double);
+    va_end(ap);
+    return s;
+}
+"#;
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_variadic_c_functions_receive_float_arguments() {
+    // `snprintf` (可変長) に f64 を渡すと、呼び出し側が `%al` を設定しないと値が 0 になる。
+    let src = r#"extern t.free_u8(pointer: *mut u8) -> () link "free"
+
+extern t.k_fmt_f1() -> *const u8 link "k_fmt_f1"
+
+extern t.k_va_sum(n: i32, x: f64, y: f64) -> f64 link "k_va_sum"
+
+extern t.malloc(n: usize) -> *mut u8 link "malloc"
+
+extern t.snprintf(buf: *mut u8, n: usize, fmt: *const u8, x: f64) -> i32 link "snprintf"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let buf = unsafe "libc" "allocate the output buffer" {
+        t.malloc(64usize)
+    }
+    let fmt = unsafe "libc" "format string from C" {
+        t.k_fmt_f1()
+    }
+    let n = unsafe "libc" "snprintf with a float argument" {
+        t.snprintf(buf, 64usize, fmt, 2.5f64)
+    }
+    unsafe "libc" "read the formatted text" {
+        core.check.eq(n, 3i32)
+        core.check.eq(core.ptr.read(buf), 50u8)
+        core.check.eq(core.ptr.read(core.ptr.add(buf, 1usize)), 46u8)
+        core.check.eq(core.ptr.read(core.ptr.add(buf, 2usize)), 53u8)
+    }
+    let s = unsafe "libc" "variadic C function reads doubles" {
+        t.k_va_sum(2i32, 1.5f64, 0.25f64)
+    }
+    core.check.eq(s, 1.75f64)
+    unsafe "libc" "free the buffer" {
+        t.free_u8(buf)
+    }
+    std.io.print_line("variadic ok")
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_variadic", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_VARIADIC_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "variadic ok\n");
+}
+
+#[test]
+fn ffi_from_ref_pointer_is_const_and_write_through_it_is_rejected() {
+    // `from_ref` は `*const` を返し、`core.ptr.write` は `*mut` を取る。書き込みは検査の段階で止まり、実行に届かない。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 41i32
+    let q: *const i32 = core.ptr.from_ref(&x)
+    unsafe "libc" "write through a const pointer" {
+        core.ptr.write(q, 42i32)
+    }
+    core.check.eq(x, 41i32)
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ffi_from_ref_const", src);
+    assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stdout).contains("E2023") && text(&r.stdout).contains("`*const i32`"), "{}", text(&r.stdout));
+}
+
+#[test]
+fn ffi_as_mut_makes_a_from_ref_pointer_writable() {
+    // `as_mut` を通したものは書ける。書き込みは元の場所 (`x`) に届く。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 41i32
+    let q: *const i32 = core.ptr.from_ref(&x)
+    let p: *mut i32 = core.ptr.as_mut(q)
+    unsafe "libc" "write through as_mut" {
+        core.ptr.write(p, 42i32)
+    }
+    core.check.eq(x, 42i32)
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ffi_as_mut_writable", src);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+}
+
+#[test]
+fn ffi_as_const_pointer_is_read_only_and_from_mut_stays_writable() {
+    // `as_const` で作った `*const` は読めるが、書き込みは `*mut` を要求する検査で止まる (下のテスト)。元の `from_mut` のポインタは従来どおり書けて読める。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    let c: *const i32 = core.ptr.as_const(p)
+    unsafe "libc" "write through the mutable pointer" {
+        core.ptr.write(p, 2i32)
+        core.check.eq(core.ptr.read(c), 2i32)
+    }
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ffi_as_const_readonly", src);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+}
+
+#[test]
+fn ffi_write_through_as_const_pointer_is_rejected() {
+    // `as_const` で作った `*const` への書き込みは、`*mut` を取る `core.ptr.write` の検査で E2023 になる。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    let c: *const i32 = core.ptr.as_const(p)
+    unsafe "libc" "write through the const pointer" {
+        core.ptr.write(c, 3i32)
+    }
+    Ok(())
+end t.main
+"#;
+    let (_t, r) = run_unsafe_pkg("ffi_as_const_write_rejected", src);
+    assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stdout).contains("E2023") && text(&r.stdout).contains("`*mut i32`"), "{}", text(&r.stdout));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_integer_argument_for_float_parameter_panics() {
+    // 整数の値を f32 / f64 の引数に渡すのは型が合わないので、黙って変換せず 101 で止まる。
+    let src = r#"extern t.k_half(x: f32) -> f32 link "k_half"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let h = unsafe "libc" "integer for f32" {
+        t.k_half(3i32)
+    }
+    core.check.eq(h, 1.5f32)
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_int_for_f32", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("unsupported type or value"), "{}", text(&r.stderr));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ffi_integer_argument_for_f64_parameter_panics() {
+    let src = r#"extern t.k_scale(x: f64, n: i32, y: f64) -> f64 link "k_scale"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let a = unsafe "libc" "integer for f64" {
+        t.k_scale(1i32, 2i32, 0.25f64)
+    }
+    core.check.eq(a, 2.25f64)
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("ffi_int_for_f64", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_C_SRC);
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("unsupported type or value"), "{}", text(&r.stderr));
+}
+
+// ---- 型推論の完全化 第 1 段 (設計_KIR.md 第 8 章 8.5): while / loop、派生メソッド、char / bool、関数項目 ----
+
+/// 型推論の被覆計測 (`KSN_TYPE_COVERAGE=1`) で、未知の式が 0 件であることを確かめる。
+/// 型が決まらない式があれば、ここで落ちる (型規則の欠落の回帰)。
+fn assert_all_typed(name: &str, src: &str) {
+    let t = Tmp::new(name, src);
+    let o = Command::new(exe()).arg("check").env("KSN_TYPE_COVERAGE", "1").current_dir(&t.0).output().expect("spawn ksn");
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let err = text(&o.stderr);
+    assert!(err.contains("型変数 0 / 未知 0 (0.0%, うち根 0)"), "{}", err);
+}
+
+#[test]
+fn kir_while_and_loop_have_types() {
+    let fns = "fn t.spin(n: u32) -> u32 uses [] panics never
+    let mut i = 0u32
+    loop {
+        i = i.wrapping_add(1u32)
+        if i > n {
+            break
+        }
+    }
+    i
+end t.spin
+
+fn t.count(n: u32) -> u32 uses [] panics never
+    let mut i = 0u32
+    while i < n {
+        i = i.wrapping_add(1u32)
+    }
+    i
+end t.count
+
+fn t.forever(n: u32) -> u32 uses [] panics never
+    loop {
+        if n == 0u32 {
+            return 1u32
+        }
+    }
+end t.forever
+
+";
+    assert_all_typed("kir_loop_types", &main_wrap(fns, "    core.check.eq(t.spin(3u32), 4u32)\n    core.check.eq(t.count(3u32), 3u32)\n"));
+}
+
+#[test]
+fn kir_derived_methods_return_self_or_the_declared_type() {
+    // `clone` は Self (u32) を返すので、bool の注釈と食い違う。派生メソッドの戻り値の型が効いている。
+    let fns = "fn t.derived(a: u32) -> bool uses [] panics never
+    let b: bool = a.clone()
+    b
+end t.derived
+
+";
+    let t = Tmp::new("kir_derived_clone", &main_wrap(fns, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}", out);
+    assert!(codes(&out).iter().any(|c| c == "E2020"), "{}", out);
+}
+
+#[test]
+fn kir_char_and_bool_methods_are_resolved() {
+    let fns = "fn t.chars() -> u32 uses [] panics never
+    let c = 'a'
+    let b = true
+    let u = c.to_u32()
+    core.mem.drop(b.then_some(1u8))
+    core.mem.drop(c.to_ascii_uppercase())
+    u
+end t.chars
+
+";
+    assert_all_typed("kir_char_bool_typed", &main_wrap(fns, "    core.check.eq(t.chars(), 97u32)\n"));
+    // 戻り値の型が sig どおりに決まる (u32 を char の注釈に入れると E2020)。
+    let bad = "fn t.bad() -> char uses [] panics never
+    let c = 'a'
+    let n: char = c.to_u32()
+    n
+end t.bad
+
+";
+    let t = Tmp::new("kir_char_ret_mismatch", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2020"), "{}", out);
+}
+
+#[test]
+fn kir_function_item_as_value_has_a_function_type() {
+    let fns = "fn t.double(x: u32) -> u32 uses [] panics never
+    x.wrapping_add(x)
+end t.double
+
+fn t.apply() -> u32 uses [] panics never
+    let f = t.double
+    f(3u32)
+end t.apply
+
+";
+    assert_all_typed("kir_fn_item_typed", &main_wrap(fns, "    core.check.eq(t.apply(), 6u32)\n"));
+    // 関数項目の引数の型が宣言と違えば、クロージャの呼び出しとして E2023 にする。
+    let bad = "fn t.double(x: u32) -> u32 uses [] panics never
+    x.wrapping_add(x)
+end t.double
+
+fn t.bad() -> u32 uses [] panics never
+    let f = t.double
+    f(true)
+end t.bad
+
+";
+    let t = Tmp::new("kir_fn_item_arg_mismatch", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2023"), "{}", out);
+    assert!(out.contains("argument 1 of the closure"), "{}", out);
+}
+
+// ---- 型推論の完全化 第 2 段 (設計_KIR.md 第 8 章 8.7): メソッドの Fn 境界、腕どうしの型、列挙子のメソッド ----
+
+#[test]
+fn kir_method_fn_bound_is_unified_with_the_argument() {
+    // `map_err(t.code)` の関数項目の引数 (bool) と戻り値 (u32) が、メソッドの Fn 境界と単一化される。
+    // 結果の型は `Ok(k)` の枝と一致して決まる (型変数 0)。
+    let fns = "fn t.code(e: bool) -> u32 uses [] panics never
+    if e {
+        1u32
+    } else {
+        2u32
+    }
+end t.code
+
+fn t.wrap(r: Result<u8, bool>, k: u8) -> Result<u8, u32> uses [] panics never
+    if k == 0u8 {
+        r.map_err(t.code)
+    } else {
+        Ok(k)
+    }
+end t.wrap
+
+";
+    assert_all_typed("kir_map_err_typed", &main_wrap(fns, ""));
+    // 関数項目の引数の型 (bool) と Result のエラー型 (u8) が違えば、メソッドの引数の検査として E2023。
+    let bad = "fn t.code(e: bool) -> u32 uses [] panics never
+    if e {
+        1u32
+    } else {
+        2u32
+    }
+end t.code
+
+fn t.bad(r: Result<u8, u8>) -> Result<u8, u32> uses [] panics never
+    r.map_err(t.code)
+end t.bad
+
+";
+    let t = Tmp::new("kir_map_err_arg_mismatch", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2023"), "{}", out);
+}
+
+#[test]
+fn kir_match_and_if_arms_share_their_type() {
+    // `Ok` / `Err` / `None` の型引数は、同じ式の他の枝や戻り値型から決まる。
+    let fns = "fn t.checked(a: u8, b: u8) -> Result<u8, u8> uses [] panics never
+    match a.checked_add(b) {
+        Some(v) => Ok(v)
+        None => Err(a)
+    }
+end t.checked
+
+fn t.pick(a: u8) -> Option<u8> uses [] panics never
+    if a == 0u8 {
+        None
+    } else {
+        Some(a)
+    }
+end t.pick
+
+fn t.unwrap_or_zero(o: Option<u8>) -> u8 uses [] panics never
+    match o {
+        Some(v) => v
+        None => return 0u8
+    }
+end t.unwrap_or_zero
+
+";
+    assert_all_typed("kir_arms_typed", &main_wrap(fns, ""));
+}
+
+#[test]
+fn kir_method_on_unit_variant_is_resolved() {
+    // `t.Phase.Idle.next()` は、変種の値 (型 `t.Phase`) へのメソッド呼び出し。
+    let enum_and_next = "enum t.Phase derive [Debug, Clone, Copy, PartialEq]
+    Idle
+    Busy
+end t.Phase
+
+fn t.Phase.next(self: t.Phase) -> t.Phase uses [] panics never
+    match self {
+        t.Phase.Idle => t.Phase.Busy
+        t.Phase.Busy => t.Phase.Idle
+    }
+end t.Phase.next
+
+";
+    let fns = format!("{}fn t.after_idle() -> t.Phase uses [] panics never\n    t.Phase.Idle.next()\nend t.after_idle\n\n", enum_and_next);
+    assert_all_typed("kir_unit_variant_method_typed", &main_wrap(&fns, ""));
+    // 戻り値の型 (t.Phase) と注釈 (bool) が違えば、E2020。
+    let bad = format!("{}fn t.bad() -> bool uses [] panics never\n    let b: bool = t.Phase.Idle.next()\n    b\nend t.bad\n\n", enum_and_next);
+    let t = Tmp::new("kir_unit_variant_mismatch", &main_wrap(&bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2020"), "{}", out);
+}
+
+/// 基本型の `Display` (`display_fmt` で `core.fmt.Formatter` に書く。仕様 4.2) と派生の比較 (`ne` / `partial_cmp`) は、
+/// インタプリタとバンドルの両方で動く (以前は "unknown integer operation" で panic していた)。
+/// `to_string` は仕様に無く検査で拒む (tests/data/unsound/)。
+#[test]
+fn scalar_display_and_derived_methods_run_in_both() {
+    let test = "test t.main.test_scalar_display
+    let n: i64 = -7i64
+    let mut buf = [0u8; 32]
+    let mut f = core.fmt.Formatter.new(&mut buf)
+    core.mem.drop(n.display_fmt(&mut f))
+    core.check.eq(core.str.from_utf8(f.written()), Ok(\"-7\"))
+    let big: u32 = 4294967295u32
+    let mut buf2 = [0u8; 16]
+    let mut f2 = core.fmt.Formatter.new(&mut buf2)
+    core.mem.drop(big.display_fmt(&mut f2))
+    core.check.eq(core.str.from_utf8(f2.written()), Ok(\"4294967295\"))
+    let c: char = 'x'
+    let mut buf3 = [0u8; 8]
+    let mut f3 = core.fmt.Formatter.new(&mut buf3)
+    core.mem.drop(c.display_fmt(&mut f3))
+    core.check.eq(core.str.from_utf8(f3.written()), Ok(\"x\"))
+    let t: bool = true
+    let mut buf4 = [0u8; 8]
+    let mut f4 = core.fmt.Formatter.new(&mut buf4)
+    core.mem.drop(t.display_fmt(&mut f4))
+    core.check.eq(core.str.from_utf8(f4.written()), Ok(\"true\"))
+    core.check.eq(n != 3i64, true)
+    core.check.eq(n.partial_cmp(&3i64).is_some(), true)
+end t.main.test_scalar_display
+";
+    let src = format!("{}\n{}", main_wrap("", ""), test);
+    let t = Tmp::new("scalar_display_both", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_scalar_display ... ok (both: native)"), "{}", out);
+}
+
+/// Formatter の境界: i64.MIN / u64.MAX / 0 / マルチバイトの char / バッファがちょうど・不足 / debug の char。
+#[test]
+fn formatter_edge_cases_run_natively() {
+    let test = r#"test t.main.test_fmt_edges
+    let mn = core.num.i64.MIN
+    let mx = core.num.u64.MAX
+    let m5 = -5i8
+    let mut b1 = [0u8; 32]
+    let mut f1 = core.fmt.Formatter.new(&mut b1)
+    core.mem.drop(mn.display_fmt(&mut f1))
+    core.check.eq(core.str.from_utf8(f1.written()), Ok("-9223372036854775808"))
+    let mut b2 = [0u8; 32]
+    let mut f2 = core.fmt.Formatter.new(&mut b2)
+    core.mem.drop(mx.display_fmt(&mut f2))
+    core.check.eq(core.str.from_utf8(f2.written()), Ok("18446744073709551615"))
+    let z = 0u8
+    let mut b3 = [0u8; 4]
+    let mut f3 = core.fmt.Formatter.new(&mut b3)
+    core.mem.drop(z.display_fmt(&mut f3))
+    core.check.eq(core.str.from_utf8(f3.written()), Ok("0"))
+    let ce = 'é'
+    let ca = 'あ'
+    let mut b4 = [0u8; 5]
+    let mut f4 = core.fmt.Formatter.new(&mut b4)
+    core.mem.drop(ce.display_fmt(&mut f4))
+    core.mem.drop(ca.display_fmt(&mut f4))
+    core.check.eq(core.str.from_utf8(f4.written()), Ok("éあ"))
+    let mut b5 = [0u8; 8]
+    let mut f5 = core.fmt.Formatter.new(&mut b5)
+    core.check.is_true(f5.written().len() == 0usize)
+    core.check.is_true(core.fmt.Formatter.write_str(&mut f5, "12345678").is_ok())
+    core.check.is_true(core.fmt.Formatter.write_str(&mut f5, "9").is_err())
+    core.check.eq(core.str.from_utf8(f5.written()), Ok("12345678"))
+    let big = 12345i32
+    let mut b6 = [0u8; 3]
+    let mut f6 = core.fmt.Formatter.new(&mut b6)
+    core.check.is_true(big.display_fmt(&mut f6).is_err())
+    core.check.eq(core.str.from_utf8(f6.written()), Ok(""))
+    let cx = 'x'
+    let cn = '\n'
+    let cq = '\''
+    let ca2 = 'あ'
+    let tt = true
+    let mut b7 = [0u8; 32]
+    let mut f7 = core.fmt.Formatter.new(&mut b7)
+    core.mem.drop(cx.debug_fmt(&mut f7))
+    core.mem.drop(cn.debug_fmt(&mut f7))
+    core.mem.drop(cq.debug_fmt(&mut f7))
+    core.mem.drop(ca2.debug_fmt(&mut f7))
+    core.mem.drop(tt.debug_fmt(&mut f7))
+    core.mem.drop(m5.debug_fmt(&mut f7))
+    core.check.eq(core.str.from_utf8(f7.written()), Ok("'x''\\n''\\'''あ'true-5"))
+end t.main.test_fmt_edges
+"#;
+    let src = format!("{}\n{}", main_wrap("", ""), test);
+    let t = Tmp::new("fmt_edges_both", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_fmt_edges ... ok (both: native)"), "{}", out);
+}
+
+/// `Display` の char は文字そのもの。`print_line` と `to_string` の出力を確かめる。
+#[test]
+fn char_display_prints_the_character_itself() {
+    let body = "    let c: char = 'x'\n    let mut buf = [0u8; 8]\n    let mut f = core.fmt.Formatter.new(&mut buf)\n    core.mem.drop(c.display_fmt(&mut f))\n    match core.str.from_utf8(f.written()) {\n        Ok(s) => std.io.print_line(s)?\n        Err(_e) => std.io.print_line(\"bad\")?\n    }\n    let n = 7u8\n    let mut buf2 = [0u8; 4]\n    let mut f2 = core.fmt.Formatter.new(&mut buf2)\n    core.mem.drop(n.display_fmt(&mut f2))\n    match core.str.from_utf8(f2.written()) {\n        Ok(s) => std.io.print_line(s)?\n        Err(_e) => std.io.print_line(\"bad\")?\n    }\n";
+    let t = Tmp::new("char_display", &main_wrap("", body));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout), "x\n7\n");
+}
+
+/// 整数の幅変換は `from_*` / `try_from_*` (仕様 4.5)。`to_<整数型>` は持たない。
+#[test]
+fn integer_width_conversion_uses_from_not_to() {
+    let t = Tmp::new("int_from", &main_wrap("", "    core.check.eq(u32.from_u8(200u8), 200u32)\n"));
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn int_to_conversion_is_e1108_with_from_fix() {
+    // 整数の `to_<整数型>` は廃止 (4.5)。幅が広がる変換は `u32.from_u8(x)` を案内し、機械適用できる修正を付ける。
+    let bad = "fn t.widen(x: u8) -> u32 uses [] panics never
+    x.to_u32()
+end t.widen
+
+";
+    let t = Tmp::new("int_to_conversion_bad", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("u32.from_u8(x)"), "{}", out);
+    assert!(out.contains("\"replace\": \"u32.from_u8(x)\""), "{}", out);
+    // 狭める変換には Result の `try_from_*` を案内する (修正は付けない: 型が変わるため)。
+    let narrow = "fn t.narrow(x: u32) -> u8 uses [] panics never
+    x.to_u8()
+end t.narrow
+
+";
+    let t = Tmp::new("int_to_conversion_narrow", &main_wrap(narrow, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(out.contains("u8.try_from_u32(x)"), "{}", out);
+    assert!(!out.contains("\"replace\": \"u8.try_from"), "{}", out);
+}
+
+#[test]
+fn int_conversions_that_exist_are_clean() {
+    // 正しい形: `from_*` / `try_from_*`、`to_f64`、char の `to_u32`。どれも E1108 にしない。
+    let ok = "fn t.a(x: u8) -> u32 uses [] panics never
+    u32.from_u8(x)
+end t.a
+
+fn t.b(x: u32) -> Result<u8, core.num.TryFromIntError> uses [] panics never
+    u8.try_from_u32(x)
+end t.b
+
+fn t.c(x: u8) -> f64 uses [] panics never
+    x.to_f64()
+end t.c
+
+fn t.d(c: char) -> u32 uses [] panics never
+    c.to_u32()
+end t.d
+
+";
+    assert_all_typed("int_conversion_ok_typed", &main_wrap(ok, ""));
+    let t = Tmp::new("int_conversion_ok", &main_wrap(ok, ""));
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn float_literal_method_without_context_is_e2027() {
+    // `let a = 9.0` の型が文脈から決まらないままメソッドを呼ぶ: 仕様どおり E2027。
+    let bad = "fn t.root() -> f64 uses [] panics never
+    let a = 9.0
+    a.sqrt()
+end t.root
+
+";
+    let t = Tmp::new("float_method_no_context", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2027"), "{}", out);
+    // 接尾辞を付ければ型が決まる。後から型が決まる場合は E2027 にしない。
+    let ok = "fn t.suffixed() -> f64 uses [] panics never
+    let a = 9.0f64
+    a.sqrt()
+end t.suffixed
+
+fn t.later(b: f32) -> f32 uses [] panics never
+    let a = 9.0
+    let r = a.sqrt()
+    let s: f32 = a
+    b
+end t.later
+
+";
+    let t = Tmp::new("float_method_context", &main_wrap(ok, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E2027"), "{}", out);
+}
+
+#[test]
+fn derived_ordering_operators_are_not_methods() {
+    // `<` 等は partial_cmp から導く演算子で、メソッドではない (3.2)。`lt` などは E1108。
+    let bad = "fn t.f(a: u8, b: u8) -> bool uses [] panics never
+    a.lt(b)
+end t.f
+
+";
+    let t = Tmp::new("derived_lt_is_not_method", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+}
+
+#[test]
+fn move_capture_that_is_rewritten_does_not_meet_the_fn_bound() {
+    // `move` で捕まえた値を書き換えるクロージャは、読むだけの `Fn` を満たさない (FnMut まで)。
+    let (got, out) = check_codes(
+        "cl_move_mut",
+        &[
+            "let mut n = 0u32",
+            "let f = fn(acc: u32, x: u32) -> u32 capture [move n] {",
+            "    n = acc + x",
+            "    n",
+            "}",
+            "let total = core.iter.fold(core.iter.range(0u32, 4u32), 0u32, f)",
+            "core.mem.drop(total)",
+        ],
+    );
+    assert!(got.iter().any(|c| c == "E2030"), "{}", out);
+}
+
+#[test]
+fn move_capture_that_is_consumed_does_not_meet_the_fn_bound() {
+    // `move` で捕まえた Copy でない値を値のまま消費するクロージャは FnOnce で、Fn / FnMut を満たさない。
+    let (got, out) = check_codes(
+        "cl_move_once",
+        &[
+            "let v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let f = fn(acc: u32, x: u32) -> u32 capture [move v] {",
+            "    core.mem.drop(v)",
+            "    acc + x",
+            "}",
+            "let total = core.iter.fold(core.iter.range(0u32, 4u32), 0u32, f)",
+            "core.mem.drop(total)",
+        ],
+    );
+    assert!(got.iter().any(|c| c == "E2030"), "{}", out);
+}
+
+#[test]
+fn move_capture_that_is_only_read_meets_the_fn_bound() {
+    // `move` で捕まえても本体が読むだけ (Copy の値、メソッドのレシーバ) なら Fn を満たす (Rust と同じ)。
+    let (got, out) = check_codes(
+        "cl_move_read",
+        &[
+            "let k = 7u32",
+            "let s = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+            "let f = fn(acc: u32, x: u32) -> u32 capture [move k, move s] {",
+            "    core.mem.drop(s.len())",
+            "    acc + x * k",
+            "}",
+            "let total = core.iter.fold(core.iter.range(0u32, 4u32), 0u32, f)",
+            "core.mem.drop(total)",
+        ],
+    );
+    assert!(!got.iter().any(|c| c == "E2030"), "{}", out);
+}
+
+/// バンドル (インタプリタ同梱の起動スクリプト) が実行権限を持ち、相対パス・PATH 経由・
+/// 別ディレクトリから起動しても同梱物を exec できること。基本型の `display_fmt` は clif 未対応なので
+/// ネイティブ生成が失敗し、バンドルへフォールバックする。
+#[cfg(unix)]
+#[test]
+fn bundle_launcher_is_executable_and_location_independent() {
+    use std::os::unix::fs::PermissionsExt;
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let n = 42u32
+    let mut buf = [0u8; 16]
+    let mut f = core.fmt.Formatter.new(&mut buf)
+    core.mem.drop(n.display_fmt(&mut f))
+    match core.str.from_utf8(f.written()) {
+        Ok(s) => std.io.print_line(s)?
+        Err(_e) => std.io.print_line(\"bad\")?
+    }
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("bundle_launcher", src);
+    let cache = std::env::temp_dir().join(format!("ksn_bundle_cache_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let o = Command::new(exe())
+        .args(["build", "--release"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let rel_dir = Path::new("target").join("release");
+    let rel_dir_abs = t.0.join(&rel_dir);
+    let launcher = rel_dir_abs.join("t");
+    let mode = fs::metadata(&launcher).expect("launcher exists").permissions().mode();
+    assert!(mode & 0o111 != 0, "launcher is not executable: mode {:o}", mode);
+
+    let check = |o: Output, how: &str| {
+        assert_eq!(o.status.code(), Some(0), "{}: {}", how, text(&o.stderr));
+        assert_eq!(text(&o.stdout), "42\n", "{}", how);
+    };
+    // 1. パッケージ直下から相対パスで起動
+    check(Command::new(rel_dir.join("t")).current_dir(&t.0).output().unwrap(), "relative path");
+    // 2. 親ディレクトリから、パッケージを含む相対パスで起動
+    let parent = t.0.parent().unwrap().to_path_buf();
+    let pkg_name = t.0.file_name().unwrap().to_os_string();
+    let via_parent = Path::new(&pkg_name).join(&rel_dir).join("t");
+    check(Command::new(&via_parent).current_dir(&parent).output().unwrap(), "relative path from parent");
+    // 3. 無関係なディレクトリから絶対パスで起動
+    check(Command::new(&launcher).current_dir(&cache).output().unwrap(), "absolute path");
+    // 4. PATH 経由 (bare name。$0 にスラッシュが無い場合の解決)
+    let path = format!("{}:{}", rel_dir_abs.display(), std::env::var("PATH").unwrap_or_default());
+    check(Command::new("t").env("PATH", path).current_dir(&cache).output().unwrap(), "PATH lookup");
+
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn kir_iter_adapters_are_typed_through_the_impl() {
+    // `map` / `filter` の結果の E・P (効果・panic の実引数) は型変数にならない。`enumerate` / `take` / `count` の
+    // `T` は、境界 `I: Iterator<T, E, P>` の I の impl (`Range` / `Enumerate` / 利用者の型) から決まる (型変数 0)。
+    let fns = "type t.Upto pub
+    cur: u32
+    stop: u32
+end t.Upto
+
+impl core.iter.Iterator<u32, [], never> for t.Upto
+fn t.Upto.next(self: &mut t.Upto) -> Option<u32> uses [] panics never impls core.iter.Iterator<u32, [], never>
+    if self.cur < self.stop {
+        let v = self.cur
+        self.cur = self.cur.wrapping_add(1u32)
+        Some(v)
+    } else {
+        None
+    }
+end t.Upto.next
+
+fn t.chain(n: i32) -> i32 uses [] panics never
+    core.iter.fold(
+        core.iter.map(
+            core.iter.filter(
+                core.iter.range(0i32, n),
+                fn(x: &i32) -> bool capture [] {
+                    *x > 2i32
+                },
+            ),
+            fn(x: i32) -> i32 capture [] {
+                x.wrapping_mul(2i32)
+            },
+        ),
+        0i32,
+        fn(a: i32, x: i32) -> i32 capture [] {
+            a.wrapping_add(x)
+        },
+    )
+end t.chain
+
+fn t.count_it() -> usize uses [] panics never
+    core.iter.count(core.iter.enumerate(core.iter.take(core.iter.range(0u8, 9u8), 2usize)))
+end t.count_it
+
+fn t.user_sum() -> u32 uses [] panics never
+    core.iter.fold(t.Upto { cur: 0u32, stop: 4u32 }, 0u32, fn(a: u32, x: u32) -> u32 capture [] {
+        a.wrapping_add(x)
+    })
+end t.user_sum
+
+";
+    assert_all_typed("kir_iter_adapters_typed", &main_wrap(fns, ""));
+}
+
+#[test]
+fn kir_iter_adapter_element_type_mismatch_is_reported() {
+    // 境界の要素型 (`range(0i32, ..)` の `T` = i32) と、フィルタのクロージャの引数型 (`&u8`) が違えば E2023。
+    let bad = "fn t.bad(n: i32) -> usize uses [] panics never
+    core.iter.count(
+        core.iter.filter(
+            core.iter.range(0i32, n),
+            fn(x: &u8) -> bool capture [] {
+                *x > 2u8
+            },
+        ),
+    )
+end t.bad
+
+";
+    let t = Tmp::new("kir_iter_filter_arg_mismatch", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E2023"), "{}", out);
+}
+
+/// `str` / `String` の `to_string`、スライス `Iter.count`、`&str` / `&[T]` / Option / Result の派生比較
+/// (`eq` `ne` `cmp` `partial_cmp`) は spec/stdlib の規範どおり check が受理する。以前はいずれも
+/// インタプリタで "no method ..." の panic になっていた。インタプリタとバンドルの両方で動くことを確かめる。
+#[test]
+fn str_slice_option_result_sig_methods_run_in_both() {
+    let test = "test t.main.test_a_option_result_cmp
+    let o: Option<u8> = Some(1u8)
+    core.check.eq(o.eq(&Some(1u8)), true)
+    core.check.eq(o.cmp(&None) == core.cmp.Ordering.Greater, true)
+    let r: Result<u8, u8> = Ok(1u8)
+    core.check.eq(r != Err(1u8), true)
+end t.main.test_a_option_result_cmp
+
+test t.main.test_b_slice_count
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(1u8))
+    core.mem.drop(v.push(2u8))
+    core.check.eq(v.iter().count(), 2usize)
+    let mut it = v.iter()
+    core.mem.drop(it.next())
+    core.check.eq(it.count(), 1usize)
+end t.main.test_b_slice_count
+
+test t.main.test_c_str_derived_cmp
+    let s: &str = \"ab\"
+    let t: &str = \"ac\"
+    core.check.eq(s.eq(&t), false)
+    core.check.eq(s != t, true)
+    core.check.eq(s.cmp(&t) == core.cmp.Ordering.Less, true)
+    core.check.eq(s.partial_cmp(&t).is_some(), true)
+end t.main.test_c_str_derived_cmp
+
+test t.main.test_d_to_string
+    let s: &str = \"héllo\"
+    let mut owned = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(o) => o
+        Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+    core.check.eq(owned.as_str(), \"héllo\")
+    core.check.eq(owned.len(), 6usize)
+    core.mem.drop(owned.push('!'))
+    core.check.eq(owned.as_str(), \"héllo!\")
+    let st = alloc.string.String.new(std.alloc.SYSTEM)
+    core.check.eq(st.is_empty(), true)
+end t.main.test_d_to_string
+";
+    let src = format!("{}\n{}", main_wrap("", ""), test);
+    let t = Tmp::new("str_slice_option_result_sig", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    for name in ["test_a_option_result_cmp", "test_b_slice_count", "test_c_str_derived_cmp"] {
+        // 機械語とインタプリタの結果が一致する。
+        assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
+    }
+    // 解放が要る値を作る `match` (`Ok(o) => o` / `Err(_e) => ..`) は機械語で動き、インタプリタと一致する。
+    assert!(out.contains("t.main.test_d_to_string ... ok (both: native)"), "{}", out);
+}
+
+#[test]
+fn derived_cmp_and_iter_count_boundaries_run_native() {
+    // `Option` / `Result` / `str` の派生の比較 (None < Some、Ok < Err、ペイロードは辞書順、str は UTF-8 バイト列の辞書順) と
+    // `v.iter()` の `next` / `count` の境界を、機械語とインタプリタで比べる。
+    let test = r#"test t.main.test_e_option_boundaries
+    let none: Option<i8> = None
+    let a: Option<i8> = Some(-1i8)
+    let b: Option<i8> = Some(1i8)
+    core.check.eq(none.cmp(&none) == core.cmp.Ordering.Equal, true)
+    core.check.eq(none.cmp(&a) == core.cmp.Ordering.Less, true)
+    core.check.eq(a.cmp(&none) == core.cmp.Ordering.Greater, true)
+    core.check.eq(a.cmp(&a) == core.cmp.Ordering.Equal, true)
+    core.check.eq(a.cmp(&b) == core.cmp.Ordering.Less, true)
+    core.check.eq(b.cmp(&a) == core.cmp.Ordering.Greater, true)
+    core.check.eq(none.eq(&none), true)
+    core.check.eq(none.eq(&a), false)
+    core.check.eq(a != b, true)
+    core.check.eq(a != a, false)
+    let big: Option<u8> = Some(255u8)
+    let small: Option<u8> = Some(1u8)
+    core.check.eq(big.cmp(&small) == core.cmp.Ordering.Greater, true)
+    let sa: Option<&str> = Some("ab")
+    let sb: Option<&str> = Some("abc")
+    core.check.eq(sa.cmp(&sb) == core.cmp.Ordering.Less, true)
+    core.check.eq(sb.cmp(&sa) == core.cmp.Ordering.Greater, true)
+    core.check.eq(sa.eq(&sb), false)
+    let pa: Option<core.cmp.Ordering> = sa.partial_cmp(&sb)
+    core.check.eq(pa.is_some(), true)
+end t.main.test_e_option_boundaries
+
+test t.main.test_f_result_boundaries
+    let ok1: Result<u8, u8> = Ok(1u8)
+    let ok2: Result<u8, u8> = Ok(2u8)
+    let er0: Result<u8, u8> = Err(0u8)
+    let er9: Result<u8, u8> = Err(9u8)
+    core.check.eq(ok1.cmp(&ok1) == core.cmp.Ordering.Equal, true)
+    core.check.eq(ok1.cmp(&ok2) == core.cmp.Ordering.Less, true)
+    core.check.eq(ok2.cmp(&ok1) == core.cmp.Ordering.Greater, true)
+    core.check.eq(ok2.cmp(&er0) == core.cmp.Ordering.Less, true)
+    core.check.eq(er0.cmp(&ok2) == core.cmp.Ordering.Greater, true)
+    core.check.eq(er0.cmp(&er9) == core.cmp.Ordering.Less, true)
+    core.check.eq(er9.cmp(&er0) == core.cmp.Ordering.Greater, true)
+    core.check.eq(er9.cmp(&er9) == core.cmp.Ordering.Equal, true)
+    core.check.eq(ok1.eq(&ok1), true)
+    core.check.eq(ok1.eq(&er0), false)
+    core.check.eq(ok1 != Ok(1u8), false)
+    core.check.eq(er0 != Err(1u8), true)
+end t.main.test_f_result_boundaries
+
+test t.main.test_g_str_boundaries
+    let empty: &str = ""
+    let a: &str = "a"
+    let ab: &str = "ab"
+    let abc: &str = "abc"
+    let b: &str = "b"
+    core.check.eq(empty.cmp(&empty) == core.cmp.Ordering.Equal, true)
+    core.check.eq(empty.cmp(&a) == core.cmp.Ordering.Less, true)
+    core.check.eq(a.cmp(&empty) == core.cmp.Ordering.Greater, true)
+    core.check.eq(ab.cmp(&abc) == core.cmp.Ordering.Less, true)
+    core.check.eq(abc.cmp(&ab) == core.cmp.Ordering.Greater, true)
+    core.check.eq(abc.cmp(&b) == core.cmp.Ordering.Less, true)
+    core.check.eq(b.cmp(&abc) == core.cmp.Ordering.Greater, true)
+    core.check.eq(abc.cmp(&abc) == core.cmp.Ordering.Equal, true)
+    core.check.eq(ab.eq(&abc), false)
+    core.check.eq(abc.eq(&abc), true)
+    core.check.eq(empty.eq(&empty), true)
+    core.check.eq(ab != abc, true)
+    core.check.eq(abc != abc, false)
+    let e1: &str = "é"
+    let e2: &str = "f"
+    let e3: &str = "あ"
+    let e4: &str = "い"
+    let e5: &str = "éa"
+    core.check.eq(e1.cmp(&e2) == core.cmp.Ordering.Greater, true)
+    core.check.eq(e2.cmp(&e1) == core.cmp.Ordering.Less, true)
+    core.check.eq(e3.cmp(&e4) == core.cmp.Ordering.Less, true)
+    core.check.eq(e1.cmp(&e5) == core.cmp.Ordering.Less, true)
+    core.check.eq(e1.cmp(&e1) == core.cmp.Ordering.Equal, true)
+    core.check.eq(e1.eq(&e1), true)
+    core.check.eq(e1.eq(&e5), false)
+    let p = ab.partial_cmp(&abc)
+    core.check.eq(p.is_some(), true)
+    core.check.eq(p.unwrap() == core.cmp.Ordering.Less, true)
+end t.main.test_g_str_boundaries
+
+test t.main.test_h_count_boundaries
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.check.eq(v.iter().count(), 0usize)
+    let mut it0 = v.iter()
+    core.check.eq(it0.next().is_none(), true)
+    core.check.eq(it0.count(), 0usize)
+    core.mem.drop(v.push(7u32))
+    core.mem.drop(v.push(8u32))
+    core.mem.drop(v.push(9u32))
+    let mut it = v.iter()
+    core.check.eq(it.next().unwrap(), 7u32)
+    core.check.eq(it.next().unwrap(), 8u32)
+    core.check.eq(it.count(), 1usize)
+    let mut it2 = v.iter()
+    core.mem.drop(it2.next())
+    core.mem.drop(it2.next())
+    core.mem.drop(it2.next())
+    core.check.eq(it2.next().is_none(), true)
+    core.check.eq(it2.count(), 0usize)
+end t.main.test_h_count_boundaries
+"#;
+    let src = format!("{}\n{}", main_wrap("", ""), test);
+    let t = Tmp::new("derived_cmp_boundaries", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    for name in ["test_e_option_boundaries", "test_f_result_boundaries", "test_g_str_boundaries", "test_h_count_boundaries"] {
+        assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
+    }
+}
+
+/// 解放が要る値を返す `match` (腕が Vec / String を返す、解放が要る payload を束縛する・捨てる、腕の `return`、
+/// 繰り返し) が機械語でも動き、インタプリタと一致する。二重解放や解放漏れがあれば機械語側が落ちるか、
+/// 10 万回の繰り返しで結果が合わなくなる。
+#[test]
+fn match_producing_droppable_values_runs_natively() {
+    let pick = r#"fn t.pick(s: &str) -> alloc.string.String uses [alloc] panics never
+    match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(o) => return o
+        Err(_e) => return alloc.string.String.new(std.alloc.SYSTEM)
+    }
+end t.pick
+
+"#;
+    let tests = r#"test t.main.test_e_vec_arms
+    let n = 1u8
+    let mut v: alloc.vec.Vec<u8, std.alloc.System> = match n {
+        0u8 => alloc.vec.Vec.new(std.alloc.SYSTEM)
+        _ => alloc.vec.Vec.new(std.alloc.SYSTEM)
+    }
+    core.mem.drop(v.push(7u8))
+    core.check.eq(v.len(), 1usize)
+end t.main.test_e_vec_arms
+
+test t.main.test_f_block_arm_moves_local
+    let n = 1u8
+    let v: alloc.vec.Vec<u8, std.alloc.System> = match n {
+        0u8 => alloc.vec.Vec.new(std.alloc.SYSTEM)
+        _ => {
+            let mut w: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            core.mem.drop(w.push(5u8))
+            w
+        }
+    }
+    core.check.eq(v.len(), 1usize)
+end t.main.test_f_block_arm_moves_local
+
+test t.main.test_g_unused_payloads
+    let s: &str = "abc"
+    let a = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(_o) => 1usize
+        Err(_e) => 0usize
+    }
+    core.check.eq(a, 1usize)
+    let b = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(_) => 2usize
+        Err(_e) => 0usize
+    }
+    core.check.eq(b, 2usize)
+    let c = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(o) => o.len()
+        Err(_e) => 9usize
+    }
+    core.check.eq(c, 3usize)
+end t.main.test_g_unused_payloads
+
+test t.main.test_h_loop_100k
+    let mut i = 0usize
+    let mut total = 0usize
+    while i < 100000usize {
+        let s = match alloc.string.String.from_str(std.alloc.SYSTEM, "héllo") {
+            Ok(o) => o
+            Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        total = total + s.len()
+        i = i + 1usize
+    }
+    core.check.eq(total, 600000usize)
+end t.main.test_h_loop_100k
+
+test t.main.test_i_return_from_arm
+    let s = t.pick("xy")
+    core.check.eq(s.len(), 2usize)
+    let e = t.pick("")
+    core.check.eq(e.is_empty(), true)
+end t.main.test_i_return_from_arm
+
+test t.main.test_k_place_scrutinee_fresh_arms
+    let r = alloc.string.String.from_str(std.alloc.SYSTEM, "xy")
+    let s = match r {
+        Ok(_o) => alloc.string.String.new(std.alloc.SYSTEM)
+        Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+    core.check.eq(s.is_empty(), true)
+end t.main.test_k_place_scrutinee_fresh_arms
+"#;
+    let src = format!("{}\n{}", main_wrap(pick, ""), tests);
+    let t = Tmp::new("match_droppable_native", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert_eq!(out.matches("(both: native)").count(), 6, "{}", out);
+    assert!(!out.contains("both: bundle"), "{}", out);
+    assert!(out.contains("6 passed; 0 failed"), "{}", out);
+}
+
+/// 解放が要る値を持つ場所 (`let` の局所) から移動する `match` は、所有の扱いを持たないので退避する。
+/// 退避の理由が出て、バンドルでも正しく動く。
+#[test]
+fn match_moving_out_of_a_place_scrutinee_falls_back_with_reason() {
+    let tests = r#"test t.main.test_j_place_scrutinee_moves
+    let r = alloc.string.String.from_str(std.alloc.SYSTEM, "x")
+    let s = match r {
+        Ok(o) => o
+        Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+    core.check.eq(s.len(), 1usize)
+end t.main.test_j_place_scrutinee_moves
+"#;
+    let src = format!("{}\n{}", main_wrap("", ""), tests);
+    let t = Tmp::new("match_place_fallback", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("t.main.test_j_place_scrutinee_moves ... ok (both: bundle (native skipped: "), "{}", out);
+}
+
+#[test]
+fn comparison_method_names_hint_the_operator_not_a_near_name() {
+    // `lt` 等は演算子 (4.3) で、`ln` のような近い名前を提案しない。
+    let bad = "fn t.f(a: u8, b: u8) -> bool uses [] panics never
+    a.lt(b)
+end t.f
+
+fn t.g(a: u8, b: u8) -> bool uses [] panics never
+    a.ge(b)
+end t.g
+
+";
+    let t = Tmp::new("cmp_method_hint", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("use `a < b`"), "{}", out);
+    assert!(out.contains("use `a >= b`"), "{}", out);
+    assert!(!out.contains("did you mean"), "{}", out);
+}
+
+#[test]
+fn float_to_int_method_is_e1108_with_trunc_hint() {
+    // 浮動小数の `to_<整数型>` は廃止された変換名。切り捨て・範囲外 None の `trunc_to_*` (Option) を案内する。
+    // 型が Option に変わるので機械適用の修正は付けない。
+    let bad = "fn t.g(x: f64) -> u32 uses [] panics never
+    x.to_u32()
+end t.g
+
+fn t.h(x: f32) -> u8 uses [] panics never
+    x.to_u8()
+end t.h
+
+";
+    let t = Tmp::new("float_to_int_bad", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(codes(&out).iter().filter(|c| *c == "E1108").count(), 2, "{}", out);
+    assert!(out.contains("x.trunc_to_u32()"), "{}", out);
+    assert!(out.contains("x.trunc_to_u8()"), "{}", out);
+    assert!(!out.contains("\"replace\""), "{}", out);
+    // 正しい形 (`trunc_to_*` と、浮動小数どうしの `to_f64`) は E1108 にしない。
+    let ok = "fn t.g(x: f64) -> Option<u32> uses [] panics never
+    x.trunc_to_u32()
+end t.g
+
+fn t.h(x: f32) -> f64 uses [] panics never
+    x.to_f64()
+end t.h
+
+";
+    let t = Tmp::new("float_to_int_ok", &main_wrap(ok, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+}
+
+#[test]
+fn derived_ord_min_max_check_and_run() {
+    // `Ord` を derive した型の `min` / `max` は Self を返す (仕様 4.3)。等しいとき min は self、max は other。
+    // `Ord` を derive しない型では E1108 (型検査が「メソッドがない」と出す)。
+    let ok = "type t.P derive [Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord]
+    x: u8
+end t.P
+
+fn t.pick(a: t.P, b: t.P) -> t.P uses [] panics never
+    a.min(b)
+end t.pick
+
+";
+    let body = "    core.check.eq(t.pick(t.P { x: 3u8 }, t.P { x: 5u8 }).x, 3u8)
+    core.check.eq(t.P { x: 3u8 }.max(t.P { x: 5u8 }).x, 5u8)
+";
+    let src = main_wrap(ok, body).replace("uses [io.console] panics may", "uses [] panics may");
+    let t = Tmp::new("derived_ord_min_max", &src);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1108"), "{}", text(&o.stdout));
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+
+    let bad = "type t.Q derive [Debug, Clone, Copy, PartialEq]
+    x: u8
+end t.Q
+
+fn t.pick(a: t.Q, b: t.Q) -> t.Q uses [] panics never
+    a.min(b)
+end t.pick
+
+";
+    let t = Tmp::new("derived_min_without_ord", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("has no method `min`"), "{}", out);
+}
+
+// ---- check/raw-ptr-types: 生ポインタの型 (`*const T` / `*mut T`) を型検査が見る ----
+
+/// `unsafe` を許したパッケージを `check --json` にかけ、出力文字列を返す (1 診断 1 行の JSON)。
+fn raw_ptr_check(name: &str, src: &str) -> String {
+    let t = Tmp::new(name, src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    text(&o.stdout)
+}
+
+#[test]
+fn raw_ptr_annotations_accept_the_correct_forms_without_errors() {
+    // 正しい書き方: from_mut / from_ref / null_mut / as_const / as_mut / cast、`*mut` → `*const` の暗黙の縮小、読み書き。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    let c: *const i32 = core.ptr.as_const(p)
+    let q: *const i32 = core.ptr.from_ref(&x)
+    let m: *mut i32 = core.ptr.as_mut(q)
+    let n: *mut i32 = core.ptr.null_mut::<i32>()
+    let b: *mut u8 = core.ptr.cast::<i32, u8>(p)
+    let r: *const u8 = b
+    let u: *const i32 = p
+    unsafe \"libc\" \"correct forms\" {
+        core.ptr.write(m, 2i32)
+        core.check.eq(core.ptr.read(c), 2i32)
+        core.check.eq(core.ptr.is_null(n), true)
+        core.check.eq(core.ptr.read(u), 2i32)
+        core.check.eq(core.ptr.read(r), 2u8)
+    }
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_ok", src);
+    assert!(!codes(&out).iter().any(|c| c == "E2020" || c == "E2023"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_let_annotation_rejects_a_plain_value() {
+    // `let s: *mut i32 = 5i32`: 値をポインタの注釈へ入れると E2020。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let s: *mut i32 = 5i32
+    core.check.eq(core.ptr.is_null(s), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_val", src);
+    assert!(out.contains("E2020") && out.contains("expected *mut i32, found i32"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_let_annotation_rejects_const_into_mut() {
+    // `let r: *mut i32 = core.ptr.from_ref(&x)`: `from_ref` は `*const` を返すので、`*mut` の注釈は E2020。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let r: *mut i32 = core.ptr.from_ref(&x)
+    core.check.eq(core.ptr.is_null(r), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_const_to_mut", src);
+    assert!(out.contains("E2020") && out.contains("expected *mut i32, found *const i32"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_let_annotation_rejects_a_different_element_type() {
+    // 要素型が確定して食い違う (`*const u8` と `*const i32`) のは E2020。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let r: *const u8 = core.ptr.from_ref(&x)
+    core.check.eq(core.ptr.is_null(r), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_elem", src);
+    assert!(out.contains("E2020") && out.contains("expected *const u8, found *const i32"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_pointer_is_not_a_plain_integer_annotation() {
+    // ポインタを整数の注釈へ入れるのは E2020 (`core.ptr.null_mut::<i32>()` を `i32` へ)。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let n: i32 = core.ptr.null_mut::<i32>()
+    core.check.eq(n, 0i32)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_to_int", src);
+    assert!(out.contains("E2020") && out.contains("expected i32, found *mut i32"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_unsuffixed_literal_is_not_a_pointer() {
+    // 整数リテラルをポインタの注釈へ入れるのは E2020 (型は `{integer}`)。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let q: *mut i32 = 5
+    core.check.eq(core.ptr.is_null(q), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_literal", src);
+    assert!(out.contains("E2020") && out.contains("expected *mut i32, found {integer}"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_const_argument_to_mut_parameter_is_rejected() {
+    // 宣言が `*mut i32` の関数へ `from_ref` (const) の値を渡すと E2023。
+    let src = "fn t.take(p: *mut i32) -> () uses [] panics never
+    core.check.eq(core.ptr.is_null(p), false)
+end t.take
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    t.take(core.ptr.from_ref(&x))
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_arg", src);
+    assert!(out.contains("E2023") && out.contains("expected `*mut i32`, found `*const i32`"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_mut_argument_to_const_parameter_is_accepted() {
+    // `*mut` → `*const` の縮小は暗黙に許す (宣言が `*const` の関数へ `*mut` を渡す)。
+    let src = "fn t.look(p: *const i32) -> i32 uses [] panics never
+    core.ptr.read(p)
+end t.look
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    unsafe \"libc\" \"read through a mutable pointer\" {
+        core.check.eq(t.look(p), 1i32)
+    }
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_mut_to_const", src);
+    assert!(!codes(&out).iter().any(|c| c == "E2020" || c == "E2023"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_return_value_mismatch_is_rejected() {
+    // 戻り値が `*mut` の関数で `from_ref` (const) を返すと E2020 (戻り値)。
+    let src = "fn t.back(x: &i32) -> *mut i32 uses [] panics never
+    core.ptr.from_ref(x)
+end t.back
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let r = t.back(&x)
+    core.check.eq(core.ptr.is_null(r), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_ret", src);
+    assert!(out.contains("E2020") && out.contains("type mismatch in return value: expected *mut i32, found *const i32"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_extern_mut_parameter_rejects_a_const_pointer() {
+    // extern 宣言の `*mut u8` 引数へ `*const u8` (from_ref) を渡すと E2023。
+    let src = "extern t.free(pointer: *mut u8) -> () link \"free\"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let b: u8 = 1u8
+    unsafe \"libc\" \"free a const pointer\" {
+        t.free(core.ptr.from_ref(&b))
+    }
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_extern", src);
+    assert!(out.contains("E2023") && out.contains("expected `*mut u8`, found `*const u8`"), "{}", out);
+}
+
+#[test]
+fn raw_ptr_reference_to_pointer_annotation_stays_silent() {
+    // 参照は透過的に扱う方針なので、`&x` を `*const` の注釈へ入れても黙る (取りこぼしを選ぶ)。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let s: *const i32 = &x
+    core.check.eq(core.ptr.is_null(s), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("raw_ptr_ref_silent", src);
+    assert!(!codes(&out).iter().any(|c| c == "E2020" || c == "E2023"), "{}", out);
+}
+
+// ---------------------------------------------------------------- 式 ID と型表 (設計_KIR.md 段階 1)
+
+const ADD1: &str = "fn t.add1(a: u8) -> u8 uses [] panics never
+    let b: u8 = a
+    b.wrapping_add(1)
+end t.add1
+
+";
+
+/// `KSN_DUMP_TYPES=1 ksn check` の stderr。
+fn dump_types(dir: &Path) -> String {
+    let o = Command::new(exe()).arg("check").env("KSN_DUMP_TYPES", "1").current_dir(dir).output().expect("spawn ksn");
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    text(&o.stderr)
+}
+
+/// 型表の 1 行 (`FQN \t #id \t 種別 \t line N \t 型`) を (FQN, 式 ID, 種別, 型) に分ける。
+fn type_rows(dump: &str) -> Vec<(String, u32, String, String)> {
+    dump.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            if f.len() != 5 {
+                return None;
+            }
+            let id = f[1].strip_prefix('#')?.parse().ok()?;
+            Some((f[0].to_string(), id, f[2].to_string(), f[4].to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn expr_ids_and_type_table_are_stable_for_same_source() {
+    let t = Tmp::new("expr_ids_stable", &main_wrap(ADD1, ""));
+    // 既定では stderr に何も出さない (既存の出力は変えない)
+    let plain = run(&["check"], &t.0);
+    assert_eq!(text(&plain.stderr), "");
+    let a = dump_types(&t.0);
+    let b = dump_types(&t.0);
+    assert!(!a.is_empty());
+    assert_eq!(a, b);
+}
+
+#[test]
+fn type_table_records_each_expression_type() {
+    let t = Tmp::new("type_table_rows", &main_wrap(ADD1, ""));
+    let rows = type_rows(&dump_types(&t.0));
+    let add1: Vec<_> = rows.iter().filter(|r| r.0 == "t.add1").collect();
+    // `a` (Path)、`1` (Lit)、`b.wrapping_add(1)` (パスの呼び出し Call) はすべて u8
+    assert!(add1.iter().any(|r| r.2 == "Path" && r.3 == "u8"), "{:?}", add1);
+    assert!(add1.iter().any(|r| r.2 == "Lit" && r.3 == "u8"), "{:?}", add1);
+    assert!(add1.iter().any(|r| r.2 == "Call" && r.3 == "u8"), "{:?}", add1);
+    // 式 ID は 1 から振られ、関数の中で重複しない
+    let mut ids: Vec<u32> = add1.iter().map(|r| r.1).collect();
+    assert!(ids.iter().all(|&i| i >= 1));
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), add1.len());
+}
+
+#[test]
+fn expr_ids_are_local_to_their_function() {
+    // `t.main` の本体を変えても、`t.add1` の式 ID と型は変わらない (ホットリロードで関数単位に振り直せる)。
+    let a = Tmp::new("expr_ids_local_a", &main_wrap(ADD1, ""));
+    let b = Tmp::new("expr_ids_local_b", &main_wrap(ADD1, "    let _c: u8 = t.add1(2)\n    let _d: u8 = t.add1(3)\n"));
+    let pick = |t: &Tmp| -> Vec<(u32, String, String)> {
+        type_rows(&dump_types(&t.0)).into_iter().filter(|r| r.0 == "t.add1").map(|r| (r.1, r.2, r.3)).collect()
+    };
+    let (ra, rb) = (pick(&a), pick(&b));
+    assert!(!ra.is_empty());
+    assert_eq!(ra, rb);
+}
+
+// ---- spec/ptr-const-ne: add_const / cast_const (const を保つ加算・変換) と `ne` の撤去 (演算子 `!=` のみ)
+
+#[test]
+fn ptr_add_const_and_cast_const_keep_const_and_run_in_both() {
+    // from_ref の `*const` を add_const (count 0) と cast_const::<i32, i32> で読み直す。from_mut の `*mut` を add_const で
+    // const に落としたものも読める。不変のスカラー変数 `x` の `from_ref(&x)` も、スタックスロットのアドレスとして扱い、
+    // インタプリタとネイティブの両方で同じ結果になる。
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    Ok(())
+end t.main
+
+test t.main.test_add_const_cast_const
+    let mut m: i32 = 7i32
+    let p: *mut i32 = core.ptr.from_mut(&mut m)
+    let x: i32 = 41i32
+    let q: *const i32 = core.ptr.from_ref(&x)
+    let r: *const i32 = core.ptr.add_const(q, 0usize)
+    let c: *const i32 = core.ptr.cast_const::<i32, i32>(r)
+    let w: *const i32 = core.ptr.add_const(p, 0usize)
+    unsafe "libc" "read through the const helpers" {
+        core.check.eq(core.ptr.read(r), 41i32)
+        core.check.eq(core.ptr.read(c), 41i32)
+        core.check.eq(core.ptr.read(w), 7i32)
+    }
+end t.main.test_add_const_cast_const
+"#;
+    let t = Tmp::new("ptr_add_const_both", src);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("t.main.test_add_const_cast_const ... ok (both: native)"), "{}", out);
+}
+
+#[test]
+fn ptr_add_rejects_const_argument_and_add_const_accepts_it() {
+    // `add` は `*mut` を取るので `*const` (from_ref) を渡すと E2023。`add_const` なら同じ引数が通る。
+    let bad = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let q: *const i32 = core.ptr.from_ref(&x)
+    let r = core.ptr.add(q, 0usize)
+    core.check.eq(core.ptr.is_null(r), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("ptr_add_mut_rejects_const", bad);
+    assert!(out.contains("E2023") && out.contains("expected `*mut i32`, found `*const i32`"), "{}", out);
+
+    let ok = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let x: i32 = 1i32
+    let q: *const i32 = core.ptr.from_ref(&x)
+    let r: *const i32 = core.ptr.add_const(q, 0usize)
+    core.check.eq(core.ptr.is_null(r), false)
+    Ok(())
+end t.main
+";
+    let out = raw_ptr_check("ptr_add_const_ok", ok);
+    assert!(!codes(&out).iter().any(|c| c == "E2020" || c == "E2023"), "{}", out);
+}
+
+#[test]
+fn ne_method_is_e1108_with_the_operator_hint() {
+    // `ne` は派生メソッドではない (3.2 / 4.3)。`a.ne(b)` は E1108 で `a != b` を案内し、近い名前は出さない。
+    let bad = "fn t.f(a: u8, b: u8) -> bool uses [] panics never
+    a.ne(b)
+end t.f
+
+";
+    let t = Tmp::new("ne_method_hint", &main_wrap(bad, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("use `a != b`"), "{}", out);
+    assert!(!out.contains("did you mean"), "{}", out);
+}
+
+// ------------------------------------------------------------ ビルドキャッシュ (生成物・キー・バンドル)
+
+const CACHE_SRC: &str = "fn t.main() -> () uses [] panics never
+end t.main
+
+fn t.one() -> u32 uses [] panics never
+    1u32
+end t.one
+
+test t.one.test_a
+    core.check.eq(t.one(), 1u32)
+end t.one.test_a
+";
+
+/// `ksn build` を、指定したキャッシュ dir と追加の引数・環境変数で実行する。
+fn build_with_cache(ksn: &str, cwd: &Path, cache: &Path, extra: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut c = Command::new(ksn);
+    c.arg("build").args(extra).current_dir(cwd).env("KSN_CACHE_DIR", cache).env("KSN_STDLIB", root().join("spec").join("stdlib"));
+    for (k, v) in envs {
+        c.env(k, v);
+    }
+    c.output().expect("spawn ksn build")
+}
+
+#[test]
+fn concurrent_builds_with_the_same_key_both_succeed() {
+    // 同じキー (同じソースの別のパッケージ dir) を同じキャッシュへ並行にビルドしても、どちらも成功する。
+    // 以前は作業用の `<key>.tmp` を共有して互いに消し合い、`fs::rename(..).unwrap()` で panic しえた。
+    let a = Tmp::new("cache_race_a", CACHE_SRC);
+    let b = Tmp::new("cache_race_b", CACHE_SRC);
+    for round in 0..4 {
+        let cache = std::env::temp_dir().join(format!("ksn_cache_race_{}_{}", std::process::id(), round));
+        let _ = fs::remove_dir_all(&cache);
+        let spawn = |dir: &Path| {
+            Command::new(exe())
+                .args(["build", "--backend", "clif"])
+                .current_dir(dir)
+                .env("KSN_CACHE_DIR", &cache)
+                .env("KSN_STDLIB", root().join("spec").join("stdlib"))
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+        let (pa, pb) = (spawn(&a.0), spawn(&b.0));
+        let (oa, ob) = (pa.wait_with_output().unwrap(), pb.wait_with_output().unwrap());
+        let _ = fs::remove_dir_all(&cache);
+        for o in [&oa, &ob] {
+            assert_eq!(o.status.code(), Some(0), "round {}: {}{}", round, text(&o.stdout), text(&o.stderr));
+        }
+    }
+}
+
+#[test]
+fn cache_hit_reuses_native_artifact_without_compiling() {
+    // 1 回目は compile_clif を通り、生成物がキャッシュに入る。2 回目は同じキーで
+    // "cache hit" となり、compile_clif (KSN_TIME の印) を通らずに生成物を複製する。
+    let t = Tmp::new("cache_artifact", CACHE_SRC);
+    let cache = std::env::temp_dir().join(format!("ksn_cache_art_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let exe_file = if cfg!(windows) { "t.exe" } else { "t.native" };
+    let exe_path = t.0.join("target").join("debug").join(exe_file);
+
+    let first = build_with_cache(exe(), &t.0, &cache, &["--backend", "clif"], &[("KSN_TIME", "1")]);
+    assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
+    assert!(!text(&first.stdout).contains("cache hit"), "{}", text(&first.stdout));
+    assert!(text(&first.stderr).contains("KSN_TIME compile_clif_call_total"), "{}", text(&first.stderr));
+    let built = fs::read(&exe_path).expect("native executable after first build");
+
+    // 生成物だけ消し、キャッシュから戻ることを確かめる。
+    fs::remove_file(&exe_path).unwrap();
+    let second = build_with_cache(exe(), &t.0, &cache, &["--backend", "clif"], &[("KSN_TIME", "1")]);
+    assert_eq!(second.status.code(), Some(0), "{}", text(&second.stderr));
+    assert!(text(&second.stdout).contains("cache hit"), "{}", text(&second.stdout));
+    assert!(
+        !text(&second.stderr).contains("KSN_TIME compile_clif"),
+        "cache hit must skip compile_clif: {}",
+        text(&second.stderr)
+    );
+    assert!(text(&second.stdout).contains("native executable: "), "{}", text(&second.stdout));
+    assert_eq!(fs::read(&exe_path).expect("restored executable"), built);
+    let run = Command::new(&exe_path).output().unwrap();
+    assert_eq!(run.status.code(), Some(0));
+
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn build_key_changes_with_ksn_binary_profile_and_backend() {
+    // キーは ksn 本体のバイト列・debug/release・バックエンドで分かれる。
+    // ksn 本体の変化は、同じ実行ファイルの末尾にバイトを足した別物で代用する (Linux / Windows は末尾を無視して動く)。
+    let t = Tmp::new("cache_key", CACHE_SRC);
+    let cache = std::env::temp_dir().join(format!("ksn_cache_key_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let bin_dir = std::env::temp_dir().join(format!("ksn_cache_key_bin_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&bin_dir);
+    fs::create_dir_all(&bin_dir).unwrap();
+    let ksn_a = bin_dir.join(format!("ksn_a{}", std::env::consts::EXE_SUFFIX));
+    let ksn_b = bin_dir.join(format!("ksn_b{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(exe(), &ksn_a).unwrap();
+    fs::copy(exe(), &ksn_b).unwrap();
+    {
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new().append(true).open(&ksn_b).unwrap();
+        f.write_all(b"\0ksn-cache-key-variant\0").unwrap();
+    }
+    let (a, b) = (ksn_a.to_str().unwrap(), ksn_b.to_str().unwrap());
+    let hit = |o: &Output| text(&o.stdout).contains("cache hit");
+    let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
+    let o = build_with_cache(a, &t.0, &cache, &[], &[]);
+    ok(&o);
+    assert!(!hit(&o));
+    let o = build_with_cache(a, &t.0, &cache, &[], &[]);
+    ok(&o);
+    assert!(hit(&o), "same ksn, same profile: {}", text(&o.stdout));
+
+    // 別の ksn 本体 → 別のキー (ヒットしない)。
+    let o = build_with_cache(b, &t.0, &cache, &[], &[]);
+    ok(&o);
+    assert!(!hit(&o), "different ksn binary must not hit: {}", text(&o.stdout));
+
+    // release は別のキー。
+    let o = build_with_cache(a, &t.0, &cache, &["--release"], &[]);
+    ok(&o);
+    assert!(!hit(&o), "release must not reuse debug entry: {}", text(&o.stdout));
+    let o = build_with_cache(a, &t.0, &cache, &["--release"], &[]);
+    ok(&o);
+    assert!(hit(&o));
+
+    // バックエンドが違えば出力も違うので別のキー。
+    // (既定のバックエンドは clif。`c` は別のキー。)
+    let o = build_with_cache(a, &t.0, &cache, &["--backend", "c"], &[]);
+    ok(&o);
+    assert!(!hit(&o), "c must not reuse the default (clif) entry: {}", text(&o.stdout));
+
+    let _ = fs::remove_dir_all(&cache);
+    let _ = fs::remove_dir_all(&bin_dir);
+}
+
+#[test]
+fn bundle_is_rebuilt_when_sources_change() {
+    // `ksn test --both` のバンドルは、ソースが変われば作り直す。
+    // 以前は target/debug に ksn があるだけで再利用され、追加したテストが "no such test" になった。
+    let t = Tmp::new("bundle_fresh", CACHE_SRC);
+    let cache = std::env::temp_dir().join(format!("ksn_cache_bundle_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let test_both = |name: &str| {
+        Command::new(exe())
+            .args(["test", "--both", name])
+            .current_dir(&t.0)
+            .env("KSN_CACHE_DIR", &cache)
+            .env("KSN_STDLIB", root().join("spec").join("stdlib"))
+            .output()
+            .unwrap()
+    };
+    let o = test_both("t.one.test_a");
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+
+    let src = format!("{}\ntest t.one.test_b\n    core.check.eq(t.one(), 1u32)\nend t.one.test_b\n", CACHE_SRC);
+    fs::write(t.0.join("src").join("t.ksnl"), src).unwrap();
+    let o = test_both("t.one.test_b");
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}", out);
+    assert!(out.contains("test t.one.test_b ... ok"), "{}", out);
+    assert!(!out.contains("no such test"), "{}", out);
+
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn numeric_methods_are_checked_against_the_receiver_type_sig() {
+    // `sqrt` は f32/f64 の sig にだけある。名前が他の型にあっても、型が決まった u8 の受け手では E1108。
+    // 引数の個数も受け手の型の sig で検査する (E2022)。sig にあるメソッドは通る。
+    let bad = "fn t.f(a: u8, b: u8) -> u8 uses [] panics never
+    a.sqrt(b)
+end t.f
+
+fn t.g(a: u8, b: u8) -> Option<u8> uses [] panics never
+    a.checked_add(b, b)
+end t.g
+
+";
+    let t = Tmp::new("num_sig_methods_bad", &main_wrap(bad, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1108") && out.contains("type `u8` has no method `sqrt`"), "{}", out);
+    assert!(codes(&out).iter().any(|c| c == "E2022"), "{}", out);
+
+    let ok = "fn t.f(a: u8, b: u8, x: f64) -> bool uses [] panics never
+    let c = a.cmp(b) == core.cmp.Ordering.Less
+    a.checked_add(b).is_some() && c && a < b && x.sqrt() > 0.0 && a.min(b) == a
+end t.f
+
+";
+    let t = Tmp::new("num_sig_methods_ok", &main_wrap(ok, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E1108" || c == "E2022"), "{}", out);
+}
+
+#[test]
+fn vec_and_string_have_no_comparison_traits() {
+    // 4.2 の表どおり Vec / String は比較のトレイトを持たない (sig にも impl が無い)。
+    // メソッド形 (`eq` `cmp` `partial_cmp`) と演算子 (`==` `<`) はどちらも E1108。
+    let bad = "fn t.v(a: &alloc.vec.Vec<u8, std.alloc.System>, b: &alloc.vec.Vec<u8, std.alloc.System>) -> bool uses [] panics never
+    a.eq(b)
+end t.v
+
+fn t.s(a: alloc.string.String<std.alloc.System>, b: alloc.string.String<std.alloc.System>) -> bool uses [] panics never
+    a == b
+end t.s
+
+fn t.c(a: &alloc.vec.Vec<u8, std.alloc.System>, b: &alloc.vec.Vec<u8, std.alloc.System>) -> bool uses [] panics never
+    a.cmp(b) == core.cmp.Ordering.Equal
+end t.c
+
+fn t.p(a: &alloc.string.String<std.alloc.System>, b: &alloc.string.String<std.alloc.System>) -> bool uses [] panics never
+    a.partial_cmp(b).is_some()
+end t.p
+
+";
+    let t = Tmp::new("vec_string_cmp_bad", &main_wrap(bad, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("unknown method `eq` on `alloc.vec.Vec`: the type does not implement `core.cmp.PartialEq`"), "{}", out);
+    assert!(out.contains("operator `==` on `alloc.string.String`: the type does not implement `core.cmp.PartialEq`"), "{}", out);
+    assert!(out.contains("unknown method `cmp` on `alloc.vec.Vec`: the type does not implement `core.cmp.Ord`"), "{}", out);
+    assert!(out.contains("unknown method `partial_cmp` on `alloc.string.String`: the type does not implement `core.cmp.PartialOrd`"), "{}", out);
+    assert!(codes(&out).iter().filter(|c| *c == "E1108").count() >= 4, "{}", out);
+}
+
+#[test]
+fn comparison_on_user_types_needs_the_derived_or_implemented_trait() {
+    // 派生していない利用者型の `==` / `eq` は E1108。`derive [PartialEq, PartialOrd]` の型と
+    // 型パラメータの境界 (`T: core.cmp.PartialEq`) は通る。
+    let bad = "type t.P pub
+    a: u8
+end t.P
+
+fn t.f(a: t.P, b: t.P) -> bool uses [] panics never
+    a == b || a.eq(b)
+end t.f
+
+";
+    let t = Tmp::new("user_cmp_bad", &main_wrap(bad, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(out.contains("operator `==` on `t.P`") && out.contains("unknown method `eq` on `t.P`"), "{}", out);
+
+    let ok = "type t.Q derive [PartialEq, PartialOrd] pub
+    a: u8
+end t.Q
+
+fn t.f(a: t.Q, b: t.Q) -> bool uses [] panics never
+    a == b && a.eq(b) && a < b && a.partial_cmp(b).is_some()
+end t.f
+
+fn t.g[T: core.cmp.PartialEq](a: &T, b: &T) -> bool uses [] panics never
+    a.eq(b)
+end t.g
+
+";
+    let t = Tmp::new("user_cmp_ok", &main_wrap(ok, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(!codes(&out).iter().any(|c| c == "E1108"), "{}", out);
+}
+
+// ---- 4.1 シャドーイング: 関数ヘッダの引数名と `import` 末尾名の衝突 (E1021) ----
+
+const SHADOW_UTIL: &str = "fn t.util.f() -> u8 uses [] panics never\n    1u8\nend t.util.f\n";
+
+#[test]
+fn shadow_header_arg_vs_import_tail_is_e1021() {
+    // 本体の束縛 (let) と同じく、引数名が import 末尾名と同じならシャドーイング。
+    let t = Tmp::new("shadow_hdr_pos", &main_wrap("", ""));
+    fs::create_dir_all(t.0.join("src/t")).unwrap();
+    fs::write(t.0.join("src/t/util.ksnl"), SHADOW_UTIL).unwrap();
+    fs::write(
+        t.0.join("src").join("t.ksnl"),
+        "import t.util\n\nfn t.g(util: u8) -> u8 uses [] panics never\n    util\nend t.g\n\n\
+         fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(t.g(util.f()))\n    Ok(())\nend t.main\n",
+    )
+    .unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
+    assert!(codes(&text(&o.stdout)).iter().any(|c| c == "E1021"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn shadow_header_arg_without_import_is_clean() {
+    // import が無ければ、同じ引数名でもシャドーイングではない。
+    let t = Tmp::new(
+        "shadow_hdr_neg",
+        "fn t.g(util: u8) -> u8 uses [] panics never\n    util\nend t.g\n\n\
+         fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(t.g(1u8))\n    Ok(())\nend t.main\n",
+    );
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1021"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn shadow_header_arg_vs_import_of_other_file_is_clean() {
+    // `import` は宣言されたファイルの中だけで可視。別ファイルの関数の引数名は衝突しない。
+    let t = Tmp::new("shadow_hdr_other", &main_wrap("", ""));
+    fs::create_dir_all(t.0.join("src/t")).unwrap();
+    fs::write(t.0.join("src/t/util.ksnl"), SHADOW_UTIL).unwrap();
+    fs::write(
+        t.0.join("src").join("t.ksnl"),
+        "import t.util\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(util.f())\n    Ok(())\nend t.main\n",
+    )
+    .unwrap();
+    fs::write(t.0.join("src/t/other.ksnl"), "fn t.other.g(util: u8) -> u8 uses [] panics never\n    util\nend t.other.g\n")
+        .unwrap();
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1021"), "{}", text(&o.stdout));
+}
+
+// ---- 型定義のフィールドの参照は、ライフタイムを省略できない (4.1 / E3020) ----
+
+fn field_elision(name: &str, prefix: &str) -> (bool, String) {
+    let t = Tmp::new(name, &main_wrap(prefix, ""));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out).iter().any(|c| c == "E3020"), out)
+}
+
+#[test]
+fn type_field_reference_without_lifetime_is_rejected() {
+    let (bad, out) = field_elision("field_elided", "type t.S\n    f: &u8\nend t.S\n\n");
+    assert!(bad, "{}", out);
+    assert!(out.contains("lifetime of the reference in `f` cannot be elided"), "{}", out);
+}
+
+#[test]
+fn enum_variant_reference_without_lifetime_is_rejected() {
+    let (bad, out) = field_elision("field_elided_enum", "enum t.E\n    A(&u8)\n    B\nend t.E\n\n");
+    assert!(bad, "{}", out);
+    assert!(out.contains("lifetime of the reference in `A` cannot be elided"), "{}", out);
+}
+
+#[test]
+fn nested_field_reference_without_lifetime_is_rejected() {
+    let (bad, out) = field_elision("field_elided_array", "type t.S\n    f: [&u8; 2]\nend t.S\n\n");
+    assert!(bad, "{}", out);
+}
+
+#[test]
+fn type_field_reference_with_declared_or_static_lifetime_is_accepted() {
+    let (bad, out) = field_elision("field_declared", NLL_REF_FIELD);
+    assert!(!bad, "{}", out);
+    let (bad, out) = field_elision("field_static", "type t.S\n    f: &'static u8\n    b: u8\nend t.S\n\n");
+    assert!(!bad, "{}", out);
+    let (bad, out) = field_elision("field_value", "type t.S\n    f: u8\nend t.S\n\n");
+    assert!(!bad, "{}", out);
+}
+
+// ---- ジェネリクス引数に渡した未決定のリテラル (E2027) ----
+
+/// `fn t.id[T](x: T) -> T` を定義し、その下に `main` の本体を置く。
+fn generic_id_check(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let prefix = "fn t.id[T](x: T) -> T uses [] panics never\n    x\nend t.id\n\n";
+    let t = Tmp::new(name, &main_wrap(prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn an_undecided_literal_passed_to_a_generic_parameter_is_an_error() {
+    // T を決める手がかりがない。`5` の型はどこからも決まらないので E2027 (従来は黙っていた)。
+    let (got, out) = generic_id_check("gen_lit_undec", &["core.mem.drop(t.id(5))"]);
+    assert!(got.iter().any(|c| c == "E2027"), "{}", out);
+    assert!(out.contains("cannot infer the type of the int literal `5`"), "{}", out);
+    let (got, out) = generic_id_check("gen_lit_float", &["core.mem.drop(t.id(2.5))"]);
+    assert!(got.iter().any(|c| c == "E2027"), "{}", out);
+    assert!(out.contains("float literal `2.5`"), "{}", out);
+}
+
+#[test]
+fn a_generic_literal_decided_later_is_not_an_error() {
+    // 型は後から決まる: 注釈付き let、後の単一化、明示型引数、別の演算との一致。
+    let (got, out) = generic_id_check("gen_lit_ann", &["let a: u8 = t.id(5)", "core.mem.drop(a)"]);
+    assert!(!got.iter().any(|c| c == "E2027" || c == "E2026"), "{}", out);
+    let (got, out) = generic_id_check("gen_lit_later", &["let x = t.id(5)", "let y: u8 = x", "core.mem.drop(y)"]);
+    assert!(!got.iter().any(|c| c == "E2027" || c == "E2026"), "{}", out);
+    let (got, out) = generic_id_check("gen_lit_targ", &["core.mem.drop(t.id::<u8>(5))"]);
+    assert!(!got.iter().any(|c| c == "E2027" || c == "E2026"), "{}", out);
+    let (got, out) = generic_id_check("gen_lit_add", &["let x = t.id(5)", "core.mem.drop(x + 1u8)"]);
+    assert!(!got.iter().any(|c| c == "E2027"), "{}", out);
+}
+
+#[test]
+fn fmath_functions_agree_across_backends_and_match_known_values() {
+    // 数学関数 (`fmath`) は、インタプリタと Cranelift で同じビット列を返し、既知の値に近い。
+    // `tests/data/fmath_both.ksnl`: 既知値 (f32 は 2〜3 ulp 以内)、特殊値 (atan2 の ±∞ / NaN 組を含む)、9 関数の総和 (ビット列の突き合わせ)。
+    let t = Tmp::new("fmath_both", include_str!("data/fmath_both.ksnl"));
+    let cache = std::env::temp_dir().join(format!("ksn_cache_fmath_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let o = Command::new(exe())
+        .args(["test", "--both"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .env("KSN_STDLIB", root().join("spec").join("stdlib"))
+        .output()
+        .unwrap();
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}", out);
+    // 6 本とも機械語で比べていること (バンドルへ退避した「空振り」を許さない)。
+    assert_eq!(out.matches("(both: native)").count(), 6, "{}", out);
+    assert!(!out.contains("both: bundle"), "{}", out);
+    assert!(out.contains("6 passed; 0 failed"), "{}", out);
+    assert!(out.contains("native 6, bundle fallback 0"), "{}", out);
+    let _ = fs::remove_dir_all(&cache);
+}
+
+// ---- `test --both`: 機械語 (Cranelift の実行ファイル) との比較と、バンドルへの退避 ----
+
+const BOTH_SRC: &str = "fn t.main() -> () uses [] panics never
+end t.main
+
+test t.main.test_ok
+    core.check.eq(1u8, 1u8)
+end t.main.test_ok
+";
+
+#[test]
+fn test_both_runs_clif_tests_as_native_executables() {
+    let src = format!("{}\ntest t.main.test_fail\n    core.check.eq(1u8, 2u8)\nend t.main.test_fail\n", BOTH_SRC);
+    let t = Tmp::new("both_native", &src);
+    // `--both` を付けなければ、出力の形式は従来どおり (注記なし)。
+    let plain = run(&["test"], &t.0);
+    assert!(text(&plain.stdout).contains("test t.main.test_ok ... ok\n"), "{}", text(&plain.stdout));
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_ok ... ok (both: native)"), "{}", out);
+    assert!(out.contains("test t.main.test_fail ... FAILED: assertion failed: left: 1, right: 2 (both: native)"), "{}", out);
+    assert!(out.contains("1 passed; 1 failed"), "{}", out);
+    assert!(!out.contains("both: bundle"), "{}", out);
+    assert!(t.0.join("target").join("test-native").is_dir(), "no native test executable: {}", out);
+}
+
+#[test]
+fn test_both_compares_failure_classes_when_both_backends_fail() {
+    // 両方が失敗しても、理由の分類 (overflow / assert / ...) が違えば disagree。同じ分類なら文言が違っても一致。
+    // 分類が違うケースの判定は `src/cli.rs` の単体テスト `both_failing_with_different_classes_disagree` で確かめる。
+    let src = format!(
+        "{}\ntest t.main.test_assert\n    core.check.eq(1u8, 2u8)\nend t.main.test_assert\n\ntest t.main.test_overflow\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\nend t.main.test_overflow\n",
+        BOTH_SRC
+    );
+    let t = Tmp::new("both_class", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}{}", out, text(&o.stderr));
+    // 文言は違う (interp: `attempt to add with overflow` / native: `arithmetic overflow`) が、分類が同じなので disagree にならない。
+    assert!(out.contains("test t.main.test_overflow ... FAILED: attempt to add with overflow (both: native)"), "{}", out);
+    assert!(out.contains("test t.main.test_assert ... FAILED: assertion failed: left: 1, right: 2 (both: native)"), "{}", out);
+    assert!(!out.contains("disagree"), "{}", out);
+    assert!(out.contains("compared with: native 3, bundle fallback 0"), "{}", out);
+}
+
+#[test]
+fn test_both_falls_back_to_the_bundle_for_a_test_clif_cannot_build() {
+    // 128 ビット整数は clif で扱えるようになった (native)。まだ clif が扱えない演算 (128 ビットの除算など) のテストだけバンドルで比べる。
+    let src = format!(
+        "{}\ntest t.main.test_wide\n    let x: i128 = 5i128\n    core.check.eq(x, 5i128)\nend t.main.test_wide\n\
+         test t.main.test_vec\n    let a: i128 = 100i128\n    core.check.eq(a / 7i128, 14i128)\nend t.main.test_vec\n",
+        BOTH_SRC
+    );
+    let t = Tmp::new("both_bundle", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_ok ... ok (both: native)"), "{}", out);
+    assert!(out.contains("test t.main.test_wide ... ok (both: native)"), "{}", out);
+    assert!(out.contains("test t.main.test_vec ... ok (both: bundle (native skipped: "), "{}", out);
+    assert!(out.contains("3 passed; 0 failed"), "{}", out);
+}
+
+/// トレイト経由の呼び出し (境界・`dyn`) の効果の検査 (4.3 / 5.1)。トレイトのメソッドの宣言 (`uses` / `panics`) で比べる。
+const TRAIT_EFF_PRELUDE: &str = "trait t.Act pub
+    fn act(self: &Self) -> u8 uses [io.console] panics never
+    fn boom(self: &Self) -> u8 uses [] panics may
+end t.Act
+
+trait t.Gen[E: uses, P: panics] pub
+    fn go(self: &Self) -> u8 uses [E] panics P
+end t.Gen
+
+";
+
+/// `prelude` (トレイトの定義) の後ろに `body` を置いたパッケージを検査する (`eff_check` の一般形)。
+fn eff_check_with(name: &str, prelude: &str, body: &str) -> (Option<i32>, Vec<String>, String) {
+    let t = Tmp::new(name, &format!("{}{}", prelude, body));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    (o.status.code(), codes(&out), out)
+}
+
+#[test]
+fn trait_bound_and_dyn_call_effects_are_checked() {
+    // 陽性: 境界・`dyn` 越しの呼び出しの宣言された効果を、呼び出し元が覆っていないとき E4001 / E4002。
+    let body = "fn t.bad_bound_concrete[A: t.Gen<[io.console], never>](a: &A) -> u8 uses [] panics never
+    a.go()
+end t.bad_bound_concrete
+
+fn t.bad_bound_panic[A: t.Gen<[], may>](a: &A) -> u8 uses [] panics never
+    a.go()
+end t.bad_bound_panic
+
+fn t.bad_dyn_act(a: &dyn t.Act) -> u8 uses [] panics never
+    a.act()
+end t.bad_dyn_act
+
+fn t.bad_dyn_boom(a: &dyn t.Act) -> u8 uses [io] panics never
+    a.boom()
+end t.bad_dyn_boom
+";
+    let (code, got, out) = eff_check_with("trait_eff_bad", TRAIT_EFF_PRELUDE, body);
+    assert_eq!(code, Some(1), "{}", out);
+    let want: Vec<String> = ["E4001", "E4002", "E4001", "E4002"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(got, want, "{}", out);
+    assert!(out.contains("t.Gen.go uses effect `io.console`"), "{}", out);
+    assert!(out.contains("t.Gen.go may panic"), "{}", out);
+    assert!(out.contains("t.Act.act uses effect `io.console`"), "{}", out);
+    assert!(out.contains("t.Act.boom may panic"), "{}", out);
+}
+
+#[test]
+fn trait_bound_and_dyn_call_effects_pass_when_declared() {
+    // 正例: 呼び出し元が宣言を覆う (階層の部分型 io ⊇ io.console、may 宣言) ときは通る。
+    let body = "fn t.ok_bound_concrete[A: t.Gen<[io.console], never>](a: &A) -> u8 uses [io] panics never
+    a.go()
+end t.ok_bound_concrete
+
+fn t.ok_dyn_act(a: &dyn t.Act) -> u8 uses [io] panics never
+    a.act()
+end t.ok_dyn_act
+
+fn t.ok_dyn_boom(a: &dyn t.Act) -> u8 uses [] panics may
+    a.boom()
+end t.ok_dyn_boom
+";
+    let (code, got, out) = eff_check_with("trait_eff_ok", TRAIT_EFF_PRELUDE, body);
+    assert_eq!(code, Some(0), "{}", out);
+    assert!(got.is_empty(), "{}", out);
+}
+
+#[test]
+fn trait_call_effects_stay_silent_when_unknown() {
+    // 陰性 (黙る): 効果変数の束縛が分からない境界、推論された関数、クロージャの本体。
+    let body = "fn t.quiet_closure(a: &dyn t.Act) -> u8 uses [] panics never
+    let f = fn(x: u8) -> u8 capture [&a] {
+        a.act()
+    }
+    f(1)
+end t.quiet_closure
+
+fn t.quiet_inferred(a: &dyn t.Act) -> u8
+    a.act()
+end t.quiet_inferred
+
+fn t.quiet_var[A: t.Gen<E, P>, E: uses, P: panics](a: &A) -> u8 uses [E] panics P
+    a.go()
+end t.quiet_var
+";
+    let (code, got, out) = eff_check_with("trait_eff_quiet", TRAIT_EFF_PRELUDE, body);
+    assert_eq!(code, Some(0), "{}", out);
+    assert!(got.is_empty(), "{}", out);
+}
+
+// ---- extern の構造体の値渡し・値の戻り値 (x86_64 SysV の分類。16 バイト以下はレジスタ、超えるものはメモリ渡し・sret)
+
+/// 構造体を値で渡す・返す C 側。`Eight` は INTEGER 1 つ、`Dbl2` は SSE 2 つ、`Mixed` は INTEGER + SSE、`Big3` は 24 バイト (メモリ)。
+const FFI_STRUCT_C_SRC: &str = r#"
+#include <stdint.h>
+typedef struct { int32_t a; int32_t b; } Eight;
+typedef struct { double x; double y; } Dbl2;
+typedef struct { int64_t a; double b; } Mixed;
+typedef struct { double x; int64_t y; } MixedRev;
+typedef struct { float x; float y; } Flt2;
+typedef struct { int64_t a, b, c; } Big3;
+typedef struct { uint8_t a; uint8_t b; int16_t c; } Small;
+Eight k_eight_add(Eight p, int32_t k) { Eight r = { p.a + k, p.b + k }; return r; }
+Dbl2 k_dbl_scale(Dbl2 p, double s) { Dbl2 r = { p.x * s, p.y * s }; return r; }
+Mixed k_mixed_bump(Mixed p, int64_t n) { Mixed r = { p.a + n, p.b * 2.0 }; return r; }
+MixedRev k_mixed_rev_bump(MixedRev p) { MixedRev r = { p.x + 1.0, p.y - 1 }; return r; }
+Flt2 k_flt_twice(Flt2 p) { Flt2 r = { p.x * 2.0f, p.y * 2.0f }; return r; }
+int64_t k_big_sum(Big3 p, int64_t n) { return p.a + p.b + p.c + n; }
+Big3 k_big_make(int64_t a) { Big3 r = { a, a * 2, a * 3 }; return r; }
+Small k_small_bump(Small p) { Small r = { p.a + 1, p.b + 2, p.c - 3 }; return r; }
+int64_t k_seven(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, Big3 p, int64_t z) {
+    return a + 2*b + 3*c + 4*d + 5*e + 6*f + 7*g + 10*p.a + 100*p.b + 1000*p.c + 10000*z;
+}
+double k_sum_then(double a, Dbl2 p, double b) { return a + p.x * 10.0 + p.y * 100.0 + b * 1000.0; }
+"#;
+
+const FFI_STRUCT_SRC: &str = r#"type t.Big3 layout c pub
+    a: i64
+    b: i64
+    c: i64
+end t.Big3
+
+type t.Dbl2 layout c pub
+    x: f64
+    y: f64
+end t.Dbl2
+
+type t.Eight layout c pub
+    a: i32
+    b: i32
+end t.Eight
+
+type t.Flt2 layout c pub
+    x: f32
+    y: f32
+end t.Flt2
+
+type t.Mixed layout c pub
+    a: i64
+    b: f64
+end t.Mixed
+
+type t.MixedRev layout c pub
+    x: f64
+    y: i64
+end t.MixedRev
+
+type t.Small layout c pub
+    a: u8
+    b: u8
+    c: i16
+end t.Small
+
+extern t.k_big_make(a: i64) -> t.Big3 link "k_big_make"
+
+extern t.k_big_sum(p: t.Big3, n: i64) -> i64 link "k_big_sum"
+
+extern t.k_dbl_scale(p: t.Dbl2, s: f64) -> t.Dbl2 link "k_dbl_scale"
+
+extern t.k_eight_add(p: t.Eight, k: i32) -> t.Eight link "k_eight_add"
+
+extern t.k_flt_twice(p: t.Flt2) -> t.Flt2 link "k_flt_twice"
+
+extern t.k_mixed_bump(p: t.Mixed, n: i64) -> t.Mixed link "k_mixed_bump"
+
+extern t.k_mixed_rev_bump(p: t.MixedRev) -> t.MixedRev link "k_mixed_rev_bump"
+
+extern t.k_seven(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, p: t.Big3, z: i64) -> i64 link "k_seven"
+
+extern t.k_small_bump(p: t.Small) -> t.Small link "k_small_bump"
+
+extern t.k_sum_then(a: f64, p: t.Dbl2, b: f64) -> f64 link "k_sum_then"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let e = unsafe "libc" "eight" {
+        t.k_eight_add(t.Eight { a: 1i32, b: 2i32 }, 10i32)
+    }
+    core.check.eq(e.a, 11i32)
+    core.check.eq(e.b, 12i32)
+    let d = unsafe "libc" "dbl2" {
+        t.k_dbl_scale(t.Dbl2 { x: 1.5f64, y: 2.0f64 }, 2.0f64)
+    }
+    core.check.eq(d.x, 3.0f64)
+    core.check.eq(d.y, 4.0f64)
+    let m = unsafe "libc" "mixed" {
+        t.k_mixed_bump(t.Mixed { a: 5i64, b: 1.25f64 }, 7i64)
+    }
+    core.check.eq(m.a, 12i64)
+    core.check.eq(m.b, 2.5f64)
+    let mr = unsafe "libc" "mixed rev" {
+        t.k_mixed_rev_bump(t.MixedRev { x: 0.5f64, y: 9i64 })
+    }
+    core.check.eq(mr.x, 1.5f64)
+    core.check.eq(mr.y, 8i64)
+    let f = unsafe "libc" "flt2" {
+        t.k_flt_twice(t.Flt2 { x: 1.5f32, y: 0.25f32 })
+    }
+    core.check.eq(f.x, 3.0f32)
+    core.check.eq(f.y, 0.5f32)
+    let s = unsafe "libc" "big3 argument" {
+        t.k_big_sum(t.Big3 { a: 1i64, b: 2i64, c: 3i64 }, 4i64)
+    }
+    core.check.eq(s, 10i64)
+    let b = unsafe "libc" "big3 result (sret)" {
+        t.k_big_make(5i64)
+    }
+    core.check.eq(b.a, 5i64)
+    core.check.eq(b.b, 10i64)
+    core.check.eq(b.c, 15i64)
+    let sm = unsafe "libc" "small" {
+        t.k_small_bump(t.Small { a: 1u8, b: 2u8, c: 10i16 })
+    }
+    core.check.eq(sm.a, 2u8)
+    core.check.eq(sm.b, 4u8)
+    core.check.eq(sm.c, 7i16)
+    let sv = unsafe "libc" "stack arguments" {
+        t.k_seven(
+            1i64,
+            1i64,
+            1i64,
+            1i64,
+            1i64,
+            1i64,
+            1i64,
+            t.Big3 { a: 1i64, b: 1i64, c: 1i64 },
+            1i64,
+        )
+    }
+    core.check.eq(sv, 11138i64)
+    let st = unsafe "libc" "double arguments around a struct" {
+        t.k_sum_then(1.0f64, t.Dbl2 { x: 1.0f64, y: 1.0f64 }, 1.0f64)
+    }
+    core.check.eq(st, 1111.0f64)
+    std.io.print_line("struct ffi ok")
+    Ok(())
+end t.main
+"#;
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn ffi_interpreter_passes_and_returns_structs_by_value() {
+    let t = Tmp::new("ffi_struct_interp", FFI_STRUCT_SRC);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let so = build_c_helpers(&t.0, FFI_STRUCT_C_SRC);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let r = run_with_c_helpers(&t.0, &so);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&r.stdout), "struct ffi ok\n");
+}
+
+/// libc だけを使う構造体の extern (補助 C ライブラリが要らないので、`ksn build --backend clif` の実行ファイルでも検査できる):
+/// `div` は 8 バイトを rax で、`ldiv` は 16 バイトを rax:rdx で返す。`inet_ntoa` は `struct in_addr` (4 バイト) を値で受ける。
+const FFI_LIBC_STRUCT_SRC: &str = r#"type t.DivT layout c pub
+    quot: i32
+    rem: i32
+end t.DivT
+
+type t.InAddr layout c pub
+    s_addr: u32
+end t.InAddr
+
+type t.LongDiv layout c pub
+    quot: i64
+    rem: i64
+end t.LongDiv
+
+extern t.div(numer: i32, denom: i32) -> t.DivT link "div"
+
+extern t.inet_ntoa(a: t.InAddr) -> *mut u8 link "inet_ntoa"
+
+extern t.ldiv(numer: i64, denom: i64) -> t.LongDiv link "ldiv"
+
+extern t.strlen(text: *const u8) -> usize link "strlen"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let d = unsafe "libc" "div returns a struct in rax" {
+        t.div(17i32, 5i32)
+    }
+    core.check.eq(d.quot, 3i32)
+    core.check.eq(d.rem, 2i32)
+    let l = unsafe "libc" "ldiv returns a struct in rax:rdx" {
+        t.ldiv(0i64 - 17i64, 5i64)
+    }
+    core.check.eq(l.quot, 0i64 - 3i64)
+    core.check.eq(l.rem, 0i64 - 2i64)
+    let s = unsafe "libc" "inet_ntoa takes a struct by value" {
+        t.inet_ntoa(t.InAddr { s_addr: 16777343u32 })
+    }
+    let n = unsafe "libc" "strlen of the C string" {
+        t.strlen(core.ptr.as_const(s))
+    }
+    core.check.eq(n, 9usize)
+    std.io.print_line("libc struct ok")
+    Ok(())
+end t.main
+"#;
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn ffi_struct_by_value_works_on_both_backends_with_libc() {
+    let t = Tmp::new("ffi_struct_libc", FFI_LIBC_STRUCT_SRC);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    let r = run(&["run"], &t.0);
+    assert_eq!(text(&r.stdout), "libc struct ok\n", "{}", text(&r.stderr));
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_ffi_struct", std::process::id()));
+    let b = Command::new(exe())
+        .args(["build", "--backend", "clif"])
+        .current_dir(&t.0)
+        .env("KSN_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    let bin = t.0.join("target").join("debug").join("t.native");
+    assert!(bin.exists(), "{}{}", text(&b.stdout), text(&b.stderr));
+    let r = Command::new(&bin).output().unwrap();
+    assert_eq!(text(&r.stdout), "libc struct ok\n");
+}
+
+#[test]
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+fn ffi_struct_by_value_is_refused_outside_x86_64_linux() {
+    // 構造体の値渡しは x86_64 SysV だけで扱う。ほかの環境では黙って壊れず、明示のエラーにする。
+    let t = Tmp::new("ffi_struct_refused", FFI_LIBC_STRUCT_SRC);
+    fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stderr).contains("x86_64"), "{}", text(&r.stderr));
+}
+
+// ---------------------------------------------------------------- KIR 段階 1 (設計_KIR.md 5 章)
+
+/// 段階 1 の対象になる関数 (整数・bool・let・代入・if・while・loop・break・continue・return・wrapping_*)。
+const KIR_FNS: &str = "fn t.gcd(a: u64, b: u64) -> u64 uses [] panics may
+    let mut x = a
+    let mut y = b
+    while y != 0u64 {
+        let r = x % y
+        x = y
+        y = r
+    }
+    x
+end t.gcd
+
+fn t.classify(n: i32) -> i32 uses [] panics may
+    let mut r = 0i32
+    if n < 0i32 {
+        r = -1i32
+    } else if n == 0i32 {
+        r = 0i32
+    } else {
+        r = 1i32
+    }
+    r
+end t.classify
+
+fn t.early(n: u32) -> u32 uses [] panics may
+    if n > 10u32 {
+        return n - 10u32
+    }
+    n * 2u32
+end t.early
+
+fn t.loopy(n: u32) -> u32 uses [] panics may
+    let mut i = 0u32
+    let mut acc = 0u32
+    loop {
+        if i >= n {
+            break
+        }
+        i = i + 1u32
+        if i % 2u32 == 0u32 {
+            continue
+        }
+        acc = acc + i
+    }
+    acc
+end t.loopy
+
+fn t.andor(a: bool, b: bool, n: i64) -> bool uses [] panics may
+    let x = a && n > 0i64
+    let y = b && n < -5i64
+    x || y
+end t.andor
+
+fn t.fact(n: u64) -> u64 uses [] panics may
+    if n <= 1u64 {
+        return 1u64
+    }
+    n * t.fact(n - 1u64)
+end t.fact
+
+fn t.negate(x: i8) -> i8 uses [] panics may
+    -x
+end t.negate
+
+fn t.divs(a: i8, b: i8) -> i8 uses [] panics may
+    a / b
+end t.divs
+
+fn t.rems(a: i8, b: i8) -> i8 uses [] panics may
+    a % b
+end t.rems
+
+fn t.wrap(a: u8, b: u8) -> u8 uses [] panics never
+    a.wrapping_mul(b).wrapping_add(a)
+end t.wrap
+
+fn t.sub8(a: u8, b: u8) -> u8 uses [] panics may
+    a - b
+end t.sub8
+
+fn t.assign_in_branch(n: i32) -> i32 uses [] panics may
+    let mut x = 1i32
+    let mut y = 2i32
+    if n > 0i32 {
+        x = x + n
+    } else {
+        y = y - n
+    }
+    x * 100i32 + y
+end t.assign_in_branch
+
+fn t.nested(n: i32) -> i32 uses [] panics may
+    let mut total = 0i32
+    let mut i = 0i32
+    while i < n {
+        let mut j = 0i32
+        while true {
+            if j > i {
+                break
+            }
+            total = total + j
+            j = j + 1i32
+        }
+        i = i + 1i32
+    }
+    total
+end t.nested
+
+fn t.down(n: u64) -> u64 uses [] panics may
+    if n == 0u64 {
+        return 0u64
+    }
+    1u64 + t.down(n - 1u64)
+end t.down
+";
+
+/// `KIR_FNS` に `main` を付けたパッケージを作る。
+fn kir_pkg(name: &str, main_body: &str) -> Tmp {
+    Tmp::new(name, &format!("{}{}", KIR_FNS, main_wrap("", main_body)))
+}
+
+#[test]
+fn kir_lower_values_match_tree_walker() {
+    // 木走査 (`ksn run`) で `core.check.eq` が通ること、参照実行器 (`ksn kir --run`) の値が期待どおりであること。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.gcd", &["48", "18"], "6u64", "6"),
+        ("t.classify", &["-7"], "-1i32", "-1"),
+        ("t.classify", &["0"], "0i32", "0"),
+        ("t.early", &["25"], "15u32", "15"),
+        ("t.early", &["4"], "8u32", "8"),
+        ("t.loopy", &["10"], "25u32", "25"),
+        ("t.fact", &["20"], "2432902008176640000u64", "2432902008176640000"),
+        ("t.negate", &["5"], "-5i8", "-5"),
+        ("t.wrap", &["200", "3"], "32u8", "32"),
+        ("t.sub8", &["9", "4"], "5u8", "5"),
+        ("t.assign_in_branch", &["3"], "402i32", "402"),
+        ("t.assign_in_branch", &["-3"], "105i32", "105"),
+        ("t.nested", &["5"], "20i32", "20"),
+        ("t.andor", &["true", "true", "3"], "true", "true"),
+        ("t.andor", &["false", "true", "-6"], "true", "true"),
+        ("t.andor", &["false", "false", "1"], "false", "false"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = kir_pkg(&format!("kir_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_lower_panics_and_depth_match_tree_walker() {
+    // panic の文言と終了コード (101)、呼び出し深さの超過 (102) が木走査と一致すること。
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.negate", &["-128"], "attempt to negate with overflow"),
+        ("t.divs", &["-128", "-1"], "attempt to divide with overflow"),
+        ("t.divs", &["7", "0"], "attempt to divide by zero"),
+        ("t.rems", &["7", "0"], "attempt to calculate the remainder with a divisor of by zero"),
+        ("t.rems", &["-128", "-1"], "attempt to calculate the remainder with overflow"),
+        ("t.sub8", &["3", "4"], "attempt to subtract with overflow"),
+        ("t.fact", &["21"], "attempt to multiply with overflow"),
+    ];
+    for (i, (f, args, msg)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = kir_pkg(&format!("kir_panic_{}", i), &format!("    let _x = {}\n", call));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "tree-walker: {}", call);
+        assert!(text(&o.stderr).contains(&format!("panic: {}", msg)), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir: {}", call);
+        assert_eq!(text(&k.stderr).trim(), format!("panic: {}", msg), "kir: {}", call);
+    }
+    // 深さの超過: 木走査と同じく 102 と "stack overflow"
+    let t = kir_pkg("kir_depth", "    let _x = t.down(5000u64)\n");
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(102));
+    let k = kir_run(&["kir", "t.down", "--run", "5000"], &t.0);
+    assert_eq!(k.status.code(), Some(102));
+    assert!(text(&k.stderr).contains("stack overflow"), "{}", text(&k.stderr));
+    let ok = kir_run(&["kir", "t.down", "--run", "2000"], &t.0);
+    assert_eq!(text(&ok.stdout).trim(), "2000");
+}
+
+#[test]
+fn kir_lower_prints_a_module_that_reads_back() {
+    // `ksn kir <FQN>` は内部で往復 (出力 → 読み込み → 出力) と検査を確かめてから出す (失敗なら終了コード 3)。
+    let t = kir_pkg("kir_text", "    core.check.eq(t.gcd(4u64, 2u64), 2u64)\n");
+    let o = run(&["kir", "t.gcd"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.starts_with("kir 1\n\nfn t.gcd key=t.gcd uses=[] panics=may stack=- ret=u64\n"), "{}", out);
+    assert!(out.contains("br_if %") && out.contains("end t.gcd\n"), "{}", out);
+    // 呼び先を含む関数は、呼び先も同じ部分モジュールに入る
+    let o = run(&["kir", "t.fact"], &t.0);
+    let out = text(&o.stdout);
+    assert!(out.contains("fn t.fact key=t.fact") && out.contains("call t.fact("), "{}", out);
+}
+
+#[test]
+fn kir_lower_reports_unsupported_constructs_with_a_reason() {
+    // 段階 1 の対象外 (標準の型 `std.io.Error` への参照の引数) は、理由を付けて拒否する。対象の関数は出さない。
+    let src = "fn t.len_of(_s: &std.io.Stdout) -> usize uses [] panics never
+    5usize
+end t.len_of
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("kir_unsupported", src);
+    let o = run(&["kir", "t.len_of"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let err = text(&o.stderr);
+    assert!(err.contains("t.len_of は未対応") && err.contains("段階 1 の対象外"), "{}", err);
+}
+
+#[test]
+fn kir_lower_dump_on_check_is_hidden_behind_the_env_var() {
+    // `KSN_DUMP_KIR=1 ksn check` だけ KIR を stderr に出す。通常の check の出力は変えない。
+    // 浮動小数の比較は失敗の文言に値を出せないので、段階 1 では未対応 (理由付きで出る)
+    let t = kir_pkg("kir_dump", "    core.check.eq(1.5f64, 1.5f64)\n");
+    let plain = run(&["check"], &t.0);
+    let dumped = Command::new(exe())
+        .args(["check"])
+        .current_dir(&t.0)
+        .env("KSN_DUMP_KIR", "1")
+        .output()
+        .expect("spawn ksn");
+    assert_eq!(dumped.status.code(), plain.status.code());
+    assert_eq!(dumped.stdout, plain.stdout);
+    let err = text(&dumped.stderr);
+    assert!(err.contains("kir 1\n") && err.contains("fn t.gcd key=t.gcd"), "{}", err);
+    assert!(err.contains("kir: 未対応 t.main"), "{}", err);
+    assert!(!text(&plain.stderr).contains("kir 1"));
+}
+
+#[test]
+fn kir_lower_examples_and_perf_functions_match_tree_walker() {
+    // examples と perf の段階 1 の対象関数。木走査の期待値は各パッケージの `main` (core.check.eq) と同じ数学的な値。
+    // 木走査は同じ入力を `ksn run` で通ること (main の検査) を先に確かめ、KIR の値を比べる。
+    let cases: &[(&str, &str, &[&str], &str)] = &[
+        ("examples/demo", "demo.fib", &["10"], "55"),
+        ("examples/demo", "demo.fib", &["20"], "6765"),
+        ("examples/native", "native.half", &["9"], "4"),
+        ("examples/native", "native.half", &["0"], "0"),
+        ("examples/realtime", "realtime.triangle", &["10"], "55"),
+        ("examples/json", "json.is_hex", &["97"], "true"),
+        ("examples/json", "json.is_hex", &["71"], "false"),
+        ("examples/json", "json.is_hex", &["57"], "true"),
+        // バイトリテラル `b'0'` などの u8 の定数 (json.is_hex)
+        ("examples/json", "json.is_hex", &["65"], "true"),
+        ("examples/json", "json.is_hex", &["103"], "false"),
+        ("perf/fib", "fib.fib", &["27"], "196418"),
+        ("perf/loops", "loops.sum_to", &["1000000"], "499999500000"),
+        ("perf/loops", "loops.sum_to", &["1000"], "499500"),
+        // 利用者の型のメソッド (`&mut self` の受け手): main の検査と同じ N = 200000 の値
+        ("perf/structs", "structs.run", &["200000"], "255318"),
+    ];
+    for (dir, f, args, want) in cases {
+        let d = root().join(dir);
+        assert_eq!(run(&["check"], &d).status.code(), Some(0), "{} check", dir);
+        assert_eq!(run(&["run"], &d).status.code(), Some(0), "{} run (tree-walker)", dir);
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &d);
+        assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+// ---- panic (unwrap・core.panic.panic)、利用者のメソッドの &mut 受け手、配列リテラルの for ----
+
+/// panic の試験用の関数。`unwrap` の None / Err と `core.panic.panic` (エスケープと % を含む文言)。
+const PANIC_SRC: &str = r#"fn t.half(n: u32) -> Option<u32> uses [] panics may
+    if n % 2u32 == 0u32 {
+        Some(n / 2u32)
+    } else {
+        None
+    }
+end t.half
+
+fn t.pick(n: i32) -> Result<u32, i32> uses [] panics may
+    if n > 0i32 {
+        Ok(7u32)
+    } else {
+        Err(n)
+    }
+end t.pick
+
+fn t.unit_err(n: i32) -> Result<u32, ()> uses [] panics may
+    if n > 0i32 {
+        Ok(7u32)
+    } else {
+        Err(())
+    }
+end t.unit_err
+
+fn t.un_opt(n: u32) -> u32 uses [] panics may
+    let o = t.half(n)
+    o.unwrap()
+end t.un_opt
+
+fn t.un_opt_expr(n: u32) -> u32 uses [] panics may
+    t.half(n).unwrap()
+end t.un_opt_expr
+
+fn t.un_res(n: i32) -> u32 uses [] panics may
+    let r = t.pick(n)
+    r.unwrap()
+end t.un_res
+
+fn t.un_unit(n: i32) -> u32 uses [] panics may
+    t.unit_err(n).unwrap()
+end t.un_unit
+
+fn t.say(n: u32) -> u32 uses [] panics may
+    if n > 3u32 {
+        core.panic.panic("too \"big\" 100% \\ ok\nnext")
+    }
+    n
+end t.say
+"#;
+
+#[test]
+fn kir_panic_unwrap_and_core_panic_match_tree_walker() {
+    // 文言と終了コード (101) が木走査と一致すること。値の枝の結果も同じ。
+    let cases: &[(&str, &str, &str, &str)] = &[
+        // (関数, KIR に渡す引数, Kasane の式の引数, 文言)
+        ("t.un_opt", "3", "3u32", "called `Option::unwrap()` on a `None` value"),
+        ("t.un_opt_expr", "5", "5u32", "called `Option::unwrap()` on a `None` value"),
+        ("t.un_res", "-5", "-5", "called `Result::unwrap()` on an `Err` value: -5"),
+        ("t.un_unit", "-1", "-1", "called `Result::unwrap()` on an `Err` value: ()"),
+        ("t.say", "9", "9u32", "too \"big\" 100% \\ ok\nnext"),
+    ];
+    for (i, &(f, arg, lit, msg)) in cases.iter().enumerate() {
+        let body = format!("    let _x = {}({})\n", f, lit);
+        let t = Tmp::new(&format!("kir_panic_unwrap_{}", i), &format!("{}{}", PANIC_SRC, main_wrap("", &body)));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "tree-walker: {}\n{}", f, text(&o.stderr));
+        assert!(text(&o.stderr).contains(&format!("panic: {}", msg)), "tree-walker: {}\n{}", f, text(&o.stderr));
+        let k = kir_run(&["kir", f, "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stderr).trim(), format!("panic: {}", msg), "kir: {}", f);
+    }
+    // 値の枝: 木走査の main の検査が通り、KIR の値が同じ
+    let t = Tmp::new(
+        "kir_panic_unwrap_values",
+        &format!(
+            "{}{}",
+            PANIC_SRC,
+            main_wrap(
+                "",
+                "    core.check.eq(t.un_opt(4u32), 2u32)\n    core.check.eq(t.un_opt_expr(6u32), 3u32)\n    core.check.eq(t.un_res(5), 7u32)\n    core.check.eq(t.un_unit(2), 7u32)\n    core.check.eq(t.say(2u32), 2u32)\n",
+            )
+        ),
+    );
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker main");
+    for (f, arg, want) in [("t.un_opt", "4", "2"), ("t.un_opt_expr", "6", "3"), ("t.un_res", "5", "7"), ("t.un_unit", "2", "7"), ("t.say", "2", "2")] {
+        let k = kir_run(&["kir", f, "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+}
+
+/// `core.check.eq` / `core.check.is_true` の下ろし (設計_KIR.md 13.2) の試験用の定義。値は関数の引数か、関数の中の定数。
+const CHECK_SRC: &str = r#"type t.Pt derive [Debug, PartialEq]
+    x: i32
+    y: u8
+end t.Pt
+
+enum t.Sh derive [Debug, PartialEq]
+    Circle(i32)
+    Rect(i32, bool)
+    Dot
+end t.Sh
+
+fn t.mk(n: i32) -> Option<i32> uses [] panics never
+    if n > 0i32 {
+        Some(n)
+    } else {
+        None
+    }
+end t.mk
+
+fn t.res(n: i32) -> Result<i32, i32> uses [] panics never
+    if n > 0i32 {
+        Ok(n)
+    } else {
+        Err(n)
+    }
+end t.res
+
+fn t.ieq(a: i32, b: i32) -> () uses [] panics may
+    core.check.eq(a, b)
+end t.ieq
+
+fn t.neq(a: i64) -> () uses [] panics may
+    core.check.eq(a, -9i64)
+end t.neq
+
+fn t.beq(c: bool) -> () uses [] panics may
+    core.check.is_true(c)
+end t.beq
+
+fn t.bq(a: bool, b: bool) -> () uses [] panics may
+    core.check.eq(a, b)
+end t.bq
+
+fn t.ceq(a: char, b: char) -> () uses [] panics may
+    core.check.eq(a, b)
+end t.ceq
+
+fn t.sok() -> () uses [] panics may
+    core.check.eq("ab", "ab")
+end t.sok
+
+fn t.sbad() -> () uses [] panics may
+    core.check.eq("ab", "ac")
+end t.sbad
+
+fn t.pq(n: i32) -> () uses [] panics may
+    core.check.eq(t.Pt { x: n, y: 1u8 }, t.Pt { x: n, y: 2u8 })
+end t.pq
+
+fn t.sq(n: i32) -> () uses [] panics may
+    core.check.eq(t.Sh.Circle(n), t.Sh.Rect(n, true))
+end t.sq
+
+fn t.sq_ok(n: i32) -> () uses [] panics may
+    core.check.eq(t.Sh.Circle(n), t.Sh.Circle(n))
+    core.check.eq(t.Sh.Dot, t.Sh.Dot)
+end t.sq_ok
+
+fn t.oq(n: i32) -> () uses [] panics may
+    core.check.eq(t.mk(n), Some(-4i32))
+end t.oq
+
+fn t.rq(n: i32) -> () uses [] panics may
+    core.check.eq(t.res(n), Ok(7i32))
+end t.rq
+"#;
+
+#[test]
+fn kir_check_eq_and_is_true_match_tree_walker() {
+    // 失敗の文言 (left / right の表示) と終了コード (101) が木走査と一致すること。成功は終了コード 0 で、表示は出さない。
+    // 対象: 整数の負数、bool、char、&str、構造体、列挙型、Option、Result。
+    let cases: &[(&str, &[&str], &str, Option<&str>)] = &[
+        ("t.ieq", &["1", "2"], "t.ieq(1i32, 2i32)", Some("assertion failed: left: 1, right: 2")),
+        ("t.ieq", &["-3", "3"], "t.ieq(-3i32, 3i32)", Some("assertion failed: left: -3, right: 3")),
+        ("t.ieq", &["-3", "-3"], "t.ieq(-3i32, -3i32)", None),
+        ("t.neq", &["-10"], "t.neq(-10i64)", Some("assertion failed: left: -10, right: -9")),
+        ("t.neq", &["-9"], "t.neq(-9i64)", None),
+        ("t.beq", &["false"], "t.beq(false)", Some("assertion failed: condition is false")),
+        ("t.beq", &["true"], "t.beq(true)", None),
+        ("t.bq", &["true", "false"], "t.bq(true, false)", Some("assertion failed: left: true, right: false")),
+        ("t.ceq", &["97", "98"], "t.ceq('a', 'b')", Some("assertion failed: left: 'a', right: 'b'")),
+        ("t.ceq", &["97", "97"], "t.ceq('a', 'a')", None),
+        ("t.sbad", &[], "t.sbad()", Some("assertion failed: left: \"ab\", right: \"ac\"")),
+        ("t.sok", &[], "t.sok()", None),
+        ("t.pq", &["5"], "t.pq(5i32)", Some("assertion failed: left: Pt { x: 5, y: 1 }, right: Pt { x: 5, y: 2 }")),
+        ("t.sq", &["3"], "t.sq(3i32)", Some("assertion failed: left: Circle(3), right: Rect(3, true)")),
+        ("t.sq_ok", &["3"], "t.sq_ok(3i32)", None),
+        ("t.oq", &["5"], "t.oq(5i32)", Some("assertion failed: left: Some(5), right: Some(-4)")),
+        ("t.oq", &["-1"], "t.oq(-1i32)", Some("assertion failed: left: None, right: Some(-4)")),
+        ("t.rq", &["-2"], "t.rq(-2i32)", Some("assertion failed: left: Err(-2), right: Ok(7)")),
+        ("t.rq", &["3"], "t.rq(3i32)", Some("assertion failed: left: Ok(3), right: Ok(7)")),
+        ("t.rq", &["7"], "t.rq(7i32)", None),
+    ];
+    for (i, &(f, args, call, want)) in cases.iter().enumerate() {
+        let t = Tmp::new(&format!("kir_check_eq_{}", i), &format!("{}{}", CHECK_SRC, main_wrap("", &format!("    {}\n", call))));
+        let tw = run(&["run"], &t.0);
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        match want {
+            Some(msg) => {
+                assert_eq!(tw.status.code(), Some(101), "tree-walker: {}\n{}", call, text(&tw.stderr));
+                assert_eq!(text(&tw.stderr).trim(), format!("panic: {}", msg), "tree-walker: {}", call);
+                assert_eq!(k.status.code(), Some(101), "kir: {:?}\n{}", kargs, text(&k.stderr));
+                assert_eq!(text(&k.stderr).trim(), text(&tw.stderr).trim(), "kir の文言が木走査と違う: {:?}", kargs);
+                assert!(text(&k.stdout).is_empty(), "kir: 失敗のときは表示を出さない: {:?}", kargs);
+            }
+            None => {
+                assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&tw.stderr));
+                assert_eq!(k.status.code(), Some(0), "kir: {:?}\n{}", kargs, text(&k.stderr));
+                assert_eq!(text(&k.stderr), "", "kir: 成功のときは stderr を出さない: {:?}", kargs);
+            }
+        }
+    }
+}
+
+#[test]
+fn kir_unwrap_of_an_aggregate_error_keeps_its_reason() {
+    // Err の値の表示 (Debug) を KIR で木走査と同じに作れない型 (利用者の構造体) は、理由を付けて未対応にする。
+    let src = "type t.E derive [Debug] pub
+    code: u8
+end t.E
+
+fn t.f(r: Result<u32, t.E>) -> u32 uses [] panics may
+    r.unwrap()
+end t.f
+";
+    let t = Tmp::new("kir_unwrap_agg_err", src);
+    let o = run(&["kir", "t.f"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let err = text(&o.stderr);
+    assert!(err.contains("unwrap の Err の値の表示は段階 1 の対象外"), "{}", err);
+}
+
+const METHOD_SRC: &str = r#"type t.Acc pub
+    total: i64
+end t.Acc
+
+type t.Outer pub
+    acc: t.Acc
+    hits: u32
+end t.Outer
+
+fn t.Acc.add(self: &mut t.Acc, v: i64) -> () uses [] panics never pub
+    self.total = self.total.wrapping_add(v)
+end t.Acc.add
+
+fn t.Acc.get(self: &t.Acc) -> i64 uses [] panics never pub
+    self.total
+end t.Acc.get
+
+fn t.Outer.bump(self: &mut t.Outer, v: i64) -> () uses [] panics never pub
+    self.acc.add(v)
+    self.hits = self.hits.wrapping_add(1u32)
+end t.Outer.bump
+
+fn t.via_ref(a: &mut t.Acc) -> () uses [] panics never pub
+    a.add(2i64)
+    a.add(3i64)
+end t.via_ref
+
+fn t.via_deref(a: &mut t.Acc) -> () uses [] panics never pub
+    (*a).add(10i64)
+end t.via_deref
+
+fn t.sum(n: i64) -> i64 uses [] panics never pub
+    let mut a = t.Acc { total: 0i64 }
+    let mut i = 0i64
+    while i < n {
+        a.add(i)
+        i = i.wrapping_add(1i64)
+    }
+    t.via_ref(&mut a)
+    t.via_deref(&mut a)
+    a.get()
+end t.sum
+
+fn t.outer(n: i64) -> i64 uses [] panics never pub
+    let mut o = t.Outer { acc: t.Acc { total: 1i64 }, hits: 0u32 }
+    let mut i = 0i64
+    while i < n {
+        o.bump(i)
+        i = i.wrapping_add(1i64)
+    }
+    o.acc.get()
+end t.outer
+
+fn t.hits(n: i64) -> u32 uses [] panics never pub
+    let mut o = t.Outer { acc: t.Acc { total: 1i64 }, hits: 0u32 }
+    let mut i = 0i64
+    while i < n {
+        o.bump(i)
+        i = i.wrapping_add(1i64)
+    }
+    o.hits
+end t.hits
+"#;
+
+#[test]
+fn kir_method_mut_receivers_match_tree_walker() {
+    // `&mut self` の受け手: 局所 (SSA と アドレスを取られたもの)、参照の引数、`*r`、フィールドの鎖 (`self.acc.add`)。
+    let t = Tmp::new(
+        "kir_method_mut",
+        &format!(
+            "{}{}",
+            METHOD_SRC,
+            main_wrap(
+                "",
+                "    core.check.eq(t.sum(4i64), 21i64)\n    core.check.eq(t.sum(0i64), 15i64)\n    core.check.eq(t.outer(4i64), 7i64)\n    core.check.eq(t.hits(4i64), 4u32)\n",
+            )
+        ),
+    );
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker main");
+    for (f, arg, want) in [("t.sum", "4", "21"), ("t.sum", "0", "15"), ("t.outer", "4", "7"), ("t.hits", "4", "4")] {
+        let k = kir_run(&["kir", f, "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {} {}\n{}", f, arg, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {} {}", f, arg);
+    }
+}
+
+const ARRAY_SRC: &str = r#"fn t.sum_lit() -> u32 uses [] panics never pub
+    let mut s = 0u32
+    for x in [1u32, 2u32, 3u32] {
+        s = s.wrapping_add(x)
+    }
+    s
+end t.sum_lit
+
+fn t.sum_bytes() -> u8 uses [] panics never pub
+    let mut s = 0u8
+    let bs = [10u8, 20u8, 250u8]
+    for b in bs {
+        s = s.wrapping_add(b)
+    }
+    s
+end t.sum_bytes
+
+fn t.count_big(n: u8) -> u8 uses [] panics never pub
+    let mut c = 0u8
+    let arr = [1u8, 2u8]
+    for x in arr {
+        if x > n {
+            c = c.wrapping_add(1u8)
+        }
+    }
+    c
+end t.count_big
+"#;
+
+#[test]
+fn kir_array_for_matches_tree_walker() {
+    // 配列リテラルの `for` と、`let` で束ねた配列の `for` (要素はスカラー。wrapping の結果も木走査と同じ)。
+    let t = Tmp::new(
+        "kir_array_for",
+        &format!(
+            "{}{}",
+            ARRAY_SRC,
+            main_wrap("", "    core.check.eq(t.sum_lit(), 6u32)\n    core.check.eq(t.sum_bytes(), 24u8)\n    core.check.eq(t.count_big(1u8), 1u8)\n"),
+        ),
+    );
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker main");
+    for (f, args, want) in [("t.sum_lit", vec![], "6"), ("t.sum_bytes", vec![], "24"), ("t.count_big", vec!["1"], "1")] {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+}
+
+#[test]
+fn kir_array_of_aggregates_keeps_its_reason() {
+    // 要素が集成体の配列は、バイト記憶で並べられないので理由を付けて未対応にする。
+    let src = "type t.E pub
+    code: u8
+end t.E
+
+fn t.g() -> u8 uses [] panics never pub
+    let mut s = 0u8
+    for x in [t.E { code: 1u8 }, t.E { code: 2u8 }] {
+        s = s.wrapping_add(x.code)
+    }
+    s
+end t.g
+";
+    let t = Tmp::new("kir_array_agg", src);
+    let o = run(&["kir", "t.g"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let err = text(&o.stderr);
+    assert!(err.contains("配列の要素の型は段階 1 の対象外"), "{}", err);
+}
+
+// ---- 組み込みの Option / Result と checked_* (設計_KIR.md 11 章) ----
+
+/// Option / Result の試験用の関数。`main` の検査 (木走査) と `ksn kir --run` の両方で使う。
+const OPTRES_SRC: &str = r#"fn t.half(n: u32) -> Option<u32> uses [] panics may
+    if n % 2u32 == 0u32 {
+        Some(n / 2u32)
+    } else {
+        None
+    }
+end t.half
+
+fn t.first_half(n: u32) -> Option<u32> uses [] panics may
+    let h = t.half(n)?
+    let q = t.half(h)?
+    Some(q + 1u32)
+end t.first_half
+
+fn t.classify(o: Option<u32>) -> u32 uses [] panics never
+    match o {
+        Some(0u32) => 100u32
+        Some(1u32) => 101u32
+        Some(_) => 1u32
+        None => 2u32
+    }
+end t.classify
+
+fn t.cls(n: u32) -> u32 uses [] panics may
+    t.classify(t.half(n))
+end t.cls
+
+fn t.last_even(n: u32) -> Option<u32> uses [] panics may
+    let mut best = None
+    let mut i = 0u32
+    while i < n {
+        if i % 2u32 == 0u32 {
+            best = Some(i)
+        }
+        i = i + 1u32
+    }
+    best
+end t.last_even
+
+fn t.chained(a: i8, b: i8) -> Option<i8> uses [] panics never
+    let s = a.checked_mul(b)?
+    s.checked_sub(1i8)
+end t.chained
+
+fn t.ck_div(a: i8, b: i8) -> Option<i8> uses [] panics never
+    a.checked_div(b)
+end t.ck_div
+
+fn t.ck_rem(a: i8, b: i8) -> Option<i8> uses [] panics never
+    a.checked_rem(b)
+end t.ck_rem
+
+fn t.unit_ok(x: u8) -> Result<(), u8> uses [] panics never
+    if x > 10u8 {
+        return Err(x)
+    }
+    Ok(())
+end t.unit_ok
+
+fn t.neg(x: i64) -> Option<i64> uses [] panics never
+    Some(x.wrapping_sub(5i64))
+end t.neg
+
+fn t.pos(x: i32) -> Option<bool> uses [] panics never
+    Some(x > 0i32)
+end t.pos
+
+fn t.nothing() -> Option<u8> uses [] panics never
+    None
+end t.nothing
+
+fn t.pick(flag: bool) -> Result<u16, u16> uses [] panics never
+    let r = if flag {
+        Ok(7u16)
+    } else {
+        Err(9u16)
+    }
+    r
+end t.pick
+"#;
+
+const OPTRES_MAIN: &str = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.half(8u32), Some(4u32))
+    core.check.eq(t.half(7u32), None)
+    core.check.eq(t.first_half(8u32), Some(3u32))
+    core.check.eq(t.first_half(6u32), None)
+    core.check.eq(t.cls(8u32), 1u32)
+    core.check.eq(t.cls(0u32), 100u32)
+    core.check.eq(t.cls(2u32), 101u32)
+    core.check.eq(t.cls(7u32), 2u32)
+    core.check.eq(t.last_even(5u32), Some(4u32))
+    core.check.eq(t.last_even(0u32), None)
+    core.check.eq(t.chained(3i8, 4i8), Some(11i8))
+    core.check.eq(t.chained(100i8, 2i8), None)
+    core.check.eq(t.ck_div(-128i8, -1i8), None)
+    core.check.eq(t.ck_div(7i8, 0i8), None)
+    core.check.eq(t.ck_div(-7i8, 2i8), Some(-3i8))
+    core.check.eq(t.ck_rem(-7i8, 2i8), Some(-1i8))
+    core.check.eq(t.ck_rem(-128i8, -1i8), None)
+    core.check.eq(t.unit_ok(3u8), Ok(()))
+    core.check.eq(t.unit_ok(12u8), Err(12u8))
+    core.check.eq(t.neg(3i64), Some(-2i64))
+    core.check.eq(t.pos(-4i32), Some(false))
+    core.check.eq(t.pos(4i32), Some(true))
+    core.check.eq(t.nothing(), None)
+    core.check.eq(t.pick(true), Ok(7u16))
+    core.check.eq(t.pick(false), Err(9u16))
+    Ok(())
+end t.main
+";
+
+#[test]
+fn kir_optres_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の main の検査が通ること、参照実行器 (`ksn kir --run`) の値が木走査の値と同じ表示であること。
+    let t = Tmp::new("kir_optres_values", &format!("{}\n{}", OPTRES_SRC, OPTRES_MAIN));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.half", &["8"], "Some(4)"),
+        ("t.half", &["7"], "None"),
+        ("t.first_half", &["8"], "Some(3)"),
+        ("t.first_half", &["6"], "None"),
+        ("t.cls", &["8"], "1"),
+        ("t.cls", &["0"], "100"),
+        ("t.cls", &["2"], "101"),
+        ("t.cls", &["7"], "2"),
+        ("t.last_even", &["5"], "Some(4)"),
+        ("t.last_even", &["0"], "None"),
+        ("t.chained", &["3", "4"], "Some(11)"),
+        ("t.chained", &["100", "2"], "None"),
+        ("t.ck_div", &["-128", "-1"], "None"),
+        ("t.ck_div", &["7", "0"], "None"),
+        ("t.ck_div", &["-7", "2"], "Some(-3)"),
+        ("t.ck_rem", &["-7", "2"], "Some(-1)"),
+        ("t.ck_rem", &["-128", "-1"], "None"),
+        ("t.unit_ok", &["3"], "Ok(())"),
+        ("t.unit_ok", &["12"], "Err(12)"),
+        ("t.neg", &["3"], "Some(-2)"),
+        ("t.pos", &["-4"], "Some(false)"),
+        ("t.pos", &["4"], "Some(true)"),
+        ("t.nothing", &[], "None"),
+        ("t.pick", &["true"], "Ok(7)"),
+        ("t.pick", &["false"], "Err(9)"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+#[test]
+fn kir_optres_prints_tagged_types_and_reads_back() {
+    // `ksn kir` は出力を読み直して検査を通してから出す (終了コード 0 なら往復と検査が通っている)。
+    let t = Tmp::new("kir_optres_text", &format!("{}\n{}", OPTRES_SRC, OPTRES_MAIN));
+    let o = run(&["kir", "t.half"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("fn t.half key=t.half uses=[] panics=may stack=- ret=Option<u32>"), "{}", out);
+    assert!(out.contains("= some %") && out.contains("= const.Option<u32> none"), "{}", out);
+    let o = run(&["kir", "t.first_half"], &t.0);
+    assert!(text(&o.stdout).contains("= tag %") && text(&o.stdout).contains("= payload %"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.nothing"], &t.0);
+    assert!(text(&o.stdout).contains("const.Option<u8> none"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.pick"], &t.0);
+    assert!(text(&o.stdout).contains("ret=Result<u16,u16>"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn kir_optres_rejects_checked_neg_and_std_payloads_with_a_reason() {
+    // `checked_neg` は段階 1 の対象外。`Option` の中のタプルは集成体として持てる (11.5) が、
+    // Kasane の定義を持たない扱いの標準ライブラリの型 (`std.io.Stdout`。`std.io.Error` は 12.1 で型表に入った) をペイロードに持つ `Result` は未対応で、理由に型名を出す。
+    let src = "fn t.neg(x: i8) -> Option<i8> uses [] panics never
+    x.checked_neg()
+end t.neg
+
+fn t.pr(x: u8) -> Option<(u8, u8)> uses [] panics never
+    Some((x, x))
+end t.pr
+
+fn t.io(x: u8) -> Result<u8, std.io.Stdout> uses [] panics never
+    Ok(x)
+end t.io
+";
+    let t = Tmp::new("kir_optres_reject", src);
+    let o = run(&["kir", "t.neg"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("checked_neg は段階 1 の対象外"), "{}", text(&o.stderr));
+    let o = run(&["kir", "t.pr"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("ret=Option<agg#"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.io"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let err = text(&o.stderr);
+    assert!(err.contains("t.io は未対応") && err.contains("std.io.Stdout は未対応"), "{}", err);
+}
+
+#[test]
+fn kir_optres_examples_features_match_tree_walker() {
+    // examples/features の `chain` (`?` と `Result`) と `checked` (`checked_add` と `match`)。
+    let d = root().join("examples/features");
+    assert_eq!(run(&["run"], &d).status.code(), Some(0), "features run (tree-walker)");
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("features.chain", &["250", "4"], "Ok(255)"),
+        ("features.chain", &["255", "1"], "Err(255)"),
+        ("features.chain", &["200", "56"], "Err(200)"),
+        ("features.checked", &["200", "55"], "Ok(255)"),
+        ("features.checked", &["200", "56"], "Err(200)"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &d);
+        assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+// ---- Option / Result のペイロードに集成体・unit・入れ子を置く (設計_KIR.md 11.5) ----
+
+/// 集成体・unit・入れ子のペイロードの試験用の関数。`?` は 2 段の呼び出しを通り、`match` は構造体・列挙子の判定を含む。
+const OPTRES_AGG_SRC: &str = r#"type t.Point
+    x: i64
+    y: i64
+end t.Point
+
+enum t.Err
+    Neg(i64)
+    Zero
+end t.Err
+
+fn t.find(n: i64) -> Option<t.Point> uses [] panics never
+    if n > 0i64 {
+        Some(t.Point { x: n, y: n.wrapping_add(1i64) })
+    } else {
+        None
+    }
+end t.find
+
+fn t.sum_opt(o: Option<t.Point>) -> i64 uses [] panics never
+    match o {
+        Some(p) => p.x.wrapping_add(p.y)
+        None => 0i64
+    }
+end t.sum_opt
+
+fn t.first_x(n: i64) -> i64 uses [] panics never
+    match t.find(n) {
+        Some(t.Point { x: a, y: b }) => a
+        None => 0i64
+    }
+end t.first_x
+
+fn t.div(a: i64, b: i64) -> Result<i64, t.Err> uses [] panics may
+    if b == 0i64 {
+        return Err(t.Err.Zero)
+    }
+    if a < 0i64 {
+        return Err(t.Err.Neg(a))
+    }
+    Ok(a / b)
+end t.div
+
+fn t.check(v: i64) -> Result<(), t.Err> uses [] panics never
+    if v > 100i64 {
+        return Err(t.Err.Neg(v))
+    }
+    Ok(())
+end t.check
+
+fn t.chain(a: i64, b: i64) -> Result<i64, t.Err> uses [] panics may
+    let q = t.div(a, b)?
+    t.check(q)?
+    Ok(q.wrapping_add(1i64))
+end t.chain
+
+fn t.chain2(a: i64, b: i64) -> Result<i64, t.Err> uses [] panics may
+    let r = t.chain(a, b)?
+    Ok(r.wrapping_mul(2i64))
+end t.chain2
+
+fn t.code(a: i64, b: i64) -> i64 uses [] panics may
+    match t.chain2(a, b) {
+        Ok(v) => v
+        Err(t.Err.Zero) => -1i64
+        Err(t.Err.Neg(n)) => n
+    }
+end t.code
+
+fn t.px(n: i64) -> i64 uses [] panics may
+    t.sum_opt(t.find(n))
+end t.px
+
+fn t.nest(n: i64) -> Option<Result<i64, t.Err>> uses [] panics may
+    if n == 0i64 {
+        None
+    } else {
+        Some(t.div(100i64, n))
+    }
+end t.nest
+
+fn t.nest_val(n: i64) -> i64 uses [] panics may
+    match t.nest(n) {
+        Some(Ok(v)) => v
+        Some(Err(_)) => -1i64
+        None => -2i64
+    }
+end t.nest_val
+
+fn t.unit_val(x: i64) -> i64 uses [] panics never
+    match t.check(x) {
+        Ok(()) => 1i64
+        Err(_) => 0i64
+    }
+end t.unit_val
+
+fn t.oo(n: i64) -> Option<Option<i64>> uses [] panics never
+    if n == 0i64 {
+        None
+    } else if n == 1i64 {
+        Some(None)
+    } else {
+        Some(Some(n))
+    }
+end t.oo
+
+fn t.oo_code(n: i64) -> i64 uses [] panics never
+    match t.oo(n) {
+        Some(Some(v)) => v
+        Some(None) => -1i64
+        None => -2i64
+    }
+end t.oo_code
+
+fn t.flags(n: i64) -> i64 uses [] panics may
+    let mut c = 0i64
+    if t.find(n).is_some() {
+        c = c + 1i64
+    }
+    if t.find(n).is_none() {
+        c = c + 10i64
+    }
+    c
+end t.flags
+
+fn t.or_default(n: i64) -> i64 uses [] panics may
+    let r = t.div(10i64, n).unwrap_or(7i64)
+    r
+end t.or_default
+"#;
+
+const OPTRES_AGG_MAIN: &str = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.px(3i64), 7i64)
+    core.check.eq(t.px(0i64), 0i64)
+    core.check.eq(t.first_x(3i64), 3i64)
+    core.check.eq(t.code(10i64, 2i64), 12i64)
+    core.check.eq(t.code(10i64, 0i64), -1i64)
+    core.check.eq(t.code(-4i64, 2i64), -4i64)
+    core.check.eq(t.code(300i64, 1i64), 300i64)
+    core.check.eq(t.nest_val(4i64), 25i64)
+    core.check.eq(t.nest_val(0i64), -2i64)
+    core.check.eq(t.nest_val(-1i64), -100i64)
+    core.check.eq(t.unit_val(5i64), 1i64)
+    core.check.eq(t.unit_val(500i64), 0i64)
+    core.check.eq(t.oo_code(0i64), -2i64)
+    core.check.eq(t.oo_code(1i64), -1i64)
+    core.check.eq(t.oo_code(7i64), 7i64)
+    core.check.eq(t.flags(2i64), 1i64)
+    core.check.eq(t.flags(-2i64), 10i64)
+    core.check.eq(t.or_default(2i64), 5i64)
+    core.check.eq(t.or_default(0i64), 7i64)
+    Ok(())
+end t.main
+";
+
+#[test]
+fn kir_optres_aggregates_match_tree_walker() {
+    // 木走査 (`ksn run`) の main が通ること、参照実行器の値が木走査と同じ値であること。
+    // 入口は整数だけを引数・戻り値に持つ関数 (集成体・入れ子を持つ戻り値は入口で拒否する)。
+    let t = Tmp::new("kir_optres_agg", &format!("{}\n{}", OPTRES_AGG_SRC, OPTRES_AGG_MAIN));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.px", &["3"], "7"),
+        ("t.px", &["0"], "0"),
+        ("t.first_x", &["3"], "3"),
+        ("t.code", &["10", "2"], "12"),
+        ("t.code", &["10", "0"], "-1"),
+        ("t.code", &["-4", "2"], "-4"),
+        ("t.code", &["300", "1"], "300"),
+        ("t.nest_val", &["4"], "25"),
+        ("t.nest_val", &["0"], "-2"),
+        ("t.nest_val", &["-1"], "-100"),
+        ("t.unit_val", &["5"], "1"),
+        ("t.unit_val", &["500"], "0"),
+        ("t.oo_code", &["0"], "-2"),
+        ("t.oo_code", &["1"], "-1"),
+        ("t.oo_code", &["7"], "7"),
+        ("t.flags", &["2"], "1"),
+        ("t.flags", &["-2"], "10"),
+        ("t.or_default", &["2"], "5"),
+        ("t.or_default", &["0"], "7"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+#[test]
+fn kir_optres_aggregates_print_and_refuse_at_the_entry() {
+    let t = Tmp::new("kir_optres_agg_text", &format!("{}\n{}", OPTRES_AGG_SRC, OPTRES_AGG_MAIN));
+    // 入れ子と集成体の型は読み直せる形で出る (`ksn kir` は往復を確かめてから出す)
+    let o = run(&["kir", "t.oo"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("ret=Option<Option<i64>>") && out.contains("const.Option<Option<i64>> none"), "{}", out);
+    let o = run(&["kir", "t.nest"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("ret=Option<Result<i64,agg#"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.code"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("ret=i64") && text(&o.stdout).contains("= call t.chain2("), "{}", text(&o.stdout));
+    // 入口は集成体・入れ子を引数・戻り値に持てない (表示できないため)
+    let k = run(&["kir", "t.find", "--run", "3"], &t.0);
+    assert_eq!(k.status.code(), Some(2), "{}", text(&k.stderr));
+    assert!(text(&k.stderr).contains("集成体を引数・戻り値に持つ"), "{}", text(&k.stderr));
+    let k = run(&["kir", "t.oo", "--run", "7"], &t.0);
+    assert_eq!(k.status.code(), Some(2), "{}", text(&k.stderr));
+}
+
+#[test]
+fn kir_optres_of_aggregates_read_back_as_text() {
+    // 集成体を含むテキスト形式の型 (`Option<agg#n>`、`Result<agg#n,i64>`) は、読み直すと同じ型になる。
+    let t = Tmp::new("kir_optres_agg_round", &format!("{}\n{}", OPTRES_AGG_SRC, OPTRES_AGG_MAIN));
+    let o = run(&["kir", "t.chain"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("ret=Result<i64,agg#"), "{}", out);
+    assert!(out.contains("= err %") && out.contains("= ok %"), "{}", out);
+    let o = run(&["kir", "t.sum_opt"], &t.0);
+    assert!(text(&o.stdout).contains("Option<agg#"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn kir_optres_unit_and_std_payloads_are_checked_by_the_verifier() {
+    // `Result<(), 利用者の型>` は作れる (unit の Ok)。`Option<型表にない std 型>` は未対応の理由を付けて拒否する。
+    let src = "type t.P
+    a: u8
+end t.P
+
+fn t.ok_unit() -> Result<(), t.P> uses [] panics never
+    Ok(())
+end t.ok_unit
+
+fn t.bad() -> Option<std.io.Stdout> uses [] panics never
+    None
+end t.bad
+";
+    let t = Tmp::new("kir_optres_unit", src);
+    let o = run(&["kir", "t.ok_unit"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("ret=Result<unit,agg#0>"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.bad"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("std.io.Stdout は未対応"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn kir_optres_slice_sub_matches_tree_walker() {
+    // `s.sub(a, b)` は `Option<&[T]>`。部分スライスの `fat` をペイロードに持ち、範囲の外は `None` (panic しない)。
+    let src = "fn t.has(s: &[u8], a: usize, b: usize) -> bool uses [] panics never
+    match s.sub(a, b) {
+        Some(_) => true
+        None => false
+    }
+end t.has
+
+fn t.bytes_has(s: &str, a: usize, b: usize) -> bool uses [] panics never
+    let v = s.as_bytes()
+    t.has(v, a, b)
+end t.bytes_has
+
+fn t.p1() -> bool uses [] panics never
+    t.bytes_has(\"hello\", 1usize, 3usize)
+end t.p1
+
+fn t.p2() -> bool uses [] panics never
+    t.bytes_has(\"hello\", 3usize, 2usize)
+end t.p2
+
+fn t.p3() -> bool uses [] panics never
+    t.bytes_has(\"hello\", 2usize, 6usize)
+end t.p3
+
+fn t.p4() -> bool uses [] panics never
+    t.bytes_has(\"hello\", 5usize, 5usize)
+end t.p4
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.p1(), true)
+    core.check.eq(t.p2(), false)
+    core.check.eq(t.p3(), false)
+    core.check.eq(t.p4(), true)
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("kir_optres_sub", src);
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker\n{}", text(&run(&["run"], &t.0).stderr));
+    for (f, want) in [("t.p1", "true"), ("t.p2", "false"), ("t.p3", "false"), ("t.p4", "true")] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+    // 戻り値の `Option<&[u8]>` は表示できる形で出る (`fat` の集成体の番号を含む)
+    let o = run(&["kir", "t.has"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+}
+
+// ---- 型引数に線形を含む型の束縛 (4.4): `Option` / `Result` / ジェネリック構造体 ----
+
+/// `tdrop_prefix` に、型引数の線形検査の試験用の定義を足して検査する。
+fn lin_arg_codes(name: &str, b: &[&str]) -> (Vec<String>, String) {
+    let nl = char::from(10u8).to_string();
+    let mut pre: Vec<&str> = tdrop_prefix();
+    pre.extend_from_slice(&[
+        "type t.Pair[A, B]",
+        "    a: A",
+        "    b: B",
+        "end t.Pair",
+        "",
+        "fn t.eat_opt(o: Option<t.L>) -> () uses [] panics never",
+        "    match o {",
+        "        Some(x) => {",
+        "            t.eat(x)",
+        "        }",
+        "        None => {",
+        "            core.mem.drop(0u8)",
+        "        }",
+        "    }",
+        "end t.eat_opt",
+        "",
+        "fn t.eat_box(b: t.Box<t.L>) -> () uses [] panics never",
+        "    let t.Box { v: x } = b",
+        "    t.eat(x)",
+        "end t.eat_box",
+        "",
+        "fn t.mk_opt() -> Option<t.L> uses [] panics never",
+        "    let o = Some(t.get_l())",
+        "    o",
+        "end t.mk_opt",
+        "",
+        "fn t.res_try() -> Result<(), u8> uses [] panics never",
+        "    let r: Result<t.L, u8> = Ok(t.get_l())",
+        "    let l = r?",
+        "    t.eat(l)",
+        "    Ok(())",
+        "end t.res_try",
+        "",
+    ]);
+    let prefix = pre.join(&nl) + &nl + &nl;
+    let t = Tmp::new(name, &main_wrap(&prefix, &body(b)));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (codes(&out), out)
+}
+
+#[test]
+fn lin_option_of_linear_left_unconsumed_is_e3003() {
+    let (cs, out) = lin_arg_codes("lin_opt_unused", &["let o = Some(t.get_l())"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `o` is never consumed"), "{}", out);
+}
+
+#[test]
+fn lin_result_with_a_linear_ok_left_unconsumed_is_e3003() {
+    let (cs, out) = lin_arg_codes("lin_res_unused", &["let r: Result<t.L, u8> = Ok(t.get_l())"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `r` is never consumed"), "{}", out);
+}
+
+#[test]
+fn lin_generic_literal_with_a_linear_arg_left_unconsumed_is_e3003() {
+    // 型引数の推論: `t.Box { v: t.get_l() }` は `t.Box<t.L>` (線形)。
+    let (cs, out) = lin_arg_codes("lin_box_unused", &["let _bl = t.Box { v: t.get_l() }"]);
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+    assert!(out.contains("linear value `_bl` is never consumed"), "{}", out);
+}
+
+#[test]
+fn lin_generic_struct_with_an_unconsumed_linear_field_is_e3003() {
+    let (cs, out) = lin_arg_codes(
+        "lin_pair_unused",
+        &["let p = t.Pair { a: t.get_l(), b: 1u8 }", "core.mem.drop(p.b)"],
+    );
+    assert!(tdrop_has(&cs, "E3003"), "{}", out);
+}
+
+#[test]
+fn lin_option_consumed_by_match_passed_or_moved_is_ok() {
+    let (cs, out) = lin_arg_codes(
+        "lin_opt_ok",
+        &[
+            "let o = Some(t.get_l())",
+            "match o {",
+            "    Some(x) => {",
+            "        t.eat(x)",
+            "    }",
+            "    None => {",
+            "        core.mem.drop(0u8)",
+            "    }",
+            "}",
+            "let p = Some(t.get_l())",
+            "t.eat_opt(p)",
+            "let q = Some(t.get_l())",
+            "let q2 = q",
+            "t.eat_opt(q2)",
+            "let m = t.mk_opt()",
+            "t.eat_opt(m)",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E3003") && !tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn lin_result_try_and_generic_literal_consumed_are_ok() {
+    let (cs, out) = lin_arg_codes(
+        "lin_res_box_ok",
+        &[
+            "let b = t.Box { v: t.get_l() }",
+            "t.eat_box(b)",
+            "let p = t.Pair { a: t.get_l(), b: 1u8 }",
+            "t.eat(p.a)",
+            "core.mem.drop(p.b)",
+            "let n: Option<u8> = Some(1u8)",
+            "core.mem.drop(n)",
+            "let r: Result<u8, t.L> = Err(t.get_l())",
+            "match r {",
+            "    Ok(v) => {",
+            "        core.mem.drop(v)",
+            "    }",
+            "    Err(e) => {",
+            "        t.eat(e)",
+            "    }",
+            "}",
+        ],
+    );
+    assert!(!tdrop_has(&cs, "E3003") && !tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+#[test]
+fn discarding_an_option_or_result_value_is_e2042() {
+    // 型引数が決まる `Some(x)` / `Ok(x)` の値を式文で捨てると 4.6 の E2042 (`()` 以外を捨てる)。
+    let (cs, out) = lin_arg_codes("lin_discard_opt", &["Some(1u8)", "Ok(1u8)"]);
+    assert!(tdrop_has(&cs, "E2042"), "{}", out);
+}
+
+// ---- 4.6 (型表): 標準ライブラリのジェネリック型のメソッドの戻り値を捨てる式文 (E2042) ----
+
+/// `Vec<u8>` の値 `v` を作る本体 (`alloc` の効果を使うので main は `uses [alloc, io.console]`)。
+fn tdisc_src(extra: &str, b: &[&str]) -> String {
+    format!(
+        "{}fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let mut v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n{}    Ok(())\nend t.main\n",
+        extra,
+        body(b)
+    )
+}
+
+/// E2042 の診断が出た行 (1 診断 1 行の JSON の "line")。
+fn e2042_lines(out: &str) -> Vec<usize> {
+    out.lines()
+        .filter(|l| l.starts_with('{') && l.contains("\"E2042\""))
+        .filter_map(|l| {
+            let i = l.find("\"line\": ")? + 8;
+            let rest = &l[i..];
+            rest[..rest.find(|c: char| !c.is_ascii_digit())?].parse().ok()
+        })
+        .collect()
+}
+
+fn tdisc_lines(name: &str, extra: &str, b: &[&str]) -> (Vec<usize>, String) {
+    let t = Tmp::new(name, &tdisc_src(extra, b));
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    (e2042_lines(&out), out)
+}
+
+#[test]
+fn tdisc_discarding_option_from_generic_method_is_e2042() {
+    // `v.pop()` の戻り値は `Option<u8>` (型引数 T を Vec の型引数から代入して決まる)。`()` ではない。
+    // 行 3 が `v.pop()` (行 1 は fn、行 2 は let)。
+    let (lines, out) = tdisc_lines("tdisc_pop", "", &["v.pop()", "v.clear()"]);
+    assert_eq!(lines, vec![3], "{}", out);
+}
+
+#[test]
+fn tdisc_discarding_scalar_from_generic_method_is_e2042() {
+    // `len` は usize を返す (型引数に依らない戻り値も、型表で決まる)。
+    let (lines, out) = tdisc_lines("tdisc_len", "", &["v.len()"]);
+    assert_eq!(lines, vec![3], "{}", out);
+}
+
+#[test]
+fn tdisc_unit_returning_generic_methods_are_silent() {
+    // `clear` / `truncate` は `()` を返すので、捨てても診断は出ない (陰性)。
+    let (lines, out) = tdisc_lines("tdisc_unit", "", &["v.clear()", "v.truncate(0usize)"]);
+    assert!(lines.is_empty(), "{}", out);
+}
+
+#[test]
+fn tdisc_discarding_result_from_push_is_e2042() {
+    // `push` は `Result<(), AllocError>` を返すので、`()` 以外を捨てることになる (4.6)。
+    let (lines, out) = tdisc_lines("tdisc_push", "", &["v.push(1u8)"]);
+    assert_eq!(lines, vec![3], "{}", out);
+}
+
+#[test]
+fn tdisc_last_statement_of_a_block_is_not_discarded() {
+    // ブロックの最後の式文はブロックの値なので捨てない (関数の戻り値は別の検査)。
+    let extra = "fn t.last(v: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Option<u8> uses [] panics never\n    v.pop()\nend t.last\n";
+    let (lines, out) = tdisc_lines("tdisc_last", extra, &["let o = t.last(&mut v)", "core.mem.drop(o)"]);
+    assert!(lines.is_empty(), "{}", out);
+}
+
+#[test]
+fn tdisc_generic_element_type_stays_silent() {
+    // 要素の型 T が決まらない (型パラメータ) ときは黙る。
+    let extra = "fn t.drop_top[T](v: &mut alloc.vec.Vec<T, std.alloc.System>) -> () uses [] panics never\n    v.pop()\n    ()\nend t.drop_top\n";
+    let (lines, out) = tdisc_lines("tdisc_generic", extra, &["t.drop_top(&mut v)"]);
+    assert!(lines.is_empty(), "{}", out);
+}
+
+// ---- impl のメソッドの効果はトレイト宣言の効果を超えない (4.3 / 5.1, E4021)
+
+const IMPL_EFF_PRELUDE: &str = "trait t.Act pub
+    fn act(self: &Self) -> u8 uses [io.console] panics never
+end t.Act
+
+trait t.Gen[E: uses, P: panics] pub
+    fn go(self: &Self) -> u8 uses [E] panics P
+end t.Gen
+
+type t.Q pub
+    n: u8
+end t.Q
+
+type t.S pub
+    n: u8
+end t.S
+
+type t.T pub
+    n: u8
+end t.T
+
+type t.W pub
+    n: u8
+end t.W
+
+type t.X pub
+    n: u8
+end t.X
+
+type t.Y pub
+    n: u8
+end t.Y
+
+type t.Z pub
+    n: u8
+end t.Z
+
+";
+
+#[test]
+fn impl_method_effects_within_the_trait_declaration_pass() {
+    // 陰性 (通る): 階層の部分型 (`io` ⊇ `io.console`)、トレイトの効果変数を impl の実引数で置き換えた上での包含、
+    // `may` の宣言に対する `never` / `may` の実装、`never` の宣言に対する `never` の実装。
+    let body = "impl t.Act for t.S
+fn t.S.act(self: &t.S) -> u8 uses [io.console] panics never impls t.Act
+    self.n
+end t.S.act
+
+impl t.Gen<[io], may> for t.T
+fn t.T.go(self: &t.T) -> u8 uses [io.fs] panics may impls t.Gen<[io], may>
+    self.n
+end t.T.go
+
+impl t.Gen<[io.console], never> for t.W
+fn t.W.go(self: &t.W) -> u8 uses [io.console] panics never impls t.Gen<[io.console], never>
+    self.n
+end t.W.go
+";
+    let (code, got, out) = eff_check_with("impl_eff_ok", IMPL_EFF_PRELUDE, body);
+    assert_eq!(code, Some(0), "{}", out);
+    assert!(got.is_empty(), "{}", out);
+}
+
+#[test]
+fn impl_method_effects_beyond_the_trait_declaration_are_rejected() {
+    // 陽性 (E4021): 宣言の `uses` に覆われない効果 (`alloc`)、トレイトの効果変数を実引数 `[]` で置き換えた後の
+    // 効果 (`io`)、トレイトが `panics never` の impl の `panics may`。
+    let body = "impl t.Act for t.X
+fn t.X.act(self: &t.X) -> u8 uses [alloc, io.console] panics never impls t.Act
+    self.n
+end t.X.act
+
+impl t.Gen<[io.console], never> for t.Y
+fn t.Y.go(self: &t.Y) -> u8 uses [io.console] panics may impls t.Gen<[io.console], never>
+    self.n
+end t.Y.go
+
+impl t.Gen<[], never> for t.Z
+fn t.Z.go(self: &t.Z) -> u8 uses [io] panics never impls t.Gen<[], never>
+    self.n
+end t.Z.go
+";
+    let (code, got, out) = eff_check_with("impl_eff_bad", IMPL_EFF_PRELUDE, body);
+    assert_eq!(code, Some(1), "{}", out);
+    let want: Vec<String> = ["E4021", "E4021", "E4021"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(got, want, "{}", out);
+    assert!(out.contains("t.X.act uses effect `alloc` not declared by trait method t.Act.act"), "{}", out);
+    assert!(out.contains("t.Z.go uses effect `io` not declared by trait method t.Gen.go"), "{}", out);
+    assert!(out.contains("t.Y.go may panic but trait method t.Gen.go declares `panics never`"), "{}", out);
+}
+
+#[test]
+fn impl_method_effects_with_unbound_trait_variables_stay_silent() {
+    // 陰性 (黙る): impl の実引数が効果変数 (`E`) のとき、トレイトの効果は束縛できず分からないので、
+    // impl のメソッドの具体的な効果 (`io`) も検査しない。
+    let body = "impl[E: uses, P: panics] t.Gen<E, P> for t.Q
+fn t.Q.go[E: uses, P: panics](self: &t.Q) -> u8 uses [io, E] panics P impls t.Gen<E, P>
+    self.n
+end t.Q.go
+";
+    let (_code, got, out) = eff_check_with("impl_eff_quiet", IMPL_EFF_PRELUDE, body);
+    assert!(!got.iter().any(|c| c == "E4021"), "{}", out);
+}
+
+// ---- 集成体 (構造体・タプル・列挙型) の下ろし (設計_KIR.md 2.3、kir/aggregates) ----
+
+/// 構築・フィールドの読み書き・列挙型の変種と `match` の束縛・タプルの束縛・ループ・腕の中の代入を含む。
+/// `t.run_*` は整数だけを引数に取るので、`ksn kir <FQN> --run` で呼べる。`t.main` は木走査の検査。
+const KIR_AGG_SRC: &str = r#"type t.Box
+    p: t.Pt
+    ok: bool
+    n: i64
+end t.Box
+
+type t.Pt
+    x: i32
+    y: i32
+end t.Pt
+
+enum t.Sh
+    Circle(i64)
+    Rect(i64, i64)
+    Tag(bool, i64)
+    Empty
+end t.Sh
+
+fn t.area(s: t.Sh) -> i64 uses [] panics never
+    match s {
+        t.Sh.Circle(r) => r.wrapping_mul(3i64)
+        t.Sh.Rect(w, h) => w.wrapping_mul(h)
+        t.Sh.Tag(b, n) => {
+            if b {
+                n
+            } else {
+                0i64
+            }
+        }
+        t.Sh.Empty => 0i64
+    }
+end t.area
+
+fn t.area_of(c: i64) -> i64 uses [] panics never
+    t.area(t.Sh.Rect(c, 2i64)).wrapping_add(t.area(t.Sh.Tag(true, c)))
+end t.area_of
+
+fn t.arm(s: t.Sh) -> i64 uses [] panics never
+    let mut cur = 1i64
+    let mut sh = s
+    match sh {
+        t.Sh.Circle(r) => {
+            sh = t.Sh.Empty
+            cur = r
+        }
+        t.Sh.Rect(_, _) => {
+            cur = 2i64
+        }
+        t.Sh.Tag(_, _) => {
+            cur = 3i64
+        }
+        t.Sh.Empty => {
+            cur = 4i64
+        }
+    }
+    match sh {
+        t.Sh.Circle(_) => cur
+        t.Sh.Rect(_, _) => cur
+        t.Sh.Tag(_, _) => cur
+        t.Sh.Empty => cur.wrapping_add(100i64)
+    }
+end t.arm
+
+fn t.box_n(bx: t.Box) -> i64 uses [] panics never
+    if bx.ok {
+        bx.n.wrapping_add(10i64)
+    } else {
+        bx.n
+    }
+end t.box_n
+
+fn t.first(pr: (i32, bool)) -> i32 uses [] panics never
+    match pr {
+        (x, true) => x
+        (x, false) => 0i32
+    }
+end t.first
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.area(t.Sh.Circle(4i64)), 12i64)
+    core.check.eq(t.area(t.Sh.Rect(3i64, 5i64)), 15i64)
+    core.check.eq(t.area(t.Sh.Tag(true, 9i64)), 9i64)
+    core.check.eq(t.area(t.Sh.Tag(false, 9i64)), 0i64)
+    core.check.eq(t.area(t.Sh.Empty), 0i64)
+    core.check.eq(t.box_n(t.mk_box(1i32, 2i32, true)), 15i64)
+    core.check.eq(t.px(t.mk_box(1i32, 2i32, true)), 1002i32)
+    core.check.eq(t.first(t.pair(7i32)), 7i32)
+    core.check.eq(t.area(t.pick(t.Sh.Circle(6i64))), 36i64)
+    core.check.eq(t.walk(4i32), 604i32)
+    core.check.eq(t.arm(t.Sh.Circle(8i64)), 108i64)
+    core.check.eq(t.arm(t.Sh.Rect(8i64, 1i64)), 2i64)
+    core.check.eq(t.tup(9i32), 9i32)
+    core.check.eq(t.area_of(4i64), 12i64)
+    core.check.eq(t.run_arm(8i64), 108i64)
+    core.check.eq(t.run_arm2(8i64), 2i64)
+    core.check.eq(t.run_box(1i32, 2i32), 15i64)
+    core.check.eq(t.run_first(7i32), 7i32)
+    core.check.eq(t.run_pick(6i64), 36i64)
+    core.check.eq(t.run_px(1i32, 2i32), 1002i32)
+    core.check.eq(t.run_tag(true, 9i64), 9i64)
+    core.check.eq(t.run_tag(false, 9i64), 0i64)
+    Ok(())
+end t.main
+
+fn t.mk_box(a: i32, b: i32, f: bool) -> t.Box uses [] panics never
+    let p = t.Pt { x: a, y: b }
+    t.Box { p: p, ok: f, n: 5i64 }
+end t.mk_box
+
+fn t.pair(a: i32) -> (i32, bool) uses [] panics never
+    (a, true)
+end t.pair
+
+fn t.pick(s: t.Sh) -> t.Sh uses [] panics never
+    match s {
+        t.Sh.Circle(r) => t.Sh.Rect(r, r)
+        t.Sh.Rect(w, h) => t.Sh.Rect(w, h)
+        t.Sh.Tag(b, n) => t.Sh.Tag(b, n)
+        t.Sh.Empty => t.Sh.Empty
+    }
+end t.pick
+
+fn t.px(bx: t.Box) -> i32 uses [] panics never
+    bx.p.x.wrapping_mul(1000i32).wrapping_add(bx.p.y)
+end t.px
+
+fn t.run_arm(c: i64) -> i64 uses [] panics never
+    t.arm(t.Sh.Circle(c))
+end t.run_arm
+
+fn t.run_arm2(c: i64) -> i64 uses [] panics never
+    t.arm(t.Sh.Rect(c, 1i64))
+end t.run_arm2
+
+fn t.run_box(a: i32, b: i32) -> i64 uses [] panics never
+    t.box_n(t.mk_box(a, b, true))
+end t.run_box
+
+fn t.run_first(a: i32) -> i32 uses [] panics never
+    t.first(t.pair(a))
+end t.run_first
+
+fn t.run_pick(c: i64) -> i64 uses [] panics never
+    t.area(t.pick(t.Sh.Circle(c)))
+end t.run_pick
+
+fn t.run_px(a: i32, b: i32) -> i32 uses [] panics never
+    t.px(t.mk_box(a, b, false))
+end t.run_px
+
+fn t.run_tag(b: bool, c: i64) -> i64 uses [] panics never
+    t.area(t.Sh.Tag(b, c))
+end t.run_tag
+
+fn t.tup(a: i32) -> i32 uses [] panics never
+    let (x, ok) = t.pair(a)
+    if ok {
+        x
+    } else {
+        0i32
+    }
+end t.tup
+
+fn t.walk(n: i32) -> i32 uses [] panics never
+    let mut acc = t.Pt { x: 0i32, y: 0i32 }
+    let mut i = 0i32
+    while i < n {
+        acc.x = acc.x.wrapping_add(i)
+        acc.y = acc.y.wrapping_add(1i32)
+        i = i.wrapping_add(1i32)
+    }
+    acc.x.wrapping_mul(100i32).wrapping_add(acc.y)
+end t.walk
+"#;
+
+#[test]
+fn kir_agg_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の検査が通ること、参照実行器 (`ksn kir --run`) の値が同じ期待値であること。
+    let t = Tmp::new("kir_agg_values", KIR_AGG_SRC);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.run_arm", &["8"], "108"),
+        ("t.run_arm2", &["8"], "2"),
+        ("t.run_box", &["1", "2"], "15"),
+        ("t.run_first", &["7"], "7"),
+        ("t.run_pick", &["6"], "36"),
+        ("t.run_px", &["1", "2"], "1002"),
+        ("t.run_tag", &["true", "9"], "9"),
+        ("t.run_tag", &["false", "9"], "0"),
+        ("t.walk", &["4"], "604"),
+        ("t.walk", &["10"], "4510"),
+        ("t.tup", &["9"], "9"),
+        ("t.area_of", &["4"], "12"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+// ---- KIR の数値 (浮動小数・128 ビット・ビット演算・シフト・数値のメソッド・変換): kir_scalar_* ----
+
+/// 数値の関数の試験用の定義。名前の順に並べる (E0020)。`t.main` は呼び出し側が最後に付ける。
+const SCALAR_FNS: &str = "fn t.a_band(a: u32, b: u32) -> u32 uses [] panics never
+    a & b
+end t.a_band
+
+fn t.a_big() -> i128 uses [] panics never
+    let a = 170141183460469231731687303715884105727i128
+    a.wrapping_add(1i128)
+end t.a_big
+
+fn t.a_bnot8(a: u8) -> u8 uses [] panics never
+    !a
+end t.a_bnot8
+
+fn t.a_bnoti(a: i32) -> i32 uses [] panics never
+    !a
+end t.a_bnoti
+
+fn t.a_cnt(a: u32) -> u32 uses [] panics never
+    a.count_ones()
+end t.a_cnt
+
+fn t.a_conv1() -> i64 uses [] panics never
+    i64.from_i8(-5i8)
+end t.a_conv1
+
+fn t.a_conv2() -> f64 uses [] panics never
+    f64.from_i32_nearest(7i32)
+end t.a_conv2
+
+fn t.a_conv3() -> u64 uses [] panics never
+    f64.from_bits(4607182418800017408u64).to_bits()
+end t.a_conv3
+
+fn t.a_conv4() -> u32 uses [] panics never
+    0.1f64.nearest_to_f32().to_bits()
+end t.a_conv4
+
+fn t.a_f32trig() -> u32 uses [] panics never
+    let x = 0.7f32
+    (x.sin() + x.exp() * x).to_bits()
+end t.a_f32trig
+
+fn t.a_fl1() -> f64 uses [] panics never
+    let a = 9.0f64
+    let b = a.sqrt()
+    let c = b * 2.0 + 1.5
+    c.floor()
+end t.a_fl1
+
+fn t.a_fromu128() -> f64 uses [] panics never
+    f64.from_u128_nearest(0u128.wrapping_sub(1u128))
+end t.a_fromu128
+
+fn t.a_lz(a: u16) -> u32 uses [] panics never
+    a.leading_zeros()
+end t.a_lz
+
+fn t.a_max(a: i64, b: i64) -> i64 uses [] panics never
+    a.max(b)
+end t.a_max
+
+fn t.a_nan() -> bool uses [] panics never
+    let n = 0.0f64 / 0.0f64
+    n == n
+end t.a_nan
+
+fn t.a_sat(a: u8, b: u8) -> u8 uses [] panics never
+    a.saturating_add(b)
+end t.a_sat
+
+fn t.a_satadd128() -> i128 uses [] panics never
+    let a = -170141183460469231731687303715884105727i128
+    a.saturating_add(-10i128)
+end t.a_satadd128
+
+fn t.a_satneg(a: i8) -> i8 uses [] panics never
+    a.saturating_neg()
+end t.a_satneg
+
+fn t.a_satneg128() -> i128 uses [] panics never
+    let a = -170141183460469231731687303715884105727i128
+    a.saturating_sub(10i128)
+end t.a_satneg128
+
+fn t.a_shl8(a: u8, n: u32) -> u8 uses [] panics never
+    a.wrapping_shl(n)
+end t.a_shl8
+
+fn t.a_shri8(a: i8, n: u32) -> i8 uses [] panics never
+    a.wrapping_shr(n)
+end t.a_shri8
+
+fn t.a_trig() -> u64 uses [] panics never
+    let x = 0.7f64
+    (x.sin() + x.cos() * x.tan() + x.exp() + x.ln() + x.atan2(0.3f64) + x.powi(5i32)).to_bits()
+end t.a_trig
+
+fn t.a_tz(a: i32) -> u32 uses [] panics never
+    a.trailing_zeros()
+end t.a_tz
+
+fn t.a_ucmp() -> bool uses [] panics never
+    t.a_umax() > 1u128
+end t.a_ucmp
+
+fn t.a_umax() -> u128 uses [] panics never
+    0u128.wrapping_sub(1u128)
+end t.a_umax
+
+fn t.a_wneg(a: u8) -> u8 uses [] panics never
+    a.wrapping_neg()
+end t.a_wneg
+
+fn t.a_wshr64(a: u64, n: u32) -> u64 uses [] panics never
+    a.wrapping_shr(n)
+end t.a_wshr64
+";
+
+/// `SCALAR_FNS` に `main` (本体 `body`) を付けたパッケージを作る。
+fn scalar_pkg(name: &str, body: &str) -> Tmp {
+    Tmp::new(
+        name,
+        &format!("{}fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n{}    Ok(())\nend t.main\n", SCALAR_FNS, body),
+    )
+}
+
+#[test]
+fn kir_scalar_ints_match_tree_walker() {
+    // (関数, 木走査の引数 (接尾辞付き), 参照実行器の引数, 木走査の期待値, 参照実行器の期待値)
+    let cases: &[(&str, &[&str], &[&str], &str, &str)] = &[
+        ("t.a_band", &["12u32", "10u32"], &["12", "10"], "8u32", "8"),
+        ("t.a_bnot8", &["0u8"], &["0"], "255u8", "255"),
+        ("t.a_bnoti", &["5i32"], &["5"], "-6i32", "-6"),
+        ("t.a_shl8", &["129u8", "9u32"], &["129", "9"], "2u8", "2"),
+        ("t.a_shri8", &["-128i8", "9u32"], &["-128", "9"], "-64i8", "-64"),
+        ("t.a_sat", &["250u8", "10u8"], &["250", "10"], "255u8", "255"),
+        ("t.a_satneg", &["-128i8"], &["-128"], "127i8", "127"),
+        ("t.a_cnt", &["61680u32"], &["61680"], "8u32", "8"),
+        ("t.a_lz", &["1u16"], &["1"], "15u32", "15"),
+        ("t.a_tz", &["0i32"], &["0"], "32u32", "32"),
+        ("t.a_max", &["-3i64", "2i64"], &["-3", "2"], "2i64", "2"),
+        ("t.a_wneg", &["1u8"], &["1"], "255u8", "255"),
+        ("t.a_wshr64", &["18446744073709551615u64", "60u32"], &["18446744073709551615", "60"], "15u64", "15"),
+    ];
+    for (i, (f, targs, kargs, want, kwant)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, targs.join(", "));
+        let t = scalar_pkg(&format!("kir_scalar_int_{}", i), &format!("    core.check.eq({}, {})\n", call, want));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut ka = vec!["kir", *f, "--run"];
+        ka.extend(kargs.iter().copied());
+        let k = kir_run(&ka, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", call);
+    }
+}
+
+// ---- 参照 (設計_KIR.md 段階 1: `&T` / `&mut T`、`*r`、`*r = v`。kir_lower_refs.rs) ----
+
+/// 参照を使う関数と、整数の引数だけで呼べる包み (`t.w_*`)。`t.main` は含まない。
+const REFS_FNS: &str = "fn t.bump(p: &mut i32) -> () uses [] panics may
+    *p = *p + 1i32
+end t.bump
+
+fn t.twice(n: i32) -> i32 uses [] panics may
+    let mut a = n
+    t.bump(&mut a)
+    t.bump(&mut a)
+    a
+end t.twice
+
+fn t.peek(r: &i32) -> i32 uses [] panics never
+    *r
+end t.peek
+
+fn t.peek_mut(a: &mut i32) -> i32 uses [] panics never
+    t.peek(a)
+end t.peek_mut
+
+fn t.sum2(a: &i32, b: &i32) -> i32 uses [] panics may
+    *a + *b
+end t.sum2
+
+fn t.swap(a: &mut i32, b: &mut i32) -> () uses [] panics never
+    let tmp = *a
+    *a = *b
+    *b = tmp
+end t.swap
+
+fn t.pick['a](a: &'a i32, b: &'a i32, first: bool) -> &'a i32 uses [] panics never
+    if first {
+        a
+    } else {
+        b
+    }
+end t.pick
+
+fn t.temp() -> i32 uses [] panics may
+    let r = &(3i32 + 4i32)
+    *r * 2i32
+end t.temp
+
+fn t.loop_bump(n: i32) -> i32 uses [] panics may
+    let mut total = 0i32
+    let mut i = 0i32
+    while i < n {
+        t.bump(&mut total)
+        i = i + 1i32
+    }
+    total
+end t.loop_bump
+
+fn t.bump_w(p: &mut i32) -> () uses [] panics never
+    let s = (*p).wrapping_add(1i32)
+    *p = s
+end t.bump_w
+
+fn t.down(p: &mut i32, n: i32) -> () uses [] panics never stack 128
+    if n > 0i32 {
+        t.bump_w(p)
+        t.down(p, n.wrapping_sub(1i32))
+    }
+end t.down
+
+fn t.assign_branch(n: i32) -> i32 uses [] panics may
+    let mut x = 0i32
+    if n > 0i32 {
+        x = n
+    } else {
+        x = 0i32 - n
+    }
+    let r = &mut x
+    *r = *r * 10i32
+    x
+end t.assign_branch
+
+fn t.wrap_ref(v: u8) -> u8 uses [] panics never
+    let mut w = v
+    let s = w.wrapping_add(200u8)
+    let r = &mut w
+    *r = s
+    w
+end t.wrap_ref
+
+fn t.bump8(p: &mut u8) -> () uses [] panics may
+    *p = *p + 100u8
+end t.bump8
+
+fn t.overflow_via_ref(v: u8) -> u8 uses [] panics may
+    let mut w = v
+    t.bump8(&mut w)
+    w
+end t.overflow_via_ref
+
+fn t.reborrow_read(r: &mut i32) -> i32 uses [] panics never
+    let s: &i32 = &*r
+    *s
+end t.reborrow_read
+
+fn t.early(n: i32) -> i32 uses [] panics may
+    let mut total = 0i32
+    let mut i = 0i32
+    while true {
+        if i > n {
+            break
+        }
+        total = total + i
+        let v = t.peek(&total)
+        if v > 100i32 {
+            return v
+        }
+        i = i + 1i32
+    }
+    total
+end t.early
+
+fn t.mixed(n: i32) -> i32 uses [] panics may
+    let mut acc = 1i32
+    let r = &mut acc
+    let mut k = 0i32
+    while k < n {
+        *r = *r + 2i32
+        k = k + 1i32
+    }
+    acc = acc + 1i32
+    t.peek(&acc) + t.reborrow_read(&mut acc)
+end t.mixed
+
+fn t.w_swap(a: i32, b: i32) -> i32 uses [] panics never
+    let mut x = a
+    let mut y = b
+    t.swap(&mut x, &mut y)
+    x.wrapping_mul(10i32).wrapping_add(y)
+end t.w_swap
+
+fn t.w_pick(a: i32, b: i32, first: bool) -> i32 uses [] panics never
+    let x = a
+    let y = b
+    *t.pick(&x, &y, first)
+end t.w_pick
+
+fn t.w_peek(n: i32) -> i32 uses [] panics never
+    let mut x = n
+    t.peek_mut(&mut x)
+end t.w_peek
+
+fn t.w_down(n: i32) -> i32 uses [] panics never
+    let mut d = 0i32
+    t.down(&mut d, n)
+    d
+end t.w_down
+
+fn t.w_sum(a: i32, b: i32) -> i32 uses [] panics may
+    let x = a
+    let y = b
+    t.sum2(&x, &y)
+end t.w_sum
+";
+
+/// 参照を使う関数の包みのパッケージを作る。
+fn refs_pkg(name: &str, main_body: &str) -> Tmp {
+    Tmp::new(name, &format!("{}{}", REFS_FNS, main_wrap("", main_body)))
+}
+
+#[test]
+fn kir_refs_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の `core.check.eq` が通ること、参照実行器 (`ksn kir --run`) の値が期待どおりであること。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.twice", &["5"], "7i32", "7"),
+        ("t.loop_bump", &["6"], "6i32", "6"),
+        ("t.temp", &[], "14i32", "14"),
+        ("t.assign_branch", &["3"], "30i32", "30"),
+        ("t.assign_branch", &["-2"], "20i32", "20"),
+        ("t.wrap_ref", &["100"], "44u8", "44"),
+        ("t.early", &["3"], "6i32", "6"),
+        ("t.early", &["20"], "105i32", "105"),
+        ("t.mixed", &["3"], "16i32", "16"),
+        ("t.w_swap", &["1", "2"], "21i32", "21"),
+        ("t.w_pick", &["2", "7", "false"], "7i32", "7"),
+        ("t.w_pick", &["2", "7", "true"], "2i32", "2"),
+        ("t.w_peek", &["10"], "10i32", "10"),
+        ("t.w_down", &["4"], "4i32", "4"),
+        ("t.w_down", &["0"], "0i32", "0"),
+        ("t.w_sum", &["3", "4"], "7i32", "7"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = refs_pkg(&format!("kir_refs_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).lines().last().unwrap_or("").trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_scalar_floats_and_wide_ints_match_tree_walker() {
+    // 木走査で `core.check.eq` が通ること (値は木走査の結果と同じ)、参照実行器の値が期待どおりであること。
+    // 超越関数と f32 の値はビット列で比べる (fmath を含むので、木走査と 1 ビットも違わないことを確かめる)。
+    // (関数, 木走査で呼ぶ式, 木走査の期待値, 参照実行器の期待値)
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("t.a_fl1", "t.a_fl1()", "7.0f64", "7"),
+        ("t.a_nan", "t.a_nan()", "false", "false"),
+        ("t.a_trig", "t.a_trig()", "4616504293205964284u64", "4616504293205964284"),
+        ("t.a_f32trig", "t.a_f32trig()", "1073967664u32", "1073967664"),
+        ("t.a_conv4", "t.a_conv4()", "1036831949u32", "1036831949"),
+        ("t.a_conv2", "t.a_conv2()", "7.0f64", "7"),
+        ("t.a_conv3", "t.a_conv3()", "4607182418800017408u64", "4607182418800017408"),
+        ("t.a_conv1", "t.a_conv1()", "-5i64", "-5"),
+        ("t.a_fromu128", "t.a_fromu128()", "3.402823669209385e38f64", "340282366920938500000000000000000000000"),
+        ("t.a_big", "t.a_big()", "-170141183460469231731687303715884105728i128", "-170141183460469231731687303715884105728"),
+        ("t.a_umax", "t.a_umax().wrapping_add(2u128)", "1u128", "340282366920938463463374607431768211455"),
+        ("t.a_ucmp", "t.a_ucmp()", "true", "true"),
+        ("t.a_satadd128", "t.a_satadd128()", "-170141183460469231731687303715884105728i128", "-170141183460469231731687303715884105728"),
+        ("t.a_satneg128", "t.a_satneg128()", "-170141183460469231731687303715884105728i128", "-170141183460469231731687303715884105728"),
+    ];
+    for (i, (f, call, want, kwant)) in cases.iter().enumerate() {
+        let t = scalar_pkg(&format!("kir_scalar_float_{}", i), &format!("    core.check.eq({}, {})\n", call, want));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let k = kir_run(&["kir", *f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", f);
+    }
+}
+
+/// 無限大・NaN・符号つきゼロの特殊値を確かめる関数 (C Annex F / IEEE 754 どおりの値を返す)。
+const FLOAT_SPECIAL_FNS: &str = "fn t.ninf() -> f64 uses [] panics never
+    -(1000.0f64.exp())
+end t.ninf
+
+fn t.abs_ninf64() -> u64 uses [] panics never
+    t.ninf().abs().to_bits()
+end t.abs_ninf64
+
+fn t.sqrt_ninf64() -> bool uses [] panics never
+    t.ninf().sqrt().is_nan()
+end t.sqrt_ninf64
+
+fn t.sqrt_neg64() -> bool uses [] panics never
+    let x = -2.0f64
+    x.sqrt().is_nan()
+end t.sqrt_neg64
+
+fn t.sqrt_nzero64() -> u64 uses [] panics never
+    let z = 0.0f64
+    (-z).sqrt().to_bits()
+end t.sqrt_nzero64
+
+fn t.sqrt_inf64() -> u64 uses [] panics never
+    (1000.0f64.exp()).sqrt().to_bits()
+end t.sqrt_inf64
+
+fn t.abs_ninf32() -> u32 uses [] panics never
+    let x = -(1000.0f32.exp())
+    x.abs().to_bits()
+end t.abs_ninf32
+
+fn t.sqrt_ninf32() -> bool uses [] panics never
+    let x = -(1000.0f32.exp())
+    x.sqrt().is_nan()
+end t.sqrt_ninf32
+
+fn t.nan32_bits() -> u32 uses [] panics never
+    f32.from_bits(2139095041u32).to_bits()
+end t.nan32_bits
+
+fn t.nan64_bits() -> u64 uses [] panics never
+    f64.from_bits(9218868437227405313u64).to_bits()
+end t.nan64_bits
+
+fn t.rte_nhalf64() -> u64 uses [] panics never
+    let x = -0.5f64
+    x.round_ties_even().to_bits()
+end t.rte_nhalf64
+
+fn t.rte_half32() -> u32 uses [] panics never
+    let x = 2.5f32
+    x.round_ties_even().to_bits()
+end t.rte_half32
+";
+
+/// (関数, 木走査の期待値 (Kasane の式), 参照実行器の期待値 (`ksn kir --run` の表示))。
+const FLOAT_SPECIAL_CASES: &[(&str, &str, &str)] = &[
+    ("t.rte_nhalf64", "9223372036854775808u64", "9223372036854775808"), // round_ties_even(-0.5) は -0
+    ("t.rte_half32", "1073741824u32", "1073741824"),                    // round_ties_even(2.5f32) は 2
+    ("t.abs_ninf64", "9218868437227405312u64", "9218868437227405312"), // abs(-inf) は +inf
+    ("t.sqrt_ninf64", "true", "true"),                                  // sqrt(-inf) は NaN
+    ("t.sqrt_neg64", "true", "true"),                                   // sqrt(負) は NaN
+    ("t.sqrt_nzero64", "9223372036854775808u64", "9223372036854775808"), // sqrt(-0) は -0
+    ("t.sqrt_inf64", "9218868437227405312u64", "9218868437227405312"),  // sqrt(+inf) は +inf
+    ("t.abs_ninf32", "2139095040u32", "2139095040"),                    // f32 の abs(-inf) は +inf
+    ("t.sqrt_ninf32", "true", "true"),
+    ("t.nan32_bits", "2139095041u32", "2139095041"), // f32 の signaling NaN のビットは保つ
+    ("t.nan64_bits", "9218868437227405313u64", "9218868437227405313"),
+];
+
+#[test]
+fn float_specials_follow_ieee_on_both_backends() {
+    // 木走査 (`ksn run`) と KIR (`ksn kir --run`) の両方で、無限大・NaN・符号つきゼロの値が IEEE 754 どおりであること。
+    for (i, (f, want, kwant)) in FLOAT_SPECIAL_CASES.iter().enumerate() {
+        let body = format!("    core.check.eq({}(), {})\n", f, want);
+        let t = Tmp::new(&format!("float_special_{}", i), &format!("{}{}", FLOAT_SPECIAL_FNS, main_wrap("", &body)));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", f, text(&o.stderr));
+        let k = kir_run(&["kir", *f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", f);
+    }
+}
+
+#[test]
+fn float_specials_and_unsigned_from_str_radix_agree_with_native() {
+    // 機械語 (`test --both`) で比べられる形だけを書く: 値の比較 (`!=` で NaN、`1.0 / x` で -0 を判別)。
+    // clif は `to_bits` / `is_nan` を持たないので、それらは上の `float_specials_follow_ieee_on_both_backends` で確かめる。
+    // 符号なしは `-` を受け付けない (`-0` も Err、Rust と同じ)。`+` は受け付ける。
+    let mut src = String::from(FLOAT_SPECIAL_FNS);
+    src.push_str("fn t.pinf() -> f64 uses [] panics never\n    1000.0f64.exp()\nend t.pinf\n\nfn t.main() -> () uses [] panics never\nend t.main\n");
+    let checks: Vec<String> = vec![
+        "core.check.eq(t.ninf().abs(), t.pinf())".into(),
+        "core.check.eq(t.ninf().sqrt() != t.ninf().sqrt(), true)".into(),
+        "core.check.eq((-2.0f64).sqrt() != (-2.0f64).sqrt(), true)".into(),
+        "core.check.eq(t.pinf().sqrt(), t.pinf())".into(),
+        "core.check.eq(1.0f64 / (-(0.0f64)).sqrt() < 0.0f64, true)".into(),
+        "core.check.eq(u8.from_str_radix(\"-0\", 10u32) != Ok(0u8), true)".into(),
+        "core.check.eq(u8.from_str_radix(\"+7\", 10u32), Ok(7u8))".into(),
+        "core.check.eq(i8.from_str_radix(\"-0\", 10u32), Ok(0i8))".into(),
+    ];
+    for (i, c) in checks.iter().enumerate() {
+        src.push_str(&format!("\ntest t.main.test_{}\n    {}\nend t.main.test_{}\n", i, c, i));
+    }
+    let t = Tmp::new("float_specials_both", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains(&format!("{} passed; 0 failed", checks.len())), "{}", out);
+    assert_eq!(out.matches("(both: native)").count(), checks.len(), "{}", out);
+}
+
+#[test]
+fn kir_agg_module_text_declares_the_layout() {
+    // 型の宣言の行 (大きさ・整列・フィールドのオフセット) と、本体の命令が出る。出力は読み直せる (cmd_kir が確かめる)。
+    let t = Tmp::new("kir_agg_text", KIR_AGG_SRC);
+    let o = run(&["kir", "t.walk"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("agg#0 struct t.Pt size=8 align=4 {x:i32@0 y:i32@4}"), "{}", out);
+    assert!(out.contains("= setfield %"), "{}", out);
+}
+
+#[test]
+fn kir_agg_refuses_generic_types_with_a_reason() {
+    // 型引数付きの型は段階 1 の型に入らない (単相化した配置をまだ持たない)。その関数は理由付きで未対応になる。
+    let src = "type t.G[T]
+    v: T
+end t.G
+
+fn t.gv(_g: t.G<i32>) -> i32 uses [] panics never
+    0i32
+end t.gv
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("kir_agg_refuse", src);
+    let o = run(&["kir", "t.gv"], &t.0);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("t.gv は未対応"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn kir_agg_entry_with_an_aggregate_value_is_refused() {
+    // 入口 (`--run`) は整数と bool の引数・戻り値だけ。集成体の関数は表示だけできる。
+    let t = Tmp::new("kir_agg_entry", KIR_AGG_SRC);
+    let o = kir_run(&["kir", "t.mk_box", "--run", "1", "2", "true"], &t.0);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("集成体を引数・戻り値に持つ"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn kir_scalar_text_reads_back_with_float_and_bit_ops() {
+    // `ksn kir` は出力を読み直して同じ文字列になることを確かめてから出す。浮動小数の命令と再解釈の表記を含む。
+    let t = scalar_pkg("kir_scalar_text", "");
+    let o = run(&["kir", "t.a_trig"], &t.0);
+
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("fsin.f64"), "{}", out);
+    assert!(out.contains("fpowi.f64"), "{}", out);
+    assert!(out.contains("bitcast.u64.f64"), "{}", out);
+}
+
+#[test]
+fn kir_scalar_reports_unsupported_numeric_methods_with_a_reason() {
+    // `trunc_to_*` は `Option` を返すので段階 1 の型に入らない。理由を付けて拒否する。
+    let src = "fn t.a_tr(a: f64) -> bool uses [] panics never
+    match a.trunc_to_i32() {
+        Some(_v) => true
+        None => false
+    }
+end t.a_tr
+";
+    let t = Tmp::new("kir_scalar_unsupported", src);
+    let o = run(&["kir", "t.a_tr"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("t.a_tr は未対応"), "{}", text(&o.stderr));
+}
+
+// ---- 数値の組み合わせの探索 (NaN・符号付き零・丸め・飽和・128 ビットの境界): kir_scalar_probes_* ----
+
+/// 数値の関数の探索用の定義。名前の順 (E0020)。main は別に付ける。
+const SCALAR_PROBES: &str = r#"fn t.q01() -> u32 uses [] panics never
+    let a = 1.1f32
+    let b = 3.3f32
+    (a * b - a / b + a - b).to_bits()
+end t.q01
+
+fn t.q02() -> u32 uses [] panics never
+    let z = 0.0f32
+    (1.0f32 / z).to_bits()
+end t.q02
+
+fn t.q03() -> u64 uses [] panics never
+    let x = 2.5f64
+    (-x).abs().to_bits()
+end t.q03
+
+fn t.q04() -> u64 uses [] panics never
+    let n = 0.0f64 / 0.0f64
+    n.max(1.0f64).to_bits()
+end t.q04
+
+fn t.q05() -> u64 uses [] panics never
+    let x = 7.5f64
+    x.rem(2.0f64).to_bits()
+end t.q05
+
+fn t.q06() -> u64 uses [] panics never
+    let x = 2.5f64
+    let y = 3.5f64
+    (x.round_ties_even() + y.round_ties_even()).to_bits()
+end t.q06
+
+fn t.q07() -> u64 uses [] panics never
+    let x = -2.5f64
+    (x.floor() * 100.0f64 + x.ceil() * 10.0f64 + x.trunc()).to_bits()
+end t.q07
+
+fn t.q08() -> bool uses [] panics never
+    let n = 0.0f64 / 0.0f64
+    let i = 1.0f64 / 0.0f64
+    n.is_nan() && !i.is_finite()
+end t.q08
+
+fn t.q09() -> u64 uses [] panics never
+    2.0f64.powi(-3i32).to_bits()
+end t.q09
+
+fn t.q10() -> u64 uses [] panics never
+    let x = 12.5f64
+    (x.sin() * x.cos() + x.tan() - x.exp().ln()).to_bits()
+end t.q10
+
+fn t.q11() -> u32 uses [] panics never
+    let x = 0.1f32
+    (x.to_f64() * 3.0f64).nearest_to_f32().to_bits()
+end t.q11
+
+fn t.q12() -> i128 uses [] panics never
+    let a = -170141183460469231731687303715884105727i128
+    a.wrapping_neg()
+end t.q12
+
+fn t.q13() -> u128 uses [] panics never
+    let a = 0u128
+    (!a).wrapping_add(2u128)
+end t.q13
+
+fn t.q14() -> u32 uses [] panics never
+    let a = -1i8
+    a.leading_zeros().wrapping_add((-1i128).count_ones())
+end t.q14
+
+fn t.q15() -> u32 uses [] panics never
+    let a = 0i64
+    a.trailing_zeros()
+end t.q15
+
+fn t.q16() -> i128 uses [] panics never
+    let a = -256i128
+    a.wrapping_shr(4u32)
+end t.q16
+
+fn t.q17() -> u128 uses [] panics never
+    let a = 0u128.wrapping_sub(1u128)
+    let b = a.wrapping_shr(1u32)
+    b.min(a)
+end t.q17
+
+fn t.q18() -> i64 uses [] panics never
+    i64.from_u32(4000000000u32)
+end t.q18
+
+fn t.q19() -> usize uses [] panics never
+    usize.from_u8(255u8)
+end t.q19
+
+fn t.q20() -> u64 uses [] panics never
+    f64.from_i64_nearest(9007199254740993i64).to_bits()
+end t.q20
+
+fn t.q21() -> u32 uses [] panics never
+    f32.from_i32_nearest(16777217i32).to_bits()
+end t.q21
+
+fn t.q22() -> u64 uses [] panics never
+    let a = -7i32
+    a.to_f64().to_bits()
+end t.q22
+
+fn t.q23() -> i8 uses [] panics never
+    let a = -128i8
+    a.saturating_mul(-1i8).wrapping_add(a.saturating_sub(1i8))
+end t.q23
+
+fn t.q24() -> u32 uses [] panics never
+    let a = 1u32
+    a.wrapping_shl(35u32)
+end t.q24
+
+fn t.q25() -> bool uses [] panics never
+    let x = 1.0f32
+    let y = 2.0f32
+    (x < y) && (y >= 2.0f32) && (x != y)
+end t.q25
+
+fn t.q26() -> bool uses [] panics never
+    0.0f32 == -0.0f32
+end t.q26
+
+fn t.q27() -> u64 uses [] panics never
+    let x = 1.0e300f64
+    (x * x).to_bits()
+end t.q27
+
+fn t.q28() -> i64 uses [] panics never
+    let a = 5i64
+    a.wrapping_mul(-3i64).max(a.wrapping_neg())
+end t.q28
+"#;
+
+#[test]
+fn kir_scalar_probes_match_tree_walker() {
+    // (関数, 木走査の期待値, 参照実行器の期待値)。木走査の期待値は参照実行器の値と同じであることを、別々の経路で確かめる。
+    let cases: &[(&str, &str, &str)] = &[
+        ("t.q01", "1066164118u32", "1066164118"),
+        ("t.q02", "2139095040u32", "2139095040"),
+        ("t.q03", "4612811918334230528u64", "4612811918334230528"),
+        ("t.q04", "4607182418800017408u64", "4607182418800017408"),
+        ("t.q05", "4609434218613702656u64", "4609434218613702656"),
+        ("t.q06", "4618441417868443648u64", "4618441417868443648"),
+        ("t.q07", "13867744336952688640u64", "13867744336952688640"),
+        ("t.q08", "true", "true"),
+        ("t.q09", "4593671619917905920u64", "4593671619917905920"),
+        ("t.q10", "13846673201326737920u64", "13846673201326737920"),
+        ("t.q11", "1050253722u32", "1050253722"),
+        ("t.q12", "170141183460469231731687303715884105727i128", "170141183460469231731687303715884105727"),
+        ("t.q13", "1u128", "1"),
+        ("t.q14", "128u32", "128"),
+        ("t.q15", "64u32", "64"),
+        ("t.q16", "-16i128", "-16"),
+        ("t.q17", "170141183460469231731687303715884105727u128", "170141183460469231731687303715884105727"),
+        ("t.q18", "4000000000i64", "4000000000"),
+        ("t.q19", "255usize", "255"),
+        ("t.q20", "4845873199050653696u64", "4845873199050653696"),
+        ("t.q21", "1266679808u32", "1266679808"),
+        ("t.q22", "13842939354630062080u64", "13842939354630062080"),
+        ("t.q23", "-1i8", "-1"),
+        ("t.q24", "8u32", "8"),
+        ("t.q25", "true", "true"),
+        ("t.q26", "true", "true"),
+        ("t.q27", "9218868437227405312u64", "9218868437227405312"),
+        ("t.q28", "-5i64", "-5"),
+    ];
+    let mut main = String::new();
+    for (f, want, _) in cases {
+        main.push_str(&format!("    core.check.eq({}(), {})\n", f, want));
+    }
+    let t = Tmp::new("kir_scalar_probes", &format!("fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n{}    Ok(())\nend t.main\n\n{}", main, SCALAR_PROBES));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker:\n{}", text(&o.stderr));
+    for (f, _, want) in cases {
+        let k = kir_run(&["kir", *f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", f);
+    }
+}
+
+#[test]
+fn kir_refs_panics_match_tree_walker() {
+    // 参照の先への書き込みで起きた溢れは、木走査と同じ文言と終了コード (101) になること。
+    let t = refs_pkg("kir_refs_panic", "    let _x = t.overflow_via_ref(200u8)\n");
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "tree-walker\n{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.overflow_via_ref", "--run", "200"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stderr).trim(), "panic: attempt to add with overflow");
+}
+
+#[test]
+fn kir_refs_text_shows_slots_and_reference_types() {
+    // 出力は `kir 1` の形で、読み直して検査が通る (cli の内部検査)。スタックスロット・参照の複製・参照の型が見える。
+    let t = refs_pkg("kir_refs_text", "    let _x = t.twice(1i32)\n");
+    let o = run(&["kir", "t.assign_branch"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    for want in ["alloca", "store %", "load %", "reborrow %", "%2: mutref<i32> = alloca"] {
+        assert!(s.contains(want), "missing `{}` in:\n{}", want, s);
+    }
+    let p = run(&["kir", "t.pick"], &t.0);
+    assert_eq!(p.status.code(), Some(0), "{}", text(&p.stderr));
+    assert!(text(&p.stdout).contains("ret=ref<i32>"), "{}", text(&p.stdout));
+}
+
+#[test]
+fn kir_refs_reference_to_unsupported_pointee_keeps_its_reason() {
+    // 指す先が整数・浮動小数・bool・利用者の構造体でない参照 (標準の型) は、従来どおり理由付きで未対応になる。
+    let src = "fn t.first(s: &std.io.Stdout) -> u8 uses [] panics never
+    let _t = s
+    0u8
+end t.first
+";
+    let t = Tmp::new("kir_refs_str", src);
+    let o = run(&["kir", "t.first"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("t.first は未対応"), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("段階 1 の対象外"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn min_rem_minus_one_overflows_for_every_signed_width() {
+    // 案 A: 符号付きの `MIN % -1` は割り算が溢れるので余りも溢れ。`%` は panic (終了コード 101)、`checked_rem` と `checked_div` は None。
+    // 木走査 (`ksn run`) と参照実行器 (`ksn kir --run`) の両方で panic の文言を確かめる。
+    for w in ["i8", "i16", "i32", "i64", "i128"] {
+        let src = format!(
+            "fn t.rem(a: {w}, b: {w}) -> {w} uses [] panics may\n    a % b\nend t.rem\n\n\
+             fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    \
+             core.mem.drop(t.rem(core.num.{w}.MIN, -1{w}))\n    Ok(())\nend t.main\n",
+            w = w
+        );
+        let t = Tmp::new(&format!("min_rem_{}", w), &src);
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "{}: {}", w, text(&o.stderr));
+        assert!(text(&o.stderr).contains("panic: attempt to calculate the remainder with overflow"), "{}: {}", w, text(&o.stderr));
+        if w == "i8" {
+            let k = kir_run(&["kir", "t.rem", "--run", "-128", "-1"], &t.0);
+            assert_eq!(k.status.code(), Some(101), "kir {}: {}", w, text(&k.stderr));
+            assert_eq!(text(&k.stderr).trim(), "panic: attempt to calculate the remainder with overflow", "kir {}", w);
+        }
+    }
+    // `checked_rem` と `checked_div` は None (`test --both` で木走査と機械語を比べる。i128 は機械語が未対応なのでバンドルで比べる)。
+    let mut src = String::from("fn t.main() -> () uses [] panics never\nend t.main\n\n");
+    for w in ["i8", "i16", "i32", "i64", "i128"] {
+        src.push_str(&format!(
+            "test t.main.test_{w}\n    let m = core.num.{w}.MIN\n    core.check.eq(m.checked_rem(-1{w}), None)\n    core.check.eq(m.checked_div(-1{w}), None)\nend t.main.test_{w}\n\n",
+            w = w
+        ));
+    }
+    let src = format!("{}\n", src.trim_end());
+    let t = Tmp::new("min_rem_checked", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("5 passed; 0 failed"), "{}", out);
+    for w in ["i8", "i16", "i32", "i64"] {
+        assert!(out.contains(&format!("t.main.test_{} ... ok (both: native)", w)), "{}", out);
+    }
+    // x64 の Cranelift は 128 ビットの除算・剰余を持たないので、i128 はバンドルで比べる (誤った値を出さない)。
+    assert!(out.contains("t.main.test_i128 ... ok (both: bundle (native skipped: "), "{}", out);
+}
+
+#[test]
+fn i128_u128_checked_and_wrapping_native() {
+    // i128 / u128 の極値 (MIN / MAX) での checked_add / wrapping_add なども機械語で比べる。
+    let src = "fn t.main() -> () uses [] panics never\nend t.main\n\n\
+        test t.main.test_i128_min\n    let m = core.num.i128.MIN\n    core.check.eq(m.wrapping_sub(1i128), core.num.i128.MAX)\n    core.check.eq(m.checked_add(-1i128), None)\nend t.main.test_i128_min\n\n\
+        test t.main.test_u128_max\n    let m = core.num.u128.MAX\n    core.check.eq(m.wrapping_add(1u128), 0u128)\n    core.check.eq(m.checked_add(1u128), None)\nend t.main.test_u128_max\n";
+    let t = Tmp::new("i128_u128_checked_wrapping", src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("2 passed; 0 failed"), "{}", out);
+    for name in ["t.main.test_i128_min", "t.main.test_u128_max"] {
+        assert!(out.contains(&format!("{name} ... ok (both: native)")), "{}", out);
+    }
+}
+
+
+// ---- KIR の段階 1 の拡張: Vec・String・&str・for・添字・クロージャ (kir/collections、設計_KIR.md 10.9) ----
+
+/// コレクション系の試験用の関数。値は木走査 (`ksn run`) と参照実行器 (`ksn kir --run`) で比べる。
+const KIR_COLL_FNS: &str = "fn t.vlen() -> usize uses [] panics may
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.len()
+end t.vlen
+
+fn t.vempty() -> bool uses [] panics never
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.is_empty()
+end t.vempty
+
+fn t.str_len() -> usize uses [] panics never
+    let s = \"héllo\"
+    s.len()
+end t.str_len
+
+fn t.string_len() -> usize uses [] panics never
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.len()
+end t.string_len
+
+fn t.pick(c: bool) -> usize uses [] panics never
+    let s = if c {
+        \"ab\"
+    } else {
+        \"cde\"
+    }
+    s.len()
+end t.pick
+
+fn t.sum_skip(n: usize) -> usize uses [] panics may
+    let mut total = 0usize
+    for i in core.iter.range(0usize, n) {
+        if i == 3usize {
+            continue
+        }
+        total = total + i
+    }
+    total
+end t.sum_skip
+
+fn t.first_at(n: usize) -> usize uses [] panics may
+    let mut k = 0usize
+    for i in core.iter.range(0usize, n) {
+        let s = alloc.string.String.new(std.alloc.SYSTEM)
+        if i == 2usize {
+            return k.wrapping_add(s.len())
+        }
+        k = k.wrapping_add(i)
+    }
+    k
+end t.first_at
+
+fn t.brk(n: u32) -> u32 uses [] panics may
+    let mut last = 0u32
+    for i in core.iter.range(0u32, n) {
+        last = i
+        if i == 4u32 {
+            break
+        }
+    }
+    last
+end t.brk
+
+fn t.empty_loop(n: u32) -> u32 uses [] panics may
+    let v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut total = n
+    for x in v {
+        if x == 7u32 {
+            return 99u32
+        }
+        total = total.wrapping_add(x)
+    }
+    total
+end t.empty_loop
+
+fn t.find(n: usize) -> usize uses [] panics may
+    let mut i = 0usize
+    while i < 10usize {
+        for j in core.iter.range(0usize, 10usize) {
+            if i.wrapping_mul(j) == n {
+                return i.wrapping_add(j)
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    0usize
+end t.find
+
+fn t.nested(n: usize) -> usize uses [] panics may
+    let mut total = 0usize
+    for i in core.iter.range(0usize, n) {
+        let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        if !v.is_empty() {
+            continue
+        }
+        for j in core.iter.range(0usize, i) {
+            if j == 2usize {
+                break
+            }
+            total = total + j
+        }
+        total = total + 100usize
+    }
+    total
+end t.nested
+
+fn t.idx_empty() -> u8 uses [] panics may
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v[5usize]
+end t.idx_empty
+
+fn t.clos_let() -> u32 uses [] panics never
+    let add = fn(a: u32, b: u32) -> u32 capture [] {
+        a.wrapping_add(b)
+    }
+    let k = add(3u32, 4u32)
+    add(k, 1u32)
+end t.clos_let
+
+fn t.apply_n[F: core.ops.Fn<(u64,), u64, E, P>, E: uses, P: panics](f: F, n: u64) -> u64 uses [E] panics P
+    let mut acc = 0u64
+    let mut i = 0u64
+    while i < n {
+        acc = acc.wrapping_add(f(i))
+        i = i.wrapping_add(1u64)
+    }
+    acc
+end t.apply_n
+
+fn t.total(n: u64) -> u64 uses [] panics may
+    t.apply_n(
+        fn(x: u64) -> u64 capture [] {
+            x.wrapping_mul(3u64).wrapping_add(1u64)
+        },
+        n,
+    )
+end t.total
+
+";
+
+/// `KIR_COLL_FNS` に `main` を付けたパッケージを作る。
+fn kir_coll_pkg(name: &str, main_body: &str) -> Tmp {
+    Tmp::new(name, &format!("{}{}", KIR_COLL_FNS, main_wrap("", main_body)))
+}
+
+#[test]
+fn kir_coll_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の `core.check.eq` が通り、参照実行器 (`ksn kir --run`) の値が期待どおりであること。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.vlen", &[], "0usize", "0"),
+        ("t.vempty", &[], "true", "true"),
+        ("t.str_len", &[], "6usize", "6"),
+        ("t.string_len", &[], "0usize", "0"),
+        ("t.pick", &["true"], "2usize", "2"),
+        ("t.pick", &["false"], "3usize", "3"),
+        ("t.sum_skip", &["5"], "7usize", "7"),
+        ("t.sum_skip", &["0"], "0usize", "0"),
+        ("t.first_at", &["5"], "1usize", "1"),
+        ("t.first_at", &["1"], "0usize", "0"),
+        ("t.brk", &["10"], "4u32", "4"),
+        ("t.brk", &["3"], "2u32", "2"),
+        ("t.find", &["6"], "7usize", "7"),
+        ("t.find", &["97"], "0usize", "0"),
+        ("t.nested", &["4"], "402usize", "402"),
+        ("t.empty_loop", &["4"], "4u32", "4"),
+        ("t.clos_let", &[], "8u32", "8"),
+        ("t.total", &["10"], "145u64", "145"),
+        ("t.total", &["0"], "0u64", "0"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = kir_coll_pkg(&format!("kir_coll_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_coll_index_panics_like_tree_walker() {
+    // 空の Vec の添字は木走査と同じ文言で panic する (終了コード 101)。
+    let t = kir_coll_pkg("kir_coll_index_panic", "    let _x = t.idx_empty()\n");
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "tree-walker");
+    assert!(text(&o.stderr).contains("panic: index out of bounds: the len is 0 but the index is 5"), "{}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.idx_empty", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir: {}", text(&k.stderr));
+    assert_eq!(text(&k.stderr).trim(), "panic: index out of bounds: the len is 0 but the index is 5");
+}
+
+#[test]
+fn kir_coll_closure_is_monomorphized_per_closure() {
+    // `Fn` 境界の関数は、渡された捕獲のないクロージャごとに 1 つの単相インスタンスになる。
+    let t = kir_coll_pkg("kir_coll_mono", "    core.check.eq(t.total(3u64), 12u64)\n");
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
+    let o = run(&["kir", "t.total"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("fn t.apply_n key=t.apply_n<t.total#c") && out.contains("call t.apply_n<t.total#c"), "{}", out);
+    assert!(out.contains("fn t.total#c") && out.contains("end t.total#c"), "{}", out);
+}
+
+#[test]
+fn kir_coll_reports_unsupported_constructs_with_a_reason() {
+    // `Vec` の `pop` (Option)、capture を持つクロージャは、理由を付けて拒否する (`push` と移動は 13 章で下ろせる)。
+    let cases: &[(&str, &str, &str)] = &[
+        ("t.pop_one", "    let mut v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let _r = v.pop()\n    v.len()\n", "pop は段階 1 の対象外"),
+        ("t.captured", "    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let f = fn(x: usize) -> usize capture [move v] {\n        x\n    }\n    f(1usize)\n", "取り込みは段階 1 の対象外"),
+    ];
+    for (i, (f, body, why)) in cases.iter().enumerate() {
+        let src = format!(
+            "fn {}() -> usize uses [alloc] panics may\n{}end {}\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n",
+            f, body, f
+        );
+        let t = Tmp::new(&format!("kir_coll_reason_{}", i), &src);
+        let o = run(&["kir", f], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}", f);
+        assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
+    }
+}
+
+#[test]
+fn kir_coll_dump_shows_drops_and_static_data() {
+    // 所有値の解放は `free` の命令として見える。文字列リテラルは `data` の静的な領域。
+    let t = kir_coll_pkg("kir_coll_dump", "    core.check.eq(t.vlen(), 0usize)\n");
+    let o = run(&["kir", "t.vlen"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("frame.bytes 24") && out.contains("heap.free %") && out.contains("mem.load.usize %"), "{}", out);
+    let s = run(&["kir", "t.str_len"], &t.0);
+    assert!(text(&s.stdout).contains("static.bytes 68c3a96c6c6f"), "{}", text(&s.stdout));
+}
+
+// ---- 集成体への参照とスライス・&str (設計_KIR.md 10.10、kir/agg-refs) ----
+
+/// 集成体への `&` / `&mut`、入れ子のフィールド、スライス、`&str` の試験用の関数。
+const AGG_REFS_FNS: &str = "type t.P
+    x: i32
+    y: i32
+end t.P
+
+type t.Line
+    a: t.P
+    b: t.P
+    len: u32
+end t.Line
+
+fn t.p_sum(p: &t.P) -> i32 uses [] panics may
+    p.x + p.y
+end t.p_sum
+
+fn t.p_bump(p: &mut t.P, d: i32) -> () uses [] panics may
+    p.x = p.x + d
+    p.y = p.y + d
+end t.p_bump
+
+fn t.p_run(a: i32, b: i32) -> i32 uses [] panics may
+    let mut p = t.P { x: a, y: b }
+    t.p_bump(&mut p, 10i32)
+    t.p_bump(&mut p, 1i32)
+    t.p_sum(&p)
+end t.p_run
+
+fn t.p_via_ref(a: i32) -> i32 uses [] panics may
+    let mut p = t.P { x: a, y: 1i32 }
+    let r = &mut p
+    r.x = r.x * 2i32
+    t.p_bump(r, 3i32)
+    t.p_sum(r)
+end t.p_via_ref
+
+fn t.px(p: &mut t.P) -> &mut i32 uses [] panics never
+    &mut p.x
+end t.px
+
+fn t.p_field_ref(a: i32) -> i32 uses [] panics may
+    let mut p = t.P { x: 0i32, y: 5i32 }
+    *t.px(&mut p) = a
+    p.x * 100i32 + p.y
+end t.p_field_ref
+
+fn t.line_move(l: &mut t.Line, dx: i32) -> () uses [] panics may
+    l.a.x = l.a.x + dx
+    l.b.x = l.b.x + dx
+    l.len = l.len + 1u32
+end t.line_move
+
+fn t.line_span(l: &t.Line) -> i32 uses [] panics may
+    l.b.x - l.a.x + l.b.y
+end t.line_span
+
+fn t.line_run(n: i32) -> i32 uses [] panics may
+    let mut l = t.Line { a: t.P { x: 1i32, y: 2i32 }, b: t.P { x: 5i32, y: 9i32 }, len: 0u32 }
+    let mut i = 0i32
+    while i < n {
+        t.line_move(&mut l, 3i32)
+        i = i + 1i32
+    }
+    t.p_bump(&mut l.b, 100i32)
+    t.line_span(&l) * 1000i32 + l.a.x
+end t.line_run
+
+fn t.line_len(n: u32) -> u32 uses [] panics may
+    let mut l = t.Line { a: t.P { x: 0i32, y: 0i32 }, b: t.P { x: 0i32, y: 0i32 }, len: 0u32 }
+    let mut i = 0u32
+    while i < n {
+        t.line_move(&mut l, 1i32)
+        i = i + 1u32
+    }
+    l.len
+end t.line_len
+
+fn t.s_len(s: &str) -> usize uses [] panics never
+    s.len()
+end t.s_len
+
+fn t.s_len_lit() -> usize uses [] panics never
+    t.s_len(\"héllo\")
+end t.s_len_lit
+
+fn t.s_len_empty() -> usize uses [] panics never
+    t.s_len(\"\")
+end t.s_len_empty
+
+fn t.b_at(s: &[u8], i: usize) -> u8 uses [] panics may
+    s[i]
+end t.b_at
+
+fn t.b_sum(s: &[u8]) -> u8 uses [] panics may
+    let mut acc = 0u8
+    for i in core.iter.range(0usize, s.len()) {
+        acc = acc.wrapping_add(s[i])
+    }
+    acc
+end t.b_sum
+
+fn t.pass_through(s: &str) -> &str uses [] panics never
+    s
+end t.pass_through
+
+fn t.str_byte(s: &str, i: usize) -> u8 uses [] panics may
+    let b = s.as_bytes()
+    t.b_at(b, i)
+end t.str_byte
+
+fn t.lit_byte(i: usize) -> u8 uses [] panics may
+    t.str_byte(\"héllo\", i)
+end t.lit_byte
+
+fn t.lit_sum() -> u8 uses [] panics may
+    t.b_sum(\"abc\".as_bytes())
+end t.lit_sum
+
+fn t.lit_sum_empty() -> u8 uses [] panics may
+    t.b_sum(\"\".as_bytes())
+end t.lit_sum_empty
+
+fn t.lit_last() -> u8 uses [] panics may
+    let b = \"abc\".as_bytes()
+    b[b.len() - 1usize]
+end t.lit_last
+
+fn t.lit_oob() -> u8 uses [] panics may
+    let b = \"abc\".as_bytes()
+    b[3usize]
+end t.lit_oob
+
+fn t.empty_oob() -> u8 uses [] panics may
+    t.str_byte(\"\", 0usize)
+end t.empty_oob
+
+fn t.pass_len(n: u32) -> usize uses [] panics never
+    let s = if n > 1u32 {
+        t.pass_through(\"abcd\")
+    } else {
+        \"x\"
+    }
+    s.len()
+end t.pass_len
+
+fn t.is_hex(c: u8) -> bool uses [] panics never
+    (c >= b'0' && c <= b'9') || (c >= b'a' && c <= b'f') || (c >= b'A' && c <= b'F')
+end t.is_hex
+
+fn t.hex_of(c: u8) -> u32 uses [] panics never
+    if t.is_hex(c) {
+        1u32
+    } else {
+        0u32
+    }
+end t.hex_of
+
+fn t.digits(src: &[u8], pos: usize) -> usize uses [] panics never
+    let mut i = pos
+    loop {
+        match src.get(i) {
+            Some(c) => {
+                if c >= b'0' && c <= b'9' {
+                    i = i.wrapping_add(1usize)
+                } else {
+                    break
+                }
+            }
+            None => break
+        }
+    }
+    i
+end t.digits
+
+fn t.digits_at(n: usize) -> usize uses [] panics never
+    t.digits(\"12a45\".as_bytes(), n)
+end t.digits_at
+
+fn t.skip_ws(src: &[u8], pos: usize) -> usize uses [] panics never
+    let mut i = pos
+    loop {
+        match src.get(i) {
+            Some(c) => {
+                if c == b' ' || c == b'\\n' || c == b'\\t' || c == b'\\r' {
+                    i = i.wrapping_add(1usize)
+                } else {
+                    break
+                }
+            }
+            None => break
+        }
+    }
+    i
+end t.skip_ws
+
+fn t.skip_at(n: usize) -> usize uses [] panics never
+    t.skip_ws(\" \\t\\n x\".as_bytes(), n)
+end t.skip_at
+
+fn t.str_digits(s: &str, n: usize) -> usize uses [] panics never
+    t.digits(s.as_bytes(), n)
+end t.str_digits
+
+fn t.str_digits_empty(n: usize) -> usize uses [] panics never
+    t.str_digits(\"\", n)
+end t.str_digits_empty
+
+type t.Doc
+    links: alloc.vec.Vec<usize, std.alloc.System>
+    nodes: alloc.vec.Vec<u8, std.alloc.System>
+    n: u32
+end t.Doc
+
+fn t.doc_count(d: &t.Doc) -> usize uses [] panics may
+    d.links.len() + d.nodes.len()
+end t.doc_count
+
+fn t.doc_bump(d: &mut t.Doc) -> () uses [] panics may
+    d.n = d.n + 1u32
+end t.doc_bump
+
+fn t.doc_empty(d: &t.Doc) -> bool uses [] panics never
+    d.nodes.is_empty()
+end t.doc_empty
+
+fn t.doc_by_ref(d: &mut t.Doc, k: u32) -> usize uses [] panics may
+    let mut i = 0u32
+    while i < k {
+        t.doc_bump(d)
+        i = i + 1u32
+    }
+    t.doc_count(d) + 10usize
+end t.doc_by_ref
+
+fn t.doc_n(d: &t.Doc) -> u32 uses [] panics never
+    d.n
+end t.doc_n
+
+fn t.doc_run(k: u32) -> u32 uses [] panics may
+    let a: alloc.vec.Vec<usize, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let b: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut d = t.Doc { links: a, nodes: b, n: 0u32 }
+    core.mem.drop(t.doc_by_ref(&mut d, k))
+    t.doc_n(&d)
+end t.doc_run
+
+fn t.vec_len(v: &alloc.vec.Vec<u8, std.alloc.System>) -> usize uses [] panics never
+    v.len()
+end t.vec_len
+
+fn t.vec_first(v: &alloc.vec.Vec<u8, std.alloc.System>) -> u8 uses [] panics may
+    v[0usize]
+end t.vec_first
+
+fn t.vec_run() -> usize uses [] panics may
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    t.vec_len(&v)
+end t.vec_run
+
+fn t.vec_oob() -> u8 uses [] panics may
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    t.vec_first(&v)
+end t.vec_oob
+
+fn t.vec_empty_loop() -> usize uses [] panics may
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut n = 0usize
+    for _x in v {
+        n = n + 1usize
+    }
+    n + t.vec_len(&v)
+end t.vec_empty_loop
+
+";
+
+/// `AGG_REFS_FNS` に `main` を付けたパッケージを作る。
+fn agg_refs_pkg(name: &str, main_body: &str) -> Tmp {
+    Tmp::new(name, &format!("{}{}", AGG_REFS_FNS, main_wrap("", main_body)))
+}
+
+#[test]
+fn kir_agg_refs_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の `core.check.eq` が通ること、参照実行器 (`ksn kir --run`) の値が期待どおりであること。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.p_run", &["1", "2"], "25i32", "25"),
+        ("t.p_run", &["-5", "5"], "22i32", "22"),
+        ("t.p_via_ref", &["4"], "15i32", "15"),
+        ("t.p_field_ref", &["7"], "705i32", "705"),
+        ("t.line_run", &["0"], "213001i32", "213001"),
+        ("t.line_run", &["3"], "213010i32", "213010"),
+        ("t.line_len", &["0"], "0u32", "0"),
+        ("t.line_len", &["5"], "5u32", "5"),
+        ("t.s_len_lit", &[], "6usize", "6"),
+        ("t.s_len_empty", &[], "0usize", "0"),
+        ("t.lit_byte", &["0"], "104u8", "104"),
+        ("t.lit_byte", &["1"], "195u8", "195"),
+        ("t.lit_byte", &["5"], "111u8", "111"),
+        ("t.lit_sum", &[], "38u8", "38"),
+        ("t.lit_sum_empty", &[], "0u8", "0"),
+        ("t.lit_last", &[], "99u8", "99"),
+        ("t.pass_len", &["0"], "1usize", "1"),
+        ("t.pass_len", &["5"], "4usize", "4"),
+        ("t.hex_of", &["102"], "1u32", "1"),
+        ("t.hex_of", &["103"], "0u32", "0"),
+        ("t.hex_of", &["65"], "1u32", "1"),
+        ("t.hex_of", &["47"], "0u32", "0"),
+        ("t.digits_at", &["0"], "2usize", "2"),
+        ("t.digits_at", &["2"], "2usize", "2"),
+        ("t.digits_at", &["3"], "5usize", "5"),
+        ("t.digits_at", &["9"], "9usize", "9"),
+        ("t.skip_at", &["0"], "4usize", "4"),
+        ("t.skip_at", &["4"], "4usize", "4"),
+        ("t.skip_at", &["9"], "9usize", "9"),
+        ("t.str_digits_empty", &["0"], "0usize", "0"),
+        ("t.vec_run", &[], "0usize", "0"),
+        ("t.vec_empty_loop", &[], "0usize", "0"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = agg_refs_pkg(&format!("kir_agg_refs_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).lines().last().unwrap_or("").trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_agg_refs_bounds_panic_like_tree_walker() {
+    // スライスと Vec の範囲外の添字 (末尾の次・空) は、木走査と同じ文言で panic する (終了コード 101)。
+    let cases: &[(&str, &str)] = &[
+        ("t.lit_oob", "panic: index out of bounds: the len is 3 but the index is 3"),
+        ("t.empty_oob", "panic: index out of bounds: the len is 0 but the index is 0"),
+        ("t.vec_oob", "panic: index out of bounds: the len is 0 but the index is 0"),
+    ];
+    for (i, (f, msg)) in cases.iter().enumerate() {
+        let t = agg_refs_pkg(&format!("kir_agg_refs_panic_{}", i), &format!("    let _x = {}()\n", f));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "tree-walker {}\n{}", f, text(&o.stderr));
+        assert!(text(&o.stderr).contains(msg), "{}: {}", f, text(&o.stderr));
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stderr).trim(), *msg, "kir {}", f);
+    }
+}
+
+#[test]
+fn kir_agg_refs_text_shows_field_addresses_and_fat_values() {
+    // 集成体への参照の型 (`mutref<agg#k>`)、フィールドのアドレス (`fieldaddr`)、`&str` の値 (`fat` の `make`) が見え、読み直せる。
+    let t = agg_refs_pkg("kir_agg_refs_text", "    let _x = t.p_run(1i32, 2i32)\n");
+    let o = run(&["kir", "t.line_move"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    for want in ["mutref<agg#", "fieldaddr %", "load %", "store %"] {
+        assert!(s.contains(want), "missing `{}` in:\n{}", want, s);
+    }
+    let o = run(&["kir", "t.lit_byte"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    assert!(s.contains("fat size=16 align=8 {ptr:ptr@0 len:usize@8}") && s.contains("static.bytes 68c3a96c6c6f"), "{}", s);
+}
+
+#[test]
+fn kir_agg_refs_vec_fields_are_read_through_references() {
+    // Vec / String を持つ構造体 (json.Doc の形) への参照は下ろせる: ヘッダの `len` を `fieldaddr` と `load` で読む。
+    // 値渡しと組み立て (所有の移動) は設計_KIR.md 13 章で下ろせる。`t.doc_run` も下ろせる。
+    let t = agg_refs_pkg("kir_agg_refs_vec_field", "    core.check.eq(t.doc_run(3u32), 3u32)\n");
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
+    let e = run(&["kir", "t.doc_empty"], &t.0);
+    assert_eq!(e.status.code(), Some(0), "{}", text(&e.stderr));
+    let o = run(&["kir", "t.doc_by_ref"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    assert!(s.contains("struct vec size=24 align=8 {ptr:ptr@0 len:usize@8 cap:usize@16}") && s.contains("call t.doc_bump(%0)"), "{}", s);
+    // 組み立て (所有の移動) と `core.mem.drop` も下ろせる。値は木走査と同じで、漏れも二重解放もない。
+    let o = kir_run(&["kir", "t.doc_run", "--run", "3"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "3");
+}
+
+#[test]
+fn kir_agg_refs_reports_unsupported_references_with_a_reason() {
+    // 指す先が標準の型・Option の参照や、移動・Vec の借用の戻りは、理由を付けて拒否する。
+    let cases: &[(&str, &str, &str)] = &[
+        ("fn t.f(e: &std.io.Stdout) -> u8 uses [] panics never\n    let _t = e\n    0u8\nend t.f\n", "t.f", "引数の型"),
+        // 要素が集成体のスライスは `fat` の対象外 (要素の大きさが要る。`Option<&[u8]>` は対象になった)
+        ("type t.P\n    a: u8\nend t.P\n\nfn t.f(s: &[t.P]) -> usize uses [] panics never\n    let _t = s\n    0usize\nend t.f\n", "t.f", "引数の型"),
+    ];
+    for (i, (src, f, why)) in cases.iter().enumerate() {
+        let src = format!("{}\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n", src);
+        let t = Tmp::new(&format!("kir_agg_refs_reason_{}", i), &src);
+        let o = run(&["kir", f], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}", f);
+        assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
+    }
+}
+
+// ---- 型が決まった接尾辞なし整数リテラル: 木走査も型表の型で計算する (レビュー #1) ----
+
+/// 辞書順 (count, dbl, main, plus, wrapped) に並べた定義。`main` の本体だけ差し替える。
+fn lit_src(main_body: &str) -> String {
+    format!(
+        "fn t.count(n: u32) -> u8 uses [] panics may
+    let mut c = 0
+    let mut i = 0u32
+    while i < n {{
+        c = c + 1
+        i = i + 1u32
+    }}
+    c
+end t.count
+
+fn t.dbl(a: u8) -> u8 uses [] panics never
+    let z = if a > 1u8 {{
+        200
+    }} else {{
+        a
+    }}
+    z.wrapping_add(z)
+end t.dbl
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+{}    Ok(())
+end t.main
+
+fn t.plus(o: Option<u8>) -> u8 uses [] panics may
+    let w = o.unwrap_or(255)
+    w + 1
+end t.plus
+
+fn t.wrapped(o: Option<u8>) -> u8 uses [] panics never
+    let w = o.unwrap_or(255)
+    w.wrapping_add(1)
+end t.wrapped
+
+test t.dbl.test_lit
+    core.check.eq(t.dbl(5u8), 144u8)
+end t.dbl.test_lit
+
+test t.wrapped.test_lit
+    core.check.eq(t.wrapped(None), 0u8)
+end t.wrapped.test_lit
+",
+        main_body
+    )
+}
+
+#[test]
+fn untyped_int_literals_take_their_inferred_type_in_the_tree_walker() {
+    // 3 形とも、木走査 (`run` / `test`)・KIR (`kir --run`)・機械語 (`test --both`) の結果が一致する。
+    let t = Tmp::new("lit_types", &lit_src("    let _x = t.count(300u32)\n"));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.count", "--run", "300"], &t.0);
+    assert_eq!(k.status.code(), Some(101));
+    assert!(text(&k.stderr).contains("panic: attempt to add with overflow"), "{}", text(&k.stderr));
+    assert_eq!(text(&kir_run(&["kir", "t.count", "--run", "200"], &t.0).stdout).trim(), "200");
+    assert_eq!(text(&kir_run(&["kir", "t.dbl", "--run", "5"], &t.0).stdout).trim(), "144");
+    for args in [&["test"][..], &["test", "--both"][..]] {
+        let o = run(args, &t.0);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{:?}\n{}{}", args, out, text(&o.stderr));
+        assert!(out.contains("2 passed; 0 failed"), "{:?}\n{}", args, out);
+    }
+    // `w + 1` (`w` は u8 の 255): 木走査も overflow で panic する。
+    let t2 = Tmp::new("lit_types_plus", &lit_src("    let _x = t.plus(None)\n"));
+    let o = run(&["run"], &t2.0);
+    assert_eq!(o.status.code(), Some(101), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
+}
+
+/// 派生の比較 (`Option` の `eq` / `cmp`) は、ペイロードの利用者型の手書きの `eq` / `cmp` を使い、列挙子の順序は
+/// その列挙型の宣言順 (4.3)。木走査は以前、入れ子を構造的に比べ、`Option` の中の列挙型の順序を取り違えていた。
+/// clif は手書きの比較を持つ型を構造的に比べないよう退避する。
+#[test]
+fn derived_comparisons_use_nested_user_impls_and_declared_variant_order() {
+    let src = r#"enum t.E derive [Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord] pub
+    B
+    A
+end t.E
+
+type t.P derive [Debug, Clone, Copy] pub
+    x: u8
+    y: u8
+end t.P
+
+impl core.cmp.Eq for t.P
+
+impl core.cmp.Ord for t.P
+fn t.P.cmp(self: &t.P, other: &t.P) -> core.cmp.Ordering uses [] panics never impls core.cmp.Ord
+    if self.x > other.x {
+        core.cmp.Ordering.Less
+    } else if self.x < other.x {
+        core.cmp.Ordering.Greater
+    } else {
+        core.cmp.Ordering.Equal
+    }
+end t.P.cmp
+
+impl core.cmp.PartialEq<t.P> for t.P
+fn t.P.eq(self: &t.P, other: &t.P) -> bool uses [] panics never impls core.cmp.PartialEq<t.P>
+    self.x == other.x
+end t.P.eq
+
+impl core.cmp.PartialOrd<t.P> for t.P
+fn t.P.partial_cmp(self: &t.P, other: &t.P) -> Option<core.cmp.Ordering> uses [] panics never impls core.cmp.PartialOrd<t.P>
+    Some(self.cmp(other))
+end t.P.partial_cmp
+
+fn t.main() -> () uses [] panics never
+end t.main
+
+test t.main.test_nested_enum_order
+    let b: Option<t.E> = Some(t.E.B)
+    let a: Option<t.E> = Some(t.E.A)
+    core.check.eq(b.cmp(&a) == core.cmp.Ordering.Less, true)
+    core.check.eq(a.cmp(&b) == core.cmp.Ordering.Greater, true)
+end t.main.test_nested_enum_order
+
+test t.main.test_nested_user_cmp
+    let a: Option<t.P> = Some(t.P { x: 1u8, y: 1u8 })
+    let b: Option<t.P> = Some(t.P { x: 2u8, y: 1u8 })
+    core.check.eq(a.cmp(&b) == core.cmp.Ordering.Greater, true)
+    let c: Option<t.P> = Some(t.P { x: 1u8, y: 9u8 })
+    core.check.eq(a == c, true)
+    core.check.eq(a.eq(&c), true)
+end t.main.test_nested_user_cmp
+"#;
+    let t = Tmp::new("nested_user_cmp", src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("2 passed; 0 failed"), "{}", out);
+    assert!(out.contains("t.main.test_nested_enum_order ... ok (both: native)"), "{}", out);
+    assert!(out.contains("ordering of t.P with a user-defined cmp"), "{}", out);
+}
+
+/// clif の 128 ビット整数: 確かめた演算 (比較・wrapping・checked_add / sub・単項 `-`・`from_*` の拡張) だけを機械語にし、
+/// 除算・剰余・乗算・`try_from_*` など 64 ビットを前提にした経路は理由付きで退避する。以前は `checked_div` が
+/// `Some(被除数)` を返す誤った機械語になっていた。どのテストも、インタプリタと食い違わない。
+#[test]
+fn clif_128_bit_integers_are_native_only_where_supported() {
+    let src = r#"fn t.main() -> () uses [] panics never
+end t.main
+
+test t.main.test_a_div
+    let x: i128 = 100i128
+    core.check.eq(x.checked_div(7i128), Some(14i128))
+end t.main.test_a_div
+
+test t.main.test_b_rem
+    let x: u128 = 100u128
+    core.check.eq(x.checked_rem(7u128), Some(2u128))
+end t.main.test_b_rem
+
+test t.main.test_c_ops
+    let x: i128 = 100i128
+    let y: i128 = 7i128
+    core.check.eq(x / y, 14i128)
+    core.check.eq(x % y, 2i128)
+end t.main.test_c_ops
+
+test t.main.test_d_mul
+    let x: i128 = 100000000000i128
+    core.check.eq(x * x, 10000000000000000000000i128)
+    core.check.eq(x.checked_mul(x), Some(10000000000000000000000i128))
+    core.check.eq(x.wrapping_mul(3i128), 300000000000i128)
+end t.main.test_d_mul
+
+test t.main.test_e_cmp_shift
+    let x: u128 = core.num.u128.MAX
+    core.check.eq(x > 5u128, true)
+    core.check.eq(x.wrapping_add(1u128), 0u128)
+    core.check.eq(core.num.i32.MIN < 0i32, true)
+    core.check.eq(core.num.i8.MIN, -128i8)
+    core.check.eq(core.num.i16.MAX, 32767i16)
+end t.main.test_e_cmp_shift
+
+test t.main.test_f_neg_conv
+    let x: i128 = 5i128
+    core.check.eq(-x, -5i128)
+    let y: i128 = i128.from_i64(-7i64)
+    core.check.eq(y, -7i128)
+    let z: u128 = u128.from_u64(18446744073709551615u64)
+    core.check.eq(z.wrapping_add(1u128) > z, true)
+end t.main.test_f_neg_conv
+
+test t.main.test_g_try_conv
+    let big: u128 = core.num.u128.MAX
+    core.check.eq(u8.try_from_u128(big).is_err(), true)
+end t.main.test_g_try_conv
+"#;
+    let t = Tmp::new("clif_i128_scope", src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("7 passed; 0 failed"), "{}", out);
+    assert!(!out.contains("disagree"), "{}", out);
+    for name in ["test_e_cmp_shift", "test_f_neg_conv"] {
+        assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
+    }
+    for (name, why) in [
+        ("test_a_div", "128-bit method i128.checked_div"),
+        ("test_b_rem", "128-bit method u128.checked_rem"),
+        ("test_c_ops", "128-bit / (i128)"),
+        ("test_d_mul", "128-bit * (i128)"),
+        ("test_g_try_conv", "128-bit conversion u8.try_from_u128"),
+    ] {
+        assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (native skipped: t.main.{}: {}", name, name, why)), "{}", out);
+    }
+}
+
+#[test]
+fn kir_llvm_output_is_deterministic_and_reads_as_ir() {
+    // `--llvm` は同じ KIR から同じバイト列の `.ll` を出す (clang が無くても確かめられる)。
+    let t = kir_pkg("kir_llvm_text", "    core.check.eq(t.gcd(4u64, 2u64), 2u64)\n");
+    for f in ["t.gcd", "t.fact", "t.negate", "t.andor", "t.nested", "t.down"] {
+        let a = run(&["kir", f, "--llvm"], &t.0);
+        let b = run(&["kir", f, "--llvm"], &t.0);
+        assert_eq!(a.status.code(), Some(0), "{}: {}", f, text(&a.stderr));
+        assert_eq!(a.stdout, b.stdout, "{}: .ll が 2 回で違う", f);
+        let ll = text(&a.stdout);
+        assert!(ll.starts_with("; ksn kir llvm 1\n") && ll.contains(&format!("define internal")) && ll.contains("define i32 @main"), "{}", ll);
+        assert!(!ll.contains("@sin") && !ll.contains("@cos"), "libm の超越関数を呼ばない");
+    }
+}
+
+#[test]
+fn kir_native_without_clang_is_an_error_with_a_reason() {
+    let t = kir_pkg("kir_native_noclang", "    core.check.eq(t.gcd(4u64, 2u64), 2u64)\n");
+    let o = Command::new(exe())
+        .args(["kir", "t.gcd", "--native", "4", "2"])
+        .current_dir(&t.0)
+        .env("KSN_CLANG", "/nonexistent/clang")
+        .output()
+        .expect("spawn ksn");
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("clang が必要です"), "{}", text(&o.stderr));
+}
+
+/// ループの中の配列リテラル (フレームの確保) を周回ごとに積まない。以前の LLVM 版は `alloca` を評価のたびに
+/// 出していたので、100 万周でスタックが溢れて落ちた (参照実行器は正しかった)。確保は関数の先頭で 1 回、
+/// 0 埋めは評価のたびに行う。
+#[test]
+fn kir_array_literal_in_a_long_loop_does_not_grow_the_native_stack() {
+    let src = "fn t.sum(n: u32) -> u64 uses [] panics never
+    let mut i = 0u32
+    let mut acc = 0u64
+    while i < n {
+        for x in [1u64, 2u64, 3u64, 4u64] {
+            acc = acc.wrapping_add(x)
+        }
+        i = i.wrapping_add(1u32)
+    }
+    acc
+end t.sum
+
+fn t.main() -> () uses [] panics never
+end t.main
+";
+    let t = Tmp::new("kir_array_loop_stack", src);
+    let o = kir_run(&["kir", "t.sum", "--run", "1000000"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "10000000");
+}
+
+// ---- 入出力と入口 (設計_KIR.md 12): `write`、`ksn build --backend llvm`、`main` の `Err` の表示 ----
+
+const IO_SAY: &str = "fn t.say() -> bool uses [io.console] panics never
+    match std.io.print_line(\"hi there\") {
+        Ok(_) => true
+        Err(_) => false
+    }
+end t.say
+
+fn t.twice() -> u8 uses [io.console] panics never
+    let a = std.io.print_line(\"one\")
+    let b = std.io.print_line(\"two\")
+    match a {
+        Ok(_) => match b {
+            Ok(_) => 2u8
+            Err(_) => 1u8
+        }
+        Err(_) => 0u8
+    }
+end t.twice
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(\"main\")
+end t.main
+";
+
+#[test]
+fn kir_write_prints_through_run_and_native() {
+    // `print_line` は `write 1, s` と `write 1, \"\\n\"` に下ろされる。`--run` (参照実行器) と `--native` (write(2)) の表示が一致する。
+    let t = Tmp::new("kir_io_write", IO_SAY);
+    let o = run(&["kir", "t.say"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let ir = text(&o.stdout);
+    assert!(ir.contains("= write %") && ir.contains("agg#1 struct std.io.Error") || ir.contains("struct std.io.Error size=8"), "{}", ir);
+    let r = kir_run(&["kir", "t.say", "--run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), "hi there\ntrue\n");
+    let r = kir_run(&["kir", "t.twice", "--run"], &t.0);
+    assert_eq!(text(&r.stdout), "one\ntwo\n2\n");
+    // 木走査と同じ行が出る
+    let tw = run(&["run"], &t.0);
+    assert_eq!(text(&tw.stdout), "main\n");
+    assert_eq!(tw.status.code(), Some(0));
+}
+
+/// `ksn build --backend llvm` の実行ファイルと `ksn run` を走らせ、(run, native) を返す。native が作れなければ `None`。
+fn llvm_build_and_run(t: &Tmp) -> Option<(Output, Output)> {
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    let out = text(&b.stdout);
+    assert_eq!(b.status.code(), Some(0), "{}{}", out, text(&b.stderr));
+    assert!(!out.contains("llvm backend skipped"), "{}", out);
+    if !clang_available() {
+        return None;
+    }
+    let exe = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    assert!(exe.exists(), "{}", out);
+    let n = Command::new(&exe).current_dir(&t.0).output().expect("native");
+    Some((run(&["run"], &t.0), n))
+}
+
+fn same_output(r: &Output, n: &Output) {
+    assert_eq!(text(&n.stdout), text(&r.stdout), "stdout");
+    assert_eq!(text(&n.stderr), text(&r.stderr), "stderr");
+    assert_eq!(n.status.code(), r.status.code(), "終了コード");
+}
+
+#[test]
+fn llvm_build_of_print_line_main_matches_run() {
+    let t = Tmp::new("llvm_build_print", IO_SAY);
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        assert_eq!(text(&r.stdout), "main\n");
+        same_output(&r, &n);
+    }
+}
+
+#[test]
+fn llvm_build_main_err_prints_debug_and_exits_1() {
+    // `Err(e)` は stderr に `Error: <Debug>` と改行、終了コード 1 (木走査と同じ)。std.io.Error の Debug も同じ。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(\"before\")?
+    let e = std.io.Error { kind: std.io.ErrorKind.BrokenPipe, code: 32i32 }
+    Err(e)
+end t.main
+";
+    let t = Tmp::new("llvm_build_io_err", src);
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        assert_eq!(r.status.code(), Some(1));
+        assert_eq!(text(&r.stderr), "Error: Error { kind: BrokenPipe, code: 32 }\n");
+        assert_eq!(text(&r.stdout), "before\n");
+        same_output(&r, &n);
+    }
+}
+
+#[test]
+fn llvm_build_debug_covers_structs_enums_ints_bool_char_and_str() {
+    // 構造体・列挙型 (ペイロード付き)・入れ子・整数 (負数・0・64 ビットの端)・bool・char (逃れと非 ASCII)・&str (逃れ) の Debug は木走査と一致する。
+    let src = "enum t.Kind derive [Debug] pub
+    Plain
+    Pair(i32, bool)
+    Named(t.Inner)
+end t.Kind
+
+type t.Inner derive [Debug] pub
+    a: i8
+    b: u64
+    c: char
+end t.Inner
+
+type t.Bad derive [Debug] pub
+    neg: i64
+    zero: i32
+    flag: bool
+    ch: char
+    text: &'static str
+    inner: t.Inner
+    kind: t.Kind
+    k2: t.Kind
+    k3: t.Kind
+    small: u8
+    min: i64
+    quote: char
+end t.Bad
+
+fn t.mk() -> t.Bad uses [] panics never
+    let inner = t.Inner { a: -128i8, b: 18446744073709551615u64, c: '\\n' }
+    let kind = t.Kind.Pair(-7i32, false)
+    let inner2 = t.Inner { a: 0i8, b: 0u64, c: '\\u{e9}' }
+    let k2 = t.Kind.Named(inner2)
+    t.Bad { neg: -12345i64, zero: 0i32, flag: true, ch: 'x', text: \"a\\\"b\\\\c\\nd \\u{e9}\", inner: inner, kind: kind, k2: k2, k3: t.Kind.Plain, small: 255u8, min: -9223372036854775808i64, quote: '\\'' }
+end t.mk
+
+fn t.main() -> Result<(), t.Bad> uses [] panics never
+    Err(t.mk())
+end t.main
+";
+    let t = Tmp::new("llvm_build_debug", src);
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        assert_eq!(r.status.code(), Some(1), "{}", text(&r.stderr));
+        let e = text(&r.stderr);
+        assert!(e.starts_with("Error: Bad { neg: -12345, zero: 0, flag: true, ch: 'x',") && e.contains("kind: Pair(-7, false)") && e.contains("k3: Plain"), "{}", e);
+        same_output(&r, &n);
+    }
+}
+
+#[test]
+fn llvm_build_panic_keeps_the_panic_exit_code_and_message() {
+    // 溢れの panic は 101 と `panic: ...` (木走査と同じ)。それまでの出力は残る。
+    let src = "fn t.bump(x: u8) -> u8 uses [] panics may
+    x + 200u8
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    std.io.print_line(\"start\")?
+    let y = t.bump(100u8)
+    match y {
+        0u8 => std.io.print_line(\"zero\")
+        _ => std.io.print_line(\"unreachable\")
+    }
+end t.main
+";
+    let t = Tmp::new("llvm_build_panic", src);
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        assert_eq!(r.status.code(), Some(101), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), "start\n");
+        same_output(&r, &n);
+    }
+}
+
+#[test]
+fn llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered() {
+    // 下ろせない関数 (ここでは `std.env.arg_count` を呼ぶ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [env, io.console] panics may
+    core.mem.drop(std.env.arg_count())
+    std.io.print_line(\"x\")
+end t.main
+";
+    let t = Tmp::new("llvm_build_fallback", src);
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    let out = text(&b.stdout);
+    assert_eq!(b.status.code(), Some(0), "{}{}", out, text(&b.stderr));
+    assert!(out.contains("llvm backend skipped: t.main を KIR に下ろせない") && out.contains("falling back"), "{}", out);
+    assert!(out.contains("built target/debug"), "{}", out);
+    // 既存の経路 (c / clif) は変わらない: llvm の文言を出さない
+    let c = run(&["build"], &t.0);
+    assert!(!text(&c.stdout).contains("llvm backend"), "{}", text(&c.stdout));
+}
+
+// ---- Vec / String の所有の移動と解放 (設計_KIR.md 13 章、kir/owned-heap) ----
+
+/// 所有の移動と解放の試験用の関数。`--run` (参照実行器) は、関数の終わりで領域の漏れと二重解放を内部エラーにする。
+const KIR_OWN_FNS: &str = "type t.Buf
+    items: alloc.vec.Vec<u32, std.alloc.System>
+    n: u32
+end t.Buf
+
+enum t.Slot
+    Empty
+    Full(alloc.vec.Vec<u32, std.alloc.System>)
+end t.Slot
+
+fn t.oom(_e: alloc.alloc.AllocError) -> u8 uses [] panics never
+    1u8
+end t.oom
+
+fn t.make(n: u32) -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        match v.push(i) {
+            Ok(_u) => {
+            }
+            Err(_e) => {
+                break
+            }
+        }
+        i = i.wrapping_add(1u32)
+    }
+    v
+end t.make
+
+fn t.ret_vec(n: u32) -> usize uses [alloc] panics never
+    let v = t.make(n)
+    v.len()
+end t.ret_vec
+
+fn t.grow(v: alloc.vec.Vec<u32, std.alloc.System>, k: u32) -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics never
+    let mut w = v
+    match w.push(k) {
+        Ok(_u) => {
+        }
+        Err(_e) => {
+        }
+    }
+    w
+end t.grow
+
+fn t.sum(v: &alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics may
+    let mut total = 0u32
+    for x in v {
+        total = total.wrapping_add(x)
+    }
+    total
+end t.sum
+
+fn t.arg_ret(n: u32) -> u32 uses [alloc] panics may
+    let v = t.make(n)
+    let w = t.grow(v, 7u32)
+    let x = t.grow(w, 8u32)
+    t.sum(&x)
+end t.arg_ret
+
+fn t.consume(v: alloc.vec.Vec<u32, std.alloc.System>) -> usize uses [] panics never
+    v.len()
+end t.consume
+
+fn t.buf(n: u32) -> t.Buf uses [alloc] panics never
+    let v = t.make(n)
+    t.Buf { items: v, n: n }
+end t.buf
+
+fn t.buf_len(b: &t.Buf) -> usize uses [] panics never
+    b.items.len()
+end t.buf_len
+
+fn t.buf_run(n: u32) -> usize uses [alloc] panics never
+    let b = t.buf(n)
+    t.buf_len(&b)
+end t.buf_run
+
+fn t.consume_buf(b: t.Buf) -> usize uses [] panics never
+    t.buf_len(&b)
+end t.consume_buf
+
+fn t.maybe(n: u32, some: bool) -> Option<alloc.vec.Vec<u32, std.alloc.System>> uses [alloc] panics never
+    if some {
+        Some(t.make(n))
+    } else {
+        None
+    }
+end t.maybe
+
+fn t.opt_len(n: u32, some: bool) -> usize uses [alloc] panics never
+    match t.maybe(n, some) {
+        Some(v) => v.len()
+        None => 99usize
+    }
+end t.opt_len
+
+fn t.opt_local(n: u32, some: bool) -> usize uses [alloc] panics never
+    let o = t.maybe(n, some)
+    match o {
+        Some(v) => v.len()
+        None => 99usize
+    }
+end t.opt_local
+
+fn t.opt_peek(n: u32, some: bool) -> usize uses [alloc] panics never
+    let o = t.maybe(n, some)
+    let k = match o {
+        Some(_v) => 1usize
+        None => 2usize
+    }
+    if o.is_some() {
+        k.wrapping_add(10usize)
+    } else {
+        k
+    }
+end t.opt_peek
+
+fn t.opt_str(some: bool) -> usize uses [alloc] panics never
+    let o: Option<alloc.string.String<std.alloc.System>> = if some {
+        Some(alloc.string.String.new(std.alloc.SYSTEM))
+    } else {
+        None
+    }
+    match o {
+        Some(s) => s.len()
+        None => 99usize
+    }
+end t.opt_str
+
+fn t.branch(n: u32, take: bool) -> usize uses [alloc] panics never
+    let v = t.make(n)
+    let mut total = 0usize
+    if take {
+        let w = v
+        total = w.len()
+    }
+    total.wrapping_add(1usize)
+end t.branch
+
+fn t.branch_call(n: u32, take: bool) -> usize uses [alloc] panics never
+    let v = t.make(n)
+    if take {
+        t.consume(v)
+    } else {
+        0usize
+    }
+end t.branch_call
+
+fn t.branch_buf(n: u32, take: bool) -> usize uses [alloc] panics never
+    let b = t.buf(n)
+    if take {
+        t.consume_buf(b)
+    } else {
+        7usize
+    }
+end t.branch_buf
+
+fn t.churn(n: u32) -> usize uses [alloc] panics never
+    let mut total = 0usize
+    let mut i = 0u32
+    while i < n {
+        let v = t.make(3u32)
+        core.mem.drop(t.make(2u32))
+        total = total.wrapping_add(v.len())
+        i = i.wrapping_add(1u32)
+    }
+    total
+end t.churn
+
+fn t.churn_exit(n: u32) -> usize uses [alloc] panics never
+    let mut total = 0usize
+    let outer = t.make(1u32)
+    let mut i = 0u32
+    while i < n {
+        let v = t.make(i)
+        i = i.wrapping_add(1u32)
+        if i == 3u32 {
+            continue
+        }
+        if i == 6u32 {
+            break
+        }
+        total = total.wrapping_add(v.len())
+    }
+    total.wrapping_add(outer.len())
+end t.churn_exit
+
+fn t.step(k: usize, bad: bool) -> Result<usize, u8> uses [] panics never
+    if bad {
+        Err(5u8)
+    } else {
+        Ok(k)
+    }
+end t.step
+
+fn t.try_inner(n: u32, bad: bool) -> Result<usize, u8> uses [alloc] panics never
+    let v = t.make(n)
+    let k = t.step(v.len(), bad)?
+    let w = t.make(2u32)
+    Ok(k.wrapping_add(w.len()))
+end t.try_inner
+
+fn t.try_run(n: u32, bad: bool) -> usize uses [alloc] panics never
+    match t.try_inner(n, bad) {
+        Ok(x) => x
+        Err(_e) => 1000usize
+    }
+end t.try_run
+
+fn t.push_oom(n: u32) -> Result<usize, u8> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.push(n).map_err(t.oom)?
+    v.push(n).map_err(fn(x: alloc.alloc.AllocError) -> u8 capture [] {
+        2u8
+    })?
+    Ok(v.len())
+end t.push_oom
+
+fn t.map_err_run(n: u32) -> usize uses [alloc] panics never
+    match t.push_oom(n) {
+        Ok(x) => x
+        Err(_e) => 1000usize
+    }
+end t.map_err_run
+
+fn t.slot(n: u32) -> t.Slot uses [alloc] panics never
+    if n == 0u32 {
+        t.Slot.Empty
+    } else {
+        t.Slot.Full(t.make(n))
+    }
+end t.slot
+
+fn t.slot_len(n: u32) -> usize uses [alloc] panics never
+    match t.slot(n) {
+        t.Slot.Empty => 0usize
+        t.Slot.Full(v) => v.len()
+    }
+end t.slot_len
+
+fn t.slot_ignore(n: u32) -> usize uses [alloc] panics never
+    match t.slot(n) {
+        t.Slot.Empty => 1usize
+        t.Slot.Full(_v) => 2usize
+    }
+end t.slot_ignore
+
+fn t.reassign(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.make(n)
+    v = t.make(2u32)
+    v.len()
+end t.reassign
+
+";
+
+/// `KIR_OWN_FNS` に `main` を付けたパッケージを作る。
+fn kir_own_pkg(name: &str, main_body: &str) -> Tmp {
+    let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", main_body);
+    Tmp::new(name, &format!("{}{}", KIR_OWN_FNS, main))
+}
+
+#[test]
+fn kir_own_values_match_tree_walker() {
+    // Vec / String の所有の移動 (返す・引数で渡す・構造体のフィールド・`Option` の `match`・片方の枝だけで移す・ループ・`?`) が、
+    // 木走査と同じ値になる。参照実行器は漏れと二重解放を内部エラーにし、LLVM (clang があれば) も同じ表示になる。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.ret_vec", &["5"], "5usize", "5"),
+        ("t.ret_vec", &["0"], "0usize", "0"),
+        ("t.arg_ret", &["4"], "21u32", "21"),
+        ("t.buf_run", &["6"], "6usize", "6"),
+        ("t.opt_len", &["3", "true"], "3usize", "3"),
+        ("t.opt_len", &["3", "false"], "99usize", "99"),
+        ("t.opt_local", &["4", "true"], "4usize", "4"),
+        ("t.opt_local", &["4", "false"], "99usize", "99"),
+        ("t.opt_peek", &["4", "true"], "11usize", "11"),
+        ("t.opt_peek", &["4", "false"], "2usize", "2"),
+        ("t.opt_str", &["true"], "0usize", "0"),
+        ("t.opt_str", &["false"], "99usize", "99"),
+        ("t.branch", &["5", "true"], "6usize", "6"),
+        ("t.branch", &["5", "false"], "1usize", "1"),
+        ("t.branch_call", &["5", "true"], "5usize", "5"),
+        ("t.branch_call", &["5", "false"], "0usize", "0"),
+        ("t.branch_buf", &["5", "true"], "5usize", "5"),
+        ("t.branch_buf", &["5", "false"], "7usize", "7"),
+        ("t.churn", &["10000"], "30000usize", "30000"),
+        ("t.churn_exit", &["10"], "9usize", "9"),
+        ("t.try_run", &["4", "false"], "6usize", "6"),
+        ("t.try_run", &["4", "true"], "1000usize", "1000"),
+        ("t.map_err_run", &["9"], "2usize", "2"),
+        ("t.slot_len", &["0"], "0usize", "0"),
+        ("t.slot_len", &["5"], "5usize", "5"),
+        ("t.slot_ignore", &["0"], "1usize", "1"),
+        ("t.slot_ignore", &["5"], "2usize", "2"),
+        ("t.reassign", &["8"], "2usize", "2"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.iter().map(|a| match *a {
+            "true" | "false" => a.to_string(),
+            n => format!("{}u32", n),
+        }).collect::<Vec<_>>().join(", "));
+        let t = kir_own_pkg(&format!("kir_own_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+// ---- 取り込みのあるクロージャと反復子の連なり (設計_KIR.md 14 章、kir/closures) ----
+
+const KIR_CLOSURE_FNS: &str = "fn t.apply[F: core.ops.Fn<(u64,), u64, E, P>, E: uses, P: panics](f: F, n: u64) -> u64 uses [E] panics P pub
+    let mut acc = 0u64
+    let mut i = 0u64
+    while i < n {
+        acc = acc.wrapping_add(f(i))
+        i = i.wrapping_add(1u64)
+    }
+    acc
+end t.apply
+
+fn t.cap_ref(n: u64) -> u64 uses [] panics may
+    let k = 7u64
+    t.apply(
+        fn(x: u64) -> u64 capture [&k] {
+            x.wrapping_mul(*k).wrapping_add(1u64)
+        },
+        n,
+    )
+end t.cap_ref
+
+fn t.cap_move(n: u64) -> u64 uses [] panics may
+    let mut k = 3u64
+    k = k.wrapping_add(n)
+    let f = fn(x: u64) -> u64 capture [move k] {
+        x.wrapping_add(k)
+    }
+    f(1u64).wrapping_add(f(2u64)).wrapping_add(t.apply(f, 4u64))
+end t.cap_move
+
+fn t.cap_mut(n: u64) -> u64 uses [] panics may
+    let mut total = 0u64
+    let f = fn(x: u64) -> u64 capture [&mut total] {
+        *total = (*total).wrapping_add(x)
+        *total
+    }
+    f(n)
+    f(n)
+    let r = f(5u64)
+    r.wrapping_add(total)
+end t.cap_mut
+
+fn t.cap_two(n: u64) -> u64 uses [] panics may
+    let a = 10u64
+    let mut b = 5u64
+    b = b.wrapping_add(n)
+    t.apply(
+        fn(x: u64) -> u64 capture [&a, move b] {
+            x.wrapping_mul(*a).wrapping_add(b)
+        },
+        3u64,
+    )
+end t.cap_two
+
+fn t.fold_basic(n: u32) -> u32 uses [] panics may
+    core.iter.fold(core.iter.range(0u32, n), 100u32, fn(acc: u32, x: u32) -> u32 capture [] {
+        acc.wrapping_add(x)
+    })
+end t.fold_basic
+
+fn t.chain(n: u64) -> u64 uses [] panics may
+    let m = 3u64
+    core.iter.fold(
+        core.iter.filter(
+            core.iter.map(core.iter.range(0u64, n), fn(x: u64) -> u64 capture [&m] {
+                x.wrapping_mul(*m)
+            }),
+            fn(x: &u64) -> bool capture [] {
+                *x % 2u64 == 0u64
+            },
+        ),
+        1u64,
+        fn(acc: u64, x: u64) -> u64 capture [] {
+            acc.wrapping_add(x)
+        },
+    )
+end t.chain
+
+fn t.count_even(n: u32) -> usize uses [] panics may
+    core.iter.count(core.iter.filter(core.iter.range(0u32, n), fn(x: &u32) -> bool capture [] {
+        *x % 2u32 == 0u32
+    }))
+end t.count_even
+
+fn t.fold_let(n: u32) -> u32 uses [] panics may
+    let step = 2u32
+    let f = fn(acc: u32, x: u32) -> u32 capture [&step] {
+        acc.wrapping_add(x.wrapping_mul(*step))
+    }
+    core.iter.fold(core.iter.range(5u32, n), 1u32, f)
+end t.fold_let
+
+";
+
+#[test]
+fn kir_closure_captures_and_iter_pipes_match_tree_walker() {
+    // 取り込み 4 種類 (`&x` `&mut x` `move x` と複数)、`fold` の初期値と累積、`map` → `filter` → `fold`、空の範囲。
+    // (関数, 引数の型, 引数, 期待する値)
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("t.cap_ref", "u64", "4", "46"),
+        ("t.cap_ref", "u64", "0", "0"),
+        ("t.cap_move", "u64", "2", "39"),
+        ("t.cap_two", "u64", "2", "51"),
+        ("t.fold_basic", "u32", "5", "110"),
+        ("t.fold_basic", "u32", "0", "100"),
+        ("t.fold_let", "u32", "9", "53"),
+        ("t.fold_let", "u32", "3", "1"),
+        ("t.chain", "u64", "10", "61"),
+        ("t.chain", "u64", "0", "1"),
+        ("t.count_even", "u32", "9", "5"),
+        ("t.count_even", "u32", "0", "0"),
+    ];
+    for (i, (f, aty, arg, want)) in cases.iter().enumerate() {
+        let rty = if *f == "t.count_even" { "usize" } else { *aty };
+        let call = format!("{}({}{})", f, arg, aty);
+        let t = Tmp::new(
+            &format!("kir_closure_{}", i),
+            &format!("{}{}", KIR_CLOSURE_FNS, main_wrap("", &format!("    core.check.eq({}, {}{})\n", call, want, rty))),
+        );
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let k = kir_run(&["kir", f, "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_own_reports_unsupported_moves_with_a_reason() {
+    // フィールドからの移動 (部分的な移動)、所有物を持つ値の分解は、誤った KIR を出さず理由を付けて拒否する。
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "type t.B\n    items: alloc.vec.Vec<u8, std.alloc.System>\nend t.B\n\nfn t.f(b: t.B) -> usize uses [] panics never\n    let w = b.items\n    w.len()\nend t.f\n",
+            "t.f",
+            "フィールドからの Vec / String の移動",
+        ),
+        (
+            "fn t.f() -> usize uses [] panics never\n    let (a, b) = (alloc.vec.Vec.new(std.alloc.SYSTEM), 1usize)\n    let v: alloc.vec.Vec<u8, std.alloc.System> = a\n    b.wrapping_add(v.len())\nend t.f\n",
+            "t.f",
+            "分解",
+        ),
+        (
+            "fn t.f(o: Option<alloc.vec.Vec<u8, std.alloc.System>>) -> usize uses [] panics never\n    o.unwrap_or(alloc.vec.Vec.new(std.alloc.SYSTEM)).len()\nend t.f\n",
+            "t.f",
+            "unwrap_or",
+        ),
+    ];
+    for (i, (src, f, why)) in cases.iter().enumerate() {
+        let src = format!("{}\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n", src);
+        let t = Tmp::new(&format!("kir_own_reason_{}", i), &src);
+        let o = run(&["kir", f], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}: {}", f, text(&o.stdout));
+        assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
+    }
+}
+
+#[test]
+fn kir_own_dump_shows_moves_as_nulling_and_flags() {
+    // Vec の移動は元のヘッダの `ptr` を null にする書き込み、構造体の局所変数の移動は印 (1 バイト) の書き込みとして見える。
+    let t = kir_own_pkg("kir_own_dump", "    core.check.eq(t.branch_buf(3u32, true), 3usize)\n");
+    let o = run(&["kir", "t.branch"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    assert!(s.contains("const.ptr 0") && s.contains("heap.free %") && s.contains("struct vec size=24"), "{}", s);
+    let o = run(&["kir", "t.branch_buf"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    assert!(s.contains("frame.bytes 1") && s.contains("mem.store.bool") && s.contains("mem.load.bool"), "{}", s);
+}
+
+/// `String.as_str()` / `Vec.as_slice()` はヘッダの {ptr, len} を借用の `fat` にする (所有は移さない)。
+/// 木走査 (`ksn run` の `core.check.eq`) と、`--run` / `--native` の値が一致する。
+#[test]
+fn kir_as_str_and_as_slice_borrow_the_header() {
+    let src = r#"fn t.sum_bytes(s: &str) -> u32 uses [] panics never
+    let b = s.as_bytes()
+    let mut acc = 0u32
+    for x in b {
+        acc = acc.wrapping_add(u32.from_u8(x))
+    }
+    acc
+end t.sum_bytes
+
+fn t.sum_slice(v: &[u16]) -> u32 uses [] panics never
+    let mut acc = 0u32
+    for x in v {
+        acc = acc.wrapping_add(u32.from_u16(x))
+    }
+    acc
+end t.sum_slice
+
+fn t.go(n: u16) -> u32 uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u16
+    while i < n {
+        core.mem.drop(v.push(i))
+        i = i.wrapping_add(1u16)
+    }
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let a = t.sum_slice(v.as_slice())
+    let b = t.sum_bytes(s.as_str())
+    if s.as_str().len() == 0usize {
+        return a.wrapping_add(b).wrapping_add(1000u32)
+    }
+    a.wrapping_add(b)
+end t.go
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    core.check.eq(t.go(10u16), 1045u32)
+end t.main
+"#;
+    let t = Tmp::new("kir_as_str_slice", src);
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
+    for (n, want) in [("10", "1045"), ("0", "1000")] {
+        let o = kir_run(&["kir", "t.go", "--run", n], &t.0);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), want);
+    }
+}
+
+#[test]
+fn kir_closure_capture_by_mut_ref_writes_through() {
+    // `capture [&mut x]` の書き込みは、取り込まれた変数に届く。木走査は `*x = v` の形を受けない
+    // (取り込んだ名前を参照にしない) ので、期待値は手で求めた値 (3, 6 と加えて 11 を返し、total も 11 → 22)。
+    let t = Tmp::new("kir_closure_cap_mut", &format!("{}{}", KIR_CLOSURE_FNS, main_wrap("", "    core.check.eq(t.cap_ref(1u64), 1u64)\n")));
+    let k = kir_run(&["kir", "t.cap_mut", "--run", "3"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "22");
+}
+
+#[test]
+fn kir_closure_environment_is_passed_as_leading_arguments() {
+    // 取り込みの値は、クロージャの関数と単相インスタンスの先頭の追加の引数になる。
+    let t = Tmp::new("kir_closure_dump", &format!("{}{}", KIR_CLOSURE_FNS, main_wrap("", "    core.check.eq(t.cap_ref(4u64), 46u64)\n")));
+    let o = run(&["kir", "t.cap_ref"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("fn t.cap_ref#c") && out.contains("fn t.apply key=t.apply<t.cap_ref#c"), "{}", out);
+}
+
+#[test]
+fn kir_closure_reports_unsupported_captures_with_a_reason() {
+    // 解放の要る値の取り込み、move で取り込んだ値の変更、反復子の未対応の元は理由付きで拒否する。
+    let cases: &[(&str, &str, &str)] = &[
+        ("t.cap_vec", "    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let f = fn(x: usize) -> usize capture [&v] {\n        x\n    }\n    f(1usize)\n", "取り込みは段階 1 の対象外"),
+        ("t.cap_mutate", "    let mut n = 1usize\n    let f = fn(x: usize) -> usize capture [move n] {\n        n = n.wrapping_add(x)\n        n\n    }\n    f(1usize)\n", "を本体が変更する形"),
+        ("t.take", "    core.iter.count(core.iter.take(core.iter.range(0usize, 5usize), 2usize))\n", "take"),
+    ];
+    for (i, (f, body, why)) in cases.iter().enumerate() {
+        let src = format!(
+            "fn {}() -> usize uses [alloc] panics may\n{}end {}\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n",
+            f, body, f
+        );
+        let t = Tmp::new(&format!("kir_closure_reason_{}", i), &src);
+        let o = run(&["kir", f], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}: {}", f, text(&o.stderr));
+        assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
+    }
+}
+
+/// 実パッケージの LLVM ビルド (設計_KIR.md 12.4): KIR に全体を下ろせるパッケージは、`ksn build --backend llvm` の
+/// 実行ファイルの stdout・stderr・終了コードが `ksn run` と一致する。ここに挙げたものが後退したら落ちる
+/// (下ろせるパッケージが増えたら足す)。パッケージは一時 dir に写してから作る (リポジトリの `target/` を汚さない)。
+#[test]
+fn llvm_builds_of_real_packages_match_run() {
+    if !clang_available() {
+        eprintln!("clang が無いので飛ばす");
+        return;
+    }
+    fn copy(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).unwrap();
+        for e in fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            let name = e.file_name();
+            if name == "target" {
+                continue;
+            }
+            let p = e.path();
+            if p.is_dir() {
+                copy(&p, &dst.join(&name));
+            } else {
+                fs::copy(&p, dst.join(&name)).unwrap();
+            }
+        }
+    }
+    for pkg in ["examples/demo", "examples/native", "perf/closure", "perf/fib", "perf/noop", "perf/structs"] {
+        let name = Path::new(pkg).file_name().unwrap().to_string_lossy().to_string();
+        let dir = std::env::temp_dir().join(format!("ksn_llvm_pkg_{}_{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&dir);
+        copy(&root().join(pkg), &dir);
+        let cache = dir.join(".cache");
+        let b = Command::new(exe())
+            .args(["build", "--backend", "llvm"])
+            .current_dir(&dir)
+            .env("KSN_CACHE_DIR", &cache)
+            .env("KSN_STDLIB", root().join("spec").join("stdlib"))
+            .output()
+            .unwrap();
+        let out = text(&b.stdout);
+        assert_eq!(b.status.code(), Some(0), "{}: {}{}", pkg, out, text(&b.stderr));
+        assert!(!out.contains("llvm backend skipped"), "{}: {}", pkg, out);
+        let r = Command::new(exe()).arg("run").current_dir(&dir).env("KSN_STDLIB", root().join("spec").join("stdlib")).output().unwrap();
+        let n = Command::new(dir.join("target").join("debug").join(format!("{}.native", name))).current_dir(&dir).output().unwrap();
+        assert_eq!(n.status.code(), r.status.code(), "{}: 終了コード", pkg);
+        assert_eq!(text(&n.stdout), text(&r.stdout), "{}: stdout", pkg);
+        assert_eq!(text(&n.stderr), text(&r.stderr), "{}: stderr", pkg);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

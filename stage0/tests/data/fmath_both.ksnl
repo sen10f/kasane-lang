@@ -1,0 +1,166 @@
+fn t.fold32(acc: u32, bits: u32) -> u32 uses [] panics never
+    acc.wrapping_mul(1000003u32).wrapping_add(bits)
+end t.fold32
+
+fn t.fold64(acc: u64, bits: u64) -> u64 uses [] panics never
+    acc.wrapping_mul(1000003u64).wrapping_add(bits)
+end t.fold64
+
+fn t.known_f32() -> bool uses [] panics never
+    let x = 1.0f32
+    let ok_sin = (x.sin() - 0.84147098f32).abs() <= 2e-7f32
+    let y = 3.5f32
+    let ok_exp = (y.exp() - 33.11545195869231f32).abs() <= 1e-5f32
+    let z = 10.0f32
+    let ok_ln = (z.ln() - 2.3025851f32).abs() <= 4e-7f32
+    let p = -0.5f32
+    let ok_atan2 = (p.atan2(2.0f32) + 0.24497866f32).abs() <= 2e-7f32
+    let b = 1.1f32
+    let ok_powi = (b.powi(7i32) - 1.9487171f32).abs() <= 4e-7f32
+    ok_sin && ok_exp && ok_ln && ok_atan2 && ok_powi
+end t.known_f32
+
+fn t.known_f64() -> bool uses [] panics never
+    let x = 1.0f64
+    let ok_sin = (x.sin() - 0.8414709848078965f64).abs() <= 1e-15f64
+    let ok_cos = (x.cos() - 0.5403023058681398f64).abs() <= 1e-15f64
+    let h = 0.5f64
+    let ok_tan = (h.tan() - 0.5463024898437905f64).abs() <= 1e-15f64
+    let ok_exp = (x.exp() - 2.718281828459045f64).abs() <= 1e-15f64
+    let z = 10.0f64
+    let ok_ln = (z.ln() - 2.302585092994046f64).abs() <= 1e-15f64
+    let ok_atan2 = (x.atan2(x) - 0.7853981633974483f64).abs() <= 1e-15f64
+    let q = 1.5f64
+    let ok_powi = q.powi(3i32) == 3.375f64 && 2.0f64.powi(-2i32) == 0.25f64
+    ok_sin && ok_cos && ok_tan && ok_exp && ok_ln && ok_atan2 && ok_powi
+end t.known_f64
+
+fn t.main() -> () uses [] panics never
+end t.main
+
+fn t.special() -> bool uses [] panics never
+    let big = 1000.0f64
+    let inf = big.exp()
+    let zero = 0.0f64
+    let neg = -1.0f64
+    let ok_inf = inf.sin().is_nan() && !inf.is_finite() && !big.exp().is_finite()
+    let ok_ln = zero.ln() == -inf && neg.ln().is_nan()
+    ok_inf && ok_ln && (-big).exp() == 0.0f64
+end t.special
+
+fn t.same(a: f64, b: f64) -> bool uses [] panics never
+    let na = a.is_nan()
+    let nb = b.is_nan()
+    (na && nb) || (!na && !nb && a.to_bits() == b.to_bits())
+end t.same
+
+fn t.special_bits() -> bool uses [] panics never
+    let inf = 1000.0f64.exp()
+    let ninf = -inf
+    let zero = 0.0f64
+    let nzero = -zero
+    let nan = inf - inf
+    let pi = 3.141592653589793f64
+    let hpi = 1.5707963267948966f64
+    let qpi = 0.7853981633974483f64
+    let tqpi = 2.356194490192344928846982537459627163f64
+    let mut ok = true
+    ok = ok && t.same(zero.atan2(nzero), pi)
+    ok = ok && t.same(nzero.atan2(zero), nzero)
+    ok = ok && t.same(nzero.atan2(nzero), -pi)
+    ok = ok && t.same(zero.atan2(-1.0f64), pi)
+    ok = ok && t.same(nzero.atan2(-1.0f64), -pi)
+    ok = ok && t.same(1.0f64.atan2(zero), hpi)
+    ok = ok && t.same((-1.0f64).atan2(nzero), -hpi)
+    ok = ok && t.same(1.0f64.atan2(ninf), pi)
+    ok = ok && t.same(1.0f64.atan2(inf), zero)
+    ok = ok && t.same((-1.0f64).atan2(inf), nzero)
+    ok = ok && t.same(inf.atan2(1.0f64), hpi)
+    ok = ok && t.same(ninf.atan2(-1.0f64), -hpi)
+    ok = ok && t.same(inf.atan2(inf), qpi)
+    ok = ok && t.same(inf.atan2(ninf), tqpi)
+    ok = ok && t.same(ninf.atan2(inf), -qpi)
+    ok = ok && t.same(ninf.atan2(ninf), -tqpi)
+    ok = ok && t.same(inf.atan2(-1.0f64), hpi)
+    ok = ok && t.same(nan.atan2(zero), nan)
+    ok = ok && t.same(nan.atan2(nzero), nan)
+    ok = ok && t.same(inf.atan2(nan), nan)
+    ok = ok && t.same(zero.sin(), zero) && t.same(nzero.sin(), nzero)
+    ok = ok && t.same(nzero.tan(), nzero) && t.same(nzero.cos(), 1.0f64)
+    ok = ok && t.same(inf.sin(), nan) && t.same(ninf.cos(), nan) && t.same(ninf.tan(), nan)
+    ok = ok && t.same(nan.exp(), nan) && t.same(inf.exp(), inf) && t.same(ninf.exp(), zero)
+    ok = ok && t.same(zero.ln(), ninf) && t.same(nzero.ln(), ninf)
+    ok = ok && t.same(inf.ln(), inf) && t.same(ninf.ln(), nan) && t.same(nan.ln(), nan)
+    ok = ok && t.same((-1.0f64).ln(), nan)
+    ok = ok && t.same(nan.powi(0i32), 1.0f64) && t.same(nan.powi(1i32), nan)
+    ok = ok && t.same(nzero.powi(3i32), nzero) && t.same(nzero.powi(2i32), zero)
+    ok = ok && t.same(zero.powi(-1i32), inf) && t.same(nzero.powi(-1i32), ninf)
+    ok = ok && t.same(nzero.powi(-2i32), inf)
+    ok = ok && t.same(inf.powi(-1i32), zero) && t.same(ninf.powi(-1i32), nzero)
+    ok = ok && t.same(ninf.powi(3i32), ninf) && t.same(ninf.powi(2i32), inf)
+    ok = ok && t.same(2.0f64.powi(2000i32), inf) && t.same(0.5f64.powi(2000i32), zero)
+    ok
+end t.special_bits
+
+fn t.sweep32() -> u32 uses [] panics never
+    let mut acc = 2166136261u32
+    let mut k = 0u32
+    while k < 3000u32 {
+        let x = k.to_f64().nearest_to_f32() * 0.0173f32 - 25.0f32
+        let p = (k.to_f64().nearest_to_f32() + 0.5f32) * 0.0911f32
+        acc = t.fold32(acc, x.sin().to_bits())
+        acc = t.fold32(acc, x.cos().to_bits())
+        acc = t.fold32(acc, x.tan().to_bits())
+        acc = t.fold32(acc, (x * 0.1f32).exp().to_bits())
+        acc = t.fold32(acc, p.ln().to_bits())
+        acc = t.fold32(acc, x.atan2(p).to_bits())
+        acc = t.fold32(acc, p.atan2(x).to_bits())
+        acc = t.fold32(acc, x.powi(7i32).to_bits())
+        k = k.wrapping_add(1u32)
+    }
+    acc
+end t.sweep32
+
+fn t.sweep64() -> u64 uses [] panics never
+    let mut acc = 14695981039346656037u64
+    let mut k = 0u32
+    while k < 4000u32 {
+        let x = k.to_f64() * 0.0173 - 34.5
+        let p = (k.to_f64() + 0.5) * 0.0911
+        acc = t.fold64(acc, x.sin().to_bits())
+        acc = t.fold64(acc, x.cos().to_bits())
+        acc = t.fold64(acc, x.tan().to_bits())
+        acc = t.fold64(acc, (x * 0.1).exp().to_bits())
+        acc = t.fold64(acc, p.ln().to_bits())
+        acc = t.fold64(acc, x.atan2(p).to_bits())
+        acc = t.fold64(acc, p.atan2(x).to_bits())
+        acc = t.fold64(acc, x.powi(7i32).to_bits())
+        acc = t.fold64(acc, p.powi(-3i32).to_bits())
+        k = k.wrapping_add(1u32)
+    }
+    acc
+end t.sweep64
+
+test t.known_f32.test_v
+    core.check.is_true(t.known_f32())
+end t.known_f32.test_v
+
+test t.known_f64.test_v
+    core.check.is_true(t.known_f64())
+end t.known_f64.test_v
+
+test t.special.test_v
+    core.check.is_true(t.special())
+end t.special.test_v
+
+test t.special_bits.test_v
+    core.check.is_true(t.special_bits())
+end t.special_bits.test_v
+
+test t.sweep32.test_v
+    core.check.eq(t.sweep32(), 1388949062u32)
+end t.sweep32.test_v
+
+test t.sweep64.test_v
+    core.check.eq(t.sweep64(), 12280087694358343571u64)
+end t.sweep64.test_v

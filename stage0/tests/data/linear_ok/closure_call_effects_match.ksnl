@@ -1,0 +1,25 @@
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.pure_caller())
+end t.main
+
+fn t.may_caller() -> u8 uses [] panics may
+    let g = fn() -> u8 capture [] {
+        t.noisy()
+    }
+    g()
+end t.may_caller
+
+fn t.noisy() -> u8 uses [] panics may
+    core.panic.panic("x")
+end t.noisy
+
+fn t.pure_caller() -> u8 uses [] panics never
+    let f = fn(x: u8) -> u8 capture [] {
+        t.quiet(x)
+    }
+    f(1u8)
+end t.pure_caller
+
+fn t.quiet(x: u8) -> u8 uses [] panics never
+    x.wrapping_add(1u8)
+end t.quiet

@@ -107,7 +107,19 @@ pub fn lookup(lib: Option<&str>, symbol: &str) -> Result<*mut c_void, String> {
     #[cfg(unix)]
     unsafe {
         let p = sys::dlsym(sys::RTLD_DEFAULT, name.as_ptr());
-        if p.is_null() { Err(format!("symbol `{}` was not found in the host C libraries", symbol)) } else { Ok(p) }
+        if !p.is_null() {
+            return Ok(p);
+        }
+        // 数学関数 (`sqrt` など) は libm にある。インタプリタ自身が libm を使わないとき (超越関数は自前実装) は
+        // プロセスに読み込まれていないので、ホストの libm を明示的に開いて探す (macOS は libSystem にある)。
+        #[cfg(not(target_os = "macos"))]
+        if let Ok(h) = open_lib("libm.so.6") {
+            let p = sys::dlsym(h, name.as_ptr());
+            if !p.is_null() {
+                return Ok(p);
+            }
+        }
+        Err(format!("symbol `{}` was not found in the host C libraries", symbol))
     }
 }
 

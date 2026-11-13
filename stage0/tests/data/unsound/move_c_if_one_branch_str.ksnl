@@ -1,0 +1,14 @@
+// expect: E3002
+fn t.consume(s: alloc.string.String) -> () uses [alloc] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let c = true
+    if c {
+        core.mem.drop(t.consume(s))
+    }
+    core.mem.drop(s.len())
+    Ok(())
+end t.main

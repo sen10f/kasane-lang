@@ -30,10 +30,10 @@ fn shortener.json.escape_into(out: &mut alloc.string.String<std.alloc.System>, t
     Ok(())
 end shortener.json.escape_into
 
-fn shortener.json.link_body(code: &str, url: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
+fn shortener.json.link_body(link_code: &str, url: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     out.push_str("{\"code\":")?
-    shortener.json.push_quoted(&mut out, code)?
+    shortener.json.push_quoted(&mut out, link_code)?
     out.push_str(",\"url\":")?
     shortener.json.push_quoted(&mut out, url)?
     out.push_str("}")?

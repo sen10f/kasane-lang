@@ -64,6 +64,10 @@ pub fn wrap(v: i128, ty: &str) -> i128 {
 pub trait Place {
     fn get(&self) -> Val;
     fn set(&self, v: Val);
+    /// 同じ場所を指す別の `Place` 値 (`&x` を評価するたびに作られる) を見分ける鍵。分からなければ `None`。
+    fn key(&self) -> Option<(usize, String)> {
+        None
+    }
 }
 
 pub struct ScopeD {
@@ -201,9 +205,20 @@ pub enum IterV {
     User { place: Rc<dyn Place>, def: usize },
 }
 
+/// `HashMap` / `BtreeMap` の実体。`d` は挿入順の組の列で、反復順はこれに従う（規範）。
+/// `idx` は `hkey` から `d` の添字への索引で、検索を平均 O(1) にする。`d` と常に対応する。
 pub struct MapV {
     pub kind: String,
     pub d: Vec<(Val, Val)>,
+    pub idx: HashMap<String, usize>,
+}
+
+impl MapV {
+    /// 組の列から表を作る（索引も作り直す）。
+    pub fn new(kind: &str, d: Vec<(Val, Val)>) -> MapV {
+        let idx = d.iter().enumerate().map(|(i, (k, _))| (hkey(k), i)).collect();
+        MapV { kind: kind.into(), d, idx }
+    }
 }
 
 #[derive(Clone)]
@@ -252,6 +267,9 @@ impl Place for VarPlace {
     }
     fn set(&self, v: Val) {
         self.0.borrow_mut().vars.insert(self.1.clone(), v);
+    }
+    fn key(&self) -> Option<(usize, String)> {
+        Some((Rc::as_ptr(&self.0) as *const u8 as usize, self.1.clone()))
     }
 }
 pub struct FieldPlace(pub Rc<StructV>, pub String);
@@ -361,7 +379,7 @@ pub fn seq_items(v: &Val) -> Option<Vec<Val>> {
     }
 }
 
-/// 列の長さ (要素を複製しない)。
+/// 列の長さ (Arr / Vec / View / Tuple)。列でなければ None。複製はしない。
 pub fn seq_len(v: &Val) -> Option<usize> {
     match v {
         Val::Arr(l) | Val::Vec(l) => Some(l.borrow().len()),
@@ -371,8 +389,8 @@ pub fn seq_len(v: &Val) -> Option<usize> {
     }
 }
 
-/// 列の `i` 番目の要素 (その 1 要素だけを複製する)。
-pub fn seq_get(v: &Val, i: usize) -> Option<Val> {
+/// 列の i 番目の要素だけを複製して返す (範囲外・列でない場合は None)。O(1)。
+pub fn seq_elem(v: &Val, i: usize) -> Option<Val> {
     match v {
         Val::Arr(l) | Val::Vec(l) => l.borrow().get(i).cloned(),
         Val::View(l, a, b) => {
@@ -385,6 +403,10 @@ pub fn seq_get(v: &Val, i: usize) -> Option<Val> {
         Val::Tuple(t) => t.get(i).cloned(),
         _ => None,
     }
+}
+
+pub fn seq_get(v: &Val, i: usize) -> Option<Val> {
+    seq_elem(v, i)
 }
 
 pub fn str_of(v: &Val) -> Option<String> {

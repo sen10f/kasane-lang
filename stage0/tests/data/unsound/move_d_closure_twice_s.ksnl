@@ -1,0 +1,21 @@
+// expect: E3002
+type t.S pub
+    v: u32
+end t.S
+
+fn t.eat(s: t.S) -> u32 uses [] panics never
+    s.v
+end t.eat
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let s = t.S { v: 1u32 }
+    let f = fn() -> () capture [move s] {
+        core.mem.drop(t.eat(s))
+    }
+    let g = fn() -> () capture [move s] {
+        core.mem.drop(t.eat(s))
+    }
+    f()
+    g()
+    Ok(())
+end t.main

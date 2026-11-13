@@ -325,7 +325,7 @@ impl Interp {
         // 同じ配列・変数のピンは使い回す
         let same = |p: &Pin| match (&p.target, &target) {
             (PinTarget::List(a), PinTarget::List(b)) => Rc::ptr_eq(a, b) && p.count == count,
-            (PinTarget::One(a), PinTarget::One(b)) => Rc::ptr_eq(a, b),
+            (PinTarget::One(a), PinTarget::One(b)) => Rc::ptr_eq(a, b) || a.key().is_some_and(|k| Some(k) == b.key()),
             _ => false,
         };
         let idx = match self.pins.iter().position(same) {
@@ -429,7 +429,11 @@ impl Interp {
 
     /// 引数の値を、宣言した型に従って C の引数にする。
     fn to_argv(&mut self, d: &Def, v: Val, t: &V) -> Result<ArgV, String> {
-        use crate::check::{tag, tel};
+        use crate::check::{st, tag, tel};
+        // 整数の値を浮動小数の引数に渡すのは型が合わないので、(`coerce` の暗黙の変換に任せず) 止める。
+        if tag(t) == "prim" && matches!(st(tel(t, 1)).as_str(), "f32" | "f64") && matches!(dr(&v), Val::Int(..)) {
+            return Err("argument of an unsupported type or value".into());
+        }
         let v = self.coerce(v, t);
         let raw = v.clone();
         let v = dr(&v);
@@ -447,8 +451,8 @@ impl Interp {
             "prim" => {
                 let p = st(tel(t, 1));
                 Ok(match (&v, p.as_str()) {
-                    (Val::Int(i, _), "f32") => ArgV::F32(*i as f32),
-                    (Val::Int(i, _), "f64") => ArgV::F64(*i as f64),
+                    // 整数の値を浮動小数の引数に渡すのは型が合わないので、黙って変換しない (f32 ← f64 の変換だけ許す)。
+                    (Val::Int(..), "f32" | "f64") => return Err("argument of an unsupported type or value".into()),
                     (Val::Int(i, _), _) => ArgV::Int(*i as i64 as u64),
                     (Val::Bool(b), _) => ArgV::Int(*b as u64),
                     (Val::Char(c), _) => ArgV::Int(*c as u64),

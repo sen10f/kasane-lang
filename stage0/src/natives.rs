@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::check::{items, st};
+use crate::fmath;
 use crate::parser::V;
 use crate::interp::Interp;
 use crate::interp::{DEADLOCK_JOIN, DEADLOCK_RECV};
@@ -41,7 +42,7 @@ pub fn mono_ns() -> u64 {
 }
 
 pub fn known_num(name: &str) -> bool {
-    ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_", "to_"].iter().any(|p| name.starts_with(p))
+    ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_"].iter().any(|p| name.starts_with(p))
         || NUM_EXTRA.contains(&name)
 }
 
@@ -52,13 +53,6 @@ fn pick_ty(args: &[Val], default: &str) -> &'static str {
         }
     }
     ity(default)
-}
-
-fn trunc_div(a: i128, b: i128) -> i128 {
-    a / b
-}
-fn trunc_rem(a: i128, b: i128) -> i128 {
-    a % b
 }
 
 fn ordering(c: i32) -> Val {
@@ -125,6 +119,10 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
         let text = str_of(&x).unwrap_or_default();
         let radix = if name == "parse" { 10 } else { iv(&a[1]) as u32 };
         let ty = ity(ty);
+        // 符号なしは `-` を受け付けない (`-0` も Err)。`+` は符号つきと同じく受け付ける (Rust と同じ、機械語と同じ)。
+        if !ty.starts_with('i') && text.starts_with('-') {
+            return Ok(err(parse_err(0)));
+        }
         if ty == "u128" {
             return Ok(match u128::from_str_radix(&text, radix) {
                 Ok(v) => ok(int(v as i128, ty)),
@@ -156,13 +154,10 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
     if name.starts_with("from_") && !name.ends_with("_nearest") && name != "from_bits" {
         return Ok(int(iv(&x), ty));
     }
-    if name == "to_f64" {
-        return Ok(Val::Float(iv(&x) as f64));
-    }
-    if let Some(t) = name.strip_prefix("to_") {
-        if is_int_ty(t) {
-            return Ok(int(iv(&x), t));
-        }
+    // `nearest_to_f64` は sig (`core.num.<int>.nearest_to_f64`) にある。最も近い f64 へ丸める。
+    if name == "to_f64" || name == "nearest_to_f64" {
+        let v = iv(&x);
+        return Ok(Val::Float(if ty == "u128" { v as u128 as f64 } else { v as f64 }));
     }
     let s = iv(&x);
     let o = if a.len() > 1 { iv(&a[1]) } else { 0 };
@@ -206,7 +201,14 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
                     if o == 0 {
                         return Ok(none());
                     }
-                    Some(if op == "div" { trunc_div(s, o) } else { trunc_rem(s, o) })
+                    // 符号付きの `MIN / -1` と `MIN % -1` は溢れ (案 A)。剰余は i128 では溢れないので型の最小値で判定する。
+                    if op == "rem" && signed(ty) && s == lo && o == -1 {
+                        None
+                    } else if op == "div" {
+                        s.checked_div(o)
+                    } else {
+                        s.checked_rem(o)
+                    }
                 }
                 "shl" => {
                     if o >= b {
@@ -235,7 +237,13 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
                 "neg" => s.checked_neg(),
                 _ => return panic(format!("unknown integer operation {}.{}", ty, name)),
             };
-            return Ok(int(r.map_or(if (op == "sub" && o > 0) || (op == "neg" && s > 0) { lo } else { hi }, |v| v.clamp(lo, hi)), ty));
+            // 溢れの方向は真の結果の符号で決まる (和と差は被演算子 s の符号、積は符号の積、符号の反転は s が最小値のときだけ溢れて正になる)。
+            let below = match op {
+                "add" | "sub" => s < 0,
+                "mul" => (s < 0) != (o < 0),
+                _ => false,
+            };
+            return Ok(int(r.map_or(if below { lo } else { hi }, |v| v.clamp(lo, hi)), ty));
         }
         _ => {}
     }
@@ -255,6 +263,17 @@ fn float_op(name: &str, ty: &str, a: &[Val]) -> Res {
             return Ok(Val::F32(*x as f32));
         }
     }
+    // f32 のビット列は f64 へ広げずに扱う。広げると signaling NaN が quiet NaN に変わる (KIR の Bitcast は保つ)。
+    if name == "to_bits" && f32mode {
+        if let Some(Val::F32(x)) = a.first() {
+            return Ok(int(x.to_bits() as i128, "u32"));
+        }
+    }
+    if name == "from_bits" && ty == "f32" {
+        if let Some(Val::Int(n, _)) = a.first() {
+            return Ok(Val::F32(f32::from_bits(*n as u32)));
+        }
+    }
     let r = float_op_f64(name, ty, a)?;
     if f32mode {
         if let Val::Float(x) = r {
@@ -265,16 +284,18 @@ fn float_op(name: &str, ty: &str, a: &[Val]) -> Res {
 }
 
 fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
+    // u128 はビットパターンで持つので、符号なしとして広げる。
+    let int_f64 = |i: i128, t: Option<&str>| if t == Some("u128") { i as u128 as f64 } else { i as f64 };
     let x = match a.first() {
         Some(Val::Float(f)) => *f,
         Some(Val::F32(f)) => *f as f64,
-        Some(Val::Int(i, _)) => *i as f64,
+        Some(Val::Int(i, t)) => int_f64(*i, *t),
         _ => 0.0,
     };
     let y = match a.get(1) {
         Some(Val::Float(f)) => *f,
         Some(Val::F32(f)) => *f as f64,
-        Some(Val::Int(i, _)) => *i as f64,
+        Some(Val::Int(i, t)) => int_f64(*i, *t),
         _ => 0.0,
     };
     if name == "from_bits" {
@@ -306,28 +327,28 @@ fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
         }
     };
     match name {
-        "abs" => simple(f64::abs),
-        "sqrt" => simple(|v| if v >= 0.0 { v.sqrt() } else { f64::NAN }),
+        // abs / sqrt は IEEE 754 の演算そのもの (機械語の fabs / sqrt と同じ): -inf の abs は +inf、負と -inf の sqrt は NaN、-0 の sqrt は -0。
+        "abs" => Ok(Val::Float(x.abs())),
+        "sqrt" => Ok(Val::Float(x.sqrt())),
         "floor" => simple(f64::floor),
         "ceil" => simple(f64::ceil),
-        "sin" => simple(f64::sin),
-        "cos" => simple(f64::cos),
-        "tan" => simple(f64::tan),
-        "exp" => simple(|v| if v < 709.78 { v.exp() } else { f64::INFINITY }),
-        "ln" => simple(|v| if v > 0.0 { v.ln() } else if v == 0.0 { f64::NEG_INFINITY } else { f64::NAN }),
+        // 超越関数は自前実装 (`fmath`)。f32 は呼び出し側で f32 へ丸める。
+        "sin" => Ok(Val::Float(fmath::sin(&fmath::Host, x))),
+        "cos" => Ok(Val::Float(fmath::cos(&fmath::Host, x))),
+        "tan" => Ok(Val::Float(fmath::tan(&fmath::Host, x))),
+        "exp" => Ok(Val::Float(fmath::exp(&fmath::Host, x))),
+        "ln" => Ok(Val::Float(fmath::ln(&fmath::Host, x))),
         "trunc" => simple(f64::trunc),
-        "round_ties_even" => simple(|v| {
-            let r = v.round();
-            if (v - v.trunc()).abs() == 0.5 && r % 2.0 != 0.0 { r - v.signum() } else { r }
-        }),
+        // IEEE 754 roundTiesToEven (-0.5 は -0、機械語の nearest と同じ)。
+        "round_ties_even" => simple(f64::round_ties_even),
         "nearest_to_f32" => simple(|v| v),
         "is_nan" => Ok(Val::Bool(x.is_nan())),
         "is_finite" => Ok(Val::Bool(!(x.is_nan() || x.is_infinite()))),
         "max" => Ok(Val::Float(x.max(y))),
         "min" => Ok(Val::Float(x.min(y))),
-        "powi" => Ok(Val::Float(x.powi(y as i32))),
+        "powi" => Ok(Val::Float(fmath::powi(&fmath::Host, x, y as i64))),
         "rem" => Ok(Val::Float(if y != 0.0 { x % y } else { f64::NAN })),
-        "atan2" => Ok(Val::Float(x.atan2(y))),
+        "atan2" => Ok(Val::Float(fmath::atan2(&fmath::Host, x, y))),
         _ => panic(format!("unknown float operation {}.{}", ty, name)),
     }
 }
@@ -396,10 +417,10 @@ fn deep(v: &Val) -> Val {
         Val::Vec(l) => Val::Vec(new_list(l.borrow().iter().map(deep).collect())),
         Val::View(l, a, b) => Val::Arr(new_list(l.borrow()[*a..*b].iter().map(deep).collect())),
         Val::StrBuf(b) => Val::StrBuf(Rc::new(RefCell::new(b.borrow().clone()))),
-        Val::Map(m) => Val::Map(Rc::new(RefCell::new(MapV {
-            kind: m.borrow().kind.clone(),
-            d: m.borrow().d.iter().map(|(k, x)| (deep(k), deep(x))).collect(),
-        }))),
+        Val::Map(m) => Val::Map(Rc::new(RefCell::new(MapV::new(
+            &m.borrow().kind,
+            m.borrow().d.iter().map(|(k, x)| (deep(k), deep(x))).collect(),
+        )))),
         other => other.clone(),
     }
 }
@@ -570,8 +591,8 @@ impl Interp {
                 Ok(ok(Val::StrBuf(Rc::new(RefCell::new(parts.join(&sep))))))
             }
             "alloc.collections.VecDeque.new" => Ok(Val::Vec(new_list(vec![]))),
-            "alloc.collections.HashMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV { kind: "HashMap".into(), d: vec![] })))),
-            "alloc.collections.BtreeMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV { kind: "BtreeMap".into(), d: vec![] })))),
+            "alloc.collections.HashMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV::new("HashMap", vec![]))))),
+            "alloc.collections.BtreeMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV::new("BtreeMap", vec![]))))),
             // `Box<T>` → `Box<dyn Tr>` (5.1): 実行系の値は型を持たないので、そのまま返す。
             "alloc.boxed.Box.into_dyn" => Ok(args[0].clone()),
             "alloc.boxed.Box.new" => Ok(ok(Val::Struct(Rc::new(StructV {
@@ -698,6 +719,13 @@ impl Interp {
         }
     }
 
+    /// `Ord` の提供メソッド `min` / `max` (仕様 4.3)。`cmp` に従い、等しいときは `min` が `self`、`max` が `other`。
+    fn derived_min_max(&mut self, name: &str, me: &Val, other: &Val) -> Res {
+        let c = self.v_cmp(me, other)?.unwrap_or(0);
+        let pick_self = if name == "min" { c <= 0 } else { c > 0 };
+        Ok(if pick_self { me.clone() } else { other.clone() })
+    }
+
     pub fn native_method(&mut self, recv: &Val, v: &Val, name: &str, args: Vec<Val>, place: Option<(&V, &Scope)>) -> Res {
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
         // `Sender.clone` / `Receiver.clone`: 同じチャネルの端をもう 1 つ増やす。
@@ -708,6 +736,14 @@ impl Interp {
             let c = if matches!(v, Val::Closure(_) | Val::Func(_)) { v.clone() } else { deep(v) };
             return Ok(if name == "try_clone" { ok(c) } else { c });
         }
+        // 派生比較メソッド: `&str`・`&[T]`・`[T; N]` (構成要素が比較できるとき) と Option / Result (derive)。
+        // 演算子 `==` `<` 等と同じ `v_eq` / `v_cmp` に委ねる (spec 3.2 / 8.3)。
+        if matches!(name, "eq" | "cmp" | "partial_cmp")
+            && (matches!(v, Val::Str(_) | Val::StrBuf(_) | Val::Arr(_) | Val::Vec(_) | Val::View(..))
+                || matches!(v, Val::Enum(e) if e.en == "Option" || e.en == "Result"))
+        {
+            return self.derived_cmp(v, name, &a0);
+        }
         if matches!(v, Val::Closure(_) | Val::Func(_)) {
             if matches!(name, "call" | "call_mut" | "call_once") {
                 let a = seq_items(&dr(&a0)).unwrap_or_default();
@@ -717,13 +753,42 @@ impl Interp {
         }
         match v {
             Val::Bool(_) | Val::Char(_) | Val::Int(..) | Val::Float(_) | Val::F32(_) => {
+                // 派生メソッド (types.rs `derived_method` / check.rs `method_known`) の基本型への適用。
                 match name {
                     "eq" => return Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
                     "cmp" => {
                         let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
                         return Ok(ordering(c));
                     }
+                    "partial_cmp" => {
+                        let c = self.v_cmp(v, &dr(&a0))?;
+                        return Ok(c.map_or_else(none, |c| some(ordering(c))));
+                    }
+                    "min" | "max" if matches!(v, Val::Bool(_) | Val::Char(_)) => {
+                        let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
+                        let pick_self = if name == "min" { c <= 0 } else { c > 0 };
+                        return Ok(if pick_self { v.clone() } else { dr(&a0) });
+                    }
                     "hash" => return Ok(Val::Unit),
+                    // `core.fmt.Debug` / `Display` の組み込み実装 (仕様 4.2): 整形先の Formatter に追記する。
+                    "debug_fmt" | "display_fmt" => {
+                        let text = if name == "debug_fmt" { self.debug_str(v)? } else { self.display_str(v)? };
+                        return match dr(&a0) {
+                            Val::Fmt(b) => {
+                                b.borrow_mut().push_str(&text);
+                                Ok(ok(Val::Unit))
+                            }
+                            // 利用者が `core.fmt.Formatter.new(&mut buf)` で作った Formatter (spec/stdlib/core/fmt.ksnl)。
+                            // 書き込みは定義された `write_str` に任せる (バッファ溢れは Err)。
+                            f @ Val::Struct(_) => {
+                                let Some(&wi) = self.p.funcs.get("core.fmt.Formatter.write_str") else {
+                                    return panic("core.fmt.Formatter.write_str is missing".to_string());
+                                };
+                                self.call_def(wi, vec![f, Val::Str(text.into())])
+                            }
+                            _ => panic(format!("{} expects a Formatter", name)),
+                        };
+                    }
                     _ => {}
                 }
                 let ty = match v {
@@ -755,6 +820,19 @@ impl Interp {
             Val::Iter(it) => {
                 if name == "next" {
                     return self.iter_next(&it.clone());
+                }
+                // core.slice.Iter.count (spec/stdlib/core/slice.sig): 残りを消費して数える。
+                if name == "count" {
+                    let src = it.clone();
+                    let mut n = 0;
+                    loop {
+                        let o = self.iter_next(&src)?;
+                        if matches!(&o, Val::Enum(e) if e.var == "None") {
+                            break;
+                        }
+                        n += 1;
+                    }
+                    return Ok(usz(n));
                 }
                 panic(format!("no method {} on iterator", name))
             }
@@ -852,6 +930,7 @@ impl Interp {
                         return Ok(ordering(c));
                     }
                     "eq" => return Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
+                    "min" | "max" => return self.derived_min_max(name, v, &dr(&a0)),
                     _ => {}
                 }
                 let nanos = |d: u64| {
@@ -885,6 +964,7 @@ impl Interp {
                     let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
                     Ok(ordering(c))
                 }
+                "min" | "max" => self.derived_min_max(name, v, &dr(&a0)),
                 _ => {
                     let d = self.debug_str(v)?;
                     panic(format!("no method {} found for value {}", name, d))
@@ -961,6 +1041,16 @@ impl Interp {
                 }
             }
             _ => panic(format!("no method {} on {}", name, e.en)),
+        }
+    }
+
+    /// `eq` / `cmp` / `partial_cmp` のメソッド形。演算子と同じ比較を使う。
+    fn derived_cmp(&mut self, v: &Val, name: &str, a0: &Val) -> Res {
+        let b = dr(a0);
+        match name {
+            "eq" => Ok(Val::Bool(self.v_eq(v, &b)?)),
+            "cmp" => Ok(ordering(self.v_cmp(v, &b)?.unwrap_or(0))),
+            _ => Ok(self.v_cmp(v, &b)?.map_or_else(none, |c| some(ordering(c)))),
         }
     }
 
@@ -1182,13 +1272,12 @@ impl Interp {
 
     fn map_method(&mut self, m: Rc<RefCell<MapV>>, name: &str, args: Vec<Val>) -> Res {
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
-        let find = |m: &Rc<RefCell<MapV>>, k: &Val| {
-            let hk = hkey(k);
-            m.borrow().d.iter().position(|(x, _)| hkey(x) == hk)
-        };
+        // 等価は `hkey` の一致で決める（従来の線形探索と同じ規則）。位置は索引 `idx` から引く。
+        let find = |m: &Rc<RefCell<MapV>>, k: &Val| m.borrow().idx.get(&hkey(k)).copied();
         match name {
             "insert" => {
-                let pos = find(&m, &a0);
+                let hk = hkey(&a0);
+                let pos = m.borrow().idx.get(&hk).copied();
                 let old = match pos {
                     Some(i) => {
                         let o = m.borrow().d[i].1.clone();
@@ -1196,7 +1285,10 @@ impl Interp {
                         Some(o)
                     }
                     None => {
-                        m.borrow_mut().d.push((a0, args[1].clone()));
+                        let mut mb = m.borrow_mut();
+                        let n = mb.d.len();
+                        mb.d.push((a0, args[1].clone()));
+                        mb.idx.insert(hk, n);
                         None
                     }
                 };
@@ -1205,7 +1297,21 @@ impl Interp {
             "get" => Ok(find(&m, &a0).map_or_else(none, |i| some(m.borrow().d[i].1.clone()))),
             "get_mut" => Ok(find(&m, &a0).map_or_else(none, |i| some(Val::Ref(Rc::new(MapPlace(m.clone(), i)))))),
             "contains_key" => Ok(Val::Bool(find(&m, &a0).is_some())),
-            "remove" => Ok(find(&m, &a0).map_or_else(none, |i| some(m.borrow_mut().d.remove(i).1))),
+            "remove" => {
+                let hk = hkey(&a0);
+                let Some(i) = m.borrow().idx.get(&hk).copied() else { return Ok(none()) };
+                let mut mb = m.borrow_mut();
+                let MapV { d, idx, .. } = &mut *mb;
+                let (_, v) = d.remove(i);
+                idx.remove(&hk);
+                // 後ろの組は添字が 1 つ詰まる。挿入順を保つための添字の付け替え（ハッシュは計算しない）。
+                for p in idx.values_mut() {
+                    if *p > i {
+                        *p -= 1;
+                    }
+                }
+                Ok(some(v))
+            }
             "len" => Ok(usz(m.borrow().d.len())),
             "is_empty" => Ok(Val::Bool(m.borrow().d.is_empty())),
             "iter" => {
@@ -1244,9 +1350,10 @@ fn io_error_kind(kind: &str) -> Val {
     }))
 }
 
-pub(crate) fn io_error(e: &std::io::Error) -> Val {
+/// `std::io::Error` に対応する `std.io.ErrorKind` の変種名 (KIR の `write` も同じ対応を使う。設計_KIR.md 12.2)。
+pub fn io_kind_name(e: &std::io::Error) -> &'static str {
     use std::io::ErrorKind as K;
-    let kind = match e.kind() {
+    match e.kind() {
         K::NotFound => "NotFound",
         K::PermissionDenied => "PermissionDenied",
         K::AlreadyExists => "AlreadyExists",
@@ -1256,7 +1363,11 @@ pub(crate) fn io_error(e: &std::io::Error) -> Val {
         K::Interrupted => "Interrupted",
         K::OutOfMemory => "OutOfMemory",
         _ => "Other",
-    };
+    }
+}
+
+pub(crate) fn io_error(e: &std::io::Error) -> Val {
+    let kind = io_kind_name(e);
     Val::Struct(Rc::new(StructV {
         ty: "std.io.Error".into(),
         f: RefCell::new(vec![

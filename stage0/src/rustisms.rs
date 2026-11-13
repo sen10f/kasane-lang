@@ -94,7 +94,7 @@ pub fn scan(text: &str) -> Vec<Hit> {
                     code: "E0042",
                     line: ln,
                     col: pos + 1,
-                    msg: "Kasane has no `as` casts: use conversion methods such as `x.to_u64()`, `u8.try_from_u32(x)`, `c.to_u32()`"
+                    msg: "Kasane has no `as` casts: use conversion functions such as `u64.from_u8(x)` (lossless), `u8.try_from_u32(x)` (returns Result), `c.to_u32()` (char)"
                         .into(),
                 });
             }

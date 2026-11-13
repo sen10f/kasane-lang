@@ -9,7 +9,8 @@ pub enum V {
     N(String),
     B(bool),
     L(Vec<V>),
-    Node(&'static str, Vec<V>, usize),
+    /// (種別, 子, 行, 式 ID)。式 ID は `number_nodes` が本体ごとに振る (0 = 未採番)。
+    Node(&'static str, Vec<V>, usize, u32),
     #[default]
     Nil,
 }
@@ -21,7 +22,7 @@ impl V {
             V::B(b) => (if *b { "true" } else { "false" }).to_string(),
             V::Nil => "-".to_string(),
             V::L(xs) => format!("[{}]", xs.iter().map(|x| x.dump()).collect::<Vec<_>>().join(" ")),
-            V::Node(n, fs, _) => {
+            V::Node(n, fs, _, _) => {
                 let mut s = format!("({}", n);
                 let fs = if *n == "Lit" && matches!(fs.first(), Some(V::S(k)) if k == "float") { &fs[..2] } else { &fs[..] };
                 for f in fs {
@@ -39,7 +40,7 @@ pub(crate) fn s(x: &str) -> V {
     V::S(x.to_string())
 }
 pub(crate) fn nd(n: &'static str, fs: Vec<V>) -> V {
-    V::Node(n, fs, 0)
+    V::Node(n, fs, 0, 0)
 }
 /// 位置の符号化: 上位が行、下位 20 bit が列 (1 始まり、Unicode スカラ値)。
 /// 列を持たない素の行番号 (< 1<<20) もそのまま「列不明」の位置として扱える。
@@ -58,7 +59,7 @@ pub(crate) fn unpack_pos(p: usize) -> (usize, usize) {
 /// 中置・後置ノードの位置。左項が同じ行で始まるなら、その開始位置 (項の先頭) を使う。
 fn anchor(p: usize, left: &V) -> usize {
     let lp = match left {
-        V::Node(_, _, l) => *l,
+        V::Node(_, _, l, _) => *l,
         _ => 0,
     };
     if lp != 0 && unpack_pos(lp).0 == unpack_pos(p).0 {
@@ -68,7 +69,34 @@ fn anchor(p: usize, left: &V) -> usize {
     }
 }
 pub(crate) fn ndl(line: usize, n: &'static str, fs: Vec<V>) -> V {
-    V::Node(n, fs, line)
+    V::Node(n, fs, line, 0)
+}
+/// 式 ID (`V::Node` の第 4 成分)。未採番・ノード以外は 0。
+pub fn nid(v: &V) -> u32 {
+    match v {
+        V::Node(_, _, _, id) => *id,
+        _ => 0,
+    }
+}
+/// 木を前順で辿り、ノードに 1 から順に式 ID を振る。`next` は次に振る番号 (本体ごとに 1 から始める)。
+/// 同じソースからは常に同じ番号になる。書き換えでノードを足すときは既存の番号を振り直さず、
+/// `max + 1` 以降を使う (設計_KIR.md 7 章 5)。
+pub(crate) fn number_nodes(v: &mut V, next: &mut u32) {
+    match v {
+        V::Node(_, fs, _, id) => {
+            *next += 1;
+            *id = *next;
+            for f in fs.iter_mut() {
+                number_nodes(f, next);
+            }
+        }
+        V::L(xs) => {
+            for x in xs.iter_mut() {
+                number_nodes(x, next);
+            }
+        }
+        _ => {}
+    }
 }
 pub(crate) fn strs(xs: &[String]) -> V {
     V::L(xs.iter().map(|x| V::S(x.clone())).collect())
@@ -1062,5 +1090,7 @@ pub fn parse_body(mut toks: Vec<Tok>, base: usize) -> R<V> {
         stmts.push(p.stmt()?);
         p.expect_nl()?;
     }
-    Ok(nd("Block", vec![V::L(stmts)]))
+    let mut body = nd("Block", vec![V::L(stmts)]);
+    number_nodes(&mut body, &mut 0);
+    Ok(body)
 }

@@ -1,0 +1,10 @@
+// expect: E2020
+fn t.main() -> () uses [] panics never
+    let f = fn(c: bool) -> u8 capture [] {
+        if c {
+            return 1u16
+        }
+        2u8
+    }
+    core.mem.drop(f(true))
+end t.main

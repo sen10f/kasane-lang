@@ -34,6 +34,8 @@ pub struct Def {
     pub layout_c: bool,
     pub fields: Vec<(String, V, bool)>,
     pub variants: Vec<(String, Vec<V>)>,
+    /// `type` / `enum` のフィールド・バリアントのうち、参照のライフタイムを省略したものの名前 (4.1 / E3020)。
+    pub elided_refs: Vec<String>,
     pub body: Option<V>,
     pub init: Option<V>,
     pub has_impls: bool,
@@ -42,18 +44,20 @@ pub struct Def {
     pub methods: Vec<String>,
     /// トレイトのメソッドのシグネチャ (名前, 引数, 戻り値)。解析できたものだけ。
     pub trait_sigs: Vec<(String, Vec<(String, V)>, V)>,
+    /// トレイトのメソッドの宣言された効果 (名前, uses, panics)。`uses` / `panics` を書いたシグネチャだけ (4.3 / 5.1)。
+    /// 効果変数 (大文字) を含みうる。トレイト境界・`dyn` 経由の呼び出しの効果検査に使う。
+    pub trait_effs: Vec<(String, Vec<String>, String)>,
     /// トレイトの `requires` スーパートレイト (基底名, 型引数)。解析できたものだけ (5.1)。
     pub requires: Vec<(String, V)>,
     /// ジェネリクス `[..]` を持つトレイトメソッドの名前 (dyn 安全性 5.1)。
     pub generic_methods: Vec<String>,
-    /// トレイトのメソッドの宣言した効果 (名前, `uses` の要素 (効果名・効果変数), `panics` (`never` / `may` / panic 変数))。
-    /// `dyn Tr<E, P>` 越しの呼び出しの効果検査 (5.1) に使う。
-    pub trait_effs: Vec<(String, Vec<String>, String)>,
     pub impl_trait: String,
     /// `extern` の `link "名前"` (省略時は FQN の末尾)。`link "ライブラリ:名前"` は、共有ライブラリを実行時に
     /// `dlopen` / `LoadLibrary` して `名前` を引く (3.8)。
     pub link: String,
     pub impl_for: V,
+    /// `impl` の実装するトレイトの型引数 (`core.iter.Iterator<T, E, P>` の `T, E, P` の並び)。型検査の境界解決に使う。
+    pub impl_targs: V,
 }
 
 impl Def {
@@ -98,6 +102,23 @@ fn line_tokens(line: &str, ln: usize) -> R<Vec<lexer::Tok>> {
     Ok(toks)
 }
 
+/// 型のトークン列に、ライフタイムを省略した参照 (`&T` / `&&T`) があるか (4.1)。
+/// `fn` 型と `dyn` 型の内側は省略規則の対象外として、そこから先は調べない (黙る)。
+fn has_elided_ref(toks: &[lexer::Tok]) -> bool {
+    for (k, t) in toks.iter().enumerate() {
+        if t.kind == "kw" && (t.text == "fn" || t.text == "dyn") {
+            return false;
+        }
+        if t.kind == "op" && t.text == "&&" {
+            return true;
+        }
+        if t.kind == "op" && t.text == "&" && !toks.get(k + 1).is_some_and(|n| n.kind == "life") {
+            return true;
+        }
+    }
+    false
+}
+
 fn ends_with_pub(line: &str) -> bool {
     let t = line.trim_end();
     if t.ends_with("\"pub\"") || !t.ends_with("pub") {
@@ -125,6 +146,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
             header: l.to_string(),
             ret: V::Nil,
             impl_for: V::Nil,
+            impl_targs: V::Nil,
             ..Default::default()
         };
         let body_lines: Vec<&str> = if sp.end_line > 0 { lines[sp.line..sp.end_line - 1].to_vec() } else { vec![] };
@@ -166,8 +188,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 d.name = p.fqn()?;
                 d.generics = conv_generics(&p.generics()?);
                 if p.accept_kw("layout") {
-                    p.name_tok()?;
-                    d.layout_c = true;
+                    d.layout_c = p.name_tok()? == "c";
                 }
                 if p.accept_kw("derive") {
                     p.expect_op("[")?;
@@ -189,18 +210,26 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                     if sp.kw == "type" {
                         let fnm = bp.name_tok()?;
                         bp.expect_op(":")?;
+                        let start = bp.i;
                         let t = bp.ty()?;
+                        if has_elided_ref(&bp.t[start..bp.i]) {
+                            d.elided_refs.push(fnm.clone());
+                        }
                         let pb = bp.accept_kw("pub");
                         d.fields.push((fnm, t, pb));
                     } else {
                         let vn = bp.name_tok()?;
                         let mut tys = Vec::new();
+                        let start = bp.i;
                         if bp.accept_op("(") {
                             tys.push(bp.ty()?);
                             while bp.accept_op(",") {
                                 tys.push(bp.ty()?);
                             }
                             bp.expect_op(")")?;
+                        }
+                        if has_elided_ref(&bp.t[start..bp.i]) {
+                            d.elided_refs.push(vn.clone());
                         }
                         d.variants.push((vn, tys));
                     }
@@ -240,29 +269,30 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                         }
                         Err(_) => sig_ok = false,
                     }
-                    let mut effs: Option<(Vec<String>, String)> = None;
                     let sig = if sig_ok {
-                        (|| -> R<(Vec<(String, V)>, V)> {
+                        (|| -> R<(Vec<(String, V)>, V, Option<(Vec<String>, String)>)> {
                             bp.expect_op("(")?;
                             let ps = conv_params(&bp.params()?);
                             bp.expect_op(")")?;
                             bp.expect_op("->")?;
                             let r = bp.ty()?;
-                            if bp.is_kw("uses") {
+                            // `uses [..] panics P` は省略できない (3.2) が、書かれていなければ効果は分からないものとして残さない。
+                            let eff = if bp.is_kw("uses") {
                                 bp.expect_kw("uses")?;
                                 let u: Vec<String> = items(&bp.effect_set()?).iter().map(text).collect();
                                 bp.expect_kw("panics")?;
-                                let pn = bp.panic_val()?;
-                                effs = Some((u, pn));
-                            }
-                            Ok((ps, r))
+                                Some((u, bp.panic_val()?))
+                            } else {
+                                None
+                            };
+                            Ok((ps, r, eff))
                         })()
                     } else {
                         Err(String::new())
                     };
-                    if let Ok((ps, r)) = sig {
-                        if let Some((u, pn)) = effs {
-                            d.trait_effs.push((mname.clone(), u, pn));
+                    if let Ok((ps, r, eff)) = sig {
+                        if let Some((u, pv)) = eff {
+                            d.trait_effs.push((mname.clone(), u, pv));
                         }
                         d.trait_sigs.push((mname, ps, r));
                     }
@@ -305,6 +335,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                 d.generics = conv_generics(&p.generics()?);
                 let tr = p.trait_ref()?;
                 d.impl_trait = text(&items(&tr)[0]);
+                d.impl_targs = items(&tr)[1].clone();
                 p.expect_kw("for")?;
                 d.impl_for = p.ty()?;
                 d.name = l.to_string();
@@ -430,7 +461,7 @@ fn norm_types(v: &mut V, ex: &dyn Fn(&str) -> String) {
                 norm_types(x, ex);
             }
         }
-        V::Node(_, fs, _) => {
+        V::Node(_, fs, _, _) => {
             for f in fs.iter_mut() {
                 norm_types(f, ex);
             }
@@ -488,7 +519,7 @@ const NUM_EXTRA: &[&str] = &[
 ];
 
 fn known_num(name: &str) -> bool {
-    ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_", "to_"].iter().any(|p| name.starts_with(p))
+    ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_"].iter().any(|p| name.starts_with(p))
         || NUM_EXTRA.contains(&name)
 }
 

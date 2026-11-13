@@ -11,6 +11,12 @@ mod cnative;
 mod explain;
 mod fixes;
 mod infer;
+mod fmath;
+mod kir;
+mod kir_exec;
+mod kir_llvm;
+mod kir_lower;
+mod kir_scalar;
 mod fmt;
 mod grammar;
 mod lint;
@@ -26,6 +32,7 @@ mod program;
 mod resolve;
 mod rustisms;
 mod types;
+mod typecov;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

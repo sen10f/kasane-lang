@@ -1,0 +1,16 @@
+// expect: E1108
+type t.P derive [Debug, Clone] pub
+    x: i32
+end t.P
+
+impl core.fmt.Display for t.P
+fn t.P.display_fmt(self: &t.P, f: &mut core.fmt.Formatter) -> Result<(), core.fmt.Error> uses [] panics never impls core.fmt.Display
+    f.write_str("P!")
+end t.P.display_fmt
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let p = t.P { x: 1i32 }
+    let s = p.to_string()
+    core.mem.drop(s)
+    Ok(())
+end t.main

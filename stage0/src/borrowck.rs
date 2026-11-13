@@ -45,6 +45,9 @@ enum Ev {
     Load { to: Holder, from_root: String, from_path: Vec<String> },
     /// `core.mem.swap`: 2 つの場所 (とその中) に保存されたローンを、互いに足し合う。
     Mix { a: (String, Vec<String>), b: (String, Vec<String>) },
+    /// 保存場所から借用を写す (コピー。保存場所のローンは残す)。分解の束縛に使う。
+    /// 道が重なる保存場所をすべて対象にする (タプルの要素は内部の道 `#i` に入っている)。
+    Peek { to: Holder, root: String, path: Vec<String> },
     /// 場所の値を消費する (`core.mem.drop(s.f)`)。そこに保存されたローンは死ぬ。
     Kill { root: String, path: Vec<String> },
     Access { root: String, path: Vec<String>, kind: Acc, line: usize },
@@ -70,6 +73,7 @@ struct Node {
 }
 
 /// 借用の出どころ。
+#[derive(Clone)]
 enum Src {
     /// `&x.f` / `&mut x.f` などで作る新しい借用
     Place { root: String, path: Vec<String>, mutable: bool },
@@ -90,7 +94,16 @@ struct Low<'a> {
     iters: usize,
     /// クロージャ本体を別に検査して出た診断 (行, 文面)。
     sub: Vec<(usize, String)>,
+    /// 値を持つ式 (`match` / `if`-else / ブロック式。節点のアドレス) → その値を持つ合成の持ち主 (`$val0` など)。
+    /// 各枝・各腕の値の借用を、枝の終わりでこの持ち主に集める (`let r = if .. { .. } else { .. }` で `r` へ移す)。
+    value_vals: HashMap<usize, String>,
 }
+
+/// 値を持つ式 (`match` の腕、`if` の枝、ブロック式) の値として外へ運ぶ借用を、どの枝から集めるか。
+/// `true` は「全枝の和」(`None => &y` や `else { &y }` のような束縛を使わない枝の値も含める)。
+/// 誤検出が出る場合は `false` にすると、枝のパターンの束縛をそのまま値にする腕 (`Some(rr) => rr`)
+/// だけに後退する (束縛を持たない `if` / ブロックの値は、この場合どれも運ばない)。
+const MATCH_VALUE_ALL_ARMS: bool = true;
 
 /// メソッドの `self` が受ける形。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -234,6 +247,11 @@ impl<'a> Low<'a> {
                 _ => vec![],
             },
             "Try" => self.loan_sources(&nf(e)[0]),
+            // 値を持つ式: 各枝・各腕の値の借用の和 (枝の終わりで合成の持ち主に集めてある)
+            "Match" | "If" | "Block" => match self.value_vals.get(&(e as *const V as usize)) {
+                Some(h) => vec![Src::Alias(h.clone())],
+                None => vec![],
+            },
             "MCall" => {
                 let name = st(&nf(e)[1]);
                 let recv = &nf(e)[0];
@@ -301,36 +319,8 @@ impl<'a> Low<'a> {
                 }
                 out
             }
-            // `match` 式の値が腕から受け取る借用を、値を受け取る側 (`let r = match ...`) へ運ぶ。
-            "Match" => self.match_value_sources(e),
             _ => vec![],
         }
-    }
-
-    /// `match` 式の値が受け取る借用の出どころ。各腕の末尾式の借用を保守的に和する
-    /// (`let r = match m.get(k) { Some(rr) => rr, None => &d }` の `r` がローンを受け取る)。
-    /// 腕の末尾が分からない・対応が取れないときは何もしない (誤検出より見落としを選ぶ)。
-    fn match_value_sources(&self, m: &V) -> Vec<Src> {
-        let mut out = vec![];
-        for arm in items(&nf(m)[1]) {
-            let a = items(arm);
-            if a.len() < 2 {
-                continue;
-            }
-            let body = &a[1];
-            // 腕の本体がブロックなら末尾の式を、そうでなければ本体そのものを見る。
-            let tail = if nname(body) == "Block" {
-                match items(&nf(body)[0]).last() {
-                    Some(t) => t,
-                    None => continue,
-                }
-            } else {
-                body
-            };
-            let tail = if nname(tail) == "ExprStmt" { &nf(tail)[0] } else { tail };
-            out.extend(self.loan_sources(tail));
-        }
-        out
     }
 
     fn method_sources(&self, recv: &V, name: &str, args: &[V]) -> Vec<Src> {
@@ -419,6 +409,125 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 分解 (`let (a, b) = e` / `match e { (a, b) => .. }`) の束縛に、右辺の借用を伝える。
+    /// タプルの要素は内部の道 `#i` (`store_value`)、構造体のフィールドは名前の道に保存されているので、
+    /// 部分パターンごとに対応する要素・フィールドの借用だけを持たせる (コピー値の要素は黙る)。
+    /// 道が分からない形 (関数の戻り値などを分解する `let (a, n) = t.f(&x)`) は何もしない (`false` を返す。
+    /// 呼び出し側が従来の読み戻しに任せる)。右辺全体の借用を全束縛に配ることはしない (誤検出を出さない)。
+    fn hold_pat(&mut self, n: usize, pat: &V, e: &V) -> bool {
+        match nname(pat) {
+            "PTuple" => {
+                let subs = items(&nf(pat)[0]);
+                if nname(e) == "TupleE" {
+                    let elems = items(&nf(e)[0]);
+                    if elems.len() == subs.len() {
+                        for (s, x) in subs.iter().zip(elems.iter()) {
+                            self.hold_pat(n, s, x);
+                        }
+                        return true;
+                    }
+                }
+                if let Some((root, path)) = self.place_of(e) {
+                    for (i, s) in subs.iter().enumerate() {
+                        let mut p = path.clone();
+                        p.push(format!("#{}", i));
+                        self.hold_place(n, s, &root, &p);
+                    }
+                    return true;
+                }
+            }
+            "PStruct" => {
+                let fields = items(&nf(pat)[1]);
+                if nname(e) == "StructLit" {
+                    for fl in fields {
+                        let fp = items(fl);
+                        if fp.len() < 2 {
+                            continue;
+                        }
+                        let fname = st(&fp[0]);
+                        let val = items(&nf(e)[1]).iter().find(|x| {
+                            let it = items(x);
+                            it.len() >= 2 && st(&it[0]) == fname
+                        });
+                        if let Some(x) = val {
+                            self.hold_pat(n, &fp[1], &items(x)[1]);
+                        }
+                    }
+                    return true;
+                }
+                if let Some((root, path)) = self.place_of(e) {
+                    for fl in fields {
+                        let fp = items(fl);
+                        if fp.len() < 2 {
+                            continue;
+                        }
+                        let mut p = path.clone();
+                        p.push(st(&fp[0]));
+                        self.hold_place(n, &fp[1], &root, &p);
+                    }
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        // 部分パターンが分解でない葉 (`a`・`_`・バリアントなど) は、与えられた式の借用をその束縛に伝える。
+        // 分解の形が分からない複合パターンは何もしない。
+        if matches!(nname(pat), "PTuple" | "PStruct") {
+            return false;
+        }
+        self.hold_whole(n, pat, e);
+        true
+    }
+
+    /// 保存場所 `root` + `path` の値を分解した束縛 (部分パターン `pat`) に、その場所の借用を写す。
+    fn hold_place(&mut self, n: usize, pat: &V, root: &str, path: &[String]) {
+        match nname(pat) {
+            "PTuple" => {
+                for (i, s) in items(&nf(pat)[0]).iter().enumerate() {
+                    let mut p = path.to_vec();
+                    p.push(format!("#{}", i));
+                    self.hold_place(n, s, root, &p);
+                }
+            }
+            "PStruct" => {
+                for fl in items(&nf(pat)[1]) {
+                    let fp = items(fl);
+                    if fp.len() < 2 {
+                        continue;
+                    }
+                    let mut p = path.to_vec();
+                    p.push(st(&fp[0]));
+                    self.hold_place(n, &fp[1], root, &p);
+                }
+            }
+            _ => {
+                let mut binds = vec![];
+                pat_binds(pat, &mut binds);
+                // 道の先の要素だけを写す。根の変数が直接持つローン (`let p = f(&x)` の p) は、
+                // 要素の道が分からないので束縛へ配らない (コピー値の要素に借用を付けて誤検出しないため)。
+                for b in binds {
+                    self.emit(n, Ev::Peek { to: Holder::Var(b), root: root.to_string(), path: path.to_vec() });
+                }
+            }
+        }
+    }
+
+    /// 分解の部分パターン `pat` (要素・フィールドの道が分からない形) の束縛に、右辺 `e` の借用の和を伝える。
+    fn hold_whole(&mut self, n: usize, pat: &V, e: &V) {
+        let mut srcs = self.loan_sources(e);
+        srcs.extend(self.lit_sources(e));
+        let mut binds = vec![];
+        pat_binds(pat, &mut binds);
+        for b in binds {
+            for s in srcs.iter().cloned() {
+                match s {
+                    Src::Stored { root, path } => self.emit(n, Ev::Peek { to: Holder::Var(b.clone()), root, path }),
+                    other => self.hold(n, Holder::Var(b.clone()), vec![other]),
+                }
+            }
+        }
+    }
+
     /// 構造体リテラルの各フィールドに入る借用を、`root` の `base` 道の先に保存された
     /// ローンとして記録する (`let s = t.S { f: &mut x }`、`s.f = t.S { g: &x }`)。
     fn store_struct_lit(&mut self, n: usize, root: &str, base: &[String], lit: &V) {
@@ -434,81 +543,105 @@ impl<'a> Low<'a> {
                 self.store_struct_lit(n, root, &q, &it[1]);
                 continue;
             }
-            let srcs = self.loan_sources(&it[1]);
-            if !srcs.is_empty() {
-                self.hold(n, Holder::Place { root: root.to_string(), path: p }, srcs);
+            self.store_value(n, root, &p, &it[1]);
+        }
+    }
+
+    /// タプル・配列リテラル (`(&x, 1)`、`[&x, &y]`、`[&x; 3]`) の要素に入る借用。入れ子のリテラル
+    /// (構造体リテラルを含む) の中も集める。要素ごとの道は持たず、リテラル全体の場所に保存する
+    /// (要素への上書きは全体を殺す — 広めに殺す方針)。リテラルでなければ空。
+    fn lit_sources(&self, e: &V) -> Vec<Src> {
+        let elems: Vec<&V> = match nname(e) {
+            "TupleE" | "ArrayE" => items(&nf(e)[0]).iter().collect(),
+            "ArrayRep" => vec![&nf(e)[0]],
+            "StructLit" => items(&nf(e)[1]).iter().filter_map(|fld| items(fld).get(1)).collect(),
+            _ => return vec![],
+        };
+        let mut out = vec![];
+        for x in elems {
+            if matches!(nname(x), "TupleE" | "ArrayE" | "ArrayRep" | "StructLit") {
+                out.extend(self.lit_sources(x));
+            } else {
+                out.extend(self.loan_sources(x));
             }
         }
+        out
     }
 
-    /// リテラルに入る借用を、`root` の `base` 道の先に保存されたローンとして記録する。
-    fn store_lit(&mut self, n: usize, root: &str, base: &[String], lit: &V) {
-        match nname(lit) {
-            "StructLit" => self.store_struct_lit(n, root, base, lit),
-            "TupleE" | "ArrayE" | "ArrayRep" => self.store_seq_lit(n, root, base, lit),
-            _ => {}
-        }
-    }
-
-    /// タプル・配列リテラルの各要素に入る借用を、`root` の `base` 道の先 (要素の添字) に
-    /// 保存されたローンとして記録する (`let t = (&x, &mut y)`、`let a = [&x, &y]`)。
-    fn store_seq_lit(&mut self, n: usize, root: &str, base: &[String], lit: &V) {
-        match nname(lit) {
-            "TupleE" | "ArrayE" => {
-                for (i, elem) in items(&nf(lit)[0]).iter().enumerate() {
-                    let mut p = base.to_vec();
-                    p.push(i.to_string());
-                    self.store_seq_elem(n, root, &p, elem);
+    /// 値の式 `e` に入る借用を、場所 `root` + `path` に保存されたローンとして記録する。
+    /// 構造体リテラルはフィールドの道ごとに、タプル・配列リテラルは全体の場所に置く。
+    /// それ以外は値の式そのものの出どころ (`&x`、参照の変数など)。
+    fn store_value(&mut self, n: usize, root: &str, path: &[String], e: &V) {
+        match nname(e) {
+            "StructLit" => {
+                self.store_struct_lit(n, root, path, e);
+                return;
+            }
+            // タプルの要素は内部の道 `#i` に置く (分解のとき要素ごとに読めるように)。
+            "TupleE" => {
+                for (i, x) in items(&nf(e)[0]).iter().enumerate() {
+                    let mut p = path.to_vec();
+                    p.push(format!("#{}", i));
+                    self.store_value(n, root, &p, x);
                 }
-            }
-            // `[&x; n]` はどの要素も同じ借用を持つ。添字の道は持たせない (`a[i]` の読み戻しに合わせる)。
-            "ArrayRep" => {
-                let elem = &nf(lit)[0];
-                self.store_seq_elem(n, root, base, elem);
+                return;
             }
             _ => {}
         }
-    }
-
-    fn store_seq_elem(&mut self, n: usize, root: &str, p: &[String], elem: &V) {
-        if matches!(nname(elem), "TupleE" | "ArrayE" | "ArrayRep") {
-            self.store_seq_lit(n, root, p, elem);
-            return;
+        let mut srcs = self.loan_sources(e);
+        if srcs.is_empty() {
+            srcs = self.lit_sources(e);
         }
-        let srcs = self.loan_sources(elem);
         if !srcs.is_empty() {
-            self.hold(n, Holder::Place { root: root.to_string(), path: p.to_vec() }, srcs);
+            self.hold(n, Holder::Place { root: root.to_string(), path: path.to_vec() }, srcs);
         }
     }
 
-    /// `let (a, b) = t` の分解で、`t` の場所 (要素の添字) に保存されたローンを各束縛へ読み戻す。
-    /// 対応の取れないパターン (`t` が場所でない・要素が束縛でない) は何もしない。
-    fn load_destructure(&mut self, n: usize, pat: &V, init: &V) {
-        if nname(pat) != "PTuple" {
-            return;
-        }
-        let Some((root, base)) = self.place_of(init) else { return };
-        self.load_destructure_at(n, pat, &root, &base);
-    }
-
-    fn load_destructure_at(&mut self, n: usize, pat: &V, root: &str, base: &[String]) {
-        if nname(pat) != "PTuple" {
-            return;
-        }
-        for (i, ep) in items(&nf(pat)[0]).iter().enumerate() {
-            let mut p = base.to_vec();
-            p.push(i.to_string());
-            match nname(ep) {
-                "PTuple" => self.load_destructure_at(n, ep, root, &p),
-                "PBind" => {
-                    let name = st(&nf(ep)[0]);
-                    if self.locals.contains(&name) {
-                        self.emit(n, Ev::Load { to: Holder::Var(name), from_root: root.to_string(), from_path: p });
-                    }
+    /// `match` の腕の値 (本体が式ならその式、ブロックなら最後の式文)。値を持たない腕は `None`。
+    fn arm_tail(body: &V) -> Option<&V> {
+        match nname(body) {
+            "Block" => {
+                let last = items(&nf(body)[0]).last()?;
+                match nname(last) {
+                    "ExprStmt" => Self::arm_tail(&nf(last)[0]),
+                    "Let" | "Assign" => None,
+                    _ => Self::arm_tail(last),
                 }
-                _ => {}
+            }
+            _ => Some(body),
+        }
+    }
+
+    /// 値を持つ式 `e` (`match` / `if`-else / ブロック式) の持ち主を作って登録する。
+    fn value_holder(&mut self, e: &V) -> String {
+        let holder = format!("$val{}", self.value_vals.len());
+        self.value_vals.insert(e as *const V as usize, holder.clone());
+        holder
+    }
+
+    /// 枝の値 `body` が運ぶ借用の出どころ。`Some(rr) => rr` なら腕の束縛 (= 被検査式のローン源を引き継いだもの)、
+    /// `None => &y` / `else { &y }` なら新しい借用。`MATCH_VALUE_ALL_ARMS` が偽なら、
+    /// 枝の束縛 `binds` をそのまま値にする枝 (`Some(rr) => rr`) だけ。
+    fn value_sources(&self, binds: &[String], body: &V) -> Vec<Src> {
+        let Some(tail) = Self::arm_tail(body) else { return vec![] };
+        if !MATCH_VALUE_ALL_ARMS {
+            let is_bind = nname(tail) == "Path" && {
+                let segs = strs(&nf(tail)[0]);
+                segs.len() == 1 && binds.contains(&segs[0])
+            };
+            if !is_bind {
+                return vec![];
             }
         }
+        self.loan_sources(tail)
+    }
+
+    /// 枝の終わり `end` で、枝の値の借用を合成の持ち主 `holder` に集める。
+    /// `Def` で前の値 (ループの前の周回など) を捨ててから持たせる。合流点では全枝の和になる。
+    fn collect_value(&mut self, end: usize, holder: &str, binds: &[String], body: &V) {
+        let srcs = self.value_sources(binds, body);
+        self.emit(end, Ev::Def(holder.to_string()));
+        self.hold(end, Holder::Var(holder.to_string()), srcs);
     }
 
     /// `push` / `insert` など、コンテナに値を入れるメソッド。値の式に入る借用を、
@@ -520,10 +653,15 @@ impl<'a> Low<'a> {
             _ => return,
         };
         let Some(a) = args.get(slot) else { return };
-        let srcs = self.loan_sources(a);
-        if !srcs.is_empty() {
-            self.hold(n, Holder::Place { root: root.to_string(), path: path.to_vec() }, srcs);
+        if nname(a) == "StructLit" {
+            // 構造体リテラルを丸ごと入れる形は、要素の道を持たないので全体に置く。
+            let srcs = self.lit_sources(a);
+            if !srcs.is_empty() {
+                self.hold(n, Holder::Place { root: root.to_string(), path: path.to_vec() }, srcs);
+            }
+            return;
         }
+        self.store_value(n, root, path, a);
     }
 
     // ------------------------------------------------------------ 式・文
@@ -554,16 +692,17 @@ impl<'a> Low<'a> {
                         self.hold(c, Holder::Var(b.clone()), srcs2);
                     }
                 }
-                // 分解 `let (a, b) = t`: `t` の場所に保存されたローンを各束縛に読み戻す。
-                if nname(&f[0]) == "PTuple" && !is_nil(init) {
-                    self.load_destructure(c, &f[0], init);
-                }
-                // 構造体・タプル・配列リテラルに入る借用は、保存場所 (変数 + 道) に記録する。
-                // 変数に直接持たせないのは、`s.f = ...` / `t = ...` の上書きでローンを殺せるようにするため。
+                // 構造体リテラルのフィールドに入る借用は、保存場所 (変数 + フィールド道) に記録する。
+                // 変数に直接持たせないのは、`s.f = ...` の上書きでローンを殺せるようにするため。
+                // タプル・配列リテラルの要素に入る借用は、変数全体の場所に記録する (`let t = (&x, 1)`)。
                 if matches!(nname(init), "StructLit" | "TupleE" | "ArrayE" | "ArrayRep") && nname(&f[0]) == "PBind" {
                     if let Some(b) = binds.first() {
-                        self.store_lit(c, b, &[], init);
+                        self.store_value(c, b, &[], init);
                     }
+                }
+                // 分解の束縛 (`let (a, b) = t`) は、右辺の要素・フィールドの借用 (保存されたローンを含む) を伝える。
+                if matches!(nname(&f[0]), "PTuple" | "PStruct") && !is_nil(init) {
+                    self.hold_pat(c, &f[0], init);
                 }
                 c
             }
@@ -579,9 +718,9 @@ impl<'a> Low<'a> {
                     self.hold(c, Holder::Var(name.clone()), srcs);
                     // 値の代入そのものも、その変数への書き込み
                     self.emit(c, Ev::Access { root: name.clone(), path: vec![], kind: Acc::Write, line: nline(s) });
-                    // `s = t.S { f: &mut y }` のように、構造体・タプル・配列ごと新しい借用を保存することもある。
+                    // `s = t.S { f: &mut y }` のように、構造体ごと新しい借用を保存することもある。
                     if matches!(nname(&f[1]), "StructLit" | "TupleE" | "ArrayE" | "ArrayRep") {
-                        self.store_lit(c, &name, &[], &f[1]);
+                        self.store_value(c, &name, &[], &f[1]);
                     }
                     return c;
                 }
@@ -595,12 +734,7 @@ impl<'a> Low<'a> {
                     self.emit(c, Ev::Access { root: root.clone(), path: path.clone(), kind: Acc::Write, line: nline(s) });
                     // 借用を場所に保存する (`s.f = &mut x` / `v[i] = &x`)。上書きなので、
                     // 前に保存されていたローンは上の Access (書き込み) で死ぬ。
-                    let srcs = self.loan_sources(&f[1]);
-                    if !srcs.is_empty() {
-                        self.hold(c, Holder::Place { root, path }, srcs);
-                    } else if matches!(nname(&f[1]), "StructLit" | "TupleE" | "ArrayE" | "ArrayRep") {
-                        self.store_lit(c, &root, &path, &f[1]);
-                    }
+                    self.store_value(c, &root, &path, &f[1]);
                 }
                 c
             }
@@ -739,6 +873,7 @@ impl<'a> Low<'a> {
             exit: 0,
             iters: self.iters + 1000,
             sub: vec![],
+            value_vals: HashMap::new(),
         };
         let entry = sub.new_node();
         let exit = sub.new_node();
@@ -842,9 +977,17 @@ impl<'a> Low<'a> {
                 let (then_n, else_n, join) = (self.new_node(), self.new_node(), self.new_node());
                 self.edge(c, then_n);
                 self.edge(c, else_n);
+                // `else` のある `if` は値を持つ: 両枝の末尾の値の借用を、枝の終わりで合成の持ち主に集める
+                let holder = if is_nil(&f[2]) { None } else { Some(self.value_holder(e)) };
                 let t_end = self.lower_block(&f[1], then_n);
+                if let Some(h) = &holder {
+                    self.collect_value(t_end, h, &[], &f[1]);
+                }
                 self.edge(t_end, join);
                 let e_end = if is_nil(&f[2]) { else_n } else { self.lower_block(&f[2], else_n) };
+                if let Some(h) = &holder {
+                    self.collect_value(e_end, h, &[], &f[2]);
+                }
                 self.edge(e_end, join);
                 join
             }
@@ -905,18 +1048,34 @@ impl<'a> Low<'a> {
                 if arms.is_empty() {
                     return c;
                 }
+                let holder = self.value_holder(e);
                 for arm in arms {
                     let a = items(arm);
                     let an = self.new_node();
                     self.edge(c, an);
                     let mut binds = vec![];
                     pat_binds(&a[0], &mut binds);
-                    for b in &binds {
-                        self.emit(an, Ev::Def(b.clone()));
-                        let srcs = self.loan_sources(&f[0]);
-                        self.hold(an, Holder::Var(b.clone()), srcs);
+                    // 分解の腕は、部分パターンごとに要素・フィールドの借用を伝える。形が分からなければ従来どおり。
+                    let known = matches!(nname(&a[0]), "PTuple" | "PStruct") && {
+                        for b in &binds {
+                            self.emit(an, Ev::Def(b.clone()));
+                        }
+                        self.hold_pat(an, &a[0], &f[0])
+                    };
+                    if !known {
+                        for b in &binds {
+                            self.emit(an, Ev::Def(b.clone()));
+                            // 形が分からない分解 (`(a, n) => ..` を関数呼び出しの戻り値に対して行う) は、
+                            // 右辺の借用を束縛へ配らない (`let (a, n) = f(&x)` と同じく黙る)。
+                            // バリアントの中身 (`Some(rr) => rr`) は右辺の借用そのものなので従来どおり伝える。
+                            if !matches!(nname(&a[0]), "PTuple" | "PStruct") {
+                                let srcs = self.loan_sources(&f[0]);
+                                self.hold(an, Holder::Var(b.clone()), srcs);
+                            }
+                        }
                     }
                     let end = self.lower_block(&a[1], an);
+                    self.collect_value(end, &holder, &binds, &a[1]);
                     self.edge(end, join);
                 }
                 join
@@ -978,7 +1137,13 @@ impl<'a> Low<'a> {
                 self.end_temps(c, temps);
                 c
             }
-            "Block" => self.lower_block(e, cur),
+            "Block" => {
+                // ブロック式の値: 末尾の式の借用を、ブロックの終わりで合成の持ち主に集める
+                let holder = self.value_holder(e);
+                let end = self.lower_block(e, cur);
+                self.collect_value(end, &holder, &[], e);
+                end
+            }
             "Unsafe" => self.lower_block(&f[2], cur),
             // `with 名前 = 初期化式 close 後始末式 { 本体 }`: 本体のあとに後始末式が続く経路で近似する
             // (本体の `return` / `?` は出口へ直接つなぐので、その経路の後始末は追わない)。
@@ -1110,6 +1275,7 @@ impl<'a> Checker<'a> {
             exit: 0,
             iters: 0,
             sub: vec![],
+            value_vals: HashMap::new(),
         };
         let entry = low.new_node();
         let exit = low.new_node();
@@ -1177,10 +1343,24 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
         }
         Ev::Load { to, from_root, from_path } => {
             // 保存場所から読み戻す。保存されていたローンは読んだ側へ移る (move の近似。
-            // 実際はコピーでも、消えるのは見落としでしかない)。
-            let key = Holder::Place { root: from_root.clone(), path: from_path.clone() };
-            if let Some(src) = st_.remove(&key) {
+            // 実際はコピーでも、消えるのは見落としでしかない)。道が重なる保存場所 (タプルの要素の道 `#i` を含む)
+            // はすべて対象にする。
+            for src in take_overlapping(st_, from_root, from_path) {
                 st_.entry(to.clone()).or_default().extend(src);
+            }
+        }
+        Ev::Peek { to, root, path } => {
+            // 保存場所の借用を写す (保存場所のローンは残す)。
+            let mut acc: BTreeSet<usize> = BTreeSet::new();
+            for (h, ids) in st_.iter() {
+                if let Holder::Place { root: r, path: p } = h {
+                    if r == root && overlaps(p, path) {
+                        acc.extend(ids.iter().copied());
+                    }
+                }
+            }
+            if !acc.is_empty() {
+                st_.entry(to.clone()).or_default().extend(acc);
             }
         }
         Ev::Kill { root, path } => kill_stored(st_, root, path),
@@ -1322,10 +1502,23 @@ fn kill_stored(st: &mut BTreeMap<Holder, BTreeSet<usize>>, root: &str, path: &[S
     }
 }
 
-/// 場所の表示 (`s.f`、コンテナなら `v`)。
+/// 道が重なる保存場所 (`root` の下) をすべて取り除き、そこに保存されていたローンの集合を返す (読み戻し用)。
+fn take_overlapping(st: &mut BTreeMap<Holder, BTreeSet<usize>>, root: &str, path: &[String]) -> Vec<BTreeSet<usize>> {
+    let keys: Vec<Holder> = st
+        .keys()
+        .filter(|h| match h {
+            Holder::Place { root: r, path: p } => r == root && overlaps(p, path),
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    keys.iter().filter_map(|h| st.remove(h)).collect()
+}
+
+/// 場所の表示 (`s.f`、コンテナなら `v`)。タプルの要素の内部の道 `#i` は表示しない。
 fn place_name(root: &str, path: &[String]) -> String {
     let mut s = root.to_string();
-    for p in path {
+    for p in path.iter().filter(|p| !p.starts_with('#')) {
         s.push('.');
         s.push_str(p);
     }

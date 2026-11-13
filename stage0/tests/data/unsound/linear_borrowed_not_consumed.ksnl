@@ -1,0 +1,13 @@
+// expect: E3003
+type t.L linear pub
+    v: u32
+end t.L
+
+fn t.main() -> () uses [] panics never
+    let l = t.L { v: 1u32 }
+    core.mem.drop(t.peek(&l))
+end t.main
+
+fn t.peek(l: &t.L) -> u32 uses [] panics never
+    l.v
+end t.peek

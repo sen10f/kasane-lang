@@ -1,0 +1,12 @@
+// expect: E3003
+type t.L linear
+    v: u32
+end t.L
+
+fn t.main() -> () uses [] panics never
+    let o: Option<t.L> = Some(t.L { v: 1u32 })
+    match o {
+        Some(_) => core.mem.drop(1u8)
+        None => core.mem.drop(2u8)
+    }
+end t.main

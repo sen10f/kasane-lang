@@ -26,14 +26,14 @@ bash scripts/setup.sh --bench # さらに NVIDIA NIM ベンチの準備確認 (A
 | `fix` / `fmt [--check]` | 修正案の適用 / 正規形への整形 |
 | `refs` / `rename [--dry-run]` | 参照の一覧 / 名前の変更と定義・モジュールの移動 (書き込む前に `check` する) |
 | `run [--watch]` / `test [--both]` | インタプリタで実行 / テスト (`--both` はネイティブとの一致も確認。`tests/` の統合テストを含む) |
-| `build [--release] [--backend clif\|c]` | Cranelift でネイティブ実行ファイル (既定) と可搬バンドル。キャッシュつき |
+| `build [--release] [--backend clif\|c\|llvm]` | ネイティブ実行ファイル (既定は Cranelift。LLVM は KIR 経由で `--backend llvm`、正式なネイティブ生成は今後 LLVM) と可搬バンドル。キャッシュつき |
 | `doc [--std] [--private]` | 静的 HTML の API 文書 |
 | `lsp` / `dap` | Language Server / Debug Adapter |
 | `debug [--json]` / `test --debug <FQN>` | インタプリタ上のデバッガ |
 
 ## 制限 (仕様との差)
 
-`実装計画.md` の 2 章 (実装状況) と 7 章 (リスク) を参照。主なもの: 型付き IR は未完成 (ブランチ `ir/tir` に途中経過)、クロスコンパイルなし、LLVM なし、WASM なし、セルフホストなし。
+`実装計画.md` の 2 章 (実装状況) と 7 章 (リスク) を参照。主なもの: 型付き IR は未完成 (ブランチ `ir/tir` に途中経過)、クロスコンパイルなし、LLVM は KIR 経由 (`ksn kir --llvm` / `--native`、`設計_KIR.md`) で途中、WASM なし、セルフホストなし。
 
 ## テスト
 
