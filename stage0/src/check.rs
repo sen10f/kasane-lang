@@ -1116,7 +1116,7 @@ impl<'a> Checker<'a> {
                 };
                 let params: HashSet<String> = d.generics.iter().map(|g| g.1.clone()).collect();
                 for dv in d.derive.clone() {
-                    if dv == "Copy" || dv == "From" || dv == "Clone" {
+                    if dv == "Copy" || dv == "From" {
                         continue;
                     }
                     let Some(&tr) = short_to_fqn.get(dv.as_str()) else { continue };
