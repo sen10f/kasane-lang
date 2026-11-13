@@ -5620,19 +5620,11 @@ impl<'a> Checker<'a> {
         for &i in &fns {
             by_name.insert(self.def(i).name.clone(), i);
         }
+        let cyclic = cyclic_nodes(&self.graph);
         for &i in &fns {
             let d = self.def(i);
             let n = d.name.clone();
-            let mut seen: BTreeSet<String> = BTreeSet::new();
-            let mut stk: Vec<String> = self.graph.get(&n).map(|s| s.iter().cloned().collect()).unwrap_or_default();
-            while let Some(x) = stk.pop() {
-                if seen.insert(x.clone()) {
-                    if let Some(s) = self.graph.get(&x) {
-                        stk.extend(s.iter().cloned());
-                    }
-                }
-            }
-            let rec = seen.contains(&n);
+            let rec = cyclic.contains(&n);
             let never = d.panics.as_deref() == Some("never");
             self.d = i;
             if rec && never && d.stack.is_none() {
@@ -5758,6 +5750,79 @@ impl<'a> Checker<'a> {
 
 fn round8(n: u64) -> u64 {
     (n + 7) / 8 * 8
+}
+
+/// 呼び出しグラフの上で、自分自身へ戻ってこられる頂点 (自己ループか大きさ 2 以上の強連結成分) の集合。
+/// 頂点ごとに到達集合を作る旧実装 (関数数の 2 乗) と同じ結果を、Tarjan 法 (反復版) で線形に求める。
+fn cyclic_nodes(g: &BTreeMap<String, BTreeSet<String>>) -> HashSet<String> {
+    let mut ids: HashMap<&str, usize> = HashMap::new();
+    let mut names: Vec<&str> = vec![];
+    for (k, vs) in g {
+        for n in std::iter::once(k).chain(vs.iter()) {
+            if !ids.contains_key(n.as_str()) {
+                ids.insert(n.as_str(), names.len());
+                names.push(n.as_str());
+            }
+        }
+    }
+    let n = names.len();
+    let adj: Vec<Vec<usize>> = names
+        .iter()
+        .map(|nm| g.get(*nm).map(|vs| vs.iter().map(|v| ids[v.as_str()]).collect()).unwrap_or_default())
+        .collect();
+    const NONE: usize = usize::MAX;
+    let mut index = vec![NONE; n];
+    let mut low = vec![0usize; n];
+    let mut on = vec![false; n];
+    let mut stack: Vec<usize> = vec![];
+    let mut out: HashSet<String> = HashSet::new();
+    let mut next = 0usize;
+    for root in 0..n {
+        if index[root] != NONE {
+            continue;
+        }
+        let mut call: Vec<(usize, usize)> = vec![(root, 0)];
+        index[root] = next;
+        low[root] = next;
+        next += 1;
+        stack.push(root);
+        on[root] = true;
+        while let Some(&(v, ei)) = call.last() {
+            if ei < adj[v].len() {
+                call.last_mut().unwrap().1 += 1;
+                let w = adj[v][ei];
+                if index[w] == NONE {
+                    index[w] = next;
+                    low[w] = next;
+                    next += 1;
+                    stack.push(w);
+                    on[w] = true;
+                    call.push((w, 0));
+                } else if on[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+            } else {
+                call.pop();
+                if let Some(&(u, _)) = call.last() {
+                    low[u] = low[u].min(low[v]);
+                }
+                if low[v] == index[v] {
+                    let mut comp = vec![];
+                    while let Some(w) = stack.pop() {
+                        on[w] = false;
+                        comp.push(w);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    if comp.len() > 1 || adj[v].contains(&v) {
+                        out.extend(comp.into_iter().map(|w| names[w].to_string()));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn format_diag(d: &Diag) -> String {
