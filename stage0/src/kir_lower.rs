@@ -63,6 +63,11 @@ use coll::CollCx;
 mod net_lower;
 use net_lower::{is_net_ty, net_call, net_method};
 
+// `std.env` (引数・環境変数) の下ろし。
+#[path = "kir_lower_env.rs"]
+mod env_lower;
+use env_lower::env_call;
+
 type LR<T> = Result<T, String>;
 
 // 集成体 (構造体・タプル・列挙型) の下ろし。子モジュールなので、この file の非公開の部品を使う。
@@ -835,6 +840,9 @@ impl<'a> Lw<'a> {
         let callee_name = segs.join(".");
         if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
             return net_call(self, e, callee_name == "std.net.listen", line);
+        }
+        if let Some(r) = env_call(self, e, &callee_name, args, line)? {
+            return Ok(Some(r));
         }
         if let Some(Tgt::Variant(en, vn)) = &target {
             let (en, vn) = (en.clone(), vn.clone());

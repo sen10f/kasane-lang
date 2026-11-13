@@ -1,0 +1,32 @@
+fn envarg.main() -> Result<(), std.io.Error> uses [env, io.console] panics never
+    let n = std.env.arg_count()
+    if n == 0usize {
+        std.io.print_line("count=0")?
+    } else if n == 1usize {
+        std.io.print_line("count=1")?
+    } else {
+        std.io.print_line("count=many")?
+    }
+    let mut i = 0usize
+    while i < n {
+        match std.env.arg(i) {
+            Some(s) => {
+                std.io.print_line(s)?
+            }
+            None => {
+                std.io.print_line("none")?
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    match std.env.var("KSN_TEST_VAR") {
+        Some(v) => {
+            std.io.print_line("var=")?
+            std.io.print_line(v)?
+        }
+        None => {
+            std.io.print_line("var=none")?
+        }
+    }
+    Ok(())
+end envarg.main

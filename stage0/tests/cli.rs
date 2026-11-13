@@ -12599,6 +12599,58 @@ fn kir_lower_values_match_tree_walker() {
 }
 
 #[test]
+fn kir_env_arg_count_arg_match_tree_walker() {
+    // `std.env.arg_count` / `std.env.arg` / `std.env.var` を引数付きで実行し、
+    // 木走査 (`ksn run`) と LLVM ネイティブ (`ksn build --backend llvm`) の表示・
+    // 終了コードが一致すること。
+    // (`ksn kir --run/--native` は引数を整数/bool として解釈するため、文字列引数を
+    // 使う `std.env` の検査には `ksn run` と生のネイティブ実行ファイルを比較する。)
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [env, io.console] panics may
+    let n = std.env.arg_count()
+    core.check.eq(n, 2usize)
+    match std.env.arg(0usize) {
+        Some(s) => {
+            core.check.eq(s, "a")
+            std.io.print_line(s)?
+        }
+        None => {
+            core.check.eq(1u8, 2u8)
+        }
+    }
+    match std.env.arg(1usize) {
+        Some(s) => {
+            core.check.eq(s, "b")
+            std.io.print_line(s)?
+        }
+        None => {
+            core.check.eq(1u8, 2u8)
+        }
+    }
+    match std.env.var("KSN_ENV_DOES_NOT_EXIST_xyz") {
+        Some(_s) => {
+            core.check.eq(1u8, 2u8)
+        }
+        None => {
+        }
+    }
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("kir_env_arg", src);
+    // 木走査 (`ksn run`) で arg_count/arg が期待どおりであること。
+    let o = run(&["run", "a", "b"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout), "a\nb\n", "tree-walker arg output");
+    // LLVM ネイティブをビルドして同じ引数で走らせ、表示が一致すること。
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    assert_eq!(b.status.code(), Some(0), "build: {}\n{}", text(&b.stdout), text(&b.stderr));
+    let native = t.0.join("target").join("debug").join("t.native");
+    let n = Command::new(&native).args(["a", "b"]).current_dir(&t.0).output().expect("spawn native");
+    assert_eq!(n.status.code(), Some(0), "native: {}\n{}", text(&n.stdout), text(&n.stderr));
+    assert_eq!(text(&n.stdout), "a\nb\n", "native arg output");
+}
+
+#[test]
 fn kir_lower_panics_and_depth_match_tree_walker() {
     // panic の文言と終了コード (101)、呼び出し深さの超過 (102) が木走査と一致すること。
     let cases: &[(&str, &[&str], &str)] = &[
@@ -16736,10 +16788,12 @@ end t.main
 
 #[test]
 fn llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered() {
-    // 下ろせない関数 (ここでは `std.env.arg_count` を呼ぶ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [env, io.console] panics may
-    core.mem.drop(std.env.arg_count())
-    std.io.print_line(\"x\")
+    // 下ろせない関数 (ここでは `with` 式を持つ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
+    // (`std.env.arg_count` は段階 1 で下ろせるようになったため、`with` を使う。)
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console, io.fs] panics may
+    with mut f = std.fs.create(\"t.tmp\")? close core.mem.drop(f.close()) {
+        std.io.print_line(\"x\")
+    }
 end t.main
 ";
     let t = Tmp::new("llvm_build_fallback", src);
