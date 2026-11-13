@@ -1125,15 +1125,17 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 試験: `kir_optres_slice_literal_eq_matches_tree_walker` (`==` / `!=` の 5 ケース、失敗の文言)。
 - examples/tour は 90 行の `Option<&[u8]>` を越えたが、91 行の `arr.first()` で止まる。残りは `BtreeMap` (KIR に型がない)、`str` の `trim` / `split` / `parse` / `split_once`、`from_str_radix` / `try_from_*` / `leading_zeros` / `count_ones`、`core.num.*.MAX` などで、一続きの作業にする。`llvm_builds_of_real_packages_match_run` には足していない。
 
-### 17.20 `first` / `last` / `contains` (kir/tour-rest、2026-11-13)
+### 17.20 `first` / `last` / `contains` / `find` / `char` / `parse` / タプル / `push_i64` (kir/tour-rest、2026-11-13)
 - `v.first()` / `v.last()` (Vec・スライス・配列の局所): `get` と同じ `pick_elem` で作る (`Pick::First` は添字 0、`Pick::Last` は `len - 1`、空なら `None`)。スカラー要素は値、所有物の要素は `bref` (17.18) で、`let g = v.first()` と `match v.last()` の両方を通す。木走査の `natives.rs` (`first` / `last`) と同じ値。
-- `v.contains(&x)` (要素がスカラー): 先頭から `==` を見る小さなループ (`contains_scalar`)。引数は `&T` の参照 (読んで比べる) か値。所有物・集成体の要素は理由付きで拒む。
-- 試験: `kir_first_last_contains_match_tree_walker` (配列・スライス (`sub` の結果)・Vec の空・先頭・末尾・範囲外、`Vec<String>` の `first` / `last` は `--run` / `--native` / ASan)。
-- `s.find(pat)` (`&str` のパターン、`kir_lower_str.rs` の `find_call`): 位置の二重ループ。空のパターンは `Some(0)`、長いパターンは `None`、多バイト文字の位置はバイト。試験 `kir_str_find_matches_tree_walker`。
-- `char` の `to_ascii_uppercase` / `to_ascii_lowercase` (`char` は KIR で `u32`。`num_plan` の `Plan::AsciiCase`。ASCII の英字の境界だけ変える) と `char.try_from_u32` (0x110000 未満、サロゲートの外)。試験 `kir_char_methods_match_tree_walker`。
-- `char.to_u32()` は下ろしていない。`'a'.to_u32()` を「未対応」の例に使う 2 本の既存の試験 (`test_both_falls_back_from_llvm_to_cranelift_with_the_reason`、`kir_lower_dump_on_check_is_hidden_behind_the_env_var`) が、下ろすと食い違う。試験の入力を書き換えるのは担当外なので、どちらにするかは統括者が決める (試験を別の未対応のメソッドに替えるか、`to_u32` を下ろして 2 本を直すか)。
+- `v.contains(&x)` (要素がスカラー): 先頭から `==` を見る小さなループ (`contains_scalar`)。引数は `&T` の参照か値。所有物・集成体の要素は理由付きで拒む。
+- `s.find(pat)` (`&str` のパターン、`kir_lower_str.rs` の `find_call`): 位置の二重ループ。空のパターンは `Some(0)`、長いパターンは `None`、位置はバイト。試験 `kir_str_find_matches_tree_walker`。
+- `char` (KIR で `u32`): `to_ascii_uppercase` / `to_ascii_lowercase` (`Plan::AsciiCase`)、`to_u32` (`Plan::Same`、値はそのまま)、`char.try_from_u32` (0x110000 未満で、サロゲートの外)。試験 `kir_char_methods_match_tree_walker`。
+- 試験の「下ろせない例」の差し替え: `test_both_falls_back_from_llvm_to_cranelift_with_the_reason` と `kir_lower_dump_on_check_is_hidden_behind_the_env_var` は、`'a'.to_u32()` の代わりに `'a'.is_ascii_digit()` を使う (`ksn kir` が「メソッド is_ascii_digit は段階 1 の対象外」と理由付きで拒む)。`is_ascii_digit` は将来下ろしうるので、動かない形 (`dyn` の呼び出しなど) にするなら統括者が替える。試験の意図 (退避の理由が出る / ダンプが環境変数の陰にある) は変えていない。
 - `i64.parse(text)` は基数 10 の `from_str_radix` と同じ `Op::ParseInt` (`kir_lower_scalar.rs`)。試験 `kir_parse_matches_tree_walker`。
-- examples/tour の残り (この時点での止まり方、先頭から): 105 行の `c.to_u32()` (上の理由で未対応のまま)。それを外すと、次は 112 行の `alloc.collections.BtreeMap.new` (KIR に `BtreeMap` の型・操作がなく、大きいので別の作業にする)。`BtreeMap` の行と `to_u32` の行を外した写し (scratch) では、130 行の `core.check.eq("key=value".split_once("="), Some(("key", "value")))` の `Option<(&str, &str)>` の比較 (タプルの `==` が未対応) で止まる。さらに外すと 133 行の `String.push_i64` (符号付きの十進の書き込み。`string_push_u64` の拡張で、符号と `i64::MIN` の扱いが要る) で止まる。`print_line` より後は未確認。
+- タプルの `==` / `!=` と表示 (`kir_debug.rs` の `tuple_eq` / `tuple`)。要素を順に比べ、表示は `(a, b)` (1 要素は `(a,)`、木走査の `debug_str` と同じ)。関数の鍵は `kname` で `(` を `tup<` に直す (KIR の `call` は最初の `(` で切るため。`Option<(&str,&str)>` の `two` の鍵も同じ)。試験 `kir_tuple_eq_matches_tree_walker` (`split_once` の `Some(..)` を含む。失敗の文言も木走査と一致)。
+- `String.push_i64(v)` (`string_push_i64`): 負なら `-` を先に書き、絶対値 (`wrapping_neg` の結果を `Conv` で u64 に読む。`i64::MIN` も正しい) の桁を書く。桁の書き込みは `push_u64_digits` に分けて `push_u64` と共有。試験 `kir_push_i64_matches_tree_walker` (`i64::MIN` / `MAX`、容量を広げる経路を含む)。
+- 参照実行器の修正 (`kir_scalar::conv`): 符号が変わる整数の変換 (`i64` の負の値を `u64` へ) は、型の範囲に入れ直す (負のままにしていた)。LLVM と木走査は従来どおり正しかった。
+- examples/tour の止まり方 (先頭から): `BtreeMap` (112 行) を外した写し (scratch) では、`tour.shapes` の `for s in [a, b, c]` (要素が列挙型の配列) で止まる。`BtreeMap` は KIR に型・操作がなく、大きいので今回は着手していない。
 
 ## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
 

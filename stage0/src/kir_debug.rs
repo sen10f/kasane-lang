@@ -34,6 +34,11 @@ pub fn key(name: &str) -> String {
     format!("{}.$debug", name)
 }
 
+/// 関数の鍵に使う型の名前。KIR の文字は `(` を含められない (`call` の括弧の読みが最初の `(` で切れる) ので、タプルの `(` は `tup<` に直す。
+fn kname(show_src: &str) -> String {
+    show_src.replace(' ', "").replace('(', "tup<").replace(')', ">")
+}
+
 /// 型 `name` の等しさの関数の鍵。
 pub fn eq_key(name: &str) -> String {
     format!("{}.$eq", name)
@@ -479,7 +484,7 @@ impl<'a> Gen<'a> {
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg(name, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, false),
             (Src::Slice(e) | Src::Array(e), t) if t == fat => self.slice_debug(e, file),
-            (Src::Tuple(_), _) => Err("タプルの Debug 表示は未対応".to_string()),
+            (Src::Tuple(es), Ty::Agg(i)) => self.tuple(es, i, file),
             (Src::Ref(_, inner), t) => self.need(inner, t, file),
             (other, t) => Err(format!("型 {} ({}) の Debug 表示は未対応", show(other), t.name())),
         }
@@ -501,6 +506,7 @@ impl<'a> Gen<'a> {
             }
             (_, t) if is_str(src, t, fat) || is_bytes(src, t, fat) => Ok(self.str_eq(fat)),
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg_eq(name, i, file),
+            (Src::Tuple(es), Ty::Agg(i)) => self.tuple_eq(es, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, true),
             (Src::Prim(_), t) if t.is_float() => Err(format!("型 {} の比較は未対応 (浮動小数は失敗の文言に値を出せない)", t.name())),
             (Src::Ref(_, inner), t) => self.need_eq(inner, t, file),
@@ -631,7 +637,7 @@ impl<'a> Gen<'a> {
     /// Option / Result の表示 (`eq == false`) か等しさ (`eq == true`)。
     fn two(&mut self, src: &Src, ty: Ty, file: &str, eq: bool) -> Result<String, String> {
         // 鍵は KIR の文字列の一部なので、空白を含めない (`Result<i32,i32>` のように書く)
-        let name = show(src).replace(' ', "");
+        let name = kname(&show(src));
         let k = if eq { eq_key(&name) } else { key(&name) };
         if !self.done.insert(k.clone()) {
             return Ok(k);
@@ -785,6 +791,66 @@ impl<'a> Gen<'a> {
         }
         let f = b.finish(&k);
         self.add(f, callees);
+        Ok(k)
+    }
+
+    /// タプルの表示 `(a, b)` (要素が 1 つなら `(a,)`、木走査の `debug_str` と同じ)。要素は元の型 `es` の表示の関数で書く。
+    fn tuple(&mut self, es: &[Src], i: u32, file: &str) -> Result<String, String> {
+        let name = kname(&show(&Src::Tuple(es.to_vec())));
+        let k = key(&name);
+        if !self.done.insert(k.clone()) {
+            return Ok(k);
+        }
+        let fat = self.fat()?;
+        let def = self.aggs.borrow().defs[i as usize].clone();
+        let AggKind::Tuple(fs) = &def.kind else {
+            return Err(format!("{} は集成体のタプルでない", name));
+        };
+        let mut b = Fb::new(&[Ty::Agg(i)], fat);
+        let mut callees: BTreeSet<String> = BTreeSet::new();
+        b.s("(");
+        for (j, (src, f)) in es.iter().zip(fs).enumerate() {
+            if j > 0 {
+                b.s(", ");
+            }
+            let kk = self.need(src, f.ty, file)?;
+            let v = b.emit(f.ty, Op::Field { a: b.v, off: f.off });
+            b.emit(Ty::Unit, Op::Call { callee: kk.clone(), args: vec![v] });
+            callees.insert(kk);
+        }
+        if es.len() == 1 {
+            b.s(",");
+        }
+        b.s(")");
+        let f = b.finish(&k);
+        self.add(f, callees);
+        Ok(k)
+    }
+
+    /// タプルの等しさ: 要素を順に比べる (木走査の `v_eq` と同じ)。
+    fn tuple_eq(&mut self, es: &[Src], i: u32, file: &str) -> Result<String, String> {
+        let name = kname(&show(&Src::Tuple(es.to_vec())));
+        let k = eq_key(&name);
+        if !self.done.insert(k.clone()) {
+            return Ok(k);
+        }
+        let fat = self.fat()?;
+        let def = self.aggs.borrow().defs[i as usize].clone();
+        let AggKind::Tuple(fs) = &def.kind else {
+            return Err(format!("{} は集成体のタプルでない", name));
+        };
+        let mut b = Fb::new(&[Ty::Agg(i), Ty::Agg(i)], fat);
+        let mut callees: BTreeSet<String> = BTreeSet::new();
+        let (fail, _) = b.block(&[]);
+        let fl: Vec<(Src, Ty, u32)> = es.iter().zip(fs).map(|(s, f)| (s.clone(), f.ty, f.off)).collect();
+        self.field_eq(&mut b, &fl, fail, &mut callees, file)?;
+        let t = b.c(Ty::Bool, 1);
+        b.term(Term::Ret(t));
+        b.at(fail);
+        let f = b.c(Ty::Bool, 0);
+        b.term(Term::Ret(f));
+        let func = b.build(&k, Ty::Bool, false);
+        self.add(func, callees);
         Ok(k)
     }
 
