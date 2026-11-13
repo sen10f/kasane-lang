@@ -290,6 +290,11 @@ impl<'a> Lw<'a> {
         match self.vty(r) {
             Ty::Ref(_, p) => {
                 let t = p.ty();
+                // 所有物 (Vec / String / それを持つ型) の借用の中身を丸ごと読むと、借用元と同じバッファを指す「所有値」ができて二重解放になる。
+                // `ksn check` はこの形を通し、木走査はバッファを共有するだけなので、KIR は理由を付けて拒む (設計_KIR.md 17.5)。
+                if super::coll::owns(self, t) {
+                    return self.err(line, "所有物を持つ型の借用の中身 (*r) を丸ごと読むのは段階 1 の対象外 (借用元と同じ領域を指す所有値ができる)");
+                }
                 Ok(Some(self.emit(t, Op::Load(r))))
             }
             // `Some(b)` で `Option<&スカラー>` から取った束縛は値で持つ (設計_KIR.md 10.10)。型表が `&T` で、

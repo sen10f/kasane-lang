@@ -117,6 +117,8 @@ struct Frame {
     /// 次に実行する命令の番号。
     ip: usize,
     vals: Vec<i128>,
+    /// 値が定義済みか (ブロック引数・命令の結果が書かれたら立つ)。定義が使用を支配しない KIR を、未定義の読みとして捕まえる (設計_KIR.md 17.9)。
+    defd: Vec<bool>,
     /// 呼び出し元で結果を受ける値番号。
     dst: Option<VId>,
     /// この呼び出しが始まったときの集成体の置き場の長さ (戻るときにここまで切り詰める)。
@@ -127,6 +129,9 @@ struct Frame {
     mem_base: usize,
 }
 
+/// 未初期化の領域のバイト (読むと内部エラー。`check_leaks` の語の走査がアドレスと取り違えない値)。
+const POISON: u8 = 0xA5;
+
 /// アドレスの基準値 (0 は null として空けておく)。
 const BASE: i128 = 0x1000;
 
@@ -135,6 +140,9 @@ const BASE: i128 = 0x1000;
 /// 解放済みの領域は再利用しない (誤用の検出を優先する)。生存する領域は `live` で、静的な領域は `pinned` で区別する。
 struct ByteMem {
     mem: Vec<u8>,
+    /// `mem` の各バイトが書かれたか。`heap.alloc` / `heap.realloc` の新しい領域は未初期化 (毒の値 `POISON` を入れ、読むと内部エラー)。
+    /// `frame.bytes` / `alloca` は機械語が 0 で埋めるので、書かれた扱い (0)。
+    init: Vec<bool>,
     /// 先頭アドレス → 領域。
     blocks: BTreeMap<i128, Blk>,
 }
@@ -148,15 +156,28 @@ struct Blk {
 
 impl ByteMem {
     fn new() -> ByteMem {
-        ByteMem { mem: vec![], blocks: BTreeMap::new() }
+        ByteMem { mem: vec![], init: vec![], blocks: BTreeMap::new() }
     }
 
+    /// 新しい領域 (`malloc` と同じく未初期化。読むまでに書かれていなければ内部エラー)。
     fn alloc(&mut self, size: usize, pinned: bool) -> i128 {
         let off = self.mem.len();
-        self.mem.resize(off + size.max(1), 0);
+        self.mem.resize(off + size.max(1), POISON);
+        self.init.resize(off + size.max(1), false);
         let addr = BASE + off as i128;
         self.blocks.insert(addr, Blk { off, size, live: true, pinned });
         addr
+    }
+
+    /// 0 で埋めた新しい領域 (`frame.bytes` / `alloca`。機械語は先頭で 0 埋めする)。
+    fn alloc_zeroed(&mut self, size: usize) -> i128 {
+        let a = self.alloc(size, false);
+        let at = self.locate(a, 0).expect("確保したばかり");
+        for k in at..at + size.max(1) {
+            self.mem[k] = 0;
+            self.init[k] = true;
+        }
+        a
     }
 
     /// `addr` から `n` バイトが生存する領域の内側にあるとき、`mem` 上の位置を返す。
@@ -172,6 +193,9 @@ impl ByteMem {
     fn read(&self, addr: i128, ty: Ty) -> Result<i128, String> {
         let n = width(ty);
         let at = self.locate(addr, n)?;
+        if self.init[at..at + n].iter().any(|b| !b) {
+            return Err(format!("未初期化の領域を読んだ {:#x} ({} バイト)", addr, n));
+        }
         let mut buf = [0u8; 16];
         buf[..n].copy_from_slice(&self.mem[at..at + n]);
         let u = u128::from_le_bytes(buf) as i128;
@@ -187,6 +211,7 @@ impl ByteMem {
         let at = self.locate(addr, n)?;
         let bytes = (v as u128).to_le_bytes();
         self.mem[at..at + n].copy_from_slice(&bytes[..n]);
+        self.init[at..at + n].iter_mut().for_each(|b| *b = true);
         Ok(())
     }
 
@@ -199,6 +224,7 @@ impl ByteMem {
     fn write_bytes(&mut self, addr: i128, bytes: &[u8]) -> Result<(), String> {
         let at = self.locate(addr, bytes.len())?;
         self.mem[at..at + bytes.len()].copy_from_slice(bytes);
+        self.init[at..at + bytes.len()].iter_mut().for_each(|b| *b = true);
         Ok(())
     }
 
@@ -228,8 +254,12 @@ impl ByteMem {
         let n = old_size.min(size);
         let src = self.locate(old, n)?;
         let bytes: Vec<u8> = self.mem[src..src + n].to_vec();
+        let flags: Vec<bool> = self.init[src..src + n].to_vec();
         let new = self.alloc(size, false);
-        self.write_bytes(new, &bytes)?;
+        // 旧い領域の書かれたバイトだけを引き継ぐ (増えた部分は未初期化のまま)。
+        let dst = self.locate(new, n)?;
+        self.mem[dst..dst + n].copy_from_slice(&bytes);
+        self.init[dst..dst + n].copy_from_slice(&flags);
         self.free(old)?;
         Ok(new)
     }
@@ -527,10 +557,12 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     }
     let enter = |f: usize, args: &[i128], dst: Option<VId>, hbase: usize, mem_base: usize| -> Frame {
         let mut vals = vec![0i128; counts[f]];
+        let mut defd = vec![false; counts[f]];
         for ((v, _), a) in m.funcs[f].params().iter().zip(args.iter()) {
             vals[*v as usize] = *a;
+            defd[*v as usize] = true;
         }
-        Frame { f, blk: 0, ip: 0, vals, dst, hbase, allocs: vec![], mem_base }
+        Frame { f, blk: 0, ip: 0, vals, defd, dst, hbase, allocs: vec![], mem_base }
     };
     // バイト記憶 (`ptr` の領域)。静的な領域 (`static.bytes`) は、命令の位置ごとに 1 回だけ確保する。
     let mut bm = ByteMem::new();
@@ -544,11 +576,14 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
         if ip < blk.insts.len() {
             stack[top].ip += 1;
             let inst = &blk.insts[ip];
+            if let Some(v) = crate::kir::operands(&inst.op).into_iter().find(|v| !stack[top].defd[*v as usize]) {
+                return Err(format!("内部エラー: 関数 {} の %{} が定義される前に読まれた (定義が使用を支配しない)", func.key, v));
+            }
             let get = |fr: &Frame, v: &VId| fr.vals[*v as usize];
             let result: i128 = match &inst.op {
                 Op::Const(v) => *v,
                 Op::FrameBytes { size } => {
-                    let a = bm.alloc(*size as usize, false);
+                    let a = bm.alloc_zeroed(*size as usize);
                     stack[top].allocs.push(a);
                     a
                 }
@@ -759,7 +794,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let Ty::Ref(_, p) = inst.ty else {
                         return Err("alloca の結果が参照でない".to_string());
                     };
-                    let a = bm.alloc(size_of(&m.aggs, p.ty()) as usize, false);
+                    let a = bm.alloc_zeroed(size_of(&m.aggs, p.ty()) as usize);
                     stack[top].allocs.push(a);
                     a
                 }
@@ -789,14 +824,19 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 Op::AsShared(p) | Op::Reborrow(p) => get(&stack[top], p),
             };
             stack[top].vals[inst.dst as usize] = result;
+            stack[top].defd[inst.dst as usize] = true;
             continue;
         }
         // 終端命令
         match &blk.term {
             Term::Br((t, targs)) => {
+                undefined(&stack[top], &func.key, targs)?;
                 jump(&mut stack[top], m, fi, *t, targs);
             }
             Term::BrIf(c, (t1, a1), (t2, a2)) => {
+                undefined(&stack[top], &func.key, &[*c])?;
+                undefined(&stack[top], &func.key, a1)?;
+                undefined(&stack[top], &func.key, a2)?;
                 if stack[top].vals[*c as usize] != 0 {
                     jump(&mut stack[top], m, fi, *t1, a1);
                 } else {
@@ -804,6 +844,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 }
             }
             Term::Ret(v) => {
+                undefined(&stack[top], &func.key, &[*v])?;
                 let mut val = stack[top].vals[*v as usize];
                 let done = stack.pop().expect("フレーム");
                 for a in &done.allocs {
@@ -836,6 +877,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     Some(caller) => {
                         if let Some(d) = done.dst {
                             caller.vals[d as usize] = val;
+                            caller.defd[d as usize] = true;
                         }
                     }
                 }
@@ -845,12 +887,21 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     }
 }
 
+/// `vs` のどれかが未定義 (定義される前の読み) なら内部エラー。
+fn undefined(fr: &Frame, key: &str, vs: &[VId]) -> Result<(), String> {
+    match vs.iter().find(|v| !fr.defd[**v as usize]) {
+        Some(v) => Err(format!("内部エラー: 関数 {} の %{} が定義される前に読まれた (定義が使用を支配しない)", key, v)),
+        None => Ok(()),
+    }
+}
+
 /// 移動先のブロックへ入る。引数は移動の前の値で受け取る (並列代入)。
 fn jump(fr: &mut Frame, m: &Module, fi: usize, t: usize, args: &[VId]) {
     let vals: Vec<i128> = args.iter().map(|a| fr.vals[*a as usize]).collect();
     let params = &m.funcs[fi].blocks[t].params;
     for ((p, _), v) in params.iter().zip(vals) {
         fr.vals[*p as usize] = v;
+        fr.defd[*p as usize] = true;
     }
     fr.blk = t;
     fr.ip = 0;
@@ -983,6 +1034,70 @@ end t.leak
         let twice = leak.replace("    %2: unit = const.unit ()\n    ret %2", "    %2: unit = heap.free %1\n    %3: unit = heap.free %1\n    ret %2")
             .replace("t.leak", "t.twice");
         assert!(exec(&twice, "t.twice").unwrap_err().contains("不正な解放"));
+    }
+
+    #[test]
+    fn reading_uninitialized_heap_bytes_is_an_internal_error() {
+        // `heap.alloc` の領域は未初期化 (malloc と同じ)。書く前に読むと内部エラー。`frame.bytes` は 0 で埋めてあるので読める。
+        let src = "kir 1
+
+fn t.raw key=t.raw uses=[alloc] panics=never stack=- ret=u8
+  b0():
+    %0: usize = const.usize 4
+    %1: ptr = heap.alloc %0
+    %2: u8 = mem.load.u8 %1 +0
+    %3: unit = heap.free %1
+    ret %2
+end t.raw
+
+fn t.frame key=t.frame uses=[] panics=never stack=- ret=u8
+  b0():
+    %0: ptr = frame.bytes 4
+    %1: u8 = mem.load.u8 %0 +3
+    ret %1
+end t.frame
+";
+        assert!(exec(src, "t.raw").unwrap_err().contains("未初期化"));
+        assert_eq!(exec(src, "t.frame"), Ok(Outcome::Value(0)));
+        // `heap.realloc` で増えた部分は未初期化、引き継いだ部分は書かれたまま。
+        let grow = "kir 1
+
+fn t.grow key=t.grow uses=[alloc] panics=never stack=- ret=u8
+  b0():
+    %0: usize = const.usize 2
+    %1: ptr = heap.alloc %0
+    %2: u8 = const.u8 9
+    %3: unit = mem.store.u8 %1 +1, %2
+    %4: usize = const.usize 8
+    %5: ptr = heap.realloc %1, %4
+    %6: u8 = mem.load.u8 %5 +1
+    %7: unit = heap.free %5
+    ret %6
+end t.grow
+";
+        assert_eq!(exec(grow, "t.grow"), Ok(Outcome::Value(9)));
+        let tail = grow.replace("mem.load.u8 %5 +1", "mem.load.u8 %5 +5");
+        assert!(exec(&tail, "t.grow").unwrap_err().contains("未初期化"));
+    }
+
+    #[test]
+    fn reading_a_value_before_its_definition_is_an_internal_error() {
+        // %2 は b1 でだけ定義されるのに、b2 (b1 を通らない経路もある) で読む。定義が使用を支配しないので、通らなかった経路で内部エラー。
+        let src = "kir 1
+
+fn t.dom key=t.dom uses=[] panics=never stack=- ret=u8
+  b0(%0: bool):
+    br_if %0, b1(), b2()
+  b1():
+    %2: u8 = const.u8 7
+    br b2()
+  b2():
+    ret %2
+end t.dom
+";
+        let m = crate::kir::parse_module(src).expect("parse");
+        assert_eq!(run(&m, "t.dom", &[1]), Ok(Outcome::Value(7)));
+        assert!(run(&m, "t.dom", &[0]).unwrap_err().contains("定義される前に読まれた"));
     }
 
     #[test]

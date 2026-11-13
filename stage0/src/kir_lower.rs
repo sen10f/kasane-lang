@@ -831,10 +831,17 @@ impl<'a> Lw<'a> {
         let mut vs = vec![];
         for a in args {
             match self.expr(a)? {
-                Some(v) => vs.push(v),
-                None => return Ok(None),
+                Some(v) => {
+                    coll::tmp_hold(self, v);
+                    vs.push(v)
+                }
+                None => {
+                    coll::tmp_release(self, &vs);
+                    return Ok(None);
+                }
             }
         }
+        coll::tmp_release(self, &vs);
         let vs = self.coerce_args(vs, &pts);
         for (v, pt) in vs.iter().zip(pts.iter()) {
             if self.vty(*v) != *pt {

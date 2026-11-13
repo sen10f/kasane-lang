@@ -1815,6 +1815,9 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
             let res = (|| -> Result<(), String> {
                 match &i.op {
                     Op::Const(v) => {
+                        if matches!(i.ty, Ty::Ref(..)) {
+                            return Err("参照の定数は作れない (ポインタは null だけ。参照は alloca / as_shared などで作る)".into());
+                        }
                         if matches!(i.ty, Ty::Agg(_)) {
                             return Err("集成体の型の定数は作れない".into());
                         }
@@ -2249,7 +2252,7 @@ fn memable(t: Ty) -> bool {
     t.is_int() || t.is_float() || matches!(t, Ty::Bool | Ty::Ptr)
 }
 
-fn operands(op: &Op) -> Vec<VId> {
+pub(crate) fn operands(op: &Op) -> Vec<VId> {
     match op {
         Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) => vec![],
         Op::PtrAdd { p, off } => vec![*p, *off],
@@ -2489,6 +2492,16 @@ end t.p
         let errs = verify_module(&bad);
         assert_eq!(errs.len(), 1);
         assert!(errs[0].1.contains("panics never"), "{:?}", errs);
+    }
+
+    #[test]
+    fn verify_rejects_a_constant_reference() {
+        // 参照の定数 (null の参照など) は作れない。参照は alloca / as_shared / reborrow で作る。
+        let mut bad = sample();
+        bad.funcs[0].blocks[0].insts.push(Inst { dst: 900, ty: Ty::Ref(false, Pointee::U32), op: Op::Const(0) });
+        let errs = verify_module(&bad);
+        assert_eq!(errs.len(), 1, "{:?}", errs);
+        assert!(errs[0].1.contains("参照の定数"), "{:?}", errs);
     }
 
     #[test]

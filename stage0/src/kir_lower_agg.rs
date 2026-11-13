@@ -427,12 +427,19 @@ impl<'a> Lw<'a> {
             if vals[k].is_some() {
                 return self.err(line, format!("フィールド {} が二度書かれている", fname));
             }
-            let Some(v) = self.expr(&xs[1])? else { return Ok(None) };
+            let Some(v) = self.expr(&xs[1])? else {
+                let held: Vec<VId> = vals.iter().flatten().copied().collect();
+                super::coll::tmp_release(self, &held);
+                return Ok(None);
+            };
+            super::coll::tmp_hold(self, v);
             if self.vty(v) != decl[k].ty {
                 return self.err(line, format!("フィールド {} の型が違う", fname));
             }
             vals[k] = Some(v);
         }
+        let held: Vec<VId> = vals.iter().flatten().copied().collect();
+        super::coll::tmp_release(self, &held);
         let Some(fields) = vals.into_iter().collect::<Option<Vec<VId>>>() else {
             return self.err(line, "構造体リテラルにフィールドが足りない");
         };
@@ -456,12 +463,17 @@ impl<'a> Lw<'a> {
         }
         let mut fields = vec![];
         for (x, fd) in xs.iter().zip(decl) {
-            let Some(v) = self.expr(x)? else { return Ok(None) };
+            let Some(v) = self.expr(x)? else {
+                super::coll::tmp_release(self, &fields);
+                return Ok(None);
+            };
+            super::coll::tmp_hold(self, v);
             if self.vty(v) != fd.ty {
                 return self.err(line, "タプルの要素の型が違う");
             }
             fields.push(v);
         }
+        super::coll::tmp_release(self, &fields);
         Ok(Some(self.emit(ty, Op::Make { variant: None, fields })))
     }
 
@@ -557,12 +569,17 @@ impl<'a> Lw<'a> {
         }
         let mut vals = vec![];
         for (a, fd) in args.iter().zip(&decl) {
-            let Some(v) = self.expr(a)? else { return Ok(None) };
+            let Some(v) = self.expr(a)? else {
+                super::coll::tmp_release(self, &vals);
+                return Ok(None);
+            };
+            super::coll::tmp_hold(self, v);
             if self.vty(v) != fd.ty {
                 return self.err(line, format!("列挙子 {} の引数の型が違う", vn));
             }
             vals.push(v);
         }
+        super::coll::tmp_release(self, &vals);
         Ok(Some(self.emit(ty, Op::Make { variant: Some(idx as u32), fields: vals })))
     }
 

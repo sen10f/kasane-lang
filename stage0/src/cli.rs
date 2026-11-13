@@ -542,7 +542,8 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
         return 2;
     }
     let mut h: u64 = 0xcbf29ce484222325;
-    for b in ll.bytes() {
+    let extra = clang_extra_args();
+    for b in ll.bytes().chain(extra.join(" ").bytes()) {
         h = (h ^ b as u64).wrapping_mul(0x100000001b3);
     }
     let exe = dir.join(format!("{:016x}{}", h, if cfg!(windows) { ".exe" } else { "" }));
@@ -553,7 +554,7 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
             return 2;
         }
         let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
-        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module", "-x", "ir"]).arg(&src).arg("-o").arg(&tmp).arg("-lm").output();
+        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).arg("-o").arg(&tmp).arg("-lm").output();
         match o {
             Err(e) => {
                 eprintln!("ksn kir: --native には clang が必要です ({} を起動できない: {})", clang, e);
@@ -2106,12 +2107,18 @@ fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str) -
     clang_ll(&ll, exe, opt)
 }
 
+/// 環境変数 `KSN_CLANG_ARGS` (空白区切り) の clang への追加の引数。試験が `-fsanitize=address -g` などを渡すための隠し機能。
+/// 未設定なら空 (既定の挙動は変わらない)。
+fn clang_extra_args() -> Vec<String> {
+    std::env::var("KSN_CLANG_ARGS").map(|s| s.split_whitespace().map(|x| x.to_string()).collect()).unwrap_or_default()
+}
+
 /// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。
 fn clang_ll(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let src = exe.with_extension("ll.tmp");
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
-    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module", "-x", "ir"]).arg(&src).arg("-o").arg(exe).arg("-lm").output();
+    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).arg("-o").arg(exe).arg("-lm").output();
     let _ = fs::remove_file(&src);
     match o {
         Err(e) => Err(format!("clang を起動できない ({}: {})", clang, e)),

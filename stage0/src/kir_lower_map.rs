@@ -616,6 +616,23 @@ pub(crate) fn method(lw: &mut Lw, e: &V, slot: Option<usize>, kind: &Kind, h: VI
 }
 
 fn insert(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+    // `&str` のキーは借用 (組には `ptr` と長さだけが入る)。元の `String` を後で変えると再確保で組のキーが解放後の領域を指す。
+    // `ksn check` はこの形を通すので、`s.as_str()` をキーにした `String` が関数のどこかで変えられるなら拒む (設計_KIR.md 17.6)。
+    let operand = if nname(&args[0]) == "Unary" && st(&nf(&args[0])[0]) == "&" { &nf(&args[0])[1] } else { &args[0] };
+    // `k.as_str()` は、パーサの形によって `Call` (名前の経路) にも `MCall` にもなる。元の String の名前を取る。
+    let src = match nname(operand) {
+        "MCall" if st(&nf(operand)[1]) == "as_str" => super::agg::field_segs(&nf(operand)[0]).map(|s| s[0].clone()),
+        "Call" if nname(&nf(operand)[0]) == "Path" => {
+            let segs = strs(&nf(&nf(operand)[0])[0]);
+            (segs.len() == 2 && segs[1] == "as_str").then(|| segs[0].clone())
+        }
+        _ => None,
+    };
+    if let (Some(name), Some(body)) = (src, lw.def.body.as_ref()) {
+        if super::coll::body_mutates(body, &name) {
+            return lw.err(line, format!("キー {}.as_str() の元の String が関数の中で変更される形は段階 1 の対象外 (組のキーが解放後の領域を指す)", name));
+        }
+    }
     let Some((key, kt)) = eval_key(lw, &args[0], line)? else { return Ok(None) };
     let Some(val) = lw.expr(&args[1])? else { return Ok(None) };
     let vt = lw.vty(val);

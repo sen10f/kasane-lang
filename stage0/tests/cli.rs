@@ -7456,7 +7456,54 @@ fn kir_run(args: &[&str], cwd: &Path) -> Output {
     if matches!(r.status.code(), Some(101) | Some(102)) {
         assert_eq!(text(&n.stderr), text(&r.stderr), "native: panic の文言が違う {:?}", args);
     }
+    // AddressSanitizer で作った実行ファイルでも走らせる (機械語の二重解放・範囲外・解放後の読み・漏れを捕まえる)。
+    if asan_available() {
+        let a = Command::new(exe())
+            .args(&native_args)
+            .current_dir(cwd)
+            .env("KSN_CLANG_ARGS", "-fsanitize=address -fno-omit-frame-pointer -g -O0")
+            .env("ASAN_OPTIONS", "detect_leaks=1:abort_on_error=0")
+            .output()
+            .expect("spawn ksn");
+        let err = text(&a.stderr);
+        // panic (101 / 102) で抜けた経路は、解放しないまま終わるので漏れの報告は見ない。
+        let panicked = matches!(r.status.code(), Some(101) | Some(102));
+        let bad = err.contains("AddressSanitizer") || (!panicked && err.contains("LeakSanitizer"));
+        assert!(!bad, "ASan が報告した {:?}\n{}", args, err);
+        assert_eq!(a.status.code(), r.status.code(), "asan: 終了コードが違う {:?}\n{}", args, err);
+        assert_eq!(text(&a.stdout), text(&r.stdout), "asan: 表示が違う {:?}", args);
+    }
     r
+}
+
+/// clang が `-fsanitize=address` の実行ファイルを作って走らせられるか (環境変数 `KSN_NO_ASAN=1` で無効にできる)。
+fn asan_available() -> bool {
+    use std::sync::OnceLock;
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        if !clang_available() || std::env::var("KSN_NO_ASAN").is_ok() {
+            return false;
+        }
+        let d = std::env::temp_dir().join(format!("ksn_asan_probe_{}", std::process::id()));
+        let _ = fs::create_dir_all(&d);
+        let c = d.join("a.c");
+        let o = d.join("a.out");
+        fs::write(&c, "int main(void){return 0;}\n").unwrap();
+        let ok = Command::new("clang")
+            .args(["-fsanitize=address"])
+            .arg(&c)
+            .arg("-o")
+            .arg(&o)
+            .output()
+            .map(|r| r.status.success())
+            .unwrap_or(false)
+            && Command::new(&o).output().map(|r| r.status.success()).unwrap_or(false);
+        let _ = fs::remove_dir_all(&d);
+        if !ok {
+            eprintln!("skip: clang の AddressSanitizer が使えないので、ASan の実行は飛ばす");
+        }
+        ok
+    })
 }
 
 
@@ -17808,4 +17855,169 @@ end t.main
     let k = kir_run(&["kir", "t.main", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(101), "{}", text(&k.stderr));
     assert_eq!(text(&k.stderr).trim(), text(&tw.stderr).trim());
+}
+
+/// Fable のレビュー (2026-11-13) で見つかった KIR / LLVM の不具合の回帰 (設計_KIR.md 17 章)。
+/// `(KIR の引数, 木走査で呼ぶ式, 期待する値のリテラル, 期待する表示)` の各ケースを、木走査・参照実行器・機械語 (と ASan) で比べる。
+fn kir_review_cases(tag: &str, fns: &str, f: &str, cases: &[(&[&str], &str, &str, &str)]) {
+    for (i, (args, call, lit, want)) in cases.iter().enumerate() {
+        let main = format!(
+            "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let r = {}\n    core.check.eq(r, {})\n    Ok(())\nend t.main\n",
+            call, lit
+        );
+        let t = Tmp::new(&format!("kir_review_{}_{}", tag, i), &format!("{}\n{}", fns, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr) + &text(&o.stdout));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_review_field_move_in_one_branch_survives_the_join() {
+    // 片方の分岐の中でフィールドを移すと、合流で移動が失われて二重解放になっていた
+    // (`assigned` が、フィールドからの移動で書き換わる局所を数えなかった)。`if` と `match`。(`while` の中の移動は E3002 で拒否される。)
+    let fns = "type t.B\n    items: alloc.vec.Vec<u32, std.alloc.System>\n    n: u32\nend t.B\n\n\
+fn t.mk() -> t.B uses [alloc] panics may\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(7u32))\n    t.B { items: v, n: 1u32 }\nend t.mk\n\n\
+fn t.f(c: bool) -> usize uses [alloc] panics may\n    let b = t.mk()\n    let mut r: usize = 0usize\n    if c {\n        let w = b.items\n        r = w.len()\n    }\n    r\nend t.f\n\n\
+fn t.g(k: u32) -> usize uses [alloc] panics may\n    let b = t.mk()\n    let mut r: usize = 0usize\n    match k {\n        0u32 => {\n            let w = b.items\n            r = w.len()\n        }\n        _ => {\n            r = 5usize\n        }\n    }\n    r\nend t.g\n";
+    kir_review_cases("fm_if", fns, "t.f", &[(&["true"], "t.f(true)", "1usize", "1"), (&["false"], "t.f(false)", "0usize", "0")]);
+    kir_review_cases("fm_match", fns, "t.g", &[(&["0"], "t.g(0u32)", "1usize", "1"), (&["3"], "t.g(3u32)", "5usize", "5")]);
+}
+
+#[test]
+fn kir_review_early_exit_frees_evaluated_owned_temporaries() {
+    // `?` / `return` / `break` で抜けるとき、評価済みで未束縛の所有値 (引数・構造体のフィールド・タプルの要素) も解放する。
+    let fns = "type t.P\n    a: alloc.vec.Vec<u32, std.alloc.System>\n    n: u32\nend t.P\n\n\
+fn t.g(c: bool) -> Option<u32> uses [] panics never\n    if c {\n        return Some(1u32)\n    }\n    None\nend t.g\n\n\
+fn t.mkv() -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics may\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(7u32))\n    v\nend t.mkv\n\n\
+fn t.h(v: alloc.vec.Vec<u32, std.alloc.System>, x: u32) -> usize uses [] panics never\n    core.mem.drop(x)\n    v.len()\nend t.h\n\n\
+fn t.f(c: bool) -> Option<usize> uses [alloc] panics may\n    Some(t.h(t.mkv(), t.g(c)?))\nend t.f\n\n\
+fn t.s(c: bool) -> Option<u32> uses [alloc] panics may\n    let p = t.P { a: t.mkv(), n: t.g(c)? }\n    Some(p.n)\nend t.s\n\n\
+fn t.tup(c: bool) -> Option<u32> uses [alloc] panics may\n    let (a, b) = (t.mkv(), t.g(c)?)\n    core.mem.drop(a)\n    Some(b)\nend t.tup\n\n\n\
+fn t.ret(c: bool) -> usize uses [alloc] panics may\n    let n = t.h(t.mkv(), if c {\n        return 5usize\n    } else {\n        1u32\n    })\n    n + 10usize\nend t.ret\n\n\
+fn t.brk(k: u32) -> usize uses [alloc] panics may\n    let mut total = 0usize\n    let mut i = 0u32\n    while i < 4u32 {\n        let n = t.h(t.mkv(), if i == k {\n            break\n        } else {\n            1u32\n        })\n        total = total + n\n        i = i + 1u32\n    }\n    total\nend t.brk\n";
+    kir_review_cases("early_arg", fns, "t.f", &[(&["true"], "t.f(true)", "Some(1usize)", "Some(1)"), (&["false"], "t.f(false)", "None", "None")]);
+    kir_review_cases("early_field", fns, "t.s", &[(&["true"], "t.s(true)", "Some(1u32)", "Some(1)"), (&["false"], "t.s(false)", "None", "None")]);
+    kir_review_cases("early_ret", fns, "t.ret", &[(&["true"], "t.ret(true)", "5usize", "5"), (&["false"], "t.ret(false)", "11usize", "11")]);
+    kir_review_cases("early_break", fns, "t.brk", &[(&["2"], "t.brk(2u32)", "2usize", "2"), (&["9"], "t.brk(9u32)", "4usize", "4")]);
+    kir_review_cases("early_tuple", fns, "t.tup", &[(&["true"], "t.tup(true)", "Some(1u32)", "Some(1)"), (&["false"], "t.tup(false)", "None", "None")]);
+}
+
+#[test]
+fn kir_review_user_iterator_advance_crosses_outer_joins() {
+    // 利用者の反復子の `for x in it` が進めたスロットは、外側の `while` / `if` / `match` の合流にも渡る
+    // (前は `scan_mut` が `For` を見ず、外側の合流が古い `it` を使い続けた)。
+    let fns = format!(
+        "{}\nfn t.outer(rounds: u32) -> u32 uses [] panics may\n    let mut it = t.Upto {{ cur: 0u32, stop: 100u32 }}\n    let mut acc = 0u32\n    let mut r = 0u32\n    while r < rounds {{\n        for x in it {{\n            acc = acc.wrapping_add(x)\n            if x % 4u32 == 3u32 {{\n                break\n            }}\n        }}\n        r = r + 1u32\n    }}\n    acc\nend t.outer\n\n\
+fn t.cond(c: bool) -> u32 uses [] panics never\n    let mut it = t.Upto {{ cur: 0u32, stop: 6u32 }}\n    let mut acc = 0u32\n    if c {{\n        for x in it {{\n            if x == 2u32 {{\n                break\n            }}\n            acc = acc.wrapping_add(x)\n        }}\n    }}\n    for y in it {{\n        acc = acc.wrapping_add(y.wrapping_mul(10u32))\n    }}\n    acc\nend t.cond\n\n\
+fn t.sel(k: u32) -> u32 uses [] panics never\n    let mut it = t.Upto {{ cur: 0u32, stop: 6u32 }}\n    let mut acc = 0u32\n    match k {{\n        0u32 => {{\n            for x in it {{\n                if x == 1u32 {{\n                    break\n                }}\n                acc = acc.wrapping_add(1u32)\n            }}\n        }}\n        _ => {{\n            acc = acc.wrapping_add(0u32)\n        }}\n    }}\n    for y in it {{\n        acc = acc.wrapping_add(y)\n    }}\n    acc\nend t.sel\n",
+        USER_ITER_SRC.split("fn t.sum(").next().unwrap()
+    );
+    kir_review_cases("uiter_outer", &fns, "t.outer", &[(&["2"], "t.outer(2u32)", "28u32", "28"), (&["3"], "t.outer(3u32)", "66u32", "66")]);
+    kir_review_cases("uiter_cond", &fns, "t.cond", &[(&["true"], "t.cond(true)", "121u32", "121"), (&["false"], "t.cond(false)", "150u32", "150")]);
+    kir_review_cases("uiter_sel", &fns, "t.sel", &[(&["0"], "t.sel(0u32)", "15u32", "15"), (&["1"], "t.sel(1u32)", "15u32", "15")]);
+}
+
+#[test]
+fn kir_review_user_iterator_owned_items_are_freed() {
+    // 利用者の反復子が所有物 (Vec) を返すとき、`for` の変数が所有して 1 周ごとに解放する (前は漏れた)。`for _ in it` も解放する。
+    let fns = "type t.Gen pub\n    cur: u32\n    stop: u32\nend t.Gen\n\n\
+impl core.iter.Iterator<alloc.vec.Vec<u32, std.alloc.System>, [alloc], may> for t.Gen\n\
+fn t.Gen.next(self: &mut t.Gen) -> Option<alloc.vec.Vec<u32, std.alloc.System>> uses [alloc] panics may impls core.iter.Iterator<alloc.vec.Vec<u32, std.alloc.System>, [alloc], may>\n    if self.cur >= self.stop {\n        return None\n    }\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(self.cur))\n    self.cur = self.cur.wrapping_add(1u32)\n    Some(v)\nend t.Gen.next\n\n\
+fn t.run(n: u32) -> usize uses [alloc] panics may\n    let mut g = t.Gen { cur: 0u32, stop: n }\n    let mut total = 0usize\n    for v in g {\n        total = total + v.len()\n    }\n    total\nend t.run\n\n\
+fn t.run_wild(n: u32) -> usize uses [alloc] panics may\n    let mut g = t.Gen { cur: 0u32, stop: n }\n    let mut total = 0usize\n    for _ in g {\n        total = total + 1usize\n    }\n    total\nend t.run_wild\n";
+    kir_review_cases("uiter_own", fns, "t.run", &[(&["4"], "t.run(4u32)", "4usize", "4"), (&["0"], "t.run(0u32)", "0usize", "0")]);
+    kir_review_cases("uiter_wild", fns, "t.run_wild", &[(&["3"], "t.run_wild(3u32)", "3usize", "3")]);
+}
+
+#[test]
+fn kir_review_nan_bits_follow_one_rule() {
+    // NaN になる演算 (`+ - * / %`・`sqrt`) の結果のビット列: 第 1 被演算子が NaN ならそれ (quiet 化)、第 2 が NaN ならそれ、
+    // どちらでもなければ正の quiet NaN。実機の既定の NaN (符号ビット付き) と LLVM の定数畳み込み (正) の違いを、
+    // 木走査・参照実行器・機械語 (最適化 -O1 と ASan の -O0) の 3 者で揃える (設計_KIR.md 17.8)。
+    let fns = "fn t.d(b: u64) -> f64 uses [] panics never\n    core.num.f64.from_bits(b)\nend t.d\n\n\
+fn t.s(b: u32) -> f32 uses [] panics never\n    core.num.f32.from_bits(b)\nend t.s\n\n\
+fn t.sub64(a: f64, b: f64) -> u64 uses [] panics never\n    (a - b).to_bits()\nend t.sub64\n\n\
+fn t.mul64(a: f64, b: f64) -> u64 uses [] panics never\n    (a * b).to_bits()\nend t.mul64\n\n\
+fn t.div64(a: f64, b: f64) -> u64 uses [] panics never\n    (a / b).to_bits()\nend t.div64\n\n\
+fn t.rem64(a: f64, b: f64) -> u64 uses [] panics never\n    a.rem(b).to_bits()\nend t.rem64\n\n\
+fn t.sqrt64(a: f64) -> u64 uses [] panics never\n    a.sqrt().to_bits()\nend t.sqrt64\n\n\
+fn t.add32(a: f32, b: f32) -> u32 uses [] panics never\n    (a + b).to_bits()\nend t.add32\n\n\
+fn t.div32(a: f32, b: f32) -> u32 uses [] panics never\n    (a / b).to_bits()\nend t.div32\n";
+    const INF: &str = "9218868437227405312";
+    const CANON: &str = "9221120237041090560";
+    const SNAN: &str = "9218868437227405313";
+    const QSNAN: &str = "9221120237041090561";
+    const ONE: &str = "4607182418800017408";
+    let c64 = |f: &'static str, a: &'static str, b: &'static str, want: &'static str| -> (&'static str, Vec<&'static str>, String, String, String) {
+        (f, vec![a, b], format!("{}(t.d({}u64), t.d({}u64))", f, a, b), format!("{}u64", want), want.to_string())
+    };
+    let mut cases = vec![
+        c64("t.sub64", INF, INF, CANON),
+        c64("t.sub64", SNAN, ONE, QSNAN),
+        c64("t.sub64", ONE, SNAN, QSNAN),
+        c64("t.mul64", "0", INF, CANON),
+        c64("t.div64", INF, INF, CANON),
+        c64("t.div64", "0", "0", CANON),
+        c64("t.div64", SNAN, "0", QSNAN),
+        c64("t.rem64", ONE, "0", CANON),
+        c64("t.rem64", INF, ONE, CANON),
+    ];
+    cases.push(("t.sqrt64", vec!["13836000000000000000"], "t.sqrt64(t.d(13836000000000000000u64))".into(), format!("{}u64", CANON), CANON.to_string()));
+    cases.push(("t.add32", vec!["2139095040", "4286578688"], "t.add32(t.s(2139095040u32), t.s(4286578688u32))".into(), "2143289344u32".into(), "2143289344".into()));
+    cases.push(("t.div32", vec!["0", "0"], "t.div32(t.s(0u32), t.s(0u32))".into(), "2143289344u32".into(), "2143289344".into()));
+    cases.push(("t.add32", vec!["2139095041", "1065353216"], "t.add32(t.s(2139095041u32), t.s(1065353216u32))".into(), "2143289345u32".into(), "2143289345".into()));
+    for (i, (f, args, call, lit, want)) in cases.iter().enumerate() {
+        kir_review_cases(&format!("nan{}", i), &fns, f, &[(&args[..], call.as_str(), lit.as_str(), want.as_str())]);
+    }
+}
+
+#[test]
+fn kir_review_rejects_borrow_shapes_that_read_freed_buffers() {
+    // `ksn check` が通す、借用の中身の丸読み (`*r`、所有物を持つ型) と、反復中の Vec の変更 (`for x in v` の本体で `v.push`) は、
+    // 二重解放・解放後の読みになるので、KIR の下ろしは理由を付けて拒む (設計_KIR.md 17.5 / 17.6)。
+    let cases: &[(&str, &str)] = &[
+        (
+            "type t.B\n    items: alloc.vec.Vec<u32, std.alloc.System>\n    n: u32\nend t.B\n\nfn t.f(r: &t.B) -> usize uses [alloc] panics may\n    let b = *r\n    b.items.len()\nend t.f\n",
+            "借用の中身",
+        ),
+        (
+            "fn t.f(r: &alloc.vec.Vec<u32, std.alloc.System>) -> usize uses [alloc] panics may\n    let b = *r\n    b.len()\nend t.f\n",
+            "* の被演算子が参照でない",
+        ),
+        (
+            "fn t.f() -> usize uses [alloc] panics may\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(1u32))\n    let mut n = 0usize\n    for x in v {\n        if n < 3usize {\n            core.mem.drop(v.push(x))\n        }\n        n = n + 1usize\n    }\n    v.len()\nend t.f\n",
+            "反復中の Vec を変更",
+        ),
+        (
+            "fn t.f() -> usize uses [alloc] panics may\n    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)\n    let mut k: alloc.string.String = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(k.push_str(\"abc\"))\n    core.mem.drop(m.insert(k.as_str(), 1u32))\n    core.mem.drop(k.push_str(\"defghijklmnopqrstuvwxyzabcdefghijklmnopq\"))\n    m.len()\nend t.f\n",
+            "元の String が関数の中で変更される",
+        ),
+    ];
+    for (i, (src, why)) in cases.iter().enumerate() {
+        let src = format!("{}\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n", src);
+        let t = Tmp::new(&format!("kir_review_reject_{}", i), &src);
+        // 検査が先に拒むようになった形 (`*r` の move は E3002、借用中の変更は E3010) は、それで健全性が保たれる。
+        // 検査を通る形だけ、KIR の下ろしが理由を付けて拒むことを確かめる。
+        let c = run(&["check", "--json"], &t.0);
+        if c.status.code() != Some(0) {
+            let got = codes(&text(&c.stdout));
+            assert!(got.iter().any(|g| g == "E3002" || g == "E3010"), "{}: {:?}", i, got);
+            continue;
+        }
+        let o = run(&["kir", "t.f"], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
+        assert!(text(&o.stderr).contains(why), "{}", text(&o.stderr));
+    }
+}
+
+#[test]
+fn kir_review_for_over_a_vec_may_still_read_it() {
+    // 本体で反復中の Vec を読むだけ (`len` など) なら、これまでどおり下ろせる。
+    let fns = "fn t.sum() -> usize uses [alloc] panics may\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(1u32))\n    core.mem.drop(v.push(2u32))\n    let mut n = 0usize\n    for x in v {\n        n = n + v.len()\n        core.mem.drop(x)\n    }\n    n\nend t.sum\n";
+    kir_review_cases("for_read", fns, "t.sum", &[(&[], "t.sum()", "4usize", "4")]);
 }

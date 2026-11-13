@@ -663,3 +663,32 @@ mod tests {
         );
     }
 }
+
+/// NaN の規則 (設計_KIR.md 17.8): 浮動小数の `+ - * /`・`%`・`sqrt` で、結果が NaN になるとき、
+/// 第 1 被演算子が NaN ならそれ (quiet 化)、そうでなく第 2 被演算子が NaN ならそれ (quiet 化)、どちらでもなければ正の quiet NaN (`f64::NAN`)。
+/// 実機は被演算子が NaN でないとき符号ビットの立った NaN を作る (x86) が、LLVM の定数畳み込みは正の NaN を作る。
+/// 木走査・参照実行器・機械語のどれも、この規則で結果を決めてビット列を揃える。
+pub fn nan_rule64(a: f64, b: f64, r: f64) -> f64 {
+    if !r.is_nan() {
+        r
+    } else if a.is_nan() {
+        f64::from_bits(a.to_bits() | 0x0008_0000_0000_0000)
+    } else if b.is_nan() {
+        f64::from_bits(b.to_bits() | 0x0008_0000_0000_0000)
+    } else {
+        f64::NAN
+    }
+}
+
+/// `nan_rule64` の `f32` 版 (正の quiet NaN は `f32::NAN` = 0x7fc00000)。
+pub fn nan_rule32(a: f32, b: f32, r: f32) -> f32 {
+    if !r.is_nan() {
+        r
+    } else if a.is_nan() {
+        f32::from_bits(a.to_bits() | 0x0040_0000)
+    } else if b.is_nan() {
+        f32::from_bits(b.to_bits() | 0x0040_0000)
+    } else {
+        f32::NAN
+    }
+}
