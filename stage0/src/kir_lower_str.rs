@@ -254,9 +254,9 @@ impl<'a> Lw<'a> {
 
         let (hd, hp) = self.new_block(&[Ty::Usize]);
         let (body, bodyp_) = self.new_block(&[Ty::Usize]);
-        let (check2, check2p) = self.new_block(&[Ty::Usize, Ty::Bool, Ty::Bool, Ty::Bool]);
-        let (check3, check3p) = self.new_block(&[Ty::Usize, Ty::Bool, Ty::Bool]);
-        let (check4, check4p) = self.new_block(&[Ty::Usize, Ty::Bool]);
+        let (check2, check2p) = self.new_block(&[Ty::Usize, Ty::U8, Ty::Bool, Ty::Bool, Ty::Bool]);
+        let (check3, check3p) = self.new_block(&[Ty::Usize, Ty::U8, Ty::Bool, Ty::Bool]);
+        let (check4, check4p) = self.new_block(&[Ty::Usize, Ty::U8, Ty::Bool]);
         let (two, tp_) = self.new_block(&[Ty::Usize]);
         let (two2, two2p) = self.new_block(&[Ty::Usize, Ty::Usize]);
         let (three, thp_) = self.new_block(&[Ty::Usize]);
@@ -267,7 +267,7 @@ impl<'a> Lw<'a> {
         let (four, fp_) = self.new_block(&[Ty::Usize]);
         let (four2, four2p) = self.new_block(&[Ty::Usize, Ty::Usize]);
 
-        let (four4, four4p) = self.new_block(&[Ty::Usize, Ty::Usize]);
+        let (four4, four4p) = self.new_block(&[Ty::Usize, Ty::U8, Ty::Usize]);
         let (okb, _) = self.new_block(&[]);
         let (badb, bp_) = self.new_block(&[Ty::Usize]);
         let (join, jp) = self.new_block(&[Ty::Res(Pay::Agg(fat_idx), Pay::Agg(err_idx))]);
@@ -294,24 +294,27 @@ impl<'a> Lw<'a> {
         let le_f4 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b, b: f4 });
         let is_4 = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge_f0, le_f4));
         let ni = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: bi, b: one });
-        self.branch(lt80, (hd, vec![ni]), (check2, vec![bi, is_2, is_3, is_4]));
+        self.branch(lt80, (hd, vec![ni]), (check2, vec![bi, b, is_2, is_3, is_4]));
         let _ = (is_2, is_3, is_4, ge_c2, le_df, ge_e0, le_ef, ge_f0, le_f4);
 
         // ---------- 先頭バイトが 0x80.. の分岐 ----------
         self.cur = Some(check2);
         let ci = check2p[0];
-        let is2 = check2p[1];
-        let is3 = check2p[2];
-        let is4 = check2p[3];
-        self.branch(is2, (two, vec![ci]), (check3, vec![ci, is3, is4]));
+        let b = check2p[1];
+        let is2 = check2p[2];
+        let is3 = check2p[3];
+        let is4 = check2p[4];
+        self.branch(is2, (two, vec![ci]), (check3, vec![ci, b, is3, is4]));
         self.cur = Some(check3);
         let ci2 = check3p[0];
-        let is3b = check3p[1];
-        let is4b = check3p[2];
-        self.branch(is3b, (three, vec![ci2]), (check4, vec![ci2, is4b]));
+        let b = check3p[1];
+        let is3b = check3p[2];
+        let is4b = check3p[3];
+        self.branch(is3b, (three, vec![ci2]), (check4, vec![ci2, b, is4b]));
         self.cur = Some(check4);
         let ci3 = check4p[0];
-        let is4b = check4p[1];
+        let b = check4p[1];
+        let is4b = check4p[2];
         self.branch(is4b, (four, vec![ci3]), (badb, vec![ci3]));
 
         // ---------- 2 バイト (C2..DF): 2 バイト目 80..BF ----------
@@ -418,7 +421,7 @@ impl<'a> Lw<'a> {
         let b2 = four3p[4];
 
         let c2 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: w2, b: len });
-        self.branch(c2, (badb, vec![w0]), (four4, vec![w0, w2]));
+        self.branch(c2, (badb, vec![w0]), (four4, vec![w0, w1, w2]));
         self.cur = Some(four4);
         let x1 = four4p[0];
         let x3 = four4p[1];
