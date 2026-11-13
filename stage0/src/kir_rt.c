@@ -3,6 +3,7 @@
  * NaN は `nan`、±inf は `inf` / `-inf`、整数値で |f| < 1e16 は小数 1 桁 (`1.0`、`-0.0`)、
  * それ以外は Rust の `{}` (往復できる最短の桁を、指数表記を使わずに 10 進で書く)。 */
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -174,4 +175,53 @@ long long ksn_utf8_valid(const unsigned char *p, long long n) {
         i += w;
     }
     return n;
+}
+
+/* `core.num.<int>.from_str_radix(text, radix)` の実行時補助。
+ * 規則は `stage0/src/natives.rs` の from_str_radix / parse と同一:
+ *   - 空文字列、符号だけの文字列は kind 0。
+ *   - 符号なし型は先頭の '-' ("-0" も含む) を kind 0 で拒む。'+' は両方受け付ける。
+ *   - 各桁は 0-9 / a-z (A-Z も可)。radix (2..=36) 以上の桁・不正文字は kind 0。
+ *   - 128 ビットで `v = v * radix + d` を累積。桁あふれは bits==128 なら kind 0、
+ *     それ以外は kind 1 (範囲外)。
+ *   - 符号付き: '-' なら |v| <= 2^(bits-1)、そうでなければ <= 2^(bits-1)-1。
+ *     違反は kind 1。符号なし: v <= 2^bits-1 (bits>=64 なら常に範囲内)。違反は kind 1。
+ * 戻り値: 0 = 成功 (out_lo/out_hi に 128 ビットの値)、1 = kind 0、2 = kind 1。 */
+int ksn_parse_int(const unsigned char *p, long len, unsigned radix,
+                  int bits, int is_signed,
+                  unsigned long long *out_lo, unsigned long long *out_hi) {
+    if (radix < 2 || radix > 36) return 1;
+    if (len == 0) return 1;
+    int is_minus = p[0] == '-';
+    int is_plus = p[0] == '+';
+    if (!is_signed && is_minus) return 1;
+    int has_sign = is_minus || is_plus;
+    long start = has_sign ? 1 : 0;
+    if (start == len) return 1;
+    unsigned __int128 v = 0;
+    unsigned __int128 lim = ~(unsigned __int128)0;
+    for (long i = start; i < len; i++) {
+        unsigned c = p[i] | 0x20;
+        unsigned d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
+        else return 1;
+        if (d >= radix) return 1;
+        if (v > (lim - (unsigned __int128)d) / (unsigned __int128)radix) {
+            return bits == 128 ? 1 : 2;
+        }
+        v = v * (unsigned __int128)radix + (unsigned __int128)d;
+    }
+    if (is_signed) {
+        unsigned __int128 half = (unsigned __int128)1 << (bits - 1);
+        unsigned __int128 bound = is_minus ? half : half - 1;
+        if (v > bound) return 2;
+    } else if (bits < 128) {
+        unsigned __int128 bound = ((unsigned __int128)1 << bits) - 1;
+        if (v > bound) return 2;
+    }
+    if (is_minus && is_signed) v = 0 - v;
+    *out_lo = (unsigned long long)(uint64_t)v;
+    *out_hi = (unsigned long long)(uint64_t)(v >> 64);
+    return 0;
 }

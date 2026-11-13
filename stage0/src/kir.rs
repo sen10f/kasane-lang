@@ -696,6 +696,10 @@ pub enum Op {
     FmtFloat { bits: u32, a: VId },
     /// `p` から `len` バイトを UTF-8 として検証し、正しい接頭辞の長さ (`valid_up_to`) を返す。全体が正しければ `len`。
     Utf8Valid { p: VId, len: VId },
+    /// `core.num.<int>.from_str_radix(text, radix)`。`ty` は結果の整数型、`s` は `&str` (fat)、`radix` は `u32`。
+    /// 結果は `Result<ty, core.num.ParseIntError>` (tag bit が 0 なら Ok でペイロードは整数、1 なら Err でペイロードは ParseIntError の kind)。
+    /// `panics never` だけで使える (エラーは値として返す)。128 ビット整数は戻り値の型で表せる範囲だけ扱う。
+    ParseInt { ty: Ty, s: VId, radix: VId },
 }
 
 /// `BitCount` の種類。
@@ -1138,6 +1142,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::Eprint { data } => format!("eprint {}", fmt_val(*data)),
         Op::Abort => "abort".to_string(),
         Op::FmtFloat { bits, a } => format!("fmtfloat.{bits} {}", fmt_val(*a)),
+        Op::ParseInt { ty, s, radix } => format!("parseint.{} {}", ty.name(), fmt_vals(&[*s, *radix])),
     };
     format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
 }
@@ -1565,6 +1570,16 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             }
             let v = operands(1)?;
             Ok(Op::FmtFloat { bits, a: v[0] })
+        }
+        ("parseint", [t]) => {
+            let Some(ty) = Ty::parse(t) else {
+                return Err(perr(line, format!("parseint の型 {} は不明", t)));
+            };
+            if !ty.is_int() {
+                return Err(perr(line, format!("parseint の型 {} は整数ではない", ty.name())));
+            }
+            let vs = operands(2)?;
+            Ok(Op::ParseInt { ty, s: vs[0], radix: vs[1] })
         }
         ("index", ["check"]) if ty == Ty::Unit => {
             let v = operands(2)?;
@@ -2343,6 +2358,22 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err(format!("fmtfloat の被演算子は f{} のはず", bits));
                         }
                     }
+                    Op::ParseInt { ty, s, radix } => {
+                        if !ty.is_int() {
+                            return Err(format!("parseint の結果の整数型 {} は整数ではない", ty.name()));
+                        }
+                        // 結果は Result<整数, ParseIntError>。
+                        let Ty::Res(_, _) = i.ty else {
+                            return Err(format!("parseint の結果の型 {} は Result ではない", i.ty.name()));
+                        };
+                        // `s` は `&str` (fat: 集成体)、`radix` は `u32`。
+                        if !matches!(ty_of(*s)?, Ty::Agg(_)) {
+                            return Err("parseint の第 1 被演算子は &str (fat) のはず".into());
+                        }
+                        if ty_of(*radix)? != Ty::U32 {
+                            return Err("parseint の第 2 被演算子は u32 のはず".into());
+                        }
+                    }
                     Op::Call { callee, args } => {
                         let Some(g) = callees.get(callee.as_str()) else {
                             return Err(format!("呼び先 {} がモジュールにない", callee));
@@ -2461,6 +2492,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         | Op::FBin { a, b, .. } => vec![*a, *b],
         Op::Shift { a, n, .. } => vec![*a, *n],
         Op::FmtFloat { a, .. } => vec![*a],
+        Op::ParseInt { s, radix, .. } => vec![*s, *radix],
         Op::Store { ptr, val } => vec![*ptr, *val],
         Op::Neg { a, .. }
         | Op::Not(a)

@@ -547,6 +547,64 @@ fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
     }
 }
 
+/// `core.num.<int>.from_str_radix` の参照実行器側の規則。
+/// 戻り値: `(ret, lo, hi)`。`ret` は 0=成功、1=ParseIntError kind 0、2=kind 1。
+/// `lo`/`hi` は成功時の 128 ビットの値の下位・上位 64 ビット。
+/// 規則は `stage0/src/natives.rs` の `from_str_radix` / `parse` と同一。
+fn parse_int(bytes: &[u8], radix: u32, bits: u32, is_signed: bool) -> (u8, u64, u64) {
+    if radix < 2 || radix > 36 {
+        return (1, 0, 0);
+    }
+    if bytes.is_empty() {
+        return (1, 0, 0);
+    }
+    let is_minus = bytes[0] == b'-';
+    let is_plus = bytes[0] == b'+';
+    if !is_signed && is_minus {
+        return (1, 0, 0);
+    }
+    let start: usize = if is_minus || is_plus { 1 } else { 0 };
+    if start == bytes.len() {
+        return (1, 0, 0);
+    }
+    let mut v: u128 = 0;
+    let lim: u128 = u128::MAX;
+    let radix = radix as u128;
+    for &c in &bytes[start..] {
+        let c = c.to_ascii_lowercase();
+        let d = if c >= b'0' && c <= b'9' {
+            (c - b'0') as u128
+        } else if c >= b'a' && c <= b'z' {
+            (c - b'a' + 10) as u128
+        } else {
+            return (1, 0, 0);
+        };
+        if d >= radix {
+            return (1, 0, 0);
+        }
+        if v > (lim - d) / radix {
+            return if bits == 128 { (1, 0, 0) } else { (2, 0, 0) };
+        }
+        v = v * radix + d;
+    }
+    if is_signed {
+        let half = 1u128 << (bits - 1);
+        let bound = if is_minus { half } else { half - 1 };
+        if v > bound {
+            return (2, 0, 0);
+        }
+    } else if bits < 128 {
+        let bound = (1u128 << bits) - 1;
+        if v > bound {
+            return (2, 0, 0);
+        }
+    }
+    if is_minus && is_signed {
+        v = v.wrapping_neg();
+    }
+    (0, v as u64, (v >> 64) as u64)
+}
+
 /// `extern` 宣言の C 関数をホストの呼び出し規約で呼ぶ (`ffi::call_generic` と同じ仕組み)。
 /// 引数・戻り値はスカラー・ポインタに限る。
 fn extern_call(func: &Func, argv: &[i128]) -> Result<i128, String> {
@@ -801,6 +859,33 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     };
                     let _ = write_fd(2, s.as_bytes());
                     0
+                }
+                Op::ParseInt { ty, s, radix } => {
+                    let fi = get(&stack[top], s) as usize;
+                    let fblob = match heap.get(fi) {
+                        Some(b) if b.len() >= 16 => b,
+                        _ => return Ok(Outcome::Panic("parseint: fat が不正".to_string())),
+                    };
+                    let ptr = i64::from_le_bytes(fblob[0..8].try_into().expect("8 バイト")) as i128;
+                    let len = u64::from_le_bytes(fblob[8..16].try_into().expect("8 バイト")) as usize;
+                    let bytes = match bm.read_bytes(ptr, len) {
+                        Ok(b) => b,
+                        Err(e) => return Ok(Outcome::Panic(e)),
+                    };
+                    let radix = get(&stack[top], radix) as u32;
+                    let (ret, lo, hi) = parse_int(&bytes, radix, ty.bits(), ty.signed());
+                    if ret == 0 {
+                        let v = ((hi as u128) << 64) | (lo as u128);
+                        // ペイロードを型のビット幅で切り下ろし、タグビット(64ビット目)を立てない。
+                        // 符号付きの負値は 128 ビットの 2 の補数なので、そのまま `as i128` するとタグビットが立つ。
+                        let bits = ty.bits();
+                        let mask = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+                        (v & mask) as u64 as i128
+                    } else {
+                        let kind = (ret - 1) as u8;
+                        heap.push(vec![kind]);
+                        TAG_BIT | (heap.len() - 1) as i128
+                    }
                 }
                 Op::Abort => return Ok(Outcome::Abort),
                 Op::Panic { msg, arg } => {

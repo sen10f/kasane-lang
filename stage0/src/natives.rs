@@ -119,6 +119,10 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
         let text = str_of(&x).unwrap_or_default();
         let radix = if name == "parse" { 10 } else { iv(&a[1]) as u32 };
         let ty = ity(ty);
+        // 基数が 2..=36 の外なら Err (種類 0)。sig は `panics never` なので、Rust の `from_str_radix` のように panic しない。
+        if !(2..=36).contains(&radix) {
+            return Ok(err(parse_err(0)));
+        }
         // 符号なしは `-` を受け付けない (`-0` も Err)。`+` は符号つきと同じく受け付ける (Rust と同じ、機械語と同じ)。
         if !ty.starts_with('i') && text.starts_with('-') {
             return Ok(err(parse_err(0)));
