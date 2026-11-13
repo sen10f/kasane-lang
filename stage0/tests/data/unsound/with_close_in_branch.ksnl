@@ -1,3 +1,4 @@
+// expect: E3041
 type t.Res linear
     id: u32
     tag: u32

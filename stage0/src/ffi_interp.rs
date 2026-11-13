@@ -408,6 +408,25 @@ impl Interp {
         self.pins.iter().position(|p| a >= p.addr && a < p.addr + (p.elem.size() as usize * p.count).max(1))
     }
 
+    /// `read` / `write` の番地が、ピンの確保範囲 (C へ渡す写しのバッファ) の中なら、要素 (`elem`) の幅が値の範囲に
+    /// 収まるかを確かめる。収まらなければ panic (値の後ろの余白は、読むと不定の値、書くと別の値を壊す)。
+    /// 番地はバッファの中まで見る (`add` で値の末尾ちょうどへ進んだ番地も対象)。
+    pub(super) fn pin_check(&self, name: &str, a: i128, elem: &str) -> Result<(), Ctl> {
+        let au = a as usize;
+        let Some(p) = self.pins.iter().find(|p| au >= p.addr && au < p.addr + p.buf.len() * 8) else {
+            return Ok(());
+        };
+        let w = self.elem_bytes(name, elem)? as usize;
+        let size = p.elem.size() as usize * p.count;
+        if au + w > p.addr + size {
+            return panic(format!(
+                "{}: a {}-byte element at {:#x} runs past the {}-byte value passed to C (from {:#x})",
+                name, w, au, size, p.addr
+            ));
+        }
+        Ok(())
+    }
+
     /// C を呼ぶ前後以外で、ピンのメモリを読む前に最新にする。
     pub(super) fn pin_before_read(&mut self, a: i128) {
         if self.ffi_depth == 0 {

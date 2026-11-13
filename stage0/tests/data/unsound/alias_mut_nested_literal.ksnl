@@ -1,3 +1,4 @@
+// expect: E3010
 type t.Pair
     a: Option<&'static mut u32>
     b: Option<&'static mut u32>

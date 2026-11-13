@@ -1454,6 +1454,7 @@ impl Interp {
                     return panic(format!("{}: null pointer dereference", name));
                 }
                 let elem = self.ptr_elem_of(name, args.first())?;
+                self.pin_check(name, p, &elem)?;
                 self.pin_before_read(p);
                 self.read_elem(name, p, &elem)
             }
@@ -1471,6 +1472,7 @@ impl Interp {
                         None => return panic(unknown_elem(name)),
                     },
                 };
+                self.pin_check(name, p, &elem)?;
                 self.write_elem(name, p, &elem, &v)?;
                 self.pin_after_write(p);
                 Ok(Val::Unit)

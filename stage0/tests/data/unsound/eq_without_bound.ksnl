@@ -1,3 +1,4 @@
+// expect: E2030
 fn t.bad[T](a: T, b: T) -> bool uses [] panics never
     a == b
 end t.bad

@@ -1,3 +1,4 @@
+// expect: E3040
 type t.Box
     s: alloc.string.String<std.alloc.System>
 end t.Box

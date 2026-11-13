@@ -1,3 +1,4 @@
+// expect: E2020
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     t.unit(true)
 end t.main

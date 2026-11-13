@@ -1,3 +1,4 @@
+// expect: E3003
 type t.Box
     r: t.Res
 end t.Box

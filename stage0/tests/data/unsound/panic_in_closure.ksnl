@@ -1,3 +1,4 @@
+// expect: E4002
 fn t.bad(xs: &[u32]) -> u32 uses [] panics never
     let g = fn(i: usize) -> u32 capture [&xs] {
         xs[i]

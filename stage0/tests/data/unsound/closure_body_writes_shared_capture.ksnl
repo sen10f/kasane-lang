@@ -1,3 +1,4 @@
+// expect: E3010
 fn t.bad() -> u32 uses [] panics never
     let mut x = 1u32
     let c = fn() -> () capture [&x] {

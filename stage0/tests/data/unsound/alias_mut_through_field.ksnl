@@ -1,3 +1,4 @@
+// expect: E3010
 type t.Pair
     a: &'static mut u32
     b: &'static mut u32
