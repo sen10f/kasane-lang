@@ -404,6 +404,39 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 呼び出し式 `e` が、借用を含まない所有値 (名前付きの型。型パラメータではない) を返すと確かに言えるか。
+    fn returns_owned_temp(&self, e: &V) -> bool {
+        let owned = |d: &Def| -> bool {
+            let V::L(parts) = &d.ret else { return false };
+            let [V::S(a), V::S(name), _] = parts.as_slice() else { return false };
+            if a != "named" || d.generics.iter().any(|g| &g.1 == name) {
+                return false;
+            }
+            let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
+            let Some(r) = self.p.resolve(&segs, &self.file) else { return false };
+            matches!(r.target, Target::Type(_)) && !self.ret_contains_ref(d)
+        };
+        match nname(e) {
+            "Call" => {
+                if nname(&nf(e)[0]) != "Path" {
+                    return false;
+                }
+                let segs = strs(&nf(&nf(e)[0])[0]);
+                if segs.len() >= 2 && self.locals.contains(&segs[0]) {
+                    return false;
+                }
+                let Some(r) = self.p.resolve(&segs, &self.file) else { return false };
+                matches!(r.target, Target::Fn(_) | Target::Sig(_))
+                    && r.rest.is_empty()
+                    && match r.target {
+                        Target::Fn(i) | Target::Sig(i) => owned(&self.p.defs[i]),
+                        _ => false,
+                    }
+            }
+            _ => false,
+        }
+    }
+
     fn method_sources(&self, recv: &V, name: &str, args: &[V]) -> Vec<Src> {
         let Some(m) = self.method_borrows(name) else { return vec![] };
         let mut out = match self.place_of(recv) {
@@ -419,7 +452,17 @@ impl<'a> Low<'a> {
             None => {
                 // `v.iter().rev()` や `xs.as_slice().get(0)` のように、借用を返す呼び出しの連なり。
                 // レシーバが `v.mk()` (Call 形) の連なりも辿り、連鎖の根の変数を借用元にする。
-                if matches!(nname(recv), "MCall" | "Call") { self.loan_sources(recv) } else { vec![] }
+                if matches!(nname(recv), "MCall" | "Call") {
+                    let mut v = self.loan_sources(recv);
+                    // 戻り値が所有値 (借用を含まない名前付きの型) の呼び出しの結果を借りたら、一時値を借りている
+                    // (`t.mk().as_str()`)。一時値は文の終わりで死ぬので、束縛して後で使うと dangling。
+                    if v.is_empty() && self.returns_owned_temp(recv) {
+                        v.push(Src::Place { root: "$temp".into(), path: vec![], mutable: m });
+                    }
+                    v
+                } else {
+                    vec![]
+                }
             }
         };
         out.extend(self.method_arg_sources(name, args));
