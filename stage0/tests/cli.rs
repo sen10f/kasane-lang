@@ -19451,3 +19451,111 @@ fn final_review_opt_folds_saturating_like_the_reference() {
     let k = kir_run(&["kir", "t.s", "--opt", "--run", "0"], &t.0);
     assert_eq!(text(&k.stdout).trim(), "256", "{}", text(&k.stderr));
 }
+
+const KIR_OWNFOR_FNS: &str = "fn t.for_names(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut total = 0usize
+    for s in v {
+        total = total.wrapping_add(s.len())
+    }
+    total
+end t.for_names
+
+fn t.for_items(n: u32) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    let mut total = 0usize
+    for it in v {
+        total = total.wrapping_add(it.name.len()).wrapping_add(usize.from_u32(it.v))
+    }
+    total
+end t.for_items
+
+fn t.for_move(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut out = t.names(0u32)
+    for s in v {
+        core.mem.drop(out.push(s))
+    }
+    out.len()
+end t.for_move
+
+fn t.for_break(n: u32, k: usize) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    let mut seen = 0usize
+    for it in v {
+        if seen >= k {
+            break
+        }
+        seen = seen.wrapping_add(1usize).wrapping_add(it.name.len())
+    }
+    seen
+end t.for_break
+
+fn t.for_ret(n: u32, k: u32) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    for it in v {
+        if it.v == k {
+            return it.name.len()
+        }
+    }
+    77usize
+end t.for_ret
+
+fn t.for_wild(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut c = 0usize
+    for _ in v {
+        c = c.wrapping_add(1usize)
+    }
+    c
+end t.for_wild
+
+fn t.for_nested(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut c = 0usize
+    for s in v {
+        let w = t.names(2u32)
+        for q in w {
+            c = c.wrapping_add(q.len()).wrapping_add(s.len())
+        }
+    }
+    c
+end t.for_nested
+";
+
+#[test]
+fn kir_for_by_value_over_owning_elems_matches_tree_walker() {
+    // `for x in v` (所有する Vec を値で回す): 要素の所有が `x` に移る。消費しなかった `x` は 1 周の終わりで、`break` / `return` で抜けたときの
+    // 残りの要素とバッファは隠しヘッダで解放される。参照実行器の漏れ・二重解放の検出と ASan で確かめる。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.for_names", &["3"], "9usize", "9"),
+        ("t.for_names", &["0"], "0usize", "0"),
+        ("t.for_items", &["4"], "18usize", "18"),
+        ("t.for_move", &["5"], "5usize", "5"),
+        ("t.for_move", &["0"], "0usize", "0"),
+        ("t.for_break", &["5", "2"], "4usize", "4"),
+        ("t.for_break", &["5", "0"], "0usize", "0"),
+        ("t.for_break", &["2", "9"], "8usize", "8"),
+        ("t.for_ret", &["5", "2"], "3usize", "3"),
+        ("t.for_ret", &["5", "9"], "77usize", "77"),
+        ("t.for_wild", &["4"], "4usize", "4"),
+        ("t.for_nested", &["3"], "36usize", "36"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!(
+            "{}({})",
+            f,
+            args.iter().enumerate().map(|(k, a)| if k == 1 && args.len() == 2 && *f == "t.for_break" { format!("{}usize", a) } else { format!("{}u32", a) }).collect::<Vec<_>>().join(", ")
+        );
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_ownfor_{}", i), &format!("{}\n{}\n{}", KIR_BORROW_FNS, KIR_OWNFOR_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}

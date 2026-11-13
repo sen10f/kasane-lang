@@ -2042,7 +2042,7 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             if !ity.is_int() || lw.vty(b) != ity {
                 return lw.err(line, "core.iter.range の範囲は同じ整数の型だけ段階 1 の対象");
             }
-            return counted(lw, line, Counted { start: a, end: b, ity, elem: None, esrc: None, by_ref: false }, name, &f[2]);
+            return counted(lw, line, Counted { start: a, end: b, ity, elem: None, esrc: None, by_ref: false, take: false }, name, &f[2]);
         }
     }
     // `for x in [e1, e2]`: 配列リテラルは `{ptr, len}` の値として、スライスと同じに反復する
@@ -2050,7 +2050,7 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         let Some((fat, elem)) = lw.array_lit(it)? else { return Ok(None) };
         let (len, base) = Seq::Fat(fat).len_and_base(lw, None);
         let zero = lw.emit(Ty::Usize, Op::Const(0));
-        return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc: None, by_ref: false }, name, &f[2]);
+        return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc: None, by_ref: false, take: false }, name, &f[2]);
     }
     // `for x in &v` / `for x in v.iter()` (v は局所変数): 要素の借用を回す。`v` を値で回す形とは、所有物の要素の扱いが違う。
     let (it, by_ref) = borrowed_iter(it);
@@ -2077,8 +2077,11 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             }
         }
         if let Some((seq, elem)) = seq {
-            if owns_heap(lw, elem) && !by_ref {
-                return lw.err(line, "要素が所有物の Vec を値で回す for (要素を 1 つずつ移す) は段階 1 の対象外 (&v か v.iter() なら借用で回せる)");
+            // `for x in v` で `v` が参照 (`&Vec` のパラメータなど) なら、借用で回す
+            let by_ref = by_ref || (owns_heap(lw, elem) && matches!(lw.src_ty(it), Ok(Src::Ref(..))));
+            let take = owns_heap(lw, elem) && !by_ref;
+            if take && (lw.coll.borrowed.contains(&s) || !matches!(seq, Seq::Hdr(_)) || !matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)))) {
+                return lw.err(line, "要素が所有物の Vec を値で回す for は、局所変数の Vec だけ段階 1 の対象");
             }
             let esrc = if owns_heap(lw, elem) {
                 match lw.src_ty(it) {
@@ -2094,9 +2097,26 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             } else {
                 None
             };
+            if take {
+                // 値で回す: `v` の 3 語を隠しヘッダへ移して、このスコープの所有に入れる。1 周ごとに要素を `x` へ移し、
+                // バッファの元の場所は空 (解放しても何も起きない値) にする。`break` / `return` で抜けたときの残りの要素とバッファは、
+                // このスコープの終わりの隠しヘッダの解放で片付く。
+                lw.scopes.push(vec![]);
+                let hdr = lw.slots[s].0;
+                let val = move_hdr(lw, hdr);
+                let h2 = adopt(lw, val);
+                let (len, base) = Seq::Hdr(h2).len_and_base(lw, None);
+                let zero = lw.emit(Ty::Usize, Op::Const(0));
+                let r = counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc, by_ref, take: true }, name, &f[2]);
+                if r.is_ok() {
+                    block_end(lw);
+                }
+                lw.scopes.pop();
+                return r;
+            }
             let (len, base) = seq.len_and_base(lw, None);
             let zero = lw.emit(Ty::Usize, Op::Const(0));
-            return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc, by_ref }, name, &f[2]);
+            return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc, by_ref, take: false }, name, &f[2]);
         }
     }
     // 利用者の反復子の局所 (`core.iter.Iterator` を実装し、`&mut self` の `next` を持つ): `next` を呼んで `None` まで回す
@@ -2246,6 +2266,8 @@ struct Counted {
     esrc: Option<Src>,
     /// 借用で回す (`&v` / `v.iter()`)。スカラーの要素の変数は値で持つが、`*x` は恒等として読めるよう借用の印を付ける。
     by_ref: bool,
+    /// 値で回す (所有物の要素を 1 つずつ `x` へ移す)。
+    take: bool,
 }
 
 /// 添字を 1 ずつ増やす数え上げのループ。代入される変数は、ループの先頭のブロック引数で受け渡す。
@@ -2278,9 +2300,22 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
         match c.elem {
             None => lw.bind(n, hp[0], c.ity),
             Some((base, ety)) if owns_heap(lw, ety) => {
-                // 所有物の要素は借用で束縛する (解放しない)
                 let addr = elem_addr_from_base(lw, base, hp[0], ety)?;
-                super::own::bind_elem_ref(lw, _line, n, addr, ety, c.esrc.as_ref())?;
+                if c.take {
+                    // 要素を `x` へ移す: 値を読み、元の場所を空にする。`x` が所有して 1 周の終わりに解放する。
+                    let Ty::Agg(ei) = ety else { return lw.err(_line, "値で回す for の要素は集成体だけ段階 1 の対象") };
+                    let rt = Ty::Ref(true, Pointee::Agg(ei));
+                    let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+                    let v = lw.emit(ety, Op::Load(r));
+                    let nv = null_value(lw, v, ety, _line)?;
+                    lw.emit(Ty::Unit, Op::Store { ptr: r, val: nv });
+                    lw.coll.hint = c.esrc.clone();
+                    bind_owned(lw, n, v, ety);
+                    lw.coll.hint = None;
+                } else {
+                    // 借用で束縛する (解放しない)
+                    super::own::bind_elem_ref(lw, _line, n, addr, ety, c.esrc.as_ref())?;
+                }
             }
             Some((base, ety)) => {
                 let addr = elem_addr_from_base(lw, base, hp[0], ety)?;
@@ -2296,6 +2331,8 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
     lw.loops.push(super::LoopCx { header: ib, exit: xb, slots: slots.clone(), depth });
     let r = lw.expr(body)?;
     if r.is_some() {
+        // 1 周の終わり: 変数が所有する値を先に解放してから戻る
+        block_end(lw);
         let args = lw.vals_of(&slots);
         lw.goto(ib, args);
     }
