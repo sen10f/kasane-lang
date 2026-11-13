@@ -12068,10 +12068,10 @@ fn test_both_compares_llvm_panics_with_the_tree_walker() {
 
 #[test]
 fn test_both_falls_back_from_llvm_to_cranelift_with_the_reason() {
-    // `char.to_u32` は KIR に下ろせない (段階 1 の対象外) ので、LLVM は退避する。Cranelift で作れる。
+    // `char.is_ascii_digit` は KIR に下ろせない (段階 1 の対象外) ので、LLVM は退避する。Cranelift で作れる。
     // 退避した Cranelift の文言 (`arithmetic overflow`) と木走査の文言は違うが、分類が同じなので一致になる。
     let src = format!(
-        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq('a'.to_u32(), 97u32)\nend t.main.test_mixed\n",
+        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq('a'.is_ascii_digit(), false)\nend t.main.test_mixed\n",
         BOTH_SRC
     );
     let t = Tmp::new("both_llvm_to_native", &src);
@@ -12797,8 +12797,8 @@ end t.main
 #[test]
 fn kir_lower_dump_on_check_is_hidden_behind_the_env_var() {
     // `KSN_DUMP_KIR=1 ksn check` だけ KIR を stderr に出す。通常の check の出力は変えない。
-    // `char.to_u32` は段階 1 では未対応 (理由付きで出る)
-    let t = kir_pkg("kir_dump", "    core.check.eq('a'.to_u32(), 97u32)\n");
+    // `char.is_ascii_digit` は段階 1 では未対応 (理由付きで出る)
+    let t = kir_pkg("kir_dump", "    core.check.eq('a'.is_ascii_digit(), false)\n");
     let plain = run(&["check"], &t.0);
     let dumped = Command::new(exe())
         .args(["check"])
@@ -14635,7 +14635,7 @@ end t.at
 
 #[test]
 fn kir_char_methods_match_tree_walker() {
-    // `char` の `to_ascii_uppercase` / `to_ascii_lowercase` (ASCII の英字の境界だけ変える)、
+    // `char` の `to_ascii_uppercase` / `to_ascii_lowercase` (ASCII の英字の境界だけ変える)、`to_u32`、
     // `char.try_from_u32` (0x110000 未満で、サロゲート 0xD800..=0xDFFF の外)。木走査と値が一致する (`--run` / `--native`)。
     let cases = [
         ("t.up_q", "'q'.to_ascii_uppercase() == 'Q'"),
@@ -14645,6 +14645,7 @@ fn kir_char_methods_match_tree_walker() {
         ("t.up_brace", "'{'.to_ascii_uppercase() == '{'"),
         ("t.up_digit", "'5'.to_ascii_uppercase() == '5'"),
         ("t.up_eacute", "'é'.to_ascii_uppercase() == 'é'"),
+        ("t.to_u32", "'q'.to_u32() == 113u32"),
         ("t.low_upper_a", "'A'.to_ascii_lowercase() == 'a'"),
         ("t.low_at", "'@'.to_ascii_lowercase() == '@'"),
         ("t.low_bracket", "'['.to_ascii_lowercase() == '['"),
@@ -14667,6 +14668,77 @@ fn kir_char_methods_match_tree_walker() {
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
     for (f, _) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "true", "kir value of {}", f);
+    }
+}
+
+#[test]
+fn kir_tuple_eq_matches_tree_walker() {
+    // タプルの `==` / `!=` は要素を順に比べる (木走査の `v_eq` と同じ)。`Option<(&str, &str)>` (`split_once`) を含む。
+    // 失敗したときの文言 (タプルの表示 `("a", "c")`) も木走査と同じ。
+    let cases = [
+        ("t.t_same", "(\"ab\", \"cd\") == (\"ab\", \"cd\")"),
+        ("t.t_diff", "(\"ab\", \"cd\") != (\"ab\", \"ce\")"),
+        ("t.t_mixed", "(1u8, \"x\", true) == (1u8, \"x\", true)"),
+        ("t.t_mixed_diff", "(1u8, \"x\", true) != (1u8, \"x\", false)"),
+        ("t.t_opt", "\"key=value\".split_once(\"=\") == Some((\"key\", \"value\"))"),
+        ("t.t_opt_none", "\"novalue\".split_once(\"=\") == None"),
+    ];
+    let mut src = String::new();
+    let mut main = String::from("fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n");
+    for (f, body) in cases {
+        src.push_str(&format!("fn {}() -> bool uses [] panics never\n    {}\nend {}\n\n", f, body, f));
+        main.push_str(&format!("    core.check.eq({}(), true)\n", f));
+    }
+    main.push_str("    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_tuple_eq", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", format!("{}{}", text(&o.stdout), text(&o.stderr)));
+    for (f, _) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "true", "kir value of {}", f);
+    }
+    // 失敗の文言: 木走査と KIR の標準エラーが一致する (タプルの表示)。
+    let fail = "fn t.fail() -> bool uses [io.console] panics may\n    core.check.eq((\"a\", \"b\"), (\"a\", \"c\"))\n    true\nend t.fail\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(t.fail())\n    Ok(())\nend t.main\n";
+    let tf = Tmp::new("kir_tuple_eq_fail", fail);
+    let w = run(&["run"], &tf.0);
+    let k = kir_run(&["kir", "t.fail", "--run"], &tf.0);
+    assert_eq!(w.status.code(), Some(101), "tree-walker\n{}", text(&w.stderr));
+    assert_eq!(k.status.code(), Some(101), "kir\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stderr), text(&w.stderr), "失敗の文言が違う");
+}
+
+#[test]
+fn kir_push_i64_matches_tree_walker() {
+    // `String.push_i64(v)`: 負なら `-` を先に書き、絶対値の桁を書く。`i64::MIN` (絶対値が i64 に入らない) も木走査と同じ。
+    // 最後のケースは長い文字列の後ろに書いて、符号の 1 バイトを書くときに容量を広げる経路を通す。
+    let cases: &[(&str, &str, &str)] = &[
+        ("t.p_zero", "0i64", "x0"),
+        ("t.p_pos", "5i64", "x5"),
+        ("t.p_neg", "-42i64", "x-42"),
+        ("t.p_neg_one", "-1i64", "x-1"),
+        ("t.p_min", "-9223372036854775808i64", "x-9223372036854775808"),
+        ("t.p_max", "9223372036854775807i64", "x9223372036854775807"),
+        ("t.p_grow", "-7i64", "abcdefghijklmnopqrstuvwxyz0123456789-7"),
+    ];
+    let mut src = String::new();
+    let mut main = String::from("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n");
+    for (f, v, want) in cases {
+        let prefix = if *f == "t.p_grow" { "abcdefghijklmnopqrstuvwxyz0123456789" } else { "x" };
+        src.push_str(&format!(
+            "fn {}() -> bool uses [alloc] panics may\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(s.push_str(\"{}\"))\n    core.mem.drop(s.push_i64({}))\n    s.as_str() == \"{}\"\nend {}\n\n",
+            f, prefix, v, want, f
+        ));
+        main.push_str(&format!("    core.check.eq({}(), true)\n", f));
+    }
+    main.push_str("    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_push_i64", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, _, _) in cases {
         let k = kir_run(&["kir", f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), "true", "kir value of {}", f);

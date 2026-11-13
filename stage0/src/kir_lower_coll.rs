@@ -1453,6 +1453,9 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if m == "push_u64" && matches!(kind, Kind::String) {
         return string_push_u64(lw, e, line, slot, h, args);
     }
+    if m == "push_i64" && matches!(kind, Kind::String) {
+        return string_push_i64(lw, e, line, h, args);
+    }
     if m == "get" {
         return get_elem(lw, line, &kind, h, args);
     }
@@ -1633,18 +1636,8 @@ pub(super) fn string_push_str(lw: &mut Lw, e: &V, line: usize, _slot: Option<usi
 
 /// `String.push_u64(value)`: `value` を10進数の桁として1バイトずつバッファに追加する。
 /// 桁テーブルから1バイトをロードして `mem.store.u8` で書き込む (`Conv u64->u8` は verify で拒否されるため)。
-pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 1 {
-        return lw.err(line, "push_u64 の引数は 1 つのはず");
-    }
-    let Some(value) = lw.expr(&args[0])? else { return Ok(None) };
-    if lw.vty(value) != Ty::U64 {
-        return lw.err(line, "push_u64 の引数は u64 ではない");
-    }
-    let rt = lw.ty_of(e)?;
-    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
-        return lw.err(line, "push_u64 の結果の型が Result<(), AllocError> でない");
-    }
+/// 符号なしの十進の桁 `value` (u64) を、文字列 `h` の末尾へ 1 バイトずつ書く (容量が足りなければ広げる)。
+fn push_u64_digits(lw: &mut Lw, h: VId, value: VId) {
     let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
     let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
     let maxdigits = lw.emit(Ty::Usize, Op::Const(20));
@@ -1732,9 +1725,79 @@ pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usi
     {
         lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: final_len });
     }
+}
+
+pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "push_u64 の引数は 1 つのはず");
+    }
+    let Some(value) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(value) != Ty::U64 {
+        return lw.err(line, "push_u64 の引数は u64 ではない");
+    }
+    let rt = lw.ty_of(e)?;
+    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+        return lw.err(line, "push_u64 の結果の型が Result<(), AllocError> でない");
+    }
+    push_u64_digits(lw, h, value);
     let u = lw.unit();
     Ok(Some(lw.emit(rt, Op::Ok(u))))
 }
+
+/// `String.push_i64(value)`: 負なら `-` を書き、絶対値 (`wrapping_neg` の bit 列を u64 に読む。`i64::MIN` も正しい) の桁を書く。
+pub(super) fn string_push_i64(lw: &mut Lw, e: &V, line: usize, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "push_i64 の引数は 1 つのはず");
+    }
+    let Some(value) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(value) != Ty::I64 {
+        return lw.err(line, "push_i64 の引数は i64 ではない");
+    }
+    let rt = lw.ty_of(e)?;
+    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+        return lw.err(line, "push_i64 の結果の型が Result<(), AllocError> でない");
+    }
+    let zero = lw.emit(Ty::I64, Op::Const(0));
+    let neg = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::I64, a: value, b: zero });
+    let (yb, _) = lw.new_block(&[]);
+    let (nb, _) = lw.new_block(&[]);
+    let (mb, mp) = lw.new_block(&[Ty::I64]);
+    lw.branch(neg, (yb, vec![]), (nb, vec![]));
+    // 負: `-` を 1 バイト書いてから、絶対値へ進む。
+    lw.cur = Some(yb);
+    {
+        let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+        let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+        let one = lw.emit(Ty::Usize, Op::Const(1));
+        let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: one });
+        let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
+        let (grow, _) = lw.new_block(&[]);
+        let (cont, _) = lw.new_block(&[]);
+        lw.branch(full, (grow, vec![]), (cont, vec![]));
+        lw.cur = Some(grow);
+        let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+        let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: need });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
+        lw.goto(cont, vec![]);
+        lw.cur = Some(cont);
+        let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: len });
+        let dash = lw.emit(Ty::U8, Op::Const(b'-' as i128));
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: addr, off: 0, v: dash });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: need });
+        let mag = lw.emit(Ty::I64, Op::Neg { a: value, mode: Mode::Wrap });
+        lw.goto(mb, vec![mag]);
+    }
+    lw.cur = Some(nb);
+    lw.goto(mb, vec![value]);
+    lw.cur = Some(mb);
+    let mag = lw.emit(Ty::U64, Op::Conv { src: Ty::I64, a: mp[0] });
+    push_u64_digits(lw, h, mag);
+    let u = lw.unit();
+    Ok(Some(lw.emit(rt, Op::Ok(u))))
+}
+
 
 /// 呼べるもの (捕獲のないクロージャの式、クロージャの局所変数、関数の項目) の、呼び先の鍵と引数・戻り値の型。
 /// 呼び先は `callees` に入れる。`Result::map_err` の引数に使う。
