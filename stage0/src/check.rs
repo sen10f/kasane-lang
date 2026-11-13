@@ -4366,28 +4366,27 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// 型 `t` (ユーザー型) のメソッド `name` (引数 `n` 個) が、`self` を参照で受けるか。
-    /// 型の所有者で一意に定まるときだけ判定し、分からなければ false (黙る)。
+    /// 型 `t` のメソッド `name` (引数 `n` 個) が、`self` を参照で受けるか。
+    /// `funcs`/`sigs` (stdlib も含む) を FQN (`型.メソッド`) で引く。`Option`/`Result` は
+    /// 標準ライブラリの FQN に置き換え、配列・スライスは `core.array`/`core.slice` を引く。
+    /// 分からなければ false (黙る)。
     fn method_borrows_self(&self, t: &V, name: &str, n: usize) -> bool {
-        if tag(t) != "named" {
+        let tname: String = match tag(t).as_str() {
+            "named" => match st(tel(t, 1)).as_str() {
+                "Option" => "core.option.Option".to_string(),
+                "Result" => "core.result.Result".to_string(),
+                nm => nm.to_string(),
+            },
+            "array" => "core.array".to_string(),
+            "slice" => "core.slice".to_string(),
+            _ => return false,
+        };
+        let fq = format!("{tname}.{name}");
+        let Some(&i) = self.p.funcs.get(&fq).or_else(|| self.p.sigs.get(&fq)) else {
             return false;
-        }
-        let owner = st(tel(t, 1));
-        let cands: Vec<&Def> = self
-            .p
-            .method_idx
-            .get(name)
-            .map(|v| {
-                v.iter()
-                    .map(|&i| self.def(i))
-                    .filter(|c| c.params.len() == n + 1 && c.name.rsplit_once('.').is_some_and(|(o, _)| o == owner))
-                    .collect()
-            })
-            .unwrap_or_default();
-        match cands.as_slice() {
-            [c] => c.params.first().is_some_and(|(pn, pt)| pn == "self" && tag(pt) == "ref"),
-            _ => false,
-        }
+        };
+        let c = self.def(i);
+        c.params.len() == n + 1 && c.params.first().is_some_and(|(pn, pt)| pn == "self" && tag(pt) == "ref")
     }
 
     /// 型推論 (types.rs) が決めた、式 `e` の型 (今の関数の式 ID から引く)。
