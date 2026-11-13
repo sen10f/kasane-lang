@@ -760,6 +760,22 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 | `for` の対象が `core.iter.range` と要素型の分かる Vec 以外 (イテレータ、配列リテラル) | Iterator / 配列の型が段階 1 の外 | Iterator の段階 |
 | 要素型が決まらない Vec | 型表の `_` (`push` が入るまで、型推論は要素型を決めない) | Option / Result の段階と型推論の完全化 (7 章 4) |
 
+### 10.10 集成体への参照・スライス・`&str` (kir/agg-refs)
+
+ブランチ `kir/agg-refs`。10.8 の参照を、集成体・スライス・`&str` へ広げた。判断は次のとおり。
+
+- **参照の値はバイト記憶のアドレス**。10.8 の「セルの番号」をやめ、`alloca` を `frame.bytes` と同じバイト記憶の領域 (関数が戻るときに解放) にした。指す先 (`Pointee`) は整数・浮動小数・bool・集成体 (`Pointee::Agg(k)`)。型は `ref<agg#k>` / `mutref<agg#k>`。理由: フィールドのアドレス (`&mut r.f`) を、スカラーでも集成体でも同じ表現で取るため。LLVM では `ptr` で、`load` / `store` はそのまま `iN` の読み書きになる。
+- 命令: `fieldaddr %r, +off` (`ref<S>` から構造体のフィールドへの参照。可変性は引き継ぐ)。`load` / `store` は集成体の値 (配置どおりのバイト列) も読み書きする。`&x.f.g` は `fieldaddr` の連鎖、`r.f` の読みは `fieldaddr` + `load`、`r.f.g = v` は `fieldaddr` の連鎖 + `store`。タプルと列挙型のフィールドへの参照は取らない。
+- **`&str` とスライス `&[T]` は値 `{ptr, len}`**。型表の構造体 `fat` (`ptr: ptr@0`, `len: usize@8`、16 バイト) の値で、引数・戻り値・局所変数・ブロック引数にそのまま使える (戻り値がフレームのヘッダを指して壊れることがない)。`len` は `field +8`、添字は `index.check` + `ptr.add` + `mem.load`。`str` から `as_bytes` は同じ値。型は `str` と `[T]` で区別しない (要素型は下ろしが型表から持つ)。10.9 の `&str` (フレームのヘッダのアドレス) を置き換えた。
+- **Vec / String の借用 (`&v`, `&mut v`) は 10.9 のヘッダのアドレス (`ptr`) をそのまま渡す**。所有は呼び出し元にあるので、借用側は解放も移動もしない (`CollCx::borrowed`)。`v.len()` / `v.is_empty()` / `v[i]` / `for x in v` が使える。型は `ptr` (要素型は区別しない)。
+- 構造体のフィールドが `Vec<T, A>` / `String` のとき、24 バイトのヘッダ (構造体 `vec`、`{ptr, len, cap}`) を埋め込む。参照を通した `r.f.len()` / `is_empty()` は `fieldaddr` + `load` で読める。この種の構造体の値渡し・戻り値・組み立ては所有の移動なので未対応 (`AggTab::owns_vec`)。
+- `get`: スカラー要素のスライス・Vec の `get(i)` は `Option<要素>` を返す (境界の内なら `some`、外なら `none`。panic しない)。木走査の `Option<&T>` はスカラーでは読み取りだけなので、値で持つ (`conv` が `Option<&スカラー>` を `Option<スカラー>` へ写し、`Some(c)` の束縛の型表は `&T` のまま局所のスロットの型を使う)。バイトリテラル `b'x'` は `u8` の定数。
+- 未対応のまま: `sub` (`Option<&[T]>`。`Option` のペイロードが集成体を持てないため。`Pay` の拡張を待つ)、`Vec` の `push` / `get` (Vec 側。`Result` / `Option` 待ち)、構造体の `Vec` フィールドの添字・`push`、列挙型への参照の `match`、`&&T`、参照どうしの比較、`str` の比較。
+- 検査 (`verify_module`): `fieldaddr` は参照の対象が構造体・タプルで、結果の指す先がそのオフセットのフィールドの型と一致し、可変性が同じ。`store` は `mutref` だけ (共有参照への store は拒否)。
+- 実行器: `alloca` はバイト記憶の領域。集成体の `load` は置き場へ複製、`store` は置き場の中身を書く。
+- 木走査との一致: `stage0/tests/cli.rs` の `kir_agg_refs_*` (値の一致 32 ケース、境界の panic、テキスト、Vec フィールド、未対応の理由)。`--run` と `--native` (LLVM) の両方で比べる。`kir_exec::tests::nested_field_addresses_read_and_write_in_the_byte_memory` は入れ子の `fieldaddr` を手書きの KIR で確かめる。
+- examples/json: `json.is_hex` が下ろせる (`json.digits` と `json.skip_ws` も下ろせるが、スライスの引数を受ける入口がないので `kir_agg_refs_*` で同じ形の関数を比べる)。残りは `Result<_, json.Error>` (名前付きの E) と `alloc.alloc.AllocError` で止まる。
+
 ## 11. 組み込みの Option / Result と checked_* (kir/option-result)
 
 ブランチ `kir/option-result` (`claude/handover-work-i7ll7p` から分岐)。第 10 章 10.6 の (2) の実装。名前付きの型 (構造体・ユーザ enum) は別の作業なので、ここでは組み込みの `Option<P>` と `Result<T, E>` だけを扱う (P、T、E は段階 1 のスカラー)。

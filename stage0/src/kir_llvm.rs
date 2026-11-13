@@ -1130,6 +1130,11 @@ impl<'a> Fe<'a> {
                 let pv = self.r(*p);
                 self.line(format!("{} = getelementptr i8, ptr {}, i64 0", d, pv));
             }
+            // フィールドのアドレス: 集成体の先頭 + バイトオフセット (配置は型表のとおり)。
+            Op::FieldAddr { a, off } => {
+                let pv = self.r(*a);
+                self.line(format!("{} = getelementptr i8, ptr {}, i64 {}", d, pv, off));
+            }
             Op::Some(a) | Op::Ok(a) | Op::Err(a) => {
                 let v = self.r(*a);
                 let pay = self.pay_to_i64(self.ty(*a), &v)?;
