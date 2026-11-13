@@ -872,7 +872,7 @@ fn cmd_run(args: &[String]) -> i32 {
             Some(Box::new(move || {
                 let (tx, rx) = std::sync::mpsc::channel::<(Program, Vec<usize>)>();
                 let flag: &'static std::sync::atomic::AtomicBool = Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
-                spawn_watcher_with(l, move |p, u| {
+                spawn_watcher_with(l, true, move |p, u| {
                     let ok = tx.send((p, u)).is_ok();
                     flag.store(true, std::sync::atomic::Ordering::Release);
                     ok
@@ -900,12 +900,13 @@ fn cmd_run(args: &[String]) -> i32 {
 /// ホットリロード: 外部面が不変の関数本体の変更だけを反映する。
 fn spawn_watcher(l: &Loaded) -> std::sync::mpsc::Receiver<Program> {
     let (tx, rx) = std::sync::mpsc::channel::<Program>();
-    spawn_watcher_with(l, move |p, _| tx.send(p).is_ok());
+    spawn_watcher_with(l, false, move |p, _| tx.send(p).is_ok());
     rx
 }
 
 /// 監視スレッドを起こす。反映できる変更があれば、再構築した `Program` と利用者の定義の添字を `send` に渡す (false が返ったら終わる)。
-fn spawn_watcher_with(l: &Loaded, send: impl Fn(Program, Vec<usize>) -> bool + Send + 'static) {
+/// `allow_add` (VM) のときは、新しい `fn` の追加 (名前が増えるだけで、ほかの定義の集合は同じ) も即時に反映する。
+fn spawn_watcher_with(l: &Loaded, allow_add: bool, send: impl Fn(Program, Vec<usize>) -> bool + Send + 'static) {
     let mut std_defs: Vec<Def> = vec![];
     for s in &l.std {
         std_defs.extend(s.defs.clone());
@@ -956,13 +957,20 @@ fn spawn_watcher_with(l: &Loaded, send: impl Fn(Program, Vec<usize>) -> bool + S
             same_names.sort();
             let mut cur_names: Vec<&&str> = cur.keys().collect();
             cur_names.sort();
+            let mut added = false;
             if same_names != cur_names {
-                restart = true;
-                continue;
+                let only_fn_added = allow_add
+                    && old.keys().all(|k| cur.contains_key(k))
+                    && cur.iter().filter(|(k, _)| !old.contains_key(*k)).all(|(_, d)| d.kw == "fn" && d.generics.is_empty() && d.body.is_some());
+                if !only_fn_added {
+                    restart = true;
+                    continue;
+                }
+                added = true;
             }
             let mut ok = true;
             for (n, d) in &cur {
-                let o = old[n];
+                let Some(o) = old.get(n) else { continue };
                 if d.kw == "fn" {
                     if d.header != o.header || !d.generics.is_empty() {
                         ok = false;
@@ -980,6 +988,9 @@ fn spawn_watcher_with(l: &Loaded, send: impl Fn(Program, Vec<usize>) -> bool + S
             if !ok {
                 restart = true;
                 continue;
+            }
+            if added {
+                changed = true;
             }
             w.lines = new.lines.clone();
             w.defs = new.defs.clone();

@@ -1257,6 +1257,14 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - ホットリロードで関数の追加を反映する (関数表の拡張と依存先の再検査)。
 - `std.thread.sleep` などの KIR 対応 (VM のホットリロードのテストが待ちに計算ループを使っている)。
 
+## 18.8 第 4 段の結果 (vm/stage4、2026-11-13)
+
+- **関数の追加のホットリロード**: `spawn_watcher_with` に `allow_add` を足した (VM だけ true。木走査は従来どおり再起動を促す)。名前が増えるだけで、既存の定義の集合が同じで、増えたものがすべて型引数のない本体付きの `fn` のときは、再起動を求めず反映する。VM 側は変更不要だった: 新しい版は入口から届く関数だけを下ろすので、書き換えた本体から呼ばれる新しい関数は新しい版に入り、呼び出しは鍵で最新の版に解決される。削除・ヘッダの変更・型や定数の追加は従来どおり再起動を促す。`tests/vm_reload.rs` に `vm_hot_reload_applies_an_added_function` を足し、再起動を促すテストはヘッダ (引数) の変更に替えた。
+- **置き場の `Vec<u8>` の再利用**: `Make` / `Field` (集成体) / `SetField` は、捨てた項目の入れ物 (`Vm::pool`、最大 512 個) から取って使う。`Ret` が捨てる項目は入れ物に戻す。確保の回数だけが減り、`kir_exec` と命令数は変わらない。
+- **見送ったもの**: (1) 8 バイトのスロット / `i128` の 2 スロット化、(2) 集成体をフレーム内のバイトに置く変更。どちらも値の符号化 (集成体 = 置き場の添字、`Option` / `Result` の tag bit とペイロードの語、`pay_word` / `pay_read` / `relocate` / `write_val`) の総入れ替えになる。`kir_exec` の振る舞いを変えずに VM 専用の符号化を別に持つ作業なので、独立した段として次に回す。
+- **計測** (`taskset -c 3,4`、ロードアベレージ約 25。`KSN_TIMING=1` の `vm-run` の最小値 7 回、前後を交互。ms、旧 → 新): fib 20.1 → 18.7、loops 48.1 → 43.2、vecops 78.3 → 74.2、strcat 51.8 → 53.1、structs 55.5 → 50.8、closure 13.4 → 12.0。命令数は不変 (第 3 段の表のまま)。`perf/vm_compare.py --repeat 5` (同じ固定、VM の中央値、旧 → 新): fib 45.9 → 40.7、loops 81.6 → 76.7、vecops 106.1 → 112.8、hashmap 36.5 → 31.5、strcat 79.9 → 80.0、structs 83.3 → 84.2、closure 38.7 → 38.2。差は揺れの範囲 (±10%) と同程度で、確かな効果は fib・loops・structs・closure の数 % から 10%。
+- **次**: 値の符号化の VM 専用化 (上の (1)(2))。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
