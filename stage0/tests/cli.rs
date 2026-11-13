@@ -18797,6 +18797,21 @@ fn from_str_radix_with_bad_radix_is_err_not_panic() {
     ]);
 }
 
+/// `derive [Clone]` の `clone()`: すべてスカラーの欄を持つ構造体は値の写し。
+/// 木走査・参照実行器・機械語で一致を確かめる。
+#[test]
+fn kir_clone_all_scalar_matches_tree_walker() {
+    let src = "type t.Point derive [Clone] pub\n    x: i32\n    y: i32\nend t.Point\n\n\
+fn t.main() -> () uses [] panics may\n    let p = t.Point { x: 1i32, y: 2i32 }\n    let q = p.clone()\n    core.check.eq(q.x, 1i32)\n    core.check.eq(q.y, 2i32)\nend t.main\n";
+    let t = Tmp::new("kir_clone_scalar", src);
+    let k = kir_run(&["kir", "t.main", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "{}", text(&k.stderr));
+}
+
+/// `derive [Clone]` の `clone()`: String / Vec<スカラー> の欄を持つ構造体は、
+/// 新規確保して中身を複写する。clone の後に元と写しを別々に変更しても独立。
+
+
 /// `<int>.try_from_<int>(x)`: 範囲チェックと Ok / Err の構築。境界 (0, -1, 各型の最小・最大とその ±1)。
 /// 木走査・参照実行器・ASan 付き機械語で一致を確かめる。
 #[test]
@@ -18826,4 +18841,16 @@ fn t.tf_u32_u8(x: u32) -> u16 uses [] panics never\n    match u8.try_from_u32(x)
         (&["256"], "t.tf_u32_u8(256u32)", "65535u16", "65535"),
         (&["4294967295"], "t.tf_u32_u8(4294967295u32)", "65535u16", "65535"),
     ]);
+}
+
+/// `derive [Clone]` は、欄の型が `Clone` を実装するときだけ書ける。String / Vec は `try_clone` (確保が失敗しうる)
+/// だけを持ち `Clone` ではないので、それらを欄に持つ型の `derive [Clone]` は E2036 (KIR の clone は欄がスカラーの型だけ)。
+#[test]
+fn derive_clone_on_string_or_vec_field_is_e2036() {
+    for (tag, field) in [("string", "alloc.string.String<std.alloc.System>"), ("vec", "alloc.vec.Vec<u8, std.alloc.System>")] {
+        let src = format!("type t.S derive [Clone] pub\n    x: {}\nend t.S\n\nfn t.main() -> () uses [] panics never\nend t.main\n", field);
+        let t = Tmp::new(&format!("derive_clone_{}", tag), &src);
+        let o = text(&run(&["check", "--json"], &t.0).stdout);
+        assert!(o.contains("E2036"), "{}", o);
+    }
 }
