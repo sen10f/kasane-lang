@@ -924,6 +924,19 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 - examples と perf の未対応 (`KSN_DUMP_KIR=1 ksn check`): examples 24 → 22 (`realtime.Ring.new` と `json.oom` が下ろせる。`json.array` などは `map_err` を越えて、`&mut` レシーバの `push_node` で止まる)、perf 13 → 13 (AllocError の戻り値は通るようになり、理由が `HashMap.new`・`push_str`・`get_mut` の `*` に変わった)。
 - 残り: `Vec` の要素が所有物 (`Vec<String>`、`Vec<構造体>`) の要素の解放、`push_str` / `pop` / `get_mut` / `insert` / `remove`、`&mut` レシーバのメソッド (別担当の kir/gaps)、`main` の `std.io.Error` (別担当の kir/io-entry)。`Drop` トレイトを実装した型の `drop` 呼び出しは、これまでどおり KIR に無い。
 
+## 14. 取り込みのあるクロージャと反復子の連なり (kir/closures)
+
+10.9 の「取り込みのないクロージャ」を、`capture [&x]` / `[&mut x]` / `[move x]` を持つものへ広げ、`core.iter.fold` / `count` と `range` / `map` / `filter` の連なりを下ろす。
+
+- **環境は先頭の追加の引数**。取り込みは、クロージャを作る位置で評価する: `move x` は x の現在の値 (スカラー・Copy の集成体)、`&x` / `&mut x` は x のスタックスロットへの参照 (`ref<T>` / `mutref<T>`。`capture [&x]` に出る名前は 10.8 の `addr` 集合に入れ、スロットに置く)。クロージャ本体は「取り込み, 引数…」を取る関数 (鍵 `関数#c式ID`) で、取り込んだ名前は同名の引数として束縛する。`Kind::Closure` が取り込みの値 (`caps`) と型 (`cap_tys`) を持ち、呼び出し (`f(x)`) は `call key(caps…, args…)` になる。環境の集成体は作らない (ループの融合と LLVM 側のインライン化に任せる)。
+- **`Fn` 境界の関数**: 単相インスタンス (鍵は 10.9 のまま) の引数は「値の引数, 型引数の順の取り込み…」で、インスタンスの中で `Kind::Closure` の `caps` を自分のブロック引数に付け替える。
+- **反復子の連なり** (`kir_lower_iter.rs`): `fold(it, init, f)` / `count(it)` の終端で、`core.iter.range(a, b)` と `map` / `filter` を 1 つのループに融合する (clif の `run_pipe` と同じ意味。反復子の値は作らない)。ブロック: `header(i, acc)` → 本体 → `incr(acc)` → `header(i+1, acc)` と、`exit(acc)`。`map` は要素へクロージャを呼び、`filter` は要素を一時のスロットに置いて共有参照で述語を呼び、偽なら `incr` へ飛ぶ。評価順は引数の順 (範囲の端、段のクロージャ、`init`、`f`)。空の範囲 (`a >= b`) はループに入らず `init` を返す。
+- **未対応 (理由付き)**: Vec / String / `&str` / スライス / クロージャ / 参照の変数の取り込み (解放の要るものは kir/owned-heap の所有の規則が要る)、`move` で取り込んだ名前を本体が変更する (呼び出しをまたぐ状態が要る)、クロージャを値として返す・構造体に入れる・代入する (環境の寿命が要る)、`take` / `enumerate` / `Vec` の `iter()` を元にした連なり、スカラー以外の累積・要素。
+- **型表の補い**: `capture [&x]` の名前は型表で外側の型 (`u64`) のままなので、`*x` の型は未確定になる。下ろしは参照の値の指す先の型 (`deref`、`local_slot_ty`) で補う。本体が `&x` の取り込みを `*` なしで使う形は型が合わず、未対応になる。
+- **木走査との差** (今回は直さない): 木走査はクロージャの環境を外側のスコープそのものとして共有する。このため (1) `[move x]` の後に x を書き換えるとクロージャからも変わって見える、(2) `[&mut x]` の本体で `*x = v` と書くと `assignment through non-reference` になる。KIR は取り込みの時点の値 (move) と参照 (`&` / `&mut`) として扱う。差分テストは (1) の形を避け、(2) は手で求めた値で確かめる。
+
+検証: `stage0/tests/cli.rs` の `kir_closure_*` (取り込み 4 種類・`fold` の初期値と累積・`map` → `filter` → `fold`・空の範囲の木走査との一致 (`--run` と `--native`)、環境の引数、未対応の理由)。`examples/demo` の `demo.main` は `fold` を越え、次は `Vec::push` (行 33) で止まる。`perf/closure` の `closure.main` はクロージャを越え、次は `core.check.eq` (行 23、kir/check-eq の担当) で止まる。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
