@@ -13882,15 +13882,14 @@ fn kir_array_for_matches_tree_walker() {
 
 #[test]
 fn kir_array_of_aggregates_keeps_its_reason() {
-    // 要素が集成体の配列は、バイト記憶で並べられないので理由を付けて未対応にする。
-    let src = "type t.E pub
-    code: u8
-end t.E
-
-fn t.g() -> u8 uses [] panics never pub
-    let mut s = 0u8
-    for x in [t.E { code: 1u8 }, t.E { code: 2u8 }] {
-        s = s.wrapping_add(x.code)
+    // 要素が所有物 (String) の配列は、移動と解放を扱わないので理由を付けて未対応にする
+    // (所有物を持たない集成体の配列は、設計_KIR.md 17.21 で下ろした)。
+    let src = "fn t.g() -> usize uses [alloc] panics may pub
+    let a = alloc.string.String.new(std.alloc.SYSTEM)
+    let b = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = 0usize
+    for x in [a, b] {
+        s = s.wrapping_add(x.len())
     }
     s
 end t.g
@@ -14709,6 +14708,160 @@ fn kir_tuple_eq_matches_tree_walker() {
     assert_eq!(w.status.code(), Some(101), "tree-walker\n{}", text(&w.stderr));
     assert_eq!(k.status.code(), Some(101), "kir\n{}", text(&k.stderr));
     assert_eq!(text(&k.stderr), text(&w.stderr), "失敗の文言が違う");
+}
+
+#[test]
+fn kir_array_literal_of_aggregates_matches_tree_walker() {
+    // 所有物を持たない集成体 (列挙型・構造体) の配列リテラルを `for` で回す。木走査と値が一致し (`--run` / `--native`)、
+    // 要素が `String` のときは、移動と解放を伴うので理由付きで止める。
+    let src = "type t.P derive [Clone] pub
+    x: i32
+end t.P
+
+enum t.Shape derive [Clone] pub
+    Circle(i32)
+    Rect(i32, i32)
+    Unit
+end t.Shape
+
+fn t.shapes() -> i32 uses [] panics never
+    let a = t.Shape.Circle(3i32)
+    let b = t.Shape.Rect(4i32, 6i32)
+    let c = t.Shape.Unit
+    let mut sum = 0i32
+    for s in [a, b, c] {
+        sum = sum.wrapping_add(match s {
+            t.Shape.Circle(r) => r.wrapping_mul(2i32)
+            t.Shape.Rect(w, h) => w.wrapping_mul(h)
+            t.Shape.Unit => 0i32
+        })
+    }
+    sum
+end t.shapes
+
+fn t.pts() -> i32 uses [] panics never
+    let a = t.P { x: 3i32 }
+    let b = t.P { x: 4i32 }
+    let mut sum = 0i32
+    for p in [a, b] {
+        sum = sum.wrapping_add(p.x)
+    }
+    sum
+end t.pts
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.shapes(), 30i32)
+    core.check.eq(t.pts(), 7i32)
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("kir_arr_agg", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, want) in [("t.shapes", "30"), ("t.pts", "7")] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+    // 所有物の要素 (`String`) は理由付きで未対応。
+    let owned = "fn t.own() -> usize uses [alloc] panics may
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut n = 0usize
+    for x in [s] {
+        n = n.wrapping_add(x.len())
+    }
+    n
+end t.own
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.own(), 0usize)
+    Ok(())
+end t.main
+";
+    let t2 = Tmp::new("kir_arr_owned", owned);
+    let k = run(&["kir", "t.own"], &t2.0);
+    let msg = format!("{}{}", text(&k.stdout), text(&k.stderr));
+    assert!(msg.contains("所有物を持たない集成体だけ"), "{}", msg);
+}
+
+#[test]
+fn kir_btree_map_matches_tree_walker() {
+    // `BtreeMap<K, V>` (整数・bool・char のキーと値)。キーの順を保つ配列 (二分探索・挿入と削除でずらす・容量を広げる)。
+    // 木走査 (`natives.rs`) と値が一致する (`--run` / `--native`)。
+    let cases: &[(&str, &str)] = &[
+        // tour と同じ並び (挿入・置き換え・長さ・検索・削除)
+        ("t.bt_basic", "    let mut m = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
+    let i1 = m.insert(3u8, 30u8)
+    let i2 = m.insert(1u8, 10u8)
+    let i3 = m.insert(3u8, 33u8)
+    core.check.eq(i1, Ok(None))
+    core.check.eq(i2, Ok(None))
+    core.check.eq(i3, Ok(Some(30u8)))
+    core.check.eq(m.len(), 2usize)
+    core.check.eq(m.get(3u8), Some(33u8))
+    core.check.eq(m.contains_key(2u8), false)
+    core.check.eq(m.remove(1u8), Some(10u8))
+    core.check.eq(m.remove(1u8), None)
+    core.check.eq(m.is_empty(), false)
+    true"),
+        // 負のキーと、ソートの順 (先頭・末尾・中ほどの削除)
+        ("t.bt_neg", "    let mut m = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
+    for k in [5i32, -3i32, 9i32, 0i32, -10i32, 7i32] {
+        core.mem.drop(m.insert(k, k.wrapping_mul(2i32)))
+    }
+    core.check.eq(m.get(-3i32), Some(-6i32))
+    core.check.eq(m.get(4i32), None)
+    core.check.eq(m.remove(5i32), Some(10i32))
+    core.check.eq(m.remove(5i32), None)
+    core.check.eq(m.remove(-10i32), Some(-20i32))
+    core.check.eq(m.remove(9i32), Some(18i32))
+    core.check.eq(m.len(), 3usize)
+    core.check.eq(m.get(7i32), Some(14i32))
+    true"),
+        // 容量を何度も広げる (降順に 40 個入れる)、偶数の削除、先頭の削除
+        ("t.bt_grow", "    let mut m = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
+    for k in core.iter.range(1i64, 41i64) {
+        core.mem.drop(m.insert(41i64 - k, k * 10i64))
+    }
+    core.check.eq(m.len(), 40usize)
+    core.check.eq(m.get(1i64), Some(400i64))
+    core.check.eq(m.get(40i64), Some(10i64))
+    core.check.eq(m.get(41i64), None)
+    for k in core.iter.range(1i64, 41i64) {
+        if k % 2i64 == 0i64 {
+            core.mem.drop(m.remove(k))
+        }
+    }
+    core.check.eq(m.len(), 20usize)
+    core.check.eq(m.get(2i64), None)
+    core.check.eq(m.get(3i64), Some(380i64))
+    core.check.eq(m.remove(1i64), Some(400i64))
+    core.check.eq(m.len(), 19usize)
+    true"),
+        // bool と char のキー
+        ("t.bt_char", "    let mut m = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
+    core.mem.drop(m.insert('z', true))
+    core.mem.drop(m.insert('a', false))
+    core.check.eq(m.get('a'), Some(false))
+    core.check.eq(m.get('z'), Some(true))
+    core.check.eq(m.get('m'), None)
+    true"),
+    ];
+    let mut src = String::new();
+    let mut main = String::from("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n");
+    for (f, body) in cases {
+        src.push_str(&format!("fn {}() -> bool uses [alloc] panics may\n{}\nend {}\n\n", f, body, f));
+        main.push_str(&format!("    core.check.eq({}(), true)\n", f));
+    }
+    main.push_str("    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_btree", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, _) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "true", "kir value of {}", f);
+    }
 }
 
 #[test]
@@ -19448,6 +19601,7 @@ fn llvm_builds_of_real_packages_match_run() {
         "examples/more_str",
         "examples/native",
         "examples/realtime",
+        "examples/tour",
         "perf/closure",
         "perf/fib",
         "perf/hashmap",
