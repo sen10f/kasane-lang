@@ -1,0 +1,73 @@
+type t.S
+    name: Option<alloc.string.String>
+    n: Option<u32>
+end t.S
+
+fn t.by_ref(o: &Option<alloc.string.String>) -> usize uses [] panics never
+    match o {
+        Some(s) => t.peek(s)
+        None => 0usize
+    }
+end t.by_ref
+
+fn t.by_value(o: Option<alloc.string.String>) -> usize uses [] panics never
+    match o {
+        Some(s) => {
+            let n = t.peek(&s)
+            t.consume(s)
+            n
+        }
+        None => 0usize
+    }
+end t.by_value
+
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.copy_payload(r: &t.S, o: &Option<u32>) -> u32 uses [] panics never
+    let a = match r.n {
+        Some(x) => x
+        None => 0u32
+    }
+    let b = match *o {
+        Some(y) => y
+        None => 1u32
+    }
+    a.wrapping_add(b)
+end t.copy_payload
+
+fn t.field_once(w: t.S) -> usize uses [] panics never
+    let n = match w.n {
+        Some(_) => 1usize
+        None => 0usize
+    }
+    match w.name {
+        Some(s) => t.peek(&s).wrapping_add(n)
+        None => n
+    }
+end t.field_once
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek
+
+fn t.twice_by_ref(o: Option<alloc.string.String>) -> usize uses [] panics never
+    let a = match &o {
+        Some(s) => t.peek(s)
+        None => 0usize
+    }
+    let b = match &o {
+        Some(s2) => t.peek(s2)
+        None => 0usize
+    }
+    a.wrapping_add(b)
+end t.twice_by_ref

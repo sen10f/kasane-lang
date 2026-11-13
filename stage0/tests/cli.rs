@@ -16325,7 +16325,7 @@ end t.opt_local
 fn t.opt_peek(n: u32, some: bool) -> usize uses [alloc] panics never
     let o = t.maybe(n, some)
     let k = match o {
-        Some(_v) => 1usize
+        Some(_) => 1usize
         None => 2usize
     }
     if o.is_some() {
