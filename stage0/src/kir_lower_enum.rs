@@ -463,6 +463,11 @@ impl<'a> Lw<'a> {
         let FromVariant::One(variant) = self.p.from_variant(&to, &from) else { return unsupported() };
         let Pay::Agg(ai2) = e1 else { return unsupported() };
         let d = self.agg_def(ai2);
+        // 下ろしている戻り値の型 (クロージャならその戻り値) と、E2 の名前が一致するときだけ包む。
+        // クロージャの中では `self.def` が外側の関数を指すので、名前で確かめる。
+        if d.name != to {
+            return unsupported();
+        }
         let AggKind::Enum(vs) = &d.kind else { return unsupported() };
         let Some(k) = vs.iter().position(|x| x.name == variant) else { return unsupported() };
         let tag = self.emit(Ty::Bool, Op::Tag(v));
