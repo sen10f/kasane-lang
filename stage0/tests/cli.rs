@@ -18854,3 +18854,21 @@ fn derive_clone_on_string_or_vec_field_is_e2036() {
         assert!(o.contains("E2036"), "{}", o);
     }
 }
+
+/// 4.1 (0.10.2): 入力位置に 2 回以上現れて入力どうしを結ぶライフタイムは、出力に現れなくても明示できる。
+/// 1 回だけ現れる宣言は省略が正規形で E3021 (`'ab` は `'a` と別の名前として数える)。
+#[test]
+fn lifetime_declared_only_in_inputs_is_e3021_unless_it_ties_inputs() {
+    let main = "fn t.main() -> () uses [] panics never\nend t.main\n";
+    let cases = [
+        ("once", "fn t.f['a](x: &'a u32) -> u32 uses [] panics never\n    *x\nend t.f\n", true),
+        ("once_two_refs", "fn t.f['a](x: &'a u32, y: &u32) -> u32 uses [] panics never\n    x.wrapping_add(*y)\nend t.f\n", true),
+        ("prefix_name", "fn t.f['ab](x: &'ab u32, y: &u32) -> u32 uses [] panics never\n    x.wrapping_add(*y)\nend t.f\n", true),
+        ("ties", "fn t.f['a](x: &'a u32, y: &'a u32) -> u32 uses [] panics never\n    x.wrapping_add(*y)\nend t.f\n", false),
+    ];
+    for (tag, f, want) in cases {
+        let t = Tmp::new(&format!("e3021_{}", tag), &format!("{}\n{}", f, main));
+        let o = text(&run(&["check", "--json"], &t.0).stdout);
+        assert_eq!(o.contains("E3021"), want, "{}: {}", tag, o);
+    }
+}

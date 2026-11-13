@@ -2751,13 +2751,31 @@ impl<'a> Checker<'a> {
     }
 
     fn check_elision(&mut self, di: usize) {
+        /// ヘッダの型パラメータ列 (`fn x.f['a, 'b, T](..)`) で宣言したライフタイムの名前 (`'a`)。
+        fn lifetime_names(head: &str) -> Vec<String> {
+            let Some(open) = head.find('[') else { return vec![] };
+            let Some(close) = head[open..].find(']') else { return vec![] };
+            head[open + 1..open + close].split(',').map(|x| x.trim()).filter(|x| x.starts_with('\'')).map(|x| x.to_string()).collect()
+        }
+        /// `txt` の中で、ライフタイム `lt` (`'a`) が識別子として現れる回数 (`'ab` は数えない)。
+        fn count_lifetime(txt: &str, lt: &str) -> usize {
+            let b = txt.as_bytes();
+            txt.match_indices(lt)
+                .filter(|(i, _)| b.get(i + lt.len()).map_or(true, |c| !(c.is_ascii_alphanumeric() || *c == b'_')))
+                .count()
+        }
         let d = self.def(di);
         let head = d.header.split(" uses ").next().unwrap_or("");
         if head.contains("['") {
             // 4.1: 省略が正規形のときのライフタイム宣言はエラー。
             let ret_txt = head.split("->").nth(1).unwrap_or("");
             let refs = d.params.iter().filter(|p| p.1.dump().contains("ref")).count();
-            let redundant = if !ret_txt.contains('\'') { true } else { d.ret.dump().contains("ref") && refs == 1 };
+            // 入力の位置に 2 回以上現れるライフタイム (2 つの入力を結ぶ: `v: &mut Vec<&'a T>, s: &'a T`) は、
+            // 戻り値に現れなくても明示が要る (省略すると別々のライフタイムになる)。1 回だけなら省略が正規形。
+            let params_txt = head.split("->").next().unwrap_or("");
+            let params_txt = params_txt.split_once('(').map(|x| x.1).unwrap_or("");
+            let ties_inputs = lifetime_names(head).iter().any(|lt| count_lifetime(params_txt, lt) >= 2);
+            let redundant = if !ret_txt.contains('\'') { !ties_inputs } else { d.ret.dump().contains("ref") && refs == 1 };
             if redundant {
                 let msg = format!("{}: lifetimes can be elided here; remove the explicit declaration", d.name);
                 self.diag("E3021", msg, di, 0);
