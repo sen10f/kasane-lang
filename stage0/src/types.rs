@@ -1906,7 +1906,21 @@ impl<'a> TypeCk<'a> {
     /// 関数の中・クロージャの本体の中では黙る（クロージャの効果は確実に含まれる効果だけを足すため、
     /// トレイトの宣言の効果 (上限) は足さない）。
     fn check_trait_effects(&mut self, name: String, uses: Vec<String>, panics: Option<String>, line: usize) {
-        if !self.eff_acc.is_empty() || self.def().inferred {
+        if self.def().inferred {
+            return;
+        }
+        if !self.eff_acc.is_empty() {
+            // クロージャの本体の中: 境界・`dyn` 越しの呼び出しは、宣言の効果 (上限) をそのクロージャの効果に数える
+            // (5.1 未宣言の副作用はエラー。確実でないので `unsure`)。効果変数は実体化されるまで数えない。
+            let low: BTreeSet<String> =
+                uses.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())).cloned().collect();
+            if let Some(acc) = self.eff_acc.last_mut() {
+                acc.0.extend(low);
+                if panics.as_deref() == Some("may") {
+                    acc.1 = true;
+                }
+                acc.2 = true;
+            }
             return;
         }
         self.record_effects(line, vec![(name, uses.clone(), panics.clone(), uses, panics)]);
@@ -1959,6 +1973,16 @@ impl<'a> TypeCk<'a> {
             // (効果検査は未束縛の変数を黙って通す)。
             if let Some((_, u, pn)) = td.trait_effs.iter().find(|e| e.0 == name) {
                 let (u2, p2) = crate::check::inst_effects(&td.generics, if cur == root { &dargs.0 } else { &[] }, u, pn);
+                // クロージャの本体の中なら、実体化した宣言の効果 (上限) をそのクロージャの効果に数える (5.1)。
+                if !self.def().inferred {
+                    if let Some(acc) = self.eff_acc.last_mut() {
+                        acc.0.extend(u2.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())).cloned());
+                        if p2 == "may" {
+                            acc.1 = true;
+                        }
+                        acc.2 = true;
+                    }
+                }
                 self.resolved_calls.push(ResolvedCall {
                     writer: self.cur,
                     scope: self.closure_nodes.last().cloned(),
@@ -3235,10 +3259,8 @@ impl<'a> TypeCk<'a> {
             }
             let Ty::Closure { id: Some(node), .. } = self.deep(a) else { continue };
             let Some((uses, may, unsure)) = self.closure_effs.get(&node) else { continue };
-            // 確実でない効果 (推論された関数の上からの近似を含む) は、効果変数の束縛に使わない (黙る)。
-            if *unsure {
-                continue;
-            }
+            // 確実でない効果 (推論された関数・`dyn` / 境界越しの上限) も、5.1 に合わせて上限として束縛に使う (fail-closed)。
+            let _ = unsure;
             for b in &bounds {
                 let bt = items(tel(b, 1));
                 let var = |i: usize, kind: &str| -> Option<String> {
@@ -3281,6 +3303,8 @@ impl<'a> TypeCk<'a> {
             }
             let Ty::Closure { id: Some(node), .. } = self.deep(a) else { continue };
             let Some((uses, may, unsure)) = self.closure_effs.get(&node) else { continue };
+            // 境界の具体名との比べは、確実な効果だけで行う (推論された関数・`dyn` 越しの上限は、
+            // 囲む関数の宣言との比べ (`closure_effect_bind` / `closure_call_effects`) が見る)。
             if *unsure {
                 continue;
             }
@@ -3467,11 +3491,11 @@ impl<'a> TypeCk<'a> {
     /// 呼び出しを含む外側のクロージャも確実でないとする (`eff_acc` の 3 つ目)。
     fn closure_call_effects(&mut self, node: &str, name: &str, line: usize) {
         let Some((uses, may, unsure)) = self.closure_effs.get(node).cloned() else { return };
+        // 確実でなくても上限として数える。呼び出しを含む外側のクロージャも確実でないとする。
         if unsure {
             if let Some(acc) = self.eff_acc.last_mut() {
                 acc.2 = true;
             }
-            return;
         }
         let uses: Vec<String> = uses.into_iter().collect();
         let panics = may.then(|| "may".to_string());
