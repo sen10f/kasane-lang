@@ -482,6 +482,7 @@ impl<'a> Lw<'a> {
             "Break" => self.jump_loop(e, true),
             "Continue" => self.jump_loop(e, false),
             "Return" => self.ret_(e),
+            "With" => self.with_(e),
             "StructLit" | "TupleE" | "Field" => self.agg_expr(e),
             "Unsafe" => ffi_lower::unsafe_block(self, e),
             "Match" => self.match_any(e),
@@ -935,7 +936,7 @@ impl<'a> Lw<'a> {
             };
             if is_net {
                 let m = st(&nf(e)[1]);
-                if matches!(m.as_str(), "accept" | "read" | "write" | "flush" | "close") {
+                if matches!(m.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port") {
                     let Some(recv) = self.expr(&nf(e)[0])? else { return Ok(None) };
                     let rt = self.vty(recv);
                     let args = items(&nf(e)[2]).to_vec();
@@ -1216,6 +1217,57 @@ impl<'a> Lw<'a> {
         coll::drop_from(self, 0);
         self.terminate(Term::Ret(v));
         Ok(None)
+    }
+
+    /// `with [mut] 名前 = 初期化式 close 後始末式 { 本体 }` (仕様 4.4)。
+    /// 本体を抜けるあらゆる経路 (末尾 / `return` / `?` / `break` / `continue`) で、
+    /// 出口の値を決めたあとに後始末式をちょうど 1 回実行する。panic とプロセス終了は
+    /// 実行しない。初期化式が失敗したら束縛も後始末もない。
+    fn with_(&mut self, e: &V) -> LR<Option<VId>> {
+        let f = nf(e);
+        let name = st(&nf(&f[0])[0]);
+        let init = &f[2];
+        let close_expr = &f[3];
+        let body = &f[4];
+
+        // 1. 初期化式を評価。`?` などで抜けたら束縛も後始末もない。
+        let Some(v) = self.expr(init)? else { return Ok(None) };
+        let t = self.vty(v);
+        coll::bind_owned(self, &name, v, t);
+
+        // 2. 本体を下ろす。
+        let body_start = self.blocks.len();
+        let body_v = self.expr(body)?;
+        let body_end = self.cur;
+        let end = self.blocks.len(); // close 式の評価でブロックが増えるので固定
+
+        // 3. 本体の各出口 (return / ? / break / continue) に後始末を置く。
+        let enclosing: Option<(usize, usize)> =
+            self.loops.last().map(|lc| (lc.header, lc.exit));
+        for b in body_start..end {
+            let close_it = match self.blocks[b].term.clone() {
+                Some(Term::Ret(_)) => true,
+                Some(Term::Br((t, _))) => match &enclosing {
+                    Some((hdr, ex)) => t == *ex || t == *hdr,
+                    None => false,
+                },
+                _ => false,
+            };
+            if close_it {
+                self.cur = Some(b);
+                let _ = self.expr(close_expr)?;
+            }
+        }
+
+        // 4. 末尾で普通に抜ける経路にも後始末を置く。
+        match (body_v, body_end) {
+            (Some(v), Some(b)) if self.blocks[b].term.is_none() => {
+                self.cur = Some(b);
+                let _ = self.expr(close_expr)?;
+                Ok(Some(v))
+            }
+            _ => Ok(None),
+        }
     }
 }
 

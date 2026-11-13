@@ -12599,6 +12599,19 @@ fn kir_lower_values_match_tree_walker() {
 }
 
 #[test]
+fn kir_with_match_tree_walker() {
+    // `with` を普通に抜ける / `return` で抜けるケース。
+    // `ksn run` (木走査) と `ksn kir t.main --run` (KIR) の結果が一致すること。
+    let body = "fn t.main() -> u32 uses [] panics may\n    let n1 = with s = 5u32 close core.mem.drop(s) {\n        42u32\n    }\n    core.check.eq(n1, 42u32)\n    with s = 5u32 close core.mem.drop(s) {\n        return 9u32\n    }\n    0u32\nend t.main\n";
+    let t = Tmp::new("t.with", body);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.main", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "9", "kir value");
+}
+
+#[test]
 fn kir_lower_panics_and_depth_match_tree_walker() {
     // panic の文言と終了コード (101)、呼び出し深さの超過 (102) が木走査と一致すること。
     let cases: &[(&str, &[&str], &str)] = &[
