@@ -10923,7 +10923,8 @@ end t.main.test_d_to_string
         assert!(out.contains(&format!("t.main.{} ... ok (both: native (llvm skipped: ", name)), "{}", out);
     }
     // 解放が要る値を作る `match` (`Ok(o) => o` / `Err(_e) => ..`) は機械語で動き、インタプリタと一致する。
-    assert!(out.contains("t.main.test_d_to_string ... ok (both: native (llvm skipped: "), "{}", out);
+    // `test` の入口は全部の効果を持つので、alloc を使う本体も LLVM で比べられる。
+    assert!(out.contains("t.main.test_d_to_string ... ok (both: llvm)"), "{}", out);
 }
 
 #[test]
@@ -11132,16 +11133,16 @@ end t.main.test_k_place_scrutinee_fresh_arms
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    // 6 本とも機械語 (Cranelift) で比べられるが、KIR に下ろせないものは Cranelift へ退避する理由が出る。
-    assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 6, "{}", out);
-    assert!(!out.contains("both: bundle"), "{}", out);
+    // 6 本とも LLVM で比べられる (テストの入口は全部の効果を持つので、alloc の関数を呼ぶ本体も下ろせる)。
+    assert_eq!(out.matches("(both: llvm)").count(), 6, "{}", out);
+    assert!(!out.contains("both: bundle") && !out.contains("both: native"), "{}", out);
     assert!(out.contains("6 passed; 0 failed"), "{}", out);
 }
 
-/// 解放が要る値を持つ場所 (`let` の局所) から移動する `match` は、所有の扱いを持たないので退避する。
-/// 退避の理由が出て、バンドルでも正しく動く。
+/// 解放が要る値を持つ場所 (`let` の局所) から移動する `match` も、LLVM で比べられる (テストの入口は全部の効果を持つ)。
+/// 以前は alloc の検査で退避していた形。インタプリタと同じ結果になる。
 #[test]
-fn match_moving_out_of_a_place_scrutinee_falls_back_with_reason() {
+fn match_moving_out_of_a_place_scrutinee_runs_on_llvm() {
     let tests = r#"test t.main.test_j_place_scrutinee_moves
     let r = alloc.string.String.from_str(std.alloc.SYSTEM, "x")
     let s = match r {
@@ -11156,8 +11157,7 @@ end t.main.test_j_place_scrutinee_moves
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("t.main.test_j_place_scrutinee_moves ... ok (both: bundle (llvm skipped: "), "{}", out);
-    assert!(out.contains("; native skipped: t.main.test_j_place_scrutinee_moves: "), "{}", out);
+    assert!(out.contains("t.main.test_j_place_scrutinee_moves ... ok (both: llvm)"), "{}", out);
 }
 
 #[test]
@@ -12064,6 +12064,31 @@ fn test_both_compares_llvm_panics_with_the_tree_walker() {
     assert!(out.contains("test t.main.test_assert ... FAILED: assertion failed: left: 1, right: 2 (both: llvm)"), "{}", out);
     assert!(!out.contains("disagree"), "{}", out);
     assert!(out.contains("compared with: llvm 5, native 0, bundle fallback 0"), "{}", out);
+}
+
+#[test]
+fn test_both_runs_a_test_without_uses_that_calls_alloc_and_console_functions_on_llvm() {
+    // `test` には uses の宣言がない。`ksn check` は test の本体で効果を見ない (全部の効果を許す) ので、
+    // KIR の入口も全部の効果を持つとして下ろす。`alloc` と `io.console` を使う関数を呼んでも、LLVM で比べる。
+    if !clang_available() {
+        eprintln!("skip: clang が PATH に無いので、LLVM の比較は飛ばす");
+        return;
+    }
+    let src = format!(
+        "{}\nfn t.main.collect(n: u32) -> usize uses [alloc, io.console] panics may\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    match v.push(n) {{\n        Ok(_) => ()\n        Err(_e) => core.panic.panic(\"oom\")\n    }}\n    std.io.print_line(\"collected\")\n    v.len()\nend t.main.collect\n\n\
+         test t.main.test_alloc_and_console_callees\n    core.check.eq(t.main.collect(3u32), 1usize)\nend t.main.test_alloc_and_console_callees\n\n\
+         test t.main.test_alloc_and_console_callees_fail\n    core.check.eq(t.main.collect(3u32), 2usize)\nend t.main.test_alloc_and_console_callees_fail\n",
+        BOTH_SRC
+    );
+    let t = Tmp::new("both_llvm_entry_effects", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert!(out.contains("test t.main.test_alloc_and_console_callees ... ok (both: llvm)"), "{}", out);
+    assert!(out.contains("test t.main.test_alloc_and_console_callees_fail ... FAILED: assertion failed: left: 1, right: 2 (both: llvm)"), "{}", out);
+    assert!(!out.contains("(both: native") && !out.contains("both: bundle"), "{}", out);
+    assert!(!out.contains("disagree"), "{}", out);
+    assert!(out.contains("compared with: llvm 3, native 0, bundle fallback 0"), "{}", out);
+    assert_eq!(o.status.code(), Some(1), "{}{}", out, text(&o.stderr));
 }
 
 #[test]
