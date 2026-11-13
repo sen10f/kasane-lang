@@ -1,0 +1,21 @@
+// expect: E3003
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.close(r: t.Res) -> u32 uses [] panics never
+    let t.Res { id: id } = r
+    id
+end t.close
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main
+
+fn t.open(n: u32) -> t.Res uses [] panics never
+    t.Res { id: n }
+end t.open
+
+fn t.over(slot: &mut t.Res, n: t.Res) -> () uses [] panics never
+    *slot = n
+end t.over

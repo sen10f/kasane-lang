@@ -1,0 +1,25 @@
+// expect: E3003
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.bad(a: [t.Res; 2]) -> u32 uses [] panics never
+    let mut n = 0u32
+    for _r in a {
+        n = n.wrapping_add(1u32)
+    }
+    n
+end t.bad
+
+fn t.close(r: t.Res) -> u32 uses [] panics never
+    let t.Res { id: id } = r
+    id
+end t.close
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main
+
+fn t.open(n: u32) -> t.Res uses [] panics never
+    t.Res { id: n }
+end t.open

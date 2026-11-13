@@ -1,0 +1,26 @@
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.close(r: t.Res) -> u32 uses [] panics never
+    let t.Res { id: id } = r
+    id
+end t.close
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main
+
+fn t.open(n: u32) -> t.Res uses [] panics never
+    t.Res { id: n }
+end t.open
+
+fn t.peek(r: &t.Res) -> u32 uses [] panics never
+    r.id
+end t.peek
+
+fn t.run() -> u32 uses [] panics never
+    let r = t.open(2u32)
+    let n = t.peek(&r)
+    n.wrapping_add(t.close(r))
+end t.run
