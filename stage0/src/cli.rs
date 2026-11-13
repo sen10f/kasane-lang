@@ -583,7 +583,8 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
             return 2;
         }
         let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
-        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).arg("-o").arg(&tmp).arg("-lm").output();
+        let rt = runtime_c_args(&ll, &src);
+        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(&tmp).arg("-lm").output();
         match o {
             Err(e) => {
                 eprintln!("ksn kir: --native には clang が必要です ({} を起動できない: {})", clang, e);
@@ -2138,6 +2139,18 @@ fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str) -
 
 /// 環境変数 `KSN_CLANG_ARGS` (空白区切り) の clang への追加の引数。試験が `-fsanitize=address -g` などを渡すための隠し機能。
 /// 未設定なら空 (既定の挙動は変わらない)。
+/// IR が C の実行時補助 (`kir_rt.c`) を要するなら、それを `src` の隣に書いて、clang に足す引数 (`-x c <path>`) を返す。
+fn runtime_c_args(ll: &str, src: &Path) -> Vec<String> {
+    if !crate::kir_llvm::needs_runtime(ll) {
+        return vec![];
+    }
+    let c = src.with_extension("rt.c");
+    if fs::write(&c, crate::kir_llvm::RUNTIME_C).is_err() {
+        return vec![];
+    }
+    vec!["-x".into(), "c".into(), c.display().to_string()]
+}
+
 fn clang_extra_args() -> Vec<String> {
     std::env::var("KSN_CLANG_ARGS").map(|s| s.split_whitespace().map(|x| x.to_string()).collect()).unwrap_or_default()
 }
@@ -2147,8 +2160,12 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let src = exe.with_extension("ll.tmp");
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
-    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).arg("-o").arg(exe).arg("-lm").output();
+    let rt = runtime_c_args(ll, &src);
+    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(exe).arg("-lm").output();
     let _ = fs::remove_file(&src);
+    if rt.len() == 3 {
+        let _ = fs::remove_file(&rt[2]);
+    }
     match o {
         Err(e) => Err(format!("clang を起動できない ({}: {})", clang, e)),
         Ok(o) if !o.status.success() => Err(format!("clang が失敗した: {}", String::from_utf8_lossy(&o.stderr).trim())),

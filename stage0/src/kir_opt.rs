@@ -79,6 +79,7 @@ fn side_effecting(op: &Op) -> bool {
         Op::Call { .. }
         | Op::Write { .. }
         | Op::Eprint { .. }
+        | Op::FmtFloat { .. }
         | Op::Abort
         | Op::Panic { .. }
         | Op::Store { .. }
@@ -251,6 +252,7 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::Panic { arg, .. } => arg.iter_mut().collect(),
         Op::Write { fd, data } => vec![fd, data],
         Op::Eprint { data } => vec![data],
+        Op::FmtFloat { a, .. } => vec![a],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }
         | Op::Cmp { a, b, .. }
