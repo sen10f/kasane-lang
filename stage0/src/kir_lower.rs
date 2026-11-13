@@ -258,7 +258,11 @@ impl<'a> Lw<'a> {
 
     fn new_slot(&mut self, v: VId, t: Ty) -> usize {
         self.slots.push((v, t));
-        self.slots.len() - 1
+        let s = self.slots.len() - 1;
+        // 枝の終わりで `slots` を切り詰めるので、番号は再利用される。前の持ち主の種類・借用の印は消す。
+        self.coll.kinds.remove(&s);
+        self.coll.borrowed.remove(&s);
+        s
     }
 
     fn bind(&mut self, name: &str, v: VId, t: Ty) {
@@ -378,13 +382,13 @@ impl<'a> Lw<'a> {
         self.rf.begin(body);
         self.scopes.push(vec![]);
         for ((name, pt), (v, t)) in d.params.iter().zip(pv.iter().zip(params.iter())) {
-            self.bind_let(name, *v, *t);
-            coll::bind_param_kind(&mut self, name, &from_v(pt, &gn));
+            coll::bind_param(&mut self, name, *v, *t, &from_v(pt, &gn));
         }
         if let Some(v) = self.expr(body)? {
             if self.vty(v) != ret {
                 return Err("本体の値の型が戻り値の型と合わない".into());
             }
+            coll::drop_from(&mut self, 0);
             self.terminate(Term::Ret(v));
         }
         let mut uses = d.uses.clone();
@@ -439,6 +443,14 @@ impl<'a> Lw<'a> {
         }
     }
 
+    /// 式を下ろす。単一の名前の局所変数 (所有物の印を持つもの) は、移さずにそのまま読む (場所としての使用)。
+    fn expr_peek(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(s) = coll::val_slot(self, e) {
+            return Ok(Some(coll::path_peek(self, s)));
+        }
+        self.expr(e)
+    }
+
     fn lit(&mut self, e: &V) -> LR<VId> {
         let f = nf(e);
         let line = nline(e);
@@ -475,8 +487,7 @@ impl<'a> Lw<'a> {
         let line = nline(e);
         if segs.len() == 1 {
             if let Some(s) = self.lookup(&segs[0]) {
-                coll::check_value_use(self, s, line)?;
-                return Ok(self.read_slot(s));
+                return Ok(coll::path_read(self, s));
             }
             if segs[0] == "None" {
                 return self.none_val(e);
@@ -486,7 +497,11 @@ impl<'a> Lw<'a> {
         if segs.len() > 1 {
             if let Some(s) = self.lookup(&segs[0]) {
                 let base = self.read_slot(s);
-                return self.field_path(base, &segs[1..], line);
+                let v = self.field_path(base, &segs[1..], line)?;
+                if coll::owns(self, self.vty(v)) {
+                    return self.err(line, "構造体のフィールドからの Vec / String の移動は段階 1 の対象外 (参照で使う)");
+                }
+                return Ok(v);
             }
         }
         if !matches!(nf(e).get(1), Some(V::Nil) | None) {
@@ -803,6 +818,9 @@ impl<'a> Lw<'a> {
                 St::Val(v) => {
                     if last {
                         out = Some(v);
+                    } else {
+                        // 文として評価した式の値は捨てる。所有物なら解放する。
+                        coll::drop_temp(self, v);
                     }
                 }
             }
@@ -810,7 +828,7 @@ impl<'a> Lw<'a> {
         if stmts.is_empty() {
             out = Some(self.unit());
         }
-        coll::block_end(self, out, nline(e))?;
+        coll::block_end(self);
         self.scopes.pop();
         if diverged {
             return Ok(None);
@@ -833,7 +851,7 @@ impl<'a> Lw<'a> {
                 let name = st(&nf(pat)[0]);
                 let Some(v) = self.expr(&f[3])? else { return Ok(St::Div) };
                 let t = self.vty(v);
-                self.bind_let(&name, v, t);
+                coll::bind_owned(self, &name, v, t);
                 coll::after_let(self, &name, &f[3])?;
                 Ok(St::Unit)
             }
@@ -856,10 +874,7 @@ impl<'a> Lw<'a> {
                 };
                 coll::check_assign(self, s_idx, line)?;
                 let Some(v) = self.expr(&f[1])? else { return Ok(St::Div) };
-                if self.vty(v) != self.slots[s_idx].1 {
-                    return self.err(line, "代入の型が変数の型と違う");
-                }
-                self.assign_slot(s_idx, v);
+                coll::assign_checked(self, s_idx, v, line)?;
                 Ok(St::Unit)
             }
             "ExprStmt" => match self.expr(&f[0])? {
@@ -1010,7 +1025,6 @@ impl<'a> Lw<'a> {
         if self.vty(v) != self.ret {
             return self.err(line, "return の値の型が戻り値の型と違う");
         }
-        coll::check_not_owned(self, v, line)?;
         coll::drop_from(self, 0);
         self.terminate(Term::Ret(v));
         Ok(None)
