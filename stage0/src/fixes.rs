@@ -98,6 +98,36 @@ pub fn fixes_for(code: &str, msg: &str, file: &str, line: usize, col: usize, lin
             let Some(&(b0, _)) = bytes.get(col.wrapping_sub(1)) else { return vec![] };
             vec![span(file, line, text, b0, b0 + 1, String::new())]
         }
+        // match の腕: 次の行が `{` だけなら、`=>` の行末から `{` の行末までを ` {` にして改行を消す。
+        "E0057" => {
+            let (Some(text), Some(next)) = (get(line), get(line + 1)) else { return vec![] };
+            if !text.trim_end().ends_with("=>") || next.trim() != "{" {
+                return vec![];
+            }
+            vec![Fix {
+                file: file.to_string(),
+                line,
+                col: text.trim_end().chars().count() + 1,
+                end_line: line + 1,
+                end_col: next.trim_end().chars().count() + 1,
+                replace: " {".to_string(),
+            }]
+        }
+        // match の腕の本体の代入 `Some(r) => result = r` を、腕の行に `{`、次の行に代入、閉じの `}` の 3 行にする。
+        "E0058" => {
+            let Some(text) = get(line) else { return vec![] };
+            let re = Regex::new(r"^(\s*)(.*?=>)\s*([A-Za-z_][A-Za-z0-9_.]*\s*=[^=>].*)$").unwrap();
+            let Some(c) = re.captures(text) else { return vec![] };
+            let (indent, head, stmt) = (&c[1], &c[2], c[3].trim_end());
+            vec![span(
+                file,
+                line,
+                text,
+                0,
+                text.len(),
+                format!("{}{} {{\n{}    {}\n{}}}", indent, head, indent, stmt, indent),
+            )]
+        }
         "E0045" => {
             let Some(text) = get(line) else { return vec![] };
             let re = Regex::new(r"^(\s*)(.+?)\s*([-+*/%&|^])=\s*(.+?)\s*$").unwrap();

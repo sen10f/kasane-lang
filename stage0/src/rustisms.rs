@@ -57,7 +57,8 @@ fn code_part(line: &str) -> Vec<char> {
 
 pub fn scan(text: &str) -> Vec<Hit> {
     let mut hits = vec![];
-    for (idx, line) in text.split('\n').enumerate() {
+    let lines: Vec<&str> = text.split('\n').collect();
+    for (idx, line) in lines.iter().enumerate() {
         let ln = idx + 1;
         let code = code_part(line);
         let s: String = code.iter().collect();
@@ -276,6 +277,29 @@ pub fn scan(text: &str) -> Vec<Hit> {
                 msg: "Kasane match arms are separated by newlines: remove the trailing `,`".into(),
             });
         }
+        // match の腕: `=>` の後で改行しない。本体は `=>` と同じ行から始める (ブロックなら `=> {` と書く)。
+        if t.ends_with("=>") {
+            let next_is_brace = lines.get(idx + 1).map_or(false, |n| n.trim() == "{");
+            hits.push(Hit {
+                code: "E0057",
+                line: ln,
+                col: t.chars().count(),
+                msg: if next_is_brace {
+                    "a match arm's `=>` must be followed by its body on the same line: move the `{` from the next line up to this line (`Some(v) => {`)".into()
+                } else {
+                    "a match arm's `=>` must be followed by its body on the same line: write `Some(v) => value` or `Some(v) => {` with the `{` on this line".into()
+                },
+            });
+        }
+        // match の腕の本体に代入 (`Some(r) => result = r`): 本体は式で、代入はブロックの中に書く。
+        if let Some(st) = find_arm_assign(&cs) {
+            hits.push(Hit {
+                code: "E0058",
+                line: ln,
+                col: st + 1,
+                msg: "a match arm body is an expression, so an assignment cannot follow `=>`: write the arm as a block: `Some(r) => {` on this line, `result = r` indented on the next line, and `}` on its own line".into(),
+            });
+        }
         // 本体の中の制御構文は波括弧を使う: `if x {` ... `}`。行末の `{` が無い行を指摘する。
         if indent > 0 {
             let head = t.trim_start();
@@ -422,6 +446,37 @@ fn find_generic_constructor(cs: &[char]) -> Option<usize> {
                     }
                 }
             }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `=>` の直後の `name = e` (代入)。`name` は `a.b` の形も含む。`==` `=>` などの比較・矢印は除く。
+/// 代入先の名前の位置 (0 始まり) を返す。
+fn find_arm_assign(cs: &[char]) -> Option<usize> {
+    let mut i = 0;
+    while i + 1 < cs.len() {
+        if cs[i] == '=' && cs[i + 1] == '>' {
+            let mut j = i + 2;
+            while j < cs.len() && cs[j] == ' ' {
+                j += 1;
+            }
+            let st = j;
+            if st < cs.len() && (cs[st].is_alphabetic() || cs[st] == '_') {
+                while j < cs.len() && (cs[j].is_alphanumeric() || matches!(cs[j], '_' | '.')) {
+                    j += 1;
+                }
+                let mut k = j;
+                while k < cs.len() && cs[k] == ' ' {
+                    k += 1;
+                }
+                if cs.get(k) == Some(&'=') && !matches!(cs.get(k + 1), Some('=') | Some('>')) {
+                    return Some(st);
+                }
+            }
+            i += 2;
+            continue;
         }
         i += 1;
     }
