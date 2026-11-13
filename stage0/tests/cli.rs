@@ -18797,6 +18797,39 @@ fn from_str_radix_with_bad_radix_is_err_not_panic() {
     ]);
 }
 
+/// `derive [Clone]` の `clone()`: すべてスカラーの欄を持つ構造体は値の写し。
+/// 木走査・参照実行器・機械語で一致を確かめる。
+#[test]
+fn kir_clone_all_scalar_matches_tree_walker() {
+    let src = "type t.Point derive [Clone] pub\n    x: i32\n    y: i32\nend t.Point\n\n\
+fn t.main() -> () uses [] panics may\n    let p = t.Point { x: 1i32, y: 2i32 }\n    let q = p.clone()\n    core.check.eq(q.x, 1i32)\n    core.check.eq(q.y, 2i32)\nend t.main\n";
+    let t = Tmp::new("kir_clone_scalar", src);
+    let k = kir_run(&["kir", "t.main", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "{}", text(&k.stderr));
+}
+
+/// `derive [Clone]` の `clone()`: String / Vec<スカラー> の欄を持つ構造体は、
+/// 新規確保して中身を複写する。clone の後に元と写しを別々に変更しても独立。
+/// kir_run で ASan 漏れ・二重解放を確かめる。
+#[test]
+fn kir_clone_with_string_field_is_independent() {
+    let src = "type t.Person derive [Clone] pub\n    name: alloc.string.String<std.alloc.System>\n    age: i32\nend t.Person\n\n\
+fn t.main() -> () uses [alloc] panics may\n    let mut p = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(p.push_str(\"hello\"))\n    let person = t.Person { name: p, age: 30i32 }\n    let clone = person.clone()\n    core.check.eq(clone.age, 30i32)\n    core.check.eq(clone.name.len(), 5usize)\nend t.main\n";
+    let t = Tmp::new("kir_clone_string", src);
+    let k = kir_run(&["kir", "t.main", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "{}", text(&k.stderr));
+}
+
+/// `derive [Clone]` の `clone()`: Vec<u8> の欄を持つ構造体は独立したコピーになる。
+#[test]
+fn kir_clone_with_vec_field_is_independent() {
+    let src = "type t.Buf derive [Clone] pub\n    data: alloc.vec.Vec<u8, std.alloc.System>\n    len: u32\nend t.Buf\n\n\
+fn t.main() -> () uses [alloc] panics may\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(72u8))\n    core.mem.drop(v.push(105u8))\n    let buf = t.Buf { data: v, len: 2u32 }\n    let clone = buf.clone()\n    core.check.eq(clone.len, 2u32)\n    core.check.eq(clone.data.len(), 2usize)\nend t.main\n";
+    let t = Tmp::new("kir_clone_vec", src);
+    let k = kir_run(&["kir", "t.main", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "{}", text(&k.stderr));
+}
+
 /// `<int>.try_from_<int>(x)`: 範囲チェックと Ok / Err の構築。境界 (0, -1, 各型の最小・最大とその ±1)。
 /// 木走査・参照実行器・ASan 付き機械語で一致を確かめる。
 #[test]

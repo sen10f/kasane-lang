@@ -14,7 +14,7 @@
 use std::collections::HashSet;
 
 use crate::check::{is_nil, items, nf, nlineno as nline, nname, st, strs};
-use crate::kir::{AggKind, Op, Pointee, Ty, VId};
+use crate::kir::{AggKind, Aop, Cc, Mode, Op, Pointee, Ty, VId};
 use crate::parser::V;
 use crate::program::Target as Tgt;
 use crate::types::{from_v, Ty as Src};
@@ -104,6 +104,9 @@ impl<'a> Lw<'a> {
         let rt = self.src_ty(&f[0]).ok()?;
         let name = recv_type_name(&rt)?;
         let m = st(&f[1]);
+        if m == "clone" {
+            return Some(self.lower_clone_mcall(e, nline(e), &rt, &f[0]));
+        }
         let mut segs: Vec<String> = name.split('.').map(String::from).collect();
         segs.push(m);
         let di = match self.p.resolve(&segs, &self.def.file)?.target {
@@ -406,5 +409,99 @@ impl<'a> Lw<'a> {
             }
             _ => {}
         }
+    }
+
+    /// `e.clone()` (derive [Clone]) の下ろし (段階 2a/2b)。`recv_expr` は受け手の式。
+    /// すべてスカラーの欄を持つ構造体・enum・タプルなら値の写しを返す。
+    /// String / Vec<スカラー> の欄を持つ構造体なら新規確保して中身を複写する。
+    /// それ以外は `None` を返し、未対応とする。
+    fn lower_clone_mcall(&mut self, _e: &V, line: usize, _rt: &Src, recv_expr: &V) -> LR<Option<VId>> {
+        let Some(recv) = self.expr_peek(recv_expr)? else { return Ok(None) };
+        let recv_ty = self.vty(recv);
+        self.lower_clone(line, recv, recv_ty)
+    }
+
+    /// `recv` (型 `recv_ty`: `Ty::Agg` または `Ty::Ref<_, Pointee::Agg>`) の clone を下ろす。
+    /// すべてスカラーなら値をそのまま返す (KIR の値は不変)。
+    /// struct の String / Vec 欄は新規確保してバイトを複写する。
+    /// それ以外は `None`。
+    pub(super) fn lower_clone(&mut self, line: usize, recv: VId, recv_ty: Ty) -> LR<Option<VId>> {
+        let ai = match recv_ty {
+            Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => ai,
+            _ => return self.err(line, "clone の受け手が集成体ではない"),
+        };
+        let agg = self.agg_def(ai);
+        let name = self.aggs.borrow().defs[ai as usize].name.clone();
+        let def = self.p.defs.iter().find(|d| d.name == name)
+            .ok_or_else(|| format!("型 {} の定義がない", name))?;
+        if !def.derive.iter().any(|x| x == "Clone") {
+            return self.err(line, format!("clone は derive [Clone] を持つ型だけ段階 1 の対象"));
+        }
+        // 参照なら値を読み出す
+        let val = match recv_ty {
+            Ty::Ref(_, p) => self.emit(p.ty(), Op::Load(recv)),
+            Ty::Agg(_) => recv,
+            _ => return self.err(line, "clone の受け手が集成体ではない"),
+        };
+        // struct: 欄ごとにコピー。String / Vec は新規確保してバイトを複写。
+        let fs = match &agg.kind {
+            AggKind::Struct(fs) => fs,
+            // enum / tuple: すべてスカラーなら値の写し、それ以外は未対応
+            kind => {
+                let all_scalar = match kind {
+                    AggKind::Enum(vs) => vs.iter().all(|v| v.fields.iter().all(|f| f.ty.is_scalar())),
+                    AggKind::Tuple(fs) => fs.iter().all(|f| f.ty.is_scalar()),
+                    AggKind::Struct(_) => unreachable!(),
+                };
+                if all_scalar {
+                    return Ok(Some(val));
+                }
+                return Ok(None);
+            }
+        };
+        let mut new_fields = vec![];
+        for f in fs {
+            let fv = self.emit(f.ty, Op::Field { a: val, off: f.off });
+            if f.ty.is_scalar() {
+                new_fields.push(fv);
+            } else if self.aggs.borrow().is_vec(f.ty) {
+                let nfv = self.clone_owned_field(line, fv, f.ty)?;
+                new_fields.push(nfv);
+            } else {
+                return Ok(None);
+            }
+        }
+        Ok(Some(self.emit(Ty::Agg(ai), Op::Make { variant: None, fields: new_fields })))
+    }
+
+    /// Vec / String の欄を深いコピーする: 新しいバッファを確保し、バイトを複写する。
+    /// `fv` は Vec/String の集成体値 (ptr@0, len@8, cap@16)。
+    fn clone_owned_field(&mut self, _line: usize, fv: VId, fty: Ty) -> LR<VId> {
+        let ptr = self.emit(Ty::Ptr, Op::Field { a: fv, off: 0 });
+        let len = self.emit(Ty::Usize, Op::Field { a: fv, off: 8 });
+        let cap = self.emit(Ty::Usize, Op::Field { a: fv, off: 16 });
+        // 新しいバッファを確保 (HeapAlloc は uses [alloc] を要る)
+        let new_ptr = self.emit(Ty::Ptr, Op::HeapAlloc(len));
+        // バイトを複写: for i in 0..len { new_ptr[i] = ptr[i] }
+        let zero = self.emit(Ty::Usize, Op::Const(0));
+        let one = self.emit(Ty::Usize, Op::Const(1));
+        let (hd, hp) = self.new_block(&[Ty::Usize]);
+        let (body, _) = self.new_block(&[]);
+        let (exit, _) = self.new_block(&[]);
+        self.goto(hd, vec![zero]);
+        self.cur = Some(hd);
+        let i = hp[0];
+        let c = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len });
+        self.branch(c, (body, vec![]), (exit, vec![]));
+        self.cur = Some(body);
+        let old_addr = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: i });
+        let byte = self.emit(Ty::U8, Op::MemLoad { p: old_addr, off: 0 });
+        let new_addr = self.emit(Ty::Ptr, Op::PtrAdd { p: new_ptr, off: i });
+        self.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: new_addr, off: 0, v: byte });
+        let i1 = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+        self.goto(hd, vec![i1]);
+        self.cur = Some(exit);
+        // 新しい Vec/String 集成体を作る
+        Ok(self.emit(fty, Op::Make { variant: None, fields: vec![new_ptr, len, cap] }))
     }
 }

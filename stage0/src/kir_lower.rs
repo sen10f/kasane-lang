@@ -793,6 +793,9 @@ impl<'a> Lw<'a> {
                     }
                 }
                 let meth = segs[segs.len() - 1].clone();
+                if meth == "clone" {
+                    return self.lower_clone(line, recv, rt);
+                }
                 let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,
                     "wrapping_sub" => Aop::Sub,
