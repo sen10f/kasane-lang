@@ -224,7 +224,8 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     let Some(ef) = m.find(entry) else {
         return Err(format!("関数 {} がない", entry));
     };
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: false };
+    let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float };
     let mut funcs = String::new();
     for (fi, f) in m.funcs.iter().enumerate() {
         funcs.push('\n');
@@ -250,14 +251,8 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     if cx.fmt_float {
         cx.decls.insert("declare i32 @snprintf(ptr, i64, ptr, ...)".to_string());
         cx.decls.insert("declare i64 @strlen(ptr)".to_string());
-        cx.decls.insert("declare i1 @llvm.isnan.f64(double)".to_string());
-        cx.decls.insert("declare i1 @llvm.isinf.f64(double)".to_string());
-        cx.decls.insert("declare double @llvm.floor.f64(double)".to_string());
-        cx.decls.insert("declare double @llvm.fabs.f64(double)".to_string());
-        cx.decls.insert("declare i1 @llvm.isnan.f32(float)".to_string());
-        cx.decls.insert("declare i1 @llvm.isinf.f32(float)".to_string());
-        cx.decls.insert("declare float @llvm.floor.f32(float)".to_string());
-        cx.decls.insert("declare float @llvm.fabs.f32(float)".to_string());
+        cx.decls.insert("declare double @strtod(ptr, ptr)".to_string());
+        cx.decls.insert("declare float @strtof(ptr, ptr)".to_string());
     }
     let mut out = String::from("; ksn kir llvm 1\n\n");
     for d in &cx.decls {
@@ -391,79 +386,128 @@ fn write_helper(aggs: &[AggDef]) -> R<String> {
 /// `@ksn.fmt.f64(double) -> ptr` と `@ksn.fmt.f32(float) -> ptr` を出す。
 /// 結果は静的バッファへのポインタ。
 fn fmt_float_helpers() -> String {
-    let buf64 = "@ksn.fmt.buf64 = private unnamed_addr constant [64 x i8] zeroinitializer\n";
-    let buf32 = "@ksn.fmt.buf32 = private unnamed_addr constant [32 x i8] zeroinitializer\n";
+    let buf64 = "@ksn.fmt.buf64 = private unnamed_addr global [512 x i8] zeroinitializer\n";
+    let buf32 = "@ksn.fmt.buf32 = private unnamed_addr global [128 x i8] zeroinitializer\n";
     let nan = str_const("ksn.fmt.nan", "nan\0");
     let inf = str_const("ksn.fmt.inf", "inf\0");
     let ninf = str_const("ksn.fmt.ninf", "-inf\0");
     let fmt_f = str_const("ksn.fmt.fmt_f", "%.1f\0");
-    let fmt_g = str_const("ksn.fmt.fmt_g", "%.17g\0");
-    let fmt_g32 = str_const("ksn.fmt.fmt_g32", "%.9g\0");
-    // f64 ヘルパー: NaN → nan, inf → inf/-inf, 整数で |f|<1e16 → %.1f, それ以外 → %.17g
+    let fmt_f_dyn = str_const("ksn.fmt.fmt_f_dyn", "%.*f\0");
+    let fmt_f_dyn32 = str_const("ksn.fmt.fmt_f_dyn32", "%.*f\0");
+    // f64 ヘルパー: NaN → nan, inf → inf/-inf, 整数で |f|<1e16 → %.1f,
+    // それ以外 → snprintf %.*f / strtod で最短の10進往復表記 (p=0..17)
     let f64 = r#"
 define private ptr @ksn.fmt.f64(double %f) {
 entry:
-  %isnan = call i1 @llvm.isnan.f64(double %f)
+  %isnan = fcmp uno double %f, %f
   br i1 %isnan, label %nan, label %isf
 nan:
   ret ptr @ksn.fmt.nan
 isf:
-  %isinf = call i1 @llvm.isinf.f64(double %f)
+  %fb = bitcast double %f to i64
+  %exp = and i64 %fb, 9218868437227405312
+  %is_inf_exp = icmp eq i64 %exp, 9218868437227405312
+  %man = and i64 %fb, 4503599627370495
+  %is_inf_man = icmp eq i64 %man, 0
+  %isinf = and i1 %is_inf_exp, %is_inf_man
   br i1 %isinf, label %inf, label %checkint
 inf:
-  %ispos = fcmp oge double %f, 0.000000e+00
-  %s = select i1 %ispos, ptr @ksn.fmt.inf, ptr @ksn.fmt.ninf
+  %sign = icmp slt i64 %fb, 0
+  %s = select i1 %sign, ptr @ksn.fmt.ninf, ptr @ksn.fmt.inf
   ret ptr %s
 checkint:
-  %fl = call double @llvm.floor.f64(double %f)
-  %isint = fcmp oeq double %fl, %f
-  %abs = call double @llvm.fabs.f64(double %f)
+  %absbits = and i64 %fb, 9223372036854775807
+  %abs = bitcast i64 %absbits to double
   %lt = fcmp olt double %abs, 1.000000e+16
-  %do1f = and i1 %isint, %lt
-  br i1 %do1f, label %do1f, label %dog
-do1f:
-  %bp = getelementptr [64 x i8], ptr @ksn.fmt.buf64, i32 0, i32 0
-  call i32 (i32, ptr, ...) @snprintf(ptr %bp, i64 64, ptr @ksn.fmt.fmt_f, double %f)
-  ret ptr %bp
-dog:
-  %bp = getelementptr [64 x i8], ptr @ksn.fmt.buf64, i32 0, i32 0
-  call i32 (i32, ptr, ...) @snprintf(ptr %bp, i64 64, ptr @ksn.fmt.fmt_g, double %f)
-  ret ptr %bp
+  br i1 %lt, label %checkint2, label %loop
+checkint2:
+  %as_i = fptosi double %f to i64
+  %as_d = sitofp i64 %as_i to double
+  %isint = fcmp oeq double %as_d, %f
+  br i1 %isint, label %use1f, label %loop
+use1f:
+  %bp1 = getelementptr [512 x i8], ptr @ksn.fmt.buf64, i32 0, i32 0
+  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %bp1, i64 512, ptr @ksn.fmt.fmt_f, double %f)
+  ret ptr %bp1
+loop:
+  %i = phi i32 [0, %checkint], [0, %checkint2], [%i2, %next]
+  %fmt = getelementptr [5 x i8], ptr @ksn.fmt.fmt_f_dyn, i32 0, i32 0
+  %bp = getelementptr [512 x i8], ptr @ksn.fmt.buf64, i32 0, i32 0
+  %n = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %bp, i64 512, ptr %fmt, i32 %i, double %f)
+  %trunc = icmp uge i32 %n, 512
+  br i1 %trunc, label %next, label %check
+check:
+  %r = call double @strtod(ptr %bp, ptr null)
+  %ok = fcmp oeq double %r, %f
+  br i1 %ok, label %done, label %next
+next:
+  %i2 = add i32 %i, 1
+  %c = icmp eq i32 %i2, 18
+  br i1 %c, label %done, label %loop
+done:
+  %bp2 = getelementptr [512 x i8], ptr @ksn.fmt.buf64, i32 0, i32 0
+  ret ptr %bp2
 }
 "#;
-    // f32 ヘルパー
+    // f32 ヘルパー (p=0..9)
     let f32 = r#"
 define private ptr @ksn.fmt.f32(float %f) {
 entry:
-  %isnan = call i1 @llvm.isnan.f32(float %f)
+  %isnan = fcmp uno float %f, %f
   br i1 %isnan, label %nan, label %isf
 nan:
   ret ptr @ksn.fmt.nan
 isf:
-  %isinf = call i1 @llvm.isinf.f32(float %f)
+  %fb = bitcast float %f to i32
+  %exp = and i32 %fb, 2139095040
+  %is_inf_exp = icmp eq i32 %exp, 2139095040
+  %man = and i32 %fb, 8388607
+  %is_inf_man = icmp eq i32 %man, 0
+  %isinf = and i1 %is_inf_exp, %is_inf_man
   br i1 %isinf, label %inf, label %checkint
 inf:
-  %ispos = fcmp oge float %f, 0.000000e+00
-  %s = select i1 %ispos, ptr @ksn.fmt.inf, ptr @ksn.fmt.ninf
+  %sign = icmp slt i32 %fb, 0
+  %s = select i1 %sign, ptr @ksn.fmt.ninf, ptr @ksn.fmt.inf
   ret ptr %s
 checkint:
-  %fl = call float @llvm.floor.f32(float %f)
-  %isint = fcmp oeq float %fl, %f
-  %abs = call float @llvm.fabs.f32(float %f)
+  %absbits = and i32 %fb, 2147483647
+  %abs = bitcast i32 %absbits to float
   %lt = fcmp olt float %abs, 1.000000e+16
-  %do1f = and i1 %isint, %lt
-  br i1 %do1f, label %do1f, label %dog
-do1f:
-  %bp = getelementptr [32 x i8], ptr @ksn.fmt.buf32, i32 0, i32 0
-  call i32 (i32, ptr, ...) @snprintf(ptr %bp, i64 32, ptr @ksn.fmt.fmt_f, float %f)
-  ret ptr %bp
-dog:
-  %bp = getelementptr [32 x i8], ptr @ksn.fmt.buf32, i32 0, i32 0
-  call i32 (i32, ptr, ...) @snprintf(ptr %bp, i64 32, ptr @ksn.fmt.fmt_g32, float %f)
-  ret ptr %bp
+  br i1 %lt, label %checkint2, label %loop
+checkint2:
+  %as_i = fptosi float %f to i64
+  %as_d = sitofp i64 %as_i to double
+  %as_f = fptrunc double %as_d to float
+  %isint = fcmp oeq float %as_f, %f
+  br i1 %isint, label %use1f, label %loop
+use1f:
+  %fext = fpext float %f to double
+  %bp1 = getelementptr [128 x i8], ptr @ksn.fmt.buf32, i32 0, i32 0
+  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %bp1, i64 128, ptr @ksn.fmt.fmt_f, double %fext)
+  ret ptr %bp1
+loop:
+  %i = phi i32 [0, %checkint], [0, %checkint2], [%i2, %next]
+  %fext2 = fpext float %f to double
+  %fmt = getelementptr [5 x i8], ptr @ksn.fmt.fmt_f_dyn32, i32 0, i32 0
+  %bp = getelementptr [128 x i8], ptr @ksn.fmt.buf32, i32 0, i32 0
+  %n = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %bp, i64 128, ptr %fmt, i32 %i, double %fext2)
+  %trunc = icmp uge i32 %n, 128
+  br i1 %trunc, label %next, label %check
+check:
+  %r = call float @strtof(ptr %bp, ptr null)
+  %ok = fcmp oeq float %r, %f
+  br i1 %ok, label %done, label %next
+next:
+  %i2 = add i32 %i, 1
+  %c = icmp eq i32 %i2, 10
+  br i1 %c, label %done, label %loop
+done:
+  %bp2 = getelementptr [128 x i8], ptr @ksn.fmt.buf32, i32 0, i32 0
+  ret ptr %bp2
 }
 "#;
-    format!("{}{}{}{}{}{}{}{}", buf64, buf32, nan, inf, ninf, fmt_f, fmt_g, fmt_g32)
+    format!("{}{}{}{}{}{}{}", buf64, buf32, nan, inf, ninf, fmt_f, fmt_f_dyn)
+        + &fmt_f_dyn32
         + &f64
         + &f32
         + "\n"
@@ -1297,6 +1341,29 @@ impl<'a> Fe<'a> {
                     self.label(&k);
                     Ok(())
                 }
+                Op::FmtFloat { bits, a } => {
+                    self.cx.fmt_float = true;
+                    let (func, arg_ty) = if *bits == 64 {
+                        ("@ksn.fmt.f64", "double")
+                    } else {
+                        ("@ksn.fmt.f32", "float")
+                    };
+                    let fp = self.t(format!("call ptr {}({} {})", func, arg_ty, self.r(*a)));
+                    self.cx.decl("declare i64 @strlen(ptr)".to_string());
+                    let len = self.t(format!("call i64 @strlen(ptr {})", fp));
+                    let fp_i = self.t(format!("ptrtoint ptr {} to i64", fp));
+                    let ptr_i128 = self.t(format!("zext i64 {} to i128", fp_i));
+                    let len_i128 = self.t(format!("zext i64 {} to i128", len));
+                    let len_shl = self.t(format!("shl i128 {}, 64", len_i128));
+                    let fat = self.t(format!("or i128 {}, {}", len_shl, ptr_i128));
+                    self.cx.eprint = true;
+                    self.cx.decl("declare i64 @write(i32, ptr, i64)".to_string());
+                    let pi = self.extract(&fat, 128, 0, 64);
+                    let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                    let n = self.extract(&fat, 128, 8, 64);
+                    self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
+                    Ok(())
+                }
                 _ => Ok(()),
             };
         }
@@ -1536,6 +1603,7 @@ impl<'a> Fe<'a> {
                 };
                 let fp = self.t(format!("call ptr {}({} {})", func, arg_ty, self.r(*a)));
                 self.cx.decl("declare i64 @strlen(ptr)".to_string());
+                self.cx.decl("declare i32 @snprintf(ptr, i64, ptr, ...)".to_string());
                 let len = self.t(format!("call i64 @strlen(ptr {})", fp));
                 let ptr_i128 = self.t(format!("zext i64 {} to i128", fp));
                 let len_i128 = self.t(format!("zext i64 {} to i128", len));

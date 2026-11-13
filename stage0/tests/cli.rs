@@ -12898,6 +12898,49 @@ fn kir_check_eq_and_is_true_match_tree_walker() {
 }
 
 #[test]
+fn kir_check_eq_float_match_tree_walker() {
+    // 浮動小数の core.check.eq が木走査・参照実行器・ネイティブで同じ失敗文言を出すこと。
+    // 各ケース: (関数名, 左の式, 右の式, 期待左, 期待右)
+    let cases: &[(&str, &str, &str, &str, &str)] = &[
+        ("t.f64_zero_one", "0.1f64", "0.2f64", "0.1", "0.2"),
+        ("t.f64_zero_one_two", "0.1f64 + 0.2f64", "0.3f64", "0.30000000000000004", "0.3"),
+        ("t.f64_one", "1.0f64", "2.0f64", "1.0", "2.0"),
+        ("t.f64_nzero", "-(0.0f64)", "1.0f64", "-0.0", "1.0"),
+        ("t.f64_e16", "1e16f64", "2e16f64", "1e+16", "2e+16"),
+        // 1e100 と f64_max は snprintf %.*f が double の正確な値を出力し、
+        // Rust の {} は丸めた「綺麗な」10 進を出力するため、LLVM バックエンドで
+        // 木走査と一致しない。5e-324 も p<=17 では表現不可。これらは未対応。
+        // ("t.f64_e100", "1e100f64", "2e100f64", "1e+100", "2e+100"),
+        ("t.f64_e_minus7", "1e-7f64", "2e-7f64", "1e-07", "2e-07"),
+        // ("t.f64_min_subnormal", "5e-324f64", "1e-323f64", "5e-324", "1e-323"),
+        // ("t.f64_max", "1.7976931348623157e+308f64", "0.0f64", "1.7976931348623157e+308", "0.0"),
+        ("t.f64_p53", "9007199254740992.0f64", "9007199254740994.0f64", "9007199254740992.0", "9007199254740994.0"),
+        ("t.f64_nan", "(-1.0f64).sqrt()", "1.0f64", "nan", "1.0"),
+        ("t.f64_inf", "1000.0f64.exp()", "0.0f64", "inf", "0.0"),
+        ("t.f32_zero_one", "0.1f32", "0.2f32", "0.1", "0.2"),
+        ("t.f64_h16777217", "16777217.0f64", "16777216.0f64", "16777217.0", "16777216.0"),
+    ];
+    let mut src = String::new();
+    for &(f, left, right, _, _) in cases {
+        src.push_str(&format!(
+            "fn {f}() -> () uses [] panics may\n    core.check.eq({left}, {right})\nend {f}\n\n",
+        ));
+    }
+    for (i, &(f, _, _, _, _)) in cases.iter().enumerate() {
+        let t = Tmp::new(
+            &format!("kir_check_eq_float_{}", i),
+            &format!("{}{}", src, main_wrap("", &format!("    {f}()\n"))),
+        );
+        let tw = run(&["run"], &t.0);
+        assert_eq!(tw.status.code(), Some(101), "tree-walker: {f}\n{}", text(&tw.stderr));
+        let expected = text(&tw.stderr).trim().to_string();
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir: {:?}\n{}", ["kir", f, "--run"], text(&k.stderr));
+        assert_eq!(text(&k.stderr).trim(), expected, "kir の文言が木走査と違う: {:?}", ["kir", f, "--run"]);
+    }
+}
+
+#[test]
 fn kir_unwrap_of_an_aggregate_error_keeps_its_reason() {
     // Err の値の表示 (Debug) を KIR で木走査と同じに作れない型 (利用者の構造体) は、理由を付けて未対応にする。
     let src = "type t.E derive [Debug] pub
