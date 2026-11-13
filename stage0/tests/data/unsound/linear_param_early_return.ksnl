@@ -1,0 +1,23 @@
+// expect: E3003
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.close(r: t.Res) -> u32 uses [] panics never
+    let t.Res { id: id } = r
+    id
+end t.close
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.mem.drop(t.try(t.open(1u32)))
+    Ok(())
+end t.main
+
+fn t.open(n: u32) -> t.Res uses [] panics never
+    t.Res { id: n }
+end t.open
+
+fn t.try(r: t.Res) -> Result<u32, std.io.Error> uses [io.console] panics never
+    std.io.print_line("x")?
+    Ok(t.close(r))
+end t.try
