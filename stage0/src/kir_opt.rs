@@ -434,7 +434,7 @@ fn inline_call_block(
 
     // 継続ブロック: %dst をパラメタにして、call 命令の後の命令と元の終端命令を実行。
     let b = &mut caller.blocks[bidx];
-    let mut after: Vec<Inst> = b.insts.split_off(ii + 1);
+    let after: Vec<Inst> = b.insts.split_off(ii + 1);
     b.insts.truncate(ii); // call 自体は削除
     let term = std::mem::replace(&mut b.term, Term::Unreachable);
     let cont_block = Block {
@@ -462,10 +462,22 @@ fn inline_call_block(
                 *v = val_map[v];
                 nb.term = Term::Br((cont, vec![*v]));
             }
-            Term::Br(t) => t.0 += base,
-            Term::BrIf(_, t1, t2) => {
+            Term::Br(t) => {
+                t.0 += base;
+                for a in &mut t.1 {
+                    *a = val_map[a];
+                }
+            }
+            Term::BrIf(c, t1, t2) => {
+                *c = val_map[c];
                 t1.0 += base;
                 t2.0 += base;
+                for a in &mut t1.1 {
+                    *a = val_map[a];
+                }
+                for a in &mut t2.1 {
+                    *a = val_map[a];
+                }
             }
             Term::Unreachable => {}
         }
@@ -473,11 +485,12 @@ fn inline_call_block(
     }
 
     // 呼び出し元ブロック b は callee エントリへジャンプ（引数をパラメタにバインド）。
+    // callee ブロック群は caller のブロック配列の末尾 (base..base+n) に追加し、
+    // 継続ブロックを base+n に置く。既存のブロック番号をずらさないので、
+    // 呼び出し元の他のブロックが参照するブロック番号はそのまま有効。
     b.term = Term::Br((base, args));
-
-    // 挿入: b の後に callee ブロック群、その後継続ブロック。
-    caller.blocks.splice(bidx + 1..bidx + 1, callee_blocks);
-    caller.blocks.insert(base + n, cont_block);
+    caller.blocks.extend(callee_blocks);
+    caller.blocks.push(cont_block);
 
     Ok(())
 }
@@ -528,8 +541,13 @@ fn const_fold(m: &Module) -> Result<Module, String> {
 
 /// 命令が定数に畳めるなら、新しい `Inst` を返す。そうでなければ `None`。
 /// `dst` と `ty` は元のまま保つ（定数は同じ型）。
+/// `Option` / `Result` / 集成体の型の定数は `Op::Const` として表せない（`Ok`/`Err`/`Some`
+/// で作るか、verify が拒む）ため、畳まない。
 fn fold_inst(f: &crate::kir::Func, inst: &Inst) -> Option<Inst> {
     if matches!(inst.op, Op::Const(_)) {
+        return None;
+    }
+    if matches!(inst.ty, Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_)) {
         return None;
     }
     let c = match &inst.op {

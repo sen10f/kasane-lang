@@ -9746,6 +9746,49 @@ fn no_diagnostics(name: &str, prefix: &str, b: &[&str]) -> String {
     out
 }
 
+/// `kir <FQN> --opt --run ...` は、最適化後の KIR でも木走査と同じ結果を出す。
+/// 既存の `kir_lower_values_match_tree_walker` の入力を `--opt` 付きでも走らせ、
+/// 表示と終了コードが一致することを確かめる。また、同じ入力から同じ出力が
+/// 得られること（決定性）を2回実行して確かめる。
+#[test]
+fn kir_opt_values_match_tree_walker() {
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.gcd", &["48", "18"], "6"),
+        ("t.classify", &["-7"], "-1"),
+        ("t.classify", &["0"], "0"),
+        ("t.early", &["25"], "15"),
+        ("t.early", &["4"], "8"),
+        ("t.loopy", &["10"], "25"),
+        ("t.fact", &["20"], "2432902008176640000"),
+        ("t.negate", &["5"], "-5"),
+        ("t.wrap", &["200", "3"], "32"),
+        ("t.sub8", &["9", "4"], "5"),
+        ("t.assign_in_branch", &["3"], "402"),
+        ("t.assign_in_branch", &["-3"], "105"),
+        ("t.nested", &["5"], "20"),
+        ("t.andor", &["true", "true", "3"], "true"),
+        ("t.andor", &["false", "true", "-6"], "true"),
+        ("t.andor", &["false", "false", "1"], "false"),
+    ];
+    for (i, (f, args, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = kir_pkg(&format!("kir_opt_values_{}", i), &format!("    core.check.eq({}, {})\n", call, want));
+        // 木走査が通ること
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        // --opt 付きで参照実行器を走らせ、同じ表示・終了コードになること
+        let mut kargs = vec!["kir", f, "--opt", "--run"];
+        kargs.extend(args.iter().copied());
+        let k1 = kir_run(&kargs, &t.0);
+        assert_eq!(k1.status.code(), Some(0), "kir --opt: {}\n{}", call, text(&k1.stderr));
+        assert_eq!(text(&k1.stdout).trim(), *want, "kir --opt value of {}", call);
+        // 決定性: 同じ入力から同じ出力
+        let k2 = kir_run(&kargs, &t.0);
+        assert_eq!(text(&k2.stdout), text(&k1.stdout), "kir --opt 決定性: {}", call);
+        assert_eq!(k2.status.code(), k1.status.code(), "kir --opt 決定性(終了コード): {}", call);
+    }
+}
+
 #[test]
 fn nll_accepts_a_copy_element_of_a_destructured_call_result_held_in_a_variable() {
     // `let p = t.apick(&x)` の p は x の借用を持つが、分解した `n` はコピー値なので黙る。

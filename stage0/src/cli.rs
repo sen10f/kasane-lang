@@ -418,13 +418,27 @@ fn cmd_check(json: bool) -> i32 {
 /// `--llvm` は LLVM IR (`.ll`) を出し、`--native` は clang で実行ファイルを作って走らせる (表示と終了コードは `--run` と同じ)。
 fn cmd_kir(rest: &[String]) -> i32 {
     let Some(fqn) = rest.first() else {
-        eprintln!("usage: ksn kir <FQN> [--run|--native <args>... | --llvm]");
+        eprintln!("usage: ksn kir <FQN> [--opt] [--run|--native <args>... | --llvm]");
         return 2;
     };
-    let mode = rest.get(1).map(|s| s.as_str());
+    // --opt は最適化パスを適用する。--run/--native/--llvm は実行モード。
+    let mut opt = false;
+    let mut mode: Option<&str> = None;
+    let mut mode_pos: Option<usize> = None;
+    for (i, s) in rest[1..].iter().enumerate() {
+        match s.as_str() {
+            "--opt" => opt = true,
+            "--run" | "--native" | "--llvm" if mode.is_none() => {
+                mode = Some(s.as_str());
+                mode_pos = Some(1 + i);
+            }
+            _ => {}
+        }
+    }
     let run = mode == Some("--run");
     let native = mode == Some("--native");
     let llvm = mode == Some("--llvm");
+    let arg_start = mode_pos.map(|p| p + 1).unwrap_or(rest.len());
     let mut rep = Report::new(false);
     let (root, prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|x| (r, x))) {
         Ok((r, (_, Some(prog), user))) if !rep.fatal() => (r, prog, user),
@@ -445,9 +459,9 @@ fn cmd_kir(rest: &[String]) -> i32 {
         }
         return 1;
     }
-    let text = crate::kir::print_module(&lo.module.reachable(fqn));
+    let mut text = crate::kir::print_module(&lo.module.reachable(fqn));
     // 出力は必ず読み直せること (往復) と検査を通ることを確かめてから使う。
-    let back = match crate::kir::parse_module(&text) {
+    let mut back = match crate::kir::parse_module(&text) {
         Ok(m) if crate::kir::print_module(&m) == text && crate::kir::verify_module(&m).is_empty() => m,
         Ok(m) => {
             eprintln!("ksn kir: 内部エラー: KIR の往復または検査が一致しない");
@@ -464,6 +478,19 @@ fn cmd_kir(rest: &[String]) -> i32 {
             return 3;
         }
     };
+    // --opt: 決定的な最適化パスを適用する (意味を変えず命令数を減らす)。
+    if opt {
+        match crate::kir_opt::optimize(&back) {
+            Ok(m) => {
+                back = m;
+                text = crate::kir::print_module(&back);
+            }
+            Err(e) => {
+                eprintln!("ksn kir: --opt: {}", e);
+                return 3;
+            }
+        }
+    }
     if llvm {
         return match crate::kir_llvm::emit(&back, fqn) {
             Ok(ll) => {
@@ -481,7 +508,7 @@ fn cmd_kir(rest: &[String]) -> i32 {
         return 0;
     }
     let mut args = vec![];
-    for a in &rest[2..] {
+    for a in &rest[arg_start..] {
         let v = match a.as_str() {
             "true" => 1,
             "false" => 0,
