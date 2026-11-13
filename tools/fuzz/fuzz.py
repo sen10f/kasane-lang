@@ -417,8 +417,16 @@ def gen_program(rng, pid):
         "end fuzz.main",
     ]
     main_item = "\n".join(main_lines)
-    # main も定義順の対象（型/関数の後ろに固定）
-    src = "\n\n".join(all_items + [main_item]) + "\n"
+    fn_items.append(main_item)
+    fn_items.sort(key=lambda b: b.split("\n")[0].split()[1])
+
+    all_items = decl_items + fn_items  # 型/列挙体を先に、関数を後に（main もソート対象）
+    for it in all_items:
+        for ln in it.split("\n"):
+            if len(ln) > MAX_LINE:
+                return None  # 生成器の誤り：捨てる
+
+    src = "\n\n".join(all_items) + "\n"
     return src, target[1], ret, main_lits
 
 
