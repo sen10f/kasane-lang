@@ -224,6 +224,11 @@ impl AggTab {
         matches!(t, Ty::Agg(i) if is_vec_name(&self.defs[i as usize].name))
     }
 
+    /// 名前付きの集成体の添字。
+    pub(super) fn agg_index(&self, name: &str) -> Option<u32> {
+        self.by_name.get(name).copied()
+    }
+
     /// 所有物を要素に持つ Vec の型 `t` の、要素の型。
     pub fn vec_elem(&self, t: Ty) -> Option<Ty> {
         let Ty::Agg(i) = t else { return None };
@@ -308,7 +313,7 @@ impl AggTab {
     }
 
     /// 定義 `p.defs[di]` (構造体 `type` または列挙型 `enum`) を型表に登録する。
-    fn intern_def(&mut self, p: &Program, di: usize) -> Result<Ty, String> {
+    pub(super) fn intern_def(&mut self, p: &Program, di: usize) -> Result<Ty, String> {
         let d = &p.defs[di];
         if let Some(&i) = self.by_name.get(&d.name) {
             return Ok(Ty::Agg(i));

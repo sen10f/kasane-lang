@@ -178,6 +178,8 @@ struct Ctx {
     write: bool,
     /// `eprint` 命令を使う (`@ksn.eprint` を出す。エラーは捨てる)。
     eprint: bool,
+    /// `std.net` 命令を使う (`@ksn.net_*` を出す)。
+    net: bool,
     /// `FmtFloat` 命令を使う (浮動小数の書式化補助関数を出す)。
     fmt_float: bool,
 }
@@ -225,7 +227,7 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         return Err(format!("関数 {} がない", entry));
     };
     let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float };
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -300,6 +302,9 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     }
     if cx.eprint {
         out.push_str(EPRINT_HELPER);
+    }
+    if cx.net {
+        out.push_str(&net_helpers(&mut cx, &m.aggs)?);
     }
     out.push_str(&funcs);
     out.push_str(&math);
@@ -397,6 +402,109 @@ fn write_helper(aggs: &[AggDef]) -> R<String> {
     s.push_str(&format!("  %ez = zext i32 %e to i64\n  %eh = shl i64 %ez, 32\n  %r = or i64 %eh, {cur}\n  ret i64 %r\n}}\n\n"));
     Ok(s)
 }
+
+/// errno を `(errno << 32) | ErrorKind の変種の添字` の i64 値にする式 (`%e` は `i32` の errno)。
+/// 書き方は `write_helper` と同じ対応表。
+fn errno_chain(errno_fn: &str, idx: &impl Fn(&str) -> Result<usize, String>, s: &mut String) -> Result<String, String> {
+    s.push_str(&format!("  %ep = call ptr @{}()\n  %e = load i32, ptr %ep\n", errno_fn));
+    let mut cur = format!("{}", idx("Other")?);
+    for (k, (errno, name)) in [(1, "PermissionDenied"), (13, "PermissionDenied"), (2, "NotFound"), (17, "AlreadyExists"), (22, "InvalidInput"), (32, "BrokenPipe"), (12, "OutOfMemory")].iter().enumerate() {
+        s.push_str(&format!("  %c{k} = icmp eq i32 %e, {errno}\n  %k{k} = select i1 %c{k}, i64 {}, i64 {cur}\n", idx(name)?));
+        cur = format!("%k{k}");
+    }
+    s.push_str(&format!("  %ez = zext i32 %e to i64\n  %eh = shl i64 %ez, 32\n  %enc = or i64 %eh, {cur}\n  %r = or i64 %enc, 9223372036854775808\n  ret i64 %r\n"));
+    Ok(cur)
+}
+
+/// `std.net` 命令の実体 (`@ksn.net_*`)。
+/// 成功は値 (fd / バイト数 / 0) を bit 63=0 で返す。失敗は `(1<<63) | (errno<<32) | ErrorKind` を返す。
+/// `inst` 側で bit 63 をタグ、下位 64 ビットをペイロードとして `pack` する。
+fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
+    let kinds = aggs.iter().find(|d| d.name == "std.io.ErrorKind").ok_or("型表に std.io.ErrorKind がない")?;
+    let AggKind::Enum(vs) = &kinds.kind else { return Err("std.io.ErrorKind が列挙型でない".into()) };
+    let idx = |n: &str| vs.iter().position(|v| v.name == n).ok_or_else(|| format!("ErrorKind に {} がない", n));
+    let errno_fn = errno_name();
+    let mut s = String::new();
+    // `write` の libc 宣言は、`cx.write` (write/eprint 命令) が立っていればトップの declare ループ
+    // (`cx.decls`) で出力される。そうでないときだけここに出力する。
+    let write_decl = "declare i64 @write(i32, ptr, i64)";
+    let write_already = cx.decls.iter().any(|d| d == write_decl);
+    for d in [
+        "declare i32 @socket(i32, i32, i32)",
+        "declare i32 @bind(i32, ptr, i64)",
+        "declare i32 @listen(i32, i32)",
+        "declare i32 @accept(i32, ptr, ptr)",
+        "declare i32 @connect(i32, ptr, i64)",
+        "declare i32 @read(i32, ptr, i64)",
+        "declare i32 @close(i32)",
+        "declare i32 @getsockname(i32, ptr, ptr)",
+        &format!("declare ptr @{}()", errno_fn),
+    ] {
+        s.push_str(d);
+        s.push('\n');
+    }
+    if !write_already {
+        s.push_str(write_decl);
+        s.push('\n');
+    }
+    macro_rules! hdr {
+        ($name:expr, $ret:expr) => {
+            s.push_str(&format!("define private i64 @{}({}) {{\nentry:\n", $name, $ret));
+        };
+    }
+    // sockaddr_in の構築: アドレス文字列 "127.0.0.1:PORT" の PORT を net_port で取り、
+    // IP は 127.0.0.1 (ループバック) に固定する。`%s` はソケット fd。
+    fn sockaddr_in(s: &mut String) {
+        s.push_str("  %sa = alloca i8, i64 16\n  %fp = getelementptr i8, ptr %sa, i64 0\n  store i16 2, ptr %fp\n  %pp = getelementptr i8, ptr %sa, i64 2\n  %port = call i32 @ksn.net_port(ptr %a, i64 %n)\n  %negp = icmp slt i32 %port, 0\n  br i1 %negp, label %err, label %po\npo:\n  %p16 = trunc i32 %port to i16\n  %phi = lshr i16 %p16, 8\n  %plo = shl i16 %p16, 8\n  %pno = or i16 %phi, %plo\n  store i16 %pno, ptr %pp\n  %ip0 = getelementptr i8, ptr %sa, i64 4\n  store i8 127, ptr %ip0\n  %ip1 = getelementptr i8, ptr %sa, i64 5\n  store i8 0, ptr %ip1\n  %ip2 = getelementptr i8, ptr %sa, i64 6\n  store i8 0, ptr %ip2\n  %ip3 = getelementptr i8, ptr %sa, i64 7\n  store i8 1, ptr %ip3\n  %b = call i32 @bind(i32 %s, ptr %sa, i64 16)\n  %neg2 = icmp slt i32 %b, 0\n  br i1 %neg2, label %err, label %ok2\nok2:\n");
+    }
+    // net.listen(addr, len): socket+bind+listen
+    hdr!("ksn.net_listen", "ptr %a, i64 %n");
+    s.push_str("  %s = call i32 @socket(i32 2, i32 1, i32 0)\n  %neg = icmp slt i32 %s, 0\n  br i1 %neg, label %err, label %ok\nok:\n");
+    sockaddr_in(&mut s);
+    s.push_str("  %l = call i32 @listen(i32 %s, i32 128)\n  %neg3 = icmp slt i32 %l, 0\n  br i1 %neg3, label %err, label %done\ndone:\n  %v = zext i32 %s to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.connect(addr, len): socket+connect
+    hdr!("ksn.net_connect", "ptr %a, i64 %n");
+    s.push_str("  %s = call i32 @socket(i32 2, i32 1, i32 0)\n  %neg = icmp slt i32 %s, 0\n  br i1 %neg, label %err, label %ok\nok:\n");
+    s.push_str("  %sa2 = alloca i8, i64 16\n  %fp2 = getelementptr i8, ptr %sa2, i64 0\n  store i16 2, ptr %fp2\n  %pp2 = getelementptr i8, ptr %sa2, i64 2\n  %port2 = call i32 @ksn.net_port(ptr %a, i64 %n)\n  %negp2 = icmp slt i32 %port2, 0\n  br i1 %negp2, label %err, label %po2\npo2:\n  %p162 = trunc i32 %port2 to i16\n  %phi2 = lshr i16 %p162, 8\n  %plo2 = shl i16 %p162, 8\n  %pno2 = or i16 %phi2, %plo2\n  store i16 %pno2, ptr %pp2\n  %ip02 = getelementptr i8, ptr %sa2, i64 4\n  store i8 127, ptr %ip02\n  %ip12 = getelementptr i8, ptr %sa2, i64 5\n  store i8 0, ptr %ip12\n  %ip22 = getelementptr i8, ptr %sa2, i64 6\n  store i8 0, ptr %ip22\n  %ip32 = getelementptr i8, ptr %sa2, i64 7\n  store i8 1, ptr %ip32\n  %c = call i32 @connect(i32 %s, ptr %sa2, i64 16)\n  %neg22 = icmp slt i32 %c, 0\n  br i1 %neg22, label %err, label %done\n");
+    s.push_str("done:\n  %v = zext i32 %s to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.accept(fd)
+    hdr!("ksn.net_accept", "i32 %fd");
+    s.push_str("  %a = call i32 @accept(i32 %fd, ptr null, ptr null)\n  %neg = icmp slt i32 %a, 0\n  br i1 %neg, label %err, label %done\ndone:\n  %v = zext i32 %a to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.read(fd, ptr, len)
+    hdr!("ksn.net_read", "i32 %fd, ptr %p, i64 %n");
+    s.push_str("  %raw = call i32 @read(i32 %fd, ptr %p, i64 %n)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  %v = zext i32 %raw to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.write(fd, ptr, len)
+    hdr!("ksn.net_write", "i32 %fd, ptr %p, i64 %n");
+    s.push_str("  %raw = call i32 @write(i32 %fd, ptr %p, i64 %n)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  %v = zext i32 %raw to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.flush(fd): ソケットへの書き出しは直ちに反映されるため成功（no-op）とする。
+    hdr!("ksn.net_flush", "i32 %fd");
+    s.push_str("  ret i64 0\n}\n\n");
+    // net.close(fd)
+    hdr!("ksn.net_close", "i32 %fd");
+    s.push_str("  %raw = call i32 @close(i32 %fd)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  ret i64 0\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.local_port(fd): getsockname で sockaddr_in の sin_port (オフセット 2、ネットワークバイトオーダ) を取る。
+    hdr!("ksn.net_local_port", "i32 %fd");
+    s.push_str("  %addr = alloca i8, i64 16\n  %len = alloca i64, i64 8\n  store i64 16, ptr %len\n  %raw = call i32 @getsockname(i32 %fd, ptr %addr, ptr %len)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  %p = getelementptr i8, ptr %addr, i64 2\n  %pv = load i16, ptr %p, align 2\n  %hi = lshr i16 %pv, 8\n  %lo = shl i16 %pv, 8\n  %port = or i16 %hi, %lo\n  %v = zext i16 %port to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.port(addr, len): "127.0.0.1:PORT" の PORT をパースして返す。
+    s.push_str("define i32 @ksn.net_port(ptr %a, i64 %n) {\nentry:\n  %col = alloca i32\n  store i32 -1, ptr %col\n  %i = alloca i64\n  store i64 0, ptr %i\n  br label %loop\nloop:\n  %iv = load i64, ptr %i\n  %d = icmp uge i64 %iv, %n\n  br i1 %d, label %parse, label %scan\nscan:\n  %p = getelementptr i8, ptr %a, i64 %iv\n  %b = load i8, ptr %p, align 1\n  %isc = icmp eq i8 %b, 58\n  br i1 %isc, label %setcol, label %inc\nsetcol:\n  %iv32 = trunc i64 %iv to i32\n  store i32 %iv32, ptr %col\n  br label %inc\ninc:\n  %iv2 = add i64 %iv, 1\n  store i64 %iv2, ptr %i\n  br label %loop\nparse:\n  %cv = load i32, ptr %col\n  %neg = icmp slt i32 %cv, 0\n  br i1 %neg, label %err, label %pstart\npstart:\n  %np = add i32 %cv, 1\n  %np64 = zext i32 %np to i64\n  %d2 = icmp uge i64 %np64, %n\n  br i1 %d2, label %err, label %vi\nvi:\n  %val = alloca i32\n  store i32 0, ptr %val\n  %j = alloca i64\n  store i64 %np64, ptr %j\n  br label %vloop\nvloop:\n  %jv = load i64, ptr %j\n  %dv = icmp uge i64 %jv, %n\n  br i1 %dv, label %vdone, label %vscan\nvscan:\n  %pv = getelementptr i8, ptr %a, i64 %jv\n  %bv = load i8, ptr %pv, align 1\n  %dv2 = icmp sle i8 %bv, 57\n  %dv3 = icmp sge i8 %bv, 48\n  %dok = and i1 %dv2, %dv3\n  br i1 %dok, label %vdigit, label %vdone\nvdigit:\n  %bv32 = zext i8 %bv to i32\n  %d0 = sub i32 %bv32, 48\n  %v = load i32, ptr %val\n  %m = mul i32 %v, 10\n  %a2 = add i32 %m, %d0\n  store i32 %a2, ptr %val\n  %j2 = add i64 %jv, 1\n  store i64 %j2, ptr %j\n  br label %vloop\nvdone:\n  %rv = load i32, ptr %val\n  ret i32 %rv\nerr:\n  ret i32 -1\n}\n\n");
+    Ok(s)
+}
+
+// ---------------------------------------------------------------- 入口 (main)
 
 /// 浮動小数の書式化は、C の実行時補助 `kir_rt.c` の `ksn_fmt_f64` / `ksn_fmt_f32` に任せる (設計_KIR.md 17.11)。
 /// 規則は `py_float` / `py_float32` と同じ。結果は静的バッファへのポインタ (NUL 終端)。
@@ -764,6 +872,14 @@ impl<'a> Fe<'a> {
             Ty::Ptr | Ty::Ref(..) => self.t(format!("inttoptr i64 {} to ptr", x)),
             _ => x,
         }
+    }
+
+    /// `std.net` の i64 結果 (bit 63 = エラー、下位 64 ビット = ペイロード) を `Result` の i65 値に pack する。
+    fn net_result(&mut self, dst: &str, r: &str) -> R<()> {
+        let neg = self.t(format!("icmp slt i64 {}, 0", r));
+        let pay = self.t(format!("and i64 {}, 9223372036854775807", r));
+        self.pack(dst, 64, &neg, &pay);
+        Ok(())
     }
 
     /// `Option` / `Result` の値 (幅 `s + 1`): 枠 `pay` (幅 `s`) と、タグ `tag` (i1) を最上位に置く。
@@ -1503,6 +1619,48 @@ impl<'a> Fe<'a> {
                 let ok = self.t(format!("icmp eq i64 {}, 0", r));
                 let tag = self.t(format!("xor i1 {}, true", ok));
                 self.pack(&d, 64, &tag, &r);
+            }
+            Op::NetListen { addr } | Op::NetConnect { addr } => {
+                self.cx.net = true;
+                let is_listen = matches!(i.op, Op::NetListen { .. });
+                let fnn = if is_listen { "ksn.net_listen" } else { "ksn.net_connect" };
+                let Ty::Agg(_) = self.ty(*addr) else { return Err("net.listen / net.connect のアドレスが fat でない".into()) };
+                let av = self.r(*addr);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let ni = self.extract(&av, 128, 8, 64);
+                let r = self.t(format!("call i64 @{}(ptr {}, i64 {})", fnn, p, ni));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetAccept { sock } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_accept(i32 {})", self.r(*sock)));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetRead { sock, buf, len } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_read(i32 {}, ptr {}, i64 {})", self.r(*sock), self.r(*buf), self.r(*len)));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetWrite { sock, buf, len } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_write(i32 {}, ptr {}, i64 {})", self.r(*sock), self.r(*buf), self.r(*len)));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetFlush { sock } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_flush(i32 {})", self.r(*sock)));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetClose { sock } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_close(i32 {})", self.r(*sock)));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetLocalPort { sock } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_local_port(i32 {})", self.r(*sock)));
+                self.net_result(&d, &r)?;
             }
             Op::FmtFloat { bits, a } => {
                 self.cx.fmt_float = true;

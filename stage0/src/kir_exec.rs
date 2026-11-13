@@ -5,10 +5,13 @@
 //! 浮動小数と 128 ビット整数の規則は `kir_scalar.rs` にある。
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 
 use crate::interp::{py_float, py_float32};
 use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
 use crate::kir_scalar;
+use crate::natives::io_kind_name;
 
 // Option / Result の値の語 (設計_KIR.md 11.1)。タグは bit 64、ペイロードの語は下位 64 ビット。
 // 語の意味はペイロードの型で決まる: スカラーは値そのもの、集成体は置き場の添字、入れ子の Option / Result は
@@ -51,6 +54,19 @@ fn pay_read(t: Ty, w: i128, heap: &[Vec<u8>]) -> i128 {
         },
         _ => payload_of(t, w),
     }
+}
+
+/// ホストのソケット (記述子表の値)。
+enum NetSock {
+    Listener(TcpListener),
+    Stream(TcpStream),
+}
+
+/// `std.net` の記述子を割り当てる (ソケット表と共に、呼び出しの間だけ生きる)。
+fn alloc_next_fd(next: &mut i128) -> i128 {
+    let fd = *next;
+    *next += 1;
+    fd
 }
 
 /// 呼び出し先が作った置き場の項目 (添字 `base` 以上) を、呼び出し元に残す形へ写す。`base` より前は呼び出し元のものなので、そのまま使う。
@@ -422,6 +438,14 @@ fn io_error_value(aggs: &[AggDef], heap: &mut Vec<Vec<u8>>, kind: &str, code: i3
     Ok((heap.len() - 1) as i128)
 }
 
+/// `{ descriptor: i32 }` のソケット集成体を置き場に作り、その添字を返す。
+fn desc_agg(heap: &mut Vec<Vec<u8>>, fd: i128) -> Result<i128, String> {
+    let mut buf = vec![0u8; 4];
+    buf[0..4].copy_from_slice(&(fd as i32).to_le_bytes());
+    heap.push(buf);
+    Ok((heap.len() - 1) as i128)
+}
+
 /// 構造体・タプルのオフセット `off` のフィールドの型。
 fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
     match &d.kind {
@@ -603,6 +627,9 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     // バイト記憶 (`ptr` の領域)。静的な領域 (`static.bytes`) は、命令の位置ごとに 1 回だけ確保する。
     let mut bm = ByteMem::new();
     let mut statics: HashMap<(usize, usize, usize), i128> = HashMap::new();
+    // ソケット表 (記述子 -> ホストのソケット)。リスナとストリームは同じ番号空間を使う。
+    let mut sockets: HashMap<i128, NetSock> = HashMap::new();
+    let mut next_fd: i128 = 0;
     let mut stack = vec![enter(entry, args, None, 0, 0)];
     loop {
         let top = stack.len() - 1;
@@ -657,6 +684,89 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                             TAG_BIT | w
                         }
                     }
+                }
+                Op::NetListen { addr } | Op::NetConnect { addr } => {
+                    let h = get(&stack[top], addr) as usize;
+                    let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+                    let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+                    let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                    let s = std::str::from_utf8(&bytes).unwrap_or("");
+                    let is_listen = matches!(inst.op, Op::NetListen { .. });
+                    let res: i128 = match if is_listen {
+                        TcpListener::bind(s).map(NetSock::Listener)
+                    } else {
+                        TcpStream::connect(s).map(NetSock::Stream)
+                    } {
+                        Ok(sock) => {
+                            let fd = alloc_next_fd(&mut next_fd);
+                            sockets.insert(fd, sock);
+                            desc_agg(&mut heap, fd)?
+                        }
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    };
+                    res
+                }
+                Op::NetAccept { sock } => {
+                    let fd = get(&stack[top], sock);
+                    let Some(NetSock::Listener(l)) = sockets.get_mut(&fd) else {
+                        return Err(format!("無効なソケット記述子 {}", fd));
+                    };
+                    let res: i128 = match l.accept() {
+                        Ok((st, _)) => {
+                            let nfd = alloc_next_fd(&mut next_fd);
+                            sockets.insert(nfd, NetSock::Stream(st));
+                            desc_agg(&mut heap, nfd)?
+                        }
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    };
+                    res
+                }
+                Op::NetRead { sock, buf, len } => {
+                    let (fd, p, n) = (
+                        get(&stack[top], sock),
+                        get(&stack[top], buf),
+                        get(&stack[top], len),
+                    );
+                    let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
+                        return Err(format!("読み出しできるのはストリームソケットだけ: {}", fd));
+                    };
+                    let mut vec = vec![0u8; n as usize];
+                    let nr = s.read(&mut vec).map_err(|e| format!("read: {e}"))?;
+                    bm.write_bytes(p, &vec[..nr])?;
+                    nr as i128
+                }
+                Op::NetWrite { sock, buf, len } => {
+                    let (fd, p, n) = (
+                        get(&stack[top], sock),
+                        get(&stack[top], buf),
+                        get(&stack[top], len),
+                    );
+                    let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
+                        return Err(format!("書き込みできるのはストリームソケットだけ: {}", fd));
+                    };
+                    let bytes = bm.read_bytes(p, n as usize)?;
+                    s.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+                    n
+                }
+                Op::NetFlush { sock } => {
+                    let fd = get(&stack[top], sock);
+                    let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
+                        return Err(format!("flush できるのはストリームソケットだけ: {}", fd));
+                    };
+                    s.flush().map_err(|e| format!("flush: {e}"))?;
+                    0
+                }
+                Op::NetClose { sock } => {
+                    let fd = get(&stack[top], sock);
+                    sockets.remove(&fd);
+                    0
+                }
+                Op::NetLocalPort { sock } => {
+                    let fd = get(&stack[top], sock);
+                    let Some(NetSock::Listener(l)) = sockets.get(&fd) else {
+                        return Err(format!("local_port できるのはリスナーソケットだけ: {}", fd));
+                    };
+                    l.local_addr().map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?
                 }
                 Op::IndexCheck { i, len } => {
                     let (ix, n) = (get(&stack[top], i), get(&stack[top], len));
