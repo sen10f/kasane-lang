@@ -17,6 +17,8 @@ use crate::types::{from_v, Ty as Src};
 /// 受け手の式が「局所変数から始まるフィールドの連なり」なら、(局所変数のスロット, フィールド名の列)。
 pub(super) fn chain_of(lw: &Lw, e: &V) -> Option<(usize, Vec<String>)> {
     match nname(e) {
+        // 所有物を持つ要素の `v[i]` (`elem_prep` が借用のスロットを作った)
+        "Index" => Some((coll::local_slot(lw, e)?, vec![])),
         "Path" => {
             let segs = strs(&nf(e)[0]);
             let s = lw.lookup(&segs[0])?;
@@ -391,7 +393,7 @@ pub(super) fn match_get_mut(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         "MCall" => {
             let g = nf(scrut);
             let a = items(&g[2]);
-            if st(&g[1]) != "get_mut" || a.len() != 1 {
+            if !matches!(st(&g[1]).as_str(), "get_mut" | "get") || a.len() != 1 {
                 return None;
             }
             (chain_of(lw, &g[0])?, &a[0])
@@ -403,13 +405,21 @@ pub(super) fn match_get_mut(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             }
             let segs = strs(&nf(&g[0])[0]);
             let a = items(&g[1]);
-            if segs.len() < 2 || segs[segs.len() - 1] != "get_mut" || a.len() != 1 {
+            if segs.len() < 2 || !matches!(segs[segs.len() - 1].as_str(), "get_mut" | "get") || a.len() != 1 {
                 return None;
             }
             ((lw.lookup(&segs[0])?, segs[1..segs.len() - 1].to_vec()), &a[0])
         }
         _ => return None,
     };
+    // `get` は、要素が所有物のときだけここで下ろす (要素の借用を束縛する)。スカラーなどは従来の値の `Option` のまま。
+    let is_get = match nname(scrut) {
+        "MCall" => st(&nf(scrut)[1]) == "get",
+        _ => strs(&nf(&nf(scrut)[0])[0]).last().is_some_and(|x| x == "get"),
+    };
+    if is_get && !recv_elem(lw, &recv).is_some_and(|t| coll::owns(lw, t)) {
+        return None;
+    }
     // 腕は `Some(名前 | _)` と `None | _` の 2 つだけ
     let arms: Vec<(&V, &V)> = items(&f[1]).iter().filter_map(|a| match a {
         V::L(xs) if xs.len() == 2 => Some((&xs[0], &xs[1])),
@@ -471,7 +481,14 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
         let pl = place(lw, s, &names, line)?;
         (Seq::Hdr(pl.hdr), t)
     };
-    let (Some(sz), Some(p)) = (coll::size_of(elem), Pointee::of(elem)) else {
+    let is_get = match nname(&nf(e)[0]) {
+        "MCall" => st(&nf(&nf(e)[0])[1]) == "get",
+        _ => strs(&nf(&nf(&nf(e)[0])[0])[0]).last().is_some_and(|x| x == "get"),
+    };
+    if is_get && !coll::owns(lw, elem) {
+        return lw.err(line, "get は要素が所有物のときだけここで扱う");
+    }
+    let (Some(sz), Some(p)) = (coll::elem_size(lw, elem), Pointee::of(elem)) else {
         return lw.err(line, format!("get_mut の要素の型 {} は段階 1 の対象外", elem.name()));
     };
     let res: Option<Ty> = match lw.src_ty(e)? {
@@ -508,9 +525,17 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
             };
             let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
             if let Some(name) = &bind {
-                let rt = Ty::Ref(true, p);
-                let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
-                lw.bind(name, r, rt);
+                if is_get {
+                    let src = match lw.src_ty(&nf(e)[0]) {
+                        Ok(Src::Named(n, a)) if n == "Option" => a.into_iter().next(),
+                        _ => None,
+                    };
+                    bind_elem_ref(lw, line, name, addr, elem, src.as_ref())?;
+                } else {
+                    let rt = Ty::Ref(true, p);
+                    let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+                    lw.bind(name, r, rt);
+                }
             }
         }
         if let Some(v) = lw.expr(arms[ai].1)? {
@@ -539,4 +564,41 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
     }
     let _ = Term::Unreachable;
     Ok(Some(if carry { jp[0] } else { lw.unit() }))
+}
+
+/// `match` の受け手 `recv` (局所変数かフィールドの Vec / スライス) の要素の型。分からなければ `None`。
+fn recv_elem(lw: &Lw, recv: &(usize, Vec<String>)) -> Option<Ty> {
+    let (s, names) = recv;
+    let k = if names.is_empty() {
+        lw.coll.kinds.get(s).cloned()
+    } else {
+        coll::kind_of_src(lw, &field_src(lw, *s, names)?)
+    };
+    match k {
+        Some(Kind::Vec(Some(t))) | Some(Kind::Slice(Some(t))) => Some(t),
+        _ => None,
+    }
+}
+
+/// 要素の番地 `addr` (型 `elem`、所有物を持つ) の借用を、名前 `name` に束縛する。借用なので所有に入れない (解放しない)。
+/// Vec / String の要素はヘッダのアドレス (`ptr`) で、種類 (`src` は `&T` の `T`) を結び付ける。構造体などは共有参照 `&T`。
+pub(super) fn bind_elem_ref(lw: &mut Lw, line: usize, name: &str, addr: VId, elem: Ty, src: Option<&Src>) -> LR<()> {
+    let Ty::Agg(ai) = elem else {
+        return lw.err(line, "要素の借用は集成体だけ段階 1 の対象");
+    };
+    if super::agg::is_vec_name(&lw.agg_def(ai).name) {
+        let kind = src.and_then(|t| coll::kind_of_src(lw, t)).or_else(|| lw.aggs.borrow().vec_elem(elem).map(|e| Kind::Vec(Some(e))));
+        let Some(kind) = kind else {
+            return lw.err(line, "要素の借用の種類 (Vec / String) が分からない");
+        };
+        lw.bind(name, addr, Ty::Ptr);
+        let s = lw.lookup(name).expect("束縛した名前");
+        lw.coll.kinds.insert(s, kind);
+        lw.coll.borrowed.insert(s);
+    } else {
+        let rt = Ty::Ref(false, Pointee::Agg(ai));
+        let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+        lw.bind(name, r, rt);
+    }
+    Ok(())
 }

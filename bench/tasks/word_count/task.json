@@ -1,0 +1,8 @@
+{
+  "id": "word_count",
+  "title": "単語数",
+  "spec": "文字列を ASCII の空白(スペース・改行・タブ)で区切った単語の個数を返す。連続する空白や前後の空白は無視する。",
+  "decl": "fn bench.word_count(text: &str) -> u32",
+  "level": "hard",
+  "order": 11
+}

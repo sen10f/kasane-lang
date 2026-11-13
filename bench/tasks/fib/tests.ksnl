@@ -1,0 +1,9 @@
+test bench.fib.test_small
+    core.check.eq(bench.fib(0u32), 0u64)
+    core.check.eq(bench.fib(1u32), 1u64)
+    core.check.eq(bench.fib(10u32), 55u64)
+end bench.fib.test_small
+
+test bench.fib.test_big
+    core.check.eq(bench.fib(50u32), 12586269025u64)
+end bench.fib.test_big

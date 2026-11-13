@@ -1,0 +1,8 @@
+{
+  "id": "fold_squares",
+  "title": "平方和(fold とクロージャ)",
+  "spec": "0 以上 n 未満の整数の平方の和を、core.iter.fold と core.iter.range とクロージャで求める(ループは使わない)。",
+  "decl": "fn bench.sum_of_squares(n: u32) -> u32",
+  "level": "hard",
+  "order": 14
+}

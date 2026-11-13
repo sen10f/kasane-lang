@@ -1,0 +1,8 @@
+{
+  "id": "count_digits",
+  "title": "文字列中の数字の個数",
+  "spec": "文字列に含まれる ASCII の数字('0'〜'9')の個数を返す。",
+  "decl": "fn bench.count_digits(text: &str) -> u32",
+  "level": "basic",
+  "order": 4
+}

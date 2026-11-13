@@ -226,3 +226,43 @@ int ksn_parse_int(const unsigned char *p, long len, unsigned radix,
     *out_hi = (unsigned long long)(uint64_t)(v >> 64);
     return 0;
 }
+
+/* ---- std.env (LLVM バックエンド用) ---- */
+typedef int64_t i64;
+typedef uint8_t u8;
+/* `ksn_rt_argc` / `ksn_rt_argv` は、LLVM の `emit_program_main` (ksn build --backend llvm) が
+ * IR のグローバル `@ksn_rt_argc/@ksn_rt_argv` として強く定義する。`ksn kir --native` は
+ * IR 側で定義しないため、ここで弱いデフォルト定義 (argc=0, argv=null) を置き、リンクを
+ * 通す (std.env は常に arg_count=0 / arg=None / var=None を返す)。 */
+#if defined(__GNUC__)
+__attribute__((weak))
+#endif
+int ksn_rt_argc = 0;
+#if defined(__GNUC__)
+__attribute__((weak))
+#endif
+char **ksn_rt_argv = 0;
+#define g_argc ksn_rt_argc
+#define g_argv ksn_rt_argv
+
+i64 ksn_rt_sys_arg_count(void) { return g_argc > 0 ? (i64)(g_argc - 1) : 0; }
+
+/* `std.env.arg(i)`: 範囲内なら NUL 終端の文字列 (長さは *len)、範囲外なら 0。 */
+i64 ksn_rt_sys_arg(i64 i, i64 *len) {
+    if (i < 0 || i >= ksn_rt_sys_arg_count()) return 0;
+    char *s = g_argv[i + 1];
+    *len = (i64)strlen(s);
+    return (i64)(intptr_t)s;
+}
+
+/* `std.env.var(name)`: 見つかれば値 (長さは *len)、なければ 0。 */
+i64 ksn_rt_sys_var(const u8 *name, i64 nlen, i64 *len) {
+    char buf[1024];
+    if (nlen < 0 || nlen >= (i64)sizeof buf) return 0;
+    memcpy(buf, name, (size_t)nlen);
+    buf[nlen] = 0;
+    char *v = getenv(buf);
+    if (!v) return 0;
+    *len = (i64)strlen(v);
+    return (i64)(intptr_t)v;
+}

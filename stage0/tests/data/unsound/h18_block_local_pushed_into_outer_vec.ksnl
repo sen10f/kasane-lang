@@ -1,0 +1,24 @@
+fn t.eat(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.eat
+
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    {
+        let b = t.mk()
+        core.mem.drop(v.push(&b))
+    }
+    core.check.eq(v.len(), 1usize)
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("x"))
+    s
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek

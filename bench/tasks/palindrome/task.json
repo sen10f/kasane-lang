@@ -1,0 +1,8 @@
+{
+  "id": "palindrome",
+  "title": "回文判定",
+  "spec": "バイト列として前後から比べ、回文なら true。空文字列と1文字は回文。",
+  "decl": "fn bench.is_palindrome(text: &str) -> bool",
+  "level": "hard",
+  "order": 12
+}

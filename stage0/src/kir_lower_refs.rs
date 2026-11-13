@@ -228,6 +228,15 @@ impl<'a> Lw<'a> {
         let line = nline(e);
         let shared = st(&f[0]) == "&";
         let operand = &f[1];
+        // 所有物を持つ要素の `&v[i]`: `elem_prep` が作った借用 (Vec / String はヘッダのアドレス、構造体などは共有参照)
+        if nname(operand) == "Index" {
+            if let Some(s) = super::coll::local_slot(self, operand) {
+                if !shared {
+                    return self.err(line, "所有物を持つ要素の &mut v[i] は段階 1 の対象外");
+                }
+                return Ok(Some(self.read_slot(s)));
+            }
+        }
         // 0. Vec / String の借用は、ヘッダのアドレスそのもの (ヘッダは所有者の関数のフレームにある)。
         if let Ok(Src::Ref(_, inner)) = self.src_ty(e) {
             if super::coll::is_hdr_named(&inner) {
@@ -312,6 +321,8 @@ impl<'a> Lw<'a> {
             }
             // `Some(b)` で `Option<&スカラー>` から取った束縛は値で持つ (設計_KIR.md 10.10)。型表が `&T` で、
             // T の型が値の型と一致するなら、`*b` は値そのもの (恒等)。
+            // `for x in &v` のスカラーの要素の変数 `x` は値で持つので、`*x` は値そのもの
+            _ if super::coll::local_slot(self, &f[1]).is_some_and(|s| self.coll.borrowed.contains(&s)) => Ok(Some(r)),
             t => match self.src_ty(&f[1]) {
                 Ok(Src::Ref(_, inner)) if super::conv(&inner) == Some(t) => Ok(Some(r)),
                 _ => self.err(line, "* の被演算子が参照でない"),

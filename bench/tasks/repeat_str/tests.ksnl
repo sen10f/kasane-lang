@@ -1,0 +1,5 @@
+test bench.repeat_str.test_basic
+    core.check.eq(bench.repeat_str("ab", 3u32).as_str(), "ababab")
+    core.check.eq(bench.repeat_str("x", 0u32).as_str(), "")
+    core.check.eq(bench.repeat_str("é", 2u32).as_str(), "éé")
+end bench.repeat_str.test_basic
