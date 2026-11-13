@@ -231,9 +231,13 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
         Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(args))),
         Src::Named(n, args) if n == BTREEMAP => Some(Kind::BMap(map_kv(args))),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
-        Src::Slice(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
+        // 要素が所有物 (`String` など、集成体) のときも要素の型を持つ。`as_slice()` の一時値
+        // が続く `get` / `len` / 添字 / `iter` で要素型を引き継ぐため、`size_of` ではなく
+        // `elem_size` で弾く (F32/F64 など `elem_size` が `None` を返す型は早期に拒否し、
+        // 行番号を正しく保つ)。
+        Src::Slice(e) => Some(Kind::Slice(conv(e).or_else(|| lw.conv_t(e)).filter(|t| elem_size(lw, *t).is_some()))),
         // 固定長配列 `&[T; N]` の要素型。長さ N は `arr_len` で別途追跡する。
-        Src::Array(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
+        Src::Array(e) => Some(Kind::Slice(conv(e).or_else(|| lw.conv_t(e)).filter(|t| elem_size(lw, *t).is_some()))),
         _ => None,
     }
 }
