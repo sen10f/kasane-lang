@@ -21708,14 +21708,17 @@ fn check_cache_survives_corruption() {
     // 内容だけ書き換える (sum が合わない)。診断を消す・文法を「一致」にする。
     let v: serde_json::Value = serde_json::from_str(&orig).unwrap();
     let mut w = v.clone();
-    w["data"]["lint"] = serde_json::json!([]);
+    w["data"]["lint"] = serde_json::json!({});
     variants.push(("lint-emptied", w.to_string().into_bytes()));
     let mut w = v.clone();
     w["key"] = serde_json::json!("0000");
     variants.push(("bad-key", w.to_string().into_bytes()));
     let mut w = v.clone();
-    w["data"]["skip"] = serde_json::json!(true);
-    variants.push(("skip-flipped", w.to_string().into_bytes()));
+    w["data"]["gram"] = serde_json::json!("00".repeat(16));
+    variants.push(("gram-forged", w.to_string().into_bytes()));
+    let mut w = v.clone();
+    w["data"]["clean"] = serde_json::json!("zz");
+    variants.push(("clean-malformed", w.to_string().into_bytes()));
     for (name, bytes) in variants {
         fs::write(&files[0], bytes).unwrap();
         assert_eq!(base, check_cached(&t.0, Some(&cache)), "corruption `{}` changed the result", name);
@@ -21726,6 +21729,147 @@ fn check_cache_survives_corruption() {
     let _ = fs::remove_file(&files[0]);
     fs::create_dir_all(&files[0]).unwrap();
     assert_eq!(base, check_cached(&t.0, Some(&cache)), "slot is a directory");
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// 定義単位のキャッシュ: 1 ファイルに複数の定義があるとき、定義を 1 つ変える・並べ替える・上に行を足す (行がずれる)・
+/// 別の定義の外部面を変える、のどの操作でも、キャッシュあり (操作をまたいで同じ置き場) の診断が位置まで含めて
+/// キャッシュなしと一致する。
+const DEF_CACHE_BASE: &str = "\
+const t.LIMIT: u32 = 5u32
+
+type t.Pair derive [Debug, Clone] pub
+    a: u32
+    b: u32
+end t.Pair
+
+fn t.alpha(x: u32) -> u32 uses [] panics never
+    let unused = 1u32
+    x
+end t.alpha
+
+fn t.beta(x: u32) -> u32 uses [] panics never
+    t.alpha(x)
+end t.beta
+
+fn t.gamma(p: t.Pair) -> u32 uses [] panics never
+    p.a.wrapping_add(p.b)
+end t.gamma
+
+fn t.main() -> () uses [] panics never
+    let _v = t.beta(t.LIMIT)
+end t.main
+
+test t.test_alpha
+    core.check.eq(t.alpha(1u32), 1u32)
+end t.test_alpha
+";
+
+fn def_cache_step(label: &str, t: &Tmp, cache: &Path, text: &str) {
+    fs::write(t.0.join("src").join("t.ksnl"), text).unwrap();
+    assert_eq!(check_cached(&t.0, None), check_cached(&t.0, Some(cache)), "{}: cold/partial", label);
+    assert_eq!(check_cached(&t.0, None), check_cached(&t.0, Some(cache)), "{}: warm", label);
+}
+
+#[test]
+fn check_cache_per_definition_edits_match_uncached() {
+    let cache = cache_tmp("defs");
+    let t = Tmp::new("cc_defs", DEF_CACHE_BASE);
+    def_cache_step("base", &t, &cache, DEF_CACHE_BASE);
+    let ed = |from: &str, to: &str| {
+        assert!(DEF_CACHE_BASE.contains(from), "{}", from);
+        DEF_CACHE_BASE.replacen(from, to, 1)
+    };
+    // 定義を 1 つ変える (診断が増える・消える・別の種類になる)。
+    def_cache_step("body edit", &t, &cache, &ed("    t.alpha(x)\n", "    let y = t.alpha(x)\n    t.alpha(y)\n"));
+    def_cache_step("fix unused", &t, &cache, &ed("    let unused = 1u32\n", ""));
+    def_cache_step("name case", &t, &cache, &ed("let unused = 1u32", "let Unused = 1u32"));
+    def_cache_step("type error", &t, &cache, &ed("    x\nend t.alpha", "    true\nend t.alpha"));
+    // 上に行を足す (下の定義が全部ずれる)。コメント・空行・import 風の行。
+    def_cache_step("shift by comment", &t, &cache, &format!("// top\n{}", DEF_CACHE_BASE));
+    def_cache_step("shift by blank", &t, &cache, &format!("\n{}", DEF_CACHE_BASE));
+    def_cache_step("shift by a const", &t, &cache, &format!("const t.ZERO: u32 = 0u32\n\n{}", DEF_CACHE_BASE));
+    def_cache_step("shift by 3 blank lines in a body", &t, &cache, &ed("    t.alpha(x)\n", "\n\n\n    t.alpha(x)\n"));
+    // 並べ替え (定義順の違反は非致命で報告)。
+    let a = "fn t.alpha(x: u32)";
+    let g = "fn t.gamma(p: t.Pair)";
+    let ia = DEF_CACHE_BASE.find(a).unwrap();
+    let ib = DEF_CACHE_BASE.find("fn t.beta").unwrap();
+    let ig = DEF_CACHE_BASE.find(g).unwrap();
+    let im = DEF_CACHE_BASE.find("fn t.main").unwrap();
+    let (alpha, beta, gamma) = (&DEF_CACHE_BASE[ia..ib], &DEF_CACHE_BASE[ib..ig], &DEF_CACHE_BASE[ig..im]);
+    let head = &DEF_CACHE_BASE[..ia];
+    let tail = &DEF_CACHE_BASE[im..];
+    def_cache_step("swap alpha/beta", &t, &cache, &format!("{}{}{}{}{}", head, beta, alpha, gamma, tail));
+    def_cache_step("reverse", &t, &cache, &format!("{}{}{}{}{}", head, gamma, beta, alpha, tail));
+    def_cache_step("back", &t, &cache, DEF_CACHE_BASE);
+    // 別の定義の外部面を変える: 呼ばれる側の戻り値型・引数・効果・pub・名前・型のフィールド。
+    def_cache_step("callee returns bool", &t, &cache, &ed("fn t.alpha(x: u32) -> u32", "fn t.alpha(x: u32) -> bool"));
+    def_cache_step("callee arity", &t, &cache, &ed("fn t.alpha(x: u32)", "fn t.alpha(x: u32, y: u32)"));
+    def_cache_step("callee uses io", &t, &cache, &ed("fn t.alpha(x: u32) -> u32 uses []", "fn t.alpha(x: u32) -> u32 uses [io.console]"));
+    def_cache_step("callee renamed", &t, &cache, &ed("fn t.alpha(x: u32)", "fn t.delta(x: u32)"));
+    def_cache_step("field renamed", &t, &cache, &ed("    a: u32\n    b: u32\nend", "    a: u32\n    c: u32\nend"));
+    def_cache_step("field type", &t, &cache, &ed("    b: u32\nend", "    b: bool\nend"));
+    def_cache_step("const type", &t, &cache, &ed("const t.LIMIT: u32 = 5u32", "const t.LIMIT: bool = true"));
+    // 文面の誤り (正規形・文法・構文)。
+    def_cache_step("double space", &t, &cache, &ed("fn t.beta(x: u32) ->", "fn t.beta(x: u32)  ->"));
+    def_cache_step("tab", &t, &cache, &ed("    t.alpha(x)\n", "\tt.alpha(x)\n"));
+    def_cache_step("missing end", &t, &cache, &ed("end t.beta\n", ""));
+    def_cache_step("end name", &t, &cache, &ed("end t.beta", "end t.betaa"));
+    def_cache_step("comment then blank", &t, &cache, &ed("fn t.beta", "// c\n\nfn t.beta"));
+    def_cache_step("trailing garbage", &t, &cache, &format!("{}garbage\n", DEF_CACHE_BASE));
+    def_cache_step("final", &t, &cache, DEF_CACHE_BASE);
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// 行単位の変異 (削除・複製・入れ替え・空行・コメント・字下げ・トークンの置換) を決まった順序で多数かけ、
+/// そのたびにキャッシュあり (同じ置き場を使い続ける) とキャッシュなしの診断が一致すること。
+#[test]
+fn check_cache_line_mutations_match_uncached() {
+    let cache = cache_tmp("mutations");
+    let t = Tmp::new("cc_mut", DEF_CACHE_BASE);
+    let lines: Vec<&str> = DEF_CACHE_BASE.lines().collect();
+    let mut seed: u64 = 0x2545F4914F6CDD1D;
+    let mut rnd = |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    let swaps = [("u32", "bool"), ("x", "y"), ("t.alpha", "t.beta"), ("uses []", "uses [io.console]"), (" pub", ""), ("let ", "let mut "), ("(", "(("), (")", "")];
+    for i in 0..48 {
+        let mut v: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        // 1 つの入力に 1〜2 個の変異を重ねる。
+        for _ in 0..1 + rnd(2) {
+            let k = rnd(v.len());
+            match rnd(7) {
+                0 => {
+                    v.remove(k);
+                }
+                1 => v.insert(k, v[k].clone()),
+                2 => {
+                    let j = rnd(v.len());
+                    v.swap(k, j);
+                }
+                3 => v.insert(k, String::new()),
+                4 => v.insert(k, "// c".to_string()),
+                5 => v[k] = format!("    {}", v[k]),
+                _ => {
+                    let (a, b) = swaps[rnd(swaps.len())];
+                    v[k] = v[k].replacen(a, b, 1);
+                }
+            }
+            if v.is_empty() {
+                v.push(String::new());
+            }
+        }
+        let text = format!("{}\n", v.join("\n"));
+        def_cache_step(&format!("mutation {}", i), &t, &cache, &text);
+        // ときどき元に戻す (定義ごとの結果が、別の版を挟んでも正しく使われる)。
+        if i % 6 == 5 {
+            def_cache_step(&format!("restore {}", i), &t, &cache, DEF_CACHE_BASE);
+        }
+    }
     let _ = fs::remove_dir_all(&cache);
 }
 

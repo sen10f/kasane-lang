@@ -1,8 +1,9 @@
-//! `ksn check` の増分化 (第 1 段、設計_増分検査.md)。
+//! `ksn check` の増分化 (第 1・2 段、設計_増分検査.md)。
 //!
-//! 保存するのは「ソースファイル 1 本の文面だけで決まる検査」の結果 (正規形の判定・lint・文法)。
+//! 保存するのは「ソースファイル 1 本の文面だけで決まる検査」の結果 (lint・文法) を定義単位に分けたもの。
+//! スロットはファイルごとに 1 つで、中に定義のキー (文面から作る) ごとの結果が入る。
 //! 意味の検査 (型・効果・借用・再帰) は他の定義に依存するので毎回やり直す。
-//! キーは ksn 実行体の中身・ファイルのパス・ソースの文面。キーが 1 つでも違えば使わない。
+//! スロットのキーは ksn 実行体の中身・ファイルのパス。定義のキーは定義の文面とモジュール名 (lint)・定義の行 (文法)。
 //! 破損・不一致は黙って捨てて再計算する (読めなかった = 未命中)。
 //!
 //! 置き場 `<KSN_CACHE_DIR>/check/` の上限は 2 つ: 使用量 (`KSN_CHECK_CACHE_MAX`、既定 64 MiB) と
@@ -26,18 +27,30 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::grammar::GramMemo;
+use crate::lint::{ItemErrs, LintMemo};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 pub type LintOut = Vec<(String, usize, String)>;
 
+/// `full_check` が 1 ファイルについて使う結果。致命かどうかは呼び出し側が毎回決める。
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileCheck {
-    /// 文法の一致 `(一致したか, メッセージ, 行)`。
-    pub grammar: (bool, String, usize),
     /// `ksn fmt` で直せるので lint を報告しない。
     pub skip: bool,
     pub lint: LintOut,
+}
+
+/// ファイル 1 本の再利用できる結果 (定義単位)。
+/// `lint`: 定義の文面とモジュール名で決まる lint の診断 (行は定義の見出しからの相対)。
+/// `gram`: 自分の規則に一致した定義のトークン列のハッシュ。
+/// 読み込み時に `old` へ入り、検査が使ったものが `new` に入る。`store` は `new` を保存する
+/// (今のファイルに無い定義の分は落ちるので、スロットはファイルの大きさに比例し続ける)。
+#[derive(Default)]
+pub struct FileMemo {
+    pub lint: LintMemo,
+    pub gram: GramMemo,
 }
 
 /// 既定は有効。`KSN_CHECK_CACHE=0` で無効、`1` で有効。
@@ -100,9 +113,10 @@ fn exe_prefix() -> &'static str {
     &exe_key()[..16]
 }
 
-fn key(path: &str, rel: &str, text: &str) -> String {
+/// スロットのキー。ksn 実行体・パス・lint 用の相対パス。文面は入れない (定義ごとのキーが担う)。
+fn key(path: &str, rel: &str) -> String {
     let mut h = Sha256::new();
-    for part in [exe_key(), path, rel, text] {
+    for part in [exe_key(), path, rel] {
         h.update((part.len() as u64).to_le_bytes());
         h.update(part.as_bytes());
     }
@@ -141,34 +155,75 @@ fn add(a: u64, d: i64) -> u64 {
     }
 }
 
-fn data_of(c: &FileCheck) -> Value {
-    json!({
-        "grammar": [c.grammar.0, c.grammar.1, c.grammar.2],
-        "skip": c.skip,
-        "lint": c.lint.iter().map(|(a, b, m)| json!([a, b, m])).collect::<Vec<_>>(),
-    })
+fn errs_json(v: &LintOut) -> Value {
+    Value::Array(v.iter().map(|(a, b, m)| json!([a, b, m])).collect())
+}
+
+/// 診断のない定義 (大多数) とキーだけ持つ一致は、パースの費用を避けるため 32 桁のキーを連ねた 1 本の文字列にする。
+fn data_of(m: &FileMemo) -> Value {
+    let mut clean: Vec<&String> = vec![];
+    let mut lint = serde_json::Map::new();
+    for (k, e) in &m.lint.new {
+        if e.iter().all(|v| v.is_empty()) {
+            clean.push(k);
+        } else {
+            lint.insert(k.clone(), Value::Array(e.iter().map(errs_json).collect()));
+        }
+    }
+    clean.sort();
+    let mut gram: Vec<&String> = m.gram.new.iter().collect();
+    gram.sort();
+    let cat = |v: Vec<&String>| v.iter().map(|s| s.as_str()).collect::<String>();
+    json!({ "clean": cat(clean), "lint": lint, "gram": cat(gram) })
 }
 
 fn sum_of(data: &Value) -> String {
     hex(&Sha256::digest(serde_json::to_string(data).unwrap_or_default().as_bytes()))
 }
 
-fn parse(v: &Value) -> Option<FileCheck> {
-    let g = v.get("grammar")?.as_array()?;
-    let grammar = (g.first()?.as_bool()?, g.get(1)?.as_str()?.to_string(), g.get(2)?.as_u64()? as usize);
-    let skip = v.get("skip")?.as_bool()?;
-    let mut lint = vec![];
-    for e in v.get("lint")?.as_array()? {
+fn parse_errs(v: &Value) -> Option<LintOut> {
+    let mut out = vec![];
+    for e in v.as_array()? {
         let e = e.as_array()?;
-        lint.push((e.first()?.as_str()?.to_string(), e.get(1)?.as_u64()? as usize, e.get(2)?.as_str()?.to_string()));
+        out.push((e.first()?.as_str()?.to_string(), e.get(1)?.as_u64()? as usize, e.get(2)?.as_str()?.to_string()));
     }
-    Some(FileCheck { grammar, skip, lint })
+    Some(out)
+}
+
+/// 32 桁 (16 進) のキーを連ねた文字列を分ける。形が違えば `None`。
+fn split_keys(s: &str) -> Option<Vec<String>> {
+    if s.len() % 32 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(s.as_bytes().chunks(32).map(|c| String::from_utf8_lossy(c).to_string()).collect())
+}
+
+fn parse(v: &Value) -> Option<FileMemo> {
+    let mut m = FileMemo::default();
+    for k in split_keys(v.get("clean")?.as_str()?)? {
+        m.lint.old.insert(k, Default::default());
+    }
+    for (k, e) in v.get("lint")?.as_object()? {
+        let ph = e.as_array()?;
+        if ph.len() != 4 {
+            return None;
+        }
+        let mut it: ItemErrs = Default::default();
+        for (i, p) in ph.iter().enumerate() {
+            it[i] = parse_errs(p)?;
+        }
+        m.lint.old.insert(k.clone(), it);
+    }
+    for g in split_keys(v.get("gram")?.as_str()?)? {
+        m.gram.old.insert(g);
+    }
+    Some(m)
 }
 
 /// 中身を検証して読む。キー・`sum`・形のどれかが合わなければ `None`。
-fn parse_entry(raw: &str, path: &str, rel: &str, text: &str) -> Option<FileCheck> {
+fn parse_entry(raw: &str, path: &str, rel: &str) -> Option<FileMemo> {
     let v: Value = serde_json::from_str(raw).ok()?;
-    if v.get("key")?.as_str()? != key(path, rel, text) {
+    if v.get("key")?.as_str()? != key(path, rel) {
         return None;
     }
     let data = v.get("data")?;
@@ -185,17 +240,18 @@ fn touch(p: &Path) {
     }
 }
 
-pub fn load(path: &str, rel: &str, text: &str) -> Option<FileCheck> {
+/// ファイルの再利用できる結果を読む。無い・壊れている・別の版のものは空 (= 全部再計算)。
+pub fn load(path: &str, rel: &str) -> FileMemo {
     let p = slot(path, rel);
     // 読めない (無い・ディレクトリ) は未命中。消すものがない。
-    let raw = fs::read_to_string(&p).ok()?;
-    match parse_entry(&raw, path, rel, text) {
-        Some(c) => {
+    let Ok(raw) = fs::read_to_string(&p) else { return FileMemo::default() };
+    match parse_entry(&raw, path, rel) {
+        Some(m) => {
             touch(&p);
-            Some(c)
+            m
         }
         None => {
-            // 壊れている、または別の文面・版のもの。捨てる (呼び出し側がこのあと上書きする)。
+            // 壊れている、または別の版のもの。捨てる (呼び出し側がこのあと上書きする)。
             let old = fs::metadata(&p).ok().filter(|m| m.is_file()).map(|m| disk_size(m.len()));
             if fs::remove_file(&p).is_ok() {
                 if let Some(sz) = old {
@@ -203,21 +259,28 @@ pub fn load(path: &str, rel: &str, text: &str) -> Option<FileCheck> {
                     PEND_ENTRIES.fetch_sub(1, Ordering::Relaxed);
                 }
             }
-            None
+            FileMemo::default()
         }
     }
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-pub fn store(path: &str, rel: &str, text: &str, c: &FileCheck) {
+/// 今回使った結果 (`m.lint.new` / `m.gram.new`) を保存する。読み込んだものと同じなら何もしない。
+pub fn store(path: &str, rel: &str, m: &FileMemo) {
+    let same = m.gram.new == m.gram.old
+        && m.lint.new.len() == m.lint.old.len()
+        && m.lint.new.keys().all(|k| m.lint.old.contains_key(k));
     let p = slot(path, rel);
+    if same && p.is_file() {
+        return;
+    }
     let Some(d) = p.parent() else { return };
     if fs::create_dir_all(d).is_err() {
         return;
     }
-    let data = data_of(c);
-    let v = json!({ "key": key(path, rel, text), "sum": sum_of(&data), "data": data });
+    let data = data_of(m);
+    let v = json!({ "key": key(path, rel), "sum": sum_of(&data), "data": data });
     let body = serde_json::to_string(&v).unwrap_or_default();
     // 上書きなら古い大きさを引く (見積もりを実際に近く保つ)。
     let old = fs::metadata(&p).ok().filter(|m| m.is_file()).map(|m| disk_size(m.len()));

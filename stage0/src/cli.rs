@@ -282,12 +282,9 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
         // 文面だけで決まる検査 (文法・正規形・lint) は、キャッシュが有効ならファイル単位で再利用する
         // (check_cache.rs、設計_増分検査.md)。無効のときは従来どおり毎回計算する。
         let relpath = lint_rel(s, &srcroot);
-        let cached = if use_cache && s.error.is_none() { crate::check_cache::load(&s.path, &relpath, &s.text) } else { None };
+        let mut memo = if use_cache && s.error.is_none() { crate::check_cache::load(&s.path, &relpath) } else { Default::default() };
         let gram = if s.error.is_none() {
-            Some(match &cached {
-                Some(c) => c.grammar.clone(),
-                None => grammar.check(&s.text),
-            })
+            Some(if use_cache { grammar.check_memo(&s.text, &mut memo.gram) } else { grammar.check(&s.text) })
         } else {
             None
         };
@@ -321,25 +318,27 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
         if !s.text.ends_with('\n') || s.text.ends_with("\n\n") {
             rep.add("E0001", "file must end with exactly one LF", Some(&fl), s.lines.len(), 1, true);
         }
-        let fc = match cached {
-            Some(c) => c,
-            None => {
-                let lt = s.text.replace("\r\n", "\n");
-                // 正規形でなくても、`ksn fmt` で正規形になり、その結果が検査を通るなら、並び順や空行は
-                // エラーにしない (`fmt --check` が差分として報告する)。意味に関する誤りは従来どおり報告する。
-                let formatted = crate::fmt::format_source(&s.text, &s.path);
-                let skip = formatted != s.text
-                    && !s.text.contains('\t')
-                    && Lint::new(&relpath, &formatted).run().is_empty()
-                    && grammar.check(&formatted).0;
-                let lint = if skip { vec![] } else { Lint::new(&relpath, &lt).run() };
-                let fc = crate::check_cache::FileCheck { grammar: gram.clone(), skip, lint };
-                if use_cache {
-                    crate::check_cache::store(&s.path, &relpath, &s.text, &fc);
-                }
-                fc
+        let lt = s.text.replace("\r\n", "\n");
+        // 正規形でなくても、`ksn fmt` で正規形になり、その結果が検査を通るなら、並び順や空行は
+        // エラーにしない (`fmt --check` が差分として報告する)。意味に関する誤りは従来どおり報告する。
+        // 整形は安いので毎回やる。lint と文法は定義ごとの結果を再利用する (check_cache.rs)。
+        let run_lint = |text: &str, memo: &mut crate::check_cache::FileMemo| {
+            if use_cache {
+                Lint::new(&relpath, text).run_memo(&mut memo.lint)
+            } else {
+                Lint::new(&relpath, text).run()
             }
         };
+        let formatted = crate::fmt::format_source(&s.text, &s.path);
+        let skip = formatted != s.text
+            && !s.text.contains('\t')
+            && run_lint(&formatted, &mut memo).is_empty()
+            && (if use_cache { grammar.check_memo(&formatted, &mut memo.gram) } else { grammar.check(&formatted) }).0;
+        let lint = if skip { vec![] } else { run_lint(&lt, &mut memo) };
+        if use_cache {
+            crate::check_cache::store(&s.path, &relpath, &memo);
+        }
+        let fc = crate::check_cache::FileCheck { skip, lint };
         if fc.skip {
             continue;
         }
