@@ -815,6 +815,7 @@ mod tests {
             uses: vec![],
             may_panic: false,
             stack: Some(4096),
+            link: None,
             ret: Ty::U64,
             blocks: vec![
                 Block {
@@ -859,6 +860,7 @@ mod tests {
             uses: vec![],
             may_panic: true,
             stack: None,
+            link: None,
             ret: Ty::I32,
             blocks: vec![Block {
                 params: vec![],
@@ -884,6 +886,7 @@ mod tests {
             uses: vec![],
             may_panic: false,
             stack: None,
+            link: None,
             ret: Ty::U32,
             blocks: vec![Block {
                 params: vec![],
@@ -915,6 +918,7 @@ mod tests {
             uses: vec![],
             may_panic: false,
             stack: None,
+            link: None,
             ret: Ty::U32,
             blocks: vec![Block {
                 params: vec![],
@@ -947,6 +951,7 @@ mod tests {
             uses: vec![],
             may_panic: false,
             stack: None,
+            link: None,
             ret: Ty::I32,
             blocks: vec![Block {
                 params: vec![(0, Ty::Ref(true, Pointee::I32))],
@@ -976,6 +981,7 @@ mod tests {
             uses: vec![],
             may_panic: false,
             stack: None,
+            link: None,
             ret: Ty::I32,
             blocks: vec![Block {
                 params: vec![(0, Ty::Ref(true, Pointee::I32))],
@@ -1004,6 +1010,7 @@ mod tests {
             uses: vec![],
             may_panic: false,
             stack: None,
+            link: None,
             ret: Ty::I64,
             blocks: vec![Block {
                 params: vec![(0, Ty::I64)],
@@ -1021,6 +1028,7 @@ mod tests {
             uses: vec![],
             may_panic: false,
             stack: None,
+            link: None,
             ret: Ty::I64,
             blocks: vec![Block {
                 params: vec![(0, Ty::I64)],
@@ -1052,6 +1060,7 @@ mod tests {
             uses: vec![],
             may_panic: false,
             stack: Some(4096),
+            link: None,
             ret: Ty::U64,
             blocks: vec![Block {
                 params: vec![(0, Ty::U64)],
@@ -1070,6 +1079,7 @@ mod tests {
             uses: vec![],
             may_panic: false,
             stack: None,
+            link: None,
             ret: Ty::U64,
             blocks: vec![Block {
                 params: vec![(0, Ty::U64)],
