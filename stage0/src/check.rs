@@ -4249,6 +4249,14 @@ impl<'a> Checker<'a> {
                 }
                 self.mcall_moves_out_of_ref(e, env);
                 self.tc_expr(&f[0], env, muts, false);
+                // `self` を値で受けるメソッド (`x.into_name()` など) はレシーバを move する (4.4)。
+                // レシーバが局所の場所 (`x` や `s.f`) のときだけ move_sites に載せる
+                // (型が解決できない場所や Copy の型では黙る)。
+                if let Some((root, path)) = self.mcall_recv_place(&f[0]) {
+                    if self.method_takes_self_by_value(&root, &path, &st(&f[1]), env) {
+                        self.use_place(&root, &path, env, nline(&f[0]), true);
+                    }
+                }
                 for a in items(&f[2]) {
                     self.tc_expr(a, env, muts, true);
                 }
@@ -4606,6 +4614,20 @@ impl<'a> Checker<'a> {
         match self.method_def(root, path, name, env).and_then(|d| d.params.first()) {
             Some((pn, pt)) => pn == "self" && tag(pt) != "ref",
             None => false,
+        }
+    }
+
+    /// メソッド呼び出し `e.m(..)` のレシーバ `e` が局所の場所 (変数・フィールドの道) ならその (根, 道)。
+    /// 呼び出し式など場所でないレシーバなら None (move の元を特定できず、黙る)。
+    fn mcall_recv_place(&self, e: &V) -> Option<(String, Vec<String>)> {
+        match nname(e) {
+            "Path" => {
+                let segs = strs(&nf(e)[0]);
+                let root = segs.first()?;
+                Some((root.clone(), segs[1..].to_vec()))
+            }
+            "Field" => self.field_place(e),
+            _ => None,
         }
     }
 
