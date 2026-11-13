@@ -489,6 +489,13 @@ pub(super) fn drop_elems(lw: &mut Lw, v: VId, buf: VId, elem: Ty) {
     lw.cur = Some(exit);
 }
 
+/// ヒープの番地 `p` から型 `t` の値を読む (`ptr` を同じアドレスの参照にして `load`)。
+pub(crate) fn box_load(lw: &mut Lw, p: VId, t: Ty) -> VId {
+    let pt = Pointee::of(t).expect("Box の中身は参照できる型");
+    let r = lw.emit(Ty::Ref(true, pt), Op::Bitcast { src: Ty::Ptr, a: p });
+    lw.emit(t, Op::Load(r))
+}
+
 /// 型 `t` の値 `v` (所有している) を解放する命令列を、現在のブロックに置く。所有物を持たない型は何もしない。
 /// 列挙型と `Option` / `Result` は、タグで枝を分けて、持っている変種のペイロードだけを解放する。
 pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
@@ -498,6 +505,26 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
     match t {
         Ty::Agg(i) => {
             let d = lw.aggs.borrow().defs[i as usize].clone();
+            // `Box<dyn Tr>`: 中身の型は実行時の vtable の番号で決まるので、補助関数 `dyn.drop` が中身を解放してから確保を返す。
+            if d.name.starts_with("dynbox<") {
+                let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                let vt = lw.emit(Ty::Usize, Op::Field { a: v, off: 8 });
+                lw.aggs.borrow_mut().dynr.drop_used = true;
+                lw.callees.insert("dyn.drop".to_string());
+                lw.emit(Ty::Unit, Op::Call { callee: "dyn.drop".to_string(), args: vec![p, vt] });
+                return;
+            }
+            // `Box<T>`: 中身が所有物なら先に解放してから、確保を返す。
+            let belem = lw.aggs.borrow().box_elem(t);
+            if let Some(elem) = belem {
+                let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                if owns_heap(lw, elem) {
+                    let inner = box_load(lw, p, elem);
+                    drop_value(lw, inner, elem);
+                }
+                lw.emit(Ty::Unit, Op::HeapFree(p));
+                return;
+            }
             if super::agg::is_vec_name(&d.name) {
                 let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
                 // 要素が所有物なら、各要素を先に解放する (設計_KIR.md 13.8)
@@ -1179,6 +1206,15 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             }
         }
     }
+    // `import alloc.vec` の別名の形 (`vec.Vec.new`) も、解決した FQN で照合する。
+    let segs: Vec<String> = match lw.p.resolve(&segs, &lw.def.file) {
+        Some(r) if r.rest.is_empty() => match r.target {
+            Target::Native(n) => n.split('.').map(String::from).collect(),
+            Target::Sig(di) | Target::Fn(di) => lw.p.defs[di].name.split('.').map(String::from).collect(),
+            _ => segs,
+        },
+        _ => segs,
+    };
     let segs: Vec<&str> = segs.iter().map(|x| x.as_str()).collect();
     match segs.as_slice() {
         ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e)),
@@ -2132,6 +2168,19 @@ fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
                 return Ok((Seq::Fat(fat_val), elem));
             }
             _ => {}
+        }
+    }
+    // 構造体のフィールドの Vec (`self.handlers[i]`): フィールドのヘッダの番地を置き場にする (読みと要素の書き込みだけ。ヘッダは変えない)。
+    if nname(e) == "Field" {
+        if let Some((s, names)) = super::own::chain_of(lw, e) {
+            if let Some(src) = super::own::field_src(lw, s, &names) {
+                if !matches!(src, Src::Ref(..)) {
+                    if let Some(Kind::Vec(Some(elem))) = kind_of_src(lw, &src) {
+                        let pl = super::own::place(lw, s, &names, line)?;
+                        return Ok((Seq::Hdr(pl.hdr), elem));
+                    }
+                }
+            }
         }
     }
     // `b"..."` リテラルは式そのままなので fat 値を作る。

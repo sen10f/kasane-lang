@@ -50,6 +50,9 @@ mod mono;
 // 配列リテラルの下ろし (子モジュール)。
 #[path = "kir_lower_array.rs"]
 mod array_lower;
+// `Box<T>` と `Box<dyn Tr>` の下ろし (子モジュール。設計_KIR.md 21 章)。
+#[path = "kir_lower_dyn.rs"]
+mod dyn_lower;
 
 // コレクション・文字列・クロージャの下ろし (子モジュール。`Lw` の非公開の項目を使う)。
 #[path = "kir_lower_iter.rs"]
@@ -776,6 +779,9 @@ impl<'a> Lw<'a> {
     }
 
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = dyn_lower::try_call(self, e) {
+            return r;
+        }
         if let Some(r) = coll::try_call(self, e) {
             return r;
         }
@@ -1000,6 +1006,9 @@ impl<'a> Lw<'a> {
             if let Some(r) = thread_lower::join_call(self, e, a, t, line) {
                 return r;
             }
+        }
+        if let Some(r) = dyn_lower::try_mcall(self, e) {
+            return r;
         }
         if let Some(r) = coll::try_mcall(self, e) {
             return r;
@@ -1459,6 +1468,10 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
                 bad.push((f.key, why));
             }
         }
+    }
+    // `Box<dyn Tr>` の呼び出しと解放の補助関数 (登録された変換と呼び出しがそろった後に作る)。
+    if let Some(&i0) = user.first() {
+        dyn_lower::synth(p, &tys, &aggs, &p.defs[i0], &mut ok);
     }
     // 同じ単相インスタンスを、別々の呼び出し元が下ろしていることがある (内容は同じ)。鍵の重複は先の一つだけ残す。
     let mut seen: HashSet<String> = HashSet::new();
