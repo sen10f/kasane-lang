@@ -18129,3 +18129,15 @@ end t.e1
     kir_review_cases("r2_unwrap", fns, "t.n7", &[(&["true"], "t.n7(true)", "2usize", "2")]);
     kir_review_cases("r2_recv_exit", fns, "t.e1", &[(&["true"], "t.e1(true)", "Some(3usize)", "Some(3)"), (&["false"], "t.e1(false)", "None", "None")]);
 }
+
+#[test]
+fn kir_net_roundtrip() {
+    // ポート 0 で bind し、実際のポートを得て connect し、同一スレッド内で数バイトをやり取りする。
+    // listen の後なら accept の前でも connect は成功する。
+    let fns = "fn t.net_roundtrip() -> () uses [alloc, io.net] panics may\n    match std.net.listen(\"127.0.0.1:0\") {\n        Ok(l) => {\n            let port = match l.local_port() {\n                Ok(p) => p\n                Err(_e) => core.panic.panic(\"local_port failed\")\n            }\n            core.check.eq((port == 0u16), false)\n            let mut address = alloc.string.String.new(std.alloc.SYSTEM)\n            match address.push_str(\"127.0.0.1:\") {\n                Ok(_u) => ()\n                Err(_e) => core.panic.panic(\"push_str failed\")\n            }\n            match address.push_u64(u64.from_u16(port)) {\n                Ok(_u) => ()\n                Err(_e) => core.panic.panic(\"push_u64 failed\")\n            }\n            let a = address.as_str()\n            match std.net.connect(a) {\n                Ok(c) => {\n                    let mut s = c\n                    match s.write(\"hello\".as_bytes()) {\n                        Ok(_n) => ()\n                        Err(_e) => core.panic.panic(\"write failed\")\n                    }\n                    match s.close() {\n                        Ok(_u) => ()\n                        Err(_e) => core.panic.panic(\"close failed\")\n                    }\n                }\n                Err(_e) => core.panic.panic(\"connect failed\")\n            }\n            match l.accept() {\n                Ok(accepted) => {\n                    let mut s2 = accepted\n                    match s2.write(\"hi\".as_bytes()) {\n                        Ok(_n) => ()\n                        Err(_e) => core.panic.panic(\"server write failed\")\n                    }\n                    match s2.close() {\n                        Ok(_u) => ()\n                        Err(_e) => core.panic.panic(\"close2 failed\")\n                    }\n                }\n                Err(_e) => core.panic.panic(\"accept failed\")\n            }\n            match l.close() {\n                Ok(_u) => ()\n                Err(_e) => core.panic.panic(\"close3 failed\")\n            }\n        }\n        Err(_e) => core.panic.panic(\"listen failed\")\n    }\nend t.net_roundtrip\n\nfn t.main() -> () uses [alloc, io.net] panics may\n    t.net_roundtrip()\nend t.main\n";
+    let t = Tmp::new("kir_net_roundtrip", fns);
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", text(&tw.stderr), text(&tw.stdout));
+    let k = kir_run(&["kir", "t.net_roundtrip", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", text(&k.stderr), text(&k.stdout));
+}

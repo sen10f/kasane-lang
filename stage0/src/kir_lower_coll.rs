@@ -1544,7 +1544,6 @@ pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usi
     lw.cur = Some(chb);
     {
         let tmp = chp[0];
-        let nd = chp[1];
         let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::U64, a: tmp, b: zero });
         lw.branch(c, (ccb, vec![]), (ce, vec![]));
     }
@@ -1569,7 +1568,6 @@ pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usi
     lw.cur = Some(whb);
     {
         let val = whp[0];
-        let pos = whp[1];
         let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::U64, a: val, b: zero });
         lw.branch(c, (wb, vec![]), (wd, vec![]));
     }
