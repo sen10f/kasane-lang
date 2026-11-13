@@ -9,7 +9,7 @@
 //! `kir_lower.rs` の子モジュールとして `Lw` の非公開の項目を使う。
 
 use crate::check::{items, nf, nlineno as nline};
-use crate::kir::{Aop, Cc, Mode, Op, Pay, Ty, VId};
+use crate::kir::{Aop, BoolOp, Cc, Mode, Op, Pay, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
 
@@ -58,8 +58,163 @@ impl<'a> Lw<'a> {
                     Err(e) => Err(e),
                 })
             }
+            // `&str` の先頭/末尾から ASCII 空白だけを削る。結果は元の文字列の部分 (ptr, len) の fat 値。
+            "trim" | "trim_start" | "trim_end" => {
+                if !matches!(kind, coll::Kind::Str) {
+                    return None;
+                }
+                if args.len() != 0 {
+                    return Some(self.err(line, format!("メソッド {} の引数は 0 個のはず", m)));
+                }
+                let t = self.ty_of(e).ok()?;
+                if !matches!(t, Ty::Agg(_)) {
+                    return Some(self.err(line, format!("メソッド {} の結果の型が &str ではない", m)));
+                }
+                Some(match self.trim_call(line, h, m) {
+                    Ok(v) => Ok(Some(v)),
+                    Err(e) => Err(e),
+                })
+            }
+            // `&str` のプレフィックス/サフィックスを削り、`Option<&str>` を返す。
+            "strip_prefix" | "strip_suffix" => {
+                if !matches!(kind, coll::Kind::Str) {
+                    return None;
+                }
+                if args.len() != 1 {
+                    return Some(self.err(line, format!("メソッド {} の引数は 1 個のはず", m)));
+                }
+                let Some(pat) = self.expr(&args[0]).ok()? else { return Some(Ok(None)) };
+                if self.vty(pat) != self.vty(h) {
+                    return Some(self.err(line, format!("メソッド {} の引数の型が受け手と違う", m)));
+                }
+                let t = self.ty_of(e).ok()?;
+                if !matches!(t, Ty::Opt(_)) {
+                    return Some(self.err(line, format!("メソッド {} の結果の型が Option<&str> ではない", m)));
+                }
+                Some(match self.strip_call(line, h, pat, m == "strip_prefix") {
+                    Ok(v) => Ok(Some(v)),
+                    Err(e) => Err(e),
+                })
+            }
             _ => None,
         }
+    }
+
+    /// ASCII 空白 (`\t` `\n` `\x0B` `\x0C` `\r` ` `) か。
+    fn is_ascii_space(&mut self, c: VId) -> LR<VId> {
+        let c32 = self.emit(Ty::U32, Op::Conv { src: Ty::U8, a: c });
+        let mut eq = |val: u32| {
+            let cv = self.emit(Ty::U32, Op::Const(val as i128));
+            self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U32, a: c32, b: cv })
+        };
+        let r9 = eq(0x09);
+        let r0a = eq(0x0A);
+        let r0b = eq(0x0B);
+        let r0c = eq(0x0C);
+        let r0d = eq(0x0D);
+        let r20 = eq(0x20);
+        let r90a = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, r9, r0a));
+        let r0b0c = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, r0b, r0c));
+        let r0d20 = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, r0d, r20));
+        let r90a0b0c = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, r90a, r0b0c));
+        Ok(self.emit(Ty::Bool, Op::Bool(BoolOp::Or, r90a0b0c, r0d20)))
+    }
+
+    /// `self.trim()` / `trim_start()` / `trim_end()`。結果は元の `self` の部分 (ptr, len) の fat 値。
+    fn trim_call(&mut self, line: usize, s: VId, m: &str) -> LR<VId> {
+        let sp = self.emit(Ty::Ptr, Op::Field { a: s, off: 0 });
+        let sl = self.emit(Ty::Usize, Op::Field { a: s, off: 8 });
+        let zero = self.emit(Ty::Usize, Op::Const(0));
+        let one = self.emit(Ty::Usize, Op::Const(1));
+        let fat = self.fat_ty();
+        let Ty::Agg(_fat_idx) = fat else {
+            return self.err(line, "fat の型が集成体でない");
+        };
+
+        // ---- 先頭の空白をスキップして start を求める (i < sl && space(s[i]) なら i+1) ----
+        let (sh, shp) = self.new_block(&[Ty::Usize]);
+        let (ss, _) = self.new_block(&[]);
+        let (sd, sdp) = self.new_block(&[Ty::Usize]);
+        self.goto(sh, vec![zero]);
+        self.cur = Some(sh);
+        let i = shp[0];
+        let i_lt = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: sl });
+        self.branch(i_lt, (ss, vec![]), (sd, vec![i]));
+        self.cur = Some(ss);
+        let bp = self.emit(Ty::Ptr, Op::PtrAdd { p: sp, off: i });
+        let bc = self.emit(Ty::U8, Op::MemLoad { p: bp, off: 0 });
+        let spc = self.is_ascii_space(bc)?;
+        let ni = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+        self.branch(spc, (sh, vec![ni]), (sd, vec![i]));
+        self.cur = Some(sd);
+        let start = sdp[0];
+
+        // trim_start ならここで結果を作る。
+        if m == "trim_start" {
+            let new_ptr = self.emit(Ty::Ptr, Op::PtrAdd { p: sp, off: start });
+            let new_len = self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: sl, b: start });
+            return Ok(self.emit(fat, Op::Make { variant: None, fields: vec![new_ptr, new_len] }));
+        }
+
+        // ---- 末尾の空白をスキップして end を求める (j > start && space(s[j-1]) なら j-1) ----
+        let (eh, ehp) = self.new_block(&[Ty::Usize]);
+        let (es, _) = self.new_block(&[]);
+        let (ed, edp) = self.new_block(&[Ty::Usize]);
+        self.goto(eh, vec![sl]);
+        self.cur = Some(eh);
+        let j = ehp[0];
+        let j_gt = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: j, b: start });
+        self.branch(j_gt, (es, vec![]), (ed, vec![j]));
+        self.cur = Some(es);
+        let jm1 = self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: j, b: one });
+        let bp = self.emit(Ty::Ptr, Op::PtrAdd { p: sp, off: jm1 });
+        let bc = self.emit(Ty::U8, Op::MemLoad { p: bp, off: 0 });
+        let spc = self.is_ascii_space(bc)?;
+        let nj = self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: j, b: one });
+        self.branch(spc, (eh, vec![nj]), (ed, vec![j]));
+        self.cur = Some(ed);
+        let end = edp[0];
+
+        let new_ptr = if m == "trim_end" { sp } else { self.emit(Ty::Ptr, Op::PtrAdd { p: sp, off: start }) };
+        let new_len = match m {
+            "trim_end" => end,
+            _ => self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: end, b: start }),
+        };
+        Ok(self.emit(fat, Op::Make { variant: None, fields: vec![new_ptr, new_len] }))
+    }
+
+    /// `self.strip_prefix(pat)` / `strip_suffix(pat)`。マッチすれば `Some(部分)`、そうでなければ `None`。
+    fn strip_call(&mut self, line: usize, s: VId, pat: VId, is_prefix: bool) -> LR<VId> {
+        let sp = self.emit(Ty::Ptr, Op::Field { a: s, off: 0 });
+        let sl = self.emit(Ty::Usize, Op::Field { a: s, off: 8 });
+        let pl = self.emit(Ty::Usize, Op::Field { a: pat, off: 8 });
+        let fat = self.fat_ty();
+        let Ty::Agg(fat_idx) = fat else {
+            return self.err(line, "fat の型が集成体でない");
+        };
+        let opt_ty = Ty::Opt(Pay::Agg(fat_idx));
+
+        let is_match = self.str_starts_or_ends_with(s, pat, is_prefix)?;
+
+        let (yesb, _) = self.new_block(&[]);
+        let (nob, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[opt_ty]);
+        let none = self.emit(opt_ty, Op::Const(0));
+        self.branch(is_match, (yesb, vec![]), (nob, vec![]));
+        self.cur = Some(yesb);
+        let new_ptr = if is_prefix {
+            self.emit(Ty::Ptr, Op::PtrAdd { p: sp, off: pl })
+        } else {
+            sp
+        };
+        let new_len = self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: sl, b: pl });
+        let fat_val = self.emit(fat, Op::Make { variant: None, fields: vec![new_ptr, new_len] });
+        let some = self.emit(opt_ty, Op::Some(fat_val));
+        self.goto(join, vec![some]);
+        self.cur = Some(nob);
+        self.goto(join, vec![none]);
+        self.cur = Some(join);
+        Ok(jp[0])
     }
 
     /// `self.starts_with(pat)` / `self.ends_with(pat)`。`self` と `pat` は `fat` (`{ptr, len}`)。

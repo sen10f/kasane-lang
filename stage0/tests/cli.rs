@@ -12743,6 +12743,51 @@ fn kir_str_methods_and_bstr_match_tree_walker() {
     assert_eq!(text(&k.stdout).trim(), "true", "kir utf8_bad value");
 }
 
+#[test]
+fn kir_trim_match_tree_walker() {
+    // `&str` の `trim` / `trim_start` / `trim_end` / `strip_prefix` / `strip_suffix` を KIR に下ろし、
+    // `--run` (KIR インタプリタ) と `--native` (LLVM) が `ksn run` と一致すること。
+    let src = r#"fn t.trim_test() -> bool uses [] panics never
+    let a = "  hello  ".trim().eq("hello")
+    let b = "   \t\n ".trim().eq("")
+    let c = "".trim().eq("")
+    let d = "no_ws".trim().eq("no_ws")
+    let e = "  leading".trim_start().eq("leading")
+    let f = "trailing  ".trim_end().eq("trailing")
+    let g = match "  abc".strip_prefix("  ") {
+        Some(_t) => true
+        None => false
+    }
+    let h = match "abc  ".strip_suffix("  ") {
+        Some(_t) => true
+        None => false
+    }
+    let i = !match "abc".strip_prefix("x") {
+        Some(_t) => true
+        None => false
+    }
+    let j = match "".strip_prefix("") {
+        Some(_t) => true
+        None => false
+    }
+    a && b && c && d && e && f && g && h && i && j
+end t.trim_test
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.trim_test(), true)
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("kir_trim", src);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "check: {}", text(&o.stderr));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "run (tree-walker): {}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.trim_test", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir trim_test: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir trim_test value");
+}
+
 // ---- panic (unwrap・core.panic.panic)、利用者のメソッドの &mut 受け手、配列リテラルの for ----
 
 /// panic の試験用の関数。`unwrap` の None / Err と `core.panic.panic` (エスケープと % を含む文言)。
