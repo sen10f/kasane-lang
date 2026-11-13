@@ -15241,6 +15241,41 @@ fn kir_coll_values_match_tree_walker() {
 }
 
 #[test]
+fn kir_str_for_matches_tree_walker() {
+    // `for x in s.split(sep)` / `for c in s.chars()` (`s` は `&str` = fat) が、木走査と
+    // 参照実行器・機械語で同じ結果になること。空の区切り・末尾・連続・マルチバイトを含む。
+    let split = |s: &str, sep: &str| -> String {
+        format!("fn t.f() -> usize uses [] panics never\n    let mut n = 0usize\n    for _ in {:?}.split({:?}) {{\n        n = n.wrapping_add(1usize)\n    }}\n    n\nend t.f\n", s, sep)
+    };
+    let chars = |s: &str| -> String {
+        format!("fn t.f() -> usize uses [] panics never\n    let mut n = 0usize\n    for _ in {:?}.chars() {{\n        n = n.wrapping_add(1usize)\n    }}\n    n\nend t.f\n", s)
+    };
+    let cases: &[(&str, &str)] = &[
+        (&split("a,b,c", ","), "3"),
+        (&split("", ","), "1"),
+        (&split("a,,b", ","), "3"),
+        (&split("a,", ","), "2"),
+        (&split(",a", ","), "2"),
+        (&split("ab", ","), "1"),
+        (&split("", ""), "1"),
+        (&split("a,b", ""), "1"),
+        (&split("x\r\ny", "\r\n"), "2"),
+        (&chars(""), "0"),
+        (&chars("abc"), "3"),
+        (&chars("あいう"), "3"),
+        (&chars("aあb"), "3"),
+    ];
+    for (i, (src, want)) in cases.iter().enumerate() {
+        let t = Tmp::new(&format!("kir_str_for_{}", i), &format!("{}{}", src, main_wrap("", &format!("    core.check.eq(t.f(), {})\n", want))));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", want, text(&o.stderr));
+        let k = kir_run(&["kir", "t.f", "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", want, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", want);
+    }
+}
+
+#[test]
 fn kir_coll_index_panics_like_tree_walker() {
     // 空の Vec の添字は木走査と同じ文言で panic する (終了コード 101)。
     let t = kir_coll_pkg("kir_coll_index_panic", "    let _x = t.idx_empty()\n");
