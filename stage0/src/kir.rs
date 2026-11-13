@@ -668,6 +668,11 @@ pub enum Op {
     /// 書き出し: ファイル記述子 `fd` (`i32`。1 = stdout、2 = stderr) へ `data` (`fat` = `{ptr, len}`) の全バイトを書く。
     /// 結果は `Result<unit, std.io.Error>` (設計_KIR.md 12.2)。短い書き込みは繰り返し、EINTR は再試行する。`uses [io.console]` の関数だけ。
     Write { fd: VId, data: VId },
+    /// panic の途中の文言を stderr へ書く (`data` = `fat`)。`write` と違って `uses` を要らない: 文言は panic の一部で、
+    /// `core.check.eq` のような効果の宣言のない関数からも呼べるため (設計_KIR.md 13.2)。結果は unit。`panics may` のときだけ。
+    Eprint { data: VId },
+    /// 文言を出さずに終了コード 101 で終わる (`Eprint` で文言を書いた後の終わり)。結果は unit。`panics may` のときだけ。
+    Abort,
 }
 
 /// `BitCount` の種類。
@@ -1088,6 +1093,8 @@ fn fmt_inst(i: &Inst) -> String {
             None => format!("panic {}", quote_msg(msg)),
         },
         Op::Write { fd, data } => format!("write {}, {}", fmt_val(*fd), fmt_val(*data)),
+        Op::Eprint { data } => format!("eprint {}", fmt_val(*data)),
+        Op::Abort => "abort".to_string(),
     };
     format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
 }
@@ -1467,6 +1474,11 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             let v = operands(2)?;
             Ok(Op::Write { fd: v[0], data: v[1] })
         }
+        ("eprint", []) if ty == Ty::Unit => {
+            let v = operands(1)?;
+            Ok(Op::Eprint { data: v[0] })
+        }
+        ("abort", []) if ty == Ty::Unit => Ok(Op::Abort),
         ("index", ["check"]) if ty == Ty::Unit => {
             let v = operands(2)?;
             Ok(Op::IndexCheck { i: v[0], len: v[1] })
@@ -2143,6 +2155,22 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("write の結果は Result<unit, std.io.Error> のはず".into());
                         }
                     }
+                    Op::Eprint { data } => {
+                        if !f.may_panic {
+                            return Err("panics never の関数に eprint".into());
+                        }
+                        if i.ty != Ty::Unit || !matches!(ty_of(*data)?, Ty::Agg(d) if m.aggs[d as usize].name == "fat") {
+                            return Err("eprint の被演算子は fat のはず".into());
+                        }
+                    }
+                    Op::Abort => {
+                        if !f.may_panic {
+                            return Err("panics never の関数に abort".into());
+                        }
+                        if i.ty != Ty::Unit {
+                            return Err("abort の結果は unit のはず".into());
+                        }
+                    }
                     Op::Call { callee, args } => {
                         let Some(g) = callees.get(callee.as_str()) else {
                             return Err(format!("呼び先 {} がモジュールにない", callee));
@@ -2226,6 +2254,8 @@ fn operands(op: &Op) -> Vec<VId> {
         Op::IndexCheck { i, len } => vec![*i, *len],
         Op::Panic { arg, .. } => arg.iter().copied().collect(),
         Op::Write { fd, data } => vec![*fd, *data],
+        Op::Eprint { data } => vec![*data],
+        Op::Abort => vec![],
         Op::Arith { a, b, .. }
         | Op::Cmp { a, b, .. }
         | Op::Bool(_, a, b)
@@ -2375,6 +2405,31 @@ mod tests {
         let mut never = back.clone();
         never.funcs[0].may_panic = false;
         assert!(!verify_module(&never).is_empty());
+    }
+
+    #[test]
+    fn eprint_and_abort_read_back_and_need_panics_may() {
+        // `eprint` は fat を書き、`abort` は文言を出さずに終わる。`uses` は要らず、`panics never` では検査で落ちる (設計_KIR.md 13.2)。
+        let src = |panics: &str| {
+            format!(
+                "kir 1
+
+agg#0 struct fat size=16 align=8 {{ptr:ptr@0 len:usize@8}}
+
+fn t.p key=t.p uses=[] panics={panics} stack=- ret=unit
+  b0(%0: agg#0):
+    %1: unit = eprint %0
+    %2: unit = abort
+    ret %2
+end t.p
+"
+            )
+        };
+        let m = parse_module(&src("may")).expect("読める");
+        assert!(verify_module(&m).is_empty(), "{:?}", verify_module(&m));
+        assert_eq!(print_module(&m), src("may"));
+        let bad = verify_module(&parse_module(&src("never")).expect("読める"));
+        assert!(bad.iter().any(|(_, msg)| msg.contains("panics never")), "{:?}", bad);
     }
 
     fn sample() -> Module {

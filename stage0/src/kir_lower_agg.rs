@@ -154,6 +154,12 @@ impl AggTab {
         }
     }
 
+    /// `eprint` (panic の文言と Debug 表示) の引数の型。`LLVM` の `write` の実体は `std.io.ErrorKind` の表を要るので、先に入れる。
+    pub fn stderr_fat(&mut self, p: &Program) -> Result<Ty, String> {
+        self.io_error(p)?;
+        Ok(self.fat())
+    }
+
     /// `&str` / スライスの値 (`{ptr, len}` の 16 バイトの構造体。設計_KIR.md 10.10)。名前は `fat` (利用者の型は FQN で `.` を含むので衝突しない)。
     pub fn fat(&mut self) -> Ty {
         if let Some(&i) = self.by_name.get("fat") {

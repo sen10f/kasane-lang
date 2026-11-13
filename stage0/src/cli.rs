@@ -448,6 +448,7 @@ fn cmd_kir(rest: &[String]) -> i32 {
             eprintln!("panic: {}", m);
             101
         }
+        Ok(crate::kir_exec::Outcome::Abort) => 101,
         Ok(crate::kir_exec::Outcome::StackOverflow) => {
             eprintln!("stack overflow");
             102

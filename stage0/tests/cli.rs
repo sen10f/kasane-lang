@@ -9712,7 +9712,8 @@ end t.main
 #[test]
 fn kir_lower_dump_on_check_is_hidden_behind_the_env_var() {
     // `KSN_DUMP_KIR=1 ksn check` だけ KIR を stderr に出す。通常の check の出力は変えない。
-    let t = kir_pkg("kir_dump", "    core.check.eq(t.gcd(4u64, 2u64), 2u64)\n");
+    // 浮動小数の比較は失敗の文言に値を出せないので、段階 1 では未対応 (理由付きで出る)
+    let t = kir_pkg("kir_dump", "    core.check.eq(1.5f64, 1.5f64)\n");
     let plain = run(&["check"], &t.0);
     let dumped = Command::new(exe())
         .args(["check"])
@@ -9853,6 +9854,133 @@ fn kir_panic_unwrap_and_core_panic_match_tree_walker() {
         let k = kir_run(&["kir", f, "--run", arg], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+}
+
+/// `core.check.eq` / `core.check.is_true` の下ろし (設計_KIR.md 13.2) の試験用の定義。値は関数の引数か、関数の中の定数。
+const CHECK_SRC: &str = r#"type t.Pt derive [Debug, PartialEq]
+    x: i32
+    y: u8
+end t.Pt
+
+enum t.Sh derive [Debug, PartialEq]
+    Circle(i32)
+    Rect(i32, bool)
+    Dot
+end t.Sh
+
+fn t.mk(n: i32) -> Option<i32> uses [] panics never
+    if n > 0i32 {
+        Some(n)
+    } else {
+        None
+    }
+end t.mk
+
+fn t.res(n: i32) -> Result<i32, i32> uses [] panics never
+    if n > 0i32 {
+        Ok(n)
+    } else {
+        Err(n)
+    }
+end t.res
+
+fn t.ieq(a: i32, b: i32) -> () uses [] panics may
+    core.check.eq(a, b)
+end t.ieq
+
+fn t.neq(a: i64) -> () uses [] panics may
+    core.check.eq(a, -9i64)
+end t.neq
+
+fn t.beq(c: bool) -> () uses [] panics may
+    core.check.is_true(c)
+end t.beq
+
+fn t.bq(a: bool, b: bool) -> () uses [] panics may
+    core.check.eq(a, b)
+end t.bq
+
+fn t.ceq(a: char, b: char) -> () uses [] panics may
+    core.check.eq(a, b)
+end t.ceq
+
+fn t.sok() -> () uses [] panics may
+    core.check.eq("ab", "ab")
+end t.sok
+
+fn t.sbad() -> () uses [] panics may
+    core.check.eq("ab", "ac")
+end t.sbad
+
+fn t.pq(n: i32) -> () uses [] panics may
+    core.check.eq(t.Pt { x: n, y: 1u8 }, t.Pt { x: n, y: 2u8 })
+end t.pq
+
+fn t.sq(n: i32) -> () uses [] panics may
+    core.check.eq(t.Sh.Circle(n), t.Sh.Rect(n, true))
+end t.sq
+
+fn t.sq_ok(n: i32) -> () uses [] panics may
+    core.check.eq(t.Sh.Circle(n), t.Sh.Circle(n))
+    core.check.eq(t.Sh.Dot, t.Sh.Dot)
+end t.sq_ok
+
+fn t.oq(n: i32) -> () uses [] panics may
+    core.check.eq(t.mk(n), Some(-4i32))
+end t.oq
+
+fn t.rq(n: i32) -> () uses [] panics may
+    core.check.eq(t.res(n), Ok(7i32))
+end t.rq
+"#;
+
+#[test]
+fn kir_check_eq_and_is_true_match_tree_walker() {
+    // 失敗の文言 (left / right の表示) と終了コード (101) が木走査と一致すること。成功は終了コード 0 で、表示は出さない。
+    // 対象: 整数の負数、bool、char、&str、構造体、列挙型、Option、Result。
+    let cases: &[(&str, &[&str], &str, Option<&str>)] = &[
+        ("t.ieq", &["1", "2"], "t.ieq(1i32, 2i32)", Some("assertion failed: left: 1, right: 2")),
+        ("t.ieq", &["-3", "3"], "t.ieq(-3i32, 3i32)", Some("assertion failed: left: -3, right: 3")),
+        ("t.ieq", &["-3", "-3"], "t.ieq(-3i32, -3i32)", None),
+        ("t.neq", &["-10"], "t.neq(-10i64)", Some("assertion failed: left: -10, right: -9")),
+        ("t.neq", &["-9"], "t.neq(-9i64)", None),
+        ("t.beq", &["false"], "t.beq(false)", Some("assertion failed: condition is false")),
+        ("t.beq", &["true"], "t.beq(true)", None),
+        ("t.bq", &["true", "false"], "t.bq(true, false)", Some("assertion failed: left: true, right: false")),
+        ("t.ceq", &["97", "98"], "t.ceq('a', 'b')", Some("assertion failed: left: 'a', right: 'b'")),
+        ("t.ceq", &["97", "97"], "t.ceq('a', 'a')", None),
+        ("t.sbad", &[], "t.sbad()", Some("assertion failed: left: \"ab\", right: \"ac\"")),
+        ("t.sok", &[], "t.sok()", None),
+        ("t.pq", &["5"], "t.pq(5i32)", Some("assertion failed: left: Pt { x: 5, y: 1 }, right: Pt { x: 5, y: 2 }")),
+        ("t.sq", &["3"], "t.sq(3i32)", Some("assertion failed: left: Circle(3), right: Rect(3, true)")),
+        ("t.sq_ok", &["3"], "t.sq_ok(3i32)", None),
+        ("t.oq", &["5"], "t.oq(5i32)", Some("assertion failed: left: Some(5), right: Some(-4)")),
+        ("t.oq", &["-1"], "t.oq(-1i32)", Some("assertion failed: left: None, right: Some(-4)")),
+        ("t.rq", &["-2"], "t.rq(-2i32)", Some("assertion failed: left: Err(-2), right: Ok(7)")),
+        ("t.rq", &["3"], "t.rq(3i32)", Some("assertion failed: left: Ok(3), right: Ok(7)")),
+        ("t.rq", &["7"], "t.rq(7i32)", None),
+    ];
+    for (i, &(f, args, call, want)) in cases.iter().enumerate() {
+        let t = Tmp::new(&format!("kir_check_eq_{}", i), &format!("{}{}", CHECK_SRC, main_wrap("", &format!("    {}\n", call))));
+        let tw = run(&["run"], &t.0);
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        match want {
+            Some(msg) => {
+                assert_eq!(tw.status.code(), Some(101), "tree-walker: {}\n{}", call, text(&tw.stderr));
+                assert_eq!(text(&tw.stderr).trim(), format!("panic: {}", msg), "tree-walker: {}", call);
+                assert_eq!(k.status.code(), Some(101), "kir: {:?}\n{}", kargs, text(&k.stderr));
+                assert_eq!(text(&k.stderr).trim(), text(&tw.stderr).trim(), "kir の文言が木走査と違う: {:?}", kargs);
+                assert!(text(&k.stdout).is_empty(), "kir: 失敗のときは表示を出さない: {:?}", kargs);
+            }
+            None => {
+                assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&tw.stderr));
+                assert_eq!(k.status.code(), Some(0), "kir: {:?}\n{}", kargs, text(&k.stderr));
+                assert_eq!(text(&k.stderr), "", "kir: 成功のときは stderr を出さない: {:?}", kargs);
+            }
+        }
     }
 }
 
