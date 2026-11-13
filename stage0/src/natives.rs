@@ -335,7 +335,7 @@ fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
     match name {
         // abs / sqrt は IEEE 754 の演算そのもの (機械語の fabs / sqrt と同じ): -inf の abs は +inf、負と -inf の sqrt は NaN、-0 の sqrt は -0。
         "abs" => Ok(Val::Float(x.abs())),
-        "sqrt" => Ok(Val::Float(x.sqrt())),
+        "sqrt" => Ok(Val::Float(fmath::nan_rule64(x, x, x.sqrt()))),
         "floor" => simple(f64::floor),
         "ceil" => simple(f64::ceil),
         // 超越関数は自前実装 (`fmath`)。f32 は呼び出し側で f32 へ丸める。
@@ -353,7 +353,7 @@ fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
         "max" => Ok(Val::Float(x.max(y))),
         "min" => Ok(Val::Float(x.min(y))),
         "powi" => Ok(Val::Float(fmath::powi(&fmath::Host, x, y as i64))),
-        "rem" => Ok(Val::Float(if y != 0.0 { x % y } else { f64::NAN })),
+        "rem" => Ok(Val::Float(fmath::nan_rule64(x, y, x % y))),
         "atan2" => Ok(Val::Float(fmath::atan2(&fmath::Host, x, y))),
         _ => panic(format!("unknown float operation {}.{}", ty, name)),
     }

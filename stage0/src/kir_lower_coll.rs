@@ -59,6 +59,9 @@ pub(crate) enum Owned {
     Hdr(VId),
     /// 構造体・列挙型・`Option` / `Result` の局所変数。スロットと、移していないとき 1 の印 (フレームの 1 バイト)。
     Val { slot: usize, flag: VId },
+    /// 評価済みで、まだ束縛も消費もされていない所有値 (呼び出しの引数・構造体のフィールド・タプルの要素)。
+    /// 後ろの式の評価が `?` / `return` / `break` で抜けるときに解放するため、消費の直前まで登録しておく (設計_KIR.md 17.3)。
+    Tmp(VId),
 }
 
 /// 下ろしの状態。`Lw` が 1 つ持つ。
@@ -507,6 +510,10 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
 fn drop_owned(lw: &mut Lw, o: Owned) {
     match o {
         Owned::Hdr(h) => drop_hdr(lw, h),
+        Owned::Tmp(v) => {
+            let t = lw.vty(v);
+            drop_value(lw, v, t);
+        }
         Owned::Val { slot, flag } => {
             let t = lw.slots[slot].1;
             let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
@@ -540,6 +547,20 @@ pub(crate) fn block_end(lw: &mut Lw) {
     let depth = lw.scopes.len() - 1;
     drop_from(lw, depth);
     lw.coll.owned.retain(|(d, _)| *d < depth);
+}
+
+/// 評価済みの値 `v` が所有物なら、消費されるまでの間、現在のスコープの一時の所有に登録する。
+pub(crate) fn tmp_hold(lw: &mut Lw, v: VId) {
+    let t = lw.vty(v);
+    if owns_heap(lw, t) {
+        let scope = lw.scopes.len() - 1;
+        lw.coll.owned.push((scope, Owned::Tmp(v)));
+    }
+}
+
+/// `tmp_hold` した値を外す (呼び出しや構築が消費する直前、または評価が途中で終わったとき)。
+pub(crate) fn tmp_release(lw: &mut Lw, vs: &[VId]) {
+    lw.coll.owned.retain(|(_, o)| !matches!(o, Owned::Tmp(x) if vs.contains(x)));
 }
 
 /// 捨てる値 (文として評価した式の値) が所有物なら解放する。
@@ -1733,6 +1754,13 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             Some(Kind::Slice(Some(elem))) => Some((Seq::Fat(lw.slots[s].0), elem)),
             _ => None,
         };
+        if let (Some(_), Some(n)) = (&seq, path1_name(it)) {
+            // 反復中に `v` を変える (`push` で再確保される、`&mut v` を渡す、代入する) と、反復が読む先頭と長さが古くなって
+            // 解放後のバッファを読む。`ksn check` はこの形を通すので KIR では拒む (設計_KIR.md 17.6)。
+            if body_mutates(&f[2], &n) {
+                return lw.err(line, "for の本体で反復中の Vec を変更する形は段階 1 の対象外 (再確保で反復が解放後の領域を読む)");
+            }
+        }
         if let Some((seq, elem)) = seq {
             let (len, base) = seq.len_and_base(lw, None);
             let zero = lw.emit(Ty::Usize, Op::Const(0));
@@ -1746,6 +1774,39 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         }
     }
     lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数・利用者の反復子の変数だけ段階 1 の対象")
+}
+
+/// 単一の名前の経路 (`v`) ならその名前。
+fn path1_name(e: &V) -> Option<String> {
+    if nname(e) != "Path" {
+        return None;
+    }
+    let segs = strs(&nf(e)[0]);
+    (segs.len() == 1).then(|| segs[0].clone())
+}
+
+/// 木 `v` の中で、名前 `name` の局所を変えうる形があるか: 代入、`&mut name`、読むだけとは限らないメソッド呼び出し。
+pub(super) fn body_mutates(v: &V, name: &str) -> bool {
+    const READ_ONLY: [&str; 9] = ["len", "is_empty", "get", "as_slice", "as_str", "first", "last", "contains", "capacity"];
+    match v {
+        V::Node(n, fs, _, _) => {
+            let hit = match *n {
+                "Assign" => fs.first().and_then(super::path_base).as_deref() == Some(name),
+                "Unary" => fs.len() == 2 && st(&fs[0]) == "&mut" && super::agg::field_segs(&fs[1]).is_some_and(|s| s[0] == name),
+                "Call" if fs.len() >= 2 && nname(&fs[0]) == "Path" => {
+                    let segs = strs(&nf(&fs[0])[0]);
+                    segs.len() >= 2 && segs[0] == name && !READ_ONLY.contains(&segs[segs.len() - 1].as_str())
+                }
+                "MCall" if fs.len() >= 2 => {
+                    super::agg::field_segs(&fs[0]).is_some_and(|s| s[0] == name) && !READ_ONLY.contains(&st(&fs[1]).as_str())
+                }
+                _ => false,
+            };
+            hit || fs.iter().any(|f| body_mutates(f, name))
+        }
+        V::L(xs) => xs.iter().any(|x| body_mutates(x, name)),
+        _ => false,
+    }
 }
 
 /// 局所 `s` の型が `core.iter.Iterator` を実装する利用者の集成体で、`&mut self` の `next` を持つなら、その定義の番号。
@@ -1795,16 +1856,22 @@ fn user_iter(lw: &mut Lw, e: &V, it: &V, s: usize, di: usize, name: Option<Strin
     let depth = lw.scopes.len() - 1;
     if let Some(n) = &name {
         let v = lw.emit(pay.ty(), Op::Payload(o));
-        lw.bind(n, v, pay.ty());
+        // 反復子が所有物 (Vec / String / それを持つ構造体) を返すときは、束縛した変数が所有して 1 周の終わりに解放する (設計_KIR.md 17.4)。
+        bind_owned(lw, n, v, pay.ty());
+    } else {
+        // `for _ in it`: 束縛しない所有物はその場で捨てる。
+        let v = lw.emit(pay.ty(), Op::Payload(o));
+        drop_temp(lw, v);
     }
     lw.loops.push(super::LoopCx { header: hb, exit: xb, slots: slots.clone(), depth });
     let r = lw.expr(body)?;
+    // 1 周の終わり: 変数が所有する値を先に解放してから、ヘッダへ戻る (戻った後の解放は到達しない)。
+    block_end(lw);
     if r.is_some() {
         let args = lw.vals_of(&slots);
         lw.goto(hb, args);
     }
     lw.loops.pop();
-    block_end(lw);
     lw.scopes.pop();
 
     lw.cur = Some(xb);

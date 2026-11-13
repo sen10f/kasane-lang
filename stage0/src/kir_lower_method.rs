@@ -180,10 +180,17 @@ impl<'a> Lw<'a> {
         let mut vs = vec![];
         for a in args {
             match self.expr(a)? {
-                Some(v) => vs.push(v),
-                None => return Ok(None),
+                Some(v) => {
+                    super::coll::tmp_hold(self, v);
+                    vs.push(v)
+                }
+                None => {
+                    super::coll::tmp_release(self, &vs);
+                    return Ok(None);
+                }
             }
         }
+        super::coll::tmp_release(self, &vs);
         let vs = self.coerce_args(vs, &pts);
         for (v, pt) in vs.iter().zip(pts.iter()) {
             if self.vty(*v) != *pt {
@@ -309,6 +316,39 @@ impl<'a> Lw<'a> {
     fn scan_mut(&self, v: &V, out: &mut Vec<String>) {
         match v {
             V::Node(n, fs, _, _) => {
+                // 所有物を持つ構造体の局所のフィールドからの移動 (`b.items` を値で使う) は、SSA の局所へ「空」を書き戻す。
+                // 値で使うかどうかをここでは見分けず、根を全部入れる (合流で余分に受け渡すだけで害はない)。
+                if *n == "Path" {
+                    let segs = strs(&fs[0]);
+                    if segs.len() >= 2 {
+                        if let Some(s) = self.lookup(&segs[0]) {
+                            if super::coll::owns(self, self.slots[s].1) {
+                                out.push(segs[0].clone());
+                            }
+                        }
+                    }
+                }
+                if *n == "Field" {
+                    let mut r = &fs[0];
+                    while nname(r) == "Field" {
+                        r = &nf(r)[0];
+                    }
+                    if nname(r) == "Path" {
+                        let root = strs(&nf(r)[0])[0].clone();
+                        if let Some(s) = self.lookup(&root) {
+                            if super::coll::owns(self, self.slots[s].1) {
+                                out.push(root);
+                            }
+                        }
+                    }
+                }
+                // 利用者の反復子の `for x in it`: `next` が進めた `it` を、外側の合流へ渡す (設計_KIR.md 17.4)。
+                if *n == "For" && fs.len() >= 2 && nname(&fs[1]) == "Path" {
+                    let segs = strs(&nf(&fs[1])[0]);
+                    if segs.len() == 1 {
+                        out.push(segs[0].clone());
+                    }
+                }
                 if *n == "Call" && fs.len() >= 2 && nname(&fs[0]) == "Path" {
                     let segs = strs(&nf(&fs[0])[0]);
                     if segs.len() >= 2 {

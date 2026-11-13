@@ -33,26 +33,16 @@ pub fn farith(op: Aop, ty: Ty, x: i128, y: i128) -> i128 {
             Aop::Mul => a * b,
             _ => a / b,
         };
-        return r.to_bits() as i128;
+        return fmath::nan_rule32(a, b, r).to_bits() as i128;
     }
     let (a, b) = (f64::from_bits(x as u64), f64::from_bits(y as u64));
     let r = match op {
         Aop::Add => a + b,
         Aop::Sub => a - b,
         Aop::Mul => a * b,
-        _ => {
-            if b == 0.0 {
-                if a == 0.0 || a.is_nan() {
-                    f64::NAN
-                } else {
-                    f64::INFINITY.copysign(a) * 1f64.copysign(b)
-                }
-            } else {
-                a / b
-            }
-        }
+        _ => a / b,
     };
-    r.to_bits() as i128
+    fmath::nan_rule64(a, b, r).to_bits() as i128
 }
 
 /// `f64` の 1 引数の演算 (木走査の `natives.rs` の `float_op_f64` と同じ式)。`Neg` / `IsNan` / `IsFinite` は呼び出し側で扱う。
@@ -67,7 +57,7 @@ fn fun64(op: FUn, x: f64) -> f64 {
     match op {
         // IEEE 754 の演算そのもの (木走査の `natives.rs` と同じ。機械語の fabs / sqrt と同じ)。
         FUn::Abs => x.abs(),
-        FUn::Sqrt => x.sqrt(),
+        FUn::Sqrt => fmath::nan_rule64(x, x, x.sqrt()),
         FUn::Floor => simple(f64::floor),
         FUn::Ceil => simple(f64::ceil),
         FUn::Trunc => simple(f64::trunc),
@@ -110,11 +100,7 @@ pub fn fbin(op: FBin, res: Ty, a: i128, b: i128) -> i128 {
         FBin::Max => x.max(y),
         FBin::Min => x.min(y),
         FBin::Rem => {
-            if y != 0.0 {
-                x % y
-            } else {
-                f64::NAN
-            }
+            fmath::nan_rule64(x, y, x % y)
         }
         FBin::Atan2 => fmath::atan2(&fmath::Host, x, y),
         FBin::Powi => fmath::powi(&fmath::Host, x, y as i64),

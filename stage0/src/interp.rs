@@ -925,26 +925,20 @@ impl Interp {
             };
             let (x, y) = (g(&a), g(&b));
             return match op.as_str() {
-                "+" => Ok(Val::F32(x + y)),
-                "-" => Ok(Val::F32(x - y)),
-                "*" => Ok(Val::F32(x * y)),
-                "/" => Ok(Val::F32(x / y)),
+                "+" => Ok(Val::F32(crate::fmath::nan_rule32(x, y, x + y))),
+                "-" => Ok(Val::F32(crate::fmath::nan_rule32(x, y, x - y))),
+                "*" => Ok(Val::F32(crate::fmath::nan_rule32(x, y, x * y))),
+                "/" => Ok(Val::F32(crate::fmath::nan_rule32(x, y, x / y))),
                 _ => panic(format!("bad float operator {}", op)),
             };
         }
         if matches!(a, Val::Float(_)) || matches!(b, Val::Float(_)) {
             let (x, y) = (fl(&a).unwrap_or(0.0), fl(&b).unwrap_or(0.0));
             return match op.as_str() {
-                "+" => Ok(Val::Float(x + y)),
-                "-" => Ok(Val::Float(x - y)),
-                "*" => Ok(Val::Float(x * y)),
-                "/" => {
-                    if y == 0.0 {
-                        Ok(Val::Float(if x == 0.0 || x.is_nan() { f64::NAN } else { f64::INFINITY.copysign(x) * 1f64.copysign(y) }))
-                    } else {
-                        Ok(Val::Float(x / y))
-                    }
-                }
+                "+" => Ok(Val::Float(crate::fmath::nan_rule64(x, y, x + y))),
+                "-" => Ok(Val::Float(crate::fmath::nan_rule64(x, y, x - y))),
+                "*" => Ok(Val::Float(crate::fmath::nan_rule64(x, y, x * y))),
+                "/" => Ok(Val::Float(crate::fmath::nan_rule64(x, y, x / y))),
                 _ => panic(format!("bad float operator {}", op)),
             };
         }

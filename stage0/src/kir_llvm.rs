@@ -905,6 +905,27 @@ impl<'a> Fe<'a> {
         }
     }
 
+    /// NaN の規則 (`fmath::nan_rule64` / `nan_rule32` と同じ、設計_KIR.md 17.8): 結果 `r` が NaN のとき、`a` が NaN なら `a` (quiet 化)、
+    /// そうでなく `b` が NaN なら `b` (quiet 化)、どちらでもなければ正の quiet NaN。結果が NaN でなければ `r`。
+    /// 定数畳み込み (正の NaN) と実機の実行時 (符号ビットの立った NaN) の違いを消す。`t` は `float` か `double`。
+    fn nan_rule(&mut self, t: &str, a: &str, b: &str, r: &str) -> String {
+        let (it, quiet, canon) = if t == "float" { ("i32", 0x0040_0000u64, 0x7FC0_0000u64) } else { ("i64", 0x0008_0000_0000_0000u64, 0x7FF8_0000_0000_0000u64) };
+        let rn = self.t(format!("fcmp uno {} {}, {}", t, r, r));
+        let an = self.t(format!("fcmp uno {} {}, {}", t, a, a));
+        let bn = self.t(format!("fcmp uno {} {}, {}", t, b, b));
+        let ab = self.t(format!("bitcast {} {} to {}", t, a, it));
+        let aq = self.t(format!("or {} {}, {}", it, ab, quiet));
+        let af = self.t(format!("bitcast {} {} to {}", it, aq, t));
+        let bb = self.t(format!("bitcast {} {} to {}", t, b, it));
+        let bq = self.t(format!("or {} {}, {}", it, bb, quiet));
+        let bf = self.t(format!("bitcast {} {} to {}", it, bq, t));
+        let cb = self.t(format!("or {} 0, {}", it, canon));
+        let cf = self.t(format!("bitcast {} {} to {}", it, cb, t));
+        let s1 = self.t(format!("select i1 {}, {} {}, {} {}", bn, t, bf, t, cf));
+        let s2 = self.t(format!("select i1 {}, {} {}, {} {}", an, t, af, t, s1));
+        self.t(format!("select i1 {}, {} {}, {} {}", rn, t, s2, t, r))
+    }
+
     fn math_call(&mut self, m: Math, args: &str) -> String {
         self.cx.math.insert(m);
         self.t(format!("call double @ksn.m.{}({})", m.name(), args))
@@ -929,11 +950,21 @@ impl<'a> Fe<'a> {
                 let ab = self.t(format!("call {} @{}({} {})", st, full, st, x));
                 self.line(format!("{} = fcmp olt {} {}, 0x7FF0000000000000", d, st, ab));
             }
+            // abs は符号ビットを落とすだけ (f64 へ広げず、整数のビット演算で。signaling NaN も、最適化の水準にもよらず変わらない)。
+            FUn::Abs => {
+                let (it, mask) = if src == Ty::F32 { ("i32", 0x7FFF_FFFFu64) } else { ("i64", 0x7FFF_FFFF_FFFF_FFFFu64) };
+                let b = self.t(format!("bitcast {} {} to {}", st, x, it));
+                let m = self.t(format!("and {} {}, {}", it, b, mask));
+                self.line(format!("{} = bitcast {} {} to {}", d, it, m, st));
+            }
             _ => {
                 let w = self.widen(src, &x);
                 let r = match f {
-                    FUn::Abs => self.f64_intr("fabs", &w),
-                    FUn::Sqrt => self.f64_intr("sqrt", &w),
+                    FUn::Abs => unreachable!(),
+                    FUn::Sqrt => {
+                        let r = self.f64_intr("sqrt", &w);
+                        self.nan_rule("double", &w, &w, &r)
+                    }
                     FUn::Floor => self.f64_intr("floor", &w),
                     FUn::Ceil => self.f64_intr("ceil", &w),
                     FUn::Trunc => self.f64_intr("trunc", &w),
@@ -969,8 +1000,7 @@ impl<'a> Fe<'a> {
                     }
                     FBin::Rem => {
                         let q = self.t(format!("frem double {}, {}", x, y));
-                        let nz = self.t(format!("fcmp une double {}, 0.0", y));
-                        self.t(format!("select i1 {}, double {}, double 0x{:016X}", nz, q, f64::NAN.to_bits()))
+                        self.nan_rule("double", &x, &y, &q)
                     }
                     FBin::Atan2 => self.math_call(Math::Atan2, &format!("double {}, double {}", x, y)),
                     FBin::Powi => unreachable!(),
@@ -985,21 +1015,17 @@ impl<'a> Fe<'a> {
         let t = self.lt(i.ty);
         let (x, y) = (self.r(a), self.r(b));
         match op {
-            Aop::Add => self.line(format!("{} = fadd {} {}, {}", d, t, x, y)),
-            Aop::Sub => self.line(format!("{} = fsub {} {}, {}", d, t, x, y)),
-            Aop::Mul => self.line(format!("{} = fmul {} {}, {}", d, t, x, y)),
             _ => {
-                let q = if i.ty == Ty::F64 { self.tmp() } else { d.clone() };
-                self.line(format!("{} = fdiv {} {}, {}", q, t, x, y));
-                if i.ty == Ty::F64 {
-                    // 0 で割る `0 / 0` と `NaN / 0` は、木走査と同じ正規の NaN (実機の既定の NaN は符号ビットが立つ)。
-                    let z = self.t(format!("fcmp oeq double {}, 0.0", y));
-                    let a0 = self.t(format!("fcmp oeq double {}, 0.0", x));
-                    let an = self.t(format!("fcmp uno double {}, {}", x, x));
-                    let bad0 = self.t(format!("or i1 {}, {}", a0, an));
-                    let c = self.t(format!("and i1 {}, {}", z, bad0));
-                    self.line(format!("{} = select i1 {}, double 0x{:016X}, double {}", d, c, f64::NAN.to_bits(), q));
-                }
+                let ins = match op {
+                    Aop::Add => "fadd",
+                    Aop::Sub => "fsub",
+                    Aop::Mul => "fmul",
+                    _ => "fdiv",
+                };
+                let q = self.t(format!("{} {} {}, {}", ins, t, x, y));
+                // NaN になる結果は、木走査・参照実行器と同じ規則のビット列にする (17.8)。
+                let r = self.nan_rule(&t, &x, &y, &q);
+                self.mov(&d, &t, &r);
             }
         }
     }
@@ -1303,10 +1329,10 @@ impl<'a> Fe<'a> {
                 let mt = self.mt(q.ty());
                 let pv = self.r(*p);
                 if q.ty() == Ty::Bool {
-                    let x = self.t(format!("load {}, ptr {}", mt, pv));
+                    let x = self.t(format!("load {}, ptr {}, align 1", mt, pv));
                     self.line(format!("{} = icmp ne i8 {}, 0", d, x));
                 } else {
-                    self.line(format!("{} = load {}, ptr {}", d, mt, pv));
+                    self.line(format!("{} = load {}, ptr {}, align 1", d, mt, pv));
                 }
             }
             Op::AsShared(p) | Op::Reborrow(p) => {
@@ -1400,7 +1426,9 @@ impl<'a> Fe<'a> {
     fn store(&mut self, ptr: VId, val: VId) -> R<()> {
         let (pv, vv) = (self.r(ptr), self.r(val));
         let t = self.ty(val);
-        self.mem_store_to(t, &pv, &vv, "")
+        // 参照の指す先の実際のアドレスは型の既定の整列 (`i192` なら 16) を満たすとは限らない (ヘッダは 8 の倍数、`malloc` の領域の途中など)。
+        // 整列を仮定すると未定義動作になるので、常に `align 1` で読み書きする。
+        self.mem_store_to(t, &pv, &vv, ", align 1")
     }
 
     fn mem_store(&mut self, t: Ty, addr: &str, v: &str) -> R<()> {

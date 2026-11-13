@@ -1038,6 +1038,44 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - `stage0/tests/cli.rs` の `kir_map_values_match_tree_walker` (20 ケース: 挿入・上書き・削除・再挿入・成長 (1 万件)・反復順・存在しないキー・墓標と作り直し・符号付きと `&str` のキー・`&mut` の借用と値の戻り)。木走査の `core.check.eq` で期待値を確かめ、`--run` と `--native` の両方で同じ値。参照実行器は漏れ・二重解放・範囲外を内部エラーにするので、解放の規則も確かめている。`kir_map_reports_unsupported_methods_with_a_reason` は `get_mut` の理由。
 - `perf/hashmap`: `ksn build --backend llvm` が作れ (`target/debug/hashmap.native`)、`ksn run` と stdout・stderr・終了コードが一致する。
 
+## 17. Fable のレビューで見つかった不具合の修正 (fix/kir-review、2026-11-13)
+
+### 17.1 合流で受け渡すスロット (`assigned`)
+- フィールドからの移動 (`let w = b.items`、13.7) は、SSA の局所 `b` へ「空」の値を書き戻す。`scan_mut` (`mut_recv_names`) が、`Path` (2 セグメント以上) / `Field` の連なりの根が所有物を持つ型の局所なら、その名前を「代入される局所」に入れる (値で使うかは見分けず、余分に受け渡すだけで害はない)。前は分岐の片方だけの移動が合流で失われ、二重解放になった (参照実行器は `不正な解放`、機械語は黙って壊れた)。`if` と `match` の回帰テスト。(`while` の中の移動は E3002 で拒否される。)
+
+### 17.2 LLVM の整列
+- 参照越しの `load` / `store` (`Op::Load` / `Op::Store`) は常に `align 1`。`i192` などの集成体の既定の整列 (16) を、8 の倍数のアドレスや `malloc` の途中のアドレスに仮定すると未定義動作になる。`alloca` は LLVM の既定 (型の ABI 整列以上) のままで、型表より小さくならない。`mem.load` / `mem.store` は元から `align 1`。
+- `f32` / `f64` の `abs` は、`double` へ広げず整数のビット演算 (符号ビットを落とす) にした。`-O0` でも signaling NaN のビットが変わらない。
+
+### 17.3 早期脱出での所有値の解放
+- `Owned::Tmp(値)` を足した。呼び出しの引数・構造体のフィールド・列挙子の引数・タプルの要素を評価するとき、所有物 (`owns`) の値は評価の直後に `tmp_hold` で現在のスコープの所有に登録し、消費する直前 (呼び出し・`make` の直前、または評価が途中で終わるとき) に `tmp_release` で外す。後ろの式の `?` / `return` / `break` の `drop_from` が、評価済みの値を解放する。登録は SSA の値そのもの (評価点は脱出点を支配する)。メソッドの受け手は対象外 (既存の所有の規則のまま)。
+
+### 17.4 利用者の反復子
+- `scan_mut` が `For` を見て、反復子の局所 (`for x in it` の `it`) を外側の合流の受け渡しに入れる。前は外側の `while` / `if` / `match` が古い `it` を使い続けた。
+- 反復子が所有物を返すとき、`for` の変数は `bind_owned` で所有に入れ、`_` なら `drop_temp` で捨てる。1 周の終わりの `block_end` は、ヘッダへの `goto` の前に置く (前は戻った後に置かれて到達しなかった)。
+
+### 17.5 `*r` で所有物を持つ型を丸ごと読む
+- `ksn check` は `let b = *r` (`r: &構造体` で Vec を持つ) を通す。木走査は共有するだけだが、KIR の `load` は借用元と同じバッファを指す所有値を作り、二重解放になる。`deref` は理由付きで拒む (`所有物を持つ型の借用の中身 (*r) を丸ごと読む`)。`&Vec` / `&String` の `*r` は、これまでどおり「* の被演算子が参照でない」で拒まれる。
+
+### 17.6 反復・借用中の変更
+- `ksn check` が拒む (E3010): `s.push_str(s.as_str())`、`m.iter()` の `for` の本体での `m.insert`。KIR では確かめるだけ。
+- `ksn check` が通す: `for x in v` の本体での `v.push` (木走査は無限に回る)、`&str` キーの元の String の変更。KIR では拒む。
+  - `for x in v` (局所の Vec) の本体に、`v` への代入・`&mut v`・読むだけとは限らないメソッド (`len` / `is_empty` / `get` / `as_slice` / `as_str` / `first` / `last` / `contains` / `capacity` 以外) があれば拒む (`body_mutates`)。
+  - `m.insert(k.as_str(), ..)` の `k` が、関数の本体のどこかで同じ基準で変更されるなら拒む (順序は見ない。前に変更するだけの形も拒む保守的な規則)。
+
+### 17.7 検査の穴 (参照実行器)
+- 定義が使用を支配するか: 参照実行器のフレームに定義済みの印 (`defd`) を持たせ、命令・終端の被演算子が未定義なら内部エラー (`定義される前に読まれた`)。静的な支配の検査 (`verify`) は足していない (実行した経路だけの検出)。`verify` は `Const` の `ref<T>` を拒む (`alloca` / `as_shared` / `reborrow` で作る)。
+- 未初期化の読み: `ByteMem` に書かれたかの印 (`init`) を持たせ、`heap.alloc` / `heap.realloc` の新しい部分は毒の値 (0xA5) で未初期化。スカラーの `mem.load` が未初期化のバイトを含むと内部エラー。`frame.bytes` / `alloca` は機械語が 0 で埋めるので書かれた扱い。集成体の読み出し (`read_bytes`) は詰め物を含むので調べない。`realloc` は旧い領域の書かれたバイトだけを引き継ぐ。
+
+### 17.8 NaN のビット列
+- 規則 (`fmath::nan_rule64` / `nan_rule32`): `+ - * /`・`%`・`sqrt` の結果が NaN のとき、第 1 被演算子が NaN ならそれ (quiet 化)、そうでなく第 2 被演算子が NaN ならそれ、どちらでもなければ正の quiet NaN (`f64::NAN` / `f32::NAN`)。実機 (x86) は被演算子が NaN でないとき符号ビット付きの NaN を作り、LLVM の定数畳み込みは正の NaN を作るので、そのままでは 3 者が食い違う。
+- 木走査 (`interp.rs` の `binary`、`natives.rs` の `sqrt` / `rem`)、参照実行器 (`kir_scalar.rs`)、機械語 (`kir_llvm.rs` の `nan_rule`。`select` の連なり) が同じ規則で結果を決める。以前の `f64` の `/` の 0 除算の特別扱い (`NaN / 0` は正規の NaN) は、この規則に含まれた (`NaN / 0` は NaN の被演算子)。`sin` などの超越関数は `fmath::canon` が元から正規の NaN にする。`max` / `min` / `floor` などは対象外 (入力が NaN のときだけ NaN)。
+
+### 17.9 機械語の検査 (ASan)
+- `ksn` の環境変数 `KSN_CLANG_ARGS` (空白区切り) が、`ksn kir --native` と `ksn build --backend llvm` の clang の引数に足される (未設定なら何も変わらない)。`--native` の実行ファイルの名前の hash には引数も入る。
+- `tests/cli.rs` の `kir_run` は、clang が `-fsanitize=address` を使えるとき (`asan_available`)、`KSN_CLANG_ARGS="-fsanitize=address -fno-omit-frame-pointer -g -O0"` と `ASAN_OPTIONS=detect_leaks=1` で作った実行ファイルでも走らせる。ASan の報告が出れば失敗 (panic の 101 / 102 の終了では、漏れの報告 (LeakSanitizer) は見ない)。終了コードと表示も参照実行器と比べる。`KSN_NO_ASAN=1` で無効にできる。`-O0` なのは、`-O1` では LLVM が `malloc` / `free` の対を消して二重解放が見えないため (項目 1 の二重解放は `-O0` でだけ ASan が報告する)。
+- 既存の KIR の差分テスト全件 (`kir_*`) は、ASan でも報告なしで通る。`KSN_CLANG_ARGS="-fsanitize=address -g"` を付けた `llvm_builds_of_real_packages_match_run` (11 パッケージ) も通る。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
