@@ -13752,3 +13752,53 @@ fn kir_closure_reports_unsupported_captures_with_a_reason() {
         assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
     }
 }
+
+/// 実パッケージの LLVM ビルド (設計_KIR.md 12.4): KIR に全体を下ろせるパッケージは、`ksn build --backend llvm` の
+/// 実行ファイルの stdout・stderr・終了コードが `ksn run` と一致する。ここに挙げたものが後退したら落ちる
+/// (下ろせるパッケージが増えたら足す)。パッケージは一時 dir に写してから作る (リポジトリの `target/` を汚さない)。
+#[test]
+fn llvm_builds_of_real_packages_match_run() {
+    if !clang_available() {
+        eprintln!("clang が無いので飛ばす");
+        return;
+    }
+    fn copy(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).unwrap();
+        for e in fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            let name = e.file_name();
+            if name == "target" {
+                continue;
+            }
+            let p = e.path();
+            if p.is_dir() {
+                copy(&p, &dst.join(&name));
+            } else {
+                fs::copy(&p, dst.join(&name)).unwrap();
+            }
+        }
+    }
+    for pkg in ["examples/demo", "examples/native", "perf/closure", "perf/fib", "perf/noop", "perf/structs"] {
+        let name = Path::new(pkg).file_name().unwrap().to_string_lossy().to_string();
+        let dir = std::env::temp_dir().join(format!("ksn_llvm_pkg_{}_{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&dir);
+        copy(&root().join(pkg), &dir);
+        let cache = dir.join(".cache");
+        let b = Command::new(exe())
+            .args(["build", "--backend", "llvm"])
+            .current_dir(&dir)
+            .env("KSN_CACHE_DIR", &cache)
+            .env("KSN_STDLIB", root().join("spec").join("stdlib"))
+            .output()
+            .unwrap();
+        let out = text(&b.stdout);
+        assert_eq!(b.status.code(), Some(0), "{}: {}{}", pkg, out, text(&b.stderr));
+        assert!(!out.contains("llvm backend skipped"), "{}: {}", pkg, out);
+        let r = Command::new(exe()).arg("run").current_dir(&dir).env("KSN_STDLIB", root().join("spec").join("stdlib")).output().unwrap();
+        let n = Command::new(dir.join("target").join("debug").join(format!("{}.native", name))).current_dir(&dir).output().unwrap();
+        assert_eq!(n.status.code(), r.status.code(), "{}: 終了コード", pkg);
+        assert_eq!(text(&n.stdout), text(&r.stdout), "{}: stdout", pkg);
+        assert_eq!(text(&n.stderr), text(&r.stderr), "{}: stderr", pkg);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
