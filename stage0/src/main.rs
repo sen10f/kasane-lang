@@ -34,6 +34,7 @@ mod resolve;
 mod rustisms;
 mod types;
 mod typecov;
+mod vm;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
