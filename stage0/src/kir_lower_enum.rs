@@ -10,7 +10,7 @@
 //!
 //! 対象外の形に出会ったら理由を付けて止める。親はその関数を「未対応」にする。
 
-use crate::check::{items, nf, nline, nname, st, strs};
+use crate::check::{items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{Aop, BoolOp, Cc, Op, Pay, Term, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
@@ -298,7 +298,7 @@ impl<'a> Lw<'a> {
                 test = nb;
             }
             self.cur = Some(bb);
-            super::coll::scrut_arm(self, &sc, i, s);
+            super::coll::scrut_arm(self, &sc, i, pat, s)?;
             if let Some(v) = self.expr(body)? {
                 if let Some(t) = res {
                     if self.vty(v) != t {

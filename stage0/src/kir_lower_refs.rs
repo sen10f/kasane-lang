@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 
 use super::{path1, path_base, Lw, St, LR};
-use crate::check::{nf, nline, nname, st, strs};
+use crate::check::{nf, nlineno as nline, nname, st, strs};
 use crate::kir::{Inst, Op, Pointee, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;

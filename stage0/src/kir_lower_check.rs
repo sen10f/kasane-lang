@@ -7,7 +7,7 @@
 //!
 //! 両方とも、式として値 `()` を返す (成功の枝は続く)。引数の型が下ろせない・表示できないときは理由付きで止める。
 
-use crate::check::{items, nf, nline, nname, strs};
+use crate::check::{items, nf, nlineno as nline, nname, strs};
 use crate::kir::{Op, Term, Ty, VId};
 use crate::parser::V;
 

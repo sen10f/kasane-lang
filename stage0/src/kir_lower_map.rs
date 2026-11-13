@@ -17,7 +17,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::check::{items, nf, nline, nname, st, strs};
+use crate::check::{items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{Aop, Block, BoolOp, Cc, Func, Inst, Mode, Op, Term, Ty, VId};
 use crate::parser::V;
 

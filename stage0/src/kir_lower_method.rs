@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use crate::check::{is_nil, items, nf, nline, nname, st, strs};
+use crate::check::{is_nil, items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{AggKind, Op, Pointee, Ty, VId};
 use crate::parser::V;
 use crate::program::Target as Tgt;
@@ -115,6 +115,22 @@ impl<'a> Lw<'a> {
         };
         let args = items(&f[2]).to_vec();
         Some(self.call_method(e, di, place, &args))
+    }
+
+    /// `E.V.m(..)` (列挙子の値 `E.V` へのメソッド呼び出し)。受け手は列挙子の値の式 (`E.V`)。メソッドでなければ `None`。
+    pub(super) fn variant_method_call(&mut self, e: &V, en: &str, m: &str) -> Option<LR<Option<VId>>> {
+        let mut segs: Vec<String> = en.split('.').map(String::from).collect();
+        segs.push(m.to_string());
+        let di = match self.p.resolve(&segs, &self.def.file)?.target {
+            Tgt::Fn(di) if self.p.defs[di].is_method() => di,
+            _ => return None,
+        };
+        let f = nf(e);
+        let callee = strs(&nf(&f[0])[0]);
+        let recv_segs: Vec<V> = callee[..callee.len() - 1].iter().map(|x| V::S(x.clone())).collect();
+        let recv = V::Node("Path", vec![V::L(recv_segs), V::Nil], nline(e), 0);
+        let args = items(&f[1]).to_vec();
+        Some(self.call_method(e, di, Place::Expr(&recv), &args))
     }
 
     /// 呼び出しの下ろし。`e` は呼び出しの式 (行の番号に使う)、`args` は受け手を除いた引数。
@@ -298,10 +314,14 @@ impl<'a> Lw<'a> {
                     if segs.len() >= 2 {
                         out.extend(self.mut_root_of(&segs[..segs.len() - 1], &segs[segs.len() - 1]));
                     }
+                    if segs.len() >= 3 {
+                        out.extend(super::own::vec_field_root(self, &segs[..segs.len() - 1]));
+                    }
                 }
                 if *n == "MCall" && fs.len() >= 2 {
                     if let Some(segs) = super::agg::field_segs(&fs[0]) {
                         out.extend(self.mut_root_of(&segs, &st(&fs[1])));
+                        out.extend(super::own::vec_field_root(self, &segs));
                     }
                 }
                 for f in fs {

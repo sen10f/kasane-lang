@@ -936,6 +936,10 @@ pub fn prune_aggs(m: &mut Module) {
             }
             for i in &mut b.insts {
                 i.ty = remap(i.ty);
+                // 命令が持つ型 (参照から ptr への bitcast の元の型) も付け替える。
+                if let Op::Bitcast { src, .. } = &mut i.op {
+                    *src = remap(*src);
+                }
             }
         }
     }
@@ -1928,7 +1932,9 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                     }
                     Op::Bitcast { src, a } => {
-                        let ok = matches!((src, i.ty), (Ty::F64, Ty::U64) | (Ty::U64, Ty::F64) | (Ty::F32, Ty::U32) | (Ty::U32, Ty::F32));
+                        // 参照 (集成体への) と ptr の相互変換: 構造体のフィールドの Vec / String のヘッダを借用のヘッダとして扱う (設計_KIR.md 13.7)。
+                        let ok = matches!((src, i.ty), (Ty::F64, Ty::U64) | (Ty::U64, Ty::F64) | (Ty::F32, Ty::U32) | (Ty::U32, Ty::F32))
+                            || matches!((src, i.ty), (Ty::Ref(..), Ty::Ptr) | (Ty::Ptr, Ty::Ref(..)));
                         if !ok || ty_of(*a)? != *src {
                             return Err(format!("{} から {} へのビット再解釈は使えない", src.name(), i.ty.name()));
                         }

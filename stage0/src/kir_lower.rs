@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::check::{is_nil, items, nf, nline, nname, st, strs};
+use crate::check::{is_nil, items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{self, Aop, Block, BoolOp, Cc, Func, Inst, Mode, Module, Op, Term, Ty, VId};
 use crate::parser::{nid, V};
 use crate::program::{Def, Program, Target as Tgt};
@@ -46,6 +46,8 @@ mod iter_lower;
 mod map_lower;
 #[path = "kir_lower_coll.rs"]
 mod coll;
+#[path = "kir_lower_own.rs"]
+mod own;
 use coll::CollCx;
 
 type LR<T> = Result<T, String>;
@@ -296,6 +298,9 @@ impl<'a> Lw<'a> {
     /// `match` の振り分け: 対象が `Option` / `Result` なら `match_` (タグの判定)、それ以外は `match_e` (集成体・スカラーの腕)。
     fn match_any(&mut self, e: &V) -> LR<Option<VId>> {
         let scrut = nf(e)[0].clone();
+        if let Some(r) = own::match_get_mut(self, e) {
+            return r;
+        }
         match self.src_ty(&scrut)? {
             Src::Named(n, _) if n == "Option" || n == "Result" => self.match_(e),
             _ => self.match_e(e),
@@ -470,8 +475,21 @@ impl<'a> Lw<'a> {
 
     /// 式を下ろす。単一の名前の局所変数 (所有物の印を持つもの) は、移さずにそのまま読む (場所としての使用)。
     fn expr_peek(&mut self, e: &V) -> LR<Option<VId>> {
+        self.coll.peek_field = false;
         if let Some(s) = coll::val_slot(self, e) {
             return Ok(Some(coll::path_peek(self, s)));
+        }
+        // 局所変数から始まるフィールドの連なり: 所有物でも移さずに読む (`match` の対象にするとき)
+        if let Some((s, names)) = own::chain_of(self, e) {
+            if !names.is_empty() && matches!(nname(e), "Path" | "Field") {
+                let base = self.read_slot(s);
+                if let Ok(v) = self.field_path(base, &names, nline(e)) {
+                    if coll::owns(self, self.vty(v)) {
+                        self.coll.peek_field = true;
+                    }
+                    return Ok(Some(v));
+                }
+            }
         }
         self.expr(e)
     }
@@ -528,7 +546,8 @@ impl<'a> Lw<'a> {
                 let base = self.read_slot(s);
                 let v = self.field_path(base, &segs[1..], line)?;
                 if coll::owns(self, self.vty(v)) {
-                    return self.err(line, "構造体のフィールドからの Vec / String の移動は段階 1 の対象外 (参照で使う)");
+                    // 所有物のフィールドを値として使う: 部分的な移動 (設計_KIR.md 13.7)
+                    return coll::field_move(self, s, &segs[1..], line);
                 }
                 return Ok(v);
             }
@@ -536,7 +555,11 @@ impl<'a> Lw<'a> {
         if !matches!(nf(e).get(1), Some(V::Nil) | None) {
             return self.err(line, "型引数付きの名前は段階 1 の対象外");
         }
-        match self.p.resolve(&segs, &self.def.file).map(|r| r.target) {
+        let resolved = self.p.resolve(&segs, &self.def.file);
+        if matches!(&resolved, Some(r) if !r.rest.is_empty()) {
+            return self.err(line, format!("名前 {} は段階 1 の対象外 (名前の一部だけが解決される)", segs.join(".")));
+        }
+        match resolved.map(|r| r.target) {
             Some(Tgt::Const(ci)) => self.const_val(ci, e),
             Some(Tgt::Variant(en, vn)) => self.variant_value(&en, &vn, line),
             _ => self.err(line, format!("名前 {} は段階 1 の対象外", segs.join("."))),
@@ -756,7 +779,20 @@ impl<'a> Lw<'a> {
                 return Ok(Some(self.emit(rt, Op::Arith { op: aop, mode: Mode::Wrap, a: recv, b })));
             }
         }
-        let target = self.p.resolve(&segs, &self.def.file).map(|r| r.target);
+        let resolved = self.p.resolve(&segs, &self.def.file);
+        // `E.V.m(..)`: 列挙子の値へのメソッド呼び出し。解決は `E.V` で止まり、残りの名前 (`m`) を落とすと別の値になる。
+        if let Some(r) = &resolved {
+            if let (Tgt::Variant(en, _), false) = (&r.target, r.rest.is_empty()) {
+                let en = en.clone();
+                if r.rest.len() == 1 {
+                    if let Some(res) = self.variant_method_call(e, &en, &r.rest[0].clone()) {
+                        return res;
+                    }
+                }
+                return self.err(line, format!("呼び出し {} (列挙子の値のメソッド) は段階 1 の対象外", segs.join(".")));
+            }
+        }
+        let target = resolved.map(|r| r.target);
         if matches!(&target, Some(Tgt::Native(n)) if n == "std.io.print_line") || matches!(&target, Some(Tgt::Sig(di) | Tgt::Fn(di)) if self.p.defs[*di].name == "std.io.print_line") {
             return self.print_line(args, line);
         }

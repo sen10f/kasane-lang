@@ -449,8 +449,14 @@ fn cmd_kir(rest: &[String]) -> i32 {
     // 出力は必ず読み直せること (往復) と検査を通ることを確かめてから使う。
     let back = match crate::kir::parse_module(&text) {
         Ok(m) if crate::kir::print_module(&m) == text && crate::kir::verify_module(&m).is_empty() => m,
-        Ok(_) => {
+        Ok(m) => {
             eprintln!("ksn kir: 内部エラー: KIR の往復または検査が一致しない");
+            for e in crate::kir::verify_module(&m).iter().take(5) {
+                eprintln!("  検査: {} {}", e.0, e.1);
+            }
+            if crate::kir::print_module(&m) != text {
+                eprintln!("  往復: 読み直して出力した形が元と違う");
+            }
             return 3;
         }
         Err(e) => {

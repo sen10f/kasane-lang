@@ -5,7 +5,7 @@
 //! 命令は、対象だと決まった後にだけ置く。
 
 use super::{Lw, LR};
-use crate::check::{items, nf, nline, nname, st, strs};
+use crate::check::{items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{self, Aop, BitK, BoolOp, FBin, FUn, Mode, Op, Ty, VId};
 use crate::kir_scalar;
 use crate::parser::V;

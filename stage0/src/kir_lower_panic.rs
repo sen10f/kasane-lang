@@ -8,7 +8,7 @@
 //!
 //! `expect` は Kasane の Option / Result のメソッドではない (E1108) ので扱わない。
 
-use crate::check::{items, nf, nline, nname, st, strs};
+use crate::check::{items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{Op, Term, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;

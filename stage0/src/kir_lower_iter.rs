@@ -9,7 +9,7 @@
 
 use super::coll::{closure_arg_kind, Kind};
 use super::{Lw, LR};
-use crate::check::{items, nf, nline, nname, strs};
+use crate::check::{items, nf, nlineno as nline, nname, strs};
 use crate::kir::{Aop, Cc, Mode, Op, Pointee, Ty, VId};
 use crate::parser::V;
 
