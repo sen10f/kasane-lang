@@ -3647,6 +3647,18 @@ impl<'a> Checker<'a> {
                         nline(s),
                     );
                 }
+                // `a[i] = ..` で線形な要素を上書きすると、添字演算は基を借用して要素を move しないので、
+                // 上書き前の値が消費されずに捨てられる (4.4)。
+                if nname(tg) == "Index" {
+                    let et = self.ty_of(tg, env);
+                    if !is_nil(&et) && self.is_linear(&et) {
+                        self.tdiag(
+                            "E3003",
+                            "a linear array element is overwritten without being consumed first".into(),
+                            nline(s),
+                        );
+                    }
+                }
                 if nname(tg) == "Path" {
                     let segs = strs(&nf(tg)[0]);
                     if env.contains_key(&segs[0]) {
