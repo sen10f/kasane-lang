@@ -570,8 +570,10 @@ impl<'a> Lw<'a> {
             "==" | "!=" | "<" | "<=" | ">" | ">=" => {
                 let Some(a) = self.expr(l)? else { return Ok(None) };
                 let Some(b) = self.expr(r)? else { return Ok(None) };
-                let t = self.ty_of(l)?;
-                if self.ty_of(r)? != t {
+                // `Some(c) => c == &y` の `&y` は読んでから比べる。比べる型は emit した値の型で決める。
+                let (a, b) = self.load_scalar_ref_pair(a, b);
+                let t = self.vty(a);
+                if self.vty(b) != t {
                     return self.err(line, "比較の両辺の型が違う");
                 }
                 let cc = match op.as_str() {

@@ -31,7 +31,7 @@ fn recv_type_name(t: &Src) -> Option<String> {
 }
 
 /// 受け手の置き場所 (呼び出しの形ごと)。
-enum Place<'v> {
+pub(super) enum Place<'v> {
     /// 局所の名前 `x` か、フィールドの経路 `x.f.g` (`segs` の先頭が局所)。
     Path(Vec<String>),
     /// 式 (`*r` は参照をたどる)。
@@ -43,7 +43,7 @@ type Recv = Option<(VId, Option<(usize, VId, Ty)>)>;
 
 impl<'a> Lw<'a> {
     /// 型 `t` (集成体かその参照) の利用者のメソッド `m` の定義の添字。
-    fn method_of_ty(&self, t: Ty, m: &str) -> Option<usize> {
+    pub(super) fn method_of_ty(&self, t: Ty, m: &str) -> Option<usize> {
         let ai = match t {
             Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => ai,
             _ => return None,
@@ -71,7 +71,7 @@ impl<'a> Lw<'a> {
     }
 
     /// メソッドの `self` が `&mut` か。
-    fn method_takes_mut(&self, di: usize) -> bool {
+    pub(super) fn method_takes_mut(&self, di: usize) -> bool {
         self.p.defs[di].params.first().map_or(false, |(_, t)| matches!(from_v(t, &HashSet::new()), Src::Ref(true, _)))
     }
 
@@ -118,7 +118,7 @@ impl<'a> Lw<'a> {
     }
 
     /// 呼び出しの下ろし。`e` は呼び出しの式 (行の番号に使う)、`args` は受け手を除いた引数。
-    fn call_method(&mut self, e: &V, di: usize, place: Place, args: &[V]) -> LR<Option<VId>> {
+    pub(super) fn call_method(&mut self, e: &V, di: usize, place: Place, args: &[V]) -> LR<Option<VId>> {
         let line = nline(e);
         let p = self.p;
         let cd = &p.defs[di];
