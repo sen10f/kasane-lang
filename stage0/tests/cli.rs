@@ -15349,6 +15349,38 @@ fn kir_push_i64_matches_tree_walker() {
 }
 
 #[test]
+fn kir_push_bytes_matches_tree_walker() {
+    // `String.push_bytes(bytes)`: 正しい UTF-8・空・誤った UTF-8 (何も足さない) の 3 ケース。
+    // `--run` (KIR インタプリタ) と `--native` (clang/LLVM) が `ksn run` と一致すること。
+    let cases: &[(&str, &str, &str)] = &[
+        ("t.p_ok", "core.mem.drop(b.push_bytes(\"héy\".as_bytes()))\n    b.as_str() == \"héy\"", "true"),
+        ("t.p_emp", "core.mem.drop(b.push_bytes(\"\".as_bytes()))\n    b.as_str() == \"\"", "true"),
+        ("t.p_bad", "core.mem.drop(b.push_bytes(b\"\\xff\"))\n    b.push_bytes(b\"\\xff\").is_ok()", "false"),
+    ];
+    let mut src = String::new();
+    let mut main = String::from("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n");
+    for (f, body, want) in cases {
+        src.push_str(&format!(
+            "fn {}() -> bool uses [alloc] panics may\n    let mut b = alloc.string.String.new(std.alloc.SYSTEM)\n    {}\nend {}\n\n",
+            f, body, f
+        ));
+        main.push_str(&format!("    core.check.eq({}(), {})\n", f, want));
+    }
+    main.push_str("    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_push_bytes", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for engine in ["--run", "--native"] {
+        for (f, _, want) in cases {
+            let k = kir_run(&["kir", f, engine], &t.0);
+            let got = text(&k.stdout).trim().to_string();
+            assert_eq!(k.status.code(), Some(0), "kir {} {}\n{}", f, engine, text(&k.stderr));
+            assert_eq!(got, *want, "kir value of {} {}", f, engine);
+        }
+    }
+}
+
+#[test]
 fn kir_parse_matches_tree_walker() {
     // `i64.parse(text)` は基数 10 の `from_str_radix` (木走査と同じ経路)。符号・溢れ・形の誤りを見る。
     let cases = [
