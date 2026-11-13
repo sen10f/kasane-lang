@@ -22283,3 +22283,97 @@ end t.main
     assert_ne!(k.status.code(), Some(0), "{}", text(&k.stdout));
     assert!(text(&k.stderr).contains("Box<dyn> の as_ref"), "{}", text(&k.stderr));
 }
+
+/// フィールドの `Vec` に対する `as_slice().get(i)` が、要素がスカラー (`u8`) と
+/// 所有物 (`String`) の両方で、木走査・KIR 実行器 (`--run`)・機械語 (`--native`) で一致すること。
+#[test]
+fn kir_as_slice_get_on_field_matches_run_kir_native() {
+    let src = r#"type t.Store pub
+    urls: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>
+    data: alloc.vec.Vec<u8, std.alloc.System>
+end t.Store
+
+fn t.Store.new() -> t.Store uses [alloc] panics may pub
+    let mut urls = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let first = match alloc.string.String.from_str(std.alloc.SYSTEM, "first") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("from_str failed")
+    }
+    core.mem.drop(urls.push(first))
+    let second = match alloc.string.String.from_str(std.alloc.SYSTEM, "second") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("from_str failed")
+    }
+    core.mem.drop(urls.push(second))
+    let third = match alloc.string.String.from_str(std.alloc.SYSTEM, "third") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("from_str failed")
+    }
+    core.mem.drop(urls.push(third))
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(data.push(10u8))
+    core.mem.drop(data.push(20u8))
+    core.mem.drop(data.push(30u8))
+    t.Store { urls: urls, data: data }
+end t.Store.new
+
+fn t.Store.lookup_str(self: &t.Store, i: usize) -> Option<&str> uses [] panics never pub
+    match self.urls.as_slice().get(i) {
+        Some(url) => Some(url.as_str())
+        None => None
+    }
+end t.Store.lookup_str
+
+fn t.Store.lookup_u8(self: &t.Store, i: usize) -> u8 uses [] panics never pub
+    match self.data.as_slice().get(i) {
+        Some(x) => *x
+        None => 0u8
+    }
+end t.Store.lookup_u8
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    let s = t.Store.new()
+    core.check.eq(s.lookup_str(0usize), Some("first"))
+    core.check.eq(s.lookup_str(1usize), Some("second"))
+    core.check.eq(s.lookup_str(2usize), Some("third"))
+    core.check.eq(s.lookup_str(3usize), None)
+    core.check.eq(s.lookup_str(100usize), None)
+    core.check.eq(s.lookup_u8(0usize), 10u8)
+    core.check.eq(s.lookup_u8(1usize), 20u8)
+    core.check.eq(s.lookup_u8(2usize), 30u8)
+    core.check.eq(s.lookup_u8(3usize), 0u8)
+    Ok(())
+end t.main
+
+fn t.lookup_u8_at(i: usize) -> u8 uses [alloc] panics may pub
+    let s = t.Store.new()
+    s.lookup_u8(i)
+end t.lookup_u8_at
+
+fn t.check_url_at(i: usize) -> bool uses [alloc] panics may pub
+    let s = t.Store.new()
+    match s.urls.as_slice().get(i) {
+        Some(url) => url.as_str() == "first"
+        None => false
+    }
+end t.check_url_at
+"#;
+    let t = Tmp::new("kir_as_slice_get_on_field", src);
+    // 木走査: t.main が全チェックを通過すれば終了コード 0。
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "tree-walker: {}{}", text(&r.stdout), text(&r.stderr));
+    // KIR: 要素がスカラー (u8) の as_slice().get(i)。
+    for (i, want) in [(0usize, "10"), (1usize, "20"), (2usize, "30"), (3usize, "0"), (100usize, "0")] {
+        let arg = i.to_string();
+        let k = kir_run(&["kir", "t.lookup_u8_at", "--run", arg.as_str()], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir lookup_u8_at {}: {}{}", i, text(&k.stdout), text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir lookup_u8_at {} value", i);
+    }
+    // KIR: 要素が所有物 (String) の as_slice().get(i) + as_str() + == 。
+    for (i, want) in [(0usize, "true"), (1usize, "false"), (2usize, "false"), (3usize, "false"), (100usize, "false")] {
+        let arg = i.to_string();
+        let k = kir_run(&["kir", "t.check_url_at", "--run", arg.as_str()], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir check_url_at {}: {}{}", i, text(&k.stdout), text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir check_url_at {} value", i);
+    }
+}
