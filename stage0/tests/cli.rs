@@ -14539,6 +14539,62 @@ fn kir_refs_values_match_tree_walker() {
     }
 }
 
+/// `extern` (libc の `abs`)、`unsafe` ブロック、`core.ptr.*` の読み書きを、
+/// 木走査・参照実行器・機械語 (`--native`) で比べる。
+#[test]
+fn kir_ffi_and_ptr_match_tree_walker() {
+    let src = r#"extern t.abs(x: i32) -> i32 link "abs"
+
+fn t.abs_extern(x: i32) -> i32 uses [] panics never
+    unsafe "abs" "libc abs" {
+        t.abs(x)
+    }
+end t.abs_extern
+
+fn t.ptr_rw() -> i32 uses [] panics never
+    let mut x = 42i32
+    let p = core.ptr.from_mut(&mut x)
+    core.ptr.write(p, 99i32)
+    core.ptr.read(p)
+end t.ptr_rw
+
+fn t.null_check() -> bool uses [] panics never
+    let p: *mut i32 = core.ptr.null_mut()
+    core.ptr.is_null(p)
+end t.null_check
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.abs_extern(-7i32), 7i32)
+    core.check.eq(t.ptr_rw(), 99i32)
+    core.check.is_true(t.null_check())
+    std.io.print_line("ffi ok")
+end t.main
+"#;
+    let t = Tmp::new("kir_ffi_and_ptr", src);
+    // `unsafe` / `extern` は `[unsafe] modules` が必要。
+    fs::write(
+        t.0.join("kasane.toml"),
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 1\nentry = \"t.main\"\n\n[dependencies]\n\n[unsafe]\nmodules = [\"t\"]\n",
+    )
+    .unwrap();
+    // 木走査 (`ksn run`) の main 検査が通ること。
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker main\n{}", text(&o.stderr));
+    // `t.abs_extern`, `t.ptr_rw`, `t.null_check` を木走査・参照実行器・機械語で比べる。
+    for (f, args, want) in [
+        ("t.abs_extern", &["-7"] as &[&str], "7"),
+        ("t.ptr_rw", &[] as &[&str], "99"),
+        ("t.null_check", &[] as &[&str], "true"),
+    ] {
+        let call = format!("{}({})", f, args.join(", "));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", call);
+    }
+}
+
 #[test]
 fn kir_scalar_floats_and_wide_ints_match_tree_walker() {
     // 木走査で `core.check.eq` が通ること (値は木走査の結果と同じ)、参照実行器の値が期待どおりであること。

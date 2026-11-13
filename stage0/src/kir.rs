@@ -736,6 +736,8 @@ pub struct Func {
     /// 宣言された `stack` の上界。
     pub stack: Option<u64>,
     pub ret: Ty,
+    /// `extern` 宣言なら C のリンク名 (`lib:symbol` の `symbol` 部分)。ユーザ関数は `None`。
+    pub link: Option<String>,
     /// ブロック 0 が入口。その引数が関数の引数。
     pub blocks: Vec<Block>,
 }
@@ -1707,6 +1709,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
             may_panic: f_may,
             stack: f_stack,
             ret: f_ret,
+            link: None,
             blocks,
         });
     }
@@ -1946,7 +1949,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if i.ty != Ty::Bool {
                             return Err("比較の結果は bool のはず".into());
                         }
-                        if !ty.is_scalar() || *ty == Ty::Unit || *ty == Ty::Ptr || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
+                        if !ty.is_scalar() || *ty == Ty::Unit || (*ty == Ty::Ptr && !matches!(cc, Cc::Eq | Cc::Ne)) || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
                             return Err(format!("型 {} の比較 {} は使えない", fmt_ty(*ty), cc.name()));
                         }
                         if ty_of(*a)? != *ty || ty_of(*b)? != *ty {
@@ -2248,7 +2251,7 @@ fn check_agg_ids(m: &Module, t: Ty) -> Result<(), String> {
 }
 
 /// バイト記憶 (`mem.load` / `mem.store`) で読み書きできる型: 整数・浮動小数・bool・ptr (集成体・参照・Option は持たない)。
-fn memable(t: Ty) -> bool {
+pub(crate) fn memable(t: Ty) -> bool {
     t.is_int() || t.is_float() || matches!(t, Ty::Bool | Ty::Ptr)
 }
 
@@ -2395,6 +2398,7 @@ mod tests {
             may_panic: true,
             stack: None,
             ret: Ty::Unit,
+            link: None,
             blocks: vec![Block {
                 params: vec![(0, Ty::U32)],
                 insts: vec![
@@ -2450,6 +2454,7 @@ end t.p
             may_panic: false,
             stack: Some(4096),
             ret: Ty::U64,
+            link: None,
             blocks: vec![
                 Block {
                     params: vec![(0, Ty::U64)],
@@ -2574,6 +2579,7 @@ end t.p
             may_panic: false,
             stack: None,
             ret: Ty::I32,
+            link: None,
             blocks: vec![Block {
                 params: vec![(0, Ty::I32)],
                 insts: vec![
@@ -2703,6 +2709,7 @@ end t.c
             may_panic: false,
             stack: None,
             ret: Ty::Res(Pay::U16, Pay::U16),
+            link: None,
             blocks: vec![
                 Block {
                     params: vec![(0, Ty::Bool)],

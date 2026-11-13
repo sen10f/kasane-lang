@@ -223,10 +223,26 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         return Err(format!("関数 {} がない", entry));
     };
     let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false };
+    // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
+    let extern_links: HashMap<String, String> = m.funcs.iter()
+        .filter_map(|f| f.link.as_ref().map(|l| {
+            let sym = l.rsplit_once(':').map(|(_, s)| s).unwrap_or(l);
+            (f.key.clone(), sym.to_string())
+        }))
+        .collect();
+    for (key, sym) in &extern_links {
+        let Some(f) = m.funcs.iter().find(|f| f.key == *key) else { continue };
+        let params: Vec<String> = f.params().iter().map(|(_, t)| lty(&m.aggs, *t)).collect();
+        let rt = lty(&m.aggs, f.ret);
+        cx.decl(format!("declare {} @{}({})", rt, sym, params.join(", ")));
+    }
     let mut funcs = String::new();
     for (fi, f) in m.funcs.iter().enumerate() {
+        if f.link.is_some() {
+            continue;
+        }
         funcs.push('\n');
-        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
+        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
     let mut math = String::new();
@@ -409,7 +425,12 @@ fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
         args.push(format!("{} {}", lty(aggs, *t), v));
     }
     let rt = lty(aggs, f.ret);
-    s.push_str(&format!("  %r = call {} {}({})\n", rt, fname(&f.key), args.join(", ")));
+    let callee = if let Some(sym) = &f.link {
+        format!("@{}", sym)
+    } else {
+        fname(&f.key)
+    };
+    s.push_str(&format!("  %r = call {} {}({})\n", rt, callee, args.join(", ")));
     let e = "%e";
     match f.ret {
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize => s.push_str(&format!("  {e} = sext {rt} %r to i128\n")),
@@ -588,6 +609,8 @@ struct Fe<'a> {
     cx: &'a mut Ctx,
     aggs: &'a [AggDef],
     f: &'a Func,
+    /// `extern` 関数の `キー → LLVM シンボル名`。`Op::Call` で `declare` したシンボルを直接呼ぶ。
+    extern_links: &'a HashMap<String, String>,
     fi: usize,
     tys: HashMap<VId, Ty>,
     /// 定数と unit の値 (命令を作らずに、使う側へ直接書く)。
@@ -600,8 +623,8 @@ struct Fe<'a> {
 }
 
 impl<'a> Fe<'a> {
-    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, fi: usize) -> Fe<'a> {
+        Fe { cx, aggs, f, extern_links, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -1277,7 +1300,11 @@ impl<'a> Fe<'a> {
             Op::Call { callee, args } => {
                 let rt = self.lt(i.ty);
                 let a: Vec<String> = args.iter().map(|v| format!("{} {}", lty(aggs, self.ty(*v)), self.r(*v))).collect();
-                self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
+                if let Some(sym) = self.extern_links.get(callee) {
+                    self.line(format!("{} = call {} @{}({})", d, rt, sym, a.join(", ")));
+                } else {
+                    self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
+                }
             }
             Op::Make { variant, fields } => {
                 let Ty::Agg(ai) = i.ty else { return Err("make の結果が集成体でない".into()) };
