@@ -834,6 +834,49 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     };
                     l.local_addr().map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?
                 }
+                Op::EnvArgCount => {
+                    let n = std::env::args().len() as i128;
+                    n.saturating_sub(1)
+                }
+                Op::EnvArg { index } => {
+                    let i = get(&stack[top], index) as usize;
+                    let args: Vec<String> = std::env::args().collect();
+                    let non_program = args.len().saturating_sub(1);
+                    if i >= non_program {
+                        0
+                    } else {
+                        let s = &args[i + 1];
+                        let bytes = s.as_bytes();
+                        let ptr = bm.alloc(bytes.len(), true);
+                        bm.write_bytes(ptr, bytes)?;
+                        let mut fat_buf = vec![0u8; 16];
+                        fat_buf[0..8].copy_from_slice(&(ptr as u64).to_le_bytes());
+                        fat_buf[8..16].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+                        heap.push(fat_buf);
+                        TAG_BIT | (heap.len() - 1) as i128
+                    }
+                }
+                Op::EnvVar { name } => {
+                    let h = get(&stack[top], name) as usize;
+                    let fat_buf = &heap[h];
+                    let ptr = u64::from_le_bytes(fat_buf[0..8].try_into().expect("fat の ptr")) as usize;
+                    let len = u64::from_le_bytes(fat_buf[8..16].try_into().expect("fat の len")) as usize;
+                    let bytes = bm.read_bytes(ptr as i128, len)?;
+                    let name = std::str::from_utf8(&bytes).unwrap_or("");
+                    match std::env::var(name) {
+                        Ok(v) => {
+                            let vbytes = v.as_bytes();
+                            let vptr = bm.alloc(vbytes.len(), true);
+                            bm.write_bytes(vptr, vbytes)?;
+                            let mut fat_buf = vec![0u8; 16];
+                            fat_buf[0..8].copy_from_slice(&(vptr as u64).to_le_bytes());
+                            fat_buf[8..16].copy_from_slice(&(vbytes.len() as u64).to_le_bytes());
+                            heap.push(fat_buf);
+                            TAG_BIT | (heap.len() - 1) as i128
+                        }
+                        Err(_) => 0,
+                    }
+                }
                 Op::IndexCheck { i, len } => {
                     let (ix, n) = (get(&stack[top], i), get(&stack[top], len));
                     if ix >= n {
