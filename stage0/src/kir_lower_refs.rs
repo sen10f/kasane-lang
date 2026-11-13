@@ -160,11 +160,41 @@ impl<'a> Lw<'a> {
         }
     }
 
+    /// 比較の一方が `&T` の参照で、他方が `&スカラー` の値 (`Some(c)` の `c`) なら、参照の側を読んで値どうしにする。
+    /// 参照どうしはそのまま (参照どうしの比較は段階 1 の対象外のまま)。
+    pub(super) fn load_scalar_ref_pair(&mut self, a: VId, b: VId) -> (VId, VId) {
+        if let Some(nb) = self.load_against(b, a) {
+            return (a, nb);
+        }
+        if let Some(na) = self.load_against(a, b) {
+            return (na, b);
+        }
+        (a, b)
+    }
+
+    /// `r` が参照で、`v` がその指す先と同じスカラーの値なら、`*r` を読んだ値を返す。
+    fn load_against(&mut self, r: VId, v: VId) -> Option<VId> {
+        match self.vty(r) {
+            Ty::Ref(_, p) if Pointee::of(self.vty(v)) == Some(p) => Some(self.emit(p.ty(), Op::Load(r))),
+            _ => None,
+        }
+    }
+
     /// 引数の値を、呼び先の引数の型に合わせる (参照の場合だけ)。
     pub(super) fn coerce_args(&mut self, vs: Vec<VId>, pts: &[Ty]) -> Vec<VId> {
         let mut out = Vec::with_capacity(vs.len());
         for (v, pt) in vs.into_iter().zip(pts.iter().copied()) {
-            out.push(if pt.is_ref() { self.coerce(v, pt) } else { v });
+            out.push(match pt {
+                // `Some(c)` の値 (`&スカラー` の値表現) を `&T` の引数に渡す: 値を一時のスロットに入れ、その共有参照を渡す。
+                // 共有参照は読むだけなので、コピーのアドレスを渡しても木走査と同じ値になる (`&5` と同じ一時の扱い)。
+                Ty::Ref(false, p) if !self.vty(v).is_ref() && Pointee::of(self.vty(v)) == Some(p) => {
+                    let ptr = self.alloca(p);
+                    self.emit(Ty::Unit, Op::Store { ptr, val: v });
+                    self.ref_value(ptr, p, true)
+                }
+                _ if pt.is_ref() => self.coerce(v, pt),
+                _ => v,
+            });
         }
         out
     }
@@ -262,7 +292,12 @@ impl<'a> Lw<'a> {
                 let t = p.ty();
                 Ok(Some(self.emit(t, Op::Load(r))))
             }
-            _ => self.err(line, "* の被演算子が参照でない"),
+            // `Some(b)` で `Option<&スカラー>` から取った束縛は値で持つ (設計_KIR.md 10.10)。型表が `&T` で、
+            // T の型が値の型と一致するなら、`*b` は値そのもの (恒等)。
+            t => match self.src_ty(&f[1]) {
+                Ok(Src::Ref(_, inner)) if super::conv(&inner) == Some(t) => Ok(Some(r)),
+                _ => self.err(line, "* の被演算子が参照でない"),
+            },
         }
     }
 

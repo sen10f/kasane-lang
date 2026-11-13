@@ -1415,7 +1415,79 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)) }, name, &f[2]);
         }
     }
-    lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数だけ段階 1 の対象")
+    // 利用者の反復子の局所 (`core.iter.Iterator` を実装し、`&mut self` の `next` を持つ): `next` を呼んで `None` まで回す
+    if let Some(s) = local_slot(lw, it) {
+        if let Some(di) = user_iter_next(lw, s) {
+            return user_iter(lw, e, it, s, di, name, &f[2]);
+        }
+    }
+    lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数・利用者の反復子の変数だけ段階 1 の対象")
+}
+
+/// 局所 `s` の型が `core.iter.Iterator` を実装する利用者の集成体で、`&mut self` の `next` を持つなら、その定義の番号。
+fn user_iter_next(lw: &Lw, s: usize) -> Option<usize> {
+    let t = lw.slots[s].1;
+    let Ty::Agg(ai) = t else { return None };
+    let tyname = lw.aggs.borrow().defs[ai as usize].name.clone();
+    let is_iter = lw.p.impls.iter().any(|(tr, ty)| *ty == tyname && tr.split('<').next() == Some("core.iter.Iterator"));
+    if !is_iter {
+        return None;
+    }
+    let di = lw.method_of_ty(t, "next")?;
+    lw.method_takes_mut(di).then_some(di)
+}
+
+/// `for PAT in it BODY` (`it` は利用者の反復子): `loop { match it.next() { Some(PAT) => BODY, None => break } }` に下ろす。
+/// `next` は `&mut it` で進むので、`it` はループの受け渡しの値 (ヘッダの引数) に入れる。`continue` はヘッダへ戻る。
+fn user_iter(lw: &mut Lw, e: &V, it: &V, s: usize, di: usize, name: Option<String>, body: &V) -> LR<Option<VId>> {
+    let line = nline(e);
+    let mut slots = lw.assigned(&[body]);
+    if !slots.contains(&s) {
+        slots.push(s);
+    }
+    let slot_tys: Vec<Ty> = slots.iter().map(|x| lw.slots[*x].1).collect();
+    let (xb, xp) = lw.new_block(&slot_tys);
+    let (bb, _) = lw.new_block(&[]);
+    let (hb, hp) = lw.new_block(&slot_tys);
+    let entry = lw.vals_of(&slots);
+    lw.goto(hb, entry);
+
+    lw.cur = Some(hb);
+    for (k, x) in slots.iter().enumerate() {
+        lw.slots[*x] = (hp[k], slot_tys[k]);
+    }
+    let Some(o) = lw.call_method(e, di, super::method_lower::Place::Path(strs(&nf(it)[0])), &[])? else {
+        return Ok(None);
+    };
+    let Ty::Opt(pay) = lw.vty(o) else {
+        return lw.err(line, "for の反復子の next は Option を返す段階 1 の対象だけ");
+    };
+    let tag = lw.emit(Ty::Bool, Op::Tag(o));
+    let exit_args = lw.vals_of(&slots);
+    lw.branch(tag, (bb, vec![]), (xb, exit_args));
+
+    lw.cur = Some(bb);
+    lw.scopes.push(vec![]);
+    let depth = lw.scopes.len() - 1;
+    if let Some(n) = &name {
+        let v = lw.emit(pay.ty(), Op::Payload(o));
+        lw.bind(n, v, pay.ty());
+    }
+    lw.loops.push(super::LoopCx { header: hb, exit: xb, slots: slots.clone(), depth });
+    let r = lw.expr(body)?;
+    if r.is_some() {
+        let args = lw.vals_of(&slots);
+        lw.goto(hb, args);
+    }
+    lw.loops.pop();
+    block_end(lw);
+    lw.scopes.pop();
+
+    lw.cur = Some(xb);
+    for (k, x) in slots.iter().enumerate() {
+        lw.slots[*x] = (xp[k], slot_tys[k]);
+    }
+    Ok(Some(lw.unit()))
 }
 
 struct Counted {

@@ -13752,3 +13752,163 @@ fn kir_closure_reports_unsupported_captures_with_a_reason() {
         assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
     }
 }
+
+/// `Vec.get` の `Option<&スカラー>` の束縛 (`Some(c)`) を、`*c`、`&T` の引数、`c == &y` で使う。
+/// 束縛は値で持つ (設計_KIR.md 10.10) ので、`*c` は値そのもの、`&T` の引数は一時に写した参照になる。
+const DEREF_OPT_SRC: &str = r#"fn t.show(x: &u32) -> u32 uses [] panics never
+    *x
+end t.show
+
+fn t.fill() -> Result<alloc.vec.Vec<u32>, alloc.alloc.AllocError> uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.push(3u32)?
+    v.push(8u32)?
+    Ok(v)
+end t.fill
+
+fn t.pick(i: usize) -> u32 uses [alloc] panics may
+    let v = match t.fill() {
+        Ok(v) => v
+        Err(_e) => core.panic.panic("oom")
+    }
+    match v.get(i) {
+        Some(c) => t.show(c)
+        None => 9u32
+    }
+end t.pick
+
+fn t.same(i: usize, x: u32) -> bool uses [alloc] panics may
+    let v = match t.fill() {
+        Ok(v) => v
+        Err(_e) => core.panic.panic("oom")
+    }
+    match v.get(i) {
+        Some(c) => *c == x
+        None => false
+    }
+end t.same
+
+fn t.eqref(i: usize, x: u32) -> bool uses [alloc] panics may
+    let v = match t.fill() {
+        Ok(v) => v
+        Err(_e) => core.panic.panic("oom")
+    }
+    let y = x
+    match v.get(i) {
+        Some(c) => c == &y
+        None => false
+    }
+end t.eqref
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.pick(1usize), 8u32)
+    core.check.eq(t.pick(5usize), 9u32)
+    core.check.eq(t.same(0usize, 3u32), true)
+    core.check.eq(t.same(1usize, 3u32), false)
+    core.check.eq(t.eqref(0usize, 3u32), true)
+    core.check.eq(t.eqref(0usize, 4u32), false)
+    Ok(())
+end t.main
+"#;
+
+#[test]
+fn kir_deref_of_scalar_option_ref_matches_tree_walker() {
+    let t = Tmp::new("kir_deref_opt_ref", DEREF_OPT_SRC);
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker main");
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.pick", &["1"], "8"),
+        ("t.pick", &["5"], "9"),
+        ("t.same", &["0", "3"], "true"),
+        ("t.same", &["1", "3"], "false"),
+        ("t.eqref", &["0", "3"], "true"),
+        ("t.eqref", &["0", "4"], "false"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+/// 利用者の反復子 (`core.iter.Iterator` を実装し、`&mut self` の `next` を持つ) を `for` で回す。
+/// `continue` は次の `next` へ、`break` は抜ける。内側のループの反復子も、外側のループの中で作って回す。
+const USER_ITER_SRC: &str = r#"type t.Upto pub
+    cur: u32
+    stop: u32
+end t.Upto
+
+impl core.iter.Iterator<u32, [], never> for t.Upto
+fn t.Upto.next(self: &mut t.Upto) -> Option<u32> uses [] panics never impls core.iter.Iterator<u32, [], never>
+    if self.cur >= self.stop {
+        return None
+    }
+    let v = self.cur
+    self.cur = self.cur.wrapping_add(1u32)
+    Some(v)
+end t.Upto.next
+
+fn t.sum(a: u32, b: u32) -> u32 uses [] panics never
+    let mut it = t.Upto { cur: a, stop: b }
+    let mut acc = 0u32
+    for n in it {
+        acc = acc.wrapping_add(n)
+    }
+    acc
+end t.sum
+
+fn t.sum_skip_break(a: u32, b: u32, k: u32) -> u32 uses [] panics never
+    let mut it = t.Upto { cur: a, stop: b }
+    let mut acc = 0u32
+    for n in it {
+        if n == k {
+            continue
+        }
+        if n > 20u32 {
+            break
+        }
+        acc = acc.wrapping_add(n)
+    }
+    acc
+end t.sum_skip_break
+
+fn t.nested(n: u32) -> u32 uses [] panics never
+    let mut it = t.Upto { cur: 0u32, stop: n }
+    let mut total = 0u32
+    for i in it {
+        let mut jt = t.Upto { cur: 0u32, stop: i }
+        for j in jt {
+            total = total.wrapping_add(j)
+        }
+    }
+    total
+end t.nested
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.sum(0u32, 4u32), 6u32)
+    core.check.eq(t.sum(3u32, 3u32), 0u32)
+    core.check.eq(t.sum_skip_break(0u32, 100u32, 2u32), 208u32)
+    core.check.eq(t.nested(4u32), 4u32)
+    Ok(())
+end t.main
+"#;
+
+#[test]
+fn kir_user_iterator_for_matches_tree_walker() {
+    let t = Tmp::new("kir_user_iter_for", USER_ITER_SRC);
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker main");
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.sum", &["0", "4"], "6"),
+        ("t.sum", &["3", "3"], "0"),
+        ("t.sum_skip_break", &["0", "100", "2"], "208"),
+        ("t.nested", &["4"], "4"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
