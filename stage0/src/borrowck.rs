@@ -2055,12 +2055,15 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                     // 保存場所 (`v.push(&b)` の `v`) が持つローンの借用元が、ブロックを抜けて死んでいる。
                     for (holder, ids) in &stt.holders {
                         let Holder::Place { root: r, .. } = holder else { continue };
-                        if !(live_after[k].contains(r) || r == root) {
+                        if r != root {
                             continue;
                         }
                         for &id in ids {
                             if stt.dead.contains(&id) {
-                                out.push((*line, format!("use of `{root}` borrows `{}` which does not live long enough", low.loans[id].root)));
+                                let m = format!("use of `{r}` borrows `{}` which does not live long enough", low.loans[id].root);
+                                if !out.iter().any(|(l, t)| l == line && *t == m) {
+                                    out.push((*line, m));
+                                }
                             }
                         }
                     }
