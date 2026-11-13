@@ -651,6 +651,8 @@ pub enum Op {
     FrameBytes { size: u32 },
     /// 静的な読み取り専用のバイト列の先頭。結果は `ptr`。同じ命令は常に同じアドレスを返す。
     StaticBytes(Vec<u8>),
+    /// 名前付きの大域領域 (`global.bytes NAME SIZE`)。0 で初期化され、プログラムの間ずっと生き、同じ名前は同じ領域。書き込める (`static` の `Mutex` など。設計_KIR.md 22 章)。
+    GlobalBytes { name: String, size: u32 },
     /// `p + off` (`off` は usize の値。境界は見ない)。結果は `ptr`。
     PtrAdd { p: VId, off: VId },
     /// `p + off` から `Inst::ty` の幅で読む (リトルエンディアン)。
@@ -689,6 +691,26 @@ pub enum Op {
     NetClose { sock: VId },
     /// `TcpListener.local_port()`: `local_addr` のポート。結果は `Result<u16, std.io.Error>`。`uses [io.net]` の関数だけ。
     NetLocalPort { sock: VId },
+    /// `std.fs.create(path)`: 作成して切り詰め、書き込み専用で開く。`path` は fat (`&str`)。結果は `Result<std.fs.File, std.io.Error>`。
+    /// 記述子はファイル。`uses [io.fs]` の関数だけ。
+    FsCreate { path: VId },
+    /// `std.fs.open(path)`: 読み取り専用で開く。`path` は fat (`&str`)。結果は `Result<std.fs.File, std.io.Error>`。
+    /// `uses [io.fs]` の関数だけ。
+    FsOpen { path: VId },
+    /// `std.fs.exists(path)`: パスが存在すれば `true`。結果は `bool`。`uses [io.fs]` の関数だけ。
+    FsExists { path: VId },
+    /// `std.fs.remove_file(path)`: ファイルを削除する。結果は `Result<(), std.io.Error>`。`uses [io.fs]` の関数だけ。
+    FsRemove { path: VId },
+    /// `std.fs.File.close()`: 記述子を閉じる。結果は `Result<(), std.io.Error>`。`uses [io.fs]` の関数だけ。
+    FsClose { fd: VId },
+    /// `std.fs.File.flush()`: OS へ永続化する (`sync_all`)。結果は `Result<(), std.io.Error>`。`uses [io.fs]` の関数だけ。
+    FsFlush { fd: VId },
+    /// `std.fs.File.read(buffer)`: `read(fd, buf, len)`。結果は `Result<usize, std.io.Error>`。`uses [io.fs]` の関数だけ。
+    FsRead { fd: VId, buf: VId, len: VId },
+    /// `std.fs.File.sync()`: OS へ永続化する (`sync_all`)。結果は `Result<(), std.io.Error>`。`uses [io.fs]` の関数だけ。
+    FsSync { fd: VId },
+    /// `std.fs.File.write(buffer)`: `write_all(fd, buf, len)`。結果は `Result<usize, std.io.Error>`。`uses [io.fs]` の関数だけ。
+    FsWrite { fd: VId, buf: VId, len: VId },
     /// `std.env.arg_count()`: プログラムへの引数の個数 (プログラム名は含まない)。結果は `usize`。
     /// `uses [env]` の関数だけ。
     EnvArgCount,
@@ -1122,6 +1144,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::AsShared(p) => format!("asshared {}", fmt_val(*p)),
         Op::Reborrow(p) => format!("reborrow {}", fmt_val(*p)),
         Op::FrameBytes { size } => format!("frame.bytes {}", size),
+        Op::GlobalBytes { name, size } => format!("global.bytes {} {}", name, size),
         Op::StaticBytes(bytes) => {
             let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
             if hex.is_empty() {
@@ -1155,6 +1178,15 @@ fn fmt_inst(i: &Inst) -> String {
         Op::NetFlush { sock } => format!("net.flush {}", fmt_val(*sock)),
         Op::NetClose { sock } => format!("net.close {}", fmt_val(*sock)),
         Op::NetLocalPort { sock } => format!("net.local_port {}", fmt_val(*sock)),
+        Op::FsCreate { path } => format!("fs.create {}", fmt_val(*path)),
+        Op::FsOpen { path } => format!("fs.open {}", fmt_val(*path)),
+        Op::FsExists { path } => format!("fs.exists {}", fmt_val(*path)),
+        Op::FsRemove { path } => format!("fs.remove_file {}", fmt_val(*path)),
+        Op::FsClose { fd } => format!("fs.close {}", fmt_val(*fd)),
+        Op::FsFlush { fd } => format!("fs.flush {}", fmt_val(*fd)),
+        Op::FsRead { fd, buf, len } => format!("fs.read {}, {}, {}", fmt_val(*fd), fmt_val(*buf), fmt_val(*len)),
+        Op::FsSync { fd } => format!("fs.sync {}", fmt_val(*fd)),
+        Op::FsWrite { fd, buf, len } => format!("fs.write {}, {}, {}", fmt_val(*fd), fmt_val(*buf), fmt_val(*len)),
         Op::EnvArgCount => "env.arg_count".to_string(),
         Op::EnvArg { index } => format!("env.arg {}", fmt_val(*index)),
         Op::EnvVar { name } => format!("env.var {}", fmt_val(*name)),
@@ -1508,6 +1540,14 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             let n = rest.trim().parse::<u32>().map_err(|_| perr(line, format!("frame.bytes の大きさ {} が不正", rest)))?;
             Ok(Op::FrameBytes { size: n })
         }
+        ("global", ["bytes"]) if ty == Ty::Ptr => {
+            let mut it = rest.split_whitespace();
+            let (Some(name), Some(n), None) = (it.next(), it.next(), it.next()) else {
+                return Err(perr(line, "global.bytes は名前と大きさを取る"));
+            };
+            let size = n.parse::<u32>().map_err(|_| perr(line, format!("global.bytes の大きさ {} が不正", n)))?;
+            Ok(Op::GlobalBytes { name: name.to_string(), size })
+        }
         ("static", ["bytes"]) if ty == Ty::Ptr => {
             let t = rest.trim();
             if t.len() % 2 != 0 {
@@ -1582,6 +1622,42 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("net", ["local_port"]) => {
             let v = operands(1)?;
             Ok(Op::NetLocalPort { sock: v[0] })
+        }
+        ("fs", ["create"]) => {
+            let v = operands(1)?;
+            Ok(Op::FsCreate { path: v[0] })
+        }
+        ("fs", ["open"]) => {
+            let v = operands(1)?;
+            Ok(Op::FsOpen { path: v[0] })
+        }
+        ("fs", ["exists"]) => {
+            let v = operands(1)?;
+            Ok(Op::FsExists { path: v[0] })
+        }
+        ("fs", ["remove_file"]) => {
+            let v = operands(1)?;
+            Ok(Op::FsRemove { path: v[0] })
+        }
+        ("fs", ["close"]) => {
+            let v = operands(1)?;
+            Ok(Op::FsClose { fd: v[0] })
+        }
+        ("fs", ["flush"]) => {
+            let v = operands(1)?;
+            Ok(Op::FsFlush { fd: v[0] })
+        }
+        ("fs", ["read"]) => {
+            let v = operands(3)?;
+            Ok(Op::FsRead { fd: v[0], buf: v[1], len: v[2] })
+        }
+        ("fs", ["sync"]) => {
+            let v = operands(1)?;
+            Ok(Op::FsSync { fd: v[0] })
+        }
+        ("fs", ["write"]) => {
+            let v = operands(3)?;
+            Ok(Op::FsWrite { fd: v[0], buf: v[1], len: v[2] })
         }
         ("env", ["arg_count"]) => {
             let _ = operands(0)?;
@@ -2225,6 +2301,11 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("frame.bytes は ptr の型で、大きさは 1 以上のはず".into());
                         }
                     }
+                    Op::GlobalBytes { size, .. } => {
+                        if i.ty != Ty::Ptr || *size == 0 {
+                            return Err("global.bytes は ptr の型で、大きさは 1 以上のはず".into());
+                        }
+                    }
                     Op::StaticBytes(_) => {
                         if i.ty != Ty::Ptr {
                             return Err("static.bytes は ptr の型のはず".into());
@@ -2351,6 +2432,65 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             }
                         }
                     }
+                    Op::FsCreate { path } | Op::FsOpen { path } => {
+                        if !f.uses.iter().any(|u| u == "io.fs") {
+                            return Err("std.fs.create / std.fs.open は uses [io.fs] の関数だけ".into());
+                        }
+                        if ty_of(*path)? != fat_ty(m)? {
+                            return Err("std.fs.create / std.fs.open のパスは fat (&str) のはず".into());
+                        }
+                        let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty()));
+                        if !ok {
+                            return Err("std.fs.create / std.fs.open の結果は Result<std.fs.File, std.io.Error> のはず".into());
+                        }
+                    }
+                    Op::FsExists { path } => {
+                        if !f.uses.iter().any(|u| u == "io.fs") {
+                            return Err("std.fs.exists は uses [io.fs] の関数だけ".into());
+                        }
+                        if ty_of(*path)? != fat_ty(m)? {
+                            return Err("std.fs.exists のパスは fat (&str) のはず".into());
+                        }
+                        if i.ty != Ty::Bool {
+                            return Err("std.fs.exists の結果は bool のはず".into());
+                        }
+                    }
+                    Op::FsRemove { path } => {
+                        if !f.uses.iter().any(|u| u == "io.fs") {
+                            return Err("std.fs.remove_file は uses [io.fs] の関数だけ".into());
+                        }
+                        if ty_of(*path)? != fat_ty(m)? {
+                            return Err("std.fs.remove_file のパスは fat (&str) のはず".into());
+                        }
+                        let ok = matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty()));
+                        if !ok {
+                            return Err("std.fs.remove_file の結果は Result<(), std.io.Error> のはず".into());
+                        }
+                    }
+                    Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => {
+                        if !f.uses.iter().any(|u| u == "io.fs") {
+                            return Err("std.fs.File.{close,flush,sync} は uses [io.fs] の関数だけ".into());
+                        }
+                        if ty_of(*fd)? != Ty::I32 {
+                            return Err("std.fs.File の記述子は i32 のはず".into());
+                        }
+                        let ok = matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty()));
+                        if !ok {
+                            return Err("std.fs.File.{close,flush,sync} の結果は Result<(), std.io.Error> のはず".into());
+                        }
+                    }
+                    Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => {
+                        if !f.uses.iter().any(|u| u == "io.fs") {
+                            return Err("std.fs.File.{read,write} は uses [io.fs] の関数だけ".into());
+                        }
+                        if ty_of(*fd)? != Ty::I32 || ty_of(*buf)? != Ty::Ptr || ty_of(*len)? != Ty::Usize {
+                            return Err("std.fs.File.{read,write} は i32 の記述子と ptr のバッファと usize の長さを取る".into());
+                        }
+                        let ok = matches!(i.ty, Ty::Res(Pay::Usize, e) if is_io_error(m, e.ty()));
+                        if !ok {
+                            return Err("std.fs.File.{read,write} の結果は Result<usize, std.io.Error> のはず".into());
+                        }
+                    }
                     Op::EnvArgCount => {
                         if !f.uses.iter().any(|u| u == "env") {
                             return Err("std.env.arg_count は uses [env] の関数だけ".into());
@@ -2466,11 +2606,16 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if i.ty != g.ret {
                             return Err(format!("{} の戻り値の型が合わない", callee));
                         }
-                        if g.may_panic && !f.may_panic {
+                        // スレッドの補助の関数 (`ksn.thr.*`、設計_KIR.md 22 章) は、spawn した側のクロージャの効果を呼ぶので、
+                        // 効果と panic の包含は spawn 側 (クロージャの下ろし) で確かめ済みとして、ここでは見ない。
+                        let thr = callee.starts_with("ksn.thr.") || callee.starts_with("ksn.chan.");
+                        if g.may_panic && !f.may_panic && !thr && !f.key.starts_with("ksn.thr.") {
                             return Err(format!("panics never の関数が panics may の {} を呼ぶ", callee));
                         }
                         if let Some(u) = g.uses.iter().find(|u| !fu.contains(u.as_str())) {
-                            return Err(format!("{} の uses {} が呼び出し元にない", callee, u));
+                            if !thr && !f.key.starts_with("ksn.thr.") {
+                                return Err(format!("{} の uses {} が呼び出し元にない", callee, u));
+                            }
                         }
                     }
                     Op::FnPtr { callee } => {
@@ -2558,7 +2703,7 @@ fn is_io_error(m: &Module, t: Ty) -> bool {
 
 pub(crate) fn operands(op: &Op) -> Vec<VId> {
     match op {
-        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) => vec![],
+        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) | Op::GlobalBytes { .. } => vec![],
         Op::PtrAdd { p, off } => vec![*p, *off],
         Op::Utf8Valid { p, len } => vec![*p, *len],
         Op::MemLoad { p, .. } | Op::HeapFree(p) => vec![*p],
@@ -2573,6 +2718,9 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => {
             vec![*sock, *buf, *len]
         }
+        Op::FsCreate { path } | Op::FsOpen { path } | Op::FsExists { path } | Op::FsRemove { path } => vec![*path],
+        Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => vec![*fd],
+        Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => vec![*fd, *buf, *len],
         Op::EnvArgCount => vec![],
         Op::EnvArg { index } | Op::EnvVar { name: index } => vec![*index],
         Op::Eprint { data } => vec![*data],

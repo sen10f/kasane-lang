@@ -249,6 +249,7 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
     for (bi, b) in f.blocks.iter().enumerate() {
         starts[bi] = fc.code.len() as u32;
         fc.last_cmp = None;
+        fc.last_pa = None;
         fc.folded.clear();
         fc.pending.clear();
         fc.find_folds(&b.insts);
@@ -522,6 +523,18 @@ impl<'a> Fc<'a> {
                 Ins::FrameBytes { d, size: size_of(&self.m.aggs, p.ty()) }
             }
             Op::FrameBytes { size } => Ins::FrameBytes { d, size: *size },
+            Op::GlobalBytes { name, size } => {
+                let p = match self.prog.globals.get(name) {
+                    Some(p) => *p,
+                    None => {
+                        let p = Box::leak(vec![0u8; (*size as usize).max(1)].into_boxed_slice()).as_ptr() as usize;
+                        self.prog.globals.insert(name.clone(), p);
+                        p
+                    }
+                };
+                self.prog.wide.push(p as i128);
+                Ins::ConstW { d, k: (self.prog.wide.len() - 1) as u32 }
+            }
             Op::StaticBytes(bytes) => {
                 // 静的な領域はコンパイル時に 1 回だけ確保し、アドレスを定数にする (同じ命令は常に同じアドレス)。
                 let mut v = bytes.clone();
@@ -624,6 +637,16 @@ impl<'a> Fc<'a> {
                 }
                 Ins::FnPtr { d, f: ci as u32 }
             }
+            // std.fs の命令は VM 未対応 (木走査へ退避する)。
+            Op::FsCreate { .. }
+            | Op::FsOpen { .. }
+            | Op::FsExists { .. }
+            | Op::FsRemove { .. }
+            | Op::FsClose { .. }
+            | Op::FsFlush { .. }
+            | Op::FsRead { .. }
+            | Op::FsSync { .. }
+            | Op::FsWrite { .. } => return Err("std.fs の命令は VM 未対応".into()),
         };
         self.push(i);
         Ok(())

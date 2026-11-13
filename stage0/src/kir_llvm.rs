@@ -182,6 +182,8 @@ struct Ctx {
     net: bool,
     /// `std.env` 命令を使う (`@ksn_rt_sys_*` を呼ぶ)。
     env: bool,
+    /// `std.fs` 命令を使う (`@ksn_rt_sys_*` を呼ぶ)。
+    fs: bool,
     /// `FmtFloat` 命令を使う (浮動小数の書式化補助関数を出す)。
     fmt_float: bool,
     /// `ParseInt` 命令を使う (`kir_rt.c` の `ksn_parse_int` を呼ぶ)。
@@ -232,7 +234,7 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     };
     let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
     let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, parse_int: has_parse_int };
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, fs: false, parse_int: has_parse_int };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -284,6 +286,15 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         cx.decls.insert("declare i64 @ksn_rt_sys_arg_count()".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_arg(i64, ptr)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_var(ptr, i64, ptr)".to_string());
+    }
+    if cx.fs {
+        cx.decls.insert("declare i64 @ksn_rt_sys_open(ptr, i64, i32, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_exists(ptr, i64)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_remove(ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_read(i32, ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_write(i32, ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_close(i32)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_sync(i32, i32*)".to_string());
     }
     let mut out = String::from("; ksn kir llvm 1\n\n");
     for d in &cx.decls {
@@ -925,6 +936,24 @@ impl<'a> Fe<'a> {
         };
         self.pack(dst, 64, &neg, &pay);
         Ok(())
+    }
+
+    /// `std.fs` の失敗の受け口 (`[ErrorKind の添字, errno]` の 2 つの i32)。`sysrt.c` の `fail` と同じ書き方。
+    fn fs_err_slot(&mut self) -> String {
+        let ep = self.t("alloca [2 x i32], align 4".to_string());
+        self.line(format!("store i64 0, ptr {}, align 4", ep));
+        ep
+    }
+
+    /// `std.fs` の i64 結果 (負 = 失敗) を `Result<_, std.io.Error>` の値に pack する。
+    /// 失敗のペイロードは `fs_err_slot` の 8 バイト (下位 = ErrorKind、上位 = errno) をそのまま使う (clif の `sys_result` と同じ並び)。
+    /// 成功のペイロードは `r` (fd / バイト数 / 0)。
+    fn fs_result(&mut self, dst: &str, r: &str, ep: &str) {
+        let neg = self.t(format!("icmp slt i64 {}, 0", r));
+        let ev = self.t(format!("load i64, ptr {}, align 4", ep));
+        let ok_pay = self.t(format!("and i64 {}, 9223372036854775807", r));
+        let pay = self.t(format!("select i1 {}, i64 {}, i64 {}", neg, ev, ok_pay));
+        self.pack(dst, 64, &neg, &pay);
     }
 
     /// `Option` / `Result` の値 (幅 `s + 1`): 枠 `pay` (幅 `s`) と、タグ `tag` (i1) を最上位に置く。
@@ -1635,6 +1664,14 @@ impl<'a> Fe<'a> {
                 self.decl("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)".into());
                 self.line(format!("call void @llvm.memset.p0.i64(ptr {}, i8 0, i64 {}, i1 false)", d, size));
             }
+            Op::GlobalBytes { name, size } => {
+                let g = format!("@\"ksn.g.{}\"", name);
+                let def = format!("{} = internal global [{} x i8] zeroinitializer, align 16\n", g, size);
+                if !self.cx.globals.contains(&def) {
+                    self.cx.globals.push_str(&def);
+                }
+                self.line(format!("{} = getelementptr i8, ptr {}, i64 0", d, g));
+            }
             Op::StaticBytes(bytes) => {
                 let g = format!("ksn.s.{}.{}", self.fi, i.dst);
                 let esc: String = bytes.iter().map(|b| format!("\\{:02X}", b)).collect();
@@ -1766,6 +1803,71 @@ impl<'a> Fe<'a> {
                 let some = self.t(format!("or i129 {}, {}", tag, fat129));
                 let result = self.t(format!("select i1 {}, i129 0, i129 {}", isnull, some));
                 self.mov(&d, "i129", &result);
+            }
+            Op::FsCreate { path } | Op::FsOpen { path } => {
+                self.cx.fs = true;
+                let is_create = matches!(i.op, Op::FsCreate { .. });
+                let Ty::Agg(_) = self.ty(*path) else { return Err("fs.create / fs.open のパスが fat でない".into()) };
+                let av = self.r(*path);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let ni = self.extract(&av, 128, 8, 64);
+                let ep = self.fs_err_slot();
+                let create = if is_create { "1" } else { "0" };
+                let r = self.t(format!("call i64 @ksn_rt_sys_open(ptr {}, i64 {}, i32 {}, ptr {})", p, ni, create, ep));
+                self.fs_result(&d, &r, &ep);
+            }
+            Op::FsExists { path } => {
+                self.cx.fs = true;
+                let Ty::Agg(_) = self.ty(*path) else { return Err("fs.exists のパスが fat でない".into()) };
+                let av = self.r(*path);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let ni = self.extract(&av, 128, 8, 64);
+                let r = self.t(format!("call i64 @ksn_rt_sys_exists(ptr {}, i64 {})", p, ni));
+                let b = self.t(format!("icmp ne i64 {}, 0", r));
+                self.mov(&d, "i1", &b);
+            }
+            Op::FsRemove { path } => {
+                self.cx.fs = true;
+                let Ty::Agg(_) = self.ty(*path) else { return Err("fs.remove_file のパスが fat でない".into()) };
+                let av = self.r(*path);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let ni = self.extract(&av, 128, 8, 64);
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_remove(ptr {}, i64 {}, ptr {})", p, ni, ep));
+                self.fs_result(&d, &r, &ep);
+            }
+            Op::FsClose { fd } => {
+                // 木走査 (clif と同じ) と同じく、閉じる失敗は報告しない。
+                self.cx.fs = true;
+                let r = self.t(format!("call i64 @ksn_rt_sys_close(i32 {})", self.r(*fd)));
+                let ep = self.fs_err_slot();
+                self.fs_result(&d, &r, &ep);
+            }
+            Op::FsFlush { .. } => {
+                // ファイルは内部でバッファしないので、flush は常に成功 (clif と同じ)。
+                self.cx.fs = true;
+                self.pack(&d, 64, "false", "0");
+            }
+            Op::FsSync { fd } => {
+                self.cx.fs = true;
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_sync(i32 {}, ptr {})", self.r(*fd), ep));
+                self.fs_result(&d, &r, &ep);
+            }
+            Op::FsRead { fd, buf, len } => {
+                self.cx.fs = true;
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_read(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), ep));
+                self.fs_result(&d, &r, &ep);
+            }
+            Op::FsWrite { fd, buf, len } => {
+                self.cx.fs = true;
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_write(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), ep));
+                self.fs_result(&d, &r, &ep);
             }
             Op::ParseInt { ty, s, radix } => {
                 self.cx.parse_int = true;

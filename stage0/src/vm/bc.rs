@@ -231,6 +231,8 @@ pub struct Prog {
     pub ext: Vec<Func>,
     /// 関数の鍵 → `funcs` の添字 (ホットリロードで、古い版の呼び出しを新しい版の関数へ解決する)。
     pub by_key: std::collections::HashMap<String, u32>,
+    /// `global.bytes` の領域 (名前 → アドレス。プログラムごとに 1 つ、解放しない)。
+    pub globals: std::collections::HashMap<String, usize>,
 }
 
 impl Prog {

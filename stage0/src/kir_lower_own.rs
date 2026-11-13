@@ -70,7 +70,7 @@ pub(super) fn vec_field_root(lw: &Lw, segs: &[String]) -> Option<String> {
 
 /// フィールドのヘッダの置き場。値の構造体のフィールドは一時のヘッダに写してあり、`wb` があれば呼び出しの後に戻す。
 pub(super) struct Place {
-    hdr: VId,
+    pub(super) hdr: VId,
     wb: Option<(usize, Vec<String>)>,
 }
 

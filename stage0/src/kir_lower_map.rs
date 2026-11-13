@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 
 use crate::check::{items, nf, nlineno as nline, nname, st, strs};
-use crate::kir::{Aop, Block, BoolOp, Cc, Func, Inst, Mode, Op, Term, Ty, VId};
+use crate::kir::{Aop, Block, BoolOp, Cc, Func, Inst, Mode, Op, Pay, Term, Ty, VId};
 use crate::parser::V;
 
 use super::coll::{self, Kind};
@@ -64,24 +64,24 @@ impl Shape {
 
 // ------------------------------------------------ 補助の関数を組み立てる道具
 
-struct Fb {
+pub(super) struct Fb {
     blocks: Vec<(Vec<(VId, Ty)>, Vec<Inst>, Option<Term>)>,
     n: u32,
     cur: usize,
 }
 
 impl Fb {
-    fn new(params: &[Ty]) -> Fb {
+    pub(super) fn new(params: &[Ty]) -> Fb {
         let ps = params.iter().enumerate().map(|(i, t)| (i as VId, *t)).collect();
         Fb { blocks: vec![(ps, vec![], None)], n: params.len() as u32, cur: 0 }
     }
-    fn emit(&mut self, ty: Ty, op: Op) -> VId {
+    pub(super) fn emit(&mut self, ty: Ty, op: Op) -> VId {
         let dst = self.n;
         self.n += 1;
         self.blocks[self.cur].1.push(Inst { dst, ty, op });
         dst
     }
-    fn block(&mut self, params: &[Ty]) -> (usize, Vec<VId>) {
+    pub(super) fn block(&mut self, params: &[Ty]) -> (usize, Vec<VId>) {
         let ids: Vec<VId> = params
             .iter()
             .map(|_| {
@@ -92,49 +92,49 @@ impl Fb {
         self.blocks.push((ids.iter().copied().zip(params.iter().copied()).collect(), vec![], None));
         (self.blocks.len() - 1, ids)
     }
-    fn term(&mut self, t: Term) {
+    pub(super) fn term(&mut self, t: Term) {
         self.blocks[self.cur].2 = Some(t);
     }
-    fn goto(&mut self, b: usize, args: Vec<VId>) {
+    pub(super) fn goto(&mut self, b: usize, args: Vec<VId>) {
         self.term(Term::Br((b, args)));
     }
-    fn at(&mut self, b: usize) {
+    pub(super) fn at(&mut self, b: usize) {
         self.cur = b;
     }
-    fn c(&mut self, ty: Ty, v: i128) -> VId {
+    pub(super) fn c(&mut self, ty: Ty, v: i128) -> VId {
         self.emit(ty, Op::Const(v))
     }
-    fn cmp(&mut self, cc: Cc, a: VId, b: VId) -> VId {
+    pub(super) fn cmp(&mut self, cc: Cc, a: VId, b: VId) -> VId {
         self.emit(Ty::Bool, Op::Cmp { cc, ty: Ty::Usize, a, b })
     }
-    fn br_if(&mut self, c: VId, t: usize, e: usize) {
+    pub(super) fn br_if(&mut self, c: VId, t: usize, e: usize) {
         self.term(Term::BrIf(c, (t, vec![]), (e, vec![])));
     }
-    fn add(&mut self, a: VId, b: VId) -> VId {
+    pub(super) fn add(&mut self, a: VId, b: VId) -> VId {
         self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a, b })
     }
-    fn sub(&mut self, a: VId, b: VId) -> VId {
+    pub(super) fn sub(&mut self, a: VId, b: VId) -> VId {
         self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a, b })
     }
-    fn mul(&mut self, a: VId, b: VId) -> VId {
+    pub(super) fn mul(&mut self, a: VId, b: VId) -> VId {
         self.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a, b })
     }
-    fn and(&mut self, a: VId, b: VId) -> VId {
+    pub(super) fn and(&mut self, a: VId, b: VId) -> VId {
         self.emit(Ty::Usize, Op::Bool(BoolOp::And, a, b))
     }
-    fn xor(&mut self, a: VId, b: VId) -> VId {
+    pub(super) fn xor(&mut self, a: VId, b: VId) -> VId {
         self.emit(Ty::Usize, Op::Bool(BoolOp::Xor, a, b))
     }
-    fn load(&mut self, ty: Ty, p: VId, off: i128) -> VId {
+    pub(super) fn load(&mut self, ty: Ty, p: VId, off: i128) -> VId {
         self.emit(ty, Op::MemLoad { p, off: off as u32 })
     }
-    fn store(&mut self, ty: Ty, p: VId, off: i128, v: VId) {
+    pub(super) fn store(&mut self, ty: Ty, p: VId, off: i128, v: VId) {
         self.emit(Ty::Unit, Op::MemStore { ty, p, off: off as u32, v });
     }
-    fn padd(&mut self, p: VId, off: VId) -> VId {
+    pub(super) fn padd(&mut self, p: VId, off: VId) -> VId {
         self.emit(Ty::Ptr, Op::PtrAdd { p, off })
     }
-    fn build(self, key: &str, uses: &[&str], ret: Ty) -> Func {
+    pub(super) fn build(self, key: &str, uses: &[&str], ret: Ty) -> Func {
         Func {
             fqn: key.to_string(),
             key: key.to_string(),
@@ -147,7 +147,7 @@ impl Fb {
         }
     }
     /// 組 `i` (添字) の番地: `buf + ENT0 + i*esz`。
-    fn entry(&mut self, buf: VId, i: VId, esz: i128) -> VId {
+    pub(super) fn entry(&mut self, buf: VId, i: VId, esz: i128) -> VId {
         let k = self.c(Ty::Usize, esz);
         let o = self.mul(i, k);
         let e0 = self.c(Ty::Usize, ENT0);
@@ -856,4 +856,320 @@ fn for_iter(lw: &mut Lw, e: &V, recv: usize, kv: Option<(Ty, Ty)>) -> LR<Option<
         lw.slots[*s] = (xp[k], slot_tys[k]);
     }
     Ok(Some(lw.unit()))
+}
+
+// ------------------------------------------------ alloc.collections.BtreeMap (キーの順を保つ)
+//
+// 表現: ヘッダは HashMap と同じ 24 バイト `{buf, len, cap}` (所有と解放は Vec と同じ)。`buf` は組の配列で、1 組は
+// キー (型どおりの大きさ、欄は 0 から) と値 (欄は +8) の 16 バイト。組はキーの昇順に並ぶ。
+// 検索は二分探索 (`lower`)、挿入と削除は後ろの組を 1 つずらす。容量が足りなければ `2*cap+4` の組へ広げる。
+// キーは整数・bool・char、値は整数・bool・char だけ (`&str` のキーは未対応)。反復 (`for`) は未対応。
+
+const BENT: i128 = 16;
+
+/// `lower` (キーの型だけで決まる) の鍵。
+fn b_lower_name(kt: Ty) -> String {
+    format!("ksn.bmap.{}.lower", kt.name())
+}
+
+/// `get` / `insert` / `remove` の鍵 (キーと値の型ごと)。
+fn b_name(kt: Ty, vt: Ty, op: &str) -> String {
+    format!("ksn.bmap.{}.{}.{}", kt.name(), vt.name(), op)
+}
+
+/// 組 `i` の番地: `buf + i*16`。
+fn b_ent(b: &mut Fb, buf: VId, i: VId) -> VId {
+    let k = b.c(Ty::Usize, BENT);
+    let o = b.mul(i, k);
+    b.padd(buf, o)
+}
+
+/// `(h, key) -> usize`: キー以上になる最初の添字 (組は昇順)。
+fn b_lower_fn(kt: Ty) -> Func {
+    let mut b = Fb::new(&[Ty::Ptr, kt]);
+    let key: VId = 1;
+    let len = b.load(Ty::Usize, 0, 8);
+    let zero = b.c(Ty::Usize, 0);
+    let (lp, lv) = b.block(&[Ty::Usize, Ty::Usize]);
+    let (body, _) = b.block(&[]);
+    let (done, dv) = b.block(&[Ty::Usize]);
+    b.goto(lp, vec![zero, len]);
+    b.at(lp);
+    let (lo, hi) = (lv[0], lv[1]);
+    let more = b.cmp(Cc::Lt, lo, hi);
+    b.term(Term::BrIf(more, (body, vec![]), (done, vec![lo])));
+    b.at(body);
+    let buf = b.load(Ty::Ptr, 0, 0);
+    let d = b.sub(hi, lo);
+    // (hi - lo) / 2 は 1 ビット右へずらす (割り算は trap を持つので、panics never の関数では使えない)
+    let one32 = b.emit(Ty::U32, Op::Const(1));
+    let half = b.emit(Ty::Usize, Op::Shift { left: false, a: d, n: one32 });
+    let mid = b.add(lo, half);
+    let ent = b_ent(&mut b, buf, mid);
+    let k = b.load(kt, ent, 0);
+    let less = b.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: kt, a: k, b: key });
+    let (yes, _) = b.block(&[]);
+    let (no, _) = b.block(&[]);
+    b.br_if(less, yes, no);
+    b.at(yes);
+    let one = b.c(Ty::Usize, 1);
+    let m1 = b.add(mid, one);
+    b.goto(lp, vec![m1, hi]);
+    b.at(no);
+    b.goto(lp, vec![lo, mid]);
+    b.at(done);
+    b.term(Term::Ret(dv[0]));
+    b.build(&b_lower_name(kt), &[], Ty::Usize)
+}
+
+/// 添字 `pos` の組のキーが `key` と等しいなら、その組の番地 (`buf` と `ent` を作る)。`pos < len` は呼び手が確かめる。
+/// 戻りは (値の判定, 組の番地)。
+fn b_found(b: &mut Fb, kt: Ty, pos: VId, key: VId, miss: usize) -> VId {
+    let buf = b.load(Ty::Ptr, 0, 0);
+    let ent = b_ent(b, buf, pos);
+    let k = b.load(kt, ent, 0);
+    let eq = b.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: kt, a: k, b: key });
+    let (hit, _) = b.block(&[]);
+    b.br_if(eq, hit, miss);
+    b.at(hit);
+    ent
+}
+
+/// `get(h, key) -> Option<V>`。
+fn b_get_fn(kt: Ty, vt: Ty) -> Func {
+    let opt = Ty::Opt(Pay::of(vt).expect("BtreeMap の値は Option のペイロードになる"));
+    let mut b = Fb::new(&[Ty::Ptr, kt]);
+    let pos = b.emit(Ty::Usize, Op::Call { callee: b_lower_name(kt), args: vec![0, 1] });
+    let len = b.load(Ty::Usize, 0, 8);
+    let inside = b.cmp(Cc::Lt, pos, len);
+    let (chk, _) = b.block(&[]);
+    let (no, _) = b.block(&[]);
+    let (join, jv) = b.block(&[opt]);
+    b.br_if(inside, chk, no);
+    b.at(chk);
+    let ent = b_found(&mut b, kt, pos, 1, no);
+    let v = b.load(vt, ent, 8);
+    let s = b.emit(opt, Op::Some(v));
+    b.goto(join, vec![s]);
+    b.at(no);
+    let n = b.emit(opt, Op::Const(0));
+    b.goto(join, vec![n]);
+    b.at(join);
+    b.term(Term::Ret(jv[0]));
+    b.build(&b_name(kt, vt, "get"), &[], opt)
+}
+
+/// `insert(h, key, val) -> Option<V>` (同じキーがあれば値を替えて古い値を返す。なければ挿入して `None`)。
+fn b_insert_fn(kt: Ty, vt: Ty) -> Func {
+    let opt = Ty::Opt(Pay::of(vt).expect("BtreeMap の値は Option のペイロードになる"));
+    let mut b = Fb::new(&[Ty::Ptr, kt, vt]);
+    let (key, val): (VId, VId) = (1, 2);
+    let pos = b.emit(Ty::Usize, Op::Call { callee: b_lower_name(kt), args: vec![0, key] });
+    let len = b.load(Ty::Usize, 0, 8);
+    let inside = b.cmp(Cc::Lt, pos, len);
+    let (chk, _) = b.block(&[]);
+    let (ins, _) = b.block(&[]);
+    let (join, jv) = b.block(&[opt]);
+    b.br_if(inside, chk, ins);
+    // 同じキーがあれば値を替える
+    b.at(chk);
+    let ent = b_found(&mut b, kt, pos, key, ins);
+    let old = b.load(vt, ent, 8);
+    b.store(vt, ent, 8, val);
+    let s = b.emit(opt, Op::Some(old));
+    b.goto(join, vec![s]);
+    // 挿入: 満杯なら広げ、`pos` から後ろの組を 1 つずらして書く
+    b.at(ins);
+    let cap = b.load(Ty::Usize, 0, 16);
+    let full = b.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: len, b: cap });
+    let (grow, _) = b.block(&[]);
+    let (moved, _) = b.block(&[]);
+    b.br_if(full, grow, moved);
+    b.at(grow);
+    let oldbuf = b.load(Ty::Ptr, 0, 0);
+    let two = b.c(Ty::Usize, 2);
+    let c2 = b.mul(cap, two);
+    let four = b.c(Ty::Usize, 4);
+    let ncap = b.add(c2, four);
+    let bytes = {
+        let k = b.c(Ty::Usize, BENT);
+        b.mul(ncap, k)
+    };
+    let np = b.emit(Ty::Ptr, Op::HeapRealloc { p: oldbuf, size: bytes });
+    b.store(Ty::Ptr, 0, 0, np);
+    b.store(Ty::Usize, 0, 16, ncap);
+    b.goto(moved, vec![]);
+    b.at(moved);
+    let (sh, sp) = b.block(&[Ty::Usize]);
+    let (shb, _) = b.block(&[]);
+    let (after, _) = b.block(&[]);
+    b.goto(sh, vec![len]);
+    b.at(sh);
+    let i = sp[0];
+    let more = b.cmp(Cc::Gt, i, pos);
+    b.br_if(more, shb, after);
+    b.at(shb);
+    let im = {
+        let one = b.c(Ty::Usize, 1);
+        b.sub(i, one)
+    };
+    let buf = b.load(Ty::Ptr, 0, 0);
+    let src = b_ent(&mut b, buf, im);
+    let dst = b_ent(&mut b, buf, i);
+    let k = b.load(kt, src, 0);
+    let v = b.load(vt, src, 8);
+    b.store(kt, dst, 0, k);
+    b.store(vt, dst, 8, v);
+    b.goto(sh, vec![im]);
+    b.at(after);
+    let buf = b.load(Ty::Ptr, 0, 0);
+    let ent = b_ent(&mut b, buf, pos);
+    b.store(kt, ent, 0, key);
+    b.store(vt, ent, 8, val);
+    let one = b.c(Ty::Usize, 1);
+    let nl = b.add(len, one);
+    b.store(Ty::Usize, 0, 8, nl);
+    let n = b.emit(opt, Op::Const(0));
+    b.goto(join, vec![n]);
+    b.at(join);
+    b.term(Term::Ret(jv[0]));
+    b.build(&b_name(kt, vt, "insert"), &["alloc"], opt)
+}
+
+/// `remove(h, key) -> Option<V>`: 見つかれば後ろの組を 1 つ前へずらし、`len` を減らして古い値を返す。
+fn b_remove_fn(kt: Ty, vt: Ty) -> Func {
+    let opt = Ty::Opt(Pay::of(vt).expect("BtreeMap の値は Option のペイロードになる"));
+    let mut b = Fb::new(&[Ty::Ptr, kt]);
+    let pos = b.emit(Ty::Usize, Op::Call { callee: b_lower_name(kt), args: vec![0, 1] });
+    let len = b.load(Ty::Usize, 0, 8);
+    let inside = b.cmp(Cc::Lt, pos, len);
+    let (chk, _) = b.block(&[]);
+    let (no, _) = b.block(&[]);
+    let (join, jv) = b.block(&[opt]);
+    b.br_if(inside, chk, no);
+    b.at(chk);
+    let ent = b_found(&mut b, kt, pos, 1, no);
+    let old = b.load(vt, ent, 8);
+    let (sh, sp) = b.block(&[Ty::Usize]);
+    let (shb, _) = b.block(&[]);
+    let (after, _) = b.block(&[]);
+    b.goto(sh, vec![pos]);
+    b.at(sh);
+    let i = sp[0];
+    let one = b.c(Ty::Usize, 1);
+    let i1 = b.add(i, one);
+    let more = b.cmp(Cc::Lt, i1, len);
+    b.br_if(more, shb, after);
+    b.at(shb);
+    let buf = b.load(Ty::Ptr, 0, 0);
+    let src = b_ent(&mut b, buf, i1);
+    let dst = b_ent(&mut b, buf, i);
+    let k = b.load(kt, src, 0);
+    let v = b.load(vt, src, 8);
+    b.store(kt, dst, 0, k);
+    b.store(vt, dst, 8, v);
+    let i2 = b.add(i, one);
+    b.goto(sh, vec![i2]);
+    b.at(after);
+    let nl = b.sub(len, one);
+    b.store(Ty::Usize, 0, 8, nl);
+    let s = b.emit(opt, Op::Some(old));
+    b.goto(join, vec![s]);
+    b.at(no);
+    let n = b.emit(opt, Op::Const(0));
+    b.goto(join, vec![n]);
+    b.at(join);
+    b.term(Term::Ret(jv[0]));
+    b.build(&b_name(kt, vt, "remove"), &[], opt)
+}
+
+/// 補助の関数を登録する (`need` と同じ作法。`lower` は `get` / `insert` / `remove` が呼ぶ)。
+fn b_need(lw: &mut Lw, kt: Ty, vt: Ty, ops: &[&str]) {
+    lw.coll.extra.push((b_lower_fn(kt), BTreeSet::new()));
+    let deps: BTreeSet<String> = [b_lower_name(kt)].into_iter().collect();
+    for op in ops {
+        let f = match *op {
+            "get" => b_get_fn(kt, vt),
+            "remove" => b_remove_fn(kt, vt),
+            _ => b_insert_fn(kt, vt),
+        };
+        lw.coll.extra.push((f, deps.clone()));
+        lw.callees.insert(b_name(kt, vt, op));
+    }
+}
+
+/// `BtreeMap` のキーの値 (整数・bool・char)。`&k` と `&` の参照は値に直す。
+fn b_scalar(lw: &mut Lw, a: &V, line: usize) -> LR<Option<VId>> {
+    let operand = if nname(a) == "Unary" && st(&nf(a)[0]) == "&" { &nf(a)[1] } else { a };
+    let Some(mut v) = lw.expr(operand)? else { return Ok(None) };
+    if let Ty::Ref(_, p) = lw.vty(v) {
+        v = lw.emit(p.ty(), Op::Load(v));
+    }
+    let t = lw.vty(v);
+    if !scalar_word(t) {
+        return lw.err(line, format!("BtreeMap のキー・値の型 {} は段階 1 の対象外 (整数・bool・char だけ)", t.name()));
+    }
+    Ok(Some(v))
+}
+
+/// 受け手の種類から (K, V) を決める。未確定なら `learn` で補う (`insert` のとき)。
+fn b_types(lw: &mut Lw, slot: Option<usize>, kind: &Kind, learn: Option<(Ty, Ty)>, line: usize) -> LR<(Ty, Ty)> {
+    match (kind, learn) {
+        (Kind::BMap(Some(kv)), _) => Ok(*kv),
+        (Kind::BMap(None), Some(kv)) => {
+            if let Some(s) = slot {
+                lw.coll.kinds.insert(s, Kind::BMap(Some(kv)));
+            }
+            Ok(kv)
+        }
+        _ => lw.err(line, "BtreeMap のキー・値の型が決まらない"),
+    }
+}
+
+/// `m.insert(k, v)` / `get` / `contains_key` / `remove` / `len` / `is_empty` (`BtreeMap`)。受け手のヘッダは `h`。
+pub(crate) fn bmap_method(lw: &mut Lw, e: &V, slot: Option<usize>, kind: &Kind, h: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
+    let line = nline(e);
+    match (m, args.len()) {
+        ("len", 0) => Ok(Some(lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 }))),
+        ("is_empty", 0) => {
+            let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+            let z = lw.emit(Ty::Usize, Op::Const(0));
+            Ok(Some(lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: len, b: z })))
+        }
+        ("insert", 2) => {
+            let Some(key) = b_scalar(lw, &args[0], line)? else { return Ok(None) };
+            let Some(val) = b_scalar(lw, &args[1], line)? else { return Ok(None) };
+            let (kt, vt) = (lw.vty(key), lw.vty(val));
+            let (kt0, vt0) = b_types(lw, slot, kind, Some((kt, vt)), line)?;
+            if (kt0, vt0) != (kt, vt) {
+                return lw.err(line, "insert の引数の型が BtreeMap のキー・値の型と違う");
+            }
+            let rt = lw.ty_of(e)?;
+            let Ty::Res(Pay::Opt(inner), _) = rt else {
+                return lw.err(line, "insert の結果の型が Result<Option<V>, AllocError> でない");
+            };
+            b_need(lw, kt, vt, &["insert"]);
+            let ot = Ty::Opt(*inner);
+            let o = lw.emit(ot, Op::Call { callee: b_name(kt, vt, "insert"), args: vec![h, key, val] });
+            Ok(Some(lw.emit(rt, Op::Ok(o))))
+        }
+        ("get", 1) | ("contains_key", 1) | ("remove", 1) => {
+            let Some(key) = b_scalar(lw, &args[0], line)? else { return Ok(None) };
+            let kt = lw.vty(key);
+            let (kt0, vt) = b_types(lw, slot, kind, None, line)?;
+            if kt0 != kt {
+                return lw.err(line, "キーの型が BtreeMap のキーの型と違う");
+            }
+            let op = if m == "remove" { "remove" } else { "get" };
+            b_need(lw, kt, vt, &[op]);
+            let Some(vp) = Pay::of(vt) else { return lw.err(line, "BtreeMap の値の型が Option に入らない") };
+            let ot = Ty::Opt(vp);
+            let o = lw.emit(ot, Op::Call { callee: b_name(kt, vt, op), args: vec![h, key] });
+            if m == "contains_key" {
+                return Ok(Some(lw.emit(Ty::Bool, Op::Tag(o))));
+            }
+            Ok(Some(o))
+        }
+        _ => lw.err(line, format!("BtreeMap のメソッド {} は段階 1 の対象外", m)),
+    }
 }

@@ -1137,6 +1137,12 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 参照実行器の修正 (`kir_scalar::conv`): 符号が変わる整数の変換 (`i64` の負の値を `u64` へ) は、型の範囲に入れ直す (負のままにしていた)。LLVM と木走査は従来どおり正しかった。
 - examples/tour の止まり方 (先頭から): `BtreeMap` (112 行) を外した写し (scratch) では、`tour.shapes` の `for s in [a, b, c]` (要素が列挙型の配列) で止まる。`BtreeMap` は KIR に型・操作がなく、大きいので今回は着手していない。
 
+### 17.21 集成体の配列リテラルと `BtreeMap` (kir/tour-rest、2026-11-13)
+- 配列リテラル `[e1, e2, ..]` の要素に、所有物を持たない集成体 (列挙型・構造体) を許す (`kir_lower_array.rs` の `elem_ok`)。値は `store_elem` で並べ、`for x in [..]` は `load_elem` で読む (`counted` の非所有の枝)。所有物 (`String` など) の要素は理由付きで拒む (移動と解放を扱う形は別の作業)。`[e; N]` は従来どおりスカラーだけ。
+- `BtreeMap<K, V>` (`Kind::BMap`、ヘッダは `HashMap` と同じ 24 バイト): 組は 16 バイト (キーは +0、値は +8) で、キーの昇順に並ぶ。`get` / `contains_key` / `remove` / `insert` は生成する補助の関数 (`ksn.bmap.<K>.<V>.{get,insert,remove}` と、キーだけで決まる `ksn.bmap.<K>.lower`)。`lower` は二分探索 (中点は 1 ビット右へのずらし。割り算は trap を持つので `panics never` で使えない)。`insert` は同じキーなら値を替えて `Some(古い値)`、なければ後ろの組を 1 つずらして書く。満杯なら `2*cap+4` の組へ広げる (`realloc` のため `uses [alloc]`)。`remove` は後ろの組を 1 つ前へずらす。キーは整数・bool・char、値は整数・bool・char だけ (`&str` のキーと集成体の値は理由付きで拒む)。反復 (`for`) は未対応。
+- 試験: `kir_array_literal_of_aggregates_matches_tree_walker` (列挙型・構造体の要素、`String` の要素の拒否)、`kir_btree_map_matches_tree_walker` (tour と同じ並び、負のキー、容量の広がり、偶数の削除、`char` のキー。`--run` / `--native` / ASan)。
+- examples/tour は `ksn build --backend llvm` で作れ、出力が `ksn run` と一致する。`llvm_builds_of_real_packages_match_run` に `examples/tour` を足した。
+
 ## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
 
 段階 2 (第 5 章) の第 1 段。`ksn run --engine=vm` と `ksn test --engine=vm` (`--engine=tree` が既定の木走査)。既定の挙動は変えていない。`clif.rs` と `examples/`・`perf/` のソースは触っていない。
@@ -1306,3 +1312,46 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 試験: `kir_generic_functions_and_methods_are_monomorphized` (2 つ以上の型・明示・メソッド・入れ子・集成体の型引数、`ksn run` / `--run` / `--native` が一致、鍵が KIR に出る)、`kir_generic_with_effect_parameter_is_rejected_with_a_reason`。`llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered` の例は `dyn` のトレイトオブジェクトを引数に取る関数 (当面だれも下ろさない形) に替えた。
 - `examples/plugins`: `Bus.register<Counter>` の単相化までは進むが、その本体の `Box.new` / `Box.into_dyn` (`Box<dyn Handler>`)、`Vec.new(allocator)`、`dyn` のメソッド呼び出し (`handle`) が段階 1 の対象外で止まる。型引数の部分の壁は越えた。
 - `examples/threads`: `std.sync.channel::<T, A>` の呼び出しは未対応のまま。チャネルには型引数付きの標準の型 (`Sender<T>` / `Receiver<T>`、集成体の表が型引数付きの型を持たない)、キューの領域、`recv` が空のときに保留中のスレッドを生成順に走らせる意味が要る。ほかに `static Mutex` の `lock`、`Rng`、ループの中の `spawn` の呼び出し元が残っていて、チャネルだけでは通らない。
+
+## 21. `Box<T>` と `Box<dyn Tr>` (kir/box-dyn、2026-11-13)
+
+- **`Box<T, std.alloc.System>`**: 所有するヒープの 1 要素へのポインタ。型表の構造体 `box<..>` (`{ptr}` 8 バイト。名前は中身が集成体なら `box<#N>`、スカラーなら `box<u32>`。中身の型は `AggTab::box_elems`)。`Box.new(std.alloc.SYSTEM, v)` は `heap.alloc` + `store` で `Ok(box)` を返す (確保の失敗は起こさない)。`as_ref` / `as_mut` は同じ番地の `ref<T>` / `mutref<T>` (中身が `String` / `Vec` ならヘッダの番地 `ptr`)、`into_inner` は中身を `load` して確保を `free` する。アロケータが `System` 以外、中身が `()` / `Option` / `Result` / 参照のものは理由付きで拒否する。
+- **所有**: `box<..>` と `dynbox<..>` は `AggTab::owns_heap` が真で、構造体のフィールド・`Result` のペイロード・`Vec` の要素になる。移動と解放は 13 章の規則 (印・登録の逆順・`?` / `return` / `break` の経路) のまま。解放 (`drop_value`) は、中身が所有物なら先に解放してから `heap.free`。
+- **`Box<dyn Tr, System>`**: データの番地と vtable の番号の組 (型 `dynbox<トレイトの FQN>`、`{ptr: ptr@0, vt: usize@8}`)。`into_dyn(b)` が (トレイト, 具体型) の組を登録して番号を振る (`AggTab::dynr`、同じ組は 1 度だけ)。具体型は名前を持つ構造体・列挙型・基本型だけ (型引数付きは拒否)。
+- **呼び出しは vtable の番号で分岐する補助関数**: KIR に間接呼び出しの命令がないので、`x.m(..)` (受け手が `Box<dyn Tr>`、その参照、フィールド、`v[i].f`) は `call dyn.call.<Tr>.<m>(ptr, vt, 引数..)` に下ろす。補助関数は全関数を下ろした後に `kir_lower_dyn.rs` の `synth` が (トレイト, メソッド) ごとに 1 つ作る: 登録された `vt` の分だけ `vt == k` の比較の連鎖で分かれ、`ptr` を具体型への参照に `bitcast` して `<具体型>.<m>` を直接呼ぶ。閉じた世界の単相化なので、新しい `Op` は足していない (参照実行器・VM・LLVM は変更なし。VM は直接呼び出しなので退避もしない)。補助関数の `uses` / `panics` は呼び先の合併で、`dyn` の宣言より広くなる (同じトレイトの別の型引数の `impl` が混ざるとき) と呼び出し元の検査が落とす。実装のメソッドが下ろせなければ補助関数が「呼び先が未対応」で外れ、呼び出し元も外れる。
+- **解放も同じ作り**: `call dyn.drop(ptr, vt)`。補助関数は、所有物を持つ具体型の `vt` だけ中身を `load` して `drop_value` し、最後に `heap.free`。`Vec<Slot>` (`Slot` が `Box<dyn>` を持つ) の解放は、13.8 の要素の解放から `dyn.drop` に届く。
+- **付随して通したもの**: `import alloc.vec` の別名の形 (`vec.Vec.new(..)`、`boxed.Box.new(..)`) を解決した FQN で照合する (`kir_lower_coll.rs` `try_call`)。構造体のフィールドの Vec の添字 `self.handlers[i]` (`vec_place` がフィールドのヘッダの番地を置き場にする。読みと要素の書き込みだけでヘッダは変えない)。
+- **対象外 (理由付きで拒否)**: `&dyn` / `&mut dyn` (関数の引数、`Box<dyn>` の `as_ref` / `as_mut`)、型引数付きの具体型、`System` 以外のアロケータ。`llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered` などの退避の試験は `&dyn` の引数を「下ろせない例」に使っていて、今も理由付きで退避する (そのまま)。
+- **試験** (`stage0/tests/cli.rs`): `kir_box_dyn_match_tree_walker` (`Box<u32>` / `Box<String>` / `Box<構造体>` / `Box<dyn>` の 2 実装の呼び分け・`&mut self` のメソッド・`Vec<Box<dyn>>` を回す・中身に `String` を持つ具体型・移動・`into_inner` の 15 ケース。木走査と `--run` / `--native` と ASan が一致)、`kir_box_dyn_dispatch_uses_a_per_trait_helper_without_new_ops` (ダンプの形と `ksn build --backend llvm`)、`kir_box_dyn_reports_unsupported_with_a_reason`。`llvm_builds_of_real_packages_match_run` に `examples/plugins` を足した。
+- **`examples/plugins`**: `ksn build --backend llvm` が通り、ネイティブの stdout・終了コードが `ksn run` と一致する (ASan 付きも)。
+
+
+
+## 22. スレッドの表・チャネル・`static` の `Mutex`・`Rng` (kir/threads-sync、2026-11-13)
+
+`examples/threads` を KIR / LLVM で通す。意味は木走査 (`interp.rs` の `threads` の注、`natives.rs`) と同じ。
+
+### 22.1 新しい命令 `global.bytes NAME SIZE`
+- 名前付きの大域領域 (`ptr`)。0 で初期化、プログラムの間ずっと生き、同じ名前は同じ領域、書き込める。`static.bytes` (読み取り専用の定数) とは別。参照実行器は pinned の領域 (終了時の漏れの検査の対象外)、LLVM は `internal global [N x i8] zeroinitializer`、VM は 1 度だけ確保した領域 (`Prog.globals`) の定数アドレス。
+- 参照実行器の関数の終わりの漏れの検査は、大域領域 (pinned) の中の語も根に数える (結果の置き場に Vec を置くため)。
+- 検査 (`verify_module`) は、`ksn.thr.*` / `ksn.chan.*` の補助の関数を呼ぶ側の `uses` / `panics` の包含を見ない (補助が spawn した側のクロージャの効果を呼ぶため。効果の検査は spawn の側のクロージャの下ろしと、木走査の検査が持つ)。
+
+### 22.2 スレッドの表 (`kir_lower_thread.rs`、14 章の「保留して join で生成順」の置き換え)
+- 以前は spawn の位置ごとの静的な「サイト」で、同じ関数の中の spawn / join、ループの外の spawn に限った。今は大域領域 `ksn.thr` に表 (`count` + 32 項目、1 項目 = `state` (0 保留 / 1 実行中 / 2 完了)・`tag` (クロージャの鍵の FNV-1a)・取り込み値 64 バイト・結果 64 バイト) を持つ。ハンドルの `native` が項目の番号 (実行時の値)。ループの中の spawn、spawn して `JoinHandle` を返す関数 (`threads.add_worker`)、ハンドルを引数で受ける関数が通る。表が満杯 (33 本目) なら `thread table full` の panic、取り込み値・結果が 64 バイトを超えるクロージャは下ろしを拒否する。
+- クロージャごとに入口の関数 `ksn.thr.site.<鍵>(項目の番地)` (取り込み値を読んでクロージャを呼び、結果を書く) を足し、`lower_defs` が全関数を下ろした後に `finish` で補助の関数を作る: `ksn.thr.exec(i)` (tag で入口を選ぶ)、`ksn.thr.run_one() -> bool` (保留の最初の 1 本を state 1 → 2 で最後まで走らせて true、無ければ false)、`ksn.thr.join(i)` (完了まで `run_one` を繰り返す。実行中の項目を待つ、走らせるものが無い場合は木走査と同じ `DEADLOCK_JOIN` の panic)。`join(h)` は `ksn.thr.join(h.native)` の後に項目の結果の置き場から読む。join しないスレッドは走らない。
+- 取り込み値は項目へ書いた時点で呼び出し元の手を離れ、走るときに入口が読んで呼び先の引数として渡す (呼び先が所有する)。
+
+### 22.3 チャネル (`kir_lower_chan.rs`)
+- 型 (`AggTab`): `std.sync.Sender<T>` / `Receiver<T>` は `{ state: ptr }` (8 バイト)、`SendError<T>` は `{ value: T }`、`RecvError` は標準の型。`T` は 64 ビット以下のスカラー (それ以外は理由付きで拒否)。型引数付きの標準の型は名前に `T` を埋め込んで型表に入れる (20 章の単相化と同じ作法)。端は「所有物を持つ型」 (`owns_heap`) で、移動・スコープの終わり・引数の解放の規則 (13 章) にそのまま乗る。
+- 状態はヒープの 48 バイト `{buf, head, len, cap, senders, receivers}`。キューは `buf[head..len]`、要素は 8 バイトの枠。`channel(alloc, cap)` は `Ok((tx, rx))` (容量は木走査と同じく無視)、`clone` は本数を増やす。端を落とすと本数を減らし、両方 0 なら `ksn.chan.free` が `buf` と状態を解放する。`send` が満杯で伸ばすのは `ksn.chan.grow` (`alloc` の効果は補助の側が持つ)。
+- `send`: 受信側が 0 本なら `Err(SendError { value })`、そうでなければ末尾に追加して `Ok(())` (待たない)。`recv`: 空でなければ先頭、空で送信側 0 本なら `Err(RecvError { code: 0 })`、空で送信側が生きていれば `ksn.thr.run_one` で保留中のスレッドを 1 本走らせてやり直し、走らせるものが無ければ `DEADLOCK_RECV` の panic (終了コード 101、文言は木走査と同じ)。
+- `move tx` の取り込みはチャネルの端だけ許す (呼び出し元の印を下ろして値を取り込み値へ移す。クロージャの本体が引数として所有し、終わりで落とす)。
+- 未対応 (理由付き): `Receiver.close`・`try_*`、要素が 8 バイトを超える・集成体・`String` の `T`、構造体のフィールドの端への `send` / `recv` (局所と `&Sender` の引数だけ)。
+
+### 22.4 `static` の `Mutex` と `Rng` (`kir_lower_sync.rs`)
+- `static N: std.sync.Mutex<T> = std.sync.Mutex.new(init)` (`T` は 64 ビット以下のスカラー、`init` は整数か bool のリテラル): 大域領域 `N` (16 バイト、`+0` 初期化の旗、`+8` 値)。`N.lock()` は旗が 0 なら `init` を値に書いて旗を立て、値の場所への `&mut T` を返す。これがガードの値で、`get()` は共有参照、`get_mut()` はそのまま。木走査の `lock` は無操作 (各スレッドは最後まで走る) なのでロックの命令は出さない。ローカルな `Mutex` の値は未対応。
+- `std.rand.Rng` は `{ state: u64 }` (標準の型として型表に入れる)。`from_seed(s)` = `{ s }`、`next_u64` は木走査と同じ splitmix64 (`natives.rs` の `splitmix`)。受け手は局所 (SSA・アドレスを取られたもの) か `&mut Rng` の引数。`from_entropy` は未対応。
+
+### 22.5 試験と結果
+- `kir_sync_values_match_tree_walker` (静的 Mutex の加算・Rng のシードの列 (`&mut` の引数を含む)・生産者 1 本のチャネル・同じスレッドでの送受信と `clone` と drop・受信側を落とした後の `send` のエラー・送り手 2 本 (受信が spawn の順に走らせる)・ループの中の `spawn`・spawn して返すハンドルの `join`。`ksn run` / `--run` / `--native` (と ASan) が一致)、`kir_sync_empty_recv_with_live_sender_deadlocks_like_the_tree_walker` (送り手が生きたままの空の recv は 101 と同じ文言)。`kir_thread_spawn_join_match_tree_walker` (14 章の既存の形) は表の方式で通る。
+- `examples/threads`: `ksn build --backend llvm` が作れ、`ksn run` と stdout・stderr・終了コードが一致する (`llvm_builds_of_real_packages_match_run` に追加)。

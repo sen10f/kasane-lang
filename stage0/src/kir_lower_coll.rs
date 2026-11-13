@@ -30,6 +30,7 @@ use crate::types::{from_v, Ty as Src};
 const VEC: &str = "alloc.vec.Vec";
 const STRING: &str = "alloc.string.String";
 const HASHMAP: &str = "alloc.collections.HashMap";
+const BTREEMAP: &str = "alloc.collections.BtreeMap";
 /// `Vec<T>` と `String` のヘッダの大きさ (ptr, len, cap)。
 const HDR_VEC: u32 = 24;
 
@@ -47,6 +48,8 @@ pub(crate) enum Kind {
     /// `HashMap<K, V>` (設計_KIR.md 16 章)。キーと値の型が分かれば `Some`。キーの `Ty::Ptr` は `&str` のキーの印。
     /// ヘッダは Vec と同じ 24 バイト (所有と移動と解放は Vec と同じ規則)。
     Map(Option<(Ty, Ty)>),
+    /// `BtreeMap<K, V>` (キーの順を保つ。ヘッダは Map と同じ 24 バイト。設計_KIR.md 17.21)。
+    BMap(Option<(Ty, Ty)>),
     /// 下ろした関数の鍵と、引数・戻り値の型。`caps` は取り込みの値 (この関数の中の値番号。値の取り込みはその値、
     /// 参照の取り込みは参照の値) で、`cap_tys` がその型。呼び出しでは先頭の追加の引数として渡す (設計_KIR.md 13 章)。
     Closure { key: String, args: Vec<Ty>, ret: Ty, caps: Vec<VId>, cap_tys: Vec<Ty> },
@@ -106,9 +109,6 @@ pub(crate) struct CollCx {
     pub(crate) peek_field: bool,
     /// 下ろしたクロージャの式 ID → (取り込みの値, その型)。`closure_kind_from_table` が読む。
     pub(crate) caps: BTreeMap<u32, (Vec<VId>, Vec<Ty>)>,
-    /// `std.thread.spawn` で保留されたクロージャの (鍵, 取り込み値) の列。FIFO = spawn 順。
-    /// `join` が先頭を取り出してクロージャ本体を呼ぶ (設計_KIR.md スレッド章)。
-    pub(crate) pending_spawns: Vec<super::thread_lower::Site>,
     /// 添字式 `v[i]` (所有物を持つ要素の Vec) の木の番地 → 要素の借用を持つスロット。`elem_prep` が作り、
     /// `local_slot` / `chain_of` が受け手として読む。
     pub(crate) elem_slots: BTreeMap<usize, usize>,
@@ -216,7 +216,7 @@ pub(crate) fn bind_param_kind(lw: &mut Lw, name: &str, t: &Src) {
 /// `&v` / `&mut v` (v は Vec / String の局所変数): ヘッダのアドレスそのもの。
 pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
     if let Some(s) = local_slot(lw, operand) {
-        if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) {
+        if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_)) | Some(Kind::BMap(_))) {
             return Ok(lw.slots[s].0);
         }
     }
@@ -229,6 +229,7 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
         Src::Named(n, args) if n == VEC => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a))))),
         Src::Named(n, _) if n == STRING => Some(Kind::String),
         Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(args))),
+        Src::Named(n, args) if n == BTREEMAP => Some(Kind::BMap(map_kv(args))),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         Src::Slice(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
         // 固定長配列 `&[T; N]` の要素型。長さ N は `arr_len` で別途追跡する。
@@ -375,6 +376,11 @@ pub(super) fn emit_free(lw: &mut Lw, hdr: VId) {
     lw.emit(Ty::Unit, Op::HeapFree(buf));
 }
 
+/// 他の下ろしの子モジュールから使う `owns_heap` (所有物を持つ型か)。
+pub(super) fn owns_heap_pub(lw: &Lw, t: Ty) -> bool {
+    owns_heap(lw, t)
+}
+
 fn owns_heap(lw: &Lw, t: Ty) -> bool {
     lw.aggs.borrow().owns_heap(t)
 }
@@ -445,7 +451,7 @@ pub(crate) fn val_slot_of(lw: &Lw, s: usize) -> bool {
 
 /// 局所変数の読み (値としての使用 = 移動)。所有する Vec / String はヘッダから値を移し、印を持つ変数は印を下ろす。
 pub(crate) fn path_read(lw: &mut Lw, s: usize) -> VId {
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) && !lw.coll.borrowed.contains(&s) {
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_)) | Some(Kind::BMap(_))) && !lw.coll.borrowed.contains(&s) {
         let h = lw.slots[s].0;
         return move_hdr(lw, h);
     }
@@ -489,6 +495,13 @@ pub(super) fn drop_elems(lw: &mut Lw, v: VId, buf: VId, elem: Ty) {
     lw.cur = Some(exit);
 }
 
+/// ヒープの番地 `p` から型 `t` の値を読む (`ptr` を同じアドレスの参照にして `load`)。
+pub(crate) fn box_load(lw: &mut Lw, p: VId, t: Ty) -> VId {
+    let pt = Pointee::of(t).expect("Box の中身は参照できる型");
+    let r = lw.emit(Ty::Ref(true, pt), Op::Bitcast { src: Ty::Ptr, a: p });
+    lw.emit(t, Op::Load(r))
+}
+
 /// 型 `t` の値 `v` (所有している) を解放する命令列を、現在のブロックに置く。所有物を持たない型は何もしない。
 /// 列挙型と `Option` / `Result` は、タグで枝を分けて、持っている変種のペイロードだけを解放する。
 pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
@@ -498,6 +511,26 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
     match t {
         Ty::Agg(i) => {
             let d = lw.aggs.borrow().defs[i as usize].clone();
+            // `Box<dyn Tr>`: 中身の型は実行時の vtable の番号で決まるので、補助関数 `dyn.drop` が中身を解放してから確保を返す。
+            if d.name.starts_with("dynbox<") {
+                let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                let vt = lw.emit(Ty::Usize, Op::Field { a: v, off: 8 });
+                lw.aggs.borrow_mut().dynr.drop_used = true;
+                lw.callees.insert("dyn.drop".to_string());
+                lw.emit(Ty::Unit, Op::Call { callee: "dyn.drop".to_string(), args: vec![p, vt] });
+                return;
+            }
+            // `Box<T>`: 中身が所有物なら先に解放してから、確保を返す。
+            let belem = lw.aggs.borrow().box_elem(t);
+            if let Some(elem) = belem {
+                let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                if owns_heap(lw, elem) {
+                    let inner = box_load(lw, p, elem);
+                    drop_value(lw, inner, elem);
+                }
+                lw.emit(Ty::Unit, Op::HeapFree(p));
+                return;
+            }
             if super::agg::is_vec_name(&d.name) {
                 let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
                 // 要素が所有物なら、各要素を先に解放する (設計_KIR.md 13.8)
@@ -506,6 +539,12 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
                     drop_elems(lw, v, p, elem);
                 }
                 lw.emit(Ty::Unit, Op::HeapFree(p));
+                return;
+            }
+            // チャネルの端: 本数を減らし、最後の 1 本なら状態を解放する (設計_KIR.md 22 章)。
+            let end = lw.aggs.borrow().chan_kind(t);
+            if let Some(sender) = end {
+                super::chan_lower::drop_end(lw, v, sender);
                 return;
             }
             match d.kind {
@@ -703,7 +742,7 @@ pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
 /// 局所変数への代入 `x = v`。所有物は、古い値を解放してから新しい値を入れる (Vec / String はヘッダを書き直す)。
 /// 印を持つ変数は印を立て直す (移した後の再代入を含む)。
 pub(crate) fn assign_checked(lw: &mut Lw, s: usize, v: VId, line: usize) -> LR<()> {
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) && !lw.coll.borrowed.contains(&s) {
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_)) | Some(Kind::BMap(_))) && !lw.coll.borrowed.contains(&s) {
         let h = lw.slots[s].0;
         let vt = lw.coll.hdr_ty.get(&h).copied().unwrap_or_else(|| lw.aggs.borrow_mut().vec_hdr());
         if lw.vty(v) != vt {
@@ -1179,6 +1218,15 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             }
         }
     }
+    // `import alloc.vec` の別名の形 (`vec.Vec.new`) も、解決した FQN で照合する。
+    let segs: Vec<String> = match lw.p.resolve(&segs, &lw.def.file) {
+        Some(r) if r.rest.is_empty() => match r.target {
+            Target::Native(n) => n.split('.').map(String::from).collect(),
+            Target::Sig(di) | Target::Fn(di) => lw.p.defs[di].name.split('.').map(String::from).collect(),
+            _ => segs,
+        },
+        _ => segs,
+    };
     let segs: Vec<&str> = segs.iter().map(|x| x.as_str()).collect();
     match segs.as_slice() {
         ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e)),
@@ -1190,6 +1238,7 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             Some(lw.from_utf8_call(e, items(&f[1]), nline(e)))
         }
         ["alloc", "collections", "HashMap", "new"] => Some(new_header(lw, e)),
+        ["alloc", "collections", "BtreeMap", "new"] => Some(new_header(lw, e)),
         // `core.mem.drop(x)`: 値を移して、その場で解放する。
         ["core", "mem", "drop"] => Some(mem_drop(lw, e)),
         _ => None,
@@ -1430,6 +1479,7 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     let slot = local_slot(lw, &f[0]);
     Some(match place(lw, &f[0]) {
         Ok(Some(h)) if matches!(kind, Kind::Map(_)) => super::map_lower::method(lw, e, slot, &kind, h, &m, items(&f[2])),
+        Ok(Some(h)) if matches!(kind, Kind::BMap(_)) => super::map_lower::bmap_method(lw, e, slot, &kind, h, &m, items(&f[2])),
         Ok(Some(h)) => method_on(lw, e, line, slot, kind, h, &m, items(&f[2])),
         Ok(None) => Ok(None),
         Err(e) => Err(e),
@@ -1487,6 +1537,9 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
     }
     if matches!(kind, Kind::Map(_)) {
         return super::map_lower::method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
+    }
+    if matches!(kind, Kind::BMap(_)) {
+        return super::map_lower::bmap_method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
     }
     method_on(lw, e, line, Some(s), kind, hdr, m, items(&f[1]))
 }
@@ -2134,6 +2187,19 @@ fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
             _ => {}
         }
     }
+    // 構造体のフィールドの Vec (`self.handlers[i]`): フィールドのヘッダの番地を置き場にする (読みと要素の書き込みだけ。ヘッダは変えない)。
+    if nname(e) == "Field" {
+        if let Some((s, names)) = super::own::chain_of(lw, e) {
+            if let Some(src) = super::own::field_src(lw, s, &names) {
+                if !matches!(src, Src::Ref(..)) {
+                    if let Some(Kind::Vec(Some(elem))) = kind_of_src(lw, &src) {
+                        let pl = super::own::place(lw, s, &names, line)?;
+                        return Ok((Seq::Hdr(pl.hdr), elem));
+                    }
+                }
+            }
+        }
+    }
     // `b"..."` リテラルは式そのままなので fat 値を作る。
     if nname(e) == "Lit" {
         let f = nf(e);
@@ -2624,7 +2690,7 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
                     let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
                     lw.bind(n, r, rt);
                 } else {
-                    let v = lw.emit(ety, Op::MemLoad { p: addr, off: 0 });
+                    let v = load_elem(lw, addr, ety);
                     lw.bind(n, v, ety);
                 }
                 if c.by_ref && !c.by_mut {
@@ -2776,7 +2842,9 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize) -> LR<(Vec<Strin
             return lw.err(line, format!("capture の {} は Vec / String / str / スライス / クロージャで、取り込みは段階 1 の対象外 (所有の移動と解放の規則が要る)", name));
         }
         let t = lw.slots[s].1;
-        if lw.aggs.borrow().owns_heap(t) {
+        // チャネルの端の `move` は取り込める (取り込み値を引き継いだ側が落とす。呼び出し元の印は `path_read` が下ろす)。
+        let chan_move = kind == "move" && lw.aggs.borrow().chan_kind(t).is_some();
+        if lw.aggs.borrow().owns_heap(t) && !chan_move {
             return lw.err(line, format!("capture の {} は解放の要る値を持つので段階 1 の対象外 (所有の移動と解放の規則が要る)", name));
         }
         if t.is_ref() {
@@ -2785,7 +2853,11 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize) -> LR<(Vec<Strin
         let v = match kind.as_str() {
             "move" => {
                 moved.push(name.clone());
-                lw.read_slot(s)
+                if chan_move {
+                    path_read(lw, s)
+                } else {
+                    lw.read_slot(s)
+                }
             }
             "&" | "&mut" => {
                 let ptr = lw.slots[s].0;

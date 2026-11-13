@@ -44,12 +44,19 @@ mod method_lower;
 // `std.thread.spawn` / `JoinHandle.join` の下ろし (子モジュール)。
 #[path = "kir_lower_thread.rs"]
 mod thread_lower;
+#[path = "kir_lower_sync.rs"]
+mod sync_lower;
+#[path = "kir_lower_chan.rs"]
+mod chan_lower;
 // 型引数付きの関数・メソッドの単相化 (子モジュール)。
 #[path = "kir_lower_mono.rs"]
 mod mono;
 // 配列リテラルの下ろし (子モジュール)。
 #[path = "kir_lower_array.rs"]
 mod array_lower;
+// `Box<T>` と `Box<dyn Tr>` の下ろし (子モジュール。設計_KIR.md 21 章)。
+#[path = "kir_lower_dyn.rs"]
+mod dyn_lower;
 
 // コレクション・文字列・クロージャの下ろし (子モジュール。`Lw` の非公開の項目を使う)。
 #[path = "kir_lower_iter.rs"]
@@ -68,6 +75,11 @@ use coll::CollCx;
 #[path = "kir_lower_net.rs"]
 mod net_lower;
 use net_lower::{is_net_ty, net_call, net_method};
+
+// `std.fs` (ファイル) の下ろし (設計_KIR.md 12 章)。
+#[path = "kir_lower_fs.rs"]
+mod fs_lower;
+use fs_lower::{is_fs_ty, fs_call, fs_method};
 
 // `std.env` (引数・環境変数) の下ろし。
 #[path = "kir_lower_env.rs"]
@@ -814,6 +826,9 @@ impl<'a> Lw<'a> {
     }
 
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = dyn_lower::try_call(self, e) {
+            return r;
+        }
         if let Some(r) = coll::try_call(self, e) {
             return r;
         }
@@ -824,6 +839,12 @@ impl<'a> Lw<'a> {
             return r;
         }
         if let Some(r) = self.unwrap_path(e) {
+            return r;
+        }
+        if let Some(r) = sync_lower::sync_call(self, e) {
+            return r;
+        }
+        if let Some(r) = chan_lower::chan_call(self, e) {
             return r;
         }
         if let Some(r) = self.user_path_call(e) {
@@ -872,6 +893,13 @@ impl<'a> Lw<'a> {
                     if matches!(meth.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port") {
                         let args = items(&f[1]).to_vec();
                         return net_method(self, e, &meth, recv, rt, &args, line);
+                    }
+                }
+                if is_fs_ty(self, rt) {
+                    let meth = segs[segs.len() - 1].clone();
+                    if matches!(meth.as_str(), "close" | "flush" | "read" | "sync" | "write") {
+                        let args = items(&f[1]).to_vec();
+                        return fs_method(self, e, &meth, recv, rt, &args, line);
                     }
                 }
                 let meth = segs[segs.len() - 1].clone();
@@ -931,6 +959,9 @@ impl<'a> Lw<'a> {
         let callee_name = segs.join(".");
         if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
             return net_call(self, e, callee_name == "std.net.listen", line);
+        }
+        if matches!(callee_name.as_str(), "std.fs.create" | "std.fs.open" | "std.fs.exists" | "std.fs.remove_file" | "std.fs.read_to_end") {
+            return fs_call(self, e, &callee_name, args, line);
         }
         if let Some(r) = env_call(self, e, &callee_name, args, line)? {
             return Ok(Some(r));
@@ -1038,6 +1069,9 @@ impl<'a> Lw<'a> {
             if let Some(r) = thread_lower::join_call(self, e, a, t, line) {
                 return r;
             }
+        }
+        if let Some(r) = dyn_lower::try_mcall(self, e) {
+            return r;
         }
         if let Some(r) = coll::try_mcall(self, e) {
             return r;
@@ -1480,6 +1514,9 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
             Err(why) => bad.push((d.name.clone(), why)),
         }
     }
+    // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
+    thread_lower::finish(&mut ok);
+    chan_lower::finish(&mut ok);
     // `extern` 宣言を KIR の関数宣言 (本体なし) にする。リンク名は `Func.link` に持つ。
     for &i in user {
         let d = &p.defs[i];
@@ -1498,6 +1535,10 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
                 bad.push((f.key, why));
             }
         }
+    }
+    // `Box<dyn Tr>` の呼び出しと解放の補助関数 (登録された変換と呼び出しがそろった後に作る)。
+    if let Some(&i0) = user.first() {
+        dyn_lower::synth(p, &tys, &aggs, &p.defs[i0], &mut ok);
     }
     // 同じ単相インスタンスを、別々の呼び出し元が下ろしていることがある (内容は同じ)。鍵の重複は先の一つだけ残す。
     let mut seen: HashSet<String> = HashSet::new();
