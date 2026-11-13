@@ -4,6 +4,7 @@ mod doc;
 mod headers;
 mod lexer;
 mod check;
+mod check_cache;
 mod cli;
 mod clif;
 mod ffi;

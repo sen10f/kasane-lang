@@ -264,13 +264,26 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
     check_lock(&l.pkg, &l.deps, rep);
     let srcroot = norm(&l.pkg.root.join("src"));
     let grammar = Grammar::new();
+    let use_cache = crate::check_cache::enabled();
     for s in &l.pkg.sources {
         let fl = rel(&s.path);
         if s.path.ends_with(".ksnh") {
             rep.add("E1107", "the .ksnh extension is no longer supported; rename the file to .ksnl", Some(&fl), 1, 1, true);
         }
+        // 文面だけで決まる検査 (文法・正規形・lint) は、キャッシュが有効ならファイル単位で再利用する
+        // (check_cache.rs、設計_増分検査.md)。無効のときは従来どおり毎回計算する。
+        let relpath = lint_rel(s, &srcroot);
+        let cached = if use_cache && s.error.is_none() { crate::check_cache::load(&s.path, &relpath, &s.text) } else { None };
+        let gram = if s.error.is_none() {
+            Some(match &cached {
+                Some(c) => c.grammar.clone(),
+                None => grammar.check(&s.text),
+            })
+        } else {
+            None
+        };
         // 構文エラーのとき、Rust 風の書き方をまとめて直し方つきで報告する。
-        if s.error.is_some() || !grammar.check(&s.text).0 {
+        if s.error.is_some() || !gram.as_ref().map_or(false, |g| g.0) {
             for h in crate::rustisms::scan(&s.text) {
                 rep.add(h.code, &h.msg, Some(&fl), h.line, h.col, true);
             }
@@ -282,6 +295,7 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             rep.add(&e.code, &e.msg, Some(&fl), e.line, e.col, true);
             continue;
         }
+        let gram = gram.unwrap();
         for (i, line) in s.lines.iter().enumerate() {
             if line.contains('\t') {
                 rep.add("E0001", "tab is not allowed", Some(&fl), i + 1, line.chars().position(|c| c == '\t').map_or(1, |p| p + 1), true);
@@ -293,25 +307,36 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
         if !s.text.ends_with('\n') || s.text.ends_with("\n\n") {
             rep.add("E0001", "file must end with exactly one LF", Some(&fl), s.lines.len(), 1, true);
         }
-        let relpath = &lint_rel(s, &srcroot);
-        let lt = s.text.replace("\r\n", "\n");
-        // 正規形でなくても、`ksn fmt` で正規形になり、その結果が検査を通るなら、並び順や空行は
-        // エラーにしない (`fmt --check` が差分として報告する)。意味に関する誤りは従来どおり報告する。
-        let formatted = crate::fmt::format_source(&s.text, &s.path);
-        if formatted != s.text && !s.text.contains('\t') {
-            let fixable = Lint::new(relpath, &formatted).run().is_empty() && grammar.check(&formatted).0;
-            if fixable {
-                continue;
+        let fc = match cached {
+            Some(c) => c,
+            None => {
+                let lt = s.text.replace("\r\n", "\n");
+                // 正規形でなくても、`ksn fmt` で正規形になり、その結果が検査を通るなら、並び順や空行は
+                // エラーにしない (`fmt --check` が差分として報告する)。意味に関する誤りは従来どおり報告する。
+                let formatted = crate::fmt::format_source(&s.text, &s.path);
+                let skip = formatted != s.text
+                    && !s.text.contains('\t')
+                    && Lint::new(&relpath, &formatted).run().is_empty()
+                    && grammar.check(&formatted).0;
+                let lint = if skip { vec![] } else { Lint::new(&relpath, &lt).run() };
+                let fc = crate::check_cache::FileCheck { grammar: gram.clone(), skip, lint };
+                if use_cache {
+                    crate::check_cache::store(&s.path, &relpath, &s.text, &fc);
+                }
+                fc
             }
+        };
+        if fc.skip {
+            continue;
         }
-        for (code, ln, msg) in Lint::new(relpath, &lt).run() {
+        for (code, ln, msg) in fc.lint {
             // `order` (E0020: 定義順・群内順・uses/属性の並び順)は `ksn fmt` で
             // 機械的に直せる違反。check では非致命的として報告し、終了コードに
             // 影響させない (`fmt --check` が差分として検出する)。
             let fatal = !(run_mode && code == "unused") && code != "order";
             rep.add(lint_code(&code), &msg, Some(&fl), ln, 0, fatal);
         }
-        let (ok, msg, ln) = grammar.check(&s.text);
+        let (ok, msg, ln) = gram;
         if !ok {
             rep.add("E0002", &msg, Some(&fl), ln, 0, true);
         }
@@ -1921,7 +1946,7 @@ fn evict(cdir: &Path, keep: &str) {
     let Ok(rd) = fs::read_dir(cdir) else { return };
     let mut ents: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git")
+        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git" && e.file_name().to_string_lossy() != "check")
         .map(|e| {
             let used = e.path().join(".used");
             let t = fs::metadata(&used).or_else(|_| e.metadata()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);

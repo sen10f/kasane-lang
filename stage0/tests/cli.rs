@@ -20181,3 +20181,145 @@ fn kir_with_exits_match_tree_walker() {
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}({})", f, arg);
     }
 }
+
+// ---- check の増分キャッシュ (設計_増分検査.md)。どの場合もキャッシュあり・なしで診断が一致すること。
+
+/// `check --json` の (終了コード, 標準出力, 標準エラー)。`cache` が `Some` なら `KSN_CHECK_CACHE=1` と置き場所を渡し、
+/// `None` ならキャッシュ無効 (`KSN_CHECK_CACHE=0`) で走らせる。
+fn check_cached(dir: &Path, cache: Option<&Path>) -> (Option<i32>, String, String) {
+    let o = match cache {
+        Some(c) => run_with_env(&["check", "--json"], dir, &[("KSN_CHECK_CACHE", "1"), ("KSN_CACHE_DIR", c.to_str().unwrap())]),
+        None => run_with_env(&["check", "--json"], dir, &[("KSN_CHECK_CACHE", "0")]),
+    };
+    (o.status.code(), text(&o.stdout), text(&o.stderr))
+}
+
+fn cache_tmp(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("ksn_cc_{}_{}", std::process::id(), name));
+    let _ = fs::remove_dir_all(&d);
+    d
+}
+
+/// 無効・初回 (キャッシュ空)・2 回目 (命中) の 3 通りが一致すること。
+fn assert_cache_same(label: &str, dir: &Path, cache: &Path) {
+    let base = check_cached(dir, None);
+    let cold = check_cached(dir, Some(cache));
+    let warm = check_cached(dir, Some(cache));
+    assert_eq!(base, cold, "{}: cold cache differs from no cache", label);
+    assert_eq!(base, warm, "{}: warm cache differs from no cache", label);
+}
+
+#[test]
+fn check_cache_matches_uncached_for_examples() {
+    let cache = cache_tmp("examples");
+    let mut n = 0;
+    for e in fs::read_dir(root().join("examples")).unwrap() {
+        let p = e.unwrap().path();
+        if p.join("kasane.toml").exists() {
+            assert_cache_same(&p.display().to_string(), &p, &cache);
+            n += 1;
+        }
+    }
+    assert!(n >= 10, "examples missing");
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn check_cache_matches_uncached_for_unsound_and_linear_ok() {
+    let cache = cache_tmp("unsound");
+    for sub in ["unsound", "linear_ok"] {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(sub);
+        let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+        names.sort();
+        assert!(!names.is_empty());
+        for (i, p) in names.into_iter().enumerate() {
+            let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+            let t = Tmp::new(&format!("cc_{}_{}", sub, stem), &fs::read_to_string(&p).unwrap());
+            if i % 3 == 0 || sub == "linear_ok" {
+                assert_cache_same(&format!("{}/{}", sub, stem), &t.0, &cache);
+            } else {
+                // 時間の節約: 3 本に 2 本は、初回 (空のキャッシュ) だけを比べる。
+                assert_eq!(check_cached(&t.0, None), check_cached(&t.0, Some(&cache)), "{}/{}", sub, stem);
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// 2 ファイルのパッケージ。`a` が呼ぶ `b.base` を変えるたびに、依存する定義の診断が (キャッシュなしと同じに) 更新される。
+#[test]
+fn check_cache_follows_edits_to_a_definition_and_its_dependents() {
+    let cache = cache_tmp("edits");
+    let t = Tmp::new("cc_edits", "");
+    let a_path = t.0.join("src").join("t.ksnl");
+    let b_path = t.0.join("src").join("t").join("b.ksnl");
+    fs::create_dir_all(b_path.parent().unwrap()).unwrap();
+    let main = "fn t.main() -> () uses [] panics never\n    let _x = t.user(1u32)\nend t.main\n";
+    let mk_a = |user_body: &str| format!("import t.b\n\nfn t.user(x: u32) -> u32 uses [] panics never\n    {}\nend t.user\n\n{}", user_body, main);
+    let mk_b = |sig: &str, body: &str| format!("fn t.b.base{} pub\n    {}\nend t.b.base\n\nfn t.b.other(x: u32) -> u32 uses [] panics never pub\n    x\nend t.b.other\n", sig, body);
+    let steps: Vec<(String, String)> = vec![
+        (mk_a("b.base(x)"), mk_b("(x: u32) -> u32 uses [] panics never", "x")),
+        // 呼ばれる側の戻り値型を変える: 呼ぶ側の `u32` と食い違う。
+        (mk_a("b.base(x)"), mk_b("(x: u32) -> bool uses [] panics never", "true")),
+        // 呼ぶ側だけを直す。
+        (mk_a("b.other(x)"), mk_b("(x: u32) -> bool uses [] panics never", "true")),
+        // 呼ばれる側の効果を宣言と食い違わせる。
+        (mk_a("b.other(x)"), mk_b("(x: u32) -> bool uses [io.console] panics never", "true")),
+        // 構文の誤り、正規形でない並び、未知の名前。
+        (mk_a("b.nope(x)"), mk_b("(x: u32) -> u32 uses [] panics never", "x")),
+        (mk_a("b.base(x"), mk_b("(x: u32) -> u32 uses [] panics never", "x")),
+        (mk_a("b.base(x)"), mk_b("(x: u32) -> u32 uses [] panics never", "x")),
+    ];
+    for (i, (a, b)) in steps.iter().enumerate() {
+        fs::write(&a_path, a).unwrap();
+        fs::write(&b_path, b).unwrap();
+        assert_cache_same(&format!("step {}", i), &t.0, &cache);
+        // 同じ状態でもう一度 (命中) も一致する。
+        assert_eq!(check_cached(&t.0, None), check_cached(&t.0, Some(&cache)), "step {} (hit)", i);
+    }
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// キャッシュを壊しても (切り詰め・ゴミ・別のファイルの中身・内容だけ書き換え) 結果は変わらない。
+#[test]
+fn check_cache_survives_corruption() {
+    let cache = cache_tmp("corrupt");
+    // lint の診断 (未使用の変数) が出るので、保存した内容を書き換えると結果が変わりうる。
+    let src = "fn t.main() -> () uses [] panics never\n    let unused = 1u32\nend t.main\n";
+    let t = Tmp::new("cc_corrupt", src);
+    let base = check_cached(&t.0, None);
+    assert_eq!(base.0, Some(1), "{:?}", base);
+    let _ = check_cached(&t.0, Some(&cache));
+    let files: Vec<PathBuf> = fs::read_dir(cache.join("check")).unwrap().map(|e| e.unwrap().path()).collect();
+    assert!(!files.is_empty(), "nothing was cached");
+    let orig = fs::read_to_string(&files[0]).unwrap();
+    let mut variants: Vec<(&str, Vec<u8>)> = vec![
+        ("empty", vec![]),
+        ("garbage", b"\x00\xff not json".to_vec()),
+        ("truncated", orig.as_bytes()[..orig.len() / 2].to_vec()),
+        ("array", b"[1,2,3]".to_vec()),
+        ("empty-object", b"{}".to_vec()),
+    ];
+    // 内容だけ書き換える (sum が合わない)。診断を消す・文法を「一致」にする。
+    let v: serde_json::Value = serde_json::from_str(&orig).unwrap();
+    let mut w = v.clone();
+    w["data"]["lint"] = serde_json::json!([]);
+    variants.push(("lint-emptied", w.to_string().into_bytes()));
+    let mut w = v.clone();
+    w["key"] = serde_json::json!("0000");
+    variants.push(("bad-key", w.to_string().into_bytes()));
+    let mut w = v.clone();
+    w["data"]["skip"] = serde_json::json!(true);
+    variants.push(("skip-flipped", w.to_string().into_bytes()));
+    for (name, bytes) in variants {
+        fs::write(&files[0], bytes).unwrap();
+        assert_eq!(base, check_cached(&t.0, Some(&cache)), "corruption `{}` changed the result", name);
+        // 壊れた項目は直されて、次は命中する。
+        assert_eq!(base, check_cached(&t.0, Some(&cache)), "after repair of `{}`", name);
+    }
+    // スロットが読めないもの (ディレクトリ) でも落ちない。
+    let _ = fs::remove_file(&files[0]);
+    fs::create_dir_all(&files[0]).unwrap();
+    assert_eq!(base, check_cached(&t.0, Some(&cache)), "slot is a directory");
+    let _ = fs::remove_dir_all(&cache);
+}
