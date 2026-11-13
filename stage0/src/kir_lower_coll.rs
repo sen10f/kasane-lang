@@ -69,6 +69,11 @@ pub(crate) enum Owned {
 pub(crate) struct CollCx {
     /// スロット番号 → 種類。
     pub(crate) kinds: BTreeMap<usize, Kind>,
+    /// 固定長配列への参照のスロット → 要素数 N (`&[T; N]` / `&mut [T; N]` のパラメータと、
+    /// アドレスを取られた配列の局所変数)。長さは型から分かるので定数として扱う。
+    pub(crate) arr_len: BTreeMap<usize, u32>,
+    /// `ptr` の値 → その配列の要素数 N (`&[T; N]` を `&[T]` に調整するとき fat の len に使う)。
+    pub(crate) ptr_len: BTreeMap<VId, u32>,
     /// 所有する値 (スコープの番号, 所有物) の登録順。
     pub(crate) owned: Vec<(usize, Owned)>,
     /// 関数の入口で確保する `alloca` (ブロック 0 の先頭に置く)。
@@ -206,6 +211,8 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
         Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(args))),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         Src::Slice(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
+        // 固定長配列 `&[T; N]` の要素型。長さ N は `arr_len` で別途追跡する。
+        Src::Array(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
         _ => None,
     }
 }
