@@ -6460,7 +6460,7 @@ fn try_does_not_convert_in_the_reverse_direction() {
 /// `derive [From]` は `enum` だけで、ペイロードが 1 つのバリアントがなければ E2050。
 #[test]
 fn derive_from_needs_an_enum_with_a_single_payload_variant() {
-    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let main = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     let on_type = format!("type t.W derive [From] pub\n    a: u8\nend t.W\n\n{}", main);
     let t = Tmp::new("derive_from_type", &on_type);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
@@ -7324,7 +7324,7 @@ fn ffi_check_codes(name: &str, src: &str, modules: &str) -> Vec<String> {
 
 #[test]
 fn ffi_boundary_diagnostics_report_exactly_their_own_code() {
-    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let main = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     // E5004: 関数型 (C のコールバック) が `uses [] panics never` でない
     let e = format!("extern t.each(f: fn(i32) -> i32 uses [io.console] panics may) -> () link \"each\"\n\n{}", main);
     assert_eq!(ffi_check_codes("ffi_e5004", &e, "t"), ["E5004"]);
@@ -15382,9 +15382,9 @@ fn float_specials_and_unsigned_from_str_radix_agree_with_native() {
     // 整数・浮動小数の比較と `from_str_radix` の一部は LLVM で比べ、`from_str_radix` の残りは Cranelift へ退避する (理由が出る)。
     if clang_available() {
         // 浮動小数の `core.check.eq` は KIR に下ろせる (kir_rt.c の表示)。`from_str_radix` の 3 本は退避する。
-        // `from_str_radix` は KIR に下ろせる。`Result != Result` (集成体のペイロード) の 1 本は KIR の検査で退避する。
-        assert_eq!(out.matches("(both: llvm)").count(), 7, "{}", out);
-        assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 1, "{}", out);
+        // `from_str_radix` と `Result != Result` (集成体のペイロード、kir/option-eq) も KIR に下ろせるので、全件 LLVM で比べる。
+        assert_eq!(out.matches("(both: llvm)").count(), 8, "{}", out);
+        assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 0, "{}", out);
     } else {
         assert_eq!(out.matches("(both: native").count(), checks.len(), "{}", out);
     }
@@ -19197,7 +19197,7 @@ fn derive_clone_on_string_or_vec_field_is_e2036() {
 /// 1 回だけ現れる宣言は省略が正規形で E3021 (`'ab` は `'a` と別の名前として数える)。
 #[test]
 fn lifetime_declared_only_in_inputs_is_e3021_unless_it_ties_inputs() {
-    let main = "\nfn t.main() -> () uses [] panics never\nend t.main\n";
+    let main = "fn t.main() -> () uses [] panics never\nend t.main\n";
     let cases = [
         ("once", "fn t.f['a](x: &'a u32) -> u32 uses [] panics never\n    *x\nend t.f\n", true),
         ("once_two_refs", "fn t.f['a](x: &'a u32, y: &u32) -> u32 uses [] panics never\n    x.wrapping_add(*y)\nend t.f\n", true),
