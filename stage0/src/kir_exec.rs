@@ -310,6 +310,40 @@ fn write_val(buf: &mut [u8], off: usize, aggs: &[AggDef], t: Ty, v: i128, heap: 
     }
 }
 
+/// `write` の実体: プロセスの stdout (1) / stderr (2) へ全バイトを書く。stdout は書くたびに流す (panic や終了の前に順序が崩れない)。
+fn write_fd(fd: i128, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    match fd {
+        1 => {
+            let mut o = std::io::stdout().lock();
+            o.write_all(bytes)?;
+            o.flush()
+        }
+        2 => std::io::stderr().lock().write_all(bytes),
+        _ => Err(std::io::Error::from_raw_os_error(9)),
+    }
+}
+
+/// `std.io.Error { kind, code }` の値を置き場に作り、その添字を返す (型表の `std.io.Error` と、その `kind` の列挙型を探す)。
+fn io_error_value(aggs: &[AggDef], heap: &mut Vec<Vec<u8>>, kind: &str, code: i32) -> Result<i128, String> {
+    let d = aggs.iter().find(|d| d.name == "std.io.Error").ok_or("型表に std.io.Error がない")?;
+    let AggKind::Struct(fs) = &d.kind else { return Err("std.io.Error が構造体でない".into()) };
+    let (Some(kf), Some(cf)) = (fs.iter().find(|f| f.name == "kind"), fs.iter().find(|f| f.name == "code")) else {
+        return Err("std.io.Error に kind と code がない".into());
+    };
+    let Ty::Agg(ki) = kf.ty else { return Err("std.io.Error.kind が列挙型でない".into()) };
+    let kd = &aggs[ki as usize];
+    let AggKind::Enum(vs) = &kd.kind else { return Err("std.io.ErrorKind が列挙型でない".into()) };
+    let vi = vs.iter().position(|v| v.name == kind).ok_or_else(|| format!("ErrorKind に {} がない", kind))?;
+    let mut kb = vec![0u8; kd.size as usize];
+    kb[0..4].copy_from_slice(&(vi as i32).to_le_bytes());
+    let mut buf = vec![0u8; d.size as usize];
+    buf[kf.off as usize..kf.off as usize + kb.len()].copy_from_slice(&kb);
+    buf[cf.off as usize..cf.off as usize + 4].copy_from_slice(&code.to_le_bytes());
+    heap.push(buf);
+    Ok((heap.len() - 1) as i128)
+}
+
 /// 構造体・タプルのオフセット `off` のフィールドの型。
 fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
     match &d.kind {
@@ -492,6 +526,19 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 Op::HeapFree(p) => {
                     bm.free(get(&stack[top], p))?;
                     0
+                }
+                Op::Write { fd, data } => {
+                    let h = get(&stack[top], data) as usize;
+                    let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+                    let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+                    let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                    match write_fd(get(&stack[top], fd), &bytes) {
+                        Ok(()) => 0,
+                        Err(e) => {
+                            let w = io_error_value(&m.aggs, &mut heap, crate::natives::io_kind_name(&e), e.raw_os_error().unwrap_or(0))?;
+                            TAG_BIT | w
+                        }
+                    }
                 }
                 Op::IndexCheck { i, len } => {
                     let (ix, n) = (get(&stack[top], i), get(&stack[top], len));

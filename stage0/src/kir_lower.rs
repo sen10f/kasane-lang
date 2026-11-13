@@ -47,6 +47,10 @@ type LR<T> = Result<T, String>;
 #[path = "kir_lower_agg.rs"]
 mod agg;
 
+// `derive [Debug]` の表示の関数 (入口の `main` の `Err` の表示に使う。設計_KIR.md 12.3)。
+#[path = "kir_debug.rs"]
+pub mod debug;
+
 /// 下ろしの結果: 対象になった関数と、未対応の関数 (鍵, 理由)。
 pub struct Lowered {
     pub module: Module,
@@ -74,6 +78,8 @@ fn is_candidate(d: &Def) -> bool {
 /// 推論済みの型を段階 1 の型へ写す。対象外の型は `None`。
 fn conv(t: &Src) -> Option<Ty> {
     match t {
+        // `char` は Unicode のスカラー値を `u32` で持つ (KIR に char の型はない。Debug 表示は元の型で区別する。設計_KIR.md 12.3)。
+        Src::Prim(s) if s == "char" => Some(Ty::U32),
         Src::Prim(s) => Ty::parse(s).filter(|t| *t != Ty::Unit),
         Src::Unit => Some(Ty::Unit),
         Src::Ref(m, x) => refs::conv_ref(*m, x),
@@ -471,6 +477,10 @@ impl<'a> Lw<'a> {
                 Ok(self.emit(Ty::Bool, Op::Const(b as i128)))
             }
             "unit" => Ok(self.unit()),
+            "char" => {
+                let v = parse_int(&f[1]).ok_or_else(|| format!("行 {}: 文字リテラルが扱えない", line))?;
+                Ok(self.emit(Ty::U32, Op::Const(v)))
+            }
             "float" => self.float_lit(e),
             // `b'a'` は u8 の定数 (字句で値に直してある)
             "byte" => {
@@ -720,6 +730,9 @@ impl<'a> Lw<'a> {
             }
         }
         let target = self.p.resolve(&segs, &self.def.file).map(|r| r.target);
+        if matches!(&target, Some(Tgt::Native(n)) if n == "std.io.print_line") || matches!(&target, Some(Tgt::Sig(di) | Tgt::Fn(di)) if self.p.defs[*di].name == "std.io.print_line") {
+            return self.print_line(args, line);
+        }
         if let Some(Tgt::Variant(en, vn)) = &target {
             let (en, vn) = (en.clone(), vn.clone());
             return self.variant_call(e, &en, &vn);
@@ -766,6 +779,34 @@ impl<'a> Lw<'a> {
         }
         self.callees.insert(name.clone());
         Ok(Some(self.emit(rt, Op::Call { callee: name, args: vs })))
+    }
+
+    /// `std.io.print_line(s)`: `write 1, s` の後に `write 1, "\n"` (設計_KIR.md 12.2)。どちらかが失敗したら、その `Err` が結果になる。
+    fn print_line(&mut self, args: &[V], line: usize) -> LR<Option<VId>> {
+        if args.len() != 1 {
+            return self.err(line, "std.io.print_line の引数は 1 個のはず");
+        }
+        let Some(s) = self.expr(&args[0])? else { return Ok(None) };
+        let fat = self.fat_ty();
+        if self.vty(s) != fat {
+            return self.err(line, "std.io.print_line の引数が &str ではない");
+        }
+        let io = self.aggs.borrow_mut().io_error(self.p).map_err(|e| format!("行 {}: {}", line, e))?;
+        let res = Ty::Res(kir::Pay::Unit, kir::Pay::of(io).expect("集成体はペイロードになる"));
+        let fd = self.emit(Ty::I32, Op::Const(1));
+        let r1 = self.emit(res, Op::Write { fd, data: s });
+        let failed = self.emit(Ty::Bool, Op::Tag(r1));
+        let (nb, _) = self.new_block(&[]);
+        let (jb, jp) = self.new_block(&[res]);
+        self.branch(failed, (jb, vec![r1]), (nb, vec![]));
+        self.cur = Some(nb);
+        let data = self.emit(Ty::Ptr, Op::StaticBytes(vec![b'\n']));
+        let one = self.emit(Ty::Usize, Op::Const(1));
+        let nl = self.emit(fat, Op::Make { variant: None, fields: vec![data, one] });
+        let r2 = self.emit(res, Op::Write { fd, data: nl });
+        self.goto(jb, vec![r2]);
+        self.cur = Some(jb);
+        Ok(Some(jp[0]))
     }
 
     /// `e.m(args)` (受け手が式の形)。整数の `wrapping_add` / `wrapping_sub` / `wrapping_mul` だけを扱う。
@@ -1069,6 +1110,12 @@ fn parse_int(v: &V) -> Option<i128> {
 
 /// ユーザの関数を下ろす。呼び先が未対応・検査違反の関数は、その呼び出し元とともに外す。
 pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
+    lower_program(p, user, None)
+}
+
+/// `lower_user` に加えて、`entry` (入口の関数の FQN) が `Result<T, E>` を返すなら、`E` の Debug 表示の関数 (`<E>.$debug`) も作る。
+/// 作れない (`derive [Debug]` がない、未対応の型を含むなど) ときは、入口を未対応にする (理由付き)。
+pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowered {
     let tys = type_table(p, user);
     let aggs = RefCell::new(agg::AggTab::new(user));
     let mut ok: Vec<(Func, BTreeSet<String>)> = vec![];
@@ -1081,6 +1128,14 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
         match Lw::new(p, &tys, &aggs, d).lower() {
             Ok(x) => ok.extend(x),
             Err(why) => bad.push((d.name.clone(), why)),
+        }
+    }
+    if let Some(e) = entry {
+        if let Some(pos) = ok.iter().position(|(f, _)| f.key == e) {
+            if let Err(why) = debug_of_entry(p, &aggs, e, &mut ok, pos) {
+                let (f, _) = ok.remove(pos);
+                bad.push((f.key, why));
+            }
         }
     }
     // 同じ単相インスタンスを、別々の呼び出し元が下ろしていることがある (内容は同じ)。鍵の重複は先の一つだけ残す。
@@ -1112,6 +1167,25 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
     let mut module = Module { funcs, aggs: aggs.into_inner().defs };
     kir::prune_aggs(&mut module);
     Lowered { module, unsupported: bad }
+}
+
+/// 入口 `e` の戻り値が `Result<T, E>` なら、`E` の Debug 表示の関数を `ok` に足す。
+fn debug_of_entry(p: &Program, aggs: &RefCell<agg::AggTab>, e: &str, ok: &mut Vec<(Func, BTreeSet<String>)>, pos: usize) -> Result<(), String> {
+    let d = p.defs.iter().find(|d| d.name == e && d.kw == "fn").ok_or_else(|| format!("入口 {} の定義がない", e))?;
+    if !d.params.is_empty() {
+        return Err("入口の関数に引数がある".to_string());
+    }
+    let Ty::Res(_, err) = ok[pos].0.ret else { return Ok(()) };
+    let rt = from_v(&d.ret, &HashSet::new());
+    let Src::Named(n, args) = &rt else { return Err("入口の戻り値の型が読めない".to_string()) };
+    if n != "Result" || args.len() != 2 {
+        return Err("入口の戻り値の型が読めない".to_string());
+    }
+    let mut g = debug::Gen::new(p, aggs);
+    let k = g.need(&args[1], err.ty(), &d.file).map_err(|w| format!("main の Err の Debug 表示を作れない: {}", w))?;
+    g.entry_wrapper(&k, err.ty())?;
+    ok.extend(g.out);
+    Ok(())
 }
 
 /// `KSN_DUMP_KIR=1 ksn check` のときだけ、KIR と未対応の一覧を stderr に出す (隠し機能)。

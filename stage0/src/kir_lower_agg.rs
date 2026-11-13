@@ -33,6 +33,9 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
     }
 }
 
+/// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
+pub const STD_TYPES: [&str; 3] = ["std.io.Error", "std.io.ErrorKind", "alloc.alloc.AllocError"];
+
 /// 集成体の型表。`lower_user` が 1 つ作り、全関数で共有する。
 #[derive(Default)]
 pub struct AggTab {
@@ -120,8 +123,8 @@ impl AggTab {
                 }
                 let segs: Vec<String> = name.split('.').map(String::from).collect();
                 match p.resolve(&segs, file).map(|r| r.target) {
-                    Some(Tgt::Type(di)) if self.user.contains(&di) => self.intern_def(p, di),
-                    // 利用者の定義でない名前は標準ライブラリの型 (`std.io.Error` など)。KIR に組み込みがないので未対応。
+                    Some(Tgt::Type(di)) if self.user.contains(&di) || STD_TYPES.contains(&p.defs[di].name.as_str()) => self.intern_def(p, di),
+                    // 上の一覧にない標準ライブラリの型は、KIR の型表に入れない (値は組み込みの実装が作るので、下ろせない)。
                     _ => Err(format!("{} は未対応 (標準ライブラリの型は KIR に組み込みがない)", name)),
                 }
             }
@@ -140,6 +143,14 @@ impl AggTab {
             // `&str` とスライスの値は `fat` (`{ptr, len}`)。要素はスカラーのものだけ (`sig_ty` と同じ条件)。Option のペイロードにも置ける。
             Src::Ref(_, inner) if matches!(&**inner, Src::Prim(s) if s == "str") || matches!(&**inner, Src::Slice(e) if conv(&**e).is_some()) => Ok(self.fat()),
             other => Err(format!("{} は未対応", show(other))),
+        }
+    }
+
+    /// `std.io.Error` を型表に入れる (`write` の結果と `print_line` の戻り値の型)。
+    pub fn io_error(&mut self, p: &Program) -> Result<Ty, String> {
+        match p.defs.iter().position(|d| d.name == "std.io.Error") {
+            Some(di) => self.intern_def(p, di),
+            None => Err("std.io.Error の定義がない".to_string()),
         }
     }
 
@@ -896,7 +907,7 @@ end t.main
         for want in ["t.A", "t.B", "t.C", "t.E", "(u8,i64)", "(bool,i16,u8,i32)"] {
             assert!(names.contains(&want), "型表に {} がない: {:?}", want, names);
         }
-        for d in &lo.module.aggs {
+        for d in lo.module.aggs.iter().filter(|d| !super::STD_TYPES.contains(&d.name.as_str())) {
             let cname = match d.kind {
                 AggKind::Tuple(_) => format!("tuple<{}>", &d.name[1..d.name.len() - 1]),
                 _ => d.name.clone(),

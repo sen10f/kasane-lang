@@ -665,6 +665,9 @@ pub enum Op {
     /// panic: 文言 `msg` を出して終了コード 101 (木走査の panic と同じ文言)。`arg` があれば `: <値>` を続ける
     /// (値は整数の 10 進。`Result::unwrap` の Err の値)。結果は unit。`panics may` のときだけ。
     Panic { msg: String, arg: Option<VId> },
+    /// 書き出し: ファイル記述子 `fd` (`i32`。1 = stdout、2 = stderr) へ `data` (`fat` = `{ptr, len}`) の全バイトを書く。
+    /// 結果は `Result<unit, std.io.Error>` (設計_KIR.md 12.2)。短い書き込みは繰り返し、EINTR は再試行する。`uses [io.console]` の関数だけ。
+    Write { fd: VId, data: VId },
 }
 
 /// `BitCount` の種類。
@@ -800,8 +803,13 @@ impl Module {
 
     /// `key` から呼び出しで到達できる関数だけを取り出した部分モジュール (鍵の順は保つ)。
     pub fn reachable(&self, key: &str) -> Module {
+        self.reachable_from(&[key])
+    }
+
+    /// `keys` のどれかから呼び出しで到達できる関数だけの部分モジュール。
+    pub fn reachable_from(&self, keys: &[&str]) -> Module {
         let mut seen: HashSet<String> = HashSet::new();
-        let mut todo = vec![key.to_string()];
+        let mut todo: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
         while let Some(k) = todo.pop() {
             if !seen.insert(k.clone()) {
                 continue;
@@ -1079,6 +1087,7 @@ fn fmt_inst(i: &Inst) -> String {
             Some(v) => format!("panic {} {}", quote_msg(msg), fmt_val(*v)),
             None => format!("panic {}", quote_msg(msg)),
         },
+        Op::Write { fd, data } => format!("write {}, {}", fmt_val(*fd), fmt_val(*data)),
     };
     format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
 }
@@ -1453,6 +1462,10 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("heap", ["realloc"]) if ty == Ty::Ptr => {
             let v = operands(2)?;
             Ok(Op::HeapRealloc { p: v[0], size: v[1] })
+        }
+        ("write", []) => {
+            let v = operands(2)?;
+            Ok(Op::Write { fd: v[0], data: v[1] })
         }
         ("index", ["check"]) if ty == Ty::Unit => {
             let v = operands(2)?;
@@ -2118,6 +2131,18 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             }
                         }
                     }
+                    Op::Write { fd, data } => {
+                        if !f.uses.iter().any(|u| u == "io.console") {
+                            return Err("write は uses [io.console] の関数だけ".into());
+                        }
+                        if ty_of(*fd)? != Ty::I32 || !matches!(ty_of(*data)?, Ty::Agg(d) if m.aggs[d as usize].name == "fat") {
+                            return Err("write の被演算子は i32 の fd と fat のはず".into());
+                        }
+                        let ok = matches!(i.ty, Ty::Res(Pay::Unit, e) if matches!(e.ty(), Ty::Agg(a) if m.aggs[a as usize].name == "std.io.Error"));
+                        if !ok {
+                            return Err("write の結果は Result<unit, std.io.Error> のはず".into());
+                        }
+                    }
                     Op::Call { callee, args } => {
                         let Some(g) = callees.get(callee.as_str()) else {
                             return Err(format!("呼び先 {} がモジュールにない", callee));
@@ -2200,6 +2225,7 @@ fn operands(op: &Op) -> Vec<VId> {
         Op::MemStore { p, v, .. } => vec![*p, *v],
         Op::IndexCheck { i, len } => vec![*i, *len],
         Op::Panic { arg, .. } => arg.iter().copied().collect(),
+        Op::Write { fd, data } => vec![*fd, *data],
         Op::Arith { a, b, .. }
         | Op::Cmp { a, b, .. }
         | Op::Bool(_, a, b)
@@ -2719,5 +2745,35 @@ end t.bad
         let m = parse_module(src).expect("読める");
         let bad = verify_module(&m);
         assert!(bad.iter().any(|(_, msg)| msg.contains("集成体の番号が表にない")), "{:?}", bad);
+    }
+
+    #[test]
+    fn write_reads_back_and_needs_io_console() {
+        // `write fd, data` は読み直せ、`uses [io.console]` の関数だけが持てる (設計_KIR.md 12.2)。
+        let src = |uses: &str| {
+            format!(
+                "kir 1
+
+agg#0 enum std.io.ErrorKind size=4 align=4 {{Other()}}
+agg#1 struct std.io.Error size=8 align=4 {{kind:agg#0@0 code:i32@4}}
+agg#2 struct fat size=16 align=8 {{ptr:ptr@0 len:usize@8}}
+
+fn t.w key=t.w uses=[{uses}] panics=never stack=- ret=Result<unit,agg#1>
+  b0():
+    %0: ptr = static.bytes 6869
+    %1: usize = const.usize 2
+    %2: agg#2 = make(%0, %1)
+    %3: i32 = const.i32 2
+    %4: Result<unit,agg#1> = write %3, %2
+    ret %4
+end t.w
+"
+            )
+        };
+        let m = parse_module(&src("io.console")).expect("読める");
+        assert!(verify_module(&m).is_empty(), "{:?}", verify_module(&m));
+        assert_eq!(print_module(&m), src("io.console"));
+        let bad = verify_module(&parse_module(&src("")).expect("読める"));
+        assert!(bad.iter().any(|(_, msg)| msg.contains("write は uses [io.console]")), "{:?}", bad);
     }
 }
