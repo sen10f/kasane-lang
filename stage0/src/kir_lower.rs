@@ -41,6 +41,9 @@ mod check_lower;
 // 利用者の型のメソッド呼び出し (`&mut self` の受け手を含む) の下ろし (子モジュール)。
 #[path = "kir_lower_method.rs"]
 mod method_lower;
+// `std.thread.spawn` / `JoinHandle.join` の下ろし (子モジュール)。
+#[path = "kir_lower_thread.rs"]
+mod thread_lower;
 // 配列リテラルの下ろし (子モジュール)。
 #[path = "kir_lower_array.rs"]
 mod array_lower;
@@ -315,7 +318,8 @@ impl<'a> Lw<'a> {
         if let Some(r) = own::match_get_mut(self, e) {
             return r;
         }
-        match self.src_ty(&scrut)? {
+        let stt = self.src_ty(&scrut)?;
+        match stt {
             Src::Named(n, _) if n == "Option" || n == "Result" => self.match_(e),
             _ => self.match_e(e),
         }
@@ -776,6 +780,13 @@ impl<'a> Lw<'a> {
         }
         let segs = strs(&nf(callee)[0]);
         let args = items(&f[1]);
+        // `std.thread.spawn(allocator, closure)`。
+        if segs == ["std", "thread", "spawn"] {
+            let Some(r) = thread_lower::spawn_call(self, e, &segs, args, line) else {
+                return self.err(line, "std.thread.spawn は段階 1 の対象外");
+            };
+            return r;
+        }
         // `x.f.v.len()`: 構造体のフィールドの Vec / String の長さ (x は参照またはスタックスロットの構造体)
         if segs.len() >= 3 && matches!(segs[segs.len() - 1].as_str(), "len" | "is_empty") && args.is_empty() {
             if let Some(s) = self.lookup(&segs[0]) {
@@ -800,6 +811,15 @@ impl<'a> Lw<'a> {
                 let meth = segs[segs.len() - 1].clone();
                 if meth == "clone" {
                     return self.lower_clone(line, recv, rt);
+                }
+                // `handle.join()`: スレッドの結果を取り出す。
+                if meth == "join" {
+                    if args.len() != 0 {
+                        return self.err(line, "join の引数は取れない");
+                    }
+                    if let Some(r) = thread_lower::join_call(self, e, recv, rt, line) {
+                        return r;
+                    }
                 }
                 let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,
@@ -926,6 +946,20 @@ impl<'a> Lw<'a> {
 
     /// `e.m(args)` (受け手が式の形)。整数の `wrapping_add` / `wrapping_sub` / `wrapping_mul` だけを扱う。
     fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
+        let f = nf(e);
+        let line = nline(e);
+        // `handle.join()`: スレッドの結果を取り出す。
+        if st(&f[1]) == "join" {
+            let t = self.ty_of(&f[0])?;
+            let Some(a) = self.expr(&f[0])? else { return Ok(None) };
+            let args = items(&f[2]);
+            if args.len() != 0 {
+                return self.err(line, "join の引数は取れない");
+            }
+            if let Some(r) = thread_lower::join_call(self, e, a, t, line) {
+                return r;
+            }
+        }
         if let Some(r) = coll::try_mcall(self, e) {
             return r;
         }
@@ -965,13 +999,14 @@ impl<'a> Lw<'a> {
         if !matches!(f.get(3), Some(V::Nil) | None) {
             return self.err(line, "型引数付きのメソッドは段階 1 の対象外");
         }
-        let aop = match st(&f[1]).as_str() {
+        let mname = st(&f[1]);
+        let args = items(&f[2]);
+        let aop = match mname.as_str() {
             "wrapping_add" => Aop::Add,
             "wrapping_sub" => Aop::Sub,
             "wrapping_mul" => Aop::Mul,
             m => return self.err(line, format!("メソッド {} は段階 1 の対象外", m)),
         };
-        let args = items(&f[2]);
         let t = self.ty_of(&f[0])?;
         if !t.is_int() || args.len() != 1 {
             return self.err(line, "wrapping_* の受け手か引数が段階 1 の対象外");
