@@ -1118,6 +1118,13 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 拒否のまま (理由付き): `Some(..)` の中が名前・`_`・構造体のパターン以外 (リテラルなど)、`g.unwrap()` / `expect` (借用を取り出す形は `match` で)、`Option<&mut T>` の値、所有物を持たない集成体の `Option<&T>`。
 - 試験: `kir_let_get_of_owning_elems_matches_tree_walker` (18 ケース: `Vec<String>`・構造体の Vec、範囲外・空、`is_some` / `is_none`、構造体パターン、`Option<&T>` を返す関数 (`v.get(i)` / `Some(&v[0])` / `None`)、引数に取る関数、ループ。`--run` / `--native` / ASan)、`kir_get_on_vec_of_owning_elements_with_unsupported_pattern_is_refused_with_a_reason`、`kir_unwrap_on_option_of_borrowed_owning_elem_is_refused_with_a_reason`。examples / perf で新しく LLVM で作れるようになったものはない (残りの理由は `trim`・`std.env`・`std.thread`・float リテラルなど別のもの)。
 
+
+### 17.19 `Option<&[T]>` の比較と表示 (kir/opt-slice-eq、2026-11-13)
+- `Option<&[T; N]>` のペイロードは `Option<&[T]>` と同じ `fat` で持つ (`pay_of`)。`Some(&[..])` の引数は一時の枠の番地 (`ref<fat>`) で来るので、`ctor` で読み出してから包む。長さ N は型検査が両辺を揃えるので値に要らない。
+- `&[T]` / `&[T; N]` (`fat`) の表示は `[a, b, c]` (木走査の `debug_str` と同じ)。`kir_debug.rs` の `slice_debug` が要素ごとに要素の表示の関数を呼ぶ。要素は整数・bool・char だけ (浮動小数と 128 ビット整数は未対応のまま、理由付きで止める)。`core.check.eq` の失敗の文言は `Some([2, 3])` になる。
+- 試験: `kir_optres_slice_literal_eq_matches_tree_walker` (`==` / `!=` の 5 ケース、失敗の文言)。
+- examples/tour は 90 行の `Option<&[u8]>` を越えたが、91 行の `arr.first()` で止まる。残りは `BtreeMap` (KIR に型がない)、`str` の `trim` / `split` / `parse` / `split_once`、`from_str_radix` / `try_from_*` / `leading_zeros` / `count_ones`、`core.num.*.MAX` などで、一続きの作業にする。`llvm_builds_of_real_packages_match_run` には足していない。
+
 ## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
 
 段階 2 (第 5 章) の第 1 段。`ksn run --engine=vm` と `ksn test --engine=vm` (`--engine=tree` が既定の木走査)。既定の挙動は変えていない。`clif.rs` と `examples/`・`perf/` のソースは触っていない。

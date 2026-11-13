@@ -11,7 +11,7 @@
 //! 対象外の形に出会ったら理由を付けて止める。親はその関数を「未対応」にする。
 
 use crate::check::{items, nf, nlineno as nline, nname, st, strs};
-use crate::kir::{AggKind, Aop, BoolOp, Cc, Op, Pay, Term, Ty, VId};
+use crate::kir::{AggKind, Aop, BoolOp, Cc, Op, Pay, Pointee, Term, Ty, VId};
 use crate::parser::V;
 use crate::program::FromVariant;
 use crate::types::{from_v, Ty as Src};
@@ -301,6 +301,13 @@ impl<'a> Lw<'a> {
             }
             _ => a,
         };
+        let mut a = a;
+        // `Some(&[..])` の引数は `ref<fat>` (一時の枠の番地) で来る。Option のペイロードは fat の値なので読み出す。
+        if let (Ty::Opt(p), Ty::Ref(_, Pointee::Agg(i))) = (t, self.vty(a)) {
+            if p.ty() == Ty::Agg(i) && name == "Some" {
+                a = self.emit(Ty::Agg(i), Op::Load(a));
+            }
+        }
         let (op, want) = match (name, t) {
             ("Some", Ty::Opt(p)) => (Op::Some(a), p.ty()),
             ("Ok", Ty::Res(t0, _)) => (Op::Ok(a), t0.ty()),

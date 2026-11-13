@@ -14388,6 +14388,75 @@ end t.main
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
 }
 
+#[test]
+fn kir_optres_slice_literal_eq_matches_tree_walker() {
+    // `Option<&[T]>` (`sub` の結果) と `Some(&[..])` (配列リテラルの参照) の `==` / `!=`。
+    // `Some(&[..])` は長さ N を持つ参照だが、Option のペイロードでは `fat` (`Option<&[T]>` と同じ値) で持つ。
+    // 失敗の文言は `Option<&[u8]>` の表示 (`Some([2, 3])`) で、木走査と同じ。
+    let src = "fn t.same(a: usize, b: usize) -> bool uses [] panics never
+    let arr = [1u8, 2u8, 3u8, 4u8, 5u8]
+    let mid = arr.sub(a, b)
+    mid == Some(&[2u8, 3u8, 4u8])
+end t.same
+
+fn t.differs(a: usize, b: usize) -> bool uses [] panics never
+    let arr = [1u8, 2u8, 3u8, 4u8, 5u8]
+    let mid = arr.sub(a, b)
+    mid != Some(&[2u8, 3u8, 4u8])
+end t.differs
+
+fn t.p1() -> bool uses [] panics never
+    t.same(1usize, 4usize)
+end t.p1
+
+fn t.p2() -> bool uses [] panics never
+    t.same(0usize, 3usize)
+end t.p2
+
+fn t.p3() -> bool uses [] panics never
+    t.same(9usize, 9usize)
+end t.p3
+
+fn t.p4() -> bool uses [] panics never
+    t.differs(0usize, 3usize)
+end t.p4
+
+fn t.p5() -> bool uses [] panics never
+    t.differs(1usize, 4usize)
+end t.p5
+
+fn t.show() -> () uses [io.console] panics may
+    let arr = [1u8, 2u8, 3u8, 4u8, 5u8]
+    let mid = arr.sub(1usize, 3usize)
+    core.check.eq(mid, Some(&[9u8, 3u8]))
+end t.show
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.p1(), true)
+    core.check.eq(t.p2(), false)
+    core.check.eq(t.p3(), false)
+    core.check.eq(t.p4(), true)
+    core.check.eq(t.p5(), false)
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("kir_optres_slice_lit", src);
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker\n{}", text(&run(&["run"], &t.0).stderr));
+    for (f, want) in [("t.p1", "true"), ("t.p2", "false"), ("t.p3", "false"), ("t.p4", "true"), ("t.p5", "false")] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+    // 失敗の文言: 木走査と同じ表示 (`Some([2, 3])` / `Some([9, 3])`)。native / ASan との比較も `kir_run` が行う。
+    let k = kir_run(&["kir", "t.show", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir t.show\n{}", text(&k.stderr));
+    assert_eq!(
+        text(&k.stderr),
+        "panic: assertion failed: left: Some([2, 3]), right: Some([9, 3])\n",
+        "kir t.show の失敗の文言"
+    );
+}
+
 // ---- 段階 1: ペイロードが所有物 (String / Vec) の Option / Result (E は整数/unit) ----
 // `Some`/`Ok`/`Err` で作り、`match` でペイロードを取り出し、`?` で同じ E を伝え、
 // スコープの終わりで解放する。観察値はスカラーに落とす (--run の入口は集成体を引数・戻り値に持てないため)。
