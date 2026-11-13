@@ -13776,6 +13776,81 @@ end t.main
     }
 }
 
+// ---- 段階 2: `Result` / `Option` の E が、所有物 (String) を持つ利用者の enum / 構造体 ----
+#[test]
+fn kir_result_heap_user_error_match_tree_walker() {
+    // 段階 2: `Result` / `Option` の E が、所有物 (String) を持つ利用者の enum / 構造体。
+    // `std.net.Error` を型表に登録済みの前提 (kir_lower_agg.rs の STD_TYPES)。
+    let src = "enum t.Err pub
+    Io(std.io.Error)
+    Net(std.net.Error)
+    Msg(alloc.string.String<std.alloc.System>)
+end t.Err
+
+fn t.msg() -> Result<usize, t.Err> uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"message\"))
+    Err(t.Err.Msg(s))
+end t.msg
+
+fn t.io() -> Result<usize, t.Err> uses [] panics never
+    Err(t.Err.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 }))
+end t.io
+
+fn t.ok_v() -> Result<usize, t.Err> uses [] panics never
+    Ok(42usize)
+end t.ok_v
+
+fn t.classify_msg() -> usize uses [alloc] panics may
+    match t.msg() {
+        Ok(n) => n
+        Err(e) => match e {
+            t.Err.Io(_e) => 1usize
+            t.Err.Net(_e) => 2usize
+            t.Err.Msg(s) => s.len()
+        }
+    }
+end t.classify_msg
+
+fn t.classify_io() -> usize uses [] panics never
+    match t.io() {
+        Ok(n) => n
+        Err(e) => match e {
+            t.Err.Io(_e) => 1usize
+            t.Err.Net(_e) => 2usize
+            t.Err.Msg(_s) => 3usize
+        }
+    }
+end t.classify_io
+
+fn t.ok_v_len() -> usize uses [] panics never
+    match t.ok_v() {
+        Ok(n) => n
+        Err(_e) => 0usize
+    }
+end t.ok_v_len
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.classify_msg(), 7usize)
+    core.check.eq(t.classify_io(), 1usize)
+    core.check.eq(t.ok_v_len(), 42usize)
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("kir_result_heap_user_error", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, want) in [
+        ("t.classify_msg", "7"),
+        ("t.classify_io", "1"),
+        ("t.ok_v_len", "42"),
+    ] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+}
+
 // ---- 型引数に線形を含む型の束縛 (4.4): `Option` / `Result` / ジェネリック構造体 ----
 
 /// `tdrop_prefix` に、型引数の線形検査の試験用の定義を足して検査する。
