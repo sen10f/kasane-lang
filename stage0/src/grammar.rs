@@ -354,7 +354,14 @@ fn precheck(text: &str) -> Result<(), Pre> {
 fn lex_file(lx: &Lexer, text: &str, sig: bool) -> Result<Vec<Tok>, String> {
     precheck(text).map_err(|e| e.0)?;
     let all: Vec<&str> = text.split('\n').collect();
-    let lines = &all[..all.len() - 1];
+    lex_lines(lx, &all[..all.len() - 1], sig, false)
+}
+
+/// 行の列をトークンにする (`lex_file` の本体。事前検査は済んでいるものとする)。
+/// `after_dot` は、最後の行の次に「`.` で始まる行」が続くとみなす (定義 1 つだけを字句解析するとき用)。
+/// 各行のトークンは、その行・`inside` の状態・直前がコメントか・次の「コメントでも空でもない行」が `.` で
+/// 始まるか、だけで決まる。
+fn lex_lines(lx: &Lexer, lines: &[&str], sig: bool, after_dot: bool) -> Result<Vec<Tok>, String> {
     let info: Vec<(usize, &str, &str)> = lines.iter().enumerate().map(|(i, l)| (i + 1, *l, l.trim())).collect();
     let mut out: Vec<Tok> = vec![];
     let mut inside = false;
@@ -395,7 +402,7 @@ fn lex_file(lx: &Lexer, text: &str, sig: bool) -> Result<Vec<Tok>, String> {
         let inhibit = s.ends_with('(')
             || s.ends_with('[')
             || s.ends_with(',')
-            || nxt.map_or(false, |x| x.2.starts_with('.') && !x.2.starts_with(".."));
+            || nxt.map_or(after_dot, |x| x.2.starts_with('.') && !x.2.starts_with(".."));
         out.extend(code);
         out.push(mk(if inhibit { "LF" } else { "NL" }, ""));
         if head == "end" {
@@ -403,6 +410,18 @@ fn lex_file(lx: &Lexer, text: &str, sig: bool) -> Result<Vec<Tok>, String> {
         }
     }
     Ok(out)
+}
+
+fn def_key(rule: &str, lines: &[&str], dot: bool) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(rule.as_bytes());
+    h.update([dot as u8]);
+    for l in lines {
+        h.update((l.len() as u64).to_le_bytes());
+        h.update(l.as_bytes());
+    }
+    h.finalize().iter().take(16).map(|b| format!("{:02x}", b)).collect()
 }
 
 // ---------------------------------------------------------------- マッチング
@@ -554,8 +573,18 @@ pub struct Grammar {
     rules: HashMap<usize, Node>,
     names: Vec<String>,
     file_id: usize,
+    /// 定義の規則 (`fn_def` など) の番号。定義単位の検査 (`check_memo`) が使う。
+    def_ids: HashMap<&'static str, usize>,
     lx: Lexer,
     _zero: HashSet<usize>,
+}
+
+/// 定義ごとの一致の再利用。キーは (規則名, 定義の行, 次の行が `.` で始まるか) のハッシュ。
+/// 保存するのは「その規則に一致した」ものだけ。`old` を読み、使ったものを `new` に入れる。
+#[derive(Default)]
+pub struct GramMemo {
+    pub old: HashSet<String>,
+    pub new: HashSet<String>,
 }
 
 impl Grammar {
@@ -565,7 +594,143 @@ impl Grammar {
         for (n, i) in &ids {
             names[*i] = n.clone();
         }
-        Grammar { file_id: ids["file"], rules, names, lx: Lexer::new(), _zero: HashSet::new() }
+        let def_ids = ["import_line", "const_def", "static_def", "type_def", "enum_def", "trait_def", "extern_def", "impl_line", "fn_def", "test_def"]
+            .iter()
+            .map(|n| (*n, ids[*n]))
+            .collect();
+        Grammar { file_id: ids["file"], def_ids, rules, names, lx: Lexer::new(), _zero: HashSet::new() }
+    }
+
+    /// `check` と同じ結果。ファイルを定義ごとに分け、各定義が自分の規則に一致するかを `memo` から再利用する。
+    ///
+    /// 一致と言えるのは「全定義が自分の規則に一致し、定義の種類の並びが `file` 規則の群の順 (import → const/static →
+    /// type/enum/trait → extern → impl → fn → test) に合う」とき。`file` は定義のトークン列の連接だけで書かれ、
+    /// 定義の間にトークンは生じない (空行は定義の中でだけ BLANK になる) ので、この条件は `file` に一致する十分条件。
+    /// 定義のトークンは、その行と「次の意味のある行が `.` で始まるか」だけで決まる (`lex_lines`) ので、
+    /// 定義の行をキーにすれば字句解析ごと省ける。少しでも合わないもの (不一致・分けられない行・コメントだけの末尾・
+    /// 並びの違反・字句エラー) は、ここでは何も言わずファイル全体の `check` に任せる。
+    /// 診断のメッセージと位置は常に `check` が決める。
+    pub fn check_memo(&self, text: &str, memo: &mut GramMemo) -> (bool, String, usize) {
+        if let Err(e) = precheck(text) {
+            return (false, e.0, 1);
+        }
+        if self.defs_match(text, memo) {
+            return (true, String::new(), 0);
+        }
+        self.check(text)
+    }
+
+    fn defs_match(&self, text: &str, memo: &mut GramMemo) -> bool {
+        let lines: Vec<&str> = text.split('\n').collect();
+        let nl = lines.len() - 1;
+        let lines = &lines[..nl];
+        // 定義に分ける: (規則名, 行の始め, 行の終わり (含まない))。
+        let mut defs: Vec<(&'static str, usize, usize)> = vec![];
+        let mut start: Option<usize> = None;
+        let mut kind: Option<&'static str> = None;
+        for (n, l) in lines.iter().enumerate() {
+            if l.trim().is_empty() {
+                continue;
+            }
+            if start.is_none() {
+                start = Some(n);
+            }
+            if l.starts_with("//") || l.starts_with(' ') {
+                continue;
+            }
+            let head = l.split(' ').next().unwrap_or("");
+            match kind {
+                None => {
+                    let (k, single) = match head {
+                        "import" => ("import_line", true),
+                        "const" => ("const_def", true),
+                        "static" => ("static_def", true),
+                        "extern" => ("extern_def", true),
+                        "impl" => ("impl_line", true),
+                        "type" => ("type_def", false),
+                        "enum" => ("enum_def", false),
+                        "trait" => ("trait_def", false),
+                        "fn" => ("fn_def", false),
+                        "test" => ("test_def", false),
+                        _ => return false,
+                    };
+                    if single {
+                        defs.push((k, start.take().unwrap(), n + 1));
+                    } else {
+                        kind = Some(k);
+                    }
+                }
+                Some(k) => {
+                    if head == "end" {
+                        defs.push((k, start.take().unwrap(), n + 1));
+                        kind = None;
+                    }
+                }
+            }
+        }
+        if start.is_some() {
+            return false;
+        }
+        // 群の順。impl の行は、次が fn なら fn の群 (5) でもよい。
+        let rank = |k: &str| match k {
+            "import_line" => 0,
+            "const_def" | "static_def" => 1,
+            "type_def" | "enum_def" | "trait_def" => 2,
+            "extern_def" => 3,
+            "fn_def" => 5,
+            _ => 6,
+        };
+        let mut r = 0;
+        for (i, d) in defs.iter().enumerate() {
+            let k = if d.0 == "impl_line" {
+                if r <= 4 {
+                    4
+                } else if r == 5 && defs.get(i + 1).map_or(false, |n| n.0 == "fn_def") {
+                    5
+                } else {
+                    return false;
+                }
+            } else {
+                rank(d.0)
+            };
+            if k < r {
+                return false;
+            }
+            r = k;
+        }
+        let mut term_cache: HashMap<String, Vec<String>> = HashMap::new();
+        for (rule, a, b) in defs {
+            // 定義の最後の行の改行の抑止は、次の「コメントでも空でもない行」が `.` で始まるかで決まる。
+            let dot = lines[b..]
+                .iter()
+                .map(|l| l.trim())
+                .find(|l| !l.is_empty() && !l.starts_with("//"))
+                .map_or(false, |l| l.starts_with('.') && !l.starts_with(".."));
+            let key = def_key(rule, &lines[a..b], dot);
+            if !memo.old.contains(&key) {
+                let Ok(toks) = lex_lines(&self.lx, &lines[a..b], false, dot) else { return false };
+                if !self.match_one(rule, &toks, &mut term_cache) {
+                    return false;
+                }
+            }
+            memo.new.insert(key);
+        }
+        true
+    }
+
+    fn match_one(&self, rule: &str, toks: &[Tok], term_cache: &mut HashMap<String, Vec<String>>) -> bool {
+        let mut m = Matcher {
+            rules: &self.rules,
+            names: self.names.clone(),
+            toks,
+            lx: &self.lx,
+            memo: HashMap::new(),
+            term_cache: std::mem::take(term_cache),
+            zero: HashSet::new(),
+        };
+        let ends = m.rule(self.def_ids[rule], 0);
+        *term_cache = std::mem::take(&mut m.term_cache);
+        ends.contains(&toks.len())
     }
 
     /// (一致したか, メッセージ, 行)。Python 版 cli.grammar_check と同じ形。
@@ -574,10 +739,14 @@ impl Grammar {
             Ok(t) => t,
             Err(e) => return (false, e, 1),
         };
+        self.check_toks(&toks)
+    }
+
+    fn check_toks(&self, toks: &[Tok]) -> (bool, String, usize) {
         let mut m = Matcher {
             rules: &self.rules,
             names: self.names.clone(),
-            toks: &toks,
+            toks,
             lx: &self.lx,
             memo: HashMap::new(),
             term_cache: HashMap::new(),
@@ -596,5 +765,64 @@ impl Grammar {
         let t = &toks[best.min(toks.len().saturating_sub(1))];
         let shown = if t.text.is_empty() { t.kind.clone() } else { t.text.clone() };
         (false, format!("does not match the canonical grammar near {}", py_repr(&shown)), 1)
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use super::*;
+
+    /// 定義ごとの再利用 (`check_memo`) は `check` と同じ結果 (メッセージと行を含む)。
+    /// 元のファイル・行の削除・複製・入れ替え・空行・コメントの変異で確かめ、2 回目 (全部命中) も同じ。
+    #[test]
+    fn memoized_grammar_equals_whole_file_grammar() {
+        let g = Grammar::new();
+        let mut seed: u64 = 0x9E3779B97F4A7C15;
+        let mut rnd = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let corpus = crate::lint::tests_corpus();
+        let (mut oks, mut errs) = (0, 0);
+        for (i, (name, text)) in corpus.iter().enumerate() {
+            let mut variants = vec![text.clone()];
+            if i % 4 == 0 {
+                for _ in 0..3 {
+                    let mut v: Vec<String> = text.lines().map(String::from).collect();
+                    if v.is_empty() {
+                        continue;
+                    }
+                    let k = rnd(v.len());
+                    match rnd(5) {
+                        0 => {
+                            v.remove(k);
+                        }
+                        1 => v.insert(k, v[k].clone()),
+                        2 => {
+                            let j = rnd(v.len());
+                            v.swap(k, j)
+                        }
+                        3 => v.insert(k, String::new()),
+                        _ => v.insert(k, "// c".into()),
+                    }
+                    variants.push(format!("{}\n", v.join("\n")));
+                }
+            }
+            for text in variants {
+                let want = g.check(&text);
+                if want.0 {
+                    oks += 1;
+                } else {
+                    errs += 1;
+                }
+                let mut memo = GramMemo::default();
+                assert_eq!(g.check_memo(&text, &mut memo), want, "cold {}", name);
+                let mut again = GramMemo { old: std::mem::take(&mut memo.new), new: Default::default() };
+                assert_eq!(g.check_memo(&text, &mut again), want, "warm {}", name);
+            }
+        }
+        assert!(oks > 20 && errs > 5, "ok {} err {}", oks, errs);
     }
 }

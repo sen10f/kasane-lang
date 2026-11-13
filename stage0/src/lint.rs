@@ -7,6 +7,24 @@ use regex::Regex;
 
 pub type LintErr = (String, usize, String);
 
+/// 定義 1 つの診断 (4 段分)。行は定義の見出しの行からの相対。
+pub type ItemErrs = [Vec<LintErr>; 4];
+
+/// 定義ごとの結果の再利用 (`old` を読み、使ったものを `new` に入れる)。キーは `Lint::item_key`。
+#[derive(Default)]
+pub struct LintMemo {
+    pub old: HashMap<String, ItemErrs>,
+    pub new: HashMap<String, ItemErrs>,
+}
+
+/// 正規表現は 1 回だけコンパイルする (定義ごとの検査から繰り返し呼ばれる)。
+macro_rules! re {
+    ($p:expr) => {{
+        static R: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        R.get_or_init(|| Regex::new($p).unwrap())
+    }};
+}
+
 const GROUP_IMPL_ONLY: usize = 4;
 const DERIVE_ORDER: &[&str] = &["Debug", "Clone", "Copy", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "From"];
 const PRIMS: &[&str] = &[
@@ -244,8 +262,8 @@ impl Lint {
     }
 
     fn items(&mut self) -> Vec<Item> {
-        let re_kw = Regex::new(r"^(import|const|static|extern|type|enum|trait|impl|fn|test|end)\b").unwrap();
-        let re_name = Regex::new(r"^\w+\s+([A-Za-z0-9_.]+)").unwrap();
+        let re_kw = re!(r"^(import|const|static|extern|type|enum|trait|impl|fn|test|end)\b");
+        let re_name = re!(r"^\w+\s+([A-Za-z0-9_.]+)");
         let l = self.lines.clone();
         let mut items = vec![];
         let mut i = 0;
@@ -308,16 +326,23 @@ impl Lint {
         items
     }
 
+    #[cfg(test)]
     fn check_fqn_and_names(&mut self, items: &[Item]) {
-        let pref = format!("{}.", self.module);
         for it in items {
+            self.fqn_one(it);
+        }
+    }
+
+    fn fqn_one(&mut self, it: &Item) {
+        let pref = format!("{}.", self.module);
+        {
             let (kw, name, n) = (it.kw.as_str(), &it.name, it.line + 1);
             if kw == "import" || kw == "impl" {
-                continue;
+                return;
             }
             if !name.starts_with(&pref) {
                 self.err("fqn", n, format!("{} does not start with module {}.", name, self.module));
-                continue;
+                return;
             }
             let rest: Vec<&str> = name[pref.len()..].split('.').collect();
             match kw {
@@ -355,8 +380,8 @@ impl Lint {
     }
 
     fn check_order(&mut self, items: &mut Vec<Item>) {
-        let re_impls = Regex::new(r" impls (.+?)(?: pub)?$").unwrap();
-        let re_gen = Regex::new(r"^impl(\[(?:[^\[\]]|\[[^\]]*\])*\])?\s+").unwrap();
+        let re_impls = re!(r" impls (.+?)(?: pub)?$");
+        let re_gen = re!(r"^impl(\[(?:[^\[\]]|\[[^\]]*\])*\])?\s+");
         let mut prev_g: i64 = -1;
         let mut prev_key: Option<String> = None;
         let mut entries: Vec<(usize, String, usize)> = vec![];
@@ -448,12 +473,20 @@ impl Lint {
         }
     }
 
+    #[cfg(test)]
     fn check_attrs(&mut self, items: &[Item]) {
-        let re_uses = Regex::new(r"\buses \[").unwrap();
-        let re_derive = Regex::new(r"\bderive \[([^\]]*)\]").unwrap();
-        let re_req = Regex::new(r"\brequires (.*?)(?: pub)?$").unwrap();
-        let re_gen = Regex::new(r"^(?:fn|type|enum|trait)\s+[A-Za-z0-9_.]+\[").unwrap();
         for it in items {
+            self.attrs_one(it);
+        }
+        self.check_capture();
+    }
+
+    fn attrs_one(&mut self, it: &Item) {
+        let re_uses = re!(r"\buses \[");
+        let re_derive = re!(r"\bderive \[([^\]]*)\]");
+        let re_req = re!(r"\brequires (.*?)(?: pub)?$");
+        let re_gen = re!(r"^(?:fn|type|enum|trait)\s+[A-Za-z0-9_.]+\[");
+        {
             let (text, n) = (&it.text, it.line + 1);
             for m in re_uses.find_iter(text) {
                 let inner = bracket(text, m.end() - 1);
@@ -530,7 +563,11 @@ impl Lint {
                 }
             }
         }
-        let re_cap = Regex::new(r"\bcapture \[([^\]]*)\]").unwrap();
+    }
+
+    /// `capture [..]` の並び順。行ごとに決まる (定義の中にも外にもありうるのでファイル全体を毎回走る。安い)。
+    fn check_capture(&mut self) {
+        let re_cap = re!(r"\bcapture \[([^\]]*)\]");
         for k in 0..self.lines.len() {
             let l = self.lines[k].clone();
             if let Some(m) = re_cap.captures(&l) {
@@ -558,18 +595,25 @@ impl Lint {
         }
     }
 
+    #[cfg(test)]
     fn check_indent(&mut self, items: &[Item]) {
         for it in items {
+            self.indent_one(it);
+        }
+    }
+
+    fn indent_one(&mut self, it: &Item) {
+        {
             if is_field_kind(&it.kw) {
                 for (k, l) in it.body.iter().enumerate() {
                     if !l.is_empty() && !(l.starts_with("    ") && !l.starts_with("     ")) {
                         self.err("indent", it.body_start + k + 1, "declaration line must be indented by exactly 4".into());
                     }
                 }
-                continue;
+                return;
             }
             if !is_body_kind(&it.kw) || (self.sig && it.kw == "fn") {
-                continue;
+                return;
             }
             let mut stack: Vec<(&str, usize)> = vec![];
             let mut stmt_base = 0usize;
@@ -650,7 +694,7 @@ impl Lint {
         let mut names: Vec<(&'static str, String)> = vec![];
         let head = &it.text;
         if is_body_kind(&it.kw) {
-            let re_h = Regex::new(r"^(?:fn|test)\s+[A-Za-z0-9_.]+").unwrap();
+            let re_h = re!(r"^(?:fn|test)\s+[A-Za-z0-9_.]+");
             let mut pos = re_h.find(head).map_or(0, |m| m.end());
             if head[pos..].starts_with('[') {
                 let mut d = 0;
@@ -690,7 +734,7 @@ impl Lint {
             }
         }
         let body = it.body.join("\n");
-        let re_let = Regex::new(r"\blet (?:mut )?([a-z_][A-Za-z0-9_]*)\b").unwrap();
+        let re_let = re!(r"\blet (?:mut )?([a-z_][A-Za-z0-9_]*)\b");
         for m in re_let.captures_iter(&body) {
             let end = m.get(0).unwrap().end();
             let rest = body[end..].trim_start();
@@ -704,7 +748,7 @@ impl Lint {
         // `t.V(m` のような破片を名前と誤るため、入れ子のカッコを数えてトップレベル
         // の `,` で分ける。単純な識別子だけを束縛とし、`path(args)` のバリアント
         // 分解は引数の中の単純な識別子だけを束縛とする。
-        let re_let_tup = Regex::new(r"\blet \(").unwrap();
+        let re_let_tup = re!(r"\blet \(");
         for m in re_let_tup.find_iter(&body) {
             let open = m.end() - 1;
             let mut depth = 0i32;
@@ -725,7 +769,7 @@ impl Lint {
             let Some(close) = close else { continue };
             tuple_let_binds(&body[open + 1..close], &mut names);
         }
-        let re_st = Regex::new(r"\blet [A-Za-z0-9_.]+ \{([^}]*)\}").unwrap();
+        let re_st = re!(r"\blet [A-Za-z0-9_.]+ \{([^}]*)\}");
         for m in re_st.captures_iter(&body) {
             for f in m[1].split(',') {
                 // フィールドの束縛先が単純な識別子のときだけ束縛とみなす（入れ子パターン `a: t.V(x)`・
@@ -740,7 +784,7 @@ impl Lint {
         }
         // `let t.V(x, _) = ..` のバリアント分解: 引数のうち単純な識別子 (小文字始まり) だけを束縛とみなす。
         // 入れ子のパターン `t.W(..)`・リテラル・大文字の名前は数えない (黙る)。
-        let re_letv = Regex::new(r"\blet ([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\(").unwrap();
+        let re_letv = re!(r"\blet ([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\(");
         for m in re_letv.captures_iter(&body) {
             let open = m.get(0).unwrap().end() - 1;
             let mut depth = 0i32;
@@ -768,7 +812,7 @@ impl Lint {
                 }
             }
         }
-        let re_fn = Regex::new(r"\bfn\(([^)]*)\)").unwrap();
+        let re_fn = re!(r"\bfn\(([^)]*)\)");
         for m in re_fn.captures_iter(&body) {
             for p in split_top(&m[1], ',') {
                 let nm = p.split(':').next().unwrap().trim().to_string();
@@ -777,12 +821,12 @@ impl Lint {
                 }
             }
         }
-        let re_for = Regex::new(r"\bfor ([a-z_][a-z0-9_]*) in\b").unwrap();
+        let re_for = re!(r"\bfor ([a-z_][a-z0-9_]*) in\b");
         for m in re_for.captures_iter(&body) {
             names.push(("let", m[1].to_string()));
         }
         // `with [mut] 名前 = ..` (4.4)。後始末式が名前を使うので、宣言とあわせて 2 回以上現れる。
-        let re_with = Regex::new(r"\bwith (?:mut )?([a-z_][a-z0-9_]*) =").unwrap();
+        let re_with = re!(r"\bwith (?:mut )?([a-z_][a-z0-9_]*) =");
         for m in re_with.captures_iter(&body) {
             names.push(("let", m[1].to_string()));
         }
@@ -806,9 +850,16 @@ impl Lint {
         (names, count_body)
     }
 
+    #[cfg(test)]
     fn check_names_and_unused(&mut self, items: &[Item]) {
-        let re_arm = Regex::new(r"(?m)^\s*[A-Za-z0-9_.]+\(([^)]*)\)\s*=>(.*)$").unwrap();
         for it in items {
+            self.names_one(it);
+        }
+    }
+
+    fn names_one(&mut self, it: &Item) {
+        let re_arm = re!(r"(?m)^\s*[A-Za-z0-9_.]+\(([^)]*)\)\s*=>(.*)$");
+        {
             let n = it.line + 1;
             if it.kw == "type" {
                 for (k, l) in it.body.iter().enumerate() {
@@ -819,7 +870,7 @@ impl Lint {
                 }
             }
             if !is_body_kind(&it.kw) || (self.sig && it.kw == "fn") {
-                continue;
+                return;
             }
             let (names, body) = self.idents_declared(it);
             for (kind, nm) in names {
@@ -924,7 +975,85 @@ impl Lint {
         }
     }
 
-    pub fn run(mut self) -> Vec<LintErr> {
+    pub fn run(self) -> Vec<LintErr> {
+        self.run_memo(&mut LintMemo::default())
+    }
+
+    /// 定義 1 つの中だけで決まる 4 つの検査 (FQN と命名・属性・インデント・名前と未使用) の結果。
+    /// 行は定義の見出しの行からの相対 (見出しの行 = 1)。
+    fn item_errs(&mut self, it: &Item) -> ItemErrs {
+        let saved = std::mem::take(&mut self.errs);
+        let mut out: ItemErrs = Default::default();
+        let phases: [fn(&mut Lint, &Item); 4] = [Lint::fqn_one, Lint::attrs_one, Lint::indent_one, Lint::names_one];
+        for (k, f) in phases.iter().enumerate() {
+            f(self, it);
+            out[k] = std::mem::take(&mut self.errs)
+                .into_iter()
+                .map(|(c, n, m)| {
+                    debug_assert!(n > it.line);
+                    (c, n - it.line, m)
+                })
+                .collect();
+        }
+        self.errs = saved;
+        out
+    }
+
+    /// 定義 1 つの結果のキー。定義の文面 (見出し・本体・`end` までの行数) とモジュール名・`.sig` かどうかだけで決まる
+    /// (`item_errs` が読むのはこれだけ)。位置は含めない。
+    fn item_key(&self, it: &Item) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        let sig = [self.sig as u8];
+        let span = ((it.end - it.line) as u64).to_le_bytes();
+        let body = it.body.join("\n");
+        for part in [self.module.as_bytes(), &sig[..], it.kw.as_bytes(), it.text.as_bytes(), &span[..], body.as_bytes()] {
+            h.update((part.len() as u64).to_le_bytes());
+            h.update(part);
+        }
+        h.finalize().iter().take(16).map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// 定義ごとの結果を `memo` から再利用して lint する。`memo.new` に今回使った分が入る。
+    /// 結果 (診断の列と順序) は `run` と完全に同じ。
+    pub fn run_memo(mut self, memo: &mut LintMemo) -> Vec<LintErr> {
+        let mut items = self.items();
+        let mut per: Vec<ItemErrs> = vec![];
+        for it in &items {
+            let k = self.item_key(it);
+            let r = match memo.old.get(&k) {
+                Some(r) => r.clone(),
+                None => self.item_errs(it),
+            };
+            memo.new.insert(k, r.clone());
+            per.push(r);
+        }
+        // 段 (fqn → order → blank → attrs → capture → indent → names → imports → pub) の順に積む。
+        // 同じ (行, コード) の診断の並びが `run` と変わらないように、段ごとに全定義を回す。
+        let push = |s: &mut Lint, items: &[Item], ph: usize| {
+            for (it, r) in items.iter().zip(&per) {
+                for (c, n, m) in &r[ph] {
+                    s.errs.push((c.clone(), n + it.line, m.clone()));
+                }
+            }
+        };
+        push(&mut self, &items, 0);
+        self.check_order(&mut items);
+        self.check_blank(&items);
+        push(&mut self, &items, 1);
+        self.check_capture();
+        push(&mut self, &items, 2);
+        push(&mut self, &items, 3);
+        self.check_imports(&items);
+        self.check_pub(&items);
+        let mut e = self.errs;
+        e.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+        e
+    }
+
+    /// 定義ごとの再利用をしない版 (`run_memo` と同じ結果になることをテストで確かめる)。
+    #[cfg(test)]
+    fn run_whole(mut self) -> Vec<LintErr> {
         let mut items = self.items();
         self.check_fqn_and_names(&items);
         self.check_order(&mut items);
@@ -949,4 +1078,66 @@ fn py_str_list(xs: &[String]) -> String {
 
 fn chr_nl() -> char {
     char::from(10u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    pub(crate) fn corpus() -> Vec<(String, String)> {
+        fn walk(d: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(rd) = std::fs::read_dir(d) else { return };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().map_or(false, |x| x == "ksnl") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut files = vec![];
+        for d in ["examples", "stage0/tests/data", "bench/tasks"] {
+            walk(&root.join(d), &mut files);
+        }
+        files.sort();
+        files
+            .into_iter()
+            .filter_map(|p| {
+                let text = std::fs::read_to_string(&p).ok()?;
+                let rel = p.file_stem()?.to_string_lossy().to_string();
+                Some((rel, text))
+            })
+            .collect()
+    }
+
+    /// 定義ごとの再利用 (`run_memo`) は、全体を一度に検査する版と診断の列 (順序を含む) が同じ。
+    /// 2 回目 (全部命中) も同じ。ファイルにはモジュール名と合わないものも混じるので、診断のあるものも通る。
+    #[test]
+    fn memoized_lint_equals_whole_file_lint() {
+        let corpus = corpus();
+        assert!(corpus.len() > 50, "corpus too small: {}", corpus.len());
+        let mut with_diags = 0;
+        for (rel, text) in corpus {
+            let want = Lint::new(&rel, &text).run_whole();
+            if !want.is_empty() {
+                with_diags += 1;
+            }
+            let mut memo = LintMemo::default();
+            assert_eq!(Lint::new(&rel, &text).run_memo(&mut memo), want, "cold {}", rel);
+            let mut again = LintMemo { old: std::mem::take(&mut memo.new), new: Default::default() };
+            assert_eq!(Lint::new(&rel, &text).run_memo(&mut again), want, "warm {}", rel);
+            assert_eq!(again.old.len(), again.new.len(), "{}", rel);
+            // 別のモジュール名で (キーにモジュール名が入っている)。
+            assert_eq!(Lint::new("other.mod", &text).run_memo(&mut again), Lint::new("other.mod", &text).run_whole(), "module {}", rel);
+        }
+        assert!(with_diags > 5, "the corpus should include files with lint diagnostics");
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn tests_corpus() -> Vec<(String, String)> {
+    tests::corpus()
 }
