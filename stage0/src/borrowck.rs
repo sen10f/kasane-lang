@@ -227,7 +227,15 @@ impl<'a> Low<'a> {
                     }
                 }
                 match self.place_of(operand) {
-                    Some((root, path)) => vec![Src::Place { root, path, mutable: op == "&mut" }],
+                    Some((root, path)) => {
+                        // `&r` (r が参照を持つ変数) は、r を通して r の借用元も借りる (参照の参照の推移)。
+                        let mut out = vec![];
+                        if path.is_empty() && self.locals.contains(&root) {
+                            out.push(Src::Alias(root.clone()));
+                        }
+                        out.push(Src::Place { root, path, mutable: op == "&mut" });
+                        out
+                    }
                     None => vec![],
                 }
             }
