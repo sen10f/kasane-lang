@@ -9,7 +9,7 @@
 //! `expect` は Kasane の Option / Result のメソッドではない (E1108) ので扱わない。
 
 use crate::check::{items, nf, nlineno as nline, nname, st, strs};
-use crate::kir::{Op, Term, Ty, VId};
+use crate::kir::{Op, Pay, Term, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
 
@@ -89,6 +89,9 @@ impl<'a> Lw<'a> {
         let rt = self.vty(recv);
         // (値を持つ枝の型, 失敗の枝の判定 (真なら値の枝), 文言, Err の値の型 (文言に値を続けるとき))
         let (pay, good, msg, arg_ty) = match rt {
+            Ty::Opt(Pay::Agg(bi)) if self.agg_def(bi).name == "bref" => {
+                return self.err(line, "Option<&T> (T は所有物を持つ型) の unwrap は段階 1 の対象外 (借用として取り出す形は `match` の `Some(x)` で書く)");
+            }
             Ty::Opt(p) => {
                 let good = self.emit(Ty::Bool, Op::Tag(recv));
                 (p.ty(), good, "called `Option::unwrap()` on a `None` value".to_string(), None)

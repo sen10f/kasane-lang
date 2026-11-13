@@ -18122,6 +18122,17 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n   
     assert!(text(&k.stderr).contains("構造体パターン"), "{}", text(&k.stderr));
 }
 
+#[test]
+fn kir_unwrap_on_option_of_borrowed_owning_elem_is_refused_with_a_reason() {
+    let src = format!("{}\nfn t.uw(n: u32) -> usize uses [alloc] panics may\n    let v = t.names(n)\n    let g = v.get(0usize)\n    g.unwrap().len()\nend t.uw\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.uw(2u32), 3usize)\n    Ok(())\nend t.main\n", KIR_LETGET_FNS);
+    let t = Tmp::new("kir_letget_unwrap", &src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let k = run(&["kir", "t.uw", "--run", "2"], &t.0);
+    assert_eq!(k.status.code(), Some(1), "{}", text(&k.stdout));
+    assert!(text(&k.stderr).contains("unwrap は段階 1 の対象外"), "{}", text(&k.stderr));
+}
+
 const KIR_LETGET_FNS: &str = "type t.Item
     name: alloc.string.String<std.alloc.System>
     v: u32
