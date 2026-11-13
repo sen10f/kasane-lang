@@ -481,6 +481,7 @@ impl<'a> Gen<'a> {
             (Src::Prim(s), Ty::U32) if s == "char" => Ok(self.scalar("char", || char_fn(fat))),
             (Src::Prim(_), t) if t.is_int() && t.bits() <= 64 => Ok(self.scalar(&t.name(), || int_fn(t, fat))),
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str", || str_fn(fat))),
+            (Src::Named(name, _), t) if name == "alloc.string.String" && matches!(t, Ty::Agg(_)) => Ok(self.string_debug(t, fat)),
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg(name, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, false),
             (Src::Slice(e) | Src::Array(e), t) if t == fat => self.slice_debug(e, file),
@@ -504,7 +505,9 @@ impl<'a> Gen<'a> {
                 let n = t.name();
                 Ok(self.scalar_eq(&n, t, fat))
             }
-            (_, t) if is_str(src, t, fat) || is_bytes(src, t, fat) => Ok(self.str_eq(fat)),
+            (_, t) if is_str(src, t, fat) || is_bytes(src, t, fat) => Ok(self.str_eq(fat, fat, "str")),
+            // `String` の等しさ: 値は {ptr, len, cap} の `vec`。先頭の {ptr, len} だけを `&str` と同じ規則で比べる (設計_KIR.md 23 章)。
+            (Src::Named(name, _), t) if name == "alloc.string.String" && matches!(t, Ty::Agg(_)) => Ok(self.str_eq(fat, t, "string")),
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg_eq(name, i, file),
             (Src::Tuple(es), Ty::Agg(i)) => self.tuple_eq(es, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, true),
@@ -587,12 +590,30 @@ impl<'a> Gen<'a> {
     }
 
     /// `&str` の等しさ: 長さが等しく、バイトがすべて一致する。
-    fn str_eq(&mut self, fat: Ty) -> String {
-        let k = eq_key("str");
+    /// `String` の表示: 値は {ptr, len, cap} の `vec`。先頭の {ptr, len} を `&str` の表示へ渡す (木走査の `StrBuf` の表示と同じ引用)。
+    fn string_debug(&mut self, ty: Ty, fat: Ty) -> String {
+        let k = key("string");
         if !self.done.insert(k.clone()) {
             return k;
         }
-        let mut b = Fb::new(&[fat, fat], fat);
+        let sk = self.scalar("str", || str_fn(fat));
+        let mut b = Fb::new(&[ty], fat);
+        let p = b.emit(Ty::Ptr, Op::Field { a: b.v, off: 0 });
+        let l = b.emit(Ty::Usize, Op::Field { a: b.v, off: 8 });
+        let s = b.emit(fat, Op::Make { variant: None, fields: vec![p, l] });
+        b.emit(Ty::Unit, Op::Call { callee: sk.clone(), args: vec![s] });
+        let f = b.finish(&k);
+        self.add(f, BTreeSet::from([sk]));
+        k
+    }
+
+    /// `ty` は比べる値の型 (`&str` / `&[u8]` は `fat`、`String` は先頭の {ptr, len} を持つ `vec`)。
+    fn str_eq(&mut self, fat: Ty, ty: Ty, name: &str) -> String {
+        let k = eq_key(name);
+        if !self.done.insert(k.clone()) {
+            return k;
+        }
+        let mut b = Fb::new(&[ty, ty], fat);
         let (a, w) = (b.v, b.w);
         let (fail, _) = b.block(&[]);
         let pa = b.emit(Ty::Ptr, Op::Field { a, off: 0 });

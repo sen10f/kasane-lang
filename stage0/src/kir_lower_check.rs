@@ -39,8 +39,12 @@ impl<'a> Lw<'a> {
         if args.len() != 2 {
             return self.err(line, "core.check.eq の引数は 2 個のはず");
         }
-        let Some(a) = self.expr(&args[0])? else { return Ok(None) };
-        let Some(b) = self.expr(&args[1])? else { return Ok(None) };
+        // 両辺は比べるだけ: 局所変数は移さずに読み (スコープの終わりに解放される)、一時の値は比べた後に解放する
+        // (設計_KIR.md 23 章)。
+        let Some(a) = self.expr_peek(&args[0])? else { return Ok(None) };
+        let Some(b) = self.expr_peek(&args[1])? else { return Ok(None) };
+        let temp_a = super::coll::val_slot(self, &args[0]).is_none() && super::own::chain_of(self, &args[0]).is_none();
+        let temp_b = super::coll::val_slot(self, &args[1]).is_none() && super::own::chain_of(self, &args[1]).is_none();
         let (ta, tb) = (self.vty(a), self.vty(b));
         if ta != tb {
             return self.err(line, "core.check.eq の両辺の型が違う");
@@ -103,8 +107,14 @@ impl<'a> Lw<'a> {
         self.put_static(fat, "\n");
         self.emit(Ty::Unit, Op::Abort);
         self.terminate(Term::Unreachable);
-        // 成功の枝
+        // 成功の枝: 一時の値 (所有物を持つ) は、比べ終えたので解放する
         self.cur = Some(yes);
+        if temp_a {
+            super::coll::drop_temp(self, a);
+        }
+        if temp_b {
+            super::coll::drop_temp(self, b);
+        }
         Ok(Some(self.emit(Ty::Unit, Op::Const(0))))
     }
 
@@ -168,7 +178,7 @@ impl<'a> Lw<'a> {
     }
 
     /// 文字列リテラルを stderr へ書く (`eprint`)。
-    fn put_static(&mut self, fat: Ty, s: &str) {
+    pub(super) fn put_static(&mut self, fat: Ty, s: &str) {
         let p = self.emit(Ty::Ptr, Op::StaticBytes(s.as_bytes().to_vec()));
         let n = self.emit(Ty::Usize, Op::Const(s.len() as i128));
         let f = self.emit(fat, Op::Make { variant: None, fields: vec![p, n] });
@@ -176,7 +186,7 @@ impl<'a> Lw<'a> {
     }
 
     /// 表示の関数 `dbg` を値 `v` に呼ぶ。
-    fn call_debug(&mut self, dbg: &str, v: VId) {
+    pub(super) fn call_debug(&mut self, dbg: &str, v: VId) {
         self.emit(Ty::Unit, Op::Call { callee: dbg.to_string(), args: vec![v] });
     }
 }

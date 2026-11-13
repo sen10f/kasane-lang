@@ -1355,3 +1355,30 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 ### 22.5 試験と結果
 - `kir_sync_values_match_tree_walker` (静的 Mutex の加算・Rng のシードの列 (`&mut` の引数を含む)・生産者 1 本のチャネル・同じスレッドでの送受信と `clone` と drop・受信側を落とした後の `send` のエラー・送り手 2 本 (受信が spawn の順に走らせる)・ループの中の `spawn`・spawn して返すハンドルの `join`。`ksn run` / `--run` / `--native` (と ASan) が一致)、`kir_sync_empty_recv_with_live_sender_deadlocks_like_the_tree_walker` (送り手が生きたままの空の recv は 101 と同じ文言)。`kir_thread_spawn_join_match_tree_walker` (14 章の既存の形) は表の方式で通る。
 - `examples/threads`: `ksn build --backend llvm` が作れ、`ksn run` と stdout・stderr・終了コードが一致する (`llvm_builds_of_real_packages_match_run` に追加)。
+
+## 23. 文字列の残りの下ろし (kir/str-rest、2026-11-13)
+
+`ksn test --both` で LLVM に下ろせずに木走査へ退避していた件を下ろした。examples の `(both: llvm)` は 43/62 → 52/62 (`json` 1→4、`shortener` 20→26、ほかは変わらず)。
+
+### 23.1 下ろしたもの
+- `split_at(m)` (`&str` / `&[T]`): 結果は `Option<(&str, &str)>` / `Option<(&[T], &[T])>`。木走査 (`natives.rs`) と同じく、`m` が長さの外、または `&str` の UTF-8 の途中なら `None` で panic しない (依頼文の「範囲外の panic」は誤り。木走査は `None` を返す)。境界は続きバイト (0x80..=0xBF) で見る。`kir_lower_str.rs` の `split_at_call`。
+- `eq_ignore_ascii_case` (`&str`): 長さが等しく、ASCII の A-Z だけを小文字にして比べる (`ascii_case` を流用。`str_eq` を `str_eq_with(.., fold)` に一般化した)。
+- `contains` (`&str` と `String`): `find` の一致の有無 (`Option` の tag)。`String` の `starts_with` / `ends_with` も同じ形で、先頭の {ptr, len} を `&str` として比べる。
+- `String.as_bytes()`: ヘッダの {ptr, len} を借用の `&[u8]` にする (`hdr_view`、`as_str` と同じ)。
+- 一時の `String` / `Vec` の読むだけのメソッド (`f().unwrap().as_str()` など): 値を `adopt` でフレームのヘッダに置き、スコープの終わりに解放する (`try_mcall`)。
+- `unwrap` の `Err` の表示: 派生の `Debug` を持つ型 (列挙型・構造体) の `Err` は、失敗の枝で `<E>.$debug` を呼んで `panic: called `Result::unwrap()` on an `Err` value: <表示>` を書く (`core.check.eq` の失敗と同じ `Abort` の形)。`kir_lower_panic.rs` の `unwrap_on` が `Result` の E の型を受け取る。
+- `core.check.eq` の `String`: `$eq` は先頭の {ptr, len} を `&str` と同じ規則で比べ、`$debug` は `&str` の表示 (引用つき) と同じ。`kir_debug.rs` の `string_debug` / `str_eq(fat, ty, name)`。
+- `core.check.eq` の両辺は移さずに読む (`expr_peek`)。一時の値 (呼び出しの結果など、場所でないもの) は比べた後に解放する。前は一時の `Result<String, _>` を渡すと解放されず、関数の終わりで「領域が解放されず」の内部エラーになった。
+- `split_once` の結果の `let (a, b) = match ..` (`let_pat`): 束縛の型表の型から種類 (`&str` の `Kind::Str` など) を結び付ける。前は `line.split_once(..)` の受け手の種類が無く、利用者の型のメソッドとして拒否されていた。
+
+### 23.2 残り (理由つき)
+- `shortener.http.parse_head.test_rejects_malformed`: `core.check.eq` の失敗の表示に `shortener.http.Head` の `derive [Debug]` が要る (設計 15 章の規則どおり拒否)。木走査は派生の無い型も表示できるので、表示の規則を広げるかどうかは別の判断。
+- `shortener.http.parse_reply.*` (2 本)・`shortener.tests.loopback.test_bad_requests_get_400`・`test_shorten_and_fetch`: 下ろしの次の壁は `String.push_bytes` (`Result<(), alloc.string.PushBytesError>` の E の型が未対応)。`split_at` 自体は通る。
+- `shortener.tests.loopback.test_serves_queued_connections_in_order` / `test_worker_pool_serves_concurrent_connections` / `store.*`: `std.fs.read_to_end` (Vec の再確保) と `push_bytes`。`as_bytes` は通る。
+- `kvlib.tests.api.test_lookup_agrees_with_parse`: 変わらず (式 Path の型が決まらない)。
+- `shortener.json.escape_into` / `store.Store.add`: 変わらず (`load` の型の検査)。
+
+### 23.3 試験
+- `stage0/tests/cli.rs` の `kir_str_rest_matches_tree_walker` (26 件の `bool` の関数: `split_at` (str 6・slice 3)、`eq_ignore_ascii_case` 7、`contains` 4、`String` の `contains` / `starts_with` / `ends_with` / `as_bytes`、一時の `as_str` / `as_bytes().len()`、`split_once` の `let` 分解。`--run` / `--native` が木走査と一致する)。
+- `kir_unwrap_err_enum_debug_matches_tree_walker` (`Err(Bad(3))` / `Err(Neg)` の文言と終了コード 101、値の枝)。
+- `kir_check_eq_on_string_matches_tree_walker` (`Result<String, _>` の等しい比べ・違う比べの文言 `Ok("ab")`、一時の値の解放)。

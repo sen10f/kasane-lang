@@ -22391,3 +22391,143 @@ end t.check_url_at
         assert_eq!(text(&k.stdout).trim(), want, "kir check_url_at {} value", i);
     }
 }
+
+/// `&str` / スライスの `split_at`、`eq_ignore_ascii_case`、`contains`、`String` の `contains` / `starts_with` /
+/// `ends_with` / `as_bytes`、一時の `String` の `as_str`、`split_once` の結果の `let` 分解 (設計_KIR.md 23 章)。
+/// 木走査と `--run` / `--native` の値が一致する。各関数は `bool` を返し、木走査の `main` の検査が通る。
+#[test]
+fn kir_str_rest_matches_tree_walker() {
+    let helpers = r#"fn t.mk_s() -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
+    alloc.string.String.from_str(std.alloc.SYSTEM, "xy")
+end t.mk_s
+
+"#;
+    // (関数名, 本体の行 (4 字下げ), 真になるべき)
+    let cases: &[(&str, &str)] = &[
+        ("t.sa_mid", "    \"hello\".split_at(2usize) == Some((\"he\", \"llo\"))"),
+        ("t.sa_zero", "    \"hello\".split_at(0usize) == Some((\"\", \"hello\"))"),
+        ("t.sa_len", "    \"hello\".split_at(5usize) == Some((\"hello\", \"\"))"),
+        ("t.sa_past", "    \"hello\".split_at(6usize) == None"),
+        ("t.sa_utf8_mid", "    \"héllo\".split_at(2usize) == None"),
+        ("t.sa_utf8", "    \"héllo\".split_at(3usize) == Some((\"hé\", \"llo\"))"),
+        ("t.sb_mid", "    b\"abc\".split_at(1usize) == Some((b\"a\", b\"bc\"))"),
+        ("t.sb_end", "    b\"abc\".split_at(3usize) == Some((b\"abc\", b\"\"))"),
+        ("t.sb_past", "    b\"abc\".split_at(4usize) == None"),
+        ("t.ei_yes", "    \"HeLLo\".eq_ignore_ascii_case(\"hello\")"),
+        ("t.ei_header", "    \"Content-Length\".eq_ignore_ascii_case(\"content-LENGTH\")"),
+        ("t.ei_punct", "    \"[]@`{\".eq_ignore_ascii_case(\"[]@`{\")"),
+        ("t.ei_no_len", "    \"abc\".eq_ignore_ascii_case(\"abcd\") == false"),
+        ("t.ei_no_char", "    \"abc\".eq_ignore_ascii_case(\"abd\") == false"),
+        ("t.ei_nonascii", "    \"É\".eq_ignore_ascii_case(\"é\") == false"),
+        ("t.ei_empty", "    \"\".eq_ignore_ascii_case(\"\")"),
+        ("t.ct_mid", "    \"hello world\".contains(\"o w\")"),
+        ("t.ct_empty", "    \"hello\".contains(\"\")"),
+        ("t.ct_no", "    \"hello\".contains(\"x\") == false"),
+        ("t.ct_long", "    \"hello\".contains(\"hello!\") == false"),
+        (
+            "t.sx_contains",
+            "    let s = alloc.string.String.from_str(std.alloc.SYSTEM, \"hello world\").unwrap()\n    s.contains(\"lo w\") && s.contains(\"xyz\") == false",
+        ),
+        (
+            "t.sx_prefix",
+            "    let s = alloc.string.String.from_str(std.alloc.SYSTEM, \"hello world\").unwrap()\n    s.starts_with(\"hel\") && s.ends_with(\"rld\") && s.starts_with(\"el\") == false",
+        ),
+        (
+            "t.sx_bytes",
+            "    let s = alloc.string.String.from_str(std.alloc.SYSTEM, \"ab\").unwrap()\n    s.as_bytes() == b\"ab\"",
+        ),
+        ("t.sx_tmp", "    t.mk_s().unwrap().as_str() == \"xy\""),
+        ("t.sx_tmp_len", "    t.mk_s().unwrap().as_bytes().len() == 2usize"),
+        (
+            "t.sl_let",
+            "    let (line, rest) = match \"GET /x HTTP\".split_once(\" \") {\n        Some(pair) => pair\n        None => return false\n    }\n    line == \"GET\" && rest == \"/x HTTP\"",
+        ),
+    ];
+    let mut src = String::from(helpers);
+    let mut main = String::from("\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n");
+    for (f, body) in cases {
+        src.push_str(&format!("fn {}() -> bool uses [alloc] panics may\n{}\nend {}\n\n", f, body, f));
+        main.push_str(&format!("    core.check.eq({}(), true)\n", f));
+    }
+    main.push_str("    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_str_rest", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, _) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "true", "kir value of {}", f);
+    }
+}
+
+/// `unwrap` の `Err` の表示: 派生の `Debug` を持つ列挙型の `Err` は、木走査と同じ `Bad(3)` / `Neg` の文言で止まる。
+#[test]
+fn kir_unwrap_err_enum_debug_matches_tree_walker() {
+    let src = r#"enum t.Er derive [Debug, Clone, PartialEq]
+    Bad(usize)
+    Neg
+end t.Er
+
+fn t.pick(n: i32) -> Result<u32, t.Er> uses [] panics may
+    if n > 0i32 {
+        Ok(7u32)
+    } else {
+        if n == 0i32 {
+            Err(t.Er.Bad(3usize))
+        } else {
+            Err(t.Er.Neg)
+        }
+    }
+end t.pick
+
+fn t.un(n: i32) -> u32 uses [] panics may
+    t.pick(n).unwrap()
+end t.un
+"#;
+    let cases = [(0, "Bad(3)"), (-1, "Neg")];
+    for (i, (arg, shown)) in cases.iter().enumerate() {
+        let msg = format!("called `Result::unwrap()` on an `Err` value: {}", shown);
+        let t = Tmp::new(&format!("kir_unwrap_enum_{}", i), &format!("{}{}", src, main_wrap("", &format!("    let _x = t.un({})\n", arg))));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "tree-walker\n{}", text(&o.stderr));
+        assert!(text(&o.stderr).contains(&format!("panic: {}", msg)), "tree-walker\n{}", text(&o.stderr));
+        let k = kir_run(&["kir", "t.un", "--run", &arg.to_string()], &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir\n{}", text(&k.stderr));
+        assert_eq!(text(&k.stderr).trim(), format!("panic: {}", msg), "kir");
+    }
+    let t = Tmp::new("kir_unwrap_enum_ok", &format!("{}{}", src, main_wrap("", "    core.check.eq(t.un(5), 7u32)\n")));
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker main");
+    let k = kir_run(&["kir", "t.un", "--run", "5"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "7", "kir value");
+}
+
+/// `core.check.eq` で `String` を含む `Result` どうしを比べる (`String` の `$eq` と `$debug`)。
+/// 等しいときは木走査と同じく通り、違うときは木走査と同じ文言 (`Ok("ab")`) で 101 になる。
+#[test]
+fn kir_check_eq_on_string_matches_tree_walker() {
+    let src = r#"fn t.mk_s(s: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
+    alloc.string.String.from_str(std.alloc.SYSTEM, s)
+end t.mk_s
+
+fn t.same() -> () uses [alloc] panics may
+    core.check.eq(t.mk_s("ab"), t.mk_s("ab"))
+    core.check.eq(t.mk_s(""), t.mk_s(""))
+end t.same
+
+fn t.differs() -> () uses [alloc] panics may
+    core.check.eq(t.mk_s("ab"), t.mk_s("ac"))
+end t.differs
+
+"#;
+    let main = "fn t.main() -> Result<(), std.io.Error> uses [io.console, alloc] panics may\n    t.same()\n    t.differs()\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_check_eq_string", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "tree-walker\n{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("panic: assertion failed: left: Ok(\"ab\"), right: Ok(\"ac\")"), "tree-walker\n{}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.same", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir same\n{}", text(&k.stderr));
+    let k = kir_run(&["kir", "t.differs", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir differs\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stderr).trim(), "panic: assertion failed: left: Ok(\"ab\"), right: Ok(\"ac\")", "kir differs");
+}

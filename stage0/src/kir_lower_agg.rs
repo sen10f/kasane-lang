@@ -860,8 +860,21 @@ impl<'a> Lw<'a> {
             super::coll::drop_unbound(self, pat, v, t)?;
             return Ok(St::Unit);
         }
+        // 束縛の型表の型から種類 (`&str` の `split_once` など) を結び付ける (設計_KIR.md 23 章)。
+        let mut srcs = std::collections::BTreeMap::new();
+        if let Ok(ss) = self.src_ty(init) {
+            super::coll::pat_srcs(self, pat, &ss, &mut srcs);
+        }
         for (n, bv, bt) in binds {
             self.bind(&n, bv, bt);
+            let Some(src) = srcs.get(&n).cloned() else { continue };
+            let Some(slot) = self.lookup(&n) else { continue };
+            if let Some(k) = super::coll::kind_of_src(self, &src) {
+                self.coll.kinds.insert(slot, k);
+                if matches!(src, crate::types::Ty::Ref(..)) {
+                    self.coll.borrowed.insert(slot);
+                }
+            }
         }
         Ok(St::Unit)
     }

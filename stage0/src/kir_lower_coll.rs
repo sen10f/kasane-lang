@@ -1484,6 +1484,16 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     Some(match place(lw, &f[0]) {
         Ok(Some(h)) if matches!(kind, Kind::Map(_)) => super::map_lower::method(lw, e, slot, &kind, h, &m, items(&f[2])),
         Ok(Some(h)) if matches!(kind, Kind::BMap(_)) => super::map_lower::bmap_method(lw, e, slot, &kind, h, &m, items(&f[2])),
+        // 一時の `String` / `Vec` (`f().unwrap().as_str()` など) の読むだけのメソッド: 値を所有のヘッダ (フレーム) に
+        // 置いて、そのアドレスを受け手にする。ヘッダはスコープの終わりに解放する (設計_KIR.md 23 章)。
+        Ok(Some(h))
+            if slot.is_none()
+                && matches!((&kind, m.as_str()), (Kind::String, "as_str" | "as_bytes" | "len" | "is_empty" | "contains" | "starts_with" | "ends_with") | (Kind::Vec(_), "len" | "is_empty" | "as_slice"))
+                && lw.aggs.borrow().is_vec(lw.vty(h)) =>
+        {
+            let hdr = adopt(lw, h);
+            method_on(lw, e, line, None, kind, hdr, &m, items(&f[2]))
+        }
         Ok(Some(h)) => method_on(lw, e, line, slot, kind, h, &m, items(&f[2])),
         Ok(None) => Ok(None),
         Err(e) => Err(e),
@@ -1569,6 +1579,8 @@ pub(super) fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str,
         }
         // `str` のバイト列: 同じ {ptr, len} の値。
         "as_bytes" if kind == Kind::Str => Ok(Some(h)),
+        // `String.as_bytes()`: ヘッダの {ptr, len} を借用の `&[u8]` (fat) にする (所有は移さない)。
+        "as_bytes" if kind == Kind::String => Ok(Some(hdr_view(lw, h))),
         // `String.as_str()` / `Vec.as_slice()`: ヘッダの {ptr, len} を借用の `fat` にする (所有は移さない)。
         "as_str" if kind == Kind::String => Ok(Some(hdr_view(lw, h))),
         "as_slice" if matches!(kind, Kind::Vec(_)) => Ok(Some(hdr_view(lw, h))),
