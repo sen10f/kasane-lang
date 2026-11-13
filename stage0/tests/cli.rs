@@ -12831,6 +12831,138 @@ fn kir_str_methods_and_bstr_match_tree_walker() {
     assert_eq!(text(&k.stdout).trim(), "true", "kir utf8_bad value");
 }
 
+#[test]
+fn kir_trim_match_tree_walker() {
+    // `&str` の `trim` / `trim_start` / `trim_end` / `strip_prefix` / `strip_suffix` / `split_once` を
+    // KIR に下ろし、`--run` (KIR インタプリタ) と `--native` (LLVM) が `ksn run` と一致すること。
+    // `trim` は 0x20 / \t / \n / \r / \x0C の 5 つだけを削る (0x0B は削らない、natives.rs と合わせる)。
+    let src = r#"fn t.trim_test() -> bool uses [] panics never
+    let a = "  hello  ".trim().eq("hello")
+    let b = "   \t\n ".trim().eq("")
+    let c = "".trim().eq("")
+    let d = "no_ws".trim().eq("no_ws")
+    let e = "  leading".trim_start().eq("leading")
+    let f = "trailing  ".trim_end().eq("trailing")
+    let g = " \x0bhello\x0b ".trim().eq("\x0bhello\x0b")
+    let h = match "  abc".strip_prefix("  ") {
+        Some(_t) => true
+        None => false
+    }
+    let i = match "abc  ".strip_suffix("  ") {
+        Some(_t) => true
+        None => false
+    }
+    let j = !match "abc".strip_prefix("x") {
+        Some(_t) => true
+        None => false
+    }
+    let k = match "".strip_prefix("") {
+        Some(_t) => true
+        None => false
+    }
+    a && b && c && d && e && f && g && h && i && j && k
+end t.trim_test
+
+fn t.split_once_test() -> bool uses [] panics may
+    let r1 = match "a,b,c".split_once(",") {
+        Some((a, b)) => {
+            core.check.eq(a, "a")
+            core.check.eq(b, "b,c")
+            true
+        }
+        None => false
+    }
+    let r2 = match "abc".split_once("z") {
+        Some(_t) => false
+        None => true
+    }
+    let r3 = match ",abc".split_once(",") {
+        Some((a, b)) => {
+            core.check.eq(a, "")
+            core.check.eq(b, "abc")
+            true
+        }
+        None => false
+    }
+    let r4 = match "abc,".split_once(",") {
+        Some((a, b)) => {
+            core.check.eq(a, "abc")
+            core.check.eq(b, "")
+            true
+        }
+        None => false
+    }
+    let r5 = match "abc".split_once("") {
+        Some(_t) => false
+        None => true
+    }
+    r1 && r2 && r3 && r4 && r5
+end t.split_once_test
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.trim_test(), true)
+    core.check.eq(t.split_once_test(), true)
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("kir_trim", src);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "check: {}", text(&o.stderr));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "run (tree-walker): {}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.trim_test", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir trim_test: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir trim_test value");
+    let k = kir_run(&["kir", "t.split_once_test", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir split_once_test: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir split_once_test value");
+}
+
+#[test]
+fn kir_str_pattern_bindings_match_tree_walker() {
+    // `Some((k, v))` や `Some(rest)` で束縛した `&str` の受け手に `trim` / `is_empty` / `eq` を使い、
+    // `&str` どうしの `==` / `!=` を `str_eq` で比べる。`--run` / `--native` が `ksn run` と一致すること。
+    let src = r#"fn t.pair_test() -> bool uses [] panics never
+    let r1 = match " a = b ".split_once("=") {
+        Some((key, value)) => key.trim().eq("a") && value.trim().eq("b") && !key.is_empty()
+        None => false
+    }
+    let r2 = match "x=y".split_once("=") {
+        Some((k, v)) => k == "x" && k != "y" && v == "y"
+        None => false
+    }
+    let r3 = match "=b".split_once("=") {
+        Some((key, _v)) => key.is_empty()
+        None => false
+    }
+    r1 && r2 && r3
+end t.pair_test
+
+fn t.rest_test() -> bool uses [] panics never
+    match "a=b".strip_prefix("a") {
+        Some(rest) => rest == "=b" && !(rest == "x") && rest.trim() == "=b"
+        None => false
+    }
+end t.rest_test
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.pair_test(), true)
+    core.check.eq(t.rest_test(), true)
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("kir_str_pattern", src);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "check: {}", text(&o.stderr));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "run (tree-walker): {}", text(&o.stderr));
+    for f in ["t.pair_test", "t.rest_test"] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}: {}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "true", "kir {} value", f);
+    }
+}
+
 // ---- panic (unwrap・core.panic.panic)、利用者のメソッドの &mut 受け手、配列リテラルの for ----
 
 /// panic の試験用の関数。`unwrap` の None / Err と `core.panic.panic` (エスケープと % を含む文言)。
@@ -18649,6 +18781,7 @@ fn llvm_builds_of_real_packages_match_run() {
         "examples/features",
         "examples/ffi",
         "examples/json",
+        "examples/kvapp",
         "examples/more_coll",
         "examples/more_str",
         "examples/native",
@@ -18663,9 +18796,14 @@ fn llvm_builds_of_real_packages_match_run() {
         "perf/vecops",
     ] {
         let name = Path::new(pkg).file_name().unwrap().to_string_lossy().to_string();
-        let dir = std::env::temp_dir().join(format!("ksn_llvm_pkg_{}_{}", std::process::id(), name));
-        let _ = fs::remove_dir_all(&dir);
+        // 一時 dir の下に写す。path 依存 (`../kvlib`) のあるパッケージは、依存を兄弟の dir として写す。
+        let base = std::env::temp_dir().join(format!("ksn_llvm_pkg_{}_{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&base);
+        let dir = base.join(&name);
         copy(&root().join(pkg), &dir);
+        if pkg == "examples/kvapp" {
+            copy(&root().join("examples").join("kvlib"), &base.join("kvlib"));
+        }
         let cache = dir.join(".cache");
         let b = Command::new(exe())
             .args(["build", "--backend", "llvm"])
@@ -18682,7 +18820,7 @@ fn llvm_builds_of_real_packages_match_run() {
         assert_eq!(n.status.code(), r.status.code(), "{}: 終了コード", pkg);
         assert_eq!(text(&n.stdout), text(&r.stdout), "{}: stdout", pkg);
         assert_eq!(text(&n.stderr), text(&r.stderr), "{}: stderr", pkg);
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&base);
     }
 }
 

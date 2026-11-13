@@ -95,6 +95,9 @@ pub(crate) struct CollCx {
     pub(crate) hint: Option<Src>,
     /// いま下ろしている `match` の対象の (KIR の型, 型表の型)。`Some(x)` の `x` の種類の手がかりを取るため。
     pub(crate) scrut_src: Option<(Ty, Src)>,
+    /// いま判定している `match` の腕のパターンの束縛名 → 型 (`scrut_src` をパターンに沿って分解したもの)。
+    /// `&str` などの借用の束縛に種類 (`str` など) を結び付けるため。腕の判定の間だけ入れ、済んだら空にする。
+    pub(crate) pat_srcs: BTreeMap<String, Src>,
     /// Vec / String のヘッダ (フレームの領域) → 値の型 (`vec` または要素が所有物の `vec<#N>`)。移すときの型と、解放のとき要素を解放するかに使う。
     pub(crate) hdr_ty: BTreeMap<VId, Ty>,
     /// 構造体のフィールド (場所) を `match` の対象として読んだ直後か (`scrut_begin` が読んで下ろす)。値は移していない。
