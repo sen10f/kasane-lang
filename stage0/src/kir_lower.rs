@@ -589,7 +589,9 @@ impl<'a> Lw<'a> {
         }
     }
 
-    /// 整数か bool のリテラルで書かれた定数 (`const f.N: u64 = 27u64`) だけを値として扱う。
+    /// 整数か bool のリテラルで書かれた定数 (`const f.N: u64 = 27u64`) と、
+    /// 文字列のリテラルで書かれた定数 (`const f.CONFIG: &str = "..."`) を値として扱う。
+    /// 定数の値はコンパイル時に分かるので、使う場所で値を作る。
     fn const_val(&mut self, ci: usize, e: &V) -> LR<VId> {
         let c = &self.p.defs[ci];
         let ty = self.ty_of(e)?;
@@ -600,6 +602,9 @@ impl<'a> Lw<'a> {
                     return self.err(nline(e), "定数の値が型の範囲にない");
                 }
                 Ok(self.emit(ty, Op::Const(v)))
+            }
+            Some(init) if nname(init) == "Lit" && st(&nf(init)[0]) == "str" && ty == self.fat_ty() => {
+                coll::str_lit(self, init)
             }
             _ => self.err(nline(e), format!("定数 {} は段階 1 の対象外", c.name)),
         }
