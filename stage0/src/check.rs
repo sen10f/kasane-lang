@@ -406,6 +406,16 @@ struct Lin {
     line: usize,
     linear: bool,
     live: bool,
+    /// 線形な欄を持つ構造体の根 (義務は欄ごとの後続の項目 `name.欄` が持つ)。根自身は義務を持たない。
+    parts: bool,
+}
+
+/// 義務の名前 (`p` または欄の `p.a`) を、診断の文に出す形へ分ける: 根の名前と、欄の注記 (` (field `a`)`)。
+fn lin_label(name: &str) -> (String, String) {
+    match name.split_once('.') {
+        Some((root, field)) => (root.to_string(), format!(" (field `{field}`)")),
+        None => (name.to_string(), String::new()),
+    }
 }
 
 /// ループ 1 つぶんの、`break` / `continue` 時点の義務の状態 (説明, 状態)。
@@ -3511,6 +3521,8 @@ impl<'a> Checker<'a> {
                         }
                         // 代入で、その場所とその下の move 済みの部分は復活する (4.1)。
                         self.revive_place(&segs);
+                        // 線形な欄の義務 (`p.a = ..`) も、古い値の未消費は漏れ、新しい値の義務を負う。
+                        self.lin_assign_place(&segs, nline(s));
                         if segs.len() == 1 {
                             // 線形な変数への再代入: 古い値が残っていれば漏れ。新しい値の義務を負う。
                             if let Some(i) = self.lin_find(root) {
@@ -3669,9 +3681,22 @@ impl<'a> Checker<'a> {
                     ("Option", "Some") => targs.first().map(|t| vec![(*t).clone()]).unwrap_or_default(),
                     ("Result", "Ok") => targs.first().map(|t| vec![(*t).clone()]).unwrap_or_default(),
                     ("Result", "Err") => targs.get(1).map(|t| vec![(*t).clone()]).unwrap_or_default(),
+                    // ジェネリックな enum は、使用側の型引数を代入した payload の型を流す (個数が合わなければ黙る)。
                     _ => match self.p.types.get(&tname) {
-                        Some(&i) if self.def(i).generics.is_empty() => {
-                            self.def(i).variants.iter().find(|v| &v.0 == vname).map(|v| v.1.clone()).unwrap_or_default()
+                        Some(&i) => {
+                            let d = self.def(i);
+                            let tps: Vec<String> = d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
+                            let args = items(tel(ty, 2));
+                            if tps.len() != args.len() {
+                                vec![]
+                            } else {
+                                let bind: HashMap<String, V> = tps.into_iter().zip(args.iter().cloned()).collect();
+                                d.variants
+                                    .iter()
+                                    .find(|v| &v.0 == vname)
+                                    .map(|v| v.1.iter().map(|t| subst_ty_params(t, &bind)).collect())
+                                    .unwrap_or_default()
+                            }
                         }
                         _ => vec![],
                     },
@@ -3685,6 +3710,21 @@ impl<'a> Checker<'a> {
                         out.push(("_".to_string(), pt.clone()));
                     }
                     self.bind_pat_types(sub, &pt, out);
+                }
+            }
+            "PStruct" => {
+                // 構造体のパターン `T { f: p, .. }`: 欄の型 (ジェネリクスは使用側の型引数で置き換える) を、欄の部分パターンへ流す。
+                if tag(ty) != "named" {
+                    return;
+                }
+                for x in items(&nf(p)[1]) {
+                    let Some(ft) = self.field_ty(ty, &st(&items(x)[0])) else { continue };
+                    let ft = if self.is_generic(&ft, &self.names) { V::Nil } else { ft };
+                    let sub = &items(x)[1];
+                    if nname(sub) == "PWild" && !is_nil(&ft) {
+                        out.push(("_".to_string(), ft.clone()));
+                    }
+                    self.bind_pat_types(sub, &ft, out);
                 }
             }
             _ => {}
@@ -3758,7 +3798,7 @@ impl<'a> Checker<'a> {
                 self.lin_in_closure = true;
                 // 移った義務は本体が負う: 取り込んだ名前を本体の線形な束縛として宣言し、全経路で消費しているかを検査する。
                 for (name, line) in taken {
-                    self.lin.push(Lin { name, line, linear: true, live: true });
+                    self.lin.push(Lin { name, line, linear: true, live: true, parts: false });
                 }
                 for p in items(&f[0]) {
                     let (pn, pt) = (st(&items(p)[0]), items(p)[1].clone());
@@ -4052,6 +4092,7 @@ impl<'a> Checker<'a> {
                     if !is_nil(&sty) {
                         self.bind_pat_types(&items(arm)[0], &sty, &mut typed);
                         self.lin_wild(&typed, nline(&items(arm)[0]));
+                        self.lin_wild_top(&items(arm)[0], &sty, nline(&items(arm)[0]));
                     }
                     for n in b {
                         let t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
@@ -4261,8 +4302,36 @@ impl<'a> Checker<'a> {
     /// 束縛を宣言する。線形な型なら消費の義務を負う (4.4)。線形でない束縛 (型が決まらないものを含む) も、
     /// 同名の外側の束縛を隠す目印として積む。
     fn lin_declare(&mut self, name: &str, ty: &V, line: usize) {
+        // 線形な欄を持つ、線形でない構造体は、欄ごとに義務を負う。根の束縛は義務を持たず、
+        // 欄の部分 move で根全体を消費済みにしない (`p.a` を渡しても `p.b` の漏れを見る)。
+        let split = self.split_fields(ty);
+        if !split.is_empty() {
+            self.lin.push(Lin { name: name.to_string(), line, linear: false, live: false, parts: true });
+            for (f, ft) in split {
+                self.lin_declare(&format!("{name}.{f}"), &ft, line);
+            }
+            return;
+        }
         let linear = !is_nil(ty) && self.is_linear(ty);
-        self.lin.push(Lin { name: name.to_string(), line, linear, live: linear });
+        self.lin.push(Lin { name: name.to_string(), line, linear, live: linear, parts: false });
+    }
+
+    /// 線形な欄を持つ、線形でない構造体の欄 (名前と型) の一覧。欄ごとに義務を負う対象。
+    /// 構造体でない型・線形な型自身・型が決まらない型は空 (従来どおり根で扱う)。
+    fn split_fields(&self, t: &V) -> Vec<(String, V)> {
+        if is_nil(t) || tag(t) != "named" {
+            return vec![];
+        }
+        let Some(&i) = self.p.types.get(&st(tel(t, 1))) else { return vec![] };
+        let d = self.def(i);
+        if d.kw != "type" || d.linear {
+            return vec![];
+        }
+        d.fields
+            .iter()
+            .filter_map(|(n, _, _)| self.field_ty(t, n).map(|ft| (n.clone(), ft)))
+            .filter(|(_, ft)| !self.is_generic(ft, &self.names) && self.is_linear(ft))
+            .collect()
     }
 
     /// パターンの `_` が線形な値を受けている (捨てている) か。`bind_pat_types` は、入れ子の `_` を
@@ -4275,6 +4344,13 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 腕の最上位のパターンが `_` で、スクラティニーが線形な値なら、その値を捨てている (4.4)。
+    fn lin_wild_top(&mut self, pat: &V, ty: &V, line: usize) {
+        if nname(pat) == "PWild" && self.is_linear(ty) {
+            self.tdiag("E3003", "a linear value matched by the pattern `_` is discarded without being consumed".into(), line);
+        }
+    }
+
     /// 名前が指す (最も内側の) 束縛。現在の関数 / クロージャの範囲だけを見る。
     fn lin_find(&self, name: &str) -> Option<usize> {
         (self.lin_floor..self.lin.len()).rev().find(|&i| self.lin[i].name == name)
@@ -4282,25 +4358,82 @@ impl<'a> Checker<'a> {
 
     /// 名前の束縛を消費済みにする。未消費の線形値だったら true。
     fn lin_consume_name(&mut self, name: &str) -> bool {
-        if let Some(i) = self.lin_find(name) {
-            if self.lin[i].linear {
-                let was = self.lin[i].live;
-                self.lin[i].live = false;
-                return was;
-            }
+        match self.lin_find(name) {
+            Some(i) => self.lin_consume_at(i),
+            None => false,
         }
-        false
     }
 
-    /// 場所の値を値として渡した (move した)。場所の型が線形なら、根の束縛の義務が移る。
-    /// 線形でない部分 (`s.len` のような読み出し) は消費にならない。
+    /// 位置 `i` の束縛と、その下の欄の義務 (`名前.` で始まる後続の項目) を消費済みにする。
+    /// 未消費の義務が 1 つでもあったら true。
+    fn lin_consume_at(&mut self, i: usize) -> bool {
+        let prefix = format!("{}.", self.lin[i].name);
+        let mut was = false;
+        for j in i..self.lin.len() {
+            if (j == i || self.lin[j].name.starts_with(&prefix)) && self.lin[j].linear {
+                was |= self.lin[j].live;
+                self.lin[j].live = false;
+            }
+        }
+        was
+    }
+
+    /// 場所の値を値として渡した (move した)。線形な欄の義務 (`parts` の根) は、道に当たる欄だけを消費する。
+    /// それ以外は場所の型が線形なら根の束縛の義務が移る。線形でない部分 (`s.len` のような読み出し) は消費にならない。
     fn lin_consume_place(&mut self, root: &str, path: &[String], env: &Env) {
         if path.is_empty() {
             self.lin_consume_name(root);
-        } else if let Some(t) = self.place_ty(root, path, env) {
+            return;
+        }
+        if let Some(i) = self.lin_find(root) {
+            if self.lin[i].parts {
+                // 道を長い方から、最初に見つかった欄の義務を探す。見つからなければ線形でない欄の読み出し。
+                for k in (1..=path.len()).rev() {
+                    let key = format!("{}.{}", root, path[..k].join("."));
+                    let Some(j) = (i + 1..self.lin.len()).rev().find(|&j| self.lin[j].name == key) else { continue };
+                    // 道の途中で親の義務 (線形な欄・分解された欄) に当たったときは、道の型で決める。
+                    let whole = k == path.len() || self.place_ty(root, path, env).is_some_and(|t| self.is_linear(&t));
+                    if self.lin[j].parts {
+                        if k == path.len() {
+                            self.lin_consume_at(j);
+                        }
+                    } else if whole {
+                        self.lin_consume_at(j);
+                    }
+                    return;
+                }
+                return;
+            }
+        }
+        if let Some(t) = self.place_ty(root, path, env) {
             if self.is_linear(&t) {
                 self.lin_consume_name(root);
             }
+        }
+    }
+
+    /// 代入 `segs = ..` で、場所とその下の欄の義務を新しい値へ移す。古い値の未消費の義務は漏れ (E3003)、
+    /// 新しい値の義務は負う (生き返らせる)。根が `parts` でなければ、根の束縛は呼び出し側が扱う。
+    fn lin_assign_place(&mut self, segs: &[String], line: usize) {
+        let Some(i) = self.lin_find(&segs[0]) else { return };
+        let key = segs.join(".");
+        let prefix = format!("{key}.");
+        for j in i + 1..self.lin.len() {
+            let n = self.lin[j].name.clone();
+            if !(n == key || n.starts_with(&prefix)) || !self.lin[j].linear {
+                continue;
+            }
+            if self.lin[j].live {
+                let dl = crate::parser::unpack_pos(self.lin[j].line).0;
+                let ln = crate::parser::unpack_pos(line).0;
+                let (root, note) = lin_label(&n);
+                self.tdiag(
+                    "E3003",
+                    format!("linear value `{root}` (declared at line {dl}) is not consumed before the assignment at line {ln} overwrites it{note}"),
+                    line,
+                );
+            }
+            self.lin[j].live = true;
         }
     }
 
@@ -4311,7 +4444,8 @@ impl<'a> Checker<'a> {
             self.lin.iter().skip(from).filter(|x| x.live).map(|x| (x.name.clone(), x.line)).collect();
         for (name, decl) in leaks {
             let dl = crate::parser::unpack_pos(decl).0;
-            self.tdiag("E3003", format!("linear value `{name}` (declared at line {dl}) is not consumed {how}"), line);
+            let (root, note) = lin_label(&name);
+            self.tdiag("E3003", format!("linear value `{root}` (declared at line {dl}) is not consumed {how}{note}"), line);
         }
     }
 
@@ -4372,7 +4506,8 @@ impl<'a> Checker<'a> {
         let base = base.min(self.lin.len());
         let gone = self.lin.split_off(base);
         for x in gone.into_iter().filter(|x| x.live) {
-            self.tdiag("E3003", format!("linear value `{}` is never consumed {how}", x.name), x.line);
+            let (root, note) = lin_label(&x.name);
+            self.tdiag("E3003", format!("linear value `{root}` is never consumed {how}{note}"), x.line);
         }
     }
 
@@ -4388,11 +4523,12 @@ impl<'a> Checker<'a> {
             let all = lives.iter().all(|&b| b);
             if !all && lives.iter().any(|&b| b) {
                 let (name, decl) = (res[i].name.clone(), crate::parser::unpack_pos(res[i].line).0);
+                let (root, note) = lin_label(&name);
                 for (k, (desc, _)) in inputs.iter().enumerate() {
                     if lives[k] {
                         self.tdiag(
                             "E3003",
-                            format!("linear value `{name}` (declared at line {decl}) is not consumed on the path where {desc}"),
+                            format!("linear value `{root}` (declared at line {decl}) is not consumed on the path where {desc}{note}"),
                             line,
                         );
                     }
