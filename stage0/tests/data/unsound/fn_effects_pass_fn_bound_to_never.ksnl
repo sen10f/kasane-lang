@@ -1,0 +1,23 @@
+// expect: E4001
+fn t.loud() -> u32 uses [io.console] panics may
+    core.mem.drop(std.io.print_line("LOUD"))
+    core.panic.panic("PANIC")
+end t.loud
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.outer(t.quiet))
+end t.main
+
+fn t.outer[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [] panics never
+    // `F: Fn<.., E, P>` の値を `Fn<.., [], never>` を求める場所に渡す:
+    // 効果変数・panic 変数が渡し側にあり、受け側が具体的なので fail-closed。
+    t.strict(f)
+end t.outer
+
+fn t.quiet() -> u32 uses [] panics never
+    1u32
+end t.quiet
+
+fn t.strict[F: core.ops.Fn<(), u32, [], never>](f: F) -> u32 uses [] panics never
+    f.call(())
+end t.strict
