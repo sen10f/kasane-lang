@@ -8,7 +8,7 @@
 //! 両方とも、式として値 `()` を返す (成功の枝は続く)。引数の型が下ろせない・表示できないときは理由付きで止める。
 
 use crate::check::{items, nf, nlineno as nline, nname, strs};
-use crate::kir::{Cc, Op, Term, Ty, VId};
+use crate::kir::{Cc, Op, Pointee, Term, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
 
@@ -47,6 +47,18 @@ impl<'a> Lw<'a> {
         }
         let sa = self.src_ty(&args[0])?;
         let file = self.def.file.clone();
+        // 参照越しのスカラー (&T / &mut T) は参照先を読んでスカラーどうしにする。
+        // `&u8` だけでなく整数・bool・char・浮動小数への参照も同様。
+        let (a, b, sa, ta) = if matches!(ta, Ty::Ref(_, p) if !matches!(p, Pointee::Agg(_))) {
+            if let Src::Ref(false, inner) = &sa {
+                let t = match ta { Ty::Ref(_, p) => p.ty(), _ => unreachable!() };
+                (self.emit(t, Op::Load(a)), self.emit(t, Op::Load(b)), (*inner).as_ref().clone(), t)
+            } else {
+                (a, b, sa, ta)
+            }
+        } else {
+            (a, b, sa, ta)
+        };
         // 浮動小数は $eq / $debug 未対応なので、Cmp (IEEE ==) と FmtFloat で下ろす。
         if ta.is_float() {
             let bits = match ta { Ty::F32 => 32, Ty::F64 => 64, _ => unreachable!() };
@@ -128,6 +140,40 @@ impl<'a> Lw<'a> {
         Ok(Some(self.emit(Ty::Unit, Op::Const(0))))
     }
 
+    /// 比較演算子 `==` / `!=` の被演算子 (値 `a` / `b`) が `Option` / `Result` / 集成体 / `&str` / `&[u8]` のとき、
+    /// `<型>.$eq` を呼んで bool を返す (派生の比較。木走査の `v_eq` と同じ意味)。`neg` なら否定。
+    pub(super) fn eq_by_call(&mut self, l: &V, r: &V, a: VId, b: VId, neg: bool, line: usize) -> LR<VId> {
+        let ta = self.vty(a);
+        let mut why = String::new();
+        let mut found = None;
+        for e in [l, r] {
+            let Ok(s) = self.src_ty(e) else { continue };
+            let s = norm_src(&s);
+            let file = self.def.file.clone();
+            let mut g = Gen::new(self.p, self.aggs);
+            match g.need_eq(&s, ta, &file) {
+                Ok(k) => {
+                    found = Some((k, std::mem::take(&mut g.out)));
+                    break;
+                }
+                Err(w) => why = w,
+            }
+        }
+        let Some((eq, out)) = found else {
+            return self.err(line, format!("型 {} の比較は段階 1 の対象外: {}", ta.name(), why));
+        };
+        for (f, c) in out {
+            self.coll.extra.push((f, c));
+        }
+        self.callees.insert(eq.clone());
+        let same = self.emit(Ty::Bool, Op::Call { callee: eq, args: vec![a, b] });
+        if neg {
+            let one = self.emit(Ty::Bool, Op::Const(1));
+            return Ok(self.emit(Ty::Bool, Op::Bool(crate::kir::BoolOp::Xor, same, one)));
+        }
+        Ok(same)
+    }
+
     /// 文字列リテラルを stderr へ書く (`eprint`)。
     fn put_static(&mut self, fat: Ty, s: &str) {
         let p = self.emit(Ty::Ptr, Op::StaticBytes(s.as_bytes().to_vec()));
@@ -139,5 +185,16 @@ impl<'a> Lw<'a> {
     /// 表示の関数 `dbg` を値 `v` に呼ぶ。
     fn call_debug(&mut self, dbg: &str, v: VId) {
         self.emit(Ty::Unit, Op::Call { callee: dbg.to_string(), args: vec![v] });
+    }
+}
+
+/// 比較の型: スカラーへの参照 (`Option<&u8>` の `&u8`) は値で持つので、参照を外す。
+fn norm_src(s: &crate::types::Ty) -> crate::types::Ty {
+    use crate::types::Ty as S;
+    match s {
+        S::Ref(_, inner) if matches!(&**inner, S::Prim(p) if p != "str") => norm_src(inner),
+        S::Ref(m, inner) => S::Ref(*m, Box::new(norm_src(inner))),
+        S::Named(n, a) => S::Named(n.clone(), a.iter().map(norm_src).collect()),
+        o => o.clone(),
     }
 }

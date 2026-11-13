@@ -1,0 +1,8 @@
+{
+  "id": "distinct",
+  "title": "異なる値の個数(HashMap)",
+  "spec": "u32 のスライスに含まれる異なる値の個数を、HashMap(キー u32、値 bool)に挿入して数える。挿入は失敗しうる(Result)ので、失敗したら core.panic.panic(\"oom\") でよい。",
+  "decl": "fn bench.distinct_count(xs: &[u32]) -> usize",
+  "level": "hard",
+  "order": 13
+}

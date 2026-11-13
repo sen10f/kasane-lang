@@ -1,0 +1,8 @@
+{
+  "id": "is_prime",
+  "title": "素数判定",
+  "spec": "n が素数なら true。0 と 1 は false。",
+  "decl": "fn bench.is_prime(n: u32) -> bool",
+  "level": "basic",
+  "order": 2
+}

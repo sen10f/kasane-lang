@@ -1330,13 +1330,28 @@ impl<'a> TypeCk<'a> {
         want = self.resolve(&want);
         got = self.resolve(&got);
         // 参照は透過的。両側から潜る (単一化と同じ)。
+        // `&mut T` は T について不変 (部分型は `&mut` の下で使えない): 両側が `&mut` なら向きを両方で見る。
+        let mut inv = false;
         loop {
             match (&want, &got) {
+                (Ty::Ref(true, w), Ty::Ref(true, g)) => {
+                    inv = true;
+                    (want, got) = (self.resolve(w), self.resolve(g));
+                }
                 (Ty::Ref(_, w), _) => want = self.resolve(w),
                 (_, Ty::Ref(_, g)) => got = self.resolve(g),
                 _ => break,
             }
         }
+        if inv {
+            self.check_fn_conv_dir_walk_one(want.clone(), got.clone());
+            self.check_fn_conv_dir_walk_one(got, want);
+            return;
+        }
+        self.check_fn_conv_dir_walk_one(want, got);
+    }
+
+    fn check_fn_conv_dir_walk_one(&mut self, want: Ty, got: Ty) {
         match (&want, &got) {
             (Ty::Closure { eff: ew, args: wa, ret: wr, .. }, Ty::Closure { eff: eg, args: ga, ret: gr, .. }) => {
                 if let (Some(ew), Some(eg)) = (&ew.0, &eg.0) {
@@ -3680,9 +3695,18 @@ impl<'a> TypeCk<'a> {
     /// 受け側の境界が具体的で渡し側に効果変数・panic 変数があり、実体化が分からないなら
     /// fail-closed で E4001 / E4002 を報告する。
     fn check_fn_param_bound_effects(&mut self, callee: &Def, raw: &Ty, got: &Ty, line: usize) {
+        // 参照は透過的: `&F` / `&mut F` も `F` と同じ境界を持つ。
+        let mut raw = raw;
+        while let Ty::Ref(_, x) = raw {
+            raw = x;
+        }
+        let mut got = got.clone();
+        while let Ty::Ref(_, x) = got {
+            got = self.resolve(&x);
+        }
         let Ty::Param(wname) = raw else { return };
         let Some((wu, wp)) = self.fn_bound_effects(callee, wname) else { return };
-        let Ty::Param(gname) = got else { return };
+        let Ty::Param(gname) = &got else { return };
         let d = self.def();
         let Some((gu, gp)) = self.fn_bound_effects(d, gname) else { return };
         let want = EffInfo {

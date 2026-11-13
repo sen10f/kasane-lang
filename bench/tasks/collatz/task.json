@@ -1,0 +1,8 @@
+{
+  "id": "collatz",
+  "title": "コラッツ予想の停止ステップ数",
+  "spec": "n が 1 になるまでに必要なステップ数を返す(偶数なら n/2、奇数なら 3n+1 を 1 ステップとする)。n=1 は 0。",
+  "decl": "fn bench.collatz_steps(n: u64) -> u32",
+  "level": "basic",
+  "order": 3
+}

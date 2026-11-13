@@ -1,0 +1,5 @@
+test bench.sum_squares.test_basic
+    core.check.eq(bench.sum_squares(0u32), 0u64)
+    core.check.eq(bench.sum_squares(3u32), 14u64)
+    core.check.eq(bench.sum_squares(10u32), 385u64)
+end bench.sum_squares.test_basic

@@ -1,0 +1,28 @@
+// expect: E3010
+type t.H
+    s: alloc.string.String
+end t.H
+
+fn t.bad() -> usize uses [] panics never
+    let s = t.mk()
+    let n = 1u32
+    let r = t.pick(s.as_str(), &n)
+    t.consume(s)
+    r.len()
+end t.bad
+
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.pick['a, 'b](r: &'a str, _o: &'b u32) -> &'a str uses [] panics never
+    r
+end t.pick

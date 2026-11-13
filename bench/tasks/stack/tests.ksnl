@@ -1,0 +1,16 @@
+test bench.Stack.test_basic
+    let mut s = bench.Stack.new()
+    core.check.eq(s.push(1u32), true)
+    core.check.eq(s.push(2u32), true)
+    core.check.eq(s.push(3u32), true)
+    core.check.eq(s.len(), 3usize)
+    core.check.eq(s.pop(), Some(3u32))
+    core.check.eq(s.pop(), Some(2u32))
+    core.check.eq(s.len(), 1usize)
+end bench.Stack.test_basic
+
+test bench.Stack.test_empty
+    let mut s = bench.Stack.new()
+    core.check.eq(s.pop(), None)
+    core.check.eq(s.len(), 0usize)
+end bench.Stack.test_empty

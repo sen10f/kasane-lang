@@ -35,7 +35,7 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
-pub const STD_TYPES: [&str; 7] = ["std.io.Error", "std.io.ErrorKind", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError"];
+pub const STD_TYPES: [&str; 9] = ["std.io.Error", "std.io.ErrorKind", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError"];
 
 /// `Vec` / `String` のヘッダの型の名前 (`vec`、要素が所有物なら `vec<#N>`)。利用者の型は FQN で `.` を含むので衝突しない。
 pub fn is_vec_name(n: &str) -> bool {
@@ -132,6 +132,12 @@ impl AggTab {
             Src::Named(name, _) if name == "alloc.string.String" => Ok(self.vec_hdr()),
             Src::Named(name, _) if name == "alloc.collections.HashMap" => Ok(self.vec_hdr()),
             Src::Named(name, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
+            // `std.thread.JoinHandle<T, A>` = `{A, usize, *mut T}`。`T` はポインタの向こうにあるので配置には現れない。
+            Src::Named(name, args) if name == "std.thread.JoinHandle" && args.len() == 2 => {
+                let elem_ty = self.lower_ty(p, file, &args[0])?;
+                let alloc_ty = self.lower_ty(p, file, &args[1])?;
+                Ok(self.join_handle(elem_ty, alloc_ty))
+            }
             Src::Named(name, args) => {
                 if !args.is_empty() {
                     return Err(format!("型 {} は型引数付きで段階 1 の対象外", name));
@@ -207,6 +213,27 @@ impl AggTab {
             Field { name: "cap".to_string(), ty: Ty::Usize, off: 16 },
         ];
         self.push("vec".to_string(), 24, 8, AggKind::Struct(fields))
+    }
+
+    /// `std.thread.JoinHandle<T, A>` = `{A, usize, *mut T}`。`result` フィールドはオフセット 16。
+    /// `T` は名前に埋め込む（レイアウトには現れないが、`join` で読み出す型として必要）。
+    pub fn join_handle(&mut self, elem_ty: Ty, alloc_ty: Ty) -> Ty {
+        let name = format!("std.thread.JoinHandle<{},{}", elem_ty.name(), alloc_ty.name());
+        if let Some(&i) = self.by_name.get(&name) {
+            return Ty::Agg(i);
+        }
+        let alloc_sz = size_of(&self.defs, alloc_ty);
+        let alloc_al = align_of(&self.defs, alloc_ty);
+        let align = alloc_al.max(8);
+        let off_native = align_up(alloc_sz, 8);
+        let off_result = align_up(off_native + 8, 8);
+        let size = align_up(off_result + 8, align);
+        let fields = vec![
+            Field { name: "allocator".to_string(), ty: alloc_ty, off: 0 },
+            Field { name: "native".to_string(), ty: Ty::Usize, off: off_native },
+            Field { name: "result".to_string(), ty: Ty::Ptr, off: off_result },
+        ];
+        self.push(name, size, align, AggKind::Struct(fields))
     }
 
     /// 要素が所有物 (`Vec<String>`、`Vec<構造体>`) の `Vec` の型。配置は `vec` と同じで、名前 `vec<#要素の型の添字>` で要素の型を持つ
@@ -397,6 +424,9 @@ impl<'a> Lw<'a> {
                 if super::coll::owns(self, self.vty(v)) {
                     // 局所変数から始まるフィールドの連なりなら、所有物を移し出す (部分的な移動)。それ以外 (一時の値のフィールド) は未対応。
                     if let Some((s, names)) = super::own::chain_of(self, e) {
+                        if self.coll.elem_slots.values().any(|x| *x == s) {
+                            return self.err(nline(e), "添字で借りた要素のフィールドの所有物を値で使う (移す) 形は段階 1 の対象外");
+                        }
                         return Ok(Some(super::coll::field_move(self, s, &names, nline(e))?));
                     }
                     return self.err(nline(e), "一時の値のフィールドからの所有物の移動は段階 1 の対象外");

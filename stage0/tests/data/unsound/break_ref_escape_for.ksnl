@@ -1,0 +1,22 @@
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    let mut r = &t.mk()
+    for i in core.iter.range(0u8, 2u8) {
+        let b = t.mk()
+        r = &b
+        core.mem.drop(i)
+        break
+    }
+    core.mem.drop(t.peek(r))
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("x"))
+    s
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek

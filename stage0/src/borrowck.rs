@@ -95,7 +95,7 @@ struct Low<'a> {
     nodes: Vec<Node>,
     loans: Vec<LoanInfo>,
     locals: HashSet<String>,
-    loops: Vec<(usize, usize)>,
+    loops: Vec<(usize, usize, usize)>,
     exit: usize,
     iters: usize,
     /// クロージャ本体を別に検査して出た診断 (行, 文面)。
@@ -404,6 +404,50 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 定義 `d` の戻り値が、借用を含まない所有値 (名前付きの型で、型引数にも参照がなく、型パラメータでもない) か。
+    fn def_returns_owned(&self, d: &Def) -> bool {
+        let V::L(parts) = &d.ret else { return false };
+        let [V::S(a), V::S(name), args] = parts.as_slice() else { return false };
+        if a != "named" || d.generics.iter().any(|g| &g.1 == name) || Self::ty_contains_ref(args) {
+            return false;
+        }
+        let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
+        let Some(r) = self.p.resolve(&segs, &self.file) else { return false };
+        matches!(r.target, Target::Type(_)) && !self.ret_contains_ref(d)
+    }
+
+    fn method_returns_owned(&self, name: &str) -> bool {
+        let Some(cands) = self.p.method_idx.get(name) else { return false };
+        !cands.is_empty()
+            && cands.iter().all(|&i| {
+                let d = &self.p.defs[i];
+                d.params.first().map_or(false, |(n, _)| n == "self") && self.def_returns_owned(d)
+            })
+    }
+
+    /// 呼び出し式 `e` が、借用を含まない所有値を返すと確かに言えるか (関数は解決先、メソッドは名前の全候補で判断)。
+    fn returns_owned_temp(&self, e: &V) -> bool {
+        match nname(e) {
+            "Call" => {
+                if nname(&nf(e)[0]) != "Path" {
+                    return false;
+                }
+                let segs = strs(&nf(&nf(e)[0])[0]);
+                if segs.len() >= 2 && self.locals.contains(&segs[0]) {
+                    // `w.dup()` の呼び出し形 (メソッド)
+                    return self.method_returns_owned(&segs[segs.len() - 1]);
+                }
+                let Some(r) = self.p.resolve(&segs, &self.file) else { return false };
+                match r.target {
+                    Target::Fn(i) | Target::Sig(i) if r.rest.is_empty() => self.def_returns_owned(&self.p.defs[i]),
+                    _ => false,
+                }
+            }
+            "MCall" => self.method_returns_owned(&st(&nf(e)[1])),
+            _ => false,
+        }
+    }
+
     fn method_sources(&self, recv: &V, name: &str, args: &[V]) -> Vec<Src> {
         let Some(m) = self.method_borrows(name) else { return vec![] };
         let mut out = match self.place_of(recv) {
@@ -419,7 +463,17 @@ impl<'a> Low<'a> {
             None => {
                 // `v.iter().rev()` や `xs.as_slice().get(0)` のように、借用を返す呼び出しの連なり。
                 // レシーバが `v.mk()` (Call 形) の連なりも辿り、連鎖の根の変数を借用元にする。
-                if matches!(nname(recv), "MCall" | "Call") { self.loan_sources(recv) } else { vec![] }
+                if matches!(nname(recv), "MCall" | "Call") {
+                    let mut v = self.loan_sources(recv);
+                    // 戻り値が所有値 (借用を含まない名前付きの型) の呼び出しの結果を借りたら、一時値を借りている
+                    // (`t.mk().as_str()`)。一時値は文の終わりで死ぬので、束縛して後で使うと dangling。
+                    if v.is_empty() && self.returns_owned_temp(recv) {
+                        v.push(Src::Place { root: "$temp".into(), path: vec![], mutable: m });
+                    }
+                    v
+                } else {
+                    vec![]
+                }
             }
         };
         out.extend(self.method_arg_sources(name, args));
@@ -871,6 +925,15 @@ impl<'a> Low<'a> {
         cur
     }
 
+    /// `break` / `continue` で抜けるブロック (スコープ深さ `depth` 以降) の局所変数の寿命を、
+    /// その場で終わらせる (ブロック末尾の `DropScope` は通らないため)。
+    fn drop_scopes_from(&mut self, cur: usize, depth: usize) {
+        let vars: Vec<String> = self.scope_stack.iter().skip(depth).flatten().cloned().collect();
+        for v in vars {
+            self.emit(cur, Ev::DropScope(v));
+        }
+    }
+
     fn lower_stmt(&mut self, s: &V, cur: usize) -> usize {
         match nname(s) {
             "Let" => {
@@ -1230,7 +1293,7 @@ impl<'a> Low<'a> {
                 let (body, exit) = (self.new_node(), self.new_node());
                 self.edge(c, body);
                 self.edge(c, exit);
-                self.loops.push((head, exit));
+                self.loops.push((head, exit, self.scope_stack.len()));
                 let end = self.lower_block(&f[1], body);
                 self.loops.pop();
                 self.edge(end, head);
@@ -1240,7 +1303,7 @@ impl<'a> Low<'a> {
                 let head = self.new_node();
                 self.edge(cur, head);
                 let exit = self.new_node();
-                self.loops.push((head, exit));
+                self.loops.push((head, exit, self.scope_stack.len()));
                 let end = self.lower_block(&f[0], head);
                 self.loops.pop();
                 self.edge(end, head);
@@ -1277,7 +1340,7 @@ impl<'a> Low<'a> {
                     let srcs = self.loan_sources(&f[1]);
                     self.hold(body, Holder::Var(b.clone()), srcs);
                 }
-                self.loops.push((head, exit));
+                self.loops.push((head, exit, self.scope_stack.len()));
                 let end = self.lower_block(&f[2], body);
                 self.loops.pop();
                 self.edge(end, head);
@@ -1346,13 +1409,15 @@ impl<'a> Low<'a> {
                 self.new_node()
             }
             "Break" => {
-                if let Some(&(_, exit)) = self.loops.last() {
+                if let Some(&(_, exit, depth)) = self.loops.last() {
+                    self.drop_scopes_from(cur, depth);
                     self.edge(cur, exit);
                 }
                 self.new_node()
             }
             "Continue" => {
-                if let Some(&(head, _)) = self.loops.last() {
+                if let Some(&(head, _, depth)) = self.loops.last() {
+                    self.drop_scopes_from(cur, depth);
                     self.edge(cur, head);
                 }
                 self.new_node()
@@ -1860,17 +1925,22 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
     struct State {
         holders: BTreeMap<Holder, BTreeSet<usize>>,
         scope: BTreeSet<String>,
+        /// 借用元の局所変数がブロックを抜けて寿命が尽きたローン。同名の兄弟ブロックの変数が
+        /// 再び `ScopeAdd` されても、別の変数なので生き返らない (借用を作り直したときだけ外す)。
+        dead: BTreeSet<usize>,
     }
     let mut state_in: Vec<Option<State>> = vec![None; n];
     state_in[0] = Some(State {
         holders: BTreeMap::new(),
         scope: low.scope_seed.iter().cloned().collect(),
+        dead: BTreeSet::new(),
     });
     let mut work: VecDeque<usize> = VecDeque::new();
     work.push_back(0);
     let apply = |st_: &mut State, ev: &Ev| match ev {
         Ev::Loan { holder, id } => {
             // 同じ変数・場所が複数の借用を持つこともある (`match` の被検査式など) ので、既存に足す。
+            st_.dead.remove(id);
             st_.holders.entry(holder.clone()).or_default().insert(*id);
         }
         Ev::Alias { to, from } => {
@@ -1939,6 +2009,11 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
         }
         Ev::DropScope(v) => {
             st_.scope.remove(v);
+            for (id, l) in low.loans.iter().enumerate() {
+                if &l.root == v {
+                    st_.dead.insert(id);
+                }
+            }
         }
         Ev::Access { root, path, kind, .. } => {
             // 場所への上書き・`&mut` で、そこに保存されたローンは死ぬ。型が分からないので広めに殺す:
@@ -1970,6 +2045,9 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                     }
                     for x in &stt.scope {
                         ch |= old.scope.insert(x.clone());
+                    }
+                    for x in &stt.dead {
+                        ch |= old.dead.insert(*x);
                     }
                     ch
                 }
@@ -2039,6 +2117,21 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
             // 失った後で使われる (ブロックを抜けた `&b` や一時値への参照など)。寿命切れの借用。
             if let Ev::Access { root, path, kind, line } = ev {
                 if !matches!(kind, Acc::Move) {
+                    // 保存場所 (`v.push(&b)` の `v`) が持つローンの借用元が、ブロックを抜けて死んでいる。
+                    for (holder, ids) in &stt.holders {
+                        let Holder::Place { root: r, .. } = holder else { continue };
+                        if r != root {
+                            continue;
+                        }
+                        for &id in ids {
+                            if stt.dead.contains(&id) {
+                                let m = format!("use of `{r}` borrows `{}` which does not live long enough", low.loans[id].root);
+                                if !out.iter().any(|(l, t)| l == line && *t == m) {
+                                    out.push((*line, m));
+                                }
+                            }
+                        }
+                    }
                     for (holder, ids) in &stt.holders {
                         let Holder::Var(v) = holder else { continue };
                         // 式の中だけで完結する一時の持ち主 (`$e0` など) は局所変数ではないので、
@@ -2051,6 +2144,11 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                         for &id in ids {
                             let l = &low.loans[id];
                             if l.root == *root && overlaps(&l.path, path) {
+                                continue;
+                            }
+                            // 借用元の変数が（同名の兄弟ブロックの変数に紛れず）寿命切れ。
+                            if stt.dead.contains(&id) {
+                                out.push((*line, format!("use of `{root}` borrows `{}` which does not live long enough", l.root)));
                                 continue;
                             }
                             // 借用元がスコープを抜けている (関数の仮引数や、

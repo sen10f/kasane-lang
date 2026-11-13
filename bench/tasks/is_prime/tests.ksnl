@@ -1,0 +1,12 @@
+test bench.is_prime.test_small
+    core.check.eq(bench.is_prime(0u32), false)
+    core.check.eq(bench.is_prime(1u32), false)
+    core.check.eq(bench.is_prime(2u32), true)
+    core.check.eq(bench.is_prime(9u32), false)
+end bench.is_prime.test_small
+
+test bench.is_prime.test_big
+    core.check.eq(bench.is_prime(97u32), true)
+    core.check.eq(bench.is_prime(7919u32), true)
+    core.check.eq(bench.is_prime(7921u32), false)
+end bench.is_prime.test_big

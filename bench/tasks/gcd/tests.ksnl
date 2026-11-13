@@ -1,0 +1,9 @@
+test bench.gcd.test_basic
+    core.check.eq(bench.gcd(12u32, 18u32), 6u32)
+    core.check.eq(bench.gcd(7u32, 13u32), 1u32)
+end bench.gcd.test_basic
+
+test bench.gcd.test_zero
+    core.check.eq(bench.gcd(0u32, 5u32), 5u32)
+    core.check.eq(bench.gcd(9u32, 0u32), 9u32)
+end bench.gcd.test_zero

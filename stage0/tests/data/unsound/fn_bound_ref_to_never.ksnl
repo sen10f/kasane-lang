@@ -1,0 +1,12 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.outer[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: &F) -> u32 uses [] panics never
+    t.strict(f)
+end t.outer
+
+// expect: E4001
+fn t.strict[F: core.ops.Fn<(), u32, [], never>](f: F) -> u32 uses [] panics never
+    f.call(())
+end t.strict
