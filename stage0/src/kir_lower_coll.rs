@@ -144,11 +144,15 @@ pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     if let Some(x) = lw.conv_t(t) {
         return Some(x);
     }
-    let Src::Ref(_, inner) = t else { return None };
+    let Src::Ref(mutbl, inner) = t else { return None };
     match &**inner {
         Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).and_then(size_of).is_some() => Some(lw.fat_ty()),
+        Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" => {
+            let ai = lw.aggs.borrow().agg_index(n).expect("std.net.Tcp* が型表にない");
+            Some(Ty::Ref(*mutbl, Pointee::Agg(ai)))
+        }
         _ => None,
     }
 }
