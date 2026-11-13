@@ -454,9 +454,21 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
     let (s, names) = recv;
     // 受け手の置き場と要素の型
     let (seq, elem) = if names.is_empty() {
-        match lw.coll.kinds.get(&s).cloned() {
-            Some(Kind::Vec(Some(t))) => (Seq::Hdr(lw.slots[s].0), t),
-            Some(Kind::Slice(Some(t))) => (Seq::Fat(lw.slots[s].0), t),
+        // `lw.coll` と `lw.slots` から必要な値を先にコピーし、その後の `lw.emit` との借用競合を避ける。
+        let kind = lw.coll.kinds.get(&s).cloned();
+        let slot_ptr = lw.slots[s].0;
+        match kind {
+            Some(Kind::Vec(Some(t))) => (Seq::Hdr(slot_ptr), t),
+            // スロットが fat への参照なら、ロードして fat 値を得る。
+            Some(Kind::Slice(Some(t))) => {
+                let fat_val = match lw.vty(slot_ptr) {
+                    Ty::Ref(_, Pointee::Agg(agg_ai)) => {
+                        lw.emit(Ty::Agg(agg_ai), Op::Load(slot_ptr))
+                    }
+                    _ => slot_ptr,
+                };
+                (Seq::Fat(fat_val), t)
+            }
             // HashMap の get_mut は `Option<&mut V>` を持てないので未対応 (設計_KIR.md 16 章)。
             Some(Kind::Map(_)) => return lw.err(line, "HashMap::get_mut は段階 1 の対象外"),
             _ => return lw.err(line, "get_mut の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
