@@ -105,6 +105,8 @@ pub enum Outcome {
     Value(i128),
     /// 実行時 panic (文言は木走査と同じ)。
     Panic(String),
+    /// 文言を `eprint` で書き終えた panic の終わり (終了コード 101。文言は出さない)。
+    Abort,
     /// 呼び出し深さの超過 (木走査と同じく終了コード 102)。
     StackOverflow,
 }
@@ -592,6 +594,16 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     }
                     0
                 }
+                Op::Eprint { data } => {
+                    let h = get(&stack[top], data) as usize;
+                    let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+                    let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+                    let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                    // panic の文言は書けなくても終わる (木走査の panic と同じく、書き込みの失敗は捨てる)
+                    let _ = write_fd(2, &bytes);
+                    0
+                }
+                Op::Abort => return Ok(Outcome::Abort),
                 Op::Panic { msg, arg } => {
                     let m = match arg {
                         Some(v) => format!("{}: {}", msg, get(&stack[top], v)),

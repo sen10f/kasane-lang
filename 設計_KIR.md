@@ -876,12 +876,12 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
   - `print_line(s)` は `write 1, s`、失敗なら `Err` を結果に、成功なら `write 1, "\n"` の結果を結果にする (`kir_lower.rs` の `print_line`)。木走査の `print_line` は書き込みの失敗を捨てて常に `Ok(())` を返す。KIR と LLVM は失敗を `Err` で返すので、stdout が閉じている・満杯 (`>&-`、`/dev/full`) のときだけ違う (終了コード 1 と `Error: Error { kind: Other, code: 9 }`。仕様に沿うのは前者)。
   - 参照実行器: プロセスの stdout / stderr に `write_all` する (stdout は書くたびに流す)。失敗は `std::io::Error` を `natives::io_kind_name` で `ErrorKind` の変種名に直し、`raw_os_error` を `code` にする (木走査の `io_error` と同じ対応表。1 つの関数を共有した)。
   - LLVM: 補助関数 `@ksn.write(fd, ptr, len) -> i64` を、`write` 命令を使うモジュールだけに出す。全バイトを書くまで `write(2)` を繰り返し、EINTR は再試行する。成功は 0、失敗は `(errno << 32) | ErrorKind の変種の添字` (errno は 0 にならない)。errno の対応: EPERM・EACCES = `PermissionDenied`、ENOENT = `NotFound`、EEXIST = `AlreadyExists`、EINVAL = `InvalidInput`、EPIPE = `BrokenPipe`、ENOMEM = `OutOfMemory`、それ以外 = `Other` (`io::Error::kind` と同じ)。errno の取得は Linux が `__errno_location`、macOS が `__error`。
-- 入口 (12.3): `kir_llvm::emit_program(m, entry)`。引数のない関数を呼ぶ C の `main` を作る。戻り値が `Result<T, E>` で `Err` なら、stderr に `Error: ` (`write(2)` を直接) と、KIR の関数 `ksn.entry.debug(e, 2)`、改行を出して終了コード 1。それ以外は 0。panic は 101、stack 超過は 102 (関数の中の `ksn.panic.*` と `ksn.overflow`。`--native` と同じ仕組みを共有するので、panic の命令が増えても同じ出口を通る)。
+- 入口 (12.3): `kir_llvm::emit_program(m, entry)`。引数のない関数を呼ぶ C の `main` を作る。戻り値が `Result<T, E>` で `Err` なら、stderr に `Error: ` (`write(2)` を直接) と、KIR の関数 `ksn.entry.debug(e)` (表示は 13 章の `eprint` で stderr へ書く)、改行を出して終了コード 1。それ以外は 0。panic は 101、stack 超過は 102 (関数の中の `ksn.panic.*` と `ksn.overflow`。`--native` と同じ仕組みを共有するので、panic の命令が増えても同じ出口を通る)。
   - `ksn kir --native` の実行ファイルは、結果の 16 進の 2 語を標準出力の最後に `\x01` を前に付けて出す。`ksn` はその前をプログラム自身の出力として流し、後ろを結果として読む (`write` の出力と結果が混ざらないため)。
-- Debug 表示 (12.3、`kir_debug.rs`): `lower_program(p, user, Some(entry))` が、入口の `Err` の型 `E` から、必要な型の `<型>.$debug(v, fd) -> unit` を作る。`i32.$debug` `bool.$debug` `char.$debug` `str.$debug` のようにスカラーも 1 関数ずつ。`E` の関数を呼ぶだけの `ksn.entry.debug` も作る (LLVM の入口はこれを呼ぶ)。
+- Debug 表示 (12.3、`kir_debug.rs`): `lower_program(p, user, Some(entry))` が、入口の `Err` の型 `E` から、必要な型の `<型>.$debug(v) -> unit` を作る (13.1 で `fd` を外した)。`i32.$debug` `bool.$debug` `char.$debug` `str.$debug` のようにスカラーも 1 関数ずつ。`E` の関数を呼ぶだけの `ksn.entry.debug` も作る (LLVM の入口はこれを呼ぶ)。
   - 型は元の定義 (`Def`) の型で分類する。KIR の型は `char` と `u32`、`&str` と `&[T]` を区別しないため。`char` は KIR では `u32` (定数と引数・フィールドだけ。算術はない)。
   - 整数は 10 進 (`u64` の除算と剰余のループ。桁は表 `"0123456789"` から 1 バイトを読んで 20 バイトの領域に末尾から置く。符号付きは `i64` へ広げて、負なら `-` と `wrapping_neg` の値を、同じ 8 バイトの書き込みと読み直しで `u64` にする。値を保つ変換がなく、`bitcast` は浮動小数と整数の間だけのため)。`char` は `\n` `\r` `\t` `\0` `\'` `\\` と、0x20 未満・0x7f の `\u{16進}`、それ以外は UTF-8 (1〜4 バイト) のまま。`&str` は `\` `"` 改行だけを逃がす (`py_quote`)。
-  - `$debug` は `panics may` (`/` と `%` が `Trap` の形を使うため。0 で割ることはない)、`uses [io.console]`。入口の `main` の呼び出し元ではなく C の `main` から呼ぶので、検査には現れない。
+  - `$debug` は `panics may` (`/` と `%` が `Trap` の形を使うため。0 で割ることはない)。出力は `eprint` (13.1) なので `uses` は要らない。入口の `main` の呼び出し元ではなく C の `main` から呼ぶので、検査には現れない。
   - 未対応 (理由付きで入口が未対応になり、`build` は退避する): `derive [Debug]` を持たない型、利用者の `debug_fmt` がある型、タプル、浮動小数、128 ビット整数、Vec / String、`&[T]`、`E` が `()`。`char` のうち表示できない Unicode (結合文字など) の `\u{..}` 化はしない。
 - `ksn build --backend llvm` (12.3): `lower_program` で `entry` から届く関数を下ろし (`reachable_from`)、`emit_program` の IR を `clang -O1` (`--release` は `-O2`) で `target/<debug|release>/<name>.native` にする (`cli.rs` の `build_llvm` / `clang_ll`)。`entry` が下ろせなければ `llvm backend skipped: <入口> を KIR に下ろせない (<根の理由>); falling back to the default backend` と出して、今の既定の経路 (c のネイティブ生成。それも無理ならバンドルだけ) に退避する。`--backend clif` / `c` は変えていない。理由は `呼び先 X が未対応` の鎖をたどった根の関数のもの。`KSN_DUMP_KIR=1` を付けると、未対応の一覧も stderr に出る。
 - 検査 (examples と perf の全 15 パッケージ、`ksn build --backend llvm`): 前は 0 本 (すべて `main` の戻り値 `Result<(), std.io.Error>` で止まった)。後は 1 本 (`perf/noop`) が LLVM で作れ、`ksn run` と stdout・stderr・終了コードが一致した。残り 14 本が下ろせない理由 (根): `core.check.eq` の呼び出し (panic の命令が無い) が 9 本 (features・native・tour と perf の fib・hashmap・loops・strcat・structs・vecops)、利用者の型の `&mut` メソッド `bump` (demo)、構造体 (`json.Doc`) の戻り値 (json)、`Ring.new` の戻り値 (realtime)、`std.thread.spawn` (threads)、capture を持つクロージャ (closure)。`core.check.eq` が下ろせるようになれば、perf の大半が一気に通る見込み (kir/gaps の panic 命令に続く作業)。
@@ -936,6 +936,38 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 - **木走査との差** (今回は直さない): 木走査はクロージャの環境を外側のスコープそのものとして共有する。このため (1) `[move x]` の後に x を書き換えるとクロージャからも変わって見える、(2) `[&mut x]` の本体で `*x = v` と書くと `assignment through non-reference` になる。KIR は取り込みの時点の値 (move) と参照 (`&` / `&mut`) として扱う。差分テストは (1) の形を避け、(2) は手で求めた値で確かめる。
 
 検証: `stage0/tests/cli.rs` の `kir_closure_*` (取り込み 4 種類・`fold` の初期値と累積・`map` → `filter` → `fold`・空の範囲の木走査との一致 (`--run` と `--native`)、環境の引数、未対応の理由)。`examples/demo` の `demo.main` は `fold` を越え、次は `Vec::push` (行 33) で止まる。`perf/closure` の `closure.main` はクロージャを越え、次は `core.check.eq` (行 23、kir/check-eq の担当) で止まる。
+
+## 15. `core.check` の下ろし (kir/check-eq、2026-11-13)
+
+### 15.1 決めたこと
+
+- **panic の文言を動的に作る方法: 部分ごとに stderr へ書いてから終わる。** `core.check.eq` の失敗の文言は `left: <a の表示>, right: <b の表示>` で、表示は実行時に決まる。`Op::Panic` は静的な文言と整数 1 つしか持てないので広げない。文言を fat で受けて 1 回で出す案は採らない: 文言の長さが表示の生成の後にしか分からず、組み立てるバッファの確保と Debug の二重の実行が要るため。
+- **追加した命令 2 つ。** `eprint %data` (`data` は `fat`。stderr の fd 2 へ全バイトを書き、結果は unit。エラーは捨てる) と `abort` (文言を出さずに終了コード 101 で終わる)。失敗の枝は `eprint "panic: assertion failed: left: "` → 表示 → `eprint ", right: "` → 表示 → `eprint "\n"` → `abort`。`is_true` の失敗は静的な文言の `panic` (`assertion failed: condition is false`) のまま。
+- **`eprint` は `uses` を要らない。** `write` は `uses [io.console]` が要るが、`core.check.eq` は Kasane の上で効果の宣言を持たない (`panics may` だけ)。panic の文言は panic の一部なので、`eprint` は効果として数えない。検査は `panics may` の関数だけ (`panics never` に置くと落ちる)。
+- **表示の関数は fd を取らない。** `<型>.$debug(v)` と `ksn.entry.debug(e)` は `eprint` で stderr へ書く。入口の `Err` の表示も stderr だけなので、fd の引数は要らなくなった。`uses [io.console]` も外れ、どの `panics may` の関数からも呼べる。
+- **LLVM の実体。** `eprint` は `@ksn.eprint(ptr, len)` (`write(2)` を全バイト書くまで繰り返す。エラーは止める)。`write` の `@ksn.write` と違い `std.io.ErrorKind` の表を使わないので、型表にそれが無くても作れる (`prune_aggs` で `std.io.Error` が落ちていても動く)。`abort` は `exit(101)`。
+- **参照実行器。** `eprint` は `write_fd(2, ..)`。`abort` は新しい結果 `Outcome::Abort` (文言なし、終了コード 101)。
+
+### 15.2 下ろしの規則 (`kir_lower_check.rs` / `kir_debug.rs`)
+
+- `core.check.eq(a, b)`: 両辺の KIR の型が同じこと。等しさは `<型>.$eq(a, b) -> bool` を呼ぶ。`$eq` は木走査の `v_eq` と同じ比べ方:
+  - 整数・`bool`・`char`: `cmp eq`。
+  - `&str`: 長さが等しく、バイトがすべて一致する (ループ)。
+  - 構造体: フィールドごとに再帰。列挙型: タグが等しく、その変種のフィールドが等しい。
+  - `Option` / `Result`: タグが等しく、タグの枝のペイロードが等しい (`Some` / `Err` が真のタグ。`unwrap` と同じ読み方)。
+  - 違えば 13.1 の順で文言を書く。表示は `<型>.$debug`。成功のときは値 `()` で続く。
+- `core.check.is_true(c)`: `c` が `bool` のこと。偽なら `panic` の静的な文言。
+- 表示 (`$debug`) は 12.3 の規則に次を足した: `Option` は `Some(v)` / `None`、`Result` は `Ok(v)` / `Err(e)`。ペイロードが `()` のときは `()`。鍵は `Option<i32>` のように空白を除く (KIR の文字列の一部なので)。
+- **未対応 (理由付き。誤った文言は出さない):**
+  - 浮動小数: 比べること自体は IEEE の `==` で書けるが、失敗の文言に値を出せない (木走査の `py_float` の最短表示を KIR で作るのは別の仕事)。`tour` の `core.check.eq(tour.floats(), 7.0)` はこれで止まる。
+  - 利用者の手書きの `eq` / `debug_fmt` を持つ型: 呼ぶ関数の下ろしが要る。
+  - タプル・スライス (`&[T]`)・参照 (`&T`) の比較・総称型・128 ビット整数・Vec / String。
+
+### 15.3 検証
+
+- `stage0/tests/cli.rs` の `kir_check_eq_and_is_true_match_tree_walker`: 負の整数、`bool`、`char`、`&str`、構造体、列挙型、`Option`、`Result` を、成功と失敗の両方で、木走査との文言 (`panic: assertion failed: left: .., right: ..`) と終了コード (101) が一致するか確かめる。`kir_run` のおかげで参照実行器と LLVM の両方を比べる。
+- `KSN_DUMP_KIR=1` の `kir_lower_dump_on_check_is_hidden_behind_the_env_var` は、未対応の理由の例を浮動小数の比較に変えた (前は `core.check.eq` が下ろせたので、`t.main` が未対応にならなかった)。
+- 15 パッケージ (examples 7 + perf 8) の `ksn build --backend llvm`: 作れたのは `examples/native`・`perf/fib`・`perf/noop`・`perf/structs` の 4 本で、`ksn run` と stdout・stderr・終了コードが一致した。残りの理由は実装状況.md の作業ログを見る。
 
 ## 付録: 参照した箇所 (主要)
 

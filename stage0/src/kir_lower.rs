@@ -29,6 +29,9 @@ mod enum_lower;
 // panic (`core.panic.panic("..")` と `unwrap`) の下ろし (子モジュール)。
 #[path = "kir_lower_panic.rs"]
 mod panic_lower;
+// `core.check.eq` / `core.check.is_true` の下ろし (子モジュール。設計_KIR.md 13.2)。
+#[path = "kir_lower_check.rs"]
+mod check_lower;
 // 利用者の型のメソッド呼び出し (`&mut self` の受け手を含む) の下ろし (子モジュール)。
 #[path = "kir_lower_method.rs"]
 mod method_lower;
@@ -684,6 +687,9 @@ impl<'a> Lw<'a> {
 
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
         if let Some(r) = coll::try_call(self, e) {
+            return r;
+        }
+        if let Some(r) = self.check_call(e) {
             return r;
         }
         if let Some(r) = self.panic_call(e) {

@@ -176,6 +176,8 @@ struct Ctx {
     math: BTreeSet<Math>,
     /// `write` 命令を使う (`@ksn.write` を出す)。
     write: bool,
+    /// `eprint` 命令を使う (`@ksn.eprint` を出す。エラーは捨てる)。
+    eprint: bool,
 }
 
 impl Ctx {
@@ -220,7 +222,7 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     let Some(ef) = m.find(entry) else {
         return Err(format!("関数 {} がない", entry));
     };
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false };
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false };
     let mut funcs = String::new();
     for (fi, f) in m.funcs.iter().enumerate() {
         funcs.push('\n');
@@ -268,6 +270,9 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     if cx.write {
         out.push_str(&write_helper(&m.aggs)?);
     }
+    if cx.eprint {
+        out.push_str(EPRINT_HELPER);
+    }
     out.push_str(&funcs);
     out.push_str(&math);
     out.push('\n');
@@ -298,7 +303,7 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
             s.push_str(&format!("  %pw = trunc i{n} %r to i{sb}\n"));
             let x = if w == sb { "%pw".to_string() } else { s.push_str(&format!("  %pe = trunc i{sb} %pw to i{w}\n")); "%pe".to_string() };
             s.push_str("  %w1 = call i64 @write(i32 2, ptr @ksn.s.err, i64 7)\n");
-            s.push_str(&format!("  %d = call i8 {}({} {}, i32 2)\n", fname(&dk.key), lty(aggs, et), x));
+            s.push_str(&format!("  %d = call i8 {}({} {})\n", fname(&dk.key), lty(aggs, et), x));
             s.push_str("  %w2 = call i64 @write(i32 2, ptr @ksn.s.nl, i64 1)\n  ret i32 1\nok:\n  ret i32 0\n}\n");
         }
         _ => s.push_str("  ret i32 0\n}\n"),
@@ -313,6 +318,10 @@ fn errno_name() -> &'static str {
         "__errno_location"
     }
 }
+
+/// `eprint` 命令の実体 `@ksn.eprint(ptr, len)`: stderr (fd 2) へ全バイトを書く。エラーは捨てる (panic の文言の途中なので、`write` の結果の表は要らない)。
+/// `write` と違い `std.io.ErrorKind` の表を使わないので、型表にそれが無くても作れる。
+const EPRINT_HELPER: &str = "define private void @ksn.eprint(ptr %p, i64 %n) {\nentry:\n  br label %loop\nloop:\n  %off = phi i64 [0, %entry], [%off2, %adv]\n  %left = sub i64 %n, %off\n  %done = icmp eq i64 %left, 0\n  br i1 %done, label %ret, label %try\ntry:\n  %q = getelementptr i8, ptr %p, i64 %off\n  %w = call i64 @write(i32 2, ptr %q, i64 %left)\n  %neg = icmp slt i64 %w, 0\n  br i1 %neg, label %ret, label %adv\nadv:\n  %off2 = add i64 %off, %w\n  br label %loop\nret:\n  ret void\n}\n";
 
 /// `write` 命令の実体 `@ksn.write(fd, ptr, len) -> i64` (設計_KIR.md 12.2)。全バイトを書くまで `write(2)` を繰り返し、EINTR は再試行する。
 /// 成功は 0。失敗は `(errno << 32) | ErrorKind の変種の添字` (errno は 0 にならないので、0 と区別できる)。
@@ -1087,6 +1096,29 @@ impl<'a> Fe<'a> {
                     self.label(&k);
                     Ok(())
                 }
+                Op::Eprint { data } => {
+                    // panic の文言の一部を stderr へ書く (`@ksn.eprint`。エラーは捨てる)。
+                    self.cx.eprint = true;
+                    self.cx.decl("declare i64 @write(i32, ptr, i64)");
+                    let av = self.r(*data);
+                    let pi = self.extract(&av, 128, 0, 64);
+                    let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                    let n = self.extract(&av, 128, 8, 64);
+                    self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
+                    Ok(())
+                }
+                Op::Abort => {
+                    // 文言は出さず、終了コード 101 で終わる (Panic と同じく、後ろは新しいラベルから続ける)
+                    let n = self.n + 1;
+                    self.n = n;
+                    let (p, k) = (format!("p{}", n), format!("c{}", n));
+                    self.line(format!("br label %{}", p));
+                    self.label(&p);
+                    self.line("call void @exit(i32 101)".into());
+                    self.line("unreachable".into());
+                    self.label(&k);
+                    Ok(())
+                }
                 Op::Panic { msg, arg } => {
                     // 文言は `panic: <msg>` (値があれば `: %lld` / `%llu`)。`%` は書式で `%%` にする。
                     let mut fmt = format!("panic: {}", msg.replace('%', "%%"));
@@ -1329,7 +1361,7 @@ impl<'a> Fe<'a> {
                     self.line(format!("{} = load {}, ptr {}, align 1", d, mt, addr));
                 }
             }
-            Op::MemStore { .. } | Op::Store { .. } | Op::HeapFree(_) | Op::IndexCheck { .. } | Op::Panic { .. } => {
+            Op::MemStore { .. } | Op::Store { .. } | Op::HeapFree(_) | Op::IndexCheck { .. } | Op::Panic { .. } | Op::Eprint { .. } | Op::Abort => {
                 return Err("unit 以外の結果を持つ副作用命令".into())
             }
             Op::Write { fd, data } => {
