@@ -293,6 +293,14 @@ impl<'a> Lw<'a> {
         }
         let t = self.ty_of(e)?;
         let Some(a) = self.expr(&args[0])? else { return Ok(None) };
+        // `Some(&x)` / `Some(x)` で `Option<&T>` (T は所有物を持つ型) を作る: 借用の番地を `bref` に包む。
+        let a = match (name, t) {
+            ("Some", Ty::Opt(Pay::Agg(bi))) if self.agg_def(bi).name == "bref" && matches!(self.vty(a), Ty::Ptr | Ty::Ref(..)) => {
+                let p = if self.vty(a) == Ty::Ptr { a } else { self.emit(Ty::Ptr, Op::Bitcast { src: self.vty(a), a }) };
+                self.emit(Ty::Agg(bi), Op::Make { variant: None, fields: vec![p] })
+            }
+            _ => a,
+        };
         let (op, want) = match (name, t) {
             ("Some", Ty::Opt(p)) => (Op::Some(a), p.ty()),
             ("Ok", Ty::Res(t0, _)) => (Op::Ok(a), t0.ty()),
@@ -376,6 +384,7 @@ impl<'a> Lw<'a> {
                 pat_src_binds(pat, &ss, &mut binds);
             }
             self.coll.pat_srcs = binds.into_iter().collect();
+            self.coll.pending_bref.clear();
             let c = self.pat_test(pat, s, sty)?;
             self.coll.pat_srcs.clear();
             let (bb, _) = self.new_block(&[]);
@@ -388,6 +397,7 @@ impl<'a> Lw<'a> {
             }
             self.cur = Some(bb);
             super::coll::scrut_arm(self, &sc, i, pat, s)?;
+            self.bref_bind(line)?;
             if let Some(v) = self.expr(body)? {
                 if let Some(t) = res {
                     if self.vty(v) != t {
@@ -481,6 +491,13 @@ impl<'a> Lw<'a> {
                 let tag = self.emit(Ty::Bool, Op::Tag(v));
                 let tag_ok = if want_tag { tag } else { self.emit(Ty::Bool, Op::Not(tag)) };
                 let pv = self.emit(pay_ty, Op::Payload(v));
+                // `Option<&T>` (T は所有物を持つ型): ペイロードは要素の番地。腕では借用として束縛する (17.18)。
+                if let (Ty::Agg(bi), "Some") = (pay_ty, segs[0].as_str()) {
+                    if self.agg_def(bi).name == "bref" {
+                        let c = self.bref_pat(sub, pv, t, line)?;
+                        return Ok(self.emit(Ty::Bool, Op::Bool(BoolOp::And, tag_ok, c)));
+                    }
+                }
                 if let Some((st_ty, st_src)) = self.coll.scrut_src.clone() {
                     if st_ty == t {
                         super::coll::set_payload_hint(self, &st_src, &segs[0]);
@@ -492,6 +509,48 @@ impl<'a> Lw<'a> {
             }
             other => self.err(line, format!("パターン {} は段階 1 の対象外", other)),
         }
+    }
+
+    /// `Some(sub)` の `sub` を、`Option<&T>` のペイロード `pv` (`bref`) に当てる。名前は要素の借用で束縛し、`_` は何もしない。
+    fn bref_pat(&mut self, sub: &V, pv: VId, t: Ty, line: usize) -> LR<VId> {
+        let one = self.emit(Ty::Bool, Op::Const(1));
+        if nname(sub) == "PWild" {
+            return Ok(one);
+        }
+        if self.coll.scrut_src.as_ref().is_none_or(|(st_ty, _)| *st_ty != t) {
+            return self.err(line, "Option<&T> の値の型が分からない (match の対象が必要)");
+        }
+        // 束縛は腕の頭 (`bref_bind`) で行う: 判定の時点では `None` の null の番地を読んでしまう。
+        self.coll.pending_bref.push((sub.clone(), pv, t));
+        Ok(one)
+    }
+
+    /// `bref_pat` が保留した束縛を、当たった腕の頭で作る。
+    fn bref_bind(&mut self, line: usize) -> LR<()> {
+        for (sub, pv, t) in std::mem::take(&mut self.coll.pending_bref) {
+            let elem_src = match self.coll.scrut_src.clone() {
+                Some((st_ty, Src::Named(n, a))) if st_ty == t && n == "Option" && a.len() == 1 => match &a[0] {
+                    Src::Ref(_, i) => (**i).clone(),
+                    _ => return self.err(line, "Option<&T> の T が分からない"),
+                },
+                _ => return self.err(line, "Option<&T> の値の型が分からない (match の対象が必要)"),
+            };
+            let elem = self.conv_t(&elem_src).ok_or_else(|| format!("行 {}: 型 {} は段階 1 の対象外", line, show(&elem_src)))?;
+            let addr = self.emit(Ty::Ptr, Op::Field { a: pv, off: 0 });
+            match nname(&sub) {
+                "PBind" => {
+                    let name = st(&nf(&sub)[0]);
+                    super::own::bind_elem_ref(self, line, &name, addr, elem, Some(&elem_src), false)?;
+                }
+                "PStruct" => {
+                    let Ty::Agg(ai) = elem else { return self.err(line, "構造体のパターンの対象が集成体でない") };
+                    let r = self.emit(Ty::Ref(false, crate::kir::Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: addr });
+                    super::own::bind_struct_pat(self, line, &sub, r, Some(&elem_src))?;
+                }
+                other => return self.err(line, format!("Option<&T> の Some の中のパターン {} は段階 1 の対象外 (名前・_・構造体のパターンだけ)", other)),
+            }
+        }
+        Ok(())
     }
 
     /// `e?`。`Option` は `None` をそのまま返し、`Result` は `Err(e)` を (変換せず) 返す。

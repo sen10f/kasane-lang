@@ -116,6 +116,11 @@ impl AggTab {
             return Ok(x);
         }
         match t {
+            // `Option<&T>` (T は所有物を持つ型): ペイロードは要素の番地を 1 つ持つ集成体 `bref` (設計_KIR.md 17.18)。
+            Src::Named(name, args) if name == "Option" && args.len() == 1 && matches!(&args[0], Src::Ref(false, i) if self.owning_src(p, file, i)) => {
+                let b = self.bref();
+                Ok(Ty::Opt(Pay::of(b).expect("集成体はペイロードになる")))
+            }
             // 組み込みの Option / Result。ペイロードは集成体・unit・入れ子も持てる (設計_KIR.md 11.5)。
             Src::Named(name, args) if name == "Option" && args.len() == 1 => Ok(Ty::Opt(self.pay_of(p, file, &args[0])?)),
             Src::Named(name, args) if name == "Result" && args.len() == 2 => {
@@ -174,6 +179,20 @@ impl AggTab {
             Src::Ref(_, inner) if matches!(&**inner, Src::Prim(s) if s == "str") || matches!(&**inner, Src::Slice(e) if conv(&**e).is_some()) => Ok(self.fat()),
             other => Err(format!("{} は未対応", show(other))),
         }
+    }
+
+    /// 型 `t` (`&T` の `T`) が所有物を持つ型として下ろせるか。
+    fn owning_src(&mut self, p: &Program, file: &str, t: &Src) -> bool {
+        matches!(t, Src::Named(..) | Src::Tuple(_)) && self.lower_ty(p, file, t).is_ok_and(|x| self.owns_heap(x))
+    }
+
+    /// `Option<&T>` のペイロード: 要素の番地 (`ptr`) 1 つの構造体。借用なので `owns_heap` は偽 (解放しない)。名前は `bref`。
+    pub fn bref(&mut self) -> Ty {
+        if let Some(&i) = self.by_name.get("bref") {
+            return Ty::Agg(i);
+        }
+        let fields = vec![Field { name: "ptr".to_string(), ty: Ty::Ptr, off: 0 }];
+        self.push("bref".to_string(), 8, 8, AggKind::Struct(fields))
     }
 
     /// `std.io.Error` を型表に入れる (`write` の結果と `print_line` の戻り値の型)。

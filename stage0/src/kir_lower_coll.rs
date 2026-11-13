@@ -98,6 +98,8 @@ pub(crate) struct CollCx {
     /// いま判定している `match` の腕のパターンの束縛名 → 型 (`scrut_src` をパターンに沿って分解したもの)。
     /// `&str` などの借用の束縛に種類 (`str` など) を結び付けるため。腕の判定の間だけ入れ、済んだら空にする。
     pub(crate) pat_srcs: BTreeMap<String, Src>,
+    /// `Option<&T>` の `Some(..)` の中の束縛 (判定のときは作らず、腕の頭 = 当たったあとで作る。`None` の番地を読まないため。設計_KIR.md 17.18)。
+    pub(crate) pending_bref: Vec<(V, VId, Ty)>,
     /// Vec / String のヘッダ (フレームの領域) → 値の型 (`vec` または要素が所有物の `vec<#N>`)。移すときの型と、解放のとき要素を解放するかに使う。
     pub(crate) hdr_ty: BTreeMap<VId, Ty>,
     /// 構造体のフィールド (場所) を `match` の対象として読んだ直後か (`scrut_begin` が読んで下ろす)。値は移していない。
@@ -1826,13 +1828,17 @@ pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]
         Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
         _ => return lw.err(line, "get の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
     };
-    let (Some(sz), Some(pay)) = (elem_size(lw, elem), Pay::of(elem)) else {
+    let borrowed = owns_heap(lw, elem);
+    let pay = if borrowed {
+        // 所有物を持つ要素: 要素の番地を `bref` に包んで持つ (写さない。17.18)
+        let b = lw.aggs.borrow_mut().bref();
+        Pay::of(b)
+    } else {
+        Pay::of(elem)
+    };
+    let (Some(sz), Some(pay)) = (elem_size(lw, elem), pay) else {
         return lw.err(line, format!("get の要素の型 {} は段階 1 の対象外", elem.name()));
     };
-    if owns_heap(lw, elem) {
-        // 要素の写しを Option に入れると、Option が所有物を持つ型になり、match などで解放されて要素と二重解放になる。
-        return lw.err(line, format!("get の要素の型 {} は所有物を持つ (借用の Option<&T> は値の写しで持てない。`match v.get(i) {{ Some(x) => .. None => .. }}` の形なら借用で下ろせる)", elem.name()));
-    }
     if args.len() != 1 {
         return lw.err(line, "get の引数の個数が違う");
     }
@@ -1855,7 +1861,7 @@ pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]
         lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k })
     };
     let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
-    let x = load_elem(lw, addr, elem);
+    let x = if borrowed { lw.emit(pay.ty(), Op::Make { variant: None, fields: vec![addr] }) } else { load_elem(lw, addr, elem) };
     let some = lw.emit(opt, Op::Some(x));
     lw.goto(jb, vec![some]);
     lw.cur = Some(eb);

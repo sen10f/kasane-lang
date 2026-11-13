@@ -18428,19 +18428,210 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n   
 }
 
 #[test]
-fn kir_get_on_vec_of_owning_elements_is_refused_with_a_reason() {
-    // 所有物を持つ要素の `get` は、要素の写しを Option に入れると二重解放になる。借用で束縛する `match v.get(i) { Some(x) => .. }` 以外
-    // (ここでは構造体パターンで要素を分解する形) は拒否する。
+fn kir_get_on_vec_of_owning_elements_with_unsupported_pattern_is_refused_with_a_reason() {
+    // `Option<&T>` の値の `Some(..)` の中は、名前・_・構造体のパターンだけ。リテラルなど他のパターンは理由付きで拒否する。
     let src = "type t.Item\n    name: alloc.string.String<std.alloc.System>\n    v: u32\nend t.Item\n\n\
 fn t.make() -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(t.Item { name: s, v: 1u32 }))\n    v\nend t.make\n\n\
-fn t.pick(i: usize) -> u32 uses [alloc] panics never\n    let v = t.make()\n    let g = v.get(i)\n    match g {\n        None => 0u32\n        Some(t.Item { name: _, v: x }) => x\n    }\nend t.pick\n\n\
+fn t.pick(i: usize) -> u32 uses [alloc] panics never\n    let v = t.make()\n    let g = v.get(i)\n    match g {\n        None => 0u32\n        Some(t.Item { name: _, v: 1u32 }) => 1u32\n        Some(_) => 2u32\n    }\nend t.pick\n\n\
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.pick(0usize), 1u32)\n    Ok(())\nend t.main\n";
     let t = Tmp::new("kir_get_owning", src);
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     let k = run(&["kir", "t.pick", "--run", "0"], &t.0);
     assert_eq!(k.status.code(), Some(1), "{}", text(&k.stdout));
-    assert!(text(&k.stderr).contains("所有物を持つ"), "{}", text(&k.stderr));
+    assert!(text(&k.stderr).contains("構造体パターン"), "{}", text(&k.stderr));
+}
+
+#[test]
+fn kir_unwrap_on_option_of_borrowed_owning_elem_is_refused_with_a_reason() {
+    let src = format!("{}\nfn t.uw(n: u32) -> usize uses [alloc] panics may\n    let v = t.names(n)\n    let g = v.get(0usize)\n    g.unwrap().len()\nend t.uw\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.uw(2u32), 3usize)\n    Ok(())\nend t.main\n", KIR_LETGET_FNS);
+    let t = Tmp::new("kir_letget_unwrap", &src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let k = run(&["kir", "t.uw", "--run", "2"], &t.0);
+    assert_eq!(k.status.code(), Some(1), "{}", text(&k.stdout));
+    assert!(text(&k.stderr).contains("unwrap は段階 1 の対象外"), "{}", text(&k.stderr));
+}
+
+const KIR_LETGET_FNS: &str = "type t.Item
+    name: alloc.string.String<std.alloc.System>
+    v: u32
+end t.Item
+
+fn t.names(n: u32) -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(s.push_str(\"abc\"))
+        core.mem.drop(v.push(s))
+        i = i.wrapping_add(1u32)
+    }
+    v
+end t.names
+
+fn t.items(n: u32) -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(s.push_str(\"ab\"))
+        core.mem.drop(v.push(t.Item { name: s, v: i }))
+        i = i.wrapping_add(1u32)
+    }
+    v
+end t.items
+
+fn t.let_get(n: u32, i: usize) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let g = v.get(i)
+    match g {
+        Some(s) => s.len()
+        None => 99usize
+    }
+end t.let_get
+
+fn t.let_is_some(n: u32, i: usize) -> u32 uses [alloc] panics never
+    let v = t.names(n)
+    let g = v.get(i)
+    let mut r = 0u32
+    if g.is_some() {
+        r = r.wrapping_add(1u32)
+    }
+    if g.is_none() {
+        r = r.wrapping_add(10u32)
+    }
+    r
+end t.let_is_some
+
+fn t.let_item(n: u32, i: usize) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    let g = v.get(i)
+    match g {
+        Some(it) => it.name.len().wrapping_add(usize.from_u32(it.v))
+        None => 99usize
+    }
+end t.let_item
+
+fn t.let_struct_pat(n: u32, i: usize) -> u32 uses [alloc] panics never
+    let v = t.items(n)
+    let g = v.get(i)
+    match g {
+        Some(t.Item { name: _, v: x }) => x
+        None => 99u32
+    }
+end t.let_struct_pat
+
+fn t.find(v: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, i: usize) -> Option<&alloc.string.String<std.alloc.System>> uses [] panics never
+    v.get(i)
+end t.find
+
+fn t.find_item(v: &alloc.vec.Vec<t.Item, std.alloc.System>, i: usize) -> Option<&t.Item> uses [] panics never
+    v.get(i)
+end t.find_item
+
+fn t.first(v: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Option<&alloc.string.String<std.alloc.System>> uses [] panics may
+    if v.len() == 0usize {
+        None
+    } else {
+        Some(&v[0usize])
+    }
+end t.first
+
+fn t.len_of(g: Option<&alloc.string.String<std.alloc.System>>) -> usize uses [] panics never
+    match g {
+        Some(s) => s.len()
+        None => 77usize
+    }
+end t.len_of
+
+fn t.via_fn(n: u32, i: usize) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    match t.find(&v, i) {
+        Some(s) => s.len()
+        None => 99usize
+    }
+end t.via_fn
+
+fn t.via_let_fn(n: u32, i: usize) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let g = t.find(&v, i)
+    let a = t.len_of(g)
+    a.wrapping_add(t.len_of(t.find(&v, i)))
+end t.via_let_fn
+
+fn t.via_item(n: u32, i: usize) -> u32 uses [alloc] panics never
+    let v = t.items(n)
+    let g = t.find_item(&v, i)
+    match g {
+        Some(it) => it.v
+        None => 99u32
+    }
+end t.via_item
+
+fn t.via_first(n: u32) -> usize uses [alloc] panics may
+    let v = t.names(n)
+    t.len_of(t.first(&v))
+end t.via_first
+
+fn t.in_loop(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut total = 0usize
+    let mut i = 0usize
+    while i < 6usize {
+        let g = v.get(i)
+        match g {
+            Some(s) => {
+                total = total.wrapping_add(s.len())
+            }
+            None => {
+                total = total.wrapping_add(100usize)
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    total
+end t.in_loop
+";
+
+#[test]
+fn kir_let_get_of_owning_elems_matches_tree_walker() {
+    // `let g = v.get(i)` の `Option<&T>` (T は String / String を持つ構造体) を値で持つ。`Option<&T>` を返す・引数に取る関数も下ろす。
+    // 木走査と `--run` / `--native` (ASan があればそれも) が一致し、参照実行器が漏れ・二重解放を内部エラーにしない。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.let_get", &["3", "1"], "3usize", "3"),
+        ("t.let_get", &["3", "7"], "99usize", "99"),
+        ("t.let_get", &["0", "0"], "99usize", "99"),
+        ("t.let_is_some", &["3", "1"], "1u32", "1"),
+        ("t.let_is_some", &["3", "5"], "10u32", "10"),
+        ("t.let_item", &["3", "2"], "4usize", "4"),
+        ("t.let_item", &["3", "3"], "99usize", "99"),
+        ("t.let_struct_pat", &["3", "2"], "2u32", "2"),
+        ("t.let_struct_pat", &["3", "9"], "99u32", "99"),
+        ("t.via_fn", &["3", "0"], "3usize", "3"),
+        ("t.via_fn", &["3", "4"], "99usize", "99"),
+        ("t.via_let_fn", &["3", "1"], "6usize", "6"),
+        ("t.via_let_fn", &["3", "8"], "154usize", "154"),
+        ("t.via_item", &["4", "3"], "3u32", "3"),
+        ("t.via_item", &["4", "4"], "99u32", "99"),
+        ("t.via_first", &["2"], "3usize", "3"),
+        ("t.via_first", &["0"], "77usize", "77"),
+        ("t.in_loop", &["4"], "212usize", "212"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let last = args.len() - 1;
+        let call = format!("{}({})", f, args.iter().enumerate().map(|(k, a)| if args.len() == 2 && k == last { format!("{}usize", a) } else { format!("{}u32", a) }).collect::<Vec<_>>().join(", "));
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_letget_{}", i), &format!("{}{}", KIR_LETGET_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
 }
 
 const KIR_BORROW_FNS: &str = "type t.Item
@@ -19474,7 +19665,7 @@ fn kir_review_user_iterator_advance_crosses_outer_joins() {
     // 利用者の反復子の `for x in it` が進めたスロットは、外側の `while` / `if` / `match` の合流にも渡る
     // (前は `scan_mut` が `For` を見ず、外側の合流が古い `it` を使い続けた)。
     let fns = format!(
-        "{}\nfn t.outer(rounds: u32) -> u32 uses [] panics may\n    let mut it = t.Upto {{ cur: 0u32, stop: 100u32 }}\n    let mut acc = 0u32\n    let mut r = 0u32\n    while r < rounds {{\n        for x in it {{\n            acc = acc.wrapping_add(x)\n            if x % 4u32 == 3u32 {{\n                break\n            }}\n        }}\n        r = r + 1u32\n    }}\n    acc\nend t.outer\n\n\
+        "{}\nfn t.outer(rounds: u32) -> u32 uses [] panics may\n    let mut it = t.Upto {{ cur: 0u32, stop: 100u32 }}\n    let mut acc = 0u32\n    let mut r = 0u32\n    while r < rounds {{\n        for x in it {{\n            acc = acc.wrapping_add(x)\n            if x % 4u32 == 3u32 {{\n                break\n            }}\n        }}\n        r = r.wrapping_add(1u32)\n    }}\n    acc\nend t.outer\n\n\
 fn t.cond(c: bool) -> u32 uses [] panics never\n    let mut it = t.Upto {{ cur: 0u32, stop: 6u32 }}\n    let mut acc = 0u32\n    if c {{\n        for x in it {{\n            if x == 2u32 {{\n                break\n            }}\n            acc = acc.wrapping_add(x)\n        }}\n    }}\n    for y in it {{\n        acc = acc.wrapping_add(y.wrapping_mul(10u32))\n    }}\n    acc\nend t.cond\n\n\
 fn t.sel(k: u32) -> u32 uses [] panics never\n    let mut it = t.Upto {{ cur: 0u32, stop: 6u32 }}\n    let mut acc = 0u32\n    match k {{\n        0u32 => {{\n            for x in it {{\n                if x == 1u32 {{\n                    break\n                }}\n                acc = acc.wrapping_add(1u32)\n            }}\n        }}\n        _ => {{\n            acc = acc.wrapping_add(0u32)\n        }}\n    }}\n    for y in it {{\n        acc = acc.wrapping_add(y)\n    }}\n    acc\nend t.sel\n",
         USER_ITER_SRC.split("fn t.sum(").next().unwrap()

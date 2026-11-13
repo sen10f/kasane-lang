@@ -1109,6 +1109,15 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 拒否のまま: `let g = v.get(i)` (値の `Option<&T>`)、`insert` / `remove`。
 - 試験: `kir_mut_borrow_of_owning_elems_matches_tree_walker` (13 ケース)、`..._out_of_range_panics_like_tree_walker`。`kir_get_on_vec_of_owning_elements_is_refused_with_a_reason` は `let` の形に差し替えた。
 
+### 17.18 `Option<&T>` を値で持つ (kir/let-get、2026-11-13)
+- 対象: `T` が所有物を持つ型 (`String`、`Vec<..>`、それらを持つ構造体) の `Option<&T>`。`let g = v.get(i)`、`Option<&T>` を返す・引数に取る利用者の関数、`Some(&v[i])`。スカラーの `Option<&u8>` は従来どおり値の `Option<u8>`。
+- 表現: ペイロードは型表の構造体 `bref` (`{ptr: ptr@0}`、8 バイト。`AggTab::bref`) で、`Option<&T>` は `Option<agg#bref>` = `Ty::Opt(Pay::Agg(bref))`。`Pay` も命令も検査も足さない (11.6 の集成体のペイロードそのまま)。`Some(x)` は `bref` に要素の番地 (`ptr`) を 1 つ入れ、`None` は従来の `none` (タグ 0)。木走査・参照実行器・LLVM は 11.1 / 11.6 の符号化のとおり同じ意味になる。null の番地でタグを省く案は、`Option` の定数・`tag` の意味が型で変わるので採らなかった。
+- 解放: `bref` は `ptr` だけなので `owns_heap` は偽。`Option<&T>` は移動も解放もされない (借用)。`lower_ty` が `Option<&T>` を `bref` に写すのは、`T` が所有物を持つときだけ (`owning_src`)。持たない集成体の `Option<&T>` は従来どおり拒否。
+- 作る: `get_elem` (`kir_lower_coll.rs`) が、所有物を持つ要素では境界の内なら `Some(bref{要素の番地})` を作る (要素は写さない)。`Some(x)` の `x` が借用 (`ptr` = Vec / String のヘッダ、`ref<Agg>`) のときは `ctor` が `bitcast` して `bref` に包む。
+- 分解: `match g { Some(x) => .. None => .. }` の `Some(x)` は、`bref_pat` が判定だけ作り、束縛は当たった腕の頭 (`bref_bind`) で `bind_elem_ref` / `bind_struct_pat` により借用として作る (17.14 / 17.17 と同じ束縛。`match v.get(i)` を直接書く形は従来の経路のまま)。束縛を腕の頭に回すのは、判定の時点では `None` の null の番地を読んでしまうため (ASan が捕まえた)。`g.is_some()` / `is_none()` は `Option` の組み込みのメソッドそのまま。
+- 拒否のまま (理由付き): `Some(..)` の中が名前・`_`・構造体のパターン以外 (リテラルなど)、`g.unwrap()` / `expect` (借用を取り出す形は `match` で)、`Option<&mut T>` の値、所有物を持たない集成体の `Option<&T>`。
+- 試験: `kir_let_get_of_owning_elems_matches_tree_walker` (18 ケース: `Vec<String>`・構造体の Vec、範囲外・空、`is_some` / `is_none`、構造体パターン、`Option<&T>` を返す関数 (`v.get(i)` / `Some(&v[0])` / `None`)、引数に取る関数、ループ。`--run` / `--native` / ASan)、`kir_get_on_vec_of_owning_elements_with_unsupported_pattern_is_refused_with_a_reason`、`kir_unwrap_on_option_of_borrowed_owning_elem_is_refused_with_a_reason`。examples / perf で新しく LLVM で作れるようになったものはない (残りの理由は `trim`・`std.env`・`std.thread`・float リテラルなど別のもの)。
+
 ## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
 
 段階 2 (第 5 章) の第 1 段。`ksn run --engine=vm` と `ksn test --engine=vm` (`--engine=tree` が既定の木走査)。既定の挙動は変えていない。`clif.rs` と `examples/`・`perf/` のソースは触っていない。
