@@ -302,6 +302,9 @@ impl<'a> Low<'a> {
                     // `&t.mk()` のように、一時値への参照。一時値は文の終わりで死ぬので、
                     // その後の使用は dangling になる。`$temp` はスコープに登録されないため
                     // 常に「寿命切れ」と見なされる。
+                    // ただし `&5u32` / `&-1i32` / `&t.LIMIT` (リテラルと、局所でないパス = `const` / `static` / 関数) は
+                    // `'static` の値への共有参照 (定数の昇格。master と同じく借用を作らない。Fable の最終レビュー p02 / p10)。
+                    None if op == "&" && is_static_operand(operand) => vec![],
                     None => vec![Src::Place { root: "$temp".into(), path: vec![], mutable: op == "&mut" }],
                 }
             }
@@ -2176,4 +2179,14 @@ fn lifetimes(s: &str) -> BTreeSet<String> {
         }
     }
     out
+}
+
+/// `&` の対象が `'static` の値か (リテラル、`-` 付きのリテラル、局所でないパス)。局所かどうかは呼ぶ側の
+/// `place_of` が先に調べている (局所なら `Some` で、ここには来ない)。
+fn is_static_operand(e: &V) -> bool {
+    match nname(e) {
+        "Lit" | "Path" => true,
+        "Unary" => st(&nf(e)[0]) == "-" && nname(&nf(e)[1]) == "Lit",
+        _ => false,
+    }
 }
