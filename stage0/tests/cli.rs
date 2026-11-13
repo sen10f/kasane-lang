@@ -18018,7 +18018,8 @@ fn kir_review_rejects_borrow_shapes_that_read_freed_buffers() {
 
 #[test]
 fn kir_review_for_over_a_vec_may_still_read_it() {
-    // 本体で反復中の Vec を読むだけ (`len` など) なら、これまでどおり下ろせる。
-    let fns = "fn t.sum() -> usize uses [alloc] panics may\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(1u32))\n    core.mem.drop(v.push(2u32))\n    let mut n = 0usize\n    for x in v {\n        n = n + v.len()\n        core.mem.drop(x)\n    }\n    n\nend t.sum\n";
+    // 本体で反復中の Vec を読むだけ (`len` など) なら、これまでどおり下ろせる。`for x in v` は `v` を消費する
+    // (fix/linear-generic) ので、借用のスライスを回す。
+    let fns = "fn t.sum() -> usize uses [alloc] panics may\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(1u32))\n    core.mem.drop(v.push(2u32))\n    let mut n = 0usize\n    let s = v.as_slice()\n    for x in s {\n        n = n + v.len()\n        core.mem.drop(x)\n    }\n    n\nend t.sum\n";
     kir_review_cases("for_read", fns, "t.sum", &[(&[], "t.sum()", "4usize", "4")]);
 }
