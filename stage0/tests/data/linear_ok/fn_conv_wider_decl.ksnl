@@ -1,0 +1,15 @@
+// 宣言 × 宣言 でも、受け側の効果が広ければ正しい
+fn t.apply(p: fn() -> u32 uses [io.console] panics never) -> u32 uses [io.console] panics never
+    p()
+end t.apply
+
+fn t.loud() -> u32 uses [io.console] panics never
+    core.mem.drop(std.io.print_line("x"))
+    1u32
+end t.loud
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    let f: fn() -> u32 uses [io.console] panics never = t.loud
+    core.mem.drop(t.apply(f))
+    Ok(())
+end t.main

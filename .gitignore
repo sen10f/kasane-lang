@@ -11,3 +11,4 @@ bench/work/
 *.so
 .env
 perf/results/
+tools/fuzz/found/

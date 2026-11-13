@@ -1,0 +1,66 @@
+fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let r = bench.split_str("a,b,c", ",")
+    core.check.eq(r.len(), 3usize)
+    match r.get(0usize) {
+        Some(s) => core.check.eq(s.as_str(), "a")
+        None => core.check.eq(0usize, 1usize)
+    }
+    match r.get(1usize) {
+        Some(s) => core.check.eq(s.as_str(), "b")
+        None => core.check.eq(0usize, 1usize)
+    }
+    match r.get(2usize) {
+        Some(s) => core.check.eq(s.as_str(), "c")
+        None => core.check.eq(0usize, 1usize)
+    }
+    let empty = bench.split_str("", ",")
+    core.check.eq(empty.len(), 1usize)
+    std.io.print_line("split ok")?
+    Ok(())
+end bench.main
+
+fn bench.split_str(text: &str, sep: &str) -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rest = text
+    let sep_len = core.str.len(sep)
+    loop {
+        match core.str.find(rest, sep) {
+            Some(pos) => {
+                match core.str.split_at(rest, pos) {
+                    Some((head, _tail)) => {
+                        match alloc.string.String.from_str(std.alloc.SYSTEM, head) {
+                            Ok(s) => {
+                                match out.push(s) {
+                                    Ok(_) => ()
+                                    Err(_e) => ()
+                                }
+                            }
+                            Err(_e) => ()
+                        }
+                        match core.str.split_at(rest, pos.wrapping_add(sep_len)) {
+                            Some((_h, tail)) => {
+                                rest = tail
+                                ()
+                            }
+                            None => break
+                        }
+                    }
+                    None => break
+                }
+            }
+            None => {
+                match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
+                    Ok(s) => {
+                        match out.push(s) {
+                            Ok(_) => ()
+                            Err(_e) => ()
+                        }
+                    }
+                    Err(_e) => ()
+                }
+                break
+            }
+        }
+    }
+    out
+end bench.split_str

@@ -9,7 +9,7 @@
 //! `kir_lower.rs` の子モジュールとして `Lw` の非公開の項目を使う。
 
 use crate::check::{items, nf, nlineno as nline};
-use crate::kir::{Aop, BoolOp, Cc, Mode, Op, Pay, Term, Ty, VId};
+use crate::kir::{Aop, Cc, Mode, Op, Pay, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
 
@@ -109,7 +109,6 @@ impl<'a> Lw<'a> {
         self.cur = Some(bad);
         self.goto(join, vec![f]);
         self.cur = Some(join);
-        self.blocks[join].term = Some(Term::Ret(jp[0]));
         Ok(jp[0])
     }
 
@@ -148,7 +147,6 @@ impl<'a> Lw<'a> {
         self.cur = Some(bad);
         self.goto(join, vec![f]);
         self.cur = Some(join);
-        self.blocks[join].term = Some(Term::Ret(jp[0]));
         Ok(jp[0])
     }
 
@@ -235,216 +233,25 @@ impl<'a> Lw<'a> {
         let Ty::Agg(err_idx) = utf8_err else {
             return self.err(line, "Utf8Error の型が集成体でない");
         };
+        // 検証は命令 `utf8.valid` (正しい接頭辞の長さ) に任せる。参照実行器は Rust の `str::from_utf8`、
+        // 機械語は `kir_rt.c` の `ksn_utf8_valid` (設計_KIR.md 17.12)。長さが全体と同じなら Ok。
         let ptr = self.emit(Ty::Ptr, Op::Field { a: bytes, off: 0 });
         let len = self.emit(Ty::Usize, Op::Field { a: bytes, off: 8 });
-        let zero = self.emit(Ty::Usize, Op::Const(0));
-        let one = self.emit(Ty::Usize, Op::Const(1));
-        let b80 = self.emit(Ty::U8, Op::Const(0x80));
-        let c2 = self.emit(Ty::U8, Op::Const(0xc2));
-        let df = self.emit(Ty::U8, Op::Const(0xdf));
-        let e0 = self.emit(Ty::U8, Op::Const(0xe0));
-        let ef = self.emit(Ty::U8, Op::Const(0xef));
-        let f0 = self.emit(Ty::U8, Op::Const(0xf0));
-        let f4 = self.emit(Ty::U8, Op::Const(0xf4));
-        let b_a0 = self.emit(Ty::U8, Op::Const(0xa0));
-        let b_9f = self.emit(Ty::U8, Op::Const(0x9f));
-        let b_bf = self.emit(Ty::U8, Op::Const(0xbf));
-        let b_90 = self.emit(Ty::U8, Op::Const(0x90));
-        let b_8f = self.emit(Ty::U8, Op::Const(0x8f));
-
-        let (hd, hp) = self.new_block(&[Ty::Usize]);
-        let (body, bodyp_) = self.new_block(&[Ty::Usize]);
-        let (check2, check2p) = self.new_block(&[Ty::Usize, Ty::U8, Ty::Bool, Ty::Bool, Ty::Bool]);
-        let (check3, check3p) = self.new_block(&[Ty::Usize, Ty::U8, Ty::Bool, Ty::Bool]);
-        let (check4, check4p) = self.new_block(&[Ty::Usize, Ty::U8, Ty::Bool]);
-        let (two, tp_) = self.new_block(&[Ty::Usize]);
-        let (two2, two2p) = self.new_block(&[Ty::Usize, Ty::Usize]);
-        let (three, thp_) = self.new_block(&[Ty::Usize]);
-        let (three2, three2p) = self.new_block(&[Ty::Usize, Ty::Usize]);
-        let (three3, three3p) = self.new_block(&[Ty::Usize, Ty::Usize, Ty::Usize, Ty::U8, Ty::U8]);
-        let (four3, four3p) = self.new_block(&[Ty::Usize, Ty::Usize, Ty::Usize, Ty::U8, Ty::U8]);
-        let (three4, three4p) = self.new_block(&[Ty::Usize, Ty::Usize]);
-        let (four, fp_) = self.new_block(&[Ty::Usize]);
-        let (four2, four2p) = self.new_block(&[Ty::Usize, Ty::Usize]);
-
-        let (four4, four4p) = self.new_block(&[Ty::Usize, Ty::Usize, Ty::Usize]);
+        let vu = self.emit(Ty::Usize, Op::Utf8Valid { p: ptr, len });
+        let all = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: vu, b: len });
+        let rt = Ty::Res(Pay::Agg(fat_idx), Pay::Agg(err_idx));
         let (okb, _) = self.new_block(&[]);
-        let (badb, bp_) = self.new_block(&[Ty::Usize]);
-        let (join, jp) = self.new_block(&[Ty::Res(Pay::Agg(fat_idx), Pay::Agg(err_idx))]);
-
-        self.goto(hd, vec![zero]);
-        self.cur = Some(hd);
-        let i = hp[0];
-        let done = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: i, b: len });
-        self.branch(done, (okb, vec![]), (body, vec![i]));
-
-        // ---------- body: 先頭バイト b の分岐 ----------
-        self.cur = Some(body);
-        let bi = bodyp_[0];
-        let bp = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: bi });
-        let b = self.emit(Ty::U8, Op::MemLoad { p: bp, off: 0 });
-        let lt80 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U8, a: b, b: b80 });
-        let ge_c2 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: b, b: c2 });
-        let le_df = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b, b: df });
-        let is_2 = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge_c2, le_df));
-        let ge_e0 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: b, b: e0 });
-        let le_ef = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b, b: ef });
-        let is_3 = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge_e0, le_ef));
-        let ge_f0 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: b, b: f0 });
-        let le_f4 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b, b: f4 });
-        let is_4 = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge_f0, le_f4));
-        let ni = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: bi, b: one });
-        self.branch(lt80, (hd, vec![ni]), (check2, vec![bi, b, is_2, is_3, is_4]));
-        let _ = (is_2, is_3, is_4, ge_c2, le_df, ge_e0, le_ef, ge_f0, le_f4);
-
-        // ---------- 先頭バイトが 0x80.. の分岐 ----------
-        self.cur = Some(check2);
-        let ci = check2p[0];
-        let b = check2p[1];
-        let is2 = check2p[2];
-        let is3 = check2p[3];
-        let is4 = check2p[4];
-        self.branch(is2, (two, vec![ci]), (check3, vec![ci, b, is3, is4]));
-        self.cur = Some(check3);
-        let ci2 = check3p[0];
-        let b = check3p[1];
-        let is3b = check3p[2];
-        let is4b = check3p[3];
-        self.branch(is3b, (three, vec![ci2]), (check4, vec![ci2, b, is4b]));
-        self.cur = Some(check4);
-        let ci3 = check4p[0];
-        let b = check4p[1];
-        let is4b = check4p[2];
-        self.branch(is4b, (four, vec![ci3]), (badb, vec![ci3]));
-
-        // ---------- 2 バイト (C2..DF): 2 バイト目 80..BF ----------
-        self.cur = Some(two);
-        let ti = tp_[0];
-        let i1 = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: ti, b: one });
-        let c1 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: i1, b: len });
-        self.branch(c1, (badb, vec![ti]), (two2, vec![ti, i1]));
-        self.cur = Some(two2);
-        let t0 = two2p[0];
-        let t1 = two2p[1];
-        let bp2 = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: t1 });
-        let b2 = self.emit(Ty::U8, Op::MemLoad { p: bp2, off: 0 });
-        let ge80 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: b2, b: b80 });
-        let lebf = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b2, b: b_bf });
-        let is_cont = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge80, lebf));
-        let i2 = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: t1, b: one });
-        self.branch(is_cont, (hd, vec![i2]), (badb, vec![t0]));
-
-        // ---------- 3 バイト (E0..EF) ----------
-        self.cur = Some(three);
-        let th = thp_[0];
-        let i1 = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: th, b: one });
-        let c1 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: i1, b: len });
-        self.branch(c1, (badb, vec![th]), (three2, vec![th, i1]));
-        self.cur = Some(three2);
-        let t0 = three2p[0];
-        let t1 = three2p[1];
-        let bp2 = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: t0 });
-        let b3 = self.emit(Ty::U8, Op::MemLoad { p: bp2, off: 0 });
-        let bp2 = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: t1 });
-        let b2 = self.emit(Ty::U8, Op::MemLoad { p: bp2, off: 0 });
-        let ge_a0 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: b2, b: b_a0 });
-        let le_bf = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b2, b: b_bf });
-        let ge80 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: b2, b: b80 });
-        let le_9f = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b2, b: b_9f });
-        let _ = b2;
-        let ok_e0 = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge_a0, le_bf));
-        let ok_ed = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge80, le_9f));
-        let ok_other = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge80, lebf));
-        let eq_e0 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U8, a: b3, b: e0 });
-        let eq_ed = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U8, a: b3, b: f0 });
-        let special = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, eq_e0, eq_ed));
-        let special_or = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, ok_e0, ok_ed));
-        let special_ok = self.emit(Ty::Bool, Op::Bool(BoolOp::And, special, special_or));
-        let ok2 = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, ok_other, special_ok));
-        let i2 = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: t1, b: one });
-        self.branch(ok2, (three3, vec![t0, i1, i2, b3, b2]), (badb, vec![th]));
-        self.cur = Some(three3);
-        let t0 = three3p[0];
-        let t1 = three3p[1];
-        let t2 = three3p[2];
-        let b3 = three3p[3];
-        let b2 = three3p[4];
-        let c2 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: t2, b: len });
-        self.branch(c2, (badb, vec![t0]), (three4, vec![t0, i2]));
-        let _ = b3;
-        self.cur = Some(three4);
-        let th = three4p[0];
-        let t2 = three4p[1];
-        let bp3 = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: t2 });
-        let b3 = self.emit(Ty::U8, Op::MemLoad { p: bp3, off: 0 });
-        let ge80 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: b3, b: b80 });
-        let lebf = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b3, b: b_bf });
-        let is_cont3 = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge80, lebf));
-        let i3 = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: t2, b: one });
-        self.branch(is_cont3, (hd, vec![i3]), (badb, vec![th]));
-
-        // ---------- 4 バイト (F0..F4) ----------
-        self.cur = Some(four);
-        let fo = fp_[0];
-        let i1 = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: fo, b: one });
-        let c1 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: i1, b: len });
-        self.branch(c1, (badb, vec![fo]), (four2, vec![fo, i1]));
-        self.cur = Some(four2);
-        let v0 = four2p[0];
-        let v1 = four2p[1];
-        let bp2 = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: v0 });
-        let b4 = self.emit(Ty::U8, Op::MemLoad { p: bp2, off: 0 });
-        let bp2 = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: v1 });
-        let b2 = self.emit(Ty::U8, Op::MemLoad { p: bp2, off: 0 });
-        let eq_f4 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U8, a: b4, b: f4 });
-        let ge_90 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: b2, b: b_90 });
-        let le_bf = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b2, b: b_bf });
-        let ge80 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: b2, b: b80 });
-        let le_8f = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b2, b: b_8f });
-        let _ = b2;
-        let ok_f0 = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge_90, le_bf));
-        let ok_f4 = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge80, le_8f));
-        let ok_other = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge80, lebf));
-        let eq_f0 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U8, a: b4, b: f0 });
-        let eq_f4 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U8, a: b4, b: f4 });
-        let special4 = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, eq_f0, eq_f4));
-        let special_or4 = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, ok_f0, ok_f4));
-        let special_ok4 = self.emit(Ty::Bool, Op::Bool(BoolOp::And, special4, special_or4));
-        let ok4 = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, ok_other, special_ok4));
-        let i2 = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: v1, b: one });
-        self.branch(ok4, (four3, vec![v0, i1, i2, b4, b2]), (badb, vec![fo]));
-        self.cur = Some(four3);
-        let w0 = four3p[0];
-        let w1 = four3p[1];
-        let w2 = four3p[2];
-        let b4 = four3p[3];
-        let b2 = four3p[4];
-
-        let c2 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: w2, b: len });
-        self.branch(c2, (badb, vec![w0]), (four4, vec![w0, w1, w2]));
-        self.cur = Some(four4);
-        let x1 = four4p[0];
-        let x3 = four4p[1];
-        let _ = b4;
-        let bp3 = self.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off: x3 });
-        let b3 = self.emit(Ty::U8, Op::MemLoad { p: bp3, off: 0 });
-        let ge80 = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: b3, b: b80 });
-        let lebf = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: b3, b: b_bf });
-        let is_cont3 = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge80, lebf));
-        let i4 = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: x3, b: one });
-        self.branch(is_cont3, (hd, vec![i4]), (badb, vec![x1]));
-
-        // ---------- 正常完了 / 不正 ----------
+        let (badb, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[rt]);
+        self.branch(all, (okb, vec![]), (badb, vec![]));
         self.cur = Some(okb);
-        let ok = self.emit(Ty::Res(Pay::Agg(fat_idx), Pay::Agg(err_idx)), Op::Ok(bytes));
+        let ok = self.emit(rt, Op::Ok(bytes));
         self.goto(join, vec![ok]);
         self.cur = Some(badb);
-        let vi = bp_[0];
-        let err_val = self.emit(utf8_err, Op::Make { variant: None, fields: vec![vi] });
-        let err = self.emit(Ty::Res(Pay::Agg(fat_idx), Pay::Agg(err_idx)), Op::Err(err_val));
+        let err_val = self.emit(utf8_err, Op::Make { variant: None, fields: vec![vu] });
+        let err = self.emit(rt, Op::Err(err_val));
         self.goto(join, vec![err]);
         self.cur = Some(join);
-        self.blocks[join].term = Some(Term::Ret(jp[0]));
         Ok(Some(jp[0]))
     }
 }

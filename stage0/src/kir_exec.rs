@@ -5,9 +5,13 @@
 //! 浮動小数と 128 ビット整数の規則は `kir_scalar.rs` にある。
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 
-use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
+use crate::interp::{py_float, py_float32};
+use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
 use crate::kir_scalar;
+use crate::natives::io_kind_name;
 
 // Option / Result の値の語 (設計_KIR.md 11.1)。タグは bit 64、ペイロードの語は下位 64 ビット。
 // 語の意味はペイロードの型で決まる: スカラーは値そのもの、集成体は置き場の添字、入れ子の Option / Result は
@@ -50,6 +54,19 @@ fn pay_read(t: Ty, w: i128, heap: &[Vec<u8>]) -> i128 {
         },
         _ => payload_of(t, w),
     }
+}
+
+/// ホストのソケット (記述子表の値)。
+enum NetSock {
+    Listener(TcpListener),
+    Stream(TcpStream),
+}
+
+/// `std.net` の記述子を割り当てる (ソケット表と共に、呼び出しの間だけ生きる)。
+fn alloc_next_fd(next: &mut i128) -> i128 {
+    let fd = *next;
+    *next += 1;
+    fd
 }
 
 /// 呼び出し先が作った置き場の項目 (添字 `base` 以上) を、呼び出し元に残す形へ写す。`base` より前は呼び出し元のものなので、そのまま使う。
@@ -421,6 +438,14 @@ fn io_error_value(aggs: &[AggDef], heap: &mut Vec<Vec<u8>>, kind: &str, code: i3
     Ok((heap.len() - 1) as i128)
 }
 
+/// `{ descriptor: i32 }` のソケット集成体を置き場に作り、その添字を返す。
+fn desc_agg(heap: &mut Vec<Vec<u8>>, fd: i128) -> Result<i128, String> {
+    let mut buf = vec![0u8; 4];
+    buf[0..4].copy_from_slice(&(fd as i32).to_le_bytes());
+    heap.push(buf);
+    Ok((heap.len() - 1) as i128)
+}
+
 /// 構造体・タプルのオフセット `off` のフィールドの型。
 fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
     match &d.kind {
@@ -522,6 +547,36 @@ fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
     }
 }
 
+/// `extern` 宣言の C 関数をホストの呼び出し規約で呼ぶ (`ffi::call_generic` と同じ仕組み)。
+/// 引数・戻り値はスカラー・ポインタに限る。
+fn extern_call(func: &Func, argv: &[i128]) -> Result<i128, String> {
+    use crate::ffi::{self, ArgV, RetTy};
+    let link = func.link.as_ref().expect("extern 関数に link がない");
+    let (lib, sym) = crate::ffi::split_link(link);
+    let fnptr = ffi::lookup(lib, sym).map_err(|e| format!("extern {}: {}", func.fqn, e))?;
+    let mut abi: Vec<ArgV> = vec![];
+    for (v, (_, pt)) in argv.iter().zip(func.params().iter()) {
+        abi.push(match pt {
+            Ty::F32 => ArgV::F32(f32::from_bits(*v as u32)),
+            Ty::F64 => ArgV::F64(f64::from_bits(*v as u64)),
+            _ => ArgV::Int(*v as u64),
+        });
+    }
+    let rty = match func.ret {
+        Ty::F32 => RetTy::F32,
+        Ty::F64 => RetTy::F64,
+        _ => RetTy::Int,
+    };
+    let r = ffi::call_generic(fnptr, &abi, &rty).map_err(|e| format!("extern {}: {}", func.fqn, e))?;
+    Ok(match r {
+        ffi::RetV::Int(x) => x as i128,
+        ffi::RetV::F32(f) => f.to_bits() as i128,
+        ffi::RetV::F64(f) => f.to_bits() as i128,
+        ffi::RetV::None => 0,
+        ffi::RetV::Agg(_) => return Err(format!("extern {}: 集成体の戻り値は未対応", func.fqn)),
+    })
+}
+
 /// 鍵 `key` の関数を引数 `args` で実行する。鍵が無い・引数の個数が違う場合は `Err`。
 pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     let index: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
@@ -530,6 +585,11 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     };
     if args.len() != m.funcs[entry].params().len() {
         return Err(format!("関数 {} の引数の個数が違う", key));
+    }
+    // エントリ自体が `extern` なら、ホストの C 関数を直接呼ぶ。
+    if m.funcs[entry].link.is_some() {
+        let result = extern_call(&m.funcs[entry], args)?;
+        return Ok(Outcome::Value(result));
     }
     let counts: Vec<usize> = m.funcs.iter().map(|f| f.value_count()).collect();
     // 関数ごとの値番号 → 型 (`store` が書く値の型を知るため)。
@@ -567,6 +627,9 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     // バイト記憶 (`ptr` の領域)。静的な領域 (`static.bytes`) は、命令の位置ごとに 1 回だけ確保する。
     let mut bm = ByteMem::new();
     let mut statics: HashMap<(usize, usize, usize), i128> = HashMap::new();
+    // ソケット表 (記述子 -> ホストのソケット)。リスナとストリームは同じ番号空間を使う。
+    let mut sockets: HashMap<i128, NetSock> = HashMap::new();
+    let mut next_fd: i128 = 0;
     let mut stack = vec![enter(entry, args, None, 0, 0)];
     loop {
         let top = stack.len() - 1;
@@ -597,6 +660,14 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     }
                 },
                 Op::PtrAdd { p, off } => get(&stack[top], p) + get(&stack[top], off),
+                Op::Utf8Valid { p, len } => {
+                    let n = get(&stack[top], len) as usize;
+                    let bytes = if n == 0 { vec![] } else { bm.read_bytes(get(&stack[top], p), n)? };
+                    match std::str::from_utf8(&bytes) {
+                        Ok(_) => n as i128,
+                        Err(e) => e.valid_up_to() as i128,
+                    }
+                }
                 Op::MemLoad { p, off } => bm.read(get(&stack[top], p) + *off as i128, inst.ty)?,
                 Op::MemStore { ty, p, off, v } => {
                     let (a, x) = (get(&stack[top], p) + *off as i128, get(&stack[top], v));
@@ -622,6 +693,89 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         }
                     }
                 }
+                Op::NetListen { addr } | Op::NetConnect { addr } => {
+                    let h = get(&stack[top], addr) as usize;
+                    let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+                    let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+                    let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                    let s = std::str::from_utf8(&bytes).unwrap_or("");
+                    let is_listen = matches!(inst.op, Op::NetListen { .. });
+                    let res: i128 = match if is_listen {
+                        TcpListener::bind(s).map(NetSock::Listener)
+                    } else {
+                        TcpStream::connect(s).map(NetSock::Stream)
+                    } {
+                        Ok(sock) => {
+                            let fd = alloc_next_fd(&mut next_fd);
+                            sockets.insert(fd, sock);
+                            desc_agg(&mut heap, fd)?
+                        }
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    };
+                    res
+                }
+                Op::NetAccept { sock } => {
+                    let fd = get(&stack[top], sock);
+                    let Some(NetSock::Listener(l)) = sockets.get_mut(&fd) else {
+                        return Err(format!("無効なソケット記述子 {}", fd));
+                    };
+                    let res: i128 = match l.accept() {
+                        Ok((st, _)) => {
+                            let nfd = alloc_next_fd(&mut next_fd);
+                            sockets.insert(nfd, NetSock::Stream(st));
+                            desc_agg(&mut heap, nfd)?
+                        }
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    };
+                    res
+                }
+                Op::NetRead { sock, buf, len } => {
+                    let (fd, p, n) = (
+                        get(&stack[top], sock),
+                        get(&stack[top], buf),
+                        get(&stack[top], len),
+                    );
+                    let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
+                        return Err(format!("読み出しできるのはストリームソケットだけ: {}", fd));
+                    };
+                    let mut vec = vec![0u8; n as usize];
+                    let nr = s.read(&mut vec).map_err(|e| format!("read: {e}"))?;
+                    bm.write_bytes(p, &vec[..nr])?;
+                    nr as i128
+                }
+                Op::NetWrite { sock, buf, len } => {
+                    let (fd, p, n) = (
+                        get(&stack[top], sock),
+                        get(&stack[top], buf),
+                        get(&stack[top], len),
+                    );
+                    let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
+                        return Err(format!("書き込みできるのはストリームソケットだけ: {}", fd));
+                    };
+                    let bytes = bm.read_bytes(p, n as usize)?;
+                    s.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+                    n
+                }
+                Op::NetFlush { sock } => {
+                    let fd = get(&stack[top], sock);
+                    let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
+                        return Err(format!("flush できるのはストリームソケットだけ: {}", fd));
+                    };
+                    s.flush().map_err(|e| format!("flush: {e}"))?;
+                    0
+                }
+                Op::NetClose { sock } => {
+                    let fd = get(&stack[top], sock);
+                    sockets.remove(&fd);
+                    0
+                }
+                Op::NetLocalPort { sock } => {
+                    let fd = get(&stack[top], sock);
+                    let Some(NetSock::Listener(l)) = sockets.get(&fd) else {
+                        return Err(format!("local_port できるのはリスナーソケットだけ: {}", fd));
+                    };
+                    l.local_addr().map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?
+                }
                 Op::IndexCheck { i, len } => {
                     let (ix, n) = (get(&stack[top], i), get(&stack[top], len));
                     if ix >= n {
@@ -636,6 +790,16 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
                     // panic の文言は書けなくても終わる (木走査の panic と同じく、書き込みの失敗は捨てる)
                     let _ = write_fd(2, &bytes);
+                    0
+                }
+                Op::FmtFloat { bits, a } => {
+                    let x = get(&stack[top], a);
+                    let s = if *bits == 32 {
+                        py_float32(f32::from_bits(x as u32))
+                    } else {
+                        py_float(f64::from_bits(x as u64))
+                    };
+                    let _ = write_fd(2, s.as_bytes());
                     0
                 }
                 Op::Abort => return Ok(Outcome::Abort),
@@ -718,6 +882,14 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let Some(&ci) = index.get(callee.as_str()) else {
                         return Err(format!("呼び先 {} がない", callee));
                     };
+                    let func = &m.funcs[ci];
+                    if func.link.is_some() {
+                        let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
+                        let result = extern_call(func, &argv)?;
+                        stack[top].vals[inst.dst as usize] = result;
+                        stack[top].defd[inst.dst as usize] = true;
+                        continue;
+                    }
                     let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
                     stack.push(enter(ci, &argv, Some(inst.dst), heap.len(), bm.mem.len()));
                     continue;
@@ -956,6 +1128,7 @@ mod tests {
             may_panic: false,
             stack: None,
             ret: Ty::U64,
+            link: None,
             blocks: vec![Block {
                 params: vec![(0, Ty::U64)],
                 insts: vec![

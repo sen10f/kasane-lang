@@ -142,6 +142,7 @@ impl Fb {
             may_panic: false,
             stack: None,
             ret,
+            link: None,
             blocks: self.blocks.into_iter().map(|(params, insts, t)| Block { params, insts, term: t.unwrap_or(Term::Unreachable) }).collect(),
         }
     }

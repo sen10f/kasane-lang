@@ -1,0 +1,83 @@
+fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let primes = bench.sieve(30usize)
+    core.check.eq(primes.len(), 30usize)
+    match primes.get(0usize) {
+        Some(v) => core.check.eq(*v, false)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match primes.get(1usize) {
+        Some(v) => core.check.eq(*v, false)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match primes.get(2usize) {
+        Some(v) => core.check.eq(*v, true)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match primes.get(3usize) {
+        Some(v) => core.check.eq(*v, true)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match primes.get(4usize) {
+        Some(v) => core.check.eq(*v, false)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match primes.get(5usize) {
+        Some(v) => core.check.eq(*v, true)
+        None => core.check.eq(0usize, 1usize)
+    }
+    std.io.print_line("sieve ok")?
+    Ok(())
+end bench.main
+
+fn bench.sieve(n: usize) -> alloc.vec.Vec<bool, std.alloc.System> uses [alloc] panics never pub
+    let mut is_prime = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < n {
+        match is_prime.push(true) {
+            Ok(_) => ()
+            Err(_e) => ()
+        }
+        i = i.wrapping_add(1usize)
+    }
+    if n > 0usize {
+        match is_prime.get_mut(0usize) {
+            Some(v) => {
+                *v = false
+                ()
+            }
+            None => ()
+        }
+    }
+    if n > 1usize {
+        match is_prime.get_mut(1usize) {
+            Some(v) => {
+                *v = false
+                ()
+            }
+            None => ()
+        }
+    }
+    let mut p = 2usize
+    while p.wrapping_mul(p) < n {
+        match is_prime.get(p) {
+            Some(v) => {
+                if *v {
+                    let mut mult = p.wrapping_mul(p)
+                    while mult < n {
+                        match is_prime.get_mut(mult) {
+                            Some(m) => {
+                                *m = false
+                                ()
+                            }
+                            None => ()
+                        }
+                        mult = mult.wrapping_add(p)
+                    }
+                }
+            }
+            None => break
+        }
+        p = p.wrapping_add(1usize)
+    }
+    is_prime
+end bench.sieve

@@ -1,0 +1,109 @@
+type bench.Bst pub
+    nodes: alloc.vec.Vec<bench.Node, std.alloc.System>
+end bench.Bst
+
+type bench.Node derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    value: u32
+    left: usize
+    right: usize
+end bench.Node
+
+fn bench.bst_contains(t: &bench.Bst, x: u32) -> bool uses [] panics never pub
+    let mut idx = 1usize
+    let mut found = false
+    loop {
+        let n = t.nodes.len()
+        if idx >= n {
+            break
+        }
+        match t.nodes.get(idx) {
+            Some(node) => {
+                if x == node.value {
+                    found = true
+                    break
+                }
+                if x < node.value {
+                    idx = node.left
+                } else {
+                    idx = node.right
+                }
+                if idx == 0usize {
+                    break
+                }
+            }
+            None => break
+        }
+    }
+    found
+end bench.bst_contains
+
+fn bench.bst_insert(t: &mut bench.Bst, x: u32) -> () uses [alloc] panics never pub
+    let mut idx = 1usize
+    loop {
+        let n = t.nodes.len()
+        if idx >= n {
+            match t.nodes.insert(idx, bench.Node { value: x, left: 0usize, right: 0usize }) {
+                Ok(_) => ()
+                Err(_e) => ()
+            }
+            break
+        }
+        match t.nodes.get_mut(idx) {
+            Some(node) => {
+                let v = node.value
+                let l = node.left
+                let r = node.right
+                if x == v {
+                    break
+                }
+                if x < v {
+                    if l == 0usize {
+                        node.left = n
+                        match t.nodes.push(bench.Node { value: x, left: 0usize, right: 0usize }) {
+                            Ok(_) => ()
+                            Err(_e) => ()
+                        }
+                        break
+                    }
+                    idx = l
+                } else {
+                    if r == 0usize {
+                        node.right = n
+                        match t.nodes.push(bench.Node { value: x, left: 0usize, right: 0usize }) {
+                            Ok(_) => ()
+                            Err(_e) => ()
+                        }
+                        break
+                    }
+                    idx = r
+                }
+            }
+            None => break
+        }
+    }
+end bench.bst_insert
+
+fn bench.bst_new() -> bench.Bst uses [alloc] panics never pub
+    let mut nodes = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match nodes.push(bench.Node { value: 0u32, left: 0usize, right: 0usize }) {
+        Ok(_) => ()
+        Err(_e) => ()
+    }
+    bench.Bst { nodes: nodes }
+end bench.bst_new
+
+fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut t = bench.bst_new()
+    bench.bst_insert(&mut t, 5u32)
+    bench.bst_insert(&mut t, 2u32)
+    bench.bst_insert(&mut t, 9u32)
+    bench.bst_insert(&mut t, 1u32)
+    bench.bst_insert(&mut t, 3u32)
+    core.check.eq(bench.bst_contains(&t, 3u32), true)
+    core.check.eq(bench.bst_contains(&t, 5u32), true)
+    core.check.eq(bench.bst_contains(&t, 7u32), false)
+    core.check.eq(bench.bst_contains(&t, 1u32), true)
+    core.check.eq(bench.bst_contains(&t, 10u32), false)
+    std.io.print_line("bst ok")?
+    Ok(())
+end bench.main

@@ -668,11 +668,34 @@ pub enum Op {
     /// 書き出し: ファイル記述子 `fd` (`i32`。1 = stdout、2 = stderr) へ `data` (`fat` = `{ptr, len}`) の全バイトを書く。
     /// 結果は `Result<unit, std.io.Error>` (設計_KIR.md 12.2)。短い書き込みは繰り返し、EINTR は再試行する。`uses [io.console]` の関数だけ。
     Write { fd: VId, data: VId },
+    /// `std.net.listen(addr)`: `socket`+`bind`+`listen`。`addr` は fat (`&str`)。結果は `Result<i32, std.io.Error>`。
+    /// 記述子はリスニングソケット。`uses [io.net]` の関数だけ。`panics never` でも置ける。
+    NetListen { addr: VId },
+    /// `std.net.connect(addr)`: `socket`+`connect`。`addr` は fat (`&str`)。結果は `Result<i32, std.io.Error>`。
+    /// 記述子は接続済みストリームソケット。`uses [io.net]` の関数だけ。`panics never` でも置ける。
+    NetConnect { addr: VId },
+    /// `TcpListener.accept()`: `accept`。結果は `Result<i32, std.io.Error>`。`uses [io.net]` の関数だけ。
+    NetAccept { sock: VId },
+    /// `TcpStream.read(buffer)`: `read(sock, buf, len)`。結果は `Result<usize, std.io.Error>`。`uses [io.net]` の関数だけ。
+    NetRead { sock: VId, buf: VId, len: VId },
+    /// `TcpStream.write(buffer)`: `write(sock, buf, len)`。結果は `Result<usize, std.io.Error>`。`uses [io.net]` の関数だけ。
+    NetWrite { sock: VId, buf: VId, len: VId },
+    /// `TcpStream.flush()`: `flush`。結果は `Result<(), std.io.Error>`。`uses [io.net]` の関数だけ。
+    NetFlush { sock: VId },
+    /// `TcpStream.close()` / `TcpListener.close()`: `close`。結果は `Result<(), std.io.Error>`。`uses [io.net]` の関数だけ。
+    NetClose { sock: VId },
+    /// `TcpListener.local_port()`: `local_addr` のポート。結果は `Result<u16, std.io.Error>`。`uses [io.net]` の関数だけ。
+    NetLocalPort { sock: VId },
     /// panic の途中の文言を stderr へ書く (`data` = `fat`)。`write` と違って `uses` を要らない: 文言は panic の一部で、
     /// `core.check.eq` のような効果の宣言のない関数からも呼べるため (設計_KIR.md 13.2)。結果は unit。`panics may` のときだけ。
     Eprint { data: VId },
     /// 文言を出さずに終了コード 101 で終わる (`Eprint` で文言を書いた後の終わり)。結果は unit。`panics may` のときだけ。
     Abort,
+    /// 浮動小数を `py_float` / `py_float32` と同じ規則で書式化して stderr へ出力する。
+    /// 被演算子は `f32` または `f64`、結果は `unit`。`panics may` のときだけ。
+    FmtFloat { bits: u32, a: VId },
+    /// `p` から `len` バイトを UTF-8 として検証し、正しい接頭辞の長さ (`valid_up_to`) を返す。全体が正しければ `len`。
+    Utf8Valid { p: VId, len: VId },
 }
 
 /// `BitCount` の種類。
@@ -736,6 +759,8 @@ pub struct Func {
     /// 宣言された `stack` の上界。
     pub stack: Option<u64>,
     pub ret: Ty,
+    /// `extern` 宣言なら C のリンク名 (`lib:symbol` の `symbol` 部分)。ユーザ関数は `None`。
+    pub link: Option<String>,
     /// ブロック 0 が入口。その引数が関数の引数。
     pub blocks: Vec<Block>,
 }
@@ -1086,6 +1111,7 @@ fn fmt_inst(i: &Inst) -> String {
             }
         }
         Op::PtrAdd { p, off } => format!("ptr.add {}, {}", fmt_val(*p), fmt_val(*off)),
+        Op::Utf8Valid { p, len } => format!("utf8.valid {}, {}", fmt_val(*p), fmt_val(*len)),
         Op::MemLoad { p, off } => format!("mem.load.{} {} +{}", fmt_ty(i.ty), fmt_val(*p), off),
         Op::MemStore { ty, p, off, v } => format!("mem.store.{} {} +{}, {}", fmt_ty(*ty), fmt_val(*p), off, fmt_val(*v)),
         Op::HeapAlloc(n) => format!("heap.alloc {}", fmt_val(*n)),
@@ -1097,8 +1123,21 @@ fn fmt_inst(i: &Inst) -> String {
             None => format!("panic {}", quote_msg(msg)),
         },
         Op::Write { fd, data } => format!("write {}, {}", fmt_val(*fd), fmt_val(*data)),
+        Op::NetListen { addr } => format!("net.listen {}", fmt_val(*addr)),
+        Op::NetConnect { addr } => format!("net.connect {}", fmt_val(*addr)),
+        Op::NetAccept { sock } => format!("net.accept {}", fmt_val(*sock)),
+        Op::NetRead { sock, buf, len } => {
+            format!("net.read {}, {}, {}", fmt_val(*sock), fmt_val(*buf), fmt_val(*len))
+        }
+        Op::NetWrite { sock, buf, len } => {
+            format!("net.write {}, {}, {}", fmt_val(*sock), fmt_val(*buf), fmt_val(*len))
+        }
+        Op::NetFlush { sock } => format!("net.flush {}", fmt_val(*sock)),
+        Op::NetClose { sock } => format!("net.close {}", fmt_val(*sock)),
+        Op::NetLocalPort { sock } => format!("net.local_port {}", fmt_val(*sock)),
         Op::Eprint { data } => format!("eprint {}", fmt_val(*data)),
         Op::Abort => "abort".to_string(),
+        Op::FmtFloat { bits, a } => format!("fmtfloat.{bits} {}", fmt_val(*a)),
     };
     format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
 }
@@ -1454,6 +1493,10 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             let v = operands(2)?;
             Ok(Op::PtrAdd { p: v[0], off: v[1] })
         }
+        ("utf8", ["valid"]) if ty == Ty::Usize => {
+            let v = operands(2)?;
+            Ok(Op::Utf8Valid { p: v[0], len: v[1] })
+        }
         ("mem", ["load", t]) => {
             same_ty(t)?;
             let (p, off) = parse_mem(rest, line)?;
@@ -1478,11 +1521,51 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             let v = operands(2)?;
             Ok(Op::Write { fd: v[0], data: v[1] })
         }
+        ("net", ["listen"]) => {
+            let v = operands(1)?;
+            Ok(Op::NetListen { addr: v[0] })
+        }
+        ("net", ["connect"]) => {
+            let v = operands(1)?;
+            Ok(Op::NetConnect { addr: v[0] })
+        }
+        ("net", ["accept"]) => {
+            let v = operands(1)?;
+            Ok(Op::NetAccept { sock: v[0] })
+        }
+        ("net", ["read"]) => {
+            let v = operands(3)?;
+            Ok(Op::NetRead { sock: v[0], buf: v[1], len: v[2] })
+        }
+        ("net", ["write"]) => {
+            let v = operands(3)?;
+            Ok(Op::NetWrite { sock: v[0], buf: v[1], len: v[2] })
+        }
+        ("net", ["flush"]) => {
+            let v = operands(1)?;
+            Ok(Op::NetFlush { sock: v[0] })
+        }
+        ("net", ["close"]) => {
+            let v = operands(1)?;
+            Ok(Op::NetClose { sock: v[0] })
+        }
+        ("net", ["local_port"]) => {
+            let v = operands(1)?;
+            Ok(Op::NetLocalPort { sock: v[0] })
+        }
         ("eprint", []) if ty == Ty::Unit => {
             let v = operands(1)?;
             Ok(Op::Eprint { data: v[0] })
         }
         ("abort", []) if ty == Ty::Unit => Ok(Op::Abort),
+        ("fmtfloat", [bits]) if ty == Ty::Unit => {
+            let bits = bits.parse::<u32>().map_err(|_| perr(line, "fmtfloat のビット数は 32 または 64"))?;
+            if bits != 32 && bits != 64 {
+                return Err(perr(line, "fmtfloat のビット数は 32 または 64"));
+            }
+            let v = operands(1)?;
+            Ok(Op::FmtFloat { bits, a: v[0] })
+        }
         ("index", ["check"]) if ty == Ty::Unit => {
             let v = operands(2)?;
             Ok(Op::IndexCheck { i: v[0], len: v[1] })
@@ -1707,6 +1790,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
             may_panic: f_may,
             stack: f_stack,
             ret: f_ret,
+            link: None,
             blocks,
         });
     }
@@ -1946,7 +2030,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if i.ty != Ty::Bool {
                             return Err("比較の結果は bool のはず".into());
                         }
-                        if !ty.is_scalar() || *ty == Ty::Unit || *ty == Ty::Ptr || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
+                        if !ty.is_scalar() || *ty == Ty::Unit || (*ty == Ty::Ptr && !matches!(cc, Cc::Eq | Cc::Ne)) || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
                             return Err(format!("型 {} の比較 {} は使えない", fmt_ty(*ty), cc.name()));
                         }
                         if ty_of(*a)? != *ty || ty_of(*b)? != *ty {
@@ -2099,6 +2183,11 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("ptr.add は ptr と usize の被演算子のはず".into());
                         }
                     }
+                    Op::Utf8Valid { p, len } => {
+                        if i.ty != Ty::Usize || ty_of(*p)? != Ty::Ptr || ty_of(*len)? != Ty::Usize {
+                            return Err("utf8.valid は ptr と usize を受けて usize を返すはず".into());
+                        }
+                    }
                     Op::MemLoad { p, .. } => {
                         if !memable(i.ty) || ty_of(*p)? != Ty::Ptr {
                             return Err("load は ptr から整数・浮動小数・bool・ptr を読むはず".into());
@@ -2164,6 +2253,63 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("write の結果は Result<unit, std.io.Error> のはず".into());
                         }
                     }
+                    Op::NetListen { addr } | Op::NetConnect { addr } => {
+                        if !f.uses.iter().any(|u| u == "io.net") {
+                            return Err("net.listen / net.connect は uses [io.net] の関数だけ".into());
+                        }
+                        if ty_of(*addr)? != fat_ty(m)? {
+                            return Err("net.listen / net.connect のアドレスは fat (&str) のはず".into());
+                        }
+                        let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty()));
+                        if !ok {
+                            return Err("net.listen / net.connect の結果は Result<ソケット集成体, std.io.Error> のはず".into());
+                        }
+                    }
+                    Op::NetAccept { sock } | Op::NetFlush { sock } | Op::NetClose { sock } | Op::NetLocalPort { sock } => {
+                        if !f.uses.iter().any(|u| u == "io.net") {
+                            return Err("net.accept / net.flush / net.close / net.local_port は uses [io.net] の関数だけ".into());
+                        }
+                        if ty_of(*sock)? != Ty::I32 {
+                            return Err("net.accept / net.flush / net.close / net.local_port のソケットは i32 のはず".into());
+                        }
+                        match &i.op {
+                            Op::NetAccept { .. } => {
+                                let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty()));
+                                if !ok {
+                                    return Err("net.accept の結果は Result<ソケット集成体, std.io.Error> のはず".into());
+                                }
+                            }
+                            Op::NetLocalPort { .. } => {
+                                let ok = matches!(i.ty, Ty::Res(Pay::U16, e) if is_io_error(m, e.ty()));
+                                if !ok {
+                                    return Err("net.local_port の結果は Result<u16, std.io.Error> のはず".into());
+                                }
+                            }
+                            _ => {
+                                let ok = matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty()));
+                                if !ok {
+                                    return Err("net.flush / net.close の結果は Result<(), std.io.Error> のはず".into());
+                                }
+                            }
+                        }
+                    }
+                    Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => {
+                        if !f.uses.iter().any(|u| u == "io.net") {
+                            return Err("net.read / net.write は uses [io.net] の関数だけ".into());
+                        }
+                        if ty_of(*sock)? != Ty::I32 || ty_of(*buf)? != Ty::Ptr || ty_of(*len)? != Ty::Usize {
+                            return Err("net.read / net.write は i32 のソケットと ptr のバッファと usize の長さを取る".into());
+                        }
+                        let want = match &i.op {
+                            Op::NetRead { .. } | Op::NetWrite { .. } => {
+                                matches!(i.ty, Ty::Res(Pay::Usize, e) if is_io_error(m, e.ty()))
+                            }
+                            _ => false,
+                        };
+                        if !want {
+                            return Err("net.read / net.write の結果は Result<usize, std.io.Error> のはず".into());
+                        }
+                    }
                     Op::Eprint { data } => {
                         if !f.may_panic {
                             return Err("panics never の関数に eprint".into());
@@ -2178,6 +2324,23 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                         if i.ty != Ty::Unit {
                             return Err("abort の結果は unit のはず".into());
+                        }
+                    }
+                    Op::FmtFloat { bits, a } => {
+                        if !f.may_panic {
+                            return Err("panics never の関数に fmtfloat".into());
+                        }
+                        if i.ty != Ty::Unit {
+                            return Err("fmtfloat の結果は unit のはず".into());
+                        }
+                        let at = ty_of(*a)?;
+                        let ok = match bits {
+                            32 => at == Ty::F32,
+                            64 => at == Ty::F64,
+                            _ => false,
+                        };
+                        if !ok {
+                            return Err(format!("fmtfloat の被演算子は f{} のはず", bits));
                         }
                     }
                     Op::Call { callee, args } => {
@@ -2248,14 +2411,33 @@ fn check_agg_ids(m: &Module, t: Ty) -> Result<(), String> {
 }
 
 /// バイト記憶 (`mem.load` / `mem.store`) で読み書きできる型: 整数・浮動小数・bool・ptr (集成体・参照・Option は持たない)。
-fn memable(t: Ty) -> bool {
+pub(crate) fn memable(t: Ty) -> bool {
     t.is_int() || t.is_float() || matches!(t, Ty::Bool | Ty::Ptr)
+}
+
+/// `fat` (`{ptr, len}`) 集成体の型。型表に無ければ `None`。
+fn fat_ty(m: &Module) -> Result<Ty, String> {
+    let i = m
+        .aggs
+        .iter()
+        .position(|d| d.name == "fat")
+        .ok_or_else(|| "型表に fat がない".to_string())?;
+    Ok(Ty::Agg(i as u32))
+}
+
+/// 型 `t` が `std.io.Error` 集成体か。
+fn is_io_error(m: &Module, t: Ty) -> bool {
+    matches!(
+        t,
+        Ty::Agg(i) if (i as usize) < m.aggs.len() && m.aggs[i as usize].name == "std.io.Error"
+    )
 }
 
 pub(crate) fn operands(op: &Op) -> Vec<VId> {
     match op {
         Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) => vec![],
         Op::PtrAdd { p, off } => vec![*p, *off],
+        Op::Utf8Valid { p, len } => vec![*p, *len],
         Op::MemLoad { p, .. } | Op::HeapFree(p) => vec![*p],
         Op::HeapAlloc(n) => vec![*n],
         Op::HeapRealloc { p, size } => vec![*p, *size],
@@ -2263,6 +2445,11 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::IndexCheck { i, len } => vec![*i, *len],
         Op::Panic { arg, .. } => arg.iter().copied().collect(),
         Op::Write { fd, data } => vec![*fd, *data],
+        Op::NetListen { addr } | Op::NetConnect { addr } => vec![*addr],
+        Op::NetAccept { sock } | Op::NetFlush { sock } | Op::NetClose { sock } | Op::NetLocalPort { sock } => vec![*sock],
+        Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => {
+            vec![*sock, *buf, *len]
+        }
         Op::Eprint { data } => vec![*data],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }
@@ -2273,6 +2460,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         | Op::MinMax { a, b, .. }
         | Op::FBin { a, b, .. } => vec![*a, *b],
         Op::Shift { a, n, .. } => vec![*a, *n],
+        Op::FmtFloat { a, .. } => vec![*a],
         Op::Store { ptr, val } => vec![*ptr, *val],
         Op::Neg { a, .. }
         | Op::Not(a)
@@ -2395,6 +2583,7 @@ mod tests {
             may_panic: true,
             stack: None,
             ret: Ty::Unit,
+            link: None,
             blocks: vec![Block {
                 params: vec![(0, Ty::U32)],
                 insts: vec![
@@ -2450,6 +2639,7 @@ end t.p
             may_panic: false,
             stack: Some(4096),
             ret: Ty::U64,
+            link: None,
             blocks: vec![
                 Block {
                     params: vec![(0, Ty::U64)],
@@ -2574,6 +2764,7 @@ end t.p
             may_panic: false,
             stack: None,
             ret: Ty::I32,
+            link: None,
             blocks: vec![Block {
                 params: vec![(0, Ty::I32)],
                 insts: vec![
@@ -2703,6 +2894,7 @@ end t.c
             may_panic: false,
             stack: None,
             ret: Ty::Res(Pay::U16, Pay::U16),
+            link: None,
             blocks: vec![
                 Block {
                     params: vec![(0, Ty::Bool)],

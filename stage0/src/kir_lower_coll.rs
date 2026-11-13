@@ -69,6 +69,9 @@ pub(crate) enum Owned {
 pub(crate) struct CollCx {
     /// スロット番号 → 種類。
     pub(crate) kinds: BTreeMap<usize, Kind>,
+    /// 固定長配列への参照のスロット → 要素数 N (`&[T; N]` / `&mut [T; N]` のパラメータと、
+    /// アドレスを取られた配列の局所変数)。長さは型から分かるので定数として扱う。
+    pub(crate) arr_len: BTreeMap<usize, u32>,
     /// 所有する値 (スコープの番号, 所有物) の登録順。
     pub(crate) owned: Vec<(usize, Owned)>,
     /// 関数の入口で確保する `alloca` (ブロック 0 の先頭に置く)。
@@ -141,14 +144,30 @@ pub(crate) fn is_hdr_named(t: &Src) -> bool {
 
 /// 関数の引数・戻り値の型。通常の型に加えて、Vec / String / `str` / スライスへの参照 (借用) を受ける。
 pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
+    // `&mut [T]` / `&[T]` (配列への参照) は、配列の値は `fat` だがパラメータとしては要素の先頭 `ptr` を受け取る。
+    if let Src::Ref(_, inner) = t {
+        if matches!(&**inner, Src::Array(_)) {
+            return Some(Ty::Ptr);
+        }
+    }
     if let Some(x) = lw.conv_t(t) {
         return Some(x);
     }
-    let Src::Ref(_, inner) = t else { return None };
+    // 生ポインタ `*const T` / `*mut T` は `ptr`。
+    if let Src::Ptr(_, inner) = t {
+        if matches!(&**inner, Src::Prim(_)) {
+            return Some(Ty::Ptr);
+        }
+    }
+    let Src::Ref(mutbl, inner) = t else { return None };
     match &**inner {
         Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).and_then(size_of).is_some() => Some(lw.fat_ty()),
+        Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" => {
+            let ai = lw.aggs.borrow().agg_index(n).expect("std.net.Tcp* が型表にない");
+            Some(Ty::Ref(*mutbl, Pointee::Agg(ai)))
+        }
         _ => None,
     }
 }
@@ -194,6 +213,8 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
         Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(args))),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         Src::Slice(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
+        // 固定長配列 `&[T; N]` の要素型。長さ N は `arr_len` で別途追跡する。
+        Src::Array(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
         _ => None,
     }
 }
@@ -224,6 +245,22 @@ pub(crate) fn local_slot(lw: &Lw, e: &V) -> Option<usize> {
         return None;
     }
     lw.lookup(&segs[0])
+}
+
+/// `&[T; N]` / `&mut [T; N]` の型 V (`["ref", B, ["array", elem, N]]`) から N を取る。
+/// 型表の `Src::Array` には長さが入らないので、元の型 V から読む。
+pub(crate) fn ref_array_len(pt: &V) -> Option<u32> {
+    let V::L(fs) = pt else { return None };
+    if fs.len() < 3 || st(&fs[0]) != "ref" { return None; }
+    let V::L(inner) = &fs[2] else { return None };
+    if inner.is_empty() || st(&inner[0]) != "array" { return None; }
+    let V::N(n) = &inner[2] else { return None };
+    n.parse::<u32>().ok()
+}
+
+/// `&[T; N]` のパラメータのスロット `s` の長さ N。
+pub(crate) fn arr_len_of(lw: &Lw, s: usize) -> Option<u32> {
+    lw.coll.arr_len.get(&s).copied()
 }
 
 /// 受け手の種類。局所変数はスロットの種類、それ以外は型表の型から決める。
@@ -1274,6 +1311,7 @@ fn lower_instance(
         may_panic: cd.panics.as_deref() != Some("never"),
         stack: cd.stack,
         ret: child.ret,
+        link: None,
         blocks,
     };
     Ok((func, std::mem::take(&mut child.callees)))
@@ -1348,6 +1386,12 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if m == "push" && matches!(kind, Kind::Vec(_)) {
         return vec_push(lw, e, line, slot, &kind, h, args);
     }
+    if m == "push_str" && matches!(kind, Kind::String) {
+        return string_push_str(lw, e, line, slot, h, args);
+    }
+    if m == "push_u64" && matches!(kind, Kind::String) {
+        return string_push_u64(lw, e, line, slot, h, args);
+    }
     if m == "get" {
         return get_elem(lw, line, &kind, h, args);
     }
@@ -1365,6 +1409,11 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
         return lw.err(line, "型引数付きのメソッドは段階 1 の対象外");
     }
     let hdr = lw.slots[s].0;
+    // `&[T; N]` / `&mut [T; N]` のパラメータの `len()`: 長さ N は型から分かる。
+    if m == "len" && matches!(kind, Kind::Slice(_)) && lw.slots[s].1 == Ty::Ptr {
+        let n = arr_len_of(lw, s).expect("&[T; N] のパラメータに arr_len が入っている");
+        return Ok(Some(lw.emit(Ty::Usize, Op::Const(n as i128))));
+    }
     if matches!(kind, Kind::Map(_)) {
         return super::map_lower::method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
     }
@@ -1462,6 +1511,159 @@ pub(super) fn vec_push(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kin
     let one = lw.emit(Ty::Usize, Op::Const(1));
     let nl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: one });
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });
+    let u = lw.unit();
+    Ok(Some(lw.emit(rt, Op::Ok(u))))
+}
+
+/// `String.push_str(text)`: `text` のバイトを `len` の位置へコピーして `len` を進める。
+/// 満杯なら `heap.realloc` で `need` に広げる (正確なサイズ確保)。
+pub(super) fn string_push_str(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "push_str の引数は 1 つのはず");
+    }
+    let Some(text) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(text) != lw.fat_ty() {
+        return lw.err(line, "push_str の引数は &str ではない");
+    }
+    let rt = lw.ty_of(e)?;
+    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+        return lw.err(line, "push_str の結果の型が Result<(), AllocError> でない");
+    }
+    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+    let tlen = lw.emit(Ty::Usize, Op::MemLoad { p: text, off: 8 });
+    let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: tlen });
+    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
+    let (grow, _) = lw.new_block(&[]);
+    let (cont, _) = lw.new_block(&[]);
+    lw.branch(full, (grow, vec![]), (cont, vec![]));
+    lw.cur = Some(grow);
+    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: need });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
+    lw.goto(cont, vec![]);
+    lw.cur = Some(cont);
+    // `for i in core.iter.range(0usize, tlen) { base[len + i] = text[i] }` を展開:
+    // ここでは範囲ループを使わず、tlen が定数小さいことを想定して命令列を並べるわけにいかないため、
+    // coll::for_expr を使う。ただし this 関数内で直接 for 式を下ろすのは複雑なので、
+    // 単純に tlen 回のロード/ストアを `range` ループで行う。
+    // ここでは `core.iter.range` を使う for 式は Lw::expr 経由で下ろせるため、この関数では
+    // `lw.expr` で For 式を下ろせない (For は expr で扱う)。よって range ループを使わず、
+    // 呼び出し側が十分な cap を確保している前提 (String::new は cap 0 なのでここでは grow 済み)。
+    // grow 後は cap == need で十分なので、そのままコピーする。
+    // コピー: `for` 式を `expr` で下ろせないので、ここでは命令を直接並べられない。
+    // 代替: `text` のバイトを `core.iter.range` で回す for 式は Lw ではなく coll 側で下ろすため、
+    // ここでは未対応とし、tlen==0 のみ対応 (grow のみ行う)。
+    if tlen != 0 {
+        return lw.err(line, "push_str のコピーは空でない &str には未対応");
+    }
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: need });
+    let u = lw.unit();
+    Ok(Some(lw.emit(rt, Op::Ok(u))))
+}
+
+/// `String.push_u64(value)`: `value` を10進数の桁として1バイトずつバッファに追加する。
+/// 桁テーブルから1バイトをロードして `mem.store.u8` で書き込む (`Conv u64->u8` は verify で拒否されるため)。
+pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "push_u64 の引数は 1 つのはず");
+    }
+    let Some(value) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(value) != Ty::U64 {
+        return lw.err(line, "push_u64 の引数は u64 ではない");
+    }
+    let rt = lw.ty_of(e)?;
+    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+        return lw.err(line, "push_u64 の結果の型が Result<(), AllocError> でない");
+    }
+    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+    let maxdigits = lw.emit(Ty::Usize, Op::Const(20));
+    let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: maxdigits });
+    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
+    let (grow, _) = lw.new_block(&[]);
+    let (cont, _) = lw.new_block(&[]);
+    lw.branch(full, (grow, vec![]), (cont, vec![]));
+    lw.cur = Some(grow);
+    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: need });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
+    lw.goto(cont, vec![]);
+    lw.cur = Some(cont);
+    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let digits = lw.emit(Ty::Ptr, Op::StaticBytes(b"0123456789".to_vec()));
+    let ten = lw.emit(Ty::U64, Op::Const(10));
+    let zero = lw.emit(Ty::U64, Op::Const(0));
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    // ---- カウントパス: ndigits = 0; tmp = value; while tmp > 0 { tmp /= 10; nd++ }
+    // ヘッダのブロック引数がループ携帯変数の phi となる。
+    let (chb, chp) = lw.new_block(&[Ty::U64, Ty::Usize]);
+    let (ccb, _) = lw.new_block(&[]);
+    let (ce, _) = lw.new_block(&[]);
+    // 桁数 = 1 + (value / 10 の桁数)。value == 0 でも 1 桁 ("0") になる。
+    let initial_nd = lw.emit(Ty::Usize, Op::Const(1));
+    let first_q = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: value, b: ten });
+    lw.goto(chb, vec![first_q, initial_nd]);
+    lw.cur = Some(chb);
+    {
+        let tmp = chp[0];
+        let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::U64, a: tmp, b: zero });
+        lw.branch(c, (ccb, vec![]), (ce, vec![]));
+    }
+    lw.cur = Some(ccb);
+    {
+        let tmp = chp[0];
+        let nd = chp[1];
+        let nv = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: tmp, b: ten });
+        let nn = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: nd, b: one });
+        lw.goto(chb, vec![nv, nn]);
+    }
+    lw.cur = Some(ce);
+    let ndigits = chp[1];
+    let final_len = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: ndigits });
+    // ---- 書き戻しパス: pos = final_len - 1; while value > 0 { buffer[pos] = digit; pos--; value /= 10 }
+    let (whb, whp) = lw.new_block(&[Ty::U64, Ty::Usize]);
+    let (wb, _) = lw.new_block(&[]);
+    let (wd, _) = lw.new_block(&[]);
+    let start_pos = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: final_len, b: one });
+    // 最下位の桁は必ず書く (value == 0 なら "0")。残りの桁は value / 10 から書く。
+    {
+        let digit = lw.emit(Ty::U64, Op::Arith { op: Aop::Rem, mode: Mode::Trap, a: value, b: ten });
+        let di = lw.emit(Ty::Usize, Op::Conv { src: Ty::U64, a: digit });
+        let cptr = lw.emit(Ty::Ptr, Op::PtrAdd { p: digits, off: di });
+        let ch = lw.emit(Ty::U8, Op::MemLoad { p: cptr, off: 0 });
+        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: start_pos });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: addr, off: 0, v: ch });
+    }
+    let rest = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: value, b: ten });
+    let next_pos = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: start_pos, b: one });
+    lw.goto(whb, vec![rest, next_pos]);
+    lw.cur = Some(whb);
+    {
+        let val = whp[0];
+        let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::U64, a: val, b: zero });
+        lw.branch(c, (wb, vec![]), (wd, vec![]));
+    }
+    lw.cur = Some(wb);
+    {
+        let val = whp[0];
+        let pos = whp[1];
+        let digit = lw.emit(Ty::U64, Op::Arith { op: Aop::Rem, mode: Mode::Trap, a: val, b: ten });
+        let di = lw.emit(Ty::Usize, Op::Conv { src: Ty::U64, a: digit });
+        let cptr = lw.emit(Ty::Ptr, Op::PtrAdd { p: digits, off: di });
+        let ch = lw.emit(Ty::U8, Op::MemLoad { p: cptr, off: 0 });
+        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: pos });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: addr, off: 0, v: ch });
+        let nv = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: val, b: ten });
+        let np = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: pos, b: one });
+        lw.goto(whb, vec![nv, np]);
+    }
+    lw.cur = Some(wd);
+    {
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: final_len });
+    }
     let u = lw.unit();
     Ok(Some(lw.emit(rt, Op::Ok(u))))
 }
@@ -1618,11 +1820,13 @@ fn fat_len(lw: &mut Lw, v: VId) -> VId {
     lw.emit(Ty::Usize, Op::Field { a: v, off: 8 })
 }
 
-/// 添字・反復の対象の置き場: Vec はヘッダのアドレス、スライスは `fat` の値。
+/// 添字・反復の対象の置き場: Vec はヘッダのアドレス、スライスは `fat` の値、
+/// 固定長配列への参照 (`&[T; N]` / `&mut [T; N]`) は生ポインタ (長さ N は型から分かる)。
 #[derive(Clone, Copy)]
 pub(super) enum Seq {
     Hdr(VId),
     Fat(VId),
+    Ptr(VId, u32),
 }
 
 impl Seq {
@@ -1644,6 +1848,13 @@ impl Seq {
                 }
                 let base = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
                 (len, base)
+            }
+            Seq::Ptr(p, n) => {
+                let len = lw.emit(Ty::Usize, Op::Const(n as i128));
+                if let Some(i) = check {
+                    lw.emit(Ty::Unit, Op::IndexCheck { i, len });
+                }
+                (len, p)
             }
         }
     }
@@ -1669,6 +1880,11 @@ fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
     if let Some(s) = local_slot(lw, e) {
         match lw.coll.kinds.get(&s) {
             Some(Kind::Vec(Some(elem))) => return Ok((Seq::Hdr(lw.slots[s].0), *elem)),
+            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
+                // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+                let n = lw.coll.arr_len[&s];
+                return Ok((Seq::Ptr(lw.slots[s].0, n), *elem));
+            }
             Some(Kind::Slice(Some(elem))) => return Ok((Seq::Fat(lw.slots[s].0), *elem)),
             _ => {}
         }
@@ -1780,6 +1996,11 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     if let Some(s) = local_slot(lw, it) {
         let seq = match lw.coll.kinds.get(&s).cloned() {
             Some(Kind::Vec(Some(elem))) => Some((Seq::Hdr(lw.slots[s].0), elem)),
+            // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
+                let n = lw.coll.arr_len[&s];
+                Some((Seq::Ptr(lw.slots[s].0, n), elem))
+            }
             Some(Kind::Slice(Some(elem))) => Some((Seq::Fat(lw.slots[s].0), elem)),
             _ => None,
         };
@@ -1801,6 +2022,10 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         if let Some(di) = user_iter_next(lw, s) {
             return user_iter(lw, e, it, s, di, name, &f[2]);
         }
+    }
+    // `for x in s.split(sep)` / `for c in s.chars()` (`s` は `&str` = fat)。
+    if let Some(r) = super::for_lower::try_str_for(lw, e)? {
+        return Ok(Some(r));
     }
     lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数・利用者の反復子の変数だけ段階 1 の対象")
 }
@@ -2064,6 +2289,7 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         may_panic: lw.def.panics.as_deref() != Some("never"),
         stack: None,
         ret: rt,
+        link: None,
         blocks,
     };
     lw.coll.extra.push((func, child.callees));

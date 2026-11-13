@@ -1,0 +1,11 @@
+// expect: E3010
+fn t.keep(v: &mut alloc.vec.Vec<&alloc.string.String, std.alloc.System>, s: &alloc.string.String) -> () uses [alloc] panics never
+    core.mem.drop(v.push(s))
+end t.keep
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    t.keep(&mut v, &s)
+    Ok(())
+end t.main
