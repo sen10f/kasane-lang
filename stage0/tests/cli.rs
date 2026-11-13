@@ -13654,6 +13654,128 @@ end t.main
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
 }
 
+// ---- 段階 1: ペイロードが所有物 (String / Vec) の Option / Result (E は整数/unit) ----
+// `Some`/`Ok`/`Err` で作り、`match` でペイロードを取り出し、`?` で同じ E を伝え、
+// スコープの終わりで解放する。観察値はスカラーに落とす (--run の入口は集成体を引数・戻り値に持てないため)。
+// 参照実行器・機械語・ASan は kir_run が比べる (解放の漏れ・二重解放も ASan で検出)。
+#[test]
+fn kir_result_heap_owned_payloads_match_tree_walker() {
+    // 段階 1: `Option<String>` / `Result<String, u8>` / `Result<Vec<u32>, u8>` を `Some`/`Ok`/`Err` で作り、
+    // `match` でペイロードを取り出し、`?` で同じ E を伝え、スコープの終わりで解放する。
+    // 観察値はスカラーに落とす (--run の入口は集成体を引数・戻り値に持てないため)。
+    let src = "fn t.mk_s() -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"banana\"))
+    Some(s)
+end t.mk_s
+
+fn t.mk_n() -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics may
+    None
+end t.mk_n
+
+fn t.opt_len() -> usize uses [alloc] panics may
+    match t.mk_s() {
+        Some(x) => x.len()
+        None => 99usize
+    }
+end t.opt_len
+
+fn t.opt_none() -> usize uses [alloc] panics may
+    match t.mk_n() {
+        Some(_x) => 99usize
+        None => 0usize
+    }
+end t.opt_none
+
+fn t.mk_ok() -> Result<alloc.string.String<std.alloc.System>, u8> uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"ok\"))
+    Ok(s)
+end t.mk_ok
+
+fn t.mk_err() -> Result<alloc.string.String<std.alloc.System>, u8> uses [] panics never
+    Err(3u8)
+end t.mk_err
+
+fn t.res_match_ok() -> usize uses [alloc] panics may
+    match t.mk_ok() {
+        Ok(x) => x.len()
+        Err(_e) => 99usize
+    }
+end t.res_match_ok
+
+fn t.res_match_err() -> usize uses [] panics never
+    match t.mk_err() {
+        Ok(_x) => 99usize
+        Err(_e) => 0usize
+    }
+end t.res_match_err
+
+fn t.q() -> Result<alloc.string.String<std.alloc.System>, u8> uses [alloc] panics may
+    Ok(t.mk_ok()?)
+end t.q
+
+fn t.q_len() -> usize uses [alloc] panics may
+    match t.q() {
+        Ok(x) => x.len()
+        Err(_e) => 99usize
+    }
+end t.q_len
+
+fn t.mk_v() -> Result<alloc.vec.Vec<u32, std.alloc.System>, u8> uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(1u32))
+    core.mem.drop(v.push(2u32))
+    Ok(v)
+end t.mk_v
+
+fn t.mk_ve() -> Result<alloc.vec.Vec<u32, std.alloc.System>, u8> uses [alloc] panics may
+    Err(9u8)
+end t.mk_ve
+
+fn t.vlen() -> usize uses [alloc] panics may
+    match t.mk_v() {
+        Ok(v) => v.len()
+        Err(_e) => 99usize
+    }
+end t.vlen
+
+fn t.velen() -> usize uses [alloc] panics may
+    match t.mk_ve() {
+        Ok(_v) => 99usize
+        Err(_e) => 0usize
+    }
+end t.velen
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.opt_len(), 6usize)
+    core.check.eq(t.opt_none(), 0usize)
+    core.check.eq(t.res_match_ok(), 2usize)
+    core.check.eq(t.res_match_err(), 0usize)
+    core.check.eq(t.q_len(), 2usize)
+    core.check.eq(t.vlen(), 2usize)
+    core.check.eq(t.velen(), 0usize)
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("kir_result_heap_owned", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, want) in [
+        ("t.opt_len", "6"),
+        ("t.opt_none", "0"),
+        ("t.res_match_ok", "2"),
+        ("t.res_match_err", "0"),
+        ("t.q_len", "2"),
+        ("t.vlen", "2"),
+        ("t.velen", "0"),
+    ] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+}
+
 // ---- 型引数に線形を含む型の束縛 (4.4): `Option` / `Result` / ジェネリック構造体 ----
 
 /// `tdrop_prefix` に、型引数の線形検査の試験用の定義を足して検査する。
