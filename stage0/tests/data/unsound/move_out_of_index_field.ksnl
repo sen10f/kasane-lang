@@ -1,0 +1,16 @@
+// expect: E3002
+type t.S
+    name: alloc.string.String
+end t.S
+
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.steal(a: [t.S; 2]) -> () uses [] panics may
+    t.consume(a[0usize].name)
+end t.steal

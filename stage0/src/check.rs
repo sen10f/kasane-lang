@@ -385,6 +385,11 @@ pub struct Checker<'a> {
     /// `tc_expr` 時点では Vec 等の基の型が `Nil` なので、型表 (`tytab`) が確定した
     /// `typeck()` の後処理で要素型を引いて E3002 を出す (4.1)。
     index_consumes: Vec<(String, u32, String, usize)>,
+    /// 値を消費するクロージャ (`FnOnce`) を束縛した局所の名前。呼ぶと move 済みになる (4.1)。
+    fnonce_locals: HashSet<String>,
+    /// `a[i].f` (添字の先のフィールド) を値として使った (関数名, Field 式の ID, 文言, 位置)。
+    /// フィールドの型を型表で引き、Copy でなければ E3002 (配列・Vec の要素の先からは move できない、4.1)。
+    field_consumes: Vec<(String, u32, String, usize)>,
     /// 型表 (`TypeCk::tytab`) の写し。`tc_fn` より前に作り、注釈のない `let` の型を引くのに使う (4.1)。
     mv_types: BTreeMap<(String, u32), crate::types::ExprTy>,
     final_env: HashMap<String, V>,
@@ -477,6 +482,8 @@ impl<'a> Checker<'a> {
             lin_closure_took: false,
             lin_loops: vec![],
             let_tys: HashMap::new(),
+            fnonce_locals: HashSet::new(),
+            field_consumes: vec![],
             index_consumes: Vec::new(),
             mv_types: BTreeMap::new(),
             final_env: HashMap::new(),
@@ -2615,7 +2622,7 @@ impl<'a> Checker<'a> {
         self.mv_types = std::mem::take(&mut tk.tytab);
         for &i in &user {
             let d = self.def(i);
-            if d.kw == "fn" && d.body.is_some() {
+            if (d.kw == "fn" || d.kw == "test") && d.body.is_some() {
                 self.tc_fn(i);
             }
         }
@@ -2645,6 +2652,19 @@ impl<'a> Checker<'a> {
                         "cannot move out of `{}`: the element is not Copy; borrow it with `&{}` or use `get`",
                         &text, &text
                     ),
+                    line,
+                );
+            }
+        }
+        for (fqn, nid_, text, line) in self.field_consumes.clone() {
+            let Some(et) = tk.tytab.get(&(fqn.clone(), nid_)) else { continue };
+            if !self.is_copy_ty(&et.ty) {
+                if let Some(&di) = self.user.iter().find(|&&i| self.def(i).name == fqn) {
+                    self.d = di;
+                }
+                self.tdiag(
+                    "E3002",
+                    format!("cannot move out of `{text}`: the element is behind an index and its field is not Copy; borrow it with `&{text}`"),
                     line,
                 );
             }
@@ -2772,10 +2792,38 @@ impl<'a> Checker<'a> {
                 if nm == "Option" || nm == "Result" {
                     return items(tel(t, 2)).iter().all(|a| self.is_copy(a));
                 }
+                // 型パラメータ: 境界に `core.ops.Copy` があれば Copy。ユーザー定義のトレイトの境界は
+                // 上位トレイトに Copy を持ちうるので黙る (Copy とみなす)。
+                if items(tel(t, 2)).is_empty() && self.names.contains(&nm) {
+                    return self.generic_may_be_copy(&nm);
+                }
                 self.p.types.get(&nm).map_or(false, |&i| self.def(i).derive.iter().any(|x| x == "Copy"))
             }
             _ => true,
         }
+    }
+
+    /// 現在の定義の型パラメータ `nm` が Copy でありうるか (境界に Copy がある / 境界が分からない)。
+    fn generic_may_be_copy(&self, nm: &str) -> bool {
+        let d = self.def(self.d);
+        for g in d.generics.iter().filter(|g| g.0 == "type" && g.1 == nm) {
+            for b in items(&g.2) {
+                let bn = match b {
+                    V::L(bx) if !bx.is_empty() => st(&bx[0]),
+                    V::S(x) => x.clone(),
+                    _ => return true,
+                };
+                if bn == "Copy" || bn.ends_with(".Copy") {
+                    return true;
+                }
+                // 標準ライブラリのトレイト以外 (ユーザー定義) は上位トレイトまで追わない: 黙る。
+                if !bn.starts_with("core.") && !bn.starts_with("std.") && !bn.starts_with("alloc.") {
+                    return true;
+                }
+            }
+        }
+        // `impl` の型パラメータなど、この定義の generics に無い名前は分からないので黙る。
+        !d.generics.iter().any(|g| g.0 == "type" && g.1 == nm)
     }
 
     /// `Ty` が Copy か。`is_copy` の `Ty` 版。未知の型・型パラメータは黙る (true)。
@@ -3185,6 +3233,7 @@ impl<'a> Checker<'a> {
         let mut env: Env = d.params.iter().cloned().collect();
         self.graph.entry(d.name.clone()).or_default();
         self.moved.clear();
+        self.fnonce_locals.clear();
         self.lin.clear();
         self.lin_floor = 0;
         self.lin_in_closure = false;
@@ -3459,6 +3508,15 @@ impl<'a> Checker<'a> {
                     }
                     env.insert(n.clone(), t);
                     self.revive_place(std::slice::from_ref(&n));
+                    let once = matches!(
+                        self.let_tys.get(&(self.d, nline(s), n.clone())),
+                        Some(crate::types::Ty::Closure { cap: crate::types::Cap::FnOnce, .. })
+                    );
+                    if once {
+                        self.fnonce_locals.insert(n.clone());
+                    } else {
+                        self.fnonce_locals.remove(&n);
+                    }
                     if matches!(f[1], V::B(true)) {
                         muts.insert(n);
                     } else {
@@ -3563,9 +3621,41 @@ impl<'a> Checker<'a> {
             return;
         }
         if consume {
+            if !path.is_empty() && self.move_out_of_ref(root, path, env, line) {
+                return;
+            }
             self.record_move(root, path, env, line);
             self.lin_consume_place(root, path, env);
         }
+    }
+
+    /// 参照 (`&T` / `&mut T`) の先のフィールドを、Copy でない型のまま値として使った (move した) なら E3002 (4.1)。
+    /// 根の型が参照で、道の型を最後まで解決でき、Copy でないときだけ報告する (型が分からなければ黙る)。
+    fn move_out_of_ref(&mut self, root: &str, path: &[String], env: &Env, line: usize) -> bool {
+        let Some(t) = env.get(root) else { return false };
+        if is_nil(t) || tag(t) != "ref" {
+            return false;
+        }
+        let mut cur = tel(t, 2).clone();
+        for seg in path {
+            if is_nil(&cur) || tag(&cur) == "ref" {
+                return false;
+            }
+            match self.field_ty(&cur, seg) {
+                Some(n) => cur = n,
+                None => return false,
+            }
+        }
+        if is_nil(&cur) || self.is_generic(&cur, &self.names) || self.is_copy(&cur) {
+            return false;
+        }
+        let key = place_key(root, path);
+        self.tdiag(
+            "E3002",
+            format!("cannot move out of `{key}`: `{root}` is a reference, so its field cannot be moved; borrow it with `&{key}` or copy it"),
+            line,
+        );
+        true
     }
 
     /// 使用した場所と重なる move 済みの場所を探す。moved の鍵は互いに重ならないので、
@@ -3833,6 +3923,10 @@ impl<'a> Checker<'a> {
                         let recv: &[String] = if segs.len() >= 2 { &segs[1..segs.len() - 1] } else { &[] };
                         let by_value = segs.len() >= 2 && self.method_takes_self_by_value(&segs[0], recv, &segs[segs.len() - 1], env);
                         self.use_place(&segs[0], recv, env, nline(e), by_value);
+                        // `FnOnce` のクロージャを呼ぶと、そのクロージャ自身が move される (2 回目の呼び出しは E3002)。
+                        if segs.len() == 1 && self.fnonce_locals.contains(&segs[0]) && self.moved_overlap(&segs[0], &[]).is_none() {
+                            self.moved.insert(segs[0].clone(), nline(e));
+                        }
                         if segs.len() >= 2 {
                             if let Some(md) = self.method_def(&segs[0], recv, &segs[segs.len() - 1], env) {
                                 if md.is_method() {
@@ -3901,6 +3995,22 @@ impl<'a> Checker<'a> {
                 let fl = self.lin_floor;
                 let what = if self.lin_in_closure { "the closure" } else { "the function" };
                 self.lin_leaks(fl, nline(e), &format!("when {what} returns early at line {}", nlineno(e)));
+            }
+            "Field" if consume && {
+                let mut b = &f[0];
+                while nname(b) == "Field" {
+                    b = &nf(b)[0];
+                }
+                nname(b) == "Index"
+            } =>
+            {
+                let mut b = &f[0];
+                while nname(b) == "Field" {
+                    b = &nf(b)[0];
+                }
+                let text = format!("{}.{}", index_text(b), st(&f[1]));
+                self.field_consumes.push((self.def(self.d).name.clone(), nid(e), text, nline(e)));
+                self.tc_expr(&f[0], env, muts, false);
             }
             "Index" => {
                 // `a[i]` で Copy でない要素を値として取り出す (move) は 4.1 に反する (E3002)。
@@ -4054,7 +4164,13 @@ impl<'a> Checker<'a> {
                         self.lin_wild(&typed, nline(&items(arm)[0]));
                     }
                     for n in b {
-                        let t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
+                        let mut t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
+                        if is_nil(&t) {
+                            // 自前で決まらない腕の束縛は、型推論の結果を使う (4.1)。
+                            if let Some(ty) = self.let_tys.get(&(self.d, nline(&items(arm)[0]), n.clone())) {
+                                t = crate::types::TypeCk::to_v(ty).unwrap_or(V::Nil);
+                            }
+                        }
                         // 腕の束縛は新しい値。以前の同名の束縛の move 記録を引き継がない。
                         self.revive_place(std::slice::from_ref(&n));
                         self.lin_declare(&n, &t, nline(arm));
@@ -4082,6 +4198,8 @@ impl<'a> Checker<'a> {
             n => {
                 let mut inner = env.clone();
                 let mut loop_binds = false;
+                // `while` の条件は毎周評価される: 条件の中の move も 2 周目の検査に入れるため、条件より前の状態を基にする。
+                let mut pre_cond: Option<BTreeMap<String, usize>> = None;
                 let body = match n {
                     "For" => {
                         // 反復子の式は move 済みの使用を検査するが、`for` 自体は反復子を move 済みに
@@ -4093,18 +4211,24 @@ impl<'a> Checker<'a> {
                         let mut b = vec![];
                         pat_binds(&f[0], &mut b);
                         for x in b {
-                            inner.insert(x, V::Nil);
+                            let t = self
+                                .let_tys
+                                .get(&(self.d, nline(e), x.clone()))
+                                .and_then(crate::types::TypeCk::to_v)
+                                .unwrap_or(V::Nil);
+                            inner.insert(x, t);
                         }
                         loop_binds = true;
                         &f[2]
                     }
                     "While" => {
+                        pre_cond = Some(self.moved.clone());
                         self.tc_expr(&f[0], env, muts, false);
                         &f[1]
                     }
                     _ => &f[0],
                 };
-                let base = self.moved.clone();
+                let base = pre_cond.unwrap_or_else(|| self.moved.clone());
                 let (lbase, lstate) = (self.lin.len(), self.lin.clone());
                 self.lin_loops.push(LinLoop { base: lbase, breaks: vec![], conts: vec![] });
                 if loop_binds {

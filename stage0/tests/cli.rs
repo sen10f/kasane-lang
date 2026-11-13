@@ -16897,14 +16897,10 @@ fn kir_own_more_match_tree_walker() {
 
 #[test]
 fn kir_own_reports_unsupported_moves_with_a_reason() {
-    // 参照を通したフィールドの移動 (借用の中身を移す)、一時の値のフィールドの移動、所有物を持つ `unwrap_or` は、
+    // 一時の値のフィールドの移動、所有物を持つ `unwrap_or` は、
     // 誤った KIR を出さず理由を付けて拒否する。
+    // (参照を通したフィールドの移動は `ksn check` が E3002 で拒否するので、ここには来ない。)
     let cases: &[(&str, &str, &str)] = &[
-        (
-            "type t.B\n    items: alloc.vec.Vec<u8, std.alloc.System>\nend t.B\n\nfn t.f(b: &mut t.B) -> usize uses [] panics never\n    let w = b.items\n    w.len()\nend t.f\n",
-            "t.f",
-            "参照を通したフィールドの移動",
-        ),
         (
             "type t.B\n    items: alloc.vec.Vec<u8, std.alloc.System>\nend t.B\n\nfn t.mk() -> t.B uses [alloc] panics never\n    t.B { items: alloc.vec.Vec.new(std.alloc.SYSTEM) }\nend t.mk\n\nfn t.f() -> usize uses [alloc] panics never\n    let w = t.mk().items\n    w.len()\nend t.f\n",
             "t.f",
