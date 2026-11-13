@@ -49,7 +49,8 @@ pub fn prof_report() {
 }
 
 struct Frame {
-    /// 戻り先 (呼び出し元) の関数・命令番号・フレームの底。
+    /// 戻り先 (呼び出し元) の関数・命令番号・フレームの底。`v` は呼び出し元の関数が属する版 (`Vm::vers` の添字)。
+    v: u32,
     f: u32,
     pc: u32,
     base: u32,
@@ -61,6 +62,7 @@ struct Frame {
 }
 
 pub struct Vm<'a> {
+    #[allow(dead_code)]
     prog: &'a Prog,
     regs: Vec<i128>,
     frames: Vec<Frame>,
@@ -76,6 +78,11 @@ pub struct Vm<'a> {
     /// `std.net` のソケット表 (記述子 → ソケット)。
     socks: std::collections::HashMap<i128, NetSock>,
     next_fd: i128,
+    /// ホットリロードの版 (0 が最初)。各フレームは、呼び出されたときの版の関数を最後まで走らせる。新しい呼び出しは最新の版へ解決する。
+    pub(super) vers: Vec<*const Prog>,
+    pub(super) owned: Vec<Box<Prog>>,
+    /// `--watch` のとき。安全点 (呼び出しの入口) でエポック (`flag`) を見て、新しい版を取り込む。
+    pub(super) hook: Option<super::reload::Reload>,
 }
 
 enum NetSock {
@@ -107,7 +114,7 @@ fn bad_addr(a: i128, n: usize) -> String {
 
 #[inline(always)]
 fn addr(a: i128, n: usize) -> Result<*mut u8, String> {
-    if a < 0x1000 || a > u64::MAX as i128 {
+    if (a as u128).wrapping_sub(0x1000) > (u64::MAX - 0x1000) as u128 {
         return Err(bad_addr(a, n));
     }
     Ok(a as usize as *mut u8)
@@ -115,7 +122,7 @@ fn addr(a: i128, n: usize) -> Result<*mut u8, String> {
 
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0 }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0, vers: vec![prog as *const Prog], owned: vec![], hook: None }
     }
 
     /// ためた stdout を流す。
@@ -199,10 +206,11 @@ impl<'a> Vm<'a> {
 
     /// 関数 `key` を引数 `args` で実行する。同じ `Vm` で続けて呼べる (置き場は戻り値が指す項目だけ残る)。
     pub fn run(&mut self, key: &str, args: &[i128]) -> Result<Outcome, String> {
-        let Some(entry) = self.prog.find(key) else {
+        let mut vi = (self.vers.len() - 1) as u32;
+        let mut prog: &Prog = unsafe { &*self.vers[vi as usize] };
+        let Some(entry) = prog.find(key) else {
             return Err(format!("関数 {} がない", key));
         };
-        let prog = self.prog;
         let f0 = &prog.funcs[entry];
         if args.len() != f0.nparams as usize {
             return Err(format!("関数 {} の引数の個数が違う", key));
@@ -298,6 +306,11 @@ impl<'a> Vm<'a> {
                     }
                 }
                 Ins::Jmp { to } => pc = *to as usize,
+                Ins::JmpIf { c, to } => {
+                    if r!(*c) != 0 {
+                        pc = *to as usize;
+                    }
+                }
                 Ins::JmpIfNot { c, to } => {
                     if r!(*c) == 0 {
                         pc = *to as usize;
@@ -397,7 +410,10 @@ impl<'a> Vm<'a> {
                         self.flush();
                         return Ok(Outcome::StackOverflow);
                     }
-                    let cf = &prog.funcs[*ci as usize];
+                    // 安全点 (関数の入口): `--watch` なら新しい版を取り込み、呼び先を最新の版へ解決する。
+                    let (cvi, ci) = if self.hook.is_some() { self.resolve_call(vi, *ci) } else { (vi, *ci) };
+                    let cprog: &Prog = if cvi == vi { prog } else { unsafe { &*self.vers[cvi as usize] } };
+                    let cf = &cprog.funcs[ci as usize];
                     let nb = base + f.nslots as usize;
                     if self.regs.len() < nb + cf.nslots as usize {
                         let n = (nb + cf.nslots as usize) * 2;
@@ -410,8 +426,10 @@ impl<'a> Vm<'a> {
                         let v = r!(s);
                         unsafe { *rp.add(f.nslots as usize + k) = v };
                     }
-                    self.frames.push(Frame { f: fi, pc: pc as u32, base: base as u32, dst: *d, hbase: self.heap.len(), abase: self.allocs.len() });
-                    fi = *ci;
+                    self.frames.push(Frame { v: vi, f: fi, pc: pc as u32, base: base as u32, dst: *d, hbase: self.heap.len(), abase: self.allocs.len() });
+                    fi = ci;
+                    vi = cvi;
+                    prog = cprog;
                     f = cf;
                     pc = 0;
                     base = nb;
@@ -452,6 +470,10 @@ impl<'a> Vm<'a> {
                         }
                         Some(fr) => {
                             fi = fr.f;
+                            if fr.v != vi {
+                                vi = fr.v;
+                                prog = unsafe { &*self.vers[vi as usize] };
+                            }
                             f = &prog.funcs[fi as usize];
                             pc = fr.pc as usize;
                             base = fr.base as usize;
@@ -556,6 +578,67 @@ impl<'a> Vm<'a> {
                         }
                     };
                     w!(*d, v);
+                }
+                Ins::LoadU64 { d, p, off } => {
+                    let a = addr(r!(*p) + *off as i128, 8)?;
+                    w!(*d, unsafe { (a as *const u64).read_unaligned() } as i128);
+                }
+                Ins::LoadI64 { d, p, off } => {
+                    let a = addr(r!(*p) + *off as i128, 8)?;
+                    w!(*d, unsafe { (a as *const i64).read_unaligned() } as i128);
+                }
+                Ins::LoadU32 { d, p, off } => {
+                    let a = addr(r!(*p) + *off as i128, 4)?;
+                    w!(*d, unsafe { (a as *const u32).read_unaligned() } as i128);
+                }
+                Ins::LoadI32 { d, p, off } => {
+                    let a = addr(r!(*p) + *off as i128, 4)?;
+                    w!(*d, unsafe { (a as *const i32).read_unaligned() } as i128);
+                }
+                Ins::LoadU8 { d, p, off } => {
+                    let a = addr(r!(*p) + *off as i128, 1)?;
+                    w!(*d, unsafe { *a } as i128);
+                }
+                Ins::Store64 { p, off, v } => {
+                    let a = addr(r!(*p) + *off as i128, 8)?;
+                    let xv = r!(*v);
+                    unsafe { (a as *mut u64).write_unaligned(xv as u64) };
+                }
+                Ins::Store8 { p, off, v } => {
+                    let a = addr(r!(*p) + *off as i128, 1)?;
+                    let xv = r!(*v);
+                    unsafe { *a = xv as u8 };
+                }
+                Ins::LoadX { d, p, x, off, k } => {
+                    let a = addr(r!(*p) + r!(*x) + *off as i128, 1)?;
+                    let v: i128 = unsafe {
+                        match k {
+                            LK::U8 => *a as i128,
+                            LK::I8 => *(a as *const i8) as i128,
+                            LK::Bool => (*a != 0) as i128,
+                            LK::U16 => (a as *const u16).read_unaligned() as i128,
+                            LK::I16 => (a as *const i16).read_unaligned() as i128,
+                            LK::U32 => (a as *const u32).read_unaligned() as i128,
+                            LK::I32 => (a as *const i32).read_unaligned() as i128,
+                            LK::U64 => (a as *const u64).read_unaligned() as i128,
+                            LK::I64 => (a as *const i64).read_unaligned() as i128,
+                            LK::I128 => (a as *const i128).read_unaligned(),
+                        }
+                    };
+                    w!(*d, v);
+                }
+                Ins::StoreX { p, x, off, v, w: wd } => {
+                    let a = addr(r!(*p) + r!(*x) + *off as i128, *wd as usize)?;
+                    let xv = r!(*v);
+                    unsafe {
+                        match wd {
+                            1 => *a = xv as u8,
+                            2 => (a as *mut u16).write_unaligned(xv as u16),
+                            4 => (a as *mut u32).write_unaligned(xv as u32),
+                            8 => (a as *mut u64).write_unaligned(xv as u64),
+                            _ => (a as *mut u128).write_unaligned(xv as u128),
+                        }
+                    }
                 }
                 Ins::LoadAgg { d, p, size } => {
                     let n = *size as usize;

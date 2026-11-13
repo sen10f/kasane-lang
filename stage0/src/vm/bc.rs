@@ -78,6 +78,8 @@ pub enum Ins {
 
     // ---- 制御
     Jmp { to: u32 },
+    /// `c` が 0 でなければ `to` へ。
+    JmpIf { c: S, to: u32 },
     /// `c` が 0 なら `to` へ。
     JmpIfNot { c: S, to: u32 },
     /// 整数 (`u128` を除く) の比較 `a cc b` が偽なら `to` へ (`icmp` + `br_if` の融合)。
@@ -139,6 +141,16 @@ pub enum Ins {
     FrameBytes { d: S, size: u32 },
     Load { d: S, p: S, off: u32, k: LK },
     /// 集成体を参照の先から読む (置き場に写す)。
+    /// `*(p + x + off)`。直前の `PtrAdd` と融合したもの。
+    LoadX { d: S, p: S, x: S, off: u32, k: LK },
+    StoreX { p: S, x: S, off: u32, v: S, w: u8 },
+    LoadU64 { d: S, p: S, off: u32 },
+    LoadI64 { d: S, p: S, off: u32 },
+    LoadU32 { d: S, p: S, off: u32 },
+    LoadI32 { d: S, p: S, off: u32 },
+    LoadU8 { d: S, p: S, off: u32 },
+    Store64 { p: S, off: u32, v: S },
+    Store8 { p: S, off: u32, v: S },
     LoadAgg { d: S, p: S, size: u32 },
     Store { p: S, off: u32, v: S, w: u8 },
     /// 集成体 (置き場の項目) を参照の先へ書く。
@@ -195,6 +207,8 @@ pub struct Prog {
     pub strs: Vec<String>,
     pub makes: Vec<MakeInfo>,
     pub ext: Vec<Func>,
+    /// 関数の鍵 → `funcs` の添字 (ホットリロードで、古い版の呼び出しを新しい版の関数へ解決する)。
+    pub by_key: std::collections::HashMap<String, u32>,
 }
 
 impl Prog {

@@ -66,6 +66,7 @@ pub fn compile(m: &Module) -> Result<Prog, String> {
         };
         prog.funcs.push(vf);
     }
+    prog.by_key = prog.funcs.iter().enumerate().map(|(i, f)| (f.key.clone(), i as u32)).collect();
     Ok(prog)
 }
 
@@ -108,6 +109,26 @@ fn width(t: Ty) -> Option<u8> {
     })
 }
 
+/// 読み出し命令 (よく使う幅は専用の命令)。
+fn load_ins(d: S, p: S, off: u32, k: LK) -> Ins {
+    match k {
+        LK::U64 => Ins::LoadU64 { d, p, off },
+        LK::I64 => Ins::LoadI64 { d, p, off },
+        LK::U32 => Ins::LoadU32 { d, p, off },
+        LK::I32 => Ins::LoadI32 { d, p, off },
+        LK::U8 => Ins::LoadU8 { d, p, off },
+        k => Ins::Load { d, p, off, k },
+    }
+}
+
+fn store_ins(p: S, off: u32, v: S, w: u8) -> Ins {
+    match w {
+        8 => Ins::Store64 { p, off, v },
+        1 => Ins::Store8 { p, off, v },
+        w => Ins::Store { p, off, v, w },
+    }
+}
+
 struct Fc<'a> {
     m: &'a Module,
     index: &'a HashMap<&'a str, usize>,
@@ -125,6 +146,8 @@ struct Fc<'a> {
     pool: Vec<u32>,
     /// 直前に出した比較 (`icmp`) の (結果の値, 命令の位置)。次の `br_if` が融合する。
     last_cmp: Option<(VId, usize)>,
+    /// 直前に出した `ptr.add` の (結果の値, 命令の位置)。次の `load` / `store` が融合する。
+    last_pa: Option<(VId, usize)>,
     /// ブロック内の `fieldaddr` のうち、唯一の使い道が同じブロックの `load` / `store` のアドレスのもの (値 → (基底, オフセット))。
     /// 命令を出さずに、`load` / `store` のオフセットに畳み込む。
     folded: HashMap<VId, (VId, u32)>,
@@ -165,6 +188,31 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
             Term::Unreachable => {}
         }
     }
+    // ブロック引数の合流の `Mov` を減らす: 無条件分岐 (`Br`) の引数が、そのブロックの中で作られて他に使われない値なら、
+    // その値を受け側のパラメータと同じスロットに置く (作った時点で直接書く)。パラメータの古い値がそれ以降に読まれないときだけ。
+    for b in &f.blocks {
+        let Term::Br((t, args)) = &b.term else { continue };
+        let params = &f.blocks[*t].params;
+        for (k, a) in args.iter().enumerate() {
+            let Some((p, _)) = params.get(k) else { continue };
+            let (a, p) = (*a, *p);
+            if uses[a as usize] != 1 || slot[a as usize] == slot[p as usize] {
+                continue;
+            }
+            let Some(idx) = b.insts.iter().position(|i| i.dst == a) else { continue };
+            if b.params.iter().any(|(q, _)| *q == a) {
+                continue;
+            }
+            let reads_p = |i: &crate::kir::Inst| crate::kir::operands(&i.op).contains(&p);
+            let later = b.insts[idx + 1..].iter().any(reads_p);
+            let fa = b.insts.iter().any(|i| matches!(i.op, Op::FieldAddr { .. }) && reads_p(i));
+            let other_args = args.iter().enumerate().any(|(j, x)| j != k && *x == p);
+            if later || fa || other_args {
+                continue;
+            }
+            slot[a as usize] = slot[p as usize];
+        }
+    }
     let mut cv: HashMap<VId, i32> = HashMap::new();
     for b in &f.blocks {
         for i in &b.insts {
@@ -189,7 +237,7 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
         }
     }
     let skip_const: std::collections::HashSet<VId> = nfold.into_iter().filter(|(v, n)| uses[*v as usize] == *n).map(|(v, _)| v).collect();
-    let mut fc = Fc { m, index, prog, slot, cv, skip_const, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, folded: HashMap::new(), pending: HashMap::new() };
+    let mut fc = Fc { m, index, prog, slot, cv, skip_const, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, last_pa: None, folded: HashMap::new(), pending: HashMap::new() };
     let mut starts = vec![0u32; f.blocks.len()];
     // 分岐先が未確定の `Jmp` などの位置 → ブロック番号。
     let mut patches: Vec<(usize, usize)> = vec![];
@@ -207,7 +255,7 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
     for (at, blk) in patches {
         let to = starts[blk];
         match &mut fc.code[at] {
-            Ins::Jmp { to: t } | Ins::JmpIfNot { to: t, .. } | Ins::JCmpNot { to: t, .. } | Ins::JCmpNotI { to: t, .. } | Ins::JCmp { to: t, .. } | Ins::JCmpI { to: t, .. } => *t = to,
+            Ins::Jmp { to: t } | Ins::JmpIf { to: t, .. } | Ins::JmpIfNot { to: t, .. } | Ins::JCmpNot { to: t, .. } | Ins::JCmpNotI { to: t, .. } | Ins::JCmp { to: t, .. } | Ins::JCmpI { to: t, .. } => *t = to,
             _ => return Err("内部エラー: 分岐の書き換え先が分岐でない".into()),
         }
     }
@@ -292,6 +340,20 @@ impl<'a> Fc<'a> {
         let d = self.s(inst.dst);
         let ty = inst.ty;
         self.last_cmp = None;
+        let prev_pa = self.last_pa.take();
+        // 直前の `ptr.add` の結果 `p` を 1 回だけ使う `load` / `store` なら、その加算を取り込む (基底と添字のスロット)。
+        let fuse_pa = |fc: &mut Fc, p: VId| -> Option<(S, S)> {
+            match prev_pa {
+                Some((v, at)) if v == p && fc.uses[p as usize] == 1 && at + 1 == fc.code.len() => match fc.code[at] {
+                    Ins::PtrAdd { p: b, off: x, .. } => {
+                        fc.code.pop();
+                        Some((b, x))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
         let i = match &inst.op {
             Op::Const(_) if self.skip_const.contains(&inst.dst) => return Ok(()),
             Op::Const(v) => match i64::try_from(*v) {
@@ -453,14 +515,23 @@ impl<'a> Fc<'a> {
                 self.prog.wide.push(p);
                 Ins::ConstW { d, k: (self.prog.wide.len() - 1) as u32 }
             }
-            Op::PtrAdd { p, off } => Ins::PtrAdd { d, p: self.s(*p), off: self.s(*off) },
+            Op::PtrAdd { p, off } => {
+                self.last_pa = Some((inst.dst, self.code.len()));
+                Ins::PtrAdd { d, p: self.s(*p), off: self.s(*off) }
+            }
             Op::MemLoad { p, off } => {
                 let Some(k) = lk(ty) else { return Err(format!("mem.load の型 {} が読めない", ty.name())) };
-                Ins::Load { d, p: self.s(*p), off: *off, k }
+                match fuse_pa(self, *p) {
+                    Some((p, x)) => Ins::LoadX { d, p, x, off: *off, k },
+                    None => load_ins(d, self.s(*p), *off, k),
+                }
             }
             Op::MemStore { ty: sty, p, off, v } => {
                 let Some(w) = width(*sty) else { return Err(format!("mem.store の型 {} が書けない", sty.name())) };
-                Ins::Store { p: self.s(*p), off: *off, v: self.s(*v), w }
+                match fuse_pa(self, *p) {
+                    Some((p, x)) => Ins::StoreX { p, x, off: *off, v: self.s(*v), w },
+                    None => store_ins(self.s(*p), *off, self.s(*v), w),
+                }
             }
             Op::Load(p) => match ty {
                 Ty::Agg(ai) => {
@@ -469,8 +540,13 @@ impl<'a> Fc<'a> {
                 }
                 t => {
                     let Some(k) = lk(t) else { return Err(format!("load の型 {} が読めない", t.name())) };
-                    let (pp, off) = self.addr_of(*p);
-                    Ins::Load { d, p: pp, off, k }
+                    match fuse_pa(self, *p) {
+                        Some((p, x)) => Ins::LoadX { d, p, x, off: 0, k },
+                        None => {
+                            let (pp, off) = self.addr_of(*p);
+                            load_ins(d, pp, off, k)
+                        }
+                    }
                 }
             },
             Op::Store { ptr, val } => match self.vty[*val as usize] {
@@ -480,8 +556,13 @@ impl<'a> Fc<'a> {
                 }
                 t => {
                     let Some(w) = width(t) else { return Err(format!("store の型 {} が書けない", t.name())) };
-                    let (pp, off) = self.addr_of(*ptr);
-                    Ins::Store { p: pp, off, v: self.s(*val), w }
+                    match fuse_pa(self, *ptr) {
+                        Some((p, x)) => Ins::StoreX { p, x, off: 0, v: self.s(*val), w },
+                        None => {
+                            let (pp, off) = self.addr_of(*ptr);
+                            store_ins(pp, off, self.s(*val), w)
+                        }
+                    }
                 }
             },
             Op::FieldAddr { a, off } => {
@@ -596,6 +677,11 @@ impl<'a> Fc<'a> {
         }
     }
 
+    /// 辺 (`args` → `params`) が出す `Mov` の数の見積り (0 かどうかだけを正確に返す)。
+    fn moves(&self, args: &[VId], params: &[(VId, Ty)]) -> usize {
+        params.iter().zip(args).filter(|((p, _), a)| self.s(*p) != self.s(**a)).count()
+    }
+
     fn term(&mut self, f: &Func, bi: usize, b: &Block, patches: &mut Vec<(usize, usize)>) -> Result<(), String> {
         match &b.term {
             Term::Br((t, args)) => self.jump_to(f, bi, *t, args, true, patches),
@@ -618,22 +704,51 @@ impl<'a> Fc<'a> {
                     _ => None,
                 };
                 let at = self.code.len();
-                match fused {
-                    Some((cc, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmpNot { cc, a, b, to: 0 }),
-                    Some((cc, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpNotI { cc, a, imm, to: 0 }),
-                    None => {
-                        let c = self.s(*c);
-                        self.push(Ins::JmpIfNot { c, to: 0 })
+                let nm1 = self.moves(a1, &f.blocks[*t1].params);
+                let nm2 = self.moves(a2, &f.blocks[*t2].params);
+                // 辺の移動がない側へは直接飛ぶ (偽の側が移動なし: 偽で飛ぶ。真の側が移動なし: 比較を反転して真で飛ぶ)。
+                // 両方なしなら、次のブロックへ落ちる側を落とす。
+                let jump_true = nm2 != 0 && nm1 == 0 || nm1 == 0 && nm2 == 0 && *t1 != bi + 1 && *t2 == bi + 1;
+                if jump_true {
+                    match fused {
+                        Some((cc, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmp { cc, a, b, to: 0 }),
+                        Some((cc, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpI { cc, a, imm, to: 0 }),
+                        None => {
+                            let c = self.s(*c);
+                            self.push(Ins::JmpIf { c, to: 0 })
+                        }
                     }
+                    patches.push((at, *t1));
+                    self.jump_to(f, bi, *t2, a2, true, patches);
+                } else if nm2 == 0 {
+                    match fused {
+                        Some((cc, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmpNot { cc, a, b, to: 0 }),
+                        Some((cc, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpNotI { cc, a, imm, to: 0 }),
+                        None => {
+                            let c = self.s(*c);
+                            self.push(Ins::JmpIfNot { c, to: 0 })
+                        }
+                    }
+                    patches.push((at, *t2));
+                    self.jump_to(f, bi, *t1, a1, true, patches);
+                } else {
+                    match fused {
+                        Some((cc, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmpNot { cc, a, b, to: 0 }),
+                        Some((cc, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpNotI { cc, a, imm, to: 0 }),
+                        None => {
+                            let c = self.s(*c);
+                            self.push(Ins::JmpIfNot { c, to: 0 })
+                        }
+                    }
+                    self.jump_to(f, bi, *t1, a1, false, patches);
+                    // 偽の側の飛び先はここ (真の側の辺の移動と Jmp の後ろ)。
+                    let else_pc = self.code.len() as u32;
+                    match &mut self.code[at] {
+                        Ins::JCmpNot { to, .. } | Ins::JCmpNotI { to, .. } | Ins::JmpIfNot { to, .. } => *to = else_pc,
+                        _ => unreachable!(),
+                    }
+                    self.jump_to(f, bi, *t2, a2, true, patches);
                 }
-                self.jump_to(f, bi, *t1, a1, false, patches);
-                // 偽の側の飛び先はここ (真の側の辺の移動と Jmp の後ろ)。
-                let else_pc = self.code.len() as u32;
-                match &mut self.code[at] {
-                    Ins::JCmpNot { to, .. } | Ins::JCmpNotI { to, .. } | Ins::JmpIfNot { to, .. } => *to = else_pc,
-                    _ => unreachable!(),
-                }
-                self.jump_to(f, bi, *t2, a2, true, patches);
             }
             Term::Ret(v) => {
                 let v = self.s(*v);

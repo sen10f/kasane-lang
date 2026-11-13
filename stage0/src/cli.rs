@@ -868,13 +868,24 @@ fn cmd_run(args: &[String]) -> i32 {
         return 1;
     };
     if use_vm {
-        if watch {
-            eprintln!("vm engine skipped: --watch は VM 未対応; falling back to the tree walker");
+        let mk: Option<Box<dyn FnOnce() -> crate::vm::reload::Reload + '_>> = if watch {
+            let (l, entry) = (&l, entry.clone());
+            Some(Box::new(move || {
+                let (tx, rx) = std::sync::mpsc::channel::<(Program, Vec<usize>)>();
+                let flag: &'static std::sync::atomic::AtomicBool = Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
+                spawn_watcher_with(l, move |p, u| {
+                    let ok = tx.send((p, u)).is_ok();
+                    flag.store(true, std::sync::atomic::Ordering::Release);
+                    ok
+                });
+                crate::vm::reload::Reload { rx, flag, entry }
+            }))
         } else {
-            match crate::vm::run_entry(&prog, &user, &entry, &rest) {
-                Ok(code) => return code,
-                Err(why) => eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why)),
-            }
+            None
+        };
+        match crate::vm::run_entry(&prog, &user, &entry, &rest, mk) {
+            Ok(code) => return code,
+            Err(why) => eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why)),
         }
     }
     let prog = Rc::new(prog);
@@ -890,6 +901,12 @@ fn cmd_run(args: &[String]) -> i32 {
 /// ホットリロード: 外部面が不変の関数本体の変更だけを反映する。
 fn spawn_watcher(l: &Loaded) -> std::sync::mpsc::Receiver<Program> {
     let (tx, rx) = std::sync::mpsc::channel::<Program>();
+    spawn_watcher_with(l, move |p, _| tx.send(p).is_ok());
+    rx
+}
+
+/// 監視スレッドを起こす。反映できる変更があれば、再構築した `Program` と利用者の定義の添字を `send` に渡す (false が返ったら終わる)。
+fn spawn_watcher_with(l: &Loaded, send: impl Fn(Program, Vec<usize>) -> bool + Send + 'static) {
     let mut std_defs: Vec<Def> = vec![];
     for s in &l.std {
         std_defs.extend(s.defs.clone());
@@ -988,12 +1005,11 @@ fn spawn_watcher(l: &Loaded) -> std::sync::mpsc::Receiver<Program> {
             }
             crate::infer::run(&mut prog);
             crate::infer::annotate_int_lits(&mut prog, &user);
-            if tx.send(prog).is_err() {
+            if !send(prog, user) {
                 return;
             }
         }
     });
-    rx
 }
 
 fn cmd_test(args: &[String]) -> i32 {
