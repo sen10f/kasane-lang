@@ -1,0 +1,12 @@
+// expect: E1108
+type t.Plain
+    a: u8
+end t.Plain
+
+fn t.bad(x: Option<t.Plain>, y: Option<t.Plain>) -> bool uses [] panics never
+    x == y
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
