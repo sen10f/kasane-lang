@@ -274,6 +274,12 @@ fn float_op(name: &str, ty: &str, a: &[Val]) -> Res {
             return Ok(Val::F32(f32::from_bits(*n as u32)));
         }
     }
+    // f32 の `abs` は符号ビットを落とすだけ (ビットのまま)。f64 へ広げると signaling NaN が quiet NaN に変わる。
+    if name == "abs" && f32mode {
+        if let Some(Val::F32(x)) = a.first() {
+            return Ok(Val::F32(f32::from_bits(x.to_bits() & 0x7fff_ffff)));
+        }
+    }
     let r = float_op_f64(name, ty, a)?;
     if f32mode {
         if let Val::Float(x) = r {
@@ -721,7 +727,7 @@ impl Interp {
 
     /// `Ord` の提供メソッド `min` / `max` (仕様 4.3)。`cmp` に従い、等しいときは `min` が `self`、`max` が `other`。
     fn derived_min_max(&mut self, name: &str, me: &Val, other: &Val) -> Res {
-        let c = self.v_cmp(me, other)?.unwrap_or(0);
+        let c = self.v_cmp_total(me, other)?.unwrap_or(0);
         let pick_self = if name == "min" { c <= 0 } else { c > 0 };
         Ok(if pick_self { me.clone() } else { other.clone() })
     }
@@ -922,11 +928,11 @@ impl Interp {
                 }
                 match name {
                     "partial_cmp" => {
-                        let c = self.v_cmp(v, &dr(&a0))?;
+                        let c = self.v_cmp_derived(v, &dr(&a0), false)?;
                         return Ok(c.map_or_else(none, |c| some(ordering(c))));
                     }
                     "cmp" => {
-                        let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
+                        let c = self.v_cmp_derived(v, &dr(&a0), true)?.unwrap_or(0);
                         return Ok(ordering(c));
                     }
                     "eq" => return Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
@@ -961,8 +967,12 @@ impl Interp {
             Val::Enum(_) => match name {
                 "eq" => Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
                 "cmp" => {
-                    let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
+                    let c = self.v_cmp_derived(v, &dr(&a0), true)?.unwrap_or(0);
                     Ok(ordering(c))
+                }
+                "partial_cmp" => {
+                    let c = self.v_cmp_derived(v, &dr(&a0), false)?;
+                    Ok(c.map_or_else(none, |c| some(ordering(c))))
                 }
                 "min" | "max" => self.derived_min_max(name, v, &dr(&a0)),
                 _ => {
@@ -1049,8 +1059,8 @@ impl Interp {
         let b = dr(a0);
         match name {
             "eq" => Ok(Val::Bool(self.v_eq(v, &b)?)),
-            "cmp" => Ok(ordering(self.v_cmp(v, &b)?.unwrap_or(0))),
-            _ => Ok(self.v_cmp(v, &b)?.map_or_else(none, |c| some(ordering(c)))),
+            "cmp" => Ok(ordering(self.v_cmp_derived(v, &b, true)?.unwrap_or(0))),
+            _ => Ok(self.v_cmp_derived(v, &b, false)?.map_or_else(none, |c| some(ordering(c)))),
         }
     }
 

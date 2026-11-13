@@ -91,6 +91,8 @@ pub fn funary(op: FUn, src: Ty, res: Ty, a: i128) -> i128 {
                 (-f64::from_bits(a as u64)).to_bits() as i128
             }
         }
+        // f32 の `abs` は符号ビットを落とすだけ (ビットのまま。f64 へ広げると signaling NaN が変わる)。
+        FUn::Abs if src == Ty::F32 => (a as u32 & 0x7fff_ffff) as i128,
         FUn::IsNan => to_f64(src, a).is_nan() as i128,
         FUn::IsFinite => {
             let x = to_f64(src, a);
