@@ -312,7 +312,8 @@ impl ByteMem {
             }
         }
         // 呼び出し前から生きている領域 (呼び出し元のヘッダ・バッファ) の中の語。
-        for b in self.blocks.values().filter(|b| b.live && !b.pinned && b.off < base) {
+        // 大域領域 (`global.bytes`、pinned) は、いつ作られていても根に数える (スレッドの結果の置き場など。設計_KIR.md 22 章)。
+        for b in self.blocks.values().filter(|b| b.live && (b.pinned || b.off < base)) {
             for ch in self.mem[b.off..b.off + b.size].chunks_exact(8) {
                 see(u64::from_le_bytes(ch.try_into().expect("8 バイト")) as i128, &mut reached, &mut work);
             }
@@ -690,6 +691,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     // バイト記憶 (`ptr` の領域)。静的な領域 (`static.bytes`) は、命令の位置ごとに 1 回だけ確保する。
     let mut bm = ByteMem::new();
     let mut statics: HashMap<(usize, usize, usize), i128> = HashMap::new();
+    let mut globals: HashMap<String, i128> = HashMap::new();
     // ソケット表 (記述子 -> ホストのソケット)。リスナとストリームは同じ番号空間を使う。
     let mut sockets: HashMap<i128, NetSock> = HashMap::new();
     let mut next_fd: i128 = 0;
@@ -713,6 +715,15 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     stack[top].allocs.push(a);
                     a
                 }
+                Op::GlobalBytes { name, size } => match globals.get(name) {
+                    Some(a) => *a,
+                    None => {
+                        let a = bm.alloc(*size as usize, true);
+                        bm.write_bytes(a, &vec![0u8; *size as usize])?;
+                        globals.insert(name.clone(), a);
+                        a
+                    }
+                },
                 Op::StaticBytes(bytes) => match statics.get(&(fi, bi, ip)) {
                     Some(a) => *a,
                     None => {

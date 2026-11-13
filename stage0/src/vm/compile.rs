@@ -346,6 +346,18 @@ impl<'a> Fc<'a> {
                 Ins::FrameBytes { d, size: size_of(&self.m.aggs, p.ty()) }
             }
             Op::FrameBytes { size } => Ins::FrameBytes { d, size: *size },
+            Op::GlobalBytes { name, size } => {
+                let p = match self.prog.globals.get(name) {
+                    Some(p) => *p,
+                    None => {
+                        let p = Box::leak(vec![0u8; (*size as usize).max(1)].into_boxed_slice()).as_ptr() as usize;
+                        self.prog.globals.insert(name.clone(), p);
+                        p
+                    }
+                };
+                self.prog.wide.push(p as i128);
+                Ins::ConstW { d, k: (self.prog.wide.len() - 1) as u32 }
+            }
             Op::StaticBytes(bytes) => {
                 // 静的な領域はコンパイル時に 1 回だけ確保し、アドレスを定数にする (同じ命令は常に同じアドレス)。
                 let mut v = bytes.clone();
