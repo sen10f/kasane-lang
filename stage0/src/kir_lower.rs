@@ -473,7 +473,8 @@ impl<'a> Lw<'a> {
             self.terminate(Term::Ret(v));
         }
         let mut uses = d.uses.clone();
-        if d.kw == "test" && TEST_ALL_EFFECTS.with(|c| c.get()) {
+        // `test` は下ろしの入口 (`lower_test`) としてだけ下ろされる (`is_candidate` は `fn` だけ)。
+        if d.kw == "test" {
             uses.extend(ALL_EFFECTS.iter().map(|s| s.to_string()));
         }
         uses.sort();
@@ -1412,25 +1413,13 @@ pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowere
     lower_defs(p, user, entry, None)
 }
 
-thread_local! {
-    /// `lower_test_vm` の間だけ立つ: `test` (uses の宣言がない) を全部の効果を持つ関数として下ろす。
-    static TEST_ALL_EFFECTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
+/// テストの入口が宣言として持つ効果 (`test` には uses の宣言がない)。`ksn check` は `test` の本体で効果を見ない
+/// (check.rs の `check_fn_sema` で `cur_uses = None`) ので、入口はこの全部の効果を持つ関数として下ろす。
 const ALL_EFFECTS: [&str; 9] = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"];
 
-/// `ksn test --engine=vm` 用。`lower_test` と同じだが、テストを全部の効果を持つ関数として下ろす
-/// (`test` には uses の宣言がなく、呼び先の uses を満たせずに下ろせなくなるのを避ける。
-/// `test --both` の LLVM 側の振る舞いは変えないよう、別の入口にしてある)。
-pub fn lower_test_vm(p: &Program, user: &[usize], test_def: usize) -> Lowered {
-    TEST_ALL_EFFECTS.with(|c| c.set(true));
-    let r = lower_test(p, user, test_def);
-    TEST_ALL_EFFECTS.with(|c| c.set(false));
-    r
-}
-
-/// `ksn test --both` の機械語側: テスト本体 `test_def` (定義の添字) を入口にして下ろす。
+/// `ksn test` (`--both` の LLVM 側・`--engine=vm`) の入口: テスト本体 `test_def` (定義の添字) を入口にして下ろす。
 /// テストは引数を持たず、戻り値は `()` (`test` の本体)。入口の名前はテストの FQN。
+/// 入口は全部の効果を持つ (上の `ALL_EFFECTS`)。呼び先の uses を満たさないことで下ろせなくなるのを避ける。
 pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
     lower_defs(p, user, Some(&p.defs[test_def].name), Some(test_def))
 }

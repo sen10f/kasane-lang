@@ -114,7 +114,7 @@ pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String]) -
 /// 下ろせない・VM が扱えないときは `Err(理由)` (呼び出し側が木走査で実行する)。
 pub fn run_test(prog: &Program, user: &[usize], ti: usize) -> Result<Option<String>, String> {
     let name = prog.defs[ti].name.clone();
-    let lo = kir_lower::lower_test_vm(prog, user, ti);
+    let lo = kir_lower::lower_test(prog, user, ti);
     let bc = prepare(lo, &name)?;
     let mut vm = run::Vm::new(&bc);
     vm.capture = Some(vec![]);
