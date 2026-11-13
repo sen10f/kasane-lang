@@ -1008,6 +1008,38 @@ impl<'a> Fe<'a> {
                     self.label(&k);
                     Ok(())
                 }
+                Op::Panic { msg, arg } => {
+                    // 文言は `panic: <msg>` (値があれば `: %lld` / `%llu`)。`%` は書式で `%%` にする。
+                    let mut fmt = format!("panic: {}", msg.replace('%', "%%"));
+                    let mut vals = String::new();
+                    if let Some(v) = arg {
+                        let vt = *self.tys.get(v).ok_or("panic の値の型が分からない")?;
+                        if vt.bits() > 64 {
+                            return Err("panic の値が 64 ビットを超える".into());
+                        }
+                        let x = self.r(*v);
+                        let x = if vt.bits() == 64 {
+                            x
+                        } else {
+                            let ext = if vt.signed() { "sext" } else { "zext" };
+                            self.t(format!("{} i{} {} to i64", ext, vt.bits(), x))
+                        };
+                        vals = format!(", i64 {}", x);
+                        fmt.push_str(if vt.signed() { ": %lld" } else { ": %llu" });
+                    }
+                    fmt.push('\n');
+                    let g = format!("ksn.pm.{}.{}", self.fi, i.dst);
+                    self.cx.globals.push_str(&str_const(&g, &format!("{}\0", fmt)));
+                    self.n += 1;
+                    let (p, k) = (format!("p{}", self.n), format!("c{}", self.n));
+                    self.line(format!("br label %{}", p));
+                    self.label(&p);
+                    self.line(format!("call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @{}{})", g, vals));
+                    self.line("call void @exit(i32 101)".into());
+                    self.line("unreachable".into());
+                    self.label(&k);
+                    Ok(())
+                }
                 _ => Ok(()),
             };
         }
@@ -1218,7 +1250,7 @@ impl<'a> Fe<'a> {
                     self.line(format!("{} = load {}, ptr {}, align 1", d, mt, addr));
                 }
             }
-            Op::MemStore { .. } | Op::Store { .. } | Op::HeapFree(_) | Op::IndexCheck { .. } => {
+            Op::MemStore { .. } | Op::Store { .. } | Op::HeapFree(_) | Op::IndexCheck { .. } | Op::Panic { .. } => {
                 return Err("unit 以外の結果を持つ副作用命令".into())
             }
             Op::HeapAlloc(n) => {
@@ -1300,14 +1332,6 @@ impl<'a> Fe<'a> {
                 Term::Ret(_) | Term::Unreachable => {}
             }
         }
-        let back_to_entry = f.blocks.iter().enumerate().any(|(k, b)| {
-            reach[k]
-                && match &b.term {
-                    Term::Br((t, _)) => *t == 0,
-                    Term::BrIf(_, (a, _), (b, _)) => *a == 0 || *b == 0,
-                    _ => false,
-                }
-        });
         let mut hoisted = String::new();
         let mut texts: Vec<String> = vec![String::new(); f.blocks.len()];
         for (k, b) in f.blocks.iter().enumerate() {
@@ -1317,8 +1341,10 @@ impl<'a> Fe<'a> {
             self.body = String::new();
             self.cur = format!("b{}", k);
             for i in &b.insts {
-                // 入口ブロックの確保は関数の先頭 (静的な確保) に集め、初期化 (0 埋め) だけをここで行う。
-                if k == 0 && !back_to_entry {
+                // 確保はどのブロックのものも関数の先頭 (静的な確保) に集め、初期化 (0 埋め) だけをここで行う。
+                // ループの中の確保 (配列リテラルなど) を評価のたびに `alloca` すると、周回ごとにスタックが伸びて溢れる。
+                // 1 つの確保命令の領域は、次に評価されるときには前の値を使い終えている (SSA の定義は各周で新しい)。
+                {
                     match &i.op {
                         Op::Alloca => {
                             let Ty::Ref(_, p) = i.ty else { return Err("alloca の結果が参照でない".into()) };
@@ -1337,14 +1363,6 @@ impl<'a> Fe<'a> {
                         }
                         _ => {}
                     }
-                }
-                if let Op::Alloca = &i.op {
-                    let Ty::Ref(_, p) = i.ty else { return Err("alloca の結果が参照でない".into()) };
-                    let mt = self.mt(p.ty());
-                    self.line(format!("%v{} = alloca {}", i.dst, mt));
-                    let zz = if mt == "ptr" { "null" } else { "0" };
-                    self.line(format!("store {} {}, ptr %v{}", mt, zz, i.dst));
-                    continue;
                 }
                 self.inst(i)?;
             }

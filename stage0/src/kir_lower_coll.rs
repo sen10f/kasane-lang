@@ -246,6 +246,14 @@ pub(crate) fn check_assign(lw: &Lw, s: usize, line: usize) -> LR<()> {
 /// `let x = init` の後に、`x` の種類を決める。
 pub(crate) fn after_let(lw: &mut Lw, name: &str, init: &V) -> LR<()> {
     let Some(slot) = lw.lookup(name) else { return Ok(()) };
+    // `let a = [e1, ..]`: 値は `{ptr, len}` (スライス)。要素型は先頭の要素の型
+    if nname(init) == "ArrayE" {
+        if let Some(first) = items(&nf(init)[0]).first() {
+            let elem = lw.ty_of(first)?;
+            lw.coll.kinds.insert(slot, Kind::Slice(Some(elem)));
+        }
+        return Ok(());
+    }
     if nname(init) == "Closure" {
         if let Some(k) = closure_kind_from_table(lw, init) {
             lw.coll.kinds.insert(slot, k);
@@ -800,7 +808,7 @@ pub(crate) fn str_lit(lw: &mut Lw, e: &V) -> LR<VId> {
     Ok(lw.emit(fat, Op::Make { variant: None, fields: vec![data, n] }))
 }
 
-fn unhex(s: &str) -> Vec<u8> {
+pub(super) fn unhex(s: &str) -> Vec<u8> {
     (0..s.len() / 2).filter_map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()).collect()
 }
 
@@ -827,6 +835,13 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             }
             return counted(lw, line, Counted { start: a, end: b, ity, elem: None }, name, &f[2]);
         }
+    }
+    // `for x in [e1, e2]`: 配列リテラルは `{ptr, len}` の値として、スライスと同じに反復する
+    if nname(it) == "ArrayE" {
+        let Some((fat, elem)) = lw.array_lit(it)? else { return Ok(None) };
+        let (len, base) = Seq::Fat(fat).len_and_base(lw, None);
+        let zero = lw.emit(Ty::Usize, Op::Const(0));
+        return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)) }, name, &f[2]);
     }
     if let Some(s) = local_slot(lw, it) {
         let seq = match lw.coll.kinds.get(&s).cloned() {

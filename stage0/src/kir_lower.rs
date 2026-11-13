@@ -26,6 +26,15 @@ use refs::RefCx;
 // 組み込みの Option / Result の下ろし (子モジュール。親の非公開の項目を使う)。
 #[path = "kir_lower_enum.rs"]
 mod enum_lower;
+// panic (`core.panic.panic("..")` と `unwrap`) の下ろし (子モジュール)。
+#[path = "kir_lower_panic.rs"]
+mod panic_lower;
+// 利用者の型のメソッド呼び出し (`&mut self` の受け手を含む) の下ろし (子モジュール)。
+#[path = "kir_lower_method.rs"]
+mod method_lower;
+// 配列リテラルの下ろし (子モジュール)。
+#[path = "kir_lower_array.rs"]
+mod array_lower;
 
 // コレクション・文字列・クロージャの下ろし (子モジュール。`Lw` の非公開の項目を使う)。
 #[path = "kir_lower_coll.rs"]
@@ -58,7 +67,8 @@ fn type_table(p: &Program, user: &[usize]) -> BTreeMap<(String, u32), ExprTy> {
 
 fn is_candidate(d: &Def) -> bool {
     // ライフタイムだけの宣言は型引数ではない (型は変えない)。型引数があるものは単相化していないので対象外。
-    d.kw == "fn" && d.body.is_some() && !d.is_method() && d.generics.iter().all(|g| g.0 == "life")
+    // メソッド (`self` を持つ関数) も対象にする。呼ぶ側は `method_lower.rs` が型表から呼び先を決める。
+    d.kw == "fn" && d.body.is_some() && d.generics.iter().all(|g| g.0 == "life")
 }
 
 /// 推論済みの型を段階 1 の型へ写す。対象外の型は `None`。
@@ -299,6 +309,7 @@ impl<'a> Lw<'a> {
         for n in nodes {
             scan_assigns(n, &mut names);
         }
+        names.extend(self.mut_recv_names(nodes));
         let mut out: Vec<usize> = vec![];
         for n in names {
             if let Some(s) = self.lookup(&n) {
@@ -435,6 +446,7 @@ impl<'a> Lw<'a> {
             "Index" => coll::index_read(self, e),
             "For" => coll::for_expr(self, e),
             "Closure" => coll::closure_lit(self, e),
+            "ArrayE" => self.array_lit(e).map(|o| o.map(|(v, _)| v)),
             other => self.err(nline(e), format!("式 {} は段階 1 の対象外", other)),
         }
     }
@@ -647,6 +659,15 @@ impl<'a> Lw<'a> {
         if let Some(r) = coll::try_call(self, e) {
             return r;
         }
+        if let Some(r) = self.panic_call(e) {
+            return r;
+        }
+        if let Some(r) = self.unwrap_path(e) {
+            return r;
+        }
+        if let Some(r) = self.user_path_call(e) {
+            return r;
+        }
         if let Some(done) = self.scalar_call(e)? {
             return Ok(done);
         }
@@ -752,6 +773,12 @@ impl<'a> Lw<'a> {
         if let Some(r) = coll::try_mcall(self, e) {
             return r;
         }
+        if let Some(r) = self.unwrap_mcall(e) {
+            return r;
+        }
+        if let Some(r) = self.user_mcall(e) {
+            return r;
+        }
         if let Some(done) = self.scalar_mcall(e)? {
             return Ok(done);
         }
@@ -848,6 +875,12 @@ impl<'a> Lw<'a> {
                 let Some(name) = path1(target) else {
                     if nname(target) == "Path" && strs(&nf(target)[0]).len() > 1 {
                         return self.assign_path(target, &f[1], line);
+                    }
+                    // `self.f = e` (フィールドの式の形): 根が名前の鎖だけ
+                    if nname(target) == "Field" {
+                        if let Some(segs) = agg::field_segs(target) {
+                            return self.assign_segs(segs, &f[1], line);
+                        }
                     }
                     return self.err(line, "代入先は名前かフィールドだけ段階 1 の対象");
                 };

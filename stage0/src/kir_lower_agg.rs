@@ -19,6 +19,20 @@ use crate::types::{from_v, Ty as Src};
 
 use super::{conv, parse_int, show, Lw, St, LR};
 
+/// 代入先の `x.f.g` (`Field` の鎖) の名前の並び。根が名前でなければ `None`。
+pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
+    match nname(v) {
+        "Path" => Some(strs(&nf(v)[0])),
+        "Field" => {
+            let f = nf(v);
+            let mut s = field_segs(&f[0])?;
+            s.push(st(&f[1]));
+            Some(s)
+        }
+        _ => None,
+    }
+}
+
 /// 集成体の型表。`lower_user` が 1 つ作り、全関数で共有する。
 #[derive(Default)]
 pub struct AggTab {
@@ -487,6 +501,11 @@ impl<'a> Lw<'a> {
     /// `p.f = e` / `p.f.g = e` (局所変数を起点とする名前への代入)。値を作り直して変数に入れ直す。
     pub(super) fn assign_path(&mut self, target: &V, rhs: &V, line: usize) -> LR<St> {
         let segs = strs(&nf(target)[0]);
+        self.assign_segs(segs, rhs, line)
+    }
+
+    /// `segs` (局所の名前と、その後のフィールド) への代入。`assign_path` と `self.f = e` (フィールドの式の形) が使う。
+    pub(super) fn assign_segs(&mut self, segs: Vec<String>, rhs: &V, line: usize) -> LR<St> {
         let Some(s) = self.lookup(&segs[0]) else {
             return self.err(line, format!("代入先 {} が見つからない", segs[0]));
         };

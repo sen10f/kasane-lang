@@ -500,6 +500,13 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     }
                     0
                 }
+                Op::Panic { msg, arg } => {
+                    let m = match arg {
+                        Some(v) => format!("{}: {}", msg, get(&stack[top], v)),
+                        None => msg.clone(),
+                    };
+                    return Ok(Outcome::Panic(m));
+                }
                 Op::Arith { op, mode, a, b } => {
                     let (x, y) = (get(&stack[top], a), get(&stack[top], b));
                     match arith(*op, *mode, inst.ty, x, y) {

@@ -9747,6 +9747,8 @@ fn kir_lower_examples_and_perf_functions_match_tree_walker() {
         ("perf/fib", "fib.fib", &["27"], "196418"),
         ("perf/loops", "loops.sum_to", &["1000000"], "499999500000"),
         ("perf/loops", "loops.sum_to", &["1000"], "499500"),
+        // 利用者の型のメソッド (`&mut self` の受け手): main の検査と同じ N = 200000 の値
+        ("perf/structs", "structs.run", &["200000"], "255318"),
     ];
     for (dir, f, args, want) in cases {
         let d = root().join(dir);
@@ -9758,6 +9760,276 @@ fn kir_lower_examples_and_perf_functions_match_tree_walker() {
         assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
     }
+}
+
+// ---- panic (unwrap・core.panic.panic)、利用者のメソッドの &mut 受け手、配列リテラルの for ----
+
+/// panic の試験用の関数。`unwrap` の None / Err と `core.panic.panic` (エスケープと % を含む文言)。
+const PANIC_SRC: &str = r#"fn t.half(n: u32) -> Option<u32> uses [] panics may
+    if n % 2u32 == 0u32 {
+        Some(n / 2u32)
+    } else {
+        None
+    }
+end t.half
+
+fn t.pick(n: i32) -> Result<u32, i32> uses [] panics may
+    if n > 0i32 {
+        Ok(7u32)
+    } else {
+        Err(n)
+    }
+end t.pick
+
+fn t.unit_err(n: i32) -> Result<u32, ()> uses [] panics may
+    if n > 0i32 {
+        Ok(7u32)
+    } else {
+        Err(())
+    }
+end t.unit_err
+
+fn t.un_opt(n: u32) -> u32 uses [] panics may
+    let o = t.half(n)
+    o.unwrap()
+end t.un_opt
+
+fn t.un_opt_expr(n: u32) -> u32 uses [] panics may
+    t.half(n).unwrap()
+end t.un_opt_expr
+
+fn t.un_res(n: i32) -> u32 uses [] panics may
+    let r = t.pick(n)
+    r.unwrap()
+end t.un_res
+
+fn t.un_unit(n: i32) -> u32 uses [] panics may
+    t.unit_err(n).unwrap()
+end t.un_unit
+
+fn t.say(n: u32) -> u32 uses [] panics may
+    if n > 3u32 {
+        core.panic.panic("too \"big\" 100% \\ ok\nnext")
+    }
+    n
+end t.say
+"#;
+
+#[test]
+fn kir_panic_unwrap_and_core_panic_match_tree_walker() {
+    // 文言と終了コード (101) が木走査と一致すること。値の枝の結果も同じ。
+    let cases: &[(&str, &str, &str, &str)] = &[
+        // (関数, KIR に渡す引数, Kasane の式の引数, 文言)
+        ("t.un_opt", "3", "3u32", "called `Option::unwrap()` on a `None` value"),
+        ("t.un_opt_expr", "5", "5u32", "called `Option::unwrap()` on a `None` value"),
+        ("t.un_res", "-5", "-5", "called `Result::unwrap()` on an `Err` value: -5"),
+        ("t.un_unit", "-1", "-1", "called `Result::unwrap()` on an `Err` value: ()"),
+        ("t.say", "9", "9u32", "too \"big\" 100% \\ ok\nnext"),
+    ];
+    for (i, &(f, arg, lit, msg)) in cases.iter().enumerate() {
+        let body = format!("    let _x = {}({})\n", f, lit);
+        let t = Tmp::new(&format!("kir_panic_unwrap_{}", i), &format!("{}{}", PANIC_SRC, main_wrap("", &body)));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "tree-walker: {}\n{}", f, text(&o.stderr));
+        assert!(text(&o.stderr).contains(&format!("panic: {}", msg)), "tree-walker: {}\n{}", f, text(&o.stderr));
+        let k = kir_run(&["kir", f, "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stderr).trim(), format!("panic: {}", msg), "kir: {}", f);
+    }
+    // 値の枝: 木走査の main の検査が通り、KIR の値が同じ
+    let t = Tmp::new(
+        "kir_panic_unwrap_values",
+        &format!(
+            "{}{}",
+            PANIC_SRC,
+            main_wrap(
+                "",
+                "    core.check.eq(t.un_opt(4u32), 2u32)\n    core.check.eq(t.un_opt_expr(6u32), 3u32)\n    core.check.eq(t.un_res(5), 7u32)\n    core.check.eq(t.un_unit(2), 7u32)\n    core.check.eq(t.say(2u32), 2u32)\n",
+            )
+        ),
+    );
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker main");
+    for (f, arg, want) in [("t.un_opt", "4", "2"), ("t.un_opt_expr", "6", "3"), ("t.un_res", "5", "7"), ("t.un_unit", "2", "7"), ("t.say", "2", "2")] {
+        let k = kir_run(&["kir", f, "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+}
+
+#[test]
+fn kir_unwrap_of_an_aggregate_error_keeps_its_reason() {
+    // Err の値の表示 (Debug) を KIR で木走査と同じに作れない型 (利用者の構造体) は、理由を付けて未対応にする。
+    let src = "type t.E derive [Debug] pub
+    code: u8
+end t.E
+
+fn t.f(r: Result<u32, t.E>) -> u32 uses [] panics may
+    r.unwrap()
+end t.f
+";
+    let t = Tmp::new("kir_unwrap_agg_err", src);
+    let o = run(&["kir", "t.f"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let err = text(&o.stderr);
+    assert!(err.contains("unwrap の Err の値の表示は段階 1 の対象外"), "{}", err);
+}
+
+const METHOD_SRC: &str = r#"type t.Acc pub
+    total: i64
+end t.Acc
+
+type t.Outer pub
+    acc: t.Acc
+    hits: u32
+end t.Outer
+
+fn t.Acc.add(self: &mut t.Acc, v: i64) -> () uses [] panics never pub
+    self.total = self.total.wrapping_add(v)
+end t.Acc.add
+
+fn t.Acc.get(self: &t.Acc) -> i64 uses [] panics never pub
+    self.total
+end t.Acc.get
+
+fn t.Outer.bump(self: &mut t.Outer, v: i64) -> () uses [] panics never pub
+    self.acc.add(v)
+    self.hits = self.hits.wrapping_add(1u32)
+end t.Outer.bump
+
+fn t.via_ref(a: &mut t.Acc) -> () uses [] panics never pub
+    a.add(2i64)
+    a.add(3i64)
+end t.via_ref
+
+fn t.via_deref(a: &mut t.Acc) -> () uses [] panics never pub
+    (*a).add(10i64)
+end t.via_deref
+
+fn t.sum(n: i64) -> i64 uses [] panics never pub
+    let mut a = t.Acc { total: 0i64 }
+    let mut i = 0i64
+    while i < n {
+        a.add(i)
+        i = i.wrapping_add(1i64)
+    }
+    t.via_ref(&mut a)
+    t.via_deref(&mut a)
+    a.get()
+end t.sum
+
+fn t.outer(n: i64) -> i64 uses [] panics never pub
+    let mut o = t.Outer { acc: t.Acc { total: 1i64 }, hits: 0u32 }
+    let mut i = 0i64
+    while i < n {
+        o.bump(i)
+        i = i.wrapping_add(1i64)
+    }
+    o.acc.get()
+end t.outer
+
+fn t.hits(n: i64) -> u32 uses [] panics never pub
+    let mut o = t.Outer { acc: t.Acc { total: 1i64 }, hits: 0u32 }
+    let mut i = 0i64
+    while i < n {
+        o.bump(i)
+        i = i.wrapping_add(1i64)
+    }
+    o.hits
+end t.hits
+"#;
+
+#[test]
+fn kir_method_mut_receivers_match_tree_walker() {
+    // `&mut self` の受け手: 局所 (SSA と アドレスを取られたもの)、参照の引数、`*r`、フィールドの鎖 (`self.acc.add`)。
+    let t = Tmp::new(
+        "kir_method_mut",
+        &format!(
+            "{}{}",
+            METHOD_SRC,
+            main_wrap(
+                "",
+                "    core.check.eq(t.sum(4i64), 21i64)\n    core.check.eq(t.sum(0i64), 15i64)\n    core.check.eq(t.outer(4i64), 7i64)\n    core.check.eq(t.hits(4i64), 4u32)\n",
+            )
+        ),
+    );
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker main");
+    for (f, arg, want) in [("t.sum", "4", "21"), ("t.sum", "0", "15"), ("t.outer", "4", "7"), ("t.hits", "4", "4")] {
+        let k = kir_run(&["kir", f, "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {} {}\n{}", f, arg, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {} {}", f, arg);
+    }
+}
+
+const ARRAY_SRC: &str = r#"fn t.sum_lit() -> u32 uses [] panics never pub
+    let mut s = 0u32
+    for x in [1u32, 2u32, 3u32] {
+        s = s.wrapping_add(x)
+    }
+    s
+end t.sum_lit
+
+fn t.sum_bytes() -> u8 uses [] panics never pub
+    let mut s = 0u8
+    let bs = [10u8, 20u8, 250u8]
+    for b in bs {
+        s = s.wrapping_add(b)
+    }
+    s
+end t.sum_bytes
+
+fn t.count_big(n: u8) -> u8 uses [] panics never pub
+    let mut c = 0u8
+    let arr = [1u8, 2u8]
+    for x in arr {
+        if x > n {
+            c = c.wrapping_add(1u8)
+        }
+    }
+    c
+end t.count_big
+"#;
+
+#[test]
+fn kir_array_for_matches_tree_walker() {
+    // 配列リテラルの `for` と、`let` で束ねた配列の `for` (要素はスカラー。wrapping の結果も木走査と同じ)。
+    let t = Tmp::new(
+        "kir_array_for",
+        &format!(
+            "{}{}",
+            ARRAY_SRC,
+            main_wrap("", "    core.check.eq(t.sum_lit(), 6u32)\n    core.check.eq(t.sum_bytes(), 24u8)\n    core.check.eq(t.count_big(1u8), 1u8)\n"),
+        ),
+    );
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker main");
+    for (f, args, want) in [("t.sum_lit", vec![], "6"), ("t.sum_bytes", vec![], "24"), ("t.count_big", vec!["1"], "1")] {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+}
+
+#[test]
+fn kir_array_of_aggregates_keeps_its_reason() {
+    // 要素が集成体の配列は、バイト記憶で並べられないので理由を付けて未対応にする。
+    let src = "type t.E pub
+    code: u8
+end t.E
+
+fn t.g() -> u8 uses [] panics never pub
+    let mut s = 0u8
+    for x in [t.E { code: 1u8 }, t.E { code: 2u8 }] {
+        s = s.wrapping_add(x.code)
+    }
+    s
+end t.g
+";
+    let t = Tmp::new("kir_array_agg", src);
+    let o = run(&["kir", "t.g"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    let err = text(&o.stderr);
+    assert!(err.contains("配列の要素の型は段階 1 の対象外"), "{}", err);
 }
 
 // ---- 組み込みの Option / Result と checked_* (設計_KIR.md 11 章) ----
@@ -12562,4 +12834,30 @@ fn kir_native_without_clang_is_an_error_with_a_reason() {
         .expect("spawn ksn");
     assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("clang が必要です"), "{}", text(&o.stderr));
+}
+
+/// ループの中の配列リテラル (フレームの確保) を周回ごとに積まない。以前の LLVM 版は `alloca` を評価のたびに
+/// 出していたので、100 万周でスタックが溢れて落ちた (参照実行器は正しかった)。確保は関数の先頭で 1 回、
+/// 0 埋めは評価のたびに行う。
+#[test]
+fn kir_array_literal_in_a_long_loop_does_not_grow_the_native_stack() {
+    let src = "fn t.sum(n: u32) -> u64 uses [] panics never
+    let mut i = 0u32
+    let mut acc = 0u64
+    while i < n {
+        for x in [1u64, 2u64, 3u64, 4u64] {
+            acc = acc.wrapping_add(x)
+        }
+        i = i.wrapping_add(1u32)
+    }
+    acc
+end t.sum
+
+fn t.main() -> () uses [] panics never
+end t.main
+";
+    let t = Tmp::new("kir_array_loop_stack", src);
+    let o = kir_run(&["kir", "t.sum", "--run", "1000000"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "10000000");
 }
