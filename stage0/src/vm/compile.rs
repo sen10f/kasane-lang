@@ -347,8 +347,6 @@ impl<'a> Fc<'a> {
             Op::Eprint { data } => Ins::Eprint { data: self.s(*data) },
             Op::FmtFloat { bits, a } => Ins::FmtFloat { a: self.s(*a), bits: *bits },
             Op::ParseInt { ty: pty, s, radix } => Ins::ParseInt { d, s: self.s(*s), radix: self.s(*radix), ty: self.ty_of(*pty) },
-            // 参照実行器と同じく関数のアドレスは 0 (VM では C のコールバックは呼ばれない)。
-            Op::FnPtr { .. } => Ins::ConstI { d, v: 0 },
             Op::EnvArgCount => Ins::EnvArgCount { d },
             Op::EnvArg { index } => Ins::EnvArg { d, i: self.s(*index) },
             Op::EnvVar { name } => Ins::EnvVar { d, name: self.s(*name) },
@@ -360,9 +358,8 @@ impl<'a> Fc<'a> {
             | Op::NetFlush { .. }
             | Op::NetClose { .. }
             | Op::NetLocalPort { .. } => return Err("std.net の命令は VM 未対応".into()),
-            // kir/closure-value・kir/std-env で入った命令 (vm/skeleton と並行に入った)。VM で実装するまでは木走査へ退避する。
+            // C のコールバックに VM の関数を渡すには機械語のトランポリンが要る。それまでは木走査へ退避する。
             Op::FnPtr { .. } => return Err("関数ポインタ (FnPtr) の命令は VM 未対応".into()),
-            Op::EnvArgCount | Op::EnvArg { .. } | Op::EnvVar { .. } => return Err("std.env の命令は VM 未対応".into()),
         };
         self.push(i);
         Ok(())

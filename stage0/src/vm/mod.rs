@@ -61,12 +61,13 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
 }
 
 /// `ksn run --engine=vm`: 入口を VM で実行して終了コードを返す。実行を始める前に分かる理由 (下ろせない・VM が扱えない) は `Err`。
-pub fn run_entry(prog: &Program, user: &[usize], entry: &str) -> Result<i32, String> {
+pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String]) -> Result<i32, String> {
     let lo = kir_lower::lower_program(prog, user, Some(entry));
     tick("lower");
     let ret = lo.module.find(entry).map(|f| f.ret);
     let bc = prepare(lo, entry)?;
     let mut vm = run::Vm::new(&bc);
+    vm.args = args.to_vec();
     let out = vm.run(entry, &[]);
     Ok(match out {
         Ok(Outcome::Value(v)) => match ret {

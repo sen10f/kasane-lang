@@ -46,6 +46,8 @@ pub struct Vm<'a> {
     out: Vec<u8>,
     /// `Some` なら stderr へ書かずにためる (テストの panic の文言を取り出すため)。
     pub capture: Option<Vec<u8>>,
+    /// プログラムへの引数 (`std.env.arg`。プログラム名は含まない)。
+    pub args: Vec<String>,
 }
 
 #[inline(always)]
@@ -67,7 +69,7 @@ fn addr(a: i128, n: usize) -> Result<*mut u8, String> {
 
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![] }
     }
 
     /// ためた stdout を流す。
@@ -533,15 +535,15 @@ impl<'a> Vm<'a> {
                     self.err_write(s.as_bytes());
                 }
                 Ins::EnvArgCount { d } => {
-                    w!(*d, (std::env::args().len() as i128 - 1).max(0));
+                    w!(*d, self.args.len() as i128);
                 }
                 Ins::EnvArg { d, i } => {
                     let i = r!(*i) as usize;
-                    let args: Vec<String> = std::env::args().collect();
-                    if i + 1 >= args.len() {
+                    if i >= self.args.len() {
                         w!(*d, 0);
                     } else {
-                        let h = self.leak_fat(args[i + 1].as_bytes());
+                        let a = self.args[i].clone();
+                        let h = self.leak_fat(a.as_bytes());
                         w!(*d, TAG_BIT | h);
                     }
                 }

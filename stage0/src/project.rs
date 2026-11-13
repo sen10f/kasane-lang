@@ -714,17 +714,38 @@ pub fn stdlib_dir() -> PathBuf {
 pub fn load_stdlib() -> Vec<Source> {
     let root = stdlib_dir();
     let rs = norm(&root);
-    let mut out = vec![];
-    for ext in ["sig", "ksnl"] {
-        let mut ps = vec![];
-        walk_files(&root, &[ext], &mut ps);
-        let mut ps: Vec<String> = ps.iter().map(|p| norm(p)).collect();
-        ps.sort();
-        for p in ps {
-            out.push(Source::load(&p, &rs));
-        }
+    let mut ps: Vec<(usize, String)> = vec![];
+    for (k, ext) in ["sig", "ksnl"].iter().enumerate() {
+        let mut fs = vec![];
+        walk_files(&root, &[ext], &mut fs);
+        let mut fs: Vec<String> = fs.iter().map(|p| norm(p)).collect();
+        fs.sort();
+        ps.extend(fs.into_iter().map(|p| (k, p)));
     }
-    out
+    // 構文解析は互いに独立なので、ファイルごとにスレッドで並列化する (起動時間の大半を占める)。順序は保つ。
+    // 読み込み用の overlay (`--watch` / LSP) は全体の共有状態なので、スレッドから読んでも同じ値が見える。
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 8);
+    if n == 1 || ps.len() < 4 {
+        return ps.iter().map(|(_, p)| Source::load(p, &rs)).collect();
+    }
+    // 大きいファイルから始める (最後に残った 1 本が全体を待たせないように)。
+    let mut order: Vec<usize> = (0..ps.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(std::fs::metadata(&ps[i].1).map(|m| m.len()).unwrap_or(0)));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<Source>>> = ps.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|sc| {
+        for _ in 0..n {
+            sc.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= ps.len() {
+                    break;
+                }
+                let i = order[i];
+                *slots[i].lock().unwrap() = Some(Source::load(&ps[i].1, &rs));
+            });
+        }
+    });
+    slots.into_iter().map(|m| m.into_inner().unwrap().expect("stdlib 読み込み")).collect()
 }
 
 pub fn find_root() -> Result<PathBuf, ProjectError> {

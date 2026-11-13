@@ -202,9 +202,14 @@ pub struct Loaded {
 }
 
 pub(crate) fn load_all(root: &Path) -> Result<Loaded, ProjectError> {
+    crate::vm::tick("pre");
     let pkg = load_package(root)?;
+    crate::vm::tick("load_pkg");
     let deps = load_deps(&pkg)?;
-    Ok(Loaded { pkg, deps, std: load_stdlib() })
+    crate::vm::tick("load_deps");
+    let std = load_stdlib();
+    crate::vm::tick("load_std");
+    Ok(Loaded { pkg, deps, std })
 }
 
 fn empty_program() -> Program {
@@ -260,10 +265,14 @@ fn check_lock(pkg: &Package, deps: &[Package], rep: &mut Report) {
 
 /// 構文・正規形・意味の検査。構文エラーが無ければ Program を返す。
 fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
+    // 文法の構築 (正規表現のコンパイルが重い) は、標準ライブラリの読み込みと並行にする。
+    let gh = std::thread::spawn(Grammar::new);
     let l = load_all(root)?;
+    crate::vm::tick("load_all");
     check_lock(&l.pkg, &l.deps, rep);
     let srcroot = norm(&l.pkg.root.join("src"));
-    let grammar = Grammar::new();
+    let grammar = gh.join().expect("文法の構築");
+    crate::vm::tick("grammar_new");
     for s in &l.pkg.sources {
         let fl = rel(&s.path);
         if s.path.ends_with(".ksnh") {
@@ -316,15 +325,18 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             rep.add("E0002", &msg, Some(&fl), ln, 0, true);
         }
     }
+    crate::vm::tick("lint");
     if l.pkg.sources.iter().any(|s| s.error.is_some()) {
         return Ok((l, None, vec![]));
     }
     let (prog, user) = build_program(&l);
+    crate::vm::tick("build_prog");
     let diags = {
         let mut ck = Checker::new(&prog, user.clone());
         ck.unsafe_modules = crate::project::unsafe_modules(&l.pkg.manifest);
         ck.integration_files = l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.clone()).collect();
         ck.run();
+        crate::vm::tick("checker");
         ck.diags
     };
     // 同じ呼び出しに対する E1108 は、名前だけの検査と型に基づく検査が両方出しうる。最初の 1 件だけ残す。
@@ -812,10 +824,10 @@ fn cmd_run(args: &[String]) -> i32 {
         return 1;
     };
     if use_vm {
-        if watch || !rest.is_empty() {
-            eprintln!("vm engine skipped: --watch と実行引数は VM 未対応; falling back to the tree walker");
+        if watch {
+            eprintln!("vm engine skipped: --watch は VM 未対応; falling back to the tree walker");
         } else {
-            match crate::vm::run_entry(&prog, &user, &entry) {
+            match crate::vm::run_entry(&prog, &user, &entry, &rest) {
                 Ok(code) => return code,
                 Err(why) => eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why)),
             }
