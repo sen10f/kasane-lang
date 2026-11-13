@@ -1,0 +1,52 @@
+fn t.gen1[T](x: T) -> usize uses [] panics never
+    let r = &x
+    let a = t.sz(r)
+    let b = t.sz(r)
+    a.wrapping_add(b)
+end t.gen1
+
+fn t.gen2[T](x: T) -> usize uses [] panics never
+    let r: &T = &x
+    let a = t.sz(r)
+    let b = t.sz(r)
+    a.wrapping_add(b)
+end t.gen2
+
+fn t.gen3[T](r: &T) -> usize uses [] panics never
+    let a = t.sz(r)
+    let b = t.sz(r)
+    a.wrapping_add(b)
+end t.gen3
+
+fn t.gen4[T](x: &T) -> usize uses [] panics never
+    let r = x
+    let a = t.sz(r)
+    let b = t.sz(r)
+    a.wrapping_add(b)
+end t.gen4
+
+fn t.gen5[T](x: T) -> usize uses [] panics never
+    let r = &x
+    let a = t.sz(r)
+    let q = r
+    a.wrapping_add(t.sz(q)).wrapping_add(t.sz(r))
+end t.gen5
+
+fn t.gen6[T](x: T, y: T) -> usize uses [] panics never
+    let p = (&x, &y)
+    let (a, b) = p
+    t.sz(a).wrapping_add(t.sz(b)).wrapping_add(t.sz(a))
+end t.gen6
+
+fn t.main() -> () uses [] panics may
+    core.check.eq(t.gen1(1u32), 2usize)
+    core.check.eq(t.gen2(1u32), 2usize)
+    core.check.eq(t.gen3(&1u32), 2usize)
+    core.check.eq(t.gen4(&1u32), 2usize)
+    core.check.eq(t.gen5(1u32), 3usize)
+    core.check.eq(t.gen6(1u32, 2u32), 3usize)
+end t.main
+
+fn t.sz[T](_x: &T) -> usize uses [] panics never
+    1usize
+end t.sz
