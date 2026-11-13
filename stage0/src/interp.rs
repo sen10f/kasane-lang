@@ -345,10 +345,21 @@ impl Interp {
         if let Val::Struct(s) = &v {
             if self.is_copy(&s.ty) {
                 let f = s.f.borrow().iter().map(|(k, x)| (k.clone(), self.cp(x.clone()))).collect();
-                return Val::Struct(Rc::new(StructV { ty: s.ty.clone(), f: RefCell::new(f) }));
+                return self.mk_struct(s.ty.clone(), f);
             }
         }
         v
+    }
+
+    /// 構造体の値を作る。フィールドは型定義の宣言順に並べる (4.3)。格納順を宣言順に揃えておくと、
+    /// `==`・`hkey` (HashMap の鍵)・Debug の表示が、リテラルに書いた順に依らず一致する。
+    /// 型定義が無いとき (標準の型) は渡された順のまま。
+    pub fn mk_struct(&self, ty: String, mut fields: Vec<(String, Val)>) -> Val {
+        if let Some(&i) = self.p.types.get(&ty) {
+            let order = &self.p.defs[i].fields;
+            fields.sort_by_key(|(k, _)| order.iter().position(|f| f.0 == *k).unwrap_or(usize::MAX));
+        }
+        Val::Struct(Rc::new(StructV { ty, f: RefCell::new(fields) }))
     }
 
     // ------------------------------------------------------------ 定数
@@ -656,7 +667,7 @@ impl Interp {
                     };
                     fields.push((fnm, v));
                 }
-                Ok(Val::Struct(Rc::new(StructV { ty: fq, f: RefCell::new(fields) })))
+                Ok(self.mk_struct(fq, fields))
             }
             "Closure" => {
                 let params = items(&f[0]).iter().map(|p| (st(&items(p)[0]), items(p)[1].clone())).collect();
