@@ -1,0 +1,32 @@
+// expect: E3010
+type t.S
+    name: alloc.string.String
+    other: alloc.string.String
+end t.S
+
+fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line(s.as_str()))
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let o = Some(t.mk())
+    let r = &o
+    match o {
+        Some(x) => t.consume(x)
+        None => core.mem.drop(0u8)
+    }
+    core.mem.drop(r.is_some())
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello, this is a long heap string"))
+    s
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [io.console] panics never
+    core.mem.drop(std.io.print_line(s.as_str()))
+    s.len()
+end t.peek
