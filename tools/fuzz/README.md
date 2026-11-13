@@ -19,17 +19,20 @@ python -I tools/fuzz/fuzz.py \
 
 ## 動作
 
-1. 種を固定した乱数で小さな Kasane プログラムを生成（`examples/` の作法に従う）。
-   - 整数・bool・浮動小数の式（四則、比較、`wrapping_*` / `checked_*`、シフト）、`if` / `while` / `match`、関数呼び出し、`Option` / `Result`（`Vec.get`）、Vec の push と添字、ループ、panic。
-   - 1 行は 100 文字まで。
-   - `ksn check` を通らないプログラムは捨て、`check_fail` としてカウント（生成器の誤り）。
-2. 4 つの実行系で比較：
-   - 木走査 (`ksn run`)
-   - 参照実行器 (`ksn kir <FQN> --run <args>`)
-   - 機械語 (`ksn kir <FQN> --native`)
-   - ASan 機械語 (`KSN_CLANG_ARGS="-fsanitize=address -O0 -g"`)
-   - stdout・終了コード・panic 文言を比較。KIR に下ろせない関数は `unsupported` として飛ばし、件数を数える。
-3. 食い違いが出たら `tools/fuzz/found/<ケース>/` に `program.ksnl` と `result.json` を書き出し、文を 1 つずつ消して食い違いが残るか確かめながら縮小する。
+1. 種を固定した乱数で小さな Kasane プログラムを生成し `ksn check` を通す。
+   - 複数関数（相互呼び出し、再帰なし）、構造体（生成・フィールド読み書き・値／`&`／`&mut` 渡し）、利用者列挙体＋`match`、Option／Result を返す関数と `?`。
+   - String（`push_str`／`push_u64`／`len`／`as_str`）と `&str` 比較、f64 四則・比較（表示は `to_bits()` を整数で出力）。
+   - 整数型 u8〜u64／i8〜i64、シフト、`wrapping_*` / `checked_*` / `saturating_*`。
+   - 添字範囲外・`unwrap` の None・0 除算などの panic 経路。
+   - 1 行は 100 文字まで（超える式は `let` に分ける）。
+   - `ksn check` を通らないプログラムは `check_fail`（生成器の誤り）としてカウント。
+2. 4 つの実行系で `fuzz.target` を比較：
+   - 木走査 (`ksn run`)、参照実行器 (`kir --run`)、機械語 (`kir --native`)、ASan 機械語。
+   - KIR に下ろせない関数は `unsupported` として飛ばす。
+   - 終了コード・stdout・panic 文言を比較。`main` が `target` の戻り値をそのまま出力するため、両者で一致するはず。
+3. 食い違いが出たら `tools/fuzz/found/<ケース>/` に `program.ksnl` と `result.json` を書き出し、縮小する：
+   - 文／ブロック（if／while／match）を単位で消す、式をリテラルに置き換える、使われない関数を消す。
+   - 食い違いの種類（どの 2 者がどう違うか）が保たれるかで採否を判断。
 
 ## 成果
 
@@ -39,4 +42,5 @@ python -I tools/fuzz/fuzz.py \
 
 - Rust 処理系 (`stage0/src`) は変更しない。新しいファイルのみ追加。
 - `ksn check` に通るプログラムだけを対象とする（`check_fail` は生成器側の問題として報告）。
-- `--count 500` の動作確認は `stage0` で `cargo build --release` 後のビルド済みバイナリで行う。
+- `tools/fuzz/found/` は gitignore に入り、コミットしない。
+- 動作確認は `stage0` で `cargo build --release` 後のビルド済みバイナリで行う。
