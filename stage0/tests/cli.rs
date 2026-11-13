@@ -22620,3 +22620,41 @@ end t.check_url_at
         assert_eq!(text(&k.stdout).trim(), want, "kir check_url_at {} value", i);
     }
 }
+
+#[test]
+fn kir_lower_string_call_result_as_str_and_const_split_lower_and_match_run() {
+    // 呼び出しの結果の String (集成体の値) に `.as_str()` / 定数の `&str` を `for .. in K.split(..)` の対象にする形は、
+    // 下ろしの検査 (load は ptr から読む / 式の型が型表にある) で落ちずに LLVM まで下りて、木走査と一致する。
+    let src = format!(
+        "{}\n{}",
+        main_wrap("", ""),
+        "const t.main.SAMPLE: &str = \"a=b\\nc=d\\n\"
+
+fn t.main.make(s: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(out.push_str(s))
+    out
+end t.main.make
+
+test t.main.test_a_call_result_as_str
+    core.check.eq(t.main.make(\"plain\").as_str(), \"plain\")
+    core.check.eq(t.main.make(\"x\").as_str().len(), 1usize)
+end t.main.test_a_call_result_as_str
+
+test t.main.test_b_const_split
+    let mut n = 0usize
+    for _line in t.main.SAMPLE.split(\"\\n\") {
+        n = n.wrapping_add(1usize)
+    }
+    core.check.eq(n, 3usize)
+end t.main.test_b_const_split
+"
+    );
+    let t = Tmp::new("kir_call_as_str_const_split", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    for name in ["test_a_call_result_as_str", "test_b_const_split"] {
+        assert!(out.contains(&format!("t.main.{} ... ok (both: llvm)", name)), "{}", out);
+    }
+}

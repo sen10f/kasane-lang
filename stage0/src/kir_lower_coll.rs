@@ -315,6 +315,9 @@ pub(crate) fn emit_alloca(lw: &mut Lw, size: u32) -> VId {
 }
 
 pub(super) fn load_len(lw: &mut Lw, hdr: VId) -> VId {
+    if matches!(lw.vty(hdr), Ty::Agg(_)) {
+        return lw.emit(Ty::Usize, Op::Field { a: hdr, off: 8 });
+    }
     lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 8 })
 }
 
@@ -2098,7 +2101,9 @@ fn pick_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, pick: Pick, m: &str)
 
 /// Vec / String のヘッダ `hdr` の中身を指す借用の `fat` ({ptr, len})。
 pub(super) fn hdr_view(lw: &mut Lw, hdr: VId) -> VId {
-    let p = lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 });
+    // 呼び出しの結果などヘッダが集成体の値のときは、メモリから読まずにフィールドを取る。
+    let by_val = matches!(lw.vty(hdr), Ty::Agg(_));
+    let p = if by_val { lw.emit(Ty::Ptr, Op::Field { a: hdr, off: 0 }) } else { lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 }) };
     let l = load_len(lw, hdr);
     let fat = lw.fat_ty();
     lw.emit(fat, Op::Make { variant: None, fields: vec![p, l] })
