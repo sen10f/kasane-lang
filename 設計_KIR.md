@@ -1129,7 +1129,11 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - `v.first()` / `v.last()` (Vec・スライス・配列の局所): `get` と同じ `pick_elem` で作る (`Pick::First` は添字 0、`Pick::Last` は `len - 1`、空なら `None`)。スカラー要素は値、所有物の要素は `bref` (17.18) で、`let g = v.first()` と `match v.last()` の両方を通す。木走査の `natives.rs` (`first` / `last`) と同じ値。
 - `v.contains(&x)` (要素がスカラー): 先頭から `==` を見る小さなループ (`contains_scalar`)。引数は `&T` の参照 (読んで比べる) か値。所有物・集成体の要素は理由付きで拒む。
 - 試験: `kir_first_last_contains_match_tree_walker` (配列・スライス (`sub` の結果)・Vec の空・先頭・末尾・範囲外、`Vec<String>` の `first` / `last` は `--run` / `--native` / ASan)。
-- examples/tour は 91 行の `first` / `last` と 93 行の `contains` を越え、102 行の `"abc".find("c")` で止まる。残りは `BtreeMap` (KIR に型がない)、`str` の `find` / `parse` / `split` / `split_once` / `strip_prefix`、`from_str_radix` / `try_from_*` / `leading_zeros` / `count_ones`、`core.num.*.MAX`、`char` の `try_from_u32` / `to_ascii_uppercase`、浮動小数 (`literal float`) など。
+- `s.find(pat)` (`&str` のパターン、`kir_lower_str.rs` の `find_call`): 位置の二重ループ。空のパターンは `Some(0)`、長いパターンは `None`、多バイト文字の位置はバイト。試験 `kir_str_find_matches_tree_walker`。
+- `char` の `to_ascii_uppercase` / `to_ascii_lowercase` (`char` は KIR で `u32`。`num_plan` の `Plan::AsciiCase`。ASCII の英字の境界だけ変える) と `char.try_from_u32` (0x110000 未満、サロゲートの外)。試験 `kir_char_methods_match_tree_walker`。
+- `char.to_u32()` は下ろしていない。`'a'.to_u32()` を「未対応」の例に使う 2 本の既存の試験 (`test_both_falls_back_from_llvm_to_cranelift_with_the_reason`、`kir_lower_dump_on_check_is_hidden_behind_the_env_var`) が、下ろすと食い違う。試験の入力を書き換えるのは担当外なので、どちらにするかは統括者が決める (試験を別の未対応のメソッドに替えるか、`to_u32` を下ろして 2 本を直すか)。
+- `i64.parse(text)` は基数 10 の `from_str_radix` と同じ `Op::ParseInt` (`kir_lower_scalar.rs`)。試験 `kir_parse_matches_tree_walker`。
+- examples/tour の残り (この時点での止まり方、先頭から): 105 行の `c.to_u32()` (上の理由で未対応のまま)。それを外すと、次は 112 行の `alloc.collections.BtreeMap.new` (KIR に `BtreeMap` の型・操作がなく、大きいので別の作業にする)。`BtreeMap` の行と `to_u32` の行を外した写し (scratch) では、130 行の `core.check.eq("key=value".split_once("="), Some(("key", "value")))` の `Option<(&str, &str)>` の比較 (タプルの `==` が未対応) で止まる。さらに外すと 133 行の `String.push_i64` (符号付きの十進の書き込み。`string_push_u64` の拡張で、符号と `i64::MIN` の扱いが要る) で止まる。`print_line` より後は未確認。
 
 ## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
 
