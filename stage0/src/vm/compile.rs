@@ -75,6 +75,10 @@ struct Fc<'a> {
     pool: Vec<u32>,
     /// 直前に出した比較 (`icmp`) の (結果の値, 命令の位置)。次の `br_if` が融合する。
     last_cmp: Option<(VId, usize)>,
+    /// ブロック内の `fieldaddr` のうち、唯一の使い道が同じブロックの `load` / `store` のアドレスのもの (値 → (基底, オフセット))。
+    /// 命令を出さずに、`load` / `store` のオフセットに畳み込む。
+    folded: HashMap<VId, (VId, u32)>,
+    pending: HashMap<VId, (VId, u32)>,
 }
 
 fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &Func) -> Result<VFunc, String> {
@@ -111,13 +115,16 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
             Term::Unreachable => {}
         }
     }
-    let mut fc = Fc { m, index, prog, slot, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None };
+    let mut fc = Fc { m, index, prog, slot, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, folded: HashMap::new(), pending: HashMap::new() };
     let mut starts = vec![0u32; f.blocks.len()];
     // 分岐先が未確定の `Jmp` などの位置 → ブロック番号。
     let mut patches: Vec<(usize, usize)> = vec![];
     for (bi, b) in f.blocks.iter().enumerate() {
         starts[bi] = fc.code.len() as u32;
         fc.last_cmp = None;
+        fc.folded.clear();
+        fc.pending.clear();
+        fc.find_folds(&b.insts);
         for inst in &b.insts {
             fc.inst(inst)?;
         }
@@ -157,6 +164,47 @@ impl<'a> Fc<'a> {
             self.pool.push(s);
         }
         (p, vs.len() as u32)
+    }
+
+    /// ブロック `insts` の中で畳み込める `fieldaddr` を `folded` に入れる。
+    fn find_folds(&mut self, insts: &[crate::kir::Inst]) {
+        let mut defs: HashMap<VId, (VId, u32)> = HashMap::new();
+        for i in insts {
+            match &i.op {
+                Op::FieldAddr { a, off } if self.uses[i.dst as usize] == 1 => {
+                    defs.insert(i.dst, (*a, *off));
+                }
+                Op::Load(p) => {
+                    if let Some(x) = defs.remove(p) {
+                        self.folded.insert(*p, x);
+                    }
+                }
+                Op::Store { ptr, val } if ptr != val => {
+                    if let Some(x) = defs.remove(ptr) {
+                        self.folded.insert(*ptr, x);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `load` / `store` のアドレス `p` を (基底スロット, オフセット) にする。畳み込めない集成体の読み書きのために `materialize` なら、
+    /// 保留していた `fieldaddr` をここで出す。
+    fn addr_of(&mut self, p: VId) -> (S, u32) {
+        if let Some((a, off)) = self.pending.remove(&p) {
+            (self.s(a), off)
+        } else {
+            (self.s(p), 0)
+        }
+    }
+
+    /// 保留中の `fieldaddr` (`p`) を、実際の加算命令として出す。
+    fn unfold(&mut self, p: VId) {
+        if let Some((a, off)) = self.pending.remove(&p) {
+            let (d, a) = (self.s(p), self.s(a));
+            self.code.push(Ins::AddImm { d, a, imm: off as i64 });
+        }
     }
 
     fn push(&mut self, i: Ins) {
@@ -318,20 +366,34 @@ impl<'a> Fc<'a> {
                 Ins::Store { p: self.s(*p), off: *off, v: self.s(*v), w }
             }
             Op::Load(p) => match ty {
-                Ty::Agg(ai) => Ins::LoadAgg { d, p: self.s(*p), size: self.m.aggs[ai as usize].size },
+                Ty::Agg(ai) => {
+                    self.unfold(*p);
+                    Ins::LoadAgg { d, p: self.s(*p), size: self.m.aggs[ai as usize].size }
+                }
                 t => {
                     let Some(k) = lk(t) else { return Err(format!("load の型 {} が読めない", t.name())) };
-                    Ins::Load { d, p: self.s(*p), off: 0, k }
+                    let (pp, off) = self.addr_of(*p);
+                    Ins::Load { d, p: pp, off, k }
                 }
             },
             Op::Store { ptr, val } => match self.vty[*val as usize] {
-                Ty::Agg(_) => Ins::StoreAgg { p: self.s(*ptr), v: self.s(*val) },
+                Ty::Agg(_) => {
+                    self.unfold(*ptr);
+                    Ins::StoreAgg { p: self.s(*ptr), v: self.s(*val) }
+                }
                 t => {
                     let Some(w) = width(t) else { return Err(format!("store の型 {} が書けない", t.name())) };
-                    Ins::Store { p: self.s(*ptr), off: 0, v: self.s(*val), w }
+                    let (pp, off) = self.addr_of(*ptr);
+                    Ins::Store { p: pp, off, v: self.s(*val), w }
                 }
             },
-            Op::FieldAddr { a, off } => Ins::AddImm { d, a: self.s(*a), imm: *off as i64 },
+            Op::FieldAddr { a, off } => {
+                if let Some(x) = self.folded.get(&inst.dst) {
+                    self.pending.insert(inst.dst, *x);
+                    return Ok(());
+                }
+                Ins::AddImm { d, a: self.s(*a), imm: *off as i64 }
+            }
             Op::AsShared(p) | Op::Reborrow(p) => Ins::Mov { d, s: self.s(*p) },
             Op::HeapAlloc(n) => Ins::HeapAlloc { d, n: self.s(*n) },
             Op::HeapRealloc { p, size } => Ins::HeapRealloc { d, p: self.s(*p), n: self.s(*size) },
