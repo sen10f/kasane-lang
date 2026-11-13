@@ -84,7 +84,6 @@ pub(crate) fn index_text(e: &V) -> String {
             let mut s = st(ps.get(1).unwrap_or(&V::Nil));
             if let Some(sfx) = ps.get(2) {
                 if !is_nil(sfx) {
-                    s.push('.');
                     s.push_str(&st(sfx));
                 }
             }
@@ -2116,7 +2115,12 @@ impl<'a> Checker<'a> {
         // ときは黙る。
         for (fqn, nid, text, line) in self.index_consumes.clone() {
             let Some(et) = tk.tytab.get(&(fqn.clone(), nid)) else { continue };
-            let el = match &et.ty {
+            // 基が参照 (`&[T]` / `&Vec<T>`) なら剥がして要素型を見る。
+            let mut base = &et.ty;
+            while let crate::types::Ty::Ref(_, inner) = base {
+                base = inner.as_ref();
+            }
+            let el = match base {
                 crate::types::Ty::Array(el) | crate::types::Ty::Slice(el) => Some(el.as_ref()),
                 crate::types::Ty::Named(_, args) => args.first(),
                 _ => None,
@@ -2608,6 +2612,11 @@ impl<'a> Checker<'a> {
         env = self.final_env.clone();
         let stmts = items(&nf(body)[0]);
         if let Some(last) = stmts.last() {
+            // 関数の末尾の値 `a[i]` は、要素を呼び出し元へ move する (4.1)。`return a[i]` と同じ扱い。
+            if nname(last) == "ExprStmt" && nname(&nf(last)[0]) == "Index" && !is_nil(&d.ret) && tag(&d.ret) != "unit" {
+                let e = &nf(last)[0];
+                self.index_consumes.push((d.name.clone(), nid(&nf(e)[0]), index_text(e), nline(e)));
+            }
             if nname(last) == "ExprStmt" {
                 let names = self.names.clone();
                 if !is_nil(&d.ret) && !self.is_generic(&d.ret, &names) {
@@ -2822,9 +2831,6 @@ impl<'a> Checker<'a> {
         Some(ty.clone())
     }
 
-    /// `a[i]` の要素の型を `a` の型から解決する。
-    /// `array`/`slice` は第 1 型引数、`Vec<T>` 等のジェネリクス型は最初の型引数を要素型と見なす。
-    /// 型が決まらないときは None (呼び出し側で黙る)。
     /// 代入・再束縛の対象の場所とその下の move 済みの記録を消す (再代入で復活、4.1)。
     /// `s = ..` は `s`・`s.f`・`s.f.g` を、`s.f = ..` は `s.f`・`s.f.g` を消す (兄弟は残す)。
     fn revive_place(&mut self, segs: &[String]) {
