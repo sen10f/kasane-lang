@@ -50,6 +50,11 @@ mod coll;
 mod own;
 use coll::CollCx;
 
+// `std.net` (TCP) の下ろし (設計_KIR.md 12 章)。
+#[path = "kir_lower_net.rs"]
+mod net_lower;
+use net_lower::{is_net_ty, net_call, net_method};
+
 type LR<T> = Result<T, String>;
 
 // 集成体 (構造体・タプル・列挙型) の下ろし。子モジュールなので、この file の非公開の部品を使う。
@@ -760,6 +765,13 @@ impl<'a> Lw<'a> {
                 let base = self.read_slot(s);
                 let recv = if segs.len() > 2 { self.field_path(base, &segs[1..segs.len() - 1], line)? } else { base };
                 let rt = self.vty(recv);
+                if is_net_ty(self, rt) {
+                    let meth = segs[segs.len() - 1].clone();
+                    if matches!(meth.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port") {
+                        let args = items(&f[1]).to_vec();
+                        return net_method(self, e, &meth, recv, rt, &args, line);
+                    }
+                }
                 let meth = segs[segs.len() - 1].clone();
                 let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,
@@ -796,6 +808,10 @@ impl<'a> Lw<'a> {
         let target = resolved.map(|r| r.target);
         if matches!(&target, Some(Tgt::Native(n)) if n == "std.io.print_line") || matches!(&target, Some(Tgt::Sig(di) | Tgt::Fn(di)) if self.p.defs[*di].name == "std.io.print_line") {
             return self.print_line(args, line);
+        }
+        let callee_name = segs.join(".");
+        if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
+            return net_call(self, e, callee_name == "std.net.listen", line);
         }
         if let Some(Tgt::Variant(en, vn)) = &target {
             let (en, vn) = (en.clone(), vn.clone());
@@ -884,6 +900,25 @@ impl<'a> Lw<'a> {
     fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
         if let Some(r) = coll::try_mcall(self, e) {
             return r;
+        }
+        // `std.net.TcpListener` / `TcpStream` のメソッド (accept / read / write / flush / close)。
+        if let Ok(rt) = self.src_ty(&nf(e)[0]) {
+            let is_net = match &rt {
+                Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" => true,
+                Src::Ref(_, inner) => {
+                    matches!(&**inner, Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream")
+                }
+                _ => false,
+            };
+            if is_net {
+                let m = st(&nf(e)[1]);
+                if matches!(m.as_str(), "accept" | "read" | "write" | "flush" | "close") {
+                    let Some(recv) = self.expr(&nf(e)[0])? else { return Ok(None) };
+                    let rt = self.vty(recv);
+                    let args = items(&nf(e)[2]).to_vec();
+                    return net_method(self, e, &m, recv, rt, &args, nline(e));
+                }
+            }
         }
         if let Some(r) = self.unwrap_mcall(e) {
             return r;
@@ -1198,6 +1233,12 @@ pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
 fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
     let tys = type_table(p, user, test_def);
     let aggs = RefCell::new(agg::AggTab::new(user));
+    // `std.net.listen`/`connect`/`accept` が返すソケット集成体を、誰も参照しなくても型表に入れる。
+    for name in ["std.net.TcpListener", "std.net.TcpStream"] {
+        if let Some(di) = p.defs.iter().position(|d| d.name == name) {
+            let _ = aggs.borrow_mut().intern_def(p, di);
+        }
+    }
     let mut ok: Vec<(Func, BTreeSet<String>)> = vec![];
     let mut bad: Vec<(String, String)> = vec![];
     for &i in user {
