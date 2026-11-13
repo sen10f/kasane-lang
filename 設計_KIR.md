@@ -1090,6 +1090,59 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 拒否のまま: `match v.get(i)` の腕で構造体のパターンを分解する形 (`Some(t.Item { name: _, v: x })`)、`get` の値を `let` に持つ形、`for x in v` (値)、`&mut v` / `iter_mut()` の要素、`insert` / `remove`。
 - 試験: `kir_borrow_owned_elems_match_tree_walker` (17 ケース。`--run` / `--native` / ASan)、`kir_borrow_owned_elems_out_of_range_index_panics_like_tree_walker`、`kir_get_on_vec_of_owning_elements_is_refused_with_a_reason` (構造体パターンの形)。`llvm_builds_of_real_packages_match_run` に `examples/more_coll` と `examples/more_str` を追加。
 
+## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
+
+段階 2 (第 5 章) の第 1 段。`ksn run --engine=vm` と `ksn test --engine=vm` (`--engine=tree` が既定の木走査)。既定の挙動は変えていない。`clif.rs` と `examples/`・`perf/` のソースは触っていない。
+
+### 18.1 構成と決めたこと
+
+- `stage0/src/vm/bc.rs` (命令 `Ins`・関数 `VFunc`・表 `Prog`)、`vm/compile.rs` (KIR → バイトコード)、`vm/run.rs` (実行ループと明示フレーム `Vm`)、`vm/mod.rs` (入口: `run_entry` / `run_test`。KIR への下ろしと退避の判定)。`kir_exec.rs` は、VM と共有する部品 (`arith` / `checked` / `relocate` / `pay_word` / `pay_read` / `write_val` / `read_scalar` / `parse_int` / `extern_call` など) を `pub(crate)` にしただけで、意味は変えていない。
+- 意味は参照実行器 (`kir_exec`) と同じ: 値の符号化 (整数は符号拡張した `i128`、`u128` はビットパターン、`Option` / `Result` は tag bit 64 + ペイロードの語、集成体は置き場 `Vm::heap` の添字)、panic の文言、`stack` 超過 (呼び出し深さ 2500 で終了コード 102)、関数が戻るときの置き場の切り詰めと `relocate`。
+- スロットは第 4.1 の 8 バイトではなく `i128` 1 つ (参照実行器と同じ符号化を使うため)。命令は 8 バイトに詰めず Rust の enum (`Ins`、被演算子は `u32` のスロット)。どちらも第 2 段で、perf の結果を見て詰める。
+- バイト記憶は第 7 章 1 の決定どおり実メモリ: `heap.alloc` / `heap.realloc` / `heap.free` は libc の `malloc` / `realloc` / `free`、`frame.bytes` と `alloca` は `calloc` (関数が戻るとき解放)、`static.bytes` はコンパイル時に 1 回確保してアドレスを定数にする。参照実行器の仮想アドレス表との違い: 範囲外・解放後・未初期化の読みの検出と、関数の終わりの漏れの検査はしない (null 付近のアドレスだけ内部エラー)。これらの検出は `ksn kir --run` と ASan の担当のまま。
+- 制御の合流 (ブロック引数) は辺ごとの `Mov` に展開する。後の引数が前の移動先を読む組 (入れ替え) のときだけ一時スロットを通す。`icmp` + `br_if` は、比較の結果がその分岐だけで使われるとき `JCmpNot` 1 命令に融合する。次のブロックへ落ちる辺は `Jmp` を出さない。64 ビット以下の整数の `+ - *` (溢れで panic / `wrapping_*`) は型ごとの専用命令 (`AddT` / `AddW` など)、狭める変換は `WrapT`。
+- stdout は書き込みをためて、終了・panic・stderr への出力の前に流す (参照実行器は書くたびに流す)。stdout が閉じているときの `Err` (EPIPE) は、ためた分を流すときに捨てるので、`print_line` の失敗を返さない (木走査と同じ側)。
+- 入口: `run_entry` は `lower_program` で入口から届く関数を下ろし、検査 (`verify_module`) とバイトコード化に通ったときだけ VM で走る。`Result` の `Err` は stderr に `Error: ` + `ksn.entry.debug` の表示 + 改行、終了コード 1 (木走査と同じ)。panic は `panic: <文言>` で 101、`core.check` の失敗 (`eprint` + `abort`) は 101、`stack` 超過は 102。
+- 退避: 入口が KIR に下ろせない、VM が扱えない命令 (`std.net` の 8 命令)、`--watch`、プログラムへの引数があるときは、`vm engine skipped: <理由>; falling back to the tree walker` を stderr に出して、プログラム全体を木走査で走らせる (関数単位の混在はしない)。`ksn test --engine=vm` はテストごとに同じ判定をする (`test <名前>: vm engine skipped: ...`)。VM でのテストの失敗の文言は、`panic` ならその文言、`core.check` の失敗なら `eprint` された文言 (`panic: ` と末尾の改行を除く、キャプチャして取り出す)、`stack` 超過は `exit(102)` で、木走査と同じ形になる。
+- 内部エラー (KIR の誤り・範囲外のアドレスなど) は `ksn: vm: 内部エラー: ...` で終了コード 3。
+
+### 18.2 対応範囲と退避の理由の内訳
+
+- VM が扱えない KIR の命令は `std.net` の 8 命令だけ (退避)。それ以外の全命令を実装した。
+- 下ろせないための退避 (examples の 8 本の `ksn run --engine=vm` の stderr から。理由は段階 1 以降の KIR の対応範囲で決まり、VM の都合ではない): `features` (`take` のメソッド)、`ffi` (関数ポインタの引数)、`http` (`with` 式)、`kvapp` (呼び先 `kvlib.lookup.count`)、`plugins` (型引数付きのメソッド)、`shortener` (`std.env.arg_count`)、`threads` (型引数付きの呼び出し)、`tour` (`Vec.remove`)。
+- VM で実際に走る (退避しない) もの: perf の 8 本すべてと examples の `demo` / `native` / `realtime` / `json` / `more_coll` / `more_str`。
+
+### 18.3 一致テスト (`stage0/tests/vm_parity.rs`)
+
+- `vm_run_matches_tree_walker_on_perf_and_lowerable_examples`: 上の 14 パッケージは VM が退避しないことを確かめたうえで、標準出力・標準エラー・終了コードを木走査と比べる。退避する 6 本の examples も、退避したうえでの一致を確かめる。
+- `vm_test_matches_tree_walker_on_examples`: `ksn test` と `ksn test --engine=vm` の出力が一致。
+- `vm_run_matches_tree_walker_on_programs_from_cli_tests`: `tests/cli.rs` の文字列リテラルを取り出し (通常と raw の両方)、(a) `fn t.main` を持つ完全なプログラム、(b) `kir_*` のテストの表 `("t.f", &[引数], 期待値, ..)` を、そのテストが使う関数の定義の `const` と組み合わせた `core.check.eq(f(引数), 期待値)` / `let _x = f(引数)` の `main`、を木走査と VM の両方で走らせて一致を確かめる。`VM_PARITY_SHOW=1` で、検査で止まったプログラムを表示する。内訳は実行時に stderr に出る (294 本: VM で走った 127 / 退避 24 / 検査で止まった (診断の負の事例) 143)。
+
+### 18.4 計測 (木走査 → VM、`python3 perf/vm_compare.py --repeat 5`)
+
+既定の入力、`ksn run` の壁時計の中央値 (起動・読み込み・検査を含む)。Xeon E5-2620 v4、release ビルド、他のビルドが並走する状態 (±10% 程度の揺れ)。目標は木走査の 10 倍 (第 7 章 10)。
+
+| ケース | 木走査 (ms) | VM (ms) | 倍率 |
+| --- | ---: | ---: | ---: |
+| noop (起動のみ) | 32.0 | 33.5 | 1.0x |
+| fib | 2412.1 | 60.2 | 40.1x |
+| loops | 9034.8 | 232.5 | 38.9x |
+| vecops | 7180.7 | 162.1 | 44.3x |
+| hashmap | 67.0 | 42.3 | 1.6x |
+| strcat | 3436.4 | 126.9 | 27.1x |
+| structs | 3961.6 | 135.4 | 29.2x |
+| closure | 2045.8 | 61.9 | 33.1x |
+
+- 起動の 32 ms (標準ライブラリの読み込み・検査・KIR への下ろし) が下限で、`hashmap` は木走査でも 67 ms と短い (索引化の後)ので倍率が出ない。起動を除いた実行部分の倍率は、fib で (2412-32)/(60-33) ≈ 90 倍。
+- 17 (VM を既定にする条件) の「perf の中央値で 5 倍以上」は hashmap 以外で満たしている。残りの条件 (cargo test・`test --both`・bench/reference が一致) は未確認。
+
+### 18.5 次の段にやること
+
+- 起動時間の短縮 (標準ライブラリの検査と下ろしが 30 ms)。入力を大きくした hashmap の計測 (README の N=20,000)。
+- バイトコードの詰め込み (8 バイトのスロット・命令。`i128` を 2 スロットに)、融合命令の追加 (`call` + `ret`、フィールドの読み + 加算など)、`Make` / `Field` が確保する置き場の `Vec<u8>` の除去 (集成体をフレーム内のバイトに置く)。
+- 関数表と安全点 (`vm/reload.rs`)、ホットリロード (`--watch`) の VM 対応、命令ごとの行表。
+- `std.net` の命令、`ksn test --both` の比較相手に VM を加える、bench/reference と `test --both` の一致の確認。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
