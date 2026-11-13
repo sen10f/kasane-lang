@@ -5,6 +5,7 @@
 
 pub mod bc;
 pub mod compile;
+pub mod reload;
 pub mod run;
 
 use crate::kir::{Ty, PAY_MASK, TAG_BIT};
@@ -55,20 +56,23 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
     if let Some(e) = errs.first() {
         return Err(format!("KIR の検査に失敗: {} {}", e.0, e.1));
     }
-    let r = compile::compile(&m);
+    let r = compile::compile(&m, &lo.lines);
     tick("compile");
     r
 }
 
 /// `ksn run --engine=vm`: 入口を VM で実行して終了コードを返す。実行を始める前に分かる理由 (下ろせない・VM が扱えない) は `Err`。
-pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String]) -> Result<i32, String> {
+pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], watch: Option<Box<dyn FnOnce() -> reload::Reload + '_>>) -> Result<i32, String> {
     let lo = kir_lower::lower_program(prog, user, Some(entry));
     tick("lower");
     let ret = lo.module.find(entry).map(|f| f.ret);
     let bc = prepare(lo, entry)?;
     let mut vm = run::Vm::new(&bc);
     vm.args = args.to_vec();
+    vm.hook = watch.map(|mk| mk());
+    tick("vm-start");
     let out = vm.run(entry, &[]);
+    tick("vm-run");
     Ok(match out {
         Ok(Outcome::Value(v)) => match ret {
             // 入口が `Err(e)` を返したら、stderr に `Error: <e の Debug 表示>` を出して終了コード 1 (木走査の `run_entry` と同じ)。
@@ -91,10 +95,21 @@ pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String]) -
         Ok(Outcome::Panic(m)) => {
             vm.flush();
             eprintln!("panic: {}", m);
+            // `KSN_PANIC_LOC=1`: panic の位置を、デバッガ (`ksn debug` の `stopped: panic`) と同じ形で添える。
+            if std::env::var_os("KSN_PANIC_LOC").is_some() {
+                if let Some(loc) = vm.panic_location() {
+                    eprintln!("  {}", loc);
+                }
+            }
             101
         }
         Ok(Outcome::Abort) => {
             vm.flush();
+            if std::env::var_os("KSN_PANIC_LOC").is_some() {
+                if let Some(loc) = vm.panic_location() {
+                    eprintln!("  {}", loc);
+                }
+            }
             101
         }
         Ok(Outcome::StackOverflow) => {

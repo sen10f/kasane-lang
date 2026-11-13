@@ -526,7 +526,16 @@ pub const CALLBACK_SLOTS: usize = 64;
 /// 入口から呼ばれるハンドラ: (スロット, GP レジスタ 6 本, XMM レジスタ 8 本の下位 64 ビット) → (RAX, XMM0)。
 pub type CallbackHandler = fn(usize, &[u64; 6], &[u64; 8]) -> (u64, u64);
 
+/// 入口の番号の振り分け: `0..VM_SLOT_BASE` は木走査 (`ffi_interp`)、`VM_SLOT_BASE..` はバイトコード VM (`vm/run.rs`)。
+/// 同じプロセスで両方が動いても (`ksn test --engine=both`)、ハンドラが混ざらない。
+pub const VM_SLOT_BASE: usize = 48;
+
 static HANDLER: std::sync::OnceLock<CallbackHandler> = std::sync::OnceLock::new();
+static VM_HANDLER: std::sync::OnceLock<CallbackHandler> = std::sync::OnceLock::new();
+
+pub fn set_vm_callback_handler(h: CallbackHandler) {
+    let _ = VM_HANDLER.set(h);
+}
 
 pub fn set_callback_handler(h: CallbackHandler) {
     let _ = HANDLER.set(h);
@@ -539,7 +548,8 @@ pub struct RetPair(u64, f64);
 extern "C" fn tramp<const N: usize>(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, f0: f64, f1: f64, f2: f64, f3: f64, f4: f64, f5: f64, f6: f64, f7: f64) -> RetPair {
     let gp = [a0, a1, a2, a3, a4, a5];
     let sse = [f0.to_bits(), f1.to_bits(), f2.to_bits(), f3.to_bits(), f4.to_bits(), f5.to_bits(), f6.to_bits(), f7.to_bits()];
-    let (a, b) = (HANDLER.get().expect("callback handler"))(N, &gp, &sse);
+    let h = if N >= VM_SLOT_BASE { VM_HANDLER.get() } else { HANDLER.get() };
+    let (a, b) = (h.expect("callback handler"))(N, &gp, &sse);
     RetPair(a, f64::from_bits(b))
 }
 

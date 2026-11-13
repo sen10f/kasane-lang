@@ -5,21 +5,68 @@
 use std::collections::HashMap;
 
 use super::bc::*;
-use crate::kir::{size_of, AggKind, Block, Func, Mode, Module, Op, Term, Ty, VId};
+use crate::kir::{size_of, AggKind, Aop, Block, Cc, Func, Mode, Module, Op, Term, Ty, VId};
+
+/// 定数の被演算子を命令に埋める (即値)。`Arith` (64 ビット以下の `+ - *`) は `(もう一方の値, 即値, 定数の値)`。
+/// 加算と乗算は定数が左でも入れ替えて埋める。
+fn imm_arith(op: Aop, mode: Mode, ty: Ty, a: VId, b: VId, cv: &HashMap<VId, i32>) -> Option<(VId, i32, VId)> {
+    fast_ti(ty)?;
+    if !matches!(mode, Mode::Trap | Mode::Wrap) || !matches!(op, Aop::Add | Aop::Sub | Aop::Mul) {
+        return None;
+    }
+    if let Some(c) = cv.get(&b) {
+        return Some((a, *c, b));
+    }
+    if op != Aop::Sub {
+        if let Some(c) = cv.get(&a) {
+            return Some((b, *c, a));
+        }
+    }
+    None
+}
+
+fn swap_cc(cc: Cc) -> Cc {
+    match cc {
+        Cc::Lt => Cc::Gt,
+        Cc::Le => Cc::Ge,
+        Cc::Gt => Cc::Lt,
+        Cc::Ge => Cc::Le,
+        c => c,
+    }
+}
+
+/// 整数 (浮動小数と `u128` を除く) の比較の定数の被演算子: `(もう一方の値, 比較, 即値, 定数の値)`。
+fn imm_cmp(cc: Cc, oty: Ty, a: VId, b: VId, cv: &HashMap<VId, i32>) -> Option<(VId, Cc, i32, VId)> {
+    if oty.is_float() || oty == Ty::U128 {
+        return None;
+    }
+    if let Some(c) = cv.get(&b) {
+        return Some((a, cc, *c, b));
+    }
+    cv.get(&a).map(|c| (b, swap_cc(cc), *c, a))
+}
+
+/// 比較の被演算子 (レジスタ同士、またはレジスタと即値)。
+#[derive(Clone, Copy)]
+enum CmpOpnd {
+    Rr(S, S),
+    Ri(S, i32),
+}
 
 /// KIR のモジュール全体をバイトコードにする。
-pub fn compile(m: &Module) -> Result<Prog, String> {
+pub fn compile(m: &Module, lines: &HashMap<String, crate::kir_lower::FnLines>) -> Result<Prog, String> {
     let mut prog = Prog { aggs: m.aggs.clone(), ..Default::default() };
     let index: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
     for f in &m.funcs {
         let vf = if f.link.is_some() {
             // `extern` 宣言 (本体なし)。呼び出しは `CallExt` になる。
-            VFunc { key: f.key.clone(), code: vec![], pool: vec![], nslots: 0, nparams: f.params().len() as u32, ret: f.ret, ret_heap: false }
+            VFunc { key: f.key.clone(), code: vec![], pool: vec![], marks: vec![], file: String::new(), nslots: 0, nparams: f.params().len() as u32, ptys: f.params().iter().map(|(_, t)| *t).collect(), ret: f.ret, ret_heap: false }
         } else {
-            compile_func(m, &index, &mut prog, f).map_err(|e| format!("{}: {}", f.key, e))?
+            compile_func(m, &index, &mut prog, f, lines.get(&f.key)).map_err(|e| format!("{}: {}", f.key, e))?
         };
         prog.funcs.push(vf);
     }
+    prog.by_key = prog.funcs.iter().enumerate().map(|(i, f)| (f.key.clone(), i as u32)).collect();
     Ok(prog)
 }
 
@@ -28,6 +75,8 @@ fn tyi(prog: &mut Prog, t: Ty) -> u32 {
         Some(i) => i as u32,
         None => {
             prog.tys.push(t);
+            let n = size_of(&prog.aggs, t);
+            prog.ty_size.push(n);
             (prog.tys.len() - 1) as u32
         }
     }
@@ -62,11 +111,38 @@ fn width(t: Ty) -> Option<u8> {
     })
 }
 
+/// 読み出し命令 (よく使う幅は専用の命令)。
+fn load_ins(d: S, p: S, off: u32, k: LK) -> Ins {
+    match k {
+        LK::U64 => Ins::LoadU64 { d, p, off },
+        LK::I64 => Ins::LoadI64 { d, p, off },
+        LK::U32 => Ins::LoadU32 { d, p, off },
+        LK::I32 => Ins::LoadI32 { d, p, off },
+        LK::U8 => Ins::LoadU8 { d, p, off },
+        k => Ins::Load { d, p, off, k },
+    }
+}
+
+fn store_ins(p: S, off: u32, v: S, w: u8) -> Ins {
+    match w {
+        8 => Ins::Store64 { p, off, v },
+        1 => Ins::Store8 { p, off, v },
+        w => Ins::Store { p, off, v, w },
+    }
+}
+
 struct Fc<'a> {
     m: &'a Module,
     index: &'a HashMap<&'a str, usize>,
     prog: &'a mut Prog,
+    /// 値番号 → 行 (行表の元)。
+    fl: Option<&'a crate::kir_lower::FnLines>,
+    marks: Vec<(u32, u32)>,
     slot: Vec<u32>,
+    /// `i32` に収まる定数の値 (即値にできる)。
+    cv: HashMap<VId, i32>,
+    /// 定数のうち、使われる箇所がすべて即値に埋められるもの (定数の命令を出さない)。
+    skip_const: std::collections::HashSet<VId>,
     vty: Vec<Ty>,
     uses: Vec<u32>,
     nslots: u32,
@@ -75,13 +151,15 @@ struct Fc<'a> {
     pool: Vec<u32>,
     /// 直前に出した比較 (`icmp`) の (結果の値, 命令の位置)。次の `br_if` が融合する。
     last_cmp: Option<(VId, usize)>,
+    /// 直前に出した `ptr.add` の (結果の値, 命令の位置)。次の `load` / `store` が融合する。
+    last_pa: Option<(VId, usize)>,
     /// ブロック内の `fieldaddr` のうち、唯一の使い道が同じブロックの `load` / `store` のアドレスのもの (値 → (基底, オフセット))。
     /// 命令を出さずに、`load` / `store` のオフセットに畳み込む。
     folded: HashMap<VId, (VId, u32)>,
     pending: HashMap<VId, (VId, u32)>,
 }
 
-fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &Func) -> Result<VFunc, String> {
+fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &Func, fl: Option<&crate::kir_lower::FnLines>) -> Result<VFunc, String> {
     let n = f.value_count();
     let mut slot = vec![u32::MAX; n];
     let mut vty = vec![Ty::Unit; n];
@@ -115,13 +193,63 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
             Term::Unreachable => {}
         }
     }
-    let mut fc = Fc { m, index, prog, slot, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, folded: HashMap::new(), pending: HashMap::new() };
+    // ブロック引数の合流の `Mov` を減らす: 無条件分岐 (`Br`) の引数が、そのブロックの中で作られて他に使われない値なら、
+    // その値を受け側のパラメータと同じスロットに置く (作った時点で直接書く)。パラメータの古い値がそれ以降に読まれないときだけ。
+    for b in &f.blocks {
+        let Term::Br((t, args)) = &b.term else { continue };
+        let params = &f.blocks[*t].params;
+        for (k, a) in args.iter().enumerate() {
+            let Some((p, _)) = params.get(k) else { continue };
+            let (a, p) = (*a, *p);
+            if uses[a as usize] != 1 || slot[a as usize] == slot[p as usize] {
+                continue;
+            }
+            let Some(idx) = b.insts.iter().position(|i| i.dst == a) else { continue };
+            if b.params.iter().any(|(q, _)| *q == a) {
+                continue;
+            }
+            let reads_p = |i: &crate::kir::Inst| crate::kir::operands(&i.op).contains(&p);
+            let later = b.insts[idx + 1..].iter().any(reads_p);
+            let fa = b.insts.iter().any(|i| matches!(i.op, Op::FieldAddr { .. }) && reads_p(i));
+            let other_args = args.iter().enumerate().any(|(j, x)| j != k && *x == p);
+            if later || fa || other_args {
+                continue;
+            }
+            slot[a as usize] = slot[p as usize];
+        }
+    }
+    let mut cv: HashMap<VId, i32> = HashMap::new();
+    for b in &f.blocks {
+        for i in &b.insts {
+            if let Op::Const(v) = &i.op {
+                if let Ok(x) = i32::try_from(*v) {
+                    cv.insert(i.dst, x);
+                }
+            }
+        }
+    }
+    let mut nfold: HashMap<VId, u32> = HashMap::new();
+    for b in &f.blocks {
+        for i in &b.insts {
+            let c = match &i.op {
+                Op::Arith { op, mode, a, b } => imm_arith(*op, *mode, i.ty, *a, *b, &cv).map(|x| x.2),
+                Op::Cmp { cc, ty: oty, a, b } => imm_cmp(*cc, *oty, *a, *b, &cv).map(|x| x.3),
+                _ => None,
+            };
+            if let Some(c) = c {
+                *nfold.entry(c).or_insert(0) += 1;
+            }
+        }
+    }
+    let skip_const: std::collections::HashSet<VId> = nfold.into_iter().filter(|(v, n)| uses[*v as usize] == *n).map(|(v, _)| v).collect();
+    let mut fc = Fc { m, index, prog, fl, marks: vec![], slot, cv, skip_const, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, last_pa: None, folded: HashMap::new(), pending: HashMap::new() };
     let mut starts = vec![0u32; f.blocks.len()];
     // 分岐先が未確定の `Jmp` などの位置 → ブロック番号。
     let mut patches: Vec<(usize, usize)> = vec![];
     for (bi, b) in f.blocks.iter().enumerate() {
         starts[bi] = fc.code.len() as u32;
         fc.last_cmp = None;
+        fc.last_pa = None;
         fc.folded.clear();
         fc.pending.clear();
         fc.find_folds(&b.insts);
@@ -133,24 +261,38 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
     for (at, blk) in patches {
         let to = starts[blk];
         match &mut fc.code[at] {
-            Ins::Jmp { to: t } | Ins::JmpIfNot { to: t, .. } | Ins::JCmpNot { to: t, .. } => *t = to,
+            Ins::Jmp { to: t } | Ins::JmpIf { to: t, .. } | Ins::JmpIfNot { to: t, .. } | Ins::JCmpNot { to: t, .. } | Ins::JCmpNotI { to: t, .. } | Ins::JCmp { to: t, .. } | Ins::JCmpI { to: t, .. } => *t = to,
             _ => return Err("内部エラー: 分岐の書き換え先が分岐でない".into()),
         }
+    }
+    if fc.nslots + fc.temps > MAX_SLOTS {
+        return Err(format!("スロットが {} 個を超える", MAX_SLOTS));
     }
     Ok(VFunc {
         key: f.key.clone(),
         code: fc.code,
         pool: fc.pool,
+        marks: fc.marks,
+        file: fl.map(|x| x.file.clone()).unwrap_or_default(),
         nslots: fc.nslots + fc.temps,
         nparams: f.params().len() as u32,
+        ptys: f.params().iter().map(|(_, t)| *t).collect(),
         ret: f.ret,
         ret_heap: crate::kir_exec::has_heap(f.ret),
     })
 }
 
 impl<'a> Fc<'a> {
+    /// これから出す命令の行を行表に記す (同じ行が続くときは足さない)。
+    fn mark(&mut self, v: VId) {
+        let line = self.fl.and_then(|f| f.lines.get(v as usize).copied()).unwrap_or(0);
+        if line != 0 && self.marks.last().map(|m| m.1) != Some(line) {
+            self.marks.push((self.code.len() as u32, line));
+        }
+    }
+
     fn s(&self, v: VId) -> S {
-        self.slot[v as usize]
+        self.slot[v as usize] as S
     }
 
     fn ty_of(&mut self, t: Ty) -> u32 {
@@ -161,7 +303,7 @@ impl<'a> Fc<'a> {
         let p = self.pool.len() as u32;
         for v in vs {
             let s = self.s(*v);
-            self.pool.push(s);
+            self.pool.push(s as u32);
         }
         (p, vs.len() as u32)
     }
@@ -214,8 +356,24 @@ impl<'a> Fc<'a> {
     fn inst(&mut self, inst: &crate::kir::Inst) -> Result<(), String> {
         let d = self.s(inst.dst);
         let ty = inst.ty;
+        self.mark(inst.dst);
         self.last_cmp = None;
+        let prev_pa = self.last_pa.take();
+        // 直前の `ptr.add` の結果 `p` を 1 回だけ使う `load` / `store` なら、その加算を取り込む (基底と添字のスロット)。
+        let fuse_pa = |fc: &mut Fc, p: VId| -> Option<(S, S)> {
+            match prev_pa {
+                Some((v, at)) if v == p && fc.uses[p as usize] == 1 && at + 1 == fc.code.len() => match fc.code[at] {
+                    Ins::PtrAdd { p: b, off: x, .. } => {
+                        fc.code.pop();
+                        Some((b, x))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
         let i = match &inst.op {
+            Op::Const(_) if self.skip_const.contains(&inst.dst) => return Ok(()),
             Op::Const(v) => match i64::try_from(*v) {
                 Ok(x) => Ins::ConstI { d, v: x },
                 Err(_) => {
@@ -224,6 +382,19 @@ impl<'a> Fc<'a> {
                 }
             },
             Op::Arith { op, mode, a, b } => {
+                if let Some((x, imm, _)) = imm_arith(*op, *mode, ty, *a, *b, &self.cv) {
+                    let (a, t) = (self.s(x), fast_ti(ty).unwrap());
+                    let i = match (op, mode) {
+                        (Aop::Add, Mode::Trap) => Ins::AddTI { d, a, t, imm },
+                        (Aop::Sub, Mode::Trap) => Ins::SubTI { d, a, t, imm },
+                        (Aop::Mul, Mode::Trap) => Ins::MulTI { d, a, t, imm },
+                        (Aop::Add, _) => Ins::AddWI { d, a, t, imm },
+                        (Aop::Sub, _) => Ins::SubWI { d, a, t, imm },
+                        _ => Ins::MulWI { d, a, t, imm },
+                    };
+                    self.push(i);
+                    return Ok(());
+                }
                 let (a, b) = (self.s(*a), self.s(*b));
                 use crate::kir::Aop::*;
                 match (fast_ti(ty), op, mode) {
@@ -237,6 +408,12 @@ impl<'a> Fc<'a> {
                 }
             }
             Op::Cmp { cc, ty: oty, a, b } => {
+                if let Some((x, cc, imm, _)) = imm_cmp(*cc, *oty, *a, *b, &self.cv) {
+                    let a = self.s(x);
+                    self.code.push(Ins::CmpII { d, a, cc, imm });
+                    self.last_cmp = Some((inst.dst, self.code.len() - 1));
+                    return Ok(());
+                }
                 let (a, b) = (self.s(*a), self.s(*b));
                 if oty.is_float() || *oty == Ty::U128 {
                     Ins::Cmp { d, a, b, cc: *cc, ty: self.ty_of(*oty) }
@@ -368,14 +545,23 @@ impl<'a> Fc<'a> {
                 self.prog.wide.push(p);
                 Ins::ConstW { d, k: (self.prog.wide.len() - 1) as u32 }
             }
-            Op::PtrAdd { p, off } => Ins::PtrAdd { d, p: self.s(*p), off: self.s(*off) },
+            Op::PtrAdd { p, off } => {
+                self.last_pa = Some((inst.dst, self.code.len()));
+                Ins::PtrAdd { d, p: self.s(*p), off: self.s(*off) }
+            }
             Op::MemLoad { p, off } => {
                 let Some(k) = lk(ty) else { return Err(format!("mem.load の型 {} が読めない", ty.name())) };
-                Ins::Load { d, p: self.s(*p), off: *off, k }
+                match fuse_pa(self, *p) {
+                    Some((p, x)) => Ins::LoadX { d, p, x, off: *off, k },
+                    None => load_ins(d, self.s(*p), *off, k),
+                }
             }
             Op::MemStore { ty: sty, p, off, v } => {
                 let Some(w) = width(*sty) else { return Err(format!("mem.store の型 {} が書けない", sty.name())) };
-                Ins::Store { p: self.s(*p), off: *off, v: self.s(*v), w }
+                match fuse_pa(self, *p) {
+                    Some((p, x)) => Ins::StoreX { p, x, off: *off, v: self.s(*v), w },
+                    None => store_ins(self.s(*p), *off, self.s(*v), w),
+                }
             }
             Op::Load(p) => match ty {
                 Ty::Agg(ai) => {
@@ -384,8 +570,13 @@ impl<'a> Fc<'a> {
                 }
                 t => {
                     let Some(k) = lk(t) else { return Err(format!("load の型 {} が読めない", t.name())) };
-                    let (pp, off) = self.addr_of(*p);
-                    Ins::Load { d, p: pp, off, k }
+                    match fuse_pa(self, *p) {
+                        Some((p, x)) => Ins::LoadX { d, p, x, off: 0, k },
+                        None => {
+                            let (pp, off) = self.addr_of(*p);
+                            load_ins(d, pp, off, k)
+                        }
+                    }
                 }
             },
             Op::Store { ptr, val } => match self.vty[*val as usize] {
@@ -395,8 +586,13 @@ impl<'a> Fc<'a> {
                 }
                 t => {
                     let Some(w) = width(t) else { return Err(format!("store の型 {} が書けない", t.name())) };
-                    let (pp, off) = self.addr_of(*ptr);
-                    Ins::Store { p: pp, off, v: self.s(*val), w }
+                    match fuse_pa(self, *ptr) {
+                        Some((p, x)) => Ins::StoreX { p, x, off: 0, v: self.s(*val), w },
+                        None => {
+                            let (pp, off) = self.addr_of(*ptr);
+                            store_ins(pp, off, self.s(*val), w)
+                        }
+                    }
                 }
             },
             Op::FieldAddr { a, off } => {
@@ -432,6 +628,15 @@ impl<'a> Fc<'a> {
             Op::NetFlush { sock } => Ins::NetFlush { d, sock: self.s(*sock) },
             Op::NetClose { sock } => Ins::NetClose { d, sock: self.s(*sock) },
             Op::NetLocalPort { sock } => Ins::NetLocalPort { d, sock: self.s(*sock) },
+            Op::FnPtr { callee } => {
+                let Some(&ci) = self.index.get(callee.as_str()) else {
+                    return Err(format!("関数ポインタの先 {} がない", callee));
+                };
+                if self.m.funcs[ci].link.is_some() {
+                    return Err(format!("extern 関数 {} のアドレスは VM 未対応", callee));
+                }
+                Ins::FnPtr { d, f: ci as u32 }
+            }
             // std.fs の命令は VM 未対応 (木走査へ退避する)。
             Op::FsCreate { .. }
             | Op::FsOpen { .. }
@@ -442,8 +647,6 @@ impl<'a> Fc<'a> {
             | Op::FsRead { .. }
             | Op::FsSync { .. }
             | Op::FsWrite { .. } => return Err("std.fs の命令は VM 未対応".into()),
-            // C のコールバックに VM の関数を渡すには機械語のトランポリンが要る。それまでは木走査へ退避する。
-            Op::FnPtr { .. } => return Err("関数ポインタ (FnPtr) の命令は VM 未対応".into()),
         };
         self.push(i);
         Ok(())
@@ -460,18 +663,60 @@ impl<'a> Fc<'a> {
             return;
         }
         let base = self.nslots;
+        if base + pairs.len() as u32 > MAX_SLOTS {
+            self.temps = MAX_SLOTS + 1; // 呼び出し元が上限超過として退避させる
+            return;
+        }
         self.temps = self.temps.max(pairs.len() as u32);
         for (k, (_, s)) in pairs.iter().enumerate() {
-            self.push(Ins::Mov { d: base + k as u32, s: *s });
+            self.push(Ins::Mov { d: (base + k as u32) as S, s: *s });
         }
         for (k, (d, _)) in pairs.iter().enumerate() {
-            self.push(Ins::Mov { d: *d, s: base + k as u32 });
+            self.push(Ins::Mov { d: *d, s: (base + k as u32) as S });
         }
+    }
+
+    /// ブロック `h` が「(定数を除いて) 整数の比較 1 つ + 引数のない分岐」だけなら、その比較と分岐先 (真・偽)。
+    fn thread_target(&self, f: &Func, h: usize) -> Option<((Cc, CmpOpnd), usize, usize)> {
+        let b = &f.blocks[h];
+        let Term::BrIf(c, (t1, a1), (t2, a2)) = &b.term else { return None };
+        if !a1.is_empty() || !a2.is_empty() || self.uses[*c as usize] != 1 {
+            return None;
+        }
+        let mut real = b.insts.iter().filter(|i| !(matches!(i.op, Op::Const(_)) && self.skip_const.contains(&i.dst)));
+        let i = real.next()?;
+        if real.next().is_some() || i.dst != *c {
+            return None;
+        }
+        let Op::Cmp { cc, ty: oty, a, b: bb } = &i.op else { return None };
+        if oty.is_float() || *oty == Ty::U128 {
+            return None;
+        }
+        let cmp = match imm_cmp(*cc, *oty, *a, *bb, &self.cv) {
+            Some((x, cc, imm, _)) => (cc, CmpOpnd::Ri(self.s(x), imm)),
+            None => (*cc, CmpOpnd::Rr(self.s(*a), self.s(*bb))),
+        };
+        Some((cmp, *t1, *t2))
     }
 
     fn jump_to(&mut self, f: &Func, from: usize, to: usize, args: &[VId], fall: bool, patches: &mut Vec<(usize, usize)>) {
         let b: &Block = &f.blocks[to];
         self.edge(args, &b.params);
+        // 後ろ辺の先が「比較 1 つだけで分岐するブロック」なら、その比較をここに写して、先頭への Jmp を省く。
+        if to <= from {
+            if let Some((cmp, t1, t2)) = self.thread_target(f, to) {
+                patches.push((self.code.len(), t1));
+                match cmp {
+                    (cc, CmpOpnd::Rr(a, b)) => self.push(Ins::JCmp { cc, a, b, to: 0 }),
+                    (cc, CmpOpnd::Ri(a, imm)) => self.push(Ins::JCmpI { cc, a, imm, to: 0 }),
+                }
+                if !(fall && t2 == from + 1) {
+                    patches.push((self.code.len(), t2));
+                    self.push(Ins::Jmp { to: 0 });
+                }
+                return;
+            }
+        }
         // 次のブロックへは落ちる (命令を出さない)。
         if !(fall && to == from + 1) {
             patches.push((self.code.len(), to));
@@ -479,17 +724,27 @@ impl<'a> Fc<'a> {
         }
     }
 
+    /// 辺 (`args` → `params`) が出す `Mov` の数の見積り (0 かどうかだけを正確に返す)。
+    fn moves(&self, args: &[VId], params: &[(VId, Ty)]) -> usize {
+        params.iter().zip(args).filter(|((p, _), a)| self.s(*p) != self.s(**a)).count()
+    }
+
     fn term(&mut self, f: &Func, bi: usize, b: &Block, patches: &mut Vec<(usize, usize)>) -> Result<(), String> {
         match &b.term {
             Term::Br((t, args)) => self.jump_to(f, bi, *t, args, true, patches),
             Term::BrIf(c, (t1, a1), (t2, a2)) => {
+                self.mark(*c);
                 // 直前の比較を融合できるか (結果がこの分岐だけで使われる)。
                 let fused = match self.last_cmp {
                     Some((v, at)) if v == *c && self.uses[*c as usize] == 1 && at + 1 == self.code.len() => {
                         match self.code[at].clone() {
                             Ins::CmpI { cc, a, b, .. } => {
                                 self.code.pop();
-                                Some((cc, a, b))
+                                Some((cc, CmpOpnd::Rr(a, b)))
+                            }
+                            Ins::CmpII { cc, a, imm, .. } => {
+                                self.code.pop();
+                                Some((cc, CmpOpnd::Ri(a, imm)))
                             }
                             _ => None,
                         }
@@ -497,23 +752,54 @@ impl<'a> Fc<'a> {
                     _ => None,
                 };
                 let at = self.code.len();
-                match fused {
-                    Some((cc, a, b)) => self.push(Ins::JCmpNot { cc, a, b, to: 0 }),
-                    None => {
-                        let c = self.s(*c);
-                        self.push(Ins::JmpIfNot { c, to: 0 })
+                let nm1 = self.moves(a1, &f.blocks[*t1].params);
+                let nm2 = self.moves(a2, &f.blocks[*t2].params);
+                // 辺の移動がない側へは直接飛ぶ (偽の側が移動なし: 偽で飛ぶ。真の側が移動なし: 比較を反転して真で飛ぶ)。
+                // 両方なしなら、次のブロックへ落ちる側を落とす。
+                let jump_true = nm2 != 0 && nm1 == 0 || nm1 == 0 && nm2 == 0 && *t1 != bi + 1 && *t2 == bi + 1;
+                if jump_true {
+                    match fused {
+                        Some((cc, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmp { cc, a, b, to: 0 }),
+                        Some((cc, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpI { cc, a, imm, to: 0 }),
+                        None => {
+                            let c = self.s(*c);
+                            self.push(Ins::JmpIf { c, to: 0 })
+                        }
                     }
+                    patches.push((at, *t1));
+                    self.jump_to(f, bi, *t2, a2, true, patches);
+                } else if nm2 == 0 {
+                    match fused {
+                        Some((cc, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmpNot { cc, a, b, to: 0 }),
+                        Some((cc, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpNotI { cc, a, imm, to: 0 }),
+                        None => {
+                            let c = self.s(*c);
+                            self.push(Ins::JmpIfNot { c, to: 0 })
+                        }
+                    }
+                    patches.push((at, *t2));
+                    self.jump_to(f, bi, *t1, a1, true, patches);
+                } else {
+                    match fused {
+                        Some((cc, CmpOpnd::Rr(a, b))) => self.push(Ins::JCmpNot { cc, a, b, to: 0 }),
+                        Some((cc, CmpOpnd::Ri(a, imm))) => self.push(Ins::JCmpNotI { cc, a, imm, to: 0 }),
+                        None => {
+                            let c = self.s(*c);
+                            self.push(Ins::JmpIfNot { c, to: 0 })
+                        }
+                    }
+                    self.jump_to(f, bi, *t1, a1, false, patches);
+                    // 偽の側の飛び先はここ (真の側の辺の移動と Jmp の後ろ)。
+                    let else_pc = self.code.len() as u32;
+                    match &mut self.code[at] {
+                        Ins::JCmpNot { to, .. } | Ins::JCmpNotI { to, .. } | Ins::JmpIfNot { to, .. } => *to = else_pc,
+                        _ => unreachable!(),
+                    }
+                    self.jump_to(f, bi, *t2, a2, true, patches);
                 }
-                self.jump_to(f, bi, *t1, a1, false, patches);
-                // 偽の側の飛び先はここ (真の側の辺の移動と Jmp の後ろ)。
-                let else_pc = self.code.len() as u32;
-                match &mut self.code[at] {
-                    Ins::JCmpNot { to, .. } | Ins::JmpIfNot { to, .. } => *to = else_pc,
-                    _ => unreachable!(),
-                }
-                self.jump_to(f, bi, *t2, a2, true, patches);
             }
             Term::Ret(v) => {
+                self.mark(*v);
                 let v = self.s(*v);
                 self.push(Ins::Ret { v });
             }

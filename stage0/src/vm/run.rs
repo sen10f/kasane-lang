@@ -23,8 +23,51 @@ extern "C" {
     fn free(p: *mut std::ffi::c_void);
 }
 
+thread_local! {
+    /// いま `CallExt` で C を呼んでいる `Vm` (コールバックの入口が戻る先)。
+    static CUR_VM: std::cell::Cell<*mut Vm<'static>> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// `ffi::tramp` の VM 用ハンドラ。
+fn vm_cb_handler(slot: usize, gp: &[u64; 6], sse: &[u64; 8]) -> (u64, u64) {
+    let p = CUR_VM.with(|c| c.get());
+    if p.is_null() {
+        eprintln!("panic: a C callback was called outside of an extern call");
+        std::process::exit(101);
+    }
+    // SAFETY: 呼び出し元の `CallExt` は、C から戻るまで `self` に触らない。
+    let vm = unsafe { &mut *p };
+    vm.run_callback(slot - crate::ffi::VM_SLOT_BASE, gp, sse)
+}
+
+const PROF: bool = option_env!("KSN_VM_PROF").is_some();
+static PROF_T: std::sync::Mutex<Vec<(std::mem::Discriminant<Ins>, u64, String)>> = std::sync::Mutex::new(Vec::new());
+fn prof_count(ins: &Ins) {
+    let d = std::mem::discriminant(ins);
+    let mut t = PROF_T.lock().unwrap();
+    match t.iter_mut().find(|e| e.0 == d) {
+        Some(e) => e.1 += 1,
+        None => t.push((d, 1, format!("{:?}", ins).split(|c| c == ' ' || c == '(').next().unwrap().to_string())),
+    }
+}
+pub fn prof_report() {
+    if !PROF {
+        return;
+    }
+    let t = PROF_T.lock().unwrap();
+    let total: u64 = t.iter().map(|e| e.1).sum();
+    let mut v: Vec<(u64, &str)> = t.iter().map(|e| (e.1, e.2.as_str())).collect();
+    v.sort();
+    v.reverse();
+    eprintln!("[prof] total {}", total);
+    for (n, name) in v.iter().take(14) {
+        eprintln!("[prof] {:>10} {:5.1}% {}", n, *n as f64 * 100.0 / total as f64, name);
+    }
+}
+
 struct Frame {
-    /// 戻り先 (呼び出し元) の関数・命令番号・フレームの底。
+    /// 戻り先 (呼び出し元) の関数・命令番号・フレームの底。`v` は呼び出し元の関数が属する版 (`Vm::vers` の添字)。
+    v: u32,
     f: u32,
     pc: u32,
     base: u32,
@@ -36,6 +79,7 @@ struct Frame {
 }
 
 pub struct Vm<'a> {
+    #[allow(dead_code)]
     prog: &'a Prog,
     regs: Vec<i128>,
     frames: Vec<Frame>,
@@ -51,11 +95,35 @@ pub struct Vm<'a> {
     /// `std.net` のソケット表 (記述子 → ソケット)。
     socks: std::collections::HashMap<i128, NetSock>,
     next_fd: i128,
+    /// コールバックのフレームを積む位置 (`CallExt` の呼び出し元のフレームの上)。
+    top: usize,
+    /// 最後の panic が起きた (版, 関数番号, 命令番号)。
+    panic_at: Option<(u32, u32, u32)>,
+    /// C に渡した関数 (版, 関数番号)。添字がコールバックの入口の番号。
+    cbs: Vec<(u32, u32)>,
+    /// ホットリロードの版 (0 が最初)。各フレームは、呼び出されたときの版の関数を最後まで走らせる。新しい呼び出しは最新の版へ解決する。
+    pub(super) vers: Vec<*const Prog>,
+    pub(super) owned: Vec<Box<Prog>>,
+    /// `--watch` のとき。安全点 (呼び出しの入口) でエポック (`flag`) を見て、新しい版を取り込む。
+    pub(super) hook: Option<super::reload::Reload>,
 }
 
 enum NetSock {
     Listener(std::net::TcpListener),
     Stream(std::net::TcpStream),
+}
+
+#[inline(always)]
+fn cc_eval(cc: crate::kir::Cc, x: i128, y: i128) -> bool {
+    use crate::kir::Cc;
+    match cc {
+        Cc::Eq => x == y,
+        Cc::Ne => x != y,
+        Cc::Lt => x < y,
+        Cc::Le => x <= y,
+        Cc::Gt => x > y,
+        Cc::Ge => x >= y,
+    }
 }
 
 #[inline(always)]
@@ -69,7 +137,7 @@ fn bad_addr(a: i128, n: usize) -> String {
 
 #[inline(always)]
 fn addr(a: i128, n: usize) -> Result<*mut u8, String> {
-    if a < 0x1000 || a > u64::MAX as i128 {
+    if (a as u128).wrapping_sub(0x1000) > (u64::MAX - 0x1000) as u128 {
         return Err(bad_addr(a, n));
     }
     Ok(a as usize as *mut u8)
@@ -77,10 +145,22 @@ fn addr(a: i128, n: usize) -> Result<*mut u8, String> {
 
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0 }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
     }
 
     /// ためた stdout を流す。
+    /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
+    pub fn panic_location(&self) -> Option<String> {
+        let (vi, fi, pc) = self.panic_at?;
+        let prog: &Prog = unsafe { &*self.vers[vi as usize] };
+        let f = &prog.funcs[fi as usize];
+        let line = f.line_at(pc as usize);
+        if line == 0 || f.file.is_empty() {
+            return None;
+        }
+        Some(format!("in {} at {}:{}", f.key, crate::cli::rel(&f.file), line))
+    }
+
     pub fn flush(&mut self) {
         use std::io::Write;
         if !self.out.is_empty() {
@@ -116,6 +196,51 @@ impl<'a> Vm<'a> {
             }
             _ => Err(std::io::Error::from_raw_os_error(9)),
         }
+    }
+
+    /// C から呼ばれた入口 (スロット `slot`) の処理: レジスタの中身を引数にして VM の関数を走らせ、戻り値をレジスタの中身にする。
+    fn run_callback(&mut self, slot: usize, gp: &[u64; 6], sse: &[u64; 8]) -> (u64, u64) {
+        let (vi, ci) = self.cbs[slot];
+        let prog: &Prog = unsafe { &*self.vers[vi as usize] };
+        let cf = &prog.funcs[ci as usize];
+        let (mut gi, mut si) = (0, 0);
+        let mut args = vec![];
+        for t in &cf.ptys {
+            args.push(match t {
+                Ty::F32 | Ty::F64 => {
+                    si += 1;
+                    sse[si - 1] as i128 & if *t == Ty::F32 { 0xffff_ffff } else { u64::MAX as i128 }
+                }
+                Ty::Ptr => {
+                    gi += 1;
+                    gp[gi - 1] as i128
+                }
+                t => {
+                    gi += 1;
+                    t.wrap(gp[gi - 1] as i128)
+                }
+            });
+        }
+        let ret = cf.ret;
+        match self.exec(vi, ci, &args, true) {
+            Ok(Outcome::Value(v)) => match ret {
+                Ty::F32 | Ty::F64 => (0, v as u64),
+                _ => (v as i64 as u64, 0),
+            },
+            // コールバックは `panics never`。C のフレームを越えて巻き戻せない異常は、その場でプロセスを止める。
+            Ok(Outcome::Panic(m)) => self.die(101, Some(format!("panic: {}", m))),
+            Ok(Outcome::Abort) => self.die(101, None),
+            Ok(Outcome::StackOverflow) => self.die(102, Some("stack overflow".to_string())),
+            Err(e) => self.die(3, Some(format!("ksn: vm: 内部エラー: {}", e))),
+        }
+    }
+
+    fn die(&mut self, code: i32, msg: Option<String>) -> ! {
+        self.flush();
+        if let Some(m) = msg {
+            eprintln!("{}", m);
+        }
+        std::process::exit(code)
     }
 
     fn fat(&self, h: i128) -> Result<(i128, usize), String> {
@@ -161,10 +286,11 @@ impl<'a> Vm<'a> {
 
     /// 関数 `key` を引数 `args` で実行する。同じ `Vm` で続けて呼べる (置き場は戻り値が指す項目だけ残る)。
     pub fn run(&mut self, key: &str, args: &[i128]) -> Result<Outcome, String> {
-        let Some(entry) = self.prog.find(key) else {
+        let vi = (self.vers.len() - 1) as u32;
+        let prog: &Prog = unsafe { &*self.vers[vi as usize] };
+        let Some(entry) = prog.find(key) else {
             return Err(format!("関数 {} がない", key));
         };
-        let prog = self.prog;
         let f0 = &prog.funcs[entry];
         if args.len() != f0.nparams as usize {
             return Err(format!("関数 {} の引数の個数が違う", key));
@@ -174,18 +300,38 @@ impl<'a> Vm<'a> {
         }
         self.frames.clear();
         self.allocs.clear();
+        self.top = 0;
+        self.exec(vi, entry as u32, args, false)
+    }
+
+    /// 版 `vi` の関数 `entry` を走らせる。`nested` は、C の関数 (`CallExt`) から呼び戻された (コールバック) とき。
+    /// その場合は、呼び出し元のフレームの上 (`self.top`) にフレームを積み、呼び出し元のフレーム列・領域には触らない。
+    fn exec(&mut self, vi: u32, entry: u32, args: &[i128], nested: bool) -> Result<Outcome, String> {
+        let saved = if nested { Some(std::mem::take(&mut self.frames)) } else { None };
+        let r = self.exec_inner(vi, entry, args, nested);
+        if let Some(fr) = saved {
+            self.frames = fr;
+        }
+        r
+    }
+
+    fn exec_inner(&mut self, mut vi: u32, entry: u32, args: &[i128], nested: bool) -> Result<Outcome, String> {
+        let mut prog: &Prog = unsafe { &*self.vers[vi as usize] };
+        let entry = entry as usize;
+        let f0 = &prog.funcs[entry];
         let top_hbase = self.heap.len();
+        let top_abase = self.allocs.len();
         let mut fi = entry as u32;
         let mut f = f0;
         let mut pc = 0usize;
-        let mut base = 0usize;
-        if self.regs.len() < f.nslots as usize {
-            self.regs.resize(f.nslots as usize * 2, 0);
+        let mut base = self.top;
+        if self.regs.len() < base + f.nslots as usize {
+            self.regs.resize((base + f.nslots as usize) * 2, 0);
         }
         for (i, a) in args.iter().enumerate() {
-            self.regs[i] = *a;
+            self.regs[base + i] = *a;
         }
-        let mut rp: *mut i128 = self.regs.as_mut_ptr();
+        let mut rp: *mut i128 = unsafe { self.regs.as_mut_ptr().add(base) };
         macro_rules! r {
             ($s:expr) => {
                 unsafe { *rp.add($s as usize) }
@@ -199,6 +345,7 @@ impl<'a> Vm<'a> {
         }
         macro_rules! panic_out {
             ($m:expr) => {{
+                self.panic_at = Some((vi, fi, pc as u32 - 1));
                 self.flush();
                 return Ok(Outcome::Panic($m));
             }};
@@ -207,13 +354,64 @@ impl<'a> Vm<'a> {
             // SAFETY: コンパイラは各関数の最後に `Ret` / `Jmp` / `Unreachable` を置くので `pc` は範囲内。
             let ins = unsafe { f.code.get_unchecked(pc) };
             pc += 1;
+            if PROF {
+                prof_count(ins);
+            }
             match ins {
                 Ins::ConstI { d, v } => w!(*d, *v as i128),
                 Ins::ConstW { d, k } => w!(*d, prog.wide[*k as usize]),
                 Ins::Mov { d, s } => w!(*d, r!(*s)),
                 Ins::AddImm { d, a, imm } => w!(*d, r!(*a) + *imm as i128),
                 Ins::PtrAdd { d, p, off } => w!(*d, r!(*p) + r!(*off)),
+                Ins::AddTI { d, a, t, imm } => {
+                    let v = r!(*a) + *imm as i128;
+                    let (lo, hi) = fast_lo_hi(*t);
+                    if v < lo || v > hi {
+                        panic_out!(kir_exec::overflow_msg(Aop::Add));
+                    }
+                    w!(*d, v);
+                }
+                Ins::SubTI { d, a, t, imm } => {
+                    let v = r!(*a) - *imm as i128;
+                    let (lo, hi) = fast_lo_hi(*t);
+                    if v < lo || v > hi {
+                        panic_out!(kir_exec::overflow_msg(Aop::Sub));
+                    }
+                    w!(*d, v);
+                }
+                Ins::MulTI { d, a, t, imm } => {
+                    let v = r!(*a).wrapping_mul(*imm as i128);
+                    let (lo, hi) = fast_lo_hi(*t);
+                    if v < lo || v > hi {
+                        panic_out!(kir_exec::overflow_msg(Aop::Mul));
+                    }
+                    w!(*d, v);
+                }
+                Ins::AddWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_add(*imm as i128))),
+                Ins::SubWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_sub(*imm as i128))),
+                Ins::MulWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_mul(*imm as i128))),
+                Ins::CmpII { d, a, cc, imm } => w!(*d, cc_eval(*cc, r!(*a), *imm as i128) as i128),
+                Ins::JCmpNotI { cc, a, imm, to } => {
+                    if !cc_eval(*cc, r!(*a), *imm as i128) {
+                        pc = *to as usize;
+                    }
+                }
+                Ins::JCmp { cc, a, b, to } => {
+                    if cc_eval(*cc, r!(*a), r!(*b)) {
+                        pc = *to as usize;
+                    }
+                }
+                Ins::JCmpI { cc, a, imm, to } => {
+                    if cc_eval(*cc, r!(*a), *imm as i128) {
+                        pc = *to as usize;
+                    }
+                }
                 Ins::Jmp { to } => pc = *to as usize,
+                Ins::JmpIf { c, to } => {
+                    if r!(*c) != 0 {
+                        pc = *to as usize;
+                    }
+                }
                 Ins::JmpIfNot { c, to } => {
                     if r!(*c) == 0 {
                         pc = *to as usize;
@@ -313,7 +511,10 @@ impl<'a> Vm<'a> {
                         self.flush();
                         return Ok(Outcome::StackOverflow);
                     }
-                    let cf = &prog.funcs[*ci as usize];
+                    // 安全点 (関数の入口): `--watch` なら新しい版を取り込み、呼び先を最新の版へ解決する。
+                    let (cvi, ci) = if self.hook.is_some() { self.resolve_call(vi, *ci) } else { (vi, *ci) };
+                    let cprog: &Prog = if cvi == vi { prog } else { unsafe { &*self.vers[cvi as usize] } };
+                    let cf = &cprog.funcs[ci as usize];
                     let nb = base + f.nslots as usize;
                     if self.regs.len() < nb + cf.nslots as usize {
                         let n = (nb + cf.nslots as usize) * 2;
@@ -322,12 +523,14 @@ impl<'a> Vm<'a> {
                     }
                     // 引数を新しいフレームの先頭へ写す。
                     for k in 0..*argn as usize {
-                        let s = f.pool[*argp as usize + k];
+                        let s = unsafe { *f.pool.get_unchecked(*argp as usize + k) };
                         let v = r!(s);
                         unsafe { *rp.add(f.nslots as usize + k) = v };
                     }
-                    self.frames.push(Frame { f: fi, pc: pc as u32, base: base as u32, dst: *d, hbase: self.heap.len(), abase: self.allocs.len() });
-                    fi = *ci;
+                    self.frames.push(Frame { v: vi, f: fi, pc: pc as u32, base: base as u32, dst: *d, hbase: self.heap.len(), abase: self.allocs.len() });
+                    fi = ci;
+                    vi = cvi;
+                    prog = cprog;
                     f = cf;
                     pc = 0;
                     base = nb;
@@ -337,17 +540,25 @@ impl<'a> Vm<'a> {
                 Ins::CallExt { e, d, argp, argn } => {
                     let func = &prog.ext[*e as usize];
                     let argv: Vec<i128> = (0..*argn as usize).map(|k| r!(f.pool[*argp as usize + k])).collect();
-                    let v = kir_exec::extern_call(func, &argv)?;
-                    w!(*d, v);
+                    // C から呼び戻された (コールバック) とき、この `Vm` の上にフレームを積む。
+                    self.top = base + f.nslots as usize;
+                    let prev = CUR_VM.with(|c| c.replace(self as *mut Vm<'a> as *mut Vm<'static>));
+                    let v = kir_exec::extern_call(func, &argv);
+                    CUR_VM.with(|c| c.set(prev));
+                    // コールバックが `regs` を伸ばしたかもしれない。
+                    rp = unsafe { self.regs.as_mut_ptr().add(base) };
+                    w!(*d, v?);
                 }
                 Ins::Ret { v } => {
                     let mut val = r!(*v);
                     let (hbase, abase) = match self.frames.last() {
                         Some(fr) => (fr.hbase, fr.abase),
-                        None => (top_hbase, 0),
+                        None => (top_hbase, top_abase),
                     };
-                    for p in self.allocs.drain(abase..) {
-                        unsafe { free(p) };
+                    if self.allocs.len() > abase {
+                        for p in self.allocs.drain(abase..) {
+                            unsafe { free(p) };
+                        }
                     }
                     // 戻る関数が作った置き場の項目は捨てる。戻り値が参照する項目だけは、呼び出し元の置き場へ複製して残す。
                     if f.ret_heap {
@@ -355,16 +566,23 @@ impl<'a> Vm<'a> {
                         let mut out: Vec<Vec<u8>> = vec![];
                         val = kir_exec::relocate(f.ret, val, &blobs, hbase, &mut out);
                         self.heap.extend(out);
-                    } else {
+                    } else if self.heap.len() > hbase {
                         self.heap.truncate(hbase);
                     }
                     match self.frames.pop() {
                         None => {
-                            self.flush();
+                            if !nested {
+                                self.flush();
+                                prof_report();
+                            }
                             return Ok(Outcome::Value(val));
                         }
                         Some(fr) => {
                             fi = fr.f;
+                            if fr.v != vi {
+                                vi = fr.v;
+                                prog = unsafe { &*self.vers[vi as usize] };
+                            }
                             f = &prog.funcs[fi as usize];
                             pc = fr.pc as usize;
                             base = fr.base as usize;
@@ -374,6 +592,30 @@ impl<'a> Vm<'a> {
                             }
                         }
                     }
+                }
+                Ins::FnPtr { d, f: ci } => {
+                    let key = (vi, *ci);
+                    let slot = match self.cbs.iter().position(|c| *c == key) {
+                        Some(i) => i,
+                        None => {
+                            let cf = &prog.funcs[*ci as usize];
+                            let ng = cf.ptys.iter().filter(|t| !matches!(t, Ty::F32 | Ty::F64)).count();
+                            let nf = cf.ptys.len() - ng;
+                            if ng > 6 || nf > 8 {
+                                return Err("コールバックの引数は整数・ポインタ 6 個、浮動小数 8 個まで".to_string());
+                            }
+                            if self.cbs.len() >= crate::ffi::CALLBACK_SLOTS - crate::ffi::VM_SLOT_BASE {
+                                return Err(format!("C に渡す関数が多すぎる (VM では {} 個まで)", crate::ffi::CALLBACK_SLOTS - crate::ffi::VM_SLOT_BASE));
+                            }
+                            self.cbs.push(key);
+                            self.cbs.len() - 1
+                        }
+                    };
+                    crate::ffi::set_vm_callback_handler(vm_cb_handler);
+                    let Some(a) = crate::ffi::trampoline(crate::ffi::VM_SLOT_BASE + slot) else {
+                        return Err("コールバック (C に渡す関数) は x86_64 Linux だけで使える".to_string());
+                    };
+                    w!(*d, a as i128);
                 }
                 Ins::Unreachable => return Err("到達しないブロックに入った".to_string()),
                 Ins::Make { d, info, argp } => {
@@ -394,7 +636,7 @@ impl<'a> Vm<'a> {
                     let h = r!(*a) as usize;
                     let o = *off as usize;
                     // タグが別の腕の値を、判定の前に読むことがある (`Option<Vec>` の `None` のペイロード)。項目が無い・短いときは 0 として読む。
-                    let need = crate::kir::size_of(&prog.aggs, t) as usize;
+                    let need = prog.ty_size[*ty as usize] as usize;
                     let ok = matches!(self.heap.get(h), Some(b) if b.len() >= o + need);
                     let v = match t {
                         Ty::Agg(ai) => {
@@ -470,6 +712,67 @@ impl<'a> Vm<'a> {
                     };
                     w!(*d, v);
                 }
+                Ins::LoadU64 { d, p, off } => {
+                    let a = addr(r!(*p) + *off as i128, 8)?;
+                    w!(*d, unsafe { (a as *const u64).read_unaligned() } as i128);
+                }
+                Ins::LoadI64 { d, p, off } => {
+                    let a = addr(r!(*p) + *off as i128, 8)?;
+                    w!(*d, unsafe { (a as *const i64).read_unaligned() } as i128);
+                }
+                Ins::LoadU32 { d, p, off } => {
+                    let a = addr(r!(*p) + *off as i128, 4)?;
+                    w!(*d, unsafe { (a as *const u32).read_unaligned() } as i128);
+                }
+                Ins::LoadI32 { d, p, off } => {
+                    let a = addr(r!(*p) + *off as i128, 4)?;
+                    w!(*d, unsafe { (a as *const i32).read_unaligned() } as i128);
+                }
+                Ins::LoadU8 { d, p, off } => {
+                    let a = addr(r!(*p) + *off as i128, 1)?;
+                    w!(*d, unsafe { *a } as i128);
+                }
+                Ins::Store64 { p, off, v } => {
+                    let a = addr(r!(*p) + *off as i128, 8)?;
+                    let xv = r!(*v);
+                    unsafe { (a as *mut u64).write_unaligned(xv as u64) };
+                }
+                Ins::Store8 { p, off, v } => {
+                    let a = addr(r!(*p) + *off as i128, 1)?;
+                    let xv = r!(*v);
+                    unsafe { *a = xv as u8 };
+                }
+                Ins::LoadX { d, p, x, off, k } => {
+                    let a = addr(r!(*p) + r!(*x) + *off as i128, 1)?;
+                    let v: i128 = unsafe {
+                        match k {
+                            LK::U8 => *a as i128,
+                            LK::I8 => *(a as *const i8) as i128,
+                            LK::Bool => (*a != 0) as i128,
+                            LK::U16 => (a as *const u16).read_unaligned() as i128,
+                            LK::I16 => (a as *const i16).read_unaligned() as i128,
+                            LK::U32 => (a as *const u32).read_unaligned() as i128,
+                            LK::I32 => (a as *const i32).read_unaligned() as i128,
+                            LK::U64 => (a as *const u64).read_unaligned() as i128,
+                            LK::I64 => (a as *const i64).read_unaligned() as i128,
+                            LK::I128 => (a as *const i128).read_unaligned(),
+                        }
+                    };
+                    w!(*d, v);
+                }
+                Ins::StoreX { p, x, off, v, w: wd } => {
+                    let a = addr(r!(*p) + r!(*x) + *off as i128, *wd as usize)?;
+                    let xv = r!(*v);
+                    unsafe {
+                        match wd {
+                            1 => *a = xv as u8,
+                            2 => (a as *mut u16).write_unaligned(xv as u16),
+                            4 => (a as *mut u32).write_unaligned(xv as u32),
+                            8 => (a as *mut u64).write_unaligned(xv as u64),
+                            _ => (a as *mut u128).write_unaligned(xv as u128),
+                        }
+                    }
+                }
                 Ins::LoadAgg { d, p, size } => {
                     let n = *size as usize;
                     let a = addr(r!(*p), n)?;
@@ -533,6 +836,7 @@ impl<'a> Vm<'a> {
                     panic_out!(m);
                 }
                 Ins::Abort => {
+                    self.panic_at = Some((vi, fi, pc as u32 - 1));
                     self.flush();
                     return Ok(Outcome::Abort);
                 }

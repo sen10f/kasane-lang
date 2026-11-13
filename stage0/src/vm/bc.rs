@@ -10,10 +10,13 @@
 use crate::kir::{AggDef, Aop, BitK, Cc, FBin, FUn, Func, Mode, Ty};
 
 /// フレーム相対のスロット番号。
-pub type S = u32;
+pub type S = u16;
 
 /// `Ins::Call` などで「結果を受けない」ことを表すスロット。
-pub const NO_SLOT: S = u32::MAX;
+pub const NO_SLOT: S = u16::MAX;
+
+/// 1 関数のスロット数の上限 (`S` が `u16` なので)。超える関数は VM が扱えない (木走査へ退避)。
+pub const MAX_SLOTS: u32 = u16::MAX as u32 - 1;
 
 /// メモリ読み出しの幅と符号 (`MemLoad` / `Load`)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,8 +62,24 @@ pub enum Ins {
     /// `d = p + off` (`ptr.add`)。
     PtrAdd { d: S, p: S, off: S },
 
+    // ---- 即値の演算 (定数の被演算子を命令に埋める。`i32` に収まる定数だけ)
+    AddTI { d: S, a: S, t: u8, imm: i32 },
+    SubTI { d: S, a: S, t: u8, imm: i32 },
+    MulTI { d: S, a: S, t: u8, imm: i32 },
+    AddWI { d: S, a: S, t: u8, imm: i32 },
+    SubWI { d: S, a: S, t: u8, imm: i32 },
+    MulWI { d: S, a: S, t: u8, imm: i32 },
+    CmpII { d: S, a: S, cc: Cc, imm: i32 },
+    /// `a cc imm` が偽なら `to` へ。
+    JCmpNotI { cc: Cc, a: S, imm: i32, to: u32 },
+    /// `a cc b` が真なら `to` へ (ループの後ろ辺に、先頭の比較を写したもの)。
+    JCmp { cc: Cc, a: S, b: S, to: u32 },
+    JCmpI { cc: Cc, a: S, imm: i32, to: u32 },
+
     // ---- 制御
     Jmp { to: u32 },
+    /// `c` が 0 でなければ `to` へ。
+    JmpIf { c: S, to: u32 },
     /// `c` が 0 なら `to` へ。
     JmpIfNot { c: S, to: u32 },
     /// 整数 (`u128` を除く) の比較 `a cc b` が偽なら `to` へ (`icmp` + `br_if` の融合)。
@@ -100,6 +119,8 @@ pub enum Ins {
     Checked { d: S, a: S, b: S, op: Aop, ty: u32 },
 
     // ---- 呼び出し
+    /// 関数のアドレス (`FnPtr`): C に渡すコールバックの入口 (`ffi::tramp`) を返す。`f` は `Prog::funcs` の添字。
+    FnPtr { d: S, f: u32 },
     /// 直接呼び出し。引数のスロットは `VFunc::pool[argp .. argp + argn]`。
     Call { f: u32, d: S, argp: u32, argn: u32 },
     /// `extern` 宣言の C 関数 (`Prog::ext` の添字)。
@@ -122,6 +143,16 @@ pub enum Ins {
     FrameBytes { d: S, size: u32 },
     Load { d: S, p: S, off: u32, k: LK },
     /// 集成体を参照の先から読む (置き場に写す)。
+    /// `*(p + x + off)`。直前の `PtrAdd` と融合したもの。
+    LoadX { d: S, p: S, x: S, off: u32, k: LK },
+    StoreX { p: S, x: S, off: u32, v: S, w: u8 },
+    LoadU64 { d: S, p: S, off: u32 },
+    LoadI64 { d: S, p: S, off: u32 },
+    LoadU32 { d: S, p: S, off: u32 },
+    LoadI32 { d: S, p: S, off: u32 },
+    LoadU8 { d: S, p: S, off: u32 },
+    Store64 { p: S, off: u32, v: S },
+    Store8 { p: S, off: u32, v: S },
     LoadAgg { d: S, p: S, size: u32 },
     Store { p: S, off: u32, v: S, w: u8 },
     /// 集成体 (置き場の項目) を参照の先へ書く。
@@ -154,6 +185,8 @@ pub enum Ins {
     NetLocalPort { d: S, sock: S },
 }
 
+const _: () = assert!(std::mem::size_of::<Ins>() <= 16);
+
 #[derive(Clone, Debug)]
 pub struct VFunc {
     pub key: String,
@@ -162,9 +195,27 @@ pub struct VFunc {
     /// フレームのスロット数 (辺の一時スロットを含む)。
     pub nslots: u32,
     pub nparams: u32,
+    /// 命令ごとの行表 (設計_KIR.md 7 章 13): `(命令番号, 行)` の昇順。命令 `pc` の行は、番号が `pc` 以下の最後の項目の行。
+    pub marks: Vec<(u32, u32)>,
+    /// 行表のソースファイル (合成した関数は空)。
+    pub file: String,
+    /// 引数の型 (コールバックの引数をレジスタから読むのに使う)。
+    pub ptys: Vec<Ty>,
     pub ret: Ty,
     /// 戻り値が置き場の項目を指すか (戻るとき `relocate` が要る)。
     pub ret_heap: bool,
+}
+
+impl VFunc {
+    /// 命令 `pc` を作った式の行 (0 は不明)。
+    pub fn line_at(&self, pc: usize) -> u32 {
+        let i = self.marks.partition_point(|m| m.0 as usize <= pc);
+        if i == 0 {
+            0
+        } else {
+            self.marks[i - 1].1
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -172,10 +223,14 @@ pub struct Prog {
     pub funcs: Vec<VFunc>,
     pub aggs: Vec<AggDef>,
     pub tys: Vec<Ty>,
+    /// `tys` の各型の大きさ (バイト。`Field` が実行時に求めなくて済むように)。
+    pub ty_size: Vec<u32>,
     pub wide: Vec<i128>,
     pub strs: Vec<String>,
     pub makes: Vec<MakeInfo>,
     pub ext: Vec<Func>,
+    /// 関数の鍵 → `funcs` の添字 (ホットリロードで、古い版の呼び出しを新しい版の関数へ解決する)。
+    pub by_key: std::collections::HashMap<String, u32>,
     /// `global.bytes` の領域 (名前 → アドレス。プログラムごとに 1 つ、解放しない)。
     pub globals: std::collections::HashMap<String, usize>,
 }

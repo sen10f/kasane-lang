@@ -100,6 +100,20 @@ pub mod debug;
 pub struct Lowered {
     pub module: Module,
     pub unsupported: Vec<(String, String)>,
+    /// 関数の鍵 → 命令ごとの行 (VM の行表の元。設計_KIR.md 7 章 13)。下ろした関数だけ (合成した補助関数にはない)。
+    pub lines: HashMap<String, FnLines>,
+}
+
+/// 1 つの関数の行の対応: ソースのファイルと、値番号 (命令の結果) → その命令を作った式の行 (0 は不明)。
+#[derive(Clone, Debug, Default)]
+pub struct FnLines {
+    pub file: String,
+    pub lines: Vec<u32>,
+}
+
+thread_local! {
+    /// `lower_defs` の間に下ろした関数の行の対応 (終わりに `Lowered::lines` へ移す)。
+    static LINES: RefCell<HashMap<String, FnLines>> = RefCell::new(HashMap::new());
 }
 
 /// 型表を作る。ユーザの関数だけを検査し、(FQN, 式 ID) → 型 を返す。
@@ -247,6 +261,10 @@ struct Lw<'a> {
     loops: Vec<LoopCx>,
     callees: BTreeSet<String>,
     ret: Ty,
+    /// 式の下ろしの間、いまの式の行 (`expr` が入るときに立て、出るときに戻す)。
+    cur_line: u32,
+    /// 値番号 → その命令を作った式の行。
+    line_of: Vec<u32>,
     /// 参照の下ろしの状態 (kir_lower_refs.rs)。
     rf: RefCx,
     /// コレクション・文字列・クロージャの下ろし (kir_lower_coll.rs) の状態。
@@ -271,6 +289,8 @@ impl<'a> Lw<'a> {
             loops: vec![],
             callees: BTreeSet::new(),
             ret: Ty::Unit,
+            cur_line: 0,
+            line_of: vec![],
             rf: RefCx::default(),
             coll: CollCx::default(),
         }
@@ -300,6 +320,10 @@ impl<'a> Lw<'a> {
         let v = self.new_val(ty);
         let cur = self.cur.expect("KIR 下ろしの内部不変条件: 到達しないブロックへ命令を置いた");
         self.blocks[cur].insts.push(Inst { dst: v, ty, op });
+        if self.line_of.len() <= v as usize {
+            self.line_of.resize(v as usize + 1, 0);
+        }
+        self.line_of[v as usize] = self.cur_line;
         v
     }
 
@@ -496,6 +520,9 @@ impl<'a> Lw<'a> {
             link: None,
             blocks,
         };
+        LINES.with(|l| {
+            l.borrow_mut().insert(f.key.clone(), FnLines { file: d.file.clone(), lines: std::mem::take(&mut self.line_of) });
+        });
         let mut out = std::mem::take(&mut self.coll.extra);
         out.insert(0, (f, self.callees));
         Ok(out)
@@ -505,6 +532,17 @@ impl<'a> Lw<'a> {
 
     /// 式を下ろす。`None` は制御がその先へ進まないこと (return / break / continue など) を表す。
     fn expr(&mut self, e: &V) -> LR<Option<VId>> {
+        let saved = self.cur_line;
+        let l = nline(e);
+        if l != 0 {
+            self.cur_line = l as u32;
+        }
+        let r = self.expr_dispatch(e);
+        self.cur_line = saved;
+        r
+    }
+
+    fn expr_dispatch(&mut self, e: &V) -> LR<Option<VId>> {
         coll::elem_prep(self, e)?;
         match nname(e) {
             "Lit" => self.lit(e).map(Some),
@@ -1425,6 +1463,7 @@ pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
 }
 
 fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
+    LINES.with(|l| l.borrow_mut().clear());
     // このパッケージから呼び出す依存パッケージ (別 module) の fn も下ろし対象にする。
     // そうしなければ、依存先が「呼び先が未対応」となり、このパッケージの関数も下ろせなくなる。
     let mut user_vec: Vec<usize> = user.to_vec();
@@ -1518,7 +1557,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     bad.sort();
     let mut module = Module { funcs, aggs: aggs.into_inner().defs };
     kir::prune_aggs(&mut module);
-    Lowered { module, unsupported: bad }
+    Lowered { module, unsupported: bad, lines: LINES.with(|l| std::mem::take(&mut *l.borrow_mut())) }
 }
 
 /// 入口 `e` の戻り値が `Result<T, E>` なら、`E` の Debug 表示の関数を `ok` に足す。
