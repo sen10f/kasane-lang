@@ -1,3 +1,4 @@
+// expect: E4001
 trait t.Handler[E: uses, P: panics]
     fn handle(self: &Self) -> () uses [E] panics P
 end t.Handler

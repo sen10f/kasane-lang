@@ -1,3 +1,4 @@
+// expect: E3030
 fn t.bad(v: &[u32]) -> &u32 uses [] panics never
     let tmp = 3u32
     let r = &tmp

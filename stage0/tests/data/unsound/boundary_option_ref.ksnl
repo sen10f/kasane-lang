@@ -1,3 +1,4 @@
+// expect: E3010
 fn t.a_pick(x: &u32) -> Option<&u32> uses [] panics never
     Some(x)
 end t.a_pick

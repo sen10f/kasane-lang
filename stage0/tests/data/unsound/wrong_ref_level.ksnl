@@ -1,3 +1,4 @@
+// expect: E2020
 fn t.bad(a: &u32) -> u32 uses [] panics never
     a
 end t.bad

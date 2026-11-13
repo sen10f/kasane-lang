@@ -1,3 +1,4 @@
+// expect: E4001
 fn t.bad(o: Option<u32>) -> Option<u32> uses [] panics never
     o.map(fn(x: u32) -> u32 capture [] {
         core.mem.drop(std.io.print_line("x"))

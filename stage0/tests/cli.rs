@@ -96,14 +96,21 @@ fn unsound_programs_are_rejected() {
         let o = run(&["check", "--json"], &t.0);
         let rejected = o.status.code() == Some(1);
         let hole = KNOWN_HOLES.contains(&stem.as_str());
+        // `// expect: Exxxx` は全行から探す (どの行にあってもよい)。穴以外は必ず持つ。
+        let want = src.lines().find_map(|l| l.trim().strip_prefix("// expect:")).map(|w| w.trim().to_string());
         if hole && rejected {
             failures.push(format!("{}: now rejected; remove it from KNOWN_HOLES", stem));
         } else if !hole && !rejected {
             failures.push(format!("{}: passes check but must be rejected (rc={:?})", stem, o.status.code()));
-        } else if let Some(want) = src.lines().next().and_then(|l| l.strip_prefix("// expect: ")) {
-            let got = codes(&text(&o.stdout));
-            if !hole && !got.iter().any(|c| *c == want.trim()) {
-                failures.push(format!("{}: want {} codes={:?}", stem, want.trim(), got));
+        } else if !hole {
+            match want {
+                None => failures.push(format!("{}: no `// expect: Exxxx` line (every unsound case names its code)", stem)),
+                Some(want) => {
+                    let got = codes(&text(&o.stdout));
+                    if !got.iter().any(|c| *c == want) {
+                        failures.push(format!("{}: want {} codes={:?}", stem, want, got));
+                    }
+                }
             }
         }
         // 整形の違反で落ちているのではないこと (意味の誤りとして報告されること)。
@@ -1017,6 +1024,22 @@ fn local_receiver_method_effects_are_checked() {
     let ok = src.replace("uses [] panics never", "uses [io.console] panics may");
     let t = Tmp::new("eff_local_ok", &ok);
     assert_eq!(run(&["check", "--json"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn param_receiver_method_effects_are_checked() {
+    // `s.say()` (引数レシーバ `s: t.S`、パスとして構文解析される形) は、型で解決した t.S.say の効果で検査される。
+    let bad = "fn t.f(s: t.S) -> Result<(), std.io.Error> uses [] panics never
+    s.say()
+end t.f
+";
+    let (code, got, out) = eff_check("eff_path_uses_bad", bad);
+    assert_eq!(code, Some(1), "{}", out);
+    assert_eq!(got, vec!["E4001".to_string()], "{}", out);
+    assert!(out.contains("t.S.say uses effect `io.console`"), "{}", out);
+    // 正例: 呼び出し元が効果を宣言していれば通る (階層の部分型 io ⊇ io.console も)。
+    let (code, _, out) = eff_check("eff_path_uses_ok", &bad.replace("uses [] panics never", "uses [io] panics never"));
+    assert_eq!(code, Some(0), "{}", out);
 }
 
 #[test]
@@ -9210,6 +9233,44 @@ end t.main
     let (_t, r) = run_unsafe_pkg("ptr_more_cast_notarg", src);
     assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
     assert!(text(&r.stderr).contains("explicit type argument"), "{}", text(&r.stderr));
+}
+
+#[test]
+fn ptr_more_access_past_a_pinned_value_panics() {
+    // ピン (`from_mut`) は値の幅の写しを C に見せるが、バッファには余白がある。値の幅を越えて読む・書くと、
+    // 余白の不定の値を読んだり別の値を壊したりするので、幅が値の範囲に収まらない番地は 101 で止まる。
+    let cases = [
+        // 4 バイトの値を 8 バイトの型で読む (番地は値の先頭)。
+        ("ptr_more_wide_read", "let w: *mut u64 = core.ptr.cast::<i32, u64>(core.ptr.from_mut(&mut x))\n        core.check.eq(core.ptr.read(w), 1u64)"),
+        // 4 バイトの値を 8 バイトの型で書く。
+        ("ptr_more_wide_write", "let w: *mut u64 = core.ptr.cast::<i32, u64>(core.ptr.from_mut(&mut x))\n        core.ptr.write(w, 5u64)"),
+        // `add` で値の末尾ちょうどへ進んで読む (値の外)。
+        ("ptr_more_add_past_end", "let p: *mut i32 = core.ptr.from_mut(&mut x)\n        let q: *mut i32 = core.ptr.add(p, 1usize)\n        core.check.eq(core.ptr.read(q), 0i32)"),
+    ];
+    for (name, body) in cases {
+        let src = format!(
+            "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    let mut x: i32 = 1i32\n    unsafe \"libc\" \"past end\" {{\n        {}\n    }}\n    std.io.print_line(\"after\")\n    Ok(())\nend t.main\n",
+            body
+        );
+        let (_t, r) = run_unsafe_pkg(name, &src);
+        assert_eq!(r.status.code(), Some(101), "{}: {}{}", name, text(&r.stdout), text(&r.stderr));
+        assert!(text(&r.stderr).contains("runs past the 4-byte value passed to C"), "{}: {}", name, text(&r.stderr));
+        assert!(!text(&r.stdout).contains("after"), "{}", name);
+    }
+    // 値の幅に収まる読み書き (`cast` で 1 バイトだけ読む) は今までどおり通る。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x: i32 = 1i32
+    unsafe \"libc\" \"fits\" {
+        let b: *mut u8 = core.ptr.cast::<i32, u8>(core.ptr.from_mut(&mut x))
+        core.check.eq(core.ptr.read(b), 1u8)
+        core.ptr.write(b, 7u8)
+    }
+    core.check.eq(x, 7i32)
+    Ok(())
+end t.main
+";
+    let (_t, r) = run_unsafe_pkg("ptr_more_fits_in_value", src);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
 }
 
 #[test]

@@ -1,3 +1,4 @@
+// expect: E3030
 type t.Holder
     r: &'static u32
 end t.Holder

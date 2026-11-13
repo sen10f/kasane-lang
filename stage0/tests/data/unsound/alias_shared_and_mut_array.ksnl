@@ -1,3 +1,4 @@
+// expect: E3010
 fn t.bad() -> usize uses [] panics never
     let mut x = 1u32
     let a = [&x, &mut x]

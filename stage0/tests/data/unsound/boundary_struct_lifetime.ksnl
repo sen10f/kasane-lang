@@ -1,3 +1,4 @@
+// expect: E3010
 type t.W['a]
     r: &'a mut u32
 end t.W

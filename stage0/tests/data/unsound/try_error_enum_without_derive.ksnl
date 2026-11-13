@@ -1,3 +1,4 @@
+// expect: E2020
 enum t.Error pub
     Wrapped(t.Inner)
 end t.Error

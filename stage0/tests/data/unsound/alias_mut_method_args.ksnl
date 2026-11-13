@@ -1,3 +1,4 @@
+// expect: E3010
 type t.S
     n: u32
 end t.S
