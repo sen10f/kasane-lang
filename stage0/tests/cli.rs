@@ -14789,6 +14789,92 @@ fn refs_pkg(name: &str, main_body: &str) -> Tmp {
 }
 
 #[test]
+fn kir_array_ref_match_tree_walker() {
+    // `&[T; N]` / `&mut [T; N]` のパラメータ (ptr)、`&[T; N]` → `&[T]` の fat への暗黙調整、
+    // `for x in a` (参照越し) を、木走査と参照実行器・機械語で比べる。
+    let fns = r#"
+fn t.for_ref(a: &[u32; 3]) -> u32 uses [] panics may
+    let mut s = 0u32
+    for x in a {
+        s = s + x
+    }
+    s
+end t.for_ref
+
+fn t.for_ref_check() -> u32 uses [] panics may
+    t.for_ref(&[1u32, 2u32, 3u32])
+end t.for_ref_check
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.use_it(), 60u32)
+    core.check.eq(t.pass_slice(), 30u32)
+    core.check.eq(t.for_ref(&[1u32, 2u32, 3u32]), 6u32)
+    std.io.print_line("ok")
+    Ok(())
+end t.main
+
+fn t.oob() -> u32 uses [] panics may
+    let a = [10u32, 20u32, 30u32]
+    a[5usize]
+end t.oob
+
+fn t.pass_slice() -> u32 uses [] panics may
+    let a = [10u32, 20u32, 30u32]
+    t.slice_ok(&a)
+end t.pass_slice
+
+fn t.set(a: &mut [u32; 3]) -> () uses [] panics may
+    a[1usize] = 20u32
+end t.set
+
+fn t.slice_ok(s: &[u32]) -> u32 uses [] panics may
+    s[0usize] + s[1usize]
+end t.slice_ok
+
+fn t.sum(a: &[u32; 3]) -> u32 uses [] panics may
+    a[0usize] + a[1usize] + a[2usize]
+end t.sum
+
+fn t.use_it() -> u32 uses [] panics may
+    let mut a = [10u32, 0u32, 30u32]
+    t.set(&mut a)
+    t.sum(&a)
+end t.use_it
+"#;
+    let t = Tmp::new("kir_array_ref_ok", fns);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker rc={:?} stdout={:?} stderr={:?}", o.status.code(), text(&o.stdout), text(&o.stderr));
+
+    // 戻り値が u32 で引数を取らない関数は `--run` / `--native` / ASan でも直接比べられる。
+    for (f, want) in [("t.use_it", "60"), ("t.pass_slice", "30"), ("t.for_ref_check", "6")] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir {} 出力\n{}", f, text(&k.stdout));
+    }
+
+    // 範囲外の添字は wood-walker と同じく panic (101) となる。
+    let msg = "index out of bounds: the len is 3 but the index is 5";
+    let fns2 = "
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let _x = t.oob()
+    Ok(())
+end t.main
+
+fn t.oob() -> u32 uses [] panics may
+    let a = [10u32, 20u32, 30u32]
+    a[5usize]
+end t.oob
+";
+    let t = Tmp::new("kir_array_ref_oob", fns2);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "tree-walker oob rc={:?} stderr={:?}", o.status.code(), text(&o.stderr));
+    assert!(text(&o.stderr).contains(&format!("panic: {}", msg)), "tree-walker oob msg\n{}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.oob", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir oob\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stderr).trim(), format!("panic: {}", msg), "kir oob msg\n{}", text(&k.stderr));
+}
+
+#[test]
 fn kir_refs_values_match_tree_walker() {
     // 木走査 (`ksn run`) の `core.check.eq` が通ること、参照実行器 (`ksn kir --run`) の値が期待どおりであること。
     let cases: &[(&str, &[&str], &str, &str)] = &[

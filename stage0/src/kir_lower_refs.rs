@@ -193,6 +193,19 @@ impl<'a> Lw<'a> {
                     self.ref_value(ptr, p, true)
                 }
                 _ if pt.is_ref() => self.coerce(v, pt),
+                // `&[T; N]` / `&mut [T; N]` のローカル (ref<fat> / mutref<fat>) を、要素の先頭 ptr に調整する。
+                Ty::Ptr => match self.vty(v) {
+                    Ty::Ref(_, Pointee::Agg(agg_ai)) => {
+                        let fat_val = self.emit(Ty::Agg(agg_ai), Op::Load(v));
+                        self.emit(Ty::Ptr, Op::Field { a: fat_val, off: 0 })
+                    },
+                    _ => v,
+                },
+                // `&[T; N]` のローカル (ref<fat>) を `&[T]` の fat 値に調整する（参照を外す）。
+                Ty::Agg(tgt_ai) => match self.vty(v) {
+                    Ty::Ref(_, Pointee::Agg(src_ai)) if tgt_ai == src_ai => self.emit(Ty::Agg(tgt_ai), Op::Load(v)),
+                    _ => v,
+                },
                 _ => v,
             });
         }

@@ -69,6 +69,9 @@ pub(crate) enum Owned {
 pub(crate) struct CollCx {
     /// スロット番号 → 種類。
     pub(crate) kinds: BTreeMap<usize, Kind>,
+    /// 固定長配列への参照のスロット → 要素数 N (`&[T; N]` / `&mut [T; N]` のパラメータと、
+    /// アドレスを取られた配列の局所変数)。長さは型から分かるので定数として扱う。
+    pub(crate) arr_len: BTreeMap<usize, u32>,
     /// 所有する値 (スコープの番号, 所有物) の登録順。
     pub(crate) owned: Vec<(usize, Owned)>,
     /// 関数の入口で確保する `alloca` (ブロック 0 の先頭に置く)。
@@ -141,18 +144,18 @@ pub(crate) fn is_hdr_named(t: &Src) -> bool {
 
 /// 関数の引数・戻り値の型。通常の型に加えて、Vec / String / `str` / スライスへの参照 (借用) を受ける。
 pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
+    // `&mut [T]` / `&[T]` (配列への参照) は、配列の値は `fat` だがパラメータとしては要素の先頭 `ptr` を受け取る。
+    if let Src::Ref(_, inner) = t {
+        if matches!(&**inner, Src::Array(_)) {
+            return Some(Ty::Ptr);
+        }
+    }
     if let Some(x) = lw.conv_t(t) {
         return Some(x);
     }
     // 生ポインタ `*const T` / `*mut T` は `ptr`。
     if let Src::Ptr(_, inner) = t {
         if matches!(&**inner, Src::Prim(_)) {
-            return Some(Ty::Ptr);
-        }
-    }
-    // `&mut [T]` / `&[T]` (配列・スライスへの参照) は、C へ渡す生ポインタとして `ptr`。
-    if let Src::Ref(_, inner) = t {
-        if matches!(&**inner, Src::Array(_)) {
             return Some(Ty::Ptr);
         }
     }
@@ -210,6 +213,8 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
         Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(args))),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         Src::Slice(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
+        // 固定長配列 `&[T; N]` の要素型。長さ N は `arr_len` で別途追跡する。
+        Src::Array(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
         _ => None,
     }
 }
@@ -240,6 +245,22 @@ pub(crate) fn local_slot(lw: &Lw, e: &V) -> Option<usize> {
         return None;
     }
     lw.lookup(&segs[0])
+}
+
+/// `&[T; N]` / `&mut [T; N]` の型 V (`["ref", B, ["array", elem, N]]`) から N を取る。
+/// 型表の `Src::Array` には長さが入らないので、元の型 V から読む。
+pub(crate) fn ref_array_len(pt: &V) -> Option<u32> {
+    let V::L(fs) = pt else { return None };
+    if fs.len() < 3 || st(&fs[0]) != "ref" { return None; }
+    let V::L(inner) = &fs[2] else { return None };
+    if inner.is_empty() || st(&inner[0]) != "array" { return None; }
+    let V::N(n) = &inner[2] else { return None };
+    n.parse::<u32>().ok()
+}
+
+/// `&[T; N]` のパラメータのスロット `s` の長さ N。
+pub(crate) fn arr_len_of(lw: &Lw, s: usize) -> Option<u32> {
+    lw.coll.arr_len.get(&s).copied()
 }
 
 /// 受け手の種類。局所変数はスロットの種類、それ以外は型表の型から決める。
@@ -1368,6 +1389,11 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
         return lw.err(line, "型引数付きのメソッドは段階 1 の対象外");
     }
     let hdr = lw.slots[s].0;
+    // `&[T; N]` / `&mut [T; N]` のパラメータの `len()`: 長さ N は型から分かる。
+    if m == "len" && matches!(kind, Kind::Slice(_)) && lw.slots[s].1 == Ty::Ptr {
+        let n = arr_len_of(lw, s).expect("&[T; N] のパラメータに arr_len が入っている");
+        return Ok(Some(lw.emit(Ty::Usize, Op::Const(n as i128))));
+    }
     if matches!(kind, Kind::Map(_)) {
         return super::map_lower::method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
     }
@@ -1774,11 +1800,13 @@ fn fat_len(lw: &mut Lw, v: VId) -> VId {
     lw.emit(Ty::Usize, Op::Field { a: v, off: 8 })
 }
 
-/// 添字・反復の対象の置き場: Vec はヘッダのアドレス、スライスは `fat` の値。
+/// 添字・反復の対象の置き場: Vec はヘッダのアドレス、スライスは `fat` の値、
+/// 固定長配列への参照 (`&[T; N]` / `&mut [T; N]`) は生ポインタ (長さ N は型から分かる)。
 #[derive(Clone, Copy)]
 pub(super) enum Seq {
     Hdr(VId),
     Fat(VId),
+    Ptr(VId, u32),
 }
 
 impl Seq {
@@ -1800,6 +1828,13 @@ impl Seq {
                 }
                 let base = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
                 (len, base)
+            }
+            Seq::Ptr(p, n) => {
+                let len = lw.emit(Ty::Usize, Op::Const(n as i128));
+                if let Some(i) = check {
+                    lw.emit(Ty::Unit, Op::IndexCheck { i, len });
+                }
+                (len, p)
             }
         }
     }
@@ -1825,6 +1860,11 @@ fn vec_place(lw: &Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
     if let Some(s) = local_slot(lw, e) {
         match lw.coll.kinds.get(&s) {
             Some(Kind::Vec(Some(elem))) => return Ok((Seq::Hdr(lw.slots[s].0), *elem)),
+            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
+                // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+                let n = lw.coll.arr_len[&s];
+                return Ok((Seq::Ptr(lw.slots[s].0, n), *elem));
+            }
             Some(Kind::Slice(Some(elem))) => return Ok((Seq::Fat(lw.slots[s].0), *elem)),
             _ => {}
         }
@@ -1927,6 +1967,11 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     if let Some(s) = local_slot(lw, it) {
         let seq = match lw.coll.kinds.get(&s).cloned() {
             Some(Kind::Vec(Some(elem))) => Some((Seq::Hdr(lw.slots[s].0), elem)),
+            // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
+                let n = lw.coll.arr_len[&s];
+                Some((Seq::Ptr(lw.slots[s].0, n), elem))
+            }
             Some(Kind::Slice(Some(elem))) => Some((Seq::Fat(lw.slots[s].0), elem)),
             _ => None,
         };

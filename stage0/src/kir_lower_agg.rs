@@ -158,6 +158,12 @@ impl AggTab {
                 Ty::Agg(i) => Ok(Ty::Ref(*m, Pointee::Agg(i))),
                 _ => Err(format!("参照の指す先 {} は段階 1 の対象外", show(inner))),
             },
+            // `&[T; N]` / `&mut [T; N]`: 配列の値は `{ptr, len}` の `fat` なので、参照は `ref<fat>` / `mutref<fat>`。
+            // 要素の先頭ポインタは `fat` の 0 番フィールド (呼び出し側の `coerce_args` で ptr に調整する)。
+            Src::Ref(m, inner) if matches!(&**inner, Src::Array(_)) => {
+                let Ty::Agg(fat_ai) = self.fat() else { unreachable!() };
+                Ok(Ty::Ref(*m, Pointee::Agg(fat_ai)))
+            }
             // `&str` とスライスの値は `fat` (`{ptr, len}`)。要素はスカラーのものだけ (`sig_ty` と同じ条件)。Option のペイロードにも置ける。
             Src::Ref(_, inner) if matches!(&**inner, Src::Prim(s) if s == "str") || matches!(&**inner, Src::Slice(e) if conv(&**e).is_some()) => Ok(self.fat()),
             other => Err(format!("{} は未対応", show(other))),
