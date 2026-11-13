@@ -9743,10 +9743,10 @@ end t.B.m
 ";
 
 #[test]
-fn inferred_callee_inside_a_closure_does_not_bind_the_fn_bound_effect() {
+fn inferred_callee_inside_a_closure_binds_the_fn_bound_effect_as_an_upper_bound() {
     // `t.h` は効果を宣言しないので推論される。推論は名前の全候補 (`m` の `t.A.m` を含む) の和で
-    // `io.console` を過大に持つ。その効果を載せたクロージャは確実でないので、`apply` の `E` を
-    // `io.console` に束縛せず、`uses []` の `t.main` から E4001 を出さない (黙る)。
+    // `io.console` を持つ。仕様 5.1「未宣言の副作用はエラー」に合わせ、確実でない効果も上限として数え、
+    // `apply` の `E` に束縛して `uses []` の `t.main` を E4001 にする (fail-closed)。
     let src = format!(
         "{}{}",
         INFERRED_PRELUDE,
@@ -9770,7 +9770,7 @@ end t.main
 "
     );
     let (got, out) = neg_check("neg_inferred_fn_bound", &src);
-    assert!(got.iter().all(|c| !c.starts_with("E4")), "{}", out);
+    assert!(got.iter().any(|c| *c == "E4001"), "{}", out);
 }
 
 #[test]
@@ -12018,16 +12018,24 @@ end t.ok_dyn_boom
 }
 
 #[test]
-fn trait_call_effects_stay_silent_when_unknown() {
-    // 陰性 (黙る): 効果変数の束縛が分からない境界、推論された関数、クロージャの本体。
-    let body = "fn t.quiet_closure(a: &dyn t.Act) -> u8 uses [] panics never
+fn dyn_call_effects_inside_a_closure_are_checked_against_the_caller() {
+    // 仕様 5.1: クロージャの中の `dyn` 越しの呼び出しの効果 (宣言の上限) も、囲む関数の宣言で検査する。
+    let body = "fn t.loud_closure(a: &dyn t.Act) -> u8 uses [] panics never
     let f = fn(x: u8) -> u8 capture [&a] {
         a.act()
     }
     f(1)
-end t.quiet_closure
+end t.loud_closure
+";
+    let (code, got, out) = eff_check_with("trait_eff_closure", TRAIT_EFF_PRELUDE, body);
+    assert_eq!(code, Some(1), "{}", out);
+    assert!(got.iter().any(|c| c == "E4001"), "{}", out);
+}
 
-fn t.quiet_inferred(a: &dyn t.Act) -> u8
+#[test]
+fn trait_call_effects_stay_silent_when_unknown() {
+    // 陰性 (黙る): 効果変数の束縛が分からない境界、推論された関数。クロージャの本体の `dyn` 越しは、上の検査。
+    let body = "fn t.quiet_inferred(a: &dyn t.Act) -> u8
     a.act()
 end t.quiet_inferred
 
