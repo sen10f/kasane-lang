@@ -45,11 +45,32 @@ pub enum Ty {
     /// クロージャの型。`cap` は capture 節から決めた「満たせ得る最大の `Fn` 系トレイト」の近似。
     /// `id` はクロージャ本体に対応する呼び出しグラフの節 (5.3 の間接呼び出しの候補計算に使う)。
     /// 型注釈から組み立てた型にはない (`None`)。
-    Closure { args: Vec<Ty>, ret: Box<Ty>, cap: Cap, id: Option<String> },
+    Closure { args: Vec<Ty>, ret: Box<Ty>, cap: Cap, id: Option<String>, eff: Eff },
     /// トレイトオブジェクト `dyn Tr` (5.1)。`Tr` は書かれたトレイト名で、使用箇所で trait 定義の FQN に解決する。
     /// `dyn` は `&` / `&mut` の背後か `alloc.boxed.Box` の第1型引数にのみ現れる (`Ref` / `Box` の中身として持つ)。
     /// 2 つ目は `dyn Tr<E, P>` の型引数 (効果・panic の実引数を実体化するのに使う。型の同一性には入れない)。
     Dyn(String, TArgs),
+}
+
+/// 関数型・関数値・クロージャの効果 (仕様 5.1 の `E0 ⊆ E` / `P0 ⊑ P` の検査用)。型の同一性には入れない。
+#[derive(Clone, Debug, Default)]
+pub struct Eff(pub Option<EffInfo>);
+
+#[derive(Clone, Debug)]
+pub struct EffInfo {
+    /// true = 型注釈 `fn(..) uses [..] panics ..` (受け側)、false = 関数・クロージャの実際の効果 (渡す側)。
+    pub decl: bool,
+    pub uses: Vec<String>,
+    /// `None` = panic 変数 (分からない)。
+    pub may: Option<bool>,
+    /// 渡す側の名前 (メッセージ用)。
+    pub name: String,
+}
+
+impl PartialEq for Eff {
+    fn eq(&self, _: &Eff) -> bool {
+        true
+    }
 }
 
 /// `dyn Tr<..>` の型引数 (書かれたままの構文木)。どの値も等しいとみなす (型の比較に影響させない)。
@@ -143,6 +164,16 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
             ret: Box::new(from_v(tel(v, 2), params)),
             cap: Cap::Fn,
             id: None,
+            eff: Eff(Some(EffInfo {
+                decl: true,
+                uses: strs(tel(v, 3)),
+                may: match st(tel(v, 4)).as_str() {
+                    "never" => Some(false),
+                    "may" => Some(true),
+                    _ => None,
+                },
+                name: String::new(),
+            })),
         },
         "ptr" => Ty::Ptr(matches!(tel(v, 1), V::B(true)), Box::new(from_v(tel(v, 2), params))),
         "named" => {
@@ -201,11 +232,12 @@ fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
         Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| subst(x, bind)).collect()),
         Ty::Array(x) => Ty::Array(Box::new(subst(x, bind))),
         Ty::Slice(x) => Ty::Slice(Box::new(subst(x, bind))),
-        Ty::Closure { args, ret, cap, id } => Ty::Closure {
+        Ty::Closure { args, ret, cap, id, eff } => Ty::Closure {
             args: args.iter().map(|x| subst(x, bind)).collect(),
             ret: Box::new(subst(ret, bind)),
             cap: cap.clone(),
             id: id.clone(),
+            eff: eff.clone(),
         },
         other => other.clone(),
     }
@@ -348,6 +380,11 @@ pub struct TypeCk<'a> {
     /// `Box.into_dyn` の呼び出しの (元の `T`, 変換先 `D`, 行)。関数の推論が終わってから検査する。
     unsize: Vec<(Ty, Ty, usize)>,
     pat_line: usize,
+    /// いま推論している式の行 (関数型への変換の効果検査の報告位置)。
+    cur_line: usize,
+    eff_seen: HashSet<(String, String, usize)>,
+    /// extern の引数の変換は E5005 が見るので、関数型の効果検査を止める。
+    conv_quiet: bool,
     /// 入れ子のループごとの「`break` があったか」。
     loop_breaks: Vec<bool>,
     /// 名前が解決できない式 (別の診断が報告するので E2044 にしない)。
@@ -410,7 +447,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, loop_breaks: vec![], quiet_sites: HashSet::new(), local_sites: HashMap::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], quiet_sites: HashSet::new(), local_sites: HashMap::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1089,11 +1126,12 @@ impl<'a> TypeCk<'a> {
             Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.deep(x)).collect()),
             Ty::Array(x) => Ty::Array(Box::new(self.deep(&x))),
             Ty::Slice(x) => Ty::Slice(Box::new(self.deep(&x))),
-            Ty::Closure { args, ret, cap, id } => Ty::Closure {
+            Ty::Closure { args, ret, cap, id, eff } => Ty::Closure {
                 args: args.iter().map(|x| self.deep(x)).collect(),
                 ret: Box::new(self.deep(&*ret)),
                 cap,
                 id,
+                eff,
             },
             other => other,
         }
@@ -1117,6 +1155,42 @@ impl<'a> TypeCk<'a> {
             Ty::Tuple(_) => Some("tuple"),
             Ty::Named(n, _) if n != "alloc.vec.Vec" && n != "alloc.string.String" => Some("named"),
             _ => None,
+        }
+    }
+
+    /// 関数・クロージャを関数型 `fn(..) uses [E] panics P` に合わせる所 (仕様 5.1) の効果の検査。
+    /// 渡す側 (decl = false) の効果 `E0 ⊆ E` かつ `P0 ⊑ P`。違反は E4001 / E4002。効果変数・panic 変数の側は黙る。
+    /// 一方が注釈の型でもう一方が実際の効果を持つ組だけを見る (どちらが左右でも同じ)。
+    fn check_fn_conv(&mut self, ea: &Eff, eb: &Eff) {
+        if self.conv_quiet {
+            return;
+        }
+        let (Some(x), Some(y)) = (&ea.0, &eb.0) else { return };
+        let (want, got) = match (x.decl, y.decl) {
+            (true, false) => (x, y),
+            (false, true) => (y, x),
+            _ => return,
+        };
+        let line = self.cur_line;
+        let open = want.uses.iter().any(|e| e.chars().next().map_or(false, |c| c.is_uppercase()));
+        let mut out: Vec<(&str, String)> = vec![];
+        if !open {
+            for e in got.uses.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())) {
+                if !crate::check::covers(&want.uses, e) {
+                    out.push((
+                        "E4001",
+                        format!("{} uses effect `{}` but the function type declares `uses [{}]`", got.name, e, want.uses.join(", ")),
+                    ));
+                }
+            }
+        }
+        if want.may == Some(false) && got.may == Some(true) {
+            out.push(("E4002", format!("{} may panic but the function type declares `panics never`", got.name)));
+        }
+        for (c, m) in out {
+            if self.eff_seen.insert((c.to_string(), m.clone(), line)) {
+                self.diag(c, m, line);
+            }
         }
     }
 
@@ -1236,10 +1310,11 @@ impl<'a> TypeCk<'a> {
                 }
                 Ok(())
             }
-            (Ty::Closure { args: xs, ret: rx, .. }, Ty::Closure { args: ys, ret: ry, .. }) => {
+            (Ty::Closure { args: xs, ret: rx, eff: ea, .. }, Ty::Closure { args: ys, ret: ry, eff: eb, .. }) => {
                 if xs.len() != ys.len() {
                     return Err((a.clone(), b.clone()));
                 }
+                self.check_fn_conv(ea, eb);
                 let (xs, ys, rx, ry) = (xs.clone(), ys.clone(), (**rx).clone(), (**ry).clone());
                 for (x, y) in xs.iter().zip(&ys) {
                     self.unify2(x, y)?;
@@ -2265,6 +2340,16 @@ impl<'a> TypeCk<'a> {
     // ------------------------------------------------------------ 式
     /// 式を推論する。計測が有効なら結果を記録する (`cov_record`)。本体は `infer_node`。
     fn infer(&mut self, e: &V) -> Ty {
+        let saved = self.cur_line;
+        if nline(e) != 0 {
+            self.cur_line = nline(e);
+        }
+        let t = self.infer_site(e);
+        self.cur_line = saved;
+        t
+    }
+
+    fn infer_site(&mut self, e: &V) -> Ty {
         if !self.strict {
             return self.infer_traced(e);
         }
@@ -2544,6 +2629,12 @@ impl<'a> TypeCk<'a> {
                         outer.2 = true;
                     }
                 }
+                let ceff = Eff(Some(EffInfo {
+                    decl: false,
+                    uses: effs.0.iter().cloned().collect(),
+                    may: Some(effs.1),
+                    name: "the closure".into(),
+                }));
                 self.closure_effs.insert(node.clone(), effs);
                 if let Err(err) = self.unify2(&ret, &body) {
                     if let Some((want, got)) = self.ann_conflict(&ret, &body, &err) {
@@ -2555,7 +2646,7 @@ impl<'a> TypeCk<'a> {
                     }
                 }
                 let cap = self.closure_cap(&f[2], &f[3]);
-                Ty::Closure { args, ret: Box::new(ret), cap, id: Some(node) }
+                Ty::Closure { args, ret: Box::new(ret), cap, id: Some(node), eff: ceff }
             }
             "Return" | "Break" | "Continue" => {
                 if nname(e) == "Break" {
@@ -2901,7 +2992,17 @@ impl<'a> TypeCk<'a> {
         seed_effects(d, &mut map);
         let args: Vec<Ty> = d.params.iter().map(|p| from_v(&p.1, &gn)).collect::<Vec<_>>().iter().map(|t| self.inst(t, &mut map)).collect();
         let ret = self.inst(&from_v(&d.ret, &gn), &mut map);
-        Ty::Closure { args, ret: Box::new(ret), cap: Cap::Fn, id: None }
+        let eff = Eff(Some(EffInfo {
+            decl: false,
+            uses: d.uses.clone(),
+            may: match d.panics.as_deref() {
+                Some("never") => Some(false),
+                Some("may") => Some(true),
+                _ => None,
+            },
+            name: format!("`{}`", d.name),
+        }));
+        Ty::Closure { args, ret: Box::new(ret), cap: Cap::Fn, id: None, eff }
     }
 
     /// ユーザー定義の enum の列挙子 `en.vn(args)` の型。型パラメータは新しい型変数にし、
@@ -3124,7 +3225,10 @@ impl<'a> TypeCk<'a> {
             if let Some((want, got)) = self.arg_ref_conflict(&raw, a, loose.get(k).copied().unwrap_or(false)) {
                 self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, d.name, want, got, ref_hint(&want, &got)), line);
             }
-            if let Err(e) = self.unify2(&pt, a) {
+            self.conv_quiet = d.kw == "extern";
+            let ur = self.unify2(&pt, a);
+            self.conv_quiet = false;
+            if let Err(e) = ur {
                 // 型パラメータを含まない引数の型は従来の検査 (E2020) が見る。ここでは重複を避ける。
                 // ただし構造体リテラルの引数で、宣言と同じ型名どうしの矛盾 (型引数の違い) は、
                 // 従来の検査が名前しか比べないので黙る。ここでだけ報告する。
@@ -3332,9 +3436,8 @@ impl<'a> TypeCk<'a> {
             let Some((uses, may, unsure)) = self.closure_effs.get(&node) else { continue };
             // 境界の具体名との比べは、確実な効果だけで行う (推論された関数・`dyn` 越しの上限は、
             // 囲む関数の宣言との比べ (`closure_effect_bind` / `closure_call_effects`) が見る)。
-            if *unsure {
-                continue;
-            }
+            // 確実でない効果 (推論された関数・`dyn` 越しの上限) も上限として比べる (fail-closed)。
+            let _ = unsure;
             for b in &bounds {
                 let bt = items(tel(b, 1));
                 if let Some(v) = bt.get(2).filter(|v| tag(v) == "effects") {
@@ -3503,11 +3606,11 @@ impl<'a> TypeCk<'a> {
                 let (Some(a0), Some(r)) = (ta.first(), ta.get(1)) else { continue };
                 let Ty::Tuple(args) = bound_targ(a0, &gn) else {
                     if bound_targ(a0, &gn) == Ty::Unit {
-                        return Some(Ty::Closure { args: vec![], ret: Box::new(bound_targ(r, &gn)), cap: Cap::Fn, id: None });
+                        return Some(Ty::Closure { args: vec![], ret: Box::new(bound_targ(r, &gn)), cap: Cap::Fn, id: None, eff: Eff::default() });
                     }
                     continue;
                 };
-                return Some(Ty::Closure { args, ret: Box::new(bound_targ(r, &gn)), cap: Cap::Fn, id: None });
+                return Some(Ty::Closure { args, ret: Box::new(bound_targ(r, &gn)), cap: Cap::Fn, id: None, eff: Eff::default() });
             }
         }
         None
