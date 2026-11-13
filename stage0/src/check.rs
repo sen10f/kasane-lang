@@ -4651,6 +4651,37 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `for` の本体の中に、このループを抜ける `break` または `return` があるか。
+    /// `break` はネストしたループ (`loop`/`while`/`for`) の中ならそちらを抜けるだけなので、
+    /// その内部の `break` は無視する。`return` は関数を抜けるのでどこでも早期抜けとする。
+    fn for_body_may_exit(&self, body: &V) -> bool {
+        self.for_body_may_exit_at(body, 0)
+    }
+
+    fn for_body_may_exit_at(&self, e: &V, depth: usize) -> bool {
+        match nname(e) {
+            "Return" => true,
+            "Break" => depth == 0,
+            "Loop" | "While" | "For" => {
+                // ネストしたループの中は深さを増す (そこの `break` は外の `for` を抜けない)。
+                for c in children(e) {
+                    if self.for_body_may_exit_at(c, depth + 1) {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => {
+                for c in children(e) {
+                    if self.for_body_may_exit_at(c, depth) {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
     /// move の集合の和 (同じ場所は先に記録した行を残す)。
     fn union_moves(into: &mut BTreeMap<String, usize>, from: &BTreeMap<String, usize>) {
         for (k, v) in from {
@@ -4816,6 +4847,7 @@ impl<'a> Checker<'a> {
                 let mut pre_cond: Option<BTreeMap<String, usize>> = None;
                 // 条件を評価した直後の move (本体へ入る前)。条件が偽でループを出る経路は、これを持つ。
                 let mut after_cond: Option<BTreeMap<String, usize>> = None;
+                let mut linear_owned = false;
                 let body = match n {
                     "For" => {
                         // 所有する `Vec` や配列を `for x in v` で回すと、`v` は move 済みになる (Rust と同じ、4.1)。
@@ -4829,7 +4861,9 @@ impl<'a> Checker<'a> {
                             self.moved = before;
                         }
                         // 要素の型: 所有する反復子の要素なら、線形な要素の束縛は義務を負う (`for _r in a` は E3003)。
+                        // `break`/`return` で抜けると残りの要素が漏れる (4.4)。
                         let el = self.elem_ty(&it_ty);
+                        linear_owned = owned && !is_nil(&el) && self.is_linear(&el);
                         let mut typed: Vec<(String, V)> = vec![];
                         self.bind_pat_types(&f[0], &el, &mut typed);
                         self.lin_wild(&typed, nline(e));
@@ -4870,6 +4904,20 @@ impl<'a> Checker<'a> {
                 }
                 self.loop_exits.push((BTreeMap::new(), BTreeMap::new()));
                 self.tc_expr(body, &inner, muts, false);
+                if linear_owned && self.for_body_may_exit(body) {
+                    let text = match nname(&f[1]) {
+                        "Path" => {
+                            let segs = strs(&nf(&f[1])[0]);
+                            segs.first().cloned().unwrap_or_else(|| "the iterator".to_string())
+                        }
+                        _ => "the iterator".to_string(),
+                    };
+                    self.tdiag(
+                        "E3003",
+                        format!("linear value `{text}` may not have all elements consumed when the loop exits early (break or `return`)"),
+                        nline(e),
+                    );
+                }
                 let body_div = self.diverges(body);
                 if body_div {
                     self.lin.truncate(lbase);
