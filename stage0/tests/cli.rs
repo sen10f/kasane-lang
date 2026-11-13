@@ -15022,8 +15022,9 @@ fn float_specials_and_unsigned_from_str_radix_agree_with_native() {
     // 整数・浮動小数の比較と `from_str_radix` の一部は LLVM で比べ、`from_str_radix` の残りは Cranelift へ退避する (理由が出る)。
     if clang_available() {
         // 浮動小数の `core.check.eq` は KIR に下ろせる (kir_rt.c の表示)。`from_str_radix` の 3 本は退避する。
-        assert_eq!(out.matches("(both: llvm)").count(), 5, "{}", out);
-        assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 3, "{}", out);
+        // `from_str_radix` は KIR に下ろせる。`Result != Result` (集成体のペイロード) の 1 本は KIR の検査で退避する。
+        assert_eq!(out.matches("(both: llvm)").count(), 7, "{}", out);
+        assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 1, "{}", out);
     } else {
         assert_eq!(out.matches("(both: native").count(), checks.len(), "{}", out);
     }
@@ -18635,4 +18636,18 @@ fn kasane_lang_py_float(f: f64) -> String {
         return format!("{:.1}", f);
     }
     format!("{}", f)
+}
+
+/// 基数が 2..=36 の外の `from_str_radix` は Err (種類 0)。木走査は Rust の `from_str_radix` の panic で落ちていた
+/// (sig は `panics never`)。参照実行器・機械語とも同じ。
+#[test]
+fn from_str_radix_with_bad_radix_is_err_not_panic() {
+    let fns = "fn t.r(rad: u32) -> u64 uses [] panics never\n    match u64.from_str_radix(\"10\", rad) {\n        Ok(v) => v\n        Err(e) => 1000u64.wrapping_add(u64.from_u8(e.kind))\n    }\nend t.r\n";
+    kir_review_cases("bad_radix", fns, "t.r", &[
+        (&["1"], "t.r(1u32)", "1000u64", "1000"),
+        (&["37"], "t.r(37u32)", "1000u64", "1000"),
+        (&["0"], "t.r(0u32)", "1000u64", "1000"),
+        (&["2"], "t.r(2u32)", "2u64", "2"),
+        (&["36"], "t.r(36u32)", "36u64", "36"),
+    ]);
 }
