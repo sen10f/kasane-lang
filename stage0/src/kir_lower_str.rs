@@ -267,7 +267,7 @@ impl<'a> Lw<'a> {
         let (four, fp_) = self.new_block(&[Ty::Usize]);
         let (four2, four2p) = self.new_block(&[Ty::Usize, Ty::Usize]);
 
-        let (four4, four4p) = self.new_block(&[Ty::Usize, Ty::U8, Ty::Usize]);
+        let (four4, four4p) = self.new_block(&[Ty::Usize, Ty::Usize, Ty::Usize]);
         let (okb, _) = self.new_block(&[]);
         let (badb, bp_) = self.new_block(&[Ty::Usize]);
         let (join, jp) = self.new_block(&[Ty::Res(Pay::Agg(fat_idx), Pay::Agg(err_idx))]);
