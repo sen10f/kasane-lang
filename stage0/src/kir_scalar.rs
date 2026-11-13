@@ -172,7 +172,8 @@ pub fn not_int(ty: Ty, x: i128) -> i128 {
 /// (`u128` は符号なしとして、`f32` は `f64` を経由して丸める。木走査の `from_*_nearest` と同じ)。
 pub fn conv(src: Ty, dst: Ty, a: i128) -> i128 {
     if src.is_int() && dst.is_int() {
-        return a;
+        // 狭める変換 (`try_from_*` が範囲を確かめた後に使う) は、LLVM の trunc と同じく下位のビットを取る。
+        return if dst.bits() < src.bits() { dst.wrap(a) } else { a };
     }
     if src.is_int() {
         let x = if src == Ty::U128 { a as u128 as f64 } else { a as f64 };
