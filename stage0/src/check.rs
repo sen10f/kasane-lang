@@ -368,6 +368,8 @@ pub struct Checker<'a> {
     /// move 済みの場所 (根の変数 + フィールド道をドットでつないだ鍵。`s`・`s.f`・`s.a.b`) → move した行。
     /// 鍵どうしは互いに重ならない (一方が他方の接頭辞なら記録しない)。E3002 (4.1・4.4)。
     moved: BTreeMap<String, usize>,
+    /// 関数の本体で move した場所 (式の位置, 場所の鍵)。借用検査が、借用中の move を E3010 にするのに使う。
+    move_sites: HashSet<(usize, String)>,
     /// 囲むループごとの (`break` 時点の move, `continue` 時点の move)。
     loop_exits: Vec<(BTreeMap<String, usize>, BTreeMap<String, usize>)>,
     /// 線形値の消費義務 (4.4)。束縛を宣言順に積む (線形でない束縛もシャドーイングの目印として積む)。
@@ -485,6 +487,7 @@ impl<'a> Checker<'a> {
             d: 0,
             names: HashSet::new(),
             moved: BTreeMap::new(),
+            move_sites: HashSet::new(),
             loop_exits: vec![],
             lin: vec![],
             lin_floor: 0,
@@ -3243,6 +3246,7 @@ impl<'a> Checker<'a> {
         let mut env: Env = d.params.iter().cloned().collect();
         self.graph.entry(d.name.clone()).or_default();
         self.moved.clear();
+        self.move_sites.clear();
         self.fnonce_locals.clear();
         self.lin.clear();
         self.lin_floor = 0;
@@ -3685,6 +3689,7 @@ impl<'a> Checker<'a> {
             return;
         }
         self.moved.insert(place_key(root, path), line);
+        self.move_sites.insert((line, place_key(root, path)));
     }
 
     /// 場所 (根の変数 + フィールド道) の型を env の根の型から解決する。
@@ -3890,6 +3895,19 @@ impl<'a> Checker<'a> {
                 for (name, line) in taken {
                     self.lin.push(Lin { name, line, linear: true, live: true, parts: false });
                 }
+                // `&a` / `&mut a` で取り込んだ名前は、本体では `&T` / `&mut T` (move は `T` のまま)。
+                for c in items(&f[2]) {
+                    let k = st(tel(c, 0));
+                    let n = st(tel(c, 1));
+                    if k == "move" {
+                        continue;
+                    }
+                    if let Some(t) = env.get(&n) {
+                        if !is_nil(t) && !self.is_generic(t, &self.names) && !self.is_copy(t) {
+                            sub.insert(n, V::L(vec![V::S("ref".into()), V::B(k == "&mut"), t.clone()]));
+                        }
+                    }
+                }
                 for p in items(&f[0]) {
                     let (pn, pt) = (st(&items(p)[0]), items(p)[1].clone());
                     sub.insert(pn.clone(), pt.clone());
@@ -4004,6 +4022,23 @@ impl<'a> Checker<'a> {
                 }
             }
             "Unary" if matches!(st(&f[0]).as_str(), "&" | "&mut") => self.tc_expr(&f[1], env, muts, false),
+            // 参照の先を値として使う (`*r`): Copy でない型なら move になり、参照越しなので E3002。
+            "Unary" if st(&f[0]) == "*" && consume && nname(&f[1]) == "Path" && strs(&nf(&f[1])[0]).len() == 1 => {
+                let n = strs(&nf(&f[1])[0])[0].clone();
+                self.use_place(&n, &[], env, nline(&f[1]), false);
+                if let Some(t) = env.get(&n) {
+                    if !is_nil(t) && tag(t) == "ref" {
+                        let inner = tel(t, 2).clone();
+                        if !is_nil(&inner) && !self.is_generic(&inner, &self.names) && !self.is_copy(&inner) {
+                            self.tdiag(
+                                "E3002",
+                                format!("cannot move out of `*{n}`: `{n}` is a reference, so the value behind it cannot be moved; borrow it with `&*{n}` or copy it"),
+                                nline(e),
+                            );
+                        }
+                    }
+                }
+            }
             "Unary" if st(&f[0]) == "-" => {
                 if self.is_int_ty(&self.ty_of(&f[1], env)) {
                     self.int_op_may_panic("unary `-`", nline(e));

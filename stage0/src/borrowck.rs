@@ -33,6 +33,8 @@ enum Acc {
     /// すでに保存されたローンは殺さない (コンテナの型の領域は、入れたすべての借用が生きる間続く)。
     MutKeep,
     Write,
+    /// 値としての消費 (move)。共有借用とも競合する。
+    Move,
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +99,8 @@ struct Low<'a> {
     /// 値を持つ式 (`match` / `if`-else / ブロック式。節点のアドレス) → その値を持つ合成の持ち主 (`$val0` など)。
     /// 各枝・各腕の値の借用を、枝の終わりでこの持ち主に集める (`let r = if .. { .. } else { .. }` で `r` へ移す)。
     value_vals: HashMap<usize, String>,
+    /// 型検査が move と判定した場所 (式の位置, 場所の鍵)。`Acc::Move` に変える。
+    moves: HashSet<(usize, String)>,
 }
 
 /// 値を持つ式 (`match` の腕、`if` の枝、ブロック式) の値として外へ運ぶ借用を、どの枝から集めるか。
@@ -874,6 +878,7 @@ impl<'a> Low<'a> {
             iters: self.iters + 1000,
             sub: vec![],
             value_vals: HashMap::new(),
+            moves: self.moves.clone(),
         };
         let entry = sub.new_node();
         let exit = sub.new_node();
@@ -915,6 +920,7 @@ impl<'a> Low<'a> {
         match self.place_of(e) {
             Some((root, path)) => {
                 self.emit(n, Ev::Use(root.clone()));
+                let kind = if kind == Acc::Read && self.moves.contains(&(nline(e), place_key(&root, &path))) { Acc::Move } else { kind };
                 self.emit(n, Ev::Access { root, path, kind, line: nline(e) });
                 true
             }
@@ -1117,6 +1123,7 @@ impl<'a> Low<'a> {
                     let k = match kind.as_str() {
                         "&mut" => Acc::MutB,
                         "&" => Acc::Shared,
+                        _ if self.moves.contains(&(nline(e), name.clone())) => Acc::Move,
                         _ => Acc::Read,
                     };
                     self.emit(cur, Ev::Access { root: name, path: vec![], kind: k, line: nline(e) });
@@ -1276,6 +1283,7 @@ impl<'a> Checker<'a> {
             iters: 0,
             sub: vec![],
             value_vals: HashMap::new(),
+            moves: self.move_sites.clone(),
         };
         let entry = low.new_node();
         let exit = low.new_node();
@@ -1476,6 +1484,8 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                             out.push((*line, format!("cannot use `{}` while it is mutably borrowed by {}", root, who)));
                         } else if matches!(kind, Acc::Write | Acc::MutB | Acc::MutKeep) {
                             out.push((*line, format!("cannot mutate `{}` while it is borrowed by {}", root, who)));
+                        } else if *kind == Acc::Move {
+                            out.push((*line, format!("cannot move `{}` while it is borrowed by {}", root, who)));
                         }
                     }
                 }

@@ -2609,6 +2609,22 @@ impl<'a> TypeCk<'a> {
                 self.closure_nodes.push(node.clone());
                 self.eff_acc.push(Default::default());
                 self.scopes.push(HashMap::new());
+                // `&a` / `&mut a` で取り込んだ名前は、本体では `&T` / `&mut T` (move は `T` のまま)。
+                for c in items(&f[2]) {
+                    let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { continue };
+                    if k == "move" {
+                        continue;
+                    }
+                    if let Some(t) = self.lookup(n) {
+                        // Copy な型 (整数など) は、読むだけなら値のままで害がない。移せる (Copy でない) 型だけ参照にする。
+                        if self.ty_copy(&t) == Some(false) {
+                            let r = Ty::Ref(k == "&mut", Box::new(t));
+                            if let Some(s) = self.scopes.last_mut() {
+                                s.insert(n.clone(), r);
+                            }
+                        }
+                    }
+                }
                 for p in items(&f[0]) {
                     let ty = from_v(&items(p)[1], &gn);
                     self.bind(&st(&items(p)[0]), ty.clone());
@@ -3046,7 +3062,12 @@ impl<'a> TypeCk<'a> {
             self.dep_on_local(&segs[0]);
             if segs.len() < 2 {
                 // `f(x)`: クロージャを持つ局所変数の直接呼び出し。
-                let t = self.lookup(&segs[0]).unwrap();
+                let mut t = self.lookup(&segs[0]).unwrap();
+                // 取り込んだ `&f` / `&mut f` の呼び出しは、参照を外して呼ぶ。
+                while let Ty::Ref(_, inner) = &t {
+                    let inner = (**inner).clone();
+                    t = inner;
+                }
                 // 再代入されうる `let mut` の局所は、束縛時のクロージャの効果を使わない (黙る)。
                 let eff_name = (!self.mutable.contains(&segs[0])).then(|| segs[0].as_str());
                 if let Some(r) = self.call_closure(&t, &argt, line, eff_name) {

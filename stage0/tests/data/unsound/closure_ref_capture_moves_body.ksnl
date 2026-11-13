@@ -1,0 +1,17 @@
+// expect: E2023
+fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line(s.as_str()))
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello, this is a long heap string"))
+    let f = fn() -> () capture [&s] {
+        t.consume(s)
+    }
+    f()
+    f()
+    t.consume(s)
+    Ok(())
+end t.main

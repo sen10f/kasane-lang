@@ -1,0 +1,27 @@
+type t.H['a]
+    r: &'a alloc.string.String
+end t.H
+
+fn t.bad() -> usize uses [] panics never
+    let s = t.mk()
+    let h = t.H { r: &s }
+    t.consume(s)
+    t.peek(h.r)
+end t.bad
+
+// expect: E3010
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek
