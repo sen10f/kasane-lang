@@ -1,0 +1,29 @@
+// expect: E3002
+type t.S
+    name: Option<alloc.string.String>
+end t.S
+
+fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line(s.as_str()))
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let x = t.S { name: Some(t.mk()) }
+    t.steal(&x)
+    t.steal(&x)
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello, this is a long heap string"))
+    s
+end t.mk
+
+fn t.steal(r: &t.S) -> () uses [io.console] panics never
+    match r.name {
+        Some(x) => t.consume(x)
+        None => core.mem.drop(0u8)
+    }
+end t.steal

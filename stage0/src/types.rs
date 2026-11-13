@@ -510,7 +510,7 @@ impl<'a> TypeCk<'a> {
         if let Some((want, got)) = self.ref_level_conflict(&ret, &value) {
             let stmts = items(&nf(body)[0]);
             let line = stmts.last().map(nline).unwrap_or(0);
-            self.diag("E2020", format!("type mismatch in return value: expected {}, found {}; there is no implicit dereference: write `*` to read the value", want, got), line);
+            self.diag("E2020", format!("type mismatch in return value: expected {}, found {}{}", want, got, self.deref_hint(&ret)), line);
         }
         self.check_dangling(body, &ret);
         self.finish_literals();
@@ -1553,7 +1553,7 @@ impl<'a> TypeCk<'a> {
             let raw_pt = from_v(&d.params[k + 1].1, &gn);
             let pt = self.inst(&raw_pt, &mut map);
             if let Some((want, got)) = self.arg_ref_conflict(&raw_pt, a, loose.get(k).copied().unwrap_or(false)) {
-                self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, name, want, got, ref_hint(&want, &got)), line);
+                self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw_pt))), line);
             }
             if let Err(e) = self.unify2(&pt, a) {
                 if fit.len() == 1 {
@@ -2578,7 +2578,7 @@ impl<'a> TypeCk<'a> {
                             }
                         }
                         if let Some((want, got)) = self.ref_level_conflict(&ret, &v) {
-                            self.diag("E2020", format!("type mismatch in return value: expected {}, found {}; there is no implicit dereference: write `*` to read the value", want, got), nline(e));
+                            self.diag("E2020", format!("type mismatch in return value: expected {}, found {}{}", want, got, self.deref_hint(&ret)), nline(e));
                         }
                     }
                 }
@@ -2650,7 +2650,7 @@ impl<'a> TypeCk<'a> {
                         }
                     }
                     if let Some((want, got)) = self.ref_level_conflict(&ann, &rhs) {
-                        self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}; there is no implicit dereference: write `*` to read the value", want, got), nline(s));
+                        self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}{}", want, got, self.deref_hint(&ann)), nline(s));
                     }
                     ann
                 } else {
@@ -3122,7 +3122,7 @@ impl<'a> TypeCk<'a> {
             let raw = from_v(&p.1, &gn);
             let pt = self.inst(&raw, &mut map);
             if let Some((want, got)) = self.arg_ref_conflict(&raw, a, loose.get(k).copied().unwrap_or(false)) {
-                self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, d.name, want, got, ref_hint(&want, &got)), line);
+                self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, d.name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw))), line);
             }
             if let Err(e) = self.unify2(&pt, a) {
                 // 型パラメータを含まない引数の型は従来の検査 (E2020) が見る。ここでは重複を避ける。
@@ -3604,6 +3604,27 @@ impl<'a> TypeCk<'a> {
     /// 値 (`want`) が要る所に参照 (`got`) を渡した形 (`&u32` を `u32` として返す) を見つけて、診断用の
     /// 2 つの型の文字列を返す。型が決まっていない・型パラメータを含む場合は黙る。
     /// 逆向き (参照が要る所に値) は、パターン束縛が外側の参照を落とす近似があるので見ない。
+    /// 型 `t` (参照は剥がす) が Copy か。決まらない型・型パラメータは true (従来の案内のまま)。
+    fn ty_copy_ref(&self, t: &Ty) -> bool {
+        let mut t = self.deep(t);
+        while let Ty::Ref(_, inner) = t {
+            t = *inner;
+        }
+        self.ty_copy_hint(&t)
+    }
+
+    fn ty_copy_hint(&self, t: &Ty) -> bool {
+        match t {
+            Ty::Named(nm, args) if nm == "Option" || nm == "Result" => args.iter().all(|x| self.ty_copy_hint(x)),
+            Ty::Tuple(xs) => xs.iter().all(|x| self.ty_copy_hint(x)),
+            _ => self.ty_copy(t) != Some(false),
+        }
+    }
+
+    fn deref_hint(&self, want: &Ty) -> String {
+        deref_advice(self.ty_copy_ref(want))
+    }
+
     fn ref_level_conflict(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
         let w = self.deep(want);
         let g = self.deep(got);
@@ -3879,10 +3900,19 @@ fn int_literal_problem(text: &str, ty: &str) -> Option<String> {
     None
 }
 
-/// 参照の段数の食い違いに付ける案内 (引数には自動参照も自動参照外しもない)。
-pub(crate) fn ref_hint(want: &str, got: &str) -> String {
-    if got.starts_with('&') && !want.starts_with('&') {
+/// 値が要る所に参照が来たときの案内。Copy の型は `*` で読めるが、Copy でない型は参照の先から move できない (4.1)。
+pub(crate) fn deref_advice(copy: bool) -> String {
+    if copy {
         "; there is no implicit dereference: write `*` to read the value".to_string()
+    } else {
+        "; there is no implicit dereference, and a value that is not Copy cannot be moved out of a reference: pass the owned value, or call `.clone()` to copy it".to_string()
+    }
+}
+
+/// 参照の段数の食い違いに付ける案内 (引数には自動参照も自動参照外しもない)。
+pub(crate) fn ref_hint(want: &str, got: &str, copy: bool) -> String {
+    if got.starts_with('&') && !want.starts_with('&') {
+        deref_advice(copy)
     } else if want.starts_with('&') && !got.starts_with('&') {
         "; there is no implicit reference: write `&` (or `&mut`) to borrow the value".to_string()
     } else {

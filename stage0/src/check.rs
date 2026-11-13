@@ -103,6 +103,24 @@ pub(crate) fn index_text(e: &V) -> String {
     };
     format!("{}[{}]", seg(&f[0]), seg(&f[1]))
 }
+/// enum 風の型 (`Option` / `Result` / ユーザー定義の enum) か。パターンで中身を取り出すと、その場所の全体が move される。
+fn sty0_is_enumlike(t: &V) -> bool {
+    tag(t) == "named"
+}
+
+/// 診断の文面に出す式の短い表記 (書かれたとおりでなくてよい)。
+fn short_text(e: &V) -> String {
+    let f = nf(e);
+    match nname(e) {
+        "Path" => strs(&f[0]).join("."),
+        "Field" if nname(&f[0]) == "Unary" => format!("({}).{}", short_text(&f[0]), st(&f[1])),
+        "Field" => format!("{}.{}", short_text(&f[0]), st(&f[1])),
+        "Unary" => format!("{}{}", st(&f[0]), short_text(&f[1])),
+        "Index" => index_text(e),
+        "Call" | "MCall" => "(call result)".to_string(),
+        _ => "(expression)".to_string(),
+    }
+}
 pub(crate) fn strs(v: &V) -> Vec<String> {
     items(v).iter().map(st).collect()
 }
@@ -387,6 +405,11 @@ pub struct Checker<'a> {
     index_consumes: Vec<(String, u32, String, usize)>,
     /// 値を消費するクロージャ (`FnOnce`) を束縛した局所の名前。呼ぶと move 済みになる (4.1)。
     fnonce_locals: HashSet<String>,
+    /// Copy でないクロージャの値 (`move` で Copy でない値・`&mut` を取り込んだ、または `FnOnce` の) を束縛した局所の名前。
+    /// 値として渡す・別の名前へ移すと、そのクロージャ自身が move される (4.1)。
+    noncopy_closures: HashSet<String>,
+    /// 参照越しの `match` の腕で、`&T` として束縛した名前 (Copy でない中身)。値を要る所へ渡すと move になってしまう。
+    ref_binds: HashSet<String>,
     /// `a[i].f` (添字の先のフィールド) を値として使った (関数名, Field 式の ID, 文言, 位置)。
     /// フィールドの型を型表で引き、Copy でなければ E3002 (配列・Vec の要素の先からは move できない、4.1)。
     field_consumes: Vec<(String, u32, String, usize)>,
@@ -493,8 +516,10 @@ impl<'a> Checker<'a> {
             lin_loops: vec![],
             let_tys: HashMap::new(),
             fnonce_locals: HashSet::new(),
+            noncopy_closures: HashSet::new(),
             field_consumes: vec![],
             index_consumes: Vec::new(),
+            ref_binds: HashSet::new(),
             mv_types: BTreeMap::new(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
@@ -3244,6 +3269,28 @@ impl<'a> Checker<'a> {
         self.graph.entry(d.name.clone()).or_default();
         self.moved.clear();
         self.fnonce_locals.clear();
+        self.noncopy_closures.clear();
+        self.ref_binds.clear();
+        // `F: core.ops.FnOnce<..>` の型パラメータの引数は、呼ぶと消費される (一度きり)。
+        for (pn, pt) in &d.params {
+            if tag(pt) == "named" && items(tel(pt, 2)).is_empty() {
+                let tn = st(tel(pt, 1));
+                let once = d.generics.iter().filter(|g| g.0 == "type" && g.1 == tn).any(|g| {
+                    items(&g.2).iter().any(|b| {
+                        let bn = match b {
+                            V::L(bx) if !bx.is_empty() => st(&bx[0]),
+                            V::S(x) => x.clone(),
+                            _ => String::new(),
+                        };
+                        bn == "FnOnce" || bn.ends_with(".FnOnce")
+                    })
+                });
+                if once {
+                    self.fnonce_locals.insert(pn.clone());
+                    self.noncopy_closures.insert(pn.clone());
+                }
+            }
+        }
         self.lin.clear();
         self.lin_floor = 0;
         self.lin_in_closure = false;
@@ -3517,6 +3564,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     env.insert(n.clone(), t);
+                    self.ref_binds.remove(&n);
                     self.revive_place(std::slice::from_ref(&n));
                     let once = matches!(
                         self.let_tys.get(&(self.d, nline(s), n.clone())),
@@ -3526,6 +3574,11 @@ impl<'a> Checker<'a> {
                         self.fnonce_locals.insert(n.clone());
                     } else {
                         self.fnonce_locals.remove(&n);
+                    }
+                    if nname(&f[0]) == "PBind" && (once || self.closure_value_non_copy(&f[3], env)) {
+                        self.noncopy_closures.insert(n.clone());
+                    } else {
+                        self.noncopy_closures.remove(&n);
                     }
                     if matches!(f[1], V::B(true)) {
                         muts.insert(n);
@@ -3635,6 +3688,9 @@ impl<'a> Checker<'a> {
         if consume {
             if !path.is_empty() && self.move_out_of_ref(root, path, env, line) {
                 return;
+            }
+            if path.is_empty() && self.noncopy_closures.contains(root) {
+                self.moved.insert(root.to_string(), line);
             }
             self.record_move(root, path, env, line);
             self.lin_consume_place(root, path, env);
@@ -3883,6 +3939,27 @@ impl<'a> Checker<'a> {
                         taken.push((st(&items(c)[1]), nline(c)));
                     }
                 }
+                // `&f` / `&mut f` で取り込んだ `FnOnce` を本体で呼ぶのは、参照の先から move すること。
+                for c in items(&f[2]) {
+                    let name = st(tel(c, 1));
+                    if st(tel(c, 0)) != "move" && self.fnonce_locals.contains(&name) {
+                        let mut nodes: Vec<&V> = vec![];
+                        walk(&f[3], &mut nodes);
+                        let called = nodes.iter().any(|n| {
+                            nname(n) == "Call" && nname(&nf(n)[0]) == "Path" && {
+                                let sg = strs(&nf(&nf(n)[0])[0]);
+                                sg[0] == name && (sg.len() == 1 || (sg.len() == 2 && sg[1] == "call_once"))
+                            }
+                        });
+                        if called {
+                            self.tdiag(
+                                "E3002",
+                                format!("cannot move out of `{name}`: it is an `FnOnce` captured by reference, and calling it moves it; capture it with `move {name}`"),
+                                nline(e),
+                            );
+                        }
+                    }
+                }
                 let saved_lin = (self.lin_floor, self.lin_in_closure, std::mem::take(&mut self.lin_loops));
                 self.lin_floor = self.lin.len();
                 self.lin_in_closure = true;
@@ -3963,8 +4040,23 @@ impl<'a> Checker<'a> {
                         let recv: &[String] = if segs.len() >= 2 { &segs[1..segs.len() - 1] } else { &[] };
                         let by_value = segs.len() >= 2 && self.method_takes_self_by_value(&segs[0], recv, &segs[segs.len() - 1], env);
                         self.use_place(&segs[0], recv, env, nline(e), by_value);
+                        // 参照の先の値を `self` で受けるメソッド (`s: &S` の `s.into_name()`) は、参照の先を move する。
+                        if segs.len() >= 2 && !by_value {
+                            if let Some((ty, true)) = self.recv_ty_through_ref(&segs[0], recv, env) {
+                                let name = &segs[segs.len() - 1];
+                                if self.method_of_named(&ty, name).is_some_and(|m| self.def_takes_self_by_value(m)) && !self.is_generic(&ty, &self.names) && !self.is_copy(&ty) {
+                                    let place = segs[..segs.len() - 1].join(".");
+                                    self.tdiag(
+                                        "E3002",
+                                        format!("cannot move out of `{place}`: `{name}` takes `self` by value, but `{place}` is behind a reference; call it on an owned value or clone first"),
+                                        nline(e),
+                                    );
+                                }
+                            }
+                        }
                         // `FnOnce` のクロージャを呼ぶと、そのクロージャ自身が move される (2 回目の呼び出しは E3002)。
-                        if segs.len() == 1 && self.fnonce_locals.contains(&segs[0]) && self.moved_overlap(&segs[0], &[]).is_none() {
+                        let call_once = segs.len() == 2 && segs[1] == "call_once";
+                        if (segs.len() == 1 || call_once) && self.fnonce_locals.contains(&segs[0]) && self.moved_overlap(&segs[0], &[]).is_none() {
                             self.moved.insert(segs[0].clone(), nline(e));
                         }
                         if segs.len() >= 2 {
@@ -3983,6 +4075,21 @@ impl<'a> Checker<'a> {
                     if let Some(c) = callee {
                         if i < c.params.len() {
                             let pt = &c.params[i].1;
+                            // 参照越しの `match` で `&T` として束縛した名前を、値 `T` の引数に渡す (= 参照の先を move する)。
+                            if nname(a) == "Path"
+                                && strs(&nf(a)[0]).len() == 1
+                                && self.ref_binds.contains(&strs(&nf(a)[0])[0])
+                                && tag(pt) != "ref"
+                                && !self.is_generic(pt, &c.gnames())
+                                && !self.is_copy(pt)
+                            {
+                                let n = &strs(&nf(a)[0])[0];
+                                self.tdiag(
+                                    "E3002",
+                                    format!("cannot move out of `{n}`: it was bound by matching through a reference, so it is a reference; pass `{n}.clone()` or take the value out of the owner"),
+                                    nline(a),
+                                );
+                            }
                             if !self.is_generic(pt, &c.gnames()) {
                                 let got = self.ty_of(a, env);
                                 self.mismatch(pt, &got, nline(e), &format!("argument {} of {}", i + 1, c.name));
@@ -3998,12 +4105,45 @@ impl<'a> Checker<'a> {
                 }
             }
             "MCall" => {
+                self.mcall_moves_out_of_ref(e);
                 self.tc_expr(&f[0], env, muts, false);
                 for a in items(&f[2]) {
                     self.tc_expr(a, env, muts, true);
                 }
             }
             "Unary" if matches!(st(&f[0]).as_str(), "&" | "&mut") => self.tc_expr(&f[1], env, muts, false),
+            "Unary" if st(&f[0]) == "*" => {
+                // `*r` を値として使う (move) のは、参照の先が Copy のときだけ (4.1)。
+                if consume && self.ety_is_ref(&f[1]) && self.ety_non_copy(e) {
+                    let text = format!("*{}", short_text(&f[1]));
+                    self.tdiag(
+                        "E3002",
+                        format!("cannot move out of `{text}`: it is behind a reference and its type is not Copy; borrow it with `&{text}` or call `.clone()`"),
+                        nline(e),
+                    );
+                }
+                self.tc_expr(&f[1], env, muts, false);
+            }
+            // `self.f` (`self` は `Path` の 1 要素で、`x.f` のように 1 つのパスにまとまらない) と、
+            // 根が局所変数の `(x).f` は、場所 (根 + フィールド道) として使う。
+            "Field" if self.field_place(e).is_some_and(|(r, _)| env.contains_key(&r)) => {
+                let (root, path) = self.field_place(e).unwrap_or_default();
+                self.use_place(&root, &path, env, nline(e), consume);
+            }
+            // 参照の先・関数の戻り値の参照の先のフィールド (`(*r).f`、`t.id(s).f`) を、Copy でない型のまま値として使う。
+            "Field" if consume && self.field_behind_ref(e) && self.ety_non_copy(e) => {
+                let mut b = &f[0];
+                while nname(b) == "Field" {
+                    b = &nf(b)[0];
+                }
+                let text = format!("{}.{}", short_text(b), st(&f[1]));
+                self.tdiag(
+                    "E3002",
+                    format!("cannot move out of `{text}`: it is behind a reference and its type is not Copy; borrow it with `&{text}` or call `.clone()`"),
+                    nline(e),
+                );
+                self.tc_expr(&f[0], env, muts, false);
+            }
             "Unary" if st(&f[0]) == "-" => {
                 if self.is_int_ty(&self.ty_of(&f[1], env)) {
                     self.int_op_may_panic("unary `-`", nline(e));
@@ -4080,12 +4220,246 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 型推論 (types.rs) が決めた、式 `e` の型 (今の関数の式 ID から引く)。
+    fn ety(&self, e: &V) -> Option<&crate::types::Ty> {
+        let id = nid(e);
+        if id == 0 {
+            return None;
+        }
+        self.mv_types.get(&(self.def(self.d).name.clone(), id)).map(|x| &x.ty)
+    }
+
+    fn ety_is_ref(&self, e: &V) -> bool {
+        matches!(self.ety(e), Some(crate::types::Ty::Ref(..)))
+    }
+
+    /// 式 `e` の型が、確実に Copy でない型か (決まらない・型パラメータは false = 黙る)。
+    fn ety_non_copy(&self, e: &V) -> bool {
+        self.ety(e).is_some_and(|t| self.ty_certainly_not_copy(t))
+    }
+
+    fn ty_certainly_not_copy(&self, t: &crate::types::Ty) -> bool {
+        use crate::types::Ty;
+        match t {
+            Ty::Unknown | Ty::Var(_) | Ty::Param(_) => false,
+            Ty::Tuple(xs) => xs.iter().any(|x| self.ty_certainly_not_copy(x)),
+            Ty::Array(el) => self.ty_certainly_not_copy(el),
+            Ty::Named(nm, args) if nm == "Option" || nm == "Result" => args.iter().any(|a| self.ty_certainly_not_copy(a)),
+            _ => !self.is_copy_ty(t),
+        }
+    }
+
+    /// `Field` の鎖 `a.f.g` の根が局所の単一の名前 (`self` など。`Path` が 1 要素) のとき、(根, 道)。
+    fn field_place(&self, e: &V) -> Option<(String, Vec<String>)> {
+        let mut path = vec![];
+        let mut b = e;
+        while nname(b) == "Field" {
+            path.push(st(&nf(b)[1]));
+            b = &nf(b)[0];
+        }
+        if nname(b) != "Path" {
+            return None;
+        }
+        let segs = strs(&nf(b)[0]);
+        if segs.len() != 1 {
+            return None;
+        }
+        path.reverse();
+        Some((segs[0].clone(), path))
+    }
+
+    /// `Field` の鎖の根が、参照を返す式 (`*r`、参照を返す呼び出し) か。そこからフィールドを move することはできない。
+    fn field_behind_ref(&self, e: &V) -> bool {
+        let mut b = e;
+        while nname(b) == "Field" {
+            b = &nf(b)[0];
+        }
+        match nname(b) {
+            "Unary" => st(&nf(b)[0]) == "*" && self.ety_is_ref(&nf(b)[1]),
+            "Call" | "MCall" => self.ety_is_ref(b),
+            _ => false,
+        }
+    }
+
+    /// `let f = <rhs>` の右辺が、Copy でないクロージャの値か。クロージャ式で、`move` で Copy でない値 (や Copy でない
+    /// クロージャ) を取り込む・`&mut` で取り込むとき。別の Copy でないクロージャの名前 (`let g = f`) もそう。型が決まらない取り込みは黙る。
+    fn closure_value_non_copy(&self, rhs: &V, env: &Env) -> bool {
+        match nname(rhs) {
+            "Closure" => items(&nf(rhs)[2]).iter().any(|c| {
+                let name = st(tel(c, 1));
+                match st(tel(c, 0)).as_str() {
+                    "move" => {
+                        self.noncopy_closures.contains(&name)
+                            || env.get(&name).is_some_and(|t| !is_nil(t) && !self.is_generic(t, &self.names) && !self.is_copy(t))
+                    }
+                    "&mut" => true,
+                    _ => false,
+                }
+            }),
+            "Path" => {
+                let segs = strs(&nf(rhs)[0]);
+                segs.len() == 1 && self.noncopy_closures.contains(&segs[0])
+            }
+            _ => false,
+        }
+    }
+
+    /// `match` の腕のパターン `pat` の束縛名と、決まる型 (パターンからの型、無ければ型推論の `let` の表)。
+    fn arm_bindings(&self, pat: &V, sty: &V, line: usize) -> Vec<(String, V)> {
+        let mut typed: Vec<(String, V)> = vec![];
+        if !is_nil(sty) {
+            self.bind_pat_types(pat, sty, &mut typed);
+        }
+        let mut names = vec![];
+        pat_binds(pat, &mut names);
+        names
+            .into_iter()
+            .map(|n| {
+                let mut t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
+                if is_nil(&t) {
+                    if let Some(ty) = self.let_tys.get(&(self.d, line, n.clone())) {
+                        t = crate::types::TypeCk::to_v(ty).unwrap_or(V::Nil);
+                    }
+                }
+                (n, t)
+            })
+            .collect()
+    }
+
+    /// スクラティニー `e` が、move できない場所か: `*r`・参照越しのフィールド・添字の先・参照を返す式のフィールド。
+    fn scrut_behind_ref(&self, e: &V, env: &Env) -> bool {
+        match nname(e) {
+            "Unary" => st(&nf(e)[0]) == "*" && self.ety_is_ref(&nf(e)[1]),
+            "Index" => true,
+            "Field" => {
+                let mut b = e;
+                while nname(b) == "Field" {
+                    b = &nf(b)[0];
+                }
+                nname(b) == "Index" || self.field_behind_ref(e) || self.field_place(e).is_some_and(|(r, p)| self.path_through_ref(&r, &p, env))
+            }
+            "Path" => {
+                let segs = strs(&nf(e)[0]);
+                segs.len() >= 2 && self.path_through_ref(&segs[0], &segs[1..], env)
+            }
+            _ => false,
+        }
+    }
+
+    /// 場所 `root.path` の道の途中に参照があるか (根が参照のときを含む)。型が分からなければ false。
+    fn path_through_ref(&self, root: &str, path: &[String], env: &Env) -> bool {
+        let Some(t) = env.get(root) else { return false };
+        let mut cur = t.clone();
+        let mut through = false;
+        for seg in path {
+            if is_nil(&cur) {
+                return false;
+            }
+            if tag(&cur) == "ref" {
+                through = true;
+                cur = self.strip(&cur).clone();
+            }
+            match self.field_ty(&cur, seg) {
+                Some(n) => cur = n,
+                None => return false,
+            }
+        }
+        through
+    }
+
+    /// スクラティニー `e` が局所の場所 (変数・フィールドの道) ならその (根, 道)。
+    fn scrut_place(&self, e: &V, env: &Env) -> Option<(String, Vec<String>)> {
+        let (root, path) = match nname(e) {
+            "Path" => {
+                let segs = strs(&nf(e)[0]);
+                (segs[0].clone(), segs[1..].to_vec())
+            }
+            "Field" => self.field_place(e)?,
+            _ => return None,
+        };
+        env.contains_key(&root).then_some((root, path))
+    }
+
     /// 場所 `root.path` の型のメソッド `name` が、`self` を値で受けるか。
     /// レシーバの型が分からない・メソッドが見つからないときは `false` (消費として扱わない)。
     fn method_takes_self_by_value(&self, root: &str, path: &[String], name: &str, env: &Env) -> bool {
         match self.method_def(root, path, name, env).and_then(|d| d.params.first()) {
             Some((pn, pt)) => pn == "self" && tag(pt) != "ref",
             None => false,
+        }
+    }
+
+    /// 場所 `root.path` の型 (参照は剥がす)。道の途中か最後に参照があれば true を添える。分からなければ None。
+    fn recv_ty_through_ref(&self, root: &str, path: &[String], env: &Env) -> Option<(V, bool)> {
+        let mut cur = env.get(root)?.clone();
+        let mut through = false;
+        for seg in path {
+            if is_nil(&cur) {
+                return None;
+            }
+            if tag(&cur) == "ref" {
+                through = true;
+                cur = self.strip(&cur).clone();
+            }
+            cur = self.field_ty(&cur, seg)?;
+        }
+        if is_nil(&cur) {
+            return None;
+        }
+        if tag(&cur) == "ref" {
+            through = true;
+            cur = self.strip(&cur).clone();
+        }
+        Some((cur, through))
+    }
+
+    /// 型 `ty` (`named`) のメソッド `name` の定義。
+    fn method_of_named(&self, ty: &V, name: &str) -> Option<&'a Def> {
+        if tag(ty) != "named" {
+            return None;
+        }
+        let tname = match st(tel(ty, 1)).as_str() {
+            "Option" => "core.option.Option".to_string(),
+            "Result" => "core.result.Result".to_string(),
+            n => n.to_string(),
+        };
+        let fq = format!("{}.{}", tname, name);
+        self.p.funcs.get(&fq).or_else(|| self.p.sigs.get(&fq)).map(|&i| self.def(i))
+    }
+
+    fn def_takes_self_by_value(&self, d: &Def) -> bool {
+        matches!(d.params.first(), Some((pn, pt)) if pn == "self" && tag(pt) != "ref")
+    }
+
+    /// `recv.m(..)` の `m` が `self` を値で受け、レシーバが参照の先・添字の先の場所 (または参照そのもの) で、
+    /// その型が Copy でないなら E3002 (4.1: 参照の先からは move できない)。型は型表から引く。
+    fn mcall_moves_out_of_ref(&mut self, e: &V) {
+        let f = nf(e);
+        let recv = &f[0];
+        let Some(rt) = self.ety(recv).cloned() else { return };
+        let (pointee, through) = match &rt {
+            crate::types::Ty::Ref(_, inner) => ((**inner).clone(), true),
+            t => (
+                t.clone(),
+                nname(recv) == "Index"
+                    || (nname(recv) == "Unary" && st(&nf(recv)[0]) == "*" && self.ety_is_ref(&nf(recv)[1]))
+                    || (nname(recv) == "Field" && self.field_behind_ref(recv)),
+            ),
+        };
+        if !through || !self.ty_certainly_not_copy(&pointee) {
+            return;
+        }
+        let Some(tv) = crate::types::TypeCk::to_v(&pointee) else { return };
+        let name = st(&f[1]);
+        if self.method_of_named(&tv, &name).is_some_and(|m| self.def_takes_self_by_value(m)) {
+            self.tdiag(
+                "E3002",
+                format!(
+                    "cannot move out of `{}`: `{name}` takes `self` by value, but the receiver is behind a reference or an index; call it on an owned value or clone first",
+                    short_text(recv)
+                ),
+                nline(e),
+            );
         }
     }
 
@@ -4178,6 +4552,35 @@ impl<'a> Checker<'a> {
             }
             "Match" => {
                 self.tc_expr(&f[0], env, muts, false);
+                let sty0 = self.ty_of(&f[0], env);
+                let sref = self.ety_is_ref(&f[0]) || tag(&sty0) == "ref";
+                let smut = matches!(self.ety(&f[0]), Some(crate::types::Ty::Ref(true, _)))
+                    || (tag(&sty0) == "ref" && matches!(tel(&sty0, 1), V::B(true)));
+                // 腕が Copy でない値を束縛して取り出すなら、スクラティニーの場所は move される (4.1)。
+                // 参照の先・添字の先からは move できない (E3002)。スクラティニーが参照そのものなら、束縛は `&T`。
+                let moving = !sref
+                    && items(&f[1]).iter().any(|a| {
+                        self.arm_bindings(&items(a)[0], &sty0, nline(&items(a)[0]))
+                            .iter()
+                            .any(|(n, t)| n != "_" && !is_nil(t) && !self.is_generic(t, &self.names) && !self.is_copy(t))
+                    });
+                if moving {
+                    if self.scrut_behind_ref(&f[0], env) {
+                        self.tdiag(
+                            "E3002",
+                            format!(
+                                "cannot move out of `{}` in a `match`: it is behind a reference or an index and the pattern binds a value that is not Copy; match on `&{}` instead",
+                                short_text(&f[0]),
+                                short_text(&f[0])
+                            ),
+                            nline(e),
+                        );
+                    } else if let Some((root, path)) = self.scrut_place(&f[0], env) {
+                        if !path.is_empty() || sty0_is_enumlike(&sty0) {
+                            self.record_move(&root, &path, env, nline(e));
+                        }
+                    }
+                }
                 let base = self.moved.clone();
                 // 腕の終わりの move の和。各腕は `base` から始まるので、全腕が同じ場所を復活させれば (`rx = back`) 復活が残る。
                 let mut merged: Option<BTreeMap<String, usize>> = None;
@@ -4212,6 +4615,22 @@ impl<'a> Checker<'a> {
                                 t = crate::types::TypeCk::to_v(ty).unwrap_or(V::Nil);
                             }
                         }
+                        if sref && is_nil(&t) && !is_nil(&sty0) {
+                            let inner_ty = self.strip(&sty0).clone();
+                            t = self
+                                .arm_bindings(&items(arm)[0], &inner_ty, nline(&items(arm)[0]))
+                                .into_iter()
+                                .find(|(m, _)| *m == n)
+                                .map(|(_, t)| t)
+                                .unwrap_or(V::Nil);
+                        }
+                        // 参照越しの照合で得た Copy でない値は、参照 (`&T` / `&mut T`) として束縛される。
+                        if sref && !is_nil(&t) && tag(&t) != "ref" && !self.is_generic(&t, &self.names) && !self.is_copy(&t) {
+                            t = V::L(vec![V::S("ref".into()), V::B(smut), t]);
+                            self.ref_binds.insert(n.clone());
+                        } else {
+                            self.ref_binds.remove(&n);
+                        }
                         // 腕の束縛は新しい値。以前の同名の束縛の move 記録を引き継がない。
                         self.revive_place(std::slice::from_ref(&n));
                         self.lin_declare(&n, &t, nline(arm));
@@ -4241,6 +4660,8 @@ impl<'a> Checker<'a> {
                 let mut loop_binds = false;
                 // `while` の条件は毎周評価される: 条件の中の move も 2 周目の検査に入れるため、条件より前の状態を基にする。
                 let mut pre_cond: Option<BTreeMap<String, usize>> = None;
+                // 条件を評価した直後の move (本体へ入る前)。条件が偽でループを出る経路は、これを持つ。
+                let mut after_cond: Option<BTreeMap<String, usize>> = None;
                 let body = match n {
                     "For" => {
                         // 反復子の式は move 済みの使用を検査するが、`for` 自体は反復子を move 済みに
@@ -4264,7 +4685,9 @@ impl<'a> Checker<'a> {
                     }
                     "While" => {
                         pre_cond = Some(self.moved.clone());
-                        self.tc_expr(&f[0], env, muts, false);
+                        // 条件の中の消費 (`while t.eat(s) { .. }`) は move になる。
+                        self.tc_expr(&f[0], env, muts, true);
+                        after_cond = Some(self.moved.clone());
                         &f[1]
                     }
                     _ => &f[0],
@@ -4332,6 +4755,11 @@ impl<'a> Checker<'a> {
                 Self::union_moves(&mut out, &breaks);
                 if n != "Loop" {
                     Self::union_moves(&mut out, &back);
+                }
+                // `while` は、条件を評価した直後 (本体へ入る前) の move の状態でも出る。本体で再代入しても、
+                // 条件で move した値は、条件が偽になって出た経路では復活していない。
+                if let Some(ac) = &after_cond {
+                    Self::union_moves(&mut out, ac);
                 }
                 // 本体の中で宣言した束縛は、ループの外では見えない。
                 out.retain(|k, _| env.contains_key(k.split('.').next().unwrap_or(k)));

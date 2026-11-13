@@ -1,0 +1,20 @@
+// expect: E3002
+type t.S
+    name: alloc.string.String
+end t.S
+
+fn t.bad(r: &t.S) -> () uses [] panics never
+    t.consume((*r).name)
+end t.bad
+
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk

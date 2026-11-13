@@ -1,0 +1,52 @@
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.forms() -> usize uses [] panics never
+    let s = t.mk()
+    let f = fn() -> () capture [move s] {
+        t.consume(s)
+    }
+    t.once(f)
+    let k = 3u32
+    let c = fn() -> u32 capture [&k] {
+        *k
+    }
+    let g = fn() -> u32 capture [&c] {
+        c()
+    }
+    core.mem.drop(g())
+    core.mem.drop(g())
+    let h = fn() -> u32 capture [move k] {
+        k
+    }
+    let h2 = h
+    core.mem.drop(h())
+    core.mem.drop(h2())
+    let s2 = t.mk()
+    let m = fn() -> usize capture [move s2] {
+        s2.len()
+    }
+    let m2 = m
+    m2()
+end t.forms
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.once[F: core.ops.FnOnce<(), (), E, P>, E: uses, P: panics](f: F) -> () uses [E] panics P
+    f.call_once(())
+end t.once
+
+fn t.once_call[F: core.ops.FnOnce<(), (), E, P>, E: uses, P: panics](f: F) -> () uses [E] panics P
+    f()
+end t.once_call
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek

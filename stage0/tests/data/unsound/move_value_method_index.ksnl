@@ -1,0 +1,25 @@
+// expect: E3002
+type t.S
+    name: alloc.string.String
+end t.S
+
+fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
+    let t.S { name: name } = self
+    name
+end t.S.into_name
+
+fn t.bad(v: &alloc.vec.Vec<t.S, std.alloc.System>) -> () uses [] panics may
+    t.consume(v[0usize].into_name())
+end t.bad
+
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.get(s: &t.S) -> &t.S uses [] panics never
+    s
+end t.get
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

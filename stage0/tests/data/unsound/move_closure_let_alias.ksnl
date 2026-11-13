@@ -1,0 +1,24 @@
+// expect: E3002
+fn t.bad() -> () uses [] panics never
+    let s = t.mk()
+    let f = fn() -> usize capture [move s] {
+        s.len()
+    }
+    let g = f
+    core.mem.drop(g())
+    core.mem.drop(f())
+    core.mem.drop(g)
+    core.mem.drop(f)
+end t.bad
+
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
