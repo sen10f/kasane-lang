@@ -4,7 +4,9 @@
 //! 設計判断: すべてのパスを 1 つのモジュールにまとめ、ファイル分割を最小化する。
 //! 各パスは独立した関数で、`Module` を受け取り `Module` を返す。
 
-use crate::kir::{self, Aop, BitK, BoolOp, Cc, FBin, FUn, Inst, Mode, Module, Op, Term, Ty, VId};
+use std::collections::HashSet;
+
+use crate::kir::{self, Aop, BitK, BoolOp, Cc, FBin, FUn, Inst, Mode, Module, Op, Term, Ty, VId, operands};
 
 /// 最適化のエントリポイント。全パスを順に適用し、各パスの後に `verify_module` を通す。
 /// 検証に失敗した場合は、その時点までの結果を返さずエラーにする（内部不整合のため）。
@@ -17,9 +19,108 @@ pub fn optimize(m: &Module) -> Result<Module, String> {
     Ok(m)
 }
 
-/// 使われない命令の除去 (パス 2)。未実装のスタブ（通過のみ）。
+/// 使われない命令の除去 (パス 2)。副作用の無い命令だけを除去する。
+/// 呼び出し・メモリ・panic・write は副作用があるとみなして残す。
 fn dce(m: &Module) -> Result<Module, String> {
-    Ok(m.clone())
+    after(m, |m| {
+        let mut m = m.clone();
+        for f in &mut m.funcs {
+            let mut changed = true;
+            while changed {
+                changed = false;
+                // 現在の命令・終端命令が参照する値番号の集合。
+                let mut referenced: HashSet<VId> = HashSet::new();
+                for b in &f.blocks {
+                    for i in &b.insts {
+                        for a in operands(&i.op) {
+                            referenced.insert(a);
+                        }
+                    }
+                    match &b.term {
+                        Term::Br(t) => referenced.extend(t.1.iter().copied()),
+                        Term::BrIf(c, t1, t2) => {
+                            referenced.insert(*c);
+                            referenced.extend(t1.1.iter().copied());
+                            referenced.extend(t2.1.iter().copied());
+                        }
+                        Term::Ret(v) => { referenced.insert(*v); }
+                        Term::Unreachable => {}
+                    }
+                }
+                let dead: Vec<(usize, usize)> = f
+                    .blocks
+                    .iter_mut()
+                    .enumerate()
+                    .flat_map(|(bi, b)| {
+                        b.insts
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, i)| {
+                                !side_effecting(&i.op) && !referenced.contains(&i.dst)
+                            })
+                            .map(move |(ii, _)| (bi, ii))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                // 後ろから削除して添字をずらさない。
+                for (bi, ii) in dead.into_iter().rev() {
+                    f.blocks[bi].insts.remove(ii);
+                    changed = true;
+                }
+            }
+        }
+        m
+    }, "使われない命令の除去")
+}
+
+/// 命令が副作用を持つか。副作用を持つ命令は結果が未使用でも除去しない。
+fn side_effecting(op: &Op) -> bool {
+    match op {
+        Op::Call { .. }
+        | Op::Write { .. }
+        | Op::Eprint { .. }
+        | Op::Abort
+        | Op::Panic { .. }
+        | Op::Store { .. }
+        | Op::MemStore { .. }
+        | Op::HeapFree(_)
+        | Op::HeapAlloc(_)
+        | Op::HeapRealloc { .. }
+        | Op::IndexCheck { .. }
+        | Op::Alloca
+        | Op::Load(_)
+        | Op::MemLoad { .. }
+        | Op::FrameBytes { .. } => true,
+        // 純粋な演算・構築・変換は副作用を持たない。
+        Op::Const(_)
+        | Op::Arith { .. }
+        | Op::Cmp { .. }
+        | Op::Neg { .. }
+        | Op::FArith { .. }
+        | Op::FUn { .. }
+        | Op::FBin { .. }
+        | Op::Shift { .. }
+        | Op::MinMax { .. }
+        | Op::Conv { .. }
+        | Op::Bitcast { .. }
+        | Op::Not(_)
+        | Op::Bool(..)
+        | Op::BitCount { .. }
+        | Op::Tag(_)
+        | Op::Payload(_)
+        | Op::Some(_)
+        | Op::Ok(_)
+        | Op::Err(_)
+        | Op::Checked { .. }
+        | Op::Make { .. }
+        | Op::Field { .. }
+        | Op::SetField { .. }
+        | Op::PtrAdd { .. }
+        | Op::StaticBytes(_)
+        | Op::AsShared(_)
+        | Op::Reborrow(_)
+        | Op::FieldAddr { .. } => false,
+    }
 }
 
 /// コピーの伝播 (パス 3)。未実装のスタブ（通過のみ）。
@@ -435,5 +536,38 @@ mod tests {
     fn const_fold_optimize_pipeline_runs() {
         let m = sample();
         let _ = optimize(&m).unwrap();
+    }
+
+    /// 使われていない純粋な算術命令は除去され、副作用のある命令は残る。
+    #[test]
+    fn dce_removes_dead_pure_inst_keeps_side_effects() {
+        let f = Func {
+            fqn: "t.dce".into(),
+            key: "t.dce".into(),
+            uses: vec![],
+            may_panic: false,
+            stack: None,
+            ret: Ty::U32,
+            blocks: vec![Block {
+                params: vec![],
+                insts: vec![
+                    Inst { dst: 0, ty: Ty::U32, op: Op::Const(1) },   // 未使用 → 削除
+                    Inst { dst: 1, ty: Ty::U32, op: Op::Const(2) },   // %2 で使われる → 残る
+                    Inst { dst: 2, ty: Ty::U32, op: Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: 1, b: 1 } }, // 自己参照は不正だがテスト用
+                    Inst { dst: 3, ty: Ty::U32, op: Op::Call { callee: "t.dce".into(), args: vec![] } }, // 副作用 → 残る（未使用でも）
+                ],
+                term: Term::Ret(2),
+            }],
+        };
+        let m = Module { funcs: vec![f], ..Default::default() };
+        let out = dce(&m).unwrap();
+        let insts = &out.funcs[0].blocks[0].insts;
+        // %0 (const 1) は除去される
+        assert!(!insts.iter().any(|i| matches!(i.op, Op::Const(1))));
+        // %1 (const 2), %2 (add), call は残る
+        assert!(insts.iter().any(|i| matches!(i.op, Op::Const(2))));
+        assert!(insts.iter().any(|i| matches!(i.op, Op::Call { .. })));
+        // ret %2 は %2 を参照するので %2 生成元は残る
+        assert_eq!(out.funcs[0].blocks[0].term, Term::Ret(2));
     }
 }
