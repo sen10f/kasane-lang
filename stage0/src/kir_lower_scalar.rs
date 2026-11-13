@@ -34,6 +34,8 @@ enum Plan {
     Bitcast,
     /// 浮動小数の 2 引数 (`min`、`max`、`rem`、`atan2`、`powi`)。
     Binary(FBin),
+    /// `char.to_u32()`: 値はそのまま (`char` は `u32` で持つ)。
+    Same,
     /// `char.to_ascii_uppercase()` / `to_ascii_lowercase()` (`true` で大文字)。ASCII の英字だけを変える。
     AsciiCase(bool),
 }
@@ -81,7 +83,7 @@ fn num_plan(rt: Ty, name: &str, n: usize) -> Option<Plan> {
         ("atan2", 1) if flt => Plan::Binary(FBin::Atan2),
         ("powi", 1) if flt => Plan::Binary(FBin::Powi),
         // `char` は `u32` で持つ。spec が `char` にだけ定めるメソッドなので、`u32` の受け手では現れない。
-        // `char.to_u32()` は下ろさない (`'a'.to_u32()` を未対応の例に使う 2 本の試験と食い違うため。設計_KIR.md 17.20)。
+        ("to_u32", 0) if rt == Ty::U32 => Plan::Same,
         ("to_ascii_uppercase", 0) if rt == Ty::U32 => Plan::AsciiCase(true),
         ("to_ascii_lowercase", 0) if rt == Ty::U32 => Plan::AsciiCase(false),
         _ => return None,
@@ -210,6 +212,7 @@ impl<'a> Lw<'a> {
             Plan::Unary(f) => self.emit(out, Op::FUn { f, src: rt, a: recv }),
             Plan::Bitcast => self.emit(res, Op::Bitcast { src: rt, a: recv }),
             Plan::Binary(f) => self.emit(rt, Op::FBin { f, a: recv, b: argv[0] }),
+            Plan::Same => recv,
             Plan::AsciiCase(upper) => self.ascii_case(recv, upper),
         };
         Ok(Some(Some(v)))
