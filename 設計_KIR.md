@@ -848,6 +848,27 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 - 試験: `stage0/tests/cli.rs` の `kir_optres_slice_sub_matches_tree_walker` (`sub` の `Some` / `None`、`as_bytes` の値を `--native` でも比べる)。
 - 試験: `stage0/tests/cli.rs` の `kir_optres_aggregates_match_tree_walker` (`Ok` / `Err` に列挙型、`?` の 2 段の伝播、`Option<構造体>` の `match`、入れ子の `Option<Result<..>>` と `Option<Option<..>>`、`Result<(), 列挙型>`、列挙子のパターンの入れ子)、`kir_optres_aggregates_print_and_refuse_at_the_entry`、`kir_optres_of_aggregates_read_back_as_text`、`kir_optres_unit_and_std_payloads_are_checked_by_the_verifier`。`kir.rs` の `nested_and_aggregate_payload_types_read_back` と `verify_rejects_an_aggregate_index_outside_the_table`。
 
+## 12. 入出力と入口 (段階 4 の次の作業、2026-11-13 の設計)
+
+examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返し、`std.io.print_line` を使う。2026-11-13 の計測では、KIR に下ろせない最後の壁はこれだった。KIR に次の 3 つを足せば、`main` から始まるプログラム全体を `ksn build --backend llvm` で作れる。
+
+### 12.1 標準ライブラリの型
+- `std.io.Error` は `{ kind: std.io.ErrorKind, code: i32 }` の Copy 構造体、`std.io.ErrorKind` は単位バリアントだけの enum (`spec/stdlib/std/io.sig`)。特別な表現は作らず、利用者の型と同じ集成体として KIR の型表 (`Module::aggs`) に入れる。他の標準ライブラリの型も、Kasane の定義があるものは同じ扱いにする (clif の `add_fmt_std` と同じ考え方)。
+
+### 12.2 書き出しの命令
+- 新しい命令 `write fd, data -> res<unit, agg#io.Error>`。`data` は `fat` (`{ptr, len}`)、`fd` は 1 (stdout) か 2 (stderr)。
+- `std.io.print_line(s)` は、`write 1, s` の後に `write 1, "\n"` を出す形に下ろす。どちらかが失敗したら、その `Err` を返す。
+- 参照実行器 (`kir_exec`) は、プロセスの stdout / stderr に書く。LLVM は `write(2)` を呼び、短い書き込みは繰り返す。失敗は errno を `code` に、`kind` は `BrokenPipe` (EPIPE) か `Interrupted` (EINTR、再試行する) か `Other` にする (木走査の対応表に合わせる)。
+
+### 12.3 入口と、`main` の `Err` の表示
+- 入口は、利用者の `entry` 関数を呼ぶ C の `main`。戻り値が `()` なら終了コード 0。`Result<(), E>` で `Err(e)` なら、stderr に `Error: ` と `e` の Debug 表示と改行を出し、終了コード 1 (木走査と同じ。`ksn run` で確かめた: `Error: Error { kind: Other, code: 5 }`)。panic は 101、stack 超過は 102 (今の `--native` と同じ)。
+- Debug 表示は、`derive [Debug]` を持つ型ごとに、KIR の関数 `<型>.$debug(v, fd)` を降格の時点で生成する。構造体は `名前 { f: v, g: w }`、enum はバリアント名 (ペイロードがあれば `名前(v, w)`)。整数は 10 進、bool は `true` / `false`、char は `'x'`、`&str` は `"…"` で、木走査の `debug_str` と同じにする。整数の 10 進化は KIR の命令列 (除算と剰余のループ) で書き、新しい命令は増やさない。
+- 型名の表示は、木走査に合わせて末尾の成分だけにする (`std.io.Error` → `Error`)。
+
+### 12.4 受け入れ基準
+- examples と perf の全パッケージで、`ksn build --backend llvm` の実行ファイルの stdout・stderr・終了コードが `ksn run` と一致する (下ろせない関数があるパッケージは、理由付きで退避する)。
+- `ksn test --both` の比較相手を、KIR に下ろせるテストでは LLVM にする (下ろせなければ、今の Cranelift、その次にバンドルへ退避する)。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。

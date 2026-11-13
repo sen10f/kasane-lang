@@ -1,0 +1,14 @@
+// expect: E3002
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let s = match alloc.string.String.from_str(std.alloc.SYSTEM, "a") {
+        Ok(x) => x
+        Err(_e) => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+    core.mem.drop(v.push(s))
+    let a = v[0usize]
+    let b = v[0usize]
+    core.mem.drop(a)
+    core.mem.drop(b)
+    Ok(())
+end t.main
