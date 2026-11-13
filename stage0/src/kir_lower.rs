@@ -1296,41 +1296,36 @@ impl<'a> Lw<'a> {
         // 1. 初期化式を評価。`?` などで抜けたら束縛も後始末もない。
         let Some(v) = self.expr(init)? else { return Ok(None) };
         let t = self.vty(v);
+
+        // 2. 束縛のスコープを作り、束縛 → 後始末式の順に登録する。出口 (`return` / `?` / `break` /
+        //    `continue`) は `drop_from` が登録の逆順に解放するので、後始末式 → 束縛の解放の順になり、
+        //    出口の終端を置く前に後始末式が下ろされる (木走査と同じ)。
+        self.scopes.push(vec![]);
         coll::bind_owned(self, &name, v, t);
+        coll::register_close(self, close_expr.clone());
 
-        // 2. 本体を下ろす。
-        let body_start = self.blocks.len();
-        let body_v = self.expr(body)?;
-        let body_end = self.cur;
-        let end = self.blocks.len(); // close 式の評価でブロックが増えるので固定
-
-        // 3. 本体の各出口 (return / ? / break / continue) に後始末を置く。
-        let enclosing: Option<(usize, usize)> =
-            self.loops.last().map(|lc| (lc.header, lc.exit));
-        for b in body_start..end {
-            let close_it = match self.blocks[b].term.clone() {
-                Some(Term::Ret(_)) => true,
-                Some(Term::Br((t, _))) => match &enclosing {
-                    Some((hdr, ex)) => t == *ex || t == *hdr,
-                    None => false,
-                },
-                _ => false,
-            };
-            if close_it {
-                self.cur = Some(b);
-                let _ = self.expr(close_expr)?;
+        // 3. 本体。
+        let r = self.expr(body);
+        let r = match r {
+            Ok(r) => r,
+            Err(e) => {
+                self.scopes.pop();
+                return Err(e);
             }
-        }
+        };
 
-        // 4. 末尾で普通に抜ける経路にも後始末を置く。
-        match (body_v, body_end) {
-            (Some(v), Some(b)) if self.blocks[b].term.is_none() => {
-                self.cur = Some(b);
-                let _ = self.expr(close_expr)?;
-                Ok(Some(v))
-            }
-            _ => Ok(None),
+        // 4. 末尾で普通に抜ける経路: 本体の値を決めたあとに後始末式、続けて束縛の解放。
+        if r.is_some() {
+            coll::block_end(self);
+        } else {
+            let depth = self.scopes.len() - 1;
+            self.coll.owned.retain(|(d, _)| *d < depth);
         }
+        self.scopes.pop();
+        if let Some(e) = self.coll.close_err.take() {
+            return Err(e);
+        }
+        Ok(r)
     }
 }
 

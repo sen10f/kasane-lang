@@ -62,6 +62,9 @@ pub(crate) enum Owned {
     /// 評価済みで、まだ束縛も消費もされていない所有値 (呼び出しの引数・構造体のフィールド・タプルの要素)。
     /// 後ろの式の評価が `?` / `return` / `break` で抜けるときに解放するため、消費の直前まで登録しておく (設計_KIR.md 17.3)。
     Tmp(VId),
+    /// `with` の後始末式 (`coll.closes` の添字)。出口 (末尾・`return`・`?`・`break`・`continue`) で、
+    /// 束縛した変数の解放より前に (登録の逆順で) 下ろす。
+    With(usize),
 }
 
 /// 下ろしの状態。`Lw` が 1 つ持つ。
@@ -74,6 +77,10 @@ pub(crate) struct CollCx {
     pub(crate) arr_len: BTreeMap<usize, u32>,
     /// 所有する値 (スコープの番号, 所有物) の登録順。
     pub(crate) owned: Vec<(usize, Owned)>,
+    /// `with` の後始末式の木と、`with` の束縛を置いたスコープの番号。
+    pub(crate) closes: Vec<(V, usize)>,
+    /// 後始末式を下ろしている間に起きた最初の下ろしの失敗 (`drop_from` は結果を返さないので持ち越す)。
+    pub(crate) close_err: Option<String>,
     /// 関数の入口で確保する `alloca` (ブロック 0 の先頭に置く)。
     pub(crate) allocas: Vec<Inst>,
     /// 借用の (`&Vec` などの) 変数のスロット。所有しないので、移動の検査と解放の対象にしない。
@@ -571,6 +578,7 @@ fn drop_owned(lw: &mut Lw, o: Owned) {
             let t = lw.vty(v);
             drop_value(lw, v, t);
         }
+        Owned::With(i) => run_close(lw, i),
         Owned::Val { slot, flag } => {
             let t = lw.slots[slot].1;
             let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
@@ -584,6 +592,40 @@ fn drop_owned(lw: &mut Lw, o: Owned) {
             lw.cur = Some(join);
         }
     }
+}
+
+/// `with` の後始末式を、いまの位置に下ろす。名前は `with` の束縛のスコープから見えるものだけ
+/// (本体の内側の同名の束縛に隠されない)。自分より後に登録された所有物 (内側) はこの時点で解放済みなので、
+/// 式の中の `?` / `return` が自分や内側を二重に後始末しないよう、登録を一時的に外す。
+fn run_close(lw: &mut Lw, i: usize) {
+    if lw.cur.is_none() {
+        return;
+    }
+    let (expr, depth) = lw.coll.closes[i].clone();
+    let pos = lw.coll.owned.iter().position(|(_, o)| matches!(o, Owned::With(j) if *j == i)).expect("登録済みの with");
+    let hidden_owned = lw.coll.owned.split_off(pos);
+    let hidden_scopes = lw.scopes.split_off(depth + 1);
+    let r = lw.expr(&expr);
+    lw.scopes.extend(hidden_scopes);
+    lw.coll.owned.truncate(pos);
+    lw.coll.owned.extend(hidden_owned);
+    match r {
+        Ok(Some(v)) => drop_temp(lw, v),
+        Ok(None) => {}
+        Err(e) => {
+            if lw.coll.close_err.is_none() {
+                lw.coll.close_err = Some(e);
+            }
+        }
+    }
+}
+
+/// `with` の本体の前に呼ぶ: 後始末式を現在のスコープ (束縛を置いたスコープ) に登録する。
+pub(crate) fn register_close(lw: &mut Lw, expr: V) {
+    let scope = lw.scopes.len() - 1;
+    lw.coll.closes.push((expr, scope));
+    let i = lw.coll.closes.len() - 1;
+    lw.coll.owned.push((scope, Owned::With(i)));
 }
 
 /// スコープ `depth` 以降に登録された所有値を、後入れ先出しで解放する (`break` / `continue` / `return` / `?` の後始末)。

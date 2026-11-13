@@ -19545,3 +19545,46 @@ fn final_review_opt_folds_saturating_like_the_reference() {
     let k = kir_run(&["kir", "t.s", "--opt", "--run", "0"], &t.0);
     assert_eq!(text(&k.stdout).trim(), "256", "{}", text(&k.stderr));
 }
+
+const KIR_WITH_FNS: &str = include_str!("data/kir_with_fns.ksnl");
+
+#[test]
+fn kir_with_exits_match_tree_walker() {
+    // `with` の後始末が、末尾 / `return` / `?` / `break` / `continue` / 入れ子 / 同名の隠蔽 / 後始末式の `match` / 所有物の束縛 /
+    // ソケットの各経路でちょうど 1 回、木走査と同じ順序で実行されること。参照実行器が漏れ・二重解放を検出せず、
+    // `--run` / `--native` (ASan を含む) が一致する。値は「後始末の記録 * 1000 + 結果」。
+    // (関数, 引数, 期待値 (型付きリテラル), 期待値 (表示))
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("t.run_tail", "3", "4008u32", "4008"),
+        ("t.run_ret", "1", "3001u32", "3001"),
+        ("t.run_ret", "9", "3007u32", "3007"),
+        ("t.run_try", "1", "2003u32", "2003"),
+        ("t.run_try", "9", "2509u32", "2509"),
+        ("t.run_loop", "3", "123004u32", "123004"),
+        ("t.run_loop", "9", "1234004u32", "1234004"),
+        ("t.run_nested", "1", "21001u32", "21001"),
+        ("t.run_nested", "5", "21003u32", "21003"),
+        ("t.run_close_match", "0", "9001u32", "9001"),
+        ("t.run_close_match", "3", "3030u32", "3030"),
+        ("t.run_close_match", "8", "8009u32", "8009"),
+        ("t.w_vec_own", "0", "2usize", "2"),
+        ("t.w_vec_own", "1", "12usize", "12"),
+        ("t.w_val_own", "4", "5u32", "5"),
+        ("t.w_body_owned", "4", "2usize", "2"),
+        ("t.w_str_close", "5", "4usize", "4"),
+        ("t.w_str_borrow", "0", "3usize", "3"),
+        ("t.w_str_borrow", "1", "99usize", "99"),
+        ("t.w_sock", "0", "6u32", "6"),
+        ("t.w_sock", "1", "5u32", "5"),
+    ];
+    for (i, (f, arg, lit, want)) in cases.iter().enumerate() {
+        let body = format!("    core.check.eq({}({}u32), {})\n", f, arg, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.net] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_with_exits_{}", i), &format!("{}\n{}", KIR_WITH_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker {}({}): {}", f, arg, text(&o.stderr));
+        let k = kir_run(&["kir", f, "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}({}): {}", f, arg, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}({})", f, arg);
+    }
+}
