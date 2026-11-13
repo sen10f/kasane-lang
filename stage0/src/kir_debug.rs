@@ -401,6 +401,11 @@ fn str_fn(fat: Ty) -> Func {
 }
 
 /// `&str` の KIR の型か (`fat` と、元の型 `&str`)。
+/// `&[u8]` (比較だけバイトの一致で下ろす。表示は未対応)。
+fn is_bytes(src: &Src, ty: Ty, fat: Ty) -> bool {
+    ty == fat && matches!(src, Src::Ref(_, inner) if matches!(&**inner, Src::Slice(e) if matches!(&**e, Src::Prim(s) if s == "u8")))
+}
+
 fn is_str(src: &Src, ty: Ty, fat: Ty) -> bool {
     ty == fat && matches!(src, Src::Ref(_, inner) if matches!(&**inner, Src::Prim(s) if s == "str"))
 }
@@ -492,7 +497,7 @@ impl<'a> Gen<'a> {
                 let n = t.name();
                 Ok(self.scalar_eq(&n, t, fat))
             }
-            (_, t) if is_str(src, t, fat) => Ok(self.str_eq(fat)),
+            (_, t) if is_str(src, t, fat) || is_bytes(src, t, fat) => Ok(self.str_eq(fat)),
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg_eq(name, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, true),
             (Src::Prim(_), t) if t.is_float() => Err(format!("型 {} の比較は未対応 (浮動小数は失敗の文言に値を出せない)", t.name())),

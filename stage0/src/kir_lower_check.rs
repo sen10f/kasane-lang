@@ -128,6 +128,40 @@ impl<'a> Lw<'a> {
         Ok(Some(self.emit(Ty::Unit, Op::Const(0))))
     }
 
+    /// 比較演算子 `==` / `!=` の被演算子 (値 `a` / `b`) が `Option` / `Result` / 集成体 / `&str` / `&[u8]` のとき、
+    /// `<型>.$eq` を呼んで bool を返す (派生の比較。木走査の `v_eq` と同じ意味)。`neg` なら否定。
+    pub(super) fn eq_by_call(&mut self, l: &V, r: &V, a: VId, b: VId, neg: bool, line: usize) -> LR<VId> {
+        let ta = self.vty(a);
+        let mut why = String::new();
+        let mut found = None;
+        for e in [l, r] {
+            let Ok(s) = self.src_ty(e) else { continue };
+            let s = norm_src(&s);
+            let file = self.def.file.clone();
+            let mut g = Gen::new(self.p, self.aggs);
+            match g.need_eq(&s, ta, &file) {
+                Ok(k) => {
+                    found = Some((k, std::mem::take(&mut g.out)));
+                    break;
+                }
+                Err(w) => why = w,
+            }
+        }
+        let Some((eq, out)) = found else {
+            return self.err(line, format!("型 {} の比較は段階 1 の対象外: {}", ta.name(), why));
+        };
+        for (f, c) in out {
+            self.coll.extra.push((f, c));
+        }
+        self.callees.insert(eq.clone());
+        let same = self.emit(Ty::Bool, Op::Call { callee: eq, args: vec![a, b] });
+        if neg {
+            let one = self.emit(Ty::Bool, Op::Const(1));
+            return Ok(self.emit(Ty::Bool, Op::Bool(crate::kir::BoolOp::Xor, same, one)));
+        }
+        Ok(same)
+    }
+
     /// 文字列リテラルを stderr へ書く (`eprint`)。
     fn put_static(&mut self, fat: Ty, s: &str) {
         let p = self.emit(Ty::Ptr, Op::StaticBytes(s.as_bytes().to_vec()));
@@ -139,5 +173,16 @@ impl<'a> Lw<'a> {
     /// 表示の関数 `dbg` を値 `v` に呼ぶ。
     fn call_debug(&mut self, dbg: &str, v: VId) {
         self.emit(Ty::Unit, Op::Call { callee: dbg.to_string(), args: vec![v] });
+    }
+}
+
+/// 比較の型: スカラーへの参照 (`Option<&u8>` の `&u8`) は値で持つので、参照を外す。
+fn norm_src(s: &crate::types::Ty) -> crate::types::Ty {
+    use crate::types::Ty as S;
+    match s {
+        S::Ref(_, inner) if matches!(&**inner, S::Prim(p) if p != "str") => norm_src(inner),
+        S::Ref(m, inner) => S::Ref(*m, Box::new(norm_src(inner))),
+        S::Named(n, a) => S::Named(n.clone(), a.iter().map(norm_src).collect()),
+        o => o.clone(),
     }
 }

@@ -17953,6 +17953,67 @@ fn kir_own_reports_unsupported_moves_with_a_reason() {
 }
 
 #[test]
+fn kir_eq_operator_on_option_result_aggregates_match_tree_walker() {
+    // `==` / `!=` が Option / Result / 派生の構造体・列挙型 / `&[u8]` / `&str` でも下ろせ、木走査と一致する。
+    let fns = "type t.P derive [Copy, Clone, PartialEq]\n    a: u8\n    b: i32\nend t.P\n\n\
+enum t.E derive [Copy, Clone, PartialEq]\n    One(u8, bool)\n    Zero\nend t.E\n\n\
+fn t.opt(b: &[u8], i: usize) -> bool uses [] panics never\n    b.get(i) == Some(b']')\nend t.opt\n\n\
+fn t.opt_ne(b: &[u8], i: usize) -> bool uses [] panics never\n    b.get(i) != Some(b']')\nend t.opt_ne\n\n\
+fn t.res(x: u8, y: u8) -> bool uses [] panics never\n    let mut a: Result<u8, u8> = Err(x)\n    let mut b: Result<u8, u8> = Err(y)\n    if x > 5u8 {\n        a = Ok(x)\n    }\n    if y > 5u8 {\n        b = Ok(y)\n    }\n    a == b\nend t.res\n\n\
+fn t.pair(x: u8, y: u8) -> bool uses [] panics never\n    t.P { a: x, b: -3i32 } == t.P { a: y, b: -3i32 }\nend t.pair\n\n\
+fn t.en(x: u8, y: u8) -> bool uses [] panics never\n    t.E.One(x, true) != t.E.One(y, true)\nend t.en\n\n\
+fn t.en_zero(x: u8) -> bool uses [] panics never\n    if x == 0u8 {\n        return t.E.Zero == t.E.Zero\n    }\n    t.E.Zero == t.E.One(x, false)\nend t.en_zero\n\n\
+fn t.bytes(a: &str, b: &str) -> bool uses [] panics never\n    a.as_bytes() == b.as_bytes()\nend t.bytes\n";
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("t.opt", "\"x]\".as_bytes(), 1usize", "true", "true"),
+        ("t.opt", "\"x]\".as_bytes(), 0usize", "false", "false"),
+        ("t.opt", "\"x]\".as_bytes(), 7usize", "false", "false"),
+        ("t.opt_ne", "\"x]\".as_bytes(), 7usize", "true", "true"),
+        ("t.opt_ne", "\"x]\".as_bytes(), 1usize", "false", "false"),
+        ("t.res", "9u8, 9u8", "true", "true"),
+        ("t.res", "9u8, 3u8", "false", "false"),
+        ("t.res", "3u8, 3u8", "true", "true"),
+        ("t.pair", "4u8, 4u8", "true", "true"),
+        ("t.pair", "4u8, 5u8", "false", "false"),
+        ("t.en", "1u8, 1u8", "false", "false"),
+        ("t.en", "1u8, 2u8", "true", "true"),
+        ("t.en_zero", "0u8", "true", "true"),
+        ("t.en_zero", "3u8", "false", "false"),
+        ("t.bytes", "\"ab\", \"ab\"", "true", "true"),
+        ("t.bytes", "\"ab\", \"ac\"", "false", "false"),
+        ("t.bytes", "\"ab\", \"abc\"", "false", "false"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args);
+        let src = format!(
+            "{}\nfn t.go() -> bool uses [] panics never\n    {}\nend t.go\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.go(), {})\n    Ok(())\nend t.main\n",
+            fns, call, lit
+        );
+        let t = Tmp::new(&format!("kir_eq_op_{}", i), &src);
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}{}", call, text(&o.stdout), text(&o.stderr));
+        let k = kir_run(&["kir", "t.go", "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_get_on_vec_of_owning_elements_is_refused_with_a_reason() {
+    // 所有物を持つ要素の `get` は、要素の写しを Option に入れると二重解放になるので拒否する。
+    let src = "type t.Item\n    name: alloc.string.String<std.alloc.System>\n    v: u32\nend t.Item\n\n\
+fn t.make() -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(t.Item { name: s, v: 1u32 }))\n    v\nend t.make\n\n\
+fn t.pick(i: usize) -> u32 uses [alloc] panics never\n    let v = t.make()\n    match v.get(i) {\n        None => 0u32\n        Some(t.Item { name: _, v: x }) => x\n    }\nend t.pick\n\n\
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.pick(0usize), 1u32)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_get_owning", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let k = run(&["kir", "t.pick", "--run", "0"], &t.0);
+    assert_eq!(k.status.code(), Some(1), "{}", text(&k.stdout));
+    assert!(text(&k.stderr).contains("所有物を持つ"), "{}", text(&k.stderr));
+}
+
+#[test]
 fn kir_own_dump_shows_moves_as_nulling_and_flags() {
     // Vec の移動は元のヘッダの `ptr` を null にする書き込み、構造体の局所変数の移動は印 (1 バイト) の書き込みとして見える。
     let t = kir_own_pkg("kir_own_dump", "    core.check.eq(t.branch_buf(3u32, true), 3usize)\n");
@@ -18083,6 +18144,7 @@ fn llvm_builds_of_real_packages_match_run() {
     }
     for pkg in [
         "examples/demo",
+        "examples/json",
         "examples/native",
         "examples/realtime",
         "perf/closure",

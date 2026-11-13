@@ -633,6 +633,9 @@ impl<'a> Lw<'a> {
                 if self.vty(b) != t {
                     return self.err(line, "比較の両辺の型が違う");
                 }
+                if matches!(op.as_str(), "==" | "!=") && (matches!(t, Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_))) && !coll::owns(self, t) {
+                    return Ok(Some(self.eq_by_call(l, r, a, b, op == "!=", line)?));
+                }
                 let cc = match op.as_str() {
                     "==" => Cc::Eq,
                     "!=" => Cc::Ne,
