@@ -115,6 +115,17 @@ impl<'a> Vm<'a> {
         Ok((ptr, len))
     }
 
+    /// `bytes` を複写した (解放しない) 領域を指す fat を置き場に作り、その添字を返す。
+    fn leak_fat(&mut self, bytes: &[u8]) -> i128 {
+        let p = unsafe { malloc(bytes.len().max(1)) } as *mut u8;
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len()) };
+        let mut b = vec![0u8; 16];
+        b[0..8].copy_from_slice(&(p as u64).to_le_bytes());
+        b[8..16].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+        self.heap.push(b);
+        (self.heap.len() - 1) as i128
+    }
+
     fn fat_bytes(&self, h: i128) -> Result<&'static [u8], String> {
         let (p, n) = self.fat(h)?;
         if n == 0 {
@@ -520,6 +531,29 @@ impl<'a> Vm<'a> {
                     let x = r!(*a);
                     let s = if *bits == 32 { py_float32(f32::from_bits(x as u32)) } else { py_float(f64::from_bits(x as u64)) };
                     self.err_write(s.as_bytes());
+                }
+                Ins::EnvArgCount { d } => {
+                    w!(*d, (std::env::args().len() as i128 - 1).max(0));
+                }
+                Ins::EnvArg { d, i } => {
+                    let i = r!(*i) as usize;
+                    let args: Vec<String> = std::env::args().collect();
+                    if i + 1 >= args.len() {
+                        w!(*d, 0);
+                    } else {
+                        let h = self.leak_fat(args[i + 1].as_bytes());
+                        w!(*d, TAG_BIT | h);
+                    }
+                }
+                Ins::EnvVar { d, name } => {
+                    let bytes = self.fat_bytes(r!(*name))?;
+                    match std::env::var(std::str::from_utf8(bytes).unwrap_or("")) {
+                        Ok(v) => {
+                            let h = self.leak_fat(v.as_bytes());
+                            w!(*d, TAG_BIT | h);
+                        }
+                        Err(_) => w!(*d, 0),
+                    }
                 }
                 Ins::ParseInt { d, s, radix, ty } => {
                     let t = prog.tys[*ty as usize];

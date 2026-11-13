@@ -347,6 +347,11 @@ impl<'a> Fc<'a> {
             Op::Eprint { data } => Ins::Eprint { data: self.s(*data) },
             Op::FmtFloat { bits, a } => Ins::FmtFloat { a: self.s(*a), bits: *bits },
             Op::ParseInt { ty: pty, s, radix } => Ins::ParseInt { d, s: self.s(*s), radix: self.s(*radix), ty: self.ty_of(*pty) },
+            // 参照実行器と同じく関数のアドレスは 0 (VM では C のコールバックは呼ばれない)。
+            Op::FnPtr { .. } => Ins::ConstI { d, v: 0 },
+            Op::EnvArgCount => Ins::EnvArgCount { d },
+            Op::EnvArg { index } => Ins::EnvArg { d, i: self.s(*index) },
+            Op::EnvVar { name } => Ins::EnvVar { d, name: self.s(*name) },
             Op::NetListen { .. }
             | Op::NetConnect { .. }
             | Op::NetAccept { .. }

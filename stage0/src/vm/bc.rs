@@ -139,6 +139,9 @@ pub enum Ins {
     Eprint { data: S },
     FmtFloat { a: S, bits: u32 },
     ParseInt { d: S, s: S, radix: S, ty: u32 },
+    EnvArgCount { d: S },
+    EnvArg { d: S, i: S },
+    EnvVar { d: S, name: S },
 }
 
 #[derive(Clone, Debug)]

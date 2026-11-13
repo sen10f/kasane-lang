@@ -780,6 +780,7 @@ fn cmd_run(args: &[String]) -> i32 {
     let args = &args[..];
     let (json, watch, rest) = run_args(args);
     let mut rep = Report::new(json);
+    crate::vm::tick("start");
     let root = match find_root() {
         Ok(r) => r,
         Err(e) => {
@@ -797,6 +798,7 @@ fn cmd_run(args: &[String]) -> i32 {
         }
     };
     rep.flush();
+    crate::vm::tick("full_check");
     if rep.fatal() {
         return 1;
     }
