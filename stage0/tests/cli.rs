@@ -13065,6 +13065,19 @@ fn llvm_build_of_print_line_main_matches_run() {
 }
 
 #[test]
+fn llvm_build_owned_strings_rings_and_moves_match_run() {
+    // `String.push_str` / `push(char)`、`&mut self` の構造体のフィールドの Vec (`get` / `get_mut`)、分解、フィールドからの移動、
+    // `Vec<String>` を含む `main` が、`ksn run` と同じ表示・終了コードで LLVM から作れる (設計_KIR.md 13.7)。
+    let body = "    core.check.eq(t.str_build(50usize), 100usize)\n    core.check.eq(t.str_chars(), 2031u32)\n    core.check.eq(t.ring_run(3usize), 528u32)\n    core.check.eq(t.pair_run(2u32), 13usize)\n    core.check.eq(t.destruct_struct(4u32), 7usize)\n    core.check.eq(t.field_move_reassign(4u32), 6usize)\n    core.check.eq(t.vs_run(5u32), 20usize)\n    core.check.eq(t.names_push(4u32), 4usize)\n    core.check.eq(t.mode_run(), 2u32)\n    std.io.print_line(\"owned ok\")\n";
+    let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+    let t = Tmp::new("llvm_build_owned", &format!("{}{}", KIR_OWN2_FNS, main));
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        assert_eq!(text(&r.stdout), "owned ok\n");
+        same_output(&r, &n);
+    }
+}
+
+#[test]
 fn llvm_build_main_err_prints_debug_and_exits_1() {
     // `Err(e)` は stderr に `Error: <Debug>` と改行、終了コード 1 (木走査と同じ)。std.io.Error の Debug も同じ。
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
@@ -13633,6 +13646,29 @@ type t.Pair
     n: usize
 end t.Pair
 
+type t.Names
+    items: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>
+end t.Names
+
+enum t.Mode derive [Debug, Clone, Copy, PartialEq]
+    A
+    B
+end t.Mode
+
+fn t.Mode.next(self: t.Mode) -> t.Mode uses [] panics never
+    match self {
+        t.Mode.A => t.Mode.B
+        t.Mode.B => t.Mode.A
+    }
+end t.Mode.next
+
+fn t.mode_run() -> u32 uses [] panics never
+    match t.Mode.A.next() {
+        t.Mode.A => 1u32
+        t.Mode.B => 2u32
+    }
+end t.mode_run
+
 fn t.make(n: u32) -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics never
     let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut i = 0u32
@@ -13648,6 +13684,101 @@ fn t.make(n: u32) -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics ne
     }
     v
 end t.make
+
+fn t.word() -> alloc.string.String<std.alloc.System> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"abc\"))
+    s
+end t.word
+
+fn t.vs_run(n: u32) -> usize uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(t.word()))
+        i = i.wrapping_add(1u32)
+    }
+    let mut total = v.len()
+    loop {
+        match v.pop() {
+            Some(s) => {
+                total = total.wrapping_add(s.len())
+            }
+            None => {
+                break
+            }
+        }
+    }
+    total
+end t.vs_run
+
+fn t.vs_clear(n: u32) -> usize uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(t.word()))
+        i = i.wrapping_add(1u32)
+    }
+    v.clear()
+    core.mem.drop(v.push(t.word()))
+    v.len()
+end t.vs_clear
+
+fn t.vs_keep(n: u32) -> usize uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(t.word()))
+        i = i.wrapping_add(1u32)
+    }
+    v.len()
+end t.vs_keep
+
+fn t.names_len(n: t.Names) -> usize uses [] panics never
+    n.items.len()
+end t.names_len
+
+fn t.names_run(n: u32) -> usize uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(t.word()))
+        i = i.wrapping_add(1u32)
+    }
+    let names = t.Names { items: v }
+    t.names_len(names)
+end t.names_run
+
+fn t.names_push(n: u32) -> usize uses [alloc] panics never
+    let mut names = t.Names { items: alloc.vec.Vec.new(std.alloc.SYSTEM) }
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(names.items.push(t.word()))
+        i = i.wrapping_add(1u32)
+    }
+    names.items.len()
+end t.names_push
+
+fn t.vv_run(n: u32) -> usize uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(t.make(i)))
+        i = i.wrapping_add(1u32)
+    }
+    let mut total = 0usize
+    loop {
+        match v.pop() {
+            Some(x) => {
+                total = total.wrapping_add(x.len())
+            }
+            None => {
+                break
+            }
+        }
+    }
+    total
+end t.vv_run
 
 fn t.pair(n: u32) -> t.Pair uses [alloc] panics never
     t.Pair { a: t.make(n), name: alloc.string.String.new(std.alloc.SYSTEM), n: 3usize }
@@ -13927,6 +14058,14 @@ fn kir_own_more_match_tree_walker() {
         ("t.field_move_reassign", &["4"], "6usize", "6"),
         ("t.field_ret_run", &["5"], "5usize", "5"),
         ("t.field_move_str", &["3"], "5usize", "5"),
+        ("t.mode_run", &[], "2u32", "2"),
+        ("t.vs_run", &["0"], "0usize", "0"),
+        ("t.vs_run", &["5"], "20usize", "20"),
+        ("t.vs_clear", &["4"], "1usize", "1"),
+        ("t.vs_keep", &["6"], "6usize", "6"),
+        ("t.names_run", &["3"], "3usize", "3"),
+        ("t.names_push", &["4"], "4usize", "4"),
+        ("t.vv_run", &["4"], "6usize", "6"),
     ];
     for (i, (f, args, lit, want)) in cases.iter().enumerate() {
         let call = format!("{}({})", f, args.iter().map(|a| match *a {

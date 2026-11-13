@@ -78,6 +78,8 @@ pub(crate) struct CollCx {
     pub(crate) hint: Option<Src>,
     /// いま下ろしている `match` の対象の (KIR の型, 型表の型)。`Some(x)` の `x` の種類の手がかりを取るため。
     pub(crate) scrut_src: Option<(Ty, Src)>,
+    /// Vec / String のヘッダ (フレームの領域) → 値の型 (`vec` または要素が所有物の `vec<#N>`)。移すときの型と、解放のとき要素を解放するかに使う。
+    pub(crate) hdr_ty: BTreeMap<VId, Ty>,
     /// 構造体のフィールド (場所) を `match` の対象として読んだ直後か (`scrut_begin` が読んで下ろす)。値は移していない。
     pub(crate) peek_field: bool,
     /// 下ろしたクロージャの式 ID → (取り込みの値, その型)。`closure_kind_from_table` が読む。
@@ -104,8 +106,14 @@ fn strip_ref(t: &Src) -> &Src {
 /// 式の値の段階 1 の型 (Vec / String は `ptr`、`&str` とスライスは `fat`、クロージャは `unit` の値)。対象外なら `None`。
 pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     // 値渡しの Vec / String は集成体 `vec` (所有の移動)、参照は借用なのでヘッダのアドレス。
-    if matches!(t, Src::Named(n, _) if n == VEC || n == STRING) {
-        return Some(lw.aggs.borrow_mut().vec_hdr());
+    if let Src::Named(n, args) = t {
+        if n == VEC {
+            let elem = args.first().and_then(|a| lw.conv_t(a));
+            return Some(lw.aggs.borrow_mut().vec_of(elem));
+        }
+        if n == STRING {
+            return Some(lw.aggs.borrow_mut().vec_hdr());
+        }
     }
     match strip_ref(t) {
         Src::Named(n, _) if n == VEC || n == STRING => Some(Ty::Ptr),
@@ -152,7 +160,7 @@ pub(crate) fn bind_param_kind(lw: &mut Lw, name: &str, t: &Src) {
     if !matches!(t, Src::Ref(..)) {
         return;
     }
-    if let (Some(s), Some(k)) = (lw.lookup(name), kind_of_src(t)) {
+    if let (Some(s), Some(k)) = (lw.lookup(name), kind_of_src(lw, t)) {
         lw.coll.kinds.insert(s, k);
         lw.coll.borrowed.insert(s);
     }
@@ -168,9 +176,10 @@ pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
     lw.err(line, "Vec / String の借用は局所変数だけ段階 1 の対象")
 }
 
-pub(super) fn kind_of_src(t: &Src) -> Option<Kind> {
+pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
     match strip_ref(t) {
-        Src::Named(n, args) if n == VEC => Some(Kind::Vec(args.first().and_then(conv))),
+        // 要素が所有物 (`Vec<String>`) のときは、要素の型 (集成体 `vec` など) を持つ
+        Src::Named(n, args) if n == VEC => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a))))),
         Src::Named(n, _) if n == STRING => Some(Kind::String),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         Src::Slice(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
@@ -201,7 +210,7 @@ fn kind_of_expr(lw: &Lw, e: &V) -> Option<Kind> {
     if let Some(s) = local_slot(lw, e) {
         return lw.coll.kinds.get(&s).cloned();
     }
-    table_ty(lw, e).and_then(|t| kind_of_src(&t))
+    table_ty(lw, e).and_then(|t| kind_of_src(lw, &t))
 }
 
 pub(super) fn emit_alloca(lw: &mut Lw, size: u32) -> VId {
@@ -214,6 +223,38 @@ pub(super) fn load_len(lw: &mut Lw, hdr: VId) -> VId {
     lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 8 })
 }
 
+/// 要素の型の大きさ。スカラーと集成体 (所有物の `vec` や構造体)。
+pub(super) fn elem_size(lw: &Lw, t: Ty) -> Option<u32> {
+    match t {
+        Ty::Agg(i) => Some(lw.aggs.borrow().defs[i as usize].size),
+        t => size_of(t),
+    }
+}
+
+/// アドレス `addr` の要素を読む (集成体は参照へ `bitcast` して `load`)。
+pub(super) fn load_elem(lw: &mut Lw, addr: VId, elem: Ty) -> VId {
+    match elem {
+        Ty::Agg(i) => {
+            let r = lw.emit(Ty::Ref(true, Pointee::Agg(i)), Op::Bitcast { src: Ty::Ptr, a: addr });
+            lw.emit(elem, Op::Load(r))
+        }
+        t => lw.emit(t, Op::MemLoad { p: addr, off: 0 }),
+    }
+}
+
+/// アドレス `addr` へ要素 `v` を書く。
+pub(super) fn store_elem(lw: &mut Lw, addr: VId, elem: Ty, v: VId) {
+    match elem {
+        Ty::Agg(i) => {
+            let r = lw.emit(Ty::Ref(true, Pointee::Agg(i)), Op::Bitcast { src: Ty::Ptr, a: addr });
+            lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+        }
+        t => {
+            lw.emit(Ty::Unit, Op::MemStore { ty: t, p: addr, off: 0, v });
+        }
+    }
+}
+
 pub(super) fn size_of(t: Ty) -> Option<u32> {
     Some(match t {
         Ty::I8 | Ty::U8 | Ty::Bool => 1,
@@ -222,6 +263,20 @@ pub(super) fn size_of(t: Ty) -> Option<u32> {
         Ty::I64 | Ty::U64 | Ty::Isize | Ty::Usize => 8,
         _ => return None,
     })
+}
+
+/// 局所変数のヘッダ `hdr` の所有物を解放する。要素が所有物の Vec は、各要素を解放してからバッファを解放する。
+fn drop_hdr(lw: &mut Lw, hdr: VId) {
+    let vt = lw.coll.hdr_ty.get(&hdr).copied();
+    if let Some(vt) = vt.filter(|t| lw.aggs.borrow().vec_elem(*t).is_some()) {
+        let p = lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 });
+        let l = lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 8 });
+        let c = lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 16 });
+        let v = lw.emit(vt, Op::Make { variant: None, fields: vec![p, l, c] });
+        drop_value(lw, v, vt);
+        return;
+    }
+    emit_free(lw, hdr);
 }
 
 /// 所有するバッファを解放する命令列を、現在のブロックに置く (`null` なら何もしない)。
@@ -253,6 +308,7 @@ pub(super) fn store_vec(lw: &mut Lw, hdr: VId, v: VId) {
 pub(crate) fn adopt(lw: &mut Lw, v: VId) -> VId {
     let hdr = emit_alloca(lw, HDR_VEC);
     store_vec(lw, hdr, v);
+    lw.coll.hdr_ty.insert(hdr, lw.vty(v));
     let scope = lw.scopes.len() - 1;
     lw.coll.owned.push((scope, Owned::Hdr(hdr)));
     hdr
@@ -265,7 +321,12 @@ pub(super) fn move_hdr(lw: &mut Lw, hdr: VId) -> VId {
     let c = lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 16 });
     let null = lw.emit(Ty::Ptr, Op::Const(0));
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: hdr, off: 0, v: null });
-    let vt = lw.aggs.borrow_mut().vec_hdr();
+    let vt = lw.coll.hdr_ty.get(&hdr).copied().unwrap_or_else(|| lw.aggs.borrow_mut().vec_hdr());
+    // 要素が所有物なら、移した後の解放が (null のバッファの) 要素をたどらないように長さも 0 にする
+    if lw.aggs.borrow().vec_elem(vt).is_some() {
+        let zero = lw.emit(Ty::Usize, Op::Const(0));
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: hdr, off: 8, v: zero });
+    }
     lw.emit(vt, Op::Make { variant: None, fields: vec![p, l, c] })
 }
 
@@ -310,6 +371,34 @@ pub(crate) fn path_peek(lw: &mut Lw, s: usize) -> VId {
     lw.read_slot(s)
 }
 
+/// 要素が所有物の Vec の値 `v` (バッファ `buf`) の、先頭から `len` 個の要素を解放する。
+pub(super) fn drop_elems(lw: &mut Lw, v: VId, buf: VId, elem: Ty) {
+    let Ty::Agg(ei) = elem else { return };
+    let size = lw.aggs.borrow().defs[ei as usize].size;
+    let len = lw.emit(Ty::Usize, Op::Field { a: v, off: 8 });
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    let (hd, hp) = lw.new_block(&[Ty::Usize]);
+    let (body, _) = lw.new_block(&[]);
+    let (exit, _) = lw.new_block(&[]);
+    lw.goto(hd, vec![zero]);
+    lw.cur = Some(hd);
+    let i = hp[0];
+    let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len });
+    lw.branch(c, (body, vec![]), (exit, vec![]));
+    lw.cur = Some(body);
+    let k = lw.emit(Ty::Usize, Op::Const(size as i128));
+    let off = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k });
+    let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: buf, off });
+    let rt = Ty::Ref(true, Pointee::Agg(ei));
+    let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+    let e = lw.emit(elem, Op::Load(r));
+    drop_value(lw, e, elem);
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    let i1 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+    lw.goto(hd, vec![i1]);
+    lw.cur = Some(exit);
+}
+
 /// 型 `t` の値 `v` (所有している) を解放する命令列を、現在のブロックに置く。所有物を持たない型は何もしない。
 /// 列挙型と `Option` / `Result` は、タグで枝を分けて、持っている変種のペイロードだけを解放する。
 pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
@@ -319,8 +408,13 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
     match t {
         Ty::Agg(i) => {
             let d = lw.aggs.borrow().defs[i as usize].clone();
-            if d.name == "vec" {
+            if super::agg::is_vec_name(&d.name) {
                 let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                // 要素が所有物なら、各要素を先に解放する (設計_KIR.md 13.8)
+                let elem = lw.aggs.borrow().vec_elem(t);
+                if let Some(elem) = elem {
+                    drop_elems(lw, v, p, elem);
+                }
                 lw.emit(Ty::Unit, Op::HeapFree(p));
                 return;
             }
@@ -394,7 +488,7 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
 /// 所有物 1 つを解放する。印を持つ変数は、印が立っているときだけ現在の値を解放する。
 fn drop_owned(lw: &mut Lw, o: Owned) {
     match o {
-        Owned::Hdr(h) => emit_free(lw, h),
+        Owned::Hdr(h) => drop_hdr(lw, h),
         Owned::Val { slot, flag } => {
             let t = lw.slots[slot].1;
             let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
@@ -443,14 +537,13 @@ pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
         lw.bind_let(name, v, t);
         return;
     }
-    let vec_t = lw.aggs.borrow_mut().vec_hdr();
-    if t == vec_t {
+    if lw.aggs.borrow().is_vec(t) {
         let h = adopt(lw, v);
         lw.bind(name, h, Ty::Ptr);
         let s = lw.lookup(name).expect("直前に束縛した名前");
         // 種類 (Vec の要素型 / String) は、パターンの型の手がかりか、無ければ Vec の要素型不明として持つ。
         let k = match lw.coll.hint.take() {
-            Some(h) => kind_of_src(&h),
+            Some(h) => kind_of_src(lw, &h),
             None => None,
         };
         lw.coll.kinds.insert(s, k.unwrap_or(Kind::Vec(None)));
@@ -468,12 +561,12 @@ pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
 /// 印を持つ変数は印を立て直す (移した後の再代入を含む)。
 pub(crate) fn assign_checked(lw: &mut Lw, s: usize, v: VId, line: usize) -> LR<()> {
     if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) && !lw.coll.borrowed.contains(&s) {
-        let vt = lw.aggs.borrow_mut().vec_hdr();
+        let h = lw.slots[s].0;
+        let vt = lw.coll.hdr_ty.get(&h).copied().unwrap_or_else(|| lw.aggs.borrow_mut().vec_hdr());
         if lw.vty(v) != vt {
             return lw.err(line, "代入の型が変数の型と違う");
         }
-        let h = lw.slots[s].0;
-        emit_free(lw, h);
+        drop_hdr(lw, h);
         store_vec(lw, h, v);
         return Ok(());
     }
@@ -774,11 +867,10 @@ fn null_value(lw: &mut Lw, old: VId, t: Ty, line: usize) -> LR<VId> {
     if !owns_heap(lw, t) {
         return Ok(old);
     }
-    let vec_t = lw.aggs.borrow_mut().vec_hdr();
-    if t == vec_t {
+    if lw.aggs.borrow().is_vec(t) {
         let null = lw.emit(Ty::Ptr, Op::Const(0));
         let zero = lw.emit(Ty::Usize, Op::Const(0));
-        return Ok(lw.emit(vec_t, Op::Make { variant: None, fields: vec![null, zero, zero] }));
+        return Ok(lw.emit(t, Op::Make { variant: None, fields: vec![null, zero, zero] }));
     }
     match t {
         Ty::Opt(_) => Ok(lw.emit(t, Op::Const(0))),
@@ -844,7 +936,7 @@ pub(crate) fn after_let(lw: &mut Lw, name: &str, init: &V) -> LR<()> {
         return Ok(());
     }
     if let Some(t) = table_ty(lw, init) {
-        if let Some(k) = kind_of_src(&t) {
+        if let Some(k) = kind_of_src(lw, &t) {
             lw.coll.kinds.insert(slot, k);
             if matches!(t, Src::Ref(..)) {
                 lw.coll.borrowed.insert(slot);
@@ -883,7 +975,11 @@ fn new_header(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     }
     let null = lw.emit(Ty::Ptr, Op::Const(0));
     let zero = lw.emit(Ty::Usize, Op::Const(0));
-    let vt = lw.aggs.borrow_mut().vec_hdr();
+    // 型表の型 (`Vec<String>` なら要素が所有物の `vec<#N>`)。決まらなければ `vec`
+    let vt = match lw.ty_of(e) {
+        Ok(t) if lw.aggs.borrow().is_vec(t) => t,
+        _ => lw.aggs.borrow_mut().vec_hdr(),
+    };
     Ok(Some(lw.emit(vt, Op::Make { variant: None, fields: vec![null, zero, zero] })))
 }
 
@@ -1253,7 +1349,7 @@ pub(super) fn vec_push(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kin
         Kind::Vec(Some(t)) => *t,
         _ => xt,
     };
-    let Some(sz) = size_of(elem) else {
+    let Some(sz) = elem_size(lw, elem) else {
         return lw.err(line, format!("push の要素の型 {} は段階 1 の対象外", elem.name()));
     };
     if xt != elem {
@@ -1298,7 +1394,7 @@ pub(super) fn vec_push(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kin
         lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: len, b: k })
     };
     let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
-    lw.emit(Ty::Unit, Op::MemStore { ty: elem, p: addr, off: 0, v: x });
+    store_elem(lw, addr, elem, x);
     let one = lw.emit(Ty::Usize, Op::Const(1));
     let nl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: one });
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });

@@ -36,6 +36,11 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
 pub const STD_TYPES: [&str; 3] = ["std.io.Error", "std.io.ErrorKind", "alloc.alloc.AllocError"];
 
+/// `Vec` / `String` のヘッダの型の名前 (`vec`、要素が所有物なら `vec<#N>`)。利用者の型は FQN で `.` を含むので衝突しない。
+pub fn is_vec_name(n: &str) -> bool {
+    n == "vec" || n.starts_with("vec<#")
+}
+
 /// 集成体の型表。`lower_user` が 1 つ作り、全関数で共有する。
 #[derive(Default)]
 pub struct AggTab {
@@ -119,7 +124,11 @@ impl AggTab {
             }
             // 値渡しの `Vec` / `String` は 24 バイトのヘッダ `vec` の値 (所有の移動。設計_KIR.md 13 章)。
             // 参照 (`&Vec` など) は下の腕に入れず、借用のヘッダのアドレス (`ptr`) として `sig_ty` が受ける。
-            Src::Named(name, _) if name == "alloc.vec.Vec" || name == "alloc.string.String" => Ok(self.vec_hdr()),
+            Src::Named(name, args) if name == "alloc.vec.Vec" => {
+                let elem = args.first().and_then(|a| self.lower_ty(p, file, a).ok());
+                Ok(self.vec_of(elem))
+            }
+            Src::Named(name, _) if name == "alloc.string.String" => Ok(self.vec_hdr()),
             Src::Named(name, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
             Src::Named(name, args) => {
                 if !args.is_empty() {
@@ -192,6 +201,34 @@ impl AggTab {
         self.push("vec".to_string(), 24, 8, AggKind::Struct(fields))
     }
 
+    /// 要素が所有物 (`Vec<String>`、`Vec<構造体>`) の `Vec` の型。配置は `vec` と同じで、名前 `vec<#要素の型の添字>` で要素の型を持つ
+    /// (所有物の解放は型だけを見るので、Vec を解放するとき各要素も解放できる。設計_KIR.md 13.8)。それ以外の要素は `vec`。
+    pub fn vec_of(&mut self, elem: Option<Ty>) -> Ty {
+        let Some(Ty::Agg(i)) = elem.filter(|e| self.owns_heap(*e)) else { return self.vec_hdr() };
+        let name = format!("vec<#{}>", i);
+        if let Some(&k) = self.by_name.get(&name) {
+            return Ty::Agg(k);
+        }
+        let fields = vec![
+            Field { name: "ptr".to_string(), ty: Ty::Ptr, off: 0 },
+            Field { name: "len".to_string(), ty: Ty::Usize, off: 8 },
+            Field { name: "cap".to_string(), ty: Ty::Usize, off: 16 },
+        ];
+        self.push(name, 24, 8, AggKind::Struct(fields))
+    }
+
+    /// `Vec` / `String` のヘッダ型 (`vec` と `vec<#N>`) か。
+    pub fn is_vec(&self, t: Ty) -> bool {
+        matches!(t, Ty::Agg(i) if is_vec_name(&self.defs[i as usize].name))
+    }
+
+    /// 所有物を要素に持つ Vec の型 `t` の、要素の型。
+    pub fn vec_elem(&self, t: Ty) -> Option<Ty> {
+        let Ty::Agg(i) = t else { return None };
+        let n = self.defs[i as usize].name.strip_prefix("vec<#")?.strip_suffix('>')?;
+        n.parse::<u32>().ok().map(Ty::Agg)
+    }
+
     /// `alloc.alloc.AllocError` (clif と同じ大きさ 1 の構造体)。`Vec::push` などの `Result` の E。
     pub fn alloc_err(&mut self) -> Ty {
         const NAME: &str = "alloc.alloc.AllocError";
@@ -207,7 +244,7 @@ impl AggTab {
         match t {
             Ty::Agg(i) => {
                 let d = &self.defs[i as usize];
-                if d.name == "vec" {
+                if is_vec_name(&d.name) {
                     return true;
                 }
                 match &d.kind {
@@ -231,7 +268,7 @@ impl AggTab {
     fn field_ty(&mut self, p: &Program, file: &str, t: &Src) -> Result<Ty, String> {
         if let Src::Named(n, _) = t {
             if n == "alloc.vec.Vec" || n == "alloc.string.String" {
-                return Ok(self.vec_hdr());
+                return self.lower_ty(p, file, t);
             }
         }
         match self.lower_ty(p, file, t)? {
@@ -474,7 +511,7 @@ impl<'a> Lw<'a> {
             cur = self.field_addr(cur, name, line)?;
         }
         let Ty::Ref(_, Pointee::Agg(k)) = self.vty(cur) else { return Ok(None) };
-        if self.agg_def(k).name != "vec" {
+        if !is_vec_name(&self.agg_def(k).name) {
             return Ok(None);
         }
         let la = self.field_addr(cur, "len", line)?;

@@ -777,8 +777,16 @@ impl<'a> Lw<'a> {
         }
         let resolved = self.p.resolve(&segs, &self.def.file);
         // `E.V.m(..)`: 列挙子の値へのメソッド呼び出し。解決は `E.V` で止まり、残りの名前 (`m`) を落とすと別の値になる。
-        if matches!(&resolved, Some(r) if matches!(r.target, Tgt::Variant(..)) && !r.rest.is_empty()) {
-            return self.err(line, format!("呼び出し {} (列挙子の値のメソッド) は段階 1 の対象外", segs.join(".")));
+        if let Some(r) = &resolved {
+            if let (Tgt::Variant(en, _), false) = (&r.target, r.rest.is_empty()) {
+                let en = en.clone();
+                if r.rest.len() == 1 {
+                    if let Some(res) = self.variant_method_call(e, &en, &r.rest[0].clone()) {
+                        return res;
+                    }
+                }
+                return self.err(line, format!("呼び出し {} (列挙子の値のメソッド) は段階 1 の対象外", segs.join(".")));
+            }
         }
         let target = resolved.map(|r| r.target);
         if matches!(&target, Some(Tgt::Native(n)) if n == "std.io.print_line") || matches!(&target, Some(Tgt::Sig(di) | Tgt::Fn(di)) if self.p.defs[*di].name == "std.io.print_line") {

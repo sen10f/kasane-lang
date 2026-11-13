@@ -54,6 +54,18 @@ pub(super) fn field_src(lw: &Lw, s: usize, names: &[String]) -> Option<Src> {
     src
 }
 
+/// `segs` (根の局所と、その後のフィールド) が値の構造体 (SSA の値) のフィールドの Vec / String なら、根の名前。
+/// そのメソッド呼び出しは、変えたヘッダを構造体へ戻す (`commit`) ので、代入と同じく合流で受け渡す値の集合に入れる。
+pub(super) fn vec_field_root(lw: &Lw, segs: &[String]) -> Option<String> {
+    let s = lw.lookup(segs.first()?)?;
+    if !matches!(lw.slots[s].1, Ty::Agg(_)) || lw.is_mem_val(lw.slots[s].0) || segs.len() < 2 {
+        return None;
+    }
+    let src = field_src(lw, s, &segs[1..])?;
+    coll::kind_of_src(lw, &src).filter(|k| matches!(k, Kind::Vec(_) | Kind::String))?;
+    Some(segs[0].clone())
+}
+
 /// フィールドのヘッダの置き場。値の構造体のフィールドは一時のヘッダに写してあり、`wb` があれば呼び出しの後に戻す。
 pub(super) struct Place {
     hdr: VId,
@@ -75,7 +87,7 @@ pub(super) fn place(lw: &mut Lw, s: usize, names: &[String], line: usize) -> LR<
         let Ty::Ref(_, Pointee::Agg(k)) = lw.vty(cur) else {
             return lw.err(line, "フィールドが Vec / String でない");
         };
-        if lw.agg_def(k).name != "vec" {
+        if !super::agg::is_vec_name(&lw.agg_def(k).name) {
             return lw.err(line, "フィールドが Vec / String でない");
         }
         let rt = lw.vty(cur);
@@ -85,12 +97,14 @@ pub(super) fn place(lw: &mut Lw, s: usize, names: &[String], line: usize) -> LR<
     // 値の構造体: フィールドの値を一時のヘッダへ写す (所有は構造体のまま)
     let b = lw.read_slot(s);
     let v = lw.field_path(b, names, line)?;
-    let vt = lw.aggs.borrow_mut().vec_hdr();
-    if lw.vty(v) != vt {
+    if !lw.aggs.borrow().is_vec(lw.vty(v)) {
         return lw.err(line, "フィールドが Vec / String でない");
     }
+    let vt = lw.vty(v);
     let hdr = coll::emit_alloca(lw, 24);
     coll::store_vec(lw, hdr, v);
+    // 一時のヘッダにも元の型 (要素の型を含む) を結び付ける
+    lw.coll.hdr_ty.insert(hdr, vt);
     Ok(Place { hdr, wb: Some((s, names.to_vec())) })
 }
 
@@ -101,7 +115,7 @@ fn commit(lw: &mut Lw, pl: &Place, line: usize) -> LR<()> {
     let p = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
     let l = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
     let c = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
-    let vt = lw.aggs.borrow_mut().vec_hdr();
+    let vt = lw.coll.hdr_ty.get(&h).copied().unwrap_or_else(|| lw.aggs.borrow_mut().vec_hdr());
     let v = lw.emit(vt, Op::Make { variant: None, fields: vec![p, l, c] });
     let mut segs = vec![String::new()];
     segs.extend(names.iter().cloned());
@@ -115,7 +129,7 @@ pub(super) fn field_call(lw: &mut Lw, e: &V, s: usize, names: &[String], m: &str
         return None;
     }
     let src = field_src(lw, s, names)?;
-    let kind = coll::kind_of_src(&src).filter(|k| matches!(k, Kind::Vec(_) | Kind::String))?;
+    let kind = coll::kind_of_src(lw, &src).filter(|k| matches!(k, Kind::Vec(_) | Kind::String))?;
     // `&Vec` などのフィールドは借用: ヘッダのアドレスではない
     if matches!(src, Src::Ref(..)) {
         return None;
@@ -303,7 +317,7 @@ fn vec_pop(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, args: &[V]) -> 
         return lw.err(line, "pop の対象は要素型の分かる Vec だけ段階 1 の対象");
     };
     let elem = *elem;
-    let (Some(sz), Some(pay)) = (coll::size_of(elem), Pay::of(elem)) else {
+    let (Some(sz), Some(pay)) = (coll::elem_size(lw, elem), Pay::of(elem)) else {
         return lw.err(line, format!("pop の要素の型 {} は段階 1 の対象外", elem.name()));
     };
     let opt = Ty::Opt(pay);
@@ -332,7 +346,7 @@ fn vec_pop(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, args: &[V]) -> 
         lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: nl, b: k })
     };
     let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
-    let x = lw.emit(elem, Op::MemLoad { p: addr, off: 0 });
+    let x = coll::load_elem(lw, addr, elem);
     let some = lw.emit(opt, Op::Some(x));
     lw.goto(jb, vec![some]);
     lw.cur = Some(jb);
@@ -346,7 +360,20 @@ fn clear(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option
     }
     match kind {
         Kind::Vec(Some(t)) if coll::size_of(*t).is_some() => {}
-        Kind::Vec(_) => return lw.err(line, "clear の要素の型は段階 1 の対象外 (スカラーだけ)"),
+        // 要素が所有物: 各要素を解放してから長さを 0 にする
+        Kind::Vec(Some(Ty::Agg(_))) => {
+            let vt = lw.coll.hdr_ty.get(&h).copied();
+            let elem = vt.and_then(|t| lw.aggs.borrow().vec_elem(t));
+            let (Some(vt), Some(elem)) = (vt, elem) else {
+                return lw.err(line, "clear の要素の型は段階 1 の対象外 (スカラーと所有物だけ)");
+            };
+            let p = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+            let l = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+            let c = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+            let v = lw.emit(vt, Op::Make { variant: None, fields: vec![p, l, c] });
+            coll::drop_elems(lw, v, p, elem);
+        }
+        Kind::Vec(_) => return lw.err(line, "clear の要素の型は段階 1 の対象外 (スカラーと所有物だけ)"),
         _ => {}
     }
     let zero = usize_const(lw, 0);
@@ -424,7 +451,7 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
         }
     } else {
         let Some(src) = field_src(lw, s, &names) else { return lw.err(line, "get_mut の対象のフィールドの型が分からない") };
-        let Some(Kind::Vec(Some(t))) = coll::kind_of_src(&src) else {
+        let Some(Kind::Vec(Some(t))) = coll::kind_of_src(lw, &src) else {
             return lw.err(line, "get_mut の対象は要素型の分かる Vec だけ段階 1 の対象");
         };
         let pl = place(lw, s, &names, line)?;
