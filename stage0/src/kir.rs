@@ -430,24 +430,6 @@ impl Ty {
     }
 }
 
-/// ソケットの種類。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SockKind {
-    /// ストリームソケット (`socket(AF_INET, SOCK_STREAM)`)。
-    Stream,
-    /// リスニングソケット (`socket`+`bind`+`listen`)。
-    Listener,
-}
-
-impl SockKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            SockKind::Stream => "stream",
-            SockKind::Listener => "listener",
-        }
-    }
-}
-
 /// 算術演算。`div` / `rem` は 0 除算と溢れで trap する (trap モードのとき)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Aop {

@@ -656,11 +656,11 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
                     let s = std::str::from_utf8(&bytes).unwrap_or("");
                     let is_listen = matches!(inst.op, Op::NetListen { .. });
-                    let res: i128 = match (if is_listen {
+                    let res: i128 = match if is_listen {
                         TcpListener::bind(s).map(NetSock::Listener)
                     } else {
                         TcpStream::connect(s).map(NetSock::Stream)
-                    }) {
+                    } {
                         Ok(sock) => {
                             let fd = alloc_next_fd(&mut next_fd);
                             sockets.insert(fd, sock);

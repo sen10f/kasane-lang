@@ -83,7 +83,7 @@ pub(super) fn net_call(lw: &mut Lw, e: &V, is_listen: bool, line: usize) -> LR<O
 }
 
 /// `TcpListener` / `TcpStream` のメソッド `accept`/`read`/`write`/`flush`/`close`。
-pub(super) fn net_method(lw: &mut Lw, e: &V, name: &str, recv: VId, rt: Ty, args: &[V], line: usize) -> LR<Option<VId>> {
+pub(super) fn net_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, args: &[V], line: usize) -> LR<Option<VId>> {
     let fd = sock_fd(lw, recv, rt, line)?;
     let op = match name {
         "accept" => {

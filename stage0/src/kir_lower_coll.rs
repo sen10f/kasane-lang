@@ -1478,7 +1478,6 @@ pub(super) fn string_push_str(lw: &mut Lw, e: &V, line: usize, _slot: Option<usi
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
     lw.goto(cont, vec![]);
     lw.cur = Some(cont);
-    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
     // `for i in core.iter.range(0usize, tlen) { base[len + i] = text[i] }` を展開:
     // ここでは範囲ループを使わず、tlen が定数小さいことを想定して命令列を並べるわけにいかないため、
     // coll::for_expr を使う。ただし this 関数内で直接 for 式を下ろすのは複雑なので、
