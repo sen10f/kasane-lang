@@ -248,6 +248,27 @@ impl<'a> Lw<'a> {
             return self.num_method(line, recv, rt, res, &segs[1], args);
         }
         let Some(dst) = Ty::parse(&segs[0]) else { return Ok(None) };
+        // `u8.from_str_radix(text, radix)` など。`&str` をバイトごとに読み、checked な乗算・加算で解析する。
+        if segs[1] == "from_str_radix" && args.len() == 2 && dst.is_int() {
+            let Ok(res) = self.ty_of(e) else { return Ok(None) };
+            let Ty::Res(t0, _) = res else {
+                return self.err(line, "from_str_radix の結果が Result ではない");
+            };
+            let int_ty = t0.ty();
+            if !int_ty.is_int() {
+                return self.err(line, "from_str_radix の結果の整数型が不正");
+            }
+            let Some(s) = self.expr(&args[0])? else { return Ok(Some(None)) };
+            let Some(radix) = self.expr(&args[1])? else { return Ok(Some(None)) };
+            let fat = self.fat_ty();
+            if self.vty(s) != fat {
+                return self.err(line, "from_str_radix の第 1 引数は &str ではない");
+            }
+            if self.vty(radix) != Ty::U32 {
+                return self.err(line, "from_str_radix の第 2 引数は u32 ではない");
+            }
+            return Ok(Some(Some(self.emit(res, Op::ParseInt { ty: int_ty, s, radix }))));
+        }
         let Some(rest) = segs[1].strip_prefix("from_") else { return Ok(None) };
         if args.len() != 1 || !(dst.is_int() || dst.is_float()) {
             return Ok(None);
