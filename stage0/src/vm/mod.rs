@@ -56,7 +56,7 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
     if let Some(e) = errs.first() {
         return Err(format!("KIR の検査に失敗: {} {}", e.0, e.1));
     }
-    let r = compile::compile(&m);
+    let r = compile::compile(&m, &lo.lines);
     tick("compile");
     r
 }
@@ -95,10 +95,21 @@ pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], w
         Ok(Outcome::Panic(m)) => {
             vm.flush();
             eprintln!("panic: {}", m);
+            // `KSN_PANIC_LOC=1`: panic の位置を、デバッガ (`ksn debug` の `stopped: panic`) と同じ形で添える。
+            if std::env::var_os("KSN_PANIC_LOC").is_some() {
+                if let Some(loc) = vm.panic_location() {
+                    eprintln!("  {}", loc);
+                }
+            }
             101
         }
         Ok(Outcome::Abort) => {
             vm.flush();
+            if std::env::var_os("KSN_PANIC_LOC").is_some() {
+                if let Some(loc) = vm.panic_location() {
+                    eprintln!("  {}", loc);
+                }
+            }
             101
         }
         Ok(Outcome::StackOverflow) => {

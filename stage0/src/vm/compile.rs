@@ -54,15 +54,15 @@ enum CmpOpnd {
 }
 
 /// KIR のモジュール全体をバイトコードにする。
-pub fn compile(m: &Module) -> Result<Prog, String> {
+pub fn compile(m: &Module, lines: &HashMap<String, crate::kir_lower::FnLines>) -> Result<Prog, String> {
     let mut prog = Prog { aggs: m.aggs.clone(), ..Default::default() };
     let index: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
     for f in &m.funcs {
         let vf = if f.link.is_some() {
             // `extern` 宣言 (本体なし)。呼び出しは `CallExt` になる。
-            VFunc { key: f.key.clone(), code: vec![], pool: vec![], nslots: 0, nparams: f.params().len() as u32, ptys: f.params().iter().map(|(_, t)| *t).collect(), ret: f.ret, ret_heap: false }
+            VFunc { key: f.key.clone(), code: vec![], pool: vec![], marks: vec![], file: String::new(), nslots: 0, nparams: f.params().len() as u32, ptys: f.params().iter().map(|(_, t)| *t).collect(), ret: f.ret, ret_heap: false }
         } else {
-            compile_func(m, &index, &mut prog, f).map_err(|e| format!("{}: {}", f.key, e))?
+            compile_func(m, &index, &mut prog, f, lines.get(&f.key)).map_err(|e| format!("{}: {}", f.key, e))?
         };
         prog.funcs.push(vf);
     }
@@ -75,6 +75,8 @@ fn tyi(prog: &mut Prog, t: Ty) -> u32 {
         Some(i) => i as u32,
         None => {
             prog.tys.push(t);
+            let n = size_of(&prog.aggs, t);
+            prog.ty_size.push(n);
             (prog.tys.len() - 1) as u32
         }
     }
@@ -133,6 +135,9 @@ struct Fc<'a> {
     m: &'a Module,
     index: &'a HashMap<&'a str, usize>,
     prog: &'a mut Prog,
+    /// 値番号 → 行 (行表の元)。
+    fl: Option<&'a crate::kir_lower::FnLines>,
+    marks: Vec<(u32, u32)>,
     slot: Vec<u32>,
     /// `i32` に収まる定数の値 (即値にできる)。
     cv: HashMap<VId, i32>,
@@ -154,7 +159,7 @@ struct Fc<'a> {
     pending: HashMap<VId, (VId, u32)>,
 }
 
-fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &Func) -> Result<VFunc, String> {
+fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &Func, fl: Option<&crate::kir_lower::FnLines>) -> Result<VFunc, String> {
     let n = f.value_count();
     let mut slot = vec![u32::MAX; n];
     let mut vty = vec![Ty::Unit; n];
@@ -237,7 +242,7 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
         }
     }
     let skip_const: std::collections::HashSet<VId> = nfold.into_iter().filter(|(v, n)| uses[*v as usize] == *n).map(|(v, _)| v).collect();
-    let mut fc = Fc { m, index, prog, slot, cv, skip_const, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, last_pa: None, folded: HashMap::new(), pending: HashMap::new() };
+    let mut fc = Fc { m, index, prog, fl, marks: vec![], slot, cv, skip_const, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, last_pa: None, folded: HashMap::new(), pending: HashMap::new() };
     let mut starts = vec![0u32; f.blocks.len()];
     // 分岐先が未確定の `Jmp` などの位置 → ブロック番号。
     let mut patches: Vec<(usize, usize)> = vec![];
@@ -266,6 +271,8 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
         key: f.key.clone(),
         code: fc.code,
         pool: fc.pool,
+        marks: fc.marks,
+        file: fl.map(|x| x.file.clone()).unwrap_or_default(),
         nslots: fc.nslots + fc.temps,
         nparams: f.params().len() as u32,
         ptys: f.params().iter().map(|(_, t)| *t).collect(),
@@ -275,6 +282,14 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
 }
 
 impl<'a> Fc<'a> {
+    /// これから出す命令の行を行表に記す (同じ行が続くときは足さない)。
+    fn mark(&mut self, v: VId) {
+        let line = self.fl.and_then(|f| f.lines.get(v as usize).copied()).unwrap_or(0);
+        if line != 0 && self.marks.last().map(|m| m.1) != Some(line) {
+            self.marks.push((self.code.len() as u32, line));
+        }
+    }
+
     fn s(&self, v: VId) -> S {
         self.slot[v as usize] as S
     }
@@ -340,6 +355,7 @@ impl<'a> Fc<'a> {
     fn inst(&mut self, inst: &crate::kir::Inst) -> Result<(), String> {
         let d = self.s(inst.dst);
         let ty = inst.ty;
+        self.mark(inst.dst);
         self.last_cmp = None;
         let prev_pa = self.last_pa.take();
         // 直前の `ptr.add` の結果 `p` を 1 回だけ使う `load` / `store` なら、その加算を取り込む (基底と添字のスロット)。
@@ -694,6 +710,7 @@ impl<'a> Fc<'a> {
         match &b.term {
             Term::Br((t, args)) => self.jump_to(f, bi, *t, args, true, patches),
             Term::BrIf(c, (t1, a1), (t2, a2)) => {
+                self.mark(*c);
                 // 直前の比較を融合できるか (結果がこの分岐だけで使われる)。
                 let fused = match self.last_cmp {
                     Some((v, at)) if v == *c && self.uses[*c as usize] == 1 && at + 1 == self.code.len() => {
@@ -759,6 +776,7 @@ impl<'a> Fc<'a> {
                 }
             }
             Term::Ret(v) => {
+                self.mark(*v);
                 let v = self.s(*v);
                 self.push(Ins::Ret { v });
             }

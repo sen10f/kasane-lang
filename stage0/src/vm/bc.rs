@@ -195,6 +195,10 @@ pub struct VFunc {
     /// フレームのスロット数 (辺の一時スロットを含む)。
     pub nslots: u32,
     pub nparams: u32,
+    /// 命令ごとの行表 (設計_KIR.md 7 章 13): `(命令番号, 行)` の昇順。命令 `pc` の行は、番号が `pc` 以下の最後の項目の行。
+    pub marks: Vec<(u32, u32)>,
+    /// 行表のソースファイル (合成した関数は空)。
+    pub file: String,
     /// 引数の型 (コールバックの引数をレジスタから読むのに使う)。
     pub ptys: Vec<Ty>,
     pub ret: Ty,
@@ -202,11 +206,25 @@ pub struct VFunc {
     pub ret_heap: bool,
 }
 
+impl VFunc {
+    /// 命令 `pc` を作った式の行 (0 は不明)。
+    pub fn line_at(&self, pc: usize) -> u32 {
+        let i = self.marks.partition_point(|m| m.0 as usize <= pc);
+        if i == 0 {
+            0
+        } else {
+            self.marks[i - 1].1
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Prog {
     pub funcs: Vec<VFunc>,
     pub aggs: Vec<AggDef>,
     pub tys: Vec<Ty>,
+    /// `tys` の各型の大きさ (バイト。`Field` が実行時に求めなくて済むように)。
+    pub ty_size: Vec<u32>,
     pub wide: Vec<i128>,
     pub strs: Vec<String>,
     pub makes: Vec<MakeInfo>,

@@ -97,6 +97,8 @@ pub struct Vm<'a> {
     next_fd: i128,
     /// コールバックのフレームを積む位置 (`CallExt` の呼び出し元のフレームの上)。
     top: usize,
+    /// 最後の panic が起きた (版, 関数番号, 命令番号)。
+    panic_at: Option<(u32, u32, u32)>,
     /// C に渡した関数 (版, 関数番号)。添字がコールバックの入口の番号。
     cbs: Vec<(u32, u32)>,
     /// ホットリロードの版 (0 が最初)。各フレームは、呼び出されたときの版の関数を最後まで走らせる。新しい呼び出しは最新の版へ解決する。
@@ -143,10 +145,22 @@ fn addr(a: i128, n: usize) -> Result<*mut u8, String> {
 
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0, top: 0, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
     }
 
     /// ためた stdout を流す。
+    /// 最後の panic の位置 (`in <関数> at <ファイル>:<行>`。デバッガと同じ形)。行表がない関数では `None`。
+    pub fn panic_location(&self) -> Option<String> {
+        let (vi, fi, pc) = self.panic_at?;
+        let prog: &Prog = unsafe { &*self.vers[vi as usize] };
+        let f = &prog.funcs[fi as usize];
+        let line = f.line_at(pc as usize);
+        if line == 0 || f.file.is_empty() {
+            return None;
+        }
+        Some(format!("in {} at {}:{}", f.key, crate::cli::rel(&f.file), line))
+    }
+
     pub fn flush(&mut self) {
         use std::io::Write;
         if !self.out.is_empty() {
@@ -331,6 +345,7 @@ impl<'a> Vm<'a> {
         }
         macro_rules! panic_out {
             ($m:expr) => {{
+                self.panic_at = Some((vi, fi, pc as u32 - 1));
                 self.flush();
                 return Ok(Outcome::Panic($m));
             }};
@@ -621,7 +636,7 @@ impl<'a> Vm<'a> {
                     let h = r!(*a) as usize;
                     let o = *off as usize;
                     // タグが別の腕の値を、判定の前に読むことがある (`Option<Vec>` の `None` のペイロード)。項目が無い・短いときは 0 として読む。
-                    let need = crate::kir::size_of(&prog.aggs, t) as usize;
+                    let need = prog.ty_size[*ty as usize] as usize;
                     let ok = matches!(self.heap.get(h), Some(b) if b.len() >= o + need);
                     let v = match t {
                         Ty::Agg(ai) => {
@@ -821,6 +836,7 @@ impl<'a> Vm<'a> {
                     panic_out!(m);
                 }
                 Ins::Abort => {
+                    self.panic_at = Some((vi, fi, pc as u32 - 1));
                     self.flush();
                     return Ok(Outcome::Abort);
                 }
