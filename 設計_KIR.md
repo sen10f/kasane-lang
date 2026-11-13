@@ -1243,3 +1243,15 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - **アドレスを取られた配列の読み**: `&mut chunk` でスロットが mem (fat のアドレス) になった配列は、`get` などの前に値を読む (`try_local_method`)。
 - **`ksn build --backend llvm` の結果**: `examples/http` が LLVM で作れ、`ksn run` と出力・終了コードが一致する (`llvm_builds_of_real_packages_match_run` に追加)。`examples/shortener` は `std.fs.remove_file` (io.fs) と `std.env.arg_count` で止まる。
 - 試験: `kir_net_refs_pass_sockets_by_reference` (参照の受け渡し、`?` の `std.net.Error`、`[0u8; 8]` を `&mut [u8]` で読む)、`kir_array_rep_matches_tree_walker`。
+
+## 20. 型引数付きの関数・メソッドの単相化 (kir/generic-method、2026-11-13)
+
+- 対象: 型パラメータ (`[T]`、`[A, B]`) を持つ利用者の自由関数とメソッド (`fn t.Acc.put[T](self: &mut t.Acc, v: T)`)。型引数ごとに別の KIR 関数を作る。実装は `kir_lower_mono.rs`。
+- 型引数の決め方 (呼び出しごと): `::<..>` の明示があればそれ。なければ、宣言の引数の型と実引数の型表の型 (メソッドは受け手を除く) を突き合わせ、残りは呼び出しの結果の型と宣言の戻り値の型から決める。決まらない・未確定の型が残るなら、理由付きで拒否する (`::<..>` で明示すれば通る)。
+- 鍵: `fqn<型引数,..>` (型引数は宣言の順、`Ty::show` の表記。例 `t.id<u32>`、`t.first<u32,u8>`、`t.Acc.put<i16>`)。`Func.fqn` は元の FQN、`Func.key` が鍵。同じ鍵のインスタンスは 1 つだけ (入れ子・再帰も `Lw::mono_done` を共有して二度下ろさない。別々の呼び出し元が下ろした重複は `lower_defs` の鍵の重複除去が落とす)。
+- 下ろし: インスタンスの本体は `Lw::subst` (型パラメータ名 → 具体的な型) で、型表の型 (`src_ty`) と宣言の型 (`decl_ty`: 引数・戻り値・`let x: T`) を置き換えて下ろす。クロージャの子の下ろしにも `subst` を引き継ぐ。インスタンス内で `x.m()` のように型パラメータの値へメソッドを呼ぶ形は、置き換え後の具体的な型で解決される。
+- 対象外 (理由付きで拒否のまま): 効果 (`uses` / `panics`) や定数のパラメータを持つ宣言 (「uses のパラメータ (E) を持つので、単相化は対象外」)、型引数付きの構造体・列挙型 (`Wrapper<T>` は集成体の表が未対応のまま)、`Fn` 境界の型パラメータに捕獲のないクロージャを渡す呼び出しは従来どおり `generic_call` (鍵 `fqn<クロージャの鍵>`、14 章) が先に処理する (引数にクロージャがあるときだけ)。
+- 新しい命令は足していない。参照実行器・VM・LLVM は変更なし。
+- 試験: `kir_generic_functions_and_methods_are_monomorphized` (2 つ以上の型・明示・メソッド・入れ子・集成体の型引数、`ksn run` / `--run` / `--native` が一致、鍵が KIR に出る)、`kir_generic_with_effect_parameter_is_rejected_with_a_reason`。`llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered` の例は `dyn` のトレイトオブジェクトを引数に取る関数 (当面だれも下ろさない形) に替えた。
+- `examples/plugins`: `Bus.register<Counter>` の単相化までは進むが、その本体の `Box.new` / `Box.into_dyn` (`Box<dyn Handler>`)、`Vec.new(allocator)`、`dyn` のメソッド呼び出し (`handle`) が段階 1 の対象外で止まる。型引数の部分の壁は越えた。
+- `examples/threads`: `std.sync.channel::<T, A>` の呼び出しは未対応のまま。チャネルには型引数付きの標準の型 (`Sender<T>` / `Receiver<T>`、集成体の表が型引数付きの型を持たない)、キューの領域、`recv` が空のときに保留中のスレッドを生成順に走らせる意味が要る。ほかに `static Mutex` の `lock`、`Rng`、ループの中の `spawn` の呼び出し元が残っていて、チャネルだけでは通らない。

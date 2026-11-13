@@ -9,7 +9,7 @@
 //! 構文から求め、その集合だけを引数にする。
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::check::{is_nil, items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{self, Aop, Block, BoolOp, Cc, Func, Inst, Mode, Module, Op, Term, Ty, VId};
@@ -44,6 +44,9 @@ mod method_lower;
 // `std.thread.spawn` / `JoinHandle.join` の下ろし (子モジュール)。
 #[path = "kir_lower_thread.rs"]
 mod thread_lower;
+// 型引数付きの関数・メソッドの単相化 (子モジュール)。
+#[path = "kir_lower_mono.rs"]
+mod mono;
 // 配列リテラルの下ろし (子モジュール)。
 #[path = "kir_lower_array.rs"]
 mod array_lower;
@@ -216,6 +219,12 @@ struct Lw<'a> {
     def: &'a Def,
     /// 集成体の型表 (全関数で共有。`lower_user` が作る)。
     aggs: &'a RefCell<agg::AggTab>,
+    /// 単相インスタンスの型パラメータ名 → 具体的な型 (空なら単相の関数)。設計_KIR.md 20 章。
+    subst: HashMap<String, Src>,
+    /// 単相インスタンスの鍵 (`fqn<型引数,..>`)。単相の関数は `None` (鍵は FQN)。
+    inst_key: Option<String>,
+    /// 下ろし済み (下ろし中) の型引数付きインスタンスの鍵 (入れ子のインスタンスと共有する)。
+    mono_done: std::rc::Rc<RefCell<BTreeSet<String>>>,
     blocks: Vec<BlockB>,
     cur: Option<usize>,
     /// 値番号 → 型 (VId は 0 から順に振る)。
@@ -239,6 +248,9 @@ impl<'a> Lw<'a> {
             tys,
             def,
             aggs,
+            subst: HashMap::new(),
+            inst_key: None,
+            mono_done: Default::default(),
             blocks: vec![],
             cur: None,
             vty: vec![],
@@ -372,7 +384,7 @@ impl<'a> Lw<'a> {
         let line = nline(e);
         let id = nid(e);
         match self.tys.get(&(self.def.name.clone(), id)) {
-            Some(x) if id != 0 => Ok(x.ty.clone()),
+            Some(x) if id != 0 => Ok(if self.subst.is_empty() { x.ty.clone() } else { mono::subst_ty(&x.ty, &self.subst) }),
             _ => self.err(line, format!("式 {} の型が決まらない (型表にない)", nname(e))),
         }
     }
@@ -408,11 +420,10 @@ impl<'a> Lw<'a> {
 
     fn lower(mut self) -> LR<Vec<(Func, BTreeSet<String>)>> {
         let d = self.def;
-        let gn = HashSet::new();
         let body = d.body.as_ref().expect("候補は本体を持つ");
         let mut params = vec![];
         for (_, t) in &d.params {
-            let st = from_v(t, &gn);
+            let st = self.decl_ty(t);
             match coll::sig_ty(&self, &st) {
                 Some(x) => params.push(x),
                 None => return Err(format!("引数の型 {} は段階 1 の対象外 ({})", show(&st), sig_why(&self, &st))),
@@ -421,7 +432,7 @@ impl<'a> Lw<'a> {
         let ret = if is_nil(&d.ret) {
             Ty::Unit
         } else {
-            let st = from_v(&d.ret, &gn);
+            let st = self.decl_ty(&d.ret);
             match coll::sig_ty(&self, &st) {
                 Some(x) => x,
                 None => return Err(format!("戻り値の型 {} は段階 1 の対象外 ({})", show(&st), sig_why(&self, &st))),
@@ -434,7 +445,8 @@ impl<'a> Lw<'a> {
         self.rf.begin(body);
         self.scopes.push(vec![]);
         for ((name, pt), (v, t)) in d.params.iter().zip(pv.iter().zip(params.iter())) {
-            coll::bind_param(&mut self, name, *v, *t, &from_v(pt, &gn));
+            let pst = self.decl_ty(pt);
+            coll::bind_param(&mut self, name, *v, *t, &pst);
             // `&[T; N]` / `&mut [T; N]` のパラメータ: 長さ N は型から分かる (ptr にするだけ)。
             if let Some(n) = coll::ref_array_len(pt) {
                 let s = self.lookup(name).expect("直後に束縛したパラメータ");
@@ -463,7 +475,7 @@ impl<'a> Lw<'a> {
         coll::finish(&mut blocks, std::mem::take(&mut self.coll.allocas));
         let f = Func {
             fqn: d.name.clone(),
-            key: d.name.clone(),
+            key: self.inst_key.clone().unwrap_or_else(|| d.name.clone()),
             uses,
             may_panic: d.panics.as_deref() != Some("never"),
             stack: d.stack,
@@ -790,9 +802,6 @@ impl<'a> Lw<'a> {
         }
         let f = nf(e);
         let line = nline(e);
-        if !matches!(f.get(2), Some(V::Nil) | None) {
-            return self.err(line, "型引数付きの呼び出しは段階 1 の対象外");
-        }
         let callee = &f[0];
         if nname(callee) != "Path" {
             return self.err(line, "式を呼ぶ形は段階 1 の対象外");
@@ -896,13 +905,19 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("呼び出し {} は段階 1 の対象外", segs.join(".")));
         };
         let cd = &self.p.defs[di];
-        if !is_candidate(cd) {
-            return self.err(line, format!("呼び先 {} は段階 1 の対象外 (ジェネリクス・メソッド・本体なし)", cd.name));
+        if cd.kw != "fn" || cd.body.is_none() {
+            return self.err(line, format!("呼び先 {} は段階 1 の対象外 (メソッド・本体なし)", cd.name));
         }
-        let gn = HashSet::new();
+        let (name, tmap) = if cd.generics.iter().any(|g| g.0 != "life") {
+            let tm = self.mono_targs(e, di, args, 0, &f[2])?;
+            (self.mono_instance(di, &tm, line)?, tm)
+        } else {
+            (cd.name.clone(), HashMap::new())
+        };
+        let gn = mono::tnames(cd);
         let mut pts = vec![];
         for (_, t) in &cd.params {
-            match coll::sig_ty(self, &from_v(t, &gn)) {
+            match coll::sig_ty(self, &mono::subst_ty(&from_v(t, &gn), &tmap)) {
                 Some(x) => pts.push(x),
                 None => return self.err(line, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name)),
             }
@@ -910,7 +925,7 @@ impl<'a> Lw<'a> {
         let rt = if is_nil(&cd.ret) {
             Ty::Unit
         } else {
-            match coll::sig_ty(self, &from_v(&cd.ret, &gn)) {
+            match coll::sig_ty(self, &mono::subst_ty(&from_v(&cd.ret, &gn), &tmap)) {
                 Some(x) => x,
                 None => return self.err(line, format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name)),
             }
@@ -918,7 +933,6 @@ impl<'a> Lw<'a> {
         if pts.len() != args.len() {
             return self.err(line, format!("呼び先 {} の引数の個数が違う", cd.name));
         }
-        let name = cd.name.clone();
         let mut vs = vec![];
         for a in args {
             match self.expr(a)? {

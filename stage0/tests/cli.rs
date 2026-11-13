@@ -17791,14 +17791,28 @@ end t.main
 
 #[test]
 fn llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered() {
-    // 下ろせない関数 (ここではジェネリック関数 `t.generic` を呼ぶ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
-    // (`std.env.arg_count` は段階 1 で下ろせるようになったため、`with` は使わない。`with` は別担当が KIR 下ろし中。)
-    let src = "fn t.generic[T](x: T) -> T uses [] panics never
-    x
-end t.generic
+    // 下ろせない関数 (ここでは `dyn` のトレイトオブジェクトを引数に取る関数を呼ぶ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
+    // (型引数付きの関数・メソッドは単相化して下ろせるので、退避の例に使わない。設計_KIR.md 20 章)
+    let src = "trait t.Speak[E: uses, P: panics]
+    fn speak(self: &Self) -> u32 uses [E] panics P
+end t.Speak
+
+type t.Dog
+    n: u32
+end t.Dog
+
+impl t.Speak<[], never> for t.Dog
+fn t.Dog.speak(self: &t.Dog) -> u32 uses [] panics never impls t.Speak<[], never>
+    self.n
+end t.Dog.speak
+
+fn t.call(s: &dyn t.Speak<[], never>) -> u32 uses [] panics never
+    s.speak()
+end t.call
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    core.mem.drop(t.generic(5u32))
+    let d = t.Dog { n: 3u32 }
+    core.check.eq(t.call(&d), 3u32)
     std.io.print_line(\"x\")
 end t.main
 ";
@@ -21191,4 +21205,96 @@ fn check_cache_parallel_processes_agree() {
         }
     }
     let _ = fs::remove_dir_all(&cache);
+}
+
+// ---- 型引数付きの関数・メソッドの単相化 (設計_KIR.md 20 章、kir/generic-method) ----
+
+/// 型引数付きの関数・メソッドを、2 つ以上の型で呼ぶ。推論と `::<..>` の明示の両方。
+const MONO_FNS: &str = "type t.Acc
+    total: u64
+end t.Acc
+
+type t.Pair
+    a: u32
+    b: u32
+end t.Pair
+
+fn t.Acc.put[T](self: &mut t.Acc, v: T) -> T uses [] panics never
+    self.total = self.total.wrapping_add(1u64)
+    v
+end t.Acc.put
+
+fn t.ann[T](x: T) -> T uses [] panics never
+    let y: T = x
+    y
+end t.ann
+
+fn t.first[A, B](a: A, b: B) -> A uses [] panics never
+    let _unused = b
+    a
+end t.first
+
+fn t.id[T](x: T) -> T uses [] panics never
+    x
+end t.id
+
+fn t.make[T](x: T) -> T uses [] panics never
+    t.id(x)
+end t.make
+
+fn t.pair2[T](a: T, b: T) -> (T, T) uses [] panics never
+    (a, b)
+end t.pair2
+
+fn t.w() -> u32 uses [] panics may
+    core.check.eq(t.id(5u32), 5u32)
+    core.check.eq(t.id(7u8), 7u8)
+    core.check.eq(t.id::<i64>(9i64), 9i64)
+    core.check.eq(t.first(1u32, 2u8), 1u32)
+    core.check.eq(t.first(3u8, true), 3u8)
+    core.check.eq(t.make(11u16), 11u16)
+    core.check.eq(t.ann(5u8), 5u8)
+    let p = t.id(t.Pair { a: 1u32, b: 2u32 })
+    core.check.eq(p.b, 2u32)
+    let (x, y) = t.pair2(1u32, 2u32)
+    let mut acc = t.Acc { total: 0u64 }
+    core.check.eq(acc.put(4u32), 4u32)
+    core.check.eq(acc.put(5u8), 5u8)
+    core.check.eq(acc.put::<i16>(6i16), 6i16)
+    core.check.eq(acc.total, 3u64)
+    t.id(x.wrapping_add(y).wrapping_add(39u32))
+end t.w
+
+";
+
+#[test]
+fn kir_generic_functions_and_methods_are_monomorphized() {
+    let t = Tmp::new("kir_mono", &format!("{}{}", MONO_FNS, main_wrap("", "    core.check.eq(t.w(), 42u32)\n")));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker: {}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.w", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "42");
+    // 型引数ごとに別の関数 (名前に型引数が入る)。
+    let d = run(&["kir", "t.w"], &t.0);
+    let out = format!("{}{}", text(&d.stdout), text(&d.stderr));
+    for key in ["t.id<u32>", "t.id<u8>", "t.id<i64>", "t.id<t.Pair>", "t.first<u32,u8>", "t.first<u8,bool>", "t.Acc.put<u32>", "t.Acc.put<u8>", "t.Acc.put<i16>"] {
+        assert!(out.contains(key), "{} が KIR にない:\n{}", key, out);
+    }
+}
+
+#[test]
+fn kir_generic_with_effect_parameter_is_rejected_with_a_reason() {
+    let src = "fn t.eff[E: uses](x: u32) -> u32 uses [E] panics never
+    x
+end t.eff
+
+fn t.w() -> u32 uses [] panics never
+    t.eff::<[]>(3u32)
+end t.w
+";
+    let t = Tmp::new("kir_mono_eff", src);
+    let k = run(&["kir", "t.w", "--run"], &t.0);
+    assert_ne!(k.status.code(), Some(0));
+    assert!(text(&k.stderr).contains("uses のパラメータ (E) を持つので、単相化は対象外"), "{}", text(&k.stderr));
 }
