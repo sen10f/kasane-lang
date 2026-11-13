@@ -1,0 +1,10 @@
+type t.Point derive [Debug, Clone, Copy] pub
+    x: u32
+    y: u32
+end t.Point
+
+fn t.main() -> () uses [] panics may
+    let a = [t.Point { x: 1u32, y: 2u32 }]
+    let b = a[0usize].x
+    core.mem.drop(b)
+end t.main

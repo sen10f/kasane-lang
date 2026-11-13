@@ -1,0 +1,7 @@
+fn t.main() -> () uses [alloc] panics may
+    let a = [alloc.string.String.new(std.alloc.SYSTEM), alloc.string.String.new(std.alloc.SYSTEM)]
+    let x = a[0usize]
+    let y = a[0usize]
+    core.mem.drop(x)
+    core.mem.drop(y)
+end t.main

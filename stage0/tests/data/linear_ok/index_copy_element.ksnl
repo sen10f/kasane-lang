@@ -1,0 +1,7 @@
+fn t.main() -> () uses [] panics may
+    let a = [1u8, 2u8, 3u8]
+    let b = a[0usize]
+    let c = a[1usize]
+    core.mem.drop(b)
+    core.mem.drop(c)
+end t.main

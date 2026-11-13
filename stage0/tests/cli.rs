@@ -93,6 +93,27 @@ fn unsound_cases_are_rejected() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// 添字から Copy でない要素を move 取り出すケースは E3002 になる
+/// (tests/data/unsound_index_move/、1 ファイル 1 ケース)。
+#[test]
+fn index_move_cases_are_e3002() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound_index_move");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    assert!(!names.is_empty(), "index_move cases missing");
+    let mut failures = Vec::new();
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&stem, &fs::read_to_string(&p).unwrap());
+        let o = run(&["check", "--json"], &t.0);
+        let got = codes(&text(&o.stdout));
+        if o.status.code() != Some(1) || !got.iter().any(|c| c == "E3002") {
+            failures.push(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 #[test]
 fn clean_program_passes_check_and_fmt() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";

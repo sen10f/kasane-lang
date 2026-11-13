@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::program::{Def, Program, Resolved, Target};
-use crate::parser::V;
+use crate::parser::{V, nid};
 
 #[path = "borrowck.rs"]
 mod borrowck;
@@ -69,6 +69,30 @@ pub(crate) fn lit_index(e: &V) -> Option<usize> {
         return None;
     }
     st(&nf(e)[1]).parse::<usize>().ok()
+}
+
+/// 診断メッセージ用にインデックス式 `a[i]` を `a[0usize]` 風にレンダリングする。
+/// 解釈できない部分は `dump()` による近似で済ませる。
+pub(crate) fn index_text(e: &V) -> String {
+    let f = nf(e);
+    let seg = |x: &V| -> String {
+        if nname(x) == "Path" {
+            return strs(&nf(x)[0]).join(".");
+        }
+        if nname(x) == "Lit" {
+            let ps = nf(x);
+            let mut s = st(ps.get(1).unwrap_or(&V::Nil));
+            if let Some(sfx) = ps.get(2) {
+                if !is_nil(sfx) {
+                    s.push('.');
+                    s.push_str(&st(sfx));
+                }
+            }
+            return s;
+        }
+        x.dump()
+    };
+    format!("{}[{}]", seg(&f[0]), seg(&f[1]))
 }
 pub(crate) fn strs(v: &V) -> Vec<String> {
     items(v).iter().map(st).collect()
@@ -315,6 +339,10 @@ pub struct Checker<'a> {
     /// move 済みの場所 (根の変数 + フィールド道をドットでつないだ鍵。`s`・`s.f`・`s.a.b`) → move した行。
     /// 鍵どうしは互いに重ならない (一方が他方の接頭辞なら記録しない)。E3002 (4.1・4.4)。
     moved: BTreeMap<String, usize>,
+    /// `a[i]` で要素を move した (consume された) 添字式の (関数名, 式 ID)。
+    /// `tc_expr` 時点では Vec 等の基の型が `Nil` なので、型表 (`tytab`) が確定した
+    /// `typeck()` の後処理で要素型を引いて E3002 を出す (4.1)。
+    index_consumes: Vec<(String, u32, String, usize)>,
     final_env: HashMap<String, V>,
     graph: BTreeMap<String, BTreeSet<String>>,
     /// 呼び出しグラフのクロージャの節 (`関数名#番号`) → (パラメータの型注釈, 本体)。
@@ -382,6 +410,7 @@ impl<'a> Checker<'a> {
             d: 0,
             names: HashSet::new(),
             moved: BTreeMap::new(),
+            index_consumes: Vec::new(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
             closure_frames: BTreeMap::new(),
@@ -2082,6 +2111,28 @@ impl<'a> Checker<'a> {
                 tk.check_def(i);
             }
         }
+        // `a[i]` で Copy でない要素を値として取り出した (consume した) 場所を、型表で
+        // 要素型を引いて E3002 にする (4.1)。型が分からない (Vec 等の基が Nil、型引数依存等)
+        // ときは黙る。
+        for (fqn, nid, text, line) in self.index_consumes.clone() {
+            let Some(et) = tk.tytab.get(&(fqn.clone(), nid)) else { continue };
+            let el = match &et.ty {
+                crate::types::Ty::Array(el) | crate::types::Ty::Slice(el) => Some(el.as_ref()),
+                crate::types::Ty::Named(_, args) => args.first(),
+                _ => None,
+            };
+            let Some(el) = el else { continue };
+            if !self.is_copy_ty(el) {
+                self.tdiag(
+                    "E3002",
+                    format!(
+                        "cannot move out of `{}`: the element is not Copy; borrow it with `&{}` or use `get`",
+                        &text, &text
+                    ),
+                    line,
+                );
+            }
+        }
         // 計測 (隠し機能): `KSN_TYPE_COVERAGE=1` のときだけ stderr に被覆率を出す (typecov.rs)。
         if let Some(c) = tk.cov.take() {
             let top = std::env::var("KSN_TYPE_COVERAGE_TOP").ok().and_then(|v| v.parse().ok()).unwrap_or(15);
@@ -2205,6 +2256,28 @@ impl<'a> Checker<'a> {
                 self.p.types.get(&nm).map_or(false, |&i| self.def(i).derive.iter().any(|x| x == "Copy"))
             }
             _ => true,
+        }
+    }
+
+    /// `Ty` が Copy か。`is_copy` の `Ty` 版。未知の型・型パラメータは黙る (true)。
+    fn is_copy_ty(&self, t: &crate::types::Ty) -> bool {
+        match t {
+            crate::types::Ty::Unknown | crate::types::Ty::Var(_) | crate::types::Ty::Param(_) => true,
+            crate::types::Ty::Never | crate::types::Ty::Unit | crate::types::Ty::Prim(_) => true,
+            crate::types::Ty::Ref(mut_, _) => !mut_,
+            crate::types::Ty::Tuple(xs) => xs.iter().all(|x| self.is_copy_ty(x)),
+            crate::types::Ty::Named(nm, args) => {
+                if nm == "Option" || nm == "Result" {
+                    return args.iter().all(|a| self.is_copy_ty(a));
+                }
+                self.p
+                    .types
+                    .get(nm)
+                    .map_or(false, |&i| self.def(i).derive.iter().any(|x| x == "Copy"))
+            }
+            crate::types::Ty::Array(el) | crate::types::Ty::Slice(el) => self.is_copy_ty(el),
+            crate::types::Ty::Ptr(_, _) | crate::types::Ty::Const(_) | crate::types::Ty::Dyn(_) => true,
+            crate::types::Ty::Closure { .. } => true,
         }
     }
 
@@ -2749,6 +2822,9 @@ impl<'a> Checker<'a> {
         Some(ty.clone())
     }
 
+    /// `a[i]` の要素の型を `a` の型から解決する。
+    /// `array`/`slice` は第 1 型引数、`Vec<T>` 等のジェネリクス型は最初の型引数を要素型と見なす。
+    /// 型が決まらないときは None (呼び出し側で黙る)。
     /// 代入・再束縛の対象の場所とその下の move 済みの記録を消す (再代入で復活、4.1)。
     /// `s = ..` は `s`・`s.f`・`s.f.g` を、`s.f = ..` は `s.f`・`s.f.g` を消す (兄弟は残す)。
     fn revive_place(&mut self, segs: &[String]) {
@@ -2869,6 +2945,24 @@ impl<'a> Checker<'a> {
                 if !is_nil(&f[0]) {
                     self.tc_expr(&f[0], env, muts, true);
                 }
+            }
+            "Index" => {
+                // `a[i]` で Copy でない要素を値として取り出す (move) は 4.1 に反する (E3002)。
+                // `&a[i]`/`&mut a[i]` は消費 (consume=false) にならないので対象外。
+                // 要素の型は型表 (`tytab`) で後から引く (tc_expr 時点では Vec 等が解決しないため)。
+                // 即時には記録だけしておく。
+                if consume {
+                    let base_nid = nid(&f[0]);
+                    self.index_consumes.push((
+                        self.def(self.d).name.clone(),
+                        base_nid,
+                        index_text(e),
+                        nline(e),
+                    ));
+                }
+                // 添字演算は基の場所を move しない (参照として扱う)。
+                self.tc_expr(&f[0], env, muts, false);
+                self.tc_expr(&f[1], env, muts, false);
             }
             _ => {
                 for c in children(e) {
