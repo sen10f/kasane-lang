@@ -4310,8 +4310,26 @@ impl<'a> Checker<'a> {
             "Field" => {
                 // 一時値の欄の読み出し (`t.open(1).id`): 基の線形な値は束縛も消費もされず漏れる。
                 // ただし消費の位置で線形な欄を取り出すなら、その欄が義務を引き継ぐ (`t.mk().inner` を渡す)。
+                // 一時値の線形な欄の一部だけを消費して一時値を捨てると、他の線形な欄が漏れる
+                // (`t.mkpair().a` は `a` だけ消費して `b` を漏らす)。
                 let fld_linear = self.is_linear(&self.lin_ty(e, env));
-                if !(consume && fld_linear) {
+                if consume && fld_linear && Self::is_temp_value(&f[0]) {
+                    let tt = self.lin_ty(&f[0], env);
+                    if self.is_linear(&tt) {
+                        let consumed = st(&f[1]).to_string();
+                        let has_other = self
+                            .split_fields(&tt)
+                            .iter()
+                            .any(|(n, _)| n != &consumed);
+                        if has_other {
+                            self.tdiag(
+                                "E3003",
+                                format!("a linear temporary's field `{consumed}` is consumed but the temporary is not fully consumed (other linear fields are leaked)"),
+                                nline(e),
+                            );
+                        }
+                    }
+                } else {
                     self.lin_temp_unused(&f[0], env, nline(e));
                 }
                 for c in children(e) {
