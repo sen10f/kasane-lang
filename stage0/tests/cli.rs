@@ -5086,8 +5086,8 @@ fn a_nested_place_blocks_uses_of_its_prefixes_but_not_siblings() {
 }
 
 #[test]
-fn a_field_moved_in_one_branch_is_fine_after_the_merge() {
-    // 分岐の合流は既存の move 検査の流儀: 枝の中で move しても、合流後は move として扱わない。
+fn a_field_moved_in_one_branch_is_an_error_after_the_merge() {
+    // 分岐の合流は合併: どこかの経路で move 済みなら、合流後の使用は E3002 (4.1。Rust と同じ)。
     let (bad, out) = pmove_check(
         "pmove_branch",
         &pmove_prefix(),
@@ -5102,7 +5102,8 @@ fn a_field_moved_in_one_branch_is_fine_after_the_merge() {
             "t.take_s(s)",
         ],
     );
-    assert!(!bad, "{}", out);
+    assert!(bad, "{}", out);
+    assert!(out.contains("E3002"), "{}", out);
 }
 
 #[test]
