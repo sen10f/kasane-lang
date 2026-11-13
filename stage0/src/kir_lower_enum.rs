@@ -19,6 +19,40 @@ use std::collections::HashSet;
 
 use super::{conv, parse_int, show, Lw, LR};
 
+/// パターン `p` を型 `src` (対象の型) に沿って分解し、束縛名とその型の組を `out` に積む。
+/// 扱うのは `PBind` (名前)、`Some(p)` / `Ok(p)` / `Err(p)`、要素数の合うタプル `(p, ..)` だけ。
+/// それ以外 (リテラル・`_`・構造体など) は何も積まない (型が決まらない束縛は種類を持たない)。
+fn pat_src_binds(p: &V, src: &Src, out: &mut Vec<(String, Src)>) {
+    match nname(p) {
+        "PBind" => out.push((st(&nf(p)[0]), src.clone())),
+        "PVariant" => {
+            let segs = strs(&nf(p)[0]);
+            let subs = items(&nf(p)[1]);
+            if segs.len() != 1 || subs.len() != 1 {
+                return;
+            }
+            let inner = match (segs[0].as_str(), src) {
+                ("Some", Src::Named(n, a)) if n == "Option" && a.len() == 1 => &a[0],
+                ("Ok", Src::Named(n, a)) if n == "Result" && a.len() == 2 => &a[0],
+                ("Err", Src::Named(n, a)) if n == "Result" && a.len() == 2 => &a[1],
+                _ => return,
+            };
+            pat_src_binds(&subs[0], inner, out);
+        }
+        "PTuple" => {
+            let pats = items(&nf(p)[0]);
+            if let Src::Tuple(elems) = src {
+                if elems.len() == pats.len() {
+                    for (sub, et) in pats.iter().zip(elems.iter()) {
+                        pat_src_binds(sub, et, out);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// 型の写し: `Option<P>` と `Result<T, E>` (ペイロードはスカラーだけ)。親の `conv` の受け皿。
 pub(super) fn conv_builtin(t: &Src) -> Option<Ty> {
     match t {
@@ -290,7 +324,14 @@ impl<'a> Lw<'a> {
             self.cur = Some(test);
             self.slots = saved.clone();
             self.scopes.push(vec![]);
+            // 腕の束縛の型を、対象の型 (`scrut_src`) をパターンに沿って分解して決める (判定の間だけ持つ)。
+            let mut binds = vec![];
+            if let Some((_, ss)) = self.coll.scrut_src.clone() {
+                pat_src_binds(pat, &ss, &mut binds);
+            }
+            self.coll.pat_srcs = binds.into_iter().collect();
             let c = self.pat_test(pat, s, sty)?;
+            self.coll.pat_srcs.clear();
             let (bb, _) = self.new_block(&[]);
             if i + 1 == n {
                 self.goto(bb, vec![]);
@@ -342,6 +383,10 @@ impl<'a> Lw<'a> {
             "PBind" => {
                 let name = st(&nf(p)[0]);
                 super::coll::bind_owned(self, &name, v, t);
+                // 借用 (`&str` など) の束縛は、腕の型 (`scrut_src` をパターンに沿って分解した型) から種類を結び付ける。
+                if let Some(src) = self.coll.pat_srcs.get(&name).cloned() {
+                    super::coll::bind_param_kind(self, &name, &src);
+                }
                 Ok(self.emit(Ty::Bool, Op::Const(1)))
             }
             "PLit" => {

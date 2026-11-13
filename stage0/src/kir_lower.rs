@@ -628,6 +628,11 @@ impl<'a> Lw<'a> {
                 let Some(a) = self.expr(l)? else { return Ok(None) };
                 let Some(b) = self.expr(r)? else { return Ok(None) };
                 // `Some(c) => c == &y` の `&y` は読んでから比べる。比べる型は emit した値の型で決める。
+                // `&str` どうしの `==` / `!=` は、バイト列の等しさ (`str.eq` と同じ)。
+                if matches!(op.as_str(), "==" | "!=") && self.is_str_ref(l) && self.is_str_ref(r) {
+                    let eq = self.str_eq(a, b)?;
+                    return Ok(Some(if op == "==" { eq } else { self.emit(Ty::Bool, Op::Not(eq)) }));
+                }
                 let (a, b) = self.load_scalar_ref_pair(a, b);
                 let t = self.vty(a);
                 if self.vty(b) != t {
