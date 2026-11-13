@@ -14,6 +14,16 @@ fn run(args: &[&str], cwd: &Path) -> Output {
     Command::new(exe()).args(args).current_dir(cwd).output().expect("spawn ksn")
 }
 
+/// `run` と同じだが、環境変数も渡す（`std.env.var` の検査用）。
+fn run_with_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(exe());
+    cmd.args(args).current_dir(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.output().expect("spawn ksn")
+}
+
 fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).replace("\r\n", "\n")
 }
@@ -12626,6 +12636,14 @@ fn kir_env_arg_count_arg_match_tree_walker() {
             core.check.eq(1u8, 2u8)
         }
     }
+    match std.env.var("KSN_TEST_VAR") {
+        Some(v) => {
+            std.io.print_line(v)?
+        }
+        None => {
+            std.io.print_line("none")?
+        }
+    }
     match std.env.var("KSN_ENV_DOES_NOT_EXIST_xyz") {
         Some(_s) => {
             core.check.eq(1u8, 2u8)
@@ -12637,17 +12655,22 @@ fn kir_env_arg_count_arg_match_tree_walker() {
 end t.main
 "#;
     let t = Tmp::new("kir_env_arg", src);
-    // 木走査 (`ksn run`) で arg_count/arg が期待どおりであること。
-    let o = run(&["run", "a", "b"], &t.0);
+    // 木走査 (`ksn run`) で arg_count/arg/var が期待どおりであること。
+    let o = run_with_env(&["run", "a", "b"], &t.0, &[("KSN_TEST_VAR", "hello")]);
     assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", text(&o.stdout), text(&o.stderr));
-    assert_eq!(text(&o.stdout), "a\nb\n", "tree-walker arg output");
-    // LLVM ネイティブをビルドして同じ引数で走らせ、表示が一致すること。
+    assert_eq!(text(&o.stdout), "a\nb\nhello\n", "tree-walker arg output");
+    // LLVM ネイティブをビルドして同じ引数・環境変数で走らせ、表示が一致すること。
     let b = run(&["build", "--backend", "llvm"], &t.0);
     assert_eq!(b.status.code(), Some(0), "build: {}\n{}", text(&b.stdout), text(&b.stderr));
     let native = t.0.join("target").join("debug").join("t.native");
-    let n = Command::new(&native).args(["a", "b"]).current_dir(&t.0).output().expect("spawn native");
+    let n = Command::new(&native)
+        .args(["a", "b"])
+        .current_dir(&t.0)
+        .env("KSN_TEST_VAR", "hello")
+        .output()
+        .expect("spawn native");
     assert_eq!(n.status.code(), Some(0), "native: {}\n{}", text(&n.stdout), text(&n.stderr));
-    assert_eq!(text(&n.stdout), "a\nb\n", "native arg output");
+    assert_eq!(text(&n.stdout), "a\nb\nhello\n", "native arg output");
 }
 
 #[test]
@@ -17064,12 +17087,15 @@ end t.main
 
 #[test]
 fn llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered() {
-    // 下ろせない関数 (ここでは `with` 式を持つ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
-    // (`std.env.arg_count` は段階 1 で下ろせるようになったため、`with` を使う。)
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console, io.fs] panics may
-    with mut f = std.fs.create(\"t.tmp\")? close core.mem.drop(f.close()) {
-        std.io.print_line(\"x\")
-    }
+    // 下ろせない関数 (ここではジェネリック関数 `t.generic` を呼ぶ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
+    // (`std.env.arg_count` は段階 1 で下ろせるようになったため、`with` は使わない。`with` は別担当が KIR 下ろし中。)
+    let src = "fn t.generic[T](x: T) -> T uses [] panics never
+    x
+end t.generic
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.mem.drop(t.generic(5u32))
+    std.io.print_line(\"x\")
 end t.main
 ";
     let t = Tmp::new("llvm_build_fallback", src);

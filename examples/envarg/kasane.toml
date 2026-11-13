@@ -1,7 +1,0 @@
-[package]
-name = "envarg"
-version = "0.1.0"
-edition = 1
-entry = "envarg.main"
-
-[dependencies]
