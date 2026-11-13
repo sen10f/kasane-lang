@@ -662,6 +662,9 @@ pub enum Op {
     HeapFree(VId),
     /// 添字の境界検査: `i < len` でなければ panic (文言は木走査の添字と同じ)。結果は unit。`panics may` のときだけ。
     IndexCheck { i: VId, len: VId },
+    /// panic: 文言 `msg` を出して終了コード 101 (木走査の panic と同じ文言)。`arg` があれば `: <値>` を続ける
+    /// (値は整数の 10 進。`Result::unwrap` の Err の値)。結果は unit。`panics may` のときだけ。
+    Panic { msg: String, arg: Option<VId> },
 }
 
 /// `BitCount` の種類。
@@ -1072,6 +1075,10 @@ fn fmt_inst(i: &Inst) -> String {
         Op::HeapRealloc { p, size } => format!("heap.realloc {}, {}", fmt_val(*p), fmt_val(*size)),
         Op::HeapFree(p) => format!("heap.free {}", fmt_val(*p)),
         Op::IndexCheck { i, len } => format!("index.check {}, {}", fmt_val(*i), fmt_val(*len)),
+        Op::Panic { msg, arg } => match arg {
+            Some(v) => format!("panic {} {}", quote_msg(msg), fmt_val(*v)),
+            None => format!("panic {}", quote_msg(msg)),
+        },
     };
     format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
 }
@@ -1451,8 +1458,64 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             let v = operands(2)?;
             Ok(Op::IndexCheck { i: v[0], len: v[1] })
         }
+        ("panic", []) if ty == Ty::Unit => parse_panic(rest, line),
         _ => Err(perr(line, format!("命令 {} が不明", head))),
     }
+}
+
+/// panic の文言を引用符で囲んだ形 (`"..."`)。`"` `\` と制御文字だけ書き換える (`\"` `\\` `\n` `\xHH`)。
+fn quote_msg(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            c if (c as u32) < 0x20 || c == '\x7f' => o.push_str(&format!("\\x{:02x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// `"文言"` か `"文言" %v` (`quote_msg` の逆)。
+fn parse_panic(s: &str, line: usize) -> Result<Op, String> {
+    let body = s.trim_start().strip_prefix('"').ok_or_else(|| perr(line, "panic の文言が引用符で始まらない"))?;
+    let b = body.as_bytes();
+    let mut out: Vec<u8> = vec![];
+    let mut i = 0;
+    loop {
+        let Some(&c) = b.get(i) else { return Err(perr(line, "panic の文言が閉じていない")) };
+        match c {
+            b'"' => {
+                i += 1;
+                break;
+            }
+            b'\\' => {
+                let Some(&e) = b.get(i + 1) else { return Err(perr(line, "panic の文言の書き方が不正")) };
+                match e {
+                    b'\\' | b'"' => out.push(e),
+                    b'n' => out.push(b'\n'),
+                    b'x' => {
+                        let h = body.get(i + 2..i + 4).ok_or_else(|| perr(line, "panic の \\x の書き方が不正"))?;
+                        out.push(u8::from_str_radix(h, 16).map_err(|_| perr(line, "panic の \\x の値が不正"))?);
+                        i += 2;
+                    }
+                    _ => return Err(perr(line, "panic の文言の書き方が不正")),
+                }
+                i += 2;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    let msg = String::from_utf8(out).map_err(|_| perr(line, "panic の文言が UTF-8 でない"))?;
+    let rest = body[i..].trim();
+    let arg = if rest.is_empty() { None } else { Some(parse_val(rest, line)?) };
+    Ok(Op::Panic { msg, arg })
 }
 
 /// `%p +off` (メモリの番地) を読む。
@@ -2041,6 +2104,20 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("添字の境界検査は usize の被演算子のはず".into());
                         }
                     }
+                    Op::Panic { arg, .. } => {
+                        if !f.may_panic {
+                            return Err("panics never の関数に panic".into());
+                        }
+                        if i.ty != Ty::Unit {
+                            return Err("panic の結果は unit のはず".into());
+                        }
+                        if let Some(a) = arg {
+                            let at = ty_of(*a)?;
+                            if !at.is_int() || at.bits() > 64 {
+                                return Err("panic の値は 64 ビット以下の整数のはず".into());
+                            }
+                        }
+                    }
                     Op::Call { callee, args } => {
                         let Some(g) = callees.get(callee.as_str()) else {
                             return Err(format!("呼び先 {} がモジュールにない", callee));
@@ -2122,6 +2199,7 @@ fn operands(op: &Op) -> Vec<VId> {
         Op::HeapRealloc { p, size } => vec![*p, *size],
         Op::MemStore { p, v, .. } => vec![*p, *v],
         Op::IndexCheck { i, len } => vec![*i, *len],
+        Op::Panic { arg, .. } => arg.iter().copied().collect(),
         Op::Arith { a, b, .. }
         | Op::Cmp { a, b, .. }
         | Op::Bool(_, a, b)
@@ -2241,6 +2319,37 @@ end t.mem
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_op_reads_back_with_escapes_and_a_value() {
+        // 文言の引用符・バックスラッシュ・改行・% と、値の付いた panic / 値のない panic が、書いて読んでも同じ。
+        let f = Func {
+            fqn: "t.p".into(),
+            key: "t.p".into(),
+            uses: vec![],
+            may_panic: true,
+            stack: None,
+            ret: Ty::Unit,
+            blocks: vec![Block {
+                params: vec![(0, Ty::U32)],
+                insts: vec![
+                    Inst { dst: 1, ty: Ty::Unit, op: Op::Panic { msg: "a\"b\\c\nd 100%".into(), arg: Some(0) } },
+                    Inst { dst: 2, ty: Ty::Unit, op: Op::Panic { msg: "plain".into(), arg: None } },
+                ],
+                term: Term::Ret(2),
+            }],
+        };
+        let m = Module { funcs: vec![f], aggs: vec![] };
+        let text = print_module(&m);
+        assert!(text.contains("panic \"a\\\"b\\\\c\\nd 100%\" %0"), "{}", text);
+        let back = parse_module(&text).expect("parse");
+        assert_eq!(back.funcs[0].blocks, m.funcs[0].blocks);
+        assert!(verify_module(&back).is_empty(), "{:?}", verify_module(&back));
+        // panics never の関数に panic は検査で落ちる
+        let mut never = back.clone();
+        never.funcs[0].may_panic = false;
+        assert!(!verify_module(&never).is_empty());
+    }
 
     fn sample() -> Module {
         // fib 風: b0(%0: u64) → 比較 → 分岐。wrap 付きの減算と加算を含む。

@@ -96,7 +96,7 @@ impl<'a> Lw<'a> {
     }
 
     /// 入口ブロックに `alloca` を置く。結果は `mutref<p>`。
-    fn alloca(&mut self, p: Pointee) -> VId {
+    pub(super) fn alloca(&mut self, p: Pointee) -> VId {
         let ty = Ty::Ref(true, p);
         let v = self.new_val(ty);
         self.rf.allocas.push(Inst {
@@ -154,7 +154,7 @@ impl<'a> Lw<'a> {
 
     /// アドレス `ptr` (`mutref<p>`) から参照の値を作る。`shared` なら `ref<p>` にする。
     /// 可変の参照も `ptr` そのものは返さず複製する (スロットの番号と区別するため。kir.rs の `Reborrow`)。
-    fn ref_value(&mut self, ptr: VId, p: Pointee, shared: bool) -> VId {
+    pub(super) fn ref_value(&mut self, ptr: VId, p: Pointee, shared: bool) -> VId {
         if shared {
             self.emit(Ty::Ref(false, p), Op::AsShared(ptr))
         } else {

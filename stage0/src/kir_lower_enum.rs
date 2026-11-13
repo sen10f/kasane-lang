@@ -82,7 +82,7 @@ impl<'a> Lw<'a> {
     }
 
     /// `Option` / `Result` のメソッド: `is_some` `is_none` `is_ok` `is_err` (タグを読むだけ) と `unwrap_or(d)` (タグで枝を分ける)。
-    /// `unwrap` と `expect` は panic の命令が KIR に無いので対象外 (親が「メソッド ... は段階 1 の対象外」で止める)。
+    /// `unwrap` は kir_lower_panic.rs (panic の命令で下ろす)。ここには来ない。
     fn optres_mcall(&mut self, e: &V, m: &str) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);

@@ -1008,6 +1008,38 @@ impl<'a> Fe<'a> {
                     self.label(&k);
                     Ok(())
                 }
+                Op::Panic { msg, arg } => {
+                    // 文言は `panic: <msg>` (値があれば `: %lld` / `%llu`)。`%` は書式で `%%` にする。
+                    let mut fmt = format!("panic: {}", msg.replace('%', "%%"));
+                    let mut vals = String::new();
+                    if let Some(v) = arg {
+                        let vt = *self.tys.get(v).ok_or("panic の値の型が分からない")?;
+                        if vt.bits() > 64 {
+                            return Err("panic の値が 64 ビットを超える".into());
+                        }
+                        let x = self.r(*v);
+                        let x = if vt.bits() == 64 {
+                            x
+                        } else {
+                            let ext = if vt.signed() { "sext" } else { "zext" };
+                            self.t(format!("{} i{} {} to i64", ext, vt.bits(), x))
+                        };
+                        vals = format!(", i64 {}", x);
+                        fmt.push_str(if vt.signed() { ": %lld" } else { ": %llu" });
+                    }
+                    fmt.push('\n');
+                    let g = format!("ksn.pm.{}.{}", self.fi, i.dst);
+                    self.cx.globals.push_str(&str_const(&g, &format!("{}\0", fmt)));
+                    self.n += 1;
+                    let (p, k) = (format!("p{}", self.n), format!("c{}", self.n));
+                    self.line(format!("br label %{}", p));
+                    self.label(&p);
+                    self.line(format!("call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @{}{})", g, vals));
+                    self.line("call void @exit(i32 101)".into());
+                    self.line("unreachable".into());
+                    self.label(&k);
+                    Ok(())
+                }
                 _ => Ok(()),
             };
         }
@@ -1218,7 +1250,7 @@ impl<'a> Fe<'a> {
                     self.line(format!("{} = load {}, ptr {}, align 1", d, mt, addr));
                 }
             }
-            Op::MemStore { .. } | Op::Store { .. } | Op::HeapFree(_) | Op::IndexCheck { .. } => {
+            Op::MemStore { .. } | Op::Store { .. } | Op::HeapFree(_) | Op::IndexCheck { .. } | Op::Panic { .. } => {
                 return Err("unit 以外の結果を持つ副作用命令".into())
             }
             Op::HeapAlloc(n) => {
