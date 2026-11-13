@@ -6,8 +6,95 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Mode, Module, Op, Term, Ty, TAG_BIT, VId};
+use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
 use crate::kir_scalar;
+
+// Option / Result の値の語 (設計_KIR.md 11.1)。タグは bit 64、ペイロードの語は下位 64 ビット。
+// 語の意味はペイロードの型で決まる: スカラーは値そのもの、集成体は置き場の添字、入れ子の Option / Result は
+// 全体の値 (i128) を入れた 16 バイトの項目の添字 (置き場の項目として持つ)。
+
+/// 型 `t` の値が置き場の項目を参照するか (集成体、または入れ子の Option / Result を含む)。
+fn has_heap(t: Ty) -> bool {
+    match t {
+        Ty::Agg(_) => true,
+        Ty::Opt(p) => pay_has_heap(p),
+        Ty::Res(a, e) => pay_has_heap(a) || pay_has_heap(e),
+        _ => false,
+    }
+}
+
+/// ペイロードの語が置き場の項目の添字になるか (集成体、または入れ子の Option / Result は項目を持つ)。
+fn pay_has_heap(p: Pay) -> bool {
+    matches!(p.ty(), Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..))
+}
+
+/// ペイロードの語を作る。`v` は型 `p` の値 (`Some(a)` などの被演算子)。入れ子の値は置き場に項目を積む。
+fn pay_word(p: Pay, v: i128, heap: &mut Vec<Vec<u8>>) -> i128 {
+    match p.ty() {
+        Ty::Agg(_) => v,
+        Ty::Opt(_) | Ty::Res(..) => {
+            heap.push(v.to_le_bytes().to_vec());
+            (heap.len() - 1) as i128
+        }
+        _ => payload_bits(v),
+    }
+}
+
+/// ペイロードの語 `w` (型 `t` の値) を読み直す。入れ子の項目が無い (タグが別の腕の値を読んだ) ときは 0。
+fn pay_read(t: Ty, w: i128, heap: &[Vec<u8>]) -> i128 {
+    match t {
+        Ty::Agg(_) => w,
+        Ty::Opt(_) | Ty::Res(..) => match heap.get(w as usize) {
+            Some(b) if b.len() == 16 => i128::from_le_bytes(b[..].try_into().expect("16 バイト")),
+            _ => 0,
+        },
+        _ => payload_of(t, w),
+    }
+}
+
+/// 呼び出し先が作った置き場の項目 (添字 `base` 以上) を、呼び出し元に残す形へ写す。`base` より前は呼び出し元のものなので、そのまま使う。
+/// `blobs` は添字 `base` から始まる項目、`out` は戻った後の置き場に積む項目。戻り値は新しい添字。
+fn relocate(t: Ty, v: i128, blobs: &[Vec<u8>], base: usize, out: &mut Vec<Vec<u8>>) -> i128 {
+    match t {
+        Ty::Agg(_) => place(v as usize, blobs, base, out),
+        Ty::Opt(p) => {
+            if v & TAG_BIT == 0 {
+                v
+            } else {
+                TAG_BIT | relocate_word(p.ty(), v & PAY_MASK, blobs, base, out)
+            }
+        }
+        Ty::Res(a, e) => {
+            let pt = if v & TAG_BIT != 0 { e.ty() } else { a.ty() };
+            (v & TAG_BIT) | relocate_word(pt, v & PAY_MASK, blobs, base, out)
+        }
+        _ => v,
+    }
+}
+
+fn relocate_word(t: Ty, w: i128, blobs: &[Vec<u8>], base: usize, out: &mut Vec<Vec<u8>>) -> i128 {
+    match t {
+        Ty::Agg(_) => place(w as usize, blobs, base, out),
+        Ty::Opt(_) | Ty::Res(..) => {
+            if (w as usize) < base {
+                return w;
+            }
+            let inner = i128::from_le_bytes(blobs[w as usize - base][..].try_into().expect("16 バイト"));
+            let moved = relocate(t, inner, blobs, base, out);
+            out.push(moved.to_le_bytes().to_vec());
+            (base + out.len() - 1) as i128
+        }
+        _ => w,
+    }
+}
+
+fn place(idx: usize, blobs: &[Vec<u8>], base: usize, out: &mut Vec<Vec<u8>>) -> i128 {
+    if idx < base {
+        return idx as i128;
+    }
+    out.push(blobs[idx - base].clone());
+    (base + out.len() - 1) as i128
+}
 
 /// 木走査インタプリタの呼び出し深さの上限 (`interp.rs` の `depth > 2500`)。
 const MAX_DEPTH: usize = 2500;
@@ -354,7 +441,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
         .collect();
     // 集成体の置き場: 集成体の値は、ここにバイト列として置き、値 (i128) はその添字で表す。値は不変。
     let mut heap: Vec<Vec<u8>> = vec![];
-    if matches!(m.funcs[entry].ret, Ty::Agg(_)) || m.funcs[entry].params().iter().any(|(_, t)| matches!(t, Ty::Agg(_))) {
+    if has_heap(m.funcs[entry].ret) || m.funcs[entry].params().iter().any(|(_, t)| has_heap(*t)) {
         return Err(format!("関数 {} は集成体を引数・戻り値に持つ (この入口では扱えない)", key));
     }
     let enter = |f: usize, args: &[i128], dst: Option<VId>, hbase: usize| -> Frame {
@@ -458,10 +545,25 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         BoolOp::Xor => x ^ y,
                     }
                 }
-                Op::Some(a) => TAG_BIT | payload_bits(get(&stack[top], a)),
-                Op::Ok(a) => payload_bits(get(&stack[top], a)),
-                Op::Err(a) => TAG_BIT | payload_bits(get(&stack[top], a)),
-                Op::Payload(a) => payload_of(inst.ty, get(&stack[top], a)),
+                Op::Some(a) => {
+                    let Ty::Opt(p) = inst.ty else {
+                        return Err("some の結果は Option のはず".to_string());
+                    };
+                    TAG_BIT | pay_word(p, get(&stack[top], a), &mut heap)
+                }
+                Op::Ok(a) => {
+                    let Ty::Res(t0, _) = inst.ty else {
+                        return Err("ok の結果は Result のはず".to_string());
+                    };
+                    pay_word(t0, get(&stack[top], a), &mut heap)
+                }
+                Op::Err(a) => {
+                    let Ty::Res(_, e0) = inst.ty else {
+                        return Err("err の結果は Result のはず".to_string());
+                    };
+                    TAG_BIT | pay_word(e0, get(&stack[top], a), &mut heap)
+                }
+                Op::Payload(a) => pay_read(inst.ty, get(&stack[top], a) & PAY_MASK, &heap),
                 Op::Checked { op, a, b } => checked(*op, inst.ty, get(&stack[top], a), get(&stack[top], b)),
                 Op::Call { callee, args } => {
                     if stack.len() >= MAX_DEPTH {
@@ -588,12 +690,12 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 for a in &done.allocs {
                     bm.release(*a);
                 }
-                // 戻る関数が作った集成体は捨てる。戻り値の集成体だけは、呼び出し元の置き場へ複製して残す。
-                if let Ty::Agg(_) = func.ret {
-                    let blob = heap[val as usize].clone();
-                    heap.truncate(done.hbase);
-                    heap.push(blob);
-                    val = (heap.len() - 1) as i128;
+                // 戻る関数が作った置き場の項目は捨てる。戻り値が参照する項目だけは、呼び出し元の置き場へ複製して残す。
+                if has_heap(func.ret) {
+                    let blobs = heap.split_off(done.hbase);
+                    let mut out: Vec<Vec<u8>> = vec![];
+                    val = relocate(func.ret, val, &blobs, done.hbase, &mut out);
+                    heap.extend(out);
                 } else {
                     heap.truncate(done.hbase);
                 }

@@ -2,12 +2,14 @@
 //!
 //! - 1 関数 = 1 つの単相インスタンス (`key`)。値は SSA (`%n` は 1 回だけ定義) で、制御の合流はブロック引数で渡す。
 //! - 型は整数 (`i8`..`i128`、`isize`、`u8`..`u128`、`usize`)、浮動小数 (`f32` / `f64`)、`bool`、`unit`、参照 (`ref<T>` / `mutref<T>`)、
-//!   組み込みの `Option<P>` / `Result<T, E>` (ペイロードはスカラー。設計_KIR.md 11 章)、生のアドレス `ptr` (ヒープ・フレーム・静的領域)。集成体は未対応。
+//!   組み込みの `Option<P>` / `Result<T, E>` (ペイロードはスカラー・unit・集成体・入れ子の Option / Result。設計_KIR.md 11 章)、
+//!   生のアドレス `ptr` (ヒープ・フレーム・静的領域)、集成体 (`Module::aggs`)。
 //!   値は全部 `i128` の 1 語で持つ。`u128` はビットパターン、浮動小数は IEEE のビット列 (`f32` は下位 32 ビット)。
 //! - テキスト形式は `kir 1` (設計_KIR.md 7 章 18: 版が違えば読み込みを拒否する)。
 //!   `print_module` の出力を `parse_module` で読み直すと、同じ構造になり、もう一度 `print_module` すると同じ文字列になる。
 //! - `verify_module` は SSA の一意性、型、ブロック引数の個数、効果 (trap の有無、`uses`、`panics`) を検査する。
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 /// テキスト形式の版の行 (7 章 18)。
@@ -116,10 +118,11 @@ impl Pointee {
     }
 }
 
-/// Option / Result のペイロードの型。スカラーだけ (ネストした Option や集成体は持てない)。
+/// Option / Result のペイロードの型 (設計_KIR.md 11.5)。スカラー、unit、集成体 (`Agg`)、入れ子の `Option` / `Result`。
 /// 128 ビット整数は値の枠 (下位 64 ビットと tag の bit) に入らないので持てない (`Pay::of` が `None`)。浮動小数は 64 ビット以内なので持てる。
-/// `Ty` が `Copy` のままで入れ子を作れないように、スカラーを別の列挙で持つ。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `Ty` は `Copy` を保つため、入れ子の中身は `&'static Pay` で持つ。同じ型は `intern` で 1 つにまとめる (作った箱は型の数だけ残る)。
+/// `Pay::Opt(x)` は型 `Option<x>`、`Pay::Res(t, e)` は型 `Result<t, e>` を表す (`Ty::Opt(p)` の `p` は `Option` の中の型)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Pay {
     I8,
     I16,
@@ -135,6 +138,29 @@ pub enum Pay {
     F64,
     Bool,
     Unit,
+    /// 集成体 (`Module::aggs` の添字)。
+    Agg(u32),
+    /// 型 `Option<x>` (入れ子)。
+    Opt(&'static Pay),
+    /// 型 `Result<t, e>` (入れ子)。
+    Res(&'static Pay, &'static Pay),
+}
+
+thread_local! {
+    static INTERNED: RefCell<HashSet<&'static Pay>> = RefCell::new(HashSet::new());
+}
+
+/// 入れ子の `Pay` を 1 つにまとめた参照にする。同じ値には同じ参照を返す (`Pay` の比較は値で行う)。
+fn intern(p: Pay) -> &'static Pay {
+    INTERNED.with(|s| {
+        let mut s = s.borrow_mut();
+        if let Some(r) = s.get(&p) {
+            return *r;
+        }
+        let r: &'static Pay = Box::leak(Box::new(p));
+        s.insert(r);
+        r
+    })
 }
 
 const ALL_TYS: [Ty; 17] = [
@@ -179,10 +205,13 @@ impl Pay {
             Pay::F64 => Ty::F64,
             Pay::Bool => Ty::Bool,
             Pay::Unit => Ty::Unit,
+            Pay::Agg(i) => Ty::Agg(i),
+            Pay::Opt(x) => Ty::Opt(*x),
+            Pay::Res(t, e) => Ty::Res(*t, *e),
         }
     }
 
-    /// スカラーの型なら対応する `Pay`。`Option` / `Result` / 参照は `None`。
+    /// 型なら対応する `Pay`。128 ビット整数・参照・`ptr` は `None` (値の枠に入らない、または指せない)。
     pub fn of(t: Ty) -> Option<Pay> {
         Some(match t {
             Ty::I8 => Pay::I8,
@@ -199,17 +228,32 @@ impl Pay {
             Ty::F64 => Pay::F64,
             Ty::Bool => Pay::Bool,
             Ty::Unit => Pay::Unit,
-            Ty::I128 | Ty::U128 | Ty::Ptr | Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..) | Ty::Agg(_) => return None,
+            Ty::Agg(i) => Pay::Agg(i),
+            Ty::Opt(p) => Pay::Opt(intern(p)),
+            Ty::Res(t, e) => Pay::Res(intern(t), intern(e)),
+            Ty::I128 | Ty::U128 | Ty::Ptr | Ty::Ref(..) => return None,
         })
+    }
+
+    /// 集成体の添字を `f` で写した `Pay` (入れ子の中も写す)。`prune_aggs` が添字を振り直すときに使う。
+    pub fn map_aggs(self, f: &impl Fn(u32) -> u32) -> Pay {
+        match self {
+            Pay::Agg(i) => Pay::Agg(f(i)),
+            Pay::Opt(x) => Pay::Opt(intern(x.map_aggs(f))),
+            Pay::Res(t, e) => Pay::Res(intern(t.map_aggs(f)), intern(e.map_aggs(f))),
+            p => p,
+        }
     }
 }
 
 /// ペイロードの値 (`v` は `Option` / `Result` の値全体の符号化) を、型 `t` の値に読み直す。
 /// タグは見ない。bool は 0 / 1、unit は 0、整数は下位 64 ビットを型の範囲へ写す。
+/// 集成体と入れ子の `Option` / `Result` は、語 (下位 64 ビット) が置き場の添字なので、そのまま返す (読み方は実行器が決める)。
 pub fn payload_of(t: Ty, v: i128) -> i128 {
     match t {
         Ty::Bool => v & 1,
         Ty::Unit => 0,
+        Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..) => v & PAY_MASK,
         _ => t.wrap(v & PAY_MASK),
     }
 }
@@ -273,20 +317,34 @@ impl Ty {
         }
     }
 
-    pub fn parse(s: &str) -> Option<Ty> {
-        if let Some(x) = ALL_TYS.iter().copied().find(|t| t.name() == s) {
-            return Some(x);
+    /// 集成体の添字を `f` で写した型 (`Ty::Agg` と、`Option` / `Result` の中の型)。
+    pub fn map_aggs(self, f: &impl Fn(u32) -> u32) -> Ty {
+        match self {
+            Ty::Agg(i) => Ty::Agg(f(i)),
+            Ty::Ref(m, Pointee::Agg(i)) => Ty::Ref(m, Pointee::Agg(f(i))),
+            Ty::Opt(p) => Ty::Opt(p.map_aggs(f)),
+            Ty::Res(t, e) => Ty::Res(t.map_aggs(f), e.map_aggs(f)),
+            t => t,
         }
+    }
+
+    pub fn parse(s: &str) -> Option<Ty> {
         if let Some(n) = s.strip_prefix("agg#") {
             return n.parse::<u32>().ok().map(Ty::Agg);
         }
-        let pay = |x: &str| Pay::of(ALL_TYS.iter().copied().find(|t| t.name() == x)?);
+        if let Some(x) = ALL_TYS.iter().copied().find(|t| t.name() == s) {
+            return Some(x);
+        }
         if let Some(inner) = s.strip_prefix("Option<").and_then(|r| r.strip_suffix('>')) {
-            return pay(inner).map(Ty::Opt);
+            return Pay::of(Ty::parse(inner)?).map(Ty::Opt);
         }
         if let Some(inner) = s.strip_prefix("Result<").and_then(|r| r.strip_suffix('>')) {
-            let (a, b) = inner.split_once(',')?;
-            return Some(Ty::Res(pay(a)?, pay(b)?));
+            // 入れ子の `Result<..>` の `,` では割らない (`split_top`)。
+            let parts = split_top(inner);
+            if parts.len() != 2 {
+                return None;
+            }
+            return Some(Ty::Res(Pay::of(Ty::parse(parts[0])?)?, Pay::of(Ty::parse(parts[1])?)?));
         }
         if let Some(inner) = s.strip_prefix("ref<").and_then(|r| r.strip_suffix('>')) {
             return Pointee::of(Ty::parse(inner)?).map(|p| Ty::Ref(false, p));
@@ -796,15 +854,22 @@ pub fn prune_aggs(m: &mut Module) {
     let mut used = vec![false; n];
     let mut todo: Vec<u32> = vec![];
     fn mark(t: Ty, used: &mut [bool], todo: &mut Vec<u32>) {
-        let t = match t {
-            Ty::Ref(_, Pointee::Agg(i)) => Ty::Agg(i),
-            t => t,
-        };
-        if let Ty::Agg(i) = t {
-            if !used[i as usize] {
-                used[i as usize] = true;
-                todo.push(i);
+        match t {
+            Ty::Agg(i) => {
+                if !used[i as usize] {
+                    used[i as usize] = true;
+                    todo.push(i);
+                }
             }
+            // 集成体の指す先の参照 (`ref<agg>`) も、その集成体を使っている
+            Ty::Ref(_, Pointee::Agg(i)) => mark(Ty::Agg(i), used, todo),
+            // `Option` / `Result` のペイロードに入る集成体も使われている
+            Ty::Opt(p) => mark(p.ty(), used, todo),
+            Ty::Res(t0, e0) => {
+                mark(t0.ty(), used, todo);
+                mark(e0.ty(), used, todo);
+            }
+            _ => {}
         }
     }
     for f in &m.funcs {
@@ -835,11 +900,7 @@ pub fn prune_aggs(m: &mut Module) {
             next += 1;
         }
     }
-    let remap = |t: Ty| match t {
-        Ty::Agg(i) => Ty::Agg(map[i as usize]),
-        Ty::Ref(m, Pointee::Agg(i)) => Ty::Ref(m, Pointee::Agg(map[i as usize])),
-        t => t,
-    };
+    let remap = |t: Ty| t.map_aggs(&|i: u32| map[i as usize]);
     let old = std::mem::take(&mut m.aggs);
     for (i, mut d) in old.into_iter().enumerate() {
         if !used[i] {
@@ -1620,6 +1681,11 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
     if f.blocks.is_empty() {
         return fail("ブロックがない".into());
     }
+    // 型に現れる集成体の番号 (Option / Result の中も) が型表にあるか
+    let all_tys = std::iter::once(f.ret).chain(f.blocks.iter().flat_map(|b| b.params.iter().map(|(_, t)| *t).chain(b.insts.iter().map(|i| i.ty))));
+    for t in all_tys {
+        check_agg_ids(m, t).map_err(|e| format!("{}: {}", f.key, e))?;
+    }
     let mut tys: HashMap<VId, Ty> = HashMap::new();
     let mut def = |v: VId, t: Ty| -> Result<(), String> {
         if tys.insert(v, t).is_some() {
@@ -2026,6 +2092,20 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 型の中の集成体の番号が型表 (`Module::aggs`) にあるか (`Option` / `Result` の中も見る)。
+fn check_agg_ids(m: &Module, t: Ty) -> Result<(), String> {
+    match t {
+        Ty::Agg(i) | Ty::Ref(_, Pointee::Agg(i)) if (i as usize) < m.aggs.len() => Ok(()),
+        Ty::Agg(_) | Ty::Ref(_, Pointee::Agg(_)) => Err("集成体の番号が表にない".into()),
+        Ty::Opt(p) => check_agg_ids(m, p.ty()),
+        Ty::Res(t0, e0) => {
+            check_agg_ids(m, t0.ty())?;
+            check_agg_ids(m, e0.ty())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// バイト記憶 (`mem.load` / `mem.store`) で読み書きできる型: 整数・浮動小数・bool・ptr (集成体・参照・Option は持たない)。
@@ -2491,5 +2571,44 @@ end t.c
         assert_eq!(show_value(Ty::Res(Pay::U8, Pay::Bool), payload_bits(1)), "Ok(1)");
         assert_eq!(show_value(Ty::Res(Pay::U8, Pay::Bool), TAG_BIT | 1), "Err(true)");
         assert_eq!(show_value(Ty::Res(Pay::Unit, Pay::U8), 0), "Ok(())");
+    }
+
+    #[test]
+    fn nested_and_aggregate_payload_types_read_back() {
+        // 入れ子の Option / Result と集成体のペイロードは、名前を読み直すと同じ型になる (`Result<..,..>` の `,` は深さで割る)。
+        let cases = [
+            Ty::Opt(Pay::Opt(intern(Pay::I64))),
+            Ty::Opt(Pay::Res(intern(Pay::I64), intern(Pay::Bool))),
+            Ty::Res(Pay::Res(intern(Pay::I64), intern(Pay::Bool)), Pay::U8),
+            Ty::Res(Pay::Agg(1), Pay::Opt(intern(Pay::Agg(0)))),
+            Ty::Res(Pay::Unit, Pay::Agg(2)),
+        ];
+        for t in cases {
+            let name = t.name();
+            assert_eq!(Ty::parse(&name), Some(t), "{}", name);
+        }
+        assert_eq!(Ty::Res(Pay::Res(intern(Pay::I64), intern(Pay::Bool)), Pay::U8).name(), "Result<Result<i64,bool>,u8>");
+        // 入れ子の型は `Pay` の値で比べられる (同じ型は同じ値)
+        assert_eq!(Pay::of(Ty::Opt(Pay::I64)), Some(Pay::Opt(intern(Pay::I64))));
+        assert_eq!(Pay::of(Ty::Agg(3)).and_then(|p| Some(p.ty())), Some(Ty::Agg(3)));
+        // 128 ビット整数と参照は payload にできない
+        assert_eq!(Pay::of(Ty::I128), None);
+        assert_eq!(Ty::parse("Option<i128>"), None);
+    }
+
+    #[test]
+    fn verify_rejects_an_aggregate_index_outside_the_table() {
+        // `Option<agg#5>` の 5 が型表にないなら、検査が止める (入れ子の中の番号も見る)。
+        let src = "kir 1
+
+fn t.bad key=t.bad uses=[] panics=never stack=- ret=Option<agg#5>
+  b0():
+    %0: Option<agg#5> = const.Option<agg#5> none
+    ret %0
+end t.bad
+";
+        let m = parse_module(src).expect("読める");
+        let bad = verify_module(&m);
+        assert!(bad.iter().any(|(_, msg)| msg.contains("集成体の番号が表にない")), "{:?}", bad);
     }
 }

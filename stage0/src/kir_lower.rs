@@ -76,6 +76,14 @@ fn conv(t: &Src) -> Option<Ty> {
     }
 }
 
+/// 引数・戻り値の型が対象外のときの理由。型の写し (`conv_t_why`) が理由を出せばそれ、出せなければ値渡しの所有物 (Vec / String) の型。
+fn sig_why(lw: &Lw, t: &Src) -> String {
+    match lw.conv_t_why(t) {
+        Err(why) => why,
+        Ok(_) => "値渡しの Vec / String を持つ型は未対応 (所有の移動)".to_string(),
+    }
+}
+
 fn show(t: &Src) -> String {
     match t {
         Src::Prim(s) => s.clone(),
@@ -84,6 +92,11 @@ fn show(t: &Src) -> String {
         Src::Unknown => "未確定".into(),
         Src::Var(_) => "型変数".into(),
         Src::Param(p) => format!("型パラメータ {}", p),
+        Src::Named(n, a) if a.is_empty() => n.clone(),
+        Src::Named(n, a) => format!("{}<{}>", n, a.iter().map(show).collect::<Vec<_>>().join(", ")),
+        Src::Tuple(xs) => format!("({})", xs.iter().map(show).collect::<Vec<_>>().join(", ")),
+        Src::Ref(m, x) => format!("&{}{}", if *m { "mut " } else { "" }, show(x)),
+        Src::Slice(x) => format!("[{}]", show(x)),
         other => format!("{:?}", other),
     }
 }
@@ -343,17 +356,19 @@ impl<'a> Lw<'a> {
         let body = d.body.as_ref().expect("候補は本体を持つ");
         let mut params = vec![];
         for (_, t) in &d.params {
-            match coll::sig_ty(&self, &from_v(t, &gn)) {
+            let st = from_v(t, &gn);
+            match coll::sig_ty(&self, &st) {
                 Some(x) => params.push(x),
-                None => return Err(format!("引数の型 {} は段階 1 の対象外", show(&from_v(t, &gn)))),
+                None => return Err(format!("引数の型 {} は段階 1 の対象外 ({})", show(&st), sig_why(&self, &st))),
             }
         }
         let ret = if is_nil(&d.ret) {
             Ty::Unit
         } else {
-            match coll::sig_ty(&self, &from_v(&d.ret, &gn)) {
+            let st = from_v(&d.ret, &gn);
+            match coll::sig_ty(&self, &st) {
                 Some(x) => x,
-                None => return Err(format!("戻り値の型 {} は段階 1 の対象外", show(&from_v(&d.ret, &gn)))),
+                None => return Err(format!("戻り値の型 {} は段階 1 の対象外 ({})", show(&st), sig_why(&self, &st))),
             }
         };
         self.ret = ret;
@@ -445,6 +460,7 @@ impl<'a> Lw<'a> {
             }
             "unit" => Ok(self.unit()),
             "float" => self.float_lit(e),
+            // `b'a'` は u8 の定数 (字句で値に直してある)
             "byte" => {
                 let v = parse_int(&f[1]).ok_or_else(|| format!("行 {}: バイトリテラルが扱えない", line))?;
                 Ok(self.emit(Ty::U8, Op::Const(v)))
@@ -667,6 +683,9 @@ impl<'a> Lw<'a> {
                     "wrapping_add" => Aop::Add,
                     "wrapping_sub" => Aop::Sub,
                     "wrapping_mul" => Aop::Mul,
+                    m if matches!(rt, Ty::Agg(_)) => {
+                        return self.err(line, format!("メソッド {} は段階 1 の対象外 (利用者の型のメソッド呼び出しは未対応。&mut の受け手は参照の対応が要る)", m))
+                    }
                     m => return self.err(line, format!("メソッド {} は段階 1 の対象外", m)),
                 };
                 if !rt.is_int() || args.len() != 1 {

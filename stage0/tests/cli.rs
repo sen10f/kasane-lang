@@ -9740,6 +9740,9 @@ fn kir_lower_examples_and_perf_functions_match_tree_walker() {
         ("examples/json", "json.is_hex", &["97"], "true"),
         ("examples/json", "json.is_hex", &["71"], "false"),
         ("examples/json", "json.is_hex", &["57"], "true"),
+        // バイトリテラル `b'0'` などの u8 の定数 (json.is_hex)
+        ("examples/json", "json.is_hex", &["65"], "true"),
+        ("examples/json", "json.is_hex", &["103"], "false"),
         ("perf/fib", "fib.fib", &["27"], "196418"),
         ("perf/loops", "loops.sum_to", &["1000000"], "499999500000"),
         ("perf/loops", "loops.sum_to", &["1000"], "499500"),
@@ -9930,8 +9933,9 @@ fn kir_optres_prints_tagged_types_and_reads_back() {
 }
 
 #[test]
-fn kir_optres_rejects_checked_neg_and_tuples_with_a_reason() {
-    // `checked_neg` と、`Option` の中の集成体 (タプル) は段階 1 の対象外。理由を付けて拒否する。
+fn kir_optres_rejects_checked_neg_and_std_payloads_with_a_reason() {
+    // `checked_neg` は段階 1 の対象外。`Option` の中のタプルは集成体として持てる (11.5) が、
+    // 標準ライブラリの型 (`std.io.Error`) をペイロードに持つ `Result` は未対応で、理由に型名を出す。
     let src = "fn t.neg(x: i8) -> Option<i8> uses [] panics never
     x.checked_neg()
 end t.neg
@@ -9939,14 +9943,22 @@ end t.neg
 fn t.pr(x: u8) -> Option<(u8, u8)> uses [] panics never
     Some((x, x))
 end t.pr
+
+fn t.io(x: u8) -> Result<u8, std.io.Error> uses [] panics never
+    Ok(x)
+end t.io
 ";
     let t = Tmp::new("kir_optres_reject", src);
     let o = run(&["kir", "t.neg"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     assert!(text(&o.stderr).contains("checked_neg は段階 1 の対象外"), "{}", text(&o.stderr));
     let o = run(&["kir", "t.pr"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("ret=Option<agg#"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.io"], &t.0);
     assert_eq!(o.status.code(), Some(1));
-    assert!(text(&o.stderr).contains("t.pr は未対応") && text(&o.stderr).contains("段階 1 の対象外"), "{}", text(&o.stderr));
+    let err = text(&o.stderr);
+    assert!(err.contains("t.io は未対応") && err.contains("std.io.Error は未対応"), "{}", err);
 }
 
 #[test]
@@ -9968,6 +9980,310 @@ fn kir_optres_examples_features_match_tree_walker() {
         assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
     }
+}
+
+// ---- Option / Result のペイロードに集成体・unit・入れ子を置く (設計_KIR.md 11.5) ----
+
+/// 集成体・unit・入れ子のペイロードの試験用の関数。`?` は 2 段の呼び出しを通り、`match` は構造体・列挙子の判定を含む。
+const OPTRES_AGG_SRC: &str = r#"type t.Point
+    x: i64
+    y: i64
+end t.Point
+
+enum t.Err
+    Neg(i64)
+    Zero
+end t.Err
+
+fn t.find(n: i64) -> Option<t.Point> uses [] panics never
+    if n > 0i64 {
+        Some(t.Point { x: n, y: n.wrapping_add(1i64) })
+    } else {
+        None
+    }
+end t.find
+
+fn t.sum_opt(o: Option<t.Point>) -> i64 uses [] panics never
+    match o {
+        Some(p) => p.x.wrapping_add(p.y)
+        None => 0i64
+    }
+end t.sum_opt
+
+fn t.first_x(n: i64) -> i64 uses [] panics never
+    match t.find(n) {
+        Some(t.Point { x: a, y: b }) => a
+        None => 0i64
+    }
+end t.first_x
+
+fn t.div(a: i64, b: i64) -> Result<i64, t.Err> uses [] panics may
+    if b == 0i64 {
+        return Err(t.Err.Zero)
+    }
+    if a < 0i64 {
+        return Err(t.Err.Neg(a))
+    }
+    Ok(a / b)
+end t.div
+
+fn t.check(v: i64) -> Result<(), t.Err> uses [] panics never
+    if v > 100i64 {
+        return Err(t.Err.Neg(v))
+    }
+    Ok(())
+end t.check
+
+fn t.chain(a: i64, b: i64) -> Result<i64, t.Err> uses [] panics may
+    let q = t.div(a, b)?
+    t.check(q)?
+    Ok(q.wrapping_add(1i64))
+end t.chain
+
+fn t.chain2(a: i64, b: i64) -> Result<i64, t.Err> uses [] panics may
+    let r = t.chain(a, b)?
+    Ok(r.wrapping_mul(2i64))
+end t.chain2
+
+fn t.code(a: i64, b: i64) -> i64 uses [] panics may
+    match t.chain2(a, b) {
+        Ok(v) => v
+        Err(t.Err.Zero) => -1i64
+        Err(t.Err.Neg(n)) => n
+    }
+end t.code
+
+fn t.px(n: i64) -> i64 uses [] panics may
+    t.sum_opt(t.find(n))
+end t.px
+
+fn t.nest(n: i64) -> Option<Result<i64, t.Err>> uses [] panics may
+    if n == 0i64 {
+        None
+    } else {
+        Some(t.div(100i64, n))
+    }
+end t.nest
+
+fn t.nest_val(n: i64) -> i64 uses [] panics may
+    match t.nest(n) {
+        Some(Ok(v)) => v
+        Some(Err(_)) => -1i64
+        None => -2i64
+    }
+end t.nest_val
+
+fn t.unit_val(x: i64) -> i64 uses [] panics never
+    match t.check(x) {
+        Ok(()) => 1i64
+        Err(_) => 0i64
+    }
+end t.unit_val
+
+fn t.oo(n: i64) -> Option<Option<i64>> uses [] panics never
+    if n == 0i64 {
+        None
+    } else if n == 1i64 {
+        Some(None)
+    } else {
+        Some(Some(n))
+    }
+end t.oo
+
+fn t.oo_code(n: i64) -> i64 uses [] panics never
+    match t.oo(n) {
+        Some(Some(v)) => v
+        Some(None) => -1i64
+        None => -2i64
+    }
+end t.oo_code
+
+fn t.flags(n: i64) -> i64 uses [] panics may
+    let mut c = 0i64
+    if t.find(n).is_some() {
+        c = c + 1i64
+    }
+    if t.find(n).is_none() {
+        c = c + 10i64
+    }
+    c
+end t.flags
+
+fn t.or_default(n: i64) -> i64 uses [] panics may
+    let r = t.div(10i64, n).unwrap_or(7i64)
+    r
+end t.or_default
+"#;
+
+const OPTRES_AGG_MAIN: &str = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.px(3i64), 7i64)
+    core.check.eq(t.px(0i64), 0i64)
+    core.check.eq(t.first_x(3i64), 3i64)
+    core.check.eq(t.code(10i64, 2i64), 12i64)
+    core.check.eq(t.code(10i64, 0i64), -1i64)
+    core.check.eq(t.code(-4i64, 2i64), -4i64)
+    core.check.eq(t.code(300i64, 1i64), 300i64)
+    core.check.eq(t.nest_val(4i64), 25i64)
+    core.check.eq(t.nest_val(0i64), -2i64)
+    core.check.eq(t.nest_val(-1i64), -100i64)
+    core.check.eq(t.unit_val(5i64), 1i64)
+    core.check.eq(t.unit_val(500i64), 0i64)
+    core.check.eq(t.oo_code(0i64), -2i64)
+    core.check.eq(t.oo_code(1i64), -1i64)
+    core.check.eq(t.oo_code(7i64), 7i64)
+    core.check.eq(t.flags(2i64), 1i64)
+    core.check.eq(t.flags(-2i64), 10i64)
+    core.check.eq(t.or_default(2i64), 5i64)
+    core.check.eq(t.or_default(0i64), 7i64)
+    Ok(())
+end t.main
+";
+
+#[test]
+fn kir_optres_aggregates_match_tree_walker() {
+    // 木走査 (`ksn run`) の main が通ること、参照実行器の値が木走査と同じ値であること。
+    // 入口は整数だけを引数・戻り値に持つ関数 (集成体・入れ子を持つ戻り値は入口で拒否する)。
+    let t = Tmp::new("kir_optres_agg", &format!("{}\n{}", OPTRES_AGG_SRC, OPTRES_AGG_MAIN));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("t.px", &["3"], "7"),
+        ("t.px", &["0"], "0"),
+        ("t.first_x", &["3"], "3"),
+        ("t.code", &["10", "2"], "12"),
+        ("t.code", &["10", "0"], "-1"),
+        ("t.code", &["-4", "2"], "-4"),
+        ("t.code", &["300", "1"], "300"),
+        ("t.nest_val", &["4"], "25"),
+        ("t.nest_val", &["0"], "-2"),
+        ("t.nest_val", &["-1"], "-100"),
+        ("t.unit_val", &["5"], "1"),
+        ("t.unit_val", &["500"], "0"),
+        ("t.oo_code", &["0"], "-2"),
+        ("t.oo_code", &["1"], "-1"),
+        ("t.oo_code", &["7"], "7"),
+        ("t.flags", &["2"], "1"),
+        ("t.flags", &["-2"], "10"),
+        ("t.or_default", &["2"], "5"),
+        ("t.or_default", &["0"], "7"),
+    ];
+    for (f, args, want) in cases {
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
+    }
+}
+
+#[test]
+fn kir_optres_aggregates_print_and_refuse_at_the_entry() {
+    let t = Tmp::new("kir_optres_agg_text", &format!("{}\n{}", OPTRES_AGG_SRC, OPTRES_AGG_MAIN));
+    // 入れ子と集成体の型は読み直せる形で出る (`ksn kir` は往復を確かめてから出す)
+    let o = run(&["kir", "t.oo"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("ret=Option<Option<i64>>") && out.contains("const.Option<Option<i64>> none"), "{}", out);
+    let o = run(&["kir", "t.nest"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("ret=Option<Result<i64,agg#"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.code"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("ret=i64") && text(&o.stdout).contains("= call t.chain2("), "{}", text(&o.stdout));
+    // 入口は集成体・入れ子を引数・戻り値に持てない (表示できないため)
+    let k = run(&["kir", "t.find", "--run", "3"], &t.0);
+    assert_eq!(k.status.code(), Some(2), "{}", text(&k.stderr));
+    assert!(text(&k.stderr).contains("集成体を引数・戻り値に持つ"), "{}", text(&k.stderr));
+    let k = run(&["kir", "t.oo", "--run", "7"], &t.0);
+    assert_eq!(k.status.code(), Some(2), "{}", text(&k.stderr));
+}
+
+#[test]
+fn kir_optres_of_aggregates_read_back_as_text() {
+    // 集成体を含むテキスト形式の型 (`Option<agg#n>`、`Result<agg#n,i64>`) は、読み直すと同じ型になる。
+    let t = Tmp::new("kir_optres_agg_round", &format!("{}\n{}", OPTRES_AGG_SRC, OPTRES_AGG_MAIN));
+    let o = run(&["kir", "t.chain"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("ret=Result<i64,agg#"), "{}", out);
+    assert!(out.contains("= err %") && out.contains("= ok %"), "{}", out);
+    let o = run(&["kir", "t.sum_opt"], &t.0);
+    assert!(text(&o.stdout).contains("Option<agg#"), "{}", text(&o.stdout));
+}
+
+#[test]
+fn kir_optres_unit_and_std_payloads_are_checked_by_the_verifier() {
+    // `Result<(), 利用者の型>` は作れる (unit の Ok)。`Option<std 型>` は未対応の理由を付けて拒否する。
+    let src = "type t.P
+    a: u8
+end t.P
+
+fn t.ok_unit() -> Result<(), t.P> uses [] panics never
+    Ok(())
+end t.ok_unit
+
+fn t.bad() -> Option<std.io.Error> uses [] panics never
+    None
+end t.bad
+";
+    let t = Tmp::new("kir_optres_unit", src);
+    let o = run(&["kir", "t.ok_unit"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("ret=Result<unit,agg#0>"), "{}", text(&o.stdout));
+    let o = run(&["kir", "t.bad"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("std.io.Error は未対応"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn kir_optres_slice_sub_matches_tree_walker() {
+    // `s.sub(a, b)` は `Option<&[T]>`。部分スライスの `fat` をペイロードに持ち、範囲の外は `None` (panic しない)。
+    let src = "fn t.has(s: &[u8], a: usize, b: usize) -> bool uses [] panics never
+    match s.sub(a, b) {
+        Some(_) => true
+        None => false
+    }
+end t.has
+
+fn t.bytes_has(s: &str, a: usize, b: usize) -> bool uses [] panics never
+    let v = s.as_bytes()
+    t.has(v, a, b)
+end t.bytes_has
+
+fn t.p1() -> bool uses [] panics never
+    t.bytes_has(\"hello\", 1usize, 3usize)
+end t.p1
+
+fn t.p2() -> bool uses [] panics never
+    t.bytes_has(\"hello\", 3usize, 2usize)
+end t.p2
+
+fn t.p3() -> bool uses [] panics never
+    t.bytes_has(\"hello\", 2usize, 6usize)
+end t.p3
+
+fn t.p4() -> bool uses [] panics never
+    t.bytes_has(\"hello\", 5usize, 5usize)
+end t.p4
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(t.p1(), true)
+    core.check.eq(t.p2(), false)
+    core.check.eq(t.p3(), false)
+    core.check.eq(t.p4(), true)
+    Ok(())
+end t.main
+";
+    let t = Tmp::new("kir_optres_sub", src);
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker\n{}", text(&run(&["run"], &t.0).stderr));
+    for (f, want) in [("t.p1", "true"), ("t.p2", "false"), ("t.p3", "false"), ("t.p4", "true")] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+    // 戻り値の `Option<&[u8]>` は表示できる形で出る (`fat` の集成体の番号を含む)
+    let o = run(&["kir", "t.has"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
 }
 
 // ---- 型引数に線形を含む型の束縛 (4.4): `Option` / `Result` / ジェネリック構造体 ----
@@ -11991,7 +12307,8 @@ fn kir_agg_refs_reports_unsupported_references_with_a_reason() {
     let cases: &[(&str, &str, &str)] = &[
         ("fn t.f(e: &std.io.Error) -> u8 uses [] panics never\n    let _t = e\n    0u8\nend t.f\n", "t.f", "引数の型"),
         ("fn t.f(v: alloc.vec.Vec<u8, std.alloc.System>) -> usize uses [] panics never\n    v.len()\nend t.f\n", "t.f", "引数の型"),
-        ("fn t.f(s: &[u8]) -> Option<&[u8]> uses [] panics never\n    s.sub(0usize, 1usize)\nend t.f\n", "t.f", "戻り値の型"),
+        // 要素が集成体のスライスは `fat` の対象外 (要素の大きさが要る。`Option<&[u8]>` は対象になった)
+        ("type t.P\n    a: u8\nend t.P\n\nfn t.f(s: &[t.P]) -> usize uses [] panics never\n    let _t = s\n    0usize\nend t.f\n", "t.f", "引数の型"),
     ];
     for (i, (src, f, why)) in cases.iter().enumerate() {
         let src = format!("{}\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n", src);

@@ -69,12 +69,62 @@ impl<'a> Lw<'a> {
         None
     }
 
-    /// `e.checked_*(b)` (受け手が式)。他のメソッドは `None` で、親の処理に任せる。
+    /// `e.checked_*(b)` (受け手が式)、`e.is_some()` などの Option / Result のメソッド。他のメソッドは `None` で、親の処理に任せる。
     pub(super) fn builtin_mcall(&mut self, e: &V) -> Option<LR<Option<VId>>> {
-        if !st(&nf(e)[1]).starts_with("checked_") {
-            return None;
+        let m = st(&nf(e)[1]);
+        if m.starts_with("checked_") {
+            return Some(self.checked_mcall(e));
         }
-        Some(self.checked_mcall(e))
+        if matches!(m.as_str(), "is_some" | "is_none" | "is_ok" | "is_err" | "unwrap_or") {
+            return Some(self.optres_mcall(e, &m));
+        }
+        None
+    }
+
+    /// `Option` / `Result` のメソッド: `is_some` `is_none` `is_ok` `is_err` (タグを読むだけ) と `unwrap_or(d)` (タグで枝を分ける)。
+    /// `unwrap` と `expect` は panic の命令が KIR に無いので対象外 (親が「メソッド ... は段階 1 の対象外」で止める)。
+    fn optres_mcall(&mut self, e: &V, m: &str) -> LR<Option<VId>> {
+        let f = nf(e);
+        let line = nline(e);
+        let args = items(&f[2]).to_vec();
+        let Some(recv) = self.expr(&f[0])? else { return Ok(None) };
+        let rt = self.vty(recv);
+        let want_args = if m == "unwrap_or" { 1 } else { 0 };
+        if args.len() != want_args {
+            return self.err(line, format!("メソッド {} の引数は {} 個のはず", m, want_args));
+        }
+        // タグの値 (Some / Err か)。Option は Some、Result は Err が 1 (`Op::Tag`)。
+        let tag = match rt {
+            Ty::Opt(_) | Ty::Res(..) => self.emit(Ty::Bool, Op::Tag(recv)),
+            _ => return self.err(line, format!("メソッド {} は型 {} に対して段階 1 の対象外", m, rt.name())),
+        };
+        let is_opt = matches!(rt, Ty::Opt(_));
+        let pay_ty = match (rt, m) {
+            (Ty::Opt(_), "is_some") => return Ok(Some(tag)),
+            (Ty::Opt(_), "is_none") => return Ok(Some(self.emit(Ty::Bool, Op::Not(tag)))),
+            (Ty::Res(..), "is_err") => return Ok(Some(tag)),
+            (Ty::Res(..), "is_ok") => return Ok(Some(self.emit(Ty::Bool, Op::Not(tag)))),
+            (Ty::Opt(p), "unwrap_or") => p.ty(),
+            (Ty::Res(t0, _), "unwrap_or") => t0.ty(),
+            _ => return self.err(line, format!("メソッド {} は型 {} に対して段階 1 の対象外", m, rt.name())),
+        };
+        // unwrap_or: 値を持つ枝 (Some、または Ok) はペイロードを読み、それ以外は既定値 d を取る。
+        let Some(d) = self.expr(&args[0])? else { return Ok(None) };
+        if self.vty(d) != pay_ty {
+            return self.err(line, format!("unwrap_or の既定値の型が {} と違う", pay_ty.name()));
+        }
+        let good = if is_opt { tag } else { self.emit(Ty::Bool, Op::Not(tag)) };
+        let (yes, _) = self.new_block(&[]);
+        let (no, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[pay_ty]);
+        self.branch(good, (yes, vec![]), (no, vec![]));
+        self.cur = Some(yes);
+        let pv = self.emit(pay_ty, Op::Payload(recv));
+        self.goto(join, vec![pv]);
+        self.cur = Some(no);
+        self.goto(join, vec![d]);
+        self.cur = Some(join);
+        Ok(Some(jp[0]))
     }
 
     fn ctor(&mut self, e: &V, name: &str) -> LR<Option<VId>> {
@@ -137,7 +187,7 @@ impl<'a> Lw<'a> {
         let line = nline(e);
         let res: Option<Ty> = match self.src_ty(e)? {
             Src::Never => None,
-            t => Some(conv(&t).ok_or_else(|| format!("行 {}: match の型 {} は段階 1 の対象外", line, show(&t)))?),
+            t => Some(self.conv_t(&t).ok_or_else(|| format!("行 {}: match の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
         let Some(s) = self.expr(&f[0])? else { return Ok(None) };
         let sty = self.vty(s);
@@ -194,8 +244,12 @@ impl<'a> Lw<'a> {
 
     /// パターン `p` の判定。値 `v` (型 `t`) について bool の値を返し、束縛を現在のスコープに入れる。
     /// 判定と束縛の値は今のブロックで先に計算する (タグを見ずにペイロードを読んでも害はない)。
-    fn pat_test(&mut self, p: &V, v: VId, t: Ty) -> LR<VId> {
+    pub(super) fn pat_test(&mut self, p: &V, v: VId, t: Ty) -> LR<VId> {
         let line = nline(p);
+        // 集成体の型のパターン (列挙子・タプル・構造体) は集成体の判定に任せる。束縛だけは下の `PBind` で作る。
+        if matches!(t, Ty::Agg(_)) && !matches!(nname(p), "PWild" | "PBind") {
+            return self.agg_pat_test(p, v, t);
+        }
         match nname(p) {
             "PWild" => Ok(self.emit(Ty::Bool, Op::Const(1))),
             "PBind" => {
@@ -207,7 +261,7 @@ impl<'a> Lw<'a> {
                 let lf = nf(&nf(p)[0]).to_vec();
                 match st(&lf[0]).as_str() {
                     "unit" if t == Ty::Unit => Ok(self.emit(Ty::Bool, Op::Const(1))),
-                    "int" if t.is_int() => {
+                    "int" | "byte" if t.is_int() => {
                         let x = parse_int(&lf[1]).ok_or_else(|| format!("行 {}: 整数パターンが扱えない", line))?;
                         if x < t.min() || x > t.max() {
                             return self.err(line, format!("整数パターンが {} の範囲にない", t.name()));

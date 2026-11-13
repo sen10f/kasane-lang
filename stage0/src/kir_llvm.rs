@@ -3,8 +3,9 @@
 //! Rust の LLVM 束縛は使わず、外部の `clang` が読むテキストだけを作る。意味は参照実行器 `kir_exec.rs` と同じにする。
 //!
 //! - 値の写像は `lty` / `mem_ty` の 1 か所にまとめる。整数 `iN`、`bool` は `i1` (メモリ上は `i8`)、`unit` は `i8` の 0、
-//!   `f32` / `f64` は `float` / `double`、`ptr` と参照は `ptr`、`Option` / `Result` は `{ i1, i64 }` (タグとペイロードの 64 ビット)、
-//!   集成体は大きさ (バイト) × 8 ビットの整数 `iN` (フィールドは `Module::aggs` のオフセットどおりのビット位置に置く)。
+//!   `f32` / `f64` は `float` / `double`、`ptr` と参照は `ptr`、
+//!   集成体は大きさ (バイト) × 8 ビットの整数 `iN` (フィールドは `Module::aggs` のオフセットどおりのビット位置に置く)、
+//!   `Option` / `Result` は整数 `iN` (N = 1 + 枠。タグは最上位のビット、枠は 64 ビット以上でペイロードのどれも入る幅。設計_KIR.md 11.6)。
 //! - panic は stderr に `panic: <文言>` を出して終了コード 101。呼び出し深さは大域の計数で数え、
 //!   参照実行器と同じ条件 (呼び出し元の深さが 2500 以上) で `stack overflow` と終了コード 102。
 //! - 浮動小数の超越関数は `fmath` の `Ops` を LLVM IR の命令列に写した内部関数 (`@ksn.m.*`) を呼ぶ。libm は使わない
@@ -26,14 +27,46 @@ const MAX_DEPTH: u32 = 2500;
 
 type R<T> = Result<T, String>;
 
-/// `Option` / `Result` の LLVM の型 (タグとペイロード)。ペイロードの詰め方は `pay_to_i64` / `i64_to_pay` だけが知っている。
-const ENUM_TY: &str = "{ i1, i64 }";
-
-// ---------------------------------------------------------------- 型の写像 (ここだけ)
-
 fn agg_bits(aggs: &[AggDef], i: u32) -> u32 {
     aggs[i as usize].size.max(1) * 8
 }
+
+/// 値 `t` を整数として表すときの幅 (ペイロードの枠に入る大きさ)。単位型は 0 (枠に置かない)、`bool` は 1、
+/// 集成体は `agg_bits`、`Option` / `Result` は タグを含む幅 (`1 + 枠`)。
+fn vbits(aggs: &[AggDef], t: Ty) -> u32 {
+    match t {
+        Ty::Unit => 0,
+        Ty::Bool => 1,
+        Ty::F32 => 32,
+        Ty::F64 | Ty::Ptr | Ty::Ref(..) => 64,
+        Ty::Agg(i) => agg_bits(aggs, i),
+        Ty::Opt(_) | Ty::Res(..) => 1 + slot_bits(aggs, t),
+        t => t.bits(),
+    }
+}
+
+/// `Option` / `Result` の枠 (ペイロードの語の幅)。64 ビット以上で、ペイロードのどれも入る幅。
+/// 枠の上にタグを 1 ビット置く (`Option` は Some = 1、`Result` は Err = 1)。
+fn slot_bits(aggs: &[AggDef], t: Ty) -> u32 {
+    let pays: Vec<Ty> = match t {
+        Ty::Opt(p) => vec![p.ty()],
+        Ty::Res(a, e) => vec![a.ty(), e.ty()],
+        _ => vec![],
+    };
+    pays.into_iter().map(|p| vbits(aggs, p)).max().unwrap_or(0).max(64)
+}
+
+/// 集成体 (フィールドや引数に入る値) を含むか。`Option<Point>` や `Result<i64, E>` (E が集成体) が対象。
+fn has_agg(t: Ty) -> bool {
+    match t {
+        Ty::Agg(_) => true,
+        Ty::Opt(p) => has_agg(p.ty()),
+        Ty::Res(a, e) => has_agg(a.ty()) || has_agg(e.ty()),
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------- 型の写像 (ここだけ)
 
 /// SSA の値の LLVM の型。
 fn lty(aggs: &[AggDef], t: Ty) -> String {
@@ -47,7 +80,7 @@ fn lty(aggs: &[AggDef], t: Ty) -> String {
         Ty::F64 => "double".into(),
         Ty::Bool => "i1".into(),
         Ty::Ptr | Ty::Ref(..) => "ptr".into(),
-        Ty::Opt(_) | Ty::Res(..) => ENUM_TY.into(),
+        Ty::Opt(_) | Ty::Res(..) => format!("i{}", 1 + slot_bits(aggs, t)),
         Ty::Agg(i) => format!("i{}", agg_bits(aggs, i)),
     }
 }
@@ -229,7 +262,8 @@ pub fn emit(m: &Module, entry: &str) -> R<String> {
 // ---------------------------------------------------------------- 入口 (main)
 
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
-    let bad = |t: Ty| matches!(t, Ty::Ptr | Ty::Ref(..) | Ty::Agg(_));
+    // 入口は語 1 つ (128 ビット) で受け渡しするので、枠が 64 ビットの Option / Result と整数・bool・浮動小数だけ扱う。
+    let bad = |t: Ty| matches!(t, Ty::Ptr | Ty::Ref(..) | Ty::Agg(_)) || (matches!(t, Ty::Opt(_) | Ty::Res(..)) && (has_agg(t) || slot_bits(aggs, t) > 64));
     if f.params().iter().any(|(_, t)| bad(*t)) || bad(f.ret) {
         return Err(format!("関数 {} は集成体・参照・ptr を引数か戻り値に持つ (この入口では扱えない)", f.key));
     }
@@ -257,9 +291,8 @@ fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
             Ty::Unit => s.push_str(&format!("  {v} = trunc i128 {w} to i8\n")),
             Ty::F32 => s.push_str(&format!("  %a{j}b = trunc i128 {w} to i32\n  {v} = bitcast i32 %a{j}b to float\n")),
             Ty::F64 => s.push_str(&format!("  %a{j}b = trunc i128 {w} to i64\n  {v} = bitcast i64 %a{j}b to double\n")),
-            Ty::Opt(_) | Ty::Res(..) => s.push_str(&format!(
-                "  %a{j}t0 = lshr i128 {w}, 64\n  %a{j}t = trunc i128 %a{j}t0 to i1\n  %a{j}p = trunc i128 {w} to i64\n  %a{j}e = insertvalue {ENUM_TY} zeroinitializer, i1 %a{j}t, 0\n  {v} = insertvalue {ENUM_TY} %a{j}e, i64 %a{j}p, 1\n"
-            )),
+            // 枠が 64 ビットなら、語の 128 ビットの下位 65 ビットが (タグ, 枠) と一致する (タグは bit 64)。
+            Ty::Opt(_) | Ty::Res(..) => s.push_str(&format!("  {v} = trunc i128 {w} to {}\n", lty(aggs, *t))),
             Ty::Ptr | Ty::Ref(..) | Ty::Agg(_) => unreachable!(),
         }
         args.push(format!("{} {}", lty(aggs, *t), v));
@@ -274,9 +307,7 @@ fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
         Ty::Unit => s.push_str(&format!("  {e} = add i128 0, 0\n")),
         Ty::F32 => s.push_str(&format!("  %rb = bitcast float %r to i32\n  {e} = zext i32 %rb to i128\n")),
         Ty::F64 => s.push_str(&format!("  %rb = bitcast double %r to i64\n  {e} = zext i64 %rb to i128\n")),
-        Ty::Opt(_) | Ty::Res(..) => s.push_str(&format!(
-            "  %rt = extractvalue {ENUM_TY} %r, 0\n  %rp = extractvalue {ENUM_TY} %r, 1\n  %rt1 = zext i1 %rt to i128\n  %rt2 = shl i128 %rt1, 64\n  %rp1 = zext i64 %rp to i128\n  {e} = or i128 %rt2, %rp1\n"
-        )),
+        Ty::Opt(_) | Ty::Res(..) => s.push_str(&format!("  {e} = zext {rt} %r to i128\n")),
         Ty::Ptr | Ty::Ref(..) | Ty::Agg(_) => unreachable!(),
     }
     s.push_str(
@@ -539,46 +570,51 @@ impl<'a> Fe<'a> {
 
     // ---- Option / Result のペイロード
 
-    /// ペイロード (型 `t`) を 64 ビットの語に詰める (符号付きは符号拡張、それ以外はゼロ拡張)。
-    fn pay_to_i64(&mut self, t: Ty, v: &str) -> R<String> {
-        Ok(match t {
-            Ty::Unit => "0".into(),
-            Ty::Bool => self.t(format!("zext i1 {} to i64", v)),
+    /// ペイロード (型 `t`、値 `v`) を枠 `s` ビットの整数にする (設計_KIR.md 11.6)。
+    /// 符号付き整数は符号拡張 (参照実行器の語と同じ)、その他の整数・集成体・入れ子はゼロ拡張、浮動小数と参照はビット列、単位型は 0。
+    fn pay_to_slot(&mut self, t: Ty, v: &str, s: u32) -> R<String> {
+        let w = vbits(self.aggs, t);
+        if w == 0 {
+            return Ok("0".into());
+        }
+        let x = match t {
+            Ty::F32 => self.t(format!("bitcast float {} to i32", v)),
             Ty::F64 => self.t(format!("bitcast double {} to i64", v)),
-            Ty::F32 => {
-                let b = self.t(format!("bitcast float {} to i32", v));
-                self.t(format!("zext i32 {} to i64", b))
-            }
-            t if t.is_int() && t.bits() <= 64 => {
-                let d = self.tmp();
-                self.int_cast(&d, v, t.bits(), 64, t.signed());
-                d
-            }
-            t => return Err(format!("Option / Result のペイロードに {} は置けない", t.name())),
-        })
+            Ty::Ptr | Ty::Ref(..) => self.t(format!("ptrtoint ptr {} to i64", v)),
+            _ => v.to_string(),
+        };
+        if w > s {
+            return Err(format!("Option / Result の枠 {} ビットに {} が入らない", s, t.name()));
+        }
+        if w == s {
+            return Ok(x);
+        }
+        let op = if t.is_int() && t.signed() { "sext" } else { "zext" };
+        Ok(self.t(format!("{} i{} {} to i{}", op, w, x, s)))
     }
 
-    fn i64_to_pay(&mut self, t: Ty, v: &str) -> R<String> {
-        Ok(match t {
-            Ty::Unit => "0".into(),
-            Ty::Bool => self.t(format!("trunc i64 {} to i1", v)),
-            Ty::F64 => self.t(format!("bitcast i64 {} to double", v)),
-            Ty::F32 => {
-                let b = self.t(format!("trunc i64 {} to i32", v));
-                self.t(format!("bitcast i32 {} to float", b))
-            }
-            t if t.is_int() && t.bits() <= 64 => {
-                let d = self.tmp();
-                self.int_cast(&d, v, 64, t.bits(), false);
-                d
-            }
-            t => return Err(format!("Option / Result のペイロードに {} は置けない", t.name())),
-        })
+    /// 枠 `s` ビットの語 `w` から、型 `t` の値を読む (`pay_to_slot` の逆)。単位型は 0。
+    fn slot_to_pay(&mut self, t: Ty, w: &str, s: u32) -> String {
+        let n = vbits(self.aggs, t);
+        if n == 0 {
+            return "0".into();
+        }
+        let x = if n == s { w.to_string() } else { self.t(format!("trunc i{} {} to i{}", s, w, n)) };
+        match t {
+            Ty::F32 => self.t(format!("bitcast i32 {} to float", x)),
+            Ty::F64 => self.t(format!("bitcast i64 {} to double", x)),
+            Ty::Ptr | Ty::Ref(..) => self.t(format!("inttoptr i64 {} to ptr", x)),
+            _ => x,
+        }
     }
 
-    fn pack(&mut self, dst: &str, tag: &str, pay: &str) {
-        let a = self.t(format!("insertvalue {} zeroinitializer, i1 {}, 0", ENUM_TY, tag));
-        self.line(format!("{} = insertvalue {} {}, i64 {}, 1", dst, ENUM_TY, a, pay));
+    /// `Option` / `Result` の値 (幅 `s + 1`): 枠 `pay` (幅 `s`) と、タグ `tag` (i1) を最上位に置く。
+    fn pack(&mut self, dst: &str, s: u32, tag: &str, pay: &str) {
+        let n = s + 1;
+        let z = self.t(format!("zext i{} {} to i{}", s, pay, n));
+        let tg = self.t(format!("zext i1 {} to i{}", tag, n));
+        let top = self.t(format!("shl i{} {}, {}", n, tg, s));
+        self.line(format!("{} = or i{} {}, {}", dst, n, z, top));
     }
 
     // ---- 集成体 (大きさ × 8 ビットの整数)
@@ -756,9 +792,10 @@ impl<'a> Fe<'a> {
                 (r, ok)
             }
         };
-        let pay = self.pay_to_i64(pt, &res)?;
+        // 整数の結果 (枠は 64 ビット)。溢れや 0 除算のときは枠を 0 にする。
+        let pay = self.pay_to_slot(pt, &res, 64)?;
         let pay0 = self.t(format!("select i1 {}, i64 {}, i64 0", ok, pay));
-        self.pack(&format!("%v{}", i.dst), &ok, &pay0);
+        self.pack(&format!("%v{}", i.dst), 64, &ok, &pay0);
         Ok(())
     }
 
@@ -1110,8 +1147,11 @@ impl<'a> Fe<'a> {
                     self.mov(&d, "i32", &x);
                 }
                 _ => {
+                    // Option / Result: タグは最上位の 1 ビット (枠の直上)
+                    let s = slot_bits(aggs, self.ty(*a));
                     let av = self.r(*a);
-                    self.line(format!("{} = extractvalue {} {}, 0", d, ENUM_TY, av));
+                    let sh = self.t(format!("lshr i{} {}, {}", s + 1, av, s));
+                    self.line(format!("{} = trunc i{} {} to i1", d, s + 1, sh));
                 }
             },
             Op::Alloca => return Err("alloca は関数の本体の組み立てで出す".into()),
@@ -1136,15 +1176,18 @@ impl<'a> Fe<'a> {
                 self.line(format!("{} = getelementptr i8, ptr {}, i64 {}", d, pv, off));
             }
             Op::Some(a) | Op::Ok(a) | Op::Err(a) => {
+                let s = slot_bits(aggs, i.ty);
                 let v = self.r(*a);
-                let pay = self.pay_to_i64(self.ty(*a), &v)?;
+                let pay = self.pay_to_slot(self.ty(*a), &v, s)?;
                 let tag = if matches!(i.op, Op::Ok(_)) { "false" } else { "true" };
-                self.pack(&d, tag, &pay);
+                self.pack(&d, s, tag, &pay);
             }
             Op::Payload(a) => {
+                // タグは見ない。枠の下位 s ビットを、型 `i.ty` の値として読む。
+                let s = slot_bits(aggs, self.ty(*a));
                 let av = self.r(*a);
-                let raw = self.t(format!("extractvalue {} {}, 1", ENUM_TY, av));
-                let v = self.i64_to_pay(i.ty, &raw)?;
+                let w = self.t(format!("trunc i{} {} to i{}", s + 1, av, s));
+                let v = self.slot_to_pay(i.ty, &w, s);
                 let t = self.lt(i.ty);
                 self.mov(&d, &t, &v);
             }
@@ -1234,7 +1277,7 @@ impl<'a> Fe<'a> {
                         Ty::Bool => (if *v != 0 { "true" } else { "false" }).to_string(),
                         Ty::F32 | Ty::F64 => float_lit(i.ty, *v),
                         Ty::Ptr => "null".into(),
-                        Ty::Opt(_) => "zeroinitializer".into(),
+                        Ty::Opt(_) => "0".into(),
                         t => int_lit(t, *v),
                     };
                     self.lit.insert(i.dst, s);
