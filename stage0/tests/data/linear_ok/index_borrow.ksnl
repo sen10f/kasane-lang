@@ -1,0 +1,7 @@
+fn t.main() -> () uses [] panics may
+    let mut a = [1u8, 2u8]
+    let r = &a[0usize]
+    core.mem.drop(r)
+    let m = &mut a[1usize]
+    core.mem.drop(m)
+end t.main

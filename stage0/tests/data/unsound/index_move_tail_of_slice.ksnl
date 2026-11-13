@@ -1,0 +1,7 @@
+// expect: E3002
+fn t.take(v: &[alloc.string.String], i: usize) -> alloc.string.String uses [] panics may
+    v[i]
+end t.take
+
+fn t.main() -> () uses [] panics never
+end t.main
