@@ -72,8 +72,6 @@ pub(crate) struct CollCx {
     /// 固定長配列への参照のスロット → 要素数 N (`&[T; N]` / `&mut [T; N]` のパラメータと、
     /// アドレスを取られた配列の局所変数)。長さは型から分かるので定数として扱う。
     pub(crate) arr_len: BTreeMap<usize, u32>,
-    /// `ptr` の値 → その配列の要素数 N (`&[T; N]` を `&[T]` に調整するとき fat の len に使う)。
-    pub(crate) ptr_len: BTreeMap<VId, u32>,
     /// 所有する値 (スコープの番号, 所有物) の登録順。
     pub(crate) owned: Vec<(usize, Owned)>,
     /// 関数の入口で確保する `alloca` (ブロック 0 の先頭に置く)。
@@ -1806,6 +1804,11 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     if let Some(s) = local_slot(lw, it) {
         let seq = match lw.coll.kinds.get(&s).cloned() {
             Some(Kind::Vec(Some(elem))) => Some((Seq::Hdr(lw.slots[s].0), elem)),
+            // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
+                let n = lw.coll.arr_len[&s];
+                Some((Seq::Ptr(lw.slots[s].0, n), elem))
+            }
             Some(Kind::Slice(Some(elem))) => Some((Seq::Fat(lw.slots[s].0), elem)),
             _ => None,
         };
