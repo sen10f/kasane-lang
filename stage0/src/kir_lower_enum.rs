@@ -58,6 +58,23 @@ impl<'a> Lw<'a> {
         if segs.len() == 1 && matches!(segs[0].as_str(), "Some" | "Ok" | "Err") {
             return Some(self.ctor(e, &segs[0]));
         }
+        if segs.len() == 2 && matches!(segs[1].as_str(), "is_some" | "is_none" | "is_ok" | "is_err" | "unwrap_or") {
+            if let Some(s) = self.lookup(&segs[0]) {
+                let recv = super::coll::path_peek(self, s);
+                let local = super::coll::val_slot_of(self, s);
+                let args = items(&f[1]).to_vec();
+                if matches!(self.vty(recv), Ty::Opt(_) | Ty::Res(..)) {
+                    return Some(self.optres_on(e, recv, local, &segs[1], &args));
+                }
+            }
+        }
+        if segs.len() == 2 && segs[1] == "map_err" {
+            if let Some(s) = self.lookup(&segs[0]) {
+                let recv = super::coll::path_read(self, s);
+                let args = items(&f[1]).to_vec();
+                return Some(self.map_err(e, recv, &args));
+            }
+        }
         if segs.len() == 2 && checked_op(&segs[1]).is_some() {
             if let Some(s) = self.lookup(&segs[0]) {
                 // 参照を取られた局所は `load` を通して値を読む (`read_slot`)。
@@ -75,6 +92,15 @@ impl<'a> Lw<'a> {
         if m.starts_with("checked_") {
             return Some(self.checked_mcall(e));
         }
+        if m == "map_err" {
+            let f = nf(e);
+            let args = items(&f[2]).to_vec();
+            return Some(match self.expr(&f[0]) {
+                Ok(Some(recv)) => self.map_err(e, recv, &args),
+                Ok(None) => Ok(None),
+                Err(x) => Err(x),
+            });
+        }
         if matches!(m.as_str(), "is_some" | "is_none" | "is_ok" | "is_err" | "unwrap_or") {
             return Some(self.optres_mcall(e, &m));
         }
@@ -85,9 +111,15 @@ impl<'a> Lw<'a> {
     /// `unwrap` は kir_lower_panic.rs (panic の命令で下ろす)。ここには来ない。
     fn optres_mcall(&mut self, e: &V, m: &str) -> LR<Option<VId>> {
         let f = nf(e);
-        let line = nline(e);
         let args = items(&f[2]).to_vec();
-        let Some(recv) = self.expr(&f[0])? else { return Ok(None) };
+        let Some(recv) = self.expr_peek(&f[0])? else { return Ok(None) };
+        let local = super::coll::val_slot(self, &f[0]).is_some();
+        self.optres_on(e, recv, local, m, &args)
+    }
+
+    /// 値 `recv` (局所変数なら `local`) に対する `Option` / `Result` のメソッド。
+    fn optres_on(&mut self, e: &V, recv: VId, local: bool, m: &str, args: &[V]) -> LR<Option<VId>> {
+        let line = nline(e);
         let rt = self.vty(recv);
         let want_args = if m == "unwrap_or" { 1 } else { 0 };
         if args.len() != want_args {
@@ -99,6 +131,15 @@ impl<'a> Lw<'a> {
             _ => return self.err(line, format!("メソッド {} は型 {} に対して段階 1 の対象外", m, rt.name())),
         };
         let is_opt = matches!(rt, Ty::Opt(_));
+        if super::coll::owns(self, rt) {
+            if m == "unwrap_or" {
+                return self.err(line, "所有物を持つ Option / Result の unwrap_or は段階 1 の対象外 (捨てる側の解放が要る)");
+            }
+            // 一時の値は、タグを読んだ後で解放する (局所変数は移さず、スコープの終わりに解放する)。
+            if !local {
+                super::coll::drop_value(self, recv, rt);
+            }
+        }
         let pay_ty = match (rt, m) {
             (Ty::Opt(_), "is_some") => return Ok(Some(tag)),
             (Ty::Opt(_), "is_none") => return Ok(Some(self.emit(Ty::Bool, Op::Not(tag)))),
@@ -123,6 +164,41 @@ impl<'a> Lw<'a> {
         self.goto(join, vec![pv]);
         self.cur = Some(no);
         self.goto(join, vec![d]);
+        self.cur = Some(join);
+        Ok(Some(jp[0]))
+    }
+
+    /// `r.map_err(f)` (`f` は捕獲のないクロージャか関数の項目): `Err(x)` は `Err(f(x))`、`Ok(t)` はそのまま。
+    fn map_err(&mut self, e: &V, recv: VId, args: &[V]) -> LR<Option<VId>> {
+        let line = nline(e);
+        if args.len() != 1 {
+            return self.err(line, "map_err の引数は 1 つのはず");
+        }
+        let rt = self.ty_of(e)?;
+        let (Ty::Res(t0, e0), Ty::Res(t1, e1)) = (self.vty(recv), rt) else {
+            return self.err(line, "map_err の受け手と結果が Result でない");
+        };
+        if t0 != t1 {
+            return self.err(line, "map_err で Ok の型が変わっている");
+        }
+        let (key, fargs, fret) = super::coll::callable(self, &args[0])?;
+        if fargs != [e0.ty()] || fret != e1.ty() {
+            return self.err(line, "map_err の関数の型が Result の E と合わない");
+        }
+        let tag = self.emit(Ty::Bool, Op::Tag(recv));
+        let (errb, _) = self.new_block(&[]);
+        let (okb, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[rt]);
+        self.branch(tag, (errb, vec![]), (okb, vec![]));
+        self.cur = Some(errb);
+        let ep = self.emit(e0.ty(), Op::Payload(recv));
+        let r = self.emit(fret, Op::Call { callee: key, args: vec![ep] });
+        let er = self.emit(rt, Op::Err(r));
+        self.goto(join, vec![er]);
+        self.cur = Some(okb);
+        let tv = self.emit(t0.ty(), Op::Payload(recv));
+        let ok = self.emit(rt, Op::Ok(tv));
+        self.goto(join, vec![ok]);
         self.cur = Some(join);
         Ok(Some(jp[0]))
     }
@@ -189,9 +265,13 @@ impl<'a> Lw<'a> {
             Src::Never => None,
             t => Some(self.conv_t(&t).ok_or_else(|| format!("行 {}: match の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
-        let Some(s) = self.expr(&f[0])? else { return Ok(None) };
+        let Some(s) = self.expr_peek(&f[0])? else { return Ok(None) };
         let sty = self.vty(s);
         let arms = items(&f[1]);
+        let pats: Vec<&V> = arms.iter().map(|a| &items(a)[0]).collect();
+        let sc = super::coll::scrut_begin(self, &f[0], s, &pats)?;
+        let saved_src = self.coll.scrut_src.take();
+        self.coll.scrut_src = self.src_ty(&f[0]).ok().map(|t| (sty, t));
         let bodies: Vec<&V> = arms.iter().map(|a| &items(a)[1]).collect();
         let slots = self.assigned(&bodies);
         let slot_tys: Vec<Ty> = slots.iter().map(|x| self.slots[*x].1).collect();
@@ -218,18 +298,23 @@ impl<'a> Lw<'a> {
                 test = nb;
             }
             self.cur = Some(bb);
+            super::coll::scrut_arm(self, &sc, i, s);
             if let Some(v) = self.expr(body)? {
                 if let Some(t) = res {
                     if self.vty(v) != t {
                         return self.err(line, "match の腕の型が結果の型と違う");
                     }
                 }
+                super::coll::block_end(self);
                 let mut args: Vec<VId> = if carry { vec![v] } else { vec![] };
                 args.extend(self.vals_of(&slots));
                 self.goto(join, args);
+            } else {
+                super::coll::block_end(self);
             }
             self.scopes.pop();
         }
+        self.coll.scrut_src = saved_src;
         if self.blocks[join].preds == 0 {
             self.slots = saved;
             return Ok(None);
@@ -254,7 +339,7 @@ impl<'a> Lw<'a> {
             "PWild" => Ok(self.emit(Ty::Bool, Op::Const(1))),
             "PBind" => {
                 let name = st(&nf(p)[0]);
-                self.bind(&name, v, t);
+                super::coll::bind_owned(self, &name, v, t);
                 Ok(self.emit(Ty::Bool, Op::Const(1)))
             }
             "PLit" => {
@@ -303,7 +388,13 @@ impl<'a> Lw<'a> {
                 let tag = self.emit(Ty::Bool, Op::Tag(v));
                 let tag_ok = if want_tag { tag } else { self.emit(Ty::Bool, Op::Not(tag)) };
                 let pv = self.emit(pay_ty, Op::Payload(v));
+                if let Some((st_ty, st_src)) = self.coll.scrut_src.clone() {
+                    if st_ty == t {
+                        super::coll::set_payload_hint(self, &st_src, &segs[0]);
+                    }
+                }
                 let c = self.pat_test(sub, pv, pay_ty)?;
+                self.coll.hint = None;
                 Ok(self.emit(Ty::Bool, Op::Bool(BoolOp::And, tag_ok, c)))
             }
             other => self.err(line, format!("パターン {} は段階 1 の対象外", other)),
@@ -324,6 +415,7 @@ impl<'a> Lw<'a> {
                 self.branch(tag, (okb, vec![]), (nob, vec![]));
                 self.cur = Some(nob);
                 let none = self.emit(rt, Op::Const(0));
+                super::coll::drop_from(self, 0);
                 self.terminate(Term::Ret(none));
                 self.cur = Some(okb);
                 Ok(Some(self.emit(p.ty(), Op::Payload(v))))
@@ -336,6 +428,7 @@ impl<'a> Lw<'a> {
                 self.cur = Some(errb);
                 let ep = self.emit(e0.ty(), Op::Payload(v));
                 let r = self.emit(rt, Op::Err(ep));
+                super::coll::drop_from(self, 0);
                 self.terminate(Term::Ret(r));
                 self.cur = Some(okb);
                 Ok(Some(self.emit(t0.ty(), Op::Payload(v))))

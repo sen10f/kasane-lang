@@ -121,6 +121,8 @@ struct Frame {
     hbase: usize,
     /// この関数の `frame.bytes` で確保した領域の先頭。関数が戻るときに解放する。
     allocs: Vec<i128>,
+    /// この呼び出しが始まったときのバイト記憶の大きさ。これ以降に確保された領域が、この呼び出しの確保 (漏れの検査の対象)。
+    mem_base: usize,
 }
 
 /// アドレスの基準値 (0 は null として空けておく)。
@@ -235,6 +237,49 @@ impl ByteMem {
         if let Some(b) = self.blocks.get_mut(&addr) {
             b.live = false;
         }
+    }
+
+    /// 関数の終わりの漏れの検査: この呼び出し (`base` 以降の確保) が作った領域のうち、まだ生きていて、
+    /// 戻り値・呼び出し前から生きている領域のどちらからも指されていないものがあれば `Err`。
+    /// 指しているかは、8 バイト境界の語が領域の先頭アドレスと等しいかで見る (戻り値は `roots` の語と `blobs` の中身)。
+    fn check_leaks(&self, base: usize, roots: &[i128], blobs: &[Vec<u8>]) -> Result<(), String> {
+        let cand: std::collections::BTreeSet<i128> =
+            self.blocks.iter().filter(|(_, b)| b.live && !b.pinned && b.off >= base).map(|(a, _)| *a).collect();
+        if cand.is_empty() {
+            return Ok(());
+        }
+        let mut reached: std::collections::BTreeSet<i128> = std::collections::BTreeSet::new();
+        let mut work: Vec<i128> = vec![];
+        let see = |w: i128, reached: &mut std::collections::BTreeSet<i128>, work: &mut Vec<i128>| {
+            if cand.contains(&w) && reached.insert(w) {
+                work.push(w);
+            }
+        };
+        for r in roots {
+            see(*r, &mut reached, &mut work);
+        }
+        for blob in blobs {
+            for ch in blob.chunks_exact(8) {
+                see(u64::from_le_bytes(ch.try_into().expect("8 バイト")) as i128, &mut reached, &mut work);
+            }
+        }
+        // 呼び出し前から生きている領域 (呼び出し元のヘッダ・バッファ) の中の語。
+        for b in self.blocks.values().filter(|b| b.live && !b.pinned && b.off < base) {
+            for ch in self.mem[b.off..b.off + b.size].chunks_exact(8) {
+                see(u64::from_le_bytes(ch.try_into().expect("8 バイト")) as i128, &mut reached, &mut work);
+            }
+        }
+        while let Some(a) = work.pop() {
+            let b = &self.blocks[&a];
+            for ch in self.mem[b.off..b.off + b.size].chunks_exact(8) {
+                see(u64::from_le_bytes(ch.try_into().expect("8 バイト")) as i128, &mut reached, &mut work);
+            }
+        }
+        let leaked = cand.len() - reached.len();
+        if leaked > 0 {
+            return Err(format!("{} 個の領域が解放されず、戻り値からも指されていない", leaked));
+        }
+        Ok(())
     }
 
     /// 生存する (解放されていない、静的でない) 領域の数。
@@ -478,17 +523,17 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     if has_heap(m.funcs[entry].ret) || m.funcs[entry].params().iter().any(|(_, t)| has_heap(*t)) {
         return Err(format!("関数 {} は集成体を引数・戻り値に持つ (この入口では扱えない)", key));
     }
-    let enter = |f: usize, args: &[i128], dst: Option<VId>, hbase: usize| -> Frame {
+    let enter = |f: usize, args: &[i128], dst: Option<VId>, hbase: usize, mem_base: usize| -> Frame {
         let mut vals = vec![0i128; counts[f]];
         for ((v, _), a) in m.funcs[f].params().iter().zip(args.iter()) {
             vals[*v as usize] = *a;
         }
-        Frame { f, blk: 0, ip: 0, vals, dst, hbase, allocs: vec![] }
+        Frame { f, blk: 0, ip: 0, vals, dst, hbase, allocs: vec![], mem_base }
     };
     // バイト記憶 (`ptr` の領域)。静的な領域 (`static.bytes`) は、命令の位置ごとに 1 回だけ確保する。
     let mut bm = ByteMem::new();
     let mut statics: HashMap<(usize, usize, usize), i128> = HashMap::new();
-    let mut stack = vec![enter(entry, args, None, 0)];
+    let mut stack = vec![enter(entry, args, None, 0, 0)];
     loop {
         let top = stack.len() - 1;
         let (fi, bi, ip) = (stack[top].f, stack[top].blk, stack[top].ip);
@@ -627,7 +672,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         return Err(format!("呼び先 {} がない", callee));
                     };
                     let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
-                    stack.push(enter(ci, &argv, Some(inst.dst), heap.len()));
+                    stack.push(enter(ci, &argv, Some(inst.dst), heap.len(), bm.mem.len()));
                     continue;
                 }
                 Op::Make { variant, fields } => {
@@ -654,14 +699,22 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 Op::Field { a, off } => {
                     let h = get(&stack[top], a) as usize;
                     let o = *off as usize;
+                    // タグが別の腕の値を、判定の前に読むことがある (`Option<Vec>` の `None` のペイロード)。
+                    // 項目が無い・短いときは 0 のバイト列として読む (判定の後で使われることはない)。
+                    let zero = vec![0u8; 16];
+                    let blob: &Vec<u8> = match heap.get(h) {
+                        Some(b) if b.len() >= o + size_of(&m.aggs, inst.ty) as usize => b,
+                        _ => &zero,
+                    };
+                    let o = if std::ptr::eq(blob, &zero) { 0 } else { o };
                     match inst.ty {
                         Ty::Agg(ai) => {
                             let n = m.aggs[ai as usize].size as usize;
-                            let sub = heap[h][o..o + n].to_vec();
+                            let sub = if std::ptr::eq(blob, &zero) { vec![0u8; n] } else { blob[o..o + n].to_vec() };
                             heap.push(sub);
                             (heap.len() - 1) as i128
                         }
-                        t => read_scalar(&heap[h], o, t),
+                        t => read_scalar(blob, o, t),
                     }
                 }
                 Op::SetField { a, off, v } => {
@@ -752,6 +805,12 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     heap.extend(out);
                 } else {
                     heap.truncate(done.hbase);
+                }
+                // 関数の終わりで、この呼び出しが作った領域が漏れていないかを検査する (所有の下ろしの誤りをその関数で捕まえる)。
+                let roots: Vec<i128> = if func.ret == Ty::Ptr { vec![val] } else { vec![] };
+                let blobs: &[Vec<u8>] = if has_heap(func.ret) { &heap[done.hbase.min(heap.len())..] } else { &[] };
+                if let Err(why) = bm.check_leaks(done.mem_base, &roots, blobs) {
+                    return Err(format!("関数 {} の終わりで{}", func.key, why));
                 }
                 match stack.last_mut() {
                     None => {
@@ -908,7 +967,7 @@ fn t.leak key=t.leak uses=[alloc] panics=never stack=- ret=unit
     ret %2
 end t.leak
 ";
-        assert_eq!(exec(leak, "t.leak"), Err("解放されていない領域が 1 個ある".to_string()));
+        assert_eq!(exec(leak, "t.leak"), Err("関数 t.leak の終わりで1 個の領域が解放されず、戻り値からも指されていない".to_string()));
         let twice = leak.replace("    %2: unit = const.unit ()\n    ret %2", "    %2: unit = heap.free %1\n    %3: unit = heap.free %1\n    ret %2")
             .replace("t.leak", "t.twice");
         assert!(exec(&twice, "t.twice").unwrap_err().contains("不正な解放"));
@@ -930,6 +989,64 @@ fn t.oob key=t.oob uses=[alloc] panics=never stack=- ret=u8
 end t.oob
 ";
         assert!(exec(src, "t.oob").unwrap_err().contains("不正なメモリアクセス"));
+    }
+
+    #[test]
+    fn a_leak_is_reported_at_the_end_of_the_function_that_made_it() {
+        // 呼び先が確保して解放せずに戻る: 呼び出し元の終わりを待たず、呼び先の終わりで報告する。
+        let src = "kir 1
+
+fn t.mk key=t.mk uses=[alloc] panics=never stack=- ret=unit
+  b0():
+    %0: usize = const.usize 8
+    %1: ptr = heap.alloc %0
+    %2: unit = const.unit ()
+    ret %2
+end t.mk
+
+fn t.outer key=t.outer uses=[alloc] panics=never stack=- ret=unit
+  b0():
+    %0: unit = call t.mk()
+    ret %0
+end t.outer
+";
+        let e = exec(src, "t.outer").unwrap_err();
+        assert!(e.contains("関数 t.mk の終わり"), "{}", e);
+    }
+
+    #[test]
+    fn a_region_returned_to_the_caller_or_stored_in_its_header_is_not_a_leak() {
+        // 確保した領域を戻り値で返し (呼び出し元が解放)、または呼び出し元のヘッダに書いて渡す形は漏れではない。
+        let src = "kir 1
+
+fn t.give key=t.give uses=[alloc] panics=never stack=- ret=ptr
+  b0():
+    %0: usize = const.usize 8
+    %1: ptr = heap.alloc %0
+    ret %1
+end t.give
+
+fn t.fill key=t.fill uses=[alloc] panics=never stack=- ret=unit
+  b0(%0: ptr):
+    %1: usize = const.usize 8
+    %2: ptr = heap.alloc %1
+    %3: unit = mem.store.ptr %0 +0, %2
+    %4: unit = const.unit ()
+    ret %4
+end t.fill
+
+fn t.outer key=t.outer uses=[alloc] panics=never stack=- ret=unit
+  b0():
+    %0: ptr = frame.bytes 8
+    %1: unit = call t.fill(%0)
+    %2: ptr = mem.load.ptr %0 +0
+    %3: unit = heap.free %2
+    %4: ptr = call t.give()
+    %5: unit = heap.free %4
+    ret %1
+end t.outer
+";
+        assert_eq!(exec(src, "t.outer"), Ok(Outcome::Value(0)));
     }
 
     #[test]

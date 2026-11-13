@@ -752,10 +752,10 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 
 | 項目 | 理由 | 次の作業 |
 | --- | --- | --- |
-| `Vec::push` / `pop` / `get` / `insert` / `remove` / `reserve` / `with_capacity`、`String::push_str` / `push` | 戻り値が `Result` / `Option` (参照を含む) | Option / Result の段階で対応する。push の展開 (grow は `heap.realloc` と `mem.store`、添字は `index.check`) は既存の命令で書ける |
+| `Vec::pop` / `insert` / `remove` / `reserve` / `with_capacity`、`String::push_str` / `push` (`Vec::push` は 13 章で対応済み) | 戻り値が `Result` / `Option` (参照を含む) | Option / Result の段階で対応する。push の展開 (grow は `heap.realloc` と `mem.store`、添字は `index.check`) は既存の命令で書ける |
 | `as_str` / `as_slice` / `&[T]` の値、`&str` の引数 | 参照 | 参照の段階 (参照の型は入っている) |
 | `capture [&x]` を持つクロージャ | 参照の捕獲 | 参照の段階。捕獲の値を追加の引数で渡す |
-| `Vec` / `String` の値の移動 (`let w = v`、値の受け渡し、ブロックの値、戻り値) | 所有の移動 (drop フラグ) が未実装 | 移動の追跡 |
+| `Vec` / `String` の値の移動 (`let w = v`、値の受け渡し、ブロックの値、戻り値) | (13 章で対応済み) | 13 章 |
 | `str` の比較 (`==` など) | 比較の下ろし (バイト列の比較) が未実装 | 段階 2 までに `mem` 系の比較を足す |
 | `for` の対象が `core.iter.range` と要素型の分かる Vec 以外 (イテレータ、配列リテラル) | Iterator / 配列の型が段階 1 の外 | Iterator の段階 |
 | 要素型が決まらない Vec | 型表の `_` (`push` が入るまで、型推論は要素型を決めない) | Option / Result の段階と型推論の完全化 (7 章 4) |
@@ -887,6 +887,42 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 - 検査 (examples と perf の全 15 パッケージ、`ksn build --backend llvm`): 前は 0 本 (すべて `main` の戻り値 `Result<(), std.io.Error>` で止まった)。後は 1 本 (`perf/noop`) が LLVM で作れ、`ksn run` と stdout・stderr・終了コードが一致した。残り 14 本が下ろせない理由 (根): `core.check.eq` の呼び出し (panic の命令が無い) が 9 本 (features・native・tour と perf の fib・hashmap・loops・strcat・structs・vecops)、利用者の型の `&mut` メソッド `bump` (demo)、構造体 (`json.Doc`) の戻り値 (json)、`Ring.new` の戻り値 (realtime)、`std.thread.spawn` (threads)、capture を持つクロージャ (closure)。`core.check.eq` が下ろせるようになれば、perf の大半が一気に通る見込み (kir/gaps の panic 命令に続く作業)。
 - 試験 (`stage0/tests/cli.rs`): `kir_write_prints_through_run_and_native` (`write` の `--run` と `--native`)、`llvm_build_of_print_line_main_matches_run`、`llvm_build_main_err_prints_debug_and_exits_1` (`std.io.Error` の Debug、終了コード 1)、`llvm_build_debug_covers_structs_enums_ints_bool_char_and_str`、`llvm_build_panic_keeps_the_panic_exit_code_and_message` (101)、`llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered`。`kir.rs` の `write_reads_back_and_needs_io_console`。clang が無い環境では `--native` と実行ファイルの比較を飛ばす。
 - 次の作業: `ksn test --both` の比較相手を、KIR に下ろせるテストでは LLVM にする (12.4 の 2 つ目)。
+
+## 13. Vec / String の所有の移動と解放 (kir/owned-heap、2026-11-13)
+
+7 章 1 と 6 章 15 の決定 (ヒープ型は `{ptr,len,cap}` の実メモリ。所有と解放は、降格の時点で KIR の解放命令に展開する) の実装。10.9 の「移動はしない」を外し、値の受け渡し・戻り値・`let` の束縛し直し・構造体のフィールドへの格納を扱う。新しい命令は足していない (`mem.load` / `mem.store` / `heap.free` / `heap.realloc` と `make` / `field` だけ)。
+
+### 13.1 値の表現
+- 値としての `Vec` / `String` (引数・戻り値・フィールド・`Option` / `Result` / 列挙型のペイロード) は、型表の構造体 `vec` (`{ptr, len, cap}`、24 バイト) の値。式の型 (`ty_of`) も `vec` になる。借用 (`&Vec` / `&mut Vec` / `&String`) は従来どおり局所変数のヘッダのアドレス (`ptr`)。
+- 局所変数の Vec / String は、フレームのヘッダ (`frame.bytes 24`) に置く (10.9)。値を局所変数にする (`let`、値渡しの引数、`match` の束縛) とき `adopt` がヘッダを作って 3 語を書き、そのスコープの所有に入れる。
+- 構造体・タプル・列挙型・`Option` / `Result` で `vec` を (入れ子を含めて) 持つ型は「所有物を持つ型」 (`AggTab::owns_heap`)。局所変数は SSA の値のままで、移したかどうかの印 (`frame.bytes 1` の 1 バイト、立っていれば有効) を別に持つ。
+- `alloc.alloc.AllocError` は大きさ 1 の構造体 (clif と同じ)。`Vec::push` は確保に失敗しないので、常に `Ok(())` を返す。
+
+### 13.2 移動
+- 移動 = 局所変数が値として使われること (引数、戻り値、`let` の右辺、構造体・変種のフィールド、ブロックと `if` の値)。場所としての使用 (`len` / 添字 / `for` / `&v` / `x.f` の読み / `match` の対象) は移動ではない。
+- Vec / String の局所変数: ヘッダから 3 語を読んで `make` し、元のヘッダの `ptr` に null を書く (`mem.store.ptr hdr +0, 0`)。解放は `free(null)` が何もしないので、**元の場所の解放は印なしで無効になる**。分岐の片方だけで移した値も、移していない側でだけ解放される。
+- 構造体などの局所変数: 印を 0 にする。解放は印が立っているときだけ。再代入 (`x = ...`) は、古い値を解放して印を立て直す。
+- 一時の値 (呼び出しの結果、`Vec.new(...)`) は、束縛されなければ捨てる場所で解放する: 文として評価した式の値、`core.mem.drop(x)`、Option / Result のメソッドの受け手。
+- フィールドからの移動 (`let w = b.items`) と、所有物を持つ値の分解 (`let (a, b) = ...`)、所有物を持つ `unwrap_or` は未対応 (理由を付けて拒否する)。
+
+### 13.3 解放の規則
+- スコープの終わり (ブロック、`for` / `while` / `loop` の 1 周、`match` の腕) で、そのスコープの所有物を**登録の逆順**に解放する (木走査の Drop の順)。`return`・`?` の `Err` / `None` の経路は全スコープ (関数の引数を含む)、`break` / `continue` はループの内側のスコープを解放してから抜ける。
+- 解放 (`drop_value`): `vec` は `free(ptr)`。構造体・タプルは所有物のフィールドを逆順に。列挙型と `Option` / `Result` はタグで分岐して、持っている変種のペイロードだけ。
+- `match` の対象 (所有物を持つ型): どれかの腕が所有物を名前に束縛する (`Some(v)`、`Full(v)`) なら、対象を丸ごと移す (局所変数は印を下ろす)。束縛する腕は束縛した変数が所有を引き継ぎ、束縛しない腕 (`None`、`Some(_)`) は腕の頭で対象を丸ごと解放する。どの腕も束縛しない局所変数は移さない。所有物の一部だけを束縛するパターンは拒否する。
+- 引数の所有は呼び先が引き継ぐ。呼び出し元は移した後の値を解放しない。
+
+### 13.4 `Vec::push` と `Result::map_err`
+- `v.push(x)` (要素はスカラー。`v` は局所変数または `&mut Vec`): 満杯 (`len == cap`) なら `cap*2+4` 要素に `heap.realloc`、末尾に書いて `len` を進める。要素型が未確定の Vec は引数の型で決める。
+- `r.map_err(f)` (`f` は捕獲のないクロージャか関数の項目): タグで分け、`Err(x)` は `Err(f(x))`、`Ok(t)` はそのまま。
+
+### 13.5 参照実行器と LLVM
+- `kir_exec.rs`: 関数が戻るとき、その呼び出しの間に確保され (`mem_base` 以降)、まだ生きている領域のうち、戻り値と、呼び出し前から生きている領域 (呼び出し元のヘッダ・バッファ) の中の 8 バイト境界の語から (推移的に) 指されないものがあれば `関数 f の終わりで N 個の領域が解放されず、戻り値からも指されていない` を内部エラーにする。二重解放は従来どおり `不正な解放`。プログラム全体の終わりの検査も残す。判定前に読む `Option` の `None` のペイロードは、項目が無ければ 0 として読む。
+- LLVM (`kir_llvm.rs`): 変更なし (`heap.free` は `free`、`heap.realloc` は `realloc`)。`kir_run` が `--run` と `--native` の表示と終了コードを比べる。
+
+### 13.6 結果と残り
+- 試験: `stage0/tests/cli.rs` の `kir_own_*` (値の一致 28 ケース: 返す・引数で渡して `push` して返す・構造体のフィールド・`Option<Vec>` / `Option<String>` の `match` (一時の値と局所変数)・片方の枝だけで移す (Vec と構造体)・ループで作って捨てる (1 万回)・`continue` / `break`・`?` の早期脱出・`map_err`・列挙型のペイロード・再代入。拒否の理由、ダンプの形)。`kir_exec` の単体試験 2 本 (関数の終わりの漏れ、戻り値・呼び出し元のヘッダ経由は漏れでない)。
+- examples と perf の未対応 (`KSN_DUMP_KIR=1 ksn check`): examples 24 → 22 (`realtime.Ring.new` と `json.oom` が下ろせる。`json.array` などは `map_err` を越えて、`&mut` レシーバの `push_node` で止まる)、perf 13 → 13 (AllocError の戻り値は通るようになり、理由が `HashMap.new`・`push_str`・`get_mut` の `*` に変わった)。
+- 残り: `Vec` の要素が所有物 (`Vec<String>`、`Vec<構造体>`) の要素の解放、`push_str` / `pop` / `get_mut` / `insert` / `remove`、`&mut` レシーバのメソッド (別担当の kir/gaps)、`main` の `std.io.Error` (別担当の kir/io-entry)。`Drop` トレイトを実装した型の `drop` 呼び出しは、これまでどおり KIR に無い。
 
 ## 付録: 参照した箇所 (主要)
 

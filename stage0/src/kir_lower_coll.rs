@@ -5,10 +5,12 @@
 //! 所有するバッファは `heap.free` で明示的に解放する。`&Vec<T>` / `&mut Vec<T>` / `&String` は借用で、同じヘッダのアドレスを渡す。
 //! `&str` とスライス `&[T]` は {ptr, len} の値 (構造体 `fat`、16 バイト。設計_KIR.md 10.10) で、引数・戻り値・局所変数にそのまま使える。
 //!
-//! - 解放: 所有する値を作った時点で、そのスコープの所有の一覧 (`CollCx::owned`) に入れる。スコープの終わり、
-//!   `return`、`break` / `continue` のたびに、対象のスコープの値を後入れ先出しで `free` する。
-//! - 移動はしない: `let w = v` や値としての受け渡しは拒否する。`for x in v` は `v` を借りて反復するだけで、
-//!   解放は `v` の寿命の終わりに行う (観測できない違いだけ生じる)。
+//! - 解放: 所有する値を束縛した時点で、そのスコープの所有の一覧 (`CollCx::owned`) に入れる。スコープの終わり、
+//!   `return`、`?`、`break` / `continue` のたびに、対象のスコープの値を後入れ先出しで解放する (設計_KIR.md 13 章)。
+//! - 移動: Vec / String の式の値は 24 バイトの集成体 `vec` (値渡し)。局所変数の移動は、ヘッダから 3 語を読んで
+//!   元のヘッダの `ptr` を null にする (`free(null)` は何もしないので、元の場所の解放は自然に無効になる)。
+//!   構造体・列挙型・`Option` / `Result` の局所変数は、移したかどうかの印 (フレームの 1 バイト) を持つ。
+//!   `for x in v` は `v` を借りて反復するだけで、解放は `v` の寿命の終わりに行う (観測できない違いだけ生じる)。
 //! - クロージャ: 捕獲のないクロージャは、本体を別の関数 (鍵 `関数#c式ID`) として下ろす。値は `unit` の印で、
 //!   `let` で束縛した名前の呼び出しは直接の呼び出しになる。型引数に型パラメータを持つ関数 (`Fn` 境界) は、
 //!   渡されたクロージャごとに単相インスタンス (鍵 `関数<クロージャの鍵>`) を作る。
@@ -19,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::check::{is_nil, items, nf, nline, nname, st, strs};
-use crate::kir::{Aop, Block, BoolOp, Cc, Func, Inst, Mode, Op, Pay, Term, Ty, VId};
+use crate::kir::{AggKind, Aop, Block, BoolOp, Cc, Func, Inst, Mode, Op, Pay, Term, Ty, VId};
 use super::{conv, Lw, St, LR};
 use crate::parser::{nid, V};
 use crate::program::Target;
@@ -45,13 +47,22 @@ pub(crate) enum Kind {
     Closure { key: String, args: Vec<Ty>, ret: Ty },
 }
 
+/// 所有している値。スコープの終わりに、移していなければ解放する。
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Owned {
+    /// `Vec` / `String` の局所変数。ヘッダのアドレス。移すと `ptr` が null になる。
+    Hdr(VId),
+    /// 構造体・列挙型・`Option` / `Result` の局所変数。スロットと、移していないとき 1 の印 (フレームの 1 バイト)。
+    Val { slot: usize, flag: VId },
+}
+
 /// 下ろしの状態。`Lw` が 1 つ持つ。
 #[derive(Default)]
 pub(crate) struct CollCx {
     /// スロット番号 → 種類。
     pub(crate) kinds: BTreeMap<usize, Kind>,
-    /// 所有する値 (スコープの番号, ヘッダのアドレス) の登録順。
-    pub(crate) owned: Vec<(usize, VId)>,
+    /// 所有する値 (スコープの番号, 所有物) の登録順。
+    pub(crate) owned: Vec<(usize, Owned)>,
     /// 関数の入口で確保する `alloca` (ブロック 0 の先頭に置く)。
     pub(crate) allocas: Vec<Inst>,
     /// 借用の (`&Vec` などの) 変数のスロット。所有しないので、移動の検査と解放の対象にしない。
@@ -62,6 +73,10 @@ pub(crate) struct CollCx {
     pub(crate) instances: BTreeSet<String>,
     /// クロージャの鍵の接頭辞。単相インスタンスの中では、同じ式でもインスタンスごとに別の関数になるので鍵を分ける。
     pub(crate) prefix: String,
+    /// パターンの `Some(x)` / `Ok(x)` / `Err(x)` の部分パターンの、型表の型 (Vec / String の種類を局所変数に結び付ける)。
+    pub(crate) hint: Option<Src>,
+    /// いま下ろしている `match` の対象の (KIR の型, 型表の型)。`Some(x)` の `x` の種類の手がかりを取るため。
+    pub(crate) scrut_src: Option<(Ty, Src)>,
 }
 
 /// 型表の式の型 (式 ID が 0 なら無い)。
@@ -83,6 +98,10 @@ fn strip_ref(t: &Src) -> &Src {
 
 /// 式の値の段階 1 の型 (Vec / String は `ptr`、`&str` とスライスは `fat`、クロージャは `unit` の値)。対象外なら `None`。
 pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
+    // 値渡しの Vec / String は集成体 `vec` (所有の移動)、参照は借用なのでヘッダのアドレス。
+    if matches!(t, Src::Named(n, _) if n == VEC || n == STRING) {
+        return Some(lw.aggs.borrow_mut().vec_hdr());
+    }
     match strip_ref(t) {
         Src::Named(n, _) if n == VEC || n == STRING => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
@@ -100,8 +119,7 @@ pub(crate) fn is_hdr_named(t: &Src) -> bool {
 /// 関数の引数・戻り値の型。通常の型に加えて、Vec / String / `str` / スライスへの参照 (借用) を受ける。
 pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     if let Some(x) = lw.conv_t(t) {
-        // Vec / String を持つ構造体の値渡しは所有の移動になる (未対応)。参照は借用なのでよい。
-        return if lw.aggs.borrow().owns_vec(x) { None } else { Some(x) };
+        return Some(x);
     }
     let Src::Ref(_, inner) = t else { return None };
     match &**inner {
@@ -110,6 +128,18 @@ pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
         Src::Slice(e) if conv(e).and_then(size_of).is_some() => Some(lw.fat_ty()),
         _ => None,
     }
+}
+
+/// 引数を局所変数にする。値渡しの所有物は所有に入れ (入口のスコープ)、借用の引数は種類を結び付ける。
+pub(crate) fn bind_param(lw: &mut Lw, name: &str, v: VId, t: Ty, src: &Src) {
+    if owns_heap(lw, t) {
+        lw.coll.hint = Some(src.clone());
+        bind_owned(lw, name, v, t);
+        lw.coll.hint = None;
+        return;
+    }
+    lw.bind_let(name, v, t);
+    bind_param_kind(lw, name, src);
 }
 
 /// 借用の引数のスロットに、種類 (Vec / String / str / スライス) を結び付ける。
@@ -195,50 +225,406 @@ fn emit_free(lw: &mut Lw, hdr: VId) {
     lw.emit(Ty::Unit, Op::HeapFree(buf));
 }
 
-/// スコープ `depth` 以降に登録された所有値を、後入れ先出しで解放する (`break` / `continue` / `return` の後始末)。
+fn owns_heap(lw: &Lw, t: Ty) -> bool {
+    lw.aggs.borrow().owns_heap(t)
+}
+
+/// 型 `t` の値が移動と解放の対象 (所有物を持つ) か。
+pub(crate) fn owns(lw: &Lw, t: Ty) -> bool {
+    owns_heap(lw, t)
+}
+
+/// ヘッダ `hdr` に、集成体 `vec` の値 (ptr, len, cap) を書く。
+fn store_vec(lw: &mut Lw, hdr: VId, v: VId) {
+    let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+    let l = lw.emit(Ty::Usize, Op::Field { a: v, off: 8 });
+    let c = lw.emit(Ty::Usize, Op::Field { a: v, off: 16 });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: hdr, off: 0, v: p });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: hdr, off: 8, v: l });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: hdr, off: 16, v: c });
+}
+
+/// 集成体 `vec` の値を局所変数にする: フレームにヘッダを作って値を書き、現在のスコープの所有に入れる。ヘッダのアドレスを返す。
+pub(crate) fn adopt(lw: &mut Lw, v: VId) -> VId {
+    let hdr = emit_alloca(lw, HDR_VEC);
+    store_vec(lw, hdr, v);
+    let scope = lw.scopes.len() - 1;
+    lw.coll.owned.push((scope, Owned::Hdr(hdr)));
+    hdr
+}
+
+/// 所有するヘッダから値を移す: 3 語を読み、元の `ptr` を null にする (元の場所の解放は何もしなくなる)。
+fn move_hdr(lw: &mut Lw, hdr: VId) -> VId {
+    let p = lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 });
+    let l = lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 8 });
+    let c = lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 16 });
+    let null = lw.emit(Ty::Ptr, Op::Const(0));
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: hdr, off: 0, v: null });
+    let vt = lw.aggs.borrow_mut().vec_hdr();
+    lw.emit(vt, Op::Make { variant: None, fields: vec![p, l, c] })
+}
+
+/// 局所変数の印 (移したかどうかのフラグ) のアドレス。印を持たない変数なら `None`。
+fn val_flag(lw: &Lw, s: usize) -> Option<VId> {
+    lw.coll.owned.iter().rev().find_map(|(_, o)| match o {
+        Owned::Val { slot, flag } if *slot == s => Some(*flag),
+        _ => None,
+    })
+}
+
+fn set_flag(lw: &mut Lw, flag: VId, on: bool) {
+    let b = lw.emit(Ty::Bool, Op::Const(on as i128));
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Bool, p: flag, off: 0, v: b });
+}
+
+/// 局所変数 (所有物の印を持つもの) か。式が単一の名前の経路で、そのスロットが印を持つなら、スロット番号。
+pub(crate) fn val_slot(lw: &Lw, e: &V) -> Option<usize> {
+    local_slot(lw, e).filter(|s| val_flag(lw, *s).is_some())
+}
+
+/// スロット `s` が所有物の印を持つ局所変数か。
+pub(crate) fn val_slot_of(lw: &Lw, s: usize) -> bool {
+    val_flag(lw, s).is_some()
+}
+
+/// 局所変数の読み (値としての使用 = 移動)。所有する Vec / String はヘッダから値を移し、印を持つ変数は印を下ろす。
+pub(crate) fn path_read(lw: &mut Lw, s: usize) -> VId {
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) && !lw.coll.borrowed.contains(&s) {
+        let h = lw.slots[s].0;
+        return move_hdr(lw, h);
+    }
+    let v = lw.read_slot(s);
+    if let Some(flag) = val_flag(lw, s) {
+        set_flag(lw, flag, false);
+    }
+    v
+}
+
+/// 局所変数の値を移さずに読む (フィールドの読み・メソッドの受け手・`match` の対象など、場所としての使用)。
+pub(crate) fn path_peek(lw: &mut Lw, s: usize) -> VId {
+    lw.read_slot(s)
+}
+
+/// 型 `t` の値 `v` (所有している) を解放する命令列を、現在のブロックに置く。所有物を持たない型は何もしない。
+/// 列挙型と `Option` / `Result` は、タグで枝を分けて、持っている変種のペイロードだけを解放する。
+pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
+    if lw.cur.is_none() || !owns_heap(lw, t) {
+        return;
+    }
+    match t {
+        Ty::Agg(i) => {
+            let d = lw.aggs.borrow().defs[i as usize].clone();
+            if d.name == "vec" {
+                let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                lw.emit(Ty::Unit, Op::HeapFree(p));
+                return;
+            }
+            match d.kind {
+                AggKind::Struct(fs) | AggKind::Tuple(fs) => {
+                    for f in fs.iter().rev() {
+                        if owns_heap(lw, f.ty) {
+                            let fv = lw.emit(f.ty, Op::Field { a: v, off: f.off });
+                            drop_value(lw, fv, f.ty);
+                        }
+                    }
+                }
+                AggKind::Enum(vs) => {
+                    let (join, _) = lw.new_block(&[]);
+                    let tag = lw.emit(Ty::I32, Op::Tag(v));
+                    for (k, var) in vs.iter().enumerate() {
+                        if !var.fields.iter().any(|f| owns_heap(lw, f.ty)) {
+                            continue;
+                        }
+                        let kk = lw.emit(Ty::I32, Op::Const(k as i128));
+                        let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::I32, a: tag, b: kk });
+                        let (yes, _) = lw.new_block(&[]);
+                        let (no, _) = lw.new_block(&[]);
+                        lw.branch(c, (yes, vec![]), (no, vec![]));
+                        lw.cur = Some(yes);
+                        for f in var.fields.iter().rev() {
+                            if owns_heap(lw, f.ty) {
+                                let fv = lw.emit(f.ty, Op::Field { a: v, off: f.off });
+                                drop_value(lw, fv, f.ty);
+                            }
+                        }
+                        lw.goto(join, vec![]);
+                        lw.cur = Some(no);
+                    }
+                    lw.goto(join, vec![]);
+                    lw.cur = Some(join);
+                }
+            }
+        }
+        Ty::Opt(p) => {
+            let tag = lw.emit(Ty::Bool, Op::Tag(v));
+            let (yes, _) = lw.new_block(&[]);
+            let (join, _) = lw.new_block(&[]);
+            lw.branch(tag, (yes, vec![]), (join, vec![]));
+            lw.cur = Some(yes);
+            let pv = lw.emit(p.ty(), Op::Payload(v));
+            drop_value(lw, pv, p.ty());
+            lw.goto(join, vec![]);
+            lw.cur = Some(join);
+        }
+        Ty::Res(a, e) => {
+            let tag = lw.emit(Ty::Bool, Op::Tag(v));
+            let (errb, _) = lw.new_block(&[]);
+            let (okb, _) = lw.new_block(&[]);
+            let (join, _) = lw.new_block(&[]);
+            lw.branch(tag, (errb, vec![]), (okb, vec![]));
+            for (b, pay) in [(errb, e), (okb, a)] {
+                lw.cur = Some(b);
+                if owns_heap(lw, pay.ty()) {
+                    let pv = lw.emit(pay.ty(), Op::Payload(v));
+                    drop_value(lw, pv, pay.ty());
+                }
+                lw.goto(join, vec![]);
+            }
+            lw.cur = Some(join);
+        }
+        _ => {}
+    }
+}
+
+/// 所有物 1 つを解放する。印を持つ変数は、印が立っているときだけ現在の値を解放する。
+fn drop_owned(lw: &mut Lw, o: Owned) {
+    match o {
+        Owned::Hdr(h) => emit_free(lw, h),
+        Owned::Val { slot, flag } => {
+            let t = lw.slots[slot].1;
+            let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
+            let (yes, _) = lw.new_block(&[]);
+            let (join, _) = lw.new_block(&[]);
+            lw.branch(on, (yes, vec![]), (join, vec![]));
+            lw.cur = Some(yes);
+            let v = lw.read_slot(slot);
+            drop_value(lw, v, t);
+            lw.goto(join, vec![]);
+            lw.cur = Some(join);
+        }
+    }
+}
+
+/// スコープ `depth` 以降に登録された所有値を、後入れ先出しで解放する (`break` / `continue` / `return` / `?` の後始末)。
 /// 現在のブロックが無い (到達しない) ときは何もしない。登録は消さない (他の経路で必要なため)。
 pub(crate) fn drop_from(lw: &mut Lw, depth: usize) {
     if lw.cur.is_none() {
         return;
     }
-    let heads: Vec<VId> = lw.coll.owned.iter().rev().filter(|(d, _)| *d >= depth).map(|(_, h)| *h).collect();
-    for h in heads {
-        emit_free(lw, h);
+    let items: Vec<Owned> = lw.coll.owned.iter().rev().filter(|(d, _)| *d >= depth).map(|(_, o)| *o).collect();
+    for o in items {
+        drop_owned(lw, o);
     }
 }
 
-/// スコープの終わり: 所有値を解放し、そのスコープの登録を消す。`out` (ブロックの値) が所有値なら拒否する。
-/// スコープを閉じるのは呼び出し側 (`scopes.pop`)。
-pub(crate) fn block_end(lw: &mut Lw, out: Option<VId>, line: usize) -> LR<()> {
+/// スコープの終わり: 所有値を解放し、そのスコープの登録を消す。スコープを閉じるのは呼び出し側 (`scopes.pop`)。
+/// ブロックの値は移し済み (式の評価で所有が移っている) なので、ここでは調べない。
+pub(crate) fn block_end(lw: &mut Lw) {
     let depth = lw.scopes.len() - 1;
-    if let Some(v) = out {
-        check_not_owned(lw, v, line)?;
-    }
     drop_from(lw, depth);
     lw.coll.owned.retain(|(d, _)| *d < depth);
-    Ok(())
 }
 
-pub(crate) fn check_not_owned(lw: &Lw, v: VId, line: usize) -> LR<()> {
-    if lw.coll.owned.iter().any(|(_, h)| *h == v) {
-        return lw.err(line, "Vec / String の値を値として返す (所有の移動) は段階 1 の対象外");
+/// 捨てる値 (文として評価した式の値) が所有物なら解放する。
+pub(crate) fn drop_temp(lw: &mut Lw, v: VId) {
+    let t = lw.vty(v);
+    drop_value(lw, v, t);
+}
+
+/// 型 `src` の値を局所変数 `name` として束縛する (所有物なら所有に入れる)。
+/// Vec / String はフレームのヘッダに置き、それ以外の所有物は印 (フレームの 1 バイト) を付ける。
+pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
+    if !owns_heap(lw, t) {
+        lw.bind_let(name, v, t);
+        return;
     }
-    Ok(())
+    let vec_t = lw.aggs.borrow_mut().vec_hdr();
+    if t == vec_t {
+        let h = adopt(lw, v);
+        lw.bind(name, h, Ty::Ptr);
+        let s = lw.lookup(name).expect("直前に束縛した名前");
+        // 種類 (Vec の要素型 / String) は、パターンの型の手がかりか、無ければ Vec の要素型不明として持つ。
+        let k = match lw.coll.hint.take() {
+            Some(h) => kind_of_src(&h),
+            None => None,
+        };
+        lw.coll.kinds.insert(s, k.unwrap_or(Kind::Vec(None)));
+        return;
+    }
+    lw.bind_let(name, v, t);
+    let s = lw.lookup(name).expect("直前に束縛した名前");
+    let flag = emit_alloca(lw, 1);
+    set_flag(lw, flag, true);
+    let scope = lw.scopes.len() - 1;
+    lw.coll.owned.push((scope, Owned::Val { slot: s, flag }));
 }
 
-/// 所有する値を値として使う (移す) ことを拒否する。
-pub(crate) fn check_value_use(lw: &Lw, s: usize, line: usize) -> LR<()> {
+/// 局所変数への代入 `x = v`。所有物は、古い値を解放してから新しい値を入れる (Vec / String はヘッダを書き直す)。
+/// 印を持つ変数は印を立て直す (移した後の再代入を含む)。
+pub(crate) fn assign_checked(lw: &mut Lw, s: usize, v: VId, line: usize) -> LR<()> {
     if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) && !lw.coll.borrowed.contains(&s) {
-        return lw.err(line, "Vec / String の値を移す (所有の移動) は段階 1 の対象外 (len・添字・for で使う)");
+        let vt = lw.aggs.borrow_mut().vec_hdr();
+        if lw.vty(v) != vt {
+            return lw.err(line, "代入の型が変数の型と違う");
+        }
+        let h = lw.slots[s].0;
+        emit_free(lw, h);
+        store_vec(lw, h, v);
+        return Ok(());
+    }
+    if lw.vty(v) != lw.slots[s].1 {
+        return lw.err(line, "代入の型が変数の型と違う");
+    }
+    if let Some(flag) = val_flag(lw, s) {
+        drop_owned(lw, Owned::Val { slot: s, flag });
+        lw.assign_slot(s, v);
+        set_flag(lw, flag, true);
+    } else {
+        lw.assign_slot(s, v);
     }
     Ok(())
 }
 
-/// 代入の先: 所有する値と、クロージャの値は代入できない (`&str` は差し替えてよい)。
+/// パターンが、所有物を束縛 (移動) するか。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Cover {
+    /// 所有物を束縛しない (`_`、リテラル、所有物を持たない変種)。値は腕の頭で丸ごと解放する。
+    No,
+    /// 値の持つ所有物をすべて名前に束縛する (所有は束縛した変数が引き継ぐ)。
+    All,
+}
+
+fn combine(lw: &Lw, line: usize, subs: &[V], ftys: &[Ty]) -> LR<Cover> {
+    let (mut all, mut no) = (false, false);
+    for (sp, ft) in subs.iter().zip(ftys) {
+        if !owns_heap(lw, *ft) {
+            continue;
+        }
+        match pat_cover(lw, sp, *ft)? {
+            Cover::All => all = true,
+            Cover::No => no = true,
+        }
+    }
+    if all && no {
+        return lw.err(line, "所有物の一部だけを束縛するパターン (部分的な移動) は段階 1 の対象外");
+    }
+    Ok(if all { Cover::All } else { Cover::No })
+}
+
+/// パターン `p` を所有物を持つ型 `t` の値に当てたとき、所有物を束縛するか。
+fn pat_cover(lw: &Lw, p: &V, t: Ty) -> LR<Cover> {
+    let line = nline(p);
+    if !owns_heap(lw, t) {
+        return Ok(Cover::No);
+    }
+    let agg = |t: Ty| match t {
+        Ty::Agg(i) => Some(lw.aggs.borrow().defs[i as usize].clone()),
+        _ => None,
+    };
+    match nname(p) {
+        "PWild" | "PLit" | "PPath" => Ok(Cover::No),
+        "PBind" => Ok(Cover::All),
+        "PVariant" => {
+            let segs = strs(&nf(p)[0]);
+            let subs = items(&nf(p)[1]);
+            let ftys: Vec<Ty> = match (segs.as_slice(), t) {
+                ([n], Ty::Opt(p0)) if n == "Some" => vec![p0.ty()],
+                ([n], Ty::Res(t0, _)) if n == "Ok" => vec![t0.ty()],
+                ([n], Ty::Res(_, e0)) if n == "Err" => vec![e0.ty()],
+                _ => {
+                    let Some(d) = agg(t) else { return lw.err(line, "パターンの対象の型が合わない") };
+                    let (Some(crate::program::Target::Variant(_, vn)), AggKind::Enum(vs)) = (lw.p.resolve(&segs, &lw.def.file).map(|r| r.target), &d.kind) else {
+                        return lw.err(line, "列挙子のパターンの対象が列挙型でない");
+                    };
+                    let Some(v) = vs.iter().find(|x| x.name == vn) else { return lw.err(line, "列挙子がない") };
+                    v.fields.iter().map(|f| f.ty).collect()
+                }
+            };
+            combine(lw, line, subs, &ftys)
+        }
+        "PTuple" => {
+            let Some(d) = agg(t) else { return lw.err(line, "タプルのパターンの対象が集成体でない") };
+            let AggKind::Tuple(fs) = &d.kind else { return lw.err(line, "タプルのパターンの対象がタプルでない") };
+            let ftys: Vec<Ty> = fs.iter().map(|f| f.ty).collect();
+            combine(lw, line, items(&nf(p)[0]), &ftys)
+        }
+        "PStruct" => {
+            let Some(d) = agg(t) else { return lw.err(line, "構造体のパターンの対象が集成体でない") };
+            let AggKind::Struct(fs) = &d.kind else { return lw.err(line, "構造体のパターンの対象が構造体でない") };
+            let (mut all, mut no) = (false, false);
+            for it in items(&nf(p)[1]) {
+                let V::L(xs) = it else { return lw.err(line, "構造体のパターンの形が不正") };
+                let Some(fd) = fs.iter().find(|x| x.name == st(&xs[0])) else { return lw.err(line, "フィールドがない") };
+                if !owns_heap(lw, fd.ty) {
+                    continue;
+                }
+                match pat_cover(lw, &xs[1], fd.ty)? {
+                    Cover::All => all = true,
+                    Cover::No => no = true,
+                }
+            }
+            // 書かれなかった (`..`) 所有物のフィールドは束縛されない。
+            let owned_fields = fs.iter().filter(|f| owns_heap(lw, f.ty)).count();
+            let written = items(&nf(p)[1]).len();
+            if all && (no || written < owned_fields) {
+                return lw.err(line, "所有物の一部だけを束縛するパターン (部分的な移動) は段階 1 の対象外");
+            }
+            Ok(if all { Cover::All } else { Cover::No })
+        }
+        other => lw.err(line, format!("パターン {} は所有物を持つ型に対して段階 1 の対象外", other)),
+    }
+}
+
+/// `match` の対象の所有の扱い。腕ごとに、所有物を束縛するかを持つ。
+pub(crate) struct Scrut {
+    /// この `match` が対象の値を所有しているか (束縛しない腕は頭で解放する)。
+    owned: bool,
+    t: Ty,
+    covers: Vec<Cover>,
+}
+
+/// `match` の対象の値 `sv` (所有物を持つ型) について、所有を決める。持たない型なら `None`。
+/// 局所変数 (印を持つ) で、どれかの腕が束縛するなら、対象を移す (印を下ろす)。束縛しないなら移さない。
+/// 一時の値 (呼び出しの結果など) は、この `match` が所有する。
+pub(crate) fn scrut_begin(lw: &mut Lw, scrut: &V, sv: VId, pats: &[&V]) -> LR<Option<Scrut>> {
+    let t = lw.vty(sv);
+    if !owns_heap(lw, t) {
+        return Ok(None);
+    }
+    let covers: Vec<Cover> = pats.iter().map(|p| pat_cover(lw, p, t)).collect::<LR<_>>()?;
+    let moves = covers.contains(&Cover::All);
+    let slot = val_slot(lw, scrut);
+    if let (Some(s), true) = (slot, moves) {
+        if let Some(flag) = val_flag(lw, s) {
+            set_flag(lw, flag, false);
+        }
+    }
+    Ok(Some(Scrut { owned: slot.is_none() || moves, t, covers }))
+}
+
+/// 腕 `i` の頭 (パターンが当たった後): 所有していて、この腕が所有物を束縛しないなら、対象の値を丸ごと解放する。
+pub(crate) fn scrut_arm(lw: &mut Lw, sc: &Option<Scrut>, i: usize, sv: VId) {
+    if let Some(sc) = sc {
+        if sc.owned && sc.covers[i] == Cover::No {
+            drop_value(lw, sv, sc.t);
+        }
+    }
+}
+
+/// パターンの `Some(x)` / `Ok(x)` / `Err(x)` の部分パターンの型の手がかり (対象の型表の型から)。
+pub(crate) fn set_payload_hint(lw: &mut Lw, scrut_src: &Src, ctor: &str) {
+    lw.coll.hint = match (scrut_src, ctor) {
+        (Src::Named(n, a), "Some") if n == "Option" => a.first().cloned(),
+        (Src::Named(n, a), "Ok") if n == "Result" => a.first().cloned(),
+        (Src::Named(n, a), "Err") if n == "Result" => a.get(1).cloned(),
+        _ => None,
+    };
+}
+
+/// 代入の先: クロージャの変数は代入できない。
 pub(crate) fn check_assign(lw: &Lw, s: usize, line: usize) -> LR<()> {
-    let owned = !lw.coll.borrowed.contains(&s);
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Closure { .. })) || (owned && matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String))) {
-        return lw.err(line, "Vec / String / クロージャの変数への代入は段階 1 の対象外");
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Closure { .. })) {
+        return lw.err(line, "クロージャの変数への代入は段階 1 の対象外");
     }
     Ok(())
 }
@@ -283,8 +669,8 @@ pub(crate) fn after_let(lw: &mut Lw, name: &str, init: &V) -> LR<()> {
 /// クロージャの式 (本体は `closure_lit` で下ろした後) の種類。型表の `Closure` 型から作る。
 fn closure_kind_from_table(lw: &Lw, e: &V) -> Option<Kind> {
     let Some(Src::Closure { args, ret, .. }) = table_ty(lw, e) else { return None };
-    let ats: Option<Vec<Ty>> = args.iter().map(conv).collect();
-    let (args, ret) = (ats?, conv(&ret)?);
+    let ats: Option<Vec<Ty>> = args.iter().map(|a| lw.conv_t(a)).collect();
+    let (args, ret) = (ats?, lw.conv_t(&ret)?);
     Some(Kind::Closure { key: closure_key(lw, nid(e)), args, ret })
 }
 
@@ -297,8 +683,8 @@ pub(crate) fn finish(blocks: &mut [Block], allocas: Vec<Inst>) {
     blocks[0].insts = allocas.into_iter().chain(rest).collect();
 }
 
-/// `Vec::new(std.alloc.SYSTEM)` / `String::new(std.alloc.SYSTEM)`: ヘッダを作り、空 (null, 0, 0) にする。
-fn new_header(lw: &mut Lw, e: &V, size: u32) -> LR<Option<VId>> {
+/// `Vec::new(std.alloc.SYSTEM)` / `String::new(std.alloc.SYSTEM)`: 空 (null, 0, 0) の値 `vec`。局所変数にするとき `adopt` がヘッダを作る。
+fn new_header(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let f = nf(e);
     let line = nline(e);
     let args = items(&f[1]);
@@ -306,15 +692,20 @@ fn new_header(lw: &mut Lw, e: &V, size: u32) -> LR<Option<VId>> {
     if !system {
         return lw.err(line, "Vec / String の生成は std.alloc.SYSTEM だけ段階 1 の対象");
     }
-    let hdr = emit_alloca(lw, size);
     let null = lw.emit(Ty::Ptr, Op::Const(0));
     let zero = lw.emit(Ty::Usize, Op::Const(0));
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: hdr, off: 0, v: null });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: hdr, off: 8, v: zero });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: hdr, off: 16, v: zero });
-    let scope = lw.scopes.len() - 1;
-    lw.coll.owned.push((scope, hdr));
-    Ok(Some(hdr))
+    let vt = lw.aggs.borrow_mut().vec_hdr();
+    Ok(Some(lw.emit(vt, Op::Make { variant: None, fields: vec![null, zero, zero] })))
+}
+
+fn mem_drop(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
+    let args = items(&nf(e)[1]);
+    if args.len() != 1 {
+        return lw.err(nline(e), "core.mem.drop の引数は 1 つのはず");
+    }
+    let Some(v) = lw.expr(&args[0])? else { return Ok(None) };
+    drop_temp(lw, v);
+    Ok(Some(lw.unit()))
 }
 
 /// 関数呼び出しのうち、コレクションの生成と、クロージャ値の呼び出しを扱う。扱わないなら `None`。
@@ -351,8 +742,10 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     }
     let segs: Vec<&str> = segs.iter().map(|x| x.as_str()).collect();
     match segs.as_slice() {
-        ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e, HDR_VEC)),
-        ["alloc", "string", "String", "new"] => Some(new_header(lw, e, HDR_VEC)),
+        ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e)),
+        ["alloc", "string", "String", "new"] => Some(new_header(lw, e)),
+        // `core.mem.drop(x)`: 値を移して、その場で解放する。
+        ["core", "mem", "drop"] => Some(mem_drop(lw, e)),
         _ => None,
     }
 }
@@ -475,8 +868,7 @@ fn lower_instance(
             child.coll.kinds.insert(s, k);
         } else {
             let t = sig_ty(child, &from_v(pt, tnames)).expect("上で検査済み");
-            child.bind_let(pname, pv[vi], t);
-            bind_param_kind(child, pname, &from_v(pt, tnames));
+            bind_param(child, pname, pv[vi], t, &from_v(pt, tnames));
             vi += 1;
         }
     }
@@ -487,6 +879,7 @@ fn lower_instance(
         if child.vty(v) != child.ret {
             return child.err(nline(body), "本体の値の型が戻り値の型と合わない");
         }
+        drop_from(child, 0);
         child.terminate(Term::Ret(v));
     }
     // 効果の型引数 (`uses [E]`) は、捕獲のないクロージャでは空の集合に束縛される。
@@ -554,7 +947,9 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     }
     let m = st(&f[1]);
     let nargs = items(&f[2]).len();
+    let slot = local_slot(lw, &f[0]);
     Some(match place(lw, &f[0]) {
+        Ok(Some(h)) if m == "push" && matches!(kind, Kind::Vec(_)) => vec_push(lw, e, line, slot, &kind, h, items(&f[2])),
         Ok(Some(h)) if m == "get" => get_elem(lw, line, &kind, h, items(&f[2])),
         Ok(Some(h)) if m == "sub" => slice_sub(lw, line, &kind, h, items(&f[2])),
         Ok(Some(h)) => coll_method(lw, line, kind, h, &m, nargs),
@@ -573,6 +968,9 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
     let hdr = lw.slots[s].0;
     if m == "get" {
         return get_elem(lw, line, &kind, hdr, items(&f[1]));
+    }
+    if m == "push" && matches!(kind, Kind::Vec(_)) {
+        return vec_push(lw, e, line, Some(s), &kind, hdr, items(&f[1]));
     }
     if m == "sub" {
         return slice_sub(lw, line, &kind, hdr, items(&f[1]));
@@ -603,6 +1001,111 @@ fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str, nargs: usi
         "as_bytes" if kind == Kind::Str => Ok(Some(h)),
         other => lw.err(line, format!("メソッド {} は段階 1 の対象外", other)),
     }
+}
+
+/// `v.push(x)` (要素はスカラーの Vec): 満杯なら `heap.realloc` で広げ、末尾に書いて `len` を進める。結果は `Ok(())`。
+/// 確保に失敗することはない (`AllocError` の `Err` は作らない)。要素型が未確定の Vec は、引数の型で決める。
+fn vec_push(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "push の引数は 1 つのはず");
+    }
+    let Some(x) = lw.expr(&args[0])? else { return Ok(None) };
+    let xt = lw.vty(x);
+    let elem = match kind {
+        Kind::Vec(Some(t)) => *t,
+        _ => xt,
+    };
+    let Some(sz) = size_of(elem) else {
+        return lw.err(line, format!("push の要素の型 {} は段階 1 の対象外", elem.name()));
+    };
+    if xt != elem {
+        return lw.err(line, "push の引数の型が要素の型と違う");
+    }
+    if matches!(kind, Kind::Vec(None)) {
+        if let Some(s) = slot {
+            lw.coll.kinds.insert(s, Kind::Vec(Some(elem)));
+        }
+    }
+    let rt = lw.ty_of(e)?;
+    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+        return lw.err(line, "push の結果の型が Result<(), AllocError> でない");
+    }
+    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: len, b: cap });
+    let (grow, _) = lw.new_block(&[]);
+    let (cont, _) = lw.new_block(&[]);
+    lw.branch(full, (grow, vec![]), (cont, vec![]));
+    lw.cur = Some(grow);
+    let dbl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: cap, b: cap });
+    let four = lw.emit(Ty::Usize, Op::Const(4));
+    let newcap = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: dbl, b: four });
+    let bytes = if sz == 1 {
+        newcap
+    } else {
+        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
+        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: newcap, b: k })
+    };
+    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: bytes });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: newcap });
+    lw.goto(cont, vec![]);
+    lw.cur = Some(cont);
+    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let off = if sz == 1 {
+        len
+    } else {
+        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
+        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: len, b: k })
+    };
+    let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
+    lw.emit(Ty::Unit, Op::MemStore { ty: elem, p: addr, off: 0, v: x });
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    let nl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: one });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });
+    let u = lw.unit();
+    Ok(Some(lw.emit(rt, Op::Ok(u))))
+}
+
+/// 呼べるもの (捕獲のないクロージャの式、クロージャの局所変数、関数の項目) の、呼び先の鍵と引数・戻り値の型。
+/// 呼び先は `callees` に入れる。`Result::map_err` の引数に使う。
+pub(crate) fn callable(lw: &mut Lw, f: &V) -> LR<(String, Vec<Ty>, Ty)> {
+    let line = nline(f);
+    if nname(f) == "Closure" {
+        if lw.expr(f)?.is_none() {
+            return lw.err(line, "クロージャが作れない");
+        }
+        let Some(Kind::Closure { key, args, ret }) = closure_kind_from_table(lw, f) else {
+            return lw.err(line, "クロージャの型が決まらない");
+        };
+        lw.callees.insert(key.clone());
+        return Ok((key, args, ret));
+    }
+    if let Some(s) = local_slot(lw, f) {
+        if let Some(Kind::Closure { key, args, ret }) = lw.coll.kinds.get(&s).cloned() {
+            lw.callees.insert(key.clone());
+            return Ok((key, args, ret));
+        }
+    }
+    if nname(f) == "Path" {
+        let segs = strs(&nf(f)[0]);
+        if let Some(Target::Fn(di)) = lw.p.resolve(&segs, &lw.def.file).map(|r| r.target) {
+            let cd = &lw.p.defs[di];
+            if cd.kw == "fn" && cd.body.is_some() && !cd.is_method() && cd.generics.iter().all(|g| g.0 == "life") {
+                let gn = HashSet::new();
+                let args: Option<Vec<Ty>> = cd.params.iter().map(|(_, t)| sig_ty(lw, &from_v(t, &gn))).collect();
+                let ret = if is_nil(&cd.ret) { Some(Ty::Unit) } else { sig_ty(lw, &from_v(&cd.ret, &gn)) };
+                if let (Some(args), Some(ret)) = (args, ret) {
+                    let name = cd.name.clone();
+                    lw.callees.insert(name.clone());
+                    return Ok((name, args, ret));
+                }
+                return lw.err(line, format!("関数 {} の型は段階 1 の対象外", segs.join(".")));
+            }
+        }
+    }
+    lw.err(line, "呼べるものは捕獲のないクロージャか関数の項目だけ段階 1 の対象")
 }
 
 /// `s.sub(a, b)` (要素がスカラーのスライス): `a <= b <= len` なら `Some(s[a..b])`、外なら `None` (panic しない。木走査の `sub` と同じ)。
@@ -869,7 +1372,7 @@ struct Counted {
 
 /// 添字を 1 ずつ増やす数え上げのループ。代入される変数は、ループの先頭のブロック引数で受け渡す。
 /// 構造: header(i, slots) → (i < end) ? body : exit。body の終わりと continue は incr(slots) へ、incr は header(i+1, slots) へ戻る。
-fn counted(lw: &mut Lw, line: usize, c: Counted, name: Option<String>, body: &V) -> LR<Option<VId>> {
+fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V) -> LR<Option<VId>> {
     let slots = lw.assigned(&[body]);
     let slot_tys: Vec<Ty> = slots.iter().map(|s| lw.slots[*s].1).collect();
     let (xb, xp) = lw.new_block(&slot_tys);
@@ -910,7 +1413,7 @@ fn counted(lw: &mut Lw, line: usize, c: Counted, name: Option<String>, body: &V)
         lw.goto(ib, args);
     }
     lw.loops.pop();
-    block_end(lw, None, line)?;
+    block_end(lw);
     lw.scopes.pop();
 
     // incr: 添字を 1 進めて先頭へ戻る (添字は body の中で変わらないので、先頭の値をそのまま使う)
@@ -952,8 +1455,8 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let Some(Src::Closure { args, ret, .. }) = table_ty(lw, e) else {
         return lw.err(line, "クロージャの型が決まらない");
     };
-    let ats: Option<Vec<Ty>> = args.iter().map(conv).collect();
-    let (Some(ats), Some(rt)) = (ats, conv(&ret)) else {
+    let ats: Option<Vec<Ty>> = args.iter().map(|a| lw.conv_t(a)).collect();
+    let (Some(ats), Some(rt)) = (ats, lw.conv_t(&ret)) else {
         return lw.err(line, "クロージャの引数か戻り値の型は段階 1 の対象外");
     };
     let names: Vec<String> = items(&f[0])

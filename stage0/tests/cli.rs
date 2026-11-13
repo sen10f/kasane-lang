@@ -12160,10 +12160,9 @@ fn kir_coll_closure_is_monomorphized_per_closure() {
 
 #[test]
 fn kir_coll_reports_unsupported_constructs_with_a_reason() {
-    // Vec の push (Result)、所有の移動、capture を持つクロージャは、理由を付けて拒否する。
+    // `Vec` の `pop` (Option)、capture を持つクロージャは、理由を付けて拒否する (`push` と移動は 13 章で下ろせる)。
     let cases: &[(&str, &str, &str)] = &[
-        ("t.push_one", "    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let _r = v.push(1u8)\n    v.len()\n", "push は段階 1 の対象外"),
-        ("t.moved", "    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let w = v\n    w.len()\n", "所有の移動"),
+        ("t.pop_one", "    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let _r = v.pop()\n    v.len()\n", "pop は段階 1 の対象外"),
         ("t.captured", "    let k = 7usize\n    let f = fn(x: usize) -> usize capture [&k] {\n        x.wrapping_mul(*k)\n    }\n    f(1usize)\n", "capture を持つ"),
     ];
     for (i, (f, body, why)) in cases.iter().enumerate() {
@@ -12560,7 +12559,7 @@ fn kir_agg_refs_text_shows_field_addresses_and_fat_values() {
 #[test]
 fn kir_agg_refs_vec_fields_are_read_through_references() {
     // Vec / String を持つ構造体 (json.Doc の形) への参照は下ろせる: ヘッダの `len` を `fieldaddr` と `load` で読む。
-    // 値渡しと、その構造体の組み立て (所有の移動) は未対応のまま。木走査では動く。
+    // 値渡しと組み立て (所有の移動) は設計_KIR.md 13 章で下ろせる。`t.doc_run` も下ろせる。
     let t = agg_refs_pkg("kir_agg_refs_vec_field", "    core.check.eq(t.doc_run(3u32), 3u32)\n");
     assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
     let e = run(&["kir", "t.doc_empty"], &t.0);
@@ -12569,9 +12568,10 @@ fn kir_agg_refs_vec_fields_are_read_through_references() {
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     let s = text(&o.stdout);
     assert!(s.contains("struct vec size=24 align=8 {ptr:ptr@0 len:usize@8 cap:usize@16}") && s.contains("call t.doc_bump(%0)"), "{}", s);
-    let o = run(&["kir", "t.doc_run"], &t.0);
-    assert_eq!(o.status.code(), Some(1));
-    assert!(text(&o.stderr).contains("t.doc_run は未対応"), "{}", text(&o.stderr));
+    // 組み立て (所有の移動) と `core.mem.drop` も下ろせる。値は木走査と同じで、漏れも二重解放もない。
+    let o = kir_run(&["kir", "t.doc_run", "--run", "3"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "3");
 }
 
 #[test]
@@ -12579,7 +12579,6 @@ fn kir_agg_refs_reports_unsupported_references_with_a_reason() {
     // 指す先が標準の型・Option の参照や、移動・Vec の借用の戻りは、理由を付けて拒否する。
     let cases: &[(&str, &str, &str)] = &[
         ("fn t.f(e: &std.io.Stdout) -> u8 uses [] panics never\n    let _t = e\n    0u8\nend t.f\n", "t.f", "引数の型"),
-        ("fn t.f(v: alloc.vec.Vec<u8, std.alloc.System>) -> usize uses [] panics never\n    v.len()\nend t.f\n", "t.f", "引数の型"),
         // 要素が集成体のスライスは `fat` の対象外 (要素の大きさが要る。`Option<&[u8]>` は対象になった)
         ("type t.P\n    a: u8\nend t.P\n\nfn t.f(s: &[t.P]) -> usize uses [] panics never\n    let _t = s\n    0usize\nend t.f\n", "t.f", "引数の型"),
     ];
@@ -13047,4 +13046,363 @@ end t.main
     // 既存の経路 (c / clif) は変わらない: llvm の文言を出さない
     let c = run(&["build"], &t.0);
     assert!(!text(&c.stdout).contains("llvm backend"), "{}", text(&c.stdout));
+}
+
+// ---- Vec / String の所有の移動と解放 (設計_KIR.md 13 章、kir/owned-heap) ----
+
+/// 所有の移動と解放の試験用の関数。`--run` (参照実行器) は、関数の終わりで領域の漏れと二重解放を内部エラーにする。
+const KIR_OWN_FNS: &str = "type t.Buf
+    items: alloc.vec.Vec<u32, std.alloc.System>
+    n: u32
+end t.Buf
+
+enum t.Slot
+    Empty
+    Full(alloc.vec.Vec<u32, std.alloc.System>)
+end t.Slot
+
+fn t.oom(_e: alloc.alloc.AllocError) -> u8 uses [] panics never
+    1u8
+end t.oom
+
+fn t.make(n: u32) -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        match v.push(i) {
+            Ok(_u) => {
+            }
+            Err(_e) => {
+                break
+            }
+        }
+        i = i.wrapping_add(1u32)
+    }
+    v
+end t.make
+
+fn t.ret_vec(n: u32) -> usize uses [alloc] panics never
+    let v = t.make(n)
+    v.len()
+end t.ret_vec
+
+fn t.grow(v: alloc.vec.Vec<u32, std.alloc.System>, k: u32) -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics never
+    let mut w = v
+    match w.push(k) {
+        Ok(_u) => {
+        }
+        Err(_e) => {
+        }
+    }
+    w
+end t.grow
+
+fn t.sum(v: &alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics may
+    let mut total = 0u32
+    for x in v {
+        total = total.wrapping_add(x)
+    }
+    total
+end t.sum
+
+fn t.arg_ret(n: u32) -> u32 uses [alloc] panics may
+    let v = t.make(n)
+    let w = t.grow(v, 7u32)
+    let x = t.grow(w, 8u32)
+    t.sum(&x)
+end t.arg_ret
+
+fn t.consume(v: alloc.vec.Vec<u32, std.alloc.System>) -> usize uses [] panics never
+    v.len()
+end t.consume
+
+fn t.buf(n: u32) -> t.Buf uses [alloc] panics never
+    let v = t.make(n)
+    t.Buf { items: v, n: n }
+end t.buf
+
+fn t.buf_len(b: &t.Buf) -> usize uses [] panics never
+    b.items.len()
+end t.buf_len
+
+fn t.buf_run(n: u32) -> usize uses [alloc] panics never
+    let b = t.buf(n)
+    t.buf_len(&b)
+end t.buf_run
+
+fn t.consume_buf(b: t.Buf) -> usize uses [] panics never
+    t.buf_len(&b)
+end t.consume_buf
+
+fn t.maybe(n: u32, some: bool) -> Option<alloc.vec.Vec<u32, std.alloc.System>> uses [alloc] panics never
+    if some {
+        Some(t.make(n))
+    } else {
+        None
+    }
+end t.maybe
+
+fn t.opt_len(n: u32, some: bool) -> usize uses [alloc] panics never
+    match t.maybe(n, some) {
+        Some(v) => v.len()
+        None => 99usize
+    }
+end t.opt_len
+
+fn t.opt_local(n: u32, some: bool) -> usize uses [alloc] panics never
+    let o = t.maybe(n, some)
+    match o {
+        Some(v) => v.len()
+        None => 99usize
+    }
+end t.opt_local
+
+fn t.opt_peek(n: u32, some: bool) -> usize uses [alloc] panics never
+    let o = t.maybe(n, some)
+    let k = match o {
+        Some(_v) => 1usize
+        None => 2usize
+    }
+    if o.is_some() {
+        k.wrapping_add(10usize)
+    } else {
+        k
+    }
+end t.opt_peek
+
+fn t.opt_str(some: bool) -> usize uses [alloc] panics never
+    let o: Option<alloc.string.String<std.alloc.System>> = if some {
+        Some(alloc.string.String.new(std.alloc.SYSTEM))
+    } else {
+        None
+    }
+    match o {
+        Some(s) => s.len()
+        None => 99usize
+    }
+end t.opt_str
+
+fn t.branch(n: u32, take: bool) -> usize uses [alloc] panics never
+    let v = t.make(n)
+    let mut total = 0usize
+    if take {
+        let w = v
+        total = w.len()
+    }
+    total.wrapping_add(1usize)
+end t.branch
+
+fn t.branch_call(n: u32, take: bool) -> usize uses [alloc] panics never
+    let v = t.make(n)
+    if take {
+        t.consume(v)
+    } else {
+        0usize
+    }
+end t.branch_call
+
+fn t.branch_buf(n: u32, take: bool) -> usize uses [alloc] panics never
+    let b = t.buf(n)
+    if take {
+        t.consume_buf(b)
+    } else {
+        7usize
+    }
+end t.branch_buf
+
+fn t.churn(n: u32) -> usize uses [alloc] panics never
+    let mut total = 0usize
+    let mut i = 0u32
+    while i < n {
+        let v = t.make(3u32)
+        core.mem.drop(t.make(2u32))
+        total = total.wrapping_add(v.len())
+        i = i.wrapping_add(1u32)
+    }
+    total
+end t.churn
+
+fn t.churn_exit(n: u32) -> usize uses [alloc] panics never
+    let mut total = 0usize
+    let outer = t.make(1u32)
+    let mut i = 0u32
+    while i < n {
+        let v = t.make(i)
+        i = i.wrapping_add(1u32)
+        if i == 3u32 {
+            continue
+        }
+        if i == 6u32 {
+            break
+        }
+        total = total.wrapping_add(v.len())
+    }
+    total.wrapping_add(outer.len())
+end t.churn_exit
+
+fn t.step(k: usize, bad: bool) -> Result<usize, u8> uses [] panics never
+    if bad {
+        Err(5u8)
+    } else {
+        Ok(k)
+    }
+end t.step
+
+fn t.try_inner(n: u32, bad: bool) -> Result<usize, u8> uses [alloc] panics never
+    let v = t.make(n)
+    let k = t.step(v.len(), bad)?
+    let w = t.make(2u32)
+    Ok(k.wrapping_add(w.len()))
+end t.try_inner
+
+fn t.try_run(n: u32, bad: bool) -> usize uses [alloc] panics never
+    match t.try_inner(n, bad) {
+        Ok(x) => x
+        Err(_e) => 1000usize
+    }
+end t.try_run
+
+fn t.push_oom(n: u32) -> Result<usize, u8> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.push(n).map_err(t.oom)?
+    v.push(n).map_err(fn(x: alloc.alloc.AllocError) -> u8 capture [] {
+        2u8
+    })?
+    Ok(v.len())
+end t.push_oom
+
+fn t.map_err_run(n: u32) -> usize uses [alloc] panics never
+    match t.push_oom(n) {
+        Ok(x) => x
+        Err(_e) => 1000usize
+    }
+end t.map_err_run
+
+fn t.slot(n: u32) -> t.Slot uses [alloc] panics never
+    if n == 0u32 {
+        t.Slot.Empty
+    } else {
+        t.Slot.Full(t.make(n))
+    }
+end t.slot
+
+fn t.slot_len(n: u32) -> usize uses [alloc] panics never
+    match t.slot(n) {
+        t.Slot.Empty => 0usize
+        t.Slot.Full(v) => v.len()
+    }
+end t.slot_len
+
+fn t.slot_ignore(n: u32) -> usize uses [alloc] panics never
+    match t.slot(n) {
+        t.Slot.Empty => 1usize
+        t.Slot.Full(_v) => 2usize
+    }
+end t.slot_ignore
+
+fn t.reassign(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.make(n)
+    v = t.make(2u32)
+    v.len()
+end t.reassign
+
+";
+
+/// `KIR_OWN_FNS` に `main` を付けたパッケージを作る。
+fn kir_own_pkg(name: &str, main_body: &str) -> Tmp {
+    let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", main_body);
+    Tmp::new(name, &format!("{}{}", KIR_OWN_FNS, main))
+}
+
+#[test]
+fn kir_own_values_match_tree_walker() {
+    // Vec / String の所有の移動 (返す・引数で渡す・構造体のフィールド・`Option` の `match`・片方の枝だけで移す・ループ・`?`) が、
+    // 木走査と同じ値になる。参照実行器は漏れと二重解放を内部エラーにし、LLVM (clang があれば) も同じ表示になる。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.ret_vec", &["5"], "5usize", "5"),
+        ("t.ret_vec", &["0"], "0usize", "0"),
+        ("t.arg_ret", &["4"], "21u32", "21"),
+        ("t.buf_run", &["6"], "6usize", "6"),
+        ("t.opt_len", &["3", "true"], "3usize", "3"),
+        ("t.opt_len", &["3", "false"], "99usize", "99"),
+        ("t.opt_local", &["4", "true"], "4usize", "4"),
+        ("t.opt_local", &["4", "false"], "99usize", "99"),
+        ("t.opt_peek", &["4", "true"], "11usize", "11"),
+        ("t.opt_peek", &["4", "false"], "2usize", "2"),
+        ("t.opt_str", &["true"], "0usize", "0"),
+        ("t.opt_str", &["false"], "99usize", "99"),
+        ("t.branch", &["5", "true"], "6usize", "6"),
+        ("t.branch", &["5", "false"], "1usize", "1"),
+        ("t.branch_call", &["5", "true"], "5usize", "5"),
+        ("t.branch_call", &["5", "false"], "0usize", "0"),
+        ("t.branch_buf", &["5", "true"], "5usize", "5"),
+        ("t.branch_buf", &["5", "false"], "7usize", "7"),
+        ("t.churn", &["10000"], "30000usize", "30000"),
+        ("t.churn_exit", &["10"], "9usize", "9"),
+        ("t.try_run", &["4", "false"], "6usize", "6"),
+        ("t.try_run", &["4", "true"], "1000usize", "1000"),
+        ("t.map_err_run", &["9"], "2usize", "2"),
+        ("t.slot_len", &["0"], "0usize", "0"),
+        ("t.slot_len", &["5"], "5usize", "5"),
+        ("t.slot_ignore", &["0"], "1usize", "1"),
+        ("t.slot_ignore", &["5"], "2usize", "2"),
+        ("t.reassign", &["8"], "2usize", "2"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.iter().map(|a| match *a {
+            "true" | "false" => a.to_string(),
+            n => format!("{}u32", n),
+        }).collect::<Vec<_>>().join(", "));
+        let t = kir_own_pkg(&format!("kir_own_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_own_reports_unsupported_moves_with_a_reason() {
+    // フィールドからの移動 (部分的な移動)、所有物を持つ値の分解は、誤った KIR を出さず理由を付けて拒否する。
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "type t.B\n    items: alloc.vec.Vec<u8, std.alloc.System>\nend t.B\n\nfn t.f(b: t.B) -> usize uses [] panics never\n    let w = b.items\n    w.len()\nend t.f\n",
+            "t.f",
+            "フィールドからの Vec / String の移動",
+        ),
+        (
+            "fn t.f() -> usize uses [] panics never\n    let (a, b) = (alloc.vec.Vec.new(std.alloc.SYSTEM), 1usize)\n    let v: alloc.vec.Vec<u8, std.alloc.System> = a\n    b.wrapping_add(v.len())\nend t.f\n",
+            "t.f",
+            "分解",
+        ),
+        (
+            "fn t.f(o: Option<alloc.vec.Vec<u8, std.alloc.System>>) -> usize uses [] panics never\n    o.unwrap_or(alloc.vec.Vec.new(std.alloc.SYSTEM)).len()\nend t.f\n",
+            "t.f",
+            "unwrap_or",
+        ),
+    ];
+    for (i, (src, f, why)) in cases.iter().enumerate() {
+        let src = format!("{}\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n", src);
+        let t = Tmp::new(&format!("kir_own_reason_{}", i), &src);
+        let o = run(&["kir", f], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}: {}", f, text(&o.stdout));
+        assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
+    }
+}
+
+#[test]
+fn kir_own_dump_shows_moves_as_nulling_and_flags() {
+    // Vec の移動は元のヘッダの `ptr` を null にする書き込み、構造体の局所変数の移動は印 (1 バイト) の書き込みとして見える。
+    let t = kir_own_pkg("kir_own_dump", "    core.check.eq(t.branch_buf(3u32, true), 3usize)\n");
+    let o = run(&["kir", "t.branch"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    assert!(s.contains("const.ptr 0") && s.contains("heap.free %") && s.contains("struct vec size=24"), "{}", s);
+    let o = run(&["kir", "t.branch_buf"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    assert!(s.contains("frame.bytes 1") && s.contains("mem.store.bool") && s.contains("mem.load.bool"), "{}", s);
 }
