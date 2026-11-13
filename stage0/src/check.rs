@@ -5305,9 +5305,15 @@ impl<'a> Checker<'a> {
                 _ => unknown = true,
             }
         }
-        // 配列全体の使用があるとき (`index_uses != total`) や、添字が判断できないときは黙る。
-        if unknown || index_uses != total {
+        // 添字が判断できないときは黙る。配列全体の使用 (`index_uses != total`) があっても、
+        // `.len()` / `.iter()` のような借用だけなら配列自体は消費されないので、義務を残す
+        // (スコープ末で未消費を報告)。`for x in a` (所有) や丸ごと渡しは `use_place(consume)`
+        // で義務を消費する。
+        if unknown {
             return true;
+        }
+        if index_uses != total {
+            return false;
         }
         if total == 0 {
             self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
