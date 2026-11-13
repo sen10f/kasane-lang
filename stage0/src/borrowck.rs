@@ -1871,17 +1871,22 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
     struct State {
         holders: BTreeMap<Holder, BTreeSet<usize>>,
         scope: BTreeSet<String>,
+        /// 借用元の局所変数がブロックを抜けて寿命が尽きたローン。同名の兄弟ブロックの変数が
+        /// 再び `ScopeAdd` されても、別の変数なので生き返らない (借用を作り直したときだけ外す)。
+        dead: BTreeSet<usize>,
     }
     let mut state_in: Vec<Option<State>> = vec![None; n];
     state_in[0] = Some(State {
         holders: BTreeMap::new(),
         scope: low.scope_seed.iter().cloned().collect(),
+        dead: BTreeSet::new(),
     });
     let mut work: VecDeque<usize> = VecDeque::new();
     work.push_back(0);
     let apply = |st_: &mut State, ev: &Ev| match ev {
         Ev::Loan { holder, id } => {
             // 同じ変数・場所が複数の借用を持つこともある (`match` の被検査式など) ので、既存に足す。
+            st_.dead.remove(id);
             st_.holders.entry(holder.clone()).or_default().insert(*id);
         }
         Ev::Alias { to, from } => {
@@ -1950,6 +1955,11 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
         }
         Ev::DropScope(v) => {
             st_.scope.remove(v);
+            for (id, l) in low.loans.iter().enumerate() {
+                if &l.root == v {
+                    st_.dead.insert(id);
+                }
+            }
         }
         Ev::Access { root, path, kind, .. } => {
             // 場所への上書き・`&mut` で、そこに保存されたローンは死ぬ。型が分からないので広めに殺す:
@@ -1981,6 +1991,9 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                     }
                     for x in &stt.scope {
                         ch |= old.scope.insert(x.clone());
+                    }
+                    for x in &stt.dead {
+                        ch |= old.dead.insert(*x);
                     }
                     ch
                 }
@@ -2050,6 +2063,21 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
             // 失った後で使われる (ブロックを抜けた `&b` や一時値への参照など)。寿命切れの借用。
             if let Ev::Access { root, path, kind, line } = ev {
                 if !matches!(kind, Acc::Move) {
+                    // 保存場所 (`v.push(&b)` の `v`) が持つローンの借用元が、ブロックを抜けて死んでいる。
+                    for (holder, ids) in &stt.holders {
+                        let Holder::Place { root: r, .. } = holder else { continue };
+                        if r != root {
+                            continue;
+                        }
+                        for &id in ids {
+                            if stt.dead.contains(&id) {
+                                let m = format!("use of `{r}` borrows `{}` which does not live long enough", low.loans[id].root);
+                                if !out.iter().any(|(l, t)| l == line && *t == m) {
+                                    out.push((*line, m));
+                                }
+                            }
+                        }
+                    }
                     for (holder, ids) in &stt.holders {
                         let Holder::Var(v) = holder else { continue };
                         // 式の中だけで完結する一時の持ち主 (`$e0` など) は局所変数ではないので、
@@ -2062,6 +2090,11 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                         for &id in ids {
                             let l = &low.loans[id];
                             if l.root == *root && overlaps(&l.path, path) {
+                                continue;
+                            }
+                            // 借用元の変数が（同名の兄弟ブロックの変数に紛れず）寿命切れ。
+                            if stt.dead.contains(&id) {
+                                out.push((*line, format!("use of `{root}` borrows `{}` which does not live long enough", l.root)));
                                 continue;
                             }
                             // 借用元がスコープを抜けている (関数の仮引数や、
