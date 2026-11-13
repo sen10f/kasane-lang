@@ -128,7 +128,11 @@ fn side_effecting(op: &Op) -> bool {
         | Op::PtrAdd { .. }
         | Op::StaticBytes(_)
         | Op::AsShared(_)
-        | Op::ParseInt { .. } => false,
+        | Op::ParseInt { .. }
+        | Op::FnPtr { .. }
+        | Op::EnvArgCount
+        | Op::EnvArg { .. }
+        | Op::EnvVar { .. } => false,
         | Op::Reborrow(_)
         | Op::FieldAddr { .. } => false,
     }
@@ -252,7 +256,7 @@ fn copy_prop(m: &Module) -> Result<Module, String> {
 /// 命令の被演算子を可変に参照する `Vec` を返す。
 fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
     match op {
-        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) => vec![],
+        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) | Op::FnPtr { .. } => vec![],
         Op::PtrAdd { p, off } => vec![p, off],
         Op::MemLoad { p, .. } | Op::HeapFree(p) => vec![p],
         Op::HeapAlloc(n) => vec![n],
@@ -267,6 +271,8 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::NetListen { addr } | Op::NetConnect { addr } => vec![addr],
         Op::NetAccept { sock } | Op::NetFlush { sock } | Op::NetClose { sock } | Op::NetLocalPort { sock } => vec![sock],
         Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => vec![sock, buf, len],
+        Op::EnvArgCount => vec![],
+        Op::EnvArg { index } | Op::EnvVar { name: index } => vec![index],
         Op::ParseInt { s, radix, .. } => vec![s, radix],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }

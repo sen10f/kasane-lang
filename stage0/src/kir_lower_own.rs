@@ -17,6 +17,8 @@ use crate::types::{from_v, Ty as Src};
 /// 受け手の式が「局所変数から始まるフィールドの連なり」なら、(局所変数のスロット, フィールド名の列)。
 pub(super) fn chain_of(lw: &Lw, e: &V) -> Option<(usize, Vec<String>)> {
     match nname(e) {
+        // 所有物を持つ要素の `v[i]` (`elem_prep` が借用のスロットを作った)
+        "Index" => Some((coll::local_slot(lw, e)?, vec![])),
         "Path" => {
             let segs = strs(&nf(e)[0]);
             let s = lw.lookup(&segs[0])?;
@@ -391,7 +393,7 @@ pub(super) fn match_get_mut(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         "MCall" => {
             let g = nf(scrut);
             let a = items(&g[2]);
-            if st(&g[1]) != "get_mut" || a.len() != 1 {
+            if !matches!(st(&g[1]).as_str(), "get_mut" | "get") || a.len() != 1 {
                 return None;
             }
             (chain_of(lw, &g[0])?, &a[0])
@@ -403,13 +405,21 @@ pub(super) fn match_get_mut(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             }
             let segs = strs(&nf(&g[0])[0]);
             let a = items(&g[1]);
-            if segs.len() < 2 || segs[segs.len() - 1] != "get_mut" || a.len() != 1 {
+            if segs.len() < 2 || !matches!(segs[segs.len() - 1].as_str(), "get_mut" | "get") || a.len() != 1 {
                 return None;
             }
             ((lw.lookup(&segs[0])?, segs[1..segs.len() - 1].to_vec()), &a[0])
         }
         _ => return None,
     };
+    // `get` は、要素が所有物のときだけここで下ろす (要素の借用を束縛する)。スカラーなどは従来の値の `Option` のまま。
+    let is_get = match nname(scrut) {
+        "MCall" => st(&nf(scrut)[1]) == "get",
+        _ => strs(&nf(&nf(scrut)[0])[0]).last().is_some_and(|x| x == "get"),
+    };
+    if is_get && !recv_elem(lw, &recv).is_some_and(|t| coll::owns(lw, t)) {
+        return None;
+    }
     // 腕は `Some(名前 | _)` と `None | _` の 2 つだけ
     let arms: Vec<(&V, &V)> = items(&f[1]).iter().filter_map(|a| match a {
         V::L(xs) if xs.len() == 2 => Some((&xs[0], &xs[1])),
@@ -430,23 +440,81 @@ pub(super) fn match_get_mut(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     let bind = {
         let sub = &items(&nf(arms[some_i].0)[1])[0];
         match nname(sub) {
-            "PBind" => Some(st(&nf(sub)[0])),
-            "PWild" => None,
+            "PBind" => GetBind::Name(st(&nf(sub)[0])),
+            "PWild" => GetBind::None,
+            // `Some(t.Item { name: _, v: x })`: 構造体の要素を借用のまま分解する (`get` で要素が所有物のときだけ)
+            "PStruct" if is_get => GetBind::Struct(sub),
             _ => return None,
         }
     };
     Some(get_mut_match(lw, e, recv, idx, &arms, some_i, none_i, bind))
 }
 
+/// `Some(..)` の中の束縛 (`get` / `get_mut` の腕)。
+enum GetBind<'a> {
+    None,
+    Name(String),
+    Struct(&'a V),
+}
+
+/// 構造体の要素への共有参照 `r` を構造体のパターン `pat` で分解する。スカラーのフィールドは値を読んで束縛し、所有物のフィールドは借用で束縛する
+/// (解放しない)。`src` は構造体の型表の型 (`&T` の `T`)。`_` と入れ子の構造体のパターンだけ。
+fn bind_struct_pat(lw: &mut Lw, line: usize, pat: &V, r: VId, src: Option<&Src>) -> LR<()> {
+    let Ty::Ref(_, Pointee::Agg(ai)) = lw.vty(r) else { return lw.err(line, "構造体のパターンの対象が集成体への参照でない") };
+    let sname = lw.agg_def(ai).name.clone();
+    let _ = src;
+    let gn = HashSet::new();
+    let def = lw.p.defs.iter().find(|x| x.kw == "type" && x.name == sname).cloned();
+    for it in items(&nf(pat)[1]) {
+        let V::L(xs) = it else { return lw.err(line, "構造体のパターンの形が不正") };
+        let fname = st(&xs[0]);
+        let sub = &xs[1];
+        if nname(sub) == "PWild" {
+            continue;
+        }
+        let AggKind::Struct(fs) = lw.agg_def(ai).kind.clone() else { return lw.err(line, "構造体のパターンの対象が構造体でない") };
+        let Some(fd) = fs.iter().find(|x| x.name == fname) else { return lw.err(line, format!("フィールド {} がない", fname)) };
+        let fa = lw.field_addr(r, &fname, line)?;
+        let fsrc = def.as_ref().and_then(|d| d.fields.iter().find(|f| f.0 == fname)).map(|f| from_v(&f.1, &gn));
+        match nname(sub) {
+            "PBind" if !matches!(nf(sub).get(1), Some(V::B(true))) => {
+                let name = st(&nf(sub)[0]);
+                if coll::owns(lw, fd.ty) {
+                    let p = lw.emit(Ty::Ptr, Op::Bitcast { src: lw.vty(fa), a: fa });
+                    bind_elem_ref(lw, line, &name, p, fd.ty, fsrc.as_ref(), false)?;
+                } else {
+                    let v = lw.emit(fd.ty, Op::Load(fa));
+                    lw.bind(&name, v, fd.ty);
+                }
+            }
+            "PStruct" => bind_struct_pat(lw, line, sub, fa, fsrc.as_ref())?,
+            _ => return lw.err(line, "get の腕の構造体パターンは、名前・_・入れ子の構造体のパターンだけ段階 1 の対象"),
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
-fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: &[(&V, &V)], some_i: usize, none_i: usize, bind: Option<String>) -> LR<Option<VId>> {
+fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: &[(&V, &V)], some_i: usize, none_i: usize, bind: GetBind) -> LR<Option<VId>> {
     let line = nline(e);
     let (s, names) = recv;
     // 受け手の置き場と要素の型
     let (seq, elem) = if names.is_empty() {
-        match lw.coll.kinds.get(&s).cloned() {
-            Some(Kind::Vec(Some(t))) => (Seq::Hdr(lw.slots[s].0), t),
-            Some(Kind::Slice(Some(t))) => (Seq::Fat(lw.slots[s].0), t),
+        // `lw.coll` と `lw.slots` から必要な値を先にコピーし、その後の `lw.emit` との借用競合を避ける。
+        let kind = lw.coll.kinds.get(&s).cloned();
+        let slot_ptr = lw.slots[s].0;
+        match kind {
+            Some(Kind::Vec(Some(t))) => (Seq::Hdr(slot_ptr), t),
+            // スロットが fat への参照なら、ロードして fat 値を得る。
+            Some(Kind::Slice(Some(t))) => {
+                let fat_val = match lw.vty(slot_ptr) {
+                    Ty::Ref(_, Pointee::Agg(agg_ai)) => {
+                        lw.emit(Ty::Agg(agg_ai), Op::Load(slot_ptr))
+                    }
+                    _ => slot_ptr,
+                };
+                (Seq::Fat(fat_val), t)
+            }
             // HashMap の get_mut は `Option<&mut V>` を持てないので未対応 (設計_KIR.md 16 章)。
             Some(Kind::Map(_)) => return lw.err(line, "HashMap::get_mut は段階 1 の対象外"),
             _ => return lw.err(line, "get_mut の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
@@ -459,7 +527,14 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
         let pl = place(lw, s, &names, line)?;
         (Seq::Hdr(pl.hdr), t)
     };
-    let (Some(sz), Some(p)) = (coll::size_of(elem), Pointee::of(elem)) else {
+    let is_get = match nname(&nf(e)[0]) {
+        "MCall" => st(&nf(&nf(e)[0])[1]) == "get",
+        _ => strs(&nf(&nf(&nf(e)[0])[0])[0]).last().is_some_and(|x| x == "get"),
+    };
+    if is_get && !coll::owns(lw, elem) {
+        return lw.err(line, "get は要素が所有物のときだけここで扱う");
+    }
+    let (Some(sz), Some(p)) = (coll::elem_size(lw, elem), Pointee::of(elem)) else {
         return lw.err(line, format!("get_mut の要素の型 {} は段階 1 の対象外", elem.name()));
     };
     let res: Option<Ty> = match lw.src_ty(e)? {
@@ -495,10 +570,27 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
                 lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k })
             };
             let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
-            if let Some(name) = &bind {
-                let rt = Ty::Ref(true, p);
-                let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
-                lw.bind(name, r, rt);
+            if let GetBind::Struct(pat) = &bind {
+                let src = match lw.src_ty(&nf(e)[0]) {
+                    Ok(Src::Named(n, a)) if n == "Option" => a.into_iter().next(),
+                    _ => None,
+                };
+                let Ty::Agg(ai) = elem else { return lw.err(line, "構造体のパターンの対象が集成体でない") };
+                let r = lw.emit(Ty::Ref(false, Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: addr });
+                bind_struct_pat(lw, line, pat, r, src.as_ref())?;
+            }
+            if let GetBind::Name(name) = &bind {
+                if is_get {
+                    let src = match lw.src_ty(&nf(e)[0]) {
+                        Ok(Src::Named(n, a)) if n == "Option" => a.into_iter().next(),
+                        _ => None,
+                    };
+                    bind_elem_ref(lw, line, name, addr, elem, src.as_ref(), false)?;
+                } else {
+                    let rt = Ty::Ref(true, p);
+                    let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+                    lw.bind(name, r, rt);
+                }
             }
         }
         if let Some(v) = lw.expr(arms[ai].1)? {
@@ -527,4 +619,41 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
     }
     let _ = Term::Unreachable;
     Ok(Some(if carry { jp[0] } else { lw.unit() }))
+}
+
+/// `match` の受け手 `recv` (局所変数かフィールドの Vec / スライス) の要素の型。分からなければ `None`。
+fn recv_elem(lw: &Lw, recv: &(usize, Vec<String>)) -> Option<Ty> {
+    let (s, names) = recv;
+    let k = if names.is_empty() {
+        lw.coll.kinds.get(s).cloned()
+    } else {
+        coll::kind_of_src(lw, &field_src(lw, *s, names)?)
+    };
+    match k {
+        Some(Kind::Vec(Some(t))) | Some(Kind::Slice(Some(t))) => Some(t),
+        _ => None,
+    }
+}
+
+/// 要素の番地 `addr` (型 `elem`、所有物を持つ) の借用を、名前 `name` に束縛する。借用なので所有に入れない (解放しない)。
+/// Vec / String の要素はヘッダのアドレス (`ptr`) で、種類 (`src` は `&T` の `T`) を結び付ける。構造体などは共有参照 `&T`。
+pub(super) fn bind_elem_ref(lw: &mut Lw, line: usize, name: &str, addr: VId, elem: Ty, src: Option<&Src>, m: bool) -> LR<()> {
+    let Ty::Agg(ai) = elem else {
+        return lw.err(line, "要素の借用は集成体だけ段階 1 の対象");
+    };
+    if super::agg::is_vec_name(&lw.agg_def(ai).name) {
+        let kind = src.and_then(|t| coll::kind_of_src(lw, t)).or_else(|| lw.aggs.borrow().vec_elem(elem).map(|e| Kind::Vec(Some(e))));
+        let Some(kind) = kind else {
+            return lw.err(line, "要素の借用の種類 (Vec / String) が分からない");
+        };
+        lw.bind(name, addr, Ty::Ptr);
+        let s = lw.lookup(name).expect("束縛した名前");
+        lw.coll.kinds.insert(s, kind);
+        lw.coll.borrowed.insert(s);
+    } else {
+        let rt = Ty::Ref(m, Pointee::Agg(ai));
+        let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+        lw.bind(name, r, rt);
+    }
+    Ok(())
 }

@@ -610,6 +610,9 @@ pub enum Op {
     BitCount { k: BitK, src: Ty, a: VId },
     /// 直接呼び出し (単相インスタンスの鍵で指す)。
     Call { callee: String, args: Vec<VId> },
+    /// 関数のアドレス (`ptr`)。C のコールバックとして関数を渡すときに使う。
+    /// `callee` は関数の鍵。取り込みの無い `fn` のみ (段階 1)。
+    FnPtr { callee: String },
     /// 集成体の構築。`variant` が `Some(k)` なら列挙型のバリアント k (先頭にタグを置く)、`None` なら構造体・タプル。
     /// `fields` は宣言の順 (列挙型ではそのバリアントのペイロードの順)。
     Make { variant: Option<u32>, fields: Vec<VId> },
@@ -686,6 +689,15 @@ pub enum Op {
     NetClose { sock: VId },
     /// `TcpListener.local_port()`: `local_addr` のポート。結果は `Result<u16, std.io.Error>`。`uses [io.net]` の関数だけ。
     NetLocalPort { sock: VId },
+    /// `std.env.arg_count()`: プログラムへの引数の個数 (プログラム名は含まない)。結果は `usize`。
+    /// `uses [env]` の関数だけ。
+    EnvArgCount,
+    /// `std.env.arg(i)`: 第 `i` 個目の引数 (0 起算、プログラム名は含まない)。結果は `Option<&'static str>` (`Option<fat>`)。
+    /// 範囲外なら `None`。`uses [env]` の関数だけ。
+    EnvArg { index: VId },
+    /// `std.env.var(name)`: 環境変数 `name` の値。結果は `Option<&'static str>` (`Option<fat>`)。未設定なら `None`。
+    /// `uses [env]` の関数だけ。
+    EnvVar { name: VId },
     /// panic の途中の文言を stderr へ書く (`data` = `fat`)。`write` と違って `uses` を要らない: 文言は panic の一部で、
     /// `core.check.eq` のような効果の宣言のない関数からも呼べるため (設計_KIR.md 13.2)。結果は unit。`panics may` のときだけ。
     Eprint { data: VId },
@@ -852,6 +864,9 @@ impl Module {
                 for b in &f.blocks {
                     for i in &b.insts {
                         if let Op::Call { callee, .. } = &i.op {
+                            todo.push(callee.clone());
+                        }
+                        if let Op::FnPtr { callee } = &i.op {
                             todo.push(callee.clone());
                         }
                     }
@@ -1090,6 +1105,7 @@ fn fmt_inst(i: &Inst) -> String {
         }
         Op::BitCount { k, src, a } => format!("{}.{} {}", k.name(), src.name(), fmt_val(*a)),
         Op::Call { callee, args } => format!("call {}({})", callee, fmt_vals(args)),
+        Op::FnPtr { callee } => format!("fnptr {}", callee),
         Op::Make { variant, fields } => {
             let head = match variant {
                 Some(k) => format!("make.v{}", k),
@@ -1139,6 +1155,9 @@ fn fmt_inst(i: &Inst) -> String {
         Op::NetFlush { sock } => format!("net.flush {}", fmt_val(*sock)),
         Op::NetClose { sock } => format!("net.close {}", fmt_val(*sock)),
         Op::NetLocalPort { sock } => format!("net.local_port {}", fmt_val(*sock)),
+        Op::EnvArgCount => "env.arg_count".to_string(),
+        Op::EnvArg { index } => format!("env.arg {}", fmt_val(*index)),
+        Op::EnvVar { name } => format!("env.var {}", fmt_val(*name)),
         Op::Eprint { data } => format!("eprint {}", fmt_val(*data)),
         Op::Abort => "abort".to_string(),
         Op::FmtFloat { bits, a } => format!("fmtfloat.{bits} {}", fmt_val(*a)),
@@ -1339,6 +1358,12 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         let open = r.find('(').ok_or_else(|| perr(line, "call に ( がない"))?;
         let close = r.rfind(')').ok_or_else(|| perr(line, "call に ) がない"))?;
         return Ok(Op::Call { callee: r[..open].to_string(), args: parse_vals(&r[open + 1..close], line)? });
+    }
+    if let Some(r) = rhs.strip_prefix("fnptr ") {
+        if ty != Ty::Ptr {
+            return Err(perr(line, format!("fnptr の結果は ptr ではない")));
+        }
+        return Ok(Op::FnPtr { callee: r.to_string() });
     }
     let (head, rest) = rhs.split_once(' ').unwrap_or((rhs, ""));
     let mut parts = head.split('.');
@@ -1557,6 +1582,18 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("net", ["local_port"]) => {
             let v = operands(1)?;
             Ok(Op::NetLocalPort { sock: v[0] })
+        }
+        ("env", ["arg_count"]) => {
+            let _ = operands(0)?;
+            Ok(Op::EnvArgCount)
+        }
+        ("env", ["arg"]) => {
+            let v = operands(1)?;
+            Ok(Op::EnvArg { index: v[0] })
+        }
+        ("env", ["var"]) => {
+            let v = operands(1)?;
+            Ok(Op::EnvVar { name: v[0] })
         }
         ("eprint", []) if ty == Ty::Unit => {
             let v = operands(1)?;
@@ -2308,6 +2345,40 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             }
                         }
                     }
+                    Op::EnvArgCount => {
+                        if !f.uses.iter().any(|u| u == "env") {
+                            return Err("std.env.arg_count は uses [env] の関数だけ".into());
+                        }
+                        if i.ty != Ty::Usize {
+                            return Err("std.env.arg_count の結果は usize のはず".into());
+                        }
+                    }
+                    Op::EnvArg { index } | Op::EnvVar { name: index } => {
+                        if !f.uses.iter().any(|u| u == "env") {
+                            return Err("std.env.arg / std.env.var は uses [env] の関数だけ".into());
+                        }
+                        let at = ty_of(*index)?;
+                        match &i.op {
+                            Op::EnvArg { .. } => {
+                                if at != Ty::Usize {
+                                    return Err("std.env.arg の引数は usize のはず".into());
+                                }
+                            }
+                            Op::EnvVar { .. } => {
+                                let fat = fat_ty(m)?;
+                                if at != fat {
+                                    return Err("std.env.var の引数は &str (fat) のはず".into());
+                                }
+                            }
+                            _ => {}
+                        }
+                        let fat = fat_ty(m)?;
+                        let Ty::Agg(fat_idx) = fat else { return Err("fat 型が見つからない".into()); };
+                        let ok = matches!(i.ty, Ty::Opt(Pay::Agg(a)) if a == fat_idx);
+                        if !ok {
+                            return Err("std.env.arg / std.env.var の結果は Option<&'static str> (Option<fat>) のはず".into());
+                        }
+                    }
                     Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => {
                         if !f.uses.iter().any(|u| u == "io.net") {
                             return Err("net.read / net.write は uses [io.net] の関数だけ".into());
@@ -2396,6 +2467,14 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err(format!("{} の uses {} が呼び出し元にない", callee, u));
                         }
                     }
+                    Op::FnPtr { callee } => {
+                        if i.ty != Ty::Ptr {
+                            return Err("fnptr の結果は ptr のはず".into());
+                        }
+                        if callees.get(callee.as_str()).is_none() {
+                            return Err(format!("fnptr の呼び先 {} がモジュールにない", callee));
+                        }
+                    }
                 }
                 Ok(())
             })();
@@ -2481,6 +2560,8 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => {
             vec![*sock, *buf, *len]
         }
+        Op::EnvArgCount => vec![],
+        Op::EnvArg { index } | Op::EnvVar { name: index } => vec![*index],
         Op::Eprint { data } => vec![*data],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }
@@ -2509,6 +2590,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         | Op::Tag(a)
         | Op::Payload(a) => vec![*a],
         Op::Call { args, .. } => args.clone(),
+        Op::FnPtr { .. } => vec![],
         Op::Make { fields, .. } => fields.clone(),
         Op::Field { a, .. } | Op::FieldAddr { a, .. } => vec![*a],
         Op::SetField { a, v, .. } => vec![*a, *v],

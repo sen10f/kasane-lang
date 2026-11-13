@@ -1,0 +1,6 @@
+test bench.word_count.test_basic
+    core.check.eq(bench.word_count("hello world"), 2u32)
+    core.check.eq(bench.word_count("  a  b   c "), 3u32)
+    core.check.eq(bench.word_count(""), 0u32)
+    core.check.eq(bench.word_count("one\ntwo\tthree"), 3u32)
+end bench.word_count.test_basic

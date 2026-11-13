@@ -1,0 +1,8 @@
+{
+  "id": "max_of",
+  "title": "スライスの最大値",
+  "spec": "i32 のスライスの最大値を Some で返す。空なら None。",
+  "decl": "fn bench.max_of(xs: &[i32]) -> Option<i32>",
+  "level": "basic",
+  "order": 5
+}

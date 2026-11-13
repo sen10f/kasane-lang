@@ -14,6 +14,16 @@ fn run(args: &[&str], cwd: &Path) -> Output {
     Command::new(exe()).args(args).current_dir(cwd).output().expect("spawn ksn")
 }
 
+/// `run` と同じだが、環境変数も渡す（`std.env.var` の検査用）。
+fn run_with_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(exe());
+    cmd.args(args).current_dir(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.output().expect("spawn ksn")
+}
+
 fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).replace("\r\n", "\n")
 }
@@ -6460,7 +6470,7 @@ fn try_does_not_convert_in_the_reverse_direction() {
 /// `derive [From]` は `enum` だけで、ペイロードが 1 つのバリアントがなければ E2050。
 #[test]
 fn derive_from_needs_an_enum_with_a_single_payload_variant() {
-    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let main = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     let on_type = format!("type t.W derive [From] pub\n    a: u8\nend t.W\n\n{}", main);
     let t = Tmp::new("derive_from_type", &on_type);
     let out = text(&run(&["check", "--json"], &t.0).stdout);
@@ -7324,7 +7334,7 @@ fn ffi_check_codes(name: &str, src: &str, modules: &str) -> Vec<String> {
 
 #[test]
 fn ffi_boundary_diagnostics_report_exactly_their_own_code() {
-    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let main = "fn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
     // E5004: 関数型 (C のコールバック) が `uses [] panics never` でない
     let e = format!("extern t.each(f: fn(i32) -> i32 uses [io.console] panics may) -> () link \"each\"\n\n{}", main);
     assert_eq!(ffi_check_codes("ffi_e5004", &e, "t"), ["E5004"]);
@@ -12599,6 +12609,71 @@ fn kir_lower_values_match_tree_walker() {
 }
 
 #[test]
+fn kir_env_arg_count_arg_match_tree_walker() {
+    // `std.env.arg_count` / `std.env.arg` / `std.env.var` を引数付きで実行し、
+    // 木走査 (`ksn run`) と LLVM ネイティブ (`ksn build --backend llvm`) の表示・
+    // 終了コードが一致すること。
+    // (`ksn kir --run/--native` は引数を整数/bool として解釈するため、文字列引数を
+    // 使う `std.env` の検査には `ksn run` と生のネイティブ実行ファイルを比較する。)
+    let src = r#"fn t.main() -> Result<(), std.io.Error> uses [env, io.console] panics may
+    let n = std.env.arg_count()
+    core.check.eq(n, 2usize)
+    match std.env.arg(0usize) {
+        Some(s) => {
+            core.check.eq(s, "a")
+            std.io.print_line(s)?
+        }
+        None => {
+            core.check.eq(1u8, 2u8)
+        }
+    }
+    match std.env.arg(1usize) {
+        Some(s) => {
+            core.check.eq(s, "b")
+            std.io.print_line(s)?
+        }
+        None => {
+            core.check.eq(1u8, 2u8)
+        }
+    }
+    match std.env.var("KSN_TEST_VAR") {
+        Some(v) => {
+            std.io.print_line(v)?
+        }
+        None => {
+            std.io.print_line("none")?
+        }
+    }
+    match std.env.var("KSN_ENV_DOES_NOT_EXIST_xyz") {
+        Some(_s) => {
+            core.check.eq(1u8, 2u8)
+        }
+        None => {
+        }
+    }
+    Ok(())
+end t.main
+"#;
+    let t = Tmp::new("kir_env_arg", src);
+    // 木走査 (`ksn run`) で arg_count/arg/var が期待どおりであること。
+    let o = run_with_env(&["run", "a", "b"], &t.0, &[("KSN_TEST_VAR", "hello")]);
+    assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout), "a\nb\nhello\n", "tree-walker arg output");
+    // LLVM ネイティブをビルドして同じ引数・環境変数で走らせ、表示が一致すること。
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    assert_eq!(b.status.code(), Some(0), "build: {}\n{}", text(&b.stdout), text(&b.stderr));
+    let native = t.0.join("target").join("debug").join("t.native");
+    let n = Command::new(&native)
+        .args(["a", "b"])
+        .current_dir(&t.0)
+        .env("KSN_TEST_VAR", "hello")
+        .output()
+        .expect("spawn native");
+    assert_eq!(n.status.code(), Some(0), "native: {}\n{}", text(&n.stdout), text(&n.stderr));
+    assert_eq!(text(&n.stdout), "a\nb\nhello\n", "native arg output");
+}
+
+#[test]
 fn kir_lower_panics_and_depth_match_tree_walker() {
     // panic の文言と終了コード (101)、呼び出し深さの超過 (102) が木走査と一致すること。
     let cases: &[(&str, &[&str], &str)] = &[
@@ -13136,6 +13211,82 @@ fn kir_check_eq_float_match_tree_walker() {
         let k = kir_run(&["kir", f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(101), "kir: {:?}\n{}", ["kir", f, "--run"], text(&k.stderr));
         assert_eq!(text(&k.stderr).trim(), expected, "kir の文言が木走査と違う: {:?}", ["kir", f, "--run"]);
+    }
+}
+
+const REF_EQ_SRC: &str = r#"fn t.eq_u8(a: u8, b: u8) -> () uses [] panics may
+    let x = a
+    let y = b
+    core.check.eq(&x, &y)
+end t.eq_u8
+
+fn t.eq_i32(a: i32, b: i32) -> () uses [] panics may
+    let x = a
+    let y = b
+    core.check.eq(&x, &y)
+end t.eq_i32
+
+fn t.eq_bool(a: bool, b: bool) -> () uses [] panics may
+    let x = a
+    let y = b
+    core.check.eq(&x, &y)
+end t.eq_bool
+
+fn t.eq_char(a: u32, b: u32) -> () uses [] panics may
+    let x = a
+    let y = b
+    core.check.eq(&x, &y)
+end t.eq_char
+"#;
+
+#[test]
+fn kir_check_eq_ref_match_tree_walker() {
+    // `core.check.eq(&a, &b)` など、参照越しのスカラーの比較を、参照先を読んで比べる。
+    // `&u8` 以外の整数・bool・char への参照も同様。成功 (終了コード 0) と失敗 (panic 101) を、
+    // 木走査 (`ksn run`) と参照実行器 (`ksn kir --run`、`--native` も clang があれば) で比べる。
+    let cases: &[(&str, &[&str], &str, Option<&str>)] = &[
+        ("t.eq_u8", &["5", "5"], "t.eq_u8(5u8, 5u8)", None),
+        ("t.eq_u8", &["5", "6"], "t.eq_u8(5u8, 6u8)", Some("assertion failed: left: 5, right: 6")),
+        ("t.eq_i32", &["-3", "-3"], "t.eq_i32(-3i32, -3i32)", None),
+        ("t.eq_i32", &["-3", "3"], "t.eq_i32(-3i32, 3i32)", Some("assertion failed: left: -3, right: 3")),
+        ("t.eq_bool", &["true", "true"], "t.eq_bool(true, true)", None),
+        ("t.eq_bool", &["true", "false"], "t.eq_bool(true, false)", Some("assertion failed: left: true, right: false")),
+        ("t.eq_char", &["97", "97"], "t.eq_char(97u32, 97u32)", None),
+        ("t.eq_char", &["97", "98"], "t.eq_char(97u32, 98u32)", Some("assertion failed: left: 97, right: 98")),
+    ];
+    for (i, &(f, args, call, want)) in cases.iter().enumerate() {
+        let t = Tmp::new(
+            &format!("kir_check_eq_ref_{}", i),
+            &format!("{}{}", REF_EQ_SRC, main_wrap("", &format!("    {}\n", call))),
+        );
+        let tw = run(&["run"], &t.0);
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        match want {
+            Some(msg) => {
+                assert_eq!(tw.status.code(), Some(101), "tree-walker: {}\n{}", call, text(&tw.stderr));
+                assert_eq!(
+                    text(&tw.stderr).trim(),
+                    format!("panic: {}", msg),
+                    "tree-walker: {}",
+                    call
+                );
+                assert_eq!(k.status.code(), Some(101), "kir: {:?}\n{}", kargs, text(&k.stderr));
+                assert_eq!(
+                    text(&k.stderr).trim(),
+                    text(&tw.stderr).trim(),
+                    "kir の文言が木走査と違う: {:?}",
+                    kargs
+                );
+                assert!(text(&k.stdout).is_empty(), "kir: 失敗のときは表示を出さない: {:?}", kargs);
+            }
+            None => {
+                assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&tw.stderr));
+                assert_eq!(k.status.code(), Some(0), "kir: {:?}\n{}", kargs, text(&k.stderr));
+                assert_eq!(text(&k.stderr), "", "kir: 成功のときは stderr を出さない: {:?}", kargs);
+            }
+        }
     }
 }
 
@@ -15438,9 +15589,9 @@ fn float_specials_and_unsigned_from_str_radix_agree_with_native() {
     // 整数・浮動小数の比較と `from_str_radix` の一部は LLVM で比べ、`from_str_radix` の残りは Cranelift へ退避する (理由が出る)。
     if clang_available() {
         // 浮動小数の `core.check.eq` は KIR に下ろせる (kir_rt.c の表示)。`from_str_radix` の 3 本は退避する。
-        // `from_str_radix` は KIR に下ろせる。`Result != Result` (集成体のペイロード) の 1 本は KIR の検査で退避する。
-        assert_eq!(out.matches("(both: llvm)").count(), 7, "{}", out);
-        assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 1, "{}", out);
+        // `from_str_radix` と `Result != Result` (集成体のペイロード、kir/option-eq) も KIR に下ろせるので、全件 LLVM で比べる。
+        assert_eq!(out.matches("(both: llvm)").count(), 8, "{}", out);
+        assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 0, "{}", out);
     } else {
         assert_eq!(out.matches("(both: native").count(), checks.len(), "{}", out);
     }
@@ -16421,6 +16572,32 @@ fn kir_agg_refs_values_match_tree_walker() {
 }
 
 #[test]
+fn kir_agg_get_match_tree_walker() {
+    // 構造体の Vec の `get(i)` が `Option<構造体>` を返し、`match` で分解でき、
+    // 木走査 (`ksn run`) と参照実行器 / 機械語 (`ksn kir --run` / `--native`) が一致する。
+    let fns = "type t.Item derive [Copy, Clone]\n    kind: u8\n    v: u32\nend t.Item\n\n\
+               fn t.make(n: u32) -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let mut i = 0u32\n    while i < n {\n        core.mem.drop(v.push(t.Item { kind: 1u8, v: i.wrapping_mul(7u32) }))\n        i = i.wrapping_add(1u32)\n    }\n    v\nend t.make\n\n\
+               fn t.pick(i: usize) -> u32 uses [alloc] panics never\n    let v = t.make(4u32)\n    match v.get(i) {\n        None => 0u32\n        Some(t.Item { kind: _, v: x }) => x\n    }\nend t.pick\n";
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.pick", &["2"], "14u32", "14"),
+        ("t.pick", &["9"], "0u32", "0"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_agg_get_{}", i), &format!("{}{}", fns, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
 fn kir_agg_refs_bounds_panic_like_tree_walker() {
     // スライスと Vec の範囲外の添字 (末尾の次・空) は、木走査と同じ文言で panic する (終了コード 101)。
     let cases: &[(&str, &str)] = &[
@@ -17042,9 +17219,14 @@ end t.main
 
 #[test]
 fn llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered() {
-    // 下ろせない関数 (ここでは `std.env.arg_count` を呼ぶ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
-    let src = "fn t.main() -> Result<(), std.io.Error> uses [env, io.console] panics may
-    core.mem.drop(std.env.arg_count())
+    // 下ろせない関数 (ここではジェネリック関数 `t.generic` を呼ぶ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
+    // (`std.env.arg_count` は段階 1 で下ろせるようになったため、`with` は使わない。`with` は別担当が KIR 下ろし中。)
+    let src = "fn t.generic[T](x: T) -> T uses [] panics never
+    x
+end t.generic
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.mem.drop(t.generic(5u32))
     std.io.print_line(\"x\")
 end t.main
 ";
@@ -17983,6 +18165,301 @@ fn kir_own_reports_unsupported_moves_with_a_reason() {
 }
 
 #[test]
+fn kir_eq_operator_on_option_result_aggregates_match_tree_walker() {
+    // `==` / `!=` が Option / Result / 派生の構造体・列挙型 / `&[u8]` / `&str` でも下ろせ、木走査と一致する。
+    let fns = "type t.P derive [Copy, Clone, PartialEq]\n    a: u8\n    b: i32\nend t.P\n\n\
+enum t.E derive [Copy, Clone, PartialEq]\n    One(u8, bool)\n    Zero\nend t.E\n\n\
+fn t.opt(b: &[u8], i: usize) -> bool uses [] panics never\n    b.get(i) == Some(b']')\nend t.opt\n\n\
+fn t.opt_ne(b: &[u8], i: usize) -> bool uses [] panics never\n    b.get(i) != Some(b']')\nend t.opt_ne\n\n\
+fn t.res(x: u8, y: u8) -> bool uses [] panics never\n    let mut a: Result<u8, u8> = Err(x)\n    let mut b: Result<u8, u8> = Err(y)\n    if x > 5u8 {\n        a = Ok(x)\n    }\n    if y > 5u8 {\n        b = Ok(y)\n    }\n    a == b\nend t.res\n\n\
+fn t.pair(x: u8, y: u8) -> bool uses [] panics never\n    t.P { a: x, b: -3i32 } == t.P { a: y, b: -3i32 }\nend t.pair\n\n\
+fn t.en(x: u8, y: u8) -> bool uses [] panics never\n    t.E.One(x, true) != t.E.One(y, true)\nend t.en\n\n\
+fn t.en_zero(x: u8) -> bool uses [] panics never\n    if x == 0u8 {\n        return t.E.Zero == t.E.Zero\n    }\n    t.E.Zero == t.E.One(x, false)\nend t.en_zero\n\n\
+fn t.bytes(a: &str, b: &str) -> bool uses [] panics never\n    a.as_bytes() == b.as_bytes()\nend t.bytes\n";
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("t.opt", "\"x]\".as_bytes(), 1usize", "true", "true"),
+        ("t.opt", "\"x]\".as_bytes(), 0usize", "false", "false"),
+        ("t.opt", "\"x]\".as_bytes(), 7usize", "false", "false"),
+        ("t.opt_ne", "\"x]\".as_bytes(), 7usize", "true", "true"),
+        ("t.opt_ne", "\"x]\".as_bytes(), 1usize", "false", "false"),
+        ("t.res", "9u8, 9u8", "true", "true"),
+        ("t.res", "9u8, 3u8", "false", "false"),
+        ("t.res", "3u8, 3u8", "true", "true"),
+        ("t.pair", "4u8, 4u8", "true", "true"),
+        ("t.pair", "4u8, 5u8", "false", "false"),
+        ("t.en", "1u8, 1u8", "false", "false"),
+        ("t.en", "1u8, 2u8", "true", "true"),
+        ("t.en_zero", "0u8", "true", "true"),
+        ("t.en_zero", "3u8", "false", "false"),
+        ("t.bytes", "\"ab\", \"ab\"", "true", "true"),
+        ("t.bytes", "\"ab\", \"ac\"", "false", "false"),
+        ("t.bytes", "\"ab\", \"abc\"", "false", "false"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args);
+        let src = format!(
+            "{}\nfn t.go() -> bool uses [] panics never\n    {}\nend t.go\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.go(), {})\n    Ok(())\nend t.main\n",
+            fns, call, lit
+        );
+        let t = Tmp::new(&format!("kir_eq_op_{}", i), &src);
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}{}", call, text(&o.stdout), text(&o.stderr));
+        let k = kir_run(&["kir", "t.go", "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_eq_on_aggregates_reused_after_and_in_loop_match_tree_walker() {
+    // 比較の後にも使う・ループの中で比べる。派生の比較は借用でなく値渡しだが、所有物を持たない (Copy でない) 型なので解放の問題は出ない。
+    let src = "type t.P derive [Clone, PartialEq]\n    a: u8\n    b: i32\nend t.P\n\n\
+fn t.go(k: u8) -> u32 uses [] panics may\n    let a = t.P { a: 1u8, b: 2i32 }\n    let b = t.P { a: k, b: 2i32 }\n    let mut c = 0u32\n    let mut i = 0u32\n    while i < 3u32 {\n        if a == b {\n            c = c + 10u32\n        }\n        if a != b {\n            c = c + 1u32\n        }\n        i = i + 1u32\n    }\n    if a == b {\n        c = c + 100u32\n    }\n    c + u32.from_u8(a.a) + u32.from_u8(b.a)\nend t.go\n\n\
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.go(1u8), 132u32)\n    core.check.eq(t.go(4u8), 8u32)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_eq_reuse", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker: {}{}", text(&o.stdout), text(&o.stderr));
+    for (arg, want) in [("1", "132"), ("4", "8")] {
+        let k = kir_run(&["kir", "t.go", "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}: {}", arg, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want);
+    }
+}
+
+#[test]
+fn kir_eq_on_aggregates_owning_heap_is_refused_with_a_reason() {
+    // String を持つ型は derive できず (E2036)、手書きの eq は下ろせない。どちらにしても == / != は理由付きで拒否する (二重解放を作らない)。
+    let src = "type t.P\n    name: alloc.string.String<std.alloc.System>\n    n: u32\nend t.P\n\nimpl core.cmp.PartialEq<t.P> for t.P\n\n\
+fn t.P.eq(self: &t.P, other: &t.P) -> bool uses [] panics never impls core.cmp.PartialEq<t.P>\n    self.n == other.n\nend t.P.eq\n\n\
+fn t.go() -> bool uses [alloc] panics never\n    let a = t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 1u32 }\n    let b = t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 1u32 }\n    let r = a == b\n    core.mem.drop(a)\n    core.mem.drop(b)\n    r\nend t.go\n\n\
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.go(), true)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_eq_owning", src);
+    let k = run(&["kir", "t.go", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(1), "{}{}", text(&k.stdout), text(&k.stderr));
+    assert!(text(&k.stderr).contains("比較は段階 1 の対象外"), "{}", text(&k.stderr));
+}
+
+#[test]
+fn kir_get_on_vec_of_owning_elements_is_refused_with_a_reason() {
+    // 所有物を持つ要素の `get` は、要素の写しを Option に入れると二重解放になる。借用で束縛する `match v.get(i) { Some(x) => .. }` 以外
+    // (ここでは構造体パターンで要素を分解する形) は拒否する。
+    let src = "type t.Item\n    name: alloc.string.String<std.alloc.System>\n    v: u32\nend t.Item\n\n\
+fn t.make() -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(t.Item { name: s, v: 1u32 }))\n    v\nend t.make\n\n\
+fn t.pick(i: usize) -> u32 uses [alloc] panics never\n    let v = t.make()\n    let g = v.get(i)\n    match g {\n        None => 0u32\n        Some(t.Item { name: _, v: x }) => x\n    }\nend t.pick\n\n\
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.pick(0usize), 1u32)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_get_owning", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let k = run(&["kir", "t.pick", "--run", "0"], &t.0);
+    assert_eq!(k.status.code(), Some(1), "{}", text(&k.stdout));
+    assert!(text(&k.stderr).contains("所有物を持つ"), "{}", text(&k.stderr));
+}
+
+const KIR_BORROW_FNS: &str = "type t.Item
+    name: alloc.string.String<std.alloc.System>
+    v: u32
+end t.Item
+
+fn t.word() -> alloc.string.String<std.alloc.System> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"abc\"))
+    s
+end t.word
+
+fn t.names(n: u32) -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(t.word()))
+        i = i.wrapping_add(1u32)
+    }
+    v
+end t.names
+
+fn t.items(n: u32) -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(t.Item { name: t.word(), v: i }))
+        i = i.wrapping_add(1u32)
+    }
+    v
+end t.items
+
+fn t.get_str(n: u32, i: usize) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    match v.get(i) {
+        Some(s) => s.len()
+        None => 99usize
+    }
+end t.get_str
+
+fn t.get_item(n: u32, i: usize) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    match v.get(i) {
+        Some(it) => it.name.len().wrapping_add(usize.from_u32(it.v))
+        None => 99usize
+    }
+end t.get_item
+
+fn t.sum_names(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut total = 0usize
+    for s in &v {
+        total = total.wrapping_add(s.len())
+    }
+    total
+end t.sum_names
+
+fn t.sum_names_iter(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut total = 0usize
+    for s in v.iter() {
+        total = total.wrapping_add(s.len())
+    }
+    total
+end t.sum_names_iter
+
+fn t.sum_items(n: u32) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    let mut total = 0usize
+    for it in &v {
+        total = total.wrapping_add(it.name.len())
+    }
+    total
+end t.sum_items
+
+fn t.sum_scalar(n: u32) -> u32 uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(i))
+        i = i.wrapping_add(1u32)
+    }
+    let mut total = 0u32
+    for x in &v {
+        total = total.wrapping_add(*x)
+    }
+    total
+end t.sum_scalar
+
+fn t.name_len(s: &alloc.string.String<std.alloc.System>) -> usize uses [] panics never
+    s.len()
+end t.name_len
+
+fn t.item_len(i: &t.Item) -> usize uses [] panics never
+    i.name.len()
+end t.item_len
+
+fn t.idx_str(n: u32, i: usize) -> usize uses [alloc] panics may
+    let v = t.names(n)
+    v[i].len()
+end t.idx_str
+
+fn t.idx_item(n: u32, i: usize) -> usize uses [alloc] panics may
+    let v = t.items(n)
+    v[i].name.len().wrapping_add(usize.from_u32(v[i].v))
+end t.idx_item
+
+fn t.idx_ref(n: u32, i: usize) -> usize uses [alloc] panics may
+    let v = t.items(n)
+    let w = t.names(n)
+    t.item_len(&v[i]).wrapping_add(t.name_len(&w[i]))
+end t.idx_ref
+
+fn t.get_loop(n: u32) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    let mut total = 0usize
+    let mut i = 0usize
+    while i < usize.from_u32(n).wrapping_add(2usize) {
+        match v.get(i) {
+            Some(it) => {
+                total = total.wrapping_add(it.name.len())
+            }
+            None => {
+                total = total.wrapping_add(100usize)
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    total
+end t.get_loop
+
+fn t.mutate_ok(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.names(n)
+    let a = match v.get(0usize) {
+        Some(s) => s.len()
+        None => 0usize
+    }
+    core.mem.drop(v.push(t.word()))
+    a.wrapping_add(v.len())
+end t.mutate_ok
+
+fn t.nested(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut total = 0usize
+    for a in &v {
+        for b in v.iter() {
+            total = total.wrapping_add(a.len()).wrapping_add(b.len())
+        }
+    }
+    total
+end t.nested
+
+";
+
+#[test]
+fn kir_borrow_owned_elems_match_tree_walker() {
+    // 所有物を持つ要素の Vec (`Vec<String>` / String を持つ構造体の Vec) の `get` / 添字 / `for` は、要素の写しでなく番地 (借用) で下ろす。
+    // 木走査と値が一致し、参照実行器が漏れ・二重解放を内部エラーにしない (`--run` / `--native`、ASan があればそれも)。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.get_str", &["3","1"], "3usize", "3"),
+        ("t.get_str", &["3","7"], "99usize", "99"),
+        ("t.get_str", &["0","0"], "99usize", "99"),
+        ("t.get_item", &["3","2"], "5usize", "5"),
+        ("t.get_item", &["3","3"], "99usize", "99"),
+        ("t.get_loop", &["3"], "209usize", "209"),
+        ("t.get_loop", &["0"], "200usize", "200"),
+        ("t.sum_names", &["3"], "9usize", "9"),
+        ("t.sum_names", &["0"], "0usize", "0"),
+        ("t.sum_names_iter", &["4"], "12usize", "12"),
+        ("t.sum_items", &["5"], "15usize", "15"),
+        ("t.sum_scalar", &["5"], "10u32", "10"),
+        ("t.idx_str", &["3","1"], "3usize", "3"),
+        ("t.idx_item", &["3","1"], "4usize", "4"),
+        ("t.idx_ref", &["3","1"], "6usize", "6"),
+        ("t.mutate_ok", &["3"], "7usize", "7"),
+        ("t.nested", &["3"], "54usize", "54"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let last = args.len() - 1;
+        let call = format!("{}({})", f, args.iter().enumerate().map(|(k, a)| if args.len() == 2 && k == last { format!("{}usize", a) } else { format!("{}u32", a) }).collect::<Vec<_>>().join(", "));
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_borrow_{}", i), &format!("{}{}", KIR_BORROW_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_borrow_owned_elems_out_of_range_index_panics_like_tree_walker() {
+    // 範囲外の添字 `v[i]` は、借用を作る前の境界の検査で panic する (終了コード 101)。
+    let main = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.idx_str(3u32, 5usize), 3usize)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_borrow_oob", &format!("{}{}", KIR_BORROW_FNS, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "tree-walker: {}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.idx_str", "--run", "3", "5"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir: {}", text(&k.stderr));
+    assert!(text(&k.stderr).contains("index out of bounds"), "{}", text(&k.stderr));
+}
+
+#[test]
 fn kir_own_dump_shows_moves_as_nulling_and_flags() {
     // Vec の移動は元のヘッダの `ptr` を null にする書き込み、構造体の局所変数の移動は印 (1 バイト) の書き込みとして見える。
     let t = kir_own_pkg("kir_own_dump", "    core.check.eq(t.branch_buf(3u32, true), 3usize)\n");
@@ -18113,7 +18590,12 @@ fn llvm_builds_of_real_packages_match_run() {
     }
     for pkg in [
         "examples/demo",
+        "examples/features",
+        "examples/ffi",
+        "examples/json",
         "examples/kvapp",
+        "examples/more_coll",
+        "examples/more_str",
         "examples/native",
         "examples/realtime",
         "perf/closure",
@@ -19171,7 +19653,7 @@ fn derive_clone_on_string_or_vec_field_is_e2036() {
 /// 1 回だけ現れる宣言は省略が正規形で E3021 (`'ab` は `'a` と別の名前として数える)。
 #[test]
 fn lifetime_declared_only_in_inputs_is_e3021_unless_it_ties_inputs() {
-    let main = "\nfn t.main() -> () uses [] panics never\nend t.main\n";
+    let main = "fn t.main() -> () uses [] panics never\nend t.main\n";
     let cases = [
         ("once", "fn t.f['a](x: &'a u32) -> u32 uses [] panics never\n    *x\nend t.f\n", true),
         ("once_two_refs", "fn t.f['a](x: &'a u32, y: &u32) -> u32 uses [] panics never\n    x.wrapping_add(*y)\nend t.f\n", true),
@@ -19217,4 +19699,254 @@ fn final_review_opt_folds_saturating_like_the_reference() {
     let t = Tmp::new("final_sat_opt", &format!("{}\nfn t.main() -> () uses [] panics never\nend t.main\n", fns));
     let k = kir_run(&["kir", "t.s", "--opt", "--run", "0"], &t.0);
     assert_eq!(text(&k.stdout).trim(), "256", "{}", text(&k.stderr));
+}
+
+const KIR_OWNFOR_FNS: &str = "fn t.for_names(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut total = 0usize
+    for s in v {
+        total = total.wrapping_add(s.len())
+    }
+    total
+end t.for_names
+
+fn t.for_items(n: u32) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    let mut total = 0usize
+    for it in v {
+        total = total.wrapping_add(it.name.len()).wrapping_add(usize.from_u32(it.v))
+    }
+    total
+end t.for_items
+
+fn t.for_move(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut out = t.names(0u32)
+    for s in v {
+        core.mem.drop(out.push(s))
+    }
+    out.len()
+end t.for_move
+
+fn t.for_break(n: u32, k: usize) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    let mut seen = 0usize
+    for it in v {
+        if seen >= k {
+            break
+        }
+        seen = seen.wrapping_add(1usize).wrapping_add(it.name.len())
+    }
+    seen
+end t.for_break
+
+fn t.for_ret(n: u32, k: u32) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    for it in v {
+        if it.v == k {
+            return it.name.len()
+        }
+    }
+    77usize
+end t.for_ret
+
+fn t.for_wild(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut c = 0usize
+    for _ in v {
+        c = c.wrapping_add(1usize)
+    }
+    c
+end t.for_wild
+
+fn t.for_nested(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut c = 0usize
+    for s in v {
+        let w = t.names(2u32)
+        for q in w {
+            c = c.wrapping_add(q.len()).wrapping_add(s.len())
+        }
+    }
+    c
+end t.for_nested
+";
+
+#[test]
+fn kir_for_by_value_over_owning_elems_matches_tree_walker() {
+    // `for x in v` (所有する Vec を値で回す): 要素の所有が `x` に移る。消費しなかった `x` は 1 周の終わりで、`break` / `return` で抜けたときの
+    // 残りの要素とバッファは隠しヘッダで解放される。参照実行器の漏れ・二重解放の検出と ASan で確かめる。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.for_names", &["3"], "9usize", "9"),
+        ("t.for_names", &["0"], "0usize", "0"),
+        ("t.for_items", &["4"], "18usize", "18"),
+        ("t.for_move", &["5"], "5usize", "5"),
+        ("t.for_move", &["0"], "0usize", "0"),
+        ("t.for_break", &["5", "2"], "4usize", "4"),
+        ("t.for_break", &["5", "0"], "0usize", "0"),
+        ("t.for_break", &["2", "9"], "8usize", "8"),
+        ("t.for_ret", &["5", "2"], "3usize", "3"),
+        ("t.for_ret", &["5", "9"], "77usize", "77"),
+        ("t.for_wild", &["4"], "4usize", "4"),
+        ("t.for_nested", &["3"], "36usize", "36"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!(
+            "{}({})",
+            f,
+            args.iter().enumerate().map(|(k, a)| if k == 1 && args.len() == 2 && *f == "t.for_break" { format!("{}usize", a) } else { format!("{}u32", a) }).collect::<Vec<_>>().join(", ")
+        );
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_ownfor_{}", i), &format!("{}\n{}\n{}", KIR_BORROW_FNS, KIR_OWNFOR_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+const KIR_OWNMUT_FNS: &str = "fn t.mut_for_str(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.names(n)
+    let mut total = 0usize
+    for s in &mut v {
+        total = total.wrapping_add(s.len())
+    }
+    for s in &v {
+        total = total.wrapping_add(s.len())
+    }
+    total
+end t.mut_for_str
+
+fn t.mut_for_item(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.items(n)
+    for it in &mut v {
+        it.v = it.v.wrapping_add(10u32)
+        it.name = t.word()
+    }
+    let mut total = 0usize
+    for it in &v {
+        total = total.wrapping_add(it.name.len()).wrapping_add(usize.from_u32(it.v))
+    }
+    total
+end t.mut_for_item
+
+fn t.bump_all(v: &mut alloc.vec.Vec<t.Item, std.alloc.System>) -> usize uses [alloc] panics never
+    let mut c = 0usize
+    for it in v {
+        it.v = it.v.wrapping_add(1u32)
+        if it.v > 3u32 {
+            break
+        }
+        c = c.wrapping_add(1usize)
+    }
+    c
+end t.bump_all
+
+fn t.mut_for_param(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.items(n)
+    let c = t.bump_all(&mut v)
+    let mut total = c
+    for it in &v {
+        total = total.wrapping_add(usize.from_u32(it.v))
+    }
+    total
+end t.mut_for_param
+
+fn t.idx_push(n: u32, i: usize) -> usize uses [alloc] panics may
+    let mut v = t.names(n)
+    core.mem.drop(v[i].push_str(\"zz\"))
+    v[i].len()
+end t.idx_push
+
+fn t.idx_field(n: u32, i: usize) -> usize uses [alloc] panics may
+    let mut v = t.items(n)
+    core.mem.drop(v[i].name.push_str(\"zz\"))
+    v[i].v = 40u32
+    v[i].name = t.word()
+    v[i].name.len().wrapping_add(usize.from_u32(v[i].v))
+end t.idx_field
+
+fn t.idx_assign(n: u32, i: usize) -> usize uses [alloc] panics may
+    let mut v = t.items(n)
+    v[i] = t.Item { name: t.word(), v: 7u32 }
+    v[i].name.len().wrapping_add(usize.from_u32(v[i].v))
+end t.idx_assign
+
+fn t.idx_assign_str(n: u32, i: usize) -> usize uses [alloc] panics may
+    let mut v = t.names(n)
+    v[i] = t.word()
+    v[i].len()
+end t.idx_assign_str
+
+fn t.get_destr(n: u32, i: usize) -> u32 uses [alloc] panics never
+    let v = t.items(n)
+    match v.get(i) {
+        None => 0u32
+        Some(t.Item { name: _, v: x }) => x
+    }
+end t.get_destr
+
+fn t.get_destr_str(n: u32, i: usize) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    match v.get(i) {
+        None => 99usize
+        Some(t.Item { name: s, v: x }) => s.len().wrapping_add(usize.from_u32(x))
+    }
+end t.get_destr_str
+";
+
+#[test]
+fn kir_mut_borrow_of_owning_elems_matches_tree_walker() {
+    // `for x in &mut v` (所有物を持つ要素・スカラー)、`v[i]` の要素への `&mut` (フィールドへの代入・`push_str`・要素の代入。古い値は解放してから)、
+    // `get` の腕の構造体パターン。木走査と値が一致し、参照実行器が漏れ・二重解放を検出せず、ASan も報告しない。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.mut_for_str", &["3"], "18usize", "18"),
+        ("t.mut_for_str", &["0"], "0usize", "0"),
+        ("t.mut_for_item", &["3"], "42usize", "42"),
+        ("t.mut_for_item", &["0"], "0usize", "0"),
+        ("t.mut_for_param", &["6"], "22usize", "22"),
+        ("t.idx_push", &["3", "1"], "5usize", "5"),
+        ("t.idx_field", &["3", "1"], "43usize", "43"),
+        ("t.idx_assign", &["3", "1"], "10usize", "10"),
+        ("t.idx_assign_str", &["3", "2"], "3usize", "3"),
+        ("t.get_destr", &["3", "1"], "1u32", "1"),
+        ("t.get_destr", &["3", "7"], "0u32", "0"),
+        ("t.get_destr_str", &["3", "2"], "5usize", "5"),
+        ("t.get_destr_str", &["3", "7"], "99usize", "99"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let two = args.len() == 2;
+        let call = format!(
+            "{}({})",
+            f,
+            args.iter().enumerate().map(|(k, a)| if two && k == 1 { format!("{}usize", a) } else { format!("{}u32", a) }).collect::<Vec<_>>().join(", ")
+        );
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_ownmut_{}", i), &format!("{}\n{}\n{}", KIR_BORROW_FNS, KIR_OWNMUT_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_mut_borrow_of_owning_elems_out_of_range_panics_like_tree_walker() {
+    for (f, args) in [("t.idx_field", ["3", "5"]), ("t.idx_assign", ["3", "9"])] {
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq({}({}u32, {}usize), 0usize)\n    Ok(())\nend t.main\n", f, args[0], args[1]);
+        let t = Tmp::new("kir_ownmut_oob", &format!("{}\n{}\n{}", KIR_BORROW_FNS, KIR_OWNMUT_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "tree-walker: {}", text(&o.stderr));
+        let k = kir_run(&["kir", f, "--run", args[0], args[1]], &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir {}: {}", f, text(&k.stderr));
+        assert!(text(&k.stderr).contains("index out of bounds"), "{}", text(&k.stderr));
+    }
 }

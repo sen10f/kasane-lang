@@ -1,0 +1,117 @@
+//! レジスタ型バイトコード VM (設計_KIR.md 4 章、段階 2 の第 1 段)。`ksn run --engine=vm` / `ksn test --engine=vm` でだけ使う。
+//!
+//! - `bc.rs`: 命令とスロット、`compile.rs`: KIR → バイトコード、`run.rs`: 実行ループと明示フレーム。
+//! - 入口から届く関数のどれかが KIR に下ろせない (または VM が扱えない命令を含む) ときは、理由を返して呼び出し側が木走査へ退避する。
+
+pub mod bc;
+pub mod compile;
+pub mod run;
+
+use crate::kir::{Ty, PAY_MASK, TAG_BIT};
+use crate::kir_exec::Outcome;
+use crate::kir_lower::{self, Lowered};
+use crate::program::Program;
+
+/// 入口 `entry` が下ろせなかった理由 (`呼び先 X が未対応` の鎖をたどった根の理由)。
+fn root_reason(lo: &Lowered, entry: &str) -> String {
+    let mut key = entry.to_string();
+    let mut why = String::from("理由不明");
+    for _ in 0..64 {
+        let Some((_, w)) = lo.unsupported.iter().find(|(k, _)| *k == key) else { break };
+        why = format!("{}: {}", key, w);
+        match w.strip_prefix("呼び先 ").and_then(|r| r.strip_suffix(" が未対応")) {
+            Some(next) => key = next.to_string(),
+            None => break,
+        }
+    }
+    format!("{} を KIR に下ろせない ({})", entry, why)
+}
+
+/// 入口 `entry` から届く関数を KIR に下ろしてバイトコードにする。
+fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
+    if lo.module.find(entry).is_none() {
+        return Err(root_reason(&lo, entry));
+    }
+    let m = lo.module.reachable_from(&[entry, kir_lower::debug::ENTRY_DEBUG]);
+    let errs = crate::kir::verify_module(&m);
+    if let Some(e) = errs.first() {
+        return Err(format!("KIR の検査に失敗: {} {}", e.0, e.1));
+    }
+    compile::compile(&m)
+}
+
+/// `ksn run --engine=vm`: 入口を VM で実行して終了コードを返す。実行を始める前に分かる理由 (下ろせない・VM が扱えない) は `Err`。
+pub fn run_entry(prog: &Program, user: &[usize], entry: &str) -> Result<i32, String> {
+    let lo = kir_lower::lower_program(prog, user, Some(entry));
+    let ret = lo.module.find(entry).map(|f| f.ret);
+    let bc = prepare(lo, entry)?;
+    let mut vm = run::Vm::new(&bc);
+    let out = vm.run(entry, &[]);
+    Ok(match out {
+        Ok(Outcome::Value(v)) => match ret {
+            // 入口が `Err(e)` を返したら、stderr に `Error: <e の Debug 表示>` を出して終了コード 1 (木走査の `run_entry` と同じ)。
+            Some(Ty::Res(_, e)) if v & TAG_BIT != 0 => {
+                vm.err_write(b"Error: ");
+                let w = crate::kir_exec::pay_read(e.ty(), v & PAY_MASK, &vm.heap);
+                match vm.run(kir_lower::debug::ENTRY_DEBUG, &[w]) {
+                    Ok(Outcome::Value(_)) => {}
+                    other => {
+                        vm.flush();
+                        eprintln!("ksn: vm: 入口の Err の表示に失敗した: {:?}", other);
+                    }
+                }
+                vm.err_write(b"\n");
+                vm.flush();
+                1
+            }
+            _ => 0,
+        },
+        Ok(Outcome::Panic(m)) => {
+            vm.flush();
+            eprintln!("panic: {}", m);
+            101
+        }
+        Ok(Outcome::Abort) => {
+            vm.flush();
+            101
+        }
+        Ok(Outcome::StackOverflow) => {
+            vm.flush();
+            eprintln!("stack overflow");
+            102
+        }
+        Err(e) => {
+            vm.flush();
+            eprintln!("ksn: vm: 内部エラー: {}", e);
+            3
+        }
+    })
+}
+
+/// `ksn test --engine=vm`: テスト `ti` を VM で実行する。結果は木走査と同じ形 (`None` = 成功、`Some(文言)` = 失敗)。
+/// 下ろせない・VM が扱えないときは `Err(理由)` (呼び出し側が木走査で実行する)。
+pub fn run_test(prog: &Program, user: &[usize], ti: usize) -> Result<Option<String>, String> {
+    let name = prog.defs[ti].name.clone();
+    let lo = kir_lower::lower_test(prog, user, ti);
+    let bc = prepare(lo, &name)?;
+    let mut vm = run::Vm::new(&bc);
+    vm.capture = Some(vec![]);
+    let out = vm.run(&name, &[]);
+    vm.flush();
+    let captured = vm.capture.take().unwrap_or_default();
+    Ok(match out {
+        Ok(Outcome::Value(_)) => None,
+        Ok(Outcome::Panic(m)) => Some(m),
+        // `core.check.eq` などは文言を `eprint` で書いてから終わる。書かれた文言 (`panic: ` と末尾の改行を除く) が失敗の理由。
+        Ok(Outcome::Abort) => {
+            let s = String::from_utf8_lossy(&captured).to_string();
+            let s = s.trim_end_matches('\n');
+            Some(s.strip_prefix("panic: ").unwrap_or(s).to_string())
+        }
+        Ok(Outcome::StackOverflow) => {
+            eprintln!("stack overflow");
+            Some("exit(102)".to_string())
+        }
+        Err(e) => return Err(format!("実行中の内部エラー: {}", e)),
+    })
+}

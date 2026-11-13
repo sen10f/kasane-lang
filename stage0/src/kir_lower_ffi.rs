@@ -15,7 +15,7 @@ use crate::check::{is_nil, items, nlineno as nline, strs};
 use crate::kir::{self, Aop, Block, Func, Mode, Op, Pointee, Term, Ty, VId};
 use crate::parser::V;
 use crate::program::{Def, Program, Target as Tgt};
-use crate::types::{from_v, Ty as Src};
+use crate::types::{from_v, Cap, Ty as Src};
 
 use super::{agg, Lw, LR, show};
 
@@ -191,8 +191,11 @@ fn extern_call(lw: &mut Lw, e: &V, d: &Def, line: usize) -> LR<Option<VId>> {
     let args = items(&f[1]);
     let gn = HashSet::new();
     let mut pts: Vec<Ty> = vec![];
+    // `fn(...)` 型のパラメータは C のコールバック用の関数ポインタ (`ptr`) として渡す。
+    let mut is_fn: Vec<bool> = vec![];
     for (_, t) in &d.params {
         let st = from_v(t, &gn);
+        is_fn.push(matches!(&st, Src::Closure { cap: Cap::Fn, id: None, .. }));
         pts.push(src_to_kir(lw, &st, line)?);
     }
     let ret = if is_nil(&d.ret) {
@@ -205,7 +208,13 @@ fn extern_call(lw: &mut Lw, e: &V, d: &Def, line: usize) -> LR<Option<VId>> {
         return lw.err(line, format!("extern {} の引数の個数が違う", d.name));
     }
     let mut vs = vec![];
-    for a in args {
+    for (i, a) in args.iter().enumerate() {
+        if is_fn[i] {
+            // C のコールバック: 関数名から関数ポインタ (`ptr`) を作る。
+            let Some(v) = fn_ptr_arg(lw, a, line)? else { return Ok(None); };
+            vs.push(v);
+            continue;
+        }
         match lw.expr(a)? {
             Some(v) => vs.push(v),
             None => return Ok(None),
@@ -220,12 +229,41 @@ fn extern_call(lw: &mut Lw, e: &V, d: &Def, line: usize) -> LR<Option<VId>> {
     Ok(Some(lw.emit(ret, Op::Call { callee: d.name.clone(), args: vs })))
 }
 
+/// `extern` の `fn(...)` 型の引数に渡される関数値から、C の関数ポインタ (`ptr`) を作る。
+/// 取り込みの無い `fn` のみを受け付ける (クロージャの取り込みは C には渡せない)。
+/// 引数・戻り値の型の一致は checker が既に保証している。
+fn fn_ptr_arg(lw: &mut Lw, a: &V, line: usize) -> LR<Option<VId>> {
+    if crate::check::nname(a) != "Path" {
+        return lw.err(line, "extern の関数ポインタ引数には関数名を指定してください");
+    }
+    let segs = strs(&crate::check::nf(a)[0]);
+    if segs.is_empty() {
+        return lw.err(line, "extern の関数ポインタ引数の形式が不正");
+    }
+    let Some(Tgt::Fn(di)) = lw.p.resolve(&segs, &lw.def.file).map(|r| r.target) else {
+        return lw.err(line, format!("extern の関数ポインタ引数 {} は関数ではない", segs.join(".")));
+    };
+    let fd = &lw.p.defs[di];
+    if fd.kw != "fn" {
+        return lw.err(line, format!("extern の関数ポインタ引数 {} は関数ではない", segs.join(".")));
+    }
+    if !fd.generics.is_empty() {
+        return lw.err(line, format!("extern の関数ポインタ引数 {} はジェネリクスは持てない", segs.join(".")));
+    }
+    if fd.panics.as_deref() != Some("never") {
+        return lw.err(line, format!("extern の関数ポインタ引数 {} は panics never でなければならない (C から呼ばれる)", segs.join(".")));
+    }
+    Ok(Some(lw.emit(Ty::Ptr, Op::FnPtr { callee: fd.name.clone() })))
+}
+
 /// 推論済みの型を段階 1 の KIR 型にする (`extern` のシグネチャ用。スカラー・ptr)。
 fn src_to_kir(lw: &Lw, t: &Src, line: usize) -> LR<Ty> {
     if let Some(x) = lw.conv_t(t) {
         return Ok(x);
     }
     match t {
+        // `fn(...)` (取り込みの無い関数ポインタ) は C に生ポインタ (`ptr`) として渡せる。
+        Src::Closure { cap: Cap::Fn, id: None, .. } => Ok(Ty::Ptr),
         Src::Ptr(_, inner) => match &**inner {
             Src::Prim(s) => Ty::parse(s)
                 .and_then(|t| kir::Pointee::of(t))
@@ -273,6 +311,8 @@ fn src_to_kir_extern(aggs: &std::cell::RefCell<agg::AggTab>, p: &Program, file: 
         return Ok(x);
     }
     match t {
+        // `fn(...)` (取り込みの無い関数ポインタ) は C に生ポインタ (`ptr`) として渡せる。
+        Src::Closure { cap: Cap::Fn, id: None, .. } => Ok(Ty::Ptr),
         Src::Ptr(_, inner) => match &**inner {
             Src::Prim(s) => Ty::parse(s)
                 .and_then(|t| kir::Pointee::of(t))

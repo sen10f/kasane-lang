@@ -66,6 +66,11 @@ use coll::CollCx;
 mod net_lower;
 use net_lower::{is_net_ty, net_call, net_method};
 
+// `std.env` (引数・環境変数) の下ろし。
+#[path = "kir_lower_env.rs"]
+mod env_lower;
+use env_lower::env_call;
+
 type LR<T> = Result<T, String>;
 
 // 集成体 (構造体・タプル・列挙型) の下ろし。子モジュールなので、この file の非公開の部品を使う。
@@ -472,6 +477,7 @@ impl<'a> Lw<'a> {
 
     /// 式を下ろす。`None` は制御がその先へ進まないこと (return / break / continue など) を表す。
     fn expr(&mut self, e: &V) -> LR<Option<VId>> {
+        coll::elem_prep(self, e)?;
         match nname(e) {
             "Lit" => self.lit(e).map(Some),
             "Path" => self.path_val(e).map(Some),
@@ -637,6 +643,9 @@ impl<'a> Lw<'a> {
                 let t = self.vty(a);
                 if self.vty(b) != t {
                     return self.err(line, "比較の両辺の型が違う");
+                }
+                if matches!(op.as_str(), "==" | "!=") && (matches!(t, Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_))) {
+                    return Ok(Some(self.eq_by_call(l, r, a, b, op == "!=", line)?));
                 }
                 let cc = match op.as_str() {
                     "==" => Cc::Eq,
@@ -826,6 +835,11 @@ impl<'a> Lw<'a> {
                         return r;
                     }
                 }
+                // `&u32` / `&mut u32` の受け手は、整数メソッドの前に参照を外す (自動の参照外し)
+                let (recv, rt) = match rt {
+                    Ty::Ref(_, p) if p.ty().is_int() => (self.emit(p.ty(), Op::Load(recv)), p.ty()),
+                    _ => (recv, rt),
+                };
                 let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,
                     "wrapping_sub" => Aop::Sub,
@@ -865,6 +879,9 @@ impl<'a> Lw<'a> {
         let callee_name = segs.join(".");
         if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
             return net_call(self, e, callee_name == "std.net.listen", line);
+        }
+        if let Some(r) = env_call(self, e, &callee_name, args, line)? {
+            return Ok(Some(r));
         }
         if let Some(Tgt::Variant(en, vn)) = &target {
             let (en, vn) = (en.clone(), vn.clone());
@@ -993,11 +1010,11 @@ impl<'a> Lw<'a> {
         if let Some(r) = self.user_mcall(e) {
             return r;
         }
-        if let Some(done) = self.scalar_mcall(e)? {
-            return Ok(done);
-        }
         if let Some(r) = self.builtin_mcall(e) {
             return r;
+        }
+        if let Some(done) = self.scalar_mcall(e)? {
+            return Ok(done);
         }
         let f = nf(e);
         let line = nline(e);
@@ -1098,6 +1115,10 @@ impl<'a> Lw<'a> {
                     if nname(target) == "Field" {
                         if let Some(segs) = agg::field_segs(target) {
                             return self.assign_segs(segs, &f[1], line);
+                        }
+                        // `v[i].f = e` (所有物を持つ要素の Vec): 要素の可変の借用の先のフィールドへ書く (設計_KIR.md 17.15)
+                        if let Some(r) = coll::assign_elem_field(self, target, &f[1], line) {
+                            return r;
                         }
                     }
                     return self.err(line, "代入先は名前かフィールドだけ段階 1 の対象");

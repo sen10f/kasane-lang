@@ -180,6 +180,8 @@ struct Ctx {
     eprint: bool,
     /// `std.net` 命令を使う (`@ksn.net_*` を出す)。
     net: bool,
+    /// `std.env` 命令を使う (`@ksn_rt_sys_*` を呼ぶ)。
+    env: bool,
     /// `FmtFloat` 命令を使う (浮動小数の書式化補助関数を出す)。
     fmt_float: bool,
     /// `ParseInt` 命令を使う (`kir_rt.c` の `ksn_parse_int` を呼ぶ)。
@@ -230,7 +232,7 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     };
     let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
     let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, parse_int: has_parse_int };
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, parse_int: has_parse_int };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -250,7 +252,7 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
             continue;
         }
         funcs.push('\n');
-        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
+        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
     let mut math = String::new();
@@ -277,6 +279,11 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     }
     if cx.parse_int {
         cx.decls.insert("declare i32 @ksn_parse_int(ptr, i64, i32, i32, i32, ptr, ptr)".to_string());
+    }
+    if cx.env {
+        cx.decls.insert("declare i64 @ksn_rt_sys_arg_count()".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_arg(i64, ptr)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_var(ptr, i64, ptr)".to_string());
     }
     let mut out = String::from("; ksn kir llvm 1\n\n");
     for d in &cx.decls {
@@ -350,6 +357,12 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
     }
     let rt = lty(aggs, f.ret);
     let mut s = String::from("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n");
+    // std.env の C ランタイムが argc/argv を参照するため、グローバルに保存する。
+    // シンボル名は C から `extern` 参照できるようドットなしにする。
+    cx.globals.push_str("@ksn_rt_argc = global i32 0\n");
+    cx.globals.push_str("@ksn_rt_argv = global ptr null\n");
+    s.push_str("  store i32 %argc, ptr @ksn_rt_argc\n");
+    s.push_str("  store ptr %argv, ptr @ksn_rt_argv\n");
     s.push_str(&format!("  %r = call {} {}()\n", rt, fname(&f.key)));
     match f.ret {
         Ty::Res(_, e) => {
@@ -523,7 +536,7 @@ pub const RUNTIME_C: &str = include_str!("kir_rt.c");
 
 /// IR が C の実行時補助を要するか。
 pub fn needs_runtime(ll: &str) -> bool {
-    ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int")
+    ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_")
 }
 
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
@@ -749,6 +762,8 @@ struct Fe<'a> {
     f: &'a Func,
     /// `extern` 関数の `キー → LLVM シンボル名`。`Op::Call` で `declare` したシンボルを直接呼ぶ。
     extern_links: &'a HashMap<String, String>,
+    /// 全関数 (`Op::Fnptr` の呼び先の型を引くため)。
+    funcs: &'a [Func],
     fi: usize,
     tys: HashMap<VId, Ty>,
     /// 定数と unit の値 (命令を作らずに、使う側へ直接書く)。
@@ -761,8 +776,8 @@ struct Fe<'a> {
 }
 
 impl<'a> Fe<'a> {
-    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, extern_links, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
+        Fe { cx, aggs, f, extern_links, funcs, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -1475,6 +1490,17 @@ impl<'a> Fe<'a> {
                     self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
                 }
             }
+            // 関数のアドレスを `ptr` として取る (C のコールバック用)。
+            // `callee` の関数は C 呼び出し規約と互換のシグネチャ (`ptr`/`i32` など) で下ろされている。
+            Op::FnPtr { callee } => {
+                let Some(f) = self.funcs.iter().find(|f| f.key == *callee) else {
+                    return Err(format!("fnptr の呼び先 {} が見つからない", callee));
+                };
+                let rt = self.lt(f.ret);
+                let params: Vec<String> = f.params().iter().map(|(_, t)| lty(self.aggs, *t)).collect();
+                let fnty = format!("{} ({})*", rt, params.join(", "));
+                self.line(format!("{} = bitcast {} {} to ptr", d, fnty, fname(callee)));
+            }
             Op::Make { variant, fields } => {
                 let Ty::Agg(ai) = i.ty else { return Err("make の結果が集成体でない".into()) };
                 let def = &aggs[ai as usize];
@@ -1672,6 +1698,50 @@ impl<'a> Fe<'a> {
                 self.cx.net = true;
                 let r = self.t(format!("call i64 @ksn.net_local_port(i32 {})", self.r(*sock)));
                 self.net_result(&d, &r)?;
+            }
+            Op::EnvArgCount => {
+                self.cx.env = true;
+                let r = self.t(format!("call i64 @ksn_rt_sys_arg_count()"));
+                self.mov(&d, "i64", &r);
+            }
+            Op::EnvArg { index } => {
+                self.cx.env = true;
+                let iv = self.r(*index);
+                let lenp = self.t("alloca i64, align 8".to_string());
+                self.line(format!("store i64 0, ptr {}, align 8", lenp));
+                let ptr = self.t(format!("call i64 @ksn_rt_sys_arg(i64 {}, ptr {})", iv, lenp));
+                let len = self.t(format!("load i64, ptr {}, align 8", lenp));
+                let isnull = self.t(format!("icmp eq i64 {}, 0", ptr));
+                let len128 = self.t(format!("zext i64 {} to i128", len));
+                let fat_hi = self.t(format!("shl i128 {}, 64", len128));
+                let ptr128 = self.t(format!("zext i64 {} to i128", ptr));
+                let fat = self.t(format!("or i128 {}, {}", fat_hi, ptr128));
+                let tag = self.t("shl i129 1, 128".to_string());
+                let fat129 = self.t(format!("zext i128 {} to i129", fat));
+                let some = self.t(format!("or i129 {}, {}", tag, fat129));
+                let result = self.t(format!("select i1 {}, i129 0, i129 {}", isnull, some));
+                self.mov(&d, "i129", &result);
+            }
+            Op::EnvVar { name } => {
+                self.cx.env = true;
+                let av = self.r(*name);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let ni = self.extract(&av, 128, 8, 64);
+                let lenp = self.t("alloca i64, align 8".to_string());
+                self.line(format!("store i64 0, ptr {}, align 8", lenp));
+                let ptr = self.t(format!("call i64 @ksn_rt_sys_var(ptr {}, i64 {}, ptr {})", p, ni, lenp));
+                let len = self.t(format!("load i64, ptr {}, align 8", lenp));
+                let isnull = self.t(format!("icmp eq i64 {}, 0", ptr));
+                let len128 = self.t(format!("zext i64 {} to i128", len));
+                let fat_hi = self.t(format!("shl i128 {}, 64", len128));
+                let ptr128 = self.t(format!("zext i64 {} to i128", ptr));
+                let fat = self.t(format!("or i128 {}, {}", fat_hi, ptr128));
+                let tag = self.t("shl i129 1, 128".to_string());
+                let fat129 = self.t(format!("zext i128 {} to i129", fat));
+                let some = self.t(format!("or i129 {}, {}", tag, fat129));
+                let result = self.t(format!("select i1 {}, i129 0, i129 {}", isnull, some));
+                self.mov(&d, "i129", &result);
             }
             Op::ParseInt { ty, s, radix } => {
                 self.cx.parse_int = true;

@@ -18,7 +18,7 @@ use crate::natives::io_kind_name;
 // 全体の値 (i128) を入れた 16 バイトの項目の添字 (置き場の項目として持つ)。
 
 /// 型 `t` の値が置き場の項目を参照するか (集成体、または入れ子の Option / Result を含む)。
-fn has_heap(t: Ty) -> bool {
+pub(crate) fn has_heap(t: Ty) -> bool {
     match t {
         Ty::Agg(_) => true,
         Ty::Opt(p) => pay_has_heap(p),
@@ -33,7 +33,7 @@ fn pay_has_heap(p: Pay) -> bool {
 }
 
 /// ペイロードの語を作る。`v` は型 `p` の値 (`Some(a)` などの被演算子)。入れ子の値は置き場に項目を積む。
-fn pay_word(p: Pay, v: i128, heap: &mut Vec<Vec<u8>>) -> i128 {
+pub(crate) fn pay_word(p: Pay, v: i128, heap: &mut Vec<Vec<u8>>) -> i128 {
     match p.ty() {
         Ty::Agg(_) => v,
         Ty::Opt(_) | Ty::Res(..) => {
@@ -45,7 +45,7 @@ fn pay_word(p: Pay, v: i128, heap: &mut Vec<Vec<u8>>) -> i128 {
 }
 
 /// ペイロードの語 `w` (型 `t` の値) を読み直す。入れ子の項目が無い (タグが別の腕の値を読んだ) ときは 0。
-fn pay_read(t: Ty, w: i128, heap: &[Vec<u8>]) -> i128 {
+pub(crate) fn pay_read(t: Ty, w: i128, heap: &[Vec<u8>]) -> i128 {
     match t {
         Ty::Agg(_) => w,
         Ty::Opt(_) | Ty::Res(..) => match heap.get(w as usize) {
@@ -71,7 +71,7 @@ fn alloc_next_fd(next: &mut i128) -> i128 {
 
 /// 呼び出し先が作った置き場の項目 (添字 `base` 以上) を、呼び出し元に残す形へ写す。`base` より前は呼び出し元のものなので、そのまま使う。
 /// `blobs` は添字 `base` から始まる項目、`out` は戻った後の置き場に積む項目。戻り値は新しい添字。
-fn relocate(t: Ty, v: i128, blobs: &[Vec<u8>], base: usize, out: &mut Vec<Vec<u8>>) -> i128 {
+pub(crate) fn relocate(t: Ty, v: i128, blobs: &[Vec<u8>], base: usize, out: &mut Vec<Vec<u8>>) -> i128 {
     match t {
         Ty::Agg(_) => place(v as usize, blobs, base, out),
         Ty::Opt(p) => {
@@ -347,7 +347,7 @@ fn width(ty: Ty) -> usize {
 }
 
 /// 集成体の値の読み出し: `t` の値を、バイト列 `buf` の `off` から取る (集成体は置き場に複製して、その添字を返す)。
-fn read_scalar(buf: &[u8], off: usize, t: Ty) -> i128 {
+pub(crate) fn read_scalar(buf: &[u8], off: usize, t: Ty) -> i128 {
     match t {
         Ty::Bool => (buf[off] != 0) as i128,
         Ty::Unit => 0,
@@ -393,7 +393,7 @@ fn arith_u128(op: Aop, mode: Mode, x: u128, y: u128) -> Result<u128, String> {
 }
 
 /// 値 `v` (スカラー、または置き場の添字の集成体) を、バイト列 `buf` の `off` に書く。
-fn write_val(buf: &mut [u8], off: usize, aggs: &[AggDef], t: Ty, v: i128, heap: &[Vec<u8>]) {
+pub(crate) fn write_val(buf: &mut [u8], off: usize, aggs: &[AggDef], t: Ty, v: i128, heap: &[Vec<u8>]) {
     if let Ty::Agg(_) = t {
         let src = &heap[v as usize];
         buf[off..off + src.len()].copy_from_slice(src);
@@ -405,7 +405,7 @@ fn write_val(buf: &mut [u8], off: usize, aggs: &[AggDef], t: Ty, v: i128, heap: 
 }
 
 /// `write` の実体: プロセスの stdout (1) / stderr (2) へ全バイトを書く。stdout は書くたびに流す (panic や終了の前に順序が崩れない)。
-fn write_fd(fd: i128, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_fd(fd: i128, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     match fd {
         1 => {
@@ -419,7 +419,7 @@ fn write_fd(fd: i128, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// `std.io.Error { kind, code }` の値を置き場に作り、その添字を返す (型表の `std.io.Error` と、その `kind` の列挙型を探す)。
-fn io_error_value(aggs: &[AggDef], heap: &mut Vec<Vec<u8>>, kind: &str, code: i32) -> Result<i128, String> {
+pub(crate) fn io_error_value(aggs: &[AggDef], heap: &mut Vec<Vec<u8>>, kind: &str, code: i32) -> Result<i128, String> {
     let d = aggs.iter().find(|d| d.name == "std.io.Error").ok_or("型表に std.io.Error がない")?;
     let AggKind::Struct(fs) = &d.kind else { return Err("std.io.Error が構造体でない".into()) };
     let (Some(kf), Some(cf)) = (fs.iter().find(|f| f.name == "kind"), fs.iter().find(|f| f.name == "code")) else {
@@ -447,7 +447,7 @@ fn desc_agg(heap: &mut Vec<Vec<u8>>, fd: i128) -> Result<i128, String> {
 }
 
 /// 構造体・タプルのオフセット `off` のフィールドの型。
-fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
+pub(crate) fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
     match &d.kind {
         AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().find(|f: &&Field| f.off == off).map(|f| f.ty),
         AggKind::Enum(_) => None,
@@ -528,7 +528,7 @@ fn checked_rem(ty: Ty, x: i128, y: i128) -> Option<i128> {
 
 /// `checked_<op>` の結果 (`Option<P>` の符号化)。溢れと 0 除算は `None` (= 0)。
 /// 符号付きの `MIN / -1` と `MIN % -1` は溢れで `None` (案 A。木走査 `interp.rs` と同じ)。
-fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
+pub(crate) fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
     let crate::kir::Ty::Opt(p) = t else { return 0 };
     let pt = p.ty();
     if matches!(op, Aop::Div | Aop::Rem) && y == 0 {
@@ -551,7 +551,7 @@ fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
 /// 戻り値: `(ret, lo, hi)`。`ret` は 0=成功、1=ParseIntError kind 0、2=kind 1。
 /// `lo`/`hi` は成功時の 128 ビットの値の下位・上位 64 ビット。
 /// 規則は `stage0/src/natives.rs` の `from_str_radix` / `parse` と同一。
-fn parse_int(bytes: &[u8], radix: u32, bits: u32, is_signed: bool) -> (u8, u64, u64) {
+pub(crate) fn parse_int(bytes: &[u8], radix: u32, bits: u32, is_signed: bool) -> (u8, u64, u64) {
     if radix < 2 || radix > 36 {
         return (1, 0, 0);
     }
@@ -607,7 +607,7 @@ fn parse_int(bytes: &[u8], radix: u32, bits: u32, is_signed: bool) -> (u8, u64, 
 
 /// `extern` 宣言の C 関数をホストの呼び出し規約で呼ぶ (`ffi::call_generic` と同じ仕組み)。
 /// 引数・戻り値はスカラー・ポインタに限る。
-fn extern_call(func: &Func, argv: &[i128]) -> Result<i128, String> {
+pub(crate) fn extern_call(func: &Func, argv: &[i128]) -> Result<i128, String> {
     use crate::ffi::{self, ArgV, RetTy};
     let link = func.link.as_ref().expect("extern 関数に link がない");
     let (lib, sym) = crate::ffi::split_link(link);
@@ -833,6 +833,49 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         return Err(format!("local_port できるのはリスナーソケットだけ: {}", fd));
                     };
                     l.local_addr().map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?
+                }
+                Op::EnvArgCount => {
+                    let n = std::env::args().len() as i128;
+                    n.saturating_sub(1)
+                }
+                Op::EnvArg { index } => {
+                    let i = get(&stack[top], index) as usize;
+                    let args: Vec<String> = std::env::args().collect();
+                    let non_program = args.len().saturating_sub(1);
+                    if i >= non_program {
+                        0
+                    } else {
+                        let s = &args[i + 1];
+                        let bytes = s.as_bytes();
+                        let ptr = bm.alloc(bytes.len(), true);
+                        bm.write_bytes(ptr, bytes)?;
+                        let mut fat_buf = vec![0u8; 16];
+                        fat_buf[0..8].copy_from_slice(&(ptr as u64).to_le_bytes());
+                        fat_buf[8..16].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+                        heap.push(fat_buf);
+                        TAG_BIT | (heap.len() - 1) as i128
+                    }
+                }
+                Op::EnvVar { name } => {
+                    let h = get(&stack[top], name) as usize;
+                    let fat_buf = &heap[h];
+                    let ptr = u64::from_le_bytes(fat_buf[0..8].try_into().expect("fat の ptr")) as usize;
+                    let len = u64::from_le_bytes(fat_buf[8..16].try_into().expect("fat の len")) as usize;
+                    let bytes = bm.read_bytes(ptr as i128, len)?;
+                    let name = std::str::from_utf8(&bytes).unwrap_or("");
+                    match std::env::var(name) {
+                        Ok(v) => {
+                            let vbytes = v.as_bytes();
+                            let vptr = bm.alloc(vbytes.len(), true);
+                            bm.write_bytes(vptr, vbytes)?;
+                            let mut fat_buf = vec![0u8; 16];
+                            fat_buf[0..8].copy_from_slice(&(vptr as u64).to_le_bytes());
+                            fat_buf[8..16].copy_from_slice(&(vbytes.len() as u64).to_le_bytes());
+                            heap.push(fat_buf);
+                            TAG_BIT | (heap.len() - 1) as i128
+                        }
+                        Err(_) => 0,
+                    }
                 }
                 Op::IndexCheck { i, len } => {
                     let (ix, n) = (get(&stack[top], i), get(&stack[top], len));
@@ -1079,6 +1122,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 }
                 Op::FieldAddr { a, off } => get(&stack[top], a) + *off as i128,
                 Op::AsShared(p) | Op::Reborrow(p) => get(&stack[top], p),
+                Op::FnPtr { .. } => 0,
             };
             stack[top].vals[inst.dst as usize] = result;
             stack[top].defd[inst.dst as usize] = true;

@@ -100,6 +100,9 @@ pub(crate) struct CollCx {
     /// `std.thread.spawn` で保留されたクロージャの (鍵, 取り込み値) の列。FIFO = spawn 順。
     /// `join` が先頭を取り出してクロージャ本体を呼ぶ (設計_KIR.md スレッド章)。
     pub(crate) pending_spawns: Vec<super::thread_lower::Site>,
+    /// 添字式 `v[i]` (所有物を持つ要素の Vec) の木の番地 → 要素の借用を持つスロット。`elem_prep` が作り、
+    /// `local_slot` / `chain_of` が受け手として読む。
+    pub(crate) elem_slots: BTreeMap<usize, usize>,
 }
 
 /// 型表の式の型 (式 ID が 0 なら無い)。
@@ -243,6 +246,9 @@ fn closure_key(lw: &Lw, id: u32) -> String {
 
 /// 単一の名前の経路なら、その名前のスロット (見えているもの)。
 pub(crate) fn local_slot(lw: &Lw, e: &V) -> Option<usize> {
+    if nname(e) == "Index" {
+        return lw.coll.elem_slots.get(&(e as *const V as usize)).copied();
+    }
     if nname(e) != "Path" {
         return None;
     }
@@ -1778,9 +1784,13 @@ pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]
         Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
         _ => return lw.err(line, "get の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
     };
-    let (Some(sz), Some(pay)) = (size_of(elem), Pay::of(elem)) else {
+    let (Some(sz), Some(pay)) = (elem_size(lw, elem), Pay::of(elem)) else {
         return lw.err(line, format!("get の要素の型 {} は段階 1 の対象外", elem.name()));
     };
+    if owns_heap(lw, elem) {
+        // 要素の写しを Option に入れると、Option が所有物を持つ型になり、match などで解放されて要素と二重解放になる。
+        return lw.err(line, format!("get の要素の型 {} は所有物を持つ (借用の Option<&T> は値の写しで持てない。`match v.get(i) {{ Some(x) => .. None => .. }}` の形なら借用で下ろせる)", elem.name()));
+    }
     if args.len() != 1 {
         return lw.err(line, "get の引数の個数が違う");
     }
@@ -1803,7 +1813,7 @@ pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]
         lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k })
     };
     let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
-    let x = lw.emit(elem, Op::MemLoad { p: addr, off: 0 });
+    let x = load_elem(lw, addr, elem);
     let some = lw.emit(opt, Op::Some(x));
     lw.goto(jb, vec![some]);
     lw.cur = Some(eb);
@@ -1868,7 +1878,7 @@ impl Seq {
 
 /// 添字の値の番地: 境界検査のあと `ptr + i * size`。
 fn elem_addr(lw: &mut Lw, seq: Seq, i: VId, elem: Ty) -> LR<VId> {
-    let Some(sz) = size_of(elem) else {
+    let Some(sz) = elem_size(lw, elem) else {
         return lw.err(0, format!("要素の型 {} は段階 1 の対象外", elem.name()));
     };
     let (_, base) = seq.len_and_base(lw, Some(i));
@@ -1884,14 +1894,27 @@ fn elem_addr(lw: &mut Lw, seq: Seq, i: VId, elem: Ty) -> LR<VId> {
 /// 添字・反復の対象になる Vec・スライスの変数または `b"..."` リテラル: (置き場, 要素の型)。要素型が分からなければ拒否する。
 fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
     if let Some(s) = local_slot(lw, e) {
-        match lw.coll.kinds.get(&s) {
-            Some(Kind::Vec(Some(elem))) => return Ok((Seq::Hdr(lw.slots[s].0), *elem)),
-            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
-                // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+        // `lw.coll` と `lw.slots` から必要な値を先にコピーし、その後の `lw.emit` との借用競合を避ける。
+        let kind = lw.coll.kinds.get(&s).cloned();
+        let slot_ptr = lw.slots[s].0;
+        match kind {
+            Some(Kind::Vec(Some(elem))) => return Ok((Seq::Hdr(slot_ptr), elem)),
+            // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+            Some(Kind::Slice(Some(elem))) if lw.vty(slot_ptr) == Ty::Ptr => {
                 let n = lw.coll.arr_len[&s];
-                return Ok((Seq::Ptr(lw.slots[s].0, n), *elem));
+                return Ok((Seq::Ptr(slot_ptr, n), elem));
             }
-            Some(Kind::Slice(Some(elem))) => return Ok((Seq::Fat(lw.slots[s].0), *elem)),
+            // スロットが fat への参照なら、ロードして fat 値を得る。
+            // slot_ptr の実際の型は Ref(true, Agg) なことがある (ローカル配列の &mut v など)。
+            Some(Kind::Slice(Some(elem))) => {
+                let fat_val = match lw.vty(slot_ptr) {
+                    Ty::Ref(_, Pointee::Agg(agg_ai)) => {
+                        lw.emit(Ty::Agg(agg_ai), Op::Load(slot_ptr))
+                    }
+                    _ => slot_ptr,
+                };
+                return Ok((Seq::Fat(fat_val), elem));
+            }
             _ => {}
         }
     }
@@ -1919,10 +1942,68 @@ pub(crate) fn local_slot_ty(lw: &Lw, e: &V) -> Option<Ty> {
     local_slot(lw, e).map(|s| lw.slots[s].1)
 }
 
+/// 所有物を持つ要素の `v[i]` を含む式 (`v[i].f` / `v[i].f.len()` / `v[i].len()` / `&v[i]`) の準備: 添字を評価して要素の番地を求め、
+/// 借用を持つスロットを作る (`elem_slots`)。以降の下ろしは、その `Index` の木を「借用の局所変数」として扱う。解放はしない。
+pub(crate) fn elem_prep(lw: &mut Lw, e: &V) -> LR<()> {
+    // 読むだけのメソッド・`&v[i]` は共有の借用、変更しうるメソッド・`&mut v[i]` は可変の借用 (設計_KIR.md 17.15)
+    const READ_ONLY: [&str; 12] = ["len", "is_empty", "get", "as_slice", "as_str", "first", "last", "contains", "capacity", "iter", "clone", "to_string"];
+    let m = match nname(e) {
+        "MCall" => !READ_ONLY.contains(&st(&nf(e)[1]).as_str()),
+        "Unary" => st(&nf(e)[0]) == "&mut",
+        _ => false,
+    };
+    elem_prep_m(lw, e, m)
+}
+
+/// `elem_prep` の本体。`m` なら構造体の要素の借用を可変の参照にする (代入の対象、`&mut v[i]`、`&mut self` のメソッド)。
+pub(crate) fn elem_prep_m(lw: &mut Lw, e: &V, m: bool) -> LR<()> {
+    let mut cur = match nname(e) {
+        "MCall" | "Field" => &nf(e)[0],
+        "Unary" if matches!(st(&nf(e)[0]).as_str(), "&" | "&mut") => &nf(e)[1],
+        _ => return Ok(()),
+    };
+    while nname(cur) == "Field" {
+        cur = &nf(cur)[0];
+    }
+    if nname(cur) != "Index" {
+        return Ok(());
+    }
+    let line = nline(cur);
+    let f = nf(cur);
+    let Ok((seq, elem)) = vec_place(lw, &f[0], line) else { return Ok(()) };
+    if !owns_heap(lw, elem) {
+        return Ok(());
+    }
+    let Some(i) = lw.expr(&f[1])? else { return Ok(()) };
+    if lw.vty(i) != Ty::Usize {
+        return lw.err(line, "添字の型が usize ではない");
+    }
+    let addr = elem_addr(lw, seq, i, elem)?;
+    let Ty::Agg(ai) = elem else { return lw.err(line, "要素の借用は集成体だけ段階 1 の対象") };
+    let slot = if lw.aggs.borrow().is_vec(elem) {
+        let kind = table_ty(lw, cur).and_then(|t| kind_of_src(lw, &t)).or_else(|| lw.aggs.borrow().vec_elem(elem).map(|e| Kind::Vec(Some(e))));
+        let Some(kind) = kind else { return lw.err(line, "添字の要素の種類 (Vec / String) が分からない") };
+        let s = lw.new_slot(addr, Ty::Ptr);
+        lw.coll.kinds.insert(s, kind);
+        lw.coll.borrowed.insert(s);
+        s
+    } else {
+        let rt = Ty::Ref(m, Pointee::Agg(ai));
+        let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+        lw.new_slot(r, rt)
+    };
+    lw.coll.elem_slots.insert(cur as *const V as usize, slot);
+    Ok(())
+}
+
 /// `v[i]` の読み取り。
 pub(crate) fn index_read(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let f = nf(e);
     let line = nline(e);
+    // 所有物を持つ要素: `elem_prep` が作った借用 (これを値として読むのは、フィールドの読み出しなど場所としての使用)
+    if let Some(s) = local_slot(lw, e) {
+        return Ok(Some(lw.read_slot(s)));
+    }
     let (seq, elem) = vec_place(lw, &f[0], line)?;
     let Some(i) = lw.expr(&f[1])? else { return Ok(None) };
     if lw.vty(i) != Ty::Usize {
@@ -1947,8 +2028,46 @@ pub(crate) fn assign_index(lw: &mut Lw, s: &V) -> LR<St> {
         return lw.err(line, "代入の型が要素の型と違う");
     }
     let addr = elem_addr(lw, seq, i, elem)?;
+    if owns_heap(lw, elem) {
+        // 所有物の要素: 古い値を解放してから書く (設計_KIR.md 17.15)
+        let Ty::Agg(ei) = elem else { return lw.err(line, "所有物の要素への代入は集成体だけ段階 1 の対象") };
+        let r = lw.emit(Ty::Ref(true, Pointee::Agg(ei)), Op::Bitcast { src: Ty::Ptr, a: addr });
+        let old = lw.emit(elem, Op::Load(r));
+        drop_value(lw, old, elem);
+        lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+        return Ok(St::Unit);
+    }
     lw.emit(Ty::Unit, Op::MemStore { ty: elem, p: addr, off: 0, v });
     Ok(St::Unit)
+}
+
+/// `v[i].f.g = e` (`v` は所有物を持つ要素の Vec): 右辺を先に評価し、要素の可変の借用を作って、そのフィールドへ書く
+/// (所有物のフィールドは古い値を解放してから)。この形でなければ `None`。
+pub(crate) fn assign_elem_field(lw: &mut Lw, target: &V, rhs: &V, line: usize) -> Option<LR<St>> {
+    let mut cur = target;
+    let mut names = vec![];
+    while nname(cur) == "Field" {
+        names.push(st(&nf(cur)[1]));
+        cur = &nf(cur)[0];
+    }
+    if nname(cur) != "Index" {
+        return None;
+    }
+    names.reverse();
+    let idx = cur;
+    let go = |lw: &mut Lw| -> LR<St> {
+        let (_, elem) = vec_place(lw, &nf(idx)[0], line)?;
+        if !owns_heap(lw, elem) {
+            return lw.err(line, "代入先は名前かフィールドだけ段階 1 の対象");
+        }
+        let Some(v) = lw.expr(rhs)? else { return Ok(St::Div) };
+        elem_prep_m(lw, target, true)?;
+        let Some(s) = local_slot(lw, idx) else { return lw.err(line, "要素の借用が作れない") };
+        let mut segs = vec![String::new()];
+        segs.extend(names.iter().cloned());
+        lw.store_segs(s, &segs, v, line, true)
+    };
+    Some(go(lw))
 }
 
 /// 文字列リテラル: 静的なバイト列と、{ptr, len} の値 (`fat`)。
@@ -1989,7 +2108,7 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             if !ity.is_int() || lw.vty(b) != ity {
                 return lw.err(line, "core.iter.range の範囲は同じ整数の型だけ段階 1 の対象");
             }
-            return counted(lw, line, Counted { start: a, end: b, ity, elem: None }, name, &f[2]);
+            return counted(lw, line, Counted { start: a, end: b, ity, elem: None, esrc: None, by_ref: false, by_mut: false, take: false }, name, &f[2]);
         }
     }
     // `for x in [e1, e2]`: 配列リテラルは `{ptr, len}` の値として、スライスと同じに反復する
@@ -1997,20 +2116,39 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         let Some((fat, elem)) = lw.array_lit(it)? else { return Ok(None) };
         let (len, base) = Seq::Fat(fat).len_and_base(lw, None);
         let zero = lw.emit(Ty::Usize, Op::Const(0));
-        return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)) }, name, &f[2]);
+        return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc: None, by_ref: false, by_mut: false, take: false }, name, &f[2]);
     }
-    if let Some(s) = local_slot(lw, it) {
-        let seq = match lw.coll.kinds.get(&s).cloned() {
-            Some(Kind::Vec(Some(elem))) => Some((Seq::Hdr(lw.slots[s].0), elem)),
+    // `for x in &v` / `for x in v.iter()` (v は局所変数): 要素の借用を回す。`v` を値で回す形とは、所有物の要素の扱いが違う。
+    let by_mut = nname(it) == "Unary" && st(&nf(it)[0]) == "&mut";
+    let (it, by_ref) = if by_mut { (&nf(it)[1], true) } else { borrowed_iter(it) };
+    // `v.iter()` が `Call` の経路 `v.iter` の形のとき、受け手の局所は経路の先頭
+    let call_iter = by_ref && nname(it) == "Call";
+    let slot = if call_iter { lw.lookup(&strs(&nf(&nf(it)[0])[0])[0]) } else { local_slot(lw, it) };
+    if let Some(s) = slot {
+        // `lw.coll` と `lw.slots` から必要な値を先にコピーし、その後の `lw.emit` との借用競合を避ける。
+        let kind = lw.coll.kinds.get(&s).cloned();
+        let slot_ptr = lw.slots[s].0;
+        let seq = match kind {
+            Some(Kind::Vec(Some(elem))) => Some((Seq::Hdr(slot_ptr), elem)),
             // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
-            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
+            Some(Kind::Slice(Some(elem))) if lw.vty(slot_ptr) == Ty::Ptr => {
                 let n = lw.coll.arr_len[&s];
-                Some((Seq::Ptr(lw.slots[s].0, n), elem))
+                Some((Seq::Ptr(slot_ptr, n), elem))
             }
-            Some(Kind::Slice(Some(elem))) => Some((Seq::Fat(lw.slots[s].0), elem)),
+            // スロットが fat への参照なら、ロードして fat 値を得る。
+            Some(Kind::Slice(Some(elem))) => {
+                let fat_val = match lw.vty(slot_ptr) {
+                    Ty::Ref(_, Pointee::Agg(agg_ai)) => {
+                        lw.emit(Ty::Agg(agg_ai), Op::Load(slot_ptr))
+                    }
+                    _ => slot_ptr,
+                };
+                Some((Seq::Fat(fat_val), elem))
+            }
             _ => None,
         };
-        if let (Some(_), Some(n)) = (&seq, path1_name(it)) {
+        let nm = if call_iter { Some(strs(&nf(&nf(it)[0])[0])[0].clone()) } else { path1_name(it) };
+        if let (Some(_), Some(n)) = (&seq, nm) {
             // 反復中に `v` を変える (`push` で再確保される、`&mut v` を渡す、代入する) と、反復が読む先頭と長さが古くなって
             // 解放後のバッファを読む。`ksn check` はこの形を通すので KIR では拒む (設計_KIR.md 17.6)。
             if body_mutates(&f[2], &n) {
@@ -2018,9 +2156,47 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             }
         }
         if let Some((seq, elem)) = seq {
+            // `for x in v` で `v` が参照 (`&Vec` のパラメータなど) なら、借用で回す
+            let by_mut = by_mut || (owns_heap(lw, elem) && matches!(lw.src_ty(it), Ok(Src::Ref(true, _))));
+            let by_ref = by_ref || (owns_heap(lw, elem) && matches!(lw.src_ty(it), Ok(Src::Ref(..))));
+            let take = owns_heap(lw, elem) && !by_ref;
+            if take && (lw.coll.borrowed.contains(&s) || !matches!(seq, Seq::Hdr(_)) || !matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)))) {
+                return lw.err(line, "要素が所有物の Vec を値で回す for は、局所変数の Vec だけ段階 1 の対象");
+            }
+            let esrc = if owns_heap(lw, elem) {
+                match lw.src_ty(it) {
+                    Ok(Src::Named(n, a)) if n == VEC => a.into_iter().next(),
+                    // `v.iter()` の型は `core.slice.Iter<T>`
+                    Ok(Src::Named(n, a)) if n == "core.slice.Iter" => a.into_iter().next(),
+                    Ok(Src::Ref(_, i)) => match *i {
+                        Src::Named(n, a) if n == VEC => a.into_iter().next(),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if take {
+                // 値で回す: `v` の 3 語を隠しヘッダへ移して、このスコープの所有に入れる。1 周ごとに要素を `x` へ移し、
+                // バッファの元の場所は空 (解放しても何も起きない値) にする。`break` / `return` で抜けたときの残りの要素とバッファは、
+                // このスコープの終わりの隠しヘッダの解放で片付く。
+                lw.scopes.push(vec![]);
+                let hdr = lw.slots[s].0;
+                let val = move_hdr(lw, hdr);
+                let h2 = adopt(lw, val);
+                let (len, base) = Seq::Hdr(h2).len_and_base(lw, None);
+                let zero = lw.emit(Ty::Usize, Op::Const(0));
+                let r = counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc, by_ref, by_mut, take: true }, name, &f[2]);
+                if r.is_ok() {
+                    block_end(lw);
+                }
+                lw.scopes.pop();
+                return r;
+            }
             let (len, base) = seq.len_and_base(lw, None);
             let zero = lw.emit(Ty::Usize, Op::Const(0));
-            return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)) }, name, &f[2]);
+            return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc, by_ref, by_mut, take: false }, name, &f[2]);
         }
     }
     // 利用者の反復子の局所 (`core.iter.Iterator` を実装し、`&mut self` の `next` を持つ): `next` を呼んで `None` まで回す
@@ -2036,6 +2212,24 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数・利用者の反復子の変数だけ段階 1 の対象")
 }
 
+/// `&v` / `v.iter()` (共有の借用) なら (`v`, true)。それ以外はそのまま (式, false)。
+fn borrowed_iter(it: &V) -> (&V, bool) {
+    match nname(it) {
+        "Unary" if st(&nf(it)[0]) == "&" => (&nf(it)[1], true),
+        "MCall" if st(&nf(it)[1]) == "iter" && items(&nf(it)[2]).is_empty() => (&nf(it)[0], true),
+        // `v.iter()` は `Call` の経路 `v.iter` の形にもなる
+        "Call" if nname(&nf(it)[0]) == "Path" && items(&nf(it)[1]).is_empty() => {
+            let segs = strs(&nf(&nf(it)[0])[0]);
+            if segs.len() == 2 && segs[1] == "iter" {
+                (it, true)
+            } else {
+                (it, false)
+            }
+        }
+        _ => (it, false),
+    }
+}
+
 /// 単一の名前の経路 (`v`) ならその名前。
 fn path1_name(e: &V) -> Option<String> {
     if nname(e) != "Path" {
@@ -2047,7 +2241,7 @@ fn path1_name(e: &V) -> Option<String> {
 
 /// 木 `v` の中で、名前 `name` の局所を変えうる形があるか: 代入、`&mut name`、読むだけとは限らないメソッド呼び出し。
 pub(super) fn body_mutates(v: &V, name: &str) -> bool {
-    const READ_ONLY: [&str; 9] = ["len", "is_empty", "get", "as_slice", "as_str", "first", "last", "contains", "capacity"];
+    const READ_ONLY: [&str; 10] = ["len", "is_empty", "get", "as_slice", "as_str", "first", "last", "contains", "capacity", "iter"];
     match v {
         V::Node(n, fs, _, _) => {
             let hit = match *n {
@@ -2148,6 +2342,14 @@ struct Counted {
     ity: Ty,
     /// Vec を反復するとき: (要素の先頭アドレス, 要素の型)。
     elem: Option<(VId, Ty)>,
+    /// 所有物の要素を借用で束縛するときの、要素の型表の型 (Vec / String の種類を決める)。
+    esrc: Option<Src>,
+    /// 借用で回す (`&v` / `v.iter()`)。スカラーの要素の変数は値で持つが、`*x` は恒等として読めるよう借用の印を付ける。
+    by_ref: bool,
+    /// 可変の借用で回す (`&mut v`)。要素の変数は `&mut T` (構造体・スカラー) か、借用のヘッダ (Vec / String)。
+    by_mut: bool,
+    /// 値で回す (所有物の要素を 1 つずつ `x` へ移す)。
+    take: bool,
 }
 
 /// 添字を 1 ずつ増やす数え上げのループ。代入される変数は、ループの先頭のブロック引数で受け渡す。
@@ -2179,16 +2381,48 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
     if let Some(n) = &name {
         match c.elem {
             None => lw.bind(n, hp[0], c.ity),
+            Some((base, ety)) if owns_heap(lw, ety) => {
+                let addr = elem_addr_from_base(lw, base, hp[0], ety)?;
+                if c.take {
+                    // 要素を `x` へ移す: 値を読み、元の場所を空にする。`x` が所有して 1 周の終わりに解放する。
+                    let Ty::Agg(ei) = ety else { return lw.err(_line, "値で回す for の要素は集成体だけ段階 1 の対象") };
+                    let rt = Ty::Ref(true, Pointee::Agg(ei));
+                    let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+                    let v = lw.emit(ety, Op::Load(r));
+                    let nv = null_value(lw, v, ety, _line)?;
+                    lw.emit(Ty::Unit, Op::Store { ptr: r, val: nv });
+                    lw.coll.hint = c.esrc.clone();
+                    bind_owned(lw, n, v, ety);
+                    lw.coll.hint = None;
+                } else {
+                    // 借用で束縛する (解放しない)
+                    super::own::bind_elem_ref(lw, _line, n, addr, ety, c.esrc.as_ref(), c.by_mut)?;
+                }
+            }
             Some((base, ety)) => {
                 let addr = elem_addr_from_base(lw, base, hp[0], ety)?;
-                let v = lw.emit(ety, Op::MemLoad { p: addr, off: 0 });
-                lw.bind(n, v, ety);
+                if c.by_mut {
+                    // `for x in &mut v` (スカラー): 要素のアドレスを `&mut T` に束縛する
+                    let Some(p) = Pointee::of(ety) else { return lw.err(_line, "可変の借用で回す要素の型は段階 1 の対象外") };
+                    let rt = Ty::Ref(true, p);
+                    let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+                    lw.bind(n, r, rt);
+                } else {
+                    let v = lw.emit(ety, Op::MemLoad { p: addr, off: 0 });
+                    lw.bind(n, v, ety);
+                }
+                if c.by_ref && !c.by_mut {
+                    let s = lw.lookup(n).expect("束縛した名前");
+                    lw.coll.borrowed.insert(s);
+                }
             }
         }
     }
     lw.loops.push(super::LoopCx { header: ib, exit: xb, slots: slots.clone(), depth });
     let r = lw.expr(body)?;
     if r.is_some() {
+        // 1 周の終わり: 変数が所有する値を先に解放してから戻る
+        block_end(lw);
         let args = lw.vals_of(&slots);
         lw.goto(ib, args);
     }
@@ -2213,7 +2447,7 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
 
 /// Vec の要素の番地 (境界は呼び出し側が保証する)。
 fn elem_addr_from_base(lw: &mut Lw, base: VId, i: VId, elem: Ty) -> LR<VId> {
-    let Some(sz) = size_of(elem) else {
+    let Some(sz) = elem_size(lw, elem) else {
         return lw.err(0, format!("要素の型 {} は段階 1 の対象外", elem.name()));
     };
     let off = if sz == 1 {

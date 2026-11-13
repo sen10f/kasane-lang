@@ -424,6 +424,9 @@ impl<'a> Lw<'a> {
                 if super::coll::owns(self, self.vty(v)) {
                     // 局所変数から始まるフィールドの連なりなら、所有物を移し出す (部分的な移動)。それ以外 (一時の値のフィールド) は未対応。
                     if let Some((s, names)) = super::own::chain_of(self, e) {
+                        if self.coll.elem_slots.values().any(|x| *x == s) {
+                            return self.err(nline(e), "添字で借りた要素のフィールドの所有物を値で使う (移す) 形は段階 1 の対象外");
+                        }
                         return Ok(Some(super::coll::field_move(self, s, &names, nline(e))?));
                     }
                     return self.err(nline(e), "一時の値のフィールドからの所有物の移動は段階 1 の対象外");

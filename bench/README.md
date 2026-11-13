@@ -73,3 +73,18 @@ taskset -c 0-9,12-31 python bench/run_bench.py --provider nim
 
 - `eval_files.py`, `verify_reference.py`: 保存済みの解・参照解の採点。
 - `run_selfdriven.py`: `claude -p` に `ksn` を回させる自走型。OpenAI 互換 API は使わないので、上のオプションは関係ない。
+
+## 課題の追加
+
+新しい課題は `bench/tasks/<id>/` ディレクトリに置く:
+
+- `task.json`: `{"id", "title", "spec", "decl", "level": "basic" | "hard", "order"}`。
+  `order` は `TASKS` 全体での位置 (0 始まり)。`bench/tasks.py` のローダが
+  `bench/tasks/*/task.json` を読んで `order` 順に `TASKS` (各辞書のキーは
+  `id, title, spec, decl, tests` の 5 つ) を組み立てる。
+- `tests.ksnl`: Kasane の `test` 定義の文字列 (課題があるものだけ)。
+- `reference.ksnl`: 参照解 (あるものだけ)。`python3 -I bench/verify_reference.py` が、課題のあるものはテストで採点し、回帰用だけのものは `ksn check` の診断 0 件と `ksn fmt --check` を確かめる (フル検証 `tests/run_tests.py` にも入っている)。
+
+回帰用だけの課題 (テストも無く、回帰検査だけの参照解)は
+`{"id", "title", "level": "reference-only"}` の `task.json` と `reference.ksnl` のみ。
+`bench/tasks.py` は回帰用 id の一覧 `REFERENCE_ONLY` も出す。

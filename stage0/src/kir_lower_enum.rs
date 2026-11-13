@@ -104,6 +104,15 @@ impl<'a> Lw<'a> {
                 }
             }
         }
+        if segs.len() == 2 && segs[1] == "take" {
+            if let Some(s) = self.lookup(&segs[0]) {
+                let recv = super::coll::path_peek(self, s);
+                let args = items(&f[1]).to_vec();
+                if matches!(self.vty(recv), Ty::Opt(_)) {
+                    return Some(self.builtin_call_take(e, s, recv, &args));
+                }
+            }
+        }
         if segs.len() == 2 && segs[1] == "map_err" {
             if let Some(s) = self.lookup(&segs[0]) {
                 let recv = super::coll::path_read(self, s);
@@ -141,6 +150,43 @@ impl<'a> Lw<'a> {
             return Some(self.optres_mcall(e, &m));
         }
         None
+    }
+
+    /// `opt.take()` (`Call[Path[opt, take]]` 形。`self: &mut Option<T>`): タグを見て `Some` ならペイロードを返して
+    /// `opt` を `None` に書き戻し、`None` なら `None` を返して `opt` は `None` のままにする。
+    /// `T` はスカラーを想定し、ペイロードをコピーして取り出す。
+    fn builtin_call_take(&mut self, e: &V, s: usize, recv: VId, args: &[V]) -> LR<Option<VId>> {
+        let line = nline(e);
+        if !args.is_empty() {
+            return self.err(line, "take は引数を取らない");
+        }
+        let rt = self.vty(recv);
+        let Ty::Opt(pay) = rt else {
+            return self.err(line, format!("メソッド take は型 {} に対して段階 1 の対象外", rt.name()));
+        };
+        let t = self.ty_of(e)?;
+        if t != rt {
+            return self.err(line, format!("take の結果の型が {} と違う", rt.name()));
+        }
+        // `&mut self` の受け手: 局所変数のスロットを `None` で上書きする。
+        let none = self.emit(rt, Op::Const(0));
+        let tag = self.emit(Ty::Bool, Op::Tag(recv));
+        let (yes, _) = self.new_block(&[]);
+        let (no, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[rt]);
+        self.branch(tag, (yes, vec![]), (no, vec![]));
+        // Some: ペイロードを取り出して `Some(payload)` を返し、`opt` を `None` にする。
+        self.cur = Some(yes);
+        let pv = self.emit(pay.ty(), Op::Payload(recv));
+        let some = self.emit(rt, Op::Some(pv));
+        self.assign_slot(s, none);
+        self.goto(join, vec![some]);
+        // None: `None` を返し、`opt` は `None` のまま。
+        self.cur = Some(no);
+        self.assign_slot(s, none);
+        self.goto(join, vec![none]);
+        self.cur = Some(join);
+        Ok(Some(jp[0]))
     }
 
     /// `Option` / `Result` のメソッド: `is_some` `is_none` `is_ok` `is_err` (タグを読むだけ) と `unwrap_or(d)` (タグで枝を分ける)。

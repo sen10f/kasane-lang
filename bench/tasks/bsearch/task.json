@@ -1,0 +1,8 @@
+{
+  "id": "bsearch",
+  "title": "二分探索",
+  "spec": "昇順に並んだ i32 のスライスから target を二分探索し、見つかった添字を Some で返す。無ければ None。",
+  "decl": "fn bench.bsearch(xs: &[i32], target: i32) -> Option<usize>",
+  "level": "hard",
+  "order": 18
+}

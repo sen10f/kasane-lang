@@ -1,0 +1,10 @@
+test bench.max_of.test_basic
+    core.check.eq(bench.max_of(&[3i32, 9i32, 2i32]), Some(9i32))
+    core.check.eq(bench.max_of(&[5i32]), Some(5i32))
+    core.check.eq(bench.max_of(&[-4i32, -1i32, -7i32]), Some(-1i32))
+end bench.max_of.test_basic
+
+test bench.max_of.test_empty
+    let xs = [1i32, 2i32]
+    core.check.eq(bench.max_of(xs.sub(1usize, 1usize).unwrap()), None)
+end bench.max_of.test_empty

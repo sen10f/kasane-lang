@@ -1076,6 +1076,92 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - `tests/cli.rs` の `kir_run` は、clang が `-fsanitize=address` を使えるとき (`asan_available`)、`KSN_CLANG_ARGS="-fsanitize=address -fno-omit-frame-pointer -g -O0"` と `ASAN_OPTIONS=detect_leaks=1` で作った実行ファイルでも走らせる。ASan の報告が出れば失敗 (panic の 101 / 102 の終了では、漏れの報告 (LeakSanitizer) は見ない)。終了コードと表示も参照実行器と比べる。`KSN_NO_ASAN=1` で無効にできる。`-O0` なのは、`-O1` では LLVM が `malloc` / `free` の対を消して二重解放が見えないため (項目 1 の二重解放は `-O0` でだけ ASan が報告する)。
 - 既存の KIR の差分テスト全件 (`kir_*`) は、ASan でも報告なしで通る。`KSN_CLANG_ARGS="-fsanitize=address -g"` を付けた `llvm_builds_of_real_packages_match_run` (11 パッケージ) も通る。
 
+### 17.13 `==` / `!=` の下ろしと `get` の所有物 (kir/option-eq、2026-11-13)
+- 比較演算子 `==` / `!=` の被演算子が `Option` / `Result` / 構造体・列挙型 (所有物なし) / `&str` / `&[u8]` のとき、15.2 の `<型>.$eq` を呼ぶ (`kir_lower_check.rs` の `eq_by_call`。`!=` は結果の否定)。型は左辺 (だめなら右辺) の元の型から作り、スカラーへの参照 (`Option<&u8>`) は値で持つので参照を外す。`&[u8]` の比較はバイトの一致 (`&str` と同じ `$eq`。表示は未対応のまま)。派生の比較はフィールドを宣言順に比べる (木走査と同じ)。
+- `Vec<所有物を持つ要素>` の `get` は拒否に戻した: 要素の写しを `Option` に入れると `Option` が所有物を持つ型になり、`match` の腕の頭で解放されて要素と二重解放になる (`2e66785` の確認で再現。参照実行器は `不正な解放`)。コピーできる要素は変わらず下ろせる。
+- `examples/json` は LLVM で作れ、`ksn run` と stdout・終了コードが一致する (ASan も報告なし)。`llvm_builds_of_real_packages_match_run` に追加した。
+- 試験: `kir_eq_operator_on_option_result_aggregates_match_tree_walker` (17 ケース)、`kir_get_on_vec_of_owning_elements_is_refused_with_a_reason`。
+
+### 17.14 所有物を持つ要素の Vec の借用 (kir/owned-elem-borrow、2026-11-13)
+- 要素が所有物 (`Vec<String>`、String / Vec を持つ構造体の Vec) の `get` / 添字 / `for` は、要素の**写しでなく番地 (借用)** で下ろす。借用は所有に入れず、解放しない。Vec / String の要素はヘッダのアドレス (`ptr`、種類 String / Vec を結び付けた借用の局所)、構造体などの要素は `bitcast` した共有参照 `ref<Agg>` (13.9 の「`&T` の `*r` を丸ごと読まない」と同じ規則で、中身を丸ごと値で読むのは拒否のまま)。
+- `match v.get(i) { Some(x) => .. None => .. }` (`kir_lower_own.rs` の `match_get_mut` を `get` にも広げた。`v` は局所変数かフィールド。腕は `Some(名前 | _)` と `None | _`)。境界の内なら要素の番地を `x` に束縛。`Option<&T>` の値は作らない。
+- `for x in &v` / `for x in v.iter()` (`kir_lower_coll.rs` の `for_expr`): 1 周ごとに要素の番地を借用で束縛。スカラーの要素も同じ形で回せ、`*x` は値そのもの。`for x in v` (値で回す。要素を移す) は所有物の要素では拒否。反復中の `v` の変更の検査 (17.6) はそのまま。
+- `v[i].f` / `v[i].name.len()` / `v[i].len()` / `&v[i]`: `elem_prep` が式の先頭で境界を検査して要素の番地を求め、借用のスロットを作る (`elem_slots`)。範囲外は panic (木走査と同じ文言)。`v[i]` の所有物のフィールドを値で使う (移す) 形と `&mut v[i]` は拒否。
+- 拒否のまま: `match v.get(i)` の腕で構造体のパターンを分解する形 (`Some(t.Item { name: _, v: x })`)、`get` の値を `let` に持つ形、`for x in v` (値)、`&mut v` / `iter_mut()` の要素、`insert` / `remove`。
+- 試験: `kir_borrow_owned_elems_match_tree_walker` (17 ケース。`--run` / `--native` / ASan)、`kir_borrow_owned_elems_out_of_range_index_panics_like_tree_walker`、`kir_get_on_vec_of_owning_elements_is_refused_with_a_reason` (構造体パターンの形)。`llvm_builds_of_real_packages_match_run` に `examples/more_coll` と `examples/more_str` を追加。
+
+### 17.15 `==` / `!=` の経路の一本化 (kir/eq-unify、2026-11-13)
+- `bin()` の比較は `eq_by_call` 1 本にした (`agg_eq_key` の経路は削除)。`Option` / `Result` / 構造体・列挙型は常にここを通る。
+- 所有物 (String / Vec) を持つ集成体は、値を `$eq` に渡すと所有が移るので `eq_by_call` の先頭で理由付きに拒否する。実際には、所有物を持つ型は `derive [PartialEq]` できず (E2036)、手書きの `impl PartialEq` は `need_eq` が「利用者の eq を持つ」で拒否するので、旧経路でも下ろされなかった (確認: 手書き eq の String 持ち構造体の `==` は `ksn kir` が未対応を返す)。拒否を一箇所に集めただけで、動作は変わらない。借用で渡す形は、手書き eq を下ろせるようになった時の課題。
+- 試験: `kir_eq_on_aggregates_reused_after_and_in_loop_match_tree_walker` (比較の後の使用・ループ、`--run` / `--native` / ASan)、`kir_eq_on_aggregates_owning_heap_is_refused_with_a_reason`。
+
+### 17.16 所有物を持つ要素の Vec の値渡し `for` (kir/owned-elem-more、2026-11-13)
+- `for x in v` (`v` は局所変数の `Vec<所有物>`。`&Vec` のパラメータは借用で回す): `for` を囲む新しいスコープに隠しヘッダを作り、`v` の 3 語を `move_hdr` で移して `adopt` で所有に入れる (`v` 側は null・len 0)。1 周ごとに要素の値を `load` して `x` へ渡し (`bind_owned`)、バッファの元の場所を `null_value` の「空」の値で上書きする。空の要素は解放しても何も起きないので、`break` / `return` / `?` で抜けたときの残りの要素とバッファは、隠しヘッダの解放 (`for` を囲むスコープの終わり、または早期脱出の `drop_from`) で片付く。
+- `counted` は 1 周の終わりの `block_end` を、増分ブロックへの `goto` の前に置く (前は `goto` の後で到達せず、`x` を所有に入れる形では解放が落ちる)。
+- 列挙型 (ペイロード付き) の要素は `null_value` が拒否するので、この形も拒否のまま。
+- 試験: `kir_for_by_value_over_owning_elems_matches_tree_walker` (12 ケース: `Vec<String>`・構造体の Vec・`x` を別の Vec へ移す・`break`・`return`・`_`・入れ子・空)。
+
+### 17.17 所有物を持つ要素の可変の借用と `get` の分解 (kir/owned-elem-more、2026-11-13)
+- `for x in &mut v` / `&mut Vec` のパラメータを回す `for` (`iter_mut` は言語に無い。`ksn check` は `for` の変数への `&mut self` のメソッド (`push_str` など) を E3031 で拒むので、変数を通す変更はフィールドへの代入と `*x = ..`): 要素の番地を、構造体は `&mut T`、Vec / String は借用のヘッダ、スカラーは `&mut T` で束縛する。`x.f = e` は参照を通した代入 (`store_segs`) で、古い所有物は解放してから書く。スカラーの `*x = ..` は KIR では下りるが、木走査は `assignment through non-reference` で止まる (試験なし)。
+- `v[i].f = e` / `v[i].a.b = e` / `v[i].f.push_str(..)` / `&mut v[i]` (所有物を持つ要素): `elem_prep` が変更しうるメソッド・`&mut` のとき要素を可変の参照で借りる (`elem_prep_m`)。代入は右辺を先に評価して、境界の検査の後に書く (`assign_elem_field`)。`v[i] = x` は古い要素を解放してから `store` (前は型の不一致で検査に落ちていた)。
+- `match v.get(i) { Some(t.Item { name: s, v: x }) => .. }`: 要素の共有参照を構造体のパターンで分解する (`bind_struct_pat`)。スカラーは値を読み、所有物のフィールドは借用で束縛し (解放しない)、入れ子の構造体のパターンと `_` を扱う。リテラルなど他の部分パターンは拒否。
+- `x.wrapping_add(..)` の受け手が `&u32` / `&mut u32` のときは参照を外す。
+- 拒否のまま: `let g = v.get(i)` (値の `Option<&T>`)、`insert` / `remove`。
+- 試験: `kir_mut_borrow_of_owning_elems_matches_tree_walker` (13 ケース)、`..._out_of_range_panics_like_tree_walker`。`kir_get_on_vec_of_owning_elements_is_refused_with_a_reason` は `let` の形に差し替えた。
+
+## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
+
+段階 2 (第 5 章) の第 1 段。`ksn run --engine=vm` と `ksn test --engine=vm` (`--engine=tree` が既定の木走査)。既定の挙動は変えていない。`clif.rs` と `examples/`・`perf/` のソースは触っていない。
+
+### 18.1 構成と決めたこと
+
+- `stage0/src/vm/bc.rs` (命令 `Ins`・関数 `VFunc`・表 `Prog`)、`vm/compile.rs` (KIR → バイトコード)、`vm/run.rs` (実行ループと明示フレーム `Vm`)、`vm/mod.rs` (入口: `run_entry` / `run_test`。KIR への下ろしと退避の判定)。`kir_exec.rs` は、VM と共有する部品 (`arith` / `checked` / `relocate` / `pay_word` / `pay_read` / `write_val` / `read_scalar` / `parse_int` / `extern_call` など) を `pub(crate)` にしただけで、意味は変えていない。
+- 意味は参照実行器 (`kir_exec`) と同じ: 値の符号化 (整数は符号拡張した `i128`、`u128` はビットパターン、`Option` / `Result` は tag bit 64 + ペイロードの語、集成体は置き場 `Vm::heap` の添字)、panic の文言、`stack` 超過 (呼び出し深さ 2500 で終了コード 102)、関数が戻るときの置き場の切り詰めと `relocate`。
+- スロットは第 4.1 の 8 バイトではなく `i128` 1 つ (参照実行器と同じ符号化を使うため)。命令は 8 バイトに詰めず Rust の enum (`Ins`、被演算子は `u32` のスロット)。どちらも第 2 段で、perf の結果を見て詰める。
+- バイト記憶は第 7 章 1 の決定どおり実メモリ: `heap.alloc` / `heap.realloc` / `heap.free` は libc の `malloc` / `realloc` / `free`、`frame.bytes` と `alloca` は `calloc` (関数が戻るとき解放)、`static.bytes` はコンパイル時に 1 回確保してアドレスを定数にする。参照実行器の仮想アドレス表との違い: 範囲外・解放後・未初期化の読みの検出と、関数の終わりの漏れの検査はしない (null 付近のアドレスだけ内部エラー)。これらの検出は `ksn kir --run` と ASan の担当のまま。
+- 制御の合流 (ブロック引数) は辺ごとの `Mov` に展開する。後の引数が前の移動先を読む組 (入れ替え) のときだけ一時スロットを通す。`icmp` + `br_if` は、比較の結果がその分岐だけで使われるとき `JCmpNot` 1 命令に融合する。次のブロックへ落ちる辺は `Jmp` を出さない。64 ビット以下の整数の `+ - *` (溢れで panic / `wrapping_*`) は型ごとの専用命令 (`AddT` / `AddW` など)、狭める変換は `WrapT`。
+- stdout は書き込みをためて、終了・panic・stderr への出力の前に流す (参照実行器は書くたびに流す)。stdout が閉じているときの `Err` (EPIPE) は、ためた分を流すときに捨てるので、`print_line` の失敗を返さない (木走査と同じ側)。
+- 入口: `run_entry` は `lower_program` で入口から届く関数を下ろし、検査 (`verify_module`) とバイトコード化に通ったときだけ VM で走る。`Result` の `Err` は stderr に `Error: ` + `ksn.entry.debug` の表示 + 改行、終了コード 1 (木走査と同じ)。panic は `panic: <文言>` で 101、`core.check` の失敗 (`eprint` + `abort`) は 101、`stack` 超過は 102。
+- 退避: 入口が KIR に下ろせない、VM が扱えない命令 (`std.net` の 8 命令)、`--watch`、プログラムへの引数があるときは、`vm engine skipped: <理由>; falling back to the tree walker` を stderr に出して、プログラム全体を木走査で走らせる (関数単位の混在はしない)。`ksn test --engine=vm` はテストごとに同じ判定をする (`test <名前>: vm engine skipped: ...`)。VM でのテストの失敗の文言は、`panic` ならその文言、`core.check` の失敗なら `eprint` された文言 (`panic: ` と末尾の改行を除く、キャプチャして取り出す)、`stack` 超過は `exit(102)` で、木走査と同じ形になる。
+- 内部エラー (KIR の誤り・範囲外のアドレスなど) は `ksn: vm: 内部エラー: ...` で終了コード 3。
+
+### 18.2 対応範囲と退避の理由の内訳
+
+- VM が扱えない KIR の命令は `std.net` の 8 命令だけ (退避)。それ以外の全命令を実装した。
+- 下ろせないための退避 (examples の 8 本の `ksn run --engine=vm` の stderr から。理由は段階 1 以降の KIR の対応範囲で決まり、VM の都合ではない): `features` (`take` のメソッド)、`ffi` (関数ポインタの引数)、`http` (`with` 式)、`kvapp` (呼び先 `kvlib.lookup.count`)、`plugins` (型引数付きのメソッド)、`shortener` (`std.env.arg_count`)、`threads` (型引数付きの呼び出し)、`tour` (`Vec.remove`)。
+- VM で実際に走る (退避しない) もの: perf の 8 本すべてと examples の `demo` / `native` / `realtime` / `json` / `more_coll` / `more_str`。
+
+### 18.3 一致テスト (`stage0/tests/vm_parity.rs`)
+
+- `vm_run_matches_tree_walker_on_perf_and_lowerable_examples`: 上の 14 パッケージは VM が退避しないことを確かめたうえで、標準出力・標準エラー・終了コードを木走査と比べる。退避する 6 本の examples も、退避したうえでの一致を確かめる。
+- `vm_test_matches_tree_walker_on_examples`: `ksn test` と `ksn test --engine=vm` の出力が一致。
+- `vm_run_matches_tree_walker_on_programs_from_cli_tests`: `tests/cli.rs` の文字列リテラルを取り出し (通常と raw の両方)、(a) `fn t.main` を持つ完全なプログラム、(b) `kir_*` のテストの表 `("t.f", &[引数], 期待値, ..)` を、そのテストが使う関数の定義の `const` と組み合わせた `core.check.eq(f(引数), 期待値)` / `let _x = f(引数)` の `main`、を木走査と VM の両方で走らせて一致を確かめる。`VM_PARITY_SHOW=1` で、検査で止まったプログラムを表示する。内訳は実行時に stderr に出る (294 本: VM で走った 127 / 退避 24 / 検査で止まった (診断の負の事例) 143)。
+
+### 18.4 計測 (木走査 → VM、`python3 perf/vm_compare.py --repeat 5`)
+
+既定の入力、`ksn run` の壁時計の中央値 (起動・読み込み・検査を含む)。Xeon E5-2620 v4、release ビルド、他のビルドが並走する状態 (±10% 程度の揺れ)。目標は木走査の 10 倍 (第 7 章 10)。
+
+| ケース | 木走査 (ms) | VM (ms) | 倍率 |
+| --- | ---: | ---: | ---: |
+| noop (起動のみ) | 32.0 | 33.5 | 1.0x |
+| fib | 2412.1 | 60.2 | 40.1x |
+| loops | 9034.8 | 232.5 | 38.9x |
+| vecops | 7180.7 | 162.1 | 44.3x |
+| hashmap | 67.0 | 42.3 | 1.6x |
+| strcat | 3436.4 | 126.9 | 27.1x |
+| structs | 3961.6 | 135.4 | 29.2x |
+| closure | 2045.8 | 61.9 | 33.1x |
+
+- 起動の 32 ms (標準ライブラリの読み込み・検査・KIR への下ろし) が下限で、`hashmap` は木走査でも 67 ms と短い (索引化の後)ので倍率が出ない。起動を除いた実行部分の倍率は、fib で (2412-32)/(60-33) ≈ 90 倍。
+- 17 (VM を既定にする条件) の「perf の中央値で 5 倍以上」は hashmap 以外で満たしている。残りの条件 (cargo test・`test --both`・bench/reference が一致) は未確認。
+
+### 18.5 次の段にやること
+
+- 起動時間の短縮 (標準ライブラリの検査と下ろしが 30 ms)。入力を大きくした hashmap の計測 (README の N=20,000)。
+- バイトコードの詰め込み (8 バイトのスロット・命令。`i128` を 2 スロットに)、融合命令の追加 (`call` + `ret`、フィールドの読み + 加算など)、`Make` / `Field` が確保する置き場の `Vec<u8>` の除去 (集成体をフレーム内のバイトに置く)。
+- 関数表と安全点 (`vm/reload.rs`)、ホットリロード (`--watch`) の VM 対応、命令ごとの行表。
+- `std.net` の命令、`ksn test --both` の比較相手に VM を加える、bench/reference と `test --both` の一致の確認。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
