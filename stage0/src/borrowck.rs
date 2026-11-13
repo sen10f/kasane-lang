@@ -924,16 +924,33 @@ impl<'a> Low<'a> {
         }
     }
 
-    fn access(&mut self, n: usize, e: &V, kind: Acc) -> bool {
+    /// 場所 `e` へのアクセスを出す。`line` は `moves` との照合および診断行に使う（`match` の
+    /// スクリューティニーは、check 側が `match` 式そのものの行で move を記録するため、
+    /// パス節の行ではなく `match` 式の行を渡す）。
+    fn access(&mut self, n: usize, e: &V, kind: Acc, line: usize) -> bool {
         match self.place_of(e) {
             Some((root, path)) => {
                 self.emit(n, Ev::Use(root.clone()));
-                let kind = if kind == Acc::Read && self.moves.contains(&(nline(e), place_key(&root, &path))) { Acc::Move } else { kind };
-                self.emit(n, Ev::Access { root, path, kind, line: nline(e) });
+                let kind = if kind == Acc::Read && self.moves.contains(&(line, place_key(&root, &path))) { Acc::Move } else { kind };
+                self.emit(n, Ev::Access { root, path, kind, line });
                 true
             }
             None => false,
         }
+    }
+
+    /// `match` のスクリューティニーへのアクセス。check 側が `match` 式そのものの行で move を
+    /// 記録するため、パス節の行ではなく `match` 式の行 (`line`) を `moves` の照合と診断行に使う。
+    /// 場所でない式（`v.push(&x)` のような呼び出し）は従来の `lower_expr` に任せ、
+    /// レシーバへの `store_into` などの副作用を失わない。
+    fn access_match_scrutinee(&mut self, cur: usize, e: &V, line: usize) -> usize {
+        // 場所 (`s`、`s.f` など) なら `match` 式の行で `moves` と照合する。それ以外
+        // (`v.push(&x)` のような呼び出し) は従来の `lower_expr` に任せ、
+        // レシーバへの `store_into` などの副作用を失わない。
+        if self.place_of(e).is_some() && self.access(cur, e, Acc::Read, line) {
+            return cur;
+        }
+        self.lower_expr(e, cur)
     }
 
     fn lower_expr(&mut self, e: &V, cur: usize) -> usize {
@@ -943,10 +960,10 @@ impl<'a> Low<'a> {
             "Path" | "Field" | "Index" => {
                 if nname(e) == "Index" {
                     let c = self.lower_index_parts(e, cur);
-                    self.access(c, e, Acc::Read);
+                    self.access(c, e, Acc::Read, nline(e));
                     return c;
                 }
-                if self.access(cur, e, Acc::Read) {
+                if self.access(cur, e, Acc::Read, nline(e)) {
                     return cur;
                 }
                 let mut c = cur;
@@ -964,7 +981,7 @@ impl<'a> Low<'a> {
                         return self.lower_expr(&nf(&f[1])[1], c);
                     }
                     let kind = if op == "&mut" { Acc::MutB } else { Acc::Shared };
-                    if self.access(c, &f[1], kind) {
+                    if self.access(c, &f[1], kind, nline(&f[1])) {
                         return c;
                     }
                     return self.lower_expr(&f[1], c);
@@ -1056,7 +1073,9 @@ impl<'a> Low<'a> {
                 exit
             }
             "Match" => {
-                let c = self.lower_expr(&f[0], cur);
+                // スクリューティニーのアクセスは `match` 式の行で `moves` と照合する
+                // (check 側が `match` 式の行で move を記録するため)。
+                let c = self.access_match_scrutinee(cur, &f[0], nline(e));
                 let join = self.new_node();
                 let arms = items(&f[1]);
                 if arms.is_empty() {
@@ -1178,9 +1197,14 @@ impl<'a> Low<'a> {
                         let mut temps = vec![];
                         let c = self.lower_args_held(args, cur, &mut temps);
                         let name = segs[segs.len() - 1].clone();
-                        let kind = self.recv_kind(&name);
                         let root = segs[0].clone();
                         let path = segs[1..segs.len() - 1].to_vec();
+                        let mut kind = self.recv_kind(&name);
+                        // `self` を値で受けるメソッド (`x.into_name()` など) はレシーバを move する:
+                        // check 側が move_sites に載せたレシーバの場所なら、Read を Move に格上げする。
+                        if kind == Acc::Read && self.moves.contains(&(nline(e), place_key(&root, &path))) {
+                            kind = Acc::Move;
+                        }
                         self.emit(c, Ev::Use(root.clone()));
                         self.emit(c, Ev::Access { root: root.clone(), path: path.clone(), kind, line: nline(e) });
                         self.store_into(c, &name, &root, &path, args);
@@ -1219,8 +1243,7 @@ impl<'a> Low<'a> {
                 if self.place_of(recv).is_some() {
                     let c = self.lower_index_parts(recv, cur);
                     let c = self.lower_args_held(args, c, &mut temps);
-                    let kind = self.recv_kind(&name);
-                    self.access(c, recv, kind);
+                    self.access(c, recv, self.recv_kind(&name), nline(recv));
                     // `v.push(&x)` / `m.insert(k, &x)`: レシーバの中に借用を保存する。
                     if let Some((root, path)) = self.place_of(recv) {
                         self.store_into(c, &name, &root, &path, args);
