@@ -253,6 +253,7 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::Write { fd, data } => vec![fd, data],
         Op::Eprint { data } => vec![data],
         Op::FmtFloat { a, .. } => vec![a],
+        Op::ParseInt { s, radix, .. } => vec![s, radix],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }
         | Op::Cmp { a, b, .. }
