@@ -21370,3 +21370,31 @@ end t.w
     assert_ne!(k.status.code(), Some(0));
     assert!(text(&k.stderr).contains("uses のパラメータ (E) を持つので、単相化は対象外"), "{}", text(&k.stderr));
 }
+
+// ---- 診断の重複: 案内付きの行の一般的な E0002 は出さない ----
+
+fn guided_syntax_case(name: &str, src: &str) -> Vec<String> {
+    let t = Tmp::new(name, src);
+    codes(&text(&run(&["check", "--json"], &t.0).stdout))
+}
+
+#[test]
+fn guided_arm_syntax_errors_drop_the_generic_e0002_on_their_line() {
+    let e49 = "fn t.a(x: u8) -> u8\n    match x {\n        0u8 => 1u8,\n        _ => 2u8,\n    }\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(1u8))\n    Ok(())\nend t.main\n";
+    let e57 = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    match x {\n        Some(v) =>\n        {\n            v\n        }\n        None => 0u8\n    }\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+    let e58 = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    let mut result = 0u8\n    match x {\n        Some(r) => result = r\n        None => {\n            result = 0u8\n        }\n    }\n    result\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+    for (name, src, code) in [("guided_e49", e49, "E0049"), ("guided_e57", e57, "E0057"), ("guided_e58", e58, "E0058")] {
+        let got = guided_syntax_case(name, src);
+        assert!(got.iter().any(|g| g == code), "{} missing in {:?}", code, got);
+        assert!(!got.iter().any(|g| g == "E0002"), "{}: E0002 should be dropped, got {:?}", code, got);
+    }
+}
+
+#[test]
+fn unguided_syntax_error_keeps_e0002() {
+    let got = guided_syntax_case("unguided_e0002", "fn t.a(x: u8) -> u8\n    let y = (x +\n    x\nend t.a\n");
+    assert!(got.iter().any(|g| g == "E0002"), "{:?}", got);
+}
