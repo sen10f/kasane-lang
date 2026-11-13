@@ -382,135 +382,18 @@ fn write_helper(aggs: &[AggDef]) -> R<String> {
     Ok(s)
 }
 
-/// 浮動小数の書式化補助 (`py_float` / `py_float32` と同じ規則)。
-/// `@ksn.fmt.f64(double) -> ptr` と `@ksn.fmt.f32(float) -> ptr` を出す。
-/// 結果は静的バッファへのポインタ。
+/// 浮動小数の書式化は、C の実行時補助 `kir_rt.c` の `ksn_fmt_f64` / `ksn_fmt_f32` に任せる (設計_KIR.md 17.11)。
+/// 規則は `py_float` / `py_float32` と同じ。結果は静的バッファへのポインタ (NUL 終端)。
 fn fmt_float_helpers() -> String {
-    let buf64 = "@ksn.fmt.buf64 = private unnamed_addr global [512 x i8] zeroinitializer\n";
-    let buf32 = "@ksn.fmt.buf32 = private unnamed_addr global [128 x i8] zeroinitializer\n";
-    let nan = str_const("ksn.fmt.nan", "nan\0");
-    let inf = str_const("ksn.fmt.inf", "inf\0");
-    let ninf = str_const("ksn.fmt.ninf", "-inf\0");
-    let fmt_f = str_const("ksn.fmt.fmt_f", "%.1f\0");
-    let fmt_f_dyn = str_const("ksn.fmt.fmt_f_dyn", "%.*f\0");
-    let fmt_f_dyn32 = str_const("ksn.fmt.fmt_f_dyn32", "%.*f\0");
-    // f64 ヘルパー: NaN → nan, inf → inf/-inf, 整数で |f|<1e16 → %.1f,
-    // それ以外 → snprintf %.*f / strtod で最短の10進往復表記 (p=0..17)
-    let f64 = r#"
-define private ptr @ksn.fmt.f64(double %f) {
-entry:
-  %isnan = fcmp uno double %f, %f
-  br i1 %isnan, label %nan, label %isf
-nan:
-  ret ptr @ksn.fmt.nan
-isf:
-  %fb = bitcast double %f to i64
-  %exp = and i64 %fb, 9218868437227405312
-  %is_inf_exp = icmp eq i64 %exp, 9218868437227405312
-  %man = and i64 %fb, 4503599627370495
-  %is_inf_man = icmp eq i64 %man, 0
-  %isinf = and i1 %is_inf_exp, %is_inf_man
-  br i1 %isinf, label %inf, label %checkint
-inf:
-  %sign = icmp slt i64 %fb, 0
-  %s = select i1 %sign, ptr @ksn.fmt.ninf, ptr @ksn.fmt.inf
-  ret ptr %s
-checkint:
-  %absbits = and i64 %fb, 9223372036854775807
-  %abs = bitcast i64 %absbits to double
-  %lt = fcmp olt double %abs, 1.000000e+16
-  br i1 %lt, label %checkint2, label %loop
-checkint2:
-  %as_i = fptosi double %f to i64
-  %as_d = sitofp i64 %as_i to double
-  %isint = fcmp oeq double %as_d, %f
-  br i1 %isint, label %use1f, label %loop
-use1f:
-  %bp1 = getelementptr [512 x i8], ptr @ksn.fmt.buf64, i32 0, i32 0
-  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %bp1, i64 512, ptr @ksn.fmt.fmt_f, double %f)
-  ret ptr %bp1
-loop:
-  %i = phi i32 [0, %checkint], [0, %checkint2], [%i2, %next]
-  %fmt = getelementptr [5 x i8], ptr @ksn.fmt.fmt_f_dyn, i32 0, i32 0
-  %bp = getelementptr [512 x i8], ptr @ksn.fmt.buf64, i32 0, i32 0
-  %n = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %bp, i64 512, ptr %fmt, i32 %i, double %f)
-  %trunc = icmp uge i32 %n, 512
-  br i1 %trunc, label %next, label %check
-check:
-  %r = call double @strtod(ptr %bp, ptr null)
-  %ok = fcmp oeq double %r, %f
-  br i1 %ok, label %done, label %next
-next:
-  %i2 = add i32 %i, 1
-  %c = icmp eq i32 %i2, 18
-  br i1 %c, label %done, label %loop
-done:
-  %bp2 = getelementptr [512 x i8], ptr @ksn.fmt.buf64, i32 0, i32 0
-  ret ptr %bp2
+    "declare ptr @ksn_fmt_f64(double)\ndeclare ptr @ksn_fmt_f32(float)\n".to_string()
 }
-"#;
-    // f32 ヘルパー (p=0..9)
-    let f32 = r#"
-define private ptr @ksn.fmt.f32(float %f) {
-entry:
-  %isnan = fcmp uno float %f, %f
-  br i1 %isnan, label %nan, label %isf
-nan:
-  ret ptr @ksn.fmt.nan
-isf:
-  %fb = bitcast float %f to i32
-  %exp = and i32 %fb, 2139095040
-  %is_inf_exp = icmp eq i32 %exp, 2139095040
-  %man = and i32 %fb, 8388607
-  %is_inf_man = icmp eq i32 %man, 0
-  %isinf = and i1 %is_inf_exp, %is_inf_man
-  br i1 %isinf, label %inf, label %checkint
-inf:
-  %sign = icmp slt i32 %fb, 0
-  %s = select i1 %sign, ptr @ksn.fmt.ninf, ptr @ksn.fmt.inf
-  ret ptr %s
-checkint:
-  %absbits = and i32 %fb, 2147483647
-  %abs = bitcast i32 %absbits to float
-  %lt = fcmp olt float %abs, 1.000000e+16
-  br i1 %lt, label %checkint2, label %loop
-checkint2:
-  %as_i = fptosi float %f to i64
-  %as_d = sitofp i64 %as_i to double
-  %as_f = fptrunc double %as_d to float
-  %isint = fcmp oeq float %as_f, %f
-  br i1 %isint, label %use1f, label %loop
-use1f:
-  %fext = fpext float %f to double
-  %bp1 = getelementptr [128 x i8], ptr @ksn.fmt.buf32, i32 0, i32 0
-  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %bp1, i64 128, ptr @ksn.fmt.fmt_f, double %fext)
-  ret ptr %bp1
-loop:
-  %i = phi i32 [0, %checkint], [0, %checkint2], [%i2, %next]
-  %fext2 = fpext float %f to double
-  %fmt = getelementptr [5 x i8], ptr @ksn.fmt.fmt_f_dyn32, i32 0, i32 0
-  %bp = getelementptr [128 x i8], ptr @ksn.fmt.buf32, i32 0, i32 0
-  %n = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %bp, i64 128, ptr %fmt, i32 %i, double %fext2)
-  %trunc = icmp uge i32 %n, 128
-  br i1 %trunc, label %next, label %check
-check:
-  %r = call float @strtof(ptr %bp, ptr null)
-  %ok = fcmp oeq float %r, %f
-  br i1 %ok, label %done, label %next
-next:
-  %i2 = add i32 %i, 1
-  %c = icmp eq i32 %i2, 10
-  br i1 %c, label %done, label %loop
-done:
-  %bp2 = getelementptr [128 x i8], ptr @ksn.fmt.buf32, i32 0, i32 0
-  ret ptr %bp2
-}
-"#;
-    format!("{}{}{}{}{}{}{}", buf64, buf32, nan, inf, ninf, fmt_f, fmt_f_dyn)
-        + &fmt_f_dyn32
-        + &f64
-        + &f32
-        + "\n"
+
+/// C の実行時補助 (`kir_rt.c`) の本文。生成した IR が `@ksn_fmt_` を呼ぶときだけ、clang に一緒に渡す。
+pub const RUNTIME_C: &str = include_str!("kir_rt.c");
+
+/// IR が C の実行時補助を要するか。
+pub fn needs_runtime(ll: &str) -> bool {
+    ll.contains("@ksn_fmt_")
 }
 
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
@@ -1344,9 +1227,9 @@ impl<'a> Fe<'a> {
                 Op::FmtFloat { bits, a } => {
                     self.cx.fmt_float = true;
                     let (func, arg_ty) = if *bits == 64 {
-                        ("@ksn.fmt.f64", "double")
+                        ("@ksn_fmt_f64", "double")
                     } else {
-                        ("@ksn.fmt.f32", "float")
+                        ("@ksn_fmt_f32", "float")
                     };
                     let fp = self.t(format!("call ptr {}({} {})", func, arg_ty, self.r(*a)));
                     self.cx.decl("declare i64 @strlen(ptr)".to_string());
@@ -1597,9 +1480,9 @@ impl<'a> Fe<'a> {
             Op::FmtFloat { bits, a } => {
                 self.cx.fmt_float = true;
                 let (func, arg_ty) = if *bits == 64 {
-                    ("@ksn.fmt.f64", "double")
+                    ("@ksn_fmt_f64", "double")
                 } else {
-                    ("@ksn.fmt.f32", "float")
+                    ("@ksn_fmt_f32", "float")
                 };
                 let fp = self.t(format!("call ptr {}({} {})", func, arg_ty, self.r(*a)));
                 self.cx.decl("declare i64 @strlen(ptr)".to_string());
