@@ -10,9 +10,10 @@
 //! - メソッド `close`/`flush`/`read`/`sync`/`write`: 受け手の `descriptor` フィールド (i32@0) から
 //!   記述子を取り出し、対応する `fs.*` 命令を出す。
 //!
-//! `std.fs.read_to_end` は `alloc.vec.Vec` の再確保を伴うため KIR の命令を作らず、下ろしの段で理由付きで拒否する (木走査へ退避)。
+//! `std.fs.read_to_end(&mut file, &mut v)` (`v: Vec<u8>`) は、新しい命令を作らず `fs.read` を繰り返して
+//! ヘッダの末尾へ足す (`read_to_end`)。Vec の再確保は `kir_lower_own` の `reserve` (`push` と同じ規則) を使う。
 
-use crate::kir::{Op, Pay, Pointee, Ty, VId};
+use crate::kir::{Aop, Cc, Mode, Op, Pay, Pointee, Ty, VId};
 use crate::parser::V;
 use crate::program::Target as Tgt;
 
@@ -55,6 +56,66 @@ fn fs_buf_ptr_len(lw: &mut Lw, buf: VId, line: usize) -> LR<(VId, VId)> {
     let ptr = lw.emit(Ty::Ptr, Op::Field { a: buf, off: 0 });
     let len = lw.emit(Ty::Usize, Op::Field { a: buf, off: 8 });
     Ok((ptr, len))
+}
+
+/// `std.fs.read_to_end(&mut file, &mut v)` の下ろし (木走査の `Read::read_to_end` と同じ値)。
+///
+/// 1 周: `reserve` で残りを 4096 バイト以上にし、残りの容量すべてを `fs.read` で読む。0 バイトなら終わりで `Ok(総数)`。
+/// 失敗したら、その周までに足したバイトを捨てて (長さを元に戻す。木走査は失敗時に `out` を変えない) `Err` をそのまま返す。
+/// 成功時は読んだ総数を `Ok` で返し、`v` には元の末尾の後ろへ足したバイトが残る。
+fn read_to_end(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
+    if args.len() != 2 {
+        return lw.err(line, "std.fs.read_to_end の引数は 2 個のはず");
+    }
+    let Some(fv) = lw.expr(&args[0])? else { return Ok(None) };
+    let ft = lw.vty(fv);
+    let fd = fs_fd(lw, fv, ft, line)?;
+    let Some(h) = lw.expr(&args[1])? else { return Ok(None) };
+    if lw.vty(h) != Ty::Ptr {
+        return lw.err(line, "std.fs.read_to_end の出力がヘッダのアドレスでない (Vec<u8> の &mut のはず)");
+    }
+    let res_ty = fs_err_ty(lw, Ty::Usize);
+    let orig = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    let (hd, hp) = lw.new_block(&[Ty::Usize]);
+    let (exit, xp) = lw.new_block(&[res_ty]);
+    lw.goto(hd, vec![zero]);
+    lw.cur = Some(hd);
+    let total = hp[0];
+    let chunk = lw.emit(Ty::Usize, Op::Const(4096));
+    super::own::reserve(lw, h, chunk);
+    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+    let dst = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: len });
+    let room = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: cap, b: len });
+    let r = lw.emit(res_ty, Op::FsRead { fd, buf: dst, len: room });
+    let is_err = lw.emit(Ty::Bool, Op::Tag(r));
+    let (on_err, _) = lw.new_block(&[]);
+    let (on_ok, _) = lw.new_block(&[]);
+    lw.branch(is_err, (on_err, vec![]), (on_ok, vec![]));
+    // 失敗: この呼び出しで足したバイトを捨てて、読み出しの Err をそのまま返す。
+    lw.cur = Some(on_err);
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: orig });
+    lw.goto(exit, vec![r]);
+    // 成功: 0 バイトなら終わり。そうでなければ長さを進めて次の周へ。
+    lw.cur = Some(on_ok);
+    let n = lw.emit(Ty::Usize, Op::Payload(r));
+    let zn = lw.emit(Ty::Usize, Op::Const(0));
+    let at_end = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: n, b: zn });
+    let (done, _) = lw.new_block(&[]);
+    let (more, _) = lw.new_block(&[]);
+    lw.branch(at_end, (done, vec![]), (more, vec![]));
+    lw.cur = Some(done);
+    let ok = lw.emit(res_ty, Op::Ok(total));
+    lw.goto(exit, vec![ok]);
+    lw.cur = Some(more);
+    let nl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: n });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });
+    let nt = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: total, b: n });
+    lw.goto(hd, vec![nt]);
+    lw.cur = Some(exit);
+    Ok(Some(xp[0]))
 }
 
 /// `std.fs.create` / `std.fs.open` / `std.fs.exists` / `std.fs.remove_file` / `std.fs.read_to_end` (フリー関数)。
@@ -127,10 +188,7 @@ pub(super) fn fs_call(lw: &mut Lw, _e: &V, name: &str, args: &[V], line: usize) 
             }
             (Op::FsRemove { path }, fs_err_ty(lw, Ty::Unit))
         }
-        "std.fs.read_to_end" => {
-            // `alloc.vec.Vec` の再確保 (ヒープの伸長) を伴うため、KIR の命令にはしない。下ろしの段で理由付きで拒否する。
-            return lw.err(line, "std.fs.read_to_end は KIR 未対応 (Vec の再確保を伴う。木走査へ退避)");
-        }
+        "std.fs.read_to_end" => return read_to_end(lw, args, line),
         _ => return Ok(None),
     };
     Ok(Some(lw.emit(res_ty, op)))
