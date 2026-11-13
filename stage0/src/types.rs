@@ -968,10 +968,32 @@ impl<'a> TypeCk<'a> {
 
     /// 本体の中での捕捉された局所 `name` の使い方。型は外側の束縛から引く (本体より外の scope にある)。
     fn capture_use(&self, body: &V, name: &str) -> CapUse {
-        let non_copy = self.lookup(name).map(|t| self.ty_copy(&self.deep(&t))) == Some(Some(false));
+        let non_copy = self.lookup(name).map(|t| {
+            self.ty_copy(&self.deep(&t)) == Some(false)
+                // `F: core.ops.FnOnce` の型パラメータを `move` で取り込み、本体で呼ぶと、
+                // そのクロージャも `FnOnce` になる (e15)。
+                || self.is_fnonce_param(name)
+        }).unwrap_or(false);
         let mut u = CapUse::default();
         self.scan_capture(body, name, non_copy, false, &mut u);
         u
+    }
+
+    /// 型パラメータ `name` の束縛が `F: core.ops.FnOnce` のように `FnOnce` を境界に持つか。
+    /// その値を本体で呼ぶと消費される (一度きり)。
+    fn is_fnonce_param(&self, name: &str) -> bool {
+        let Some(Ty::Param(p)) = self.lookup(name) else { return false };
+        let d = self.def();
+        d.generics.iter().filter(|g| g.0 == "type" && g.1 == p).any(|g| {
+            items(&g.2).iter().any(|b| {
+                let bn = match b {
+                    V::L(bx) if !bx.is_empty() => st(&bx[0]),
+                    V::S(x) => x.clone(),
+                    _ => return true,
+                };
+                bn == "FnOnce" || bn.ends_with(".FnOnce")
+            })
+        })
     }
 
     /// `e` を走査して `name` の使い方を `u` に記録する。`borrowed` は `e` が借用・読取りの位置にあるか
@@ -1005,8 +1027,30 @@ impl<'a> TypeCk<'a> {
             }
             "MCall" => {
                 self.scan_capture(&f[0], name, non_copy, true, u);
+                // `F: core.ops.FnOnce` の型パラメータをレシーバに呼ぶと消費される (e15)。
+                if non_copy && self.is_fnonce_param(name) && place_root_is(&f[0], name) {
+                    u.consumed = true;
+                }
                 for a in items(&f[2]) {
                     self.scan_capture(a, name, non_copy, false, u);
+                }
+            }
+            "Call" => {
+                // `f()` で `f` が `F: FnOnce` の型パラメータなら消費される (e15)。`f.call_once(())` のように
+                // 修飾パスで呼んでも、根が `f` なら同様に消費する。
+                if let Some(callee) = f.first() {
+                    if nname(callee) == "Path" {
+                        let segs = strs(&nf(callee)[0]);
+                        if !segs.is_empty() && segs[0] == name
+                            && non_copy
+                            && self.is_fnonce_param(name)
+                        {
+                            u.consumed = true;
+                        }
+                    }
+                }
+                for c in crate::check::children(e) {
+                    self.scan_capture(c, name, non_copy, false, u);
                 }
             }
             "Bin" => {
@@ -1063,6 +1107,9 @@ impl<'a> TypeCk<'a> {
                     None
                 }
             }
+            // `FnOnce` クロージャは一度しか呼べないので `Copy` ではない。外側のクロージャが
+            // 本体でそれを呼ぶと、外側も `FnOnce` になる (cap 推論で伝える)。
+            Ty::Closure { cap, .. } if *cap == crate::types::Cap::FnOnce => Some(false),
             _ => None,
         }
     }

@@ -1,0 +1,12 @@
+fn t.main() -> () uses [] panics never
+    let z = 0u32
+    t.wr(fn() -> () capture [move z] {
+    })
+end t.main
+
+fn t.wr[F: core.ops.FnOnce<(), (), E, P>, E: uses, P: panics](f: F) -> () uses [E] panics P
+    let g = fn() -> () capture [move f] {
+        f.call_once(())
+    }
+    g()
+end t.wr
