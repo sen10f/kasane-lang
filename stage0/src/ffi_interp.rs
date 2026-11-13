@@ -224,7 +224,7 @@ impl Interp {
                     let v = self.val_from_mem(ft, &b[*off as usize..]);
                     fields.push((n.clone(), v));
                 }
-                Val::Struct(Rc::new(StructV { ty: s.name.clone(), f: RefCell::new(fields) }))
+                self.mk_struct(s.name.clone(), fields)
             }
             CTy::Array(e, n) => {
                 let es = e.size() as usize;

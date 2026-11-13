@@ -17756,3 +17756,56 @@ fn kir_unsupported_reasons_show_the_source_line() {
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("行 4:"), "{}", text(&o.stderr));
 }
+
+#[test]
+fn struct_value_order_is_declaration_order() {
+    // 構造体の値はリテラルに書いた順ではなく型定義の宣言順で持つ (4.3)。そのため、同じ値の `==`・HashMap の鍵・Debug の表示は
+    // フィールドの書き方に依らない。木走査 (`ksn run`) と参照実行器 (`ksn kir --run`) の表示も一致すること。
+    let src = "type t.P derive [Clone, Copy, Debug, PartialEq, Eq, Hash]
+    a: u8
+    b: u8
+end t.P
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    let x = t.P { b: 1u8, a: 2u8 }
+    let y = t.P { a: 2u8, b: 1u8 }
+    core.check.eq(x == y, true)
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    core.mem.drop(m.insert(x, 1u8))
+    core.mem.drop(m.insert(y, 2u8))
+    core.mem.drop(std.io.print_line(if m.len() == 1usize {
+        \"len 1\"
+    } else {
+        \"len 2\"
+    }))
+    core.mem.drop(std.io.print_line(if m.get(&x) == Some(&2u8) {
+        \"x -> 2\"
+    } else {
+        \"x -> other\"
+    }))
+end t.main
+";
+    let t = Tmp::new("struct_order_hash", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout), "len 1\nx -> 2\n");
+
+    // Debug の表示は宣言順 (リテラルの書き方に依らない)。左辺は逆順で書いた値。
+    let src = "type t.P derive [Clone, Copy, Debug, PartialEq, Eq]
+    a: u8
+    b: u8
+end t.P
+
+fn t.main() -> () uses [io.console] panics may
+    let x = t.P { b: 1u8, a: 2u8 }
+    core.check.eq(x, t.P { a: 9u8, b: 1u8 })
+end t.main
+";
+    let t = Tmp::new("struct_order_debug", src);
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(101), "{}", text(&tw.stderr));
+    assert_eq!(text(&tw.stderr).trim(), "panic: assertion failed: left: P { a: 2, b: 1 }, right: P { a: 9, b: 1 }");
+    let k = kir_run(&["kir", "t.main", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "{}", text(&k.stderr));
+    assert_eq!(text(&k.stderr).trim(), text(&tw.stderr).trim());
+}
