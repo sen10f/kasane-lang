@@ -1,0 +1,10 @@
+fn t.main() -> () uses [] panics never
+    let x = 7u32
+    let a = t.use_ref(&x)
+    let b = t.use_ref(&x)
+    core.mem.drop(a.wrapping_add(b))
+end t.main
+
+fn t.use_ref[T: core.ops.Copy](r: &T) -> T uses [] panics never
+    *r
+end t.use_ref

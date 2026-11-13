@@ -1,0 +1,16 @@
+// expect: E3002
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello"))
+    t.consume(t.steal(&s))
+    t.consume(s)
+    Ok(())
+end t.main
+
+fn t.steal[T](r: &T) -> T uses [] panics never
+    *r
+end t.steal

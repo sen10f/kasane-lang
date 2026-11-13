@@ -1,0 +1,15 @@
+// expect: E3002
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.f(x: &(alloc.string.String, u32)) -> () uses [io.console] panics never
+    let (n, _k) = x
+    t.consume(n)
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let x = (alloc.string.String.new(std.alloc.SYSTEM), 1u32)
+    t.f(&x)
+    Ok(())
+end t.main

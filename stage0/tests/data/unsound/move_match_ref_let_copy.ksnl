@@ -1,0 +1,23 @@
+// expect: E3002
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let o = Some(t.mk())
+    let r = &o
+    match r {
+        Some(s) => {
+            let z = s
+            t.consume(*z)
+        }
+        None => core.mem.drop(0u8)
+    }
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello"))
+    s
+end t.mk

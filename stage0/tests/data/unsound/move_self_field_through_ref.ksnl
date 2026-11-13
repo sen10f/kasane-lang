@@ -1,0 +1,27 @@
+// expect: E3002
+type t.O
+    opt: Option<alloc.string.String>
+    inner: t.S
+end t.O
+
+type t.S
+    name: alloc.string.String
+end t.S
+
+fn t.O.f(self: &t.O) -> () uses [io.console] panics may
+    self.opt.unwrap()
+    self.inner.into_name()
+end t.O.f
+
+fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
+    let t.S { name: name } = self
+    name
+end t.S.into_name
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello"))
+    let o = t.O { opt: Some(s), inner: t.S { name: alloc.string.String.new(std.alloc.SYSTEM) } }
+    o.f()
+    Ok(())
+end t.main
