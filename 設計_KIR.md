@@ -311,9 +311,9 @@ end demo.fib
 - 2 本で進める: (A) KIR の対応範囲を examples・perf・tests の全体へ広げる (2026-11-13 の計測で、最初に止まる理由は `Result` の戻り値 19 件、利用者の構造体への参照の引数 12 件、スライス / `&str` の引数 5 件など)。(B) KIR の全命令を LLVM IR に写し、`ksn kir --run` (参照実行器) と機械語の結果が一致することを確かめる。旧 `clif.rs` は、LLVM の経路が下の Cranelift のテスト一式を通すまで比較の基準として残し、その後に削除する。以下の旧計画の「Cranelift のテスト一式」は LLVM 版の受け入れ基準として読む。
 
 - (B) の実装 (2026-11-13): `stage0/src/kir_llvm.rs`。`ksn kir <FQN> --llvm` が `.ll` を出し、`ksn kir <FQN> --native <引数>...` が clang (`KSN_CLANG` で変更可) で `target/kir-native/` に実行ファイルを作って走らせる (表示は `--run` と同じ `show_value`、panic は stderr に `panic: <文言>` で終了コード 101、呼び出し深さが 2500 を超えると 102)。clang が無ければ理由つきで終了コード 2。受け入れ: `stage0/tests/cli.rs` の `kir_*_match_tree_walker` 系の `--run` の全件を、`--native` でも走らせて表示・終了コード・panic の文言の一致を確かめる (`kir_run`。clang が PATH に無い環境では飛ばす)。
-  - 型の写像は `lty` / `mem_ty` の 1 か所。集成体は `iN` (N = size × 8)、`Option` / `Result` は `{ i1, i64 }`。ペイロードの詰め方は `pay_to_i64` / `i64_to_pay` だけにある。
+  - 型の写像は `lty` / `mem_ty` の 1 か所。集成体は `iN` (N = size × 8)、`Option` / `Result` は整数 `iN` (N = 1 + 枠、タグは最上位 bit。枠は 64 ビット以上でペイロードのどれも入る幅。11.6)。ペイロードの詰め方は `pay_to_slot` / `slot_to_pay` と `pack` だけにある (スカラーだけの型は枠 64 ビットで、語の並びは参照実行器と同じ)。
   - 超越関数は `fmath::Ops` を LLVM IR の命令列に写した内部関数 (`@ksn.m.*`)。libm は使わない (`floor` / `sqrt` / `frem` は LLVM の組み込み)。
-  - 未対応にしたもの (理由つきで `Err`): (1) 入口の引数・戻り値が集成体・参照・`ptr` の関数 (`--run` も同じ)。(2) 集成体の `Option` / `Result` のペイロード (KIR 側の型が広がったら `pay_to_i64` を拡げる)。命令と型は、これ以外は全て対応。
+  - 未対応にしたもの (理由つきで `Err`): (1) 入口の引数・戻り値が集成体・参照・`ptr` の関数 (`--run` も同じ)。(2) 入れ子の `Option` / `Result` と集成体のペイロードは、枠が 64 ビットを超える整数になるので、入口の引数・戻り値には使えない (11.6 の入口の規則と同じ)。命令と型は、これ以外は全て対応。
   - 既知の差: NaN の符号ビット (`0.0 / 0.0` 以外で生じる NaN は実機の演算の結果。`f64` の `0 / 0` と `NaN / 0` だけは木走査と同じ正規の NaN に揃えている)。解放されていない領域の検出 (参照実行器の内部エラー) はしない。
 
 旧計画 (参考):
@@ -782,11 +782,11 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 
 ### 11.1 値の表現 (タグ + ペイロード)
 
-- 型: `Ty::Opt(Pay)` (`Option<P>`)、`Ty::Res(Pay, Pay)` (`Result<T, E>`)。`Pay` は整数・`bool`・`unit` だけを持つ列挙で、ネストした Option や集成体は型として書けない。`Ty` は `Copy` のまま保つ (型表の `TyId` を導入せずに済む)。
+- 型: `Ty::Opt(Pay)` (`Option<P>`)、`Ty::Res(Pay, Pay)` (`Result<T, E>`)。`Pay` はスカラー・`unit`・集成体 (`Pay::Agg`)・入れ子の `Option` / `Result` を持つ (11.6)。入れ子は `&'static Pay` で持ち、`Ty` は `Copy` のまま保つ (型表の `TyId` を導入せずに済む)。
 - 値の論理的な形: 1 つの SSA 値が「タグ 1 bit + ペイロード 1 つ」を持つ。
   - `Option<P>`: タグ = Some か。`None` はタグ 0 (ペイロードは読まない)。
   - `Result<T, E>`: タグ = Err か。`Ok(t)` はタグ 0、`Err(e)` はタグ 1。ペイロードは `T` か `E` のどちらかで、タグで決まる (同じ場所を共有する)。
-  - ペイロードは 64 ビット以下のスカラー。`bool` は 0 / 1、`unit` は 0、整数は 2 の補数の下位 64 ビット。
+  - ペイロードの語 (下位 64 ビット) の意味はペイロードの型で決まる (11.6)。スカラーは `bool` が 0 / 1、`unit` は 0、整数は 2 の補数の下位 64 ビット。集成体と入れ子の `Option` / `Result` は、置き場の項目の添字。
 - 参照実行器 (`kir_exec`) の符号化: `i128` 1 スロット。bit 64 がタグ、bit 0..63 がペイロード (`TAG_BIT` と `PAY_MASK`、`payload_bits` / `payload_of`)。`None` は 0、`Some(0)` は bit 64 が立った値なので、ペイロードが 0 でも両者は区別される。`show_value` が型に従って `Some(..)` / `None` / `Ok(..)` / `Err(..)` に読む。
 - 注意: この `i128` 符号化は参照実行器だけの都合である。VM・Cranelift・LLVM は第 2.3 章の集成体のバイト配置 (タグとペイロードを別の位置に置く) を使う。VM の値の表現は段階 2 で決める。ここでは KIR の型と意味だけを決めている。
 
@@ -825,7 +825,28 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 
 - 下ろしの結果: examples 7 本で降格できた関数は、単独では 3 件から 5 件に増えた (`features.chain`、`features.checked`)。kir/scalars と統合した後は 10 件 (`tour.ints` が加わる)、未対応は 30 件。`ksn check` の出力と終了コードは変わらない (統合前の kir/scalars とバイト一致)。
 - 残りの未対応 (第 10 章 10.5 の表に対応): 参照 (`&json.Doc` など) 17、名前付きの E を持つ `Result` 7、名前付きの型 4、その他 2。
-- 未対応のまま: `Option` の中の集成体・`Option<Option<_>>`、`Result` の E の変換を伴う `?`、`checked_neg` / `checked_shl` / `checked_shr`、`Option` / `Result` の同値比較・`Option` の定数 (`none` 以外)。
+- 未対応のまま: `Result` の E の変換を伴う `?`、`checked_neg` / `checked_shl` / `checked_shr`、`Option` / `Result` の同値比較・`Option` の定数 (`none` 以外)、`unwrap` / `expect` (panic の命令が KIR に無い)、`Option` / `Result` の中の `Ptr` と参照 (`Pay::of` が拒否)、標準ライブラリの型 (`std.io.Error` など) をペイロードに持つ `Result` (理由は「`std.io.Error は未対応`」の形で出す)。
+
+### 11.6 ペイロードの拡張 (集成体・unit・入れ子)
+
+- 対象: `Pay` に `Agg(u32)` (集成体、`Module::aggs` の添字)、`Opt(&Pay)` (`Option<X>`)、`Res(&Pay, &Pay)` (`Result<T, E>`) を足した。`Pay::of` / `Pay::ty` が往復する。128 ビット整数・参照・`ptr` は引き続き持てない。
+- 入れ子の箱: `&'static Pay` は同じ型ごとに 1 つ (`intern`、型の数だけ残る)。`Pay` は `Eq` / `Hash` で比べる。
+- テキスト形式: `Option<agg#3>`、`Result<Option<i64>,agg#1>`、`Result<unit,agg#0>`。`Result` の 2 つの型の区切りは、`<...>` の深さ 0 の `,` (`split_top`)。`Ty::parse` は `agg#n` を直接読む。
+- 参照実行器 (`kir_exec`) の語 (ペイロードの下位 64 ビット) の意味:
+  - スカラー・unit: 値そのもの (11.1 のとおり)。
+  - 集成体: 置き場 (`heap`) の添字。集成体の値は不変なので、添字の共有で足りる。
+  - 入れ子の `Option` / `Result`: 全体の値 (`i128`、タグ bit を含む) を入れた 16 バイトの項目の添字。外側のタグは 1 bit、ペイロードの語に入り切らないため項目にする。
+  - 読み出し (`payload`) は、型が入れ子・集成体なら語を添字として読む。タグが別の腕の値を読んでも害がないよう、範囲外の添字は 0 として読む (判定は `tag` で行う)。
+- 戻り値の扱い: 関数が戻るとき、置き場の項目は捨てる。戻り値が参照する項目 (呼び出し先が作ったもの) だけを、呼び出し元の置き場へ複製する (`relocate`)。引数として渡された呼び出し元の項目は添字のまま使う。
+- 入口 (`ksn kir <FQN> --run`): 集成体・入れ子を引数・戻り値に持つ関数は拒否する (表示できないため)。入口の戻り値は整数・bool・unit・スカラーの `Option` / `Result` だけ。
+- 下ろし (`kir_lower_agg.rs`): `AggTab::lower_ty` が `Option<X>` / `Result<T, E>` を組み立てる (`pay_of` は `Pay::of` を通す)。集成体の型のパターン (列挙子・タプル・構造体) は、`Option` / `Result` の中でも `agg_pat_test` が判定に直す (タグの比較と、フィールドの `field` の読み)。
+- 追加した組み込みのメソッド (`kir_lower_enum.rs` の `optres_mcall`): `is_some` / `is_none` / `is_ok` / `is_err` (タグを読むだけ)、`unwrap_or(d)` (タグで枝を分けて、ペイロードか `d` を取る)。
+- 追加した字句: `b'a'` (`Lit byte`) は `u8` の定数。
+- 検証: `verify_func` が、型に現れる集成体の番号 (入れ子の中も) を型表で確かめる (`check_agg_ids`)。
+- LLVM (`kir_llvm.rs`): 同じ語の並びを整数 `iN` で持つ (`lty`)。枠 `s` の語との間は `pay_to_slot` / `slot_to_pay` が写し (符号付きは符号拡張)、`pack` がタグを bit `s` に置き、`tag` が読む。スカラーだけの型は `i65` (枠 64)。入口 `main` は枠が 64 ビットのものだけ受け取る。
+- `sub` (`kir_lower_coll.rs` の `slice_sub`): `s.sub(a, b)` は `a <= b <= len` なら `Some(部分スライス)`、外なら `None` (panic しない。木走査と同じ)。値は `fat` (`{ptr, len}`) をペイロードに持つ `Option<fat>`。要素はスカラーのスライスだけ。`Option<&[T]>` と `Option<&str>` は、同じ `Pay::Agg(fat)` として `lower_ty` が写す。
+- 試験: `stage0/tests/cli.rs` の `kir_optres_slice_sub_matches_tree_walker` (`sub` の `Some` / `None`、`as_bytes` の値を `--native` でも比べる)。
+- 試験: `stage0/tests/cli.rs` の `kir_optres_aggregates_match_tree_walker` (`Ok` / `Err` に列挙型、`?` の 2 段の伝播、`Option<構造体>` の `match`、入れ子の `Option<Result<..>>` と `Option<Option<..>>`、`Result<(), 列挙型>`、列挙子のパターンの入れ子)、`kir_optres_aggregates_print_and_refuse_at_the_entry`、`kir_optres_of_aggregates_read_back_as_text`、`kir_optres_unit_and_std_payloads_are_checked_by_the_verifier`。`kir.rs` の `nested_and_aggregate_payload_types_read_back` と `verify_rejects_an_aggregate_index_outside_the_table`。
 
 ## 12. 入出力と入口 (段階 4 の次の作業、2026-11-13 の設計)
 

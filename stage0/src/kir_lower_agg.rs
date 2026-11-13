@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::check::{items, nf, nline, nname, st, strs};
-use crate::kir::{align_of, size_of, AggDef, AggKind, Field, Op, Pointee, Term, Ty, VId, Variant};
+use crate::kir::{align_of, size_of, AggDef, AggKind, BoolOp, Field, Op, Pay, Pointee, Term, Ty, VId, Variant};
 use crate::parser::V;
 use crate::program::{Program, Target as Tgt};
 use crate::types::{from_v, Ty as Src};
@@ -93,6 +93,13 @@ impl AggTab {
             return Ok(x);
         }
         match t {
+            // 組み込みの Option / Result。ペイロードは集成体・unit・入れ子も持てる (設計_KIR.md 11.5)。
+            Src::Named(name, args) if name == "Option" && args.len() == 1 => Ok(Ty::Opt(self.pay_of(p, file, &args[0])?)),
+            Src::Named(name, args) if name == "Result" && args.len() == 2 => {
+                let t0 = self.pay_of(p, file, &args[0])?;
+                let e0 = self.pay_of(p, file, &args[1])?;
+                Ok(Ty::Res(t0, e0))
+            }
             Src::Named(name, args) => {
                 if !args.is_empty() {
                     return Err(format!("型 {} は型引数付きで段階 1 の対象外", name));
@@ -100,7 +107,8 @@ impl AggTab {
                 let segs: Vec<String> = name.split('.').map(String::from).collect();
                 match p.resolve(&segs, file).map(|r| r.target) {
                     Some(Tgt::Type(di)) if self.user.contains(&di) => self.intern_def(p, di),
-                    _ => Err(format!("型 {} は段階 1 の対象外 (利用者の定義でない)", name)),
+                    // 利用者の定義でない名前は標準ライブラリの型 (`std.io.Error` など)。KIR に組み込みがないので未対応。
+                    _ => Err(format!("{} は未対応 (標準ライブラリの型は KIR に組み込みがない)", name)),
                 }
             }
             Src::Tuple(xs) => {
@@ -115,7 +123,9 @@ impl AggTab {
                 Ty::Agg(i) => Ok(Ty::Ref(*m, Pointee::Agg(i))),
                 _ => Err(format!("参照の指す先 {} は段階 1 の対象外", show(inner))),
             },
-            other => Err(format!("型 {} は段階 1 の対象外", show(other))),
+            // `&str` とスライスの値は `fat` (`{ptr, len}`)。要素はスカラーのものだけ (`sig_ty` と同じ条件)。Option のペイロードにも置ける。
+            Src::Ref(_, inner) if matches!(&**inner, Src::Prim(s) if s == "str") || matches!(&**inner, Src::Slice(e) if conv(&**e).is_some()) => Ok(self.fat()),
+            other => Err(format!("{} は未対応", show(other))),
         }
     }
 
@@ -155,6 +165,12 @@ impl AggTab {
             AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| self.owns_vec(f.ty)),
             AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| self.owns_vec(f.ty))),
         }
+    }
+
+    /// `Option` / `Result` のペイロードの型。スカラー・unit・集成体・入れ子は `Pay` になる (128 ビット整数・参照は拒否)。
+    fn pay_of(&mut self, p: &Program, file: &str, t: &Src) -> Result<Pay, String> {
+        let x = self.lower_ty(p, file, t)?;
+        Pay::of(x).ok_or_else(|| format!("型 {} は Option / Result のペイロードに使えない", x.name()))
     }
 
     /// フィールド・要素の型。ユニット型は値を置けないので拒否する。
@@ -241,7 +257,12 @@ impl AggTab {
 impl<'a> Lw<'a> {
     /// 推論済みの型を段階 1 の型にする (集成体は型表に登録する)。対象外なら `None`。
     pub(super) fn conv_t(&self, t: &Src) -> Option<Ty> {
-        self.aggs.borrow_mut().lower_ty(self.p, &self.def.file, t).ok()
+        self.conv_t_why(t).ok()
+    }
+
+    /// `conv_t` と同じ。対象外の理由 (`std.io.Error は未対応` など) も返す。
+    pub(super) fn conv_t_why(&self, t: &Src) -> Result<Ty, String> {
+        self.aggs.borrow_mut().lower_ty(self.p, &self.def.file, t)
     }
 
     fn agg_def(&self, ai: u32) -> AggDef {
@@ -583,7 +604,7 @@ impl<'a> Lw<'a> {
                         let c = self.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty: Ty::Bool, a: val, b: k });
                         self.test(c, fl);
                     }
-                    "int" => {
+                    "int" | "byte" => {
                         let Some(fl) = fail else {
                             return self.err(line, "let の束縛は反駁可能でない");
                         };
@@ -657,6 +678,85 @@ impl<'a> Lw<'a> {
             other => return self.err(line, format!("パターン {} は段階 1 の対象外", other)),
         }
         Ok(out)
+    }
+
+    /// `Option` / `Result` の中の集成体に当てるパターンの判定 (bool の値)。`pat_test` が集成体の型の部分パターンへ回す。
+    /// 束縛は `pat_test` が現在のスコープに入れる。変種の判定はタグの比較、フィールドは判定の前に読む (値は不変なので害はない)。
+    pub(super) fn agg_pat_test(&mut self, p: &V, v: VId, t: Ty) -> LR<VId> {
+        let line = nline(p);
+        let Ty::Agg(ai) = t else {
+            return self.err(line, "集成体のパターンの対象が集成体でない");
+        };
+        let d = self.agg_def(ai);
+        match nname(p) {
+            "PPath" | "PVariant" => {
+                let segs = strs(&nf(p)[0]);
+                let Some(Tgt::Variant(en, vn)) = self.p.resolve(&segs, &self.def.file).map(|r| r.target) else {
+                    return self.err(line, format!("パターン {} は段階 1 の対象外", segs.join(".")));
+                };
+                let AggKind::Enum(vs) = &d.kind else {
+                    return self.err(line, format!("列挙子のパターンの対象 {} が列挙型でない", d.name));
+                };
+                if d.name != en {
+                    return self.err(line, format!("パターン {} の型が対象の型 {} と違う", vn, d.name));
+                }
+                let Some(idx) = vs.iter().position(|x| x.name == vn) else {
+                    return self.err(line, format!("列挙子 {} がない", vn));
+                };
+                let tg = self.emit(Ty::I32, Op::Tag(v));
+                let k = self.emit(Ty::I32, Op::Const(idx as i128));
+                let mut c = self.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty: Ty::I32, a: tg, b: k });
+                if nname(p) == "PVariant" {
+                    let subs = items(&nf(p)[1]).to_vec();
+                    let fields = vs[idx].fields.clone();
+                    if subs.len() != fields.len() {
+                        return self.err(line, "列挙子のパターンの要素数が違う");
+                    }
+                    for (sp, fd) in subs.iter().zip(&fields) {
+                        let fv = self.emit(fd.ty, Op::Field { a: v, off: fd.off });
+                        let sc = self.pat_test(sp, fv, fd.ty)?;
+                        c = self.emit(Ty::Bool, Op::Bool(BoolOp::And, c, sc));
+                    }
+                }
+                Ok(c)
+            }
+            "PTuple" => {
+                let AggKind::Tuple(fs) = &d.kind else {
+                    return self.err(line, "タプルのパターンの対象がタプルでない");
+                };
+                let subs = items(&nf(p)[0]).to_vec();
+                if subs.len() != fs.len() {
+                    return self.err(line, "タプルのパターンの要素数が型と合わない");
+                }
+                let mut c = self.emit(Ty::Bool, Op::Const(1));
+                for (sp, fd) in subs.iter().zip(fs) {
+                    let fv = self.emit(fd.ty, Op::Field { a: v, off: fd.off });
+                    let sc = self.pat_test(sp, fv, fd.ty)?;
+                    c = self.emit(Ty::Bool, Op::Bool(BoolOp::And, c, sc));
+                }
+                Ok(c)
+            }
+            "PStruct" => {
+                let AggKind::Struct(fs) = &d.kind else {
+                    return self.err(line, "構造体のパターンの対象が構造体でない");
+                };
+                let mut c = self.emit(Ty::Bool, Op::Const(1));
+                for it in items(&nf(p)[1]) {
+                    let V::L(xs) = it else {
+                        return self.err(line, "構造体のパターンの形が不正");
+                    };
+                    let fname = st(&xs[0]);
+                    let Some(fd) = fs.iter().find(|x| x.name == fname) else {
+                        return self.err(line, format!("フィールド {} がない", fname));
+                    };
+                    let fv = self.emit(fd.ty, Op::Field { a: v, off: fd.off });
+                    let sc = self.pat_test(&xs[1], fv, fd.ty)?;
+                    c = self.emit(Ty::Bool, Op::Bool(BoolOp::And, c, sc));
+                }
+                Ok(c)
+            }
+            other => self.err(line, format!("パターン {} は集成体の型に対して段階 1 の対象外", other)),
+        }
     }
 
     /// `match e { p => body ... }`。腕は順に試し、最初に当たった腕の値が結果になる。

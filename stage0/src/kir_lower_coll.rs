@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::check::{is_nil, items, nf, nline, nname, st, strs};
-use crate::kir::{Aop, Block, Cc, Func, Inst, Mode, Op, Pay, Term, Ty, VId};
+use crate::kir::{Aop, Block, BoolOp, Cc, Func, Inst, Mode, Op, Pay, Term, Ty, VId};
 use super::{conv, Lw, St, LR};
 use crate::parser::{nid, V};
 use crate::program::Target;
@@ -548,6 +548,7 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     let nargs = items(&f[2]).len();
     Some(match place(lw, &f[0]) {
         Ok(Some(h)) if m == "get" => get_elem(lw, line, &kind, h, items(&f[2])),
+        Ok(Some(h)) if m == "sub" => slice_sub(lw, line, &kind, h, items(&f[2])),
         Ok(Some(h)) => coll_method(lw, line, kind, h, &m, nargs),
         Ok(None) => Ok(None),
         Err(e) => Err(e),
@@ -564,6 +565,9 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
     let hdr = lw.slots[s].0;
     if m == "get" {
         return get_elem(lw, line, &kind, hdr, items(&f[1]));
+    }
+    if m == "sub" {
+        return slice_sub(lw, line, &kind, hdr, items(&f[1]));
     }
     coll_method(lw, line, kind, hdr, m, items(&f[1]).len())
 }
@@ -591,6 +595,56 @@ fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str, nargs: usi
         "as_bytes" if kind == Kind::Str => Ok(Some(h)),
         other => lw.err(line, format!("メソッド {} は段階 1 の対象外", other)),
     }
+}
+
+/// `s.sub(a, b)` (要素がスカラーのスライス): `a <= b <= len` なら `Some(s[a..b])`、外なら `None` (panic しない。木走査の `sub` と同じ)。
+/// 結果は `Option<&[T]>` で、部分スライスの値 `fat` (`{ptr, len}`) をペイロードに持つ (設計_KIR.md 11.6)。
+fn slice_sub(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+    let Kind::Slice(Some(elem)) = kind else {
+        return lw.err(line, "sub の対象は要素型の分かるスライスだけ段階 1 の対象");
+    };
+    let elem = *elem;
+    let Some(sz) = size_of(elem) else {
+        return lw.err(line, format!("sub の要素の型 {} は段階 1 の対象外", elem.name()));
+    };
+    if args.len() != 2 {
+        return lw.err(line, "sub の引数は 2 つのはず");
+    }
+    let Some(a) = lw.expr(&args[0])? else { return Ok(None) };
+    let Some(b) = lw.expr(&args[1])? else { return Ok(None) };
+    if lw.vty(a) != Ty::Usize || lw.vty(b) != Ty::Usize {
+        return lw.err(line, "sub の引数が usize ではない");
+    }
+    let fat = lw.fat_ty();
+    let Some(fp) = Pay::of(fat) else {
+        return lw.err(line, "fat の型が Option のペイロードにならない");
+    };
+    let opt = Ty::Opt(fp);
+    let (len, base) = Seq::Fat(h).len_and_base(lw, None);
+    let le_ab = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::Usize, a, b: b });
+    let le_bl = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::Usize, a: b, b: len });
+    let ok = lw.emit(Ty::Bool, Op::Bool(BoolOp::And, le_ab, le_bl));
+    let (tb, _) = lw.new_block(&[]);
+    let (eb, _) = lw.new_block(&[]);
+    let (jb, jp) = lw.new_block(&[opt]);
+    lw.branch(ok, (tb, vec![]), (eb, vec![]));
+    lw.cur = Some(tb);
+    let off = if sz == 1 {
+        a
+    } else {
+        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
+        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a, b: k })
+    };
+    let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
+    let n = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: b, b: a });
+    let view = lw.emit(fat, Op::Make { variant: None, fields: vec![addr, n] });
+    let some = lw.emit(opt, Op::Some(view));
+    lw.goto(jb, vec![some]);
+    lw.cur = Some(eb);
+    let none = lw.emit(opt, Op::Const(0));
+    lw.goto(jb, vec![none]);
+    lw.cur = Some(jb);
+    Ok(Some(jp[0]))
 }
 
 /// `v.get(i)` / `s.get(i)` (要素はスカラー): `Option<要素>`。境界の内なら `Some(要素)`、外なら `None` (panic しない)。
