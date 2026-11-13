@@ -35,7 +35,7 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
-pub const STD_TYPES: [&str; 9] = ["std.io.Error", "std.io.ErrorKind", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError"];
+pub const STD_TYPES: [&str; 11] = ["std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError"];
 
 /// ソケットの型 (`std.net.TcpListener` / `TcpStream`)。型表には `lower_defs` が常に入れる。`&` の形の型も、同じ集成体として下ろす。
 pub fn is_net_socket(name: &str) -> bool {
@@ -57,6 +57,10 @@ pub struct AggTab {
     busy: HashSet<String>,
     /// 利用者のパッケージの定義 (`Program::defs` の添字)。標準の型は clif が特別扱いする配置を持つので、ここに入るものだけ扱う。
     user: HashSet<usize>,
+    /// チャネルの端 (`std.sync.Sender<T>` / `Receiver<T>`) の型の添字 → 要素の型 `T` (設計_KIR.md 21 章)。
+    pub chan_elem: HashMap<u32, Ty>,
+    /// `std.thread.JoinHandle<T, A>` の型の添字 → `T`。
+    pub handle_elem: HashMap<u32, Ty>,
 }
 
 fn align_up(n: u32, a: u32) -> u32 {
@@ -112,7 +116,7 @@ fn layout_enum(defs: &[AggDef], vs: &[(String, Vec<Ty>)]) -> (u32, u32, Vec<Vari
 impl AggTab {
     /// `user` は利用者のパッケージの定義の添字 (`lower_user` の引数と同じ)。
     pub fn new(user: &[usize]) -> AggTab {
-        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect() }
+        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), chan_elem: HashMap::new(), handle_elem: HashMap::new() }
     }
 
     /// 推論済みの型 `t` を段階 1 の型にする。`file` は名前を解決するファイル。対象外なら理由付きで `Err`。
@@ -147,6 +151,14 @@ impl AggTab {
                 let elem_ty = self.lower_ty(p, file, &args[0])?;
                 let alloc_ty = self.lower_ty(p, file, &args[1])?;
                 Ok(self.join_handle(elem_ty, alloc_ty))
+            }
+            // チャネルの端 `Sender<T>` / `Receiver<T>` (`{ state: ptr }`) と `SendError<T>` (`{ value: T }`)。T は 8 バイト以下のスカラー。
+            Src::Named(name, args) if (name == "std.sync.Sender" || name == "std.sync.Receiver" || name == "std.sync.SendError") && args.len() == 1 => {
+                let elem = self.lower_ty(p, file, &args[0])?;
+                if !elem.is_scalar() || elem == Ty::Unit || matches!(elem, Ty::I128 | Ty::U128) {
+                    return Err(format!("{}<{}> は段階 1 の対象外 (要素は 64 ビット以下のスカラーだけ)", name, show(&args[0])));
+                }
+                Ok(if name == "std.sync.SendError" { self.send_err(elem) } else { self.chan_end(name == "std.sync.Sender", elem) })
             }
             Src::Named(name, args) => {
                 if !args.is_empty() {
@@ -258,7 +270,11 @@ impl AggTab {
             Field { name: "native".to_string(), ty: Ty::Usize, off: off_native },
             Field { name: "result".to_string(), ty: Ty::Ptr, off: off_result },
         ];
-        self.push(name, size, align, AggKind::Struct(fields))
+        let t = self.push(name, size, align, AggKind::Struct(fields));
+        if let Ty::Agg(i) = t {
+            self.handle_elem.insert(i, elem_ty);
+        }
+        t
     }
 
     /// 要素が所有物 (`Vec<String>`、`Vec<構造体>`) の `Vec` の型。配置は `vec` と同じで、名前 `vec<#要素の型の添字>` で要素の型を持つ
@@ -319,12 +335,49 @@ impl AggTab {
         self.push(NAME.to_string(), size, align, AggKind::Enum(variants))
     }
 
+    /// `std.sync.Sender<T>` / `Receiver<T>` = `{ state: ptr }` (チャネルの状態は実メモリ。設計_KIR.md 21 章)。
+    pub fn chan_end(&mut self, sender: bool, elem: Ty) -> Ty {
+        let name = format!("std.sync.{}<{}>", if sender { "Sender" } else { "Receiver" }, elem.name());
+        if let Some(&i) = self.by_name.get(&name) {
+            return Ty::Agg(i);
+        }
+        let fields = vec![Field { name: "state".to_string(), ty: Ty::Ptr, off: 0 }];
+        let t = self.push(name, 8, 8, AggKind::Struct(fields));
+        if let Ty::Agg(i) = t {
+            self.chan_elem.insert(i, elem);
+        }
+        t
+    }
+
+    /// `std.sync.SendError<T>` = `{ value: T }`。
+    pub fn send_err(&mut self, elem: Ty) -> Ty {
+        let name = format!("std.sync.SendError<{}>", elem.name());
+        if let Some(&i) = self.by_name.get(&name) {
+            return Ty::Agg(i);
+        }
+        let (size, align, fields) = layout_fields(&self.defs, &[("value".to_string(), elem)]);
+        self.push(name, size, align, AggKind::Struct(fields))
+    }
+
+    /// チャネルの端の型なら `Some(送り手か)`。
+    pub fn chan_kind(&self, t: Ty) -> Option<bool> {
+        let Ty::Agg(i) = t else { return None };
+        let n = &self.defs[i as usize].name;
+        if n.starts_with("std.sync.Sender<") {
+            Some(true)
+        } else if n.starts_with("std.sync.Receiver<") {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     /// 型 `t` の値が (入れ子を含めて) ヒープの所有物 (Vec / String のヘッダ) を持つか。持つ値は移動と解放の対象になる。
     pub fn owns_heap(&self, t: Ty) -> bool {
         match t {
             Ty::Agg(i) => {
                 let d = &self.defs[i as usize];
-                if is_vec_name(&d.name) {
+                if is_vec_name(&d.name) || self.chan_kind(t).is_some() {
                     return true;
                 }
                 match &d.kind {

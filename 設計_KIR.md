@@ -1255,3 +1255,32 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 試験: `kir_generic_functions_and_methods_are_monomorphized` (2 つ以上の型・明示・メソッド・入れ子・集成体の型引数、`ksn run` / `--run` / `--native` が一致、鍵が KIR に出る)、`kir_generic_with_effect_parameter_is_rejected_with_a_reason`。`llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered` の例は `dyn` のトレイトオブジェクトを引数に取る関数 (当面だれも下ろさない形) に替えた。
 - `examples/plugins`: `Bus.register<Counter>` の単相化までは進むが、その本体の `Box.new` / `Box.into_dyn` (`Box<dyn Handler>`)、`Vec.new(allocator)`、`dyn` のメソッド呼び出し (`handle`) が段階 1 の対象外で止まる。型引数の部分の壁は越えた。
 - `examples/threads`: `std.sync.channel::<T, A>` の呼び出しは未対応のまま。チャネルには型引数付きの標準の型 (`Sender<T>` / `Receiver<T>`、集成体の表が型引数付きの型を持たない)、キューの領域、`recv` が空のときに保留中のスレッドを生成順に走らせる意味が要る。ほかに `static Mutex` の `lock`、`Rng`、ループの中の `spawn` の呼び出し元が残っていて、チャネルだけでは通らない。
+
+## 21. スレッドの表・チャネル・`static` の `Mutex`・`Rng` (kir/threads-sync、2026-11-13)
+
+`examples/threads` を KIR / LLVM で通す。意味は木走査 (`interp.rs` の `threads` の注、`natives.rs`) と同じ。
+
+### 21.1 新しい命令 `global.bytes NAME SIZE`
+- 名前付きの大域領域 (`ptr`)。0 で初期化、プログラムの間ずっと生き、同じ名前は同じ領域、書き込める。`static.bytes` (読み取り専用の定数) とは別。参照実行器は pinned の領域 (終了時の漏れの検査の対象外)、LLVM は `internal global [N x i8] zeroinitializer`、VM は 1 度だけ確保した領域 (`Prog.globals`) の定数アドレス。
+- 参照実行器の関数の終わりの漏れの検査は、大域領域 (pinned) の中の語も根に数える (結果の置き場に Vec を置くため)。
+- 検査 (`verify_module`) は、`ksn.thr.*` / `ksn.chan.*` の補助の関数を呼ぶ側の `uses` / `panics` の包含を見ない (補助が spawn した側のクロージャの効果を呼ぶため。効果の検査は spawn の側のクロージャの下ろしと、木走査の検査が持つ)。
+
+### 21.2 スレッドの表 (`kir_lower_thread.rs`、14 章の「保留して join で生成順」の置き換え)
+- 以前は spawn の位置ごとの静的な「サイト」で、同じ関数の中の spawn / join、ループの外の spawn に限った。今は大域領域 `ksn.thr` に表 (`count` + 32 項目、1 項目 = `state` (0 保留 / 1 実行中 / 2 完了)・`tag` (クロージャの鍵の FNV-1a)・取り込み値 64 バイト・結果 64 バイト) を持つ。ハンドルの `native` が項目の番号 (実行時の値)。ループの中の spawn、spawn して `JoinHandle` を返す関数 (`threads.add_worker`)、ハンドルを引数で受ける関数が通る。表が満杯 (33 本目) なら `thread table full` の panic、取り込み値・結果が 64 バイトを超えるクロージャは下ろしを拒否する。
+- クロージャごとに入口の関数 `ksn.thr.site.<鍵>(項目の番地)` (取り込み値を読んでクロージャを呼び、結果を書く) を足し、`lower_defs` が全関数を下ろした後に `finish` で補助の関数を作る: `ksn.thr.exec(i)` (tag で入口を選ぶ)、`ksn.thr.run_one() -> bool` (保留の最初の 1 本を state 1 → 2 で最後まで走らせて true、無ければ false)、`ksn.thr.join(i)` (完了まで `run_one` を繰り返す。実行中の項目を待つ、走らせるものが無い場合は木走査と同じ `DEADLOCK_JOIN` の panic)。`join(h)` は `ksn.thr.join(h.native)` の後に項目の結果の置き場から読む。join しないスレッドは走らない。
+- 取り込み値は項目へ書いた時点で呼び出し元の手を離れ、走るときに入口が読んで呼び先の引数として渡す (呼び先が所有する)。
+
+### 21.3 チャネル (`kir_lower_chan.rs`)
+- 型 (`AggTab`): `std.sync.Sender<T>` / `Receiver<T>` は `{ state: ptr }` (8 バイト)、`SendError<T>` は `{ value: T }`、`RecvError` は標準の型。`T` は 64 ビット以下のスカラー (それ以外は理由付きで拒否)。型引数付きの標準の型は名前に `T` を埋め込んで型表に入れる (20 章の単相化と同じ作法)。端は「所有物を持つ型」 (`owns_heap`) で、移動・スコープの終わり・引数の解放の規則 (13 章) にそのまま乗る。
+- 状態はヒープの 48 バイト `{buf, head, len, cap, senders, receivers}`。キューは `buf[head..len]`、要素は 8 バイトの枠。`channel(alloc, cap)` は `Ok((tx, rx))` (容量は木走査と同じく無視)、`clone` は本数を増やす。端を落とすと本数を減らし、両方 0 なら `ksn.chan.free` が `buf` と状態を解放する。`send` が満杯で伸ばすのは `ksn.chan.grow` (`alloc` の効果は補助の側が持つ)。
+- `send`: 受信側が 0 本なら `Err(SendError { value })`、そうでなければ末尾に追加して `Ok(())` (待たない)。`recv`: 空でなければ先頭、空で送信側 0 本なら `Err(RecvError { code: 0 })`、空で送信側が生きていれば `ksn.thr.run_one` で保留中のスレッドを 1 本走らせてやり直し、走らせるものが無ければ `DEADLOCK_RECV` の panic (終了コード 101、文言は木走査と同じ)。
+- `move tx` の取り込みはチャネルの端だけ許す (呼び出し元の印を下ろして値を取り込み値へ移す。クロージャの本体が引数として所有し、終わりで落とす)。
+- 未対応 (理由付き): `Receiver.close`・`try_*`、要素が 8 バイトを超える・集成体・`String` の `T`、構造体のフィールドの端への `send` / `recv` (局所と `&Sender` の引数だけ)。
+
+### 21.4 `static` の `Mutex` と `Rng` (`kir_lower_sync.rs`)
+- `static N: std.sync.Mutex<T> = std.sync.Mutex.new(init)` (`T` は 64 ビット以下のスカラー、`init` は整数か bool のリテラル): 大域領域 `N` (16 バイト、`+0` 初期化の旗、`+8` 値)。`N.lock()` は旗が 0 なら `init` を値に書いて旗を立て、値の場所への `&mut T` を返す。これがガードの値で、`get()` は共有参照、`get_mut()` はそのまま。木走査の `lock` は無操作 (各スレッドは最後まで走る) なのでロックの命令は出さない。ローカルな `Mutex` の値は未対応。
+- `std.rand.Rng` は `{ state: u64 }` (標準の型として型表に入れる)。`from_seed(s)` = `{ s }`、`next_u64` は木走査と同じ splitmix64 (`natives.rs` の `splitmix`)。受け手は局所 (SSA・アドレスを取られたもの) か `&mut Rng` の引数。`from_entropy` は未対応。
+
+### 21.5 試験と結果
+- `kir_sync_values_match_tree_walker` (静的 Mutex の加算・Rng のシードの列 (`&mut` の引数を含む)・生産者 1 本のチャネル・同じスレッドでの送受信と `clone` と drop・受信側を落とした後の `send` のエラー・送り手 2 本 (受信が spawn の順に走らせる)・ループの中の `spawn`・spawn して返すハンドルの `join`。`ksn run` / `--run` / `--native` (と ASan) が一致)、`kir_sync_empty_recv_with_live_sender_deadlocks_like_the_tree_walker` (送り手が生きたままの空の recv は 101 と同じ文言)。`kir_thread_spawn_join_match_tree_walker` (14 章の既存の形) は表の方式で通る。
+- `examples/threads`: `ksn build --backend llvm` が作れ、`ksn run` と stdout・stderr・終了コードが一致する (`llvm_builds_of_real_packages_match_run` に追加)。

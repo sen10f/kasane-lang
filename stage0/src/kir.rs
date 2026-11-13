@@ -651,6 +651,8 @@ pub enum Op {
     FrameBytes { size: u32 },
     /// 静的な読み取り専用のバイト列の先頭。結果は `ptr`。同じ命令は常に同じアドレスを返す。
     StaticBytes(Vec<u8>),
+    /// 名前付きの大域領域 (`global.bytes NAME SIZE`)。0 で初期化され、プログラムの間ずっと生き、同じ名前は同じ領域。書き込める (`static` の `Mutex` など。設計_KIR.md 21 章)。
+    GlobalBytes { name: String, size: u32 },
     /// `p + off` (`off` は usize の値。境界は見ない)。結果は `ptr`。
     PtrAdd { p: VId, off: VId },
     /// `p + off` から `Inst::ty` の幅で読む (リトルエンディアン)。
@@ -1122,6 +1124,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::AsShared(p) => format!("asshared {}", fmt_val(*p)),
         Op::Reborrow(p) => format!("reborrow {}", fmt_val(*p)),
         Op::FrameBytes { size } => format!("frame.bytes {}", size),
+        Op::GlobalBytes { name, size } => format!("global.bytes {} {}", name, size),
         Op::StaticBytes(bytes) => {
             let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
             if hex.is_empty() {
@@ -1507,6 +1510,14 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("frame", ["bytes"]) if ty == Ty::Ptr => {
             let n = rest.trim().parse::<u32>().map_err(|_| perr(line, format!("frame.bytes の大きさ {} が不正", rest)))?;
             Ok(Op::FrameBytes { size: n })
+        }
+        ("global", ["bytes"]) if ty == Ty::Ptr => {
+            let mut it = rest.split_whitespace();
+            let (Some(name), Some(n), None) = (it.next(), it.next(), it.next()) else {
+                return Err(perr(line, "global.bytes は名前と大きさを取る"));
+            };
+            let size = n.parse::<u32>().map_err(|_| perr(line, format!("global.bytes の大きさ {} が不正", n)))?;
+            Ok(Op::GlobalBytes { name: name.to_string(), size })
         }
         ("static", ["bytes"]) if ty == Ty::Ptr => {
             let t = rest.trim();
@@ -2225,6 +2236,11 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("frame.bytes は ptr の型で、大きさは 1 以上のはず".into());
                         }
                     }
+                    Op::GlobalBytes { size, .. } => {
+                        if i.ty != Ty::Ptr || *size == 0 {
+                            return Err("global.bytes は ptr の型で、大きさは 1 以上のはず".into());
+                        }
+                    }
                     Op::StaticBytes(_) => {
                         if i.ty != Ty::Ptr {
                             return Err("static.bytes は ptr の型のはず".into());
@@ -2466,11 +2482,16 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if i.ty != g.ret {
                             return Err(format!("{} の戻り値の型が合わない", callee));
                         }
-                        if g.may_panic && !f.may_panic {
+                        // スレッドの補助の関数 (`ksn.thr.*`、設計_KIR.md 21 章) は、spawn した側のクロージャの効果を呼ぶので、
+                        // 効果と panic の包含は spawn 側 (クロージャの下ろし) で確かめ済みとして、ここでは見ない。
+                        let thr = callee.starts_with("ksn.thr.") || callee.starts_with("ksn.chan.");
+                        if g.may_panic && !f.may_panic && !thr && !f.key.starts_with("ksn.thr.") {
                             return Err(format!("panics never の関数が panics may の {} を呼ぶ", callee));
                         }
                         if let Some(u) = g.uses.iter().find(|u| !fu.contains(u.as_str())) {
-                            return Err(format!("{} の uses {} が呼び出し元にない", callee, u));
+                            if !thr && !f.key.starts_with("ksn.thr.") {
+                                return Err(format!("{} の uses {} が呼び出し元にない", callee, u));
+                            }
                         }
                     }
                     Op::FnPtr { callee } => {
@@ -2558,7 +2579,7 @@ fn is_io_error(m: &Module, t: Ty) -> bool {
 
 pub(crate) fn operands(op: &Op) -> Vec<VId> {
     match op {
-        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) => vec![],
+        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) | Op::GlobalBytes { .. } => vec![],
         Op::PtrAdd { p, off } => vec![*p, *off],
         Op::Utf8Valid { p, len } => vec![*p, *len],
         Op::MemLoad { p, .. } | Op::HeapFree(p) => vec![*p],

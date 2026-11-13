@@ -106,9 +106,6 @@ pub(crate) struct CollCx {
     pub(crate) peek_field: bool,
     /// 下ろしたクロージャの式 ID → (取り込みの値, その型)。`closure_kind_from_table` が読む。
     pub(crate) caps: BTreeMap<u32, (Vec<VId>, Vec<Ty>)>,
-    /// `std.thread.spawn` で保留されたクロージャの (鍵, 取り込み値) の列。FIFO = spawn 順。
-    /// `join` が先頭を取り出してクロージャ本体を呼ぶ (設計_KIR.md スレッド章)。
-    pub(crate) pending_spawns: Vec<super::thread_lower::Site>,
     /// 添字式 `v[i]` (所有物を持つ要素の Vec) の木の番地 → 要素の借用を持つスロット。`elem_prep` が作り、
     /// `local_slot` / `chain_of` が受け手として読む。
     pub(crate) elem_slots: BTreeMap<usize, usize>,
@@ -506,6 +503,12 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
                     drop_elems(lw, v, p, elem);
                 }
                 lw.emit(Ty::Unit, Op::HeapFree(p));
+                return;
+            }
+            // チャネルの端: 本数を減らし、最後の 1 本なら状態を解放する (設計_KIR.md 21 章)。
+            let end = lw.aggs.borrow().chan_kind(t);
+            if let Some(sender) = end {
+                super::chan_lower::drop_end(lw, v, sender);
                 return;
             }
             match d.kind {
@@ -2713,7 +2716,9 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize) -> LR<(Vec<Strin
             return lw.err(line, format!("capture の {} は Vec / String / str / スライス / クロージャで、取り込みは段階 1 の対象外 (所有の移動と解放の規則が要る)", name));
         }
         let t = lw.slots[s].1;
-        if lw.aggs.borrow().owns_heap(t) {
+        // チャネルの端の `move` は取り込める (取り込み値を引き継いだ側が落とす。呼び出し元の印は `path_read` が下ろす)。
+        let chan_move = kind == "move" && lw.aggs.borrow().chan_kind(t).is_some();
+        if lw.aggs.borrow().owns_heap(t) && !chan_move {
             return lw.err(line, format!("capture の {} は解放の要る値を持つので段階 1 の対象外 (所有の移動と解放の規則が要る)", name));
         }
         if t.is_ref() {
@@ -2722,7 +2727,11 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize) -> LR<(Vec<Strin
         let v = match kind.as_str() {
             "move" => {
                 moved.push(name.clone());
-                lw.read_slot(s)
+                if chan_move {
+                    path_read(lw, s)
+                } else {
+                    lw.read_slot(s)
+                }
             }
             "&" | "&mut" => {
                 let ptr = lw.slots[s].0;

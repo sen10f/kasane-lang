@@ -13830,6 +13830,275 @@ fn kir_thread_spawn_join_match_tree_walker() {
     assert_eq!(text(&k.stdout).lines().collect::<Vec<_>>(), [&want[..], &["123"][..]].concat(), "kir の表示が木走査と違う");
 }
 
+const SYNC_SRC: &str = r#"static t.TOTAL: std.sync.Mutex<u64> = std.sync.Mutex.new(5u64) pub
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end t.oom
+
+fn t.rng_values() -> u64 uses [] panics may
+    let mut rng = std.rand.Rng.from_seed(7u64)
+    let a = rng.next_u64()
+    let b = rng.next_u64()
+    let mut again = std.rand.Rng.from_seed(7u64)
+    core.check.eq(again.next_u64(), a)
+    core.check.eq(again.next_u64(), b)
+    let mut other = std.rand.Rng.from_seed(8u64)
+    core.check.eq(other.next_u64() == a, false)
+    a.wrapping_add(b)
+end t.rng_values
+
+fn t.rng_step(r: &mut std.rand.Rng) -> u64 uses [] panics may
+    r.next_u64()
+end t.rng_step
+
+fn t.rng_ref() -> u64 uses [] panics may
+    let mut rng = std.rand.Rng.from_seed(99u64)
+    let a = t.rng_step(&mut rng)
+    let b = t.rng_step(&mut rng)
+    let mut same = std.rand.Rng.from_seed(99u64)
+    core.check.eq(same.next_u64(), a)
+    core.check.eq(same.next_u64(), b)
+    a ^ b
+end t.rng_ref
+
+fn t.bump(n: u32) -> () uses [thread] panics may
+    let mut i = 0u32
+    while i < n {
+        let mut guard = t.TOTAL.lock()
+        let seen = *guard.get()
+        *guard.get_mut() = seen + 1u64
+        i = i + 1u32
+    }
+end t.bump
+
+fn t.mutex_adds() -> u64 uses [thread] panics may
+    t.bump(10u32)
+    t.bump(5u32)
+    let total = t.TOTAL.lock()
+    let v = *total.get()
+    core.mem.drop(total)
+    v
+end t.mutex_adds
+
+fn t.produce(tx: std.sync.Sender<u32>, from: u32, count: u32) -> () uses [thread] panics may
+    let mut i = 0u32
+    while i < count {
+        match tx.send(from + i) {
+            Ok(_u) => 0u32
+            Err(_e) => core.panic.panic("send failed")
+        }
+        i = i + 1u32
+    }
+end t.produce
+
+fn t.spawn_producer(tx: std.sync.Sender<u32>, from: u32, count: u32) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move tx, move from, move count] {
+            t.produce(tx, from, count)
+        },
+    )
+    match spawned {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.spawn_producer
+
+fn t.pipe() -> Result<u32, std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 4usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let producer = t.spawn_producer(tx, 1u32, 100u32)
+    let mut sum = 0u32
+    loop {
+        match rx.recv() {
+            Ok(n) => {
+                sum = sum + n
+            }
+            Err(_e) => break
+        }
+    }
+    producer.join()
+    Ok(sum)
+end t.pipe
+
+fn t.pipe_sum() -> u32 uses [alloc, thread] panics may
+    match t.pipe() {
+        Ok(n) => n
+        Err(_e) => 0u32
+    }
+end t.pipe_sum
+
+fn t.same_thread() -> Result<u32, std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let tx2 = tx.clone()
+    core.mem.drop(tx.send(1u32))
+    core.mem.drop(tx2.send(20u32))
+    core.mem.drop(tx.send(300u32))
+    core.mem.drop(tx)
+    core.mem.drop(tx2)
+    let mut sum = 0u32
+    let mut n = 0u32
+    loop {
+        match rx.recv() {
+            Ok(v) => {
+                sum = sum + v
+                n = n + 1u32
+            }
+            Err(_e) => break
+        }
+    }
+    Ok(sum * 10u32 + n)
+end t.same_thread
+
+fn t.same_thread_sum() -> u32 uses [alloc, thread] panics may
+    match t.same_thread() {
+        Ok(n) => n
+        Err(_e) => 0u32
+    }
+end t.same_thread_sum
+
+fn t.send_after_close() -> Result<u32, std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    core.mem.drop(rx)
+    match tx.send(7u32) {
+        Ok(_u) => Ok(0u32)
+        Err(e) => Ok(e.value)
+    }
+end t.send_after_close
+
+fn t.send_after_close_value() -> u32 uses [alloc, thread] panics may
+    match t.send_after_close() {
+        Ok(n) => n
+        Err(_e) => 1u32
+    }
+end t.send_after_close_value
+
+fn t.two_producers() -> Result<u32, std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 4usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let tx2 = tx.clone()
+    let a = t.spawn_producer(tx, 1u32, 3u32)
+    let b = t.spawn_producer(tx2, 10u32, 3u32)
+    let mut order = 0u32
+    loop {
+        match rx.recv() {
+            Ok(n) => {
+                order = order * 2u32 + n / 10u32
+            }
+            Err(_e) => break
+        }
+    }
+    b.join()
+    a.join()
+    Ok(order)
+end t.two_producers
+
+fn t.two_producers_order() -> u32 uses [alloc, thread] panics may
+    match t.two_producers() {
+        Ok(n) => n
+        Err(_e) => 1u32
+    }
+end t.two_producers_order
+
+fn t.empty_recv() -> Result<u32, std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let got = match rx.recv() {
+        Ok(n) => n
+        Err(_e) => 0u32
+    }
+    core.mem.drop(tx)
+    Ok(got)
+end t.empty_recv
+
+fn t.empty_recv_value() -> u32 uses [alloc, thread] panics may
+    match t.empty_recv() {
+        Ok(n) => n
+        Err(_e) => 1u32
+    }
+end t.empty_recv_value
+
+fn t.loop_spawn() -> u32 uses [alloc, thread] panics may
+    let mut total = 0u32
+    let mut i = 0u32
+    while i < 3u32 {
+        let h = match std.thread.spawn(
+            std.alloc.SYSTEM,
+            fn() -> u32 capture [move i] {
+                i * 10u32 + 1u32
+            },
+        ) {
+            Ok(h) => h
+            Err(_e) => core.panic.panic("spawn failed")
+        }
+        total = total + h.join()
+        i = i + 1u32
+    }
+    total
+end t.loop_spawn
+"#;
+
+#[test]
+fn kir_sync_values_match_tree_walker() {
+    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    core.check.eq(t.mutex_adds(), 20u64)\n    core.check.eq(t.pipe_sum(), 5050u32)\n    core.check.eq(t.same_thread_sum(), 3213u32)\n    core.check.eq(t.send_after_close_value(), 7u32)\n    core.check.eq(t.two_producers_order(), 7u32)\n    core.check.eq(t.empty_recv_value(), 0u32)\n    core.check.eq(t.loop_spawn(), 33u32)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_sync", &format!("{}{}", SYNC_SRC, main));
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(101), "木走査: 空の recv は送り手が生きたまま deadlock\n{}{}", text(&tw.stdout), text(&tw.stderr));
+    // 木走査の値は各関数を `core.check.eq` で確かめる (empty_recv は別に deadlock を見る)。
+    let main_ok = main.replace("    core.check.eq(t.empty_recv_value(), 0u32)\n", "");
+    let t = Tmp::new("kir_sync_ok", &format!("{}{}", SYNC_SRC, main_ok));
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(0), "木走査 main\n{}{}", text(&tw.stdout), text(&tw.stderr));
+    for (f, want) in [
+        ("t.mutex_adds", "20"),
+        ("t.pipe_sum", "5050"),
+        ("t.same_thread_sum", "3213"),
+        ("t.send_after_close_value", "7"),
+        ("t.two_producers_order", "7"),
+        ("t.loop_spawn", "33"),
+    ] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+    // Rng: 木走査と同じ列 (シードが同じなら同じ、別のシードなら別)。値は木走査の core.check と --run / --native で比べる。
+    for f in ["t.rng_values", "t.rng_ref"] {
+        let mut v = vec![];
+        for engine in ["--run", "--native"] {
+            let k = run(&["kir", f, engine], &t.0);
+            assert_eq!(k.status.code(), Some(0), "kir {} {}\n{}", f, engine, text(&k.stderr));
+            v.push(text(&k.stdout));
+        }
+        assert_eq!(v[0], v[1], "{}: --run と --native の値", f);
+    }
+    // 木走査との値の一致: Rng の値を木走査の `core.check.eq` へ埋め込んで確かめる。
+    let want = text(&run(&["kir", "t.rng_values", "--run"], &t.0).stdout).trim().to_string();
+    let m = format!("\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    core.check.eq(t.rng_values(), {}u64)\n    Ok(())\nend t.main\n", want);
+    let t2 = Tmp::new("kir_sync_rng", &format!("{}{}", SYNC_SRC, m));
+    assert_eq!(run(&["run"], &t2.0).status.code(), Some(0), "Rng の値が木走査と違う ({})", want);
+    let want = text(&run(&["kir", "t.rng_ref", "--run"], &t.0).stdout).trim().to_string();
+    let m = format!("\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    core.check.eq(t.rng_ref(), {}u64)\n    Ok(())\nend t.main\n", want);
+    let t3 = Tmp::new("kir_sync_rng2", &format!("{}{}", SYNC_SRC, m));
+    assert_eq!(run(&["run"], &t3.0).status.code(), Some(0), "Rng (&mut の引数) の値が木走査と違う ({})", want);
+}
+
+#[test]
+fn kir_sync_empty_recv_with_live_sender_deadlocks_like_the_tree_walker() {
+    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    core.check.eq(t.empty_recv_value(), 0u32)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_sync_dead", &format!("{}{}", SYNC_SRC, main));
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(101));
+    let tw_err = text(&tw.stderr);
+    assert!(tw_err.contains("deadlock: recv() on an empty channel"), "{}", tw_err);
+    // kir_run は panic (101) の文言も --run と --native で比べる。
+    let k = kir_run(&["kir", "t.empty_recv_value", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir: {}", text(&k.stderr));
+    assert!(text(&k.stderr).contains("deadlock: recv() on an empty channel"), "{}", text(&k.stderr));
+}
+
 const ARRAY_SRC: &str = r#"fn t.sum_lit() -> u32 uses [] panics never pub
     let mut s = 0u32
     for x in [1u32, 2u32, 3u32] {
@@ -19376,6 +19645,7 @@ fn llvm_builds_of_real_packages_match_run() {
         "examples/more_str",
         "examples/native",
         "examples/realtime",
+        "examples/threads",
         "perf/closure",
         "perf/fib",
         "perf/hashmap",
