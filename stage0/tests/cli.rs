@@ -12164,7 +12164,7 @@ fn kir_coll_reports_unsupported_constructs_with_a_reason() {
     let cases: &[(&str, &str, &str)] = &[
         ("t.push_one", "    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let _r = v.push(1u8)\n    v.len()\n", "push は段階 1 の対象外"),
         ("t.moved", "    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let w = v\n    w.len()\n", "所有の移動"),
-        ("t.captured", "    let k = 7usize\n    let f = fn(x: usize) -> usize capture [&k] {\n        x.wrapping_mul(*k)\n    }\n    f(1usize)\n", "capture を持つ"),
+        ("t.captured", "    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let f = fn(x: usize) -> usize capture [move v] {\n        x\n    }\n    f(1usize)\n", "取り込みは段階 1 の対象外"),
     ];
     for (i, (f, body, why)) in cases.iter().enumerate() {
         let src = format!(
@@ -13047,4 +13047,172 @@ end t.main
     // 既存の経路 (c / clif) は変わらない: llvm の文言を出さない
     let c = run(&["build"], &t.0);
     assert!(!text(&c.stdout).contains("llvm backend"), "{}", text(&c.stdout));
+}
+
+// ---- 取り込みのあるクロージャと反復子の連なり (設計_KIR.md 13 章、kir/closures) ----
+
+const KIR_CLOSURE_FNS: &str = "fn t.apply[F: core.ops.Fn<(u64,), u64, E, P>, E: uses, P: panics](f: F, n: u64) -> u64 uses [E] panics P pub
+    let mut acc = 0u64
+    let mut i = 0u64
+    while i < n {
+        acc = acc.wrapping_add(f(i))
+        i = i.wrapping_add(1u64)
+    }
+    acc
+end t.apply
+
+fn t.cap_ref(n: u64) -> u64 uses [] panics may
+    let k = 7u64
+    t.apply(
+        fn(x: u64) -> u64 capture [&k] {
+            x.wrapping_mul(*k).wrapping_add(1u64)
+        },
+        n,
+    )
+end t.cap_ref
+
+fn t.cap_move(n: u64) -> u64 uses [] panics may
+    let mut k = 3u64
+    k = k.wrapping_add(n)
+    let f = fn(x: u64) -> u64 capture [move k] {
+        x.wrapping_add(k)
+    }
+    f(1u64).wrapping_add(f(2u64)).wrapping_add(t.apply(f, 4u64))
+end t.cap_move
+
+fn t.cap_mut(n: u64) -> u64 uses [] panics may
+    let mut total = 0u64
+    let f = fn(x: u64) -> u64 capture [&mut total] {
+        *total = (*total).wrapping_add(x)
+        *total
+    }
+    f(n)
+    f(n)
+    let r = f(5u64)
+    r.wrapping_add(total)
+end t.cap_mut
+
+fn t.cap_two(n: u64) -> u64 uses [] panics may
+    let a = 10u64
+    let mut b = 5u64
+    b = b.wrapping_add(n)
+    t.apply(
+        fn(x: u64) -> u64 capture [&a, move b] {
+            x.wrapping_mul(*a).wrapping_add(b)
+        },
+        3u64,
+    )
+end t.cap_two
+
+fn t.fold_basic(n: u32) -> u32 uses [] panics may
+    core.iter.fold(core.iter.range(0u32, n), 100u32, fn(acc: u32, x: u32) -> u32 capture [] {
+        acc.wrapping_add(x)
+    })
+end t.fold_basic
+
+fn t.chain(n: u64) -> u64 uses [] panics may
+    let m = 3u64
+    core.iter.fold(
+        core.iter.filter(
+            core.iter.map(core.iter.range(0u64, n), fn(x: u64) -> u64 capture [&m] {
+                x.wrapping_mul(*m)
+            }),
+            fn(x: &u64) -> bool capture [] {
+                *x % 2u64 == 0u64
+            },
+        ),
+        1u64,
+        fn(acc: u64, x: u64) -> u64 capture [] {
+            acc.wrapping_add(x)
+        },
+    )
+end t.chain
+
+fn t.count_even(n: u32) -> usize uses [] panics may
+    core.iter.count(core.iter.filter(core.iter.range(0u32, n), fn(x: &u32) -> bool capture [] {
+        *x % 2u32 == 0u32
+    }))
+end t.count_even
+
+fn t.fold_let(n: u32) -> u32 uses [] panics may
+    let step = 2u32
+    let f = fn(acc: u32, x: u32) -> u32 capture [&step] {
+        acc.wrapping_add(x.wrapping_mul(*step))
+    }
+    core.iter.fold(core.iter.range(5u32, n), 1u32, f)
+end t.fold_let
+
+";
+
+#[test]
+fn kir_closure_captures_and_iter_pipes_match_tree_walker() {
+    // 取り込み 4 種類 (`&x` `&mut x` `move x` と複数)、`fold` の初期値と累積、`map` → `filter` → `fold`、空の範囲。
+    // (関数, 引数の型, 引数, 期待する値)
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("t.cap_ref", "u64", "4", "46"),
+        ("t.cap_ref", "u64", "0", "0"),
+        ("t.cap_move", "u64", "2", "39"),
+        ("t.cap_two", "u64", "2", "51"),
+        ("t.fold_basic", "u32", "5", "110"),
+        ("t.fold_basic", "u32", "0", "100"),
+        ("t.fold_let", "u32", "9", "53"),
+        ("t.fold_let", "u32", "3", "1"),
+        ("t.chain", "u64", "10", "61"),
+        ("t.chain", "u64", "0", "1"),
+        ("t.count_even", "u32", "9", "5"),
+        ("t.count_even", "u32", "0", "0"),
+    ];
+    for (i, (f, aty, arg, want)) in cases.iter().enumerate() {
+        let rty = if *f == "t.count_even" { "usize" } else { *aty };
+        let call = format!("{}({}{})", f, arg, aty);
+        let t = Tmp::new(
+            &format!("kir_closure_{}", i),
+            &format!("{}{}", KIR_CLOSURE_FNS, main_wrap("", &format!("    core.check.eq({}, {}{})\n", call, want, rty))),
+        );
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let k = kir_run(&["kir", f, "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_closure_capture_by_mut_ref_writes_through() {
+    // `capture [&mut x]` の書き込みは、取り込まれた変数に届く。木走査は `*x = v` の形を受けない
+    // (取り込んだ名前を参照にしない) ので、期待値は手で求めた値 (3, 6 と加えて 11 を返し、total も 11 → 22)。
+    let t = Tmp::new("kir_closure_cap_mut", &format!("{}{}", KIR_CLOSURE_FNS, main_wrap("", "    core.check.eq(t.cap_ref(1u64), 1u64)\n")));
+    let k = kir_run(&["kir", "t.cap_mut", "--run", "3"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "22");
+}
+
+#[test]
+fn kir_closure_environment_is_passed_as_leading_arguments() {
+    // 取り込みの値は、クロージャの関数と単相インスタンスの先頭の追加の引数になる。
+    let t = Tmp::new("kir_closure_dump", &format!("{}{}", KIR_CLOSURE_FNS, main_wrap("", "    core.check.eq(t.cap_ref(4u64), 46u64)\n")));
+    let o = run(&["kir", "t.cap_ref"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let out = text(&o.stdout);
+    assert!(out.contains("fn t.cap_ref#c") && out.contains("fn t.apply key=t.apply<t.cap_ref#c"), "{}", out);
+}
+
+#[test]
+fn kir_closure_reports_unsupported_captures_with_a_reason() {
+    // 解放の要る値の取り込み、move で取り込んだ値の変更、反復子の未対応の元は理由付きで拒否する。
+    let cases: &[(&str, &str, &str)] = &[
+        ("t.cap_vec", "    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let f = fn(x: usize) -> usize capture [&v] {\n        x\n    }\n    f(1usize)\n", "取り込みは段階 1 の対象外"),
+        ("t.cap_mutate", "    let mut n = 1usize\n    let f = fn(x: usize) -> usize capture [move n] {\n        n = n.wrapping_add(x)\n        n\n    }\n    f(1usize)\n", "を本体が変更する形"),
+        ("t.take", "    core.iter.count(core.iter.take(core.iter.range(0usize, 5usize), 2usize))\n", "take"),
+    ];
+    for (i, (f, body, why)) in cases.iter().enumerate() {
+        let src = format!(
+            "fn {}() -> usize uses [alloc] panics may\n{}end {}\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n",
+            f, body, f
+        );
+        let t = Tmp::new(&format!("kir_closure_reason_{}", i), &src);
+        let o = run(&["kir", f], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}: {}", f, text(&o.stderr));
+        assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
+    }
 }

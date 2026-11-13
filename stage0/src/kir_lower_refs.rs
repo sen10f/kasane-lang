@@ -39,6 +39,11 @@ impl RefCx {
         self.addr = names;
     }
 
+    /// `&x` / `&mut x` (または `capture [&x]`) と書かれた名前か。
+    pub(super) fn is_addr_name(&self, n: &str) -> bool {
+        self.addr.contains(n)
+    }
+
     /// 値番号 `v` がスタックスロットなら true。
     pub(super) fn is_mem(&self, v: VId) -> bool {
         self.mem.contains(&v)
@@ -53,6 +58,18 @@ fn addr_names(v: &V, out: &mut BTreeSet<String>) {
                 // `&x` も `&x.f.g` も x のアドレスが要る (フィールドのアドレスはスロットの先頭から数える)。
                 if let Some(name) = path_base(&fs[1]) {
                     out.insert(name);
+                }
+            }
+            // `capture [&x]` / `[&mut x]` は x のアドレスを取る。
+            if *n == "Closure" && fs.len() == 4 {
+                if let V::L(caps) = &fs[2] {
+                    for c in caps {
+                        if let V::L(kv) = c {
+                            if kv.len() == 2 && matches!(st(&kv[0]).as_str(), "&" | "&mut") {
+                                out.insert(st(&kv[1]));
+                            }
+                        }
+                    }
                 }
             }
             for f in fs {
@@ -238,10 +255,13 @@ impl<'a> Lw<'a> {
     pub(super) fn deref(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
-        let t = self.ty_of(e)?;
         let Some(r) = self.expr(&f[1])? else { return Ok(None) };
+        // 結果の型は、指す先の型で決まる (型表は `capture [&x]` で取り込んだ名前の `*x` を未確定にするため、型表は見ない)。
         match self.vty(r) {
-            Ty::Ref(_, p) if p.ty() == t => Ok(Some(self.emit(t, Op::Load(r)))),
+            Ty::Ref(_, p) => {
+                let t = p.ty();
+                Ok(Some(self.emit(t, Op::Load(r))))
+            }
             _ => self.err(line, "* の被演算子が参照でない"),
         }
     }
