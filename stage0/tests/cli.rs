@@ -9692,8 +9692,8 @@ fn kir_lower_prints_a_module_that_reads_back() {
 
 #[test]
 fn kir_lower_reports_unsupported_constructs_with_a_reason() {
-    // 段階 1 の対象外 (`&str` の引数) は、理由を付けて拒否する。対象の関数は出さない。
-    let src = "fn t.len_of(_s: &str) -> usize uses [] panics never
+    // 段階 1 の対象外 (標準の型 `std.io.Error` への参照の引数) は、理由を付けて拒否する。対象の関数は出さない。
+    let src = "fn t.len_of(_s: &std.io.Error) -> usize uses [] panics never
     5usize
 end t.len_of
 
@@ -11927,7 +11927,7 @@ fn kir_agg_refs_values_match_tree_walker() {
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).lines().last().unwrap_or("").trim(), *want, "kir value of {}", call);
     }
@@ -11946,7 +11946,7 @@ fn kir_agg_refs_bounds_panic_like_tree_walker() {
         let o = run(&["run"], &t.0);
         assert_eq!(o.status.code(), Some(101), "tree-walker {}\n{}", f, text(&o.stderr));
         assert!(text(&o.stderr).contains(msg), "{}: {}", f, text(&o.stderr));
-        let k = run(&["kir", f, "--run"], &t.0);
+        let k = kir_run(&["kir", f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(101), "kir {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stderr).trim(), *msg, "kir {}", f);
     }
