@@ -279,6 +279,21 @@ impl AggTab {
         self.push(NAME.to_string(), 1, 1, AggKind::Struct(fields))
     }
 
+    /// `alloc.vec.InsertError` 列挙型 (OutOfBounds / Alloc)。`insert` の `Err(InsertError::OutOfBounds)` を作るためだけに用いる。
+    pub fn insert_err(&mut self) -> Ty {
+        const NAME: &str = "alloc.vec.InsertError";
+        if let Some(&i) = self.by_name.get(NAME) {
+            return Ty::Agg(i);
+        }
+        let alloc_err = self.alloc_err();
+        let variants = vec![
+            ("OutOfBounds".to_string(), vec![]),
+            ("Alloc".to_string(), vec![alloc_err]),
+        ];
+        let (size, align, variants) = layout_enum(&self.defs, &variants);
+        self.push(NAME.to_string(), size, align, AggKind::Enum(variants))
+    }
+
     /// 型 `t` の値が (入れ子を含めて) ヒープの所有物 (Vec / String のヘッダ) を持つか。持つ値は移動と解放の対象になる。
     pub fn owns_heap(&self, t: Ty) -> bool {
         match t {
