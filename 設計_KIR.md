@@ -1090,6 +1090,11 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 拒否のまま: `match v.get(i)` の腕で構造体のパターンを分解する形 (`Some(t.Item { name: _, v: x })`)、`get` の値を `let` に持つ形、`for x in v` (値)、`&mut v` / `iter_mut()` の要素、`insert` / `remove`。
 - 試験: `kir_borrow_owned_elems_match_tree_walker` (17 ケース。`--run` / `--native` / ASan)、`kir_borrow_owned_elems_out_of_range_index_panics_like_tree_walker`、`kir_get_on_vec_of_owning_elements_is_refused_with_a_reason` (構造体パターンの形)。`llvm_builds_of_real_packages_match_run` に `examples/more_coll` と `examples/more_str` を追加。
 
+### 17.15 `==` / `!=` の経路の一本化 (kir/eq-unify、2026-11-13)
+- `bin()` の比較は `eq_by_call` 1 本にした (`agg_eq_key` の経路は削除)。`Option` / `Result` / 構造体・列挙型は常にここを通る。
+- 所有物 (String / Vec) を持つ集成体は、値を `$eq` に渡すと所有が移るので `eq_by_call` の先頭で理由付きに拒否する。実際には、所有物を持つ型は `derive [PartialEq]` できず (E2036)、手書きの `impl PartialEq` は `need_eq` が「利用者の eq を持つ」で拒否するので、旧経路でも下ろされなかった (確認: 手書き eq の String 持ち構造体の `==` は `ksn kir` が未対応を返す)。拒否を一箇所に集めただけで、動作は変わらない。借用で渡す形は、手書き eq を下ろせるようになった時の課題。
+- 試験: `kir_eq_on_aggregates_reused_after_and_in_loop_match_tree_walker` (比較の後の使用・ループ、`--run` / `--native` / ASan)、`kir_eq_on_aggregates_owning_heap_is_refused_with_a_reason`。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
