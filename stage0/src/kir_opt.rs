@@ -119,6 +119,7 @@ fn side_effecting(op: &Op) -> bool {
         | Op::PtrAdd { .. }
         | Op::StaticBytes(_)
         | Op::AsShared(_)
+        | Op::ParseInt { .. } => false,
         | Op::Reborrow(_)
         | Op::FieldAddr { .. } => false,
     }

@@ -2227,7 +2227,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err(format!("fmtfloat の被演算子は f{} のはず", bits));
                         }
                     }
-                    Op::ParseInt { ty, s, radix } => {
+                    Op::ParseInt { ty: _, s, radix } => {
                         if !i.ty.is_int() {
                             return Err(format!("parseint の結果の型 {} は整数ではない", i.ty.name()));
                         }

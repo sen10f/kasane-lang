@@ -180,6 +180,8 @@ struct Ctx {
     eprint: bool,
     /// `FmtFloat` 命令を使う (浮動小数の書式化補助関数を出す)。
     fmt_float: bool,
+    /// `ParseInt` 命令を使う (`kir_rt.c` の `ksn_parse_int` を呼ぶ)。
+    parse_int: bool,
 }
 
 impl Ctx {
@@ -225,7 +227,8 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         return Err(format!("関数 {} がない", entry));
     };
     let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float };
+    let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, parse_int: has_parse_int };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -269,6 +272,9 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         cx.decls.insert("declare i64 @strlen(ptr)".to_string());
         cx.decls.insert("declare double @strtod(ptr, ptr)".to_string());
         cx.decls.insert("declare float @strtof(ptr, ptr)".to_string());
+    }
+    if cx.parse_int {
+        cx.decls.insert("declare i32 @ksn_parse_int(ptr, i64, i32, i32, i32, ptr, ptr)".to_string());
     }
     let mut out = String::from("; ksn kir llvm 1\n\n");
     for d in &cx.decls {
@@ -409,7 +415,7 @@ pub const RUNTIME_C: &str = include_str!("kir_rt.c");
 
 /// IR が C の実行時補助を要するか。
 pub fn needs_runtime(ll: &str) -> bool {
-    ll.contains("@ksn_fmt_")
+    ll.contains("@ksn_fmt_") || ll.contains("@ksn_parse_int")
 }
 
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
@@ -1275,6 +1281,30 @@ impl<'a> Fe<'a> {
         }
         match &i.op {
             Op::Const(_) => {}
+            Op::ParseInt { ty, s, radix } => {
+                self.cx.parse_int = true;
+                self.cx.decl("declare i32 @ksn_parse_int(ptr, i64, i32, i32, i32, ptr, ptr)".to_string());
+                let av = self.r(*s);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let n = self.extract(&av, 128, 8, 64);
+                let rv = self.r(*radix);
+                let bits = ty.bits();
+                let iss = if ty.signed() { 1 } else { 0 };
+                let lo_ptr = self.t("alloca i64".to_string());
+                let hi_ptr = self.t("alloca i64".to_string());
+                let ret = self.t(format!(
+                    "call i32 @ksn_parse_int(ptr {}, i64 {}, i32 {}, i32 {}, i32 {}, ptr {}, ptr {})",
+                    p, n, rv, bits, iss, lo_ptr, hi_ptr
+                ));
+                let lo = self.t(format!("load i64, i64* {}", lo_ptr));
+                let is_ok = self.t(format!("icmp eq i32 {}, 0", ret));
+                let tag = self.t(format!("xor i1 {}, true", is_ok));
+                let kind = self.t(format!("sub i32 {}, 1", ret));
+                let kind_z = self.t(format!("zext i32 {} to i64", kind));
+                let pay = self.t(format!("select i1 {}, i64 {}, i64 {}", is_ok, lo, kind_z));
+                self.pack(&d, 64, &tag, &pay);
+            }
             Op::Arith { op, mode, a, b } => self.arith(i, *op, *mode, *a, *b),
             Op::FArith { op, a, b } => self.farith(i, *op, *a, *b),
             Op::Cmp { cc, ty, a, b } => {
@@ -1503,6 +1533,30 @@ impl<'a> Fe<'a> {
                 let ok = self.t(format!("icmp eq i64 {}, 0", r));
                 let tag = self.t(format!("xor i1 {}, true", ok));
                 self.pack(&d, 64, &tag, &r);
+            }
+            Op::ParseInt { ty, s, radix } => {
+                self.cx.parse_int = true;
+                self.cx.decl("declare i32 @ksn_parse_int(ptr, i64, i32, i32, i32, ptr, ptr)".to_string());
+                let av = self.r(*s);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let n = self.extract(&av, 128, 8, 64);
+                let rv = self.r(*radix);
+                let bits = ty.bits();
+                let iss = if ty.signed() { 1 } else { 0 };
+                let lo_ptr = self.t("alloca i64".to_string());
+                let hi_ptr = self.t("alloca i64".to_string());
+                let ret = self.t(format!(
+                    "call i32 @ksn_parse_int(ptr {}, i64 {}, i32 {}, i32 {}, i32 {}, ptr {}, ptr {})",
+                    p, n, rv, bits, iss, lo_ptr, hi_ptr
+                ));
+                let lo = self.t(format!("load i64, i64* {}", lo_ptr));
+                let is_ok = self.t(format!("icmp eq i32 {}, 0", ret));
+                let tag = self.t(format!("xor i1 {}, true", is_ok));
+                let kind = self.t(format!("sub i32 {}, 1", ret));
+                let kind_z = self.t(format!("zext i32 {} to i64", kind));
+                let pay = self.t(format!("select i1 {}, i64 {}, i64 {}", is_ok, lo, kind_z));
+                self.pack(&d, 64, &tag, &pay);
             }
             Op::FmtFloat { bits, a } => {
                 self.cx.fmt_float = true;
