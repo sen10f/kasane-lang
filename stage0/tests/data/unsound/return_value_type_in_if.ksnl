@@ -1,0 +1,11 @@
+// expect: E2020
+fn t.f(c: bool) -> u8 uses [] panics never
+    if c {
+        return 1u16
+    }
+    2u8
+end t.f
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.f(true))
+end t.main
