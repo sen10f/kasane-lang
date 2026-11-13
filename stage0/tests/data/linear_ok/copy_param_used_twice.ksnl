@@ -1,0 +1,7 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.pair[T: core.ops.Copy](x: T) -> (T, T) uses [] panics never
+    (x, x)
+end t.pair

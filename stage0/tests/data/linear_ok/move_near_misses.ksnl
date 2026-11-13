@@ -1,0 +1,54 @@
+type t.S
+    name: alloc.string.String
+    n: u32
+end t.S
+
+fn t.arms(v: &mut alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> () uses [] panics never
+    match v.pop() {
+        Some(s) => {
+            t.show(&s)
+            t.show(&s)
+        }
+        None => core.mem.drop(0u8)
+    }
+end t.arms
+
+fn t.id[T: core.ops.Copy](x: T) -> T uses [] panics never
+    x
+end t.id
+
+fn t.look(s: &t.S) -> u32 uses [] panics never
+    s.n
+end t.look
+
+fn t.loop_copy[T: core.ops.Copy](x: T) -> () uses [] panics never
+    let mut i = 0u32
+    while i < 3u32 {
+        core.mem.drop(t.id(x))
+        i = i.wrapping_add(1u32)
+    }
+end t.loop_copy
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.once() -> () uses [] panics never
+    let s: alloc.string.String = alloc.string.String.new(std.alloc.SYSTEM)
+    let f = fn() -> () capture [move s] {
+        core.mem.drop(s)
+    }
+    f()
+end t.once
+
+fn t.refs(s: &mut t.S) -> () uses [] panics never
+    t.show(&s.name)
+    t.show(&s.name)
+    core.mem.drop(t.look(s))
+    core.mem.drop(s.n)
+    core.mem.drop(s.n)
+end t.refs
+
+fn t.show(s: &alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.show

@@ -1,0 +1,16 @@
+// expect: E3002
+fn t.bad() -> () uses [] panics never
+    let s: alloc.string.String = alloc.string.String.new(std.alloc.SYSTEM)
+    while t.eat(s) {
+        core.mem.drop(0u8)
+    }
+end t.bad
+
+fn t.eat(s: alloc.string.String) -> bool uses [] panics never
+    core.mem.drop(s)
+    false
+end t.eat
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -521,9 +521,19 @@ impl<'a> TypeCk<'a> {
             let t = self.recv_log[k].recv.clone();
             self.recv_log[k].recv = self.deep(&t);
         }
+        // 同じ行の同じ名前の束縛 (1 行に並べた腕など) が違う型なら、決められない (Unknown = 黙る)。
+        let mut seen: HashMap<(usize, String), Ty> = HashMap::new();
         for (line, name, t) in std::mem::take(&mut self.let_pending) {
             let t = self.deep(&t);
-            self.let_tys.insert((di, line, name), t);
+            match seen.get(&(line, name.clone())) {
+                Some(old) if *old != t => {
+                    self.let_tys.insert((di, line, name), Ty::Unknown);
+                }
+                _ => {
+                    seen.insert((line, name.clone()), t.clone());
+                    self.let_tys.insert((di, line, name), t);
+                }
+            }
         }
         self.flush_expr_types();
         self.cov_flush();
@@ -2448,6 +2458,7 @@ impl<'a> TypeCk<'a> {
                 for arm in items(&f[1]) {
                     self.scopes.push(HashMap::new());
                     self.bind_pat_from(&items(arm)[0], &s, src, nline(&items(arm)[0]));
+                    self.note_pat_binds(&items(arm)[0], nline(&items(arm)[0]));
                     let t = self.infer(&items(arm)[1]);
                     self.scopes.pop();
                     if t == Ty::Never {
@@ -2469,6 +2480,7 @@ impl<'a> TypeCk<'a> {
                 self.scopes.push(HashMap::new());
                 let elem = self.iter_elem(&it);
                 self.bind_pat_from(&f[0], &elem, src, nline(e));
+                self.note_pat_binds(&f[0], nline(e));
                 self.loop_breaks.push(false);
                 self.infer(&f[2]);
                 self.loop_breaks.pop();
@@ -2651,6 +2663,21 @@ impl<'a> TypeCk<'a> {
                 Ty::Unit
             }
             _ => self.infer(&f[0]),
+        }
+    }
+
+    /// `match` の腕・`for` のパターンの束縛の型を `let_tys` に記録する (move の追跡 E3002 が使う)。
+    /// 参照の段数が決まらない束縛 (`loose`) は記録しない (黙る)。
+    fn note_pat_binds(&mut self, pat: &V, line: usize) {
+        let mut names = vec![];
+        pat_binds(pat, &mut names);
+        for n in names {
+            if self.loose.contains(&n) {
+                continue;
+            }
+            if let Some(t) = self.lookup(&n) {
+                self.let_pending.push((line, n, t));
+            }
         }
     }
 
