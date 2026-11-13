@@ -1271,22 +1271,44 @@ impl<'a> TypeCk<'a> {
 
     /// `want` (受け側の宣言) の効果に `got` (渡し側の宣言) の効果が含まれていなければ E4001 / E4002 を報告する。
     /// 向きは呼び出し側が決める (let の注釈・引数・戻り値・構造体の欄)。宣言 × 実際と宣言 × 宣言の両方を見る。
-    /// 効果変数・panic 変数の側は黙る。
+    /// 受け側に効果変数・panic 変数があると何が求められているか分からないので黙る (呼ぶ側で実体化を検査するため)。
+    /// 渡し側に効果変数・panic 変数があり、受け側が具体的なら、その変数がその場で同じ変数に
+    /// 実体化されるとは限らないので fail-closed で報告する。
     fn check_fn_eff(&mut self, want: &EffInfo, got: &EffInfo, line: usize) {
-        let open = want.uses.iter().any(|e| e.chars().next().map_or(false, |c| c.is_uppercase()));
+        if want.uses.iter().any(|e| e.chars().next().map_or(false, |c| c.is_uppercase()))
+            || want.may == None
+        {
+            return;
+        }
         let mut out: Vec<(&str, String)> = vec![];
-        if !open {
-            for e in got.uses.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())) {
-                if !crate::check::covers(&want.uses, e) {
+        for e in &got.uses {
+            match e.chars().next() {
+                Some(c) if c.is_lowercase() => {
+                    if !crate::check::covers(&want.uses, e) {
+                        out.push((
+                            "E4001",
+                            format!("{} uses effect `{}` but the function type declares `uses [{}]`", got.name, e, want.uses.join(", ")),
+                        ));
+                    }
+                }
+                Some(c) if c.is_uppercase() => {
+                    // 渡し側に効果変数があり、受け側は具体的: どの効果に束縛されるか分からないので fail-closed。
                     out.push((
                         "E4001",
-                        format!("{} uses effect `{}` but the function type declares `uses [{}]`", got.name, e, want.uses.join(", ")),
+                        format!(
+                            "{} uses effect variable `{}` but the function type declares `uses [{}]`",
+                            if got.name.is_empty() { "the passed function type" } else { &got.name },
+                            e,
+                            want.uses.join(", ")
+                        ),
                     ));
                 }
+                _ => {}
             }
         }
-        if want.may == Some(false) && got.may == Some(true) {
-            out.push(("E4002", format!("{} may panic but the function type declares `panics never`", got.name)));
+        if want.may == Some(false) && got.may != Some(false) {
+            let g = if got.name.is_empty() { "the passed function type" } else { &got.name };
+            out.push(("E4002", format!("{} may panic but the function type declares `panics never`", g)));
         }
         for (c, m) in out {
             if self.eff_seen.insert((c.to_string(), m.clone(), line)) {
@@ -3461,6 +3483,10 @@ impl<'a> TypeCk<'a> {
             // `extern` の呼び出しは従来どおりここで黙る (E5004/E5005 が境界で見る)。
             if !is_extern {
                 self.check_fn_conv_dir(&pt, a);
+                // `F: Fn<.., E, P>` 型の値を、`Fn<.., [], never>` のように具体的な効果を持つ
+                // パラメータに渡す。受け側の境界が具体的で渡し側に効果変数・panic 変数があり、
+                // 実体化が分からないなら fail-closed で E4001 / E4002 にする。
+                self.check_fn_param_bound_effects(d, &raw, &self.resolve(a), line);
             }
             if let Err(e) = ur {
                 // 型パラメータを含まない引数の型は従来の検査 (E2020) が見る。ここでは重複を避ける。
@@ -3605,6 +3631,73 @@ impl<'a> TypeCk<'a> {
             }
         }
         out
+    }
+
+    /// `F: core.ops.Fn<Args, R, E, P>` の境界を持つ型パラメータ `name` (定義 `d` の generics に属する)
+    /// の効果実引数を `(uses, panics)` で返す。効果変数・panic 変数はそのまま (大文字の名前 /
+    /// `None`) で返す。`Fn` 境界がなければ None。
+    fn fn_bound_effects(&self, d: &Def, name: &str) -> Option<(Vec<String>, Option<bool>)> {
+        for b in self.fn_bound(d, name).iter() {
+            let V::L(bx) = b else { continue };
+            if !st(&bx[0]).starts_with("core.ops.Fn") {
+                continue;
+            }
+            let targs = items(tel(b, 1));
+            let uses = match targs.get(2) {
+                Some(v) if tag(v) == "effects" => items(tel(v, 1)).iter().map(|x| st(x)).collect(),
+                Some(v) if tag(v) == "named" => {
+                    let nm = st(tel(v, 1));
+                    if d.generics.iter().any(|g| g.0 == "uses" && g.1 == nm) {
+                        vec![nm]
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            };
+            let may = match targs.get(3) {
+                Some(v) if tag(v) == "panic" => match st(tel(v, 1)).as_str() {
+                    "never" => Some(false),
+                    "may" => Some(true),
+                    _ => None,
+                },
+                Some(v) if tag(v) == "named" => {
+                    let nm = st(tel(v, 1));
+                    if d.generics.iter().any(|g| g.0 == "panics" && g.1 == nm) {
+                        None
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            };
+            return Some((uses, may));
+        }
+        None
+    }
+
+    /// 型パラメータの `Fn` 境界を受け取るパラメータに型パラメータの値を渡す場所で効果を検査する。
+    /// 受け側の境界が具体的で渡し側に効果変数・panic 変数があり、実体化が分からないなら
+    /// fail-closed で E4001 / E4002 を報告する。
+    fn check_fn_param_bound_effects(&mut self, callee: &Def, raw: &Ty, got: &Ty, line: usize) {
+        let Ty::Param(wname) = raw else { return };
+        let Some((wu, wp)) = self.fn_bound_effects(callee, wname) else { return };
+        let Ty::Param(gname) = got else { return };
+        let d = self.def();
+        let Some((gu, gp)) = self.fn_bound_effects(d, gname) else { return };
+        let want = EffInfo {
+            decl: true,
+            uses: wu,
+            may: wp,
+            name: format!("parameter `{}` of `{}`", wname, callee.name),
+        };
+        let got = EffInfo {
+            decl: false,
+            uses: gu,
+            may: gp,
+            name: format!("type parameter `{}` of `{}`", gname, d.name),
+        };
+        self.check_fn_eff(&want, &got, line);
     }
 
     /// `Fn` 境界 (`F: core.ops.Fn<Args, R, E, P>`) のパラメータに渡されたクロージャの本体の効果で、
