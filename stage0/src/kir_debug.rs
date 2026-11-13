@@ -463,6 +463,9 @@ impl<'a> Gen<'a> {
     /// 元の型 `src` (KIR の型 `ty`) の表示関数を (まだなければ) 作り、その鍵を返す。
     pub fn need(&mut self, src: &Src, ty: Ty, file: &str) -> Result<String, String> {
         let fat = self.fat()?;
+        // `&T` のソース型で、KIR の型が T のスカラーなら、T として扱う
+        // (参照先を読んだ値。`Option<&u8>` のペイロードなど)。
+        let (src, ty) = Self::scalar_ref_src(src, ty);
         match (src, ty) {
             (Src::Prim(s), Ty::Bool) if s == "bool" => Ok(self.scalar("bool", || bool_fn(fat))),
             (Src::Prim(s), Ty::U32) if s == "char" => Ok(self.scalar("char", || char_fn(fat))),
@@ -479,6 +482,9 @@ impl<'a> Gen<'a> {
     /// 木走査の `v_eq` と同じ比べ方。浮動小数は表示できないので未対応 (`core.check.eq` の失敗の文言に値を出せない)。
     pub fn need_eq(&mut self, src: &Src, ty: Ty, file: &str) -> Result<String, String> {
         let fat = self.fat()?;
+        // `&T` のソース型で、KIR の型が T のスカラーなら、T として扱う
+        // (参照先を読んだ値。`Option<&u8>` のペイロードなど)。
+        let (src, ty) = Self::scalar_ref_src(src, ty);
         match (src, ty) {
             (Src::Prim(s), Ty::Bool) if s == "bool" => Ok(self.scalar_eq("bool", ty, fat)),
             (Src::Prim(s), Ty::U32) if s == "char" => Ok(self.scalar_eq("char", ty, fat)),
@@ -491,6 +497,15 @@ impl<'a> Gen<'a> {
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, true),
             (Src::Prim(_), t) if t.is_float() => Err(format!("型 {} の比較は未対応 (浮動小数は失敗の文言に値を出せない)", t.name())),
             (other, t) => Err(format!("型 {} ({}) の比較は未対応", show(other), t.name())),
+        }
+    }
+
+    /// `&T` のソース型で、KIR の型が T のスカラーなら、T として扱う。
+    /// 参照先を読んだ値 (`Option<&u8>` のペイロードや、`core.check.eq(&a, &b)` の両辺) に対して使う。
+    fn scalar_ref_src(src: &Src, ty: Ty) -> (&Src, Ty) {
+        match src {
+            Src::Ref(false, inner) if super::conv(inner) == Some(ty) => (inner, ty),
+            _ => (src, ty),
         }
     }
 
