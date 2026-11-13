@@ -1543,8 +1543,10 @@ pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usi
     let (chb, chp) = lw.new_block(&[Ty::U64, Ty::Usize]);
     let (ccb, _) = lw.new_block(&[]);
     let (ce, _) = lw.new_block(&[]);
-    let initial_nd = lw.emit(Ty::Usize, Op::Const(0));
-    lw.goto(chb, vec![value, initial_nd]);
+    // 桁数 = 1 + (value / 10 の桁数)。value == 0 でも 1 桁 ("0") になる。
+    let initial_nd = lw.emit(Ty::Usize, Op::Const(1));
+    let first_q = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: value, b: ten });
+    lw.goto(chb, vec![first_q, initial_nd]);
     lw.cur = Some(chb);
     {
         let tmp = chp[0];
@@ -1563,12 +1565,22 @@ pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usi
     let ndigits = chp[1];
     let final_len = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: ndigits });
     // ---- 書き戻しパス: pos = final_len - 1; while value > 0 { buffer[pos] = digit; pos--; value /= 10 }
-    // value == 0 なら桁は 0 個（この用途では port >= 1 なので発生しないが、len は変えない）。
     let (whb, whp) = lw.new_block(&[Ty::U64, Ty::Usize]);
     let (wb, _) = lw.new_block(&[]);
     let (wd, _) = lw.new_block(&[]);
     let start_pos = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: final_len, b: one });
-    lw.goto(whb, vec![value, start_pos]);
+    // 最下位の桁は必ず書く (value == 0 なら "0")。残りの桁は value / 10 から書く。
+    {
+        let digit = lw.emit(Ty::U64, Op::Arith { op: Aop::Rem, mode: Mode::Trap, a: value, b: ten });
+        let di = lw.emit(Ty::Usize, Op::Conv { src: Ty::U64, a: digit });
+        let cptr = lw.emit(Ty::Ptr, Op::PtrAdd { p: digits, off: di });
+        let ch = lw.emit(Ty::U8, Op::MemLoad { p: cptr, off: 0 });
+        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: start_pos });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: addr, off: 0, v: ch });
+    }
+    let rest = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: value, b: ten });
+    let next_pos = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: start_pos, b: one });
+    lw.goto(whb, vec![rest, next_pos]);
     lw.cur = Some(whb);
     {
         let val = whp[0];
