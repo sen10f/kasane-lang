@@ -42,6 +42,8 @@ mod array_lower;
 // コレクション・文字列・クロージャの下ろし (子モジュール。`Lw` の非公開の項目を使う)。
 #[path = "kir_lower_iter.rs"]
 mod iter_lower;
+#[path = "kir_lower_map.rs"]
+mod map_lower;
 #[path = "kir_lower_coll.rs"]
 mod coll;
 use coll::CollCx;

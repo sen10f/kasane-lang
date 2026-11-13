@@ -969,6 +969,40 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 - `KSN_DUMP_KIR=1` の `kir_lower_dump_on_check_is_hidden_behind_the_env_var` は、未対応の理由の例を浮動小数の比較に変えた (前は `core.check.eq` が下ろせたので、`t.main` が未対応にならなかった)。
 - 15 パッケージ (examples 7 + perf 8) の `ksn build --backend llvm`: 作れたのは `examples/native`・`perf/fib`・`perf/noop`・`perf/structs` の 4 本で、`ksn run` と stdout・stderr・終了コードが一致した。残りの理由は実装状況.md の作業ログを見る。
 
+## 16. HashMap (kir/hashmap、2026-11-13)
+
+`alloc.collections.HashMap` を KIR に下ろす。意味は木走査と同じ (挿入順を保つ。削除後も相対順を保つ。上書きは位置を変えず、削除後の再挿入は末尾)。ハッシュ関数は木走査と別でよいが決定的 (種なし。反復順は挿入順で決まるので外から見えない)。
+
+### 16.1 表現
+
+- 局所変数は Vec / String と同じ 24 バイトのヘッダ `{buf: ptr, len: usize, cap: usize}` (フレーム)。`len` は生きている組の数。型表では `vec` の値 (集成体) なので、所有・移動・解放・`&` / `&mut` の借用 (ヘッダのアドレス) は 13 章の Vec の規則をそのまま使う (`Kind::Map`)。解放は `free(buf)` の 1 回。
+- `buf` は 1 本のヒープ領域 (空のとき null):
+
+```text
+buf+0                 used  (使った組の数。削除した組を含む。挿入順の組の列の長さ)
+buf+8                 組 0 .. 組 cap-1   (1 組 = key + value(8) + live(8)、key は 8 か 16 バイト)
+buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。0 = 空、TOMB = 墓標、n = 組 n-1)
+```
+
+- キーは 8 バイトの語 (整数・bool・char。上位は 0 埋め) か `&str` (`ptr`, `len` の 16 バイト、借用。バイトの一致で等しい)。値は 8 バイトの語 (整数・bool・char)。語は書くとき上位を 0 にし、読むときは型の幅で読む (リトルエンディアン)。
+- 削除: 組の `live` を 0、索引を TOMB、`len` を 1 減らす (組は動かさないので順序が保たれる)。反復は組の列を前から見て `live` のものを出す。
+- 作り直し: 挿入のとき `used == cap` (または空) なら、新しい領域を確保して生きている組を前から詰めて写し、索引を作り直す。生きている組が `cap` の半分以上なら容量を倍に (初期 8)、そうでなければ同じ容量 (墓標と削除済みの組を片付ける)。索引は常に半分以上が空なので、探査は必ず止まる。
+- ハッシュ: 語 (または FNV-1a のバイト列) に乗算と xor-shift を掛ける。決定的。
+
+### 16.2 下ろし (`kir_lower_map.rs`)
+
+- 補助の関数を、キーの種類ごと (`w` = 語、`s` = `&str`) に 4 本、`coll.extra` へ足す: `ksn.map.<w|s>.hash` / `find` (添字 + 1、無ければ 0) / `add` (キーが無いことが前提。作り直しと末尾への追加。`uses [alloc]`) / `remove` (`find` と同じ戻り値で、見つけたら削除)。関数の中身は `kir_lower_map.rs` が KIR の命令で組み立てる (新しい命令は無い)。
+- `HashMap.new(std.alloc.SYSTEM)` は Vec と同じ空のヘッダ (null, 0, 0)。`insert(k, v)` は `find` で分けて、あれば値を書き換えて `Ok(Some(old))`、無ければ `add` して値を書き `Ok(None)` (`Result<Option<V>, AllocError>`。`Err` は作らない)。`get(&k)` は `Option<V>` (10.10 の規則。`Option<&V>` を値で持つ)、`contains_key`、`remove` (`Option<V>`)、`len`、`is_empty`。キーの引数は `&k` の `k` を直接評価する (参照を作らない)。
+- `for (k, v) in m.iter()`: 添字を 0 から `used` まで増やすループ (`counted` と同じ形)。`live` でない組は次へ飛ぶ。`k` / `v` は値で束縛する (`&K` / `&V` は値で持つ)。`break` / `continue` / `return` と代入が使える。
+- 参照を外す `*k` / `*v`: 値で持つ `&スカラー` に `*` が付いたら値そのもの (`kir_lower_refs.rs` の `deref` の 1 腕)。
+- 型 (キー・値) は型表の `HashMap<K, V, _>` から決め、決まらないときは最初の `insert` の引数の型で決める。
+- 未対応 (理由付き): `get_mut` (`Option<&mut V>` を持てない。参照の段階)、`iter` を `for` 以外で使う形、値が浮動小数・集成体・`String` / `Vec`、キーが `String` や集成体、`HashMap` を構造体のフィールドに持つ形。
+
+### 16.3 検証
+
+- `stage0/tests/cli.rs` の `kir_map_values_match_tree_walker` (20 ケース: 挿入・上書き・削除・再挿入・成長 (1 万件)・反復順・存在しないキー・墓標と作り直し・符号付きと `&str` のキー・`&mut` の借用と値の戻り)。木走査の `core.check.eq` で期待値を確かめ、`--run` と `--native` の両方で同じ値。参照実行器は漏れ・二重解放・範囲外を内部エラーにするので、解放の規則も確かめている。`kir_map_reports_unsupported_methods_with_a_reason` は `get_mut` の理由。
+- `perf/hashmap`: `ksn build --backend llvm` が作れ (`target/debug/hashmap.native`)、`ksn run` と stdout・stderr・終了コードが一致する。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。

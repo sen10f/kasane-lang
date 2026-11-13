@@ -29,6 +29,7 @@ use crate::types::{from_v, Ty as Src};
 
 const VEC: &str = "alloc.vec.Vec";
 const STRING: &str = "alloc.string.String";
+const HASHMAP: &str = "alloc.collections.HashMap";
 /// `Vec<T>` と `String` のヘッダの大きさ (ptr, len, cap)。
 const HDR_VEC: u32 = 24;
 
@@ -43,6 +44,9 @@ pub(crate) enum Kind {
     Str,
     /// `&[T]` / `&mut [T]` (要素型が分かれば `Some`。値は `fat` の {ptr, len})。
     Slice(Option<Ty>),
+    /// `HashMap<K, V>` (設計_KIR.md 16 章)。キーと値の型が分かれば `Some`。キーの `Ty::Ptr` は `&str` のキーの印。
+    /// ヘッダは Vec と同じ 24 バイト (所有と移動と解放は Vec と同じ規則)。
+    Map(Option<(Ty, Ty)>),
     /// 下ろした関数の鍵と、引数・戻り値の型。`caps` は取り込みの値 (この関数の中の値番号。値の取り込みはその値、
     /// 参照の取り込みは参照の値) で、`cap_tys` がその型。呼び出しでは先頭の追加の引数として渡す (設計_KIR.md 13 章)。
     Closure { key: String, args: Vec<Ty>, ret: Ty, caps: Vec<VId>, cap_tys: Vec<Ty> },
@@ -102,11 +106,11 @@ fn strip_ref(t: &Src) -> &Src {
 /// 式の値の段階 1 の型 (Vec / String は `ptr`、`&str` とスライスは `fat`、クロージャは `unit` の値)。対象外なら `None`。
 pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     // 値渡しの Vec / String は集成体 `vec` (所有の移動)、参照は借用なのでヘッダのアドレス。
-    if matches!(t, Src::Named(n, _) if n == VEC || n == STRING) {
+    if matches!(t, Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP) {
         return Some(lw.aggs.borrow_mut().vec_hdr());
     }
     match strip_ref(t) {
-        Src::Named(n, _) if n == VEC || n == STRING => Some(Ty::Ptr),
+        Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).and_then(size_of).is_some() => Some(lw.fat_ty()),
         Src::Closure { .. } => Some(Ty::Unit),
@@ -116,7 +120,7 @@ pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
 
 /// `Vec` / `String` の名前の型か。
 pub(crate) fn is_hdr_named(t: &Src) -> bool {
-    matches!(t, Src::Named(n, _) if n == VEC || n == STRING)
+    matches!(t, Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP)
 }
 
 /// 関数の引数・戻り値の型。通常の型に加えて、Vec / String / `str` / スライスへの参照 (借用) を受ける。
@@ -126,7 +130,7 @@ pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     }
     let Src::Ref(_, inner) = t else { return None };
     match &**inner {
-        Src::Named(n, _) if n == VEC || n == STRING => Some(Ty::Ptr),
+        Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).and_then(size_of).is_some() => Some(lw.fat_ty()),
         _ => None,
@@ -159,7 +163,7 @@ pub(crate) fn bind_param_kind(lw: &mut Lw, name: &str, t: &Src) {
 /// `&v` / `&mut v` (v は Vec / String の局所変数): ヘッダのアドレスそのもの。
 pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
     if let Some(s) = local_slot(lw, operand) {
-        if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) {
+        if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) {
             return Ok(lw.slots[s].0);
         }
     }
@@ -170,10 +174,21 @@ fn kind_of_src(t: &Src) -> Option<Kind> {
     match strip_ref(t) {
         Src::Named(n, args) if n == VEC => Some(Kind::Vec(args.first().and_then(conv))),
         Src::Named(n, _) if n == STRING => Some(Kind::String),
+        Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(args))),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         Src::Slice(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
         _ => None,
     }
+}
+
+/// `HashMap<K, V, _>` の型引数から (キー, 値) の KIR の型。キーは整数・bool・char (`Ty`) か `&str` (`Ty::Ptr` の印)、値は整数・bool・char。
+fn map_kv(args: &[Src]) -> Option<(Ty, Ty)> {
+    let k = match args.first()? {
+        Src::Ref(_, i) if matches!(&**i, Src::Prim(s) if s == "str") => Ty::Ptr,
+        other => conv(other).filter(|t| size_of(*t).is_some())?,
+    };
+    let v = conv(args.get(1)?).filter(|t| size_of(*t).is_some())?;
+    Some((k, v))
 }
 
 /// クロージャの鍵。式 ID は関数 (または単相インスタンス) の中で一意なので、同じ中の別のクロージャと衝突しない。
@@ -183,7 +198,7 @@ fn closure_key(lw: &Lw, id: u32) -> String {
 }
 
 /// 単一の名前の経路なら、その名前のスロット (見えているもの)。
-fn local_slot(lw: &Lw, e: &V) -> Option<usize> {
+pub(crate) fn local_slot(lw: &Lw, e: &V) -> Option<usize> {
     if nname(e) != "Path" {
         return None;
     }
@@ -202,7 +217,7 @@ fn kind_of_expr(lw: &Lw, e: &V) -> Option<Kind> {
     table_ty(lw, e).and_then(|t| kind_of_src(&t))
 }
 
-fn emit_alloca(lw: &mut Lw, size: u32) -> VId {
+pub(crate) fn emit_alloca(lw: &mut Lw, size: u32) -> VId {
     let dst = lw.new_val(Ty::Ptr);
     lw.coll.allocas.push(Inst { dst, ty: Ty::Ptr, op: Op::FrameBytes { size } });
     dst
@@ -292,7 +307,7 @@ pub(crate) fn val_slot_of(lw: &Lw, s: usize) -> bool {
 
 /// 局所変数の読み (値としての使用 = 移動)。所有する Vec / String はヘッダから値を移し、印を持つ変数は印を下ろす。
 pub(crate) fn path_read(lw: &mut Lw, s: usize) -> VId {
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) && !lw.coll.borrowed.contains(&s) {
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) && !lw.coll.borrowed.contains(&s) {
         let h = lw.slots[s].0;
         return move_hdr(lw, h);
     }
@@ -465,7 +480,7 @@ pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
 /// 局所変数への代入 `x = v`。所有物は、古い値を解放してから新しい値を入れる (Vec / String はヘッダを書き直す)。
 /// 印を持つ変数は印を立て直す (移した後の再代入を含む)。
 pub(crate) fn assign_checked(lw: &mut Lw, s: usize, v: VId, line: usize) -> LR<()> {
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) && !lw.coll.borrowed.contains(&s) {
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) && !lw.coll.borrowed.contains(&s) {
         let vt = lw.aggs.borrow_mut().vec_hdr();
         if lw.vty(v) != vt {
             return lw.err(line, "代入の型が変数の型と違う");
@@ -752,6 +767,7 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     match segs.as_slice() {
         ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e)),
         ["alloc", "string", "String", "new"] => Some(new_header(lw, e)),
+        ["alloc", "collections", "HashMap", "new"] => Some(new_header(lw, e)),
         // `core.mem.drop(x)`: 値を移して、その場で解放する。
         ["core", "mem", "drop"] => Some(mem_drop(lw, e)),
         _ => None,
@@ -980,6 +996,7 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     let nargs = items(&f[2]).len();
     let slot = local_slot(lw, &f[0]);
     Some(match place(lw, &f[0]) {
+        Ok(Some(h)) if matches!(kind, Kind::Map(_)) => super::map_lower::method(lw, e, slot, &kind, h, &m, items(&f[2])),
         Ok(Some(h)) if m == "push" && matches!(kind, Kind::Vec(_)) => vec_push(lw, e, line, slot, &kind, h, items(&f[2])),
         Ok(Some(h)) if m == "get" => get_elem(lw, line, &kind, h, items(&f[2])),
         Ok(Some(h)) if m == "sub" => slice_sub(lw, line, &kind, h, items(&f[2])),
@@ -997,6 +1014,9 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
         return lw.err(line, "型引数付きのメソッドは段階 1 の対象外");
     }
     let hdr = lw.slots[s].0;
+    if matches!(kind, Kind::Map(_)) {
+        return super::map_lower::method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
+    }
     if m == "get" {
         return get_elem(lw, line, &kind, hdr, items(&f[1]));
     }
@@ -1374,6 +1394,9 @@ pub(super) fn unhex(s: &str) -> Vec<u8> {
 
 /// `for PAT in IT BODY`。`IT` は `core.iter.range(a, b)` か、要素型の分かる Vec の変数。
 pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
+    if let Some(r) = super::map_lower::try_for(lw, e) {
+        return r;
+    }
     let f = nf(e);
     let line = nline(e);
     let name = match nname(&f[0]) {
