@@ -8,8 +8,9 @@
 //! 両方とも、式として値 `()` を返す (成功の枝は続く)。引数の型が下ろせない・表示できないときは理由付きで止める。
 
 use crate::check::{items, nf, nlineno as nline, nname, strs};
-use crate::kir::{Cc, Op, Term, Ty, VId};
+use crate::kir::{Cc, Op, Pointee, Term, Ty, VId};
 use crate::parser::V;
+use crate::types::Ty as Src;
 
 use super::debug::Gen;
 use super::{LR, Lw};
@@ -46,6 +47,18 @@ impl<'a> Lw<'a> {
         }
         let sa = self.src_ty(&args[0])?;
         let file = self.def.file.clone();
+        // 参照越しのスカラー (&T / &mut T) は参照先を読んでスカラーどうしにする。
+        // `&u8` だけでなく整数・bool・char・浮動小数への参照も同様。
+        let (a, b, sa, ta) = if matches!(ta, Ty::Ref(_, p) if !matches!(p, Pointee::Agg(_))) {
+            if let Src::Ref(false, inner) = &sa {
+                let t = match ta { Ty::Ref(_, p) => p.ty(), _ => unreachable!() };
+                (self.emit(t, Op::Load(a)), self.emit(t, Op::Load(b)), (*inner).as_ref().clone(), t)
+            } else {
+                (a, b, sa, ta)
+            }
+        } else {
+            (a, b, sa, ta)
+        };
         // 浮動小数は $eq / $debug 未対応なので、Cmp (IEEE ==) と FmtFloat で下ろす。
         if ta.is_float() {
             let bits = match ta { Ty::F32 => 32, Ty::F64 => 64, _ => unreachable!() };

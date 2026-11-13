@@ -13007,6 +13007,82 @@ fn kir_check_eq_float_match_tree_walker() {
     }
 }
 
+const REF_EQ_SRC: &str = r#"fn t.eq_u8(a: u8, b: u8) -> () uses [] panics may
+    let x = a
+    let y = b
+    core.check.eq(&x, &y)
+end t.eq_u8
+
+fn t.eq_i32(a: i32, b: i32) -> () uses [] panics may
+    let x = a
+    let y = b
+    core.check.eq(&x, &y)
+end t.eq_i32
+
+fn t.eq_bool(a: bool, b: bool) -> () uses [] panics may
+    let x = a
+    let y = b
+    core.check.eq(&x, &y)
+end t.eq_bool
+
+fn t.eq_char(a: u32, b: u32) -> () uses [] panics may
+    let x = a
+    let y = b
+    core.check.eq(&x, &y)
+end t.eq_char
+"#;
+
+#[test]
+fn kir_check_eq_ref_match_tree_walker() {
+    // `core.check.eq(&a, &b)` など、参照越しのスカラーの比較を、参照先を読んで比べる。
+    // `&u8` 以外の整数・bool・char への参照も同様。成功 (終了コード 0) と失敗 (panic 101) を、
+    // 木走査 (`ksn run`) と参照実行器 (`ksn kir --run`、`--native` も clang があれば) で比べる。
+    let cases: &[(&str, &[&str], &str, Option<&str>)] = &[
+        ("t.eq_u8", &["5", "5"], "t.eq_u8(5u8, 5u8)", None),
+        ("t.eq_u8", &["5", "6"], "t.eq_u8(5u8, 6u8)", Some("assertion failed: left: 5, right: 6")),
+        ("t.eq_i32", &["-3", "-3"], "t.eq_i32(-3i32, -3i32)", None),
+        ("t.eq_i32", &["-3", "3"], "t.eq_i32(-3i32, 3i32)", Some("assertion failed: left: -3, right: 3")),
+        ("t.eq_bool", &["true", "true"], "t.eq_bool(true, true)", None),
+        ("t.eq_bool", &["true", "false"], "t.eq_bool(true, false)", Some("assertion failed: left: true, right: false")),
+        ("t.eq_char", &["97", "97"], "t.eq_char(97u32, 97u32)", None),
+        ("t.eq_char", &["97", "98"], "t.eq_char(97u32, 98u32)", Some("assertion failed: left: 97, right: 98")),
+    ];
+    for (i, &(f, args, call, want)) in cases.iter().enumerate() {
+        let t = Tmp::new(
+            &format!("kir_check_eq_ref_{}", i),
+            &format!("{}{}", REF_EQ_SRC, main_wrap("", &format!("    {}\n", call))),
+        );
+        let tw = run(&["run"], &t.0);
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        match want {
+            Some(msg) => {
+                assert_eq!(tw.status.code(), Some(101), "tree-walker: {}\n{}", call, text(&tw.stderr));
+                assert_eq!(
+                    text(&tw.stderr).trim(),
+                    format!("panic: {}", msg),
+                    "tree-walker: {}",
+                    call
+                );
+                assert_eq!(k.status.code(), Some(101), "kir: {:?}\n{}", kargs, text(&k.stderr));
+                assert_eq!(
+                    text(&k.stderr).trim(),
+                    text(&tw.stderr).trim(),
+                    "kir の文言が木走査と違う: {:?}",
+                    kargs
+                );
+                assert!(text(&k.stdout).is_empty(), "kir: 失敗のときは表示を出さない: {:?}", kargs);
+            }
+            None => {
+                assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&tw.stderr));
+                assert_eq!(k.status.code(), Some(0), "kir: {:?}\n{}", kargs, text(&k.stderr));
+                assert_eq!(text(&k.stderr), "", "kir: 成功のときは stderr を出さない: {:?}", kargs);
+            }
+        }
+    }
+}
+
 #[test]
 fn kir_unwrap_of_an_aggregate_error_keeps_its_reason() {
     // Err の値の表示 (Debug) を KIR で木走査と同じに作れない型 (利用者の構造体) は、理由を付けて未対応にする。
