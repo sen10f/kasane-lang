@@ -175,6 +175,13 @@ impl<'a> Low<'a> {
         (op == "&" || op == "&mut") && self.place_of(&f[1]).is_none()
     }
 
+    /// 式 `e` の評価で一時値 (`$temp` への貸し出し) が作られるか。
+    /// `match` / `for` / `if` / `while` の対象式の中の `$temp` は、その文の終わりまで
+    /// 生きる (仕様 4.2)。
+    fn has_temp(&self, e: &V) -> bool {
+        self.loan_sources(e).iter().any(|s| matches!(s, Src::Place { root, .. } if root == "$temp"))
+    }
+
     // ------------------------------------------------------------ メソッド・関数の署名
     /// 名前 `name` のメソッドの `self` の受け方 (すべての候補が一致するとき)。
     fn self_mode(&self, name: &str) -> SelfMode {
@@ -1247,6 +1254,12 @@ impl<'a> Low<'a> {
                 self.edge(head, exit);
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
+                // `for x in <式に一時値を含むイテレータ>` の一時値は `for` 文の終わりまで生きる。
+                if self.has_temp(&f[1]) {
+                    for b in &binds {
+                        self.temp_extended.insert(b.clone());
+                    }
+                }
                 for b in &binds {
                     self.emit(body, Ev::Def(b.clone()));
                     self.emit(body, Ev::ScopeAdd(b.clone()));
@@ -1278,9 +1291,9 @@ impl<'a> Low<'a> {
                     self.edge(c, an);
                     let mut binds = vec![];
                     pat_binds(&a[0], &mut binds);
-                    // `match &<一時値> { .. }` では、腕の束縛が持つ一時値の寿命が `match`
-                    // 全体の終わりまで延びる。
-                    if self.is_direct_temp_ref(&f[0]) {
+                    // `match <一時値を含む式> { .. }` では、腕の束縛が持つ一時値の寿命が
+                    // `match` 全体の終わりまで延びる (仕様 4.2)。
+                    if self.has_temp(&f[0]) {
                         for b in &binds {
                             self.temp_extended.insert(b.clone());
                         }
