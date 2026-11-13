@@ -18338,6 +18338,45 @@ fn t.brk(k: u32) -> usize uses [alloc] panics may\n    let mut total = 0usize\n 
 }
 
 #[test]
+fn kir_review_from_str_radix_agrees_with_tree_walker() {
+    // `core.num.<int>.from_str_radix` の KIR 下ろし (Op::ParseInt) が、木走査と Ok の値と
+    // Err の kind を一致させる (符号・空文字列・範囲外・桁の誤り・radix 範囲)。
+    let fns = [
+        "fn t.i64(case: u32) -> i64 uses [] panics never\n    let r = match case {\n        0u32 => i64.from_str_radix(\"-9223372036854775808\", 10u32)\n        1u32 => i64.from_str_radix(\"9223372036854775808\", 10u32)\n        _ => i64.from_str_radix(\"0\", 10u32)\n    }\n    match r {\n        Ok(n) => n\n        Err(e) => i64.from_u8(e.kind).wrapping_add(1000)\n    }\nend t.i64",
+        "fn t.i8(case: u32) -> i32 uses [] panics never\n    let r = match case {\n        0u32 => i8.from_str_radix(\"-128\", 10u32)\n        1u32 => i8.from_str_radix(\"128\", 10u32)\n        _ => i8.from_str_radix(\"0\", 10u32)\n    }\n    match r {\n        Ok(n) => i32.from_i8(n)\n        Err(e) => i32.from_u8(e.kind).wrapping_add(1000)\n    }\nend t.i8",
+        "fn t.u64(case: u32) -> u64 uses [] panics never\n    let r = match case {\n        0u32 => u64.from_str_radix(\"18446744073709551615\", 10u32)\n        1u32 => u64.from_str_radix(\"18446744073709551616\", 10u32)\n        _ => u64.from_str_radix(\"0\", 10u32)\n    }\n    match r {\n        Ok(n) => n\n        Err(e) => u64.from_u8(e.kind).wrapping_add(1000u64)\n    }\nend t.u64",
+        "fn t.u8(case: u32) -> u32 uses [] panics never\n    let r = match case {\n        0u32 => u8.from_str_radix(\"\", 10u32)\n        1u32 => u8.from_str_radix(\"0\", 10u32)\n        2u32 => u8.from_str_radix(\"+5\", 10u32)\n        3u32 => u8.from_str_radix(\"-5\", 10u32)\n        4u32 => u8.from_str_radix(\"-\", 10u32)\n        5u32 => u8.from_str_radix(\"ff\", 16u32)\n        6u32 => u8.from_str_radix(\"ff\", 10u32)\n        7u32 => u8.from_str_radix(\"FF\", 16u32)\n        8u32 => u8.from_str_radix(\"z\", 36u32)\n        9u32 => u8.from_str_radix(\"255\", 10u32)\n        10u32 => u8.from_str_radix(\"256\", 10u32)\n        11u32 => u8.from_str_radix(\" 1\", 10u32)\n        12u32 => u8.from_str_radix(\"1_0\", 10u32)\n        _ => u8.from_str_radix(\"\", 10u32)\n    }\n    match r {\n        Ok(n) => u32.from_u8(n)\n        Err(e) => 1000u32.wrapping_add(u32.from_u8(e.kind))\n    }\nend t.u8",
+    ].join("\n\n");
+    kir_review_cases("pi_u8", &fns, "t.u8", &[
+        (&["0"], "t.u8(0u32)", "1000u32", "1000"), // 空文字列 → kind 0
+        (&["1"], "t.u8(1u32)", "0u32", "0"),      // "0" → Ok(0)
+        (&["2"], "t.u8(2u32)", "5u32", "5"),      // "+5" → Ok(5)
+        (&["3"], "t.u8(3u32)", "1000u32", "1000"),// 符号なしに "-" → kind 0
+        (&["4"], "t.u8(4u32)", "1000u32", "1000"),// 符号だけ → kind 0
+        (&["5"], "t.u8(5u32)", "255u32", "255"),  // "ff" radix 16 → Ok(255)
+        (&["6"], "t.u8(6u32)", "1000u32", "1000"),// "ff" radix 10 → kind 0
+        (&["7"], "t.u8(7u32)", "255u32", "255"),  // "FF" radix 16 → Ok(255)
+        (&["8"], "t.u8(8u32)", "35u32", "35"),    // "z" radix 36 → Ok(35)
+        (&["9"], "t.u8(9u32)", "255u32", "255"),  // u8 "255" → Ok(255)
+        (&["10"], "t.u8(10u32)", "1001u32", "1001"), // u8 "256" → kind 1 (範囲外)
+        (&["11"], "t.u8(11u32)", "1000u32", "1000"),// " 1" → kind 0
+        (&["12"], "t.u8(12u32)", "1000u32", "1000"),// "1_0" → kind 0
+    ]);
+    kir_review_cases("pi_i8", &fns, "t.i8", &[
+        (&["0"], "t.i8(0u32)", "-128i32", "-128"),  // i8 "-128" → Ok(-128)
+        (&["1"], "t.i8(1u32)", "1001i32", "1001"),  // i8 "128" → kind 1 (範囲外)
+    ]);
+    kir_review_cases("pi_u64", &fns, "t.u64", &[
+        (&["0"], "t.u64(0u32)", "18446744073709551615u64", "18446744073709551615"), // u64 max → Ok
+        (&["1"], "t.u64(1u32)", "1001u64", "1001"), // u64 max+1 → kind 1
+    ]);
+    kir_review_cases("pi_i64", &fns, "t.i64", &[
+        (&["0"], "t.i64(0u32)", "-9223372036854775808i64", "-9223372036854775808"), // i64 min → Ok
+        (&["1"], "t.i64(1u32)", "1001i64", "1001"), // i64 "2^63" → kind 1
+    ]);
+}
+
+#[test]
 fn kir_review_user_iterator_advance_crosses_outer_joins() {
     // 利用者の反復子の `for x in it` が進めたスロットは、外側の `while` / `if` / `match` の合流にも渡る
     // (前は `scan_mut` が `For` を見ず、外側の合流が古い `it` を使い続けた)。

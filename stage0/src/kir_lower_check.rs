@@ -44,6 +44,13 @@ impl<'a> Lw<'a> {
         if ta != tb {
             return self.err(line, "core.check.eq の両辺の型が違う");
         }
+        // `Result<T, E>` のペイロードに集成体を持つ場合は、KIR では比較関数を作れないので
+        // クレーンリフト側へ退避させる (`from_str_radix` の `Result<..., core.num.ParseIntError>` など)。
+        if let Ty::Res(t0, e0) = ta {
+            if matches!(t0.ty(), Ty::Agg(_)) || matches!(e0.ty(), Ty::Agg(_)) {
+                return Err(format!("core.check.eq の型 {} はペイロードに集成体を持つため KIR では比較できない", ta.name()));
+            }
+        }
         let sa = self.src_ty(&args[0])?;
         let file = self.def.file.clone();
         // 浮動小数は $eq / $debug 未対応なので、Cmp (IEEE ==) と FmtFloat で下ろす。

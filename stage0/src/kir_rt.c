@@ -3,6 +3,7 @@
  * NaN は `nan`、±inf は `inf` / `-inf`、整数値で |f| < 1e16 は小数 1 桁 (`1.0`、`-0.0`)、
  * それ以外は Rust の `{}` (往復できる最短の桁を、指数表記を使わずに 10 進で書く)。 */
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

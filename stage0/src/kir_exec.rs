@@ -539,7 +539,7 @@ fn parse_int(bytes: &[u8], radix: u32, bits: u32, is_signed: bool) -> (u8, u64, 
     if !is_signed && is_minus {
         return (1, 0, 0);
     }
-    let mut start: usize = if is_minus || is_plus { 1 } else { 0 };
+    let start: usize = if is_minus || is_plus { 1 } else { 0 };
     if start == bytes.len() {
         return (1, 0, 0);
     }
@@ -758,7 +758,11 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let (ret, lo, hi) = parse_int(&bytes, radix, ty.bits(), ty.signed());
                     if ret == 0 {
                         let v = ((hi as u128) << 64) | (lo as u128);
-                        v as i128
+                        // ペイロードを型のビット幅で切り下ろし、タグビット(64ビット目)を立てない。
+                        // 符号付きの負値は 128 ビットの 2 の補数なので、そのまま `as i128` するとタグビットが立つ。
+                        let bits = ty.bits();
+                        let mask = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+                        (v & mask) as u64 as i128
                     } else {
                         let kind = (ret - 1) as u8;
                         heap.push(vec![kind]);

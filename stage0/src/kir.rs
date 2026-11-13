@@ -1109,7 +1109,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::Eprint { data } => format!("eprint {}", fmt_val(*data)),
         Op::Abort => "abort".to_string(),
         Op::FmtFloat { bits, a } => format!("fmtfloat.{bits} {}", fmt_val(*a)),
-        Op::ParseInt { ty, s, radix } => format!("parseint.{} {} {}", ty.name(), fmt_val(*s), fmt_val(*radix)),
+        Op::ParseInt { ty, s, radix } => format!("parseint.{} {}", ty.name(), fmt_vals(&[*s, *radix])),
     };
     format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
 }
@@ -2227,10 +2227,14 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err(format!("fmtfloat の被演算子は f{} のはず", bits));
                         }
                     }
-                    Op::ParseInt { ty: _, s, radix } => {
-                        if !i.ty.is_int() {
-                            return Err(format!("parseint の結果の型 {} は整数ではない", i.ty.name()));
+                    Op::ParseInt { ty, s, radix } => {
+                        if !ty.is_int() {
+                            return Err(format!("parseint の結果の整数型 {} は整数ではない", ty.name()));
                         }
+                        // 結果は Result<整数, ParseIntError>。
+                        let Ty::Res(_, _) = i.ty else {
+                            return Err(format!("parseint の結果の型 {} は Result ではない", i.ty.name()));
+                        };
                         // `s` は `&str` (fat: 集成体)、`radix` は `u32`。
                         if !matches!(ty_of(*s)?, Ty::Agg(_)) {
                             return Err("parseint の第 1 被演算子は &str (fat) のはず".into());
