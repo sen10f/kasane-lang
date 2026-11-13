@@ -21144,6 +21144,20 @@ fn kir_push_u64_matches_tree_walker() {
     ]);
 }
 
+/// `panics never` の関数での `push_u64` / `push_i64`。下ろしが作る `/ 10` `% 10` は除数が正の定数で trap しないので、
+/// KIR の検証 (`panics never` に trap 付きの算術を許さない) を通り、木走査と同じ値になる。
+#[test]
+fn kir_push_u64_in_a_panics_never_function_matches_tree_walker() {
+    let fns = "fn t.f(x: u64) -> usize uses [alloc] panics never\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    match s.push_u64(x) {\n        Ok(_u) => s.len()\n        Err(_e) => 0usize\n    }\nend t.f\n\nfn t.g(x: i64) -> usize uses [alloc] panics never\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    match s.push_i64(x) {\n        Ok(_u) => s.len()\n        Err(_e) => 0usize\n    }\nend t.g\n\n";
+    kir_review_cases("push_never_u", fns, "t.f", &[
+        (&["0"], "t.f(0u64)", "1usize", "1"),
+        (&["18446744073709551615"], "t.f(18446744073709551615u64)", "20usize", "20"),
+    ]);
+    kir_review_cases("push_never_i", fns, "t.g", &[
+        (&["-5"], "t.g(-5i64)", "2usize", "2"),
+    ]);
+}
+
 /// `core.str.from_utf8` の検証 (命令 `utf8.valid`、機械語は kir_rt.c) は Rust の規則と同じ:
 /// 1〜4 バイト、途中で切れた列、過長な符号化、サロゲート、U+10FFFF 超。Ok は 1000、Err は `valid_up_to`。
 #[test]
