@@ -1,0 +1,8 @@
+test bench.collatz_steps.test_small
+    core.check.eq(bench.collatz_steps(1u64), 0u32)
+    core.check.eq(bench.collatz_steps(6u64), 8u32)
+end bench.collatz_steps.test_small
+
+test bench.collatz_steps.test_big
+    core.check.eq(bench.collatz_steps(27u64), 111u32)
+end bench.collatz_steps.test_big

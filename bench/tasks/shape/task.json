@@ -1,0 +1,8 @@
+{
+  "id": "shape",
+  "title": "図形の面積(enum と match)",
+  "spec": "enum bench.Shape を定義する: Circle(i32)(半径)、Rect(i32, i32)(幅と高さ)、Square(i32)(辺)。area は円を 3*r*r、長方形を w*h、正方形を s*s で返す。enum のバリアントは宣言順に Circle, Rect, Square。",
+  "decl": "enum bench.Shape: variants Circle(i32), Rect(i32, i32), Square(i32)\nfn bench.area(s: bench.Shape) -> i32",
+  "level": "basic",
+  "order": 6
+}

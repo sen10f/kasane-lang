@@ -31,7 +31,7 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'spec', 'tools', 'c
                    capture_output=True, text=True, encoding='utf-8')
 step('spec/tools/check_all.py', r.returncode == 0, r.stdout[-800:])
 
-# 3. LLM ベンチの参照解 (bench/reference/*.ksnl) が今の検査器で通ること
+# 3. LLM ベンチの参照解 (bench/tasks/*/reference.ksnl) が今の検査器で通ること
 r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'verify_reference.py')],
                    capture_output=True, text=True, encoding='utf-8', errors='replace')
 step('bench/verify_reference.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])

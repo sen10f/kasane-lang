@@ -30,7 +30,7 @@ def check(name, ok, detail=''):
 
 
 def ref(task_id):
-    return open(os.path.join(ROOT, 'bench', 'reference', task_id + '.ksnl'), encoding='utf-8').read()
+    return open(os.path.join(ROOT, 'bench', 'tasks', task_id, 'reference.ksnl'), encoding='utf-8').read()
 
 
 def fence(code):

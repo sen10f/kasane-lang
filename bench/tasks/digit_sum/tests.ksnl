@@ -1,0 +1,10 @@
+test bench.digit_sum.test_ok
+    core.check.eq(bench.digit_sum("123"), Ok(6u32))
+    core.check.eq(bench.double_digit_sum("123"), Ok(12u32))
+end bench.digit_sum.test_ok
+
+test bench.digit_sum.test_err
+    core.check.eq(bench.digit_sum(""), Err(bench.ParseError.Empty))
+    core.check.eq(bench.digit_sum("1x3"), Err(bench.ParseError.BadChar(120u8)))
+    core.check.eq(bench.double_digit_sum(""), Err(bench.ParseError.Empty))
+end bench.digit_sum.test_err

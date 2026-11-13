@@ -1,0 +1,6 @@
+test bench.count_digits.test_basic
+    core.check.eq(bench.count_digits("a1b22c"), 3u32)
+    core.check.eq(bench.count_digits(""), 0u32)
+    core.check.eq(bench.count_digits("abc"), 0u32)
+    core.check.eq(bench.count_digits("2024-11-09"), 8u32)
+end bench.count_digits.test_basic

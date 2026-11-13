@@ -1,0 +1,11 @@
+test bench.bsearch.test_found
+    core.check.eq(bench.bsearch(&[1i32, 3i32, 5i32, 7i32, 9i32], 7i32), Some(3usize))
+    core.check.eq(bench.bsearch(&[1i32, 3i32, 5i32, 7i32, 9i32], 1i32), Some(0usize))
+    core.check.eq(bench.bsearch(&[1i32, 3i32, 5i32, 7i32, 9i32], 9i32), Some(4usize))
+end bench.bsearch.test_found
+
+test bench.bsearch.test_missing
+    core.check.eq(bench.bsearch(&[1i32, 3i32, 5i32, 7i32, 9i32], 4i32), None)
+    core.check.eq(bench.bsearch(&[2i32], 2i32), Some(0usize))
+    core.check.eq(bench.bsearch(&[2i32], 3i32), None)
+end bench.bsearch.test_missing

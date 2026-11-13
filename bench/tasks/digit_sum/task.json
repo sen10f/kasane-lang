@@ -1,0 +1,8 @@
+{
+  "id": "digit_sum",
+  "title": "エラー型と ? 演算子",
+  "spec": "enum bench.ParseError を定義する(バリアント Empty と BadChar(u8)、derive [Debug, PartialEq])。digit_sum は、数字だけの文字列の各桁の和を Ok で返す。空文字列は Err(Empty)、数字以外が含まれていたら最初のそのバイトで Err(BadChar(バイト))。double_digit_sum は digit_sum の結果を ? で受けて 2 倍にして返す(エラーはそのまま返す)。",
+  "decl": "enum bench.ParseError: variants Empty, BadChar(u8)\nfn bench.digit_sum(text: &str) -> Result<u32, bench.ParseError>\nfn bench.double_digit_sum(text: &str) -> Result<u32, bench.ParseError>",
+  "level": "hard",
+  "order": 15
+}
