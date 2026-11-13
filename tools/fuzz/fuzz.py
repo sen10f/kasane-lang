@@ -60,6 +60,8 @@ ENUMS = [
 def lit(rng, t):
     if t == "bool":
         return rng.choice(["true", "false"])
+    if t == "&str":
+        return "\"hi\""
     if t in UNSIGNED:
         return "%du%s" % (rng.randint(0, 200), t[1:])
     if t in SIGNED:
@@ -179,7 +181,7 @@ def gen_fn(rng, name, params, ret, fns, depth, structs):
     for _ in range(n):
         kind = rng.choice(["let", "if", "while", "match", "call", "field", "str", "float", "panic", "div0", "oob", "unwrap"])
         if kind == "let":
-            scalar_types = INT_TYPES + BOOL + FLOAT + ["alloc.vec.Vec<u64, std.alloc.System>", "alloc.string.String<std.alloc.System>", "&str"]
+            scalar_types = INT_TYPES + BOOL + FLOAT
             struct_types = ["fuzz.%s" % s for s in structs]
             t = rng.choice(scalar_types + struct_types)
             mut = "mut " if rng.random() < 0.5 else ""
@@ -190,8 +192,19 @@ def gen_fn(rng, name, params, ret, fns, depth, structs):
             elif t == "fuzz.Triple":
                 init = "fuzz.Triple { x: 1u32, y: 2i32, z: 3u64 }"
             else:
-                init = lit(rng, t) if t in INT_TYPES + BOOL + FLOAT else ("alloc.vec.Vec.new(std.alloc.SYSTEM)" if t.startswith("alloc.vec.Vec") else ("alloc.string.String.new(std.alloc.SYSTEM)" if t.startswith("alloc.string.String") else "\"hi\""))
-            lines.append("    let %s%s = %s" % (mut, vname, init))
+                if t == "alloc.vec.Vec<u64, std.alloc.System>":
+                    t_ann = "alloc.vec.Vec<u64, std.alloc.System>"
+                    init = "alloc.vec.Vec.new(std.alloc.SYSTEM)"
+                elif t.startswith("alloc.string.String"):
+                    t_ann = "alloc.string.String<std.alloc.System>"
+                    init = "alloc.string.String.new(std.alloc.SYSTEM)"
+                else:
+                    t_ann = None
+                    init = lit(rng, t)
+                if t_ann:
+                    lines.append("    let %s%s: %s = %s" % (mut, vname, t_ann, init))
+                else:
+                    lines.append("    let %s%s = %s" % (mut, vname, init))
         elif kind == "if":
             c, _ = scalar_expr(rng, "bool")
             then = gen_fn_block(rng, fns, 8, ctr)
@@ -248,7 +261,7 @@ def gen_fn(rng, name, params, ret, fns, depth, structs):
                 lines.append("    let a%d = %s.%s" % (len(locals_), vname, fname))
                 locals_.append(("a%d" % len(locals_), ft, False))
         elif kind == "str":
-            strs = [n for n, t, _ in locals_ if t.startswith("alloc.string.String")]
+            strs = [n for n, t, m in locals_ if t.startswith("alloc.string.String") and m]
             if not strs:
                 continue
             sname = rng.choice(strs)
@@ -295,12 +308,20 @@ def gen_fn(rng, name, params, ret, fns, depth, structs):
     else:  # f64
         tail_line = "    %s" % lit_f64(rng)
         used = set()
-    # 使われていないパラメータと全関数レベルローカルを drop（tail の直前）
+    # 未使用パラメータと、本体で let 宣言されたコピー型ローカルを drop（tail の直前）。
+    declared = set()
+    for ln in lines:
+        m = re.match(r"\s*let (?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", ln)
+        if m:
+            declared.add(m.group(1))
+    local_types = {n: t for n, t, _ in locals_}
+    copy_types = set(INT_TYPES + BOOL + FLOAT)
+    for n in sorted(declared):
+        if n in local_types and local_types[n] in copy_types:
+            lines.append("    core.mem.drop(%s)" % n)
     for p, _ in params:
         if p not in used:
             lines.append("    core.mem.drop(%s)" % p)
-    for n, _, _ in locals_:
-        lines.append("    core.mem.drop(%s)" % n)
     lines.append(tail_line)
     return lines
 
@@ -354,7 +375,7 @@ def gen_program(rng, pid):
             params = [("p%d" % i, rng.choice(INT_TYPES)) for i in range(nparam)]
         else:
             params = [("p%d" % i, rng.choice(INT_TYPES + BOOL + FLOAT)) for i in range(nparam)]
-        ret = rng.choice(RET_TYPES + ["bool", "f64"])
+        ret = rng.choice(RET_TYPES) if fi == 0 else rng.choice(RET_TYPES + ["bool", "f64"])
         fname = "target" if fi == 0 else "fn%d" % fi
         fns.append((fname, params, ret))
 
@@ -370,7 +391,7 @@ def gen_program(rng, pid):
         flines.extend(body)
         flines.append("end fuzz.%s" % fname)
         fn_items.append("\n".join(flines))
-    fn_items.sort(key=lambda b: b.split("\n")[0].split()[-1])
+    fn_items.sort(key=lambda b: b.split("\n")[0].split()[1])
 
     all_items = decl_items + fn_items  # 型/列挙体を先に、関数を後に
     for it in all_items:
@@ -383,21 +404,13 @@ def gen_program(rng, pid):
     ret = target[2]
     if ret in UNSIGNED:
         push = "core.mem.drop(s.push_u64(fuzz.target(%s)))" % main_args
-    elif ret in SIGNED:
+    else:
         push = "core.mem.drop(s.push_i64(fuzz.target(%s)))" % main_args
-    elif ret == "bool":
-        push = ("core.mem.drop(s.push_u64((match fuzz.target(%s) { true => 1u64 false => 0u64 })))" % main_args)
-    else:  # f64 -> to_bits() で整数として出力
-        push = ["    let t = fuzz.target(%s)" % main_args,
-                "    core.mem.drop(s.push_u64(t.to_bits()))"]
     main_lines = [
         "fn fuzz.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
         "    let mut s = alloc.string.String.new(std.alloc.SYSTEM)",
+        "    %s" % push,
     ]
-    if isinstance(push, list):
-        main_lines.extend(push)
-    else:
-        main_lines.append("    %s" % push)
     main_lines += [
         "    std.io.print_line(s.as_str())?",
         "    Ok(())",
@@ -562,10 +575,108 @@ def write_found(found_dir, r):
     print("食い違い検出: %s" % d)
 
 
+def split_top_level_units(lines):
+    """body 行をトップレベルの文単位（if/while ブロックはまとまり）に分割して (start,end) のリストを返す。"""
+    units = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        ln = lines[i]
+        if not ln.strip():
+            i += 1
+            continue
+        start = i
+        depth = ln.count("{") - ln.count("}")
+        if depth > 0:
+            j = i + 1
+            while j < n and depth > 0:
+                depth += lines[j].count("{") - lines[j].count("}")
+                j += 1
+            units.append((start, j))
+            i = j
+        else:
+            units.append((start, start + 1))
+            i += 1
+    return units
+
+
+def mismatch_persists(res2):
+    valid = {k: v for k, v in res2.items() if v[0] != "unsupported"}
+    keys = list(valid.keys())
+    if not keys:
+        return False
+    first = valid[keys[0]]
+    return any(valid[k] != first for k in keys[1:])
+
+
+def find_fn_bounds(lines):
+    """fn fuzz.X ... end fuzz.X の (start,end,name) をすべて返す。"""
+    bounds = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        ln = lines[i]
+        if ln.startswith("fn fuzz."):
+            name = ln.split("(")[0].split()[-1]  # fuzz.X
+            j = i + 1
+            while j < n and lines[j] != "end " + name:
+                j += 1
+            if j < n:
+                j += 1  # end 行を含める
+            bounds.append((i, j, name))
+            i = j
+        else:
+            i += 1
+    return bounds
+
+
+def called_names(src):
+    return set(re.findall(r"fuzz\.([A-Za-z0-9_]+)\s*\(", src))
+
+
+def remove_unused_functions(ksn, root, src, params, ret, args):
+    """target/main から到達不能な関数定義を 1 つずつ削り、食い違いが残るなら採用。"""
+    while True:
+        lines = src.split("\n")
+        bounds = find_fn_bounds(lines)
+        names = set(b[2] for b in bounds)
+        if "fuzz.target" not in names or "fuzz.main" not in names:
+            return src
+        used = {"fuzz.target"}
+        frontier = ["fuzz.target"]
+        body_by_name = {b[2]: "\n".join(lines[b[0]:b[1]]) for b in bounds}
+        while frontier:
+            cur = frontier.pop()
+            for c in called_names(body_by_name.get(cur, "")):
+                full = "fuzz." + c
+                if full in names and full not in used:
+                    used.add(full)
+                    frontier.append(full)
+        used.add("fuzz.main")
+        removable = [b for b in bounds if b[2] not in used]
+        if not removable:
+            return src
+        # 1 つ削って食い違いが残れば採用してやり直し
+        progressed = False
+        for (s, e, name) in removable:
+            trial = lines[:s] + lines[e:]
+            trial_src = "\n".join(trial)
+            root2 = write_tmp_pkg(root, trial_src)
+            ok, _, _ = check_pkg(ksn, root2)
+            if not ok:
+                continue
+            res2, _ = compare(ksn, root2, params, ret, args)
+            if mismatch_persists(res2):
+                src = trial_src
+                progressed = True
+                break
+        if not progressed:
+            return src
+
+
 def shrink(ksn, root, src, params, ret, args, results, found_dir):
-    """target の文を1つずつ消し、食い違いが残るならその形を採用。"""
+    """target 本体を文/ブロック単位で消し、未使用関数を削り、食い違いが残る形を採用。"""
     lines = src.split("\n")
-    # target の本体行を特定（fn fuzz.target から end fuzz.target の間）
     tstart = None
     tend = None
     for i, ln in enumerate(lines):
@@ -581,24 +692,22 @@ def shrink(ksn, root, src, params, ret, args, results, found_dir):
     changed = True
     while changed:
         changed = False
-        for i in range(len(cur)):
-            trial = cur[:i] + cur[i + 1:]
+        units = split_top_level_units(cur)
+        for (s, e) in units:
+            trial = cur[:s] + cur[e:]
             new_src = build_src(lines, tstart, tend, trial)
             root2 = write_tmp_pkg(root, new_src)
             ok, _, _ = check_pkg(ksn, root2)
             if not ok:
                 continue
             res2, _ = compare(ksn, root2, params, ret, args)
-            valid = {k: v for k, v in res2.items() if v[0] != "unsupported"}
-            keys = list(valid.keys())
-            if not keys:
-                continue
-            first = valid[keys[0]]
-            if any(valid[k] != first for k in keys[1:]):
+            if mismatch_persists(res2):
                 cur = trial
                 changed = True
                 break
-    return build_src(lines, tstart, tend, cur)
+    new_src = build_src(lines, tstart, tend, cur)
+    new_src = remove_unused_functions(ksn, root, new_src, params, ret, args)
+    return new_src
 
 
 def build_src(all_lines, tstart, tend, body):
