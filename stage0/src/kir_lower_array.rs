@@ -9,10 +9,16 @@
 //! フレームの領域は式の評価ごとに確保する (ループの中で評価すると、領域はループの回数だけ増える)。
 
 use crate::check::{items, nf, nlineno as nline};
-use crate::kir::{size_of, Aop, Cc, Mode, Op, Ty, VId};
+use crate::kir::{Aop, Cc, Mode, Op, Ty, VId};
 use crate::parser::V;
 
+use super::coll::{elem_size, owns_heap_pub, store_elem};
 use super::{Lw, LR};
+
+/// 配列の要素にできる型: 整数・浮動小数・bool・ptr、と所有物を持たない集成体 (値の写しで並べる)。
+fn elem_ok(lw: &Lw, t: Ty) -> bool {
+    t.is_int() || t.is_float() || matches!(t, Ty::Bool | Ty::Ptr) || (matches!(t, Ty::Agg(_)) && !owns_heap_pub(lw, t))
+}
 
 impl<'a> Lw<'a> {
     /// `[e1, e2, ...]` の値 (`{ptr, len}`) と要素の型。対象外なら理由付きで止める。
@@ -30,16 +36,20 @@ impl<'a> Lw<'a> {
             }
         }
         let et = self.vty(vs[0]);
-        if !(et.is_int() || et.is_float() || matches!(et, Ty::Bool | Ty::Ptr)) {
-            return self.err(line, "配列の要素の型は段階 1 の対象外 (要素は整数・浮動小数・bool・ptr だけ)");
+        if !elem_ok(self, et) {
+            return self.err(line, "配列の要素の型は段階 1 の対象外 (要素は整数・浮動小数・bool・ptr、所有物を持たない集成体だけ)");
         }
         if vs.iter().any(|v| self.vty(*v) != et) {
             return self.err(line, "配列の要素の型がそろっていない");
         }
-        let size = size_of(&self.aggs.borrow().defs, et);
+        let size = elem_size(self, et).expect("要素の大きさ");
         let base = self.emit(Ty::Ptr, Op::FrameBytes { size: size * vs.len() as u32 });
         for (i, v) in vs.iter().enumerate() {
-            self.emit(Ty::Unit, Op::MemStore { ty: et, p: base, off: size * i as u32, v: *v });
+            let p = if i == 0 { base } else {
+                let off = self.emit(Ty::Usize, Op::Const((size * i as u32) as i128));
+                self.emit(Ty::Ptr, Op::PtrAdd { p: base, off })
+            };
+            store_elem(self, p, et, *v);
         }
         let n = self.emit(Ty::Usize, Op::Const(vs.len() as i128));
         let fat = self.fat_ty();
@@ -62,7 +72,7 @@ impl<'a> Lw<'a> {
         if !(et.is_int() || et.is_float() || matches!(et, Ty::Bool | Ty::Ptr)) {
             return self.err(line, "配列の要素の型は段階 1 の対象外 (要素は整数・浮動小数・bool・ptr だけ)");
         }
-        let size = size_of(&self.aggs.borrow().defs, et);
+        let size = elem_size(self, et).expect("要素の大きさ");
         // 空の配列 (`[x; 0]`) も領域は 1 バイト確保する (`frame.bytes` は 1 以上のはず。長さ 0 なので読まれない)。
         let base = self.emit(Ty::Ptr, Op::FrameBytes { size: (size * n as u32).max(1) });
         let zero = self.emit(Ty::Usize, Op::Const(0));

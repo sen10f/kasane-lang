@@ -30,6 +30,7 @@ use crate::types::{from_v, Ty as Src};
 const VEC: &str = "alloc.vec.Vec";
 const STRING: &str = "alloc.string.String";
 const HASHMAP: &str = "alloc.collections.HashMap";
+const BTREEMAP: &str = "alloc.collections.BtreeMap";
 /// `Vec<T>` と `String` のヘッダの大きさ (ptr, len, cap)。
 const HDR_VEC: u32 = 24;
 
@@ -47,6 +48,8 @@ pub(crate) enum Kind {
     /// `HashMap<K, V>` (設計_KIR.md 16 章)。キーと値の型が分かれば `Some`。キーの `Ty::Ptr` は `&str` のキーの印。
     /// ヘッダは Vec と同じ 24 バイト (所有と移動と解放は Vec と同じ規則)。
     Map(Option<(Ty, Ty)>),
+    /// `BtreeMap<K, V>` (キーの順を保つ。ヘッダは Map と同じ 24 バイト。設計_KIR.md 17.21)。
+    BMap(Option<(Ty, Ty)>),
     /// 下ろした関数の鍵と、引数・戻り値の型。`caps` は取り込みの値 (この関数の中の値番号。値の取り込みはその値、
     /// 参照の取り込みは参照の値) で、`cap_tys` がその型。呼び出しでは先頭の追加の引数として渡す (設計_KIR.md 13 章)。
     Closure { key: String, args: Vec<Ty>, ret: Ty, caps: Vec<VId>, cap_tys: Vec<Ty> },
@@ -213,7 +216,7 @@ pub(crate) fn bind_param_kind(lw: &mut Lw, name: &str, t: &Src) {
 /// `&v` / `&mut v` (v は Vec / String の局所変数): ヘッダのアドレスそのもの。
 pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
     if let Some(s) = local_slot(lw, operand) {
-        if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) {
+        if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_)) | Some(Kind::BMap(_))) {
             return Ok(lw.slots[s].0);
         }
     }
@@ -226,6 +229,7 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
         Src::Named(n, args) if n == VEC => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a))))),
         Src::Named(n, _) if n == STRING => Some(Kind::String),
         Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(args))),
+        Src::Named(n, args) if n == BTREEMAP => Some(Kind::BMap(map_kv(args))),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         Src::Slice(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
         // 固定長配列 `&[T; N]` の要素型。長さ N は `arr_len` で別途追跡する。
@@ -372,6 +376,11 @@ pub(super) fn emit_free(lw: &mut Lw, hdr: VId) {
     lw.emit(Ty::Unit, Op::HeapFree(buf));
 }
 
+/// 他の下ろしの子モジュールから使う `owns_heap` (所有物を持つ型か)。
+pub(super) fn owns_heap_pub(lw: &Lw, t: Ty) -> bool {
+    owns_heap(lw, t)
+}
+
 fn owns_heap(lw: &Lw, t: Ty) -> bool {
     lw.aggs.borrow().owns_heap(t)
 }
@@ -442,7 +451,7 @@ pub(crate) fn val_slot_of(lw: &Lw, s: usize) -> bool {
 
 /// 局所変数の読み (値としての使用 = 移動)。所有する Vec / String はヘッダから値を移し、印を持つ変数は印を下ろす。
 pub(crate) fn path_read(lw: &mut Lw, s: usize) -> VId {
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) && !lw.coll.borrowed.contains(&s) {
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_)) | Some(Kind::BMap(_))) && !lw.coll.borrowed.contains(&s) {
         let h = lw.slots[s].0;
         return move_hdr(lw, h);
     }
@@ -733,7 +742,7 @@ pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
 /// 局所変数への代入 `x = v`。所有物は、古い値を解放してから新しい値を入れる (Vec / String はヘッダを書き直す)。
 /// 印を持つ変数は印を立て直す (移した後の再代入を含む)。
 pub(crate) fn assign_checked(lw: &mut Lw, s: usize, v: VId, line: usize) -> LR<()> {
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) && !lw.coll.borrowed.contains(&s) {
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_)) | Some(Kind::BMap(_))) && !lw.coll.borrowed.contains(&s) {
         let h = lw.slots[s].0;
         let vt = lw.coll.hdr_ty.get(&h).copied().unwrap_or_else(|| lw.aggs.borrow_mut().vec_hdr());
         if lw.vty(v) != vt {
@@ -1229,6 +1238,7 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             Some(lw.from_utf8_call(e, items(&f[1]), nline(e)))
         }
         ["alloc", "collections", "HashMap", "new"] => Some(new_header(lw, e)),
+        ["alloc", "collections", "BtreeMap", "new"] => Some(new_header(lw, e)),
         // `core.mem.drop(x)`: 値を移して、その場で解放する。
         ["core", "mem", "drop"] => Some(mem_drop(lw, e)),
         _ => None,
@@ -1469,6 +1479,7 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     let slot = local_slot(lw, &f[0]);
     Some(match place(lw, &f[0]) {
         Ok(Some(h)) if matches!(kind, Kind::Map(_)) => super::map_lower::method(lw, e, slot, &kind, h, &m, items(&f[2])),
+        Ok(Some(h)) if matches!(kind, Kind::BMap(_)) => super::map_lower::bmap_method(lw, e, slot, &kind, h, &m, items(&f[2])),
         Ok(Some(h)) => method_on(lw, e, line, slot, kind, h, &m, items(&f[2])),
         Ok(None) => Ok(None),
         Err(e) => Err(e),
@@ -1526,6 +1537,9 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
     }
     if matches!(kind, Kind::Map(_)) {
         return super::map_lower::method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
+    }
+    if matches!(kind, Kind::BMap(_)) {
+        return super::map_lower::bmap_method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
     }
     method_on(lw, e, line, Some(s), kind, hdr, m, items(&f[1]))
 }
@@ -2676,7 +2690,7 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
                     let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
                     lw.bind(n, r, rt);
                 } else {
-                    let v = lw.emit(ety, Op::MemLoad { p: addr, off: 0 });
+                    let v = load_elem(lw, addr, ety);
                     lw.bind(n, v, ety);
                 }
                 if c.by_ref && !c.by_mut {

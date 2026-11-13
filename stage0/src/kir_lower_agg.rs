@@ -180,7 +180,7 @@ impl AggTab {
                 Ok(self.vec_of(elem))
             }
             Src::Named(name, _) if name == "alloc.string.String" => Ok(self.vec_hdr()),
-            Src::Named(name, _) if name == "alloc.collections.HashMap" => Ok(self.vec_hdr()),
+            Src::Named(name, _) if name == "alloc.collections.HashMap" || name == "alloc.collections.BtreeMap" => Ok(self.vec_hdr()),
             Src::Named(name, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
             // `std.thread.JoinHandle<T, A>` = `{A, usize, *mut T}`。`T` はポインタの向こうにあるので配置には現れない。
             Src::Named(name, args) if name == "std.thread.JoinHandle" && args.len() == 2 => {
@@ -235,7 +235,7 @@ impl AggTab {
                 self.intern_tuple(elems)
             }
             // 集成体への参照 `&S` / `&mut S` (スカラーへの参照は上の `conv` が済ませている)。
-            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String" || n == "alloc.collections.HashMap") => {
+            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") => {
                 Err("Vec / String への参照はヘッダのアドレスで渡す".to_string())
             }
             Src::Ref(m, inner) if matches!(&**inner, Src::Named(..) | Src::Tuple(_)) => match self.lower_ty(p, file, inner)? {
@@ -509,7 +509,7 @@ impl AggTab {
     /// フィールド・要素の型。ユニット型は値を置けないので拒否する。
     fn field_ty(&mut self, p: &Program, file: &str, t: &Src) -> Result<Ty, String> {
         if let Src::Named(n, _) = t {
-            if n == "alloc.collections.HashMap" {
+            if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap" {
                 return Ok(self.vec_hdr());
             }
             if n == "alloc.vec.Vec" || n == "alloc.string.String" {

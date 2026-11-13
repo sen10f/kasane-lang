@@ -1137,6 +1137,12 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 参照実行器の修正 (`kir_scalar::conv`): 符号が変わる整数の変換 (`i64` の負の値を `u64` へ) は、型の範囲に入れ直す (負のままにしていた)。LLVM と木走査は従来どおり正しかった。
 - examples/tour の止まり方 (先頭から): `BtreeMap` (112 行) を外した写し (scratch) では、`tour.shapes` の `for s in [a, b, c]` (要素が列挙型の配列) で止まる。`BtreeMap` は KIR に型・操作がなく、大きいので今回は着手していない。
 
+### 17.21 集成体の配列リテラルと `BtreeMap` (kir/tour-rest、2026-11-13)
+- 配列リテラル `[e1, e2, ..]` の要素に、所有物を持たない集成体 (列挙型・構造体) を許す (`kir_lower_array.rs` の `elem_ok`)。値は `store_elem` で並べ、`for x in [..]` は `load_elem` で読む (`counted` の非所有の枝)。所有物 (`String` など) の要素は理由付きで拒む (移動と解放を扱う形は別の作業)。`[e; N]` は従来どおりスカラーだけ。
+- `BtreeMap<K, V>` (`Kind::BMap`、ヘッダは `HashMap` と同じ 24 バイト): 組は 16 バイト (キーは +0、値は +8) で、キーの昇順に並ぶ。`get` / `contains_key` / `remove` / `insert` は生成する補助の関数 (`ksn.bmap.<K>.<V>.{get,insert,remove}` と、キーだけで決まる `ksn.bmap.<K>.lower`)。`lower` は二分探索 (中点は 1 ビット右へのずらし。割り算は trap を持つので `panics never` で使えない)。`insert` は同じキーなら値を替えて `Some(古い値)`、なければ後ろの組を 1 つずらして書く。満杯なら `2*cap+4` の組へ広げる (`realloc` のため `uses [alloc]`)。`remove` は後ろの組を 1 つ前へずらす。キーは整数・bool・char、値は整数・bool・char だけ (`&str` のキーと集成体の値は理由付きで拒む)。反復 (`for`) は未対応。
+- 試験: `kir_array_literal_of_aggregates_matches_tree_walker` (列挙型・構造体の要素、`String` の要素の拒否)、`kir_btree_map_matches_tree_walker` (tour と同じ並び、負のキー、容量の広がり、偶数の削除、`char` のキー。`--run` / `--native` / ASan)。
+- examples/tour は `ksn build --backend llvm` で作れ、出力が `ksn run` と一致する。`llvm_builds_of_real_packages_match_run` に `examples/tour` を足した。
+
 ## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
 
 段階 2 (第 5 章) の第 1 段。`ksn run --engine=vm` と `ksn test --engine=vm` (`--engine=tree` が既定の木走査)。既定の挙動は変えていない。`clif.rs` と `examples/`・`perf/` のソースは触っていない。
