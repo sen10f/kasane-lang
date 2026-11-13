@@ -231,9 +231,6 @@ impl<'a> Lw<'a> {
         // 所有物を持つ要素の `&v[i]`: `elem_prep` が作った借用 (Vec / String はヘッダのアドレス、構造体などは共有参照)
         if nname(operand) == "Index" {
             if let Some(s) = super::coll::local_slot(self, operand) {
-                if !shared {
-                    return self.err(line, "所有物を持つ要素の &mut v[i] は段階 1 の対象外");
-                }
                 return Ok(Some(self.read_slot(s)));
             }
         }

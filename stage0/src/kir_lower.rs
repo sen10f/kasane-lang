@@ -830,6 +830,11 @@ impl<'a> Lw<'a> {
                         return r;
                     }
                 }
+                // `&u32` / `&mut u32` の受け手は、整数メソッドの前に参照を外す (自動の参照外し)
+                let (recv, rt) = match rt {
+                    Ty::Ref(_, p) if p.ty().is_int() => (self.emit(p.ty(), Op::Load(recv)), p.ty()),
+                    _ => (recv, rt),
+                };
                 let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,
                     "wrapping_sub" => Aop::Sub,
@@ -1105,6 +1110,10 @@ impl<'a> Lw<'a> {
                     if nname(target) == "Field" {
                         if let Some(segs) = agg::field_segs(target) {
                             return self.assign_segs(segs, &f[1], line);
+                        }
+                        // `v[i].f = e` (所有物を持つ要素の Vec): 要素の可変の借用の先のフィールドへ書く (設計_KIR.md 17.15)
+                        if let Some(r) = coll::assign_elem_field(self, target, &f[1], line) {
+                            return r;
                         }
                     }
                     return self.err(line, "代入先は名前かフィールドだけ段階 1 の対象");
