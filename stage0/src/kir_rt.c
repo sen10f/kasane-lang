@@ -142,3 +142,36 @@ static const char *ksn_fmt(double f, int is32, char *out) {
 
 const char *ksn_fmt_f64(double f) { return ksn_fmt(f, 0, ksn_fbuf[0]); }
 const char *ksn_fmt_f32(float f) { return ksn_fmt((double)f, 1, ksn_fbuf[1]); }
+
+/* `p` から `n` バイトを UTF-8 として検証し、正しい接頭辞の長さ (Rust の `Utf8Error::valid_up_to`) を返す。
+ * 全体が正しければ `n`。規則は Rust の `core::str::from_utf8` と同じ (過長な符号化・サロゲート・U+10FFFF 超を拒む)。 */
+long long ksn_utf8_valid(const unsigned char *p, long long n) {
+    long long i = 0;
+    while (i < n) {
+        unsigned char b = p[i];
+        int w;
+        unsigned char lo = 0x80, hi = 0xbf;
+        if (b < 0x80) {
+            i++;
+            continue;
+        } else if (b >= 0xc2 && b <= 0xdf) {
+            w = 2;
+        } else if (b >= 0xe0 && b <= 0xef) {
+            w = 3;
+            if (b == 0xe0) lo = 0xa0;
+            if (b == 0xed) hi = 0x9f;
+        } else if (b >= 0xf0 && b <= 0xf4) {
+            w = 4;
+            if (b == 0xf0) lo = 0x90;
+            if (b == 0xf4) hi = 0x8f;
+        } else {
+            return i;
+        }
+        if (i + 1 >= n || p[i + 1] < lo || p[i + 1] > hi) return i;
+        for (int k = 2; k < w; k++) {
+            if (i + k >= n || p[i + k] < 0x80 || p[i + k] > 0xbf) return i;
+        }
+        i += w;
+    }
+    return n;
+}

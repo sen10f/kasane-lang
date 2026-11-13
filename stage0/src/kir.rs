@@ -694,6 +694,8 @@ pub enum Op {
     /// 浮動小数を `py_float` / `py_float32` と同じ規則で書式化して stderr へ出力する。
     /// 被演算子は `f32` または `f64`、結果は `unit`。`panics may` のときだけ。
     FmtFloat { bits: u32, a: VId },
+    /// `p` から `len` バイトを UTF-8 として検証し、正しい接頭辞の長さ (`valid_up_to`) を返す。全体が正しければ `len`。
+    Utf8Valid { p: VId, len: VId },
 }
 
 /// `BitCount` の種類。
@@ -1109,6 +1111,7 @@ fn fmt_inst(i: &Inst) -> String {
             }
         }
         Op::PtrAdd { p, off } => format!("ptr.add {}, {}", fmt_val(*p), fmt_val(*off)),
+        Op::Utf8Valid { p, len } => format!("utf8.valid {}, {}", fmt_val(*p), fmt_val(*len)),
         Op::MemLoad { p, off } => format!("mem.load.{} {} +{}", fmt_ty(i.ty), fmt_val(*p), off),
         Op::MemStore { ty, p, off, v } => format!("mem.store.{} {} +{}, {}", fmt_ty(*ty), fmt_val(*p), off, fmt_val(*v)),
         Op::HeapAlloc(n) => format!("heap.alloc {}", fmt_val(*n)),
@@ -1489,6 +1492,10 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("ptr", ["add"]) if ty == Ty::Ptr => {
             let v = operands(2)?;
             Ok(Op::PtrAdd { p: v[0], off: v[1] })
+        }
+        ("utf8", ["valid"]) if ty == Ty::Usize => {
+            let v = operands(2)?;
+            Ok(Op::Utf8Valid { p: v[0], len: v[1] })
         }
         ("mem", ["load", t]) => {
             same_ty(t)?;
@@ -2176,6 +2183,11 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("ptr.add は ptr と usize の被演算子のはず".into());
                         }
                     }
+                    Op::Utf8Valid { p, len } => {
+                        if i.ty != Ty::Usize || ty_of(*p)? != Ty::Ptr || ty_of(*len)? != Ty::Usize {
+                            return Err("utf8.valid は ptr と usize を受けて usize を返すはず".into());
+                        }
+                    }
                     Op::MemLoad { p, .. } => {
                         if !memable(i.ty) || ty_of(*p)? != Ty::Ptr {
                             return Err("load は ptr から整数・浮動小数・bool・ptr を読むはず".into());
@@ -2425,6 +2437,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
     match op {
         Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) => vec![],
         Op::PtrAdd { p, off } => vec![*p, *off],
+        Op::Utf8Valid { p, len } => vec![*p, *len],
         Op::MemLoad { p, .. } | Op::HeapFree(p) => vec![*p],
         Op::HeapAlloc(n) => vec![*n],
         Op::HeapRealloc { p, size } => vec![*p, *size],

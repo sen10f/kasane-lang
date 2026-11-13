@@ -512,12 +512,12 @@ fn fmt_float_helpers() -> String {
     "declare ptr @ksn_fmt_f64(double)\ndeclare ptr @ksn_fmt_f32(float)\n".to_string()
 }
 
-/// C の実行時補助 (`kir_rt.c`) の本文。生成した IR が `@ksn_fmt_` を呼ぶときだけ、clang に一緒に渡す。
+/// C の実行時補助 (`kir_rt.c`) の本文。生成した IR が `@ksn_fmt_` / `@ksn_utf8_` を呼ぶときだけ、clang に一緒に渡す。
 pub const RUNTIME_C: &str = include_str!("kir_rt.c");
 
 /// IR が C の実行時補助を要するか。
 pub fn needs_runtime(ll: &str) -> bool {
-    ll.contains("@ksn_fmt_")
+    ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_")
 }
 
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
@@ -1588,6 +1588,11 @@ impl<'a> Fe<'a> {
             Op::PtrAdd { p, off } => {
                 let (pv, o) = (self.r(*p), self.r(*off));
                 self.line(format!("{} = getelementptr i8, ptr {}, i64 {}", d, pv, o));
+            }
+            Op::Utf8Valid { p, len } => {
+                self.cx.decl("declare i64 @ksn_utf8_valid(ptr, i64)".to_string());
+                let (pv, n) = (self.r(*p), self.r(*len));
+                self.line(format!("{} = call i64 @ksn_utf8_valid(ptr {}, i64 {})", d, pv, n));
             }
             Op::MemLoad { p, off } => {
                 let pv = self.r(*p);

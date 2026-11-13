@@ -660,6 +660,14 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     }
                 },
                 Op::PtrAdd { p, off } => get(&stack[top], p) + get(&stack[top], off),
+                Op::Utf8Valid { p, len } => {
+                    let n = get(&stack[top], len) as usize;
+                    let bytes = if n == 0 { vec![] } else { bm.read_bytes(get(&stack[top], p), n)? };
+                    match std::str::from_utf8(&bytes) {
+                        Ok(_) => n as i128,
+                        Err(e) => e.valid_up_to() as i128,
+                    }
+                }
                 Op::MemLoad { p, off } => bm.read(get(&stack[top], p) + *off as i128, inst.ty)?,
                 Op::MemStore { ty, p, off, v } => {
                     let (a, x) = (get(&stack[top], p) + *off as i128, get(&stack[top], v));

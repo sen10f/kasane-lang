@@ -99,6 +99,7 @@ fn side_effecting(op: &Op) -> bool {
         | Op::Alloca
         | Op::Load(_)
         | Op::MemLoad { .. }
+        | Op::Utf8Valid { .. }
         | Op::FrameBytes { .. } => true,
         // 純粋な演算・構築・変換は副作用を持たない。
         Op::Const(_)
@@ -261,6 +262,7 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::Write { fd, data } => vec![fd, data],
         Op::Eprint { data } => vec![data],
         Op::FmtFloat { a, .. } => vec![a],
+        Op::Utf8Valid { p, len } => vec![p, len],
         Op::NetListen { addr } | Op::NetConnect { addr } => vec![addr],
         Op::NetAccept { sock } | Op::NetFlush { sock } | Op::NetClose { sock } | Op::NetLocalPort { sock } => vec![sock],
         Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => vec![sock, buf, len],

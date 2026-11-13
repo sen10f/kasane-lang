@@ -12719,6 +12719,30 @@ fn kir_lower_examples_and_perf_functions_match_tree_walker() {
     }
 }
 
+#[test]
+fn kir_str_methods_and_bstr_match_tree_walker() {
+    // `&str` の `starts_with` / `ends_with` / `eq` とバイト列リテラル `b"..."`。
+    // 木走査は `t.main` の `core.check.eq` で検査し、KIR は整数/bool を返す関数を `--run` で比べる。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(\"abc\".starts_with(\"ab\"), true)\n    core.check.eq(\"abc\".starts_with(\"bc\"), false)\n    core.check.eq(\"abc\".starts_with(\"\"), true)\n    core.check.eq(\"\".starts_with(\"\"), true)\n    core.check.eq(\"abc\".ends_with(\"bc\"), true)\n    core.check.eq(\"abc\".ends_with(\"ab\"), false)\n    core.check.eq(\"abc\".ends_with(\"\"), true)\n    core.check.eq(\"abc\".ends_with(\"abcd\"), false)\n    core.check.eq(\"abc\".eq(\"abc\"), true)\n    core.check.eq(\"abc\".eq(\"abd\"), false)\n    core.check.eq(match core.str.from_utf8(b\"abc\") {\n        Ok(_t) => true\n        Err(_e) => false\n    }, true)\n    core.check.eq(match core.str.from_utf8(b\"\\xc3\") {\n        Ok(_t) => true\n        Err(_e) => false\n    }, false)\n    Ok(())\nend t.main\n\nfn t.bstr_test() -> bool uses [] panics may\n    b\"abc\".len() == 3usize && b\"abc\"[0] == 97u8\nend t.bstr_test\n\nfn t.str_test() -> bool uses [] panics never\n    \"abc\".starts_with(\"ab\") && \"abc\".starts_with(\"bc\") == false && \"abc\".eq(\"abc\") && !\"abc\".eq(\"abd\")\nend t.str_test\n\nfn t.utf8_ok() -> bool uses [] panics never\n    match core.str.from_utf8(b\"abc\") {\n        Ok(_t) => true\n        Err(_e) => false\n    }\nend t.utf8_ok\n\nfn t.utf8_bad() -> bool uses [] panics never\n    match core.str.from_utf8(b\"\\xc3\") {\n        Ok(_t) => false\n        Err(_e) => true\n    }\nend t.utf8_bad\n";
+    let t = Tmp::new("kir_str_methods", src);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "check: {}", text(&o.stderr));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "run (tree-walker): {}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.str_test", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir str_test: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir str_test value");
+    let k = kir_run(&["kir", "t.bstr_test", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir bstr_test: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir bstr_test value");
+    let k = kir_run(&["kir", "t.utf8_ok", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir utf8_ok: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir utf8_ok value");
+    let k = kir_run(&["kir", "t.utf8_bad", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir utf8_bad: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir utf8_bad value");
+}
+
 // ---- panic (unwrap・core.panic.panic)、利用者のメソッドの &mut 受け手、配列リテラルの for ----
 
 /// panic の試験用の関数。`unwrap` の None / Err と `core.panic.panic` (エスケープと % を含む文言)。
@@ -18705,4 +18729,16 @@ fn kir_push_u64_matches_tree_walker() {
         (&["10"], "t.f(10u64)", "680005usize", "680005"),
         (&["18446744073709551615"], "t.f(18446744073709551615u64)", "4233681847441813393usize", "4233681847441813393"),
     ]);
+}
+
+/// `core.str.from_utf8` の検証 (命令 `utf8.valid`、機械語は kir_rt.c) は Rust の規則と同じ:
+/// 1〜4 バイト、途中で切れた列、過長な符号化、サロゲート、U+10FFFF 超。Ok は 1000、Err は `valid_up_to`。
+#[test]
+fn kir_from_utf8_matches_tree_walker() {
+    let fns = "fn t.c0() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\x61\\x62\\x63\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c0\n\nfn t.c1() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c1\n\nfn t.c2() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xc3\\xa9\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c2\n\nfn t.c3() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xe3\\x81\\x82\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c3\n\nfn t.c4() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xf0\\x9f\\x98\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c4\n\nfn t.c5() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xc3\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c5\n\nfn t.c6() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xe3\\x81\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c6\n\nfn t.c7() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xf0\\x9f\\x98\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c7\n\nfn t.c8() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xc0\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c8\n\nfn t.c9() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xe0\\x80\\xaf\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c9\n\nfn t.c10() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xed\\xa0\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c10\n\nfn t.c11() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xf4\\x90\\x80\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c11\n\nfn t.c12() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c12\n\nfn t.c13() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xff\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c13\n\nfn t.c14() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\x61\\xe3\\x81\\x82\\x62\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c14\n\nfn t.c15() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xef\\xbf\\xbf\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c15\n\nfn t.c16() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xf4\\x8f\\xbf\\xbf\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c16\n\nfn t.c17() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\xc2\\x80\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c17\n\nfn t.c18() -> u64 uses [] panics may\n    match core.str.from_utf8(b\"\\x61\\x62\\xc3\") {\n        Ok(_s) => 1000u64\n        Err(e) => u64.from_usize(e.valid_up_to)\n    }\nend t.c18\n";
+    let want = ["1000", "1000", "1000", "1000", "1000", "0", "0", "0", "0", "0", "0", "0", "0", "0", "1000", "1000", "1000", "1000", "2"];
+    for (i, w) in want.iter().enumerate() {
+        let f = format!("t.c{}", i);
+        kir_review_cases(&format!("from_utf8_{}", i), fns, &f, &[(&[], &format!("{}()", f), &format!("{}u64", w), w)]);
+    }
 }

@@ -1106,3 +1106,7 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 機械語は、表示を C の小さな実行時補助 `stage0/src/kir_rt.c` (`ksn_fmt_f64` / `ksn_fmt_f32`) に任せる。`ksn` に埋め込み (`include_str!`)、IR が `@ksn_fmt_` を呼ぶときだけ、`.ll` の隣に書いて clang に一緒に渡す (`-x c`)。IR で書くより短く、検証しやすいため。
 - 算法: `%.{p}e` を p = 0.. で試し、`strtod` / `strtof` で読み戻して一致した最初の桁を使う。最近接の候補が往復しないとき (2 の冪の境界) は、同じ桁数の隣の候補を 10 進の桁の列の上で作って試す。ちょうど中間の値は、Rust と同じく絶対値の大きい方を取る (正確な 10 進展開で判定)。最後に指数表記を通常の 10 進に直す。
 - 確かめ: Rust の `format!("{}")` と、f64 約 25 万個 (2 の冪すべて、乱数のビット列、小数 3 桁の値) と f32 約 20 万個で全件一致。
+
+### 17.12 `core.str.from_utf8` の検証 (2026-11-13)
+- 命令 `utf8.valid p, len` (Op::Utf8Valid) は、`p` から `len` バイトを UTF-8 として検証し、正しい接頭辞の長さ (`valid_up_to`) を返す。全体が正しければ `len`。参照実行器は Rust の `str::from_utf8`、機械語は `kir_rt.c` の `ksn_utf8_valid` (Rust と同じ規則: 過長な符号化・サロゲート・U+10FFFF 超を拒む)。`from_utf8` は、結果が `len` なら `Ok(元の fat)`、違えば `Err(Utf8Error { valid_up_to })`。
+- 確かめ: `ksn_utf8_valid` を Python の UTF-8 の復号 (Rust と同じ規則) と、乱数のバイト列 30 万個で比べて全件一致。
