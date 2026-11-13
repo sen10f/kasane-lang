@@ -19040,6 +19040,7 @@ fn llvm_builds_of_real_packages_match_run() {
         "examples/demo",
         "examples/features",
         "examples/ffi",
+        "examples/http",
         "examples/json",
         "examples/kvapp",
         "examples/more_coll",
@@ -19907,6 +19908,145 @@ fn kir_net_roundtrip() {
     assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", text(&tw.stderr), text(&tw.stdout));
     let k = kir_run(&["kir", "t.net_roundtrip", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", text(&k.stderr), text(&k.stdout));
+}
+
+/// ソケットを `&TcpListener` / `&mut TcpStream` で渡す (設計_KIR.md 12 章)。`[0u8; 8]` の配列を `&mut [u8]` で読ませ、
+/// 読んだ長さと先頭バイトを返す。`?` の失敗の型は `std.net.Error` (listen / accept / local_port / close)。木走査と一致する値は 5104 (5 バイト、先頭 'h' = 104)。
+#[test]
+fn kir_net_refs_pass_sockets_by_reference() {
+    let fns = r#"fn t.port_of(l: &std.net.TcpListener) -> Result<u16, std.net.Error> uses [io.net] panics never
+    l.local_port()
+end t.port_of
+
+fn t.send(s: &mut std.net.TcpStream, data: &[u8]) -> Result<usize, std.io.Error> uses [io.net] panics never
+    s.write(data)
+end t.send
+
+fn t.recv(s: &mut std.net.TcpStream, buf: &mut [u8]) -> Result<usize, std.io.Error> uses [io.net] panics never
+    s.read(buf)
+end t.recv
+
+fn t.first_byte(buf: &[u8]) -> usize uses [] panics never
+    match buf.get(0usize) {
+        Some(b) => usize.from_u8(*b)
+        None => 0usize
+    }
+end t.first_byte
+
+fn t.exchange() -> usize uses [alloc, io.net] panics may
+    let mut address = alloc.string.String.new(std.alloc.SYSTEM)
+    let listener = match std.net.listen("127.0.0.1:0") {
+        Ok(l) => l
+        Err(_e) => core.panic.panic("listen")
+    }
+    let port = match t.port_of(&listener) {
+        Ok(p) => p
+        Err(_e) => core.panic.panic("port")
+    }
+    match address.push_str("127.0.0.1:") {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("push")
+    }
+    match address.push_u64(u64.from_u16(port)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("push_u64")
+    }
+    let mut client = match std.net.connect(address.as_str()) {
+        Ok(c) => c
+        Err(_e) => core.panic.panic("connect")
+    }
+    match t.send(&mut client, "hello".as_bytes()) {
+        Ok(_n) => ()
+        Err(_e) => core.panic.panic("send")
+    }
+    match client.close() {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("close client")
+    }
+    let mut server = match listener.accept() {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("accept")
+    }
+    let mut chunk = [0u8; 8]
+    let n = match t.recv(&mut server, &mut chunk) {
+        Ok(k) => k
+        Err(_e) => core.panic.panic("recv")
+    }
+    let first = t.first_byte(&chunk)
+    match server.close() {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("close server")
+    }
+    match listener.close() {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("close listener")
+    }
+    n.wrapping_mul(1000usize).wrapping_add(first)
+end t.exchange
+
+fn t.bad_listen() -> Result<usize, std.net.Error> uses [io.net] panics never
+    let l = std.net.listen("not an address")?
+    match l.close() {
+        Ok(_u) => Ok(1usize)
+        Err(e) => Err(e)
+    }
+end t.bad_listen
+"#;
+    let main = "fn t.main() -> () uses [alloc, io.net] panics may\n    core.check.eq(t.exchange(), 5104usize)\n    match t.bad_listen() {\n        Ok(_n) => core.panic.panic(\"listen should fail\")\n        Err(_e) => ()\n    }\nend t.main\n";
+    let t = Tmp::new("kir_net_refs", &format!("{}\n{}", fns, main));
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", text(&tw.stderr), text(&tw.stdout));
+    let k = kir_run(&["kir", "t.exchange", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", text(&k.stderr), text(&k.stdout));
+    assert_eq!(text(&k.stdout).trim(), "5104");
+    let m = kir_run(&["kir", "t.main", "--run"], &t.0);
+    assert_eq!(m.status.code(), Some(0), "kir main: {}\n{}", text(&m.stderr), text(&m.stdout));
+}
+
+/// `[x; N]` (`ArrayRep`、長さはリテラル、要素はスカラー) の値・ループ・`get`。長さ 0 の配列も含む。
+#[test]
+fn kir_array_rep_matches_tree_walker() {
+    let fns = r#"fn t.count_true() -> usize uses [] panics never
+    let mut bs = [false; 4]
+    match bs.get(2usize) {
+        Some(b) => core.mem.drop(*b)
+        None => core.mem.drop(false)
+    }
+    let mut n = 0usize
+    for b in bs {
+        if !b {
+            n = n.wrapping_add(1usize)
+        }
+    }
+    n
+end t.count_true
+
+fn t.fill_len(buf: &mut [u32]) -> usize uses [] panics never
+    buf.len()
+end t.fill_len
+
+fn t.sum_arr() -> u32 uses [] panics never
+    let a = [3u32; 5]
+    let mut s = 0u32
+    for x in a {
+        s = s.wrapping_add(x)
+    }
+    let b = [1u32; 0]
+    for y in b {
+        s = s.wrapping_add(y)
+    }
+    s
+end t.sum_arr
+"#;
+    let main = "fn t.main() -> () uses [] panics may\n    core.check.eq(t.sum_arr(), 15u32)\n    core.check.eq(t.count_true(), 4usize)\nend t.main\n";
+    let t = Tmp::new("kir_array_rep", &format!("{}\n{}", fns, main));
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", text(&tw.stderr), text(&tw.stdout));
+    for (f, want) in [("t.sum_arr", "15"), ("t.count_true", "4")] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}: {}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
 }
 
 /// `--opt` のインライン化は `extern` (本体が仮の `unreachable`) を展開しない。

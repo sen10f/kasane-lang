@@ -14,9 +14,17 @@ use crate::parser::V;
 use super::{Lw, LR};
 
 /// `std.io.Error` 集成体をペイロードに持つ `Result<i32, std.io.Error>` / `Result<usize, ...>` / `Result<(), ...>`。
+/// `read` / `write` / `flush` の失敗は `std.io.Error` (設計_KIR.md 12 章、`spec/stdlib/std/net.sig`)。
 fn net_err_ty(lw: &mut Lw, payload: Ty) -> Ty {
     let ioerr = lw.aggs.borrow_mut().io_error(lw.p).expect("std.io.Error の定義がない");
     Ty::Res(Pay::of(payload).expect("ペイロードがスカラーになる"), Pay::of(ioerr).expect("std.io.Error は集成体ペイロードになる"))
+}
+
+/// `std.net.Error` (`{ code: i32 }`) をペイロードに持つ `Result`。`listen` / `connect` / `accept` / `local_port` / `close` の失敗。
+/// 失敗のペイロードは errno (下位 32 ビット) で、`kir_llvm` の `net_result` と `kir_exec` の `net_error_agg` がこの形に直す。
+fn net_sock_err_ty(lw: &mut Lw, payload: Pay) -> Ty {
+    let neterr = lw.aggs.borrow().agg_index("std.net.Error").expect("std.net.Error が型表にない");
+    Ty::Res(payload, Pay::Agg(neterr))
 }
 
 /// 受け手 (`ref<agg>` / `mutref<agg>` / `Agg`) から `descriptor` フィールド (i32@0) を読む。
@@ -66,13 +74,12 @@ pub(super) fn net_call(lw: &mut Lw, e: &V, is_listen: bool, line: usize) -> LR<O
     if lw.vty(addr) != fat {
         return lw.err(line, "net のアドレスは &str ではない");
     }
-    let ioerr = Pay::of(lw.aggs.borrow_mut().io_error(lw.p).expect("std.io.Error")).expect("ペイロード");
     let res_ty = if is_listen {
         let agg = lw.aggs.borrow().agg_index("std.net.TcpListener").expect("std.net.TcpListener が型表にない");
-        Ty::Res(Pay::Agg(agg), ioerr)
+        net_sock_err_ty(lw, Pay::Agg(agg))
     } else {
         let agg = lw.aggs.borrow().agg_index("std.net.TcpStream").expect("std.net.TcpStream が型表にない");
-        Ty::Res(Pay::Agg(agg), ioerr)
+        net_sock_err_ty(lw, Pay::Agg(agg))
     };
     let op = if is_listen {
         Op::NetListen { addr }
@@ -131,10 +138,12 @@ pub(super) fn net_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, arg
     let res_ty = match name {
         "accept" => {
             let stream = lw.aggs.borrow().agg_index("std.net.TcpStream").expect("std.net.TcpStream が型表にない");
-            Ty::Res(Pay::Agg(stream), Pay::of(lw.aggs.borrow_mut().io_error(lw.p).expect("std.io.Error")).expect("ペイロード"))
+            net_sock_err_ty(lw, Pay::Agg(stream))
         }
         "read" | "write" => net_err_ty(lw, Ty::Usize),
-        "local_port" => net_err_ty(lw, Ty::U16),
+        "local_port" => net_sock_err_ty(lw, Pay::U16),
+        // `flush` は `std.io.Error`、`close` は `std.net.Error` (spec の型どおり)。
+        "close" => net_sock_err_ty(lw, Pay::Unit),
         _ => net_err_ty(lw, Ty::Unit),
     };
     Ok(Some(lw.emit(res_ty, op)))

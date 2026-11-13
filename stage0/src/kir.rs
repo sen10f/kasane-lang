@@ -2312,9 +2312,9 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if ty_of(*addr)? != fat_ty(m)? {
                             return Err("net.listen / net.connect のアドレスは fat (&str) のはず".into());
                         }
-                        let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty()));
+                        let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_net_error(m, e.ty()));
                         if !ok {
-                            return Err("net.listen / net.connect の結果は Result<ソケット集成体, std.io.Error> のはず".into());
+                            return Err("net.listen / net.connect の結果は Result<ソケット集成体, std.net.Error> のはず".into());
                         }
                     }
                     Op::NetAccept { sock } | Op::NetFlush { sock } | Op::NetClose { sock } | Op::NetLocalPort { sock } => {
@@ -2326,21 +2326,27 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                         match &i.op {
                             Op::NetAccept { .. } => {
-                                let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty()));
+                                let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_net_error(m, e.ty()));
                                 if !ok {
-                                    return Err("net.accept の結果は Result<ソケット集成体, std.io.Error> のはず".into());
+                                    return Err("net.accept の結果は Result<ソケット集成体, std.net.Error> のはず".into());
                                 }
                             }
                             Op::NetLocalPort { .. } => {
-                                let ok = matches!(i.ty, Ty::Res(Pay::U16, e) if is_io_error(m, e.ty()));
+                                let ok = matches!(i.ty, Ty::Res(Pay::U16, e) if is_net_error(m, e.ty()));
                                 if !ok {
-                                    return Err("net.local_port の結果は Result<u16, std.io.Error> のはず".into());
+                                    return Err("net.local_port の結果は Result<u16, std.net.Error> のはず".into());
+                                }
+                            }
+                            Op::NetClose { .. } => {
+                                let ok = matches!(i.ty, Ty::Res(Pay::Unit, e) if is_net_error(m, e.ty()));
+                                if !ok {
+                                    return Err("net.close の結果は Result<(), std.net.Error> のはず".into());
                                 }
                             }
                             _ => {
                                 let ok = matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty()));
                                 if !ok {
-                                    return Err("net.flush / net.close の結果は Result<(), std.io.Error> のはず".into());
+                                    return Err("net.flush の結果は Result<(), std.io.Error> のはず".into());
                                 }
                             }
                         }
@@ -2536,6 +2542,13 @@ fn fat_ty(m: &Module) -> Result<Ty, String> {
 }
 
 /// 型 `t` が `std.io.Error` 集成体か。
+fn is_net_error(m: &Module, t: Ty) -> bool {
+    matches!(
+        t,
+        Ty::Agg(i) if (i as usize) < m.aggs.len() && m.aggs[i as usize].name == "std.net.Error"
+    )
+}
+
 fn is_io_error(m: &Module, t: Ty) -> bool {
     matches!(
         t,

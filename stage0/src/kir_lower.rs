@@ -501,6 +501,7 @@ impl<'a> Lw<'a> {
             "For" => coll::for_expr(self, e),
             "Closure" => coll::closure_lit(self, e),
             "ArrayE" => self.array_lit(e).map(|o| o.map(|(v, _)| v)),
+            "ArrayRep" => self.array_rep(e),
             other => self.err(nline(e), format!("式 {} は段階 1 の対象外", other)),
         }
     }
@@ -1369,8 +1370,8 @@ pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
 fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
     let tys = type_table(p, user, test_def);
     let aggs = RefCell::new(agg::AggTab::new(user));
-    // `std.net.listen`/`connect`/`accept` が返すソケット集成体を、誰も参照しなくても型表に入れる。
-    for name in ["std.net.TcpListener", "std.net.TcpStream"] {
+    // `std.net.listen`/`connect`/`accept` が返すソケット集成体と、その失敗の `std.net.Error` を、誰も参照しなくても型表に入れる。
+    for name in ["std.net.TcpListener", "std.net.TcpStream", "std.net.Error"] {
         if let Some(di) = p.defs.iter().position(|d| d.name == name) {
             let _ = aggs.borrow_mut().intern_def(p, di);
         }

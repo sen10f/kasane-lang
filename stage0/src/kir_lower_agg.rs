@@ -37,6 +37,11 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
 pub const STD_TYPES: [&str; 9] = ["std.io.Error", "std.io.ErrorKind", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError"];
 
+/// ソケットの型 (`std.net.TcpListener` / `TcpStream`)。型表には `lower_defs` が常に入れる。`&` の形の型も、同じ集成体として下ろす。
+pub fn is_net_socket(name: &str) -> bool {
+    name == "std.net.TcpListener" || name == "std.net.TcpStream"
+}
+
 /// `Vec` / `String` のヘッダの型の名前 (`vec`、要素が所有物なら `vec<#N>`)。利用者の型は FQN で `.` を含むので衝突しない。
 pub fn is_vec_name(n: &str) -> bool {
     n == "vec" || n.starts_with("vec<#")
@@ -149,7 +154,8 @@ impl AggTab {
                 }
                 let segs: Vec<String> = name.split('.').map(String::from).collect();
                 match p.resolve(&segs, file).map(|r| r.target) {
-                    Some(Tgt::Type(di)) if self.user.contains(&di) || STD_TYPES.contains(&p.defs[di].name.as_str()) => self.intern_def(p, di),
+                    // ソケットの型 (`std.net.TcpListener` / `TcpStream`) は `&` の形でも現れるので、型表に入れる (設計_KIR.md 12 章)。
+                    Some(Tgt::Type(di)) if self.user.contains(&di) || STD_TYPES.contains(&p.defs[di].name.as_str()) || is_net_socket(&p.defs[di].name) => self.intern_def(p, di),
                     // 上の一覧にない標準ライブラリの型は、KIR の型表に入れない (値は組み込みの実装が作るので、下ろせない)。
                     _ => Err(format!("{} は未対応 (標準ライブラリの型は KIR に組み込みがない)", name)),
                 }
