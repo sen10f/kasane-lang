@@ -364,7 +364,26 @@ impl Interp {
             }
             "Closure" => {
                 let params = items(&f[0]).iter().map(|p| (st(&items(p)[0]), items(p)[1].clone())).collect();
-                Ok(Val::Closure(Rc::new(ClosureV { params, ret: f[1].clone(), body: f[3].clone(), scope: sc.clone() })))
+                // 4.3: 取り込みは作る時点で決まる。`move x` と `x` は値の写し、`&x` は値の共有、
+                // `&mut x` は外側の変数への参照 (本体の `*x = v` / `x = v` がそこへ書く)。
+                // 外側のスコープを共有すると、取り込み後の外側の書き換えが見えてしまうので、取り込みだけを入れた
+                // 専用のスコープを作る (取り込み漏れの名前は、従来どおり外側の scope へ届く。漏れの検査は別件)。
+                let cs = new_scope(Some(sc), Rc::from(""));
+                for c in items(&f[2]) {
+                    let (k, n) = (st(&items(c)[0]), st(&items(c)[1]));
+                    let Some(owner) = sc_owner(sc, &n) else { continue };
+                    let cur = owner.borrow().vars[&n].clone();
+                    let v = match k.as_str() {
+                        "&mut" => match cur {
+                            Val::Ref(_) => cur,
+                            _ => Val::Ref(Rc::new(VarPlace(owner, n.clone()))),
+                        },
+                        "&" => cur,
+                        _ => self.cp(cur),
+                    };
+                    sc_declare(&cs, &n, v);
+                }
+                Ok(Val::Closure(Rc::new(ClosureV { params, ret: f[1].clone(), body: f[3].clone(), scope: cs })))
             }
             "If" => {
                 if self.truthy(&f[0], sc)? {

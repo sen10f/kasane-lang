@@ -1741,6 +1741,110 @@ fn a_closure_that_captures_by_mutation_does_not_meet_the_fn_bound() {
     assert!(got.iter().any(|c| c == "E2030"), "{}", out);
 }
 
+// 木走査: 取り込みは作る時点で決まる (4.3)。外側の後の書き換えは見えない。
+#[test]
+fn move_capture_copies_the_value_when_the_closure_is_made() {
+    run_ok(
+        "clo_move_copy",
+        &body(&[
+            "let mut x = 1u64",
+            "let f = fn() -> u64 capture [move x] {",
+            "    x",
+            "}",
+            "x = 5u64",
+            "core.check.eq(f(), 1u64)",
+            "core.check.eq(x, 5u64)",
+        ]),
+    );
+}
+
+// 木走査: `&x` は共有で、本体の `*x` で読める。
+#[test]
+fn shared_capture_reads_through_the_reference() {
+    run_ok(
+        "clo_shared_read",
+        &body(&[
+            "let base = 3u64",
+            "let f = fn() -> u64 capture [&base] {",
+            "    *base + 1u64",
+            "}",
+            "core.check.eq(f(), 4u64)",
+        ]),
+    );
+}
+
+// 木走査: `&mut x` の本体では `*x = v` が外側の `x` へ書く (KIR と同じ)。
+#[test]
+fn mut_ref_capture_writes_through_deref_assignment() {
+    run_ok(
+        "clo_mut_deref",
+        &body(&[
+            "let mut x = 1u64",
+            "let f = fn(v: u64) -> () capture [&mut x] {",
+            "    *x = v",
+            "}",
+            "f(7u64)",
+            "core.check.eq(x, 7u64)",
+        ]),
+    );
+}
+
+// 木走査: `&mut x` の本体で `x = v` と書いても、仕様の「本体で `a` と書く」形として外側へ書く。
+#[test]
+fn mut_ref_capture_writes_through_plain_name_assignment() {
+    run_ok(
+        "clo_mut_name",
+        &body(&[
+            "let mut x = 1u64",
+            "let g = fn(v: u64) -> () capture [&mut x] {",
+            "    x = v",
+            "}",
+            "g(9u64)",
+            "core.check.eq(x, 9u64)",
+        ]),
+    );
+}
+
+// 木走査: `move` で取り込んだ値は、クロージャの呼び出しをまたいで残る (FnMut の状態)。外側は変わらない。
+#[test]
+fn move_captured_state_persists_across_calls_without_touching_the_outer() {
+    run_ok(
+        "clo_move_state",
+        &body(&[
+            "let mut n = 0u64",
+            "let mut inc = fn() -> u64 capture [move n] {",
+            "    n = n + 1u64",
+            "    n",
+            "}",
+            "core.check.eq(inc(), 1u64)",
+            "core.check.eq(inc(), 2u64)",
+            "core.check.eq(n, 0u64)",
+        ]),
+    );
+}
+
+// 規範 (sig) にある数値の変換は、静的な呼び出しで通る。規範に無い `from_` は E1108 (下)。
+#[test]
+fn sig_listed_numeric_conversions_run() {
+    run_ok(
+        "num_conv_ok",
+        &body(&[
+            "core.check.eq(u32.from_u8(3u8), 3u32)",
+            "core.check.eq(f64.from_usize_nearest(3usize), 3.0f64)",
+            "core.check.eq(f32.from_u32_nearest(3u32), 3.0f32)",
+            "core.check.eq(u8.try_from_u32(300u32).is_err(), true)",
+        ]),
+    );
+}
+
+// 規範 (spec/stdlib/core/num*.sig) に無い `P.from_X` は、整数では E1108 (f32 / f64 にだけある `_nearest`)。
+#[test]
+fn numeric_from_name_not_in_the_stdlib_is_reported() {
+    let (got, out) = check_codes("num_conv_bad", &["core.mem.drop(u32.from_usize_nearest(3usize))"]);
+    assert!(got.iter().any(|c| c == "E1108"), "{}", out);
+    assert!(out.contains("u32.from_usize_nearest"), "{}", out);
+}
+
 fn trait_prefix() -> String {
     [
         "trait t.Shape",
