@@ -9693,7 +9693,7 @@ fn kir_lower_prints_a_module_that_reads_back() {
 #[test]
 fn kir_lower_reports_unsupported_constructs_with_a_reason() {
     // 段階 1 の対象外 (標準の型 `std.io.Error` への参照の引数) は、理由を付けて拒否する。対象の関数は出さない。
-    let src = "fn t.len_of(_s: &std.io.Error) -> usize uses [] panics never
+    let src = "fn t.len_of(_s: &std.io.Stdout) -> usize uses [] panics never
     5usize
 end t.len_of
 
@@ -9935,7 +9935,7 @@ fn kir_optres_prints_tagged_types_and_reads_back() {
 #[test]
 fn kir_optres_rejects_checked_neg_and_std_payloads_with_a_reason() {
     // `checked_neg` は段階 1 の対象外。`Option` の中のタプルは集成体として持てる (11.5) が、
-    // 標準ライブラリの型 (`std.io.Error`) をペイロードに持つ `Result` は未対応で、理由に型名を出す。
+    // Kasane の定義を持たない扱いの標準ライブラリの型 (`std.io.Stdout`。`std.io.Error` は 12.1 で型表に入った) をペイロードに持つ `Result` は未対応で、理由に型名を出す。
     let src = "fn t.neg(x: i8) -> Option<i8> uses [] panics never
     x.checked_neg()
 end t.neg
@@ -9944,7 +9944,7 @@ fn t.pr(x: u8) -> Option<(u8, u8)> uses [] panics never
     Some((x, x))
 end t.pr
 
-fn t.io(x: u8) -> Result<u8, std.io.Error> uses [] panics never
+fn t.io(x: u8) -> Result<u8, std.io.Stdout> uses [] panics never
     Ok(x)
 end t.io
 ";
@@ -9958,7 +9958,7 @@ end t.io
     let o = run(&["kir", "t.io"], &t.0);
     assert_eq!(o.status.code(), Some(1));
     let err = text(&o.stderr);
-    assert!(err.contains("t.io は未対応") && err.contains("std.io.Error は未対応"), "{}", err);
+    assert!(err.contains("t.io は未対応") && err.contains("std.io.Stdout は未対応"), "{}", err);
 }
 
 #[test]
@@ -10213,7 +10213,7 @@ fn kir_optres_of_aggregates_read_back_as_text() {
 
 #[test]
 fn kir_optres_unit_and_std_payloads_are_checked_by_the_verifier() {
-    // `Result<(), 利用者の型>` は作れる (unit の Ok)。`Option<std 型>` は未対応の理由を付けて拒否する。
+    // `Result<(), 利用者の型>` は作れる (unit の Ok)。`Option<型表にない std 型>` は未対応の理由を付けて拒否する。
     let src = "type t.P
     a: u8
 end t.P
@@ -10222,7 +10222,7 @@ fn t.ok_unit() -> Result<(), t.P> uses [] panics never
     Ok(())
 end t.ok_unit
 
-fn t.bad() -> Option<std.io.Error> uses [] panics never
+fn t.bad() -> Option<std.io.Stdout> uses [] panics never
     None
 end t.bad
 ";
@@ -10232,7 +10232,7 @@ end t.bad
     assert!(text(&o.stdout).contains("ret=Result<unit,agg#0>"), "{}", text(&o.stdout));
     let o = run(&["kir", "t.bad"], &t.0);
     assert_eq!(o.status.code(), Some(1));
-    assert!(text(&o.stderr).contains("std.io.Error は未対応"), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("std.io.Stdout は未対応"), "{}", text(&o.stderr));
 }
 
 #[test]
@@ -11605,7 +11605,7 @@ fn kir_refs_text_shows_slots_and_reference_types() {
 #[test]
 fn kir_refs_reference_to_unsupported_pointee_keeps_its_reason() {
     // 指す先が整数・浮動小数・bool・利用者の構造体でない参照 (標準の型) は、従来どおり理由付きで未対応になる。
-    let src = "fn t.first(s: &std.io.Error) -> u8 uses [] panics never
+    let src = "fn t.first(s: &std.io.Stdout) -> u8 uses [] panics never
     let _t = s
     0u8
 end t.first
@@ -12305,7 +12305,7 @@ fn kir_agg_refs_vec_fields_are_read_through_references() {
 fn kir_agg_refs_reports_unsupported_references_with_a_reason() {
     // 指す先が標準の型・Option の参照や、移動・Vec の借用の戻りは、理由を付けて拒否する。
     let cases: &[(&str, &str, &str)] = &[
-        ("fn t.f(e: &std.io.Error) -> u8 uses [] panics never\n    let _t = e\n    0u8\nend t.f\n", "t.f", "引数の型"),
+        ("fn t.f(e: &std.io.Stdout) -> u8 uses [] panics never\n    let _t = e\n    0u8\nend t.f\n", "t.f", "引数の型"),
         ("fn t.f(v: alloc.vec.Vec<u8, std.alloc.System>) -> usize uses [] panics never\n    v.len()\nend t.f\n", "t.f", "引数の型"),
         // 要素が集成体のスライスは `fat` の対象外 (要素の大きさが要る。`Option<&[u8]>` は対象になった)
         ("type t.P\n    a: u8\nend t.P\n\nfn t.f(s: &[t.P]) -> usize uses [] panics never\n    let _t = s\n    0usize\nend t.f\n", "t.f", "引数の型"),
@@ -12561,4 +12561,191 @@ fn kir_native_without_clang_is_an_error_with_a_reason() {
         .expect("spawn ksn");
     assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("clang が必要です"), "{}", text(&o.stderr));
+}
+
+// ---- 入出力と入口 (設計_KIR.md 12): `write`、`ksn build --backend llvm`、`main` の `Err` の表示 ----
+
+const IO_SAY: &str = "fn t.say() -> bool uses [io.console] panics never
+    match std.io.print_line(\"hi there\") {
+        Ok(_) => true
+        Err(_) => false
+    }
+end t.say
+
+fn t.twice() -> u8 uses [io.console] panics never
+    let a = std.io.print_line(\"one\")
+    let b = std.io.print_line(\"two\")
+    match a {
+        Ok(_) => match b {
+            Ok(_) => 2u8
+            Err(_) => 1u8
+        }
+        Err(_) => 0u8
+    }
+end t.twice
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(\"main\")
+end t.main
+";
+
+#[test]
+fn kir_write_prints_through_run_and_native() {
+    // `print_line` は `write 1, s` と `write 1, \"\\n\"` に下ろされる。`--run` (参照実行器) と `--native` (write(2)) の表示が一致する。
+    let t = Tmp::new("kir_io_write", IO_SAY);
+    let o = run(&["kir", "t.say"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let ir = text(&o.stdout);
+    assert!(ir.contains("= write %") && ir.contains("agg#1 struct std.io.Error") || ir.contains("struct std.io.Error size=8"), "{}", ir);
+    let r = kir_run(&["kir", "t.say", "--run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), "hi there\ntrue\n");
+    let r = kir_run(&["kir", "t.twice", "--run"], &t.0);
+    assert_eq!(text(&r.stdout), "one\ntwo\n2\n");
+    // 木走査と同じ行が出る
+    let tw = run(&["run"], &t.0);
+    assert_eq!(text(&tw.stdout), "main\n");
+    assert_eq!(tw.status.code(), Some(0));
+}
+
+/// `ksn build --backend llvm` の実行ファイルと `ksn run` を走らせ、(run, native) を返す。native が作れなければ `None`。
+fn llvm_build_and_run(t: &Tmp) -> Option<(Output, Output)> {
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    let out = text(&b.stdout);
+    assert_eq!(b.status.code(), Some(0), "{}{}", out, text(&b.stderr));
+    assert!(!out.contains("llvm backend skipped"), "{}", out);
+    if !clang_available() {
+        return None;
+    }
+    let exe = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    assert!(exe.exists(), "{}", out);
+    let n = Command::new(&exe).current_dir(&t.0).output().expect("native");
+    Some((run(&["run"], &t.0), n))
+}
+
+fn same_output(r: &Output, n: &Output) {
+    assert_eq!(text(&n.stdout), text(&r.stdout), "stdout");
+    assert_eq!(text(&n.stderr), text(&r.stderr), "stderr");
+    assert_eq!(n.status.code(), r.status.code(), "終了コード");
+}
+
+#[test]
+fn llvm_build_of_print_line_main_matches_run() {
+    let t = Tmp::new("llvm_build_print", IO_SAY);
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        assert_eq!(text(&r.stdout), "main\n");
+        same_output(&r, &n);
+    }
+}
+
+#[test]
+fn llvm_build_main_err_prints_debug_and_exits_1() {
+    // `Err(e)` は stderr に `Error: <Debug>` と改行、終了コード 1 (木走査と同じ)。std.io.Error の Debug も同じ。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(\"before\")?
+    let e = std.io.Error { kind: std.io.ErrorKind.BrokenPipe, code: 32i32 }
+    Err(e)
+end t.main
+";
+    let t = Tmp::new("llvm_build_io_err", src);
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        assert_eq!(r.status.code(), Some(1));
+        assert_eq!(text(&r.stderr), "Error: Error { kind: BrokenPipe, code: 32 }\n");
+        assert_eq!(text(&r.stdout), "before\n");
+        same_output(&r, &n);
+    }
+}
+
+#[test]
+fn llvm_build_debug_covers_structs_enums_ints_bool_char_and_str() {
+    // 構造体・列挙型 (ペイロード付き)・入れ子・整数 (負数・0・64 ビットの端)・bool・char (逃れと非 ASCII)・&str (逃れ) の Debug は木走査と一致する。
+    let src = "enum t.Kind derive [Debug] pub
+    Plain
+    Pair(i32, bool)
+    Named(t.Inner)
+end t.Kind
+
+type t.Inner derive [Debug] pub
+    a: i8
+    b: u64
+    c: char
+end t.Inner
+
+type t.Bad derive [Debug] pub
+    neg: i64
+    zero: i32
+    flag: bool
+    ch: char
+    text: &'static str
+    inner: t.Inner
+    kind: t.Kind
+    k2: t.Kind
+    k3: t.Kind
+    small: u8
+    min: i64
+    quote: char
+end t.Bad
+
+fn t.mk() -> t.Bad uses [] panics never
+    let inner = t.Inner { a: -128i8, b: 18446744073709551615u64, c: '\\n' }
+    let kind = t.Kind.Pair(-7i32, false)
+    let inner2 = t.Inner { a: 0i8, b: 0u64, c: '\\u{e9}' }
+    let k2 = t.Kind.Named(inner2)
+    t.Bad { neg: -12345i64, zero: 0i32, flag: true, ch: 'x', text: \"a\\\"b\\\\c\\nd \\u{e9}\", inner: inner, kind: kind, k2: k2, k3: t.Kind.Plain, small: 255u8, min: -9223372036854775808i64, quote: '\\'' }
+end t.mk
+
+fn t.main() -> Result<(), t.Bad> uses [] panics never
+    Err(t.mk())
+end t.main
+";
+    let t = Tmp::new("llvm_build_debug", src);
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        assert_eq!(r.status.code(), Some(1), "{}", text(&r.stderr));
+        let e = text(&r.stderr);
+        assert!(e.starts_with("Error: Bad { neg: -12345, zero: 0, flag: true, ch: 'x',") && e.contains("kind: Pair(-7, false)") && e.contains("k3: Plain"), "{}", e);
+        same_output(&r, &n);
+    }
+}
+
+#[test]
+fn llvm_build_panic_keeps_the_panic_exit_code_and_message() {
+    // 溢れの panic は 101 と `panic: ...` (木走査と同じ)。それまでの出力は残る。
+    let src = "fn t.bump(x: u8) -> u8 uses [] panics may
+    x + 200u8
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    std.io.print_line(\"start\")?
+    let y = t.bump(100u8)
+    match y {
+        0u8 => std.io.print_line(\"zero\")
+        _ => std.io.print_line(\"unreachable\")
+    }
+end t.main
+";
+    let t = Tmp::new("llvm_build_panic", src);
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        assert_eq!(r.status.code(), Some(101), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), "start\n");
+        same_output(&r, &n);
+    }
+}
+
+#[test]
+fn llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered() {
+    // 下ろせない関数 (ここでは `std.env.arg_count` を呼ぶ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [env, io.console] panics may
+    core.mem.drop(std.env.arg_count())
+    std.io.print_line(\"x\")
+end t.main
+";
+    let t = Tmp::new("llvm_build_fallback", src);
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    let out = text(&b.stdout);
+    assert_eq!(b.status.code(), Some(0), "{}{}", out, text(&b.stderr));
+    assert!(out.contains("llvm backend skipped: t.main を KIR に下ろせない") && out.contains("falling back"), "{}", out);
+    assert!(out.contains("built target/debug"), "{}", out);
+    // 既存の経路 (c / clif) は変わらない: llvm の文言を出さない
+    let c = run(&["build"], &t.0);
+    assert!(!text(&c.stdout).contains("llvm backend"), "{}", text(&c.stdout));
 }

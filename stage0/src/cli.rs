@@ -521,7 +521,13 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
     eprint!("{}", String::from_utf8_lossy(&o.stderr));
     match o.status.code() {
         Some(0) => {
-            let out = String::from_utf8_lossy(&o.stdout);
+            // 標準出力の最後の `\x01` から後ろが結果 (16 進の 2 語)。その前は、プログラム自身の出力 (`write`)。
+            let raw = String::from_utf8_lossy(&o.stdout).to_string();
+            let (prog_out, out) = match raw.rfind('\x01') {
+                Some(i) => (&raw[..i], &raw[i + 1..]),
+                None => ("", raw.as_str()),
+            };
+            print!("{}", prog_out);
             let mut it = out.split_whitespace().map(|w| u64::from_str_radix(w, 16));
             match (it.next(), it.next()) {
                 (Some(Ok(lo)), Some(Ok(hi))) => {
@@ -1828,7 +1834,15 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
                     funcs.insert(d.name.clone(), d);
                 }
             }
-            if backend == "clif" {
+            if backend == "llvm" {
+                match build_llvm(&prog, &user, e, &exe, release) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        println!("llvm backend skipped: {}; falling back to the default backend", why);
+                        crate::cnative::compile_native(&funcs, e, &norm(&exe), release)
+                    }
+                }
+            } else if backend == "clif" {
                 let t_cc = std::time::Instant::now();
                 let mut tdefs: HashMap<String, &Def> = HashMap::new();
                 for &i in &user {
@@ -1857,6 +1871,48 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     }
     println!("built {} ({}, target {}; portable interpreter bundle)", rel(&norm(&out)), kind, target);
     0
+}
+
+/// `ksn build --backend llvm`: 入口の関数から届く関数すべてを KIR に下ろし、LLVM IR を作って clang で実行ファイルにする (設計_KIR.md 12.3)。
+/// 下ろせない関数が 1 つでもあれば、理由を `Err` で返す (呼び出し側が既定の経路へ退避する)。
+fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool) -> Result<(), String> {
+    let lo = crate::kir_lower::lower_program(prog, user, Some(entry));
+    if lo.module.find(entry).is_none() {
+        // 理由の鎖 (`呼び先 X が未対応`) をたどって、根の理由を出す。
+        let mut key = entry.to_string();
+        let mut why = String::from("理由不明");
+        for _ in 0..64 {
+            let Some((_, w)) = lo.unsupported.iter().find(|(k, _)| *k == key) else { break };
+            why = format!("{}: {}", key, w);
+            match w.strip_prefix("呼び先 ").and_then(|r| r.strip_suffix(" が未対応")) {
+                Some(next) => key = next.to_string(),
+                None => break,
+            }
+        }
+        return Err(format!("{} を KIR に下ろせない ({})", entry, why));
+    }
+    if std::env::var_os("KSN_DUMP_KIR").is_some() {
+        for (f, why) in &lo.unsupported {
+            eprintln!("kir: 未対応 {}: {}", f, why);
+        }
+    }
+    let m = lo.module.reachable_from(&[entry, crate::kir_lower::debug::ENTRY_DEBUG]);
+    let ll = crate::kir_llvm::emit_program(&m, entry)?;
+    clang_ll(&ll, exe, if release { "-O2" } else { "-O1" })
+}
+
+/// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。
+fn clang_ll(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
+    let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let src = exe.with_extension("ll.tmp");
+    fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
+    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module", "-x", "ir"]).arg(&src).arg("-o").arg(exe).arg("-lm").output();
+    let _ = fs::remove_file(&src);
+    match o {
+        Err(e) => Err(format!("clang を起動できない ({}: {})", clang, e)),
+        Ok(o) if !o.status.success() => Err(format!("clang が失敗した: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        Ok(_) => Ok(()),
+    }
 }
 
 /// ビルド成果物の実行入口 (内部コマンド)。

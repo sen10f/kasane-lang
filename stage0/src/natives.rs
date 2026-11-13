@@ -1191,9 +1191,10 @@ fn io_error_kind(kind: &str) -> Val {
     }))
 }
 
-fn io_error(e: &std::io::Error) -> Val {
+/// `std::io::Error` に対応する `std.io.ErrorKind` の変種名 (KIR の `write` も同じ対応を使う。設計_KIR.md 12.2)。
+pub fn io_kind_name(e: &std::io::Error) -> &'static str {
     use std::io::ErrorKind as K;
-    let kind = match e.kind() {
+    match e.kind() {
         K::NotFound => "NotFound",
         K::PermissionDenied => "PermissionDenied",
         K::AlreadyExists => "AlreadyExists",
@@ -1203,7 +1204,11 @@ fn io_error(e: &std::io::Error) -> Val {
         K::Interrupted => "Interrupted",
         K::OutOfMemory => "OutOfMemory",
         _ => "Other",
-    };
+    }
+}
+
+fn io_error(e: &std::io::Error) -> Val {
+    let kind = io_kind_name(e);
     Val::Struct(Rc::new(StructV {
         ty: "std.io.Error".into(),
         f: RefCell::new(vec![

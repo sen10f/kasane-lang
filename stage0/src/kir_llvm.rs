@@ -11,7 +11,7 @@
 //! - 浮動小数の超越関数は `fmath` の `Ops` を LLVM IR の命令列に写した内部関数 (`@ksn.m.*`) を呼ぶ。libm は使わない
 //!   (`floor` / `sqrt` / `frem` など丸めが一意に決まる演算は LLVM の組み込みを使う)。
 //! - 出力は決定的 (同じ KIR からは同じバイト列)。
-//! - 入口 `main` は引数を 16 進の語 (下位・上位) で受け取り、結果も 16 進の 2 語で標準出力に出す。表示は呼び出し側
+//! - 入口 `main` は引数を 16 進の語 (下位・上位) で受け取り、結果も 16 進の 2 語で標準出力の最後に出す (前に制御文字 `\x01` を付ける。プログラム自身の出力と区別するため)。表示は呼び出し側
 //!   (`kir::show_value`) が行うので、`--run` と同じ表示になる。
 
 use std::cell::{Cell, RefCell};
@@ -174,6 +174,8 @@ struct Ctx {
     decls: BTreeSet<String>,
     globals: String,
     math: BTreeSet<Math>,
+    /// `write` 命令を使う (`@ksn.write` を出す)。
+    write: bool,
 }
 
 impl Ctx {
@@ -200,6 +202,17 @@ fn str_const(name: &str, s: &str) -> String {
 
 /// `entry` を入口とする実行可能な LLVM IR を作る。KIR の検査に通らない・入口が扱えない形は理由つきの `Err`。
 pub fn emit(m: &Module, entry: &str) -> R<String> {
+    emit_with(m, entry, false)
+}
+
+/// `main` から始まるプログラム全体の実行ファイルの LLVM IR。入口は引数なしの関数 (`()` か `Result<T, E>` を返す) を呼び、
+/// `Err(e)` なら stderr に `Error: <e の Debug 表示>` と改行を出して終了コード 1、それ以外は 0 で終わる (設計_KIR.md 12.3)。
+/// `E` の表示は、KIR の関数 `ksn.entry.debug` (降格が作る) を呼ぶ。
+pub fn emit_program(m: &Module, entry: &str) -> R<String> {
+    emit_with(m, entry, true)
+}
+
+fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     let errs = verify_module(m);
     if let Some((k, e)) = errs.first() {
         return Err(format!("KIR の検査に通らない ({}): {}", k, e));
@@ -207,13 +220,13 @@ pub fn emit(m: &Module, entry: &str) -> R<String> {
     let Some(ef) = m.find(entry) else {
         return Err(format!("関数 {} がない", entry));
     };
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new() };
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false };
     let mut funcs = String::new();
     for (fi, f) in m.funcs.iter().enumerate() {
         funcs.push('\n');
         funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
     }
-    let main = emit_main(&mut cx, &m.aggs, ef)?;
+    let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
     let mut math = String::new();
     for mf in cx.math.clone() {
         math.push('\n');
@@ -237,7 +250,7 @@ pub fn emit(m: &Module, entry: &str) -> R<String> {
     }
     out.push('\n');
     out.push_str("@ksn.depth = internal global i64 0\n");
-    out.push_str(&str_const("ksn.fmt.res", "%llx %llx\n\0"));
+    out.push_str(&str_const("ksn.fmt.res", "\x01%llx %llx\n\0"));
     out.push_str(&str_const("ksn.fmt.so", "stack overflow\n\0"));
     out.push_str(&str_const("ksn.fmt.index", "panic: index out of bounds: the len is %llu but the index is %llu\n\0"));
     for (n, msg) in PANICS {
@@ -252,11 +265,77 @@ pub fn emit(m: &Module, entry: &str) -> R<String> {
     }
     out.push_str("define private void @ksn.panic.index(i64 %len, i64 %ix) noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.index, i64 %len, i64 %ix)\n  call void @exit(i32 101)\n  unreachable\n}\n\n");
     out.push_str("define private void @ksn.overflow() noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.so)\n  call void @exit(i32 102)\n  unreachable\n}\n");
+    if cx.write {
+        out.push_str(&write_helper(&m.aggs)?);
+    }
     out.push_str(&funcs);
     out.push_str(&math);
     out.push('\n');
     out.push_str(&main);
     Ok(out)
+}
+
+/// プログラムの入口 `main` (`emit_program`)。
+fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
+    let aggs = &m.aggs;
+    if !f.params().is_empty() {
+        return Err(format!("入口 {} に引数がある", f.key));
+    }
+    let rt = lty(aggs, f.ret);
+    let mut s = String::from("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n");
+    s.push_str(&format!("  %r = call {} {}()\n", rt, fname(&f.key)));
+    match f.ret {
+        Ty::Res(_, e) => {
+            let sb = slot_bits(aggs, f.ret);
+            let n = sb + 1;
+            let dk = m.find(crate::kir_lower::debug::ENTRY_DEBUG).ok_or("Err の表示の関数 (ksn.entry.debug) がない")?;
+            let et = e.ty();
+            let w = vbits(aggs, et);
+            cx.decl("declare i64 @write(i32, ptr, i64)");
+            cx.globals.push_str(&str_const("ksn.s.err", "Error: "));
+            cx.globals.push_str(&str_const("ksn.s.nl", "\n"));
+            s.push_str(&format!("  %t = lshr i{n} %r, {sb}\n  %tb = trunc i{n} %t to i1\n  br i1 %tb, label %err, label %ok\nerr:\n"));
+            s.push_str(&format!("  %pw = trunc i{n} %r to i{sb}\n"));
+            let x = if w == sb { "%pw".to_string() } else { s.push_str(&format!("  %pe = trunc i{sb} %pw to i{w}\n")); "%pe".to_string() };
+            s.push_str("  %w1 = call i64 @write(i32 2, ptr @ksn.s.err, i64 7)\n");
+            s.push_str(&format!("  %d = call i8 {}({} {}, i32 2)\n", fname(&dk.key), lty(aggs, et), x));
+            s.push_str("  %w2 = call i64 @write(i32 2, ptr @ksn.s.nl, i64 1)\n  ret i32 1\nok:\n  ret i32 0\n}\n");
+        }
+        _ => s.push_str("  ret i32 0\n}\n"),
+    }
+    Ok(s)
+}
+
+fn errno_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "__error"
+    } else {
+        "__errno_location"
+    }
+}
+
+/// `write` 命令の実体 `@ksn.write(fd, ptr, len) -> i64` (設計_KIR.md 12.2)。全バイトを書くまで `write(2)` を繰り返し、EINTR は再試行する。
+/// 成功は 0。失敗は `(errno << 32) | ErrorKind の変種の添字` (errno は 0 にならないので、0 と区別できる)。
+/// errno と `ErrorKind` の対応は木走査 (`natives::io_kind_name`、Rust の `io::Error::kind`) と同じ。
+fn write_helper(aggs: &[AggDef]) -> R<String> {
+    let kinds = aggs.iter().find(|d| d.name == "std.io.ErrorKind").ok_or("型表に std.io.ErrorKind がない")?;
+    let AggKind::Enum(vs) = &kinds.kind else { return Err("std.io.ErrorKind が列挙型でない".into()) };
+    let idx = |n: &str| vs.iter().position(|v| v.name == n).ok_or_else(|| format!("ErrorKind に {} がない", n));
+    let errno_fn = errno_name();
+    let mut s = String::new();
+    s.push_str("define private i64 @ksn.write(i32 %fd, ptr %p, i64 %n) {\nentry:\n  br label %loop\nloop:\n");
+    s.push_str("  %off = phi i64 [0, %entry], [%off2, %adv], [%off, %fail]\n  %left = sub i64 %n, %off\n  %done = icmp eq i64 %left, 0\n  br i1 %done, label %ok, label %try\n");
+    s.push_str("try:\n  %q = getelementptr i8, ptr %p, i64 %off\n  %w = call i64 @write(i32 %fd, ptr %q, i64 %left)\n  %neg = icmp slt i64 %w, 0\n  br i1 %neg, label %fail, label %adv\n");
+    s.push_str("adv:\n  %off2 = add i64 %off, %w\n  br label %loop\n");
+    s.push_str(&format!("fail:\n  %ep = call ptr @{}()\n  %e = load i32, ptr %ep\n  %intr = icmp eq i32 %e, 4\n  br i1 %intr, label %loop, label %err\n", errno_fn));
+    s.push_str("ok:\n  ret i64 0\nerr:\n");
+    let mut cur = format!("{}", idx("Other")?);
+    for (k, (errno, name)) in [(1, "PermissionDenied"), (13, "PermissionDenied"), (2, "NotFound"), (17, "AlreadyExists"), (22, "InvalidInput"), (32, "BrokenPipe"), (12, "OutOfMemory")].iter().enumerate() {
+        s.push_str(&format!("  %c{k} = icmp eq i32 %e, {errno}\n  %k{k} = select i1 %c{k}, i64 {}, i64 {cur}\n", idx(name)?));
+        cur = format!("%k{k}");
+    }
+    s.push_str(&format!("  %ez = zext i32 %e to i64\n  %eh = shl i64 %ez, 32\n  %r = or i64 %eh, {cur}\n  ret i64 %r\n}}\n\n"));
+    Ok(s)
 }
 
 // ---------------------------------------------------------------- 入口 (main)
@@ -1220,6 +1299,23 @@ impl<'a> Fe<'a> {
             }
             Op::MemStore { .. } | Op::Store { .. } | Op::HeapFree(_) | Op::IndexCheck { .. } => {
                 return Err("unit 以外の結果を持つ副作用命令".into())
+            }
+            Op::Write { fd, data } => {
+                let Ty::Res(_, e) = i.ty else { return Err("write の結果が Result でない".into()) };
+                if vbits(aggs, e.ty()) != 64 {
+                    return Err("std.io.Error の幅が 8 バイトでない".into());
+                }
+                self.cx.write = true;
+                self.cx.decl("declare i64 @write(i32, ptr, i64)");
+                self.cx.decl(format!("declare ptr @{}()", errno_name()));
+                let (f, av) = (self.r(*fd), self.r(*data));
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let n = self.extract(&av, 128, 8, 64);
+                let r = self.t(format!("call i64 @ksn.write(i32 {}, ptr {}, i64 {})", f, p, n));
+                let ok = self.t(format!("icmp eq i64 {}, 0", r));
+                let tag = self.t(format!("xor i1 {}, true", ok));
+                self.pack(&d, 64, &tag, &r);
             }
             Op::HeapAlloc(n) => {
                 let nv = self.r(*n);
