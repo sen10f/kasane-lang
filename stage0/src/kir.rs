@@ -2535,7 +2535,7 @@ fn int_into(src: Ty, dst: Ty) -> bool {
     if dst == Ty::I128 {
         return true;
     }
-    src.bits() <= 64 && src.min() >= dst.min() && src.max() <= dst.max()
+    src.bits() <= 64 && dst.bits() <= 64
 }
 
 /// 変換 `src -> dst` が KIR にあるか。整数どうしは `int_into`、整数・浮動小数から浮動小数へ、`f32` と `f64` の間。
