@@ -1,0 +1,22 @@
+fn t.hi(p: fn() -> fn() -> u32 uses [] panics never uses [] panics never) -> u32 uses [] panics never
+    let f = p()
+    f()
+end t.hi
+
+// expect: E4001
+fn t.loud() -> u32 uses [io.console] panics may
+    core.mem.drop(std.io.print_line("LOUD"))
+    core.panic.panic("PANIC")
+end t.loud
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.hi(t.mkloud))
+end t.main
+
+fn t.mkloud() -> fn() -> u32 uses [io.console] panics may uses [] panics never
+    t.loud
+end t.mkloud
+
+fn t.quiet() -> u32 uses [] panics never
+    1u32
+end t.quiet

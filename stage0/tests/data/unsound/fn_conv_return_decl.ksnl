@@ -1,0 +1,13 @@
+// expect: E4001
+fn t.conv(p: fn() -> u32 uses [io.console] panics may) -> fn() -> u32 uses [] panics never uses [] panics never
+    p
+end t.conv
+
+fn t.loud() -> u32 uses [io.console] panics may
+    core.mem.drop(std.io.print_line("LOUD"))
+    core.panic.panic("PANIC")
+end t.loud
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

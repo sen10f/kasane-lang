@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
-use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
+use crate::interp::{py_float, py_float32};
+use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
 use crate::kir_scalar;
 use crate::natives::io_kind_name;
 
@@ -546,6 +547,36 @@ fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
     }
 }
 
+/// `extern` 宣言の C 関数をホストの呼び出し規約で呼ぶ (`ffi::call_generic` と同じ仕組み)。
+/// 引数・戻り値はスカラー・ポインタに限る。
+fn extern_call(func: &Func, argv: &[i128]) -> Result<i128, String> {
+    use crate::ffi::{self, ArgV, RetTy};
+    let link = func.link.as_ref().expect("extern 関数に link がない");
+    let (lib, sym) = crate::ffi::split_link(link);
+    let fnptr = ffi::lookup(lib, sym).map_err(|e| format!("extern {}: {}", func.fqn, e))?;
+    let mut abi: Vec<ArgV> = vec![];
+    for (v, (_, pt)) in argv.iter().zip(func.params().iter()) {
+        abi.push(match pt {
+            Ty::F32 => ArgV::F32(f32::from_bits(*v as u32)),
+            Ty::F64 => ArgV::F64(f64::from_bits(*v as u64)),
+            _ => ArgV::Int(*v as u64),
+        });
+    }
+    let rty = match func.ret {
+        Ty::F32 => RetTy::F32,
+        Ty::F64 => RetTy::F64,
+        _ => RetTy::Int,
+    };
+    let r = ffi::call_generic(fnptr, &abi, &rty).map_err(|e| format!("extern {}: {}", func.fqn, e))?;
+    Ok(match r {
+        ffi::RetV::Int(x) => x as i128,
+        ffi::RetV::F32(f) => f.to_bits() as i128,
+        ffi::RetV::F64(f) => f.to_bits() as i128,
+        ffi::RetV::None => 0,
+        ffi::RetV::Agg(_) => return Err(format!("extern {}: 集成体の戻り値は未対応", func.fqn)),
+    })
+}
+
 /// 鍵 `key` の関数を引数 `args` で実行する。鍵が無い・引数の個数が違う場合は `Err`。
 pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     let index: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
@@ -554,6 +585,11 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     };
     if args.len() != m.funcs[entry].params().len() {
         return Err(format!("関数 {} の引数の個数が違う", key));
+    }
+    // エントリ自体が `extern` なら、ホストの C 関数を直接呼ぶ。
+    if m.funcs[entry].link.is_some() {
+        let result = extern_call(&m.funcs[entry], args)?;
+        return Ok(Outcome::Value(result));
     }
     let counts: Vec<usize> = m.funcs.iter().map(|f| f.value_count()).collect();
     // 関数ごとの値番号 → 型 (`store` が書く値の型を知るため)。
@@ -748,6 +784,16 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let _ = write_fd(2, &bytes);
                     0
                 }
+                Op::FmtFloat { bits, a } => {
+                    let x = get(&stack[top], a);
+                    let s = if *bits == 32 {
+                        py_float32(f32::from_bits(x as u32))
+                    } else {
+                        py_float(f64::from_bits(x as u64))
+                    };
+                    let _ = write_fd(2, s.as_bytes());
+                    0
+                }
                 Op::Abort => return Ok(Outcome::Abort),
                 Op::Panic { msg, arg } => {
                     let m = match arg {
@@ -828,6 +874,14 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let Some(&ci) = index.get(callee.as_str()) else {
                         return Err(format!("呼び先 {} がない", callee));
                     };
+                    let func = &m.funcs[ci];
+                    if func.link.is_some() {
+                        let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
+                        let result = extern_call(func, &argv)?;
+                        stack[top].vals[inst.dst as usize] = result;
+                        stack[top].defd[inst.dst as usize] = true;
+                        continue;
+                    }
                     let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
                     stack.push(enter(ci, &argv, Some(inst.dst), heap.len(), bm.mem.len()));
                     continue;
@@ -1066,6 +1120,7 @@ mod tests {
             may_panic: false,
             stack: None,
             ret: Ty::U64,
+            link: None,
             blocks: vec![Block {
                 params: vec![(0, Ty::U64)],
                 insts: vec![

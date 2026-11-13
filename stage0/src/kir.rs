@@ -691,6 +691,9 @@ pub enum Op {
     Eprint { data: VId },
     /// 文言を出さずに終了コード 101 で終わる (`Eprint` で文言を書いた後の終わり)。結果は unit。`panics may` のときだけ。
     Abort,
+    /// 浮動小数を `py_float` / `py_float32` と同じ規則で書式化して stderr へ出力する。
+    /// 被演算子は `f32` または `f64`、結果は `unit`。`panics may` のときだけ。
+    FmtFloat { bits: u32, a: VId },
 }
 
 /// `BitCount` の種類。
@@ -754,6 +757,8 @@ pub struct Func {
     /// 宣言された `stack` の上界。
     pub stack: Option<u64>,
     pub ret: Ty,
+    /// `extern` 宣言なら C のリンク名 (`lib:symbol` の `symbol` 部分)。ユーザ関数は `None`。
+    pub link: Option<String>,
     /// ブロック 0 が入口。その引数が関数の引数。
     pub blocks: Vec<Block>,
 }
@@ -1129,6 +1134,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::NetLocalPort { sock } => format!("net.local_port {}", fmt_val(*sock)),
         Op::Eprint { data } => format!("eprint {}", fmt_val(*data)),
         Op::Abort => "abort".to_string(),
+        Op::FmtFloat { bits, a } => format!("fmtfloat.{bits} {}", fmt_val(*a)),
     };
     format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
 }
@@ -1545,6 +1551,14 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             Ok(Op::Eprint { data: v[0] })
         }
         ("abort", []) if ty == Ty::Unit => Ok(Op::Abort),
+        ("fmtfloat", [bits]) if ty == Ty::Unit => {
+            let bits = bits.parse::<u32>().map_err(|_| perr(line, "fmtfloat のビット数は 32 または 64"))?;
+            if bits != 32 && bits != 64 {
+                return Err(perr(line, "fmtfloat のビット数は 32 または 64"));
+            }
+            let v = operands(1)?;
+            Ok(Op::FmtFloat { bits, a: v[0] })
+        }
         ("index", ["check"]) if ty == Ty::Unit => {
             let v = operands(2)?;
             Ok(Op::IndexCheck { i: v[0], len: v[1] })
@@ -1769,6 +1783,7 @@ pub fn parse_module(src: &str) -> Result<Module, String> {
             may_panic: f_may,
             stack: f_stack,
             ret: f_ret,
+            link: None,
             blocks,
         });
     }
@@ -2008,7 +2023,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if i.ty != Ty::Bool {
                             return Err("比較の結果は bool のはず".into());
                         }
-                        if !ty.is_scalar() || *ty == Ty::Unit || *ty == Ty::Ptr || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
+                        if !ty.is_scalar() || *ty == Ty::Unit || (*ty == Ty::Ptr && !matches!(cc, Cc::Eq | Cc::Ne)) || (*ty == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
                             return Err(format!("型 {} の比較 {} は使えない", fmt_ty(*ty), cc.name()));
                         }
                         if ty_of(*a)? != *ty || ty_of(*b)? != *ty {
@@ -2299,6 +2314,23 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("abort の結果は unit のはず".into());
                         }
                     }
+                    Op::FmtFloat { bits, a } => {
+                        if !f.may_panic {
+                            return Err("panics never の関数に fmtfloat".into());
+                        }
+                        if i.ty != Ty::Unit {
+                            return Err("fmtfloat の結果は unit のはず".into());
+                        }
+                        let at = ty_of(*a)?;
+                        let ok = match bits {
+                            32 => at == Ty::F32,
+                            64 => at == Ty::F64,
+                            _ => false,
+                        };
+                        if !ok {
+                            return Err(format!("fmtfloat の被演算子は f{} のはず", bits));
+                        }
+                    }
                     Op::Call { callee, args } => {
                         let Some(g) = callees.get(callee.as_str()) else {
                             return Err(format!("呼び先 {} がモジュールにない", callee));
@@ -2367,7 +2399,7 @@ fn check_agg_ids(m: &Module, t: Ty) -> Result<(), String> {
 }
 
 /// バイト記憶 (`mem.load` / `mem.store`) で読み書きできる型: 整数・浮動小数・bool・ptr (集成体・参照・Option は持たない)。
-fn memable(t: Ty) -> bool {
+pub(crate) fn memable(t: Ty) -> bool {
     t.is_int() || t.is_float() || matches!(t, Ty::Bool | Ty::Ptr)
 }
 
@@ -2415,6 +2447,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         | Op::MinMax { a, b, .. }
         | Op::FBin { a, b, .. } => vec![*a, *b],
         Op::Shift { a, n, .. } => vec![*a, *n],
+        Op::FmtFloat { a, .. } => vec![*a],
         Op::Store { ptr, val } => vec![*ptr, *val],
         Op::Neg { a, .. }
         | Op::Not(a)
@@ -2537,6 +2570,7 @@ mod tests {
             may_panic: true,
             stack: None,
             ret: Ty::Unit,
+            link: None,
             blocks: vec![Block {
                 params: vec![(0, Ty::U32)],
                 insts: vec![
@@ -2592,6 +2626,7 @@ end t.p
             may_panic: false,
             stack: Some(4096),
             ret: Ty::U64,
+            link: None,
             blocks: vec![
                 Block {
                     params: vec![(0, Ty::U64)],
@@ -2716,6 +2751,7 @@ end t.p
             may_panic: false,
             stack: None,
             ret: Ty::I32,
+            link: None,
             blocks: vec![Block {
                 params: vec![(0, Ty::I32)],
                 insts: vec![
@@ -2845,6 +2881,7 @@ end t.c
             may_panic: false,
             stack: None,
             ret: Ty::Res(Pay::U16, Pay::U16),
+            link: None,
             blocks: vec![
                 Block {
                     params: vec![(0, Ty::Bool)],

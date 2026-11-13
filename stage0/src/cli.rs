@@ -418,13 +418,27 @@ fn cmd_check(json: bool) -> i32 {
 /// `--llvm` は LLVM IR (`.ll`) を出し、`--native` は clang で実行ファイルを作って走らせる (表示と終了コードは `--run` と同じ)。
 fn cmd_kir(rest: &[String]) -> i32 {
     let Some(fqn) = rest.first() else {
-        eprintln!("usage: ksn kir <FQN> [--run|--native <args>... | --llvm]");
+        eprintln!("usage: ksn kir <FQN> [--opt] [--run|--native <args>... | --llvm]");
         return 2;
     };
-    let mode = rest.get(1).map(|s| s.as_str());
+    // --opt は最適化パスを適用する。--run/--native/--llvm は実行モード。
+    let mut opt = false;
+    let mut mode: Option<&str> = None;
+    let mut mode_pos: Option<usize> = None;
+    for (i, s) in rest[1..].iter().enumerate() {
+        match s.as_str() {
+            "--opt" => opt = true,
+            "--run" | "--native" | "--llvm" if mode.is_none() => {
+                mode = Some(s.as_str());
+                mode_pos = Some(1 + i);
+            }
+            _ => {}
+        }
+    }
     let run = mode == Some("--run");
     let native = mode == Some("--native");
     let llvm = mode == Some("--llvm");
+    let arg_start = mode_pos.map(|p| p + 1).unwrap_or(rest.len());
     let mut rep = Report::new(false);
     let (root, prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|x| (r, x))) {
         Ok((r, (_, Some(prog), user))) if !rep.fatal() => (r, prog, user),
@@ -445,9 +459,9 @@ fn cmd_kir(rest: &[String]) -> i32 {
         }
         return 1;
     }
-    let text = crate::kir::print_module(&lo.module.reachable(fqn));
+    let mut text = crate::kir::print_module(&lo.module.reachable(fqn));
     // 出力は必ず読み直せること (往復) と検査を通ることを確かめてから使う。
-    let back = match crate::kir::parse_module(&text) {
+    let _back = match crate::kir::parse_module(&text) {
         Ok(m) if crate::kir::print_module(&m) == text && crate::kir::verify_module(&m).is_empty() => m,
         Ok(m) => {
             eprintln!("ksn kir: 内部エラー: KIR の往復または検査が一致しない");
@@ -464,8 +478,23 @@ fn cmd_kir(rest: &[String]) -> i32 {
             return 3;
         }
     };
+    // --opt: 決定的な最適化パスを適用する (意味を変えず命令数を減らす)。
+    // 実行・生成には、往復を確かめた元の (extern の link を持つ) モジュールを使う。
+    let mut exe = lo.module.reachable(fqn);
+    if opt {
+        match crate::kir_opt::optimize(&exe) {
+            Ok(m) => {
+                exe = m;
+                text = crate::kir::print_module(&exe);
+            }
+            Err(e) => {
+                eprintln!("ksn kir: --opt: {}", e);
+                return 3;
+            }
+        }
+    }
     if llvm {
-        return match crate::kir_llvm::emit(&back, fqn) {
+        return match crate::kir_llvm::emit(&exe, fqn) {
             Ok(ll) => {
                 print!("{}", ll);
                 0
@@ -481,7 +510,7 @@ fn cmd_kir(rest: &[String]) -> i32 {
         return 0;
     }
     let mut args = vec![];
-    for a in &rest[2..] {
+    for a in &rest[arg_start..] {
         let v = match a.as_str() {
             "true" => 1,
             "false" => 0,
@@ -495,15 +524,15 @@ fn cmd_kir(rest: &[String]) -> i32 {
         };
         args.push(v);
     }
-    let ret = back.find(fqn).map(|f| f.ret);
+    let ret = exe.find(fqn).map(|f| f.ret);
     let show = |v: i128| match ret {
         Some(t) => println!("{}", crate::kir::show_value(t, v)),
         None => println!("{}", v),
     };
     if native {
-        return kir_native(&root, &back, fqn, &args, show);
+        return kir_native(&root, &exe, fqn, &args, show);
     }
-    match crate::kir_exec::run(&back, fqn, &args) {
+    match crate::kir_exec::run(&exe, fqn, &args) {
         Ok(crate::kir_exec::Outcome::Value(v)) => {
             show(v);
             0
@@ -554,7 +583,8 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
             return 2;
         }
         let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
-        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).arg("-o").arg(&tmp).arg("-lm").output();
+        let rt = runtime_c_args(&ll, &src);
+        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(&tmp).arg("-lm").output();
         match o {
             Err(e) => {
                 eprintln!("ksn kir: --native には clang が必要です ({} を起動できない: {})", clang, e);
@@ -2109,6 +2139,18 @@ fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str) -
 
 /// 環境変数 `KSN_CLANG_ARGS` (空白区切り) の clang への追加の引数。試験が `-fsanitize=address -g` などを渡すための隠し機能。
 /// 未設定なら空 (既定の挙動は変わらない)。
+/// IR が C の実行時補助 (`kir_rt.c`) を要するなら、それを `src` の隣に書いて、clang に足す引数 (`-x c <path>`) を返す。
+fn runtime_c_args(ll: &str, src: &Path) -> Vec<String> {
+    if !crate::kir_llvm::needs_runtime(ll) {
+        return vec![];
+    }
+    let c = src.with_extension("rt.c");
+    if fs::write(&c, crate::kir_llvm::RUNTIME_C).is_err() {
+        return vec![];
+    }
+    vec!["-x".into(), "c".into(), c.display().to_string()]
+}
+
 fn clang_extra_args() -> Vec<String> {
     std::env::var("KSN_CLANG_ARGS").map(|s| s.split_whitespace().map(|x| x.to_string()).collect()).unwrap_or_default()
 }
@@ -2118,8 +2160,12 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let src = exe.with_extension("ll.tmp");
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
-    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).arg("-o").arg(exe).arg("-lm").output();
+    let rt = runtime_c_args(ll, &src);
+    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(exe).arg("-lm").output();
     let _ = fs::remove_file(&src);
+    if rt.len() == 3 {
+        let _ = fs::remove_file(&rt[2]);
+    }
     match o {
         Err(e) => Err(format!("clang を起動できない ({}: {})", clang, e)),
         Ok(o) if !o.status.success() => Err(format!("clang が失敗した: {}", String::from_utf8_lossy(&o.stderr).trim())),

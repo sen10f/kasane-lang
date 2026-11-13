@@ -1,0 +1,90 @@
+type bench.Matrix pub
+    rows: usize
+    cols: usize
+    data: alloc.vec.Vec<i32, std.alloc.System>
+end bench.Matrix
+
+fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut da = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match da.push(1i32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match da.push(2i32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match da.push(3i32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match da.push(4i32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let a = bench.Matrix { rows: 2usize, cols: 2usize, data: da }
+    let mut db = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match db.push(5i32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match db.push(6i32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match db.push(7i32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match db.push(8i32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    let b = bench.Matrix { rows: 2usize, cols: 2usize, data: db }
+    let c = bench.mat_mul(&a, &b)
+    match c.data.as_slice().get(0usize) {
+        Some(v) => core.check.eq(*v, 19i32)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match c.data.as_slice().get(1usize) {
+        Some(v) => core.check.eq(*v, 22i32)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match c.data.as_slice().get(2usize) {
+        Some(v) => core.check.eq(*v, 43i32)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match c.data.as_slice().get(3usize) {
+        Some(v) => core.check.eq(*v, 50i32)
+        None => core.check.eq(0usize, 1usize)
+    }
+    std.io.print_line("matmul ok")?
+    Ok(())
+end bench.main
+
+fn bench.mat_mul(a: &bench.Matrix, b: &bench.Matrix) -> bench.Matrix uses [alloc] panics never pub
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < a.rows {
+        let mut j = 0usize
+        while j < b.cols {
+            let mut acc = 0i32
+            let mut k = 0usize
+            while k < a.cols {
+                let ai = i.wrapping_mul(a.cols).wrapping_add(k)
+                let av = *a.data.as_slice().get(ai).unwrap_or(&0i32)
+                let bj = k.wrapping_mul(b.cols).wrapping_add(j)
+                let bv = *b.data.as_slice().get(bj).unwrap_or(&0i32)
+                acc = acc.wrapping_add(av.wrapping_mul(bv))
+                k = k.wrapping_add(1usize)
+            }
+            match data.push(acc) {
+                Ok(_) => ()
+                Err(_e) => ()
+            }
+            j = j.wrapping_add(1usize)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    bench.Matrix { rows: a.rows, cols: b.cols, data: data }
+end bench.mat_mul

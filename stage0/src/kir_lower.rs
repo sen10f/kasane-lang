@@ -23,6 +23,9 @@ mod scalar;
 #[path = "kir_lower_refs.rs"]
 mod refs;
 use refs::RefCx;
+// `unsafe` ブロック、`extern` の呼び出し、`core.ptr.*` の下ろし。
+#[path = "kir_lower_ffi.rs"]
+mod ffi_lower;
 // 組み込みの Option / Result の下ろし (子モジュール。親の非公開の項目を使う)。
 #[path = "kir_lower_enum.rs"]
 mod enum_lower;
@@ -46,6 +49,8 @@ mod iter_lower;
 mod map_lower;
 #[path = "kir_lower_coll.rs"]
 mod coll;
+#[path = "kir_lower_for.rs"]
+mod for_lower;
 #[path = "kir_lower_own.rs"]
 mod own;
 use coll::CollCx;
@@ -443,6 +448,7 @@ impl<'a> Lw<'a> {
             may_panic: d.panics.as_deref() != Some("never"),
             stack: d.stack,
             ret,
+            link: None,
             blocks,
         };
         let mut out = std::mem::take(&mut self.coll.extra);
@@ -469,6 +475,7 @@ impl<'a> Lw<'a> {
             "Continue" => self.jump_loop(e, false),
             "Return" => self.ret_(e),
             "StructLit" | "TupleE" | "Field" => self.agg_expr(e),
+            "Unsafe" => ffi_lower::unsafe_block(self, e),
             "Match" => self.match_any(e),
             "Try" => self.try_(e),
             "Index" => coll::index_read(self, e),
@@ -738,6 +745,9 @@ impl<'a> Lw<'a> {
             return Ok(done);
         }
         if let Some(r) = self.builtin_call(e) {
+            return r;
+        }
+        if let Some(r) = ffi_lower::ffi_call(self, e) {
             return r;
         }
         let f = nf(e);
@@ -1248,6 +1258,17 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
         }
         match Lw::new(p, &tys, &aggs, d).lower() {
             Ok(x) => ok.extend(x),
+            Err(why) => bad.push((d.name.clone(), why)),
+        }
+    }
+    // `extern` 宣言を KIR の関数宣言 (本体なし) にする。リンク名は `Func.link` に持つ。
+    for &i in user {
+        let d = &p.defs[i];
+        if d.kw != "extern" {
+            continue;
+        }
+        match ffi_lower::extern_func(p, d, &aggs) {
+            Ok(f) => ok.push((f, BTreeSet::new())),
             Err(why) => bad.push((d.name.clone(), why)),
         }
     }

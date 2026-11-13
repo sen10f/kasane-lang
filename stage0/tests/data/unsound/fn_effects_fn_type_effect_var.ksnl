@@ -1,0 +1,23 @@
+// expect: E4001
+fn t.apply(p: fn() -> u32 uses [] panics never) -> u32 uses [] panics never
+    p()
+end t.apply
+
+fn t.g[E: uses, P: panics](p: fn() -> u32 uses [E] panics P) -> u32 uses [] panics never
+    // `fn() -> u32 uses [E] panics P` を `fn() -> u32 uses [] panics never` 型として
+    // 渡す。渡し側に効果変数・panic 変数があり、受け側が具体的なので fail-closed。
+    t.apply(p)
+end t.g
+
+fn t.loud() -> u32 uses [io.console] panics may
+    core.mem.drop(std.io.print_line("LOUD"))
+    core.panic.panic("PANIC")
+end t.loud
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.g(t.loud))
+end t.main
+
+fn t.quiet() -> u32 uses [] panics never
+    1u32
+end t.quiet

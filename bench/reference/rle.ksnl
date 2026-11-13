@@ -1,0 +1,67 @@
+type bench.Run derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    ch: u8
+    count: u32
+end bench.Run
+
+fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let r = bench.rle("aaabbc")
+    core.check.eq(r.len(), 3usize)
+    match r.get(0usize) {
+        Some(run) => {
+            core.check.eq(run.ch, 97u8)
+            core.check.eq(run.count, 3u32)
+        }
+        None => core.check.eq(0usize, 1usize)
+    }
+    match r.get(1usize) {
+        Some(run) => {
+            core.check.eq(run.ch, 98u8)
+            core.check.eq(run.count, 2u32)
+        }
+        None => core.check.eq(0usize, 1usize)
+    }
+    match r.get(2usize) {
+        Some(run) => {
+            core.check.eq(run.ch, 99u8)
+            core.check.eq(run.count, 1u32)
+        }
+        None => core.check.eq(0usize, 1usize)
+    }
+    std.io.print_line("rle ok")?
+    Ok(())
+end bench.main
+
+fn bench.rle(text: &str) -> alloc.vec.Vec<bench.Run, std.alloc.System> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let bytes = text.as_bytes()
+    let mut i = 0usize
+    let n = bytes.len()
+    while i < n {
+        match bytes.get(i) {
+            Some(c) => {
+                let mut count = 1u32
+                let mut j = i.wrapping_add(1usize)
+                while j < n {
+                    match bytes.get(j) {
+                        Some(d) => {
+                            if *d == *c {
+                                count = count.wrapping_add(1u32)
+                                j = j.wrapping_add(1usize)
+                            } else {
+                                break
+                            }
+                        }
+                        None => break
+                    }
+                }
+                match out.push(bench.Run { ch: *c, count: count }) {
+                    Ok(_) => ()
+                    Err(_e) => ()
+                }
+                i = j
+            }
+            None => break
+        }
+    }
+    out
+end bench.rle

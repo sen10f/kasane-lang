@@ -144,6 +144,18 @@ pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     if let Some(x) = lw.conv_t(t) {
         return Some(x);
     }
+    // 生ポインタ `*const T` / `*mut T` は `ptr`。
+    if let Src::Ptr(_, inner) = t {
+        if matches!(&**inner, Src::Prim(_)) {
+            return Some(Ty::Ptr);
+        }
+    }
+    // `&mut [T]` / `&[T]` (配列・スライスへの参照) は、C へ渡す生ポインタとして `ptr`。
+    if let Src::Ref(_, inner) = t {
+        if matches!(&**inner, Src::Array(_)) {
+            return Some(Ty::Ptr);
+        }
+    }
     let Src::Ref(mutbl, inner) = t else { return None };
     match &**inner {
         Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP => Some(Ty::Ptr),
@@ -1261,6 +1273,7 @@ fn lower_instance(
         may_panic: cd.panics.as_deref() != Some("never"),
         stack: cd.stack,
         ret: child.ret,
+        link: None,
         blocks,
     };
     Ok((func, std::mem::take(&mut child.callees)))
@@ -1936,6 +1949,10 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             return user_iter(lw, e, it, s, di, name, &f[2]);
         }
     }
+    // `for x in s.split(sep)` / `for c in s.chars()` (`s` は `&str` = fat)。
+    if let Some(r) = super::for_lower::try_str_for(lw, e)? {
+        return Ok(Some(r));
+    }
     lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数・利用者の反復子の変数だけ段階 1 の対象")
 }
 
@@ -2198,6 +2215,7 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         may_panic: lw.def.panics.as_deref() != Some("never"),
         stack: None,
         ret: rt,
+        link: None,
         blocks,
     };
     lw.coll.extra.push((func, child.callees));

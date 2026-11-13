@@ -180,6 +180,8 @@ struct Ctx {
     eprint: bool,
     /// `std.net` 命令を使う (`@ksn.net_*` を出す)。
     net: bool,
+    /// `FmtFloat` 命令を使う (浮動小数の書式化補助関数を出す)。
+    fmt_float: bool,
 }
 
 impl Ctx {
@@ -224,18 +226,28 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     let Some(ef) = m.find(entry) else {
         return Err(format!("関数 {} がない", entry));
     };
-    let mut cx = Ctx {
-        decls: BTreeSet::new(),
-        globals: String::new(),
-        math: BTreeSet::new(),
-        write: false,
-        eprint: false,
-        net: false,
-    };
+    let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false };
+    // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
+    let extern_links: HashMap<String, String> = m.funcs.iter()
+        .filter_map(|f| f.link.as_ref().map(|l| {
+            let sym = l.rsplit_once(':').map(|(_, s)| s).unwrap_or(l);
+            (f.key.clone(), sym.to_string())
+        }))
+        .collect();
+    for (key, sym) in &extern_links {
+        let Some(f) = m.funcs.iter().find(|f| f.key == *key) else { continue };
+        let params: Vec<String> = f.params().iter().map(|(_, t)| lty(&m.aggs, *t)).collect();
+        let rt = lty(&m.aggs, f.ret);
+        cx.decl(format!("declare {} @{}({})", rt, sym, params.join(", ")));
+    }
     let mut funcs = String::new();
     for (fi, f) in m.funcs.iter().enumerate() {
+        if f.link.is_some() {
+            continue;
+        }
         funcs.push('\n');
-        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
+        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
     let mut math = String::new();
@@ -253,6 +265,12 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         "declare i64 @strtoull(ptr, ptr, i32)",
     ] {
         cx.decls.insert(d.to_string());
+    }
+    if cx.fmt_float {
+        cx.decls.insert("declare i32 @snprintf(ptr, i64, ptr, ...)".to_string());
+        cx.decls.insert("declare i64 @strlen(ptr)".to_string());
+        cx.decls.insert("declare double @strtod(ptr, ptr)".to_string());
+        cx.decls.insert("declare float @strtof(ptr, ptr)".to_string());
     }
     let mut out = String::from("; ksn kir llvm 1\n\n");
     for d in &cx.decls {
@@ -276,6 +294,9 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     }
     out.push_str("define private void @ksn.panic.index(i64 %len, i64 %ix) noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.index, i64 %len, i64 %ix)\n  call void @exit(i32 101)\n  unreachable\n}\n\n");
     out.push_str("define private void @ksn.overflow() noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.so)\n  call void @exit(i32 102)\n  unreachable\n}\n");
+    if cx.fmt_float {
+        out.push_str(&fmt_float_helpers());
+    }
     if cx.write {
         out.push_str(&write_helper(&m.aggs)?);
     }
@@ -485,6 +506,20 @@ fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
 
 // ---------------------------------------------------------------- 入口 (main)
 
+/// 浮動小数の書式化は、C の実行時補助 `kir_rt.c` の `ksn_fmt_f64` / `ksn_fmt_f32` に任せる (設計_KIR.md 17.11)。
+/// 規則は `py_float` / `py_float32` と同じ。結果は静的バッファへのポインタ (NUL 終端)。
+fn fmt_float_helpers() -> String {
+    "declare ptr @ksn_fmt_f64(double)\ndeclare ptr @ksn_fmt_f32(float)\n".to_string()
+}
+
+/// C の実行時補助 (`kir_rt.c`) の本文。生成した IR が `@ksn_fmt_` を呼ぶときだけ、clang に一緒に渡す。
+pub const RUNTIME_C: &str = include_str!("kir_rt.c");
+
+/// IR が C の実行時補助を要するか。
+pub fn needs_runtime(ll: &str) -> bool {
+    ll.contains("@ksn_fmt_")
+}
+
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
     // 入口は語 1 つ (128 ビット) で受け渡しするので、枠が 64 ビットの Option / Result と整数・bool・浮動小数だけ扱う。
     let bad = |t: Ty| matches!(t, Ty::Ptr | Ty::Ref(..) | Ty::Agg(_)) || (matches!(t, Ty::Opt(_) | Ty::Res(..)) && (has_agg(t) || slot_bits(aggs, t) > 64));
@@ -522,7 +557,12 @@ fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
         args.push(format!("{} {}", lty(aggs, *t), v));
     }
     let rt = lty(aggs, f.ret);
-    s.push_str(&format!("  %r = call {} {}({})\n", rt, fname(&f.key), args.join(", ")));
+    let callee = if let Some(sym) = &f.link {
+        format!("@{}", sym)
+    } else {
+        fname(&f.key)
+    };
+    s.push_str(&format!("  %r = call {} {}({})\n", rt, callee, args.join(", ")));
     let e = "%e";
     match f.ret {
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize => s.push_str(&format!("  {e} = sext {rt} %r to i128\n")),
@@ -701,6 +741,8 @@ struct Fe<'a> {
     cx: &'a mut Ctx,
     aggs: &'a [AggDef],
     f: &'a Func,
+    /// `extern` 関数の `キー → LLVM シンボル名`。`Op::Call` で `declare` したシンボルを直接呼ぶ。
+    extern_links: &'a HashMap<String, String>,
     fi: usize,
     tys: HashMap<VId, Ty>,
     /// 定数と unit の値 (命令を作らずに、使う側へ直接書く)。
@@ -713,8 +755,8 @@ struct Fe<'a> {
 }
 
 impl<'a> Fe<'a> {
-    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, fi: usize) -> Fe<'a> {
+        Fe { cx, aggs, f, extern_links, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -1321,6 +1363,29 @@ impl<'a> Fe<'a> {
                     self.label(&k);
                     Ok(())
                 }
+                Op::FmtFloat { bits, a } => {
+                    self.cx.fmt_float = true;
+                    let (func, arg_ty) = if *bits == 64 {
+                        ("@ksn_fmt_f64", "double")
+                    } else {
+                        ("@ksn_fmt_f32", "float")
+                    };
+                    let fp = self.t(format!("call ptr {}({} {})", func, arg_ty, self.r(*a)));
+                    self.cx.decl("declare i64 @strlen(ptr)".to_string());
+                    let len = self.t(format!("call i64 @strlen(ptr {})", fp));
+                    let fp_i = self.t(format!("ptrtoint ptr {} to i64", fp));
+                    let ptr_i128 = self.t(format!("zext i64 {} to i128", fp_i));
+                    let len_i128 = self.t(format!("zext i64 {} to i128", len));
+                    let len_shl = self.t(format!("shl i128 {}, 64", len_i128));
+                    let fat = self.t(format!("or i128 {}, {}", len_shl, ptr_i128));
+                    self.cx.eprint = true;
+                    self.cx.decl("declare i64 @write(i32, ptr, i64)".to_string());
+                    let pi = self.extract(&fat, 128, 0, 64);
+                    let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                    let n = self.extract(&fat, 128, 8, 64);
+                    self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
+                    Ok(())
+                }
                 _ => Ok(()),
             };
         }
@@ -1398,7 +1463,11 @@ impl<'a> Fe<'a> {
             Op::Call { callee, args } => {
                 let rt = self.lt(i.ty);
                 let a: Vec<String> = args.iter().map(|v| format!("{} {}", lty(aggs, self.ty(*v)), self.r(*v))).collect();
-                self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
+                if let Some(sym) = self.extern_links.get(callee) {
+                    self.line(format!("{} = call {} @{}({})", d, rt, sym, a.join(", ")));
+                } else {
+                    self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
+                }
             }
             Op::Make { variant, fields } => {
                 let Ty::Agg(ai) = i.ty else { return Err("make の結果が集成体でない".into()) };
@@ -1592,6 +1661,28 @@ impl<'a> Fe<'a> {
                 self.cx.net = true;
                 let r = self.t(format!("call i64 @ksn.net_local_port(i32 {})", self.r(*sock)));
                 self.net_result(&d, &r)?;
+            }
+            Op::FmtFloat { bits, a } => {
+                self.cx.fmt_float = true;
+                let (func, arg_ty) = if *bits == 64 {
+                    ("@ksn_fmt_f64", "double")
+                } else {
+                    ("@ksn_fmt_f32", "float")
+                };
+                let fp = self.t(format!("call ptr {}({} {})", func, arg_ty, self.r(*a)));
+                self.cx.decl("declare i64 @strlen(ptr)".to_string());
+                self.cx.decl("declare i32 @snprintf(ptr, i64, ptr, ...)".to_string());
+                let len = self.t(format!("call i64 @strlen(ptr {})", fp));
+                let ptr_i128 = self.t(format!("zext i64 {} to i128", fp));
+                let len_i128 = self.t(format!("zext i64 {} to i128", len));
+                let len_shl = self.t(format!("shl i128 {}, 64", len_i128));
+                let fat = self.t(format!("or i128 {}, {}", len_shl, ptr_i128));
+                self.cx.eprint = true;
+                self.cx.decl("declare i64 @write(i32, ptr, i64)".to_string());
+                let pi = self.extract(&fat, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let n = self.extract(&fat, 128, 8, 64);
+                self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
             }
             Op::HeapAlloc(n) => {
                 let nv = self.r(*n);
