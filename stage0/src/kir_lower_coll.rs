@@ -1451,6 +1451,12 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if m == "get" {
         return get_elem(lw, line, &kind, h, args);
     }
+    if (m == "first" || m == "last") && matches!(kind, Kind::Vec(_) | Kind::Slice(_)) {
+        return first_last(lw, line, &kind, h, m, args.len());
+    }
+    if m == "contains" && matches!(kind, Kind::Vec(_) | Kind::Slice(_)) && args.len() == 1 {
+        return contains_scalar(lw, line, &kind, h, args);
+    }
     if m == "sub" {
         return slice_sub(lw, line, &kind, h, args);
     }
@@ -1824,10 +1830,84 @@ pub(super) fn slice_sub(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V
 /// `v.get(i)` / `s.get(i)` (要素はスカラー): `Option<要素>`。境界の内なら `Some(要素)`、外なら `None` (panic しない)。
 /// 木走査の `Option<&T>` はスカラーでは読み取りだけなので、値で持つ (設計_KIR.md 10.10)。
 pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "get の引数の個数が違う");
+    }
+    pick_elem(lw, line, kind, h, Pick::At(&args[0]), "get")
+}
+
+/// `v.first()` / `v.last()` (要素の型は `get` と同じ): `Option<&T>` と同じ形で `Option<要素>` を作る。空なら `None`。
+pub(super) fn first_last(lw: &mut Lw, line: usize, kind: &Kind, h: VId, m: &str, nargs: usize) -> LR<Option<VId>> {
+    if nargs != 0 {
+        return lw.err(line, format!("メソッド {} の引数は段階 1 の対象外", m));
+    }
+    let pick = if m == "first" { Pick::First } else { Pick::Last };
+    pick_elem(lw, line, kind, h, pick, m)
+}
+
+/// `v.contains(&x)` (要素はスカラー): 先頭から順に `==` を見て、見つかれば `true`。木走査 (`natives.rs` の `contains`) と同じ順。
+/// 引数は `&T` の参照 (`&3u8`) か、値 (`T`) のどちらでもよい。要素が所有物・集成体の形は理由付きで拒む。
+pub(super) fn contains_scalar(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
     let (seq, elem) = match kind {
         Kind::Vec(Some(e)) => (Seq::Hdr(h), *e),
         Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
-        _ => return lw.err(line, "get の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
+        _ => return lw.err(line, "contains の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
+    };
+    if owns_heap(lw, elem) || matches!(elem, Ty::Agg(_)) {
+        return lw.err(line, format!("contains の要素の型 {} は段階 1 の対象外 (スカラーだけ)", elem.name()));
+    }
+    let Some(sz) = elem_size(lw, elem) else {
+        return lw.err(line, format!("contains の要素の型 {} は段階 1 の対象外", elem.name()));
+    };
+    let Some(a0) = lw.expr(&args[0])? else { return Ok(None) };
+    let x = match lw.vty(a0) {
+        Ty::Ref(_, p) if p.ty() == elem => lw.emit(elem, Op::Load(a0)),
+        t if t == elem => a0,
+        _ => return lw.err(line, "contains の引数の型が要素の型と違う"),
+    };
+    let (len, base) = seq.len_and_base(lw, None);
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    // 先頭: (i) を持つ。`i < len` なら要素を見る。見つかれば結果 `true`、外れたら `i+1` へ。
+    let (hb, hp) = lw.new_block(&[Ty::Usize]);
+    let i = hp[0];
+    let (bb, _) = lw.new_block(&[]);
+    let (jb, jp) = lw.new_block(&[Ty::Bool]);
+    lw.goto(hb, vec![zero]);
+    lw.cur = Some(hb);
+    let inside = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len });
+    // 範囲外は `inside` が偽なので `jb` へ (値は偽)。
+    lw.branch(inside, (bb, vec![]), (jb, vec![inside]));
+    lw.cur = Some(bb);
+    let off = if sz == 1 {
+        i
+    } else {
+        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
+        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k })
+    };
+    let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
+    let e = load_elem(lw, addr, elem);
+    let hit = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: elem, a: e, b: x });
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    let next = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+    // 見つかった: `hit` (真) を結果にして抜ける。外れ: 次の添字へ。
+    lw.branch(hit, (jb, vec![hit]), (hb, vec![next]));
+    lw.cur = Some(jb);
+    Ok(Some(jp[0]))
+}
+
+/// 添字の決め方。`At` は利用者の式 (usize)、`First` / `Last` は 0 と `len - 1` (空なら `None`)。
+#[derive(Clone, Copy)]
+pub(super) enum Pick<'a> {
+    At(&'a V),
+    First,
+    Last,
+}
+
+fn pick_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, pick: Pick, m: &str) -> LR<Option<VId>> {
+    let (seq, elem) = match kind {
+        Kind::Vec(Some(e)) => (Seq::Hdr(h), *e),
+        Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
+        _ => return lw.err(line, format!("{} の対象は要素型の分かる Vec・スライスだけ段階 1 の対象", m)),
     };
     let borrowed = owns_heap(lw, elem);
     let pay = if borrowed {
@@ -1838,18 +1918,37 @@ pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]
         Pay::of(elem)
     };
     let (Some(sz), Some(pay)) = (elem_size(lw, elem), pay) else {
-        return lw.err(line, format!("get の要素の型 {} は段階 1 の対象外", elem.name()));
+        return lw.err(line, format!("{} の要素の型 {} は段階 1 の対象外", m, elem.name()));
     };
-    if args.len() != 1 {
-        return lw.err(line, "get の引数の個数が違う");
-    }
-    let Some(i) = lw.expr(&args[0])? else { return Ok(None) };
-    if lw.vty(i) != Ty::Usize {
-        return lw.err(line, "get の添字が usize ではない");
-    }
+    let idx = match pick {
+        Pick::At(a) => {
+            let Some(i) = lw.expr(a)? else { return Ok(None) };
+            if lw.vty(i) != Ty::Usize {
+                return lw.err(line, format!("{} の添字が usize ではない", m));
+            }
+            Some(i)
+        }
+        Pick::First | Pick::Last => None,
+    };
     let opt = Ty::Opt(pay);
     let (len, base) = seq.len_and_base(lw, None);
-    let inside = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len });
+    // 境界の内か (`i < len`)、添字 (`i`)。first / last は空でなければ内で、添字は 0 か len-1。
+    let (inside, i) = match (pick, idx) {
+        (Pick::At(_), Some(i)) => (lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len }), i),
+        (Pick::First, _) => {
+            let zero = lw.emit(Ty::Usize, Op::Const(0));
+            let nonempty = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: zero, b: len });
+            (nonempty, zero)
+        }
+        _ => {
+            let zero = lw.emit(Ty::Usize, Op::Const(0));
+            let nonempty = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: zero, b: len });
+            let one = lw.emit(Ty::Usize, Op::Const(1));
+            // 空のときは使われない (wrap の減算は trap しない)
+            let last = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: len, b: one });
+            (nonempty, last)
+        }
+    };
     let (tb, _) = lw.new_block(&[]);
     let (eb, _) = lw.new_block(&[]);
     let (jb, jp) = lw.new_block(&[opt]);
