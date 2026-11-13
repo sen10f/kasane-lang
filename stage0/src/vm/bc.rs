@@ -119,6 +119,8 @@ pub enum Ins {
     Checked { d: S, a: S, b: S, op: Aop, ty: u32 },
 
     // ---- 呼び出し
+    /// 関数のアドレス (`FnPtr`): C に渡すコールバックの入口 (`ffi::tramp`) を返す。`f` は `Prog::funcs` の添字。
+    FnPtr { d: S, f: u32 },
     /// 直接呼び出し。引数のスロットは `VFunc::pool[argp .. argp + argn]`。
     Call { f: u32, d: S, argp: u32, argn: u32 },
     /// `extern` 宣言の C 関数 (`Prog::ext` の添字)。
@@ -193,6 +195,8 @@ pub struct VFunc {
     /// フレームのスロット数 (辺の一時スロットを含む)。
     pub nslots: u32,
     pub nparams: u32,
+    /// 引数の型 (コールバックの引数をレジスタから読むのに使う)。
+    pub ptys: Vec<Ty>,
     pub ret: Ty,
     /// 戻り値が置き場の項目を指すか (戻るとき `relocate` が要る)。
     pub ret_heap: bool,

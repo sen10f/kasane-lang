@@ -60,7 +60,7 @@ pub fn compile(m: &Module) -> Result<Prog, String> {
     for f in &m.funcs {
         let vf = if f.link.is_some() {
             // `extern` 宣言 (本体なし)。呼び出しは `CallExt` になる。
-            VFunc { key: f.key.clone(), code: vec![], pool: vec![], nslots: 0, nparams: f.params().len() as u32, ret: f.ret, ret_heap: false }
+            VFunc { key: f.key.clone(), code: vec![], pool: vec![], nslots: 0, nparams: f.params().len() as u32, ptys: f.params().iter().map(|(_, t)| *t).collect(), ret: f.ret, ret_heap: false }
         } else {
             compile_func(m, &index, &mut prog, f).map_err(|e| format!("{}: {}", f.key, e))?
         };
@@ -268,6 +268,7 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
         pool: fc.pool,
         nslots: fc.nslots + fc.temps,
         nparams: f.params().len() as u32,
+        ptys: f.params().iter().map(|(_, t)| *t).collect(),
         ret: f.ret,
         ret_heap: crate::kir_exec::has_heap(f.ret),
     })
@@ -598,8 +599,15 @@ impl<'a> Fc<'a> {
             Op::NetFlush { sock } => Ins::NetFlush { d, sock: self.s(*sock) },
             Op::NetClose { sock } => Ins::NetClose { d, sock: self.s(*sock) },
             Op::NetLocalPort { sock } => Ins::NetLocalPort { d, sock: self.s(*sock) },
-            // C のコールバックに VM の関数を渡すには機械語のトランポリンが要る。それまでは木走査へ退避する。
-            Op::FnPtr { .. } => return Err("関数ポインタ (FnPtr) の命令は VM 未対応".into()),
+            Op::FnPtr { callee } => {
+                let Some(&ci) = self.index.get(callee.as_str()) else {
+                    return Err(format!("関数ポインタの先 {} がない", callee));
+                };
+                if self.m.funcs[ci].link.is_some() {
+                    return Err(format!("extern 関数 {} のアドレスは VM 未対応", callee));
+                }
+                Ins::FnPtr { d, f: ci as u32 }
+            }
         };
         self.push(i);
         Ok(())

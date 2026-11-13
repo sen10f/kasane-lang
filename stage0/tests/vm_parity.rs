@@ -146,6 +146,7 @@ const STRICT_PKGS: &[&str] = &[
     "examples/json",
     "examples/more_coll",
     "examples/more_str",
+    "examples/ffi",
 ];
 
 const LOOSE_PKGS: &[&str] = &["examples/features", "examples/tour", "examples/kvapp", "examples/plugins", "examples/shortener", "examples/threads"];

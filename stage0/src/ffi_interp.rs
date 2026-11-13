@@ -618,8 +618,8 @@ impl Interp {
             return Err("a callback takes at most 6 integer/pointer and 8 floating-point parameters in the interpreter".into());
         }
         let ret = self.cb_ty(tel(t, 2), file)?;
-        if self.cbs.len() >= ffi::CALLBACK_SLOTS {
-            return Err(format!("too many distinct callbacks ({} at most in the interpreter)", ffi::CALLBACK_SLOTS));
+        if self.cbs.len() >= ffi::VM_SLOT_BASE {
+            return Err(format!("too many distinct callbacks ({} at most in the interpreter)", ffi::VM_SLOT_BASE));
         }
         ffi::set_callback_handler(cb_handler);
         self.cbs.push(CbSlot { key, f, params, ret });
