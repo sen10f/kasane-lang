@@ -83,7 +83,7 @@ taskset -c 0-9,12-31 python bench/run_bench.py --provider nim
   `bench/tasks/*/task.json` を読んで `order` 順に `TASKS` (各辞書のキーは
   `id, title, spec, decl, tests` の 5 つ) を組み立てる。
 - `tests.ksnl`: Kasane の `test` 定義の文字列 (課題があるものだけ)。
-- `reference.ksnl`: 参照解 (あるものだけ)。`git mv bench/reference/<id>.ksnl bench/tasks/<id>/reference.ksnl` の形で移す。
+- `reference.ksnl`: 参照解 (あるものだけ)。`python3 -I bench/verify_reference.py` が、課題のあるものはテストで採点し、回帰用だけのものは `ksn check` の診断 0 件と `ksn fmt --check` を確かめる (フル検証 `tests/run_tests.py` にも入っている)。
 
 回帰用だけの課題 (テストも無く、回帰検査だけの参照解)は
 `{"id", "title", "level": "reference-only"}` の `task.json` と `reference.ksnl` のみ。
