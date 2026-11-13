@@ -4,7 +4,7 @@
 //! 設計判断: すべてのパスを 1 つのモジュールにまとめ、ファイル分割を最小化する。
 //! 各パスは独立した関数で、`Module` を受け取り `Module` を返す。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::kir::{self, Aop, BitK, BoolOp, Cc, FBin, FUn, Inst, Mode, Module, Op, Term, Ty, VId, operands};
 
@@ -123,9 +123,163 @@ fn side_effecting(op: &Op) -> bool {
     }
 }
 
-/// コピーの伝播 (パス 3)。未実装のスタブ（通過のみ）。
+/// コピーの伝播 (パス 3)。
+/// `%dst = reborrow %src` (同じアドレスを指すコピー) なら、`%dst` の使用を `%src` に
+/// 置き換えて reborrow 命令を除去する。意味は変わらない（同じアドレス）。
 fn copy_prop(m: &Module) -> Result<Module, String> {
-    Ok(m.clone())
+    after(m, |m| {
+        let mut m = m.clone();
+        for f in &mut m.funcs {
+            let mut changed = true;
+            while changed {
+                changed = false;
+                // dst → src のコピー関係 (reborrow は同じアドレスを指すコピー) を収集。
+                let copies: Vec<(VId, VId)> = f
+                    .blocks
+                    .iter()
+                    .flat_map(|b| {
+                        b.insts.iter().filter_map(|i| {
+                            if let Op::Reborrow(a) = i.op {
+                                Some((i.dst, a))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+                if copies.is_empty() {
+                    break;
+                }
+                // 連鎖 (%c = reborrow %b, %b = reborrow %a) を辿り、各 dst の最終的な送り先 (root) を求める。
+                let copy_map: HashMap<VId, VId> = copies
+                    .iter()
+                    .filter_map(|(dst, mut src)| {
+                        let mut visited = HashSet::new();
+                        while let Some(&nxt) = copies.iter().find(|(d, _)| *d == src).map(|(_, s)| s) {
+                            if !visited.insert(src) {
+                                break; // 環
+                            }
+                            src = nxt;
+                        }
+                        if src == *dst {
+                            None
+                        } else {
+                            Some((*dst, src))
+                        }
+                    })
+                    .collect();
+                if copy_map.is_empty() {
+                    break;
+                }
+                let copy_dsts: HashSet<VId> = copy_map.keys().copied().collect();
+                // 全命令の被演算子と終端命令の参照を root に置き換える。
+                for b in &mut f.blocks {
+                    for i in &mut b.insts {
+                        for a in operands_mut(&mut i.op) {
+                            if let Some(&s) = copy_map.get(a) {
+                                *a = s;
+                                changed = true;
+                            }
+                        }
+                    }
+                    match &mut b.term {
+                        Term::Br(t) => {
+                            for a in &mut t.1 {
+                                if let Some(&s) = copy_map.get(a) {
+                                    *a = s;
+                                    changed = true;
+                                }
+                            }
+                        }
+                        Term::BrIf(c, t1, t2) => {
+                            if let Some(&s) = copy_map.get(c) {
+                                *c = s;
+                                changed = true;
+                            }
+                            for a in &mut t1.1 {
+                                if let Some(&s) = copy_map.get(a) {
+                                    *a = s;
+                                    changed = true;
+                                }
+                            }
+                            for a in &mut t2.1 {
+                                if let Some(&s) = copy_map.get(a) {
+                                    *a = s;
+                                    changed = true;
+                                }
+                            }
+                        }
+                        Term::Ret(v) => {
+                            if let Some(&s) = copy_map.get(v) {
+                                *v = s;
+                                changed = true;
+                            }
+                        }
+                        Term::Unreachable => {}
+                    }
+                }
+                // reborrow 命令 (コピーの定義) を除去。
+                for b in &mut f.blocks {
+                    let pos: Vec<usize> = b
+                        .insts
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, i)| copy_dsts.contains(&i.dst))
+                        .map(|(pos, _)| pos)
+                        .collect();
+                    for pos in pos.into_iter().rev() {
+                        b.insts.remove(pos);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        m
+    }, "コピーの伝播")
+}
+
+/// 命令の被演算子を可変に参照する `Vec` を返す。
+fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
+    match op {
+        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) => vec![],
+        Op::PtrAdd { p, off } => vec![p, off],
+        Op::MemLoad { p, .. } | Op::HeapFree(p) => vec![p],
+        Op::HeapAlloc(n) => vec![n],
+        Op::HeapRealloc { p, size } => vec![p, size],
+        Op::MemStore { p, v, .. } => vec![p, v],
+        Op::IndexCheck { i, len } => vec![i, len],
+        Op::Panic { arg, .. } => arg.iter_mut().collect(),
+        Op::Write { fd, data } => vec![fd, data],
+        Op::Eprint { data } => vec![data],
+        Op::Abort => vec![],
+        Op::Arith { a, b, .. }
+        | Op::Cmp { a, b, .. }
+        | Op::Bool(_, a, b)
+        | Op::Checked { a, b, .. }
+        | Op::FArith { a, b, .. }
+        | Op::MinMax { a, b, .. }
+        | Op::FBin { a, b, .. } => vec![a, b],
+        Op::Shift { a, n, .. } => vec![a, n],
+        Op::Store { ptr, val } => vec![ptr, val],
+        Op::Neg { a, .. }
+        | Op::Not(a)
+        | Op::FUn { a, .. }
+        | Op::Conv { a, .. }
+        | Op::Bitcast { a, .. }
+        | Op::BitCount { a, .. }
+        | Op::Load(a)
+        | Op::AsShared(a)
+        | Op::Reborrow(a)
+        | Op::Some(a)
+        | Op::Ok(a)
+        | Op::Err(a)
+        | Op::Tag(a)
+        | Op::Payload(a) => vec![a],
+        Op::Call { args, .. } => args.iter_mut().collect(),
+        Op::Make { fields, .. } => fields.iter_mut().collect(),
+        Op::Field { a, .. } | Op::FieldAddr { a, .. } => vec![a],
+        Op::SetField { a, v, .. } => vec![a, v],
+    }
 }
 
 /// 小さな関数のインライン化 (パス 4)。未実装のスタブ（通過のみ）。
@@ -278,8 +432,8 @@ fn const_args(f: &crate::kir::Func, inst: &Inst, a: VId, b: VId) -> Option<(i128
     Some((const_arg(f, inst, a)?, const_arg(f, inst, b)?))
 }
 
-fn const_arg(f: &crate::kir::Func, inst: &Inst, v: VId) -> Option<i128> {
-    const_of(f, v)
+fn const_arg(_f: &crate::kir::Func, _inst: &Inst, v: VId) -> Option<i128> {
+    const_of(_f, v)
 }
 
 /// 値番号 `v` が定数ならその値を返す。ブロック引数や未定義の値は `None`。
@@ -438,7 +592,7 @@ fn checked_val(op: Aop, t: Ty, x: i128, y: i128) -> i128 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kir::{Block, Func, Inst, Term};
+    use crate::kir::{Block, Func, Inst, Pointee, Term, verify_module};
 
     fn sample() -> Module {
         let f = Func {
@@ -569,5 +723,61 @@ mod tests {
         assert!(insts.iter().any(|i| matches!(i.op, Op::Call { .. })));
         // ret %2 は %2 を参照するので %2 生成元は残る
         assert_eq!(out.funcs[0].blocks[0].term, Term::Ret(2));
+    }
+
+    #[test]
+    fn copy_prop_reborrow_replaces_and_removes() {
+        let f = Func {
+            fqn: "t.cp".into(),
+            key: "t.cp".into(),
+            uses: vec![],
+            may_panic: false,
+            stack: None,
+            ret: Ty::I32,
+            blocks: vec![Block {
+                params: vec![(0, Ty::Ref(true, Pointee::I32))],
+                insts: vec![
+                    Inst { dst: 1, ty: Ty::Ref(true, Pointee::I32), op: Op::Reborrow(0) },
+                    Inst { dst: 2, ty: Ty::I32, op: Op::Load(1) },
+                ],
+                term: Term::Ret(2),
+            }],
+        };
+        let m = Module { funcs: vec![f], ..Default::default() };
+        let out = copy_prop(&m).unwrap();
+        let insts = &out.funcs[0].blocks[0].insts;
+        // reborrow は除去され、load の被演算子は %0 に置き換わる
+        assert_eq!(insts.len(), 1);
+        assert!(matches!(insts[0].op, Op::Load(0)));
+        assert_eq!(out.funcs[0].blocks[0].term, Term::Ret(2));
+        assert!(verify_module(&out).is_empty(), "{:?}", verify_module(&out));
+    }
+
+    #[test]
+    fn copy_prop_chain_is_resolved() {
+        // %1 = reborrow %0, %2 = reborrow %1 → 両方 %0 に置き換えて両方の reborrow を除去
+        let f = Func {
+            fqn: "t.cp2".into(),
+            key: "t.cp2".into(),
+            uses: vec![],
+            may_panic: false,
+            stack: None,
+            ret: Ty::I32,
+            blocks: vec![Block {
+                params: vec![(0, Ty::Ref(true, Pointee::I32))],
+                insts: vec![
+                    Inst { dst: 1, ty: Ty::Ref(true, Pointee::I32), op: Op::Reborrow(0) },
+                    Inst { dst: 2, ty: Ty::Ref(true, Pointee::I32), op: Op::Reborrow(1) },
+                    Inst { dst: 3, ty: Ty::I32, op: Op::Load(2) },
+                ],
+                term: Term::Ret(3),
+            }],
+        };
+        let m = Module { funcs: vec![f], ..Default::default() };
+        let out = copy_prop(&m).unwrap();
+        let insts = &out.funcs[0].blocks[0].insts;
+        assert_eq!(insts.len(), 1);
+        assert!(matches!(insts[0].op, Op::Load(0)));
+        assert!(verify_module(&out).is_empty(), "{:?}", verify_module(&out));
     }
 }
