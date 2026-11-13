@@ -610,6 +610,9 @@ pub enum Op {
     BitCount { k: BitK, src: Ty, a: VId },
     /// 直接呼び出し (単相インスタンスの鍵で指す)。
     Call { callee: String, args: Vec<VId> },
+    /// 関数のアドレス (`ptr`)。C のコールバックとして関数を渡すときに使う。
+    /// `callee` は関数の鍵。取り込みの無い `fn` のみ (段階 1)。
+    FnPtr { callee: String },
     /// 集成体の構築。`variant` が `Some(k)` なら列挙型のバリアント k (先頭にタグを置く)、`None` なら構造体・タプル。
     /// `fields` は宣言の順 (列挙型ではそのバリアントのペイロードの順)。
     Make { variant: Option<u32>, fields: Vec<VId> },
@@ -854,6 +857,9 @@ impl Module {
                         if let Op::Call { callee, .. } = &i.op {
                             todo.push(callee.clone());
                         }
+                        if let Op::FnPtr { callee } = &i.op {
+                            todo.push(callee.clone());
+                        }
                     }
                 }
             }
@@ -1090,6 +1096,7 @@ fn fmt_inst(i: &Inst) -> String {
         }
         Op::BitCount { k, src, a } => format!("{}.{} {}", k.name(), src.name(), fmt_val(*a)),
         Op::Call { callee, args } => format!("call {}({})", callee, fmt_vals(args)),
+        Op::FnPtr { callee } => format!("fnptr {}", callee),
         Op::Make { variant, fields } => {
             let head = match variant {
                 Some(k) => format!("make.v{}", k),
@@ -1339,6 +1346,12 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         let open = r.find('(').ok_or_else(|| perr(line, "call に ( がない"))?;
         let close = r.rfind(')').ok_or_else(|| perr(line, "call に ) がない"))?;
         return Ok(Op::Call { callee: r[..open].to_string(), args: parse_vals(&r[open + 1..close], line)? });
+    }
+    if let Some(r) = rhs.strip_prefix("fnptr ") {
+        if ty != Ty::Ptr {
+            return Err(perr(line, format!("fnptr の結果は ptr ではない")));
+        }
+        return Ok(Op::FnPtr { callee: r.to_string() });
     }
     let (head, rest) = rhs.split_once(' ').unwrap_or((rhs, ""));
     let mut parts = head.split('.');
@@ -2396,6 +2409,14 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err(format!("{} の uses {} が呼び出し元にない", callee, u));
                         }
                     }
+                    Op::FnPtr { callee } => {
+                        if i.ty != Ty::Ptr {
+                            return Err("fnptr の結果は ptr のはず".into());
+                        }
+                        if callees.get(callee.as_str()).is_none() {
+                            return Err(format!("fnptr の呼び先 {} がモジュールにない", callee));
+                        }
+                    }
                 }
                 Ok(())
             })();
@@ -2509,6 +2530,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         | Op::Tag(a)
         | Op::Payload(a) => vec![*a],
         Op::Call { args, .. } => args.clone(),
+        Op::FnPtr { .. } => vec![],
         Op::Make { fields, .. } => fields.clone(),
         Op::Field { a, .. } | Op::FieldAddr { a, .. } => vec![*a],
         Op::SetField { a, v, .. } => vec![*a, *v],

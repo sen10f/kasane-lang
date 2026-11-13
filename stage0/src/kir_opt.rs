@@ -128,7 +128,8 @@ fn side_effecting(op: &Op) -> bool {
         | Op::PtrAdd { .. }
         | Op::StaticBytes(_)
         | Op::AsShared(_)
-        | Op::ParseInt { .. } => false,
+        | Op::ParseInt { .. }
+        | Op::FnPtr { .. } => false,
         | Op::Reborrow(_)
         | Op::FieldAddr { .. } => false,
     }
@@ -252,7 +253,7 @@ fn copy_prop(m: &Module) -> Result<Module, String> {
 /// 命令の被演算子を可変に参照する `Vec` を返す。
 fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
     match op {
-        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) => vec![],
+        Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) | Op::FnPtr { .. } => vec![],
         Op::PtrAdd { p, off } => vec![p, off],
         Op::MemLoad { p, .. } | Op::HeapFree(p) => vec![p],
         Op::HeapAlloc(n) => vec![n],

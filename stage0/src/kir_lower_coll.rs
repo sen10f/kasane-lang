@@ -1878,14 +1878,27 @@ fn elem_addr(lw: &mut Lw, seq: Seq, i: VId, elem: Ty) -> LR<VId> {
 /// 添字・反復の対象になる Vec・スライスの変数または `b"..."` リテラル: (置き場, 要素の型)。要素型が分からなければ拒否する。
 fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
     if let Some(s) = local_slot(lw, e) {
-        match lw.coll.kinds.get(&s) {
-            Some(Kind::Vec(Some(elem))) => return Ok((Seq::Hdr(lw.slots[s].0), *elem)),
-            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
-                // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+        // `lw.coll` と `lw.slots` から必要な値を先にコピーし、その後の `lw.emit` との借用競合を避ける。
+        let kind = lw.coll.kinds.get(&s).cloned();
+        let slot_ptr = lw.slots[s].0;
+        match kind {
+            Some(Kind::Vec(Some(elem))) => return Ok((Seq::Hdr(slot_ptr), elem)),
+            // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+            Some(Kind::Slice(Some(elem))) if lw.vty(slot_ptr) == Ty::Ptr => {
                 let n = lw.coll.arr_len[&s];
-                return Ok((Seq::Ptr(lw.slots[s].0, n), *elem));
+                return Ok((Seq::Ptr(slot_ptr, n), elem));
             }
-            Some(Kind::Slice(Some(elem))) => return Ok((Seq::Fat(lw.slots[s].0), *elem)),
+            // スロットが fat への参照なら、ロードして fat 値を得る。
+            // slot_ptr の実際の型は Ref(true, Agg) なことがある (ローカル配列の &mut v など)。
+            Some(Kind::Slice(Some(elem))) => {
+                let fat_val = match lw.vty(slot_ptr) {
+                    Ty::Ref(_, Pointee::Agg(agg_ai)) => {
+                        lw.emit(Ty::Agg(agg_ai), Op::Load(slot_ptr))
+                    }
+                    _ => slot_ptr,
+                };
+                return Ok((Seq::Fat(fat_val), elem));
+            }
             _ => {}
         }
     }
@@ -1994,14 +2007,26 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)) }, name, &f[2]);
     }
     if let Some(s) = local_slot(lw, it) {
-        let seq = match lw.coll.kinds.get(&s).cloned() {
-            Some(Kind::Vec(Some(elem))) => Some((Seq::Hdr(lw.slots[s].0), elem)),
+        // `lw.coll` と `lw.slots` から必要な値を先にコピーし、その後の `lw.emit` との借用競合を避ける。
+        let kind = lw.coll.kinds.get(&s).cloned();
+        let slot_ptr = lw.slots[s].0;
+        let seq = match kind {
+            Some(Kind::Vec(Some(elem))) => Some((Seq::Hdr(slot_ptr), elem)),
             // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
-            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
+            Some(Kind::Slice(Some(elem))) if lw.vty(slot_ptr) == Ty::Ptr => {
                 let n = lw.coll.arr_len[&s];
-                Some((Seq::Ptr(lw.slots[s].0, n), elem))
+                Some((Seq::Ptr(slot_ptr, n), elem))
             }
-            Some(Kind::Slice(Some(elem))) => Some((Seq::Fat(lw.slots[s].0), elem)),
+            // スロットが fat への参照なら、ロードして fat 値を得る。
+            Some(Kind::Slice(Some(elem))) => {
+                let fat_val = match lw.vty(slot_ptr) {
+                    Ty::Ref(_, Pointee::Agg(agg_ai)) => {
+                        lw.emit(Ty::Agg(agg_ai), Op::Load(slot_ptr))
+                    }
+                    _ => slot_ptr,
+                };
+                Some((Seq::Fat(fat_val), elem))
+            }
             _ => None,
         };
         if let (Some(_), Some(n)) = (&seq, path1_name(it)) {

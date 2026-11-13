@@ -250,7 +250,7 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
             continue;
         }
         funcs.push('\n');
-        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
+        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
     let mut math = String::new();
@@ -749,6 +749,8 @@ struct Fe<'a> {
     f: &'a Func,
     /// `extern` 関数の `キー → LLVM シンボル名`。`Op::Call` で `declare` したシンボルを直接呼ぶ。
     extern_links: &'a HashMap<String, String>,
+    /// 全関数 (`Op::Fnptr` の呼び先の型を引くため)。
+    funcs: &'a [Func],
     fi: usize,
     tys: HashMap<VId, Ty>,
     /// 定数と unit の値 (命令を作らずに、使う側へ直接書く)。
@@ -761,8 +763,8 @@ struct Fe<'a> {
 }
 
 impl<'a> Fe<'a> {
-    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, extern_links, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
+        Fe { cx, aggs, f, extern_links, funcs, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -1474,6 +1476,17 @@ impl<'a> Fe<'a> {
                 } else {
                     self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
                 }
+            }
+            /// 関数のアドレスを `ptr` として取る (C のコールバック用)。
+            /// `callee` の関数は C 呼び出し規約と互換のシグネチャ (`ptr`/`i32` など) で下ろされている。
+            Op::FnPtr { callee } => {
+                let Some(f) = self.funcs.iter().find(|f| f.key == *callee) else {
+                    return Err(format!("fnptr の呼び先 {} が見つからない", callee));
+                };
+                let rt = self.lt(f.ret);
+                let params: Vec<String> = f.params().iter().map(|(_, t)| lty(self.aggs, *t)).collect();
+                let fnty = format!("{} ({})*", rt, params.join(", "));
+                self.line(format!("{} = bitcast {} {} to ptr", d, fnty, fname(callee)));
             }
             Op::Make { variant, fields } => {
                 let Ty::Agg(ai) = i.ty else { return Err("make の結果が集成体でない".into()) };
