@@ -1368,6 +1368,25 @@ pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
 }
 
 fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
+    // このパッケージから呼び出す依存パッケージ (別 module) の fn も下ろし対象にする。
+    // そうしなければ、依存先が「呼び先が未対応」となり、このパッケージの関数も下ろせなくなる。
+    let mut user_vec: Vec<usize> = user.to_vec();
+    let cur_module = entry
+        .and_then(|e| p.funcs.get(e).copied())
+        .or_else(|| user.first().copied())
+        .and_then(|i| Some(p.defs[i].module.clone()));
+    if let Some(m) = cur_module {
+        for (i, d) in p.defs.iter().enumerate() {
+            if d.kw == "fn"
+                && d.body.is_some()
+                && d.module != m
+                && !user_vec.contains(&i)
+            {
+                user_vec.push(i);
+            }
+        }
+    }
+    let user = &user_vec;
     let tys = type_table(p, user, test_def);
     let aggs = RefCell::new(agg::AggTab::new(user));
     // `std.net.listen`/`connect`/`accept` が返すソケット集成体と、その失敗の `std.net.Error` を、誰も参照しなくても型表に入れる。
