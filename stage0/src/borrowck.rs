@@ -455,6 +455,113 @@ impl<'a> Low<'a> {
         Some(flows)
     }
 
+    /// `fn keep['a](v: &mut Vec<&'a String>, s: &'a String) -> &'a String` のように、
+    /// ヘッダの名前付きライフタイム `'a` が、`&mut X<..'a..>` 型の引数 (受け手 R) と
+    /// 参照の引数 (借用元 S) の両方に現れるとき、S の借用を R の場所に結びつけ、
+    /// R の最後の使用まで生かす。`v` が生きている間は `s` を move できない (E3010)。
+    /// 戻り値への借用追跡 (flow_params / ret_contains_ref) と同じ仕組み。
+    fn bind_receiver_arg_borrow(&mut self, c: usize, di: usize, args: &[V]) {
+        let d = &self.p.defs[di];
+        let Some(flow) = Self::flow_params(d) else { return };
+        let lts: Vec<String> = d
+            .generics
+            .iter()
+            .filter(|g| g.0 == "life")
+            .map(|g| g.1.trim_start_matches('\'').to_string())
+            .collect();
+        if lts.is_empty() {
+            return;
+        }
+        // ヘッダの仮引数の文面からライフタイムを取る (ty.dump() にはライフタイムが含まれない)。
+        let head = match d.header.split(" uses ").next() { Some(h) => h, None => return };
+        let b = head.as_bytes();
+        let mut i = match head.find(|c| c == '(' || c == '[') { Some(i) => i, None => return };
+        if b[i] == b'[' {
+            i = match match_close(head, i) { Some(j) => j + 1, None => return };
+        }
+        if b.get(i) != Some(&b'(') {
+            return;
+        }
+        let close = match match_close(head, i) { Some(j) => j, None => return };
+        let ptexts: Vec<String> = split_top(&head[i + 1..close]);
+        if ptexts.len() != d.params.len() { return; }
+
+        let mut receivers: Vec<usize> = vec![];
+        let mut sources: Vec<usize> = vec![];
+        for (k, ((_, ty), &f)) in d.params.iter().zip(flow.iter()).enumerate() {
+            let ltys = lifetimes(&ptexts[k]);
+            if !f || tag(ty) != "ref" {
+                continue;
+            }
+            if !lts.iter().any(|l| ltys.contains(l)) {
+                continue;
+            }
+            if matches!(tel(ty, 1), V::B(true)) {
+                receivers.push(k);
+            } else {
+                sources.push(k);
+            }
+        }
+        if receivers.is_empty() || sources.is_empty() {
+            return;
+        }
+        for &r in &receivers {
+            let Some(a) = args.get(r) else { continue };
+            let Some((rroot, _)) = self.arg_place(a) else { continue };
+            for &s in &sources {
+                let Some(b) = args.get(s) else { continue };
+                let Some(sroot) = self.borrow_root(b) else { continue };
+                if sroot == rroot {
+                    continue;
+                }
+                let mutable = matches!(tel(&d.params[s].1, 1), V::B(true));
+                let id = self.loans.len();
+                self.loans.push(LoanInfo {
+                    root: sroot.clone(),
+                    path: vec![],
+                    mutable,
+                });
+                self.emit(c, Ev::Loan {
+                    holder: Holder::Var(rroot.clone()),
+                    id,
+                });
+            }
+        }
+    }
+
+    /// 式 `a` が `&<場所>` / `&mut <場所>` ならその場所の (根, 道)。
+    fn arg_place(&self, a: &V) -> Option<(String, Vec<String>)> {
+        match nname(a) {
+            "Unary" => {
+                let op = st(&nf(a)[0]);
+                if op == "&" || op == "&mut" {
+                    self.place_of(&nf(a)[1])
+                } else {
+                    None
+                }
+            }
+            _ => self.place_of(a),
+        }
+    }
+
+    /// `&<変数>` の借用元の変数名。それ以外は None。
+    fn borrow_root(&self, a: &V) -> Option<String> {
+        if nname(a) != "Unary" {
+            return None;
+        }
+        let f = nf(a);
+        let op = st(&f[0]);
+        if op != "&" && op != "&mut" {
+            return None;
+        }
+        let (root, path) = self.place_of(&f[1])?;
+        if path.is_empty() {
+            Some(root)
+        } else {
+            None
+        }
+    }
+
     /// `holder` が `srcs` の借用を持つようにする事象を出す。
     fn hold(&mut self, n: usize, holder: Holder, srcs: Vec<Src>) {
         for s in srcs {
@@ -1320,8 +1427,20 @@ impl<'a> Low<'a> {
                 } else {
                     // 呼び出し先の式 (ここでは追わない)
                 }
+                let mut di: Option<usize> = None;
+                if nname(callee) == "Path" {
+                    if let Some(r) = self.p.resolve(&strs(&nf(callee)[0]), &self.file) {
+                        di = match r.target {
+                            Target::Fn(i) | Target::Sig(i) => Some(i),
+                            _ => None,
+                        };
+                    }
+                }
                 let mut temps = vec![];
                 let c = self.lower_args_held(args, cur, &mut temps);
+                if let Some(di) = di {
+                    self.bind_receiver_arg_borrow(c, di, args);
+                }
                 self.end_temps(c, temps);
                 // `core.mem.drop(p)`: 場所の値を消費する。そこに保存された借用はここで死ぬ。
                 if nname(callee) == "Path" && self.is_drop_fn(&strs(&nf(callee)[0])) {
