@@ -492,6 +492,7 @@ impl<'a> Lw<'a> {
             "Break" => self.jump_loop(e, true),
             "Continue" => self.jump_loop(e, false),
             "Return" => self.ret_(e),
+            "With" => self.with_(e),
             "StructLit" | "TupleE" | "Field" => self.agg_expr(e),
             "Unsafe" => ffi_lower::unsafe_block(self, e),
             "Match" => self.match_any(e),
@@ -991,7 +992,7 @@ impl<'a> Lw<'a> {
             };
             if is_net {
                 let m = st(&nf(e)[1]);
-                if matches!(m.as_str(), "accept" | "read" | "write" | "flush" | "close") {
+                if matches!(m.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port") {
                     let Some(recv) = self.expr(&nf(e)[0])? else { return Ok(None) };
                     let rt = self.vty(recv);
                     let args = items(&nf(e)[2]).to_vec();
@@ -1277,6 +1278,52 @@ impl<'a> Lw<'a> {
         coll::drop_from(self, 0);
         self.terminate(Term::Ret(v));
         Ok(None)
+    }
+
+    /// `with [mut] 名前 = 初期化式 close 後始末式 { 本体 }` (仕様 4.4)。
+    /// 本体を抜けるあらゆる経路 (末尾 / `return` / `?` / `break` / `continue`) で、
+    /// 出口の値を決めたあとに後始末式をちょうど 1 回実行する。panic とプロセス終了は
+    /// 実行しない。初期化式が失敗したら束縛も後始末もない。
+    fn with_(&mut self, e: &V) -> LR<Option<VId>> {
+        let f = nf(e);
+        let name = st(&nf(&f[0])[0]);
+        let init = &f[2];
+        let close_expr = &f[3];
+        let body = &f[4];
+
+        // 1. 初期化式を評価。`?` などで抜けたら束縛も後始末もない。
+        let Some(v) = self.expr(init)? else { return Ok(None) };
+        let t = self.vty(v);
+
+        // 2. 束縛のスコープを作り、束縛 → 後始末式の順に登録する。出口 (`return` / `?` / `break` /
+        //    `continue`) は `drop_from` が登録の逆順に解放するので、後始末式 → 束縛の解放の順になり、
+        //    出口の終端を置く前に後始末式が下ろされる (木走査と同じ)。
+        self.scopes.push(vec![]);
+        coll::bind_owned(self, &name, v, t);
+        coll::register_close(self, close_expr.clone());
+
+        // 3. 本体。
+        let r = self.expr(body);
+        let r = match r {
+            Ok(r) => r,
+            Err(e) => {
+                self.scopes.pop();
+                return Err(e);
+            }
+        };
+
+        // 4. 末尾で普通に抜ける経路: 本体の値を決めたあとに後始末式、続けて束縛の解放。
+        if r.is_some() {
+            coll::block_end(self);
+        } else {
+            let depth = self.scopes.len() - 1;
+            self.coll.owned.retain(|(d, _)| *d < depth);
+        }
+        self.scopes.pop();
+        if let Some(e) = self.coll.close_err.take() {
+            return Err(e);
+        }
+        Ok(r)
     }
 }
 
