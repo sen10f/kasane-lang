@@ -754,7 +754,30 @@ pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
     Ok(crate::debug::Target { prog, entry, entry_name, tests, user_files })
 }
 
+/// `--engine=vm|tree` を取り除く。`true` なら VM (`ksn run` / `ksn test`。既定は木走査)。
+fn take_engine(args: &[String]) -> Result<(bool, Vec<String>), String> {
+    let mut vm = false;
+    let mut rest = vec![];
+    for a in args {
+        match a.strip_prefix("--engine=") {
+            Some("vm") => vm = true,
+            Some("tree") => vm = false,
+            Some(o) => return Err(format!("--engine は vm か tree (指定: {})", o)),
+            None => rest.push(a.clone()),
+        }
+    }
+    Ok((vm, rest))
+}
+
 fn cmd_run(args: &[String]) -> i32 {
+    let (use_vm, args) = match take_engine(args) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("ksn: {}", e);
+            return 2;
+        }
+    };
+    let args = &args[..];
     let (json, watch, rest) = run_args(args);
     let mut rep = Report::new(json);
     let root = match find_root() {
@@ -765,7 +788,7 @@ fn cmd_run(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let (l, prog, _) = match full_check(&root, &mut rep, true) {
+    let (l, prog, user) = match full_check(&root, &mut rep, true) {
         Ok(x) => x,
         Err(e) => {
             rep.add(&e.code, &e.msg, None, 1, 1, true);
@@ -786,6 +809,16 @@ fn cmd_run(args: &[String]) -> i32 {
         eprintln!("ksn: E9030: entry function {} not found", entry);
         return 1;
     };
+    if use_vm {
+        if watch || !rest.is_empty() {
+            eprintln!("vm engine skipped: --watch と実行引数は VM 未対応; falling back to the tree walker");
+        } else {
+            match crate::vm::run_entry(&prog, &user, &entry) {
+                Ok(code) => return code,
+                Err(why) => eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why)),
+            }
+        }
+    }
     let prog = Rc::new(prog);
     let mut it = Interp::new(prog);
     it.args = rest;
@@ -917,9 +950,16 @@ fn cmd_test(args: &[String]) -> i32 {
         dargs.extend(["--test".to_string(), name.clone()]);
         return crate::debug::cmd_debug(&dargs);
     }
+    let (use_vm, args) = match take_engine(args) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("ksn: {}", e);
+            return 2;
+        }
+    };
     let mut both = false;
     let mut prefix: Option<String> = None;
-    for a in args {
+    for a in &args {
         if a == "--both" {
             both = true;
         } else {
@@ -960,15 +1000,30 @@ fn cmd_test(args: &[String]) -> i32 {
     for ti in &tests {
         let name = prog.defs[*ti].name.clone();
         let mut results: Vec<Option<String>> = vec![];
-        let mut it = Interp::new(prog.clone());
-        let r = it.call_body(*ti);
-        use std::io::Write;
-        let _ = it.out.flush();
-        results.push(match r {
-            Err(Ctl::Panic(m)) => Some(m),
-            Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
-            _ => None,
-        });
+        let vm_result = if use_vm {
+            match crate::vm::run_test(&prog, &user, *ti) {
+                Ok(r) => Some(r),
+                Err(why) => {
+                    eprintln!("test {}: vm engine skipped: {}; falling back to the tree walker", name, first_line(&why));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(r) = vm_result {
+            results.push(r);
+        } else {
+            let mut it = Interp::new(prog.clone());
+            let r = it.call_body(*ti);
+            use std::io::Write;
+            let _ = it.out.flush();
+            results.push(match r {
+                Err(Ctl::Panic(m)) => Some(m),
+                Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
+                _ => None,
+            });
+        }
         // `--both` の相手は、KIR に下ろせればその LLVM の実行ファイル。下ろせなければ Cranelift の実行ファイル、
         // それも作れなければバンドル (どれも作れない機能を含むテストだけ)。
         let mut other = "";
