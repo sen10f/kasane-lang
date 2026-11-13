@@ -12676,6 +12676,30 @@ fn kir_lower_examples_and_perf_functions_match_tree_walker() {
     }
 }
 
+#[test]
+fn kir_str_methods_and_bstr_match_tree_walker() {
+    // `&str` の `starts_with` / `ends_with` / `eq` とバイト列リテラル `b"..."`。
+    // 木走査は `t.main` の `core.check.eq` で検査し、KIR は整数/bool を返す関数を `--run` で比べる。
+    let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(\"abc\".starts_with(\"ab\"), true)\n    core.check.eq(\"abc\".starts_with(\"bc\"), false)\n    core.check.eq(\"abc\".starts_with(\"\"), true)\n    core.check.eq(\"\".starts_with(\"\"), true)\n    core.check.eq(\"abc\".ends_with(\"bc\"), true)\n    core.check.eq(\"abc\".ends_with(\"ab\"), false)\n    core.check.eq(\"abc\".ends_with(\"\"), true)\n    core.check.eq(\"abc\".ends_with(\"abcd\"), false)\n    core.check.eq(\"abc\".eq(\"abc\"), true)\n    core.check.eq(\"abc\".eq(\"abd\"), false)\n    core.check.eq(match core.str.from_utf8(b\"abc\") {\n        Ok(_t) => true\n        Err(_e) => false\n    }, true)\n    core.check.eq(match core.str.from_utf8(b\"\\xc3\") {\n        Ok(_t) => true\n        Err(_e) => false\n    }, false)\n    Ok(())\nend t.main\n\nfn t.bstr_test() -> bool uses [] panics may\n    b\"abc\".len() == 3usize && b\"abc\"[0] == 97u8\nend t.bstr_test\n\nfn t.str_test() -> bool uses [] panics never\n    \"abc\".starts_with(\"ab\") && \"abc\".starts_with(\"bc\") == false && \"abc\".eq(\"abc\") && !\"abc\".eq(\"abd\")\nend t.str_test\n\nfn t.utf8_ok() -> bool uses [] panics never\n    match core.str.from_utf8(b\"abc\") {\n        Ok(_t) => true\n        Err(_e) => false\n    }\nend t.utf8_ok\n\nfn t.utf8_bad() -> bool uses [] panics never\n    match core.str.from_utf8(b\"\\xc3\") {\n        Ok(_t) => false\n        Err(_e) => true\n    }\nend t.utf8_bad\n";
+    let t = Tmp::new("kir_str_methods", src);
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "check: {}", text(&o.stderr));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "run (tree-walker): {}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.str_test", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir str_test: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir str_test value");
+    let k = kir_run(&["kir", "t.bstr_test", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir bstr_test: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir bstr_test value");
+    let k = kir_run(&["kir", "t.utf8_ok", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir utf8_ok: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir utf8_ok value");
+    let k = kir_run(&["kir", "t.utf8_bad", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir utf8_bad: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "true", "kir utf8_bad value");
+}
+
 // ---- panic (unwrap・core.panic.panic)、利用者のメソッドの &mut 受け手、配列リテラルの for ----
 
 /// panic の試験用の関数。`unwrap` の None / Err と `core.panic.panic` (エスケープと % を含む文言)。

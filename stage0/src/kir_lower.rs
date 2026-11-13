@@ -26,6 +26,9 @@ use refs::RefCx;
 // 組み込みの Option / Result の下ろし (子モジュール。親の非公開の項目を使う)。
 #[path = "kir_lower_enum.rs"]
 mod enum_lower;
+// 文字列・バイト列の操作の下ろし (kir_lower_str.rs)。
+#[path = "kir_lower_str.rs"]
+mod str_lower;
 // panic (`core.panic.panic("..")` と `unwrap`) の下ろし (子モジュール)。
 #[path = "kir_lower_panic.rs"]
 mod panic_lower;
@@ -526,6 +529,8 @@ impl<'a> Lw<'a> {
                 Ok(self.emit(Ty::U8, Op::Const(v)))
             }
             "str" => coll::str_lit(self, e),
+            // `b"..."` は静的なバイト列と長さから `fat` (`{ptr, len}`) を作る。
+            "bstr" => self.str_lit(e),
             other => self.err(line, format!("リテラル {} は段階 1 の対象外", other)),
         }
     }

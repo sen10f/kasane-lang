@@ -229,7 +229,18 @@ pub(crate) fn local_slot(lw: &Lw, e: &V) -> Option<usize> {
 /// 受け手の種類。局所変数はスロットの種類、それ以外は型表の型から決める。
 fn kind_of_expr(lw: &Lw, e: &V) -> Option<Kind> {
     if let Some(s) = local_slot(lw, e) {
-        return lw.coll.kinds.get(&s).cloned();
+        if let Some(k) = lw.coll.kinds.get(&s).cloned() {
+            return Some(k);
+        }
+    }
+    // 文字列リテラル / バイト列リテラルは式そのままなので、型表に無くても種類を返す。
+    if nname(e) == "Lit" {
+        let f = nf(e);
+        match st(&f[0]).as_str() {
+            "str" => return Some(Kind::Str),
+            "bstr" => return Some(Kind::Slice(Some(Ty::U8))),
+            _ => {}
+        }
     }
     table_ty(lw, e).and_then(|t| kind_of_src(lw, &t))
 }
@@ -1079,6 +1090,12 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     match segs.as_slice() {
         ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e)),
         ["alloc", "string", "String", "new"] => Some(new_header(lw, e)),
+        ["alloc", "string", "String", "from_str"] => {
+            Some(lw.from_str_call(e, items(&f[1]), nline(e)))
+        }
+        ["core", "str", "from_utf8"] => {
+            Some(lw.from_utf8_call(e, items(&f[1]), nline(e)))
+        }
         ["alloc", "collections", "HashMap", "new"] => Some(new_header(lw, e)),
         // `core.mem.drop(x)`: 値を移して、その場で解放する。
         ["core", "mem", "drop"] => Some(mem_drop(lw, e)),
@@ -1322,6 +1339,9 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
 
 /// ヘッダ (または `fat`) `h` を受け手とするメソッド呼び出し。所有の周りの新しいメソッド (`own`) を先に試す。
 pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: Kind, h: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
+    if let Some(r) = lw.str_method_call(e, &kind, h, m, args) {
+        return r;
+    }
     if let Some(r) = super::own::method(lw, e, line, &kind, h, m, args) {
         return r;
     }
@@ -1644,13 +1664,22 @@ fn elem_addr(lw: &mut Lw, seq: Seq, i: VId, elem: Ty) -> LR<VId> {
     Ok(lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off }))
 }
 
-/// 添字・反復の対象になる Vec・スライスの変数: (置き場, 要素の型)。要素型が分からなければ拒否する。
-fn vec_place(lw: &Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
+/// 添字・反復の対象になる Vec・スライスの変数または `b"..."` リテラル: (置き場, 要素の型)。要素型が分からなければ拒否する。
+fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
     if let Some(s) = local_slot(lw, e) {
         match lw.coll.kinds.get(&s) {
             Some(Kind::Vec(Some(elem))) => return Ok((Seq::Hdr(lw.slots[s].0), *elem)),
             Some(Kind::Slice(Some(elem))) => return Ok((Seq::Fat(lw.slots[s].0), *elem)),
             _ => {}
+        }
+    }
+    // `b"..."` リテラルは式そのままなので fat 値を作る。
+    if nname(e) == "Lit" {
+        let f = nf(e);
+        if st(&f[0]).as_str() == "bstr" {
+            if let Some(fat) = lw.expr(e)? {
+                return Ok((Seq::Fat(fat), Ty::U8));
+            }
         }
     }
     lw.err(line, "添字・for の対象は要素型の分かる Vec・スライスの変数だけ段階 1 の対象")
