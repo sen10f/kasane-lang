@@ -1,0 +1,23 @@
+fn t.apply(p: fn() -> u32 uses [] panics never) -> u32 uses [] panics never
+    p()
+end t.apply
+
+// expect: E4001
+fn t.loud() -> u32 uses [io.console] panics may
+    core.mem.drop(std.io.print_line("LOUD"))
+    core.panic.panic("PANIC")
+end t.loud
+
+fn t.main() -> () uses [] panics never
+    let (a, b) = t.pair(t.quiet, t.loud)
+    core.mem.drop(t.apply(a))
+    core.mem.drop(t.apply(b))
+end t.main
+
+fn t.pair[T](a: T, b: T) -> (T, T) uses [] panics never
+    (a, b)
+end t.pair
+
+fn t.quiet() -> u32 uses [] panics never
+    1u32
+end t.quiet

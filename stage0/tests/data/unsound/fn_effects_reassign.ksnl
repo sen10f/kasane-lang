@@ -1,0 +1,19 @@
+fn t.apply(p: fn() -> u32 uses [] panics never) -> u32 uses [] panics never
+    p()
+end t.apply
+
+// expect: E4001
+fn t.loud() -> u32 uses [io.console] panics may
+    core.mem.drop(std.io.print_line("LOUD"))
+    core.panic.panic("PANIC")
+end t.loud
+
+fn t.main() -> () uses [] panics never
+    let mut p = t.quiet
+    p = t.loud
+    core.mem.drop(t.apply(p))
+end t.main
+
+fn t.quiet() -> u32 uses [] panics never
+    1u32
+end t.quiet

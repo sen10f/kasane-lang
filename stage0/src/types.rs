@@ -915,12 +915,57 @@ impl<'a> TypeCk<'a> {
     /// 同じ型になるべき 2 つの式 (`if` の両枝、`match` の腕) の型を一致させる。結果は報告しない
     /// (不一致は別の検査が見る)。分からない型 (未知・型パラメータ) とは一致させない。そうしないと
     /// 型変数が escape され、本来決まるはずの型変数の診断が消えるため。
-    fn join_arm(&mut self, a: &Ty, b: &Ty) {
+    /// 同じ型になるべき 2 つの式 (`if` の両枝、`match` の腕) の型を一致させる。
+    /// 結果は報告しない (不一致は別の検査が見る)。分からない型 (未知・型パラメータ)
+    /// とは一致させない。2 つのクロージャが合流するときは、実際の効果 (`eff`) を和に
+    /// して残す (先に入った方だけが残る穴を塞ぐ)。
+    fn join_arm(&mut self, a: &Ty, b: &Ty) -> Ty {
         let unknown = |t: &Ty| matches!(t, Ty::Unknown | Ty::Param(_));
         if unknown(&self.resolve(a)) || unknown(&self.resolve(b)) {
-            return;
+            return a.clone();
         }
         let _ = self.unify2(a, b);
+        self.merge_closure_eff(a, b)
+    }
+
+    /// 実際の効果を和にする (`uses` の和、`may` はどちらか `may` なら `may`)。
+    fn eff_union(&self, ea: &Eff, eb: &Eff) -> Eff {
+        let Eff(Some(a)) = ea else { return eb.clone() };
+        let Eff(Some(b)) = eb else { return ea.clone() };
+        let mut uses = a.uses.clone();
+        for e in &b.uses {
+            if !uses.contains(e) {
+                uses.push(e.clone());
+            }
+        }
+        let may = match (a.may, b.may) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        };
+        Eff(Some(EffInfo {
+            decl: a.decl,
+            uses,
+            may,
+            name: a.name.clone(),
+        }))
+    }
+
+    /// 2 つのクロージャを合流させた型 (実際の効果の和を残す)。クロージャでなければ a。
+    fn merge_closure_eff(&self, a: &Ty, b: &Ty) -> Ty {
+        let (ca, cb) = (self.resolve(a), self.resolve(b));
+        let (Ty::Closure { args, ret, cap, id, eff: ea }, Ty::Closure { eff: eb, .. }) =
+            (&ca, &cb)
+        else {
+            return ca;
+        };
+        Ty::Closure {
+            args: args.clone(),
+            ret: ret.clone(),
+            cap: cap.clone(),
+            id: id.clone(),
+            eff: self.eff_union(ea, eb),
+        }
     }
 
     fn escape(&mut self, t: &Ty) {
@@ -1196,6 +1241,18 @@ impl<'a> TypeCk<'a> {
 
     /// 2 つの型を等しくする。矛盾したら、その箇所の 2 つの型を返す。参照は透過的。
     fn unify2(&mut self, a: &Ty, b: &Ty) -> Result<(), (Ty, Ty)> {
+        // 単一化前に、どちらかが型変数に束縛されていればその変数を記録する
+        // (resolve で束縛先が展開されてしまうため)。
+        let (va, vb) = (
+            match a {
+                Ty::Var(x) => Some((*x, self.vars[*x].clone())),
+                _ => None,
+            },
+            match b {
+                Ty::Var(x) => Some((*x, self.vars[*x].clone())),
+                _ => None,
+            },
+        );
         let (a, b) = (self.resolve(a), self.resolve(b));
         // 型パラメータ (本体の中では「どれかの型」) と一般の型変数は、変数を型パラメータに束縛して決める。
         // リテラルの型変数 (整数・浮動小数) は従来どおり決めない。
@@ -1315,11 +1372,20 @@ impl<'a> TypeCk<'a> {
                     return Err((a.clone(), b.clone()));
                 }
                 self.check_fn_conv(ea, eb);
+                // 2 つの実際のクロージャを単一化する (合流・代入): 実際の効果を和にして残す。
+                let merged = self.merge_closure_eff(&a, &b);
                 let (xs, ys, rx, ry) = (xs.clone(), ys.clone(), (**rx).clone(), (**ry).clone());
                 for (x, y) in xs.iter().zip(&ys) {
                     self.unify2(x, y)?;
                 }
-                self.unify2(&rx, &ry)
+                self.unify2(&rx, &ry)?;
+                // どちらかが型変数に束縛されていれば、束縛先も効果の和に更新する。
+                for opt in [va, vb] {
+                    if let Some((x, Some(Ty::Closure { .. }))) = opt {
+                        self.vars[x] = Some(merged.clone());
+                    }
+                }
+                Ok(())
             }
             (Ty::Slice(x), Ty::Slice(y)) | (Ty::Slice(x), Ty::Array(y)) | (Ty::Array(x), Ty::Slice(y)) | (Ty::Array(x), Ty::Array(y)) => {
                 let (x, y) = (x.clone(), y.clone());
@@ -2544,11 +2610,24 @@ impl<'a> TypeCk<'a> {
                 for t in &ts {
                     let _ = self.unify2(&elem, t);
                 }
+                // 配列リテラルでクロージャが合流する: 実際の効果を和にして要素型に残す。
+                if let Ty::Var(v) = &elem {
+                    let mut merged: Option<Ty> = None;
+                    for t in &ts {
+                        merged = Some(match merged {
+                            None => t.clone(),
+                            Some(m) => self.merge_closure_eff(&m, t),
+                        });
+                    }
+                    if let Some(m) = merged {
+                        self.vars[*v] = Some(m);
+                    }
+                }
                 Ty::Array(Box::new(elem))
             }
             "If" => {
                 self.infer(&f[0]);
-                let a = self.infer(&f[1]);
+                let mut a = self.infer(&f[1]);
                 let has_else = !is_nil(&f[2]);
                 let b = if has_else { self.infer(&f[2]) } else { Ty::Unit };
                 if a == Ty::Never {
@@ -2556,7 +2635,7 @@ impl<'a> TypeCk<'a> {
                 }
                 // 6 の 2: 両方の枝は同じ型になる。`Ok(..)` と `Err(..)` の枝の型変数は、互いに一致させて決まる。
                 if has_else && b != Ty::Never {
-                    self.join_arm(&a, &b);
+                    a = self.join_arm(&a, &b);
                 }
                 a
             }
@@ -2577,7 +2656,7 @@ impl<'a> TypeCk<'a> {
                         out = t;
                     } else {
                         // 6 の 2: 他の腕と型を一致させる (`Some(v) => Ok(v)` と `None => Err(a)` など)。
-                        self.join_arm(&out, &t);
+                        out = self.join_arm(&out, &t);
                     }
                 }
                 // 腕がすべて発散するなら、match 自身も発散する。
@@ -2790,6 +2869,20 @@ impl<'a> TypeCk<'a> {
                     }
                 } else {
                     let _ = self.unify2(&target, &value);
+                    // 再代入でクロージャが合流する: 実際の効果を和にして束縛を更新する。
+                    if matches!(self.resolve(&target), Ty::Closure { .. })
+                        && matches!(self.resolve(&value), Ty::Closure { .. })
+                    {
+                        let merged = self.merge_closure_eff(&target, &value);
+                        if let Some(name) = strs(&nf(&f[0])[0]).first().cloned() {
+                            for s in self.scopes.iter_mut().rev() {
+                                if s.contains_key(&name) {
+                                    s.insert(name, merged);
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
                 Ty::Unit
             }
