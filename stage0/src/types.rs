@@ -544,6 +544,8 @@ impl<'a> TypeCk<'a> {
                 self.diag("E2020", format!("type mismatch in return value: expected {}, found {}{}", want, got, conv_hint(&want, &got)), line);
             }
         }
+        // 戻り値は「受け側」の関数型が分かる: 宣言 × 宣言の効果の食い違いをここで報告する。
+        self.check_fn_conv_dir(&ret, &value);
         if let Some((want, got)) = self.ref_level_conflict(&ret, &value) {
             let stmts = items(&nf(body)[0]);
             let line = stmts.last().map(nline).unwrap_or(0);
@@ -1251,8 +1253,9 @@ impl<'a> TypeCk<'a> {
     }
 
     /// 関数・クロージャを関数型 `fn(..) uses [E] panics P` に合わせる所 (仕様 5.1) の効果の検査。
-    /// 渡す側 (decl = false) の効果 `E0 ⊆ E` かつ `P0 ⊑ P`。違反は E4001 / E4002。効果変数・panic 変数の側は黙る。
-    /// 一方が注釈の型でもう一方が実際の効果を持つ組だけを見る (どちらが左右でも同じ)。
+    /// `want` (受け側: 注釈) の効果に `got` (渡し側: 実際の効果) の効果が含まれていなければ E4001 / E4002。
+    /// 効果変数・panic 変数の側は黙る。単一化は対称なので向きの分からない組はここでは見ない
+    /// (向きが分かる場所は `check_fn_conv_dir` で見る)。
     fn check_fn_conv(&mut self, ea: &Eff, eb: &Eff) {
         if self.conv_quiet {
             return;
@@ -1263,7 +1266,13 @@ impl<'a> TypeCk<'a> {
             (false, true) => (y, x),
             _ => return,
         };
-        let line = self.cur_line;
+        self.check_fn_eff(want, got, self.cur_line);
+    }
+
+    /// `want` (受け側の宣言) の効果に `got` (渡し側の宣言) の効果が含まれていなければ E4001 / E4002 を報告する。
+    /// 向きは呼び出し側が決める (let の注釈・引数・戻り値・構造体の欄)。宣言 × 実際と宣言 × 宣言の両方を見る。
+    /// 効果変数・panic 変数の側は黙る。
+    fn check_fn_eff(&mut self, want: &EffInfo, got: &EffInfo, line: usize) {
         let open = want.uses.iter().any(|e| e.chars().next().map_or(false, |c| c.is_uppercase()));
         let mut out: Vec<(&str, String)> = vec![];
         if !open {
@@ -1283,6 +1292,52 @@ impl<'a> TypeCk<'a> {
             if self.eff_seen.insert((c.to_string(), m.clone(), line)) {
                 self.diag(c, m, line);
             }
+        }
+    }
+
+    /// 方向が分かる場所 (let の注釈・引数・戻り値・構造体の欄) で、渡し側の関数型の宣言の効果が
+    /// 受け側の宣言に含まれていなければ E4001 / E4002 を報告する。単一化は対称なので向きを
+    /// `want`/`got` で外から渡す。入れ子 (Option<fn(..)> など) も辿る。
+    fn check_fn_conv_dir(&mut self, want: &Ty, got: &Ty) {
+        self.check_fn_conv_dir_walk(self.resolve(want), self.resolve(got));
+    }
+
+    /// `want`/`got` を辿り、関数型同士が対になる所だけ `check_fn_eff` する。
+    /// 構造が揃わない組は黙る (型不一致は単一化側が見る)。
+    fn check_fn_conv_dir_walk(&mut self, mut want: Ty, mut got: Ty) {
+        want = self.resolve(&want);
+        got = self.resolve(&got);
+        // 参照は透過的。両側から潜る (単一化と同じ)。
+        loop {
+            match (&want, &got) {
+                (Ty::Ref(_, w), _) => want = self.resolve(w),
+                (_, Ty::Ref(_, g)) => got = self.resolve(g),
+                _ => break,
+            }
+        }
+        match (&want, &got) {
+            (Ty::Closure { eff: ew, .. }, Ty::Closure { eff: eg, .. }) => {
+                if let (Some(ew), Some(eg)) = (&ew.0, &eg.0) {
+                    self.check_fn_eff(ew, eg, self.cur_line);
+                }
+            }
+            (Ty::Named(_, ws), Ty::Named(_, gs)) => {
+                for (w, g) in ws.iter().zip(gs.iter()) {
+                    self.check_fn_conv_dir_walk(w.clone(), g.clone());
+                }
+            }
+            (Ty::Tuple(ws), Ty::Tuple(gs)) => {
+                for (w, g) in ws.iter().zip(gs.iter()) {
+                    self.check_fn_conv_dir_walk(w.clone(), g.clone());
+                }
+            }
+            (Ty::Array(w), Ty::Array(g)) | (Ty::Slice(w), Ty::Slice(g)) => {
+                self.check_fn_conv_dir_walk((**w).clone(), (**g).clone());
+            }
+            (Ty::Ptr(_, w), Ty::Ptr(_, g)) => {
+                self.check_fn_conv_dir_walk((**w).clone(), (**g).clone());
+            }
+            _ => {}
         }
     }
 
@@ -2642,6 +2697,8 @@ impl<'a> TypeCk<'a> {
                             );
                         }
                     }
+                    // 構造体の欄は「受け側」の関数型が分かる: 宣言 × 宣言の効果の食い違いをここで報告する。
+                    self.check_fn_conv_dir(&declared, &vt);
                 }
                 // 型引数はここでは escape しない。あとから注釈や呼び出しで決まるかもしれない
                 // (決まらなかったリテラルは finish_literals が E2027 にする)。
@@ -2882,6 +2939,8 @@ impl<'a> TypeCk<'a> {
                             self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}{}", want, got, conv_hint(&want, &got)), nline(s));
                         }
                     }
+                    // let の注釈は「受け側」の関数型が分かる: 宣言 × 宣言の効果の食い違いをここで報告する。
+                    self.check_fn_conv_dir(&ann, &rhs);
                     if let Some((want, got)) = self.ref_level_conflict(&ann, &rhs) {
                         self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}{}", want, got, self.deref_hint(&ann)), nline(s));
                     }
@@ -3176,6 +3235,8 @@ impl<'a> TypeCk<'a> {
             for (pt, a) in payload.iter().zip(argt) {
                 let declared = subst(&from_v(pt, &gn), &bind);
                 let _ = self.unify2(&declared, a);
+                // enum のペイロードの欄は「受け側」の関数型が分かる: 宣言 × 宣言の効果の食い違いをここで報告する。
+                self.check_fn_conv_dir(&declared, a);
             }
         }
         Ty::Named(en.to_string(), targs)
@@ -3386,9 +3447,15 @@ impl<'a> TypeCk<'a> {
             if let Some((want, got)) = self.arg_ref_conflict(&raw, a, loose.get(k).copied().unwrap_or(false)) {
                 self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`{}", k + 1, d.name, want, got, ref_hint(&want, &got, self.ty_copy_ref(&raw))), line);
             }
-            self.conv_quiet = d.kw == "extern";
+            let is_extern = d.kw == "extern";
+            self.conv_quiet = is_extern;
             let ur = self.unify2(&pt, a);
             self.conv_quiet = false;
+            // 引数は「受け側」のパラメータ型が分かる: 宣言 × 宣言の効果の食い違いをここで報告する。
+            // `extern` の呼び出しは従来どおりここで黙る (E5004/E5005 が境界で見る)。
+            if !is_extern {
+                self.check_fn_conv_dir(&pt, a);
+            }
             if let Err(e) = ur {
                 // 型パラメータを含まない引数の型は従来の検査 (E2020) が見る。ここでは重複を避ける。
                 // ただし構造体リテラルの引数で、宣言と同じ型名どうしの矛盾 (型引数の違い) は、
