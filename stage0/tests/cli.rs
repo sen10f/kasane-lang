@@ -18079,6 +18079,35 @@ fn t.bytes(a: &str, b: &str) -> bool uses [] panics never\n    a.as_bytes() == b
 }
 
 #[test]
+fn kir_eq_on_aggregates_reused_after_and_in_loop_match_tree_walker() {
+    // 比較の後にも使う・ループの中で比べる。派生の比較は借用でなく値渡しだが、所有物を持たない (Copy でない) 型なので解放の問題は出ない。
+    let src = "type t.P derive [Clone, PartialEq]\n    a: u8\n    b: i32\nend t.P\n\n\
+fn t.go(k: u8) -> u32 uses [] panics may\n    let a = t.P { a: 1u8, b: 2i32 }\n    let b = t.P { a: k, b: 2i32 }\n    let mut c = 0u32\n    let mut i = 0u32\n    while i < 3u32 {\n        if a == b {\n            c = c + 10u32\n        }\n        if a != b {\n            c = c + 1u32\n        }\n        i = i + 1u32\n    }\n    if a == b {\n        c = c + 100u32\n    }\n    c + u32.from_u8(a.a) + u32.from_u8(b.a)\nend t.go\n\n\
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.check.eq(t.go(1u8), 132u32)\n    core.check.eq(t.go(4u8), 8u32)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_eq_reuse", src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker: {}{}", text(&o.stdout), text(&o.stderr));
+    for (arg, want) in [("1", "132"), ("4", "8")] {
+        let k = kir_run(&["kir", "t.go", "--run", arg], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}: {}", arg, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want);
+    }
+}
+
+#[test]
+fn kir_eq_on_aggregates_owning_heap_is_refused_with_a_reason() {
+    // String を持つ型は derive できず (E2036)、手書きの eq は下ろせない。どちらにしても == / != は理由付きで拒否する (二重解放を作らない)。
+    let src = "type t.P\n    name: alloc.string.String<std.alloc.System>\n    n: u32\nend t.P\n\nimpl core.cmp.PartialEq<t.P> for t.P\n\n\
+fn t.P.eq(self: &t.P, other: &t.P) -> bool uses [] panics never impls core.cmp.PartialEq<t.P>\n    self.n == other.n\nend t.P.eq\n\n\
+fn t.go() -> bool uses [alloc] panics never\n    let a = t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 1u32 }\n    let b = t.P { name: alloc.string.String.new(std.alloc.SYSTEM), n: 1u32 }\n    let r = a == b\n    core.mem.drop(a)\n    core.mem.drop(b)\n    r\nend t.go\n\n\
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.go(), true)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_eq_owning", src);
+    let k = run(&["kir", "t.go", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(1), "{}{}", text(&k.stdout), text(&k.stderr));
+    assert!(text(&k.stderr).contains("比較は段階 1 の対象外"), "{}", text(&k.stderr));
+}
+
+#[test]
 fn kir_get_on_vec_of_owning_elements_is_refused_with_a_reason() {
     // 所有物を持つ要素の `get` は、要素の写しを Option に入れると二重解放になる。借用で束縛する `match v.get(i) { Some(x) => .. }` 以外
     // (ここでは構造体パターンで要素を分解する形) は拒否する。

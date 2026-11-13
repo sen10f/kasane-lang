@@ -108,18 +108,6 @@ impl<'a> Lw<'a> {
         Ok(Some(self.emit(Ty::Unit, Op::Const(0))))
     }
 
-    /// 集成体型 `ty` (元の型 `src`) の等しさ関数 `<型>.$eq` を (まだなければ) 生成し、その鍵を返す。
-    /// `bin()` の `==`/`!=` で集成体を比べるために使う。
-    pub(super) fn agg_eq_key(&mut self, src: &Src, ty: Ty, file: &str) -> Result<String, String> {
-        let mut g = Gen::new(self.p, self.aggs);
-        let eq = g.need_eq(src, ty, file)?;
-        for (f, c) in std::mem::take(&mut g.out) {
-            self.coll.extra.push((f, c));
-        }
-        self.callees.insert(eq.clone());
-        Ok(eq)
-    }
-
     fn check_true(&mut self, e: &V) -> LR<Option<VId>> {
         let line = nline(e);
         let args = items(&nf(e)[1]);
@@ -144,6 +132,11 @@ impl<'a> Lw<'a> {
     /// `<型>.$eq` を呼んで bool を返す (派生の比較。木走査の `v_eq` と同じ意味)。`neg` なら否定。
     pub(super) fn eq_by_call(&mut self, l: &V, r: &V, a: VId, b: VId, neg: bool, line: usize) -> LR<VId> {
         let ta = self.vty(a);
+        // 所有物 (String / Vec) を持つ型は値で `$eq` に渡すと所有が移る。派生の比較は所有物のフィールドを許さず
+        // (E2036)、手書きの eq は下ろせないので、理由を付けて拒否する (設計_KIR.md 17.15)。
+        if super::coll::owns(self, ta) {
+            return self.err(line, format!("型 {} の比較は段階 1 の対象外: 所有物を持つ型の == / != は値渡しで所有が移るため", ta.name()));
+        }
         let mut why = String::new();
         let mut found = None;
         for e in [l, r] {

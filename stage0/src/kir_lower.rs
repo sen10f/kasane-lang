@@ -639,7 +639,7 @@ impl<'a> Lw<'a> {
                 if self.vty(b) != t {
                     return self.err(line, "比較の両辺の型が違う");
                 }
-                if matches!(op.as_str(), "==" | "!=") && (matches!(t, Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_))) && !coll::owns(self, t) {
+                if matches!(op.as_str(), "==" | "!=") && (matches!(t, Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_))) {
                     return Ok(Some(self.eq_by_call(l, r, a, b, op == "!=", line)?));
                 }
                 let cc = match op.as_str() {
@@ -652,17 +652,6 @@ impl<'a> Lw<'a> {
                 };
                 if t.is_ref() || t == Ty::Unit || (t == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
                     return self.err(line, format!("型 {} の比較は段階 1 の対象外", t.name()));
-                }
-                // 集成体（構造体・列挙型）の `==` / `!=` は `<型>.$eq` 関数を呼ぶ（設計_KIR.md 13.3）。
-                if matches!(t, Ty::Agg(_)) && matches!(cc, Cc::Eq | Cc::Ne) {
-                    let src = self.src_ty(l)?;
-                    let eq = self.agg_eq_key(&src, t, &self.def.file)?;
-                    let r = self.emit(Ty::Bool, Op::Call { callee: eq, args: vec![a, b] });
-                    if cc == Cc::Ne {
-                        let r = self.emit(Ty::Bool, Op::Not(r));
-                        return Ok(Some(r));
-                    }
-                    return Ok(Some(r));
                 }
                 Ok(Some(self.emit(Ty::Bool, Op::Cmp { cc, ty: t, a, b })))
             }
