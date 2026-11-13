@@ -16289,6 +16289,32 @@ fn kir_agg_refs_values_match_tree_walker() {
 }
 
 #[test]
+fn kir_agg_get_match_tree_walker() {
+    // 構造体の Vec の `get(i)` が `Option<構造体>` を返し、`match` で分解でき、
+    // 木走査 (`ksn run`) と参照実行器 / 機械語 (`ksn kir --run` / `--native`) が一致する。
+    let fns = "type t.Item derive [Copy, Clone]\n    kind: u8\n    v: u32\nend t.Item\n\n\
+               fn t.make(n: u32) -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let mut i = 0u32\n    while i < n {\n        core.mem.drop(v.push(t.Item { kind: 1u8, v: i.wrapping_mul(7u32) }))\n        i = i.wrapping_add(1u32)\n    }\n    v\nend t.make\n\n\
+               fn t.pick(i: usize) -> u32 uses [alloc] panics never\n    let v = t.make(4u32)\n    match v.get(i) {\n        None => 0u32\n        Some(t.Item { kind: _, v: x }) => x\n    }\nend t.pick\n";
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.pick", &["2"], "14u32", "14"),
+        ("t.pick", &["9"], "0u32", "0"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_agg_get_{}", i), &format!("{}{}", fns, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
 fn kir_agg_refs_bounds_panic_like_tree_walker() {
     // スライスと Vec の範囲外の添字 (末尾の次・空) は、木走査と同じ文言で panic する (終了コード 101)。
     let cases: &[(&str, &str)] = &[

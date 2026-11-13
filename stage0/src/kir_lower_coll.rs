@@ -1775,7 +1775,7 @@ pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]
         Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
         _ => return lw.err(line, "get の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
     };
-    let (Some(sz), Some(pay)) = (size_of(elem), Pay::of(elem)) else {
+    let (Some(sz), Some(pay)) = (elem_size(lw, elem), Pay::of(elem)) else {
         return lw.err(line, format!("get の要素の型 {} は段階 1 の対象外", elem.name()));
     };
     if args.len() != 1 {
@@ -1800,7 +1800,7 @@ pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]
         lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k })
     };
     let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
-    let x = lw.emit(elem, Op::MemLoad { p: addr, off: 0 });
+    let x = load_elem(lw, addr, elem);
     let some = lw.emit(opt, Op::Some(x));
     lw.goto(jb, vec![some]);
     lw.cur = Some(eb);
