@@ -18004,7 +18004,7 @@ fn kir_get_on_vec_of_owning_elements_is_refused_with_a_reason() {
     // (ここでは構造体パターンで要素を分解する形) は拒否する。
     let src = "type t.Item\n    name: alloc.string.String<std.alloc.System>\n    v: u32\nend t.Item\n\n\
 fn t.make() -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(t.Item { name: s, v: 1u32 }))\n    v\nend t.make\n\n\
-fn t.pick(i: usize) -> u32 uses [alloc] panics never\n    let v = t.make()\n    match v.get(i) {\n        None => 0u32\n        Some(t.Item { name: _, v: x }) => x\n    }\nend t.pick\n\n\
+fn t.pick(i: usize) -> u32 uses [alloc] panics never\n    let v = t.make()\n    let g = v.get(i)\n    match g {\n        None => 0u32\n        Some(t.Item { name: _, v: x }) => x\n    }\nend t.pick\n\n\
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.pick(0usize), 1u32)\n    Ok(())\nend t.main\n";
     let t = Tmp::new("kir_get_owning", src);
     let o = run(&["run"], &t.0);
@@ -19557,5 +19557,147 @@ fn kir_for_by_value_over_owning_elems_matches_tree_walker() {
         let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+const KIR_OWNMUT_FNS: &str = "fn t.mut_for_str(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.names(n)
+    let mut total = 0usize
+    for s in &mut v {
+        total = total.wrapping_add(s.len())
+    }
+    for s in &v {
+        total = total.wrapping_add(s.len())
+    }
+    total
+end t.mut_for_str
+
+fn t.mut_for_item(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.items(n)
+    for it in &mut v {
+        it.v = it.v.wrapping_add(10u32)
+        it.name = t.word()
+    }
+    let mut total = 0usize
+    for it in &v {
+        total = total.wrapping_add(it.name.len()).wrapping_add(usize.from_u32(it.v))
+    }
+    total
+end t.mut_for_item
+
+fn t.bump_all(v: &mut alloc.vec.Vec<t.Item, std.alloc.System>) -> usize uses [alloc] panics never
+    let mut c = 0usize
+    for it in v {
+        it.v = it.v.wrapping_add(1u32)
+        if it.v > 3u32 {
+            break
+        }
+        c = c.wrapping_add(1usize)
+    }
+    c
+end t.bump_all
+
+fn t.mut_for_param(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.items(n)
+    let c = t.bump_all(&mut v)
+    let mut total = c
+    for it in &v {
+        total = total.wrapping_add(usize.from_u32(it.v))
+    }
+    total
+end t.mut_for_param
+
+fn t.idx_push(n: u32, i: usize) -> usize uses [alloc] panics may
+    let mut v = t.names(n)
+    core.mem.drop(v[i].push_str(\"zz\"))
+    v[i].len()
+end t.idx_push
+
+fn t.idx_field(n: u32, i: usize) -> usize uses [alloc] panics may
+    let mut v = t.items(n)
+    core.mem.drop(v[i].name.push_str(\"zz\"))
+    v[i].v = 40u32
+    v[i].name = t.word()
+    v[i].name.len().wrapping_add(usize.from_u32(v[i].v))
+end t.idx_field
+
+fn t.idx_assign(n: u32, i: usize) -> usize uses [alloc] panics may
+    let mut v = t.items(n)
+    v[i] = t.Item { name: t.word(), v: 7u32 }
+    v[i].name.len().wrapping_add(usize.from_u32(v[i].v))
+end t.idx_assign
+
+fn t.idx_assign_str(n: u32, i: usize) -> usize uses [alloc] panics may
+    let mut v = t.names(n)
+    v[i] = t.word()
+    v[i].len()
+end t.idx_assign_str
+
+fn t.get_destr(n: u32, i: usize) -> u32 uses [alloc] panics never
+    let v = t.items(n)
+    match v.get(i) {
+        None => 0u32
+        Some(t.Item { name: _, v: x }) => x
+    }
+end t.get_destr
+
+fn t.get_destr_str(n: u32, i: usize) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    match v.get(i) {
+        None => 99usize
+        Some(t.Item { name: s, v: x }) => s.len().wrapping_add(usize.from_u32(x))
+    }
+end t.get_destr_str
+";
+
+#[test]
+fn kir_mut_borrow_of_owning_elems_matches_tree_walker() {
+    // `for x in &mut v` (所有物を持つ要素・スカラー)、`v[i]` の要素への `&mut` (フィールドへの代入・`push_str`・要素の代入。古い値は解放してから)、
+    // `get` の腕の構造体パターン。木走査と値が一致し、参照実行器が漏れ・二重解放を検出せず、ASan も報告しない。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.mut_for_str", &["3"], "18usize", "18"),
+        ("t.mut_for_str", &["0"], "0usize", "0"),
+        ("t.mut_for_item", &["3"], "42usize", "42"),
+        ("t.mut_for_item", &["0"], "0usize", "0"),
+        ("t.mut_for_param", &["6"], "22usize", "22"),
+        ("t.idx_push", &["3", "1"], "5usize", "5"),
+        ("t.idx_field", &["3", "1"], "43usize", "43"),
+        ("t.idx_assign", &["3", "1"], "10usize", "10"),
+        ("t.idx_assign_str", &["3", "2"], "3usize", "3"),
+        ("t.get_destr", &["3", "1"], "1u32", "1"),
+        ("t.get_destr", &["3", "7"], "0u32", "0"),
+        ("t.get_destr_str", &["3", "2"], "5usize", "5"),
+        ("t.get_destr_str", &["3", "7"], "99usize", "99"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let two = args.len() == 2;
+        let call = format!(
+            "{}({})",
+            f,
+            args.iter().enumerate().map(|(k, a)| if two && k == 1 { format!("{}usize", a) } else { format!("{}u32", a) }).collect::<Vec<_>>().join(", ")
+        );
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_ownmut_{}", i), &format!("{}\n{}\n{}", KIR_BORROW_FNS, KIR_OWNMUT_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_mut_borrow_of_owning_elems_out_of_range_panics_like_tree_walker() {
+    for (f, args) in [("t.idx_field", ["3", "5"]), ("t.idx_assign", ["3", "9"])] {
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq({}({}u32, {}usize), 0usize)\n    Ok(())\nend t.main\n", f, args[0], args[1]);
+        let t = Tmp::new("kir_ownmut_oob", &format!("{}\n{}\n{}", KIR_BORROW_FNS, KIR_OWNMUT_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "tree-walker: {}", text(&o.stderr));
+        let k = kir_run(&["kir", f, "--run", args[0], args[1]], &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir {}: {}", f, text(&k.stderr));
+        assert!(text(&k.stderr).contains("index out of bounds"), "{}", text(&k.stderr));
     }
 }

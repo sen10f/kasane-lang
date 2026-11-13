@@ -1096,6 +1096,14 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 列挙型 (ペイロード付き) の要素は `null_value` が拒否するので、この形も拒否のまま。
 - 試験: `kir_for_by_value_over_owning_elems_matches_tree_walker` (12 ケース: `Vec<String>`・構造体の Vec・`x` を別の Vec へ移す・`break`・`return`・`_`・入れ子・空)。
 
+### 17.16 所有物を持つ要素の可変の借用と `get` の分解 (kir/owned-elem-more、2026-11-13)
+- `for x in &mut v` / `&mut Vec` のパラメータを回す `for` (`iter_mut` は言語に無い。`ksn check` は `for` の変数への `&mut self` のメソッド (`push_str` など) を E3031 で拒むので、変数を通す変更はフィールドへの代入と `*x = ..`): 要素の番地を、構造体は `&mut T`、Vec / String は借用のヘッダ、スカラーは `&mut T` で束縛する。`x.f = e` は参照を通した代入 (`store_segs`) で、古い所有物は解放してから書く。スカラーの `*x = ..` は KIR では下りるが、木走査は `assignment through non-reference` で止まる (試験なし)。
+- `v[i].f = e` / `v[i].a.b = e` / `v[i].f.push_str(..)` / `&mut v[i]` (所有物を持つ要素): `elem_prep` が変更しうるメソッド・`&mut` のとき要素を可変の参照で借りる (`elem_prep_m`)。代入は右辺を先に評価して、境界の検査の後に書く (`assign_elem_field`)。`v[i] = x` は古い要素を解放してから `store` (前は型の不一致で検査に落ちていた)。
+- `match v.get(i) { Some(t.Item { name: s, v: x }) => .. }`: 要素の共有参照を構造体のパターンで分解する (`bind_struct_pat`)。スカラーは値を読み、所有物のフィールドは借用で束縛し (解放しない)、入れ子の構造体のパターンと `_` を扱う。リテラルなど他の部分パターンは拒否。
+- `x.wrapping_add(..)` の受け手が `&u32` / `&mut u32` のときは参照を外す。
+- 拒否のまま: `let g = v.get(i)` (値の `Option<&T>`)、`insert` / `remove`。
+- 試験: `kir_mut_borrow_of_owning_elems_matches_tree_walker` (13 ケース)、`..._out_of_range_panics_like_tree_walker`。`kir_get_on_vec_of_owning_elements_is_refused_with_a_reason` は `let` の形に差し替えた。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
