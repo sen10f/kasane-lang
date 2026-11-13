@@ -12728,6 +12728,77 @@ end t.main
 }
 
 #[test]
+fn kir_fs_create_open_read_remove_match_tree_walker() {
+    // `std.fs.create` / `open` / `close` / `sync` / `flush` / `remove_file` / `exists` を
+    // 一時ディレクトリ上で使い、`ksn run` と `ksn kir --run` と `--native` の結果が一致すること。
+    let tmp = Tmp::new("kir_fs_tmp", "fn t.main() -> u32 uses [] panics may\n    0u32\nend t.main\n");
+    let path_str = tmp.0.join("fs_test.bin").to_string_lossy().replace('\\', "/");
+    let src = format!(r#"
+fn t.main() -> u32 uses [io.fs] panics may
+    match std.fs.exists("{path_str}") {{
+        true => {{
+            core.check.eq(1u8, 2u8)
+        }}
+        false => {{
+        }}
+    }}
+    with mut file = match std.fs.create("{path_str}") {{
+        Ok(f) => f
+        Err(_) => return 1u32
+    }} close core.mem.drop(file.close()) {{
+        match file.write("hi".as_bytes()) {{
+            Ok(n) => {{
+                core.check.eq(n, 2usize)
+            }}
+            Err(_) => {{
+                return 1u32
+            }}
+        }}
+        match file.sync() {{
+            Ok(()) => {{
+            }}
+            Err(_) => {{
+                return 1u32
+            }}
+        }}
+        match file.flush() {{
+            Ok(()) => {{
+            }}
+            Err(_) => {{
+                return 1u32
+            }}
+        }}
+    }}
+    with mut file = match std.fs.open("{path_str}") {{
+        Ok(f) => f
+        Err(_) => return 1u32
+    }} close core.mem.drop(file.close()) {{
+    }}
+    match std.fs.remove_file("{path_str}") {{
+        Ok(()) => {{
+        }}
+        Err(_) => {{
+            return 1u32
+        }}
+    }}
+    match std.fs.exists("{path_str}") {{
+        true => {{
+            core.check.eq(1u8, 2u8)
+        }}
+        false => {{
+        }}
+    }}
+    0u32
+end t.main
+"#);
+    let t = Tmp::new("kir_fs_create_open_read_remove", &src);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", text(&o.stdout), text(&o.stderr));
+    let k = kir_run(&["kir", "t.main", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", text(&k.stdout), text(&k.stderr));
+}
+
+#[test]
 fn kir_lower_panics_and_depth_match_tree_walker() {
     // panic の文言と終了コード (101)、呼び出し深さの超過 (102) が木走査と一致すること。
     let cases: &[(&str, &[&str], &str)] = &[

@@ -76,6 +76,11 @@ use coll::CollCx;
 mod net_lower;
 use net_lower::{is_net_ty, net_call, net_method};
 
+// `std.fs` (ファイル) の下ろし (設計_KIR.md 12 章)。
+#[path = "kir_lower_fs.rs"]
+mod fs_lower;
+use fs_lower::{is_fs_ty, fs_call, fs_method};
+
 // `std.env` (引数・環境変数) の下ろし。
 #[path = "kir_lower_env.rs"]
 mod env_lower;
@@ -852,6 +857,13 @@ impl<'a> Lw<'a> {
                         return net_method(self, e, &meth, recv, rt, &args, line);
                     }
                 }
+                if is_fs_ty(self, rt) {
+                    let meth = segs[segs.len() - 1].clone();
+                    if matches!(meth.as_str(), "close" | "flush" | "read" | "sync" | "write") {
+                        let args = items(&f[1]).to_vec();
+                        return fs_method(self, e, &meth, recv, rt, &args, line);
+                    }
+                }
                 let meth = segs[segs.len() - 1].clone();
                 if meth == "clone" {
                     return self.lower_clone(line, recv, rt);
@@ -909,6 +921,9 @@ impl<'a> Lw<'a> {
         let callee_name = segs.join(".");
         if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
             return net_call(self, e, callee_name == "std.net.listen", line);
+        }
+        if matches!(callee_name.as_str(), "std.fs.create" | "std.fs.open" | "std.fs.exists" | "std.fs.remove_file" | "std.fs.read_to_end") {
+            return fs_call(self, e, &callee_name, args, line);
         }
         if let Some(r) = env_call(self, e, &callee_name, args, line)? {
             return Ok(Some(r));

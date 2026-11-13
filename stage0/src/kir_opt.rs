@@ -88,6 +88,15 @@ fn side_effecting(op: &Op) -> bool {
         | Op::NetFlush { .. }
         | Op::NetClose { .. }
         | Op::NetLocalPort { .. }
+        | Op::FsCreate { .. }
+        | Op::FsOpen { .. }
+        | Op::FsExists { .. }
+        | Op::FsRemove { .. }
+        | Op::FsClose { .. }
+        | Op::FsFlush { .. }
+        | Op::FsRead { .. }
+        | Op::FsSync { .. }
+        | Op::FsWrite { .. }
         | Op::Abort
         | Op::Panic { .. }
         | Op::Store { .. }
@@ -274,6 +283,9 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => vec![sock, buf, len],
         Op::EnvArgCount => vec![],
         Op::EnvArg { index } | Op::EnvVar { name: index } => vec![index],
+        Op::FsCreate { path } | Op::FsOpen { path } | Op::FsExists { path } | Op::FsRemove { path } => vec![path],
+        Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => vec![fd],
+        Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => vec![fd, buf, len],
         Op::ParseInt { s, radix, .. } => vec![s, radix],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }

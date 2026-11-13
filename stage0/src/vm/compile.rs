@@ -432,6 +432,16 @@ impl<'a> Fc<'a> {
             Op::NetFlush { sock } => Ins::NetFlush { d, sock: self.s(*sock) },
             Op::NetClose { sock } => Ins::NetClose { d, sock: self.s(*sock) },
             Op::NetLocalPort { sock } => Ins::NetLocalPort { d, sock: self.s(*sock) },
+            // std.fs の命令は VM 未対応 (木走査へ退避する)。
+            Op::FsCreate { .. }
+            | Op::FsOpen { .. }
+            | Op::FsExists { .. }
+            | Op::FsRemove { .. }
+            | Op::FsClose { .. }
+            | Op::FsFlush { .. }
+            | Op::FsRead { .. }
+            | Op::FsSync { .. }
+            | Op::FsWrite { .. } => return Err("std.fs の命令は VM 未対応".into()),
             // C のコールバックに VM の関数を渡すには機械語のトランポリンが要る。それまでは木走査へ退避する。
             Op::FnPtr { .. } => return Err("関数ポインタ (FnPtr) の命令は VM 未対応".into()),
         };

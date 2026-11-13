@@ -2275,16 +2275,28 @@ fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str) -
 
 /// 環境変数 `KSN_CLANG_ARGS` (空白区切り) の clang への追加の引数。試験が `-fsanitize=address -g` などを渡すための隠し機能。
 /// 未設定なら空 (既定の挙動は変わらない)。
-/// IR が C の実行時補助 (`kir_rt.c`) を要するなら、それを `src` の隣に書いて、clang に足す引数 (`-x c <path>`) を返す。
+/// IR が C の実行時補助 (`kir_rt.c`) や OS ランタイム (`sysrt.c`) を要するなら、
+/// それらを `src` の隣に書いて、clang に足す引数 (`-x c <path>` の繰り返し) を返す。
 fn runtime_c_args(ll: &str, src: &Path) -> Vec<String> {
     if !crate::kir_llvm::needs_runtime(ll) {
         return vec![];
     }
+    let mut args = Vec::new();
     let c = src.with_extension("rt.c");
-    if fs::write(&c, crate::kir_llvm::RUNTIME_C).is_err() {
-        return vec![];
+    if fs::write(&c, crate::kir_llvm::RUNTIME_C).is_ok() {
+        args.push("-x".into());
+        args.push("c".into());
+        args.push(c.display().to_string());
     }
-    vec!["-x".into(), "c".into(), c.display().to_string()]
+    if ll.contains("@ksn_rt_sys_") {
+        let c = src.with_extension("sys.c");
+        if fs::write(&c, include_str!("sysrt.c")).is_ok() {
+            args.push("-x".into());
+            args.push("c".into());
+            args.push(c.display().to_string());
+        }
+    }
+    args
 }
 
 fn clang_extra_args() -> Vec<String> {
@@ -2299,8 +2311,9 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
     let rt = runtime_c_args(ll, &src);
     let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(exe).arg("-lm").output();
     let _ = fs::remove_file(&src);
-    if rt.len() == 3 {
-        let _ = fs::remove_file(&rt[2]);
+    // 一時的な C ファイルを削除する (引数は "-x c <path>" の繰り返し)。
+    for i in (2..rt.len()).step_by(3) {
+        let _ = fs::remove_file(&rt[i]);
     }
     match o {
         Err(e) => Err(format!("clang を起動できない ({}: {})", clang, e)),
