@@ -1,0 +1,12 @@
+// expect: E3003
+type t.L linear pub
+    v: u32
+end t.L
+
+fn t.main() -> () uses [] panics never
+    let r: Result<t.L, u8> = Ok(t.L { v: 1u32 })
+    match r {
+        Ok(l) => core.mem.drop(1u8)
+        Err(e) => core.mem.drop(e)
+    }
+end t.main
