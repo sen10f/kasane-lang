@@ -46,6 +46,9 @@ SCALAR = INT_TYPES + BOOL + FLOAT
 RET_TYPES = ["u64", "i64"]
 MAX_LINE = 100
 
+# モジュール共通の単調カウンタ（生成される一時変数名をユニークにする）。
+_gctr = [0]
+
 # 構造体・列挙体の定義（生成器が出す Kasane ソースの先頭に並べる）
 STRUCTS = [
     ("Pair", [("a", "u64"), ("b", "i64")]),
@@ -55,6 +58,8 @@ ENUMS = [
     ("Flag", [("A", None), ("B", None)]),
     ("Pick", [("One", "u64"), ("Two", "i64"), ("None_", None)]),
 ]
+STRUCT_DICT = {sname: dict(fields) for sname, fields in STRUCTS}
+ENUM_DICT = {ename: variants for ename, variants in ENUMS}
 
 
 def lit(rng, t):
@@ -62,6 +67,8 @@ def lit(rng, t):
         return rng.choice(["true", "false"])
     if t == "&str":
         return "\"hi\""
+    if t == "usize":
+        return "%dusize" % rng.randint(0, 200)
     if t in UNSIGNED:
         return "%du%s" % (rng.randint(0, 200), t[1:])
     if t in SIGNED:
@@ -72,20 +79,22 @@ def lit(rng, t):
 
 
 def decl_block(rng):
-    """構造体・列挙体の定義ブロック（0～1 個）。(lines, 宣言された構造体名リスト)"""
+    """構造体・列挙体の定義ブロック（0～1 個）。(lines, 宣言された構造体名リスト, 列挙体名リスト)"""
     lines = []
     structs = []
+    enums = []
     if rng.random() < 0.6:
         sname, fields = rng.choice(STRUCTS)
         structs.append(sname)
-        lines.append("type fuzz.%s" % sname)
+        lines.append("type fuzz.%s derive [Debug, Clone]" % sname)
         for fname, ft in fields:
             lines.append("    %s: %s" % (fname, ft))
         lines.append("end fuzz.%s" % sname)
         lines.append("")
     if rng.random() < 0.6:
         ename, variants = rng.choice(ENUMS)
-        lines.append("enum fuzz.%s" % ename)
+        enums.append(ename)
+        lines.append("enum fuzz.%s derive [Debug, Clone, Copy]" % ename)
         for vname, pt in variants:
             if pt is None:
                 lines.append("    %s" % vname)
@@ -93,7 +102,7 @@ def decl_block(rng):
                 lines.append("    %s(%s)" % (vname, pt))
         lines.append("end fuzz.%s" % ename)
         lines.append("")
-    return lines, structs
+    return lines, structs, enums
 
 
 def int_binop(rng, a, b, t):
@@ -172,54 +181,119 @@ def str_concat(rng, s):
     return "core.mem.drop(%s.push_u64(42u64))" % s
 
 
-def gen_fn(rng, name, params, ret, fns, depth, structs):
-    """1 関数の本体行リスト。structs はこのプログラムで宣言された構造体名。"""
+def int_cmp(rng, a, b, t):
+    op = rng.choice(["<", ">", "<=", ">=", "==", "!="])
+    return "(%s %s %s)" % (a, op, b), "bool"
+
+
+def gen_fn(rng, name, params, ret, fns, depth, structs, enums, is_target):
+    """1 関数の本体行リスト。変数(引数・前のlet)を使い、accumulator を wrapping_add して返す。"""
     lines = []
     locals_ = []  # (name, type, is_mut) 関数レベル
-    ctr = [0]
-    n = rng.randint(2, 5)
-    for _ in range(n):
-        kind = rng.choice(["let", "if", "while", "match", "call", "field", "str", "float", "panic", "div0", "oob", "unwrap"])
-        if kind == "let":
-            scalar_types = INT_TYPES + BOOL + FLOAT
-            struct_types = ["fuzz.%s" % s for s in structs]
-            t = rng.choice(scalar_types + struct_types)
-            mut = "mut " if rng.random() < 0.5 else ""
-            vname = "v%d" % len(locals_)
-            locals_.append((vname, t, mut == "mut "))
-            if t == "fuzz.Pair":
-                init = "fuzz.Pair { a: 1u64, b: 2i64 }"
-            elif t == "fuzz.Triple":
-                init = "fuzz.Triple { x: 1u32, y: 2i32, z: 3u64 }"
+    acc = []      # 戻り値に使う値式（int のみ、ret と同じ型）
+    ptypes = dict(params)
+    declared_structs = set()
+    n = rng.randint(3, 6)
+    # target は宣言済み struct/enum を必ず 1 つずつ使う。
+    if is_target:
+        if structs:
+            sname = rng.choice(structs)
+            declared_structs.add(sname)
+            fields = STRUCT_DICT[sname]
+            vname = "s%d" % _gctr[0]; _gctr[0] += 1
+            init = "fuzz.%s { %s }" % (sname, ", ".join("%s: %s" % (fn, lit(rng, ft)) for fn, ft in fields.items()))
+            lines.append("    let %s = %s" % (vname, init))
+            locals_.append((vname, "fuzz.%s" % sname, False))
+            # フィールドを読んで畳み込み対象に
+            int_fields = [fn for fn, ft in fields.items() if ft == ret]
+            if int_fields:
+                lines.append("    core.mem.drop(%s.clone())" % vname)
+                acc.append("%s.%s" % (vname, int_fields[0]))
             else:
-                if t == "alloc.vec.Vec<u64, std.alloc.System>":
-                    t_ann = "alloc.vec.Vec<u64, std.alloc.System>"
-                    init = "alloc.vec.Vec.new(std.alloc.SYSTEM)"
-                elif t.startswith("alloc.string.String"):
-                    t_ann = "alloc.string.String<std.alloc.System>"
-                    init = "alloc.string.String.new(std.alloc.SYSTEM)"
+                lines.append("    core.mem.drop(%s.clone())" % vname)
+        if enums:
+            ename = rng.choice(enums)
+            variants = ENUM_DICT[ename]
+            vname = "e%d" % _gctr[0]; _gctr[0] += 1
+            first = variants[0]
+            if first[1] is None:
+                init = "fuzz.%s.%s" % (ename, first[0])
+            else:
+                init = "fuzz.%s.%s(%s)" % (ename, first[0], lit(rng, first[1]))
+            lines.append("    let %s = %s" % (vname, init))
+            locals_.append((vname, "fuzz.%s" % ename, False))
+            lines.append("    core.mem.drop(match %s.clone() {" % vname)
+            arms = []
+            for vname2, pt in variants:
+                if pt is None:
+                    arms.append("        fuzz.%s.%s => ()" % (ename, vname2))
                 else:
-                    t_ann = None
-                    init = lit(rng, t)
-                if t_ann:
-                    lines.append("    let %s%s: %s = %s" % (mut, vname, t_ann, init))
-                else:
-                    lines.append("    let %s%s = %s" % (mut, vname, init))
+                    arms.append("        fuzz.%s.%s(_) => ()" % (ename, vname2))
+            lines.extend(arms)
+            lines.append("    })")
+            lines.append("    core.mem.drop(%s.clone())" % vname)
+    for _ in range(n):
+        kind = rng.choice(["let", "if", "while", "match", "call", "str", "float", "vec"])
+        if kind == "let":
+            t = rng.choice(INT_TYPES + BOOL + FLOAT + ["alloc.vec.Vec<u64, std.alloc.System>", "alloc.string.String<std.alloc.System>"])
+            mut = "mut " if rng.random() < 0.5 else ""
+            vname = "v%d" % _gctr[0]; _gctr[0] += 1
+            locals_.append((vname, t, mut == "mut "))
+            if t == "alloc.vec.Vec<u64, std.alloc.System>":
+                lines.append("    let mut %s: alloc.vec.Vec<u64, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)" % vname)
+                lines.append("    core.mem.drop(match %s.push(42u64) {" % vname)
+                lines.append("        Ok(_u) => ()")
+                lines.append("        Err(_e) => core.panic.panic(\"oom\")")
+                lines.append("    })")
+                locals_[-1] = (vname, t, True)
+                continue
+            elif t.startswith("alloc.string.String"):
+                lines.append("    let mut %s: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)" % vname)
+                lines.append("    core.mem.drop(%s.push_str(\"x\"))" % vname)
+                locals_[-1] = (vname, t, True)
+                continue
+            else:
+                init = lit(rng, t)
+            lines.append("    let %s%s = %s" % (mut, vname, init))
+            if t == ret and t in INT_TYPES:
+                acc.append(vname)
         elif kind == "if":
-            c, _ = scalar_expr(rng, "bool")
-            then = gen_fn_block(rng, fns, 8, ctr)
-            el_ = gen_fn_block(rng, fns, 8, ctr)
+            pool = [p for p, t in params if t in INT_TYPES] + [n for n, t, _ in locals_ if t in INT_TYPES]
+            if not pool:
+                continue
+            a = rng.choice(pool)
+            at = ptypes.get(a) or dict((n, t) for n, t, _ in locals_).get(a)
+            b = lit(rng, at)
+            c, _ = int_cmp(rng, a, b, at)
+            then = gen_fn_block(rng, fns, 8, params, locals_, acc)
+            el_ = gen_fn_block(rng, fns, 8, params, locals_, acc)
             lines.append("    if %s {" % c)
             lines.extend(then)
             lines.append("    } else {")
             lines.extend(el_)
             lines.append("    }")
+        elif kind == "guard" and is_target and rng.random() < 0.3:
+            pool = [p for p, t in params if t in INT_TYPES]
+            if not pool:
+                continue
+            a = rng.choice(pool)
+            at = ptypes.get(a) or dict((n, t) for n, t, _ in locals_).get(a)
+            b = lit(rng, at)
+            c, _ = int_cmp(rng, a, b, at)
+            lines.append("    if %s {" % c)
+            lines.append("        core.panic.panic(\"boom\")")
+            lines.append("    }")
         elif kind == "while" and depth < 2:
-            c, _ = scalar_expr(rng, "bool")
-            body = gen_fn_block(rng, fns, 8, ctr)
+            cands = [(n, t) for n, t, m in locals_ if t in INT_TYPES and m]
+            if not cands:
+                continue
+            a, at = rng.choice(cands)
+            b = lit(rng, at)
+            c, _ = int_cmp(rng, a, b, at)
+            body = gen_fn_block(rng, fns, 8, params, locals_, acc)
             lines.append("    while %s {" % c)
             lines.extend(body)
-            lines.append("        break")
+            lines.append("        %s = %s.wrapping_sub(%s)" % (a, a, lit(rng, at)))
             lines.append("    }")
         elif kind == "match":
             cands = [(n, t) for n, t in params] + [(n, t) for n, t, _ in locals_]
@@ -247,19 +321,8 @@ def gen_fn(rng, name, params, ret, fns, depth, structs):
                 continue
             lines.append("    let r%d = fuzz.%s(%s)" % (len(locals_), fname, ", ".join(args)))
             locals_.append(("r%d" % len(locals_), fret, False))
-        elif kind == "field" and locals_:
-            struct_fields = {sname: dict(fields) for sname, fields in STRUCTS}
-            cands = [(n, t, m) for n, t, m in locals_ if t in struct_fields]
-            if not cands:
-                continue
-            vname, vt, mut = rng.choice(cands)
-            fname, ft = rng.choice(list(struct_fields[vt].items()))
-            if mut and rng.random() < 0.5:
-                val = lit(rng, ft) if ft in INT_TYPES + BOOL else "0u64"
-                lines.append("    %s.%s = %s" % (vname, fname, val))
-            else:
-                lines.append("    let a%d = %s.%s" % (len(locals_), vname, fname))
-                locals_.append(("a%d" % len(locals_), ft, False))
+            if ret in INT_TYPES and fret == ret:
+                acc.append("r%d" % (len(locals_) - 1))
         elif kind == "str":
             strs = [n for n, t, m in locals_ if t.startswith("alloc.string.String") and m]
             if not strs:
@@ -270,83 +333,86 @@ def gen_fn(rng, name, params, ret, fns, depth, structs):
             a = lit_f64(rng); b = lit_f64(rng)
             lines.append("    let f%d = (%s * %s).to_bits()" % (len(locals_), a, b))
             locals_.append(("f%d" % len(locals_), "u64", False))
-        elif kind == "panic":
-            if rng.random() < 0.5:
-                lines.append("    core.panic.panic(\"boom\")")
-        elif kind == "div0":
-            idx = len(locals_)
-            lines.append("    let d%d = 1u64 / 0u64" % idx)
-            locals_.append(("d%d" % idx, "u64", False))
-        elif kind == "oob":
-            lines.append("    core.mem.drop(0u64)")
-        elif kind == "unwrap":
-            idx = len(locals_)
-            lines.append("    let u%d: Option<u64> = None" % idx)
-            locals_.append(("u%d" % idx, "Option<u64>", False))
-            lines.append("    core.mem.drop(u%d.unwrap())" % idx)
-    # 戻り値（tail）。ret と同じ型のパラメータを使う。tail は常に最後の式。
+            if ret == "u64":
+                acc.append("f%d" % (len(locals_) - 1))
+        elif kind == "vec":
+            vecs = [n for n, t, _ in locals_ if t == "alloc.vec.Vec<u64, std.alloc.System>"]
+            if not vecs:
+                continue
+            vname = rng.choice(vecs)
+            lines.append("    core.mem.drop(match %s.push(42u64) {" % vname)
+            lines.append("        Ok(_u) => ()")
+            lines.append("        Err(_e) => core.panic.panic(\"oom\")")
+            lines.append("    })")
+            lines.append("    let g%d = %s.len()" % (len(locals_), vname))
+            locals_.append(("g%d" % len(locals_), "usize", False))
+            idx = lit(rng, "usize")
+            lines.append("    core.mem.drop(match %s.get(%s) {" % (vname, idx))
+            lines.append("        Some(c) => core.mem.drop(*c)")
+            lines.append("        None => ()")
+            lines.append("    })")
+    # 戻り値（tail）：accumulator を wrapping_add で畳む（int のみ）。
     tail_line = None
-    if ret in INT_TYPES:
+    if ret in INT_TYPES and acc:
+        tail = acc[0]
+        for e in acc[1:]:
+            tail = "%s.wrapping_add(%s)" % (tail, e)
+        tail_line = "    %s" % tail
+    elif ret in INT_TYPES:
         same = [p for p, t in params if t == ret]
         if same:
-            tail = same[0]
-            for p in same[1:]:
-                tail = "%s.wrapping_add(%s)" % (tail, p)
-            tail_line = "    %s" % tail
-            used = set(same)
+            tail_line = "    %s" % same[0]
         else:
             tail_line = "    %s" % lit(rng, ret)
-            used = set()
     elif ret == "bool":
         same = [p for p, t in params if t == "bool"]
         if same:
             tail_line = "    %s" % same[0]
-            used = set(same)
         else:
             tail_line = "    %s" % lit(rng, "bool")
-            used = set()
     else:  # f64
         tail_line = "    %s" % lit_f64(rng)
-        used = set()
-    # 未使用パラメータと、本体で let 宣言されたコピー型ローカルを drop（tail の直前）。
-    declared = set()
-    for ln in lines:
-        m = re.match(r"\s*let (?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", ln)
-        if m:
-            declared.add(m.group(1))
-    local_types = {n: t for n, t, _ in locals_}
+    # 未使用パラメータと gen_fn レベルのローカルを drop（tail の直前）。
+    # copy 型は2回 drop で lint を満たす。move 型(String/Vec/struct)は1回。
     copy_types = set(INT_TYPES + BOOL + FLOAT)
-    for n in sorted(declared):
-        if n in local_types and local_types[n] in copy_types:
-            lines.append("    core.mem.drop(%s)" % n)
-    for p, _ in params:
-        if p not in used:
+    acc_names = set(e.split(".")[0] for e in acc)
+    def n_drop(n, t):
+        if t in copy_types:
+            return 2
+        return 1
+    for n, t, _ in locals_:
+        if n not in acc_names and n not in declared_structs:
+            for _ in range(n_drop(n, t)):
+                lines.append("    core.mem.drop(%s)" % n)
+    for p, pt in params:
+        if pt in copy_types and p not in acc_names:
+            lines.append("    core.mem.drop(%s)" % p)
+            lines.append("    core.mem.drop(%s)" % p)
+        elif pt not in copy_types and p not in acc_names:
             lines.append("    core.mem.drop(%s)" % p)
     lines.append(tail_line)
     return lines
 
 
-def gen_fn_block(rng, fns, indent, ctr):
-    """if/while 本体。ブロックローカルは末尾で drop し、bare 式は使わない。"""
+def gen_fn_block(rng, fns, indent, params, locals_, acc):
+    """if/while 本体。ブロックローカルは末尾で drop。"""
     sp = " " * indent
     lines = []
-    locals_ = []
+    blk_locals = []
     n = rng.randint(1, 3)
     for _ in range(n):
-        kind = rng.choice(["let", "expr", "match"])
+        kind = rng.choice(["let", "match"])
         if kind == "let":
             t = rng.choice(INT_TYPES + BOOL)
-            vname = "blk%d" % ctr[0]; ctr[0] += 1
-            locals_.append(vname)
+            vname = "blk%d" % _gctr[0]; _gctr[0] += 1
+            blk_locals.append(vname)
             lines.append("%slet %s = %s" % (sp, vname, lit(rng, t)))
-        elif kind == "expr":
-            lines.append("%score.mem.drop(0u64)" % sp)
         elif kind == "match":
             lines.append("%score.mem.drop(match true {" % sp)
             lines.append("%s    true => ()" % sp)
             lines.append("%s    false => ()" % sp)
             lines.append("%s})" % sp)
-    for v in locals_:
+    for v in blk_locals:
         lines.append("%score.mem.drop(%s)" % (sp, v))
     if not lines:
         lines.append("%score.mem.drop(0u64)" % sp)
@@ -354,7 +420,8 @@ def gen_fn_block(rng, fns, indent, ctr):
 
 
 def gen_program(rng, pid):
-    decl_lines, declared_structs = decl_block(rng)
+    _gctr[0] = 0  # 1 プログラムごとに変数名を 0 から振り直す（lint の shadow エラー回避）
+    decl_lines, declared_structs, declared_enums = decl_block(rng)
     # decl_block は空行で区切られた複数ブロックを返すので再構成
     decl_text = "\n".join(decl_lines).strip()
     decl_items = []
@@ -385,9 +452,9 @@ def gen_program(rng, pid):
     for fname, fparams, fret in fns:
         flines = ["fn fuzz.%s(%s) -> %s uses [alloc] panics may" % (fname, ", ".join("%s: %s" % p for p in fparams), fret)]
         if fname == target[0]:
-            body = gen_fn(rng, "target", fparams, fret, [f for f in fns if f[0] != fname], 0, declared_structs)
+            body = gen_fn(rng, "target", fparams, fret, [f for f in fns if f[0] != fname], 0, declared_structs, declared_enums, True)
         else:
-            body = gen_fn(rng, fname, fparams, fret, fns, 0, declared_structs)
+            body = gen_fn(rng, fname, fparams, fret, [f for f in fns if f[0] != fname], 0, declared_structs, declared_enums, False)
         flines.extend(body)
         flines.append("end fuzz.%s" % fname)
         fn_items.append("\n".join(flines))
