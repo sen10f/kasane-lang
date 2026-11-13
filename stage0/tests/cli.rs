@@ -13171,6 +13171,181 @@ fn kir_check_eq_ref_match_tree_walker() {
     }
 }
 
+const VEC_REMOVE_INSERT_SRC: &str = r#"fn t.rm_first() -> () uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(10u32))
+    core.mem.drop(v.push(20u32))
+    core.mem.drop(v.push(30u32))
+    match v.remove(0usize) {
+        Some(x) => core.check.eq(x, 10u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+    core.check.eq(v.len(), 2usize)
+    match v.get(0usize) {
+        Some(x) => core.check.eq(x, 20u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+    match v.get(1usize) {
+        Some(x) => core.check.eq(x, 30u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+end t.rm_first
+
+fn t.rm_mid() -> () uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(10u32))
+    core.mem.drop(v.push(20u32))
+    core.mem.drop(v.push(30u32))
+    match v.remove(1usize) {
+        Some(x) => core.check.eq(x, 20u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+    core.check.eq(v.len(), 2usize)
+    match v.get(0usize) {
+        Some(x) => core.check.eq(x, 10u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+    match v.get(1usize) {
+        Some(x) => core.check.eq(x, 30u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+end t.rm_mid
+
+fn t.rm_last() -> () uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(10u32))
+    core.mem.drop(v.push(20u32))
+    core.mem.drop(v.push(30u32))
+    match v.remove(2usize) {
+        Some(x) => core.check.eq(x, 30u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+    core.check.eq(v.len(), 2usize)
+    match v.get(0usize) {
+        Some(x) => core.check.eq(x, 10u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+    match v.get(1usize) {
+        Some(x) => core.check.eq(x, 20u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+end t.rm_last
+
+fn t.rm_oob() -> () uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(10u32))
+    match v.remove(5usize) {
+        None => ()
+        Some(x) => core.check.eq(x, 0u32)
+    }
+    core.check.eq(v.len(), 1usize)
+    match v.get(0usize) {
+        Some(x) => core.check.eq(x, 10u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+end t.rm_oob
+
+fn t.ins_first() -> () uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(10u32))
+    core.mem.drop(v.push(20u32))
+    match v.insert(0usize, 99u32) {
+        Ok(()) => ()
+        Err(_) => core.check.eq(1u8, 2u8)
+    }
+    core.check.eq(v.len(), 3usize)
+    match v.get(0usize) {
+        Some(x) => core.check.eq(x, 99u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+    match v.get(1usize) {
+        Some(x) => core.check.eq(x, 10u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+    match v.get(2usize) {
+        Some(x) => core.check.eq(x, 20u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+end t.ins_first
+
+fn t.ins_mid() -> () uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(10u32))
+    core.mem.drop(v.push(30u32))
+    match v.insert(1usize, 99u32) {
+        Ok(()) => ()
+        Err(_) => core.check.eq(1u8, 2u8)
+    }
+    core.check.eq(v.len(), 3usize)
+    match v.get(0usize) {
+        Some(x) => core.check.eq(x, 10u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+    match v.get(1usize) {
+        Some(x) => core.check.eq(x, 99u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+    match v.get(2usize) {
+        Some(x) => core.check.eq(x, 30u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+end t.ins_mid
+
+fn t.ins_last() -> () uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(10u32))
+    core.mem.drop(v.push(20u32))
+    match v.insert(2usize, 30u32) {
+        Ok(()) => ()
+        Err(_) => core.check.eq(1u8, 2u8)
+    }
+    core.check.eq(v.len(), 3usize)
+    match v.get(2usize) {
+        Some(x) => core.check.eq(x, 30u32)
+        None => core.check.eq(1u8, 2u8)
+    }
+end t.ins_last
+
+fn t.ins_oob() -> () uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(10u32))
+    match v.insert(5usize, 99u32) {
+        Ok(()) => core.check.eq(1u8, 2u8)
+        Err(_) => ()
+    }
+    core.check.eq(v.len(), 1usize)
+end t.ins_oob
+
+fn t.main() -> () uses [alloc] panics may
+    t.rm_first()
+    t.rm_mid()
+    t.rm_last()
+    t.rm_oob()
+    t.ins_first()
+    t.ins_mid()
+    t.ins_last()
+    t.ins_oob()
+end t.main
+"#;
+
+#[test]
+fn kir_vec_remove_insert_match_tree_walker() {
+    // Vec.remove / Vec.insert を段階 1 で下ろす (スカラー要素のみ)。
+    // 先頭・末尾・中・範囲外で、木走査 (ksn run) と KIR 実行器 (ksn kir --run) と
+    // --native (clang) の終了コード・表示・panic 文言が一致することを確かめる。
+    let t = Tmp::new("kir_vec_remove_insert", VEC_REMOVE_INSERT_SRC);
+    // 木走査: t.main が全シナリオを実行し、全て成功すれば終了コード 0。
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", text(&tw.stdout), text(&tw.stderr));
+    // KIR: 各シナリオを --run で走らせ、--native (clang) と一致することを確かめる。
+    for f in ["t.rm_first", "t.rm_mid", "t.rm_last", "t.rm_oob",
+              "t.ins_first", "t.ins_mid", "t.ins_last", "t.ins_oob"] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stderr), "", "kir: 成功のときは stderr を出さない: {}\n{}", f, text(&k.stderr));
+    }
+}
+
 #[test]
 fn kir_unwrap_of_an_aggregate_error_keeps_its_reason() {
     // Err の値の表示 (Debug) を KIR で木走査と同じに作れない型 (利用者の構造体) は、理由を付けて未対応にする。
@@ -16090,9 +16265,9 @@ fn kir_coll_closure_is_monomorphized_per_closure() {
 
 #[test]
 fn kir_coll_reports_unsupported_constructs_with_a_reason() {
-    // `Vec` の `remove` (Option)、capture を持つクロージャは、理由を付けて拒否する (`push` / `pop` と移動は 13 章で下ろせる)。
+    // `Vec` の `remove` / `insert` はスカラー要素なら段階 1 で下ろせる (`push` / `pop` と同様)。
+    // capture を持つクロージャは、理由を付けて拒否する。
     let cases: &[(&str, &str, &str)] = &[
-        ("t.remove_one", "    let mut v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let _r = v.remove(0usize)\n    v.len()\n", "remove は段階 1 の対象外"),
         ("t.captured", "    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let f = fn(x: usize) -> usize capture [move v] {\n        x\n    }\n    f(1usize)\n", "取り込みは段階 1 の対象外"),
     ];
     for (i, (f, body, why)) in cases.iter().enumerate() {
