@@ -418,13 +418,27 @@ fn cmd_check(json: bool) -> i32 {
 /// `--llvm` は LLVM IR (`.ll`) を出し、`--native` は clang で実行ファイルを作って走らせる (表示と終了コードは `--run` と同じ)。
 fn cmd_kir(rest: &[String]) -> i32 {
     let Some(fqn) = rest.first() else {
-        eprintln!("usage: ksn kir <FQN> [--run|--native <args>... | --llvm]");
+        eprintln!("usage: ksn kir <FQN> [--opt] [--run|--native <args>... | --llvm]");
         return 2;
     };
-    let mode = rest.get(1).map(|s| s.as_str());
+    // --opt は最適化パスを適用する。--run/--native/--llvm は実行モード。
+    let mut opt = false;
+    let mut mode: Option<&str> = None;
+    let mut mode_pos: Option<usize> = None;
+    for (i, s) in rest[1..].iter().enumerate() {
+        match s.as_str() {
+            "--opt" => opt = true,
+            "--run" | "--native" | "--llvm" if mode.is_none() => {
+                mode = Some(s.as_str());
+                mode_pos = Some(1 + i);
+            }
+            _ => {}
+        }
+    }
     let run = mode == Some("--run");
     let native = mode == Some("--native");
     let llvm = mode == Some("--llvm");
+    let arg_start = mode_pos.map(|p| p + 1).unwrap_or(rest.len());
     let mut rep = Report::new(false);
     let (root, prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|x| (r, x))) {
         Ok((r, (_, Some(prog), user))) if !rep.fatal() => (r, prog, user),
@@ -445,7 +459,7 @@ fn cmd_kir(rest: &[String]) -> i32 {
         }
         return 1;
     }
-    let text = crate::kir::print_module(&lo.module.reachable(fqn));
+    let mut text = crate::kir::print_module(&lo.module.reachable(fqn));
     // 出力は必ず読み直せること (往復) と検査を通ることを確かめてから使う。
     let _back = match crate::kir::parse_module(&text) {
         Ok(m) if crate::kir::print_module(&m) == text && crate::kir::verify_module(&m).is_empty() => m,
@@ -464,8 +478,23 @@ fn cmd_kir(rest: &[String]) -> i32 {
             return 3;
         }
     };
+    // --opt: 決定的な最適化パスを適用する (意味を変えず命令数を減らす)。
+    // 実行・生成には、往復を確かめた元の (extern の link を持つ) モジュールを使う。
+    let mut exe = lo.module.reachable(fqn);
+    if opt {
+        match crate::kir_opt::optimize(&exe) {
+            Ok(m) => {
+                exe = m;
+                text = crate::kir::print_module(&exe);
+            }
+            Err(e) => {
+                eprintln!("ksn kir: --opt: {}", e);
+                return 3;
+            }
+        }
+    }
     if llvm {
-        return match crate::kir_llvm::emit(&lo.module.reachable(fqn), fqn) {
+        return match crate::kir_llvm::emit(&exe, fqn) {
             Ok(ll) => {
                 print!("{}", ll);
                 0
@@ -481,7 +510,7 @@ fn cmd_kir(rest: &[String]) -> i32 {
         return 0;
     }
     let mut args = vec![];
-    for a in &rest[2..] {
+    for a in &rest[arg_start..] {
         let v = match a.as_str() {
             "true" => 1,
             "false" => 0,
@@ -495,15 +524,15 @@ fn cmd_kir(rest: &[String]) -> i32 {
         };
         args.push(v);
     }
-    let ret = lo.module.reachable(fqn).find(fqn).map(|f| f.ret);
+    let ret = exe.find(fqn).map(|f| f.ret);
     let show = |v: i128| match ret {
         Some(t) => println!("{}", crate::kir::show_value(t, v)),
         None => println!("{}", v),
     };
     if native {
-        return kir_native(&root, &lo.module.reachable(fqn), fqn, &args, show);
+        return kir_native(&root, &exe, fqn, &args, show);
     }
-    match crate::kir_exec::run(&lo.module.reachable(fqn), fqn, &args) {
+    match crate::kir_exec::run(&exe, fqn, &args) {
         Ok(crate::kir_exec::Outcome::Value(v)) => {
             show(v);
             0
