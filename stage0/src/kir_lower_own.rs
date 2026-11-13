@@ -459,7 +459,7 @@ enum GetBind<'a> {
 
 /// 構造体の要素への共有参照 `r` を構造体のパターン `pat` で分解する。スカラーのフィールドは値を読んで束縛し、所有物のフィールドは借用で束縛する
 /// (解放しない)。`src` は構造体の型表の型 (`&T` の `T`)。`_` と入れ子の構造体のパターンだけ。
-fn bind_struct_pat(lw: &mut Lw, line: usize, pat: &V, r: VId, src: Option<&Src>) -> LR<()> {
+pub(super) fn bind_struct_pat(lw: &mut Lw, line: usize, pat: &V, r: VId, src: Option<&Src>) -> LR<()> {
     let Ty::Ref(_, Pointee::Agg(ai)) = lw.vty(r) else { return lw.err(line, "構造体のパターンの対象が集成体への参照でない") };
     let sname = lw.agg_def(ai).name.clone();
     let _ = src;
