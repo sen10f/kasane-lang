@@ -472,6 +472,7 @@ impl<'a> Lw<'a> {
 
     /// 式を下ろす。`None` は制御がその先へ進まないこと (return / break / continue など) を表す。
     fn expr(&mut self, e: &V) -> LR<Option<VId>> {
+        coll::elem_prep(self, e)?;
         match nname(e) {
             "Lit" => self.lit(e).map(Some),
             "Path" => self.path_val(e).map(Some),
