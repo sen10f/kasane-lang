@@ -22,7 +22,7 @@
 //! で決める (`flow_params`)。`core.mem.replace` / `swap` と `push` / `insert` は、場所が持つローンを殺さず足す。
 
 use super::*;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Acc {
@@ -1367,6 +1367,224 @@ impl<'a> Low<'a> {
             }
         }
     }
+
+    /// `v.push(&s)` / `s.f = &x` のように、別の引数が指す先 (`&mut` 引数の中の Vec 要素や
+    /// 構造体の欄) に参照を保存するとき、両者に同じ名前付きライフタイムが宣言されていなければ
+    /// (行, 文面) の診断を返す (§4.1 の省略規則)。ライフタイムが書かれていないと要素の寿命と
+    /// 借用元の寿命は無関係になり、後で解放済みを読む (d22 の穴)。
+    fn check_lifetime_store(&self, di: usize, body: &V) -> Vec<(usize, String)> {
+        let d = &self.p.defs[di];
+        let head = match d.header.split(" uses ").next() {
+            Some(h) => h,
+            None => return vec![],
+        };
+        let b = head.as_bytes();
+        let mut i = match head.find(|c| c == '(' || c == '[') {
+            Some(i) => i,
+            None => return vec![],
+        };
+        if b[i] == b'[' {
+            i = match match_close(head, i) {
+                Some(j) => j + 1,
+                None => return vec![],
+            };
+        }
+        if b.get(i) != Some(&b'(') {
+            return vec![];
+        }
+        let close = match match_close(head, i) {
+            Some(j) => j,
+            None => return vec![],
+        };
+        let ptexts: Vec<String> = split_top(&head[i + 1..close]);
+        if ptexts.len() != d.params.len() {
+            return vec![];
+        }
+        let lt: Vec<BTreeSet<String>> = ptexts.iter().map(|t| lifetimes(t)).collect();
+        let is_ref: Vec<bool> = ptexts.iter().map(|t| t.contains('&')).collect();
+        let param_of: HashMap<&str, usize> =
+            d.params.iter().enumerate().map(|(k, p)| (p.0.as_str(), k)).collect();
+
+        // `let x = init` (1 束縛)。`let r = &s` のように参照から得た値を辿るため。
+        let mut inits: HashMap<String, &V> = HashMap::new();
+        let mut all = vec![];
+        walk(body, &mut all);
+        for v in &all {
+            if nname(v) == "Let" {
+                let f = nf(v);
+                if f.len() > 3 && nname(&f[0]) == "PBind" && !is_nil(&f[3]) {
+                    inits.insert(st(&nf(&f[0])[0]), &f[3]);
+                }
+            }
+        }
+
+        // (保存先の引数, 保存される値の出どころの引数, 行) の組。同じ行の重複はまとめる。
+        let mut flagged: BTreeSet<(usize, usize, usize)> = BTreeSet::new();
+        let mut check_store = |p: usize, value: &V, line: usize| {
+            let Some(q) = self.store_source(value, &param_of, &is_ref, &inits) else { return };
+            if lt[p].intersection(&lt[q]).next().is_none() {
+                flagged.insert((line, p, q));
+            }
+        };
+        for v in &all {
+            let line = nlineno(v);
+            match nname(v) {
+                "MCall" | "Call" => {
+                    let f = nf(v);
+                    let info = match nname(v) {
+                        "MCall" => {
+                            if f.len() < 3 {
+                                None
+                            } else {
+                                let name = st(&f[1]);
+                                if !matches!(name.as_str(), "push" | "push_back" | "push_front" | "insert")
+                                {
+                                    None
+                                } else {
+                                    let args = items(&f[2]);
+                                    match self.place_of(&f[0]) {
+                                        Some((root, path)) => Some((name, args, root, path)),
+                                        None => None,
+                                    }
+                                }
+                            }
+                        }
+                        "Call" => {
+                            let callee = &f[0];
+                            if nname(callee) != "Path" {
+                                None
+                            } else {
+                                let segs = strs(&nf(callee)[0]);
+                                if segs.len() < 2 {
+                                    None
+                                } else {
+                                    let name = segs.last().unwrap().clone();
+                                    if !matches!(
+                                        name.as_str(),
+                                        "push" | "push_back" | "push_front" | "insert"
+                                    ) {
+                                        None
+                                    } else {
+                                        let args = items(&f[1]);
+                                        let root = segs[0].clone();
+                                        let path: Vec<String> = segs[1..segs.len() - 1].to_vec();
+                                        Some((name, args, root, path))
+                                    }
+                                }
+                            }
+                        }
+                        _ => None,
+                    };
+                    let Some((name, args, root, path)) = info else { continue };
+                    if !path.is_empty() {
+                        continue;
+                    }
+                    let slot = if name == "insert" { 1 } else { 0 };
+                    let Some(value) = args.get(slot) else { continue };
+                    let Some(&p) = param_of.get(root.as_str()) else { continue };
+                    check_store(p, value, line);
+                }
+                "Assign" => {
+                    let f = nf(v);
+                    if f.len() < 2 {
+                        continue;
+                    }
+                    let Some((root, path)) = self.place_of(&f[0]) else { continue };
+                    let Some(&p) = param_of.get(root.as_str()) else { continue };
+                    let element_lt = if path.is_empty() {
+                        lt[p].clone()
+                    } else {
+                        self.field_lifetime(d, p, &path[0])
+                    };
+                    // 欄の型が参照でなければ型検査の担当なので黙る (欄の参照は省略不可のため、
+                    // element_lt が空ならこの検査の対象外)。
+                    if !path.is_empty() && element_lt.is_empty() {
+                        continue;
+                    }
+                    let Some(value) = f.get(1) else { continue };
+                    check_store(p, value, line);
+                }
+                _ => {}
+            }
+        }
+        let mut out = vec![];
+        for (line, p, q) in flagged {
+            out.push((
+                line,
+                format!(
+                    "{}: argument `{}`'s reference (`{}`) is stored into argument `{}`'s pointee (`{}`), but no shared named lifetime is declared, so the pointee's lifetime and the reference's lifetime are unrelated; declare `['a]` and use `&'a T` on both",
+                    d.name,
+                    d.params[q].0,
+                    ptexts[q],
+                    d.params[p].0,
+                    ptexts[p],
+                ),
+            ));
+        }
+        out
+    }
+
+    /// 保存される値 `e` の借用が、どの参照型パラメータ (またはそこから経由した `let` 束縛)
+    /// に由来するか。なければ None。
+    fn store_source(
+        &self,
+        e: &V,
+        param_of: &HashMap<&str, usize>,
+        is_ref: &[bool],
+        inits: &HashMap<String, &V>,
+    ) -> Option<usize> {
+        match nname(e) {
+            "Unary" => {
+                let f = nf(e);
+                let op = st(&f[0]);
+                if op != "&" && op != "&mut" {
+                    return None;
+                }
+                let Some((root, path)) = self.place_of(&f[1]) else { return None };
+                if !path.is_empty() {
+                    return None;
+                }
+                param_of.get(root.as_str()).copied()
+            }
+            "Path" => {
+                let segs = strs(&nf(e)[0]);
+                if segs.len() == 1 {
+                    if let Some(&q) = param_of.get(segs[0].as_str()) {
+                        return is_ref[q].then_some(q);
+                    }
+                    if let Some(init) = inits.get(segs[0].as_str()) {
+                        return self.store_source(init, param_of, is_ref, inits);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// 構造体パラメータ `p` の欄 `fname` の型に現れる名前付きライフタイム集合。
+    /// 欄の参照はライフタイムを省略できないので、空なら参照の欄ではない (型検査に任せる)。
+    fn field_lifetime(&self, d: &Def, p: usize, fname: &str) -> BTreeSet<String> {
+        let mut ty = &d.params[p].1;
+        while tag(ty) == "ref" {
+            ty = tel(ty, 2);
+        }
+        let V::L(parts) = ty else { return BTreeSet::new() };
+        if parts.is_empty() || st(&parts[0]) != "named" || parts.len() < 2 {
+            return BTreeSet::new();
+        }
+        let name = st(&parts[1]);
+        let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
+        let Some(r) = self.p.resolve(&segs, &self.file) else { return BTreeSet::new() };
+        let Target::Type(tdi) = r.target else { return BTreeSet::new() };
+        let mut out = BTreeSet::new();
+        for (fname2, fty, _) in &self.p.defs[tdi].fields {
+            if fname2 == fname {
+                out = lifetimes(&fty.dump());
+            }
+        }
+        out
+    }
 }
 
 /// 2 つの場所の道が重なる (一方が他方の接頭辞) か。
@@ -1418,6 +1636,11 @@ impl<'a> Checker<'a> {
             scope_seed,
             temp_extended: HashSet::new(),
         };
+        // 参照を別の引数の指す先 (Vec 要素・構造体欄) に保存する際の
+        // ライフタイム不一致 (d22)。
+        for (line, msg) in low.check_lifetime_store(di, body) {
+            self.tdiag("E3010", msg, line);
+        }
         let entry = low.new_node();
         let exit = low.new_node();
         low.exit = exit;
@@ -1433,6 +1656,7 @@ impl<'a> Checker<'a> {
             }
         }
     }
+
 }
 
 /// 生存解析と借用の保持の解析をして、競合を (行, 文面) の列で返す。
