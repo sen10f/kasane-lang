@@ -146,18 +146,18 @@ pub(crate) fn is_hdr_named(t: &Src) -> bool {
 
 /// 関数の引数・戻り値の型。通常の型に加えて、Vec / String / `str` / スライスへの参照 (借用) を受ける。
 pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
+    // `&mut [T]` / `&[T]` (配列への参照) は、配列の値は `fat` だがパラメータとしては要素の先頭 `ptr` を受け取る。
+    if let Src::Ref(_, inner) = t {
+        if matches!(&**inner, Src::Array(_)) {
+            return Some(Ty::Ptr);
+        }
+    }
     if let Some(x) = lw.conv_t(t) {
         return Some(x);
     }
     // 生ポインタ `*const T` / `*mut T` は `ptr`。
     if let Src::Ptr(_, inner) = t {
         if matches!(&**inner, Src::Prim(_)) {
-            return Some(Ty::Ptr);
-        }
-    }
-    // `&mut [T]` / `&[T]` (配列・スライスへの参照) は、C へ渡す生ポインタとして `ptr`。
-    if let Src::Ref(_, inner) = t {
-        if matches!(&**inner, Src::Array(_)) {
             return Some(Ty::Ptr);
         }
     }
