@@ -52,6 +52,10 @@ enum Ev {
     Peek { to: Holder, root: String, path: Vec<String> },
     /// 場所の値を消費する (`core.mem.drop(s.f)`)。そこに保存されたローンは死ぬ。
     Kill { root: String, path: Vec<String> },
+    /// ブロックで局所変数が宣言され、スコープに入る。
+    ScopeAdd(String),
+    /// ブロックの末尾で、そのブロックで宣言した局所変数の寿命が終わる。
+    DropScope(String),
     Access { root: String, path: Vec<String>, kind: Acc, line: usize },
 }
 
@@ -101,6 +105,10 @@ struct Low<'a> {
     value_vals: HashMap<usize, String>,
     /// 型検査が move と判定した場所 (式の位置, 場所の鍵)。`Acc::Move` に変える。
     moves: HashSet<(usize, String)>,
+    /// ブロックごとの局所変数スタック。ブロックの末尾でそのブロックの変数の寿命が終わる。
+    scope_stack: Vec<Vec<String>>,
+    /// 関数の仮引数。スコープ解析の初期値 (関数の間ずっと生きている)。
+    scope_seed: Vec<String>,
 }
 
 /// 値を持つ式 (`match` の腕、`if` の枝、ブロック式) の値として外へ運ぶ借用を、どの枝から集めるか。
@@ -236,7 +244,10 @@ impl<'a> Low<'a> {
                         out.push(Src::Place { root, path, mutable: op == "&mut" });
                         out
                     }
-                    None => vec![],
+                    // `&t.mk()` のように、一時値への参照。一時値は文の終わりで死ぬので、
+                    // その後の使用は dangling になる。`$temp` はスコープに登録されないため
+                    // 常に「寿命切れ」と見なされる。
+                    None => vec![Src::Place { root: "$temp".into(), path: vec![], mutable: op == "&mut" }],
                 }
             }
             "Path" => {
@@ -681,8 +692,15 @@ impl<'a> Low<'a> {
         if nname(b) != "Block" {
             return self.lower_expr(b, cur);
         }
+        // このブロックで宣言する局所変数のスコープレベルを積む。末尾で寿命が終わる。
+        self.scope_stack.push(vec![]);
         for s in items(&nf(b)[0]) {
             cur = self.lower_stmt(s, cur);
+        }
+        // ブロックの末尾で、このブロックで宣言した変数のスコープを抜ける。
+        let vars = self.scope_stack.pop().unwrap_or_default();
+        for v in vars {
+            self.emit(cur, Ev::DropScope(v));
         }
         cur
     }
@@ -695,8 +713,15 @@ impl<'a> Low<'a> {
                 let c = if is_nil(init) { cur } else { self.lower_expr(init, cur) };
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
+                // `let` で宣言した変数は、このブロックのスコープに入る。
+                if let Some(top) = self.scope_stack.last_mut() {
+                    for b in &binds {
+                        top.push(b.clone());
+                    }
+                }
                 let srcs = if is_nil(init) || nname(&f[0]) != "PBind" { vec![] } else { self.loan_sources(init) };
                 for (k, b) in binds.iter().enumerate() {
+                    self.emit(c, Ev::ScopeAdd(b.clone()));
                     self.emit(c, Ev::Def(b.clone()));
                     if k == 0 && !srcs.is_empty() {
                         // 借用の出どころは、束縛が 1 つのときだけ (`let r = &x`)
@@ -880,13 +905,15 @@ impl<'a> Low<'a> {
             file: self.file.clone(),
             nodes: vec![],
             loans: vec![],
-            locals,
             loops: vec![],
             exit: 0,
             iters: self.iters + 1000,
             sub: vec![],
+            scope_stack: vec![],
+            scope_seed: locals.iter().cloned().collect(),
             value_vals: HashMap::new(),
             moves: self.moves.clone(),
+            locals,
         };
         let entry = sub.new_node();
         let exit = sub.new_node();
@@ -1063,6 +1090,10 @@ impl<'a> Low<'a> {
                 pat_binds(&f[0], &mut binds);
                 for b in &binds {
                     self.emit(body, Ev::Def(b.clone()));
+                    self.emit(body, Ev::ScopeAdd(b.clone()));
+                    if let Some(top) = self.scope_stack.last_mut() {
+                        top.push(b.clone());
+                    }
                     let srcs = self.loan_sources(&f[1]);
                     self.hold(body, Holder::Var(b.clone()), srcs);
                 }
@@ -1092,12 +1123,20 @@ impl<'a> Low<'a> {
                     let known = matches!(nname(&a[0]), "PTuple" | "PStruct") && {
                         for b in &binds {
                             self.emit(an, Ev::Def(b.clone()));
+                            self.emit(an, Ev::ScopeAdd(b.clone()));
+                            if let Some(top) = self.scope_stack.last_mut() {
+                                top.push(b.clone());
+                            }
                         }
                         self.hold_pat(an, &a[0], &f[0])
                     };
                     if !known {
                         for b in &binds {
                             self.emit(an, Ev::Def(b.clone()));
+                            self.emit(an, Ev::ScopeAdd(b.clone()));
+                            if let Some(top) = self.scope_stack.last_mut() {
+                                top.push(b.clone());
+                            }
                             // 形が分からない分解 (`(a, n) => ..` を関数呼び出しの戻り値に対して行う) は、
                             // 右辺の借用を束縛へ配らない (`let (a, n) = f(&x)` と同じく黙る)。
                             // バリアントの中身 (`Some(rr) => rr`) は右辺の借用そのものなので従来どおり伝える。
@@ -1284,6 +1323,7 @@ impl<'a> Checker<'a> {
         let Some(body) = &d.body else { return };
         // 局所変数 (引数・`let`・パターン・`for`・`match` の束縛)
         let mut locals: HashSet<String> = d.params.iter().map(|p| p.0.clone()).collect();
+        let scope_seed: Vec<String> = d.params.iter().map(|p| p.0.clone()).collect();
         let mut all = vec![];
         walk(body, &mut all);
         for n in &all {
@@ -1315,6 +1355,8 @@ impl<'a> Checker<'a> {
             sub: vec![],
             value_vals: HashMap::new(),
             moves: self.move_sites.clone(),
+            scope_stack: vec![],
+            scope_seed,
         };
         let entry = low.new_node();
         let exit = low.new_node();
@@ -1365,33 +1407,40 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
             break;
         }
     }
-    // ---- 前向き: どの変数・場所がどの借用を持つか
-    type State = BTreeMap<Holder, BTreeSet<usize>>;
+    // ---- 前向き: どの変数・場所がどの借用を持つか、どの局所変数がスコープ内か
+    #[derive(Clone, Default)]
+    struct State {
+        holders: BTreeMap<Holder, BTreeSet<usize>>,
+        scope: BTreeSet<String>,
+    }
     let mut state_in: Vec<Option<State>> = vec![None; n];
-    state_in[0] = Some(State::new());
+    state_in[0] = Some(State {
+        holders: BTreeMap::new(),
+        scope: low.scope_seed.iter().cloned().collect(),
+    });
     let mut work: VecDeque<usize> = VecDeque::new();
     work.push_back(0);
     let apply = |st_: &mut State, ev: &Ev| match ev {
         Ev::Loan { holder, id } => {
             // 同じ変数・場所が複数の借用を持つこともある (`match` の被検査式など) ので、既存に足す。
-            st_.entry(holder.clone()).or_default().insert(*id);
+            st_.holders.entry(holder.clone()).or_default().insert(*id);
         }
         Ev::Alias { to, from } => {
-            let src = st_.get(from).cloned().unwrap_or_default();
-            st_.entry(to.clone()).or_default().extend(src);
+            let src = st_.holders.get(from).cloned().unwrap_or_default();
+            st_.holders.entry(to.clone()).or_default().extend(src);
         }
         Ev::Load { to, from_root, from_path } => {
             // 保存場所から読み戻す。保存されていたローンは読んだ側へ移る (move の近似。
             // 実際はコピーでも、消えるのは見落としでしかない)。道が重なる保存場所 (タプルの要素の道 `#i` を含む)
             // はすべて対象にする。
-            for src in take_overlapping(st_, from_root, from_path) {
-                st_.entry(to.clone()).or_default().extend(src);
+            for src in take_overlapping(&mut st_.holders, from_root, from_path) {
+                st_.holders.entry(to.clone()).or_default().extend(src);
             }
         }
         Ev::Peek { to, root, path } => {
             // 保存場所の借用を写す (保存場所のローンは残す)。
             let mut acc: BTreeSet<usize> = BTreeSet::new();
-            for (h, ids) in st_.iter() {
+            for (h, ids) in st_.holders.iter() {
                 if let Holder::Place { root: r, path: p } = h {
                     if r == root && overlaps(p, path) {
                         acc.extend(ids.iter().copied());
@@ -1399,13 +1448,14 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                 }
             }
             if !acc.is_empty() {
-                st_.entry(to.clone()).or_default().extend(acc);
+                st_.holders.entry(to.clone()).or_default().extend(acc);
             }
         }
-        Ev::Kill { root, path } => kill_stored(st_, root, path),
+        Ev::Kill { root, path } => kill_stored(&mut st_.holders, root, path),
         Ev::Mix { a, b } => {
             let under = |st_: &State, r: &str, p: &[String]| -> BTreeSet<usize> {
-                st_.iter()
+                st_.holders
+                    .iter()
                     .filter(|(h, _)| matches!(h, Holder::Place { root, path } if root == r && path.starts_with(p)))
                     .flat_map(|(_, v)| v.iter().copied())
                     .collect()
@@ -1413,27 +1463,40 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
             let mut all = under(st_, &a.0, &a.1);
             all.extend(under(st_, &b.0, &b.1));
             if !all.is_empty() {
-                st_.entry(Holder::Place { root: a.0.clone(), path: a.1.clone() }).or_default().extend(all.iter().copied());
-                st_.entry(Holder::Place { root: b.0.clone(), path: b.1.clone() }).or_default().extend(all);
+                st_.holders
+                    .entry(Holder::Place { root: a.0.clone(), path: a.1.clone() })
+                    .or_default()
+                    .extend(all.iter().copied());
+                st_.holders
+                    .entry(Holder::Place { root: b.0.clone(), path: b.1.clone() })
+                    .or_default()
+                    .extend(all);
             }
         }
+        Ev::ScopeAdd(v) => {
+            st_.scope.insert(v.clone());
+        }
         Ev::Def(v) => {
-            st_.remove(&Holder::Var(v.clone()));
+            st_.holders.remove(&Holder::Var(v.clone()));
             // 根の変数の再代入 (`v = ...`) で、その中に保存されたローンはすべて死ぬ。
             let dead: Vec<Holder> = st_
+                .holders
                 .keys()
                 .filter(|h| matches!(h, Holder::Place { root, .. } if root == v))
                 .cloned()
                 .collect();
             for h in dead {
-                st_.remove(&h);
+                st_.holders.remove(&h);
             }
+        }
+        Ev::DropScope(v) => {
+            st_.scope.remove(v);
         }
         Ev::Access { root, path, kind, .. } => {
             // 場所への上書き・`&mut` で、そこに保存されたローンは死ぬ。型が分からないので広めに殺す:
             // `v.push` のような要素を残す操作でも一度殺す (見落としはあっても、誤検出は出さない)。
             if matches!(kind, Acc::Write | Acc::MutB) {
-                kill_stored(st_, root, path);
+                kill_stored(&mut st_.holders, root, path);
             }
         }
         _ => {}
@@ -1451,11 +1514,14 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                 }
                 Some(old) => {
                     let mut ch = false;
-                    for (k, v) in &stt {
-                        let e = old.entry(k.clone()).or_default();
+                    for (k, v) in &stt.holders {
+                        let e = old.holders.entry(k.clone()).or_default();
                         for x in v {
                             ch |= e.insert(*x);
                         }
+                    }
+                    for x in &stt.scope {
+                        ch |= old.scope.insert(x.clone());
                     }
                     ch
                 }
@@ -1490,7 +1556,7 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
         }
         for (k, ev) in node.evs.iter().enumerate() {
             if let Ev::Access { root, path, kind, line } = ev {
-                for (holder, ids) in &stt {
+                for (holder, ids) in &stt.holders {
                     // 変数のローンは変数が、保存場所のローンは根の変数が生きている間だけ競合する。
                     let live = match holder {
                         Holder::Var(v) => live_after[k].contains(v),
@@ -1517,6 +1583,34 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                             out.push((*line, format!("cannot mutate `{}` while it is borrowed by {}", root, who)));
                         } else if *kind == Acc::Move {
                             out.push((*line, format!("cannot move `{}` while it is borrowed by {}", root, who)));
+                        }
+                    }
+                }
+            }
+            // 借用を保持する生きている変数が、その借用元の局所をスコープの終わりで
+            // 失った後で使われる (ブロックを抜けた `&b` や一時値への参照など)。寿命切れの借用。
+            if let Ev::Access { root, path, kind, line } = ev {
+                if !matches!(kind, Acc::Move) {
+                    for (holder, ids) in &stt.holders {
+                        let Holder::Var(v) = holder else { continue };
+                        // 式の中だけで完結する一時の持ち主 (`$e0` など) は局所変数ではないので、
+                        // そこに保存された一時値への参照は式の終わりまでしか生きず、
+                        // その後の別の変数の使用と誤検出にならないようスキップする。
+                        if !low.locals.contains(v) { continue; }
+                        // このアクセスそのものが holder を使う (最後の使用など) ため、
+                        // 直後の生存に含まれなくても「今使われている」と見なす。
+                        if !live_after[k].contains(v) && v != root { continue; }
+                        for &id in ids {
+                            let l = &low.loans[id];
+                            if l.root == *root && overlaps(&l.path, path) {
+                                continue;
+                            }
+                            // 借用元がスコープを抜けている (関数の仮引数や、
+                            // `$temp` のような一時値はスコープに登録されない)。
+                            if stt.scope.contains(&l.root) {
+                                continue;
+                            }
+                            out.push((*line, format!("use of `{root}` borrows `{}` which does not live long enough", l.root)));
                         }
                     }
                 }
