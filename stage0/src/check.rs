@@ -3323,9 +3323,8 @@ impl<'a> Checker<'a> {
             .collect();
         for (pn, pt) in &d.params {
             // 線形と分かる型 (`T: linear` や、それを含む `Option<T>`) は、汎用でも義務を負う。
-            if !self.is_generic(pt, &self.names) || self.is_linear(pt) {
-                self.lin_declare(pn, pt, 0);
-            }
+            // 宣言行は仮引数の行 (関数ヘッダ行) で、0 にすると診断の `declared at line 0` が誤る (g25)。
+            self.lin_declare(pn, pt, d.line);
         }
         let body = d.body.as_ref().unwrap();
         self.tc_block(body, &env, &BTreeSet::new());
