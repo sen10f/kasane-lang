@@ -12834,3 +12834,29 @@ fn kir_native_without_clang_is_an_error_with_a_reason() {
     assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("clang が必要です"), "{}", text(&o.stderr));
 }
+
+/// ループの中の配列リテラル (フレームの確保) を周回ごとに積まない。以前の LLVM 版は `alloca` を評価のたびに
+/// 出していたので、100 万周でスタックが溢れて落ちた (参照実行器は正しかった)。確保は関数の先頭で 1 回、
+/// 0 埋めは評価のたびに行う。
+#[test]
+fn kir_array_literal_in_a_long_loop_does_not_grow_the_native_stack() {
+    let src = "fn t.sum(n: u32) -> u64 uses [] panics never
+    let mut i = 0u32
+    let mut acc = 0u64
+    while i < n {
+        for x in [1u64, 2u64, 3u64, 4u64] {
+            acc = acc.wrapping_add(x)
+        }
+        i = i.wrapping_add(1u32)
+    }
+    acc
+end t.sum
+
+fn t.main() -> () uses [] panics never
+end t.main
+";
+    let t = Tmp::new("kir_array_loop_stack", src);
+    let o = kir_run(&["kir", "t.sum", "--run", "1000000"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "10000000");
+}

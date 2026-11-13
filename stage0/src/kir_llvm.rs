@@ -1332,14 +1332,6 @@ impl<'a> Fe<'a> {
                 Term::Ret(_) | Term::Unreachable => {}
             }
         }
-        let back_to_entry = f.blocks.iter().enumerate().any(|(k, b)| {
-            reach[k]
-                && match &b.term {
-                    Term::Br((t, _)) => *t == 0,
-                    Term::BrIf(_, (a, _), (b, _)) => *a == 0 || *b == 0,
-                    _ => false,
-                }
-        });
         let mut hoisted = String::new();
         let mut texts: Vec<String> = vec![String::new(); f.blocks.len()];
         for (k, b) in f.blocks.iter().enumerate() {
@@ -1349,8 +1341,10 @@ impl<'a> Fe<'a> {
             self.body = String::new();
             self.cur = format!("b{}", k);
             for i in &b.insts {
-                // 入口ブロックの確保は関数の先頭 (静的な確保) に集め、初期化 (0 埋め) だけをここで行う。
-                if k == 0 && !back_to_entry {
+                // 確保はどのブロックのものも関数の先頭 (静的な確保) に集め、初期化 (0 埋め) だけをここで行う。
+                // ループの中の確保 (配列リテラルなど) を評価のたびに `alloca` すると、周回ごとにスタックが伸びて溢れる。
+                // 1 つの確保命令の領域は、次に評価されるときには前の値を使い終えている (SSA の定義は各周で新しい)。
+                {
                     match &i.op {
                         Op::Alloca => {
                             let Ty::Ref(_, p) = i.ty else { return Err("alloca の結果が参照でない".into()) };
@@ -1369,14 +1363,6 @@ impl<'a> Fe<'a> {
                         }
                         _ => {}
                     }
-                }
-                if let Op::Alloca = &i.op {
-                    let Ty::Ref(_, p) = i.ty else { return Err("alloca の結果が参照でない".into()) };
-                    let mt = self.mt(p.ty());
-                    self.line(format!("%v{} = alloca {}", i.dst, mt));
-                    let zz = if mt == "ptr" { "null" } else { "0" };
-                    self.line(format!("store {} {}, ptr %v{}", mt, zz, i.dst));
-                    continue;
                 }
                 self.inst(i)?;
             }
