@@ -1,0 +1,8 @@
+{
+  "id": "fact",
+  "title": "階乗(再帰とオーバーフロー検査)",
+  "spec": "n の階乗を再帰で計算し、u64 に収まれば Some、オーバーフローするなら None を返す(0 の階乗は 1)。オーバーフローは checked_mul で検査する。panic しない関数として宣言すること。",
+  "decl": "fn bench.fact_checked(n: u64) -> Option<u64>",
+  "level": "hard",
+  "order": 16
+}

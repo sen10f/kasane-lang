@@ -41,6 +41,9 @@ mod check_lower;
 // 利用者の型のメソッド呼び出し (`&mut self` の受け手を含む) の下ろし (子モジュール)。
 #[path = "kir_lower_method.rs"]
 mod method_lower;
+// `std.thread.spawn` / `JoinHandle.join` の下ろし (子モジュール)。
+#[path = "kir_lower_thread.rs"]
+mod thread_lower;
 // 配列リテラルの下ろし (子モジュール)。
 #[path = "kir_lower_array.rs"]
 mod array_lower;
@@ -62,6 +65,11 @@ use coll::CollCx;
 #[path = "kir_lower_net.rs"]
 mod net_lower;
 use net_lower::{is_net_ty, net_call, net_method};
+
+// `std.env` (引数・環境変数) の下ろし。
+#[path = "kir_lower_env.rs"]
+mod env_lower;
+use env_lower::env_call;
 
 type LR<T> = Result<T, String>;
 
@@ -315,7 +323,8 @@ impl<'a> Lw<'a> {
         if let Some(r) = own::match_get_mut(self, e) {
             return r;
         }
-        match self.src_ty(&scrut)? {
+        let stt = self.src_ty(&scrut)?;
+        match stt {
             Src::Named(n, _) if n == "Option" || n == "Result" => self.match_(e),
             _ => self.match_e(e),
         }
@@ -468,6 +477,7 @@ impl<'a> Lw<'a> {
 
     /// 式を下ろす。`None` は制御がその先へ進まないこと (return / break / continue など) を表す。
     fn expr(&mut self, e: &V) -> LR<Option<VId>> {
+        coll::elem_prep(self, e)?;
         match nname(e) {
             "Lit" => self.lit(e).map(Some),
             "Path" => self.path_val(e).map(Some),
@@ -590,7 +600,9 @@ impl<'a> Lw<'a> {
         }
     }
 
-    /// 整数か bool のリテラルで書かれた定数 (`const f.N: u64 = 27u64`) だけを値として扱う。
+    /// 整数か bool のリテラルで書かれた定数 (`const f.N: u64 = 27u64`) と、
+    /// 文字列のリテラルで書かれた定数 (`const f.CONFIG: &str = "..."`) を値として扱う。
+    /// 定数の値はコンパイル時に分かるので、使う場所で値を作る。
     fn const_val(&mut self, ci: usize, e: &V) -> LR<VId> {
         let c = &self.p.defs[ci];
         let ty = self.ty_of(e)?;
@@ -601,6 +613,9 @@ impl<'a> Lw<'a> {
                     return self.err(nline(e), "定数の値が型の範囲にない");
                 }
                 Ok(self.emit(ty, Op::Const(v)))
+            }
+            Some(init) if nname(init) == "Lit" && st(&nf(init)[0]) == "str" && ty == self.fat_ty() => {
+                coll::str_lit(self, init)
             }
             _ => self.err(nline(e), format!("定数 {} は段階 1 の対象外", c.name)),
         }
@@ -625,6 +640,9 @@ impl<'a> Lw<'a> {
                 if self.vty(b) != t {
                     return self.err(line, "比較の両辺の型が違う");
                 }
+                if matches!(op.as_str(), "==" | "!=") && (matches!(t, Ty::Opt(_) | Ty::Res(..) | Ty::Agg(_))) && !coll::owns(self, t) {
+                    return Ok(Some(self.eq_by_call(l, r, a, b, op == "!=", line)?));
+                }
                 let cc = match op.as_str() {
                     "==" => Cc::Eq,
                     "!=" => Cc::Ne,
@@ -635,6 +653,17 @@ impl<'a> Lw<'a> {
                 };
                 if t.is_ref() || t == Ty::Unit || (t == Ty::Bool && !matches!(cc, Cc::Eq | Cc::Ne)) {
                     return self.err(line, format!("型 {} の比較は段階 1 の対象外", t.name()));
+                }
+                // 集成体（構造体・列挙型）の `==` / `!=` は `<型>.$eq` 関数を呼ぶ（設計_KIR.md 13.3）。
+                if matches!(t, Ty::Agg(_)) && matches!(cc, Cc::Eq | Cc::Ne) {
+                    let src = self.src_ty(l)?;
+                    let eq = self.agg_eq_key(&src, t, &self.def.file)?;
+                    let r = self.emit(Ty::Bool, Op::Call { callee: eq, args: vec![a, b] });
+                    if cc == Cc::Ne {
+                        let r = self.emit(Ty::Bool, Op::Not(r));
+                        return Ok(Some(r));
+                    }
+                    return Ok(Some(r));
                 }
                 Ok(Some(self.emit(Ty::Bool, Op::Cmp { cc, ty: t, a, b })))
             }
@@ -772,6 +801,13 @@ impl<'a> Lw<'a> {
         }
         let segs = strs(&nf(callee)[0]);
         let args = items(&f[1]);
+        // `std.thread.spawn(allocator, closure)`。
+        if segs == ["std", "thread", "spawn"] {
+            let Some(r) = thread_lower::spawn_call(self, e, &segs, args, line) else {
+                return self.err(line, "std.thread.spawn は段階 1 の対象外");
+            };
+            return r;
+        }
         // `x.f.v.len()`: 構造体のフィールドの Vec / String の長さ (x は参照またはスタックスロットの構造体)
         if segs.len() >= 3 && matches!(segs[segs.len() - 1].as_str(), "len" | "is_empty") && args.is_empty() {
             if let Some(s) = self.lookup(&segs[0]) {
@@ -796,6 +832,15 @@ impl<'a> Lw<'a> {
                 let meth = segs[segs.len() - 1].clone();
                 if meth == "clone" {
                     return self.lower_clone(line, recv, rt);
+                }
+                // `handle.join()`: スレッドの結果を取り出す。
+                if meth == "join" {
+                    if args.len() != 0 {
+                        return self.err(line, "join の引数は取れない");
+                    }
+                    if let Some(r) = thread_lower::join_call(self, e, recv, rt, line) {
+                        return r;
+                    }
                 }
                 let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,
@@ -836,6 +881,9 @@ impl<'a> Lw<'a> {
         let callee_name = segs.join(".");
         if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
             return net_call(self, e, callee_name == "std.net.listen", line);
+        }
+        if let Some(r) = env_call(self, e, &callee_name, args, line)? {
+            return Ok(Some(r));
         }
         if let Some(Tgt::Variant(en, vn)) = &target {
             let (en, vn) = (en.clone(), vn.clone());
@@ -922,6 +970,20 @@ impl<'a> Lw<'a> {
 
     /// `e.m(args)` (受け手が式の形)。整数の `wrapping_add` / `wrapping_sub` / `wrapping_mul` だけを扱う。
     fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
+        let f = nf(e);
+        let line = nline(e);
+        // `handle.join()`: スレッドの結果を取り出す。
+        if st(&f[1]) == "join" {
+            let t = self.ty_of(&f[0])?;
+            let Some(a) = self.expr(&f[0])? else { return Ok(None) };
+            let args = items(&f[2]);
+            if args.len() != 0 {
+                return self.err(line, "join の引数は取れない");
+            }
+            if let Some(r) = thread_lower::join_call(self, e, a, t, line) {
+                return r;
+            }
+        }
         if let Some(r) = coll::try_mcall(self, e) {
             return r;
         }
@@ -950,24 +1012,25 @@ impl<'a> Lw<'a> {
         if let Some(r) = self.user_mcall(e) {
             return r;
         }
-        if let Some(done) = self.scalar_mcall(e)? {
-            return Ok(done);
-        }
         if let Some(r) = self.builtin_mcall(e) {
             return r;
+        }
+        if let Some(done) = self.scalar_mcall(e)? {
+            return Ok(done);
         }
         let f = nf(e);
         let line = nline(e);
         if !matches!(f.get(3), Some(V::Nil) | None) {
             return self.err(line, "型引数付きのメソッドは段階 1 の対象外");
         }
-        let aop = match st(&f[1]).as_str() {
+        let mname = st(&f[1]);
+        let args = items(&f[2]);
+        let aop = match mname.as_str() {
             "wrapping_add" => Aop::Add,
             "wrapping_sub" => Aop::Sub,
             "wrapping_mul" => Aop::Mul,
             m => return self.err(line, format!("メソッド {} は段階 1 の対象外", m)),
         };
-        let args = items(&f[2]);
         let t = self.ty_of(&f[0])?;
         if !t.is_int() || args.len() != 1 {
             return self.err(line, "wrapping_* の受け手か引数が段階 1 の対象外");

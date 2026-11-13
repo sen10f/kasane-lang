@@ -1,0 +1,8 @@
+{
+  "id": "sum_squares",
+  "title": "平方和(Vec を使う)",
+  "spec": "1 から n までの平方を Vec(要素 u64)に push し、その合計を返す。n=0 なら 0。push は失敗しうる(Result)ので、失敗したら core.panic.panic(\"oom\") でよい。",
+  "decl": "fn bench.sum_squares(n: u32) -> u64",
+  "level": "basic",
+  "order": 8
+}

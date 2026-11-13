@@ -128,7 +128,10 @@ fn side_effecting(op: &Op) -> bool {
         | Op::PtrAdd { .. }
         | Op::StaticBytes(_)
         | Op::AsShared(_)
-        | Op::ParseInt { .. } => false,
+        | Op::ParseInt { .. }
+        | Op::EnvArgCount
+        | Op::EnvArg { .. }
+        | Op::EnvVar { .. } => false,
         | Op::Reborrow(_)
         | Op::FieldAddr { .. } => false,
     }
@@ -267,6 +270,8 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::NetListen { addr } | Op::NetConnect { addr } => vec![addr],
         Op::NetAccept { sock } | Op::NetFlush { sock } | Op::NetClose { sock } | Op::NetLocalPort { sock } => vec![sock],
         Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => vec![sock, buf, len],
+        Op::EnvArgCount => vec![],
+        Op::EnvArg { index } | Op::EnvVar { name: index } => vec![index],
         Op::ParseInt { s, radix, .. } => vec![s, radix],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }

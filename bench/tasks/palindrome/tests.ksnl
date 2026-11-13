@@ -1,0 +1,7 @@
+test bench.is_palindrome.test_basic
+    core.check.eq(bench.is_palindrome("racecar"), true)
+    core.check.eq(bench.is_palindrome("abca"), false)
+    core.check.eq(bench.is_palindrome(""), true)
+    core.check.eq(bench.is_palindrome("a"), true)
+    core.check.eq(bench.is_palindrome("abba"), true)
+end bench.is_palindrome.test_basic

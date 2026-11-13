@@ -1,0 +1,6 @@
+test bench.popcount.test_basic
+    core.check.eq(bench.popcount(0u32), 0u32)
+    core.check.eq(bench.popcount(255u32), 8u32)
+    core.check.eq(bench.popcount(1023u32), 10u32)
+    core.check.eq(bench.popcount(4294967295u32), 32u32)
+end bench.popcount.test_basic

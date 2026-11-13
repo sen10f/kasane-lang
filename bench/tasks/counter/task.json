@@ -1,0 +1,8 @@
+{
+  "id": "counter",
+  "title": "カウンタ(構造体とメソッド)",
+  "spec": "type bench.Counter を定義する(フィールド count: u32)。new は 0 から始め、incr で 1 増やし、get で値を返す。",
+  "decl": "type bench.Counter: one field count: u32\nfn bench.Counter.new() -> bench.Counter\nfn bench.Counter.incr(self: &mut bench.Counter) -> ()\nfn bench.Counter.get(self: &bench.Counter) -> u32",
+  "level": "basic",
+  "order": 7
+}

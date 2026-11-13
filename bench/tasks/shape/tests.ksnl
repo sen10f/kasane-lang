@@ -1,0 +1,5 @@
+test bench.area.test_basic
+    core.check.eq(bench.area(bench.Shape.Rect(3i32, 4i32)), 12i32)
+    core.check.eq(bench.area(bench.Shape.Circle(2i32)), 12i32)
+    core.check.eq(bench.area(bench.Shape.Square(5i32)), 25i32)
+end bench.area.test_basic

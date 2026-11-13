@@ -1,0 +1,8 @@
+{
+  "id": "popcount",
+  "title": "立っているビットの数",
+  "spec": "u32 の値で 1 になっているビットの個数を返す。ビット演算とシフトを使って数える(count_ones は使わない)。",
+  "decl": "fn bench.popcount(n: u32) -> u32",
+  "level": "basic",
+  "order": 10
+}

@@ -1,0 +1,8 @@
+{
+  "id": "gcd",
+  "title": "最大公約数",
+  "spec": "2つの u32 の最大公約数を返す。gcd(0, n) は n。",
+  "decl": "fn bench.gcd(a: u32, b: u32) -> u32",
+  "level": "basic",
+  "order": 0
+}
