@@ -355,17 +355,21 @@ fn cmd_check(json: bool) -> i32 {
     if rep.fatal() { 1 } else { 0 }
 }
 
-/// `ksn kir <FQN> [--run <引数>...]` (隠し機能、設計_KIR.md 段階 1)。
+/// `ksn kir <FQN> [--run|--native <引数>... | --llvm]` (隠し機能、設計_KIR.md 段階 1 と 4)。
 /// 関数の KIR を出す。`--run` を付けると、出した KIR を読み直して参照実行器で走らせる (木走査の `ksn run` と結果を比べるため)。
+/// `--llvm` は LLVM IR (`.ll`) を出し、`--native` は clang で実行ファイルを作って走らせる (表示と終了コードは `--run` と同じ)。
 fn cmd_kir(rest: &[String]) -> i32 {
     let Some(fqn) = rest.first() else {
-        eprintln!("usage: ksn kir <FQN> [--run <args>...]");
+        eprintln!("usage: ksn kir <FQN> [--run|--native <args>... | --llvm]");
         return 2;
     };
-    let run = rest.get(1).is_some_and(|s| s == "--run");
+    let mode = rest.get(1).map(|s| s.as_str());
+    let run = mode == Some("--run");
+    let native = mode == Some("--native");
+    let llvm = mode == Some("--llvm");
     let mut rep = Report::new(false);
-    let (prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false)) {
-        Ok((_, Some(prog), user)) if !rep.fatal() => (prog, user),
+    let (root, prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|x| (r, x))) {
+        Ok((r, (_, Some(prog), user))) if !rep.fatal() => (r, prog, user),
         Ok(_) => {
             rep.flush();
             return 1;
@@ -396,7 +400,19 @@ fn cmd_kir(rest: &[String]) -> i32 {
             return 3;
         }
     };
-    if !run {
+    if llvm {
+        return match crate::kir_llvm::emit(&back, fqn) {
+            Ok(ll) => {
+                print!("{}", ll);
+                0
+            }
+            Err(e) => {
+                eprintln!("ksn kir: --llvm: {}", e);
+                2
+            }
+        };
+    }
+    if !run && !native {
         print!("{}", text);
         return 0;
     }
@@ -416,12 +432,16 @@ fn cmd_kir(rest: &[String]) -> i32 {
         args.push(v);
     }
     let ret = back.find(fqn).map(|f| f.ret);
+    let show = |v: i128| match ret {
+        Some(t) => println!("{}", crate::kir::show_value(t, v)),
+        None => println!("{}", v),
+    };
+    if native {
+        return kir_native(&root, &back, fqn, &args, show);
+    }
     match crate::kir_exec::run(&back, fqn, &args) {
         Ok(crate::kir_exec::Outcome::Value(v)) => {
-            match ret {
-                Some(t) => println!("{}", crate::kir::show_value(t, v)),
-                None => println!("{}", v),
-            }
+            show(v);
             0
         }
         Ok(crate::kir_exec::Outcome::Panic(m)) => {
@@ -435,6 +455,89 @@ fn cmd_kir(rest: &[String]) -> i32 {
         Err(e) => {
             eprintln!("ksn kir: {}", e);
             2
+        }
+    }
+}
+
+/// `ksn kir <FQN> --native`: KIR から LLVM IR を作り、clang で `target/kir-native/` に実行ファイルを作って走らせる。
+/// 実行ファイルは結果を 16 進の 2 語 (下位・上位) で出すので、ここで `show_value` の表示にする。
+/// 同じ `.ll` (内容の FNV-1a で名前を付ける) の実行ファイルは作り直さない。
+fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], show: impl Fn(i128)) -> i32 {
+    let ll = match crate::kir_llvm::emit(m, fqn) {
+        Ok(ll) => ll,
+        Err(e) => {
+            eprintln!("ksn kir: --native: {}", e);
+            return 2;
+        }
+    };
+    let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let dir = root.join("target").join("kir-native");
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!("ksn kir: --native: {} を作れない: {}", dir.display(), e);
+        return 2;
+    }
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in ll.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+    let exe = dir.join(format!("{:016x}{}", h, if cfg!(windows) { ".exe" } else { "" }));
+    if !exe.exists() {
+        let src = dir.join(format!("{:016x}.ll", h));
+        if let Err(e) = fs::write(&src, &ll) {
+            eprintln!("ksn kir: --native: {} を書けない: {}", src.display(), e);
+            return 2;
+        }
+        let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
+        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module", "-x", "ir"]).arg(&src).arg("-o").arg(&tmp).arg("-lm").output();
+        match o {
+            Err(e) => {
+                eprintln!("ksn kir: --native には clang が必要です ({} を起動できない: {})", clang, e);
+                return 2;
+            }
+            Ok(o) if !o.status.success() => {
+                eprintln!("ksn kir: --native: clang が失敗した ({}): {}", src.display(), String::from_utf8_lossy(&o.stderr).trim());
+                let _ = fs::remove_file(&tmp);
+                return 3;
+            }
+            Ok(_) => {}
+        }
+        if let Err(e) = fs::rename(&tmp, &exe) {
+            eprintln!("ksn kir: --native: {}", e);
+            return 2;
+        }
+    }
+    let mut cmd = std::process::Command::new(&exe);
+    for a in args {
+        let u = *a as u128;
+        cmd.arg(format!("{:x}", u as u64)).arg(format!("{:x}", (u >> 64) as u64));
+    }
+    let o = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("ksn kir: --native: 実行できない: {}", e);
+            return 2;
+        }
+    };
+    eprint!("{}", String::from_utf8_lossy(&o.stderr));
+    match o.status.code() {
+        Some(0) => {
+            let out = String::from_utf8_lossy(&o.stdout);
+            let mut it = out.split_whitespace().map(|w| u64::from_str_radix(w, 16));
+            match (it.next(), it.next()) {
+                (Some(Ok(lo)), Some(Ok(hi))) => {
+                    show((((hi as u128) << 64) | lo as u128) as i128);
+                    0
+                }
+                _ => {
+                    eprintln!("ksn kir: --native: 実行ファイルの出力が読めない: {}", out.trim());
+                    3
+                }
+            }
+        }
+        Some(c) => c,
+        None => {
+            eprintln!("ksn kir: --native: 実行ファイルが異常終了した ({:?})", o.status);
+            3
         }
     }
 }

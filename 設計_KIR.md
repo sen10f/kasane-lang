@@ -310,6 +310,12 @@ end demo.fib
 - 方針: Cranelift を KIR 入力に置き換えるのではなく、KIR から LLVM IR のテキストを生成する `stage0/src/kir_llvm.rs` を作り、外部の `clang` でコンパイル・リンクする (第 7 章 22)。LLVM はネイティブ生成にのみ必須 (`check` / `run` / `test` は LLVM なしで動く)。
 - 2 本で進める: (A) KIR の対応範囲を examples・perf・tests の全体へ広げる (2026-11-13 の計測で、最初に止まる理由は `Result` の戻り値 19 件、利用者の構造体への参照の引数 12 件、スライス / `&str` の引数 5 件など)。(B) KIR の全命令を LLVM IR に写し、`ksn kir --run` (参照実行器) と機械語の結果が一致することを確かめる。旧 `clif.rs` は、LLVM の経路が下の Cranelift のテスト一式を通すまで比較の基準として残し、その後に削除する。以下の旧計画の「Cranelift のテスト一式」は LLVM 版の受け入れ基準として読む。
 
+- (B) の実装 (2026-11-13): `stage0/src/kir_llvm.rs`。`ksn kir <FQN> --llvm` が `.ll` を出し、`ksn kir <FQN> --native <引数>...` が clang (`KSN_CLANG` で変更可) で `target/kir-native/` に実行ファイルを作って走らせる (表示は `--run` と同じ `show_value`、panic は stderr に `panic: <文言>` で終了コード 101、呼び出し深さが 2500 を超えると 102)。clang が無ければ理由つきで終了コード 2。受け入れ: `stage0/tests/cli.rs` の `kir_*_match_tree_walker` 系の `--run` の全件を、`--native` でも走らせて表示・終了コード・panic の文言の一致を確かめる (`kir_run`。clang が PATH に無い環境では飛ばす)。
+  - 型の写像は `lty` / `mem_ty` の 1 か所。集成体は `iN` (N = size × 8)、`Option` / `Result` は `{ i1, i64 }`。ペイロードの詰め方は `pay_to_i64` / `i64_to_pay` だけにある。
+  - 超越関数は `fmath::Ops` を LLVM IR の命令列に写した内部関数 (`@ksn.m.*`)。libm は使わない (`floor` / `sqrt` / `frem` は LLVM の組み込み)。
+  - 未対応にしたもの (理由つきで `Err`): (1) 入口の引数・戻り値が集成体・参照・`ptr` の関数 (`--run` も同じ)。(2) 集成体の `Option` / `Result` のペイロード (KIR 側の型が広がったら `pay_to_i64` を拡げる)。命令と型は、これ以外は全て対応。
+  - 既知の差: NaN の符号ビット (`0.0 / 0.0` 以外で生じる NaN は実機の演算の結果。`f64` の `0 / 0` と `NaN / 0` だけは木走査と同じ正規の NaN に揃えている)。解放されていない領域の検出 (参照実行器の内部エラー) はしない。
+
 旧計画 (参考):
 
 - 変更ファイル:

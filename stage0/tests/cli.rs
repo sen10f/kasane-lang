@@ -41,6 +41,36 @@ impl Drop for Tmp {
     }
 }
 
+/// clang が使えるか (使えなければ、`--native` の比較は飛ばして理由を一度だけ出す)。
+fn clang_available() -> bool {
+    use std::sync::OnceLock;
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        let ok = Command::new("clang").arg("--version").output().map(|o| o.status.success()).unwrap_or(false);
+        if !ok {
+            eprintln!("skip: clang が PATH に無いので、`ksn kir --native` との比較は飛ばす");
+        }
+        ok
+    })
+}
+
+/// `ksn kir <FQN> --run ...` を走らせ、clang があれば同じ引数の `--native` (LLVM IR を clang で実行ファイルにする) も走らせて、
+/// 終了コード・標準出力 (表示)・panic の文言 (標準エラー) が参照実行器と一致することを確かめる。`--run` の結果を返す。
+fn kir_run(args: &[&str], cwd: &Path) -> Output {
+    let r = run(args, cwd);
+    if !clang_available() {
+        return r;
+    }
+    let native_args: Vec<&str> = args.iter().map(|a| if *a == "--run" { "--native" } else { *a }).collect();
+    let n = run(&native_args, cwd);
+    assert_eq!(n.status.code(), r.status.code(), "native: 終了コードが違う {:?}\n{}", args, text(&n.stderr));
+    assert_eq!(text(&n.stdout), text(&r.stdout), "native: 表示が違う {:?}", args);
+    if matches!(r.status.code(), Some(101) | Some(102)) {
+        assert_eq!(text(&n.stderr), text(&r.stderr), "native: panic の文言が違う {:?}", args);
+    }
+    r
+}
+
 fn codes(json: &str) -> Vec<String> {
     // 1診断1行の JSON から "code" を取り出す (簡易)。
     json.lines()
@@ -9605,7 +9635,7 @@ fn kir_lower_values_match_tree_walker() {
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
     }
@@ -9631,17 +9661,17 @@ fn kir_lower_panics_and_depth_match_tree_walker() {
         assert!(text(&o.stderr).contains(&format!("panic: {}", msg)), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(101), "kir: {}", call);
         assert_eq!(text(&k.stderr).trim(), format!("panic: {}", msg), "kir: {}", call);
     }
     // 深さの超過: 木走査と同じく 102 と "stack overflow"
     let t = kir_pkg("kir_depth", "    let _x = t.down(5000u64)\n");
     assert_eq!(run(&["run"], &t.0).status.code(), Some(102));
-    let k = run(&["kir", "t.down", "--run", "5000"], &t.0);
+    let k = kir_run(&["kir", "t.down", "--run", "5000"], &t.0);
     assert_eq!(k.status.code(), Some(102));
     assert!(text(&k.stderr).contains("stack overflow"), "{}", text(&k.stderr));
-    let ok = run(&["kir", "t.down", "--run", "2000"], &t.0);
+    let ok = kir_run(&["kir", "t.down", "--run", "2000"], &t.0);
     assert_eq!(text(&ok.stdout).trim(), "2000");
 }
 
@@ -9717,7 +9747,7 @@ fn kir_lower_examples_and_perf_functions_match_tree_walker() {
         assert_eq!(run(&["run"], &d).status.code(), Some(0), "{} run (tree-walker)", dir);
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &d);
+        let k = kir_run(&kargs, &d);
         assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
     }
@@ -9873,7 +9903,7 @@ fn kir_optres_values_match_tree_walker() {
     for (f, args, want) in cases {
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
     }
@@ -9931,7 +9961,7 @@ fn kir_optres_examples_features_match_tree_walker() {
     for (f, args, want) in cases {
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &d);
+        let k = kir_run(&kargs, &d);
         assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
     }
@@ -10455,7 +10485,7 @@ fn kir_agg_values_match_tree_walker() {
     for (f, args, want) in cases {
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {} {:?}\n{}", f, args, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
     }
@@ -10615,7 +10645,7 @@ fn kir_scalar_ints_match_tree_walker() {
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut ka = vec!["kir", *f, "--run"];
         ka.extend(kargs.iter().copied());
-        let k = run(&ka, &t.0);
+        let k = kir_run(&ka, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", call);
     }
@@ -10816,7 +10846,7 @@ fn kir_refs_values_match_tree_walker() {
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).lines().last().unwrap_or("").trim(), *want, "kir value of {}", call);
     }
@@ -10847,7 +10877,7 @@ fn kir_scalar_floats_and_wide_ints_match_tree_walker() {
         let t = scalar_pkg(&format!("kir_scalar_float_{}", i), &format!("    core.check.eq({}, {})\n", call, want));
         let o = run(&["run"], &t.0);
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
-        let k = run(&["kir", *f, "--run"], &t.0);
+        let k = kir_run(&["kir", *f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", f);
     }
@@ -10932,7 +10962,7 @@ fn float_specials_follow_ieee_on_both_backends() {
         let t = Tmp::new(&format!("float_special_{}", i), &format!("{}{}", FLOAT_SPECIAL_FNS, main_wrap("", &body)));
         let o = run(&["run"], &t.0);
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", f, text(&o.stderr));
-        let k = run(&["kir", *f, "--run"], &t.0);
+        let k = kir_run(&["kir", *f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", f);
     }
@@ -11002,7 +11032,7 @@ end t.main
 fn kir_agg_entry_with_an_aggregate_value_is_refused() {
     // 入口 (`--run`) は整数と bool の引数・戻り値だけ。集成体の関数は表示だけできる。
     let t = Tmp::new("kir_agg_entry", KIR_AGG_SRC);
-    let o = run(&["kir", "t.mk_box", "--run", "1", "2", "true"], &t.0);
+    let o = kir_run(&["kir", "t.mk_box", "--run", "1", "2", "true"], &t.0);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("集成体を引数・戻り値に持つ"), "{}", text(&o.stderr));
 }
@@ -11220,7 +11250,7 @@ fn kir_scalar_probes_match_tree_walker() {
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "tree-walker:\n{}", text(&o.stderr));
     for (f, _, want) in cases {
-        let k = run(&["kir", *f, "--run"], &t.0);
+        let k = kir_run(&["kir", *f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", f);
     }
@@ -11233,7 +11263,7 @@ fn kir_refs_panics_match_tree_walker() {
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(101), "tree-walker\n{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
-    let k = run(&["kir", "t.overflow_via_ref", "--run", "200"], &t.0);
+    let k = kir_run(&["kir", "t.overflow_via_ref", "--run", "200"], &t.0);
     assert_eq!(k.status.code(), Some(101), "kir\n{}", text(&k.stderr));
     assert_eq!(text(&k.stderr).trim(), "panic: attempt to add with overflow");
 }
@@ -11284,7 +11314,7 @@ fn min_rem_minus_one_overflows_for_every_signed_width() {
         assert_eq!(o.status.code(), Some(101), "{}: {}", w, text(&o.stderr));
         assert!(text(&o.stderr).contains("panic: attempt to calculate the remainder with overflow"), "{}: {}", w, text(&o.stderr));
         if w == "i8" {
-            let k = run(&["kir", "t.rem", "--run", "-128", "-1"], &t.0);
+            let k = kir_run(&["kir", "t.rem", "--run", "-128", "-1"], &t.0);
             assert_eq!(k.status.code(), Some(101), "kir {}: {}", w, text(&k.stderr));
             assert_eq!(text(&k.stderr).trim(), "panic: attempt to calculate the remainder with overflow", "kir {}", w);
         }
@@ -11506,7 +11536,7 @@ fn kir_coll_values_match_tree_walker() {
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
     }
@@ -11519,7 +11549,7 @@ fn kir_coll_index_panics_like_tree_walker() {
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(101), "tree-walker");
     assert!(text(&o.stderr).contains("panic: index out of bounds: the len is 0 but the index is 5"), "{}", text(&o.stderr));
-    let k = run(&["kir", "t.idx_empty", "--run"], &t.0);
+    let k = kir_run(&["kir", "t.idx_empty", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(101), "kir: {}", text(&k.stderr));
     assert_eq!(text(&k.stderr).trim(), "panic: index out of bounds: the len is 0 but the index is 5");
 }
@@ -11625,11 +11655,11 @@ fn untyped_int_literals_take_their_inferred_type_in_the_tree_walker() {
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(101), "{}{}", text(&o.stdout), text(&o.stderr));
     assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
-    let k = run(&["kir", "t.count", "--run", "300"], &t.0);
+    let k = kir_run(&["kir", "t.count", "--run", "300"], &t.0);
     assert_eq!(k.status.code(), Some(101));
     assert!(text(&k.stderr).contains("panic: attempt to add with overflow"), "{}", text(&k.stderr));
-    assert_eq!(text(&run(&["kir", "t.count", "--run", "200"], &t.0).stdout).trim(), "200");
-    assert_eq!(text(&run(&["kir", "t.dbl", "--run", "5"], &t.0).stdout).trim(), "144");
+    assert_eq!(text(&kir_run(&["kir", "t.count", "--run", "200"], &t.0).stdout).trim(), "200");
+    assert_eq!(text(&kir_run(&["kir", "t.dbl", "--run", "5"], &t.0).stdout).trim(), "144");
     for args in [&["test"][..], &["test", "--both"][..]] {
         let o = run(args, &t.0);
         let out = text(&o.stdout);
@@ -11782,4 +11812,32 @@ end t.main.test_g_try_conv
     ] {
         assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (native skipped: t.main.{}: {}", name, name, why)), "{}", out);
     }
+}
+
+#[test]
+fn kir_llvm_output_is_deterministic_and_reads_as_ir() {
+    // `--llvm` は同じ KIR から同じバイト列の `.ll` を出す (clang が無くても確かめられる)。
+    let t = kir_pkg("kir_llvm_text", "    core.check.eq(t.gcd(4u64, 2u64), 2u64)\n");
+    for f in ["t.gcd", "t.fact", "t.negate", "t.andor", "t.nested", "t.down"] {
+        let a = run(&["kir", f, "--llvm"], &t.0);
+        let b = run(&["kir", f, "--llvm"], &t.0);
+        assert_eq!(a.status.code(), Some(0), "{}: {}", f, text(&a.stderr));
+        assert_eq!(a.stdout, b.stdout, "{}: .ll が 2 回で違う", f);
+        let ll = text(&a.stdout);
+        assert!(ll.starts_with("; ksn kir llvm 1\n") && ll.contains(&format!("define internal")) && ll.contains("define i32 @main"), "{}", ll);
+        assert!(!ll.contains("@sin") && !ll.contains("@cos"), "libm の超越関数を呼ばない");
+    }
+}
+
+#[test]
+fn kir_native_without_clang_is_an_error_with_a_reason() {
+    let t = kir_pkg("kir_native_noclang", "    core.check.eq(t.gcd(4u64, 2u64), 2u64)\n");
+    let o = Command::new(exe())
+        .args(["kir", "t.gcd", "--native", "4", "2"])
+        .current_dir(&t.0)
+        .env("KSN_CLANG", "/nonexistent/clang")
+        .output()
+        .expect("spawn ksn");
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("clang が必要です"), "{}", text(&o.stderr));
 }
