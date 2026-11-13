@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::kir::{self, Aop, BitK, BoolOp, Cc, FBin, FUn, Inst, Mode, Module, Op, Term, Ty, VId, operands};
+use crate::kir::{self, Aop, BitK, BoolOp, Cc, FBin, FUn, Func, Inst, Mode, Module, Op, Term, Ty, VId, Block, operands};
 
 /// 最適化のエントリポイント。全パスを順に適用し、各パスの後に `verify_module` を通す。
 /// 検証に失敗した場合は、その時点までの結果を返さずエラーにする（内部不整合のため）。
@@ -282,9 +282,204 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
     }
 }
 
-/// 小さな関数のインライン化 (パス 4)。未実装のスタブ（通過のみ）。
+/// 小さな関数のインライン化 (パス 4)。
+/// 命令数がしきい値以下で再帰しない関数を、呼び出し点に展開する。
+/// 再帰関数は展開しない（深さの数え方 102 を変えないため）。
+const INLINE_INST_LIMIT: usize = 12;
+
 fn inline_small(m: &Module) -> Result<Module, String> {
-    Ok(m.clone())
+    after(m, |m| {
+        let mut m = m.clone();
+        let recursive = recursive_keys(&m);
+        let candidates: HashSet<String> = m
+            .funcs
+            .iter()
+            .filter(|f| !recursive.contains(f.key.as_str()) && inst_count(f) <= INLINE_INST_LIMIT)
+            .map(|f| f.key.clone())
+            .collect();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            'outer: for fi in 0..m.funcs.len() {
+                for bi in 0..m.funcs[fi].blocks.len() {
+                    let b = &m.funcs[fi].blocks[bi];
+                    let Some(pos) = b.insts.iter().position(|i| {
+                        matches!(i.op, Op::Call { ref callee, .. } if candidates.contains(callee.as_str()))
+                    }) else {
+                        continue;
+                    };
+                    let Op::Call { callee, .. } = &b.insts[pos].op else { continue };
+                    let callee_key = callee.clone();
+                    let callee = m
+                        .funcs
+                        .iter()
+                        .find(|f| f.key == callee_key)
+                        .unwrap()
+                        .clone();
+                    match inline_call_block(&mut m.funcs[fi], bi, pos, &callee) {
+                        Ok(()) => {
+                            changed = true;
+                            break 'outer;
+                        }
+                        Err(_) => continue, // 展開できない呼び出しはスキップ
+                    }
+                }
+            }
+        }
+        m
+    }, "小さな関数のインライン化")
+}
+
+/// 関数の命令数（終端命令を除く）。
+fn inst_count(f: &Func) -> usize {
+    f.blocks.iter().map(|b| b.insts.len()).sum()
+}
+
+/// 再帰（直接・間接）を持つ関数の鍵の集合。
+fn recursive_keys(m: &Module) -> HashSet<String> {
+    let mut rec: HashSet<String> = HashSet::new();
+    let adj: HashMap<&str, Vec<&str>> = m
+        .funcs
+        .iter()
+        .map(|f| {
+            let mut callees = vec![];
+            for b in &f.blocks {
+                for i in &b.insts {
+                    if let Op::Call { callee, .. } = &i.op {
+                        callees.push(callee.as_str());
+                    }
+                }
+            }
+            (f.key.as_str(), callees)
+        })
+        .collect();
+    for k in adj.keys() {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut todo = vec![*k];
+        while let Some(x) = todo.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            for &c in adj.get(x).unwrap_or(&vec![]) {
+                if c == *k {
+                    rec.insert(k.to_string());
+                }
+                todo.push(c);
+            }
+        }
+    }
+    rec
+}
+
+/// 呼び出し命令（ブロック `bidx` の `ii` 番目）を callee の本体で展開する。
+/// `caller` は展開先の関数。`callee` は展開元（コピーされる）。
+fn inline_call_block(
+    caller: &mut Func,
+    bidx: usize,
+    ii: usize,
+    callee: &Func,
+) -> Result<(), String> {
+    let inst = caller.blocks[bidx].insts[ii].clone();
+    let Op::Call { callee: _key, args } = &inst.op else {
+        return Err("call ではない".to_string());
+    };
+    let dst = inst.dst;
+    let ret_ty = inst.ty;
+    let args = args.clone();
+
+    // 現 caller の最大値番号 + 1 を、callee の値番号の振り直しの基準とする。
+    let max_val = caller
+        .blocks
+        .iter()
+        .flat_map(|b| {
+            b.insts
+                .iter()
+                .map(|i| i.dst)
+                .chain(b.params.iter().map(|(v, _)| *v))
+        })
+        .chain(caller.blocks.iter().flat_map(|b| match &b.term {
+            Term::Ret(v) => vec![*v],
+            Term::BrIf(c, _, _) => vec![*c],
+            Term::Br(_) => vec![],
+            Term::Unreachable => vec![],
+        }))
+        .max()
+        .unwrap_or(0);
+    let offset = max_val + 1;
+
+    // 引数の個数を確認。
+    if callee.blocks[0].params.len() != args.len() {
+        return Err(format!("{} の引数の個数が違う", callee.key));
+    }
+    // callee の全値番号（パラメタ・inst dst）を offset からの新番号に割り当てる。
+    // ブロック引数はブランチの実引数 (caller 側の値番号) で束縛されるため、
+    // callee 側のパラメタ番号は caller のものと衝突しないよう fresh に割り当てる。
+    let mut val_map: HashMap<VId, VId> = HashMap::new();
+    let mut next = offset;
+    for cb in &callee.blocks {
+        for (pv, _) in &cb.params {
+            val_map.insert(*pv, next);
+            next += 1;
+        }
+        for i in &cb.insts {
+            val_map.insert(i.dst, next);
+            next += 1;
+        }
+    }
+
+    // callee のブロックを caller のブロック番号空間にコピー。
+    let base = caller.blocks.len();
+    let n = callee.blocks.len();
+    let cont = base + n; // 継続ブロックの番号
+
+    // 継続ブロック: %dst をパラメタにして、call 命令の後の命令と元の終端命令を実行。
+    let b = &mut caller.blocks[bidx];
+    let mut after: Vec<Inst> = b.insts.split_off(ii + 1);
+    b.insts.truncate(ii); // call 自体は削除
+    let term = std::mem::replace(&mut b.term, Term::Unreachable);
+    let cont_block = Block {
+        params: vec![(dst, ret_ty)],
+        insts: after,
+        term,
+    };
+
+    // callee ブロックのコピー。ret → br cont(%retval_mapped)。
+    let mut callee_blocks: Vec<Block> = vec![];
+    for cb in &callee.blocks {
+        let mut nb = cb.clone();
+        // 値番号の振り直し（パラメタ・被演算子・dst）。
+        for (pv, _) in &mut nb.params {
+            *pv = val_map[pv];
+        }
+        for i in &mut nb.insts {
+            for a in operands_mut(&mut i.op) {
+                *a = val_map[a];
+            }
+            i.dst = val_map[&i.dst];
+        }
+        match &mut nb.term {
+            Term::Ret(v) => {
+                *v = val_map[v];
+                nb.term = Term::Br((cont, vec![*v]));
+            }
+            Term::Br(t) => t.0 += base,
+            Term::BrIf(_, t1, t2) => {
+                t1.0 += base;
+                t2.0 += base;
+            }
+            Term::Unreachable => {}
+        }
+        callee_blocks.push(nb);
+    }
+
+    // 呼び出し元ブロック b は callee エントリへジャンプ（引数をパラメタにバインド）。
+    b.term = Term::Br((base, args));
+
+    // 挿入: b の後に callee ブロック群、その後継続ブロック。
+    caller.blocks.splice(bidx + 1..bidx + 1, callee_blocks);
+    caller.blocks.insert(base + n, cont_block);
+
+    Ok(())
 }
 
 /// 1 パスのラッパ: 変換を適用して `verify_module` を通す。違反があればエラー。
@@ -779,5 +974,107 @@ mod tests {
         assert_eq!(insts.len(), 1);
         assert!(matches!(insts[0].op, Op::Load(0)));
         assert!(verify_module(&out).is_empty(), "{:?}", verify_module(&out));
+    }
+
+    #[test]
+    fn inline_small_removes_call() {
+        // t.double(x) = x + x (wrap) を t.twice(y) = t.double(y) にインライン展開。
+        let double = Func {
+            fqn: "t.double".into(),
+            key: "t.double".into(),
+            uses: vec![],
+            may_panic: false,
+            stack: None,
+            ret: Ty::I64,
+            blocks: vec![Block {
+                params: vec![(0, Ty::I64)],
+                insts: vec![Inst {
+                    dst: 1,
+                    ty: Ty::I64,
+                    op: Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: 0, b: 0 },
+                }],
+                term: Term::Ret(1),
+            }],
+        };
+        let twice = Func {
+            fqn: "t.twice".into(),
+            key: "t.twice".into(),
+            uses: vec![],
+            may_panic: false,
+            stack: None,
+            ret: Ty::I64,
+            blocks: vec![Block {
+                params: vec![(0, Ty::I64)],
+                insts: vec![Inst {
+                    dst: 1,
+                    ty: Ty::I64,
+                    op: Op::Call { callee: "t.double".into(), args: vec![0] },
+                }],
+                term: Term::Ret(1),
+            }],
+        };
+        let m = Module {
+            funcs: vec![double, twice],
+            ..Default::default()
+        };
+        let out = inline_small(&m).unwrap();
+        let f = out.funcs.iter().find(|f| f.key == "t.twice").unwrap();
+        // 呼び出しは除去される
+        assert!(!f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::Call { .. }))));
+        assert!(verify_module(&out).is_empty(), "{:?}", verify_module(&out));
+    }
+
+    #[test]
+    fn inline_skips_recursive_function() {
+        // t.fact は自分を再帰呼び出しするので展開されない。
+        let fact = Func {
+            fqn: "t.fact".into(),
+            key: "t.fact".into(),
+            uses: vec![],
+            may_panic: false,
+            stack: Some(4096),
+            ret: Ty::U64,
+            blocks: vec![Block {
+                params: vec![(0, Ty::U64)],
+                insts: vec![Inst {
+                    dst: 1,
+                    ty: Ty::U64,
+                    op: Op::Call { callee: "t.fact".into(), args: vec![0] },
+                }],
+                term: Term::Ret(1),
+            }],
+        };
+        // 呼び出し元も含める（再帰判定のため）
+        let use_fact = Func {
+            fqn: "t.use".into(),
+            key: "t.use".into(),
+            uses: vec![],
+            may_panic: false,
+            stack: None,
+            ret: Ty::U64,
+            blocks: vec![Block {
+                params: vec![(0, Ty::U64)],
+                insts: vec![Inst {
+                    dst: 1,
+                    ty: Ty::U64,
+                    op: Op::Call { callee: "t.fact".into(), args: vec![0] },
+                }],
+                term: Term::Ret(1),
+            }],
+        };
+        let m = Module {
+            funcs: vec![fact, use_fact],
+            ..Default::default()
+        };
+        let out = inline_small(&m).unwrap();
+        let f = out.funcs.iter().find(|f| f.key == "t.use").unwrap();
+        assert!(f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::Call { .. }))));
+        assert!(verify_module(&out).is_empty(), "{:?}", verify_module(&out));
+    }
+
+    #[test]
+    fn optimize_pipeline_runs_on_sample() {
+        let m = sample();
+        let _ = optimize(&m).unwrap();
     }
 }
