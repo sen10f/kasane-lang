@@ -1257,6 +1257,47 @@ fn match_arm_trailing_comma_is_fixed_by_ksn_fix() {
     assert!(got.iter().any(|g| g == "E0049"), "{:?}", got);
 }
 
+// ---- 診断の改善 (4): match の腕 (`=>` の後の改行・腕の本体の代入) ----
+
+#[test]
+fn match_arm_brace_on_next_line_is_explained_and_fixed() {
+    let src = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    match x {\n        Some(v) =>\n        {\n            v\n        }\n        None => 0u8\n    }\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("arm_brace_next_line", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|g| g == "E0057"), "{}", out);
+    assert!(out.contains("move the `{` from the next line up to this line"), "{}", out);
+    let o = run(&["fix"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("        Some(v) => {\n            v\n        }\n"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn match_arm_assignment_is_explained_and_fixed_as_a_block() {
+    let src = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    let mut result = 0u8\n    match x {\n        Some(r) => result = r\n        None => {\n            result = 0u8\n        }\n    }\n    result\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("arm_assign", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|g| g == "E0058"), "{}", out);
+    let o = run(&["fix"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("        Some(r) => {\n            result = r\n        }\n"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn match_arm_correct_forms_pass_check() {
+    // `=> {` を同じ行に書く形と、ブロックの中の代入は、どちらも診断 0 件で通る。`==` と `=>` の比較は代入ではない。
+    let src = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    let mut result = 0u8\n    match x {\n        Some(r) => {\n            result = r\n        }\n        None => {\n            result = 1u8\n        }\n    }\n    result\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("arm_correct", src);
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+}
+
 #[test]
 fn unresolved_name_suggests_a_close_definition_and_fix() {
     let b = body(&["let mut v = core.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.len())"]);

@@ -1,0 +1,10 @@
+fn t.a(x: Option<u8>) -> u8 uses [] panics never
+    let mut result = 0u8
+    match x {
+        Some(r) => result = r
+        None => {
+            result = 0u8
+        }
+    }
+    result
+end t.a
