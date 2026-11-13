@@ -68,7 +68,9 @@ pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String]) -
     let bc = prepare(lo, entry)?;
     let mut vm = run::Vm::new(&bc);
     vm.args = args.to_vec();
+    tick("vm-start");
     let out = vm.run(entry, &[]);
+    tick("vm-run");
     Ok(match out {
         Ok(Outcome::Value(v)) => match ret {
             // 入口が `Err(e)` を返したら、stderr に `Error: <e の Debug 表示>` を出して終了コード 1 (木走査の `run_entry` と同じ)。

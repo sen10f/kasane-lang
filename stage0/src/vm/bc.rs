@@ -10,10 +10,13 @@
 use crate::kir::{AggDef, Aop, BitK, Cc, FBin, FUn, Func, Mode, Ty};
 
 /// フレーム相対のスロット番号。
-pub type S = u32;
+pub type S = u16;
 
 /// `Ins::Call` などで「結果を受けない」ことを表すスロット。
-pub const NO_SLOT: S = u32::MAX;
+pub const NO_SLOT: S = u16::MAX;
+
+/// 1 関数のスロット数の上限 (`S` が `u16` なので)。超える関数は VM が扱えない (木走査へ退避)。
+pub const MAX_SLOTS: u32 = u16::MAX as u32 - 1;
 
 /// メモリ読み出しの幅と符号 (`MemLoad` / `Load`)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +61,20 @@ pub enum Ins {
     AddImm { d: S, a: S, imm: i64 },
     /// `d = p + off` (`ptr.add`)。
     PtrAdd { d: S, p: S, off: S },
+
+    // ---- 即値の演算 (定数の被演算子を命令に埋める。`i32` に収まる定数だけ)
+    AddTI { d: S, a: S, t: u8, imm: i32 },
+    SubTI { d: S, a: S, t: u8, imm: i32 },
+    MulTI { d: S, a: S, t: u8, imm: i32 },
+    AddWI { d: S, a: S, t: u8, imm: i32 },
+    SubWI { d: S, a: S, t: u8, imm: i32 },
+    MulWI { d: S, a: S, t: u8, imm: i32 },
+    CmpII { d: S, a: S, cc: Cc, imm: i32 },
+    /// `a cc imm` が偽なら `to` へ。
+    JCmpNotI { cc: Cc, a: S, imm: i32, to: u32 },
+    /// `a cc b` が真なら `to` へ (ループの後ろ辺に、先頭の比較を写したもの)。
+    JCmp { cc: Cc, a: S, b: S, to: u32 },
+    JCmpI { cc: Cc, a: S, imm: i32, to: u32 },
 
     // ---- 制御
     Jmp { to: u32 },
@@ -153,6 +170,8 @@ pub enum Ins {
     NetClose { d: S, sock: S },
     NetLocalPort { d: S, sock: S },
 }
+
+const _: () = assert!(std::mem::size_of::<Ins>() <= 16);
 
 #[derive(Clone, Debug)]
 pub struct VFunc {

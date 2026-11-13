@@ -23,6 +23,31 @@ extern "C" {
     fn free(p: *mut std::ffi::c_void);
 }
 
+const PROF: bool = option_env!("KSN_VM_PROF").is_some();
+static PROF_T: std::sync::Mutex<Vec<(std::mem::Discriminant<Ins>, u64, String)>> = std::sync::Mutex::new(Vec::new());
+fn prof_count(ins: &Ins) {
+    let d = std::mem::discriminant(ins);
+    let mut t = PROF_T.lock().unwrap();
+    match t.iter_mut().find(|e| e.0 == d) {
+        Some(e) => e.1 += 1,
+        None => t.push((d, 1, format!("{:?}", ins).split(|c| c == ' ' || c == '(').next().unwrap().to_string())),
+    }
+}
+pub fn prof_report() {
+    if !PROF {
+        return;
+    }
+    let t = PROF_T.lock().unwrap();
+    let total: u64 = t.iter().map(|e| e.1).sum();
+    let mut v: Vec<(u64, &str)> = t.iter().map(|e| (e.1, e.2.as_str())).collect();
+    v.sort();
+    v.reverse();
+    eprintln!("[prof] total {}", total);
+    for (n, name) in v.iter().take(14) {
+        eprintln!("[prof] {:>10} {:5.1}% {}", n, *n as f64 * 100.0 / total as f64, name);
+    }
+}
+
 struct Frame {
     /// 戻り先 (呼び出し元) の関数・命令番号・フレームの底。
     f: u32,
@@ -56,6 +81,19 @@ pub struct Vm<'a> {
 enum NetSock {
     Listener(std::net::TcpListener),
     Stream(std::net::TcpStream),
+}
+
+#[inline(always)]
+fn cc_eval(cc: crate::kir::Cc, x: i128, y: i128) -> bool {
+    use crate::kir::Cc;
+    match cc {
+        Cc::Eq => x == y,
+        Cc::Ne => x != y,
+        Cc::Lt => x < y,
+        Cc::Le => x <= y,
+        Cc::Gt => x > y,
+        Cc::Ge => x >= y,
+    }
 }
 
 #[inline(always)]
@@ -207,12 +245,58 @@ impl<'a> Vm<'a> {
             // SAFETY: コンパイラは各関数の最後に `Ret` / `Jmp` / `Unreachable` を置くので `pc` は範囲内。
             let ins = unsafe { f.code.get_unchecked(pc) };
             pc += 1;
+            if PROF {
+                prof_count(ins);
+            }
             match ins {
                 Ins::ConstI { d, v } => w!(*d, *v as i128),
                 Ins::ConstW { d, k } => w!(*d, prog.wide[*k as usize]),
                 Ins::Mov { d, s } => w!(*d, r!(*s)),
                 Ins::AddImm { d, a, imm } => w!(*d, r!(*a) + *imm as i128),
                 Ins::PtrAdd { d, p, off } => w!(*d, r!(*p) + r!(*off)),
+                Ins::AddTI { d, a, t, imm } => {
+                    let v = r!(*a) + *imm as i128;
+                    let (lo, hi) = fast_lo_hi(*t);
+                    if v < lo || v > hi {
+                        panic_out!(kir_exec::overflow_msg(Aop::Add));
+                    }
+                    w!(*d, v);
+                }
+                Ins::SubTI { d, a, t, imm } => {
+                    let v = r!(*a) - *imm as i128;
+                    let (lo, hi) = fast_lo_hi(*t);
+                    if v < lo || v > hi {
+                        panic_out!(kir_exec::overflow_msg(Aop::Sub));
+                    }
+                    w!(*d, v);
+                }
+                Ins::MulTI { d, a, t, imm } => {
+                    let v = r!(*a).wrapping_mul(*imm as i128);
+                    let (lo, hi) = fast_lo_hi(*t);
+                    if v < lo || v > hi {
+                        panic_out!(kir_exec::overflow_msg(Aop::Mul));
+                    }
+                    w!(*d, v);
+                }
+                Ins::AddWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_add(*imm as i128))),
+                Ins::SubWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_sub(*imm as i128))),
+                Ins::MulWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_mul(*imm as i128))),
+                Ins::CmpII { d, a, cc, imm } => w!(*d, cc_eval(*cc, r!(*a), *imm as i128) as i128),
+                Ins::JCmpNotI { cc, a, imm, to } => {
+                    if !cc_eval(*cc, r!(*a), *imm as i128) {
+                        pc = *to as usize;
+                    }
+                }
+                Ins::JCmp { cc, a, b, to } => {
+                    if cc_eval(*cc, r!(*a), r!(*b)) {
+                        pc = *to as usize;
+                    }
+                }
+                Ins::JCmpI { cc, a, imm, to } => {
+                    if cc_eval(*cc, r!(*a), *imm as i128) {
+                        pc = *to as usize;
+                    }
+                }
                 Ins::Jmp { to } => pc = *to as usize,
                 Ins::JmpIfNot { c, to } => {
                     if r!(*c) == 0 {
@@ -322,7 +406,7 @@ impl<'a> Vm<'a> {
                     }
                     // 引数を新しいフレームの先頭へ写す。
                     for k in 0..*argn as usize {
-                        let s = f.pool[*argp as usize + k];
+                        let s = unsafe { *f.pool.get_unchecked(*argp as usize + k) };
                         let v = r!(s);
                         unsafe { *rp.add(f.nslots as usize + k) = v };
                     }
@@ -346,8 +430,10 @@ impl<'a> Vm<'a> {
                         Some(fr) => (fr.hbase, fr.abase),
                         None => (top_hbase, 0),
                     };
-                    for p in self.allocs.drain(abase..) {
-                        unsafe { free(p) };
+                    if self.allocs.len() > abase {
+                        for p in self.allocs.drain(abase..) {
+                            unsafe { free(p) };
+                        }
                     }
                     // 戻る関数が作った置き場の項目は捨てる。戻り値が参照する項目だけは、呼び出し元の置き場へ複製して残す。
                     if f.ret_heap {
@@ -355,12 +441,13 @@ impl<'a> Vm<'a> {
                         let mut out: Vec<Vec<u8>> = vec![];
                         val = kir_exec::relocate(f.ret, val, &blobs, hbase, &mut out);
                         self.heap.extend(out);
-                    } else {
+                    } else if self.heap.len() > hbase {
                         self.heap.truncate(hbase);
                     }
                     match self.frames.pop() {
                         None => {
                             self.flush();
+                            prof_report();
                             return Ok(Outcome::Value(val));
                         }
                         Some(fr) => {
