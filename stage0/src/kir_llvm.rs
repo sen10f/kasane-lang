@@ -1490,8 +1490,8 @@ impl<'a> Fe<'a> {
                     self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
                 }
             }
-            /// 関数のアドレスを `ptr` として取る (C のコールバック用)。
-            /// `callee` の関数は C 呼び出し規約と互換のシグネチャ (`ptr`/`i32` など) で下ろされている。
+            // 関数のアドレスを `ptr` として取る (C のコールバック用)。
+            // `callee` の関数は C 呼び出し規約と互換のシグネチャ (`ptr`/`i32` など) で下ろされている。
             Op::FnPtr { callee } => {
                 let Some(f) = self.funcs.iter().find(|f| f.key == *callee) else {
                     return Err(format!("fnptr の呼び先 {} が見つからない", callee));
