@@ -32,8 +32,6 @@ struct Frame {
     dst: Option<VId>,
     /// この呼び出しが始まったときの集成体の置き場の長さ (戻るときにここまで切り詰める)。
     hbase: usize,
-    /// この呼び出しが始まったときのセル列の長さ (返るときに切り詰める)。
-    mem_base: usize,
     /// この関数の `frame.bytes` で確保した領域の先頭。関数が戻るときに解放する。
     allocs: Vec<i128>,
 }
@@ -99,6 +97,12 @@ impl ByteMem {
         let bytes = (v as u128).to_le_bytes();
         self.mem[at..at + n].copy_from_slice(&bytes[..n]);
         Ok(())
+    }
+
+    /// `addr` から `n` バイトをそのまま読む (集成体の読み出し用)。
+    fn read_bytes(&self, addr: i128, n: usize) -> Result<Vec<u8>, String> {
+        let at = self.locate(addr, n)?;
+        Ok(self.mem[at..at + n].to_vec())
     }
 
     fn write_bytes(&mut self, addr: i128, bytes: &[u8]) -> Result<(), String> {
@@ -175,8 +179,8 @@ fn read_scalar(buf: &[u8], off: usize, t: Ty) -> i128 {
     }
 }
 
-const DIV_ZERO: &str = "attempt to divide by zero";
-const REM_ZERO: &str = "attempt to calculate the remainder with a divisor of by zero";
+pub(crate) const DIV_ZERO: &str = "attempt to divide by zero";
+pub(crate) const REM_ZERO: &str = "attempt to calculate the remainder with a divisor of by zero";
 
 /// `u128` の算術 (値はビットパターン)。
 fn arith_u128(op: Aop, mode: Mode, x: u128, y: u128) -> Result<u128, String> {
@@ -227,7 +231,7 @@ fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
     }
 }
 
-fn overflow_msg(op: Aop) -> String {
+pub(crate) fn overflow_msg(op: Aop) -> String {
     match op {
         Aop::Add => "attempt to add with overflow",
         Aop::Sub => "attempt to subtract with overflow",
@@ -330,24 +334,40 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
         return Err(format!("関数 {} の引数の個数が違う", key));
     }
     let counts: Vec<usize> = m.funcs.iter().map(|f| f.value_count()).collect();
+    // 関数ごとの値番号 → 型 (`store` が書く値の型を知るため)。
+    let vtys: Vec<Vec<Ty>> = m
+        .funcs
+        .iter()
+        .zip(&counts)
+        .map(|(f, n)| {
+            let mut t = vec![Ty::Unit; *n];
+            for b in &f.blocks {
+                for (v, ty) in &b.params {
+                    t[*v as usize] = *ty;
+                }
+                for i in &b.insts {
+                    t[i.dst as usize] = i.ty;
+                }
+            }
+            t
+        })
+        .collect();
     // 集成体の置き場: 集成体の値は、ここにバイト列として置き、値 (i128) はその添字で表す。値は不変。
     let mut heap: Vec<Vec<u8>> = vec![];
     if matches!(m.funcs[entry].ret, Ty::Agg(_)) || m.funcs[entry].params().iter().any(|(_, t)| matches!(t, Ty::Agg(_))) {
         return Err(format!("関数 {} は集成体を引数・戻り値に持つ (この入口では扱えない)", key));
     }
-    let enter = |f: usize, args: &[i128], dst: Option<VId>, hbase: usize, mem_base: usize| -> Frame {
+    let enter = |f: usize, args: &[i128], dst: Option<VId>, hbase: usize| -> Frame {
         let mut vals = vec![0i128; counts[f]];
         for ((v, _), a) in m.funcs[f].params().iter().zip(args.iter()) {
             vals[*v as usize] = *a;
         }
-        Frame { f, blk: 0, ip: 0, vals, dst, hbase, mem_base, allocs: vec![] }
+        Frame { f, blk: 0, ip: 0, vals, dst, hbase, allocs: vec![] }
     };
-    // 参照の指すセル。`alloca` が 1 セル確保し、その番号がアドレスになる。呼び出しの終わりに切り詰める。
-    let mut mem: Vec<i128> = vec![];
     // バイト記憶 (`ptr` の領域)。静的な領域 (`static.bytes`) は、命令の位置ごとに 1 回だけ確保する。
     let mut bm = ByteMem::new();
     let mut statics: HashMap<(usize, usize, usize), i128> = HashMap::new();
-    let mut stack = vec![enter(entry, args, None, 0, 0)];
+    let mut stack = vec![enter(entry, args, None, 0)];
     loop {
         let top = stack.len() - 1;
         let (fi, bi, ip) = (stack[top].f, stack[top].blk, stack[top].ip);
@@ -451,7 +471,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         return Err(format!("呼び先 {} がない", callee));
                     };
                     let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
-                    stack.push(enter(ci, &argv, Some(inst.dst), heap.len(), mem.len()));
+                    stack.push(enter(ci, &argv, Some(inst.dst), heap.len()));
                     continue;
                 }
                 Op::Make { variant, fields } => {
@@ -514,15 +534,37 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     }
                 }
                 Op::Alloca => {
-                    mem.push(0);
-                    (mem.len() - 1) as i128
+                    // スタックスロットはバイト記憶の領域 (関数が戻るときに解放する)。大きさは指す先の型の幅。
+                    let Ty::Ref(_, p) = inst.ty else {
+                        return Err("alloca の結果が参照でない".to_string());
+                    };
+                    let a = bm.alloc(size_of(&m.aggs, p.ty()) as usize, false);
+                    stack[top].allocs.push(a);
+                    a
                 }
-                Op::Load(p) => mem[get(&stack[top], p) as usize],
+                Op::Load(p) => {
+                    let a = get(&stack[top], p);
+                    match inst.ty {
+                        Ty::Agg(ai) => {
+                            let blob = bm.read_bytes(a, m.aggs[ai as usize].size as usize)?;
+                            heap.push(blob);
+                            (heap.len() - 1) as i128
+                        }
+                        t => bm.read(a, t)?,
+                    }
+                }
                 Op::Store { ptr, val } => {
                     let (a, v) = (get(&stack[top], ptr), get(&stack[top], val));
-                    mem[a as usize] = v;
+                    match vtys[fi][*val as usize] {
+                        Ty::Agg(_) => {
+                            let blob = heap[v as usize].clone();
+                            bm.write_bytes(a, &blob)?;
+                        }
+                        t => bm.write(a, t, v)?,
+                    }
                     0
                 }
+                Op::FieldAddr { a, off } => get(&stack[top], a) + *off as i128,
                 Op::AsShared(p) | Op::Reborrow(p) => get(&stack[top], p),
             };
             stack[top].vals[inst.dst as usize] = result;
@@ -555,7 +597,6 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 } else {
                     heap.truncate(done.hbase);
                 }
-                mem.truncate(done.mem_base);
                 match stack.last_mut() {
                     None => {
                         // 正常終了では、解放されていない領域があってはならない (所有の下ろしの誤り)。
@@ -653,6 +694,44 @@ mod tests {
     fn exec(text: &str, key: &str) -> Result<Outcome, String> {
         let m = crate::kir::parse_module(text).expect("parse");
         run(&m, key, &[])
+    }
+
+    #[test]
+    fn nested_field_addresses_read_and_write_in_the_byte_memory() {
+        // 集成体を alloca に置き、入れ子のフィールドのアドレス (`fieldaddr`) を通して書き換える。他のフィールドは変わらない。
+        let text = "kir 1
+
+agg#0 struct pt size=8 align=4 {x:i32@0 y:i32@4}
+agg#1 struct line size=20 align=4 {a:agg#0@0 b:agg#0@8 n:u32@16}
+
+fn t.nested key=t.nested uses=[] panics=never stack=- ret=i32
+  b0():
+    %0: mutref<agg#1> = alloca
+    %1: i32 = const.i32 1
+    %2: i32 = const.i32 2
+    %3: agg#0 = make(%1, %2)
+    %4: agg#0 = make(%2, %1)
+    %5: u32 = const.u32 9
+    %6: agg#1 = make(%3, %4, %5)
+    %7: unit = store %0, %6
+    %8: mutref<agg#0> = fieldaddr %0, +8
+    %9: mutref<i32> = fieldaddr %8, +4
+    %10: i32 = const.i32 40
+    %11: unit = store %9, %10
+    %12: agg#1 = load %0
+    %13: agg#0 = field %12, +8
+    %14: i32 = field %13, +4
+    %15: agg#0 = field %12, +0
+    %16: i32 = field %15, +0
+    %17: i32 = add.i32.wrap %14, %16
+    ret %17
+end t.nested
+";
+        assert_eq!(exec(text, "t.nested"), Ok(Outcome::Value(41)));
+        // 共有参照 ref<T> への store は検査が拒む。
+        let bad = text.replace("%9: mutref<i32> = fieldaddr %8, +4", "%9: ref<i32> = fieldaddr %8, +4");
+        let m = crate::kir::parse_module(&bad).expect("parse");
+        assert!(!crate::kir::verify_module(&m).is_empty());
     }
 
     #[test]

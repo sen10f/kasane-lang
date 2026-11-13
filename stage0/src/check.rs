@@ -343,6 +343,8 @@ pub struct Checker<'a> {
     /// `typeck()` の後処理で要素型を引いて E3002 を出す (4.1)。
     index_consumes: Vec<(String, u32, String, usize)>,
     final_env: HashMap<String, V>,
+    /// 現在の関数で、線形な値を `move` で取り込んだクロージャに束縛した名前 (4.4)。型が付かないので別に持つ。
+    lin_closures: HashSet<String>,
     graph: BTreeMap<String, BTreeSet<String>>,
     /// 呼び出しグラフのクロージャの節 (`関数名#番号`) → (パラメータの型注釈, 本体)。
     /// `stack` の見積り (E4012) でクロージャの節のフレームを計算するのに使う (5.3)。
@@ -411,6 +413,7 @@ impl<'a> Checker<'a> {
             moved: BTreeMap::new(),
             index_consumes: Vec::new(),
             final_env: HashMap::new(),
+            lin_closures: HashSet::new(),
             graph: BTreeMap::new(),
             closure_frames: BTreeMap::new(),
             import_tails: HashSet::new(),
@@ -2604,8 +2607,14 @@ impl<'a> Checker<'a> {
         let mut env: Env = d.params.iter().cloned().collect();
         self.graph.entry(d.name.clone()).or_default();
         self.moved.clear();
+        self.lin_closures.clear();
         let body = d.body.as_ref().unwrap();
         self.tc_block(body, &env, &BTreeSet::new());
+        // 値で受けた線形な引数は、本体で消費しなければならない (4.4)。参照 (`&T`) は対象外。
+        let (params, line) = (d.params.clone(), d.line);
+        for (pn, pt) in &params {
+            self.note_linear(pn, pt, line);
+        }
         self.check_extern_calls(di);
         // NLL の借用検査 (制御フローと、借用を持つ変数の生存に基づく)
         self.borrowck(di);
@@ -2679,6 +2688,12 @@ impl<'a> Checker<'a> {
                     self.mismatch(&f[2], &got, nline(s), "let binding");
                 }
                 let ty = if !is_nil(&f[2]) { f[2].clone() } else { got };
+                // 線形な値を `move` で取り込むクロージャ (4.4)。その束縛は線形なクロージャ。
+                let clo_caps = if nname(&f[0]) == "PBind" && nname(&f[3]) == "Closure" {
+                    self.linear_move_caps(&f[3], env)
+                } else {
+                    vec![]
+                };
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
                 for n in binds {
@@ -2692,15 +2707,25 @@ impl<'a> Checker<'a> {
                 }
                 if nname(&f[0]) == "PBind" {
                     let name = st(&nf(&f[0])[0]);
-                    if !self.note_linear_array(&name, &f[3], &ty, nline(s)) {
-                        self.note_linear(&name, &ty, nline(s));
+                    if !clo_caps.is_empty() {
+                        self.lin_closures.insert(name.clone());
+                        self.note_linear_closure(&name, &f[3], &clo_caps, nline(s));
+                    } else {
+                        self.lin_closures.remove(&name);
+                        if !self.note_linear_array(&name, &f[3], &ty, nline(s)) {
+                            self.note_linear(&name, &ty, nline(s));
+                        }
                     }
                 } else {
                     // タプル・構造体の分解で束縛した線形な値も消費を要する (4.4)。
                     let mut tb = vec![];
                     self.pat_typed_binds(&f[0], &ty, &mut tb);
                     for (n, t) in tb {
-                        self.note_linear(&n, &t, nline(s));
+                        if n == "_" {
+                            self.note_linear_wild(&t, nline(s));
+                        } else {
+                            self.note_linear(&n, &t, nline(s));
+                        }
                     }
                 }
             }
@@ -2878,6 +2903,12 @@ impl<'a> Checker<'a> {
             "Call" => {
                 let mut callee: Option<&Def> = None;
                 let fnn = &f[0];
+                // 4.4: `core.mem.drop(x)` は `x` が非線形のときだけ。線形な値は消費を要する (E3003)。
+                if nname(fnn) == "Path" && strs(&nf(fnn)[0]).join(".") == "core.mem.drop" {
+                    if let Some(a) = items(&f[1]).first() {
+                        self.check_drop_linear(a, env, nline(e));
+                    }
+                }
                 if nname(fnn) == "Path" {
                     let segs = strs(&nf(fnn)[0]);
                     if !env.contains_key(&segs[0]) {
@@ -3002,6 +3033,7 @@ impl<'a> Checker<'a> {
             }
             "Match" => {
                 self.tc_expr(&f[0], env, muts, false);
+                let scrut_ty = self.ty_of(&f[0], env);
                 let base = self.moved.clone();
                 for arm in items(&f[1]) {
                     self.moved = base.clone();
@@ -3010,6 +3042,16 @@ impl<'a> Checker<'a> {
                     pat_binds(&items(arm)[0], &mut b);
                     for n in b {
                         inner.insert(n, V::Nil);
+                    }
+                    // 腕のパターンで束縛した線形な値 (`Some(l)` の `l`) は、その腕の中で消費する (4.4)。
+                    let mut tb = vec![];
+                    self.pat_typed_binds(&items(arm)[0], &scrut_ty, &mut tb);
+                    for (n, t) in tb {
+                        if n == "_" {
+                            self.note_linear_wild(&t, nline(e));
+                        } else {
+                            self.note_linear_in_arm(&items(arm)[1], &n, &t, nline(e));
+                        }
                     }
                     self.tc_expr(&items(arm)[1], &inner, muts, false);
                 }
@@ -3127,20 +3169,7 @@ impl<'a> Checker<'a> {
     /// (フィールド・バリアントのペイロード・タプル要素・配列要素)。明確に線形のときだけ true
     /// (型パラメータ・標準ライブラリの型など分からないものは false = 黙る)。
     fn contains_linear(&self, t: &V) -> bool {
-        if is_nil(t) {
-            return false;
-        }
-        if self.is_linear(t) {
-            return true;
-        }
-        let user_types: HashSet<String> = self
-            .user
-            .iter()
-            .map(|&i| self.def(i))
-            .filter(|d| matches!(d.kw.as_str(), "type" | "enum"))
-            .map(|d| d.name.clone())
-            .collect();
-        self.linear_v(t, &self.names, &user_types, &mut HashSet::new()) == Some(true)
+        self.linear_of(t) == Some(true)
     }
 
     /// `let` のパターンの束縛と型の組 (タプル・構造体の分解、4.4)。型が分からない所は返さない。
@@ -3150,6 +3179,8 @@ impl<'a> Checker<'a> {
         }
         match nname(p) {
             "PBind" => out.push((st(&nf(p)[0]), ty.clone())),
+            // `_` は値を捨てる。線形な値なら消費の漏れ (4.4)。呼び出し側が名前 "_" で受ける。
+            "PWild" => out.push(("_".to_string(), ty.clone())),
             "PTuple" => {
                 if tag(ty) != "tuple" {
                     return;
@@ -3160,6 +3191,40 @@ impl<'a> Checker<'a> {
                     return;
                 }
                 for (x, t) in ps.iter().zip(ts) {
+                    self.pat_typed_binds(x, t, out);
+                }
+            }
+            "PVariant" => {
+                // `Option<T>` の `Some` / `Result<T, E>` の `Ok` / `Err`、および型引数のない
+                // ユーザーの enum のバリアントのペイロード (4.4: match の腕の束縛)。他は黙る。
+                if tag(ty) != "named" {
+                    return;
+                }
+                let segs = strs(&nf(p)[0]);
+                let vname = segs.last().map_or("", |s| s.as_str());
+                let tn = st(tel(ty, 1));
+                let args = items(tel(ty, 2));
+                let tys: Vec<V> = if let Some(&i) = self.p.types.get(&tn) {
+                    let d = self.def(i);
+                    if d.kw != "enum" || d.generics.iter().any(|g| g.0 == "type") {
+                        return;
+                    }
+                    match d.variants.iter().find(|v| v.0 == vname) {
+                        Some(v) => v.1.clone(),
+                        None => return,
+                    }
+                } else {
+                    match (tn.rsplit('.').next().unwrap_or(""), vname) {
+                        ("Option", "Some") | ("Result", "Ok") => args.first().cloned().into_iter().collect(),
+                        ("Result", "Err") => args.get(1).cloned().into_iter().collect(),
+                        _ => return,
+                    }
+                };
+                let subs = items(&nf(p)[1]);
+                if subs.len() != tys.len() {
+                    return;
+                }
+                for (x, t) in subs.iter().zip(tys.iter()) {
                     self.pat_typed_binds(x, t, out);
                 }
             }
@@ -3189,13 +3254,21 @@ impl<'a> Checker<'a> {
             return;
         }
         let body = self.def(self.d).body.as_ref().unwrap();
+        if !self.linear_consumed(body, name, ty) {
+            self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
+        }
+    }
+
+    /// 線形な値を `body` の中で消費しうるか (4.4)。`body` は束縛の有効範囲 (関数本体・
+    /// `match` の腕)。型が分からない使用は消費として数える (黙る)。
+    fn linear_consumed(&self, body: &V, name: &str, ty: &V) -> bool {
         let mut all = vec![];
         walk(body, &mut all);
-        let uses: Vec<Vec<String>> = all
-            .iter()
-            .filter(|x| nname(x) == "Path")
-            .map(|x| strs(&nf(x)[0]))
-            .filter(|segs| segs[0] == name)
+        // 線形な値のフィールドの読み `l.f` は、経路の末尾の型が線形なときだけ消費。
+        // フィールドの読みは消費ではない (非線形なフィールド・`&l.f` の貸し出し) ため。
+        let uses: Vec<Vec<String>> = Self::linear_uses(&all, name, None, true)
+            .into_iter()
+            .filter(|segs| segs.len() == 1 || self.field_path_may_consume(ty, segs))
             .collect();
         // 宣言が linear な型・構造体以外 (タプル・enum) は従来どおり、名前の使用があれば消費とみなす。
         // linear と宣言されていない構造体が線形なフィールドを含む場合は (4.4)、全体の使用
@@ -3210,7 +3283,7 @@ impl<'a> Checker<'a> {
                 .filter(|d| d.kw == "type")
                 .map(|d| d.fields.iter().map(|f| f.0.clone()).collect())
         };
-        let consumed = match struct_fields {
+        match struct_fields {
             None => !uses.is_empty(),
             Some(fields) => {
                 let whole = uses.iter().any(|segs| segs.len() == 1 || !fields.contains(&segs[1]));
@@ -3220,9 +3293,144 @@ impl<'a> Checker<'a> {
                         !lin || uses.iter().any(|segs| segs[1] == *fname)
                     })
             }
-        };
-        if !consumed {
+        }
+    }
+
+    /// `segs` (`l.f.g` の経路) の使用が、線形な値 `ty` の消費になりうるか。経路の末尾の型が
+    /// 線形か分からないとき (メソッド呼び出し `l.m` を含む) は true。
+    fn field_path_may_consume(&self, ty: &V, segs: &[String]) -> bool {
+        let mut cur = ty.clone();
+        for s in &segs[1..] {
+            match self.field_ty(&cur, s) {
+                Some(ft) => cur = ft,
+                None => return true,
+            }
+        }
+        self.linear_of(&cur) != Some(false)
+    }
+
+    /// 値の型の線形性: `Some(true)` 線形、`Some(false)` 非線形、`None` 分からない。
+    fn linear_of(&self, t: &V) -> Option<bool> {
+        if is_nil(t) {
+            return None;
+        }
+        if self.is_linear(t) {
+            return Some(true);
+        }
+        let user_types: HashSet<String> = self
+            .user
+            .iter()
+            .map(|&i| self.def(i))
+            .filter(|d| matches!(d.kw.as_str(), "type" | "enum"))
+            .map(|d| d.name.clone())
+            .collect();
+        self.linear_v(t, &self.names, &user_types, &mut HashSet::new())
+    }
+
+    /// match の腕のパターンで束縛した線形な値 `name` (型 `ty`) が、その腕の本体 `body` で
+    /// 消費されるか (4.4)。消費されなければ E3003。
+    /// パターンの `_` が線形な値を捨てる (4.4)。消費されないので E3003。型が分からなければ黙る。
+    fn note_linear_wild(&mut self, ty: &V, line: usize) {
+        if self.contains_linear(ty) {
+            self.tdiag("E3003", "a linear value is discarded by the `_` pattern; bind it and consume it (4.4)".to_string(), line);
+        }
+    }
+
+    fn note_linear_in_arm(&mut self, body: &V, name: &str, ty: &V, line: usize) {
+        if !self.contains_linear(ty) || self.linear_consumed(body, name, ty) {
+            return;
+        }
+        self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
+    }
+
+    /// 線形な名前 `name` の、本体の中での消費になりうる使用の経路 (4.4)。`&x` / `&mut x` で直接
+    /// 貸すだけの使用は消費ではない。`move` のキャプチャ (内側のクロージャも含む) は消費。
+    /// `fn_once` が `Some(false)` (`Fn` / `FnMut` のクロージャ) のとき、`f()` の呼び出しは消費にしない。
+    /// `field_reads` が false のとき、フィールドの読み (`x.f` で呼ばれていない) は消費にしない。
+    fn linear_uses(all: &[&V], name: &str, fn_once: Option<bool>, field_reads: bool) -> Vec<Vec<String>> {
+        let borrowed: HashSet<*const V> = all
+            .iter()
+            .filter(|x| nname(x) == "Unary" && matches!(st(&nf(x)[0]).as_str(), "&" | "&mut"))
+            .map(|x| &nf(x)[1] as *const V)
+            .collect();
+        let callees: HashSet<*const V> = all
+            .iter()
+            .filter(|x| nname(x) == "Call")
+            .map(|x| &nf(x)[0] as *const V)
+            .collect();
+        let mut out = vec![];
+        for x in all {
+            let p = *x as *const V;
+            match nname(x) {
+                "Path" => {
+                    let segs = strs(&nf(x)[0]);
+                    if segs[0] != name || borrowed.contains(&p) {
+                        continue;
+                    }
+                    let callee = callees.contains(&p);
+                    if fn_once == Some(false) && callee && segs.len() == 1 {
+                        continue;
+                    }
+                    if !field_reads && !callee && segs.len() > 1 {
+                        continue;
+                    }
+                    out.push(segs);
+                }
+                "Closure" => {
+                    for c in items(&nf(x)[2]) {
+                        let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { continue };
+                        if k.as_str() == "move" && n == name {
+                            out.push(vec![name.to_string()]);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// クロージャ式の `move` キャプチャのうち、取り込んだ値が線形なもの (4.4)。
+    fn linear_move_caps(&self, clo: &V, env: &Env) -> Vec<String> {
+        items(&nf(clo)[2])
+            .iter()
+            .filter_map(|c| {
+                let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { return None };
+                let lin = env.get(n).map_or(false, |t| self.contains_linear(t));
+                (k.as_str() == "move" && lin).then(|| n.clone())
+            })
+            .collect()
+    }
+
+    /// 線形な値を `move` で取り込んだクロージャを `name` に束縛した (4.4)。`name` は線形な値。
+    /// 呼び出し `name()` は、本体が線形な取り込みを消費する (FnOnce) ときだけ消費とみなす。
+    /// `core.mem.drop(name)` は tc_expr の検査で E3003。消費されなければ E3003。
+    fn note_linear_closure(&mut self, name: &str, clo: &V, caps: &[String], line: usize) {
+        let mut inner = vec![];
+        walk(&nf(clo)[3], &mut inner);
+        let fn_once = caps.iter().any(|c| !Self::linear_uses(&inner, c, None, false).is_empty());
+        let body = self.def(self.d).body.as_ref().unwrap();
+        let mut all = vec![];
+        walk(body, &mut all);
+        if Self::linear_uses(&all, name, Some(fn_once), true).is_empty() {
             self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
+        }
+    }
+
+    /// `core.mem.drop(a)` の引数 `a` が線形な値なら E3003 (4.4: `drop` は非線形のときだけ)。
+    /// 型が分からないもの (型パラメータ・未知の型) は黙る。
+    fn check_drop_linear(&mut self, a: &V, env: &Env, line: usize) {
+        let (linear, what) = match nname(a) {
+            "Closure" => (!self.linear_move_caps(a, env).is_empty(), "a closure capturing a linear value".to_string()),
+            "Path" if strs(&nf(a)[0]).len() == 1 && env.contains_key(&strs(&nf(a)[0])[0]) => {
+                let n = strs(&nf(a)[0])[0].clone();
+                let lin = self.lin_closures.contains(&n) || self.contains_linear(&env[&n]);
+                (lin, format!("linear value `{}`", n))
+            }
+            _ => (self.contains_linear(&self.ty_of(a, env)), "linear value".to_string()),
+        };
+        if linear {
+            self.tdiag("E3003", format!("{} cannot be passed to core.mem.drop; consume it (4.4)", what), line);
         }
     }
 

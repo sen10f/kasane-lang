@@ -1,3 +1,4 @@
+// expect: E1108
 type t.P derive [Debug, Clone] pub
     x: i32
 end t.P

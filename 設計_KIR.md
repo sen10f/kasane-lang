@@ -310,6 +310,12 @@ end demo.fib
 - 方針: Cranelift を KIR 入力に置き換えるのではなく、KIR から LLVM IR のテキストを生成する `stage0/src/kir_llvm.rs` を作り、外部の `clang` でコンパイル・リンクする (第 7 章 22)。LLVM はネイティブ生成にのみ必須 (`check` / `run` / `test` は LLVM なしで動く)。
 - 2 本で進める: (A) KIR の対応範囲を examples・perf・tests の全体へ広げる (2026-11-13 の計測で、最初に止まる理由は `Result` の戻り値 19 件、利用者の構造体への参照の引数 12 件、スライス / `&str` の引数 5 件など)。(B) KIR の全命令を LLVM IR に写し、`ksn kir --run` (参照実行器) と機械語の結果が一致することを確かめる。旧 `clif.rs` は、LLVM の経路が下の Cranelift のテスト一式を通すまで比較の基準として残し、その後に削除する。以下の旧計画の「Cranelift のテスト一式」は LLVM 版の受け入れ基準として読む。
 
+- (B) の実装 (2026-11-13): `stage0/src/kir_llvm.rs`。`ksn kir <FQN> --llvm` が `.ll` を出し、`ksn kir <FQN> --native <引数>...` が clang (`KSN_CLANG` で変更可) で `target/kir-native/` に実行ファイルを作って走らせる (表示は `--run` と同じ `show_value`、panic は stderr に `panic: <文言>` で終了コード 101、呼び出し深さが 2500 を超えると 102)。clang が無ければ理由つきで終了コード 2。受け入れ: `stage0/tests/cli.rs` の `kir_*_match_tree_walker` 系の `--run` の全件を、`--native` でも走らせて表示・終了コード・panic の文言の一致を確かめる (`kir_run`。clang が PATH に無い環境では飛ばす)。
+  - 型の写像は `lty` / `mem_ty` の 1 か所。集成体は `iN` (N = size × 8)、`Option` / `Result` は `{ i1, i64 }`。ペイロードの詰め方は `pay_to_i64` / `i64_to_pay` だけにある。
+  - 超越関数は `fmath::Ops` を LLVM IR の命令列に写した内部関数 (`@ksn.m.*`)。libm は使わない (`floor` / `sqrt` / `frem` は LLVM の組み込み)。
+  - 未対応にしたもの (理由つきで `Err`): (1) 入口の引数・戻り値が集成体・参照・`ptr` の関数 (`--run` も同じ)。(2) 集成体の `Option` / `Result` のペイロード (KIR 側の型が広がったら `pay_to_i64` を拡げる)。命令と型は、これ以外は全て対応。
+  - 既知の差: NaN の符号ビット (`0.0 / 0.0` 以外で生じる NaN は実機の演算の結果。`f64` の `0 / 0` と `NaN / 0` だけは木走査と同じ正規の NaN に揃えている)。解放されていない領域の検出 (参照実行器の内部エラー) はしない。
+
 旧計画 (参考):
 
 - 変更ファイル:
@@ -754,6 +760,22 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 | `for` の対象が `core.iter.range` と要素型の分かる Vec 以外 (イテレータ、配列リテラル) | Iterator / 配列の型が段階 1 の外 | Iterator の段階 |
 | 要素型が決まらない Vec | 型表の `_` (`push` が入るまで、型推論は要素型を決めない) | Option / Result の段階と型推論の完全化 (7 章 4) |
 
+### 10.10 集成体への参照・スライス・`&str` (kir/agg-refs)
+
+ブランチ `kir/agg-refs`。10.8 の参照を、集成体・スライス・`&str` へ広げた。判断は次のとおり。
+
+- **参照の値はバイト記憶のアドレス**。10.8 の「セルの番号」をやめ、`alloca` を `frame.bytes` と同じバイト記憶の領域 (関数が戻るときに解放) にした。指す先 (`Pointee`) は整数・浮動小数・bool・集成体 (`Pointee::Agg(k)`)。型は `ref<agg#k>` / `mutref<agg#k>`。理由: フィールドのアドレス (`&mut r.f`) を、スカラーでも集成体でも同じ表現で取るため。LLVM では `ptr` で、`load` / `store` はそのまま `iN` の読み書きになる。
+- 命令: `fieldaddr %r, +off` (`ref<S>` から構造体のフィールドへの参照。可変性は引き継ぐ)。`load` / `store` は集成体の値 (配置どおりのバイト列) も読み書きする。`&x.f.g` は `fieldaddr` の連鎖、`r.f` の読みは `fieldaddr` + `load`、`r.f.g = v` は `fieldaddr` の連鎖 + `store`。タプルと列挙型のフィールドへの参照は取らない。
+- **`&str` とスライス `&[T]` は値 `{ptr, len}`**。型表の構造体 `fat` (`ptr: ptr@0`, `len: usize@8`、16 バイト) の値で、引数・戻り値・局所変数・ブロック引数にそのまま使える (戻り値がフレームのヘッダを指して壊れることがない)。`len` は `field +8`、添字は `index.check` + `ptr.add` + `mem.load`。`str` から `as_bytes` は同じ値。型は `str` と `[T]` で区別しない (要素型は下ろしが型表から持つ)。10.9 の `&str` (フレームのヘッダのアドレス) を置き換えた。
+- **Vec / String の借用 (`&v`, `&mut v`) は 10.9 のヘッダのアドレス (`ptr`) をそのまま渡す**。所有は呼び出し元にあるので、借用側は解放も移動もしない (`CollCx::borrowed`)。`v.len()` / `v.is_empty()` / `v[i]` / `for x in v` が使える。型は `ptr` (要素型は区別しない)。
+- 構造体のフィールドが `Vec<T, A>` / `String` のとき、24 バイトのヘッダ (構造体 `vec`、`{ptr, len, cap}`) を埋め込む。参照を通した `r.f.len()` / `is_empty()` は `fieldaddr` + `load` で読める。この種の構造体の値渡し・戻り値・組み立ては所有の移動なので未対応 (`AggTab::owns_vec`)。
+- `get`: スカラー要素のスライス・Vec の `get(i)` は `Option<要素>` を返す (境界の内なら `some`、外なら `none`。panic しない)。木走査の `Option<&T>` はスカラーでは読み取りだけなので、値で持つ (`conv` が `Option<&スカラー>` を `Option<スカラー>` へ写し、`Some(c)` の束縛の型表は `&T` のまま局所のスロットの型を使う)。バイトリテラル `b'x'` は `u8` の定数。
+- 未対応のまま: `sub` (`Option<&[T]>`。`Option` のペイロードが集成体を持てないため。`Pay` の拡張を待つ)、`Vec` の `push` / `get` (Vec 側。`Result` / `Option` 待ち)、構造体の `Vec` フィールドの添字・`push`、列挙型への参照の `match`、`&&T`、参照どうしの比較、`str` の比較。
+- 検査 (`verify_module`): `fieldaddr` は参照の対象が構造体・タプルで、結果の指す先がそのオフセットのフィールドの型と一致し、可変性が同じ。`store` は `mutref` だけ (共有参照への store は拒否)。
+- 実行器: `alloca` はバイト記憶の領域。集成体の `load` は置き場へ複製、`store` は置き場の中身を書く。
+- 木走査との一致: `stage0/tests/cli.rs` の `kir_agg_refs_*` (値の一致 32 ケース、境界の panic、テキスト、Vec フィールド、未対応の理由)。`--run` と `--native` (LLVM) の両方で比べる。`kir_exec::tests::nested_field_addresses_read_and_write_in_the_byte_memory` は入れ子の `fieldaddr` を手書きの KIR で確かめる。
+- examples/json: `json.is_hex` が下ろせる (`json.digits` と `json.skip_ws` も下ろせるが、スライスの引数を受ける入口がないので `kir_agg_refs_*` で同じ形の関数を比べる)。残りは `Result<_, json.Error>` (名前付きの E) と `alloc.alloc.AllocError` で止まる。
+
 ## 11. 組み込みの Option / Result と checked_* (kir/option-result)
 
 ブランチ `kir/option-result` (`claude/handover-work-i7ll7p` から分岐)。第 10 章 10.6 の (2) の実装。名前付きの型 (構造体・ユーザ enum) は別の作業なので、ここでは組み込みの `Option<P>` と `Result<T, E>` だけを扱う (P、T、E は段階 1 のスカラー)。
@@ -804,6 +826,27 @@ spec/stdlib の 55 式 (8.2 で 100% 確定) は今回は再計測していな�
 - 下ろしの結果: examples 7 本で降格できた関数は、単独では 3 件から 5 件に増えた (`features.chain`、`features.checked`)。kir/scalars と統合した後は 10 件 (`tour.ints` が加わる)、未対応は 30 件。`ksn check` の出力と終了コードは変わらない (統合前の kir/scalars とバイト一致)。
 - 残りの未対応 (第 10 章 10.5 の表に対応): 参照 (`&json.Doc` など) 17、名前付きの E を持つ `Result` 7、名前付きの型 4、その他 2。
 - 未対応のまま: `Option` の中の集成体・`Option<Option<_>>`、`Result` の E の変換を伴う `?`、`checked_neg` / `checked_shl` / `checked_shr`、`Option` / `Result` の同値比較・`Option` の定数 (`none` 以外)。
+
+## 12. 入出力と入口 (段階 4 の次の作業、2026-11-13 の設計)
+
+examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返し、`std.io.print_line` を使う。2026-11-13 の計測では、KIR に下ろせない最後の壁はこれだった。KIR に次の 3 つを足せば、`main` から始まるプログラム全体を `ksn build --backend llvm` で作れる。
+
+### 12.1 標準ライブラリの型
+- `std.io.Error` は `{ kind: std.io.ErrorKind, code: i32 }` の Copy 構造体、`std.io.ErrorKind` は単位バリアントだけの enum (`spec/stdlib/std/io.sig`)。特別な表現は作らず、利用者の型と同じ集成体として KIR の型表 (`Module::aggs`) に入れる。他の標準ライブラリの型も、Kasane の定義があるものは同じ扱いにする (clif の `add_fmt_std` と同じ考え方)。
+
+### 12.2 書き出しの命令
+- 新しい命令 `write fd, data -> res<unit, agg#io.Error>`。`data` は `fat` (`{ptr, len}`)、`fd` は 1 (stdout) か 2 (stderr)。
+- `std.io.print_line(s)` は、`write 1, s` の後に `write 1, "\n"` を出す形に下ろす。どちらかが失敗したら、その `Err` を返す。
+- 参照実行器 (`kir_exec`) は、プロセスの stdout / stderr に書く。LLVM は `write(2)` を呼び、短い書き込みは繰り返す。失敗は errno を `code` に、`kind` は `BrokenPipe` (EPIPE) か `Interrupted` (EINTR、再試行する) か `Other` にする (木走査の対応表に合わせる)。
+
+### 12.3 入口と、`main` の `Err` の表示
+- 入口は、利用者の `entry` 関数を呼ぶ C の `main`。戻り値が `()` なら終了コード 0。`Result<(), E>` で `Err(e)` なら、stderr に `Error: ` と `e` の Debug 表示と改行を出し、終了コード 1 (木走査と同じ。`ksn run` で確かめた: `Error: Error { kind: Other, code: 5 }`)。panic は 101、stack 超過は 102 (今の `--native` と同じ)。
+- Debug 表示は、`derive [Debug]` を持つ型ごとに、KIR の関数 `<型>.$debug(v, fd)` を降格の時点で生成する。構造体は `名前 { f: v, g: w }`、enum はバリアント名 (ペイロードがあれば `名前(v, w)`)。整数は 10 進、bool は `true` / `false`、char は `'x'`、`&str` は `"…"` で、木走査の `debug_str` と同じにする。整数の 10 進化は KIR の命令列 (除算と剰余のループ) で書き、新しい命令は増やさない。
+- 型名の表示は、木走査に合わせて末尾の成分だけにする (`std.io.Error` → `Error`)。
+
+### 12.4 受け入れ基準
+- examples と perf の全パッケージで、`ksn build --backend llvm` の実行ファイルの stdout・stderr・終了コードが `ksn run` と一致する (下ろせない関数があるパッケージは、理由付きで退避する)。
+- `ksn test --both` の比較相手を、KIR に下ろせるテストでは LLVM にする (下ろせなければ、今の Cranelift、その次にバンドルへ退避する)。
 
 ## 付録: 参照した箇所 (主要)
 

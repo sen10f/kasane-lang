@@ -67,6 +67,11 @@ fn conv(t: &Src) -> Option<Ty> {
         Src::Prim(s) => Ty::parse(s).filter(|t| *t != Ty::Unit),
         Src::Unit => Some(Ty::Unit),
         Src::Ref(m, x) => refs::conv_ref(*m, x),
+        // `Option<&スカラー>` (`get` の結果) は値のペイロードで持つ (設計_KIR.md 10.10)。
+        Src::Named(n, a) if n == "Option" && a.len() == 1 && matches!(&a[0], Src::Ref(false, i) if matches!(&**i, Src::Prim(_))) => {
+            let Src::Ref(_, i) = &a[0] else { return None };
+            conv(i).and_then(kir::Pay::of).map(Ty::Opt)
+        }
         _ => enum_lower::conv_builtin(t),
     }
 }
@@ -266,6 +271,11 @@ impl<'a> Lw<'a> {
         None
     }
 
+    /// `&str` とスライスの値の型 (`{ptr, len}`)。型表に登録する。
+    fn fat_ty(&self) -> Ty {
+        self.aggs.borrow_mut().fat()
+    }
+
     fn vals_of(&self, slots: &[usize]) -> Vec<VId> {
         slots.iter().map(|s| self.slots[*s].0).collect()
     }
@@ -308,8 +318,16 @@ impl<'a> Lw<'a> {
                 None => r?,
             },
         };
-        if let Some(x) = coll::value_ty(&t) {
+        if let Some(x) = coll::value_ty(self, &t) {
             return Ok(x);
+        }
+        // `Some(c)` で束縛した変数の型表は `&スカラー` のまま。値で持つ局所変数は、スロットの型 (スカラー) を使う。
+        if let Src::Ref(false, inner) = &t {
+            if let (Some(x), Some(want)) = (coll::local_slot_ty(self, e), conv(inner)) {
+                if x == want {
+                    return Ok(x);
+                }
+            }
         }
         match self.conv_t(&t) {
             Some(x) => Ok(x),
@@ -325,7 +343,7 @@ impl<'a> Lw<'a> {
         let body = d.body.as_ref().expect("候補は本体を持つ");
         let mut params = vec![];
         for (_, t) in &d.params {
-            match self.conv_t(&from_v(t, &gn)) {
+            match coll::sig_ty(&self, &from_v(t, &gn)) {
                 Some(x) => params.push(x),
                 None => return Err(format!("引数の型 {} は段階 1 の対象外", show(&from_v(t, &gn)))),
             }
@@ -333,7 +351,7 @@ impl<'a> Lw<'a> {
         let ret = if is_nil(&d.ret) {
             Ty::Unit
         } else {
-            match self.conv_t(&from_v(&d.ret, &gn)) {
+            match coll::sig_ty(&self, &from_v(&d.ret, &gn)) {
                 Some(x) => x,
                 None => return Err(format!("戻り値の型 {} は段階 1 の対象外", show(&from_v(&d.ret, &gn)))),
             }
@@ -344,8 +362,9 @@ impl<'a> Lw<'a> {
         self.cur = Some(0);
         self.rf.begin(body);
         self.scopes.push(vec![]);
-        for ((name, _), (v, t)) in d.params.iter().zip(pv.iter().zip(params.iter())) {
+        for ((name, pt), (v, t)) in d.params.iter().zip(pv.iter().zip(params.iter())) {
             self.bind_let(name, *v, *t);
+            coll::bind_param_kind(&mut self, name, &from_v(pt, &gn));
         }
         if let Some(v) = self.expr(body)? {
             if self.vty(v) != ret {
@@ -426,6 +445,10 @@ impl<'a> Lw<'a> {
             }
             "unit" => Ok(self.unit()),
             "float" => self.float_lit(e),
+            "byte" => {
+                let v = parse_int(&f[1]).ok_or_else(|| format!("行 {}: バイトリテラルが扱えない", line))?;
+                Ok(self.emit(Ty::U8, Op::Const(v)))
+            }
             "str" => coll::str_lit(self, e),
             other => self.err(line, format!("リテラル {} は段階 1 の対象外", other)),
         }
@@ -625,6 +648,14 @@ impl<'a> Lw<'a> {
         }
         let segs = strs(&nf(callee)[0]);
         let args = items(&f[1]);
+        // `x.f.v.len()`: 構造体のフィールドの Vec / String の長さ (x は参照またはスタックスロットの構造体)
+        if segs.len() >= 3 && matches!(segs[segs.len() - 1].as_str(), "len" | "is_empty") && args.is_empty() {
+            if let Some(s) = self.lookup(&segs[0]) {
+                if let Some(v) = self.vec_field_len(s, &segs, line)? {
+                    return Ok(Some(v));
+                }
+            }
+        }
         // `x.m(..)` / `x.f.m(..)`: 局所変数 x (またはそのフィールド) の整数メソッド (wrapping_* だけ)
         if segs.len() >= 2 {
             if let Some(s) = self.lookup(&segs[0]) {
@@ -663,7 +694,7 @@ impl<'a> Lw<'a> {
         let gn = HashSet::new();
         let mut pts = vec![];
         for (_, t) in &cd.params {
-            match self.conv_t(&from_v(t, &gn)) {
+            match coll::sig_ty(self, &from_v(t, &gn)) {
                 Some(x) => pts.push(x),
                 None => return self.err(line, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name)),
             }
@@ -671,7 +702,7 @@ impl<'a> Lw<'a> {
         let rt = if is_nil(&cd.ret) {
             Ty::Unit
         } else {
-            match self.conv_t(&from_v(&cd.ret, &gn)) {
+            match coll::sig_ty(self, &from_v(&cd.ret, &gn)) {
                 Some(x) => x,
                 None => return self.err(line, format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name)),
             }
@@ -830,7 +861,7 @@ impl<'a> Lw<'a> {
         // 結果の型。両枝とも発散するなら `!` で、結果の値は持たない。unit の値は合流の引数に載せない。
         let res: Option<Ty> = match self.src_ty(e)? {
             Src::Never => None,
-            t => Some(coll::value_ty(&t).or_else(|| self.conv_t(&t)).ok_or_else(|| format!("行 {}: if の型 {} は段階 1 の対象外", line, show(&t)))?),
+            t => Some(coll::value_ty(self, &t).or_else(|| self.conv_t(&t)).ok_or_else(|| format!("行 {}: if の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
         let carry = matches!(res, Some(t) if t != Ty::Unit);
         let slots = self.assigned(&[&f[1], &f[2]]);

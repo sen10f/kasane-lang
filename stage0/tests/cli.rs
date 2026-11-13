@@ -41,6 +41,36 @@ impl Drop for Tmp {
     }
 }
 
+/// clang が使えるか (使えなければ、`--native` の比較は飛ばして理由を一度だけ出す)。
+fn clang_available() -> bool {
+    use std::sync::OnceLock;
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        let ok = Command::new("clang").arg("--version").output().map(|o| o.status.success()).unwrap_or(false);
+        if !ok {
+            eprintln!("skip: clang が PATH に無いので、`ksn kir --native` との比較は飛ばす");
+        }
+        ok
+    })
+}
+
+/// `ksn kir <FQN> --run ...` を走らせ、clang があれば同じ引数の `--native` (LLVM IR を clang で実行ファイルにする) も走らせて、
+/// 終了コード・標準出力 (表示)・panic の文言 (標準エラー) が参照実行器と一致することを確かめる。`--run` の結果を返す。
+fn kir_run(args: &[&str], cwd: &Path) -> Output {
+    let r = run(args, cwd);
+    if !clang_available() {
+        return r;
+    }
+    let native_args: Vec<&str> = args.iter().map(|a| if *a == "--run" { "--native" } else { *a }).collect();
+    let n = run(&native_args, cwd);
+    assert_eq!(n.status.code(), r.status.code(), "native: 終了コードが違う {:?}\n{}", args, text(&n.stderr));
+    assert_eq!(text(&n.stdout), text(&r.stdout), "native: 表示が違う {:?}", args);
+    if matches!(r.status.code(), Some(101) | Some(102)) {
+        assert_eq!(text(&n.stderr), text(&r.stderr), "native: panic の文言が違う {:?}", args);
+    }
+    r
+}
+
 fn codes(json: &str) -> Vec<String> {
     // 1診断1行の JSON から "code" を取り出す (簡易)。
     json.lines()
@@ -72,8 +102,8 @@ fn diagnostics_each_case_reports_its_code() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// 検査を通ってはいけないケース (tests/data/unsound/、1 ファイル 1 ケース)。`to_string` は仕様に無く、
-/// 浮動小数は `Ord` を持たない (4.3) ので、どれも E1108 で拒まれ、`check` は rc=1 になる。
+/// 検査を通ってはいけないケース (tests/data/unsound/、1 ファイル 1 ケース)。1 行目の
+/// `// expect: Exxxx` に期待する診断コードを書く。`check` は rc=1 で、そのコードを含まなければならない。
 #[test]
 fn unsound_cases_are_rejected() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound");
@@ -83,11 +113,17 @@ fn unsound_cases_are_rejected() {
     let mut failures = Vec::new();
     for p in names {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-        let t = Tmp::new(&stem, &fs::read_to_string(&p).unwrap());
+        let src = fs::read_to_string(&p).unwrap();
+        let Some(want) = src.lines().next().and_then(|l| l.strip_prefix("// expect: ")) else {
+            failures.push(format!("{}: line 1 must be `// expect: Exxxx`", stem));
+            continue;
+        };
+        let want = want.trim().to_string();
+        let t = Tmp::new(&stem, &src);
         let o = run(&["check", "--json"], &t.0);
         let got = codes(&text(&o.stdout));
-        if o.status.code() != Some(1) || !got.iter().any(|c| c == "E1108") {
-            failures.push(format!("{}: rc={:?} codes={:?}", stem, o.status.code(), got));
+        if o.status.code() != Some(1) || !got.iter().any(|c| *c == want) {
+            failures.push(format!("{}: want {} rc={:?} codes={:?}", stem, want, o.status.code(), got));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -9620,7 +9656,7 @@ fn kir_lower_values_match_tree_walker() {
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
     }
@@ -9646,17 +9682,17 @@ fn kir_lower_panics_and_depth_match_tree_walker() {
         assert!(text(&o.stderr).contains(&format!("panic: {}", msg)), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(101), "kir: {}", call);
         assert_eq!(text(&k.stderr).trim(), format!("panic: {}", msg), "kir: {}", call);
     }
     // 深さの超過: 木走査と同じく 102 と "stack overflow"
     let t = kir_pkg("kir_depth", "    let _x = t.down(5000u64)\n");
     assert_eq!(run(&["run"], &t.0).status.code(), Some(102));
-    let k = run(&["kir", "t.down", "--run", "5000"], &t.0);
+    let k = kir_run(&["kir", "t.down", "--run", "5000"], &t.0);
     assert_eq!(k.status.code(), Some(102));
     assert!(text(&k.stderr).contains("stack overflow"), "{}", text(&k.stderr));
-    let ok = run(&["kir", "t.down", "--run", "2000"], &t.0);
+    let ok = kir_run(&["kir", "t.down", "--run", "2000"], &t.0);
     assert_eq!(text(&ok.stdout).trim(), "2000");
 }
 
@@ -9677,8 +9713,8 @@ fn kir_lower_prints_a_module_that_reads_back() {
 
 #[test]
 fn kir_lower_reports_unsupported_constructs_with_a_reason() {
-    // 段階 1 の対象外 (`&str` の引数) は、理由を付けて拒否する。対象の関数は出さない。
-    let src = "fn t.len_of(_s: &str) -> usize uses [] panics never
+    // 段階 1 の対象外 (標準の型 `std.io.Error` への参照の引数) は、理由を付けて拒否する。対象の関数は出さない。
+    let src = "fn t.len_of(_s: &std.io.Error) -> usize uses [] panics never
     5usize
 end t.len_of
 
@@ -9722,6 +9758,9 @@ fn kir_lower_examples_and_perf_functions_match_tree_walker() {
         ("examples/native", "native.half", &["9"], "4"),
         ("examples/native", "native.half", &["0"], "0"),
         ("examples/realtime", "realtime.triangle", &["10"], "55"),
+        ("examples/json", "json.is_hex", &["97"], "true"),
+        ("examples/json", "json.is_hex", &["71"], "false"),
+        ("examples/json", "json.is_hex", &["57"], "true"),
         ("perf/fib", "fib.fib", &["27"], "196418"),
         ("perf/loops", "loops.sum_to", &["1000000"], "499999500000"),
         ("perf/loops", "loops.sum_to", &["1000"], "499500"),
@@ -9732,7 +9771,7 @@ fn kir_lower_examples_and_perf_functions_match_tree_walker() {
         assert_eq!(run(&["run"], &d).status.code(), Some(0), "{} run (tree-walker)", dir);
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &d);
+        let k = kir_run(&kargs, &d);
         assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
     }
@@ -9888,7 +9927,7 @@ fn kir_optres_values_match_tree_walker() {
     for (f, args, want) in cases {
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
     }
@@ -9946,7 +9985,7 @@ fn kir_optres_examples_features_match_tree_walker() {
     for (f, args, want) in cases {
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &d);
+        let k = kir_run(&kargs, &d);
         assert_eq!(k.status.code(), Some(0), "kir {} {:?}\n{}", f, args, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
     }
@@ -10470,7 +10509,7 @@ fn kir_agg_values_match_tree_walker() {
     for (f, args, want) in cases {
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {} {:?}\n{}", f, args, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {} {:?}", f, args);
     }
@@ -10630,7 +10669,7 @@ fn kir_scalar_ints_match_tree_walker() {
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut ka = vec!["kir", *f, "--run"];
         ka.extend(kargs.iter().copied());
-        let k = run(&ka, &t.0);
+        let k = kir_run(&ka, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", call);
     }
@@ -10831,7 +10870,7 @@ fn kir_refs_values_match_tree_walker() {
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).lines().last().unwrap_or("").trim(), *want, "kir value of {}", call);
     }
@@ -10862,7 +10901,7 @@ fn kir_scalar_floats_and_wide_ints_match_tree_walker() {
         let t = scalar_pkg(&format!("kir_scalar_float_{}", i), &format!("    core.check.eq({}, {})\n", call, want));
         let o = run(&["run"], &t.0);
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
-        let k = run(&["kir", *f, "--run"], &t.0);
+        let k = kir_run(&["kir", *f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", f);
     }
@@ -10947,7 +10986,7 @@ fn float_specials_follow_ieee_on_both_backends() {
         let t = Tmp::new(&format!("float_special_{}", i), &format!("{}{}", FLOAT_SPECIAL_FNS, main_wrap("", &body)));
         let o = run(&["run"], &t.0);
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", f, text(&o.stderr));
-        let k = run(&["kir", *f, "--run"], &t.0);
+        let k = kir_run(&["kir", *f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *kwant, "kir value of {}", f);
     }
@@ -11017,7 +11056,7 @@ end t.main
 fn kir_agg_entry_with_an_aggregate_value_is_refused() {
     // 入口 (`--run`) は整数と bool の引数・戻り値だけ。集成体の関数は表示だけできる。
     let t = Tmp::new("kir_agg_entry", KIR_AGG_SRC);
-    let o = run(&["kir", "t.mk_box", "--run", "1", "2", "true"], &t.0);
+    let o = kir_run(&["kir", "t.mk_box", "--run", "1", "2", "true"], &t.0);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("集成体を引数・戻り値に持つ"), "{}", text(&o.stderr));
 }
@@ -11235,7 +11274,7 @@ fn kir_scalar_probes_match_tree_walker() {
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(0), "tree-walker:\n{}", text(&o.stderr));
     for (f, _, want) in cases {
-        let k = run(&["kir", *f, "--run"], &t.0);
+        let k = kir_run(&["kir", *f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", f);
     }
@@ -11248,7 +11287,7 @@ fn kir_refs_panics_match_tree_walker() {
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(101), "tree-walker\n{}", text(&o.stderr));
     assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
-    let k = run(&["kir", "t.overflow_via_ref", "--run", "200"], &t.0);
+    let k = kir_run(&["kir", "t.overflow_via_ref", "--run", "200"], &t.0);
     assert_eq!(k.status.code(), Some(101), "kir\n{}", text(&k.stderr));
     assert_eq!(text(&k.stderr).trim(), "panic: attempt to add with overflow");
 }
@@ -11270,8 +11309,8 @@ fn kir_refs_text_shows_slots_and_reference_types() {
 
 #[test]
 fn kir_refs_reference_to_unsupported_pointee_keeps_its_reason() {
-    // 指す先が整数と bool でない参照 (`&str`) は、従来どおり理由付きで未対応になる。
-    let src = "fn t.first(s: &str) -> u8 uses [] panics never
+    // 指す先が整数・浮動小数・bool・利用者の構造体でない参照 (標準の型) は、従来どおり理由付きで未対応になる。
+    let src = "fn t.first(s: &std.io.Error) -> u8 uses [] panics never
     let _t = s
     0u8
 end t.first
@@ -11299,7 +11338,7 @@ fn min_rem_minus_one_overflows_for_every_signed_width() {
         assert_eq!(o.status.code(), Some(101), "{}: {}", w, text(&o.stderr));
         assert!(text(&o.stderr).contains("panic: attempt to calculate the remainder with overflow"), "{}: {}", w, text(&o.stderr));
         if w == "i8" {
-            let k = run(&["kir", "t.rem", "--run", "-128", "-1"], &t.0);
+            let k = kir_run(&["kir", "t.rem", "--run", "-128", "-1"], &t.0);
             assert_eq!(k.status.code(), Some(101), "kir {}: {}", w, text(&k.stderr));
             assert_eq!(text(&k.stderr).trim(), "panic: attempt to calculate the remainder with overflow", "kir {}", w);
         }
@@ -11521,7 +11560,7 @@ fn kir_coll_values_match_tree_walker() {
         assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
         let mut kargs = vec!["kir", f, "--run"];
         kargs.extend(args.iter().copied());
-        let k = run(&kargs, &t.0);
+        let k = kir_run(&kargs, &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
     }
@@ -11534,7 +11573,7 @@ fn kir_coll_index_panics_like_tree_walker() {
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(101), "tree-walker");
     assert!(text(&o.stderr).contains("panic: index out of bounds: the len is 0 but the index is 5"), "{}", text(&o.stderr));
-    let k = run(&["kir", "t.idx_empty", "--run"], &t.0);
+    let k = kir_run(&["kir", "t.idx_empty", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(101), "kir: {}", text(&k.stderr));
     assert_eq!(text(&k.stderr).trim(), "panic: index out of bounds: the len is 0 but the index is 5");
 }
@@ -11581,6 +11620,407 @@ fn kir_coll_dump_shows_drops_and_static_data() {
     assert!(out.contains("frame.bytes 24") && out.contains("heap.free %") && out.contains("mem.load.usize %"), "{}", out);
     let s = run(&["kir", "t.str_len"], &t.0);
     assert!(text(&s.stdout).contains("static.bytes 68c3a96c6c6f"), "{}", text(&s.stdout));
+}
+
+// ---- 集成体への参照とスライス・&str (設計_KIR.md 10.10、kir/agg-refs) ----
+
+/// 集成体への `&` / `&mut`、入れ子のフィールド、スライス、`&str` の試験用の関数。
+const AGG_REFS_FNS: &str = "type t.P
+    x: i32
+    y: i32
+end t.P
+
+type t.Line
+    a: t.P
+    b: t.P
+    len: u32
+end t.Line
+
+fn t.p_sum(p: &t.P) -> i32 uses [] panics may
+    p.x + p.y
+end t.p_sum
+
+fn t.p_bump(p: &mut t.P, d: i32) -> () uses [] panics may
+    p.x = p.x + d
+    p.y = p.y + d
+end t.p_bump
+
+fn t.p_run(a: i32, b: i32) -> i32 uses [] panics may
+    let mut p = t.P { x: a, y: b }
+    t.p_bump(&mut p, 10i32)
+    t.p_bump(&mut p, 1i32)
+    t.p_sum(&p)
+end t.p_run
+
+fn t.p_via_ref(a: i32) -> i32 uses [] panics may
+    let mut p = t.P { x: a, y: 1i32 }
+    let r = &mut p
+    r.x = r.x * 2i32
+    t.p_bump(r, 3i32)
+    t.p_sum(r)
+end t.p_via_ref
+
+fn t.px(p: &mut t.P) -> &mut i32 uses [] panics never
+    &mut p.x
+end t.px
+
+fn t.p_field_ref(a: i32) -> i32 uses [] panics may
+    let mut p = t.P { x: 0i32, y: 5i32 }
+    *t.px(&mut p) = a
+    p.x * 100i32 + p.y
+end t.p_field_ref
+
+fn t.line_move(l: &mut t.Line, dx: i32) -> () uses [] panics may
+    l.a.x = l.a.x + dx
+    l.b.x = l.b.x + dx
+    l.len = l.len + 1u32
+end t.line_move
+
+fn t.line_span(l: &t.Line) -> i32 uses [] panics may
+    l.b.x - l.a.x + l.b.y
+end t.line_span
+
+fn t.line_run(n: i32) -> i32 uses [] panics may
+    let mut l = t.Line { a: t.P { x: 1i32, y: 2i32 }, b: t.P { x: 5i32, y: 9i32 }, len: 0u32 }
+    let mut i = 0i32
+    while i < n {
+        t.line_move(&mut l, 3i32)
+        i = i + 1i32
+    }
+    t.p_bump(&mut l.b, 100i32)
+    t.line_span(&l) * 1000i32 + l.a.x
+end t.line_run
+
+fn t.line_len(n: u32) -> u32 uses [] panics may
+    let mut l = t.Line { a: t.P { x: 0i32, y: 0i32 }, b: t.P { x: 0i32, y: 0i32 }, len: 0u32 }
+    let mut i = 0u32
+    while i < n {
+        t.line_move(&mut l, 1i32)
+        i = i + 1u32
+    }
+    l.len
+end t.line_len
+
+fn t.s_len(s: &str) -> usize uses [] panics never
+    s.len()
+end t.s_len
+
+fn t.s_len_lit() -> usize uses [] panics never
+    t.s_len(\"héllo\")
+end t.s_len_lit
+
+fn t.s_len_empty() -> usize uses [] panics never
+    t.s_len(\"\")
+end t.s_len_empty
+
+fn t.b_at(s: &[u8], i: usize) -> u8 uses [] panics may
+    s[i]
+end t.b_at
+
+fn t.b_sum(s: &[u8]) -> u8 uses [] panics may
+    let mut acc = 0u8
+    for i in core.iter.range(0usize, s.len()) {
+        acc = acc.wrapping_add(s[i])
+    }
+    acc
+end t.b_sum
+
+fn t.pass_through(s: &str) -> &str uses [] panics never
+    s
+end t.pass_through
+
+fn t.str_byte(s: &str, i: usize) -> u8 uses [] panics may
+    let b = s.as_bytes()
+    t.b_at(b, i)
+end t.str_byte
+
+fn t.lit_byte(i: usize) -> u8 uses [] panics may
+    t.str_byte(\"héllo\", i)
+end t.lit_byte
+
+fn t.lit_sum() -> u8 uses [] panics may
+    t.b_sum(\"abc\".as_bytes())
+end t.lit_sum
+
+fn t.lit_sum_empty() -> u8 uses [] panics may
+    t.b_sum(\"\".as_bytes())
+end t.lit_sum_empty
+
+fn t.lit_last() -> u8 uses [] panics may
+    let b = \"abc\".as_bytes()
+    b[b.len() - 1usize]
+end t.lit_last
+
+fn t.lit_oob() -> u8 uses [] panics may
+    let b = \"abc\".as_bytes()
+    b[3usize]
+end t.lit_oob
+
+fn t.empty_oob() -> u8 uses [] panics may
+    t.str_byte(\"\", 0usize)
+end t.empty_oob
+
+fn t.pass_len(n: u32) -> usize uses [] panics never
+    let s = if n > 1u32 {
+        t.pass_through(\"abcd\")
+    } else {
+        \"x\"
+    }
+    s.len()
+end t.pass_len
+
+fn t.is_hex(c: u8) -> bool uses [] panics never
+    (c >= b'0' && c <= b'9') || (c >= b'a' && c <= b'f') || (c >= b'A' && c <= b'F')
+end t.is_hex
+
+fn t.hex_of(c: u8) -> u32 uses [] panics never
+    if t.is_hex(c) {
+        1u32
+    } else {
+        0u32
+    }
+end t.hex_of
+
+fn t.digits(src: &[u8], pos: usize) -> usize uses [] panics never
+    let mut i = pos
+    loop {
+        match src.get(i) {
+            Some(c) => {
+                if c >= b'0' && c <= b'9' {
+                    i = i.wrapping_add(1usize)
+                } else {
+                    break
+                }
+            }
+            None => break
+        }
+    }
+    i
+end t.digits
+
+fn t.digits_at(n: usize) -> usize uses [] panics never
+    t.digits(\"12a45\".as_bytes(), n)
+end t.digits_at
+
+fn t.skip_ws(src: &[u8], pos: usize) -> usize uses [] panics never
+    let mut i = pos
+    loop {
+        match src.get(i) {
+            Some(c) => {
+                if c == b' ' || c == b'\\n' || c == b'\\t' || c == b'\\r' {
+                    i = i.wrapping_add(1usize)
+                } else {
+                    break
+                }
+            }
+            None => break
+        }
+    }
+    i
+end t.skip_ws
+
+fn t.skip_at(n: usize) -> usize uses [] panics never
+    t.skip_ws(\" \\t\\n x\".as_bytes(), n)
+end t.skip_at
+
+fn t.str_digits(s: &str, n: usize) -> usize uses [] panics never
+    t.digits(s.as_bytes(), n)
+end t.str_digits
+
+fn t.str_digits_empty(n: usize) -> usize uses [] panics never
+    t.str_digits(\"\", n)
+end t.str_digits_empty
+
+type t.Doc
+    links: alloc.vec.Vec<usize, std.alloc.System>
+    nodes: alloc.vec.Vec<u8, std.alloc.System>
+    n: u32
+end t.Doc
+
+fn t.doc_count(d: &t.Doc) -> usize uses [] panics may
+    d.links.len() + d.nodes.len()
+end t.doc_count
+
+fn t.doc_bump(d: &mut t.Doc) -> () uses [] panics may
+    d.n = d.n + 1u32
+end t.doc_bump
+
+fn t.doc_empty(d: &t.Doc) -> bool uses [] panics never
+    d.nodes.is_empty()
+end t.doc_empty
+
+fn t.doc_by_ref(d: &mut t.Doc, k: u32) -> usize uses [] panics may
+    let mut i = 0u32
+    while i < k {
+        t.doc_bump(d)
+        i = i + 1u32
+    }
+    t.doc_count(d) + 10usize
+end t.doc_by_ref
+
+fn t.doc_n(d: &t.Doc) -> u32 uses [] panics never
+    d.n
+end t.doc_n
+
+fn t.doc_run(k: u32) -> u32 uses [] panics may
+    let a: alloc.vec.Vec<usize, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let b: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut d = t.Doc { links: a, nodes: b, n: 0u32 }
+    core.mem.drop(t.doc_by_ref(&mut d, k))
+    t.doc_n(&d)
+end t.doc_run
+
+fn t.vec_len(v: &alloc.vec.Vec<u8, std.alloc.System>) -> usize uses [] panics never
+    v.len()
+end t.vec_len
+
+fn t.vec_first(v: &alloc.vec.Vec<u8, std.alloc.System>) -> u8 uses [] panics may
+    v[0usize]
+end t.vec_first
+
+fn t.vec_run() -> usize uses [] panics may
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    t.vec_len(&v)
+end t.vec_run
+
+fn t.vec_oob() -> u8 uses [] panics may
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    t.vec_first(&v)
+end t.vec_oob
+
+fn t.vec_empty_loop() -> usize uses [] panics may
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut n = 0usize
+    for _x in v {
+        n = n + 1usize
+    }
+    n + t.vec_len(&v)
+end t.vec_empty_loop
+
+";
+
+/// `AGG_REFS_FNS` に `main` を付けたパッケージを作る。
+fn agg_refs_pkg(name: &str, main_body: &str) -> Tmp {
+    Tmp::new(name, &format!("{}{}", AGG_REFS_FNS, main_wrap("", main_body)))
+}
+
+#[test]
+fn kir_agg_refs_values_match_tree_walker() {
+    // 木走査 (`ksn run`) の `core.check.eq` が通ること、参照実行器 (`ksn kir --run`) の値が期待どおりであること。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.p_run", &["1", "2"], "25i32", "25"),
+        ("t.p_run", &["-5", "5"], "22i32", "22"),
+        ("t.p_via_ref", &["4"], "15i32", "15"),
+        ("t.p_field_ref", &["7"], "705i32", "705"),
+        ("t.line_run", &["0"], "213001i32", "213001"),
+        ("t.line_run", &["3"], "213010i32", "213010"),
+        ("t.line_len", &["0"], "0u32", "0"),
+        ("t.line_len", &["5"], "5u32", "5"),
+        ("t.s_len_lit", &[], "6usize", "6"),
+        ("t.s_len_empty", &[], "0usize", "0"),
+        ("t.lit_byte", &["0"], "104u8", "104"),
+        ("t.lit_byte", &["1"], "195u8", "195"),
+        ("t.lit_byte", &["5"], "111u8", "111"),
+        ("t.lit_sum", &[], "38u8", "38"),
+        ("t.lit_sum_empty", &[], "0u8", "0"),
+        ("t.lit_last", &[], "99u8", "99"),
+        ("t.pass_len", &["0"], "1usize", "1"),
+        ("t.pass_len", &["5"], "4usize", "4"),
+        ("t.hex_of", &["102"], "1u32", "1"),
+        ("t.hex_of", &["103"], "0u32", "0"),
+        ("t.hex_of", &["65"], "1u32", "1"),
+        ("t.hex_of", &["47"], "0u32", "0"),
+        ("t.digits_at", &["0"], "2usize", "2"),
+        ("t.digits_at", &["2"], "2usize", "2"),
+        ("t.digits_at", &["3"], "5usize", "5"),
+        ("t.digits_at", &["9"], "9usize", "9"),
+        ("t.skip_at", &["0"], "4usize", "4"),
+        ("t.skip_at", &["4"], "4usize", "4"),
+        ("t.skip_at", &["9"], "9usize", "9"),
+        ("t.str_digits_empty", &["0"], "0usize", "0"),
+        ("t.vec_run", &[], "0usize", "0"),
+        ("t.vec_empty_loop", &[], "0usize", "0"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let t = agg_refs_pkg(&format!("kir_agg_refs_values_{}", i), &format!("    core.check.eq({}, {})\n", call, lit));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).lines().last().unwrap_or("").trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_agg_refs_bounds_panic_like_tree_walker() {
+    // スライスと Vec の範囲外の添字 (末尾の次・空) は、木走査と同じ文言で panic する (終了コード 101)。
+    let cases: &[(&str, &str)] = &[
+        ("t.lit_oob", "panic: index out of bounds: the len is 3 but the index is 3"),
+        ("t.empty_oob", "panic: index out of bounds: the len is 0 but the index is 0"),
+        ("t.vec_oob", "panic: index out of bounds: the len is 0 but the index is 0"),
+    ];
+    for (i, (f, msg)) in cases.iter().enumerate() {
+        let t = agg_refs_pkg(&format!("kir_agg_refs_panic_{}", i), &format!("    let _x = {}()\n", f));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(101), "tree-walker {}\n{}", f, text(&o.stderr));
+        assert!(text(&o.stderr).contains(msg), "{}: {}", f, text(&o.stderr));
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(101), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stderr).trim(), *msg, "kir {}", f);
+    }
+}
+
+#[test]
+fn kir_agg_refs_text_shows_field_addresses_and_fat_values() {
+    // 集成体への参照の型 (`mutref<agg#k>`)、フィールドのアドレス (`fieldaddr`)、`&str` の値 (`fat` の `make`) が見え、読み直せる。
+    let t = agg_refs_pkg("kir_agg_refs_text", "    let _x = t.p_run(1i32, 2i32)\n");
+    let o = run(&["kir", "t.line_move"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    for want in ["mutref<agg#", "fieldaddr %", "load %", "store %"] {
+        assert!(s.contains(want), "missing `{}` in:\n{}", want, s);
+    }
+    let o = run(&["kir", "t.lit_byte"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    assert!(s.contains("fat size=16 align=8 {ptr:ptr@0 len:usize@8}") && s.contains("static.bytes 68c3a96c6c6f"), "{}", s);
+}
+
+#[test]
+fn kir_agg_refs_vec_fields_are_read_through_references() {
+    // Vec / String を持つ構造体 (json.Doc の形) への参照は下ろせる: ヘッダの `len` を `fieldaddr` と `load` で読む。
+    // 値渡しと、その構造体の組み立て (所有の移動) は未対応のまま。木走査では動く。
+    let t = agg_refs_pkg("kir_agg_refs_vec_field", "    core.check.eq(t.doc_run(3u32), 3u32)\n");
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
+    let e = run(&["kir", "t.doc_empty"], &t.0);
+    assert_eq!(e.status.code(), Some(0), "{}", text(&e.stderr));
+    let o = run(&["kir", "t.doc_by_ref"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let s = text(&o.stdout);
+    assert!(s.contains("struct vec size=24 align=8 {ptr:ptr@0 len:usize@8 cap:usize@16}") && s.contains("call t.doc_bump(%0)"), "{}", s);
+    let o = run(&["kir", "t.doc_run"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("t.doc_run は未対応"), "{}", text(&o.stderr));
+}
+
+#[test]
+fn kir_agg_refs_reports_unsupported_references_with_a_reason() {
+    // 指す先が標準の型・Option の参照や、移動・Vec の借用の戻りは、理由を付けて拒否する。
+    let cases: &[(&str, &str, &str)] = &[
+        ("fn t.f(e: &std.io.Error) -> u8 uses [] panics never\n    let _t = e\n    0u8\nend t.f\n", "t.f", "引数の型"),
+        ("fn t.f(v: alloc.vec.Vec<u8, std.alloc.System>) -> usize uses [] panics never\n    v.len()\nend t.f\n", "t.f", "引数の型"),
+        ("fn t.f(s: &[u8]) -> Option<&[u8]> uses [] panics never\n    s.sub(0usize, 1usize)\nend t.f\n", "t.f", "戻り値の型"),
+    ];
+    for (i, (src, f, why)) in cases.iter().enumerate() {
+        let src = format!("{}\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n", src);
+        let t = Tmp::new(&format!("kir_agg_refs_reason_{}", i), &src);
+        let o = run(&["kir", f], &t.0);
+        assert_eq!(o.status.code(), Some(1), "{}", f);
+        assert!(text(&o.stderr).contains(why), "{}: {}", f, text(&o.stderr));
+    }
 }
 
 // ---- 型が決まった接尾辞なし整数リテラル: 木走査も型表の型で計算する (レビュー #1) ----
@@ -11640,11 +12080,11 @@ fn untyped_int_literals_take_their_inferred_type_in_the_tree_walker() {
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(101), "{}{}", text(&o.stdout), text(&o.stderr));
     assert!(text(&o.stderr).contains("panic: attempt to add with overflow"), "{}", text(&o.stderr));
-    let k = run(&["kir", "t.count", "--run", "300"], &t.0);
+    let k = kir_run(&["kir", "t.count", "--run", "300"], &t.0);
     assert_eq!(k.status.code(), Some(101));
     assert!(text(&k.stderr).contains("panic: attempt to add with overflow"), "{}", text(&k.stderr));
-    assert_eq!(text(&run(&["kir", "t.count", "--run", "200"], &t.0).stdout).trim(), "200");
-    assert_eq!(text(&run(&["kir", "t.dbl", "--run", "5"], &t.0).stdout).trim(), "144");
+    assert_eq!(text(&kir_run(&["kir", "t.count", "--run", "200"], &t.0).stdout).trim(), "200");
+    assert_eq!(text(&kir_run(&["kir", "t.dbl", "--run", "5"], &t.0).stdout).trim(), "144");
     for args in [&["test"][..], &["test", "--both"][..]] {
         let o = run(args, &t.0);
         let out = text(&o.stdout);
@@ -11797,4 +12237,32 @@ end t.main.test_g_try_conv
     ] {
         assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (native skipped: t.main.{}: {}", name, name, why)), "{}", out);
     }
+}
+
+#[test]
+fn kir_llvm_output_is_deterministic_and_reads_as_ir() {
+    // `--llvm` は同じ KIR から同じバイト列の `.ll` を出す (clang が無くても確かめられる)。
+    let t = kir_pkg("kir_llvm_text", "    core.check.eq(t.gcd(4u64, 2u64), 2u64)\n");
+    for f in ["t.gcd", "t.fact", "t.negate", "t.andor", "t.nested", "t.down"] {
+        let a = run(&["kir", f, "--llvm"], &t.0);
+        let b = run(&["kir", f, "--llvm"], &t.0);
+        assert_eq!(a.status.code(), Some(0), "{}: {}", f, text(&a.stderr));
+        assert_eq!(a.stdout, b.stdout, "{}: .ll が 2 回で違う", f);
+        let ll = text(&a.stdout);
+        assert!(ll.starts_with("; ksn kir llvm 1\n") && ll.contains(&format!("define internal")) && ll.contains("define i32 @main"), "{}", ll);
+        assert!(!ll.contains("@sin") && !ll.contains("@cos"), "libm の超越関数を呼ばない");
+    }
+}
+
+#[test]
+fn kir_native_without_clang_is_an_error_with_a_reason() {
+    let t = kir_pkg("kir_native_noclang", "    core.check.eq(t.gcd(4u64, 2u64), 2u64)\n");
+    let o = Command::new(exe())
+        .args(["kir", "t.gcd", "--native", "4", "2"])
+        .current_dir(&t.0)
+        .env("KSN_CLANG", "/nonexistent/clang")
+        .output()
+        .expect("spawn ksn");
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("clang が必要です"), "{}", text(&o.stderr));
 }

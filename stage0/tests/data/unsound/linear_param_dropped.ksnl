@@ -1,0 +1,12 @@
+// expect: E3003
+type t.L linear pub
+    v: u32
+end t.L
+
+fn t.drop_it(l: t.L) -> () uses [] panics never
+    core.mem.drop(l)
+end t.drop_it
+
+fn t.main() -> () uses [] panics never
+    t.drop_it(t.L { v: 1u32 })
+end t.main

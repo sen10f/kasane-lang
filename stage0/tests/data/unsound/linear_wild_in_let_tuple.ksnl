@@ -1,0 +1,14 @@
+// expect: E3003
+type t.L linear
+    v: u32
+end t.L
+
+fn t.eat(l: t.L) -> u32 uses [] panics never
+    let t.L { v: v } = l
+    v
+end t.eat
+
+fn t.main() -> () uses [] panics never
+    let (a, _) = (t.L { v: 1u32 }, t.L { v: 2u32 })
+    core.mem.drop(t.eat(a))
+end t.main

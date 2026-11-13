@@ -8,13 +8,14 @@
 //! - `&x` / `&mut x` のアドレスは `alloca` の値そのもの (`mutref<T>`)。`&` のときは `asshared` で `ref<T>` にする。
 //!   式のままの値 (`&5` など) は一時のスロットに入れてから、そのアドレスを取る。
 //! - 参照どうしの一致は型だけで決める。`&mut T` を `&T` の位置に渡すときは `asshared` を挟む。
-//! - 借用の検査は済んでいる前提で、ここでは検査しない。指す先はスカラー (整数と bool) だけ。
-//!   それ以外の参照 (名前付きの型・スライス・`str`) は `conv_ref` が `None` を返し、従来どおり未対応になる。
+//! - 借用の検査は済んでいる前提で、ここでは検査しない。指す先はスカラーと集成体 (設計_KIR.md 10.10)。
+//!   Vec / String / `&str` / スライスの参照は、ヘッダ・`{ptr, len}` の値で渡す (`kir_lower_coll.rs`。ここでは扱わない)。
+//! - `&x.f.g` / `&mut x.f.g` は、x のスロット (または x の参照) から `fieldaddr` をたどる。
 
 use std::collections::BTreeSet;
 
-use super::{path1, Lw, St, LR};
-use crate::check::{nf, nline, nname, st};
+use super::{path1, path_base, Lw, St, LR};
+use crate::check::{nf, nline, nname, st, strs};
 use crate::kir::{Inst, Op, Pointee, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
@@ -49,7 +50,8 @@ fn addr_names(v: &V, out: &mut BTreeSet<String>) {
     match v {
         V::Node(n, fs, _, _) => {
             if *n == "Unary" && fs.len() == 2 && matches!(st(&fs[0]).as_str(), "&" | "&mut") {
-                if let Some(name) = path1(&fs[1]) {
+                // `&x` も `&x.f.g` も x のアドレスが要る (フィールドのアドレスはスロットの先頭から数える)。
+                if let Some(name) = path_base(&fs[1]) {
                     out.insert(name);
                 }
             }
@@ -66,7 +68,7 @@ fn addr_names(v: &V, out: &mut BTreeSet<String>) {
     }
 }
 
-/// 型 `&T` / `&mut T` を段階 1 の型へ写す。指す先が整数か bool のときだけ。
+/// 型 `&T` / `&mut T` を段階 1 の型へ写す。指す先がスカラーのときだけ (集成体への参照は `AggTab::lower_ty`)。
 pub(super) fn conv_ref(m: bool, inner: &Src) -> Option<Ty> {
     match inner {
         Src::Prim(s) => Ty::parse(s).and_then(Pointee::of).map(|p| Ty::Ref(m, p)),
@@ -86,6 +88,11 @@ impl<'a> Lw<'a> {
             }
             _ => self.bind(name, v, t),
         }
+    }
+
+    /// 値番号 `v` がスタックスロットか (他の子モジュールから使う入口)。
+    pub(super) fn is_mem_val(&self, v: VId) -> bool {
+        self.rf.is_mem(v)
     }
 
     /// 入口ブロックに `alloca` を置く。結果は `mutref<p>`。
@@ -160,11 +167,17 @@ impl<'a> Lw<'a> {
         let f = nf(e);
         let line = nline(e);
         let shared = st(&f[0]) == "&";
+        let operand = &f[1];
+        // 0. Vec / String の借用は、ヘッダのアドレスそのもの (ヘッダは所有者の関数のフレームにある)。
+        if let Ok(Src::Ref(_, inner)) = self.src_ty(e) {
+            if super::coll::is_hdr_named(&inner) {
+                return super::coll::borrow_header(self, operand, line).map(Some);
+            }
+        }
         let Ty::Ref(m, p) = self.ty_of(e)? else {
             return self.err(line, "参照の型が参照でない");
         };
         let rt = Ty::Ref(m, p);
-        let operand = &f[1];
         // 1. 局所変数: 名前がスタックスロットに置かれていれば、そのアドレス
         if let Some(name) = path1(operand) {
             if let Some(s) = self.lookup(&name) {
@@ -176,6 +189,28 @@ impl<'a> Lw<'a> {
                     );
                 }
                 return Ok(Some(self.ref_value(ptr, p, shared)));
+            }
+        }
+        // 1'. `&x.f.g`: x のスロット (または x の参照) からフィールドのアドレスをたどる
+        if nname(operand) == "Path" {
+            let segs = strs(&nf(operand)[0]);
+            if segs.len() > 1 {
+                if let Some(s) = self.lookup(&segs[0]) {
+                    let (base, _) = self.slots[s];
+                    let mut cur = match self.vty(base) {
+                        Ty::Ref(_, Pointee::Agg(_)) => base,
+                        _ if self.rf.is_mem(base) => base,
+                        _ => return self.err(line, format!("局所 {} のフィールドのアドレスを取れない (段階 1 の対象外の型)", segs[0])),
+                    };
+                    for name in &segs[1..] {
+                        cur = self.field_addr(cur, name, line)?;
+                    }
+                    let v = self.coerce(cur, rt);
+                    if self.vty(v) != rt {
+                        return self.err(line, "参照の型が合わない (共有参照から可変参照は取れない)");
+                    }
+                    return Ok(Some(v));
+                }
             }
         }
         // 2. `&*r` / `&mut *r`: 参照を付け替えるだけ
