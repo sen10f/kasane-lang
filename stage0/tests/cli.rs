@@ -18824,6 +18824,75 @@ fn llvm_builds_of_real_packages_match_run() {
     }
 }
 
+/// 依存パッケージ (別 module) の `kvlib.lookup.find`/`count` を KIR に下ろし、
+/// 依存元の main から呼ぶ。`ksn run` / `ksn kir t.main --run` / `--native` が一致することを確かめる。
+#[test]
+fn dep_package_fn_is_lowered_and_matches_run_kir_native() {
+    if !clang_available() {
+        eprintln!("skip: clang が PATH に無いので、--native の比較は飛ばす");
+        return;
+    }
+    let src = "import kvlib.lookup\n\nfn t.main() -> () uses [] panics never\n    let r = lookup.find(\"name = kasane\\nmode = fast\\n\", \"name\")\n    core.mem.drop(r)\n    let r2 = lookup.find(\"name = kasane\\nmode = fast\\n\", \"missing\")\n    core.mem.drop(r2)\n    let n = lookup.count(\"a = 1\\nb = 2\\n\")\n    core.mem.drop(n)\nend t.main\n";
+    let t = Tmp::new("dep_lower", src);
+    let kvlib = root().join("examples").join("kvlib").display().to_string();
+    fs::write(
+        t.0.join("kasane.toml"),
+        format!("{}kvlib = {{ path = \"{}\" }}\n", TOML, kvlib),
+    )
+    .unwrap();
+    let u = run(&["update"], &t.0);
+    assert_eq!(u.status.code(), Some(0), "update: {}{}", text(&u.stdout), text(&u.stderr));
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "run: {}{}", text(&r.stdout), text(&r.stderr));
+    kir_run(&["kir", "t.main", "--run"], &t.0);
+}
+
+/// `examples/kvapp` で `ksn test --both` を走らせたとき、バンドル退避にならず `(both: llvm)` になることを確かめる。
+#[test]
+fn kvapp_test_both_is_llvm_not_bundle() {
+    if !clang_available() {
+        eprintln!("skip: clang が PATH に無いので、LLVM の比較は飛ばす");
+        return;
+    }
+    fn copy_all(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).unwrap();
+        for e in fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            let name = e.file_name();
+            let p = e.path();
+            if p.is_dir() {
+                copy_all(&p, &dst.join(&name));
+            } else {
+                let _ = fs::copy(&p, dst.join(&name));
+            }
+        }
+    }
+    let base = std::env::temp_dir().join(format!("ksn_kvapp_both_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let dir = base.join("kvapp");
+    copy_all(&root().join("examples").join("kvapp"), &dir);
+    copy_all(&root().join("examples").join("kvlib"), &base.join("kvlib"));
+    let cache = dir.join(".cache");
+    let stdlib = std::env::var("KSN_STDLIB")
+        .ok()
+        .unwrap_or_else(|| root().join("spec").join("stdlib").to_string_lossy().to_string());
+    let o = Command::new(exe())
+        .args(["test", "--both"])
+        .current_dir(&dir)
+        .env("KSN_CACHE_DIR", &cache)
+        .env("KSN_STDLIB", &stdlib)
+        .output()
+        .unwrap();
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "kvapp test --both: {}{}", out, text(&o.stderr));
+    // kvapp には 2 つのテストがあり、どちらも (both: llvm) で比較され、bundle 退避にはならない。
+    assert_eq!(out.matches("(both: llvm)").count(), 2, "{}", out);
+    assert!(out.contains("compared with: llvm 2, native 0, bundle fallback 0"), "{}", out);
+    assert!(!out.contains("both: bundle"), "{}", out);
+    assert!(out.contains("2 passed; 0 failed"), "{}", out);
+    let _ = fs::remove_dir_all(&base);
+}
+
 /// `Vec.get` の `Option<&スカラー>` の束縛 (`Some(c)`) を、`*c`、`&T` の引数、`c == &y` で使う。
 /// 束縛は値で持つ (設計_KIR.md 10.10) ので、`*c` は値そのもの、`&T` の引数は一時に写した参照になる。
 const DEREF_OPT_SRC: &str = r#"fn t.show(x: &u32) -> u32 uses [] panics never
