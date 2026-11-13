@@ -202,6 +202,35 @@ impl<'a> Low<'a> {
         d.ret.dump().contains("[ref ") || d.generics.iter().any(|g| g.0 == "life")
     }
 
+    /// 戻り値が参照を含むか。`ret_borrows` に加え、戻り値の型定義の欄が参照を持つ構造体
+    /// (`t.H { r: &'a T }` など) も含む。省略規則で、戻り値は受け手・引数を借りる。
+    fn ret_contains_ref(&self, d: &Def) -> bool {
+        if Self::ret_borrows(d) {
+            return true;
+        }
+        let V::L(parts) = &d.ret else { return false };
+        let [V::S(a), V::S(name), _] = parts.as_slice() else { return false };
+        if a != "named" { return false; }
+        let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
+        let Some(r) = self.p.resolve(&segs, &self.file) else { return false };
+        let Target::Type(di) = r.target else { return false };
+        let td = &self.p.defs[di];
+        td.fields.iter().any(|(_, ty, _)| Self::ty_contains_ref(ty))
+    }
+
+    /// 型表現 `ty` が、どこかで参照 (`&T` / `&mut T`) を含むか。
+    fn ty_contains_ref(ty: &V) -> bool {
+        match ty {
+            V::L(xs) => {
+                if xs.first().map_or(false, |s| matches!(s, V::S(n) if n == "ref")) {
+                    return true;
+                }
+                xs.iter().any(Self::ty_contains_ref)
+            }
+            _ => false,
+        }
+    }
+
     /// `core.mem.drop` の呼び出しか (値を受け取って消費する組み込み)。
     fn is_drop_fn(&self, segs: &[String]) -> bool {
         if segs.len() < 2 {
@@ -333,7 +362,7 @@ impl<'a> Low<'a> {
                     }
                     _ => return vec![],
                 };
-                if !r.rest.is_empty() || !Self::ret_borrows(&self.p.defs[di]) {
+                if !r.rest.is_empty() || !self.ret_contains_ref(&self.p.defs[di]) {
                     return vec![];
                 }
                 // ヘッダのライフタイム (省略規則を含む) で、戻り値へ流れる引数だけを取る。読めなければ全部。
@@ -373,8 +402,9 @@ impl<'a> Low<'a> {
                 ]
             }
             None => {
-                // `v.iter().rev()` のように、借用を返す呼び出しの連なり
-                if matches!(nname(recv), "MCall") { self.loan_sources(recv) } else { vec![] }
+                // `v.iter().rev()` や `xs.as_slice().get(0)` のように、借用を返す呼び出しの連なり。
+                // レシーバが `v.mk()` (Call 形) の連なりも辿り、連鎖の根の変数を借用元にする。
+                if matches!(nname(recv), "MCall" | "Call") { self.loan_sources(recv) } else { vec![] }
             }
         };
         out.extend(self.method_arg_sources(name, args));

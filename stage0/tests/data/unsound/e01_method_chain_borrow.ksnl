@@ -1,0 +1,29 @@
+// expect: E3010
+fn t.f(xs: &mut alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics never
+    match xs.as_slice().get(0usize) {
+        Some(k) => {
+            match xs.as_mut_slice().get_mut(0usize) {
+                Some(p) => {
+                    *p = 7u32
+                }
+                None => ()
+            }
+            *k
+        }
+        None => 0u32
+    }
+end t.f
+
+fn t.g(xs: &mut alloc.vec.Vec<u32, std.alloc.System>) -> u32 uses [] panics never
+    let k = xs.as_slice().get(0usize)
+    xs.clear()
+    *k.unwrap_or(&0u32)
+end t.g
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(1u32))
+    core.mem.drop(t.f(&mut v))
+    core.mem.drop(t.g(&mut v))
+    Ok(())
+end t.main
