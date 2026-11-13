@@ -672,7 +672,15 @@ impl<'a> Lw<'a> {
     /// 定数の値はコンパイル時に分かるので、使う場所で値を作る。
     fn const_val(&mut self, ci: usize, e: &V) -> LR<VId> {
         let c = &self.p.defs[ci];
-        let ty = self.ty_of(e)?;
+        // `for x in K.split(..)` の `K` は下ろしが作った式 (番号 0) で型表にない。定数の宣言の型を使う。
+        let ty = if nid(e) == 0 {
+            match coll::value_ty(self, &from_v(&c.ret, &HashSet::new())) {
+                Some(t) => t,
+                None => return self.err(nline(e), format!("定数 {} の型が決まらない", c.name)),
+            }
+        } else {
+            self.ty_of(e)?
+        };
         match c.init.as_ref() {
             Some(init) if nname(init) == "Lit" && st(&nf(init)[0]) == "int" && ty.is_int() => {
                 let v = parse_int(&nf(init)[1]).ok_or_else(|| "定数の値が扱えない".to_string())?;
