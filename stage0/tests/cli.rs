@@ -15462,11 +15462,12 @@ end t.vec_oob
 
 fn t.vec_empty_loop() -> usize uses [] panics may
     let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let len = t.vec_len(&v)
     let mut n = 0usize
     for _x in v {
         n = n + 1usize
     }
-    n + t.vec_len(&v)
+    n + len
 end t.vec_empty_loop
 
 ";

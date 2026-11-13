@@ -1,0 +1,9 @@
+fn t.bump(n: &mut u32) -> () uses [] panics never
+    *n = 5u32
+end t.bump
+
+fn t.main() -> () uses [] panics never
+    let mut x = 1u32
+    t.bump(&mut x)
+    core.mem.drop(x)
+end t.main
