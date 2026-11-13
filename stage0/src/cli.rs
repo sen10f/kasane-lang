@@ -292,8 +292,11 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             None
         };
         // 構文エラーのとき、Rust 風の書き方をまとめて直し方つきで報告する。
+        // 案内付きの行の一般的な E0002 (`expected ...`) は、同じ原因を別の言い方で重ねるだけなので出さない。
+        let mut guided: Vec<usize> = vec![];
         if s.error.is_some() || !gram.as_ref().map_or(false, |g| g.0) {
             for h in crate::rustisms::scan(&s.text) {
+                guided.push(h.line);
                 rep.add(h.code, &h.msg, Some(&fl), h.line, h.col, true);
             }
         }
@@ -301,7 +304,9 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             rep.add("E0001", "CR (CRLF) is not allowed; use LF", Some(&fl), 1, 1, true);
         }
         if let Some(e) = &s.error {
-            rep.add(&e.code, &e.msg, Some(&fl), e.line, e.col, true);
+            if !(e.code == "E0002" && guided.contains(&e.line)) {
+                rep.add(&e.code, &e.msg, Some(&fl), e.line, e.col, true);
+            }
             continue;
         }
         let gram = gram.unwrap();
@@ -346,7 +351,7 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             rep.add(lint_code(&code), &msg, Some(&fl), ln, 0, fatal);
         }
         let (ok, msg, ln) = gram;
-        if !ok {
+        if !ok && !guided.contains(&ln) {
             rep.add("E0002", &msg, Some(&fl), ln, 0, true);
         }
     }
