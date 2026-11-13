@@ -19,11 +19,54 @@ impl<'a> Lw<'a> {
     /// `e.m(args)` のうち、`&str` / `&[u8]` のメソッド (`starts_with` / `ends_with` / `eq`)。
     /// 対象外なら `None` (親の処理に任せる)。
     pub(super) fn str_method_call(&mut self, e: &V, kind: &coll::Kind, h: VId, m: &str, args: &[V]) -> Option<LR<Option<VId>>> {
+        // `String` の `contains` / `starts_with` / `ends_with`: 受け手はヘッダなので、先頭の {ptr, len} を借用の
+        // `fat` として `&str` の規則で比べる (設計_KIR.md 23 章)。
+        if matches!(kind, coll::Kind::String) && matches!(m, "contains" | "starts_with" | "ends_with") {
+            let view = super::coll::hdr_view(self, h);
+            return self.str_method_call(e, &coll::Kind::Str, view, m, args);
+        }
         if !matches!(kind, coll::Kind::Str | coll::Kind::Slice(_)) {
             return None;
         }
         let line = nline(e);
         match m {
+            // `&str` の部分列の有無 (`find` の一致を `Option` の tag で見る)。スライスの `contains` は要素の比較 (coll.rs)。
+            "contains" if matches!(kind, coll::Kind::Str) => Some(self.contains_call(e, h, args)),
+            // `s.split_at(m)`: `Option<(&str, &str)>` / `Option<(&[T], &[T])>`。`m` が長さの外、または `&str` の
+            // UTF-8 の途中なら `None` (panic しない。木走査の `split_at` と同じ)。
+            "split_at" => {
+                if args.len() != 1 {
+                    return Some(self.err(line, "メソッド split_at の引数は 1 個のはず"));
+                }
+                let Some(mv) = self.expr(&args[0]).ok()? else { return Some(Ok(None)) };
+                if self.vty(mv) != Ty::Usize {
+                    return Some(self.err(line, "メソッド split_at の引数は usize のはず"));
+                }
+                let t = self.ty_of(e).ok()?;
+                if !matches!(t, Ty::Opt(_)) {
+                    return Some(self.err(line, "メソッド split_at の結果の型が Option ではない"));
+                }
+                let is_str = matches!(kind, coll::Kind::Str);
+                Some(self.split_at_call(e, line, h, mv, is_str).map(Some))
+            }
+            // `&str` の ASCII の大文字・小文字を無視した等しさ (長さが等しく、ASCII の A-Z だけを小文字にして比べる)。
+            "eq_ignore_ascii_case" => {
+                if !matches!(kind, coll::Kind::Str) {
+                    return None;
+                }
+                if args.len() != 1 {
+                    return Some(self.err(line, "メソッド eq_ignore_ascii_case の引数は 1 個のはず"));
+                }
+                let Some(o) = self.expr(&args[0]).ok()? else { return Some(Ok(None)) };
+                if self.vty(o) != self.vty(h) {
+                    return Some(self.err(line, "メソッド eq_ignore_ascii_case の引数の型が受け手と違う"));
+                }
+                let t = self.ty_of(e).ok()?;
+                if !matches!(t, Ty::Bool) {
+                    return Some(self.err(line, "メソッド eq_ignore_ascii_case の結果の型が bool ではない"));
+                }
+                Some(self.str_eq_with(h, o, true).map(Some))
+            }
             "starts_with" | "ends_with" => {
                 if args.len() != 1 {
                     return Some(self.err(line, format!("メソッド {} の引数は 1 個のはず", m)));
@@ -443,8 +486,85 @@ impl<'a> Lw<'a> {
         matches!(self.src_ty(e), Ok(Src::Ref(_, i)) if matches!(&*i, Src::Prim(s) if s == "str"))
     }
 
+    /// `self.contains(pat)` (`&str`)。`find` の一致の有無 (`Option` の tag) で決める。
+    fn contains_call(&mut self, e: &V, h: VId, args: &[V]) -> LR<Option<VId>> {
+        let line = nline(e);
+        if args.len() != 1 {
+            return self.err(line, "メソッド contains の引数は 1 個のはず");
+        }
+        let Some(pat) = self.expr(&args[0])? else { return Ok(None) };
+        let fat = self.fat_ty();
+        if self.vty(pat) != fat {
+            return self.err(line, "メソッド contains の引数は &str のはず");
+        }
+        if self.ty_of(e)? != Ty::Bool {
+            return self.err(line, "メソッド contains の結果の型が bool ではない");
+        }
+        let found = self.find_call(h, pat)?;
+        Ok(Some(self.emit(Ty::Bool, Op::Tag(found))))
+    }
+
+    /// `s.split_at(m)` (`&str` / スライス)。`m <= len` (`&str` は `m` が文字の境界) なら `Some((前, 後))`、外なら `None`。
+    fn split_at_call(&mut self, e: &V, line: usize, s: VId, m: VId, is_str: bool) -> LR<VId> {
+        let sp = self.emit(Ty::Ptr, Op::Field { a: s, off: 0 });
+        let sl = self.emit(Ty::Usize, Op::Field { a: s, off: 8 });
+        let opt_ty = self.ty_of(e)?;
+        let Ty::Opt(p) = opt_ty else {
+            return self.err(line, "split_at の結果の型が Option ではない");
+        };
+        let tuple_ty = p.ty();
+        let fat = self.fat_ty();
+
+        let (chk, _) = self.new_block(&[]);
+        let (bnd, _) = self.new_block(&[]);
+        let (ok, _) = self.new_block(&[]);
+        let (none, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[opt_ty]);
+
+        let in_range = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::Usize, a: m, b: sl });
+        self.branch(in_range, (chk, vec![]), (none, vec![]));
+
+        // `&str` は `m` が長さと等しいか、そこのバイトが UTF-8 の続きバイト (0x80..=0xBF) でないとき境界
+        self.cur = Some(chk);
+        if is_str {
+            let at_end = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: m, b: sl });
+            self.branch(at_end, (ok, vec![]), (bnd, vec![]));
+            self.cur = Some(bnd);
+            let bp = self.emit(Ty::Ptr, Op::PtrAdd { p: sp, off: m });
+            let byte = self.emit(Ty::U8, Op::MemLoad { p: bp, off: 0 });
+            let lo = self.emit(Ty::U8, Op::Const(0x80));
+            let hi = self.emit(Ty::U8, Op::Const(0xBF));
+            let ge = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U8, a: byte, b: lo });
+            let le = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U8, a: byte, b: hi });
+            let cont = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge, le));
+            self.branch(cont, (none, vec![]), (ok, vec![]));
+        } else {
+            self.goto(ok, vec![]);
+        }
+
+        self.cur = Some(ok);
+        let left = self.emit(fat, Op::Make { variant: None, fields: vec![sp, m] });
+        let right_ptr = self.emit(Ty::Ptr, Op::PtrAdd { p: sp, off: m });
+        let right_len = self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: sl, b: m });
+        let right = self.emit(fat, Op::Make { variant: None, fields: vec![right_ptr, right_len] });
+        let tuple = self.emit(tuple_ty, Op::Make { variant: None, fields: vec![left, right] });
+        let some = self.emit(opt_ty, Op::Some(tuple));
+        self.goto(join, vec![some]);
+
+        self.cur = Some(none);
+        let nothing = self.emit(opt_ty, Op::Const(0));
+        self.goto(join, vec![nothing]);
+        self.cur = Some(join);
+        Ok(jp[0])
+    }
+
     /// `self == other` (`&str` のバイト列の等しさ)。
     pub(super) fn str_eq(&mut self, a: VId, b: VId) -> LR<VId> {
+        self.str_eq_with(a, b, false)
+    }
+
+    /// `&str` の等しさ。`fold` なら ASCII の A-Z を小文字にして比べる (`eq_ignore_ascii_case`)。
+    fn str_eq_with(&mut self, a: VId, b: VId, fold: bool) -> LR<VId> {
         let pa = self.emit(Ty::Ptr, Op::Field { a, off: 0 });
         let la = self.emit(Ty::Usize, Op::Field { a, off: 8 });
         let pb = self.emit(Ty::Ptr, Op::Field { a: b, off: 0 });
@@ -470,7 +590,16 @@ impl<'a> Lw<'a> {
         let bb = self.emit(Ty::Ptr, Op::PtrAdd { p: pb, off: i });
         let ca = self.emit(Ty::U8, Op::MemLoad { p: ba, off: 0 });
         let cb = self.emit(Ty::U8, Op::MemLoad { p: bb, off: 0 });
-        let eq = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U8, a: ca, b: cb });
+        let eq = if fold {
+            // ASCII の大文字・小文字を無視する: 両方を u32 に広げ、A-Z を小文字にしてから比べる (他のバイトは変えない)。
+            let wa = self.emit(Ty::U32, Op::Conv { src: Ty::U8, a: ca });
+            let wb = self.emit(Ty::U32, Op::Conv { src: Ty::U8, a: cb });
+            let la = self.ascii_case(wa, false);
+            let lb = self.ascii_case(wb, false);
+            self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U32, a: la, b: lb })
+        } else {
+            self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U8, a: ca, b: cb })
+        };
         let ni = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
         self.branch(eq, (hd, vec![ni]), (bad, vec![]));
         self.cur = Some(okb);

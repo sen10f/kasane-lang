@@ -219,7 +219,7 @@ impl<'a> Lw<'a> {
     }
 
     /// ASCII の英字の大文字・小文字 (`char` は `u32` で持つ)。英字以外はそのまま返す。
-    fn ascii_case(&mut self, c: VId, upper: bool) -> VId {
+    pub(super) fn ascii_case(&mut self, c: VId, upper: bool) -> VId {
         let (lo, hi) = if upper { (97i128, 122i128) } else { (65, 90) };
         let lo_v = self.emit(Ty::U32, Op::Const(lo));
         let hi_v = self.emit(Ty::U32, Op::Const(hi));

@@ -45,17 +45,19 @@ impl<'a> Lw<'a> {
         if st(&nf(e)[1]) != "unwrap" {
             return None;
         }
-        match self.src_ty(&nf(e)[0]) {
-            Ok(Src::Named(n, _)) if n == "Option" || n == "Result" => {}
+        // `Result` の E の型 (Err の表示に使う)。`Option` なら None。
+        let err_src = match self.src_ty(&nf(e)[0]) {
+            Ok(Src::Named(n, _)) if n == "Option" => None,
+            Ok(Src::Named(n, args)) if n == "Result" => args.get(1).cloned(),
             _ => return None,
-        }
+        };
         let f = nf(e);
         let line = nline(e);
         if !items(&f[2]).is_empty() {
             return Some(self.err(line, "unwrap の引数は 0 個のはず"));
         }
         Some(self.expr(&f[0]).and_then(|r| match r {
-            Some(recv) => self.unwrap_on(recv, line),
+            Some(recv) => self.unwrap_on(recv, line, err_src),
             None => Ok(None),
         }))
     }
@@ -81,13 +83,15 @@ impl<'a> Lw<'a> {
         } else {
             self.read_slot(s)
         };
-        Some(self.unwrap_on(recv, nline(e)))
+        Some(self.unwrap_on(recv, nline(e), None))
     }
 
     /// `recv` (`Option` / `Result`) の unwrap。失敗の枝は panic、値の枝はペイロードを返す。
-    fn unwrap_on(&mut self, recv: VId, line: usize) -> LR<Option<VId>> {
+    /// `err_src` は `Result` の E の型 (木走査と同じ Debug 表示を、E の `$debug` で書くために使う)。
+    fn unwrap_on(&mut self, recv: VId, line: usize, err_src: Option<Src>) -> LR<Option<VId>> {
         let rt = self.vty(recv);
-        // (値を持つ枝の型, 失敗の枝の判定 (真なら値の枝), 文言, Err の値の型 (文言に値を続けるとき))
+        // (値を持つ枝の型, 失敗の枝の判定 (真なら値の枝), 文言, Err の値の型 (整数・() は文言に値を続ける))
+        let mut dbg: Option<(Src, Ty)> = None;
         let (pay, good, msg, arg_ty) = match rt {
             Ty::Opt(Pay::Agg(bi)) if self.agg_def(bi).name == "bref" => {
                 return self.err(line, "Option<&T> (T は所有物を持つ型) の unwrap は段階 1 の対象外 (借用として取り出す形は `match` の `Some(x)` で書く)");
@@ -105,8 +109,12 @@ impl<'a> Lw<'a> {
                     (t0.ty(), good, head.to_string(), Some(et))
                 } else if et == Ty::Unit {
                     (t0.ty(), good, format!("{}: ()", head), None)
+                } else if let (Some(es), Ty::Agg(_)) = (err_src, et) {
+                    // 集成体の E (派生の Debug を持つ型): 失敗の枝で `<E>.$debug` を呼んで表示する
+                    dbg = Some((es, et));
+                    (t0.ty(), good, head.to_string(), None)
                 } else {
-                    return self.err(line, "unwrap の Err の値の表示は段階 1 の対象外 (表示を下ろせるのは整数と () だけ)");
+                    return self.err(line, "unwrap の Err の値の表示は段階 1 の対象外 (表示を下ろせるのは整数・() と、派生の Debug を持つ型だけ)");
                 }
             }
             other => return self.err(line, format!("メソッド unwrap は型 {} に対して段階 1 の対象外", other.name())),
@@ -116,6 +124,28 @@ impl<'a> Lw<'a> {
         self.branch(good, (yes, vec![]), (no, vec![]));
         // 失敗の枝: 文言 (と Err の値) を出して終わる
         self.cur = Some(no);
+        if let Some((es, et)) = dbg {
+            // 文言の接頭辞と Err の表示を部分ごとに書き、終了コード 101 で止まる (`core.check.eq` の失敗と同じ形)。
+            let file = self.def.file.clone();
+            let mut g = super::debug::Gen::new(self.p, self.aggs);
+            let dbg_fn = match g.need(&es, et, &file) {
+                Ok(k) => k,
+                Err(w) => return self.err(line, format!("unwrap の Err の表示を下ろせない: {}", w)),
+            };
+            for (f, c) in std::mem::take(&mut g.out) {
+                self.coll.extra.push((f, c));
+            }
+            self.callees.insert(dbg_fn.clone());
+            let fat = self.aggs.borrow_mut().stderr_fat(self.p)?;
+            let ev = self.emit(et, Op::Payload(recv));
+            self.put_static(fat, &format!("panic: {}: ", msg));
+            self.call_debug(&dbg_fn, ev);
+            self.put_static(fat, "\n");
+            self.emit(Ty::Unit, Op::Abort);
+            self.terminate(Term::Unreachable);
+            self.cur = Some(yes);
+            return Ok(Some(self.emit(pay, Op::Payload(recv))));
+        }
         let arg = match arg_ty {
             Some(et) => Some(self.emit(et, Op::Payload(recv))),
             None => None,
