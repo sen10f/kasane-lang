@@ -1778,6 +1778,10 @@ pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]
     let (Some(sz), Some(pay)) = (elem_size(lw, elem), Pay::of(elem)) else {
         return lw.err(line, format!("get の要素の型 {} は段階 1 の対象外", elem.name()));
     };
+    if owns_heap(lw, elem) {
+        // 要素の写しを Option に入れると、Option が所有物を持つ型になり、match などで解放されて要素と二重解放になる。
+        return lw.err(line, format!("get の要素の型 {} は所有物を持つ (借用の Option<&T> は値の写しで持てない)", elem.name()));
+    }
     if args.len() != 1 {
         return lw.err(line, "get の引数の個数が違う");
     }
