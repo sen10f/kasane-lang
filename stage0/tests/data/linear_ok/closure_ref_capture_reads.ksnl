@@ -1,0 +1,33 @@
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let s = t.mk()
+    let f = fn() -> usize capture [&s] {
+        t.peek(s).wrapping_add(s.len())
+    }
+    core.mem.drop(f())
+    core.mem.drop(f())
+    t.consume(s)
+    let mut m = t.mk()
+    let g = fn() -> usize capture [&mut m] {
+        m.len()
+    }
+    core.mem.drop(g())
+    t.consume(m)
+    let t2 = t.mk()
+    let h = fn() -> () capture [move t2] {
+        t.consume(t2)
+    }
+    h()
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek
