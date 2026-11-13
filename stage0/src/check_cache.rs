@@ -2,7 +2,8 @@
 //!
 //! 保存するのは「ソースファイル 1 本の文面だけで決まる検査」の結果 (正規形の判定・lint・文法)。
 //! 意味の検査 (型・効果・借用・再帰) は他の定義に依存するので毎回やり直す。
-//! キーは ksn 実行体の中身・ファイルのパス・ソースの文面。キーが 1 つでも違えば使わない。
+//! キーは ksn の識別子 (ビルド時に `build.rs` が実行体へ埋め込むものすべてのハッシュ。実行時に実行体を読まない)・
+//! ファイルのパス・ソースの文面。キーが 1 つでも違えば使わない。
 //! 破損・不一致は黙って捨てて再計算する (読めなかった = 未命中)。
 //!
 //! 置き場 `<KSN_CACHE_DIR>/check/` の上限は 2 つ: 使用量 (`KSN_CHECK_CACHE_MAX`、既定 64 MiB) と
@@ -23,7 +24,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
@@ -82,27 +82,26 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{:02x}", x)).collect()
 }
 
-/// ksn 実行体の中身のハッシュ (版・検査の実装が変わればキーが変わる)。
+/// ksn 実行体の識別子 (64 桁の 16 進)。ビルド時に `build.rs` が、実行体へ埋め込むもの全部のハッシュとして作る。
+/// 実行時に実行体を読んで hash すると 15 MB で約 50 ms かかり、`ksn check` の固定費になるので使わない
+/// (設計_増分検査.md 9 章)。ソースや版・ツールチェーン・ビルド設定が 1 つでも変われば値が変わる。
 fn exe_key() -> &'static str {
-    static K: OnceLock<String> = OnceLock::new();
-    K.get_or_init(|| {
-        let mut h = Sha256::new();
-        h.update(env!("CARGO_PKG_VERSION").as_bytes());
-        if let Ok(exe) = std::env::current_exe() {
-            h.update(fs::read(exe).unwrap_or_default());
-        }
-        hex(&h.finalize())
-    })
+    env!("KSN_BUILD_ID")
 }
 
-/// 実行体のハッシュの先頭 16 桁。スロット名の接頭辞になり、掃除が「今の実行体のものか」を名前で判定する。
+/// 実行体の識別子の先頭 16 桁。スロット名の接頭辞になり、掃除が「今の実行体のものか」を名前で判定する。
 fn exe_prefix() -> &'static str {
     &exe_key()[..16]
 }
 
 fn key(path: &str, rel: &str, text: &str) -> String {
+    key_with(exe_key(), path, rel, text)
+}
+
+/// 鍵 (実行体の識別子を引数にする。テストで識別子を変えて確かめるため分けてある)。
+fn key_with(exe: &str, path: &str, rel: &str, text: &str) -> String {
     let mut h = Sha256::new();
-    for part in [exe_key(), path, rel, text] {
+    for part in [exe, path, rel, text] {
         h.update((part.len() as u64).to_le_bytes());
         h.update(part.as_bytes());
     }
@@ -384,6 +383,26 @@ mod tests {
         let mut v: Vec<String> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).filter(|n| !n.starts_with('.')).collect();
         v.sort();
         v
+    }
+
+    /// 実行体の識別子が変われば鍵が変わる (古い実行体のエントリは当たらない)。
+    /// 鍵の残りの部分 (パス・相対パス・文面) が同じでも、識別子だけで別の鍵になることを確かめる。
+    #[test]
+    fn key_changes_with_build_identity() {
+        let a = key_with("aa", "/p/x.ksnl", "src/x.ksnl", "fn f() end f\n");
+        assert_eq!(a, key_with("aa", "/p/x.ksnl", "src/x.ksnl", "fn f() end f\n"));
+        assert_ne!(a, key_with("ab", "/p/x.ksnl", "src/x.ksnl", "fn f() end f\n"));
+        // 連結のずれで同じ鍵にならないこと (長さの前置)。
+        assert_ne!(key_with("a", "bc", "", ""), key_with("ab", "c", "", ""));
+    }
+
+    /// 識別子は 64 桁の 16 進で、スロット名の接頭辞は先頭 16 桁。
+    #[test]
+    fn build_id_is_a_hex_fingerprint() {
+        let id = exe_key();
+        assert_eq!(id.len(), 64);
+        assert!(id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert_eq!(exe_prefix(), &id[..16]);
     }
 
     #[test]
