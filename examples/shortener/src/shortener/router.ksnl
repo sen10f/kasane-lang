@@ -1,0 +1,149 @@
+import shortener.error
+import shortener.http
+import shortener.json
+import shortener.store
+
+fn shortener.router.error_response(status: u16, message: &str) -> Result<shortener.http.Response, shortener.error.Error> uses [alloc] panics never pub
+    let body = json.error_body(message)?
+    Ok(http.json_response(status, body))
+end shortener.router.error_response
+
+fn shortener.router.lookup(db: &shortener.store.Store, path: &str) -> Result<shortener.http.Response, shortener.error.Error> uses [alloc] panics never
+    let code_text = match path.strip_prefix("/") {
+        Some(c) => c
+        None => return shortener.router.error_response(400u16, "bad path")
+    }
+    match db.lookup(code_text) {
+        Some(url) => {
+            let body = json.link_body(code_text, url)?
+            http.redirect_response(url, body)
+        }
+        None => shortener.router.error_response(404u16, "not found")
+    }
+end shortener.router.lookup
+
+fn shortener.router.route(db: &mut shortener.store.Store, request: &shortener.http.Request) -> Result<shortener.http.Response, shortener.error.Error> uses [alloc, io.fs] panics never pub
+    let path = request.path.as_str()
+    match request.method {
+        http.Method.Get => {
+            if path == "/stats" {
+                let body = json.stats_body(db.len())?
+                return Ok(http.json_response(200u16, body))
+            }
+            if path == "/shorten" {
+                return shortener.router.error_response(405u16, "method not allowed")
+            }
+            shortener.router.lookup(db, path)
+        }
+        http.Method.Post => {
+            if path == "/shorten" {
+                return shortener.router.shorten(db, request.body.as_str())
+            }
+            shortener.router.error_response(405u16, "method not allowed")
+        }
+        http.Method.Other => shortener.router.error_response(405u16, "method not allowed")
+    }
+end shortener.router.route
+
+fn shortener.router.shorten(db: &mut shortener.store.Store, body: &str) -> Result<shortener.http.Response, shortener.error.Error> uses [alloc, io.fs] panics never
+    let url = body.trim()
+    if !store.is_valid_url(url) {
+        return shortener.router.error_response(400u16, "invalid url")
+    }
+    match db.add(url) {
+        Ok(code_text) => {
+            let out = json.link_body(code_text.as_str(), url)?
+            Ok(http.json_response(201u16, out))
+        }
+        Err(error.Error.Alloc(a)) => Err(error.Error.Alloc(a))
+        Err(_other) => shortener.router.error_response(500u16, "storage failure")
+    }
+end shortener.router.shorten
+
+fn shortener.router.test_call(db: &mut shortener.store.Store, method: shortener.http.Method, path: &str, body: &str) -> shortener.http.Response uses [alloc, io.fs] panics may
+    let copy_path = match alloc.string.String.from_str(std.alloc.SYSTEM, path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("alloc")
+    }
+    let copy_body = match alloc.string.String.from_str(std.alloc.SYSTEM, body) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("alloc")
+    }
+    let request = http.Request { body: copy_body, method: method, path: copy_path }
+    match shortener.router.route(db, &request) {
+        Ok(r) => r
+        Err(_e) => core.panic.panic("route failed")
+    }
+end shortener.router.test_call
+
+fn shortener.router.test_store() -> shortener.store.Store uses [alloc] panics may
+    match store.Store.new("") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+end shortener.router.test_store
+
+test shortener.router.route.test_get_known_code_redirects
+    let mut db = shortener.router.test_store()
+    core.mem.drop(shortener.router.test_call(&mut db, http.Method.Post, "/shorten", "http://a.test/x"))
+    let r = shortener.router.test_call(&mut db, http.Method.Get, "/1000", "")
+    core.check.eq(r.status, 302u16)
+    core.check.eq(r.location.as_str(), "http://a.test/x")
+    core.check.eq(r.body.as_str(), "{\"code\":\"1000\",\"url\":\"http://a.test/x\"}")
+end shortener.router.route.test_get_known_code_redirects
+
+test shortener.router.route.test_get_unknown_code_is_404
+    let mut db = shortener.router.test_store()
+    let r = shortener.router.test_call(&mut db, http.Method.Get, "/1000", "")
+    core.check.eq(r.status, 404u16)
+    core.check.eq(r.body.as_str(), "{\"error\":\"not found\"}")
+    core.check.eq(r.location.as_str(), "")
+    core.check.eq(shortener.router.test_call(&mut db, http.Method.Get, "/", "").status, 404u16)
+    core.check.eq(shortener.router.test_call(&mut db, http.Method.Get, "/a/b", "").status, 404u16)
+    core.check.eq(shortener.router.test_call(&mut db, http.Method.Get, "/%00", "").status, 404u16)
+end shortener.router.route.test_get_unknown_code_is_404
+
+test shortener.router.route.test_method_not_allowed
+    let mut db = shortener.router.test_store()
+    let other = http.Method.Other
+    core.check.eq(shortener.router.test_call(&mut db, other, "/shorten", "http://a.test/").status, 405u16)
+    core.check.eq(shortener.router.test_call(&mut db, other, "/1000", "").status, 405u16)
+    core.check.eq(shortener.router.test_call(&mut db, http.Method.Post, "/stats", "").status, 405u16)
+    core.check.eq(shortener.router.test_call(&mut db, http.Method.Post, "/1000", "").status, 405u16)
+    core.check.eq(shortener.router.test_call(&mut db, http.Method.Get, "/shorten", "").status, 405u16)
+    core.check.eq(db.len(), 0usize)
+end shortener.router.route.test_method_not_allowed
+
+test shortener.router.route.test_shorten_creates_link
+    let mut db = shortener.router.test_store()
+    let r = shortener.router.test_call(&mut db, http.Method.Post, "/shorten", "  http://a.test/x\r\n")
+    core.check.eq(r.status, 201u16)
+    core.check.eq(r.body.as_str(), "{\"code\":\"1000\",\"url\":\"http://a.test/x\"}")
+    let r2 = shortener.router.test_call(&mut db, http.Method.Post, "/shorten", "https://b.test/")
+    core.check.eq(r2.status, 201u16)
+    core.check.eq(r2.body.as_str(), "{\"code\":\"1001\",\"url\":\"https://b.test/\"}")
+    core.check.eq(db.len(), 2usize)
+end shortener.router.route.test_shorten_creates_link
+
+test shortener.router.route.test_shorten_rejects_bad_urls
+    let mut db = shortener.router.test_store()
+    let post = http.Method.Post
+    core.check.eq(shortener.router.test_call(&mut db, post, "/shorten", "").status, 400u16)
+    core.check.eq(shortener.router.test_call(&mut db, post, "/shorten", "not a url").status, 400u16)
+    core.check.eq(shortener.router.test_call(&mut db, post, "/shorten", "ftp://a.test/").status, 400u16)
+    core.check.eq(shortener.router.test_call(&mut db, post, "/shorten", "http://a b/").status, 400u16)
+    let r = shortener.router.test_call(&mut db, post, "/shorten", "javascript:alert(1)")
+    core.check.eq(r.body.as_str(), "{\"error\":\"invalid url\"}")
+    core.check.eq(db.len(), 0usize)
+end shortener.router.route.test_shorten_rejects_bad_urls
+
+test shortener.router.route.test_stats_counts_links
+    let mut db = shortener.router.test_store()
+    let r0 = shortener.router.test_call(&mut db, http.Method.Get, "/stats", "")
+    core.check.eq(r0.status, 200u16)
+    core.check.eq(r0.body.as_str(), "{\"links\":0}")
+    core.mem.drop(shortener.router.test_call(&mut db, http.Method.Post, "/shorten", "http://a.test/"))
+    core.mem.drop(shortener.router.test_call(&mut db, http.Method.Post, "/shorten", "http://b.test/"))
+    let r2 = shortener.router.test_call(&mut db, http.Method.Get, "/stats", "")
+    core.check.eq(r2.body.as_str(), "{\"links\":2}")
+end shortener.router.route.test_stats_counts_links

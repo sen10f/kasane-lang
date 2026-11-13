@@ -6,7 +6,7 @@
 //! 配列の引数・戻り値・フィールドは対象外 (KIR に型がないので、理由付きで未対応にする)。
 //! フレームの領域は式の評価ごとに確保する (ループの中で評価すると、領域はループの回数だけ増える)。
 
-use crate::check::{items, nf, nline};
+use crate::check::{items, nf, nlineno as nline};
 use crate::kir::{size_of, Op, Ty, VId};
 use crate::parser::V;
 

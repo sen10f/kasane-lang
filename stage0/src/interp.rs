@@ -3,13 +3,15 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
-use crate::check::{children as _children, items, nf, nline, nname, st, strs};
-use crate::ffi::{classify, words, Class, FArg, Leaf, Loc, Out, Placer, Ret, INT_REGS, SSE_REGS};
+use crate::check::{children as _children, items, nf, nlineno, nname, st, strs};
 use crate::parser::V;
 use crate::program::{Def, Program, Resolved, Target};
 use crate::value::*;
+
+#[path = "ffi_interp.rs"]
+mod ffi_interp;
 
 const PRIMS: &[&str] = &[
     "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
@@ -21,17 +23,47 @@ pub struct Interp {
     pub depth: usize,
     pub const_cache: HashMap<String, Val>,
     pub args: Vec<String>,
-    pub out: std::io::BufWriter<std::io::Stdout>,
+    pub out: std::io::BufWriter<Box<dyn Write>>,
+    /// `ksn debug` / `ksn dap` のデバッガ (`None` なら何も起きない。debug.rs)
+    pub dbg: Option<Box<crate::debug::Debugger>>,
+    /// デバッガが式を評価している間 true: 副作用・panic のありうる呼び出しを拒否する (debug.rs)
+    pub dbg_guard: bool,
     pub reload: Option<std::sync::mpsc::Receiver<Program>>,
     keep: Vec<Rc<Program>>,
     /// std.fs で開いたファイル (記述子 -> ファイル)
     pub files: HashMap<i128, std::fs::File>,
     pub next_fd: i128,
-    /// const の印を付けた場所ポインタ (`from_ref` / `as_const` の結果)。番地 -> 場所の Weak。
-    /// Weak が番地を確保しているので、印の付いた場所の番地は別の場所に再利用されない。
-    const_refs: HashMap<usize, Weak<dyn Place>>,
-    const_prune_at: usize,
+    /// 生ポインタのアドレス → その指す型の名前。`extern` の `*mut T` の戻り値や `core.ptr.*` が
+    /// 作ったアドレスに付ける (`core.ptr.read` / `add` が要素の幅を知るため)。ネイティブ生成は
+    /// ポインタの静的型から知るが、インタプリタの値は型を持たないので、作った側で覚えておく。
+    ptr_elem: RefCell<HashMap<i128, String>>,
+    /// いま評価している `core.ptr.*` の呼び出しの明示型引数 (`core.ptr.cast::<T, U>`)。ポインタの値の要素型を決める。
+    ptr_targs: Vec<V>,
+    /// C に見せている Kasane の配列・構造体・変数の写し (`core.ptr.from_mut`)
+    pins: Vec<ffi_interp::Pin>,
+    /// C へ渡した関数 (コールバック) の入口の割り当て
+    cbs: Vec<ffi_interp::CbSlot>,
+    /// いま実行中の `extern` の呼び出しの深さ (0 のときだけ、ピンを読み書きのたびに同期する)
+    ffi_depth: usize,
+    /// std.net のソケット表
+    pub net: crate::net::NetTable,
+    /// `std.thread.spawn` したスレッド (spawn の順)。
+    ///
+    /// インタプリタは単一スレッド (値は `Rc`)。スレッドは spawn の時点では走らせず、本体を保留する。
+    /// 保留したスレッドは、(1) `join` が完了を待つとき、(2) `recv` が空のキューで待つとき、に spawn の順で 1 つずつ最後まで走らせる
+    /// (途中で切り替えない。走っている最中に別のスレッドへ制御を渡すのは、上の 2 つで待つときだけ)。
+    /// `Mutex.lock` は何もしない (各スレッドは最後まで走るので、同時に 2 つがロックを持つことはない)。
+    /// チャネルの容量は無視する (`send` は待たない)。`join` / `Mutex` / チャネルだけで通信する正しいプログラムは、
+    /// ネイティブ生成と同じ結果になる。どの順で走らせても進めないプログラム (走っているスレッドが、自分を待っている側からの
+    /// 後の `send` を `recv` で待つ往復の通信、`join` の循環、送信側が生きたままの空チャネルの `recv` など) は、
+    /// 止まらずに「deadlock」の panic で失敗する。
+    pub threads: Vec<Rc<ThreadV>>,
 }
+
+pub const DEADLOCK_JOIN: &str = "deadlock: a thread waits for itself, or two threads wait for each other (the interpreter runs each thread to completion and cannot suspend one)";
+pub const DEADLOCK_RECV: &str = "deadlock: recv() on an empty channel whose Sender is still alive, and no other thread can run \
+(native threads would block here forever; or the program needs a back-and-forth with a thread that is waiting on this one, which the \
+single-threaded interpreter cannot schedule. Drop the Sender when done sending)";
 
 fn unhex(s: &str) -> String {
     let bytes: Vec<u8> = (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap_or(0)).collect();
@@ -42,6 +74,119 @@ fn parse_int(s: &str) -> i128 {
     s.parse::<i128>().unwrap_or_else(|_| s.parse::<u128>().map(|u| u as i128).unwrap_or(0))
 }
 
+// ------------------------------------------------------------ 生ポインタの読み書き
+/// 要素の型が分からない生ポインタの読み書きの実行時エラー。
+fn unknown_elem(name: &str) -> String {
+    format!(
+        "{}: the interpreter does not know the element type of the pointer (raw pointer memory); use `ksn build --backend clif`",
+        name
+    )
+}
+
+/// スカラーでない (構造体など) 要素の読み書きの実行時エラー。
+fn unsupported_elem(name: &str, elem: &str) -> String {
+    format!("{}: the element type `{}` is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`", name, elem)
+}
+
+/// 生ポインタの値の型名 (`Val::Int` の型名) と要素型の対応。扱うのはスカラーだけ。
+const PTR_TAGS: &[(&str, &str)] = &[
+    ("i8", "*i8"),
+    ("i16", "*i16"),
+    ("i32", "*i32"),
+    ("i64", "*i64"),
+    ("isize", "*isize"),
+    ("u8", "*u8"),
+    ("u16", "*u16"),
+    ("u32", "*u32"),
+    ("u64", "*u64"),
+    ("usize", "*usize"),
+    ("f32", "*f32"),
+    ("f64", "*f64"),
+    ("bool", "*bool"),
+];
+
+fn ptr_tag(elem: &str) -> Option<&'static str> {
+    PTR_TAGS.iter().find(|(e, _)| *e == elem).map(|(_, t)| *t)
+}
+
+fn ptr_tag_elem(tag: &str) -> Option<&'static str> {
+    PTR_TAGS.iter().find(|(_, t)| *t == tag).map(|(e, _)| *e)
+}
+
+/// 型の構文 (`*mut T` の `T` など) から名前を取り出す (スカラーと名前付きの型だけ)。
+fn elem_name(t: &V) -> Option<String> {
+    match crate::check::tag(t).as_str() {
+        "prim" | "named" => Some(crate::check::st(crate::check::tel(t, 1))),
+        _ => None,
+    }
+}
+
+/// 値そのものが持っている型のタグ (`write` がポインタの要素型を知らないときの代わり)。
+fn scalar_ty(v: &Val) -> Option<&'static str> {
+    match v {
+        Val::Bool(_) => Some("bool"),
+        Val::Char(_) => Some("char"),
+        Val::F32(_) => Some("f32"),
+        Val::Float(_) => Some("f64"),
+        Val::Int(_, Some(t)) => Some(t),
+        _ => None,
+    }
+}
+
+/// アドレスから要素型 1 つぶんを読む。
+unsafe fn read_scalar(name: &str, p: i128, elem: &str) -> Res {
+    let a = p as usize as *const u8;
+    Ok(match elem {
+        "bool" => Val::Bool(std::ptr::read_unaligned(a) != 0),
+        "i8" => int(std::ptr::read_unaligned(a as *const i8) as i128, "i8"),
+        "u8" => int(std::ptr::read_unaligned(a) as i128, "u8"),
+        "i16" => int(std::ptr::read_unaligned(a as *const i16) as i128, "i16"),
+        "u16" => int(std::ptr::read_unaligned(a as *const u16) as i128, "u16"),
+        "i32" => int(std::ptr::read_unaligned(a as *const i32) as i128, "i32"),
+        "u32" => int(std::ptr::read_unaligned(a as *const u32) as i128, "u32"),
+        "i64" => int(std::ptr::read_unaligned(a as *const i64) as i128, "i64"),
+        "isize" => int(std::ptr::read_unaligned(a as *const isize) as i128, "isize"),
+        "u64" => int(std::ptr::read_unaligned(a as *const u64) as i128, "u64"),
+        "usize" => int(std::ptr::read_unaligned(a as *const usize) as i128, "usize"),
+        "i128" => int(std::ptr::read_unaligned(a as *const i128), "i128"),
+        "u128" => int(std::ptr::read_unaligned(a as *const u128) as i128, "u128"),
+        "f32" => Val::F32(std::ptr::read_unaligned(a as *const f32)),
+        "f64" => Val::Float(std::ptr::read_unaligned(a as *const f64)),
+        "char" => Val::Char(char::from_u32(std::ptr::read_unaligned(a as *const u32)).unwrap_or('\0')),
+        _ => return panic(unsupported_elem(name, elem)),
+    })
+}
+
+/// アドレスへ要素型 1 つぶんを書く (値は宣言の型に合わせて読む)。
+unsafe fn write_scalar(name: &str, p: i128, elem: &str, v: &Val) -> Result<(), Ctl> {
+    let a = p as usize as *mut u8;
+    let i = match v {
+        Val::Int(x, _) => *x,
+        Val::Bool(b) => *b as i128,
+        Val::Char(c) => *c as i128,
+        _ => 0,
+    };
+    let f = match v {
+        Val::F32(x) => *x as f64,
+        Val::Float(x) => *x,
+        Val::Int(x, _) => *x as f64,
+        _ => 0.0,
+    };
+    match elem {
+        "bool" => std::ptr::write_unaligned(a, (i != 0) as u8),
+        "i8" | "u8" => std::ptr::write_unaligned(a, i as u8),
+        "i16" | "u16" => std::ptr::write_unaligned(a as *mut u16, i as u16),
+        "i32" | "u32" => std::ptr::write_unaligned(a as *mut u32, i as u32),
+        "char" => std::ptr::write_unaligned(a as *mut u32, i as u32),
+        "i64" | "u64" | "isize" | "usize" => std::ptr::write_unaligned(a as *mut u64, i as u64),
+        "i128" | "u128" => std::ptr::write_unaligned(a as *mut u128, i as u128),
+        "f32" => std::ptr::write_unaligned(a as *mut f32, f as f32),
+        "f64" => std::ptr::write_unaligned(a as *mut f64, f),
+        _ => return panic(unsupported_elem(name, elem)),
+    }
+    Ok(())
+}
+
 impl Interp {
     pub fn new(p: Rc<Program>) -> Interp {
         Interp {
@@ -49,29 +194,68 @@ impl Interp {
             depth: 0,
             const_cache: HashMap::new(),
             args: vec![],
-            out: std::io::BufWriter::new(std::io::stdout()),
+            out: std::io::BufWriter::new(Box::new(std::io::stdout())),
+            dbg: None,
+            dbg_guard: false,
             reload: None,
             keep: vec![],
             files: HashMap::new(),
             next_fd: 3,
-            const_refs: HashMap::new(),
-            const_prune_at: 1024,
+            ptr_elem: RefCell::new(HashMap::new()),
+            ptr_targs: vec![],
+            pins: vec![],
+            cbs: vec![],
+            ffi_depth: 0,
+            net: Default::default(),
+            threads: vec![],
         }
     }
 
-    /// 場所ポインタに const の印を付けて返す。`write` は印の付いたポインタでは panic する (`as_mut` で印を外す)。
-    fn mark_const(&mut self, p: Rc<dyn Place>) -> Rc<dyn Place> {
-        if self.const_refs.len() >= self.const_prune_at {
-            self.const_refs.retain(|_, w| w.strong_count() > 0);
-            self.const_prune_at = (self.const_refs.len() * 2).max(1024);
+    /// 式 `e` が局所変数そのもの (`x`) で、その値 `v` がチャネルの端を持つなら、変数を空にする (所有権の移動の近似)。
+    /// インタプリタは値を共有して持つので、元の変数を残すと、送信側が「まだ生きている」ままになってしまう。
+    pub fn move_out(&self, e: &V, sc: &Scope, v: &Val) {
+        if nname(e) != "Path" || !has_chan(v, 0) {
+            return;
         }
-        self.const_refs.insert(Rc::as_ptr(&p) as *const u8 as usize, Rc::downgrade(&p));
-        p
+        let segs = strs(&nf(e)[0]);
+        if segs.len() == 1 {
+            if let Some(owner) = sc_owner(sc, &segs[0]) {
+                owner.borrow_mut().vars.insert(segs[0].clone(), Val::Unit);
+            }
+        }
     }
 
-    /// 場所ポインタに const の印が付いているか。
-    fn is_const_place(&self, p: &Rc<dyn Place>) -> bool {
-        self.const_refs.get(&(Rc::as_ptr(p) as *const u8 as usize)).and_then(|w| w.upgrade()).is_some_and(|s| Rc::ptr_eq(&s, p))
+    /// 保留中のスレッドを 1 つ (spawn の順で先頭のもの) 最後まで走らせる。走らせるものがなければ false。
+    pub fn run_one_pending(&mut self) -> Result<bool, Ctl> {
+        let Some(t) = self.threads.iter().find(|t| t.state.get() == 0).cloned() else { return Ok(false) };
+        self.run_thread(&t)?;
+        Ok(true)
+    }
+
+    pub fn run_thread(&mut self, t: &Rc<ThreadV>) -> Result<(), Ctl> {
+        match t.state.get() {
+            2 => return Ok(()),
+            1 => return panic(DEADLOCK_JOIN),
+            _ => {}
+        }
+        t.state.set(1);
+        let body = t.body.borrow_mut().take();
+        let tracing = self.dbg.is_some();
+        if tracing {
+            self.dbg_thread_enter(self.threads.iter().position(|x| Rc::ptr_eq(x, t)).unwrap_or(0));
+        }
+        let r = match body {
+            Some(b) => self.call_value(&b, vec![]),
+            None => Ok(Val::Unit),
+        };
+        if tracing {
+            self.dbg_thread_exit();
+        }
+        let r = r?;
+        // 本体 (取り込んだ値を持つクロージャ) はここで落ちる: 取り込んだ `Sender` はこの時点で閉じる。
+        *t.result.borrow_mut() = Some(r);
+        t.state.set(2);
+        Ok(())
     }
 
     fn def(&self, i: usize) -> &'static Def {
@@ -101,6 +285,16 @@ impl Interp {
                 } else if p == "f64" {
                     if let Val::Int(x, _) = v {
                         return Val::Float(x as f64);
+                    }
+                }
+                v
+            }
+            // 生ポインタ: 宣言の指す型を覚える (`core.ptr.read` / `write` / `add` が幅を知るため)。
+            "ptr" => {
+                if let Val::Int(a, _) = &v {
+                    if let Some(e) = elem_name(tel(ty, 2)) {
+                        let e = self.type_fqn(&e, "").unwrap_or(e);
+                        self.ptr_elem.borrow_mut().insert(*a, e);
                     }
                 }
                 v
@@ -151,10 +345,21 @@ impl Interp {
         if let Val::Struct(s) = &v {
             if self.is_copy(&s.ty) {
                 let f = s.f.borrow().iter().map(|(k, x)| (k.clone(), self.cp(x.clone()))).collect();
-                return Val::Struct(Rc::new(StructV { ty: s.ty.clone(), f: RefCell::new(f) }));
+                return self.mk_struct(s.ty.clone(), f);
             }
         }
         v
+    }
+
+    /// 構造体の値を作る。フィールドは型定義の宣言順に並べる (4.3)。格納順を宣言順に揃えておくと、
+    /// `==`・`hkey` (HashMap の鍵)・Debug の表示が、リテラルに書いた順に依らず一致する。
+    /// 型定義が無いとき (標準の型) は渡された順のまま。
+    pub fn mk_struct(&self, ty: String, mut fields: Vec<(String, Val)>) -> Val {
+        if let Some(&i) = self.p.types.get(&ty) {
+            let order = &self.p.defs[i].fields;
+            fields.sort_by_key(|(k, _)| order.iter().position(|f| f.0 == *k).unwrap_or(usize::MAX));
+        }
+        Val::Struct(Rc::new(StructV { ty, f: RefCell::new(fields) }))
     }
 
     // ------------------------------------------------------------ 定数
@@ -194,26 +399,97 @@ impl Interp {
             let a = self.coerce(a, pty);
             sc_declare(&sc, pn, a);
         }
+        if self.dbg_guard {
+            self.dbg_guard_def(d)?;
+        }
         self.depth += 1;
         if self.depth > 2500 {
             eprintln!("stack overflow");
             return Err(Ctl::Exit(102));
         }
+        let tracing = self.dbg.is_some();
+        if tracing {
+            self.dbg_enter(d.name.clone(), &sc, true);
+        }
         let r = self.eval_block_body(d.body.as_ref().unwrap(), &sc);
+        if tracing {
+            self.dbg_leave(&r)?;
+        }
         self.depth -= 1;
         let v = match r {
             Ok(v) => v,
             Err(Ctl::Return(v)) => v,
             Err(e) => return Err(e),
         };
+        let v = self.convert_err(v, &d.ret, &d.file)?;
         Ok(self.coerce(v, &d.ret))
+    }
+
+    /// 4.1: `?` のエラー変換。戻り値型が `Result<_, E2>` で `E2` が `derive [From]` の `enum` のとき、
+    /// 返す値が `Err(e)` で `e` の型が `E1` (`E2` と別の型) なら、`E1` を唯一のペイロードに持つバリアントで包み直す。
+    /// 検査を通ったプログラムでは、型の違う `Err` が関数から出る経路は `?` だけなので、
+    /// `?` の位置で変換するのと同じ結果になる (包むのはバリアントの構築だけで、効果もpanicもない)。
+    fn convert_err(&mut self, v: Val, ret: &V, file: &str) -> Res {
+        use crate::check::{tag, tel};
+        if self.p.from_enums.is_empty() || tag(ret) != "named" || st(tel(ret, 1)) != "Result" {
+            return Ok(v);
+        }
+        let Val::Enum(en) = &v else { return Ok(v) };
+        if en.en != "Result" || en.var != "Err" || en.pl.is_empty() {
+            return Ok(v);
+        }
+        let Some(e2) = items(tel(ret, 2)).get(1) else { return Ok(v) };
+        if tag(e2) != "named" {
+            return Ok(v);
+        }
+        let segs: Vec<String> = st(tel(e2, 1)).split('.').map(String::from).collect();
+        let e2name = self.p.expand(&segs, file).join(".");
+        if !self.p.from_enums.contains(&e2name) {
+            return Ok(v);
+        }
+        let payload = dr(&en.pl[0]);
+        let key = match &payload {
+            Val::Struct(s) => Some(s.ty.clone()),
+            Val::Enum(e) => Some(e.en.clone()),
+            Val::Int(_, Some(k)) => Some(k.to_string()),
+            Val::Bool(_) => Some("bool".to_string()),
+            Val::Char(_) => Some("char".to_string()),
+            _ => None,
+        };
+        if key.as_deref() == Some(e2name.as_str()) {
+            return Ok(v);
+        }
+        let Some(&ti) = self.p.types.get(&e2name) else { return Ok(v) };
+        let cands: Vec<&String> = self.p.defs[ti]
+            .variants
+            .iter()
+            .filter(|(_, pl)| pl.len() == 1)
+            .filter(|(_, pl)| match &key {
+                Some(k) => crate::types::from_v(&pl[0], &std::collections::HashSet::new()).show() == *k,
+                None => true,
+            })
+            .map(|(vn, _)| vn)
+            .collect();
+        // 値の型が決まらないとき (文字列・コレクションなど) は、包めるバリアントが 1 つだけのときに限る。
+        let [vn] = cands.as_slice() else { return Ok(v) };
+        let vn = (*vn).clone();
+        let converted = self.mk_variant(&e2name, &vn, vec![en.pl[0].clone()])?;
+        Ok(mk_enum("Result", "Err", vec![converted]))
     }
 
     /// テスト本体など、引数なしの本体だけを実行する。
     pub fn call_body(&mut self, di: usize) -> Res {
         let d = self.def(di);
         let sc = new_scope(None, Rc::from(d.file.as_str()));
-        match self.eval_block_body(d.body.as_ref().unwrap(), &sc) {
+        let tracing = self.dbg.is_some();
+        if tracing {
+            self.dbg_enter(d.name.clone(), &sc, true);
+        }
+        let r = self.eval_block_body(d.body.as_ref().unwrap(), &sc);
+        if tracing {
+            self.dbg_leave(&r)?;
+        }
+        match r {
             Ok(v) => Ok(v),
             Err(Ctl::Return(v)) => Ok(v),
             Err(e) => Err(e),
@@ -229,11 +505,23 @@ impl Interp {
                     let a = self.coerce(a, pty);
                     sc_declare(&sc, pn, a);
                 }
-                let r = match self.eval(&c.body, &sc) {
+                let tracing = self.dbg.is_some();
+                if tracing {
+                    self.dbg_enter("<closure>".into(), &sc, false);
+                } else if self.dbg_guard {
+                    return panic("debugger: calling a closure is not allowed in a debugger expression");
+                }
+                let r = self.eval(&c.body, &sc);
+                if tracing {
+                    self.dbg_leave(&r)?;
+                }
+                let r = match r {
                     Ok(v) => v,
                     Err(Ctl::Return(v)) => v,
                     Err(e) => return Err(e),
                 };
+                let file = c.scope.borrow().file.clone();
+                let r = self.convert_err(r, &c.ret, &file)?;
                 Ok(self.coerce(r, &c.ret))
             }
             Val::Func(i) => self.call_def(*i, args),
@@ -267,10 +555,14 @@ impl Interp {
     }
 
     fn exec_stmt(&mut self, s: &V, sc: &Scope) -> Res {
+        if self.dbg.is_some() {
+            self.dbg_stmt(s, sc)?;
+        }
         let f = nf(s);
         match nname(s) {
             "Let" => {
                 let v = self.eval(&f[3], sc)?;
+                self.move_out(&f[3], sc, &v);
                 let mut v = self.cp(v);
                 if !matches!(f[2], V::Nil) {
                     v = self.coerce(v, &f[2]);
@@ -305,6 +597,21 @@ impl Interp {
             "Lit" => Ok(self.lit(e)),
             "Block" => self.eval_block(e, sc),
             "Unsafe" => self.eval_block(&f[2], sc),
+            // `with 名前 = 初期化式 close 後始末式 { 本体 }` (4.4): 本体を抜けるあらゆる経路 (値・`return` /
+            // `?` / `break` / `continue`) で、後始末式をちょうど 1 回、出口の値を決めたあとに実行する。
+            // panic とプロセス終了は巻き戻さない (後始末なし)。初期化式が失敗したら束縛も後始末もない。
+            "With" => {
+                let v = self.eval(&f[2], sc)?;
+                let v = self.cp(v);
+                let s2 = new_scope(Some(sc), Rc::from(""));
+                self.bind(&f[0], v, &s2)?;
+                let r = self.eval(&f[4], &s2);
+                if matches!(r, Err(Ctl::Panic(_)) | Err(Ctl::Exit(_))) {
+                    return r;
+                }
+                self.eval(&f[3], &s2)?;
+                r
+            }
             "TupleE" => {
                 let mut out = vec![];
                 for x in items(&f[0]) {
@@ -360,7 +667,7 @@ impl Interp {
                     };
                     fields.push((fnm, v));
                 }
-                Ok(Val::Struct(Rc::new(StructV { ty: fq, f: RefCell::new(fields) })))
+                Ok(self.mk_struct(fq, fields))
             }
             "Closure" => {
                 let params = items(&f[0]).iter().map(|p| (st(&items(p)[0]), items(p)[1].clone())).collect();
@@ -368,6 +675,7 @@ impl Interp {
                 // `&mut x` は外側の変数への参照 (本体の `*x = v` / `x = v` がそこへ書く)。
                 // 外側のスコープを共有すると、取り込み後の外側の書き換えが見えてしまうので、取り込みだけを入れた
                 // 専用のスコープを作る (取り込み漏れの名前は、従来どおり外側の scope へ届く。漏れの検査は別件)。
+                let caps = items(&f[2]).iter().map(|c| (st(crate::check::tel(c, 0)), st(crate::check::tel(c, 1)))).collect();
                 let cs = new_scope(Some(sc), Rc::from(""));
                 for c in items(&f[2]) {
                     let (k, n) = (st(&items(c)[0]), st(&items(c)[1]));
@@ -379,11 +687,18 @@ impl Interp {
                             _ => Val::Ref(Rc::new(VarPlace(owner, n.clone()))),
                         },
                         "&" => cur,
-                        _ => self.cp(cur),
+                        _ => {
+                            // `move x` でチャネルの端を取り込むと、端はクロージャへ移る: 元の変数は空にする
+                            // (残すと、送信側が「まだ生きている」ままになる。`move_out` と同じ近似)。
+                            if k == "move" && has_chan(&cur, 0) {
+                                owner.borrow_mut().vars.insert(n.clone(), Val::Unit);
+                            }
+                            self.cp(cur)
+                        }
                     };
                     sc_declare(&cs, &n, v);
                 }
-                Ok(Val::Closure(Rc::new(ClosureV { params, ret: f[1].clone(), body: f[3].clone(), scope: cs })))
+                Ok(Val::Closure(Rc::new(ClosureV { params, ret: f[1].clone(), body: f[3].clone(), scope: cs, caps })))
             }
             "If" => {
                 if self.truthy(&f[0], sc)? {
@@ -396,13 +711,14 @@ impl Interp {
             }
             "Match" => {
                 let v = self.eval(&f[0], sc)?;
+                self.move_out(&f[0], sc, &v);
                 for arm in items(&f[1]) {
                     let s2 = new_scope(Some(sc), Rc::from(""));
                     if self.bind(&items(arm)[0], v.clone(), &s2)? {
                         return self.eval(&items(arm)[1], &s2);
                     }
                 }
-                panic(format!("non-exhaustive match at line {}", nline(e)))
+                panic(format!("non-exhaustive match at line {}", nlineno(e)))
             }
             "Loop" => {
                 loop {
@@ -452,6 +768,7 @@ impl Interp {
             "ExprStmt" | "Let" | "Assign" => self.exec_stmt(e, sc),
             "Try" => {
                 let v = dr(&self.eval(&f[0], sc)?);
+                self.move_out(&f[0], sc, &v);
                 if let Val::Enum(en) = &v {
                     if en.en == "Result" {
                         if en.var == "Ok" {
@@ -487,12 +804,12 @@ impl Interp {
                     Val::Int(x, _) => x,
                     _ => return panic("bad index"),
                 };
-                // 要素 1 個だけを複製する (列全体を複製すると読み取りが長さに比例する)。
+                // 要素を 1 つだけ取り出す (列全体を複製しない)。
                 let len = seq_len(&b).unwrap_or(0);
                 if i < 0 || i as usize >= len {
                     return panic(format!("index out of bounds: the len is {} but the index is {}", len, i));
                 }
-                Ok(seq_elem(&b, i as usize).unwrap_or(Val::Unit))
+                Ok(seq_get(&b, i as usize).unwrap_or(Val::Unit))
             }
             "Call" => self.e_call(e, sc),
             "MCall" => {
@@ -619,26 +936,20 @@ impl Interp {
             };
             let (x, y) = (g(&a), g(&b));
             return match op.as_str() {
-                "+" => Ok(Val::F32(x + y)),
-                "-" => Ok(Val::F32(x - y)),
-                "*" => Ok(Val::F32(x * y)),
-                "/" => Ok(Val::F32(x / y)),
+                "+" => Ok(Val::F32(crate::fmath::nan_rule32(x, y, x + y))),
+                "-" => Ok(Val::F32(crate::fmath::nan_rule32(x, y, x - y))),
+                "*" => Ok(Val::F32(crate::fmath::nan_rule32(x, y, x * y))),
+                "/" => Ok(Val::F32(crate::fmath::nan_rule32(x, y, x / y))),
                 _ => panic(format!("bad float operator {}", op)),
             };
         }
         if matches!(a, Val::Float(_)) || matches!(b, Val::Float(_)) {
             let (x, y) = (fl(&a).unwrap_or(0.0), fl(&b).unwrap_or(0.0));
             return match op.as_str() {
-                "+" => Ok(Val::Float(x + y)),
-                "-" => Ok(Val::Float(x - y)),
-                "*" => Ok(Val::Float(x * y)),
-                "/" => {
-                    if y == 0.0 {
-                        Ok(Val::Float(if x == 0.0 || x.is_nan() { f64::NAN } else { f64::INFINITY.copysign(x) * 1f64.copysign(y) }))
-                    } else {
-                        Ok(Val::Float(x / y))
-                    }
-                }
+                "+" => Ok(Val::Float(crate::fmath::nan_rule64(x, y, x + y))),
+                "-" => Ok(Val::Float(crate::fmath::nan_rule64(x, y, x - y))),
+                "*" => Ok(Val::Float(crate::fmath::nan_rule64(x, y, x * y))),
+                "/" => Ok(Val::Float(crate::fmath::nan_rule64(x, y, x / y))),
                 _ => panic(format!("bad float operator {}", op)),
             };
         }
@@ -740,60 +1051,96 @@ impl Interp {
         0
     }
 
-    /// 順序 (-1 / 0 / 1、NaN は None)。手書きの `partial_cmp` / `cmp` を持つ型はそれを呼ぶ。派生の順序は、列挙子は
-    /// その型の宣言順、ペイロード・フィールド・列の要素は辞書順で、要素ごとにこの関数を再帰で呼ぶ (4.3)。
+    /// 演算子 `<` 等の順序 (-1 / 0 / 1、NaN は None)。`<` は `partial_cmp` から導く (4.3): 手書きの `partial_cmp` があればそれを呼び、
+    /// なければ派生の順序 (列挙子は宣言順、フィールド・ペイロード・列の要素は辞書順)。
     pub fn v_cmp(&mut self, a: &Val, b: &Val) -> Result<Option<i32>, Ctl> {
+        self.ord_of(a, b, false, false)
+    }
+
+    /// 順序の本体。`total` が真なら `cmp` の規則 (`min` / `max` が従う)、偽なら `partial_cmp` の規則。
+    /// `derived_top` が真なら、派生の `cmp` / `partial_cmp` の入口なので、利用者の型の最上位では手書きのメソッドを引かず
+    /// フィールドごとに比べる (手書きの `partial_cmp` が派生の `cmp` を呼ぶときに無限に再帰しないため)。
+    /// 入れ子の要素は、どの入口でも手書きのメソッドを使う (4.3)。
+    fn ord_of(&mut self, a: &Val, b: &Val, total: bool, derived_top: bool) -> Result<Option<i32>, Ctl> {
         let (a, b) = (dr(a), dr(b));
-        let user_ty = match &a {
-            Val::Struct(s) => Some(s.ty.clone()),
-            Val::Enum(e) if e.en != "Option" && e.en != "Result" => Some(e.en.clone()),
-            _ => None,
-        };
-        if let Some(ty) = &user_ty {
-            if let Some(&di) = self.p.funcs.get(&format!("{}.partial_cmp", ty)) {
-                let r = self.call_def(di, vec![a.clone(), b.clone()])?;
-                if let Val::Enum(e) = &r {
-                    if e.var == "None" {
-                        return Ok(None);
-                    }
-                    return Ok(Some(Self::ordering(&e.pl[0])));
-                }
-            }
-            if let Some(&di) = self.p.funcs.get(&format!("{}.cmp", ty)) {
-                let r = self.call_def(di, vec![a.clone(), b.clone()])?;
-                return Ok(Some(Self::ordering(&r)));
+        if !derived_top {
+            if let Some(r) = self.user_ord(&a, &b, total)? {
+                return Ok(r);
             }
         }
-        match (&a, &b) {
+        self.ord_fields(&a, &b, total)
+    }
+
+    /// 利用者の型の手書きの `partial_cmp` (`total` なら `cmp`) を呼ぶ。持たなければ `None`。
+    fn user_ord(&mut self, a: &Val, b: &Val, total: bool) -> Result<Option<Option<i32>>, Ctl> {
+        let ty = match a {
+            Val::Struct(s) => s.ty.clone(),
+            Val::Enum(e) if e.en != "Option" && e.en != "Result" => e.en.clone(),
+            _ => return Ok(None),
+        };
+        let name = if total { "cmp" } else { "partial_cmp" };
+        let Some(&di) = self.p.funcs.get(&format!("{}.{}", ty, name)) else { return Ok(None) };
+        let r = self.call_def(di, vec![a.clone(), b.clone()])?;
+        Ok(Some(match &r {
+            Val::Enum(e) if !total => {
+                if e.var == "None" {
+                    None
+                } else {
+                    Some(Self::ordering(&e.pl[0]))
+                }
+            }
+            _ => Some(Self::ordering(&r)),
+        }))
+    }
+
+    /// 派生の順序 (手書きのメソッドは最上位で引かない)。構造体のフィールドは型定義の宣言順の辞書式 (4.3)。
+    fn ord_fields(&mut self, a: &Val, b: &Val, total: bool) -> Result<Option<i32>, Ctl> {
+        match (a, b) {
             (Val::Enum(x), Val::Enum(y)) => {
                 if x.var != y.var {
                     let (ia, ib) = self.order_of(&x.en)(&x.var, &y.var);
                     return Ok(Some(if ia < ib { -1 } else { 1 }));
                 }
                 let (xs, ys) = (x.pl.clone(), y.pl.clone());
-                self.cmp_seq(&xs, &ys)
+                self.cmp_seq(&xs, &ys, total)
             }
             (Val::Struct(x), Val::Struct(y)) => {
-                let xs: Vec<Val> = x.f.borrow().iter().map(|(_, v)| v.clone()).collect();
-                let ys: Vec<Val> = y.f.borrow().iter().map(|(_, v)| v.clone()).collect();
-                self.cmp_seq(&xs, &ys)
+                // 型定義の宣言順 (`fields`) で並べる。定義が無いとき (標準の型) は格納順。
+                let names: Vec<String> = match self.p.types.get(&x.ty) {
+                    Some(&i) => self.p.defs[i].fields.iter().map(|f| f.0.clone()).collect(),
+                    None => x.f.borrow().iter().map(|(k, _)| k.clone()).collect(),
+                };
+                let xs: Vec<Val> = names.iter().map(|n| x.get(n).unwrap_or(Val::Unit)).collect();
+                let ys: Vec<Val> = names.iter().map(|n| y.get(n).unwrap_or(Val::Unit)).collect();
+                self.cmp_seq(&xs, &ys, total)
             }
-            _ if str_of(&a).is_none() => match (seq_items(&a), seq_items(&b)) {
-                (Some(x), Some(y)) => self.cmp_seq(&x, &y),
-                _ => Ok(vcmp(&a, &b, &*self.order_of(""))),
+            _ if str_of(a).is_none() => match (seq_items(a), seq_items(b)) {
+                (Some(x), Some(y)) => self.cmp_seq(&x, &y, total),
+                _ => Ok(vcmp(a, b, &*self.order_of(""))),
             },
-            _ => Ok(vcmp(&a, &b, &*self.order_of(""))),
+            _ => Ok(vcmp(a, b, &*self.order_of(""))),
         }
     }
 
-    fn cmp_seq(&mut self, x: &[Val], y: &[Val]) -> Result<Option<i32>, Ctl> {
+    /// 辞書式の比較。要素は、その比較の規則 (`total`) で手書きのメソッドを使いながら比べる。
+    fn cmp_seq(&mut self, x: &[Val], y: &[Val], total: bool) -> Result<Option<i32>, Ctl> {
         for (p, q) in x.iter().zip(y) {
-            match self.v_cmp(p, q)? {
+            match self.ord_of(p, q, total, false)? {
                 Some(0) => {}
                 r => return Ok(r),
             }
         }
         Ok(Some((x.len() > y.len()) as i32 - (x.len() < y.len()) as i32))
+    }
+
+    /// 派生の `cmp` / `partial_cmp` のメソッド形 (利用者の型の最上位は手書きを引かない)。
+    pub fn v_cmp_derived(&mut self, a: &Val, b: &Val, total: bool) -> Result<Option<i32>, Ctl> {
+        self.ord_of(a, b, total, true)
+    }
+
+    /// `min` / `max` (`Ord` の提供メソッド) の比較。`cmp` の規則に従い、手書きの `cmp` があればそれを使う。
+    pub fn v_cmp_total(&mut self, a: &Val, b: &Val) -> Result<Option<i32>, Ctl> {
+        self.ord_of(a, b, true, false)
     }
 
     // ------------------------------------------------------------ 場所・代入
@@ -1001,7 +1348,7 @@ impl Interp {
         }
         let file = sc.borrow().file.to_string();
         let Some(r) = self.p.resolve(&segs, &file) else {
-            return panic(format!("unresolved name {} (line {})", segs.join("."), nline(e)));
+            return panic(format!("unresolved name {} (line {})", segs.join("."), nlineno(e)));
         };
         self.path_value(&r, 0)
     }
@@ -1069,26 +1416,30 @@ impl Interp {
             }
             let file = sc.borrow().file.to_string();
             let Some(r) = self.p.resolve(&segs, &file) else {
-                return panic(format!("unresolved function {} (line {})", segs.join("."), nline(e)));
+                return panic(format!("unresolved function {} (line {})", segs.join("."), nlineno(e)));
             };
             if !r.rest.is_empty() {
                 let base = self.path_value(&r, 1)?;
                 let args = self.eval_args(&f[1], sc)?;
                 return self.invoke_method(base, &r.rest[r.rest.len() - 1], args, None);
             }
-            // `from_ref(&x)` は `x` の場所を指す。`&x` を値として評価すると複製になり、以後の書き込みが見えなくなる。
-            let args = match (&r.target, ref_arg_inner(&f[1])) {
-                (Target::Sig(i), Some(inner)) if self.def(*i).name == "core.ptr.from_ref" => vec![self.eval_place(inner, sc)?],
+            // `core.ptr.from_ref(&x)` は `x` の場所を指す (`&x` を値として評価すると複製になり、以後の書き込みが見えない)。
+            let args = match (&r.target, items(&f[1]).first()) {
+                (Target::Sig(i), Some(a)) if self.def(*i).name == "core.ptr.from_ref" && nname(a) == "Unary" && st(&nf(a)[0]) == "&" => {
+                    vec![self.eval_place(&nf(a)[1], sc)?]
+                }
                 _ => self.eval_args(&f[1], sc)?,
             };
             if let Target::Sig(i) = &r.target {
-                let name = self.def(*i).name.clone();
-                if name.starts_with("core.ptr.") {
+                if self.def(*i).name.starts_with("core.ptr.") {
                     // 型引数 (`core.ptr.cast::<T, U>`) は呼び出し式の Path の 2 つ目の成分にある。
-                    let targs = items(&nf(fnn)[1]).to_vec();
-                    if let Some(out) = self.typed_ptr_op(&name, &args, &targs) {
-                        return out;
-                    }
+                    self.ptr_targs = items(&nf(fnn)[1]).to_vec();
+                }
+            }
+            if matches!(&r.target, Target::Native(n) if n == "core.mem.drop") {
+                // `core.mem.drop(tx)`: 変数の値を落とす (チャネルの端なら閉じる)。
+                if let (Some(a), Some(v)) = (items(&f[1]).first(), args.first()) {
+                    self.move_out(a, sc, v);
                 }
             }
             return self.call_resolved(&r, args);
@@ -1102,208 +1453,103 @@ impl Interp {
         let mut out = vec![];
         for a in items(args) {
             let v = self.eval(a, sc)?;
+            // チャネルの端を値で渡すのは移動: 呼び出し側の変数を空にする (残すと、送信側が閉じない)。
+            self.move_out(a, sc, &v);
             out.push(self.cp(v));
         }
         Ok(out)
     }
 
-    /// `extern` の関数を、ホストの C ライブラリから探して呼ぶ (C の呼び出し規約、x86_64 SysV の分類)。
-    /// 引数・戻り値は整数・`bool`・ポインタ・`f32` / `f64` と、`layout c` の構造体 (値渡し・値の戻り値。16 バイトを超えるものはメモリ渡し・sret)。
-    /// 宣言の型で各引数の場所 (整数・浮動小数のレジスタかスタック) と戻り値の読み方を決める。
-    fn extern_call(&mut self, d: &Def, args: Vec<Val>) -> Res {
-        if args.len() != d.params.len() {
-            return panic(format!("extern {}: argument count", d.name));
-        }
-        let uses_agg = crate::check::tag(&d.ret) == "named" || d.params.iter().any(|(_, t)| crate::check::tag(t) == "named");
-        if uses_agg && !cfg!(all(unix, target_arch = "x86_64")) {
-            return panic(format!("extern {}: a structure passed or returned by value is supported by the interpreter only on x86_64 Unix", d.name));
-        }
-        // 戻り値の構造体の C 配置。eightbyte の分類が None (16 バイト超・レジスタに入らない) はメモリ渡し (sret)。
-        let ret_layout = if crate::check::tag(&d.ret) == "named" {
-            match self.c_layout(&d.ret) {
-                Ok(l) if l.size > 0 => Some(l),
-                Ok(_) => return panic(format!("extern {}: a zero-sized structure cannot cross the C boundary", d.name)),
-                Err(e) => return panic(format!("extern {}: {}", d.name, e)),
-            }
-        } else {
-            None
+    /// `core.ptr.*` の native。生ポインタはアドレス (整数) として持つ。要素型は、値が持つタグ (`cast::<T, U>` と
+    /// `null_mut::<T>` が付ける。`Val::Int` の型名に `*i32` などを載せる) か、作った側が `ptr_elem` に覚えたものから引く
+    /// (ネイティブ生成は静的型から知るが、インタプリタの値は型を持たない)。
+    fn ptr_native(&mut self, name: &str, args: Vec<Val>) -> Res {
+        let addr = |i: usize| match args.get(i).map(dr) {
+            Some(Val::Int(a, _)) => a,
+            _ => 0,
         };
-        let ret_classes = ret_layout.as_ref().and_then(|l| classify(l.size, &l.leaves));
-        let sret = ret_layout.is_some() && ret_classes.is_none();
-        let mut sret_buf = vec![0u64; ret_layout.as_ref().map_or(0, |l| words(l.size))];
-        let mut regs = CallRegs { ints: [0; INT_REGS], floats: [FArg::F64(0.0); SSE_REGS], stack: vec![] };
-        let mut placer = Placer::new(sret);
-        if sret {
-            regs.ints[0] = sret_buf.as_mut_ptr() as i64;
-        }
-        for (a, (_, pt)) in args.iter().zip(&d.params) {
-            if matches!(a, Val::Ref(_)) && crate::check::tag(pt) == "ptr" {
-                return panic(format!("extern {}: a pointer to a Kasane place (from from_mut / from_ref) cannot be passed to C", d.name));
+        match name {
+            "core.ptr.null_mut" => {
+                // 型引数があれば、null にも要素型を載せる。無ければネイティブ生成と同じ既定 (`*mut u8` 相当)。
+                let elem = self.ptr_targs.first().and_then(elem_name).unwrap_or_else(|| "u8".into());
+                Ok(self.ptr_value(0, &elem))
             }
-            let v = dr(a);
-            if crate::check::tag(pt) == "named" {
-                let l = match self.c_layout(pt) {
-                    Ok(l) if l.size > 0 => l,
-                    Ok(_) => return panic(format!("extern {}: a zero-sized structure cannot cross the C boundary", d.name)),
-                    Err(e) => return panic(format!("extern {}: {}", d.name, e)),
+            "core.ptr.is_null" => Ok(Val::Bool(matches!(args.first().map(dr), Some(Val::Int(0, _))))),
+            // `as_const` / `as_mut` はアドレス (と要素型) のまま。
+            "core.ptr.as_const" | "core.ptr.as_mut" => Ok(args.first().map(dr).unwrap_or(Val::Unit)),
+            // `cast` の指す先の型は静的型からしか分からないので、明示の型引数 (`cast::<T, U>`) を要る。
+            "core.ptr.cast" | "core.ptr.cast_const" => {
+                let Some(to) = self.ptr_targs.get(1).and_then(elem_name) else {
+                    return panic(format!("{}: the target type needs an explicit type argument (`{}::<T, U>`)", name, name));
                 };
-                let mut buf = vec![0u8; words(l.size) * 8];
-                if let Err(e) = self.c_write(&v, pt, &mut buf, 0) {
-                    return panic(format!("extern {}: {}", d.name, e));
-                }
-                let classes = classify(l.size, &l.leaves);
-                let locs = placer.place(classes.as_deref(), l.size);
-                for (k, loc) in locs.into_iter().enumerate() {
-                    let w = u64::from_le_bytes(buf[8 * k..8 * k + 8].try_into().unwrap());
-                    regs.put(loc, Word::Bits(w));
-                }
-                continue;
+                Ok(self.ptr_value(addr(0), &to))
             }
-            let (class, word) = match (arg_kind(pt), &v) {
-                (Some(ArgK::Int), Val::Int(i, _)) => (Class::Int, Word::I(*i as i64)),
-                (Some(ArgK::Int), Val::Bool(b)) => (Class::Int, Word::I(*b as i64)),
-                (Some(ArgK::F64), Val::Float(x)) => (Class::Sse, Word::Bits(x.to_bits())),
-                (Some(ArgK::F64), Val::F32(x)) => (Class::Sse, Word::Bits((*x as f64).to_bits())),
-                (Some(ArgK::F32), Val::F32(x)) => (Class::Sse, Word::F32(*x)),
-                (Some(ArgK::F32), Val::Float(x)) => (Class::Sse, Word::F32(*x as f32)),
-                // 整数の値を浮動小数の引数に渡すのは型が合わないので、下の `_` で panic (f32 ← f64 の変換だけ許す)。
-                _ => return panic(format!("extern {}: argument of an unsupported type or value", d.name)),
-            };
-            let size = if matches!(word, Word::F32(_)) { 4 } else { 8 };
-            let locs = placer.place(Some(&[class]), size);
-            regs.put(locs[0], word);
-        }
-        let ret = &d.ret;
-        let rk = match (&ret_layout, &ret_classes) {
-            (Some(_), None) => Ret::Int,
-            (Some(_), Some(cs)) => match cs.as_slice() {
-                [Class::Int] => Ret::Int,
-                [Class::Sse] => Ret::F64,
-                [c0, c1] => Ret::Pair(*c0, *c1),
-                _ => return panic(format!("extern {}: unexpected structure classification", d.name)),
-            },
-            (None, _) => match crate::check::tag(ret).as_str() {
-                "tuple" | "ptr" => Ret::Int,
-                "never" => return panic(format!("extern {} returned although it is declared `!`", d.name)),
-                "prim" => match crate::check::st(crate::check::tel(ret, 1)).as_str() {
-                    "f32" => Ret::F32,
-                    "f64" => Ret::F64,
-                    n if is_int_ty(n) || n == "bool" => Ret::Int,
-                    n => return panic(format!("extern {}: unsupported return type {}", d.name, n)),
-                },
-                _ => return panic(format!("extern {}: unsupported return type", d.name)),
-            },
-        };
-        let out = match crate::ffi::call_typed(&d.link, &regs.ints, &regs.floats, &regs.stack, rk) {
-            Ok(o) => o,
-            Err(e) => return panic(format!("extern {}: {}", d.name, e)),
-        };
-        if ret_layout.is_some() {
-            // 構造体の戻り値: レジスタの eightbyte かメモリ (sret の領域) から、C 配置のバイト列を組んで読む。
-            let bytes: Vec<u8> = match (out, sret) {
-                (_, true) => sret_buf.iter().flat_map(|w| w.to_le_bytes()).collect(),
-                (Out::Pair(a, b), false) => a.to_le_bytes().into_iter().chain(b.to_le_bytes()).collect(),
-                (Out::Int(r), false) => r.to_le_bytes().to_vec(),
-                (Out::F64(x), false) => x.to_bits().to_le_bytes().to_vec(),
-                _ => return panic(format!("extern {}: unexpected structure result", d.name)),
-            };
-            return match self.c_read(ret, &bytes, 0) {
-                Ok(v) => Ok(v),
-                Err(e) => panic(format!("extern {}: {}", d.name, e)),
-            };
-        }
-        let r = match out {
-            Out::F32(x) => return Ok(Val::F32(x)),
-            Out::F64(x) => return Ok(Val::Float(x)),
-            Out::Int(r) => r,
-            Out::Pair(..) => return panic(format!("extern {}: unexpected two-word result", d.name)),
-        };
-        // 戻り値は、宣言の型に合わせて切り詰める。
-        Ok(match crate::check::tag(ret).as_str() {
-            "tuple" => Val::Unit,
-            "ptr" => {
-                // ポインタの要素型が分かる (スカラーの `*mut T`) なら、値に要素型を載せる。
-                let elem = prim_name(&crate::check::tel(ret, 2));
-                match elem.as_deref().and_then(ptr_tag) {
-                    Some(t) => Val::Int((r as u64) as i128, Some(t)),
-                    None => Val::Int((r as u64) as i128, Some("usize")),
+            "core.ptr.add" | "core.ptr.add_const" => {
+                let elem = self.ptr_elem_of(name, args.first())?;
+                let q = addr(0).wrapping_add(addr(1).wrapping_mul(self.elem_bytes(name, &elem)?));
+                Ok(self.ptr_value(q, &elem))
+            }
+            "core.ptr.read" => {
+                let p = addr(0);
+                if p == 0 {
+                    return panic(format!("{}: null pointer dereference", name));
                 }
+                let elem = self.ptr_elem_of(name, args.first())?;
+                self.pin_check(name, p, &elem)?;
+                self.pin_before_read(p);
+                self.read_elem(name, p, &elem)
             }
-            _ => {
-                let n = crate::check::st(crate::check::tel(ret, 1));
-                match n.as_str() {
-                    "bool" => Val::Bool(r & 0xff != 0),
-                    "i8" => int((r as i8) as i128, "i8"),
-                    "i16" => int((r as i16) as i128, "i16"),
-                    "i32" => int((r as i32) as i128, "i32"),
-                    "i64" | "isize" => int(r as i128, &n),
-                    "u8" => int((r as u8) as i128, "u8"),
-                    "u16" => int((r as u16) as i128, "u16"),
-                    "u32" => int((r as u32) as i128, "u32"),
-                    "u64" | "usize" => int((r as u64) as i128, &n),
-                    _ => return panic(format!("extern {}: unsupported return type {}", d.name, n)),
+            "core.ptr.write" => {
+                let p = addr(0);
+                if p == 0 {
+                    return panic(format!("{}: null pointer dereference", name));
                 }
-            }
-        })
-    }
-
-    /// 型引数や値の種類 (生アドレス / 場所) で動きが決まる `core.ptr.*`。対象外なら `None` (呼び出し側で通常の経路へ)。
-    fn typed_ptr_op(&mut self, name: &str, args: &[Val], targs: &[V]) -> Option<Res> {
-        let op = name.strip_prefix("core.ptr.")?;
-        match (op, args.len()) {
-            ("null_mut", 0) => {
-                // 要素型が分かれば、null にも要素型を載せる (型引数が無ければ従来どおり usize の 0)。
-                let tag = targs.first().and_then(prim_name).and_then(|n| ptr_tag(&n)).unwrap_or("usize");
-                Some(Ok(Val::Int(0, Some(tag))))
-            }
-            ("from_mut", 1) => Some(Ok(match &args[0] {
-                // `&mut x` は場所そのもの (Val::Ref) なので、同じ場所を指すポインタになる。
-                // 値として渡された場合 (`&mut` でない式など) は、その値を入れた新しい場所を指す。
-                Val::Ref(_) => args[0].clone(),
-                v => Val::Ref(Rc::new(CellPlace(RefCell::new(v.clone())))),
-            })),
-            // `from_ref` は const の印を付ける。書き込みは `as_mut` を通してだけ許す。印は別名 (AliasPlace) に付けるので、
-            // 元の場所のポインタ (from_mut など) には影響しない。
-            ("from_ref", 1) => {
-                let inner: Rc<dyn Place> = match &args[0] {
-                    Val::Ref(p) => Rc::new(AliasPlace(p.clone())),
-                    v => Rc::new(CellPlace(RefCell::new(v.clone()))),
+                let v = args.get(1).map(dr).unwrap_or(Val::Unit);
+                // ネイティブ生成と同じく、ポインタの要素型が分かればそれで、分からなければ値の型で書く。
+                let elem = match self.ptr_elem_of(name, args.first()) {
+                    Ok(e) => e,
+                    Err(_) => match scalar_ty(&v) {
+                        Some(t) => t.to_string(),
+                        None => return panic(unknown_elem(name)),
+                    },
                 };
-                Some(Ok(Val::Ref(self.mark_const(inner))))
+                self.pin_check(name, p, &elem)?;
+                self.write_elem(name, p, &elem, &v)?;
+                self.pin_after_write(p);
+                Ok(Val::Unit)
             }
-            ("cast", 1) => Some(self.cast_ptr(name, &args[0], targs)),
-            // `cast_const` は `cast` と同じ変換の結果に const の印を付ける (場所のポインタは印の付いた別名を返す)。
-            ("cast_const", 1) => Some(match self.cast_ptr(name, &args[0], targs) {
-                Ok(Val::Ref(p)) => Ok(Val::Ref(self.mark_const(Rc::new(AliasPlace(p))))),
-                other => other,
-            }),
-            _ => None,
+            "core.ptr.from_mut" | "core.ptr.from_ref" => {
+                let a = args.first().cloned().unwrap_or(Val::Unit);
+                self.make_pin(name, &a)
+            }
+            _ => panic(format!("{} is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`", name)),
         }
     }
 
-    /// `core.ptr.cast::<T, U>(p)`。生アドレスは要素型の Ity だけ付け替える。場所を指すポインタは T と U が同じときだけ恒等 (幅の違う読み替えは再現できない)。
-    fn cast_ptr(&mut self, name: &str, p: &Val, targs: &[V]) -> Res {
-        let Some(to_t) = targs.get(1) else {
-            return panic(format!("{}: the target type needs an explicit type argument (`{}::<T, U>`)", name, name));
-        };
-        let to = prim_name(to_t);
-        match p {
-            Val::Ref(_) => {
-                let from = targs.first().and_then(prim_name);
-                if from.is_some() && from == to {
-                    Ok(p.clone())
-                } else {
-                    panic(format!("{}: a pointer to a Kasane place can only be cast to the same type in the interpreter", name))
-                }
+    /// アドレス `addr` を指す、要素型 `elem` のポインタの値。スカラーの要素型はタグとして値に載せる (同じアドレスを別の型で
+    /// 指す `cast` の結果が、元のポインタの型を変えないように)。スカラーでなければアドレスに覚える。
+    fn ptr_value(&self, addr: i128, elem: &str) -> Val {
+        match ptr_tag(elem) {
+            Some(t) => Val::Int(addr, Some(t)),
+            None => {
+                self.ptr_elem.borrow_mut().insert(addr, elem.to_string());
+                int(addr, "usize")
             }
-            _ => match to.as_deref().and_then(ptr_tag) {
-                Some(t) => match dr(p) {
-                    Val::Int(x, _) => Ok(Val::Int(x, Some(t))),
-                    _ => panic(format!("{}: the argument is not a raw pointer", name)),
-                },
-                None => panic(format!("{}: only scalar pointee types are supported by the interpreter", name)),
-            },
         }
+    }
+
+    /// ポインタの値の要素型: 値のタグ、なければ作った側が覚えたもの。分からなければ実行時エラー。
+    fn ptr_elem_of(&self, name: &str, p: Option<&Val>) -> Result<String, Ctl> {
+        let Some(p) = p else { return panic(unknown_elem(name)) };
+        if let Val::Int(a, tag) = dr(p) {
+            if let Some(e) = tag.and_then(ptr_tag_elem) {
+                return Ok(e.to_string());
+            }
+            if let Some(e) = self.ptr_elem.borrow().get(&a).cloned() {
+                return Ok(e);
+            }
+        }
+        panic(unknown_elem(name))
     }
 
     fn call_resolved(&mut self, r: &Resolved, args: Vec<Val>) -> Res {
@@ -1329,37 +1575,8 @@ impl Interp {
                 if d.kw == "extern" {
                     return self.extern_call(d, args);
                 }
-                if d.name == "core.ptr.null_mut" {
-                    return Ok(int(0, "usize"));
-                }
-                if d.name == "core.ptr.is_null" {
-                    // 場所を指すポインタ (`Val::Ref`) は null にならない。dr で中身を見ると誤判定する。
-                    return Ok(Val::Bool(matches!(args.first(), Some(Val::Int(0, _)))));
-                }
                 if d.name.starts_with("core.ptr.") {
-                    if let Some(Val::Ref(p)) = args.first() {
-                        // 場所を指すポインタの const の扱い: `as_mut` は印を外した別名、`as_const` は印を付けた別名を返す。
-                        // 印の付いた場所への `write` は panic (`from_ref` は読み取り専用)。
-                        match d.name.as_str() {
-                            "core.ptr.as_mut" => return Ok(Val::Ref(Rc::new(AliasPlace(p.clone())))),
-                            "core.ptr.as_const" => {
-                                let c = self.mark_const(Rc::new(AliasPlace(p.clone())));
-                                return Ok(Val::Ref(c));
-                            }
-                            // 場所のポインタの add_const は count 0 の恒等のみ (raw_ptr_op)。結果に const の印を付ける。
-                            "core.ptr.add_const" => {
-                                return match raw_ptr_op(&d.name, &args)? {
-                                    Val::Ref(q) => Ok(Val::Ref(self.mark_const(Rc::new(AliasPlace(q))))),
-                                    v => Ok(v),
-                                };
-                            }
-                            "core.ptr.write" if self.is_const_place(p) => {
-                                return panic("core.ptr.write: the pointer is const (from from_ref or as_const); use as_mut to write through it");
-                            }
-                            _ => {}
-                        }
-                    }
-                    return raw_ptr_op(&d.name, &args);
+                    return self.ptr_native(&d.name, args);
                 }
                 panic(format!("function {} has no implementation in this interpreter", d.name))
             }
@@ -1408,6 +1625,15 @@ impl Interp {
                 }
             }
         }
+        // `Box<dyn Tr>` のレシーバは中身の値で呼ぶ (自動参照外し。5.1)。`&mut self` のメソッドは中身の場所を渡す。
+        if d.is_none() {
+            if let Val::Struct(s) = &v {
+                if s.ty == "alloc.boxed.Box" && !matches!(name, "as_ref" | "as_mut" | "into_inner" | "into_dyn" | "clone" | "try_clone") {
+                    let inner = Val::Ref(Rc::new(FieldPlace(s.clone(), "value".into())));
+                    return self.invoke_method(inner, name, args, None);
+                }
+            }
+        }
         if let Some(di) = d {
             let def = self.def(di);
             let selfty = &def.params[0].1;
@@ -1426,6 +1652,17 @@ impl Interp {
             let mut all = vec![first];
             all.extend(args);
             return self.call_def(di, all);
+        }
+        // `made.map_err(f)` のように値を消費する `Option` / `Result` のメソッド: 受け手の変数はチャネルの端を手放す。
+        if let (Val::Enum(e), Some((pe, psc))) = (&v, place) {
+            if (e.en == "Option" || e.en == "Result")
+                && !matches!(name, "is_some" | "is_none" | "is_ok" | "is_err" | "as_ref" | "as_mut" | "iter" | "clone" | "eq")
+            {
+                self.move_out(pe, psc, &v);
+            }
+        }
+        if self.dbg_guard {
+            self.dbg_guard_method(name)?;
         }
         self.native_method(&recv, &v, name, args, place)
     }
@@ -1689,433 +1926,6 @@ pub fn py_float(f: f64) -> String {
 #[allow(dead_code)]
 fn unused() {
     let _ = _children;
-}
-
-// ------------------------------------------------------------ extern の引数・生ポインタ
-// 生ポインタは `Val::Int` のアドレスで、要素型を Ity の名前 (`*f64` など) に載せる。
-// 要素型が載らない (extern の戻り値が `*mut Struct` など) ポインタは、読み書きできない。
-
-/// 生ポインタの要素型と、ポインタ値の Ity 名の対応。扱うのはスカラーだけ。
-const PTR_TAGS: &[(&str, &str)] = &[
-    ("i8", "*i8"),
-    ("i16", "*i16"),
-    ("i32", "*i32"),
-    ("i64", "*i64"),
-    ("isize", "*isize"),
-    ("u8", "*u8"),
-    ("u16", "*u16"),
-    ("u32", "*u32"),
-    ("u64", "*u64"),
-    ("usize", "*usize"),
-    ("f32", "*f32"),
-    ("f64", "*f64"),
-    ("bool", "*bool"),
-];
-
-fn ptr_tag(elem: &str) -> Option<&'static str> {
-    PTR_TAGS.iter().find(|(e, _)| *e == elem).map(|(_, t)| *t)
-}
-
-fn ptr_elem(tag: &str) -> Option<&'static str> {
-    PTR_TAGS.iter().find(|(_, t)| *t == tag).map(|(e, _)| *e)
-}
-
-fn elem_size(elem: &str) -> u64 {
-    match elem {
-        "i8" | "u8" | "bool" => 1,
-        "i16" | "u16" => 2,
-        "i32" | "u32" | "f32" => 4,
-        _ => 8,
-    }
-}
-
-/// 型が `prim` (スカラー名) なら、その名前。
-fn prim_name(t: &V) -> Option<String> {
-    (crate::check::tag(t) == "prim").then(|| crate::check::st(crate::check::tel(t, 1)))
-}
-
-/// `layout c` の型の C 配置: 大きさ・整列・中のスカラーの並び (オフセット付き)。
-#[derive(Clone)]
-struct CLayout {
-    size: u32,
-    align: u32,
-    leaves: Vec<Leaf>,
-}
-
-/// 1 つの引数・戻り値のワード (レジスタかスタックに置く前の値)。
-#[derive(Clone, Copy)]
-enum Word {
-    I(i64),
-    F32(f32),
-    /// `f64` の 64 ビット、または構造体の eightbyte のビット列。
-    Bits(u64),
-}
-
-/// `extern` 呼び出しの引数の並び (レジスタの番号順と、スタックのワード)。
-struct CallRegs {
-    ints: [i64; INT_REGS],
-    floats: [FArg; SSE_REGS],
-    stack: Vec<i64>,
-}
-
-impl CallRegs {
-    fn put(&mut self, loc: Loc, w: Word) {
-        let bits = match w {
-            Word::I(v) => v,
-            Word::F32(x) => x.to_bits() as i64,
-            Word::Bits(b) => b as i64,
-        };
-        match loc {
-            Loc::Int(k) => self.ints[k] = bits,
-            Loc::Sse(k) => {
-                self.floats[k] = match w {
-                    Word::F32(x) => FArg::F32(x),
-                    _ => FArg::F64(f64::from_bits(bits as u64)),
-                }
-            }
-            Loc::Stack(k) => {
-                if self.stack.len() <= k {
-                    self.stack.resize(k + 1, 0);
-                }
-                self.stack[k] = bits;
-            }
-        }
-    }
-}
-
-fn align_up(x: u32, a: u32) -> u32 {
-    x.div_ceil(a) * a
-}
-
-/// 整数型の名前から (大きさ, 符号付きか)。
-fn int_layout(n: &str) -> Option<(usize, bool)> {
-    Some(match n {
-        "i8" => (1, true),
-        "u8" => (1, false),
-        "i16" => (2, true),
-        "u16" => (2, false),
-        "i32" => (4, true),
-        "u32" => (4, false),
-        "i64" | "isize" => (8, true),
-        "u64" | "usize" => (8, false),
-        _ => return None,
-    })
-}
-
-impl Interp {
-    /// 型 `ty` の C 配置。スカラー・ポインタと、`layout c` の構造体 (中のフィールドも C 互換の型) だけを扱う。
-    fn c_layout(&self, ty: &V) -> Result<CLayout, String> {
-        let scalar = |size: u32, float: bool| CLayout { size, align: size, leaves: vec![Leaf { off: 0, size, float }] };
-        match crate::check::tag(ty).as_str() {
-            "prim" => {
-                let n = crate::check::st(crate::check::tel(ty, 1));
-                match n.as_str() {
-                    "bool" => Ok(scalar(1, false)),
-                    "f32" => Ok(scalar(4, true)),
-                    "f64" => Ok(scalar(8, true)),
-                    _ => match int_layout(&n) {
-                        Some((size, _)) => Ok(scalar(size as u32, false)),
-                        None => Err(format!("type {} has no C representation", n)),
-                    },
-                }
-            }
-            "ptr" => Ok(scalar(8, false)),
-            "named" => Ok(self.c_fields(&crate::check::st(crate::check::tel(ty, 1)))?.1),
-            _ => Err("this type has no C representation".into()),
-        }
-    }
-
-    /// `layout c` の構造体 `fqn` のフィールド (名前・型・オフセット) と、構造体全体の C 配置。
-    fn c_fields(&self, fqn: &str) -> Result<(Vec<(String, V, u32)>, CLayout), String> {
-        let Some(&i) = self.p.types.get(fqn) else {
-            return Err(format!("unknown type {}", fqn));
-        };
-        let def = &self.p.defs[i];
-        if def.kw != "type" || !def.layout_c || !def.gnames().is_empty() {
-            return Err(format!("{} is not a non-generic `layout c` structure", fqn));
-        }
-        let (mut off, mut align) = (0u32, 1u32);
-        let (mut fields, mut leaves) = (vec![], vec![]);
-        for (n, t, _) in &def.fields {
-            let l = self.c_layout(t)?;
-            off = align_up(off, l.align);
-            leaves.extend(l.leaves.iter().map(|lf| Leaf { off: off + lf.off, ..*lf }));
-            fields.push((n.clone(), t.clone(), off));
-            off += l.size;
-            align = align.max(l.align);
-        }
-        let size = align_up(off, align);
-        Ok((fields, CLayout { size, align, leaves }))
-    }
-
-    /// 値 `v` を型 `ty` の C 配置で `buf` の `off` から書く。
-    fn c_write(&self, v: &Val, ty: &V, buf: &mut [u8], off: usize) -> Result<(), String> {
-        let v = dr(v);
-        let unsupported = || "argument of an unsupported type or value".to_string();
-        match (crate::check::tag(ty).as_str(), &v) {
-            ("prim", _) => {
-                let n = crate::check::st(crate::check::tel(ty, 1));
-                match (n.as_str(), &v) {
-                    ("bool", Val::Bool(b)) => buf[off] = *b as u8,
-                    ("f32", Val::F32(x)) => buf[off..off + 4].copy_from_slice(&x.to_le_bytes()),
-                    ("f32", Val::Float(x)) => buf[off..off + 4].copy_from_slice(&(*x as f32).to_le_bytes()),
-                    ("f64", Val::Float(x)) => buf[off..off + 8].copy_from_slice(&x.to_le_bytes()),
-                    ("f64", Val::F32(x)) => buf[off..off + 8].copy_from_slice(&(*x as f64).to_le_bytes()),
-                    (_, Val::Int(x, _)) => match int_layout(&n) {
-                        Some((size, _)) => buf[off..off + size].copy_from_slice(&x.to_le_bytes()[..size]),
-                        None => return Err(unsupported()),
-                    },
-                    _ => return Err(unsupported()),
-                }
-                Ok(())
-            }
-            ("ptr", Val::Int(a, _)) => {
-                buf[off..off + 8].copy_from_slice(&(*a as u64).to_le_bytes());
-                Ok(())
-            }
-            ("named", Val::Struct(s)) => {
-                let (fields, _) = self.c_fields(&crate::check::st(crate::check::tel(ty, 1)))?;
-                for (n, fty, foff) in fields {
-                    let fv = s.get(&n).ok_or_else(unsupported)?;
-                    self.c_write(&fv, &fty, buf, off + foff as usize)?;
-                }
-                Ok(())
-            }
-            _ => Err(unsupported()),
-        }
-    }
-
-    /// `buf` の `off` から、型 `ty` の C 配置の値を読む (整数は型の符号で広げる)。
-    fn c_read(&self, ty: &V, buf: &[u8], off: usize) -> Result<Val, String> {
-        match crate::check::tag(ty).as_str() {
-            "prim" => {
-                let n = crate::check::st(crate::check::tel(ty, 1));
-                let word = |size: usize| -> [u8; 8] {
-                    let mut b = [0u8; 8];
-                    b[..size].copy_from_slice(&buf[off..off + size]);
-                    b
-                };
-                Ok(match n.as_str() {
-                    "bool" => Val::Bool(buf[off] != 0),
-                    "f32" => Val::F32(f32::from_le_bytes(word(4)[..4].try_into().unwrap())),
-                    "f64" => Val::Float(f64::from_le_bytes(word(8))),
-                    _ => {
-                        let Some((size, signed)) = int_layout(&n) else {
-                            return Err(format!("type {} has no C representation", n));
-                        };
-                        let raw = u64::from_le_bytes(word(size));
-                        let x: i128 = if signed && size < 8 && (raw >> (8 * size - 1)) & 1 == 1 {
-                            raw as i128 - (1i128 << (8 * size))
-                        } else if signed {
-                            raw as i64 as i128
-                        } else {
-                            raw as i128
-                        };
-                        int(x, &n)
-                    }
-                })
-            }
-            "ptr" => {
-                let addr = u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
-                let elem = prim_name(&crate::check::tel(ty, 2));
-                Ok(Val::Int(addr as i128, elem.as_deref().and_then(ptr_tag)))
-            }
-            "named" => {
-                let fqn = crate::check::st(crate::check::tel(ty, 1));
-                let (fields, _) = self.c_fields(&fqn)?;
-                let mut f = vec![];
-                for (n, fty, foff) in fields {
-                    f.push((n, self.c_read(&fty, buf, off + foff as usize)?));
-                }
-                Ok(Val::Struct(Rc::new(StructV { ty: fqn, f: RefCell::new(f) })))
-            }
-            _ => Err("this type has no C representation".into()),
-        }
-    }
-}
-
-/// extern の引数を渡すレジスタの種類。
-#[derive(Clone, Copy)]
-enum ArgK {
-    Int,
-    F32,
-    F64,
-}
-
-fn arg_kind(t: &V) -> Option<ArgK> {
-    match crate::check::tag(t).as_str() {
-        "ptr" => Some(ArgK::Int),
-        "prim" => match crate::check::st(crate::check::tel(t, 1)).as_str() {
-            "f32" => Some(ArgK::F32),
-            "f64" => Some(ArgK::F64),
-            n if is_int_ty(n) || n == "bool" => Some(ArgK::Int),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// 生ポインタの値から (アドレス, 要素型) を取る。
-fn raw_ptr(v: &Val) -> Result<(u64, &'static str), String> {
-    match dr(v) {
-        Val::Int(a, Some(t)) => match ptr_elem(t) {
-            Some(e) => Ok((a as u64, e)),
-            None => Err("the pointer's element type is unknown to the interpreter (a pointer from an extern declaration or core.ptr.null_mut::<T>() / core.ptr.cast::<T, U>() with a scalar T)".into()),
-        },
-        _ => Err("the argument is not a raw pointer".into()),
-    }
-}
-
-/// 引数が `&e` ひとつだけなら、`e` を返す。
-fn ref_arg_inner(args: &V) -> Option<&V> {
-    let [a] = items(args) else { return None };
-    (nname(a) == "Unary" && st(&nf(a)[0]) == "&").then(|| &nf(a)[1])
-}
-
-/// 同じ場所を別の名前で指すポインタ (`as_mut` / `as_const` / `from_ref` の結果)。読み書きは元の場所に通す。
-/// const の印は、この別名の `Rc` の番地に付く (`Interp::mark_const`)。
-struct AliasPlace(Rc<dyn Place>);
-impl Place for AliasPlace {
-    fn get(&self) -> Val {
-        self.0.get()
-    }
-    fn set(&self, v: Val) {
-        self.0.set(v)
-    }
-}
-
-/// 場所を指すポインタ (`from_mut` / `from_ref` の結果) の操作。アドレスを持たないので、読み書きは場所を通して行う。
-/// `as_mut` / `as_const` と、印の付いた場所への `write` は呼び出し側 (`call_resolved`) で扱う。
-fn place_ptr_op(name: &str, op: &str, p: &dyn Place, args: &[Val]) -> Res {
-    match (op, args.len()) {
-        ("read", 1) => Ok(p.get()),
-        ("write", 2) => {
-            p.set(args[1].clone());
-            Ok(Val::Unit)
-        }
-        ("is_null", 1) => Ok(Val::Bool(false)),
-        // 要素が 1 つしかないので、0 だけ進める加算は恒等。それ以外は配列の要素を指さないので扱えない。
-        ("add" | "add_const", 2) if matches!(dr(&args[1]), Val::Int(0, _)) => Ok(args[0].clone()),
-        _ => panic(format!(
-            "{} is not supported for a pointer to a single place (only read, write, as_const, as_mut, is_null, add by 0)",
-            name
-        )),
-    }
-}
-
-/// `core.ptr.*` の操作 (`null_mut` / `is_null` は呼び出し側で扱う)。読み書きはホストのメモリに直接触れる。
-fn raw_ptr_op(name: &str, args: &[Val]) -> Res {
-    let op = name.strip_prefix("core.ptr.").unwrap_or(name);
-    if let Some(Val::Ref(p)) = args.first() {
-        // 場所を指すポインタは dr で中身に潜らず、場所として扱う。
-        return place_ptr_op(name, op, p.as_ref(), args);
-    }
-    match (op, args.len()) {
-        ("as_const", 1) | ("as_mut", 1) => Ok(args[0].clone()),
-        ("add" | "add_const", 2) => {
-            let (a, e) = match raw_ptr(&args[0]) {
-                Ok(x) => x,
-                Err(m) => return panic(format!("{}: {}", name, m)),
-            };
-            let n = match dr(&args[1]) {
-                Val::Int(n, _) => n as u64,
-                _ => return panic(format!("{}: the count is not an integer", name)),
-            };
-            let r = a.wrapping_add(n.wrapping_mul(elem_size(e)));
-            Ok(Val::Int(r as i128, Some(ptr_tag(e).unwrap_or("usize"))))
-        }
-        ("read", 1) => {
-            if matches!(args[0], Val::Int(0, _)) {
-                return panic(format!("{}: null pointer dereference", name));
-            }
-            let (a, e) = match raw_ptr(&args[0]) {
-                Ok(x) => x,
-                Err(m) => return panic(format!("{}: {}", name, m)),
-            };
-            Ok(unsafe { read_elem(a, e) })
-        }
-        ("write", 2) => {
-            if matches!(args[0], Val::Int(0, _)) {
-                return panic(format!("{}: null pointer dereference", name));
-            }
-            let (a, e) = match raw_ptr(&args[0]) {
-                Ok(x) => x,
-                Err(m) => return panic(format!("{}: {}", name, m)),
-            };
-            if let Err(m) = unsafe { write_elem(a, e, &dr(&args[1])) } {
-                return panic(format!("{}: {}", name, m));
-            }
-            Ok(Val::Unit)
-        }
-        _ => panic(format!(
-            "{} is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`",
-            name
-        )),
-    }
-}
-
-/// 要素型 `elem` の値を、アドレス `addr` から読む。
-///
-/// # Safety
-/// `addr` は読んでよい `elem` の領域を指していること (extern が返したポインタの責任)。
-unsafe fn read_elem(addr: u64, elem: &'static str) -> Val {
-    let p = addr as usize as *const u8;
-    match elem {
-        "i8" => Val::Int(std::ptr::read_unaligned(p as *const i8) as i128, Some("i8")),
-        "i16" => Val::Int(std::ptr::read_unaligned(p as *const i16) as i128, Some("i16")),
-        "i32" => Val::Int(std::ptr::read_unaligned(p as *const i32) as i128, Some("i32")),
-        "i64" => Val::Int(std::ptr::read_unaligned(p as *const i64) as i128, Some("i64")),
-        "isize" => Val::Int(std::ptr::read_unaligned(p as *const isize) as i128, Some("isize")),
-        "u8" => Val::Int(std::ptr::read_unaligned(p) as i128, Some("u8")),
-        "u16" => Val::Int(std::ptr::read_unaligned(p as *const u16) as i128, Some("u16")),
-        "u32" => Val::Int(std::ptr::read_unaligned(p as *const u32) as i128, Some("u32")),
-        "u64" => Val::Int(std::ptr::read_unaligned(p as *const u64) as i128, Some("u64")),
-        "usize" => Val::Int(std::ptr::read_unaligned(p as *const usize) as i128, Some("usize")),
-        "f32" => Val::F32(std::ptr::read_unaligned(p as *const f32)),
-        "f64" => Val::Float(std::ptr::read_unaligned(p as *const f64)),
-        _ => Val::Bool(std::ptr::read_unaligned(p) != 0),
-    }
-}
-
-/// 要素型 `elem` の値を、アドレス `addr` へ書く。整数は要素の幅に切り詰める。
-///
-/// # Safety
-/// `addr` は書いてよい `elem` の領域を指していること。
-unsafe fn write_elem(addr: u64, elem: &str, v: &Val) -> Result<(), String> {
-    let p = addr as usize as *mut u8;
-    let int: Option<i128> = match v {
-        Val::Int(x, _) => Some(*x),
-        Val::Bool(b) => Some(*b as i128),
-        _ => None,
-    };
-    let flt: Option<f64> = match v {
-        Val::Float(x) => Some(*x),
-        Val::F32(x) => Some(*x as f64),
-        Val::Int(x, _) => Some(*x as f64),
-        _ => None,
-    };
-    let not_scalar = || Err("the value to write is not a scalar".to_string());
-    match elem {
-        "f32" | "f64" => {
-            let Some(x) = flt else { return not_scalar() };
-            if elem == "f32" {
-                std::ptr::write_unaligned(p as *mut f32, x as f32);
-            } else {
-                std::ptr::write_unaligned(p as *mut f64, x);
-            }
-        }
-        _ => {
-            let Some(x) = int else { return not_scalar() };
-            match elem {
-                "bool" => std::ptr::write_unaligned(p, (x != 0) as u8),
-                "i8" | "u8" => std::ptr::write_unaligned(p, x as u8),
-                "i16" | "u16" => std::ptr::write_unaligned(p as *mut u16, x as u16),
-                "i32" | "u32" => std::ptr::write_unaligned(p as *mut u32, x as u32),
-                _ => std::ptr::write_unaligned(p as *mut u64, x as u64),
-            }
-        }
-    }
-    Ok(())
 }
 
 /// 整数の `+ - * / %`。オーバーフローとゼロ除算は panic (4.1)。u128 はビットパターンで保持している。

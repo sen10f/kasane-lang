@@ -1,0 +1,16 @@
+type t.S
+    n: u32
+end t.S
+
+fn t.S.boom(self: t.S) -> u32 uses [] panics may
+    core.panic.panic("x")
+end t.S.boom
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.mk().boom())
+    Ok(())
+end t.main
+
+fn t.mk() -> t.S uses [] panics never
+    t.S { n: 1u32 }
+end t.mk

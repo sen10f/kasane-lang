@@ -1,0 +1,69 @@
+fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(bench.parens_balanced("()[]{}"), true)
+    core.check.eq(bench.parens_balanced("([{}])"), true)
+    core.check.eq(bench.parens_balanced("(]"), false)
+    core.check.eq(bench.parens_balanced("([)]"), false)
+    core.check.eq(bench.parens_balanced("("), false)
+    core.check.eq(bench.parens_balanced(""), true)
+    std.io.print_line("parens ok")?
+    Ok(())
+end bench.main
+
+fn bench.parens_balanced(text: &str) -> bool uses [alloc] panics never pub
+    let mut stack = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let bytes = text.as_bytes()
+    let mut i = 0usize
+    let n = bytes.len()
+    while i < n {
+        match bytes.get(i) {
+            Some(c) => {
+                if *c == 40u8 {
+                    match stack.push(*c) {
+                        Ok(_) => ()
+                        Err(_e) => ()
+                    }
+                } else if *c == 91u8 {
+                    match stack.push(*c) {
+                        Ok(_) => ()
+                        Err(_e) => ()
+                    }
+                } else if *c == 123u8 {
+                    match stack.push(*c) {
+                        Ok(_) => ()
+                        Err(_e) => ()
+                    }
+                } else if *c == 41u8 {
+                    match stack.pop() {
+                        Some(v) => {
+                            if v != 40u8 {
+                                return false
+                            }
+                        }
+                        None => return false
+                    }
+                } else if *c == 93u8 {
+                    match stack.pop() {
+                        Some(v) => {
+                            if v != 91u8 {
+                                return false
+                            }
+                        }
+                        None => return false
+                    }
+                } else if *c == 125u8 {
+                    match stack.pop() {
+                        Some(v) => {
+                            if v != 123u8 {
+                                return false
+                            }
+                        }
+                        None => return false
+                    }
+                }
+            }
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    stack.is_empty()
+end bench.parens_balanced

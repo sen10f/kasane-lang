@@ -886,7 +886,15 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 - `ksn build --backend llvm` (12.3): `lower_program` で `entry` から届く関数を下ろし (`reachable_from`)、`emit_program` の IR を `clang -O1` (`--release` は `-O2`) で `target/<debug|release>/<name>.native` にする (`cli.rs` の `build_llvm` / `clang_ll`)。`entry` が下ろせなければ `llvm backend skipped: <入口> を KIR に下ろせない (<根の理由>); falling back to the default backend` と出して、今の既定の経路 (c のネイティブ生成。それも無理ならバンドルだけ) に退避する。`--backend clif` / `c` は変えていない。理由は `呼び先 X が未対応` の鎖をたどった根の関数のもの。`KSN_DUMP_KIR=1` を付けると、未対応の一覧も stderr に出る。
 - 検査 (examples と perf の全 15 パッケージ、`ksn build --backend llvm`): 前は 0 本 (すべて `main` の戻り値 `Result<(), std.io.Error>` で止まった)。後は 1 本 (`perf/noop`) が LLVM で作れ、`ksn run` と stdout・stderr・終了コードが一致した。残り 14 本が下ろせない理由 (根): `core.check.eq` の呼び出し (panic の命令が無い) が 9 本 (features・native・tour と perf の fib・hashmap・loops・strcat・structs・vecops)、利用者の型の `&mut` メソッド `bump` (demo)、構造体 (`json.Doc`) の戻り値 (json)、`Ring.new` の戻り値 (realtime)、`std.thread.spawn` (threads)、capture を持つクロージャ (closure)。`core.check.eq` が下ろせるようになれば、perf の大半が一気に通る見込み (kir/gaps の panic 命令に続く作業)。
 - 試験 (`stage0/tests/cli.rs`): `kir_write_prints_through_run_and_native` (`write` の `--run` と `--native`)、`llvm_build_of_print_line_main_matches_run`、`llvm_build_main_err_prints_debug_and_exits_1` (`std.io.Error` の Debug、終了コード 1)、`llvm_build_debug_covers_structs_enums_ints_bool_char_and_str`、`llvm_build_panic_keeps_the_panic_exit_code_and_message` (101)、`llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered`。`kir.rs` の `write_reads_back_and_needs_io_console`。clang が無い環境では `--native` と実行ファイルの比較を飛ばす。
-- 次の作業: `ksn test --both` の比較相手を、KIR に下ろせるテストでは LLVM にする (12.4 の 2 つ目)。
+### 12.6 `test --both` の比較相手 (kir/test-both-llvm、2026-11-13) で決めたこと
+
+- 順序: テストごとに、まず KIR → LLVM (`build_llvm_test`)。下ろせない・clang が無いなどで作れなければ Cranelift (`build_native_test`)、それも無理ならバンドル (`run_in_bundle`)。表示は `(both: llvm)` / `(both: native (llvm skipped: 理由))` / `(both: bundle (llvm skipped: 理由; native skipped: 理由))`。要約は `compared with: llvm L, native N, bundle fallback M`。
+- 入口: `kir_lower::lower_test(p, user, ti)` は、テストの本体 (`()` を返す) を入口にして下ろす。`test` の本体は型表 (`type_table`) と下ろしの両方に入れる。戻り値が `()` の入口は Debug 表示の関数を要らない (`debug_of_entry` は戻り値を先に見る)。LLVM 側は `llvm_exe` (`build_llvm` と共通) で作り、`target/test-llvm/` に置く。
+- 失敗の比べ方: LLVM の panic の文言は `kir_llvm::PANICS` と木走査 (`interp.rs`) で同じ。`fail_class` の単体テスト `llvm_panic_texts_classify_like_the_tree_walker` が、両方の文言の組を同じ分類に通す。
+- stack 超過: 木走査は `Exit(102)`、LLVM は終了コード 102 (stderr に `stack overflow`)。`run_native_test` は 102 を `exit(102)` にして、終了の種類で比べる (Cranelift の結果も同じ扱いになる)。
+- 結果 (examples 7 本、11 テスト): `llvm 5 / native 6 / bundle 0`。LLVM で比べたのは demo・features・realtime・tour の一部。残りは KIR の下ろしが壁 (`Result` の Err の表示、`let` の分解、構造体のフィールドからの `Vec` の移動、浮動小数の比較、`from_str_radix`、128 ビット、配列の繰り返し式、`eq` / `cmp` などの手書きのメソッド)。perf はテストを持たない (0 件)。
+- 試験: `stage0/tests/cli.rs` の `test_both_runs_kir_tests_as_llvm_executables` (LLVM)、`test_both_compares_llvm_panics_with_the_tree_walker` (除算・unwrap・overflow・assert の文言と分類)、`test_both_falls_back_from_llvm_to_cranelift_with_the_reason` (LLVM が退避し Cranelift が比べる)、`test_both_falls_back_to_the_bundle_when_llvm_and_cranelift_both_cannot_build` (バンドル)、`test_both_stack_overflow_is_exit_102_on_both_sides`。disagree は人工的に食い違わせる方法が無いので、`src/cli.rs` の単体テストで分類の判定を確かめる。
+- 残り: Cranelift (`clif.rs`) は、LLVM が全テストを通すまで比較相手として残す (12.4 の 2 つ目の後始末)。
 
 ## 13. Vec / String の所有の移動と解放 (kir/owned-heap、2026-11-13)
 
@@ -903,12 +911,12 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 - Vec / String の局所変数: ヘッダから 3 語を読んで `make` し、元のヘッダの `ptr` に null を書く (`mem.store.ptr hdr +0, 0`)。解放は `free(null)` が何もしないので、**元の場所の解放は印なしで無効になる**。分岐の片方だけで移した値も、移していない側でだけ解放される。
 - 構造体などの局所変数: 印を 0 にする。解放は印が立っているときだけ。再代入 (`x = ...`) は、古い値を解放して印を立て直す。
 - 一時の値 (呼び出しの結果、`Vec.new(...)`) は、束縛されなければ捨てる場所で解放する: 文として評価した式の値、`core.mem.drop(x)`、Option / Result のメソッドの受け手。
-- フィールドからの移動 (`let w = b.items`) と、所有物を持つ値の分解 (`let (a, b) = ...`)、所有物を持つ `unwrap_or` は未対応 (理由を付けて拒否する)。
+- フィールドからの移動 (`let w = b.items`) と、所有物を持つ値の分解 (`let (a, b) = ...`) は 13.7 で対応した。所有物を持つ `unwrap_or` は未対応 (理由を付けて拒否する)。
 
 ### 13.3 解放の規則
 - スコープの終わり (ブロック、`for` / `while` / `loop` の 1 周、`match` の腕) で、そのスコープの所有物を**登録の逆順**に解放する (木走査の Drop の順)。`return`・`?` の `Err` / `None` の経路は全スコープ (関数の引数を含む)、`break` / `continue` はループの内側のスコープを解放してから抜ける。
 - 解放 (`drop_value`): `vec` は `free(ptr)`。構造体・タプルは所有物のフィールドを逆順に。列挙型と `Option` / `Result` はタグで分岐して、持っている変種のペイロードだけ。
-- `match` の対象 (所有物を持つ型): どれかの腕が所有物を名前に束縛する (`Some(v)`、`Full(v)`) なら、対象を丸ごと移す (局所変数は印を下ろす)。束縛する腕は束縛した変数が所有を引き継ぎ、束縛しない腕 (`None`、`Some(_)`) は腕の頭で対象を丸ごと解放する。どの腕も束縛しない局所変数は移さない。所有物の一部だけを束縛するパターンは拒否する。
+- `match` の対象 (所有物を持つ型): どれかの腕が所有物を名前に束縛する (`Some(v)`、`Full(v)`) なら、対象を丸ごと移す (局所変数は印を下ろす)。束縛する腕は束縛した変数が所有を引き継ぎ、束縛しない腕 (`None`、`Some(_)`) は腕の頭で対象を丸ごと解放する。どの腕も束縛しない局所変数は移さない。所有物の一部だけを束縛するパターンは、束縛しなかった所有物を腕の頭で解放する (13.7)。
 - 引数の所有は呼び先が引き継ぐ。呼び出し元は移した後の値を解放しない。
 
 ### 13.4 `Vec::push` と `Result::map_err`
@@ -923,6 +931,33 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 - 試験: `stage0/tests/cli.rs` の `kir_own_*` (値の一致 28 ケース: 返す・引数で渡して `push` して返す・構造体のフィールド・`Option<Vec>` / `Option<String>` の `match` (一時の値と局所変数)・片方の枝だけで移す (Vec と構造体)・ループで作って捨てる (1 万回)・`continue` / `break`・`?` の早期脱出・`map_err`・列挙型のペイロード・再代入。拒否の理由、ダンプの形)。`kir_exec` の単体試験 2 本 (関数の終わりの漏れ、戻り値・呼び出し元のヘッダ経由は漏れでない)。
 - examples と perf の未対応 (`KSN_DUMP_KIR=1 ksn check`): examples 24 → 22 (`realtime.Ring.new` と `json.oom` が下ろせる。`json.array` などは `map_err` を越えて、`&mut` レシーバの `push_node` で止まる)、perf 13 → 13 (AllocError の戻り値は通るようになり、理由が `HashMap.new`・`push_str`・`get_mut` の `*` に変わった)。
 - 残り: `Vec` の要素が所有物 (`Vec<String>`、`Vec<構造体>`) の要素の解放、`push_str` / `pop` / `get_mut` / `insert` / `remove`、`&mut` レシーバのメソッド (別担当の kir/gaps)、`main` の `std.io.Error` (別担当の kir/io-entry)。`Drop` トレイトを実装した型の `drop` 呼び出しは、これまでどおり KIR に無い。
+
+### 13.7 所有の周りの残り (kir/owned-more、2026-11-13)
+
+13.2 / 13.3 が「未対応」にした形を埋める。新しい命令はなく、`bitcast` を「集成体への参照 ⇄ `ptr`」にも使える (検査と `reachable` の付け替えを足した。参照実行器・LLVM は同じアドレスなので変更なし)。
+
+- **構造体のフィールドの Vec / String の受け手** (`kir_lower_own.rs`): `x.f.v.m(..)` の `x` が参照 (`&mut self` など) かスタックスロットの構造体なら、`fieldaddr` でフィールドのヘッダのアドレスを求めて `bitcast` で `ptr` にし、局所変数の Vec / String と同じメソッドを呼ぶ。`x` が値の構造体 (SSA の値) なら、フィールドの値を一時のヘッダへ写し、メソッドの後に 3 語を読み直して `setfield` で `x` へ戻す (バッファの所有は動かない。古い値は解放しない)。この戻しは代入と同じなので、`mut_recv_names` (`scan_mut`) が根の名前を「代入される局所」の集合に入れる (ループ・分岐の合流で受け渡す)。フィールドの型は利用者の構造体の定義 (`Def::fields`) をたどって求める。
+- **メソッド**: `String.push_str(&str)` (`max(cap*2+4, len+n)` に `realloc` してバイトを 1 つずつ写す)、`String.push(char)` (UTF-8 の 1〜4 バイト。KIR に縮める変換がないので、`u32` を一時の 4 バイトへ書いて先頭の 1 バイトを読む)、`Vec.pop` (`Option<要素>`)、`Vec.clear` / `String.clear` (`len` を 0 にする。容量は残す)。どれも確保に失敗せず `Ok(())`。
+- **`get_mut`** は `match v.get_mut(i) { Some(x) => .., None => .. }` の形だけ (`Option<&mut T>` の値は作らない)。境界の内なら要素のアドレスを `&mut T` の変数に束縛して腕を下ろす (`v` は局所変数かフィールド、要素はスカラー)。
+- **所有物を持つ値の分解** (`let (a, b) = t`、`let t.S { f: x, g: y } = s`、`match` の一部だけ束縛する腕): 束縛した部分は変数が所有し (`bind_owned`)、束縛しなかった所有物は分解の時点で `drop_unbound` が解放する (パターンをたどり、`_`・リテラル・書かなかったフィールドの所有物を `drop_value`)。13.3 の「一部だけを束縛するパターンは拒否」は外した。`pat_srcs` が対象の型表の型からパターンの名前ごとの型を求め、Vec と String を区別する。構造体のパターンの変数の型が型表で未確定だった (`types.rs` の `bind_pat` に `PStruct` がなかった) ので足した。
+- **フィールドからの移動** (`let w = b.items`、`p.a` を返す・渡す): `b` が値の局所変数 (または引数) のとき、フィールドの値を取り出し、元の場所に「空」の値 (`vec` は `{null, 0, 0}`、`Option` は `None`、構造体・タプルは所有物のフィールドだけ空) を書く。残りのフィールドは `b` のスコープの終わりに解放され、空のフィールドは何もしない。移したフィールドへ再代入すると、古い (空の) 値を解放して新しい値が入る。仕様 4.1 / E3002 の「全体の使用は move 済み、別のフィールドの使用・再代入では復活」と合う。`match` の対象にフィールドを置く形は、所有物を束縛しない腕だけなら借りて見るだけ (移さない)、束縛するなら拒否する。
+- **`&mut` の参照を通したフィールドの移動は未対応 (拒否)**: `fn f(self: &mut S) -> Vec { self.items }` は `ksn check` が診断を出さず、木走査は移したあとも元のフィールドを使える (共有する)。借用の中身を移すので KIR では拒否する。検査側の欠落 (報告のみ。ここでは直さない)。一時の値のフィールド (`t.mk().items`) も拒否する。
+- 副産物の誤コード修正: `E.V.m(..)` (列挙子の値へのメソッド呼び出し) が、解決が `E.V` で止まり `m` を落として列挙子の値そのものとして下ろされていた (`realtime.Phase.Idle.next()` が `Idle` になった)。`variant_method_call` で受け手を `E.V` の式にして呼ぶ。名前の一部だけが解決される他の形は拒否する。
+
+### 13.8 要素が所有物の Vec
+
+`Vec<String>` / `Vec<Vec<T>>` / `Vec<構造体 (所有物を持つ)>`。型だけで解放できるように、要素が所有物 (集成体) の Vec のヘッダは別の型 `vec<#N>` (`N` は要素の型の添字。配置は `vec` と同じ) にする (`AggTab::vec_of` / `vec_elem` / `is_vec`)。スカラーなどの要素は従来の `vec`。
+
+- 解放 (`drop_value`): `vec<#N>` は先頭の `len` 個の要素を `Load` して `drop_value` してから、バッファを `free`。局所変数のヘッダ (`Owned::Hdr`) は `hdr_ty` (ヘッダのアドレス → 値の型) で型を引いて同じ解放をする。移した後 (`move_hdr`) は、バッファの null と一緒に `len` も 0 にする (空のバッファの要素をたどらない)。
+- メソッド: `push(要素)` (大きさは型表の集成体の大きさ。書き込みは `bitcast` した参照への `store`)、`pop` (`Option<要素>`)、`clear` (要素を解放してから `len = 0`)、`len`、移動・引数・戻り値・構造体のフィールド。`Vec::new` の型は型表の式の型から決める。
+- 未対応 (理由付き): 要素へのアクセス (`get` / 添字 / `for` — 借用の `&String` が要る)、`insert` / `remove`。コピーできる集成体の要素 (`Vec<json.Node>`) の `push` は同じ経路で下ろせるが、`get` が `Option<&集成体>` を返す形 (`Option<&T>` の `*`) は別担当 (kir/deref-for)。
+
+### 13.9 結果
+
+- 試験 (`stage0/tests/cli.rs` の `kir_own_more_match_tree_walker`。木走査と `--run` / `--native` の値が一致し、参照実行器が漏れ・二重解放を検出しない 31 ケース): `push_str` / `push(char)` の 1〜4 バイト・`pop`・`clear`・`&mut self` の Ring (`get` / `get_mut` / `checked_rem`)・値の構造体のフィールドの `push` / `push_str` (ループの中を含む)・引数の構造体・分解 (タプル・構造体・`_`)・`match` の部分束縛・フィールドからの移動 (残りの解放、再代入、返す)・`Vec<String>` / `Vec<Vec<u32>>` の `push` / `pop` / `clear` / 構造体のフィールド・`E.V.m()`。拒否の理由は `kir_own_reports_unsupported_moves_with_a_reason` (参照を通したフィールドの移動・一時の値のフィールド・`unwrap_or`)。
+- `ksn build --backend llvm`: `perf/strcat` と `examples/realtime` は LLVM で作れて、`ksn run` と stdout・stderr・終了コードが一致する。`examples/json` は新しい理由で止まる (下)。
+- `examples/json` の残り: `Option<u8>` と `Some(b']')` の `==` (比較 `eq` が KIR にない)、`core.str.from_utf8`、`doc.nodes.get(i)` が返す `Option<&json.Node>` (集成体の借用のペイロード)、コピーできる集成体の `==`。どれも所有の周りではない。
+- 残り: 要素が所有物の Vec の `get` / 添字 / `for` / `insert` / `remove`、`&mut` の参照を通したフィールドの移動 (検査の欠落)、一時の値のフィールドの移動、フィールドが `Result` や列挙型 (ペイロード付き) の移動。
 
 ## 14. 取り込みのあるクロージャと反復子の連なり (kir/closures)
 
@@ -969,6 +1004,78 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 - `KSN_DUMP_KIR=1` の `kir_lower_dump_on_check_is_hidden_behind_the_env_var` は、未対応の理由の例を浮動小数の比較に変えた (前は `core.check.eq` が下ろせたので、`t.main` が未対応にならなかった)。
 - 15 パッケージ (examples 7 + perf 8) の `ksn build --backend llvm`: 作れたのは `examples/native`・`perf/fib`・`perf/noop`・`perf/structs` の 4 本で、`ksn run` と stdout・stderr・終了コードが一致した。残りの理由は実装状況.md の作業ログを見る。
 
+## 16. HashMap (kir/hashmap、2026-11-13)
+
+`alloc.collections.HashMap` を KIR に下ろす。意味は木走査と同じ (挿入順を保つ。削除後も相対順を保つ。上書きは位置を変えず、削除後の再挿入は末尾)。ハッシュ関数は木走査と別でよいが決定的 (種なし。反復順は挿入順で決まるので外から見えない)。
+
+### 16.1 表現
+
+- 局所変数は Vec / String と同じ 24 バイトのヘッダ `{buf: ptr, len: usize, cap: usize}` (フレーム)。`len` は生きている組の数。型表では `vec` の値 (集成体) なので、所有・移動・解放・`&` / `&mut` の借用 (ヘッダのアドレス) は 13 章の Vec の規則をそのまま使う (`Kind::Map`)。解放は `free(buf)` の 1 回。
+- `buf` は 1 本のヒープ領域 (空のとき null):
+
+```text
+buf+0                 used  (使った組の数。削除した組を含む。挿入順の組の列の長さ)
+buf+8                 組 0 .. 組 cap-1   (1 組 = key + value(8) + live(8)、key は 8 か 16 バイト)
+buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。0 = 空、TOMB = 墓標、n = 組 n-1)
+```
+
+- キーは 8 バイトの語 (整数・bool・char。上位は 0 埋め) か `&str` (`ptr`, `len` の 16 バイト、借用。バイトの一致で等しい)。値は 8 バイトの語 (整数・bool・char)。語は書くとき上位を 0 にし、読むときは型の幅で読む (リトルエンディアン)。
+- 削除: 組の `live` を 0、索引を TOMB、`len` を 1 減らす (組は動かさないので順序が保たれる)。反復は組の列を前から見て `live` のものを出す。
+- 作り直し: 挿入のとき `used == cap` (または空) なら、新しい領域を確保して生きている組を前から詰めて写し、索引を作り直す。生きている組が `cap` の半分以上なら容量を倍に (初期 8)、そうでなければ同じ容量 (墓標と削除済みの組を片付ける)。索引は常に半分以上が空なので、探査は必ず止まる。
+- ハッシュ: 語 (または FNV-1a のバイト列) に乗算と xor-shift を掛ける。決定的。
+
+### 16.2 下ろし (`kir_lower_map.rs`)
+
+- 補助の関数を、キーの種類ごと (`w` = 語、`s` = `&str`) に 4 本、`coll.extra` へ足す: `ksn.map.<w|s>.hash` / `find` (添字 + 1、無ければ 0) / `add` (キーが無いことが前提。作り直しと末尾への追加。`uses [alloc]`) / `remove` (`find` と同じ戻り値で、見つけたら削除)。関数の中身は `kir_lower_map.rs` が KIR の命令で組み立てる (新しい命令は無い)。
+- `HashMap.new(std.alloc.SYSTEM)` は Vec と同じ空のヘッダ (null, 0, 0)。`insert(k, v)` は `find` で分けて、あれば値を書き換えて `Ok(Some(old))`、無ければ `add` して値を書き `Ok(None)` (`Result<Option<V>, AllocError>`。`Err` は作らない)。`get(&k)` は `Option<V>` (10.10 の規則。`Option<&V>` を値で持つ)、`contains_key`、`remove` (`Option<V>`)、`len`、`is_empty`。キーの引数は `&k` の `k` を直接評価する (参照を作らない)。
+- `for (k, v) in m.iter()`: 添字を 0 から `used` まで増やすループ (`counted` と同じ形)。`live` でない組は次へ飛ぶ。`k` / `v` は値で束縛する (`&K` / `&V` は値で持つ)。`break` / `continue` / `return` と代入が使える。
+- 参照を外す `*k` / `*v`: 値で持つ `&スカラー` に `*` が付いたら値そのもの (`kir_lower_refs.rs` の `deref` の 1 腕)。
+- 型 (キー・値) は型表の `HashMap<K, V, _>` から決め、決まらないときは最初の `insert` の引数の型で決める。
+- 未対応 (理由付き): `get_mut` (`Option<&mut V>` を持てない。参照の段階)、`iter` を `for` 以外で使う形、値が浮動小数・集成体・`String` / `Vec`、キーが `String` や集成体、`HashMap` を構造体のフィールドに持つ形。
+
+### 16.3 検証
+
+- `stage0/tests/cli.rs` の `kir_map_values_match_tree_walker` (20 ケース: 挿入・上書き・削除・再挿入・成長 (1 万件)・反復順・存在しないキー・墓標と作り直し・符号付きと `&str` のキー・`&mut` の借用と値の戻り)。木走査の `core.check.eq` で期待値を確かめ、`--run` と `--native` の両方で同じ値。参照実行器は漏れ・二重解放・範囲外を内部エラーにするので、解放の規則も確かめている。`kir_map_reports_unsupported_methods_with_a_reason` は `get_mut` の理由。
+- `perf/hashmap`: `ksn build --backend llvm` が作れ (`target/debug/hashmap.native`)、`ksn run` と stdout・stderr・終了コードが一致する。
+
+## 17. Fable のレビューで見つかった不具合の修正 (fix/kir-review、2026-11-13)
+
+### 17.1 合流で受け渡すスロット (`assigned`)
+- フィールドからの移動 (`let w = b.items`、13.7) は、SSA の局所 `b` へ「空」の値を書き戻す。`scan_mut` (`mut_recv_names`) が、`Path` (2 セグメント以上) / `Field` の連なりの根が所有物を持つ型の局所なら、その名前を「代入される局所」に入れる (値で使うかは見分けず、余分に受け渡すだけで害はない)。前は分岐の片方だけの移動が合流で失われ、二重解放になった (参照実行器は `不正な解放`、機械語は黙って壊れた)。`if` と `match` の回帰テスト。(`while` の中の移動は E3002 で拒否される。)
+
+### 17.2 LLVM の整列
+- 参照越しの `load` / `store` (`Op::Load` / `Op::Store`) は常に `align 1`。`i192` などの集成体の既定の整列 (16) を、8 の倍数のアドレスや `malloc` の途中のアドレスに仮定すると未定義動作になる。`alloca` は LLVM の既定 (型の ABI 整列以上) のままで、型表より小さくならない。`mem.load` / `mem.store` は元から `align 1`。
+- `f32` / `f64` の `abs` は、`double` へ広げず整数のビット演算 (符号ビットを落とす) にした。`-O0` でも signaling NaN のビットが変わらない。
+
+### 17.3 早期脱出での所有値の解放
+- `Owned::Tmp(値)` を足した。呼び出しの引数・構造体のフィールド・列挙子の引数・タプルの要素を評価するとき、所有物 (`owns`) の値は評価の直後に `tmp_hold` で現在のスコープの所有に登録し、消費する直前 (呼び出し・`make` の直前、または評価が途中で終わるとき) に `tmp_release` で外す。後ろの式の `?` / `return` / `break` の `drop_from` が、評価済みの値を解放する。登録は SSA の値そのもの (評価点は脱出点を支配する)。メソッドの受け手は対象外 (既存の所有の規則のまま)。
+
+### 17.4 利用者の反復子
+- `scan_mut` が `For` を見て、反復子の局所 (`for x in it` の `it`) を外側の合流の受け渡しに入れる。前は外側の `while` / `if` / `match` が古い `it` を使い続けた。
+- 反復子が所有物を返すとき、`for` の変数は `bind_owned` で所有に入れ、`_` なら `drop_temp` で捨てる。1 周の終わりの `block_end` は、ヘッダへの `goto` の前に置く (前は戻った後に置かれて到達しなかった)。
+
+### 17.5 `*r` で所有物を持つ型を丸ごと読む
+- `ksn check` は `let b = *r` (`r: &構造体` で Vec を持つ) を通す。木走査は共有するだけだが、KIR の `load` は借用元と同じバッファを指す所有値を作り、二重解放になる。`deref` は理由付きで拒む (`所有物を持つ型の借用の中身 (*r) を丸ごと読む`)。`&Vec` / `&String` の `*r` は、これまでどおり「* の被演算子が参照でない」で拒まれる。
+
+### 17.6 反復・借用中の変更
+- `ksn check` が拒む (E3010): `s.push_str(s.as_str())`、`m.iter()` の `for` の本体での `m.insert`。KIR では確かめるだけ。
+- `ksn check` が通す: `for x in v` の本体での `v.push` (木走査は無限に回る)、`&str` キーの元の String の変更。KIR では拒む。
+  - `for x in v` (局所の Vec) の本体に、`v` への代入・`&mut v`・読むだけとは限らないメソッド (`len` / `is_empty` / `get` / `as_slice` / `as_str` / `first` / `last` / `contains` / `capacity` 以外) があれば拒む (`body_mutates`)。
+  - `m.insert(k.as_str(), ..)` の `k` が、関数の本体のどこかで同じ基準で変更されるなら拒む (順序は見ない。前に変更するだけの形も拒む保守的な規則)。
+
+### 17.7 検査の穴 (参照実行器)
+- 定義が使用を支配するか: 参照実行器のフレームに定義済みの印 (`defd`) を持たせ、命令・終端の被演算子が未定義なら内部エラー (`定義される前に読まれた`)。静的な支配の検査 (`verify`) は足していない (実行した経路だけの検出)。`verify` は `Const` の `ref<T>` を拒む (`alloca` / `as_shared` / `reborrow` で作る)。
+- 未初期化の読み: `ByteMem` に書かれたかの印 (`init`) を持たせ、`heap.alloc` / `heap.realloc` の新しい部分は毒の値 (0xA5) で未初期化。スカラーの `mem.load` が未初期化のバイトを含むと内部エラー。`frame.bytes` / `alloca` は機械語が 0 で埋めるので書かれた扱い。集成体の読み出し (`read_bytes`) は詰め物を含むので調べない。`realloc` は旧い領域の書かれたバイトだけを引き継ぐ。
+
+### 17.8 NaN のビット列
+- 規則 (`fmath::nan_rule64` / `nan_rule32`): `+ - * /`・`%`・`sqrt` の結果が NaN のとき、第 1 被演算子が NaN ならそれ (quiet 化)、そうでなく第 2 被演算子が NaN ならそれ、どちらでもなければ正の quiet NaN (`f64::NAN` / `f32::NAN`)。実機 (x86) は被演算子が NaN でないとき符号ビット付きの NaN を作り、LLVM の定数畳み込みは正の NaN を作るので、そのままでは 3 者が食い違う。
+- 木走査 (`interp.rs` の `binary`、`natives.rs` の `sqrt` / `rem`)、参照実行器 (`kir_scalar.rs`)、機械語 (`kir_llvm.rs` の `nan_rule`。`select` の連なり) が同じ規則で結果を決める。以前の `f64` の `/` の 0 除算の特別扱い (`NaN / 0` は正規の NaN) は、この規則に含まれた (`NaN / 0` は NaN の被演算子)。`sin` などの超越関数は `fmath::canon` が元から正規の NaN にする。`max` / `min` / `floor` などは対象外 (入力が NaN のときだけ NaN)。
+
+### 17.9 機械語の検査 (ASan)
+- `ksn` の環境変数 `KSN_CLANG_ARGS` (空白区切り) が、`ksn kir --native` と `ksn build --backend llvm` の clang の引数に足される (未設定なら何も変わらない)。`--native` の実行ファイルの名前の hash には引数も入る。
+- `tests/cli.rs` の `kir_run` は、clang が `-fsanitize=address` を使えるとき (`asan_available`)、`KSN_CLANG_ARGS="-fsanitize=address -fno-omit-frame-pointer -g -O0"` と `ASAN_OPTIONS=detect_leaks=1` で作った実行ファイルでも走らせる。ASan の報告が出れば失敗 (panic の 101 / 102 の終了では、漏れの報告 (LeakSanitizer) は見ない)。終了コードと表示も参照実行器と比べる。`KSN_NO_ASAN=1` で無効にできる。`-O0` なのは、`-O1` では LLVM が `malloc` / `free` の対を消して二重解放が見えないため (項目 1 の二重解放は `-O0` でだけ ASan が報告する)。
+- 既存の KIR の差分テスト全件 (`kir_*`) は、ASan でも報告なしで通る。`KSN_CLANG_ARGS="-fsanitize=address -g"` を付けた `llvm_builds_of_real_packages_match_run` (11 パッケージ) も通る。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
@@ -987,3 +1094,19 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 - `バックエンド.md`: 値の表現、所有と解放、既知の注意。
 - `方針まとめ.md`: 6 章 (設計変更)、7 章 (段階)、9 章 (未決)。
 - `設計案_小型モデル向け.md`: B (整数演算子)。
+
+### 17.10 Fable の 2 回目のレビュー (2026-11-13) の修正
+- 値の受け手 (`self: T`、所有物を持つ型) は、関数の形の引数と同じく移す (`path_read`)。移した受け手は、引数を評価する間 (`?` で抜ける経路) は一時値として持つ (`tmp_hold`)。`&self` に一時値を渡すときは、写しを一時値として持ち、スコープの終わりに解放する。
+- 所有物を持つ局所の `Option` / `Result` の `unwrap` は、局所を移す (取り出した値とスコープの終わりの解放が重ならない)。
+- `KSN_CLANG_ARGS` に `-fsanitize=address` があるときは、生成するすべての `define` に `sanitize_address` を付ける (生成コードの読み書きも ASan が調べる)。
+- `&str` キーの HashMap の元の String の解放・移動は、検査 (借用中の move、E3010) が先に拒む。
+
+### 17.11 浮動小数の表示と C の実行時補助 (2026-11-13)
+- `core.check.eq` の f64 / f32 は、IEEE の `==` で比べ (NaN は不一致)、失敗の表示を新しい命令 `fmt_float` (Op::FmtFloat) で作る。参照実行器は `py_float` / `py_float32` をそのまま使う。
+- 機械語は、表示を C の小さな実行時補助 `stage0/src/kir_rt.c` (`ksn_fmt_f64` / `ksn_fmt_f32`) に任せる。`ksn` に埋め込み (`include_str!`)、IR が `@ksn_fmt_` を呼ぶときだけ、`.ll` の隣に書いて clang に一緒に渡す (`-x c`)。IR で書くより短く、検証しやすいため。
+- 算法: `%.{p}e` を p = 0.. で試し、`strtod` / `strtof` で読み戻して一致した最初の桁を使う。最近接の候補が往復しないとき (2 の冪の境界) は、同じ桁数の隣の候補を 10 進の桁の列の上で作って試す。ちょうど中間の値は、Rust と同じく絶対値の大きい方を取る (正確な 10 進展開で判定)。最後に指数表記を通常の 10 進に直す。
+- 確かめ: Rust の `format!("{}")` と、f64 約 25 万個 (2 の冪すべて、乱数のビット列、小数 3 桁の値) と f32 約 20 万個で全件一致。
+
+### 17.12 `core.str.from_utf8` の検証 (2026-11-13)
+- 命令 `utf8.valid p, len` (Op::Utf8Valid) は、`p` から `len` バイトを UTF-8 として検証し、正しい接頭辞の長さ (`valid_up_to`) を返す。全体が正しければ `len`。参照実行器は Rust の `str::from_utf8`、機械語は `kir_rt.c` の `ksn_utf8_valid` (Rust と同じ規則: 過長な符号化・サロゲート・U+10FFFF 超を拒む)。`from_utf8` は、結果が `len` なら `Ok(元の fat)`、違えば `Err(Utf8Error { valid_up_to })`。
+- 確かめ: `ksn_utf8_valid` を Python の UTF-8 の復号 (Rust と同じ規則) と、乱数のバイト列 30 万個で比べて全件一致。

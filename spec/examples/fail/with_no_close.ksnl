@@ -1,0 +1,6 @@
+fn app.x.f(path: &str) -> Result<(), std.io.Error> uses [io.fs] panics never
+    with file = std.fs.open(path)? {
+        core.mem.drop(file)
+    }
+    Ok(())
+end app.x.f

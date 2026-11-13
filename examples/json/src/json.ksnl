@@ -3,8 +3,8 @@ type json.Doc pub
     nodes: alloc.vec.Vec<json.Node, std.alloc.System>
 end json.Doc
 
-enum json.Error derive [Debug, Clone, PartialEq] pub
-    Alloc
+enum json.Error derive [Debug, Clone, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
     BadEscape(usize)
     BadNumber(usize)
     Eof
@@ -31,7 +31,7 @@ fn json.array(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usiz
     let mut close = 0usize
     loop {
         let (child, after) = json.value(doc, src, i)?
-        items.push(child).map_err(json.oom)?
+        items.push(child)?
         let j = json.skip_ws(src, after)
         match src.get(j) {
             Some(b',') => {
@@ -88,7 +88,7 @@ fn json.escape(src: &[u8], pos: usize) -> Result<usize, json.Error>
                 }
                 match src.get(k) {
                     Some(c) => {
-                        if !json.is_hex(c) {
+                        if !json.is_hex(*c) {
                             return Err(json.Error.BadEscape(pos))
                         }
                     }
@@ -112,7 +112,7 @@ fn json.flush(doc: &mut json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>
     let n = items.len()
     for k in core.iter.range(0usize, n) {
         match items.get(k) {
-            Some(v) => json.push_link(doc, v)?
+            Some(v) => json.push_link(doc, *v)?
             None => return Err(json.Error.Eof)
         }
     }
@@ -200,8 +200,8 @@ fn json.object(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usi
             return Err(json.Error.Unexpected(colon))
         }
         let (val, after_val) = json.value(doc, src, json.skip_ws(src, colon.wrapping_add(1usize)))?
-        items.push(key).map_err(json.oom)?
-        items.push(val).map_err(json.oom)?
+        items.push(key)?
+        items.push(val)?
         let j = json.skip_ws(src, after_val)
         match src.get(j) {
             Some(b',') => {
@@ -222,10 +222,6 @@ fn json.object(doc: &mut json.Doc, src: &[u8], pos: usize) -> Result<(usize, usi
     Ok((at, close.wrapping_add(1usize)))
 end json.object
 
-fn json.oom(_e: alloc.alloc.AllocError) -> json.Error
-    json.Error.Alloc
-end json.oom
-
 fn json.parse(text: &str) -> Result<(json.Doc, usize), json.Error>
     let src = text.as_bytes()
     let links = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -240,12 +236,13 @@ fn json.parse(text: &str) -> Result<(json.Doc, usize), json.Error>
 end json.parse
 
 fn json.push_link(doc: &mut json.Doc, slot: usize) -> Result<(), json.Error>
-    doc.links.push(slot).map_err(json.oom)
+    doc.links.push(slot)?
+    Ok(())
 end json.push_link
 
 fn json.push_node(doc: &mut json.Doc, node: json.Node) -> Result<usize, json.Error>
     let at = doc.nodes.len()
-    doc.nodes.push(node).map_err(json.oom)?
+    doc.nodes.push(node)?
     Ok(at)
 end json.push_node
 
@@ -253,13 +250,18 @@ fn json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], 
     match src.sub(from, to) {
         Some(bytes) => {
             match core.str.from_utf8(bytes) {
-                Ok(text) => out.push_str(text).map_err(json.oom)
+                Ok(text) => json.put(out, text)
                 Err(_e) => Err(json.Error.Unexpected(from))
             }
         }
         None => Err(json.Error.Eof)
     }
 end json.push_range
+
+fn json.put(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), json.Error>
+    out.push_str(text)?
+    Ok(())
+end json.put
 
 fn json.skip_ws(src: &[u8], pos: usize) -> usize
     let mut i = pos
@@ -315,44 +317,47 @@ end json.value
 fn json.write(doc: &json.Doc, src: &[u8], node: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), json.Error> uses [alloc] panics never stack 4096
     match doc.nodes.get(node) {
         None => Err(json.Error.Eof)
-        Some(json.Node.Null) => out.push_str("null").map_err(json.oom)
-        Some(json.Node.Bool(true)) => out.push_str("true").map_err(json.oom)
-        Some(json.Node.Bool(false)) => out.push_str("false").map_err(json.oom)
+        Some(json.Node.Null) => json.put(out, "null")
+        Some(json.Node.Bool(true)) => json.put(out, "true")
+        Some(json.Node.Bool(false)) => json.put(out, "false")
         Some(json.Node.Number(a, b)) => json.push_range(out, src, a, b)
         Some(json.Node.Str(a, b)) => {
-            out.push('"').map_err(json.oom)?
+            out.push('"')?
             json.push_range(out, src, a, b)?
-            out.push('"').map_err(json.oom)
+            out.push('"')?
+            Ok(())
         }
         Some(json.Node.Array(first, count)) => {
-            out.push('[').map_err(json.oom)?
+            out.push('[')?
             for k in core.iter.range(0usize, count) {
                 if k > 0usize {
-                    out.push(',').map_err(json.oom)?
+                    out.push(',')?
                 }
                 json.write_link(doc, src, first.wrapping_add(k), out)?
             }
-            out.push(']').map_err(json.oom)
+            out.push(']')?
+            Ok(())
         }
         Some(json.Node.Object(first, pairs)) => {
-            out.push('{').map_err(json.oom)?
+            out.push('{')?
             for k in core.iter.range(0usize, pairs) {
                 if k > 0usize {
-                    out.push(',').map_err(json.oom)?
+                    out.push(',')?
                 }
                 let at = first.wrapping_add(k.wrapping_mul(2usize))
                 json.write_link(doc, src, at, out)?
-                out.push(':').map_err(json.oom)?
+                out.push(':')?
                 json.write_link(doc, src, at.wrapping_add(1usize), out)?
             }
-            out.push('}').map_err(json.oom)
+            out.push('}')?
+            Ok(())
         }
     }
 end json.write
 
 fn json.write_link(doc: &json.Doc, src: &[u8], slot: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), json.Error> uses [alloc] panics never stack 4096
     match doc.links.get(slot) {
-        Some(node) => json.write(doc, src, node, out)
+        Some(node) => json.write(doc, src, *node, out)
         None => Err(json.Error.Eof)
     }
 end json.write_link

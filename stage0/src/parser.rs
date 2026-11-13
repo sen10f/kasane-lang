@@ -42,6 +42,32 @@ pub(crate) fn s(x: &str) -> V {
 pub(crate) fn nd(n: &'static str, fs: Vec<V>) -> V {
     V::Node(n, fs, 0, 0)
 }
+/// 位置の符号化: 上位が行、下位 20 bit が列 (1 始まり、Unicode スカラ値)。
+/// 列を持たない素の行番号 (< 1<<20) もそのまま「列不明」の位置として扱える。
+pub(crate) const COL_BITS: usize = 20;
+pub(crate) fn pack_pos(line: usize, col: usize) -> usize {
+    (line << COL_BITS) | col.min((1 << COL_BITS) - 1)
+}
+/// 位置 `p` を (行, 列) に分ける。列が無ければ 0。
+pub(crate) fn unpack_pos(p: usize) -> (usize, usize) {
+    if p < (1 << COL_BITS) {
+        (p, 0)
+    } else {
+        (p >> COL_BITS, p & ((1 << COL_BITS) - 1))
+    }
+}
+/// 中置・後置ノードの位置。左項が同じ行で始まるなら、その開始位置 (項の先頭) を使う。
+fn anchor(p: usize, left: &V) -> usize {
+    let lp = match left {
+        V::Node(_, _, l, _) => *l,
+        _ => 0,
+    };
+    if lp != 0 && unpack_pos(lp).0 == unpack_pos(p).0 {
+        lp
+    } else {
+        p
+    }
+}
 pub(crate) fn ndl(line: usize, n: &'static str, fs: Vec<V>) -> V {
     V::Node(n, fs, line, 0)
 }
@@ -525,11 +551,11 @@ impl Parser {
             match c.text.as_str() {
                 "break" => {
                     self.i += 1;
-                    return Ok(ndl(c.line, "Break", vec![]));
+                    return Ok(ndl(c.pos(), "Break", vec![]));
                 }
                 "continue" => {
                     self.i += 1;
-                    return Ok(ndl(c.line, "Continue", vec![]));
+                    return Ok(ndl(c.pos(), "Continue", vec![]));
                 }
                 "return" => {
                     self.i += 1;
@@ -537,7 +563,7 @@ impl Parser {
                     if self.cur().kind != "nl" && self.cur().kind != "eof" && !self.is_op("}") {
                         e = Some(self.expr(ns)?);
                     }
-                    return Ok(ndl(c.line, "Return", vec![opt(e)]));
+                    return Ok(ndl(c.pos(), "Return", vec![opt(e)]));
                 }
                 _ => {}
             }
@@ -548,10 +574,10 @@ impl Parser {
     pub(crate) fn or_expr(&mut self, ns: bool) -> R<V> {
         let mut l = self.and_expr(ns)?;
         while self.is_op("||") {
-            let ln = self.cur().line;
+            let ln = self.cur().pos();
             self.i += 1;
             let r = self.and_expr(ns)?;
-            l = ndl(ln, "Bin", vec![s("||"), l, r]);
+            l = ndl(anchor(ln, &l), "Bin", vec![s("||"), l, r]);
         }
         Ok(l)
     }
@@ -559,10 +585,10 @@ impl Parser {
     pub(crate) fn and_expr(&mut self, ns: bool) -> R<V> {
         let mut l = self.cmp_expr(ns)?;
         while self.is_op("&&") {
-            let ln = self.cur().line;
+            let ln = self.cur().pos();
             self.i += 1;
             let r = self.cmp_expr(ns)?;
-            l = ndl(ln, "Bin", vec![s("&&"), l, r]);
+            l = ndl(anchor(ln, &l), "Bin", vec![s("&&"), l, r]);
         }
         Ok(l)
     }
@@ -573,7 +599,7 @@ impl Parser {
         if c.kind == "op" && matches!(c.text.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=") {
             self.i += 1;
             let r = self.bin_level(0, ns)?;
-            return Ok(ndl(c.line, "Bin", vec![V::S(c.text), l, r]));
+            return Ok(ndl(anchor(c.pos(), &l), "Bin", vec![V::S(c.text), l, r]));
         }
         Ok(l)
     }
@@ -586,10 +612,10 @@ impl Parser {
         let mut l = self.bin_level(lv + 1, ns)?;
         while self.cur().kind == "op" && LEVELS[lv].contains(&self.cur().text.as_str()) {
             let op = self.cur().text.clone();
-            let ln = self.cur().line;
+            let ln = self.cur().pos();
             self.i += 1;
             let r = self.bin_level(lv + 1, ns)?;
-            l = ndl(ln, "Bin", vec![V::S(op), l, r]);
+            l = ndl(anchor(ln, &l), "Bin", vec![V::S(op), l, r]);
         }
         Ok(l)
     }
@@ -600,16 +626,16 @@ impl Parser {
             if matches!(c.text.as_str(), "-" | "!" | "*") {
                 self.i += 1;
                 let e = self.unary(ns)?;
-                return Ok(ndl(c.line, "Unary", vec![V::S(c.text), e]));
+                return Ok(ndl(c.pos(), "Unary", vec![V::S(c.text), e]));
             }
             if c.text == "&" {
                 self.i += 1;
                 if self.accept_kw("mut") {
                     let e = self.unary(ns)?;
-                    return Ok(ndl(c.line, "Unary", vec![s("&mut"), e]));
+                    return Ok(ndl(c.pos(), "Unary", vec![s("&mut"), e]));
                 }
                 let e = self.unary(ns)?;
-                return Ok(ndl(c.line, "Unary", vec![s("&"), e]));
+                return Ok(ndl(c.pos(), "Unary", vec![s("&"), e]));
             }
         }
         self.postfix(ns)
@@ -643,6 +669,7 @@ impl Parser {
             match c.text.as_str() {
                 "." => {
                     self.i += 1;
+                    let name_pos = self.cur().pos();
                     let nm = self.name_tok()?;
                     let mut targs = V::Nil;
                     if self.is_op("::") {
@@ -651,24 +678,24 @@ impl Parser {
                     }
                     if self.is_op("(") {
                         let args = self.call_args()?;
-                        e = ndl(c.line, "MCall", vec![e, V::S(nm), args, targs]);
+                        e = ndl(anchor(c.pos(), &e), "MCall", vec![e, V::S(nm), args, targs, V::N(name_pos.to_string())]);
                     } else {
-                        e = ndl(c.line, "Field", vec![e, V::S(nm)]);
+                        e = ndl(anchor(c.pos(), &e), "Field", vec![e, V::S(nm), V::N(name_pos.to_string())]);
                     }
                 }
                 "(" => {
                     let args = self.call_args()?;
-                    e = ndl(c.line, "Call", vec![e, args, V::Nil]);
+                    e = ndl(anchor(c.pos(), &e), "Call", vec![e, args, V::Nil]);
                 }
                 "[" => {
                     self.i += 1;
                     let idx = self.expr(false)?;
                     self.expect_op("]")?;
-                    e = ndl(c.line, "Index", vec![e, idx]);
+                    e = ndl(anchor(c.pos(), &e), "Index", vec![e, idx]);
                 }
                 "?" => {
                     self.i += 1;
-                    e = ndl(c.line, "Try", vec![e]);
+                    e = ndl(anchor(c.pos(), &e), "Try", vec![e]);
                 }
                 _ => break,
             }
@@ -681,30 +708,30 @@ impl Parser {
         match c.kind {
             "int" => {
                 let (v, sfx) = split_number(&c.text, false)?;
-                Ok(ndl(c.line, "Lit", vec![s("int"), V::N(v), opt(sfx.map(V::S))]))
+                Ok(ndl(c.pos(), "Lit", vec![s("int"), V::N(v), opt(sfx.map(V::S))]))
             }
             "float" => {
                 let (core, sfx) = split_number(&c.text, true)?;
                 let core = if c.text.starts_with('-') { format!("-{}", core) } else { core };
-                Ok(ndl(c.line, "Lit", vec![s("float"), opt(sfx.map(V::S)), V::N(core)]))
+                Ok(ndl(c.pos(), "Lit", vec![s("float"), opt(sfx.map(V::S)), V::N(core)]))
             }
             "str" => {
                 let inner = &c.text[1..c.text.len() - 1];
                 let v: String = unescape(inner)?.into_iter().collect();
-                Ok(ndl(c.line, "Lit", vec![s("str"), V::S(hex(v.as_bytes()))]))
+                Ok(ndl(c.pos(), "Lit", vec![s("str"), V::S(hex(v.as_bytes()))]))
             }
             "bstr" => {
                 let inner = &c.text[2..c.text.len() - 1];
                 let v = unescape(inner)?;
-                Ok(ndl(c.line, "Lit", vec![s("bstr"), V::L(v.iter().map(|ch| V::N((*ch as u32).to_string())).collect())]))
+                Ok(ndl(c.pos(), "Lit", vec![s("bstr"), V::L(v.iter().map(|ch| V::N((*ch as u32).to_string())).collect())]))
             }
             "char" => {
                 let v = unescape(&c.text[1..c.text.len() - 1])?;
-                Ok(ndl(c.line, "Lit", vec![s("char"), V::N((v[0] as u32).to_string())]))
+                Ok(ndl(c.pos(), "Lit", vec![s("char"), V::N((v[0] as u32).to_string())]))
             }
             _ => {
                 let v = unescape(&c.text[2..c.text.len() - 1])?;
-                Ok(ndl(c.line, "Lit", vec![s("byte"), V::N((v[0] as u32).to_string())]))
+                Ok(ndl(c.pos(), "Lit", vec![s("byte"), V::N((v[0] as u32).to_string())]))
             }
         }
     }
@@ -716,24 +743,24 @@ impl Parser {
             "kw" => match c.text.as_str() {
                 "true" | "false" => {
                     self.i += 1;
-                    return Ok(ndl(c.line, "Lit", vec![s("bool"), V::B(c.text == "true")]));
+                    return Ok(ndl(c.pos(), "Lit", vec![s("bool"), V::B(c.text == "true")]));
                 }
                 "self" => {
                     self.i += 1;
-                    return Ok(ndl(c.line, "Path", vec![V::L(vec![s("self")]), V::Nil]));
+                    return Ok(ndl(c.pos(), "Path", vec![V::L(vec![s("self")]), V::Nil]));
                 }
                 "if" => return self.if_expr(),
                 "match" => return self.match_expr(),
                 "loop" => {
                     self.i += 1;
                     let b = self.block()?;
-                    return Ok(ndl(c.line, "Loop", vec![b]));
+                    return Ok(ndl(c.pos(), "Loop", vec![b]));
                 }
                 "while" => {
                     self.i += 1;
                     let cond = self.expr(true)?;
                     let b = self.block()?;
-                    return Ok(ndl(c.line, "While", vec![cond, b]));
+                    return Ok(ndl(c.pos(), "While", vec![cond, b]));
                 }
                 "for" => {
                     self.i += 1;
@@ -741,15 +768,16 @@ impl Parser {
                     self.expect_kw("in")?;
                     let it = self.expr(true)?;
                     let b = self.block()?;
-                    return Ok(ndl(c.line, "For", vec![pat, it, b]));
+                    return Ok(ndl(c.pos(), "For", vec![pat, it, b]));
                 }
                 "unsafe" => {
                     self.i += 1;
                     let name = self.str_value()?;
                     let why = self.str_value()?;
                     let b = self.block()?;
-                    return Ok(ndl(c.line, "Unsafe", vec![V::S(name), V::S(why), b]));
+                    return Ok(ndl(c.pos(), "Unsafe", vec![V::S(name), V::S(why), b]));
                 }
+                "with" => return self.with_expr(),
                 "fn" => return self.closure(),
                 _ => {}
             },
@@ -757,7 +785,7 @@ impl Parser {
                 "(" => {
                     self.i += 1;
                     if self.accept_op(")") {
-                        return Ok(ndl(c.line, "Lit", vec![s("unit")]));
+                        return Ok(ndl(c.pos(), "Lit", vec![s("unit")]));
                     }
                     let first = self.expr(false)?;
                     if self.accept_op(")") {
@@ -771,18 +799,18 @@ impl Parser {
                         items.push(self.expr(false)?);
                     }
                     self.expect_op(")")?;
-                    return Ok(ndl(c.line, "TupleE", vec![V::L(items)]));
+                    return Ok(ndl(c.pos(), "TupleE", vec![V::L(items)]));
                 }
                 "[" => {
                     self.i += 1;
                     if self.accept_op("]") {
-                        return Ok(ndl(c.line, "ArrayE", vec![V::L(vec![])]));
+                        return Ok(ndl(c.pos(), "ArrayE", vec![V::L(vec![])]));
                     }
                     let first = self.expr(false)?;
                     if self.accept_op(";") {
                         let n = self.const_expr()?;
                         self.expect_op("]")?;
-                        return Ok(ndl(c.line, "ArrayRep", vec![first, n]));
+                        return Ok(ndl(c.pos(), "ArrayRep", vec![first, n]));
                     }
                     let mut items = vec![first];
                     while self.accept_op(",") {
@@ -792,7 +820,7 @@ impl Parser {
                         items.push(self.expr(false)?);
                     }
                     self.expect_op("]")?;
-                    return Ok(ndl(c.line, "ArrayE", vec![V::L(items)]));
+                    return Ok(ndl(c.pos(), "ArrayE", vec![V::L(items)]));
                 }
                 "{" => return self.block(),
                 _ => {}
@@ -823,12 +851,12 @@ impl Parser {
                         }
                     }
                     self.expect_op("}")?;
-                    return Ok(ndl(c.line, "StructLit", vec![V::S(segs.join(".")), V::L(fields)]));
+                    return Ok(ndl(c.pos(), "StructLit", vec![V::S(segs.join(".")), V::L(fields)]));
                 }
-                let p = ndl(c.line, "Path", vec![strs(&segs), targs.clone()]);
+                let p = ndl(c.pos(), "Path", vec![strs(&segs), targs.clone()]);
                 if !matches!(targs, V::Nil) && self.is_op("(") {
                     let args = self.call_args()?;
-                    return Ok(ndl(c.line, "Call", vec![p, args, targs]));
+                    return Ok(ndl(c.pos(), "Call", vec![p, args, targs]));
                 }
                 return Ok(p);
             }
@@ -853,7 +881,7 @@ impl Parser {
     }
 
     pub(crate) fn closure(&mut self) -> R<V> {
-        let ln = self.cur().line;
+        let ln = self.cur().pos();
         self.expect_kw("fn")?;
         self.expect_op("(")?;
         let ps = self.params()?;
@@ -884,8 +912,28 @@ impl Parser {
         Ok(ndl(ln, "Closure", vec![ps, ret, V::L(caps), body]))
     }
 
+    /// `with [mut] 名前 = 初期化式 close 後始末式 { 本体 }` (4.4)。
+    /// ノード: `With [PBind(名前), mut, 初期化式, 後始末式, 本体ブロック]`。
+    pub(crate) fn with_expr(&mut self) -> R<V> {
+        let c = self.cur().clone();
+        self.expect_kw("with")?;
+        let m = self.accept_kw("mut");
+        let nc = self.cur().clone();
+        if nc.kind != "ident" {
+            return self.err("expected a binding name after `with`");
+        }
+        self.i += 1;
+        self.expect_op("=")?;
+        let init = self.expr(false)?;
+        self.expect_kw("close")?;
+        let cleanup = self.expr(true)?;
+        let body = self.block()?;
+        let pat = ndl(nc.pos(), "PBind", vec![V::S(nc.text), V::B(false)]);
+        Ok(ndl(c.pos(), "With", vec![pat, V::B(m), init, cleanup, body]))
+    }
+
     pub(crate) fn if_expr(&mut self) -> R<V> {
-        let ln = self.cur().line;
+        let ln = self.cur().pos();
         self.expect_kw("if")?;
         let cond = self.expr(true)?;
         let then = self.block()?;
@@ -897,7 +945,7 @@ impl Parser {
     }
 
     pub(crate) fn match_expr(&mut self) -> R<V> {
-        let ln = self.cur().line;
+        let ln = self.cur().pos();
         self.expect_kw("match")?;
         let scrut = self.expr(true)?;
         self.expect_op("{")?;
@@ -915,7 +963,7 @@ impl Parser {
     }
 
     pub fn block(&mut self) -> R<V> {
-        let ln = self.cur().line;
+        let ln = self.cur().pos();
         self.expect_op("{")?;
         self.skip_nl();
         let mut stmts = Vec::new();
@@ -930,7 +978,7 @@ impl Parser {
     }
 
     pub fn stmt(&mut self) -> R<V> {
-        let ln = self.cur().line;
+        let ln = self.cur().pos();
         if self.is_kw("let") {
             self.i += 1;
             let m = self.accept_kw("mut");
@@ -957,22 +1005,22 @@ impl Parser {
         let c = self.cur().clone();
         if matches!(c.kind, "int" | "float" | "str" | "char" | "byte" | "bstr") {
             let l = self.lit_tok(&c)?;
-            return Ok(nd("PLit", vec![l]));
+            return Ok(ndl(c.pos(), "PLit", vec![l]));
         }
         if c.kind == "kw" && (c.text == "true" || c.text == "false") {
             self.i += 1;
-            return Ok(nd("PLit", vec![nd("Lit", vec![s("bool"), V::B(c.text == "true")])]));
+            return Ok(ndl(c.pos(), "PLit", vec![nd("Lit", vec![s("bool"), V::B(c.text == "true")])]));
         }
         if c.kind == "op" {
             if c.text == "&" {
                 self.i += 1;
                 let p = self.pattern()?;
-                return Ok(nd("PRef", vec![p]));
+                return Ok(ndl(c.pos(), "PRef", vec![p]));
             }
             if c.text == "(" {
                 self.i += 1;
                 if self.accept_op(")") {
-                    return Ok(nd("PLit", vec![nd("Lit", vec![s("unit")])]));
+                    return Ok(ndl(c.pos(), "PLit", vec![nd("Lit", vec![s("unit")])]));
                 }
                 let mut items = vec![self.pattern()?];
                 while self.accept_op(",") {
@@ -982,13 +1030,13 @@ impl Parser {
                     items.push(self.pattern()?);
                 }
                 self.expect_op(")")?;
-                return Ok(nd("PTuple", vec![V::L(items)]));
+                return Ok(ndl(c.pos(), "PTuple", vec![V::L(items)]));
             }
         }
         if matches!(c.kind, "ident" | "upper" | "prim") {
             if c.text == "_" {
                 self.i += 1;
-                return Ok(nd("PWild", vec![]));
+                return Ok(ndl(c.pos(), "PWild", vec![]));
             }
             let mut segs = vec![c.text.clone()];
             self.i += 1;
@@ -1004,7 +1052,7 @@ impl Parser {
                     items.push(self.pattern()?);
                 }
                 self.expect_op(")")?;
-                return Ok(nd("PVariant", vec![strs(&segs), V::L(items)]));
+                return Ok(ndl(c.pos(), "PVariant", vec![strs(&segs), V::L(items)]));
             }
             if self.is_op("{") {
                 self.i += 1;
@@ -1019,12 +1067,12 @@ impl Parser {
                     }
                 }
                 self.expect_op("}")?;
-                return Ok(nd("PStruct", vec![strs(&segs), V::L(fl)]));
+                return Ok(ndl(c.pos(), "PStruct", vec![strs(&segs), V::L(fl)]));
             }
             if segs.len() == 1 && c.kind == "ident" {
-                return Ok(nd("PBind", vec![V::S(c.text), V::B(false)]));
+                return Ok(ndl(c.pos(), "PBind", vec![V::S(c.text), V::B(false)]));
             }
-            return Ok(nd("PPath", vec![strs(&segs)]));
+            return Ok(ndl(c.pos(), "PPath", vec![strs(&segs)]));
         }
         self.err("expected a pattern")
     }

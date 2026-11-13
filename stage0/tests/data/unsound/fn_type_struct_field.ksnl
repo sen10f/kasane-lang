@@ -1,0 +1,19 @@
+// expect: E4001
+type t.H
+    f: fn() -> u32 uses [] panics never
+end t.H
+
+fn t.bad() -> u32 uses [] panics never
+    let h = t.H { f: t.loud }
+    let f = h.f
+    f()
+end t.bad
+
+fn t.loud() -> u32 uses [io.console] panics never
+    core.mem.drop(std.io.print_line("x"))
+    1u32
+end t.loud
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

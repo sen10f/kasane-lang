@@ -1,0 +1,12 @@
+type t.W pub
+    num: u8
+end t.W
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    t.mk().num
+    Ok(())
+end t.main
+
+fn t.mk() -> t.W uses [] panics never
+    t.W { num: 7u8 }
+end t.mk

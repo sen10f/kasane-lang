@@ -1,0 +1,40 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.push(10u32).map_err(t.oom)?
+    v.push(20u32).map_err(t.oom)?
+    v.push(12u32).map_err(t.oom)?
+    let base = 100u32
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u32 capture [move base, move v] {
+            let mut total = base
+            for x in v.iter() {
+                total = total.wrapping_add(*x)
+            }
+            total
+        },
+    )
+    let h = match spawned {
+        Ok(handle) => handle
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let sum = h.join()
+    core.check.eq(sum, 142u32)
+    let other = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> bool capture [] {
+            true
+        },
+    )
+    let h2 = match other {
+        Ok(handle) => handle
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    core.check.eq(h2.join(), true)
+    std.io.print_line("spawn ok")
+    Ok(())
+end t.main
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end t.oom

@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::check::{is_nil, items, nf, nline, nname, st, strs};
+use crate::check::{is_nil, items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{self, Aop, Block, BoolOp, Cc, Func, Inst, Mode, Module, Op, Term, Ty, VId};
 use crate::parser::{nid, V};
 use crate::program::{Def, Program, Target as Tgt};
@@ -23,9 +23,15 @@ mod scalar;
 #[path = "kir_lower_refs.rs"]
 mod refs;
 use refs::RefCx;
+// `unsafe` ブロック、`extern` の呼び出し、`core.ptr.*` の下ろし。
+#[path = "kir_lower_ffi.rs"]
+mod ffi_lower;
 // 組み込みの Option / Result の下ろし (子モジュール。親の非公開の項目を使う)。
 #[path = "kir_lower_enum.rs"]
 mod enum_lower;
+// 文字列・バイト列の操作の下ろし (kir_lower_str.rs)。
+#[path = "kir_lower_str.rs"]
+mod str_lower;
 // panic (`core.panic.panic("..")` と `unwrap`) の下ろし (子モジュール)。
 #[path = "kir_lower_panic.rs"]
 mod panic_lower;
@@ -42,9 +48,20 @@ mod array_lower;
 // コレクション・文字列・クロージャの下ろし (子モジュール。`Lw` の非公開の項目を使う)。
 #[path = "kir_lower_iter.rs"]
 mod iter_lower;
+#[path = "kir_lower_map.rs"]
+mod map_lower;
 #[path = "kir_lower_coll.rs"]
 mod coll;
+#[path = "kir_lower_for.rs"]
+mod for_lower;
+#[path = "kir_lower_own.rs"]
+mod own;
 use coll::CollCx;
+
+// `std.net` (TCP) の下ろし (設計_KIR.md 12 章)。
+#[path = "kir_lower_net.rs"]
+mod net_lower;
+use net_lower::{is_net_ty, net_call, net_method};
 
 type LR<T> = Result<T, String>;
 
@@ -63,11 +80,12 @@ pub struct Lowered {
 }
 
 /// 型表を作る。ユーザの関数だけを検査し、(FQN, 式 ID) → 型 を返す。
-fn type_table(p: &Program, user: &[usize]) -> BTreeMap<(String, u32), ExprTy> {
+/// 型表を作る。`test_def` (テストを入口にするとき) は、テストの本体も検査する。
+fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> BTreeMap<(String, u32), ExprTy> {
     let mut tk = TypeCk::new(p);
     for &i in user {
         let d = &p.defs[i];
-        if d.kw == "fn" && d.body.is_some() {
+        if (d.kw == "fn" && d.body.is_some()) || test_def == Some(i) {
             tk.check_def(i);
         }
     }
@@ -294,6 +312,9 @@ impl<'a> Lw<'a> {
     /// `match` の振り分け: 対象が `Option` / `Result` なら `match_` (タグの判定)、それ以外は `match_e` (集成体・スカラーの腕)。
     fn match_any(&mut self, e: &V) -> LR<Option<VId>> {
         let scrut = nf(e)[0].clone();
+        if let Some(r) = own::match_get_mut(self, e) {
+            return r;
+        }
         match self.src_ty(&scrut)? {
             Src::Named(n, _) if n == "Option" || n == "Result" => self.match_(e),
             _ => self.match_e(e),
@@ -405,6 +426,11 @@ impl<'a> Lw<'a> {
         self.scopes.push(vec![]);
         for ((name, pt), (v, t)) in d.params.iter().zip(pv.iter().zip(params.iter())) {
             coll::bind_param(&mut self, name, *v, *t, &from_v(pt, &gn));
+            // `&[T; N]` / `&mut [T; N]` のパラメータ: 長さ N は型から分かる (ptr にするだけ)。
+            if let Some(n) = coll::ref_array_len(pt) {
+                let s = self.lookup(name).expect("直後に束縛したパラメータ");
+                self.coll.arr_len.insert(s, n);
+            }
         }
         if let Some(v) = self.expr(body)? {
             if self.vty(v) != ret {
@@ -430,6 +456,7 @@ impl<'a> Lw<'a> {
             may_panic: d.panics.as_deref() != Some("never"),
             stack: d.stack,
             ret,
+            link: None,
             blocks,
         };
         let mut out = std::mem::take(&mut self.coll.extra);
@@ -456,6 +483,7 @@ impl<'a> Lw<'a> {
             "Continue" => self.jump_loop(e, false),
             "Return" => self.ret_(e),
             "StructLit" | "TupleE" | "Field" => self.agg_expr(e),
+            "Unsafe" => ffi_lower::unsafe_block(self, e),
             "Match" => self.match_any(e),
             "Try" => self.try_(e),
             "Index" => coll::index_read(self, e),
@@ -468,8 +496,21 @@ impl<'a> Lw<'a> {
 
     /// 式を下ろす。単一の名前の局所変数 (所有物の印を持つもの) は、移さずにそのまま読む (場所としての使用)。
     fn expr_peek(&mut self, e: &V) -> LR<Option<VId>> {
+        self.coll.peek_field = false;
         if let Some(s) = coll::val_slot(self, e) {
             return Ok(Some(coll::path_peek(self, s)));
+        }
+        // 局所変数から始まるフィールドの連なり: 所有物でも移さずに読む (`match` の対象にするとき)
+        if let Some((s, names)) = own::chain_of(self, e) {
+            if !names.is_empty() && matches!(nname(e), "Path" | "Field") {
+                let base = self.read_slot(s);
+                if let Ok(v) = self.field_path(base, &names, nline(e)) {
+                    if coll::owns(self, self.vty(v)) {
+                        self.coll.peek_field = true;
+                    }
+                    return Ok(Some(v));
+                }
+            }
         }
         self.expr(e)
     }
@@ -505,6 +546,8 @@ impl<'a> Lw<'a> {
                 Ok(self.emit(Ty::U8, Op::Const(v)))
             }
             "str" => coll::str_lit(self, e),
+            // `b"..."` は静的なバイト列と長さから `fat` (`{ptr, len}`) を作る。
+            "bstr" => self.str_lit(e),
             other => self.err(line, format!("リテラル {} は段階 1 の対象外", other)),
         }
     }
@@ -526,7 +569,8 @@ impl<'a> Lw<'a> {
                 let base = self.read_slot(s);
                 let v = self.field_path(base, &segs[1..], line)?;
                 if coll::owns(self, self.vty(v)) {
-                    return self.err(line, "構造体のフィールドからの Vec / String の移動は段階 1 の対象外 (参照で使う)");
+                    // 所有物のフィールドを値として使う: 部分的な移動 (設計_KIR.md 13.7)
+                    return coll::field_move(self, s, &segs[1..], line);
                 }
                 return Ok(v);
             }
@@ -534,7 +578,11 @@ impl<'a> Lw<'a> {
         if !matches!(nf(e).get(1), Some(V::Nil) | None) {
             return self.err(line, "型引数付きの名前は段階 1 の対象外");
         }
-        match self.p.resolve(&segs, &self.def.file).map(|r| r.target) {
+        let resolved = self.p.resolve(&segs, &self.def.file);
+        if matches!(&resolved, Some(r) if !r.rest.is_empty()) {
+            return self.err(line, format!("名前 {} は段階 1 の対象外 (名前の一部だけが解決される)", segs.join(".")));
+        }
+        match resolved.map(|r| r.target) {
             Some(Tgt::Const(ci)) => self.const_val(ci, e),
             Some(Tgt::Variant(en, vn)) => self.variant_value(&en, &vn, line),
             _ => self.err(line, format!("名前 {} は段階 1 の対象外", segs.join("."))),
@@ -570,8 +618,10 @@ impl<'a> Lw<'a> {
             "==" | "!=" | "<" | "<=" | ">" | ">=" => {
                 let Some(a) = self.expr(l)? else { return Ok(None) };
                 let Some(b) = self.expr(r)? else { return Ok(None) };
-                let t = self.ty_of(l)?;
-                if self.ty_of(r)? != t {
+                // `Some(c) => c == &y` の `&y` は読んでから比べる。比べる型は emit した値の型で決める。
+                let (a, b) = self.load_scalar_ref_pair(a, b);
+                let t = self.vty(a);
+                if self.vty(b) != t {
                     return self.err(line, "比較の両辺の型が違う");
                 }
                 let cc = match op.as_str() {
@@ -707,6 +757,9 @@ impl<'a> Lw<'a> {
         if let Some(r) = self.builtin_call(e) {
             return r;
         }
+        if let Some(r) = ffi_lower::ffi_call(self, e) {
+            return r;
+        }
         let f = nf(e);
         let line = nline(e);
         if !matches!(f.get(2), Some(V::Nil) | None) {
@@ -732,7 +785,17 @@ impl<'a> Lw<'a> {
                 let base = self.read_slot(s);
                 let recv = if segs.len() > 2 { self.field_path(base, &segs[1..segs.len() - 1], line)? } else { base };
                 let rt = self.vty(recv);
+                if is_net_ty(self, rt) {
+                    let meth = segs[segs.len() - 1].clone();
+                    if matches!(meth.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port") {
+                        let args = items(&f[1]).to_vec();
+                        return net_method(self, e, &meth, recv, rt, &args, line);
+                    }
+                }
                 let meth = segs[segs.len() - 1].clone();
+                if meth == "clone" {
+                    return self.lower_clone(line, recv, rt);
+                }
                 let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,
                     "wrapping_sub" => Aop::Sub,
@@ -752,9 +815,26 @@ impl<'a> Lw<'a> {
                 return Ok(Some(self.emit(rt, Op::Arith { op: aop, mode: Mode::Wrap, a: recv, b })));
             }
         }
-        let target = self.p.resolve(&segs, &self.def.file).map(|r| r.target);
+        let resolved = self.p.resolve(&segs, &self.def.file);
+        // `E.V.m(..)`: 列挙子の値へのメソッド呼び出し。解決は `E.V` で止まり、残りの名前 (`m`) を落とすと別の値になる。
+        if let Some(r) = &resolved {
+            if let (Tgt::Variant(en, _), false) = (&r.target, r.rest.is_empty()) {
+                let en = en.clone();
+                if r.rest.len() == 1 {
+                    if let Some(res) = self.variant_method_call(e, &en, &r.rest[0].clone()) {
+                        return res;
+                    }
+                }
+                return self.err(line, format!("呼び出し {} (列挙子の値のメソッド) は段階 1 の対象外", segs.join(".")));
+            }
+        }
+        let target = resolved.map(|r| r.target);
         if matches!(&target, Some(Tgt::Native(n)) if n == "std.io.print_line") || matches!(&target, Some(Tgt::Sig(di) | Tgt::Fn(di)) if self.p.defs[*di].name == "std.io.print_line") {
             return self.print_line(args, line);
+        }
+        let callee_name = segs.join(".");
+        if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
+            return net_call(self, e, callee_name == "std.net.listen", line);
         }
         if let Some(Tgt::Variant(en, vn)) = &target {
             let (en, vn) = (en.clone(), vn.clone());
@@ -790,10 +870,17 @@ impl<'a> Lw<'a> {
         let mut vs = vec![];
         for a in args {
             match self.expr(a)? {
-                Some(v) => vs.push(v),
-                None => return Ok(None),
+                Some(v) => {
+                    coll::tmp_hold(self, v);
+                    vs.push(v)
+                }
+                None => {
+                    coll::tmp_release(self, &vs);
+                    return Ok(None);
+                }
             }
         }
+        coll::tmp_release(self, &vs);
         let vs = self.coerce_args(vs, &pts);
         for (v, pt) in vs.iter().zip(pts.iter()) {
             if self.vty(*v) != *pt {
@@ -836,6 +923,25 @@ impl<'a> Lw<'a> {
     fn mcall(&mut self, e: &V) -> LR<Option<VId>> {
         if let Some(r) = coll::try_mcall(self, e) {
             return r;
+        }
+        // `std.net.TcpListener` / `TcpStream` のメソッド (accept / read / write / flush / close)。
+        if let Ok(rt) = self.src_ty(&nf(e)[0]) {
+            let is_net = match &rt {
+                Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" => true,
+                Src::Ref(_, inner) => {
+                    matches!(&**inner, Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream")
+                }
+                _ => false,
+            };
+            if is_net {
+                let m = st(&nf(e)[1]);
+                if matches!(m.as_str(), "accept" | "read" | "write" | "flush" | "close") {
+                    let Some(recv) = self.expr(&nf(e)[0])? else { return Ok(None) };
+                    let rt = self.vty(recv);
+                    let args = items(&nf(e)[2]).to_vec();
+                    return net_method(self, e, &m, recv, rt, &args, nline(e));
+                }
+            }
         }
         if let Some(r) = self.unwrap_mcall(e) {
             return r;
@@ -1138,17 +1244,44 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
 /// `lower_user` に加えて、`entry` (入口の関数の FQN) が `Result<T, E>` を返すなら、`E` の Debug 表示の関数 (`<E>.$debug`) も作る。
 /// 作れない (`derive [Debug]` がない、未対応の型を含むなど) ときは、入口を未対応にする (理由付き)。
 pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowered {
-    let tys = type_table(p, user);
+    lower_defs(p, user, entry, None)
+}
+
+/// `ksn test --both` の機械語側: テスト本体 `test_def` (定義の添字) を入口にして下ろす。
+/// テストは引数を持たず、戻り値は `()` (`test` の本体)。入口の名前はテストの FQN。
+pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
+    lower_defs(p, user, Some(&p.defs[test_def].name), Some(test_def))
+}
+
+fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
+    let tys = type_table(p, user, test_def);
     let aggs = RefCell::new(agg::AggTab::new(user));
+    // `std.net.listen`/`connect`/`accept` が返すソケット集成体を、誰も参照しなくても型表に入れる。
+    for name in ["std.net.TcpListener", "std.net.TcpStream"] {
+        if let Some(di) = p.defs.iter().position(|d| d.name == name) {
+            let _ = aggs.borrow_mut().intern_def(p, di);
+        }
+    }
     let mut ok: Vec<(Func, BTreeSet<String>)> = vec![];
     let mut bad: Vec<(String, String)> = vec![];
     for &i in user {
         let d = &p.defs[i];
-        if !is_candidate(d) {
+        if !is_candidate(d) && test_def != Some(i) {
             continue;
         }
         match Lw::new(p, &tys, &aggs, d).lower() {
             Ok(x) => ok.extend(x),
+            Err(why) => bad.push((d.name.clone(), why)),
+        }
+    }
+    // `extern` 宣言を KIR の関数宣言 (本体なし) にする。リンク名は `Func.link` に持つ。
+    for &i in user {
+        let d = &p.defs[i];
+        if d.kw != "extern" {
+            continue;
+        }
+        match ffi_lower::extern_func(p, d, &aggs) {
+            Ok(f) => ok.push((f, BTreeSet::new())),
             Err(why) => bad.push((d.name.clone(), why)),
         }
     }
@@ -1193,11 +1326,12 @@ pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowere
 
 /// 入口 `e` の戻り値が `Result<T, E>` なら、`E` の Debug 表示の関数を `ok` に足す。
 fn debug_of_entry(p: &Program, aggs: &RefCell<agg::AggTab>, e: &str, ok: &mut Vec<(Func, BTreeSet<String>)>, pos: usize) -> Result<(), String> {
+    // 戻り値が `()` の入口 (テストの本体を含む) は、Debug 表示の関数を要らない。
+    let Ty::Res(_, err) = ok[pos].0.ret else { return Ok(()) };
     let d = p.defs.iter().find(|d| d.name == e && d.kw == "fn").ok_or_else(|| format!("入口 {} の定義がない", e))?;
     if !d.params.is_empty() {
         return Err("入口の関数に引数がある".to_string());
     }
-    let Ty::Res(_, err) = ok[pos].0.ret else { return Ok(()) };
     let rt = from_v(&d.ret, &HashSet::new());
     let Src::Named(n, args) = &rt else { return Err("入口の戻り値の型が読めない".to_string()) };
     if n != "Result" || args.len() != 2 {

@@ -1,0 +1,114 @@
+import shortener.code
+import shortener.error
+
+fn shortener.json.error_body(message: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("{\"error\":")?
+    shortener.json.push_quoted(&mut out, message)?
+    out.push_str("}")?
+    Ok(out)
+end shortener.json.error_body
+
+fn shortener.json.escape_into(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), shortener.error.Error> uses [alloc] panics never pub
+    for c in text.chars() {
+        if c == '"' {
+            out.push_str("\\\"")?
+        } else if c == '\\' {
+            out.push_str("\\\\")?
+        } else if c == '\n' {
+            out.push_str("\\n")?
+        } else if c == '\r' {
+            out.push_str("\\r")?
+        } else if c == '\t' {
+            out.push_str("\\t")?
+        } else if c.to_u32() < 32u32 {
+            shortener.json.push_control(out, c.to_u32())?
+        } else {
+            out.push(c)?
+        }
+    }
+    Ok(())
+end shortener.json.escape_into
+
+fn shortener.json.link_body(link_code: &str, url: &str) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("{\"code\":")?
+    shortener.json.push_quoted(&mut out, link_code)?
+    out.push_str(",\"url\":")?
+    shortener.json.push_quoted(&mut out, url)?
+    out.push_str("}")?
+    Ok(out)
+end shortener.json.link_body
+
+fn shortener.json.push_control(out: &mut alloc.string.String<std.alloc.System>, unit: u32) -> Result<(), shortener.error.Error> uses [alloc] panics never
+    out.push_str("\\u00")?
+    let high = unit.wrapping_shr(4u32)
+    let low = unit & 15u32
+    match u8.try_from_u32(high) {
+        Ok(d) => out.push(code.digit_char(d))?
+        Err(_e) => return Err(error.Error.Corrupt)
+    }
+    match u8.try_from_u32(low) {
+        Ok(d) => out.push(code.digit_char(d))?
+        Err(_e) => return Err(error.Error.Corrupt)
+    }
+    Ok(())
+end shortener.json.push_control
+
+fn shortener.json.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), shortener.error.Error> uses [alloc] panics never
+    out.push_str("\"")?
+    shortener.json.escape_into(out, text)?
+    out.push_str("\"")?
+    Ok(())
+end shortener.json.push_quoted
+
+fn shortener.json.stats_body(links: usize) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("{\"links\":")?
+    out.push_u64(u64.from_usize(links))?
+    out.push_str("}")?
+    Ok(out)
+end shortener.json.stats_body
+
+fn shortener.json.test_escape(text: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    match shortener.json.escape_into(&mut out, text) {
+        Ok(_u) => out
+        Err(_e) => core.panic.panic("escape failed")
+    }
+end shortener.json.test_escape
+
+test shortener.json.error_body.test_shape
+    match shortener.json.error_body("not found") {
+        Ok(s) => core.check.eq(s.as_str(), "{\"error\":\"not found\"}")
+        Err(_e) => core.panic.panic("error_body")
+    }
+end shortener.json.error_body.test_shape
+
+test shortener.json.escape_into.test_escapes
+    core.check.eq(shortener.json.test_escape("plain").as_str(), "plain")
+    core.check.eq(shortener.json.test_escape("a\"b").as_str(), "a\\\"b")
+    core.check.eq(shortener.json.test_escape("a\\b").as_str(), "a\\\\b")
+    core.check.eq(shortener.json.test_escape("a\nb\rc\td").as_str(), "a\\nb\\rc\\td")
+    core.check.eq(shortener.json.test_escape("\u{1}x").as_str(), "\\u0001x")
+    core.check.eq(shortener.json.test_escape("\u{1f}").as_str(), "\\u001f")
+    core.check.eq(shortener.json.test_escape("https://x.test/a?b=1&c=日本").as_str(), "https://x.test/a?b=1&c=日本")
+end shortener.json.escape_into.test_escapes
+
+test shortener.json.link_body.test_shape
+    match shortener.json.link_body("1000", "http://a.test/\"q\"") {
+        Ok(s) => core.check.eq(s.as_str(), "{\"code\":\"1000\",\"url\":\"http://a.test/\\\"q\\\"\"}")
+        Err(_e) => core.panic.panic("link_body")
+    }
+end shortener.json.link_body.test_shape
+
+test shortener.json.stats_body.test_shape
+    match shortener.json.stats_body(0usize) {
+        Ok(s) => core.check.eq(s.as_str(), "{\"links\":0}")
+        Err(_e) => core.panic.panic("stats_body")
+    }
+    match shortener.json.stats_body(12345usize) {
+        Ok(s) => core.check.eq(s.as_str(), "{\"links\":12345}")
+        Err(_e) => core.panic.panic("stats_body")
+    }
+end shortener.json.stats_body.test_shape

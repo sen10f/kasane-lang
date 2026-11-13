@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::check::{items, nf, nline, nname, st, strs};
+use crate::check::{items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{align_of, size_of, AggDef, AggKind, BoolOp, Field, Op, Pay, Pointee, Term, Ty, VId, Variant};
 use crate::parser::V;
 use crate::program::{Program, Target as Tgt};
@@ -34,7 +34,13 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 }
 
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
-pub const STD_TYPES: [&str; 3] = ["std.io.Error", "std.io.ErrorKind", "alloc.alloc.AllocError"];
+/// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
+pub const STD_TYPES: [&str; 7] = ["std.io.Error", "std.io.ErrorKind", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError"];
+
+/// `Vec` / `String` のヘッダの型の名前 (`vec`、要素が所有物なら `vec<#N>`)。利用者の型は FQN で `.` を含むので衝突しない。
+pub fn is_vec_name(n: &str) -> bool {
+    n == "vec" || n.starts_with("vec<#")
+}
 
 /// 集成体の型表。`lower_user` が 1 つ作り、全関数で共有する。
 #[derive(Default)]
@@ -119,7 +125,12 @@ impl AggTab {
             }
             // 値渡しの `Vec` / `String` は 24 バイトのヘッダ `vec` の値 (所有の移動。設計_KIR.md 13 章)。
             // 参照 (`&Vec` など) は下の腕に入れず、借用のヘッダのアドレス (`ptr`) として `sig_ty` が受ける。
-            Src::Named(name, _) if name == "alloc.vec.Vec" || name == "alloc.string.String" => Ok(self.vec_hdr()),
+            Src::Named(name, args) if name == "alloc.vec.Vec" => {
+                let elem = args.first().and_then(|a| self.lower_ty(p, file, a).ok());
+                Ok(self.vec_of(elem))
+            }
+            Src::Named(name, _) if name == "alloc.string.String" => Ok(self.vec_hdr()),
+            Src::Named(name, _) if name == "alloc.collections.HashMap" => Ok(self.vec_hdr()),
             Src::Named(name, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
             Src::Named(name, args) => {
                 if !args.is_empty() {
@@ -140,13 +151,19 @@ impl AggTab {
                 self.intern_tuple(elems)
             }
             // 集成体への参照 `&S` / `&mut S` (スカラーへの参照は上の `conv` が済ませている)。
-            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String") => {
+            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String" || n == "alloc.collections.HashMap") => {
                 Err("Vec / String への参照はヘッダのアドレスで渡す".to_string())
             }
             Src::Ref(m, inner) if matches!(&**inner, Src::Named(..) | Src::Tuple(_)) => match self.lower_ty(p, file, inner)? {
                 Ty::Agg(i) => Ok(Ty::Ref(*m, Pointee::Agg(i))),
                 _ => Err(format!("参照の指す先 {} は段階 1 の対象外", show(inner))),
             },
+            // `&[T; N]` / `&mut [T; N]`: 配列の値は `{ptr, len}` の `fat` なので、参照は `ref<fat>` / `mutref<fat>`。
+            // 要素の先頭ポインタは `fat` の 0 番フィールド (呼び出し側の `coerce_args` で ptr に調整する)。
+            Src::Ref(m, inner) if matches!(&**inner, Src::Array(_)) => {
+                let Ty::Agg(fat_ai) = self.fat() else { unreachable!() };
+                Ok(Ty::Ref(*m, Pointee::Agg(fat_ai)))
+            }
             // `&str` とスライスの値は `fat` (`{ptr, len}`)。要素はスカラーのものだけ (`sig_ty` と同じ条件)。Option のペイロードにも置ける。
             Src::Ref(_, inner) if matches!(&**inner, Src::Prim(s) if s == "str") || matches!(&**inner, Src::Slice(e) if conv(&**e).is_some()) => Ok(self.fat()),
             other => Err(format!("{} は未対応", show(other))),
@@ -192,6 +209,39 @@ impl AggTab {
         self.push("vec".to_string(), 24, 8, AggKind::Struct(fields))
     }
 
+    /// 要素が所有物 (`Vec<String>`、`Vec<構造体>`) の `Vec` の型。配置は `vec` と同じで、名前 `vec<#要素の型の添字>` で要素の型を持つ
+    /// (所有物の解放は型だけを見るので、Vec を解放するとき各要素も解放できる。設計_KIR.md 13.8)。それ以外の要素は `vec`。
+    pub fn vec_of(&mut self, elem: Option<Ty>) -> Ty {
+        let Some(Ty::Agg(i)) = elem.filter(|e| self.owns_heap(*e)) else { return self.vec_hdr() };
+        let name = format!("vec<#{}>", i);
+        if let Some(&k) = self.by_name.get(&name) {
+            return Ty::Agg(k);
+        }
+        let fields = vec![
+            Field { name: "ptr".to_string(), ty: Ty::Ptr, off: 0 },
+            Field { name: "len".to_string(), ty: Ty::Usize, off: 8 },
+            Field { name: "cap".to_string(), ty: Ty::Usize, off: 16 },
+        ];
+        self.push(name, 24, 8, AggKind::Struct(fields))
+    }
+
+    /// `Vec` / `String` のヘッダ型 (`vec` と `vec<#N>`) か。
+    pub fn is_vec(&self, t: Ty) -> bool {
+        matches!(t, Ty::Agg(i) if is_vec_name(&self.defs[i as usize].name))
+    }
+
+    /// 名前付きの集成体の添字。
+    pub(super) fn agg_index(&self, name: &str) -> Option<u32> {
+        self.by_name.get(name).copied()
+    }
+
+    /// 所有物を要素に持つ Vec の型 `t` の、要素の型。
+    pub fn vec_elem(&self, t: Ty) -> Option<Ty> {
+        let Ty::Agg(i) = t else { return None };
+        let n = self.defs[i as usize].name.strip_prefix("vec<#")?.strip_suffix('>')?;
+        n.parse::<u32>().ok().map(Ty::Agg)
+    }
+
     /// `alloc.alloc.AllocError` (clif と同じ大きさ 1 の構造体)。`Vec::push` などの `Result` の E。
     pub fn alloc_err(&mut self) -> Ty {
         const NAME: &str = "alloc.alloc.AllocError";
@@ -207,7 +257,7 @@ impl AggTab {
         match t {
             Ty::Agg(i) => {
                 let d = &self.defs[i as usize];
-                if d.name == "vec" {
+                if is_vec_name(&d.name) {
                     return true;
                 }
                 match &d.kind {
@@ -230,8 +280,11 @@ impl AggTab {
     /// フィールド・要素の型。ユニット型は値を置けないので拒否する。
     fn field_ty(&mut self, p: &Program, file: &str, t: &Src) -> Result<Ty, String> {
         if let Src::Named(n, _) = t {
-            if n == "alloc.vec.Vec" || n == "alloc.string.String" {
+            if n == "alloc.collections.HashMap" {
                 return Ok(self.vec_hdr());
+            }
+            if n == "alloc.vec.Vec" || n == "alloc.string.String" {
+                return self.lower_ty(p, file, t);
             }
         }
         match self.lower_ty(p, file, t)? {
@@ -266,7 +319,7 @@ impl AggTab {
     }
 
     /// 定義 `p.defs[di]` (構造体 `type` または列挙型 `enum`) を型表に登録する。
-    fn intern_def(&mut self, p: &Program, di: usize) -> Result<Ty, String> {
+    pub(super) fn intern_def(&mut self, p: &Program, di: usize) -> Result<Ty, String> {
         let d = &p.defs[di];
         if let Some(&i) = self.by_name.get(&d.name) {
             return Ok(Ty::Agg(i));
@@ -319,7 +372,7 @@ impl<'a> Lw<'a> {
         self.aggs.borrow_mut().lower_ty(self.p, &self.def.file, t)
     }
 
-    fn agg_def(&self, ai: u32) -> AggDef {
+    pub(super) fn agg_def(&self, ai: u32) -> AggDef {
         self.aggs.borrow().defs[ai as usize].clone()
     }
 
@@ -342,7 +395,11 @@ impl<'a> Lw<'a> {
                 let name = st(&f[1]);
                 let v = self.field_of(b, &name, nline(e))?;
                 if super::coll::owns(self, self.vty(v)) {
-                    return self.err(nline(e), "構造体のフィールドからの Vec / String の移動は段階 1 の対象外 (参照で使う)");
+                    // 局所変数から始まるフィールドの連なりなら、所有物を移し出す (部分的な移動)。それ以外 (一時の値のフィールド) は未対応。
+                    if let Some((s, names)) = super::own::chain_of(self, e) {
+                        return Ok(Some(super::coll::field_move(self, s, &names, nline(e))?));
+                    }
+                    return self.err(nline(e), "一時の値のフィールドからの所有物の移動は段階 1 の対象外");
                 }
                 if super::coll::owns(self, self.vty(b)) && super::coll::val_slot(self, &f[0]).is_none() {
                     let bt = self.vty(b);
@@ -382,12 +439,19 @@ impl<'a> Lw<'a> {
             if vals[k].is_some() {
                 return self.err(line, format!("フィールド {} が二度書かれている", fname));
             }
-            let Some(v) = self.expr(&xs[1])? else { return Ok(None) };
+            let Some(v) = self.expr(&xs[1])? else {
+                let held: Vec<VId> = vals.iter().flatten().copied().collect();
+                super::coll::tmp_release(self, &held);
+                return Ok(None);
+            };
+            super::coll::tmp_hold(self, v);
             if self.vty(v) != decl[k].ty {
                 return self.err(line, format!("フィールド {} の型が違う", fname));
             }
             vals[k] = Some(v);
         }
+        let held: Vec<VId> = vals.iter().flatten().copied().collect();
+        super::coll::tmp_release(self, &held);
         let Some(fields) = vals.into_iter().collect::<Option<Vec<VId>>>() else {
             return self.err(line, "構造体リテラルにフィールドが足りない");
         };
@@ -411,12 +475,17 @@ impl<'a> Lw<'a> {
         }
         let mut fields = vec![];
         for (x, fd) in xs.iter().zip(decl) {
-            let Some(v) = self.expr(x)? else { return Ok(None) };
+            let Some(v) = self.expr(x)? else {
+                super::coll::tmp_release(self, &fields);
+                return Ok(None);
+            };
+            super::coll::tmp_hold(self, v);
             if self.vty(v) != fd.ty {
                 return self.err(line, "タプルの要素の型が違う");
             }
             fields.push(v);
         }
+        super::coll::tmp_release(self, &fields);
         Ok(Some(self.emit(ty, Op::Make { variant: None, fields })))
     }
 
@@ -470,7 +539,7 @@ impl<'a> Lw<'a> {
             cur = self.field_addr(cur, name, line)?;
         }
         let Ty::Ref(_, Pointee::Agg(k)) = self.vty(cur) else { return Ok(None) };
-        if self.agg_def(k).name != "vec" {
+        if !is_vec_name(&self.agg_def(k).name) {
             return Ok(None);
         }
         let la = self.field_addr(cur, "len", line)?;
@@ -512,12 +581,17 @@ impl<'a> Lw<'a> {
         }
         let mut vals = vec![];
         for (a, fd) in args.iter().zip(&decl) {
-            let Some(v) = self.expr(a)? else { return Ok(None) };
+            let Some(v) = self.expr(a)? else {
+                super::coll::tmp_release(self, &vals);
+                return Ok(None);
+            };
+            super::coll::tmp_hold(self, v);
             if self.vty(v) != fd.ty {
                 return self.err(line, format!("列挙子 {} の引数の型が違う", vn));
             }
             vals.push(v);
         }
+        super::coll::tmp_release(self, &vals);
         Ok(Some(self.emit(ty, Op::Make { variant: Some(idx as u32), fields: vals })))
     }
 
@@ -539,10 +613,21 @@ impl<'a> Lw<'a> {
     pub(super) fn let_pat(&mut self, pat: &V, init: &V) -> LR<St> {
         let Some(v) = self.expr(init)? else { return Ok(St::Div) };
         let t = self.vty(v);
-        if super::coll::owns(self, t) {
-            return self.err(nline(pat), "所有物を持つ値の分解 (let パターン) は段階 1 の対象外");
-        }
         let binds = self.pat(pat, v, t, None)?;
+        if super::coll::owns(self, t) {
+            // 所有物を持つ値の分解: 束縛した部分は変数が所有し、束縛しなかった所有物は分解の時点で解放する (設計_KIR.md 13.7)。
+            let mut srcs = std::collections::BTreeMap::new();
+            if let Ok(ss) = self.src_ty(init) {
+                super::coll::pat_srcs(self, pat, &ss, &mut srcs);
+            }
+            for (n, bv, bt) in binds {
+                self.coll.hint = srcs.get(&n).cloned();
+                super::coll::bind_owned(self, &n, bv, bt);
+                self.coll.hint = None;
+            }
+            super::coll::drop_unbound(self, pat, v, t)?;
+            return Ok(St::Unit);
+        }
         for (n, bv, bt) in binds {
             self.bind(&n, bv, bt);
         }
@@ -561,6 +646,12 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("代入先 {} が見つからない", segs[0]));
         };
         let Some(v) = self.expr(rhs)? else { return Ok(St::Div) };
+        self.store_segs(s, &segs, v, line, true)
+    }
+
+    /// `segs` (局所変数 `s` から始まる) のフィールドへ値 `v` を書く。`drop_old` なら所有物の古い値を先に解放する
+    /// (メソッドが書き換えたヘッダを戻すときは、同じバッファなので解放しない)。
+    pub(super) fn store_segs(&mut self, s: usize, segs: &[String], v: VId, line: usize, drop_old: bool) -> LR<St> {
         let base0 = self.read_slot(s);
         // 参照を通した代入 `r.f.g = v`: フィールドのアドレスをたどって書く (参照は可変のものだけ)。
         if let Ty::Ref(m, Pointee::Agg(_)) = self.vty(base0) {
@@ -579,7 +670,7 @@ impl<'a> Lw<'a> {
                 return self.err(line, "フィールドへの代入の型が違う");
             }
             // 所有物のフィールドは、古い値を解放してから書く。
-            if super::coll::owns(self, p.ty()) {
+            if drop_old && super::coll::owns(self, p.ty()) {
                 let old = self.emit(p.ty(), Op::Load(last));
                 super::coll::drop_value(self, old, p.ty());
             }
@@ -597,7 +688,7 @@ impl<'a> Lw<'a> {
         let last_old = {
             let parent = *chain.last().expect("鎖");
             let old = self.field_of(parent, &segs[segs.len() - 1], line)?;
-            super::coll::owns(self, self.vty(old)).then_some(old)
+            (drop_old && super::coll::owns(self, self.vty(old))).then_some(old)
         };
         if let Some(old) = last_old {
             let ot = self.vty(old);
@@ -865,6 +956,7 @@ impl<'a> Lw<'a> {
             .collect::<Result<_, _>>()?;
         let bodies: Vec<&V> = arms.iter().map(|(_, b)| *b).collect();
         let pats: Vec<&V> = arms.iter().map(|(p, _)| *p).collect();
+        let scrut_src = self.src_ty(&f[0]).ok();
         let sc = super::coll::scrut_begin(self, &f[0], sv, &pats)?;
         let slots = self.assigned(&bodies);
         let slot_tys: Vec<Ty> = slots.iter().map(|s| self.slots[*s].1).collect();
@@ -877,10 +969,16 @@ impl<'a> Lw<'a> {
             self.slots = saved.clone();
             let binds = self.pat(pat, sv, sty, Some(next))?;
             self.scopes.push(vec![]);
-            for (n, v, t) in binds {
-                super::coll::bind_owned(self, &n, v, t);
+            let mut srcs = std::collections::BTreeMap::new();
+            if let Some(ss) = &scrut_src {
+                super::coll::pat_srcs(self, pat, ss, &mut srcs);
             }
-            super::coll::scrut_arm(self, &sc, i, sv);
+            for (n, v, t) in binds {
+                self.coll.hint = srcs.get(&n).cloned();
+                super::coll::bind_owned(self, &n, v, t);
+                self.coll.hint = None;
+            }
+            super::coll::scrut_arm(self, &sc, i, pat, sv)?;
             if let Some(v) = self.expr(body)? {
                 if let Some(t) = res {
                     if self.vty(v) != t && carry {

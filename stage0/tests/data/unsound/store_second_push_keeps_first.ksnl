@@ -1,0 +1,20 @@
+// expect: E3010
+fn t.bad() -> usize uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut x = 1u32
+    let y = 2u32
+    match v.push(&x) {
+        Ok(_u) => 0u32
+        Err(_e) => 1u32
+    }
+    match v.push(&y) {
+        Ok(_u) => 0u32
+        Err(_e) => 1u32
+    }
+    x = 3u32
+    v.len()
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

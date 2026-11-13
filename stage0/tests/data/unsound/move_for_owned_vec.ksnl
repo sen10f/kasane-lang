@@ -1,0 +1,13 @@
+// expect: E3002
+fn t.bad() -> usize uses [] panics never
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut n = 0usize
+    for _x in v {
+        n = n.wrapping_add(1usize)
+    }
+    n.wrapping_add(v.len())
+end t.bad
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main

@@ -1,0 +1,16 @@
+// expect: E4002
+fn t.apply(p: fn() -> u32 uses [] panics never) -> u32 uses [] panics never
+    p()
+end t.apply
+
+fn t.bad() -> u32 uses [] panics never
+    t.apply(t.boom)
+end t.bad
+
+fn t.boom() -> u32 uses [] panics may
+    core.panic.panic("y")
+end t.boom
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -1,0 +1,37 @@
+fn kvlib.parse.is_comment(line: &str) -> bool uses [] panics never
+    line.is_empty() || line.starts_with("#")
+end kvlib.parse.is_comment
+
+fn kvlib.parse.split_line(line: &str) -> Option<(&str, &str)> uses [] panics never pub
+    let text = line.trim()
+    if kvlib.parse.is_comment(text) {
+        return None
+    }
+    match text.split_once("=") {
+        Some((key, value)) => {
+            let name = key.trim()
+            if name.is_empty() {
+                return None
+            }
+            Some((name, value.trim()))
+        }
+        None => None
+    }
+end kvlib.parse.split_line
+
+test kvlib.parse.split_line.test_skips_comments_and_garbage
+    core.check.eq(kvlib.parse.split_line("# note = 1").is_none(), true)
+    core.check.eq(kvlib.parse.split_line("").is_none(), true)
+    core.check.eq(kvlib.parse.split_line("no equals sign").is_none(), true)
+    core.check.eq(kvlib.parse.split_line("= value").is_none(), true)
+end kvlib.parse.split_line.test_skips_comments_and_garbage
+
+test kvlib.parse.split_line.test_trims_both_sides
+    match kvlib.parse.split_line("  name =  kasane ") {
+        Some((key, value)) => {
+            core.check.eq(key, "name")
+            core.check.eq(value, "kasane")
+        }
+        None => core.panic.panic("expected a pair")
+    }
+end kvlib.parse.split_line.test_trims_both_sides

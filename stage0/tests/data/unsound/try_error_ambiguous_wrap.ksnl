@@ -1,0 +1,23 @@
+// expect: E2049
+enum t.Error derive [From] pub
+    First(t.Inner)
+    Second(t.Inner)
+end t.Error
+
+type t.Inner pub
+    a: u8
+end t.Inner
+
+fn t.f() -> Result<u8, t.Inner> uses [] panics never
+    Err(t.Inner { a: 1u8 })
+end t.f
+
+fn t.g() -> Result<u8, t.Error> uses [] panics never
+    let n = t.f()?
+    Ok(n)
+end t.g
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.g())
+    Ok(())
+end t.main

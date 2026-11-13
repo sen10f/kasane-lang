@@ -64,6 +64,10 @@ pub fn wrap(v: i128, ty: &str) -> i128 {
 pub trait Place {
     fn get(&self) -> Val;
     fn set(&self, v: Val);
+    /// 同じ場所を指す別の `Place` 値 (`&x` を評価するたびに作られる) を見分ける鍵。分からなければ `None`。
+    fn key(&self) -> Option<(usize, String)> {
+        None
+    }
 }
 
 pub struct ScopeD {
@@ -127,6 +131,67 @@ pub struct ClosureV {
     pub ret: V,
     pub body: V,
     pub scope: Scope,
+    /// `capture [..]` の (種類, 名前)。`std.thread.spawn` が取り込む値を、その時点の値で固定するのに使う。
+    pub caps: Vec<(String, String)>,
+}
+
+/// チャネルの状態 (インタプリタ)。送信側・受信側は `clone` で増える (端の参照数を数える)。
+/// 端の数が 0 になった側は閉じたとみなす。容量は無視する (満杯で待つことはしない。結果が実行順に依存しないプログラムでは観測できない)。
+pub struct ChanState {
+    pub q: RefCell<VecDeque<Val>>,
+    pub senders: Cell<usize>,
+    pub receivers: Cell<usize>,
+}
+
+/// チャネルの端 (論理的な 1 つ)。最後の参照が無くなった (= 値が落とされた) とき、その端を閉じる。
+/// `close` で先に畳んだ端は `closed` を立て、落とされたときに二重に数えない。
+pub struct ChanEnd {
+    pub st: Rc<ChanState>,
+    pub is_sender: bool,
+    pub closed: Cell<bool>,
+}
+
+impl ChanEnd {
+    pub fn new(st: Rc<ChanState>, is_sender: bool) -> ChanEnd {
+        let n = if is_sender { &st.senders } else { &st.receivers };
+        n.set(n.get() + 1);
+        ChanEnd { st, is_sender, closed: Cell::new(false) }
+    }
+    /// 端を 1 つ畳む (まだ畳んでいなければ)。
+    pub fn release(&self) {
+        if !self.closed.replace(true) {
+            let n = if self.is_sender { &self.st.senders } else { &self.st.receivers };
+            n.set(n.get() - 1);
+        }
+    }
+}
+
+impl Drop for ChanEnd {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// `spawn` したスレッド (インタプリタ)。`body` は `join` かチャネルの待ちで走らせるまで保留する (走るのは 1 回、最後まで)。
+pub struct ThreadV {
+    pub body: RefCell<Option<Val>>,
+    pub result: RefCell<Option<Val>>,
+    /// 0 = 未実行、1 = 実行中、2 = 完了
+    pub state: Cell<u8>,
+}
+
+/// 値が (入れ子を含めて) チャネルの端を持つか。持つ値は、変数から別へ渡すとき元の変数を空にする (移動の近似)。
+pub fn has_chan(v: &Val, depth: u32) -> bool {
+    if depth > 4 {
+        return false;
+    }
+    match v {
+        Val::Chan(_) => true,
+        Val::Tuple(t) => t.iter().any(|x| has_chan(x, depth + 1)),
+        Val::Enum(e) => e.pl.iter().any(|x| has_chan(x, depth + 1)),
+        Val::Struct(s) => s.f.borrow().iter().any(|x| has_chan(&x.1, depth + 1)),
+        _ => false,
+    }
 }
 
 pub enum IterV {
@@ -180,9 +245,9 @@ pub enum Val {
     Map(Rc<RefCell<MapV>>),
     StrBuf(Rc<RefCell<String>>),
     Fmt(Rc<RefCell<String>>),
-    Chan(Rc<RefCell<VecDeque<Val>>>),
+    Chan(Rc<ChanEnd>),
     Mutex(Rc<CellPlace>),
-    Join(Rc<Val>),
+    Join(Rc<ThreadV>),
     Rng(Rc<Cell<u64>>),
 }
 
@@ -202,6 +267,9 @@ impl Place for VarPlace {
     }
     fn set(&self, v: Val) {
         self.0.borrow_mut().vars.insert(self.1.clone(), v);
+    }
+    fn key(&self) -> Option<(usize, String)> {
+        Some((Rc::as_ptr(&self.0) as *const u8 as usize, self.1.clone()))
     }
 }
 pub struct FieldPlace(pub Rc<StructV>, pub String);
@@ -335,6 +403,10 @@ pub fn seq_elem(v: &Val, i: usize) -> Option<Val> {
         Val::Tuple(t) => t.get(i).cloned(),
         _ => None,
     }
+}
+
+pub fn seq_get(v: &Val, i: usize) -> Option<Val> {
+    seq_elem(v, i)
 }
 
 pub fn str_of(v: &Val) -> Option<String> {

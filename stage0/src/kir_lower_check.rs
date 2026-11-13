@@ -7,8 +7,8 @@
 //!
 //! 両方とも、式として値 `()` を返す (成功の枝は続く)。引数の型が下ろせない・表示できないときは理由付きで止める。
 
-use crate::check::{items, nf, nline, nname, strs};
-use crate::kir::{Op, Term, Ty, VId};
+use crate::check::{items, nf, nlineno as nline, nname, strs};
+use crate::kir::{Cc, Op, Term, Ty, VId};
 use crate::parser::V;
 
 use super::debug::Gen;
@@ -46,6 +46,26 @@ impl<'a> Lw<'a> {
         }
         let sa = self.src_ty(&args[0])?;
         let file = self.def.file.clone();
+        // 浮動小数は $eq / $debug 未対応なので、Cmp (IEEE ==) と FmtFloat で下ろす。
+        if ta.is_float() {
+            let bits = match ta { Ty::F32 => 32, Ty::F64 => 64, _ => unreachable!() };
+            let same = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: ta, a, b });
+            let (yes, _) = self.new_block(&[]);
+            let (no, _) = self.new_block(&[]);
+            self.branch(same, (yes, vec![]), (no, vec![]));
+            self.cur = Some(no);
+            let fat = self.aggs.borrow_mut().stderr_fat(self.p)?;
+            self.put_static(fat, "panic: assertion failed: left: ");
+            self.emit(Ty::Unit, Op::FmtFloat { bits, a });
+            self.put_static(fat, ", right: ");
+            self.emit(Ty::Unit, Op::FmtFloat { bits, a: b });
+            self.put_static(fat, "\n");
+            self.emit(Ty::Unit, Op::Abort);
+            self.terminate(Term::Unreachable);
+            self.cur = Some(yes);
+            return Ok(Some(self.emit(Ty::Unit, Op::Const(0))));
+        }
+
         // 比べる関数と、表示の関数 (失敗の文言)。両方を作れるときだけ下ろす。
         let mut g = Gen::new(self.p, self.aggs);
         let eq = g.need_eq(&sa, ta, &file).map_err(|w| format!("行 {}: core.check.eq の比較を下ろせない: {}", line, w))?;

@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 
 use super::{path1, path_base, Lw, St, LR};
-use crate::check::{nf, nline, nname, st, strs};
+use crate::check::{nf, nlineno as nline, nname, st, strs};
 use crate::kir::{Inst, Op, Pointee, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
@@ -160,11 +160,54 @@ impl<'a> Lw<'a> {
         }
     }
 
+    /// 比較の一方が `&T` の参照で、他方が `&スカラー` の値 (`Some(c)` の `c`) なら、参照の側を読んで値どうしにする。
+    /// 参照どうしはそのまま (参照どうしの比較は段階 1 の対象外のまま)。
+    pub(super) fn load_scalar_ref_pair(&mut self, a: VId, b: VId) -> (VId, VId) {
+        if let Some(nb) = self.load_against(b, a) {
+            return (a, nb);
+        }
+        if let Some(na) = self.load_against(a, b) {
+            return (na, b);
+        }
+        (a, b)
+    }
+
+    /// `r` が参照で、`v` がその指す先と同じスカラーの値なら、`*r` を読んだ値を返す。
+    fn load_against(&mut self, r: VId, v: VId) -> Option<VId> {
+        match self.vty(r) {
+            Ty::Ref(_, p) if Pointee::of(self.vty(v)) == Some(p) => Some(self.emit(p.ty(), Op::Load(r))),
+            _ => None,
+        }
+    }
+
     /// 引数の値を、呼び先の引数の型に合わせる (参照の場合だけ)。
     pub(super) fn coerce_args(&mut self, vs: Vec<VId>, pts: &[Ty]) -> Vec<VId> {
         let mut out = Vec::with_capacity(vs.len());
         for (v, pt) in vs.into_iter().zip(pts.iter().copied()) {
-            out.push(if pt.is_ref() { self.coerce(v, pt) } else { v });
+            out.push(match pt {
+                // `Some(c)` の値 (`&スカラー` の値表現) を `&T` の引数に渡す: 値を一時のスロットに入れ、その共有参照を渡す。
+                // 共有参照は読むだけなので、コピーのアドレスを渡しても木走査と同じ値になる (`&5` と同じ一時の扱い)。
+                Ty::Ref(false, p) if !self.vty(v).is_ref() && Pointee::of(self.vty(v)) == Some(p) => {
+                    let ptr = self.alloca(p);
+                    self.emit(Ty::Unit, Op::Store { ptr, val: v });
+                    self.ref_value(ptr, p, true)
+                }
+                _ if pt.is_ref() => self.coerce(v, pt),
+                // `&[T; N]` / `&mut [T; N]` のローカル (ref<fat> / mutref<fat>) を、要素の先頭 ptr に調整する。
+                Ty::Ptr => match self.vty(v) {
+                    Ty::Ref(_, Pointee::Agg(agg_ai)) => {
+                        let fat_val = self.emit(Ty::Agg(agg_ai), Op::Load(v));
+                        self.emit(Ty::Ptr, Op::Field { a: fat_val, off: 0 })
+                    },
+                    _ => v,
+                },
+                // `&[T; N]` のローカル (ref<fat>) を `&[T]` の fat 値に調整する（参照を外す）。
+                Ty::Agg(tgt_ai) => match self.vty(v) {
+                    Ty::Ref(_, Pointee::Agg(src_ai)) if tgt_ai == src_ai => self.emit(Ty::Agg(tgt_ai), Op::Load(v)),
+                    _ => v,
+                },
+                _ => v,
+            });
         }
         out
     }
@@ -260,9 +303,19 @@ impl<'a> Lw<'a> {
         match self.vty(r) {
             Ty::Ref(_, p) => {
                 let t = p.ty();
+                // 所有物 (Vec / String / それを持つ型) の借用の中身を丸ごと読むと、借用元と同じバッファを指す「所有値」ができて二重解放になる。
+                // `ksn check` はこの形を通し、木走査はバッファを共有するだけなので、KIR は理由を付けて拒む (設計_KIR.md 17.5)。
+                if super::coll::owns(self, t) {
+                    return self.err(line, "所有物を持つ型の借用の中身 (*r) を丸ごと読むのは段階 1 の対象外 (借用元と同じ領域を指す所有値ができる)");
+                }
                 Ok(Some(self.emit(t, Op::Load(r))))
             }
-            _ => self.err(line, "* の被演算子が参照でない"),
+            // `Some(b)` で `Option<&スカラー>` から取った束縛は値で持つ (設計_KIR.md 10.10)。型表が `&T` で、
+            // T の型が値の型と一致するなら、`*b` は値そのもの (恒等)。
+            t => match self.src_ty(&f[1]) {
+                Ok(Src::Ref(_, inner)) if super::conv(&inner) == Some(t) => Ok(Some(r)),
+                _ => self.err(line, "* の被演算子が参照でない"),
+            },
         }
     }
 

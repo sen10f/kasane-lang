@@ -1,0 +1,36 @@
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.close(r: t.Res) -> u32 uses [] panics never
+    let t.Res { id: id } = r
+    id
+end t.close
+
+fn t.keep[T: linear](x: T) -> T uses [] panics never
+    x
+end t.keep
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main
+
+fn t.open(n: u32) -> t.Res uses [] panics never
+    t.Res { id: n }
+end t.open
+
+fn t.peek(r: &t.Res) -> u32 uses [] panics never
+    r.id
+end t.peek
+
+fn t.take[T: linear](o: Option<T>) -> Option<T> uses [] panics never
+    match o {
+        Some(v) => Some(v)
+        None => None
+    }
+end t.take
+
+fn t.wrap[T: linear](x: T) -> Option<T> uses [] panics never
+    let y = t.keep(x)
+    Some(y)
+end t.wrap

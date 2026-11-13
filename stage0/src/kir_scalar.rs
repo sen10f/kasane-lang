@@ -33,26 +33,16 @@ pub fn farith(op: Aop, ty: Ty, x: i128, y: i128) -> i128 {
             Aop::Mul => a * b,
             _ => a / b,
         };
-        return r.to_bits() as i128;
+        return fmath::nan_rule32(a, b, r).to_bits() as i128;
     }
     let (a, b) = (f64::from_bits(x as u64), f64::from_bits(y as u64));
     let r = match op {
         Aop::Add => a + b,
         Aop::Sub => a - b,
         Aop::Mul => a * b,
-        _ => {
-            if b == 0.0 {
-                if a == 0.0 || a.is_nan() {
-                    f64::NAN
-                } else {
-                    f64::INFINITY.copysign(a) * 1f64.copysign(b)
-                }
-            } else {
-                a / b
-            }
-        }
+        _ => a / b,
     };
-    r.to_bits() as i128
+    fmath::nan_rule64(a, b, r).to_bits() as i128
 }
 
 /// `f64` の 1 引数の演算 (木走査の `natives.rs` の `float_op_f64` と同じ式)。`Neg` / `IsNan` / `IsFinite` は呼び出し側で扱う。
@@ -67,7 +57,7 @@ fn fun64(op: FUn, x: f64) -> f64 {
     match op {
         // IEEE 754 の演算そのもの (木走査の `natives.rs` と同じ。機械語の fabs / sqrt と同じ)。
         FUn::Abs => x.abs(),
-        FUn::Sqrt => x.sqrt(),
+        FUn::Sqrt => fmath::nan_rule64(x, x, x.sqrt()),
         FUn::Floor => simple(f64::floor),
         FUn::Ceil => simple(f64::ceil),
         FUn::Trunc => simple(f64::trunc),
@@ -91,6 +81,8 @@ pub fn funary(op: FUn, src: Ty, res: Ty, a: i128) -> i128 {
                 (-f64::from_bits(a as u64)).to_bits() as i128
             }
         }
+        // f32 の `abs` は符号ビットを落とすだけ (ビットのまま。f64 へ広げると signaling NaN が変わる)。
+        FUn::Abs if src == Ty::F32 => (a as u32 & 0x7fff_ffff) as i128,
         FUn::IsNan => to_f64(src, a).is_nan() as i128,
         FUn::IsFinite => {
             let x = to_f64(src, a);
@@ -108,11 +100,7 @@ pub fn fbin(op: FBin, res: Ty, a: i128, b: i128) -> i128 {
         FBin::Max => x.max(y),
         FBin::Min => x.min(y),
         FBin::Rem => {
-            if y != 0.0 {
-                x % y
-            } else {
-                f64::NAN
-            }
+            fmath::nan_rule64(x, y, x % y)
         }
         FBin::Atan2 => fmath::atan2(&fmath::Host, x, y),
         FBin::Powi => fmath::powi(&fmath::Host, x, y as i64),
@@ -184,7 +172,8 @@ pub fn not_int(ty: Ty, x: i128) -> i128 {
 /// (`u128` は符号なしとして、`f32` は `f64` を経由して丸める。木走査の `from_*_nearest` と同じ)。
 pub fn conv(src: Ty, dst: Ty, a: i128) -> i128 {
     if src.is_int() && dst.is_int() {
-        return a;
+        // 狭める変換 (`try_from_*` が範囲を確かめた後に使う) は、LLVM の trunc と同じく下位のビットを取る。
+        return if dst.bits() < src.bits() { dst.wrap(a) } else { a };
     }
     if src.is_int() {
         let x = if src == Ty::U128 { a as u128 as f64 } else { a as f64 };

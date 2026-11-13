@@ -1,0 +1,10 @@
+[package]
+name = "ffi"
+version = "0.1.0"
+edition = 1
+entry = "ffi.main"
+
+[dependencies]
+
+[unsafe]
+modules = ["ffi"]

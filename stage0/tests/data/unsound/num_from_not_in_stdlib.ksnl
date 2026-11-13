@@ -1,4 +1,4 @@
-// expect: E1108
+// expect: E1101
 fn t.main() -> Result<(), std.io.Error> uses [] panics never
     let a = u32.from_usize_nearest(3usize)
     core.mem.drop(a)

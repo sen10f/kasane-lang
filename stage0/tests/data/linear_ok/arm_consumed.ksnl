@@ -7,6 +7,10 @@ fn t.eat(l: t.L) -> () uses [] panics never
     core.mem.drop(v)
 end t.eat
 
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.run(Some(t.L { v: 1u32 })))
+end t.main
+
 fn t.run(o: Option<t.L>) -> u8 uses [] panics never
     match o {
         Some(l) => {
@@ -16,7 +20,3 @@ fn t.run(o: Option<t.L>) -> u8 uses [] panics never
         None => 0u8
     }
 end t.run
-
-fn t.main() -> () uses [] panics never
-    core.mem.drop(t.run(Some(t.L { v: 1u32 })))
-end t.main

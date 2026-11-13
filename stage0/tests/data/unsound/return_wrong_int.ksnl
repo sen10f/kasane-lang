@@ -1,0 +1,11 @@
+// expect: E2020
+fn t.bad(a: u32) -> u64 uses [] panics never
+    if a > 1u32 {
+        return a
+    }
+    0u64
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

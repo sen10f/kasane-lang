@@ -178,6 +178,12 @@ struct Ctx {
     write: bool,
     /// `eprint` 命令を使う (`@ksn.eprint` を出す。エラーは捨てる)。
     eprint: bool,
+    /// `std.net` 命令を使う (`@ksn.net_*` を出す)。
+    net: bool,
+    /// `FmtFloat` 命令を使う (浮動小数の書式化補助関数を出す)。
+    fmt_float: bool,
+    /// `ParseInt` 命令を使う (`kir_rt.c` の `ksn_parse_int` を呼ぶ)。
+    parse_int: bool,
 }
 
 impl Ctx {
@@ -222,11 +228,29 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     let Some(ef) = m.find(entry) else {
         return Err(format!("関数 {} がない", entry));
     };
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false };
+    let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
+    let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, parse_int: has_parse_int };
+    // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
+    let extern_links: HashMap<String, String> = m.funcs.iter()
+        .filter_map(|f| f.link.as_ref().map(|l| {
+            let sym = l.rsplit_once(':').map(|(_, s)| s).unwrap_or(l);
+            (f.key.clone(), sym.to_string())
+        }))
+        .collect();
+    for (key, sym) in &extern_links {
+        let Some(f) = m.funcs.iter().find(|f| f.key == *key) else { continue };
+        let params: Vec<String> = f.params().iter().map(|(_, t)| lty(&m.aggs, *t)).collect();
+        let rt = lty(&m.aggs, f.ret);
+        cx.decl(format!("declare {} @{}({})", rt, sym, params.join(", ")));
+    }
     let mut funcs = String::new();
     for (fi, f) in m.funcs.iter().enumerate() {
+        if f.link.is_some() {
+            continue;
+        }
         funcs.push('\n');
-        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
+        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
     let mut math = String::new();
@@ -244,6 +268,15 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         "declare i64 @strtoull(ptr, ptr, i32)",
     ] {
         cx.decls.insert(d.to_string());
+    }
+    if cx.fmt_float {
+        cx.decls.insert("declare i32 @snprintf(ptr, i64, ptr, ...)".to_string());
+        cx.decls.insert("declare i64 @strlen(ptr)".to_string());
+        cx.decls.insert("declare double @strtod(ptr, ptr)".to_string());
+        cx.decls.insert("declare float @strtof(ptr, ptr)".to_string());
+    }
+    if cx.parse_int {
+        cx.decls.insert("declare i32 @ksn_parse_int(ptr, i64, i32, i32, i32, ptr, ptr)".to_string());
     }
     let mut out = String::from("; ksn kir llvm 1\n\n");
     for d in &cx.decls {
@@ -267,16 +300,45 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     }
     out.push_str("define private void @ksn.panic.index(i64 %len, i64 %ix) noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.index, i64 %len, i64 %ix)\n  call void @exit(i32 101)\n  unreachable\n}\n\n");
     out.push_str("define private void @ksn.overflow() noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.so)\n  call void @exit(i32 102)\n  unreachable\n}\n");
+    if cx.fmt_float {
+        out.push_str(&fmt_float_helpers());
+    }
     if cx.write {
         out.push_str(&write_helper(&m.aggs)?);
     }
     if cx.eprint {
         out.push_str(EPRINT_HELPER);
     }
+    if cx.net {
+        out.push_str(&net_helpers(&mut cx, &m.aggs)?);
+    }
     out.push_str(&funcs);
     out.push_str(&math);
     out.push('\n');
     out.push_str(&main);
+    // AddressSanitizer が有効なら、全ての関数定義に sanitize_address を付ける (設計_KIR.md 17.9)。
+    // `declare` は `define` ではないので置換されない。
+    if std::env::var("KSN_CLANG_ARGS")
+        .map(|s| s.split_whitespace().any(|a| a == "-fsanitize=address"))
+        .unwrap_or(false)
+    {
+        // `define ... {` → `define ... sanitize_address {`（関数属性は `{` の前に置く）。`declare` は対象外。
+        out = out
+            .lines()
+            .map(|l| {
+                let trimmed = l.trim_start();
+                if trimmed.starts_with("define ") && trimmed.ends_with('{') {
+                    let indent = &l[..l.len() - trimmed.len()];
+                    let body = &trimmed[..trimmed.len() - 1];
+                    format!("{} {}sanitize_address {{\n", indent, body)
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+    }
     Ok(out)
 }
 
@@ -347,7 +409,122 @@ fn write_helper(aggs: &[AggDef]) -> R<String> {
     Ok(s)
 }
 
+/// errno を `(errno << 32) | ErrorKind の変種の添字` の i64 値にする式 (`%e` は `i32` の errno)。
+/// 書き方は `write_helper` と同じ対応表。
+fn errno_chain(errno_fn: &str, idx: &impl Fn(&str) -> Result<usize, String>, s: &mut String) -> Result<String, String> {
+    s.push_str(&format!("  %ep = call ptr @{}()\n  %e = load i32, ptr %ep\n", errno_fn));
+    let mut cur = format!("{}", idx("Other")?);
+    for (k, (errno, name)) in [(1, "PermissionDenied"), (13, "PermissionDenied"), (2, "NotFound"), (17, "AlreadyExists"), (22, "InvalidInput"), (32, "BrokenPipe"), (12, "OutOfMemory")].iter().enumerate() {
+        s.push_str(&format!("  %c{k} = icmp eq i32 %e, {errno}\n  %k{k} = select i1 %c{k}, i64 {}, i64 {cur}\n", idx(name)?));
+        cur = format!("%k{k}");
+    }
+    s.push_str(&format!("  %ez = zext i32 %e to i64\n  %eh = shl i64 %ez, 32\n  %enc = or i64 %eh, {cur}\n  %r = or i64 %enc, 9223372036854775808\n  ret i64 %r\n"));
+    Ok(cur)
+}
+
+/// `std.net` 命令の実体 (`@ksn.net_*`)。
+/// 成功は値 (fd / バイト数 / 0) を bit 63=0 で返す。失敗は `(1<<63) | (errno<<32) | ErrorKind` を返す。
+/// `inst` 側で bit 63 をタグ、下位 64 ビットをペイロードとして `pack` する。
+fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
+    let kinds = aggs.iter().find(|d| d.name == "std.io.ErrorKind").ok_or("型表に std.io.ErrorKind がない")?;
+    let AggKind::Enum(vs) = &kinds.kind else { return Err("std.io.ErrorKind が列挙型でない".into()) };
+    let idx = |n: &str| vs.iter().position(|v| v.name == n).ok_or_else(|| format!("ErrorKind に {} がない", n));
+    let errno_fn = errno_name();
+    let mut s = String::new();
+    // `write` の libc 宣言は、`cx.write` (write/eprint 命令) が立っていればトップの declare ループ
+    // (`cx.decls`) で出力される。そうでないときだけここに出力する。
+    let write_decl = "declare i64 @write(i32, ptr, i64)";
+    let write_already = cx.decls.iter().any(|d| d == write_decl);
+    for d in [
+        "declare i32 @socket(i32, i32, i32)",
+        "declare i32 @bind(i32, ptr, i64)",
+        "declare i32 @listen(i32, i32)",
+        "declare i32 @accept(i32, ptr, ptr)",
+        "declare i32 @connect(i32, ptr, i64)",
+        "declare i32 @read(i32, ptr, i64)",
+        "declare i32 @close(i32)",
+        "declare i32 @getsockname(i32, ptr, ptr)",
+        &format!("declare ptr @{}()", errno_fn),
+    ] {
+        s.push_str(d);
+        s.push('\n');
+    }
+    if !write_already {
+        s.push_str(write_decl);
+        s.push('\n');
+    }
+    macro_rules! hdr {
+        ($name:expr, $ret:expr) => {
+            s.push_str(&format!("define private i64 @{}({}) {{\nentry:\n", $name, $ret));
+        };
+    }
+    // sockaddr_in の構築: アドレス文字列 "127.0.0.1:PORT" の PORT を net_port で取り、
+    // IP は 127.0.0.1 (ループバック) に固定する。`%s` はソケット fd。
+    fn sockaddr_in(s: &mut String) {
+        s.push_str("  %sa = alloca i8, i64 16\n  %fp = getelementptr i8, ptr %sa, i64 0\n  store i16 2, ptr %fp\n  %pp = getelementptr i8, ptr %sa, i64 2\n  %port = call i32 @ksn.net_port(ptr %a, i64 %n)\n  %negp = icmp slt i32 %port, 0\n  br i1 %negp, label %err, label %po\npo:\n  %p16 = trunc i32 %port to i16\n  %phi = lshr i16 %p16, 8\n  %plo = shl i16 %p16, 8\n  %pno = or i16 %phi, %plo\n  store i16 %pno, ptr %pp\n  %ip0 = getelementptr i8, ptr %sa, i64 4\n  store i8 127, ptr %ip0\n  %ip1 = getelementptr i8, ptr %sa, i64 5\n  store i8 0, ptr %ip1\n  %ip2 = getelementptr i8, ptr %sa, i64 6\n  store i8 0, ptr %ip2\n  %ip3 = getelementptr i8, ptr %sa, i64 7\n  store i8 1, ptr %ip3\n  %b = call i32 @bind(i32 %s, ptr %sa, i64 16)\n  %neg2 = icmp slt i32 %b, 0\n  br i1 %neg2, label %err, label %ok2\nok2:\n");
+    }
+    // net.listen(addr, len): socket+bind+listen
+    hdr!("ksn.net_listen", "ptr %a, i64 %n");
+    s.push_str("  %s = call i32 @socket(i32 2, i32 1, i32 0)\n  %neg = icmp slt i32 %s, 0\n  br i1 %neg, label %err, label %ok\nok:\n");
+    sockaddr_in(&mut s);
+    s.push_str("  %l = call i32 @listen(i32 %s, i32 128)\n  %neg3 = icmp slt i32 %l, 0\n  br i1 %neg3, label %err, label %done\ndone:\n  %v = zext i32 %s to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.connect(addr, len): socket+connect
+    hdr!("ksn.net_connect", "ptr %a, i64 %n");
+    s.push_str("  %s = call i32 @socket(i32 2, i32 1, i32 0)\n  %neg = icmp slt i32 %s, 0\n  br i1 %neg, label %err, label %ok\nok:\n");
+    s.push_str("  %sa2 = alloca i8, i64 16\n  %fp2 = getelementptr i8, ptr %sa2, i64 0\n  store i16 2, ptr %fp2\n  %pp2 = getelementptr i8, ptr %sa2, i64 2\n  %port2 = call i32 @ksn.net_port(ptr %a, i64 %n)\n  %negp2 = icmp slt i32 %port2, 0\n  br i1 %negp2, label %err, label %po2\npo2:\n  %p162 = trunc i32 %port2 to i16\n  %phi2 = lshr i16 %p162, 8\n  %plo2 = shl i16 %p162, 8\n  %pno2 = or i16 %phi2, %plo2\n  store i16 %pno2, ptr %pp2\n  %ip02 = getelementptr i8, ptr %sa2, i64 4\n  store i8 127, ptr %ip02\n  %ip12 = getelementptr i8, ptr %sa2, i64 5\n  store i8 0, ptr %ip12\n  %ip22 = getelementptr i8, ptr %sa2, i64 6\n  store i8 0, ptr %ip22\n  %ip32 = getelementptr i8, ptr %sa2, i64 7\n  store i8 1, ptr %ip32\n  %c = call i32 @connect(i32 %s, ptr %sa2, i64 16)\n  %neg22 = icmp slt i32 %c, 0\n  br i1 %neg22, label %err, label %done\n");
+    s.push_str("done:\n  %v = zext i32 %s to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.accept(fd)
+    hdr!("ksn.net_accept", "i32 %fd");
+    s.push_str("  %a = call i32 @accept(i32 %fd, ptr null, ptr null)\n  %neg = icmp slt i32 %a, 0\n  br i1 %neg, label %err, label %done\ndone:\n  %v = zext i32 %a to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.read(fd, ptr, len)
+    hdr!("ksn.net_read", "i32 %fd, ptr %p, i64 %n");
+    s.push_str("  %raw = call i32 @read(i32 %fd, ptr %p, i64 %n)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  %v = zext i32 %raw to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.write(fd, ptr, len)
+    hdr!("ksn.net_write", "i32 %fd, ptr %p, i64 %n");
+    s.push_str("  %raw = call i32 @write(i32 %fd, ptr %p, i64 %n)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  %v = zext i32 %raw to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.flush(fd): ソケットへの書き出しは直ちに反映されるため成功（no-op）とする。
+    hdr!("ksn.net_flush", "i32 %fd");
+    s.push_str("  ret i64 0\n}\n\n");
+    // net.close(fd)
+    hdr!("ksn.net_close", "i32 %fd");
+    s.push_str("  %raw = call i32 @close(i32 %fd)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  ret i64 0\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.local_port(fd): getsockname で sockaddr_in の sin_port (オフセット 2、ネットワークバイトオーダ) を取る。
+    hdr!("ksn.net_local_port", "i32 %fd");
+    s.push_str("  %addr = alloca i8, i64 16\n  %len = alloca i64, i64 8\n  store i64 16, ptr %len\n  %raw = call i32 @getsockname(i32 %fd, ptr %addr, ptr %len)\n  %neg = icmp slt i32 %raw, 0\n  br i1 %neg, label %err, label %done\ndone:\n  %p = getelementptr i8, ptr %addr, i64 2\n  %pv = load i16, ptr %p, align 2\n  %hi = lshr i16 %pv, 8\n  %lo = shl i16 %pv, 8\n  %port = or i16 %hi, %lo\n  %v = zext i16 %port to i64\n  ret i64 %v\nerr:\n");
+    errno_chain(errno_fn, &idx, &mut s)?;
+    s.push_str("}\n\n");
+    // net.port(addr, len): "127.0.0.1:PORT" の PORT をパースして返す。
+    s.push_str("define i32 @ksn.net_port(ptr %a, i64 %n) {\nentry:\n  %col = alloca i32\n  store i32 -1, ptr %col\n  %i = alloca i64\n  store i64 0, ptr %i\n  br label %loop\nloop:\n  %iv = load i64, ptr %i\n  %d = icmp uge i64 %iv, %n\n  br i1 %d, label %parse, label %scan\nscan:\n  %p = getelementptr i8, ptr %a, i64 %iv\n  %b = load i8, ptr %p, align 1\n  %isc = icmp eq i8 %b, 58\n  br i1 %isc, label %setcol, label %inc\nsetcol:\n  %iv32 = trunc i64 %iv to i32\n  store i32 %iv32, ptr %col\n  br label %inc\ninc:\n  %iv2 = add i64 %iv, 1\n  store i64 %iv2, ptr %i\n  br label %loop\nparse:\n  %cv = load i32, ptr %col\n  %neg = icmp slt i32 %cv, 0\n  br i1 %neg, label %err, label %pstart\npstart:\n  %np = add i32 %cv, 1\n  %np64 = zext i32 %np to i64\n  %d2 = icmp uge i64 %np64, %n\n  br i1 %d2, label %err, label %vi\nvi:\n  %val = alloca i32\n  store i32 0, ptr %val\n  %j = alloca i64\n  store i64 %np64, ptr %j\n  br label %vloop\nvloop:\n  %jv = load i64, ptr %j\n  %dv = icmp uge i64 %jv, %n\n  br i1 %dv, label %vdone, label %vscan\nvscan:\n  %pv = getelementptr i8, ptr %a, i64 %jv\n  %bv = load i8, ptr %pv, align 1\n  %dv2 = icmp sle i8 %bv, 57\n  %dv3 = icmp sge i8 %bv, 48\n  %dok = and i1 %dv2, %dv3\n  br i1 %dok, label %vdigit, label %vdone\nvdigit:\n  %bv32 = zext i8 %bv to i32\n  %d0 = sub i32 %bv32, 48\n  %v = load i32, ptr %val\n  %m = mul i32 %v, 10\n  %a2 = add i32 %m, %d0\n  store i32 %a2, ptr %val\n  %j2 = add i64 %jv, 1\n  store i64 %j2, ptr %j\n  br label %vloop\nvdone:\n  %rv = load i32, ptr %val\n  ret i32 %rv\nerr:\n  ret i32 -1\n}\n\n");
+    Ok(s)
+}
+
 // ---------------------------------------------------------------- 入口 (main)
+
+/// 浮動小数の書式化は、C の実行時補助 `kir_rt.c` の `ksn_fmt_f64` / `ksn_fmt_f32` に任せる (設計_KIR.md 17.11)。
+/// 規則は `py_float` / `py_float32` と同じ。結果は静的バッファへのポインタ (NUL 終端)。
+fn fmt_float_helpers() -> String {
+    "declare ptr @ksn_fmt_f64(double)\ndeclare ptr @ksn_fmt_f32(float)\n".to_string()
+}
+
+/// C の実行時補助 (`kir_rt.c`) の本文。生成した IR が `@ksn_fmt_` / `@ksn_utf8_` を呼ぶときだけ、clang に一緒に渡す。
+pub const RUNTIME_C: &str = include_str!("kir_rt.c");
+
+/// IR が C の実行時補助を要するか。
+pub fn needs_runtime(ll: &str) -> bool {
+    ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int")
+}
 
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
     // 入口は語 1 つ (128 ビット) で受け渡しするので、枠が 64 ビットの Option / Result と整数・bool・浮動小数だけ扱う。
@@ -386,7 +563,12 @@ fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
         args.push(format!("{} {}", lty(aggs, *t), v));
     }
     let rt = lty(aggs, f.ret);
-    s.push_str(&format!("  %r = call {} {}({})\n", rt, fname(&f.key), args.join(", ")));
+    let callee = if let Some(sym) = &f.link {
+        format!("@{}", sym)
+    } else {
+        fname(&f.key)
+    };
+    s.push_str(&format!("  %r = call {} {}({})\n", rt, callee, args.join(", ")));
     let e = "%e";
     match f.ret {
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize => s.push_str(&format!("  {e} = sext {rt} %r to i128\n")),
@@ -565,6 +747,8 @@ struct Fe<'a> {
     cx: &'a mut Ctx,
     aggs: &'a [AggDef],
     f: &'a Func,
+    /// `extern` 関数の `キー → LLVM シンボル名`。`Op::Call` で `declare` したシンボルを直接呼ぶ。
+    extern_links: &'a HashMap<String, String>,
     fi: usize,
     tys: HashMap<VId, Ty>,
     /// 定数と unit の値 (命令を作らずに、使う側へ直接書く)。
@@ -577,8 +761,8 @@ struct Fe<'a> {
 }
 
 impl<'a> Fe<'a> {
-    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, fi: usize) -> Fe<'a> {
+        Fe { cx, aggs, f, extern_links, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -694,6 +878,14 @@ impl<'a> Fe<'a> {
             Ty::Ptr | Ty::Ref(..) => self.t(format!("inttoptr i64 {} to ptr", x)),
             _ => x,
         }
+    }
+
+    /// `std.net` の i64 結果 (bit 63 = エラー、下位 64 ビット = ペイロード) を `Result` の i65 値に pack する。
+    fn net_result(&mut self, dst: &str, r: &str) -> R<()> {
+        let neg = self.t(format!("icmp slt i64 {}, 0", r));
+        let pay = self.t(format!("and i64 {}, 9223372036854775807", r));
+        self.pack(dst, 64, &neg, &pay);
+        Ok(())
     }
 
     /// `Option` / `Result` の値 (幅 `s + 1`): 枠 `pay` (幅 `s`) と、タグ `tag` (i1) を最上位に置く。
@@ -905,6 +1097,27 @@ impl<'a> Fe<'a> {
         }
     }
 
+    /// NaN の規則 (`fmath::nan_rule64` / `nan_rule32` と同じ、設計_KIR.md 17.8): 結果 `r` が NaN のとき、`a` が NaN なら `a` (quiet 化)、
+    /// そうでなく `b` が NaN なら `b` (quiet 化)、どちらでもなければ正の quiet NaN。結果が NaN でなければ `r`。
+    /// 定数畳み込み (正の NaN) と実機の実行時 (符号ビットの立った NaN) の違いを消す。`t` は `float` か `double`。
+    fn nan_rule(&mut self, t: &str, a: &str, b: &str, r: &str) -> String {
+        let (it, quiet, canon) = if t == "float" { ("i32", 0x0040_0000u64, 0x7FC0_0000u64) } else { ("i64", 0x0008_0000_0000_0000u64, 0x7FF8_0000_0000_0000u64) };
+        let rn = self.t(format!("fcmp uno {} {}, {}", t, r, r));
+        let an = self.t(format!("fcmp uno {} {}, {}", t, a, a));
+        let bn = self.t(format!("fcmp uno {} {}, {}", t, b, b));
+        let ab = self.t(format!("bitcast {} {} to {}", t, a, it));
+        let aq = self.t(format!("or {} {}, {}", it, ab, quiet));
+        let af = self.t(format!("bitcast {} {} to {}", it, aq, t));
+        let bb = self.t(format!("bitcast {} {} to {}", t, b, it));
+        let bq = self.t(format!("or {} {}, {}", it, bb, quiet));
+        let bf = self.t(format!("bitcast {} {} to {}", it, bq, t));
+        let cb = self.t(format!("or {} 0, {}", it, canon));
+        let cf = self.t(format!("bitcast {} {} to {}", it, cb, t));
+        let s1 = self.t(format!("select i1 {}, {} {}, {} {}", bn, t, bf, t, cf));
+        let s2 = self.t(format!("select i1 {}, {} {}, {} {}", an, t, af, t, s1));
+        self.t(format!("select i1 {}, {} {}, {} {}", rn, t, s2, t, r))
+    }
+
     fn math_call(&mut self, m: Math, args: &str) -> String {
         self.cx.math.insert(m);
         self.t(format!("call double @ksn.m.{}({})", m.name(), args))
@@ -929,11 +1142,21 @@ impl<'a> Fe<'a> {
                 let ab = self.t(format!("call {} @{}({} {})", st, full, st, x));
                 self.line(format!("{} = fcmp olt {} {}, 0x7FF0000000000000", d, st, ab));
             }
+            // abs は符号ビットを落とすだけ (f64 へ広げず、整数のビット演算で。signaling NaN も、最適化の水準にもよらず変わらない)。
+            FUn::Abs => {
+                let (it, mask) = if src == Ty::F32 { ("i32", 0x7FFF_FFFFu64) } else { ("i64", 0x7FFF_FFFF_FFFF_FFFFu64) };
+                let b = self.t(format!("bitcast {} {} to {}", st, x, it));
+                let m = self.t(format!("and {} {}, {}", it, b, mask));
+                self.line(format!("{} = bitcast {} {} to {}", d, it, m, st));
+            }
             _ => {
                 let w = self.widen(src, &x);
                 let r = match f {
-                    FUn::Abs => self.f64_intr("fabs", &w),
-                    FUn::Sqrt => self.f64_intr("sqrt", &w),
+                    FUn::Abs => unreachable!(),
+                    FUn::Sqrt => {
+                        let r = self.f64_intr("sqrt", &w);
+                        self.nan_rule("double", &w, &w, &r)
+                    }
                     FUn::Floor => self.f64_intr("floor", &w),
                     FUn::Ceil => self.f64_intr("ceil", &w),
                     FUn::Trunc => self.f64_intr("trunc", &w),
@@ -969,8 +1192,7 @@ impl<'a> Fe<'a> {
                     }
                     FBin::Rem => {
                         let q = self.t(format!("frem double {}, {}", x, y));
-                        let nz = self.t(format!("fcmp une double {}, 0.0", y));
-                        self.t(format!("select i1 {}, double {}, double 0x{:016X}", nz, q, f64::NAN.to_bits()))
+                        self.nan_rule("double", &x, &y, &q)
                     }
                     FBin::Atan2 => self.math_call(Math::Atan2, &format!("double {}, double {}", x, y)),
                     FBin::Powi => unreachable!(),
@@ -985,21 +1207,17 @@ impl<'a> Fe<'a> {
         let t = self.lt(i.ty);
         let (x, y) = (self.r(a), self.r(b));
         match op {
-            Aop::Add => self.line(format!("{} = fadd {} {}, {}", d, t, x, y)),
-            Aop::Sub => self.line(format!("{} = fsub {} {}, {}", d, t, x, y)),
-            Aop::Mul => self.line(format!("{} = fmul {} {}, {}", d, t, x, y)),
             _ => {
-                let q = if i.ty == Ty::F64 { self.tmp() } else { d.clone() };
-                self.line(format!("{} = fdiv {} {}, {}", q, t, x, y));
-                if i.ty == Ty::F64 {
-                    // 0 で割る `0 / 0` と `NaN / 0` は、木走査と同じ正規の NaN (実機の既定の NaN は符号ビットが立つ)。
-                    let z = self.t(format!("fcmp oeq double {}, 0.0", y));
-                    let a0 = self.t(format!("fcmp oeq double {}, 0.0", x));
-                    let an = self.t(format!("fcmp uno double {}, {}", x, x));
-                    let bad0 = self.t(format!("or i1 {}, {}", a0, an));
-                    let c = self.t(format!("and i1 {}, {}", z, bad0));
-                    self.line(format!("{} = select i1 {}, double 0x{:016X}, double {}", d, c, f64::NAN.to_bits(), q));
-                }
+                let ins = match op {
+                    Aop::Add => "fadd",
+                    Aop::Sub => "fsub",
+                    Aop::Mul => "fmul",
+                    _ => "fdiv",
+                };
+                let q = self.t(format!("{} {} {}, {}", ins, t, x, y));
+                // NaN になる結果は、木走査・参照実行器と同じ規則のビット列にする (17.8)。
+                let r = self.nan_rule(&t, &x, &y, &q);
+                self.mov(&d, &t, &r);
             }
         }
     }
@@ -1151,6 +1369,29 @@ impl<'a> Fe<'a> {
                     self.label(&k);
                     Ok(())
                 }
+                Op::FmtFloat { bits, a } => {
+                    self.cx.fmt_float = true;
+                    let (func, arg_ty) = if *bits == 64 {
+                        ("@ksn_fmt_f64", "double")
+                    } else {
+                        ("@ksn_fmt_f32", "float")
+                    };
+                    let fp = self.t(format!("call ptr {}({} {})", func, arg_ty, self.r(*a)));
+                    self.cx.decl("declare i64 @strlen(ptr)".to_string());
+                    let len = self.t(format!("call i64 @strlen(ptr {})", fp));
+                    let fp_i = self.t(format!("ptrtoint ptr {} to i64", fp));
+                    let ptr_i128 = self.t(format!("zext i64 {} to i128", fp_i));
+                    let len_i128 = self.t(format!("zext i64 {} to i128", len));
+                    let len_shl = self.t(format!("shl i128 {}, 64", len_i128));
+                    let fat = self.t(format!("or i128 {}, {}", len_shl, ptr_i128));
+                    self.cx.eprint = true;
+                    self.cx.decl("declare i64 @write(i32, ptr, i64)".to_string());
+                    let pi = self.extract(&fat, 128, 0, 64);
+                    let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                    let n = self.extract(&fat, 128, 8, 64);
+                    self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
+                    Ok(())
+                }
                 _ => Ok(()),
             };
         }
@@ -1228,7 +1469,11 @@ impl<'a> Fe<'a> {
             Op::Call { callee, args } => {
                 let rt = self.lt(i.ty);
                 let a: Vec<String> = args.iter().map(|v| format!("{} {}", lty(aggs, self.ty(*v)), self.r(*v))).collect();
-                self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
+                if let Some(sym) = self.extern_links.get(callee) {
+                    self.line(format!("{} = call {} @{}({})", d, rt, sym, a.join(", ")));
+                } else {
+                    self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
+                }
             }
             Op::Make { variant, fields } => {
                 let Ty::Agg(ai) = i.ty else { return Err("make の結果が集成体でない".into()) };
@@ -1303,10 +1548,10 @@ impl<'a> Fe<'a> {
                 let mt = self.mt(q.ty());
                 let pv = self.r(*p);
                 if q.ty() == Ty::Bool {
-                    let x = self.t(format!("load {}, ptr {}", mt, pv));
+                    let x = self.t(format!("load {}, ptr {}, align 1", mt, pv));
                     self.line(format!("{} = icmp ne i8 {}, 0", d, x));
                 } else {
-                    self.line(format!("{} = load {}, ptr {}", d, mt, pv));
+                    self.line(format!("{} = load {}, ptr {}, align 1", d, mt, pv));
                 }
             }
             Op::AsShared(p) | Op::Reborrow(p) => {
@@ -1350,6 +1595,11 @@ impl<'a> Fe<'a> {
                 let (pv, o) = (self.r(*p), self.r(*off));
                 self.line(format!("{} = getelementptr i8, ptr {}, i64 {}", d, pv, o));
             }
+            Op::Utf8Valid { p, len } => {
+                self.cx.decl("declare i64 @ksn_utf8_valid(ptr, i64)".to_string());
+                let (pv, n) = (self.r(*p), self.r(*len));
+                self.line(format!("{} = call i64 @ksn_utf8_valid(ptr {}, i64 {})", d, pv, n));
+            }
             Op::MemLoad { p, off } => {
                 let pv = self.r(*p);
                 let addr = self.t(format!("getelementptr i8, ptr {}, i64 {}", pv, off));
@@ -1381,6 +1631,94 @@ impl<'a> Fe<'a> {
                 let tag = self.t(format!("xor i1 {}, true", ok));
                 self.pack(&d, 64, &tag, &r);
             }
+            Op::NetListen { addr } | Op::NetConnect { addr } => {
+                self.cx.net = true;
+                let is_listen = matches!(i.op, Op::NetListen { .. });
+                let fnn = if is_listen { "ksn.net_listen" } else { "ksn.net_connect" };
+                let Ty::Agg(_) = self.ty(*addr) else { return Err("net.listen / net.connect のアドレスが fat でない".into()) };
+                let av = self.r(*addr);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let ni = self.extract(&av, 128, 8, 64);
+                let r = self.t(format!("call i64 @{}(ptr {}, i64 {})", fnn, p, ni));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetAccept { sock } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_accept(i32 {})", self.r(*sock)));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetRead { sock, buf, len } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_read(i32 {}, ptr {}, i64 {})", self.r(*sock), self.r(*buf), self.r(*len)));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetWrite { sock, buf, len } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_write(i32 {}, ptr {}, i64 {})", self.r(*sock), self.r(*buf), self.r(*len)));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetFlush { sock } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_flush(i32 {})", self.r(*sock)));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetClose { sock } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_close(i32 {})", self.r(*sock)));
+                self.net_result(&d, &r)?;
+            }
+            Op::NetLocalPort { sock } => {
+                self.cx.net = true;
+                let r = self.t(format!("call i64 @ksn.net_local_port(i32 {})", self.r(*sock)));
+                self.net_result(&d, &r)?;
+            }
+            Op::ParseInt { ty, s, radix } => {
+                self.cx.parse_int = true;
+                self.cx.decl("declare i32 @ksn_parse_int(ptr, i64, i32, i32, i32, ptr, ptr)".to_string());
+                let av = self.r(*s);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let n = self.extract(&av, 128, 8, 64);
+                let rv = self.r(*radix);
+                let bits = ty.bits();
+                let iss = if ty.signed() { 1 } else { 0 };
+                let lo_ptr = self.t("alloca i64".to_string());
+                let hi_ptr = self.t("alloca i64".to_string());
+                let ret = self.t(format!(
+                    "call i32 @ksn_parse_int(ptr {}, i64 {}, i32 {}, i32 {}, i32 {}, ptr {}, ptr {})",
+                    p, n, rv, bits, iss, lo_ptr, hi_ptr
+                ));
+                let lo = self.t(format!("load i64, i64* {}", lo_ptr));
+                let is_ok = self.t(format!("icmp eq i32 {}, 0", ret));
+                let tag = self.t(format!("xor i1 {}, true", is_ok));
+                let kind = self.t(format!("sub i32 {}, 1", ret));
+                let kind_z = self.t(format!("zext i32 {} to i64", kind));
+                let pay = self.t(format!("select i1 {}, i64 {}, i64 {}", is_ok, lo, kind_z));
+                self.pack(&d, 64, &tag, &pay);
+            }
+            Op::FmtFloat { bits, a } => {
+                self.cx.fmt_float = true;
+                let (func, arg_ty) = if *bits == 64 {
+                    ("@ksn_fmt_f64", "double")
+                } else {
+                    ("@ksn_fmt_f32", "float")
+                };
+                let fp = self.t(format!("call ptr {}({} {})", func, arg_ty, self.r(*a)));
+                self.cx.decl("declare i64 @strlen(ptr)".to_string());
+                self.cx.decl("declare i32 @snprintf(ptr, i64, ptr, ...)".to_string());
+                let len = self.t(format!("call i64 @strlen(ptr {})", fp));
+                let ptr_i128 = self.t(format!("zext i64 {} to i128", fp));
+                let len_i128 = self.t(format!("zext i64 {} to i128", len));
+                let len_shl = self.t(format!("shl i128 {}, 64", len_i128));
+                let fat = self.t(format!("or i128 {}, {}", len_shl, ptr_i128));
+                self.cx.eprint = true;
+                self.cx.decl("declare i64 @write(i32, ptr, i64)".to_string());
+                let pi = self.extract(&fat, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let n = self.extract(&fat, 128, 8, 64);
+                self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
+            }
             Op::HeapAlloc(n) => {
                 let nv = self.r(*n);
                 let z = self.t(format!("icmp eq i64 {}, 0", nv));
@@ -1400,7 +1738,9 @@ impl<'a> Fe<'a> {
     fn store(&mut self, ptr: VId, val: VId) -> R<()> {
         let (pv, vv) = (self.r(ptr), self.r(val));
         let t = self.ty(val);
-        self.mem_store_to(t, &pv, &vv, "")
+        // 参照の指す先の実際のアドレスは型の既定の整列 (`i192` なら 16) を満たすとは限らない (ヘッダは 8 の倍数、`malloc` の領域の途中など)。
+        // 整列を仮定すると未定義動作になるので、常に `align 1` で読み書きする。
+        self.mem_store_to(t, &pv, &vv, ", align 1")
     }
 
     fn mem_store(&mut self, t: Ty, addr: &str, v: &str) -> R<()> {

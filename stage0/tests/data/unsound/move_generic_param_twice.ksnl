@@ -1,0 +1,4 @@
+// expect: E3002
+fn t.twice[T](x: T) -> (T, T) uses [] panics never
+    (x, x)
+end t.twice

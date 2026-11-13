@@ -24,7 +24,7 @@ GROUP = {'import': 0, 'const': 1, 'static': 1, 'type': 2, 'enum': 2, 'trait': 2,
          'extern': 3, 'impl_only': 4, 'fn': 5, 'test': 6}
 BODY_KINDS = ('fn', 'test')
 FIELD_KINDS = ('type', 'enum', 'trait')
-DERIVE_ORDER = ['Debug', 'Clone', 'Copy', 'PartialEq', 'Eq', 'PartialOrd', 'Ord', 'Hash']
+DERIVE_ORDER = ['Debug', 'Clone', 'Copy', 'PartialEq', 'Eq', 'PartialOrd', 'Ord', 'Hash', 'From']
 PRIMS = {'i8', 'i16', 'i32', 'i64', 'i128', 'isize', 'u8', 'u16', 'u32', 'u64', 'u128', 'usize',
          'f32', 'f64', 'bool', 'char', 'str'}
 # 3.7: 語は英字で始まり、数字は直前の語に付ける (foo2 は可、foo_2 は不可)
@@ -341,10 +341,18 @@ class Lint:
                         self.err('indent', n, 'unbalanced closing bracket')
                     else:
                         expect(stack[-1][1]); stack.pop()
+                    # `) {` と `)? close g(` は、閉じと同じ行で次の波括弧・括弧を開く
+                    if s.endswith('{'):
+                        stack.append(('brace', ind))
+                    elif s.endswith(('(', '[')):
+                        stack.append(('wrap', ind))
                     continue
                 if s.startswith('.'):
                     expect(stmt_base + 4)
-                    if s.endswith(('(', '[')):
+                    if s.endswith('{'):
+                        # `with .. = a` の次の `.b()? close c() {` のように、チェーンの最後の行が波括弧を開く
+                        stack.append(('brace', stmt_base))
+                    elif s.endswith(('(', '[')):
                         stack.append(('wrap', ind))
                     continue
                 in_wrap = bool(stack) and stack[-1][0] == 'wrap'
@@ -411,6 +419,8 @@ class Lint:
                     names.append(('param', nm))
         for m in re.finditer(r'\bfor ([a-z_][a-z0-9_]*) in\b', body):
             names.append(('let', m.group(1)))
+        for m in re.finditer(r'\bwith (?:mut )?([a-z_][a-z0-9_]*) =', body):
+            names.append(('let', m.group(1)))
         return names, body
 
     def check_names_and_unused(self, items):
@@ -458,7 +468,8 @@ class Lint:
             if it['kw'] != 'import':
                 continue
             tail = it['name'].split('.')[-1]
-            if not re.search(r'(?<![A-Za-z0-9_.])' + re.escape(tail) + r'\.', text):
+            # 3.3: 短縮形でも FQN でも、ヘッダでも本体でも、参照があれば使用済み。
+            if not any(re.search(r'(?<![A-Za-z0-9_.])' + re.escape(n) + r'\.', text) for n in (tail, it['name'])):
                 self.err('unused', it['line'] + 1, f'unused import {it["name"]}')
 
     def check_pub(self, items):

@@ -1,0 +1,40 @@
+import shortener.http
+import shortener.server
+import shortener.wire
+
+fn shortener.client.address(port: u16) -> Result<alloc.string.String<std.alloc.System>, shortener.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("127.0.0.1:")?
+    out.push_u64(u64.from_u16(port))?
+    Ok(out)
+end shortener.client.address
+
+fn shortener.client.exchange(listener: &std.net.TcpListener, db: &mut shortener.store.Store, request: &str) -> Result<shortener.http.Reply, shortener.error.Error> uses [alloc, io.fs, io.net] panics never pub
+    let port = listener.local_port()?
+    let target = shortener.client.address(port)?
+    with mut stream = std.net.connect(target.as_str())? close core.mem.drop(stream.close()) {
+        wire.write_all(&mut stream, request.as_bytes())?
+        server.serve_one(listener, db)?
+        let raw = wire.read_to_close(&mut stream)?
+        http.parse_reply(raw.as_slice())
+    }
+end shortener.client.exchange
+
+fn shortener.client.queued_pair(listener: &std.net.TcpListener, db: &mut shortener.store.Store) -> Result<(shortener.http.Reply, shortener.http.Reply), shortener.error.Error> uses [alloc, io.fs, io.net] panics never pub
+    let port = listener.local_port()?
+    let target = shortener.client.address(port)?
+    let one = http.build_request("POST", "/shorten", "http://q.test/1")?
+    let two = http.build_request("POST", "/shorten", "http://q.test/2")?
+    with mut first = std.net.connect(target.as_str())? close core.mem.drop(first.close()) {
+        with mut second = std.net.connect(target.as_str())? close core.mem.drop(second.close()) {
+            wire.write_all(&mut first, one.as_bytes())?
+            wire.write_all(&mut second, two.as_bytes())?
+            core.mem.drop(server.serve(listener, db, 2usize)?)
+            let raw_one = wire.read_to_close(&mut first)?
+            let raw_two = wire.read_to_close(&mut second)?
+            let reply_one = http.parse_reply(raw_one.as_slice())?
+            let reply_two = http.parse_reply(raw_two.as_slice())?
+            Ok((reply_one, reply_two))
+        }
+    }
+end shortener.client.queued_pair

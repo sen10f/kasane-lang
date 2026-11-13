@@ -1,0 +1,16 @@
+// expect: E3002
+type t.Wrap
+    v: alloc.vec.Vec<u32, std.alloc.System>
+end t.Wrap
+
+fn t.bad() -> usize uses [alloc] panics never
+    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let w = t.Wrap { v: v }
+    let n = v.len()
+    core.mem.drop(w)
+    n
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

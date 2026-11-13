@@ -1,0 +1,14 @@
+fn t.f(x: &(alloc.string.String, usize)) -> usize uses [] panics never
+    let (n, k) = x
+    t.peek(n).wrapping_add(k)
+end t.f
+
+fn t.main() -> () uses [alloc] panics never
+    let x = (alloc.string.String.new(std.alloc.SYSTEM), 1usize)
+    let r = t.f(&x)
+    core.mem.drop(r.wrapping_add(0usize))
+end t.main
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek

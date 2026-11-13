@@ -30,9 +30,9 @@ pub struct Def {
     pub stack: Option<u64>,
     pub derive: Vec<String>,
     pub linear: bool,
-    pub fields: Vec<(String, V, bool)>,
-    /// `type` ヘッダの `layout c` (C 互換配置。3.8 の構造体の値渡し・値の戻り値に必要)。
+    /// `type` の `layout c` (C 互換の配置。3.8)
     pub layout_c: bool,
+    pub fields: Vec<(String, V, bool)>,
     pub variants: Vec<(String, Vec<V>)>,
     /// `type` / `enum` のフィールド・バリアントのうち、参照のライフタイムを省略したものの名前 (4.1 / E3020)。
     pub elided_refs: Vec<String>,
@@ -52,7 +52,8 @@ pub struct Def {
     /// ジェネリクス `[..]` を持つトレイトメソッドの名前 (dyn 安全性 5.1)。
     pub generic_methods: Vec<String>,
     pub impl_trait: String,
-    /// `extern` の `link "名前"` (省略時は FQN の末尾)
+    /// `extern` の `link "名前"` (省略時は FQN の末尾)。`link "ライブラリ:名前"` は、共有ライブラリを実行時に
+    /// `dlopen` / `LoadLibrary` して `名前` を引く (3.8)。
     pub link: String,
     pub impl_for: V,
     /// `impl` の実装するトレイトの型引数 (`core.iter.Iterator<T, E, P>` の `T, E, P` の並び)。型検査の境界解決に使う。
@@ -347,7 +348,126 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
         }
         out.push(d);
     }
+    normalize_short_names(&mut out);
     Ok(out)
+}
+
+/// 3.3: import 済みモジュールの短縮形 (`net.Error`) を FQN (`app.net.Error`) に展開する。
+/// ヘッダの型・トレイト参照と本体の型注釈に適用し、以後の検査は常に FQN だけを見る。
+/// 解決順: ジェネリクス名 > import 末尾名 (先頭成分が一致) > そのまま (FQN)。
+fn normalize_short_names(defs: &mut [Def]) {
+    let mut imps: HashMap<String, String> = HashMap::new();
+    for d in defs.iter() {
+        if d.kw == "import" {
+            imps.insert(d.name.rsplit('.').next().unwrap().to_string(), d.name.clone());
+        }
+    }
+    if imps.is_empty() {
+        return;
+    }
+    for d in defs.iter_mut() {
+        if d.kw == "import" {
+            continue;
+        }
+        let gn = d.gnames();
+        let ex = |name: &str| -> String { expand_short(name, &imps, &gn) };
+        for g in d.generics.iter_mut() {
+            if let V::L(bs) = &mut g.2 {
+                for b in bs.iter_mut() {
+                    norm_trait_ref(b, &ex);
+                }
+            }
+        }
+        for p in d.params.iter_mut() {
+            norm_types(&mut p.1, &ex);
+        }
+        norm_types(&mut d.ret, &ex);
+        norm_types(&mut d.impl_for, &ex);
+        for f in d.fields.iter_mut() {
+            norm_types(&mut f.1, &ex);
+        }
+        for v in d.variants.iter_mut() {
+            for t in v.1.iter_mut() {
+                norm_types(t, &ex);
+            }
+        }
+        for s in d.trait_sigs.iter_mut() {
+            for p in s.1.iter_mut() {
+                norm_types(&mut p.1, &ex);
+            }
+            norm_types(&mut s.2, &ex);
+        }
+        for r in d.requires.iter_mut() {
+            r.0 = ex(&r.0);
+            norm_types(&mut r.1, &ex);
+        }
+        if !d.impl_trait.is_empty() {
+            d.impl_trait = ex(&d.impl_trait);
+        }
+        if !d.impls_trait.is_empty() {
+            d.impls_trait = ex(&d.impls_trait);
+        }
+        if let Some(b) = d.body.as_mut() {
+            norm_types(b, &ex);
+        }
+        if let Some(b) = d.init.as_mut() {
+            norm_types(b, &ex);
+        }
+    }
+}
+
+fn expand_short(name: &str, imps: &HashMap<String, String>, generics: &HashSet<String>) -> String {
+    let Some((first, rest)) = name.split_once('.') else { return name.to_string() };
+    if generics.contains(first) {
+        return name.to_string();
+    }
+    match imps.get(first) {
+        Some(full) => format!("{}.{}", full, rest),
+        None => name.to_string(),
+    }
+}
+
+fn norm_trait_ref(v: &mut V, ex: &dyn Fn(&str) -> String) {
+    if let V::L(xs) = v {
+        if xs.len() == 2 {
+            if let V::S(n) = &xs[0] {
+                xs[0] = V::S(ex(n));
+            }
+            norm_types(&mut xs[1], ex);
+        }
+    }
+}
+
+/// 型の木 (本体の式の木を含む) の `named` と `dyn` の名前を展開する。
+fn norm_types(v: &mut V, ex: &dyn Fn(&str) -> String) {
+    match v {
+        V::L(xs) => {
+            let tag = match xs.first() {
+                Some(V::S(t)) => t.clone(),
+                _ => String::new(),
+            };
+            if tag == "named" && xs.len() == 3 && matches!(xs[2], V::L(_)) {
+                if let V::S(n) = &xs[1] {
+                    xs[1] = V::S(ex(n));
+                }
+            } else if tag == "dyn" && xs.len() == 3 && matches!(xs[1], V::L(_)) {
+                if let V::L(tr) = &mut xs[1] {
+                    if let Some(V::S(n)) = tr.first() {
+                        tr[0] = V::S(ex(n));
+                    }
+                }
+            }
+            for x in xs.iter_mut() {
+                norm_types(x, ex);
+            }
+        }
+        V::Node(_, fs, _, _) => {
+            for f in fs.iter_mut() {
+                norm_types(f, ex);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -391,7 +511,7 @@ const PRIMS: &[&str] = &[
 ];
 const INTS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"];
 const NUM_EXTRA: &[&str] = &[
-    "abs", "max", "min", "count_ones", "leading_zeros", "trailing_zeros", "successor", "to_f64", "from_str_radix",
+    "abs", "max", "min", "count_ones", "leading_zeros", "trailing_zeros", "successor", "to_f64", "from_str_radix", "parse",
     "to_bits", "from_bits", "rem", "sqrt", "floor", "ceil", "sin", "cos", "tan", "exp", "ln", "powi", "trunc",
     "round_ties_even", "is_nan", "is_finite", "atan2", "nearest_to_f32", "then_some", "is_ascii_alphabetic",
     "is_ascii_digit", "is_ascii_whitespace", "len_utf8", "to_ascii_lowercase", "to_ascii_uppercase", "to_u32",
@@ -423,9 +543,46 @@ pub struct Program {
     pub imports: HashMap<String, HashMap<String, String>>,
     pub method_idx: HashMap<String, Vec<usize>>,
     pub impls: HashSet<(String, String)>,
+    /// `derive [From]` を宣言した `enum` の FQN (4.3 の `?` のエラー変換)。
+    pub from_enums: HashSet<String>,
+}
+
+/// `?` のエラー変換 (4.1) で、`E1` を包むバリアントを引いた結果。
+#[derive(Debug, Clone, PartialEq)]
+pub enum FromVariant {
+    /// ちょうど 1 つ見つかった (バリアント名)。
+    One(String),
+    /// `E2` が `derive [From]` を宣言していない、または該当バリアントがない。
+    None,
+    /// 該当バリアントが 2 つ以上ある (バリアント名)。
+    Many(Vec<String>),
 }
 
 impl Program {
+    /// `?` のエラー変換 (4.1): `enum e2` が `derive [From]` で、ペイロードがちょうど 1 つで型が `e1` (`Ty::show()` の表記)
+    /// と一致するバリアントを引く。型パラメータを持つ `enum` は対象にしない。
+    pub fn from_variant(&self, e2: &str, e1: &str) -> FromVariant {
+        if !self.from_enums.contains(e2) {
+            return FromVariant::None;
+        }
+        let Some(&i) = self.types.get(e2) else { return FromVariant::None };
+        let d = &self.defs[i];
+        if d.generics.iter().any(|g| g.0 == "type") {
+            return FromVariant::None;
+        }
+        let hits: Vec<String> = d
+            .variants
+            .iter()
+            .filter(|(_, pl)| pl.len() == 1 && crate::types::from_v(&pl[0], &HashSet::new()).show() == e1)
+            .map(|(vn, _)| vn.clone())
+            .collect();
+        match hits.len() {
+            0 => FromVariant::None,
+            1 => FromVariant::One(hits[0].clone()),
+            _ => FromVariant::Many(hits),
+        }
+    }
+
     pub fn add_def(&mut self, d: Def) {
         let idx = self.defs.len();
         match d.kw.as_str() {
@@ -449,6 +606,9 @@ impl Program {
             "type" | "enum" | "trait" => {
                 self.types.insert(d.name.clone(), idx);
                 if d.kw == "enum" {
+                    if d.derive.iter().any(|x| x == "From") {
+                        self.from_enums.insert(d.name.clone());
+                    }
                     for (i, (vn, _)) in d.variants.iter().enumerate() {
                         self.variants.insert(format!("{}.{}", d.name, vn), (idx, i));
                     }

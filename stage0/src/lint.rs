@@ -8,7 +8,7 @@ use regex::Regex;
 pub type LintErr = (String, usize, String);
 
 const GROUP_IMPL_ONLY: usize = 4;
-const DERIVE_ORDER: &[&str] = &["Debug", "Clone", "Copy", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash"];
+const DERIVE_ORDER: &[&str] = &["Debug", "Clone", "Copy", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "From"];
 const PRIMS: &[&str] = &[
     "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64", "bool",
     "char", "str",
@@ -609,9 +609,19 @@ impl Lint {
                         expect(stack.last().unwrap().1, &mut errs);
                         stack.pop();
                     }
+                    // `) {` (`if f(` / `with .. close f(` の折り返しの閉じ) と `)? close g(` は、同じ行で次の波括弧・括弧を開く。
+                    if s.ends_with('{') {
+                        stack.push(("brace", ind));
+                    } else if s.ends_with('(') || s.ends_with('[') {
+                        stack.push(("wrap", ind));
+                    }
                 } else if s.starts_with('.') {
                     expect(stmt_base + 4, &mut errs);
-                    if s.ends_with('(') || s.ends_with('[') {
+                    if s.ends_with('{') {
+                        // `with .. = a` の次の `.b()? close c() {` のように、チェーンの最後の行が波括弧を開く。
+                        // 閉じは文頭の行と同じ深さ。
+                        stack.push(("brace", stmt_base));
+                    } else if s.ends_with('(') || s.ends_with('[') {
                         stack.push(("wrap", ind));
                     }
                 } else {
@@ -684,8 +694,8 @@ impl Lint {
         for m in re_let.captures_iter(&body) {
             let end = m.get(0).unwrap().end();
             let rest = body[end..].trim_start();
-            // `let t.L { .. }` / `let t.V(..)` のパターン先頭のパス成分（`t`）は束縛ではない。
-            if rest.starts_with('{') || rest.starts_with('.') {
+            // `let t.Res { .. } = x` の FQN の先頭成分 (`t`) は束縛ではない。
+            if rest.starts_with('{') || (rest.starts_with('.') && !rest.starts_with("..")) {
                 continue;
             }
             names.push(("let", m[1].to_string()));
@@ -769,6 +779,11 @@ impl Lint {
         }
         let re_for = Regex::new(r"\bfor ([a-z_][a-z0-9_]*) in\b").unwrap();
         for m in re_for.captures_iter(&body) {
+            names.push(("let", m[1].to_string()));
+        }
+        // `with [mut] 名前 = ..` (4.4)。後始末式が名前を使うので、宣言とあわせて 2 回以上現れる。
+        let re_with = Regex::new(r"\bwith (?:mut )?([a-z_][a-z0-9_]*) =").unwrap();
+        for m in re_with.captures_iter(&body) {
             names.push(("let", m[1].to_string()));
         }
         // 構造体パターンのフィールドラベル (`b` in `let t.L { b: b } = l`) は変数の使用ではない。
@@ -880,9 +895,11 @@ impl Lint {
                     format!("import tail `{}` collides with another import; use the FQN instead", tail),
                 );
             }
-            let needle = format!("{}.", tail);
-            let used = text.match_indices(&needle).any(|(i, _)| {
-                text[..i].chars().next_back().map_or(true, |c| !(word_char(c) || c == '.'))
+            // 3.3: 短縮形 (`net.f`) でも FQN (`app.net.f`) でも、ヘッダでも本体でも、参照があれば使用済み。
+            let used = [format!("{}.", tail), format!("{}.", it.name)].iter().any(|needle| {
+                text.match_indices(needle.as_str()).any(|(i, _)| {
+                    text[..i].chars().next_back().map_or(true, |c| !(word_char(c) || c == '.'))
+                })
             });
             if !used {
                 self.err("unused", it.line + 1, format!("unused import {}", it.name));

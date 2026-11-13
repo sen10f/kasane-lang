@@ -1,0 +1,122 @@
+import shortener.client
+import shortener.error
+import shortener.http
+import shortener.pool
+import shortener.server
+import shortener.store
+
+const shortener.DEMO_DB: &str = "shortener-demo.tmp"
+
+fn shortener.announce(line: &str) -> Result<(), shortener.error.Error> uses [io.console] panics never
+    std.io.print_line(line)?
+    Ok(())
+end shortener.announce
+
+fn shortener.demo() -> Result<(), shortener.error.Error> uses [alloc, io.console, io.fs, io.net] panics never
+    with listener = std.net.listen("127.0.0.1:0")? close core.mem.drop(listener.close()) {
+        let mut db = store.Store.load(shortener.DEMO_DB)?
+        let ran = shortener.demo_script(&listener, &mut db)
+        core.mem.drop(std.fs.remove_file(shortener.DEMO_DB))
+        ran
+    }
+end shortener.demo
+
+fn shortener.demo_script(listener: &std.net.TcpListener, db: &mut shortener.store.Store) -> Result<(), shortener.error.Error> uses [alloc, io.console, io.fs, io.net] panics never
+    let url = "https://example.test/a/long/path?x=1"
+    let created = "{\"code\":\"1000\",\"url\":\"https://example.test/a/long/path?x=1\"}"
+    shortener.step(listener, db, "POST", "/shorten", url, 201u16, created)?
+    shortener.step(listener, db, "GET", "/1000", "", 302u16, created)?
+    shortener.step(listener, db, "GET", "/1001", "", 404u16, "{\"error\":\"not found\"}")?
+    shortener.step(listener, db, "GET", "/stats", "", 200u16, "{\"links\":1}")?
+    shortener.step(listener, db, "POST", "/shorten", "nope", 400u16, "{\"error\":\"invalid url\"}")?
+    shortener.step(listener, db, "DELETE", "/1000", "", 405u16, "{\"error\":\"method not allowed\"}")?
+    let junk = client.exchange(listener, db, "garbage\r\n\r\n")?
+    shortener.expect(junk.status == 400u16)?
+    shortener.announce("garbage -> 400")?
+    let reloaded = store.Store.load(shortener.DEMO_DB)?
+    shortener.expect(reloaded.len() == 1usize)?
+    shortener.expect(reloaded.lookup("1000") == Some(url))?
+    shortener.announce("persisted links reloaded: 1")
+end shortener.demo_script
+
+fn shortener.expect(ok: bool) -> Result<(), shortener.error.Error> uses [] panics never
+    if ok {
+        return Ok(())
+    }
+    Err(error.Error.Mismatch)
+end shortener.expect
+
+fn shortener.main() -> Result<(), shortener.error.Error> uses [alloc, env, io.console, io.fs, io.net, thread] panics may
+    if std.env.arg_count() == 0usize {
+        return shortener.demo()
+    }
+    shortener.serve_cli()
+end shortener.main
+
+fn shortener.report(n: usize) -> Result<(), shortener.error.Error> uses [alloc, io.console] panics never
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("served ")?
+    line.push_u64(u64.from_usize(n))?
+    shortener.announce(line.as_str())
+end shortener.report
+
+fn shortener.serve_cli() -> Result<(), shortener.error.Error> uses [alloc, env, io.console, io.fs, io.net, thread] panics may
+    let address = match std.env.arg(0usize) {
+        Some(a) => a
+        None => return Err(error.Error.BadRequest)
+    }
+    let count = match std.env.arg(1usize) {
+        Some(c) => usize.parse(c).map_err(error.bad_number)?
+        None => return Err(error.Error.BadRequest)
+    }
+    let path = match std.env.arg(2usize) {
+        Some(p) => p
+        None => return Err(error.Error.BadRequest)
+    }
+    // 4 つ目の引数 (ワーカー数) があれば、受け付けた接続をワーカーのスレッドに渡して並行に処理する (0 または省略で 1 接続ずつ)。
+    let workers = match std.env.arg(3usize) {
+        Some(w) => usize.parse(w).map_err(error.bad_number)?
+        None => 0usize
+    }
+    if workers == 0usize {
+        let n = shortener.serve_in_turn(address, count, path)?
+        return shortener.report(n)
+    }
+    let n = shortener.serve_pooled(address, count, path, workers)?
+    shortener.report(n)
+end shortener.serve_cli
+
+fn shortener.serve_in_turn(address: &str, count: usize, path: &str) -> Result<usize, shortener.error.Error> uses [alloc, io.fs, io.net] panics never
+    with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
+        let mut db = store.Store.load(path)?
+        server.serve(&listener, &mut db, count)
+    }
+end shortener.serve_in_turn
+
+fn shortener.serve_pooled(address: &str, count: usize, path: &str, workers: usize) -> Result<usize, shortener.error.Error> uses [alloc, io.fs, io.net, thread] panics may
+    with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
+        let db = store.Store.load(path)?
+        pool.serve(&listener, db, count, workers)
+    }
+end shortener.serve_pooled
+
+fn shortener.step(listener: &std.net.TcpListener, db: &mut shortener.store.Store, method: &str, path: &str, body: &str, status: u16, expected: &str) -> Result<(), shortener.error.Error> uses [alloc, io.console, io.fs, io.net] panics never
+    let request = http.build_request(method, path, body)?
+    let reply = client.exchange(listener, db, request.as_str())?
+    shortener.expect(reply.status == status)?
+    shortener.expect(reply.body.as_str() == expected)?
+    shortener.expect(status != 302u16 || !reply.location.is_empty())?
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str(method)?
+    line.push_str(" ")?
+    line.push_str(path)?
+    line.push_str(" -> ")?
+    line.push_u64(u64.from_u16(reply.status))?
+    line.push_str(" ")?
+    line.push_str(reply.body.as_str())?
+    if !reply.location.is_empty() {
+        line.push_str(" Location: ")?
+        line.push_str(reply.location.as_str())?
+    }
+    shortener.announce(line.as_str())
+end shortener.step

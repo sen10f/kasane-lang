@@ -1,0 +1,35 @@
+// expect: E3003
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.bad(go: bool) -> () uses [alloc, thread] panics may
+    let r = t.open()
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u32 capture [move go, move r] {
+            if go {
+                return t.close(r)
+            }
+            2u32
+        },
+    )
+    match spawned {
+        Ok(h) => core.mem.drop(h.join())
+        Err(_e) => core.panic.panic("spawn")
+    }
+end t.bad
+
+fn t.close(r: t.Res) -> u32 uses [] panics never
+    match r {
+        t.Res { id: id } => id
+    }
+end t.close
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.open() -> t.Res uses [] panics never
+    t.Res { id: 1u32 }
+end t.open

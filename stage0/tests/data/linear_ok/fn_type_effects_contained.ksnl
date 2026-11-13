@@ -1,0 +1,51 @@
+type t.H
+    f: fn() -> u32 uses [io] panics never
+end t.H
+
+fn t.apply_io(p: fn() -> u32 uses [io] panics never) -> u32 uses [io] panics never
+    p()
+end t.apply_io
+
+fn t.apply_may(p: fn() -> u32 uses [io.console] panics may) -> u32 uses [io.console] panics may
+    p()
+end t.apply_may
+
+fn t.apply_var[E: uses](p: fn() -> u32 uses [E] panics never) -> u32 uses [E] panics never
+    p()
+end t.apply_var
+
+fn t.inferred() -> u32
+    core.mem.drop(std.io.print_line("x"))
+    1u32
+end t.inferred
+
+fn t.loud() -> u32 uses [io.console] panics never
+    core.mem.drop(std.io.print_line("x"))
+    1u32
+end t.loud
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.quiet() -> u32 uses [] panics never
+    1u32
+end t.quiet
+
+fn t.ret() -> fn() -> u32 uses [io] panics never uses [] panics never
+    t.loud
+end t.ret
+
+fn t.strict[F: core.ops.Fn<(), u32, [], never>](f: F) -> u32 uses [] panics never
+    f.call(())
+end t.strict
+
+fn t.use_all() -> u32 uses [io] panics may
+    let h = t.H { f: t.loud }
+    let a = t.apply_io(t.loud) + t.apply_io(t.quiet) + t.apply_io(t.inferred) + t.apply_may(t.loud)
+    let b = t.apply_var(t.loud) + t.apply_var(t.quiet)
+    let f = h.f
+    a + b + f() + t.strict(fn() -> u32 capture [] {
+        t.quiet()
+    })
+end t.use_all

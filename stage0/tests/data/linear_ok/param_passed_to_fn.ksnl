@@ -7,10 +7,10 @@ fn t.eat(l: t.L) -> () uses [] panics never
     core.mem.drop(v)
 end t.eat
 
-fn t.wrap(l: t.L) -> () uses [] panics never
-    t.eat(l)
-end t.wrap
-
 fn t.main() -> () uses [] panics never
     t.wrap(t.L { v: 1u32 })
 end t.main
+
+fn t.wrap(l: t.L) -> () uses [] panics never
+    t.eat(l)
+end t.wrap

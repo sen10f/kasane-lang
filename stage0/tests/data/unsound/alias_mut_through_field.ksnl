@@ -1,0 +1,16 @@
+// expect: E3010
+type t.Pair
+    a: &'static mut u32
+    b: &'static mut u32
+end t.Pair
+
+fn t.bad() -> u32 uses [] panics never
+    let mut x = 1u32
+    let p = t.Pair { a: &mut x, b: &mut x }
+    *p.a = 2u32
+    *p.b
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

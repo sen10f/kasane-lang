@@ -1,0 +1,21 @@
+// expect: E3002
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello"))
+    t.wr(fn() -> () capture [move s] {
+        t.consume(s)
+    })
+    Ok(())
+end t.main
+
+fn t.wr[F: core.ops.FnOnce<(), (), E, P>, E: uses, P: panics](f: F) -> () uses [E] panics P
+    let g = fn() -> () capture [move f] {
+        f.call_once(())
+    }
+    g()
+    g()
+end t.wr

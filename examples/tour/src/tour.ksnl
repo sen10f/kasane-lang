@@ -14,6 +14,18 @@ fn tour.Acc.add(self: &mut tour.Acc, v: i64) -> () uses [] panics never pub
     self.hits = self.hits.wrapping_add(1u32)
 end tour.Acc.add
 
+fn tour.csv_sum(line: &str) -> i64 uses [] panics never pub
+    let mut total = 0i64
+    for cell in line.split(",") {
+        let v = match i64.parse(cell.trim()) {
+            Ok(n) => n
+            Err(_) => 0i64
+        }
+        total = total.wrapping_add(v)
+    }
+    total
+end tour.csv_sum
+
 fn tour.floats() -> f64 uses [] panics never pub
     let a = 9.0f64
     let b = a.sqrt()
@@ -114,6 +126,12 @@ fn tour.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     core.check.eq(u8.from_str_radix("ff", 16u32), Ok(255u8))
     core.check.eq(7u32.leading_zeros(), 29u32)
     core.check.eq(12u8.count_ones(), 2u32)
+    core.check.eq(tour.csv_sum("1, 20,-3 ,x"), 18i64)
+    core.check.eq("key=value".split_once("="), Some(("key", "value")))
+    core.check.eq("<b>".strip_prefix("<"), Some("b>"))
+    let mut num = alloc.string.String.new(std.alloc.SYSTEM)
+    core.check.eq(num.push_i64(-42i64), Ok(()))
+    core.check.eq(num.as_str(), "-42")
     std.io.print_line("tour ok")
 end tour.main
 
@@ -131,6 +149,11 @@ fn tour.shapes() -> i32 uses [] panics never pub
     }
     sum
 end tour.shapes
+
+test tour.csv_sum.test_cells
+    core.check.eq(tour.csv_sum(" 5 ,6,,7"), 18i64)
+    core.check.eq(tour.csv_sum(""), 0i64)
+end tour.csv_sum.test_cells
 
 test tour.floats.test_value
     core.check.eq(tour.floats(), 7.0)

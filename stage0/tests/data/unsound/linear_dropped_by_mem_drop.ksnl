@@ -1,0 +1,10 @@
+// expect: E3006
+fn t.bad(l: &std.net.TcpListener) -> Result<(), std.net.Error> uses [io.net] panics never
+    let s = l.accept()?
+    core.mem.drop(s)
+    Ok(())
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

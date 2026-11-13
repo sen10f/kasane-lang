@@ -1,0 +1,11 @@
+extern t.nope(x: i32) -> i32 link "/no/such/dir/libnothing.so:nope"
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    std.io.print_line("before")
+    let r = unsafe "ffi" "missing library" {
+        t.nope(1i32)
+    }
+    core.check.eq(r, 1i32)
+    std.io.print_line("after")
+    Ok(())
+end t.main

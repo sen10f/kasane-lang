@@ -1,0 +1,13 @@
+// expect: E3030
+type t.Holder
+    r: &'static u32
+end t.Holder
+
+fn t.bad() -> t.Holder uses [] panics never
+    let x = 5u32
+    t.Holder { r: &x }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

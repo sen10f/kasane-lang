@@ -5,10 +5,11 @@
 //! 命令は、対象だと決まった後にだけ置く。
 
 use super::{Lw, LR};
-use crate::check::{items, nf, nline, nname, st, strs};
-use crate::kir::{self, Aop, BitK, BoolOp, FBin, FUn, Mode, Op, Ty, VId};
+use crate::check::{items, nf, nlineno as nline, nname, st, strs};
+use crate::kir::{self, Aop, BitK, BoolOp, Cc, FBin, FUn, Mode, Op, Pay, Ty, VId};
 use crate::kir_scalar;
 use crate::parser::V;
+use crate::types::Ty as Src;
 
 /// 数値のメソッドの下ろし方。
 #[derive(Clone, Copy)]
@@ -248,6 +249,82 @@ impl<'a> Lw<'a> {
             return self.num_method(line, recv, rt, res, &segs[1], args);
         }
         let Some(dst) = Ty::parse(&segs[0]) else { return Ok(None) };
+        // `u8.from_str_radix(text, radix)` など。`&str` をバイトごとに読み、checked な乗算・加算で解析する。
+        if segs[1] == "from_str_radix" && args.len() == 2 && dst.is_int() {
+            let Ok(res) = self.ty_of(e) else { return Ok(None) };
+            let Ty::Res(t0, _) = res else {
+                return self.err(line, "from_str_radix の結果が Result ではない");
+            };
+            let int_ty = t0.ty();
+            if !int_ty.is_int() {
+                return self.err(line, "from_str_radix の結果の整数型が不正");
+            }
+            let Some(s) = self.expr(&args[0])? else { return Ok(Some(None)) };
+            let Some(radix) = self.expr(&args[1])? else { return Ok(Some(None)) };
+            let fat = self.fat_ty();
+            if self.vty(s) != fat {
+                return self.err(line, "from_str_radix の第 1 引数は &str ではない");
+            }
+            if self.vty(radix) != Ty::U32 {
+                return self.err(line, "from_str_radix の第 2 引数は u32 ではない");
+            }
+            return Ok(Some(Some(self.emit(res, Op::ParseInt { ty: int_ty, s, radix }))));
+        }
+        // `<dst>.try_from_<src>(x)`: x が dst の範囲に入るなら Ok(写し)、範囲外なら
+        // Err(core.num.TryFromIntError { kind: 0u8 })。`try_from_*` は非可逆の幅変換なので、
+        // `Op::Conv` で写す組だけを扱う (i128/u128 は Result のペイロードに入らない)。
+        if let Some(rest) = segs[1].strip_prefix("try_from_") {
+            if args.len() == 1 && dst.is_int() {
+                let Some(src) = Ty::parse(rest) else { return Ok(None) };
+                if !src.is_int() {
+                    return Ok(None);
+                }
+                let Ok(res) = self.ty_of(e) else { return Ok(None) };
+                let Ty::Res(t0, _) = res else {
+                    return self.err(line, "try_from_* の結果が Result ではない");
+                };
+                if t0.ty() != dst {
+                    return self.err(line, "try_from_* の結果の型が宛先と違う");
+                }
+                if !kir::conv_ok(src, dst) {
+                    return Ok(None);
+                }
+                let Some(a) = self.expr(&args[0])? else { return Ok(Some(None)) };
+                self.expect_ty(a, src, line)?;
+                let Some(err_ty) = self.conv_t(&Src::Named("core.num.TryFromIntError".into(), vec![])) else {
+                    return self.err(line, "TryFromIntError の型が読めない");
+                };
+                let Ty::Agg(_) = err_ty else {
+                    return self.err(line, "TryFromIntError の型が集成体でない");
+                };
+                let rt = Ty::Res(Pay::of(dst).expect("整数はペイロードになる"),
+                    Pay::of(err_ty).expect("エラー型はペイロードになる"));
+                // `try_from_*` は非可逆なので `src` の範囲内にクランプした dst の境界を
+                // `src` 型で比べる (u128/i128 は conv_ok で既に落とす)。
+                let lo_v = dst.min().max(src.min());
+                let hi_v = dst.max().min(src.max());
+                let lo = self.emit(src, Op::Const(lo_v));
+                let hi = self.emit(src, Op::Const(hi_v));
+                let c_lo = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: src, a, b: lo });
+                let c_hi = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: src, a, b: hi });
+                let in_range = self.emit(Ty::Bool, Op::Bool(BoolOp::And, c_lo, c_hi));
+                let (okb, _) = self.new_block(&[]);
+                let (badb, _) = self.new_block(&[]);
+                let (join, jp) = self.new_block(&[rt]);
+                self.branch(in_range, (okb, vec![]), (badb, vec![]));
+                self.cur = Some(okb);
+                let conv = self.emit(dst, Op::Conv { src, a });
+                let ok = self.emit(rt, Op::Ok(conv));
+                self.goto(join, vec![ok]);
+                self.cur = Some(badb);
+                let kind = self.emit(Ty::U8, Op::Const(0));
+                let err_val = self.emit(err_ty, Op::Make { variant: None, fields: vec![kind] });
+                let err = self.emit(rt, Op::Err(err_val));
+                self.goto(join, vec![err]);
+                self.cur = Some(join);
+                return Ok(Some(Some(jp[0])));
+            }
+        }
         let Some(rest) = segs[1].strip_prefix("from_") else { return Ok(None) };
         if args.len() != 1 || !(dst.is_int() || dst.is_float()) {
             return Ok(None);

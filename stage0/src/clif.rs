@@ -11,6 +11,7 @@
 //! 総称型・文字列・Vec・`Option` / `Result`・スカラーへの参照は未対応 (Err を返し、呼び出し側が別の経路に回す)。
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
@@ -20,9 +21,8 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, DataDescription, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use crate::check::{items, nf, nline, nname, st, strs, tag, tel};
+use crate::check::{items, nf, nlineno, nname, st, strs, tag, tel};
 use crate::fmath;
-use crate::ffi::{classify, Class, Leaf, Loc, Placer, INT_REGS, SSE_REGS};
 
 // [Step 0 計測用 一時コード] 単相化 (型引数の決定とインスタンスの宣言) に使った時間の累計 (ns)。
 thread_local! { static MONO_NS: std::cell::Cell<u128> = const { std::cell::Cell::new(0) }; }
@@ -92,6 +92,11 @@ fn signed(p: &str) -> bool {
 }
 
 const STRING: &str = "alloc.string.String";
+/// `String` に対しても `str` として呼べる、`str` のメソッド。
+const STR_METHODS: &[&str] = &[
+    "ends_with", "contains", "eq_ignore_ascii_case", "trim", "trim_start", "trim_end", "strip_prefix", "strip_suffix", "rfind", "split_once",
+    "find", "starts_with", "split_at",
+];
 
 /// 比較の結果 `core.cmp.Ordering` (Less / Equal / Greater。タグ 0 / 1 / 2 の単位列挙型)。
 const ORD: &str = "core.cmp.Ordering";
@@ -134,6 +139,16 @@ fn split_ty_args(ty: &str) -> Option<(String, Vec<String>)> {
     Some((ty[..i].to_string(), out))
 }
 
+/// `dyn Tr` / `box<dyn Tr>` の `Tr` (トレイトの FQN)。
+fn dyn_tr_of(ty: &str) -> Option<&str> {
+    ty.strip_prefix("dyn ").or_else(|| ty.strip_prefix("box<dyn ").and_then(|r| r.strip_suffix('>')))
+}
+
+/// `box<T>` の `T`。
+fn box_inner(ty: &str) -> Option<&str> {
+    ty.strip_prefix("box<").and_then(|r| r.strip_suffix('>'))
+}
+
 /// 定義 `d` の型パラメータの名前 (ライフタイムや効果の変数は除く)。
 fn type_params(d: &Def) -> Vec<String> {
     d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect()
@@ -169,6 +184,20 @@ struct Inst<'a> {
     def: &'a Def,
     subst: HashMap<String, String>,
     entry: bool,
+    /// `std.thread.spawn` のクロージャ本体をスレッドの入口 (`void entry(void *env)`) として生成するときの情報
+    thunk: Option<Rc<Thunk>>,
+    /// `dyn` の vtable が持つ drop glue (型名を持つ。引数は値のアドレス 1 つで戻り値なし)。
+    glue: Option<String>,
+}
+
+/// スレッドの入口の生成情報。環境ブロックは [結果 (size = `res_size`)] + 取り込んだ値 (`caps` の各オフセット)。
+struct Thunk {
+    /// クロージャの式
+    node: V,
+    /// (取り込んだ変数の名前, 型, 環境ブロック内のオフセット)
+    caps: Vec<(String, String, u32)>,
+    /// クロージャの戻り値の型 (`void` もある)
+    ret: String,
 }
 
 /// 取り込んだ変数を関数に渡すときの型: `&mut` のスカラーと構造体などはアドレス、それ以外のスカラーは値。
@@ -220,6 +249,8 @@ struct Cx<'a> {
     /// `Fn` 境界の型パラメータに渡されたクロージャ: `closure<id>` → (クロージャの式, 書かれたファイル, そのときの型パラメータの束縛)
     /// 取り込む変数も持つ: (種類 `&` / `&mut` / `move`, 名前, 型) の列
     closure_types: RefCell<HashMap<String, (V, String, HashMap<String, String>, Vec<(String, String, String)>)>>,
+    /// `dyn` の vtable のデータ (`具象型|トレイト` → データ)。(トレイト, 具象型) の組ごとに 1 つ作る。
+    vtables: RefCell<HashMap<String, cranelift_module::DataId>>,
 }
 
 /// 構造体・列挙型のメモリ配置。
@@ -248,6 +279,17 @@ impl<'a> Cx<'a> {
         }
         match tag(t).as_str() {
             "never" => return Ok("void".into()),
+            // `dyn Tr` は `{データ, vtable}` の 16 バイト (`&dyn` / `&mut dyn` / `Box<dyn>` の本体)。
+            "dyn" => {
+                let nm = st(tel(tel(t, 1), 0));
+                let fq = crate::check::resolve_trait_fqn(self.prog, &nm).ok_or("dyn of an unknown trait")?;
+                let td = self.prog.types.get(&fq).map(|&i| &self.prog.defs[i]).ok_or("dyn of an unknown trait")?;
+                if td.generics.iter().any(|g| g.0 == "type") {
+                    return Err("dyn of a trait with type parameters".into());
+                }
+                return Ok(format!("dyn {}", fq));
+            }
+            "array" => return Err("a fixed-size array type `[T; N]` (for example a field of a `layout c` struct) is not supported by the native backend yet; the interpreter supports it".into()),
             "ptr" => {
                 // `*const T` / `*mut T`: 要素の型が `()` の場合 (void*) は `u8` とみなす。
                 let inner = self.pty(tel(t, 2))?;
@@ -288,6 +330,30 @@ impl<'a> Cx<'a> {
                 if let Some(r) = self.subst.borrow().get(&n) {
                     return Ok(r.clone());
                 }
+                if n == "alloc.boxed.Box" {
+                    // `Box<T, A>`: ヒープの `T` を指す 8 バイト。`Box<dyn Tr, A>` は `{データ, vtable}` の 16 バイト。
+                    // 確保は C ライブラリの `realloc` / `free` なので、アロケータは `std.alloc.System` だけ。
+                    let args: Vec<&V> = items(tel(t, 2)).iter().filter(|a| matches!(a, V::L(_)) && tag(a) != "life").collect();
+                    if args.len() != 2 {
+                        return Err("Box without type arguments".into());
+                    }
+                    let an = st(tel(args[1], 1));
+                    let a_ok = match self.subst.borrow().get(&an) {
+                        Some(r) => r == "std.alloc.System",
+                        None => self.qual_name(&an) == "std.alloc.System",
+                    };
+                    if !a_ok {
+                        return Err("Box with an allocator other than std.alloc.System".into());
+                    }
+                    if tag(args[0]) == "dyn" {
+                        return Ok(format!("box<{}>", self.pty(args[0])?));
+                    }
+                    let inner = self.pty_owned(args[0])?;
+                    if !is_agg(&inner) || inner == "void" || inner == "str" || inner.starts_with("slice<") {
+                        return Err("Box of a scalar or an unsized type".into());
+                    }
+                    return Ok(format!("box<{}>", inner));
+                }
                 if n == "alloc.vec.Vec" {
                     let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("Vec without an element type")?;
                     let elem = self.pty_owned(first)?;
@@ -307,9 +373,6 @@ impl<'a> Cx<'a> {
                 if n == "std.thread.JoinHandle" {
                     let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("JoinHandle without a type")?;
                     let inner = self.pty_owned(first)?;
-                    if inner == "void" {
-                        return Err("JoinHandle of unit".into());
-                    }
                     return Ok(self.handle_of(&inner));
                 }
                 if n == "std.sync.Mutex" {
@@ -319,6 +382,17 @@ impl<'a> Cx<'a> {
                         return Err("Mutex of unit".into());
                     }
                     return Ok(self.mutex_of(&inner));
+                }
+                if n == "std.sync.Sender" || n == "std.sync.Receiver" {
+                    if cfg!(windows) {
+                        return Err("std.sync channels are not supported by the native backend on Windows".into());
+                    }
+                    let first = items(tel(t, 2)).iter().find(|a| matches!(a, V::L(_))).ok_or("channel end without a type")?;
+                    let inner = self.pty_owned(first)?;
+                    if inner == "void" {
+                        return Err("channel of unit".into());
+                    }
+                    return Ok(if n.ends_with("Sender") { self.sender_of(&inner) } else { self.receiver_of(&inner) });
                 }
                 if n == "std.sync.MutexGuard" {
                     // `MutexGuard<'a, T>`: ライフタイムの引数を飛ばして `T` を取る。
@@ -337,7 +411,10 @@ impl<'a> Cx<'a> {
                     let (k, v) = (self.pty_owned(args[0])?, self.pty_owned(args[1])?);
                     return self.map_of(n.ends_with("BtreeMap"), &k, &v);
                 }
-                if n == "alloc.alloc.AllocError" || n == ORD || n == STRING || n == "std.io.Error" || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.rand.Rng" || n == "core.num.ParseIntError" {
+                if cfg!(windows) && n.starts_with("std.net.") {
+                    return Err("std.net is not supported by the native backend on Windows".into());
+                }
+                if n == "alloc.alloc.AllocError" || n == ORD || n == STRING || n == "core.str.Utf8Error" || n == "core.num.TryFromIntError" || n == "std.thread.SpawnError" || n == "std.sync.RecvError" || n == "std.rand.Rng" || n == "core.num.ParseIntError" {
                     return Ok(n);
                 }
                 if n == "Option" || n == "Result" {
@@ -553,41 +630,61 @@ impl<'a> Cx<'a> {
         self.maps.borrow().get(name).cloned()
     }
 
-    /// `std.thread.JoinHandle<T>`: 結果の `T` を 1 つ持つ値 (スレッドは `spawn` のときに同期して実行する)。
+    /// `std.thread.JoinHandle<T>`: スレッドのハンドル 1 語 (実体は C ランタイムの `ksn_thr` へのポインタ)。型の名前に `T` を持つ (`T` は `void` もある)。
     fn handle_of(&self, inner: &str) -> String {
         let name = format!("joinhandle<{}>", inner);
-        self.tuples.borrow_mut().insert(name.clone(), vec![inner.to_string()]);
+        self.tuples.borrow_mut().insert(name.clone(), vec!["usize".to_string()]);
         name
     }
 
-    /// `std.sync.Mutex<T>`: 値 `T` を 1 つ持つ値 (同期実行なので `flag` は持たない)。実体は `{T}`。
+    /// `joinhandle<T>` の `T`。
+    fn handle_inner(&self, ty: &str) -> Option<String> {
+        ty.strip_prefix("joinhandle<").and_then(|r| r.strip_suffix('>')).map(String::from)
+    }
+
+    /// `std.sync.Mutex<T>`: ロック語 (8 バイト、0 = 解放) と値 `T`。実体は `{usize, T}` (`static` ではデータ領域に置く)。
     fn mutex_of(&self, inner: &str) -> String {
         let name = format!("mutex<{}>", inner);
-        self.tuples.borrow_mut().insert(name.clone(), vec![inner.to_string()]);
+        self.tuples.borrow_mut().insert(name.clone(), vec!["usize".to_string(), inner.to_string()]);
         name
     }
 
     /// `mutex<T>` の `T`。
     fn mutex_inner(&self, ty: &str) -> Option<String> {
-        if !ty.starts_with("mutex<") {
-            return None;
-        }
-        self.tuples.borrow().get(ty).and_then(|v| v.first().cloned())
+        ty.strip_prefix("mutex<").and_then(|r| r.strip_suffix('>')).map(String::from)
     }
 
-    /// `std.sync.MutexGuard<'a, T>`: 借用なので所有は持たない。実体はミューテックスの値のアドレス (型は `mutexguard<T>`)。
+    /// `std.sync.MutexGuard<'a, T>`: ミューテックスのアドレス 1 語。所有者で、落とすとロックを解く (型は `mutexguard<T>`)。
     fn guard_of(&self, inner: &str) -> String {
         let name = format!("mutexguard<{}>", inner);
-        self.tuples.borrow_mut().insert(name.clone(), vec![inner.to_string()]);
+        self.tuples.borrow_mut().insert(name.clone(), vec!["usize".to_string()]);
         name
     }
 
     /// `mutexguard<T>` の `T`。
     fn guard_inner(&self, ty: &str) -> Option<String> {
-        if !ty.starts_with("mutexguard<") {
-            return None;
-        }
-        self.tuples.borrow().get(ty).and_then(|v| v.first().cloned())
+        ty.strip_prefix("mutexguard<").and_then(|r| r.strip_suffix('>')).map(String::from)
+    }
+
+    /// `std.sync.Sender<T>` / `Receiver<T>`: チャネルへのポインタ 1 語。所有者で、落とすと端を閉じる。
+    fn sender_of(&self, inner: &str) -> String {
+        let name = format!("sender<{}>", inner);
+        self.tuples.borrow_mut().insert(name.clone(), vec!["usize".to_string()]);
+        name
+    }
+
+    fn receiver_of(&self, inner: &str) -> String {
+        let name = format!("receiver<{}>", inner);
+        self.tuples.borrow_mut().insert(name.clone(), vec!["usize".to_string()]);
+        name
+    }
+
+    fn sender_inner(&self, ty: &str) -> Option<String> {
+        ty.strip_prefix("sender<").and_then(|r| r.strip_suffix('>')).map(String::from)
+    }
+
+    fn receiver_inner(&self, ty: &str) -> Option<String> {
+        ty.strip_prefix("receiver<").and_then(|r| r.strip_suffix('>')).map(String::from)
     }
 
     fn tuple_of(&self, elems: &[String]) -> String {
@@ -617,9 +714,21 @@ impl<'a> Cx<'a> {
         if d > 8 || !is_agg(ty) || ty == "str" || ty == "alloc.alloc.AllocError" {
             return false;
         }
-        // `MutexGuard` はミューテックスの値のアドレスを借りているだけで、所有しない (二重解放を避ける)。
-        if ty.starts_with("mutexguard<") {
-            return false;
+        // `Box` はヒープを所有する (落とすと中身を破棄して解放する)。
+        if ty.starts_with("box<") {
+            return true;
+        }
+        // ガード (落とすとロックを解く) とチャネルの両端 (落とすと端を閉じる) は、落とす処理が要る所有者。
+        if ty.starts_with("mutexguard<") || ty.starts_with("sender<") {
+            return true;
+        }
+        // 線形な値を運ぶ受信側は線形 (4.4)。落とす処理は持たず、`close` で消費される (検査が全経路で保証する)。
+        // 所有者にしないので、`match` の腕の束縛からも (`Err(back) => rx = back`) 動かせる。
+        if let Some(t) = self.receiver_inner(ty) {
+            return !self.is_linear_ty(&t, 0);
+        }
+        if ty.starts_with("receiver<") {
+            return true;
         }
         if ty == STRING || self.vecs.borrow().contains_key(ty) || self.deques.borrow().contains_key(ty) {
             return true;
@@ -636,25 +745,32 @@ impl<'a> Cx<'a> {
         }
     }
 
-    /// `layout c` の構造体 `name` の C 配置: 大きさと、中のスカラーの並び (構造体の先頭からのオフセット付き)。
-    /// スカラーは整数・`bool`・浮動小数・生ポインタだけ (それ以外の型のフィールドは C 互換でないので拒否する)。
-    fn c_struct(&self, name: &str) -> R<(u32, Vec<Leaf>)> {
-        let base = self.inst_types.borrow().get(name).map(|x| x.0.clone()).unwrap_or_else(|| name.to_string());
-        let d = self.types.get(&base).ok_or_else(|| format!("unknown type {}", name))?;
-        if d.kw != "type" || !d.layout_c || !d.gnames().is_empty() {
-            return Err(format!("{} is not a non-generic `layout c` structure", name));
+    /// 型 `ty` が線形か (4.4): 標準の線形な型 (`TcpStream` / `TcpListener` / `File`)、`linear` と宣言された型、それらを含む型。
+    fn is_linear_ty(&self, ty: &str, d: u32) -> bool {
+        if d > 6 {
+            return false;
         }
-        let l = self.layout(name, 0)?;
-        let mut leaves = vec![];
-        for (_, fty, off) in &l.fields {
-            if is_int(fty) || fty.as_str() == "bool" || is_float(fty) || is_rawptr(fty) {
-                leaves.push(Leaf { off: *off, size: scalar_size(fty), float: is_float(fty) });
-            } else {
-                let (_, sub) = self.c_struct(fty).map_err(|_| format!("field of type {} in {} has no C representation", fty, name))?;
-                leaves.extend(sub.into_iter().map(|lf| Leaf { off: off + lf.off, ..lf }));
+        if matches!(ty, "std.net.TcpStream" | "std.net.TcpListener" | "std.fs.File") {
+            return true;
+        }
+        if let Some(def) = self.types.get(ty) {
+            if def.linear {
+                return true;
             }
         }
-        Ok((l.size, leaves))
+        if !is_agg(ty) || ty == "str" {
+            return false;
+        }
+        match self.layout(ty, 0) {
+            Ok(l) => {
+                if l.is_enum {
+                    l.variants.iter().any(|v| v.1.iter().any(|(t, _)| self.is_linear_ty(t, d + 1)))
+                } else {
+                    l.fields.iter().any(|f| self.is_linear_ty(&f.1, d + 1))
+                }
+            }
+            Err(_) => false,
+        }
     }
 
     fn layout(&self, name: &str, depth: u32) -> R<Layout> {
@@ -690,6 +806,19 @@ impl<'a> Cx<'a> {
                 is_enum: false,
                 variants: vec![],
             });
+        }
+        // `dyn Tr` と `Box<dyn Tr>`: `{データ, vtable}`。`Box<T>`: `{ポインタ}`。
+        if name.starts_with("dyn ") || name.starts_with("box<dyn ") {
+            return Ok(Layout {
+                size: 16,
+                align: 8,
+                fields: vec![("data".into(), "usize".into(), 0), ("vtable".into(), "usize".into(), 8)],
+                is_enum: false,
+                variants: vec![],
+            });
+        }
+        if name.starts_with("box<") {
+            return Ok(Layout { size: 8, align: 8, fields: vec![("ptr".into(), "usize".into(), 0)], is_enum: false, variants: vec![] });
         }
         let tup = self.tuples.borrow().get(name).cloned();
         if let Some(elems) = tup {
@@ -763,7 +892,7 @@ impl<'a> Cx<'a> {
         if name == "std.rand.Rng" {
             return Ok(Layout { size: 8, align: 8, fields: vec![("state".into(), "u64".into(), 0)], is_enum: false, variants: vec![] });
         }
-        if name == "std.io.Error" || name == "core.str.Utf8Error" || name == "core.num.TryFromIntError" || name == "std.thread.SpawnError" || name == "core.num.ParseIntError" {
+        if name == "core.str.Utf8Error" || name == "core.num.TryFromIntError" || name == "std.thread.SpawnError" || name == "std.sync.RecvError" || name == "core.num.ParseIntError" {
             return Ok(Layout { size: 8, align: 8, fields: vec![], is_enum: false, variants: vec![] });
         }
         let registered = self.gen.borrow().get(name).cloned();
@@ -862,7 +991,39 @@ impl<'a> Cx<'a> {
     }
 
     /// 組み込み型 (str / Vec / AllocError) のメソッドの戻り値の型。
+    /// `std.fs` / `std.net` の関数・メソッド (完全修飾名) の戻り値の型。対象外なら None。
+    /// 本体は `FnGen::sys_call` (OS 呼び出しは `sysrt.c`)。
+    fn sys_ret(&self, fq: &str) -> Option<String> {
+        let io = "std.io.Error";
+        let ne = "std.net.Error";
+        let res = |ok: &str, er: &str| self.builtin_enum("Result", &[ok.to_string(), er.to_string()]).ok();
+        match fq {
+            "std.fs.exists" => Some("bool".into()),
+            "std.fs.remove_file" => res("void", io),
+            "std.fs.open" | "std.fs.create" => res("std.fs.File", io),
+            "std.fs.read_to_end" => res("usize", io),
+            "std.fs.File.read" | "std.fs.File.write" | "std.net.TcpStream.read" | "std.net.TcpStream.write" => res("usize", io),
+            "std.fs.File.flush" | "std.fs.File.sync" | "std.fs.File.close" | "std.net.TcpStream.flush" => res("void", io),
+            "std.net.TcpStream.close" | "std.net.TcpListener.close" => res("void", ne),
+            "std.net.connect" => res("std.net.TcpStream", ne),
+            "std.net.listen" => res("std.net.TcpListener", ne),
+            "std.net.TcpListener.accept" => res("std.net.TcpStream", ne),
+            "std.net.TcpListener.local_port" => res("u16", ne),
+            "std.env.arg_count" => Some("usize".into()),
+            "std.env.arg" | "std.env.var" => self.builtin_enum("Option", &["str".to_string()]).ok(),
+            "std.time.Instant.now" => Some("std.time.Instant".into()),
+            "std.time.Instant.elapsed" | "std.time.Duration.from_millis" => Some("std.time.Duration".into()),
+            "std.time.Instant.since" => self.builtin_enum("Option", &["std.time.Duration".to_string()]).ok(),
+            "std.time.Duration.as_nanos" => Some("u64".into()),
+            "std.thread.sleep" | "std.thread.yield_now" => Some("void".into()),
+            _ => None,
+        }
+    }
+
     fn builtin_method_ty(&self, recv_ty: &str, name: &str) -> Option<String> {
+        if let Some(t) = self.sys_ret(&format!("{}.{}", recv_ty, name)) {
+            return Some(t);
+        }
         // 派生の比較 (4.3): `Option` / `Result` / `str` / `String` の `eq` / `ne` / `cmp` / `partial_cmp`。
         if (recv_ty.starts_with("Option<") || recv_ty.starts_with("Result<") || recv_ty == "str" || recv_ty == STRING) && !self.types.contains_key(&format!("{}.{}", recv_ty, name)) {
             match name {
@@ -885,10 +1046,30 @@ impl<'a> Cx<'a> {
         if recv_ty == "std.rand.Rng" && name == "next_u64" {
             return Some("u64".into());
         }
-        if recv_ty.starts_with("joinhandle<") && name == "join" {
-            return self.tuples.borrow().get(recv_ty).and_then(|v| v.first().cloned());
+        if name == "join" {
+            if let Some(t) = self.handle_inner(recv_ty) {
+                return Some(t);
+            }
         }
-        // `std.sync.Mutex`: 同期実行なので `lock` は値のアドレスをそのままガードとして返す。
+        if name == "send" {
+            if let Some(t) = self.sender_inner(recv_ty) {
+                let se = self.type_inst("std.sync.SendError", &[t]);
+                return self.builtin_enum("Result", &["void".to_string(), se]).ok();
+            }
+        }
+        if name == "recv" {
+            if let Some(t) = self.receiver_inner(recv_ty) {
+                return self.builtin_enum("Result", &[t, "std.sync.RecvError".to_string()]).ok();
+            }
+        }
+        // `Sender.clone` / `Receiver.clone`: 同じ型 (端がもう 1 つ増える)。`Receiver.close`: `Result<(), Receiver<T>>`。
+        if name == "clone" && (self.sender_inner(recv_ty).is_some() || self.receiver_inner(recv_ty).is_some()) {
+            return Some(recv_ty.to_string());
+        }
+        if name == "close" && self.receiver_inner(recv_ty).is_some() {
+            return self.builtin_enum("Result", &["void".to_string(), recv_ty.to_string()]).ok();
+        }
+        // `std.sync.Mutex.lock`: ロックを取って、ミューテックスのアドレスを持つガードを返す。
         if let Some(inner) = self.mutex_inner(recv_ty) {
             if name == "lock" {
                 return Some(self.guard_of(&inner));
@@ -974,7 +1155,14 @@ impl<'a> Cx<'a> {
                 "len" => Some("usize".into()),
                 "is_empty" => Some("bool".into()),
                 "as_bytes" => Some(self.slice_of("u8")),
-                "starts_with" => Some("bool".into()),
+                "starts_with" | "ends_with" | "contains" | "eq_ignore_ascii_case" => Some("bool".into()),
+                "trim" | "trim_start" | "trim_end" => Some("str".into()),
+                "strip_prefix" | "strip_suffix" => self.builtin_enum("Option", &["str".into()]).ok(),
+                "rfind" => self.builtin_enum("Option", &["usize".into()]).ok(),
+                "split_once" => {
+                    let t = self.tuple_of(&["str".to_string(), "str".to_string()]);
+                    self.builtin_enum("Option", &[t]).ok()
+                }
                 "find" => self.builtin_enum("Option", &["usize".into()]).ok(),
                 "split_at" => {
                     let t = self.tuple_of(&["str".to_string(), "str".to_string()]);
@@ -1009,7 +1197,13 @@ impl<'a> Cx<'a> {
             return self.seq_method_ty(&elem, name);
         }
         if recv_ty == STRING {
+            // `str` のメソッドは、先頭の 2 語が `{ptr, len}` の `String` にもそのまま使える。
+            if STR_METHODS.contains(&name) {
+                return self.builtin_method_ty("str", name);
+            }
             return match name {
+                "push_u64" | "push_i64" => self.builtin_enum("Result", &["void".into(), "alloc.alloc.AllocError".into()]).ok(),
+                "push_bytes" => self.builtin_enum("Result", &["void".into(), "alloc.string.PushBytesError".into()]).ok(),
                 "len" => Some("usize".into()),
                 "is_empty" => Some("bool".into()),
                 "clear" => Some("void".into()),
@@ -1041,12 +1235,18 @@ impl<'a> Cx<'a> {
             "len" => Some("usize".into()),
             "is_empty" => Some("bool".into()),
             "iter" if is_scalar(elem) && !is_mutref(elem) => Some(format!("seqiter<{}>", elem)),
-            "get" | "first" | "last" if is_scalar(elem) || !self.needs_drop(elem) => self.builtin_enum("Option", &[elem.to_string()]).ok(),
+            // 解放が要る要素の `get` は `match` の被検査式のときだけ (別名の `Some`。`alias_ok`)。それ以外は生成側が退避する。
+            "get" | "first" | "last" => self.builtin_enum("Option", &[elem.to_string()]).ok(),
             "contains" if is_scalar(elem) && !is_mutref(elem) => Some("bool".into()),
             "get_mut" if is_scalar(elem) && !is_mutref(elem) => self.builtin_enum("Option", &[format!("mutref<{}>", elem)]).ok(),
             "sub" | "sub_mut" => {
                 let sl = self.slice_of(elem);
                 self.builtin_enum("Option", &[sl]).ok()
+            }
+            "split_at" => {
+                let sl = self.slice_of(elem);
+                let t = self.tuple_of(&[sl.clone(), sl]);
+                self.builtin_enum("Option", &[t]).ok()
             }
             "copy_from" if !self.needs_drop(elem) => self.builtin_enum("Result", &["void".into(), "core.slice.LengthError".into()]).ok(),
             "as_slice" | "as_mut_slice" => Some(self.slice_of(elem)),
@@ -1055,6 +1255,65 @@ impl<'a> Cx<'a> {
     }
 
     /// `Option<T>` / `Result<T, E>` の具体化を登録して、その名前を返す。`()` はペイロードなし。
+    /// トレイト `tr` とスーパートレイトのメソッドを、vtable の順 (トレイト自身 → スーパートレイトの幅優先) に並べる。
+    /// 各要素は (メソッド名, 宣言したトレイトの定義の添字)。
+    fn dyn_flat(&self, tr: &str) -> R<Vec<(String, usize)>> {
+        let mut out: Vec<(String, usize)> = vec![];
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut q = vec![tr.to_string()];
+        let mut qi = 0;
+        while qi < q.len() {
+            let cur = q[qi].clone();
+            qi += 1;
+            if !seen.insert(cur.clone()) {
+                continue;
+            }
+            let Some(&ti) = self.prog.types.get(&cur) else { continue };
+            let td = &self.prog.defs[ti];
+            if td.kw != "trait" {
+                continue;
+            }
+            for m in &td.methods {
+                if !out.iter().any(|x| &x.0 == m) {
+                    out.push((m.clone(), ti));
+                }
+            }
+            for (sup, _) in &td.requires {
+                if let Some(fq) = crate::check::resolve_trait_fqn(self.prog, sup) {
+                    q.push(fq);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// `dyn Tr` / `Box<dyn Tr>` 越しのメソッド `name` の (引数の型の木 (`self` を除く), 戻り値の型の木, 宣言したトレイトの定義の添字)。
+    fn dyn_sig(&self, tr: &str, name: &str) -> Option<(Vec<V>, V, usize)> {
+        let flat = self.dyn_flat(tr).ok()?;
+        let (_, ti) = flat.iter().find(|x| x.0 == name)?;
+        let td = &self.prog.defs[*ti];
+        let sig = td.trait_sigs.iter().find(|s| s.0 == name)?;
+        if sig.1.first().map_or(true, |p| p.0 != "self") {
+            return None;
+        }
+        Some((sig.1[1..].iter().map(|p| p.1.clone()).collect(), sig.2.clone(), *ti))
+    }
+
+    /// `dyn Tr` / `Box<dyn Tr>` / `Box<T>` に対するメソッド `name` の戻り値の型 (`Box` 自身の `as_ref` / `as_mut` を含む)。
+    fn dyn_ret_ty(&self, rt: &str, name: &str) -> Option<String> {
+        if let Some(inner) = box_inner(rt) {
+            if name == "as_ref" || name == "as_mut" {
+                return Some(inner.to_string());
+            }
+        }
+        let tr = dyn_tr_of(rt)?;
+        let (_, ret, ti) = self.dyn_sig(tr, name)?;
+        let old = self.file.replace(self.prog.defs[ti].file.clone());
+        let r = self.pty(&ret).ok();
+        *self.file.borrow_mut() = old;
+        r
+    }
+
     fn builtin_enum(&self, base: &str, args: &[String]) -> R<String> {
         let name = format!("{}<{}>", base, args.join(","));
         let payload = |t: &String| if t == "void" { vec![] } else { vec![t.clone()] };
@@ -1096,9 +1355,7 @@ impl<'a> Cx<'a> {
 
 /// ランタイムとして使う C ライブラリ関数の ID。
 struct Rt {
-    puts: FuncId,
     write: FuncId,
-    exit: FuncId,
     realloc: FuncId,
     calloc: FuncId,
     free: FuncId,
@@ -1202,6 +1459,14 @@ impl fmath::Ops for ClifOps<'_, '_> {
 
 struct FnGen<'a, 'b, 'm> {
     b: FunctionBuilder<'b>,
+    /// いま生成している関数の定義 (スレッドの入口を作るとき、同じファイルの文脈で生成するのに使う)
+    def: &'a Def,
+    /// `static` の `Mutex` のデータ領域 (名前 → データ)。スレッドから共有する
+    statics: &'a RefCell<HashMap<String, cranelift_module::DataId>>,
+    /// `let g = m.lock()` の右辺を評価中か (ガードは `let` で束ねたときだけ許す)
+    let_lock: bool,
+    /// `match` の被検査式の `get` / `first` / `last` を評価中か (解放が要る要素の別名を返してよい)
+    alias_ok: bool,
     module: &'m mut ObjectModule,
     cx: &'a Cx<'a>,
     funcs: &'a HashMap<String, &'a Def>,
@@ -1219,6 +1484,9 @@ struct FnGen<'a, 'b, 'm> {
     nvar: usize,
     /// スコープごとの、所有する変数 (先頭アドレスを持つ変数の番号) の列。
     scopes: Vec<Vec<u32>>,
+    /// `with` の後始末式: (登録したスコープの深さ, 後始末式, 登録時点の環境)。`drop_scopes_from` が、
+    /// そのスコープを抜けるすべての経路 (`return` / `?` / `break` / `continue` / 末尾) で式を展開する。
+    defers: Vec<(usize, V, Env)>,
     owners: HashMap<u32, Owner>,
     /// 参照 (`&T` / `&mut T`) である変数の番号。値のコピーではなく別名として扱う。
     refs: HashSet<u32>,
@@ -1239,6 +1507,8 @@ enum Src {
     Range(V, V),
     /// `s.chars()`: 文字列の文字 (UTF-8 を復号する)
     Chars(V),
+    /// `s.split(sep)`: 区切りで分けた断片 (`str`)
+    Split(V, V),
     /// `next` を持つ独自のイテレータ (値の式)
     Custom(V),
     /// (列の式, `iter_mut` か)
@@ -1311,7 +1581,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// `P.from_S(x)` / `P.try_from_S(x)` / `char.try_from_u32(x)` の結果の型。
     fn conv_ty(&self, segs: &[String]) -> Option<String> {
         if let [p, n] | [_, _, p, n] = segs {
-            if n == "from_str_radix" && is_int(p) {
+            if (n == "from_str_radix" || n == "parse") && is_int(p) {
                 return self.cx.builtin_enum("Result", &[p.clone(), "core.num.ParseIntError".into()]).ok();
             }
         }
@@ -1347,6 +1617,32 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             return self.cx.builtin_enum("Option", &[a]).ok();
         }
         None
+    }
+
+    /// `static` で `Mutex<T>` 型のもの (完全修飾名の成分) の型。ほかの `static` / `const` は式を使う場所で展開する。
+    fn static_mutex_ty(&self, segs: &[String]) -> Option<String> {
+        let &ci = self.cx.prog.consts.get(&segs.join("."))?;
+        let d = &self.cx.prog.defs[ci];
+        if d.kw != "static" {
+            return None;
+        }
+        let ty = self.cx.pty_for(d, &d.ret).ok()?;
+        self.cx.mutex_inner(&ty).map(|_| ty)
+    }
+
+    /// `std.sync.channel::<T, A>(..)` の要素の型 `T`: ターボフィッシュ、なければ期待される型 (`Result<(Sender<T>, Receiver<T>), _>`)。
+    fn channel_elem(&self, f: &[V], expect: Option<&str>) -> Option<String> {
+        if let Some(V::L(ts)) = f.get(2) {
+            if let Some(t) = ts.first() {
+                let t = self.cx.pty(t).ok()?;
+                return if t == "void" { None } else { Some(t) };
+            }
+        }
+        let want = expect.filter(|e| e.starts_with("Result<"))?;
+        let l = self.cx.layout(want, 0).ok()?;
+        let tup = l.variants.first()?.1.first()?.0.clone();
+        let first = self.cx.tuples.borrow().get(&tup)?.first()?.clone();
+        self.cx.sender_inner(&first)
     }
 
     /// 引数の式が、クロージャの式、または `let` / 引数で束縛されたクロージャの名前なら、そのクロージャの式。
@@ -1534,240 +1830,309 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok(out)
     }
 
-    /// `extern` の関数 `d` を、外部シンボルとして取り込んで呼ぶ (C の呼び出し規約)。引数・戻り値はスカラーとポインタ。
-    /// 構造体 (`layout c`) の値渡し・値の戻り値は `extern_call_abi` で扱う。
+    /// C に渡す型 `ty` (スカラー・生ポインタ・`layout c` の構造体) の葉のスカラーを、(オフセット, 大きさ, 浮動小数か) で並べる。
+    fn c_flat(&self, d: &Def, ty: &str, base: u32, out: &mut Vec<(u32, u32, bool)>, depth: u32) -> R<()> {
+        if depth > 8 {
+            return Err(format!("extern {}: type {} is nested too deeply", d.name, ty));
+        }
+        if is_mutref(ty) {
+            return Err(format!("extern {}: a mutable reference to a scalar is not a C type (use a raw pointer)", d.name));
+        }
+        if is_scalar(ty) {
+            out.push((base, scalar_size(ty), is_float(ty)));
+            return Ok(());
+        }
+        let ok = self.cx.types.get(ty).is_some_and(|t| t.kw == "type" && t.layout_c);
+        if !ok {
+            return Err(format!("extern {}: the struct {} is not `layout c`, so it cannot cross the C boundary", d.name, ty));
+        }
+        let l = self.cx.layout(ty, 0)?;
+        for (_, fty, off) in &l.fields {
+            self.c_flat(d, fty, base + off, out, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    /// `extern` の関数 `d` を、外部シンボルとして取り込んで呼ぶ。C の呼び出し規約 (System V AMD64 の分類に従った、
+    /// 構造体の値渡し・値返しを含む)。`link "lib:name"` は、実行時に共有ライブラリから引く (失敗は終了コード 101)。
+    /// 関数型の引数は、Kasane の関数かキャプチャなしのクロージャの C 用の入口のアドレスを渡す。
     fn extern_call(&mut self, d: &Def, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
-        let mut all_tys = vec![];
-        for (_, t) in &d.params {
-            all_tys.push(self.cx.pty_for(d, t)?);
-        }
-        let rty0 = self.cx.pty_for(d, &d.ret)?;
-        if all_tys.iter().chain(std::iter::once(&rty0)).any(|t| t != "void" && is_agg(t)) {
-            return self.extern_call_abi(d, args, env, &all_tys, &rty0);
-        }
-        let mut sig = self.module.make_signature();
-        let mut ptys = vec![];
-        for (_, t) in &d.params {
-            let pt = self.cx.pty_for(d, t)?;
-            if !is_scalar(&pt) {
-                return Err(format!("extern {}: parameter of type {}", d.name, pt));
-            }
-            sig.params.push(AbiParam::new(cl(&pt)));
-            ptys.push(pt);
-        }
-        let rty = self.cx.pty_for(d, &d.ret)?;
-        if rty != "void" && !is_scalar(&rty) {
-            return Err(format!("extern {}: return type {}", d.name, rty));
-        }
-        if rty != "void" {
-            sig.returns.push(AbiParam::new(cl(&rty)));
-        }
-        if args.len() != ptys.len() {
+        use cranelift_codegen::ir::ArgumentPurpose;
+        if args.len() != d.params.len() {
             return Err(format!("extern {}: argument count", d.name));
         }
-        // 同じシンボルを別のシグネチャで宣言したとき、先の宣言を流用しない (declare_function が食い違いを報告し、バンドルへ退避する)。
-        let key = format!("extern:{}:{}", d.link, sig);
-        let cached = self.ids.borrow().get(&key).copied();
-        let id = match cached {
-            Some(id) => id,
+        let ptr_t = self.ptr_ty();
+        let (lib, sym) = crate::ffi::split_link(&d.link);
+        let agg_ok = cfg!(all(target_arch = "x86_64", not(windows)));
+        let mut sig = self.module.make_signature();
+        let rty = self.cx.pty_for(d, &d.ret)?;
+        // 戻り値: スカラーはそのまま、構造体は 16 バイト以下ならレジスタ (8 バイトごとに INTEGER / SSE)、
+        // それより大きければ戻り先のアドレスを最初の引数に取る。
+        let mut ret_regs: Vec<bool> = vec![];
+        let mut ret_mem = false;
+        let (mut gp, mut sse) = (0usize, 0usize);
+        if rty != "void" && is_agg(&rty) {
+            if !agg_ok {
+                return Err(format!("extern {}: returning a struct by value is native-supported on x86_64 only", d.name));
+            }
+            let mut flat = vec![];
+            self.c_flat(d, &rty, 0, &mut flat, 0)?;
+            let size = self.cx.layout(&rty, 0)?.size;
+            match crate::ffi::classify_flat(&flat, size) {
+                crate::ffi::Pass::Memory => {
+                    ret_mem = true;
+                    sig.params.push(AbiParam::new(ptr_t));
+                    sig.returns.push(AbiParam::new(ptr_t));
+                    gp += 1;
+                }
+                crate::ffi::Pass::Regs(cls) => {
+                    for c in &cls {
+                        sig.returns.push(AbiParam::new(if *c { types::F64 } else { types::I64 }));
+                    }
+                    ret_regs = cls;
+                }
+            }
+        } else if rty != "void" {
+            if !is_scalar(&rty) {
+                return Err(format!("extern {}: return type {}", d.name, rty));
+            }
+            sig.returns.push(AbiParam::new(cl(&rty)));
+        }
+        // 引数の振り分け
+        enum K {
+            Scalar(String),
+            Callback,
+            Regs(String, Vec<bool>),
+            Stack(String),
+        }
+        let mut kinds: Vec<K> = vec![];
+        for (_, t) in &d.params {
+            if tag(t) == "fn" {
+                gp += 1;
+                sig.params.push(AbiParam::new(ptr_t));
+                kinds.push(K::Callback);
+                continue;
+            }
+            let pt = self.cx.pty_for(d, t)?;
+            if is_scalar(&pt) {
+                if is_mutref(&pt) {
+                    return Err(format!("extern {}: parameter of type {}", d.name, pt));
+                }
+                if is_float(&pt) {
+                    sse += 1;
+                } else {
+                    gp += 1;
+                }
+                // 8 ビット・16 ビットの整数は、C の慣習どおり 32 ビットまで拡張して渡す
+                let p = AbiParam::new(cl(&pt));
+                sig.params.push(match pt.as_str() {
+                    "i8" | "i16" => p.sext(),
+                    "u8" | "u16" | "bool" => p.uext(),
+                    _ => p,
+                });
+                kinds.push(K::Scalar(pt));
+                continue;
+            }
+            if !agg_ok {
+                return Err(format!("extern {}: passing a struct by value is native-supported on x86_64 only", d.name));
+            }
+            let mut flat = vec![];
+            self.c_flat(d, &pt, 0, &mut flat, 0)?;
+            let size = self.cx.layout(&pt, 0)?.size;
+            match crate::ffi::classify_flat(&flat, size) {
+                crate::ffi::Pass::Regs(cls) if gp + cls.iter().filter(|c| !**c).count() <= 6 && sse + cls.iter().filter(|c| **c).count() <= 8 => {
+                    for c in &cls {
+                        if *c {
+                            sse += 1;
+                        } else {
+                            gp += 1;
+                        }
+                        sig.params.push(AbiParam::new(if *c { types::F64 } else { types::I64 }));
+                    }
+                    kinds.push(K::Regs(pt, cls));
+                }
+                _ => {
+                    // メモリ (または、レジスタが足りないとき): 引数領域へコピーして渡す
+                    let padded = size.div_ceil(8) * 8;
+                    sig.params.push(AbiParam::special(ptr_t, ArgumentPurpose::StructArgument(padded)));
+                    kinds.push(K::Stack(pt));
+                }
+            }
+        }
+        // 引数の評価
+        let mut vals: Vec<Value> = vec![];
+        let ret_buf = if ret_mem { Some(self.alloc_for(&rty)?) } else { None };
+        if let Some(b) = ret_buf {
+            vals.push(b);
+        }
+        for ((a, (_, t)), k) in args.iter().zip(&d.params).zip(&kinds) {
+            match k {
+                K::Callback => vals.push(self.callback_addr(d, a, t)?),
+                K::Scalar(pt) => {
+                    let (v, got) = self.expr(a, env, Some(pt))?;
+                    if &got != pt {
+                        return Err(format!("extern {}: argument of type {} where {} is expected", d.name, got, pt));
+                    }
+                    vals.push(v.ok_or("bad argument")?);
+                }
+                K::Regs(pt, _) | K::Stack(pt) => {
+                    let (v, got) = self.expr(a, env, Some(pt))?;
+                    if &got != pt {
+                        return Err(format!("extern {}: argument of type {} where {} is expected", d.name, got, pt));
+                    }
+                    let v = v.ok_or("bad argument")?;
+                    let size = self.cx.layout(pt, 0)?.size;
+                    // 0 で埋めた 8 バイト単位の領域へ写す (末尾の余白を読まないため)
+                    let padded = size.div_ceil(8) * 8;
+                    let tmp = self.alloc(padded.max(8), 8);
+                    let zero = self.b.ins().iconst(types::I64, 0);
+                    for i in 0..padded.div_ceil(8) {
+                        self.b.ins().store(MemFlags::new(), zero, tmp, (i * 8) as i32);
+                    }
+                    self.copy_mem(tmp, v, size);
+                    match k {
+                        K::Regs(_, cls) => {
+                            for (i, c) in cls.iter().enumerate() {
+                                let ty = if *c { types::F64 } else { types::I64 };
+                                vals.push(self.b.ins().load(ty, MemFlags::new(), tmp, (i * 8) as i32));
+                            }
+                        }
+                        _ => vals.push(tmp),
+                    }
+                }
+            }
+        }
+        let results: Vec<Value> = match lib {
             None => {
-                let id = self
-                    .module
-                    .declare_function(&d.link, Linkage::Import, &sig)
-                    .map_err(|e| format!("extern {} (symbol {}): {}", d.name, d.link, e))?;
-                self.ids.borrow_mut().insert(key, id);
-                id
+                // 同じシンボルを別のシグネチャで宣言したとき、先の宣言を流用しない (declare_function が食い違いを報告し、バンドルへ退避する)。
+                let key = format!("extern:{}:{}", d.link, sig);
+                let cached = self.ids.borrow().get(&key).copied();
+                let id = match cached {
+                    Some(id) => id,
+                    None => {
+                        let id = self
+                            .module
+                            .declare_function(sym, Linkage::Import, &sig)
+                            .map_err(|e| format!("extern {} (symbol {}): {}", d.name, d.link, e))?;
+                        self.ids.borrow_mut().insert(key, id);
+                        id
+                    }
+                };
+                self.call_rt(id, &vals)
+            }
+            Some(lib) => {
+                // 動的ロード: 実行時に `dlopen` / `dlsym` (ランタイムの `ksn_rt_sys_dlsym`)。見つからなければ panic (終了コード 101)。
+                let mut lb = lib.as_bytes().to_vec();
+                lb.push(0);
+                let mut sb = sym.as_bytes().to_vec();
+                sb.push(0);
+                let lp = self.string_ptr(lb)?;
+                let sp = self.string_ptr(sb)?;
+                let f = self.crt("ksn_rt_sys_dlsym", &[lp, sp], Some(ptr_t)).ok_or("dlsym")?;
+                let sr = self.b.import_signature(sig);
+                let c = self.b.ins().call_indirect(sr, f, &vals);
+                self.b.inst_results(c).to_vec()
             }
         };
-        let mut vals = vec![];
-        for (a, pt) in args.iter().zip(&ptys) {
-            let (v, t) = self.expr(a, env, Some(pt))?;
-            if &t != pt {
-                return Err(format!("extern {}: argument of type {} where {} is expected", d.name, t, pt));
-            }
-            vals.push(v.ok_or("bad argument")?);
-        }
-        let res = self.call_rt(id, &vals);
         if tag(&d.ret) == "never" {
             self.b.ins().trap(TrapCode::user(6).unwrap());
             self.term = true;
         }
-        Ok((res.first().copied(), rty))
+        if ret_mem {
+            return Ok((ret_buf, rty));
+        }
+        if !ret_regs.is_empty() {
+            let size = self.cx.layout(&rty, 0)?.size;
+            let tmp = self.alloc(size.div_ceil(8).max(1) * 8, 8);
+            for (i, v) in results.iter().enumerate() {
+                self.b.ins().store(MemFlags::new(), *v, tmp, (i * 8) as i32);
+            }
+            return Ok((Some(tmp), rty));
+        }
+        Ok((results.first().copied(), rty))
     }
 
-    /// 構造体 (`layout c`) を値で渡す・値で返す `extern` の呼び出し (x86_64 SysV)。引数と戻り値の場所は `ffi::Placer` で決める
-    /// (16 バイト以下は eightbyte ごとに INTEGER / SSE のレジスタ、残りは全部スタック、16 バイト超と戻り値の sret は領域へのポインタ)。
-    /// 呼び出しは、整数 6・浮動小数 8 のレジスタとスタックのワードを、すべて宣言の順の I64 / F64 の引数として並べる。
-    /// 余りのレジスタは 0 にする (呼ばれた側は読まない)。スタックのワードは、レジスタを使い切った後に宣言の順に積まれる。
-    fn extern_call_abi(&mut self, d: &Def, args: &[V], env: &mut Env, ptys: &[String], rty: &str) -> R<(Option<Value>, String)> {
-        if !cfg!(all(unix, target_arch = "x86_64")) {
-            return Err(format!("extern {}: a structure passed or returned by value is supported only on x86_64 Unix", d.name));
-        }
-        if args.len() != ptys.len() {
-            return Err(format!("extern {}: argument count", d.name));
-        }
-        let ret_info = if rty != "void" && is_agg(rty) {
-            let (size, leaves) = self.cx.c_struct(rty)?;
-            if size == 0 {
-                return Err(format!("extern {}: a zero-sized structure cannot cross the C boundary", d.name));
+    /// 関数型の引数 (C のコールバック) の実引数 `a` から、C の関数ポインタ (Kasane の関数の C 用の入口) を作る。
+    /// `a` は関数への道 (`app.cmp`) かキャプチャなしのクロージャ式で、型は宣言の関数型 `fnty` の引数・戻り値と同じでなければならない。
+    /// 引数・戻り値はスカラー・生ポインタ・`()` だけ (構造体の値渡しは対象外)。
+    fn callback_addr(&mut self, d: &Def, a: &V, fnty: &V) -> R<Value> {
+        let ptr_t = self.ptr_ty();
+        let mut ptys = vec![];
+        for p in items(tel(fnty, 1)) {
+            let t = self.cx.pty_for(d, p)?;
+            if !is_scalar(&t) || is_mutref(&t) {
+                return Err(format!("extern {}: a callback parameter of type {} (only scalars and raw pointers)", d.name, t));
             }
-            Some((size, classify(size, &leaves)))
+            ptys.push(t);
+        }
+        let rty = self.cx.pty_for(d, tel(fnty, 2))?;
+        if rty != "void" && (!is_scalar(&rty) || is_mutref(&rty)) {
+            return Err(format!("extern {}: a callback return type {}", d.name, rty));
+        }
+        let id = if nname(a) == "Path" {
+            let segs = strs(&nf(a)[0]);
+            if segs.len() == 1 && (self.closure_ctx.contains_key(&segs[0]) || self.closures.contains_key(&segs[0])) {
+                return Err(format!("extern {}: a closure variable cannot be passed to C (write the closure at the call or pass a function)", d.name));
+            }
+            let q = self.cx.qual_segs(&segs).join(".");
+            let fd: &'a Def = *self.funcs.get(&q).ok_or_else(|| format!("extern {}: the callback `{}` is not a function", d.name, q))?;
+            if !type_params(fd).is_empty() {
+                return Err(format!("extern {}: the callback `{}` is generic", d.name, q));
+            }
+            let mut ok = fd.params.len() == ptys.len();
+            if ok {
+                for ((_, t), want) in fd.params.iter().zip(&ptys) {
+                    ok = ok && self.cx.pty_for(fd, t).ok().as_ref() == Some(want);
+                }
+                ok = ok && self.cx.pty_for(fd, &fd.ret).ok().as_ref() == Some(&rty);
+            }
+            if !ok {
+                return Err(format!("extern {}: the callback `{}` does not match the parameter's function type", d.name, q));
+            }
+            self.func_id(fd, &q, &HashMap::new())?
+        } else if nname(a) == "Closure" {
+            let f = nf(a);
+            if !items(&f[2]).is_empty() {
+                return Err(format!("extern {}: a closure passed to C cannot capture variables", d.name));
+            }
+            let mut nodes: Vec<&V> = vec![];
+            crate::check::walk(&f[3], &mut nodes);
+            if nodes.iter().any(|n| matches!(nname(n), "Return" | "Try")) {
+                return Err(format!("extern {}: `return` or `?` inside a callback closure", d.name));
+            }
+            if items(&f[0]).len() != ptys.len() {
+                return Err(format!("extern {}: the callback closure does not match the parameter's function type", d.name));
+            }
+            for (p, want) in items(&f[0]).iter().zip(&ptys) {
+                let t = self.cx.pty(&items(p)[1])?;
+                if &t != want {
+                    return Err(format!("extern {}: the callback closure's parameter type {} differs from {}", d.name, t, want));
+                }
+            }
+            let crty = self.cx.pty(&f[1])?;
+            if crty != rty {
+                return Err(format!("extern {}: the callback closure does not match the parameter's function type", d.name));
+            }
+            // クロージャを、同じファイルの `fn` として合成する (本体は通常の関数と同じ経路で生成する)
+            let sym = format!("ksn_cb_{}", self.ids.borrow().len());
+            let cd: &'a Def = Box::leak(Box::new(Def {
+                kw: "fn".into(),
+                name: sym.clone(),
+                file: self.def.file.clone(),
+                module: self.def.module.clone(),
+                params: items(&f[0]).iter().map(|p| (st(&items(p)[0]), items(p)[1].clone())).collect(),
+                ret: f[1].clone(),
+                body: Some(f[3].clone()),
+                panics: Some("never".into()),
+                ..Default::default()
+            }));
+            let sub = self.cx.subst.borrow().clone();
+            self.func_id(cd, &sym, &sub)?
         } else {
-            if rty != "void" && !is_scalar(rty) {
-                return Err(format!("extern {}: return type {}", d.name, rty));
-            }
-            None
+            return Err(format!("extern {}: a function-typed argument must be a function or a closure written at the call", d.name));
         };
-        let sret = matches!(ret_info, Some((_, None)));
-        let dst = match ret_info {
-            Some(_) => Some(self.alloc_for(rty)?),
-            None => None,
-        };
-        let mut placer = Placer::new(sret);
-        // 引数の 1 ワード (I64 のビット列) とその場所。sret の領域のポインタを先頭の整数レジスタに置く。
-        let mut placed: Vec<(Loc, Value)> = vec![];
-        if let (true, Some(p)) = (sret, dst) {
-            placed.push((Loc::Int(0), p));
-        }
-        for (i, a) in args.iter().enumerate() {
-            let pt = ptys[i].clone();
-            let (v, t) = self.expr(a, env, Some(&pt))?;
-            if t != pt {
-                return Err(format!("extern {}: argument of type {} where {} is expected", d.name, t, pt));
-            }
-            let v = v.ok_or("bad argument")?;
-            if is_agg(&pt) {
-                self.consume(a, &pt, env)?;
-                let (size, leaves) = self.cx.c_struct(&pt)?;
-                if size == 0 {
-                    return Err(format!("extern {}: a zero-sized structure cannot cross the C boundary", d.name));
-                }
-                let classes = classify(size, &leaves);
-                let locs = placer.place(classes.as_deref(), size);
-                for (k, loc) in locs.into_iter().enumerate() {
-                    let n = (size - 8 * k as u32).min(8);
-                    let w = self.load_word(v, 8 * k as u32, n);
-                    placed.push((loc, w));
-                }
-            } else {
-                let w = if pt == "f64" {
-                    self.b.ins().bitcast(types::I64, MemFlags::new(), v)
-                } else if pt == "f32" {
-                    let bits = self.b.ins().bitcast(types::I32, MemFlags::new(), v);
-                    self.b.ins().uextend(types::I64, bits)
-                } else if cl(&pt) == types::I64 {
-                    v
-                } else if matches!(pt.as_str(), "i8" | "i16" | "i32") {
-                    self.b.ins().sextend(types::I64, v)
-                } else {
-                    self.b.ins().uextend(types::I64, v)
-                };
-                let class = if is_float(&pt) { Class::Sse } else { Class::Int };
-                let locs = placer.place(Some(&[class]), 8);
-                placed.push((locs[0], w));
-            }
-        }
-        let nstack = placer.stack_words();
-        let zero = self.b.ins().iconst(types::I64, 0);
-        let zf = self.b.ins().bitcast(types::F64, MemFlags::new(), zero);
-        let mut ints = vec![zero; INT_REGS];
-        let mut sses = vec![zf; SSE_REGS];
-        let mut stack = vec![zero; nstack];
-        for (loc, w) in placed {
-            match loc {
-                Loc::Int(k) => ints[k] = w,
-                Loc::Sse(k) => sses[k] = self.b.ins().bitcast(types::F64, MemFlags::new(), w),
-                Loc::Stack(k) => stack[k] = w,
-            }
-        }
-        let mut sig = self.module.make_signature();
-        for _ in 0..INT_REGS {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        for _ in 0..SSE_REGS {
-            sig.params.push(AbiParam::new(types::F64));
-        }
-        for _ in 0..nstack {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-        match &ret_info {
-            None if rty != "void" => sig.returns.push(AbiParam::new(cl(rty))),
-            None => {}
-            Some((_, None)) => {}
-            Some((_, Some(cs))) => {
-                for c in cs {
-                    sig.returns.push(AbiParam::new(if *c == Class::Int { types::I64 } else { types::F64 }));
-                }
-            }
-        }
-        // 同じシンボルを別のシグネチャで宣言したとき、先の宣言を流用しない (declare_function が食い違いを報告し、バンドルへ退避する)。
-        let key = format!("extern:{}:{}", d.link, sig);
-        let cached = self.ids.borrow().get(&key).copied();
-        let id = match cached {
-            Some(id) => id,
-            None => {
-                let id = self
-                    .module
-                    .declare_function(&d.link, Linkage::Import, &sig)
-                    .map_err(|e| format!("extern {} (symbol {}): {}", d.name, d.link, e))?;
-                self.ids.borrow_mut().insert(key, id);
-                id
-            }
-        };
-        let mut all = ints;
-        all.extend(sses);
-        all.extend(stack);
-        let res = self.call_rt(id, &all);
-        match (ret_info, dst) {
-            (Some((size, classes)), Some(dst)) => {
-                if let Some(cs) = classes {
-                    for (k, c) in cs.iter().enumerate() {
-                        let w = if *c == Class::Int {
-                            res[k]
-                        } else {
-                            self.b.ins().bitcast(types::I64, MemFlags::new(), res[k])
-                        };
-                        let n = (size - 8 * k as u32).min(8);
-                        self.store_word(dst, 8 * k as u32, n, w);
-                    }
-                }
-                Ok((Some(dst), rty.to_string()))
-            }
-            _ => {
-                if tag(&d.ret) == "never" {
-                    self.b.ins().trap(TrapCode::user(6).unwrap());
-                    self.term = true;
-                }
-                Ok((res.first().copied(), rty.to_string()))
-            }
-        }
-    }
-
-    /// 構造体のメモリ `p` の `off` から、`n` バイト (1〜8) を I64 のビット列として読む (リトルエンディアン、残りは 0)。
-    fn load_word(&mut self, p: Value, off: u32, n: u32) -> Value {
-        if n == 8 {
-            return self.b.ins().load(types::I64, MemFlags::new(), p, off as i32);
-        }
-        let mut acc = self.b.ins().iconst(types::I64, 0);
-        for i in (0..n).rev() {
-            let byte = self.b.ins().load(types::I8, MemFlags::new(), p, (off + i) as i32);
-            let wide = self.b.ins().uextend(types::I64, byte);
-            let sh = self.b.ins().ishl_imm(acc, 8);
-            acc = self.b.ins().bor(sh, wide);
-        }
-        acc
-    }
-
-    /// I64 のビット列 `w` の下位 `n` バイト (1〜8) を、メモリ `p` の `off` から書く (リトルエンディアン)。
-    fn store_word(&mut self, p: Value, off: u32, n: u32, w: Value) {
-        if n == 8 {
-            self.b.ins().store(MemFlags::new(), w, p, off as i32);
-            return;
-        }
-        for i in 0..n {
-            let sh = self.b.ins().ushr_imm(w, 8 * i as i64);
-            self.b.ins().istore8(MemFlags::new(), sh, p, (off + i) as i32);
-        }
+        let fr = self.module.declare_func_in_func(id, self.b.func);
+        Ok(self.b.ins().func_addr(ptr_t, fr))
     }
 
     /// `core.ptr.*`: 生ポインタの操作。扱わない名前なら None。
@@ -1834,6 +2199,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if let Some(inner) = mutref_inner(&t) {
                     return Ok(Some((v, format!("rawptr<{}>", inner))));
                 }
+                // 配列・スライス・`Vec<T>` は、先頭の要素を指す (`*mut T`)。C に配列を渡す形 (インタプリタと同じ意味)。
+                let seq_elem = self.cx.elem_of(&t).or_else(|| self.cx.slices.borrow().get(&t).cloned());
+                if let Some(e) = seq_elem {
+                    let pt = self.ptr_ty();
+                    let p = self.b.ins().load(pt, MemFlags::new(), v.ok_or("bad pointer")?, 0);
+                    return Ok(Some((Some(p), format!("rawptr<{}>", e))));
+                }
                 if is_agg(&t) {
                     return Ok(Some((v, format!("rawptr<{}>", t))));
                 }
@@ -1887,7 +2259,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let sym = format!("{}_{}", mangle(&key), self.ids.borrow().len());
         let id = self.module.declare_function(&sym, Linkage::Local, &sig).map_err(|e| e.to_string())?;
         self.ids.borrow_mut().insert(key.clone(), id);
-        self.pending.borrow_mut().push(Inst { key, def: d, subst: subst.clone(), entry: false });
+        self.pending.borrow_mut().push(Inst { key, def: d, subst: subst.clone(), entry: false, thunk: None, glue: None });
         Ok(id)
     }
 
@@ -1940,6 +2312,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             if nname(n) == "Let" && nname(&nf(n)[0]) == "PBind" {
                 let ann = if matches!(nf(n)[2], V::Nil) { None } else { self.cx.pty(&nf(n)[2]).ok() };
                 if let Some(t) = ann.or_else(|| self.ty_of(&nf(n)[3], &local, None)) {
+                    local.insert(st(&nf(&nf(n)[0])[0]), (ph, t));
+                }
+            }
+            if nname(n) == "With" {
+                if let Some(t) = self.ty_of(&nf(n)[2], &local, None) {
                     local.insert(st(&nf(&nf(n)[0])[0]), (ph, t));
                 }
             }
@@ -2012,6 +2389,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                                 return Some(self.cx.deque_of(&t));
                             }
                         }
+                    }
+                    // `std.fs.read_to_end(&mut file, &mut v)`: v は Vec<u8>
+                    if is_vec_new && args.len() == 2 && refers(&args[1]) && self.cx.qual_segs(&segs) == ["std", "fs", "read_to_end"] {
+                        return Some(self.cx.vec_of("u8"));
                     }
                     // 関数の引数に渡される: その引数の型
                     if let Some(d) = self.funcs.get(&segs.join(".")).copied() {
@@ -2129,8 +2510,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     sfx.or(expect.map(String::from)).filter(|t| is_float(t))
                 }
                 "str" => Some("str".into()),
+                "bstr" => Some(self.cx.slice_of("u8")),
                 "char" => Some("char".into()),
                 "byte" => Some("u8".into()),
+                "unit" => Some("void".into()),
                 _ => None,
             },
             "Index" => {
@@ -2157,7 +2540,13 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.variant_enum_type(&en, idx, &[], env, expect)
             }
             "Field" => {
-                let segs = place_segs(e)?;
+                let Some(segs) = place_segs(e) else {
+                    // 場所でない式 (`v[i].f` など) のフィールド: 基底の型のレイアウトから引く。
+                    let bt = self.ty_of(&f[0], env, None)?;
+                    let l = self.cx.layout(&bt, 0).ok()?;
+                    let fname = st(&f[1]);
+                    return l.fields.iter().find(|x| x.0 == fname).map(|x| x.1.clone());
+                };
                 if env.contains_key(&segs[0]) { self.field_chain_ty(&segs, env) } else { None }
             }
             "Try" => {
@@ -2187,6 +2576,23 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 Some(self.cx.slice_of(&elem))
             }
             "Unsafe" => self.body_ty(&f[2], env, expect),
+            "With" => {
+                let t = self.ty_of(&f[2], env, None)?;
+                let mut inner = env.clone();
+                let ph = Variable::from_u32(u32::MAX);
+                inner.insert(st(&nf(&f[0])[0]), (ph, t));
+                // 本体の `let` の型も足してから、末尾の式の型を求める。
+                for s in items(&nf(&f[4])[0]) {
+                    let sf = nf(s);
+                    if nname(s) == "Let" && nname(&sf[0]) == "PBind" {
+                        let ann = if matches!(sf[2], V::Nil) { None } else { self.cx.pty(&sf[2]).ok() };
+                        if let Some(t) = ann.or_else(|| self.ty_of(&sf[3], &inner, None)) {
+                            inner.insert(st(&nf(&sf[0])[0]), (ph, t));
+                        }
+                    }
+                }
+                self.body_ty(&f[4], &inner, expect)
+            }
             "TupleE" => {
                 let want: Option<Vec<String>> = expect.and_then(|t| self.cx.tuples.borrow().get(t).cloned());
                 let mut elems = vec![];
@@ -2242,6 +2648,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                 }
                 if let Some(rt) = &recv_ty {
+                    if let Some(t) = self.cx.dyn_ret_ty(rt, &name) {
+                        return Some(t);
+                    }
                     if let Some(t) = self.cx.builtin_method_ty(rt, &name) {
                         return Some(t);
                     }
@@ -2263,6 +2672,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     if name == "map_err" && items(&f[1]).len() == 1 {
                         return self.map_err_ty(&recv_ty, &items(&f[1])[0], env);
                     }
+                    if let Some(t) = self.cx.dyn_ret_ty(&recv_ty, name) {
+                        return Some(t);
+                    }
                     if let Some(t) = self.cx.builtin_method_ty(&recv_ty, name) {
                         return Some(t);
                     }
@@ -2270,6 +2682,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         return self.method_target(&recv_ty, name).and_then(|d| self.call_ret_ty(d, Some(&recv_ty), items(&f[1]), env, expect));
                     }
                     return Some(recv_ty);
+                }
+                if segs.len() >= 2 {
+                    if let Some(recv_ty) = self.static_mutex_ty(&segs[..segs.len() - 1]) {
+                        return self.cx.builtin_method_ty(&recv_ty, &segs[segs.len() - 1]);
+                    }
                 }
                 if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
                     return self.variant_enum_type(&en, idx, items(&f[1]), env, expect);
@@ -2288,6 +2705,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 if segs == ["alloc", "collections", "VecDeque", "new"] {
                     return expect.filter(|t| self.cx.deque_elem(t).is_some()).map(String::from);
+                }
+                if segs == ["alloc", "boxed", "Box", "new"] && items(&f[1]).len() == 2 {
+                    let inner = self.ty_of(&items(&f[1])[1], env, None)?;
+                    if !is_agg(&inner) || inner == "void" {
+                        return None;
+                    }
+                    return self.cx.builtin_enum("Result", &[format!("box<{}>", inner), "alloc.alloc.AllocError".to_string()]).ok();
+                }
+                if segs == ["alloc", "boxed", "Box", "into_dyn"] && items(&f[1]).len() == 1 {
+                    return expect.filter(|t| t.starts_with("box<dyn ")).map(String::from);
                 }
                 // `std.sync.Mutex.new(value)`: 値の型が `T`。
                 if segs == ["std", "sync", "Mutex", "new"] && items(&f[1]).len() == 1 {
@@ -2325,7 +2752,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         "read" => self.ty_of(args.first()?, env, None).and_then(|t| rawptr_inner(&t).map(String::from)),
                         "from_mut" | "from_ref" => {
                             let t = self.ty_of(args.first()?, env, None)?;
-                            Some(format!("rawptr<{}>", mutref_inner(&t).unwrap_or(&t)))
+                            // 配列・スライス・`Vec<T>` は先頭の要素を指す (`ptr_call` と同じ)
+                            let seq = self.cx.elem_of(&t).or_else(|| self.cx.slices.borrow().get(&t).cloned());
+                            Some(format!("rawptr<{}>", seq.as_deref().unwrap_or_else(|| mutref_inner(&t).unwrap_or(&t))))
                         }
                         _ => None,
                     };
@@ -2339,6 +2768,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if segs == ["std", "rand", "Rng", "from_seed"] || segs == ["std", "rand", "Rng", "from_entropy"] {
                     return Some("std.rand.Rng".into());
                 }
+                if let Some(t) = self.cx.sys_ret(&segs.join(".")) {
+                    return Some(t);
+                }
+                if segs == ["std", "sync", "channel"] && items(&f[1]).len() == 2 {
+                    let t = self.channel_elem(f, expect)?;
+                    let tup = self.cx.tuple_of(&[self.cx.sender_of(&t), self.cx.receiver_of(&t)]);
+                    return self.cx.builtin_enum("Result", &[tup, "alloc.alloc.AllocError".into()]).ok();
+                }
                 if segs == ["std", "thread", "spawn"] && items(&f[1]).len() == 2 {
                     let clo = &items(&f[1])[1];
                     let node = if nname(clo) == "Closure" {
@@ -2349,9 +2786,6 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         None
                     };
                     let t = self.cx.pty(&nf(&node?)[1]).ok()?;
-                    if t == "void" {
-                        return None;
-                    }
                     let hty = self.cx.handle_of(&t);
                     return self.cx.builtin_enum("Result", &[hty, "std.thread.SpawnError".into()]).ok();
                 }
@@ -2378,6 +2812,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 if segs == ["alloc", "string", "String", "new"] {
                     return Some(STRING.to_string());
                 }
+                if segs == ["alloc", "string", "String", "replace"] || segs == ["alloc", "string", "String", "join"] {
+                    return self.cx.builtin_enum("Result", &[STRING.to_string(), "alloc.alloc.AllocError".to_string()]).ok();
+                }
                 if segs == ["alloc", "string", "String", "from_str"] {
                     return self.cx.builtin_enum("Result", &[STRING.to_string(), "alloc.alloc.AllocError".to_string()]).ok();
                 }
@@ -2399,6 +2836,723 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         self.nvar += 1;
         self.b.declare_var(v, cl(ty));
         v
+    }
+
+    /// 文字列ランタイム (`strrt.c`) の関数 `name` を呼ぶ。引数の型は値から決める。
+    fn crt(&mut self, name: &str, args: &[Value], ret: Option<Type>) -> Option<Value> {
+        let mut sig = self.module.make_signature();
+        for a in args {
+            sig.params.push(AbiParam::new(self.b.func.dfg.value_type(*a)));
+        }
+        if let Some(r) = ret {
+            sig.returns.push(AbiParam::new(r));
+        }
+        let id = self.module.declare_function(name, Linkage::Import, &sig).ok()?;
+        self.call_rt(id, args).first().copied()
+    }
+
+    /// 引数の式を `str` として評価して、(先頭アドレス, 長さ) を返す。
+    fn str_arg(&mut self, a: &V, env: &mut Env) -> R<(Value, Value)> {
+        let (v, t) = self.expr(a, env, Some("str"))?;
+        if t != "str" && t != STRING {
+            return Err("string argument expected".into());
+        }
+        let v = v.ok_or("bad argument")?;
+        let pt = self.ptr_ty();
+        let ptr = self.b.ins().load(pt, MemFlags::new(), v, 0);
+        let len = self.b.ins().load(types::I64, MemFlags::new(), v, 8);
+        Ok((ptr, len))
+    }
+
+    /// `Option<usize>` を、見つかった位置 (負なら None) から作る。
+    fn opt_index(&mut self, idx: Value) -> R<(Option<Value>, String)> {
+        let rty = self.cx.builtin_enum("Option", &["usize".into()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let found = self.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, idx, 0);
+        let tg = self.b.ins().uextend(types::I32, found);
+        self.b.ins().store(MemFlags::new(), tg, res, 0);
+        let poff = l.variants[1].1[0].1 as i64;
+        self.b.ins().store(MemFlags::new(), idx, res, poff as i32);
+        Ok((Some(res), rty))
+    }
+
+    /// 作りかけの `String` (`tmp`) と失敗フラグから `Result<String, AllocError>` を作る。
+    fn string_result(&mut self, tmp: Value, failed: Value) -> R<(Option<Value>, String)> {
+        let rty = self.cx.builtin_enum("Result", &[STRING.to_string(), "alloc.alloc.AllocError".to_string()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let tg = self.b.ins().uextend(types::I32, failed);
+        self.b.ins().store(MemFlags::new(), tg, res, 0);
+        let dst = self.b.ins().iadd_imm(res, l.variants[0].1[0].1 as i64);
+        self.copy_mem(dst, tmp, 24);
+        Ok((Some(res), rty))
+    }
+
+    /// OS ランタイム (`sysrt.c`) の関数 `name` を呼ぶ。
+    fn csys(&mut self, name: &str, args: &[Value]) -> R<Value> {
+        self.crt(name, args, Some(types::I64)).ok_or_else(|| format!("runtime call {}", name))
+    }
+
+    /// `Result<ok, err>` を作る。`failed` が None なら必ず `Ok`。失敗のときのエラーは `e` ({kind, code} の 2 語) から取る
+    /// (`std.net.Error` は code だけ)。`ok_val` は成功時のペイロード (ハンドルは記述子の `i32`)。
+    fn sys_result(&mut self, rty: &str, failed: Option<Value>, ok_val: Option<Value>, e: Value) -> R<(Option<Value>, String)> {
+        let l = self.cx.layout(rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let ok_off = l.variants[0].1.first().map(|x| x.1);
+        let store_ok = |g: &mut Self| {
+            let t0 = g.b.ins().iconst(types::I32, 0);
+            g.b.ins().store(MemFlags::new(), t0, res, 0);
+            if let (Some(v), Some(off)) = (ok_val, ok_off) {
+                g.b.ins().store(MemFlags::new(), v, res, off as i32);
+            }
+        };
+        let Some(failed) = failed else {
+            store_ok(self);
+            return Ok((Some(res), rty.to_string()));
+        };
+        let (eb, ob, mb) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(failed, eb, &[], ob, &[]);
+        self.b.switch_to_block(eb);
+        let (ety, eoff) = l.variants[1].1.first().cloned().ok_or("sys error payload")?;
+        let t1 = self.b.ins().iconst(types::I32, 1);
+        self.b.ins().store(MemFlags::new(), t1, res, 0);
+        if ety == "std.net.Error" {
+            let code = self.b.ins().load(types::I32, MemFlags::new(), e, 4);
+            self.b.ins().store(MemFlags::new(), code, res, eoff as i32);
+        } else {
+            let kind = self.b.ins().load(types::I32, MemFlags::new(), e, 0);
+            let code = self.b.ins().load(types::I32, MemFlags::new(), e, 4);
+            self.b.ins().store(MemFlags::new(), kind, res, eoff as i32);
+            self.b.ins().store(MemFlags::new(), code, res, eoff as i32 + 4);
+        }
+        self.b.ins().jump(mb, &[]);
+        self.b.switch_to_block(ob);
+        store_ok(self);
+        self.b.ins().jump(mb, &[]);
+        self.b.switch_to_block(mb);
+        Ok((Some(res), rty.to_string()))
+    }
+
+    /// `std.fs` / `std.net` の関数とメソッド。記述子を持つハンドル構造体の先頭 4 バイトが記述子。
+    /// 実際の OS 呼び出しは `sysrt.c`。インタプリタ (natives.rs / net.rs) と戻り値・エラーの種類・終端の約束が同じ。
+    /// `recv` が None で名前がメソッドなら、第 1 引数が受け手。対象外の名前は Ok(None)。
+    fn sys_call(&mut self, fq: &str, recv: Option<&V>, args: &[V], env: &mut Env) -> R<Option<(Option<Value>, String)>> {
+        let Some(rty) = self.cx.sys_ret(fq) else { return Ok(None) };
+        if cfg!(windows) && fq.starts_with("std.net.") {
+            return Err("std.net is not supported by the native backend on Windows".into());
+        }
+        if fq.starts_with("std.env.") || fq.starts_with("std.time.") || fq.starts_with("std.thread.") {
+            return self.env_time_call(fq, recv, args, env, &rty);
+        }
+        let is_method = fq.rsplit('.').nth(1).map_or(false, |t| matches!(t, "File" | "TcpStream" | "TcpListener"));
+        let (recv, args) = match (recv, is_method) {
+            (Some(r), _) => (Some(r), args),
+            (None, true) => match args.split_first() {
+                Some((r, rest)) => (Some(r), rest),
+                None => return Err(format!("{} without a receiver", fq)),
+            },
+            (None, false) => (None, args),
+        };
+        let want = match fq {
+            "std.fs.read_to_end" => 2,
+            "std.fs.exists" | "std.fs.remove_file" | "std.fs.open" | "std.fs.create" | "std.net.connect" | "std.net.listen" | "std.fs.File.read"
+            | "std.fs.File.write" | "std.net.TcpStream.read" | "std.net.TcpStream.write" => 1,
+            _ => 0,
+        };
+        if args.len() != want {
+            return Err(format!("{}: wrong number of arguments", fq));
+        }
+        let i32t = types::I32;
+        let e = self.alloc(8, 4);
+        let neg = |g: &mut Self, r: Value| g.b.ins().icmp_imm(IntCC::SignedLessThan, r, 0);
+        // 受け手 (ハンドル) の記述子
+        let fd = match recv {
+            Some(r) => {
+                let (h, _) = self.expr(r, env, None)?;
+                let h = h.ok_or("bad handle")?;
+                Some(self.b.ins().load(i32t, MemFlags::new(), h, 0))
+            }
+            None => None,
+        };
+        let (r, ok_val, check): (Option<Value>, Option<Value>, bool) = match fq {
+            "std.fs.exists" => {
+                let (p, n) = self.str_arg(&args[0], env)?;
+                let r = self.csys("ksn_rt_sys_exists", &[p, n])?;
+                let r = self.b.ins().ireduce(i32t, r);
+                let b = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                return Ok(Some((Some(b), "bool".into())));
+            }
+            "std.fs.remove_file" => {
+                let (p, n) = self.str_arg(&args[0], env)?;
+                (Some(self.csys("ksn_rt_sys_remove", &[p, n, e])?), None, true)
+            }
+            "std.fs.open" | "std.fs.create" => {
+                let (p, n) = self.str_arg(&args[0], env)?;
+                let create = self.b.ins().iconst(i32t, if fq == "std.fs.create" { 1 } else { 0 });
+                let r = self.csys("ksn_rt_sys_open", &[p, n, create, e])?;
+                let fdv = self.b.ins().ireduce(i32t, r);
+                (Some(r), Some(fdv), true)
+            }
+            "std.net.connect" | "std.net.listen" => {
+                let (p, n) = self.str_arg(&args[0], env)?;
+                let name = if fq == "std.net.connect" { "ksn_rt_sys_connect" } else { "ksn_rt_sys_listen" };
+                let r = self.csys(name, &[p, n, e])?;
+                let fdv = self.b.ins().ireduce(i32t, r);
+                (Some(r), Some(fdv), true)
+            }
+            "std.net.TcpListener.accept" => {
+                let r = self.csys("ksn_rt_sys_accept", &[fd.ok_or("accept")?, e])?;
+                let fdv = self.b.ins().ireduce(i32t, r);
+                (Some(r), Some(fdv), true)
+            }
+            "std.net.TcpListener.local_port" => {
+                let r = self.csys("ksn_rt_sys_local_port", &[fd.ok_or("local_port")?, e])?;
+                let port = self.b.ins().ireduce(types::I16, r);
+                (Some(r), Some(port), true)
+            }
+            "std.fs.File.close" | "std.net.TcpStream.close" | "std.net.TcpListener.close" => {
+                self.csys("ksn_rt_sys_close", &[fd.ok_or("close")?])?;
+                (None, None, false)
+            }
+            "std.fs.File.flush" | "std.net.TcpStream.flush" => (None, None, false),
+            "std.fs.File.sync" => (Some(self.csys("ksn_rt_sys_sync", &[fd.ok_or("sync")?, e])?), None, true),
+            "std.fs.File.read" | "std.net.TcpStream.read" => {
+                let (bv, bt) = self.expr(&args[0], env, Some("slice<u8>"))?;
+                let bv = bv.ok_or("bad buffer")?;
+                if self.cx.seq_elem(&bt).as_deref() != Some("u8") {
+                    return Err("read into a buffer that is not [u8]".into());
+                }
+                let pt = self.ptr_ty();
+                let ptr = self.b.ins().load(pt, MemFlags::new(), bv, 0);
+                let len = self.b.ins().load(types::I64, MemFlags::new(), bv, 8);
+                let r = self.csys("ksn_rt_sys_read", &[fd.ok_or("read")?, ptr, len, e])?;
+                (Some(r), Some(r), true)
+            }
+            "std.fs.File.write" | "std.net.TcpStream.write" => {
+                let (bv, bt) = self.expr(&args[0], env, Some("slice<u8>"))?;
+                let bv = bv.ok_or("bad buffer")?;
+                if bt != "str" && self.cx.seq_elem(&bt).as_deref() != Some("u8") {
+                    return Err("write of a buffer that is not [u8]".into());
+                }
+                let pt = self.ptr_ty();
+                let ptr = self.b.ins().load(pt, MemFlags::new(), bv, 0);
+                let len = self.b.ins().load(types::I64, MemFlags::new(), bv, 8);
+                let r = self.csys("ksn_rt_sys_write", &[fd.ok_or("write")?, ptr, len, e])?;
+                (Some(r), Some(r), true)
+            }
+            "std.fs.read_to_end" => {
+                let (fv, _) = self.expr(&args[0], env, None)?;
+                let fv = fv.ok_or("bad file")?;
+                let fdv = self.b.ins().load(i32t, MemFlags::new(), fv, 0);
+                let (vv, vt) = self.expr(&args[1], env, None)?;
+                let vv = vv.ok_or("bad output")?;
+                if self.cx.elem_of(&vt).as_deref() != Some("u8") {
+                    return Err("read_to_end into a vector that is not Vec<u8>".into());
+                }
+                let r = self.csys("ksn_rt_sys_read_to_end", &[fdv, vv, e])?;
+                (Some(r), Some(r), true)
+            }
+            _ => return Ok(None),
+        };
+        let failed = if check { r.map(|r| neg(self, r)) } else { None };
+        Ok(Some(self.sys_result(&rty, failed, ok_val, e)?))
+    }
+
+    /// `static` の `Mutex<T>`: データ領域 (書き込み可。全スレッドで共有) のアドレス。初期値はコンパイル時に埋める。
+    /// 初期化式は `std.sync.Mutex.new(<整数・bool のリテラル>)` に限る (それ以外は未対応)。
+    fn static_mutex(&mut self, q: &[String]) -> R<(Option<Value>, String)> {
+        if cfg!(windows) {
+            return Err("static Mutex is not supported by the native backend on Windows".into());
+        }
+        let name = q.join(".");
+        let ci = *self.cx.prog.consts.get(&name).ok_or("static not found")?;
+        let d = &self.cx.prog.defs[ci];
+        let ty = self.cx.pty_for(d, &d.ret)?;
+        let inner = self.cx.mutex_inner(&ty).ok_or("static is not a Mutex")?;
+        let existing = self.statics.borrow().get(&name).copied();
+        let id = match existing {
+            Some(id) => id,
+            None => {
+                let init = d.init.clone().ok_or("static without a value")?;
+                let lit = if nname(&init) == "Call" && items(&nf(&init)[1]).len() == 1 {
+                    let callee = strs(&nf(&nf(&init)[0])[0]);
+                    let old = self.cx.file.replace(d.file.clone());
+                    let full = self.cx.qual_segs(&callee);
+                    *self.cx.file.borrow_mut() = old;
+                    if full == ["std", "sync", "Mutex", "new"] { Some(items(&nf(&init)[1])[0].clone()) } else { None }
+                } else {
+                    None
+                };
+                let lit = lit.ok_or("static Mutex initializer must be Mutex.new(<literal>)")?;
+                if !is_scalar(&inner) || is_float(&inner) || is_mutref(&inner) || is_rawptr(&inner) {
+                    return Err("static Mutex of a non-integer type".into());
+                }
+                let v: i64 = match (nname(&lit), st(&nf(&lit)[0]).as_str()) {
+                    ("Lit", "int") => int_value(&st(&nf(&lit)[1]))?,
+                    ("Lit", "bool") => i64::from(matches!(nf(&lit)[1], V::B(true))),
+                    _ => return Err("static Mutex initializer must be an integer or bool literal".into()),
+                };
+                let ml = self.cx.layout(&ty, 0)?;
+                let mut bytes = vec![0u8; ml.size as usize];
+                let (off, sz) = (ml.fields[1].2 as usize, scalar_size(&inner) as usize);
+                bytes[off..off + sz].copy_from_slice(&v.to_le_bytes()[..sz]);
+                let sym = format!("ksn_static_{}", self.statics.borrow().len());
+                let id = self.module.declare_data(&sym, Linkage::Local, true, false).map_err(|e| e.to_string())?;
+                let mut desc = DataDescription::new();
+                desc.define(bytes.into_boxed_slice());
+                desc.set_align(8);
+                self.module.define_data(id, &desc).map_err(|e| e.to_string())?;
+                self.statics.borrow_mut().insert(name, id);
+                id
+            }
+        };
+        let gv = self.module.declare_data_in_func(id, self.b.func);
+        let pt = self.ptr_ty();
+        Ok((Some(self.b.ins().global_value(pt, gv)), ty))
+    }
+
+    /// `std.thread.spawn(allocator, closure)`: クロージャ本体を新しいスレッドの入口 (`void entry(void *env)`) にする。
+    /// 環境ブロック (malloc) = [結果 (クロージャの戻り値)] + [取り込んだ値 (`capture [move x, ..]`)]。取り込んだ値は呼び出し側から
+    /// 環境ブロックへ移り (所有者のフラグは下ろす)、入口が自分の局所変数として受け取って所有する (終わりに解放する)。
+    /// 結果は `join` が環境ブロックから読んで、ブロックを解放する。
+    fn spawn_call(&mut self, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        if cfg!(windows) {
+            return Err("std.thread.spawn is not supported by the native backend on Windows (real threads need POSIX threads)".into());
+        }
+        let clo = &args[1];
+        let node = if nname(clo) == "Closure" {
+            clo.clone()
+        } else if nname(clo) == "Path" && strs(&nf(clo)[0]).len() == 1 && !self.closure_ctx.contains_key(&strs(&nf(clo)[0])[0]) {
+            self.closures.get(&strs(&nf(clo)[0])[0]).cloned().ok_or("spawn of an unknown closure")?
+        } else {
+            return Err("spawn of a closure that is not written at the call".into());
+        };
+        let f = nf(&node);
+        if !items(&f[0]).is_empty() {
+            return Err("spawn closure arity".into());
+        }
+        let mut nodes: Vec<&V> = vec![];
+        crate::check::walk(&f[3], &mut nodes);
+        if nodes.iter().any(|n| matches!(nname(n), "Return" | "Try")) {
+            return Err("return or `?` inside a spawned closure".into());
+        }
+        let rty = self.cx.pty(&f[1])?;
+        if rty != "void" && is_agg(&rty) && self.cx.needs_drop(&rty) {
+            return Err("spawned closure returning a droppable value".into());
+        }
+        // 環境ブロックの配置
+        let rsize = if rty == "void" { 0 } else { self.elem_size(&rty)? };
+        let mut off = align_up(rsize.max(1), 16);
+        let mut caps: Vec<(String, String, u32)> = vec![];
+        let mut cap_vars: Vec<(String, Variable, String)> = vec![];
+        for c in items(&f[2]) {
+            let (kind, name) = (st(tel(c, 0)), st(tel(c, 1)));
+            if kind != "move" {
+                return Err(format!("spawn closure captures `{}` by {}", name, kind));
+            }
+            let (var, ty) = env.get(&name).cloned().ok_or("captured variable not found")?;
+            if self.refs.contains(&var.as_u32()) || self.holds_borrow(&ty, 0) {
+                return Err(format!("spawn closure captures `{}`, which holds a borrow", name));
+            }
+            let (sz, al) = if is_scalar(&ty) { (scalar_size(&ty), scalar_size(&ty)) } else { let l = self.cx.layout(&ty, 0)?; (l.size, l.align) };
+            off = align_up(off, al);
+            caps.push((name.clone(), ty.clone(), off));
+            cap_vars.push((name, var, ty));
+            off += sz;
+        }
+        let total = align_up(off, 16);
+        let pt = self.ptr_ty();
+        // スレッドの入口を宣言して、生成を待ち行列に積む
+        let sym = format!("ksn_thr_{}", self.ids.borrow().len());
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(pt));
+        let id = self.module.declare_function(&sym, Linkage::Local, &sig).map_err(|e| e.to_string())?;
+        self.ids.borrow_mut().insert(sym.clone(), id);
+        let thunk = Thunk { node: node.clone(), caps: caps.clone(), ret: rty.clone() };
+        let subst = self.cx.subst.borrow().clone();
+        self.pending.borrow_mut().push(Inst { key: sym, def: self.def, subst, entry: false, thunk: Some(Rc::new(thunk)), glue: None });
+
+        let zero = self.b.ins().iconst(pt, 0);
+        let sz = self.b.ins().iconst(types::I64, total as i64);
+        let ra = self.rt.realloc;
+        let envp = self.call_rt(ra, &[zero, sz])[0];
+        let (okb, nullb, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.append_block_param(done, pt);
+        let isnull = self.b.ins().icmp_imm(IntCC::Equal, envp, 0);
+        self.b.ins().brif(isnull, nullb, &[], okb, &[]);
+        self.b.switch_to_block(nullb);
+        self.b.ins().jump(done, &[zero]);
+        self.b.switch_to_block(okb);
+        // 取り込んだ値を環境ブロックへ移す
+        for ((name, var, ty), (_, _, o)) in cap_vars.iter().zip(caps.iter()) {
+            let v = if is_agg(ty) {
+                self.b.use_var(*var)
+            } else if self.promoted.contains(&var.as_u32()) {
+                let slot = self.b.use_var(*var);
+                self.b.ins().load(cl(ty), MemFlags::new(), slot, 0)
+            } else {
+                self.b.use_var(*var)
+            };
+            let dst = self.b.ins().iadd_imm(envp, *o as i64);
+            self.store_value(dst, ty, v)?;
+            let path = V::Node("Path", vec![V::L(vec![V::S(name.clone())]), V::Nil], 0, 0);
+            self.consume(&path, ty, env)?;
+        }
+        let fr = self.module.declare_func_in_func(id, self.b.func);
+        let fa = self.b.ins().func_addr(pt, fr);
+        let h = self.crt("ksn_rt_thr_spawn", &[fa, envp], Some(pt)).ok_or("spawn")?;
+        self.b.ins().jump(done, &[h]);
+        self.b.switch_to_block(done);
+        let h = self.b.block_params(done)[0];
+
+        let hty = self.cx.handle_of(&rty);
+        let res_ty = self.cx.builtin_enum("Result", &[hty, "std.thread.SpawnError".into()])?;
+        let rl = self.cx.layout(&res_ty, 0)?;
+        let res = self.alloc(rl.size, rl.align);
+        let failed = self.b.ins().icmp_imm(IntCC::Equal, h, 0);
+        let tg = self.b.ins().uextend(types::I32, failed);
+        self.b.ins().store(MemFlags::new(), tg, res, 0);
+        // `Ok` のハンドルと `Err` の `SpawnError` は同じ場所に置く。失敗のときの `h` は 0。
+        self.b.ins().store(MemFlags::new(), h, res, rl.variants[0].1[0].1 as i32);
+        Ok((Some(res), res_ty))
+    }
+
+    /// 型 `ty` が借用 (`&str` / スライス / 参照 / 生ポインタ) を含むか。含む値はスレッドに渡せない (`'static` を確かめられない)。
+    fn holds_borrow(&self, ty: &str, depth: u32) -> bool {
+        if depth > 8 {
+            return true;
+        }
+        if ty == "str" || is_mutref(ty) || is_rawptr(ty) || self.cx.slices.borrow().contains_key(ty) {
+            return true;
+        }
+        if !is_agg(ty) || ty == STRING {
+            return false;
+        }
+        if let Some(e) = self.cx.elem_of(ty).or_else(|| self.cx.deque_elem(ty)) {
+            return self.holds_borrow(&e, depth + 1);
+        }
+        match self.cx.layout(ty, 0) {
+            Ok(l) => {
+                if l.is_enum {
+                    l.variants.iter().any(|v| v.1.iter().any(|(t, _)| self.holds_borrow(t, depth + 1)))
+                } else {
+                    l.fields.iter().any(|f| self.holds_borrow(&f.1, depth + 1))
+                }
+            }
+            Err(_) => true,
+        }
+    }
+
+    /// スレッドの入口の本体: 環境ブロックから取り込んだ値を受け取り、クロージャ本体を実行して結果を環境ブロックの先頭に書く。
+    /// 受け取った値は、本体の中で別へ移さなければ入口の終わりで解放する (チャネルの端なら閉じる)。
+    fn thunk_body(&mut self, th: &Thunk, params_vals: &[Value]) -> R<()> {
+        let envp = params_vals[0];
+        let f = nf(&th.node);
+        let mut env: Env = HashMap::new();
+        self.scopes.push(vec![]);
+        {
+            let mut nodes: Vec<&V> = vec![];
+            crate::check::walk(&f[3], &mut nodes);
+            for n in nodes {
+                if nname(n) == "Closure" {
+                    for c in items(&nf(n)[2]) {
+                        if st(tel(c, 0)) == "&mut" {
+                            self.addr_taken.insert(st(tel(c, 1)));
+                        }
+                    }
+                }
+                if nname(n) == "Unary" && st(&nf(n)[0]) == "&mut" && nname(&nf(n)[1]) == "Path" {
+                    let segs = strs(&nf(&nf(n)[1])[0]);
+                    if segs.len() == 1 {
+                        self.addr_taken.insert(segs[0].clone());
+                    }
+                }
+            }
+        }
+        for (name, ty, off) in &th.caps {
+            let a = self.b.ins().iadd_imm(envp, *off as i64);
+            if is_agg(ty) {
+                // スレッドの局所変数に値を移す (元の環境ブロックの領域は使わない)
+                let dst = self.alloc_for(ty)?;
+                let size = self.cx.layout(ty, 0)?.size;
+                self.copy_mem(dst, a, size);
+                let var = self.new_var(ty);
+                self.b.def_var(var, dst);
+                if self.cx.needs_drop(ty) {
+                    self.register_owner(var, ty);
+                }
+                env.insert(name.clone(), (var, ty.clone()));
+            } else {
+                let v = self.b.ins().load(cl(ty), MemFlags::new(), a, 0);
+                if !is_mutref(ty) && self.addr_taken.contains(name) {
+                    let slot = self.alloc(8, 8);
+                    self.b.ins().store(MemFlags::new(), v, slot, 0);
+                    let pvar = self.new_var("usize");
+                    self.b.def_var(pvar, slot);
+                    self.promoted.insert(pvar.as_u32());
+                    env.insert(name.clone(), (pvar, ty.clone()));
+                } else {
+                    let var = self.new_var(ty);
+                    self.b.def_var(var, v);
+                    env.insert(name.clone(), (var, ty.clone()));
+                }
+            }
+        }
+        self.scopes.push(vec![]);
+        let stmts: Vec<V> = if nname(&f[3]) == "Block" { items(&nf(&f[3])[0]).to_vec() } else { vec![] };
+        let mut value: Option<Value> = None;
+        if stmts.is_empty() && nname(&f[3]) != "Block" {
+            let (v, _) = self.expr(&f[3], &mut env, if th.ret == "void" { None } else { Some(&th.ret) })?;
+            value = v;
+        }
+        for (i, s) in stmts.iter().enumerate() {
+            self.rest = stmts[i + 1..].to_vec();
+            if i == stmts.len() - 1 && nname(s) == "ExprStmt" && th.ret != "void" {
+                let (v, _) = self.expr(&nf(s)[0], &mut env, Some(&th.ret))?;
+                value = v;
+            } else {
+                self.stmt(s, &mut env, i == stmts.len() - 1)?;
+            }
+        }
+        if !self.term {
+            if th.ret != "void" {
+                let v = value.ok_or("spawned closure without a value")?;
+                self.store_value(envp, &th.ret, v)?;
+            }
+            self.drop_scopes_from(0)?;
+            self.b.ins().return_(&[]);
+        }
+        Ok(())
+    }
+
+    /// `std.sync.channel::<T, A>(allocator, capacity)` -> `Result<(Sender<T>, Receiver<T>), AllocError>`。
+    fn channel_call(&mut self, f: &[V], args: &[V], env: &mut Env, expect: Option<&str>) -> R<(Option<Value>, String)> {
+        if cfg!(windows) {
+            return Err("std.sync channels are not supported by the native backend on Windows".into());
+        }
+        let t = self.channel_elem(f, expect).ok_or("channel without an element type (write std.sync.channel::<T, A>(..))")?;
+        let esz = self.elem_size(&t)?;
+        let (cap, _) = self.expr(&args[1], env, Some("usize"))?;
+        let cap = cap.ok_or("bad capacity")?;
+        let pt = self.ptr_ty();
+        let esz = self.b.ins().iconst(types::I64, esz as i64);
+        let ch = self.crt("ksn_rt_thr_chan_new", &[esz, cap], Some(pt)).ok_or("channel")?;
+        let tup = self.cx.tuple_of(&[self.cx.sender_of(&t), self.cx.receiver_of(&t)]);
+        let rty = self.cx.builtin_enum("Result", &[tup, "alloc.alloc.AllocError".into()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let failed = self.b.ins().icmp_imm(IntCC::Equal, ch, 0);
+        let tg = self.b.ins().uextend(types::I32, failed);
+        self.b.ins().store(MemFlags::new(), tg, res, 0);
+        let poff = l.variants[0].1[0].1 as i32;
+        self.b.ins().store(MemFlags::new(), ch, res, poff);
+        self.b.ins().store(MemFlags::new(), ch, res, poff + 8);
+        Ok((Some(res), rty))
+    }
+
+    /// `tx.send(value)`: 値の所有はチャネルへ移る。受信側が落ちていれば `Err(SendError { value })` で値が戻る。
+    fn chan_send(&mut self, recv: &V, t: &str, arg: &V, env: &mut Env) -> R<(Option<Value>, String)> {
+        let (p, _) = self.expr(recv, env, None)?;
+        let p = p.ok_or("bad receiver")?;
+        let pt = self.ptr_ty();
+        let ch = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        let (v, got) = self.expr(arg, env, Some(t))?;
+        let mut v = v.ok_or("send of unit")?;
+        if got != t {
+            v = self.coerce(v, &got, t)?;
+        }
+        self.consume(arg, t, env)?;
+        let size = self.elem_size(t)?;
+        let tmp = self.alloc(size, 8);
+        self.store_value(tmp, t, v)?;
+        let r = self.crt("ksn_rt_thr_send", &[ch, tmp], Some(types::I64)).ok_or("send")?;
+        let se = self.cx.type_inst("std.sync.SendError", &[t.to_string()]);
+        let rty = self.cx.builtin_enum("Result", &["void".into(), se])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let failed = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+        let tg = self.b.ins().uextend(types::I32, failed);
+        self.b.ins().store(MemFlags::new(), tg, res, 0);
+        // `Err` のペイロード (`SendError { value }`) には値を戻す。`Ok` のときは使わない場所なので、そのまま書いてよい。
+        let poff = l.variants[1].1[0].1 as i64;
+        let dst = self.b.ins().iadd_imm(res, poff);
+        let back = self.load_value(tmp, t);
+        self.store_value(dst, t, back)?;
+        Ok((Some(res), rty))
+    }
+
+    /// `tx.clone()` / `rx.clone()`: 同じチャネルへの端をもう 1 つ増やす (確保しない)。
+    fn chan_clone(&mut self, recv: &V, ty: &str, is_sender: bool, env: &mut Env) -> R<(Option<Value>, String)> {
+        let (p, _) = self.expr(recv, env, None)?;
+        let p = p.ok_or("bad receiver")?;
+        let pt = self.ptr_ty();
+        let ch = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        self.crt(if is_sender { "ksn_rt_thr_sender_clone" } else { "ksn_rt_thr_receiver_clone" }, &[ch], None);
+        let dst = self.alloc(8, 8);
+        self.b.ins().store(MemFlags::new(), ch, dst, 0);
+        Ok((Some(dst), ty.to_string()))
+    }
+
+    /// `rx.close()` -> `Result<(), Receiver<T>>`。ほかに受信側があるか、最後でキューが空なら端を畳んで `Ok(())`。
+    /// 最後の受信側でキューに値が残っていれば閉じずに `Err(受信側)` で返す (残りは呼び出し側が受け取る)。
+    fn chan_close(&mut self, recv: &V, ty: &str, env: &mut Env) -> R<(Option<Value>, String)> {
+        let (p, _) = self.expr(recv, env, None)?;
+        let p = p.ok_or("bad receiver")?;
+        let pt = self.ptr_ty();
+        let ch = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        let r = self.crt("ksn_rt_thr_receiver_close", &[ch], Some(types::I64)).ok_or("close")?;
+        let rty = self.cx.builtin_enum("Result", &["void".into(), ty.to_string()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let failed = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+        let tg = self.b.ins().uextend(types::I32, failed);
+        self.b.ins().store(MemFlags::new(), tg, res, 0);
+        // `Ok` では使わない場所なので、`Err` のペイロード (受信側) をそのまま書いてよい。
+        self.b.ins().store(MemFlags::new(), ch, res, l.variants[1].1[0].1 as i32);
+        // 受信側は結果へ移った (閉じたなら C ランタイムが手放した)。呼び出し側の変数はもう落とさない。
+        self.consume(recv, ty, env)?;
+        Ok((Some(res), rty))
+    }
+
+    /// `rx.recv()`: キューが空で送信側が生きている間は待つ。空で送信側が落ちていれば `Err(RecvError)`。
+    fn chan_recv(&mut self, recv: &V, t: &str, env: &mut Env) -> R<(Option<Value>, String)> {
+        let (p, _) = self.expr(recv, env, None)?;
+        let p = p.ok_or("bad receiver")?;
+        let pt = self.ptr_ty();
+        let ch = self.b.ins().load(pt, MemFlags::new(), p, 0);
+        let tsize = self.elem_size(t)?;
+        let tmp = self.alloc(tsize, 8);
+        let r = self.crt("ksn_rt_thr_recv", &[ch, tmp], Some(types::I64)).ok_or("recv")?;
+        let rty = self.cx.builtin_enum("Result", &[t.to_string(), "std.sync.RecvError".into()])?;
+        let l = self.cx.layout(&rty, 0)?;
+        let res = self.alloc(l.size, l.align);
+        let (okb, errb, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(r, errb, &[], okb, &[]);
+        self.b.switch_to_block(okb);
+        let t0 = self.b.ins().iconst(types::I32, 0);
+        self.b.ins().store(MemFlags::new(), t0, res, 0);
+        let dst = self.b.ins().iadd_imm(res, l.variants[0].1[0].1 as i64);
+        let got = self.load_value(tmp, t);
+        self.store_value(dst, t, got)?;
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(errb);
+        let t1 = self.b.ins().iconst(types::I32, 1);
+        self.b.ins().store(MemFlags::new(), t1, res, 0);
+        let z = self.b.ins().iconst(types::I64, 0);
+        self.b.ins().store(MemFlags::new(), z, res, l.variants[1].1[0].1 as i32);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok((Some(res), rty))
+    }
+
+    /// `std.env` / `std.time` / `std.thread.sleep` / `std.thread.yield_now`。OS 呼び出しは `sysrt.c`。
+    /// `std.env.arg(i)` の `i` は 0 始まりで、プログラム名を含まない (インタプリタと同じ)。
+    fn env_time_call(&mut self, fq: &str, recv: Option<&V>, args: &[V], env: &mut Env, rty: &str) -> R<Option<(Option<Value>, String)>> {
+        let is_method = matches!(fq, "std.time.Instant.elapsed" | "std.time.Instant.since" | "std.time.Duration.as_nanos");
+        let (recv, args) = match (recv, is_method) {
+            (Some(r), _) => (Some(r), args),
+            (None, true) => match args.split_first() {
+                Some((r, rest)) => (Some(r), rest),
+                None => return Err(format!("{} without a receiver", fq)),
+            },
+            (None, false) => (None, args),
+        };
+        let want = match fq {
+            "std.env.arg" | "std.env.var" | "std.time.Duration.from_millis" | "std.time.Instant.since" | "std.thread.sleep" => 1,
+            _ => 0,
+        };
+        if args.len() != want {
+            return Err(format!("{}: wrong number of arguments", fq));
+        }
+        let i64t = types::I64;
+        match fq {
+            "std.env.arg_count" => {
+                let r = self.csys("ksn_rt_sys_arg_count", &[])?;
+                Ok(Some((Some(r), "usize".into())))
+            }
+            "std.env.arg" | "std.env.var" => {
+                let lenslot = self.alloc(8, 8);
+                let z = self.b.ins().iconst(i64t, 0);
+                self.b.ins().store(MemFlags::new(), z, lenslot, 0);
+                let p = if fq == "std.env.arg" {
+                    let (i, _) = self.expr(&args[0], env, Some("usize"))?;
+                    let i = i.ok_or("bad index")?;
+                    self.csys("ksn_rt_sys_arg", &[i, lenslot])?
+                } else {
+                    let (np, nl) = self.str_arg(&args[0], env)?;
+                    self.csys("ksn_rt_sys_var", &[np, nl, lenslot])?
+                };
+                let l = self.cx.layout(rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let found = self.b.ins().icmp_imm(IntCC::NotEqual, p, 0);
+                let tg = self.b.ins().uextend(types::I32, found);
+                self.b.ins().store(MemFlags::new(), tg, res, 0);
+                let poff = l.variants[1].1[0].1 as i32;
+                self.b.ins().store(MemFlags::new(), p, res, poff);
+                let len = self.b.ins().load(i64t, MemFlags::new(), lenslot, 0);
+                self.b.ins().store(MemFlags::new(), len, res, poff + 8);
+                Ok(Some((Some(res), rty.to_string())))
+            }
+            "std.time.Instant.now" => {
+                let t = self.csys("ksn_rt_sys_now_ns", &[])?;
+                let slot = self.alloc(8, 8);
+                self.b.ins().store(MemFlags::new(), t, slot, 0);
+                Ok(Some((Some(slot), rty.to_string())))
+            }
+            "std.time.Instant.elapsed" => {
+                let (r, _) = self.expr(recv.ok_or("elapsed")?, env, None)?;
+                let r = r.ok_or("bad receiver")?;
+                let then = self.b.ins().load(i64t, MemFlags::new(), r, 0);
+                let now = self.csys("ksn_rt_sys_now_ns", &[])?;
+                let d = self.b.ins().isub(now, then);
+                let slot = self.alloc(8, 8);
+                self.b.ins().store(MemFlags::new(), d, slot, 0);
+                Ok(Some((Some(slot), rty.to_string())))
+            }
+            "std.time.Instant.since" => {
+                let (r, _) = self.expr(recv.ok_or("since")?, env, None)?;
+                let r = r.ok_or("bad receiver")?;
+                let (e, _) = self.expr(&args[0], env, None)?;
+                let e = e.ok_or("bad argument")?;
+                let a = self.b.ins().load(i64t, MemFlags::new(), r, 0);
+                let b = self.b.ins().load(i64t, MemFlags::new(), e, 0);
+                let ok = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, a, b);
+                let d = self.b.ins().isub(a, b);
+                let l = self.cx.layout(rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let tg = self.b.ins().uextend(types::I32, ok);
+                self.b.ins().store(MemFlags::new(), tg, res, 0);
+                let poff = l.variants[1].1[0].1 as i32;
+                self.b.ins().store(MemFlags::new(), d, res, poff);
+                Ok(Some((Some(res), rty.to_string())))
+            }
+            "std.time.Duration.as_nanos" => {
+                let (r, _) = self.expr(recv.ok_or("as_nanos")?, env, None)?;
+                let r = r.ok_or("bad receiver")?;
+                let v = self.b.ins().load(i64t, MemFlags::new(), r, 0);
+                Ok(Some((Some(v), "u64".into())))
+            }
+            "std.time.Duration.from_millis" => {
+                let (ms, _) = self.expr(&args[0], env, Some("u64"))?;
+                let ms = ms.ok_or("bad milliseconds")?;
+                let ns = self.b.ins().imul_imm(ms, 1_000_000);
+                let slot = self.alloc(8, 8);
+                self.b.ins().store(MemFlags::new(), ns, slot, 0);
+                Ok(Some((Some(slot), rty.to_string())))
+            }
+            "std.thread.sleep" => {
+                let (ms, _) = self.expr(&args[0], env, Some("u64"))?;
+                let ms = ms.ok_or("bad milliseconds")?;
+                self.crt("ksn_rt_sys_sleep_ms", &[ms], None);
+                Ok(Some((None, "void".into())))
+            }
+            "std.thread.yield_now" => {
+                self.crt("ksn_rt_sys_yield", &[], None);
+                Ok(Some((None, "void".into())))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn call_rt(&mut self, id: FuncId, args: &[Value]) -> Vec<Value> {
@@ -2453,10 +3607,28 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         if is_agg(ty) { addr } else { self.b.ins().load(cl(ty), MemFlags::new(), addr, 0) }
     }
 
+    /// 本体 (式またはブロック) の値が、新しい値か、値を返さず抜ける式 (`return` / `break` / `continue` / `panic`) か。
+    fn body_fresh(&self, body: &V) -> bool {
+        let tail = if nname(body) == "Block" {
+            match items(&nf(body)[0]).last() {
+                Some(s) if nname(s) == "ExprStmt" => nf(s)[0].clone(),
+                _ => return false,
+            }
+        } else {
+            body.clone()
+        };
+        let diverges = matches!(nname(&tail), "Return" | "Break" | "Continue")
+            || (nname(&tail) == "Call"
+                && nname(&nf(&tail)[0]) == "Path"
+                && strs(&nf(&nf(&tail)[0])[0]) == ["core", "panic", "panic"]);
+        diverges || self.is_fresh(&tail)
+    }
+
     /// 式が一時的な領域を新しく作る (コピーせず束縛してよい) か。
     fn is_fresh(&self, e: &V) -> bool {
         match nname(e) {
-            "StructLit" | "MCall" | "TupleE" | "ArrayE" | "Match" => true,
+            "StructLit" | "MCall" | "TupleE" | "ArrayE" | "ArrayRep" | "Match" => true,
+            "With" => self.body_fresh(&nf(e)[4]),
             "Try" => self.is_fresh(&nf(e)[0]),
             "Call" => !(nname(&nf(e)[0]) == "Path" && strs(&nf(&nf(e)[0])[0]).len() >= 2 && false),
             "Path" => {
@@ -2537,6 +3709,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// 深さ `depth` 以降のスコープの所有者をすべて (内側から) 解放する。スコープ自体は残す。
     fn drop_scopes_from(&mut self, depth: usize) -> R<()> {
         for i in (depth..self.scopes.len()).rev() {
+            // `with` の後始末式は、同じスコープの所有者の解放より先に走る (束縛は後始末が消費する)。
+            let cleanups: Vec<(V, Env)> =
+                self.defers.iter().rev().filter(|d| d.0 == i).map(|d| (d.1.clone(), d.2.clone())).collect();
+            for (cleanup, mut cenv) in cleanups {
+                self.exprstmt(&cleanup, &mut cenv, false)?;
+            }
             let ids = self.scopes[i].clone();
             for id in ids.iter().rev() {
                 self.drop_owner_if_live(*id)?;
@@ -2549,6 +3727,60 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     fn drop_value(&mut self, addr: Value, ty: &str) -> R<()> {
         let i64t = types::I64;
         let pt = self.ptr_ty();
+        // `Box<T>`: 中身を破棄してから解放する。`Box<dyn Tr>`: vtable の drop glue (具象型の破棄) を呼んでから解放する。
+        if let Some(inner) = box_inner(ty) {
+            let fr = self.rt.free;
+            if inner.starts_with("dyn ") {
+                let data = self.b.ins().load(pt, MemFlags::new(), addr, 0);
+                let vt = self.b.ins().load(pt, MemFlags::new(), addr, 8);
+                let glue = self.b.ins().load(pt, MemFlags::new(), vt, 0);
+                let mut sig = self.module.make_signature();
+                sig.params.push(AbiParam::new(pt));
+                let sr = self.b.import_signature(sig);
+                self.b.ins().call_indirect(sr, glue, &[data]);
+                self.call_rt(fr, &[data]);
+            } else {
+                let p = self.b.ins().load(pt, MemFlags::new(), addr, 0);
+                if self.cx.needs_drop(inner) {
+                    self.drop_value(p, inner)?;
+                }
+                self.call_rt(fr, &[p]);
+            }
+            return Ok(());
+        }
+        // MutexGuard: ロックを解く。Sender / Receiver: 端を閉じる (受信側は溜まった値も解放する)。
+        if self.cx.guard_inner(ty).is_some() {
+            let m = self.b.ins().load(pt, MemFlags::new(), addr, 0);
+            self.crt("ksn_rt_thr_unlock", &[m], None);
+            return Ok(());
+        }
+        if self.cx.sender_inner(ty).is_some() {
+            let ch = self.b.ins().load(pt, MemFlags::new(), addr, 0);
+            self.crt("ksn_rt_thr_sender_drop", &[ch], None);
+            return Ok(());
+        }
+        if let Some(t) = self.cx.receiver_inner(ty) {
+            let ch = self.b.ins().load(pt, MemFlags::new(), addr, 0);
+            // 受信側を数から外す。最後の受信側だけが、溜まった値を破棄する (ほかの受信側がいる間は値を取り合う相手が残る)。
+            let last = self.crt("ksn_rt_thr_receiver_leave", &[ch], Some(i64t)).ok_or("receiver_leave")?;
+            if self.cx.needs_drop(&t) {
+                let tmp = self.alloc_for(&t)?;
+                let (drain, head, body, exit) =
+                    (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(last, drain, &[], exit, &[]);
+                self.b.switch_to_block(drain);
+                self.b.ins().jump(head, &[]);
+                self.b.switch_to_block(head);
+                let r = self.crt("ksn_rt_thr_try_pop", &[ch, tmp], Some(i64t)).ok_or("try_pop")?;
+                self.b.ins().brif(r, body, &[], exit, &[]);
+                self.b.switch_to_block(body);
+                self.drop_value(tmp, &t)?;
+                self.b.ins().jump(head, &[]);
+                self.b.switch_to_block(exit);
+            }
+            self.crt("ksn_rt_thr_receiver_release", &[ch], None);
+            return Ok(());
+        }
         let seq_elem = self.cx.elem_of(ty).or_else(|| self.cx.deque_elem(ty));
         if ty == STRING || seq_elem.is_some() {
             if let Some(elem) = seq_elem {
@@ -2614,6 +3846,158 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok(())
     }
 
+    /// vtable が持つ drop glue (値のアドレスを受けて、型 `ty` の値を破棄する関数) の識別子。なければ宣言して待ち行列に足す。
+    fn glue_id(&mut self, ty: &str) -> R<FuncId> {
+        let key = format!("glue:{}", ty);
+        if let Some(&id) = self.ids.borrow().get(&key) {
+            return Ok(id);
+        }
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(self.ptr_ty()));
+        let sym = format!("ksn_glue_{}", self.ids.borrow().len());
+        let id = self.module.declare_function(&sym, Linkage::Local, &sig).map_err(|e| e.to_string())?;
+        self.ids.borrow_mut().insert(key.clone(), id);
+        self.pending.borrow_mut().push(Inst { key, def: self.def, subst: HashMap::new(), entry: false, thunk: None, glue: Some(ty.to_string()) });
+        Ok(id)
+    }
+
+    /// drop glue の本体: 引数の値のアドレスにある `ty` の値を破棄して戻る。
+    fn glue_body(&mut self, ty: &str, params_vals: &[Value]) -> R<()> {
+        if self.cx.needs_drop(ty) {
+            self.drop_value(params_vals[0], ty)?;
+        }
+        self.b.ins().return_(&[]);
+        self.term = true;
+        Ok(())
+    }
+
+    /// (具象型 `conc`, トレイト `tr`) の vtable のアドレス。レイアウトは `[drop glue, size, align, メソッド...]` (各 8 バイト。
+    /// メソッドは `dyn_flat` の順)。組ごとに 1 つ、読み取り専用のデータとして作る。
+    fn vtable_for(&mut self, conc: &str, tr: &str) -> R<Value> {
+        let key = format!("{}|{}", conc, tr);
+        let pt = self.ptr_ty();
+        let existing = self.cx.vtables.borrow().get(&key).copied();
+        let id = match existing {
+            Some(id) => id,
+            None => {
+                if !is_agg(conc) || !self.cx.types.contains_key(conc) {
+                    return Err(format!("dyn {} for the type {} (only structs and enums can be erased)", tr, conc));
+                }
+                let flat = self.cx.dyn_flat(tr)?;
+                let l = self.cx.layout(conc, 0)?;
+                let mut fids = vec![];
+                for (m, _) in &flat {
+                    let fq = format!("{}.{}", conc, m);
+                    let d = self.funcs.get(&fq).copied().ok_or_else(|| format!("{} has no method {} for dyn {}", conc, m, tr))?;
+                    if !d.is_method() || !type_params(d).is_empty() {
+                        return Err(format!("{}: generic or non-method implementation of a dyn method", fq));
+                    }
+                    fids.push(self.func_id(d, &fq, &HashMap::new())?);
+                }
+                let glue = self.glue_id(conc)?;
+                let mut bytes = vec![0u8; 24 + 8 * flat.len()];
+                bytes[8..16].copy_from_slice(&(l.size as u64).to_le_bytes());
+                bytes[16..24].copy_from_slice(&(l.align as u64).to_le_bytes());
+                let name = format!("ksn_vtable_{}", *self.data_n);
+                *self.data_n += 1;
+                let id = self.module.declare_data(&name, Linkage::Local, false, false).map_err(|e| e.to_string())?;
+                let mut desc = DataDescription::new();
+                desc.define(bytes.into_boxed_slice());
+                let gr = self.module.declare_func_in_data(glue, &mut desc);
+                desc.write_function_addr(0, gr);
+                for (i, fid) in fids.iter().enumerate() {
+                    let fr = self.module.declare_func_in_data(*fid, &mut desc);
+                    desc.write_function_addr((24 + 8 * i) as u32, fr);
+                }
+                self.module.define_data(id, &desc).map_err(|e| e.to_string())?;
+                self.cx.vtables.borrow_mut().insert(key, id);
+                id
+            }
+        };
+        let gv = self.module.declare_data_in_func(id, self.b.func);
+        Ok(self.b.ins().global_value(pt, gv))
+    }
+
+    /// `Box<T>` の値 `v` (式 `arg`) を、変換先 `want` (`box<dyn Tr>`) の `{データ, vtable}` にする。元の `Box` の所有は移る。
+    fn into_dyn_value(&mut self, arg: &V, v: Value, ty: &str, want: &str, env: &Env) -> R<(Option<Value>, String)> {
+        if ty == want {
+            return Ok((Some(v), ty.to_string()));
+        }
+        let tr = dyn_tr_of(want).ok_or("Box.into_dyn: the target is not a Box<dyn ..>")?.to_string();
+        let inner = box_inner(ty).ok_or("Box.into_dyn of a value that is not a Box")?.to_string();
+        if inner.starts_with("dyn ") {
+            return Err("Box.into_dyn between different dyn types".into());
+        }
+        let pt = self.ptr_ty();
+        let vt = self.vtable_for(&inner, &tr)?;
+        let data = self.b.ins().load(pt, MemFlags::new(), v, 0);
+        self.consume(arg, ty, env)?;
+        let slot = self.alloc(16, 8);
+        self.b.ins().store(MemFlags::new(), data, slot, 0);
+        self.b.ins().store(MemFlags::new(), vt, slot, 8);
+        Ok((Some(slot), want.to_string()))
+    }
+
+    /// `dyn Tr` / `Box<dyn Tr>` 越しのメソッド呼び出し: vtable から関数のアドレスを読んで間接呼び出しする。
+    fn dyn_call(&mut self, recv: &V, rt: &str, name: &str, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
+        let tr = dyn_tr_of(rt).ok_or("not a dyn")?.to_string();
+        let flat = self.cx.dyn_flat(&tr)?;
+        let idx = flat.iter().position(|x| x.0 == name).ok_or_else(|| format!("method {} of dyn {}", name, tr))?;
+        let (ptys, ret, ti) = self.cx.dyn_sig(&tr, name).ok_or("signature of a dyn method")?;
+        if ptys.len() != args.len() {
+            return Err("dyn call arity".into());
+        }
+        let old = self.cx.file.replace(self.cx.prog.defs[ti].file.clone());
+        let tys: R<(Vec<String>, String)> = (|| {
+            let mut v = vec![];
+            for p in &ptys {
+                v.push(self.cx.pty(p)?);
+            }
+            Ok((v, self.cx.pty(&ret)?))
+        })();
+        *self.cx.file.borrow_mut() = old;
+        let (want_tys, rty) = tys?;
+        if want_tys.iter().any(|t| t.starts_with("closure<")) {
+            return Err("dyn method with a closure parameter".into());
+        }
+        let (fat, _) = self.expr(recv, env, None)?;
+        let fat = fat.ok_or("bad dyn receiver")?;
+        let pt = self.ptr_ty();
+        let data = self.b.ins().load(pt, MemFlags::new(), fat, 0);
+        let vt = self.b.ins().load(pt, MemFlags::new(), fat, 8);
+        let fnp = self.b.ins().load(pt, MemFlags::new(), vt, (24 + 8 * idx) as i32);
+        let mut sig = self.module.make_signature();
+        let mut vals = vec![];
+        let mut out = None;
+        if is_agg(&rty) {
+            sig.params.push(AbiParam::new(pt));
+            let p = self.alloc_for(&rty)?;
+            vals.push(p);
+            out = Some(p);
+        }
+        sig.params.push(AbiParam::new(pt));
+        vals.push(data);
+        for ((a, want), pv) in args.iter().zip(&want_tys).zip(&ptys) {
+            let (v, got) = self.expr(a, env, Some(want))?;
+            let mut v = v.ok_or("bad argument")?;
+            if got != *want {
+                v = self.coerce(v, &got, want)?;
+            }
+            if tag(pv) != "ref" {
+                self.consume(a, want, env)?;
+            }
+            sig.params.push(AbiParam::new(if is_agg(want) { pt } else { cl(want) }));
+            vals.push(v);
+        }
+        if rty != "void" && !is_agg(&rty) {
+            sig.returns.push(AbiParam::new(cl(&rty)));
+        }
+        let sr = self.b.import_signature(sig);
+        let c = self.b.ins().call_indirect(sr, fnp, &vals);
+        let res = self.b.inst_results(c).to_vec();
+        Ok((out.or(res.first().copied()), rty))
+    }
+
     /// 式 `e` が参照 (`&x` / 参照である変数) か。参照はコピーせず別名にする。
     fn is_ref_expr(&self, e: &V, env: &Env) -> bool {
         match nname(e) {
@@ -2628,10 +4012,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     /// `main` が `Err` を返した: 標準エラーに出して終了コード 1 で終わる。
     fn entry_error_exit(&mut self) -> R<()> {
-        self.write_stderr(format!("Error: main returned an error{}", char::from(10u8)).as_bytes())?;
-        let code = self.b.ins().iconst(types::I32, 1);
-        let x = self.rt.exit;
-        self.call_rt(x, &[code]);
+        self.crt("ksn_rt_entry_error", &[], None);
         self.b.ins().trap(TrapCode::user(4).unwrap());
         self.term = true;
         Ok(())
@@ -2648,20 +4029,6 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok(())
     }
 
-    /// 定数のバイト列を標準エラーに書く。
-    fn write_stderr(&mut self, bytes: &[u8]) -> R<()> {
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        let n = bytes.len() as i64;
-        let p = self.string_ptr(bytes.to_vec())?;
-        let fd = self.b.ins().iconst(types::I32, 2);
-        let len = self.b.ins().iconst(types::I32, n);
-        let w = self.rt.write;
-        self.call_rt(w, &[fd, p, len]);
-        Ok(())
-    }
-
     /// 条件 `bad` が真なら panic して終了コード 101 で終わる。
     fn guard(&mut self, bad: Value, msg: &str) -> R<()> {
         let (pb, ok) = (self.b.create_block(), self.b.create_block());
@@ -2672,17 +4039,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         Ok(())
     }
 
+    /// 定数のメッセージで `ksn_rt_panic` (rt.c) を呼ぶ。戻らない。
+    fn panic_const(&mut self, bytes: &[u8]) -> R<()> {
+        let p = self.string_ptr(bytes.to_vec())?;
+        let len = self.b.ins().iconst(types::I64, bytes.len() as i64);
+        self.crt("ksn_rt_panic", &[p, len], None);
+        Ok(())
+    }
+
     fn fail_block(&mut self, text: &str) -> R<()> {
-        let msg = format!("panic: {}{}", text, char::from(10u8)).into_bytes();
-        let n = msg.len() as i64;
-        let p = self.string_ptr(msg)?;
-        let fd = self.b.ins().iconst(types::I32, 2);
-        let len = self.b.ins().iconst(types::I32, n);
-        let w = self.rt.write;
-        self.call_rt(w, &[fd, p, len]);
-        let code = self.b.ins().iconst(types::I32, 101);
-        let x = self.rt.exit;
-        self.call_rt(x, &[code]);
+        self.panic_const(text.as_bytes())?;
         self.b.ins().trap(TrapCode::user(1).unwrap());
         Ok(())
     }
@@ -2804,7 +4170,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     fn stmt(&mut self, s: &V, env: &mut Env, tail: bool) -> R<()> {
         // 最初に失敗した文の行を、エラーに付ける (原因を探しやすくする)。
-        self.stmt_inner(s, env, tail).map_err(|e| if e.contains("(line ") { e } else { format!("{} (line {})", e, nline(s)) })
+        self.stmt_inner(s, env, tail).map_err(|e| if e.contains("(line ") { e } else { format!("{} (line {})", e, nlineno(s)) })
     }
 
     fn stmt_inner(&mut self, s: &V, env: &mut Env, tail: bool) -> R<()> {
@@ -2880,8 +4246,21 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     Some(t) if t != "void" => t,
                     _ => return Err(format!("let of unknown type: {}", lname)),
                 };
-                let (v, _) = self.expr(&f[3], env, Some(&ty))?;
+                self.let_lock = (nname(&f[3]) == "MCall"
+                    && st(&nf(&f[3])[1]) == "lock"
+                    && items(&nf(&f[3])[2]).is_empty()
+                    && place_segs(&nf(&f[3])[0]).is_some())
+                    || (nname(&f[3]) == "Call"
+                        && items(&nf(&f[3])[1]).is_empty()
+                        && nname(&nf(&f[3])[0]) == "Path"
+                        && strs(&nf(&nf(&f[3])[0])[0]).len() >= 2
+                        && strs(&nf(&nf(&f[3])[0])[0]).last().map(String::as_str) == Some("lock"));
+                let (v, got) = self.expr(&f[3], env, Some(&ty))?;
+                self.let_lock = false;
                 let mut v = v.ok_or("let of unit")?;
+                if got != ty && [&got, &ty].iter().any(|t| dyn_tr_of(t).is_some()) {
+                    v = self.coerce(v, &got, &ty)?;
+                }
                 let mut is_ref = false;
                 let mut owner = false;
                 if is_agg(&ty) {
@@ -3013,6 +4392,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     /// 戻り値を返す (構造体・列挙型は sret にコピー)。
     fn emit_return(&mut self, v: Option<Value>, ty: &str) -> R<()> {
+        // `&String` / `&Vec<T>` を `&str` / `&[T]` として返すときは、{ptr, len} の組に直してから書く (戻り値の領域は 16 バイト)。
+        let ret = self.ret_ty.clone();
+        let (v, ty) = match v {
+            Some(x) if !self.entry && ty != ret && (ty == STRING || self.cx.elem_of(ty).is_some()) && (ret == "str" || self.cx.slices.borrow().contains_key(&ret)) => {
+                (Some(self.coerce(x, ty, &ret)?), ret.as_str())
+            }
+            other => (other, ty),
+        };
         if is_agg(ty) {
             let dst = self.sret.ok_or("aggregate return without sret")?;
             let size = self.cx.layout(ty, 0)?.size;
@@ -3035,6 +4422,22 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         match nname(e) {
             "Return" => {
                 if self.entry {
+                    // `return <Result>`: 値を評価して、`Err` なら終了コード 1 (末尾の式と同じ)。値を捨てて 0 で終わってはいけない。
+                    if !matches!(f[0], V::Nil) && !is_ok_unit(&f[0]) {
+                        let e0 = &f[0];
+                        if nname(e0) == "Call" && nname(&nf(e0)[0]) == "Path" && strs(&nf(&nf(e0)[0])[0]) == ["Err"] {
+                            self.entry_error_exit()?;
+                            return Ok(());
+                        }
+                        let (v, t) = self.expr(e0, env, None)?;
+                        if !t.starts_with("Result<") {
+                            return Err("entry return value".into());
+                        }
+                        let p = v.ok_or("bad return value")?;
+                        let tg = self.b.ins().load(types::I32, MemFlags::new(), p, 0);
+                        let is_err = self.b.ins().icmp_imm(IntCC::NotEqual, tg, 0);
+                        self.guard_with(is_err, |g| g.entry_error_exit())?;
+                    }
                     self.drop_scopes_from(0)?;
                     let z = self.b.ins().iconst(types::I32, 0);
                     self.b.ins().return_(&[z]);
@@ -3177,6 +4580,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     return Some(p);
                 }
             }
+            if segs.len() >= 2 && env.contains_key(&segs[0]) && segs[segs.len() - 1] == "split" && args.len() == 1 {
+                let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0, 0);
+                if self.ty_of(&recv, env, None).map_or(false, |t| t == "str" || t == STRING) {
+                    return Some(Pipe { src: Src::Split(recv, args[0].clone()), stages: vec![] });
+                }
+            }
             if segs.len() >= 2 && env.contains_key(&segs[0]) && segs[segs.len() - 1] == "chars" && args.is_empty() {
                 let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0, 0);
                 return Some(Pipe { src: Src::Chars(recv), stages: vec![] });
@@ -3184,6 +4593,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             if segs.len() >= 2 && env.contains_key(&segs[0]) && matches!(segs[segs.len() - 1].as_str(), "iter" | "iter_mut") && args.is_empty() {
                 let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0, 0);
                 return Some(Pipe { src: Src::Seq(recv, segs[segs.len() - 1] == "iter_mut"), stages: vec![] });
+            }
+        }
+        if nname(it) == "MCall" && st(&nf(it)[1]) == "split" && items(&nf(it)[2]).len() == 1 {
+            if self.ty_of(&nf(it)[0], env, None).map_or(false, |t| t == "str" || t == STRING) {
+                return Some(Pipe { src: Src::Split(nf(it)[0].clone(), items(&nf(it)[2])[0].clone()), stages: vec![] });
             }
         }
         if nname(it) == "MCall" && st(&nf(it)[1]) == "chars" && items(&nf(it)[2]).is_empty() {
@@ -3366,9 +4780,31 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let mut custom: Option<(Value, String, String)> = None;
         // `chars()`: (文字列の先頭アドレス, 1 文字ぶん進める幅を入れる変数)
         let mut chars_state: Option<(Value, Variable)> = None;
+        // `split()`: (先頭アドレス, 全体の長さ, 区切りの先頭, 区切りの長さ, 次の断片までの幅を入れる変数)
+        let mut split_state: Option<(Value, Value, Value, Value, Variable)> = None;
         // マップの `iter()`: (先頭アドレス, キーの型, 値の型, キーのオフセット, 値のオフセット, 組の大きさ)
         let mut map_state: Option<(Value, String, String, i64, i64, i64)> = None;
         match &pipe.src {
+            Src::Split(e, sep) => {
+                let (sp, sty) = self.expr(e, env, None)?;
+                let sp = sp.ok_or("bad string")?;
+                if sty != "str" && sty != STRING {
+                    return Err("split of a non-string".into());
+                }
+                let base = self.b.ins().load(pt, MemFlags::new(), sp, 0);
+                let len = self.b.ins().load(i64t, MemFlags::new(), sp, 8);
+                let (pp, pl) = self.str_arg(sep, env)?;
+                let step = self.new_var("usize");
+                let one = self.b.ins().iconst(i64t, 1);
+                self.b.def_var(step, one);
+                index_ty = i64t;
+                start = self.b.ins().iconst(i64t, 0);
+                // 断片の数は区切りの数 + 1。最後の断片の次の位置は len + 1 にして終わらせる。
+                limit = self.b.ins().iadd_imm(len, 1);
+                item_ty = "str".to_string();
+                elem_info = None;
+                split_state = Some((base, len, pp, pl, step));
+            }
             Src::Chars(e) => {
                 let (sp, sty) = self.expr(e, env, None)?;
                 let sp = sp.ok_or("bad string")?;
@@ -3544,6 +4980,23 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.switch_to_block(merge);
                 (self.b.block_params(merge)[0], "char".to_string())
             }
+            None if split_state.is_some() => {
+                let (base, len, pp, pl, step) = split_state.ok_or("split state")?;
+                let r = self.crt("ksn_rt_split_find", &[base, len, i, pp, pl], Some(i64t)).ok_or("split")?;
+                let found = self.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, r, 0);
+                let end = self.b.ins().select(found, r, len);
+                let slot = self.alloc(16, 8);
+                let at = self.b.ins().iadd(base, i);
+                let plen = self.b.ins().isub(end, i);
+                self.b.ins().store(MemFlags::new(), at, slot, 0);
+                self.b.ins().store(MemFlags::new(), plen, slot, 8);
+                let with_sep = self.b.ins().iadd(plen, pl);
+                let past = self.b.ins().isub(len, i);
+                let past = self.b.ins().iadd_imm(past, 1);
+                let w = self.b.ins().select(found, with_sep, past);
+                self.b.def_var(step, w);
+                (slot, "str".to_string())
+            }
             None if custom.is_some() => {
                 // 独自のイテレータ: `next` を呼んで、`None` なら終わる。
                 let (cp, fq, opt_ty) = custom.clone().ok_or("custom iterator state")?;
@@ -3662,12 +5115,12 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             }
         }
         self.b.switch_to_block(cont);
-        let n = match chars_state {
-            Some((_, step)) => {
+        let n = match (chars_state, split_state) {
+            (Some((_, step)), _) | (_, Some((_, _, _, _, step))) => {
                 let w = self.b.use_var(step);
                 self.b.ins().iadd(i, w)
             }
-            None => self.b.ins().iadd_imm(i, 1),
+            _ => self.b.ins().iadd_imm(i, 1),
         };
         self.b.ins().jump(head, &[n]);
         self.b.switch_to_block(exit);
@@ -3935,19 +5388,46 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// `match` の共通部分。`value` が Some のとき、各腕の値をそのブロック引数に渡す。
     fn match_common(&mut self, e: &V, env: &mut Env, tail: bool, value: Option<(&str, Block, Option<Value>)>) -> R<()> {
         let f = nf(e);
-        let (sv, sty) = self.expr(&f[0], env, None)?;
+        self.alias_ok = match nname(&f[0]) {
+            "MCall" => matches!(st(&nf(&f[0])[1]).as_str(), "get" | "first" | "last"),
+            "Call" => {
+                nname(&nf(&f[0])[0]) == "Path"
+                    && matches!(strs(&nf(&nf(&f[0])[0])[0]).last().map(String::as_str), Some("get" | "first" | "last"))
+            }
+            _ => false,
+        };
+        // 被検査式が要素の別名を返す (`v.get(i)`) とき、腕の束縛は参照で、持ち主は元の列のまま。腕は解放しない。
+        let alias_scrut = self.alias_ok;
+        let scrut = self.expr(&f[0], env, None);
+        self.alias_ok = false;
+        let (sv, sty) = scrut?;
         let sv = sv.ok_or("match on unit")?;
         let tagv = if is_agg(&sty) { Some(self.b.ins().load(types::I32, MemFlags::new(), sv, 0)) } else { None };
+        // `match rx.recv() { Ok(m) => .., Err(_) => .. }`: 受け取った値 (チャネルから所有権が移ったもの) は、`match` の終わりに
+        // (腕の途中の `break` / `return` でも) 解放する。腕の束縛は参照なので、腕が値を別へ移すことはない。
+        // 型には参照が出ない (`Option<&T>` も `Option<T>`) ので、持ち主が確かなこの形に限る。
+        let own_scrut = sty.ends_with(",std.sync.RecvError>")
+            && self.cx.needs_drop(&sty)
+            && self.is_fresh(&f[0])
+            && value.map_or(true, |(t, _, _)| t == "void" || is_scalar(t));
+        let scrut_depth = self.scopes.len();
+        if own_scrut {
+            let var = self.new_var(&sty);
+            self.b.def_var(var, sv);
+            self.scopes.push(vec![]);
+            self.register_owner(var, &sty);
+        }
         let end = match value {
             Some((_, end, _)) => end,
             None => self.b.create_block(),
         };
         // 所有の扱い:
         // - `scrut_owned`: スクルーティニーが新しい値 (一時的な領域)。腕が束縛した解放要の値はその腕が持ち、
+        //   (`recv` の結果は `own_scrut` が所有する)
         //   束縛されなかった解放要のペイロードは腕に入った時点で解放する。
         // - `result_owned`: 結果が解放要の値。各腕の値は新しい値か、その腕が所有する局所 (移動する)。
         // どちらでもない `match` は、従来どおり束縛を参照として扱う。
-        let scrut_owned = self.is_fresh(&f[0]) && self.cx.needs_drop(&sty);
+        let scrut_owned = !own_scrut && !alias_scrut && self.is_fresh(&f[0]) && self.cx.needs_drop(&sty);
         let result_owned = value.map_or(false, |(t, _, _)| is_agg(t) && self.cx.needs_drop(t));
         let owned_mode = scrut_owned || result_owned;
         let arms = items(&f[1]).to_vec();
@@ -3999,7 +5479,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     let unit_bind = nname(&a[1]) == "Path" && {
                         // `Ok(done) => done` の `done` は `()` の束縛 (値を持たない): 何もしない
                         let segs = strs(&nf(&a[1])[0]);
-                        segs.len() == 1 && !inner.contains_key(&segs[0])
+                        segs.len() == 1 && !inner.contains_key(&segs[0]) && segs[0].starts_with(|c: char| c.is_lowercase() || c == '_')
                     };
                     if unit_bind {
                     } else if nname(&a[1]) == "Block" {
@@ -4029,6 +5509,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         }
         self.b.switch_to_block(end);
         self.term = false;
+        if own_scrut {
+            self.drop_scopes_from(scrut_depth)?;
+            self.scopes.pop();
+        }
         Ok(())
     }
 
@@ -4051,14 +5535,18 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         self.expr(body, env, expect)
     }
 
-    /// `std.io.print_line(s)`。文字列リテラルは `puts`、`str` の値は `write` で出す。
+    /// `std.io.print_line(s)`。どちらも `write` で出す。
     fn print_value(&mut self, a: &V, env: &mut Env) -> R<()> {
         if nname(a) == "Lit" && st(&nf(a)[0]) == "str" {
+            // 文字列の値の出力と同じ `write` で出す (`puts` の標準入出力の緩衝と混ぜると、順序が入れ替わる)。1 回の `write` で行ごと出す。
             let mut bytes = lit_bytes(a);
-            bytes.push(0);
+            bytes.push(10u8);
+            let n = bytes.len() as i64;
             let p = self.string_ptr(bytes)?;
-            let id = self.rt.puts;
-            self.call_rt(id, &[p]);
+            let fd = self.b.ins().iconst(types::I32, 1);
+            let len = self.b.ins().iconst(types::I32, n);
+            let w = self.rt.write;
+            self.call_rt(w, &[fd, p, len]);
             return Ok(());
         }
         let (v, ty) = self.expr(a, env, None)?;
@@ -4111,8 +5599,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         env: &mut Env,
         expect: Option<&str>,
     ) -> R<(Option<Value>, String)> {
-        if tag(&d.ret) == "ref" && tag(tel(&d.ret, 2)) != "slice" {
-            return Err("call of a function returning a reference".into());
+        if tag(&d.ret) == "ref" {
+            check_ref_return(self.cx, d)?;
         }
         let recv_ty = recv.as_ref().map(|r| r.1.clone());
         let subst = if type_params(d).is_empty() {
@@ -4194,6 +5682,17 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     self.b.ins().store(MemFlags::new(), len, slot, 8);
                     Ok((Some(slot), "str".into()))
                 }
+                "bstr" => {
+                    // `b"..."`: 静的なバイト列を指す `&[u8]`
+                    let bytes: Vec<u8> = items(&f[1]).iter().map(|x| st(x).parse::<u32>().unwrap_or(0) as u8).collect();
+                    let n = bytes.len() as i64;
+                    let ptr = self.string_ptr(bytes)?;
+                    let slot = self.alloc(16, 8);
+                    self.b.ins().store(MemFlags::new(), ptr, slot, 0);
+                    let len = self.b.ins().iconst(types::I64, n);
+                    self.b.ins().store(MemFlags::new(), len, slot, 8);
+                    Ok((Some(slot), self.cx.slice_of("u8")))
+                }
                 "float" => {
                     let Some(t) = self.ty_of(e, env, expect) else { return Err("untyped float literal".into()) };
                     let text = st(&f[2]).replace('_', "");
@@ -4204,6 +5703,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     };
                     Ok((Some(c), t))
                 }
+                "unit" => Ok((None, "void".into())),
                 k => Err(format!("literal {}", k)),
             },
             "Path" => {
@@ -4250,6 +5750,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     };
                     return Ok((Some(c), t));
                 }
+                if self.static_mutex_ty(&q).is_some() {
+                    return self.static_mutex(&q);
+                }
                 if let Some(&ci) = self.cx.prog.consts.get(&q.join(".")) {
                     // ユーザー定義の定数: 使う場所で、初期値の式を (その定数のファイルの名前で) 評価する。
                     let d = &self.cx.prog.defs[ci];
@@ -4284,7 +5787,23 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 Ok((Some(v), elem))
             }
             "Field" => {
-                let segs = place_segs(e).ok_or("field of a non-place")?;
+                let Some(segs) = place_segs(e) else {
+                    // 場所でない式 (`v[i].f` など) のフィールド: 基底のアドレスにフィールドのオフセットを足す。
+                    let (bv, bty) = self.expr(&f[0], env, None)?;
+                    let bv = bv.ok_or("field of a unit value")?;
+                    if !is_agg(&bty) {
+                        return Err("field of a scalar".into());
+                    }
+                    let l = self.cx.layout(&bty, 0)?;
+                    let fname = st(&f[1]);
+                    let (_, fty, off) = l.fields.iter().find(|x| x.0 == fname).cloned().ok_or_else(|| format!("no field {}", fname))?;
+                    let addr = self.b.ins().iadd_imm(bv, off as i64);
+                    if is_agg(&fty) {
+                        return Ok((Some(addr), fty));
+                    }
+                    let v = self.b.ins().load(cl(&fty), MemFlags::new(), addr, 0);
+                    return Ok((Some(v), fty));
+                };
                 if !env.contains_key(&segs[0]) {
                     return Err("field of a non-local".into());
                 }
@@ -4316,17 +5835,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.ins().brif(is_ok, cont, &[], bad, &[]);
                 self.b.switch_to_block(bad);
                 if self.entry {
-                    // main が Err を返した: 標準エラーに出して終了コード 1。
-                    let msg = format!("Error: main returned an error{}", char::from(10u8)).into_bytes();
-                    let n = msg.len() as i64;
-                    let mp = self.string_ptr(msg)?;
-                    let fd = self.b.ins().iconst(types::I32, 2);
-                    let len = self.b.ins().iconst(types::I32, n);
-                    let w = self.rt.write;
-                    self.call_rt(w, &[fd, mp, len]);
-                    let code = self.b.ins().iconst(types::I32, 1);
-                    let x = self.rt.exit;
-                    self.call_rt(x, &[code]);
+                    // main が Err を返した: ランタイム (rt.c) が標準エラーに出して終了コード 1。
+                    self.crt("ksn_rt_entry_error", &[], None);
                     self.b.ins().trap(TrapCode::user(4).unwrap());
                 } else {
                     let rt = self.ret_ty.clone();
@@ -4343,10 +5853,31 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         let src = l.variants[1].1.first().cloned();
                         let dst = rl.variants[1].1.first().cloned();
                         match (src, dst) {
-                            (Some((st_, so)), Some((dt_, doff))) => {
-                                if st_ != dt_ {
+                            (Some((st_, so)), Some((dt_, doff))) if st_ != dt_ => {
+                                // 4.1: 型が違うエラーは、`derive [From]` の `enum` `dt_` で `st_` を唯一のペイロードに持つバリアントを
+                                // 作って書く (タグを置き、ペイロードをコピーするだけ)。
+                                let dl = self.cx.layout(&dt_, 0)?;
+                                let derives = self.cx.prog.from_enums.contains(&dt_);
+                                let hits: Vec<(usize, u32)> = dl
+                                    .variants
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, v)| v.1.len() == 1 && v.1[0].0 == st_)
+                                    .map(|(i, v)| (i, v.1[0].1))
+                                    .collect();
+                                let [(vidx, voff)] = hits.as_slice() else { return Err("? with a different error type".into()) };
+                                if !dl.is_enum || !derives {
                                     return Err("? with a different error type".into());
                                 }
+                                let size = if is_scalar(&st_) { scalar_size(&st_) } else { self.cx.layout(&st_, 0)?.size };
+                                let sa = self.b.ins().iadd_imm(p, so as i64);
+                                let da = self.b.ins().iadd_imm(sret, doff as i64);
+                                let tgv = self.b.ins().iconst(types::I32, *vidx as i64);
+                                self.b.ins().store(MemFlags::new(), tgv, da, 0);
+                                let pa = self.b.ins().iadd_imm(da, *voff as i64);
+                                self.copy_mem(pa, sa, size);
+                            }
+                            (Some((st_, so)), Some((_, doff))) => {
                                 let size = if is_scalar(&st_) { scalar_size(&st_) } else { self.cx.layout(&st_, 0)?.size };
                                 let sa = self.b.ins().iadd_imm(p, so as i64);
                                 let da = self.b.ins().iadd_imm(sret, doff as i64);
@@ -4370,6 +5901,34 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                     None => Ok((None, "void".into())),
                 }
+            }
+            "With" => {
+                // `with 名前 = 初期化式 close 後始末式 { 本体 }` (4.4)。束縛をスコープに置き、後始末式を
+                // `defers` に登録する。本体を抜けるすべての経路で `drop_scopes_from` が展開する。
+                if crate::check::cleanup_exit(&f[3]).is_some() {
+                    return Err("return / break / continue / ? in a with cleanup".into());
+                }
+                let saved_rest = std::mem::replace(&mut self.rest, items(&nf(&f[4])[0]).to_vec());
+                self.scopes.push(vec![]);
+                let d = self.scopes.len() - 1;
+                let mut inner = env.clone();
+                let bind = V::Node("Let", vec![f[0].clone(), f[1].clone(), V::Nil, f[2].clone()], crate::check::nline(e), 0);
+                let r0 = self.stmt_inner(&bind, &mut inner, false);
+                self.rest = saved_rest;
+                r0?;
+                self.defers.push((d, f[3].clone(), inner.clone()));
+                self.scopes.push(vec![]);
+                let r = self.arm_value(&f[4], &mut inner, expect);
+                if r.is_ok() && !self.term {
+                    self.drop_scopes_from(d + 1)?;
+                }
+                self.scopes.pop();
+                if r.is_ok() && !self.term {
+                    self.drop_scopes_from(d)?;
+                }
+                self.defers.pop();
+                self.scopes.pop();
+                r
             }
             "Unsafe" => {
                 // `unsafe "名前" "理由" { .. }`: 本体のブロックの値。範囲を抜けるときの解放も行う。
@@ -4415,6 +5974,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     _ => return Err("array length that is not a literal".into()),
                 };
                 let sz = self.elem_size(&elem)?;
+                if (sz as u64) * (n as u64) > 65536 {
+                    return Err("array too large for the stack".into());
+                }
                 let (x, _) = self.expr(&f[0], env, Some(&elem))?;
                 let x = x.ok_or("bad array element")?;
                 let buf = self.alloc((sz * n).max(1), if is_agg(&elem) { 8 } else { sz.max(1) });
@@ -4685,11 +6247,6 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     o => Err(format!("unary {}", o)),
                 }
             }
-            "Return" => {
-                // `match` の腕の値として書いた `return x`: 関数を抜けるので値は持たない (呼び出し側は `term` を見る)。
-                self.exprstmt(e, env, false)?;
-                Ok((None, "void".into()))
-            }
             "Match" => {
                 let ty = self
                     .ty_of(e, env, expect)
@@ -4728,6 +6285,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0, 0);
                     return self.method_call(&recv, &segs[segs.len() - 1], args, env, expect);
                 }
+                if segs.len() >= 2 && self.static_mutex_ty(&segs[..segs.len() - 1]).is_some() {
+                    let recv = V::Node("Path", vec![V::L(segs[..segs.len() - 1].iter().map(|x| V::S(x.clone())).collect()), V::Nil], 0, 0);
+                    return self.method_call(&recv, &segs[segs.len() - 1], args, env, expect);
+                }
                 if let Some((en, idx, _)) = self.cx.split_variant(&segs) {
                     let en = self.variant_enum_type(&en, idx, args, env, expect).ok_or("cannot infer the type arguments of an enum")?;
                     return self.make_variant(&en, idx, args, env);
@@ -4747,9 +6308,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     return self.make_variant(&t, idx, args, env);
                 }
                 if segs == ["core", "check", "is_true"] && args.len() == 1 {
-                    let (a, _) = self.expr(&args[0], env, Some("bool"))?;
-                    let ne = self.b.ins().bxor_imm(a.ok_or("bad operand")?, 1);
-                    self.guard(ne, "assertion failed")?;
+                    let (c, _) = self.expr(&args[0], env, Some("bool"))?;
+                    let c = c.ok_or("bad condition")?;
+                    let bad = self.b.ins().bxor_imm(c, 1);
+                    self.guard(bad, "assertion failed")?;
                     return Ok((None, "void".into()));
                 }
                 if segs == ["core", "check", "eq"] {
@@ -4783,10 +6345,9 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 }
                 if segs == ["core", "panic", "panic"] && args.len() == 1 {
                     // メッセージを標準エラーに出して、終了コード 101 で終わる。
-                    self.write_stderr(b"panic: ")?;
                     if nname(&args[0]) == "Lit" && st(&nf(&args[0])[0]) == "str" {
                         let bytes = lit_bytes(&args[0]);
-                        self.write_stderr(&bytes)?;
+                        self.panic_const(&bytes)?;
                     } else {
                         let (sv, t) = self.expr(&args[0], env, Some("str"))?;
                         if t != "str" {
@@ -4796,20 +6357,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                         let pt = self.ptr_ty();
                         let ptr = self.b.ins().load(pt, MemFlags::new(), sv, 0);
                         let len = self.b.ins().load(types::I64, MemFlags::new(), sv, 8);
-                        let len32 = self.b.ins().ireduce(types::I32, len);
-                        let fd = self.b.ins().iconst(types::I32, 2);
-                        let w = self.rt.write;
-                        self.call_rt(w, &[fd, ptr, len32]);
+                        self.crt("ksn_rt_panic", &[ptr, len], None);
                     }
-                    self.write_stderr(&[10u8])?;
-                    let code = self.b.ins().iconst(types::I32, 101);
-                    let x = self.rt.exit;
-                    self.call_rt(x, &[code]);
                     self.b.ins().trap(TrapCode::user(5).unwrap());
                     self.term = true;
                     return Ok((None, "void".into()));
                 }
                 if let Some(r) = self.conv_call(&segs, args, env)? {
+                    return Ok(r);
+                }
+                if let Some(r) = self.sys_call(&segs.join("."), None, args, env)? {
                     return Ok(r);
                 }
                 if segs.len() == 3 && segs[0] == "core" && segs[1] == "ptr" {
@@ -4836,22 +6393,10 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     return Ok((Some(slot), "std.rand.Rng".into()));
                 }
                 if segs == ["std", "thread", "spawn"] && args.len() == 2 {
-                    // スレッドは spawn のときに同期して実行する (インタプリタと同じ)。
-                    let (v, t) = self.inline_closure(&args[1], &[], env)?;
-                    let v = v.ok_or("spawn of a closure returning unit")?;
-                    let hty = self.cx.handle_of(&t);
-                    let hl = self.cx.layout(&hty, 0)?;
-                    let handle = self.alloc(hl.size, hl.align);
-                    let faddr = self.b.ins().iadd_imm(handle, hl.fields[0].2 as i64);
-                    self.store_value(faddr, &t, v)?;
-                    let rty = self.cx.builtin_enum("Result", &[hty.clone(), "std.thread.SpawnError".into()])?;
-                    let rl = self.cx.layout(&rty, 0)?;
-                    let res = self.alloc(rl.size, rl.align);
-                    let t0 = self.b.ins().iconst(types::I32, 0);
-                    self.b.ins().store(MemFlags::new(), t0, res, 0);
-                    let dst = self.b.ins().iadd_imm(res, rl.variants[0].1[0].1 as i64);
-                    self.store_value(dst, &hty, handle)?;
-                    return Ok((Some(res), rty));
+                    return self.spawn_call(args, env);
+                }
+                if segs == ["std", "sync", "channel"] && args.len() == 2 {
+                    return self.channel_call(f, args, env, expect);
                 }
                 if segs == ["core", "str", "from_utf8"] && args.len() == 1 {
                     let (bv, bt) = self.expr(&args[0], env, None)?;
@@ -4951,6 +6496,30 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                     return Ok((Some(v), STRING.to_string()));
                 }
+                if segs == ["alloc", "string", "String", "replace"] && args.len() == 4 {
+                    let (sp, sl) = self.str_arg(&args[1], env)?;
+                    let (fp, fl) = self.str_arg(&args[2], env)?;
+                    let (tp, tl) = self.str_arg(&args[3], env)?;
+                    let tmp = self.alloc(24, 8);
+                    let failed = self.crt("ksn_rt_replace", &[tmp, sp, sl, fp, fl, tp, tl], Some(types::I32)).ok_or("replace")?;
+                    let failed = self.b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                    return self.string_result(tmp, failed);
+                }
+                if segs == ["alloc", "string", "String", "join"] && args.len() == 3 {
+                    let (pv, pty) = self.expr(&args[1], env, None)?;
+                    let pv = pv.ok_or("bad parts")?;
+                    if self.cx.seq_elem(&pty).as_deref() != Some("str") {
+                        return Err("join of a non-str sequence".into());
+                    }
+                    let (sp, sl) = self.str_arg(&args[2], env)?;
+                    let pt = self.ptr_ty();
+                    let base = self.b.ins().load(pt, MemFlags::new(), pv, 0);
+                    let n = self.b.ins().load(types::I64, MemFlags::new(), pv, 8);
+                    let tmp = self.alloc(24, 8);
+                    let failed = self.crt("ksn_rt_join", &[tmp, base, n, sp, sl], Some(types::I32)).ok_or("join")?;
+                    let failed = self.b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+                    return self.string_result(tmp, failed);
+                }
                 if segs == ["alloc", "string", "String", "from_str"] {
                     if args.len() != 2 {
                         return Err("from_str arity".into());
@@ -5003,8 +6572,50 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                     return Ok((Some(v), t.to_string()));
                 }
-                // `std.sync.Mutex.new(value)`: `{T}` の領域に値を入れる (`flag` は持たない)。
+                // `alloc.boxed.Box.new(allocator, value)`: ヒープに値を置く。確保は `realloc` で、失敗は `Err(AllocError)`。
+                if segs == ["alloc", "boxed", "Box", "new"] && args.len() == 2 {
+                    let inner = self.ty_of(&args[1], env, None).ok_or("Box.new without a value type")?;
+                    if !is_agg(&inner) || inner == "void" || inner == "str" || inner.starts_with("slice<") || dyn_tr_of(&inner).is_some() {
+                        return Err("Box of a scalar or an unsized type".into());
+                    }
+                    let (v, _) = self.expr(&args[1], env, Some(&inner))?;
+                    let v = v.ok_or("bad Box value")?;
+                    self.consume(&args[1], &inner, env)?;
+                    let size = self.cx.layout(&inner, 0)?.size as i64;
+                    let pt = self.ptr_ty();
+                    let nullp = self.b.ins().iconst(pt, 0);
+                    let sz = self.b.ins().iconst(types::I64, size.max(1));
+                    let rf = self.rt.realloc;
+                    let p = self.call_rt(rf, &[nullp, sz])[0];
+                    let failed = self.b.ins().icmp_imm(IntCC::Equal, p, 0);
+                    let boxty = format!("box<{}>", inner);
+                    let rty = self.cx.builtin_enum("Result", &[boxty, "alloc.alloc.AllocError".to_string()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let tg = self.b.ins().uextend(types::I32, failed);
+                    self.b.ins().store(MemFlags::new(), tg, res, 0);
+                    let (ok_b, done) = (self.b.create_block(), self.b.create_block());
+                    self.b.ins().brif(failed, done, &[], ok_b, &[]);
+                    self.b.switch_to_block(ok_b);
+                    self.store_value(p, &inner, v)?;
+                    let dst = self.b.ins().iadd_imm(res, l.variants[0].1[0].1 as i64);
+                    self.b.ins().store(MemFlags::new(), p, dst, 0);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(done);
+                    return Ok((Some(res), rty));
+                }
+                // `alloc.boxed.Box.into_dyn(b)`: `Box<T>` → `Box<dyn Tr>`。変換先は期待型から決まる。
+                if segs == ["alloc", "boxed", "Box", "into_dyn"] && args.len() == 1 {
+                    let want = expect.filter(|t| t.starts_with("box<dyn ")).map(String::from).ok_or("Box.into_dyn: the target type is unknown (add a type annotation)")?;
+                    let (v, ty) = self.expr(&args[0], env, None)?;
+                    let v = v.ok_or("bad Box value")?;
+                    return self.into_dyn_value(&args[0], v, &ty, &want, env);
+                }
+                // `std.sync.Mutex.new(value)`: `{ロック語 (0 = 解放), T}` の領域を作る。
                 if segs == ["std", "sync", "Mutex", "new"] && args.len() == 1 {
+                    if cfg!(windows) {
+                        return Err("std.sync.Mutex is not supported by the native backend on Windows".into());
+                    }
                     let inner = self.ty_of(&args[0], env, None).ok_or("Mutex.new without a value type")?;
                     if inner == "void" {
                         return Err("Mutex of unit".into());
@@ -5014,12 +6625,20 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     let t = self.cx.mutex_of(&inner);
                     let l = self.cx.layout(&t, 0)?;
                     let p = self.alloc(l.size, l.align);
-                    self.store_value(p, &inner, v.ok_or("bad Mutex value")?)?;
+                    let z = self.b.ins().iconst(types::I64, 0);
+                    self.b.ins().store(MemFlags::new(), z, p, 0);
+                    let vaddr = self.b.ins().iadd_imm(p, l.fields[1].2 as i64);
+                    self.store_value(vaddr, &inner, v.ok_or("bad Mutex value")?)?;
                     return Ok((Some(p), t));
                 }
                 let fq = segs.join(".");
                 let Some(d) = self.funcs.get(&fq).copied() else { return Err(format!("call to {}", fq)) };
                 self.call_user(&fq, d, None, args, env, expect)
+            }
+            // `match` の腕などで値の位置に現れる `return` / `break` / `continue`: 文として出して、値は無い。
+            "Return" | "Break" | "Continue" => {
+                self.exprstmt(e, env, false)?;
+                Ok((None, "void".into()))
             }
             n => Err(format!("expression {}", n)),
         }
@@ -5033,22 +6652,56 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             return self.method_call(&deref, name, args, env, expect);
         }
         if let Some(rt) = &rty {
-            // `std.sync.Mutex.lock`: 同期実行なので、値のアドレスをそのままガードとして返す。
+            // `dyn Tr` / `Box<dyn Tr>` 越しの呼び出し (vtable) と、`Box` 自身のメソッド。
+            if dyn_tr_of(rt).is_some() || box_inner(rt).is_some() {
+                let rt = rt.clone();
+                if let Some(inner) = box_inner(&rt) {
+                    if (name == "as_ref" || name == "as_mut") && args.is_empty() {
+                        let (p, _) = self.expr(recv, env, None)?;
+                        let p = p.ok_or("bad receiver")?;
+                        if inner.starts_with("dyn ") {
+                            return Ok((Some(p), inner.to_string()));
+                        }
+                        let pt = self.ptr_ty();
+                        let q = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                        return Ok((Some(q), inner.to_string()));
+                    }
+                    if name == "into_dyn" && args.is_empty() {
+                        let want = expect.filter(|t| t.starts_with("box<dyn ")).map(String::from).ok_or("Box.into_dyn: the target type is unknown (add a type annotation)")?;
+                        let (p, ty) = self.expr(recv, env, None)?;
+                        let p = p.ok_or("bad receiver")?;
+                        return self.into_dyn_value(recv, p, &ty, &want, env);
+                    }
+                    if !inner.starts_with("dyn ") {
+                        return Err(format!("method {} on a Box", name));
+                    }
+                }
+                return self.dyn_call(recv, &rt, name, args, env);
+            }
+            // `std.sync.Mutex.lock`: ロックを取り、ミューテックスのアドレスを持つガード (所有者。落とすとロックを解く) を返す。
+            // ガードは `let g = m.lock()` で束ねたときだけ許す (束ねない一時値は解放の時点が決まらず、ロックを握り続けるため)。
             if let Some(inner) = self.cx.mutex_inner(rt) {
                 if name == "lock" && args.is_empty() {
+                    if !std::mem::take(&mut self.let_lock) {
+                        return Err("MutexGuard temporary (bind the guard with `let`)".into());
+                    }
                     let (p, _) = self.expr(recv, env, None)?;
                     let p = p.ok_or("bad receiver")?;
-                    let l = self.cx.layout(rt, 0)?;
-                    let off = l.fields[0].2 as i64;
-                    let addr = if off == 0 { p } else { self.b.ins().iadd_imm(p, off) };
-                    return Ok((Some(addr), self.cx.guard_of(&inner)));
+                    self.crt("ksn_rt_thr_lock", &[p], None);
+                    let slot = self.alloc(8, 8);
+                    self.b.ins().store(MemFlags::new(), p, slot, 0);
+                    return Ok((Some(slot), self.cx.guard_of(&inner)));
                 }
             }
-            // `std.sync.MutexGuard.get` / `get_mut`: ガードは値のアドレス。
+            // `std.sync.MutexGuard.get` / `get_mut`: ガードが持つミューテックスの値の場所。
             if let Some(inner) = self.cx.guard_inner(rt) {
                 if (name == "get" || name == "get_mut") && args.is_empty() {
-                    let (p, _) = self.expr(recv, env, None)?;
-                    let p = p.ok_or("bad receiver")?;
+                    let (g, _) = self.expr(recv, env, None)?;
+                    let g = g.ok_or("bad receiver")?;
+                    let pt = self.ptr_ty();
+                    let m = self.b.ins().load(pt, MemFlags::new(), g, 0);
+                    let ml = self.cx.layout(&self.cx.mutex_of(&inner), 0)?;
+                    let p = self.b.ins().iadd_imm(m, ml.fields[1].2 as i64);
                     if name == "get_mut" {
                         // `&mut スカラー` はアドレス (`mutref<T>`)、構造体などはアドレスをそのまま。
                         return Ok((Some(p), if is_agg(&inner) { inner } else { format!("mutref<{}>", inner) }));
@@ -5058,6 +6711,25 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                     }
                     let v = self.b.ins().load(cl(&inner), MemFlags::new(), p, 0);
                     return Ok((Some(v), inner));
+                }
+            }
+            if let Some(t) = self.cx.sender_inner(rt) {
+                if name == "send" && args.len() == 1 {
+                    return self.chan_send(recv, &t, &args[0], env);
+                }
+                if name == "clone" && args.is_empty() {
+                    return self.chan_clone(recv, rt, true, env);
+                }
+            }
+            if let Some(t) = self.cx.receiver_inner(rt) {
+                if name == "recv" && args.is_empty() {
+                    return self.chan_recv(recv, &t, env);
+                }
+                if name == "clone" && args.is_empty() {
+                    return self.chan_clone(recv, rt, false, env);
+                }
+                if name == "close" && args.is_empty() {
+                    return self.chan_close(recv, rt, env);
                 }
             }
             if name == "clone" && args.is_empty() && self.cx.builtin_method_ty(rt, "clone").is_some() && !self.funcs.contains_key(&format!("{}.clone", rt)) {
@@ -5087,6 +6759,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let p = p.ok_or("bad receiver")?;
                 return self.map_err(recv, p, rt, &args[0], env);
             }
+            if self.cx.sys_ret(&format!("{}.{}", rt, name)).is_some() {
+                if let Some(r) = self.sys_call(&format!("{}.{}", rt, name), Some(recv), args, env)? {
+                    return Ok(r);
+                }
+            }
             if rt == "std.rand.Rng" && name == "next_u64" {
                 let (p, _) = self.expr(recv, env, None)?;
                 let p = p.ok_or("bad receiver")?;
@@ -5095,15 +6772,26 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.ins().store(MemFlags::new(), ns, p, 0);
                 return Ok((Some(z), "u64".into()));
             }
-            if rt.starts_with("joinhandle<") && name == "join" && args.is_empty() {
+            if let (Some(t), "join", true) = (self.cx.handle_inner(rt), name, args.is_empty()) {
+                // スレッドの終了を待ち、環境ブロックの先頭にある結果を読んで、ブロックを解放する。
                 let (p, _) = self.expr(recv, env, None)?;
                 let p = p.ok_or("bad receiver")?;
-                self.consume(recv, rt, env)?;
-                let l = self.cx.layout(rt, 0)?;
-                let (fty, off) = (l.fields[0].1.clone(), l.fields[0].2);
-                let addr = self.b.ins().iadd_imm(p, off as i64);
-                let v = self.load_value(addr, &fty);
-                return Ok((Some(v), fty));
+                let pt = self.ptr_ty();
+                let h = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                let envp = self.crt("ksn_rt_thr_join", &[h], Some(pt)).ok_or("join")?;
+                let out = if t == "void" {
+                    None
+                } else if is_agg(&t) {
+                    let dst = self.alloc_for(&t)?;
+                    let size = self.cx.layout(&t, 0)?.size;
+                    self.copy_mem(dst, envp, size);
+                    Some(dst)
+                } else {
+                    Some(self.b.ins().load(cl(&t), MemFlags::new(), envp, 0))
+                };
+                let fr = self.rt.free;
+                self.call_rt(fr, &[envp]);
+                return Ok((out, t));
             }
             if rt.starts_with("Option<") && name == "take" && args.is_empty() {
                 let (p, _) = self.expr(recv, env, None)?;
@@ -5176,7 +6864,11 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 Ok(Some((Some(slot), self.cx.slice_of(elem))))
             }
             "get" | "first" | "last" | "get_mut" => {
-                if !is_scalar(elem) && (name == "get_mut" || self.cx.needs_drop(elem)) {
+                // 解放が要る要素 (`String` など) の `get` は、要素のビット列を `Some` に写した別名を返す。別名は `match` の
+                // 腕が読むだけなら安全 (束縛は参照で、解放されない)。`let` などで所有者にされると二重解放になるので、
+                // `match` の被検査式にあるときだけ許す。
+                let alias_ok = std::mem::take(&mut self.alias_ok);
+                if !is_scalar(elem) && (name == "get_mut" || (self.cx.needs_drop(elem) && !alias_ok)) {
                     return Err(format!("{} on this kind of aggregate elements", name));
                 }
                 let by_addr = name == "get_mut";
@@ -5248,6 +6940,41 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 self.b.ins().jump(head, &[n]);
                 self.b.switch_to_block(done);
                 Ok(Some((Some(self.b.block_params(done)[0]), "bool".into())))
+            }
+            "split_at" => {
+                // `Option<(&[T], &[T])>`: `mid <= len` なら、境目で分けた 2 つのスライス。
+                if args.len() != 1 {
+                    return Err("split_at needs one argument".into());
+                }
+                let sl = self.cx.slice_of(elem);
+                let tup = self.cx.tuple_of(&[sl.clone(), sl]);
+                let rty = self.cx.builtin_enum("Option", &[tup.clone()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let (mid, _) = self.expr(&args[0], env, Some("usize"))?;
+                let mid = mid.ok_or("bad index")?;
+                let ok = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, mid, len);
+                let (yes, no, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(ok, yes, &[], no, &[]);
+                self.b.switch_to_block(no);
+                let t0 = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), t0, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(yes);
+                let base = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                let off = self.b.ins().imul_imm(mid, sz as i64);
+                let rest = self.b.ins().iadd(base, off);
+                let rest_len = self.b.ins().isub(len, mid);
+                let dst = self.b.ins().iadd_imm(res, l.variants[1].1[0].1 as i64);
+                self.b.ins().store(MemFlags::new(), base, dst, 0);
+                self.b.ins().store(MemFlags::new(), mid, dst, 8);
+                self.b.ins().store(MemFlags::new(), rest, dst, 16);
+                self.b.ins().store(MemFlags::new(), rest_len, dst, 24);
+                let t1 = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), t1, res, 0);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok(Some((Some(res), rty)))
             }
             "copy_from" if is_slice && !self.cx.needs_drop(elem) => {
                 // 長さが違えば Err(LengthError { expected: 自分の長さ })。同じなら要素を写す。
@@ -5603,6 +7330,55 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
                 let failed = self.string_append(p, slot, n)?;
                 let (res, rty) = self.alloc_result(failed)?;
                 return Ok((Some(res), rty));
+            }
+            "push_u64" | "push_i64" => {
+                let arg = args.first().ok_or("needs a number")?;
+                let want = if name == "push_u64" { "u64" } else { "i64" };
+                let (v, t) = self.expr(arg, env, Some(want))?;
+                if t != want {
+                    return Err(format!("{} of a non-{}", name, want));
+                }
+                let v = v.ok_or("bad number")?;
+                let buf = self.alloc(24, 8);
+                let f = if name == "push_u64" { "ksn_rt_fmt_u64" } else { "ksn_rt_fmt_i64" };
+                let n = self.crt(f, &[buf, v], Some(i64t)).ok_or("fmt")?;
+                let failed = self.string_append(p, buf, n)?;
+                let (res, rty) = self.alloc_result(failed)?;
+                Ok((Some(res), rty))
+            }
+            "push_bytes" => {
+                let arg = args.first().ok_or("push_bytes needs bytes")?;
+                let (bv, bt) = self.expr(arg, env, None)?;
+                let bv = bv.ok_or("bad bytes")?;
+                if self.cx.seq_elem(&bt).as_deref() != Some("u8") {
+                    return Err("push_bytes of a non-byte sequence".into());
+                }
+                let src = self.b.ins().load(pt, MemFlags::new(), bv, 0);
+                let n = self.b.ins().load(i64t, MemFlags::new(), bv, 8);
+                let u = self.rt.utf8;
+                let r = self.call_rt(u, &[src, n])[0];
+                let valid = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                let rty = self.cx.builtin_enum("Result", &["void".into(), "alloc.string.PushBytesError".into()])?;
+                let l = self.cx.layout(&rty, 0)?;
+                let res = self.alloc(l.size, l.align);
+                let (ok_b, bad_b, done) = (self.b.create_block(), self.b.create_block(), self.b.create_block());
+                self.b.ins().brif(valid, ok_b, &[], bad_b, &[]);
+                self.b.switch_to_block(bad_b);
+                // `Err(PushBytesError)`: 正しくない UTF-8 は `InvalidUtf8` (番号 1)、確保の失敗は `Alloc` (番号 0)
+                let err_off = l.variants[1].1[0].1 as i32;
+                let one = self.b.ins().iconst(types::I32, 1);
+                self.b.ins().store(MemFlags::new(), one, res, 0);
+                self.b.ins().store(MemFlags::new(), one, res, err_off);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(ok_b);
+                let failed = self.string_append(p, src, n)?;
+                let tg = self.b.ins().uextend(types::I32, failed);
+                self.b.ins().store(MemFlags::new(), tg, res, 0);
+                let zero = self.b.ins().iconst(types::I32, 0);
+                self.b.ins().store(MemFlags::new(), zero, res, err_off);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                Ok((Some(res), rty))
             }
             "len" => {
                 let v = self.b.ins().load(i64t, MemFlags::new(), p, 8);
@@ -6568,8 +8344,8 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// `P.from_S(x)` / `P.try_from_S(x)` / `char.try_from_u32(x)` (P は整数)。変換でなければ None。
     fn conv_call(&mut self, segs: &[String], args: &[V], env: &mut Env) -> R<Option<(Option<Value>, String)>> {
         if let [p, n] | [_, _, p, n] = segs {
-            if n == "from_str_radix" && is_int(p) && args.len() == 2 && (segs.len() == 2 || (segs[0] == "core" && segs[1] == "num")) {
-                if cl(p).bits() > 64 {
+            if (n == "parse" && args.len() == 1 || n == "from_str_radix" && args.len() == 2) && is_int(p) && (segs.len() == 2 || (segs[0] == "core" && segs[1] == "num")) {
+                if cl(p).bits() > 64 && n == "from_str_radix" {
                     return Err(format!("128-bit from_str_radix ({})", p));
                 }
                 return self.from_str_radix(p, args, env).map(Some);
@@ -6705,9 +8481,14 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
             return Err("from_str_radix of a non-string".into());
         }
         let sv = sv.ok_or("bad string")?;
-        let (rv, _) = self.expr(&args[1], env, Some("u32"))?;
-        let rv = rv.ok_or("bad radix")?;
-        let radix = self.b.ins().uextend(i64t, rv);
+        let radix = if args.len() == 1 {
+            // `parse`: 10 進
+            self.b.ins().iconst(i64t, 10)
+        } else {
+            let (rv, _) = self.expr(&args[1], env, Some("u32"))?;
+            let rv = rv.ok_or("bad radix")?;
+            self.b.ins().uextend(i64t, rv)
+        };
         let rty = self.cx.builtin_enum("Result", &[p.to_string(), "core.num.ParseIntError".into()])?;
         let l = self.cx.layout(&rty, 0)?;
         let res = self.alloc(l.size, l.align);
@@ -7017,6 +8798,16 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
 
     /// `&Vec<T>` → `&[T]`、`&String` → `&str` の暗黙の変換 (どちらも {ptr, len} を作る)。
     fn coerce(&mut self, v: Value, from: &str, to: &str) -> R<Value> {
+        // `&T` / `&mut T` → `&dyn Tr` / `&mut dyn Tr` (4.2): `{データ, vtable}` を作る。
+        if let Some(tr) = to.strip_prefix("dyn ") {
+            if !from.starts_with("dyn ") && is_agg(from) {
+                let vt = self.vtable_for(from, tr)?;
+                let slot = self.alloc(16, 8);
+                self.b.ins().store(MemFlags::new(), v, slot, 0);
+                self.b.ins().store(MemFlags::new(), vt, slot, 8);
+                return Ok(slot);
+            }
+        }
         let ok = (from == STRING && to == "str")
             || (self.cx.elem_of(from).is_some() && self.cx.slices.borrow().get(to).cloned() == self.cx.elem_of(from));
         if !ok {
@@ -7038,9 +8829,83 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
     /// `str` と `Vec` の組み込みメソッド。`p` はレシーバの先頭アドレス。
     fn builtin_method(&mut self, p: Value, rt: &str, name: &str, args: &[V], env: &mut Env) -> R<(Option<Value>, String)> {
         let i64t = types::I64;
-        if rt == "str" {
+        if rt == "str" || (rt == STRING && STR_METHODS.contains(&name)) {
             let len = self.b.ins().load(i64t, MemFlags::new(), p, 8);
             return match name {
+                "ends_with" | "contains" | "eq_ignore_ascii_case" | "rfind" => {
+                    let (pp, pl) = self.str_arg(args.first().ok_or("needs an argument")?, env)?;
+                    let pt = self.ptr_ty();
+                    let sp = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                    match name {
+                        "rfind" => {
+                            let r = self.crt("ksn_rt_rfind", &[sp, len, pp, pl], Some(i64t)).ok_or("rfind")?;
+                            self.opt_index(r)
+                        }
+                        "contains" => {
+                            let r = self.crt("ksn_rt_find", &[sp, len, pp, pl], Some(i64t)).ok_or("contains")?;
+                            let b = self.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, r, 0);
+                            Ok((Some(b), "bool".into()))
+                        }
+                        _ => {
+                            let f = if name == "ends_with" { "ksn_rt_ends_with" } else { "ksn_rt_eq_nocase" };
+                            let r = self.crt(f, &[sp, len, pp, pl], Some(types::I32)).ok_or("str method")?;
+                            let b = self.b.ins().icmp_imm(IntCC::NotEqual, r, 0);
+                            Ok((Some(b), "bool".into()))
+                        }
+                    }
+                }
+                "trim" | "trim_start" | "trim_end" => {
+                    let pt = self.ptr_ty();
+                    let sp = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                    let mode = self.b.ins().iconst(types::I32, match name { "trim_start" => 1, "trim_end" => 2, _ => 3 });
+                    let out = self.alloc(16, 8);
+                    self.crt("ksn_rt_trim", &[sp, len, mode, out], None);
+                    Ok((Some(out), "str".into()))
+                }
+                "strip_prefix" | "strip_suffix" => {
+                    let (pp, pl) = self.str_arg(args.first().ok_or("needs an argument")?, env)?;
+                    let pt = self.ptr_ty();
+                    let sp = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                    let rty = self.cx.builtin_enum("Option", &["str".into()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let out = self.b.ins().iadd_imm(res, l.variants[1].1[0].1 as i64);
+                    let mode = self.b.ins().iconst(types::I32, if name == "strip_prefix" { 1 } else { 2 });
+                    let r = self.crt("ksn_rt_strip", &[sp, len, pp, pl, mode, out], Some(types::I32)).ok_or("strip")?;
+                    self.b.ins().store(MemFlags::new(), r, res, 0);
+                    Ok((Some(res), rty))
+                }
+                "split_once" => {
+                    let (pp, pl) = self.str_arg(args.first().ok_or("needs an argument")?, env)?;
+                    let pt = self.ptr_ty();
+                    let sp = self.b.ins().load(pt, MemFlags::new(), p, 0);
+                    let zero = self.b.ins().iconst(i64t, 0);
+                    let idx = self.crt("ksn_rt_split_find", &[sp, len, zero, pp, pl], Some(i64t)).ok_or("split_once")?;
+                    let tup = self.cx.tuple_of(&["str".to_string(), "str".to_string()]);
+                    let rty = self.cx.builtin_enum("Option", &[tup.clone()])?;
+                    let l = self.cx.layout(&rty, 0)?;
+                    let tl = self.cx.layout(&tup, 0)?;
+                    let res = self.alloc(l.size, l.align);
+                    let found = self.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, idx, 0);
+                    let (yes, done) = (self.b.create_block(), self.b.create_block());
+                    let tg = self.b.ins().uextend(types::I32, found);
+                    self.b.ins().store(MemFlags::new(), tg, res, 0);
+                    self.b.ins().brif(found, yes, &[], done, &[]);
+                    self.b.switch_to_block(yes);
+                    let base = self.b.ins().iadd_imm(res, l.variants[1].1[0].1 as i64);
+                    let a0 = self.b.ins().iadd_imm(base, tl.fields[0].2 as i64);
+                    self.b.ins().store(MemFlags::new(), sp, a0, 0);
+                    self.b.ins().store(MemFlags::new(), idx, a0, 8);
+                    let a1 = self.b.ins().iadd_imm(base, tl.fields[1].2 as i64);
+                    let skip = self.b.ins().iadd(idx, pl);
+                    let rest = self.b.ins().iadd(sp, skip);
+                    let rest_len = self.b.ins().isub(len, skip);
+                    self.b.ins().store(MemFlags::new(), rest, a1, 0);
+                    self.b.ins().store(MemFlags::new(), rest_len, a1, 8);
+                    self.b.ins().jump(done, &[]);
+                    self.b.switch_to_block(done);
+                    Ok((Some(res), rty))
+                }
                 "len" => Ok((Some(len), "usize".into())),
                 "is_empty" => {
                     let r = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
@@ -7175,7 +9040,7 @@ impl<'a, 'b, 'm> FnGen<'a, 'b, 'm> {
         let is_deque = self.cx.deques.borrow().contains_key(rt);
         let elem = self.cx.seq_elem(rt).or_else(|| self.cx.deque_elem(rt)).ok_or("not a sequence")?;
         let sz = self.elem_size(&elem)?;
-        if is_slice || matches!(name, "get" | "first" | "last" | "get_mut" | "sub" | "sub_mut" | "as_slice" | "as_mut_slice" | "contains" | "iter") {
+        if is_slice || matches!(name, "get" | "first" | "last" | "get_mut" | "sub" | "sub_mut" | "as_slice" | "as_mut_slice" | "contains" | "split_at" | "iter") {
             if let Some(r) = self.seq_method(p, &elem, sz, is_slice, name, args, env)? {
                 return Ok(r);
             }
@@ -7702,14 +9567,116 @@ fn int_value(text: &str) -> R<i64> {
 }
 
 /// 関数 `d` (型パラメータは `subst` で具体化した版) の Cranelift のシグネチャ。
+/// 参照を返す関数を受け付けてよいか調べる。受け付けるのは、持ち主を移さない (解放が要らない) 次の形だけ。
+/// - `&スカラー`: 値そのものとして返る (借用の間は値が変わらない)。
+/// - `&str` / `&[T]`: `{ptr, len}` の組が返る。指す先が関数の外に残るものだけ受け付ける。つまり返す式が
+///   文字列・バイト列リテラル、参照型の引数、またはその引数に `as_str` / `trim` などをつないだもの。
+///   ローカル変数や、この関数が作った値を指すものは受け付けない (ぶら下がり参照になる)。
+///
+/// `&mut`、`&String` / `&Vec` / `&構造体` などの参照は、持ち主を二重に解放したり、値のコピーが別名にならなかったり
+/// するので、理由を付けて未対応にする。
+fn check_ref_return(cx: &Cx, d: &Def) -> R<()> {
+    if matches!(tel(&d.ret, 1), V::B(true)) {
+        return Err("returns a mutable reference".into());
+    }
+    let target = tel(&d.ret, 2);
+    let is_seq = tag(target) == "slice" || (tag(target) == "prim" && st(tel(target, 1)) == "str");
+    if !is_seq {
+        let inner = cx.pty(target)?;
+        if is_scalar(&inner) && !is_mutref(&inner) {
+            return Ok(());
+        }
+        return Err("returns a reference to an aggregate (only &str, &[T] and references to scalars are supported)".into());
+    }
+    let Some(body) = d.body.as_ref() else { return Ok(()) };
+    // 標準ライブラリの関数 (`core.fmt.Formatter.written` など。借用を返す本体を保証済みとして使う) は、下の保守的な
+    // 追跡 (引数の参照か文字列リテラルに由来するか) を通さない。利用者の関数だけを調べる。
+    if d.name.starts_with("core.") || d.name.starts_with("alloc.") || d.name.starts_with("std.") {
+        return Ok(());
+    }
+    let refs: HashSet<String> = d.params.iter().filter(|(_, t)| tag(t) == "ref").map(|(n, _)| n.clone()).collect();
+    let mut leaves: Vec<&V> = vec![];
+    ref_leaves(body, &mut leaves);
+    let mut nodes: Vec<&V> = vec![];
+    crate::check::walk(body, &mut nodes);
+    for n in nodes {
+        if nname(n) == "Return" && !matches!(nf(n)[0], V::Nil) {
+            ref_leaves(&nf(n)[0], &mut leaves);
+        }
+    }
+    for l in leaves {
+        if !ref_rooted(l, &refs) {
+            return Err("returns a reference that may not outlive the function (only string literals and reference parameters, optionally through as_str / as_bytes / as_slice / trim, are supported)".into());
+        }
+    }
+    Ok(())
+}
+
+/// 関数本体の値になる式 (末尾の式。`if` / `match` / ブロックの腕の末尾も含む)。`return` は別に拾う。
+fn ref_leaves<'v>(e: &'v V, out: &mut Vec<&'v V>) {
+    match nname(e) {
+        "Block" => {
+            if let Some(last) = items(&nf(e)[0]).last() {
+                ref_leaves(last, out);
+            }
+        }
+        "ExprStmt" => ref_leaves(&nf(e)[0], out),
+        "If" => {
+            ref_leaves(&nf(e)[1], out);
+            if !matches!(nf(e)[2], V::Nil) {
+                ref_leaves(&nf(e)[2], out);
+            }
+        }
+        "Match" => {
+            for arm in items(&nf(e)[1]) {
+                if let Some(b) = items(arm).get(1) {
+                    ref_leaves(b, out);
+                }
+            }
+        }
+        "Unsafe" => ref_leaves(&nf(e)[2], out),
+        // 戻らない式。値にならないので何も足さない。
+        "Return" | "Break" | "Continue" => {}
+        "Call" if nname(&nf(e)[0]) == "Path" && matches!(strs(&nf(&nf(e)[0])[0]).as_slice(), [a, b, _] if a == "core" && b == "panic") => {}
+        _ => out.push(e),
+    }
+}
+
+/// 返す式 `e` が、関数の外に残るものを指すか (`refs` は参照型の引数の名前)。
+fn ref_rooted(e: &V, refs: &HashSet<String>) -> bool {
+    match nname(e) {
+        "Lit" => matches!(st(&nf(e)[0]).as_str(), "str" | "bstr"),
+        "Path" => {
+            let segs = strs(&nf(e)[0]);
+            segs.len() == 1 && refs.contains(&segs[0])
+        }
+        "Unary" => matches!(st(&nf(e)[0]).as_str(), "&" | "&mut") && ref_rooted(&nf(e)[1], refs),
+        // `x.as_str()` は、受け手が変数のとき `Call(Path[x, as_str])` の形になる。
+        "Call" => {
+            let callee = &nf(e)[0];
+            if nname(callee) != "Path" || !items(&nf(e)[1]).is_empty() {
+                return false;
+            }
+            let segs = strs(&nf(callee)[0]);
+            segs.len() == 2 && refs.contains(&segs[0]) && matches!(segs[1].as_str(), "as_str" | "as_bytes" | "as_slice" | "trim" | "trim_start" | "trim_end")
+        }
+        "MCall" => {
+            matches!(st(&nf(e)[1]).as_str(), "as_str" | "as_bytes" | "as_slice" | "trim" | "trim_start" | "trim_end")
+                && items(&nf(e)[2]).is_empty()
+                && ref_rooted(&nf(e)[0], refs)
+        }
+        _ => false,
+    }
+}
+
 fn make_sig(module: &ObjectModule, cx: &Cx, d: &Def, is_entry: bool, subst: &HashMap<String, String>) -> R<cranelift_codegen::ir::Signature> {
     let ptr = module.target_config().pointer_type();
     let old = cx.file.replace(d.file.clone());
     let olds = cx.subst.replace(subst.clone());
     let r = (|| -> R<cranelift_codegen::ir::Signature> {
         let mut sig = module.make_signature();
-        if !is_entry && tag(&d.ret) == "ref" && tag(tel(&d.ret, 2)) != "slice" {
-            return Err(format!("{}: returns a reference", d.name));
+        if !is_entry && tag(&d.ret) == "ref" {
+            check_ref_return(cx, d).map_err(|e| format!("{}: {}", d.name, e))?;
         }
         let rty = if is_entry { "void".to_string() } else { cx.pty(&d.ret).map_err(|e| format!("{}: {}", d.name, e))? };
         if !is_entry && is_agg(&rty) {
@@ -7753,7 +9720,14 @@ pub fn compile_clif(
     let tm_all = std::time::Instant::now();
     let tm_on = std::env::var_os("KSN_TIME").is_some();
     MONO_NS.with(|c| c.set(0));
-    let cx = Cx { types: type_defs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()) };
+    // std.fs / std.net のハンドルとエラー型は、標準ライブラリの宣言から取って、利用者の型と同じように配置する。
+    let mut all_types = type_defs.clone();
+    for n in ["std.io.Error", "std.io.ErrorKind", "std.net.Error", "std.fs.File", "std.net.TcpStream", "std.net.TcpListener", "std.sync.SendError", "alloc.string.PushBytesError", "std.time.Instant", "std.time.Duration"] {
+        if let Some(&i) = prog.types.get(n) {
+            all_types.entry(n.to_string()).or_insert(&prog.defs[i]);
+        }
+    }
+    let cx = Cx { types: &all_types, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()), vtables: RefCell::new(HashMap::new()) };
     let mut flags = settings::builder();
     flags.set("opt_level", if release { "speed" } else { "none" }).map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
@@ -7817,18 +9791,11 @@ pub fn compile_clif(
 
     // ランタイム (C ライブラリ) の宣言。
     let mut sig = module.make_signature();
-    sig.params.push(AbiParam::new(ptr));
-    sig.returns.push(AbiParam::new(types::I32));
-    let puts = module.declare_function("puts", Linkage::Import, &sig).map_err(|e| e.to_string())?;
-    let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I32));
     sig.params.push(AbiParam::new(ptr));
     sig.params.push(AbiParam::new(types::I32));
     sig.returns.push(AbiParam::new(types::I32));
     let write = module.declare_function("write", Linkage::Import, &sig).map_err(|e| e.to_string())?;
-    let mut sig = module.make_signature();
-    sig.params.push(AbiParam::new(types::I32));
-    let exit = module.declare_function("exit", Linkage::Import, &sig).map_err(|e| e.to_string())?;
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(ptr));
     sig.params.push(AbiParam::new(types::I64));
@@ -7865,21 +9832,22 @@ pub fn compile_clif(
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(ptr));
     let memmove = module.declare_function("memmove", Linkage::Import, &sig).map_err(|e| e.to_string())?;
-    let rt = Rt { puts, write, exit, realloc, calloc, free, memcpy, memcmp, memmove, utf8 };
+    let rt = Rt { write, realloc, calloc, free, memcpy, memcmp, memmove, utf8 };
 
     let t_collect = tm_all.elapsed();
     // 関数の宣言。入口は C の `main` にする。構造体・列挙型を返す関数は、先頭に戻り値用のアドレスを取る。
     let ids: RefCell<HashMap<String, FuncId>> = RefCell::new(HashMap::new());
     let pending: RefCell<Vec<Inst>> = RefCell::new(vec![]);
+    let statics: RefCell<HashMap<String, cranelift_module::DataId>> = RefCell::new(HashMap::new());
     let empty: HashMap<String, String> = HashMap::new();
     let mut queue: Vec<Inst> = vec![];
     for n in &order {
         let d = funcs[n];
         let sig = make_sig(&module, &cx, d, n == entry, &empty)?;
-        let (name, link) = if n == entry { ("main".to_string(), Linkage::Export) } else { (mangle(n), Linkage::Local) };
+        let (name, link) = if n == entry { ("ksn_main".to_string(), Linkage::Export) } else { (mangle(n), Linkage::Local) };
         let id = module.declare_function(&name, link, &sig).map_err(|e| e.to_string())?;
         ids.borrow_mut().insert(n.clone(), id);
-        queue.push(Inst { key: n.clone(), def: d, subst: HashMap::new(), entry: n == entry });
+        queue.push(Inst { key: n.clone(), def: d, subst: HashMap::new(), entry: n == entry, thunk: None, glue: None });
     }
 
     let t_declare = tm_all.elapsed();
@@ -7903,10 +9871,14 @@ pub fn compile_clif(
             b.append_block_params_for_function_params(eb);
             b.switch_to_block(eb);
             let params_vals = b.block_params(eb).to_vec();
-            let ret_ty = if inst.entry { "void".to_string() } else { cx.pty(&d.ret)? };
+            let ret_ty = if inst.entry || inst.thunk.is_some() || inst.glue.is_some() { "void".to_string() } else { cx.pty(&d.ret)? };
             let mut g = FnGen {
                 b,
                 module: &mut module,
+                def: d,
+                statics: &statics,
+                let_lock: false,
+                alias_ok: false,
                 cx: &cx,
                 funcs,
                 ids: &ids,
@@ -7920,6 +9892,7 @@ pub fn compile_clif(
                 term: false,
                 nvar: 0,
                 scopes: vec![],
+                defers: vec![],
                 owners: HashMap::new(),
                 refs: HashSet::new(),
                 addr_taken: HashSet::new(),
@@ -7928,7 +9901,11 @@ pub fn compile_clif(
                 closure_ctx: HashMap::new(),
                 promoted: HashSet::new(),
             };
-            g.func(d, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?;
+            match (&inst.thunk, &inst.glue) {
+                (_, Some(ty)) => g.glue_body(ty, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?,
+                (Some(th), None) => g.thunk_body(th, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?,
+                (None, None) => g.func(d, &params_vals).map_err(|e| format!("{}: {}", d.name, e))?,
+            }
             let FnGen { mut b, .. } = g;
             b.seal_all_blocks();
             b.finalize();
@@ -7944,10 +9921,55 @@ pub fn compile_clif(
     let bytes = module.finish().emit().map_err(|e| e.to_string())?;
     let t_emit = tm_all.elapsed();
     let opath = format!("{}.o", out_path);
-    std::fs::write(&opath, bytes).map_err(|e| e.to_string())?;
+    // `ksn_rt_sys_` は OS ランタイム (sysrt.c)、`ksn_rt_thr_` はスレッド (thrrt.c)、コア (rt.c。起動・panic・スタック溢れ) は常にリンクする。
+    // それ以外の `ksn_rt_` は文字列ランタイム (strrt.c)。
+    let uses_sys = bytes.windows(11).any(|w| w == b"ksn_rt_sys_");
+    let uses_thr = bytes.windows(11).any(|w| w == b"ksn_rt_thr_");
+    let uses_rt = bytes.windows(7).enumerate().any(|(i, w)| {
+        if w != b"ksn_rt_" {
+            return false;
+        }
+        let rest = &bytes[i + 7..];
+        let n = rest.iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_').count();
+        let name = &rest[..n];
+        !(name.starts_with(b"sys_") || name.starts_with(b"thr_") || CORE_RT_SYMS.contains(&name))
+    });
+    std::fs::write(&opath, &bytes).map_err(|e| e.to_string())?;
     let t_write = tm_all.elapsed();
     let cc = ["gcc", "cc", "clang"].iter().find(|c| which(c)).ok_or("no linker found (gcc / cc / clang)")?;
-    let r = std::process::Command::new(cc).args(["-o", out_path, &opath]).output().map_err(|e| e.to_string())?;
+    // 文字列ランタイム (strrt.c) は、`ksn_rt_` の関数を使うときだけ一緒にコンパイルする。
+    let rt_c = format!("{}.rt.c", out_path);
+    let mut cmd = std::process::Command::new(cc);
+    cmd.args(["-o", out_path, &opath]);
+    // コアランタイム (rt.c) は常にリンクする。
+    let core_c = format!("{}.core.c", out_path);
+    std::fs::write(&core_c, include_str!("rt.c")).map_err(|e| e.to_string())?;
+    cmd.args(["-O1", &core_c]);
+    if uses_rt {
+        std::fs::write(&rt_c, include_str!("strrt.c")).map_err(|e| e.to_string())?;
+        cmd.args(["-O1", &rt_c]);
+    }
+    let sys_c = format!("{}.sys.c", out_path);
+    if uses_sys {
+        std::fs::write(&sys_c, include_str!("sysrt.c")).map_err(|e| e.to_string())?;
+        cmd.args(["-O1", &sys_c]);
+        // 動的ロード (`link "lib:name"`) は dlopen / dlsym を使う (古い glibc では libdl が別)。
+        if !cfg!(windows) && bytes.windows(16).any(|w| w == b"ksn_rt_sys_dlsym") {
+            cmd.arg("-ldl");
+        }
+    }
+    // スレッドランタイム (thrrt.c) は POSIX スレッドを使うので `-pthread` を付ける。
+    let thr_c = format!("{}.thr.c", out_path);
+    if uses_thr {
+        std::fs::write(&thr_c, include_str!("thrrt.c")).map_err(|e| e.to_string())?;
+        cmd.args(["-O1", "-pthread", &thr_c]);
+    }
+    let r = cmd.output();
+    let _ = std::fs::remove_file(&core_c);
+    let _ = std::fs::remove_file(&rt_c);
+    let _ = std::fs::remove_file(&sys_c);
+    let _ = std::fs::remove_file(&thr_c);
+    let r = r.map_err(|e| e.to_string())?;
     let t_link = tm_all.elapsed();
     if tm_on {
         let mono = MONO_NS.with(|c| c.get()) as f64 / 1e6;
@@ -7977,6 +9999,9 @@ fn is_cont(b: &mut FunctionBuilder, v: Value) -> Value {
     let m = b.ins().band_imm(v, 0xC0);
     b.ins().icmp_imm(IntCC::Equal, m, 0x80)
 }
+
+/// コアランタイム (rt.c) の `ksn_rt_` の名前。文字列ランタイム (strrt.c) の参照とは数えない。
+const CORE_RT_SYMS: [&[u8]; 2] = [b"panic", b"entry_error"];
 
 /// `ksn_utf8_valid(ptr, len) -> i32` を定義する (正しい UTF-8 なら 1)。
 fn define_utf8_valid(module: &mut ObjectModule, id: FuncId, fbc: &mut FunctionBuilderContext) -> R<()> {
@@ -8143,7 +10168,7 @@ pub(crate) fn layout_probe(prog: &Program, name: &str) -> R<(u32, u32, Vec<u32>,
             tdefs.insert(f.name.clone(), f);
         }
     }
-    let cx = Cx { types: &tdefs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()) };
+    let cx = Cx { types: &tdefs, prog, file: RefCell::new(String::new()), gen: RefCell::new(HashMap::new()), vecs: RefCell::new(HashMap::new()), deques: RefCell::new(HashMap::new()), slices: RefCell::new(HashMap::new()), tuples: RefCell::new(HashMap::new()), maps: RefCell::new(HashMap::new()), subst: RefCell::new(HashMap::new()), inst_types: RefCell::new(HashMap::new()), closure_types: RefCell::new(HashMap::new()), vtables: RefCell::new(HashMap::new()) };
     if let Some(inner) = name.strip_prefix("tuple<").and_then(|r| r.strip_suffix('>')) {
         let elems: Vec<String> = inner.split(',').map(String::from).collect();
         cx.tuple_of(&elems);

@@ -1,0 +1,33 @@
+// expect: E3041
+type t.Res linear
+    id: u32
+    tag: u32
+end t.Res
+
+fn t.Res.get(self: &t.Res) -> u32
+    self.id
+end t.Res.get
+
+fn t.Res.name(self: &t.Res) -> &str
+    "res"
+end t.Res.name
+
+fn t.Res.new(id: u32) -> t.Res
+    t.Res { id: id, tag: 0u32 }
+end t.Res.new
+
+fn t.Res.shut(self: t.Res) -> ()
+    let t.Res { id: id, tag: tag } = self
+    core.mem.drop(id)
+    core.mem.drop(tag)
+end t.Res.shut
+
+fn t.bad() -> () uses [] panics never
+    with r = t.Res.new(1u32) close core.mem.drop(r.get()) {
+        core.mem.drop(r.get())
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

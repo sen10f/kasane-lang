@@ -1,0 +1,7 @@
+type t.Rec layout c
+    name: alloc.string.String<std.alloc.System>
+end t.Rec
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

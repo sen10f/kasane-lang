@@ -8,7 +8,7 @@
 //!
 //! `expect` は Kasane の Option / Result のメソッドではない (E1108) ので扱わない。
 
-use crate::check::{items, nf, nline, nname, st, strs};
+use crate::check::{items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{Op, Term, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
@@ -74,7 +74,13 @@ impl<'a> Lw<'a> {
         if !matches!(self.slots[s].1, Ty::Opt(_) | Ty::Res(..)) {
             return None;
         }
-        let recv = self.read_slot(s);
+        // 所有物を持つ Option / Result の局所は、unwrap がペイロードを取り出すので移す (印を下ろす)。
+        // そうしないと、取り出した値とスコープの終わりの解放が重なって二重解放になる (Fable レビュー n7)。
+        let recv = if super::coll::owns(self, self.slots[s].1) {
+            super::coll::path_read(self, s)
+        } else {
+            self.read_slot(s)
+        };
         Some(self.unwrap_on(recv, nline(e)))
     }
 

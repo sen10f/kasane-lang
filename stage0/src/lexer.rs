@@ -8,6 +8,13 @@ pub struct Tok {
     pub col: usize,
 }
 
+impl Tok {
+    /// AST ノード用の符号化済み位置 (行と列)。
+    pub fn pos(&self) -> usize {
+        crate::parser::pack_pos(self.line, self.col)
+    }
+}
+
 const PRIMS: &[&str] = &[
     "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
     "bool", "char", "str",
@@ -15,7 +22,7 @@ const PRIMS: &[&str] = &[
 const KEYWORDS: &[&str] = &[
     "fn", "type", "enum", "trait", "impl", "const", "static", "extern", "test", "end", "import", "let", "mut",
     "if", "else", "match", "loop", "while", "for", "in", "break", "continue", "return", "true", "false", "self",
-    "Self", "pub", "uses", "panics", "unsafe", "move",
+    "Self", "pub", "uses", "panics", "unsafe", "move", "with",
     "dyn", "blanket", "never", "may", "async", "await", "where", "ref", "as",
 ];
 const OPS2: &[&str] = &["=>", "->", "==", "!=", "<=", ">=", "&&", "||", "::"];
@@ -232,5 +239,5 @@ fn check_escape(chars: &[char], j: usize, ln: usize) -> Result<(), String> {
 
 /// ヘッダ位置でのみ特別な意味を持つ語。識別子としても使える (文脈キーワード)。
 pub fn is_contextual(w: &str) -> bool {
-    matches!(w, "stack" | "impls" | "derive" | "linear" | "layout" | "requires" | "capture" | "link")
+    matches!(w, "stack" | "impls" | "derive" | "linear" | "layout" | "requires" | "capture" | "link" | "close")
 }

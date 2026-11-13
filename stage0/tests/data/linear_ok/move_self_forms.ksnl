@@ -1,0 +1,42 @@
+type t.S
+    name: alloc.string.String
+    n: u32
+end t.S
+
+fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
+    let t.S { name: name, n: _ } = self
+    name
+end t.S.into_name
+
+fn t.S.len(self: &t.S) -> usize uses [] panics never
+    t.peek(&self.name).wrapping_add(t.peek(&self.name))
+end t.S.len
+
+fn t.S.once(self: t.S) -> usize uses [] panics never
+    t.consume(self.name)
+    0usize
+end t.S.once
+
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek
+
+fn t.use_owned(s: t.S, r: &t.S) -> usize uses [] panics never
+    let a = r.len()
+    let b = r.len()
+    let n = s.into_name()
+    t.consume(n)
+    a.wrapping_add(b)
+end t.use_owned

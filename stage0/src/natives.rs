@@ -8,6 +8,7 @@ use crate::check::{items, st};
 use crate::fmath;
 use crate::parser::V;
 use crate::interp::Interp;
+use crate::interp::{DEADLOCK_JOIN, DEADLOCK_RECV};
 use crate::value::*;
 use crate::value::Scope;
 
@@ -17,21 +18,28 @@ pub const NATIVE_NAMES: &[&str] = &[
     "std.process.abort", "std.env.arg", "std.env.arg_count", "std.env.var", "core.iter.range", "core.iter.map",
     "core.iter.filter", "core.iter.enumerate", "core.iter.take", "core.iter.count", "core.iter.fold",
     "core.str.from_utf8", "alloc.vec.Vec.new", "alloc.vec.Vec.with_capacity", "alloc.string.String.new",
-    "alloc.string.String.from_str", "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
+    "alloc.string.String.from_str", "alloc.string.String.replace", "alloc.string.String.join",
+    "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
     "alloc.collections.VecDeque.new",
-    "alloc.boxed.Box.new", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
+    "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
-    "std.fs.create", "std.fs.read_to_end",
+    "std.fs.create", "std.fs.read_to_end", "std.net.connect", "std.net.listen",
 ];
 
 const NUM_EXTRA: &[&str] = &[
-    "abs", "max", "min", "count_ones", "leading_zeros", "trailing_zeros", "successor", "to_f64", "from_str_radix",
+    "abs", "max", "min", "count_ones", "leading_zeros", "trailing_zeros", "successor", "to_f64", "from_str_radix", "parse",
     "to_bits", "from_bits", "rem", "sqrt", "floor", "ceil", "sin", "cos", "tan", "exp", "ln", "powi", "trunc",
     "round_ties_even", "is_nan", "is_finite", "atan2", "nearest_to_f32", "then_some", "is_ascii_alphabetic",
     "is_ascii_digit", "is_ascii_whitespace", "len_utf8", "to_ascii_lowercase", "to_ascii_uppercase", "to_u32",
     "try_from_u32",
 ];
+
+/// プロセスの開始からの単調時計 (ナノ秒)。`std.time.Instant.ticks`。
+pub fn mono_ns() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_nanos() as u64
+}
 
 pub fn known_num(name: &str) -> bool {
     ["wrapping_", "checked_", "saturating_", "from_", "try_from_", "trunc_to_"].iter().any(|p| name.starts_with(p))
@@ -107,22 +115,32 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
         Val::Float(f) => *f as i128,
         _ => 0,
     };
-    if name == "from_str_radix" {
+    if name == "from_str_radix" || name == "parse" {
         let text = str_of(&x).unwrap_or_default();
-        let radix = iv(&a[1]) as u32;
+        let radix = if name == "parse" { 10 } else { iv(&a[1]) as u32 };
         let ty = ity(ty);
+        // 基数が 2..=36 の外なら Err (種類 0)。sig は `panics never` なので、Rust の `from_str_radix` のように panic しない。
+        if !(2..=36).contains(&radix) {
+            return Ok(err(parse_err(0)));
+        }
         // 符号なしは `-` を受け付けない (`-0` も Err)。`+` は符号つきと同じく受け付ける (Rust と同じ、機械語と同じ)。
         if !ty.starts_with('i') && text.starts_with('-') {
             return Ok(err(parse_err(0)));
         }
+        // 種類: 0 は形の誤り (空・符号だけ・桁でない文字)、1 は溢れ (Rust の PosOverflow / NegOverflow)。
+        // i128 に入らない桁数も溢れ (機械語・参照実行器と同じ)。
+        let kind_of = |e: std::num::ParseIntError| match e.kind() {
+            std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => 1,
+            _ => 0,
+        };
         if ty == "u128" {
             return Ok(match u128::from_str_radix(&text, radix) {
                 Ok(v) => ok(int(v as i128, ty)),
-                Err(_) => err(parse_err(0)),
+                Err(e) => err(parse_err(kind_of(e))),
             });
         }
         return Ok(match i128::from_str_radix(&text, radix) {
-            Err(_) => err(parse_err(0)),
+            Err(e) => err(parse_err(kind_of(e))),
             Ok(v) if v < tmin(ty) || v > tmax(ty) => err(parse_err(1)),
             Ok(v) => ok(int(v, ty)),
         });
@@ -266,6 +284,12 @@ fn float_op(name: &str, ty: &str, a: &[Val]) -> Res {
             return Ok(Val::F32(f32::from_bits(*n as u32)));
         }
     }
+    // f32 の `abs` は符号ビットを落とすだけ (ビットのまま)。f64 へ広げると signaling NaN が quiet NaN に変わる。
+    if name == "abs" && f32mode {
+        if let Some(Val::F32(x)) = a.first() {
+            return Ok(Val::F32(f32::from_bits(x.to_bits() & 0x7fff_ffff)));
+        }
+    }
     let r = float_op_f64(name, ty, a)?;
     if f32mode {
         if let Val::Float(x) = r {
@@ -321,7 +345,7 @@ fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
     match name {
         // abs / sqrt は IEEE 754 の演算そのもの (機械語の fabs / sqrt と同じ): -inf の abs は +inf、負と -inf の sqrt は NaN、-0 の sqrt は -0。
         "abs" => Ok(Val::Float(x.abs())),
-        "sqrt" => Ok(Val::Float(x.sqrt())),
+        "sqrt" => Ok(Val::Float(fmath::nan_rule64(x, x, x.sqrt()))),
         "floor" => simple(f64::floor),
         "ceil" => simple(f64::ceil),
         // 超越関数は自前実装 (`fmath`)。f32 は呼び出し側で f32 へ丸める。
@@ -339,7 +363,7 @@ fn float_op_f64(name: &str, ty: &str, a: &[Val]) -> Res {
         "max" => Ok(Val::Float(x.max(y))),
         "min" => Ok(Val::Float(x.min(y))),
         "powi" => Ok(Val::Float(fmath::powi(&fmath::Host, x, y as i64))),
-        "rem" => Ok(Val::Float(if y != 0.0 { x % y } else { f64::NAN })),
+        "rem" => Ok(Val::Float(fmath::nan_rule64(x, y, x % y))),
         "atan2" => Ok(Val::Float(fmath::atan2(&fmath::Host, x, y))),
         _ => panic(format!("unknown float operation {}.{}", ty, name)),
     }
@@ -457,6 +481,9 @@ impl Interp {
     }
 
     pub fn call_native(&mut self, name: &str, args: Vec<Val>) -> Res {
+        if self.dbg_guard {
+            self.dbg_guard_native(name)?;
+        }
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
         match name {
             "core.mem.drop" => Ok(Val::Unit),
@@ -510,7 +537,7 @@ impl Interp {
                 Ok(opt(self.args.get(i).map(|s| s_val(s))))
             }
             "std.env.arg_count" => Ok(usz(self.args.len())),
-            "std.env.var" => Ok(none()),
+            "std.env.var" => Ok(opt(std::env::var(str_of(&a0).unwrap_or_default()).ok().map(|s| s_val(&s)))),
             "core.iter.range" => Ok(Val::Iter(Rc::new(RefCell::new(IterV::Range { cur: dr(&args[0]), end: dr(&args[1]) })))),
             "core.iter.map" => {
                 let src = self.to_iter(&args[0])?;
@@ -568,16 +595,29 @@ impl Interp {
             "alloc.vec.Vec.with_capacity" => Ok(ok(Val::Vec(new_list(vec![])))),
             "alloc.string.String.new" => Ok(Val::StrBuf(Rc::new(RefCell::new(String::new())))),
             "alloc.string.String.from_str" => Ok(ok(Val::StrBuf(Rc::new(RefCell::new(str_of(&args[1]).unwrap_or_default()))))),
+            "alloc.string.String.replace" => {
+                let (text, from, to) = (str_of(&args[1]).unwrap_or_default(), str_of(&args[2]).unwrap_or_default(), str_of(&args[3]).unwrap_or_default());
+                // 空の `from` は置き換えず、そのまま複製する。
+                let out = if from.is_empty() { text } else { text.replace(&from, &to) };
+                Ok(ok(Val::StrBuf(Rc::new(RefCell::new(out)))))
+            }
+            "alloc.string.String.join" => {
+                let parts: Vec<String> = seq_items(&dr(&args[1])).unwrap_or_default().iter().map(|x| str_of(x).unwrap_or_default()).collect();
+                let sep = str_of(&args[2]).unwrap_or_default();
+                Ok(ok(Val::StrBuf(Rc::new(RefCell::new(parts.join(&sep))))))
+            }
             "alloc.collections.VecDeque.new" => Ok(Val::Vec(new_list(vec![]))),
             "alloc.collections.HashMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV::new("HashMap", vec![]))))),
             "alloc.collections.BtreeMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV::new("BtreeMap", vec![]))))),
+            // `Box<T>` → `Box<dyn Tr>` (5.1): 実行系の値は型を持たないので、そのまま返す。
+            "alloc.boxed.Box.into_dyn" => Ok(args[0].clone()),
             "alloc.boxed.Box.new" => Ok(ok(Val::Struct(Rc::new(StructV {
                 ty: "alloc.boxed.Box".into(),
                 f: RefCell::new(vec![("value".into(), args[1].clone())]),
             })))),
             "std.time.Instant.now" => Ok(Val::Struct(Rc::new(StructV {
                 ty: "std.time.Instant".into(),
-                f: RefCell::new(vec![("ticks".into(), int(0, "u64"))]),
+                f: RefCell::new(vec![("ticks".into(), int(mono_ns() as i128, "u64"))]),
             }))),
             "std.time.Duration.from_millis" => {
                 let ms = if let Val::Int(i, _) = dr(&a0) { i } else { 0 };
@@ -587,8 +627,35 @@ impl Interp {
                 })))
             }
             "std.thread.spawn" => {
-                let r = self.call_value(&args[1], vec![])?;
-                Ok(ok(Val::Join(Rc::new(r))))
+                // クロージャの取り込み (`move x`) は、spawn の時点の値で固定する (保留している間に元の変数が変わっても影響しない)。
+                let body = match dr(&args[1]) {
+                    Val::Closure(c) => {
+                        let file = c.scope.borrow().file.clone();
+                        let snap = new_scope(None, file);
+                        for (_, name) in &c.caps {
+                            if let Some(v) = sc_get(&c.scope, name) {
+                                if has_chan(&v, 0) {
+                                    // 取り込んだチャネルの端はスレッドへ移る: 元の変数は空にする
+                                    if let Some(o) = sc_owner(&c.scope, name) {
+                                        o.borrow_mut().vars.insert(name.clone(), Val::Unit);
+                                    }
+                                }
+                                sc_declare(&snap, name, v);
+                            }
+                        }
+                        Val::Closure(Rc::new(ClosureV {
+                            params: c.params.clone(),
+                            ret: c.ret.clone(),
+                            body: c.body.clone(),
+                            scope: snap,
+                            caps: c.caps.clone(),
+                        }))
+                    }
+                    other => other,
+                };
+                let t = Rc::new(ThreadV { body: RefCell::new(Some(body)), result: RefCell::new(None), state: Cell::new(0) });
+                self.threads.push(t.clone());
+                Ok(ok(Val::Join(t)))
             }
             "std.thread.sleep" => {
                 if let Val::Int(ms, _) = dr(&a0) {
@@ -598,8 +665,10 @@ impl Interp {
             }
             "std.thread.yield_now" => Ok(Val::Unit),
             "std.sync.channel" => {
-                let q = Rc::new(RefCell::new(VecDeque::new()));
-                Ok(ok(Val::Tuple(Rc::new(vec![Val::Chan(q.clone()), Val::Chan(q)]))))
+                let st = Rc::new(ChanState { q: RefCell::new(VecDeque::new()), senders: Cell::new(0), receivers: Cell::new(0) });
+                let tx = Val::Chan(Rc::new(ChanEnd::new(st.clone(), true)));
+                let rx = Val::Chan(Rc::new(ChanEnd::new(st, false)));
+                Ok(ok(Val::Tuple(Rc::new(vec![tx, rx]))))
             }
             "std.sync.Mutex.new" => Ok(Val::Mutex(Rc::new(CellPlace(RefCell::new(a0))))),
             "std.rand.Rng.from_seed" => Ok(Val::Rng(Rc::new(Cell::new(if let Val::Int(i, _) = dr(&a0) { i as u64 } else { 0 })))),
@@ -652,6 +721,7 @@ impl Interp {
                     Err(e) => Ok(err(io_error(&e))),
                 }
             }
+            "std.net.connect" | "std.net.listen" => self.net_native(name, &args),
             _ => {
                 if let Some((ty, f)) = name.split_once('.') {
                     if is_int_ty(ty) || ty == "f32" || ty == "f64" || ty == "bool" || ty == "char" {
@@ -667,13 +737,17 @@ impl Interp {
 
     /// `Ord` の提供メソッド `min` / `max` (仕様 4.3)。`cmp` に従い、等しいときは `min` が `self`、`max` が `other`。
     fn derived_min_max(&mut self, name: &str, me: &Val, other: &Val) -> Res {
-        let c = self.v_cmp(me, other)?.unwrap_or(0);
+        let c = self.v_cmp_total(me, other)?.unwrap_or(0);
         let pick_self = if name == "min" { c <= 0 } else { c > 0 };
         Ok(if pick_self { me.clone() } else { other.clone() })
     }
 
     pub fn native_method(&mut self, recv: &Val, v: &Val, name: &str, args: Vec<Val>, place: Option<(&V, &Scope)>) -> Res {
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
+        // `Sender.clone` / `Receiver.clone`: 同じチャネルの端をもう 1 つ増やす。
+        if let (Val::Chan(end), "clone") = (v, name) {
+            return Ok(Val::Chan(Rc::new(ChanEnd::new(end.st.clone(), end.is_sender))));
+        }
         if name == "clone" || name == "try_clone" {
             let c = if matches!(v, Val::Closure(_) | Val::Func(_)) { v.clone() } else { deep(v) };
             return Ok(if name == "try_clone" { ok(c) } else { c });
@@ -778,23 +852,51 @@ impl Interp {
                 }
                 panic(format!("no method {} on iterator", name))
             }
-            Val::Join(r) => {
+            Val::Join(t) => {
                 if name == "join" {
-                    return Ok((**r).clone());
+                    // 完了するまで、保留中のスレッドを spawn の順に 1 つずつ最後まで走らせる。
+                    while t.state.get() != 2 {
+                        if t.state.get() == 1 || !self.run_one_pending()? {
+                            return panic(DEADLOCK_JOIN);
+                        }
+                    }
+                    let r = t.result.borrow().clone().unwrap_or(Val::Unit);
+                    return Ok(r);
                 }
                 panic("no such method on JoinHandle")
             }
-            Val::Chan(q) => match name {
-                "send" => {
-                    q.borrow_mut().push_back(a0);
+            Val::Chan(end) => match name {
+                "send" if end.is_sender => {
+                    if end.st.receivers.get() == 0 {
+                        let e = StructV { ty: "std.sync.SendError".into(), f: RefCell::new(vec![("value".into(), a0)]) };
+                        return Ok(err(Val::Struct(Rc::new(e))));
+                    }
+                    end.st.q.borrow_mut().push_back(a0);
                     Ok(ok(Val::Unit))
                 }
-                "recv" => {
-                    let x = q.borrow_mut().pop_front();
-                    Ok(match x {
-                        Some(x) => ok(x),
-                        None => err(Val::Struct(Rc::new(StructV { ty: "std.sync.RecvError".into(), f: RefCell::new(vec![]) }))),
-                    })
+                "recv" if !end.is_sender => {
+                    loop {
+                        let x = end.st.q.borrow_mut().pop_front();
+                        if let Some(x) = x {
+                            return Ok(ok(x));
+                        }
+                        if end.st.senders.get() == 0 {
+                            let e = StructV { ty: "std.sync.RecvError".into(), f: RefCell::new(vec![("code".into(), int(0, "u8"))]) };
+                            return Ok(err(Val::Struct(Rc::new(e))));
+                        }
+                        // 空で、送信側はまだ生きている: 保留中のスレッドを走らせて、送ってくるのを待つ。
+                        if !self.run_one_pending()? {
+                            return panic(DEADLOCK_RECV);
+                        }
+                    }
+                }
+                // `Receiver.close`: ほかに受信側があれば畳んで Ok、最後でキューが空なら閉じて Ok、値が残っていれば受信側を返す。
+                "close" if !end.is_sender => {
+                    if end.st.receivers.get() > 1 || end.st.q.borrow().is_empty() {
+                        end.release();
+                        return Ok(ok(Val::Unit));
+                    }
+                    Ok(err(v.clone()))
                 }
                 "drop" => Ok(Val::Unit),
                 _ => panic(format!("no method {} on channel", name)),
@@ -817,6 +919,9 @@ impl Interp {
                 panic("no such method on Rng")
             }
             Val::Struct(s) => {
+                if s.ty.starts_with("std.net.Tcp") {
+                    return self.net_method(s, name, &args);
+                }
                 if s.ty == "std.fs.File" {
                     return self.file_method(s, name, &args);
                 }
@@ -827,28 +932,44 @@ impl Interp {
                     if name == "as_ref" || name == "as_mut" {
                         return Ok(Val::Ref(Rc::new(FieldPlace(s.clone(), "value".into()))));
                     }
-                    if name == "into_inner" {
-                        return Ok(s.get("value").unwrap());
+                    if name == "into_inner" || name == "into_dyn" {
+                        return Ok(if name == "into_dyn" { v.clone() } else { s.get("value").unwrap() });
                     }
                 }
                 match name {
                     "partial_cmp" => {
-                        let c = self.v_cmp(v, &dr(&a0))?;
+                        let c = self.v_cmp_derived(v, &dr(&a0), false)?;
                         return Ok(c.map_or_else(none, |c| some(ordering(c))));
                     }
                     "cmp" => {
-                        let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
+                        let c = self.v_cmp_derived(v, &dr(&a0), true)?.unwrap_or(0);
                         return Ok(ordering(c));
                     }
                     "eq" => return Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
                     "min" | "max" => return self.derived_min_max(name, v, &dr(&a0)),
                     _ => {}
                 }
+                let nanos = |d: u64| {
+                    Val::Struct(Rc::new(StructV { ty: "std.time.Duration".into(), f: RefCell::new(vec![("nanos".into(), int(d as i128, "u64"))]) }))
+                };
+                let field = |v: &Val, n: &str| -> u64 {
+                    match v {
+                        Val::Struct(x) => match x.get(n) {
+                            Some(Val::Int(i, _)) => i as u64,
+                            _ => 0,
+                        },
+                        _ => 0,
+                    }
+                };
                 if s.ty == "std.time.Instant" && name == "elapsed" {
-                    return Ok(Val::Struct(Rc::new(StructV {
-                        ty: "std.time.Duration".into(),
-                        f: RefCell::new(vec![("nanos".into(), int(0, "u64"))]),
-                    })));
+                    return Ok(nanos(mono_ns().saturating_sub(field(v, "ticks"))));
+                }
+                if s.ty == "std.time.Instant" && name == "since" {
+                    let (a, b) = (field(v, "ticks"), field(&dr(&a0), "ticks"));
+                    return Ok(opt(if a >= b { Some(nanos(a - b)) } else { None }));
+                }
+                if s.ty == "std.time.Duration" && name == "as_nanos" {
+                    return Ok(int(field(v, "nanos") as i128, "u64"));
                 }
                 let d = self.debug_str(v)?;
                 panic(format!("no method {} found for value {}", name, d))
@@ -856,8 +977,12 @@ impl Interp {
             Val::Enum(_) => match name {
                 "eq" => Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
                 "cmp" => {
-                    let c = self.v_cmp(v, &dr(&a0))?.unwrap_or(0);
+                    let c = self.v_cmp_derived(v, &dr(&a0), true)?.unwrap_or(0);
                     Ok(ordering(c))
+                }
+                "partial_cmp" => {
+                    let c = self.v_cmp_derived(v, &dr(&a0), false)?;
+                    Ok(c.map_or_else(none, |c| some(ordering(c))))
                 }
                 "min" | "max" => self.derived_min_max(name, v, &dr(&a0)),
                 _ => {
@@ -944,8 +1069,8 @@ impl Interp {
         let b = dr(a0);
         match name {
             "eq" => Ok(Val::Bool(self.v_eq(v, &b)?)),
-            "cmp" => Ok(ordering(self.v_cmp(v, &b)?.unwrap_or(0))),
-            _ => Ok(self.v_cmp(v, &b)?.map_or_else(none, |c| some(ordering(c)))),
+            "cmp" => Ok(ordering(self.v_cmp_derived(v, &b, true)?.unwrap_or(0))),
+            _ => Ok(self.v_cmp_derived(v, &b, false)?.map_or_else(none, |c| some(ordering(c)))),
         }
     }
 
@@ -1096,7 +1221,56 @@ impl Interp {
                 }
                 Ok(some(Val::Tuple(Rc::new(vec![s_val(&s[..m]), s_val(&s[m..])]))))
             }
+            "ends_with" => Ok(Val::Bool(s.ends_with(&sarg(&a0)))),
+            "contains" => Ok(Val::Bool(s.contains(&sarg(&a0)))),
+            "rfind" => Ok(s.rfind(&sarg(&a0)).map_or_else(none, |i| some(usz(i)))),
+            "eq_ignore_ascii_case" => Ok(Val::Bool(s.eq_ignore_ascii_case(&sarg(&a0)))),
+            // 空白は ASCII の空白 (スペース, \t, \n, \r, \x0C) だけ。
+            "trim" => Ok(s_val(s.trim_matches(|c: char| c.is_ascii_whitespace()))),
+            "trim_start" => Ok(s_val(s.trim_start_matches(|c: char| c.is_ascii_whitespace()))),
+            "trim_end" => Ok(s_val(s.trim_end_matches(|c: char| c.is_ascii_whitespace()))),
+            "strip_prefix" => Ok(s.strip_prefix(sarg(&a0).as_str()).map_or_else(none, |r| some(s_val(r)))),
+            "strip_suffix" => Ok(s.strip_suffix(sarg(&a0).as_str()).map_or_else(none, |r| some(s_val(r)))),
+            "split_once" => {
+                let sep = sarg(&a0);
+                // 空の区切りは「見つからない」として扱う。
+                Ok(match s.find(&sep).filter(|_| !sep.is_empty()) {
+                    Some(i) => some(Val::Tuple(Rc::new(vec![s_val(&s[..i]), s_val(&s[i + sep.len()..])]))),
+                    None => none(),
+                })
+            }
+            "split" => {
+                let sep = sarg(&a0);
+                // 空の区切りでは分割せず、全体を 1 つの断片として返す。
+                let pieces: Vec<Val> = if sep.is_empty() { vec![s_val(&s)] } else { s.split(sep.as_str()).map(s_val).collect() };
+                Ok(Val::Iter(Rc::new(RefCell::new(IterV::Pre { items: pieces, i: 0 }))))
+            }
             "as_str" => Ok(s_val(&s)),
+            "push_u64" | "push_i64" | "push_bytes" => {
+                let Val::StrBuf(b) = v else { return panic(format!("no method {} on str", name)) };
+                if name == "push_bytes" {
+                    let bytes: Vec<u8> = seq_items(&dr(a0.as_ref().unwrap_or(&Val::Unit))).unwrap_or_default().iter().map(|x| if let Val::Int(i, _) = x { *i as u8 } else { 0 }).collect();
+                    return Ok(match String::from_utf8(bytes) {
+                        Ok(t) => {
+                            b.borrow_mut().push_str(&t);
+                            ok(Val::Unit)
+                        }
+                        Err(e) => err(mk_enum(
+                            "alloc.string.PushBytesError",
+                            "InvalidUtf8",
+                            vec![Val::Struct(Rc::new(StructV {
+                                ty: "core.str.Utf8Error".into(),
+                                f: RefCell::new(vec![("valid_up_to".into(), usz(e.utf8_error().valid_up_to()))]),
+                            }))],
+                        )),
+                    });
+                }
+                if let Some(Val::Int(n, _)) = a0 {
+                    // u64 は Val::Int(i128) にそのまま入るので、符号つき / なしを区別せず 10 進に直せる。
+                    b.borrow_mut().push_str(&n.to_string());
+                }
+                Ok(ok(Val::Unit))
+            }
             "push" | "push_str" | "clear" => {
                 if let Val::StrBuf(b) = v {
                     match name {
@@ -1178,6 +1352,11 @@ impl Interp {
     }
 }
 
+/// 文字列の引数 (なければ空)。
+fn sarg(a: &Option<Val>) -> String {
+    a.as_ref().and_then(str_of).unwrap_or_default()
+}
+
 #[allow(dead_code)]
 fn unused(_: &V) {
     let _ = (items, st);
@@ -1207,7 +1386,7 @@ pub fn io_kind_name(e: &std::io::Error) -> &'static str {
     }
 }
 
-fn io_error(e: &std::io::Error) -> Val {
+pub(crate) fn io_error(e: &std::io::Error) -> Val {
     let kind = io_kind_name(e);
     Val::Struct(Rc::new(StructV {
         ty: "std.io.Error".into(),
@@ -1230,12 +1409,12 @@ fn file_fd(v: &Val) -> Option<i128> {
 }
 
 /// `&[u8]` / `&mut [u8]` / Vec<u8> の中身をバイト列にする。
-fn bytes_of(v: &Val) -> Vec<u8> {
+pub(crate) fn bytes_of(v: &Val) -> Vec<u8> {
     seq_items(&dr(v)).unwrap_or_default().iter().map(|x| if let Val::Int(i, _) = dr(x) { i as u8 } else { 0 }).collect()
 }
 
 impl Interp {
-    /// std.fs.File のメソッド (read / write / flush / close)。
+    /// std.fs.File のメソッド (read / write / flush / sync / close)。
     fn file_method(&mut self, s: &Rc<StructV>, name: &str, args: &[Val]) -> Res {
         use std::io::{Read, Write};
         let Some(Val::Int(fd, _)) = s.get("descriptor") else { return panic("invalid file") };
@@ -1250,6 +1429,13 @@ impl Interp {
                 }
                 Ok(ok(Val::Unit))
             }
+            "sync" => match self.files.get_mut(&fd) {
+                Some(f) => Ok(match f.flush().and_then(|_| f.sync_all()) {
+                    Ok(()) => ok(Val::Unit),
+                    Err(e) => err(io_error(&e)),
+                }),
+                None => Ok(err(io_error_kind("InvalidInput"))),
+            },
             "write" => {
                 let data = bytes_of(args.first().unwrap_or(&Val::Unit));
                 match self.files.get_mut(&fd) {
@@ -1262,7 +1448,7 @@ impl Interp {
             }
             "read" => {
                 let target = dr(args.first().unwrap_or(&Val::Unit));
-                let cap = seq_items(&target).map_or(0, |x| x.len());
+                let cap = seq_len(&target).unwrap_or(0);
                 let mut buf = vec![0u8; cap];
                 let n = match self.files.get_mut(&fd) {
                     Some(f) => match f.read(&mut buf) {

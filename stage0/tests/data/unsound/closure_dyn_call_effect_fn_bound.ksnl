@@ -1,0 +1,18 @@
+// expect: E4001
+trait t.Handler[E: uses, P: panics]
+    fn handle(self: &Self) -> () uses [E] panics P
+end t.Handler
+
+fn t.gen[F: core.ops.Fn<(), (), E, P>, E: uses, P: panics](f: F) -> () uses [E] panics P
+    f.call(())
+end t.gen
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.run(h: &dyn t.Handler<[io.console], never>) -> () uses [] panics never
+    t.gen(fn() -> () capture [&h] {
+        h.handle()
+    })
+end t.run

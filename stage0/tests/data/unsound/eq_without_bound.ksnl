@@ -1,0 +1,8 @@
+// expect: E2030
+fn t.bad[T](a: T, b: T) -> bool uses [] panics never
+    a == b
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

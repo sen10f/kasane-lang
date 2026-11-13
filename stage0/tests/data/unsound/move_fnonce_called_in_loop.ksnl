@@ -1,0 +1,16 @@
+// expect: E3002
+fn t.bad() -> () uses [] panics never
+    let s: alloc.string.String = alloc.string.String.new(std.alloc.SYSTEM)
+    let f = fn() -> () capture [move s] {
+        core.mem.drop(s)
+    }
+    let mut i = 0u32
+    while i < 2u32 {
+        f()
+        i = i.wrapping_add(1u32)
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

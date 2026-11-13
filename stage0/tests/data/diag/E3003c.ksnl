@@ -1,0 +1,13 @@
+type t.L linear pub
+    a: u8
+end t.L
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let (_a, b) = t.pair()
+    core.mem.drop(b)
+    Ok(())
+end t.main
+
+fn t.pair() -> (t.L, u8) uses [] panics never
+    (t.L { a: 1u8 }, 2u8)
+end t.pair

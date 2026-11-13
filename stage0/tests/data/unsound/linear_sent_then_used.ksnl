@@ -1,0 +1,27 @@
+// expect: E3002
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.bad(tx: std.sync.Sender<t.Res>) -> u32 uses [thread] panics never
+    let r = t.open()
+    match tx.send(r) {
+        Ok(_u) => 0u32
+        Err(back) => t.close(back.value)
+    }
+    t.close(r)
+end t.bad
+
+fn t.close(r: t.Res) -> u32 uses [] panics never
+    match r {
+        t.Res { id: id } => id
+    }
+end t.close
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.open() -> t.Res uses [] panics never
+    t.Res { id: 1u32 }
+end t.open

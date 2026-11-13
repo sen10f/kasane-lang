@@ -1,11 +1,11 @@
-// expect: E4001
-fn t.say() -> () uses [io.console] panics never
-    std.io.print_line("hi")
-end t.say
-
 fn t.main() -> () uses [] panics never
     let f = fn() -> () capture [] {
         t.say()
     }
     f()
 end t.main
+
+// expect: E4001
+fn t.say() -> () uses [io.console] panics never
+    std.io.print_line("hi")
+end t.say

@@ -1,0 +1,288 @@
+enum http.Error derive [Debug, Clone, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    BadRequest
+    BadResponse
+    Closed
+    Io(std.io.Error)
+    Net(std.net.Error)
+end http.Error
+
+type http.Request derive [Debug, Clone, Copy, PartialEq] pub
+    path_end: usize
+    path_start: usize
+end http.Request
+
+fn http.append_decimal(out: &mut alloc.string.String<std.alloc.System>, n: usize) -> Result<(), http.Error>
+    let mut unit = 1usize
+    while n / unit >= 10usize {
+        unit = unit * 10usize
+    }
+    let mut rest = n
+    while unit > 0usize {
+        let digit = rest / unit
+        out.push_str(http.digit_text(digit))?
+        rest = rest % unit
+        unit = unit / 10usize
+    }
+    Ok(())
+end http.append_decimal
+
+fn http.build_address(out: &mut alloc.string.String<std.alloc.System>, port: u16) -> Result<(), http.Error>
+    out.push_str("127.0.0.1:")?
+    http.append_decimal(out, usize.from_u16(port))
+end http.build_address
+
+fn http.build_request(out: &mut alloc.string.String<std.alloc.System>, path: &str, host: &str) -> Result<(), http.Error>
+    out.push_str("GET ")?
+    out.push_str(path)?
+    out.push_str(" HTTP/1.1\r\nHost: ")?
+    out.push_str(host)?
+    out.push_str("\r\nConnection: close\r\n\r\n")?
+    Ok(())
+end http.build_request
+
+fn http.build_response(out: &mut alloc.string.String<std.alloc.System>, status: &str, body: &str) -> Result<(), http.Error>
+    out.push_str("HTTP/1.1 ")?
+    out.push_str(status)?
+    out.push_str("\r\nContent-Type: text/plain\r\nContent-Length: ")?
+    http.append_decimal(out, body.len())?
+    out.push_str("\r\nConnection: close\r\n\r\n")?
+    out.push_str(body)?
+    Ok(())
+end http.build_response
+
+fn http.client_receive(stream: &mut std.net.TcpStream) -> Result<usize, http.Error> uses [alloc, io.net] panics may
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let head_end = http.read_head(stream, &mut data)?
+    let bytes = data.as_slice()
+    if !http.has_prefix(bytes, 0usize, b"HTTP/1.1 200 OK\r\n") {
+        return Err(http.Error.BadResponse)
+    }
+    let length = http.content_length(bytes, head_end)?
+    http.read_body(stream, &mut data, head_end.wrapping_add(length))?
+    let full = data.as_slice()
+    if full.len() != head_end.wrapping_add(length) {
+        return Err(http.Error.BadResponse)
+    }
+    if !http.has_prefix(full, head_end, b"Hello, Kasane!") {
+        return Err(http.Error.BadResponse)
+    }
+    Ok(length)
+end http.client_receive
+
+fn http.client_send(stream: &mut std.net.TcpStream, host: &str) -> Result<(), http.Error> uses [alloc, io.net] panics may
+    let mut request = alloc.string.String.new(std.alloc.SYSTEM)
+    http.build_request(&mut request, "/hello", host)?
+    http.write_all(stream, request.as_str().as_bytes())
+end http.client_send
+
+fn http.content_length(buf: &[u8], head_end: usize) -> Result<usize, http.Error>
+    let key = b"Content-Length: "
+    let mut i = 0usize
+    while i < head_end {
+        if http.has_prefix(buf, i, key) {
+            let mut j = i.wrapping_add(key.len())
+            let mut value = 0usize
+            let mut seen = false
+            loop {
+                match buf.get(j) {
+                    Some(c) => {
+                        if c >= b'0' && c <= b'9' {
+                            value = value * 10usize + usize.from_u8(c.wrapping_sub(b'0'))
+                            seen = true
+                            j = j.wrapping_add(1usize)
+                        } else {
+                            break
+                        }
+                    }
+                    None => break
+                }
+            }
+            if seen {
+                return Ok(value)
+            }
+            return Err(http.Error.BadResponse)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Err(http.Error.BadResponse)
+end http.content_length
+
+fn http.digit_text(d: usize) -> &'static str
+    match d {
+        0usize => "0"
+        1usize => "1"
+        2usize => "2"
+        3usize => "3"
+        4usize => "4"
+        5usize => "5"
+        6usize => "6"
+        7usize => "7"
+        8usize => "8"
+        _ => "9"
+    }
+end http.digit_text
+
+fn http.exchange(listener: &std.net.TcpListener, address: &str) -> Result<usize, http.Error> uses [alloc, io.net] panics may
+    with mut client = std.net.connect(address)? close core.mem.drop(client.close()) {
+        with mut server = listener.accept()? close core.mem.drop(server.close()) {
+            http.client_send(&mut client, address)?
+            http.server(&mut server)?
+            http.client_receive(&mut client)
+        }
+    }
+end http.exchange
+
+fn http.find_end(buf: &[u8]) -> Option<usize>
+    let len = buf.len()
+    let mut i = 0usize
+    while i.wrapping_add(4usize) <= len {
+        if http.has_prefix(buf, i, b"\r\n\r\n") {
+            return Some(i.wrapping_add(4usize))
+        }
+        i = i.wrapping_add(1usize)
+    }
+    None
+end http.find_end
+
+fn http.has_prefix(buf: &[u8], at: usize, lit: &[u8]) -> bool
+    let mut i = 0usize
+    while i < lit.len() {
+        if buf.get(at.wrapping_add(i)) != lit.get(i) {
+            return false
+        }
+        i = i.wrapping_add(1usize)
+    }
+    true
+end http.has_prefix
+
+fn http.io_failed() -> http.Error uses [] panics never
+    http.Error.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })
+end http.io_failed
+
+fn http.main() -> Result<(), http.Error> uses [alloc, io.console, io.net] panics may
+    let length = with listener = std.net.listen("127.0.0.1:0")? close core.mem.drop(listener.close()) {
+        let port = listener.local_port()?
+        let mut address = alloc.string.String.new(std.alloc.SYSTEM)
+        http.build_address(&mut address, port)?
+        http.exchange(&listener, address.as_str())?
+    }
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("200 OK, body bytes: ")?
+    http.append_decimal(&mut line, length)?
+    match std.io.print_line(line.as_str()) {
+        Ok(_u) => Ok(())
+        Err(e) => Err(http.Error.Io(e))
+    }
+end http.main
+
+fn http.parse_request_line(buf: &[u8]) -> Result<http.Request, http.Error>
+    if !http.has_prefix(buf, 0usize, b"GET /") {
+        return Err(http.Error.BadRequest)
+    }
+    let path_start = 4usize
+    let mut i = path_start
+    loop {
+        match buf.get(i) {
+            Some(c) => {
+                if c == b' ' {
+                    break
+                }
+                if c == b'\r' || c == b'\n' {
+                    return Err(http.Error.BadRequest)
+                }
+                i = i.wrapping_add(1usize)
+            }
+            None => return Err(http.Error.BadRequest)
+        }
+    }
+    if !http.has_prefix(buf, i, b" HTTP/1.1\r\n") {
+        return Err(http.Error.BadRequest)
+    }
+    Ok(http.Request { path_end: i, path_start: path_start })
+end http.parse_request_line
+
+fn http.read_body(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>, total: usize) -> Result<(), http.Error> uses [alloc, io.net] panics may
+    while data.len() < total {
+        http.read_chunk(stream, data)?
+    }
+    Ok(())
+end http.read_body
+
+fn http.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<(), http.Error> uses [alloc, io.net] panics may
+    let mut chunk = [0u8; 64]
+    let n = stream.read(&mut chunk)?
+    if n == 0usize {
+        return Err(http.Error.Closed)
+    }
+    for i in core.iter.range(0usize, n) {
+        match chunk.get(i) {
+            Some(b) => data.push(b)?
+            None => return Err(http.io_failed())
+        }
+    }
+    Ok(())
+end http.read_chunk
+
+fn http.read_head(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, http.Error> uses [alloc, io.net] panics may
+    loop {
+        http.read_chunk(stream, data)?
+        match http.find_end(data.as_slice()) {
+            Some(stop) => return Ok(stop)
+            None => core.mem.drop(0u8)
+        }
+    }
+end http.read_head
+
+fn http.server(stream: &mut std.net.TcpStream) -> Result<usize, http.Error> uses [alloc, io.net] panics may
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let head_end = http.read_head(stream, &mut data)?
+    let request = http.parse_request_line(data.as_slice())?
+    let bytes = data.as_slice()
+    let found = bytes.sub(request.path_start, request.path_end)
+    let mut reply = alloc.string.String.new(std.alloc.SYSTEM)
+    match found {
+        Some(path) => {
+            if path == b"/hello" {
+                http.build_response(&mut reply, "200 OK", "Hello, Kasane!")?
+            } else {
+                http.build_response(&mut reply, "404 Not Found", "Not Found")?
+            }
+        }
+        None => return Err(http.Error.BadRequest)
+    }
+    http.write_all(stream, reply.as_str().as_bytes())?
+    Ok(head_end)
+end http.server
+
+fn http.write_all(stream: &mut std.net.TcpStream, data: &[u8]) -> Result<(), http.Error> uses [io.net] panics never
+    let n = stream.write(data)?
+    if n != data.len() {
+        return Err(http.io_failed())
+    }
+    stream.flush()?
+    Ok(())
+end http.write_all
+
+test http.find_end.test_finds_blank_line
+    core.check.eq(http.find_end(b"a\r\n\r\nbody"), Some(5usize))
+    core.check.eq(http.find_end(b"a\r\nb"), None)
+end http.find_end.test_finds_blank_line
+
+test http.parse_request_line.test_accepts_get
+    let line = b"GET /hello HTTP/1.1\r\nHost: x\r\n\r\n"
+    match http.parse_request_line(line) {
+        Ok(r) => {
+            core.check.eq(r.path_start, 4usize)
+            core.check.eq(r.path_end, 10usize)
+        }
+        Err(_e) => core.panic.panic("expected Ok")
+    }
+end http.parse_request_line.test_accepts_get
+
+test http.parse_request_line.test_rejects_bad_lines
+    core.check.eq(http.parse_request_line(b"POST /hello HTTP/1.1\r\n"), Err(http.Error.BadRequest))
+    core.check.eq(http.parse_request_line(b"GET /hello HTTP/1.0\r\n"), Err(http.Error.BadRequest))
+    core.check.eq(http.parse_request_line(b"GET /hello"), Err(http.Error.BadRequest))
+    core.check.eq(http.parse_request_line(b"GET hello HTTP/1.1\r\n"), Err(http.Error.BadRequest))
+end http.parse_request_line.test_rejects_bad_lines

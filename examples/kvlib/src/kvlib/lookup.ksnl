@@ -1,0 +1,32 @@
+import kvlib.parse
+
+fn kvlib.lookup.count(text: &str) -> usize uses [] panics never pub
+    let mut n = 0usize
+    for line in text.split("\n") {
+        if parse.split_line(line).is_some() {
+            n = n.wrapping_add(1usize)
+        }
+    }
+    n
+end kvlib.lookup.count
+
+fn kvlib.lookup.find['a](text: &'a str, key: &str) -> Option<&'a str> uses [] panics never pub
+    for line in text.split("\n") {
+        match parse.split_line(line) {
+            Some((name, value)) => {
+                if name == key {
+                    return Some(value)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    None
+end kvlib.lookup.find
+
+test kvlib.lookup.find.test_first_match_wins
+    let text = "a = 1\nb = 2\na = 3\n"
+    core.check.eq(kvlib.lookup.find(text, "a"), Some("1"))
+    core.check.eq(kvlib.lookup.find(text, "b"), Some("2"))
+    core.check.eq(kvlib.lookup.find(text, "c"), None)
+end kvlib.lookup.find.test_first_match_wins

@@ -1,0 +1,5 @@
+extern t.each(f: fn(i32) -> i32 uses [io.console] panics may) -> () link "each"
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

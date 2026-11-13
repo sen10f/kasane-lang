@@ -8,14 +8,13 @@ use std::rc::Rc;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-use crate::check::{children, nf, nline, nname, st, strs, Checker};
+use crate::check::Checker;
 use crate::explain::EXPLAIN;
 use crate::fmt::{format_source, mechanical_collapse};
 use crate::grammar::{py_repr, Grammar};
 use crate::interp::Interp;
 use crate::lint::Lint;
 use crate::natives::NATIVE_NAMES;
-use crate::parser::V;
 use crate::program::{Def, Program};
 use crate::project::*;
 use crate::value::Ctl;
@@ -39,14 +38,14 @@ fn lint_code(c: &str) -> &'static str {
 
 // ------------------------------------------------------------ 診断
 pub struct Item {
-    code: String,
-    fatal: bool,
-    fqn: Option<String>,
-    file: Option<String>,
-    line: usize,
-    col: usize,
-    message: String,
-    fix: Vec<crate::fixes::Fix>,
+    pub code: String,
+    pub fatal: bool,
+    pub fqn: Option<String>,
+    pub file: Option<String>,
+    pub line: usize,
+    pub col: usize,
+    pub message: String,
+    pub fix: Vec<crate::fixes::Fix>,
 }
 
 pub struct Report {
@@ -98,9 +97,25 @@ fn attach_fixes(items: &mut [Item]) {
         let Some(file) = it.file.clone() else { continue };
         let lines = cache
             .entry(file.clone())
-            .or_insert_with(|| fs::read_to_string(&file).unwrap_or_default().split(char::from(10u8)).map(String::from).collect());
+            .or_insert_with(|| read_text(&file).unwrap_or_default().split(char::from(10u8)).map(String::from).collect());
         it.fix = crate::fixes::fixes_for(&it.code, &it.message, &file, it.line, it.col, lines);
     }
+}
+
+/// 定義ヘッダの行に付く診断のうち、メッセージが名前を示すもの (未知の型・トレイト、未使用の引数) は、
+/// その名前が行の中で最初に現れる列 (1 始まり、Unicode スカラ値) を返す。
+fn header_name_col(msg: &str, line: &str) -> Option<usize> {
+    let name = ["unknown type ", "unknown trait ", "unused parameter "].iter().find_map(|p| msg.strip_prefix(p))?;
+    let name = name.split_whitespace().next()?;
+    let cs: Vec<char> = line.chars().collect();
+    let ns: Vec<char> = name.chars().collect();
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    (0..cs.len()).find(|&i| {
+        cs[i..].starts_with(&ns)
+            && (i == 0 || !(ident(cs[i - 1]) || cs[i - 1] == '.'))
+            && cs.get(i + ns.len()).map_or(true, |&c| !ident(c))
+    })
+    .map(|i| i + 1)
 }
 
 impl Report {
@@ -119,10 +134,30 @@ impl Report {
             fix: vec![],
         });
     }
-    fn flush(&mut self) {
+    /// 列が分からない診断 (col == 0) に、その行の最初の非空白文字の列を補う (行が読めなければ 1)。
+    fn fill_cols(&mut self) {
+        let mut cache: HashMap<String, Vec<String>> = HashMap::new();
+        for it in self.items.iter_mut().filter(|i| i.col == 0) {
+            let lines = it.file.as_ref().map(|f| {
+                cache
+                    .entry(f.clone())
+                    .or_insert_with(|| read_text(f).unwrap_or_default().split('\n').map(String::from).collect())
+            });
+            let text = lines.and_then(|ls| ls.get(it.line.wrapping_sub(1)));
+            it.col = text.map_or(1, |l| {
+                header_name_col(&it.message, l).unwrap_or_else(|| l.chars().take_while(|c| *c == ' ').count() + 1)
+            });
+        }
+    }
+    /// 列の補完と安定した並べ替え (出力はしない)。
+    fn finish(&mut self) {
+        self.fill_cols();
         self.items.sort_by(|a, b| {
             (a.file.clone().unwrap_or_default(), a.line, a.col, &a.code).cmp(&(b.file.clone().unwrap_or_default(), b.line, b.col, &b.code))
         });
+    }
+    fn flush(&mut self) {
+        self.finish();
         for it in &self.items {
             if self.json {
                 println!(
@@ -166,7 +201,7 @@ pub struct Loaded {
     pub std: Vec<Source>,
 }
 
-fn load_all(root: &Path) -> Result<Loaded, ProjectError> {
+pub(crate) fn load_all(root: &Path) -> Result<Loaded, ProjectError> {
     let pkg = load_package(root)?;
     let deps = load_deps(&pkg)?;
     Ok(Loaded { pkg, deps, std: load_stdlib() })
@@ -181,7 +216,7 @@ fn empty_program() -> Program {
 }
 
 /// std + 依存 + 本体の順に登録する。返す添字は本体の定義。
-fn build_program(l: &Loaded) -> (Program, Vec<usize>) {
+pub(crate) fn build_program(l: &Loaded) -> (Program, Vec<usize>) {
     let mut prog = empty_program();
     for s in &l.std {
         for d in &s.defs {
@@ -207,31 +242,26 @@ fn build_program(l: &Loaded) -> (Program, Vec<usize>) {
     (prog, user)
 }
 
-fn check_lock(pkg: &Package, rep: &mut Report) {
-    let deps = pkg.manifest.get("dependencies").and_then(|d| d.as_table()).cloned().unwrap_or_default();
-    let lock = pkg.root.join("kasane.lock");
-    if !deps.is_empty() && !lock.exists() {
-        rep.add("E9020", "kasane.lock is missing; run `ksn update`", Some("kasane.lock"), 1, 1, true);
-        return;
+/// lint がモジュール名を求めるための、ソースルートからの相対パス風の名前。
+/// `tests/` 配下は `<パッケージ>/tests/<名前>` にする (モジュール `<パッケージ>.tests.<名前>`)。
+fn lint_rel(s: &Source, srcroot: &str) -> String {
+    if s.is_test {
+        format!("{}.ksnl", s.module.replace('.', "/"))
+    } else {
+        s.path.strip_prefix(&format!("{}/", srcroot)).unwrap_or(&s.path).to_string()
     }
-    if lock.exists() {
-        let v: toml::Value = fs::read_to_string(&lock).unwrap_or_default().parse().unwrap_or(toml::Value::Table(Default::default()));
-        let names: Vec<String> = v
-            .get("package")
-            .and_then(|p| p.as_array())
-            .map(|a| a.iter().filter_map(|x| x.get("name").and_then(|n| n.as_str()).map(String::from)).collect())
-            .unwrap_or_default();
-        let subset = deps.keys().all(|k| names.contains(k));
-        if !subset || (deps.is_empty() && !names.is_empty()) {
-            rep.add("E9021", "kasane.toml and kasane.lock disagree; run `ksn update`", Some("kasane.lock"), 1, 1, true);
-        }
+}
+
+fn check_lock(pkg: &Package, deps: &[Package], rep: &mut Report) {
+    for (code, msg) in verify_lock(pkg, deps) {
+        rep.add(&code, &msg, Some("kasane.lock"), 1, 1, true);
     }
 }
 
 /// 構文・正規形・意味の検査。構文エラーが無ければ Program を返す。
 fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
     let l = load_all(root)?;
-    check_lock(&l.pkg, rep);
+    check_lock(&l.pkg, &l.deps, rep);
     let srcroot = norm(&l.pkg.root.join("src"));
     let grammar = Grammar::new();
     for s in &l.pkg.sources {
@@ -254,16 +284,16 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
         }
         for (i, line) in s.lines.iter().enumerate() {
             if line.contains('\t') {
-                rep.add("E0001", "tab is not allowed", Some(&fl), i + 1, 1, true);
+                rep.add("E0001", "tab is not allowed", Some(&fl), i + 1, line.chars().position(|c| c == '\t').map_or(1, |p| p + 1), true);
             }
             if line != line.trim_end_matches(' ') && !line.ends_with('\r') {
-                rep.add("E0001", "trailing whitespace", Some(&fl), i + 1, 1, true);
+                rep.add("E0001", "trailing whitespace", Some(&fl), i + 1, line.trim_end_matches(' ').chars().count() + 1, true);
             }
         }
         if !s.text.ends_with('\n') || s.text.ends_with("\n\n") {
             rep.add("E0001", "file must end with exactly one LF", Some(&fl), s.lines.len(), 1, true);
         }
-        let relpath = s.path.strip_prefix(&format!("{}/", srcroot)).unwrap_or(&s.path);
+        let relpath = &lint_rel(s, &srcroot);
         let lt = s.text.replace("\r\n", "\n");
         // 正規形でなくても、`ksn fmt` で正規形になり、その結果が検査を通るなら、並び順や空行は
         // エラーにしない (`fmt --check` が差分として報告する)。意味に関する誤りは従来どおり報告する。
@@ -279,11 +309,11 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             // 機械的に直せる違反。check では非致命的として報告し、終了コードに
             // 影響させない (`fmt --check` が差分として検出する)。
             let fatal = !(run_mode && code == "unused") && code != "order";
-            rep.add(lint_code(&code), &msg, Some(&fl), ln, 1, fatal);
+            rep.add(lint_code(&code), &msg, Some(&fl), ln, 0, fatal);
         }
         let (ok, msg, ln) = grammar.check(&s.text);
         if !ok {
-            rep.add("E0002", &msg, Some(&fl), ln, 1, true);
+            rep.add("E0002", &msg, Some(&fl), ln, 0, true);
         }
     }
     if l.pkg.sources.iter().any(|s| s.error.is_some()) {
@@ -293,17 +323,23 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
     let diags = {
         let mut ck = Checker::new(&prog, user.clone());
         ck.unsafe_modules = crate::project::unsafe_modules(&l.pkg.manifest);
+        ck.integration_files = l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.clone()).collect();
         ck.run();
         ck.diags
     };
+    // 同じ呼び出しに対する E1108 は、名前だけの検査と型に基づく検査が両方出しうる。最初の 1 件だけ残す。
+    let mut seen_1108: std::collections::HashSet<(String, usize, usize)> = Default::default();
     for d in diags {
+        if d.code == "E1108" && !seen_1108.insert((d.file.clone(), d.line, d.col)) {
+            continue;
+        }
         rep.items.push(Item {
             code: d.code,
             fatal: true,
             fqn: if d.fqn == "-" { None } else { Some(d.fqn) },
             file: Some(rel(&d.file)),
             line: d.line,
-            col: 1,
+            col: d.col,
             message: d.msg,
             fix: vec![],
         });
@@ -344,6 +380,28 @@ fn is_pkg_name(s: &str) -> bool {
     matches!(cs.next(), Some(c) if c.is_ascii_lowercase()) && cs.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// `ksn lsp` 用の検査結果。`check --json` と同じ診断 (修正案つき・並べ替え済み)。
+pub struct Analysis {
+    pub items: Vec<Item>,
+    /// 読み込みに成功したとき: 読み込んだパッケージ一式と、構文エラーが無ければ検査済みの Program。
+    pub loaded: Option<(Loaded, Option<Program>)>,
+}
+
+/// パッケージ `root` を検査して診断を返す (出力はしない。ソースは `overlay_set` の上書きを優先して読む)。
+pub fn analyze(root: &Path) -> Analysis {
+    let mut rep = Report::new(false);
+    let loaded = match full_check(root, &mut rep, false) {
+        Ok((l, p, _)) => Some((l, p)),
+        Err(e) => {
+            rep.add(&e.code, &e.msg, None, 1, 1, true);
+            None
+        }
+    };
+    attach_fixes(&mut rep.items);
+    rep.finish();
+    Analysis { items: rep.items, loaded }
+}
+
 fn cmd_check(json: bool) -> i32 {
     let mut rep = Report::new(json);
     match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|(_, prog, user)| crate::kir_lower::dump_hidden(prog.as_ref(), &user))) {
@@ -360,13 +418,27 @@ fn cmd_check(json: bool) -> i32 {
 /// `--llvm` は LLVM IR (`.ll`) を出し、`--native` は clang で実行ファイルを作って走らせる (表示と終了コードは `--run` と同じ)。
 fn cmd_kir(rest: &[String]) -> i32 {
     let Some(fqn) = rest.first() else {
-        eprintln!("usage: ksn kir <FQN> [--run|--native <args>... | --llvm]");
+        eprintln!("usage: ksn kir <FQN> [--opt] [--run|--native <args>... | --llvm]");
         return 2;
     };
-    let mode = rest.get(1).map(|s| s.as_str());
+    // --opt は最適化パスを適用する。--run/--native/--llvm は実行モード。
+    let mut opt = false;
+    let mut mode: Option<&str> = None;
+    let mut mode_pos: Option<usize> = None;
+    for (i, s) in rest[1..].iter().enumerate() {
+        match s.as_str() {
+            "--opt" => opt = true,
+            "--run" | "--native" | "--llvm" if mode.is_none() => {
+                mode = Some(s.as_str());
+                mode_pos = Some(1 + i);
+            }
+            _ => {}
+        }
+    }
     let run = mode == Some("--run");
     let native = mode == Some("--native");
     let llvm = mode == Some("--llvm");
+    let arg_start = mode_pos.map(|p| p + 1).unwrap_or(rest.len());
     let mut rep = Report::new(false);
     let (root, prog, user) = match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|x| (r, x))) {
         Ok((r, (_, Some(prog), user))) if !rep.fatal() => (r, prog, user),
@@ -387,12 +459,18 @@ fn cmd_kir(rest: &[String]) -> i32 {
         }
         return 1;
     }
-    let text = crate::kir::print_module(&lo.module.reachable(fqn));
+    let mut text = crate::kir::print_module(&lo.module.reachable(fqn));
     // 出力は必ず読み直せること (往復) と検査を通ることを確かめてから使う。
-    let back = match crate::kir::parse_module(&text) {
+    let _back = match crate::kir::parse_module(&text) {
         Ok(m) if crate::kir::print_module(&m) == text && crate::kir::verify_module(&m).is_empty() => m,
-        Ok(_) => {
+        Ok(m) => {
             eprintln!("ksn kir: 内部エラー: KIR の往復または検査が一致しない");
+            for e in crate::kir::verify_module(&m).iter().take(5) {
+                eprintln!("  検査: {} {}", e.0, e.1);
+            }
+            if crate::kir::print_module(&m) != text {
+                eprintln!("  往復: 読み直して出力した形が元と違う");
+            }
             return 3;
         }
         Err(e) => {
@@ -400,8 +478,23 @@ fn cmd_kir(rest: &[String]) -> i32 {
             return 3;
         }
     };
+    // --opt: 決定的な最適化パスを適用する (意味を変えず命令数を減らす)。
+    // 実行・生成には、往復を確かめた元の (extern の link を持つ) モジュールを使う。
+    let mut exe = lo.module.reachable(fqn);
+    if opt {
+        match crate::kir_opt::optimize(&exe) {
+            Ok(m) => {
+                exe = m;
+                text = crate::kir::print_module(&exe);
+            }
+            Err(e) => {
+                eprintln!("ksn kir: --opt: {}", e);
+                return 3;
+            }
+        }
+    }
     if llvm {
-        return match crate::kir_llvm::emit(&back, fqn) {
+        return match crate::kir_llvm::emit(&exe, fqn) {
             Ok(ll) => {
                 print!("{}", ll);
                 0
@@ -417,7 +510,7 @@ fn cmd_kir(rest: &[String]) -> i32 {
         return 0;
     }
     let mut args = vec![];
-    for a in &rest[2..] {
+    for a in &rest[arg_start..] {
         let v = match a.as_str() {
             "true" => 1,
             "false" => 0,
@@ -431,15 +524,15 @@ fn cmd_kir(rest: &[String]) -> i32 {
         };
         args.push(v);
     }
-    let ret = back.find(fqn).map(|f| f.ret);
+    let ret = exe.find(fqn).map(|f| f.ret);
     let show = |v: i128| match ret {
         Some(t) => println!("{}", crate::kir::show_value(t, v)),
         None => println!("{}", v),
     };
     if native {
-        return kir_native(&root, &back, fqn, &args, show);
+        return kir_native(&root, &exe, fqn, &args, show);
     }
-    match crate::kir_exec::run(&back, fqn, &args) {
+    match crate::kir_exec::run(&exe, fqn, &args) {
         Ok(crate::kir_exec::Outcome::Value(v)) => {
             show(v);
             0
@@ -478,7 +571,8 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
         return 2;
     }
     let mut h: u64 = 0xcbf29ce484222325;
-    for b in ll.bytes() {
+    let extra = clang_extra_args();
+    for b in ll.bytes().chain(extra.join(" ").bytes()) {
         h = (h ^ b as u64).wrapping_mul(0x100000001b3);
     }
     let exe = dir.join(format!("{:016x}{}", h, if cfg!(windows) { ".exe" } else { "" }));
@@ -489,7 +583,8 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
             return 2;
         }
         let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
-        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module", "-x", "ir"]).arg(&src).arg("-o").arg(&tmp).arg("-lm").output();
+        let rt = runtime_c_args(&ll, &src);
+        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(&tmp).arg("-lm").output();
         match o {
             Err(e) => {
                 eprintln!("ksn kir: --native には clang が必要です ({} を起動できない: {})", clang, e);
@@ -633,6 +728,32 @@ fn run_args(args: &[String]) -> (bool, bool, Vec<String>) {
     (json, watch, rest)
 }
 
+/// デバッガ用の読み込み: 検査して Program を作る。致命的な診断があれば、その本文を Err で返す。
+pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
+    let mut rep = Report::new(false);
+    let root = find_root().map_err(|e| format!("ksn: {}: {}", e.code, e.msg))?;
+    let (l, prog, user) = full_check(&root, &mut rep, true).map_err(|e| format!("ksn: {}: {}", e.code, e.msg))?;
+    rep.finish();
+    if rep.fatal() {
+        let lines: Vec<String> = rep
+            .items
+            .iter()
+            .filter(|it| it.fatal)
+            .map(|it| match &it.file {
+                Some(f) => format!("{}:{}:{}: {}: {}", f, it.line, it.col, it.code, it.message),
+                None => format!("<project>: {}: {}", it.code, it.message),
+            })
+            .collect();
+        return Err(lines.join("\n"));
+    }
+    let prog = Rc::new(prog.unwrap());
+    let entry_name = l.pkg.entry().unwrap_or_default();
+    let entry = prog.funcs.get(&entry_name).copied();
+    let tests: Vec<usize> = user.iter().copied().filter(|&i| prog.defs[i].kw == "test").collect();
+    let user_files = user.iter().map(|&i| prog.defs[i].file.clone()).collect();
+    Ok(crate::debug::Target { prog, entry, entry_name, tests, user_files })
+}
+
 fn cmd_run(args: &[String]) -> i32 {
     let (json, watch, rest) = run_args(args);
     let mut rep = Report::new(json);
@@ -699,6 +820,7 @@ fn spawn_watcher(l: &Loaded) -> std::sync::mpsc::Receiver<Program> {
         .pkg
         .sources
         .iter()
+        .filter(|s| !s.is_test)
         .map(|s| W {
             path: s.path.clone(),
             lines: s.lines.clone(),
@@ -784,6 +906,17 @@ fn spawn_watcher(l: &Loaded) -> std::sync::mpsc::Receiver<Program> {
 }
 
 fn cmd_test(args: &[String]) -> i32 {
+    // `ksn test --debug [--json] <テスト名>`: そのテスト 1 つをデバッガの下で走らせる (debug.rs)
+    if args.iter().any(|a| a == "--debug") {
+        let name = args.iter().find(|a| !a.starts_with("--"));
+        let Some(name) = name else {
+            eprintln!("usage: ksn test --debug [--json] <test FQN>");
+            return 2;
+        };
+        let mut dargs: Vec<String> = args.iter().filter(|a| *a == "--json").cloned().collect();
+        dargs.extend(["--test".to_string(), name.clone()]);
+        return crate::debug::cmd_debug(&dargs);
+    }
     let mut both = false;
     let mut prefix: Option<String> = None;
     for a in args {
@@ -823,7 +956,7 @@ fn cmd_test(args: &[String]) -> i32 {
         .collect();
     tests.sort_by(|&a, &b| prog.defs[a].name.cmp(&prog.defs[b].name));
     let mut failed = 0;
-    let (mut n_native, mut n_bundle) = (0, 0);
+    let (mut n_llvm, mut n_native, mut n_bundle) = (0, 0, 0);
     for ti in &tests {
         let name = prog.defs[*ti].name.clone();
         let mut results: Vec<Option<String>> = vec![];
@@ -836,28 +969,40 @@ fn cmd_test(args: &[String]) -> i32 {
             Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
             _ => None,
         });
-        // `--both` の相手は機械語 (Cranelift の実行ファイル)。作れない機能を含むテストだけバンドルに落とす。
+        // `--both` の相手は、KIR に下ろせればその LLVM の実行ファイル。下ろせなければ Cranelift の実行ファイル、
+        // それも作れなければバンドル (どれも作れない機能を含むテストだけ)。
         let mut other = "";
         let mut label = String::new();
         if both {
-            match build_native_test(&root, &prog, &user, *ti) {
+            match build_llvm_test(&root, &prog, &user, *ti) {
                 Ok(exe) => {
                     results.push(run_native_test(&root, &exe));
-                    other = "native";
-                    label = "both: native".into();
+                    other = "llvm";
+                    label = "both: llvm".into();
                 }
-                Err(why) => {
-                    results.push(run_in_bundle(&root, &name, &l));
-                    other = "bundle";
-                    label = format!("both: bundle (native skipped: {})", why.lines().next().unwrap_or("").trim());
+                Err(why_llvm) => {
+                    let why_llvm = first_line(&why_llvm);
+                    match build_native_test(&root, &prog, &user, *ti) {
+                        Ok(exe) => {
+                            results.push(run_native_test(&root, &exe));
+                            other = "native";
+                            label = format!("both: native (llvm skipped: {})", why_llvm);
+                        }
+                        Err(why) => {
+                            results.push(run_in_bundle(&root, &name, &l));
+                            other = "bundle";
+                            label = format!("both: bundle (llvm skipped: {}; native skipped: {})", why_llvm, first_line(&why));
+                        }
+                    }
                 }
             }
         }
         let suffix = if label.is_empty() { String::new() } else { format!(" ({})", label) };
-        if other == "native" {
-            n_native += 1;
-        } else if other == "bundle" {
-            n_bundle += 1;
+        match other {
+            "llvm" => n_llvm += 1,
+            "native" => n_native += 1,
+            "bundle" => n_bundle += 1,
+            _ => {}
         }
         let disagree = results.len() > 1 && backends_disagree(&results[0], &results[1]);
         if disagree {
@@ -872,9 +1017,14 @@ fn cmd_test(args: &[String]) -> i32 {
     }
     println!("\n{} passed; {} failed", tests.len() - failed, failed);
     if both {
-        println!("compared with: native {}, bundle fallback {}", n_native, n_bundle);
+        println!("compared with: llvm {}, native {}, bundle fallback {}", n_llvm, n_native, n_bundle);
     }
     if failed > 0 { 1 } else { 0 }
+}
+
+/// 理由の最初の行 (前後の空白を除く)。
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or("").trim()
 }
 
 /// 成否が違う、または両方失敗でも理由の分類が違えば不一致。
@@ -979,8 +1129,7 @@ fn build_native_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> 
     add_fmt_std(prog, &mut funcs, &mut tdefs);
     let dir = root.join("target").join("test-native");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stem: String = d.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' { c } else { '_' }).collect();
-    let exe = dir.join(format!("{}_{}{}", ti, stem, if cfg!(windows) { ".exe" } else { ".native" }));
+    let exe = dir.join(format!("{}_{}{}", ti, test_stem(&d.name), if cfg!(windows) { ".exe" } else { ".native" }));
     let _ = fs::remove_file(&exe);
     let out = norm(&exe);
     // clif は未対応の形に出会うと Err を返す。万一それ以外で落ちても、バンドルへ戻すだけにする。
@@ -996,6 +1145,8 @@ fn build_native_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> 
 fn run_native_test(root: &Path, exe: &Path) -> Option<String> {
     match std::process::Command::new(exe).current_dir(root).output() {
         Ok(o) if o.status.success() => None,
+        // 102 は stack 超過 (機械語は stderr に `stack overflow` と書く)。木走査は `Exit(102)` なので、終了の種類で比べる。
+        Ok(o) if o.status.code() == Some(102) => Some("exit(102)".into()),
         Ok(o) => {
             let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
             Some(if e.is_empty() { format!("exit {}", o.status.code().unwrap_or(-1)) } else { e })
@@ -1026,12 +1177,13 @@ fn load_everything() -> Result<Everything, ProjectError> {
     Ok(Everything { l })
 }
 
-enum Found<'a> {
+pub(crate) enum Found<'a> {
     Def(&'a Def, &'a Source),
+    #[allow(dead_code)]
     Line(&'a Source, usize),
 }
 
-fn find_def<'a>(srcs: &[&'a Source], fqn: &str) -> Option<Found<'a>> {
+pub(crate) fn find_def<'a>(srcs: &[&'a Source], fqn: &str) -> Option<Found<'a>> {
     for s in srcs {
         for d in &s.defs {
             if d.name == fqn && matches!(d.kw.as_str(), "fn" | "type" | "enum" | "trait" | "test" | "const" | "static" | "extern") {
@@ -1067,7 +1219,7 @@ fn find_def<'a>(srcs: &[&'a Source], fqn: &str) -> Option<Found<'a>> {
     None
 }
 
-fn def_start(s: &Source, d: &Def) -> usize {
+pub(crate) fn def_start(s: &Source, d: &Def) -> usize {
     let mut i = d.line - 1;
     while i > 0 && s.lines[i - 1].starts_with("//") {
         i -= 1;
@@ -1115,6 +1267,24 @@ fn derived_impls(d: &Def) -> Option<String> {
                     out.push("    // equal variants with equal payloads".into());
                 }
                 out.push(format!("end {}.eq", n));
+            }
+            "From" => {
+                // `?` が包むバリアントを、ペイロードの型ごとに 1 行で示す (4.1)。同じ型を持つバリアントが複数あると曖昧 (E2049)。
+                out.push(format!("// derive From for {}: `e?` with `e: Result<_, E1>` wraps the error as the variant", n));
+                let keyed: Vec<(String, &String)> = d
+                    .variants
+                    .iter()
+                    .filter(|(_, pl)| pl.len() == 1)
+                    .map(|(vn, pl)| (crate::types::from_v(&pl[0], &std::collections::HashSet::new()).show(), vn))
+                    .collect();
+                for (ty, vn) in &keyed {
+                    let same: Vec<&str> = keyed.iter().filter(|(t, _)| t == ty).map(|(_, v)| v.as_str()).collect();
+                    if same.len() > 1 {
+                        out.push(format!("//     E1 = {}  =>  ambiguous ({}): `?` is an error, use map_err", ty, same.join(", ")));
+                    } else {
+                        out.push(format!("//     E1 = {}  =>  {}.{}(error)", ty, n, vn));
+                    }
+                }
             }
             other => out.push(format!("// {}: built-in derived implementation for {}", other, n)),
         }
@@ -1253,8 +1423,87 @@ fn cmd_sig(args: &[String]) -> i32 {
     }
 }
 
+/// `ksn doc [--std] [--private]`: 静的 HTML の API ドキュメントを `target/doc/` に生成する (生成器は doc.rs)。
+fn cmd_doc(args: &[String]) -> i32 {
+    for a in args {
+        if a != "--std" && a != "--private" {
+            eprintln!("ksn: usage: ksn doc [--std] [--private]");
+            return 2;
+        }
+    }
+    let std_only = args.iter().any(|a| a == "--std");
+    let private = args.iter().any(|a| a == "--private");
+    let root = match find_root() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let l = match load_all(&root) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let (prog, _) = build_program(&l);
+    // build_program は std -> 依存 -> 本体の順に定義を登録する。同じ順で推論済みの定義と対応づける。
+    let mut std_items = vec![];
+    let mut pkg_items = vec![];
+    let mut k = 0;
+    for s in &l.std {
+        for _ in &s.defs {
+            std_items.push(crate::doc::Item { d: &prog.defs[k], lines: &s.lines });
+            k += 1;
+        }
+    }
+    for dp in &l.deps {
+        for s in &dp.sources {
+            k += s.defs.len();
+        }
+    }
+    for s in &l.pkg.sources {
+        for _ in &s.defs {
+            pkg_items.push(crate::doc::Item { d: &prog.defs[k], lines: &s.lines });
+            k += 1;
+        }
+    }
+    let out = root.join("target").join("doc");
+    let std_dir = out.join("std");
+    let (dir, pages) = if std_only {
+        let cfg = crate::doc::Config { title: "標準ライブラリ", is_std: true, private, std_link: None };
+        (std_dir, crate::doc::generate(&std_items, &cfg))
+    } else {
+        let name = l.pkg.name.clone();
+        let link = if std_dir.join("index.html").exists() { Some(&std_items[..]) } else { None };
+        let cfg = crate::doc::Config { title: &name, is_std: false, private, std_link: link };
+        (out, crate::doc::generate(&pkg_items, &cfg))
+    };
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!("ksn: cannot create {}: {}", norm(&dir), e);
+        return 1;
+    }
+    // 古いページ (消えたモジュール) を残さない。
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            if e.path().extension().map_or(false, |x| x == "html") {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    for (f, html) in &pages {
+        if let Err(e) = fs::write(dir.join(f), html) {
+            eprintln!("ksn: cannot write {}: {}", f, e);
+            return 1;
+        }
+    }
+    println!("{}", norm(&dir.join("index.html")));
+    0
+}
+
 /// `(?<![\w.])OLD(?![\w])(?!\.[A-Za-z_])` に一致するか。
-fn fqn_occurs(text: &str, target: &str, tail_dot_ok: bool) -> bool {
+pub(crate) fn fqn_occurs(text: &str, target: &str, tail_dot_ok: bool) -> bool {
     text.match_indices(target).any(|(i, _)| fqn_boundary(text, i, target.len(), tail_dot_ok))
 }
 fn fqn_boundary(text: &str, i: usize, len: usize, tail_dot_ok: bool) -> bool {
@@ -1267,13 +1516,6 @@ fn fqn_boundary(text: &str, i: usize, len: usize, tail_dot_ok: bool) -> bool {
     before.map_or(true, |c| !(w(c) || c == '.'))
         && after.map_or(true, |c| !w(c))
         && (tail_dot_ok || !(after == Some('.') && second.next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_')))
-}
-
-fn walk_all<'a>(v: &'a V, out: &mut Vec<&'a V>) {
-    out.push(v);
-    for c in children(v) {
-        walk_all(c, out);
-    }
 }
 
 fn cmd_refs(args: &[String]) -> i32 {
@@ -1295,98 +1537,32 @@ fn cmd_refs(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let (prog, _) = build_program(&l);
-    let last = target.rsplit('.').next().unwrap().to_string();
-    let tdef = prog.funcs.get(target).or(prog.sigs.get(target)).map(|&i| &prog.defs[i]);
-    let is_method = tdef.map_or(false, |d| d.is_method());
-    let mut hits: Vec<(String, usize, String)> = vec![];
-    for s in &l.pkg.sources {
-        let f = rel(&s.path);
-        for d in &s.defs {
-            if d.kw == "import" {
-                if d.name == *target {
-                    hits.push((f.clone(), d.line, "(import)".into()));
-                }
-                continue;
+    match crate::refactor::refs(&l, target) {
+        Ok(sites) => {
+            for s in sites {
+                println!("{}:{}:{}: {} [{}]", rel(&s.file), s.line, s.col, s.owner, s.kind);
             }
-            if d.kw == "impl" {
-                if fqn_occurs(&d.header, target, false) {
-                    hits.push((f.clone(), d.line, "(impl)".into()));
-                }
-                continue;
-            }
-            if d.name == *target {
-                continue;
-            }
-            let owner = d.name.clone();
-            let hdr: String = if d.kw != "fn" {
-                d.header.splitn(3, ' ').last().unwrap_or("").to_string()
-            } else {
-                d.header.get(format!("fn {}", d.name).len()..).unwrap_or("").to_string()
-            };
-            if fqn_occurs(&hdr, target, false) {
-                hits.push((f.clone(), d.line, owner.clone()));
-            }
-            let roots: Vec<&V> = match (&d.body, &d.init) {
-                (Some(b), _) => vec![b],
-                (None, Some(i)) if d.kw == "const" || d.kw == "static" => vec![i],
-                _ => vec![],
-            };
-            for r in roots {
-                let mut all = vec![];
-                walk_all(r, &mut all);
-                for n in all {
-                    let fs = nf(n);
-                    let segs: Option<Vec<String>> = match nname(n) {
-                        "Path" | "PPath" | "PVariant" | "PStruct" => Some(strs(&fs[0])),
-                        "StructLit" => Some(st(&fs[0]).split('.').map(String::from).collect()),
-                        _ => None,
-                    };
-                    if let Some(segs) = segs {
-                        if let Some(rr) = prog.resolve(&segs, &d.file) {
-                            let nm = match rr.target {
-                                crate::program::Target::Fn(i) | crate::program::Target::Sig(i) | crate::program::Target::Const(i) | crate::program::Target::Type(i) => {
-                                    Some(prog.defs[i].name.clone())
-                                }
-                                _ => None,
-                            };
-                            if nm.as_deref() == Some(target.as_str()) {
-                                hits.push((f.clone(), if nline(n) != 0 { nline(n) } else { d.line }, owner.clone()));
-                            }
-                        }
-                    } else if nname(n) == "MCall" && is_method && st(&fs[1]) == last {
-                        hits.push((f.clone(), if nline(n) != 0 { nline(n) } else { d.line }, format!("{} (method call by name)", owner)));
-                    }
-                }
-            }
+            0
+        }
+        Err(m) => {
+            eprintln!("ksn: {}", m);
+            1
         }
     }
-    hits.sort();
-    hits.dedup();
-    for (f, ln, who) in hits {
-        println!("{}:{}: {}", f, ln, who);
-    }
-    0
 }
 
-fn replace_fqn(text: &str, old: &str, new: &str) -> String {
-    let mut out = String::new();
-    let mut last = 0;
-    for (i, _) in text.match_indices(old) {
-        if i < last {
-            continue;
-        }
-        let w = |c: char| c.is_alphanumeric() || c == '_';
-        let before = text[..i].chars().next_back();
-        let after = text[i + old.len()..].chars().next();
-        if before.map_or(true, |c| !(w(c) || c == '.')) && after.map_or(true, |c| !w(c)) {
-            out.push_str(&text[last..i]);
-            out.push_str(new);
-            last = i + old.len();
-        }
+/// `ksn check` と同じ検査を走らせ、致命的な診断の一覧 ("file:line: code: message") を返す。
+/// 改名の検証 (改名の前後で診断が増えないこと) に使う。
+pub(crate) fn check_error_lines(root: &Path) -> Vec<String> {
+    let mut rep = Report::new(false);
+    if let Err(e) = full_check(root, &mut rep, false) {
+        return vec![format!("{}: {}", e.code, e.msg)];
     }
-    out.push_str(&text[last..]);
-    out
+    rep.items
+        .iter()
+        .filter(|i| i.fatal)
+        .map(|i| format!("{}:{}: {}: {}", i.file.clone().unwrap_or_default(), i.line, i.code, i.message))
+        .collect()
 }
 
 fn cmd_rename(args: &[String]) -> i32 {
@@ -1397,55 +1573,58 @@ fn cmd_rename(args: &[String]) -> i32 {
         return 2;
     }
     let (old, new) = (pos[0], pos[1]);
-    let ev = match load_everything() {
-        Ok(e) => e,
+    let root = match find_root() {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("ksn: {}: {}", e.code, e.msg);
             return 1;
         }
     };
-    if !Regex::new(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$").unwrap().is_match(new) {
-        eprintln!("ksn: invalid new name");
-        return 1;
-    }
-    let mut srcs: Vec<&Source> = ev.l.pkg.sources.iter().collect();
-    for dp in &ev.l.deps {
-        srcs.extend(dp.sources.iter());
-    }
-    match find_def(&srcs, old) {
-        Some(Found::Def(..)) => {}
-        _ => {
-            eprintln!("ksn: {} not found", old);
+    let l = match load_all(&root) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
             return 1;
         }
+    };
+    let plan = match crate::refactor::plan_rename(&l, old, new) {
+        Ok(p) => p,
+        Err(m) => {
+            eprintln!("ksn: {}", m);
+            return 1;
+        }
+    };
+    if let Err(m) = crate::refactor::verify(&root, &plan) {
+        eprintln!("ksn: {}", m);
+        return 1;
     }
-    for s in &srcs {
-        for d in &s.defs {
-            if d.name == **new || d.name.starts_with(&format!("{}.", new)) {
-                eprintln!("ksn: collision with existing definition {}", d.name);
-                return 1;
-            }
+    for c in &plan.changes {
+        match &c.old_path {
+            Some(o) if *o != c.new_path => println!("move {} -> {}", rel(o), rel(&c.new_path)),
+            _ => println!("update {}", rel(&c.new_path)),
         }
     }
-    let mut changes: Vec<(&Source, String)> = vec![];
-    for s in &ev.l.pkg.sources {
-        let nt = replace_fqn(&s.text, old, new);
-        if nt != s.text {
-            changes.push((s, nt));
-        }
+    if let Some((p, _, _)) = &plan.manifest {
+        println!("update {}", rel(p));
     }
-    for (s, _) in &changes {
-        println!("update {}", rel(&s.path));
+    for n in &plan.notes {
+        eprintln!("ksn: note: {}", n);
     }
     if dry {
-        for (s, nt) in &changes {
-            let diff = similar::TextDiff::from_lines(s.text.as_str(), nt.as_str());
-            print!("{}", diff.unified_diff().header(&rel(&s.path), &rel(&s.path)));
+        for c in &plan.changes {
+            let diff = similar::TextDiff::from_lines(c.old_text.as_str(), c.new_text.as_str());
+            let oldh = c.old_path.as_deref().map(rel).unwrap_or_default();
+            print!("{}", diff.unified_diff().header(&oldh, &rel(&c.new_path)));
+        }
+        if let Some((p, o, n)) = &plan.manifest {
+            let diff = similar::TextDiff::from_lines(o.as_str(), n.as_str());
+            print!("{}", diff.unified_diff().header(&rel(p), &rel(p)));
         }
         return 0;
     }
-    for (s, nt) in changes {
-        fs::write(&s.path, nt).unwrap();
+    if let Err(m) = crate::refactor::apply(&plan) {
+        eprintln!("ksn: {}", m);
+        return 1;
     }
     0
 }
@@ -1481,7 +1660,7 @@ fn cmd_fmt(args: &[String]) -> i32 {
                 text = nt;
             }
         }
-        let relpath = s.path.strip_prefix(&format!("{}/", srcroot)).unwrap_or(&s.path).to_string();
+        let relpath = lint_rel(s, &srcroot);
         for (code, l, m) in Lint::new(&relpath, &text.replace("\r\n", "\n")).run() {
             if code != "unused" {
                 diff = true;
@@ -1511,44 +1690,68 @@ fn cmd_explain(args: &[String]) -> i32 {
     }
 }
 
-fn cmd_update() -> i32 {
-    let (root, pkg, deps) = match find_root().and_then(|r| {
-        let p = load_package(&r)?;
-        let d = load_deps(&p)?;
-        Ok((r, p, d))
-    }) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!("ksn: {}: {}", e.code, e.msg);
-            return 2;
-        }
+fn toml_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// 既存の `kasane.lock` の `[[package]]` を名前で引く。
+fn old_lock(root: &Path) -> std::collections::HashMap<String, toml::Value> {
+    let v: toml::Value = fs::read_to_string(root.join("kasane.lock")).unwrap_or_default().parse().unwrap_or(toml::Value::Table(Default::default()));
+    v.get("package")
+        .and_then(|p| p.as_array())
+        .map(|a| a.iter().filter_map(|e| Some((e.get("name")?.as_str()?.to_string(), e.clone()))).collect())
+        .unwrap_or_default()
+}
+
+/// `ksn update [<名前>]`: 依存を再解決して `kasane.lock` を書く。git 依存は取得元から取り直してハッシュを計算する
+/// (`<名前>` を指定したときは、その依存だけを取り直し、ほかの依存は既存のロックの記録を保つ)。
+fn cmd_update(args: &[String]) -> i32 {
+    let only = args.first().cloned();
+    let fail = |e: ProjectError| {
+        eprintln!("ksn: {}: {}", e.code, e.msg);
+        2
     };
-    let m = pkg.manifest.get("dependencies").and_then(|d| d.as_table()).cloned().unwrap_or_default();
+    let (root, pkg) = match find_root().and_then(|r| load_package(&r).map(|p| (r, p))) {
+        Ok(x) => x,
+        Err(e) => return fail(e),
+    };
+    let old = old_lock(&root);
+    let mode = |n: &str| match &only {
+        None => GitMode::Fresh,
+        Some(o) if o == n => GitMode::Fresh,
+        Some(_) => GitMode::IfMissing,
+    };
+    let deps = match load_deps_with(&pkg, &mode) {
+        Ok(d) => d,
+        Err(e) => return fail(e),
+    };
+    if let Some(o) = &only {
+        if !deps.iter().any(|d| d.name == *o) {
+            return fail(ProjectError { code: "E9017".into(), msg: format!("{} is not a dependency of {}", o, pkg.name) });
+        }
+    }
     let mut lines = vec!["version = 1".to_string(), String::new()];
     let mut sorted: Vec<&Package> = deps.iter().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
     for dp in sorted {
-        let dv = m.get(&dp.name);
         lines.push("[[package]]".into());
-        lines.push(format!("name = \"{}\"", dp.name));
-        if let Some(git) = dv.and_then(|d| d.get("git")).and_then(|g| g.as_str()) {
-            let rev = dv.and_then(|d| d.get("rev")).and_then(|g| g.as_str()).unwrap_or("");
-            lines.push(format!("source = \"git+{}#{}\"", git, rev));
-            lines.push(format!("hash = \"{}\"", package_hash(&dp.root)));
-        } else {
-            let a = norm(&dp.root);
-            let b = norm(&pkg.root);
-            let p = relative_path(&a, &b);
-            lines.push(format!("source = \"path+{}\"", p));
+        lines.push(format!("name = {}", toml_str(&dp.name)));
+        lines.push(format!("source = {}", toml_str(&dp.source)));
+        if dp.source.starts_with("git+") {
+            let kept = only.as_ref().filter(|o| **o != dp.name).and_then(|_| old.get(&dp.name)).and_then(|e| e.get("hash")).and_then(|h| h.as_str()).map(String::from);
+            let hash = match kept {
+                Some(h) => h,
+                None => match try_package_hash(&dp.root) {
+                    Ok(h) => h,
+                    Err(e) => return fail(e),
+                },
+            };
+            lines.push(format!("hash = {}", toml_str(&hash)));
         }
-        let mut dn: Vec<String> = dp
-            .manifest
-            .get("dependencies")
-            .and_then(|d| d.as_table())
-            .map(|t| t.keys().cloned().collect())
-            .unwrap_or_default();
+        let mut dn: Vec<String> =
+            dp.manifest.get("dependencies").and_then(|d| d.as_table()).map(|t| t.keys().cloned().collect()).unwrap_or_default();
         dn.sort();
-        lines.push(format!("deps = [{}]", dn.iter().map(|x| format!("\"{}\"", x)).collect::<Vec<_>>().join(", ")));
+        lines.push(format!("deps = [{}]", dn.iter().map(|x| toml_str(x)).collect::<Vec<_>>().join(", ")));
         lines.push(String::new());
     }
     let text = lines.join("\n").trim_end().to_string() + "\n";
@@ -1556,53 +1759,44 @@ fn cmd_update() -> i32 {
     0
 }
 
-fn relative_path(target: &str, base: &str) -> String {
-    let t: Vec<&str> = target.split('/').collect();
-    let b: Vec<&str> = base.split('/').collect();
-    let mut i = 0;
-    while i < t.len() && i < b.len() && t[i] == b[i] {
-        i += 1;
-    }
-    let mut out: Vec<String> = vec!["..".to_string(); b.len() - i];
-    out.extend(t[i..].iter().map(|x| x.to_string()));
-    if out.is_empty() { ".".into() } else { out.join("/") }
-}
-
+/// `ksn vendor`: git 依存 (推移的なものを含む) を取得元から取り直し、`vendor/<名前>/` に複製する。
+/// `kasane.lock` に記録があれば、取得した内容がそのハッシュと一致することを確かめてから複製する。
 fn cmd_vendor() -> i32 {
+    let fail = |e: ProjectError| {
+        eprintln!("ksn: {}: {}", e.code, e.msg);
+        2
+    };
     let (root, pkg) = match find_root().and_then(|r| load_package(&r).map(|p| (r, p))) {
         Ok(x) => x,
-        Err(e) => {
-            eprintln!("ksn: {}: {}", e.code, e.msg);
-            return 2;
-        }
+        Err(e) => return fail(e),
     };
-    let deps = pkg.manifest.get("dependencies").and_then(|d| d.as_table()).cloned().unwrap_or_default();
-    for (dn, dv) in deps {
-        let Some(git) = dv.get("git").and_then(|g| g.as_str()) else { continue };
-        let dest = root.join("vendor").join(&dn);
-        if dest.is_dir() {
-            continue;
+    let deps = match load_deps_with(&pkg, &|_| GitMode::Fresh) {
+        Ok(d) => d,
+        Err(e) => return fail(e),
+    };
+    let old = old_lock(&root);
+    for dp in deps.iter().filter(|d| d.source.starts_with("git+")) {
+        let actual = match try_package_hash(&dp.root) {
+            Ok(h) => h,
+            Err(e) => return fail(e),
+        };
+        if let Some(h) = old.get(&dp.name).and_then(|e| e.get("hash")).and_then(|h| h.as_str()) {
+            if h != actual {
+                return fail(ProjectError {
+                    code: "E9022".into(),
+                    msg: format!("hash mismatch for {}: kasane.lock says {} but the fetched source has {}; not vendored", dp.name, h, actual),
+                });
+            }
         }
-        let rev = dv.get("rev").and_then(|r| r.as_str()).unwrap_or("");
-        let ok = std::process::Command::new("git").args(["clone", git, &norm(&dest)]).status().map_or(false, |s| s.success())
-            && std::process::Command::new("git").args(["-C", &norm(&dest), "checkout", rev]).status().map_or(false, |s| s.success());
-        if !ok {
-            eprintln!("ksn: failed to vendor {}", dn);
-            return 2;
-        }
+        let dest = root.join("vendor").join(&dp.name);
+        let _ = fs::remove_dir_all(&dest);
+        copy_tree(&dp.root, &dest, &[]);
+        let _ = fs::write(dest.join(".ksn-source"), format!("{}\n", dp.source));
     }
     0
 }
 
 // ------------------------------------------------------------ build
-fn cache_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("KSN_CACHE_DIR") {
-        return PathBuf::from(d);
-    }
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".ksn").join("cache")
-}
-
 fn dir_size(p: &Path) -> u64 {
     let mut n = 0;
     if let Ok(rd) = fs::read_dir(p) {
@@ -1672,7 +1866,7 @@ fn evict(cdir: &Path, keep: &str) {
     let Ok(rd) = fs::read_dir(cdir) else { return };
     let mut ents: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy() != keep)
+        .filter(|e| e.file_name().to_string_lossy() != keep && e.file_name().to_string_lossy() != "git")
         .map(|e| {
             let used = e.path().join(".used");
             let t = fs::metadata(&used).or_else(|_| e.metadata()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
@@ -1704,6 +1898,13 @@ fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
     for dp in &l.deps {
         h.update(package_hash(&dp.root).as_bytes());
     }
+    // デバッグビルドの同梱物には `tests/` (統合テスト、3.2) が入る。リリースには入れない。
+    if !release {
+        for s in l.pkg.sources.iter().filter(|s| s.is_test) {
+            h.update(s.path.as_bytes());
+            h.update(s.text.as_bytes());
+        }
+    }
     for s in &l.std {
         h.update(s.text.as_bytes());
     }
@@ -1725,7 +1926,7 @@ fn set_exec(_p: &Path) {}
 
 fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let release = args.iter().any(|a| a == "--release");
-    let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "c".into());
+    let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "clif".into());
     let target = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)).cloned();
     let mut rep = Report::new(false);
     let root = match find_root() {
@@ -1771,6 +1972,10 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         copy_tree(&stdlib_dir(), &tmp.join("stdlib"), &[]);
         let pk = tmp.join("pkg");
         copy_tree(&l.pkg.root, &pk, &["target", "__pycache__", ".git"]);
+        if release {
+            // 3.2: テストはリリースビルドから除外する (統合テストのファイルも同梱しない)。
+            let _ = fs::remove_dir_all(pk.join("tests"));
+        }
         for dp in &l.deps {
             copy_tree(&dp.root, &pk.join("vendor").join(&dp.name), &["target", "__pycache__", ".git"]);
         }
@@ -1828,6 +2033,13 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
         _ if reused => Ok(()),
         None => Err("library package".into()),
         Some(e) => {
+            let test_files: std::collections::HashSet<&str> =
+                l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.as_str()).collect();
+            let mut user: Vec<usize> = user.iter().copied().filter(|&i| !test_files.contains(prog.defs[i].file.as_str())).collect();
+            // 依存パッケージの関数・型も機械語にする (到達できるものだけが出力される)。
+            let dep_files: std::collections::HashSet<&str> =
+                l.deps.iter().flat_map(|dp| dp.sources.iter().map(|s| s.path.as_str())).collect();
+            user.extend((0..prog.defs.len()).filter(|&i| dep_files.contains(prog.defs[i].file.as_str())));
             let mut funcs: HashMap<String, &Def> = HashMap::new();
             for &i in &user {
                 let d = &prog.defs[i];
@@ -1878,6 +2090,29 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
 /// 下ろせない関数が 1 つでもあれば、理由を `Err` で返す (呼び出し側が既定の経路へ退避する)。
 fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool) -> Result<(), String> {
     let lo = crate::kir_lower::lower_program(prog, user, Some(entry));
+    llvm_exe(lo, entry, exe, if release { "-O2" } else { "-O1" })
+}
+
+/// `ksn test --both` の LLVM 側: テスト `ti` を入口にして KIR → LLVM → clang の実行ファイルを作る (`target/test-llvm/`)。
+/// 下ろせない・clang が無いなどで作れなければ理由を返す (呼び出し側が Cranelift・バンドルへ退避する)。
+fn build_llvm_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> Result<PathBuf, String> {
+    let d = &prog.defs[ti];
+    let lo = crate::kir_lower::lower_test(prog, user, ti);
+    let dir = root.join("target").join("test-llvm");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let exe = dir.join(format!("{}_{}{}", ti, test_stem(&d.name), if cfg!(windows) { ".exe" } else { ".native" }));
+    let _ = fs::remove_file(&exe);
+    llvm_exe(lo, &d.name, &exe, "-O1")?;
+    Ok(exe)
+}
+
+/// テストの FQN を、実行ファイル名に使える形にする。
+fn test_stem(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' { c } else { '_' }).collect()
+}
+
+/// 下ろし済みの `lo` から、入口 `entry` の実行ファイル `exe` を作る。入口が下ろせなければ、根の理由を `Err` で返す。
+fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str) -> Result<(), String> {
     if lo.module.find(entry).is_none() {
         // 理由の鎖 (`呼び先 X が未対応`) をたどって、根の理由を出す。
         let mut key = entry.to_string();
@@ -1899,7 +2134,25 @@ fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: 
     }
     let m = lo.module.reachable_from(&[entry, crate::kir_lower::debug::ENTRY_DEBUG]);
     let ll = crate::kir_llvm::emit_program(&m, entry)?;
-    clang_ll(&ll, exe, if release { "-O2" } else { "-O1" })
+    clang_ll(&ll, exe, opt)
+}
+
+/// 環境変数 `KSN_CLANG_ARGS` (空白区切り) の clang への追加の引数。試験が `-fsanitize=address -g` などを渡すための隠し機能。
+/// 未設定なら空 (既定の挙動は変わらない)。
+/// IR が C の実行時補助 (`kir_rt.c`) を要するなら、それを `src` の隣に書いて、clang に足す引数 (`-x c <path>`) を返す。
+fn runtime_c_args(ll: &str, src: &Path) -> Vec<String> {
+    if !crate::kir_llvm::needs_runtime(ll) {
+        return vec![];
+    }
+    let c = src.with_extension("rt.c");
+    if fs::write(&c, crate::kir_llvm::RUNTIME_C).is_err() {
+        return vec![];
+    }
+    vec!["-x".into(), "c".into(), c.display().to_string()]
+}
+
+fn clang_extra_args() -> Vec<String> {
+    std::env::var("KSN_CLANG_ARGS").map(|s| s.split_whitespace().map(|x| x.to_string()).collect()).unwrap_or_default()
 }
 
 /// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。
@@ -1907,8 +2160,12 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let src = exe.with_extension("ll.tmp");
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
-    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module", "-x", "ir"]).arg(&src).arg("-o").arg(exe).arg("-lm").output();
+    let rt = runtime_c_args(ll, &src);
+    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(exe).arg("-lm").output();
     let _ = fs::remove_file(&src);
+    if rt.len() == 3 {
+        let _ = fs::remove_file(&rt[2]);
+    }
     match o {
         Err(e) => Err(format!("clang を起動できない ({}: {})", clang, e)),
         Ok(o) if !o.status.success() => Err(format!("clang が失敗した: {}", String::from_utf8_lossy(&o.stderr).trim())),
@@ -1955,7 +2212,17 @@ fn cmd_exec(args: &[String]) -> i32 {
 
 // ------------------------------------------------------------ エントリ
 pub fn main_cli(args: Vec<String>) -> i32 {
-    let rest: Vec<String> = args[1..].to_vec();
+    // E2044 (型が決まらない) は既定で有効。`--no-strict-types` で旧来の挙動に戻す (移行用)。
+    // `--strict-types` は受け付けるだけで何も変えない。どちらも全コマンド共通 (check / build / test / run)。
+    let mut rest: Vec<String> = args[1..].to_vec();
+    // `--` より後ろはプログラムへの引数なので触らない。
+    let cut = rest.iter().position(|a| a == "--").unwrap_or(rest.len());
+    if rest[..cut].iter().any(|a| a == "--no-strict-types") {
+        crate::types::set_strict_types(false);
+    }
+    let tail = rest.split_off(cut);
+    rest.retain(|a| a != "--no-strict-types" && a != "--strict-types");
+    rest.extend(tail);
     match args[0].as_str() {
         "new" => match rest.first() {
             Some(n) => cmd_new(n),
@@ -1964,11 +2231,14 @@ pub fn main_cli(args: Vec<String>) -> i32 {
                 2
             }
         },
-        "check" => cmd_check(rest.iter().any(|a| a == "--json")),
+        "check" => {
+            cmd_check(rest.iter().any(|a| a == "--json"))
+        }
         "run" => cmd_run(&rest),
         "test" => cmd_test(&rest),
         "get" => cmd_get(&rest),
         "sig" => cmd_sig(&rest),
+        "doc" => cmd_doc(&rest),
         "refs" => cmd_refs(&rest),
         "rename" => cmd_rename(&rest),
         "fmt" => cmd_fmt(&rest),
@@ -1976,9 +2246,12 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "todo" => cmd_todo(),
         "context" => cmd_context(&rest),
         "explain" => cmd_explain(&rest),
+        "lsp" => crate::lsp::run(),
+        "debug" => crate::debug::cmd_debug(&rest),
+        "dap" => crate::debug::cmd_dap(),
         "kir" => cmd_kir(&rest),
         "build" => cmd_build(&rest, None),
-        "update" => cmd_update(),
+        "update" => cmd_update(&rest),
         "vendor" => cmd_vendor(),
         "_exec" => cmd_exec(&rest),
         "--version" | "-V" => {
@@ -1987,7 +2260,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
         _ => {
             eprintln!(
-                "usage: ksn <new|check|fix|todo|context|fmt|run|test|build|get|sig|refs|rename|explain|update|vendor> [args]"
+                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|refs|rename|explain|lsp|update|vendor> [args]"
             );
             2
         }
@@ -2026,5 +2299,51 @@ mod both_tests {
         // 片方だけ失敗。
         assert!(backends_disagree(&None, &s("panic: assertion failed")));
         assert!(!backends_disagree(&None, &None));
+    }
+
+    #[test]
+    fn llvm_panic_texts_classify_like_the_tree_walker() {
+        // KIR の LLVM 出力 (`ksn.panic.*` と `eprint` の文言) と、木走査の文言が同じ分類になること。
+        // `kir_llvm::PANICS` と `interp.rs` の文言を並べる (片方を変えたらここが落ちる)。
+        let pairs = [
+            ("panic: attempt to add with overflow", "attempt to add with overflow", "overflow"),
+            ("panic: attempt to subtract with overflow", "attempt to subtract with overflow", "overflow"),
+            ("panic: attempt to multiply with overflow", "attempt to multiply with overflow", "overflow"),
+            ("panic: attempt to divide with overflow", "attempt to divide with overflow", "overflow"),
+            ("panic: attempt to calculate the remainder with overflow", "attempt to calculate the remainder with overflow", "overflow"),
+            ("panic: attempt to negate with overflow", "attempt to negate with overflow", "overflow"),
+            ("panic: attempt to divide by zero", "attempt to divide by zero", "divide"),
+            (
+                "panic: attempt to calculate the remainder with a divisor of by zero",
+                "attempt to calculate the remainder with a divisor of by zero",
+                "divide",
+            ),
+            (
+                "panic: index out of bounds: the len is 3 but the index is 5",
+                "index out of bounds: the len is 3 but the index is 5",
+                "index",
+            ),
+            (
+                "panic: called `Option::unwrap()` on a `None` value",
+                "called `Option::unwrap()` on a `None` value",
+                "unwrap",
+            ),
+            (
+                "panic: called `Result::unwrap()` on an `Err` value: 5",
+                "called `Result::unwrap()` on an `Err` value: 5",
+                "unwrap",
+            ),
+            ("panic: assertion failed: left: 1, right: 2", "assertion failed: left: 1, right: 2", "assert"),
+            ("panic: assertion failed: condition is false", "assertion failed: condition is false", "assert"),
+        ];
+        for (llvm, tree, class) in pairs {
+            assert_eq!(fail_class(llvm), class, "{}", llvm);
+            assert_eq!(fail_class(tree), class, "{}", tree);
+            assert!(!backends_disagree(&s(llvm), &s(tree)), "{} / {}", llvm, tree);
+        }
+        // 終了の種類 (`exit(102)` は stack 超過、木走査の `Exit(102)` と同じ)。
+        assert_eq!(fail_class("exit(102)"), "exit 102");
+        assert!(!backends_disagree(&s("exit(102)"), &s("exit(102)")));
+        assert!(backends_disagree(&s("exit(102)"), &s("panic: attempt to add with overflow")));
     }
 }

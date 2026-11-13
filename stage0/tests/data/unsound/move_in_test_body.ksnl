@@ -1,0 +1,14 @@
+// expect: E3002
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+test t.main.test_twice
+    let s: alloc.string.String = alloc.string.String.new(std.alloc.SYSTEM)
+    t.consume(s)
+    t.consume(s)
+end t.main.test_twice

@@ -1,0 +1,44 @@
+fn t.consume(s: alloc.string.String) -> () uses [] panics never
+    core.mem.drop(s)
+end t.consume
+
+fn t.continue_after_reassign() -> () uses [] panics never
+    let mut s = t.mk()
+    let mut i = 0u8
+    while i < 3u8 {
+        if i == 1u8 {
+            t.consume(s)
+            s = t.mk()
+            i = i.wrapping_add(1u8)
+            continue
+        }
+        i = i.wrapping_add(1u8)
+    }
+    t.consume(s)
+end t.continue_after_reassign
+
+fn t.eat(s: alloc.string.String) -> bool uses [] panics never
+    core.mem.drop(s)
+    false
+end t.eat
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek
+
+fn t.refill() -> () uses [] panics never
+    let mut s = t.mk()
+    while t.eat(s) {
+        s = t.mk()
+    }
+    s = t.mk()
+    t.consume(s)
+end t.refill

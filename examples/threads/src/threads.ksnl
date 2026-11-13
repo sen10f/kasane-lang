@@ -1,3 +1,24 @@
+static threads.TOTAL: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+fn threads.add_worker(rounds: u32) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move rounds] {
+            let mut i = 0u32
+            while i < rounds {
+                let mut guard = threads.TOTAL.lock()
+                let seen = *guard.get()
+                *guard.get_mut() = seen + 1u64
+                i = i + 1u32
+            }
+        },
+    )
+    match spawned {
+        Ok(handle) => handle
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end threads.add_worker
+
 fn threads.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
     let spawned = std.thread.spawn(
         std.alloc.SYSTEM,
@@ -11,9 +32,54 @@ fn threads.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] p
     }
     let answer = handle.join()
     core.check.eq(answer, 42u32)
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 4usize)
+    let (tx, rx) = made.map_err(threads.oom)?
+    let first = threads.add_worker(1000u32)
+    let second = threads.add_worker(1000u32)
+    let producer_spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move tx] {
+            threads.produce(tx, 100u32)
+        },
+    )
+    let producer = match producer_spawned {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let mut sum = 0u32
+    loop {
+        match rx.recv() {
+            Ok(n) => {
+                sum = sum + n
+            }
+            Err(_e) => break
+        }
+    }
+    producer.join()
+    first.join()
+    second.join()
+    core.check.eq(sum, 5050u32)
+    let total = threads.TOTAL.lock()
+    core.check.eq(*total.get(), 2000u64)
+    core.mem.drop(total)
     let mut rng = std.rand.Rng.from_seed(7u64)
-    let first = rng.next_u64()
+    let seeded = rng.next_u64()
     let mut again = std.rand.Rng.from_seed(7u64)
-    core.check.eq(again.next_u64(), first)
+    core.check.eq(again.next_u64(), seeded)
     std.io.print_line("threads ok")
 end threads.main
+
+fn threads.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end threads.oom
+
+fn threads.produce(tx: std.sync.Sender<u32>, count: u32) -> () uses [thread] panics may
+    let mut i = 1u32
+    while i <= count {
+        match tx.send(i) {
+            Ok(_u) => 0u32
+            Err(_e) => core.panic.panic("send failed")
+        }
+        i = i + 1u32
+    }
+end threads.produce

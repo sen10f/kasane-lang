@@ -20,7 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::check::{is_nil, items, nf, nline, nname, st, strs};
+use crate::check::{is_nil, items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{AggKind, Aop, Block, BoolOp, Cc, Func, Inst, Mode, Op, Pay, Pointee, Term, Ty, VId};
 use super::{conv, Lw, St, LR};
 use crate::parser::{nid, V};
@@ -29,6 +29,7 @@ use crate::types::{from_v, Ty as Src};
 
 const VEC: &str = "alloc.vec.Vec";
 const STRING: &str = "alloc.string.String";
+const HASHMAP: &str = "alloc.collections.HashMap";
 /// `Vec<T>` と `String` のヘッダの大きさ (ptr, len, cap)。
 const HDR_VEC: u32 = 24;
 
@@ -43,6 +44,9 @@ pub(crate) enum Kind {
     Str,
     /// `&[T]` / `&mut [T]` (要素型が分かれば `Some`。値は `fat` の {ptr, len})。
     Slice(Option<Ty>),
+    /// `HashMap<K, V>` (設計_KIR.md 16 章)。キーと値の型が分かれば `Some`。キーの `Ty::Ptr` は `&str` のキーの印。
+    /// ヘッダは Vec と同じ 24 バイト (所有と移動と解放は Vec と同じ規則)。
+    Map(Option<(Ty, Ty)>),
     /// 下ろした関数の鍵と、引数・戻り値の型。`caps` は取り込みの値 (この関数の中の値番号。値の取り込みはその値、
     /// 参照の取り込みは参照の値) で、`cap_tys` がその型。呼び出しでは先頭の追加の引数として渡す (設計_KIR.md 13 章)。
     Closure { key: String, args: Vec<Ty>, ret: Ty, caps: Vec<VId>, cap_tys: Vec<Ty> },
@@ -55,6 +59,9 @@ pub(crate) enum Owned {
     Hdr(VId),
     /// 構造体・列挙型・`Option` / `Result` の局所変数。スロットと、移していないとき 1 の印 (フレームの 1 バイト)。
     Val { slot: usize, flag: VId },
+    /// 評価済みで、まだ束縛も消費もされていない所有値 (呼び出しの引数・構造体のフィールド・タプルの要素)。
+    /// 後ろの式の評価が `?` / `return` / `break` で抜けるときに解放するため、消費の直前まで登録しておく (設計_KIR.md 17.3)。
+    Tmp(VId),
 }
 
 /// 下ろしの状態。`Lw` が 1 つ持つ。
@@ -62,6 +69,9 @@ pub(crate) enum Owned {
 pub(crate) struct CollCx {
     /// スロット番号 → 種類。
     pub(crate) kinds: BTreeMap<usize, Kind>,
+    /// 固定長配列への参照のスロット → 要素数 N (`&[T; N]` / `&mut [T; N]` のパラメータと、
+    /// アドレスを取られた配列の局所変数)。長さは型から分かるので定数として扱う。
+    pub(crate) arr_len: BTreeMap<usize, u32>,
     /// 所有する値 (スコープの番号, 所有物) の登録順。
     pub(crate) owned: Vec<(usize, Owned)>,
     /// 関数の入口で確保する `alloca` (ブロック 0 の先頭に置く)。
@@ -78,12 +88,16 @@ pub(crate) struct CollCx {
     pub(crate) hint: Option<Src>,
     /// いま下ろしている `match` の対象の (KIR の型, 型表の型)。`Some(x)` の `x` の種類の手がかりを取るため。
     pub(crate) scrut_src: Option<(Ty, Src)>,
+    /// Vec / String のヘッダ (フレームの領域) → 値の型 (`vec` または要素が所有物の `vec<#N>`)。移すときの型と、解放のとき要素を解放するかに使う。
+    pub(crate) hdr_ty: BTreeMap<VId, Ty>,
+    /// 構造体のフィールド (場所) を `match` の対象として読んだ直後か (`scrut_begin` が読んで下ろす)。値は移していない。
+    pub(crate) peek_field: bool,
     /// 下ろしたクロージャの式 ID → (取り込みの値, その型)。`closure_kind_from_table` が読む。
     pub(crate) caps: BTreeMap<u32, (Vec<VId>, Vec<Ty>)>,
 }
 
 /// 型表の式の型 (式 ID が 0 なら無い)。
-fn table_ty(lw: &Lw, e: &V) -> Option<Src> {
+pub(super) fn table_ty(lw: &Lw, e: &V) -> Option<Src> {
     let id = nid(e);
     if id == 0 {
         return None;
@@ -102,11 +116,20 @@ fn strip_ref(t: &Src) -> &Src {
 /// 式の値の段階 1 の型 (Vec / String は `ptr`、`&str` とスライスは `fat`、クロージャは `unit` の値)。対象外なら `None`。
 pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     // 値渡しの Vec / String は集成体 `vec` (所有の移動)、参照は借用なのでヘッダのアドレス。
-    if matches!(t, Src::Named(n, _) if n == VEC || n == STRING) {
-        return Some(lw.aggs.borrow_mut().vec_hdr());
+    if let Src::Named(n, args) = t {
+        if n == VEC {
+            let elem = args.first().and_then(|a| lw.conv_t(a));
+            return Some(lw.aggs.borrow_mut().vec_of(elem));
+        }
+        if n == STRING {
+            return Some(lw.aggs.borrow_mut().vec_hdr());
+        }
+        if n == HASHMAP {
+            return Some(lw.aggs.borrow_mut().vec_hdr());
+        }
     }
     match strip_ref(t) {
-        Src::Named(n, _) if n == VEC || n == STRING => Some(Ty::Ptr),
+        Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).and_then(size_of).is_some() => Some(lw.fat_ty()),
         Src::Closure { .. } => Some(Ty::Unit),
@@ -116,19 +139,35 @@ pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
 
 /// `Vec` / `String` の名前の型か。
 pub(crate) fn is_hdr_named(t: &Src) -> bool {
-    matches!(t, Src::Named(n, _) if n == VEC || n == STRING)
+    matches!(t, Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP)
 }
 
 /// 関数の引数・戻り値の型。通常の型に加えて、Vec / String / `str` / スライスへの参照 (借用) を受ける。
 pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
+    // `&mut [T]` / `&[T]` (配列への参照) は、配列の値は `fat` だがパラメータとしては要素の先頭 `ptr` を受け取る。
+    if let Src::Ref(_, inner) = t {
+        if matches!(&**inner, Src::Array(_)) {
+            return Some(Ty::Ptr);
+        }
+    }
     if let Some(x) = lw.conv_t(t) {
         return Some(x);
     }
-    let Src::Ref(_, inner) = t else { return None };
+    // 生ポインタ `*const T` / `*mut T` は `ptr`。
+    if let Src::Ptr(_, inner) = t {
+        if matches!(&**inner, Src::Prim(_)) {
+            return Some(Ty::Ptr);
+        }
+    }
+    let Src::Ref(mutbl, inner) = t else { return None };
     match &**inner {
-        Src::Named(n, _) if n == VEC || n == STRING => Some(Ty::Ptr),
+        Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).and_then(size_of).is_some() => Some(lw.fat_ty()),
+        Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" => {
+            let ai = lw.aggs.borrow().agg_index(n).expect("std.net.Tcp* が型表にない");
+            Some(Ty::Ref(*mutbl, Pointee::Agg(ai)))
+        }
         _ => None,
     }
 }
@@ -150,7 +189,7 @@ pub(crate) fn bind_param_kind(lw: &mut Lw, name: &str, t: &Src) {
     if !matches!(t, Src::Ref(..)) {
         return;
     }
-    if let (Some(s), Some(k)) = (lw.lookup(name), kind_of_src(t)) {
+    if let (Some(s), Some(k)) = (lw.lookup(name), kind_of_src(lw, t)) {
         lw.coll.kinds.insert(s, k);
         lw.coll.borrowed.insert(s);
     }
@@ -159,21 +198,35 @@ pub(crate) fn bind_param_kind(lw: &mut Lw, name: &str, t: &Src) {
 /// `&v` / `&mut v` (v は Vec / String の局所変数): ヘッダのアドレスそのもの。
 pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
     if let Some(s) = local_slot(lw, operand) {
-        if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) {
+        if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) {
             return Ok(lw.slots[s].0);
         }
     }
     lw.err(line, "Vec / String の借用は局所変数だけ段階 1 の対象")
 }
 
-fn kind_of_src(t: &Src) -> Option<Kind> {
+pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
     match strip_ref(t) {
-        Src::Named(n, args) if n == VEC => Some(Kind::Vec(args.first().and_then(conv))),
+        // 要素が所有物 (`Vec<String>`) のときは、要素の型 (集成体 `vec` など) を持つ
+        Src::Named(n, args) if n == VEC => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a))))),
         Src::Named(n, _) if n == STRING => Some(Kind::String),
+        Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(args))),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         Src::Slice(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
+        // 固定長配列 `&[T; N]` の要素型。長さ N は `arr_len` で別途追跡する。
+        Src::Array(e) => Some(Kind::Slice(conv(e).filter(|t| size_of(*t).is_some()))),
         _ => None,
     }
+}
+
+/// `HashMap<K, V, _>` の型引数から (キー, 値) の KIR の型。キーは整数・bool・char (`Ty`) か `&str` (`Ty::Ptr` の印)、値は整数・bool・char。
+fn map_kv(args: &[Src]) -> Option<(Ty, Ty)> {
+    let k = match args.first()? {
+        Src::Ref(_, i) if matches!(&**i, Src::Prim(s) if s == "str") => Ty::Ptr,
+        other => conv(other).filter(|t| size_of(*t).is_some())?,
+    };
+    let v = conv(args.get(1)?).filter(|t| size_of(*t).is_some())?;
+    Some((k, v))
 }
 
 /// クロージャの鍵。式 ID は関数 (または単相インスタンス) の中で一意なので、同じ中の別のクロージャと衝突しない。
@@ -183,7 +236,7 @@ fn closure_key(lw: &Lw, id: u32) -> String {
 }
 
 /// 単一の名前の経路なら、その名前のスロット (見えているもの)。
-fn local_slot(lw: &Lw, e: &V) -> Option<usize> {
+pub(crate) fn local_slot(lw: &Lw, e: &V) -> Option<usize> {
     if nname(e) != "Path" {
         return None;
     }
@@ -194,25 +247,84 @@ fn local_slot(lw: &Lw, e: &V) -> Option<usize> {
     lw.lookup(&segs[0])
 }
 
+/// `&[T; N]` / `&mut [T; N]` の型 V (`["ref", B, ["array", elem, N]]`) から N を取る。
+/// 型表の `Src::Array` には長さが入らないので、元の型 V から読む。
+pub(crate) fn ref_array_len(pt: &V) -> Option<u32> {
+    let V::L(fs) = pt else { return None };
+    if fs.len() < 3 || st(&fs[0]) != "ref" { return None; }
+    let V::L(inner) = &fs[2] else { return None };
+    if inner.is_empty() || st(&inner[0]) != "array" { return None; }
+    let V::N(n) = &inner[2] else { return None };
+    n.parse::<u32>().ok()
+}
+
+/// `&[T; N]` のパラメータのスロット `s` の長さ N。
+pub(crate) fn arr_len_of(lw: &Lw, s: usize) -> Option<u32> {
+    lw.coll.arr_len.get(&s).copied()
+}
+
 /// 受け手の種類。局所変数はスロットの種類、それ以外は型表の型から決める。
 fn kind_of_expr(lw: &Lw, e: &V) -> Option<Kind> {
     if let Some(s) = local_slot(lw, e) {
-        return lw.coll.kinds.get(&s).cloned();
+        if let Some(k) = lw.coll.kinds.get(&s).cloned() {
+            return Some(k);
+        }
     }
-    table_ty(lw, e).and_then(|t| kind_of_src(&t))
+    // 文字列リテラル / バイト列リテラルは式そのままなので、型表に無くても種類を返す。
+    if nname(e) == "Lit" {
+        let f = nf(e);
+        match st(&f[0]).as_str() {
+            "str" => return Some(Kind::Str),
+            "bstr" => return Some(Kind::Slice(Some(Ty::U8))),
+            _ => {}
+        }
+    }
+    table_ty(lw, e).and_then(|t| kind_of_src(lw, &t))
 }
 
-fn emit_alloca(lw: &mut Lw, size: u32) -> VId {
+pub(crate) fn emit_alloca(lw: &mut Lw, size: u32) -> VId {
     let dst = lw.new_val(Ty::Ptr);
     lw.coll.allocas.push(Inst { dst, ty: Ty::Ptr, op: Op::FrameBytes { size } });
     dst
 }
 
-fn load_len(lw: &mut Lw, hdr: VId) -> VId {
+pub(super) fn load_len(lw: &mut Lw, hdr: VId) -> VId {
     lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 8 })
 }
 
-fn size_of(t: Ty) -> Option<u32> {
+/// 要素の型の大きさ。スカラーと集成体 (所有物の `vec` や構造体)。
+pub(super) fn elem_size(lw: &Lw, t: Ty) -> Option<u32> {
+    match t {
+        Ty::Agg(i) => Some(lw.aggs.borrow().defs[i as usize].size),
+        t => size_of(t),
+    }
+}
+
+/// アドレス `addr` の要素を読む (集成体は参照へ `bitcast` して `load`)。
+pub(super) fn load_elem(lw: &mut Lw, addr: VId, elem: Ty) -> VId {
+    match elem {
+        Ty::Agg(i) => {
+            let r = lw.emit(Ty::Ref(true, Pointee::Agg(i)), Op::Bitcast { src: Ty::Ptr, a: addr });
+            lw.emit(elem, Op::Load(r))
+        }
+        t => lw.emit(t, Op::MemLoad { p: addr, off: 0 }),
+    }
+}
+
+/// アドレス `addr` へ要素 `v` を書く。
+pub(super) fn store_elem(lw: &mut Lw, addr: VId, elem: Ty, v: VId) {
+    match elem {
+        Ty::Agg(i) => {
+            let r = lw.emit(Ty::Ref(true, Pointee::Agg(i)), Op::Bitcast { src: Ty::Ptr, a: addr });
+            lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+        }
+        t => {
+            lw.emit(Ty::Unit, Op::MemStore { ty: t, p: addr, off: 0, v });
+        }
+    }
+}
+
+pub(super) fn size_of(t: Ty) -> Option<u32> {
     Some(match t {
         Ty::I8 | Ty::U8 | Ty::Bool => 1,
         Ty::I16 | Ty::U16 => 2,
@@ -222,8 +334,22 @@ fn size_of(t: Ty) -> Option<u32> {
     })
 }
 
+/// 局所変数のヘッダ `hdr` の所有物を解放する。要素が所有物の Vec は、各要素を解放してからバッファを解放する。
+fn drop_hdr(lw: &mut Lw, hdr: VId) {
+    let vt = lw.coll.hdr_ty.get(&hdr).copied();
+    if let Some(vt) = vt.filter(|t| lw.aggs.borrow().vec_elem(*t).is_some()) {
+        let p = lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 });
+        let l = lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 8 });
+        let c = lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 16 });
+        let v = lw.emit(vt, Op::Make { variant: None, fields: vec![p, l, c] });
+        drop_value(lw, v, vt);
+        return;
+    }
+    emit_free(lw, hdr);
+}
+
 /// 所有するバッファを解放する命令列を、現在のブロックに置く (`null` なら何もしない)。
-fn emit_free(lw: &mut Lw, hdr: VId) {
+pub(super) fn emit_free(lw: &mut Lw, hdr: VId) {
     let buf = lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 });
     lw.emit(Ty::Unit, Op::HeapFree(buf));
 }
@@ -238,7 +364,7 @@ pub(crate) fn owns(lw: &Lw, t: Ty) -> bool {
 }
 
 /// ヘッダ `hdr` に、集成体 `vec` の値 (ptr, len, cap) を書く。
-fn store_vec(lw: &mut Lw, hdr: VId, v: VId) {
+pub(super) fn store_vec(lw: &mut Lw, hdr: VId, v: VId) {
     let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
     let l = lw.emit(Ty::Usize, Op::Field { a: v, off: 8 });
     let c = lw.emit(Ty::Usize, Op::Field { a: v, off: 16 });
@@ -251,19 +377,25 @@ fn store_vec(lw: &mut Lw, hdr: VId, v: VId) {
 pub(crate) fn adopt(lw: &mut Lw, v: VId) -> VId {
     let hdr = emit_alloca(lw, HDR_VEC);
     store_vec(lw, hdr, v);
+    lw.coll.hdr_ty.insert(hdr, lw.vty(v));
     let scope = lw.scopes.len() - 1;
     lw.coll.owned.push((scope, Owned::Hdr(hdr)));
     hdr
 }
 
 /// 所有するヘッダから値を移す: 3 語を読み、元の `ptr` を null にする (元の場所の解放は何もしなくなる)。
-fn move_hdr(lw: &mut Lw, hdr: VId) -> VId {
+pub(super) fn move_hdr(lw: &mut Lw, hdr: VId) -> VId {
     let p = lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 });
     let l = lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 8 });
     let c = lw.emit(Ty::Usize, Op::MemLoad { p: hdr, off: 16 });
     let null = lw.emit(Ty::Ptr, Op::Const(0));
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: hdr, off: 0, v: null });
-    let vt = lw.aggs.borrow_mut().vec_hdr();
+    let vt = lw.coll.hdr_ty.get(&hdr).copied().unwrap_or_else(|| lw.aggs.borrow_mut().vec_hdr());
+    // 要素が所有物なら、移した後の解放が (null のバッファの) 要素をたどらないように長さも 0 にする
+    if lw.aggs.borrow().vec_elem(vt).is_some() {
+        let zero = lw.emit(Ty::Usize, Op::Const(0));
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: hdr, off: 8, v: zero });
+    }
     lw.emit(vt, Op::Make { variant: None, fields: vec![p, l, c] })
 }
 
@@ -292,7 +424,7 @@ pub(crate) fn val_slot_of(lw: &Lw, s: usize) -> bool {
 
 /// 局所変数の読み (値としての使用 = 移動)。所有する Vec / String はヘッダから値を移し、印を持つ変数は印を下ろす。
 pub(crate) fn path_read(lw: &mut Lw, s: usize) -> VId {
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) && !lw.coll.borrowed.contains(&s) {
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) && !lw.coll.borrowed.contains(&s) {
         let h = lw.slots[s].0;
         return move_hdr(lw, h);
     }
@@ -308,6 +440,34 @@ pub(crate) fn path_peek(lw: &mut Lw, s: usize) -> VId {
     lw.read_slot(s)
 }
 
+/// 要素が所有物の Vec の値 `v` (バッファ `buf`) の、先頭から `len` 個の要素を解放する。
+pub(super) fn drop_elems(lw: &mut Lw, v: VId, buf: VId, elem: Ty) {
+    let Ty::Agg(ei) = elem else { return };
+    let size = lw.aggs.borrow().defs[ei as usize].size;
+    let len = lw.emit(Ty::Usize, Op::Field { a: v, off: 8 });
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    let (hd, hp) = lw.new_block(&[Ty::Usize]);
+    let (body, _) = lw.new_block(&[]);
+    let (exit, _) = lw.new_block(&[]);
+    lw.goto(hd, vec![zero]);
+    lw.cur = Some(hd);
+    let i = hp[0];
+    let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len });
+    lw.branch(c, (body, vec![]), (exit, vec![]));
+    lw.cur = Some(body);
+    let k = lw.emit(Ty::Usize, Op::Const(size as i128));
+    let off = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k });
+    let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: buf, off });
+    let rt = Ty::Ref(true, Pointee::Agg(ei));
+    let r = lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr });
+    let e = lw.emit(elem, Op::Load(r));
+    drop_value(lw, e, elem);
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    let i1 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+    lw.goto(hd, vec![i1]);
+    lw.cur = Some(exit);
+}
+
 /// 型 `t` の値 `v` (所有している) を解放する命令列を、現在のブロックに置く。所有物を持たない型は何もしない。
 /// 列挙型と `Option` / `Result` は、タグで枝を分けて、持っている変種のペイロードだけを解放する。
 pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
@@ -317,8 +477,13 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
     match t {
         Ty::Agg(i) => {
             let d = lw.aggs.borrow().defs[i as usize].clone();
-            if d.name == "vec" {
+            if super::agg::is_vec_name(&d.name) {
                 let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                // 要素が所有物なら、各要素を先に解放する (設計_KIR.md 13.8)
+                let elem = lw.aggs.borrow().vec_elem(t);
+                if let Some(elem) = elem {
+                    drop_elems(lw, v, p, elem);
+                }
                 lw.emit(Ty::Unit, Op::HeapFree(p));
                 return;
             }
@@ -392,7 +557,11 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
 /// 所有物 1 つを解放する。印を持つ変数は、印が立っているときだけ現在の値を解放する。
 fn drop_owned(lw: &mut Lw, o: Owned) {
     match o {
-        Owned::Hdr(h) => emit_free(lw, h),
+        Owned::Hdr(h) => drop_hdr(lw, h),
+        Owned::Tmp(v) => {
+            let t = lw.vty(v);
+            drop_value(lw, v, t);
+        }
         Owned::Val { slot, flag } => {
             let t = lw.slots[slot].1;
             let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
@@ -428,6 +597,20 @@ pub(crate) fn block_end(lw: &mut Lw) {
     lw.coll.owned.retain(|(d, _)| *d < depth);
 }
 
+/// 評価済みの値 `v` が所有物なら、消費されるまでの間、現在のスコープの一時の所有に登録する。
+pub(crate) fn tmp_hold(lw: &mut Lw, v: VId) {
+    let t = lw.vty(v);
+    if owns_heap(lw, t) {
+        let scope = lw.scopes.len() - 1;
+        lw.coll.owned.push((scope, Owned::Tmp(v)));
+    }
+}
+
+/// `tmp_hold` した値を外す (呼び出しや構築が消費する直前、または評価が途中で終わったとき)。
+pub(crate) fn tmp_release(lw: &mut Lw, vs: &[VId]) {
+    lw.coll.owned.retain(|(_, o)| !matches!(o, Owned::Tmp(x) if vs.contains(x)));
+}
+
 /// 捨てる値 (文として評価した式の値) が所有物なら解放する。
 pub(crate) fn drop_temp(lw: &mut Lw, v: VId) {
     let t = lw.vty(v);
@@ -441,14 +624,13 @@ pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
         lw.bind_let(name, v, t);
         return;
     }
-    let vec_t = lw.aggs.borrow_mut().vec_hdr();
-    if t == vec_t {
+    if lw.aggs.borrow().is_vec(t) {
         let h = adopt(lw, v);
         lw.bind(name, h, Ty::Ptr);
         let s = lw.lookup(name).expect("直前に束縛した名前");
         // 種類 (Vec の要素型 / String) は、パターンの型の手がかりか、無ければ Vec の要素型不明として持つ。
         let k = match lw.coll.hint.take() {
-            Some(h) => kind_of_src(&h),
+            Some(h) => kind_of_src(lw, &h),
             None => None,
         };
         lw.coll.kinds.insert(s, k.unwrap_or(Kind::Vec(None)));
@@ -465,13 +647,13 @@ pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
 /// 局所変数への代入 `x = v`。所有物は、古い値を解放してから新しい値を入れる (Vec / String はヘッダを書き直す)。
 /// 印を持つ変数は印を立て直す (移した後の再代入を含む)。
 pub(crate) fn assign_checked(lw: &mut Lw, s: usize, v: VId, line: usize) -> LR<()> {
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) && !lw.coll.borrowed.contains(&s) {
-        let vt = lw.aggs.borrow_mut().vec_hdr();
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_))) && !lw.coll.borrowed.contains(&s) {
+        let h = lw.slots[s].0;
+        let vt = lw.coll.hdr_ty.get(&h).copied().unwrap_or_else(|| lw.aggs.borrow_mut().vec_hdr());
         if lw.vty(v) != vt {
             return lw.err(line, "代入の型が変数の型と違う");
         }
-        let h = lw.slots[s].0;
-        emit_free(lw, h);
+        drop_hdr(lw, h);
         store_vec(lw, h, v);
         return Ok(());
     }
@@ -497,19 +679,12 @@ pub(crate) enum Cover {
     All,
 }
 
-fn combine(lw: &Lw, line: usize, subs: &[V], ftys: &[Ty]) -> LR<Cover> {
-    let (mut all, mut no) = (false, false);
+fn combine(lw: &Lw, _line: usize, subs: &[V], ftys: &[Ty]) -> LR<Cover> {
+    let mut all = false;
     for (sp, ft) in subs.iter().zip(ftys) {
-        if !owns_heap(lw, *ft) {
-            continue;
+        if owns_heap(lw, *ft) && pat_cover(lw, sp, *ft)? == Cover::All {
+            all = true;
         }
-        match pat_cover(lw, sp, *ft)? {
-            Cover::All => all = true,
-            Cover::No => no = true,
-        }
-    }
-    if all && no {
-        return lw.err(line, "所有物の一部だけを束縛するパターン (部分的な移動) は段階 1 の対象外");
     }
     Ok(if all { Cover::All } else { Cover::No })
 }
@@ -554,23 +729,13 @@ fn pat_cover(lw: &Lw, p: &V, t: Ty) -> LR<Cover> {
         "PStruct" => {
             let Some(d) = agg(t) else { return lw.err(line, "構造体のパターンの対象が集成体でない") };
             let AggKind::Struct(fs) = &d.kind else { return lw.err(line, "構造体のパターンの対象が構造体でない") };
-            let (mut all, mut no) = (false, false);
+            let mut all = false;
             for it in items(&nf(p)[1]) {
                 let V::L(xs) = it else { return lw.err(line, "構造体のパターンの形が不正") };
                 let Some(fd) = fs.iter().find(|x| x.name == st(&xs[0])) else { return lw.err(line, "フィールドがない") };
-                if !owns_heap(lw, fd.ty) {
-                    continue;
+                if owns_heap(lw, fd.ty) && pat_cover(lw, &xs[1], fd.ty)? == Cover::All {
+                    all = true;
                 }
-                match pat_cover(lw, &xs[1], fd.ty)? {
-                    Cover::All => all = true,
-                    Cover::No => no = true,
-                }
-            }
-            // 書かれなかった (`..`) 所有物のフィールドは束縛されない。
-            let owned_fields = fs.iter().filter(|f| owns_heap(lw, f.ty)).count();
-            let written = items(&nf(p)[1]).len();
-            if all && (no || written < owned_fields) {
-                return lw.err(line, "所有物の一部だけを束縛するパターン (部分的な移動) は段階 1 の対象外");
             }
             Ok(if all { Cover::All } else { Cover::No })
         }
@@ -591,11 +756,19 @@ pub(crate) struct Scrut {
 /// 一時の値 (呼び出しの結果など) は、この `match` が所有する。
 pub(crate) fn scrut_begin(lw: &mut Lw, scrut: &V, sv: VId, pats: &[&V]) -> LR<Option<Scrut>> {
     let t = lw.vty(sv);
+    let peeked = std::mem::take(&mut lw.coll.peek_field);
     if !owns_heap(lw, t) {
         return Ok(None);
     }
     let covers: Vec<Cover> = pats.iter().map(|p| pat_cover(lw, p, t)).collect::<LR<_>>()?;
     let moves = covers.contains(&Cover::All);
+    // 構造体のフィールド (場所) の値を対象にする `match`: 所有物を束縛しない腕だけなら借りて見るだけ。束縛するなら部分的な移動が要る。
+    if peeked {
+        if moves {
+            return lw.err(nline(scrut), "フィールドの値を所有物を束縛する match の対象にする形 (部分的な移動) は段階 1 の対象外");
+        }
+        return Ok(Some(Scrut { owned: false, t, covers }));
+    }
     let slot = val_slot(lw, scrut);
     if let (Some(s), true) = (slot, moves) {
         if let Some(flag) = val_flag(lw, s) {
@@ -606,11 +779,202 @@ pub(crate) fn scrut_begin(lw: &mut Lw, scrut: &V, sv: VId, pats: &[&V]) -> LR<Op
 }
 
 /// 腕 `i` の頭 (パターンが当たった後): 所有していて、この腕が所有物を束縛しないなら、対象の値を丸ごと解放する。
-pub(crate) fn scrut_arm(lw: &mut Lw, sc: &Option<Scrut>, i: usize, sv: VId) {
+pub(crate) fn scrut_arm(lw: &mut Lw, sc: &Option<Scrut>, i: usize, pat: &V, sv: VId) -> LR<()> {
     if let Some(sc) = sc {
-        if sc.owned && sc.covers[i] == Cover::No {
-            drop_value(lw, sv, sc.t);
+        if sc.owned {
+            if sc.covers[i] == Cover::No {
+                drop_value(lw, sv, sc.t);
+            } else {
+                drop_unbound(lw, pat, sv, sc.t)?;
+            }
         }
+    }
+    Ok(())
+}
+
+/// パターン `p` が当たった所有物を持つ値 `v` (型 `t`) のうち、パターンが名前に束縛しなかった所有物を解放する
+/// (分解の「束縛しなかった部分は分解の時点で解放する」。設計_KIR.md 13.7)。束縛した部分は束縛した変数が所有する。
+pub(crate) fn drop_unbound(lw: &mut Lw, p: &V, v: VId, t: Ty) -> LR<()> {
+    if lw.cur.is_none() || !owns_heap(lw, t) {
+        return Ok(());
+    }
+    let line = nline(p);
+    match nname(p) {
+        "PBind" => {}
+        "PWild" | "PLit" | "PPath" => drop_value(lw, v, t),
+        "PTuple" | "PStruct" => {
+            let Ty::Agg(i) = t else { return lw.err(line, "パターンの対象が集成体でない") };
+            let d = lw.aggs.borrow().defs[i as usize].clone();
+            let fs = match &d.kind {
+                AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.clone(),
+                _ => return lw.err(line, "パターンの対象が構造体・タプルでない"),
+            };
+            // (フィールド, 部分パターン)。構造体のパターンに書かれなかったフィールドは束縛されない (`..`)
+            let mut subs: Vec<(crate::kir::Field, Option<V>)> = vec![];
+            if nname(p) == "PTuple" {
+                let ps = items(&nf(p)[0]);
+                if ps.len() != fs.len() {
+                    return lw.err(line, "タプルのパターンの要素数が型と合わない");
+                }
+                for (f, sp) in fs.iter().zip(ps) {
+                    subs.push((f.clone(), Some(sp.clone())));
+                }
+            } else {
+                for f in &fs {
+                    let sp = items(&nf(p)[1]).iter().find_map(|it| match it {
+                        V::L(xs) if st(&xs[0]) == f.name => Some(xs[1].clone()),
+                        _ => None,
+                    });
+                    subs.push((f.clone(), sp));
+                }
+            }
+            for (f, sp) in subs.iter().rev() {
+                if !owns_heap(lw, f.ty) {
+                    continue;
+                }
+                let fv = lw.emit(f.ty, Op::Field { a: v, off: f.off });
+                match sp {
+                    Some(sp) => drop_unbound(lw, sp, fv, f.ty)?,
+                    None => drop_value(lw, fv, f.ty),
+                }
+            }
+        }
+        "PVariant" => {
+            let segs = strs(&nf(p)[0]);
+            let ps = items(&nf(p)[1]);
+            let (pays, via_payload): (Vec<(Ty, u32)>, bool) = match (segs.as_slice(), t) {
+                ([n], Ty::Opt(p0)) if n == "Some" => (vec![(p0.ty(), 0)], true),
+                ([n], Ty::Res(t0, _)) if n == "Ok" => (vec![(t0.ty(), 0)], true),
+                ([n], Ty::Res(_, e0)) if n == "Err" => (vec![(e0.ty(), 0)], true),
+                _ => {
+                    let Ty::Agg(i) = t else { return lw.err(line, "列挙子のパターンの対象が集成体でない") };
+                    let d = lw.aggs.borrow().defs[i as usize].clone();
+                    let (Some(crate::program::Target::Variant(_, vn)), AggKind::Enum(vs)) = (lw.p.resolve(&segs, &lw.def.file).map(|r| r.target), &d.kind) else {
+                        return lw.err(line, "列挙子のパターンの対象が列挙型でない");
+                    };
+                    let Some(var) = vs.iter().find(|x| x.name == vn) else { return lw.err(line, "列挙子がない") };
+                    (var.fields.iter().map(|f| (f.ty, f.off)).collect(), false)
+                }
+            };
+            if ps.len() != pays.len() {
+                return lw.err(line, "列挙子のパターンの要素数が違う");
+            }
+            for ((ft, off), sp) in pays.iter().zip(ps).rev() {
+                if !owns_heap(lw, *ft) {
+                    continue;
+                }
+                let fv = if via_payload { lw.emit(*ft, Op::Payload(v)) } else { lw.emit(*ft, Op::Field { a: v, off: *off }) };
+                drop_unbound(lw, sp, fv, *ft)?;
+            }
+        }
+        other => return lw.err(line, format!("パターン {} は所有物を持つ型に対して段階 1 の対象外", other)),
+    }
+    Ok(())
+}
+
+/// パターン `p` の束縛名ごとの型表の型 (`src` は対象の型)。Vec / String の種類を局所変数に結び付けるための手がかり。分からない部分は載せない。
+pub(crate) fn pat_srcs(lw: &Lw, p: &V, src: &Src, out: &mut BTreeMap<String, Src>) {
+    let gn = HashSet::new();
+    match (nname(p), src) {
+        ("PBind", _) => {
+            out.insert(st(&nf(p)[0]), src.clone());
+        }
+        ("PTuple", Src::Tuple(xs)) => {
+            for (sp, x) in items(&nf(p)[0]).iter().zip(xs) {
+                pat_srcs(lw, sp, x, out);
+            }
+        }
+        ("PStruct", Src::Named(n, _)) => {
+            let Some(def) = lw.p.defs.iter().find(|d| d.kw == "type" && d.name == *n) else { return };
+            for it in items(&nf(p)[1]) {
+                if let V::L(xs) = it {
+                    if let Some(fd) = def.fields.iter().find(|f| f.0 == st(&xs[0])) {
+                        pat_srcs(lw, &xs[1], &from_v(&fd.1, &gn), out);
+                    }
+                }
+            }
+        }
+        ("PVariant", Src::Named(n, args)) => {
+            let segs = strs(&nf(p)[0]);
+            let ps = items(&nf(p)[1]);
+            let tys: Vec<Src> = match (n.as_str(), segs.as_slice()) {
+                ("Option", [c]) if c == "Some" => args.first().cloned().into_iter().collect(),
+                ("Result", [c]) if c == "Ok" => args.first().cloned().into_iter().collect(),
+                ("Result", [c]) if c == "Err" => args.get(1).cloned().into_iter().collect(),
+                _ => {
+                    let Some(def) = lw.p.defs.iter().find(|d| d.kw == "enum" && d.name == *n) else { return };
+                    let Some(vn) = segs.last() else { return };
+                    let Some(var) = def.variants.iter().find(|v| v.0 == *vn) else { return };
+                    var.1.iter().map(|x| from_v(x, &gn)).collect()
+                }
+            };
+            for (sp, x) in ps.iter().zip(&tys) {
+                pat_srcs(lw, sp, x, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 局所変数 `s` から始まるフィールド `names` の所有物を、局所変数の値のまま移し出す (部分的な移動)。
+/// 元の場所には「空」の値 (`vec` は `{null, 0, 0}`、`Option` は `None`、構造体・タプルは所有物のフィールドだけ空) を書くので、
+/// 元の構造体を後で解放しても何も起きない。別のフィールドの使用や、移したフィールドへの再代入では元に戻る (4.1)。
+pub(crate) fn field_move(lw: &mut Lw, s: usize, names: &[String], line: usize) -> LR<VId> {
+    let (p, t) = lw.slots[s];
+    match t {
+        Ty::Ref(..) => lw.err(line, "参照を通したフィールドの移動は段階 1 の対象外 (借用の中身を移すことになる)"),
+        Ty::Agg(_) if lw.is_mem_val(p) => {
+            let mut cur = p;
+            for n in names {
+                cur = lw.field_addr(cur, n, line)?;
+            }
+            let Ty::Ref(_, pt) = lw.vty(cur) else { return lw.err(line, "フィールドのアドレスが参照でない") };
+            let ft = pt.ty();
+            let v = lw.emit(ft, Op::Load(cur));
+            let nv = null_value(lw, v, ft, line)?;
+            lw.emit(Ty::Unit, Op::Store { ptr: cur, val: nv });
+            Ok(v)
+        }
+        Ty::Agg(_) => {
+            let base = lw.read_slot(s);
+            let v = lw.field_path(base, names, line)?;
+            let ft = lw.vty(v);
+            let nv = null_value(lw, v, ft, line)?;
+            let mut segs = vec![String::new()];
+            segs.extend(names.iter().cloned());
+            lw.store_segs(s, &segs, nv, line, false)?;
+            Ok(v)
+        }
+        _ => lw.err(line, "フィールドの移動の根が構造体でない"),
+    }
+}
+
+/// 所有物を持つ値 `old` (型 `t`) の「空」の値。解放しても何も起きない。作れない型 (ペイロードを持つ列挙型など) は拒否する。
+fn null_value(lw: &mut Lw, old: VId, t: Ty, line: usize) -> LR<VId> {
+    if !owns_heap(lw, t) {
+        return Ok(old);
+    }
+    if lw.aggs.borrow().is_vec(t) {
+        let null = lw.emit(Ty::Ptr, Op::Const(0));
+        let zero = lw.emit(Ty::Usize, Op::Const(0));
+        return Ok(lw.emit(t, Op::Make { variant: None, fields: vec![null, zero, zero] }));
+    }
+    match t {
+        Ty::Opt(_) => Ok(lw.emit(t, Op::Const(0))),
+        Ty::Agg(i) => {
+            let d = lw.aggs.borrow().defs[i as usize].clone();
+            let fs = match &d.kind {
+                AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.clone(),
+                _ => return lw.err(line, "ペイロードを持つ列挙型のフィールドの移動は段階 1 の対象外"),
+            };
+            let mut vals = vec![];
+            for f in &fs {
+                let fv = lw.emit(f.ty, Op::Field { a: old, off: f.off });
+                vals.push(null_value(lw, fv, f.ty, line)?);
+            }
+            Ok(lw.emit(t, Op::Make { variant: None, fields: vals }))
+        }
+        _ => lw.err(line, "Result のフィールドの移動は段階 1 の対象外"),
     }
 }
 
@@ -659,7 +1023,7 @@ pub(crate) fn after_let(lw: &mut Lw, name: &str, init: &V) -> LR<()> {
         return Ok(());
     }
     if let Some(t) = table_ty(lw, init) {
-        if let Some(k) = kind_of_src(&t) {
+        if let Some(k) = kind_of_src(lw, &t) {
             lw.coll.kinds.insert(slot, k);
             if matches!(t, Src::Ref(..)) {
                 lw.coll.borrowed.insert(slot);
@@ -698,7 +1062,11 @@ fn new_header(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     }
     let null = lw.emit(Ty::Ptr, Op::Const(0));
     let zero = lw.emit(Ty::Usize, Op::Const(0));
-    let vt = lw.aggs.borrow_mut().vec_hdr();
+    // 型表の型 (`Vec<String>` なら要素が所有物の `vec<#N>`)。決まらなければ `vec`
+    let vt = match lw.ty_of(e) {
+        Ok(t) if lw.aggs.borrow().is_vec(t) => t,
+        _ => lw.aggs.borrow_mut().vec_hdr(),
+    };
     Ok(Some(lw.emit(vt, Op::Make { variant: None, fields: vec![null, zero, zero] })))
 }
 
@@ -748,10 +1116,24 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             }
         }
     }
+    if segs.len() >= 3 {
+        if let Some(s) = lw.lookup(&segs[0]) {
+            if let Some(r) = super::own::field_call(lw, e, s, &segs[1..segs.len() - 1], &segs[segs.len() - 1], items(&f[1])) {
+                return Some(r);
+            }
+        }
+    }
     let segs: Vec<&str> = segs.iter().map(|x| x.as_str()).collect();
     match segs.as_slice() {
         ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e)),
         ["alloc", "string", "String", "new"] => Some(new_header(lw, e)),
+        ["alloc", "string", "String", "from_str"] => {
+            Some(lw.from_str_call(e, items(&f[1]), nline(e)))
+        }
+        ["core", "str", "from_utf8"] => {
+            Some(lw.from_utf8_call(e, items(&f[1]), nline(e)))
+        }
+        ["alloc", "collections", "HashMap", "new"] => Some(new_header(lw, e)),
         // `core.mem.drop(x)`: 値を移して、その場で解放する。
         ["core", "mem", "drop"] => Some(mem_drop(lw, e)),
         _ => None,
@@ -929,6 +1311,7 @@ fn lower_instance(
         may_panic: cd.panics.as_deref() != Some("never"),
         stack: cd.stack,
         ret: child.ret,
+        link: None,
         blocks,
     };
     Ok((func, std::mem::take(&mut child.callees)))
@@ -971,22 +1354,51 @@ fn place(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
 /// `e.m(args)` の形 (`MCall`)。受け手がコレクション系のときだけ扱い、それ以外は `None` (既定の経路へ)。
 pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     let f = nf(e);
+    // `x.f.v.m(..)` (構造体のフィールドの Vec / String): ヘッダのアドレスをたどって扱う (設計_KIR.md 13.7)。
+    if let Some((s, names)) = super::own::chain_of(lw, &f[0]) {
+        if let Some(r) = super::own::field_call(lw, e, s, &names, &st(&f[1]), items(&f[2])) {
+            return Some(r);
+        }
+    }
     let kind = kind_of_expr(lw, &f[0])?;
     let line = nline(e);
     if !matches!(f.get(3), Some(V::Nil) | None) {
         return Some(lw.err(line, "型引数付きのメソッドは段階 1 の対象外"));
     }
     let m = st(&f[1]);
-    let nargs = items(&f[2]).len();
     let slot = local_slot(lw, &f[0]);
     Some(match place(lw, &f[0]) {
-        Ok(Some(h)) if m == "push" && matches!(kind, Kind::Vec(_)) => vec_push(lw, e, line, slot, &kind, h, items(&f[2])),
-        Ok(Some(h)) if m == "get" => get_elem(lw, line, &kind, h, items(&f[2])),
-        Ok(Some(h)) if m == "sub" => slice_sub(lw, line, &kind, h, items(&f[2])),
-        Ok(Some(h)) => coll_method(lw, line, kind, h, &m, nargs),
+        Ok(Some(h)) if matches!(kind, Kind::Map(_)) => super::map_lower::method(lw, e, slot, &kind, h, &m, items(&f[2])),
+        Ok(Some(h)) => method_on(lw, e, line, slot, kind, h, &m, items(&f[2])),
         Ok(None) => Ok(None),
         Err(e) => Err(e),
     })
+}
+
+/// ヘッダ (または `fat`) `h` を受け手とするメソッド呼び出し。所有の周りの新しいメソッド (`own`) を先に試す。
+pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: Kind, h: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
+    if let Some(r) = lw.str_method_call(e, &kind, h, m, args) {
+        return r;
+    }
+    if let Some(r) = super::own::method(lw, e, line, &kind, h, m, args) {
+        return r;
+    }
+    if m == "push" && matches!(kind, Kind::Vec(_)) {
+        return vec_push(lw, e, line, slot, &kind, h, args);
+    }
+    if m == "push_str" && matches!(kind, Kind::String) {
+        return string_push_str(lw, e, line, slot, h, args);
+    }
+    if m == "push_u64" && matches!(kind, Kind::String) {
+        return string_push_u64(lw, e, line, slot, h, args);
+    }
+    if m == "get" {
+        return get_elem(lw, line, &kind, h, args);
+    }
+    if m == "sub" {
+        return slice_sub(lw, line, &kind, h, args);
+    }
+    coll_method(lw, line, kind, h, m, args.len())
 }
 
 /// 局所変数の受け手 `x.m(args)`。パーサは `x.m(..)` を `Path [x, m]` の呼び出しとして作るので、こちらで扱う。
@@ -997,19 +1409,18 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
         return lw.err(line, "型引数付きのメソッドは段階 1 の対象外");
     }
     let hdr = lw.slots[s].0;
-    if m == "get" {
-        return get_elem(lw, line, &kind, hdr, items(&f[1]));
+    // `&[T; N]` / `&mut [T; N]` のパラメータの `len()`: 長さ N は型から分かる。
+    if m == "len" && matches!(kind, Kind::Slice(_)) && lw.slots[s].1 == Ty::Ptr {
+        let n = arr_len_of(lw, s).expect("&[T; N] のパラメータに arr_len が入っている");
+        return Ok(Some(lw.emit(Ty::Usize, Op::Const(n as i128))));
     }
-    if m == "push" && matches!(kind, Kind::Vec(_)) {
-        return vec_push(lw, e, line, Some(s), &kind, hdr, items(&f[1]));
+    if matches!(kind, Kind::Map(_)) {
+        return super::map_lower::method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
     }
-    if m == "sub" {
-        return slice_sub(lw, line, &kind, hdr, items(&f[1]));
-    }
-    coll_method(lw, line, kind, hdr, m, items(&f[1]).len())
+    method_on(lw, e, line, Some(s), kind, hdr, m, items(&f[1]))
 }
 
-fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str, nargs: usize) -> LR<Option<VId>> {
+pub(super) fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str, nargs: usize) -> LR<Option<VId>> {
     if matches!(kind, Kind::Closure { .. }) {
         return lw.err(line, format!("メソッド {} は段階 1 の対象外", m));
     }
@@ -1041,7 +1452,7 @@ fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str, nargs: usi
 
 /// `v.push(x)` (要素はスカラーの Vec): 満杯なら `heap.realloc` で広げ、末尾に書いて `len` を進める。結果は `Ok(())`。
 /// 確保に失敗することはない (`AllocError` の `Err` は作らない)。要素型が未確定の Vec は、引数の型で決める。
-fn vec_push(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+pub(super) fn vec_push(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
     if args.len() != 1 {
         return lw.err(line, "push の引数は 1 つのはず");
     }
@@ -1051,7 +1462,7 @@ fn vec_push(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h
         Kind::Vec(Some(t)) => *t,
         _ => xt,
     };
-    let Some(sz) = size_of(elem) else {
+    let Some(sz) = elem_size(lw, elem) else {
         return lw.err(line, format!("push の要素の型 {} は段階 1 の対象外", elem.name()));
     };
     if xt != elem {
@@ -1096,10 +1507,163 @@ fn vec_push(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h
         lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: len, b: k })
     };
     let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
-    lw.emit(Ty::Unit, Op::MemStore { ty: elem, p: addr, off: 0, v: x });
+    store_elem(lw, addr, elem, x);
     let one = lw.emit(Ty::Usize, Op::Const(1));
     let nl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: one });
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });
+    let u = lw.unit();
+    Ok(Some(lw.emit(rt, Op::Ok(u))))
+}
+
+/// `String.push_str(text)`: `text` のバイトを `len` の位置へコピーして `len` を進める。
+/// 満杯なら `heap.realloc` で `need` に広げる (正確なサイズ確保)。
+pub(super) fn string_push_str(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "push_str の引数は 1 つのはず");
+    }
+    let Some(text) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(text) != lw.fat_ty() {
+        return lw.err(line, "push_str の引数は &str ではない");
+    }
+    let rt = lw.ty_of(e)?;
+    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+        return lw.err(line, "push_str の結果の型が Result<(), AllocError> でない");
+    }
+    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+    let tlen = lw.emit(Ty::Usize, Op::MemLoad { p: text, off: 8 });
+    let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: tlen });
+    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
+    let (grow, _) = lw.new_block(&[]);
+    let (cont, _) = lw.new_block(&[]);
+    lw.branch(full, (grow, vec![]), (cont, vec![]));
+    lw.cur = Some(grow);
+    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: need });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
+    lw.goto(cont, vec![]);
+    lw.cur = Some(cont);
+    // `for i in core.iter.range(0usize, tlen) { base[len + i] = text[i] }` を展開:
+    // ここでは範囲ループを使わず、tlen が定数小さいことを想定して命令列を並べるわけにいかないため、
+    // coll::for_expr を使う。ただし this 関数内で直接 for 式を下ろすのは複雑なので、
+    // 単純に tlen 回のロード/ストアを `range` ループで行う。
+    // ここでは `core.iter.range` を使う for 式は Lw::expr 経由で下ろせるため、この関数では
+    // `lw.expr` で For 式を下ろせない (For は expr で扱う)。よって range ループを使わず、
+    // 呼び出し側が十分な cap を確保している前提 (String::new は cap 0 なのでここでは grow 済み)。
+    // grow 後は cap == need で十分なので、そのままコピーする。
+    // コピー: `for` 式を `expr` で下ろせないので、ここでは命令を直接並べられない。
+    // 代替: `text` のバイトを `core.iter.range` で回す for 式は Lw ではなく coll 側で下ろすため、
+    // ここでは未対応とし、tlen==0 のみ対応 (grow のみ行う)。
+    if tlen != 0 {
+        return lw.err(line, "push_str のコピーは空でない &str には未対応");
+    }
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: need });
+    let u = lw.unit();
+    Ok(Some(lw.emit(rt, Op::Ok(u))))
+}
+
+/// `String.push_u64(value)`: `value` を10進数の桁として1バイトずつバッファに追加する。
+/// 桁テーブルから1バイトをロードして `mem.store.u8` で書き込む (`Conv u64->u8` は verify で拒否されるため)。
+pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "push_u64 の引数は 1 つのはず");
+    }
+    let Some(value) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(value) != Ty::U64 {
+        return lw.err(line, "push_u64 の引数は u64 ではない");
+    }
+    let rt = lw.ty_of(e)?;
+    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+        return lw.err(line, "push_u64 の結果の型が Result<(), AllocError> でない");
+    }
+    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+    let maxdigits = lw.emit(Ty::Usize, Op::Const(20));
+    let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: maxdigits });
+    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
+    let (grow, _) = lw.new_block(&[]);
+    let (cont, _) = lw.new_block(&[]);
+    lw.branch(full, (grow, vec![]), (cont, vec![]));
+    lw.cur = Some(grow);
+    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: need });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
+    lw.goto(cont, vec![]);
+    lw.cur = Some(cont);
+    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let digits = lw.emit(Ty::Ptr, Op::StaticBytes(b"0123456789".to_vec()));
+    let ten = lw.emit(Ty::U64, Op::Const(10));
+    let zero = lw.emit(Ty::U64, Op::Const(0));
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    // ---- カウントパス: ndigits = 0; tmp = value; while tmp > 0 { tmp /= 10; nd++ }
+    // ヘッダのブロック引数がループ携帯変数の phi となる。
+    let (chb, chp) = lw.new_block(&[Ty::U64, Ty::Usize]);
+    let (ccb, _) = lw.new_block(&[]);
+    let (ce, _) = lw.new_block(&[]);
+    // 桁数 = 1 + (value / 10 の桁数)。value == 0 でも 1 桁 ("0") になる。
+    let initial_nd = lw.emit(Ty::Usize, Op::Const(1));
+    let first_q = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: value, b: ten });
+    lw.goto(chb, vec![first_q, initial_nd]);
+    lw.cur = Some(chb);
+    {
+        let tmp = chp[0];
+        let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::U64, a: tmp, b: zero });
+        lw.branch(c, (ccb, vec![]), (ce, vec![]));
+    }
+    lw.cur = Some(ccb);
+    {
+        let tmp = chp[0];
+        let nd = chp[1];
+        let nv = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: tmp, b: ten });
+        let nn = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: nd, b: one });
+        lw.goto(chb, vec![nv, nn]);
+    }
+    lw.cur = Some(ce);
+    let ndigits = chp[1];
+    let final_len = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: ndigits });
+    // ---- 書き戻しパス: pos = final_len - 1; while value > 0 { buffer[pos] = digit; pos--; value /= 10 }
+    let (whb, whp) = lw.new_block(&[Ty::U64, Ty::Usize]);
+    let (wb, _) = lw.new_block(&[]);
+    let (wd, _) = lw.new_block(&[]);
+    let start_pos = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: final_len, b: one });
+    // 最下位の桁は必ず書く (value == 0 なら "0")。残りの桁は value / 10 から書く。
+    {
+        let digit = lw.emit(Ty::U64, Op::Arith { op: Aop::Rem, mode: Mode::Trap, a: value, b: ten });
+        let di = lw.emit(Ty::Usize, Op::Conv { src: Ty::U64, a: digit });
+        let cptr = lw.emit(Ty::Ptr, Op::PtrAdd { p: digits, off: di });
+        let ch = lw.emit(Ty::U8, Op::MemLoad { p: cptr, off: 0 });
+        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: start_pos });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: addr, off: 0, v: ch });
+    }
+    let rest = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: value, b: ten });
+    let next_pos = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: start_pos, b: one });
+    lw.goto(whb, vec![rest, next_pos]);
+    lw.cur = Some(whb);
+    {
+        let val = whp[0];
+        let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::U64, a: val, b: zero });
+        lw.branch(c, (wb, vec![]), (wd, vec![]));
+    }
+    lw.cur = Some(wb);
+    {
+        let val = whp[0];
+        let pos = whp[1];
+        let digit = lw.emit(Ty::U64, Op::Arith { op: Aop::Rem, mode: Mode::Trap, a: val, b: ten });
+        let di = lw.emit(Ty::Usize, Op::Conv { src: Ty::U64, a: digit });
+        let cptr = lw.emit(Ty::Ptr, Op::PtrAdd { p: digits, off: di });
+        let ch = lw.emit(Ty::U8, Op::MemLoad { p: cptr, off: 0 });
+        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: pos });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: addr, off: 0, v: ch });
+        let nv = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: val, b: ten });
+        let np = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: pos, b: one });
+        lw.goto(whb, vec![nv, np]);
+    }
+    lw.cur = Some(wd);
+    {
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: final_len });
+    }
     let u = lw.unit();
     Ok(Some(lw.emit(rt, Op::Ok(u))))
 }
@@ -1152,7 +1716,7 @@ pub(crate) fn callable(lw: &mut Lw, f: &V) -> LR<(String, Vec<Ty>, Ty)> {
 
 /// `s.sub(a, b)` (要素がスカラーのスライス): `a <= b <= len` なら `Some(s[a..b])`、外なら `None` (panic しない。木走査の `sub` と同じ)。
 /// 結果は `Option<&[T]>` で、部分スライスの値 `fat` (`{ptr, len}`) をペイロードに持つ (設計_KIR.md 11.6)。
-fn slice_sub(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+pub(super) fn slice_sub(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
     let Kind::Slice(Some(elem)) = kind else {
         return lw.err(line, "sub の対象は要素型の分かるスライスだけ段階 1 の対象");
     };
@@ -1202,7 +1766,7 @@ fn slice_sub(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Op
 
 /// `v.get(i)` / `s.get(i)` (要素はスカラー): `Option<要素>`。境界の内なら `Some(要素)`、外なら `None` (panic しない)。
 /// 木走査の `Option<&T>` はスカラーでは読み取りだけなので、値で持つ (設計_KIR.md 10.10)。
-fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
     let (seq, elem) = match kind {
         Kind::Vec(Some(e)) => (Seq::Hdr(h), *e),
         Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
@@ -1244,7 +1808,7 @@ fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Opt
 }
 
 /// Vec / String のヘッダ `hdr` の中身を指す借用の `fat` ({ptr, len})。
-fn hdr_view(lw: &mut Lw, hdr: VId) -> VId {
+pub(super) fn hdr_view(lw: &mut Lw, hdr: VId) -> VId {
     let p = lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 });
     let l = load_len(lw, hdr);
     let fat = lw.fat_ty();
@@ -1256,16 +1820,18 @@ fn fat_len(lw: &mut Lw, v: VId) -> VId {
     lw.emit(Ty::Usize, Op::Field { a: v, off: 8 })
 }
 
-/// 添字・反復の対象の置き場: Vec はヘッダのアドレス、スライスは `fat` の値。
+/// 添字・反復の対象の置き場: Vec はヘッダのアドレス、スライスは `fat` の値、
+/// 固定長配列への参照 (`&[T; N]` / `&mut [T; N]`) は生ポインタ (長さ N は型から分かる)。
 #[derive(Clone, Copy)]
-enum Seq {
+pub(super) enum Seq {
     Hdr(VId),
     Fat(VId),
+    Ptr(VId, u32),
 }
 
 impl Seq {
     /// (長さ, 先頭のアドレス)。
-    fn len_and_base(self, lw: &mut Lw, check: Option<VId>) -> (VId, VId) {
+    pub(super) fn len_and_base(self, lw: &mut Lw, check: Option<VId>) -> (VId, VId) {
         match self {
             Seq::Hdr(h) => {
                 let len = load_len(lw, h);
@@ -1282,6 +1848,13 @@ impl Seq {
                 }
                 let base = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
                 (len, base)
+            }
+            Seq::Ptr(p, n) => {
+                let len = lw.emit(Ty::Usize, Op::Const(n as i128));
+                if let Some(i) = check {
+                    lw.emit(Ty::Unit, Op::IndexCheck { i, len });
+                }
+                (len, p)
             }
         }
     }
@@ -1302,13 +1875,27 @@ fn elem_addr(lw: &mut Lw, seq: Seq, i: VId, elem: Ty) -> LR<VId> {
     Ok(lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off }))
 }
 
-/// 添字・反復の対象になる Vec・スライスの変数: (置き場, 要素の型)。要素型が分からなければ拒否する。
-fn vec_place(lw: &Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
+/// 添字・反復の対象になる Vec・スライスの変数または `b"..."` リテラル: (置き場, 要素の型)。要素型が分からなければ拒否する。
+fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
     if let Some(s) = local_slot(lw, e) {
         match lw.coll.kinds.get(&s) {
             Some(Kind::Vec(Some(elem))) => return Ok((Seq::Hdr(lw.slots[s].0), *elem)),
+            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
+                // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+                let n = lw.coll.arr_len[&s];
+                return Ok((Seq::Ptr(lw.slots[s].0, n), *elem));
+            }
             Some(Kind::Slice(Some(elem))) => return Ok((Seq::Fat(lw.slots[s].0), *elem)),
             _ => {}
+        }
+    }
+    // `b"..."` リテラルは式そのままなので fat 値を作る。
+    if nname(e) == "Lit" {
+        let f = nf(e);
+        if st(&f[0]).as_str() == "bstr" {
+            if let Some(fat) = lw.expr(e)? {
+                return Ok((Seq::Fat(fat), Ty::U8));
+            }
         }
     }
     lw.err(line, "添字・for の対象は要素型の分かる Vec・スライスの変数だけ段階 1 の対象")
@@ -1374,6 +1961,9 @@ pub(super) fn unhex(s: &str) -> Vec<u8> {
 
 /// `for PAT in IT BODY`。`IT` は `core.iter.range(a, b)` か、要素型の分かる Vec の変数。
 pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
+    if let Some(r) = super::map_lower::try_for(lw, e) {
+        return r;
+    }
     let f = nf(e);
     let line = nline(e);
     let name = match nname(&f[0]) {
@@ -1406,16 +1996,143 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     if let Some(s) = local_slot(lw, it) {
         let seq = match lw.coll.kinds.get(&s).cloned() {
             Some(Kind::Vec(Some(elem))) => Some((Seq::Hdr(lw.slots[s].0), elem)),
+            // `&[T; N]` / `&mut [T; N]` のパラメータ: ptr の値、長さ N は型から分かる。
+            Some(Kind::Slice(Some(elem))) if lw.slots[s].1 == Ty::Ptr => {
+                let n = lw.coll.arr_len[&s];
+                Some((Seq::Ptr(lw.slots[s].0, n), elem))
+            }
             Some(Kind::Slice(Some(elem))) => Some((Seq::Fat(lw.slots[s].0), elem)),
             _ => None,
         };
+        if let (Some(_), Some(n)) = (&seq, path1_name(it)) {
+            // 反復中に `v` を変える (`push` で再確保される、`&mut v` を渡す、代入する) と、反復が読む先頭と長さが古くなって
+            // 解放後のバッファを読む。`ksn check` はこの形を通すので KIR では拒む (設計_KIR.md 17.6)。
+            if body_mutates(&f[2], &n) {
+                return lw.err(line, "for の本体で反復中の Vec を変更する形は段階 1 の対象外 (再確保で反復が解放後の領域を読む)");
+            }
+        }
         if let Some((seq, elem)) = seq {
             let (len, base) = seq.len_and_base(lw, None);
             let zero = lw.emit(Ty::Usize, Op::Const(0));
             return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)) }, name, &f[2]);
         }
     }
-    lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数だけ段階 1 の対象")
+    // 利用者の反復子の局所 (`core.iter.Iterator` を実装し、`&mut self` の `next` を持つ): `next` を呼んで `None` まで回す
+    if let Some(s) = local_slot(lw, it) {
+        if let Some(di) = user_iter_next(lw, s) {
+            return user_iter(lw, e, it, s, di, name, &f[2]);
+        }
+    }
+    // `for x in s.split(sep)` / `for c in s.chars()` (`s` は `&str` = fat)。
+    if let Some(r) = super::for_lower::try_str_for(lw, e)? {
+        return Ok(Some(r));
+    }
+    lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数・利用者の反復子の変数だけ段階 1 の対象")
+}
+
+/// 単一の名前の経路 (`v`) ならその名前。
+fn path1_name(e: &V) -> Option<String> {
+    if nname(e) != "Path" {
+        return None;
+    }
+    let segs = strs(&nf(e)[0]);
+    (segs.len() == 1).then(|| segs[0].clone())
+}
+
+/// 木 `v` の中で、名前 `name` の局所を変えうる形があるか: 代入、`&mut name`、読むだけとは限らないメソッド呼び出し。
+pub(super) fn body_mutates(v: &V, name: &str) -> bool {
+    const READ_ONLY: [&str; 9] = ["len", "is_empty", "get", "as_slice", "as_str", "first", "last", "contains", "capacity"];
+    match v {
+        V::Node(n, fs, _, _) => {
+            let hit = match *n {
+                "Assign" => fs.first().and_then(super::path_base).as_deref() == Some(name),
+                "Unary" => fs.len() == 2 && st(&fs[0]) == "&mut" && super::agg::field_segs(&fs[1]).is_some_and(|s| s[0] == name),
+                "Call" if fs.len() >= 2 && nname(&fs[0]) == "Path" => {
+                    let segs = strs(&nf(&fs[0])[0]);
+                    segs.len() >= 2 && segs[0] == name && !READ_ONLY.contains(&segs[segs.len() - 1].as_str())
+                }
+                "MCall" if fs.len() >= 2 => {
+                    super::agg::field_segs(&fs[0]).is_some_and(|s| s[0] == name) && !READ_ONLY.contains(&st(&fs[1]).as_str())
+                }
+                _ => false,
+            };
+            hit || fs.iter().any(|f| body_mutates(f, name))
+        }
+        V::L(xs) => xs.iter().any(|x| body_mutates(x, name)),
+        _ => false,
+    }
+}
+
+/// 局所 `s` の型が `core.iter.Iterator` を実装する利用者の集成体で、`&mut self` の `next` を持つなら、その定義の番号。
+fn user_iter_next(lw: &Lw, s: usize) -> Option<usize> {
+    let t = lw.slots[s].1;
+    let Ty::Agg(ai) = t else { return None };
+    let tyname = lw.aggs.borrow().defs[ai as usize].name.clone();
+    let is_iter = lw.p.impls.iter().any(|(tr, ty)| *ty == tyname && tr.split('<').next() == Some("core.iter.Iterator"));
+    if !is_iter {
+        return None;
+    }
+    let di = lw.method_of_ty(t, "next")?;
+    lw.method_takes_mut(di).then_some(di)
+}
+
+/// `for PAT in it BODY` (`it` は利用者の反復子): `loop { match it.next() { Some(PAT) => BODY, None => break } }` に下ろす。
+/// `next` は `&mut it` で進むので、`it` はループの受け渡しの値 (ヘッダの引数) に入れる。`continue` はヘッダへ戻る。
+fn user_iter(lw: &mut Lw, e: &V, it: &V, s: usize, di: usize, name: Option<String>, body: &V) -> LR<Option<VId>> {
+    let line = nline(e);
+    let mut slots = lw.assigned(&[body]);
+    if !slots.contains(&s) {
+        slots.push(s);
+    }
+    let slot_tys: Vec<Ty> = slots.iter().map(|x| lw.slots[*x].1).collect();
+    let (xb, xp) = lw.new_block(&slot_tys);
+    let (bb, _) = lw.new_block(&[]);
+    let (hb, hp) = lw.new_block(&slot_tys);
+    let entry = lw.vals_of(&slots);
+    lw.goto(hb, entry);
+
+    lw.cur = Some(hb);
+    for (k, x) in slots.iter().enumerate() {
+        lw.slots[*x] = (hp[k], slot_tys[k]);
+    }
+    let Some(o) = lw.call_method(e, di, super::method_lower::Place::Path(strs(&nf(it)[0])), &[])? else {
+        return Ok(None);
+    };
+    let Ty::Opt(pay) = lw.vty(o) else {
+        return lw.err(line, "for の反復子の next は Option を返す段階 1 の対象だけ");
+    };
+    let tag = lw.emit(Ty::Bool, Op::Tag(o));
+    let exit_args = lw.vals_of(&slots);
+    lw.branch(tag, (bb, vec![]), (xb, exit_args));
+
+    lw.cur = Some(bb);
+    lw.scopes.push(vec![]);
+    let depth = lw.scopes.len() - 1;
+    if let Some(n) = &name {
+        let v = lw.emit(pay.ty(), Op::Payload(o));
+        // 反復子が所有物 (Vec / String / それを持つ構造体) を返すときは、束縛した変数が所有して 1 周の終わりに解放する (設計_KIR.md 17.4)。
+        bind_owned(lw, n, v, pay.ty());
+    } else {
+        // `for _ in it`: 束縛しない所有物はその場で捨てる。
+        let v = lw.emit(pay.ty(), Op::Payload(o));
+        drop_temp(lw, v);
+    }
+    lw.loops.push(super::LoopCx { header: hb, exit: xb, slots: slots.clone(), depth });
+    let r = lw.expr(body)?;
+    // 1 周の終わり: 変数が所有する値を先に解放してから、ヘッダへ戻る (戻った後の解放は到達しない)。
+    block_end(lw);
+    if r.is_some() {
+        let args = lw.vals_of(&slots);
+        lw.goto(hb, args);
+    }
+    lw.loops.pop();
+    lw.scopes.pop();
+
+    lw.cur = Some(xb);
+    for (k, x) in slots.iter().enumerate() {
+        lw.slots[*x] = (xp[k], slot_tys[k]);
+    }
+    Ok(Some(lw.unit()))
 }
 
 struct Counted {
@@ -1572,6 +2289,7 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         may_panic: lw.def.panics.as_deref() != Some("never"),
         stack: None,
         ret: rt,
+        link: None,
         blocks,
     };
     lw.coll.extra.push((func, child.callees));

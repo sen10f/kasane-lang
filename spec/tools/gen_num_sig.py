@@ -61,6 +61,7 @@ for T in INTS:
     fn(f'{P}.leading_zeros', f'self: {n}', 'u32')
     fn(f'{P}.trailing_zeros', f'self: {n}', 'u32')
     fn(f'{P}.from_str_radix', 'text: &str, radix: u32', f'Result<{n}, core.num.ParseIntError>')
+    fn(f'{P}.parse', 'text: &str', f'Result<{n}, core.num.ParseIntError>')
     for S in INTS:
         if S[0] == n:
             continue

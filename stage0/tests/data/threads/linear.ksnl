@@ -1,0 +1,207 @@
+fn t.addr(port: u16) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("127.0.0.1:"))
+    core.mem.drop(s.push_u64(u64.from_u16(port)))
+    s
+end t.addr
+
+fn t.bump(state_tx: std.sync.Sender<u64>, state_rx: std.sync.Receiver<u64>, rounds: u32) -> () uses [thread] panics may
+    let mut i = 0u32
+    while i < rounds {
+        match state_rx.recv() {
+            Ok(n) => {
+                match state_tx.send(n + 1u64) {
+                    Ok(_u) => 0u32
+                    Err(_e) => core.panic.panic("send failed")
+                }
+            }
+            Err(_e) => core.panic.panic("state lost")
+        }
+        i = i + 1u32
+    }
+end t.bump
+
+fn t.client(addr: &str) -> std.net.TcpStream uses [io.net] panics may
+    let mut c = match std.net.connect(addr) {
+        Ok(c) => c
+        Err(_e) => core.panic.panic("connect failed")
+    }
+    core.mem.drop(c.write(b"x"))
+    c
+end t.client
+
+fn t.drain(first: std.sync.Receiver<std.net.TcpStream>) -> u32 uses [io.net, thread] panics never
+    let mut rx = first
+    let mut sum = 0u32
+    loop {
+        match rx.recv() {
+            Ok(stream) => {
+                sum = sum.wrapping_add(t.handle(stream))
+            }
+            Err(_e) => match rx.close() {
+                Ok(_u) => break
+                Err(back) => {
+                    rx = back
+                }
+            }
+        }
+    }
+    sum
+end t.drain
+
+fn t.handle(stream: std.net.TcpStream) -> u32 uses [io.net] panics never
+    let mut s = stream
+    let mut one = [0u8; 4]
+    let got = match s.read(&mut one) {
+        Ok(n) => n
+        Err(_e) => 0usize
+    }
+    core.mem.drop(s.close())
+    if got > 0usize {
+        return 1u32
+    }
+    0u32
+end t.handle
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.net, thread] panics may
+    t.ok_unit(t.serve())
+    std.io.print_line("linear threads ok")
+end t.main
+
+fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
+    match r {
+        Ok(_u) => {
+        }
+        Err(_e) => core.panic.panic("unexpected I/O error")
+    }
+end t.ok_unit
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end t.oom
+
+fn t.serve() -> Result<(), std.io.Error> uses [alloc, io.console, io.net, thread] panics may
+    match std.net.listen("127.0.0.1:0") {
+        Ok(l) => {
+            let done = t.session(&l)
+            core.mem.drop(l.close())
+            done
+        }
+        Err(_e) => core.panic.panic("listen failed")
+    }
+end t.serve
+
+fn t.session(listener: &std.net.TcpListener) -> Result<(), std.io.Error> uses [alloc, io.console, io.net, thread] panics may
+    let port = match listener.local_port() {
+        Ok(p) => p
+        Err(_e) => core.panic.panic("port failed")
+    }
+    let addr = t.addr(port)
+    let one_client = t.client(addr.as_str())
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> std.net.TcpStream capture [move one_client] {
+            one_client
+        },
+    )
+    let handle = match spawned {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let returned = handle.join()
+    core.mem.drop(returned.close())
+    match listener.accept() {
+        Ok(s) => core.check.eq(t.handle(s), 1u32)
+        Err(_e) => core.panic.panic("accept failed")
+    }
+    let work = std.sync.channel::<std.net.TcpStream, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let (tx, rx) = work.map_err(t.oom)?
+    let rx2 = rx.clone()
+    let first = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u32 capture [move rx] {
+            t.drain(rx)
+        },
+    )
+    let second = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u32 capture [move rx2] {
+            t.drain(rx2)
+        },
+    )
+    let w1 = match first {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let w2 = match second {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let mut i = 0u32
+    while i < 12u32 {
+        core.mem.drop(t.client(addr.as_str()).close())
+        match listener.accept() {
+            Ok(s) => match tx.send(s) {
+                Ok(_u) => 0u32
+                Err(back) => t.handle(back.value)
+            }
+            Err(_e) => core.panic.panic("accept failed")
+        }
+        i = i + 1u32
+    }
+    core.mem.drop(tx)
+    let total = w1.join() + w2.join()
+    core.check.eq(total, 12u32)
+    let left = std.sync.channel::<std.net.TcpStream, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let (left_tx, left_rx) = left.map_err(t.oom)?
+    core.mem.drop(t.client(addr.as_str()).close())
+    match listener.accept() {
+        Ok(s) => match left_tx.send(s) {
+            Ok(_u) => 0u32
+            Err(back) => t.handle(back.value)
+        }
+        Err(_e) => core.panic.panic("accept failed")
+    }
+    core.mem.drop(left_tx)
+    core.check.eq(t.drain(left_rx), 1u32)
+    let made_state = std.sync.channel::<u64, std.alloc.System>(
+        std.alloc.SYSTEM,
+        1usize,
+    )
+    let (state_tx, state_rx) = made_state.map_err(t.oom)?
+    let state_tx_a = state_tx.clone()
+    let state_rx_a = state_rx.clone()
+    let state_tx_b = state_tx.clone()
+    let state_rx_b = state_rx.clone()
+    let bump_a = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move state_rx_a, move state_tx_a] {
+            t.bump(state_tx_a, state_rx_a, 100u32)
+        },
+    )
+    let bump_b = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move state_rx_b, move state_tx_b] {
+            t.bump(state_tx_b, state_rx_b, 100u32)
+        },
+    )
+    let ha = match bump_a {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let hb = match bump_b {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    match state_tx.send(0u64) {
+        Ok(_u) => 0u32
+        Err(_e) => core.panic.panic("send failed")
+    }
+    ha.join()
+    hb.join()
+    match state_rx.recv() {
+        Ok(n) => core.check.eq(n, 200u64)
+        Err(_e) => core.panic.panic("state lost")
+    }
+    Ok(())
+end t.session

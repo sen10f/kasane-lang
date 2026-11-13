@@ -1,0 +1,6 @@
+version = 1
+
+[[package]]
+name = "kvlib"
+source = "path+../kvlib"
+deps = []

@@ -1,0 +1,70 @@
+// expect: E3010
+type t.H['a]
+    r: &'a alloc.string.String
+end t.H
+
+type t.O
+    inner: t.S
+    opt: Option<alloc.string.String>
+end t.O
+
+type t.S
+    name: alloc.string.String
+    other: alloc.string.String
+end t.S
+
+fn t.S.into_name(self: t.S) -> alloc.string.String uses [] panics never
+    let t.S { name: name, other: _o } = self
+    name
+end t.S.into_name
+
+fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line(s.as_str()))
+    core.mem.drop(s)
+end t.consume
+
+fn t.eat(s: alloc.string.String) -> bool uses [] panics never
+    core.mem.drop(s)
+    false
+end t.eat
+
+fn t.keep['a](v: &mut alloc.vec.Vec<&'a alloc.string.String, std.alloc.System>, s: &'a alloc.string.String) -> &'a alloc.string.String uses [alloc] panics never
+    core.mem.drop(v.push(s))
+    s
+end t.keep
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let s = t.mk()
+    core.mem.drop(t.keep(&mut v, &s))
+    t.consume(s)
+    core.mem.drop(t.peek(v[0usize]))
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello, this is a long heap string"))
+    s
+end t.mk
+
+fn t.mks() -> t.S uses [alloc] panics never
+    t.S { name: t.mk(), other: t.mk() }
+end t.mks
+
+fn t.peek(s: &alloc.string.String) -> usize uses [io.console] panics never
+    core.mem.drop(std.io.print_line(s.as_str()))
+    s.len()
+end t.peek
+
+fn t.pick[T](a: &T) -> &T uses [] panics never
+    a
+end t.pick
+
+fn t.same(s: &alloc.string.String) -> &alloc.string.String uses [] panics never
+    s
+end t.same
+
+fn t.wrap(s: &alloc.string.String) -> t.H uses [] panics never
+    t.H { r: s }
+end t.wrap

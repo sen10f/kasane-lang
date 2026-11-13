@@ -5,9 +5,13 @@
 //! 浮動小数と 128 ビット整数の規則は `kir_scalar.rs` にある。
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 
-use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
+use crate::interp::{py_float, py_float32};
+use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
 use crate::kir_scalar;
+use crate::natives::io_kind_name;
 
 // Option / Result の値の語 (設計_KIR.md 11.1)。タグは bit 64、ペイロードの語は下位 64 ビット。
 // 語の意味はペイロードの型で決まる: スカラーは値そのもの、集成体は置き場の添字、入れ子の Option / Result は
@@ -50,6 +54,19 @@ fn pay_read(t: Ty, w: i128, heap: &[Vec<u8>]) -> i128 {
         },
         _ => payload_of(t, w),
     }
+}
+
+/// ホストのソケット (記述子表の値)。
+enum NetSock {
+    Listener(TcpListener),
+    Stream(TcpStream),
+}
+
+/// `std.net` の記述子を割り当てる (ソケット表と共に、呼び出しの間だけ生きる)。
+fn alloc_next_fd(next: &mut i128) -> i128 {
+    let fd = *next;
+    *next += 1;
+    fd
 }
 
 /// 呼び出し先が作った置き場の項目 (添字 `base` 以上) を、呼び出し元に残す形へ写す。`base` より前は呼び出し元のものなので、そのまま使う。
@@ -117,6 +134,8 @@ struct Frame {
     /// 次に実行する命令の番号。
     ip: usize,
     vals: Vec<i128>,
+    /// 値が定義済みか (ブロック引数・命令の結果が書かれたら立つ)。定義が使用を支配しない KIR を、未定義の読みとして捕まえる (設計_KIR.md 17.9)。
+    defd: Vec<bool>,
     /// 呼び出し元で結果を受ける値番号。
     dst: Option<VId>,
     /// この呼び出しが始まったときの集成体の置き場の長さ (戻るときにここまで切り詰める)。
@@ -127,6 +146,9 @@ struct Frame {
     mem_base: usize,
 }
 
+/// 未初期化の領域のバイト (読むと内部エラー。`check_leaks` の語の走査がアドレスと取り違えない値)。
+const POISON: u8 = 0xA5;
+
 /// アドレスの基準値 (0 は null として空けておく)。
 const BASE: i128 = 0x1000;
 
@@ -135,6 +157,9 @@ const BASE: i128 = 0x1000;
 /// 解放済みの領域は再利用しない (誤用の検出を優先する)。生存する領域は `live` で、静的な領域は `pinned` で区別する。
 struct ByteMem {
     mem: Vec<u8>,
+    /// `mem` の各バイトが書かれたか。`heap.alloc` / `heap.realloc` の新しい領域は未初期化 (毒の値 `POISON` を入れ、読むと内部エラー)。
+    /// `frame.bytes` / `alloca` は機械語が 0 で埋めるので、書かれた扱い (0)。
+    init: Vec<bool>,
     /// 先頭アドレス → 領域。
     blocks: BTreeMap<i128, Blk>,
 }
@@ -148,15 +173,28 @@ struct Blk {
 
 impl ByteMem {
     fn new() -> ByteMem {
-        ByteMem { mem: vec![], blocks: BTreeMap::new() }
+        ByteMem { mem: vec![], init: vec![], blocks: BTreeMap::new() }
     }
 
+    /// 新しい領域 (`malloc` と同じく未初期化。読むまでに書かれていなければ内部エラー)。
     fn alloc(&mut self, size: usize, pinned: bool) -> i128 {
         let off = self.mem.len();
-        self.mem.resize(off + size.max(1), 0);
+        self.mem.resize(off + size.max(1), POISON);
+        self.init.resize(off + size.max(1), false);
         let addr = BASE + off as i128;
         self.blocks.insert(addr, Blk { off, size, live: true, pinned });
         addr
+    }
+
+    /// 0 で埋めた新しい領域 (`frame.bytes` / `alloca`。機械語は先頭で 0 埋めする)。
+    fn alloc_zeroed(&mut self, size: usize) -> i128 {
+        let a = self.alloc(size, false);
+        let at = self.locate(a, 0).expect("確保したばかり");
+        for k in at..at + size.max(1) {
+            self.mem[k] = 0;
+            self.init[k] = true;
+        }
+        a
     }
 
     /// `addr` から `n` バイトが生存する領域の内側にあるとき、`mem` 上の位置を返す。
@@ -172,6 +210,9 @@ impl ByteMem {
     fn read(&self, addr: i128, ty: Ty) -> Result<i128, String> {
         let n = width(ty);
         let at = self.locate(addr, n)?;
+        if self.init[at..at + n].iter().any(|b| !b) {
+            return Err(format!("未初期化の領域を読んだ {:#x} ({} バイト)", addr, n));
+        }
         let mut buf = [0u8; 16];
         buf[..n].copy_from_slice(&self.mem[at..at + n]);
         let u = u128::from_le_bytes(buf) as i128;
@@ -187,6 +228,7 @@ impl ByteMem {
         let at = self.locate(addr, n)?;
         let bytes = (v as u128).to_le_bytes();
         self.mem[at..at + n].copy_from_slice(&bytes[..n]);
+        self.init[at..at + n].iter_mut().for_each(|b| *b = true);
         Ok(())
     }
 
@@ -199,6 +241,7 @@ impl ByteMem {
     fn write_bytes(&mut self, addr: i128, bytes: &[u8]) -> Result<(), String> {
         let at = self.locate(addr, bytes.len())?;
         self.mem[at..at + bytes.len()].copy_from_slice(bytes);
+        self.init[at..at + bytes.len()].iter_mut().for_each(|b| *b = true);
         Ok(())
     }
 
@@ -228,8 +271,12 @@ impl ByteMem {
         let n = old_size.min(size);
         let src = self.locate(old, n)?;
         let bytes: Vec<u8> = self.mem[src..src + n].to_vec();
+        let flags: Vec<bool> = self.init[src..src + n].to_vec();
         let new = self.alloc(size, false);
-        self.write_bytes(new, &bytes)?;
+        // 旧い領域の書かれたバイトだけを引き継ぐ (増えた部分は未初期化のまま)。
+        let dst = self.locate(new, n)?;
+        self.mem[dst..dst + n].copy_from_slice(&bytes);
+        self.init[dst..dst + n].copy_from_slice(&flags);
         self.free(old)?;
         Ok(new)
     }
@@ -391,6 +438,14 @@ fn io_error_value(aggs: &[AggDef], heap: &mut Vec<Vec<u8>>, kind: &str, code: i3
     Ok((heap.len() - 1) as i128)
 }
 
+/// `{ descriptor: i32 }` のソケット集成体を置き場に作り、その添字を返す。
+fn desc_agg(heap: &mut Vec<Vec<u8>>, fd: i128) -> Result<i128, String> {
+    let mut buf = vec![0u8; 4];
+    buf[0..4].copy_from_slice(&(fd as i32).to_le_bytes());
+    heap.push(buf);
+    Ok((heap.len() - 1) as i128)
+}
+
 /// 構造体・タプルのオフセット `off` のフィールドの型。
 fn field_ty_at(d: &AggDef, off: u32) -> Option<Ty> {
     match &d.kind {
@@ -411,7 +466,7 @@ pub(crate) fn overflow_msg(op: Aop) -> String {
 }
 
 /// 整数の算術。結果は型の範囲内に収まる値か、panic の文言。
-fn arith(op: Aop, mode: Mode, ty: Ty, x: i128, y: i128) -> Result<i128, String> {
+pub(crate) fn arith(op: Aop, mode: Mode, ty: Ty, x: i128, y: i128) -> Result<i128, String> {
     if ty == Ty::U128 {
         return arith_u128(op, mode, x as u128, y as u128).map(|v| v as i128);
     }
@@ -492,6 +547,94 @@ fn checked(op: Aop, t: crate::kir::Ty, x: i128, y: i128) -> i128 {
     }
 }
 
+/// `core.num.<int>.from_str_radix` の参照実行器側の規則。
+/// 戻り値: `(ret, lo, hi)`。`ret` は 0=成功、1=ParseIntError kind 0、2=kind 1。
+/// `lo`/`hi` は成功時の 128 ビットの値の下位・上位 64 ビット。
+/// 規則は `stage0/src/natives.rs` の `from_str_radix` / `parse` と同一。
+fn parse_int(bytes: &[u8], radix: u32, bits: u32, is_signed: bool) -> (u8, u64, u64) {
+    if radix < 2 || radix > 36 {
+        return (1, 0, 0);
+    }
+    if bytes.is_empty() {
+        return (1, 0, 0);
+    }
+    let is_minus = bytes[0] == b'-';
+    let is_plus = bytes[0] == b'+';
+    if !is_signed && is_minus {
+        return (1, 0, 0);
+    }
+    let start: usize = if is_minus || is_plus { 1 } else { 0 };
+    if start == bytes.len() {
+        return (1, 0, 0);
+    }
+    let mut v: u128 = 0;
+    let lim: u128 = u128::MAX;
+    let radix = radix as u128;
+    for &c in &bytes[start..] {
+        let c = c.to_ascii_lowercase();
+        let d = if c >= b'0' && c <= b'9' {
+            (c - b'0') as u128
+        } else if c >= b'a' && c <= b'z' {
+            (c - b'a' + 10) as u128
+        } else {
+            return (1, 0, 0);
+        };
+        if d >= radix {
+            return (1, 0, 0);
+        }
+        if v > (lim - d) / radix {
+            return (2, 0, 0); // 溢れは型の幅によらず種類 1
+        }
+        v = v * radix + d;
+    }
+    if is_signed {
+        let half = 1u128 << (bits - 1);
+        let bound = if is_minus { half } else { half - 1 };
+        if v > bound {
+            return (2, 0, 0);
+        }
+    } else if bits < 128 {
+        let bound = (1u128 << bits) - 1;
+        if v > bound {
+            return (2, 0, 0);
+        }
+    }
+    if is_minus && is_signed {
+        v = v.wrapping_neg();
+    }
+    (0, v as u64, (v >> 64) as u64)
+}
+
+/// `extern` 宣言の C 関数をホストの呼び出し規約で呼ぶ (`ffi::call_generic` と同じ仕組み)。
+/// 引数・戻り値はスカラー・ポインタに限る。
+fn extern_call(func: &Func, argv: &[i128]) -> Result<i128, String> {
+    use crate::ffi::{self, ArgV, RetTy};
+    let link = func.link.as_ref().expect("extern 関数に link がない");
+    let (lib, sym) = crate::ffi::split_link(link);
+    let fnptr = ffi::lookup(lib, sym).map_err(|e| format!("extern {}: {}", func.fqn, e))?;
+    let mut abi: Vec<ArgV> = vec![];
+    for (v, (_, pt)) in argv.iter().zip(func.params().iter()) {
+        abi.push(match pt {
+            Ty::F32 => ArgV::F32(f32::from_bits(*v as u32)),
+            Ty::F64 => ArgV::F64(f64::from_bits(*v as u64)),
+            _ => ArgV::Int(*v as u64),
+        });
+    }
+    let rty = match func.ret {
+        Ty::F32 => RetTy::F32,
+        Ty::F64 => RetTy::F64,
+        _ => RetTy::Int,
+    };
+    let r = ffi::call_generic(fnptr, &abi, &rty).map_err(|e| format!("extern {}: {}", func.fqn, e))?;
+    Ok(match r {
+        ffi::RetV::Int(x) => x as i128,
+        ffi::RetV::F32(f) => f.to_bits() as i128,
+        ffi::RetV::F64(f) => f.to_bits() as i128,
+        ffi::RetV::None => 0,
+        ffi::RetV::Agg(_) => return Err(format!("extern {}: 集成体の戻り値は未対応", func.fqn)),
+    })
+}
+
 /// 鍵 `key` の関数を引数 `args` で実行する。鍵が無い・引数の個数が違う場合は `Err`。
 pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     let index: HashMap<&str, usize> = m.funcs.iter().enumerate().map(|(i, f)| (f.key.as_str(), i)).collect();
@@ -500,6 +643,11 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     };
     if args.len() != m.funcs[entry].params().len() {
         return Err(format!("関数 {} の引数の個数が違う", key));
+    }
+    // エントリ自体が `extern` なら、ホストの C 関数を直接呼ぶ。
+    if m.funcs[entry].link.is_some() {
+        let result = extern_call(&m.funcs[entry], args)?;
+        return Ok(Outcome::Value(result));
     }
     let counts: Vec<usize> = m.funcs.iter().map(|f| f.value_count()).collect();
     // 関数ごとの値番号 → 型 (`store` が書く値の型を知るため)。
@@ -527,14 +675,19 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     }
     let enter = |f: usize, args: &[i128], dst: Option<VId>, hbase: usize, mem_base: usize| -> Frame {
         let mut vals = vec![0i128; counts[f]];
+        let mut defd = vec![false; counts[f]];
         for ((v, _), a) in m.funcs[f].params().iter().zip(args.iter()) {
             vals[*v as usize] = *a;
+            defd[*v as usize] = true;
         }
-        Frame { f, blk: 0, ip: 0, vals, dst, hbase, allocs: vec![], mem_base }
+        Frame { f, blk: 0, ip: 0, vals, defd, dst, hbase, allocs: vec![], mem_base }
     };
     // バイト記憶 (`ptr` の領域)。静的な領域 (`static.bytes`) は、命令の位置ごとに 1 回だけ確保する。
     let mut bm = ByteMem::new();
     let mut statics: HashMap<(usize, usize, usize), i128> = HashMap::new();
+    // ソケット表 (記述子 -> ホストのソケット)。リスナとストリームは同じ番号空間を使う。
+    let mut sockets: HashMap<i128, NetSock> = HashMap::new();
+    let mut next_fd: i128 = 0;
     let mut stack = vec![enter(entry, args, None, 0, 0)];
     loop {
         let top = stack.len() - 1;
@@ -544,11 +697,14 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
         if ip < blk.insts.len() {
             stack[top].ip += 1;
             let inst = &blk.insts[ip];
+            if let Some(v) = crate::kir::operands(&inst.op).into_iter().find(|v| !stack[top].defd[*v as usize]) {
+                return Err(format!("内部エラー: 関数 {} の %{} が定義される前に読まれた (定義が使用を支配しない)", func.key, v));
+            }
             let get = |fr: &Frame, v: &VId| fr.vals[*v as usize];
             let result: i128 = match &inst.op {
                 Op::Const(v) => *v,
                 Op::FrameBytes { size } => {
-                    let a = bm.alloc(*size as usize, false);
+                    let a = bm.alloc_zeroed(*size as usize);
                     stack[top].allocs.push(a);
                     a
                 }
@@ -562,6 +718,14 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     }
                 },
                 Op::PtrAdd { p, off } => get(&stack[top], p) + get(&stack[top], off),
+                Op::Utf8Valid { p, len } => {
+                    let n = get(&stack[top], len) as usize;
+                    let bytes = if n == 0 { vec![] } else { bm.read_bytes(get(&stack[top], p), n)? };
+                    match std::str::from_utf8(&bytes) {
+                        Ok(_) => n as i128,
+                        Err(e) => e.valid_up_to() as i128,
+                    }
+                }
                 Op::MemLoad { p, off } => bm.read(get(&stack[top], p) + *off as i128, inst.ty)?,
                 Op::MemStore { ty, p, off, v } => {
                     let (a, x) = (get(&stack[top], p) + *off as i128, get(&stack[top], v));
@@ -587,6 +751,89 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         }
                     }
                 }
+                Op::NetListen { addr } | Op::NetConnect { addr } => {
+                    let h = get(&stack[top], addr) as usize;
+                    let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+                    let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+                    let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                    let s = std::str::from_utf8(&bytes).unwrap_or("");
+                    let is_listen = matches!(inst.op, Op::NetListen { .. });
+                    let res: i128 = match if is_listen {
+                        TcpListener::bind(s).map(NetSock::Listener)
+                    } else {
+                        TcpStream::connect(s).map(NetSock::Stream)
+                    } {
+                        Ok(sock) => {
+                            let fd = alloc_next_fd(&mut next_fd);
+                            sockets.insert(fd, sock);
+                            desc_agg(&mut heap, fd)?
+                        }
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    };
+                    res
+                }
+                Op::NetAccept { sock } => {
+                    let fd = get(&stack[top], sock);
+                    let Some(NetSock::Listener(l)) = sockets.get_mut(&fd) else {
+                        return Err(format!("無効なソケット記述子 {}", fd));
+                    };
+                    let res: i128 = match l.accept() {
+                        Ok((st, _)) => {
+                            let nfd = alloc_next_fd(&mut next_fd);
+                            sockets.insert(nfd, NetSock::Stream(st));
+                            desc_agg(&mut heap, nfd)?
+                        }
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    };
+                    res
+                }
+                Op::NetRead { sock, buf, len } => {
+                    let (fd, p, n) = (
+                        get(&stack[top], sock),
+                        get(&stack[top], buf),
+                        get(&stack[top], len),
+                    );
+                    let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
+                        return Err(format!("読み出しできるのはストリームソケットだけ: {}", fd));
+                    };
+                    let mut vec = vec![0u8; n as usize];
+                    let nr = s.read(&mut vec).map_err(|e| format!("read: {e}"))?;
+                    bm.write_bytes(p, &vec[..nr])?;
+                    nr as i128
+                }
+                Op::NetWrite { sock, buf, len } => {
+                    let (fd, p, n) = (
+                        get(&stack[top], sock),
+                        get(&stack[top], buf),
+                        get(&stack[top], len),
+                    );
+                    let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
+                        return Err(format!("書き込みできるのはストリームソケットだけ: {}", fd));
+                    };
+                    let bytes = bm.read_bytes(p, n as usize)?;
+                    s.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+                    n
+                }
+                Op::NetFlush { sock } => {
+                    let fd = get(&stack[top], sock);
+                    let Some(NetSock::Stream(s)) = sockets.get_mut(&fd) else {
+                        return Err(format!("flush できるのはストリームソケットだけ: {}", fd));
+                    };
+                    s.flush().map_err(|e| format!("flush: {e}"))?;
+                    0
+                }
+                Op::NetClose { sock } => {
+                    let fd = get(&stack[top], sock);
+                    sockets.remove(&fd);
+                    0
+                }
+                Op::NetLocalPort { sock } => {
+                    let fd = get(&stack[top], sock);
+                    let Some(NetSock::Listener(l)) = sockets.get(&fd) else {
+                        return Err(format!("local_port できるのはリスナーソケットだけ: {}", fd));
+                    };
+                    l.local_addr().map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?
+                }
                 Op::IndexCheck { i, len } => {
                     let (ix, n) = (get(&stack[top], i), get(&stack[top], len));
                     if ix >= n {
@@ -602,6 +849,43 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     // panic の文言は書けなくても終わる (木走査の panic と同じく、書き込みの失敗は捨てる)
                     let _ = write_fd(2, &bytes);
                     0
+                }
+                Op::FmtFloat { bits, a } => {
+                    let x = get(&stack[top], a);
+                    let s = if *bits == 32 {
+                        py_float32(f32::from_bits(x as u32))
+                    } else {
+                        py_float(f64::from_bits(x as u64))
+                    };
+                    let _ = write_fd(2, s.as_bytes());
+                    0
+                }
+                Op::ParseInt { ty, s, radix } => {
+                    let fi = get(&stack[top], s) as usize;
+                    let fblob = match heap.get(fi) {
+                        Some(b) if b.len() >= 16 => b,
+                        _ => return Ok(Outcome::Panic("parseint: fat が不正".to_string())),
+                    };
+                    let ptr = i64::from_le_bytes(fblob[0..8].try_into().expect("8 バイト")) as i128;
+                    let len = u64::from_le_bytes(fblob[8..16].try_into().expect("8 バイト")) as usize;
+                    let bytes = match bm.read_bytes(ptr, len) {
+                        Ok(b) => b,
+                        Err(e) => return Ok(Outcome::Panic(e)),
+                    };
+                    let radix = get(&stack[top], radix) as u32;
+                    let (ret, lo, hi) = parse_int(&bytes, radix, ty.bits(), ty.signed());
+                    if ret == 0 {
+                        let v = ((hi as u128) << 64) | (lo as u128);
+                        // ペイロードを型のビット幅で切り下ろし、タグビット(64ビット目)を立てない。
+                        // 符号付きの負値は 128 ビットの 2 の補数なので、そのまま `as i128` するとタグビットが立つ。
+                        let bits = ty.bits();
+                        let mask = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+                        (v & mask) as u64 as i128
+                    } else {
+                        let kind = (ret - 1) as u8;
+                        heap.push(vec![kind]);
+                        TAG_BIT | (heap.len() - 1) as i128
+                    }
                 }
                 Op::Abort => return Ok(Outcome::Abort),
                 Op::Panic { msg, arg } => {
@@ -683,6 +967,14 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let Some(&ci) = index.get(callee.as_str()) else {
                         return Err(format!("呼び先 {} がない", callee));
                     };
+                    let func = &m.funcs[ci];
+                    if func.link.is_some() {
+                        let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
+                        let result = extern_call(func, &argv)?;
+                        stack[top].vals[inst.dst as usize] = result;
+                        stack[top].defd[inst.dst as usize] = true;
+                        continue;
+                    }
                     let argv: Vec<i128> = args.iter().map(|a| get(&stack[top], a)).collect();
                     stack.push(enter(ci, &argv, Some(inst.dst), heap.len(), bm.mem.len()));
                     continue;
@@ -759,7 +1051,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let Ty::Ref(_, p) = inst.ty else {
                         return Err("alloca の結果が参照でない".to_string());
                     };
-                    let a = bm.alloc(size_of(&m.aggs, p.ty()) as usize, false);
+                    let a = bm.alloc_zeroed(size_of(&m.aggs, p.ty()) as usize);
                     stack[top].allocs.push(a);
                     a
                 }
@@ -789,14 +1081,19 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 Op::AsShared(p) | Op::Reborrow(p) => get(&stack[top], p),
             };
             stack[top].vals[inst.dst as usize] = result;
+            stack[top].defd[inst.dst as usize] = true;
             continue;
         }
         // 終端命令
         match &blk.term {
             Term::Br((t, targs)) => {
+                undefined(&stack[top], &func.key, targs)?;
                 jump(&mut stack[top], m, fi, *t, targs);
             }
             Term::BrIf(c, (t1, a1), (t2, a2)) => {
+                undefined(&stack[top], &func.key, &[*c])?;
+                undefined(&stack[top], &func.key, a1)?;
+                undefined(&stack[top], &func.key, a2)?;
                 if stack[top].vals[*c as usize] != 0 {
                     jump(&mut stack[top], m, fi, *t1, a1);
                 } else {
@@ -804,6 +1101,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 }
             }
             Term::Ret(v) => {
+                undefined(&stack[top], &func.key, &[*v])?;
                 let mut val = stack[top].vals[*v as usize];
                 let done = stack.pop().expect("フレーム");
                 for a in &done.allocs {
@@ -836,6 +1134,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     Some(caller) => {
                         if let Some(d) = done.dst {
                             caller.vals[d as usize] = val;
+                            caller.defd[d as usize] = true;
                         }
                     }
                 }
@@ -845,12 +1144,21 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     }
 }
 
+/// `vs` のどれかが未定義 (定義される前の読み) なら内部エラー。
+fn undefined(fr: &Frame, key: &str, vs: &[VId]) -> Result<(), String> {
+    match vs.iter().find(|v| !fr.defd[**v as usize]) {
+        Some(v) => Err(format!("内部エラー: 関数 {} の %{} が定義される前に読まれた (定義が使用を支配しない)", key, v)),
+        None => Ok(()),
+    }
+}
+
 /// 移動先のブロックへ入る。引数は移動の前の値で受け取る (並列代入)。
 fn jump(fr: &mut Frame, m: &Module, fi: usize, t: usize, args: &[VId]) {
     let vals: Vec<i128> = args.iter().map(|a| fr.vals[*a as usize]).collect();
     let params = &m.funcs[fi].blocks[t].params;
     for ((p, _), v) in params.iter().zip(vals) {
         fr.vals[*p as usize] = v;
+        fr.defd[*p as usize] = true;
     }
     fr.blk = t;
     fr.ip = 0;
@@ -905,6 +1213,7 @@ mod tests {
             may_panic: false,
             stack: None,
             ret: Ty::U64,
+            link: None,
             blocks: vec![Block {
                 params: vec![(0, Ty::U64)],
                 insts: vec![
@@ -983,6 +1292,70 @@ end t.leak
         let twice = leak.replace("    %2: unit = const.unit ()\n    ret %2", "    %2: unit = heap.free %1\n    %3: unit = heap.free %1\n    ret %2")
             .replace("t.leak", "t.twice");
         assert!(exec(&twice, "t.twice").unwrap_err().contains("不正な解放"));
+    }
+
+    #[test]
+    fn reading_uninitialized_heap_bytes_is_an_internal_error() {
+        // `heap.alloc` の領域は未初期化 (malloc と同じ)。書く前に読むと内部エラー。`frame.bytes` は 0 で埋めてあるので読める。
+        let src = "kir 1
+
+fn t.raw key=t.raw uses=[alloc] panics=never stack=- ret=u8
+  b0():
+    %0: usize = const.usize 4
+    %1: ptr = heap.alloc %0
+    %2: u8 = mem.load.u8 %1 +0
+    %3: unit = heap.free %1
+    ret %2
+end t.raw
+
+fn t.frame key=t.frame uses=[] panics=never stack=- ret=u8
+  b0():
+    %0: ptr = frame.bytes 4
+    %1: u8 = mem.load.u8 %0 +3
+    ret %1
+end t.frame
+";
+        assert!(exec(src, "t.raw").unwrap_err().contains("未初期化"));
+        assert_eq!(exec(src, "t.frame"), Ok(Outcome::Value(0)));
+        // `heap.realloc` で増えた部分は未初期化、引き継いだ部分は書かれたまま。
+        let grow = "kir 1
+
+fn t.grow key=t.grow uses=[alloc] panics=never stack=- ret=u8
+  b0():
+    %0: usize = const.usize 2
+    %1: ptr = heap.alloc %0
+    %2: u8 = const.u8 9
+    %3: unit = mem.store.u8 %1 +1, %2
+    %4: usize = const.usize 8
+    %5: ptr = heap.realloc %1, %4
+    %6: u8 = mem.load.u8 %5 +1
+    %7: unit = heap.free %5
+    ret %6
+end t.grow
+";
+        assert_eq!(exec(grow, "t.grow"), Ok(Outcome::Value(9)));
+        let tail = grow.replace("mem.load.u8 %5 +1", "mem.load.u8 %5 +5");
+        assert!(exec(&tail, "t.grow").unwrap_err().contains("未初期化"));
+    }
+
+    #[test]
+    fn reading_a_value_before_its_definition_is_an_internal_error() {
+        // %2 は b1 でだけ定義されるのに、b2 (b1 を通らない経路もある) で読む。定義が使用を支配しないので、通らなかった経路で内部エラー。
+        let src = "kir 1
+
+fn t.dom key=t.dom uses=[] panics=never stack=- ret=u8
+  b0(%0: bool):
+    br_if %0, b1(), b2()
+  b1():
+    %2: u8 = const.u8 7
+    br b2()
+  b2():
+    ret %2
+end t.dom
+";
+        let m = crate::kir::parse_module(src).expect("parse");
+        assert_eq!(run(&m, "t.dom", &[1]), Ok(Outcome::Value(7)));
+        assert!(run(&m, "t.dom", &[0]).unwrap_err().contains("定義される前に読まれた"));
     }
 
     #[test]

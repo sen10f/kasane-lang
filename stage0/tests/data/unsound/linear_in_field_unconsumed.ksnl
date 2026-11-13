@@ -1,0 +1,17 @@
+// expect: E3003
+type t.Box
+    r: t.Res
+end t.Box
+
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.bad() -> u32 uses [] panics never
+    let b = t.Box { r: t.Res { id: 1u32 } }
+    b.r.id
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

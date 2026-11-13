@@ -1,0 +1,19 @@
+trait t.Shape
+    fn area(self: &Self) -> i64 uses [] panics never
+end t.Shape
+
+type t.Sq
+    side: i64
+end t.Sq
+
+impl t.Shape for t.Sq
+fn t.Sq.area(self: &t.Sq) -> i64 uses [] panics never impls t.Shape
+    self.side
+end t.Sq.area
+
+fn t.f(v: &alloc.vec.Vec<dyn t.Shape + 'static, std.alloc.System>) -> usize uses [] panics never
+    v.len()
+end t.f
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    std.io.print_line("x")
+end t.main

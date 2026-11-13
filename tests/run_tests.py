@@ -31,6 +31,16 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'spec', 'tools', 'c
                    capture_output=True, text=True, encoding='utf-8')
 step('spec/tools/check_all.py', r.returncode == 0, r.stdout[-800:])
 
+# 3. LLM ベンチの参照解 (bench/reference/*.ksnl) が今の検査器で通ること
+r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'verify_reference.py')],
+                   capture_output=True, text=True, encoding='utf-8', errors='replace')
+step('bench/verify_reference.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
+
+# 3b. LLM ベンチのハーネス (モック API でリトライ・採点・invalid 判定を検査。外部には接続しない)
+r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'test_harness.py')],
+                   capture_output=True, text=True, encoding='utf-8', errors='replace')
+step('bench/test_harness.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
+
 # 2. Rust 版のビルドと cargo test
 r = subprocess.run(['cargo', 'build', '--release'], cwd=os.path.join(ROOT, 'stage0'), capture_output=True, text=True,
                    encoding='utf-8', errors='replace')
@@ -84,7 +94,9 @@ step('rust ksn: second build hits the cache', 'cache hit' in r.stdout, r.stdout 
 shutil.rmtree(os.path.join(d, 'target'), ignore_errors=True)
 d = os.path.join(ROOT, 'examples', 'demo')
 r = subprocess.run([RSEXE, 'test', '--both'], cwd=d, capture_output=True, text=True, encoding='utf-8', env=envc)
-step('rust ksn: test --both (interpreter and native agree)', r.returncode == 0 and '(both: native)' in r.stdout, r.stdout + r.stderr)
+# clang が無ければ LLVM の比較は退避して Cranelift で比べる (cli.rs の clang_available と同じ条件)。
+want_label = '(both: llvm)' if shutil.which('clang') else '(both: native'
+step('rust ksn: test --both (interpreter and native agree)', r.returncode == 0 and want_label in r.stdout and 'disagree' not in r.stdout, r.stdout + r.stderr)
 shutil.rmtree(os.path.join(d, 'target'), ignore_errors=True)
 shutil.rmtree(cache2, ignore_errors=True)
 

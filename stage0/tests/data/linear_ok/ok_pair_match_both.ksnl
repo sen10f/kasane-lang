@@ -1,0 +1,23 @@
+type t.Pair
+    a: t.Res
+    b: t.Res
+end t.Pair
+
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.both(p: t.Pair) -> u32 uses [] panics never
+    match p {
+        t.Pair { a: a, b: b } => t.close(a).wrapping_add(t.close(b))
+    }
+end t.both
+
+fn t.close(r: t.Res) -> u32 uses [] panics never
+    let t.Res { id: id } = r
+    id
+end t.close
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main

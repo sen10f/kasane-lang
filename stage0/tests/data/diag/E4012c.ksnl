@@ -1,0 +1,13 @@
+fn t.gen[F: core.ops.Fn<(u128, u128, u128, u128), (), [], never>](f: F) -> () uses [] panics never stack 4096
+    f.call((1u128, 2u128, 3u128, 4u128))
+end t.gen
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.spin() -> () uses [] panics never stack 64
+    t.gen(fn(a: u128, b: u128, c: u128, d: u128) -> () capture [] {
+        t.spin()
+    })
+end t.spin

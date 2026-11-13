@@ -1,0 +1,16 @@
+// expect: E4001
+fn t.gen[F: core.ops.Fn<(), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [E] panics P
+    f.call(())
+end t.gen
+
+fn t.loud() -> u32
+    core.mem.drop(std.io.print_line("x"))
+    1u32
+end t.loud
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.gen(fn() -> u32 capture [] {
+        t.loud()
+    }))
+    Ok(())
+end t.main

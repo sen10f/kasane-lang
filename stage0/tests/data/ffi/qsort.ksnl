@@ -1,0 +1,48 @@
+extern t.qsort(base: *mut i32, n: usize, size: usize, cmp: fn(*const i32, *const i32) -> i32 uses [] panics never) -> () link "qsort"
+
+fn t.ascending(a: *const i32, b: *const i32) -> i32 uses [] panics never
+    let x = unsafe "cmp" "read the left element" {
+        core.ptr.read(a)
+    }
+    let y = unsafe "cmp" "read the right element" {
+        core.ptr.read(b)
+    }
+    if x < y {
+        -1i32
+    } else if x > y {
+        1i32
+    } else {
+        0i32
+    }
+end t.ascending
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut v = [5i32, 3i32, 9i32, 1i32, 7i32, 2i32]
+    let p = core.ptr.from_mut(&mut v)
+    unsafe "sort" "qsort with a Kasane comparator" {
+        t.qsort(p, 6usize, 4usize, t.ascending)
+    }
+    core.check.eq(v[0], 1i32)
+    core.check.eq(v[1], 2i32)
+    core.check.eq(v[2], 3i32)
+    core.check.eq(v[3], 5i32)
+    core.check.eq(v[4], 7i32)
+    core.check.eq(v[5], 9i32)
+    unsafe "sort" "qsort with a closure that has no captures (descending)" {
+        t.qsort(p, 6usize, 4usize, fn(a: *const i32, b: *const i32) -> i32 capture [] {
+            let x = core.ptr.read(a)
+            let y = core.ptr.read(b)
+            if x < y {
+                1i32
+            } else if x > y {
+                -1i32
+            } else {
+                0i32
+            }
+        })
+    }
+    core.check.eq(v[0], 9i32)
+    core.check.eq(v[5], 1i32)
+    std.io.print_line("qsort ok")
+    Ok(())
+end t.main

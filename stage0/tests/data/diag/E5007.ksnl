@@ -1,0 +1,10 @@
+type t.Pair
+    a: i32
+    b: i32
+end t.Pair
+
+extern t.take(p: t.Pair) -> () link "take"
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

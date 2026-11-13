@@ -1,0 +1,18 @@
+// expect: E3002
+fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
+    core.mem.drop(std.io.print_line(s.as_str()))
+    core.mem.drop(s)
+end t.consume
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello, this is a long heap string"))
+    t.steal(&s)
+    t.steal(&s)
+    t.consume(s)
+    Ok(())
+end t.main
+
+fn t.steal(r: &alloc.string.String) -> () uses [io.console] panics never
+    t.consume(*r)
+end t.steal

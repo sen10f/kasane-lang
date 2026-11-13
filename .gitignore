@@ -8,4 +8,7 @@ bench/agent_prompts*/
 bench/results/
 bench/*.log
 bench/work/
+*.so
+.env
 perf/results/
+tools/fuzz/found/

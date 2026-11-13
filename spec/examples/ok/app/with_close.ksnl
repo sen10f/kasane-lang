@@ -1,0 +1,20 @@
+fn app.with_close.copy_head(from: &str, to: &str) -> Result<usize, std.io.Error> uses [io.fs] panics may pub
+    let mut buffer = [0u8; 64]
+    with mut input = std.fs.open(from)? close core.mem.drop(input.close()) {
+        with mut output = std.fs.create(to)? close core.mem.drop(output.close()) {
+            let count = input.read(&mut buffer)?
+            output.write(buffer.sub(0usize, count).unwrap())
+        }
+    }
+end app.with_close.copy_head
+
+fn app.with_close.first_byte(path: &str) -> Result<u8, std.io.Error> uses [io.fs] panics may pub
+    let mut buffer = [0u8; 1]
+    let count = with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        file.read(&mut buffer)?
+    }
+    if count == 0usize {
+        return Ok(0u8)
+    }
+    Ok(buffer[0usize])
+end app.with_close.first_byte

@@ -1,0 +1,107 @@
+import shortener.error
+import shortener.http
+import shortener.router
+import shortener.server
+import shortener.store
+import shortener.wire
+
+fn shortener.pool.accept_all(listener: &std.net.TcpListener, jobs: &std.sync.Sender<std.net.TcpStream>, count: usize) -> Result<usize, shortener.error.Error> uses [io.net, thread] panics never
+    let mut accepted = 0usize
+    while count == 0usize || accepted < count {
+        let stream = listener.accept()?
+        match jobs.send(stream) {
+            Ok(_u) => {
+                accepted = accepted.saturating_add(1usize)
+            }
+            Err(back) => core.mem.drop(back.value.close())
+        }
+    }
+    Ok(accepted)
+end shortener.pool.accept_all
+
+fn shortener.pool.respond(stream: &mut std.net.TcpStream, give: &std.sync.Sender<shortener.store.Store>, take: &std.sync.Receiver<shortener.store.Store>) -> Result<(), shortener.error.Error> uses [alloc, io.fs, io.net, thread] panics may
+    let response = match wire.read_request(stream) {
+        Ok(request) => shortener.pool.route(give, take, &request)?
+        Err(error.Error.BadRequest) => router.error_response(400u16, "bad request")?
+        Err(error.Error.TooLarge) => router.error_response(413u16, "payload too large")?
+        Err(other) => return Err(other)
+    }
+    let text = http.render_response(&response)?
+    wire.write_all(stream, text.as_str().as_bytes())
+end shortener.pool.respond
+
+fn shortener.pool.route(give: &std.sync.Sender<shortener.store.Store>, take: &std.sync.Receiver<shortener.store.Store>, request: &shortener.http.Request) -> Result<shortener.http.Response, shortener.error.Error> uses [alloc, io.fs, thread] panics may
+    let mut db = take.recv().unwrap()
+    let routed = router.route(&mut db, request)
+    core.mem.drop(give.send(db))
+    routed
+end shortener.pool.route
+
+fn shortener.pool.run(left: usize, listener: &std.net.TcpListener, count: usize, jobs: std.sync.Sender<std.net.TcpStream>, queue: std.sync.Receiver<std.net.TcpStream>, give: std.sync.Sender<shortener.store.Store>, take: std.sync.Receiver<shortener.store.Store>) -> Result<usize, shortener.error.Error> uses [alloc, io.fs, io.net, thread] panics may
+    if left == 0usize {
+        let accepted = shortener.pool.accept_all(listener, &jobs, count)
+        core.mem.drop(jobs)
+        core.mem.drop(shortener.pool.worker(queue, give, take))
+        return accepted
+    }
+    let worker_give = give.clone()
+    let worker_queue = queue.clone()
+    let worker_take = take.clone()
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u64 capture [move worker_give, move worker_queue, move worker_take] {
+            shortener.pool.worker(worker_queue, worker_give, worker_take)
+        },
+    )
+    let rest = left.saturating_sub(1usize)
+    let inner = shortener.pool.run(rest, listener, count, jobs, queue, give, take)
+    match spawned {
+        Ok(handle) => core.mem.drop(handle.join())
+        Err(_e) => {
+        }
+    }
+    inner
+end shortener.pool.run
+
+fn shortener.pool.serve(listener: &std.net.TcpListener, db: shortener.store.Store, count: usize, workers: usize) -> Result<usize, shortener.error.Error> uses [alloc, io.fs, io.net, thread] panics may pub
+    let (give, take) = std.sync.channel::<store.Store, std.alloc.System>(
+        std.alloc.SYSTEM,
+        1usize,
+    )?
+    core.mem.drop(give.send(db))
+    let (jobs, queue) = std.sync.channel::<std.net.TcpStream, std.alloc.System>(
+        std.alloc.SYSTEM,
+        64usize,
+    )?
+    shortener.pool.run(workers, listener, count, jobs, queue, give, take)
+end shortener.pool.serve
+
+fn shortener.pool.serve_one(stream: std.net.TcpStream, give: &std.sync.Sender<shortener.store.Store>, take: &std.sync.Receiver<shortener.store.Store>) -> Result<(), shortener.error.Error> uses [alloc, io.fs, io.net, thread] panics may
+    let handled = with mut open = stream close core.mem.drop(open.close()) {
+        shortener.pool.respond(&mut open, give, take)
+    }
+    server.settle(handled)
+end shortener.pool.serve_one
+
+fn shortener.pool.worker(first: std.sync.Receiver<std.net.TcpStream>, give: std.sync.Sender<shortener.store.Store>, take: std.sync.Receiver<shortener.store.Store>) -> u64 uses [alloc, io.fs, io.net, thread] panics may
+    let mut queue = first
+    let mut served = 0u64
+    loop {
+        match queue.recv() {
+            Ok(stream) => match shortener.pool.serve_one(stream, &give, &take) {
+                Ok(_u) => {
+                    served = served.saturating_add(1u64)
+                }
+                Err(_e) => {
+                }
+            }
+            Err(_e) => match queue.close() {
+                Ok(_u) => break
+                Err(back) => {
+                    queue = back
+                }
+            }
+        }
+    }
+    served
+end shortener.pool.worker

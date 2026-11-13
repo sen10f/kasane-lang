@@ -1,0 +1,4 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    (1u8, 2u8)
+    Ok(())
+end t.main

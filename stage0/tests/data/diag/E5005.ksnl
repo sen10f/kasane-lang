@@ -1,0 +1,12 @@
+extern t.each(f: fn(i32) -> i32 uses [] panics never) -> () link "each"
+
+fn t.twice(x: i32) -> i32 uses [] panics may
+    x
+end t.twice
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    unsafe "ffi" "callback" {
+        t.each(t.twice)
+    }
+    Ok(())
+end t.main

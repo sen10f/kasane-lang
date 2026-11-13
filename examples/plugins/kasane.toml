@@ -1,0 +1,7 @@
+[package]
+name = "plugins"
+version = "0.1.0"
+edition = 1
+entry = "plugins.main"
+
+[dependencies]

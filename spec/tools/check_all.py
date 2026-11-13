@@ -43,8 +43,13 @@ def step(name, ok, detail=''):
             print('     ' + detail.strip().replace('\n', '\n     '))
 
 
-def only(prefix, out):
-    return '\n'.join(l for l in out.splitlines() if l.startswith(prefix))
+def only(prefix, out, rc=None):
+    hit = '\n'.join(l for l in out.splitlines() if l.startswith(prefix))
+    # 失敗したのに FAIL 行がない (下位のツールが異常終了した) ときは、終了コードと出力の末尾を見せる。
+    if not hit and rc not in (None, 0):
+        tail = '\n'.join(out.splitlines()[-15:])
+        return f'exit code {rc}, no {prefix} line; last output:\n{tail}'
+    return hit
 
 
 stdlib_src = files('stdlib/**/*.ksnl', 'stdlib/**/*.sig')
@@ -77,19 +82,19 @@ step(f'grammar references ({len(rules)} rules)', not undefined and not unused, f
 # 2. 実パース
 srcs = stdlib_src + ok_src
 rc, out = run(['tools/ebnfcheck.py', 'grammar.ebnf', 'ok'] + srcs)
-step(f'parse: {len(srcs)} valid sources derive', rc == 0, only('FAIL', out))
+step(f'parse: {len(srcs)} valid sources derive', rc == 0, only('FAIL', out, rc))
 rc, out = run(['tools/ebnfcheck.py', 'grammar.ebnf', 'fail'] + fail_src)
-step(f'parse: {len(fail_src)} invalid sources rejected for the intended reason', rc == 0, only('FAIL', out))
+step(f'parse: {len(fail_src)} invalid sources rejected for the intended reason', rc == 0, only('FAIL', out, rc))
 neg = lint_fail + xref_fail
 rc, out = run(['tools/ebnfcheck.py', 'grammar.ebnf', 'ok'] + neg)
-step(f'parse: {len(neg)} lint/xref negative examples are grammatical', rc == 0, only('FAIL', out))
+step(f'parse: {len(neg)} lint/xref negative examples are grammatical', rc == 0, only('FAIL', out, rc))
 
 # 3. lint
 for root, pats in (('stdlib', stdlib_src), ('examples/ok', ok_src)):
     rc, out = run(['tools/ksnlint.py', root, 'ok'] + pats)
     step(f'lint: {len(pats)} sources under {root} are clean', rc == 0, '\n'.join(l for l in out.splitlines() if not l.startswith('PASS')))
 rc, out = run(['tools/ksnlint.py', 'examples/lint_fail', 'fail'] + lint_fail)
-step(f'lint: {len(lint_fail)} violations each reported with the expected code', rc == 0, only('FAIL', out))
+step(f'lint: {len(lint_fail)} violations each reported with the expected code', rc == 0, only('FAIL', out, rc))
 
 # 4. xref
 rc, out = run(['tools/xref.py', '.'] + stdlib_src)

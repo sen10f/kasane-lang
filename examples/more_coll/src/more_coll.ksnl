@@ -1,0 +1,62 @@
+fn more_coll.count_bytes(text: &str) -> alloc.collections.HashMap<u8, u32, std.alloc.System> uses [alloc] panics never pub
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let bytes = text.as_bytes()
+    let mut i = 0usize
+    while i < bytes.len() {
+        match bytes.get(i) {
+            Some(c) => {
+                match m.insert(*c, 1u32) {
+                    Ok(None) => ()
+                    Ok(Some(old)) => {
+                        match m.insert(*c, old.wrapping_add(1u32)) {
+                            Ok(None) => ()
+                            Ok(Some(_old2)) => ()
+                            Err(_e) => ()
+                        }
+                    }
+                    Err(_e) => ()
+                }
+                i = i.wrapping_add(1usize)
+            }
+            None => break
+        }
+    }
+    m
+end more_coll.count_bytes
+
+fn more_coll.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match v.push(3u32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match v.push(1u32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match v.push(2u32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    core.check.eq(v.len(), 3usize)
+    let m = more_coll.count_bytes("abc")
+    match m.get(&97u8) {
+        Some(cnt) => core.check.eq(*cnt, 1u32)
+        None => core.check.eq(0usize, 1usize)
+    }
+    std.io.print_line("more_coll ok")?
+    Ok(())
+end more_coll.main
+
+test more_coll.count_bytes.test_hello
+    let m = more_coll.count_bytes("hello")
+    match m.get(&104u8) {
+        Some(v) => core.check.eq(*v, 1u32)
+        None => core.check.eq(0usize, 1usize)
+    }
+    match m.get(&108u8) {
+        Some(v) => core.check.eq(*v, 2u32)
+        None => core.check.eq(0usize, 1usize)
+    }
+    core.check.eq(m.len(), 4usize)
+end more_coll.count_bytes.test_hello

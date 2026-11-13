@@ -1,0 +1,83 @@
+import alloc.boxed
+import alloc.vec
+
+type plugins.Bus pub
+    handlers: alloc.vec.Vec<plugins.Slot, std.alloc.System>
+end plugins.Bus
+
+type plugins.Counter pub
+    seen: u32
+end plugins.Counter
+
+trait plugins.Handler[E: uses, P: panics] pub
+    fn handle(self: &mut Self, event: &str) -> u32 uses [E] panics P
+end plugins.Handler
+
+type plugins.Logger pub
+    calls: u32
+    prefix: alloc.string.String
+end plugins.Logger
+
+type plugins.Slot
+    handler: alloc.boxed.Box<dyn plugins.Handler<[io.console], never> + 'static, std.alloc.System>
+end plugins.Slot
+
+fn plugins.Bus.dispatch(self: &mut plugins.Bus, event: &str) -> u32 uses [io.console] panics may pub
+    let mut total = 0u32
+    let mut i = 0usize
+    while i < self.handlers.len() {
+        total = total.wrapping_add(self.handlers[i].handler.handle(event))
+        i = i.wrapping_add(1usize)
+    }
+    total
+end plugins.Bus.dispatch
+
+fn plugins.Bus.new() -> plugins.Bus uses [] panics never pub
+    plugins.Bus { handlers: vec.Vec.new(std.alloc.SYSTEM) }
+end plugins.Bus.new
+
+fn plugins.Bus.register[H: plugins.Handler<[io.console], never>](self: &mut plugins.Bus, handler: H) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let b = boxed.Box.new(std.alloc.SYSTEM, handler)?
+    self.handlers.push(plugins.Slot { handler: boxed.Box.into_dyn(b) })?
+    Ok(())
+end plugins.Bus.register
+
+impl plugins.Handler<[], never> for plugins.Counter
+fn plugins.Counter.handle(self: &mut plugins.Counter, _event: &str) -> u32 uses [] panics never impls plugins.Handler<[], never>
+    self.seen = self.seen.wrapping_add(1u32)
+    self.seen
+end plugins.Counter.handle
+
+impl plugins.Handler<[io.console], never> for plugins.Logger
+fn plugins.Logger.handle(self: &mut plugins.Logger, event: &str) -> u32 uses [io.console] panics never impls plugins.Handler<[io.console], never>
+    self.calls = self.calls.wrapping_add(1u32)
+    match std.io.print_line(event) {
+        Ok(_u) => self.calls
+        Err(_e) => 0u32
+    }
+end plugins.Logger.handle
+
+fn plugins.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    match plugins.run() {
+        Ok(total) => core.check.eq(total, 6u32)
+        Err(_e) => core.panic.panic("out of memory")
+    }
+    std.io.print_line("plugins ok")
+end plugins.main
+
+fn plugins.run() -> Result<u32, alloc.alloc.AllocError> uses [alloc, io.console] panics may
+    let mut bus = plugins.Bus.new()
+    let prefix = alloc.string.String.from_str(std.alloc.SYSTEM, "log")?
+    bus.register(plugins.Counter { seen: 0u32 })?
+    bus.register(plugins.Logger { calls: 0u32, prefix: prefix })?
+    let first = bus.dispatch("start")
+    let second = bus.dispatch("stop")
+    Ok(first.wrapping_add(second))
+end plugins.run
+
+test plugins.run.test_dispatch_sums_handler_results
+    match plugins.run() {
+        Ok(total) => core.check.eq(total, 6u32)
+        Err(_e) => core.panic.panic("out of memory")
+    }
+end plugins.run.test_dispatch_sums_handler_results

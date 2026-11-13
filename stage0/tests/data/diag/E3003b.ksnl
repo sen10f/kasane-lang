@@ -1,0 +1,16 @@
+type t.L linear pub
+    a: u8
+end t.L
+
+type t.W pub
+    lin: t.L
+end t.W
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let _x = t.mk().lin
+    Ok(())
+end t.main
+
+fn t.mk() -> t.W uses [] panics never
+    t.W { lin: t.L { a: 1u8 } }
+end t.mk
