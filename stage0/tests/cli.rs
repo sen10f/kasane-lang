@@ -18350,6 +18350,8 @@ fn llvm_builds_of_real_packages_match_run() {
     for pkg in [
         "examples/demo",
         "examples/json",
+        "examples/more_coll",
+        "examples/more_str",
         "examples/native",
         "examples/realtime",
         "perf/closure",
