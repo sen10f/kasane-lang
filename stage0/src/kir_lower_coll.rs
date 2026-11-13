@@ -982,7 +982,7 @@ fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str, nargs: usi
     if matches!(kind, Kind::Closure { .. }) {
         return lw.err(line, format!("メソッド {} は段階 1 の対象外", m));
     }
-    if !matches!(m, "len" | "is_empty" | "as_bytes") {
+    if !matches!(m, "len" | "is_empty" | "as_bytes" | "as_str" | "as_slice") {
         return lw.err(line, format!("メソッド {} は段階 1 の対象外 (戻り値が Option / Result / 参照のため)", m));
     }
     if nargs != 0 {
@@ -999,6 +999,11 @@ fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str, nargs: usi
         }
         // `str` のバイト列: 同じ {ptr, len} の値。
         "as_bytes" if kind == Kind::Str => Ok(Some(h)),
+        // `String.as_str()` / `Vec.as_slice()`: ヘッダの {ptr, len} を借用の `fat` にする (所有は移さない)。
+        "as_str" if kind == Kind::String => Ok(Some(hdr_view(lw, h))),
+        "as_slice" if matches!(kind, Kind::Vec(_)) => Ok(Some(hdr_view(lw, h))),
+        // `&str.as_str()` はそのまま。
+        "as_str" if kind == Kind::Str => Ok(Some(h)),
         other => lw.err(line, format!("メソッド {} は段階 1 の対象外", other)),
     }
 }
@@ -1199,6 +1204,14 @@ fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Opt
     lw.goto(jb, vec![none]);
     lw.cur = Some(jb);
     Ok(Some(jp[0]))
+}
+
+/// Vec / String のヘッダ `hdr` の中身を指す借用の `fat` ({ptr, len})。
+fn hdr_view(lw: &mut Lw, hdr: VId) -> VId {
+    let p = lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 });
+    let l = load_len(lw, hdr);
+    let fat = lw.fat_ty();
+    lw.emit(fat, Op::Make { variant: None, fields: vec![p, l] })
 }
 
 /// `fat` の長さ。

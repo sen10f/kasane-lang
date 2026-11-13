@@ -13406,3 +13406,53 @@ fn kir_own_dump_shows_moves_as_nulling_and_flags() {
     let s = text(&o.stdout);
     assert!(s.contains("frame.bytes 1") && s.contains("mem.store.bool") && s.contains("mem.load.bool"), "{}", s);
 }
+
+/// `String.as_str()` / `Vec.as_slice()` はヘッダの {ptr, len} を借用の `fat` にする (所有は移さない)。
+/// 木走査 (`ksn run` の `core.check.eq`) と、`--run` / `--native` の値が一致する。
+#[test]
+fn kir_as_str_and_as_slice_borrow_the_header() {
+    let src = r#"fn t.sum_bytes(s: &str) -> u32 uses [] panics never
+    let b = s.as_bytes()
+    let mut acc = 0u32
+    for x in b {
+        acc = acc.wrapping_add(u32.from_u8(x))
+    }
+    acc
+end t.sum_bytes
+
+fn t.sum_slice(v: &[u16]) -> u32 uses [] panics never
+    let mut acc = 0u32
+    for x in v {
+        acc = acc.wrapping_add(u32.from_u16(x))
+    }
+    acc
+end t.sum_slice
+
+fn t.go(n: u16) -> u32 uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u16
+    while i < n {
+        core.mem.drop(v.push(i))
+        i = i.wrapping_add(1u16)
+    }
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let a = t.sum_slice(v.as_slice())
+    let b = t.sum_bytes(s.as_str())
+    if s.as_str().len() == 0usize {
+        return a.wrapping_add(b).wrapping_add(1000u32)
+    }
+    a.wrapping_add(b)
+end t.go
+
+fn t.main() -> () uses [alloc, io.console] panics may
+    core.check.eq(t.go(10u16), 1045u32)
+end t.main
+"#;
+    let t = Tmp::new("kir_as_str_slice", src);
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0));
+    for (n, want) in [("10", "1045"), ("0", "1000")] {
+        let o = kir_run(&["kir", "t.go", "--run", n], &t.0);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), want);
+    }
+}
