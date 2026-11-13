@@ -1,0 +1,8 @@
+{
+  "id": "fib",
+  "title": "フィボナッチ",
+  "spec": "n 番目のフィボナッチ数を返す(fib(0)=0, fib(1)=1)。ループで計算する。fib(50) までオーバーフローしない。",
+  "decl": "fn bench.fib(n: u32) -> u64",
+  "level": "basic",
+  "order": 1
+}

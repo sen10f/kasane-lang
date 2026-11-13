@@ -1,0 +1,12 @@
+test bench.Counter.test_basic
+    let mut c = bench.Counter.new()
+    c.incr()
+    c.incr()
+    c.incr()
+    core.check.eq(c.get(), 3u32)
+end bench.Counter.test_basic
+
+test bench.Counter.test_fresh
+    let c = bench.Counter.new()
+    core.check.eq(c.get(), 0u32)
+end bench.Counter.test_fresh

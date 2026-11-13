@@ -1,24 +1,78 @@
 #!/usr/bin/env python3
-"""bench/reference/<課題>.ksnl の参照解が、課題のテストに通ることを確かめる(課題が言語側で解けるかの検査)。"""
+"""bench/tasks/*/reference.ksnl の参照解を検査する。
+
+課題がある参照解は run_bench.evaluate と同じ形の一時パッケージで ksn check +
+ksn test を行い pass を期待する。回帰用だけの参照解は、run_bench.py の evaluate と
+同じ形の一時パッケージで ksn check が診断 0 件 (と ksn fmt --check が通る) を確かめる。
+どれか 1 本でも落ちたら終了コード 1。
+"""
 import os
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'bench'))
 import run_bench as rb  # noqa: E402
-from tasks import TASKS  # noqa: E402
+from tasks import TASKS, REFERENCE_ONLY  # noqa: E402
 
-want = set(sys.argv[1].split(',')) if len(sys.argv) > 1 else None
-bad = 0
-for t in TASKS:
-    if want and t['id'] not in want:
-        continue
-    p = os.path.join(ROOT, 'bench', 'reference', t['id'] + '.ksnl')
-    if not os.path.exists(p):
-        continue
-    stage, out, _ = rb.evaluate(open(p, encoding='utf-8').read(), t['tests'])
-    print(f"{t['id']}: {stage}")
-    if stage != 'pass':
-        bad += 1
-        print('   ' + out[:900].replace('\n', '\n   '))
-sys.exit(1 if bad else 0)
+
+def check_reference_only(code):
+    """一時パッケージで ksn check (診断0件) と ksn fmt --check を確かめる。(ok, msg)"""
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, 'src'))
+        open(os.path.join(td, 'kasane.toml'), 'w', newline='\n').write(rb.TOML)
+        open(os.path.join(td, 'kasane.lock'), 'w', newline='\n').write('version = 1\n')
+        nl = chr(10)
+        src = code.rstrip(nl) + nl
+        open(os.path.join(td, 'src', 'bench.ksnl'), 'w', newline='\n', encoding='utf-8').write(src)
+        rc, out = rb.run_ksn_retry(['check'], td)
+        if rc < 0:
+            return False, f'ksn check がシグナル {-rc} で落ちた: {out.strip()}'
+        if rc != 0:
+            return False, f'ksn check 失敗 (rc={rc}):\n{out.strip()}'
+        rc, out = rb.run_ksn_retry(['fmt', '--check'], td)
+        if rc < 0:
+            return False, f'ksn fmt --check がシグナル {-rc} で落ちた: {out.strip()}'
+        if rc != 0:
+            return False, f'ksn fmt --check 失敗 (rc={rc}):\n{out.strip()}'
+        return True, 'ok'
+
+
+def main():
+    want = set(sys.argv[1].split(',')) if len(sys.argv) > 1 else None
+    bad = 0
+    total = 0
+    # 課題がある参照解: テスト採点
+    for t in TASKS:
+        if want and t['id'] not in want:
+            continue
+        ref_path = os.path.join(ROOT, 'bench', 'tasks', t['id'], 'reference.ksnl')
+        if not os.path.exists(ref_path):
+            continue
+        total += 1
+        code = open(ref_path, encoding='utf-8').read()
+        stage, out, _ = rb.evaluate(code, t['tests'])
+        print(f"{t['id']}: {stage}")
+        if stage != 'pass':
+            bad += 1
+            print('   ' + out[:900].replace('\n', '\n   '))
+    # 回帰用だけの参照解: ksn check (診断0件) + ksn fmt --check
+    for tid in REFERENCE_ONLY:
+        if want and tid not in want:
+            continue
+        ref_path = os.path.join(ROOT, 'bench', 'tasks', tid, 'reference.ksnl')
+        if not os.path.exists(ref_path):
+            continue
+        total += 1
+        code = open(ref_path, encoding='utf-8').read()
+        ok, msg = check_reference_only(code)
+        print(f"{tid}: {'ok' if ok else 'FAIL'} {'' if ok else msg}")
+        if not ok:
+            bad += 1
+            print('   ' + msg.replace('\n', '\n   '))
+    print(f'total {total}, bad {bad}')
+    sys.exit(1 if bad else 0)
+
+
+if __name__ == '__main__':
+    main()
