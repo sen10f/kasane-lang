@@ -4393,7 +4393,9 @@ impl<'a> Checker<'a> {
     fn ty_certainly_not_copy(&self, t: &crate::types::Ty) -> bool {
         use crate::types::Ty;
         match t {
-            Ty::Unknown | Ty::Var(_) | Ty::Param(_) => false,
+            Ty::Unknown | Ty::Var(_) => false,
+            // 型パラメータに Copy の境界が無ければ、`*r` で値を取り出すのは不正 (e11)。
+            Ty::Param(p) => !self.generic_may_be_copy(p),
             Ty::Tuple(xs) => xs.iter().any(|x| self.ty_certainly_not_copy(x)),
             Ty::Array(el) => self.ty_certainly_not_copy(el),
             Ty::Named(nm, args) if nm == "Option" || nm == "Result" => args.iter().any(|a| self.ty_certainly_not_copy(a)),
@@ -4844,6 +4846,16 @@ impl<'a> Checker<'a> {
                                 .unwrap_or(V::Nil);
                             if is_nil(&t) {
                                 t = typed.iter().find(|(m, _)| *m == x).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
+                            }
+                            // 参照 (`&Vec<T>` / `&[T]`) の反復の束縛は `&T`。所有値として消費させない。
+                            let src_ref = self.ety_is_ref(&f[1]) || tag(&it_ty) == "ref";
+                            if src_ref && !is_nil(&t) && tag(&t) != "ref" && !self.is_generic(&t, &self.names) && !self.is_copy(&t) {
+                                let smut = matches!(self.ety(&f[1]), Some(crate::types::Ty::Ref(true, _)))
+                                    || (tag(&it_ty) == "ref" && matches!(tel(&it_ty, 1), V::B(true)));
+                                t = V::L(vec![V::S("ref".into()), V::B(smut), t]);
+                                self.ref_binds.insert(x.clone());
+                            } else {
+                                self.ref_binds.remove(&x);
                             }
                             inner.insert(x.clone(), t.clone());
                             loop_tys.push((x, t));
