@@ -1316,9 +1316,15 @@ impl<'a> TypeCk<'a> {
             }
         }
         match (&want, &got) {
-            (Ty::Closure { eff: ew, .. }, Ty::Closure { eff: eg, .. }) => {
+            (Ty::Closure { eff: ew, args: wa, ret: wr, .. }, Ty::Closure { eff: eg, args: ga, ret: gr, .. }) => {
                 if let (Some(ew), Some(eg)) = (&ew.0, &eg.0) {
                     self.check_fn_eff(ew, eg, self.cur_line);
+                }
+                // 戻り値は共変: 同じ向きで再帰する。
+                self.check_fn_conv_dir_walk(wr.as_ref().clone(), gr.as_ref().clone());
+                // 引数は反変: 向きを逆にして再帰する。
+                for (w, g) in wa.iter().zip(ga.iter()) {
+                    self.check_fn_conv_dir_walk(g.clone(), w.clone());
                 }
             }
             (Ty::Named(_, ws), Ty::Named(_, gs)) => {
