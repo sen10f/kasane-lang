@@ -1257,6 +1257,47 @@ fn match_arm_trailing_comma_is_fixed_by_ksn_fix() {
     assert!(got.iter().any(|g| g == "E0049"), "{:?}", got);
 }
 
+// ---- 診断の改善 (4): match の腕 (`=>` の後の改行・腕の本体の代入) ----
+
+#[test]
+fn match_arm_brace_on_next_line_is_explained_and_fixed() {
+    let src = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    match x {\n        Some(v) =>\n        {\n            v\n        }\n        None => 0u8\n    }\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("arm_brace_next_line", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|g| g == "E0057"), "{}", out);
+    assert!(out.contains("move the `{` from the next line up to this line"), "{}", out);
+    let o = run(&["fix"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("        Some(v) => {\n            v\n        }\n"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn match_arm_assignment_is_explained_and_fixed_as_a_block() {
+    let src = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    let mut result = 0u8\n    match x {\n        Some(r) => result = r\n        None => {\n            result = 0u8\n        }\n    }\n    result\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("arm_assign", src);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|g| g == "E0058"), "{}", out);
+    let o = run(&["fix"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let fixed = fs::read_to_string(t.0.join("src/t.ksnl")).unwrap();
+    assert!(fixed.contains("        Some(r) => {\n            result = r\n        }\n"), "{}", fixed);
+    assert_eq!(run(&["check"], &t.0).status.code(), Some(0));
+}
+
+#[test]
+fn match_arm_correct_forms_pass_check() {
+    // `=> {` を同じ行に書く形と、ブロックの中の代入は、どちらも診断 0 件で通る。`==` と `=>` の比較は代入ではない。
+    let src = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    let mut result = 0u8\n    match x {\n        Some(r) => {\n            result = r\n        }\n        None => {\n            result = 1u8\n        }\n    }\n    result\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("arm_correct", src);
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+}
+
 #[test]
 fn unresolved_name_suggests_a_close_definition_and_fix() {
     let b = body(&["let mut v = core.vec.Vec.new(std.alloc.SYSTEM)", "core.mem.drop(v.len())"]);
@@ -12027,10 +12068,10 @@ fn test_both_compares_llvm_panics_with_the_tree_walker() {
 
 #[test]
 fn test_both_falls_back_from_llvm_to_cranelift_with_the_reason() {
-    // `char.to_u32` は KIR に下ろせない (段階 1 の対象外) ので、LLVM は退避する。Cranelift で作れる。
+    // `char.is_ascii_digit` は KIR に下ろせない (段階 1 の対象外) ので、LLVM は退避する。Cranelift で作れる。
     // 退避した Cranelift の文言 (`arithmetic overflow`) と木走査の文言は違うが、分類が同じなので一致になる。
     let src = format!(
-        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq('a'.to_u32(), 97u32)\nend t.main.test_mixed\n",
+        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq('a'.is_ascii_digit(), false)\nend t.main.test_mixed\n",
         BOTH_SRC
     );
     let t = Tmp::new("both_llvm_to_native", &src);
@@ -12827,8 +12868,8 @@ end t.main
 #[test]
 fn kir_lower_dump_on_check_is_hidden_behind_the_env_var() {
     // `KSN_DUMP_KIR=1 ksn check` だけ KIR を stderr に出す。通常の check の出力は変えない。
-    // `char.to_u32` は段階 1 では未対応 (理由付きで出る)
-    let t = kir_pkg("kir_dump", "    core.check.eq('a'.to_u32(), 97u32)\n");
+    // `char.is_ascii_digit` は段階 1 では未対応 (理由付きで出る)
+    let t = kir_pkg("kir_dump", "    core.check.eq('a'.is_ascii_digit(), false)\n");
     let plain = run(&["check"], &t.0);
     let dumped = Command::new(exe())
         .args(["check"])
@@ -14457,6 +14498,352 @@ end t.main
     // 戻り値の `Option<&[u8]>` は表示できる形で出る (`fat` の集成体の番号を含む)
     let o = run(&["kir", "t.has"], &t.0);
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+}
+
+#[test]
+fn kir_first_last_contains_match_tree_walker() {
+    // `first()` / `last()` は `Option<&T>` (スカラーは値で持つ)、`contains(&x)` は先頭からの `==` の走査。
+    // 配列・スライス・Vec の局所で、空と境界の両側を見る。木走査と値が一致し (`--run` / `--native`、ASan があればそれも)。
+    let helpers = "fn t.first_is(a: &[u8], want: u8) -> bool uses [] panics never
+    match a.first() {
+        Some(x) => *x == want
+        None => false
+    }
+end t.first_is
+
+fn t.last_is(a: &[u8], want: u8) -> bool uses [] panics never
+    match a.last() {
+        Some(x) => *x == want
+        None => false
+    }
+end t.last_is
+
+fn t.has(a: &[u8], x: u8) -> bool uses [] panics never
+    a.contains(&x)
+end t.has
+
+fn t.vfirst_is(v: &alloc.vec.Vec<u32, std.alloc.System>, want: u32) -> bool uses [] panics never
+    match v.first() {
+        Some(x) => *x == want
+        None => false
+    }
+end t.vfirst_is
+
+fn t.vlast_is(v: &alloc.vec.Vec<u32, std.alloc.System>, want: u32) -> bool uses [] panics never
+    match v.last() {
+        Some(x) => *x == want
+        None => false
+    }
+end t.vlast_is
+
+fn t.vhas(v: &alloc.vec.Vec<u32, std.alloc.System>, x: u32) -> bool uses [] panics never
+    v.contains(&x)
+end t.vhas
+
+fn t.arr_first_yes() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8]
+    t.first_is(&arr, 3u8)
+end t.arr_first_yes
+
+fn t.arr_first_no() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8]
+    t.first_is(&arr, 1u8)
+end t.arr_first_no
+
+fn t.arr_last_yes() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8]
+    t.last_is(&arr, 4u8)
+end t.arr_last_yes
+
+fn t.arr_has_yes() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8]
+    t.has(&arr, 1u8)
+end t.arr_has_yes
+
+fn t.arr_has_no() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8]
+    t.has(&arr, 9u8)
+end t.arr_has_no
+
+fn t.sub_last_yes() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8, 1u8, 5u8]
+    let mid = arr.sub(1usize, 3usize)
+    match mid {
+        Some(s) => t.last_is(s, 4u8)
+        None => false
+    }
+end t.sub_last_yes
+
+fn t.vec_empty() -> bool uses [alloc] panics may
+    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    t.vfirst_is(&v, 0u32)
+end t.vec_empty
+
+fn t.vec_first_yes() -> bool uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(5u32))
+    core.mem.drop(v.push(6u32))
+    t.vfirst_is(&v, 5u32)
+end t.vec_first_yes
+
+fn t.vec_last_yes() -> bool uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(5u32))
+    core.mem.drop(v.push(6u32))
+    t.vlast_is(&v, 6u32)
+end t.vec_last_yes
+
+fn t.vec_has_yes() -> bool uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(5u32))
+    core.mem.drop(v.push(6u32))
+    t.vhas(&v, 6u32)
+end t.vec_has_yes
+
+fn t.vec_has_no() -> bool uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(5u32))
+    core.mem.drop(v.push(6u32))
+    t.vhas(&v, 7u32)
+end t.vec_has_no
+
+fn t.str_first_len(v: &alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> usize uses [] panics never
+    let g = v.first()
+    match g {
+        Some(x) => x.len()
+        None => 0usize
+    }
+end t.str_first_len
+
+fn t.str_last_len(v: &alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> usize uses [] panics never
+    match v.last() {
+        Some(x) => x.len()
+        None => 0usize
+    }
+end t.str_last_len
+
+fn t.str_mk(n: usize) -> usize uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"ab\"))
+    core.mem.drop(v.push(s))
+    let mut t2 = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(t2.push_str(\"xyz\"))
+    core.mem.drop(v.push(t2))
+    t.str_first_len(&v) + t.str_last_len(&v) + n
+end t.str_mk
+";
+    // (関数, 期待値)。木走査は `core.check.eq` で確かめ、KIR は `--run` の表示 (`true` / `false`) で確かめる。
+    let cases = [
+        ("t.arr_first_yes", "true"),
+        ("t.arr_first_no", "false"),
+        ("t.arr_last_yes", "true"),
+        ("t.arr_has_yes", "true"),
+        ("t.arr_has_no", "false"),
+        ("t.sub_last_yes", "true"),
+        ("t.vec_empty", "false"),
+        ("t.vec_first_yes", "true"),
+        ("t.vec_last_yes", "true"),
+        ("t.vec_has_yes", "true"),
+        ("t.vec_has_no", "false"),
+    ];
+    let mut main = String::from("\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n");
+    for (f, want) in cases {
+        main.push_str(&format!("    core.check.eq({}(), {})\n", f, want));
+    }
+    // 所有物の要素 (`Vec<String>`): `let g = v.first()` と `match v.last()` は `bref` (借用) で持つ。
+    main.push_str("    core.check.eq(t.str_mk(0usize), 5usize)\n    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_first_last", &format!("{}{}", helpers, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, want) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+    let k = kir_run(&["kir", "t.str_mk", "--run", "0"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir t.str_mk\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "5", "kir value of t.str_mk");
+}
+
+#[test]
+fn kir_str_find_matches_tree_walker() {
+    // `s.find(pat)` (`&str` のパターン) は `Option<usize>` の最初の一致の位置 (バイト)。
+    // 空のパターンは `Some(0)`、パターンが長いと `None`、後戻り (`aab` の `ab`) と多バイト文字 (`héllo`) を見る。
+    let helpers = "fn t.at(s: &str, p: &str) -> Option<usize> uses [] panics never
+    s.find(p)
+end t.at
+";
+    // (関数, 本体, 木走査の期待値の式, KIR の表示)
+    let cases = [
+        ("t.f_c", "\"abc\".find(\"c\")", "Some(2usize)", "Some(2)"),
+        ("t.f_bc", "\"abc\".find(\"bc\")", "Some(1usize)", "Some(1)"),
+        ("t.f_empty", "\"abc\".find(\"\")", "Some(0usize)", "Some(0)"),
+        ("t.f_none_long", "\"abc\".find(\"abcd\")", "None", "None"),
+        ("t.f_none_miss", "\"abc\".find(\"x\")", "None", "None"),
+        ("t.f_backtrack", "\"aab\".find(\"ab\")", "Some(1usize)", "Some(1)"),
+        ("t.f_whole", "\"abc\".find(\"abc\")", "Some(0usize)", "Some(0)"),
+        ("t.f_utf8", "\"héllo\".find(\"l\")", "Some(3usize)", "Some(3)"),
+        ("t.f_empty_src", "\"\".find(\"a\")", "None", "None"),
+        ("t.f_at", "t.at(\"hello world\", \"wor\")", "Some(6usize)", "Some(6)"),
+    ];
+    let mut src = String::from(helpers);
+    let mut main = String::from("\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n");
+    for (f, body, want, _) in cases {
+        src.push_str(&format!("\nfn {}() -> Option<usize> uses [] panics never\n    {}\nend {}\n", f, body, f));
+        main.push_str(&format!("    core.check.eq({}(), {})\n", f, want));
+    }
+    main.push_str("    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_str_find", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, _, _, shown) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), shown, "kir value of {}", f);
+    }
+}
+
+#[test]
+fn kir_char_methods_match_tree_walker() {
+    // `char` の `to_ascii_uppercase` / `to_ascii_lowercase` (ASCII の英字の境界だけ変える)、`to_u32`、
+    // `char.try_from_u32` (0x110000 未満で、サロゲート 0xD800..=0xDFFF の外)。木走査と値が一致する (`--run` / `--native`)。
+    let cases = [
+        ("t.up_q", "'q'.to_ascii_uppercase() == 'Q'"),
+        ("t.up_a", "'a'.to_ascii_uppercase() == 'A'"),
+        ("t.up_z", "'z'.to_ascii_uppercase() == 'Z'"),
+        ("t.up_backtick", "'`'.to_ascii_uppercase() == '`'"),
+        ("t.up_brace", "'{'.to_ascii_uppercase() == '{'"),
+        ("t.up_digit", "'5'.to_ascii_uppercase() == '5'"),
+        ("t.up_eacute", "'é'.to_ascii_uppercase() == 'é'"),
+        ("t.to_u32", "'q'.to_u32() == 113u32"),
+        ("t.low_upper_a", "'A'.to_ascii_lowercase() == 'a'"),
+        ("t.low_at", "'@'.to_ascii_lowercase() == '@'"),
+        ("t.low_bracket", "'['.to_ascii_lowercase() == '['"),
+        ("t.low_z", "'Z'.to_ascii_lowercase() == 'z'"),
+        ("t.from_a", "char.try_from_u32(65u32) == Some('A')"),
+        ("t.from_surrogate", "char.try_from_u32(55296u32) == None"),
+        ("t.from_surrogate_hi", "char.try_from_u32(57343u32) == None"),
+        ("t.from_after_surrogate", "char.try_from_u32(57344u32).is_some()"),
+        ("t.from_too_big", "char.try_from_u32(1114112u32) == None"),
+        ("t.from_max", "char.try_from_u32(1114111u32).is_some()"),
+    ];
+    let mut src = String::new();
+    let mut main = String::from("fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n");
+    for (f, expr) in cases {
+        src.push_str(&format!("fn {}() -> bool uses [] panics never\n    {}\nend {}\n\n", f, expr, f));
+        main.push_str(&format!("    core.check.eq({}(), true)\n", f));
+    }
+    main.push_str("    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_char_methods", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, _) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "true", "kir value of {}", f);
+    }
+}
+
+#[test]
+fn kir_tuple_eq_matches_tree_walker() {
+    // タプルの `==` / `!=` は要素を順に比べる (木走査の `v_eq` と同じ)。`Option<(&str, &str)>` (`split_once`) を含む。
+    // 失敗したときの文言 (タプルの表示 `("a", "c")`) も木走査と同じ。
+    let cases = [
+        ("t.t_same", "(\"ab\", \"cd\") == (\"ab\", \"cd\")"),
+        ("t.t_diff", "(\"ab\", \"cd\") != (\"ab\", \"ce\")"),
+        ("t.t_mixed", "(1u8, \"x\", true) == (1u8, \"x\", true)"),
+        ("t.t_mixed_diff", "(1u8, \"x\", true) != (1u8, \"x\", false)"),
+        ("t.t_opt", "\"key=value\".split_once(\"=\") == Some((\"key\", \"value\"))"),
+        ("t.t_opt_none", "\"novalue\".split_once(\"=\") == None"),
+    ];
+    let mut src = String::new();
+    let mut main = String::from("fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n");
+    for (f, body) in cases {
+        src.push_str(&format!("fn {}() -> bool uses [] panics never\n    {}\nend {}\n\n", f, body, f));
+        main.push_str(&format!("    core.check.eq({}(), true)\n", f));
+    }
+    main.push_str("    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_tuple_eq", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", format!("{}{}", text(&o.stdout), text(&o.stderr)));
+    for (f, _) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "true", "kir value of {}", f);
+    }
+    // 失敗の文言: 木走査と KIR の標準エラーが一致する (タプルの表示)。
+    let fail = "fn t.fail() -> bool uses [io.console] panics may\n    core.check.eq((\"a\", \"b\"), (\"a\", \"c\"))\n    true\nend t.fail\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    core.mem.drop(t.fail())\n    Ok(())\nend t.main\n";
+    let tf = Tmp::new("kir_tuple_eq_fail", fail);
+    let w = run(&["run"], &tf.0);
+    let k = kir_run(&["kir", "t.fail", "--run"], &tf.0);
+    assert_eq!(w.status.code(), Some(101), "tree-walker\n{}", text(&w.stderr));
+    assert_eq!(k.status.code(), Some(101), "kir\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stderr), text(&w.stderr), "失敗の文言が違う");
+}
+
+#[test]
+fn kir_push_i64_matches_tree_walker() {
+    // `String.push_i64(v)`: 負なら `-` を先に書き、絶対値の桁を書く。`i64::MIN` (絶対値が i64 に入らない) も木走査と同じ。
+    // 最後のケースは長い文字列の後ろに書いて、符号の 1 バイトを書くときに容量を広げる経路を通す。
+    let cases: &[(&str, &str, &str)] = &[
+        ("t.p_zero", "0i64", "x0"),
+        ("t.p_pos", "5i64", "x5"),
+        ("t.p_neg", "-42i64", "x-42"),
+        ("t.p_neg_one", "-1i64", "x-1"),
+        ("t.p_min", "-9223372036854775808i64", "x-9223372036854775808"),
+        ("t.p_max", "9223372036854775807i64", "x9223372036854775807"),
+        ("t.p_grow", "-7i64", "abcdefghijklmnopqrstuvwxyz0123456789-7"),
+    ];
+    let mut src = String::new();
+    let mut main = String::from("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n");
+    for (f, v, want) in cases {
+        let prefix = if *f == "t.p_grow" { "abcdefghijklmnopqrstuvwxyz0123456789" } else { "x" };
+        src.push_str(&format!(
+            "fn {}() -> bool uses [alloc] panics may\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(s.push_str(\"{}\"))\n    core.mem.drop(s.push_i64({}))\n    s.as_str() == \"{}\"\nend {}\n\n",
+            f, prefix, v, want, f
+        ));
+        main.push_str(&format!("    core.check.eq({}(), true)\n", f));
+    }
+    main.push_str("    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_push_i64", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, _, _) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "true", "kir value of {}", f);
+    }
+}
+
+#[test]
+fn kir_parse_matches_tree_walker() {
+    // `i64.parse(text)` は基数 10 の `from_str_radix` (木走査と同じ経路)。符号・溢れ・形の誤りを見る。
+    let cases = [
+        ("t.p_plain", "match i64.parse(\"12\") {\n        Ok(n) => n == 12i64\n        Err(_) => false\n    }"),
+        ("t.p_neg", "match i64.parse(\"-3\") {\n        Ok(n) => n == -3i64\n        Err(_) => false\n    }"),
+        ("t.p_plus", "match i64.parse(\"+5\") {\n        Ok(n) => n == 5i64\n        Err(_) => false\n    }"),
+        ("t.p_letter", "match i64.parse(\"x\") {\n        Ok(_) => false\n        Err(_) => true\n    }"),
+        ("t.p_empty", "match i64.parse(\"\") {\n        Ok(_) => false\n        Err(_) => true\n    }"),
+        ("t.p_u8_overflow", "match u8.parse(\"300\") {\n        Ok(_) => false\n        Err(_) => true\n    }"),
+        ("t.p_u8_max", "match u8.parse(\"255\") {\n        Ok(n) => n == 255u8\n        Err(_) => false\n    }"),
+        ("t.p_u8_neg", "match u8.parse(\"-1\") {\n        Ok(_) => false\n        Err(_) => true\n    }"),
+    ];
+    let mut src = String::new();
+    let mut main = String::from("fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n");
+    for (f, body) in cases {
+        src.push_str(&format!("fn {}() -> bool uses [] panics never\n    {}\nend {}\n\n", f, body, f));
+        main.push_str(&format!("    core.check.eq({}(), true)\n", f));
+    }
+    main.push_str("    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_parse", &format!("{}{}", src, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, _) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "true", "kir value of {}", f);
+    }
 }
 
 #[test]
@@ -17547,14 +17934,28 @@ end t.main
 
 #[test]
 fn llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered() {
-    // 下ろせない関数 (ここではジェネリック関数 `t.generic` を呼ぶ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
-    // (`std.env.arg_count` は段階 1 で下ろせるようになったため、`with` は使わない。`with` は別担当が KIR 下ろし中。)
-    let src = "fn t.generic[T](x: T) -> T uses [] panics never
-    x
-end t.generic
+    // 下ろせない関数 (ここでは `dyn` のトレイトオブジェクトを引数に取る関数を呼ぶ main) は、理由を出して既定の経路へ退避する。ビルドは成功する。
+    // (型引数付きの関数・メソッドは単相化して下ろせるので、退避の例に使わない。設計_KIR.md 20 章)
+    let src = "trait t.Speak[E: uses, P: panics]
+    fn speak(self: &Self) -> u32 uses [E] panics P
+end t.Speak
+
+type t.Dog
+    n: u32
+end t.Dog
+
+impl t.Speak<[], never> for t.Dog
+fn t.Dog.speak(self: &t.Dog) -> u32 uses [] panics never impls t.Speak<[], never>
+    self.n
+end t.Dog.speak
+
+fn t.call(s: &dyn t.Speak<[], never>) -> u32 uses [] panics never
+    s.speak()
+end t.call
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    core.mem.drop(t.generic(5u32))
+    let d = t.Dog { n: 3u32 }
+    core.check.eq(t.call(&d), 3u32)
     std.io.print_line(\"x\")
 end t.main
 ";
@@ -19111,11 +19512,13 @@ fn llvm_builds_of_real_packages_match_run() {
         "examples/demo",
         "examples/features",
         "examples/ffi",
+        "examples/http",
         "examples/json",
         "examples/kvapp",
         "examples/more_coll",
         "examples/more_str",
         "examples/native",
+        "examples/plugins",
         "examples/realtime",
         "perf/closure",
         "perf/fib",
@@ -19153,6 +19556,75 @@ fn llvm_builds_of_real_packages_match_run() {
         assert_eq!(text(&n.stderr), text(&r.stderr), "{}: stderr", pkg);
         let _ = fs::remove_dir_all(&base);
     }
+}
+
+/// 依存パッケージ (別 module) の `kvlib.lookup.find`/`count` を KIR に下ろし、
+/// 依存元の main から呼ぶ。`ksn run` / `ksn kir t.main --run` / `--native` が一致することを確かめる。
+#[test]
+fn dep_package_fn_is_lowered_and_matches_run_kir_native() {
+    if !clang_available() {
+        eprintln!("skip: clang が PATH に無いので、--native の比較は飛ばす");
+        return;
+    }
+    let src = "import kvlib.lookup\n\nfn t.main() -> () uses [] panics never\n    let r = lookup.find(\"name = kasane\\nmode = fast\\n\", \"name\")\n    core.mem.drop(r)\n    let r2 = lookup.find(\"name = kasane\\nmode = fast\\n\", \"missing\")\n    core.mem.drop(r2)\n    let n = lookup.count(\"a = 1\\nb = 2\\n\")\n    core.mem.drop(n)\nend t.main\n";
+    let t = Tmp::new("dep_lower", src);
+    let kvlib = root().join("examples").join("kvlib").display().to_string();
+    fs::write(
+        t.0.join("kasane.toml"),
+        format!("{}kvlib = {{ path = \"{}\" }}\n", TOML, kvlib),
+    )
+    .unwrap();
+    let u = run(&["update"], &t.0);
+    assert_eq!(u.status.code(), Some(0), "update: {}{}", text(&u.stdout), text(&u.stderr));
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "run: {}{}", text(&r.stdout), text(&r.stderr));
+    kir_run(&["kir", "t.main", "--run"], &t.0);
+}
+
+/// `examples/kvapp` で `ksn test --both` を走らせたとき、バンドル退避にならず `(both: llvm)` になることを確かめる。
+#[test]
+fn kvapp_test_both_is_llvm_not_bundle() {
+    if !clang_available() {
+        eprintln!("skip: clang が PATH に無いので、LLVM の比較は飛ばす");
+        return;
+    }
+    fn copy_all(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).unwrap();
+        for e in fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            let name = e.file_name();
+            let p = e.path();
+            if p.is_dir() {
+                copy_all(&p, &dst.join(&name));
+            } else {
+                let _ = fs::copy(&p, dst.join(&name));
+            }
+        }
+    }
+    let base = std::env::temp_dir().join(format!("ksn_kvapp_both_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let dir = base.join("kvapp");
+    copy_all(&root().join("examples").join("kvapp"), &dir);
+    copy_all(&root().join("examples").join("kvlib"), &base.join("kvlib"));
+    let cache = dir.join(".cache");
+    let stdlib = std::env::var("KSN_STDLIB")
+        .ok()
+        .unwrap_or_else(|| root().join("spec").join("stdlib").to_string_lossy().to_string());
+    let o = Command::new(exe())
+        .args(["test", "--both"])
+        .current_dir(&dir)
+        .env("KSN_CACHE_DIR", &cache)
+        .env("KSN_STDLIB", &stdlib)
+        .output()
+        .unwrap();
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "kvapp test --both: {}{}", out, text(&o.stderr));
+    // kvapp には 2 つのテストがあり、どちらも (both: llvm) で比較され、bundle 退避にはならない。
+    assert_eq!(out.matches("(both: llvm)").count(), 2, "{}", out);
+    assert!(out.contains("compared with: llvm 2, native 0, bundle fallback 0"), "{}", out);
+    assert!(!out.contains("both: bundle"), "{}", out);
+    assert!(out.contains("2 passed; 0 failed"), "{}", out);
+    let _ = fs::remove_dir_all(&base);
 }
 
 /// `Vec.get` の `Option<&スカラー>` の束縛 (`Some(c)`) を、`*c`、`&T` の引数、`c == &y` で使う。
@@ -19980,6 +20452,145 @@ fn kir_net_roundtrip() {
     assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", text(&k.stderr), text(&k.stdout));
 }
 
+/// ソケットを `&TcpListener` / `&mut TcpStream` で渡す (設計_KIR.md 12 章)。`[0u8; 8]` の配列を `&mut [u8]` で読ませ、
+/// 読んだ長さと先頭バイトを返す。`?` の失敗の型は `std.net.Error` (listen / accept / local_port / close)。木走査と一致する値は 5104 (5 バイト、先頭 'h' = 104)。
+#[test]
+fn kir_net_refs_pass_sockets_by_reference() {
+    let fns = r#"fn t.port_of(l: &std.net.TcpListener) -> Result<u16, std.net.Error> uses [io.net] panics never
+    l.local_port()
+end t.port_of
+
+fn t.send(s: &mut std.net.TcpStream, data: &[u8]) -> Result<usize, std.io.Error> uses [io.net] panics never
+    s.write(data)
+end t.send
+
+fn t.recv(s: &mut std.net.TcpStream, buf: &mut [u8]) -> Result<usize, std.io.Error> uses [io.net] panics never
+    s.read(buf)
+end t.recv
+
+fn t.first_byte(buf: &[u8]) -> usize uses [] panics never
+    match buf.get(0usize) {
+        Some(b) => usize.from_u8(*b)
+        None => 0usize
+    }
+end t.first_byte
+
+fn t.exchange() -> usize uses [alloc, io.net] panics may
+    let mut address = alloc.string.String.new(std.alloc.SYSTEM)
+    let listener = match std.net.listen("127.0.0.1:0") {
+        Ok(l) => l
+        Err(_e) => core.panic.panic("listen")
+    }
+    let port = match t.port_of(&listener) {
+        Ok(p) => p
+        Err(_e) => core.panic.panic("port")
+    }
+    match address.push_str("127.0.0.1:") {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("push")
+    }
+    match address.push_u64(u64.from_u16(port)) {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("push_u64")
+    }
+    let mut client = match std.net.connect(address.as_str()) {
+        Ok(c) => c
+        Err(_e) => core.panic.panic("connect")
+    }
+    match t.send(&mut client, "hello".as_bytes()) {
+        Ok(_n) => ()
+        Err(_e) => core.panic.panic("send")
+    }
+    match client.close() {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("close client")
+    }
+    let mut server = match listener.accept() {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("accept")
+    }
+    let mut chunk = [0u8; 8]
+    let n = match t.recv(&mut server, &mut chunk) {
+        Ok(k) => k
+        Err(_e) => core.panic.panic("recv")
+    }
+    let first = t.first_byte(&chunk)
+    match server.close() {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("close server")
+    }
+    match listener.close() {
+        Ok(_u) => ()
+        Err(_e) => core.panic.panic("close listener")
+    }
+    n.wrapping_mul(1000usize).wrapping_add(first)
+end t.exchange
+
+fn t.bad_listen() -> Result<usize, std.net.Error> uses [io.net] panics never
+    let l = std.net.listen("not an address")?
+    match l.close() {
+        Ok(_u) => Ok(1usize)
+        Err(e) => Err(e)
+    }
+end t.bad_listen
+"#;
+    let main = "fn t.main() -> () uses [alloc, io.net] panics may\n    core.check.eq(t.exchange(), 5104usize)\n    match t.bad_listen() {\n        Ok(_n) => core.panic.panic(\"listen should fail\")\n        Err(_e) => ()\n    }\nend t.main\n";
+    let t = Tmp::new("kir_net_refs", &format!("{}\n{}", fns, main));
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", text(&tw.stderr), text(&tw.stdout));
+    let k = kir_run(&["kir", "t.exchange", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", text(&k.stderr), text(&k.stdout));
+    assert_eq!(text(&k.stdout).trim(), "5104");
+    let m = kir_run(&["kir", "t.main", "--run"], &t.0);
+    assert_eq!(m.status.code(), Some(0), "kir main: {}\n{}", text(&m.stderr), text(&m.stdout));
+}
+
+/// `[x; N]` (`ArrayRep`、長さはリテラル、要素はスカラー) の値・ループ・`get`。長さ 0 の配列も含む。
+#[test]
+fn kir_array_rep_matches_tree_walker() {
+    let fns = r#"fn t.count_true() -> usize uses [] panics never
+    let mut bs = [false; 4]
+    match bs.get(2usize) {
+        Some(b) => core.mem.drop(*b)
+        None => core.mem.drop(false)
+    }
+    let mut n = 0usize
+    for b in bs {
+        if !b {
+            n = n.wrapping_add(1usize)
+        }
+    }
+    n
+end t.count_true
+
+fn t.fill_len(buf: &mut [u32]) -> usize uses [] panics never
+    buf.len()
+end t.fill_len
+
+fn t.sum_arr() -> u32 uses [] panics never
+    let a = [3u32; 5]
+    let mut s = 0u32
+    for x in a {
+        s = s.wrapping_add(x)
+    }
+    let b = [1u32; 0]
+    for y in b {
+        s = s.wrapping_add(y)
+    }
+    s
+end t.sum_arr
+"#;
+    let main = "fn t.main() -> () uses [] panics may\n    core.check.eq(t.sum_arr(), 15u32)\n    core.check.eq(t.count_true(), 4usize)\nend t.main\n";
+    let t = Tmp::new("kir_array_rep", &format!("{}\n{}", fns, main));
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(0), "tree-walker: {}\n{}", text(&tw.stderr), text(&tw.stdout));
+    for (f, want) in [("t.sum_arr", "15"), ("t.count_true", "4")] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}: {}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+}
+
 /// `--opt` のインライン化は `extern` (本体が仮の `unreachable`) を展開しない。
 #[test]
 fn kir_opt_does_not_inline_extern() {
@@ -20738,4 +21349,438 @@ fn check_cache_parallel_processes_agree() {
         }
     }
     let _ = fs::remove_dir_all(&cache);
+}
+
+// ---- 型引数付きの関数・メソッドの単相化 (設計_KIR.md 20 章、kir/generic-method) ----
+
+/// 型引数付きの関数・メソッドを、2 つ以上の型で呼ぶ。推論と `::<..>` の明示の両方。
+const MONO_FNS: &str = "type t.Acc
+    total: u64
+end t.Acc
+
+type t.Pair
+    a: u32
+    b: u32
+end t.Pair
+
+fn t.Acc.put[T](self: &mut t.Acc, v: T) -> T uses [] panics never
+    self.total = self.total.wrapping_add(1u64)
+    v
+end t.Acc.put
+
+fn t.ann[T](x: T) -> T uses [] panics never
+    let y: T = x
+    y
+end t.ann
+
+fn t.first[A, B](a: A, b: B) -> A uses [] panics never
+    let _unused = b
+    a
+end t.first
+
+fn t.id[T](x: T) -> T uses [] panics never
+    x
+end t.id
+
+fn t.make[T](x: T) -> T uses [] panics never
+    t.id(x)
+end t.make
+
+fn t.pair2[T](a: T, b: T) -> (T, T) uses [] panics never
+    (a, b)
+end t.pair2
+
+fn t.w() -> u32 uses [] panics may
+    core.check.eq(t.id(5u32), 5u32)
+    core.check.eq(t.id(7u8), 7u8)
+    core.check.eq(t.id::<i64>(9i64), 9i64)
+    core.check.eq(t.first(1u32, 2u8), 1u32)
+    core.check.eq(t.first(3u8, true), 3u8)
+    core.check.eq(t.make(11u16), 11u16)
+    core.check.eq(t.ann(5u8), 5u8)
+    let p = t.id(t.Pair { a: 1u32, b: 2u32 })
+    core.check.eq(p.b, 2u32)
+    let (x, y) = t.pair2(1u32, 2u32)
+    let mut acc = t.Acc { total: 0u64 }
+    core.check.eq(acc.put(4u32), 4u32)
+    core.check.eq(acc.put(5u8), 5u8)
+    core.check.eq(acc.put::<i16>(6i16), 6i16)
+    core.check.eq(acc.total, 3u64)
+    t.id(x.wrapping_add(y).wrapping_add(39u32))
+end t.w
+
+";
+
+#[test]
+fn kir_generic_functions_and_methods_are_monomorphized() {
+    let t = Tmp::new("kir_mono", &format!("{}{}", MONO_FNS, main_wrap("", "    core.check.eq(t.w(), 42u32)\n")));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker: {}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.w", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: {}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "42");
+    // 型引数ごとに別の関数 (名前に型引数が入る)。
+    let d = run(&["kir", "t.w"], &t.0);
+    let out = format!("{}{}", text(&d.stdout), text(&d.stderr));
+    for key in ["t.id<u32>", "t.id<u8>", "t.id<i64>", "t.id<t.Pair>", "t.first<u32,u8>", "t.first<u8,bool>", "t.Acc.put<u32>", "t.Acc.put<u8>", "t.Acc.put<i16>"] {
+        assert!(out.contains(key), "{} が KIR にない:\n{}", key, out);
+    }
+}
+
+#[test]
+fn kir_generic_with_effect_parameter_is_rejected_with_a_reason() {
+    let src = "fn t.eff[E: uses](x: u32) -> u32 uses [E] panics never
+    x
+end t.eff
+
+fn t.w() -> u32 uses [] panics never
+    t.eff::<[]>(3u32)
+end t.w
+";
+    let t = Tmp::new("kir_mono_eff", src);
+    let k = run(&["kir", "t.w", "--run"], &t.0);
+    assert_ne!(k.status.code(), Some(0));
+    assert!(text(&k.stderr).contains("uses のパラメータ (E) を持つので、単相化は対象外"), "{}", text(&k.stderr));
+}
+
+// ---- 診断の重複: 案内付きの行の一般的な E0002 は出さない ----
+
+fn guided_syntax_case(name: &str, src: &str) -> Vec<String> {
+    let t = Tmp::new(name, src);
+    codes(&text(&run(&["check", "--json"], &t.0).stdout))
+}
+
+#[test]
+fn guided_arm_syntax_errors_drop_the_generic_e0002_on_their_line() {
+    let e49 = "fn t.a(x: u8) -> u8\n    match x {\n        0u8 => 1u8,\n        _ => 2u8,\n    }\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(1u8))\n    Ok(())\nend t.main\n";
+    let e57 = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    match x {\n        Some(v) =>\n        {\n            v\n        }\n        None => 0u8\n    }\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+    let e58 = "fn t.a(x: Option<u8>) -> u8 uses [] panics never\n    let mut result = 0u8\n    match x {\n        Some(r) => result = r\n        None => {\n            result = 0u8\n        }\n    }\n    result\nend t.a\n\n\
+               fn t.main() -> Result<(), std.io.Error> uses [] panics may\n    core.mem.drop(t.a(Some(1u8)))\n    Ok(())\nend t.main\n";
+    for (name, src, code) in [("guided_e49", e49, "E0049"), ("guided_e57", e57, "E0057"), ("guided_e58", e58, "E0058")] {
+        let got = guided_syntax_case(name, src);
+        assert!(got.iter().any(|g| g == code), "{} missing in {:?}", code, got);
+        assert!(!got.iter().any(|g| g == "E0002"), "{}: E0002 should be dropped, got {:?}", code, got);
+    }
+}
+
+#[test]
+fn unguided_syntax_error_keeps_e0002() {
+    let got = guided_syntax_case("unguided_e0002", "fn t.a(x: u8) -> u8\n    let y = (x +\n    x\nend t.a\n");
+    assert!(got.iter().any(|g| g == "E0002"), "{:?}", got);
+}
+
+
+// ---- Box<T> と Box<dyn Tr> (設計_KIR.md 21 章、kir/box-dyn) ----
+
+/// `Box` / `dyn` の試験用の関数。
+const KIR_DYN_FNS: &str = r#"import alloc.boxed
+import alloc.vec
+
+trait t.Shape[E: uses, P: panics] pub
+    fn area(self: &Self) -> u32 uses [E] panics P
+    fn grow(self: &mut Self, by: u32) -> u32 uses [E] panics P
+end t.Shape
+
+type t.Sq
+    s: u32
+end t.Sq
+
+type t.Rect
+    w: u32
+    h: u32
+    tag: alloc.string.String
+end t.Rect
+
+type t.Slot
+    h: alloc.boxed.Box<dyn t.Shape<[], never> + 'static, std.alloc.System>
+end t.Slot
+
+impl t.Shape<[], never> for t.Sq
+fn t.Sq.area(self: &t.Sq) -> u32 uses [] panics never impls t.Shape<[], never>
+    self.s.wrapping_mul(self.s)
+end t.Sq.area
+fn t.Sq.grow(self: &mut t.Sq, by: u32) -> u32 uses [] panics never impls t.Shape<[], never>
+    self.s = self.s.wrapping_add(by)
+    self.s
+end t.Sq.grow
+
+impl t.Shape<[], never> for t.Rect
+fn t.Rect.area(self: &t.Rect) -> u32 uses [] panics never impls t.Shape<[], never>
+    self.w.wrapping_mul(self.h)
+end t.Rect.area
+fn t.Rect.grow(self: &mut t.Rect, by: u32) -> u32 uses [] panics never impls t.Shape<[], never>
+    self.w = self.w.wrapping_add(by)
+    self.w
+end t.Rect.grow
+
+fn t.box_u32(n: u32) -> u32 uses [alloc] panics may
+    match boxed.Box.new(std.alloc.SYSTEM, n) {
+        Ok(bx) => {
+            let r = *bx.as_ref()
+            r.wrapping_add(1u32)
+        }
+        Err(_e) => 0u32
+    }
+end t.box_u32
+
+fn t.box_inner(n: u32) -> u32 uses [alloc] panics may
+    match boxed.Box.new(std.alloc.SYSTEM, n) {
+        Ok(bx) => bx.into_inner()
+        Err(_e) => 0u32
+    }
+end t.box_inner
+
+fn t.box_mut_r(n: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut bx = boxed.Box.new(std.alloc.SYSTEM, n)?
+    let r = bx.as_mut()
+    *r = r.wrapping_add(10u32)
+    Ok(*bx.as_ref())
+end t.box_mut_r
+
+fn t.box_mut(n: u32) -> u32 uses [alloc] panics may
+    match t.box_mut_r(n) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.box_mut
+
+fn t.box_string_r(n: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < n {
+        s.push_str("ab")?
+        i = i.wrapping_add(1usize)
+    }
+    let bx = boxed.Box.new(std.alloc.SYSTEM, s)?
+    Ok(bx.as_ref().len())
+end t.box_string_r
+
+fn t.box_string(n: usize) -> usize uses [alloc] panics may
+    match t.box_string_r(n) {
+        Ok(v) => v
+        Err(_e) => 0usize
+    }
+end t.box_string
+
+fn t.slot_sq(s: u32) -> Result<t.Slot, alloc.alloc.AllocError> uses [alloc] panics never
+    let b = boxed.Box.new(std.alloc.SYSTEM, t.Sq { s: s })?
+    Ok(t.Slot { h: boxed.Box.into_dyn(b) })
+end t.slot_sq
+
+fn t.slot_rect(w: u32) -> Result<t.Slot, alloc.alloc.AllocError> uses [alloc] panics never
+    let tag = alloc.string.String.new(std.alloc.SYSTEM)
+    let b = boxed.Box.new(std.alloc.SYSTEM, t.Rect { w: w, h: 2u32, tag: tag })?
+    Ok(t.Slot { h: boxed.Box.into_dyn(b) })
+end t.slot_rect
+
+fn t.dyn_one_r(pick: bool) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut total = 0u32
+    if pick {
+        let mut s = t.slot_sq(3u32)?
+        total = total.wrapping_add(s.h.grow(1u32))
+        total = total.wrapping_add(s.h.area())
+    } else {
+        let s = t.slot_rect(5u32)?
+        total = total.wrapping_add(s.h.area())
+    }
+    Ok(total)
+end t.dyn_one_r
+
+fn t.dyn_one(pick: bool) -> u32 uses [alloc] panics may
+    match t.dyn_one_r(pick) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.dyn_one
+
+fn t.dyn_vec_r(n: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics may
+    let mut v = vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        if i % 2u32 == 0u32 {
+            v.push(t.slot_sq(i)?)?
+        } else {
+            v.push(t.slot_rect(i)?)?
+        }
+        i = i.wrapping_add(1u32)
+    }
+    let mut total = 0u32
+    let mut j = 0usize
+    while j < v.len() {
+        total = total.wrapping_add(v[j].h.area())
+        j = j.wrapping_add(1usize)
+    }
+    Ok(total)
+end t.dyn_vec_r
+
+fn t.dyn_vec(n: u32) -> u32 uses [alloc] panics may
+    match t.dyn_vec_r(n) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.dyn_vec
+
+fn t.slot_rect_tag(w: u32, n: usize) -> Result<t.Slot, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut tag = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < n {
+        tag.push_str("xy")?
+        i = i.wrapping_add(1usize)
+    }
+    let b = boxed.Box.new(std.alloc.SYSTEM, t.Rect { w: w, h: 3u32, tag: tag })?
+    Ok(t.Slot { h: boxed.Box.into_dyn(b) })
+end t.slot_rect_tag
+
+fn t.rect_str_r(w: u32, n: usize) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut s = t.slot_rect_tag(w, n)?
+    let g = s.h.grow(2u32)
+    Ok(g.wrapping_add(s.h.area()))
+end t.rect_str_r
+
+fn t.rect_str(w: u32, n: usize) -> u32 uses [alloc] panics may
+    match t.rect_str_r(w, n) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.rect_str
+
+fn t.consume(b: alloc.boxed.Box<u32, std.alloc.System>) -> u32 uses [] panics never
+    *b.as_ref()
+end t.consume
+
+fn t.make_box(n: u32) -> Result<alloc.boxed.Box<u32, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let b = boxed.Box.new(std.alloc.SYSTEM, n)?
+    Ok(b)
+end t.make_box
+
+fn t.box_move_r(n: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let b = t.make_box(n)?
+    let c = t.make_box(n.wrapping_add(1u32))?
+    let first = t.consume(b)
+    Ok(first.wrapping_add(*c.as_ref()))
+end t.box_move_r
+
+fn t.box_move(n: u32) -> u32 uses [alloc] panics may
+    match t.box_move_r(n) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.box_move
+
+fn t.box_struct_r(s: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let b = boxed.Box.new(std.alloc.SYSTEM, t.Sq { s: s })?
+    let sq = b.into_inner()
+    Ok(sq.s)
+end t.box_struct_r
+
+fn t.box_struct(s: u32) -> u32 uses [alloc] panics may
+    match t.box_struct_r(s) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.box_struct
+
+fn t.box_rect_r(w: u32) -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut tag = alloc.string.String.new(std.alloc.SYSTEM)
+    tag.push_str("hello")?
+    let b = boxed.Box.new(std.alloc.SYSTEM, t.Rect { w: w, h: 2u32, tag: tag })?
+    Ok(b.as_ref().w)
+end t.box_rect_r
+
+fn t.box_rect(w: u32) -> u32 uses [alloc] panics may
+    match t.box_rect_r(w) {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.box_rect
+
+"#;
+
+#[test]
+fn kir_box_dyn_match_tree_walker() {
+    // `Box<u32>` / `Box<String>` / `Box<構造体>`、`Box<dyn Tr>` の 2 つの実装の呼び分け、`Vec<Box<dyn Tr>>`、移動と解放。
+    // 木走査と同じ値になり、参照実行器が漏れ・二重解放を内部エラーにせず、`--native` と ASan も何も出さないこと。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.box_u32", &["4u32"], "5u32", "5"),
+        ("t.box_inner", &["7u32"], "7u32", "7"),
+        ("t.box_mut", &["5u32"], "15u32", "15"),
+        ("t.box_string", &["0usize"], "0usize", "0"),
+        ("t.box_string", &["3usize"], "6usize", "6"),
+        ("t.box_struct", &["9u32"], "9u32", "9"),
+        ("t.box_rect", &["7u32"], "7u32", "7"),
+        ("t.box_move", &["6u32"], "13u32", "13"),
+        ("t.dyn_one", &["true"], "20u32", "20"),
+        ("t.dyn_one", &["false"], "10u32", "10"),
+        ("t.rect_str", &["4u32", "3usize"], "24u32", "24"),
+        ("t.rect_str", &["4u32", "0usize"], "24u32", "24"),
+        ("t.dyn_vec", &["0u32"], "0u32", "0"),
+        ("t.dyn_vec", &["5u32"], "28u32", "28"),
+        ("t.dyn_vec", &["40u32"], "10680u32", "10680"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.join(", "));
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_box_dyn_{}", i), &format!("{}{}", KIR_DYN_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}{}", call, text(&o.stdout), text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        // 入口の引数は接尾辞なしの数 (`4u32` → `4`)
+        let plain: Vec<String> = args
+            .iter()
+            .map(|a| if *a == "true" || *a == "false" { a.to_string() } else { a.split(|c: char| c.is_alphabetic()).next().unwrap().to_string() })
+            .collect();
+        kargs.extend(plain.iter().map(|s| s.as_str()));
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_box_dyn_dispatch_uses_a_per_trait_helper_without_new_ops() {
+    // `dyn` のメソッド呼び出しは vtable の番号で分岐する補助関数 `dyn.call.<Tr>.<m>`、解放は `dyn.drop`。
+    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.dyn_vec(5u32), 28u32)\n    std.io.print_line(\"ok\")\nend t.main\n";
+    let t = Tmp::new("kir_box_dyn_dump", &format!("{}{}", KIR_DYN_FNS, main));
+    let o = run(&["kir", "t.dyn_vec"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let d = text(&o.stdout);
+    assert!(d.contains("call dyn.call.t.Shape.area("), "{}", d);
+    assert!(d.contains("call dyn.drop("), "{}", d);
+    assert!(d.contains("dynbox<t.Shape>"), "{}", d);
+    let b = run(&["build", "--backend", "llvm"], &t.0);
+    assert_eq!(b.status.code(), Some(0), "{}{}", text(&b.stdout), text(&b.stderr));
+    assert!(!text(&b.stdout).contains("llvm backend skipped"), "{}", text(&b.stdout));
+}
+
+#[test]
+fn kir_box_dyn_reports_unsupported_with_a_reason() {
+    // `Box<dyn>` から `&dyn` を作る `as_ref` は対象外。誤った KIR を出さず理由を付けて拒否する。
+    let tail = "
+fn t.via_ref_r() -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
+    let s = t.slot_sq(3u32)?
+    let r = s.h.as_ref()
+    Ok(r.area())
+end t.via_ref_r
+
+fn t.via_ref() -> u32 uses [alloc] panics never
+    match t.via_ref_r() {
+        Ok(v) => v
+        Err(_e) => 0u32
+    }
+end t.via_ref
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.via_ref(), 9u32)
+    std.io.print_line(\"ok\")
+end t.main
+";
+    let t = Tmp::new("kir_box_dyn_reject", &format!("{}{}", KIR_DYN_FNS, tail));
+    let r = run(&["run"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "tree-walker: {}{}", text(&r.stdout), text(&r.stderr));
+    let k = run(&["kir", "t.via_ref_r"], &t.0);
+    assert_ne!(k.status.code(), Some(0), "{}", text(&k.stdout));
+    assert!(text(&k.stderr).contains("Box<dyn> の as_ref"), "{}", text(&k.stderr));
 }

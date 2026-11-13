@@ -10,9 +10,9 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 use crate::interp::{py_float, py_float32};
+use crate::natives::io_kind_name;
 use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
 use crate::kir_scalar;
-use crate::natives::io_kind_name;
 
 // Option / Result の値の語 (設計_KIR.md 11.1)。タグは bit 64、ペイロードの語は下位 64 ビット。
 // 語の意味はペイロードの型で決まる: スカラーは値そのもの、集成体は置き場の添字、入れ子の Option / Result は
@@ -440,6 +440,12 @@ pub(crate) fn io_error_value(aggs: &[AggDef], heap: &mut Vec<Vec<u8>>, kind: &st
 }
 
 /// `{ descriptor: i32 }` のソケット集成体を置き場に作り、その添字を返す。
+/// `std.net.Error` (`{ code: i32 }`、4 バイト) の値。`code` は errno (取れなければ -1。木走査の `net_error` と同じ)。
+pub(crate) fn net_error_agg(heap: &mut Vec<Vec<u8>>, code: i32) -> Result<i128, String> {
+    heap.push(code.to_le_bytes().to_vec());
+    Ok((heap.len() - 1) as i128)
+}
+
 fn desc_agg(heap: &mut Vec<Vec<u8>>, fd: i128) -> Result<i128, String> {
     let mut buf = vec![0u8; 4];
     buf[0..4].copy_from_slice(&(fd as i32).to_le_bytes());
@@ -770,7 +776,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                             sockets.insert(fd, sock);
                             desc_agg(&mut heap, fd)?
                         }
-                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                        Err(e) => TAG_BIT | net_error_agg(&mut heap, e.raw_os_error().unwrap_or(-1))?,
                     };
                     res
                 }
@@ -785,7 +791,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                             sockets.insert(nfd, NetSock::Stream(st));
                             desc_agg(&mut heap, nfd)?
                         }
-                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                        Err(e) => TAG_BIT | net_error_agg(&mut heap, e.raw_os_error().unwrap_or(-1))?,
                     };
                     res
                 }
@@ -843,11 +849,12 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
                     let s = std::str::from_utf8(&bytes).unwrap_or("");
                     let is_create = matches!(inst.op, Op::FsCreate { .. });
-                    let res: i128 = match (if is_create {
+                    let opened = if is_create {
                         OpenOptions::new().write(true).create(true).truncate(true).open(std::path::Path::new(s))
                     } else {
                         OpenOptions::new().read(true).open(std::path::Path::new(s))
-                    }) {
+                    };
+                    let res: i128 = match opened {
                         Ok(f) => {
                             let fd = alloc_next_fd(&mut next_fd);
                             files.insert(fd, f);
@@ -915,9 +922,6 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let bytes = bm.read_bytes(p, n as usize)?;
                     f.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
                     n
-                }
-                Op::FsReadToEnd { .. } => {
-                    return Err("std.fs.read_to_end は KIR 参照実行器では未対応 (木走査へ退避)".into());
                 }
                 Op::EnvArgCount => {
                     let n = std::env::args().len() as i128;

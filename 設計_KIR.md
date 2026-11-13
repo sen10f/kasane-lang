@@ -1125,6 +1125,18 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 試験: `kir_optres_slice_literal_eq_matches_tree_walker` (`==` / `!=` の 5 ケース、失敗の文言)。
 - examples/tour は 90 行の `Option<&[u8]>` を越えたが、91 行の `arr.first()` で止まる。残りは `BtreeMap` (KIR に型がない)、`str` の `trim` / `split` / `parse` / `split_once`、`from_str_radix` / `try_from_*` / `leading_zeros` / `count_ones`、`core.num.*.MAX` などで、一続きの作業にする。`llvm_builds_of_real_packages_match_run` には足していない。
 
+### 17.20 `first` / `last` / `contains` / `find` / `char` / `parse` / タプル / `push_i64` (kir/tour-rest、2026-11-13)
+- `v.first()` / `v.last()` (Vec・スライス・配列の局所): `get` と同じ `pick_elem` で作る (`Pick::First` は添字 0、`Pick::Last` は `len - 1`、空なら `None`)。スカラー要素は値、所有物の要素は `bref` (17.18) で、`let g = v.first()` と `match v.last()` の両方を通す。木走査の `natives.rs` (`first` / `last`) と同じ値。
+- `v.contains(&x)` (要素がスカラー): 先頭から `==` を見る小さなループ (`contains_scalar`)。引数は `&T` の参照か値。所有物・集成体の要素は理由付きで拒む。
+- `s.find(pat)` (`&str` のパターン、`kir_lower_str.rs` の `find_call`): 位置の二重ループ。空のパターンは `Some(0)`、長いパターンは `None`、位置はバイト。試験 `kir_str_find_matches_tree_walker`。
+- `char` (KIR で `u32`): `to_ascii_uppercase` / `to_ascii_lowercase` (`Plan::AsciiCase`)、`to_u32` (`Plan::Same`、値はそのまま)、`char.try_from_u32` (0x110000 未満で、サロゲートの外)。試験 `kir_char_methods_match_tree_walker`。
+- 試験の「下ろせない例」の差し替え: `test_both_falls_back_from_llvm_to_cranelift_with_the_reason` と `kir_lower_dump_on_check_is_hidden_behind_the_env_var` は、`'a'.to_u32()` の代わりに `'a'.is_ascii_digit()` を使う (`ksn kir` が「メソッド is_ascii_digit は段階 1 の対象外」と理由付きで拒む)。`is_ascii_digit` は将来下ろしうるので、動かない形 (`dyn` の呼び出しなど) にするなら統括者が替える。試験の意図 (退避の理由が出る / ダンプが環境変数の陰にある) は変えていない。
+- `i64.parse(text)` は基数 10 の `from_str_radix` と同じ `Op::ParseInt` (`kir_lower_scalar.rs`)。試験 `kir_parse_matches_tree_walker`。
+- タプルの `==` / `!=` と表示 (`kir_debug.rs` の `tuple_eq` / `tuple`)。要素を順に比べ、表示は `(a, b)` (1 要素は `(a,)`、木走査の `debug_str` と同じ)。関数の鍵は `kname` で `(` を `tup<` に直す (KIR の `call` は最初の `(` で切るため。`Option<(&str,&str)>` の `two` の鍵も同じ)。試験 `kir_tuple_eq_matches_tree_walker` (`split_once` の `Some(..)` を含む。失敗の文言も木走査と一致)。
+- `String.push_i64(v)` (`string_push_i64`): 負なら `-` を先に書き、絶対値 (`wrapping_neg` の結果を `Conv` で u64 に読む。`i64::MIN` も正しい) の桁を書く。桁の書き込みは `push_u64_digits` に分けて `push_u64` と共有。試験 `kir_push_i64_matches_tree_walker` (`i64::MIN` / `MAX`、容量を広げる経路を含む)。
+- 参照実行器の修正 (`kir_scalar::conv`): 符号が変わる整数の変換 (`i64` の負の値を `u64` へ) は、型の範囲に入れ直す (負のままにしていた)。LLVM と木走査は従来どおり正しかった。
+- examples/tour の止まり方 (先頭から): `BtreeMap` (112 行) を外した写し (scratch) では、`tour.shapes` の `for s in [a, b, c]` (要素が列挙型の配列) で止まる。`BtreeMap` は KIR に型・操作がなく、大きいので今回は着手していない。
+
 ## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
 
 段階 2 (第 5 章) の第 1 段。`ksn run --engine=vm` と `ksn test --engine=vm` (`--engine=tree` が既定の木走査)。既定の挙動は変えていない。`clif.rs` と `examples/`・`perf/` のソースは触っていない。
@@ -1178,6 +1190,18 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 関数表と安全点 (`vm/reload.rs`)、ホットリロード (`--watch`) の VM 対応、命令ごとの行表。
 - `std.net` の命令、`ksn test --both` の比較相手に VM を加える、bench/reference と `test --both` の一致の確認。
 
+## 18.6 第 2 段の結果 (vm/stage2、2026-11-13)
+
+- **合流の修正**: `dev/plan` は VM と並行に入った KIR の命令 (`FnPtr` / `EnvArgCount` / `EnvArg` / `EnvVar`) で VM がビルドできなかった。std.env の 3 命令は VM に実装した (プログラムへの引数は `Vm::args`。`ksn run --engine=vm` は実行引数があっても退避しなくなった)。`FnPtr` は C のコールバックに VM の関数を渡すには機械語のトランポリンが要るので、退避のまま (VM が退避する命令はこれだけ)。
+- **起動時間**: `KSN_TIMING=1` で `ksn run` の起動の内訳を stderr に出す (`vm::tick`)。noop の `run` の内訳 (ms): 標準ライブラリの読み込み (29 本の `.sig` / `.ksnl` の構文解析) 15.0、文法の構築 (`Grammar::new` の正規表現のコンパイル) 2.2、lint・整形・文法検査 3.9、`build_program` (infer) 3.7、検査 0.7、KIR への下ろし 0.8、検査・バイトコード化は 0.1 未満。VM 固有の部分 (下ろし以降) は約 1 ms で、起動の大半は木走査と共有の `full_check` だった。対策は、(1) 標準ライブラリの読み込みをファイルごとにスレッドで並列化 (大きい順に配る)、(2) 定義が 256 件以上のファイル (`core/num.sig` の約 800 件) は定義ごとの解析を分割して並列化、(3) `Grammar::new` を読み込みと並行のスレッドで構築。合計は約 25 ms → 約 18 ms (2 コアの余裕がある負荷で。木走査の起動も同じだけ速くなる)。残りは lint 3.9 と infer 3.7。結果のキャッシュ (std の解析結果の直列化) は、`Def` の `V` 木の直列化が大きいので見送った。
+- **比較の仕組み**: `ksn test --engine=both` は、各テストを木走査と VM の両方で走らせ、成否と失敗の分類 (`fail_class`) が違えば `FAILED: tree, vm disagree: [..]` にする。VM が退避したテストは木走査だけで、`(vm skipped: 理由)` を付けて数える。末尾に `compared tree walker with vm: N (vm skipped M)`。`--both` (LLVM / 機械語との比較) とも併用でき、その場合は 3 者が全部一致する必要がある。`ksn run --engine=both` はエラー (終了コード 2)。`vm_parity` に examples 全 8 パッケージの一致テストを足した。
+- **テストの効果**: `test` には `uses` の宣言がなく、`alloc` を使う関数を呼ぶテストは KIR の検査 (呼び先の uses が呼び出し元にある) で下ろせず退避していた。`kir_lower::lower_test_vm` (VM 専用の入口) は、テストを全部の効果を持つ関数として下ろす。`test --both` の LLVM 側の下ろし (`lower_test`) は変えていない (変えると LLVM で走るテストが増え、cli テストの期待する経路の表示が変わる)。
+- **参照解の一致**: `bench/vm_reference.py` (`run_bench.evaluate` と同じ形の一時パッケージ + 課題のテストで `ksn test --engine=both`) で、課題のある参照解 9 本 (12 テスト) が木走査と VM で全件一致。11 テストが VM で走り、1 本 (`repeat_str`) は KIR の下ろしの検査 (`load は ptr から整数…を読むはず`) で退避。これは KIR 下ろし側の問題で VM の都合ではない (次の段の課題)。
+- **std.net**: 8 命令を `Vm` のソケット表 (`HashMap<fd, TcpListener | TcpStream>`、記述子は 0 から) で実装 (意味は `kir_exec` と同じ)。`tests/data/vm/net_loopback.ksnl` (`kir_net_roundtrip` と同じプログラム: listen / local_port / connect / write / accept / close) が VM で退避せずに走り、木走査と一致するテストを `vm_parity` に足した。`read` / `flush` の命令は、下ろしが対応している呼び方のテストがまだなく、実行は未検証 (実装は `kir_exec` の写し)。
+- **最適化 (第 4 項の一部)**: `fieldaddr` の唯一の使い道が同じブロックの `load` / `store` のとき、命令を出さずにオフセットに畳み込む (structs で 117 → 103 ms、命令数で約 17% 減)。バイトコードの詰め込み・集成体のフレーム内配置・`call` + `ret` の融合は、計測のノイズが大きい (他のビルドの並走でロードアベレージ 30〜40) ので着手していない。`Field` は毎回 `size_of` を求めており、コンパイル時に持てる (次の段)。
+- **perf** (`python3 perf/vm_compare.py --repeat 5`、負荷が高い中の中央値、ms): noop 33.5 → 21.5 (VM)・32.0 → 20.5 (木走査)、fib 60.2 → 60.3 (38.7x)、loops 232.5 → 117.4、vecops 162.1 → 188.7 (揺れ)、hashmap 42.3 → 39.9 (1.8x)、strcat 126.9 → 101.2、structs 135.4 → 107.6 (25.4x)、closure 61.9 → 47.5。起動の短縮が全ケースに効く。
+- **次の段**: 命令の詰め込み (8 バイトのスロット・命令)、`Make` / `Field` の置き場 `Vec<u8>` の除去、定数の持ち上げ (ループ内の `ConstI` が命令の約 2 割)、`FnPtr` のトランポリン、`vm/reload.rs`、命令ごとの行表、`lint` / `infer` の起動時間 (各約 4 ms)。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
@@ -1212,3 +1236,37 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 ### 17.12 `core.str.from_utf8` の検証 (2026-11-13)
 - 命令 `utf8.valid p, len` (Op::Utf8Valid) は、`p` から `len` バイトを UTF-8 として検証し、正しい接頭辞の長さ (`valid_up_to`) を返す。全体が正しければ `len`。参照実行器は Rust の `str::from_utf8`、機械語は `kir_rt.c` の `ksn_utf8_valid` (Rust と同じ規則: 過長な符号化・サロゲート・U+10FFFF 超を拒む)。`from_utf8` は、結果が `len` なら `Ok(元の fat)`、違えば `Err(Utf8Error { valid_up_to })`。
 - 確かめ: `ksn_utf8_valid` を Python の UTF-8 の復号 (Rust と同じ規則) と、乱数のバイト列 30 万個で比べて全件一致。
+
+## 19. ソケットの参照と配列の繰り返し (kir/net-refs、2026-11-13)
+
+- **ソケットの型は型表に入る**: `std.net.TcpListener` / `TcpStream` は `lower_ty` が `&` の形でも型表に入れる (`is_net_socket`)。`&listener` は局所変数のスタックスロットのアドレス (`ref<agg>` / `mutref<agg>`)、引数の `&TcpStream` はそのまま参照の値。読みは `fieldaddr` + `load` で descriptor を取る。借用なので解放しない。
+- **失敗の型は仕様どおり**: `listen` / `connect` / `accept` / `local_port` / `close` の失敗は `std.net.Error` (`{code: i32}`、ペイロードは errno)、`read` / `write` / `flush` は `std.io.Error`。これまでは全部 `std.io.Error` で、`?` の変換が通らなかった (`std.net.Error` を `http.Error::Net` へ包む形が下ろせなかった)。`kir.rs` の検査、`kir_exec` (`net_error_agg`)、`kir_llvm` (`net_result` の `net_err`) を揃えた。`std.io.ErrorKind` は `read` / `write` / `flush` のときだけ型表に入るので、LLVM のヘルパは種類を使わないときに添字 0 を入れる。
+- **`[x; N]` (`ArrayRep`)**: 長さは整数リテラル、要素はスカラー。N 回の書き込みは 2 ブロックのループにする (N を展開しない)。`N = 0` も 1 バイトの領域を取り、ループを 0 回回す。新しい命令は足していない (`frame.bytes` / `ptr.add` / `mem.store` / `icmp` / `br_if`)。
+- **アドレスを取られた配列の読み**: `&mut chunk` でスロットが mem (fat のアドレス) になった配列は、`get` などの前に値を読む (`try_local_method`)。
+- **`ksn build --backend llvm` の結果**: `examples/http` が LLVM で作れ、`ksn run` と出力・終了コードが一致する (`llvm_builds_of_real_packages_match_run` に追加)。`examples/shortener` は `std.fs.remove_file` (io.fs) と `std.env.arg_count` で止まる。
+- 試験: `kir_net_refs_pass_sockets_by_reference` (参照の受け渡し、`?` の `std.net.Error`、`[0u8; 8]` を `&mut [u8]` で読む)、`kir_array_rep_matches_tree_walker`。
+
+## 20. 型引数付きの関数・メソッドの単相化 (kir/generic-method、2026-11-13)
+
+- 対象: 型パラメータ (`[T]`、`[A, B]`) を持つ利用者の自由関数とメソッド (`fn t.Acc.put[T](self: &mut t.Acc, v: T)`)。型引数ごとに別の KIR 関数を作る。実装は `kir_lower_mono.rs`。
+- 型引数の決め方 (呼び出しごと): `::<..>` の明示があればそれ。なければ、宣言の引数の型と実引数の型表の型 (メソッドは受け手を除く) を突き合わせ、残りは呼び出しの結果の型と宣言の戻り値の型から決める。決まらない・未確定の型が残るなら、理由付きで拒否する (`::<..>` で明示すれば通る)。
+- 鍵: `fqn<型引数,..>` (型引数は宣言の順、`Ty::show` の表記。例 `t.id<u32>`、`t.first<u32,u8>`、`t.Acc.put<i16>`)。`Func.fqn` は元の FQN、`Func.key` が鍵。同じ鍵のインスタンスは 1 つだけ (入れ子・再帰も `Lw::mono_done` を共有して二度下ろさない。別々の呼び出し元が下ろした重複は `lower_defs` の鍵の重複除去が落とす)。
+- 下ろし: インスタンスの本体は `Lw::subst` (型パラメータ名 → 具体的な型) で、型表の型 (`src_ty`) と宣言の型 (`decl_ty`: 引数・戻り値・`let x: T`) を置き換えて下ろす。クロージャの子の下ろしにも `subst` を引き継ぐ。インスタンス内で `x.m()` のように型パラメータの値へメソッドを呼ぶ形は、置き換え後の具体的な型で解決される。
+- 対象外 (理由付きで拒否のまま): 効果 (`uses` / `panics`) や定数のパラメータを持つ宣言 (「uses のパラメータ (E) を持つので、単相化は対象外」)、型引数付きの構造体・列挙型 (`Wrapper<T>` は集成体の表が未対応のまま)、`Fn` 境界の型パラメータに捕獲のないクロージャを渡す呼び出しは従来どおり `generic_call` (鍵 `fqn<クロージャの鍵>`、14 章) が先に処理する (引数にクロージャがあるときだけ)。
+- 新しい命令は足していない。参照実行器・VM・LLVM は変更なし。
+- 試験: `kir_generic_functions_and_methods_are_monomorphized` (2 つ以上の型・明示・メソッド・入れ子・集成体の型引数、`ksn run` / `--run` / `--native` が一致、鍵が KIR に出る)、`kir_generic_with_effect_parameter_is_rejected_with_a_reason`。`llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered` の例は `dyn` のトレイトオブジェクトを引数に取る関数 (当面だれも下ろさない形) に替えた。
+- `examples/plugins`: `Bus.register<Counter>` の単相化までは進むが、その本体の `Box.new` / `Box.into_dyn` (`Box<dyn Handler>`)、`Vec.new(allocator)`、`dyn` のメソッド呼び出し (`handle`) が段階 1 の対象外で止まる。型引数の部分の壁は越えた。
+- `examples/threads`: `std.sync.channel::<T, A>` の呼び出しは未対応のまま。チャネルには型引数付きの標準の型 (`Sender<T>` / `Receiver<T>`、集成体の表が型引数付きの型を持たない)、キューの領域、`recv` が空のときに保留中のスレッドを生成順に走らせる意味が要る。ほかに `static Mutex` の `lock`、`Rng`、ループの中の `spawn` の呼び出し元が残っていて、チャネルだけでは通らない。
+
+## 21. `Box<T>` と `Box<dyn Tr>` (kir/box-dyn、2026-11-13)
+
+- **`Box<T, std.alloc.System>`**: 所有するヒープの 1 要素へのポインタ。型表の構造体 `box<..>` (`{ptr}` 8 バイト。名前は中身が集成体なら `box<#N>`、スカラーなら `box<u32>`。中身の型は `AggTab::box_elems`)。`Box.new(std.alloc.SYSTEM, v)` は `heap.alloc` + `store` で `Ok(box)` を返す (確保の失敗は起こさない)。`as_ref` / `as_mut` は同じ番地の `ref<T>` / `mutref<T>` (中身が `String` / `Vec` ならヘッダの番地 `ptr`)、`into_inner` は中身を `load` して確保を `free` する。アロケータが `System` 以外、中身が `()` / `Option` / `Result` / 参照のものは理由付きで拒否する。
+- **所有**: `box<..>` と `dynbox<..>` は `AggTab::owns_heap` が真で、構造体のフィールド・`Result` のペイロード・`Vec` の要素になる。移動と解放は 13 章の規則 (印・登録の逆順・`?` / `return` / `break` の経路) のまま。解放 (`drop_value`) は、中身が所有物なら先に解放してから `heap.free`。
+- **`Box<dyn Tr, System>`**: データの番地と vtable の番号の組 (型 `dynbox<トレイトの FQN>`、`{ptr: ptr@0, vt: usize@8}`)。`into_dyn(b)` が (トレイト, 具体型) の組を登録して番号を振る (`AggTab::dynr`、同じ組は 1 度だけ)。具体型は名前を持つ構造体・列挙型・基本型だけ (型引数付きは拒否)。
+- **呼び出しは vtable の番号で分岐する補助関数**: KIR に間接呼び出しの命令がないので、`x.m(..)` (受け手が `Box<dyn Tr>`、その参照、フィールド、`v[i].f`) は `call dyn.call.<Tr>.<m>(ptr, vt, 引数..)` に下ろす。補助関数は全関数を下ろした後に `kir_lower_dyn.rs` の `synth` が (トレイト, メソッド) ごとに 1 つ作る: 登録された `vt` の分だけ `vt == k` の比較の連鎖で分かれ、`ptr` を具体型への参照に `bitcast` して `<具体型>.<m>` を直接呼ぶ。閉じた世界の単相化なので、新しい `Op` は足していない (参照実行器・VM・LLVM は変更なし。VM は直接呼び出しなので退避もしない)。補助関数の `uses` / `panics` は呼び先の合併で、`dyn` の宣言より広くなる (同じトレイトの別の型引数の `impl` が混ざるとき) と呼び出し元の検査が落とす。実装のメソッドが下ろせなければ補助関数が「呼び先が未対応」で外れ、呼び出し元も外れる。
+- **解放も同じ作り**: `call dyn.drop(ptr, vt)`。補助関数は、所有物を持つ具体型の `vt` だけ中身を `load` して `drop_value` し、最後に `heap.free`。`Vec<Slot>` (`Slot` が `Box<dyn>` を持つ) の解放は、13.8 の要素の解放から `dyn.drop` に届く。
+- **付随して通したもの**: `import alloc.vec` の別名の形 (`vec.Vec.new(..)`、`boxed.Box.new(..)`) を解決した FQN で照合する (`kir_lower_coll.rs` `try_call`)。構造体のフィールドの Vec の添字 `self.handlers[i]` (`vec_place` がフィールドのヘッダの番地を置き場にする。読みと要素の書き込みだけでヘッダは変えない)。
+- **対象外 (理由付きで拒否)**: `&dyn` / `&mut dyn` (関数の引数、`Box<dyn>` の `as_ref` / `as_mut`)、型引数付きの具体型、`System` 以外のアロケータ。`llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered` などの退避の試験は `&dyn` の引数を「下ろせない例」に使っていて、今も理由付きで退避する (そのまま)。
+- **試験** (`stage0/tests/cli.rs`): `kir_box_dyn_match_tree_walker` (`Box<u32>` / `Box<String>` / `Box<構造体>` / `Box<dyn>` の 2 実装の呼び分け・`&mut self` のメソッド・`Vec<Box<dyn>>` を回す・中身に `String` を持つ具体型・移動・`into_inner` の 15 ケース。木走査と `--run` / `--native` と ASan が一致)、`kir_box_dyn_dispatch_uses_a_per_trait_helper_without_new_ops` (ダンプの形と `ksn build --backend llvm`)、`kir_box_dyn_reports_unsupported_with_a_reason`。`llvm_builds_of_real_packages_match_run` に `examples/plugins` を足した。
+- **`examples/plugins`**: `ksn build --backend llvm` が通り、ネイティブの stdout・終了コードが `ksn run` と一致する (ASan 付きも)。
+

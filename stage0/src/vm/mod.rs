@@ -12,6 +12,22 @@ use crate::kir_exec::Outcome;
 use crate::kir_lower::{self, Lowered};
 use crate::program::Program;
 
+/// `KSN_TIMING=1` のとき、直前の `tick` からの経過を stderr に出す (起動時間の内訳の計測用)。
+pub fn tick(label: &str) {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    if std::env::var_os("KSN_TIMING").is_none() {
+        return;
+    }
+    let now = Instant::now();
+    let mut g = LAST.lock().unwrap();
+    if let Some(t) = *g {
+        eprintln!("[timing] {:<12} {:>7.2} ms", label, (now - t).as_secs_f64() * 1000.0);
+    }
+    *g = Some(now);
+}
+
 /// 入口 `entry` が下ろせなかった理由 (`呼び先 X が未対応` の鎖をたどった根の理由)。
 fn root_reason(lo: &Lowered, entry: &str) -> String {
     let mut key = entry.to_string();
@@ -33,19 +49,25 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
         return Err(root_reason(&lo, entry));
     }
     let m = lo.module.reachable_from(&[entry, kir_lower::debug::ENTRY_DEBUG]);
+    tick("reachable");
     let errs = crate::kir::verify_module(&m);
+    tick("verify");
     if let Some(e) = errs.first() {
         return Err(format!("KIR の検査に失敗: {} {}", e.0, e.1));
     }
-    compile::compile(&m)
+    let r = compile::compile(&m);
+    tick("compile");
+    r
 }
 
 /// `ksn run --engine=vm`: 入口を VM で実行して終了コードを返す。実行を始める前に分かる理由 (下ろせない・VM が扱えない) は `Err`。
-pub fn run_entry(prog: &Program, user: &[usize], entry: &str) -> Result<i32, String> {
+pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String]) -> Result<i32, String> {
     let lo = kir_lower::lower_program(prog, user, Some(entry));
+    tick("lower");
     let ret = lo.module.find(entry).map(|f| f.ret);
     let bc = prepare(lo, entry)?;
     let mut vm = run::Vm::new(&bc);
+    vm.args = args.to_vec();
     let out = vm.run(entry, &[]);
     Ok(match out {
         Ok(Outcome::Value(v)) => match ret {
@@ -92,7 +114,7 @@ pub fn run_entry(prog: &Program, user: &[usize], entry: &str) -> Result<i32, Str
 /// 下ろせない・VM が扱えないときは `Err(理由)` (呼び出し側が木走査で実行する)。
 pub fn run_test(prog: &Program, user: &[usize], ti: usize) -> Result<Option<String>, String> {
     let name = prog.defs[ti].name.clone();
-    let lo = kir_lower::lower_test(prog, user, ti);
+    let lo = kir_lower::lower_test_vm(prog, user, ti);
     let bc = prepare(lo, &name)?;
     let mut vm = run::Vm::new(&bc);
     vm.capture = Some(vec![]);

@@ -96,6 +96,24 @@ impl<'a> Lw<'a> {
                     Err(e) => Err(e),
                 })
             }
+            // `self.find(pat)`: 最初の一致の先頭のバイト位置。空のパターンは `Some(0)` (木走査の Rust と同じ)。
+            "find" => {
+                if !matches!(kind, coll::Kind::Str) {
+                    return None;
+                }
+                if args.len() != 1 {
+                    return Some(self.err(line, "メソッド find の引数は 1 個のはず"));
+                }
+                let Some(pat) = self.expr(&args[0]).ok()? else { return Some(Ok(None)) };
+                if self.vty(pat) != self.vty(h) {
+                    return Some(self.err(line, "メソッド find の引数の型が受け手と違う"));
+                }
+                let t = self.ty_of(e).ok()?;
+                if t != Ty::Opt(Pay::Usize) {
+                    return Some(self.err(line, "メソッド find の結果の型が Option<usize> ではない"));
+                }
+                Some(self.find_call(h, pat).map(Some))
+            }
             // `self.split_once(sep)`。空の区切りは「見つからない」(None)。
             // 見つかれば `Option<(&str, &str)>` で、タプル集成体を Option のペイロードにする。
             "split_once" => {
@@ -360,6 +378,67 @@ impl<'a> Lw<'a> {
     }
 
     /// 式 `e` の型が `&str` か (演算子 `==` を `str_eq` に回すかの判定)。型表に無ければ false。
+    /// `s.find(pat)` (`&str` のパターン)。空のパターンは `Some(0)`、`pat` が `s` より長ければ `None`。
+    /// 外側は開始位置 `i` (0..=len-plen)、内側は `k` (0..plen) で `s[i+k] == pat[k]` を比べる。
+    fn find_call(&mut self, s: VId, pat: VId) -> LR<VId> {
+        let sp = self.emit(Ty::Ptr, Op::Field { a: s, off: 0 });
+        let sl = self.emit(Ty::Usize, Op::Field { a: s, off: 8 });
+        let pp = self.emit(Ty::Ptr, Op::Field { a: pat, off: 0 });
+        let pl = self.emit(Ty::Usize, Op::Field { a: pat, off: 8 });
+        let zero = self.emit(Ty::Usize, Op::Const(0));
+        let one = self.emit(Ty::Usize, Op::Const(1));
+        let opt = Ty::Opt(Pay::Usize);
+        let pat_empty = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: pl, b: zero });
+        let too_short = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: sl, b: pl });
+        // 最後に試す開始位置 (sl - pl)。`too_short` のときは使わない (wrap の減算は trap しない)。
+        let last = self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: sl, b: pl });
+
+        let (c1, _) = self.new_block(&[]);
+        let (oh, ohp) = self.new_block(&[Ty::Usize]);
+        let (ih, ihp) = self.new_block(&[Ty::Usize]);
+        let (cmpb, _) = self.new_block(&[]);
+        let (nexti, _) = self.new_block(&[]);
+        let (foundb, _) = self.new_block(&[]);
+        let (someb, _) = self.new_block(&[]);
+        let (noneb, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[opt]);
+
+        self.branch(pat_empty, (someb, vec![]), (c1, vec![]));
+        self.cur = Some(c1);
+        self.branch(too_short, (noneb, vec![]), (oh, vec![zero]));
+        self.cur = Some(oh);
+        let i = ohp[0];
+        let past = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: i, b: last });
+        self.branch(past, (noneb, vec![]), (ih, vec![zero]));
+        self.cur = Some(ih);
+        let k = ihp[0];
+        let done = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: k, b: pl });
+        self.branch(done, (foundb, vec![]), (cmpb, vec![]));
+        self.cur = Some(cmpb);
+        let ik = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: k });
+        let ap = self.emit(Ty::Ptr, Op::PtrAdd { p: sp, off: ik });
+        let bp = self.emit(Ty::Ptr, Op::PtrAdd { p: pp, off: k });
+        let ca = self.emit(Ty::U8, Op::MemLoad { p: ap, off: 0 });
+        let cb = self.emit(Ty::U8, Op::MemLoad { p: bp, off: 0 });
+        let eq = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::U8, a: ca, b: cb });
+        let nk = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: k, b: one });
+        self.branch(eq, (ih, vec![nk]), (nexti, vec![]));
+        self.cur = Some(nexti);
+        let ni = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+        self.goto(oh, vec![ni]);
+        self.cur = Some(foundb);
+        let found = self.emit(opt, Op::Some(i));
+        self.goto(join, vec![found]);
+        self.cur = Some(someb);
+        let at0 = self.emit(opt, Op::Some(zero));
+        self.goto(join, vec![at0]);
+        self.cur = Some(noneb);
+        let none = self.emit(opt, Op::Const(0));
+        self.goto(join, vec![none]);
+        self.cur = Some(join);
+        Ok(jp[0])
+    }
+
     pub(super) fn is_str_ref(&self, e: &V) -> bool {
         matches!(self.src_ty(e), Ok(Src::Ref(_, i)) if matches!(&*i, Src::Prim(s) if s == "str"))
     }

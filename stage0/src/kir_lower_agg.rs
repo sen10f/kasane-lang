@@ -37,6 +37,11 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
 pub const STD_TYPES: [&str; 10] = ["std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError"];
 
+/// ソケットの型 (`std.net.TcpListener` / `TcpStream`)。型表には `lower_defs` が常に入れる。`&` の形の型も、同じ集成体として下ろす。
+pub fn is_net_socket(name: &str) -> bool {
+    name == "std.net.TcpListener" || name == "std.net.TcpStream"
+}
+
 /// `Vec` / `String` のヘッダの型の名前 (`vec`、要素が所有物なら `vec<#N>`)。利用者の型は FQN で `.` を含むので衝突しない。
 pub fn is_vec_name(n: &str) -> bool {
     n == "vec" || n.starts_with("vec<#")
@@ -52,6 +57,42 @@ pub struct AggTab {
     busy: HashSet<String>,
     /// 利用者のパッケージの定義 (`Program::defs` の添字)。標準の型は clif が特別扱いする配置を持つので、ここに入るものだけ扱う。
     user: HashSet<usize>,
+    /// `Box<T>` の集成体 (`box<..>`) の添字 → 中身 `T` の型 (解放のとき中身を先に解放するため。設計_KIR.md 21 章)。
+    box_elems: HashMap<u32, Ty>,
+    /// `Box<dyn Tr>` の変換と呼び出しの登録 (全関数で共有。最後に呼び出しの補助関数を作る)。
+    pub dynr: DynReg,
+}
+
+/// `Box<dyn Tr>` の vtable の登録 (設計_KIR.md 21 章)。vtable の「番地」は、登録順の番号 (`usize`)。
+#[derive(Default, Clone)]
+pub struct DynReg {
+    /// 番号 = vtable の番号。`into_dyn` が下ろされるたびに (トレイト, 具体型) の組を 1 度だけ登録する。
+    pub vts: Vec<VtEntry>,
+    /// `dyn` のメソッド呼び出しの (トレイトの FQN, メソッド名) → (引数の型 (データと vtable を除く), 戻り値の型)。
+    pub calls: std::collections::BTreeMap<(String, String), (Vec<Ty>, Ty)>,
+    /// `dyn.drop` を使ったか。
+    pub drop_used: bool,
+}
+
+#[derive(Clone)]
+pub struct VtEntry {
+    /// トレイトの FQN。
+    pub tr: String,
+    /// 具体型の FQN (メソッドの定義 `<具体型>.<メソッド>` を引く)。
+    pub concrete_name: String,
+    /// 具体型の KIR の型。
+    pub concrete: Ty,
+    /// 具体型の名前を解決するファイル。
+    pub file: String,
+}
+
+/// `dyn Tr` の `Tr` (書かれた名前) を、トレイト定義の FQN にする。解決できなければ書かれた名前のまま。
+pub fn trait_fqn(p: &Program, file: &str, written: &str) -> String {
+    let segs: Vec<String> = written.split('.').map(String::from).collect();
+    match p.resolve(&segs, file).map(|r| r.target) {
+        Some(Tgt::Type(di)) | Some(Tgt::Sig(di)) if p.defs[di].kw == "trait" => p.defs[di].name.clone(),
+        _ => written.to_string(),
+    }
 }
 
 fn align_up(n: u32, a: u32) -> u32 {
@@ -107,7 +148,7 @@ fn layout_enum(defs: &[AggDef], vs: &[(String, Vec<Ty>)]) -> (u32, u32, Vec<Vari
 impl AggTab {
     /// `user` は利用者のパッケージの定義の添字 (`lower_user` の引数と同じ)。
     pub fn new(user: &[usize]) -> AggTab {
-        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect() }
+        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default() }
     }
 
     /// 推論済みの型 `t` を段階 1 の型にする。`file` は名前を解決するファイル。対象外なら理由付きで `Err`。
@@ -143,13 +184,33 @@ impl AggTab {
                 let alloc_ty = self.lower_ty(p, file, &args[1])?;
                 Ok(self.join_handle(elem_ty, alloc_ty))
             }
+            // `Box<T, System>` は 8 バイトの所有ポインタ (`box<..>`)、`Box<dyn Tr, System>` はデータと vtable の組 (`dynbox`)。設計_KIR.md 21 章。
+            Src::Named(name, args) if name == "alloc.boxed.Box" && args.len() == 2 => {
+                if !matches!(&args[1], Src::Named(a, _) if a == "std.alloc.System") {
+                    return Err("Box のアロケータは std.alloc.System だけ対象".to_string());
+                }
+                match &args[0] {
+                    Src::Dyn(tr, _) => {
+                        let fq = trait_fqn(p, file, tr);
+                        Ok(self.dynbox(&fq))
+                    }
+                    inner => {
+                        let e = self.lower_ty(p, file, inner)?;
+                        if Pointee::of(e).is_none() {
+                            return Err(format!("Box の中身の型 {} は対象外", crate::kir::fmt_ty(e)));
+                        }
+                        Ok(self.box_of(e))
+                    }
+                }
+            }
             Src::Named(name, args) => {
                 if !args.is_empty() {
                     return Err(format!("型 {} は型引数付きで段階 1 の対象外", name));
                 }
                 let segs: Vec<String> = name.split('.').map(String::from).collect();
                 match p.resolve(&segs, file).map(|r| r.target) {
-                    Some(Tgt::Type(di)) if self.user.contains(&di) || STD_TYPES.contains(&p.defs[di].name.as_str()) => self.intern_def(p, di),
+                    // ソケットの型 (`std.net.TcpListener` / `TcpStream`) は `&` の形でも現れるので、型表に入れる (設計_KIR.md 12 章)。
+                    Some(Tgt::Type(di)) if self.user.contains(&di) || STD_TYPES.contains(&p.defs[di].name.as_str()) || is_net_socket(&p.defs[di].name) => self.intern_def(p, di),
                     // 上の一覧にない標準ライブラリの型は、KIR の型表に入れない (値は組み込みの実装が作るので、下ろせない)。
                     _ => Err(format!("{} は未対応 (標準ライブラリの型は KIR に組み込みがない)", name)),
                 }
@@ -271,6 +332,53 @@ impl AggTab {
         self.push(name, 24, 8, AggKind::Struct(fields))
     }
 
+    /// `Box<T>` の型 (所有するヒープの 1 要素へのポインタ `{ptr}`)。名前は `box<#N>` (`T` が集成体) か `box<型名>`。
+    pub fn box_of(&mut self, elem: Ty) -> Ty {
+        let key = match elem {
+            Ty::Agg(i) => format!("box<#{}>", i),
+            t => format!("box<{}>", crate::kir::fmt_ty(t)),
+        };
+        if let Some(&i) = self.by_name.get(&key) {
+            return Ty::Agg(i);
+        }
+        let fields = vec![Field { name: "ptr".to_string(), ty: Ty::Ptr, off: 0 }];
+        let t = self.push(key, 8, 8, AggKind::Struct(fields));
+        if let Ty::Agg(i) = t {
+            self.box_elems.insert(i, elem);
+        }
+        t
+    }
+
+    /// `Box<dyn Tr>` の型 `{ptr, vt}` (データの番地と vtable の番号)。トレイトごとに別の型 (名前 `dynbox<トレイトの FQN>`)。
+    pub fn dynbox(&mut self, tr: &str) -> Ty {
+        let name = format!("dynbox<{}>", tr);
+        if let Some(&i) = self.by_name.get(&name) {
+            return Ty::Agg(i);
+        }
+        let fields = vec![
+            Field { name: "ptr".to_string(), ty: Ty::Ptr, off: 0 },
+            Field { name: "vt".to_string(), ty: Ty::Usize, off: 8 },
+        ];
+        self.push(name, 16, 8, AggKind::Struct(fields))
+    }
+
+    /// `Box<dyn Tr>` の型なら、トレイトの FQN。
+    pub fn dynbox_trait(&self, t: Ty) -> Option<String> {
+        let Ty::Agg(i) = t else { return None };
+        self.defs[i as usize].name.strip_prefix("dynbox<")?.strip_suffix('>').map(String::from)
+    }
+
+    /// `Box<T>` (`box<..>`) の中身の型。`Box<dyn>` と他の型は `None`。
+    pub fn box_elem(&self, t: Ty) -> Option<Ty> {
+        let Ty::Agg(i) = t else { return None };
+        self.box_elems.get(&i).copied()
+    }
+
+    /// `Box<dyn Tr>` の型か。
+    pub fn is_dynbox(&self, t: Ty) -> bool {
+        self.dynbox_trait(t).is_some()
+    }
+
     /// `Vec` / `String` のヘッダ型 (`vec` と `vec<#N>`) か。
     pub fn is_vec(&self, t: Ty) -> bool {
         matches!(t, Ty::Agg(i) if is_vec_name(&self.defs[i as usize].name))
@@ -318,7 +426,7 @@ impl AggTab {
         match t {
             Ty::Agg(i) => {
                 let d = &self.defs[i as usize];
-                if is_vec_name(&d.name) {
+                if is_vec_name(&d.name) || d.name.starts_with("dynbox<") || self.box_elems.contains_key(&i) {
                     return true;
                 }
                 match &d.kind {

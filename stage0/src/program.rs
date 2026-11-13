@@ -132,8 +132,8 @@ fn ends_with_pub(line: &str) -> bool {
 pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
     let sig = path.ends_with(".sig");
     let lines: Vec<&str> = src.split('\n').collect();
-    let mut out = Vec::new();
-    for sp in defs::scan_with(src, sig)? {
+    let spans = defs::scan_with(src, sig)?;
+    let build = |sp: &defs::DefSpan| -> R<Def> {
         let l = lines[sp.line - 1];
         let mut p = Parser::new(line_tokens(l, sp.line)?);
         let mut d = Def {
@@ -346,7 +346,24 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
             let body = body_lines.join("\n") + "\n";
             d.body = Some(parse_body(lexer::lex(&body)?, sp.line)?);
         }
-        out.push(d);
+        Ok(d)
+    };
+    // 定義の数が多いファイル (`core/num.sig` は約 800 件) は、定義ごとの構文解析が独立なので並列にする。
+    let mut out: Vec<Def> = Vec::with_capacity(spans.len());
+    let nt = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 8);
+    if spans.len() >= 256 && nt > 1 {
+        let per = spans.len().div_ceil(nt);
+        let parts: Vec<R<Vec<Def>>> = std::thread::scope(|sc| {
+            let hs: Vec<_> = spans.chunks(per).map(|ch| sc.spawn(|| ch.iter().map(&build).collect::<R<Vec<Def>>>())).collect();
+            hs.into_iter().map(|h| h.join().expect("構文解析のスレッド")).collect()
+        });
+        for p in parts {
+            out.extend(p?);
+        }
+    } else {
+        for sp in &spans {
+            out.push(build(sp)?);
+        }
     }
     normalize_short_names(&mut out);
     Ok(out)

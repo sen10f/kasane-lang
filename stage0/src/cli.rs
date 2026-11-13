@@ -202,9 +202,14 @@ pub struct Loaded {
 }
 
 pub(crate) fn load_all(root: &Path) -> Result<Loaded, ProjectError> {
+    crate::vm::tick("pre");
     let pkg = load_package(root)?;
+    crate::vm::tick("load_pkg");
     let deps = load_deps(&pkg)?;
-    Ok(Loaded { pkg, deps, std: load_stdlib() })
+    crate::vm::tick("load_deps");
+    let std = load_stdlib();
+    crate::vm::tick("load_std");
+    Ok(Loaded { pkg, deps, std })
 }
 
 fn empty_program() -> Program {
@@ -260,10 +265,14 @@ fn check_lock(pkg: &Package, deps: &[Package], rep: &mut Report) {
 
 /// 構文・正規形・意味の検査。構文エラーが無ければ Program を返す。
 fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
+    // 文法の構築 (正規表現のコンパイルが重い) は、標準ライブラリの読み込みと並行にする。
+    let gh = std::thread::spawn(Grammar::new);
     let l = load_all(root)?;
+    crate::vm::tick("load_all");
     check_lock(&l.pkg, &l.deps, rep);
     let srcroot = norm(&l.pkg.root.join("src"));
-    let grammar = Grammar::new();
+    let grammar = gh.join().expect("文法の構築");
+    crate::vm::tick("grammar_new");
     let use_cache = crate::check_cache::enabled();
     for s in &l.pkg.sources {
         let fl = rel(&s.path);
@@ -283,8 +292,11 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             None
         };
         // 構文エラーのとき、Rust 風の書き方をまとめて直し方つきで報告する。
+        // 案内付きの行の一般的な E0002 (`expected ...`) は、同じ原因を別の言い方で重ねるだけなので出さない。
+        let mut guided: Vec<usize> = vec![];
         if s.error.is_some() || !gram.as_ref().map_or(false, |g| g.0) {
             for h in crate::rustisms::scan(&s.text) {
+                guided.push(h.line);
                 rep.add(h.code, &h.msg, Some(&fl), h.line, h.col, true);
             }
         }
@@ -292,7 +304,9 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             rep.add("E0001", "CR (CRLF) is not allowed; use LF", Some(&fl), 1, 1, true);
         }
         if let Some(e) = &s.error {
-            rep.add(&e.code, &e.msg, Some(&fl), e.line, e.col, true);
+            if !(e.code == "E0002" && guided.contains(&e.line)) {
+                rep.add(&e.code, &e.msg, Some(&fl), e.line, e.col, true);
+            }
             continue;
         }
         let gram = gram.unwrap();
@@ -337,7 +351,7 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             rep.add(lint_code(&code), &msg, Some(&fl), ln, 0, fatal);
         }
         let (ok, msg, ln) = gram;
-        if !ok {
+        if !ok && !guided.contains(&ln) {
             rep.add("E0002", &msg, Some(&fl), ln, 0, true);
         }
     }
@@ -345,15 +359,18 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
         // 置き場の上限を超えていたら古いものから消す (1 回だけ。ファイルごとに数えると件数の 2 乗になる)。
         crate::check_cache::trim();
     }
+    crate::vm::tick("lint");
     if l.pkg.sources.iter().any(|s| s.error.is_some()) {
         return Ok((l, None, vec![]));
     }
     let (prog, user) = build_program(&l);
+    crate::vm::tick("build_prog");
     let diags = {
         let mut ck = Checker::new(&prog, user.clone());
         ck.unsafe_modules = crate::project::unsafe_modules(&l.pkg.manifest);
         ck.integration_files = l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.clone()).collect();
         ck.run();
+        crate::vm::tick("checker");
         ck.diags
     };
     // 同じ呼び出しに対する E1108 は、名前だけの検査と型に基づく検査が両方出しうる。最初の 1 件だけ残す。
@@ -783,32 +800,43 @@ pub(crate) fn load_for_debug() -> Result<crate::debug::Target, String> {
     Ok(crate::debug::Target { prog, entry, entry_name, tests, user_files })
 }
 
-/// `--engine=vm|tree` を取り除く。`true` なら VM (`ksn run` / `ksn test`。既定は木走査)。
-fn take_engine(args: &[String]) -> Result<(bool, Vec<String>), String> {
+/// `--engine=vm|tree|both` を取り除く。1 つ目は VM を使うか (`ksn run` / `ksn test`。既定は木走査)、
+/// 2 つ目は `both` (`ksn test` だけ: 木走査と VM の両方で走らせて結果を比べる)。
+fn take_engine(args: &[String]) -> Result<(bool, bool, Vec<String>), String> {
     let mut vm = false;
+    let mut cmp = false;
     let mut rest = vec![];
     for a in args {
         match a.strip_prefix("--engine=") {
             Some("vm") => vm = true,
             Some("tree") => vm = false,
+            Some("both") => {
+                vm = true;
+                cmp = true;
+            }
             Some(o) => return Err(format!("--engine は vm か tree (指定: {})", o)),
             None => rest.push(a.clone()),
         }
     }
-    Ok((vm, rest))
+    Ok((vm, cmp, rest))
 }
 
 fn cmd_run(args: &[String]) -> i32 {
-    let (use_vm, args) = match take_engine(args) {
+    let (use_vm, cmp, args) = match take_engine(args) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("ksn: {}", e);
             return 2;
         }
     };
+    if cmp {
+        eprintln!("ksn: --engine=both は ksn test だけ (木走査と VM の結果を比べる)");
+        return 2;
+    }
     let args = &args[..];
     let (json, watch, rest) = run_args(args);
     let mut rep = Report::new(json);
+    crate::vm::tick("start");
     let root = match find_root() {
         Ok(r) => r,
         Err(e) => {
@@ -826,6 +854,7 @@ fn cmd_run(args: &[String]) -> i32 {
         }
     };
     rep.flush();
+    crate::vm::tick("full_check");
     if rep.fatal() {
         return 1;
     }
@@ -839,10 +868,10 @@ fn cmd_run(args: &[String]) -> i32 {
         return 1;
     };
     if use_vm {
-        if watch || !rest.is_empty() {
-            eprintln!("vm engine skipped: --watch と実行引数は VM 未対応; falling back to the tree walker");
+        if watch {
+            eprintln!("vm engine skipped: --watch は VM 未対応; falling back to the tree walker");
         } else {
-            match crate::vm::run_entry(&prog, &user, &entry) {
+            match crate::vm::run_entry(&prog, &user, &entry, &rest) {
                 Ok(code) => return code,
                 Err(why) => eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why)),
             }
@@ -979,7 +1008,7 @@ fn cmd_test(args: &[String]) -> i32 {
         dargs.extend(["--test".to_string(), name.clone()]);
         return crate::debug::cmd_debug(&dargs);
     }
-    let (use_vm, args) = match take_engine(args) {
+    let (use_vm, cmp, args) = match take_engine(args) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("ksn: {}", e);
@@ -1026,23 +1055,26 @@ fn cmd_test(args: &[String]) -> i32 {
     tests.sort_by(|&a, &b| prog.defs[a].name.cmp(&prog.defs[b].name));
     let mut failed = 0;
     let (mut n_llvm, mut n_native, mut n_bundle) = (0, 0, 0);
+    let (mut n_vm, mut n_vm_skipped) = (0, 0);
     for ti in &tests {
         let name = prog.defs[*ti].name.clone();
         let mut results: Vec<Option<String>> = vec![];
+        let mut names: Vec<&str> = vec![];
+        let mut vm_note = String::new();
         let vm_result = if use_vm {
             match crate::vm::run_test(&prog, &user, *ti) {
                 Ok(r) => Some(r),
                 Err(why) => {
                     eprintln!("test {}: vm engine skipped: {}; falling back to the tree walker", name, first_line(&why));
+                    vm_note = format!("vm skipped: {}", first_line(&why));
                     None
                 }
             }
         } else {
             None
         };
-        if let Some(r) = vm_result {
-            results.push(r);
-        } else {
+        // 木走査は、VM を使わない・VM が退避した・`--engine=both` のときに走らせる (比べるときは木走査が先)。
+        if vm_result.is_none() || cmp {
             let mut it = Interp::new(prog.clone());
             let r = it.call_body(*ti);
             use std::io::Write;
@@ -1052,6 +1084,16 @@ fn cmd_test(args: &[String]) -> i32 {
                 Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
                 _ => None,
             });
+            names.push("tree");
+        }
+        if let Some(r) = vm_result {
+            results.push(r);
+            names.push("vm");
+            if cmp {
+                n_vm += 1;
+            }
+        } else if cmp {
+            n_vm_skipped += 1;
         }
         // `--both` の相手は、KIR に下ろせればその LLVM の実行ファイル。下ろせなければ Cranelift の実行ファイル、
         // それも作れなければバンドル (どれも作れない機能を含むテストだけ)。
@@ -1081,6 +1123,12 @@ fn cmd_test(args: &[String]) -> i32 {
                 }
             }
         }
+        if !other.is_empty() {
+            names.push(other);
+        }
+        if !vm_note.is_empty() && cmp {
+            label = if label.is_empty() { vm_note.clone() } else { format!("{}; {}", label, vm_note) };
+        }
         let suffix = if label.is_empty() { String::new() } else { format!(" ({})", label) };
         match other {
             "llvm" => n_llvm += 1,
@@ -1088,10 +1136,11 @@ fn cmd_test(args: &[String]) -> i32 {
             "bundle" => n_bundle += 1,
             _ => {}
         }
-        let disagree = results.len() > 1 && backends_disagree(&results[0], &results[1]);
+        let disagree = results.len() > 1 && results[1..].iter().any(|r| backends_disagree(&results[0], r));
         if disagree {
             failed += 1;
-            println!("test {} ... FAILED: interpreter and {} disagree: {}{}", name, other, py_opt_list(&results), suffix);
+            let who = if cmp { names.join(", ") } else { format!("interpreter and {}", other) };
+            println!("test {} ... FAILED: {} disagree: {}{}", name, who, py_opt_list(&results), suffix);
         } else if results.iter().all(|r| r.is_none()) {
             println!("test {} ... ok{}", name, suffix);
         } else {
@@ -1102,6 +1151,9 @@ fn cmd_test(args: &[String]) -> i32 {
     println!("\n{} passed; {} failed", tests.len() - failed, failed);
     if both {
         println!("compared with: llvm {}, native {}, bundle fallback {}", n_llvm, n_native, n_bundle);
+    }
+    if cmp {
+        println!("compared tree walker with vm: {} (vm skipped {})", n_vm, n_vm_skipped);
     }
     if failed > 0 { 1 } else { 0 }
 }

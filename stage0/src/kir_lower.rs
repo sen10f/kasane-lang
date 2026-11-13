@@ -9,7 +9,7 @@
 //! 構文から求め、その集合だけを引数にする。
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::check::{is_nil, items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{self, Aop, Block, BoolOp, Cc, Func, Inst, Mode, Module, Op, Term, Ty, VId};
@@ -44,9 +44,15 @@ mod method_lower;
 // `std.thread.spawn` / `JoinHandle.join` の下ろし (子モジュール)。
 #[path = "kir_lower_thread.rs"]
 mod thread_lower;
+// 型引数付きの関数・メソッドの単相化 (子モジュール)。
+#[path = "kir_lower_mono.rs"]
+mod mono;
 // 配列リテラルの下ろし (子モジュール)。
 #[path = "kir_lower_array.rs"]
 mod array_lower;
+// `Box<T>` と `Box<dyn Tr>` の下ろし (子モジュール。設計_KIR.md 21 章)。
+#[path = "kir_lower_dyn.rs"]
+mod dyn_lower;
 
 // コレクション・文字列・クロージャの下ろし (子モジュール。`Lw` の非公開の項目を使う)。
 #[path = "kir_lower_iter.rs"]
@@ -221,6 +227,12 @@ struct Lw<'a> {
     def: &'a Def,
     /// 集成体の型表 (全関数で共有。`lower_user` が作る)。
     aggs: &'a RefCell<agg::AggTab>,
+    /// 単相インスタンスの型パラメータ名 → 具体的な型 (空なら単相の関数)。設計_KIR.md 20 章。
+    subst: HashMap<String, Src>,
+    /// 単相インスタンスの鍵 (`fqn<型引数,..>`)。単相の関数は `None` (鍵は FQN)。
+    inst_key: Option<String>,
+    /// 下ろし済み (下ろし中) の型引数付きインスタンスの鍵 (入れ子のインスタンスと共有する)。
+    mono_done: std::rc::Rc<RefCell<BTreeSet<String>>>,
     blocks: Vec<BlockB>,
     cur: Option<usize>,
     /// 値番号 → 型 (VId は 0 から順に振る)。
@@ -244,6 +256,9 @@ impl<'a> Lw<'a> {
             tys,
             def,
             aggs,
+            subst: HashMap::new(),
+            inst_key: None,
+            mono_done: Default::default(),
             blocks: vec![],
             cur: None,
             vty: vec![],
@@ -377,7 +392,7 @@ impl<'a> Lw<'a> {
         let line = nline(e);
         let id = nid(e);
         match self.tys.get(&(self.def.name.clone(), id)) {
-            Some(x) if id != 0 => Ok(x.ty.clone()),
+            Some(x) if id != 0 => Ok(if self.subst.is_empty() { x.ty.clone() } else { mono::subst_ty(&x.ty, &self.subst) }),
             _ => self.err(line, format!("式 {} の型が決まらない (型表にない)", nname(e))),
         }
     }
@@ -413,11 +428,10 @@ impl<'a> Lw<'a> {
 
     fn lower(mut self) -> LR<Vec<(Func, BTreeSet<String>)>> {
         let d = self.def;
-        let gn = HashSet::new();
         let body = d.body.as_ref().expect("候補は本体を持つ");
         let mut params = vec![];
         for (_, t) in &d.params {
-            let st = from_v(t, &gn);
+            let st = self.decl_ty(t);
             match coll::sig_ty(&self, &st) {
                 Some(x) => params.push(x),
                 None => return Err(format!("引数の型 {} は段階 1 の対象外 ({})", show(&st), sig_why(&self, &st))),
@@ -426,7 +440,7 @@ impl<'a> Lw<'a> {
         let ret = if is_nil(&d.ret) {
             Ty::Unit
         } else {
-            let st = from_v(&d.ret, &gn);
+            let st = self.decl_ty(&d.ret);
             match coll::sig_ty(&self, &st) {
                 Some(x) => x,
                 None => return Err(format!("戻り値の型 {} は段階 1 の対象外 ({})", show(&st), sig_why(&self, &st))),
@@ -439,7 +453,8 @@ impl<'a> Lw<'a> {
         self.rf.begin(body);
         self.scopes.push(vec![]);
         for ((name, pt), (v, t)) in d.params.iter().zip(pv.iter().zip(params.iter())) {
-            coll::bind_param(&mut self, name, *v, *t, &from_v(pt, &gn));
+            let pst = self.decl_ty(pt);
+            coll::bind_param(&mut self, name, *v, *t, &pst);
             // `&[T; N]` / `&mut [T; N]` のパラメータ: 長さ N は型から分かる (ptr にするだけ)。
             if let Some(n) = coll::ref_array_len(pt) {
                 let s = self.lookup(name).expect("直後に束縛したパラメータ");
@@ -454,6 +469,9 @@ impl<'a> Lw<'a> {
             self.terminate(Term::Ret(v));
         }
         let mut uses = d.uses.clone();
+        if d.kw == "test" && TEST_ALL_EFFECTS.with(|c| c.get()) {
+            uses.extend(ALL_EFFECTS.iter().map(|s| s.to_string()));
+        }
         uses.sort();
         uses.dedup();
         self.flush_allocas();
@@ -465,7 +483,7 @@ impl<'a> Lw<'a> {
         coll::finish(&mut blocks, std::mem::take(&mut self.coll.allocas));
         let f = Func {
             fqn: d.name.clone(),
-            key: d.name.clone(),
+            key: self.inst_key.clone().unwrap_or_else(|| d.name.clone()),
             uses,
             may_panic: d.panics.as_deref() != Some("never"),
             stack: d.stack,
@@ -506,6 +524,7 @@ impl<'a> Lw<'a> {
             "For" => coll::for_expr(self, e),
             "Closure" => coll::closure_lit(self, e),
             "ArrayE" => self.array_lit(e).map(|o| o.map(|(v, _)| v)),
+            "ArrayRep" => self.array_rep(e),
             other => self.err(nline(e), format!("式 {} は段階 1 の対象外", other)),
         }
     }
@@ -765,6 +784,9 @@ impl<'a> Lw<'a> {
     }
 
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = dyn_lower::try_call(self, e) {
+            return r;
+        }
         if let Some(r) = coll::try_call(self, e) {
             return r;
         }
@@ -791,9 +813,6 @@ impl<'a> Lw<'a> {
         }
         let f = nf(e);
         let line = nline(e);
-        if !matches!(f.get(2), Some(V::Nil) | None) {
-            return self.err(line, "型引数付きの呼び出しは段階 1 の対象外");
-        }
         let callee = &f[0];
         if nname(callee) != "Path" {
             return self.err(line, "式を呼ぶ形は段階 1 の対象外");
@@ -907,13 +926,19 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("呼び出し {} は段階 1 の対象外", segs.join(".")));
         };
         let cd = &self.p.defs[di];
-        if !is_candidate(cd) {
-            return self.err(line, format!("呼び先 {} は段階 1 の対象外 (ジェネリクス・メソッド・本体なし)", cd.name));
+        if cd.kw != "fn" || cd.body.is_none() {
+            return self.err(line, format!("呼び先 {} は段階 1 の対象外 (メソッド・本体なし)", cd.name));
         }
-        let gn = HashSet::new();
+        let (name, tmap) = if cd.generics.iter().any(|g| g.0 != "life") {
+            let tm = self.mono_targs(e, di, args, 0, &f[2])?;
+            (self.mono_instance(di, &tm, line)?, tm)
+        } else {
+            (cd.name.clone(), HashMap::new())
+        };
+        let gn = mono::tnames(cd);
         let mut pts = vec![];
         for (_, t) in &cd.params {
-            match coll::sig_ty(self, &from_v(t, &gn)) {
+            match coll::sig_ty(self, &mono::subst_ty(&from_v(t, &gn), &tmap)) {
                 Some(x) => pts.push(x),
                 None => return self.err(line, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name)),
             }
@@ -921,7 +946,7 @@ impl<'a> Lw<'a> {
         let rt = if is_nil(&cd.ret) {
             Ty::Unit
         } else {
-            match coll::sig_ty(self, &from_v(&cd.ret, &gn)) {
+            match coll::sig_ty(self, &mono::subst_ty(&from_v(&cd.ret, &gn), &tmap)) {
                 Some(x) => x,
                 None => return self.err(line, format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name)),
             }
@@ -929,7 +954,6 @@ impl<'a> Lw<'a> {
         if pts.len() != args.len() {
             return self.err(line, format!("呼び先 {} の引数の個数が違う", cd.name));
         }
-        let name = cd.name.clone();
         let mut vs = vec![];
         for a in args {
             match self.expr(a)? {
@@ -997,6 +1021,9 @@ impl<'a> Lw<'a> {
             if let Some(r) = thread_lower::join_call(self, e, a, t, line) {
                 return r;
             }
+        }
+        if let Some(r) = dyn_lower::try_mcall(self, e) {
+            return r;
         }
         if let Some(r) = coll::try_mcall(self, e) {
             return r;
@@ -1375,6 +1402,23 @@ pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowere
     lower_defs(p, user, entry, None)
 }
 
+thread_local! {
+    /// `lower_test_vm` の間だけ立つ: `test` (uses の宣言がない) を全部の効果を持つ関数として下ろす。
+    static TEST_ALL_EFFECTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+const ALL_EFFECTS: [&str; 9] = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"];
+
+/// `ksn test --engine=vm` 用。`lower_test` と同じだが、テストを全部の効果を持つ関数として下ろす
+/// (`test` には uses の宣言がなく、呼び先の uses を満たせずに下ろせなくなるのを避ける。
+/// `test --both` の LLVM 側の振る舞いは変えないよう、別の入口にしてある)。
+pub fn lower_test_vm(p: &Program, user: &[usize], test_def: usize) -> Lowered {
+    TEST_ALL_EFFECTS.with(|c| c.set(true));
+    let r = lower_test(p, user, test_def);
+    TEST_ALL_EFFECTS.with(|c| c.set(false));
+    r
+}
+
 /// `ksn test --both` の機械語側: テスト本体 `test_def` (定義の添字) を入口にして下ろす。
 /// テストは引数を持たず、戻り値は `()` (`test` の本体)。入口の名前はテストの FQN。
 pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
@@ -1382,10 +1426,29 @@ pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
 }
 
 fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
+    // このパッケージから呼び出す依存パッケージ (別 module) の fn も下ろし対象にする。
+    // そうしなければ、依存先が「呼び先が未対応」となり、このパッケージの関数も下ろせなくなる。
+    let mut user_vec: Vec<usize> = user.to_vec();
+    let cur_module = entry
+        .and_then(|e| p.funcs.get(e).copied())
+        .or_else(|| user.first().copied())
+        .and_then(|i| Some(p.defs[i].module.clone()));
+    if let Some(m) = cur_module {
+        for (i, d) in p.defs.iter().enumerate() {
+            if d.kw == "fn"
+                && d.body.is_some()
+                && d.module != m
+                && !user_vec.contains(&i)
+            {
+                user_vec.push(i);
+            }
+        }
+    }
+    let user = &user_vec;
     let tys = type_table(p, user, test_def);
     let aggs = RefCell::new(agg::AggTab::new(user));
-    // `std.net.listen`/`connect`/`accept` が返すソケット集成体を、誰も参照しなくても型表に入れる。
-    for name in ["std.net.TcpListener", "std.net.TcpStream"] {
+    // `std.net.listen`/`connect`/`accept` が返すソケット集成体と、その失敗の `std.net.Error` を、誰も参照しなくても型表に入れる。
+    for name in ["std.net.TcpListener", "std.net.TcpStream", "std.net.Error"] {
         if let Some(di) = p.defs.iter().position(|d| d.name == name) {
             let _ = aggs.borrow_mut().intern_def(p, di);
         }
@@ -1420,6 +1483,10 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
                 bad.push((f.key, why));
             }
         }
+    }
+    // `Box<dyn Tr>` の呼び出しと解放の補助関数 (登録された変換と呼び出しがそろった後に作る)。
+    if let Some(&i0) = user.first() {
+        dyn_lower::synth(p, &tys, &aggs, &p.defs[i0], &mut ok);
     }
     // 同じ単相インスタンスを、別々の呼び出し元が下ろしていることがある (内容は同じ)。鍵の重複は先の一つだけ残す。
     let mut seen: HashSet<String> = HashSet::new();

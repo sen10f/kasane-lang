@@ -450,15 +450,28 @@ fn errno_chain(errno_fn: &str, idx: &impl Fn(&str) -> Result<usize, String>, s: 
 /// 成功は値 (fd / バイト数 / 0) を bit 63=0 で返す。失敗は `(1<<63) | (errno<<32) | ErrorKind` を返す。
 /// `inst` 側で bit 63 をタグ、下位 64 ビットをペイロードとして `pack` する。
 fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
-    let kinds = aggs.iter().find(|d| d.name == "std.io.ErrorKind").ok_or("型表に std.io.ErrorKind がない")?;
-    let AggKind::Enum(vs) = &kinds.kind else { return Err("std.io.ErrorKind が列挙型でない".into()) };
-    let idx = |n: &str| vs.iter().position(|v| v.name == n).ok_or_else(|| format!("ErrorKind に {} がない", n));
+    // `std.io.ErrorKind` は `read` / `write` / `flush` の失敗 (`std.io.Error`) を使うときだけ型表に入る。
+    // `listen` などの失敗 (`std.net.Error`) は種類の添字を使わないので、型表に無ければ 0 を入れる (読まれない)。
+    let vs: Vec<String> = match aggs.iter().find(|d| d.name == "std.io.ErrorKind") {
+        Some(kinds) => match &kinds.kind {
+            AggKind::Enum(vs) => vs.iter().map(|v| v.name.clone()).collect(),
+            _ => return Err("std.io.ErrorKind が列挙型でない".into()),
+        },
+        None => vec![],
+    };
+    let idx = |n: &str| -> Result<usize, String> {
+        if vs.is_empty() {
+            return Ok(0);
+        }
+        vs.iter().position(|v| v == n).ok_or_else(|| format!("ErrorKind に {} がない", n))
+    };
     let errno_fn = errno_name();
     let mut s = String::new();
     // `write` の libc 宣言は、`cx.write` (write/eprint 命令) が立っていればトップの declare ループ
     // (`cx.decls`) で出力される。そうでないときだけここに出力する。
     let write_decl = "declare i64 @write(i32, ptr, i64)";
     let write_already = cx.decls.iter().any(|d| d == write_decl);
+    // 既に `cx.decls` に入っている宣言 (`errno` の取得など) は、トップの宣言の並びに任せて二重に出さない。
     for d in [
         "declare i32 @socket(i32, i32, i32)",
         "declare i32 @bind(i32, ptr, i64)",
@@ -470,8 +483,10 @@ fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
         "declare i32 @getsockname(i32, ptr, ptr)",
         &format!("declare ptr @{}()", errno_fn),
     ] {
-        s.push_str(d);
-        s.push('\n');
+        if !cx.decls.iter().any(|x| x == d) {
+            s.push_str(d);
+            s.push('\n');
+        }
     }
     if !write_already {
         s.push_str(write_decl);
@@ -907,11 +922,38 @@ impl<'a> Fe<'a> {
     }
 
     /// `std.net` の i64 結果 (bit 63 = エラー、下位 64 ビット = ペイロード) を `Result` の i65 値に pack する。
-    fn net_result(&mut self, dst: &str, r: &str) -> R<()> {
+    /// `net_err` の命令 (`listen` / `connect` / `accept` / `close` / `local_port`) の失敗は `std.net.Error` (`{code}`) なので、
+    /// 失敗のペイロードは errno (上位 32 ビットの値を下位へ) にする。`read` / `write` / `flush` は `std.io.Error` のまま。
+    fn net_result(&mut self, dst: &str, r: &str, net_err: bool) -> R<()> {
         let neg = self.t(format!("icmp slt i64 {}, 0", r));
-        let pay = self.t(format!("and i64 {}, 9223372036854775807", r));
+        let ok_pay = self.t(format!("and i64 {}, 9223372036854775807", r));
+        let pay = if net_err {
+            let sh = self.t(format!("lshr i64 {}, 32", r));
+            let errno = self.t(format!("and i64 {}, 4294967295", sh));
+            self.t(format!("select i1 {}, i64 {}, i64 {}", neg, errno, ok_pay))
+        } else {
+            ok_pay
+        };
         self.pack(dst, 64, &neg, &pay);
         Ok(())
+    }
+
+    /// `std.fs` の失敗の受け口 (`[ErrorKind の添字, errno]` の 2 つの i32)。`sysrt.c` の `fail` と同じ書き方。
+    fn fs_err_slot(&mut self) -> String {
+        let ep = self.t("alloca [2 x i32], align 4".to_string());
+        self.line(format!("store i64 0, ptr {}, align 4", ep));
+        ep
+    }
+
+    /// `std.fs` の i64 結果 (負 = 失敗) を `Result<_, std.io.Error>` の値に pack する。
+    /// 失敗のペイロードは `fs_err_slot` の 8 バイト (下位 = ErrorKind、上位 = errno) をそのまま使う (clif の `sys_result` と同じ並び)。
+    /// 成功のペイロードは `r` (fd / バイト数 / 0)。
+    fn fs_result(&mut self, dst: &str, r: &str, ep: &str) {
+        let neg = self.t(format!("icmp slt i64 {}, 0", r));
+        let ev = self.t(format!("load i64, ptr {}, align 4", ep));
+        let ok_pay = self.t(format!("and i64 {}, 9223372036854775807", r));
+        let pay = self.t(format!("select i1 {}, i64 {}, i64 {}", neg, ev, ok_pay));
+        self.pack(dst, 64, &neg, &pay);
     }
 
     /// `Option` / `Result` の値 (幅 `s + 1`): 枠 `pay` (幅 `s`) と、タグ `tag` (i1) を最上位に置く。
@@ -1678,37 +1720,37 @@ impl<'a> Fe<'a> {
                 let p = self.t(format!("inttoptr i64 {} to ptr", pi));
                 let ni = self.extract(&av, 128, 8, 64);
                 let r = self.t(format!("call i64 @{}(ptr {}, i64 {})", fnn, p, ni));
-                self.net_result(&d, &r)?;
+                self.net_result(&d, &r, true)?;
             }
             Op::NetAccept { sock } => {
                 self.cx.net = true;
                 let r = self.t(format!("call i64 @ksn.net_accept(i32 {})", self.r(*sock)));
-                self.net_result(&d, &r)?;
+                self.net_result(&d, &r, true)?;
             }
             Op::NetRead { sock, buf, len } => {
                 self.cx.net = true;
                 let r = self.t(format!("call i64 @ksn.net_read(i32 {}, ptr {}, i64 {})", self.r(*sock), self.r(*buf), self.r(*len)));
-                self.net_result(&d, &r)?;
+                self.net_result(&d, &r, false)?;
             }
             Op::NetWrite { sock, buf, len } => {
                 self.cx.net = true;
                 let r = self.t(format!("call i64 @ksn.net_write(i32 {}, ptr {}, i64 {})", self.r(*sock), self.r(*buf), self.r(*len)));
-                self.net_result(&d, &r)?;
+                self.net_result(&d, &r, false)?;
             }
             Op::NetFlush { sock } => {
                 self.cx.net = true;
                 let r = self.t(format!("call i64 @ksn.net_flush(i32 {})", self.r(*sock)));
-                self.net_result(&d, &r)?;
+                self.net_result(&d, &r, false)?;
             }
             Op::NetClose { sock } => {
                 self.cx.net = true;
                 let r = self.t(format!("call i64 @ksn.net_close(i32 {})", self.r(*sock)));
-                self.net_result(&d, &r)?;
+                self.net_result(&d, &r, true)?;
             }
             Op::NetLocalPort { sock } => {
                 self.cx.net = true;
                 let r = self.t(format!("call i64 @ksn.net_local_port(i32 {})", self.r(*sock)));
-                self.net_result(&d, &r)?;
+                self.net_result(&d, &r, true)?;
             }
             Op::EnvArgCount => {
                 self.cx.env = true;
@@ -1762,11 +1804,10 @@ impl<'a> Fe<'a> {
                 let pi = self.extract(&av, 128, 0, 64);
                 let p = self.t(format!("inttoptr i64 {} to ptr", pi));
                 let ni = self.extract(&av, 128, 8, 64);
-                let lenp = self.t("alloca i32, align 4".to_string());
-                self.line(format!("store i32 0, ptr {}, align 4", lenp));
+                let ep = self.fs_err_slot();
                 let create = if is_create { "1" } else { "0" };
-                let r = self.t(format!("call i64 @ksn_rt_sys_open(ptr {}, i64 {}, i32 {}, ptr {})", p, ni, create, lenp));
-                self.net_result(&d, &r)?;
+                let r = self.t(format!("call i64 @ksn_rt_sys_open(ptr {}, i64 {}, i32 {}, ptr {})", p, ni, create, ep));
+                self.fs_result(&d, &r, &ep);
             }
             Op::FsExists { path } => {
                 self.cx.fs = true;
@@ -1786,39 +1827,39 @@ impl<'a> Fe<'a> {
                 let pi = self.extract(&av, 128, 0, 64);
                 let p = self.t(format!("inttoptr i64 {} to ptr", pi));
                 let ni = self.extract(&av, 128, 8, 64);
-                let lenp = self.t("alloca i32, align 4".to_string());
-                self.line(format!("store i32 0, ptr {}, align 4", lenp));
-                let r = self.t(format!("call i64 @ksn_rt_sys_remove(ptr {}, i64 {}, ptr {})", p, ni, lenp));
-                self.net_result(&d, &r)?;
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_remove(ptr {}, i64 {}, ptr {})", p, ni, ep));
+                self.fs_result(&d, &r, &ep);
             }
             Op::FsClose { fd } => {
+                // 木走査 (clif と同じ) と同じく、閉じる失敗は報告しない。
                 self.cx.fs = true;
                 let r = self.t(format!("call i64 @ksn_rt_sys_close(i32 {})", self.r(*fd)));
-                self.net_result(&d, &r)?;
+                let ep = self.fs_err_slot();
+                self.fs_result(&d, &r, &ep);
             }
-            Op::FsFlush { fd } | Op::FsSync { fd } => {
+            Op::FsFlush { .. } => {
+                // ファイルは内部でバッファしないので、flush は常に成功 (clif と同じ)。
                 self.cx.fs = true;
-                let lenp = self.t("alloca i32, align 4".to_string());
-                self.line(format!("store i32 0, ptr {}, align 4", lenp));
-                let r = self.t(format!("call i64 @ksn_rt_sys_sync(i32 {}, ptr {})", self.r(*fd), lenp));
-                self.net_result(&d, &r)?;
+                self.pack(&d, 64, "false", "0");
+            }
+            Op::FsSync { fd } => {
+                self.cx.fs = true;
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_sync(i32 {}, ptr {})", self.r(*fd), ep));
+                self.fs_result(&d, &r, &ep);
             }
             Op::FsRead { fd, buf, len } => {
                 self.cx.fs = true;
-                let lenp = self.t("alloca i32, align 4".to_string());
-                self.line(format!("store i32 0, ptr {}, align 4", lenp));
-                let r = self.t(format!("call i64 @ksn_rt_sys_read(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), lenp));
-                self.net_result(&d, &r)?;
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_read(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), ep));
+                self.fs_result(&d, &r, &ep);
             }
             Op::FsWrite { fd, buf, len } => {
                 self.cx.fs = true;
-                let lenp = self.t("alloca i32, align 4".to_string());
-                self.line(format!("store i32 0, ptr {}, align 4", lenp));
-                let r = self.t(format!("call i64 @ksn_rt_sys_write(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), lenp));
-                self.net_result(&d, &r)?;
-            }
-            Op::FsReadToEnd { .. } => {
-                return Err("std.fs.read_to_end は LLVM 未対応 (木走査へ退避)".into());
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_write(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), ep));
+                self.fs_result(&d, &r, &ep);
             }
             Op::ParseInt { ty, s, radix } => {
                 self.cx.parse_int = true;

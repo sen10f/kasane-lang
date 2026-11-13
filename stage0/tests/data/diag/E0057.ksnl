@@ -1,0 +1,9 @@
+fn t.a(x: Option<u8>) -> u8 uses [] panics never
+    match x {
+        Some(v) =>
+        {
+            v
+        }
+        None => 0u8
+    }
+end t.a

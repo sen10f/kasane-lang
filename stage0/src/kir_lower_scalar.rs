@@ -34,6 +34,10 @@ enum Plan {
     Bitcast,
     /// 浮動小数の 2 引数 (`min`、`max`、`rem`、`atan2`、`powi`)。
     Binary(FBin),
+    /// `char.to_u32()`: 値はそのまま (`char` は `u32` で持つ)。
+    Same,
+    /// `char.to_ascii_uppercase()` / `to_ascii_lowercase()` (`true` で大文字)。ASCII の英字だけを変える。
+    AsciiCase(bool),
 }
 
 /// 数値のメソッドの対応表。対象外なら `None` (引数の個数は一致している必要がある)。
@@ -78,6 +82,10 @@ fn num_plan(rt: Ty, name: &str, n: usize) -> Option<Plan> {
         ("rem", 1) if flt => Plan::Binary(FBin::Rem),
         ("atan2", 1) if flt => Plan::Binary(FBin::Atan2),
         ("powi", 1) if flt => Plan::Binary(FBin::Powi),
+        // `char` は `u32` で持つ。spec が `char` にだけ定めるメソッドなので、`u32` の受け手では現れない。
+        ("to_u32", 0) if rt == Ty::U32 => Plan::Same,
+        ("to_ascii_uppercase", 0) if rt == Ty::U32 => Plan::AsciiCase(true),
+        ("to_ascii_lowercase", 0) if rt == Ty::U32 => Plan::AsciiCase(false),
         _ => return None,
     })
 }
@@ -204,8 +212,33 @@ impl<'a> Lw<'a> {
             Plan::Unary(f) => self.emit(out, Op::FUn { f, src: rt, a: recv }),
             Plan::Bitcast => self.emit(res, Op::Bitcast { src: rt, a: recv }),
             Plan::Binary(f) => self.emit(rt, Op::FBin { f, a: recv, b: argv[0] }),
+            Plan::Same => recv,
+            Plan::AsciiCase(upper) => self.ascii_case(recv, upper),
         };
         Ok(Some(Some(v)))
+    }
+
+    /// ASCII の英字の大文字・小文字 (`char` は `u32` で持つ)。英字以外はそのまま返す。
+    fn ascii_case(&mut self, c: VId, upper: bool) -> VId {
+        let (lo, hi) = if upper { (97i128, 122i128) } else { (65, 90) };
+        let lo_v = self.emit(Ty::U32, Op::Const(lo));
+        let hi_v = self.emit(Ty::U32, Op::Const(hi));
+        let ge = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U32, a: c, b: lo_v });
+        let le = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U32, a: c, b: hi_v });
+        let both = self.emit(Ty::Bool, Op::Bool(BoolOp::And, ge, le));
+        let (yes, _) = self.new_block(&[]);
+        let (no, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[Ty::U32]);
+        self.branch(both, (yes, vec![]), (no, vec![]));
+        self.cur = Some(yes);
+        let d = self.emit(Ty::U32, Op::Const(32));
+        let op = if upper { Aop::Sub } else { Aop::Add };
+        let moved = self.emit(Ty::U32, Op::Arith { op, mode: Mode::Wrap, a: c, b: d });
+        self.goto(join, vec![moved]);
+        self.cur = Some(no);
+        self.goto(join, vec![c]);
+        self.cur = Some(join);
+        jp[0]
     }
 
     /// `e.name(args)` (受け手が式の形) の数値のメソッド。
@@ -248,25 +281,61 @@ impl<'a> Lw<'a> {
             let recv = self.read_slot(s);
             return self.num_method(line, recv, rt, res, &segs[1], args);
         }
+        // `char.try_from_u32(x)`: 有効な文字 (0x110000 未満で、サロゲート 0xD800..=0xDFFF の外) なら `Some(x)`、そうでなければ `None`。
+        if segs[0] == "char" && segs[1] == "try_from_u32" && args.len() == 1 {
+            let Ok(res) = self.ty_of(e) else { return Ok(None) };
+            let Ty::Opt(Pay::U32) = res else {
+                return self.err(line, "char.try_from_u32 の結果が Option<char> ではない");
+            };
+            let Some(x) = self.expr(&args[0])? else { return Ok(Some(None)) };
+            self.expect_ty(x, Ty::U32, line)?;
+            let lim = self.emit(Ty::U32, Op::Const(0x110000));
+            let sur_lo = self.emit(Ty::U32, Op::Const(0xD800));
+            let sur_hi = self.emit(Ty::U32, Op::Const(0xDFFF));
+            let below = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U32, a: x, b: lim });
+            let under = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U32, a: x, b: sur_lo });
+            let over = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::U32, a: x, b: sur_hi });
+            let outside = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, under, over));
+            let ok = self.emit(Ty::Bool, Op::Bool(BoolOp::And, below, outside));
+            let (yes, _) = self.new_block(&[]);
+            let (no, _) = self.new_block(&[]);
+            let (join, jp) = self.new_block(&[res]);
+            self.branch(ok, (yes, vec![]), (no, vec![]));
+            self.cur = Some(yes);
+            let some = self.emit(res, Op::Some(x));
+            self.goto(join, vec![some]);
+            self.cur = Some(no);
+            let none = self.emit(res, Op::Const(0));
+            self.goto(join, vec![none]);
+            self.cur = Some(join);
+            return Ok(Some(Some(jp[0])));
+        }
         let Some(dst) = Ty::parse(&segs[0]) else { return Ok(None) };
         // `u8.from_str_radix(text, radix)` など。`&str` をバイトごとに読み、checked な乗算・加算で解析する。
-        if segs[1] == "from_str_radix" && args.len() == 2 && dst.is_int() {
+        // `i64.parse(text)` は基数 10 の `from_str_radix` と同じ (木走査 natives.rs も同じ経路)。
+        let is_parse = segs[1] == "parse" && args.len() == 1 && dst.is_int();
+        if (segs[1] == "from_str_radix" && args.len() == 2 && dst.is_int()) || is_parse {
             let Ok(res) = self.ty_of(e) else { return Ok(None) };
             let Ty::Res(t0, _) = res else {
-                return self.err(line, "from_str_radix の結果が Result ではない");
+                return self.err(line, format!("{} の結果が Result ではない", segs[1]));
             };
             let int_ty = t0.ty();
             if !int_ty.is_int() {
-                return self.err(line, "from_str_radix の結果の整数型が不正");
+                return self.err(line, format!("{} の結果の整数型が不正", segs[1]));
             }
             let Some(s) = self.expr(&args[0])? else { return Ok(Some(None)) };
-            let Some(radix) = self.expr(&args[1])? else { return Ok(Some(None)) };
+            let radix = if is_parse {
+                self.emit(Ty::U32, Op::Const(10))
+            } else {
+                let Some(r) = self.expr(&args[1])? else { return Ok(Some(None)) };
+                r
+            };
             let fat = self.fat_ty();
             if self.vty(s) != fat {
-                return self.err(line, "from_str_radix の第 1 引数は &str ではない");
+                return self.err(line, format!("{} の第 1 引数は &str ではない", segs[1]));
             }
             if self.vty(radix) != Ty::U32 {
-                return self.err(line, "from_str_radix の第 2 引数は u32 ではない");
+                return self.err(line, format!("{} の基数は u32 ではない", segs[1]));
             }
             return Ok(Some(Some(self.emit(res, Op::ParseInt { ty: int_ty, s, radix }))));
         }

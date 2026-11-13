@@ -97,7 +97,6 @@ fn side_effecting(op: &Op) -> bool {
         | Op::FsRead { .. }
         | Op::FsSync { .. }
         | Op::FsWrite { .. }
-        | Op::FsReadToEnd { .. }
         | Op::Abort
         | Op::Panic { .. }
         | Op::Store { .. }
@@ -286,7 +285,6 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::FsCreate { path } | Op::FsOpen { path } | Op::FsExists { path } | Op::FsRemove { path } => vec![path],
         Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => vec![fd],
         Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => vec![fd, buf, len],
-        Op::FsReadToEnd { fd, out } => vec![fd, out],
         Op::ParseInt { s, radix, .. } => vec![s, radix],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }

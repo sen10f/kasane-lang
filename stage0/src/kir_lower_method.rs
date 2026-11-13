@@ -9,7 +9,7 @@
 //!   - `x.f.g` は x が参照かスタックスロットのときだけ (フィールドのアドレスをたどる)。値のフィールドの `&mut` は対象外。
 //! - 受け手が `*r` なら、指す先そのもの。その他の式は値 (`&mut` の受け手は対象外、`&` の受け手は一時に写す)。
 //! - 呼び先の型は型表から決める。メソッドでないと分かった呼び出しは、何も下ろさずに親へ返す (`None`)。
-//! - 型引数付きのメソッドは対象外。
+//! - 型引数付きのメソッドは、呼び出しごとに単相化する (`kir_lower_mono.rs`)。
 
 use std::collections::HashSet;
 
@@ -143,14 +143,18 @@ impl<'a> Lw<'a> {
         let line = nline(e);
         let p = self.p;
         let cd = &p.defs[di];
-        if cd.generics.iter().any(|g| g.0 != "life") {
-            return self.err(line, format!("メソッド {} は型引数付きで段階 1 の対象外", cd.name));
-        }
         if cd.params.len() != args.len() + 1 {
             return self.err(line, format!("メソッド {} の引数の個数が違う", cd.name));
         }
-        let gn = HashSet::new();
-        let self_src = from_v(&cd.params[0].1, &gn);
+        let (callee, tmap) = if cd.generics.iter().any(|g| g.0 != "life") {
+            let tm = self.mono_targs(e, di, args, 1, super::mono::targs_of(e))?;
+            (self.mono_instance(di, &tm, line)?, tm)
+        } else {
+            (cd.name.clone(), std::collections::HashMap::new())
+        };
+        let gn = super::mono::tnames(cd);
+        let sub = |t: Src| super::mono::subst_ty(&t, &tmap);
+        let self_src = sub(from_v(&cd.params[0].1, &gn));
         let (by_ref, want_mut) = match &self_src {
             Src::Ref(m, _) => (true, *m),
             _ => (false, false),
@@ -160,7 +164,7 @@ impl<'a> Lw<'a> {
         };
         let mut pts = vec![];
         for (_, t) in &cd.params[1..] {
-            match coll::sig_ty(self, &from_v(t, &gn)) {
+            match coll::sig_ty(self, &sub(from_v(t, &gn))) {
                 Some(x) => pts.push(x),
                 None => return self.err(line, format!("メソッド {} の引数の型は段階 1 の対象外", cd.name)),
             }
@@ -168,7 +172,7 @@ impl<'a> Lw<'a> {
         let ret = if is_nil(&cd.ret) {
             Ty::Unit
         } else {
-            match coll::sig_ty(self, &from_v(&cd.ret, &gn)) {
+            match coll::sig_ty(self, &sub(from_v(&cd.ret, &gn))) {
                 Some(x) => x,
                 None => return self.err(line, format!("メソッド {} の戻り値の型は段階 1 の対象外", cd.name)),
             }
@@ -215,9 +219,8 @@ impl<'a> Lw<'a> {
         }
         let mut all = vec![rv];
         all.extend(vs);
-        let name = cd.name.clone();
-        self.callees.insert(name.clone());
-        let r = self.emit(ret, Op::Call { callee: name, args: all });
+        self.callees.insert(callee.clone());
+        let r = self.emit(ret, Op::Call { callee, args: all });
         if let Some((slot, ptr, t)) = copy_back {
             let nv = self.emit(t, Op::Load(ptr));
             self.assign_slot(slot, nv);

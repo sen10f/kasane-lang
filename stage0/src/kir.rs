@@ -709,9 +709,6 @@ pub enum Op {
     FsSync { fd: VId },
     /// `std.fs.File.write(buffer)`: `write_all(fd, buf, len)`。結果は `Result<usize, std.io.Error>`。`uses [io.fs]` の関数だけ。
     FsWrite { fd: VId, buf: VId, len: VId },
-    /// `std.fs.read_to_end(file, out)`: 終端まで読んで `out` (`&mut Vec<u8>`) に足す。結果は `Result<usize, std.io.Error>`。
-    /// `uses [alloc, io.fs]` の関数だけ。KIR では未対応 (木走査へ退避)。
-    FsReadToEnd { fd: VId, out: VId },
     /// `std.env.arg_count()`: プログラムへの引数の個数 (プログラム名は含まない)。結果は `usize`。
     /// `uses [env]` の関数だけ。
     EnvArgCount,
@@ -1187,7 +1184,6 @@ fn fmt_inst(i: &Inst) -> String {
         Op::FsRead { fd, buf, len } => format!("fs.read {}, {}, {}", fmt_val(*fd), fmt_val(*buf), fmt_val(*len)),
         Op::FsSync { fd } => format!("fs.sync {}", fmt_val(*fd)),
         Op::FsWrite { fd, buf, len } => format!("fs.write {}, {}, {}", fmt_val(*fd), fmt_val(*buf), fmt_val(*len)),
-        Op::FsReadToEnd { fd, out } => format!("fs.read_to_end {}, {}", fmt_val(*fd), fmt_val(*out)),
         Op::EnvArgCount => "env.arg_count".to_string(),
         Op::EnvArg { index } => format!("env.arg {}", fmt_val(*index)),
         Op::EnvVar { name } => format!("env.var {}", fmt_val(*name)),
@@ -1651,10 +1647,6 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("fs", ["write"]) => {
             let v = operands(3)?;
             Ok(Op::FsWrite { fd: v[0], buf: v[1], len: v[2] })
-        }
-        ("fs", ["read_to_end"]) => {
-            let v = operands(2)?;
-            Ok(Op::FsReadToEnd { fd: v[0], out: v[1] })
         }
         ("env", ["arg_count"]) => {
             let _ = operands(0)?;
@@ -2385,9 +2377,9 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         if ty_of(*addr)? != fat_ty(m)? {
                             return Err("net.listen / net.connect のアドレスは fat (&str) のはず".into());
                         }
-                        let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty()));
+                        let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_net_error(m, e.ty()));
                         if !ok {
-                            return Err("net.listen / net.connect の結果は Result<ソケット集成体, std.io.Error> のはず".into());
+                            return Err("net.listen / net.connect の結果は Result<ソケット集成体, std.net.Error> のはず".into());
                         }
                     }
                     Op::NetAccept { sock } | Op::NetFlush { sock } | Op::NetClose { sock } | Op::NetLocalPort { sock } => {
@@ -2399,21 +2391,27 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                         match &i.op {
                             Op::NetAccept { .. } => {
-                                let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty()));
+                                let ok = matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_net_error(m, e.ty()));
                                 if !ok {
-                                    return Err("net.accept の結果は Result<ソケット集成体, std.io.Error> のはず".into());
+                                    return Err("net.accept の結果は Result<ソケット集成体, std.net.Error> のはず".into());
                                 }
                             }
                             Op::NetLocalPort { .. } => {
-                                let ok = matches!(i.ty, Ty::Res(Pay::U16, e) if is_io_error(m, e.ty()));
+                                let ok = matches!(i.ty, Ty::Res(Pay::U16, e) if is_net_error(m, e.ty()));
                                 if !ok {
-                                    return Err("net.local_port の結果は Result<u16, std.io.Error> のはず".into());
+                                    return Err("net.local_port の結果は Result<u16, std.net.Error> のはず".into());
+                                }
+                            }
+                            Op::NetClose { .. } => {
+                                let ok = matches!(i.ty, Ty::Res(Pay::Unit, e) if is_net_error(m, e.ty()));
+                                if !ok {
+                                    return Err("net.close の結果は Result<(), std.net.Error> のはず".into());
                                 }
                             }
                             _ => {
                                 let ok = matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty()));
                                 if !ok {
-                                    return Err("net.flush / net.close の結果は Result<(), std.io.Error> のはず".into());
+                                    return Err("net.flush の結果は Result<(), std.io.Error> のはず".into());
                                 }
                             }
                         }
@@ -2475,18 +2473,6 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         let ok = matches!(i.ty, Ty::Res(Pay::Usize, e) if is_io_error(m, e.ty()));
                         if !ok {
                             return Err("std.fs.File.{read,write} の結果は Result<usize, std.io.Error> のはず".into());
-                        }
-                    }
-                    Op::FsReadToEnd { fd, out } => {
-                        if !f.uses.iter().any(|u| u == "io.fs") || !f.uses.iter().any(|u| u == "alloc") {
-                            return Err("std.fs.read_to_end は uses [alloc, io.fs] の関数だけ".into());
-                        }
-                        if ty_of(*fd)? != Ty::I32 || ty_of(*out)? != Ty::Ptr {
-                            return Err("std.fs.read_to_end は i32 の記述子と ptr のバッファを取る".into());
-                        }
-                        let ok = matches!(i.ty, Ty::Res(Pay::Usize, e) if is_io_error(m, e.ty()));
-                        if !ok {
-                            return Err("std.fs.read_to_end の結果は Result<usize, std.io.Error> のはず".into());
                         }
                     }
                     Op::EnvArgCount => {
@@ -2680,6 +2666,13 @@ fn fat_ty(m: &Module) -> Result<Ty, String> {
 }
 
 /// 型 `t` が `std.io.Error` 集成体か。
+fn is_net_error(m: &Module, t: Ty) -> bool {
+    matches!(
+        t,
+        Ty::Agg(i) if (i as usize) < m.aggs.len() && m.aggs[i as usize].name == "std.net.Error"
+    )
+}
+
 fn is_io_error(m: &Module, t: Ty) -> bool {
     matches!(
         t,
@@ -2707,7 +2700,6 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::FsCreate { path } | Op::FsOpen { path } | Op::FsExists { path } | Op::FsRemove { path } => vec![*path],
         Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => vec![*fd],
         Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => vec![*fd, *buf, *len],
-        Op::FsReadToEnd { fd, out } => vec![*fd, *out],
         Op::EnvArgCount => vec![],
         Op::EnvArg { index } | Op::EnvVar { name: index } => vec![*index],
         Op::Eprint { data } => vec![*data],

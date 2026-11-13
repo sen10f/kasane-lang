@@ -489,6 +489,13 @@ pub(super) fn drop_elems(lw: &mut Lw, v: VId, buf: VId, elem: Ty) {
     lw.cur = Some(exit);
 }
 
+/// ヒープの番地 `p` から型 `t` の値を読む (`ptr` を同じアドレスの参照にして `load`)。
+pub(crate) fn box_load(lw: &mut Lw, p: VId, t: Ty) -> VId {
+    let pt = Pointee::of(t).expect("Box の中身は参照できる型");
+    let r = lw.emit(Ty::Ref(true, pt), Op::Bitcast { src: Ty::Ptr, a: p });
+    lw.emit(t, Op::Load(r))
+}
+
 /// 型 `t` の値 `v` (所有している) を解放する命令列を、現在のブロックに置く。所有物を持たない型は何もしない。
 /// 列挙型と `Option` / `Result` は、タグで枝を分けて、持っている変種のペイロードだけを解放する。
 pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
@@ -498,6 +505,26 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
     match t {
         Ty::Agg(i) => {
             let d = lw.aggs.borrow().defs[i as usize].clone();
+            // `Box<dyn Tr>`: 中身の型は実行時の vtable の番号で決まるので、補助関数 `dyn.drop` が中身を解放してから確保を返す。
+            if d.name.starts_with("dynbox<") {
+                let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                let vt = lw.emit(Ty::Usize, Op::Field { a: v, off: 8 });
+                lw.aggs.borrow_mut().dynr.drop_used = true;
+                lw.callees.insert("dyn.drop".to_string());
+                lw.emit(Ty::Unit, Op::Call { callee: "dyn.drop".to_string(), args: vec![p, vt] });
+                return;
+            }
+            // `Box<T>`: 中身が所有物なら先に解放してから、確保を返す。
+            let belem = lw.aggs.borrow().box_elem(t);
+            if let Some(elem) = belem {
+                let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                if owns_heap(lw, elem) {
+                    let inner = box_load(lw, p, elem);
+                    drop_value(lw, inner, elem);
+                }
+                lw.emit(Ty::Unit, Op::HeapFree(p));
+                return;
+            }
             if super::agg::is_vec_name(&d.name) {
                 let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
                 // 要素が所有物なら、各要素を先に解放する (設計_KIR.md 13.8)
@@ -1156,7 +1183,7 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     }
     // 型引数に型パラメータを持つ関数 (`Fn` 境界の引数) は、渡されたクロージャごとに単相化する。
     if let Some(Target::Fn(di)) = lw.p.resolve(&segs, &lw.def.file).map(|r| r.target) {
-        if lw.p.defs[di].generics.iter().any(|g| g.0 == "type") {
+        if lw.p.defs[di].generics.iter().any(|g| g.0 == "type") && has_closure_arg(lw, items(&f[1])) {
             return Some(generic_call(lw, e, di));
         }
     }
@@ -1179,6 +1206,15 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             }
         }
     }
+    // `import alloc.vec` の別名の形 (`vec.Vec.new`) も、解決した FQN で照合する。
+    let segs: Vec<String> = match lw.p.resolve(&segs, &lw.def.file) {
+        Some(r) if r.rest.is_empty() => match r.target {
+            Target::Native(n) => n.split('.').map(String::from).collect(),
+            Target::Sig(di) | Target::Fn(di) => lw.p.defs[di].name.split('.').map(String::from).collect(),
+            _ => segs,
+        },
+        _ => segs,
+    };
     let segs: Vec<&str> = segs.iter().map(|x| x.as_str()).collect();
     match segs.as_slice() {
         ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e)),
@@ -1194,6 +1230,11 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         ["core", "mem", "drop"] => Some(mem_drop(lw, e)),
         _ => None,
     }
+}
+
+/// 引数にクロージャ (式、またはクロージャを束縛した局所) があるか。型引数に渡すクロージャの単相化の判定に使う。
+fn has_closure_arg(lw: &Lw, args: &[V]) -> bool {
+    args.iter().any(|a| nname(a) == "Closure" || local_slot(lw, a).map_or(false, |s| matches!(lw.coll.kinds.get(&s), Some(Kind::Closure { .. }))))
 }
 
 /// 型引数に捕獲のないクロージャを取る関数の呼び出し。鍵は `関数名<クロージャの鍵,...>` で、
@@ -1448,8 +1489,17 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if m == "push_u64" && matches!(kind, Kind::String) {
         return string_push_u64(lw, e, line, slot, h, args);
     }
+    if m == "push_i64" && matches!(kind, Kind::String) {
+        return string_push_i64(lw, e, line, h, args);
+    }
     if m == "get" {
         return get_elem(lw, line, &kind, h, args);
+    }
+    if (m == "first" || m == "last") && matches!(kind, Kind::Vec(_) | Kind::Slice(_)) {
+        return first_last(lw, line, &kind, h, m, args.len());
+    }
+    if m == "contains" && matches!(kind, Kind::Vec(_) | Kind::Slice(_)) && args.len() == 1 {
+        return contains_scalar(lw, line, &kind, h, args);
     }
     if m == "sub" {
         return slice_sub(lw, line, &kind, h, args);
@@ -1464,7 +1514,8 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
     if !matches!(f.get(2), Some(V::Nil) | None) {
         return lw.err(line, "型引数付きのメソッドは段階 1 の対象外");
     }
-    let hdr = lw.slots[s].0;
+    // アドレスを取られた配列 (`&mut chunk` の `[T; N]`) は、スロットが fat のアドレス (mem) なので、値を読んで fat にする。
+    let hdr = if matches!(kind, Kind::Slice(_)) && lw.is_mem_val(lw.slots[s].0) { lw.read_slot(s) } else { lw.slots[s].0 };
     // `&[T; N]` / `&mut [T; N]` のパラメータの `len()`: 長さ N は型から分かる。
     if m == "len" && matches!(kind, Kind::Slice(_)) && lw.slots[s].1 == Ty::Ptr {
         let n = arr_len_of(lw, s).expect("&[T; N] のパラメータに arr_len が入っている");
@@ -1621,18 +1672,8 @@ pub(super) fn string_push_str(lw: &mut Lw, e: &V, line: usize, _slot: Option<usi
 
 /// `String.push_u64(value)`: `value` を10進数の桁として1バイトずつバッファに追加する。
 /// 桁テーブルから1バイトをロードして `mem.store.u8` で書き込む (`Conv u64->u8` は verify で拒否されるため)。
-pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 1 {
-        return lw.err(line, "push_u64 の引数は 1 つのはず");
-    }
-    let Some(value) = lw.expr(&args[0])? else { return Ok(None) };
-    if lw.vty(value) != Ty::U64 {
-        return lw.err(line, "push_u64 の引数は u64 ではない");
-    }
-    let rt = lw.ty_of(e)?;
-    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
-        return lw.err(line, "push_u64 の結果の型が Result<(), AllocError> でない");
-    }
+/// 符号なしの十進の桁 `value` (u64) を、文字列 `h` の末尾へ 1 バイトずつ書く (容量が足りなければ広げる)。
+fn push_u64_digits(lw: &mut Lw, h: VId, value: VId) {
     let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
     let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
     let maxdigits = lw.emit(Ty::Usize, Op::Const(20));
@@ -1720,9 +1761,79 @@ pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usi
     {
         lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: final_len });
     }
+}
+
+pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "push_u64 の引数は 1 つのはず");
+    }
+    let Some(value) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(value) != Ty::U64 {
+        return lw.err(line, "push_u64 の引数は u64 ではない");
+    }
+    let rt = lw.ty_of(e)?;
+    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+        return lw.err(line, "push_u64 の結果の型が Result<(), AllocError> でない");
+    }
+    push_u64_digits(lw, h, value);
     let u = lw.unit();
     Ok(Some(lw.emit(rt, Op::Ok(u))))
 }
+
+/// `String.push_i64(value)`: 負なら `-` を書き、絶対値 (`wrapping_neg` の bit 列を u64 に読む。`i64::MIN` も正しい) の桁を書く。
+pub(super) fn string_push_i64(lw: &mut Lw, e: &V, line: usize, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "push_i64 の引数は 1 つのはず");
+    }
+    let Some(value) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(value) != Ty::I64 {
+        return lw.err(line, "push_i64 の引数は i64 ではない");
+    }
+    let rt = lw.ty_of(e)?;
+    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+        return lw.err(line, "push_i64 の結果の型が Result<(), AllocError> でない");
+    }
+    let zero = lw.emit(Ty::I64, Op::Const(0));
+    let neg = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::I64, a: value, b: zero });
+    let (yb, _) = lw.new_block(&[]);
+    let (nb, _) = lw.new_block(&[]);
+    let (mb, mp) = lw.new_block(&[Ty::I64]);
+    lw.branch(neg, (yb, vec![]), (nb, vec![]));
+    // 負: `-` を 1 バイト書いてから、絶対値へ進む。
+    lw.cur = Some(yb);
+    {
+        let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+        let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+        let one = lw.emit(Ty::Usize, Op::Const(1));
+        let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: one });
+        let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
+        let (grow, _) = lw.new_block(&[]);
+        let (cont, _) = lw.new_block(&[]);
+        lw.branch(full, (grow, vec![]), (cont, vec![]));
+        lw.cur = Some(grow);
+        let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+        let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: need });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
+        lw.goto(cont, vec![]);
+        lw.cur = Some(cont);
+        let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: len });
+        let dash = lw.emit(Ty::U8, Op::Const(b'-' as i128));
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: addr, off: 0, v: dash });
+        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: need });
+        let mag = lw.emit(Ty::I64, Op::Neg { a: value, mode: Mode::Wrap });
+        lw.goto(mb, vec![mag]);
+    }
+    lw.cur = Some(nb);
+    lw.goto(mb, vec![value]);
+    lw.cur = Some(mb);
+    let mag = lw.emit(Ty::U64, Op::Conv { src: Ty::I64, a: mp[0] });
+    push_u64_digits(lw, h, mag);
+    let u = lw.unit();
+    Ok(Some(lw.emit(rt, Op::Ok(u))))
+}
+
 
 /// 呼べるもの (捕獲のないクロージャの式、クロージャの局所変数、関数の項目) の、呼び先の鍵と引数・戻り値の型。
 /// 呼び先は `callees` に入れる。`Result::map_err` の引数に使う。
@@ -1823,10 +1934,84 @@ pub(super) fn slice_sub(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V
 /// `v.get(i)` / `s.get(i)` (要素はスカラー): `Option<要素>`。境界の内なら `Some(要素)`、外なら `None` (panic しない)。
 /// 木走査の `Option<&T>` はスカラーでは読み取りだけなので、値で持つ (設計_KIR.md 10.10)。
 pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
+    if args.len() != 1 {
+        return lw.err(line, "get の引数の個数が違う");
+    }
+    pick_elem(lw, line, kind, h, Pick::At(&args[0]), "get")
+}
+
+/// `v.first()` / `v.last()` (要素の型は `get` と同じ): `Option<&T>` と同じ形で `Option<要素>` を作る。空なら `None`。
+pub(super) fn first_last(lw: &mut Lw, line: usize, kind: &Kind, h: VId, m: &str, nargs: usize) -> LR<Option<VId>> {
+    if nargs != 0 {
+        return lw.err(line, format!("メソッド {} の引数は段階 1 の対象外", m));
+    }
+    let pick = if m == "first" { Pick::First } else { Pick::Last };
+    pick_elem(lw, line, kind, h, pick, m)
+}
+
+/// `v.contains(&x)` (要素はスカラー): 先頭から順に `==` を見て、見つかれば `true`。木走査 (`natives.rs` の `contains`) と同じ順。
+/// 引数は `&T` の参照 (`&3u8`) か、値 (`T`) のどちらでもよい。要素が所有物・集成体の形は理由付きで拒む。
+pub(super) fn contains_scalar(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
     let (seq, elem) = match kind {
         Kind::Vec(Some(e)) => (Seq::Hdr(h), *e),
         Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
-        _ => return lw.err(line, "get の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
+        _ => return lw.err(line, "contains の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
+    };
+    if owns_heap(lw, elem) || matches!(elem, Ty::Agg(_)) {
+        return lw.err(line, format!("contains の要素の型 {} は段階 1 の対象外 (スカラーだけ)", elem.name()));
+    }
+    let Some(sz) = elem_size(lw, elem) else {
+        return lw.err(line, format!("contains の要素の型 {} は段階 1 の対象外", elem.name()));
+    };
+    let Some(a0) = lw.expr(&args[0])? else { return Ok(None) };
+    let x = match lw.vty(a0) {
+        Ty::Ref(_, p) if p.ty() == elem => lw.emit(elem, Op::Load(a0)),
+        t if t == elem => a0,
+        _ => return lw.err(line, "contains の引数の型が要素の型と違う"),
+    };
+    let (len, base) = seq.len_and_base(lw, None);
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    // 先頭: (i) を持つ。`i < len` なら要素を見る。見つかれば結果 `true`、外れたら `i+1` へ。
+    let (hb, hp) = lw.new_block(&[Ty::Usize]);
+    let i = hp[0];
+    let (bb, _) = lw.new_block(&[]);
+    let (jb, jp) = lw.new_block(&[Ty::Bool]);
+    lw.goto(hb, vec![zero]);
+    lw.cur = Some(hb);
+    let inside = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len });
+    // 範囲外は `inside` が偽なので `jb` へ (値は偽)。
+    lw.branch(inside, (bb, vec![]), (jb, vec![inside]));
+    lw.cur = Some(bb);
+    let off = if sz == 1 {
+        i
+    } else {
+        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
+        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: k })
+    };
+    let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
+    let e = load_elem(lw, addr, elem);
+    let hit = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: elem, a: e, b: x });
+    let one = lw.emit(Ty::Usize, Op::Const(1));
+    let next = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
+    // 見つかった: `hit` (真) を結果にして抜ける。外れ: 次の添字へ。
+    lw.branch(hit, (jb, vec![hit]), (hb, vec![next]));
+    lw.cur = Some(jb);
+    Ok(Some(jp[0]))
+}
+
+/// 添字の決め方。`At` は利用者の式 (usize)、`First` / `Last` は 0 と `len - 1` (空なら `None`)。
+#[derive(Clone, Copy)]
+pub(super) enum Pick<'a> {
+    At(&'a V),
+    First,
+    Last,
+}
+
+fn pick_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, pick: Pick, m: &str) -> LR<Option<VId>> {
+    let (seq, elem) = match kind {
+        Kind::Vec(Some(e)) => (Seq::Hdr(h), *e),
+        Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
+        _ => return lw.err(line, format!("{} の対象は要素型の分かる Vec・スライスだけ段階 1 の対象", m)),
     };
     let borrowed = owns_heap(lw, elem);
     let pay = if borrowed {
@@ -1837,18 +2022,37 @@ pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]
         Pay::of(elem)
     };
     let (Some(sz), Some(pay)) = (elem_size(lw, elem), pay) else {
-        return lw.err(line, format!("get の要素の型 {} は段階 1 の対象外", elem.name()));
+        return lw.err(line, format!("{} の要素の型 {} は段階 1 の対象外", m, elem.name()));
     };
-    if args.len() != 1 {
-        return lw.err(line, "get の引数の個数が違う");
-    }
-    let Some(i) = lw.expr(&args[0])? else { return Ok(None) };
-    if lw.vty(i) != Ty::Usize {
-        return lw.err(line, "get の添字が usize ではない");
-    }
+    let idx = match pick {
+        Pick::At(a) => {
+            let Some(i) = lw.expr(a)? else { return Ok(None) };
+            if lw.vty(i) != Ty::Usize {
+                return lw.err(line, format!("{} の添字が usize ではない", m));
+            }
+            Some(i)
+        }
+        Pick::First | Pick::Last => None,
+    };
     let opt = Ty::Opt(pay);
     let (len, base) = seq.len_and_base(lw, None);
-    let inside = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len });
+    // 境界の内か (`i < len`)、添字 (`i`)。first / last は空でなければ内で、添字は 0 か len-1。
+    let (inside, i) = match (pick, idx) {
+        (Pick::At(_), Some(i)) => (lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len }), i),
+        (Pick::First, _) => {
+            let zero = lw.emit(Ty::Usize, Op::Const(0));
+            let nonempty = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: zero, b: len });
+            (nonempty, zero)
+        }
+        _ => {
+            let zero = lw.emit(Ty::Usize, Op::Const(0));
+            let nonempty = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: zero, b: len });
+            let one = lw.emit(Ty::Usize, Op::Const(1));
+            // 空のときは使われない (wrap の減算は trap しない)
+            let last = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: len, b: one });
+            (nonempty, last)
+        }
+    };
     let (tb, _) = lw.new_block(&[]);
     let (eb, _) = lw.new_block(&[]);
     let (jb, jp) = lw.new_block(&[opt]);
@@ -1964,6 +2168,19 @@ fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
                 return Ok((Seq::Fat(fat_val), elem));
             }
             _ => {}
+        }
+    }
+    // 構造体のフィールドの Vec (`self.handlers[i]`): フィールドのヘッダの番地を置き場にする (読みと要素の書き込みだけ。ヘッダは変えない)。
+    if nname(e) == "Field" {
+        if let Some((s, names)) = super::own::chain_of(lw, e) {
+            if let Some(src) = super::own::field_src(lw, s, &names) {
+                if !matches!(src, Src::Ref(..)) {
+                    if let Some(Kind::Vec(Some(elem))) = kind_of_src(lw, &src) {
+                        let pl = super::own::place(lw, s, &names, line)?;
+                        return Ok((Seq::Hdr(pl.hdr), elem));
+                    }
+                }
+            }
         }
     }
     // `b"..."` リテラルは式そのままなので fat 値を作る。
@@ -2532,6 +2749,8 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let (cap_names, cap_vals, moved) = capture_values(lw, &f[2], &f[3], line)?;
     let cap_tys: Vec<Ty> = cap_vals.iter().map(|v| lw.vty(*v)).collect();
     let mut child = Lw::new(lw.p, lw.tys, lw.aggs, lw.def);
+    child.subst = lw.subst.clone();
+    child.mono_done = lw.mono_done.clone();
     child.coll.prefix = lw.coll.prefix.clone();
     child.ret = rt;
     let mut ptys = cap_tys.clone();

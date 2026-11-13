@@ -10,7 +10,7 @@
 //! - メソッド `close`/`flush`/`read`/`sync`/`write`: 受け手の `descriptor` フィールド (i32@0) から
 //!   記述子を取り出し、対応する `fs.*` 命令を出す。
 //!
-//! `std.fs.read_to_end` は `alloc.vec.Vec` の再確保を伴うため KIR では未対応とし、木走査へ退避する。
+//! `std.fs.read_to_end` は `alloc.vec.Vec` の再確保を伴うため KIR の命令を作らず、下ろしの段で理由付きで拒否する (木走査へ退避)。
 
 use crate::kir::{Op, Pay, Pointee, Ty, VId};
 use crate::parser::V;
@@ -128,8 +128,8 @@ pub(super) fn fs_call(lw: &mut Lw, _e: &V, name: &str, args: &[V], line: usize) 
             (Op::FsRemove { path }, fs_err_ty(lw, Ty::Unit))
         }
         "std.fs.read_to_end" => {
-            // `alloc.vec.Vec` の再確保を伴うため KIR では未対応。木走査へ退避。
-            return Ok(None);
+            // `alloc.vec.Vec` の再確保 (ヒープの伸長) を伴うため、KIR の命令にはしない。下ろしの段で理由付きで拒否する。
+            return lw.err(line, "std.fs.read_to_end は KIR 未対応 (Vec の再確保を伴う。木走査へ退避)");
         }
         _ => return Ok(None),
     };
