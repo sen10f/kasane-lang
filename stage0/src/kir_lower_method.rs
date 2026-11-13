@@ -38,8 +38,10 @@ pub(super) enum Place<'v> {
     Expr(&'v V),
 }
 
-/// 受け手を渡す形: (引数の値, 書き戻す局所 (スロット, アドレス, 値の型))。
-type Recv = Option<(VId, Option<(usize, VId, Ty)>)>;
+/// 受け手を渡す形: (引数の値, 書き戻す局所 (スロット, アドレス, 値の型), call_method で tmp_hold するか)。
+/// `path_read` (`Path`) でスコープから移した値や、`&self` の alloca コピーはスコープ終了で解放されるので `false`。
+/// `Call`/`MCall` の戻り値（スコープにまだ登録されていない一時値）は `true`。
+type Recv = Option<(VId, Option<(usize, VId, Ty)>, bool)>;
 
 impl<'a> Lw<'a> {
     /// 型 `t` (集成体かその参照) の利用者のメソッド `m` の定義の添字。
@@ -168,7 +170,7 @@ impl<'a> Lw<'a> {
                 None => return self.err(line, format!("メソッド {} の戻り値の型は段階 1 の対象外", cd.name)),
             }
         };
-        let Some((rv, copy_back)) = (match place {
+        let Some((rv, copy_back, need_hold)) = (match place {
             Place::Path(segs) => self.recv_path(&segs, self_ty, by_ref, want_mut, line)?,
             Place::Expr(r) => self.recv_expr(r, self_ty, by_ref, want_mut, line)?,
         }) else {
@@ -176,6 +178,11 @@ impl<'a> Lw<'a> {
         };
         if self.vty(rv) != self_ty {
             return self.err(line, format!("メソッド {} の受け手の型が合わない", cd.name));
+        }
+        // `Call`/`MCall` の戻り値（スコープにまだ登録されていない一時値）だけ tmp_hold する。
+        // `Path` で移した値や `&self` の alloca コピーはスコープ終了で解放される。
+        if need_hold {
+            super::coll::tmp_hold(self, rv);
         }
         let mut vs = vec![];
         for a in args {
@@ -186,11 +193,17 @@ impl<'a> Lw<'a> {
                 }
                 None => {
                     super::coll::tmp_release(self, &vs);
+                    if need_hold {
+                        super::coll::tmp_release(self, &[rv]);
+                    }
                     return Ok(None);
                 }
             }
         }
         super::coll::tmp_release(self, &vs);
+        if need_hold {
+            super::coll::tmp_release(self, &[rv]);
+        }
         let vs = self.coerce_args(vs, &pts);
         for (v, pt) in vs.iter().zip(pts.iter()) {
             if self.vty(*v) != *pt {
@@ -217,24 +230,29 @@ impl<'a> Lw<'a> {
         let (sv, stt) = self.slots[s];
         if segs.len() == 1 {
             if !by_ref {
-                let v = self.read_slot(s);
-                return Ok(Some((v, None)));
+                // 値の受け手は関数の引数と同じ移動 (path_read: ヘッダを移し/印を下ろす)。
+                // 呼び先が所有を引き継ぐので、呼び出し元での二重解放を防ぐ (設計_KIR.md 17.1)。
+                let v = super::coll::path_read(self, s);
+                // 移した値は、呼び出しまでの間 (引数の `?` で抜ける経路) は一時値として持つ。
+                let hold = super::coll::owns(self, self.vty(v));
+                return Ok(Some((v, None, hold)));
             }
             // アドレスを取られた局所: スタックスロットのアドレス (値の番号は別の参照の値に写す)
             if self.is_mem_val(sv) {
                 let Some(p) = Pointee::of(stt) else {
                     return self.err(line, format!("受け手 {} の型は段階 1 の対象外", segs[0]));
                 };
-                return Ok(Some((self.ref_value(sv, p, !want_mut), None)));
+                return Ok(Some((self.ref_value(sv, p, !want_mut), None, false)));
             }
             // 参照の値 (引数の `&mut` や `let r = &mut x`)
             if let Ty::Ref(m, _) = self.vty(sv) {
                 if want_mut && !m {
                     return self.err(line, "共有参照から可変参照は取れない (メソッドの受け手)");
                 }
-                return Ok(Some((self.coerce(sv, self_ty), None)));
+                return Ok(Some((self.coerce(sv, self_ty), None, false)));
             }
-            // SSA の局所: 一時のスタックに写して、`&mut` のときは呼んだあとに書き戻す
+            // SSA の局所: 一時のスタックに写して、`&mut` のときは呼んだあとに書き戻す。
+            // `sv` はスコープの局所変数の値なので、ここで tmp_hold せずスコープ終了で解放される (tmp_v=None)。
             let Some(p) = Pointee::of(stt) else {
                 return self.err(line, format!("受け手 {} の型は段階 1 の対象外", segs[0]));
             };
@@ -242,15 +260,16 @@ impl<'a> Lw<'a> {
             self.emit(Ty::Unit, Op::Store { ptr, val: sv });
             let rv = self.ref_value(ptr, p, !want_mut);
             let back = if want_mut { Some((s, ptr, stt)) } else { None };
-            return Ok(Some((rv, back)));
+            return Ok(Some((rv, back, false)));
         }
         // `x.f.g`
         if !by_ref {
-            let base = self.read_slot(s);
+            let base = super::coll::path_read(self, s);
             let v = self.field_path(base, &segs[1..], line)?;
-            return Ok(Some((v, None)));
+            return Ok(Some((v, None, false)));
         }
         // 参照の値・スタックスロットを根とするなら、そのアドレスをたどる。SSA の集成体を根とするときは一時に写す (`&mut` は書き戻す)。
+        // `sv` はスコープの局所変数の値なので、ここで tmp_hold せずスコープ終了で解放される (tmp_v=None)。
         let (base, back) = if matches!(self.vty(sv), Ty::Ref(_, Pointee::Agg(_))) || self.is_mem_val(sv) {
             (sv, None)
         } else {
@@ -265,7 +284,7 @@ impl<'a> Lw<'a> {
         for n in &segs[1..] {
             cur = self.field_addr(cur, n, line)?;
         }
-        Ok(Some((self.coerce(cur, self_ty), back)))
+        Ok(Some((self.coerce(cur, self_ty), back, false)))
     }
 
     /// 式の受け手。`*r` は指す先そのもの。値の受け手はそのまま、`&` の受け手は一時に写す。
@@ -275,11 +294,17 @@ impl<'a> Lw<'a> {
             if want_mut && matches!(self.vty(rv), Ty::Ref(false, _)) {
                 return self.err(line, "共有参照を通した &mut の受け手は段階 1 の対象外");
             }
-            return Ok(Some((self.coerce(rv, self_ty), None)));
+            return Ok(Some((self.coerce(rv, self_ty), None, false)));
         }
         let Some(v) = self.expr(r)? else { return Ok(None) };
         if !by_ref {
-            return Ok(Some((v, None)));
+            // `Path` の `Owned::Val`（スロットあり）はスコープ終了で drop されるので tmp_hold しない。
+            // 一時値（Call の戻り値など）はスコープにまだ登録されていないので tmp_hold する。
+            let need_hold = match (nname(r), super::coll::local_slot(self, r)) {
+                ("Path", Some(slot)) if super::coll::val_slot_of(self, slot) => false,
+                _ => true,
+            };
+            return Ok(Some((v, None, need_hold)));
         }
         if want_mut {
             return self.err(line, "&mut の受け手は名前・フィールド・*参照 だけ段階 1 の対象");
@@ -289,7 +314,13 @@ impl<'a> Lw<'a> {
         };
         let ptr = self.alloca(p);
         self.emit(Ty::Unit, Op::Store { ptr, val: v });
-        Ok(Some((self.ref_value(ptr, p, true), None)))
+        // `v` のコピーを alloca (フレーム領域) に置いた。元の `v` がローカル変数 (Owned::Val) ならスコープ終了で既に解放されるので tmp_hold しない。
+        // 一時値ならスコープ終了で解放されるよう tmp_hold する。alloca の中身はフレームとともに解放。二重解放を防ぐ (設計_KIR.md 17.1)。
+        let is_local_val = nname(r) == "Path" && super::coll::local_slot(self, r).map_or(false, |s| super::coll::val_slot_of(self, s));
+        if !is_local_val {
+            super::coll::tmp_hold(self, v);
+        }
+        Ok(Some((self.ref_value(ptr, p, true), None, false)))
     }
 
     /// 木の中で、利用者の `&mut self` のメソッドを呼ぶ局所 (`x.m(..)` の `x`、`x` は SSA の集成体) の名前。

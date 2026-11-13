@@ -277,6 +277,29 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     out.push_str(&math);
     out.push('\n');
     out.push_str(&main);
+    // AddressSanitizer が有効なら、全ての関数定義に sanitize_address を付ける (設計_KIR.md 17.9)。
+    // `declare` は `define` ではないので置換されない。
+    if std::env::var("KSN_CLANG_ARGS")
+        .map(|s| s.split_whitespace().any(|a| a == "-fsanitize=address"))
+        .unwrap_or(false)
+    {
+        // `define ... {` → `define ... sanitize_address {`（関数属性は `{` の前に置く）。`declare` は対象外。
+        out = out
+            .lines()
+            .map(|l| {
+                let trimmed = l.trim_start();
+                if trimmed.starts_with("define ") && trimmed.ends_with('{') {
+                    let indent = &l[..l.len() - trimmed.len()];
+                    let body = &trimmed[..trimmed.len() - 1];
+                    format!("{} {}sanitize_address {{\n", indent, body)
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+    }
     Ok(out)
 }
 

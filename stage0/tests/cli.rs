@@ -12979,6 +12979,60 @@ fn t.hits(n: i64) -> u32 uses [] panics never pub
 end t.hits
 "#;
 
+const METHOD_VALUE_SRC: &str = r#"type t.B
+    items: alloc.vec.Vec<u32, std.alloc.System>
+end t.B
+
+fn t.mk() -> t.B uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(7u32))
+    t.B { items: v }
+end t.mk
+
+fn t.B.total(self: t.B) -> usize uses [] panics never
+    self.items.len()
+end t.B.total
+
+fn t.B.into(self: t.B) -> alloc.vec.Vec<u32, std.alloc.System> uses [] panics never
+    self.items
+end t.B.into
+
+fn t.m1() -> usize uses [alloc] panics may
+    let b = t.mk()
+    b.total()
+end t.m1
+
+fn t.m4() -> usize uses [alloc] panics may
+    let b = t.mk()
+    let v = b.into()
+    v.len()
+end t.m4
+
+fn t.m5() -> usize uses [alloc] panics may
+    let b = t.mk()
+    t.B.total(b)
+end t.m5"#;
+
+#[test]
+fn kir_method_value_receiver_move_match_tree_walker() {
+    // 値レシーバのメソッド呼び出し (`b.total()`) で二重解放・リークが起きない (Fable KIR レビュー 指摘 1)。
+    // 木走査・参照実行器・機械語・ASan の 4 つを `kir_run` で比べる。
+    let t = Tmp::new(
+        "kir_method_value_receiver",
+        &format!(
+            "{}{}",
+            METHOD_VALUE_SRC,
+            "\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc] panics may\n    core.check.eq(t.m1(), 1usize)\n    core.check.eq(t.m4(), 1usize)\n    core.check.eq(t.m5(), 1usize)\n    Ok(())\nend t.main\n"
+        ),
+    );
+    assert_eq!(run(&["run"], &t.0).status.code(), Some(0), "tree-walker main");
+    for f in ["t.m1", "t.m4", "t.m5"] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), "1", "kir value of {}", f);
+    }
+}
+
 #[test]
 fn kir_method_mut_receivers_match_tree_walker() {
     // `&mut self` の受け手: 局所 (SSA と アドレスを取られたもの)、参照の引数、`*r`、フィールドの鎖 (`self.acc.add`)。
@@ -18022,4 +18076,56 @@ fn kir_review_for_over_a_vec_may_still_read_it() {
     // (fix/linear-generic) ので、借用のスライスを回す。
     let fns = "fn t.sum() -> usize uses [alloc] panics may\n    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(1u32))\n    core.mem.drop(v.push(2u32))\n    let mut n = 0usize\n    let s = v.as_slice()\n    for x in s {\n        n = n + v.len()\n        core.mem.drop(x)\n    }\n    n\nend t.sum\n";
     kir_review_cases("for_read", fns, "t.sum", &[(&[], "t.sum()", "4usize", "4")]);
+}
+
+/// Fable の KIR レビュー 2 回目: 局所の `Option<Vec>` の `unwrap` は局所を移す (取り出した値とスコープの終わりの解放が
+/// 重なって二重解放になっていた)。値の受け手を移した後、引数の `?` で抜けても受け手は漏れない。
+#[test]
+fn kir_review2_unwrap_moves_and_receiver_survives_early_exit() {
+    let fns = "fn t.mkv(n: u32) -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(i))
+        i = i + 1u32
+    }
+    v
+end t.mkv
+
+fn t.opt(c: bool) -> Option<alloc.vec.Vec<u32, std.alloc.System>> uses [alloc] panics may
+    if c {
+        return Some(t.mkv(2u32))
+    }
+    None
+end t.opt
+
+fn t.n7(c: bool) -> usize uses [alloc] panics may
+    let o = t.opt(c)
+    let v = o.unwrap()
+    v.len()
+end t.n7
+
+type t.B
+    items: alloc.vec.Vec<u32, std.alloc.System>
+end t.B
+
+fn t.B.total(self: t.B, x: u32) -> usize uses [] panics never
+    core.mem.drop(x)
+    self.items.len()
+end t.B.total
+
+fn t.g(c: bool) -> Option<u32> uses [] panics never
+    if c {
+        return Some(1u32)
+    }
+    None
+end t.g
+
+fn t.e1(c: bool) -> Option<usize> uses [alloc] panics may
+    let b = t.B { items: t.mkv(3u32) }
+    Some(b.total(t.g(c)?))
+end t.e1
+";
+    kir_review_cases("r2_unwrap", fns, "t.n7", &[(&["true"], "t.n7(true)", "2usize", "2")]);
+    kir_review_cases("r2_recv_exit", fns, "t.e1", &[(&["true"], "t.e1(true)", "Some(3usize)", "Some(3)"), (&["false"], "t.e1(false)", "None", "None")]);
 }
