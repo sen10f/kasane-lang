@@ -1178,6 +1178,18 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 関数表と安全点 (`vm/reload.rs`)、ホットリロード (`--watch`) の VM 対応、命令ごとの行表。
 - `std.net` の命令、`ksn test --both` の比較相手に VM を加える、bench/reference と `test --both` の一致の確認。
 
+## 18.6 第 2 段の結果 (vm/stage2、2026-11-13)
+
+- **合流の修正**: `dev/plan` は VM と並行に入った KIR の命令 (`FnPtr` / `EnvArgCount` / `EnvArg` / `EnvVar`) で VM がビルドできなかった。std.env の 3 命令は VM に実装した (プログラムへの引数は `Vm::args`。`ksn run --engine=vm` は実行引数があっても退避しなくなった)。`FnPtr` は C のコールバックに VM の関数を渡すには機械語のトランポリンが要るので、退避のまま (VM が退避する命令はこれだけ)。
+- **起動時間**: `KSN_TIMING=1` で `ksn run` の起動の内訳を stderr に出す (`vm::tick`)。noop の `run` の内訳 (ms): 標準ライブラリの読み込み (29 本の `.sig` / `.ksnl` の構文解析) 15.0、文法の構築 (`Grammar::new` の正規表現のコンパイル) 2.2、lint・整形・文法検査 3.9、`build_program` (infer) 3.7、検査 0.7、KIR への下ろし 0.8、検査・バイトコード化は 0.1 未満。VM 固有の部分 (下ろし以降) は約 1 ms で、起動の大半は木走査と共有の `full_check` だった。対策は、(1) 標準ライブラリの読み込みをファイルごとにスレッドで並列化 (大きい順に配る)、(2) 定義が 256 件以上のファイル (`core/num.sig` の約 800 件) は定義ごとの解析を分割して並列化、(3) `Grammar::new` を読み込みと並行のスレッドで構築。合計は約 25 ms → 約 18 ms (2 コアの余裕がある負荷で。木走査の起動も同じだけ速くなる)。残りは lint 3.9 と infer 3.7。結果のキャッシュ (std の解析結果の直列化) は、`Def` の `V` 木の直列化が大きいので見送った。
+- **比較の仕組み**: `ksn test --engine=both` は、各テストを木走査と VM の両方で走らせ、成否と失敗の分類 (`fail_class`) が違えば `FAILED: tree, vm disagree: [..]` にする。VM が退避したテストは木走査だけで、`(vm skipped: 理由)` を付けて数える。末尾に `compared tree walker with vm: N (vm skipped M)`。`--both` (LLVM / 機械語との比較) とも併用でき、その場合は 3 者が全部一致する必要がある。`ksn run --engine=both` はエラー (終了コード 2)。`vm_parity` に examples 全 8 パッケージの一致テストを足した。
+- **テストの効果**: `test` には `uses` の宣言がなく、`alloc` を使う関数を呼ぶテストは KIR の検査 (呼び先の uses が呼び出し元にある) で下ろせず退避していた。`kir_lower::lower_test_vm` (VM 専用の入口) は、テストを全部の効果を持つ関数として下ろす。`test --both` の LLVM 側の下ろし (`lower_test`) は変えていない (変えると LLVM で走るテストが増え、cli テストの期待する経路の表示が変わる)。
+- **参照解の一致**: `bench/vm_reference.py` (`run_bench.evaluate` と同じ形の一時パッケージ + 課題のテストで `ksn test --engine=both`) で、課題のある参照解 9 本 (12 テスト) が木走査と VM で全件一致。11 テストが VM で走り、1 本 (`repeat_str`) は KIR の下ろしの検査 (`load は ptr から整数…を読むはず`) で退避。これは KIR 下ろし側の問題で VM の都合ではない (次の段の課題)。
+- **std.net**: 8 命令を `Vm` のソケット表 (`HashMap<fd, TcpListener | TcpStream>`、記述子は 0 から) で実装 (意味は `kir_exec` と同じ)。`tests/data/vm/net_loopback.ksnl` (`kir_net_roundtrip` と同じプログラム: listen / local_port / connect / write / accept / close) が VM で退避せずに走り、木走査と一致するテストを `vm_parity` に足した。`read` / `flush` の命令は、下ろしが対応している呼び方のテストがまだなく、実行は未検証 (実装は `kir_exec` の写し)。
+- **最適化 (第 4 項の一部)**: `fieldaddr` の唯一の使い道が同じブロックの `load` / `store` のとき、命令を出さずにオフセットに畳み込む (structs で 117 → 103 ms、命令数で約 17% 減)。バイトコードの詰め込み・集成体のフレーム内配置・`call` + `ret` の融合は、計測のノイズが大きい (他のビルドの並走でロードアベレージ 30〜40) ので着手していない。`Field` は毎回 `size_of` を求めており、コンパイル時に持てる (次の段)。
+- **perf** (`python3 perf/vm_compare.py --repeat 5`、負荷が高い中の中央値、ms): noop 33.5 → 21.5 (VM)・32.0 → 20.5 (木走査)、fib 60.2 → 60.3 (38.7x)、loops 232.5 → 117.4、vecops 162.1 → 188.7 (揺れ)、hashmap 42.3 → 39.9 (1.8x)、strcat 126.9 → 101.2、structs 135.4 → 107.6 (25.4x)、closure 61.9 → 47.5。起動の短縮が全ケースに効く。
+- **次の段**: 命令の詰め込み (8 バイトのスロット・命令)、`Make` / `Field` の置き場 `Vec<u8>` の除去、定数の持ち上げ (ループ内の `ConstI` が命令の約 2 割)、`FnPtr` のトランポリン、`vm/reload.rs`、命令ごとの行表、`lint` / `infer` の起動時間 (各約 4 ms)。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。

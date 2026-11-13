@@ -449,6 +449,9 @@ impl<'a> Lw<'a> {
             self.terminate(Term::Ret(v));
         }
         let mut uses = d.uses.clone();
+        if d.kw == "test" && TEST_ALL_EFFECTS.with(|c| c.get()) {
+            uses.extend(ALL_EFFECTS.iter().map(|s| s.to_string()));
+        }
         uses.sort();
         uses.dedup();
         self.flush_allocas();
@@ -1359,6 +1362,23 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
 /// 作れない (`derive [Debug]` がない、未対応の型を含むなど) ときは、入口を未対応にする (理由付き)。
 pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowered {
     lower_defs(p, user, entry, None)
+}
+
+thread_local! {
+    /// `lower_test_vm` の間だけ立つ: `test` (uses の宣言がない) を全部の効果を持つ関数として下ろす。
+    static TEST_ALL_EFFECTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+const ALL_EFFECTS: [&str; 9] = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"];
+
+/// `ksn test --engine=vm` 用。`lower_test` と同じだが、テストを全部の効果を持つ関数として下ろす
+/// (`test` には uses の宣言がなく、呼び先の uses を満たせずに下ろせなくなるのを避ける。
+/// `test --both` の LLVM 側の振る舞いは変えないよう、別の入口にしてある)。
+pub fn lower_test_vm(p: &Program, user: &[usize], test_def: usize) -> Lowered {
+    TEST_ALL_EFFECTS.with(|c| c.set(true));
+    let r = lower_test(p, user, test_def);
+    TEST_ALL_EFFECTS.with(|c| c.set(false));
+    r
 }
 
 /// `ksn test --both` の機械語側: テスト本体 `test_def` (定義の添字) を入口にして下ろす。

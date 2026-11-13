@@ -439,7 +439,7 @@ pub(crate) fn io_error_value(aggs: &[AggDef], heap: &mut Vec<Vec<u8>>, kind: &st
 
 /// `{ descriptor: i32 }` のソケット集成体を置き場に作り、その添字を返す。
 /// `std.net.Error` (`{ code: i32 }`、4 バイト) の値。`code` は errno (取れなければ -1。木走査の `net_error` と同じ)。
-fn net_error_agg(heap: &mut Vec<Vec<u8>>, code: i32) -> Result<i128, String> {
+pub(crate) fn net_error_agg(heap: &mut Vec<Vec<u8>>, code: i32) -> Result<i128, String> {
     heap.push(code.to_le_bytes().to_vec());
     Ok((heap.len() - 1) as i128)
 }
