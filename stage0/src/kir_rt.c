@@ -201,14 +201,15 @@ int ksn_parse_int(const unsigned char *p, long len, unsigned radix,
     unsigned __int128 v = 0;
     unsigned __int128 lim = ~(unsigned __int128)0;
     for (long i = start; i < len; i++) {
-        unsigned c = p[i] | 0x20;
+        /* 数字の判定は元のバイトで行い、英字のときだけ小文字に寄せる (`| 0x20` を先にすると 0x10〜0x19 が数字になる)。 */
+        unsigned c = p[i];
         unsigned d;
         if (c >= '0' && c <= '9') d = c - '0';
-        else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
+        else if ((c | 0x20) >= 'a' && (c | 0x20) <= 'z') d = (c | 0x20) - 'a' + 10;
         else return 1;
         if (d >= radix) return 1;
         if (v > (lim - (unsigned __int128)d) / (unsigned __int128)radix) {
-            return bits == 128 ? 1 : 2;
+            return 2; /* 溢れは型の幅によらず種類 1 (Rust の PosOverflow / NegOverflow と同じ) */
         }
         v = v * (unsigned __int128)radix + (unsigned __int128)d;
     }

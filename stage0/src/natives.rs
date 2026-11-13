@@ -127,14 +127,20 @@ fn num_op(name: &str, ty: &str, a: &[Val]) -> Res {
         if !ty.starts_with('i') && text.starts_with('-') {
             return Ok(err(parse_err(0)));
         }
+        // 種類: 0 は形の誤り (空・符号だけ・桁でない文字)、1 は溢れ (Rust の PosOverflow / NegOverflow)。
+        // i128 に入らない桁数も溢れ (機械語・参照実行器と同じ)。
+        let kind_of = |e: std::num::ParseIntError| match e.kind() {
+            std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => 1,
+            _ => 0,
+        };
         if ty == "u128" {
             return Ok(match u128::from_str_radix(&text, radix) {
                 Ok(v) => ok(int(v as i128, ty)),
-                Err(_) => err(parse_err(0)),
+                Err(e) => err(parse_err(kind_of(e))),
             });
         }
         return Ok(match i128::from_str_radix(&text, radix) {
-            Err(_) => err(parse_err(0)),
+            Err(e) => err(parse_err(kind_of(e))),
             Ok(v) if v < tmin(ty) || v > tmax(ty) => err(parse_err(1)),
             Ok(v) => ok(int(v, ty)),
         });

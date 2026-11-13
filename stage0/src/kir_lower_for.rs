@@ -115,8 +115,10 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
     for (k, s) in slots.iter().enumerate() {
         lw.slots[*s] = (fhp[k + 2], slot_tys[k]);
     }
-    let last = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: s_len, b: sep_len });
-    let i_past = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: fi, b: last });
+    // `i + sep_len > s_len` なら、もう区切りは入らない (`s_len - sep_len` は sep が長いと wrap するので使わない。
+    // 長さは確保できる大きさなので、足し算は溢れない)。
+    let end = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: fi, b: sep_len });
+    let i_past = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: end, b: s_len });
     lw.branch(i_past, (bb, body_args(lw, &[ffrom, s_len], &slots)),
                  (ch, head_args(lw, &[ffrom, zero, fi], &slots)));
 
