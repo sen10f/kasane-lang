@@ -169,6 +169,26 @@ fn vm_test_matches_tree_walker_on_examples() {
     assert!(r.out.contains("test ") && r.out.contains("0 failed"), "{}", r.out);
 }
 
+#[test]
+fn test_engine_both_compares_tree_walker_and_vm() {
+    // `ksn test --engine=both`: 木走査と VM の両方で走らせて比べる。examples の全パッケージで不一致が出ない。
+    let pkgs = ["examples/demo", "examples/native", "examples/realtime", "examples/json", "examples/more_coll", "examples/more_str", "examples/features", "examples/tour"];
+    let fails = parallel(&pkgs, |p| {
+        let r = ksn(&["test", "--engine=both"], &root().join(p), 120);
+        if r.code == Some(0) && r.out.contains("compared tree walker with vm:") && !r.out.contains("disagree") {
+            None
+        } else {
+            Some(format!("{}: {:?}\n{}{}", p, r.code, r.out, r.err))
+        }
+    });
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
+    let r = ksn(&["test", "--engine=both"], &root().join("examples/demo"), 120);
+    assert!(r.out.contains("compared tree walker with vm: 1 (vm skipped 0)"), "{}", r.out);
+    // `ksn run` では使えない。
+    let r = ksn(&["run", "--engine=both"], &root().join("examples/demo"), 120);
+    assert_eq!(r.code, Some(2), "{}{}", r.out, r.err);
+}
+
 /// Rust の通常の文字列リテラルの中身 (引用符の内側) をその値にする。
 fn unescape(s: &str) -> String {
     let mut o = String::new();
