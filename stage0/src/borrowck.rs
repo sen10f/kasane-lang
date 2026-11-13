@@ -109,6 +109,9 @@ struct Low<'a> {
     scope_stack: Vec<Vec<String>>,
     /// 関数の仮引数。スコープ解析の初期値 (関数の間ずっと生きている)。
     scope_seed: Vec<String>,
+    /// `let x = &<一時値>` / `match &<一時値> { .. }` で、一時値の寿命が束縛先のスコープまで
+    /// 延びる変数名。`$temp` ルールで寿命切れと誤検出しないため。
+    temp_extended: HashSet<String>,
 }
 
 /// 値を持つ式 (`match` の腕、`if` の枝、ブロック式) の値として外へ運ぶ借用を、どの枝から集めるか。
@@ -159,6 +162,17 @@ impl<'a> Low<'a> {
             }
             _ => None,
         }
+    }
+
+    /// `&<一時値>` / `&mut <一時値>` (例: `&(3i32 + 4i32)`、`&Some(x)`)。一時値への直接の
+    /// 参照で、寿命が束縛先のスコープまで延びる。
+    fn is_direct_temp_ref(&self, e: &V) -> bool {
+        if nname(e) != "Unary" {
+            return false;
+        }
+        let f = nf(e);
+        let op = st(&f[0]);
+        (op == "&" || op == "&mut") && self.place_of(&f[1]).is_none()
     }
 
     // ------------------------------------------------------------ メソッド・関数の署名
@@ -713,6 +727,13 @@ impl<'a> Low<'a> {
                 let c = if is_nil(init) { cur } else { self.lower_expr(init, cur) };
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
+                // `let x = &<一時値>` / `let x = &mut <一時値>` では、一時値の寿命が `x`
+                // のスコープまで延びる (Rust と同じ)。
+                if self.is_direct_temp_ref(init) {
+                    for b in &binds {
+                        self.temp_extended.insert(b.clone());
+                    }
+                }
                 // `let` で宣言した変数は、このブロックのスコープに入る。
                 if let Some(top) = self.scope_stack.last_mut() {
                     for b in &binds {
@@ -914,6 +935,7 @@ impl<'a> Low<'a> {
             value_vals: HashMap::new(),
             moves: self.moves.clone(),
             locals,
+            temp_extended: HashSet::new(),
         };
         let entry = sub.new_node();
         let exit = sub.new_node();
@@ -1119,6 +1141,13 @@ impl<'a> Low<'a> {
                     self.edge(c, an);
                     let mut binds = vec![];
                     pat_binds(&a[0], &mut binds);
+                    // `match &<一時値> { .. }` では、腕の束縛が持つ一時値の寿命が `match`
+                    // 全体の終わりまで延びる。
+                    if self.is_direct_temp_ref(&f[0]) {
+                        for b in &binds {
+                            self.temp_extended.insert(b.clone());
+                        }
+                    }
                     // 分解の腕は、部分パターンごとに要素・フィールドの借用を伝える。形が分からなければ従来どおり。
                     let known = matches!(nname(&a[0]), "PTuple" | "PStruct") && {
                         for b in &binds {
@@ -1357,6 +1386,7 @@ impl<'a> Checker<'a> {
             moves: self.move_sites.clone(),
             scope_stack: vec![],
             scope_seed,
+            temp_extended: HashSet::new(),
         };
         let entry = low.new_node();
         let exit = low.new_node();
@@ -1608,6 +1638,11 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                             // 借用元がスコープを抜けている (関数の仮引数や、
                             // `$temp` のような一時値はスコープに登録されない)。
                             if stt.scope.contains(&l.root) {
+                                continue;
+                            }
+                            // `let x = &<一時値>` / `match &<一時値> { .. }` で束縛した
+                            // 変数が持つ一時値は、その変数のスコープまで生きる。
+                            if l.root == "$temp" && low.temp_extended.contains(v) {
                                 continue;
                             }
                             out.push((*line, format!("use of `{root}` borrows `{}` which does not live long enough", l.root)));
