@@ -18000,7 +18000,8 @@ fn t.bytes(a: &str, b: &str) -> bool uses [] panics never\n    a.as_bytes() == b
 
 #[test]
 fn kir_get_on_vec_of_owning_elements_is_refused_with_a_reason() {
-    // 所有物を持つ要素の `get` は、要素の写しを Option に入れると二重解放になるので拒否する。
+    // 所有物を持つ要素の `get` は、要素の写しを Option に入れると二重解放になる。借用で束縛する `match v.get(i) { Some(x) => .. }` 以外
+    // (ここでは構造体パターンで要素を分解する形) は拒否する。
     let src = "type t.Item\n    name: alloc.string.String<std.alloc.System>\n    v: u32\nend t.Item\n\n\
 fn t.make() -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(v.push(t.Item { name: s, v: 1u32 }))\n    v\nend t.make\n\n\
 fn t.pick(i: usize) -> u32 uses [alloc] panics never\n    let v = t.make()\n    match v.get(i) {\n        None => 0u32\n        Some(t.Item { name: _, v: x }) => x\n    }\nend t.pick\n\n\
@@ -18011,6 +18012,210 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n   
     let k = run(&["kir", "t.pick", "--run", "0"], &t.0);
     assert_eq!(k.status.code(), Some(1), "{}", text(&k.stdout));
     assert!(text(&k.stderr).contains("所有物を持つ"), "{}", text(&k.stderr));
+}
+
+const KIR_BORROW_FNS: &str = "type t.Item
+    name: alloc.string.String<std.alloc.System>
+    v: u32
+end t.Item
+
+fn t.word() -> alloc.string.String<std.alloc.System> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"abc\"))
+    s
+end t.word
+
+fn t.names(n: u32) -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(t.word()))
+        i = i.wrapping_add(1u32)
+    }
+    v
+end t.names
+
+fn t.items(n: u32) -> alloc.vec.Vec<t.Item, std.alloc.System> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(t.Item { name: t.word(), v: i }))
+        i = i.wrapping_add(1u32)
+    }
+    v
+end t.items
+
+fn t.get_str(n: u32, i: usize) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    match v.get(i) {
+        Some(s) => s.len()
+        None => 99usize
+    }
+end t.get_str
+
+fn t.get_item(n: u32, i: usize) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    match v.get(i) {
+        Some(it) => it.name.len().wrapping_add(usize.from_u32(it.v))
+        None => 99usize
+    }
+end t.get_item
+
+fn t.sum_names(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut total = 0usize
+    for s in &v {
+        total = total.wrapping_add(s.len())
+    }
+    total
+end t.sum_names
+
+fn t.sum_names_iter(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut total = 0usize
+    for s in v.iter() {
+        total = total.wrapping_add(s.len())
+    }
+    total
+end t.sum_names_iter
+
+fn t.sum_items(n: u32) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    let mut total = 0usize
+    for it in &v {
+        total = total.wrapping_add(it.name.len())
+    }
+    total
+end t.sum_items
+
+fn t.sum_scalar(n: u32) -> u32 uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(i))
+        i = i.wrapping_add(1u32)
+    }
+    let mut total = 0u32
+    for x in &v {
+        total = total.wrapping_add(*x)
+    }
+    total
+end t.sum_scalar
+
+fn t.name_len(s: &alloc.string.String<std.alloc.System>) -> usize uses [] panics never
+    s.len()
+end t.name_len
+
+fn t.item_len(i: &t.Item) -> usize uses [] panics never
+    i.name.len()
+end t.item_len
+
+fn t.idx_str(n: u32, i: usize) -> usize uses [alloc] panics may
+    let v = t.names(n)
+    v[i].len()
+end t.idx_str
+
+fn t.idx_item(n: u32, i: usize) -> usize uses [alloc] panics may
+    let v = t.items(n)
+    v[i].name.len().wrapping_add(usize.from_u32(v[i].v))
+end t.idx_item
+
+fn t.idx_ref(n: u32, i: usize) -> usize uses [alloc] panics may
+    let v = t.items(n)
+    let w = t.names(n)
+    t.item_len(&v[i]).wrapping_add(t.name_len(&w[i]))
+end t.idx_ref
+
+fn t.get_loop(n: u32) -> usize uses [alloc] panics never
+    let v = t.items(n)
+    let mut total = 0usize
+    let mut i = 0usize
+    while i < usize.from_u32(n).wrapping_add(2usize) {
+        match v.get(i) {
+            Some(it) => {
+                total = total.wrapping_add(it.name.len())
+            }
+            None => {
+                total = total.wrapping_add(100usize)
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    total
+end t.get_loop
+
+fn t.mutate_ok(n: u32) -> usize uses [alloc] panics never
+    let mut v = t.names(n)
+    let a = match v.get(0usize) {
+        Some(s) => s.len()
+        None => 0usize
+    }
+    core.mem.drop(v.push(t.word()))
+    a.wrapping_add(v.len())
+end t.mutate_ok
+
+fn t.nested(n: u32) -> usize uses [alloc] panics never
+    let v = t.names(n)
+    let mut total = 0usize
+    for a in &v {
+        for b in v.iter() {
+            total = total.wrapping_add(a.len()).wrapping_add(b.len())
+        }
+    }
+    total
+end t.nested
+
+";
+
+#[test]
+fn kir_borrow_owned_elems_match_tree_walker() {
+    // 所有物を持つ要素の Vec (`Vec<String>` / String を持つ構造体の Vec) の `get` / 添字 / `for` は、要素の写しでなく番地 (借用) で下ろす。
+    // 木走査と値が一致し、参照実行器が漏れ・二重解放を内部エラーにしない (`--run` / `--native`、ASan があればそれも)。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.get_str", &["3","1"], "3usize", "3"),
+        ("t.get_str", &["3","7"], "99usize", "99"),
+        ("t.get_str", &["0","0"], "99usize", "99"),
+        ("t.get_item", &["3","2"], "5usize", "5"),
+        ("t.get_item", &["3","3"], "99usize", "99"),
+        ("t.get_loop", &["3"], "209usize", "209"),
+        ("t.get_loop", &["0"], "200usize", "200"),
+        ("t.sum_names", &["3"], "9usize", "9"),
+        ("t.sum_names", &["0"], "0usize", "0"),
+        ("t.sum_names_iter", &["4"], "12usize", "12"),
+        ("t.sum_items", &["5"], "15usize", "15"),
+        ("t.sum_scalar", &["5"], "10u32", "10"),
+        ("t.idx_str", &["3","1"], "3usize", "3"),
+        ("t.idx_item", &["3","1"], "4usize", "4"),
+        ("t.idx_ref", &["3","1"], "6usize", "6"),
+        ("t.mutate_ok", &["3"], "7usize", "7"),
+        ("t.nested", &["3"], "54usize", "54"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let last = args.len() - 1;
+        let call = format!("{}({})", f, args.iter().enumerate().map(|(k, a)| if args.len() == 2 && k == last { format!("{}usize", a) } else { format!("{}u32", a) }).collect::<Vec<_>>().join(", "));
+        let body = format!("    core.check.eq({}, {})\n", call, lit);
+        let main = format!("fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", body);
+        let t = Tmp::new(&format!("kir_borrow_{}", i), &format!("{}{}", KIR_BORROW_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_borrow_owned_elems_out_of_range_index_panics_like_tree_walker() {
+    // 範囲外の添字 `v[i]` は、借用を作る前の境界の検査で panic する (終了コード 101)。
+    let main = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq(t.idx_str(3u32, 5usize), 3usize)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_borrow_oob", &format!("{}{}", KIR_BORROW_FNS, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(101), "tree-walker: {}", text(&o.stderr));
+    let k = kir_run(&["kir", "t.idx_str", "--run", "3", "5"], &t.0);
+    assert_eq!(k.status.code(), Some(101), "kir: {}", text(&k.stderr));
+    assert!(text(&k.stderr).contains("index out of bounds"), "{}", text(&k.stderr));
 }
 
 #[test]

@@ -1786,7 +1786,7 @@ pub(super) fn get_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]
     };
     if owns_heap(lw, elem) {
         // 要素の写しを Option に入れると、Option が所有物を持つ型になり、match などで解放されて要素と二重解放になる。
-        return lw.err(line, format!("get の要素の型 {} は所有物を持つ (借用の Option<&T> は値の写しで持てない)", elem.name()));
+        return lw.err(line, format!("get の要素の型 {} は所有物を持つ (借用の Option<&T> は値の写しで持てない。`match v.get(i) {{ Some(x) => .. None => .. }}` の形なら借用で下ろせる)", elem.name()));
     }
     if args.len() != 1 {
         return lw.err(line, "get の引数の個数が違う");
@@ -2052,7 +2052,7 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         let zero = lw.emit(Ty::Usize, Op::Const(0));
         return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc: None, by_ref: false }, name, &f[2]);
     }
-    // `for x in &v` / `for x in &mut v` / `for x in v.iter()` (v は局所変数): 要素の借用を回す。`v` を値で回す形とは、所有物の要素の扱いが違う。
+    // `for x in &v` / `for x in v.iter()` (v は局所変数): 要素の借用を回す。`v` を値で回す形とは、所有物の要素の扱いが違う。
     let (it, by_ref) = borrowed_iter(it);
     // `v.iter()` が `Call` の経路 `v.iter` の形のとき、受け手の局所は経路の先頭
     let call_iter = by_ref && nname(it) == "Call";
@@ -2112,15 +2112,15 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数・利用者の反復子の変数だけ段階 1 の対象")
 }
 
-/// `&v` / `&mut v` / `v.iter()` / `v.iter_mut()` なら (`v`, true)。それ以外はそのまま (式, false)。
+/// `&v` / `v.iter()` (共有の借用) なら (`v`, true)。それ以外はそのまま (式, false)。
 fn borrowed_iter(it: &V) -> (&V, bool) {
     match nname(it) {
-        "Unary" if matches!(st(&nf(it)[0]).as_str(), "&" | "&mut") => (&nf(it)[1], true),
-        "MCall" if matches!(st(&nf(it)[1]).as_str(), "iter" | "iter_mut") && items(&nf(it)[2]).is_empty() => (&nf(it)[0], true),
+        "Unary" if st(&nf(it)[0]) == "&" => (&nf(it)[1], true),
+        "MCall" if st(&nf(it)[1]) == "iter" && items(&nf(it)[2]).is_empty() => (&nf(it)[0], true),
         // `v.iter()` は `Call` の経路 `v.iter` の形にもなる
         "Call" if nname(&nf(it)[0]) == "Path" && items(&nf(it)[1]).is_empty() => {
             let segs = strs(&nf(&nf(it)[0])[0]);
-            if segs.len() == 2 && matches!(segs[1].as_str(), "iter" | "iter_mut") {
+            if segs.len() == 2 && segs[1] == "iter" {
                 (it, true)
             } else {
                 (it, false)
@@ -2141,7 +2141,7 @@ fn path1_name(e: &V) -> Option<String> {
 
 /// 木 `v` の中で、名前 `name` の局所を変えうる形があるか: 代入、`&mut name`、読むだけとは限らないメソッド呼び出し。
 pub(super) fn body_mutates(v: &V, name: &str) -> bool {
-    const READ_ONLY: [&str; 9] = ["len", "is_empty", "get", "as_slice", "as_str", "first", "last", "contains", "capacity"];
+    const READ_ONLY: [&str; 10] = ["len", "is_empty", "get", "as_slice", "as_str", "first", "last", "contains", "capacity", "iter"];
     match v {
         V::Node(n, fs, _, _) => {
             let hit = match *n {
