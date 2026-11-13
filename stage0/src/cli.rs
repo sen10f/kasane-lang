@@ -823,7 +823,7 @@ fn cmd_test(args: &[String]) -> i32 {
         .collect();
     tests.sort_by(|&a, &b| prog.defs[a].name.cmp(&prog.defs[b].name));
     let mut failed = 0;
-    let (mut n_native, mut n_bundle) = (0, 0);
+    let (mut n_llvm, mut n_native, mut n_bundle) = (0, 0, 0);
     for ti in &tests {
         let name = prog.defs[*ti].name.clone();
         let mut results: Vec<Option<String>> = vec![];
@@ -836,28 +836,40 @@ fn cmd_test(args: &[String]) -> i32 {
             Err(Ctl::Exit(c)) => Some(format!("exit({})", c)),
             _ => None,
         });
-        // `--both` の相手は機械語 (Cranelift の実行ファイル)。作れない機能を含むテストだけバンドルに落とす。
+        // `--both` の相手は、KIR に下ろせればその LLVM の実行ファイル。下ろせなければ Cranelift の実行ファイル、
+        // それも作れなければバンドル (どれも作れない機能を含むテストだけ)。
         let mut other = "";
         let mut label = String::new();
         if both {
-            match build_native_test(&root, &prog, &user, *ti) {
+            match build_llvm_test(&root, &prog, &user, *ti) {
                 Ok(exe) => {
                     results.push(run_native_test(&root, &exe));
-                    other = "native";
-                    label = "both: native".into();
+                    other = "llvm";
+                    label = "both: llvm".into();
                 }
-                Err(why) => {
-                    results.push(run_in_bundle(&root, &name, &l));
-                    other = "bundle";
-                    label = format!("both: bundle (native skipped: {})", why.lines().next().unwrap_or("").trim());
+                Err(why_llvm) => {
+                    let why_llvm = first_line(&why_llvm);
+                    match build_native_test(&root, &prog, &user, *ti) {
+                        Ok(exe) => {
+                            results.push(run_native_test(&root, &exe));
+                            other = "native";
+                            label = format!("both: native (llvm skipped: {})", why_llvm);
+                        }
+                        Err(why) => {
+                            results.push(run_in_bundle(&root, &name, &l));
+                            other = "bundle";
+                            label = format!("both: bundle (llvm skipped: {}; native skipped: {})", why_llvm, first_line(&why));
+                        }
+                    }
                 }
             }
         }
         let suffix = if label.is_empty() { String::new() } else { format!(" ({})", label) };
-        if other == "native" {
-            n_native += 1;
-        } else if other == "bundle" {
-            n_bundle += 1;
+        match other {
+            "llvm" => n_llvm += 1,
+            "native" => n_native += 1,
+            "bundle" => n_bundle += 1,
+            _ => {}
         }
         let disagree = results.len() > 1 && backends_disagree(&results[0], &results[1]);
         if disagree {
@@ -872,9 +884,14 @@ fn cmd_test(args: &[String]) -> i32 {
     }
     println!("\n{} passed; {} failed", tests.len() - failed, failed);
     if both {
-        println!("compared with: native {}, bundle fallback {}", n_native, n_bundle);
+        println!("compared with: llvm {}, native {}, bundle fallback {}", n_llvm, n_native, n_bundle);
     }
     if failed > 0 { 1 } else { 0 }
+}
+
+/// 理由の最初の行 (前後の空白を除く)。
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or("").trim()
 }
 
 /// 成否が違う、または両方失敗でも理由の分類が違えば不一致。
@@ -979,8 +996,7 @@ fn build_native_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> 
     add_fmt_std(prog, &mut funcs, &mut tdefs);
     let dir = root.join("target").join("test-native");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stem: String = d.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' { c } else { '_' }).collect();
-    let exe = dir.join(format!("{}_{}{}", ti, stem, if cfg!(windows) { ".exe" } else { ".native" }));
+    let exe = dir.join(format!("{}_{}{}", ti, test_stem(&d.name), if cfg!(windows) { ".exe" } else { ".native" }));
     let _ = fs::remove_file(&exe);
     let out = norm(&exe);
     // clif は未対応の形に出会うと Err を返す。万一それ以外で落ちても、バンドルへ戻すだけにする。
@@ -996,6 +1012,8 @@ fn build_native_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> 
 fn run_native_test(root: &Path, exe: &Path) -> Option<String> {
     match std::process::Command::new(exe).current_dir(root).output() {
         Ok(o) if o.status.success() => None,
+        // 102 は stack 超過 (機械語は stderr に `stack overflow` と書く)。木走査は `Exit(102)` なので、終了の種類で比べる。
+        Ok(o) if o.status.code() == Some(102) => Some("exit(102)".into()),
         Ok(o) => {
             let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
             Some(if e.is_empty() { format!("exit {}", o.status.code().unwrap_or(-1)) } else { e })
@@ -1878,6 +1896,29 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
 /// 下ろせない関数が 1 つでもあれば、理由を `Err` で返す (呼び出し側が既定の経路へ退避する)。
 fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool) -> Result<(), String> {
     let lo = crate::kir_lower::lower_program(prog, user, Some(entry));
+    llvm_exe(lo, entry, exe, if release { "-O2" } else { "-O1" })
+}
+
+/// `ksn test --both` の LLVM 側: テスト `ti` を入口にして KIR → LLVM → clang の実行ファイルを作る (`target/test-llvm/`)。
+/// 下ろせない・clang が無いなどで作れなければ理由を返す (呼び出し側が Cranelift・バンドルへ退避する)。
+fn build_llvm_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> Result<PathBuf, String> {
+    let d = &prog.defs[ti];
+    let lo = crate::kir_lower::lower_test(prog, user, ti);
+    let dir = root.join("target").join("test-llvm");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let exe = dir.join(format!("{}_{}{}", ti, test_stem(&d.name), if cfg!(windows) { ".exe" } else { ".native" }));
+    let _ = fs::remove_file(&exe);
+    llvm_exe(lo, &d.name, &exe, "-O1")?;
+    Ok(exe)
+}
+
+/// テストの FQN を、実行ファイル名に使える形にする。
+fn test_stem(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' { c } else { '_' }).collect()
+}
+
+/// 下ろし済みの `lo` から、入口 `entry` の実行ファイル `exe` を作る。入口が下ろせなければ、根の理由を `Err` で返す。
+fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str) -> Result<(), String> {
     if lo.module.find(entry).is_none() {
         // 理由の鎖 (`呼び先 X が未対応`) をたどって、根の理由を出す。
         let mut key = entry.to_string();
@@ -1899,7 +1940,7 @@ fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: 
     }
     let m = lo.module.reachable_from(&[entry, crate::kir_lower::debug::ENTRY_DEBUG]);
     let ll = crate::kir_llvm::emit_program(&m, entry)?;
-    clang_ll(&ll, exe, if release { "-O2" } else { "-O1" })
+    clang_ll(&ll, exe, opt)
 }
 
 /// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。
@@ -2026,5 +2067,51 @@ mod both_tests {
         // 片方だけ失敗。
         assert!(backends_disagree(&None, &s("panic: assertion failed")));
         assert!(!backends_disagree(&None, &None));
+    }
+
+    #[test]
+    fn llvm_panic_texts_classify_like_the_tree_walker() {
+        // KIR の LLVM 出力 (`ksn.panic.*` と `eprint` の文言) と、木走査の文言が同じ分類になること。
+        // `kir_llvm::PANICS` と `interp.rs` の文言を並べる (片方を変えたらここが落ちる)。
+        let pairs = [
+            ("panic: attempt to add with overflow", "attempt to add with overflow", "overflow"),
+            ("panic: attempt to subtract with overflow", "attempt to subtract with overflow", "overflow"),
+            ("panic: attempt to multiply with overflow", "attempt to multiply with overflow", "overflow"),
+            ("panic: attempt to divide with overflow", "attempt to divide with overflow", "overflow"),
+            ("panic: attempt to calculate the remainder with overflow", "attempt to calculate the remainder with overflow", "overflow"),
+            ("panic: attempt to negate with overflow", "attempt to negate with overflow", "overflow"),
+            ("panic: attempt to divide by zero", "attempt to divide by zero", "divide"),
+            (
+                "panic: attempt to calculate the remainder with a divisor of by zero",
+                "attempt to calculate the remainder with a divisor of by zero",
+                "divide",
+            ),
+            (
+                "panic: index out of bounds: the len is 3 but the index is 5",
+                "index out of bounds: the len is 3 but the index is 5",
+                "index",
+            ),
+            (
+                "panic: called `Option::unwrap()` on a `None` value",
+                "called `Option::unwrap()` on a `None` value",
+                "unwrap",
+            ),
+            (
+                "panic: called `Result::unwrap()` on an `Err` value: 5",
+                "called `Result::unwrap()` on an `Err` value: 5",
+                "unwrap",
+            ),
+            ("panic: assertion failed: left: 1, right: 2", "assertion failed: left: 1, right: 2", "assert"),
+            ("panic: assertion failed: condition is false", "assertion failed: condition is false", "assert"),
+        ];
+        for (llvm, tree, class) in pairs {
+            assert_eq!(fail_class(llvm), class, "{}", llvm);
+            assert_eq!(fail_class(tree), class, "{}", tree);
+            assert!(!backends_disagree(&s(llvm), &s(tree)), "{} / {}", llvm, tree);
+        }
+        // 終了の種類 (`exit(102)` は stack 超過、木走査の `Exit(102)` と同じ)。
+        assert_eq!(fail_class("exit(102)"), "exit 102");
+        assert!(!backends_disagree(&s("exit(102)"), &s("exit(102)")));
+        assert!(backends_disagree(&s("exit(102)"), &s("panic: attempt to add with overflow")));
     }
 }

@@ -63,11 +63,12 @@ pub struct Lowered {
 }
 
 /// 型表を作る。ユーザの関数だけを検査し、(FQN, 式 ID) → 型 を返す。
-fn type_table(p: &Program, user: &[usize]) -> BTreeMap<(String, u32), ExprTy> {
+/// 型表を作る。`test_def` (テストを入口にするとき) は、テストの本体も検査する。
+fn type_table(p: &Program, user: &[usize], test_def: Option<usize>) -> BTreeMap<(String, u32), ExprTy> {
     let mut tk = TypeCk::new(p);
     for &i in user {
         let d = &p.defs[i];
-        if d.kw == "fn" && d.body.is_some() {
+        if (d.kw == "fn" && d.body.is_some()) || test_def == Some(i) {
             tk.check_def(i);
         }
     }
@@ -1138,13 +1139,23 @@ pub fn lower_user(p: &Program, user: &[usize]) -> Lowered {
 /// `lower_user` に加えて、`entry` (入口の関数の FQN) が `Result<T, E>` を返すなら、`E` の Debug 表示の関数 (`<E>.$debug`) も作る。
 /// 作れない (`derive [Debug]` がない、未対応の型を含むなど) ときは、入口を未対応にする (理由付き)。
 pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowered {
-    let tys = type_table(p, user);
+    lower_defs(p, user, entry, None)
+}
+
+/// `ksn test --both` の機械語側: テスト本体 `test_def` (定義の添字) を入口にして下ろす。
+/// テストは引数を持たず、戻り値は `()` (`test` の本体)。入口の名前はテストの FQN。
+pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
+    lower_defs(p, user, Some(&p.defs[test_def].name), Some(test_def))
+}
+
+fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
+    let tys = type_table(p, user, test_def);
     let aggs = RefCell::new(agg::AggTab::new(user));
     let mut ok: Vec<(Func, BTreeSet<String>)> = vec![];
     let mut bad: Vec<(String, String)> = vec![];
     for &i in user {
         let d = &p.defs[i];
-        if !is_candidate(d) {
+        if !is_candidate(d) && test_def != Some(i) {
             continue;
         }
         match Lw::new(p, &tys, &aggs, d).lower() {
@@ -1193,11 +1204,12 @@ pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowere
 
 /// 入口 `e` の戻り値が `Result<T, E>` なら、`E` の Debug 表示の関数を `ok` に足す。
 fn debug_of_entry(p: &Program, aggs: &RefCell<agg::AggTab>, e: &str, ok: &mut Vec<(Func, BTreeSet<String>)>, pos: usize) -> Result<(), String> {
+    // 戻り値が `()` の入口 (テストの本体を含む) は、Debug 表示の関数を要らない。
+    let Ty::Res(_, err) = ok[pos].0.ret else { return Ok(()) };
     let d = p.defs.iter().find(|d| d.name == e && d.kw == "fn").ok_or_else(|| format!("入口 {} の定義がない", e))?;
     if !d.params.is_empty() {
         return Err("入口の関数に引数がある".to_string());
     }
-    let Ty::Res(_, err) = ok[pos].0.ret else { return Ok(()) };
     let rt = from_v(&d.ret, &HashSet::new());
     let Src::Named(n, args) = &rt else { return Err("入口の戻り値の型が読めない".to_string()) };
     if n != "Result" || args.len() != 2 {

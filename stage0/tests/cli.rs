@@ -7690,7 +7690,8 @@ end t.main.test_scalar_display
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("test t.main.test_scalar_display ... ok (both: native)"), "{}", out);
+    // 配列の繰り返し式は KIR に下ろせないので、機械語 (Cranelift) で比べる。
+    assert!(out.contains("test t.main.test_scalar_display ... ok (both: native (llvm skipped: "), "{}", out);
 }
 
 /// Formatter の境界: i64.MIN / u64.MAX / 0 / マルチバイトの char / バッファがちょうど・不足 / debug の char。
@@ -7752,7 +7753,7 @@ end t.main.test_fmt_edges
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("test t.main.test_fmt_edges ... ok (both: native)"), "{}", out);
+    assert!(out.contains("test t.main.test_fmt_edges ... ok (both: native (llvm skipped: "), "{}", out);
 }
 
 /// `Display` の char は文字そのもの。`print_line` と `to_string` の出力を確かめる。
@@ -8109,11 +8110,11 @@ end t.main.test_d_to_string
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     for name in ["test_a_option_result_cmp", "test_b_slice_count", "test_c_str_derived_cmp"] {
-        // 機械語とインタプリタの結果が一致する。
-        assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
+        // 機械語とインタプリタの結果が一致する (KIR に下ろせないので Cranelift で比べる)。
+        assert!(out.contains(&format!("t.main.{} ... ok (both: native (llvm skipped: ", name)), "{}", out);
     }
     // 解放が要る値を作る `match` (`Ok(o) => o` / `Err(_e) => ..`) は機械語で動き、インタプリタと一致する。
-    assert!(out.contains("t.main.test_d_to_string ... ok (both: native)"), "{}", out);
+    assert!(out.contains("t.main.test_d_to_string ... ok (both: native (llvm skipped: "), "{}", out);
 }
 
 #[test]
@@ -8228,7 +8229,7 @@ end t.main.test_h_count_boundaries
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     for name in ["test_e_option_boundaries", "test_f_result_boundaries", "test_g_str_boundaries", "test_h_count_boundaries"] {
-        assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
+        assert!(out.contains(&format!("t.main.{} ... ok (both: native (llvm skipped: ", name)), "{}", out);
     }
 }
 
@@ -8322,7 +8323,8 @@ end t.main.test_k_place_scrutinee_fresh_arms
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert_eq!(out.matches("(both: native)").count(), 6, "{}", out);
+    // 6 本とも機械語 (Cranelift) で比べられるが、KIR に下ろせないものは Cranelift へ退避する理由が出る。
+    assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 6, "{}", out);
     assert!(!out.contains("both: bundle"), "{}", out);
     assert!(out.contains("6 passed; 0 failed"), "{}", out);
 }
@@ -8345,7 +8347,8 @@ end t.main.test_j_place_scrutinee_moves
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("t.main.test_j_place_scrutinee_moves ... ok (both: bundle (native skipped: "), "{}", out);
+    assert!(out.contains("t.main.test_j_place_scrutinee_moves ... ok (both: bundle (llvm skipped: "), "{}", out);
+    assert!(out.contains("; native skipped: t.main.test_j_place_scrutinee_moves: "), "{}", out);
 }
 
 #[test]
@@ -8737,7 +8740,7 @@ end t.main.test_add_const_cast_const
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("t.main.test_add_const_cast_const ... ok (both: native)"), "{}", out);
+    assert!(out.contains("t.main.test_add_const_cast_const ... ok (both: native (llvm skipped: "), "{}", out);
 }
 
 #[test]
@@ -9183,15 +9186,19 @@ fn fmath_functions_agree_across_backends_and_match_known_values() {
         .unwrap();
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}", out);
-    // 6 本とも機械語で比べていること (バンドルへ退避した「空振り」を許さない)。
-    assert_eq!(out.matches("(both: native)").count(), 6, "{}", out);
+    // 6 本とも LLVM (clang が無ければ Cranelift) で比べていること (バンドルへ退避した「空振り」を許さない)。
+    if clang_available() {
+        assert_eq!(out.matches("(both: llvm)").count(), 6, "{}", out);
+        assert!(out.contains("llvm 6, native 0, bundle fallback 0"), "{}", out);
+    } else {
+        assert_eq!(out.matches("(both: native").count(), 6, "{}", out);
+    }
     assert!(!out.contains("both: bundle"), "{}", out);
     assert!(out.contains("6 passed; 0 failed"), "{}", out);
-    assert!(out.contains("native 6, bundle fallback 0"), "{}", out);
     let _ = fs::remove_dir_all(&cache);
 }
 
-// ---- `test --both`: 機械語 (Cranelift の実行ファイル) との比較と、バンドルへの退避 ----
+// ---- `test --both`: 機械語 (KIR → LLVM、作れなければ Cranelift) との比較と、バンドルへの退避 ----
 
 const BOTH_SRC: &str = "fn t.main() -> () uses [] panics never
 end t.main
@@ -9202,20 +9209,89 @@ end t.main.test_ok
 ";
 
 #[test]
-fn test_both_runs_clif_tests_as_native_executables() {
+fn test_both_runs_kir_tests_as_llvm_executables() {
+    if !clang_available() {
+        eprintln!("skip: clang が PATH に無いので、LLVM の比較は飛ばす");
+        return;
+    }
     let src = format!("{}\ntest t.main.test_fail\n    core.check.eq(1u8, 2u8)\nend t.main.test_fail\n", BOTH_SRC);
-    let t = Tmp::new("both_native", &src);
+    let t = Tmp::new("both_llvm", &src);
     // `--both` を付けなければ、出力の形式は従来どおり (注記なし)。
     let plain = run(&["test"], &t.0);
     assert!(text(&plain.stdout).contains("test t.main.test_ok ... ok\n"), "{}", text(&plain.stdout));
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(1), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("test t.main.test_ok ... ok (both: native)"), "{}", out);
-    assert!(out.contains("test t.main.test_fail ... FAILED: assertion failed: left: 1, right: 2 (both: native)"), "{}", out);
+    assert!(out.contains("test t.main.test_ok ... ok (both: llvm)"), "{}", out);
+    assert!(out.contains("test t.main.test_fail ... FAILED: assertion failed: left: 1, right: 2 (both: llvm)"), "{}", out);
     assert!(out.contains("1 passed; 1 failed"), "{}", out);
+    assert!(out.contains("compared with: llvm 2, native 0, bundle fallback 0"), "{}", out);
+    assert!(!out.contains("both: bundle") && !out.contains("disagree"), "{}", out);
+    assert!(t.0.join("target").join("test-llvm").is_dir(), "no llvm test executable: {}", out);
+}
+
+#[test]
+fn test_both_compares_llvm_panics_with_the_tree_walker() {
+    // KIR (LLVM) の失敗の文言は木走査と同じ。除算・unwrap・overflow・assert が、木走査と同じ文言・同じ分類で出る。
+    let src = format!(
+        "{}\ntest t.main.test_div0\n    let z = core.num.u8.MIN\n    core.check.eq(7u8 / z, 0u8)\nend t.main.test_div0\n\n\
+         test t.main.test_unwrap\n    let o: Option<u8> = None\n    core.check.eq(o.unwrap(), 0u8)\nend t.main.test_unwrap\n\n\
+         test t.main.test_overflow\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\nend t.main.test_overflow\n\n\
+         test t.main.test_assert\n    core.check.eq(1u8, 2u8)\nend t.main.test_assert\n",
+        BOTH_SRC
+    );
+    if !clang_available() {
+        eprintln!("skip: clang が PATH に無いので、LLVM の比較は飛ばす");
+        return;
+    }
+    let t = Tmp::new("both_llvm_panics", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_div0 ... FAILED: attempt to divide by zero (both: llvm)"), "{}", out);
+    assert!(out.contains("test t.main.test_unwrap ... FAILED: called `Option::unwrap()` on a `None` value (both: llvm)"), "{}", out);
+    assert!(out.contains("test t.main.test_overflow ... FAILED: attempt to add with overflow (both: llvm)"), "{}", out);
+    assert!(out.contains("test t.main.test_assert ... FAILED: assertion failed: left: 1, right: 2 (both: llvm)"), "{}", out);
+    assert!(!out.contains("disagree"), "{}", out);
+    assert!(out.contains("compared with: llvm 5, native 0, bundle fallback 0"), "{}", out);
+}
+
+#[test]
+fn test_both_falls_back_from_llvm_to_cranelift_with_the_reason() {
+    // f64 の比較は KIR に下ろせない (失敗の文言に値を出せない) ので、LLVM は退避する。Cranelift で作れる。
+    // 退避した Cranelift の文言 (`arithmetic overflow`) と木走査の文言は違うが、分類が同じなので一致になる。
+    let src = format!(
+        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq(1.0f64, 1.0f64)\nend t.main.test_mixed\n",
+        BOTH_SRC
+    );
+    let t = Tmp::new("both_llvm_to_native", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_mixed ... FAILED: attempt to add with overflow (both: native (llvm skipped: "), "{}", out);
+    // `BOTH_SRC` の test_ok は LLVM で比べる (clang が無ければ Cranelift)。
+    if clang_available() {
+        assert!(out.contains("compared with: llvm 1, native 1, bundle fallback 0"), "{}", out);
+    } else {
+        assert!(out.contains("compared with: llvm 0, native 2, bundle fallback 0"), "{}", out);
+    }
+    assert!(!out.contains("disagree"), "{}", out);
     assert!(!out.contains("both: bundle"), "{}", out);
-    assert!(t.0.join("target").join("test-native").is_dir(), "no native test executable: {}", out);
+}
+
+#[test]
+fn test_both_stack_overflow_is_exit_102_on_both_sides() {
+    // 木走査は深さ上限で `Exit(102)`、LLVM は終了コード 102 (stderr に `stack overflow`)。どちらも終了の種類 `exit(102)` で比べて一致する。
+    let src = "fn t.down(n: u64) -> u64 uses [] panics never stack 4096\n    if n == 0u64 {\n        return 0u64\n    }\n    t.down(n.wrapping_sub(1u64)).wrapping_add(1u64)\nend t.down\n\n\
+               fn t.main() -> () uses [] panics never\nend t.main\n\n\
+               test t.main.test_deep\n    core.check.eq(t.down(10000u64), 10000u64)\nend t.main.test_deep\n";
+    let t = Tmp::new("both_stack_102", src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{}{}", out, text(&o.stderr));
+    // 失敗の表示は木走査の結果 (`exit(102)`)。機械語も同じ終了の種類なので、不一致にはならない。
+    assert!(out.contains("test t.main.test_deep ... FAILED: exit(102) (both: llvm)"), "{}", out);
+    assert!(!out.contains("disagree"), "{}", out);
 }
 
 #[test]
@@ -9230,29 +9306,38 @@ fn test_both_compares_failure_classes_when_both_backends_fail() {
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(1), "{}{}", out, text(&o.stderr));
-    // 文言は違う (interp: `attempt to add with overflow` / native: `arithmetic overflow`) が、分類が同じなので disagree にならない。
-    assert!(out.contains("test t.main.test_overflow ... FAILED: attempt to add with overflow (both: native)"), "{}", out);
-    assert!(out.contains("test t.main.test_assert ... FAILED: assertion failed: left: 1, right: 2 (both: native)"), "{}", out);
+    // 両方とも失敗し、文言が同じ (木走査と LLVM) なら一致。分類が違う組み合わせは `both_tests` の単体テストで確かめる。
+    if clang_available() {
+        assert!(out.contains("test t.main.test_overflow ... FAILED: attempt to add with overflow (both: llvm)"), "{}", out);
+        assert!(out.contains("test t.main.test_assert ... FAILED: assertion failed: left: 1, right: 2 (both: llvm)"), "{}", out);
+        assert!(out.contains("compared with: llvm 3, native 0, bundle fallback 0"), "{}", out);
+    }
     assert!(!out.contains("disagree"), "{}", out);
-    assert!(out.contains("compared with: native 3, bundle fallback 0"), "{}", out);
 }
 
 #[test]
-fn test_both_falls_back_to_the_bundle_for_a_test_clif_cannot_build() {
-    // 128 ビット整数は clif で扱えるようになった (native)。まだ clif が扱えない機能 (Vec など) のテストだけバンドルで比べる。
+fn test_both_falls_back_to_the_bundle_when_llvm_and_cranelift_both_cannot_build() {
+    // 128 ビットの除算・剰余は KIR (LLVM) も Cranelift も持たないので、バンドルで比べる。
+    // i128 の比較は KIR に下ろせないので Cranelift で比べる (LLVM の理由を出す)。
     let src = format!(
         "{}\ntest t.main.test_wide\n    let x: i128 = 5i128\n    core.check.eq(x, 5i128)\nend t.main.test_wide\n\
-         test t.main.test_vec\n    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    core.check.eq(v.len(), 0usize)\nend t.main.test_vec\n",
+         test t.main.test_div\n    let m = core.num.i128.MIN\n    core.check.eq(m.checked_rem(-1i128), None)\nend t.main.test_div\n",
         BOTH_SRC
     );
     let t = Tmp::new("both_bundle", &src);
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("test t.main.test_ok ... ok (both: native)"), "{}", out);
-    assert!(out.contains("test t.main.test_wide ... ok (both: native)"), "{}", out);
-    assert!(out.contains("test t.main.test_vec ... ok (both: bundle (native skipped: "), "{}", out);
+    assert!(out.contains("test t.main.test_wide ... ok (both: native (llvm skipped: "), "{}", out);
+    assert!(out.contains("test t.main.test_div ... ok (both: bundle (llvm skipped: "), "{}", out);
+    assert!(out.contains("; native skipped: t.main.test_div: 128-bit method i128.checked_rem"), "{}", out);
     assert!(out.contains("3 passed; 0 failed"), "{}", out);
+    if clang_available() {
+        assert!(out.contains("test t.main.test_ok ... ok (both: llvm)"), "{}", out);
+        assert!(out.contains("compared with: llvm 1, native 1, bundle fallback 1"), "{}", out);
+    } else {
+        assert!(out.contains("compared with: llvm 0, native 2, bundle fallback 1"), "{}", out);
+    }
 }
 
 /// トレイト経由の呼び出し (境界・`dyn`) の効果の検査 (4.3 / 5.1)。トレイトのメソッドの宣言 (`uses` / `panics`) で比べる。
@@ -11817,7 +11902,14 @@ fn float_specials_and_unsigned_from_str_radix_agree_with_native() {
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains(&format!("{} passed; 0 failed", checks.len())), "{}", out);
-    assert_eq!(out.matches("(both: native)").count(), checks.len(), "{}", out);
+    // 整数の比較と `from_str_radix` の一部は LLVM で比べ、浮動小数の比較や `from_str_radix` の残りは Cranelift へ退避する (理由が出る)。
+    if clang_available() {
+        assert_eq!(out.matches("(both: llvm)").count(), 3, "{}", out);
+        assert_eq!(out.matches("(both: native (llvm skipped: ").count(), 5, "{}", out);
+    } else {
+        assert_eq!(out.matches("(both: native").count(), checks.len(), "{}", out);
+    }
+    assert!(!out.contains("both: bundle"), "{}", out);
 }
 
 #[test]
@@ -12157,11 +12249,14 @@ fn min_rem_minus_one_overflows_for_every_signed_width() {
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("5 passed; 0 failed"), "{}", out);
-    for w in ["i8", "i16", "i32", "i64"] {
-        assert!(out.contains(&format!("t.main.test_{} ... ok (both: native)", w)), "{}", out);
+    if clang_available() {
+        for w in ["i8", "i16", "i32", "i64"] {
+            assert!(out.contains(&format!("t.main.test_{} ... ok (both: llvm)", w)), "{}", out);
+        }
     }
-    // x64 の Cranelift は 128 ビットの除算・剰余を持たないので、i128 はバンドルで比べる (誤った値を出さない)。
-    assert!(out.contains("t.main.test_i128 ... ok (both: bundle (native skipped: "), "{}", out);
+    // i128 は KIR (定数の値が扱えない) も Cranelift (128 ビットの除算・剰余) も持たないので、バンドルで比べる (誤った値を出さない)。
+    assert!(out.contains("t.main.test_i128 ... ok (both: bundle (llvm skipped: "), "{}", out);
+    assert!(out.contains("; native skipped: t.main.test_i128: 128-bit method i128.checked_rem"), "{}", out);
 }
 
 #[test]
@@ -12175,8 +12270,9 @@ fn i128_u128_checked_and_wrapping_native() {
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("2 passed; 0 failed"), "{}", out);
+    // 128 ビットの定数は KIR に下ろせないので、Cranelift で比べる (LLVM の理由が出る)。
     for name in ["t.main.test_i128_min", "t.main.test_u128_max"] {
-        assert!(out.contains(&format!("{name} ... ok (both: native)")), "{}", out);
+        assert!(out.contains(&format!("{name} ... ok (both: native (llvm skipped: ")), "{}", out);
     }
 }
 
@@ -12960,7 +13056,7 @@ end t.main.test_nested_user_cmp
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("2 passed; 0 failed"), "{}", out);
-    assert!(out.contains("t.main.test_nested_enum_order ... ok (both: native)"), "{}", out);
+    assert!(out.contains("t.main.test_nested_enum_order ... ok (both: native (llvm skipped: "), "{}", out);
     assert!(out.contains("ordering of t.P with a user-defined cmp"), "{}", out);
 }
 
@@ -13026,7 +13122,7 @@ end t.main.test_g_try_conv
     assert!(out.contains("7 passed; 0 failed"), "{}", out);
     assert!(!out.contains("disagree"), "{}", out);
     for name in ["test_e_cmp_shift", "test_f_neg_conv"] {
-        assert!(out.contains(&format!("t.main.{} ... ok (both: native)", name)), "{}", out);
+        assert!(out.contains(&format!("t.main.{} ... ok (both: native (llvm skipped: ", name)), "{}", out);
     }
     for (name, why) in [
         ("test_a_div", "128-bit method i128.checked_div"),
@@ -13035,7 +13131,8 @@ end t.main.test_g_try_conv
         ("test_d_mul", "128-bit * (i128)"),
         ("test_g_try_conv", "128-bit conversion u8.try_from_u128"),
     ] {
-        assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (native skipped: t.main.{}: {}", name, name, why)), "{}", out);
+        assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (llvm skipped: ", name)), "{}", out);
+        assert!(out.contains(&format!("; native skipped: t.main.{}: {}", name, why)), "{}", out);
     }
 }
 
