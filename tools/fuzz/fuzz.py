@@ -17,6 +17,11 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gen2  # noqa: E402
+
+GEN = [2]  # --gen で切り替える (1 は初版の生成器)
+
 TASKSET = "taskset -c 0-9,12-31".split()
 
 
@@ -505,7 +510,7 @@ def make_pkg(tmpdir, seed, pid):
         f.write('[package]\nname = "fuzz%d"\nversion = "0.1.0"\nedition = 1\nentry = "fuzz.main"\n' % pid)
     with open(os.path.join(root, "kasane.lock"), "w") as f:
         f.write("version = 1\n")
-    res = gen_program(rng, pid)
+    res = gen2.gen_program(rng, pid) if GEN[0] == 2 else gen_program(rng, pid)
     if res is None:
         return None
     src, params, ret, main_lits = res
@@ -595,14 +600,16 @@ def process_one(ksn, seed, pid, found_dir):
     keys = list(valid.keys())
     first = valid[keys[0]] if keys else None
     mismatch = any(valid[k] != first for k in keys[1:])
+    stats = count_features(src)
+    stats["panic"] = results["tree"][0] == 101  # 木走査が panic (終了コード 101) で終わったか
     if not mismatch:
-        return {"status": "ok", "stats": count_features(src), "lines": src.count("\n"),
+        return {"status": "ok", "stats": stats, "lines": src.count("\n"),
                 "kir_unsupported": results.get("kir", ("",))[0] == "unsupported",
                 "results": results}
     # 食い違いあり：縮小して found/ に書き出し
     small = shrink(ksn, root, src, params, ret, args, results, found_dir)
     return {"status": "mismatch", "src": small, "results": results, "args": args,
-            "stats": count_features(src), "lines": src.count("\n"),
+            "stats": stats, "lines": src.count("\n"),
             "kir_unsupported": results.get("kir", ("",))[0] == "unsupported"}
 
 
@@ -617,7 +624,9 @@ def main():
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--count", type=int, required=True)
     ap.add_argument("--jobs", type=int, default=1)
+    ap.add_argument("--gen", type=int, default=2, help="生成器の版 (2 が既定、1 は初版)")
     args = ap.parse_args()
+    GEN[0] = args.gen
 
     args.ksn = os.path.abspath(args.ksn)
     if not os.path.isfile(args.ksn):

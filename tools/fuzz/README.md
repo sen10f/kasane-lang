@@ -44,3 +44,12 @@ python -I tools/fuzz/fuzz.py \
 - `ksn check` に通るプログラムだけを対象とする（`check_fail` は生成器側の問題として報告）。
 - `tools/fuzz/found/` は gitignore に入り、コミットしない。
 - 動作確認は `stage0` で `cargo build --release` 後のビルド済みバイナリで行う。
+
+## 生成器の第 2 版 (`gen2.py`、既定)
+
+- KIR に下ろせる範囲の機能 (整数の演算、構造体の欄の読み書きと `&mut` 渡し、ペイロード付き enum と `match`、
+  `Option` と `?`、Vec の push / get / `for`、上限付きの `while`、関数の呼び出し) を、引数と前の値に依存する
+  計算として組み合わせ、中間値をすべて畳み込んだ u64 を返す。panic はまれに起きる (`+` の溢れ、範囲外の添字)。
+- 第 1 版 (`--gen 1`) は、宣言した型を使わず値が定数ばかりで、ほとんどが KIR に下ろせなかった。
+- 目安 (`--seed 2 --count 400`): 400 本すべてが KIR に下ろせ、32 本が panic で終わり、食い違いは 0。
+- KIR が未対応のため使っていないもの: `u64.try_from_i64` などの `try_from_*`、`derive [Clone]` の `clone`、浮動小数。
