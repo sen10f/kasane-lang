@@ -1196,3 +1196,12 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 ### 17.12 `core.str.from_utf8` の検証 (2026-11-13)
 - 命令 `utf8.valid p, len` (Op::Utf8Valid) は、`p` から `len` バイトを UTF-8 として検証し、正しい接頭辞の長さ (`valid_up_to`) を返す。全体が正しければ `len`。参照実行器は Rust の `str::from_utf8`、機械語は `kir_rt.c` の `ksn_utf8_valid` (Rust と同じ規則: 過長な符号化・サロゲート・U+10FFFF 超を拒む)。`from_utf8` は、結果が `len` なら `Ok(元の fat)`、違えば `Err(Utf8Error { valid_up_to })`。
 - 確かめ: `ksn_utf8_valid` を Python の UTF-8 の復号 (Rust と同じ規則) と、乱数のバイト列 30 万個で比べて全件一致。
+
+## 19. ソケットの参照と配列の繰り返し (kir/net-refs、2026-11-13)
+
+- **ソケットの型は型表に入る**: `std.net.TcpListener` / `TcpStream` は `lower_ty` が `&` の形でも型表に入れる (`is_net_socket`)。`&listener` は局所変数のスタックスロットのアドレス (`ref<agg>` / `mutref<agg>`)、引数の `&TcpStream` はそのまま参照の値。読みは `fieldaddr` + `load` で descriptor を取る。借用なので解放しない。
+- **失敗の型は仕様どおり**: `listen` / `connect` / `accept` / `local_port` / `close` の失敗は `std.net.Error` (`{code: i32}`、ペイロードは errno)、`read` / `write` / `flush` は `std.io.Error`。これまでは全部 `std.io.Error` で、`?` の変換が通らなかった (`std.net.Error` を `http.Error::Net` へ包む形が下ろせなかった)。`kir.rs` の検査、`kir_exec` (`net_error_agg`)、`kir_llvm` (`net_result` の `net_err`) を揃えた。`std.io.ErrorKind` は `read` / `write` / `flush` のときだけ型表に入るので、LLVM のヘルパは種類を使わないときに添字 0 を入れる。
+- **`[x; N]` (`ArrayRep`)**: 長さは整数リテラル、要素はスカラー。N 回の書き込みは 2 ブロックのループにする (N を展開しない)。`N = 0` も 1 バイトの領域を取り、ループを 0 回回す。新しい命令は足していない (`frame.bytes` / `ptr.add` / `mem.store` / `icmp` / `br_if`)。
+- **アドレスを取られた配列の読み**: `&mut chunk` でスロットが mem (fat のアドレス) になった配列は、`get` などの前に値を読む (`try_local_method`)。
+- **`ksn build --backend llvm` の結果**: `examples/http` が LLVM で作れ、`ksn run` と出力・終了コードが一致する (`llvm_builds_of_real_packages_match_run` に追加)。`examples/shortener` は `std.fs.remove_file` (io.fs) と `std.env.arg_count` で止まる。
+- 試験: `kir_net_refs_pass_sockets_by_reference` (参照の受け渡し、`?` の `std.net.Error`、`[0u8; 8]` を `&mut [u8]` で読む)、`kir_array_rep_matches_tree_walker`。

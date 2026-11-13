@@ -1462,7 +1462,8 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
     if !matches!(f.get(2), Some(V::Nil) | None) {
         return lw.err(line, "型引数付きのメソッドは段階 1 の対象外");
     }
-    let hdr = lw.slots[s].0;
+    // アドレスを取られた配列 (`&mut chunk` の `[T; N]`) は、スロットが fat のアドレス (mem) なので、値を読んで fat にする。
+    let hdr = if matches!(kind, Kind::Slice(_)) && lw.is_mem_val(lw.slots[s].0) { lw.read_slot(s) } else { lw.slots[s].0 };
     // `&[T; N]` / `&mut [T; N]` のパラメータの `len()`: 長さ N は型から分かる。
     if m == "len" && matches!(kind, Kind::Slice(_)) && lw.slots[s].1 == Ty::Ptr {
         let n = arr_len_of(lw, s).expect("&[T; N] のパラメータに arr_len が入っている");
