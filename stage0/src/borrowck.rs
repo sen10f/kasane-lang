@@ -95,7 +95,7 @@ struct Low<'a> {
     nodes: Vec<Node>,
     loans: Vec<LoanInfo>,
     locals: HashSet<String>,
-    loops: Vec<(usize, usize)>,
+    loops: Vec<(usize, usize, usize)>,
     exit: usize,
     iters: usize,
     /// クロージャ本体を別に検査して出た診断 (行, 文面)。
@@ -871,6 +871,15 @@ impl<'a> Low<'a> {
         cur
     }
 
+    /// `break` / `continue` で抜けるブロック (スコープ深さ `depth` 以降) の局所変数の寿命を、
+    /// その場で終わらせる (ブロック末尾の `DropScope` は通らないため)。
+    fn drop_scopes_from(&mut self, cur: usize, depth: usize) {
+        let vars: Vec<String> = self.scope_stack.iter().skip(depth).flatten().cloned().collect();
+        for v in vars {
+            self.emit(cur, Ev::DropScope(v));
+        }
+    }
+
     fn lower_stmt(&mut self, s: &V, cur: usize) -> usize {
         match nname(s) {
             "Let" => {
@@ -1230,7 +1239,7 @@ impl<'a> Low<'a> {
                 let (body, exit) = (self.new_node(), self.new_node());
                 self.edge(c, body);
                 self.edge(c, exit);
-                self.loops.push((head, exit));
+                self.loops.push((head, exit, self.scope_stack.len()));
                 let end = self.lower_block(&f[1], body);
                 self.loops.pop();
                 self.edge(end, head);
@@ -1240,7 +1249,7 @@ impl<'a> Low<'a> {
                 let head = self.new_node();
                 self.edge(cur, head);
                 let exit = self.new_node();
-                self.loops.push((head, exit));
+                self.loops.push((head, exit, self.scope_stack.len()));
                 let end = self.lower_block(&f[0], head);
                 self.loops.pop();
                 self.edge(end, head);
@@ -1277,7 +1286,7 @@ impl<'a> Low<'a> {
                     let srcs = self.loan_sources(&f[1]);
                     self.hold(body, Holder::Var(b.clone()), srcs);
                 }
-                self.loops.push((head, exit));
+                self.loops.push((head, exit, self.scope_stack.len()));
                 let end = self.lower_block(&f[2], body);
                 self.loops.pop();
                 self.edge(end, head);
@@ -1346,13 +1355,15 @@ impl<'a> Low<'a> {
                 self.new_node()
             }
             "Break" => {
-                if let Some(&(_, exit)) = self.loops.last() {
+                if let Some(&(_, exit, depth)) = self.loops.last() {
+                    self.drop_scopes_from(cur, depth);
                     self.edge(cur, exit);
                 }
                 self.new_node()
             }
             "Continue" => {
-                if let Some(&(head, _)) = self.loops.last() {
+                if let Some(&(head, _, depth)) = self.loops.last() {
+                    self.drop_scopes_from(cur, depth);
                     self.edge(cur, head);
                 }
                 self.new_node()
