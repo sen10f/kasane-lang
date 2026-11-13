@@ -341,6 +341,10 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             rep.add("E0002", &msg, Some(&fl), ln, 0, true);
         }
     }
+    if use_cache {
+        // 置き場の上限を超えていたら古いものから消す (1 回だけ。ファイルごとに数えると件数の 2 乗になる)。
+        crate::check_cache::trim();
+    }
     if l.pkg.sources.iter().any(|s| s.error.is_some()) {
         return Ok((l, None, vec![]));
     }

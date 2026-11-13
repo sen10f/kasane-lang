@@ -20514,3 +20514,88 @@ fn check_cache_survives_corruption() {
     assert_eq!(base, check_cached(&t.0, Some(&cache)), "slot is a directory");
     let _ = fs::remove_dir_all(&cache);
 }
+
+/// `check --json` を追加の環境変数つきで走らせる。
+fn check_cached_env(dir: &Path, env: &[(&str, &str)]) -> (Option<i32>, String, String) {
+    let o = run_with_env(&["check", "--json"], dir, env);
+    (o.status.code(), text(&o.stdout), text(&o.stderr))
+}
+
+/// 文面だけの検査 (未使用の変数の lint) が出るファイルを `n` 本持つパッケージ (`t.ksnl` と `t/f<i>.ksnl`)。
+fn many_files_package(name: &str, n: usize) -> Tmp {
+    let t = Tmp::new(name, "fn t.main() -> () uses [] panics never\n    let unused = 1u32\nend t.main\n");
+    let d = t.0.join("src").join("t");
+    fs::create_dir_all(&d).unwrap();
+    for i in 0..n {
+        let src = format!("fn t.f{}.g() -> u32 uses [] panics never\n    let unused = {}u32\n    {}u32\nend t.f{}.g\n", i, i, i, i);
+        fs::write(d.join(format!("f{}.ksnl", i)), src).unwrap();
+    }
+    t
+}
+
+/// 既定で有効 (`KSN_CHECK_CACHE` を書かなくても置き場に保存する)。`KSN_CHECK_CACHE=0` なら何も書かない。
+#[test]
+fn check_cache_is_on_by_default_and_can_be_turned_off() {
+    let t = many_files_package("cc_default", 3);
+    let base = check_cached(&t.0, None);
+    let on = cache_tmp("default_on");
+    assert_eq!(base, check_cached_env(&t.0, &[("KSN_CACHE_DIR", on.to_str().unwrap())]), "default run differs");
+    let n = fs::read_dir(on.join("check")).map(|r| r.count()).unwrap_or(0);
+    assert!(n >= 4, "default is on, but only {} entries were stored", n);
+    let off = cache_tmp("default_off");
+    assert_eq!(base, check_cached_env(&t.0, &[("KSN_CHECK_CACHE", "0"), ("KSN_CACHE_DIR", off.to_str().unwrap())]));
+    assert!(!off.join("check").exists(), "KSN_CHECK_CACHE=0 still wrote to the cache");
+    let _ = fs::remove_dir_all(&on);
+    let _ = fs::remove_dir_all(&off);
+}
+
+/// 上限 (`KSN_CHECK_CACHE_MAX`) を小さくすると古いものが消え、置き場の合計は上限以下になる。結果は変わらない。
+#[test]
+fn check_cache_limit_evicts_old_entries_and_keeps_results() {
+    let t = many_files_package("cc_limit", 8);
+    let base = check_cached(&t.0, None);
+    let cache = cache_tmp("limit");
+    let c = cache.to_str().unwrap();
+    let cdir = cache.join("check");
+    let size = || -> u64 {
+        fs::read_dir(&cdir).map(|rd| rd.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0)
+    };
+    for max in [1000u64, 0] {
+        let m = max.to_string();
+        let env = [("KSN_CACHE_DIR", c), ("KSN_CHECK_CACHE_MAX", m.as_str())];
+        for round in 0..2 {
+            assert_eq!(base, check_cached_env(&t.0, &env), "max {} round {}", max, round);
+            assert!(size() <= max, "max {}: {} bytes are kept", max, size());
+        }
+    }
+    // 上限が十分なら全部残る (t.ksnl と f0..f7 の 9 本)。上限 1000 では数本しか残らない (上の検査で確かめた)。
+    let _ = fs::remove_dir_all(&cdir);
+    assert_eq!(base, check_cached_env(&t.0, &[("KSN_CACHE_DIR", c), ("KSN_CHECK_CACHE_MAX", "100000000")]));
+    assert_eq!(fs::read_dir(&cdir).unwrap().count(), 9);
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// 同じ置き場を 8 本の `ksn check` が同時に使っても、どれの診断もキャッシュなしと一致する。
+/// 空から同時に書く回・上限で同時に削る回・命中しながら同時に読む回を試す。
+#[test]
+fn check_cache_parallel_processes_agree() {
+    let t = many_files_package("cc_parallel", 12);
+    let base = check_cached(&t.0, None);
+    let cache = cache_tmp("parallel");
+    let c = cache.to_str().unwrap().to_string();
+    for (label, max) in [("cold", "100000000"), ("tight", "500"), ("warm", "100000000"), ("tight-warm", "500")] {
+        let outs: Vec<(Option<i32>, String, String)> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8)
+                .map(|_| {
+                    let (dir, c) = (t.0.clone(), c.clone());
+                    s.spawn(move || check_cached_env(&dir, &[("KSN_CACHE_DIR", c.as_str()), ("KSN_CHECK_CACHE_MAX", max)]))
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for (i, o) in outs.iter().enumerate() {
+            assert_eq!(&base, o, "{}: process {} differs from no cache", label, i);
+        }
+    }
+    let _ = fs::remove_dir_all(&cache);
+}
