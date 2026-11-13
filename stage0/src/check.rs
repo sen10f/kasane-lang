@@ -3323,9 +3323,8 @@ impl<'a> Checker<'a> {
             .collect();
         for (pn, pt) in &d.params {
             // 線形と分かる型 (`T: linear` や、それを含む `Option<T>`) は、汎用でも義務を負う。
-            if !self.is_generic(pt, &self.names) || self.is_linear(pt) {
-                self.lin_declare(pn, pt, 0);
-            }
+            // 宣言行は仮引数の行 (関数ヘッダ行) で、0 にすると診断の `declared at line 0` が誤る (g25)。
+            self.lin_declare(pn, pt, d.line);
         }
         let body = d.body.as_ref().unwrap();
         self.tc_block(body, &env, &BTreeSet::new());
@@ -3646,6 +3645,18 @@ impl<'a> Checker<'a> {
                         "a linear value behind a reference is overwritten by the assignment without being consumed".into(),
                         nline(s),
                     );
+                }
+                // `a[i] = ..` で線形な要素を上書きすると、添字演算は基を借用して要素を move しないので、
+                // 上書き前の値が消費されずに捨てられる (4.4)。
+                if nname(tg) == "Index" {
+                    let et = self.ty_of(tg, env);
+                    if !is_nil(&et) && self.is_linear(&et) {
+                        self.tdiag(
+                            "E3003",
+                            "a linear array element is overwritten without being consumed first".into(),
+                            nline(s),
+                        );
+                    }
                 }
                 if nname(tg) == "Path" {
                     let segs = strs(&nf(tg)[0]);
@@ -4310,8 +4321,26 @@ impl<'a> Checker<'a> {
             "Field" => {
                 // 一時値の欄の読み出し (`t.open(1).id`): 基の線形な値は束縛も消費もされず漏れる。
                 // ただし消費の位置で線形な欄を取り出すなら、その欄が義務を引き継ぐ (`t.mk().inner` を渡す)。
+                // 一時値の線形な欄の一部だけを消費して一時値を捨てると、他の線形な欄が漏れる
+                // (`t.mkpair().a` は `a` だけ消費して `b` を漏らす)。
                 let fld_linear = self.is_linear(&self.lin_ty(e, env));
-                if !(consume && fld_linear) {
+                if consume && fld_linear && Self::is_temp_value(&f[0]) {
+                    let tt = self.lin_ty(&f[0], env);
+                    if self.is_linear(&tt) {
+                        let consumed = st(&f[1]).to_string();
+                        let has_other = self
+                            .split_fields(&tt)
+                            .iter()
+                            .any(|(n, _)| n != &consumed);
+                        if has_other {
+                            self.tdiag(
+                                "E3003",
+                                format!("a linear temporary's field `{consumed}` is consumed but the temporary is not fully consumed (other linear fields are leaked)"),
+                                nline(e),
+                            );
+                        }
+                    }
+                } else {
                     self.lin_temp_unused(&f[0], env, nline(e));
                 }
                 for c in children(e) {
@@ -4348,28 +4377,27 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// 型 `t` (ユーザー型) のメソッド `name` (引数 `n` 個) が、`self` を参照で受けるか。
-    /// 型の所有者で一意に定まるときだけ判定し、分からなければ false (黙る)。
+    /// 型 `t` のメソッド `name` (引数 `n` 個) が、`self` を参照で受けるか。
+    /// `funcs`/`sigs` (stdlib も含む) を FQN (`型.メソッド`) で引く。`Option`/`Result` は
+    /// 標準ライブラリの FQN に置き換え、配列・スライスは `core.array`/`core.slice` を引く。
+    /// 分からなければ false (黙る)。
     fn method_borrows_self(&self, t: &V, name: &str, n: usize) -> bool {
-        if tag(t) != "named" {
+        let tname: String = match tag(t).as_str() {
+            "named" => match st(tel(t, 1)).as_str() {
+                "Option" => "core.option.Option".to_string(),
+                "Result" => "core.result.Result".to_string(),
+                nm => nm.to_string(),
+            },
+            "array" => "core.array".to_string(),
+            "slice" => "core.slice".to_string(),
+            _ => return false,
+        };
+        let fq = format!("{tname}.{name}");
+        let Some(&i) = self.p.funcs.get(&fq).or_else(|| self.p.sigs.get(&fq)) else {
             return false;
-        }
-        let owner = st(tel(t, 1));
-        let cands: Vec<&Def> = self
-            .p
-            .method_idx
-            .get(name)
-            .map(|v| {
-                v.iter()
-                    .map(|&i| self.def(i))
-                    .filter(|c| c.params.len() == n + 1 && c.name.rsplit_once('.').is_some_and(|(o, _)| o == owner))
-                    .collect()
-            })
-            .unwrap_or_default();
-        match cands.as_slice() {
-            [c] => c.params.first().is_some_and(|(pn, pt)| pn == "self" && tag(pt) == "ref"),
-            _ => false,
-        }
+        };
+        let c = self.def(i);
+        c.params.len() == n + 1 && c.params.first().is_some_and(|(pn, pt)| pn == "self" && tag(pt) == "ref")
     }
 
     /// 型推論 (types.rs) が決めた、式 `e` の型 (今の関数の式 ID から引く)。
@@ -4651,6 +4679,37 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `for` の本体の中に、このループを抜ける `break` または `return` があるか。
+    /// `break` はネストしたループ (`loop`/`while`/`for`) の中ならそちらを抜けるだけなので、
+    /// その内部の `break` は無視する。`return` は関数を抜けるのでどこでも早期抜けとする。
+    fn for_body_may_exit(&self, body: &V) -> bool {
+        self.for_body_may_exit_at(body, 0)
+    }
+
+    fn for_body_may_exit_at(&self, e: &V, depth: usize) -> bool {
+        match nname(e) {
+            "Return" => true,
+            "Break" => depth == 0,
+            "Loop" | "While" | "For" => {
+                // ネストしたループの中は深さを増す (そこの `break` は外の `for` を抜けない)。
+                for c in children(e) {
+                    if self.for_body_may_exit_at(c, depth + 1) {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => {
+                for c in children(e) {
+                    if self.for_body_may_exit_at(c, depth) {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
     /// move の集合の和 (同じ場所は先に記録した行を残す)。
     fn union_moves(into: &mut BTreeMap<String, usize>, from: &BTreeMap<String, usize>) {
         for (k, v) in from {
@@ -4816,6 +4875,7 @@ impl<'a> Checker<'a> {
                 let mut pre_cond: Option<BTreeMap<String, usize>> = None;
                 // 条件を評価した直後の move (本体へ入る前)。条件が偽でループを出る経路は、これを持つ。
                 let mut after_cond: Option<BTreeMap<String, usize>> = None;
+                let mut linear_owned = false;
                 let body = match n {
                     "For" => {
                         // 所有する `Vec` や配列を `for x in v` で回すと、`v` は move 済みになる (Rust と同じ、4.1)。
@@ -4829,7 +4889,9 @@ impl<'a> Checker<'a> {
                             self.moved = before;
                         }
                         // 要素の型: 所有する反復子の要素なら、線形な要素の束縛は義務を負う (`for _r in a` は E3003)。
+                        // `break`/`return` で抜けると残りの要素が漏れる (4.4)。
                         let el = self.elem_ty(&it_ty);
+                        linear_owned = owned && !is_nil(&el) && self.is_linear(&el);
                         let mut typed: Vec<(String, V)> = vec![];
                         self.bind_pat_types(&f[0], &el, &mut typed);
                         self.lin_wild(&typed, nline(e));
@@ -4870,6 +4932,20 @@ impl<'a> Checker<'a> {
                 }
                 self.loop_exits.push((BTreeMap::new(), BTreeMap::new()));
                 self.tc_expr(body, &inner, muts, false);
+                if linear_owned && self.for_body_may_exit(body) {
+                    let text = match nname(&f[1]) {
+                        "Path" => {
+                            let segs = strs(&nf(&f[1])[0]);
+                            segs.first().cloned().unwrap_or_else(|| "the iterator".to_string())
+                        }
+                        _ => "the iterator".to_string(),
+                    };
+                    self.tdiag(
+                        "E3003",
+                        format!("linear value `{text}` may not have all elements consumed when the loop exits early (break or `return`)"),
+                        nline(e),
+                    );
+                }
                 let body_div = self.diverges(body);
                 if body_div {
                     self.lin.truncate(lbase);
@@ -5228,9 +5304,15 @@ impl<'a> Checker<'a> {
                 _ => unknown = true,
             }
         }
-        // 配列全体の使用があるとき (`index_uses != total`) や、添字が判断できないときは黙る。
-        if unknown || index_uses != total {
+        // 添字が判断できないときは黙る。配列全体の使用 (`index_uses != total`) があっても、
+        // `.len()` / `.iter()` のような借用だけなら配列自体は消費されないので、義務を残す
+        // (スコープ末で未消費を報告)。`for x in a` (所有) や丸ごと渡しは `use_place(consume)`
+        // で義務を消費する。
+        if unknown {
             return true;
+        }
+        if index_uses != total {
+            return false;
         }
         if total == 0 {
             self.tdiag("E3003", format!("linear value `{}` is never consumed", name), line);
