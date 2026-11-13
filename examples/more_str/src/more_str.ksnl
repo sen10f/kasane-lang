@@ -1,0 +1,61 @@
+fn more_str.is_palindrome(s: &str) -> bool uses [] panics never pub
+    let bytes = s.as_bytes()
+    let mut lo = 0usize
+    let mut hi = bytes.len()
+    while lo < hi {
+        match bytes.get(lo) {
+            Some(a) => {
+                match bytes.get(hi.wrapping_sub(1usize)) {
+                    Some(b) => {
+                        if *a != *b {
+                            return false
+                        }
+                        lo = lo.wrapping_add(1usize)
+                        hi = hi.wrapping_sub(1usize)
+                    }
+                    None => break
+                }
+            }
+            None => break
+        }
+    }
+    true
+end more_str.is_palindrome
+
+fn more_str.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(more_str.is_palindrome("abba"), true)
+    core.check.eq(more_str.is_palindrome("abc"), false)
+    core.check.eq(more_str.is_palindrome(""), true)
+    core.check.eq(more_str.is_palindrome("a"), true)
+    core.check.eq(more_str.split_words("hello world"), 2u32)
+    core.check.eq(more_str.split_words("  a  b c "), 3u32)
+    core.check.eq(more_str.split_words(""), 0u32)
+    std.io.print_line("more_str ok")?
+    Ok(())
+end more_str.main
+
+fn more_str.split_words(text: &str) -> u32 uses [] panics never pub
+    let bytes = text.as_bytes()
+    let mut count = 0u32
+    let mut in_word = false
+    for b in bytes.iter() {
+        if *b == 32u8 || *b == 10u8 || *b == 9u8 || *b == 13u8 {
+            in_word = false
+        } else {
+            if !in_word {
+                count = count.wrapping_add(1u32)
+            }
+            in_word = true
+        }
+    }
+    count
+end more_str.split_words
+
+test more_str.is_palindrome.test_basic
+    core.check.eq(more_str.is_palindrome("racecar"), true)
+    core.check.eq(more_str.is_palindrome("hello"), false)
+end more_str.is_palindrome.test_basic
+
+test more_str.split_words.test_basic
+    core.check.eq(more_str.split_words("one two three"), 3u32)
+end more_str.split_words.test_basic

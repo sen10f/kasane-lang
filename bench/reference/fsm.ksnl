@@ -1,0 +1,50 @@
+enum bench.State derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    A
+    B
+    C
+end bench.State
+
+fn bench.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    core.check.eq(bench.run_fsm(&[65u8, 66u8]), bench.State.C)
+    core.check.eq(bench.run_fsm(&[65u8, 65u8]), bench.State.A)
+    core.check.eq(bench.run_fsm(&[66u8, 65u8]), bench.State.A)
+    core.check.eq(bench.run_fsm(&[]), bench.State.A)
+    std.io.print_line("fsm ok")?
+    Ok(())
+end bench.main
+
+fn bench.run_fsm(inputs: &[u8]) -> bench.State uses [] panics never pub
+    let mut s = bench.State.A
+    let mut i = 0usize
+    let n = inputs.len()
+    while i < n {
+        match inputs.get(i) {
+            Some(v) => {
+                s = bench.step(s, *v)
+            }
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+    s
+end bench.run_fsm
+
+fn bench.step(s: bench.State, input: u8) -> bench.State uses [] panics never pub
+    match s {
+        bench.State.A => {
+            if input == 65u8 {
+                bench.State.B
+            } else {
+                bench.State.A
+            }
+        }
+        bench.State.B => {
+            if input == 66u8 {
+                bench.State.C
+            } else {
+                bench.State.A
+            }
+        }
+        bench.State.C => bench.State.C
+    }
+end bench.step

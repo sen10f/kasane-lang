@@ -1,0 +1,36 @@
+fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
+    match std.fs.create("/tmp/opencode/rsrc.txt") {
+        Ok(f) => {
+            let mut g = f
+            match g.write("hi".as_bytes()) {
+                Ok(_) => ()
+                Err(_e) => ()
+            }
+            match g.sync() {
+                Ok(_) => ()
+                Err(_e) => ()
+            }
+            match g.close() {
+                Ok(_) => ()
+                Err(_e) => ()
+            }
+        }
+        Err(_e) => ()
+    }
+    let n = bench.resource("/tmp/opencode/rsrc.txt")?
+    core.check.eq(n, 2usize)
+    std.io.print_line("resource ok")?
+    Ok(())
+end bench.main
+
+fn bench.resource(path: &str) -> Result<usize, std.io.Error> uses [alloc, io.fs] panics may
+    let n = with mut f = std.fs.open(path)? close core.mem.drop(f.close()) {
+        let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        match std.fs.read_to_end(&mut f, &mut buf) {
+            Ok(_sz) => buf.len()
+            Err(_e) => 0usize
+        }
+    }
+    core.check.eq(n, 2usize)
+    Ok(n)
+end bench.resource

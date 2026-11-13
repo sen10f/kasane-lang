@@ -1,0 +1,69 @@
+fn bench.insertion_sort(xs: &mut alloc.vec.Vec<u32, std.alloc.System>) -> () uses [alloc] panics never pub
+    let mut i = 1usize
+    let n = xs.len()
+    while i < n {
+        match xs.as_slice().get(i) {
+            Some(key) => {
+                let mut j = i.wrapping_sub(1usize)
+                while j > 0usize {
+                    match xs.as_slice().get(j) {
+                        Some(v) => {
+                            if *v > *key {
+                                match xs.as_mut_slice().get_mut(j.wrapping_add(1usize)) {
+                                    Some(nxt) => {
+                                        *nxt = *v
+                                        ()
+                                    }
+                                    None => ()
+                                }
+                                j = j.wrapping_sub(1usize)
+                            } else {
+                                break
+                            }
+                        }
+                        None => break
+                    }
+                }
+                match xs.as_mut_slice().get_mut(j.wrapping_add(1usize)) {
+                    Some(pos) => {
+                        *pos = *key
+                        ()
+                    }
+                    None => ()
+                }
+            }
+            None => break
+        }
+        i = i.wrapping_add(1usize)
+    }
+end bench.insertion_sort
+
+fn bench.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match v.push(5u32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match v.push(2u32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match v.push(9u32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match v.push(1u32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match v.push(3u32) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    bench.insertion_sort(&mut v)
+    core.check.eq(v.len(), 5usize)
+    core.check.eq(*v.as_slice().get(0usize).unwrap_or(&0u32), 1u32)
+    core.check.eq(*v.as_slice().get(4usize).unwrap_or(&0u32), 9u32)
+    std.io.print_line("sort ok")?
+    Ok(())
+end bench.main
