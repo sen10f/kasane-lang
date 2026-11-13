@@ -673,6 +673,9 @@ pub enum Op {
     Eprint { data: VId },
     /// 文言を出さずに終了コード 101 で終わる (`Eprint` で文言を書いた後の終わり)。結果は unit。`panics may` のときだけ。
     Abort,
+    /// 浮動小数を `py_float` / `py_float32` と同じ規則で書式化して stderr へ出力する。
+    /// 被演算子は `f32` または `f64`、結果は `unit`。`panics may` のときだけ。
+    FmtFloat { bits: u32, a: VId },
 }
 
 /// `BitCount` の種類。
@@ -1099,6 +1102,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::Write { fd, data } => format!("write {}, {}", fmt_val(*fd), fmt_val(*data)),
         Op::Eprint { data } => format!("eprint {}", fmt_val(*data)),
         Op::Abort => "abort".to_string(),
+        Op::FmtFloat { bits, a } => format!("fmtfloat.{bits} {}", fmt_val(*a)),
     };
     format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
 }
@@ -1483,6 +1487,14 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             Ok(Op::Eprint { data: v[0] })
         }
         ("abort", []) if ty == Ty::Unit => Ok(Op::Abort),
+        ("fmtfloat", [bits]) if ty == Ty::Unit => {
+            let bits = bits.parse::<u32>().map_err(|_| perr(line, "fmtfloat のビット数は 32 または 64"))?;
+            if bits != 32 && bits != 64 {
+                return Err(perr(line, "fmtfloat のビット数は 32 または 64"));
+            }
+            let v = operands(1)?;
+            Ok(Op::FmtFloat { bits, a: v[0] })
+        }
         ("index", ["check"]) if ty == Ty::Unit => {
             let v = operands(2)?;
             Ok(Op::IndexCheck { i: v[0], len: v[1] })
@@ -2180,6 +2192,23 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("abort の結果は unit のはず".into());
                         }
                     }
+                    Op::FmtFloat { bits, a } => {
+                        if !f.may_panic {
+                            return Err("panics never の関数に fmtfloat".into());
+                        }
+                        if i.ty != Ty::Unit {
+                            return Err("fmtfloat の結果は unit のはず".into());
+                        }
+                        let at = ty_of(*a)?;
+                        let ok = match bits {
+                            32 => at == Ty::F32,
+                            64 => at == Ty::F64,
+                            _ => false,
+                        };
+                        if !ok {
+                            return Err(format!("fmtfloat の被演算子は f{} のはず", bits));
+                        }
+                    }
                     Op::Call { callee, args } => {
                         let Some(g) = callees.get(callee.as_str()) else {
                             return Err(format!("呼び先 {} がモジュールにない", callee));
@@ -2273,6 +2302,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         | Op::MinMax { a, b, .. }
         | Op::FBin { a, b, .. } => vec![*a, *b],
         Op::Shift { a, n, .. } => vec![*a, *n],
+        Op::FmtFloat { a, .. } => vec![*a],
         Op::Store { ptr, val } => vec![*ptr, *val],
         Op::Neg { a, .. }
         | Op::Not(a)

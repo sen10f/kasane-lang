@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::interp::{py_float, py_float32};
 use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
 use crate::kir_scalar;
 
@@ -636,6 +637,16 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
                     // panic の文言は書けなくても終わる (木走査の panic と同じく、書き込みの失敗は捨てる)
                     let _ = write_fd(2, &bytes);
+                    0
+                }
+                Op::FmtFloat { bits, a } => {
+                    let x = get(&stack[top], a);
+                    let s = if *bits == 32 {
+                        py_float32(f32::from_bits(x as u32))
+                    } else {
+                        py_float(f64::from_bits(x as u64))
+                    };
+                    let _ = write_fd(2, s.as_bytes());
                     0
                 }
                 Op::Abort => return Ok(Outcome::Abort),

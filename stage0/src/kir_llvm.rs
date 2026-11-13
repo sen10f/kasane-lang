@@ -1430,6 +1430,10 @@ impl<'a> Fe<'a> {
                 let tag = self.t(format!("xor i1 {}, true", ok));
                 self.pack(&d, 64, &tag, &r);
             }
+            Op::FmtFloat { .. } => {
+                // 段階 2 で LLVM 補助関数を実装するまで未対応。
+                return Err("fmtfloat は LLVM バックエンド未対応".into());
+            }
             Op::HeapAlloc(n) => {
                 let nv = self.r(*n);
                 let z = self.t(format!("icmp eq i64 {}, 0", nv));
