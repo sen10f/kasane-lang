@@ -3611,7 +3611,8 @@ impl<'a> Checker<'a> {
                             t = crate::types::TypeCk::to_v(ty).unwrap_or(V::Nil);
                         }
                     }
-                    if src_is_ref && !is_nil(&t) && tag(&t) != "ref" && !self.is_generic(&t, &self.names) && !self.is_copy(&t) {
+                    if src_is_ref && !is_nil(&t) && tag(&t) != "ref" && !self.is_copy(&t) {
+                        // 型パラメータへの共有参照 (`&T`) も Copy: 束縛を `&T` のままにして move 記録しない。
                         t = V::L(vec![V::S("ref".into()), V::B(false), t]);
                         self.ref_binds.insert(n.clone());
                     } else {
