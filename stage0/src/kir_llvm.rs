@@ -182,6 +182,8 @@ struct Ctx {
     net: bool,
     /// `std.env` 命令を使う (`@ksn_rt_sys_*` を呼ぶ)。
     env: bool,
+    /// `std.fs` 命令を使う (`@ksn_rt_sys_*` を呼ぶ)。
+    fs: bool,
     /// `FmtFloat` 命令を使う (浮動小数の書式化補助関数を出す)。
     fmt_float: bool,
     /// `ParseInt` 命令を使う (`kir_rt.c` の `ksn_parse_int` を呼ぶ)。
@@ -232,7 +234,7 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
     };
     let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
     let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, parse_int: has_parse_int };
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, fs: false, parse_int: has_parse_int };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -284,6 +286,15 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         cx.decls.insert("declare i64 @ksn_rt_sys_arg_count()".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_arg(i64, ptr)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_var(ptr, i64, ptr)".to_string());
+    }
+    if cx.fs {
+        cx.decls.insert("declare i64 @ksn_rt_sys_open(ptr, i64, i32, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_exists(ptr, i64)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_remove(ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_read(i32, ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_write(i32, ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_close(i32)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_sync(i32, i32*)".to_string());
     }
     let mut out = String::from("; ksn kir llvm 1\n\n");
     for d in &cx.decls {
@@ -1742,6 +1753,72 @@ impl<'a> Fe<'a> {
                 let some = self.t(format!("or i129 {}, {}", tag, fat129));
                 let result = self.t(format!("select i1 {}, i129 0, i129 {}", isnull, some));
                 self.mov(&d, "i129", &result);
+            }
+            Op::FsCreate { path } | Op::FsOpen { path } => {
+                self.cx.fs = true;
+                let is_create = matches!(i.op, Op::FsCreate { .. });
+                let Ty::Agg(_) = self.ty(*path) else { return Err("fs.create / fs.open のパスが fat でない".into()) };
+                let av = self.r(*path);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let ni = self.extract(&av, 128, 8, 64);
+                let lenp = self.t("alloca i32, align 4".to_string());
+                self.line(format!("store i32 0, ptr {}, align 4", lenp));
+                let create = if is_create { "1" } else { "0" };
+                let r = self.t(format!("call i64 @ksn_rt_sys_open(ptr {}, i64 {}, i32 {}, ptr {})", p, ni, create, lenp));
+                self.net_result(&d, &r)?;
+            }
+            Op::FsExists { path } => {
+                self.cx.fs = true;
+                let Ty::Agg(_) = self.ty(*path) else { return Err("fs.exists のパスが fat でない".into()) };
+                let av = self.r(*path);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let ni = self.extract(&av, 128, 8, 64);
+                let r = self.t(format!("call i64 @ksn_rt_sys_exists(ptr {}, i64 {})", p, ni));
+                let b = self.t(format!("icmp ne i64 {}, 0", r));
+                self.mov(&d, "i1", &b);
+            }
+            Op::FsRemove { path } => {
+                self.cx.fs = true;
+                let Ty::Agg(_) = self.ty(*path) else { return Err("fs.remove_file のパスが fat でない".into()) };
+                let av = self.r(*path);
+                let pi = self.extract(&av, 128, 0, 64);
+                let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                let ni = self.extract(&av, 128, 8, 64);
+                let lenp = self.t("alloca i32, align 4".to_string());
+                self.line(format!("store i32 0, ptr {}, align 4", lenp));
+                let r = self.t(format!("call i64 @ksn_rt_sys_remove(ptr {}, i64 {}, ptr {})", p, ni, lenp));
+                self.net_result(&d, &r)?;
+            }
+            Op::FsClose { fd } => {
+                self.cx.fs = true;
+                let r = self.t(format!("call i64 @ksn_rt_sys_close(i32 {})", self.r(*fd)));
+                self.net_result(&d, &r)?;
+            }
+            Op::FsFlush { fd } | Op::FsSync { fd } => {
+                self.cx.fs = true;
+                let lenp = self.t("alloca i32, align 4".to_string());
+                self.line(format!("store i32 0, ptr {}, align 4", lenp));
+                let r = self.t(format!("call i64 @ksn_rt_sys_sync(i32 {}, ptr {})", self.r(*fd), lenp));
+                self.net_result(&d, &r)?;
+            }
+            Op::FsRead { fd, buf, len } => {
+                self.cx.fs = true;
+                let lenp = self.t("alloca i32, align 4".to_string());
+                self.line(format!("store i32 0, ptr {}, align 4", lenp));
+                let r = self.t(format!("call i64 @ksn_rt_sys_read(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), lenp));
+                self.net_result(&d, &r)?;
+            }
+            Op::FsWrite { fd, buf, len } => {
+                self.cx.fs = true;
+                let lenp = self.t("alloca i32, align 4".to_string());
+                self.line(format!("store i32 0, ptr {}, align 4", lenp));
+                let r = self.t(format!("call i64 @ksn_rt_sys_write(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), lenp));
+                self.net_result(&d, &r)?;
+            }
+            Op::FsReadToEnd { .. } => {
+                return Err("std.fs.read_to_end は LLVM 未対応 (木走査へ退避)".into());
             }
             Op::ParseInt { ty, s, radix } => {
                 self.cx.parse_int = true;

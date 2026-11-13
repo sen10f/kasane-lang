@@ -354,9 +354,16 @@ extern char **ksn_rt_argv;
 #define g_argc ksn_rt_argc
 #define g_argv ksn_rt_argv
 
+/* LLVM パスでは kir_rt.c もリンクされ、そこで同名の強い定義がある。弱いシンボルにして競合を避ける (clif パスでは sysrt.c のみリンクするため、ここで定義が必要)。 */
+#if defined(__GNUC__)
+__attribute__((weak))
+#endif
 i64 ksn_rt_sys_arg_count(void) { return g_argc > 0 ? (i64)(g_argc - 1) : 0; }
 
 /* `std.env.arg(i)`: 範囲内なら NUL 終端の文字列 (長さは *len)、範囲外なら 0。 */
+#if defined(__GNUC__)
+__attribute__((weak))
+#endif
 i64 ksn_rt_sys_arg(i64 i, i64 *len) {
     if (i < 0 || i >= ksn_rt_sys_arg_count()) return 0;
     char *s = g_argv[i + 1];
@@ -365,6 +372,9 @@ i64 ksn_rt_sys_arg(i64 i, i64 *len) {
 }
 
 /* `std.env.var(name)`: 見つかれば値 (長さは *len)、なければ 0。 */
+#if defined(__GNUC__)
+__attribute__((weak))
+#endif
 i64 ksn_rt_sys_var(const u8 *name, i64 nlen, i64 *len) {
     char buf[1024];
     if (nlen < 0 || nlen >= (i64)sizeof buf) return 0;

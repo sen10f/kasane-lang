@@ -5,6 +5,7 @@
 //! 浮動小数と 128 ビット整数の規則は `kir_scalar.rs` にある。
 
 use std::collections::{BTreeMap, HashMap};
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
@@ -687,6 +688,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
     let mut statics: HashMap<(usize, usize, usize), i128> = HashMap::new();
     // ソケット表 (記述子 -> ホストのソケット)。リスナとストリームは同じ番号空間を使う。
     let mut sockets: HashMap<i128, NetSock> = HashMap::new();
+    let mut files: HashMap<i128, File> = HashMap::new();
     let mut next_fd: i128 = 0;
     let mut stack = vec![enter(entry, args, None, 0, 0)];
     loop {
@@ -833,6 +835,89 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         return Err(format!("local_port できるのはリスナーソケットだけ: {}", fd));
                     };
                     l.local_addr().map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?
+                }
+                Op::FsCreate { path } | Op::FsOpen { path } => {
+                    let h = get(&stack[top], path) as usize;
+                    let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+                    let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+                    let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                    let s = std::str::from_utf8(&bytes).unwrap_or("");
+                    let is_create = matches!(inst.op, Op::FsCreate { .. });
+                    let res: i128 = match (if is_create {
+                        OpenOptions::new().write(true).create(true).truncate(true).open(std::path::Path::new(s))
+                    } else {
+                        OpenOptions::new().read(true).open(std::path::Path::new(s))
+                    }) {
+                        Ok(f) => {
+                            let fd = alloc_next_fd(&mut next_fd);
+                            files.insert(fd, f);
+                            desc_agg(&mut heap, fd)?
+                        }
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    };
+                    res
+                }
+                Op::FsExists { path } => {
+                    let h = get(&stack[top], path) as usize;
+                    let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+                    let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+                    let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                    if std::path::Path::new(std::str::from_utf8(&bytes).unwrap_or("")).exists() { 1 } else { 0 }
+                }
+                Op::FsRemove { path } => {
+                    let h = get(&stack[top], path) as usize;
+                    let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+                    let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+                    let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                    match std::fs::remove_file(std::path::Path::new(std::str::from_utf8(&bytes).unwrap_or(""))) {
+                        Ok(()) => 0,
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    }
+                }
+                Op::FsClose { fd } => {
+                    let fd = get(&stack[top], fd);
+                    files.remove(&fd);
+                    0
+                }
+                Op::FsFlush { fd } | Op::FsSync { fd } => {
+                    let fd = get(&stack[top], fd);
+                    let Some(f) = files.get_mut(&fd) else {
+                        return Err(format!("flush/sync できるのはファイル記述子だけ: {}", fd));
+                    };
+                    match f.sync_all() {
+                        Ok(()) => 0,
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    }
+                }
+                Op::FsRead { fd, buf, len } => {
+                    let (fd, p, n) = (
+                        get(&stack[top], fd),
+                        get(&stack[top], buf),
+                        get(&stack[top], len),
+                    );
+                    let Some(f) = files.get_mut(&fd) else {
+                        return Err(format!("読み出しできるのはファイル記述子だけ: {}", fd));
+                    };
+                    let mut vec = vec![0u8; n as usize];
+                    let nr = f.read(&mut vec).map_err(|e| format!("read: {e}"))?;
+                    bm.write_bytes(p, &vec[..nr])?;
+                    nr as i128
+                }
+                Op::FsWrite { fd, buf, len } => {
+                    let (fd, p, n) = (
+                        get(&stack[top], fd),
+                        get(&stack[top], buf),
+                        get(&stack[top], len),
+                    );
+                    let Some(f) = files.get_mut(&fd) else {
+                        return Err(format!("書き込みできるのはファイル記述子だけ: {}", fd));
+                    };
+                    let bytes = bm.read_bytes(p, n as usize)?;
+                    f.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+                    n
+                }
+                Op::FsReadToEnd { .. } => {
+                    return Err("std.fs.read_to_end は KIR 参照実行器では未対応 (木走査へ退避)".into());
                 }
                 Op::EnvArgCount => {
                     let n = std::env::args().len() as i128;

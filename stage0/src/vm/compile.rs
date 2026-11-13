@@ -355,6 +355,16 @@ impl<'a> Fc<'a> {
             | Op::NetFlush { .. }
             | Op::NetClose { .. }
             | Op::NetLocalPort { .. } => return Err("std.net の命令は VM 未対応".into()),
+            Op::FsCreate { .. }
+            | Op::FsOpen { .. }
+            | Op::FsExists { .. }
+            | Op::FsRemove { .. }
+            | Op::FsClose { .. }
+            | Op::FsFlush { .. }
+            | Op::FsRead { .. }
+            | Op::FsSync { .. }
+            | Op::FsWrite { .. }
+            | Op::FsReadToEnd { .. } => return Err("std.fs の命令は VM 未対応".into()),
             // kir/closure-value・kir/std-env で入った命令 (vm/skeleton と並行に入った)。VM で実装するまでは木走査へ退避する。
             Op::FnPtr { .. } => return Err("関数ポインタ (FnPtr) の命令は VM 未対応".into()),
             Op::EnvArgCount | Op::EnvArg { .. } | Op::EnvVar { .. } => return Err("std.env の命令は VM 未対応".into()),
