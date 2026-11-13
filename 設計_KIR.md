@@ -1125,6 +1125,12 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 試験: `kir_optres_slice_literal_eq_matches_tree_walker` (`==` / `!=` の 5 ケース、失敗の文言)。
 - examples/tour は 90 行の `Option<&[u8]>` を越えたが、91 行の `arr.first()` で止まる。残りは `BtreeMap` (KIR に型がない)、`str` の `trim` / `split` / `parse` / `split_once`、`from_str_radix` / `try_from_*` / `leading_zeros` / `count_ones`、`core.num.*.MAX` などで、一続きの作業にする。`llvm_builds_of_real_packages_match_run` には足していない。
 
+### 17.20 `first` / `last` / `contains` (kir/tour-rest、2026-11-13)
+- `v.first()` / `v.last()` (Vec・スライス・配列の局所): `get` と同じ `pick_elem` で作る (`Pick::First` は添字 0、`Pick::Last` は `len - 1`、空なら `None`)。スカラー要素は値、所有物の要素は `bref` (17.18) で、`let g = v.first()` と `match v.last()` の両方を通す。木走査の `natives.rs` (`first` / `last`) と同じ値。
+- `v.contains(&x)` (要素がスカラー): 先頭から `==` を見る小さなループ (`contains_scalar`)。引数は `&T` の参照 (読んで比べる) か値。所有物・集成体の要素は理由付きで拒む。
+- 試験: `kir_first_last_contains_match_tree_walker` (配列・スライス (`sub` の結果)・Vec の空・先頭・末尾・範囲外、`Vec<String>` の `first` / `last` は `--run` / `--native` / ASan)。
+- examples/tour は 91 行の `first` / `last` と 93 行の `contains` を越え、102 行の `"abc".find("c")` で止まる。残りは `BtreeMap` (KIR に型がない)、`str` の `find` / `parse` / `split` / `split_once` / `strip_prefix`、`from_str_radix` / `try_from_*` / `leading_zeros` / `count_ones`、`core.num.*.MAX`、`char` の `try_from_u32` / `to_ascii_uppercase`、浮動小数 (`literal float`) など。
+
 ## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
 
 段階 2 (第 5 章) の第 1 段。`ksn run --engine=vm` と `ksn test --engine=vm` (`--engine=tree` が既定の木走査)。既定の挙動は変えていない。`clif.rs` と `examples/`・`perf/` のソースは触っていない。

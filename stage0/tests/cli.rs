@@ -14389,6 +14389,172 @@ end t.main
 }
 
 #[test]
+fn kir_first_last_contains_match_tree_walker() {
+    // `first()` / `last()` は `Option<&T>` (スカラーは値で持つ)、`contains(&x)` は先頭からの `==` の走査。
+    // 配列・スライス・Vec の局所で、空と境界の両側を見る。木走査と値が一致し (`--run` / `--native`、ASan があればそれも)。
+    let helpers = "fn t.first_is(a: &[u8], want: u8) -> bool uses [] panics never
+    match a.first() {
+        Some(x) => *x == want
+        None => false
+    }
+end t.first_is
+
+fn t.last_is(a: &[u8], want: u8) -> bool uses [] panics never
+    match a.last() {
+        Some(x) => *x == want
+        None => false
+    }
+end t.last_is
+
+fn t.has(a: &[u8], x: u8) -> bool uses [] panics never
+    a.contains(&x)
+end t.has
+
+fn t.vfirst_is(v: &alloc.vec.Vec<u32, std.alloc.System>, want: u32) -> bool uses [] panics never
+    match v.first() {
+        Some(x) => *x == want
+        None => false
+    }
+end t.vfirst_is
+
+fn t.vlast_is(v: &alloc.vec.Vec<u32, std.alloc.System>, want: u32) -> bool uses [] panics never
+    match v.last() {
+        Some(x) => *x == want
+        None => false
+    }
+end t.vlast_is
+
+fn t.vhas(v: &alloc.vec.Vec<u32, std.alloc.System>, x: u32) -> bool uses [] panics never
+    v.contains(&x)
+end t.vhas
+
+fn t.arr_first_yes() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8]
+    t.first_is(&arr, 3u8)
+end t.arr_first_yes
+
+fn t.arr_first_no() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8]
+    t.first_is(&arr, 1u8)
+end t.arr_first_no
+
+fn t.arr_last_yes() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8]
+    t.last_is(&arr, 4u8)
+end t.arr_last_yes
+
+fn t.arr_has_yes() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8]
+    t.has(&arr, 1u8)
+end t.arr_has_yes
+
+fn t.arr_has_no() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8]
+    t.has(&arr, 9u8)
+end t.arr_has_no
+
+fn t.sub_last_yes() -> bool uses [] panics never
+    let arr = [3u8, 1u8, 4u8, 1u8, 5u8]
+    let mid = arr.sub(1usize, 3usize)
+    match mid {
+        Some(s) => t.last_is(s, 4u8)
+        None => false
+    }
+end t.sub_last_yes
+
+fn t.vec_empty() -> bool uses [alloc] panics may
+    let v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    t.vfirst_is(&v, 0u32)
+end t.vec_empty
+
+fn t.vec_first_yes() -> bool uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(5u32))
+    core.mem.drop(v.push(6u32))
+    t.vfirst_is(&v, 5u32)
+end t.vec_first_yes
+
+fn t.vec_last_yes() -> bool uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(5u32))
+    core.mem.drop(v.push(6u32))
+    t.vlast_is(&v, 6u32)
+end t.vec_last_yes
+
+fn t.vec_has_yes() -> bool uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(5u32))
+    core.mem.drop(v.push(6u32))
+    t.vhas(&v, 6u32)
+end t.vec_has_yes
+
+fn t.vec_has_no() -> bool uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(5u32))
+    core.mem.drop(v.push(6u32))
+    t.vhas(&v, 7u32)
+end t.vec_has_no
+
+fn t.str_first_len(v: &alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> usize uses [] panics never
+    let g = v.first()
+    match g {
+        Some(x) => x.len()
+        None => 0usize
+    }
+end t.str_first_len
+
+fn t.str_last_len(v: &alloc.vec.Vec<alloc.string.String, std.alloc.System>) -> usize uses [] panics never
+    match v.last() {
+        Some(x) => x.len()
+        None => 0usize
+    }
+end t.str_last_len
+
+fn t.str_mk(n: usize) -> usize uses [alloc] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"ab\"))
+    core.mem.drop(v.push(s))
+    let mut t2 = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(t2.push_str(\"xyz\"))
+    core.mem.drop(v.push(t2))
+    t.str_first_len(&v) + t.str_last_len(&v) + n
+end t.str_mk
+";
+    // (関数, 期待値)。木走査は `core.check.eq` で確かめ、KIR は `--run` の表示 (`true` / `false`) で確かめる。
+    let cases = [
+        ("t.arr_first_yes", "true"),
+        ("t.arr_first_no", "false"),
+        ("t.arr_last_yes", "true"),
+        ("t.arr_has_yes", "true"),
+        ("t.arr_has_no", "false"),
+        ("t.sub_last_yes", "true"),
+        ("t.vec_empty", "false"),
+        ("t.vec_first_yes", "true"),
+        ("t.vec_last_yes", "true"),
+        ("t.vec_has_yes", "true"),
+        ("t.vec_has_no", "false"),
+    ];
+    let mut main = String::from("\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n");
+    for (f, want) in cases {
+        main.push_str(&format!("    core.check.eq({}(), {})\n", f, want));
+    }
+    // 所有物の要素 (`Vec<String>`): `let g = v.first()` と `match v.last()` は `bref` (借用) で持つ。
+    main.push_str("    core.check.eq(t.str_mk(0usize), 5usize)\n    Ok(())\nend t.main\n");
+    let t = Tmp::new("kir_first_last", &format!("{}{}", helpers, main));
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "tree-walker\n{}", text(&o.stderr));
+    for (f, want) in cases {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+    let k = kir_run(&["kir", "t.str_mk", "--run", "0"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir t.str_mk\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "5", "kir value of t.str_mk");
+}
+
+#[test]
 fn kir_optres_slice_literal_eq_matches_tree_walker() {
     // `Option<&[T]>` (`sub` の結果) と `Some(&[..])` (配列リテラルの参照) の `==` / `!=`。
     // `Some(&[..])` は長さ N を持つ参照だが、Option のペイロードでは `fat` (`Option<&[T]>` と同じ値) で持つ。
