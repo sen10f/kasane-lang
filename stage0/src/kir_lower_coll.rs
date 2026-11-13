@@ -1156,7 +1156,7 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     }
     // 型引数に型パラメータを持つ関数 (`Fn` 境界の引数) は、渡されたクロージャごとに単相化する。
     if let Some(Target::Fn(di)) = lw.p.resolve(&segs, &lw.def.file).map(|r| r.target) {
-        if lw.p.defs[di].generics.iter().any(|g| g.0 == "type") {
+        if lw.p.defs[di].generics.iter().any(|g| g.0 == "type") && has_closure_arg(lw, items(&f[1])) {
             return Some(generic_call(lw, e, di));
         }
     }
@@ -1194,6 +1194,11 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         ["core", "mem", "drop"] => Some(mem_drop(lw, e)),
         _ => None,
     }
+}
+
+/// 引数にクロージャ (式、またはクロージャを束縛した局所) があるか。型引数に渡すクロージャの単相化の判定に使う。
+fn has_closure_arg(lw: &Lw, args: &[V]) -> bool {
+    args.iter().any(|a| nname(a) == "Closure" || local_slot(lw, a).map_or(false, |s| matches!(lw.coll.kinds.get(&s), Some(Kind::Closure { .. }))))
 }
 
 /// 型引数に捕獲のないクロージャを取る関数の呼び出し。鍵は `関数名<クロージャの鍵,...>` で、
@@ -2533,6 +2538,8 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let (cap_names, cap_vals, moved) = capture_values(lw, &f[2], &f[3], line)?;
     let cap_tys: Vec<Ty> = cap_vals.iter().map(|v| lw.vty(*v)).collect();
     let mut child = Lw::new(lw.p, lw.tys, lw.aggs, lw.def);
+    child.subst = lw.subst.clone();
+    child.mono_done = lw.mono_done.clone();
     child.coll.prefix = lw.coll.prefix.clone();
     child.ret = rt;
     let mut ptys = cap_tys.clone();
