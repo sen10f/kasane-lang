@@ -1,0 +1,23 @@
+fn t.bad() -> u32 uses [] panics never
+    let mut q: fn() -> u32 uses [] panics never = t.quiet
+    t.set(&mut q)
+    q()
+end t.bad
+
+// expect: E4001
+fn t.loud() -> u32 uses [io.console] panics may
+    core.mem.drop(std.io.print_line("LOUD"))
+    core.panic.panic("PANIC")
+end t.loud
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.quiet() -> u32 uses [] panics never
+    1u32
+end t.quiet
+
+fn t.set(slot: &mut fn() -> u32 uses [io.console] panics may) -> ()
+    *slot = t.loud
+end t.set

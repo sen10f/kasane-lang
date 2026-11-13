@@ -1076,6 +1076,20 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - `tests/cli.rs` の `kir_run` は、clang が `-fsanitize=address` を使えるとき (`asan_available`)、`KSN_CLANG_ARGS="-fsanitize=address -fno-omit-frame-pointer -g -O0"` と `ASAN_OPTIONS=detect_leaks=1` で作った実行ファイルでも走らせる。ASan の報告が出れば失敗 (panic の 101 / 102 の終了では、漏れの報告 (LeakSanitizer) は見ない)。終了コードと表示も参照実行器と比べる。`KSN_NO_ASAN=1` で無効にできる。`-O0` なのは、`-O1` では LLVM が `malloc` / `free` の対を消して二重解放が見えないため (項目 1 の二重解放は `-O0` でだけ ASan が報告する)。
 - 既存の KIR の差分テスト全件 (`kir_*`) は、ASan でも報告なしで通る。`KSN_CLANG_ARGS="-fsanitize=address -g"` を付けた `llvm_builds_of_real_packages_match_run` (11 パッケージ) も通る。
 
+### 17.13 `==` / `!=` の下ろしと `get` の所有物 (kir/option-eq、2026-11-13)
+- 比較演算子 `==` / `!=` の被演算子が `Option` / `Result` / 構造体・列挙型 (所有物なし) / `&str` / `&[u8]` のとき、15.2 の `<型>.$eq` を呼ぶ (`kir_lower_check.rs` の `eq_by_call`。`!=` は結果の否定)。型は左辺 (だめなら右辺) の元の型から作り、スカラーへの参照 (`Option<&u8>`) は値で持つので参照を外す。`&[u8]` の比較はバイトの一致 (`&str` と同じ `$eq`。表示は未対応のまま)。派生の比較はフィールドを宣言順に比べる (木走査と同じ)。
+- `Vec<所有物を持つ要素>` の `get` は拒否に戻した: 要素の写しを `Option` に入れると `Option` が所有物を持つ型になり、`match` の腕の頭で解放されて要素と二重解放になる (`2e66785` の確認で再現。参照実行器は `不正な解放`)。コピーできる要素は変わらず下ろせる。
+- `examples/json` は LLVM で作れ、`ksn run` と stdout・終了コードが一致する (ASan も報告なし)。`llvm_builds_of_real_packages_match_run` に追加した。
+- 試験: `kir_eq_operator_on_option_result_aggregates_match_tree_walker` (17 ケース)、`kir_get_on_vec_of_owning_elements_is_refused_with_a_reason`。
+
+### 17.14 所有物を持つ要素の Vec の借用 (kir/owned-elem-borrow、2026-11-13)
+- 要素が所有物 (`Vec<String>`、String / Vec を持つ構造体の Vec) の `get` / 添字 / `for` は、要素の**写しでなく番地 (借用)** で下ろす。借用は所有に入れず、解放しない。Vec / String の要素はヘッダのアドレス (`ptr`、種類 String / Vec を結び付けた借用の局所)、構造体などの要素は `bitcast` した共有参照 `ref<Agg>` (13.9 の「`&T` の `*r` を丸ごと読まない」と同じ規則で、中身を丸ごと値で読むのは拒否のまま)。
+- `match v.get(i) { Some(x) => .. None => .. }` (`kir_lower_own.rs` の `match_get_mut` を `get` にも広げた。`v` は局所変数かフィールド。腕は `Some(名前 | _)` と `None | _`)。境界の内なら要素の番地を `x` に束縛。`Option<&T>` の値は作らない。
+- `for x in &v` / `for x in v.iter()` (`kir_lower_coll.rs` の `for_expr`): 1 周ごとに要素の番地を借用で束縛。スカラーの要素も同じ形で回せ、`*x` は値そのもの。`for x in v` (値で回す。要素を移す) は所有物の要素では拒否。反復中の `v` の変更の検査 (17.6) はそのまま。
+- `v[i].f` / `v[i].name.len()` / `v[i].len()` / `&v[i]`: `elem_prep` が式の先頭で境界を検査して要素の番地を求め、借用のスロットを作る (`elem_slots`)。範囲外は panic (木走査と同じ文言)。`v[i]` の所有物のフィールドを値で使う (移す) 形と `&mut v[i]` は拒否。
+- 拒否のまま: `match v.get(i)` の腕で構造体のパターンを分解する形 (`Some(t.Item { name: _, v: x })`)、`get` の値を `let` に持つ形、`for x in v` (値)、`&mut v` / `iter_mut()` の要素、`insert` / `remove`。
+- 試験: `kir_borrow_owned_elems_match_tree_walker` (17 ケース。`--run` / `--native` / ASan)、`kir_borrow_owned_elems_out_of_range_index_panics_like_tree_walker`、`kir_get_on_vec_of_owning_elements_is_refused_with_a_reason` (構造体パターンの形)。`llvm_builds_of_real_packages_match_run` に `examples/more_coll` と `examples/more_str` を追加。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。

@@ -1,0 +1,11 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let n = t.mk().as_str().len()
+    let m = t.mk().len()
+    core.mem.drop(n)
+    core.mem.drop(m)
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
