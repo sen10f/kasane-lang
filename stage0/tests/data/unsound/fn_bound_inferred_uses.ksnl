@@ -1,0 +1,19 @@
+// expect: E4001
+fn t.bad() -> u32 uses [] panics never
+    t.strict(fn() -> u32 capture [] {
+        t.loud()
+    })
+end t.bad
+
+fn t.loud() -> u32
+    core.mem.drop(std.io.print_line("printed"))
+    1u32
+end t.loud
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.strict[F: core.ops.Fn<(), u32, [], never>](f: F) -> u32 uses [] panics never
+    f.call(())
+end t.strict

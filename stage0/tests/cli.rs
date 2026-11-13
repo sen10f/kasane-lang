@@ -9337,7 +9337,16 @@ end t.main
 // 具体的な効果実引数を持つ `Fn` 境界 (`[]` / `[io]` / `never` / `may`) の検査 (4.3 / 5.1)。
 // 境界の検査は、渡したクロージャの確実な効果と境界の具体名を比べる (呼び出し元の `uses` とは別)。
 // 定義の並びは UTF-8 順 (E0020) にしてある。`BOUND_BAD` の呼び出し元 3 本だけが違反する。
-const BOUND_BAD: &str = r#"fn t.bad_let(s: t.S, x: u8) -> u8 uses [io] panics never
+const BOUND_BAD: &str = r#"fn t.bad_infer(x: u8) -> u8 uses [] panics never
+    t.bnd_none(
+        fn(y: u8) -> u8 capture [] {
+            t.inf_io(y)
+        },
+        x,
+    )
+end t.bad_infer
+
+fn t.bad_let(s: t.S, x: u8) -> u8 uses [io] panics never
     let c = fn(y: u8) -> u8 capture [&s] {
         core.mem.drop(s.say())
         y
@@ -9374,15 +9383,6 @@ fn t.inf_io(x: u8) -> u8
     x
 end t.inf_io
 
-fn t.ok_infer(x: u8) -> u8 uses [] panics never
-    t.bnd_none(
-        fn(y: u8) -> u8 capture [] {
-            t.inf_io(y)
-        },
-        x,
-    )
-end t.ok_infer
-
 fn t.ok_io(s: t.S, x: u8) -> u8 uses [io] panics never
     t.bnd_io(
         fn(y: u8) -> u8 capture [&s] {
@@ -9418,7 +9418,7 @@ fn concrete_fn_bound_effects_are_checked_against_the_closure() {
     // 呼び出し元が `uses [io]` でも境界の違反は報告する (let に束縛したクロージャ・メソッド形も)。
     let body = format!("{}{}", BOUND_BAD, BOUND_REST);
     let (_, got, out) = eff_check("eff_bound_bad", &body);
-    assert_eq!(got, vec!["E4001".to_string(), "E4002".to_string()], "{}", out);
+    assert_eq!(got, vec!["E4001".to_string(), "E4001".to_string(), "E4002".to_string()], "{}", out);
     assert!(out.contains("closure passed to `t.bnd_none` uses effect `io.console` outside the `Fn` bound's effects []"), "{}", out);
     assert!(out.contains("closure passed to `t.bnd_none` may panic but the `Fn` bound declares `panics never`"), "{}", out);
 }
@@ -9461,8 +9461,8 @@ end t.ok_method
 
 #[test]
 fn concrete_fn_bound_effects_that_cover_the_closure_stay_silent() {
-    // 境界が覆う効果 (`io` ⊇ `io.console`)・`may` 境界・効果のないクロージャ・確実でない効果
-    // (推論された関数を呼ぶクロージャ) は黙る (下からの近似: 誤検出を出さない)。
+    // 境界が覆う効果 (`io` ⊇ `io.console`)・`may` 境界・効果のないクロージャ
+    // は黙る (推論された関数を呼ぶクロージャは、推論した効果を上限として境界と比べる = `BOUND_BAD` の `bad_infer`)。
     let (code, _, out) = eff_check("eff_bound_ok", BOUND_REST);
     assert_eq!(code, Some(0), "{}", out);
 }

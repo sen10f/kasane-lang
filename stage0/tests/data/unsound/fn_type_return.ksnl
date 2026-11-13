@@ -1,0 +1,13 @@
+// expect: E4001
+fn t.loud() -> u32 uses [io.console] panics never
+    core.mem.drop(std.io.print_line("x"))
+    1u32
+end t.loud
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.ret() -> fn() -> u32 uses [] panics never uses [] panics never
+    t.loud
+end t.ret
