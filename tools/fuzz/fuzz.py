@@ -550,7 +550,7 @@ def compare(ksn, root, params, ret, args):
     results["tree"] = normalize(rc, out, err)
     rc, out, err = kir_run(ksn, root, fqn, args)
     if "未対応" in err or rc == 1 and "ユーザの関数ではない" in err:
-        results["kir"] = ("unsupported", "", err.strip())
+        results["kir"] = ("unsupported", rc, err.strip())
     else:
         results["kir"] = normalize(rc, out, err)
     rc, out, err = kir_native(ksn, root, fqn, args, asan=False)
@@ -564,6 +564,20 @@ def kir_status(rc, err, out, err2):
     if rc == 1 and "未対応" in err:
         return ("unsupported", "", err.strip())
     return normalize(rc, out, err2)
+
+
+def count_features(src):
+    """生成ソースから使われた機能の有無を返す。"""
+    return {
+        "struct": "type fuzz." in src,
+        "enum": "enum fuzz." in src,
+        "vec": "alloc.vec.Vec" in src,
+        "string": "alloc.string.String" in src,
+        "f64": "f64" in src,
+        "question": "?" in src,
+        "call": "fuzz." in src,
+        "panic": "core.panic.panic" in src,
+    }
 
 
 def process_one(ksn, seed, pid, found_dir):
@@ -582,10 +596,14 @@ def process_one(ksn, seed, pid, found_dir):
     first = valid[keys[0]] if keys else None
     mismatch = any(valid[k] != first for k in keys[1:])
     if not mismatch:
-        return {"status": "ok"}
+        return {"status": "ok", "stats": count_features(src), "lines": src.count("\n"),
+                "kir_unsupported": results.get("kir", ("",))[0] == "unsupported",
+                "results": results}
     # 食い違いあり：縮小して found/ に書き出し
     small = shrink(ksn, root, src, params, ret, args, results, found_dir)
-    return {"status": "mismatch", "src": small, "results": results, "args": args}
+    return {"status": "mismatch", "src": small, "results": results, "args": args,
+            "stats": count_features(src), "lines": src.count("\n"),
+            "kir_unsupported": results.get("kir", ("",))[0] == "unsupported"}
 
 
 def worker(item):
@@ -610,6 +628,7 @@ def main():
 
     counts = {"ok": 0, "gen_fail": 0, "check_fail": 0, "mismatch": 0, "unsupported": 0}
     items = [(args.ksn, args.seed, i, found_dir) for i in range(args.count)]
+    all_results = []
 
     shown = 0
     if args.jobs > 1:
@@ -618,6 +637,7 @@ def main():
             for fut in as_completed(fut2it):
                 it = fut2it[fut]
                 r = fut.result()
+                all_results.append(r)
                 counts[r["status"]] = counts.get(r["status"], 0) + 1
                 if r["status"] == "mismatch":
                     write_found(found_dir, r)
@@ -627,6 +647,7 @@ def main():
     else:
         for it in items:
             r = worker(it)
+            all_results.append(r)
             counts[r["status"]] = counts.get(r["status"], 0) + 1
             if r["status"] == "mismatch":
                 write_found(found_dir, r)
@@ -636,6 +657,31 @@ def main():
 
     print("結果: ok=%d gen_fail=%d check_fail=%d mismatch=%d unsupported=%d" % (
         counts["ok"], counts["gen_fail"], counts["check_fail"], counts["mismatch"], counts["unsupported"]))
+
+    # 統計
+    ok_results = [r for r in all_results if r["status"] == "ok"]
+    if ok_results:
+        n = len(ok_results)
+        panic = sum(1 for r in ok_results if r.get("stats", {}).get("panic"))
+        avg_lines = sum(r.get("lines", 0) for r in ok_results) / n
+        feat = {}
+        for k in ["struct", "enum", "vec", "string", "f64", "question", "call", "panic"]:
+            feat[k] = sum(1 for r in ok_results if r.get("stats", {}).get(k))
+        kir_un = [r for r in all_results if r.get("kir_unsupported")]
+        print("統計: プログラム=%d panic終了=%d 平均行数=%.1f" % (n, panic, avg_lines))
+        print("機能利用: struct=%d enum=%d vec=%d string=%d f64=%d ?=%d 関数呼び出し=%d" % (
+            feat["struct"], feat["enum"], feat["vec"], feat["string"], feat["f64"],
+            feat["question"], feat["call"]))
+        print("KIR未下ろし: %d 本" % len(kir_un))
+        if kir_un:
+            reasons = {}
+            for r in kir_un:
+                err = r.get("results", {}).get("kir", ("", "", ""))[2]
+                rc = r.get("results", {}).get("kir", ("", "", ""))[1]
+                key = ("rc=%s %s" % (rc, (err.split("\n")[0] if err else "no-error")))[:60]
+                reasons[key] = reasons.get(key, 0) + 1
+            for key, c in sorted(reasons.items(), key=lambda x: -x[1])[:5]:
+                print("  %d: %s" % (c, key))
 
 
 def write_found(found_dir, r):
