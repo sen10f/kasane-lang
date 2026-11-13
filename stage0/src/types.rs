@@ -1900,10 +1900,19 @@ impl<'a> TypeCk<'a> {
             "Return" | "Break" | "Continue" => {
                 if nname(e) == "Return" && !is_nil(&f[0]) {
                     let v = self.infer(&f[0]);
-                    let d = self.def();
-                    let gn = d.gnames();
-                    let ret = subst_params_unknown(&from_v(&d.ret, &gn));
-                    let _ = self.unify2(&ret, &v);
+                    // 4.3: `return` の値は、いま囲んでいる関数・クロージャの戻り値型と比べる (末尾の値と同じ規則)。
+                    // `rets` は関数・クロージャの入れ子に合わせて積まれている。
+                    if let Some(ret) = self.rets.last().cloned() {
+                        if let Err(err) = self.unify2(&ret, &v) {
+                            if let Some((want, got)) = self.ann_conflict(&ret, &v, &err) {
+                                self.diag(
+                                    "E2020",
+                                    format!("type mismatch in return value: expected {}, found {}{}", want, got, conv_hint(&want, &got)),
+                                    nline(e),
+                                );
+                            }
+                        }
+                    }
                 }
                 Ty::Never
             }
@@ -2078,7 +2087,7 @@ impl<'a> TypeCk<'a> {
         if nname(callee) != "Path" {
             // `fn(..) {..}(x)` のように、クロージャを直接呼ぶ形。
             let t = self.infer(callee);
-            if let Some(r) = self.call_closure(&t, &argt, line) {
+            if let Some(r) = self.call_closure(&t, &argt, line, Some("closure")) {
                 return r;
             }
             argt.iter().for_each(|a| self.escape(a));
@@ -2090,7 +2099,9 @@ impl<'a> TypeCk<'a> {
             if segs.len() < 2 {
                 // `f(x)`: クロージャを持つ局所変数の直接呼び出し。
                 let t = self.lookup(&segs[0]).unwrap();
-                if let Some(r) = self.call_closure(&t, &argt, line) {
+                // 再代入されうる `let mut` の局所は、束縛時のクロージャの効果を使わない (黙る)。
+                let eff_name = (!self.mutable.contains(&segs[0])).then(|| segs[0].as_str());
+                if let Some(r) = self.call_closure(&t, &argt, line, eff_name) {
                     return r;
                 }
                 return Ty::Unknown;
@@ -2524,12 +2535,14 @@ impl<'a> TypeCk<'a> {
 
     /// クロージャの型での直接呼び出し (`f(x)`)。引数の個数 (E2022) と型 (E2023) を検査し、
     /// 戻り値の型を返す。`cl` がクロージャに決まらないときは None。
-    fn call_closure(&mut self, cl: &Ty, argt: &[Ty], line: usize) -> Option<Ty> {
+    ///
+    /// `eff_name` が `Some` のときは、そのクロージャの本体から推論した効果を、呼び出し元の検査に足す (4.3 / 5.1)。
+    fn call_closure(&mut self, cl: &Ty, argt: &[Ty], line: usize, eff_name: Option<&str>) -> Option<Ty> {
         let cl = self.deep(cl);
         let Ty::Closure { args, ret, id, .. } = cl else { return None };
         // 直接呼び出し (`let g = fn..; g(x)`) は、呼び出し元からクロージャの節への辺になる (5.3)。
         // 節の本体の呼び出しは書かれた関数に帰属するが、節そのもののフレームを数えるには辺が要る。
-        if let Some(node) = id {
+        if let Some(node) = id.clone() {
             self.add_edge(node);
         }
         if args.len() != argt.len() {
@@ -2552,7 +2565,26 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
+        if let (Some(name), Some(node)) = (eff_name, id.as_deref()) {
+            self.closure_call_effects(node, name, line);
+        }
         Some((*ret).clone())
+    }
+
+    /// クロージャの直接呼び出しの効果 (4.3 / 5.1): 本体から推論した効果 (確実に含まれる部分だけ) を、
+    /// 呼び出し元の宣言と比べる (`record_effects`)。確実でない推論の効果は使わない (黙る)。その
+    /// 呼び出しを含む外側のクロージャも確実でないとする (`eff_acc` の 3 つ目)。
+    fn closure_call_effects(&mut self, node: &str, name: &str, line: usize) {
+        let Some((uses, may, unsure)) = self.closure_effs.get(node).cloned() else { return };
+        if unsure {
+            if let Some(acc) = self.eff_acc.last_mut() {
+                acc.2 = true;
+            }
+            return;
+        }
+        let uses: Vec<String> = uses.into_iter().collect();
+        let panics = may.then(|| "may".to_string());
+        self.record_effects(line, vec![(name.to_string(), uses.clone(), panics.clone(), uses, panics)]);
     }
 
     /// 生ポインタが絡む矛盾 (`want` = 注釈・宣言の型、`got` = 実際の型) の 2 つの型の文字列。

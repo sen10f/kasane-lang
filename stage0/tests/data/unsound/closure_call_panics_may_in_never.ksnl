@@ -1,0 +1,11 @@
+// expect: E4002
+fn t.boom() -> u8 uses [] panics may
+    core.panic.panic("x")
+end t.boom
+
+fn t.main() -> () uses [] panics never
+    let f = fn() -> u8 capture [] {
+        t.boom()
+    }
+    core.mem.drop(f())
+end t.main
