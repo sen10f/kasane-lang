@@ -2639,7 +2639,11 @@ impl<'a> Checker<'a> {
                     let mut tb = vec![];
                     self.pat_typed_binds(&f[0], &ty, &mut tb);
                     for (n, t) in tb {
-                        self.note_linear(&n, &t, nline(s));
+                        if n == "_" {
+                            self.note_linear_wild(&t, nline(s));
+                        } else {
+                            self.note_linear(&n, &t, nline(s));
+                        }
                     }
                 }
             }
@@ -2943,7 +2947,11 @@ impl<'a> Checker<'a> {
                     let mut tb = vec![];
                     self.pat_typed_binds(&items(arm)[0], &scrut_ty, &mut tb);
                     for (n, t) in tb {
-                        self.note_linear_in_arm(&items(arm)[1], &n, &t, nline(e));
+                        if n == "_" {
+                            self.note_linear_wild(&t, nline(e));
+                        } else {
+                            self.note_linear_in_arm(&items(arm)[1], &n, &t, nline(e));
+                        }
                     }
                     self.tc_expr(&items(arm)[1], &inner, muts, false);
                 }
@@ -3071,6 +3079,8 @@ impl<'a> Checker<'a> {
         }
         match nname(p) {
             "PBind" => out.push((st(&nf(p)[0]), ty.clone())),
+            // `_` は値を捨てる。線形な値なら消費の漏れ (4.4)。呼び出し側が名前 "_" で受ける。
+            "PWild" => out.push(("_".to_string(), ty.clone())),
             "PTuple" => {
                 if tag(ty) != "tuple" {
                     return;
@@ -3219,6 +3229,13 @@ impl<'a> Checker<'a> {
 
     /// match の腕のパターンで束縛した線形な値 `name` (型 `ty`) が、その腕の本体 `body` で
     /// 消費されるか (4.4)。消費されなければ E3003。
+    /// パターンの `_` が線形な値を捨てる (4.4)。消費されないので E3003。型が分からなければ黙る。
+    fn note_linear_wild(&mut self, ty: &V, line: usize) {
+        if self.contains_linear(ty) {
+            self.tdiag("E3003", "a linear value is discarded by the `_` pattern; bind it and consume it (4.4)".to_string(), line);
+        }
+    }
+
     fn note_linear_in_arm(&mut self, body: &V, name: &str, ty: &V, line: usize) {
         if !self.contains_linear(ty) || self.linear_consumed(body, name, ty) {
             return;
