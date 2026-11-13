@@ -21656,7 +21656,7 @@ fn check_cache_survives_corruption() {
     let base = check_cached(&t.0, None);
     assert_eq!(base.0, Some(1), "{:?}", base);
     let _ = check_cached(&t.0, Some(&cache));
-    let files: Vec<PathBuf> = fs::read_dir(cache.join("check")).unwrap().map(|e| e.unwrap().path()).collect();
+    let files: Vec<PathBuf> = slot_files(&cache);
     assert!(!files.is_empty(), "nothing was cached");
     let orig = fs::read_to_string(&files[0]).unwrap();
     let mut variants: Vec<(&str, Vec<u8>)> = vec![
@@ -21724,7 +21724,23 @@ fn check_cache_is_on_by_default_and_can_be_turned_off() {
     let _ = fs::remove_dir_all(&off);
 }
 
-/// 上限 (`KSN_CHECK_CACHE_MAX`) を小さくすると古いものが消え、置き場の合計は上限以下になる。結果は変わらない。
+/// スロット (`.` で始まる記録を除く) のファイル。
+fn slot_files(cache: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = fs::read_dir(cache.join("check"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| !p.file_name().unwrap().to_string_lossy().starts_with('.'))
+        .collect();
+    v.sort();
+    v
+}
+
+/// 置き場の使用量。ディスクのブロック (4 KiB) に切り上げた合計で、記録 (`.stat.json`) は除く。
+fn disk_usage(cache: &Path) -> u64 {
+    slot_files(cache).iter().map(|p| fs::metadata(p).unwrap().len().div_ceil(4096) * 4096).sum()
+}
+
+/// 上限 (`KSN_CHECK_CACHE_MAX`) を小さくすると古いものが消え、置き場の使用量 (ブロック単位) は上限以下になる。結果は変わらない。
 #[test]
 fn check_cache_limit_evicts_old_entries_and_keeps_results() {
     let t = many_files_package("cc_limit", 8);
@@ -21732,21 +21748,55 @@ fn check_cache_limit_evicts_old_entries_and_keeps_results() {
     let cache = cache_tmp("limit");
     let c = cache.to_str().unwrap();
     let cdir = cache.join("check");
-    let size = || -> u64 {
-        fs::read_dir(&cdir).map(|rd| rd.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0)
-    };
-    for max in [1000u64, 0] {
+    // 1000 と 0 は 1 本も残らない。3 ブロック (12 KiB) は 2 本ほど残す。
+    for max in [1000u64, 0, 3 * 4096] {
         let m = max.to_string();
         let env = [("KSN_CACHE_DIR", c), ("KSN_CHECK_CACHE_MAX", m.as_str())];
         for round in 0..2 {
             assert_eq!(base, check_cached_env(&t.0, &env), "max {} round {}", max, round);
-            assert!(size() <= max, "max {}: {} bytes are kept", max, size());
+            assert!(disk_usage(&cache) <= max, "max {}: {} bytes (blocks) are kept", max, disk_usage(&cache));
         }
     }
-    // 上限が十分なら全部残る (t.ksnl と f0..f7 の 9 本)。上限 1000 では数本しか残らない (上の検査で確かめた)。
+    // 上限が十分なら全部残る (t.ksnl と f0..f7 の 9 本)。
     let _ = fs::remove_dir_all(&cdir);
     assert_eq!(base, check_cached_env(&t.0, &[("KSN_CACHE_DIR", c), ("KSN_CHECK_CACHE_MAX", "100000000")]));
-    assert_eq!(fs::read_dir(&cdir).unwrap().count(), 9);
+    assert_eq!(slot_files(&cache).len(), 9);
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// 件数の上限 (`KSN_CHECK_CACHE_ENTRIES`) を超えたら、件数が上限以下になる。結果は変わらない。
+#[test]
+fn check_cache_entry_cap_is_enforced() {
+    let t = many_files_package("cc_entries", 8);
+    let base = check_cached(&t.0, None);
+    let cache = cache_tmp("entries");
+    let c = cache.to_str().unwrap();
+    let env = [("KSN_CACHE_DIR", c), ("KSN_CHECK_CACHE_ENTRIES", "4")];
+    assert_eq!(base, check_cached_env(&t.0, &env));
+    assert!(slot_files(&cache).len() <= 4, "{} entries are kept", slot_files(&cache).len());
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// 掃除の記録: 上限を超えない限り、全体を数え直すのは 1 時間に 1 回。2 回目以降の実行は記録の時刻を変えない。
+/// 記録が壊れていたら作り直す。
+#[test]
+fn check_cache_record_avoids_recounting_on_every_run() {
+    let t = many_files_package("cc_record", 3);
+    let cache = cache_tmp("record");
+    let c = cache.to_str().unwrap();
+    let env = [("KSN_CACHE_DIR", c)];
+    let scanned = || -> u64 {
+        let raw = fs::read_to_string(cache.join("check").join(".stat.json")).unwrap();
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap()["scanned"].as_u64().unwrap()
+    };
+    assert_eq!(check_cached(&t.0, None), check_cached_env(&t.0, &env));
+    let first = scanned();
+    assert_eq!(check_cached(&t.0, None), check_cached_env(&t.0, &env));
+    assert_eq!(first, scanned(), "a run within the hour recounted the cache");
+    // 記録が壊れたら、次の実行で作り直す。診断は変わらない。
+    fs::write(cache.join("check").join(".stat.json"), "garbage").unwrap();
+    assert_eq!(check_cached(&t.0, None), check_cached_env(&t.0, &env));
+    assert!(serde_json::from_str::<serde_json::Value>(&fs::read_to_string(cache.join("check").join(".stat.json")).unwrap()).is_ok());
     let _ = fs::remove_dir_all(&cache);
 }
 
