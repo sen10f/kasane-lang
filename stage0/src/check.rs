@@ -3575,11 +3575,14 @@ impl<'a> Checker<'a> {
                         self.check_ty_linear_args(&t, self.d, nline(s));
                     }
                 }
-                let ty = if !is_nil(&f[2]) { f[2].clone() } else { got };
+                let ty = if !is_nil(&f[2]) { f[2].clone() } else { got.clone() };
                 // パターンに沿って束縛名の型を決める (PBind と、分解 `let (a, b) = ..`)。
                 // 決まらない束縛は下のパスで V::Nil になり、検査は黙る。
+                // 参照越しの分解 `let p = x` (`x: &T`): 束縛は `&T` の欄。所有値として消費させない (E3002)。
+                let src_is_ref = self.ety_is_ref(&f[3]) || tag(&got) == "ref" || tag(&ty) == "ref";
+                let pat_ty = if src_is_ref && tag(&ty) == "ref" { tel(&ty, 2).clone() } else { ty };
                 let mut typed: Vec<(String, V)> = vec![];
-                self.bind_pat_types(&f[0], &ty, &mut typed);
+                self.bind_pat_types(&f[0], &pat_ty, &mut typed);
                 self.lin_wild(&typed, nline(s));
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
@@ -3591,8 +3594,13 @@ impl<'a> Checker<'a> {
                             t = crate::types::TypeCk::to_v(ty).unwrap_or(V::Nil);
                         }
                     }
+                    if src_is_ref && !is_nil(&t) && tag(&t) != "ref" && !self.is_generic(&t, &self.names) && !self.is_copy(&t) {
+                        t = V::L(vec![V::S("ref".into()), V::B(false), t]);
+                        self.ref_binds.insert(n.clone());
+                    } else {
+                        self.ref_binds.remove(&n);
+                    }
                     env.insert(n.clone(), t);
-                    self.ref_binds.remove(&n);
                     self.revive_place(std::slice::from_ref(&n));
                     let once = matches!(
                         self.let_tys.get(&(self.d, nline(s), n.clone())),
