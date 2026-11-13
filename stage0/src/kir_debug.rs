@@ -478,6 +478,7 @@ impl<'a> Gen<'a> {
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str", || str_fn(fat))),
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg(name, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, false),
+            (Src::Slice(e) | Src::Array(e), t) if t == fat => self.slice_debug(e, file),
             (Src::Tuple(_), _) => Err("タプルの Debug 表示は未対応".to_string()),
             (Src::Ref(_, inner), t) => self.need(inner, t, file),
             (other, t) => Err(format!("型 {} ({}) の Debug 表示は未対応", show(other), t.name())),
@@ -526,6 +527,57 @@ impl<'a> Gen<'a> {
             self.add(f, BTreeSet::new());
         }
         k
+    }
+
+    /// `&[T]` / `&[T; N]` の表示 (`[a, b, c]`。木走査の `debug_str` と同じ)。値は `fat` (`{ptr, len}`)。
+    /// 要素はスカラー (整数・bool・char) だけ。要素の表示の関数を要素ごとに呼ぶ (区切りは `, `)。
+    fn slice_debug(&mut self, e: &Src, file: &str) -> Result<String, String> {
+        let fat = self.fat()?;
+        let et = super::conv(e)
+            .filter(|t| (t.is_int() && t.bits() <= 64) || matches!(t, Ty::Bool | Ty::U32))
+            .ok_or_else(|| format!("要素の型 {} の Debug 表示は未対応", show(e)))?;
+        let size = crate::kir::size_of(&self.aggs.borrow().defs, et);
+        let name = format!("slice<{}>", show(e).replace(' ', ""));
+        let k = key(&name);
+        if !self.done.insert(k.clone()) {
+            return Ok(k);
+        }
+        let ek = self.need(e, et, file)?;
+        let mut b = Fb::new(&[fat], fat);
+        let ptr = b.emit(Ty::Ptr, Op::Field { a: b.v, off: 0 });
+        let len = b.emit(Ty::Usize, Op::Field { a: b.v, off: 8 });
+        b.s("[");
+        let z = b.c(Ty::Usize, 0);
+        let (lp, lv) = b.block(&[Ty::Usize]);
+        let (body, _) = b.block(&[]);
+        let (sep, _) = b.block(&[]);
+        let (elem, _) = b.block(&[]);
+        let (end, _) = b.block(&[]);
+        b.goto(lp, vec![z]);
+        b.at(lp);
+        let done = b.cmp(Cc::Ge, Ty::Usize, lv[0], len);
+        b.term(Term::BrIf(done, (end, vec![]), (body, vec![])));
+        b.at(body);
+        let zero = b.c(Ty::Usize, 0);
+        let first = b.cmp(Cc::Eq, Ty::Usize, lv[0], zero);
+        b.term(Term::BrIf(first, (elem, vec![]), (sep, vec![])));
+        b.at(sep);
+        b.s(", ");
+        b.goto(elem, vec![]);
+        b.at(elem);
+        let sz = b.c(Ty::Usize, size as i128);
+        let off = b.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: lv[0], b: sz });
+        let p = b.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off });
+        let x = b.emit(et, Op::MemLoad { p, off: 0 });
+        b.emit(Ty::Unit, Op::Call { callee: ek.clone(), args: vec![x] });
+        let one = b.c(Ty::Usize, 1);
+        let i1 = b.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: lv[0], b: one });
+        b.goto(lp, vec![i1]);
+        b.at(end);
+        b.s("]");
+        let f = b.finish(&k);
+        self.add(f, [ek].into_iter().collect());
+        Ok(k)
     }
 
     /// `&str` の等しさ: 長さが等しく、バイトがすべて一致する。

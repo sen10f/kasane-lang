@@ -1109,6 +1109,12 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 拒否のまま: `let g = v.get(i)` (値の `Option<&T>`)、`insert` / `remove`。
 - 試験: `kir_mut_borrow_of_owning_elems_matches_tree_walker` (13 ケース)、`..._out_of_range_panics_like_tree_walker`。`kir_get_on_vec_of_owning_elements_is_refused_with_a_reason` は `let` の形に差し替えた。
 
+### 17.18 `Option<&[T]>` の比較と表示 (kir/opt-slice-eq、2026-11-13)
+- `Option<&[T; N]>` のペイロードは `Option<&[T]>` と同じ `fat` で持つ (`pay_of`)。`Some(&[..])` の引数は一時の枠の番地 (`ref<fat>`) で来るので、`ctor` で読み出してから包む。長さ N は型検査が両辺を揃えるので値に要らない。
+- `&[T]` / `&[T; N]` (`fat`) の表示は `[a, b, c]` (木走査の `debug_str` と同じ)。`kir_debug.rs` の `slice_debug` が要素ごとに要素の表示の関数を呼ぶ。要素は整数・bool・char だけ (浮動小数と 128 ビット整数は未対応のまま、理由付きで止める)。`core.check.eq` の失敗の文言は `Some([2, 3])` になる。
+- 試験: `kir_optres_slice_literal_eq_matches_tree_walker` (`==` / `!=` の 5 ケース、失敗の文言)。
+- examples/tour は 90 行の `Option<&[u8]>` を越えたが、91 行の `arr.first()` で止まる。残りは `BtreeMap` (KIR に型がない)、`str` の `trim` / `split` / `parse` / `split_once`、`from_str_radix` / `try_from_*` / `leading_zeros` / `count_ones`、`core.num.*.MAX` などで、一続きの作業にする。`llvm_builds_of_real_packages_match_run` には足していない。
+
 ## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
 
 段階 2 (第 5 章) の第 1 段。`ksn run --engine=vm` と `ksn test --engine=vm` (`--engine=tree` が既定の木走査)。既定の挙動は変えていない。`clif.rs` と `examples/`・`perf/` のソースは触っていない。

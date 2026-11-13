@@ -315,6 +315,13 @@ impl AggTab {
 
     /// `Option` / `Result` のペイロードの型。スカラー・unit・集成体・入れ子は `Pay` になる (128 ビット整数・参照は拒否)。
     fn pay_of(&mut self, p: &Program, file: &str, t: &Src) -> Result<Pay, String> {
+        // `Option<&[T; N]>` は `Option<&[T]>` と同じ値 (`fat`) で持つ。長さ N は型検査が両辺を揃えるので、値には要らない。
+        // (`lower_ty` の `&[T; N]` は参照 `ref<fat>` で、Option のペイロードには置けないため。)
+        if let Src::Ref(_, inner) = t {
+            if matches!(&**inner, Src::Array(e) if conv(e).is_some()) {
+                return Pay::of(self.fat()).ok_or_else(|| "&[T; N] の fat は Option のペイロードに使えない".to_string());
+            }
+        }
         let x = self.lower_ty(p, file, t)?;
         Pay::of(x).ok_or_else(|| format!("型 {} は Option / Result のペイロードに使えない", x.name()))
     }
