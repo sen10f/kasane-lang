@@ -78,14 +78,14 @@ fn parse_int(s: &str) -> i128 {
 /// 要素の型が分からない生ポインタの読み書きの実行時エラー。
 fn unknown_elem(name: &str) -> String {
     format!(
-        "{}: the interpreter does not know the element type of the pointer (raw pointer memory); use `ksn build --backend clif`",
+        "{}: the interpreter does not know the element type of the pointer (raw pointer memory); use a native build (`ksn build`)",
         name
     )
 }
 
 /// スカラーでない (構造体など) 要素の読み書きの実行時エラー。
 fn unsupported_elem(name: &str, elem: &str) -> String {
-    format!("{}: the element type `{}` is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`", name, elem)
+    format!("{}: the element type `{}` is not supported by the interpreter (raw pointer memory); use a native build (`ksn build`)", name, elem)
 }
 
 /// 生ポインタの値の型名 (`Val::Int` の型名) と要素型の対応。扱うのはスカラーだけ。
@@ -1522,7 +1522,7 @@ impl Interp {
                 let a = args.first().cloned().unwrap_or(Val::Unit);
                 self.make_pin(name, &a)
             }
-            _ => panic(format!("{} is not supported by the interpreter (raw pointer memory); use `ksn build --backend clif`", name)),
+            _ => panic(format!("{} is not supported by the interpreter (raw pointer memory); use a native build (`ksn build`)", name)),
         }
     }
 

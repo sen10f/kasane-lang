@@ -61,7 +61,7 @@
                   ├→ kir::vm    レジスタ型バイトコード (開発時の実行・ホットリロード)
                   └→ kir::llvm  LLVM (ネイティブ生成。LLVM のパスに LLM の判断を組み込む)
               KIR の最適化パス (決定的 + LLM 判断。第 3 章)
-(Cranelift (`clif.rs`) は移行期間だけ残す。凍結し、機能を足さない。)
+(Cranelift (`clif.rs`) は 2026-11-14 に削除した。7 章 19。)
 ```
 
 KIR は関数単位の表で、鍵は単相化インスタンス (FQN + 型引数) である。
@@ -377,7 +377,7 @@ end demo.fib
 | 16 | perf ハーネス | `perf/` を新設 (ブランチ perf/bench-harness で作業中) |
 | 17 | VM を既定にする条件 | cargo test・examples の `test --both`・bench/reference がすべて一致し、perf の中央値で 5 倍以上 |
 | 18 | テキスト形式の互換 | `kir 1` は段階 5 まで後方互換を約束しない (版が違えば読み込みを拒否) |
-| 19 | Cranelift | (2026-11-13) 最終形から外す。今の `clif.rs` は凍結 (誤った機械語の修正だけ。機能は足さない)。`test --both` の比較相手として、LLVM の経路が全テストを通すまで残し、その後に削除する |
+| 19 | Cranelift | (2026-11-13) 最終形から外す。**完了 (2026-11-14、kir/llvm-default)**: `ksn build` の既定を LLVM にし、`clif.rs` (10180 行)・`rt.c`・`strrt.c`・`thrrt.c`・`cranelift*` の依存を削除した。`--backend clif` は廃止を告げて失敗する。`test --both` の比較相手は LLVM → バンドル。LLVM に下ろせないプログラムは、理由を出してバンドルへ退避する |
 | 20 | LLM の組み込み先 | (2026-11-13) KIR 上の判断 (層 (a)) と、LLVM のパスの中の判断 (層 (b)) の両方。どちらも性能の判断だけで、検証と記録の仕組みは共通 (第 3 章) |
 | 21 | 段取りの順 | (2026-11-13) 段階 4 (KIR → LLVM) を段階 2 (VM) より先にする。既存の `test --both` とテスト一式を、そのまま LLVM 版の受け入れ基準に使えるため |
 | 22 | LLVM との接続 | (2026-11-13) Rust 束縛 (`inkwell` / `llvm-sys`) は使わず、KIR から LLVM IR のテキスト (`.ll`) を出し、外部の `clang` (と、層 (b) では `opt -load-pass-plugin`) でコンパイル・リンクする。束縛は LLVM の版に強く縛られるが、テキストの IR は版の違いに強い。今の gcc をリンカにする形と同じで、LLVM はネイティブ生成のときだけ要る (cargo feature は不要)。手元は LLVM 23 |
@@ -867,7 +867,7 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 
 ### 12.4 受け入れ基準
 - examples と perf の全パッケージで、`ksn build --backend llvm` の実行ファイルの stdout・stderr・終了コードが `ksn run` と一致する (下ろせない関数があるパッケージは、理由付きで退避する)。
-- `ksn test --both` の比較相手を、KIR に下ろせるテストでは LLVM にする (下ろせなければ、今の Cranelift、その次にバンドルへ退避する)。
+- `ksn test --both` の比較相手を、KIR に下ろせるテストでは LLVM にする (下ろせなければバンドルへ退避する。Cranelift は 2026-11-14 に削除)。
 
 ### 12.5 実装 (kir/io-entry、2026-11-13) で決めたこと
 
@@ -888,13 +888,13 @@ examples と perf の `main` は、すべて `Result<(), std.io.Error>` を返�
 - 試験 (`stage0/tests/cli.rs`): `kir_write_prints_through_run_and_native` (`write` の `--run` と `--native`)、`llvm_build_of_print_line_main_matches_run`、`llvm_build_main_err_prints_debug_and_exits_1` (`std.io.Error` の Debug、終了コード 1)、`llvm_build_debug_covers_structs_enums_ints_bool_char_and_str`、`llvm_build_panic_keeps_the_panic_exit_code_and_message` (101)、`llvm_build_falls_back_with_a_reason_when_a_function_cannot_be_lowered`。`kir.rs` の `write_reads_back_and_needs_io_console`。clang が無い環境では `--native` と実行ファイルの比較を飛ばす。
 ### 12.6 `test --both` の比較相手 (kir/test-both-llvm、2026-11-13) で決めたこと
 
-- 順序: テストごとに、まず KIR → LLVM (`build_llvm_test`)。下ろせない・clang が無いなどで作れなければ Cranelift (`build_native_test`)、それも無理ならバンドル (`run_in_bundle`)。表示は `(both: llvm)` / `(both: native (llvm skipped: 理由))` / `(both: bundle (llvm skipped: 理由; native skipped: 理由))`。要約は `compared with: llvm L, native N, bundle fallback M`。
+- 順序: テストごとに、まず KIR → LLVM (`build_llvm_test`)。下ろせない・clang が無いなどで作れなければバンドル (`run_in_bundle`)。表示は `(both: llvm)` / `(both: bundle (llvm skipped: 理由))`。要約は `compared with: llvm L, bundle fallback M`。(2026-11-14 までは、間に Cranelift の `(both: native ...)` があった。)
 - 入口: `kir_lower::lower_test(p, user, ti)` は、テストの本体 (`()` を返す) を入口にして下ろす。`test` の本体は型表 (`type_table`) と下ろしの両方に入れる。戻り値が `()` の入口は Debug 表示の関数を要らない (`debug_of_entry` は戻り値を先に見る)。LLVM 側は `llvm_exe` (`build_llvm` と共通) で作り、`target/test-llvm/` に置く。
 - 失敗の比べ方: LLVM の panic の文言は `kir_llvm::PANICS` と木走査 (`interp.rs`) で同じ。`fail_class` の単体テスト `llvm_panic_texts_classify_like_the_tree_walker` が、両方の文言の組を同じ分類に通す。
 - stack 超過: 木走査は `Exit(102)`、LLVM は終了コード 102 (stderr に `stack overflow`)。`run_native_test` は 102 を `exit(102)` にして、終了の種類で比べる (Cranelift の結果も同じ扱いになる)。
 - 結果 (examples 7 本、11 テスト): `llvm 5 / native 6 / bundle 0`。LLVM で比べたのは demo・features・realtime・tour の一部。残りは KIR の下ろしが壁 (`Result` の Err の表示、`let` の分解、構造体のフィールドからの `Vec` の移動、浮動小数の比較、`from_str_radix`、128 ビット、配列の繰り返し式、`eq` / `cmp` などの手書きのメソッド)。perf はテストを持たない (0 件)。
-- 試験: `stage0/tests/cli.rs` の `test_both_runs_kir_tests_as_llvm_executables` (LLVM)、`test_both_compares_llvm_panics_with_the_tree_walker` (除算・unwrap・overflow・assert の文言と分類)、`test_both_falls_back_from_llvm_to_cranelift_with_the_reason` (LLVM が退避し Cranelift が比べる)、`test_both_falls_back_to_the_bundle_when_llvm_and_cranelift_both_cannot_build` (バンドル)、`test_both_stack_overflow_is_exit_102_on_both_sides`。disagree は人工的に食い違わせる方法が無いので、`src/cli.rs` の単体テストで分類の判定を確かめる。
-- 残り: Cranelift (`clif.rs`) は、LLVM が全テストを通すまで比較相手として残す (12.4 の 2 つ目の後始末)。
+- 試験: `stage0/tests/cli.rs` の `test_both_runs_kir_tests_as_llvm_executables` (LLVM)、`test_both_compares_llvm_panics_with_the_tree_walker` (除算・unwrap・overflow・assert の文言と分類)、`test_both_falls_back_from_llvm_to_the_bundle_with_the_reason` (LLVM が退避しバンドルが比べる)、`test_both_falls_back_to_the_bundle_when_llvm_cannot_build_128_bit_integers` (128 ビット)、`test_both_stack_overflow_is_exit_102_on_both_sides`。disagree は人工的に食い違わせる方法が無いので、`src/cli.rs` の単体テストで分類の判定を確かめる。
+- 残り: なし。Cranelift (`clif.rs`) は 2026-11-14 に削除した (7 章 19)。
 
 ## 13. Vec / String の所有の移動と解放 (kir/owned-heap、2026-11-13)
 

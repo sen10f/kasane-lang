@@ -367,7 +367,7 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
         return Err(format!("入口 {} に引数がある", f.key));
     }
     let rt = lty(aggs, f.ret);
-    let mut s = String::from("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n");
+    let mut s = String::from("define i32 @main(i32 %argc, ptr %argv) null_pointer_is_valid {\nentry:\n");
     // std.env の C ランタイムが argc/argv を参照するため、グローバルに保存する。
     // シンボル名は C から `extern` 参照できるようドットなしにする。
     cx.globals.push_str("@ksn_rt_argc = global i32 0\n");
@@ -571,7 +571,7 @@ fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
     if f.params().iter().any(|(_, t)| bad(*t)) || bad(f.ret) {
         return Err(format!("関数 {} は集成体・参照・ptr を引数か戻り値に持つ (この入口では扱えない)", f.key));
     }
-    let mut s = String::from("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n");
+    let mut s = String::from("define i32 @main(i32 %argc, ptr %argv) null_pointer_is_valid {\nentry:\n");
     let mut args = vec![];
     for (j, (_, t)) in f.params().iter().enumerate() {
         let (lo_i, hi_i) = (1 + 2 * j, 2 + 2 * j);
@@ -2069,7 +2069,8 @@ impl<'a> Fe<'a> {
         }
         // 先頭 (静的な確保と深さの検査) と本体。
         let params: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(self.aggs, *t), j)).collect();
-        let mut s = format!("define internal {} {}({}) {{\nentry:\n", self.lt(f.ret), fname(&f.key), params.join(", "));
+        // `null-pointer-is-valid`: `core.ptr.read(null)` などの null 参照を、最適化で消える未定義動作にせず、実際の fault (SIGSEGV) にする。
+        let mut s = format!("define internal {} {}({}) null_pointer_is_valid {{\nentry:\n", self.lt(f.ret), fname(&f.key), params.join(", "));
         s.push_str(&hoisted);
         s.push_str(&format!(
             "  %depth = load i64, ptr @ksn.depth\n  %over = icmp uge i64 %depth, {}\n  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n  unreachable\ngo:\n  %depth1 = add i64 %depth, 1\n  store i64 %depth1, ptr @ksn.depth\n  br label %b0\n",
