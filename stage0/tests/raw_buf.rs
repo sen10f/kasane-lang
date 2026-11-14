@@ -308,3 +308,11 @@ end t.main
 fn buf_of_owning_elements_lowers_to_native() {
     assert_eq!(run_native("owned", OWNED), "owned ok\n");
 }
+
+#[test]
+fn a_kasane_vec_over_buf_lowers_to_native_with_owning_elements() {
+    // ジェネリックな構造体 + `Buf` フィールド (暗黙の drop) + メソッド + 所有物の要素 (`String`・入れ子の Vec) を、
+    // 組み込みの `Vec` を使わず Kasane だけで書いた `Vec` (設計_stdlib_kasane.md)。
+    let src = include_str!("data/raw_buf/kvec.ksnl");
+    assert_eq!(run_native("kvec", src), "ok\n");
+}

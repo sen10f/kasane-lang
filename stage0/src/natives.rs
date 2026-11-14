@@ -17,7 +17,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "core.panic.todo", "core.panic.unreachable", "core.check.eq", "core.check.is_true", "std.io.print_line", "std.process.exit",
     "std.process.abort", "std.env.arg", "std.env.arg_count", "std.env.var", "core.iter.range", "core.iter.map",
     "core.iter.filter", "core.iter.enumerate", "core.iter.take", "core.iter.count", "core.iter.fold",
-    "core.str.from_utf8", "alloc.vec.Vec.new", "alloc.raw.Buf.with_capacity", "alloc.vec.Vec.with_capacity", "alloc.string.String.new",
+    "core.str.from_utf8", "alloc.vec.Vec.new", "alloc.raw.Buf.new", "alloc.raw.Buf.with_capacity", "alloc.vec.Vec.with_capacity", "alloc.string.String.new",
     "alloc.string.String.from_str", "alloc.string.String.replace", "alloc.string.String.join",
     "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
     "alloc.collections.VecDeque.new",
@@ -591,6 +591,10 @@ impl Interp {
                     })))),
                 }
             }
+            "alloc.raw.Buf.new" => Ok(Val::Struct(Rc::new(StructV {
+                ty: "alloc.raw.Buf".into(),
+                f: RefCell::new(vec![("allocator".into(), a0.clone()), ("capacity".into(), usz(0)), ("items".into(), Val::Vec(new_list(vec![])))]),
+            }))),
             "alloc.raw.Buf.with_capacity" => {
                 let n = if let Some(Val::Int(c, _)) = args.get(1).map(dr) { c as usize } else { 0 };
                 Ok(ok(Val::Struct(Rc::new(StructV {

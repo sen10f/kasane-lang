@@ -79,7 +79,7 @@ impl<'a> Lw<'a> {
 
     /// 呼び先 `di` の型引数 (名前 → 具体的な型)。`targs` は `::<..>` の明示 (なければ `Nil`)、
     /// なければ引数 `args` (先頭の `skip` 個の宣言の引数は受け手なので飛ばす) と呼び出しの結果の型から決める。
-    pub(super) fn mono_targs(&self, e: &V, di: usize, args: &[V], skip: usize, targs: &V) -> LR<HashMap<String, Src>> {
+    pub(super) fn mono_targs(&self, e: &V, di: usize, args: &[V], skip: usize, targs: &V, recv: Option<Src>) -> LR<HashMap<String, Src>> {
         let line = nline(e);
         let cd = &self.p.defs[di];
         if let Some(g) = cd.generics.iter().find(|g| g.0 != "life" && g.0 != "type") {
@@ -96,6 +96,18 @@ impl<'a> Lw<'a> {
             for (n, t) in names.iter().zip(explicit) {
                 bind.insert(n.clone(), subst_ty(&from_v(t, &tnames(self.def)), &self.subst));
             }
+        }
+        // メソッドの受け手の型 (`self: &Kvec<T, A>` に対する `Kvec<u32, System>`)。参照の段数は両側から剥がして突き合わせる。
+        if let (Some(r), Some((_, pt))) = (recv, cd.params.first().filter(|_| skip == 1)) {
+            let mut pat = from_v(pt, &tn);
+            while let Src::Ref(_, x) = pat {
+                pat = *x;
+            }
+            let mut act = r;
+            while let Src::Ref(_, x) = act {
+                act = *x;
+            }
+            unify(&pat, &act, &mut bind);
         }
         for ((_, pt), a) in cd.params.iter().skip(skip).zip(args) {
             if let Ok(at) = self.src_ty(a) {

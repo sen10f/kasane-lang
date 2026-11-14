@@ -65,6 +65,8 @@ pub struct AggTab {
     pub chan_elem: HashMap<u32, Ty>,
     /// `std.thread.JoinHandle<T, A>` の型の添字 → `T`。
     pub handle_elem: HashMap<u32, Ty>,
+    /// 型引数付きの集成体の添字 → (定義の FQN, 型引数)。メソッドの型引数の推論 (受け手の型) に使う。
+    pub generic_args: HashMap<u32, (String, Vec<Src>)>,
 }
 
 /// `Box<dyn Tr>` の vtable の登録 (設計_KIR.md 21 章)。vtable の「番地」は、登録順の番号 (`usize`)。
@@ -152,7 +154,7 @@ fn layout_enum(defs: &[AggDef], vs: &[(String, Vec<Ty>)]) -> (u32, u32, Vec<Vari
 impl AggTab {
     /// `user` は利用者のパッケージの定義の添字 (`lower_user` の引数と同じ)。
     pub fn new(user: &[usize]) -> AggTab {
-        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default(), chan_elem: HashMap::new(), handle_elem: HashMap::new() }
+        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default(), chan_elem: HashMap::new(), handle_elem: HashMap::new(), generic_args: HashMap::new() }
     }
 
     /// 推論済みの型 `t` を段階 1 の型にする。`file` は名前を解決するファイル。対象外なら理由付きで `Err`。
@@ -411,14 +413,14 @@ impl AggTab {
         n.parse::<u32>().ok().map(Ty::Agg)
     }
 
-    /// `alloc.alloc.AllocError` (clif と同じ大きさ 1 の構造体)。`Vec::push` などの `Result` の E。
+    /// `alloc.alloc.AllocError` (仕様どおり `{ code: u32 }`。Kasane で書いた `Vec` が `AllocError { code: .. }` を作れるように)。`Vec::push` などの `Result` の E。
     pub fn alloc_err(&mut self) -> Ty {
         const NAME: &str = "alloc.alloc.AllocError";
         if let Some(&i) = self.by_name.get(NAME) {
             return Ty::Agg(i);
         }
-        let fields = vec![Field { name: "kind".to_string(), ty: Ty::U8, off: 0 }];
-        self.push(NAME.to_string(), 1, 1, AggKind::Struct(fields))
+        let fields = vec![Field { name: "code".to_string(), ty: Ty::U32, off: 0 }];
+        self.push(NAME.to_string(), 4, 4, AggKind::Struct(fields))
     }
 
     /// `alloc.vec.InsertError` 列挙型 (OutOfBounds / Alloc)。`insert` の `Err(InsertError::OutOfBounds)` を作るためだけに用いる。
@@ -587,6 +589,9 @@ impl AggTab {
         let bind: std::collections::HashMap<String, Src> = names.into_iter().zip(args.iter().cloned()).collect();
         let r = self.build_def_with(p, di, &bind, key.clone());
         self.busy.remove(&key);
+        if let Ok(Ty::Agg(i)) = r {
+            self.generic_args.insert(i, (d.name.clone(), args.to_vec()));
+        }
         r
     }
 

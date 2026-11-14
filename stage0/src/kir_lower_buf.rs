@@ -60,6 +60,35 @@ fn alloc_err_pay(lw: &mut Lw) -> Pay {
     }
 }
 
+/// 引数のアロケータが `std.alloc.System` か確かめ、変数・フィールドなら評価だけする (定数 `std.alloc.SYSTEM` は値を作らない)。
+fn allocator_arg(lw: &mut Lw, line: usize, a: &V) -> LR<bool> {
+    match lw.src_ty(a) {
+        Ok(Src::Named(n, _)) if n == "std.alloc.System" => {}
+        _ => return lw.err(line, "Buf のアロケータは std.alloc.System だけ段階 1 の対象"),
+    }
+    let literal = crate::check::nname(a) == "Path" && crate::check::strs(&nf(a)[0]) == ["std", "alloc", "SYSTEM"];
+    Ok(literal || lw.expr(a)?.is_some())
+}
+
+/// `alloc.raw.Buf.new(allocator)`: 確保しない空の箱 (null, 0, 0)。
+pub(super) fn new(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
+    let line = nline(e);
+    let args = items(&nf(e)[1]);
+    if args.len() != 1 {
+        return lw.err(line, "Buf.new の引数は 1 つのはず");
+    }
+    if !allocator_arg(lw, line, &args[0])? {
+        return Ok(None);
+    }
+    let vt = match lw.ty_of(e) {
+        Ok(t) if lw.aggs.borrow().is_vec(t) => t,
+        _ => return lw.err(line, "Buf.new の結果の型が Buf でない"),
+    };
+    let null = lw.emit(Ty::Ptr, Op::Const(0));
+    let zero = usize_const(lw, 0);
+    Ok(Some(lw.emit(vt, Op::Make { variant: None, fields: vec![null, zero, zero] })))
+}
+
 /// `alloc.raw.Buf.with_capacity(allocator, n)`: `n` 個分のバッファを確保して `Ok(Buf)` (確保の失敗は起きない)。
 pub(super) fn with_capacity(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let f = nf(e);
@@ -68,13 +97,7 @@ pub(super) fn with_capacity(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     if args.len() != 2 {
         return lw.err(line, "Buf.with_capacity の引数は 2 つのはず");
     }
-    match lw.src_ty(&args[0]) {
-        Ok(Src::Named(a, _)) if a == "std.alloc.System" => {}
-        _ => return lw.err(line, "Buf のアロケータは std.alloc.System だけ段階 1 の対象"),
-    }
-    // `std.alloc.SYSTEM` の定数は値を作らない (使わない)。変数・フィールドのアロケータは評価だけする。
-    let literal = crate::check::nname(&args[0]) == "Path" && crate::check::strs(&nf(&args[0])[0]) == ["std", "alloc", "SYSTEM"];
-    if !literal && lw.expr(&args[0])?.is_none() {
+    if !allocator_arg(lw, line, &args[0])? {
         return Ok(None);
     }
     let Some(n) = lw.expr(&args[1])? else { return Ok(None) };

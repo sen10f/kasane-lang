@@ -713,6 +713,31 @@ impl<'a> Lw<'a> {
             Some(init) if nname(init) == "Lit" && st(&nf(init)[0]) == "str" && ty == self.fat_ty() => {
                 coll::str_lit(self, init)
             }
+            // 整数リテラルのフィールドだけの構造体リテラルの定数 (`std.alloc.SYSTEM = std.alloc.System { id: 0u8 }`)。
+            Some(init) if nname(init) == "StructLit" => {
+                let Ty::Agg(ai) = ty else { return self.err(nline(e), format!("定数 {} の型が構造体でない", c.name)) };
+                let crate::kir::AggKind::Struct(decl) = self.agg_def(ai).kind else { return self.err(nline(e), format!("定数 {} の型が構造体でない", c.name)) };
+                let mut vals: Vec<Option<VId>> = vec![None; decl.len()];
+                for it in items(&nf(init)[1]) {
+                    let V::L(xs) = it else { return self.err(nline(e), format!("定数 {} の形が対象外", c.name)) };
+                    let (fname, val) = (st(&xs[0]), &xs[1]);
+                    let k = decl.iter().position(|x| x.name == fname);
+                    match (k, nname(val)) {
+                        (Some(k), "Lit") if st(&nf(val)[0]) == "int" && decl[k].ty.is_int() => {
+                            let v = parse_int(&nf(val)[1]).ok_or_else(|| "定数の値が扱えない".to_string())?;
+                            if !decl[k].ty.in_range(v) {
+                                return self.err(nline(e), "定数の値が型の範囲にない");
+                            }
+                            vals[k] = Some(self.emit(decl[k].ty, Op::Const(v)));
+                        }
+                        _ => return self.err(nline(e), format!("定数 {} は段階 1 の対象外 (整数のフィールドだけ)", c.name)),
+                    }
+                }
+                let Some(fields) = vals.into_iter().collect::<Option<Vec<VId>>>() else {
+                    return self.err(nline(e), format!("定数 {} のフィールドが足りない", c.name));
+                };
+                Ok(self.emit(ty, Op::Make { variant: None, fields }))
+            }
             _ => self.err(nline(e), format!("定数 {} は段階 1 の対象外", c.name)),
         }
     }
@@ -1016,7 +1041,7 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("呼び先 {} は段階 1 の対象外 (メソッド・本体なし)", cd.name));
         }
         let (name, tmap) = if cd.generics.iter().any(|g| g.0 != "life") {
-            let tm = self.mono_targs(e, di, args, 0, &f[2])?;
+            let tm = self.mono_targs(e, di, args, 0, &f[2], None)?;
             (self.mono_instance(di, &tm, line)?, tm)
         } else {
             (cd.name.clone(), HashMap::new())

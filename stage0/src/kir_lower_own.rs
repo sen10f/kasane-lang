@@ -57,9 +57,19 @@ pub(super) fn field_src(lw: &Lw, s: usize, names: &[String]) -> Option<Src> {
         let d = lw.aggs.borrow().defs[ai as usize].clone();
         let AggKind::Struct(fs) = &d.kind else { return None };
         let fty = fs.iter().find(|f| f.name == *n)?.ty;
-        let def = lw.p.defs.iter().find(|x| x.kw == "type" && x.name == d.name)?;
+        // 型引数付きの構造体は、定義の FQN と型引数を表から引き、フィールドの型の型パラメータを具体型に置き換える。
+        let (defname, bind) = match lw.aggs.borrow().generic_args.get(&ai) {
+            Some((name, args)) => {
+                let def = lw.p.defs.iter().find(|x| x.kw == "type" && x.name == *name)?;
+                let names = def.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone());
+                (name.clone(), names.zip(args.iter().cloned()).collect::<std::collections::HashMap<String, Src>>())
+            }
+            None => (d.name.clone(), std::collections::HashMap::new()),
+        };
+        let def = lw.p.defs.iter().find(|x| x.kw == "type" && x.name == defname)?;
         let v = &def.fields.iter().find(|f| f.0 == *n)?.1;
-        src = Some(from_v(v, &HashSet::new()));
+        let tn: HashSet<String> = bind.keys().cloned().collect();
+        src = Some(super::mono::subst_ty(&from_v(v, &tn), &bind));
         if k + 1 < names.len() {
             let Ty::Agg(next) = fty else { return None };
             ai = next;

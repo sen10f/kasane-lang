@@ -190,6 +190,26 @@ impl<'a> Lw<'a> {
         Some(self.call_method(e, di, Place::Expr(&recv), &args))
     }
 
+    /// 受け手の型表の型 (型引数付きの集成体は、登録した引数から作る)。メソッドの型引数の推論に使う。
+    fn recv_src(&self, place: &Place) -> Option<Src> {
+        match place {
+            Place::Expr(r) => self.src_ty(r).ok(),
+            Place::Path(segs) => {
+                let s = self.lookup(&segs[0])?;
+                let mut t = self.slots[s].1;
+                for n in &segs[1..] {
+                    t = self.field_ty_of(t, n)?;
+                }
+                let ai = match t {
+                    Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => ai,
+                    _ => return None,
+                };
+                let (name, args) = self.aggs.borrow().generic_args.get(&ai).cloned()?;
+                Some(Src::Named(name, args))
+            }
+        }
+    }
+
     /// 呼び出しの下ろし。`e` は呼び出しの式 (行の番号に使う)、`args` は受け手を除いた引数。
     pub(super) fn call_method(&mut self, e: &V, di: usize, place: Place, args: &[V]) -> LR<Option<VId>> {
         let line = nline(e);
@@ -199,7 +219,8 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("メソッド {} の引数の個数が違う", cd.name));
         }
         let (callee, tmap) = if cd.generics.iter().any(|g| g.0 != "life") {
-            let tm = self.mono_targs(e, di, args, 1, super::mono::targs_of(e))?;
+            let recv_src = self.recv_src(&place);
+            let tm = self.mono_targs(e, di, args, 1, super::mono::targs_of(e), recv_src)?;
             (self.mono_instance(di, &tm, line)?, tm)
         } else {
             (cd.name.clone(), std::collections::HashMap::new())

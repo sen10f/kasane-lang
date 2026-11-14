@@ -1315,6 +1315,7 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     let segs: Vec<&str> = segs.iter().map(|x| x.as_str()).collect();
     match segs.as_slice() {
         ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e)),
+        ["alloc", "raw", "Buf", "new"] => Some(super::buf::new(lw, e)),
         ["alloc", "raw", "Buf", "with_capacity"] => Some(super::buf::with_capacity(lw, e)),
         ["alloc", "string", "String", "new"] => Some(new_header(lw, e)),
         ["alloc", "string", "String", "from_str"] => {

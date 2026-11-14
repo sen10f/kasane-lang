@@ -1,0 +1,148 @@
+enum t.InsertError derive [Debug, PartialEq] pub
+    OutOfBounds
+    Alloc(alloc.alloc.AllocError)
+end t.InsertError
+
+type t.Kvec[T, A: alloc.alloc.Allocator] pub
+    buf: alloc.raw.Buf<T, A>
+end t.Kvec
+
+fn t.Kvec.as_mut_slice[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>) -> &mut [T] uses [] panics never pub
+    self.buf.as_mut_slice()
+end t.Kvec.as_mut_slice
+
+fn t.Kvec.as_slice[T, A: alloc.alloc.Allocator](self: &t.Kvec<T, A>) -> &[T] uses [] panics never pub
+    self.buf.as_slice()
+end t.Kvec.as_slice
+
+fn t.Kvec.capacity[T, A: alloc.alloc.Allocator](self: &t.Kvec<T, A>) -> usize uses [] panics never pub
+    self.buf.cap()
+end t.Kvec.capacity
+
+fn t.Kvec.clear[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>) -> () uses [] panics never pub
+    self.buf.clear()
+end t.Kvec.clear
+
+fn t.Kvec.insert[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>, index: usize, value: T) -> Result<(), t.InsertError> uses [alloc] panics never pub
+    if index > self.buf.len() {
+        return Err(t.InsertError.OutOfBounds)
+    }
+    match self.buf.insert_within_cap(index, value) {
+        Ok(_) => Ok(())
+        Err(back) => {
+            match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {
+                Ok(_) => {
+                }
+                Err(e) => return Err(t.InsertError.Alloc(e))
+            }
+            match self.buf.insert_within_cap(index, back) {
+                Ok(_) => Ok(())
+                Err(_lost) => Err(t.InsertError.Alloc(alloc.alloc.AllocError { code: 1u32 }))
+            }
+        }
+    }
+end t.Kvec.insert
+
+fn t.Kvec.is_empty[T, A: alloc.alloc.Allocator](self: &t.Kvec<T, A>) -> bool uses [] panics never pub
+    self.buf.is_empty()
+end t.Kvec.is_empty
+
+fn t.Kvec.len[T, A: alloc.alloc.Allocator](self: &t.Kvec<T, A>) -> usize uses [] panics never pub
+    self.buf.len()
+end t.Kvec.len
+
+fn t.Kvec.new[T, A: alloc.alloc.Allocator](allocator: A) -> t.Kvec<T, A> uses [] panics never pub
+    t.Kvec { buf: alloc.raw.Buf.new(allocator) }
+end t.Kvec.new
+
+fn t.Kvec.pop[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>) -> Option<T> uses [] panics never pub
+    self.buf.pop()
+end t.Kvec.pop
+
+fn t.Kvec.push[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>, value: T) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    match self.buf.push_within_cap(value) {
+        Ok(_) => Ok(())
+        Err(back) => {
+            self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize))?
+            match self.buf.push_within_cap(back) {
+                Ok(_) => Ok(())
+                Err(_lost) => Err(alloc.alloc.AllocError { code: 1u32 })
+            }
+        }
+    }
+end t.Kvec.push
+
+fn t.Kvec.remove[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>, index: usize) -> Option<T> uses [] panics never pub
+    self.buf.remove(index)
+end t.Kvec.remove
+
+fn t.Kvec.reserve[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>, additional: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let want = self.buf.len().wrapping_add(additional)
+    if want > self.buf.cap() {
+        self.buf.grow(want)?
+    }
+    Ok(())
+end t.Kvec.reserve
+
+fn t.Kvec.truncate[T, A: alloc.alloc.Allocator](self: &mut t.Kvec<T, A>, length: usize) -> () uses [] panics never pub
+    self.buf.truncate(length)
+end t.Kvec.truncate
+
+fn t.Kvec.with_capacity[T, A: alloc.alloc.Allocator](allocator: A, capacity: usize) -> Result<t.Kvec<T, A>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    match alloc.raw.Buf.with_capacity(allocator, capacity) {
+        Ok(buf) => Ok(t.Kvec { buf: buf })
+        Err(e) => Err(e)
+    }
+end t.Kvec.with_capacity
+
+fn t.leak() -> () uses [alloc] panics may
+    let mut names = t.Kvec.new(std.alloc.SYSTEM)
+    core.check.eq(names.push(t.name("ann")), Ok(()))
+    core.check.eq(names.push(t.name("bob")), Ok(()))
+    core.check.eq(names.insert(1usize, t.name("dee")), Ok(()))
+    match names.remove(0usize) {
+        Some(s) => core.check.eq(s.len(), 3usize)
+        None => core.panic.panic("remove")
+    }
+    names.truncate(1usize)
+    let inner: t.Kvec<u32, std.alloc.System> = t.Kvec.new(std.alloc.SYSTEM)
+    let mut vs = t.Kvec.new(std.alloc.SYSTEM)
+    core.check.eq(vs.push(inner), Ok(()))
+    core.check.eq(vs.len(), 1usize)
+end t.leak
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut v = t.Kvec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < 10u32 {
+        core.check.eq(v.push(i), Ok(()))
+        i = i.wrapping_add(1u32)
+    }
+    core.check.eq(v.len(), 10usize)
+    core.check.eq(v.pop(), Some(9u32))
+    core.check.eq(v.as_slice().len(), 9usize)
+    core.check.eq(v.as_slice().get(3usize), Some(&3u32))
+    core.check.eq(v.insert(0usize, 100u32), Ok(()))
+    core.check.eq(v.insert(99usize, 1u32), Err(t.InsertError.OutOfBounds))
+    core.check.eq(v.remove(0usize), Some(100u32))
+    core.check.eq(v.remove(50usize), None)
+    core.check.eq(v.reserve(100usize), Ok(()))
+    core.check.eq(v.capacity() >= 109usize, true)
+    v.truncate(2usize)
+    core.check.eq(v.len(), 2usize)
+    v.clear()
+    core.check.eq(v.is_empty(), true)
+    let mut k = 0u32
+    while k < 2000u32 {
+        t.leak()
+        k = k.wrapping_add(1u32)
+    }
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+
+fn t.name(text: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.check.eq(s.push_str(text), Ok(()))
+    s
+end t.name
