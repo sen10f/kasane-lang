@@ -100,6 +100,16 @@ step('rust ksn: test --both (interpreter and native agree)', r.returncode == 0 a
 shutil.rmtree(os.path.join(d, 'target'), ignore_errors=True)
 shutil.rmtree(cache2, ignore_errors=True)
 
+# 10. ネイティブになった割合 (修正プラン 3-5)。下限 (tests/native_ratio_floor.json) を下回ったら落とす。
+r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tests', 'native_ratio.py')],
+                   capture_output=True, text=True, encoding='utf-8', errors='replace')
+summary = next((ln for ln in r.stdout.splitlines() if ln.startswith('native ratio:')), 'native ratio: (集計が出力されなかった)')
+step(summary, r.returncode == 0, r.stdout + r.stderr)
+if r.returncode == 0:
+    for ln in r.stdout.splitlines():
+        if ln.startswith('note: '):
+            print('     ' + ln)
+
 print()
 print('ALL TESTS PASSED' if not failures else f'{len(failures)} FAILED: {failures}')
 sys.exit(1 if failures else 0)
