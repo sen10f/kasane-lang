@@ -112,7 +112,7 @@ pub const EXPLAIN: &[(&str, &str)] = &[
     ("E4021", r#"`impl` のメソッドの効果が、トレイトのメソッドの宣言を超えている。`uses` は宣言の `uses` のいずれかに覆われる必要がある(階層の部分型。宣言が `io.console` なら impl は `io.console` かその部分集合)。トレイトが `panics never` なら impl も `panics never` でなければならない。トレイトの効果変数は impl 行の実引数で置き換えて比べる(4.3 / 5.1)。"#),
     ("E4013", r#"再帰を含む型(自己参照・相互再帰)には `core.ops.Drop` の明示実装が必要(5.3)。自己再帰する型(再帰が `Box<Self>` / `Option<Box<Self>>` だけ)は、`derive [Drop]` と書けば処理系が深さに依らない破棄(反復。スタックが溢れない)を生成する。"#),
     ("E2051", r#"`derive [Drop]` は、再帰の出現が `Box<Self, A>` か `Option<Box<Self, A>>` だけの自己再帰する型に書ける。`Vec<Self>`・タプル・参照などを経由する再帰、他の型との相互再帰、`Copy` との併用、手書きの `core.ops.Drop` との併用はE2051(`linear` 型はE2032)。手書きの `impl core.ops.Drop` を使うか、添字(アリーナ)表現にする(4.3 / 5.3)。"#),
-    ("E5003", r#"`extern` の外部関数は `unsafe "名前" "理由" { .. }` ブロックの中でしか呼べない(3.8)。"#),
+    ("E5003", r#"`extern` の外部関数と `core.ptr` の関数(生ポインタの生成・変換・読み書き)は `unsafe "名前" "理由" { .. }` ブロックの中でしか呼べない(3.8)。"#),
     ("E5001", r#"`unsafe` は `kasane.toml` の `[unsafe] modules` に列挙したモジュールでのみ使える(3.5)。"#),
     ("E5004", r#"C の境界を越える関数型(`extern` の引数・戻り値の `fn(..) -> R uses .. panics ..`)は `uses [] panics never` でなければならない。C は副作用も panic も運べない(3.8, 5.2)。"#),
     ("E5005", r#"`extern` の関数型の引数に渡す関数・クロージャは `uses [] panics never`(推論した効果を含む)で、クロージャは `capture []`(キャプチャなし)でなければならない(3.8)。"#),

@@ -1174,9 +1174,15 @@ fn ptr_more_place_pointers_alias_their_places_and_null_is_detected() {
     // from_mut / from_ref は場所を指す。書き込みは場所に届き、from_ref は後の書き込みも見る。null_mut::<T>() は is_null で null と分かる。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut x: i32 = 41i32
-    let n: *mut i32 = core.ptr.null_mut::<i32>()
-    let p: *mut i32 = core.ptr.from_mut(&mut x)
-    let q: *const i32 = core.ptr.from_ref(&x)
+    let n: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.null_mut::<i32>()
+    }
+    let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_mut(&mut x)
+    }
+    let q: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_ref(&x)
+    }
     unsafe "libc" "place pointers" {
         core.check.eq(core.ptr.is_null(n), true)
         core.check.eq(core.ptr.is_null(p), false)
@@ -1417,7 +1423,9 @@ fn ffi_from_ref_pointer_is_const_and_write_through_it_is_rejected() {
     // `from_ref` は `*const` を返し、`core.ptr.write` は `*mut` を取る。書き込みは検査の段階で止まり、実行に届かない。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let x: i32 = 41i32
-    let q: *const i32 = core.ptr.from_ref(&x)
+    let q: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_ref(&x)
+    }
     unsafe "libc" "write through a const pointer" {
         core.ptr.write(q, 42i32)
     }
@@ -1435,8 +1443,12 @@ fn ffi_as_mut_makes_a_from_ref_pointer_writable() {
     // `as_mut` を通したものは書ける。書き込みは元の場所 (`x`) に届く。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut x: i32 = 41i32
-    let q: *const i32 = core.ptr.from_ref(&x)
-    let p: *mut i32 = core.ptr.as_mut(q)
+    let q: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_ref(&x)
+    }
+    let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.as_mut(q)
+    }
     unsafe "libc" "write through as_mut" {
         core.ptr.write(p, 42i32)
     }
@@ -1453,8 +1465,12 @@ fn ffi_as_const_pointer_is_read_only_and_from_mut_stays_writable() {
     // `as_const` で作った `*const` は読めるが、書き込みは `*mut` を要求する検査で止まる (下のテスト)。元の `from_mut` のポインタは従来どおり書けて読める。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut x: i32 = 1i32
-    let p: *mut i32 = core.ptr.from_mut(&mut x)
-    let c: *const i32 = core.ptr.as_const(p)
+    let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_mut(&mut x)
+    }
+    let c: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.as_const(p)
+    }
     unsafe "libc" "write through the mutable pointer" {
         core.ptr.write(p, 2i32)
         core.check.eq(core.ptr.read(c), 2i32)
@@ -1471,8 +1487,12 @@ fn ffi_write_through_as_const_pointer_is_rejected() {
     // `as_const` で作った `*const` への書き込みは、`*mut` を取る `core.ptr.write` の検査で E2023 になる。
     let src = r#"fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut x: i32 = 1i32
-    let p: *mut i32 = core.ptr.from_mut(&mut x)
-    let c: *const i32 = core.ptr.as_const(p)
+    let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_mut(&mut x)
+    }
+    let c: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.as_const(p)
+    }
     unsafe "libc" "write through the const pointer" {
         core.ptr.write(c, 3i32)
     }
@@ -1611,12 +1631,24 @@ fn raw_ptr_annotations_accept_the_correct_forms_without_errors() {
     // 正しい書き方: from_mut / from_ref / null_mut / as_const / as_mut / cast、`*mut` → `*const` の暗黙の縮小、読み書き。
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut x: i32 = 1i32
-    let p: *mut i32 = core.ptr.from_mut(&mut x)
-    let c: *const i32 = core.ptr.as_const(p)
-    let q: *const i32 = core.ptr.from_ref(&x)
-    let m: *mut i32 = core.ptr.as_mut(q)
-    let n: *mut i32 = core.ptr.null_mut::<i32>()
-    let b: *mut u8 = core.ptr.cast::<i32, u8>(p)
+    let p: *mut i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.from_mut(&mut x)
+    }
+    let c: *const i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.as_const(p)
+    }
+    let q: *const i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.from_ref(&x)
+    }
+    let m: *mut i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.as_mut(q)
+    }
+    let n: *mut i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.null_mut::<i32>()
+    }
+    let b: *mut u8 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.cast::<i32, u8>(p)
+    }
     let r: *const u8 = b
     let u: *const i32 = p
     unsafe \"libc\" \"correct forms\" {
@@ -1638,7 +1670,9 @@ fn raw_ptr_let_annotation_rejects_a_plain_value() {
     // `let s: *mut i32 = 5i32`: 値をポインタの注釈へ入れると E2020。
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let s: *mut i32 = 5i32
-    core.check.eq(core.ptr.is_null(s), false)
+    unsafe \"ptr\" \"null check\" {
+        core.check.eq(core.ptr.is_null(s), false)
+    }
     Ok(())
 end t.main
 ";
@@ -1651,8 +1685,12 @@ fn raw_ptr_let_annotation_rejects_const_into_mut() {
     // `let r: *mut i32 = core.ptr.from_ref(&x)`: `from_ref` は `*const` を返すので、`*mut` の注釈は E2020。
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let x: i32 = 1i32
-    let r: *mut i32 = core.ptr.from_ref(&x)
-    core.check.eq(core.ptr.is_null(r), false)
+    let r: *mut i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.from_ref(&x)
+    }
+    unsafe \"ptr\" \"null check\" {
+        core.check.eq(core.ptr.is_null(r), false)
+    }
     Ok(())
 end t.main
 ";
@@ -1665,8 +1703,12 @@ fn raw_ptr_let_annotation_rejects_a_different_element_type() {
     // 要素型が確定して食い違う (`*const u8` と `*const i32`) のは E2020。
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let x: i32 = 1i32
-    let r: *const u8 = core.ptr.from_ref(&x)
-    core.check.eq(core.ptr.is_null(r), false)
+    let r: *const u8 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.from_ref(&x)
+    }
+    unsafe \"ptr\" \"null check\" {
+        core.check.eq(core.ptr.is_null(r), false)
+    }
     Ok(())
 end t.main
 ";
@@ -1678,7 +1720,9 @@ end t.main
 fn raw_ptr_pointer_is_not_a_plain_integer_annotation() {
     // ポインタを整数の注釈へ入れるのは E2020 (`core.ptr.null_mut::<i32>()` を `i32` へ)。
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
-    let n: i32 = core.ptr.null_mut::<i32>()
+    let n: i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.null_mut::<i32>()
+    }
     core.check.eq(n, 0i32)
     Ok(())
 end t.main
@@ -1692,7 +1736,9 @@ fn raw_ptr_unsuffixed_literal_is_not_a_pointer() {
     // 整数リテラルをポインタの注釈へ入れるのは E2020 (型は `{integer}`)。
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let q: *mut i32 = 5
-    core.check.eq(core.ptr.is_null(q), false)
+    unsafe \"ptr\" \"null check\" {
+        core.check.eq(core.ptr.is_null(q), false)
+    }
     Ok(())
 end t.main
 ";
@@ -1704,12 +1750,16 @@ end t.main
 fn raw_ptr_const_argument_to_mut_parameter_is_rejected() {
     // 宣言が `*mut i32` の関数へ `from_ref` (const) の値を渡すと E2023。
     let src = "fn t.take(p: *mut i32) -> () uses [] panics never
-    core.check.eq(core.ptr.is_null(p), false)
+    unsafe \"ptr\" \"null check\" {
+        core.check.eq(core.ptr.is_null(p), false)
+    }
 end t.take
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let x: i32 = 1i32
-    t.take(core.ptr.from_ref(&x))
+    unsafe \"ptr\" \"make or convert a raw pointer\" {
+        t.take(core.ptr.from_ref(&x))
+    }
     Ok(())
 end t.main
 ";
@@ -1721,12 +1771,16 @@ end t.main
 fn raw_ptr_mut_argument_to_const_parameter_is_accepted() {
     // `*mut` → `*const` の縮小は暗黙に許す (宣言が `*const` の関数へ `*mut` を渡す)。
     let src = "fn t.look(p: *const i32) -> i32 uses [] panics never
-    core.ptr.read(p)
+    unsafe \"ptr\" \"read or write through a raw pointer\" {
+        core.ptr.read(p)
+    }
 end t.look
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut x: i32 = 1i32
-    let p: *mut i32 = core.ptr.from_mut(&mut x)
+    let p: *mut i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.from_mut(&mut x)
+    }
     unsafe \"libc\" \"read through a mutable pointer\" {
         core.check.eq(t.look(p), 1i32)
     }
@@ -1741,13 +1795,17 @@ end t.main
 fn raw_ptr_return_value_mismatch_is_rejected() {
     // 戻り値が `*mut` の関数で `from_ref` (const) を返すと E2020 (戻り値)。
     let src = "fn t.back(x: &i32) -> *mut i32 uses [] panics never
-    core.ptr.from_ref(x)
+    unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.from_ref(x)
+    }
 end t.back
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let x: i32 = 1i32
     let r = t.back(&x)
-    core.check.eq(core.ptr.is_null(r), false)
+    unsafe \"ptr\" \"null check\" {
+        core.check.eq(core.ptr.is_null(r), false)
+    }
     Ok(())
 end t.main
 ";
@@ -1778,7 +1836,9 @@ fn raw_ptr_reference_to_pointer_annotation_stays_silent() {
     let src = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let x: i32 = 1i32
     let s: *const i32 = &x
-    core.check.eq(core.ptr.is_null(s), false)
+    unsafe \"ptr\" \"null check\" {
+        core.check.eq(core.ptr.is_null(s), false)
+    }
     Ok(())
 end t.main
 ";
@@ -1791,9 +1851,15 @@ fn ptr_add_rejects_const_argument_and_add_const_accepts_it() {
     // `add` は `*mut` を取るので `*const` (from_ref) を渡すと E2023。`add_const` なら同じ引数が通る。
     let bad = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let x: i32 = 1i32
-    let q: *const i32 = core.ptr.from_ref(&x)
-    let r = core.ptr.add(q, 0usize)
-    core.check.eq(core.ptr.is_null(r), false)
+    let q: *const i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.from_ref(&x)
+    }
+    let r = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.add(q, 0usize)
+    }
+    unsafe \"ptr\" \"null check\" {
+        core.check.eq(core.ptr.is_null(r), false)
+    }
     Ok(())
 end t.main
 ";
@@ -1802,9 +1868,15 @@ end t.main
 
     let ok = "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let x: i32 = 1i32
-    let q: *const i32 = core.ptr.from_ref(&x)
-    let r: *const i32 = core.ptr.add_const(q, 0usize)
-    core.check.eq(core.ptr.is_null(r), false)
+    let q: *const i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.from_ref(&x)
+    }
+    let r: *const i32 = unsafe \"ptr\" \"make or convert a raw pointer\" {
+        core.ptr.add_const(q, 0usize)
+    }
+    unsafe \"ptr\" \"null check\" {
+        core.check.eq(core.ptr.is_null(r), false)
+    }
     Ok(())
 end t.main
 ";

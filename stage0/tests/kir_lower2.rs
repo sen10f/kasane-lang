@@ -1331,14 +1331,24 @@ end t.abs_extern
 
 fn t.ptr_rw() -> i32 uses [] panics never
     let mut x = 42i32
-    let p = core.ptr.from_mut(&mut x)
-    core.ptr.write(p, 99i32)
-    core.ptr.read(p)
+    let p = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_mut(&mut x)
+    }
+    unsafe "ptr" "read or write through a raw pointer" {
+        core.ptr.write(p, 99i32)
+    }
+    unsafe "ptr" "read or write through a raw pointer" {
+        core.ptr.read(p)
+    }
 end t.ptr_rw
 
 fn t.null_check() -> bool uses [] panics never
-    let p: *mut i32 = core.ptr.null_mut()
-    core.ptr.is_null(p)
+    let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.null_mut()
+    }
+    unsafe "ptr" "null check" {
+        core.ptr.is_null(p)
+    }
 end t.null_check
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may

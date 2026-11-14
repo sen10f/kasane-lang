@@ -44,7 +44,9 @@ end shapes.area_of_size
 
 fn shapes.grown(r: shapes.Rect, d: f64) -> shapes.Rect uses [] panics never
     let mut copy = r
-    let p = core.ptr.from_mut(&mut copy)
+    let p = unsafe "shapes" "take a raw pointer to a local struct" {
+        core.ptr.from_mut(&mut copy)
+    }
     unsafe "shapes" "struct by pointer" {
         shapes.rect_grow(p, d)
     }
@@ -80,7 +82,9 @@ end shapes.vertex
 
 fn shapes.vertex_stats(r: shapes.Rect) -> shapes.Acc uses [] panics never
     let mut acc = shapes.Acc { count: 0i32, sum: 0.0f64 }
-    let p = core.ptr.from_mut(&mut acc)
+    let p = unsafe "shapes" "take a raw pointer to a local accumulator" {
+        core.ptr.from_mut(&mut acc)
+    }
     unsafe "shapes" "callback with user data" {
         shapes.rect_each_vertex(r, shapes.vertex, p)
     }

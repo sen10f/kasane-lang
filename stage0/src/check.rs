@@ -3821,7 +3821,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// `extern` の関数は `unsafe` ブロックの中でしか呼べない (3.8, E5003)。
+    /// `extern` の関数と `core.ptr` の関数 (生ポインタの生成・変換・読み書き) は `unsafe` ブロックの中でしか呼べない (3.8, E5003)。
     fn check_extern_calls(&mut self, di: usize) {
         let d = self.def(di);
         let Some(body) = &d.body else { return };
@@ -3830,8 +3830,9 @@ impl<'a> Checker<'a> {
                 let segs = strs(&nf(&nf(v)[0])[0]);
                 if let Some(r) = ck.p.resolve(&segs, file) {
                     if let Target::Sig(i) = r.target {
-                        if r.rest.is_empty() && ck.p.defs[i].kw == "extern" {
-                            out.push((nline(v), ck.p.defs[i].name.clone()));
+                        let t = &ck.p.defs[i];
+                        if r.rest.is_empty() && (t.kw == "extern" || t.name.starts_with("core.ptr.")) {
+                            out.push((nline(v), t.name.clone()));
                         }
                     }
                 }
@@ -3846,7 +3847,7 @@ impl<'a> Checker<'a> {
         for (line, name) in found {
             self.diag(
                 "E5003",
-                format!("the external function `{}` can only be called inside an `unsafe` block", name),
+                format!("the external or raw-pointer function `{}` can only be called inside an `unsafe` block", name),
                 di,
                 line,
             );

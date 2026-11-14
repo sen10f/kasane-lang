@@ -45,7 +45,9 @@ fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     }
     core.check.eq(sb, 11008i64)
     let mut acc = t.Acc { total: 0i64, count: 0i32 }
-    let user = core.ptr.from_mut(&mut acc)
+    let user = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_mut(&mut acc)
+    }
     unsafe "ffi" "callback with user data" {
         t.run_ticks(4i32, t.tick, user)
     }
