@@ -564,6 +564,16 @@ pub(crate) fn box_load(lw: &mut Lw, p: VId, t: Ty) -> VId {
     lw.emit(t, Op::Load(r))
 }
 
+/// `derive [Drop]` の型 `t` の解放の補助関数 `drop.<FQN>(p, skip)` を呼ぶ。`p` は `t` の値を置いた確保 (箱の確保かスロット)、
+/// `skip` は解放しない番地 (箱なら `null`、スロットなら `p`)。補助関数の本体は `kir_lower_drop.rs`。
+pub(crate) fn rec_drop_call(lw: &mut Lw, t: Ty, p: VId, skip: VId) {
+    let Ty::Agg(i) = t else { return };
+    let name = format!("drop.{}", lw.aggs.borrow().defs[i as usize].name);
+    lw.aggs.borrow_mut().drop_need.insert(i);
+    lw.callees.insert(name.clone());
+    lw.emit(Ty::Unit, Op::Call { callee: name, args: vec![p, skip] });
+}
+
 /// 型 `t` の値 `v` (所有している) を解放する命令列を、現在のブロックに置く。所有物を持たない型は何もしない。
 /// 列挙型と `Option` / `Result` は、タグで枝を分けて、持っている変種のペイロードだけを解放する。
 pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
@@ -586,6 +596,12 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
             let belem = lw.aggs.borrow().box_elem(t);
             if let Some(elem) = belem {
                 let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+                // `derive [Drop]` の再帰する型の箱: 反復する補助関数が、木全体を解放して箱の確保も返す。
+                if lw.aggs.borrow().is_rec_drop(elem) {
+                    let null = lw.emit(Ty::Ptr, Op::Const(0));
+                    rec_drop_call(lw, elem, p, null);
+                    return;
+                }
                 if owns_heap(lw, elem) {
                     let inner = box_load(lw, p, elem);
                     drop_value(lw, inner, elem);
@@ -608,6 +624,16 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
             if let Some(sender) = end {
                 let elem = lw.aggs.borrow().chan_elem.get(&i).copied().unwrap_or(Ty::U8);
                 super::chan_lower::drop_end(lw, v, sender, elem);
+                return;
+            }
+            // `derive [Drop]` の再帰する型の値そのもの: スロットへ置いて、補助関数に木全体を解放させる (スロット自体は解放しない)。
+            if lw.aggs.borrow().is_rec_drop(t) {
+                let size = lw.aggs.borrow().defs[i as usize].size.max(8);
+                let slot = emit_alloca(lw, size);
+                let pt = Pointee::of(t).expect("集成体は参照できる");
+                let r = lw.emit(Ty::Ref(true, pt), Op::Bitcast { src: Ty::Ptr, a: slot });
+                lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+                rec_drop_call(lw, t, slot, slot);
                 return;
             }
             match d.kind {
