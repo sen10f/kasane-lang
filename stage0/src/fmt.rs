@@ -6,7 +6,7 @@ use crate::lexer::{self, Tok};
 use crate::program::load_file;
 use std::collections::HashSet;
 
-const DERIVE_ORDER: &[&str] = &["Debug", "Clone", "Copy", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "From"];
+const DERIVE_ORDER: &[&str] = &["Debug", "Clone", "Copy", "TryClone", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "From"];
 
 pub fn mechanical(text: &str) -> Vec<String> {
     let t = text.replace("\r\n", "\n").replace('\r', "\n");

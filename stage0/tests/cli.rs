@@ -23354,3 +23354,36 @@ fn kir_copy_elem_fields_match_tree_walker() {
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
     }
 }
+
+/// `derive [TryClone]` (トレイト `alloc.alloc.TryClone`): derive した型を `Vec` に入れて `try_clone` し、
+/// `T: alloc.alloc.TryClone` のジェネリック関数経由でも複製できる。`run` と `build` (LLVM → 下ろせなければバンドル) の出力が一致する。
+#[test]
+fn derive_try_clone_runs_and_builds_alike() {
+    let src = "type t.P derive [Debug, Clone, Copy, TryClone] pub\n    x: u32\n    y: u32\nend t.P\n\nenum t.E derive [TryClone] pub\n    A(u32)\n    B(t.P)\nend t.E\n\ntype t.W derive [TryClone] pub\n    p: t.P\n    n: u32\nend t.W\n\nfn t.dup[T: alloc.alloc.TryClone](v: &T) -> Result<T, alloc.alloc.AllocError> uses [alloc] panics never\n    v.try_clone()\nend t.dup\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let w = t.W { p: t.P { x: 1u32, y: 2u32 }, n: 3u32 }\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    match v.push(w) {\n        Ok(_u) => 0u8\n        Err(_e) => 1u8\n    }\n    match t.dup(&v) {\n        Ok(c) => {\n            core.check.eq(c.len(), 1usize)\n            std.io.print_line(\"ok\")\n        }\n        Err(_e) => std.io.print_line(\"err\")\n    }\n    match v.try_clone() {\n        Ok(c) => core.check.eq(c.len(), 1usize)\n        Err(_e) => core.check.eq(1u8, 2u8)\n    }\n    match t.dup(&t.E.B(t.P { x: 1u32, y: 2u32 })) {\n        Ok(_c) => std.io.print_line(\"e ok\")\n        Err(_e) => std.io.print_line(\"err\")\n    }\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("derive_try_clone_ok", src);
+    let chk = run(&["check"], &t.0);
+    assert_eq!(chk.status.code(), Some(0), "{}{}", text(&chk.stdout), text(&chk.stderr));
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    assert_eq!(text(&interp.stdout), "ok\ne ok\n");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_tryclone_{}", std::process::id()));
+    let mut c = Command::new(exe());
+    c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+    let o = c.output().unwrap();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = native_or_launcher(p, &out);
+    let r = Command::new(&p).output().unwrap();
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), text(&interp.stdout), "build and run outputs differ");
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// `derive [TryClone]` は全フィールドが `TryClone` のときだけ (E2036)。`T: TryClone` の境界を満たさない型は E2030。
+#[test]
+fn derive_try_clone_on_non_try_clone_field_is_e2036() {
+    let t = Tmp::new("derive_try_clone_bad", "type t.N pub\n    x: u32\nend t.N\n\ntype t.W derive [TryClone] pub\n    n: t.N\nend t.W\n\nfn t.dup[T: alloc.alloc.TryClone](v: &T) -> Result<T, alloc.alloc.AllocError> uses [alloc] panics never\n    v.try_clone()\nend t.dup\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let n = t.N { x: 1u32 }\n    match t.dup(&n) {\n        Ok(_c) => std.io.print_line(\"e ok\")\n        Err(_e) => std.io.print_line(\"err\")\n    }\n    Ok(())\nend t.main\n");
+    let o = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(o.contains("E2036"), "{}", o);
+    assert!(o.contains("E2030"), "{}", o);
+}

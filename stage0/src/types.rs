@@ -2590,6 +2590,10 @@ impl<'a> TypeCk<'a> {
         if self.p.impls.contains(&(tr.to_string(), ty.to_string())) {
             return true;
         }
+        // `Clone` を実装する型は `TryClone` も持つ (確保なしの複製は確保ありの複製でもある)。
+        if tr == "alloc.alloc.TryClone" && self.implements(ty, "core.ops.Clone") {
+            return true;
+        }
         self.p.defs[i].derive.iter().any(|x| crate::check::DERIVE_TRAITS.iter().any(|(k, v)| k == x && *v == tr))
     }
 
