@@ -267,7 +267,7 @@ fn method(lw: &mut Lw, e: &V, recv: VId, m: &str, args: &[V]) -> LR<Option<VId>>
 // ------------------------------------------------ 補助関数 (全関数を下ろした後に作る)
 
 /// 補助関数を 1 つ組み立てる (`Lw` の部品を借りて、手でブロックを置く)。
-fn build<'a>(
+pub(super) fn build<'a>(
     p: &'a Program,
     tys: &'a BTreeMap<(String, u32), ExprTy>,
     aggs: &'a std::cell::RefCell<AggTab>,

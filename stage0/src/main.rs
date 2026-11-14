@@ -1,4 +1,5 @@
 mod debug;
+mod derive_drop;
 mod derive_json;
 mod defs;
 mod doc;

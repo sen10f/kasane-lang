@@ -1,0 +1,8 @@
+enum t.Tree derive [Drop] pub
+    Leaf
+    Node(alloc.vec.Vec<t.Tree, std.alloc.System>)
+end t.Tree
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

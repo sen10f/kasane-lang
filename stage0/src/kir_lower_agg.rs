@@ -65,6 +65,10 @@ pub struct AggTab {
     pub chan_elem: HashMap<u32, Ty>,
     /// `std.thread.JoinHandle<T, A>` の型の添字 → `T`。
     pub handle_elem: HashMap<u32, Ty>,
+    /// `derive [Drop]` の再帰する型 (添字)。`Box<Self>` を経由する再帰を許し、解放は補助関数 `drop.<FQN>` (反復) が担う。
+    pub rec_drop: HashSet<u32>,
+    /// 解放の補助関数が要る `rec_drop` の型 (呼び出しを下ろしたもの)。
+    pub drop_need: std::collections::BTreeSet<u32>,
 }
 
 /// `Box<dyn Tr>` の vtable の登録 (設計_KIR.md 21 章)。vtable の「番地」は、登録順の番号 (`usize`)。
@@ -152,7 +156,7 @@ fn layout_enum(defs: &[AggDef], vs: &[(String, Vec<Ty>)]) -> (u32, u32, Vec<Vari
 impl AggTab {
     /// `user` は利用者のパッケージの定義の添字 (`lower_user` の引数と同じ)。
     pub fn new(user: &[usize]) -> AggTab {
-        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default(), chan_elem: HashMap::new(), handle_elem: HashMap::new() }
+        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default(), chan_elem: HashMap::new(), handle_elem: HashMap::new(), rec_drop: HashSet::new(), drop_need: Default::default() }
     }
 
     /// 推論済みの型 `t` を段階 1 の型にする。`file` は名前を解決するファイル。対象外なら理由付きで `Err`。
@@ -384,6 +388,11 @@ impl AggTab {
         self.defs[i as usize].name.strip_prefix("dynbox<")?.strip_suffix('>').map(String::from)
     }
 
+    /// `derive [Drop]` の再帰する型か。
+    pub fn is_rec_drop(&self, t: Ty) -> bool {
+        matches!(t, Ty::Agg(i) if self.rec_drop.contains(&i))
+    }
+
     /// `Box<T>` (`box<..>`) の中身の型。`Box<dyn>` と他の型は `None`。
     pub fn box_elem(&self, t: Ty) -> Option<Ty> {
         let Ty::Agg(i) = t else { return None };
@@ -565,12 +574,32 @@ impl AggTab {
         if !self.busy.insert(d.name.clone()) {
             return Err(format!("再帰的な型 {} は段階 1 の対象外", d.name));
         }
-        let r = self.build_def(p, di);
+        // `derive [Drop]` の型は、先に添字を予約して、`Box<Self>` のフィールドから自分を指せるようにする (箱は 8 バイトなので
+        // 中身の配置は要らない)。検査器が、再帰の出現を `Box<Self>` / `Option<Box<Self>>` に限っている (E2051)。
+        let reserved = if d.derive.iter().any(|x| x == "Drop") {
+            let t = self.push(d.name.clone(), 0, 1, AggKind::Struct(vec![]));
+            let Ty::Agg(i) = t else { unreachable!() };
+            self.rec_drop.insert(i);
+            Some(i)
+        } else {
+            None
+        };
+        let r = self.build_def(p, di, reserved);
         self.busy.remove(&d.name);
+        if r.is_err() {
+            if let Some(i) = reserved {
+                // 失敗した予約は取り消す (型表の末尾にあるとき)。
+                self.rec_drop.remove(&i);
+                self.by_name.remove(&d.name);
+                if i as usize + 1 == self.defs.len() {
+                    self.defs.pop();
+                }
+            }
+        }
         r
     }
 
-    fn build_def(&mut self, p: &Program, di: usize) -> Result<Ty, String> {
+    fn build_def(&mut self, p: &Program, di: usize, reserved: Option<u32>) -> Result<Ty, String> {
         let d = &p.defs[di];
         let (size, align, kind) = if d.kw == "type" {
             let mut fs = vec![];
@@ -592,6 +621,10 @@ impl AggTab {
             let (size, align, variants) = layout_enum(&self.defs, &vs);
             (size, align, AggKind::Enum(variants))
         };
+        if let Some(i) = reserved {
+            self.defs[i as usize] = AggDef { name: d.name.clone(), size, align, kind };
+            return Ok(Ty::Agg(i));
+        }
         Ok(self.push(d.name.clone(), size, align, kind))
     }
 }

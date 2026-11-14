@@ -1705,6 +1705,15 @@ fn derived_impls(d: &Def) -> Option<String> {
                     }
                 }
             }
+            "Drop" => {
+                out.push(format!(
+                    "impl core.ops.Drop for {0}\nfn {0}.drop(self: &mut {0}) -> () uses [] panics never impls core.ops.Drop",
+                    n
+                ));
+                out.push("    // built in: an iterative drop whose depth does not depend on the shape of the value".into());
+                out.push("    // (the Box<Self> children go onto a work list kept in the freed parents; no allocation, no recursion)".into());
+                out.push(format!("end {}.drop", n));
+            }
             "ToJson" | "FromJson" => out.push(format!("// {}: expanded to ordinary Kasane code (see below)", tr)),
             other => out.push(format!("// {}: built-in derived implementation for {}", other, n)),
         }

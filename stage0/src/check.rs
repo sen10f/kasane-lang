@@ -361,6 +361,7 @@ pub(crate) const DERIVE_TRAITS: &[(&str, &str)] = &[
     ("Clone", "core.ops.Clone"),
     ("Copy", "core.ops.Copy"),
     ("TryClone", "alloc.alloc.TryClone"),
+    ("Drop", "core.ops.Drop"),
     ("PartialEq", "core.cmp.PartialEq"),
     ("Eq", "core.cmp.Eq"),
     ("PartialOrd", "core.cmp.PartialOrd"),
@@ -649,7 +650,7 @@ impl<'a> Checker<'a> {
             }
             // 5.3: 再帰を含む型 (自己参照・相互再帰) は Drop の明示実装が必要。
             if matches!(d.kw.as_str(), "type" | "enum") && recursive.contains(&d.name) {
-                let has_drop = user.iter().any(|&j| {
+                let has_drop = d.derive.iter().any(|x| x == "Drop") || user.iter().any(|&j| {
                     let x = self.def(j);
                     x.kw == "impl" && x.impl_trait == "core.ops.Drop" && ty_mentions(&x.impl_for, &d.name)
                 });
@@ -1119,6 +1120,21 @@ impl<'a> Checker<'a> {
                     self.diag("E2050", format!("derive [From] on {}: {}", d.name, why), i, 0);
                 }
             }
+            // 4.3 / 5.3: `Drop` は反復で破棄できる形の型にだけ (E2051)。`linear` 型・手書きの `Drop` との併用も不可。
+            if derived.contains("Drop") {
+                let mutual = user_types.iter().any(|m| *m != d.name && self.type_reaches(&d.name, m) && self.type_reaches(m, &d.name));
+                let mut why = crate::derive_drop::problems(self.p, &d, mutual);
+                let manual = self.user.iter().any(|&j| {
+                    let x = self.def(j);
+                    x.kw == "impl" && x.impl_trait == "core.ops.Drop" && ty_mentions(&x.impl_for, &d.name)
+                });
+                if manual {
+                    why.push("the type also has an explicit core.ops.Drop impl (a type has one Drop)".to_string());
+                }
+                for w in why {
+                    self.diag("E2051", format!("derive [Drop] on {}: {}", d.name, w), i, 0);
+                }
+            }
             // 4.3: derive した各トレイト (Copy 以外) は、フィールド・ペイロードの名義型もそのトレイトを実装していること
             // (基本型・参照・タプル・配列は組み込み実装、型パラメータは境界が担うので見ない)。
             {
@@ -1129,7 +1145,7 @@ impl<'a> Checker<'a> {
                 };
                 let params: HashSet<String> = d.generics.iter().map(|g| g.1.clone()).collect();
                 for dv in d.derive.clone() {
-                    if dv == "Copy" || dv == "From" {
+                    if dv == "Copy" || dv == "From" || dv == "Drop" {
                         continue;
                     }
                     let Some(&tr) = short_to_fqn.get(dv.as_str()) else { continue };
@@ -1168,6 +1184,37 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// 利用者の型 `from` のフィールドをたどって型 `to` に届くか (`from` 自身から始め、1 歩以上)。
+    fn type_reaches(&self, from: &str, to: &str) -> bool {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut stack = vec![from.to_string()];
+        while let Some(n) = stack.pop() {
+            let Some(&i) = self.p.types.get(&n) else { continue };
+            if !self.user.contains(&i) {
+                continue;
+            }
+            let d = self.def(i);
+            let tys: Vec<&V> = if d.kw == "type" {
+                d.fields.iter().map(|f| &f.1).collect()
+            } else {
+                d.variants.iter().flat_map(|v| v.1.iter()).collect()
+            };
+            let mut names = HashSet::new();
+            for t in tys {
+                collect_ty_names(t, &mut names);
+            }
+            for m in names {
+                if m == to {
+                    return true;
+                }
+                if seen.insert(m.clone()) {
+                    stack.push(m);
+                }
+            }
+        }
+        false
     }
 
     /// 型の中に現れる名義型の FQN (参照・タプル・配列・スライス・型引数を通して)。
@@ -1299,7 +1346,7 @@ impl<'a> Checker<'a> {
             let d = self.def(i);
             if matches!(d.kw.as_str(), "type" | "enum") && d.linear {
                 for dv in d.derive.clone() {
-                    if dv == "Clone" || dv == "Copy" {
+                    if dv == "Clone" || dv == "Copy" || dv == "Drop" {
                         self.diag("E2032", format!("linear type {} must not derive {}", d.name, dv), i, 0);
                     }
                 }
