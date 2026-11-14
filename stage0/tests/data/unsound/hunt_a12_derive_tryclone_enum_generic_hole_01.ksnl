@@ -1,0 +1,17 @@
+// expect: E????
+type t.NoClone
+    a: u8
+end t.NoClone
+
+enum t.Opt[T] derive [TryClone]
+    Some(T)
+    None
+end t.Opt
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let v = t.Opt.Some(t.NoClone { a: 1u8 })
+    match v.try_clone() {
+        Ok(_c) => Ok(())
+        Err(_e) => Ok(())
+    }
+end t.main

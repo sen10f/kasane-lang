@@ -1,0 +1,9 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let _c = t.unwrap_o(Some(1u32))
+    Ok(())
+end t.main
+
+// expect: E????
+fn t.unwrap_o[P: panics](o: Option<u32>) -> u32 uses [] panics P
+    o.unwrap()
+end t.unwrap_o

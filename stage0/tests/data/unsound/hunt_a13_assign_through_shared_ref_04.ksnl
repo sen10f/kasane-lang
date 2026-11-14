@@ -1,0 +1,11 @@
+// expect: E3030
+type t.Holder pub
+    v: u8
+end t.Holder
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut h = t.Holder { v: 1u8 }
+    let r = &h
+    r.v = 2u8
+    Ok(())
+end t.main

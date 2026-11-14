@@ -1,0 +1,12 @@
+// expect: E????
+fn t.f(o: Option<u32>) -> u32 uses [] panics never
+    match o {
+        Some(n) => n
+        None => ()
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.f(Some(1u32)))
+    Ok(())
+end t.main

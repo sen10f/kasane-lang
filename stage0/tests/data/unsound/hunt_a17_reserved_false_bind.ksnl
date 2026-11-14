@@ -1,0 +1,8 @@
+// expect: E0002
+// 予約語 `false` を束縛名に使う
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let false = 5i32
+    let x = false
+    core.mem.drop(x)
+    Ok(())
+end t.main

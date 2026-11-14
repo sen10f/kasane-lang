@@ -1,0 +1,10 @@
+// expect: E2020
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x = Some(1u8)
+    let y = match &x {
+        Some(p) => p
+        None => 0u8
+    }
+    core.mem.drop(y)
+    Ok(())
+end t.main

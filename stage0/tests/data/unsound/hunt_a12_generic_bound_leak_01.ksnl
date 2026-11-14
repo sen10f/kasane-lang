@@ -1,0 +1,12 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+// expect: E????
+fn t.need_eq[T: core.cmp.Eq](a: T, b: T) -> bool uses [] panics never
+    a == b
+end t.need_eq
+
+fn t.pass_through[T](a: T, b: T) -> bool uses [] panics never
+    t.need_eq(a, b)
+end t.pass_through

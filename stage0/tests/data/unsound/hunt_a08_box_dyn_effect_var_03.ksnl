@@ -1,0 +1,30 @@
+type t.Boxed
+    x: u32
+end t.Boxed
+
+// expect: E4001
+enum t.MyError derive [Debug, Clone, Copy, PartialEq, From] pub
+    Io(std.io.Error)
+    Alloc(alloc.alloc.AllocError)
+end t.MyError
+
+trait t.Tr[E: uses, P: panics]
+    fn m(self: &Self) -> () uses [E] panics P
+end t.Tr
+
+impl t.Tr<[io.console], never> for t.Boxed
+fn t.Boxed.m(self: &Self) -> () uses [io.console] panics never impls t.Tr<[io.console], never>
+    core.mem.drop(std.io.print_line("x"))
+end t.Boxed.m
+
+fn t.main() -> Result<(), t.MyError> uses [alloc, io.console] panics never
+    let b = t.Boxed { x: 1u32 }
+    let bx = alloc.boxed.Box.new(std.alloc.SYSTEM, b)?
+    let d = alloc.boxed.Box.into_dyn(bx)
+    core.mem.drop(t.take(d))
+    Ok(())
+end t.main
+
+fn t.take[E: uses, P: panics](h: alloc.boxed.Box<dyn t.Tr<E, P> + 'static, std.alloc.System>) -> () uses [] panics never
+    h.m()
+end t.take

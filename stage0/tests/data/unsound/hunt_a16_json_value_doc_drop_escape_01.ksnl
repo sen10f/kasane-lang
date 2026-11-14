@@ -1,0 +1,16 @@
+// expect: E????
+// std.json.parse で得た Doc から root() で Value を取り、Doc を drop してから Value を使う
+fn t.bad() -> () uses [alloc] panics never
+    match std.json.parse("{\"a\": 42}") {
+        Ok(doc) => {
+            let v = doc.root()
+            core.mem.drop(doc)
+            let _b = std.json.is_null(v)
+        }
+        Err(_e) => ()
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

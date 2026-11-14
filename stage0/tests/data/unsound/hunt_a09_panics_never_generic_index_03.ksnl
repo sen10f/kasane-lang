@@ -1,0 +1,9 @@
+// expect: E????
+fn t.get_o[P: panics](a: &[u32; 2], i: usize) -> u32 uses [] panics P
+    a[i]
+end t.get_o
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let _c = t.get_o(&[1u32, 2u32], 0usize)
+    Ok(())
+end t.main
