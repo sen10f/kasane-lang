@@ -3,7 +3,7 @@
 
 各ワークロードを次の 3 通りで N 回ずつ計測し、中央値を Markdown 表と JSON に出す。
   1. インタプリタ: `ksn run`
-  2. Cranelift ネイティブ: `ksn build --release --backend clif` の生成物
+  2. LLVM ネイティブ: `ksn build --release` の生成物 (Cranelift は 2026-11-14 に削除)
   3. C: `cc -O2` で作った、同じ計算をする実行ファイル（perf/c/*.c）
 
 時間は子プロセスの壁時計時間（起動・読み込み・実行を含む）。起動だけの基準
@@ -168,9 +168,9 @@ def time_runs(cmd: list, cwd: Path, repeat: int, timeout: float) -> dict:
 
 
 def native_build(ksn: Path, work: Path, name: str, timeout: float) -> tuple:
-    """Cranelift ネイティブを作る。作れなければ (None, 理由) を返す。"""
+    """LLVM ネイティブを作る。作れなければ (None, 理由) を返す。"""
     p = subprocess.run(
-        [str(ksn), "build", "--release", "--backend", "clif"],
+        [str(ksn), "build", "--release"],
         cwd=work,
         capture_output=True,
         text=True,
@@ -230,7 +230,7 @@ def render_markdown(rows: list, meta: dict) -> str:
     lines = []
     lines.append(f"計測: {meta['timestamp']} / 入力: {meta['size']} / 各 {meta['repeat']} 回の中央値 / 単位 ms")
     lines.append("")
-    lines.append("| ワークロード | 入力 | インタプリタ | Cranelift | C (-O2) | インタプリタ / C | Cranelift / C |")
+    lines.append("| ワークロード | 入力 | インタプリタ | LLVM | C (-O2) | インタプリタ / C | LLVM / C |")
     lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: |")
     for r in rows:
         inputs = ", ".join(f"{k}={v:,}" for k, v in r["inputs"].items()) or "-"
@@ -249,7 +249,7 @@ def render_markdown(rows: list, meta: dict) -> str:
     lines.append("n/a の理由:")
     any_na = False
     for r in rows:
-        for key, label in (("interp", "インタプリタ"), ("native", "Cranelift"), ("c", "C")):
+        for key, label in (("interp", "インタプリタ"), ("native", "LLVM"), ("c", "C")):
             st = r[key].get("status", "")
             if st != "ok":
                 any_na = True
@@ -282,7 +282,7 @@ def environment(ksn: Path) -> str:
 
 
 def main(argv: list) -> int:
-    ap = argparse.ArgumentParser(description="Kasane の実行速度を計測する（インタプリタ / Cranelift / C）")
+    ap = argparse.ArgumentParser(description="Kasane の実行速度を計測する（インタプリタ / LLVM / C）")
     ap.add_argument("--ksn", type=Path, default=DEFAULT_KSN, help="ksn バイナリ（既定 stage0/target/release/ksn）")
     ap.add_argument("--repeat", type=int, default=3, help="各計測の回数（既定 3。中央値を出す）")
     ap.add_argument("--quick", action="store_true", help="小さい入力で計測する")

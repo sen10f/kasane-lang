@@ -26,6 +26,11 @@ def step(name, ok, detail=''):
             print('     ' + detail.strip().replace(NLC, NLC + '     '))
 
 
+# 0. Rust 版のビルド (後の段の bench/verify_reference.py などが ksn を使うので最初に。まっさらな checkout・CI でも通るように)
+r = subprocess.run(['cargo', 'build', '--release'], cwd=os.path.join(ROOT, 'stage0'), capture_output=True, text=True,
+                   encoding='utf-8', errors='replace')
+step('stage0: cargo build', r.returncode == 0, r.stderr[-500:])
+
 # 1. 仕様の機械検証
 r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'spec', 'tools', 'check_all.py')],
                    capture_output=True, text=True, encoding='utf-8')
@@ -41,10 +46,7 @@ r = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'bench', 'test_harn
                    capture_output=True, text=True, encoding='utf-8', errors='replace')
 step('bench/test_harness.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
 
-# 2. Rust 版のビルドと cargo test
-r = subprocess.run(['cargo', 'build', '--release'], cwd=os.path.join(ROOT, 'stage0'), capture_output=True, text=True,
-                   encoding='utf-8', errors='replace')
-step('stage0: cargo build', r.returncode == 0, r.stderr[-500:])
+# 2. Rust 版の cargo test (ビルドは 0 で先に済ませる)
 r = subprocess.run(['cargo', 'test', '--release'], cwd=os.path.join(ROOT, 'stage0'), capture_output=True, text=True,
                    encoding='utf-8', errors='replace')
 step('stage0: cargo test', r.returncode == 0, (r.stdout + r.stderr)[-1500:])
