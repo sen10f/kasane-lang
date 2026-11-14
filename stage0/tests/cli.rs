@@ -22830,3 +22830,113 @@ end t.differs
     assert_eq!(k.status.code(), Some(101), "kir differs\n{}", text(&k.stderr));
     assert_eq!(text(&k.stderr).trim(), "panic: assertion failed: left: Ok(\"ab\"), right: Ok(\"ac\")", "kir differs");
 }
+
+/// コピーできる集成体の要素を添字で読む形 (`tests/data/linear_ok/index_field_copy.ksnl` の `a[0usize].x`)。
+/// 要素の値を読んでフィールドを取る・値として束縛する・関数の引数に渡す・入れ子のフィールド・`&Vec` 越し・ローカルの `Vec`・`for` の中で読む。
+const KIR_COPY_ELEM_FNS: &str = r#"type t.Point derive [Debug, Clone, Copy] pub
+    x: u32
+    y: u32
+end t.Point
+
+type t.Seg derive [Debug, Clone, Copy] pub
+    p: t.Point
+    n: u32
+end t.Seg
+
+fn t.area(p: t.Point) -> u32 uses [] panics may
+    p.x * p.y
+end t.area
+
+fn t.field_at(n: usize) -> u32 uses [] panics may
+    let a = [t.Point { x: 1u32, y: 2u32 }, t.Point { x: 10u32, y: 20u32 }]
+    a[n].x + a[n].y
+end t.field_at
+
+fn t.whole_at(n: usize) -> u32 uses [] panics may
+    let a = [t.Point { x: 1u32, y: 2u32 }, t.Point { x: 10u32, y: 20u32 }]
+    let b = a[n]
+    b.x * b.y
+end t.whole_at
+
+fn t.nested_at(n: usize) -> u32 uses [] panics may
+    let s = [
+        t.Seg { p: t.Point { x: 3u32, y: 4u32 }, n: 5u32 },
+        t.Seg { p: t.Point { x: 6u32, y: 7u32 }, n: 8u32 },
+    ]
+    s[n].p.y + s[n].n
+end t.nested_at
+
+fn t.pass_at(n: usize) -> u32 uses [] panics may
+    let a = [t.Point { x: 2u32, y: 3u32 }, t.Point { x: 4u32, y: 5u32 }]
+    t.area(a[n])
+end t.pass_at
+
+fn t.vec_at(n: usize) -> u32 uses [alloc] panics may
+    let mut v: alloc.vec.Vec<t.Point, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let p = t.Point { x: 5u32, y: 6u32 }
+    core.mem.drop(v.push(p))
+    let q = t.Point { x: 7u32, y: 8u32 }
+    core.mem.drop(v.push(q))
+    v[n].x + v[n].y
+end t.vec_at
+
+fn t.sum_ref(v: &alloc.vec.Vec<t.Point, std.alloc.System>, n: usize) -> u32 uses [] panics may
+    v[n].x + v[n].y
+end t.sum_ref
+
+fn t.ref_at(n: usize) -> u32 uses [alloc] panics may
+    let mut v: alloc.vec.Vec<t.Point, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let p = t.Point { x: 5u32, y: 6u32 }
+    core.mem.drop(v.push(p))
+    let q = t.Point { x: 7u32, y: 8u32 }
+    core.mem.drop(v.push(q))
+    t.sum_ref(&v, n)
+end t.ref_at
+
+fn t.loop_sum(n: usize) -> u32 uses [] panics may
+    let a = [t.Point { x: 1u32, y: 2u32 }, t.Point { x: 10u32, y: 20u32 }]
+    let mut s = 0u32
+    for i in core.iter.range(0usize, n) {
+        s = s.wrapping_add(a[i].x)
+    }
+    s
+end t.loop_sum
+
+"#;
+
+#[test]
+fn kir_copy_elem_fields_match_tree_walker() {
+    // コピーできる集成体の要素の読み (`a[n].x` / `let b = a[n]` / `a[n].p.y` / 引数に渡す) は、木走査と同じ値になる。
+    // 以前は要素を `MemLoad` (スカラーだけ読める) で読み、下ろしの検査が `load は ptr から整数・...` で落ちた (設計_KIR.md 17.22)。
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        ("t.field_at", &["0"], "3u32", "3"),
+        ("t.field_at", &["1"], "30u32", "30"),
+        ("t.whole_at", &["0"], "2u32", "2"),
+        ("t.whole_at", &["1"], "200u32", "200"),
+        ("t.nested_at", &["0"], "9u32", "9"),
+        ("t.nested_at", &["1"], "15u32", "15"),
+        ("t.pass_at", &["0"], "6u32", "6"),
+        ("t.pass_at", &["1"], "20u32", "20"),
+        ("t.vec_at", &["0"], "11u32", "11"),
+        ("t.vec_at", &["1"], "15u32", "15"),
+        ("t.ref_at", &["0"], "11u32", "11"),
+        ("t.ref_at", &["1"], "15u32", "15"),
+        ("t.loop_sum", &["0"], "0u32", "0"),
+        ("t.loop_sum", &["2"], "11u32", "11"),
+    ];
+    for (i, (f, args, lit, want)) in cases.iter().enumerate() {
+        let call = format!("{}({})", f, args.iter().map(|a| format!("{}usize", a)).collect::<Vec<_>>().join(", "));
+        let main = format!(
+            "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    core.check.eq({}, {})\n    Ok(())\nend t.main\n",
+            call, lit
+        );
+        let t = Tmp::new(&format!("kir_copy_elem_{}", i), &format!("{}{}", KIR_COPY_ELEM_FNS, main));
+        let o = run(&["run"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "tree-walker: {}\n{}", call, text(&o.stderr));
+        let mut kargs = vec!["kir", f, "--run"];
+        kargs.extend(args.iter().copied());
+        let k = kir_run(&kargs, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
+    }
+}

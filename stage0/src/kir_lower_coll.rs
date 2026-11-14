@@ -2404,6 +2404,12 @@ pub(crate) fn index_read(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         return lw.err(line, "添字の型が usize ではない");
     }
     let addr = elem_addr(lw, seq, i, elem)?;
+    // 集成体 (コピーできるもの) の要素は、`ref<集成体>` へ `bitcast` して `load` で値として読む。
+    // `MemLoad` は整数・浮動小数・bool・ptr しか読めないので、ここで使うと下ろしの検査 (`load は ptr から ...`) に落ちる。
+    if let Ty::Agg(ai) = elem {
+        let r = lw.emit(Ty::Ref(false, Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: addr });
+        return Ok(Some(lw.emit(elem, Op::Load(r))));
+    }
     Ok(Some(lw.emit(elem, Op::MemLoad { p: addr, off: 0 })))
 }
 

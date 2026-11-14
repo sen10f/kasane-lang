@@ -1143,6 +1143,13 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - 試験: `kir_array_literal_of_aggregates_matches_tree_walker` (列挙型・構造体の要素、`String` の要素の拒否)、`kir_btree_map_matches_tree_walker` (tour と同じ並び、負のキー、容量の広がり、偶数の削除、`char` のキー。`--run` / `--native` / ASan)。
 - examples/tour は `ksn build --backend llvm` で作れ、出力が `ksn run` と一致する。`llvm_builds_of_real_packages_match_run` に `examples/tour` を足した。
 
+### 17.22 コピーできる集成体の要素の添字読み (kir/index-field-copy、2026-11-14)
+- 症状: `let a = [t.Point {..}]; a[0usize].x` (`tests/data/linear_ok/index_field_copy.ksnl`) が下ろしの検査で `load は ptr から整数・浮動小数・bool・ptr を読むはず` に落ち、`ksn run --engine=vm` が木走査へ退いていた。`let b = a[0usize]` でも同じ。
+- 原因: `index_read` (`kir_lower_coll.rs`) が、所有物を持たない集成体の要素を `MemLoad` で読んでいた。`MemLoad` は整数・浮動小数・bool・ptr だけを読む命令なので、集成体の要素では検査に落ちる。
+- 直し方: 集成体の要素の番地を `ref<集成体>` へ `bitcast` して `Op::Load` で値として読む (`assign_index` の所有物の要素と同じ形。検査は `Load` の被演算子が参照で、結果の型が指す先と一致することを見る)。スカラーの要素は従来どおり `MemLoad`。
+- 試験: `kir_copy_elem_fields_match_tree_walker` (14 ケース。`a[n].x` / `let b = a[n]` / `s[n].p.y + s[n].n` / 引数に `a[n]` を渡す / `&Vec` 越し `v[n].x` / ローカルの `Vec` の `v[n].x` / `for` の中の `a[i].x`。木走査と `--run` / `--native` / ASan の値が一致)。修正を外すと同じ検査の文言で落ちることを確かめた。
+- 別件 (検査の取りこぼし、ここでは直さない): `fn f(v: &alloc.vec.Vec<t.Point, std.alloc.System>, ..)` に配列 `[t.Point {..}]` の `&v` を渡しても `ksn check` と `ksn run` が通る (型の不一致を見ていない)。`kir_copy_elem` の試験では本物の `Vec` を使い、この形は避けた。
+
 ## 18. バイトコード VM 第 1 段 (vm/skeleton、2026-11-13)
 
 段階 2 (第 5 章) の第 1 段。`ksn run --engine=vm` と `ksn test --engine=vm` (`--engine=tree` が既定の木走査)。既定の挙動は変えていない。`clif.rs` と `examples/`・`perf/` のソースは触っていない。
