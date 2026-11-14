@@ -90,6 +90,58 @@ fn conv_generics(v: &V) -> Vec<(String, String, V)> {
         })
         .collect()
 }
+/// `Fn*` 境界の効果実引数の省略 (4.3): `F: core.ops.Fn<Args, R>` は `Fn<Args, R, E$F, P$F>` に補い、
+/// `E$F: uses` / `P$F: panics` を関数の型パラメータの末尾に足す。`uses` に `E$F` を足し、`panics never` は
+/// `panics P$F` に読み替える (`panics may` はそのまま)。省略した境界は 1 関数に 1 つだけ。
+fn elide_fn_effects(d: &mut Def) -> Result<(), String> {
+    const FNS: [&str; 3] = ["core.ops.Fn", "core.ops.FnMut", "core.ops.FnOnce"];
+    let mut hits: Vec<(usize, usize)> = Vec::new();
+    for (gi, g) in d.generics.iter().enumerate() {
+        if g.0 != "type" {
+            continue;
+        }
+        for (bi, b) in items(&g.2).iter().enumerate() {
+            if let V::L(f) = b {
+                if f.len() == 2 && FNS.contains(&text(&f[0]).as_str()) {
+                    match items(&f[1]).len() {
+                        2 => hits.push((gi, bi)),
+                        3 => return Err(format!("`{}` bound: write both the effect and the panic argument, or neither (4.3)", text(&f[0]))),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    if hits.is_empty() {
+        return Ok(());
+    }
+    if hits.len() > 1 {
+        return Err("more than one `Fn*` bound omits its effect arguments: write `E` / `P` explicitly (4.3)".to_string());
+    }
+    let (gi, bi) = hits[0];
+    if !d.inferred && !matches!(d.panics.as_deref(), Some("never") | Some("may")) {
+        return Err("an `Fn*` bound omits its effect arguments but `panics` names another variable: write `E` / `P` explicitly (4.3)".to_string());
+    }
+    let gname = d.generics[gi].1.clone();
+    let (e, pv) = (format!("E${}", gname), format!("P${}", gname));
+    let mut bounds = items(&d.generics[gi].2).to_vec();
+    if let V::L(f) = &bounds[bi] {
+        let mut args = items(&f[1]).to_vec();
+        args.push(V::L(vec![V::S("named".into()), V::S(e.clone()), V::L(vec![])]));
+        args.push(V::L(vec![V::S("named".into()), V::S(pv.clone()), V::L(vec![])]));
+        bounds[bi] = V::L(vec![f[0].clone(), V::L(args)]);
+    }
+    d.generics[gi].2 = V::L(bounds);
+    d.generics.push(("uses".into(), e.clone(), V::L(vec![])));
+    d.generics.push(("panics".into(), pv.clone(), V::L(vec![])));
+    if !d.inferred {
+        d.uses.push(e);
+        if d.panics.as_deref() == Some("never") {
+            d.panics = Some(pv);
+        }
+    }
+    Ok(())
+}
 fn conv_params(v: &V) -> Vec<(String, V)> {
     items(v).iter().map(|p| (text(&items(p)[0]), items(p)[1].clone())).collect()
 }
@@ -182,6 +234,7 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                     d.impls_trait = text(&items(&tr)[0]);
                     d.has_impls = true;
                 }
+                elide_fn_effects(&mut d).map_err(|m| format!("E0002|{}|1|{}", sp.line, m))?;
             }
             "type" | "enum" => {
                 p.i = 1;

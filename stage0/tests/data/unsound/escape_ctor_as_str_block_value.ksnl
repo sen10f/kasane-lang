@@ -1,0 +1,13 @@
+// expect: E3010
+type t.H['a]
+    r: &'a str
+end t.H
+
+fn t.bad() -> usize uses [alloc] panics never
+    let h = {
+        let mut x = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(x.push_str("hello"))
+        t.H { r: x.as_str() }
+    }
+    h.r.len()
+end t.bad

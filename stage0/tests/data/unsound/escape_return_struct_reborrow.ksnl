@@ -1,0 +1,13 @@
+// expect: E3030
+type t.H['a]
+    r: &'a u32
+end t.H
+
+fn t.bad() -> t.H<'static> uses [] panics never
+    let x = 7u32
+    t.H { r: &*&x }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

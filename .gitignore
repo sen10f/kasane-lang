@@ -12,3 +12,4 @@ bench/work/
 .env
 perf/results/
 tools/fuzz/found/
+tools/fuzz/found_borrow/

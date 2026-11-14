@@ -1,0 +1,32 @@
+# フル検証 (python3 tests/run_tests.py) を push と PR ごとに回す (修正プラン 6-1)。
+name: ci
+
+on:
+  push:
+    branches: [master, dev/plan]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: 依存 (gcc / clang / python3 / curl)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc clang python3 curl
+          gcc --version | head -1
+          clang --version | head -1
+          python3 --version
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: stage0
+      - name: フル検証
+        run: python3 tests/run_tests.py

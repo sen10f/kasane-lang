@@ -360,6 +360,7 @@ pub(crate) const DERIVE_TRAITS: &[(&str, &str)] = &[
     ("Debug", "core.fmt.Debug"),
     ("Clone", "core.ops.Clone"),
     ("Copy", "core.ops.Copy"),
+    ("TryClone", "alloc.alloc.TryClone"),
     ("PartialEq", "core.cmp.PartialEq"),
     ("Eq", "core.cmp.Eq"),
     ("PartialOrd", "core.cmp.PartialOrd"),
@@ -5562,6 +5563,10 @@ impl<'a> Checker<'a> {
         if self.p.impls.contains(&(tr.to_string(), ty.to_string())) {
             return true;
         }
+        // `Clone` を実装する型は `TryClone` も持つ (確保なしの複製は確保ありの複製でもある)。
+        if tr == "alloc.alloc.TryClone" && self.implements(ty, "core.ops.Clone") {
+            return true;
+        }
         self.def(i).derive.iter().any(|x| DERIVE_TRAITS.iter().any(|(k, v)| k == x && *v == tr))
     }
 
@@ -6119,7 +6124,7 @@ fn ty_mentions(t: &V, name: &str) -> bool {
     }
 }
 
-const INT_PRIMS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"];
+pub(crate) const INT_PRIMS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"];
 
 /// レーベンシュタイン距離。
 pub(crate) fn edit_distance(a: &str, b: &str) -> usize {

@@ -674,7 +674,7 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
         }
         let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
         let rt = runtime_c_args(&ll, &src);
-        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(&tmp).arg("-lm").output();
+        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(&tmp).arg("-lm").arg("-pthread").output();
         match o {
             Err(e) => {
                 eprintln!("ksn kir: --native には clang が必要です ({} を起動できない: {})", clang, e);
@@ -1408,6 +1408,22 @@ fn derived_impls(d: &Def) -> Option<String> {
                 }
                 out.push(format!("end {}.clone", n));
             }
+            "TryClone" => {
+                out.push(format!(
+                    "impl alloc.alloc.TryClone for {0}\nfn {0}.try_clone(self: &{0}) -> Result<{0}, alloc.alloc.AllocError> uses [alloc] panics never impls alloc.alloc.TryClone",
+                    n
+                ));
+                if d.kw == "type" {
+                    out.push(format!(
+                        "    Ok({} {{ {} }})",
+                        n,
+                        d.fields.iter().map(|f| format!("{0}: self.{0}.try_clone()?", f.0)).collect::<Vec<_>>().join(", ")
+                    ));
+                } else {
+                    out.push("    // try_clone each variant payload, propagating the error with `?`".into());
+                }
+                out.push(format!("end {}.try_clone", n));
+            }
             "PartialEq" => {
                 out.push(format!(
                     "impl core.cmp.PartialEq<{0}> for {0}\nfn {0}.eq(self: &{0}, other: &{0}) -> bool uses [] panics never impls core.cmp.PartialEq<{0}>",
@@ -2081,6 +2097,9 @@ fn set_exec(_p: &Path) {}
 
 fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let release = args.iter().any(|a| a == "--release");
+    // 3-2: リリースのネイティブ生成が失敗したとき、インタプリタ同梱のバンドルへ退避するのを明示的に許す。
+    // デバッグ (`--release` なし) は常に退避する (理由を出す) ので、このフラグは効かない。
+    let allow_bundle = args.iter().any(|a| a == "--allow-bundle");
     let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "llvm".into());
     let target = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)).cloned();
     if backend == "clif" {
@@ -2226,6 +2245,18 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     if native.is_ok() && !reused {
         store_artifact(&cdir, &key, &exe);
     }
+    if let Err(why) = &native {
+        // ライブラリ (entry なし) は実行ファイルを作らないものなので、退避の対象ではなく従来どおり扱う。
+        if release && !allow_bundle && entry.is_some() {
+            // 3-2: リリースは退避しない。作りかけの target/release を残さず、理由と逃げ道を出して失敗する。
+            let _ = fs::remove_dir_all(&out);
+            eprintln!(
+                "ksn: E9040: `ksn build --release` cannot make a native executable: {}. Release builds do not fall back to the interpreter bundle. Fix the cause, build without `--release` (the bundle is then made), or pass `--allow-bundle` to accept the bundle",
+                why
+            );
+            return 1;
+        }
+    }
     match native {
         Ok(()) => println!("native executable: {}", rel(&norm(&exe))),
         Err(e) => println!("native backend skipped: {}; the interpreter bundle is used", e),
@@ -2321,7 +2352,7 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
     let src = exe.with_extension("ll.tmp");
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
     let rt = runtime_c_args(ll, &src);
-    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(exe).arg("-lm").output();
+    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(exe).arg("-lm").arg("-pthread").output();
     let _ = fs::remove_file(&src);
     // 一時的な C ファイルを削除する (引数は "-x c <path>" の繰り返し)。
     for i in (2..rt.len()).step_by(3) {

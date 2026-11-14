@@ -39,8 +39,8 @@ python3 perf/run_perf.py --repeat 5 --only fib,loops --tag try
 
 - `--ksn <パス>` で ksn を指定できる（既定は `stage0/target/release/ksn`）。
 - 結果は `perf/results/perf-<日時>-<入力>[-タグ].json` と `.md` に出る。表は標準出力にも出る。
-- Cranelift は `ksn build --release --backend clif` で作る。生成物 `target/release/<名前>.native` が
-  無いとき（`native backend skipped` など）はその理由を表の下に出し、インタプリタ入りのバンドルは計測しない。
+- ネイティブは LLVM（`ksn build --release`）で作る（Cranelift の `--backend clif` は 2026-11-14 に削除）。生成物 `target/release/<名前>.native` が
+  無いとき（`--release` は退避せず E9040 で失敗する。修正プラン 3-2）はその理由を表の下に出す。
 
 ## 計測の決まり
 

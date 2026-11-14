@@ -1,0 +1,25 @@
+type t.H['a]
+    r: &'a str
+end t.H
+
+fn t.H.set['a](self: &mut t.H<'a>, r: &'a str) -> () uses [] panics never
+    self.r = r
+end t.H.set
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut h = t.H { r: "x" }
+    h.set(t.same("a", "b"))
+    std.io.print_line(h.r)
+    std.io.print_line(t.stat("a"))
+    core.mem.drop(s)
+    Ok(())
+end t.main
+
+fn t.same['a](x: &'a str, _y: &'a str) -> &'a str uses [] panics never
+    x
+end t.same
+
+fn t.stat(_x: &str) -> &'static str uses [] panics never
+    "lit"
+end t.stat

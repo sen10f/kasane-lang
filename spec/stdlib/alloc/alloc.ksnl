@@ -12,3 +12,7 @@ type alloc.alloc.Layout derive [Debug, Clone, Copy] pub
     size: usize pub
     align: usize pub
 end alloc.alloc.Layout
+
+trait alloc.alloc.TryClone pub
+    fn try_clone(self: &Self) -> Result<Self, alloc.alloc.AllocError> uses [alloc] panics never
+end alloc.alloc.TryClone

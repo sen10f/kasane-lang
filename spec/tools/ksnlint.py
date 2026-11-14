@@ -24,7 +24,7 @@ GROUP = {'import': 0, 'const': 1, 'static': 1, 'type': 2, 'enum': 2, 'trait': 2,
          'extern': 3, 'impl_only': 4, 'fn': 5, 'test': 6}
 BODY_KINDS = ('fn', 'test')
 FIELD_KINDS = ('type', 'enum', 'trait')
-DERIVE_ORDER = ['Debug', 'Clone', 'Copy', 'PartialEq', 'Eq', 'PartialOrd', 'Ord', 'Hash', 'From']
+DERIVE_ORDER = ['Debug', 'Clone', 'Copy', 'TryClone', 'PartialEq', 'Eq', 'PartialOrd', 'Ord', 'Hash', 'From']
 PRIMS = {'i8', 'i16', 'i32', 'i64', 'i128', 'isize', 'u8', 'u16', 'u32', 'u64', 'u128', 'usize',
          'f32', 'f64', 'bool', 'char', 'str'}
 # 3.7: 語は英字で始まり、数字は直前の語に付ける (foo2 は可、foo_2 は不可)

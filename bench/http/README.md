@@ -7,7 +7,7 @@
 
 | 実装 | ファイル | 形 |
 | --- | --- | --- |
-| Kasane | `examples/shortener` (`ksn build --backend clif --release`) | 受付スレッドが接続を `Sender<TcpStream>` に送り、ワーカー N 本が `Receiver` の複製で取り合う。ストアは容量 1 のチャネルで持ち回す |
+| Kasane | `examples/shortener` (`ksn build --release`) | 受付スレッドが接続を `Sender<TcpStream>` に送り、ワーカー N 本が `Receiver` の複製で取り合う。ストアは容量 1 のチャネルで持ち回す |
 | Rust | `rust/server.rs` (std のみ) | 受付スレッド + ワーカー N 本 (`Arc<Mutex<Receiver>>`)。ストアは `Mutex<Vec<String>>` |
 | Go | `go/server.go` (標準ライブラリのみ。Go が入っているときだけ) | 受付 + ワーカー goroutine N 本 (既定)。`-mode spawn` は接続ごとに goroutine |
 
@@ -50,7 +50,7 @@ python3 bench/http/run.py --seconds 10 --repeat 3 --conns 256 --workers 16
 rustc -C opt-level=3 -o bench/http/target/server_rust bench/http/rust/server.rs
 GO111MODULE=off go build -o bench/http/target/server_go bench/http/go/server.go
 rustc -C opt-level=3 -o bench/http/target/loadgen bench/http/loadgen/loadgen.rs
-(cd examples/shortener && ../../stage0/target/release/ksn build --backend clif --release)
+(cd examples/shortener && ../../stage0/target/release/ksn build --release)
 
 taskset -c 0-9 bench/http/target/server_rust 127.0.0.1:18080 4
 taskset -c 0-9 bench/http/target/server_go -addr 127.0.0.1:18080 -workers 4
@@ -77,8 +77,10 @@ loopback なので、生成器とサーバが CPU を取り合わないように
 
 ## 計測結果 (2026-11-12)
 
+> 注: 以下の表は Cranelift（`--backend clif`、削除済み）での計測。LLVM（`ksn build --release`）での測り直しは `修正プラン.md` 2-3 で行う。それまで、この表の数値は現在の処理系では再現できない。
+
 環境: Intel Core i9-13900KF (32 論理 CPU)、Linux 7.3、loopback。サーバは `taskset -c 0-9`、負荷生成器は `taskset -c 12-31` (CPU 10 / 11 は使わない)。
-rustc 1.99.1 (`-C opt-level=3`)、Go 1.27.3、Kasane は `ksn build --backend clif --release` (Cranelift)。10 秒 x 3 回の RPS の中央値の回。エラー (期待と違うステータス・接続の失敗) は全回 0。
+rustc 1.99.1 (`-C opt-level=3`)、Go 1.27.3、Kasane は当時 `ksn build --backend clif --release` (Cranelift。削除済み)。10 秒 x 3 回の RPS の中央値の回。エラー (期待と違うステータス・接続の失敗) は全回 0。
 
 並行接続 64 / ワーカー 4:
 
@@ -101,6 +103,6 @@ rustc 1.99.1 (`-C opt-level=3`)、Go 1.27.3、Kasane は `ksn build --backend cl
 | (参考) Kasane, 1 接続ずつ (従来) | 38,909 | 0.92 | 1.04 | 133 | 0.4 |
 
 - ビルド時間は、コンパイラのキャッシュなし (Go は `GOCACHE` を空にした初回)。Kasane は `ksn build` 全体で、可搬なインタプリタの束 (ksn のコピー) も含む。実行ファイルの大きさは `shortener.native` (束は含めない)。
-- Kasane のワーカーの形は Rust の約 0.9 倍 (64 接続) / 0.7 倍 (256 接続)、Go の約 1.4 倍。1 接続ずつの従来形からは 3.1 倍 (64 接続)。
+- Kasane のワーカーの形は Rust の約 0.9 倍 (64 接続) / 0.7 倍 (256 接続)、Go の約 1.4 倍。1 接続ずつの従来形からは 3.1 倍 (64 接続)。（Cranelift での計測。LLVM での測り直しは `修正プラン.md` 2-3）
 - 1 接続ずつの形が 256 接続で急に落ちるのは、受け付けが待つ間に待ち行列 (listen のバックログ) があふれて SYN が再送されるため。
 - 1 回の計測の揺れは数 % ある (3 回の中央値を採っている)。上の差のうち、Kasane と Rust の約 10〜30 % の差は揺れより大きいが、原因 (Cranelift の生成コード・受付の形・確保など) は切り分けていない。

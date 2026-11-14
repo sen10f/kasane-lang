@@ -2590,6 +2590,10 @@ impl<'a> TypeCk<'a> {
         if self.p.impls.contains(&(tr.to_string(), ty.to_string())) {
             return true;
         }
+        // `Clone` を実装する型は `TryClone` も持つ (確保なしの複製は確保ありの複製でもある)。
+        if tr == "alloc.alloc.TryClone" && self.implements(ty, "core.ops.Clone") {
+            return true;
+        }
         self.p.defs[i].derive.iter().any(|x| crate::check::DERIVE_TRAITS.iter().any(|(k, v)| k == x && *v == tr))
     }
 
@@ -2722,6 +2726,11 @@ impl<'a> TypeCk<'a> {
             }
             "Unary" => {
                 let t = self.infer(&f[1]);
+                if st(&f[0]) == "-" && self.is_int_prim(&t) {
+                    if let Some(acc) = self.eff_acc.last_mut() {
+                        acc.1 = true;
+                    }
+                }
                 match st(&f[0]).as_str() {
                     "&" => Ty::Ref(false, Box::new(t)),
                     "&mut" => Ty::Ref(true, Box::new(t)),
@@ -2744,6 +2753,13 @@ impl<'a> TypeCk<'a> {
                 if let Err(err) = self.unify2(&a, &b) {
                     if let Some((l, r)) = self.prim_conflict(&err) {
                         self.diag("E2024", format!("operands of `{}` have different types: `{}` and `{}`", op, l, r), nline(e));
+                    }
+                }
+                // 整数の算術はオーバーフロー・0 除算で panic しうる (クロージャの本体では `panics may` の根拠にする)。
+                // 型が整数と決まっているときだけ数える (浮動小数・型が分からないものは数えない)。
+                if matches!(op.as_str(), "+" | "-" | "*" | "/" | "%") && (self.is_int_prim(&a) || self.is_int_prim(&b)) {
+                    if let Some(acc) = self.eff_acc.last_mut() {
+                        acc.1 = true;
                     }
                 }
                 // 比較演算子は PartialEq / PartialOrd に対応する (3.2 / 4.3)。受け手の型が持たなければ E1108 (メソッド形と揃える)。
@@ -3779,12 +3795,21 @@ impl<'a> TypeCk<'a> {
         let gn = d.gnames();
         for (k, a) in argt.iter().enumerate() {
             let Some(p) = d.params.get(k + off) else { break };
-            let Ty::Param(name) = from_v(&p.1, &gn) else { continue };
+            // 参照は透過的: `&F` / `&mut F` も `F` と同じ境界を持ち、`&g` を渡しても `g` のクロージャを見る。
+            let mut pt = from_v(&p.1, &gn);
+            while let Ty::Ref(_, x) = pt {
+                pt = *x;
+            }
+            let Ty::Param(name) = pt else { continue };
             let bounds = self.fn_bound(d, &name);
             if bounds.is_empty() {
                 continue;
             }
-            let Ty::Closure { id: Some(node), .. } = self.deep(a) else { continue };
+            let mut at = self.deep(a);
+            while let Ty::Ref(_, x) = at {
+                at = self.deep(&x);
+            }
+            let Ty::Closure { id: Some(node), .. } = at else { continue };
             let Some((uses, may, unsure)) = self.closure_effs.get(&node) else { continue };
             // 確実でない効果 (推論された関数・`dyn` / 境界越しの上限) も、5.1 に合わせて上限として束縛に使う (fail-closed)。
             let _ = unsure;
@@ -3809,6 +3834,11 @@ impl<'a> TypeCk<'a> {
         out
     }
 
+    /// 型が整数のプリミティブと決まっているか (参照は外して見る)。
+    fn is_int_prim(&self, t: &Ty) -> bool {
+        matches!(self.deep(t).strip(), Ty::Prim(n) if crate::check::INT_PRIMS.contains(&n.as_str()))
+    }
+
     /// 推論された関数 (`infer.rs` の上からの近似) の名前か。
     fn inferred_def(&self, name: &str) -> bool {
         self.p.defs.iter().any(|d| d.inferred && d.name == name)
@@ -3823,12 +3853,21 @@ impl<'a> TypeCk<'a> {
         let mut out: Vec<(&'static str, String)> = vec![];
         for (k, a) in argt.iter().enumerate() {
             let Some(p) = d.params.get(k + off) else { break };
-            let Ty::Param(name) = from_v(&p.1, &gn) else { continue };
+            // 参照は透過的: `&F` / `&mut F` も `F` と同じ境界を持ち、`&g` を渡しても `g` のクロージャを見る。
+            let mut pt = from_v(&p.1, &gn);
+            while let Ty::Ref(_, x) = pt {
+                pt = *x;
+            }
+            let Ty::Param(name) = pt else { continue };
             let bounds = self.fn_bound(d, &name);
             if bounds.is_empty() {
                 continue;
             }
-            let Ty::Closure { id: Some(node), .. } = self.deep(a) else { continue };
+            let mut at = self.deep(a);
+            while let Ty::Ref(_, x) = at {
+                at = self.deep(&x);
+            }
+            let Ty::Closure { id: Some(node), .. } = at else { continue };
             let Some((uses, may, unsure)) = self.closure_effs.get(&node) else { continue };
             // 境界の具体名との比べは、確実な効果だけで行う (推論された関数・`dyn` 越しの上限は、
             // 囲む関数の宣言との比べ (`closure_effect_bind` / `closure_call_effects`) が見る)。

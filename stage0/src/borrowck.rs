@@ -614,9 +614,13 @@ impl<'a> Low<'a> {
     /// 参照の引数 (借用元 S) の両方に現れるとき、S の借用を R の場所に結びつけ、
     /// R の最後の使用まで生かす。`v` が生きている間は `s` を move できない (E3010)。
     /// 戻り値への借用追跡 (flow_params / ret_contains_ref) と同じ仕組み。
-    fn bind_receiver_arg_borrow(&mut self, c: usize, di: usize, args: &[V]) {
+    fn bind_receiver_arg_borrow(&mut self, c: usize, di: usize, args: &[V], recv: Option<String>) {
         let d = &self.p.defs[di];
-        let Some(flow) = Self::flow_params(d) else { return };
+        let Some(mut flow) = Self::flow_params(d) else { return };
+        if recv.is_some() {
+            // メソッド形のセッターは戻り値に流れなくても、同じ名前の領域を共有する引数を保存しうる。
+            flow = vec![true; flow.len()];
+        }
         let lts: Vec<String> = d
             .generics
             .iter()
@@ -659,16 +663,32 @@ impl<'a> Low<'a> {
         if receivers.is_empty() || sources.is_empty() {
             return;
         }
+        // メソッド形 (`h.set(x)`) では、レシーバは args に入っていないので 1 つずらす。
+        let shift = usize::from(recv.is_some());
         for &r in &receivers {
-            let Some(a) = args.get(r) else { continue };
-            let Some((rroot, _)) = self.arg_place(a) else { continue };
+            let rroot = if let Some(rr) = &recv {
+                if r != 0 { continue }
+                rr.clone()
+            } else {
+                let Some(a) = args.get(r) else { continue };
+                let Some((rroot, _)) = self.arg_place(a) else { continue };
+                rroot
+            };
             for &s in &sources {
-                let Some(b) = args.get(s) else { continue };
-                let Some(sroot) = self.borrow_root(b) else { continue };
+                if s < shift { continue }
+                let Some(b) = args.get(s - shift) else { continue };
+                let mutable = matches!(tel(&d.params[s].1, 1), V::B(true));
+                let Some(sroot) = self.borrow_root(b) else {
+                    // `s.as_str()` のように借用を返す式: その借用元をレシーバが持つ。
+                    let srcs = self.loan_sources(b);
+                    if !srcs.is_empty() && recv.is_some() {
+                        self.hold(c, Holder::Var(rroot.clone()), srcs);
+                    }
+                    continue;
+                };
                 if sroot == rroot {
                     continue;
                 }
-                let mutable = matches!(tel(&d.params[s].1, 1), V::B(true));
                 let id = self.loans.len();
                 self.loans.push(LoanInfo {
                     root: sroot.clone(),
@@ -681,6 +701,21 @@ impl<'a> Low<'a> {
                 });
             }
         }
+    }
+
+    /// メソッド呼び出し `h.set(x)`: 名前のメソッドがただ 1 つなら、そのヘッダで `&mut self` と参照の引数が
+    /// 同じライフタイムを共有するとき、引数の借用をレシーバ `h` に持たせる。
+    fn bind_method_setter(&mut self, c: usize, name: &str, root: &str, args: &[V]) {
+        let Some(cands) = self.p.method_idx.get(name) else { return };
+        if cands.len() != 1 {
+            return;
+        }
+        let di = cands[0];
+        let d = &self.p.defs[di];
+        if d.params.len() != args.len() + 1 || d.params.first().map_or(true, |p| p.0 != "self") {
+            return;
+        }
+        self.bind_receiver_arg_borrow(c, di, args, Some(root.to_string()));
     }
 
     /// 式 `a` が `&<場所>` / `&mut <場所>` ならその場所の (根, 道)。
@@ -1604,6 +1639,9 @@ impl<'a> Low<'a> {
                         self.emit(c, Ev::Use(root.clone()));
                         self.emit(c, Ev::Access { root: root.clone(), path: path.clone(), kind, line: nline(e) });
                         self.store_into(c, &name, &root, &path, args);
+                        if path.is_empty() {
+                            self.bind_method_setter(c, &name, &root, args);
+                        }
                         self.end_temps(c, temps);
                         return c;
                     }
@@ -1630,7 +1668,7 @@ impl<'a> Low<'a> {
                 let mut temps = vec![];
                 let c = self.lower_args_held(args, cur, &mut temps);
                 if let Some(di) = di {
-                    self.bind_receiver_arg_borrow(c, di, args);
+                    self.bind_receiver_arg_borrow(c, di, args, None);
                 }
                 self.end_temps(c, temps);
                 // `core.mem.drop(p)`: 場所の値を消費する。そこに保存された借用はここで死ぬ。
@@ -1655,6 +1693,9 @@ impl<'a> Low<'a> {
                     // `v.push(&x)` / `m.insert(k, &x)`: レシーバの中に借用を保存する。
                     if let Some((root, path)) = self.place_of(recv) {
                         self.store_into(c, &name, &root, &path, args);
+                        if path.is_empty() {
+                            self.bind_method_setter(c, &name, &root, args);
+                        }
                     }
                     self.end_temps(c, temps);
                     return c;
@@ -1896,6 +1937,124 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 戻り値が `&'L T` と宣言された関数の本体が、別の名前の領域 `'M` を持つ参照引数をそのまま返す
+    /// (`'M: 'L` の境界もない) と、宣言より短い (または無関係な) 借用が戻り値に流れる。`'L` が `'static` なら、
+    /// `'static` でない名前付きの領域の引数を返すのも同じ。読める形 (引数そのものが末尾式・`return` の値) だけを見る。
+    fn check_return_lifetime(&self, di: usize, body: &V) -> Vec<(usize, String)> {
+        let d = &self.p.defs[di];
+        let Some(head) = d.header.split(" uses ").next() else { return vec![] };
+        let Some(mut i) = head.find(|c| c == '(' || c == '[') else { return vec![] };
+        let gen_text = if head.as_bytes()[i] == b'[' {
+            let Some(j) = match_close(head, i) else { return vec![] };
+            let g = head[i..=j].to_string();
+            i = j + 1;
+            g
+        } else {
+            String::new()
+        };
+        if head.as_bytes().get(i) != Some(&b'(') {
+            return vec![];
+        }
+        let Some(close) = match_close(head, i) else { return vec![] };
+        let ptexts = split_top(&head[i + 1..close]);
+        if ptexts.len() != d.params.len() {
+            return vec![];
+        }
+        let Some((_, ret)) = head[close + 1..].split_once("->") else { return vec![] };
+        // 戻り値の型の先頭の `&'L`。
+        let ref_lt = |t: &str| -> Option<String> {
+            let t = t.trim().strip_prefix('&')?.trim_start();
+            let t = t.strip_prefix("mut ").unwrap_or(t).trim_start();
+            let t = t.strip_prefix('\'')?;
+            let n: String = t.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            (!n.is_empty()).then_some(n)
+        };
+        let Some(want) = ref_lt(ret) else { return vec![] };
+        let mut all = vec![];
+        walk(body, &mut all);
+        // 引数を隠す束縛があれば、名前だけでは引数と決められない。
+        let mut shadow: HashSet<String> = HashSet::new();
+        for n in &all {
+            match nname(n) {
+                "Let" | "For" | "With" => {
+                    let mut b = vec![];
+                    pat_binds(&nf(n)[0], &mut b);
+                    shadow.extend(b);
+                }
+                "Match" => {
+                    for arm in items(&nf(n)[1]) {
+                        let mut b = vec![];
+                        pat_binds(&items(arm)[0], &mut b);
+                        shadow.extend(b);
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn tails<'v>(e: &'v V, out: &mut Vec<&'v V>) {
+            match nname(e) {
+                "Block" => {
+                    if let Some(last) = items(&nf(e)[0]).last() {
+                        match nname(last) {
+                            "ExprStmt" => tails(&nf(last)[0], out),
+                            "Let" | "Assign" => {}
+                            _ => tails(last, out),
+                        }
+                    }
+                }
+                "If" => {
+                    let f = nf(e);
+                    tails(&f[1], out);
+                    if !is_nil(&f[2]) {
+                        tails(&f[2], out);
+                    }
+                }
+                "Match" => {
+                    for arm in items(&nf(e)[1]) {
+                        if let Some(b) = items(arm).last() {
+                            tails(b, out);
+                        }
+                    }
+                }
+                _ => out.push(e),
+            }
+        }
+        let mut vals: Vec<&V> = vec![];
+        tails(body, &mut vals);
+        for v in &all {
+            if nname(v) == "Return" && !is_nil(&nf(v)[0]) {
+                tails(&nf(v)[0], &mut vals);
+            }
+        }
+        let mut out = vec![];
+        for v in vals {
+            if nname(v) != "Path" {
+                continue;
+            }
+            let segs = strs(&nf(v)[0]);
+            if segs.len() != 1 || shadow.contains(&segs[0]) {
+                continue;
+            }
+            let Some(q) = d.params.iter().position(|p| p.0 == segs[0]) else { continue };
+            let Some(have) = ptexts[q].split_once(':').and_then(|x| ref_lt(x.1)) else { continue };
+            if have == "static" || have == want {
+                continue;
+            }
+            // `'b: 'a` のような境界を宣言していれば読めないので通す。
+            if gen_text.contains(&format!("'{}:", have)) || gen_text.contains(&format!("'{} :", have)) {
+                continue;
+            }
+            out.push((
+                nlineno(v),
+                format!(
+                    "{}: returns argument `{}` (`{}`) but the header declares the return type `&'{} ..`; `'{}` is not declared to outlive `'{}`",
+                    d.name, d.params[q].0, ptexts[q], want, have, want
+                ),
+            ));
+        }
+        out
+    }
+
     /// 構造体パラメータ `p` の欄 `fname` の型に現れる名前付きライフタイム集合。
     /// 欄の参照はライフタイムを省略できないので、空なら参照の欄ではない (型検査に任せる)。
     fn field_lifetime(&self, d: &Def, p: usize, fname: &str) -> BTreeSet<String> {
@@ -2012,6 +2171,10 @@ impl<'a> Checker<'a> {
         // 参照を別の引数の指す先 (Vec 要素・構造体欄) に保存する際の
         // ライフタイム不一致 (d22)。
         for (line, msg) in low.check_lifetime_store(di, body) {
+            self.tdiag("E3010", msg, line);
+        }
+        // 戻り値の参照が、ヘッダの宣言と違う領域の引数から来る (修正プラン A1)。
+        for (line, msg) in low.check_return_lifetime(di, body) {
             self.tdiag("E3010", msg, line);
         }
         let entry = low.new_node();

@@ -90,13 +90,26 @@ const KNOWN_HOLES: &[&str] = &[
     // 借用を持つ変数 (`let w = t.mk(&x)`) のフィールドを読み戻す (`let r = w.r`) と、借用が読んだ側へ移らない
     // (変数の型が分からないので、`w.n` のような Copy の値と区別できず、移すと誤検出になる)。
     "boundary_field_read_back",
-    // 修正プラン A1: 関数本体が自分のヘッダのライフタイムに照らして検査されない (`&'b` を `&'a` / `&'static` として返せる)。
-    "header_lifetime_return_other",
-    "header_lifetime_return_static",
-    // 修正プラン A2: メソッドのレシーバ (`self: &mut t.H<'a>`) 経由で短い借用を長寿命の構造体に入れられる。
-    "header_lifetime_method_setter",
-    // 修正プラン A3: `Fn<.., [], never>` の境界に添字で panic しうるクロージャを渡せる。
-    "panics_never_closure_index_bound",
+    // 型のない近似で追えない包み方 (タプル・関数呼び出しの戻り値・再借用 `&*&x`・`&mut &str` の引数) を通ると外へ出られる。
+    // タプルに包んでブロックの値にする。
+    "escape_tuple_block_value",
+    // `t.H { r: t.id(&x) }` (関数経由の借用を構造体に入れてブロックの値にする)。
+    "escape_ctor_via_fn_block_value",
+    // `t.put(&mut r, x.as_str())`: 引数が `&mut &'a str` の関数経由 (`&x` を直接渡す形は E3010 で止まる)。
+    "escape_put_as_str",
+    // `-> &'static u32` の関数が `t.id(&x)` (局所への借用を関数に通したもの) を返す (`&x` を直接返す形は E3030)。
+    "escape_return_static_via_fn",
+    // `h.r = &*&x`: 再借用を構造体のフィールドへ代入するとブロックを抜けられる。
+    "escape_field_assign_reborrow",
+    // `-> t.H<'static>` が `t.H { r: &*&x }` を返す (`&x` 直接は E3030)。
+    "escape_return_struct_reborrow",
+    // `v.push(&mut *&mut x)`: 再借用した `&mut` を Vec に入れてブロックを抜ける (`&mut x` 直接は E3010)。
+    "escape_vec_push_mut_reborrow",
+    // `t.H { r: x.as_str() }` をブロックの値にする (`t.H { r: &x }` 直接なら止まる)。
+    "escape_ctor_as_str_block_value",
+    // A1 を直した後も残る形: 本体が `'b` の引数を `t.H<'a>` / `Option<&'a T>` に包んで返す (`'b` を `&'a` で直接返す形は止まる)。
+    "header_wrapped_return_struct",
+    "header_wrapped_return_option",
 ];
 
 #[test]
@@ -2547,7 +2560,7 @@ fn build_native_strict(name: &str, src: &str, release: bool) -> (Tmp, Option<Pat
     let mut c = Command::new(exe());
     c.args(["build"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     if release {
-        c.arg("--release");
+        c.args(["--release", "--allow-bundle"]);
     }
     let o = c.output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
@@ -4244,7 +4257,7 @@ fn the_llvm_backend_compiles_map_get_mut_and_hashmap_iter() {
         let mut c = Command::new(exe());
         c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
         if release {
-            c.arg("--release");
+            c.args(["--release", "--allow-bundle"]);
         }
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
@@ -4288,7 +4301,7 @@ fn the_llvm_backend_compiles_mutex_lock_and_guard() {
         let mut c = Command::new(exe());
         c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
         if release {
-            c.arg("--release");
+            c.args(["--release", "--allow-bundle"]);
         }
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
@@ -6936,7 +6949,7 @@ fn threads_build(t: &Tmp, release: bool) -> PathBuf {
     let mut c = Command::new(exe());
     c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     if release {
-        c.arg("--release");
+        c.args(["--release", "--allow-bundle"]);
     }
     let o = c.output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
@@ -7051,10 +7064,9 @@ fn threads_interpreter_fails_clearly_when_no_single_threaded_schedule_exists() {
     }
     let p = threads_build(&t, false);
     let r = Command::new(&p).output().unwrap();
-    // LLVM (KIR) の `spawn` は実スレッドではなく、インタプリタと同じ単一スレッドの割り当て (Cranelift は pthreads で往復できた)。
-    // ネイティブでもバンドルでも、同じ理由で止まる。
-    assert_eq!(r.status.code(), Some(101), "{}", text(&r.stderr));
-    assert!(text(&r.stderr).contains("deadlock"), "{}", text(&r.stderr));
+    // LLVM (KIR) の `spawn` は pthread の実スレッドなので、往復の通信はネイティブでは進んで終わる
+    // (インタプリタの単一スレッドの割り当てには載らない)。
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
 }
 
 /// 線形値 (`TcpStream`) を `spawn` のクロージャへ move し、返す。`Receiver` を複製して複数のワーカーが 1 つのキューから
@@ -10855,7 +10867,7 @@ end t.main
     let cache = std::env::temp_dir().join(format!("ksn_bundle_cache_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let o = Command::new(exe())
-        .args(["build", "--release"])
+        .args(["build", "--release", "--allow-bundle"])
         .current_dir(&t.0)
         .env("KSN_CACHE_DIR", &cache)
         .output()
@@ -14096,7 +14108,8 @@ fn kir_thread_spawn_join_match_tree_walker() {
         assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
     }
     // 出力の順 (spawn の時は何も出ず、b を join すると a, b の順に走り、c は c の join の時に走る) を木走査の表示と比べる。
-    let k = kir_run(&["kir", "t.order_print", "--run"], &t.0);
+    // 出力の順は実スレッドのネイティブでは決まらない (spawn した側が先に出す) ので、参照実行器だけで比べる。
+    let k = run(&["kir", "t.order_print", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(0), "kir order_print\n{}", text(&k.stderr));
     let want = ["spawned", "thread", "thread", "joined b", "thread", "joined all"];
     assert_eq!(tw_out.lines().collect::<Vec<_>>(), want, "木走査: join の時に生成順で走る");
@@ -14513,13 +14526,16 @@ fn kir_sync_values_match_tree_walker() {
         ("t.pipe_sum", "5050"),
         ("t.same_thread_sum", "3213"),
         ("t.send_after_close_value", "7"),
-        ("t.two_producers_order", "7"),
         ("t.loop_spawn", "33"),
     ] {
         let k = kir_run(&["kir", f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
     }
+    // 2 本の生産者の受信の順は、実スレッドのネイティブでは決まらない (協調実行の生成順ではない)。参照実行器だけで比べる。
+    let k = run(&["kir", "t.two_producers_order", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: two_producers_order\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "7");
     // Rng: 木走査と同じ列 (シードが同じなら同じ、別のシードなら別)。値は木走査の core.check と --run / --native で比べる。
     for f in ["t.rng_values", "t.rng_ref"] {
         let mut v = vec![];
@@ -14648,6 +14664,142 @@ fn kir_sync_empty_recv_with_live_sender_deadlocks_like_the_tree_walker() {
     let k = kir_run(&["kir", "t.empty_recv_value", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(101), "kir: {}", text(&k.stderr));
     assert!(text(&k.stderr).contains("deadlock: recv() on an empty channel"), "{}", text(&k.stderr));
+}
+
+const REAL_THREADS_SRC: &str = r#"static t.COUNTER: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+fn t.add_many(n: u32) -> () uses [thread] panics may
+    let mut i = 0u32
+    while i < n {
+        let g = t.COUNTER.lock()
+        core.mem.drop(g)
+        let mut h = t.COUNTER.lock()
+        let r = h.get_mut()
+        *r = *r + 1u64
+        core.mem.drop(h)
+        i = i + 1u32
+    }
+end t.add_many
+
+fn t.contend(left: u32, per: u32) -> u64 uses [alloc, thread] panics may
+    if left == 0u32 {
+        t.add_many(per)
+        return 0u64
+    }
+    let handle = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [move per] {
+        t.add_many(per)
+        1u64
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let inner = t.contend(left - 1u32, per)
+    let v = handle.join()
+    inner + v
+end t.contend
+
+fn t.contended() -> u64 uses [alloc, thread] panics may
+    let spawned = t.contend(7u32, 2000u32)
+    let total = t.COUNTER.lock()
+    let v = *total.get()
+    core.mem.drop(total)
+    v + spawned * 1000000u64
+end t.contended
+
+fn t.fan(left: u32) -> u64 uses [alloc, thread] panics may
+    if left == 0u32 {
+        return 0u64
+    }
+    let handle = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [move left] {
+        u64.from_u32(left)
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let inner = t.fan(left - 1u32)
+    let v = handle.join()
+    inner + v
+end t.fan
+
+fn t.fan40() -> u64 uses [alloc, thread] panics may
+    t.fan(40u32)
+end t.fan40
+
+fn t.fan300() -> u64 uses [alloc, thread] panics may
+    t.fan(300u32)
+end t.fan300
+
+fn t.pc_produce(tx: std.sync.Sender<u32>, from: u32, count: u32) -> () uses [thread] panics may
+    let mut i = 0u32
+    while i < count {
+        match tx.send(from + i) {
+            Ok(_u) => 0u32
+            Err(_e) => core.panic.panic("send failed")
+        }
+        i = i + 1u32
+    }
+end t.pc_produce
+
+fn t.pc_sum() -> u32 uses [alloc, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 4usize)
+    let (tx, rx) = match made {
+        Ok(p) => p
+        Err(_e) => core.panic.panic("channel failed")
+    }
+    let tx2 = tx.clone()
+    let a = match std.thread.spawn(std.alloc.SYSTEM, fn() -> () capture [move tx] {
+        t.pc_produce(tx, 0u32, 500u32)
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let b = match std.thread.spawn(std.alloc.SYSTEM, fn() -> () capture [move tx2] {
+        t.pc_produce(tx2, 1000u32, 500u32)
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let mut sum = 0u32
+    let mut n = 0u32
+    while n < 1000u32 {
+        match rx.recv() {
+            Ok(v) => {
+                sum = sum + v
+            }
+            Err(_e) => core.panic.panic("recv failed")
+        }
+        n = n + 1u32
+    }
+    a.join()
+    b.join()
+    sum
+end t.pc_sum
+"#;
+
+#[test]
+fn kir_native_threads_are_real_pthreads() {
+    // 実スレッド (pthread): 表の上限 (参照実行器の 1024) を超える 300 本、複数スレッドからの Mutex の相互排他、
+    // 2 本の生産者と 1 本の消費者のチャネル。値は ksn run (木走査) と --run / --native が一致する。
+    if !clang_available() {
+        return;
+    }
+    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    core.check.eq(t.fan40(), 820u64)\n    core.check.eq(t.fan300(), 45150u64)\n    core.check.eq(t.contended(), 7016000u64)\n    core.check.eq(t.pc_sum(), 749500u32)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_real_threads", &format!("{}{}", REAL_THREADS_SRC, main));
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(0), "木走査 main\n{}{}", text(&tw.stdout), text(&tw.stderr));
+    for (f, want) in [("t.fan40", "820"), ("t.contended", "7016000"), ("t.pc_sum", "749500")] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+    // 300 本 (協調実行の表は 1024 本まで。ネイティブは上限なし)。繰り返して競合を拾う。
+    for _ in 0..5 {
+        for (f, want) in [("t.fan300", "45150"), ("t.contended", "7016000"), ("t.pc_sum", "749500")] {
+            let k = run(&["kir", f, "--native"], &t.0);
+            assert_eq!(k.status.code(), Some(0), "native: {}\n{}", f, text(&k.stderr));
+            assert_eq!(text(&k.stdout).trim(), want, "native value of {}", f);
+        }
+    }
 }
 
 const ARRAY_SRC: &str = r#"fn t.sum_lit() -> u32 uses [] panics never pub
@@ -18896,6 +19048,88 @@ end t.main
     // `--backend c` は残してある: llvm の理由は出さない。
     let c = run(&["build", "--backend", "c"], &t.0);
     assert!(!text(&c.stdout).contains("KIR に下ろせない"), "{}", text(&c.stdout));
+}
+
+/// 3-2: `ksn build --release` は、ネイティブ実行ファイルが作れないとき (下ろせない・clang が無い) インタプリタ同梱の
+/// バンドルへ退避せず、E9040 と理由と逃げ道を出して終了コード 1 で止まる。成果物 (`target/release`) を残さない。
+/// デバッグ (`--release` なし) は理由を出して退避する (終了コード 0)。`--allow-bundle` を付けると、リリースでも退避する。
+#[test]
+fn release_build_does_not_fall_back_to_the_bundle_but_debug_does() {
+    let src = "trait t.Speak[E: uses, P: panics]
+    fn speak(self: &Self) -> u32 uses [E] panics P
+end t.Speak
+
+type t.Dog
+    n: u32
+end t.Dog
+
+impl t.Speak<[], never> for t.Dog
+fn t.Dog.speak(self: &t.Dog) -> u32 uses [] panics never impls t.Speak<[], never>
+    self.n
+end t.Dog.speak
+
+fn t.call(s: &dyn t.Speak<[], never>) -> u32 uses [] panics never
+    s.speak()
+end t.call
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let d = t.Dog { n: 3u32 }
+    core.check.eq(t.call(&d), 3u32)
+    std.io.print_line(\"x\")
+end t.main
+";
+    let t = Tmp::new("release_no_bundle", src);
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_release_no_bundle", std::process::id()));
+    let build = |extra: &[&str]| {
+        let mut args = vec!["build"];
+        args.extend_from_slice(extra);
+        Command::new(exe()).args(&args).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap()
+    };
+    // リリース: 失敗し、理由と逃げ道を出し、何も残さない。
+    let r = build(&["--release"]);
+    let err = text(&r.stderr);
+    assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), err);
+    assert!(err.contains("E9040") && err.contains("t.main を KIR に下ろせない") && err.contains("--allow-bundle"), "{}", err);
+    assert!(!err.contains("interpreter bundle is used") && !text(&r.stdout).contains("built "), "{}", text(&r.stdout));
+    assert!(!t.0.join("target").join("release").exists(), "失敗したリリースは target/release を残さない");
+    // デバッグ: 今のとおり理由を出して退避し、終了コード 0。
+    let d = build(&[]);
+    assert_eq!(d.status.code(), Some(0), "{}{}", text(&d.stdout), text(&d.stderr));
+    assert!(text(&d.stdout).contains("native backend skipped: t.main を KIR に下ろせない") && text(&d.stdout).contains("the interpreter bundle is used"), "{}", text(&d.stdout));
+    assert!(t.0.join("target").join("debug").join("t").exists(), "デバッグはバンドルの起動スクリプトを作る");
+    // リリースでも `--allow-bundle` を付ければ退避する (理由を出し、終了コード 0)。
+    let a = build(&["--release", "--allow-bundle"]);
+    assert_eq!(a.status.code(), Some(0), "{}{}", text(&a.stdout), text(&a.stderr));
+    assert!(text(&a.stdout).contains("native backend skipped: t.main を KIR に下ろせない") && text(&a.stdout).contains("the interpreter bundle is used"), "{}", text(&a.stdout));
+    assert!(t.0.join("target").join("release").join("t").exists(), "--allow-bundle はリリースのバンドルを作る");
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// 3-2: clang が無いときも、リリースは退避せず E9040 で止まる (デバッグは理由を出して退避する)。
+#[test]
+fn release_build_without_clang_fails_instead_of_bundling() {
+    let t = Tmp::new("release_no_clang", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"ok\")\nend t.main\n");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_release_no_clang", std::process::id()));
+    let build = |extra: &[&str]| {
+        let mut args = vec!["build"];
+        args.extend_from_slice(extra);
+        Command::new(exe())
+            .args(&args)
+            .current_dir(&t.0)
+            .env("KSN_CACHE_DIR", &cache)
+            .env("KSN_CLANG", "/nonexistent/ksn-test-no-clang")
+            .output()
+            .unwrap()
+    };
+    let r = build(&["--release"]);
+    let err = text(&r.stderr);
+    assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), err);
+    assert!(err.contains("E9040") && err.contains("clang を起動できない") && err.contains("--allow-bundle"), "{}", err);
+    assert!(!t.0.join("target").join("release").exists(), "失敗したリリースは target/release を残さない");
+    let d = build(&[]);
+    assert_eq!(d.status.code(), Some(0), "{}{}", text(&d.stdout), text(&d.stderr));
+    assert!(text(&d.stdout).contains("native backend skipped: clang を起動できない") && text(&d.stdout).contains("the interpreter bundle is used"), "{}", text(&d.stdout));
+    let _ = fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -23360,4 +23594,99 @@ fn kir_copy_elem_fields_match_tree_walker() {
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
     }
+}
+
+/// `derive [TryClone]` (トレイト `alloc.alloc.TryClone`): derive した型を `Vec` に入れて `try_clone` し、
+/// `T: alloc.alloc.TryClone` のジェネリック関数経由でも複製できる。`run` と `build` (LLVM → 下ろせなければバンドル) の出力が一致する。
+#[test]
+fn derive_try_clone_runs_and_builds_alike() {
+    let src = "type t.P derive [Debug, Clone, Copy, TryClone] pub\n    x: u32\n    y: u32\nend t.P\n\nenum t.E derive [TryClone] pub\n    A(u32)\n    B(t.P)\nend t.E\n\ntype t.W derive [TryClone] pub\n    p: t.P\n    n: u32\nend t.W\n\nfn t.dup[T: alloc.alloc.TryClone](v: &T) -> Result<T, alloc.alloc.AllocError> uses [alloc] panics never\n    v.try_clone()\nend t.dup\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let w = t.W { p: t.P { x: 1u32, y: 2u32 }, n: 3u32 }\n    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    match v.push(w) {\n        Ok(_u) => 0u8\n        Err(_e) => 1u8\n    }\n    match t.dup(&v) {\n        Ok(c) => {\n            core.check.eq(c.len(), 1usize)\n            std.io.print_line(\"ok\")\n        }\n        Err(_e) => std.io.print_line(\"err\")\n    }\n    match v.try_clone() {\n        Ok(c) => core.check.eq(c.len(), 1usize)\n        Err(_e) => core.check.eq(1u8, 2u8)\n    }\n    match t.dup(&t.E.B(t.P { x: 1u32, y: 2u32 })) {\n        Ok(_c) => std.io.print_line(\"e ok\")\n        Err(_e) => std.io.print_line(\"err\")\n    }\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("derive_try_clone_ok", src);
+    let chk = run(&["check"], &t.0);
+    assert_eq!(chk.status.code(), Some(0), "{}{}", text(&chk.stdout), text(&chk.stderr));
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    assert_eq!(text(&interp.stdout), "ok\ne ok\n");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_tryclone_{}", std::process::id()));
+    let mut c = Command::new(exe());
+    c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+    let o = c.output().unwrap();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = native_or_launcher(p, &out);
+    let r = Command::new(&p).output().unwrap();
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), text(&interp.stdout), "build and run outputs differ");
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// `derive [TryClone]` は全フィールドが `TryClone` のときだけ (E2036)。`T: TryClone` の境界を満たさない型は E2030。
+#[test]
+fn derive_try_clone_on_non_try_clone_field_is_e2036() {
+    let t = Tmp::new("derive_try_clone_bad", "type t.N pub\n    x: u32\nend t.N\n\ntype t.W derive [TryClone] pub\n    n: t.N\nend t.W\n\nfn t.dup[T: alloc.alloc.TryClone](v: &T) -> Result<T, alloc.alloc.AllocError> uses [alloc] panics never\n    v.try_clone()\nend t.dup\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let n = t.N { x: 1u32 }\n    match t.dup(&n) {\n        Ok(_c) => std.io.print_line(\"e ok\")\n        Err(_e) => std.io.print_line(\"err\")\n    }\n    Ok(())\nend t.main\n");
+    let o = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(o.contains("E2036"), "{}", o);
+    assert!(o.contains("E2030"), "{}", o);
+}
+
+/// `Fn*` 境界の効果実引数の省略 (4.3): 省略した `E` / `P` は関数の暗黙の効果変数・panic 変数で、
+/// 渡したクロージャの効果が呼び出し側に伝わる。
+const ELIDE_AP: &str = "fn t.ap[F: core.ops.Fn<(usize,), u8>](f: F) -> u8 uses [] panics never\n    f.call((0,))\nend t.ap\n\n";
+
+fn elide_main(uses: &str, panics: &str, body: &str) -> String {
+    format!(
+        "{}fn t.boom() -> u8 uses [] panics may\n    core.panic.panic(\"x\")\nend t.boom\n\nfn t.main() -> Result<(), std.io.Error> uses [{}] panics {}\n    core.mem.drop(t.ap(fn(i: usize) -> u8 capture [] {{\n{}\n    }}))\n    Ok(())\nend t.main\n",
+        ELIDE_AP, uses, panics, body
+    )
+}
+
+#[test]
+fn elided_fn_effects_carry_the_closure_effect_to_the_caller() {
+    let leak = "        core.mem.drop(std.io.print_line(\"x\"))\n        7";
+    let t = Tmp::new("elide_leak", &elide_main("", "never", leak));
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
+    assert!(text(&o.stderr).contains("E4001") || text(&o.stdout).contains("E4001"), "{}{}", text(&o.stdout), text(&o.stderr));
+    let t = Tmp::new("elide_ok", &elide_main("io.console", "never", leak));
+    for args in [&["check"][..], &["run"][..], &["fmt", "--check"][..]] {
+        let o = run(args, &t.0);
+        assert_eq!(o.status.code(), Some(0), "{:?}: {}{}", args, text(&o.stdout), text(&o.stderr));
+    }
+    let o = run(&["run"], &t.0);
+    assert_eq!(text(&o.stdout).trim(), "x");
+    let o = run(&["test", "--both"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let o = run(&["build"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn elided_fn_panic_reaches_a_panics_never_caller() {
+    let t = Tmp::new("elide_panic", &elide_main("", "never", "        t.boom()"));
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("E4002") || text(&o.stdout).contains("E4002"), "{}{}", text(&o.stdout), text(&o.stderr));
+    let t = Tmp::new("elide_panic_ok", &elide_main("", "may", "        t.boom()"));
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let t = Tmp::new("elide_pure_ok", &elide_main("", "never", "        3"));
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn ambiguous_elided_fn_effects_must_be_written_out() {
+    let two = "fn t.two[F: core.ops.Fn<(), u8>, G: core.ops.Fn<(), u8>](f: F, g: G) -> u8 uses [] panics never\n    g.call(())\nend t.two\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("elide_two", two);
+    let o = run(&["check"], &t.0);
+    assert!(format!("{}{}", text(&o.stdout), text(&o.stderr)).contains("omits its effect arguments"), "{}{}", text(&o.stdout), text(&o.stderr));
+    let var = two.replace("F: core.ops.Fn<(), u8>, G: core.ops.Fn<(), u8>", "F: core.ops.Fn<(), u8>, G: core.ops.Fn<(), u8, [], never>");
+    let var = var.replace("uses [] panics never\n    g", "uses [] panics never\n    g");
+    let t = Tmp::new("elide_one_explicit", &var);
+    let o = run(&["check"], &t.0);
+    assert!(!format!("{}{}", text(&o.stdout), text(&o.stderr)).contains("omits its effect arguments"), "{}{}", text(&o.stdout), text(&o.stderr));
+    let half = two.replace("G: core.ops.Fn<(), u8>", "G: core.ops.Fn<(), u8, []>");
+    let t = Tmp::new("elide_half", &half);
+    let o = run(&["check"], &t.0);
+    assert!(format!("{}{}", text(&o.stdout), text(&o.stderr)).contains("both the effect and the panic argument"), "{}{}", text(&o.stdout), text(&o.stderr));
 }

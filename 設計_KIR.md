@@ -1557,6 +1557,16 @@ noop の VM だけを 60 回ずつ交互に測ると、壁時計の中央値は 
 - 試験: `kir_chan_aggregate_elements_match_tree_walker` (`String` を生産者のスレッドから・`Vec` を同じスレッドで・構造体をループで送受信、40 個送って 1 つだけ受け取って落とす、受信側を落とした後の `send` が `String` を返す。`ksn run` / `--run` / `--native` / ASan が一致、漏れ・二重解放なし)、`kir_read_only_field_method_in_short_circuit_rhs_does_not_write_back`。
 - `examples/shortener`: `ksn build --backend llvm` が作れ、`ksn run` と stdout・stderr・終了コードが一致する (`llvm_builds_of_real_packages_match_run` に追加)。`ksn test --both` も 35 件すべて `(both: llvm)` で通る (ワーカープールのループバック試験を含む)。
 
+### 22.7 実スレッド (pthread、kir/pthread、2026-11-14)
+LLVM のネイティブでは、`spawn` は pthread の実スレッド、チャネルと `static` の `Mutex` は実際の相互排他になる。参照実行器・VM (`ksn kir --run`、`--engine=vm`) は従来の協調実行のまま (表は 1024 本まで)。
+- KIR は同じ。実行器の本体を持つ補助の関数 `ksn.thr.{new,ent,start,release,join,lock,unlock,wait,minit,mlock,munlock}` を `spawn` / `join` / チャネル / `Mutex.lock` の下ろしが呼ぶ。LLVM (`kir_llvm.rs` の `thread_override`) は、この名前の関数の本体を pthread のものに差し替える。`kir_opt` はこの接頭辞の関数をインライン展開しない。
+- 項目 (256 バイト以内) は `calloc` した領域で、ハンドルの `native` はその番地。`start` が 16 MiB のスタックで `pthread_create` (`+16` に `pthread_t`)、`join` が `pthread_join`、結果を読んだ後に `release` が `free`。表の上限はない。
+- チャネルは大域の 1 つの mutex + 条件変数。`send` / `recv` / `clone` / 端の drop / `close` が `lock` … `unlock` で囲む (`unlock` は世代を進めて全員を起こす)。空の `recv` は `wait`。要素の解放 (`drop_value`) はロックの外で行う。
+- 木走査の deadlock の panic (終了コード 101、同じ文言) は、生きているスレッド数 `live` と待っている数 `blocked` が等しくなったとき `wait` が出す。join 待ちは数えないので、join 先が空の recv で永久に待つ形は検出できない (止まる)。
+- `static` の `Mutex` は 80 バイト (`+16` に再帰 mutex)。初期化は大域のロックの下、`lock()` で mutex を取り、ガードはスコープの終わりの所有物 (`Owned::Unlock`) として外す。
+- `@ksn.depth` は thread_local、`kir_rt.c` の浮動小数の書式の作業領域は `_Thread_local`。リンクは `-pthread`。`malloc` はスレッド安全。残り: `sysrt.c` の `dlsym` の表は未保護。
+- 出力が順序に依存する試験 (`t.order_print`、`t.two_producers_order`) は実スレッドで決まらないので、参照実行器だけで比べる。ping_pong は、ネイティブで往復が進んで終わる (終了コード 0)。試験: `kir_native_threads_are_real_pthreads` (300 本・Mutex の競合・2 生産者 1 消費者を 5 回繰り返す)。
+
 ## 23. 文字列の残りの下ろし (kir/str-rest、2026-11-13)
 
 `ksn test --both` で LLVM に下ろせずに木走査へ退避していた件を下ろした。examples の `(both: llvm)` は 43/62 → 52/62 (`json` 1→4、`shortener` 20→26、ほかは変わらず)。

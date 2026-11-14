@@ -25,7 +25,7 @@ use super::{coll, Lw, LR};
 /// 表の大域領域の名前。
 pub(super) const TABLE: &str = "ksn.thr";
 /// 表の項目の数 (満杯なら spawn が panic)。
-const CAP: u32 = 32;
+const CAP: u32 = 1024;
 /// 項目の取り込み値の領域・結果の領域の大きさ (バイト)。
 const CAPB: u32 = 64;
 const RESB: u32 = 64;
@@ -35,11 +35,32 @@ const HDR: u32 = 24;
 const ESZ: u32 = HDR + CAPB + RESB;
 /// 表の大きさ (`count` の 8 バイトを含む)。
 const TOTAL: u32 = 8 + CAP * ESZ;
+/// kir_llvm.rs の `THREAD_ENTRY_SIZE` (256) に収まる。
+const _: () = assert!(ESZ <= 256);
 
 const SITE: &str = "ksn.thr.site.";
 pub(super) const RUN_ONE: &str = "ksn.thr.run_one";
 const EXEC: &str = "ksn.thr.exec";
 pub(super) const JOIN: &str = "ksn.thr.join";
+/// 実行器 (参照実行器・VM) では協調実行の本体を持ち、LLVM (`kir_llvm.rs` の `thread_override`) では pthread の本体に差し替える補助の関数。
+/// 名前は `kir_llvm.rs` と対応している。インライン展開しない (`kir_opt.rs`)。
+pub(super) const TNEW: &str = "ksn.thr.new";
+pub(super) const TENT: &str = "ksn.thr.ent";
+pub(super) const TSTART: &str = "ksn.thr.start";
+pub(super) const TREL: &str = "ksn.thr.release";
+pub(super) const LOCK: &str = "ksn.thr.lock";
+pub(super) const UNLOCK: &str = "ksn.thr.unlock";
+pub(super) const WAIT: &str = "ksn.thr.wait";
+/// `static` の `Mutex` の再帰 mutex (番地を取る): 初期化・取得・解放。
+pub(super) const MINIT: &str = "ksn.thr.minit";
+pub(super) const MLOCK: &str = "ksn.thr.mlock";
+pub(super) const MUNLOCK: &str = "ksn.thr.munlock";
+
+/// 補助の関数 `name(args)` の呼び出し (戻り値の型 `ret`)。
+pub(super) fn rt_call(lw: &mut Lw, name: &str, args: Vec<VId>, ret: Ty) -> VId {
+    lw.callees.insert(name.to_string());
+    lw.emit(ret, Op::Call { callee: name.to_string(), args })
+}
 
 /// 鍵の FNV-1a (入口を選ぶ tag)。
 fn tag_of(key: &str) -> u64 {
@@ -55,18 +76,14 @@ fn align8(n: u32) -> u32 {
     (n + 7) / 8 * 8
 }
 
-/// 表の大域領域の先頭。
-pub(super) fn table(lw: &mut Lw) -> VId {
-    lw.emit(Ty::Ptr, Op::GlobalBytes { name: TABLE.to_string(), size: TOTAL })
-}
-
-/// 項目 `idx` (usize の値) の番地 + `extra` バイト。
-fn entry_at(lw: &mut Lw, g: VId, idx: VId, extra: u32) -> VId {
-    let esz = lw.emit(Ty::Usize, Op::Const(ESZ as i128));
-    let o = lw.emit(Ty::Usize, Op::Arith { op: crate::kir::Aop::Mul, mode: crate::kir::Mode::Wrap, a: idx, b: esz });
-    let base = lw.emit(Ty::Usize, Op::Const(8 + extra as i128));
-    let o = lw.emit(Ty::Usize, Op::Arith { op: crate::kir::Aop::Add, mode: crate::kir::Mode::Wrap, a: o, b: base });
-    lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off: o })
+/// 項目 `idx` (usize の値。協調実行では表の番号、LLVM では項目の番地) の番地 + `extra` バイト。
+fn entry_at(lw: &mut Lw, idx: VId, extra: u32) -> VId {
+    let ent = rt_call(lw, TENT, vec![idx], Ty::Ptr);
+    if extra == 0 {
+        return ent;
+    }
+    let o = lw.emit(Ty::Usize, Op::Const(extra as i128));
+    lw.emit(Ty::Ptr, Op::PtrAdd { p: ent, off: o })
 }
 
 /// 番地 `p` を `&mut t` として見る。
@@ -149,19 +166,9 @@ pub(super) fn spawn_call(lw: &mut Lw, _e: &V, segs: &[String], args: &[V], line:
         Some(t) => t,
         None => return Some(lw.err(line, "std.thread.SpawnError は段階 1 の対象外")),
     };
-    let g = table(lw);
-    let idx = lw.emit(Ty::Usize, Op::MemLoad { p: g, off: 0 });
-    let cap = lw.emit(Ty::Usize, Op::Const(CAP as i128));
-    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: idx, b: cap });
-    let (bad, _) = lw.new_block(&[]);
-    let (good, _) = lw.new_block(&[]);
-    lw.branch(full, (bad, vec![]), (good, vec![]));
-    lw.cur = Some(bad);
-    lw.emit(Ty::Unit, Op::Panic { msg: format!("thread table full (at most {} threads can be spawned in the KIR backend)", CAP), arg: None });
-    lw.terminate(Term::Unreachable);
-    lw.cur = Some(good);
+    let idx = rt_call(lw, TNEW, vec![], Ty::Usize);
     let tag = lw.emit(Ty::U64, Op::Const(tag_of(&key) as i128));
-    let ent = entry_at(lw, g, idx, 0);
+    let ent = entry_at(lw, idx, 0);
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U64, p: ent, off: 8, v: tag });
     for (v, off) in cap_vals.iter().zip(offs.iter()) {
         let t = lw.vty(*v);
@@ -170,9 +177,7 @@ pub(super) fn spawn_call(lw: &mut Lw, _e: &V, segs: &[String], args: &[V], line:
         let r = ref_at(lw, addr, t).expect("上で確かめた");
         lw.emit(Ty::Unit, Op::Store { ptr: r, val: *v });
     }
-    let one = lw.emit(Ty::Usize, Op::Const(1));
-    let next = lw.emit(Ty::Usize, Op::Arith { op: crate::kir::Aop::Add, mode: crate::kir::Mode::Wrap, a: idx, b: one });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: g, off: 0, v: next });
+    rt_call(lw, TSTART, vec![idx], Ty::Unit);
 
     // アロケータの値は KIR では使わない。`std.alloc.System` は `{ id: u8 }` のゼロ埋めを代用する。
     let result_ty = Ty::Res(Pay::of(hty).expect("JoinHandle がペイロードになれない"), Pay::of(spawnerr_ty).expect("SpawnError がペイロードになれない"));
@@ -235,17 +240,20 @@ pub(super) fn join_call(lw: &mut Lw, _e: &V, recv: VId, recv_ty: Ty, line: usize
     lw.callees.insert(JOIN.to_string());
     lw.emit(Ty::Unit, Op::Call { callee: JOIN.to_string(), args: vec![id] });
     if ret == Ty::Unit {
+        rt_call(lw, TREL, vec![id], Ty::Unit);
         return Some(Ok(Some(lw.unit())));
     }
-    let g = table(lw);
-    let addr = entry_at(lw, g, id, HDR + CAPB);
+    let addr = entry_at(lw, id, HDR + CAPB);
     let Some(r) = ref_at(lw, addr, ret) else { return Some(lw.err(line, "join の結果の型は領域に置けない")) };
-    Some(Ok(Some(lw.emit(ret, Op::Load(r)))))
+    let v = lw.emit(ret, Op::Load(r));
+    rt_call(lw, TREL, vec![id], Ty::Unit);
+    Some(Ok(Some(v)))
 }
 
 /// 全関数を下ろした後に、補助の関数 (`exec` / `run_one` / `join`) を作って足す。どれも呼ばれていなければ何もしない。
 pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
-    if !ok.iter().any(|(_, cs)| cs.contains(JOIN) || cs.contains(RUN_ONE)) {
+    let wanted = |n: &str| n == JOIN || n == RUN_ONE || n == WAIT || n == TNEW || n == TENT || n == TSTART || n == TREL || n == LOCK || n == UNLOCK || n == MINIT || n == MLOCK || n == MUNLOCK;
+    if !ok.iter().any(|(_, cs)| cs.iter().any(|c| wanted(c))) {
         return;
     }
     let mut sites: Vec<String> = ok.iter().filter_map(|(f, _)| f.key.strip_prefix(SITE).map(String::from)).collect();
@@ -260,12 +268,7 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
     // exec(i): tag で入口を選ぶ。
     {
         let mut b = Fb::new(&[Ty::Usize]);
-        let g = b.emit(Ty::Ptr, Op::GlobalBytes { name: TABLE.to_string(), size: TOTAL });
-        let esz = b.c(Ty::Usize, ESZ as i128);
-        let o = b.mul(0, esz);
-        let base = b.c(Ty::Usize, 8);
-        let o = b.add(o, base);
-        let ent = b.padd(g, o);
+        let ent = b.emit(Ty::Ptr, Op::Call { callee: TENT.to_string(), args: vec![0] });
         let tag = b.load(Ty::U64, ent, 8);
         for k in &sites {
             let want = b.c(Ty::U64, tag_of(k) as i128);
@@ -281,7 +284,8 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
         }
         b.emit(Ty::Unit, Op::Panic { msg: "unknown thread entry".into(), arg: None });
         b.term(Term::Unreachable);
-        let callees: BTreeSet<String> = sites.iter().map(|k| format!("{}{}", SITE, k)).collect();
+        let mut callees: BTreeSet<String> = sites.iter().map(|k| format!("{}{}", SITE, k)).collect();
+        callees.insert(TENT.to_string());
         ok.push((mk(b.build(EXEC, &[], Ty::Unit)), callees));
     }
     // run_one(): 保留の最初の 1 本を最後まで走らせて true。無ければ false。
@@ -329,12 +333,7 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
     // join(id): 完了まで待つ。
     {
         let mut b = Fb::new(&[Ty::Usize]);
-        let g = b.emit(Ty::Ptr, Op::GlobalBytes { name: TABLE.to_string(), size: TOTAL });
-        let esz = b.c(Ty::Usize, ESZ as i128);
-        let o = b.mul(0, esz);
-        let base = b.c(Ty::Usize, 8);
-        let o = b.add(o, base);
-        let ent = b.padd(g, o);
+        let ent = b.emit(Ty::Ptr, Op::Call { callee: TENT.to_string(), args: vec![0] });
         let (lp, _) = b.block(&[]);
         b.goto(lp, vec![]);
         b.at(lp);
@@ -362,6 +361,62 @@ pub(super) fn finish(ok: &mut Vec<(Func, BTreeSet<String>)>) {
         b.at(dead);
         b.emit(Ty::Unit, Op::Panic { msg: crate::interp::DEADLOCK_JOIN.to_string(), arg: None });
         b.term(Term::Unreachable);
-        ok.push((mk(b.build(JOIN, &[], Ty::Unit)), BTreeSet::from([RUN_ONE.to_string()])));
+        ok.push((mk(b.build(JOIN, &[], Ty::Unit)), BTreeSet::from([RUN_ONE.to_string(), TENT.to_string()])));
+    }
+    // 補助の関数 (協調実行の本体。LLVM は pthread の本体に差し替える。kir_llvm.rs の `thread_override`)。
+    let none = || BTreeSet::new();
+    // new(): 表の次の項目の番号。満杯なら panic。
+    {
+        let mut b = Fb::new(&[]);
+        let g = b.emit(Ty::Ptr, Op::GlobalBytes { name: TABLE.to_string(), size: TOTAL });
+        let idx = b.load(Ty::Usize, g, 0);
+        let cap = b.c(Ty::Usize, CAP as i128);
+        let full = b.cmp(Cc::Ge, idx, cap);
+        let (bad, _) = b.block(&[]);
+        let (good, _) = b.block(&[]);
+        b.br_if(full, bad, good);
+        b.at(bad);
+        b.emit(Ty::Unit, Op::Panic { msg: format!("thread table full (at most {} threads can be spawned in the KIR interpreters; native code has no limit)", CAP), arg: None });
+        b.term(Term::Unreachable);
+        b.at(good);
+        let one = b.c(Ty::Usize, 1);
+        let next = b.add(idx, one);
+        b.store(Ty::Usize, g, 0, next);
+        b.term(Term::Ret(idx));
+        ok.push((mk(b.build(TNEW, &[], Ty::Usize)), none()));
+    }
+    // ent(i): 項目の番地。
+    {
+        let mut b = Fb::new(&[Ty::Usize]);
+        let g = b.emit(Ty::Ptr, Op::GlobalBytes { name: TABLE.to_string(), size: TOTAL });
+        let esz = b.c(Ty::Usize, ESZ as i128);
+        let o = b.mul(0, esz);
+        let base = b.c(Ty::Usize, 8);
+        let o = b.add(o, base);
+        let ent = b.padd(g, o);
+        b.term(Term::Ret(ent));
+        ok.push((mk(b.build(TENT, &[], Ty::Ptr)), none()));
+    }
+    // start(i) / release(i) / lock() / unlock(): 協調実行では何もしない。
+    for (name, params) in [(TSTART, vec![Ty::Usize]), (TREL, vec![Ty::Usize]), (LOCK, vec![]), (UNLOCK, vec![]), (MINIT, vec![Ty::Ptr]), (MLOCK, vec![Ty::Ptr]), (MUNLOCK, vec![Ty::Ptr])] {
+        let mut b = Fb::new(&params);
+        let u = b.emit(Ty::Unit, Op::Const(0));
+        b.term(Term::Ret(u));
+        ok.push((mk(b.build(name, &[], Ty::Unit)), none()));
+    }
+    // wait(): 空の recv の待ち。保留中のスレッドを 1 本走らせる。走らせるものが無ければ deadlock の panic。
+    {
+        let mut b = Fb::new(&[]);
+        let r = b.emit(Ty::Bool, Op::Call { callee: RUN_ONE.to_string(), args: vec![] });
+        let (yes, _) = b.block(&[]);
+        let (dead, _) = b.block(&[]);
+        b.br_if(r, yes, dead);
+        b.at(yes);
+        let u = b.emit(Ty::Unit, Op::Const(0));
+        b.term(Term::Ret(u));
+        b.at(dead);
+        b.emit(Ty::Unit, Op::Panic { msg: crate::interp::DEADLOCK_RECV.to_string(), arg: None });
+        b.term(Term::Unreachable);
+        ok.push((mk(b.build(WAIT, &[], Ty::Unit)), BTreeSet::from([RUN_ONE.to_string()])));
     }
 }

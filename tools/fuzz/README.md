@@ -54,3 +54,22 @@ python -I tools/fuzz/fuzz.py \
 - 比べる相手は 5 つ: 木走査・参照実行器・`--opt` の参照実行器・機械語・ASan。
 - 目安 (`--seed 2 --count 400`): 400 本すべてが KIR に下ろせ、32 本が panic で終わり、食い違いは 0。
 - KIR が未対応のため使っていないもの: `u64.try_from_i64` などの `try_from_*`、`derive [Clone]` の `clone`、浮動小数。
+
+## 借用・ライフタイムの穴探し (`fuzz_borrow.py` / `gen_borrow.py`)
+
+検査器の健全性 (修正プラン 1-5) を探す。差分実行ではなく、生成時に付けたラベルと `ksn check` の判定を照合する。
+
+```sh
+python -I tools/fuzz/fuzz_borrow.py --ksn stage0/target/release/ksn --seed 1 --count 2000 --jobs 8
+FZB_MSG=1 ...   # 診断コードにメッセージ (90 字) を付ける
+```
+
+- 借用の元 (`as_str` / u32 / String の参照 / `&mut u32`) × 包み方 (そのまま・恒等関数・再借用・`fst`/`snd`・`if`・`let`) ×
+  出口 (代入・ブロックの値・フィールド・構造体・Option・タプル・Vec の push・`&mut` 引数・メソッドのセッタ・
+  クロージャの取り込み・ヘッダ付き戻り値) × 元が内側 / 外側、に加えて借用中の変更・move・代入の形を生成する。
+- `bad` (不健全) なのに診断 0 件 → `hole`。`ok` なのに診断が出る → `false_pos`。`false_pos` の診断コードが
+  E0xxx / E1xxx / E2xxx なら生成器の誤りなので、まず `FZB_MSG=1` で確かめる。
+- 出力: `--out` (既定 `tools/fuzz/found_borrow/`、gitignore) に形ごと 1 本。穴は手で最小化し、
+  `stage0/tests/data/unsound/` に `// expect:` 付きで足し、`stage0/tests/cli.rs` の `KNOWN_HOLES` へ載せる。
+- タグの `A1` / `A2` は修正プランの既知の穴 (ヘッダ照合・セッタ)。新しい穴の判定からは除く。
+- 並列度は 8 まで。
