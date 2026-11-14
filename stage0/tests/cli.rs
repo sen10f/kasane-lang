@@ -11889,33 +11889,32 @@ end t.f
 }
 
 #[test]
-fn vec_and_string_have_no_comparison_traits() {
-    // 4.2 の表どおり Vec / String は比較のトレイトを持たない (sig にも impl が無い)。
-    // メソッド形 (`eq` `cmp` `partial_cmp`) と演算子 (`==` `<`) はどちらも E1108。
+fn vec_has_no_comparison_traits_but_string_has() {
+    // 4.2 の表どおり Vec は比較のトレイトを持たない (sig にも impl が無い)。
+    // メソッド形 (`eq` `cmp`) はどちらも E1108。String は `string.sig` の `impl` で比較できる (2026-11-14 の決定)。
     let bad = "fn t.v(a: &alloc.vec.Vec<u8, std.alloc.System>, b: &alloc.vec.Vec<u8, std.alloc.System>) -> bool uses [] panics never
     a.eq(b)
 end t.v
-
-fn t.s(a: alloc.string.String<std.alloc.System>, b: alloc.string.String<std.alloc.System>) -> bool uses [] panics never
-    a == b
-end t.s
 
 fn t.c(a: &alloc.vec.Vec<u8, std.alloc.System>, b: &alloc.vec.Vec<u8, std.alloc.System>) -> bool uses [] panics never
     a.cmp(b) == core.cmp.Ordering.Equal
 end t.c
 
-fn t.p(a: &alloc.string.String<std.alloc.System>, b: &alloc.string.String<std.alloc.System>) -> bool uses [] panics never
-    a.partial_cmp(b).is_some()
-end t.p
-
 ";
-    let t = Tmp::new("vec_string_cmp_bad", &main_wrap(bad, ""));
+    let t = Tmp::new("vec_cmp_bad", &main_wrap(bad, ""));
     let out = text(&run(&["check", "--json"], &t.0).stdout);
     assert!(out.contains("unknown method `eq` on `alloc.vec.Vec`: the type does not implement `core.cmp.PartialEq`"), "{}", out);
-    assert!(out.contains("operator `==` on `alloc.string.String`: the type does not implement `core.cmp.PartialEq`"), "{}", out);
     assert!(out.contains("unknown method `cmp` on `alloc.vec.Vec`: the type does not implement `core.cmp.Ord`"), "{}", out);
-    assert!(out.contains("unknown method `partial_cmp` on `alloc.string.String`: the type does not implement `core.cmp.PartialOrd`"), "{}", out);
-    assert!(codes(&out).iter().filter(|c| *c == "E1108").count() >= 4, "{}", out);
+    assert!(codes(&out).iter().filter(|c| *c == "E1108").count() >= 2, "{}", out);
+    let good = "fn t.s(a: &alloc.string.String<std.alloc.System>, b: &alloc.string.String<std.alloc.System>) -> bool uses [] panics never
+    a == b && a.partial_cmp(b).is_some() && a.cmp(b) == core.cmp.Ordering.Equal
+end t.s
+
+";
+    let t = Tmp::new("string_cmp_ok", &main_wrap(good, ""));
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}", out);
 }
 
 #[test]
@@ -23360,4 +23359,80 @@ fn kir_copy_elem_fields_match_tree_walker() {
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
     }
+}
+
+/// 整形 API (`alloc.fmt`): `Spec` による幅・0 埋め・16 進、整数・文字列・`derive [Debug]` の型の追記、
+/// `String` の `==` と `Debug` / `Display`。`run` と `build` (LLVM) の出力が一致する。
+#[test]
+fn fmt_builder_runs_in_both() {
+    let prefix = r#"type t.P derive [Debug] pub
+    x: i32
+    y: i32
+end t.P
+
+fn t.fill(b: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let hex = alloc.fmt.Spec.new().with_radix(16u32).with_upper().with_width(6usize).with_fill('0')
+    let dec = alloc.fmt.Spec.new().with_width(5usize)
+    let lft = alloc.fmt.Spec.new().with_width(4usize).with_left().with_fill('.')
+    let p = t.P { x: 1i32, y: -2i32 }
+    alloc.fmt.write_u64(b, 48879u64, &hex)?
+    alloc.fmt.write_str(b, "|", &dec)?
+    alloc.fmt.write_i64(b, -42i64, &dec)?
+    alloc.fmt.write_i64(b, -42i64, &hex)?
+    alloc.fmt.write_str(b, "ab", &lft)?
+    alloc.fmt.debug(b, &p)?
+    alloc.fmt.write(b, &9i32)?
+    alloc.fmt.write(b, &true)?
+    Ok(())
+end t.fill
+
+"#;
+    let body = "    let mut b = alloc.string.String.new(std.alloc.SYSTEM)\n    let mut c = alloc.string.String.new(std.alloc.SYSTEM)\n    match t.fill(&mut b) {\n        Ok(_u) => ()\n        Err(_e) => ()\n    }\n    std.io.print_line(b.as_str())?\n    match c.push_display(&b) {\n        Ok(_u) => ()\n        Err(_e) => ()\n    }\n    if b == c {\n        std.io.print_line(\"same\")?\n    }\n    match c.push_debug(&b) {\n        Ok(_u) => ()\n        Err(_e) => ()\n    }\n    std.io.print_line(c.as_str())?\n";
+    let full = format!("{}fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n{}    Ok(())\nend t.main\n", prefix, body);
+    let t = Tmp::new("fmt_builder_both", &full);
+    let o = run(&["run"], &t.0);
+    let ran = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", ran, text(&o.stderr));
+    let expect = "00BEEF    |  -42-0002Aab..P { x: 1, y: -2 }9true\nsame\n00BEEF    |  -42-0002Aab..P { x: 1, y: -2 }9true\"00BEEF    |  -42-0002Aab..P { x: 1, y: -2 }9true\"\n";
+    assert_eq!(ran, expect);
+    let o = run(&["build"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("native executable:"), "{}", out);
+    let bin = t.0.join("target/debug/t.native");
+    let n = Command::new(&bin).output().expect("spawn native");
+    assert_eq!(text(&n.stdout), expect);
+}
+
+/// `String` の `==` / `!=` は `test --both` で LLVM と一致する。`<` / `cmp` は木走査で動き、LLVM は理由を出してバンドルへ退避する。
+#[test]
+fn string_eq_ord_run_and_native_eq() {
+    let eq = "test t.main.test_string_eq
+    let a = alloc.string.String.from_str(std.alloc.SYSTEM, \"abc\").unwrap()
+    let b = alloc.string.String.from_str(std.alloc.SYSTEM, \"abc\").unwrap()
+    let c = alloc.string.String.from_str(std.alloc.SYSTEM, \"abd\").unwrap()
+    core.check.is_true(a == b)
+    core.check.is_true(a != c)
+    core.check.is_true(!(a == c))
+end t.main.test_string_eq
+";
+    let src = format!("{}\n{}", main_wrap("", ""), eq);
+    let t = Tmp::new("string_eq_both", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_string_eq ... ok (both: llvm)"), "{}", out);
+    let ord = "test t.main.test_string_ord
+    let a = alloc.string.String.from_str(std.alloc.SYSTEM, \"abc\").unwrap()
+    let c = alloc.string.String.from_str(std.alloc.SYSTEM, \"abd\").unwrap()
+    core.check.is_true(a < c)
+    core.check.is_true(a.cmp(&c) == core.cmp.Ordering.Less)
+end t.main.test_string_ord
+";
+    let src = format!("{}\n{}", main_wrap("", ""), ord);
+    let t = Tmp::new("string_ord_both", &src);
+    let o = run(&["test", "--both"], &t.0);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(out.contains("test t.main.test_string_ord ... ok (both: bundle (llvm skipped: "), "{}", out);
 }

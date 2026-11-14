@@ -1,0 +1,175 @@
+type alloc.fmt.Spec derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    width: usize
+    fill: char
+    left: bool
+    radix: u32
+    upper: bool
+end alloc.fmt.Spec
+
+fn alloc.fmt.Spec.new() -> alloc.fmt.Spec const uses [] panics never pub
+    alloc.fmt.Spec { width: 0usize, fill: ' ', left: false, radix: 10u32, upper: false }
+end alloc.fmt.Spec.new
+
+fn alloc.fmt.Spec.with_fill(self: &alloc.fmt.Spec, c: char) -> alloc.fmt.Spec uses [] panics never pub
+    let mut spec = *self
+    spec.fill = c
+    spec
+end alloc.fmt.Spec.with_fill
+
+fn alloc.fmt.Spec.with_left(self: &alloc.fmt.Spec) -> alloc.fmt.Spec uses [] panics never pub
+    let mut spec = *self
+    spec.left = true
+    spec
+end alloc.fmt.Spec.with_left
+
+fn alloc.fmt.Spec.with_radix(self: &alloc.fmt.Spec, base: u32) -> alloc.fmt.Spec uses [] panics never pub
+    let mut spec = *self
+    spec.radix = base
+    spec
+end alloc.fmt.Spec.with_radix
+
+fn alloc.fmt.Spec.with_upper(self: &alloc.fmt.Spec) -> alloc.fmt.Spec uses [] panics never pub
+    let mut spec = *self
+    spec.upper = true
+    spec
+end alloc.fmt.Spec.with_upper
+
+fn alloc.fmt.Spec.with_width(self: &alloc.fmt.Spec, count: usize) -> alloc.fmt.Spec uses [] panics never pub
+    let mut spec = *self
+    spec.width = count
+    spec
+end alloc.fmt.Spec.with_width
+
+fn alloc.fmt.debug[A: alloc.alloc.Allocator, T: core.fmt.Debug](b: &mut alloc.string.String<A>, x: &T) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    b.push_debug(x)
+end alloc.fmt.debug
+
+fn alloc.fmt.digit(d: u64, upper: bool) -> char uses [] panics never
+    let n = u32.try_from_u64(d).unwrap_or(0u32)
+    let c = match n {
+        0u32 => '0'
+        1u32 => '1'
+        2u32 => '2'
+        3u32 => '3'
+        4u32 => '4'
+        5u32 => '5'
+        6u32 => '6'
+        7u32 => '7'
+        8u32 => '8'
+        9u32 => '9'
+        10u32 => 'a'
+        11u32 => 'b'
+        12u32 => 'c'
+        13u32 => 'd'
+        14u32 => 'e'
+        15u32 => 'f'
+        16u32 => 'g'
+        17u32 => 'h'
+        18u32 => 'i'
+        19u32 => 'j'
+        20u32 => 'k'
+        21u32 => 'l'
+        22u32 => 'm'
+        23u32 => 'n'
+        24u32 => 'o'
+        25u32 => 'p'
+        26u32 => 'q'
+        27u32 => 'r'
+        28u32 => 's'
+        29u32 => 't'
+        30u32 => 'u'
+        31u32 => 'v'
+        32u32 => 'w'
+        33u32 => 'x'
+        34u32 => 'y'
+        35u32 => 'z'
+        _ => '?'
+    }
+    if upper {
+        c.to_ascii_uppercase()
+    } else {
+        c
+    }
+end alloc.fmt.digit
+
+fn alloc.fmt.pad[A: alloc.alloc.Allocator](b: &mut alloc.string.String<A>, fill: char, count: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let mut i = 0usize
+    while i < count {
+        b.push(fill)?
+        i = i.wrapping_add(1usize)
+    }
+    Ok(())
+end alloc.fmt.pad
+
+fn alloc.fmt.write[A: alloc.alloc.Allocator, T: core.fmt.Display](b: &mut alloc.string.String<A>, x: &T) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    b.push_display(x)
+end alloc.fmt.write
+
+fn alloc.fmt.write_i64[A: alloc.alloc.Allocator](b: &mut alloc.string.String<A>, value: i64, spec: &alloc.fmt.Spec) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    if value < 0i64 {
+        let mut mag = 9223372036854775808u64
+        if value != core.num.i64.MIN {
+            mag = u64.try_from_i64(value.wrapping_neg()).unwrap_or(0u64)
+        }
+        alloc.fmt.write_mag(b, true, mag, spec)
+    } else {
+        alloc.fmt.write_mag(b, false, u64.try_from_i64(value).unwrap_or(0u64), spec)
+    }
+end alloc.fmt.write_i64
+
+fn alloc.fmt.write_mag[A: alloc.alloc.Allocator](b: &mut alloc.string.String<A>, neg: bool, mag: u64, spec: &alloc.fmt.Spec) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let radix = u64.from_u32(spec.radix)
+    let mut n = 1usize
+    let mut div = 1u64
+    while mag.checked_div(div).unwrap_or(0u64) >= radix {
+        div = div.wrapping_mul(radix)
+        n = n.wrapping_add(1usize)
+    }
+    let mut total = n
+    if neg {
+        total = n.wrapping_add(1usize)
+    }
+    let mut fill_n = 0usize
+    if spec.width > total {
+        fill_n = spec.width.wrapping_sub(total)
+    }
+    let zeros = spec.fill == '0' && !spec.left
+    if neg && zeros {
+        b.push('-')?
+    }
+    if !spec.left {
+        alloc.fmt.pad(b, spec.fill, fill_n)?
+    }
+    if neg && !zeros {
+        b.push('-')?
+    }
+    let mut rest = mag
+    while div > 0u64 {
+        b.push(alloc.fmt.digit(rest.checked_div(div).unwrap_or(0u64), spec.upper))?
+        rest = rest.checked_rem(div).unwrap_or(0u64)
+        div = div.checked_div(radix).unwrap_or(0u64)
+    }
+    if spec.left {
+        alloc.fmt.pad(b, spec.fill, fill_n)?
+    }
+    Ok(())
+end alloc.fmt.write_mag
+
+fn alloc.fmt.write_str[A: alloc.alloc.Allocator](b: &mut alloc.string.String<A>, text: &str, spec: &alloc.fmt.Spec) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut fill_n = 0usize
+    if spec.width > text.len() {
+        fill_n = spec.width.wrapping_sub(text.len())
+    }
+    if !spec.left {
+        alloc.fmt.pad(b, spec.fill, fill_n)?
+    }
+    b.push_str(text)?
+    if spec.left {
+        alloc.fmt.pad(b, spec.fill, fill_n)?
+    }
+    Ok(())
+end alloc.fmt.write_str
+
+fn alloc.fmt.write_u64[A: alloc.alloc.Allocator](b: &mut alloc.string.String<A>, value: u64, spec: &alloc.fmt.Spec) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    alloc.fmt.write_mag(b, false, value, spec)
+end alloc.fmt.write_u64

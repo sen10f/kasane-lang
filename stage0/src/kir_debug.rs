@@ -31,7 +31,11 @@ use super::show;
 
 /// 型 `name` の表示の関数の鍵。
 pub fn key(name: &str) -> String {
-    format!("{}.$debug", name)
+    if SINK_MODE.with(|c| c.get()) {
+        format!("{}.$debug.s", name)
+    } else {
+        format!("{}.$debug", name)
+    }
 }
 
 /// 関数の鍵に使う型の名前。KIR の文字は `(` を含められない (`call` の括弧の読みが最初の `(` で切れる) ので、タプルの `(` は `tup<` に直す。
@@ -55,15 +59,46 @@ struct Fb {
     fat: Ty,
     v: VId,
     w: VId,
+    /// 出力先が `String` のとき、その先頭の `{ptr, len, cap}` を指す引数 (最後の引数)。`None` なら stderr。
+    sink: Option<VId>,
 }
 
+thread_local! {
+    /// 表示の関数を作る向き: `true` なら `String` へ追記する版 (`<型>.$debug.s`。最後の引数が `String` の先頭への参照)。
+    static SINK_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `String` へバイト列を追記する関数の鍵 `(h, ptr, len)`。
+pub const APPEND: &str = "ksn.fmt.append";
+
 impl Fb {
+    /// 表示の関数用: `SINK_MODE` なら最後に `String` の参照の引数を足す。
+    fn new_d(params: &[Ty], fat: Ty) -> Fb {
+        if SINK_MODE.with(|c| c.get()) {
+            let mut ps = params.to_vec();
+            ps.push(Ty::Ptr);
+            let mut b = Fb::new(&ps, fat);
+            b.sink = Some(ps.len() as u32 - 1);
+            b
+        } else {
+            Fb::new(params, fat)
+        }
+    }
+
+    /// 呼び先へ渡す引数 (出力先が `String` なら最後に足す)。
+    fn sargs(&self, mut a: Vec<VId>) -> Vec<VId> {
+        if let Some(h) = self.sink {
+            a.push(h);
+        }
+        a
+    }
+
     fn new(params: &[Ty], fat: Ty) -> Fb {
         let ids: Vec<VId> = (0..params.len() as u32).collect();
         let ps = ids.iter().copied().zip(params.iter().copied()).collect();
         let v = ids.first().copied().unwrap_or(0);
         let w = ids.get(1).copied().unwrap_or(0);
-        Fb { blocks: vec![(ps, vec![], None)], n: params.len() as u32, cur: 0, fat, v, w }
+        Fb { blocks: vec![(ps, vec![], None)], n: params.len() as u32, cur: 0, fat, v, w, sink: None }
     }
 
     fn val(&mut self) -> VId {
@@ -109,6 +144,10 @@ impl Fb {
 
     /// stderr へ `{ptr, len}` を書く (`eprint`)。
     fn put(&mut self, ptr: VId, len: VId) {
+        if let Some(h) = self.sink {
+            self.emit(Ty::Unit, Op::Call { callee: APPEND.to_string(), args: vec![h, ptr, len] });
+            return;
+        }
         let fat = self.fat;
         let f = self.emit(fat, Op::Make { variant: None, fields: vec![ptr, len] });
         self.emit(Ty::Unit, Op::Eprint { data: f });
@@ -133,8 +172,8 @@ impl Fb {
         Func {
             fqn: key.to_string(),
             key: key.to_string(),
-            uses: vec![],
-            may_panic: may,
+            uses: if self.sink.is_some() || key == APPEND { vec!["alloc".to_string()] } else { vec![] },
+            may_panic: may && self.sink.is_none() && key != APPEND,
             stack: None,
             ret,
             link: None,
@@ -145,7 +184,7 @@ impl Fb {
 
 /// 10 進の整数 (128 ビットは対象外)。符号付きは `-` と大きさ (u64) に分け、桁を末尾から `buf` に置く。
 fn int_fn(t: Ty, fat: Ty) -> Func {
-    let mut b = Fb::new(&[t], fat);
+    let mut b = Fb::new_d(&[t], fat);
     let buf = b.emit(Ty::Ptr, Op::FrameBytes { size: 20 });
     let tmp = b.emit(Ty::Ptr, Op::FrameBytes { size: 8 });
     // i64 → u64 の再解釈 (値を保つ変換は無いので、同じ 8 バイトを書いて読み直す)
@@ -201,8 +240,62 @@ fn int_fn(t: Ty, fat: Ty) -> Func {
     b.finish(&key(&t.name()))
 }
 
+/// `&str` / `String` の中身をそのまま `String` へ書く (`Display`)。値の先頭 2 語が `{ptr, len}`。
+fn raw_fn(ty: Ty, fat: Ty, name: &str) -> Func {
+    let mut b = Fb::new_d(&[ty], fat);
+    let (p, l) = if ty == Ty::Ptr {
+        (b.emit(Ty::Ptr, Op::MemLoad { p: b.v, off: 0 }), b.emit(Ty::Usize, Op::MemLoad { p: b.v, off: 8 }))
+    } else {
+        (b.emit(Ty::Ptr, Op::Field { a: b.v, off: 0 }), b.emit(Ty::Usize, Op::Field { a: b.v, off: 8 }))
+    };
+    b.put(p, l);
+    b.finish(&key(name))
+}
+
+/// `ksn.fmt.append(h, ptr, len)`: 文字列 `h` (`{ptr, len, cap}`) の末尾へ `len` バイトを書く (足りなければ広げる)。
+fn append_fn(fat: Ty) -> Func {
+    let mut b = Fb::new(&[Ty::Ptr, Ty::Ptr, Ty::Usize], fat);
+    let (h, src, n) = (0 as VId, 1 as VId, 2 as VId);
+    let len = b.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+    let cap = b.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+    let need = b.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: n });
+    let full = b.cmp(Cc::Gt, Ty::Usize, need, cap);
+    let (grow, _) = b.block(&[]);
+    let (cont, _) = b.block(&[]);
+    b.br_if(full, grow, cont);
+    b.at(grow);
+    let old = b.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let newcap = b.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: need, b: need });
+    let np = b.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: newcap });
+    b.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
+    b.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: newcap });
+    b.goto(cont, vec![]);
+    b.at(cont);
+    let base = b.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let dst = b.emit(Ty::Ptr, Op::PtrAdd { p: base, off: len });
+    let z = b.c(Ty::Usize, 0);
+    let (lp, lv) = b.block(&[Ty::Usize]);
+    let (body, _) = b.block(&[]);
+    let (end, _) = b.block(&[]);
+    b.goto(lp, vec![z]);
+    b.at(lp);
+    let done = b.cmp(Cc::Ge, Ty::Usize, lv[0], n);
+    b.term(Term::BrIf(done, (end, vec![]), (body, vec![])));
+    b.at(body);
+    let sp = b.emit(Ty::Ptr, Op::PtrAdd { p: src, off: lv[0] });
+    let byte = b.emit(Ty::U8, Op::MemLoad { p: sp, off: 0 });
+    let dp = b.emit(Ty::Ptr, Op::PtrAdd { p: dst, off: lv[0] });
+    b.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: dp, off: 0, v: byte });
+    let one = b.c(Ty::Usize, 1);
+    let i1 = b.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: lv[0], b: one });
+    b.goto(lp, vec![i1]);
+    b.at(end);
+    b.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: need });
+    b.finish(APPEND)
+}
+
 fn bool_fn(fat: Ty) -> Func {
-    let mut b = Fb::new(&[Ty::Bool], fat);
+    let mut b = Fb::new_d(&[Ty::Bool], fat);
     let (t, _) = b.block(&[]);
     let (f, _) = b.block(&[]);
     let (j, _) = b.block(&[]);
@@ -238,7 +331,7 @@ fn hex_digit(b: &mut Fb, d: VId) {
 }
 
 fn char_fn(fat: Ty) -> Func {
-    let mut b = Fb::new(&[Ty::U32], fat);
+    let mut b = Fb::new_d(&[Ty::U32], fat);
     let c = b.v;
     let buf = b.emit(Ty::Ptr, Op::FrameBytes { size: 16 });
     b.s("'");
@@ -336,7 +429,7 @@ fn char_fn(fat: Ty) -> Func {
 }
 
 fn str_fn(fat: Ty) -> Func {
-    let mut b = Fb::new(&[fat], fat);
+    let mut b = Fb::new_d(&[fat], fat);
     b.s("\"");
     let ptr = b.emit(Ty::Ptr, Op::Field { a: b.v, off: 0 });
     let len = b.emit(Ty::Usize, Op::Field { a: b.v, off: 8 });
@@ -434,11 +527,39 @@ pub struct Gen<'a> {
     aggs: &'a RefCell<AggTab>,
     done: HashSet<String>,
     pub out: Vec<(Func, BTreeSet<String>)>,
+    /// `String` へ追記する版を作るか (`String.push_display` / `push_debug` の下ろし)。
+    sink: bool,
 }
 
 impl<'a> Gen<'a> {
     pub fn new(p: &'a Program, aggs: &'a RefCell<AggTab>) -> Gen<'a> {
-        Gen { p, aggs, done: HashSet::new(), out: vec![] }
+        SINK_MODE.with(|c| c.set(false));
+        Gen { p, aggs, done: HashSet::new(), out: vec![], sink: false }
+    }
+
+    /// `String` へ追記する版の表示の関数を作る生成 (鍵は `<型>.$debug.s`、最後の引数が `String` の先頭への参照)。
+    pub fn new_sink(p: &'a Program, aggs: &'a RefCell<AggTab>) -> Gen<'a> {
+        SINK_MODE.with(|c| c.set(true));
+        Gen { p, aggs, done: HashSet::new(), out: vec![], sink: true }
+    }
+
+    /// 型 `src` を `Display` で `String` へ書く関数 `(値, String の先頭への参照)` の鍵。
+    /// 整数・bool は `Debug` と同じ表示、`&str` / `String` はそのまま書く。それ以外 (`char` や利用者の `Display`) は未対応。
+    pub fn need_display(&mut self, src: &Src, ty: Ty, file: &str) -> Result<String, String> {
+        SINK_MODE.with(|c| c.set(self.sink));
+        let fat = self.fat()?;
+        let (src, ty) = Self::scalar_ref_src(src, ty);
+        match (src, ty) {
+            (Src::Prim(s), Ty::Bool) if s == "bool" => self.need(src, ty, file),
+            (Src::Prim(s), Ty::U32) if s == "char" => Err("char の Display の String への追記は未対応".to_string()),
+            (Src::Prim(_), t) if t.is_int() && t.bits() <= 64 => self.need(src, ty, file),
+            (_, t) if is_str(src, t, fat) => Ok(self.scalar("str.raw", || raw_fn(fat, fat, "str.raw"))),
+            (Src::Named(name, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || t == Ty::Ptr) => {
+                Ok(self.scalar("string.raw", || raw_fn(t, fat, "string.raw")))
+            }
+            (Src::Ref(_, inner), t) => self.need_display(inner, t, file),
+            (other, t) => Err(format!("型 {} ({}) の Display の String への追記は未対応", show(other), t.name())),
+        }
     }
 
     /// `eprint` の引数の型 (`fat`)。`std.io.Error` の表も入れる (LLVM の `write` の実体が要る)。
@@ -446,14 +567,24 @@ impl<'a> Gen<'a> {
         self.aggs.borrow_mut().stderr_fat(self.p)
     }
 
-    fn add(&mut self, f: Func, callees: BTreeSet<String>) {
+    fn add(&mut self, f: Func, mut callees: BTreeSet<String>) {
+        if self.sink {
+            callees.insert(APPEND.to_string());
+            if self.done.insert(APPEND.to_string()) {
+                let fat = self.fat().unwrap_or(Ty::Ptr);
+                self.out.push((append_fn(fat), BTreeSet::new()));
+            }
+        }
         self.out.push((f, callees));
     }
 
     fn scalar(&mut self, name: &str, f: impl FnOnce() -> Func) -> String {
         let k = key(name);
         if self.done.insert(k.clone()) {
-            self.add(f(), BTreeSet::new());
+            let mut func = f();
+            func.key = k.clone();
+            func.fqn = k.clone();
+            self.add(func, BTreeSet::new());
         }
         k
     }
@@ -472,6 +603,7 @@ impl<'a> Gen<'a> {
 
     /// 元の型 `src` (KIR の型 `ty`) の表示関数を (まだなければ) 作り、その鍵を返す。
     pub fn need(&mut self, src: &Src, ty: Ty, file: &str) -> Result<String, String> {
+        SINK_MODE.with(|c| c.set(self.sink));
         let fat = self.fat()?;
         // `&T` のソース型で、KIR の型が T のスカラーなら、T として扱う
         // (参照先を読んだ値。`Option<&u8>` のペイロードなど)。
@@ -481,7 +613,7 @@ impl<'a> Gen<'a> {
             (Src::Prim(s), Ty::U32) if s == "char" => Ok(self.scalar("char", || char_fn(fat))),
             (Src::Prim(_), t) if t.is_int() && t.bits() <= 64 => Ok(self.scalar(&t.name(), || int_fn(t, fat))),
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str", || str_fn(fat))),
-            (Src::Named(name, _), t) if name == "alloc.string.String" && matches!(t, Ty::Agg(_)) => Ok(self.string_debug(t, fat)),
+            (Src::Named(name, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || (self.sink && t == Ty::Ptr)) => Ok(self.string_debug(t, fat)),
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg(name, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, false),
             (Src::Slice(e) | Src::Array(e), t) if t == fat => self.slice_debug(e, file),
@@ -508,6 +640,8 @@ impl<'a> Gen<'a> {
             (_, t) if is_str(src, t, fat) || is_bytes(src, t, fat) => Ok(self.str_eq(fat, fat, "str")),
             // `String` の等しさ: 値は {ptr, len, cap} の `vec`。先頭の {ptr, len} だけを `&str` と同じ規則で比べる (設計_KIR.md 23 章)。
             (Src::Named(name, _), t) if name == "alloc.string.String" && matches!(t, Ty::Agg(_)) => Ok(self.str_eq(fat, t, "string")),
+            // 局所変数の `String` はヘッダの参照 (`ptr`) で渡る。
+            (Src::Named(name, _), Ty::Ptr) if name == "alloc.string.String" => Ok(self.str_eq(fat, Ty::Ptr, "string.ptr")),
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg_eq(name, i, file),
             (Src::Tuple(es), Ty::Agg(i)) => self.tuple_eq(es, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, true),
@@ -552,7 +686,7 @@ impl<'a> Gen<'a> {
             return Ok(k);
         }
         let ek = self.need(e, et, file)?;
-        let mut b = Fb::new(&[fat], fat);
+        let mut b = Fb::new_d(&[fat], fat);
         let ptr = b.emit(Ty::Ptr, Op::Field { a: b.v, off: 0 });
         let len = b.emit(Ty::Usize, Op::Field { a: b.v, off: 8 });
         b.s("[");
@@ -578,7 +712,8 @@ impl<'a> Gen<'a> {
         let off = b.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: lv[0], b: sz });
         let p = b.emit(Ty::Ptr, Op::PtrAdd { p: ptr, off });
         let x = b.emit(et, Op::MemLoad { p, off: 0 });
-        b.emit(Ty::Unit, Op::Call { callee: ek.clone(), args: vec![x] });
+        let a = b.sargs(vec![x]);
+        b.emit(Ty::Unit, Op::Call { callee: ek.clone(), args: a });
         let one = b.c(Ty::Usize, 1);
         let i1 = b.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: lv[0], b: one });
         b.goto(lp, vec![i1]);
@@ -597,11 +732,15 @@ impl<'a> Gen<'a> {
             return k;
         }
         let sk = self.scalar("str", || str_fn(fat));
-        let mut b = Fb::new(&[ty], fat);
-        let p = b.emit(Ty::Ptr, Op::Field { a: b.v, off: 0 });
-        let l = b.emit(Ty::Usize, Op::Field { a: b.v, off: 8 });
+        let mut b = Fb::new_d(&[ty], fat);
+        let (p, l) = if ty == Ty::Ptr {
+            (b.emit(Ty::Ptr, Op::MemLoad { p: b.v, off: 0 }), b.emit(Ty::Usize, Op::MemLoad { p: b.v, off: 8 }))
+        } else {
+            (b.emit(Ty::Ptr, Op::Field { a: b.v, off: 0 }), b.emit(Ty::Usize, Op::Field { a: b.v, off: 8 }))
+        };
         let s = b.emit(fat, Op::Make { variant: None, fields: vec![p, l] });
-        b.emit(Ty::Unit, Op::Call { callee: sk.clone(), args: vec![s] });
+        let a = b.sargs(vec![s]);
+        b.emit(Ty::Unit, Op::Call { callee: sk.clone(), args: a });
         let f = b.finish(&k);
         self.add(f, BTreeSet::from([sk]));
         k
@@ -616,10 +755,21 @@ impl<'a> Gen<'a> {
         let mut b = Fb::new(&[ty, ty], fat);
         let (a, w) = (b.v, b.w);
         let (fail, _) = b.block(&[]);
-        let pa = b.emit(Ty::Ptr, Op::Field { a, off: 0 });
-        let pb = b.emit(Ty::Ptr, Op::Field { a: w, off: 0 });
-        let la = b.emit(Ty::Usize, Op::Field { a, off: 8 });
-        let lb = b.emit(Ty::Usize, Op::Field { a: w, off: 8 });
+        let (pa, pb, la, lb) = if ty == Ty::Ptr {
+            (
+                b.emit(Ty::Ptr, Op::MemLoad { p: a, off: 0 }),
+                b.emit(Ty::Ptr, Op::MemLoad { p: w, off: 0 }),
+                b.emit(Ty::Usize, Op::MemLoad { p: a, off: 8 }),
+                b.emit(Ty::Usize, Op::MemLoad { p: w, off: 8 }),
+            )
+        } else {
+            (
+                b.emit(Ty::Ptr, Op::Field { a, off: 0 }),
+                b.emit(Ty::Ptr, Op::Field { a: w, off: 0 }),
+                b.emit(Ty::Usize, Op::Field { a, off: 8 }),
+                b.emit(Ty::Usize, Op::Field { a: w, off: 8 }),
+            )
+        };
         let same_len = b.cmp(Cc::Eq, Ty::Usize, la, lb);
         let (lp, lv) = b.block(&[Ty::Usize]);
         let (pre, _) = b.block(&[]);
@@ -667,7 +817,7 @@ impl<'a> Gen<'a> {
         let fat = self.fat()?;
         let mut callees: BTreeSet<String> = BTreeSet::new();
         let params: Vec<Ty> = if eq { vec![ty, ty] } else { vec![ty] };
-        let mut b = Fb::new(&params, fat);
+        let mut b = if eq { Fb::new(&params, fat) } else { Fb::new_d(&params, fat) };
         let (yes, _) = b.block(&[]);
         let (no, _) = b.block(&[]);
         if !eq {
@@ -684,7 +834,8 @@ impl<'a> Gen<'a> {
                     } else {
                         let pv = b.emit(pty, Op::Payload(b.v));
                         let kk = self.need(&psrc, pty, file)?;
-                        b.emit(Ty::Unit, Op::Call { callee: kk.clone(), args: vec![pv] });
+                        let a = b.sargs(vec![pv]);
+                        b.emit(Ty::Unit, Op::Call { callee: kk.clone(), args: a });
                         callees.insert(kk);
                     }
                     b.s(")");
@@ -745,7 +896,7 @@ impl<'a> Gen<'a> {
         let fat = self.fat()?;
         let def = self.aggs.borrow().defs[i as usize].clone();
         let short = name.rsplit('.').next().unwrap_or(name).to_string();
-        let mut b = Fb::new(&[Ty::Agg(i)], fat);
+        let mut b = Fb::new_d(&[Ty::Agg(i)], fat);
         let mut callees: BTreeSet<String> = BTreeSet::new();
         let gn = HashSet::new();
         // フィールドの表示: (元の型, 読み出し)
@@ -753,7 +904,8 @@ impl<'a> Gen<'a> {
             let src = from_v(fv, &gn);
             let k = g.need(&src, ty, &d.file)?;
             let v = b.emit(ty, Op::Field { a: b.v, off });
-            b.emit(Ty::Unit, Op::Call { callee: k.clone(), args: vec![v] });
+            let a = b.sargs(vec![v]);
+            b.emit(Ty::Unit, Op::Call { callee: k.clone(), args: a });
             callees.insert(k);
             Ok(())
         };
@@ -827,7 +979,7 @@ impl<'a> Gen<'a> {
         let AggKind::Tuple(fs) = &def.kind else {
             return Err(format!("{} は集成体のタプルでない", name));
         };
-        let mut b = Fb::new(&[Ty::Agg(i)], fat);
+        let mut b = Fb::new_d(&[Ty::Agg(i)], fat);
         let mut callees: BTreeSet<String> = BTreeSet::new();
         b.s("(");
         for (j, (src, f)) in es.iter().zip(fs).enumerate() {
@@ -836,7 +988,8 @@ impl<'a> Gen<'a> {
             }
             let kk = self.need(src, f.ty, file)?;
             let v = b.emit(f.ty, Op::Field { a: b.v, off: f.off });
-            b.emit(Ty::Unit, Op::Call { callee: kk.clone(), args: vec![v] });
+            let a = b.sargs(vec![v]);
+            b.emit(Ty::Unit, Op::Call { callee: kk.clone(), args: a });
             callees.insert(kk);
         }
         if es.len() == 1 {

@@ -787,24 +787,7 @@ impl Interp {
                     }
                     "hash" => return Ok(Val::Unit),
                     // `core.fmt.Debug` / `Display` の組み込み実装 (仕様 4.2): 整形先の Formatter に追記する。
-                    "debug_fmt" | "display_fmt" => {
-                        let text = if name == "debug_fmt" { self.debug_str(v)? } else { self.display_str(v)? };
-                        return match dr(&a0) {
-                            Val::Fmt(b) => {
-                                b.borrow_mut().push_str(&text);
-                                Ok(ok(Val::Unit))
-                            }
-                            // 利用者が `core.fmt.Formatter.new(&mut buf)` で作った Formatter (spec/stdlib/core/fmt.ksnl)。
-                            // 書き込みは定義された `write_str` に任せる (バッファ溢れは Err)。
-                            f @ Val::Struct(_) => {
-                                let Some(&wi) = self.p.funcs.get("core.fmt.Formatter.write_str") else {
-                                    return panic("core.fmt.Formatter.write_str is missing".to_string());
-                                };
-                                self.call_def(wi, vec![f, Val::Str(text.into())])
-                            }
-                            _ => panic(format!("{} expects a Formatter", name)),
-                        };
-                    }
+                    "debug_fmt" | "display_fmt" => return self.fmt_into(name, v, &a0),
                     _ => {}
                 }
                 let ty = match v {
@@ -961,6 +944,9 @@ impl Interp {
                         _ => 0,
                     }
                 };
+                if matches!(name, "debug_fmt" | "display_fmt") {
+                    return self.fmt_into(name, v, &a0);
+                }
                 if s.ty == "std.time.Instant" && name == "elapsed" {
                     return Ok(nanos(mono_ns().saturating_sub(field(v, "ticks"))));
                 }
@@ -975,6 +961,7 @@ impl Interp {
                 panic(format!("no method {} found for value {}", name, d))
             }
             Val::Enum(_) => match name {
+                "debug_fmt" | "display_fmt" => self.fmt_into(name, v, &a0),
                 "eq" => Ok(Val::Bool(self.v_eq(v, &dr(&a0))?)),
                 "cmp" => {
                     let c = self.v_cmp_derived(v, &dr(&a0), true)?.unwrap_or(0);
@@ -994,6 +981,26 @@ impl Interp {
                 let d = self.debug_str(v)?;
                 panic(format!("no method {} found for value {}", name, d))
             }
+        }
+    }
+
+    /// `x.debug_fmt(&mut f)` / `x.display_fmt(&mut f)` の組み込み実装: 文字列に直して Formatter に追記する。
+    fn fmt_into(&mut self, name: &str, v: &Val, a0: &Val) -> Res {
+        let text = if name == "debug_fmt" { self.debug_str(v)? } else { self.display_str(v)? };
+        match dr(a0) {
+            Val::Fmt(b) => {
+                b.borrow_mut().push_str(&text);
+                Ok(ok(Val::Unit))
+            }
+            // 利用者が `core.fmt.Formatter.new(&mut buf)` で作った Formatter (spec/stdlib/core/fmt.ksnl)。
+            // 書き込みは定義された `write_str` に任せる (バッファ溢れは Err)。
+            f @ Val::Struct(_) => {
+                let Some(&wi) = self.p.funcs.get("core.fmt.Formatter.write_str") else {
+                    return panic("core.fmt.Formatter.write_str is missing".to_string());
+                };
+                self.call_def(wi, vec![f, Val::Str(text.into())])
+            }
+            _ => panic(format!("{} expects a Formatter", name)),
         }
     }
 
@@ -1246,6 +1253,18 @@ impl Interp {
                 Ok(Val::Iter(Rc::new(RefCell::new(IterV::Pre { items: pieces, i: 0 }))))
             }
             "as_str" => Ok(s_val(&s)),
+            "debug_fmt" | "display_fmt" => {
+                let f = a0.clone().unwrap_or(Val::Unit);
+                self.fmt_into(name, v, &f)
+            }
+            // `String.push_display(&x)` / `push_debug(&x)` (`alloc.fmt.write` / `alloc.fmt.debug` の実体)。
+            "push_display" | "push_debug" => {
+                let Val::StrBuf(b) = v else { return panic(format!("no method {} on str", name)) };
+                let x = a0.clone().unwrap_or(Val::Unit);
+                let text = if name == "push_debug" { self.debug_str(&x)? } else { self.display_str(&x)? };
+                b.borrow_mut().push_str(&text);
+                Ok(ok(Val::Unit))
+            }
             "push_u64" | "push_i64" | "push_bytes" => {
                 let Val::StrBuf(b) = v else { return panic(format!("no method {} on str", name)) };
                 if name == "push_bytes" {

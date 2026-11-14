@@ -707,6 +707,11 @@ impl<'a> Lw<'a> {
         match op.as_str() {
             "&&" | "||" => self.short_circuit(op == "||", l, r, line),
             "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+                if matches!(op.as_str(), "==" | "!=") {
+                    if let Some(r) = self.string_eq_locals(l, r, op == "!=")? {
+                        return Ok(Some(r));
+                    }
+                }
                 let Some(a) = self.expr(l)? else { return Ok(None) };
                 let Some(b) = self.expr(r)? else { return Ok(None) };
                 // `Some(c) => c == &y` の `&y` は読んでから比べる。比べる型は emit した値の型で決める。
