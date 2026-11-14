@@ -96,7 +96,7 @@ step('rust ksn: second build hits the cache', 'cache hit' in r.stdout, r.stdout 
 shutil.rmtree(os.path.join(d, 'target'), ignore_errors=True)
 d = os.path.join(ROOT, 'examples', 'demo')
 r = subprocess.run([RSEXE, 'test', '--both'], cwd=d, capture_output=True, text=True, encoding='utf-8', env=envc)
-# clang が無ければ LLVM の比較は退避して バンドルで比べる (cli.rs の clang_available と同じ条件)。
+# clang が無ければ LLVM の比較は退避して バンドルで比べる (`stage0/tests/common/mod.rs` の `clang_available` と同じ条件)。
 want_label = '(both: llvm)' if shutil.which('clang') else '(both: bundle'
 step('rust ksn: test --both (interpreter and native agree)', r.returncode == 0 and want_label in r.stdout and 'disagree' not in r.stdout, r.stdout + r.stderr)
 shutil.rmtree(os.path.join(d, 'target'), ignore_errors=True)

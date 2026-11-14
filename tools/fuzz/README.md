@@ -70,6 +70,6 @@ FZB_MSG=1 ...   # 診断コードにメッセージ (90 字) を付ける
 - `bad` (不健全) なのに診断 0 件 → `hole`。`ok` なのに診断が出る → `false_pos`。`false_pos` の診断コードが
   E0xxx / E1xxx / E2xxx なら生成器の誤りなので、まず `FZB_MSG=1` で確かめる。
 - 出力: `--out` (既定 `tools/fuzz/found_borrow/`、gitignore) に形ごと 1 本。穴は手で最小化し、
-  `stage0/tests/data/unsound/` に `// expect:` 付きで足し、`stage0/tests/cli.rs` の `KNOWN_HOLES` へ載せる。
+  `stage0/tests/data/unsound/` に `// expect:` 付きで足し、`stage0/tests/check_diag.rs` の `KNOWN_HOLES` へ載せる。
 - タグの `A1` / `A2` は修正プランの既知の穴 (ヘッダ照合・セッタ)。新しい穴の判定からは除く。
 - 並列度は 8 まで。

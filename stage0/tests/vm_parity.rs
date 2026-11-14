@@ -2,7 +2,7 @@
 //!
 //! - `perf/*` と、KIR に下ろせる examples (demo・native・realtime・json・more_coll・more_str) は、VM で実際に走る (退避しない) ことも確かめる。
 //! - 他の examples は、退避しても出力が一致することだけを確かめる。
-//! - `tests/cli.rs` の中の `fn t.main` を持つ完全なプログラム (`kir_*` 系の入力を含む) を取り出して、同じ比較をする。
+//! - `tests/*.rs` (旧 `cli.rs`) の中の `fn t.main` を持つ完全なプログラム (`kir_*` 系の入力を含む) を取り出して、同じ比較をする。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -257,7 +257,7 @@ fn unescape(s: &str) -> String {
     o
 }
 
-/// `tests/cli.rs` から取り出した文字列リテラル: (位置, 値)。通常の文字列と raw 文字列の両方。
+/// `tests/*.rs` (旧 `cli.rs`) から取り出した文字列リテラル: (位置, 値)。通常の文字列と raw 文字列の両方。
 fn cli_literals(src: &str) -> Vec<(usize, String)> {
     let b = src.as_bytes();
     let mut lits: Vec<(usize, String)> = vec![];
@@ -313,19 +313,36 @@ fn cli_literals(src: &str) -> Vec<(usize, String)> {
     lits
 }
 
-/// 一時パッケージ用に `main` を足す (`tests/cli.rs` の `main_wrap` と同じ)。
+/// 一時パッケージ用に `main` を足す (`tests/*.rs` (旧 `cli.rs`) の `main_wrap` と同じ)。
 fn main_wrap(prefix: &str, body: &str) -> String {
     format!("{}fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n{}    Ok(())\nend t.main\n", prefix, body)
 }
 
-/// `tests/cli.rs` から取り出したプログラム (テスト関数の名前, ソース)。
+/// `tests/*.rs` (旧 `cli.rs`) から取り出したプログラム (テスト関数の名前, ソース)。
 /// (a) `fn t.main` を持つ完全なプログラムのリテラル。
 /// (b) `kir_*` のテストの表 `("t.f", &["引数"..], "期待値の式", "表示")` / `("t.f", &["引数"..], "panic の文言")` を、
 ///     そのテストが使う関数の定義 (`const ..: &str`) と組み合わせた `core.check.eq(f(args), lit)` / `let _x = f(args)` の main。
 /// 同じ内容は 1 本にまとめる。
 fn cli_programs() -> Vec<(String, String)> {
-    let src = include_str!("cli.rs");
-    let lits = cli_literals(src);
+    // 旧 `cli.rs` は分野ごとのファイルに分かれたので、全部をつないだ文字列から取り出す。
+    // common の `pub` は外して、旧 `cli.rs` の行頭の形 (`fn ` / `const `) に揃える。
+    let common = include_str!("common/mod.rs").replace("\npub ", "\n");
+    let src = [
+        common.as_str(),
+        include_str!("cache_incremental.rs"),
+        include_str!("check_borrow.rs"),
+        include_str!("check_diag.rs"),
+        include_str!("fmt_fix.rs"),
+        include_str!("kir_lower.rs"),
+        include_str!("kir_lower2.rs"),
+        include_str!("kir_lower3.rs"),
+        include_str!("kir_native.rs"),
+        include_str!("run_interp.rs"),
+        include_str!("threads.rs"),
+        include_str!("tooling.rs"),
+    ]
+    .concat();
+    let lits = cli_literals(&src);
     // トップレベルの `fn name(` の位置。
     let mut fns: Vec<(usize, String)> = vec![];
     let mut off = 0;
@@ -411,7 +428,7 @@ fn vm_run_matches_tree_walker_on_programs_from_cli_tests() {
         r
     });
     let c: Vec<usize> = counts.iter().map(|a| a.load(Ordering::SeqCst)).collect();
-    eprintln!("vm_parity: cli.rs から {} 本 (kir_ 系 {} 本): VM で走った {} / 退避 {} / 検査で止まった {} / 時間切れ {}", progs.len(), n_kir, c[0], c[1], c[2], c[3]);
+    eprintln!("vm_parity: テストファイルから {} 本 (kir_ 系 {} 本): VM で走った {} / 退避 {} / 検査で止まった {} / 時間切れ {}", progs.len(), n_kir, c[0], c[1], c[2], c[3]);
     assert!(fails.is_empty(), "{}", fails.join("\n"));
     assert!(c[0] >= 100, "VM で走ったプログラムが少なすぎる");
 }
