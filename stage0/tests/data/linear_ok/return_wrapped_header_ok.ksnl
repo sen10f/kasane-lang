@@ -1,0 +1,23 @@
+type t.H['a]
+    r: &'a u32
+end t.H
+
+fn t.id(x: &u32) -> &u32 uses [] panics never
+    x
+end t.id
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.opt['a, 'b](x: &'a u32, _y: &'b u32) -> Option<&'a u32> uses [] panics never
+    Some(t.id(x))
+end t.opt
+
+fn t.statik(x: &'static u32) -> t.H<'static> uses [] panics never
+    t.H { r: &*x }
+end t.statik
+
+fn t.wrap['a, 'b](x: &'a u32, _y: &'b u32) -> t.H<'a> uses [] panics never
+    t.H { r: x }
+end t.wrap

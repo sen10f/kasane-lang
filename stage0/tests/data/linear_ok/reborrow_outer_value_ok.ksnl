@@ -1,0 +1,52 @@
+type t.H['a]
+    r: &'a u32
+end t.H
+
+type t.S['a]
+    s: &'a str
+end t.S
+
+fn t.id(x: &u32) -> &u32 uses [] panics never
+    x
+end t.id
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.ok() -> u32 uses [] panics never
+    let x = 7u32
+    let o = 1u32
+    let mut h = t.H { r: &o }
+    {
+        h.r = &*&x
+    }
+    let r = {
+        &*&x
+    }
+    let o2 = {
+        Some(&*&x)
+    }
+    let pr = {
+        (t.id(&x), 1u8)
+    }
+    let (a, _n) = pr
+    let from_opt = match o2 {
+        Some(q) => *q
+        None => 0u32
+    }
+    (*h.r).wrapping_add(*r).wrapping_add(*a).wrapping_add(from_opt)
+end t.ok
+
+fn t.ok_str() -> usize uses [alloc] panics never
+    let mut x = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(x.push_str("hello"))
+    let mut r = "d"
+    {
+        r = &*x.as_str()
+    }
+    let h = {
+        t.S { s: &*x.as_str() }
+    }
+    r.len().wrapping_add(h.s.len())
+end t.ok_str

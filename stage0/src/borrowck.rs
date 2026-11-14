@@ -289,6 +289,15 @@ impl<'a> Low<'a> {
                         return out;
                     }
                 }
+                // 場所でないものの再借用 (`&*&x`、`&*x.as_str()`、`&mut *&mut x`): 内側の借用がそのまま通り抜ける。
+                if let Some(inner) = Self::reborrow_inner(operand) {
+                    if self.place_of(inner).is_none() {
+                        let v = self.borrow_expr_sources(inner);
+                        if !v.is_empty() {
+                            return v;
+                        }
+                    }
+                }
                 match self.place_of(operand) {
                     Some((root, path)) => {
                         // `&r` (r が参照を持つ変数) は、r を通して r の借用元も借りる (参照の参照の推移)。
@@ -595,8 +604,8 @@ impl<'a> Low<'a> {
                 let mutable = matches!(tel(&d.params[s].1, 1), V::B(true));
                 let Some(sroot) = self.borrow_root(b) else {
                     // `s.as_str()` のように借用を返す式: その借用元をレシーバが持つ。
-                    let srcs = self.loan_sources(b);
-                    if !srcs.is_empty() && recv.is_some() {
+                    let srcs: Vec<Src> = self.borrow_expr_sources(b).into_iter().filter(|s| !matches!(s, Src::Stored { .. })).collect();
+                    if !srcs.is_empty() {
                         self.hold(c, Holder::Var(rroot.clone()), srcs);
                     }
                     continue;
@@ -911,7 +920,7 @@ impl<'a> Low<'a> {
                 return vec![];
             }
         }
-        self.loan_sources(tail)
+        self.borrow_expr_sources(tail)
     }
 
     /// 枝の終わり `end` で、枝の値の借用を合成の持ち主 `holder` に集める。
@@ -1975,6 +1984,213 @@ impl<'a> Low<'a> {
     }
 }
 
+// ---------------------------------------------------------------- 借用を生む式 (一般化)
+/// 戻り値へ流れる借用の出どころ。
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Origin {
+    /// 関数の中の局所変数への借用
+    Local(String),
+    /// 引数 (その番号) から借りたもの
+    Param(usize),
+}
+
+impl<'a> Low<'a> {
+    /// `*e` の `e` (再借用 `&*e` / `&mut *e` の内側)。
+    fn reborrow_inner(operand: &V) -> Option<&V> {
+        if nname(operand) == "Unary" && st(&nf(operand)[0]) == "*" { Some(&nf(operand)[1]) } else { None }
+    }
+
+    /// 「借用を生む式」の出どころを 1 か所で求める: `&e` / `&*e` / 借用を返す呼び出し・メソッド
+    /// (`loan_sources`) と、借用を含むタプル・配列・構造体リテラル (`lit_sources`)。
+    /// ブロックの値・代入・`&mut` 引数・`push` の出口はこれを使う。
+    fn borrow_expr_sources(&self, e: &V) -> Vec<Src> {
+        let mut v = self.loan_sources(e);
+        v.extend(self.lit_sources(e));
+        v
+    }
+
+    /// 式 `e` の値として外へ出る葉 (`if` / `match` / ブロックの末尾を通す)。
+    fn value_leaves<'v>(e: &'v V, out: &mut Vec<&'v V>) {
+        match nname(e) {
+            "Block" => {
+                if let Some(last) = items(&nf(e)[0]).last() {
+                    match nname(last) {
+                        "ExprStmt" => Self::value_leaves(&nf(last)[0], out),
+                        "Let" | "Assign" => {}
+                        _ => Self::value_leaves(last, out),
+                    }
+                }
+            }
+            "If" => {
+                let f = nf(e);
+                Self::value_leaves(&f[1], out);
+                if !is_nil(&f[2]) {
+                    Self::value_leaves(&f[2], out);
+                }
+            }
+            "Match" => {
+                for arm in items(&nf(e)[1]) {
+                    if let Some(b) = items(arm).last() {
+                        Self::value_leaves(b, out);
+                    }
+                }
+            }
+            _ => out.push(e),
+        }
+    }
+
+    /// 式 `e` が運ぶ借用の出どころ。`inits` は 1 回だけ束縛された `let` の初期化式 (変数をたどる)。
+    fn origins(&self, e: &V, d: &Def, inits: &HashMap<String, &V>, depth: usize, out: &mut Vec<Origin>) {
+        if depth > 8 {
+            return;
+        }
+        let mut leaves = vec![];
+        Self::value_leaves(e, &mut leaves);
+        for leaf in leaves {
+            for s in self.borrow_expr_sources(leaf) {
+                match s {
+                    Src::Place { root, path, .. } => {
+                        if let Some(q) = d.params.iter().position(|p| p.0 == root) {
+                            if tag(&d.params[q].1) == "ref" || path.iter().any(|x| x == "*") {
+                                out.push(Origin::Param(q));
+                            } else {
+                                out.push(Origin::Local(root));
+                            }
+                        } else if let Some(init) = inits.get(&root) {
+                            // 借用を持つ変数 (`let y = x`) を通した借用は、その変数の出どころ。
+                            let mut sub = vec![];
+                            self.origins(init, d, inits, depth + 1, &mut sub);
+                            if sub.is_empty() { out.push(Origin::Local(root)) } else { out.extend(sub) }
+                        }
+                    }
+                    Src::Alias(v) | Src::Stored { root: v, .. } => {
+                        if let Some(q) = d.params.iter().position(|p| p.0 == v) {
+                            out.push(Origin::Param(q));
+                        } else if let Some(init) = inits.get(&v) {
+                            self.origins(init, d, inits, depth + 1, out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 戻り値の式が、(a) 局所変数への借用を運ぶ (E3030)、(b) ヘッダの戻り値の領域と無関係な (または
+    /// `'static` でない) 引数の借用を運ぶ (E3010)。`&x`・引数そのものを返す形に加えて、再借用・関数経由・
+    /// タプル・構造体・`Some(..)` に包んだ形も同じ関数 (`origins`) で求める。
+    /// 返り値は (診断コード, 行, 文面)。
+    fn check_return_flow(&self, di: usize, body: &V) -> Vec<(&'static str, usize, String)> {
+        let d = &self.p.defs[di];
+        let Some(head) = d.header.split(" uses ").next() else { return vec![] };
+        let Some(mut i) = head.find(|c| c == '(' || c == '[') else { return vec![] };
+        let gen_text = if head.as_bytes()[i] == b'[' {
+            let Some(j) = match_close(head, i) else { return vec![] };
+            let g = head[i..=j].to_string();
+            i = j + 1;
+            g
+        } else {
+            String::new()
+        };
+        if head.as_bytes().get(i) != Some(&b'(') {
+            return vec![];
+        }
+        let Some(close) = match_close(head, i) else { return vec![] };
+        let ptexts = split_top(&head[i + 1..close]);
+        if ptexts.len() != d.params.len() {
+            return vec![];
+        }
+        let Some((_, ret)) = head[close + 1..].split_once("->") else { return vec![] };
+        let want = lifetimes(ret);
+        let static_ret = ret.contains("'static");
+        if want.is_empty() && !static_ret && !ret.contains('&') && !self.ret_contains_ref(d) {
+            return vec![];
+        }
+        let mut all = vec![];
+        walk(body, &mut all);
+        // 1 回だけ束縛された名前 (引数と同名の束縛・複数回の束縛は、名前では決められないので使わない)。
+        let mut count: HashMap<String, usize> = d.params.iter().map(|p| (p.0.clone(), 1)).collect();
+        let mut inits: HashMap<String, &V> = HashMap::new();
+        for n in &all {
+            match nname(n) {
+                "Let" | "For" | "With" => {
+                    let mut b = vec![];
+                    pat_binds(&nf(n)[0], &mut b);
+                    for x in &b {
+                        *count.entry(x.clone()).or_insert(0) += 1;
+                    }
+                    if nname(n) == "Let" && nname(&nf(n)[0]) == "PBind" && !is_nil(&nf(n)[3]) {
+                        inits.insert(st(&nf(&nf(n)[0])[0]), &nf(n)[3]);
+                    }
+                }
+                "Match" => {
+                    for arm in items(&nf(n)[1]) {
+                        let mut b = vec![];
+                        pat_binds(&items(arm)[0], &mut b);
+                        for x in &b {
+                            *count.entry(x.clone()).or_insert(0) += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        inits.retain(|k, _| count.get(k) == Some(&1));
+        let mut vals: Vec<&V> = vec![];
+        Self::value_leaves(body, &mut vals);
+        for v in &all {
+            if nname(v) == "Return" && !is_nil(&nf(v)[0]) {
+                Self::value_leaves(&nf(v)[0], &mut vals);
+            }
+        }
+        let mut out = vec![];
+        let mut seen: BTreeSet<(usize, String)> = BTreeSet::new();
+        for v in vals {
+            if nname(v) == "Path" && strs(&nf(v)[0]).len() == 1 && d.params.iter().any(|p| p.0 == strs(&nf(v)[0])[0]) {
+                continue; // 引数そのものを返す形は check_return_lifetime が見る
+            }
+            let mut os = vec![];
+            self.origins(v, d, &inits, 0, &mut os);
+            for o in os {
+                match o {
+                    Origin::Local(name) => {
+                        if seen.insert((nlineno(v), name.clone())) {
+                            out.push((
+                                "E3030",
+                                nlineno(v),
+                                format!("returns a reference to the local variable `{}`, which does not live long enough", name),
+                            ));
+                        }
+                    }
+                    Origin::Param(q) => {
+                        let have = lifetimes(&ptexts[q]);
+                        if have.is_empty() || ptexts[q].contains("'static") || have.intersection(&want).next().is_some() {
+                            continue;
+                        }
+                        if have.iter().any(|h| gen_text.contains(&format!("'{}:", h)) || gen_text.contains(&format!("'{} :", h))) {
+                            continue;
+                        }
+                        if seen.insert((nlineno(v), d.params[q].0.clone())) {
+                            out.push((
+                                "E3010",
+                                nlineno(v),
+                                format!(
+                                    "{}: the returned value carries a borrow from argument `{}` (`{}`), but the return type `{}` does not name its lifetime; `{}` is not declared to outlive it",
+                                    d.name,
+                                    d.params[q].0,
+                                    ptexts[q],
+                                    ret.trim(),
+                                    have.iter().map(|h| format!("'{}", h)).collect::<Vec<_>>().join(", ")
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 /// 2 つの場所の道が重なる (一方が他方の接頭辞) か。
 fn overlaps(a: &[String], b: &[String]) -> bool {
     let n = a.len().min(b.len());
@@ -2032,6 +2248,15 @@ impl<'a> Checker<'a> {
         // 戻り値の参照が、ヘッダの宣言と違う領域の引数から来る (修正プラン A1)。
         for (line, msg) in low.check_return_lifetime(di, body) {
             self.tdiag("E3010", msg, line);
+        }
+        // 戻り値へ流れる借用の出どころ (局所・ヘッダと違う領域の引数) を、式の形によらず一般に求める。
+        for (code, line, msg) in low.check_return_flow(di, body) {
+            let ln = crate::parser::unpack_pos(if line != 0 { line } else { d.line }).0;
+            let dup = self.diags.iter().any(|x| x.code == code && x.fqn == d.name && x.line == ln)
+                || (code == "E3010" && self.diags.iter().any(|x| x.code == "E3010" && x.fqn == d.name && x.line == ln && x.msg.contains("returns argument")));
+            if !dup {
+                self.tdiag(code, msg, line);
+            }
         }
         let entry = low.new_node();
         let exit = low.new_node();
