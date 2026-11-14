@@ -578,6 +578,7 @@ impl<'a> Checker<'a> {
         self.check_linear();
         self.check_linear_type_args();
         self.check_derive();
+        self.check_impl_requires();
         for &i in &user {
             let d = self.def(i);
             match d.kw.as_str() {
@@ -1182,6 +1183,34 @@ impl<'a> Checker<'a> {
                 };
                 if tys.iter().any(|t| self.is_copy_v(t, &user_types) == Some(false)) {
                     self.diag("E2036", format!("derive [Copy] on {}: every field must be Copy", d.name), i, 0);
+                }
+            }
+        }
+    }
+
+    /// 3.2 / 4.3: `impl Tr for X` は、`Tr` の `requires` (スーパートレイト) を `X` が満たすこと (E2035)。
+    /// `derive` の `requires` と同じ規則 (`Eq` の `impl` には `PartialEq<Self>` が要る)。手書きの `impl` は
+    /// 対象型が宣言 (`p.types`) を持つときだけ見る (組み込みの型への `impl` は組み込みの実装が担う)。
+    fn check_impl_requires(&mut self) {
+        for i in self.user.clone() {
+            let d = self.def(i);
+            if d.kw != "impl" {
+                continue;
+            }
+            let target = impl_target(&d.impl_for);
+            if !self.p.types.contains_key(&target) {
+                continue;
+            }
+            let Some(&ti) = self.p.types.get(&d.impl_trait) else { continue };
+            for (sup, _) in self.p.defs[ti].requires.clone() {
+                let Some(sf) = resolve_trait_fqn(self.p, &sup) else { continue };
+                if !self.implements(&target, &sf) {
+                    let short = sf.rsplit('.').next().unwrap_or(&sf).to_string();
+                    let msg = format!(
+                        "impl {} for {} requires `{}`: {} must implement it too (derive [{}] or write `impl {} for {}`)",
+                        d.impl_trait, target, sf, target, short, sf, target
+                    );
+                    self.diag("E2035", msg, i, 0);
                 }
             }
         }
@@ -2944,7 +2973,9 @@ impl<'a> Checker<'a> {
                 if items(tel(t, 2)).is_empty() && self.names.contains(&nm) {
                     return self.generic_may_be_copy(&nm);
                 }
+                // 派生の `Copy` は型引数が `Copy` のときだけ (`impl[T: Copy] Copy for Box<T>`)。
                 self.p.types.get(&nm).map_or(false, |&i| self.def(i).derive.iter().any(|x| x == "Copy"))
+                    && items(tel(t, 2)).iter().all(|a| self.is_copy(a))
             }
             _ => true,
         }
@@ -2984,10 +3015,12 @@ impl<'a> Checker<'a> {
                 if nm == "Option" || nm == "Result" {
                     return args.iter().all(|a| self.is_copy_ty(a));
                 }
+                // 派生の `Copy` は型引数が `Copy` のときだけ (`impl[T: Copy] Copy for Box<T>`)。
                 self.p
                     .types
                     .get(nm)
                     .map_or(false, |&i| self.def(i).derive.iter().any(|x| x == "Copy"))
+                    && args.iter().all(|a| self.is_copy_ty(a))
             }
             crate::types::Ty::Array(el) | crate::types::Ty::Slice(el) => self.is_copy_ty(el),
             crate::types::Ty::Ptr(_, _) | crate::types::Ty::Const(_) | crate::types::Ty::Dyn(..) => true,
@@ -6068,7 +6101,7 @@ pub(crate) fn resolve_trait_fqn(p: &Program, nm: &str) -> Option<String> {
 }
 
 /// `impl .. for X` の対象型の基底名 (型引数を落とす)。
-fn impl_target(v: &V) -> String {
+pub(crate) fn impl_target(v: &V) -> String {
     match tag(v).as_str() {
         "named" | "prim" => st(tel(v, 1)),
         "ref" | "ptr" => impl_target(tel(v, 2)),

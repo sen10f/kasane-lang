@@ -2,7 +2,7 @@ type t.Box[T] derive [ToJson]
     x: T
 end t.Box
 
-// expect: E????
+// expect: E2030
 type t.NoJson
     a: u8
 end t.NoJson
