@@ -31,6 +31,7 @@ mod interp;
 mod natives;
 mod net;
 mod process;
+mod ptrwidth;
 mod value;
 mod parser;
 mod program;

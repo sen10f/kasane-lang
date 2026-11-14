@@ -377,13 +377,14 @@ impl Ty {
         matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::I128 | Ty::Isize)
     }
 
-    /// 整数の幅 (ビット)。`isize` / `usize` は 64 ビット。
+    /// 整数の幅 (ビット)。`isize` / `usize` はターゲットのポインタの幅 (`ptrwidth`。既定は 64 ビット、wasm32 は 32 ビット)。
     pub fn bits(self) -> u32 {
         match self {
             Ty::I8 | Ty::U8 => 8,
             Ty::I16 | Ty::U16 => 16,
             Ty::I32 | Ty::U32 | Ty::F32 => 32,
             Ty::I128 | Ty::U128 => 128,
+            Ty::Isize | Ty::Usize => crate::ptrwidth::bits(),
             _ => 64,
         }
     }
@@ -1134,11 +1135,13 @@ pub fn size_of(aggs: &[AggDef], t: Ty) -> u32 {
         Ty::I8 | Ty::U8 | Ty::Bool => 1,
         Ty::I16 | Ty::U16 => 2,
         Ty::I32 | Ty::U32 | Ty::F32 => 4,
-        Ty::I64 | Ty::U64 | Ty::Isize | Ty::Usize | Ty::F64 | Ty::Ptr => 8,
+        Ty::I64 | Ty::U64 | Ty::F64 => 8,
+        // `usize` / `isize` / 生ポインタ / 参照はターゲットのポインタの幅 (既定 64 ビット、wasm32 は 32 ビット)。
+        Ty::Isize | Ty::Usize | Ty::Ptr => crate::ptrwidth::bits() / 8,
         Ty::I128 | Ty::U128 => 16,
         Ty::Unit => 0,
         // 参照・Option・Result は集成体のフィールドに来ない (`field_ty` が拒否する)。値の幅だけ与える。
-        Ty::Ref(..) => 8,
+        Ty::Ref(..) => crate::ptrwidth::bits() / 8,
         Ty::Opt(_) | Ty::Res(..) => 16,
         Ty::Agg(i) => aggs[i as usize].size,
     }
