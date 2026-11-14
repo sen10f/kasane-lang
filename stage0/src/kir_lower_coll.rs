@@ -103,6 +103,10 @@ pub(crate) struct CollCx {
     pub(crate) stmt_guards: Vec<(VId, VId, VId)>,
     /// `with` の後始末式の木と、`with` の束縛を置いたスコープの番号。
     pub(crate) closes: Vec<(V, usize)>,
+    /// `closes` と同じ添字: 束縛した名前とスロット (所有の注釈。後始末式が束縛を消費する)。
+    pub(crate) close_own: Vec<Option<(String, usize)>>,
+    /// 後始末式を下ろしている間の、所有の注釈を止めるスロット (式の中の消費は、後で 1 つだけ注釈する)。
+    pub(crate) own_mute: Option<usize>,
     /// 後始末式を下ろしている間に起きた最初の下ろしの失敗 (`drop_from` は結果を返さないので持ち越す)。
     pub(crate) close_err: Option<String>,
     /// 関数の入口で確保する `alloca` (ブロック 0 の先頭に置く)。
@@ -758,10 +762,20 @@ fn run_close(lw: &mut Lw, i: usize) {
     let pos = lw.coll.owned.iter().position(|(_, o)| matches!(o, Owned::With(j) if *j == i)).expect("登録済みの with");
     let hidden_owned = lw.coll.owned.split_off(pos);
     let hidden_scopes = lw.scopes.split_off(depth + 1);
+    // 束縛の消費は後始末式 (`close`) が行う。式の中の消費・借用の注釈は止め、下ろした後に 1 つだけ付ける。
+    let own = lw.coll.close_own[i].clone();
+    let prev_mute = lw.coll.own_mute;
+    if let Some((_, s)) = &own {
+        lw.coll.own_mute = Some(*s);
+    }
     let r = lw.expr(&expr);
+    lw.coll.own_mute = prev_mute;
     lw.scopes.extend(hidden_scopes);
     lw.coll.owned.truncate(pos);
     lw.coll.owned.extend(hidden_owned);
+    if let Some((name, s)) = own {
+        lw.own_emit(&name, s, crate::kir::OwnKind::Consume);
+    }
     match r {
         Ok(Some(v)) => drop_temp(lw, v),
         Ok(None) => {}
@@ -821,9 +835,10 @@ pub(crate) fn bind_guard(lw: &mut Lw, name: &str, v: VId) {
 }
 
 /// `with` の本体の前に呼ぶ: 後始末式を現在のスコープ (束縛を置いたスコープ) に登録する。
-pub(crate) fn register_close(lw: &mut Lw, expr: V) {
+pub(crate) fn register_close(lw: &mut Lw, expr: V, own: Option<(String, usize)>) {
     let scope = lw.scopes.len() - 1;
     lw.coll.closes.push((expr, scope));
+    lw.coll.close_own.push(own);
     let i = lw.coll.closes.len() - 1;
     lw.coll.owned.push((scope, Owned::With(i)));
 }

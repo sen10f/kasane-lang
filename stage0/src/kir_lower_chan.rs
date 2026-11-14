@@ -178,6 +178,7 @@ pub(super) fn chan_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     if meth == "close" {
         // 受け手を消費する (局所の印を下ろす)。ほかに受信側があるか、キューが空なら端を畳んで `Ok(())`、残りがあれば端をそのまま `Err` で返す。
         let end = super::coll::path_read(lw, s);
+        lw.own_emit(&segs[0], s, crate::kir::OwnKind::Consume);
         return Some(close_end(lw, e, end, end_t, line));
     }
     let end = if via_ref {

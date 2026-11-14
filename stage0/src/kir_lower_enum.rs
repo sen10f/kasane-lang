@@ -116,6 +116,7 @@ impl<'a> Lw<'a> {
         if segs.len() == 2 && segs[1] == "map_err" {
             if let Some(s) = self.lookup(&segs[0]) {
                 let recv = super::coll::path_read(self, s);
+                self.own_emit(&segs[0], s, crate::kir::OwnKind::Consume);
                 let args = items(&f[1]).to_vec();
                 return Some(self.map_err(e, recv, &args));
             }
@@ -413,6 +414,7 @@ impl<'a> Lw<'a> {
             self.coll.pat_srcs = binds.into_iter().collect();
             self.coll.pending_bref.clear();
             let c = self.pat_test(pat, s, sty)?;
+            let arm_binds: Vec<(String, Src)> = self.coll.pat_srcs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             self.coll.pat_srcs.clear();
             let (bb, _) = self.new_block(&[]);
             if i + 1 == n {
@@ -424,6 +426,12 @@ impl<'a> Lw<'a> {
             }
             self.cur = Some(bb);
             super::coll::scrut_arm(self, &sc, i, pat, s)?;
+            // 腕の束縛の所有 (線形な値の義務・move の注釈)。腕の本体に入ったときだけ義務が生じる (判定の経路には置かない)。
+            for (name, src) in &arm_binds {
+                if let Some(bs) = self.lookup(name) {
+                    self.own_declare(name, bs, src);
+                }
+            }
             self.bref_bind(line)?;
             if let Some(v) = self.expr(body)? {
                 if let Some(t) = res {

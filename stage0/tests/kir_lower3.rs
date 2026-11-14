@@ -2839,8 +2839,9 @@ fn kir_borrowck_stage2_catches_scope_and_move_cases() {
 }
 
 /// 第 3 段 (実験): 所有の注釈 (`own.*`) の上の線形性・move の検査 (E3002 / E3003)。隠しの切り替え `KSN_BORROWCK=kir,own` のときだけ動く
-/// (既定の `kir` は借用だけ)。AST の結果 (E3002 / E3003) と並べ、一致数の下限と、正しいコードの誤検出数の上限を固定する。
-/// 誤検出の残り: クロージャ `spawn` の取り込み・`with` / `self` を値で受けるメソッドでの消費 (注釈未対応)。
+/// (既定の `kir` は借用だけ)。AST の結果 (E3002 / E3003) と並べ、一致数の下限と、正しいコードの誤検出 0 を固定する。
+/// 注釈: 値の受け手 (`self` で受けるメソッド・`close` / `join`)、`with` の後始末 (束縛の消費)、`match` の腕の束縛、字段の受け手 (部分的な move)、
+/// クロージャの `capture [move]`、`chan` の端の `close`、`Option` / `Result` の `map_err` / `unwrap`。
 #[test]
 fn kir_own_linearity_agreement_floor() {
     fn own_codes(dir: &Path) -> Option<Vec<String>> {
@@ -2866,17 +2867,44 @@ fn kir_own_linearity_agreement_floor() {
             agree += 1;
         }
     }
+    // 正しいコードの誤検出は 0 件 (`linear_ok/`、参照解、`examples/` の全パッケージ)。
     let mut fps = vec![];
+    let mut ok_checked = 0;
     for p in sorted_ksnl("linear_ok") {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let t = Tmp::new(&format!("kirown_ok_{}", stem), &fs::read_to_string(&p).unwrap());
-        if own_codes(&t.0).map_or(false, |k| lin(&k)) {
-            fps.push(stem);
+        match own_codes(&t.0) {
+            Some(k) if lin(&k) => fps.push(format!("linear_ok/{}: {:?}", stem, k)),
+            Some(_) => ok_checked += 1,
+            None => {}
         }
     }
-    eprintln!("kir own (unsound): checked {} agree {} kir_reject {}; linear_ok false positives: {:?}", checked, agree, kir_reject, fps);
-    assert!(checked >= 165);
-    assert!(agree >= 109, "agreement dropped to {}", agree);
-    assert!(kir_reject >= 42, "KIR rejects only {}", kir_reject);
-    assert!(fps.len() <= 1, "linear_ok false positives grew: {:?}", fps);
+    let mut refs: Vec<PathBuf> = fs::read_dir(root().join("bench").join("tasks")).unwrap().map(|e| e.unwrap().path().join("reference.ksnl")).filter(|p| p.exists()).collect();
+    refs.sort();
+    for p in refs {
+        let name = p.parent().unwrap().file_name().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("kirown_ref_{}", name), &fs::read_to_string(&p).unwrap());
+        match own_codes(&t.0) {
+            Some(k) if lin(&k) => fps.push(format!("reference {}: {:?}", name, k)),
+            Some(_) => ok_checked += 1,
+            None => {}
+        }
+    }
+    let mut ex: Vec<PathBuf> = fs::read_dir(root().join("examples")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("kasane.toml").exists()).collect();
+    ex.sort();
+    for d in ex {
+        let name = d.file_name().unwrap().to_string_lossy().to_string();
+        match own_codes(&d) {
+            Some(k) if lin(&k) => fps.push(format!("examples/{}: {:?}", name, k)),
+            Some(_) => ok_checked += 1,
+            None => {}
+        }
+    }
+    eprintln!("kir own (unsound): checked {} agree {} kir_reject {}; correct code checked {} false positives {:?}", checked, agree, kir_reject, ok_checked, fps);
+    assert!(fps.is_empty(), "KIR linearity false positives on correct code:\n{}", fps.join("\n"));
+    // 下限 (現在値。下げない): 検査できた不正・一致・KIR の拒否・正しいコードの検査数。
+    assert!(checked >= 166, "KIR (own) checked only {} unsound programs", checked);
+    assert!(agree >= 114, "agreement dropped to {}", agree);
+    assert!(kir_reject >= 48, "KIR (own) rejects only {}", kir_reject);
+    assert!(ok_checked >= 114, "only {} correct programs were checked by the KIR linearity", ok_checked);
 }

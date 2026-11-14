@@ -1673,6 +1673,28 @@ KIR は単相・SSA で、型にライフタイムがない。そこで領域は
 **結果。** `unsound/` 283 件: 検査できた 123、KIR が拒否 16、受理 107、AST との一致 123/123 (第 1 段は 124 件中 118、不一致 6 件)。`linear_ok/` 104 + 参照解 14 + examples 15 のうち検査できた 95 件は誤検出 0。判断できない: unsound 160、correct 43 (別担当の 3-1 が減らす)。残りの不一致: なし (下ろせない形は判断できないとして除外)。
 **残り。** 呼び出しごとの領域変数、ヘッダの `where` 的な境界以外 (トレイト境界の借用)、`break` / `continue` で抜けるときの局所の寿命の終わり (`break_ref_escape_*` は、下ろしが対応した後で確かめる)、E4xxx と E3002 / E3003 の KIR 移行。
 
+### 24.8 所有の注釈の追加 (check/kir-linear、2026-11-14)
+
+線形性の誤検出 4 件 (`ok_spawn_move_linear`、`examples/shortener`・`examples/threads`、参照解 `resource`) を 0 にした。注釈を足した構文:
+- 値の受け手 (`x.m()` の `m` が値で受ける形。`recv_path`)、`close` / `join` (ネットワーク・ファイル・スレッドの組み込み。`x.close()` は `Consume`、`x.f.close()` は `Part`)、チャネルの端の `close`、`Option` / `Result` の `map_err` / `unwrap`、`Box` の `into_inner`。
+- `with` の後始末: 束縛を `own_declare` で追う。後始末式 (`run_close`) を下ろす間は同じスロットの注釈を止め、下ろした後に 1 つだけ `Consume` を付ける (式の中の `close()` と二重にしない)。
+- `match` の腕の束縛: 腕の本体の先頭で `own_declare` する (判定の経路に置くと、ほかの腕へ進む経路にも義務が残るため)。
+- 字段の受け手 (`back.value.close()`) は部分的な move (`Part`) として義務を果たす。
+
+**結果** (`KSN_BORROWCK=kir,own`、`kir_own_linearity_agreement_floor`):
+- 正しいコード (`linear_ok/`・参照解・`examples/`) のうち KIR に下ろせた 114 件で、線形性の誤検出 0。テストは今まで `linear_ok/` だけを見ていたので、参照解と `examples/` も見るようにした。
+- `unsound/` の線形性: 検査 165 → 166、一致 109 → 114、KIR の拒否 42 → 48。増えたのは `linear_dropped_in_option`、`linear_match_arm_unconsumed`、`linear_result_arm_unconsumed`、`move_by_value_self_twice`、`move_match_arm_binding_twice` の 5 件。
+- 不一致が 1 件増えた: `with_body_consumes_binding`。`with` の本体で束縛を move したあと後始末が再び消費するので、KIR は E3002 (二重の move)。AST は E3040 (`with` の本体での move) を出し、E3002 / E3003 ではない。どちらも正しい拒否。
+- 一致の後退はない (ファイルごとに比べて、一致から不一致に変わったものはない)。途中で、腕の束縛を追わないと `linear_received_value_dropped` の E3003 が消えることを確かめ、腕の束縛の注釈で戻した。
+
+**項目 3 (`Option<&スカラー>`) は未対応 (理由を残す)。** `e01_method_chain_borrow`・`option_unwrap_returns_borrow` の KIR:
+`%3 = asshared %1` (`ref<u32>`) → `%4 = load %3` (値) → `%5 = some %4` (`Option<u32>`)。借用の出どころ (`Slot(%1)`) は `load` の時点で消える。直す方法は二つあるが、どちらも今回の範囲を超える:
+1. 参照の型を保つ: `Pay` に参照の種類がない (`Pay` は整数・集成体・入れ子の Option / Result だけ)。参照を入れると、すべての実行器・LLVM・VM のペイロードの配置を変える。
+2. 出どころの注釈を付ける: `some` / `payload` の伝播は `carries_ty(t)` で止まっていて (`kir_borrowck.rs` の `step`)、スカラーの値は借用を運ばない。注釈で運ばせるには、スカラーの `payload` の伝播規則を変えることになり、スカラーの値を通るすべての命令に効く。その上で `Some(&x)`・`get`・`unwrap` の下ろし口すべてに注釈が要る。誤検出の検査を取り直す規模なので、ここでは行わない。
+どちらも `unsound/` の不一致を減らせるが、正しいコードへの誤検出を増やす危険がある。項目 3 を解くのは、下ろしの一般化 (修正プラン 3-1) と合わせて扱う。
+
+**残り。** 字段の注釈は `x.f.m()` の受け手と `with` の後始末に限る。`match` の腕の束縛は `match_` の腕だけ (`if let` は `match` に下ろされるので同じ経路)。`for` や `let` の分解の束縛は追っていない (`pat_test` の経路は未注釈)。
+
 ## 25. `derive [Drop]` の再帰する型 (check/derive-drop、2026-11-14)
 
 - 型表: `derive [Drop]` の型は、`intern_def` が型の組み立ての前に添字を予約し (`AggTab::rec_drop`)、`Box<Self>` のフィールドから自分を指せる (箱は 8 バイトなので中身の配置は要らない)。ほかの再帰 (`Vec<Self>` など) は従来どおり「再帰的な型は対象外」。検査器が `derive [Drop]` の再帰を `Box<Self>` / `Option<Box<Self>>` に限っている (E2051)。KIR は集成体のフィールドに `Option` を置けないので、`Option<Box<Self>>` の欄を持つ型は下ろせずバンドルへ退避する。

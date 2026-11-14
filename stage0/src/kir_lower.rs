@@ -747,7 +747,7 @@ impl<'a> Lw<'a> {
     }
 
     fn own_emit(&mut self, name: &str, s: usize, kind: kir::OwnKind) {
-        if self.cur.is_none() {
+        if self.cur.is_none() || self.coll.own_mute == Some(s) {
             return;
         }
         if let Some(id) = self.coll.own_ids.get(&(name.to_string(), s)).copied() {
@@ -1081,6 +1081,10 @@ impl<'a> Lw<'a> {
                 if is_net_ty(self, rt) {
                     let meth = segs[segs.len() - 1].clone();
                     if matches!(meth.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port" | "set_read_timeout" | "set_write_timeout" | "shutdown" | "peer_addr_raw" | "local_addr_raw" | "send_to" | "recv_from_raw") {
+                        // `x.close()` は値の受け手 (move)。
+                        if meth == "close" {
+                            self.own_emit(&segs[0], s, if segs.len() == 2 { crate::kir::OwnKind::Consume } else { crate::kir::OwnKind::Part });
+                        }
                         let args = items(&f[1]).to_vec();
                         return net_method(self, e, &meth, recv, rt, &args, line);
                     }
@@ -1095,6 +1099,9 @@ impl<'a> Lw<'a> {
                 if is_fs_ty(self, rt) {
                     let meth = segs[segs.len() - 1].clone();
                     if matches!(meth.as_str(), "close" | "flush" | "read" | "sync" | "write") {
+                        if meth == "close" {
+                            self.own_emit(&segs[0], s, if segs.len() == 2 { crate::kir::OwnKind::Consume } else { crate::kir::OwnKind::Part });
+                        }
                         let args = items(&f[1]).to_vec();
                         return fs_method(self, e, &meth, recv, rt, &args, line);
                     }
@@ -1109,6 +1116,8 @@ impl<'a> Lw<'a> {
                         return self.err(line, "join の引数は取れない");
                     }
                     if let Some(r) = thread_lower::join_call(self, e, recv, rt, line) {
+                        // `join` は値の受け手 (move)。スレッドの値を取り出すとき、束縛の義務を果たす。
+                        self.own_emit(&segs[0], s, if segs.len() == 2 { crate::kir::OwnKind::Consume } else { crate::kir::OwnKind::Part });
                         return r;
                     }
                 }
@@ -1648,7 +1657,12 @@ impl<'a> Lw<'a> {
         //    出口の終端を置く前に後始末式が下ろされる (木走査と同じ)。
         self.scopes.push(vec![]);
         coll::bind_owned(self, &name, v, t);
-        coll::register_close(self, close_expr.clone());
+        // 束縛した資源の move・線形の義務を追う (注釈)。後始末式の中の消費 (`r.close()` / `t.close(r)`) が義務を果たす。
+        let own_slot = self.lookup(&name);
+        if let (Ok(it), Some(s)) = (self.src_ty(init), own_slot) {
+            self.own_declare(&name, s, &it);
+        }
+        coll::register_close(self, close_expr.clone(), own_slot.map(|s| (name.clone(), s)));
 
         // 3. 本体。
         let r = self.expr(body);
