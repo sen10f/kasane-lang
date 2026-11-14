@@ -130,6 +130,50 @@ fn fname(key: &str) -> String {
     gname("k.", key)
 }
 
+/// スレッドの補助の関数 (`kir_lower_thread.rs`。実行器では協調実行の本体) を、pthread の本体に差し替える (設計_KIR.md 22.7)。
+/// - 項目 (`ksn.thr.new`) は `calloc` した領域で、「番号」(usize) はその番地。`+16` に `pthread_t` を置く。
+/// - `start` は 16 MiB のスタックの `pthread_create` で `ksn.thr.exec` を走らせ、`join` は `pthread_join`、`release` は `free`。
+/// - チャネルは大域の 1 つの mutex + 条件変数 (`lock` / `unlock` (起こしてから外す) / `wait`)。
+/// スレッドの項目の大きさ (`kir_lower_thread.rs` の `ESZ` と同じ。余裕を持たせて 256)。
+const THREAD_ENTRY_SIZE: usize = 256;
+
+fn thread_override(key: &str, m: &Module) -> Option<String> {
+    let f = m.find(key)?;
+    let name = fname(key);
+    let def = |ret: &str, params: &str, body: &str| Some(format!("define internal {ret} {name}({params}) {{\nentry:\n{body}}}\n"));
+    match key {
+        "ksn.thr.lock" => def("i8", "", "  %r = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  ret i8 0\n"),
+        "ksn.thr.unlock" => def("i8", "", "  %g = load i64, ptr @ksn.rt.gen\n  %g1 = add i64 %g, 1\n  store i64 %g1, ptr @ksn.rt.gen\n  store i64 0, ptr @ksn.rt.blocked\n  %a = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %r = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret i8 0\n"),
+        "ksn.thr.minit" => def("i8", "ptr %arg0", "  %attr = alloca [64 x i8], align 16\n  %a0 = call i32 @pthread_mutexattr_init(ptr %attr)\n  %a1 = call i32 @pthread_mutexattr_settype(ptr %attr, i32 1)\n  %a2 = call i32 @pthread_mutex_init(ptr %arg0, ptr %attr)\n  %a3 = call i32 @pthread_mutexattr_destroy(ptr %attr)\n  ret i8 0\n"),
+        "ksn.thr.mlock" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_mutex_lock(ptr %arg0)\n  ret i8 0\n"),
+        "ksn.thr.munlock" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_mutex_unlock(ptr %arg0)\n  ret i8 0\n"),
+        "ksn.thr.wait" => def(
+            "i8",
+            "",
+            "  %b = load i64, ptr @ksn.rt.blocked\n  %b1 = add i64 %b, 1\n  store i64 %b1, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %d = icmp uge i64 %b1, %l\n  br i1 %d, label %dead, label %w\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock)\n  call void @exit(i32 101)\n  unreachable\nw:\n  %g0 = load i64, ptr @ksn.rt.gen\n  br label %lp\nlp:\n  %r = call i32 @pthread_cond_wait(ptr @ksn.rt.cv, ptr @ksn.rt.mu)\n  %g1 = load i64, ptr @ksn.rt.gen\n  %same = icmp eq i64 %g1, %g0\n  br i1 %same, label %lp, label %done\ndone:\n  ret i8 0\n",
+        ),
+        "ksn.thr.new" => def("i64", "", &format!("  %p = call ptr @calloc(i64 1, i64 {})\n  %z = icmp eq ptr %p, null\n  br i1 %z, label %oom, label %ok\noom:\n  call void @exit(i32 101)\n  unreachable\nok:\n  %i = ptrtoint ptr %p to i64\n  ret i64 %i\n", THREAD_ENTRY_SIZE)),
+        "ksn.thr.ent" => def("ptr", "i64 %arg0", "  %p = inttoptr i64 %arg0 to ptr\n  ret ptr %p\n"),
+        "ksn.thr.release" => def("i8", "i64 %arg0", "  %p = inttoptr i64 %arg0 to ptr\n  call void @free(ptr %p)\n  ret i8 0\n"),
+        "ksn.thr.join" => def("i8", "i64 %arg0", "  %p = inttoptr i64 %arg0 to ptr\n  %t = getelementptr i8, ptr %p, i64 16\n  %tid = load i64, ptr %t\n  %r = call i32 @pthread_join(i64 %tid, ptr null)\n  ret i8 0\n"),
+        "ksn.thr.start" => {
+            let exec = m.find("ksn.thr.exec")?;
+            let body = format!(
+                "  %p = inttoptr i64 %arg0 to ptr\n  %t = getelementptr i8, ptr %p, i64 16\n  %attr = alloca [64 x i8], align 16\n  %a0 = call i32 @pthread_attr_init(ptr %attr)\n  %a1 = call i32 @pthread_attr_setstacksize(ptr %attr, i64 16777216)\n  %m = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %l = load i64, ptr @ksn.rt.live\n  %l1 = add i64 %l, 1\n  store i64 %l1, ptr @ksn.rt.live\n  %mu = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  %r = call i32 @pthread_create(ptr %t, ptr %attr, ptr @ksn.rt.tramp, ptr %p)\n  %a2 = call i32 @pthread_attr_destroy(ptr %attr)\n  %bad = icmp ne i32 %r, 0\n  br i1 %bad, label %fail, label %ok\nfail:\n  call void @exit(i32 101)\n  unreachable\nok:\n  ret i8 0\n"
+            );
+            let tramp = format!(
+                "define internal ptr @ksn.rt.tramp(ptr %p) {{\nentry:\n  %i = ptrtoint ptr %p to i64\n  %r = call i8 {}(i64 %i)\n  %m = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %l = load i64, ptr @ksn.rt.live\n  %l1 = sub i64 %l, 1\n  store i64 %l1, ptr @ksn.rt.live\n  %g = load i64, ptr @ksn.rt.gen\n  %g1 = add i64 %g, 1\n  store i64 %g1, ptr @ksn.rt.gen\n  store i64 0, ptr @ksn.rt.blocked\n  %bc = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret ptr null\n}}\n\n",
+                fname(&exec.key)
+            );
+            def("i8", "i64 %arg0", &body).map(|d| tramp + &d)
+        }
+        _ => {
+            let _ = f;
+            None
+        }
+    }
+}
+
 // ---------------------------------------------------------------- モジュール全体
 
 /// 超越関数の内部関数 (`fmath` を命令列に写す)。
@@ -249,11 +293,39 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         cx.decl(format!("declare {} @{}({})", rt, sym, params.join(", ")));
     }
     let mut funcs = String::new();
+    let mut pthread_used = false;
     for (fi, f) in m.funcs.iter().enumerate() {
         if f.link.is_some() {
             continue;
         }
         funcs.push('\n');
+        if let Some(text) = thread_override(&f.key, m) {
+            if !pthread_used {
+                pthread_used = true;
+                cx.globals.push_str("@ksn.rt.mu = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.cv = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.live = internal global i64 1\n@ksn.rt.blocked = internal global i64 0\n@ksn.rt.gen = internal global i64 0\n");
+                cx.globals.push_str(&str_const("ksn.rt.deadlock", &format!("panic: {}\n\0", crate::interp::DEADLOCK_RECV)));
+                for d in [
+                    "declare i32 @pthread_create(ptr, ptr, ptr, ptr)",
+                    "declare i32 @pthread_join(i64, ptr)",
+                    "declare i32 @pthread_attr_init(ptr)",
+                    "declare i32 @pthread_attr_setstacksize(ptr, i64)",
+                    "declare i32 @pthread_attr_destroy(ptr)",
+                    "declare i32 @pthread_mutex_lock(ptr)",
+                    "declare i32 @pthread_mutex_unlock(ptr)",
+                    "declare i32 @pthread_cond_wait(ptr, ptr)",
+                    "declare i32 @pthread_cond_broadcast(ptr)",
+                    "declare ptr @calloc(i64, i64)",
+                    "declare i32 @pthread_mutexattr_init(ptr)",
+                    "declare i32 @pthread_mutexattr_settype(ptr, i32)",
+                    "declare i32 @pthread_mutexattr_destroy(ptr)",
+                    "declare i32 @pthread_mutex_init(ptr, ptr)",
+                ] {
+                    cx.decl(d);
+                }
+            }
+            funcs.push_str(&text);
+            continue;
+        }
         funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
@@ -302,7 +374,7 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         out.push('\n');
     }
     out.push('\n');
-    out.push_str("@ksn.depth = internal global i64 0\n");
+    out.push_str("@ksn.depth = internal thread_local global i64 0\n");
     out.push_str(&str_const("ksn.fmt.res", "\x01%llx %llx\n\0"));
     out.push_str(&str_const("ksn.fmt.so", "stack overflow\n\0"));
     out.push_str(&str_const("ksn.fmt.index", "panic: index out of bounds: the len is %llu but the index is %llu\n\0"));

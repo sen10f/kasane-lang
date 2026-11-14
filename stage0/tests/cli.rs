@@ -7051,10 +7051,9 @@ fn threads_interpreter_fails_clearly_when_no_single_threaded_schedule_exists() {
     }
     let p = threads_build(&t, false);
     let r = Command::new(&p).output().unwrap();
-    // LLVM (KIR) の `spawn` は実スレッドではなく、インタプリタと同じ単一スレッドの割り当て (Cranelift は pthreads で往復できた)。
-    // ネイティブでもバンドルでも、同じ理由で止まる。
-    assert_eq!(r.status.code(), Some(101), "{}", text(&r.stderr));
-    assert!(text(&r.stderr).contains("deadlock"), "{}", text(&r.stderr));
+    // LLVM (KIR) の `spawn` は pthread の実スレッドなので、往復の通信はネイティブでは進んで終わる
+    // (インタプリタの単一スレッドの割り当てには載らない)。
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
 }
 
 /// 線形値 (`TcpStream`) を `spawn` のクロージャへ move し、返す。`Receiver` を複製して複数のワーカーが 1 つのキューから
@@ -14096,7 +14095,8 @@ fn kir_thread_spawn_join_match_tree_walker() {
         assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
     }
     // 出力の順 (spawn の時は何も出ず、b を join すると a, b の順に走り、c は c の join の時に走る) を木走査の表示と比べる。
-    let k = kir_run(&["kir", "t.order_print", "--run"], &t.0);
+    // 出力の順は実スレッドのネイティブでは決まらない (spawn した側が先に出す) ので、参照実行器だけで比べる。
+    let k = run(&["kir", "t.order_print", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(0), "kir order_print\n{}", text(&k.stderr));
     let want = ["spawned", "thread", "thread", "joined b", "thread", "joined all"];
     assert_eq!(tw_out.lines().collect::<Vec<_>>(), want, "木走査: join の時に生成順で走る");
@@ -14513,13 +14513,16 @@ fn kir_sync_values_match_tree_walker() {
         ("t.pipe_sum", "5050"),
         ("t.same_thread_sum", "3213"),
         ("t.send_after_close_value", "7"),
-        ("t.two_producers_order", "7"),
         ("t.loop_spawn", "33"),
     ] {
         let k = kir_run(&["kir", f, "--run"], &t.0);
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
     }
+    // 2 本の生産者の受信の順は、実スレッドのネイティブでは決まらない (協調実行の生成順ではない)。参照実行器だけで比べる。
+    let k = run(&["kir", "t.two_producers_order", "--run"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "kir: two_producers_order\n{}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "7");
     // Rng: 木走査と同じ列 (シードが同じなら同じ、別のシードなら別)。値は木走査の core.check と --run / --native で比べる。
     for f in ["t.rng_values", "t.rng_ref"] {
         let mut v = vec![];
@@ -14648,6 +14651,142 @@ fn kir_sync_empty_recv_with_live_sender_deadlocks_like_the_tree_walker() {
     let k = kir_run(&["kir", "t.empty_recv_value", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(101), "kir: {}", text(&k.stderr));
     assert!(text(&k.stderr).contains("deadlock: recv() on an empty channel"), "{}", text(&k.stderr));
+}
+
+const REAL_THREADS_SRC: &str = r#"static t.COUNTER: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+fn t.add_many(n: u32) -> () uses [thread] panics may
+    let mut i = 0u32
+    while i < n {
+        let g = t.COUNTER.lock()
+        core.mem.drop(g)
+        let mut h = t.COUNTER.lock()
+        let r = h.get_mut()
+        *r = *r + 1u64
+        core.mem.drop(h)
+        i = i + 1u32
+    }
+end t.add_many
+
+fn t.contend(left: u32, per: u32) -> u64 uses [alloc, thread] panics may
+    if left == 0u32 {
+        t.add_many(per)
+        return 0u64
+    }
+    let handle = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [move per] {
+        t.add_many(per)
+        1u64
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let inner = t.contend(left - 1u32, per)
+    let v = handle.join()
+    inner + v
+end t.contend
+
+fn t.contended() -> u64 uses [alloc, thread] panics may
+    let spawned = t.contend(7u32, 2000u32)
+    let total = t.COUNTER.lock()
+    let v = *total.get()
+    core.mem.drop(total)
+    v + spawned * 1000000u64
+end t.contended
+
+fn t.fan(left: u32) -> u64 uses [alloc, thread] panics may
+    if left == 0u32 {
+        return 0u64
+    }
+    let handle = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [move left] {
+        u64.from_u32(left)
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let inner = t.fan(left - 1u32)
+    let v = handle.join()
+    inner + v
+end t.fan
+
+fn t.fan40() -> u64 uses [alloc, thread] panics may
+    t.fan(40u32)
+end t.fan40
+
+fn t.fan300() -> u64 uses [alloc, thread] panics may
+    t.fan(300u32)
+end t.fan300
+
+fn t.pc_produce(tx: std.sync.Sender<u32>, from: u32, count: u32) -> () uses [thread] panics may
+    let mut i = 0u32
+    while i < count {
+        match tx.send(from + i) {
+            Ok(_u) => 0u32
+            Err(_e) => core.panic.panic("send failed")
+        }
+        i = i + 1u32
+    }
+end t.pc_produce
+
+fn t.pc_sum() -> u32 uses [alloc, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 4usize)
+    let (tx, rx) = match made {
+        Ok(p) => p
+        Err(_e) => core.panic.panic("channel failed")
+    }
+    let tx2 = tx.clone()
+    let a = match std.thread.spawn(std.alloc.SYSTEM, fn() -> () capture [move tx] {
+        t.pc_produce(tx, 0u32, 500u32)
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let b = match std.thread.spawn(std.alloc.SYSTEM, fn() -> () capture [move tx2] {
+        t.pc_produce(tx2, 1000u32, 500u32)
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let mut sum = 0u32
+    let mut n = 0u32
+    while n < 1000u32 {
+        match rx.recv() {
+            Ok(v) => {
+                sum = sum + v
+            }
+            Err(_e) => core.panic.panic("recv failed")
+        }
+        n = n + 1u32
+    }
+    a.join()
+    b.join()
+    sum
+end t.pc_sum
+"#;
+
+#[test]
+fn kir_native_threads_are_real_pthreads() {
+    // 実スレッド (pthread): 表の上限 (参照実行器の 1024) を超える 300 本、複数スレッドからの Mutex の相互排他、
+    // 2 本の生産者と 1 本の消費者のチャネル。値は ksn run (木走査) と --run / --native が一致する。
+    if !clang_available() {
+        return;
+    }
+    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    core.check.eq(t.fan40(), 820u64)\n    core.check.eq(t.fan300(), 45150u64)\n    core.check.eq(t.contended(), 7016000u64)\n    core.check.eq(t.pc_sum(), 749500u32)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_real_threads", &format!("{}{}", REAL_THREADS_SRC, main));
+    let tw = run(&["run"], &t.0);
+    assert_eq!(tw.status.code(), Some(0), "木走査 main\n{}{}", text(&tw.stdout), text(&tw.stderr));
+    for (f, want) in [("t.fan40", "820"), ("t.contended", "7016000"), ("t.pc_sum", "749500")] {
+        let k = kir_run(&["kir", f, "--run"], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", f, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want, "kir value of {}", f);
+    }
+    // 300 本 (協調実行の表は 1024 本まで。ネイティブは上限なし)。繰り返して競合を拾う。
+    for _ in 0..5 {
+        for (f, want) in [("t.fan300", "45150"), ("t.contended", "7016000"), ("t.pc_sum", "749500")] {
+            let k = run(&["kir", f, "--native"], &t.0);
+            assert_eq!(k.status.code(), Some(0), "native: {}\n{}", f, text(&k.stderr));
+            assert_eq!(text(&k.stdout).trim(), want, "native value of {}", f);
+        }
+    }
 }
 
 const ARRAY_SRC: &str = r#"fn t.sum_lit() -> u32 uses [] panics never pub

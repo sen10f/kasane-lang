@@ -68,6 +68,8 @@ pub(crate) enum Owned {
     /// `with` の後始末式 (`coll.closes` の添字)。出口 (末尾・`return`・`?`・`break`・`continue`) で、
     /// 束縛した変数の解放より前に (登録の逆順で) 下ろす。
     With(usize),
+    /// `static` の `Mutex` のガード (mutex の番地)。スコープの終わりで mutex を外す。
+    Unlock(VId),
 }
 
 /// 下ろしの状態。`Lw` が 1 つ持つ。
@@ -633,6 +635,9 @@ fn drop_owned(lw: &mut Lw, o: Owned) {
             drop_value(lw, v, t);
         }
         Owned::With(i) => run_close(lw, i),
+        Owned::Unlock(m) => {
+            super::thread_lower::rt_call(lw, super::thread_lower::MUNLOCK, vec![m], Ty::Unit);
+        }
         Owned::Val { slot, flag } => {
             let t = lw.slots[slot].1;
             let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
@@ -672,6 +677,12 @@ fn run_close(lw: &mut Lw, i: usize) {
             }
         }
     }
+}
+
+/// `static` の `Mutex` の `lock()` の結果 (ガード) を現在のスコープの所有に入れる: 終わりで `m` (mutex の番地) を外す。
+pub(crate) fn register_unlock(lw: &mut Lw, m: VId) {
+    let scope = lw.scopes.len() - 1;
+    lw.coll.owned.push((scope, Owned::Unlock(m)));
 }
 
 /// `with` の本体の前に呼ぶ: 後始末式を現在のスコープ (束縛を置いたスコープ) に登録する。

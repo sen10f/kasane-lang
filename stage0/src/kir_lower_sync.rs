@@ -14,7 +14,11 @@ use crate::parser::V;
 use crate::program::Target as Tgt;
 use crate::types::{from_v, Ty as Src};
 
+use super::thread_lower::{rt_call, LOCK, MINIT, MLOCK, UNLOCK};
 use super::{Lw, LR};
+
+/// 大域領域の中の pthread mutex の位置 (`+0` 旗、`+8` 値、`+16` mutex)。
+const MUTEX_OFF: u32 = 16;
 
 const RNG: &str = "std.rand.Rng";
 
@@ -164,7 +168,9 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
         Some(v) if nname(v) == "Call" && strs(&nf(&nf(v)[0])[0]).join(".") == "std.sync.Mutex.new" && items(&nf(v)[1]).len() == 1 => items(&nf(v)[1])[0].clone(),
         _ => return lw.err(line, format!("static {} の初期化が std.sync.Mutex.new(値) の形でない", name)),
     };
-    let g = lw.emit(Ty::Ptr, Op::GlobalBytes { name, size: 16 });
+    let g = lw.emit(Ty::Ptr, Op::GlobalBytes { name, size: 80 });
+    // 初期化の判定は大域のロックの下 (実スレッドで 2 重に初期化しない)。
+    rt_call(lw, LOCK, vec![], Ty::Unit);
     let flag = lw.emit(Ty::U8, Op::MemLoad { p: g, off: 0 });
     let zero = lw.emit(Ty::U8, Op::Const(0));
     let fresh = lw.emit(Ty::Bool, Op::Cmp { cc: crate::kir::Cc::Eq, ty: Ty::U8, a: flag, b: zero });
@@ -186,8 +192,17 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
     lw.emit(Ty::Unit, Op::MemStore { ty: elem, p: g, off: 8, v: iv });
     let one = lw.emit(Ty::U8, Op::Const(1));
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: g, off: 0, v: one });
+    let mo = lw.emit(Ty::Usize, Op::Const(MUTEX_OFF as i128));
+    let mp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off: mo });
+    rt_call(lw, MINIT, vec![mp], Ty::Unit);
     lw.goto(cont, vec![]);
     lw.cur = Some(cont);
+    rt_call(lw, UNLOCK, vec![], Ty::Unit);
+    // 実スレッドの相互排他: 値ごとの再帰 mutex。ガードを落とす (スコープの終わり) まで保持する。協調実行では何もしない。
+    let mo = lw.emit(Ty::Usize, Op::Const(MUTEX_OFF as i128));
+    let mp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off: mo });
+    rt_call(lw, MLOCK, vec![mp], Ty::Unit);
+    super::coll::register_unlock(lw, mp);
     let off = lw.emit(Ty::Usize, Op::Const(8));
     let vp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off });
     let r = lw.emit(Ty::Ref(true, p), Op::Bitcast { src: Ty::Ptr, a: vp });
