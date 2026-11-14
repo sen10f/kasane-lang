@@ -1,0 +1,221 @@
+const todo.model.MAX_TITLE: usize = 2048usize
+
+type todo.model.Todo derive [Debug, PartialEq, Eq] pub
+    id: i64 pub
+    title: alloc.string.String<std.alloc.System> pub
+    done: bool pub
+    created_at: alloc.string.String<std.alloc.System> pub
+end todo.model.Todo
+
+fn todo.model.decode_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.Todo, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
+    let len = std.json.decode_len(std.json.Value { doc: doc, at: at })?
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for i in core.iter.range(0usize, len) {
+        let item = std.json.decode_item(std.json.Value { doc: doc, at: at }, i)?
+        out.push(todo.model.from_json_value(item)?)?
+    }
+    Ok(out)
+end todo.model.decode_array
+
+// POST リクエストボディ `{"title":"..."}` から title と現在時刻 (RFC 3339) を取り出す。
+fn todo.model.from_create_value(value: std.json.Value) -> Result<(alloc.string.String<std.alloc.System>, alloc.string.String<std.alloc.System>), std.json.Error> uses [alloc, time] panics never pub
+    let title_v = std.json.decode_field(value, "title", 0usize)?
+    let title = std.json.decode_string(title_v)?
+    if title.len() > todo.model.MAX_TITLE {
+        return Err(std.json.Error.OutOfRange)
+    }
+    let now = std.datetime.DateTime.now()
+    let created_at = now.to_rfc3339()?
+    Ok((title, created_at))
+end todo.model.from_create_value
+
+// `std.json.parse` で得たオブジェクト `Value` から Todo を組み立てる。
+fn todo.model.from_json_value(value: std.json.Value) -> Result<todo.model.Todo, std.json.Error> uses [alloc] panics never
+    let id_v = std.json.decode_field(value, "id", 0usize)?
+    let id = std.json.decode_i64(id_v)?
+    let title_v = std.json.decode_field(value, "title", 1usize)?
+    let title = std.json.decode_string(title_v)?
+    if title.len() > todo.model.MAX_TITLE {
+        return Err(std.json.Error.OutOfRange)
+    }
+    let done_v = std.json.decode_field(value, "done", 2usize)?
+    let done = std.json.decode_bool(done_v)?
+    let created_v = std.json.decode_field(value, "created_at", 3usize)?
+    let created_at = std.json.decode_string(created_v)?
+    Ok(todo.model.Todo { id: id, title: title, done: done, created_at: created_at })
+end todo.model.from_json_value
+
+fn todo.model.push_digit_char(d: u8) -> char uses [] panics never
+    let mut base = b'0'
+    if d >= 10u8 {
+        base = b'a'.wrapping_sub(10u8)
+    }
+    match char.try_from_u32(u32.from_u8(base.wrapping_add(d))) {
+        Some(c) => c
+        None => '?'
+    }
+end todo.model.push_digit_char
+
+fn todo.model.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    out.push_str("\"")?
+    for c in text.chars() {
+        if c == '"' {
+            out.push_str("\\\"")?
+        } else if c == '\\' {
+            out.push_str("\\\\")?
+        } else if c == '\n' {
+            out.push_str("\\n")?
+        } else if c == '\r' {
+            out.push_str("\\r")?
+        } else if c == '\t' {
+            out.push_str("\\t")?
+        } else if c.to_u32() < 32u32 {
+            let high = c.to_u32().wrapping_shr(4u32)
+            let low = c.to_u32() & 15u32
+            out.push_str("\\u00")?
+            match u8.try_from_u32(high) {
+                Ok(d) => out.push(todo.model.push_digit_char(d))?
+                Err(_e) => return Err(alloc.alloc.AllocError { code: 0u32 })
+            }
+            match u8.try_from_u32(low) {
+                Ok(d) => out.push(todo.model.push_digit_char(d))?
+                Err(_e) => return Err(alloc.alloc.AllocError { code: 0u32 })
+            }
+        } else {
+            out.push(c)?
+        }
+    }
+    out.push_str("\"")?
+    Ok(out)
+end todo.model.push_quoted
+
+fn todo.model.test_memory() -> todo.model.Todo uses [alloc] panics may
+    let mut title = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(title.push_str("買い物"))
+    match alloc.string.String.from_str(std.alloc.SYSTEM, "2026-11-14T10:00:00Z") {
+        Ok(created) => todo.model.Todo { id: 7i64, title: title, done: true, created_at: created }
+        Err(_e) => core.panic.panic("test_memory")
+    }
+end todo.model.test_memory
+
+// `{"id":1,"title":"買い物","done":false,"created_at":"2026-11-14T10:00:00Z"}` の形に書き出す。
+fn todo.model.to_json(todo: &todo.model.Todo) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("{\"id\":")?
+    out.push_i64(todo.id)?
+    out.push_str(",\"title\":")?
+    out.push_str("\"")?
+    for c in todo.title.as_str().chars() {
+        if c == '"' {
+            out.push_str("\\\"")?
+        } else if c == '\\' {
+            out.push_str("\\\\")?
+        } else if c == '\n' {
+            out.push_str("\\n")?
+        } else if c == '\r' {
+            out.push_str("\\r")?
+        } else if c == '\t' {
+            out.push_str("\\t")?
+        } else if c.to_u32() < 32u32 {
+            let high = c.to_u32().wrapping_shr(4u32)
+            let low = c.to_u32() & 15u32
+            out.push_str("\\u00")?
+            match u8.try_from_u32(high) {
+                Ok(d) => {
+                    let mut base = b'0'
+                    if d >= 10u8 {
+                        base = b'a'.wrapping_sub(10u8)
+                    }
+                    match char.try_from_u32(u32.from_u8(base.wrapping_add(d))) {
+                        Some(c2) => out.push(c2)?
+                        None => return Err(alloc.alloc.AllocError { code: 0u32 })
+                    }
+                }
+                Err(_e) => return Err(alloc.alloc.AllocError { code: 0u32 })
+            }
+            match u8.try_from_u32(low) {
+                Ok(d) => {
+                    let mut base = b'0'
+                    if d >= 10u8 {
+                        base = b'a'.wrapping_sub(10u8)
+                    }
+                    match char.try_from_u32(u32.from_u8(base.wrapping_add(d))) {
+                        Some(c2) => out.push(c2)?
+                        None => return Err(alloc.alloc.AllocError { code: 0u32 })
+                    }
+                }
+                Err(_e) => return Err(alloc.alloc.AllocError { code: 0u32 })
+            }
+        } else {
+            out.push(c)?
+        }
+    }
+    out.push_str("\"")?
+    out.push_str(",\"done\":")?
+    if todo.done {
+        out.push_str("true")?
+    } else {
+        out.push_str("false")?
+    }
+    out.push_str(",\"created_at\":")?
+    out.push_str("\"")?
+    for c in todo.created_at.as_str().chars() {
+        if c == '"' {
+            out.push_str("\\\"")?
+        } else if c == '\\' {
+            out.push_str("\\\\")?
+        } else if c == '\n' {
+            out.push_str("\\n")?
+        } else if c == '\r' {
+            out.push_str("\\r")?
+        } else if c == '\t' {
+            out.push_str("\\t")?
+        } else if c.to_u32() < 32u32 {
+            let high = c.to_u32().wrapping_shr(4u32)
+            let low = c.to_u32() & 15u32
+            out.push_str("\\u00")?
+            match u8.try_from_u32(high) {
+                Ok(d) => {
+                    let mut base = b'0'
+                    if d >= 10u8 {
+                        base = b'a'.wrapping_sub(10u8)
+                    }
+                    match char.try_from_u32(u32.from_u8(base.wrapping_add(d))) {
+                        Some(c2) => out.push(c2)?
+                        None => return Err(alloc.alloc.AllocError { code: 0u32 })
+                    }
+                }
+                Err(_e) => return Err(alloc.alloc.AllocError { code: 0u32 })
+            }
+            match u8.try_from_u32(low) {
+                Ok(d) => {
+                    let mut base = b'0'
+                    if d >= 10u8 {
+                        base = b'a'.wrapping_sub(10u8)
+                    }
+                    match char.try_from_u32(u32.from_u8(base.wrapping_add(d))) {
+                        Some(c2) => out.push(c2)?
+                        None => return Err(alloc.alloc.AllocError { code: 0u32 })
+                    }
+                }
+                Err(_e) => return Err(alloc.alloc.AllocError { code: 0u32 })
+            }
+        } else {
+            out.push(c)?
+        }
+    }
+    out.push_str("\"")?
+    out.push_str("}")?
+    Ok(out)
+end todo.model.to_json
+
+test todo.model.to_json.test_shape
+    let t = todo.model.test_memory()
+    match todo.model.to_json(&t) {
+        Ok(s) => {
+            let want = "{\"id\":7,\"title\":\"買い物\",\"done\":true,\"created_at\":\"2026-11-14T10:00:00Z\"}"
+            core.check.eq(s.as_str(), want)
+        }
+        Err(_e) => core.panic.panic("to_json")
+    }
+end todo.model.to_json.test_shape

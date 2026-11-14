@@ -1,0 +1,201 @@
+import todo.error
+import todo.http
+import todo.model
+import todo.store
+
+fn todo.router.create(db: &mut todo.store.Store, body: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, time] panics never
+    let doc = std.json.parse(body).map_err(error.from_json)?
+    let root = doc.root()
+    let (title, created_at) = model.from_create_value(root).map_err(error.from_json)?
+    let added = db.add(title.as_str(), created_at.as_str())?
+    let s = model.to_json(added)?
+    Ok(http.json_response(201u16, s))
+end todo.router.create
+
+fn todo.router.error_body(message: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("{\"error\":")?
+    model.push_quoted(&mut out, message)?
+    out.push_str("}")?
+    Ok(out)
+end todo.router.error_body
+
+fn todo.router.error_response(status: u16, message: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never pub
+    let body = todo.router.error_body(message)?
+    Ok(http.json_response(status, body))
+end todo.router.error_response
+
+fn todo.router.get_one(db: &todo.store.Store, id: i64) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never
+    match db.get(id) {
+        Some(t) => {
+            let s = model.to_json(t)?
+            Ok(http.json_response(200u16, s))
+        }
+        None => todo.router.error_response(404u16, "not found")
+    }
+end todo.router.get_one
+
+fn todo.router.list_all(db: &todo.store.Store) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never
+    let body = db.list()?
+    Ok(http.json_response(200u16, body))
+end todo.router.list_all
+
+fn todo.router.patch(db: &mut todo.store.Store, id: i64, body: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs] panics never
+    let doc = std.json.parse(body).map_err(error.from_json)?
+    let root = doc.root()
+    let done_v = std.json.decode_field(root, "done", 0usize)?
+    let done = std.json.decode_bool(done_v)?
+    let updated = db.set_done(id, done)?
+    let s = model.to_json(updated)?
+    Ok(http.json_response(200u16, s))
+end todo.router.patch
+
+fn todo.router.remove_one(db: &mut todo.store.Store, id: i64) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs] panics never
+    match db.remove(id) {
+        Ok(_u) => {
+            let empty = alloc.string.String.new(std.alloc.SYSTEM)
+            Ok(http.json_response(204u16, empty))
+        }
+        Err(error.Error.NotFound) => todo.router.error_response(404u16, "not found")
+        Err(e) => Err(e)
+    }
+end todo.router.remove_one
+
+fn todo.router.route(db: &mut todo.store.Store, request: &todo.http.Request) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, time] panics never pub
+    let path = request.path.as_str()
+    match request.method {
+        http.Method.Get => {
+            if path == "/todos" {
+                return todo.router.list_all(db)
+            }
+            if path.starts_with("/todos/") {
+                let id_text = match path.strip_prefix("/todos/") {
+                    Some(t) => t
+                    None => return todo.router.error_response(400u16, "bad path")
+                }
+                let id = match i64.parse(id_text) {
+                    Ok(n) => n
+                    Err(_e) => return todo.router.error_response(400u16, "bad id")
+                }
+                return todo.router.get_one(db, id)
+            }
+            todo.router.error_response(404u16, "not found")
+        }
+        http.Method.Post => {
+            if path == "/todos" {
+                return todo.router.create(db, request.body.as_str())
+            }
+            todo.router.error_response(405u16, "method not allowed")
+        }
+        http.Method.Patch => {
+            if path.starts_with("/todos/") {
+                let id_text = match path.strip_prefix("/todos/") {
+                    Some(t) => t
+                    None => return todo.router.error_response(400u16, "bad path")
+                }
+                let id = match i64.parse(id_text) {
+                    Ok(n) => n
+                    Err(_e) => return todo.router.error_response(400u16, "bad id")
+                }
+                return todo.router.patch(db, id, request.body.as_str())
+            }
+            todo.router.error_response(405u16, "method not allowed")
+        }
+        http.Method.Delete => {
+            if path.starts_with("/todos/") {
+                let id_text = match path.strip_prefix("/todos/") {
+                    Some(t) => t
+                    None => return todo.router.error_response(400u16, "bad path")
+                }
+                let id = match i64.parse(id_text) {
+                    Ok(n) => n
+                    Err(_e) => return todo.router.error_response(400u16, "bad id")
+                }
+                return todo.router.remove_one(db, id)
+            }
+            todo.router.error_response(405u16, "method not allowed")
+        }
+        http.Method.Other => todo.router.error_response(405u16, "method not allowed")
+    }
+end todo.router.route
+
+fn todo.router.store_len(db: &todo.store.Store) -> usize uses [] panics never pub
+    db.len()
+end todo.router.store_len
+
+fn todo.router.test_call(db: &mut todo.store.Store, method: todo.http.Method, path: &str, body: &str) -> todo.http.Response uses [alloc, io.fs, time] panics may
+    let copy_path = match alloc.string.String.from_str(std.alloc.SYSTEM, path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("alloc")
+    }
+    let copy_body = match alloc.string.String.from_str(std.alloc.SYSTEM, body) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("alloc")
+    }
+    let request = http.Request { body: copy_body, method: method, path: copy_path }
+    match todo.router.route(db, &request) {
+        Ok(r) => r
+        Err(_e) => core.panic.panic("route failed")
+    }
+end todo.router.test_call
+
+fn todo.router.test_store() -> todo.store.Store uses [alloc] panics may
+    match store.Store.new("") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+end todo.router.test_store
+
+test todo.router.route.test_create_get_list
+    let mut db = todo.router.test_store()
+    let r = todo.router.test_call(&mut db, http.Method.Post, "/todos", "{\"title\":\"買い物\"}")
+    core.check.eq(r.status, 201u16)
+    let prefix1 = "{\"id\":1,\"title\":\"買い物\",\"done\":false,\"created_at\":\"2"
+    core.check.eq(r.body.as_str().starts_with(prefix1), true)
+    let r2 = todo.router.test_call(&mut db, http.Method.Get, "/todos", "")
+    core.check.eq(r2.status, 200u16)
+    core.check.eq(r2.body.as_str().starts_with("[{\"id\":1"), true)
+    let r3 = todo.router.test_call(&mut db, http.Method.Get, "/todos/1", "")
+    core.check.eq(r3.status, 200u16)
+    let prefix3 = "{\"id\":1,\"title\":\"買い物\",\"done\":false"
+    core.check.eq(r3.body.as_str().starts_with(prefix3), true)
+end todo.router.route.test_create_get_list
+
+test todo.router.route.test_delete_removes
+    let mut db = todo.router.test_store()
+    core.mem.drop(todo.router.test_call(&mut db, http.Method.Post, "/todos", "{\"title\":\"test\"}"))
+    let r = todo.router.test_call(&mut db, http.Method.Delete, "/todos/1", "")
+    core.check.eq(r.status, 204u16)
+    let r2 = todo.router.test_call(&mut db, http.Method.Get, "/todos/1", "")
+    core.check.eq(r2.status, 404u16)
+    let r3 = todo.router.test_call(&mut db, http.Method.Get, "/todos", "")
+    core.check.eq(r3.body.as_str(), "[]")
+end todo.router.route.test_delete_removes
+
+test todo.router.route.test_method_not_allowed
+    let mut db = todo.router.test_store()
+    let g1 = todo.router.test_call(&mut db, http.Method.Get, "/todos/1", "")
+    core.check.eq(g1.status, 404u16)
+    let p1 = todo.router.test_call(&mut db, http.Method.Post, "/todos/1", "")
+    core.check.eq(p1.status, 405u16)
+    let g2 = todo.router.test_call(&mut db, http.Method.Get, "/todos", "")
+    core.check.eq(g2.status, 200u16)
+    core.check.eq(db.len(), 0usize)
+end todo.router.route.test_method_not_allowed
+
+test todo.router.route.test_patch_toggles_done
+    let mut db = todo.router.test_store()
+    core.mem.drop(todo.router.test_call(&mut db, http.Method.Post, "/todos", "{\"title\":\"test\"}"))
+    let r = todo.router.test_call(&mut db, http.Method.Patch, "/todos/1", "{\"done\":true}")
+    core.check.eq(r.status, 200u16)
+    core.check.eq(r.body.as_str().contains("\"done\":true"), true)
+    let r2 = todo.router.test_call(&mut db, http.Method.Get, "/todos/1", "")
+    core.check.eq(r2.status, 200u16)
+    core.check.eq(r2.body.as_str().contains("\"done\":true"), true)
+end todo.router.route.test_patch_toggles_done
+
+test todo.router.route.test_unknown_id_is_404
+    let mut db = todo.router.test_store()
+    let g = todo.router.test_call(&mut db, http.Method.Get, "/todos/999", "")
+    core.check.eq(g.status, 404u16)
+end todo.router.route.test_unknown_id_is_404

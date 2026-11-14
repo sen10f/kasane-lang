@@ -1,0 +1,107 @@
+import todo.error
+import todo.http
+import todo.router
+import todo.server
+import todo.store
+import todo.wire
+
+fn todo.pool.accept_all(listener: &std.net.TcpListener, jobs: &std.sync.Sender<std.net.TcpStream>, count: usize) -> Result<usize, todo.error.Error> uses [io.net, thread] panics never
+    let mut accepted = 0usize
+    while count == 0usize || accepted < count {
+        let stream = listener.accept()?
+        match jobs.send(stream) {
+            Ok(_u) => {
+                accepted = accepted.saturating_add(1usize)
+            }
+            Err(back) => core.mem.drop(back.value.close())
+        }
+    }
+    Ok(accepted)
+end todo.pool.accept_all
+
+fn todo.pool.respond(stream: &mut std.net.TcpStream, give: &std.sync.Sender<todo.store.Store>, take: &std.sync.Receiver<todo.store.Store>) -> Result<(), todo.error.Error> uses [alloc, io.fs, io.net, thread, time] panics may
+    let response = match wire.read_request(stream) {
+        Ok(request) => todo.pool.route(give, take, &request)?
+        Err(error.Error.BadRequest) => router.error_response(400u16, "bad request")?
+        Err(error.Error.TooLarge) => router.error_response(413u16, "payload too large")?
+        Err(other) => return Err(other)
+    }
+    let text = http.render_response(&response)?
+    wire.write_all(stream, text.as_str().as_bytes())
+end todo.pool.respond
+
+fn todo.pool.route(give: &std.sync.Sender<todo.store.Store>, take: &std.sync.Receiver<todo.store.Store>, request: &todo.http.Request) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, thread, time] panics may
+    let mut db = take.recv().unwrap()
+    let routed = router.route(&mut db, request)
+    core.mem.drop(give.send(db))
+    routed
+end todo.pool.route
+
+fn todo.pool.run(left: usize, listener: &std.net.TcpListener, count: usize, jobs: std.sync.Sender<std.net.TcpStream>, queue: std.sync.Receiver<std.net.TcpStream>, give: std.sync.Sender<todo.store.Store>, take: std.sync.Receiver<todo.store.Store>) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, thread, time] panics may
+    if left == 0usize {
+        let accepted = todo.pool.accept_all(listener, &jobs, count)
+        core.mem.drop(jobs)
+        core.mem.drop(todo.pool.worker(queue, give, take))
+        return accepted
+    }
+    let worker_give = give.clone()
+    let worker_queue = queue.clone()
+    let worker_take = take.clone()
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u64 capture [move worker_give, move worker_queue, move worker_take] {
+            todo.pool.worker(worker_queue, worker_give, worker_take)
+        },
+    )
+    let rest = left.saturating_sub(1usize)
+    let inner = todo.pool.run(rest, listener, count, jobs, queue, give, take)
+    match spawned {
+        Ok(handle) => core.mem.drop(handle.join())
+        Err(_e) => {
+        }
+    }
+    inner
+end todo.pool.run
+
+fn todo.pool.serve(listener: &std.net.TcpListener, db: todo.store.Store, count: usize, workers: usize) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, thread, time] panics may pub
+    let (give, take) = std.sync.channel::<store.Store, std.alloc.System>(
+        std.alloc.SYSTEM,
+        1usize,
+    )?
+    core.mem.drop(give.send(db))
+    let (jobs, queue) = std.sync.channel::<std.net.TcpStream, std.alloc.System>(
+        std.alloc.SYSTEM,
+        64usize,
+    )?
+    todo.pool.run(workers, listener, count, jobs, queue, give, take)
+end todo.pool.serve
+
+fn todo.pool.serve_one(stream: std.net.TcpStream, give: &std.sync.Sender<todo.store.Store>, take: &std.sync.Receiver<todo.store.Store>) -> Result<(), todo.error.Error> uses [alloc, io.fs, io.net, thread, time] panics may
+    let handled = with mut open = stream close core.mem.drop(open.close()) {
+        todo.pool.respond(&mut open, give, take)
+    }
+    server.settle(handled)
+end todo.pool.serve_one
+
+fn todo.pool.worker(first: std.sync.Receiver<std.net.TcpStream>, give: std.sync.Sender<todo.store.Store>, take: std.sync.Receiver<todo.store.Store>) -> u64 uses [alloc, io.fs, io.net, thread, time] panics may
+    let mut queue = first
+    let mut served = 0u64
+    loop {
+        match queue.recv() {
+            Ok(stream) => match todo.pool.serve_one(stream, &give, &take) {
+                Ok(_u) => {
+                    served = served.saturating_add(1u64)
+                }
+                Err(_e) => {
+                }
+            }
+            Err(_e) => match queue.close() {
+                Ok(_u) => break
+                Err(back) => {
+                    queue = back
+                }
+            }
+        }
+    }
+    served
+end todo.pool.worker

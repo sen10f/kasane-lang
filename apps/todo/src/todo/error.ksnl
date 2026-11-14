@@ -1,0 +1,36 @@
+import alloc.string
+
+enum todo.error.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    BadRequest
+    Closed
+    Corrupt
+    Io(std.io.Error)
+    Json(std.json.Error)
+    Net(std.net.Error)
+    NotFound
+    TooLarge
+end todo.error.Error
+
+fn todo.error.bad_number(_value: core.num.ParseIntError) -> todo.error.Error uses [] panics never pub
+    todo.error.Error.BadRequest
+end todo.error.bad_number
+
+fn todo.error.bad_text(_value: core.str.Utf8Error) -> todo.error.Error uses [] panics never pub
+    todo.error.Error.BadRequest
+end todo.error.bad_text
+
+fn todo.error.from_json(value: std.json.Error) -> todo.error.Error uses [] panics never pub
+    todo.error.Error.Json(value)
+end todo.error.from_json
+
+fn todo.error.io_failed() -> todo.error.Error uses [] panics never pub
+    todo.error.Error.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })
+end todo.error.io_failed
+
+fn todo.error.push_failed(value: alloc.string.PushBytesError) -> todo.error.Error uses [] panics never pub
+    match value {
+        string.PushBytesError.Alloc(a) => todo.error.Error.Alloc(a)
+        string.PushBytesError.InvalidUtf8(_u) => todo.error.Error.BadRequest
+    }
+end todo.error.push_failed
