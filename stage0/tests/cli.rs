@@ -23361,3 +23361,101 @@ fn kir_copy_elem_fields_match_tree_walker() {
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
     }
 }
+
+// ---- KIR の上の借用検査 (隠しの切り替え `KSN_BORROWCK=kir`。設計_KIR.md 24 章) ----
+
+/// `KSN_BORROWCK=kir ksn check` の結果: (KIR の検査の状態, KIR の診断の符号の列)。
+/// 状態は `Some(codes)` (検査した。codes は KIR が出した E3010 / E3030 の列) か `None` (KIR に下ろせず判断できない)。
+fn kir_bc(dir: &Path) -> Option<Vec<String>> {
+    let cache = std::env::temp_dir().join(format!("ksn_kirbc_cache_{}", std::process::id()));
+    let o = run_with_env(&["check", "--json"], dir, &[("KSN_BORROWCK", "kir"), ("KSN_CACHE_DIR", cache.to_str().unwrap())]);
+    let err = text(&o.stderr);
+    err.lines().find_map(|l| l.strip_prefix("kir-borrowck: checked").map(|r| r.split_whitespace().flat_map(|w| w.split(',')).filter(|c| !c.is_empty()).map(String::from).collect()))
+}
+
+fn ast_borrow_rejects(dir: &Path) -> bool {
+    codes(&text(&run(&["check", "--json"], dir).stdout)).iter().any(|c| c == "E3010" || c == "E3030")
+}
+
+fn sorted_ksnl(sub: &str) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(sub)).unwrap().map(|e| e.unwrap().path()).collect();
+    v.sort();
+    v
+}
+
+/// KIR の検査は、正しいコード (`linear_ok/`、`examples/`、参照解) に誤検出を出さない。KIR に下ろせないものは除く (その数を出す)。
+#[test]
+fn kir_borrowck_has_no_false_positives() {
+    let mut fps = vec![];
+    let (mut checked, mut unknown) = (0, 0);
+    for p in sorted_ksnl("linear_ok") {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("kirbc_ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        match kir_bc(&t.0) {
+            Some(c) if !c.is_empty() => fps.push(format!("linear_ok/{}: {:?}", stem, c)),
+            Some(_) => checked += 1,
+            None => unknown += 1,
+        }
+    }
+    let bench = root().join("bench").join("tasks");
+    let mut refs: Vec<PathBuf> = fs::read_dir(&bench).unwrap().map(|e| e.unwrap().path().join("reference.ksnl")).filter(|p| p.exists()).collect();
+    refs.sort();
+    for p in refs {
+        let name = p.parent().unwrap().file_name().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("kirbc_ref_{}", name), &fs::read_to_string(&p).unwrap());
+        match kir_bc(&t.0) {
+            Some(c) if !c.is_empty() => fps.push(format!("reference {}: {:?}", name, c)),
+            Some(_) => checked += 1,
+            None => unknown += 1,
+        }
+    }
+    let mut ex: Vec<PathBuf> = fs::read_dir(root().join("examples")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("kasane.toml").exists()).collect();
+    ex.sort();
+    for d in ex {
+        let name = d.file_name().unwrap().to_string_lossy().to_string();
+        match kir_bc(&d) {
+            Some(c) if !c.is_empty() => fps.push(format!("examples/{}: {:?}", name, c)),
+            Some(_) => checked += 1,
+            None => unknown += 1,
+        }
+    }
+    eprintln!("kir_borrowck (correct code): checked {} unknown {} false positives {}", checked, unknown, fps.len());
+    assert!(fps.is_empty(), "KIR borrowck false positives:\n{}", fps.join("\n"));
+    // 下ろせる数が減らないこと (現在値 94 を下限にする。下ろしの対応が増えたら上げる)。
+    assert!(checked >= 94, "only {} correct programs were checked on KIR", checked);
+}
+
+/// `unsound/` の全件で、AST の借用検査 (E3010 / E3030) と KIR の検査の結果を並べる。
+/// 検査できた (KIR に下ろせた) もののうち、一致した数が下限を下回らないこと。header_lifetime_* のうち下ろせるものは KIR が止める。
+#[test]
+fn kir_borrowck_agreement_on_unsound_does_not_drop() {
+    let (mut checked, mut agree, mut kir_reject, mut unknown) = (0, 0, 0, 0);
+    let mut mism = vec![];
+    for p in sorted_ksnl("unsound") {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("kirbc_{}", stem), &fs::read_to_string(&p).unwrap());
+        match kir_bc(&t.0) {
+            None => unknown += 1,
+            Some(c) => {
+                checked += 1;
+                let kir = !c.is_empty();
+                let ast = ast_borrow_rejects(&t.0);
+                if kir {
+                    kir_reject += 1;
+                }
+                if kir == ast {
+                    agree += 1;
+                } else {
+                    mism.push(format!("{} (ast={} kir={})", stem, ast, kir));
+                }
+                if stem == "header_lifetime_return_other" || stem == "header_lifetime_return_static" {
+                    assert!(kir, "{} must be rejected by the KIR borrowck", stem);
+                }
+            }
+        }
+    }
+    eprintln!("kir_borrowck (unsound): checked {} agree {} kir_reject {} unknown {}; mismatches: {}", checked, agree, kir_reject, unknown, mism.join(", "));
+    assert!(checked >= 119, "KIR checked only {} unsound programs", checked);
+    assert!(agree >= 112, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
+    assert!(kir_reject >= 9, "KIR rejects only {}", kir_reject);
+}

@@ -13,6 +13,7 @@ mod fixes;
 mod infer;
 mod fmath;
 mod kir;
+mod kir_borrowck;
 mod kir_exec;
 mod kir_llvm;
 mod kir_lower;
