@@ -61,11 +61,11 @@ def build_all():
         info["Go (net, worker pool)"] = {"exe": exe, "build_s": t, "size": os.path.getsize(exe), "go": True}
     else:
         print("go が見つからないので Go は飛ばす", file=sys.stderr)
-    # Kasane (Cranelift バックエンド。コンパイラのキャッシュは使わない)
+    # Kasane (LLVM が既定の経路。コンパイラのキャッシュは使わない)
     if not os.path.exists(KSN):
         sys.exit("ksn が未ビルド: cd stage0 && cargo build --release")
     cache = tempfile.mkdtemp(prefix="ksncache_")
-    t = timed([KSN, "build", "--backend", "clif", "--release"], cwd=SHORTENER, env=dict(os.environ, KSN_CACHE_DIR=cache))
+    t = timed([KSN, "build", "--release"], cwd=SHORTENER, env=dict(os.environ, KSN_CACHE_DIR=cache))
     shutil.rmtree(cache, ignore_errors=True)
     exe = os.path.join(SHORTENER, "target", "release", "shortener.native")
     info["Kasane (native, worker pool)"] = {"exe": exe, "build_s": t, "size": os.path.getsize(exe), "kasane": True}
