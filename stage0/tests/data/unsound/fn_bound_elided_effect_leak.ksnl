@@ -1,0 +1,12 @@
+// expect: E4001
+fn t.ap[F: core.ops.Fn<(usize,), u8>](f: F) -> u8 uses [] panics never
+    f.call((0,))
+end t.ap
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.ap(fn(i: usize) -> u8 capture [] {
+        core.mem.drop(std.io.print_line("x"))
+        7
+    }))
+    Ok(())
+end t.main
