@@ -283,8 +283,8 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
         // 要素が所有物 (`Vec<String>`) のときは、要素の型 (集成体 `vec` など) を持つ
         Src::Named(n, args) if is_vecn(n) => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a))))),
         Src::Named(n, _) if n == STRING => Some(Kind::String),
-        Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(args))),
-        Src::Named(n, args) if n == BTREEMAP => Some(Kind::BMap(map_kv(args))),
+        Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(lw, args))),
+        Src::Named(n, args) if n == BTREEMAP => Some(Kind::BMap(map_kv(lw, args))),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         // 要素が所有物 (`String` など、集成体) のときも要素の型を持つ。`as_slice()` の一時値
         // が続く `get` / `len` / 添字 / `iter` で要素型を引き継ぐため、`size_of` ではなく
@@ -298,9 +298,11 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
 }
 
 /// `HashMap<K, V, _>` の型引数から (キー, 値) の KIR の型。キーは整数・bool・char (`Ty`) か `&str` (`Ty::Ptr` の印)、値は整数・bool・char。
-fn map_kv(args: &[Src]) -> Option<(Ty, Ty)> {
+fn map_kv(lw: &Lw, args: &[Src]) -> Option<(Ty, Ty)> {
     let k = match args.first()? {
         Src::Ref(_, i) if matches!(&**i, Src::Prim(s) if s == "str") => Ty::Ptr,
+        // `String` のキー: 型はヘッダ `vec` (表が所有する。設計_KIR.md 16.4)
+        Src::Named(n, _) if n == STRING => lw.aggs.borrow_mut().vec_hdr(),
         other => conv(other).filter(|t| size_of(*t).is_some())?,
     };
     let v = conv(args.get(1)?).filter(|t| size_of(*t).is_some())?;
@@ -420,6 +422,7 @@ pub(super) fn size_of(t: Ty) -> Option<u32> {
 
 /// 局所変数のヘッダ `hdr` の所有物を解放する。要素が所有物の Vec は、各要素を解放してからバッファを解放する。
 fn drop_hdr(lw: &mut Lw, hdr: VId) {
+    super::map_lower::drop_owned_keys(lw, hdr);
     let vt = lw.coll.hdr_ty.get(&hdr).copied();
     if let Some(vt) = vt.filter(|t| lw.aggs.borrow().vec_elem(*t).is_some()) {
         let p = lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 });
@@ -1739,6 +1742,9 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if let Some(r) = super::own::method(lw, e, line, &kind, h, m, args) {
         return r;
     }
+    if matches!(m, "cmp" | "partial_cmp") && matches!(kind, Kind::String | Kind::Str) {
+        return lw.string_cmp_method(e, &kind, h, m, args);
+    }
     if m == "push" && matches!(kind, Kind::Vec(_)) {
         return vec_push(lw, e, line, slot, &kind, h, args);
     }
@@ -2860,7 +2866,9 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     if !by_mut && nname(it) == "Call" {
         if let Ok(Src::Ref(false, inner)) = lw.src_ty(it) {
             if let Src::Slice(el) = &*inner {
-                if let Some(elem) = conv(el).filter(|t| size_of(*t).is_some()) {
+                // 要素はスカラー、または所有物を持たない集成体 (`Copy` の構造体。`for n in p.ast.nodes.as_slice().iter()`)
+                let elem = conv(el).filter(|t| size_of(*t).is_some()).or_else(|| lw.conv_t(el).filter(|t| matches!(t, Ty::Agg(_)) && !owns_heap(lw, *t) && elem_size(lw, *t).is_some()));
+                if let Some(elem) = elem {
                     let Some(fat) = lw.expr(it)? else { return Ok(None) };
                     let (len, base) = Seq::Fat(fat).len_and_base(lw, None);
                     let zero = lw.emit(Ty::Usize, Op::Const(0));

@@ -1031,12 +1031,23 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - `for (k, v) in m.iter()`: 添字を 0 から `used` まで増やすループ (`counted` と同じ形)。`live` でない組は次へ飛ぶ。`k` / `v` は値で束縛する (`&K` / `&V` は値で持つ)。`break` / `continue` / `return` と代入が使える。
 - 参照を外す `*k` / `*v`: 値で持つ `&スカラー` に `*` が付いたら値そのもの (`kir_lower_refs.rs` の `deref` の 1 腕)。
 - 型 (キー・値) は型表の `HashMap<K, V, _>` から決め、決まらないときは最初の `insert` の引数の型で決める。
-- 未対応 (理由付き): `get_mut` (`Option<&mut V>` を持てない。参照の段階)、`iter` を `for` 以外で使う形、値が浮動小数・集成体・`String` / `Vec`、キーが `String` や集成体、`HashMap` を構造体のフィールドに持つ形。
+- 未対応 (理由付き): `get_mut` (`Option<&mut V>` を持てない。参照の段階)、`iter` を `for` 以外で使う形、値が浮動小数・集成体・`String` / `Vec`、キーが集成体、`HashMap` を構造体のフィールドに持つ形。(キーの `String` は 16.4)
 
 ### 16.3 検証
 
 - `stage0/tests/cli.rs` の `kir_map_values_match_tree_walker` (20 ケース: 挿入・上書き・削除・再挿入・成長 (1 万件)・反復順・存在しないキー・墓標と作り直し・符号付きと `&str` のキー・`&mut` の借用と値の戻り)。木走査の `core.check.eq` で期待値を確かめ、`--run` と `--native` の両方で同じ値。参照実行器は漏れ・二重解放・範囲外を内部エラーにするので、解放の規則も確かめている。`kir_map_reports_unsupported_methods_with_a_reason` は `get_mut` の理由。
 - `perf/hashmap`: `ksn build --backend llvm` が作れ (`target/debug/hashmap.native`)、`ksn run` と stdout・stderr・終了コードが一致する。
+
+### 16.4 `String` のキーと文字列の順序 (kir/string-keys、2026-11-14)
+
+- `HashMap<String, V>` / `BtreeMap<String, V>` / `BtreeMap<&str, V>`。キーの型は `String` = 型表の `vec` (`Kind::Map(Some((vec, V)))`)、`&str` = `Ty::Ptr` の印。
+- 表がキーを所有する: 組のキーは `String` のヘッダ全体 (`ptr, len, cap` の 24 バイト。`&str` は 16 バイト)。`insert(k, v)` は `k` を移す (評価中は `tmp_hold`)。同じキーが既にあれば値だけ替えて、渡した `k` のバッファは解放する。`remove` は見つけた組のキーを解放する。表のスコープの終わり (`drop_hdr`、再代入を含む) では、生きている組のキーを `ksn.map.o.drop` / `ksn.bo.drop` で解放してから `buf` を解放する (`buf` が null なら何もしない)。表を値として移した先 (戻り値・構造体のフィールド) ではキーのバッファを解放しない (漏れるだけで、二重解放はしない)。
+- `get(&k)` / `contains_key` / `remove` のキーは `&k` の式をそのまま評価して借用のヘッダから (ptr, len) を読む (`k` の所有は移らない)。`&str` も受ける。`for (k, v) in m.iter()` の `k` は組の中のヘッダを借用の `String` (`Kind::String`) として束縛する。
+- ハッシュは `&str` と同じ FNV-1a + 混ぜ。`HashMap` の `hash` / `find` / `remove` は (ptr, len) を取り、`add` だけが (ptr, len, cap) を取る (`ksn.map.o.*`)。
+- `BtreeMap` の文字列キーは `kir_lower_mapstr.rs`: 組 = キー + 値 (8 バイト)、二分探索 (`ksn.bo.lower`)、後ろの組をずらす挿入と削除。順序は `ksn.bs.cmp` (バイト列の辞書順で、0 = 小さい / 1 = 等しい / 2 = 大きい)。
+- `String` / `&str` の `<` `<=` `>` `>=` は `ksn.bs.cmp` の結果の判定 (所有は移さない)。`a.cmp(&b)` / `a.partial_cmp(&b)` は結果を `core.cmp.Ordering` (`Less` `Equal` `Greater` の順の単位の列挙。`STD_TYPES` に入れた) の値にする。整数の `cmp` と `Hash` は未対応のまま。
+- 文字列リテラルのパターン (`match s { "fn" => .. }`、`Some("a")`) は `str_eq` で比べる。`const K: &str` への `K.as_bytes()` / `K.split(..)` は定数の値 (fat) を受け手にする。`match v.last() { Some(t) => *t }` は所有物を持たない集成体の `*t` を値の恒等にする。`for n in p.f.v.as_slice().iter()` は要素が所有物を持たない集成体でも回る。`Ok(E.V(text))` で束縛した `String` は型から種類を結び付ける。
+- 検証: `stage0/tests/kir_string_keys.rs` (木走査と `ksn build --release` の出力の一致、clang が使えれば ASan + LeakSanitizer でも同じ出力と報告なしを確かめる。`selfhost/probes/hashmap`・`strmatch` の複製も)。
 
 ## 17. Fable のレビューで見つかった不具合の修正 (fix/kir-review、2026-11-13)
 
