@@ -2,7 +2,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-// expect: E????
+// expect: E2030
 fn t.need_eq[T: core.cmp.Eq](a: T, b: T) -> bool uses [] panics never
     a == b
 end t.need_eq

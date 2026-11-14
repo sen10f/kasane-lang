@@ -285,8 +285,40 @@ fn cmp_trait(name: &str) -> Option<&'static str> {
         "eq" | "==" | "!=" => Some("core.cmp.PartialEq"),
         "partial_cmp" | "<" | "<=" | ">" | ">=" => Some("core.cmp.PartialOrd"),
         "cmp" => Some("core.cmp.Ord"),
+        "clone" => Some("core.ops.Clone"),
+        "try_clone" => Some("alloc.alloc.TryClone"),
+        "hash" => Some("core.hash.Hash"),
         _ => None,
     }
+}
+
+/// 定義 `d` の型パラメータ `pn` が境界として `tr` を持つか (スーパートレイト `requires` を推移的に辿る。
+/// `TryClone` は `Clone` から成り立つ)。`pn` が `d` の型パラメータでなければ None (分からない: 黙る)。
+/// 境界に解決できないトレイト名があれば黙って Some(true) (そちらは別の診断が出る)。
+pub(crate) fn param_bound_implies(p: &Program, d: &Def, pn: &str, tr: &str) -> Option<bool> {
+    let g = d.generics.iter().find(|g| g.0 == "type" && g.1 == pn)?;
+    let mut todo: Vec<String> = items(&g.2).iter().filter_map(|b| if let V::L(bx) = b { Some(st(&bx[0])) } else { None }).collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Some(b) = todo.pop() {
+        if !seen.insert(b.clone()) {
+            continue;
+        }
+        if b == tr || (tr == "alloc.alloc.TryClone" && b == "core.ops.Clone") {
+            return Some(true);
+        }
+        match p.types.get(&b) {
+            Some(&i) if p.defs[i].kw == "trait" => {
+                for (sup, _) in &p.defs[i].requires {
+                    match crate::check::resolve_trait_fqn(p, sup) {
+                        Some(f) => todo.push(f),
+                        None => return Some(true),
+                    }
+                }
+            }
+            _ => return Some(true),
+        }
+    }
+    Some(false)
 }
 
 /// 型で解決できた呼び出しの効果検査の義務 (5.1 / 4.3)。check.rs が、呼び出し元 `di` の
@@ -1939,7 +1971,15 @@ impl<'a> TypeCk<'a> {
             return false;
         }
         let Some(tr) = cmp_trait(name) else { return false };
+        // 型パラメータのレシーバは境界からのメソッド探索 (`trait_bound_method`) と `check_cmp_bound` が見る。
+        // `&T` は `T` によらず Copy + Clone (4.2) なので、共有参照の `clone` / `try_clone` は見ない。
+        if matches!(self.deep(recv), Ty::Ref(false, _)) && matches!(name, "clone" | "try_clone") {
+            return false;
+        }
         let whole = self.deep(recv).strip().clone();
+        if matches!(whole, Ty::Param(_)) {
+            return false;
+        }
         let Some(leaf) = self.unsatisfied(&whole, tr) else { return false };
         let ty = match &whole {
             Ty::Named(n, _) if leaf == whole => n.clone(),
@@ -1951,7 +1991,8 @@ impl<'a> TypeCk<'a> {
             let short = tr.rsplit('.').next().unwrap_or(tr);
             format!("`{}` must implement it too: add `derive [{}]` to `{}`", leaf.show(), short, leaf.show())
         };
-        let msg = if matches!(name, "eq" | "cmp" | "partial_cmp") {
+        let is_method = name.chars().all(|c| c.is_alphanumeric() || c == '_');
+        let msg = if is_method {
             format!("unknown method `{}` on `{}`: the type does not implement `{}` ({})", name, ty, tr, hint)
         } else {
             format!("operator `{}` on `{}`: the type does not implement `{}` ({})", name, ty, tr, hint)
@@ -2429,7 +2470,17 @@ impl<'a> TypeCk<'a> {
                 }
                 if let Some(leaf) = self.unsatisfied(t, &tr) {
                     let mut msg = format!("the trait bound `{}: {}` of {} is not satisfied by {}", g.1, tr, d.name, t.show());
-                    if leaf != *t {
+                    if let Ty::Param(pn) = &leaf {
+                        let short = tr.rsplit('.').next().unwrap_or(&tr);
+                        msg.push_str(&format!(
+                            ": `{}` has no bound `{}` in {}; add `{}: {}` to the type parameters of the caller",
+                            pn,
+                            short,
+                            self.def().name,
+                            pn,
+                            tr
+                        ));
+                    } else if leaf != *t {
                         let short = tr.rsplit('.').next().unwrap_or(&tr);
                         msg.push_str(&format!(
                             ": `{}` is not `{}` (the type arguments of a derived impl must satisfy it too); add `derive [{}]` to `{}`",
@@ -2576,6 +2627,25 @@ impl<'a> TypeCk<'a> {
                     return Some(t.clone());
                 }
                 if self.p.impls.contains(&(tr.to_string(), n.clone())) {
+                    // 手書き・生成の impl (`derive [ToJson]` が作る `impl[T: ToJson] .. for Box<T>` を含む) は、
+                    // その impl の型パラメータの境界で決まる。境界の無い手書きの impl は満たす。
+                    let imp = self.p.defs.iter().find(|d| d.kw == "impl" && d.impl_trait == tr && crate::check::impl_target(&d.impl_for) == *n);
+                    let Some(imp) = imp else { return None };
+                    if let Ty::Named(_, iargs) = from_v(&imp.impl_for, &imp.gnames()) {
+                        if iargs.len() == args.len() {
+                            for (ia, a) in iargs.iter().zip(args) {
+                                let Ty::Param(gp) = ia else { continue };
+                                for g in imp.generics.iter().filter(|g| g.0 == "type" && g.1 == *gp) {
+                                    for b in items(&g.2) {
+                                        let V::L(bx) = b else { continue };
+                                        if let Some(leaf) = self.unsatisfied(self.deep(a).strip(), &st(&bx[0])) {
+                                            return Some(leaf);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     return None;
                 }
                 let gs: Vec<&(String, String, V)> = self.p.defs[i].generics.iter().filter(|g| g.0 != "life").collect();
@@ -2584,6 +2654,9 @@ impl<'a> TypeCk<'a> {
                 }
                 gs.iter().zip(args).filter(|(g, _)| g.0 == "type").find_map(|(_, a)| self.unsatisfied(self.deep(a).strip(), tr))
             }
+            // 型パラメータは、いま検査している定義の境界が `tr` を (スーパートレイトまで辿って) 含むときだけ満たす。
+            // 境界に無ければ原因になる (`fn f[T](a: T) { g(a) }` で `g` が `T: Eq` を要るとき、E2030)。
+            Ty::Param(pn) => (param_bound_implies(self.p, self.def(), pn, tr) == Some(false)).then(|| t.clone()),
             Ty::Prim(p) if p == "f32" || p == "f64" => {
                 matches!(tr, "core.cmp.Eq" | "core.cmp.Ord" | "core.hash.Hash").then(|| t.clone())
             }

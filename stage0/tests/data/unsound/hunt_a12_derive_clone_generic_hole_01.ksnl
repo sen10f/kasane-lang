@@ -1,4 +1,4 @@
-// expect: E????
+// expect: E1108
 type t.Box[T] derive [Clone]
     x: T
 end t.Box
