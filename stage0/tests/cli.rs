@@ -23361,3 +23361,65 @@ fn kir_copy_elem_fields_match_tree_walker() {
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
     }
 }
+
+/// `Fn*` 境界の効果実引数の省略 (4.3): 省略した `E` / `P` は関数の暗黙の効果変数・panic 変数で、
+/// 渡したクロージャの効果が呼び出し側に伝わる。
+const ELIDE_AP: &str = "fn t.ap[F: core.ops.Fn<(usize,), u8>](f: F) -> u8 uses [] panics never\n    f.call((0,))\nend t.ap\n\n";
+
+fn elide_main(uses: &str, panics: &str, body: &str) -> String {
+    format!(
+        "{}fn t.boom() -> u8 uses [] panics may\n    core.panic.panic(\"x\")\nend t.boom\n\nfn t.main() -> Result<(), std.io.Error> uses [{}] panics {}\n    core.mem.drop(t.ap(fn(i: usize) -> u8 capture [] {{\n{}\n    }}))\n    Ok(())\nend t.main\n",
+        ELIDE_AP, uses, panics, body
+    )
+}
+
+#[test]
+fn elided_fn_effects_carry_the_closure_effect_to_the_caller() {
+    let leak = "        core.mem.drop(std.io.print_line(\"x\"))\n        7";
+    let t = Tmp::new("elide_leak", &elide_main("", "never", leak));
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stdout));
+    assert!(text(&o.stderr).contains("E4001") || text(&o.stdout).contains("E4001"), "{}{}", text(&o.stdout), text(&o.stderr));
+    let t = Tmp::new("elide_ok", &elide_main("io.console", "never", leak));
+    for args in [&["check"][..], &["run"][..], &["fmt", "--check"][..]] {
+        let o = run(args, &t.0);
+        assert_eq!(o.status.code(), Some(0), "{:?}: {}{}", args, text(&o.stdout), text(&o.stderr));
+    }
+    let o = run(&["run"], &t.0);
+    assert_eq!(text(&o.stdout).trim(), "x");
+    let o = run(&["test", "--both"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let o = run(&["build"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn elided_fn_panic_reaches_a_panics_never_caller() {
+    let t = Tmp::new("elide_panic", &elide_main("", "never", "        t.boom()"));
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(text(&o.stderr).contains("E4002") || text(&o.stdout).contains("E4002"), "{}{}", text(&o.stdout), text(&o.stderr));
+    let t = Tmp::new("elide_panic_ok", &elide_main("", "may", "        t.boom()"));
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let t = Tmp::new("elide_pure_ok", &elide_main("", "never", "        3"));
+    let o = run(&["check"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+}
+
+#[test]
+fn ambiguous_elided_fn_effects_must_be_written_out() {
+    let two = "fn t.two[F: core.ops.Fn<(), u8>, G: core.ops.Fn<(), u8>](f: F, g: G) -> u8 uses [] panics never\n    g.call(())\nend t.two\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("elide_two", two);
+    let o = run(&["check"], &t.0);
+    assert!(format!("{}{}", text(&o.stdout), text(&o.stderr)).contains("omits its effect arguments"), "{}{}", text(&o.stdout), text(&o.stderr));
+    let var = two.replace("F: core.ops.Fn<(), u8>, G: core.ops.Fn<(), u8>", "F: core.ops.Fn<(), u8>, G: core.ops.Fn<(), u8, [], never>");
+    let var = var.replace("uses [] panics never\n    g", "uses [] panics never\n    g");
+    let t = Tmp::new("elide_one_explicit", &var);
+    let o = run(&["check"], &t.0);
+    assert!(!format!("{}{}", text(&o.stdout), text(&o.stderr)).contains("omits its effect arguments"), "{}{}", text(&o.stdout), text(&o.stderr));
+    let half = two.replace("G: core.ops.Fn<(), u8>", "G: core.ops.Fn<(), u8, []>");
+    let t = Tmp::new("elide_half", &half);
+    let o = run(&["check"], &t.0);
+    assert!(format!("{}{}", text(&o.stdout), text(&o.stderr)).contains("both the effect and the panic argument"), "{}{}", text(&o.stdout), text(&o.stderr));
+}
