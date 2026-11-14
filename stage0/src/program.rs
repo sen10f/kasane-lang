@@ -33,6 +33,9 @@ pub struct Def {
     /// `type` の `layout c` (C 互換の配置。3.8)
     pub layout_c: bool,
     pub fields: Vec<(String, V, bool)>,
+    /// `type` の欄ごとに、欄の型文面に現れるライフタイム名 (`'` を除く。`'static` も含む)。
+    /// 型の `V` はライフタイムを持たないので、欄がどの領域を運ぶかはここから読む。
+    pub field_lifetimes: Vec<(String, Vec<String>)>,
     pub variants: Vec<(String, Vec<V>)>,
     /// `type` / `enum` のフィールド・バリアントのうち、参照のライフタイムを省略したものの名前 (4.1 / E3020)。
     pub elided_refs: Vec<String>,
@@ -279,6 +282,12 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                         if has_elided_ref(&bp.t[start..bp.i]) {
                             d.elided_refs.push(fnm.clone());
                         }
+                        let lts: Vec<String> = bp.t[start..bp.i]
+                            .iter()
+                            .filter(|t| t.kind == "life")
+                            .map(|t| t.text.trim_start_matches('\'').to_string())
+                            .collect();
+                        d.field_lifetimes.push((fnm.clone(), lts));
                         let pb = bp.accept_kw("pub");
                         d.fields.push((fnm, t, pb));
                     } else {

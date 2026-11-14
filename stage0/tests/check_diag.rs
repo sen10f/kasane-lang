@@ -45,10 +45,8 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a01_reborrow_mut_then_shared_read_01",
     "hunt_a01_reborrow_reassign_01",
     "hunt_a01_reborrow_shared_then_mut_01",
-    // F1 借用: ライフタイムの入れ替え (構造体・タプルの中で 'a と 'b を入れ替えて返す)
-    "hunt_a02_pair_lifetime_partial_2",
+    // F1 借用: hunt_a02_pair_lifetime_swap_1 は正しいコード (Pair<'b,'a> は f:&'b・s:&'a) なので穴ではなく、期待の E3010 が誤り。
     "hunt_a02_pair_lifetime_swap_1",
-    "hunt_a02_tup_lifetime_swap_3",
     // F1 借用: `&mut` を取り込んだクロージャを共有参照 `&c` 越しに呼ぶ
     "hunt_a05_andmut_capture_then_assign_01",
     "hunt_a05_andmut_read_after_last_call_01",
@@ -189,6 +187,70 @@ fn correct_linear_programs_are_accepted() {
         let o = run(&["check", "--json"], &t.0);
         assert_eq!(o.status.code(), Some(0), "{}: {}", stem, text(&o.stdout));
         assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{} is not canonical", stem);
+    }
+}
+
+/// 組・構造体・`Some` / `Ok` の中で領域を入れ替えて返す正しいコードは、ヘッダの位置どおりに通る (AST の借用検査)。
+/// 置き場は `linear_ok/` ではない: そこは KIR の検査 (`kir_borrowck_has_no_false_positives`) も通すが、
+/// KIR の検査は戻り値の領域を 1 つにまとめるので、これらを偽陽性にする (既知。`kir_borrowck.rs` の `ret_rg`)。
+#[test]
+fn lifetime_slot_correct_swaps_are_accepted() {
+    let cases: [(&str, &str); 4] = [
+        (
+            "pair_swap",
+            "type t.Pair['a, 'b]
+    f: &'a u32
+    s: &'b u32
+end t.Pair
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.pair_swap['a, 'b](f: &'a u32, s: &'b u32) -> t.Pair<'b, 'a> uses [] panics never
+    t.Pair { f: s, s: f }
+end t.pair_swap
+",
+        ),
+        (
+            "tuple_swap",
+            "fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.tuple_swap['a, 'b](x: &'a u32, y: &'b u32) -> (&'b u32, &'a u32) uses [] panics never
+    (y, x)
+end t.tuple_swap
+",
+        ),
+        (
+            "opt_swap",
+            "fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.opt_swap['a, 'b](x: &'a u32, y: &'b u32) -> Option<(&'b u32, &'a u32)> uses [] panics never
+    Some((y, x))
+end t.opt_swap
+",
+        ),
+        (
+            "tuple_keep",
+            "fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.pick['a, 'b](x: &'a u32, y: &'b u32) -> (&'a u32, &'b u32) uses [] panics never
+    (x, y)
+end t.pick
+",
+        ),
+    ];
+    for (name, src) in cases {
+        let t = Tmp::new(&format!("slot_ok_{}", name), src);
+        let o = run(&["check", "--json"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "{}: {}", name, text(&o.stdout));
+        assert_eq!(run(&["fmt", "--check"], &t.0).status.code(), Some(0), "{} is not canonical", name);
     }
 }
 

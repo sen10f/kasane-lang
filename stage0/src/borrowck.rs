@@ -2209,9 +2209,104 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 名前 (`t.Pair`) が指す型定義。型でなければ None。
+    fn type_of_name(&self, name: &str) -> Option<usize> {
+        let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
+        match self.p.resolve(&segs, &self.file)?.target {
+            Target::Type(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// 戻り値の式 `e` を、戻り値の型 `ty` の位置ごとに分ける。各葉に「その葉が運んでよい領域の集合」を付ける。
+    /// タプルは型の成分ごとに、構造体リテラルは欄の宣言の領域を戻り値の型引数で置き換えた集合ごとに、
+    /// `Some` / `Ok` / `Err` は包まれる型の位置へ送る。それ以外の葉は戻り値の型の全領域を期待とする。
+    /// 形が型と合わないとき (型の名前が違う・成分の数が違う) は期待を空にする (fail-closed)。
+    fn ret_slots<'v>(&self, e: &'v V, ty: &str, out: &mut Vec<(&'v V, BTreeSet<String>)>) {
+        // 戻り値の型の後ろの修飾 (`-> core.fmt.Formatter<'a> const`) は型ではない。
+        let ty = ty.trim();
+        let ty = ty.strip_suffix(" const").unwrap_or(ty).trim_end();
+        // 型の引数 `T<a, b>` を (名前, 引数)。
+        let generic = |t: &str| -> Option<(String, Vec<String>)> {
+            let i = t.find('<')?;
+            let inner = t.strip_suffix('>')?.get(i + 1..)?;
+            Some((t[..i].trim().to_string(), split_top(inner)))
+        };
+        match nname(e) {
+            "TupleE" => {
+                let elems = items(&nf(e)[0]);
+                let comps = ty.strip_prefix('(').and_then(|t| t.strip_suffix(')')).map(split_top);
+                match comps {
+                    Some(comps) if !elems.is_empty() && comps.len() == elems.len() => {
+                        for (x, c) in elems.iter().zip(&comps) {
+                            self.ret_slots(x, c, out);
+                        }
+                    }
+                    _ => out.extend(elems.iter().map(|x| (x, BTreeSet::new()))),
+                }
+            }
+            "StructLit" => {
+                let Some(tdi) = self.type_of_name(&st(&nf(e)[0])) else {
+                    out.extend(items(&nf(e)[1]).iter().filter_map(|f| items(f).get(1)).map(|x| (x, BTreeSet::new())));
+                    return;
+                };
+                let (rname, rargs) = generic(ty).unwrap_or((ty.to_string(), vec![]));
+                if self.type_of_name(&rname) != Some(tdi) {
+                    out.extend(items(&nf(e)[1]).iter().filter_map(|f| items(f).get(1)).map(|x| (x, BTreeSet::new())));
+                    return;
+                }
+                // 型の仮引数 (宣言の順) と戻り値の型引数を並べて、ライフタイムの置き換えを作る。
+                let mut subst: HashMap<String, String> = HashMap::new();
+                for (g, a) in self.p.defs[tdi].generics.iter().zip(&rargs) {
+                    let (gn, an) = (g.1.trim_start_matches('\''), a.trim_start_matches('\''));
+                    if g.0 == "life" && a.starts_with('\'') {
+                        subst.insert(gn.to_string(), an.to_string());
+                    }
+                }
+                for fld in items(&nf(e)[1]) {
+                    let it = items(fld);
+                    if it.len() < 2 {
+                        continue;
+                    }
+                    let fname = st(&it[0]);
+                    let flts = self.p.defs[tdi].field_lifetimes.iter().find(|f| f.0 == fname).map(|f| f.1.clone()).unwrap_or_default();
+                    // 欄に名前付きの領域がなければ (型引数で決まる欄) 戻り値の全領域を期待とする。
+                    let expected: BTreeSet<String> = if flts.is_empty() {
+                        lifetimes(ty)
+                    } else {
+                        flts.iter().map(|l| subst.get(l).cloned().unwrap_or_else(|| l.clone())).collect()
+                    };
+                    out.push((&it[1], expected));
+                }
+            }
+            "Call" => {
+                let f = nf(e);
+                let args = items(&f[1]);
+                // 包む型の名前と、包まれる値が入る型引数の位置 (`Some`: `Option<T>` の 0、`Ok`: `Result<T, E>` の 0、`Err`: 1)。
+                let segs = if nname(&f[0]) == "Path" { strs(&nf(&f[0])[0]) } else { vec![] };
+                let ctor = match (segs.as_slice(), args.len()) {
+                    ([s], 1) if s.as_str() == "Some" => Some(("Option", 0)),
+                    ([s], 1) if s.as_str() == "Ok" => Some(("Result", 0)),
+                    ([s], 1) if s.as_str() == "Err" => Some(("Result", 1)),
+                    _ => None,
+                };
+                let inner = ctor.and_then(|(name, k)| {
+                    let (n, a) = generic(ty)?;
+                    if n == name { a.get(k).cloned() } else { None }
+                });
+                match inner {
+                    Some(t) => self.ret_slots(&args[0], &t, out),
+                    None => out.push((e, lifetimes(ty))),
+                }
+            }
+            _ => out.push((e, lifetimes(ty))),
+        }
+    }
+
     /// 戻り値の式が、(a) 局所変数への借用を運ぶ (E3030)、(b) ヘッダの戻り値の領域と無関係な (または
     /// `'static` でない) 引数の借用を運ぶ (E3010)。`&x`・引数そのものを返す形に加えて、再借用・関数経由・
     /// タプル・構造体・`Some(..)` に包んだ形も同じ関数 (`origins`) で求める。
+    /// 組・構造体・`Some` / `Ok` / `Err` は `ret_slots` で位置ごとに照らす (`(y, x)` を `(&'a, &'b)` で返す形を通さない)。
     /// 返り値は (診断コード, 行, 文面)。
     fn check_return_flow(&self, di: usize, body: &V) -> Vec<(&'static str, usize, String)> {
         let d = &self.p.defs[di];
@@ -2276,11 +2371,17 @@ impl<'a> Low<'a> {
                 Self::value_leaves(&nf(v)[0], &mut vals);
             }
         }
+        // 葉ごとに、その葉が運んでよい領域 (戻り値の型の位置) を付ける。
+        let mut slots: Vec<(&V, BTreeSet<String>)> = vec![];
+        for v in vals {
+            self.ret_slots(v, ret, &mut slots);
+        }
         let mut out = vec![];
         let mut seen: BTreeSet<(usize, String)> = BTreeSet::new();
-        for v in vals {
-            if nname(v) == "Path" && strs(&nf(v)[0]).len() == 1 && d.params.iter().any(|p| p.0 == strs(&nf(v)[0])[0]) {
-                continue; // 引数そのものを返す形は check_return_lifetime が見る
+        for (v, expected) in slots {
+            // `&'L T` を返す形で引数そのものを返すのは check_return_lifetime が見る。
+            if ret.trim().starts_with('&') && nname(v) == "Path" && strs(&nf(v)[0]).len() == 1 && d.params.iter().any(|p| p.0 == strs(&nf(v)[0])[0]) {
+                continue;
             }
             let mut os = vec![];
             self.origins(v, d, &inits, 0, &mut os);
@@ -2297,7 +2398,7 @@ impl<'a> Low<'a> {
                     }
                     Origin::Param(q) => {
                         let have = lifetimes(&ptexts[q]);
-                        if have.is_empty() || ptexts[q].contains("'static") || have.intersection(&want).next().is_some() {
+                        if have.is_empty() || ptexts[q].contains("'static") || have.intersection(&expected).next().is_some() {
                             continue;
                         }
                         if have.iter().any(|h| gen_text.contains(&format!("'{}:", h)) || gen_text.contains(&format!("'{} :", h))) {
