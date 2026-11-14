@@ -1,0 +1,14 @@
+// expect: E2030
+type t.Plain
+    a: u8
+end t.Plain
+
+fn t.bad() -> () uses [] panics may
+    let a: alloc.vec.Vec<t.Plain, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let b: alloc.vec.Vec<t.Plain, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.check.eq(a, b)
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -1927,14 +1927,22 @@ impl<'a> TypeCk<'a> {
             return false;
         }
         let Some(tr) = cmp_trait(name) else { return false };
-        let Ty::Named(ty, _) = self.deep(recv).strip().clone() else { return false };
-        if self.implements(&ty, tr) {
-            return false;
-        }
-        let msg = if matches!(name, "eq" | "cmp" | "partial_cmp") {
-            format!("unknown method `{}` on `{}`: the type does not implement `{}` (derive it or write an impl)", name, ty, tr)
+        let whole = self.deep(recv).strip().clone();
+        let Some(leaf) = self.unsatisfied(&whole, tr) else { return false };
+        let ty = match &whole {
+            Ty::Named(n, _) if leaf == whole => n.clone(),
+            _ => whole.show(),
+        };
+        let hint = if leaf == whole {
+            "derive it or write an impl".to_string()
         } else {
-            format!("operator `{}` on `{}`: the type does not implement `{}` (derive it or write an impl)", name, ty, tr)
+            let short = tr.rsplit('.').next().unwrap_or(tr);
+            format!("`{}` must implement it too: add `derive [{}]` to `{}`", leaf.show(), short, leaf.show())
+        };
+        let msg = if matches!(name, "eq" | "cmp" | "partial_cmp") {
+            format!("unknown method `{}` on `{}`: the type does not implement `{}` ({})", name, ty, tr, hint)
+        } else {
+            format!("operator `{}` on `{}`: the type does not implement `{}` ({})", name, ty, tr, hint)
         };
         self.quiet_here();
         self.diag("E1108", msg, line);
@@ -2407,19 +2415,19 @@ impl<'a> TypeCk<'a> {
                 if !known {
                     continue;
                 }
-                let bad = match t {
-                    Ty::Named(n, _) => self.p.types.contains_key(n) && !self.implements(n, &tr),
-                    Ty::Prim(p) if p == "f32" || p == "f64" => {
-                        matches!(tr.as_str(), "core.cmp.Eq" | "core.cmp.Ord" | "core.hash.Hash")
+                if let Some(leaf) = self.unsatisfied(t, &tr) {
+                    let mut msg = format!("the trait bound `{}: {}` of {} is not satisfied by {}", g.1, tr, d.name, t.show());
+                    if leaf != *t {
+                        let short = tr.rsplit('.').next().unwrap_or(&tr);
+                        msg.push_str(&format!(
+                            ": `{}` is not `{}` (the type arguments of a derived impl must satisfy it too); add `derive [{}]` to `{}`",
+                            leaf.show(),
+                            short,
+                            short,
+                            leaf.show()
+                        ));
                     }
-                    _ => false,
-                };
-                if bad {
-                    self.diag(
-                        "E2030",
-                        format!("the trait bound `{}: {}` of {} is not satisfied by {}", g.1, tr, d.name, t.show()),
-                        line,
-                    );
+                    self.diag("E2030", msg, line);
                 }
             }
         }
@@ -2537,6 +2545,39 @@ impl<'a> TypeCk<'a> {
                     let _ = self.unify2(w, &it);
                 }
             }
+        }
+    }
+
+    /// 型 `t` がトレイト `tr` を満たさないとき、満たさない原因の型を返す。`derive` で得た実装は
+    /// 型引数 (`T: Tr`) の成り立ちに還元する (`Option<T>: PartialEq` ⇔ `T: PartialEq`)。タプル・配列・
+    /// スライス・参照は中身に還元する。型パラメータ・未確定の型・手書きの `impl` は黙って通す。
+    fn unsatisfied(&self, t: &Ty, tr: &str) -> Option<Ty> {
+        match t {
+            Ty::Named(n, args) => {
+                let n = &match n.as_str() {
+                    "Option" => "core.option.Option".to_string(),
+                    "Result" => "core.result.Result".to_string(),
+                    _ => n.clone(),
+                };
+                let &i = self.p.types.get(n)?;
+                if !self.implements(n, tr) {
+                    return Some(t.clone());
+                }
+                if self.p.impls.contains(&(tr.to_string(), n.clone())) {
+                    return None;
+                }
+                let gs: Vec<&(String, String, V)> = self.p.defs[i].generics.iter().filter(|g| g.0 != "life").collect();
+                if gs.len() != args.len() {
+                    return None;
+                }
+                gs.iter().zip(args).filter(|(g, _)| g.0 == "type").find_map(|(_, a)| self.unsatisfied(self.deep(a).strip(), tr))
+            }
+            Ty::Prim(p) if p == "f32" || p == "f64" => {
+                matches!(tr, "core.cmp.Eq" | "core.cmp.Ord" | "core.hash.Hash").then(|| t.clone())
+            }
+            Ty::Tuple(ts) => ts.iter().find_map(|x| self.unsatisfied(self.deep(x).strip(), tr)),
+            Ty::Array(x) | Ty::Slice(x) => self.unsatisfied(self.deep(x).strip(), tr),
+            _ => None,
         }
     }
 

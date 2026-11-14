@@ -1,0 +1,13 @@
+// expect: E2030
+type t.Plain
+    a: u8
+end t.Plain
+
+fn t.bad() -> () uses [] panics may
+    let r: Result<t.Plain, u8> = Err(1u8)
+    core.check.eq(r, Err(2u8))
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
