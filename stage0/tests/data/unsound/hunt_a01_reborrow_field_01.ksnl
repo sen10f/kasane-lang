@@ -1,0 +1,16 @@
+// expect: E3010
+type t.H['a]
+    r: &'a mut u32
+end t.H
+
+fn t.bad() -> u32 uses [] panics never
+    let mut x = 1u32
+    let mut h = t.H { r: &mut x }
+    let r2 = &mut *h.r
+    *h.r = 2u32
+    *r2
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

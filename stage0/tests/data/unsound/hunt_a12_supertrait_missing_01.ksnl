@@ -1,0 +1,10 @@
+// expect: E????
+type t.MyType
+    v: u32
+end t.MyType
+
+impl core.cmp.Eq for t.MyType
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

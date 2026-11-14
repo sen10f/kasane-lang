@@ -1,0 +1,32 @@
+// expect: E4001
+trait t.Base[E: uses, P: panics]
+    fn base(self: &Self) -> () uses [E] panics P
+end t.Base
+
+type t.Boxed
+    x: u32
+end t.Boxed
+
+trait t.Tr[E: uses, P: panics] requires t.Base<E, P>
+    fn m(self: &Self) -> () uses [E] panics P
+end t.Tr
+
+impl t.Base<[io.console], never> for t.Boxed
+fn t.Boxed.base(self: &Self) -> () uses [io.console] panics never impls t.Base<[io.console], never>
+    core.mem.drop(std.io.print_line("b"))
+end t.Boxed.base
+
+impl t.Tr<[io.console], never> for t.Boxed
+fn t.Boxed.m(self: &Self) -> () uses [io.console] panics never impls t.Tr<[io.console], never>
+    core.mem.drop(std.io.print_line("x"))
+end t.Boxed.m
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    let b = t.Boxed { x: 1u32 }
+    core.mem.drop(t.take(&b))
+    Ok(())
+end t.main
+
+fn t.take[E: uses, P: panics](h: &dyn t.Tr<E, P>) -> () uses [] panics never
+    h.m()
+end t.take

@@ -1,0 +1,22 @@
+// expect: E????
+type t.Ptr
+    p: *mut u32
+end t.Ptr
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
+    let mut x = 10u32
+    let s = t.Ptr { p: core.ptr.from_mut(&mut x) }
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u32 capture [move s] {
+            core.ptr.read(s.p)
+        },
+    )
+    match spawned {
+        Ok(handle) => {
+            let _h = handle.join()
+        }
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    Ok(())
+end t.main

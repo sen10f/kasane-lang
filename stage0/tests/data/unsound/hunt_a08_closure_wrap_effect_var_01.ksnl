@@ -1,0 +1,14 @@
+// expect: E4001
+fn t.foo[E: uses](f: fn() -> () uses [E] panics never) -> () uses [] panics never
+    let c = fn() -> () capture [&f] {
+        f()
+    }
+    c()
+end t.foo
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.foo(fn() -> () capture [] {
+        core.mem.drop(std.io.print_line("x"))
+    }))
+    Ok(())
+end t.main

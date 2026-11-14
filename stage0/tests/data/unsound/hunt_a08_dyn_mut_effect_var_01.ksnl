@@ -1,0 +1,23 @@
+type t.Boxed
+    x: u32
+end t.Boxed
+
+// expect: E4001
+trait t.Tr[E: uses, P: panics]
+    fn m(self: &Self) -> () uses [E] panics P
+end t.Tr
+
+impl t.Tr<[io.console], never> for t.Boxed
+fn t.Boxed.m(self: &Self) -> () uses [io.console] panics never impls t.Tr<[io.console], never>
+    core.mem.drop(std.io.print_line("x"))
+end t.Boxed.m
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    let mut b = t.Boxed { x: 1u32 }
+    core.mem.drop(t.take_mut(&mut b))
+    Ok(())
+end t.main
+
+fn t.take_mut[E: uses, P: panics](h: &mut dyn t.Tr<E, P>) -> () uses [] panics never
+    h.m()
+end t.take_mut

@@ -1,0 +1,12 @@
+// expect: E????
+enum t.E pub
+    A(i32)
+end t.E
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let e = t.E.A(1u8)
+    match e {
+        t.E.A(n) => core.mem.drop(n)
+    }
+    Ok(())
+end t.main

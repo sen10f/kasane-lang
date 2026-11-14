@@ -1,0 +1,10 @@
+// expect: E2020
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x = 1u8
+    let f = fn() -> u8 capture [&x] {
+        x
+    }
+    let y = f()
+    core.mem.drop(y)
+    Ok(())
+end t.main

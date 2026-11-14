@@ -1,0 +1,12 @@
+// expect: E????
+fn t.f(b: bool) -> u32 uses [] panics never
+    match b {
+        true => 1u32
+        false => "x"
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.f(true))
+    Ok(())
+end t.main

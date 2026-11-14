@@ -1,0 +1,16 @@
+enum t.BoxOr[T] derive [ToJson]
+    Just(T)
+    Nothing
+end t.BoxOr
+
+// expect: E????
+type t.NoJson
+    a: u8
+end t.NoJson
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let v = t.BoxOr.Just(t.NoJson { a: 1u8 })
+    let r = std.json.to_string(&v)
+    core.mem.drop(r)
+    Ok(())
+end t.main

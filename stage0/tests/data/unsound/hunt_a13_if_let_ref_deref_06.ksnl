@@ -1,0 +1,9 @@
+// expect: E2020
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x = Some(1u8)
+    if let Some(p) = &x {
+        let y: u8 = p
+        core.mem.drop(y)
+    }
+    Ok(())
+end t.main

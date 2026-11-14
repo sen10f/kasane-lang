@@ -1,0 +1,14 @@
+// expect: E????
+// raw.Buf の pub フィールド initialized を偽装し、get で初期化済みでない領域への参照を得る
+fn t.bad() -> u8 uses [] panics never
+    let mut buf: alloc.raw.Buf<u8, std.alloc.System> = alloc.raw.Buf.new(std.alloc.SYSTEM)
+    buf.initialized = 1usize
+    match buf.get(0usize) {
+        Some(x) => *x
+        None => 0u8
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

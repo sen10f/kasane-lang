@@ -1,0 +1,16 @@
+type t.Box[T] derive [PartialEq, Eq, Hash]
+    x: T
+end t.Box
+
+// expect: E????
+type t.NoHash
+    a: u8
+end t.NoHash
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let b = t.Box { x: t.NoHash { a: 1u8 } }
+    let mut h = core.hash.Fnv64.new()
+    b.hash(&mut h)
+    let _n = h.finish()
+    Ok(())
+end t.main
