@@ -134,8 +134,9 @@ const KNOWN_HOLES: &[&str] = &[
     // F6 型: 外れうるパターンの `let` (`let false = 5i32`)
     "hunt_a17_reserved_false_bind",
     // F7 定数: `const` の範囲・オーバーフロー・ターゲットの幅
-    "hunt_a18_const_int_overflow",
-    "hunt_a18_const_lit_outofrange",
+    // hunt_a18_const_int_overflow と hunt_a18_const_lit_outofrange は塞いだ (E2026)。
+    // hunt_a18_const_usize_range_wasm は `--target wasm32-unknown-unknown` でのみ検出されるので、
+    // `check_diag.rs` の `ksn check` (ターゲット指定なし) では検出できず、const_range.rs で個別に検査する。
     "hunt_a18_const_usize_range_wasm",
 ];
 

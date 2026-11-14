@@ -588,6 +588,7 @@ impl<'a> Checker<'a> {
                     if let Some(init) = &d.init {
                         self.cur_uses = self.cur_uses.take();
                         self.visit(init, &mut HashSet::new(), i, true);
+                        self.check_const_range(init, i);
                     }
                 }
                 "type" => {
@@ -3032,6 +3033,99 @@ impl<'a> Checker<'a> {
                 what, cause, how, note
             );
             self.tdiag("E4004", msg, line);
+        }
+    }
+
+    /// `const` / `static` の初期化式に含まれる整数リテラル・定数式が、
+    /// 型の範囲に収まるか検査する。範囲外は E2026 を報告する (仕様 3.7, 4.5)。
+    fn check_const_range(&mut self, init: &V, di: usize) {
+        let _ = self.const_eval(init, di);
+    }
+
+    /// 定数式を評価し、型の範囲を検査する。
+    /// 返り値: `Some((i128 の値, 型名))`、評価不能の場合は `None`。
+    fn const_eval(&mut self, e: &V, di: usize) -> Option<(i128, String)> {
+        let f = nf(e);
+        match nname(e) {
+            "Lit" => {
+                if st(&f[0]) != "int" {
+                    return None;
+                }
+                let text = st(&f[1]);
+                let ty = if is_nil(&f[2]) { return None; } else { st(&f[2]) };
+                // リテラルの範囲検査 (E2026)
+                if let Some(msg) = crate::types::int_literal_problem(&text, &ty) {
+                    self.diag("E2026", msg, di, nline(e));
+                }
+                let mag = text.trim_start_matches('-').replace('_', "");
+                let digits: String = mag.chars().take_while(|c| c.is_ascii_digit()).collect();
+                let value: i128 = digits.parse().ok()?;
+                let neg = text.starts_with('-');
+                Some((if neg { -value } else { value }, ty))
+            }
+            "Bin" => {
+                let op = st(&f[0]);
+                if !matches!(op.as_str(), "+" | "-" | "*" | "/" | "%") {
+                    return None;
+                }
+                let (lv, lt) = self.const_eval(&f[1], di)?;
+                let (rv, _rt) = self.const_eval(&f[2], di)?;
+                let result = match op.as_str() {
+                    "+" => lv.checked_add(rv)?,
+                    "-" => lv.checked_sub(rv)?,
+                    "*" => lv.checked_mul(rv)?,
+                    "/" => {
+                        if rv == 0 {
+                            return None;
+                        }
+                        lv.checked_div(rv)?
+                    }
+                    "%" => {
+                        if rv == 0 {
+                            return None;
+                        }
+                        lv.checked_rem(rv)?
+                    }
+                    _ => return None,
+                };
+                // 結果の型は左辺の型
+                if !self.value_in_range(result, &lt) {
+                    self.diag(
+                        "E2026",
+                        format!("integer literal `{}` is out of range for `{}`", result, lt),
+                        di,
+                        nline(e),
+                    );
+                }
+                Some((result, lt))
+            }
+            "Unary" => {
+                if st(&f[0]) != "-" {
+                    return None;
+                }
+                let (v, ty) = self.const_eval(&f[1], di)?;
+                Some((-v, ty))
+            }
+            _ => None,
+        }
+    }
+
+    /// 値 `value` が型 `ty` の範囲に収まるか。`usize`/`isize` はターゲットの幅で見る (4.5)。
+    fn value_in_range(&self, value: i128, ty: &str) -> bool {
+        let bits: u32 = match ty {
+            "i8" | "u8" => 8,
+            "i16" | "u16" => 16,
+            "i32" | "u32" => 32,
+            "i128" | "u128" => 128,
+            "isize" | "usize" => crate::ptrwidth::bits(),
+            _ => return true,
+        };
+        let signed = ty.starts_with('i');
+        if signed {
+            value >= -(1i128 << (bits - 1)) && value <= (1i128 << (bits - 1)) - 1
+        } else {
+            let max = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+            value >= 0 && value <= max as i128
         }
     }
 

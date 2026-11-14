@@ -4429,7 +4429,7 @@ fn place_root_is(e: &V, name: &str) -> bool {
 }
 
 /// 整数リテラルの綴り `text` が型 `ty` に収まらなければ、その説明を返す。
-fn int_literal_problem(text: &str, ty: &str) -> Option<String> {
+pub(crate) fn int_literal_problem(text: &str, ty: &str) -> Option<String> {
     let neg = text.starts_with('-');
     let t = text.trim_start_matches('-').replace('_', "");
     let (digits, radix) = if let Some(r) = t.strip_prefix("0x") {
