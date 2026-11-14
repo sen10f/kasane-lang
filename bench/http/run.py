@@ -72,6 +72,20 @@ def build_all():
     return info
 
 
+def free_port(port):
+    # 前の計測の TIME_WAIT が残るポートは、Kasane 版 (SO_REUSEADDR を付けない) の bind が失敗する。
+    # SO_REUSEADDR を付けずに bind できるポートを選ぶ。
+    while True:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind(("127.0.0.1", port))
+            return port
+        except OSError:
+            port += 1
+        finally:
+            s.close()
+
+
 def wait_port(port, proc):
     for _ in range(200):
         if proc.poll() is not None:
@@ -131,7 +145,7 @@ def main():
     for name, spec, pool in cases:
         runs = []
         for _ in range(a.repeat):
-            port += 1
+            port = free_port(port + 1)
             p = start(name, spec, port, a.workers, a.server_cpus, pool)
             try:
                 runs.append(measure(port, a.conns, a.seconds, a.client_cpus))
