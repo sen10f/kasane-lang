@@ -18142,7 +18142,7 @@ fn kir_coll_reports_unsupported_constructs_with_a_reason() {
     // `Vec` の `remove` / `insert` はスカラー要素なら段階 1 で下ろせる (`push` / `pop` と同様)。
     // capture を持つクロージャは、理由を付けて拒否する。
     let cases: &[(&str, &str, &str)] = &[
-        ("t.captured", "    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let f = fn(x: usize) -> usize capture [move v] {\n        x\n    }\n    f(1usize)\n", "取り込みは段階 1 の対象外"),
+        ("t.captured", "    let v: Option<alloc.vec.Vec<u8, std.alloc.System>> = Some(alloc.vec.Vec.new(std.alloc.SYSTEM))\n    let f = fn(x: usize) -> usize capture [move v] {\n        x\n    }\n    f(1usize)\n", "解放の要る値を持つ"),
     ];
     for (i, (f, body, why)) in cases.iter().enumerate() {
         let src = format!(
@@ -18582,11 +18582,9 @@ fn kir_agg_refs_vec_fields_are_read_through_references() {
 
 #[test]
 fn kir_agg_refs_reports_unsupported_references_with_a_reason() {
-    // 指す先が標準の型・Option の参照や、移動・Vec の借用の戻りは、理由を付けて拒否する。
+    // 指す先が標準の型の参照は、理由を付けて拒否する (要素が集成体のスライス `&[t.P]` は下ろせる)。
     let cases: &[(&str, &str, &str)] = &[
         ("fn t.f(e: &std.io.Stdout) -> u8 uses [] panics never\n    let _t = e\n    0u8\nend t.f\n", "t.f", "引数の型"),
-        // 要素が集成体のスライスは `fat` の対象外 (要素の大きさが要る。`Option<&[u8]>` は対象になった)
-        ("type t.P\n    a: u8\nend t.P\n\nfn t.f(s: &[t.P]) -> usize uses [] panics never\n    let _t = s\n    0usize\nend t.f\n", "t.f", "引数の型"),
     ];
     for (i, (src, f, why)) in cases.iter().enumerate() {
         let src = format!("{}\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n", src);
@@ -20775,7 +20773,6 @@ fn kir_closure_environment_is_passed_as_leading_arguments() {
 fn kir_closure_reports_unsupported_captures_with_a_reason() {
     // 解放の要る値の取り込み、move で取り込んだ値の変更、反復子の未対応の元は理由付きで拒否する。
     let cases: &[(&str, &str, &str)] = &[
-        ("t.cap_vec", "    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let f = fn(x: usize) -> usize capture [&v] {\n        x\n    }\n    f(1usize)\n", "取り込みは段階 1 の対象外"),
         ("t.cap_mutate", "    let mut n = 1usize\n    let f = fn(x: usize) -> usize capture [move n] {\n        n = n.wrapping_add(x)\n        n\n    }\n    f(1usize)\n", "を本体が変更する形"),
         ("t.take", "    core.iter.count(core.iter.take(core.iter.range(0usize, 5usize), 2usize))\n", "take"),
     ];
@@ -24098,4 +24095,32 @@ fn kir_borrowck_agreement_on_unsound_does_not_drop() {
     assert!(checked >= 119, "KIR checked only {} unsound programs", checked);
     assert!(agree >= 112, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
     assert!(kir_reject >= 9, "KIR rejects only {}", kir_reject);
+}
+
+
+/// `linear_ok/` の正しい小プログラムは、すべてネイティブになり、出力・終了コードが `ksn run` と一致する (修正プラン 3-1)。
+#[test]
+fn linear_ok_programs_build_native_and_match_run() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    assert!(names.len() >= 100, "linear_ok cases missing");
+    let mut bad = vec![];
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("linear_native_{}", stem), &fs::read_to_string(&p).unwrap());
+        let b = run(&["build"], &t.0);
+        let out = format!("{}{}", text(&b.stdout), text(&b.stderr));
+        let exe = t.0.join("target").join("debug").join("t.native");
+        if out.contains("native backend skipped") || !exe.exists() {
+            bad.push(format!("{}: バンドルへ退避: {}", stem, out.lines().find(|l| l.contains("skipped")).unwrap_or("")));
+            continue;
+        }
+        let n = Command::new(&exe).current_dir(&t.0).output().unwrap();
+        let r = run(&["run"], &t.0);
+        if n.status.code() != r.status.code() || text(&n.stdout) != text(&r.stdout) || text(&n.stderr) != text(&r.stderr) {
+            bad.push(format!("{}: native と run が違う: {:?} {:?} / {:?} {:?}", stem, n.status.code(), text(&n.stdout), r.status.code(), text(&r.stdout)));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
 }

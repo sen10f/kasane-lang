@@ -516,9 +516,15 @@ impl AggTab {
                 return self.lower_ty(p, file, t);
             }
         }
+        // `&Vec` / `&String` / `&HashMap` のフィールドは、借用のヘッダのアドレス (`ptr`)。
+        if let Src::Ref(_, inner) = t {
+            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
+                return Ok(Ty::Ptr);
+            }
+        }
         match self.lower_ty(p, file, t)? {
             Ty::Unit => Err("ユニット型のフィールドは段階 1 の対象外".to_string()),
-            Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => Err("参照・Option・Result のフィールドは段階 1 の対象外".to_string()),
+            Ty::Opt(_) | Ty::Res(..) => Err("Option・Result のフィールドは段階 1 の対象外".to_string()),
             x => Ok(x),
         }
     }
@@ -1041,6 +1047,48 @@ impl<'a> Lw<'a> {
                         self.test(c, fl);
                     }
                     other => return self.err(line, format!("リテラルのパターン {} は段階 1 の対象外", other)),
+                }
+            }
+            // `let (a, b) = r` (r は集成体のタプルへの参照): フィールドを借りて束縛する。Vec / String のフィールドは借用のヘッダ、
+            // スカラーのフィールドは値の複製 (`Copy`)。
+            "PTuple" if matches!(ty, Ty::Ref(_, Pointee::Agg(_))) => {
+                let Ty::Ref(m, Pointee::Agg(ai)) = ty else { unreachable!() };
+                let d = self.agg_def(ai);
+                let AggKind::Tuple(fs) = &d.kind else {
+                    return self.err(line, "タプルのパターンの対象がタプルでない");
+                };
+                let subs = items(&nf(p)[0]);
+                if subs.len() != fs.len() {
+                    return self.err(line, "タプルのパターンの要素数が型と合わない");
+                }
+                for (sp, fd) in subs.iter().zip(fs) {
+                    match nname(sp) {
+                        "PWild" => continue,
+                        "PBind" => {}
+                        _ => return self.err(line, "参照越しのタプルのパターンは名前と _ だけ段階 1 の対象"),
+                    }
+                    let name = st(&nf(sp)[0]);
+                    let Some(fp) = Pointee::of(fd.ty) else {
+                        return self.err(line, "参照越しのタプルのフィールドの型は段階 1 の対象外");
+                    };
+                    let addr = self.emit(Ty::Ref(m, fp), Op::FieldAddr { a: val, off: fd.off });
+                    if let Ty::Agg(fi) = fd.ty {
+                        if is_vec_name(&self.agg_def(fi).name) {
+                            let hp = self.emit(Ty::Ptr, Op::Bitcast { src: Ty::Ref(m, fp), a: addr });
+                            let kind = match self.aggs.borrow().vec_elem(fd.ty) {
+                                Some(e) => super::coll::Kind::Vec(Some(e)),
+                                None => super::coll::Kind::String,
+                            };
+                            self.bind(&name, hp, Ty::Ptr);
+                            let sl = self.lookup(&name).expect("直前に束縛した名前");
+                            self.coll.kinds.insert(sl, kind);
+                            self.coll.borrowed.insert(sl);
+                            continue;
+                        }
+                        return self.err(line, "参照越しのタプルの集成体のフィールドは段階 1 の対象外");
+                    }
+                    let v = self.emit(fd.ty, Op::Load(addr));
+                    out.extend(self.pat(sp, v, fd.ty, fail)?);
                 }
             }
             "PTuple" => {

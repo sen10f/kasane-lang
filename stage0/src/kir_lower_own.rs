@@ -30,6 +30,18 @@ pub(super) fn chain_of(lw: &Lw, e: &V) -> Option<(usize, Vec<String>)> {
             names.push(st(&f[1]));
             Some((s, names))
         }
+        // `v.as_slice()` / `v.as_mut_slice()` は `v` と同じ場所 (`get` / `get_mut` の受け手)
+        "MCall" if matches!(st(&nf(e)[1]).as_str(), "as_slice" | "as_mut_slice") && items(&nf(e)[2]).is_empty() => chain_of(lw, &nf(e)[0]),
+        // `v.as_slice()` / `x.f.as_mut_slice()` (経路の呼び出しの形)
+        "Call" if items(&nf(e)[1]).is_empty() && nname(&nf(e)[0]) == "Path" => {
+            let segs = strs(&nf(&nf(e)[0])[0]);
+            let n = segs.len();
+            if n < 2 || !matches!(segs[n - 1].as_str(), "as_slice" | "as_mut_slice") {
+                return None;
+            }
+            let s = lw.lookup(&segs[0])?;
+            Some((s, segs[1..n - 1].to_vec()))
+        }
         _ => None,
     }
 }
