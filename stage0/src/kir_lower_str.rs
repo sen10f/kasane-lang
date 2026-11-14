@@ -685,6 +685,11 @@ impl<'a> Lw<'a> {
             return self.err(line, "core.str.from_utf8 の引数は 1 個のはず");
         }
         let Some(bytes) = self.expr(&args[0])? else { return Ok(None) };
+        self.from_utf8_of(bytes, line)
+    }
+
+    /// `&[u8]` の値 `bytes` (`fat`) を UTF-8 として検査し、`Result<&str, Utf8Error>` にする。
+    pub(super) fn from_utf8_of(&mut self, bytes: VId, line: usize) -> LR<Option<VId>> {
         let fat = self.vty(bytes);
         let Ty::Agg(fat_idx) = fat else {
             return self.err(line, "core.str.from_utf8 の引数が &[u8] ではない");

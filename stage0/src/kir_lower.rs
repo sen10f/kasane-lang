@@ -69,6 +69,8 @@ mod coll;
 mod for_lower;
 #[path = "kir_lower_own.rs"]
 mod own;
+#[path = "kir_lower_buf.rs"]
+mod buf;
 use coll::CollCx;
 
 // `std.net` (TCP) の下ろし (設計_KIR.md 12 章)。

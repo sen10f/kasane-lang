@@ -68,6 +68,10 @@ fn run_native(name: &str, src: &str) -> String {
     assert!(text(&chk.stdout).trim().is_empty() && chk.status.success(), "{}{}", text(&chk.stdout), text(&chk.stderr));
     let tree = run(&["run", "--engine=tree"], &t.0);
     assert_eq!(tree.status.code(), Some(0), "{}{}", text(&tree.stdout), text(&tree.stderr));
+    let vm = run(&["run", "--engine=vm"], &t.0);
+    assert_eq!(vm.status.code(), Some(0), "{}{}", text(&vm.stdout), text(&vm.stderr));
+    assert_eq!(text(&tree.stdout), text(&vm.stdout), "VM の出力が木走査と違う");
+    assert!(!text(&vm.stderr).contains("vm engine skipped"), "VM が KIR に下ろせず木走査へ退避した: {}", text(&vm.stderr));
     let cache = std::env::temp_dir().join(format!("ksn_rawbuf_cache_{}_{}", std::process::id(), name));
     let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
@@ -240,13 +244,13 @@ end t.main
 
 #[test]
 fn buf_operations_agree_across_run_engines_and_build() {
-    let out = run_all("ops", PROG);
+    let out = run_native("ops", PROG);
     assert_eq!(out, "show\ndone\n");
 }
 
 #[test]
 fn buf_u8_utf8_checked_view() {
-    let out = run_all("bytes", BYTES);
+    let out = run_native("bytes", BYTES);
     assert_eq!(out, "héllo\n");
 }
 
@@ -259,4 +263,48 @@ fn generic_structs_and_methods_lower_to_native() {
 fn address_of_a_field_through_a_reference_points_at_the_field() {
     // `&mut self.value` は、フィールドそのもののアドレス (以前は読んだ値の一時の写しを指していた)。
     assert_eq!(run_native("ref_field", REF_FIELD), "ok\n");
+}
+
+const OWNED: &str = r#"type t.Item pub
+    name: alloc.string.String<std.alloc.System>
+    n: u32
+end t.Item
+
+fn t.item(text: &str, n: u32) -> t.Item uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.check.eq(s.push_str(text), Ok(()))
+    t.Item { name: s, n: n }
+end t.item
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut b = match alloc.raw.Buf.with_capacity(std.alloc.SYSTEM, 4usize) {
+        Ok(b) => b
+        Err(_e) => core.panic.panic("oom")
+    }
+    core.check.eq(b.push_within_cap(t.item("a", 1u32)).is_ok(), true)
+    core.check.eq(b.push_within_cap(t.item("b", 2u32)).is_ok(), true)
+    core.check.eq(b.push_within_cap(t.item("c", 3u32)).is_ok(), true)
+    core.check.eq(b.insert_within_cap(1usize, t.item("x", 9u32)).is_ok(), true)
+    core.check.eq(b.len(), 4usize)
+    let full = b.push_within_cap(t.item("y", 10u32))
+    core.check.eq(full.is_err(), true)
+    match b.swap_remove(0usize) {
+        Some(it) => core.check.eq(it.n, 1u32)
+        None => core.panic.panic("swap_remove")
+    }
+    core.check.eq(b.len(), 3usize)
+    b.truncate(1usize)
+    core.check.eq(b.len(), 1usize)
+    match b.pop() {
+        Some(it) => core.check.eq(it.n, 3u32)
+        None => core.panic.panic("pop")
+    }
+    std.io.print_line("owned ok")?
+    Ok(())
+end t.main
+"#;
+
+#[test]
+fn buf_of_owning_elements_lowers_to_native() {
+    assert_eq!(run_native("owned", OWNED), "owned ok\n");
 }

@@ -175,7 +175,7 @@ impl AggTab {
             }
             // 値渡しの `Vec` / `String` は 24 バイトのヘッダ `vec` の値 (所有の移動。設計_KIR.md 13 章)。
             // 参照 (`&Vec` など) は下の腕に入れず、借用のヘッダのアドレス (`ptr`) として `sig_ty` が受ける。
-            Src::Named(name, args) if name == "alloc.vec.Vec" => {
+            Src::Named(name, args) if name == "alloc.vec.Vec" || name == "alloc.raw.Buf" => {
                 let elem = args.first().and_then(|a| self.lower_ty(p, file, a).ok());
                 Ok(self.vec_of(elem))
             }
@@ -234,7 +234,7 @@ impl AggTab {
                 self.intern_tuple(elems)
             }
             // 集成体への参照 `&S` / `&mut S` (スカラーへの参照は上の `conv` が済ませている)。
-            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") => {
+            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") => {
                 Err("Vec / String への参照はヘッダのアドレスで渡す".to_string())
             }
             Src::Ref(m, inner) if matches!(&**inner, Src::Named(..) | Src::Tuple(_)) => match self.lower_ty(p, file, inner)? {
@@ -511,13 +511,13 @@ impl AggTab {
             if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap" {
                 return Ok(self.vec_hdr());
             }
-            if n == "alloc.vec.Vec" || n == "alloc.string.String" {
+            if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" {
                 return self.lower_ty(p, file, t);
             }
         }
         // `&Vec` / `&String` / `&HashMap` のフィールドは、借用のヘッダのアドレス (`ptr`)。
         if let Src::Ref(_, inner) = t {
-            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
+            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
                 return Ok(Ty::Ptr);
             }
         }

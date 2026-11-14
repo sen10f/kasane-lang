@@ -210,7 +210,7 @@ pub(super) fn reserve(lw: &mut Lw, h: VId, extra: VId) {
 }
 
 /// `n` バイトを `src` から `dst` へ写す (重ならない)。
-fn copy_bytes(lw: &mut Lw, dst: VId, src: VId, n: VId) {
+pub(super) fn copy_bytes(lw: &mut Lw, dst: VId, src: VId, n: VId) {
     let zero = usize_const(lw, 0);
     let (hd, hp) = lw.new_block(&[Ty::Usize]);
     let (body, _) = lw.new_block(&[]);

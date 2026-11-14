@@ -28,6 +28,13 @@ use crate::program::Target;
 use crate::types::{from_v, Ty as Src};
 
 const VEC: &str = "alloc.vec.Vec";
+/// `alloc.raw.Buf<T, A>` は Vec と同じ 24 バイトのヘッダ {ptr, len, cap} (cap は要素数)。
+const BUF: &str = "alloc.raw.Buf";
+
+/// ヘッダを持つ「Vec の仲間」(`Vec` と `Buf`) の名前か。
+pub(crate) fn is_vecn(n: &str) -> bool {
+    n == VEC || n == BUF
+}
 const STRING: &str = "alloc.string.String";
 const HASHMAP: &str = "alloc.collections.HashMap";
 const BTREEMAP: &str = "alloc.collections.BtreeMap";
@@ -150,7 +157,7 @@ fn strip_ref(t: &Src) -> &Src {
 pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     // 値渡しの Vec / String は集成体 `vec` (所有の移動)、参照は借用なのでヘッダのアドレス。
     if let Src::Named(n, args) = t {
-        if n == VEC {
+        if is_vecn(n) {
             let elem = args.first().and_then(|a| lw.conv_t(a));
             return Some(lw.aggs.borrow_mut().vec_of(elem));
         }
@@ -162,7 +169,7 @@ pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
         }
     }
     match strip_ref(t) {
-        Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP => Some(Ty::Ptr),
+        Src::Named(n, _) if is_vecn(n) || n == STRING || n == HASHMAP => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).or_else(|| lw.conv_t(e)).and_then(|t| elem_size(lw, t)).is_some() => Some(lw.fat_ty()),
         Src::Closure { .. } => Some(Ty::Unit),
@@ -172,7 +179,7 @@ pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
 
 /// `Vec` / `String` の名前の型か。
 pub(crate) fn is_hdr_named(t: &Src) -> bool {
-    matches!(t, Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP)
+    matches!(t, Src::Named(n, _) if is_vecn(n) || n == STRING || n == HASHMAP)
 }
 
 /// 関数の引数・戻り値の型。通常の型に加えて、Vec / String / `str` / スライスへの参照 (借用) を受ける。
@@ -194,7 +201,7 @@ pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     }
     let Src::Ref(mutbl, inner) = t else { return None };
     match &**inner {
-        Src::Named(n, _) if n == VEC || n == STRING || n == HASHMAP => Some(Ty::Ptr),
+        Src::Named(n, _) if is_vecn(n) || n == STRING || n == HASHMAP => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).or_else(|| lw.conv_t(e)).and_then(|t| elem_size(lw, t)).is_some() => Some(lw.fat_ty()),
         Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" => {
@@ -274,7 +281,7 @@ pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
 pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
     match strip_ref(t) {
         // 要素が所有物 (`Vec<String>`) のときは、要素の型 (集成体 `vec` など) を持つ
-        Src::Named(n, args) if n == VEC => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a))))),
+        Src::Named(n, args) if is_vecn(n) => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a))))),
         Src::Named(n, _) if n == STRING => Some(Kind::String),
         Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(args))),
         Src::Named(n, args) if n == BTREEMAP => Some(Kind::BMap(map_kv(args))),
@@ -1308,6 +1315,7 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     let segs: Vec<&str> = segs.iter().map(|x| x.as_str()).collect();
     match segs.as_slice() {
         ["alloc", "vec", "Vec", "new"] => Some(new_header(lw, e)),
+        ["alloc", "raw", "Buf", "with_capacity"] => Some(super::buf::with_capacity(lw, e)),
         ["alloc", "string", "String", "new"] => Some(new_header(lw, e)),
         ["alloc", "string", "String", "from_str"] => {
             Some(lw.from_str_call(e, items(&f[1]), nline(e)))
@@ -1696,6 +1704,9 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
 /// ヘッダ (または `fat`) `h` を受け手とするメソッド呼び出し。所有の周りの新しいメソッド (`own`) を先に試す。
 pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: Kind, h: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
     if let Some(r) = lw.str_method_call(e, &kind, h, m, args) {
+        return r;
+    }
+    if let Some(r) = super::buf::method(lw, e, line, &kind, h, m, args) {
         return r;
     }
     if let Some(r) = super::own::method(lw, e, line, &kind, h, m, args) {
@@ -2492,7 +2503,7 @@ fn vec_place(lw: &mut Lw, e: &V, line: usize) -> LR<(Seq, Ty)> {
             // 要素型が局所の初期化から決まらなかった Vec (別の関数の `push` で決まるもの) は、式の型表の型で決める。
             Some(Kind::Vec(None)) => {
                 if let Some(Src::Named(n, args)) = table_ty(lw, e).as_ref().map(strip_ref) {
-                    if n == VEC {
+                    if is_vecn(n) {
                         if let Some(elem) = args.first().and_then(|a| sig_ty(lw, a)).filter(|t| elem_size(lw, *t).is_some()) {
                             return Ok((Seq::Hdr(slot_ptr), elem));
                         }
@@ -2784,11 +2795,11 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             }
             let esrc = if owns_heap(lw, elem) {
                 match lw.src_ty(it) {
-                    Ok(Src::Named(n, a)) if n == VEC => a.into_iter().next(),
+                    Ok(Src::Named(n, a)) if is_vecn(&n) => a.into_iter().next(),
                     // `v.iter()` の型は `core.slice.Iter<T>`
                     Ok(Src::Named(n, a)) if n == "core.slice.Iter" => a.into_iter().next(),
                     Ok(Src::Ref(_, i)) => match *i {
-                        Src::Named(n, a) if n == VEC => a.into_iter().next(),
+                        Src::Named(n, a) if is_vecn(&n) => a.into_iter().next(),
                         _ => None,
                     },
                     _ => None,
