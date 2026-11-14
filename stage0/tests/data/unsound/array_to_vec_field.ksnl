@@ -1,0 +1,12 @@
+// expect: E2023
+type t.H
+    v: &'static alloc.vec.Vec<u32, std.alloc.System>
+end t.H
+
+fn t.bad(a: &'static [u32; 3]) -> t.H uses [] panics never
+    t.H { v: a }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
