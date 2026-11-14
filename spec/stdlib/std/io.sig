@@ -12,6 +12,7 @@ enum std.io.ErrorKind derive [Debug, Clone, Copy, PartialEq, Eq] pub
     BrokenPipe
     Interrupted
     OutOfMemory
+    TimedOut
     Other
 end std.io.ErrorKind
 

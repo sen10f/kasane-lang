@@ -709,6 +709,66 @@ impl FsK {
     pub const ALL: [FsK; 6] = [FsK::Rename, FsK::CreateDir, FsK::RemoveDir, FsK::OpenAppend, FsK::Stat, FsK::ReadDir];
 }
 
+/// `Op::NetSys` の種類 (`std.net` の原始操作のうち、`listen` / `connect` / `accept` / `read` / `write` / `flush` / `close` / `local_port` 以外)。
+/// 引数の並びと結果の型は種類ごとに決まる (`kir.rs` の検査 / `kir_exec.rs` / `kir_llvm.rs` が同じ並びを読む)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetK {
+    /// `set_read_timeout(sock, ms: u64)`: `SO_RCVTIMEO`。0 = なし。結果は `Result<(), std.io.Error>`。
+    ReadTimeout,
+    /// `set_write_timeout(sock, ms: u64)`: `SO_SNDTIMEO`。0 = なし。結果は `Result<(), std.io.Error>`。
+    WriteTimeout,
+    /// `shutdown(sock, how: i32)`: 0 = 読み、1 = 書き、2 = 両方。結果は `Result<(), std.io.Error>`。
+    Shutdown,
+    /// `peer_addr_raw(sock, buf, cap)`: 相手のアドレス (`ip:port`) を `buf` へ書く。結果は `Result<usize, std.io.Error>`。
+    PeerAddr,
+    /// `local_addr_raw(sock, buf, cap)`: 自分のアドレス。`PeerAddr` と同じ形。
+    LocalAddr,
+    /// `resolve_raw(host, port, buf, cap)`: `getaddrinfo` の結果を `アドレス\0` の並びで `buf` へ書く。結果は `Result<usize, std.io.Error>`。
+    Resolve,
+    /// `UdpSocket.bind(addr)`: 結果は `Result<UdpSocket 集成体, std.net.Error>`。
+    UdpBind,
+    /// `UdpSocket.send_to(sock, buf, len, addr)`。結果は `Result<usize, std.io.Error>`。
+    UdpSendTo,
+    /// `UdpSocket.recv_from_raw(sock, buf, len, from, fromcap)`: 送り元を `from` へ `ip:port\0` で書く。結果は `Result<usize, std.io.Error>`。
+    UdpRecvFrom,
+}
+
+impl NetK {
+    pub fn name(self) -> &'static str {
+        match self {
+            NetK::ReadTimeout => "set_read_timeout",
+            NetK::WriteTimeout => "set_write_timeout",
+            NetK::Shutdown => "shutdown",
+            NetK::PeerAddr => "peer_addr",
+            NetK::LocalAddr => "local_addr",
+            NetK::Resolve => "resolve",
+            NetK::UdpBind => "udp_bind",
+            NetK::UdpSendTo => "udp_send_to",
+            NetK::UdpRecvFrom => "udp_recv_from",
+        }
+    }
+    pub fn arity(self) -> usize {
+        match self {
+            NetK::ReadTimeout | NetK::WriteTimeout | NetK::Shutdown => 2,
+            NetK::PeerAddr | NetK::LocalAddr => 3,
+            NetK::Resolve | NetK::UdpSendTo => 4,
+            NetK::UdpBind => 1,
+            NetK::UdpRecvFrom => 5,
+        }
+    }
+    pub const ALL: [NetK; 9] = [
+        NetK::ReadTimeout,
+        NetK::WriteTimeout,
+        NetK::Shutdown,
+        NetK::PeerAddr,
+        NetK::LocalAddr,
+        NetK::Resolve,
+        NetK::UdpBind,
+        NetK::UdpSendTo,
+        NetK::UdpRecvFrom,
+    ];
+}
+
 /// 命令の本体。結果の型と番号は `Inst` が持つ。
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
@@ -831,6 +891,9 @@ pub enum Op {
     NetClose { sock: VId },
     /// `TcpListener.local_port()`: `local_addr` のポート。結果は `Result<u16, std.io.Error>`。`uses [io.net]` の関数だけ。
     NetLocalPort { sock: VId },
+    /// `std.net` の原始操作 (`NetK`)。`args` の個数と型、結果の型は `NetK` ごとに決まる。`uses [io.net]` の関数だけ。
+    /// 戻り値の失敗の型は `UdpBind` だけ `std.net.Error`、ほかは `std.io.Error`。
+    NetSys { kind: NetK, args: Vec<VId> },
     /// `std.fs.create(path)`: 作成して切り詰め、書き込み専用で開く。`path` は fat (`&str`)。結果は `Result<std.fs.File, std.io.Error>`。
     /// 記述子はファイル。`uses [io.fs]` の関数だけ。
     FsCreate { path: VId },
@@ -1104,6 +1167,10 @@ pub fn prune_aggs(m: &mut Module) {
             }
             for i in &b.insts {
                 mark(i.ty, &mut used, &mut todo);
+                // 命令の中に持つ型も使われている (付け替えの対象と同じ並び。`remap` の下の注を見る)。
+                for t in op_tys(&i.op) {
+                    mark(t, &mut used, &mut todo);
+                }
             }
         }
     }
@@ -1144,12 +1211,24 @@ pub fn prune_aggs(m: &mut Module) {
             }
             for i in &mut b.insts {
                 i.ty = remap(i.ty);
-                // 命令が持つ型 (参照から ptr への bitcast の元の型) も付け替える。
-                if let Op::Bitcast { src, .. } = &mut i.op {
-                    *src = remap(*src);
+                // 命令が持つ型 (参照から ptr への bitcast の元の型、比較・メモリ書き込みの型など) も付け替える。
+                // 付け替えが漏れると、添字が古いまま残り、VM などが型表の外を読む (2026-11-14 の `std.net` の追加で見つかった)。
+                match &mut i.op {
+                    Op::Bitcast { src, .. } | Op::Conv { src, .. } | Op::FUn { src, .. } | Op::BitCount { src, .. } => *src = remap(*src),
+                    Op::Cmp { ty, .. } | Op::MemStore { ty, .. } | Op::ParseInt { ty, .. } => *ty = remap(*ty),
+                    _ => {}
                 }
             }
         }
+    }
+}
+
+/// 命令が持つ型 (`Ty`) の一覧。`prune_aggs` が使われている型を数えるのと、付け替えの対象を一致させるために使う。
+fn op_tys(op: &Op) -> Vec<Ty> {
+    match op {
+        Op::Bitcast { src, .. } | Op::Conv { src, .. } | Op::FUn { src, .. } | Op::BitCount { src, .. } => vec![*src],
+        Op::Cmp { ty, .. } | Op::MemStore { ty, .. } | Op::ParseInt { ty, .. } => vec![*ty],
+        _ => vec![],
     }
 }
 
@@ -1322,6 +1401,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::NetFlush { sock } => format!("net.flush {}", fmt_val(*sock)),
         Op::NetClose { sock } => format!("net.close {}", fmt_val(*sock)),
         Op::NetLocalPort { sock } => format!("net.local_port {}", fmt_val(*sock)),
+        Op::NetSys { kind, args } => format!("net.{} {}", kind.name(), args.iter().map(|a| fmt_val(*a)).collect::<Vec<_>>().join(", ")),
         Op::Proc { f, args } => format!("proc.{} {}", f.name(), args.iter().map(|a| fmt_val(*a)).collect::<Vec<_>>().join(", ")),
         Op::FsCreate { path } => format!("fs.create {}", fmt_val(*path)),
         Op::FsOpen { path } => format!("fs.open {}", fmt_val(*path)),
@@ -1771,6 +1851,11 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("net", ["local_port"]) => {
             let v = operands(1)?;
             Ok(Op::NetLocalPort { sock: v[0] })
+        }
+        ("net", [k]) if NetK::ALL.iter().any(|f| f.name() == *k) => {
+            let kind = *NetK::ALL.iter().find(|f| f.name() == *k).expect("種別");
+            let v = operands(kind.arity())?;
+            Ok(Op::NetSys { kind, args: v })
         }
         ("proc", [name]) => {
             let Some(f) = ProcFn::parse(name) else { return Err(perr(line, format!("proc.{} は不明", name))) };
@@ -2658,6 +2743,39 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("std.fs.exists の結果は bool のはず".into());
                         }
                     }
+                    Op::NetSys { kind, args } => {
+                        if !f.uses.iter().any(|u| u == "io.net") {
+                            return Err(format!("net.{} は uses [io.net] の関数だけ", kind.name()));
+                        }
+                        if args.len() != kind.arity() {
+                            return Err(format!("net.{} の引数は {} 個のはず", kind.name(), kind.arity()));
+                        }
+                        let fat = fat_ty(m)?;
+                        let want: Vec<Ty> = match kind {
+                            NetK::ReadTimeout | NetK::WriteTimeout => vec![Ty::I32, Ty::U64],
+                            NetK::Shutdown => vec![Ty::I32, Ty::I32],
+                            NetK::PeerAddr | NetK::LocalAddr => vec![Ty::I32, Ty::Ptr, Ty::Usize],
+                            NetK::Resolve => vec![fat, Ty::U16, Ty::Ptr, Ty::Usize],
+                            NetK::UdpBind => vec![fat],
+                            NetK::UdpSendTo => vec![Ty::I32, Ty::Ptr, Ty::Usize, fat],
+                            NetK::UdpRecvFrom => vec![Ty::I32, Ty::Ptr, Ty::Usize, Ty::Ptr, Ty::Usize],
+                        };
+                        for (a, w) in args.iter().zip(want.iter()) {
+                            if ty_of(*a)? != *w {
+                                return Err(format!("net.{} の引数の型が合わない", kind.name()));
+                            }
+                        }
+                        let ok = match kind {
+                            NetK::UdpBind => matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_net_error(m, e.ty())),
+                            NetK::ReadTimeout | NetK::WriteTimeout | NetK::Shutdown => {
+                                matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty()))
+                            }
+                            _ => matches!(i.ty, Ty::Res(Pay::Usize, e) if is_io_error(m, e.ty())),
+                        };
+                        if !ok {
+                            return Err(format!("net.{} の結果の型が合わない", kind.name()));
+                        }
+                    }
                     Op::FsRemove { path } => {
                         if !f.uses.iter().any(|u| u == "io.fs" || u == "process") {
                             return Err("std.fs.remove_file は uses [io.fs] の関数だけ".into());
@@ -2950,6 +3068,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::Proc { args, .. } => args.clone(),
         Op::FsCreate { path } | Op::FsOpen { path } | Op::FsExists { path } | Op::FsRemove { path } => vec![*path],
         Op::FsSys { args, .. } => args.clone(),
+        Op::NetSys { args, .. } => args.clone(),
         Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => vec![*fd],
         Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => vec![*fd, *buf, *len],
         Op::EnvArgCount => vec![],

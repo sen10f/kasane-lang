@@ -1,0 +1,70 @@
+fn std.net.TcpStream.local_addr(self: &std.net.TcpStream) -> Result<alloc.string.String<std.alloc.System>, std.io.Error> uses [alloc, io.net] panics never pub
+    let mut buf = [0u8; 64]
+    let n = self.local_addr_raw(&mut buf)?
+    std.net.text_range(&buf, 0usize, n)
+end std.net.TcpStream.local_addr
+
+fn std.net.TcpStream.peer_addr(self: &std.net.TcpStream) -> Result<alloc.string.String<std.alloc.System>, std.io.Error> uses [alloc, io.net] panics never pub
+    let mut buf = [0u8; 64]
+    let n = self.peer_addr_raw(&mut buf)?
+    std.net.text_range(&buf, 0usize, n)
+end std.net.TcpStream.peer_addr
+
+fn std.net.UdpSocket.recv_from(self: &std.net.UdpSocket, buffer: &mut [u8], from: &mut alloc.string.String<std.alloc.System>) -> Result<usize, std.io.Error> uses [alloc, io.net] panics never pub
+    let mut raw = [0u8; 128]
+    let n = self.recv_from_raw(buffer, &mut raw)?
+    let mut stop = 0usize
+    while stop < 128usize {
+        if raw.get(stop) == Some(0u8) {
+            break
+        }
+        stop = stop.wrapping_add(1usize)
+    }
+    let text = std.net.text_range(&raw, 0usize, stop)?
+    from.clear()
+    match from.push_str(text.as_str()) {
+        Ok(_u) => {
+        }
+        Err(_e) => return Err(std.net.oom())
+    }
+    Ok(n)
+end std.net.UdpSocket.recv_from
+
+fn std.net.oom() -> std.io.Error uses [] panics never
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end std.net.oom
+
+fn std.net.resolve(host: &str, port: u16) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, std.io.Error> uses [alloc, io.net] panics never pub
+    let mut buf = [0u8; 4096]
+    let total = std.net.resolve_raw(host, port, &mut buf)?
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut start = 0usize
+    let mut i = 0usize
+    while i < total {
+        if buf.get(i) == Some(0u8) {
+            let s = std.net.text_range(&buf, start, i)?
+            match out.push(s) {
+                Ok(_u) => {
+                }
+                Err(_e) => return Err(std.net.oom())
+            }
+            start = i.wrapping_add(1usize)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end std.net.resolve
+
+fn std.net.text_range(bytes: &[u8], start: usize, last: usize) -> Result<alloc.string.String<std.alloc.System>, std.io.Error> uses [alloc] panics never
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let part = match bytes.sub(start, last) {
+        Some(s) => s
+        None => return Err(std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 })
+    }
+    match out.push_bytes(part) {
+        Ok(_u) => {
+        }
+        Err(_e) => return Err(std.net.oom())
+    }
+    Ok(out)
+end std.net.text_range

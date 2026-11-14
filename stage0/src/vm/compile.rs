@@ -787,6 +787,8 @@ impl<'a> Fc<'a> {
             | Op::FsRead { .. }
             | Op::FsSync { .. }
             | Op::FsWrite { .. } => return Err("std.fs の命令は VM 未対応".into()),
+            // std.net の追加分 (タイムアウト・shutdown・アドレス・resolve・UDP) も VM 未対応 (木走査へ退避する)。
+            Op::NetSys { .. } => return Err("std.net の追加分は VM 未対応".into()),
         };
         self.push(i);
         Ok(())

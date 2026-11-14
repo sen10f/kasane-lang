@@ -74,8 +74,9 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
 pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], watch: Option<Box<dyn FnOnce() -> reload::Reload + '_>>) -> Result<i32, String> {
     let lo = kir_lower::lower_program(prog, user, Some(entry));
     tick("lower");
-    let ret = lo.module.find(entry).map(|f| f.ret);
     let bc = prepare(lo, entry)?;
+    // 戻り値の型は付け替え後の型表 (`bc.aggs`) の添字で読む。`lo.module` の型は型表を縮める前の添字なので使えない。
+    let ret = bc.by_key.get(entry).map(|&i| bc.funcs[i as usize].ret);
     let mut vm = run::Vm::new(&bc);
     vm.args = args.to_vec();
     vm.hook = watch.map(|mk| mk());

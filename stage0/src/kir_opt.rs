@@ -88,6 +88,7 @@ fn side_effecting(op: &Op) -> bool {
         | Op::NetFlush { .. }
         | Op::NetClose { .. }
         | Op::NetLocalPort { .. }
+        | Op::NetSys { .. }
         | Op::Proc { .. }
         | Op::FsCreate { .. }
         | Op::FsOpen { .. }
@@ -284,6 +285,7 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::Utf8Valid { p, len } => vec![p, len],
         Op::NetListen { addr } | Op::NetConnect { addr } => vec![addr],
         Op::NetAccept { sock } | Op::NetFlush { sock } | Op::NetClose { sock } | Op::NetLocalPort { sock } => vec![sock],
+        Op::NetSys { args, .. } => args.iter_mut().collect(),
         Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => vec![sock, buf, len],
         Op::EnvArgCount => vec![],
         Op::EnvArg { index } | Op::EnvVar { name: index } => vec![index],

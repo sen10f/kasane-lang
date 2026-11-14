@@ -16,6 +16,7 @@ fn t.kind_num(k: std.io.ErrorKind) -> i64 uses [] panics never
         std.io.ErrorKind.BrokenPipe => 6i64
         std.io.ErrorKind.Interrupted => 7i64
         std.io.ErrorKind.OutOfMemory => 8i64
+        std.io.ErrorKind.TimedOut => 10i64
         std.io.ErrorKind.Other => 9i64
     }
 end t.kind_num

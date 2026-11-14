@@ -7,11 +7,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 
 use crate::interp::{py_float, py_float32};
 use crate::natives::io_kind_name;
-use crate::kir::{FsK, payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
+use crate::kir::{FsK, NetK, payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
 use crate::kir_scalar;
 
 // Option / Result の値の語 (設計_KIR.md 11.1)。タグは bit 64、ペイロードの語は下位 64 ビット。
@@ -61,6 +61,15 @@ pub(crate) fn pay_read(t: Ty, w: i128, heap: &[Vec<u8>]) -> i128 {
 enum NetSock {
     Listener(TcpListener),
     Stream(TcpStream),
+    Udp(UdpSocket),
+}
+
+/// fat (`&str`) の置き場の添字 `h` が指す文字列を読む (UTF-8 でなければ空)。
+fn fat_text(bm: &ByteMem, heap: &[Vec<u8>], h: usize) -> Result<String, String> {
+    let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+    let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+    let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+    Ok(String::from_utf8(bytes).unwrap_or_default())
 }
 
 /// `std.net` の記述子を割り当てる (ソケット表と共に、呼び出しの間だけ生きる)。
@@ -848,10 +857,139 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                 }
                 Op::NetLocalPort { sock } => {
                     let fd = get(&stack[top], sock);
-                    let Some(NetSock::Listener(l)) = sockets.get(&fd) else {
-                        return Err(format!("local_port できるのはリスナーソケットだけ: {}", fd));
+                    let addr = match sockets.get(&fd) {
+                        Some(NetSock::Listener(l)) => l.local_addr(),
+                        Some(NetSock::Udp(u)) => u.local_addr(),
+                        _ => return Err(format!("local_port できるのはリスナーソケットか UDP ソケットだけ: {}", fd)),
                     };
-                    l.local_addr().map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?
+                    addr.map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?
+                }
+                Op::NetSys { kind, args } => {
+                    let a = |k: usize| get(&stack[top], &args[k]);
+                    // 失敗は `std.io.Error` (`UdpBind` だけ `std.net.Error`)。戻り値は成功の値か、`TAG_BIT | 置き場の添字`。
+                    match kind {
+                        NetK::ReadTimeout | NetK::WriteTimeout => {
+                            let ms = a(1) as u64;
+                            // 0 = タイムアウトなし。
+                            let dur = if ms == 0 { None } else { Some(std::time::Duration::from_millis(ms)) };
+                            let r = match sockets.get(&a(0)) {
+                                Some(NetSock::Stream(s)) => {
+                                    if matches!(kind, NetK::ReadTimeout) {
+                                        s.set_read_timeout(dur)
+                                    } else {
+                                        s.set_write_timeout(dur)
+                                    }
+                                }
+                                _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                            };
+                            match r {
+                                Ok(()) => 0,
+                                Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                            }
+                        }
+                        NetK::Shutdown => {
+                            let how = match a(1) {
+                                0 => Shutdown::Read,
+                                1 => Shutdown::Write,
+                                _ => Shutdown::Both,
+                            };
+                            let r = match sockets.get(&a(0)) {
+                                Some(NetSock::Stream(s)) => s.shutdown(how),
+                                _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                            };
+                            match r {
+                                Ok(()) => 0,
+                                Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                            }
+                        }
+                        NetK::PeerAddr | NetK::LocalAddr => {
+                            let (p, cap) = (a(1), a(2));
+                            let r = match sockets.get(&a(0)) {
+                                Some(NetSock::Stream(s)) => {
+                                    let addr = if matches!(kind, NetK::PeerAddr) { s.peer_addr() } else { s.local_addr() };
+                                    addr.map(|x| x.to_string().into_bytes())
+                                }
+                                _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                            };
+                            match r {
+                                Ok(bytes) if bytes.len() as i128 <= cap => {
+                                    bm.write_bytes(p, &bytes)?;
+                                    bytes.len() as i128
+                                }
+                                Ok(_) => TAG_BIT | io_error_value(&m.aggs, &mut heap, "InvalidInput", 0)?,
+                                Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                            }
+                        }
+                        NetK::Resolve => {
+                            let host = fat_text(&bm, &heap, a(0) as usize)?;
+                            let (port, p, cap) = (a(1) as u16, a(2), a(3));
+                            // 解決の失敗は Other (番号 0)。木走査の `resolve_raw` と同じ。
+                            let r = (host.as_str(), port).to_socket_addrs().map(|it| {
+                                let mut t: Vec<u8> = Vec::new();
+                                for x in it {
+                                    t.extend_from_slice(x.to_string().as_bytes());
+                                    t.push(0);
+                                }
+                                t
+                            });
+                            match r {
+                                Ok(t) if t.len() as i128 <= cap => {
+                                    bm.write_bytes(p, &t)?;
+                                    t.len() as i128
+                                }
+                                Ok(_) => TAG_BIT | io_error_value(&m.aggs, &mut heap, "InvalidInput", 0)?,
+                                Err(_) => TAG_BIT | io_error_value(&m.aggs, &mut heap, "Other", 0)?,
+                            }
+                        }
+                        NetK::UdpBind => {
+                            let addr = fat_text(&bm, &heap, a(0) as usize)?;
+                            match UdpSocket::bind(addr.as_str()) {
+                                Ok(s) => {
+                                    let fd = alloc_next_fd(&mut next_fd);
+                                    sockets.insert(fd, NetSock::Udp(s));
+                                    desc_agg(&mut heap, fd)?
+                                }
+                                Err(e) => TAG_BIT | net_error_agg(&mut heap, e.raw_os_error().unwrap_or(-1))?,
+                            }
+                        }
+                        NetK::UdpSendTo => {
+                            let (p, n) = (a(1), a(2));
+                            let data = if n == 0 { vec![] } else { bm.read_bytes(p, n as usize)? };
+                            let addr = fat_text(&bm, &heap, a(3) as usize)?;
+                            let r = match sockets.get(&a(0)) {
+                                Some(NetSock::Udp(s)) => s.send_to(&data, addr.as_str()),
+                                _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                            };
+                            match r {
+                                Ok(k) => k as i128,
+                                Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                            }
+                        }
+                        NetK::UdpRecvFrom => {
+                            let (p, n, fp, fc) = (a(1), a(2), a(3), a(4));
+                            let mut vec = vec![0u8; n as usize];
+                            let r = match sockets.get(&a(0)) {
+                                Some(NetSock::Udp(s)) => s.recv_from(&mut vec),
+                                _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+                            };
+                            match r {
+                                Ok((nr, src)) => {
+                                    let mut text = src.to_string().into_bytes();
+                                    text.push(0);
+                                    if text.len() as i128 > fc {
+                                        TAG_BIT | io_error_value(&m.aggs, &mut heap, "InvalidInput", 0)?
+                                    } else {
+                                        if nr > 0 {
+                                            bm.write_bytes(p, &vec[..nr])?;
+                                        }
+                                        bm.write_bytes(fp, &text)?;
+                                        nr as i128
+                                    }
+                                }
+                                Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                            }
+                        }
+                    }
                 }
                 Op::Proc { .. } => return Err("std.process は参照実行器 (`ksn kir --run`) 未対応 (木走査 `ksn run` と LLVM ネイティブが対応)".into()),
                 Op::FsCreate { path } | Op::FsOpen { path } => {

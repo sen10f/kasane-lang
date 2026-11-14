@@ -35,11 +35,11 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
-pub const STD_TYPES: [&str; 21] = ["std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering"];
+pub const STD_TYPES: [&str; 25] = ["std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering"];
 
 /// ソケットの型 (`std.net.TcpListener` / `TcpStream`)。型表には `lower_defs` が常に入れる。`&` の形の型も、同じ集成体として下ろす。
 pub fn is_net_socket(name: &str) -> bool {
-    name == "std.net.TcpListener" || name == "std.net.TcpStream"
+    name == "std.net.TcpListener" || name == "std.net.TcpStream" || name == "std.net.UdpSocket"
 }
 
 /// `Vec` / `String` のヘッダの型の名前 (`vec`、要素が所有物なら `vec<#N>`)。利用者の型は FQN で `.` を含むので衝突しない。

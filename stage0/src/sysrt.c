@@ -1,6 +1,6 @@
-/* Cranelift バックエンドの OS ランタイム (std.fs / std.net)。
- * clif.rs が `include_str!` でこのファイルを埋め込み、ネイティブ実行ファイルが `ksn_rt_sys_` の関数を
- * 参照するときだけ、リンク時に C コンパイラで一緒にコンパイルする (strrt.c と同じ仕組み)。
+/* ネイティブ生成 (LLVM) の OS ランタイム (std.fs / std.net / std.process)。
+ * cli.rs (`runtime_c_args`) がこのファイルを `include_str!` で埋め込み、IR が `ksn_rt_sys_` の関数を
+ * 参照するときだけ、リンク時に C コンパイラで一緒にコンパイルする (kir_rt.c と同じ仕組み)。
  *
  * 規約: 戻り値は i64。0 以上なら成功 (値は関数ごと)、-1 なら失敗で、エラーを e[0..2] に書く。
  *   e[0] = std.io.ErrorKind のバリアント番号 (spec/stdlib/std/io.sig の宣言順)、e[1] = 発生源の OS エラー番号。
@@ -30,6 +30,7 @@
 #include <sys/mman.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -40,10 +41,10 @@ typedef uint64_t u64;
 typedef int64_t i64;
 typedef int32_t i32;
 
-/* std.io.ErrorKind のバリアント番号 */
-enum { K_NOT_FOUND = 0, K_PERMISSION_DENIED, K_ALREADY_EXISTS, K_INVALID_INPUT, K_UNEXPECTED_EOF, K_BROKEN_PIPE, K_INTERRUPTED, K_OUT_OF_MEMORY, K_OTHER };
+/* std.io.ErrorKind のバリアント番号 (spec/stdlib/std/io.sig の宣言順。TimedOut は Other の前)。 */
+enum { K_NOT_FOUND = 0, K_PERMISSION_DENIED, K_ALREADY_EXISTS, K_INVALID_INPUT, K_UNEXPECTED_EOF, K_BROKEN_PIPE, K_INTERRUPTED, K_OUT_OF_MEMORY, K_TIMED_OUT, K_OTHER };
 
-/* errno から ErrorKind を決める (Rust の標準ライブラリと同じ対応)。 */
+/* errno から ErrorKind を決める (Rust の標準ライブラリと同じ対応。タイムアウトの EAGAIN は WouldBlock だが、木走査と同じく TimedOut にする)。 */
 static i32 kind_of(int err) {
     switch (err) {
     case ENOENT: return K_NOT_FOUND;
@@ -54,6 +55,8 @@ static i32 kind_of(int err) {
     case EPIPE: return K_BROKEN_PIPE;
     case EINTR: return K_INTERRUPTED;
     case ENOMEM: return K_OUT_OF_MEMORY;
+    case EAGAIN:
+    case ETIMEDOUT: return K_TIMED_OUT;
     default: return K_OTHER;
     }
 }
@@ -398,8 +401,8 @@ static void init_net(void) {
     }
 }
 
-/* "host:port" を分けて、getaddrinfo で解決する。失敗は fail_net。 */
-static int resolve(const u8 *a, u64 n, struct addrinfo **out, i32 *e) {
+/* "host:port" を分けて、getaddrinfo で解決する (socktype は SOCK_STREAM / SOCK_DGRAM)。失敗は fail_net。 */
+static int resolve_t(const u8 *a, u64 n, int socktype, struct addrinfo **out, i32 *e) {
     int nul;
     char *s = cstr(a, n, &nul);
     if (!s) { fail_net(e); return 0; }
@@ -440,12 +443,16 @@ static int resolve(const u8 *a, u64 n, struct addrinfo **out, i32 *e) {
     struct addrinfo hints;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_socktype = socktype;
     int rc = getaddrinfo(host, portbuf, &hints, out);
     free(inner);
     free(s);
     if (rc != 0 || *out == NULL) { fail_net(e); return 0; }
     return 1;
+}
+
+static int resolve(const u8 *a, u64 n, struct addrinfo **out, i32 *e) {
+    return resolve_t(a, n, SOCK_STREAM, out, e);
 }
 
 static void set_cloexec(int fd) {
@@ -512,6 +519,147 @@ i64 ksn_rt_sys_local_port(i32 fd, i32 *e) {
     if (ss.ss_family == AF_INET) return ntohs(((struct sockaddr_in *)&ss)->sin_port);
     if (ss.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
     return fail_net(e);
+}
+
+/* ---- std.net の追加分 (タイムアウト・shutdown・アドレス・resolve・UDP)。木走査 net.rs と同じ結果にする。 */
+
+/* ソケットアドレスを "ip:port" (IPv6 は "[ip]:port") の文字列にする。 */
+static int format_addr(const struct sockaddr *sa, char *txt, size_t cap) {
+    char ip[INET6_ADDRSTRLEN];
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *s4 = (const struct sockaddr_in *)sa;
+        if (!inet_ntop(AF_INET, &s4->sin_addr, ip, sizeof ip)) return -1;
+        snprintf(txt, cap, "%s:%u", ip, (unsigned)ntohs(s4->sin_port));
+        return 0;
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)sa;
+        if (!inet_ntop(AF_INET6, &s6->sin6_addr, ip, sizeof ip)) return -1;
+        snprintf(txt, cap, "[%s]:%u", ip, (unsigned)ntohs(s6->sin6_port));
+        return 0;
+    }
+    return -1;
+}
+
+/* 0 = 秒 (ms = 0 はタイムアウトなし)。SO_RCVTIMEO (読み) / SO_SNDTIMEO (書き)。 */
+i64 ksn_rt_sys_net_timeout(i32 fd, i32 write_side, u64 ms, i32 *e) {
+    struct timeval tv;
+    tv.tv_sec = (time_t)(ms / 1000);
+    tv.tv_usec = (suseconds_t)((ms % 1000) * 1000);
+    if (setsockopt(fd, SOL_SOCKET, write_side ? SO_SNDTIMEO : SO_RCVTIMEO, &tv, sizeof tv) != 0) return fail(e, errno);
+    return 0;
+}
+
+/* how: 0 = 読み、1 = 書き、2 = 両方。 */
+i64 ksn_rt_sys_net_shutdown(i32 fd, i32 how, i32 *e) {
+    int h = how == 0 ? SHUT_RD : (how == 1 ? SHUT_WR : SHUT_RDWR);
+    if (shutdown(fd, h) != 0) return fail(e, errno);
+    return 0;
+}
+
+/* 相手 (peer != 0) か自分のアドレスを "ip:port" で out へ書く。入りきらなければ InvalidInput。書いたバイト数。 */
+i64 ksn_rt_sys_net_addr(i32 fd, i32 peer, u8 *out, u64 cap, i32 *e) {
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof ss;
+    int rc = peer ? getpeername(fd, (struct sockaddr *)&ss, &len) : getsockname(fd, (struct sockaddr *)&ss, &len);
+    if (rc != 0) return fail(e, errno);
+    char txt[80];
+    if (format_addr((struct sockaddr *)&ss, txt, sizeof txt) != 0) return fail_invalid(e);
+    u64 n = strlen(txt);
+    if (n > cap) return fail_invalid(e);
+    memcpy(out, txt, n);
+    return (i64)n;
+}
+
+/* host (ポートは 10 進の文字列) を getaddrinfo で解決し、"アドレス\0" の並びを out へ書く。 */
+i64 ksn_rt_sys_net_resolve(const u8 *host, u64 hn, i32 port, u8 *out, u64 cap, i32 *e) {
+    init_net();
+    int nul;
+    char *h = cstr(host, hn, &nul);
+    if (!h) { e[0] = K_OTHER; e[1] = 0; return -1; }
+    char portbuf[8];
+    snprintf(portbuf, sizeof portbuf, "%d", (int)port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    int rc = getaddrinfo(h, portbuf, &hints, &res);
+    free(h);
+    if (rc != 0 || res == NULL) {
+        /* 解決の失敗は OS の番号を持たない (Other、番号 0)。 */
+        if (res) freeaddrinfo(res);
+        e[0] = K_OTHER;
+        e[1] = 0;
+        return -1;
+    }
+    u64 total = 0;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        char txt[80];
+        if (format_addr(ai->ai_addr, txt, sizeof txt) != 0) continue;
+        u64 len = strlen(txt) + 1;
+        if (total + len > cap) { freeaddrinfo(res); return fail_invalid(e); }
+        memcpy(out + total, txt, len);
+        total += len;
+    }
+    freeaddrinfo(res);
+    return (i64)total;
+}
+
+/* UDP の束縛。"host:port" (`resolve` と同じ書き方) を読んで、最初に束縛できたソケットを返す。 */
+i64 ksn_rt_sys_net_udp_bind(const u8 *a, u64 n, i32 *e) {
+    init_net();
+    struct addrinfo *res;
+    if (!resolve_t(a, n, SOCK_DGRAM, &res, e)) return -1;
+    int last = 0;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        int s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (s < 0) { last = errno; continue; }
+        set_cloexec(s);
+        if (bind(s, ai->ai_addr, ai->ai_addrlen) == 0) { freeaddrinfo(res); return s; }
+        last = errno;
+        close(s);
+    }
+    freeaddrinfo(res);
+    e[0] = K_OTHER;
+    e[1] = (i32)last;
+    return -1;
+}
+
+/* UDP の送信。宛先 "host:port" を解決して、最初に送れたアドレスへ送る。送ったバイト数。 */
+i64 ksn_rt_sys_net_sendto(i32 fd, const u8 *buf, u64 n, const u8 *a, u64 an, i32 *e) {
+    init_net();
+    struct addrinfo *res;
+    if (!resolve_t(a, an, SOCK_DGRAM, &res, e)) { e[0] = K_OTHER; e[1] = 0; return -1; }
+    i64 r = -1;
+    int last = 0;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        ssize_t k = sendto(fd, buf, n, 0, ai->ai_addr, ai->ai_addrlen);
+        if (k >= 0) { r = (i64)k; break; }
+        last = errno;
+    }
+    freeaddrinfo(res);
+    if (r < 0) return fail(e, last);
+    return r;
+}
+
+/* UDP の受信。受けたバイト数を返し、送り元を "ip:port\0" で from へ書く。 */
+i64 ksn_rt_sys_net_recvfrom(i32 fd, u8 *buf, u64 n, u8 *from, u64 fcap, i32 *e) {
+    init_net();
+    struct sockaddr_storage ss;
+    socklen_t sl = sizeof ss;
+    ssize_t got;
+    for (;;) {
+        got = recvfrom(fd, buf, n, 0, (struct sockaddr *)&ss, &sl);
+        if (got >= 0) break;
+        if (errno == EINTR) continue;
+        return fail(e, errno);
+    }
+    char txt[80];
+    if (format_addr((struct sockaddr *)&ss, txt, sizeof txt) != 0) return fail_invalid(e);
+    u64 tl = strlen(txt) + 1;
+    if (tl > fcap) return fail_invalid(e);
+    memcpy(from, txt, tl);
+    return (i64)got;
 }
 
 #endif
