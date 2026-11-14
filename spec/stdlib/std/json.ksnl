@@ -1,0 +1,906 @@
+type std.json.Doc pub
+    links: alloc.vec.Vec<usize, std.alloc.System>
+    nodes: alloc.vec.Vec<std.json.Node, std.alloc.System>
+    top: usize
+end std.json.Doc
+
+enum std.json.Error derive [Debug, Clone, Copy, PartialEq, Eq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    BadEscape(usize)
+    BadNumber(usize)
+    Depth(usize)
+    Eof
+    MissingField(usize)
+    MissingPayload
+    OutOfRange
+    Trailing(usize)
+    TypeMismatch(std.json.Kind)
+    Unexpected(usize)
+    UnknownVariant
+end std.json.Error
+
+trait std.json.FromJson pub
+end std.json.FromJson
+
+enum std.json.Kind derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    Array
+    Bool
+    Null
+    Number
+    Object
+    Str
+end std.json.Kind
+
+enum std.json.Node pub
+    Array(usize, usize)
+    Bool(bool)
+    Null
+    Number(alloc.string.String<std.alloc.System>)
+    Object(usize, usize)
+    Str(alloc.string.String<std.alloc.System>)
+end std.json.Node
+
+trait std.json.ToJson pub
+    fn to_json(self: &Self, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+end std.json.ToJson
+
+type std.json.Value['a] derive [Clone, Copy] pub
+    doc: &'a std.json.Doc
+    at: usize
+end std.json.Value
+
+impl std.json.FromJson for alloc.string.String<std.alloc.System>
+
+impl std.json.FromJson for bool
+
+impl std.json.FromJson for i16
+
+impl std.json.FromJson for i32
+
+impl std.json.FromJson for i64
+
+impl std.json.FromJson for i8
+
+impl std.json.FromJson for isize
+
+impl std.json.FromJson for u16
+
+impl std.json.FromJson for u32
+
+impl std.json.FromJson for u64
+
+impl std.json.FromJson for u8
+
+impl std.json.FromJson for usize
+
+impl[T: std.json.FromJson] std.json.FromJson for alloc.vec.Vec<T, std.alloc.System>
+
+impl[T: std.json.FromJson] std.json.FromJson for core.option.Option<T>
+
+fn std.json.Doc.root(self: &std.json.Doc) -> std.json.Value uses [] panics never pub
+    std.json.Value { doc: self, at: self.top }
+end std.json.Doc.root
+
+impl[A: alloc.alloc.Allocator] std.json.ToJson for alloc.string.String<A>
+fn std.json.ToJson.alloc.string.String.to_json[A: alloc.alloc.Allocator](self: &alloc.string.String<A>, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    std.json.push_quoted(out, self.as_str())
+end std.json.ToJson.alloc.string.String.to_json
+
+impl[T: std.json.ToJson, A: alloc.alloc.Allocator] std.json.ToJson for alloc.vec.Vec<T, A>
+fn std.json.ToJson.alloc.vec.Vec.to_json[T: std.json.ToJson, A: alloc.alloc.Allocator](self: &alloc.vec.Vec<T, A>, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    let all = self.as_slice()
+    out.push('[')?
+    for k in core.iter.range(0usize, all.len()) {
+        if k > 0usize {
+            out.push(',')?
+        }
+        match all.get(k) {
+            Some(x) => x.to_json(out)?
+            None => return Ok(())
+        }
+    }
+    out.push(']')
+end std.json.ToJson.alloc.vec.Vec.to_json
+
+impl std.json.ToJson for bool
+fn std.json.ToJson.bool.to_json(self: &bool, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    if *self {
+        out.push_str("true")
+    } else {
+        out.push_str("false")
+    }
+end std.json.ToJson.bool.to_json
+
+impl[T: std.json.ToJson] std.json.ToJson for core.option.Option<T>
+fn std.json.ToJson.core.option.Option.to_json[T: std.json.ToJson](self: &Option<T>, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    match self {
+        Some(x) => x.to_json(out)
+        None => out.push_str("null")
+    }
+end std.json.ToJson.core.option.Option.to_json
+
+impl std.json.ToJson for i16
+fn std.json.ToJson.i16.to_json(self: &i16, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    out.push_i64(i64.from_i16(*self))
+end std.json.ToJson.i16.to_json
+
+impl std.json.ToJson for i32
+fn std.json.ToJson.i32.to_json(self: &i32, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    out.push_i64(i64.from_i32(*self))
+end std.json.ToJson.i32.to_json
+
+impl std.json.ToJson for i64
+fn std.json.ToJson.i64.to_json(self: &i64, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    out.push_i64(*self)
+end std.json.ToJson.i64.to_json
+
+impl std.json.ToJson for i8
+fn std.json.ToJson.i8.to_json(self: &i8, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    out.push_i64(i64.from_i8(*self))
+end std.json.ToJson.i8.to_json
+
+impl std.json.ToJson for isize
+fn std.json.ToJson.isize.to_json(self: &isize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    out.push_i64(i64.from_isize(*self))
+end std.json.ToJson.isize.to_json
+
+impl std.json.ToJson for std.json.Doc
+fn std.json.ToJson.std.json.Doc.to_json(self: &std.json.Doc, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    std.json.write(self.root(), out)
+end std.json.ToJson.std.json.Doc.to_json
+
+impl std.json.ToJson for u16
+fn std.json.ToJson.u16.to_json(self: &u16, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    out.push_u64(u64.from_u16(*self))
+end std.json.ToJson.u16.to_json
+
+impl std.json.ToJson for u32
+fn std.json.ToJson.u32.to_json(self: &u32, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    out.push_u64(u64.from_u32(*self))
+end std.json.ToJson.u32.to_json
+
+impl std.json.ToJson for u64
+fn std.json.ToJson.u64.to_json(self: &u64, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    out.push_u64(*self)
+end std.json.ToJson.u64.to_json
+
+impl std.json.ToJson for u8
+fn std.json.ToJson.u8.to_json(self: &u8, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    out.push_u64(u64.from_u8(*self))
+end std.json.ToJson.u8.to_json
+
+impl std.json.ToJson for usize
+fn std.json.ToJson.usize.to_json(self: &usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
+    out.push_u64(u64.from_usize(*self))
+end std.json.ToJson.usize.to_json
+
+fn std.json.arr_at(doc: &std.json.Doc, at: usize) -> Option<(usize, usize)>
+    match doc.nodes.as_slice().get(at) {
+        Some(std.json.Node.Array(first, count)) => Some((*first, *count))
+        Some(std.json.Node.Bool(_b)) => None
+        Some(std.json.Node.Null) => None
+        Some(std.json.Node.Number(_n)) => None
+        Some(std.json.Node.Object(_a, _b)) => None
+        Some(std.json.Node.Str(_s)) => None
+        None => None
+    }
+end std.json.arr_at
+
+fn std.json.bool_at(doc: &std.json.Doc, at: usize) -> Option<bool>
+    match doc.nodes.as_slice().get(at) {
+        Some(std.json.Node.Bool(b)) => Some(*b)
+        Some(std.json.Node.Array(_a, _b)) => None
+        Some(std.json.Node.Null) => None
+        Some(std.json.Node.Number(_n)) => None
+        Some(std.json.Node.Object(_a, _b)) => None
+        Some(std.json.Node.Str(_s)) => None
+        None => None
+    }
+end std.json.bool_at
+
+fn std.json.char_of(code: u32) -> char
+    char.try_from_u32(code).unwrap_or('?')
+end std.json.char_of
+
+fn std.json.decode_bool(v: std.json.Value) -> Result<bool, std.json.Error> uses [] panics never pub
+    match std.json.bool_at(v.doc, v.at) {
+        Some(b) => Ok(b)
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+    }
+end std.json.decode_bool
+
+fn std.json.decode_field['a](v: std.json.Value<'a>, name: &str, index: usize) -> Result<std.json.Value<'a>, std.json.Error> uses [] panics never pub
+    match std.json.obj_at(v.doc, v.at) {
+        Some((first, pairs)) => {
+            for k in core.iter.range(0usize, pairs) {
+                let slot = first.wrapping_add(k.wrapping_mul(2usize))
+                let key = std.json.str_at(v.doc, std.json.link_at(v.doc, slot)?)?
+                if key == name {
+                    let at = std.json.link_at(v.doc, slot.wrapping_add(1usize))?
+                    return Ok(std.json.Value { doc: v.doc, at: at })
+                }
+            }
+            Err(std.json.Error.MissingField(index))
+        }
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+    }
+end std.json.decode_field
+
+fn std.json.decode_i16(v: std.json.Value) -> Result<i16, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(v)?
+    match i16.parse(text) {
+        Ok(x) => Ok(x)
+        Err(_e) => Err(std.json.Error.OutOfRange)
+    }
+end std.json.decode_i16
+
+fn std.json.decode_i32(v: std.json.Value) -> Result<i32, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(v)?
+    match i32.parse(text) {
+        Ok(x) => Ok(x)
+        Err(_e) => Err(std.json.Error.OutOfRange)
+    }
+end std.json.decode_i32
+
+fn std.json.decode_i64(v: std.json.Value) -> Result<i64, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(v)?
+    match i64.parse(text) {
+        Ok(x) => Ok(x)
+        Err(_e) => Err(std.json.Error.OutOfRange)
+    }
+end std.json.decode_i64
+
+fn std.json.decode_i8(v: std.json.Value) -> Result<i8, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(v)?
+    match i8.parse(text) {
+        Ok(x) => Ok(x)
+        Err(_e) => Err(std.json.Error.OutOfRange)
+    }
+end std.json.decode_i8
+
+fn std.json.decode_isize(v: std.json.Value) -> Result<isize, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(v)?
+    match isize.parse(text) {
+        Ok(x) => Ok(x)
+        Err(_e) => Err(std.json.Error.OutOfRange)
+    }
+end std.json.decode_isize
+
+fn std.json.decode_item['a](v: std.json.Value<'a>, index: usize) -> Result<std.json.Value<'a>, std.json.Error> uses [] panics never pub
+    match std.json.arr_at(v.doc, v.at) {
+        Some((first, count)) => {
+            if index >= count {
+                return Err(std.json.Error.Eof)
+            }
+            let at = std.json.link_at(v.doc, first.wrapping_add(index))?
+            Ok(std.json.Value { doc: v.doc, at: at })
+        }
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+    }
+end std.json.decode_item
+
+fn std.json.decode_len(v: std.json.Value) -> Result<usize, std.json.Error> uses [] panics never pub
+    match std.json.arr_at(v.doc, v.at) {
+        Some((_first, count)) => Ok(count)
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+    }
+end std.json.decode_len
+
+fn std.json.decode_payload(payload: Option<std.json.Value>) -> Result<std.json.Value, std.json.Error> uses [] panics never pub
+    match payload {
+        Some(x) => Ok(x)
+        None => Err(std.json.Error.MissingPayload)
+    }
+end std.json.decode_payload
+
+fn std.json.decode_string(v: std.json.Value) -> Result<alloc.string.String<std.alloc.System>, std.json.Error> uses [alloc] panics never pub
+    match std.json.text_at(v.doc, v.at) {
+        Some(s) => {
+            let copy = alloc.string.String.from_str(std.alloc.SYSTEM, s)?
+            Ok(copy)
+        }
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+    }
+end std.json.decode_string
+
+fn std.json.decode_tuple(v: std.json.Value, count: usize) -> Result<(), std.json.Error> uses [] panics never pub
+    let len = std.json.decode_len(v)?
+    if len != count {
+        return Err(std.json.Error.TypeMismatch(std.json.Kind.Array))
+    }
+    Ok(())
+end std.json.decode_tuple
+
+fn std.json.decode_u16(v: std.json.Value) -> Result<u16, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(v)?
+    match u16.parse(text) {
+        Ok(x) => Ok(x)
+        Err(_e) => Err(std.json.Error.OutOfRange)
+    }
+end std.json.decode_u16
+
+fn std.json.decode_u32(v: std.json.Value) -> Result<u32, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(v)?
+    match u32.parse(text) {
+        Ok(x) => Ok(x)
+        Err(_e) => Err(std.json.Error.OutOfRange)
+    }
+end std.json.decode_u32
+
+fn std.json.decode_u64(v: std.json.Value) -> Result<u64, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(v)?
+    match u64.parse(text) {
+        Ok(x) => Ok(x)
+        Err(_e) => Err(std.json.Error.OutOfRange)
+    }
+end std.json.decode_u64
+
+fn std.json.decode_u8(v: std.json.Value) -> Result<u8, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(v)?
+    match u8.parse(text) {
+        Ok(x) => Ok(x)
+        Err(_e) => Err(std.json.Error.OutOfRange)
+    }
+end std.json.decode_u8
+
+fn std.json.decode_usize(v: std.json.Value) -> Result<usize, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(v)?
+    match usize.parse(text) {
+        Ok(x) => Ok(x)
+        Err(_e) => Err(std.json.Error.OutOfRange)
+    }
+end std.json.decode_usize
+
+fn std.json.decode_variant['a](v: std.json.Value<'a>) -> Result<(&'a str, Option<std.json.Value<'a>>), std.json.Error> uses [] panics never pub
+    if std.json.text_at(v.doc, v.at).is_some() {
+        let name = std.json.str_at(v.doc, v.at)?
+        return Ok((name, None))
+    }
+    match std.json.obj_at(v.doc, v.at) {
+        Some((first, pairs)) => {
+            if pairs != 1usize {
+                return Err(std.json.Error.TypeMismatch(std.json.Kind.Object))
+            }
+            let name = std.json.str_at(v.doc, std.json.link_at(v.doc, first)?)?
+            let at = std.json.link_at(v.doc, first.wrapping_add(1usize))?
+            Ok((name, Some(std.json.Value { doc: v.doc, at: at })))
+        }
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+    }
+end std.json.decode_variant
+
+fn std.json.digits(src: &[u8], pos: usize) -> usize
+    let mut i = pos
+    loop {
+        match src.get(i) {
+            Some(c) => {
+                if c >= b'0' && c <= b'9' {
+                    i = i.wrapping_add(1usize)
+                } else {
+                    break
+                }
+            }
+            None => break
+        }
+    }
+    i
+end std.json.digits
+
+fn std.json.flush(doc: &mut std.json.Doc, items: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), std.json.Error>
+    let all = items.as_slice()
+    for k in core.iter.range(0usize, all.len()) {
+        match all.get(k) {
+            Some(n) => doc.links.push(*n)?
+            None => return Err(std.json.Error.Eof)
+        }
+    }
+    Ok(())
+end std.json.flush
+
+fn std.json.hex4(src: &[u8], pos: usize) -> Result<u32, std.json.Error>
+    let mut value = 0u32
+    for k in core.iter.range(0usize, 4usize) {
+        match src.get(pos.wrapping_add(k)) {
+            Some(c) => {
+                match std.json.hex_value(*c) {
+                    Some(d) => {
+                        value = value.wrapping_shl(4u32) | d
+                    }
+                    None => return Err(std.json.Error.BadEscape(pos))
+                }
+            }
+            None => return Err(std.json.Error.Eof)
+        }
+    }
+    Ok(value)
+end std.json.hex4
+
+fn std.json.hex_char(n: u32) -> char
+    let mut code = n.wrapping_add(87u32)
+    if n < 10u32 {
+        code = n.wrapping_add(48u32)
+    }
+    std.json.char_of(code)
+end std.json.hex_char
+
+fn std.json.hex_value(c: u8) -> Option<u32>
+    if c >= b'0' && c <= b'9' {
+        return Some(u32.from_u8(c.wrapping_sub(b'0')))
+    }
+    if c >= b'a' && c <= b'f' {
+        return Some(u32.from_u8(c.wrapping_sub(b'a')).wrapping_add(10u32))
+    }
+    if c >= b'A' && c <= b'F' {
+        return Some(u32.from_u8(c.wrapping_sub(b'A')).wrapping_add(10u32))
+    }
+    None
+end std.json.hex_value
+
+fn std.json.is_null(v: std.json.Value) -> bool uses [] panics never pub
+    match v.doc.nodes.as_slice().get(v.at) {
+        Some(std.json.Node.Null) => true
+        Some(std.json.Node.Array(_a, _b)) => false
+        Some(std.json.Node.Bool(_b)) => false
+        Some(std.json.Node.Number(_n)) => false
+        Some(std.json.Node.Object(_a, _b)) => false
+        Some(std.json.Node.Str(_s)) => false
+        None => true
+    }
+end std.json.is_null
+
+fn std.json.kind_at(v: std.json.Value) -> std.json.Kind uses [] panics never pub
+    match v.doc.nodes.as_slice().get(v.at) {
+        Some(std.json.Node.Array(_a, _b)) => std.json.Kind.Array
+        Some(std.json.Node.Bool(_b)) => std.json.Kind.Bool
+        Some(std.json.Node.Number(_n)) => std.json.Kind.Number
+        Some(std.json.Node.Object(_a, _b)) => std.json.Kind.Object
+        Some(std.json.Node.Str(_s)) => std.json.Kind.Str
+        Some(std.json.Node.Null) => std.json.Kind.Null
+        None => std.json.Kind.Null
+    }
+end std.json.kind_at
+
+fn std.json.link_at(doc: &std.json.Doc, slot: usize) -> Result<usize, std.json.Error>
+    match doc.links.as_slice().get(slot) {
+        Some(n) => Ok(*n)
+        None => Err(std.json.Error.Eof)
+    }
+end std.json.link_at
+
+fn std.json.new_doc() -> std.json.Doc uses [] panics never
+    std.json.Doc { links: std.json.new_links(), nodes: std.json.new_nodes(), top: 0usize }
+end std.json.new_doc
+
+fn std.json.new_links() -> alloc.vec.Vec<usize, std.alloc.System> uses [] panics never
+    alloc.vec.Vec.new(std.alloc.SYSTEM)
+end std.json.new_links
+
+fn std.json.new_nodes() -> alloc.vec.Vec<std.json.Node, std.alloc.System> uses [] panics never
+    alloc.vec.Vec.new(std.alloc.SYSTEM)
+end std.json.new_nodes
+
+fn std.json.new_text() -> alloc.string.String<std.alloc.System> uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end std.json.new_text
+
+fn std.json.num_at(doc: &std.json.Doc, at: usize) -> Option<&str>
+    match doc.nodes.as_slice().get(at) {
+        Some(std.json.Node.Number(s)) => Some(s.as_str())
+        Some(std.json.Node.Array(_a, _b)) => None
+        Some(std.json.Node.Bool(_b)) => None
+        Some(std.json.Node.Null) => None
+        Some(std.json.Node.Object(_a, _b)) => None
+        Some(std.json.Node.Str(_s)) => None
+        None => None
+    }
+end std.json.num_at
+
+fn std.json.number_text['a](v: std.json.Value<'a>) -> Result<&'a str, std.json.Error>
+    match std.json.num_at(v.doc, v.at) {
+        Some(s) => Ok(s)
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+    }
+end std.json.number_text
+
+fn std.json.obj_at(doc: &std.json.Doc, at: usize) -> Option<(usize, usize)>
+    match doc.nodes.as_slice().get(at) {
+        Some(std.json.Node.Object(first, pairs)) => Some((*first, *pairs))
+        Some(std.json.Node.Array(_a, _b)) => None
+        Some(std.json.Node.Bool(_b)) => None
+        Some(std.json.Node.Null) => None
+        Some(std.json.Node.Number(_n)) => None
+        Some(std.json.Node.Str(_s)) => None
+        None => None
+    }
+end std.json.obj_at
+
+fn std.json.parse(text: &str) -> Result<std.json.Doc, std.json.Error> uses [alloc] panics never pub
+    let src = text.as_bytes()
+    let mut doc = std.json.new_doc()
+    let start = std.json.skip_ws(src, 0usize)
+    let (root, after) = std.json.parse_value(&mut doc, src, start, 0usize)?
+    let tail = std.json.skip_ws(src, after)
+    if tail != src.len() {
+        return Err(std.json.Error.Trailing(tail))
+    }
+    doc.top = root
+    Ok(doc)
+end std.json.parse
+
+fn std.json.parse_array(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: usize) -> Result<(usize, usize), std.json.Error> uses [alloc] panics never stack 4096
+    let mut items = std.json.new_links()
+    let mut i = std.json.skip_ws(src, pos.wrapping_add(1usize))
+    let mut close = i
+    if src.get(i) != Some(b']') {
+        loop {
+            let (child, after) = std.json.parse_value(doc, src, i, depth.wrapping_add(1usize))?
+            items.push(child)?
+            let j = std.json.skip_ws(src, after)
+            match src.get(j) {
+                Some(b',') => {
+                    i = std.json.skip_ws(src, j.wrapping_add(1usize))
+                }
+                Some(b']') => {
+                    close = j
+                    break
+                }
+                Some(_c) => return Err(std.json.Error.Unexpected(j))
+                None => return Err(std.json.Error.Eof)
+            }
+        }
+    }
+    let first = doc.links.len()
+    let count = items.len()
+    std.json.flush(doc, &items)?
+    let at = std.json.push_node(doc, std.json.Node.Array(first, count))?
+    Ok((at, close.wrapping_add(1usize)))
+end std.json.parse_array
+
+fn std.json.parse_escape(src: &[u8], pos: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<usize, std.json.Error>
+    let next = pos.wrapping_add(2usize)
+    match src.get(pos.wrapping_add(1usize)) {
+        None => Err(std.json.Error.Eof)
+        Some(b'u') => std.json.parse_unicode(src, pos, out)
+        Some(b'"') => {
+            out.push('"')?
+            Ok(next)
+        }
+        Some(b'\\') => {
+            out.push('\\')?
+            Ok(next)
+        }
+        Some(b'/') => {
+            out.push('/')?
+            Ok(next)
+        }
+        Some(b'b') => {
+            out.push(std.json.char_of(8u32))?
+            Ok(next)
+        }
+        Some(b'f') => {
+            out.push(std.json.char_of(12u32))?
+            Ok(next)
+        }
+        Some(b'n') => {
+            out.push('\n')?
+            Ok(next)
+        }
+        Some(b'r') => {
+            out.push('\r')?
+            Ok(next)
+        }
+        Some(b't') => {
+            out.push('\t')?
+            Ok(next)
+        }
+        Some(_c) => Err(std.json.Error.BadEscape(pos))
+    }
+end std.json.parse_escape
+
+fn std.json.parse_literal(doc: &mut std.json.Doc, src: &[u8], pos: usize, word: &str, node: std.json.Node) -> Result<(usize, usize), std.json.Error>
+    let want = word.as_bytes()
+    let stop = pos.wrapping_add(want.len())
+    match src.sub(pos, stop) {
+        Some(got) => {
+            if got == want {
+                let at = std.json.push_node(doc, node)?
+                Ok((at, stop))
+            } else {
+                Err(std.json.Error.Unexpected(pos))
+            }
+        }
+        None => Err(std.json.Error.Eof)
+    }
+end std.json.parse_literal
+
+fn std.json.parse_number(doc: &mut std.json.Doc, src: &[u8], pos: usize) -> Result<(usize, usize), std.json.Error>
+    let mut i = pos
+    if src.get(i) == Some(b'-') {
+        i = i.wrapping_add(1usize)
+    }
+    let int_end = std.json.digits(src, i)
+    if int_end == i {
+        return Err(std.json.Error.BadNumber(pos))
+    }
+    if src.get(i) == Some(b'0') && int_end != i.wrapping_add(1usize) {
+        return Err(std.json.Error.BadNumber(pos))
+    }
+    i = int_end
+    if src.get(i) == Some(b'.') {
+        let frac_end = std.json.digits(src, i.wrapping_add(1usize))
+        if frac_end == i.wrapping_add(1usize) {
+            return Err(std.json.Error.BadNumber(pos))
+        }
+        i = frac_end
+    }
+    let e = src.get(i)
+    if e == Some(b'e') || e == Some(b'E') {
+        let mut k = i.wrapping_add(1usize)
+        let sign = src.get(k)
+        if sign == Some(b'+') || sign == Some(b'-') {
+            k = k.wrapping_add(1usize)
+        }
+        let exp_end = std.json.digits(src, k)
+        if exp_end == k {
+            return Err(std.json.Error.BadNumber(pos))
+        }
+        i = exp_end
+    }
+    let mut text = std.json.new_text()
+    std.json.push_range(&mut text, src, pos, i)?
+    let at = std.json.push_node(doc, std.json.Node.Number(text))?
+    Ok((at, i))
+end std.json.parse_number
+
+fn std.json.parse_object(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: usize) -> Result<(usize, usize), std.json.Error> uses [alloc] panics never stack 4096
+    let mut items = std.json.new_links()
+    let mut i = std.json.skip_ws(src, pos.wrapping_add(1usize))
+    let mut close = i
+    if src.get(i) != Some(b'}') {
+        loop {
+            if src.get(i) != Some(b'"') {
+                return Err(std.json.Error.Unexpected(i))
+            }
+            let (key, after_key) = std.json.parse_string(src, i)?
+            let key_at = std.json.push_node(doc, std.json.Node.Str(key))?
+            let colon = std.json.skip_ws(src, after_key)
+            if src.get(colon) != Some(b':') {
+                return Err(std.json.Error.Unexpected(colon))
+            }
+            let start = std.json.skip_ws(src, colon.wrapping_add(1usize))
+            let deeper = depth.wrapping_add(1usize)
+            let (value, after_value) = std.json.parse_value(doc, src, start, deeper)?
+            items.push(key_at)?
+            items.push(value)?
+            let j = std.json.skip_ws(src, after_value)
+            match src.get(j) {
+                Some(b',') => {
+                    i = std.json.skip_ws(src, j.wrapping_add(1usize))
+                }
+                Some(b'}') => {
+                    close = j
+                    break
+                }
+                Some(_c) => return Err(std.json.Error.Unexpected(j))
+                None => return Err(std.json.Error.Eof)
+            }
+        }
+    }
+    let first = doc.links.len()
+    let pairs = items.len().wrapping_shr(1u32)
+    std.json.flush(doc, &items)?
+    let at = std.json.push_node(doc, std.json.Node.Object(first, pairs))?
+    Ok((at, close.wrapping_add(1usize)))
+end std.json.parse_object
+
+fn std.json.parse_string(src: &[u8], pos: usize) -> Result<(alloc.string.String<std.alloc.System>, usize), std.json.Error>
+    let mut out = std.json.new_text()
+    let mut i = pos.wrapping_add(1usize)
+    let mut run = i
+    loop {
+        match src.get(i) {
+            None => return Err(std.json.Error.Eof)
+            Some(b'"') => break
+            Some(b'\\') => {
+                std.json.push_range(&mut out, src, run, i)?
+                i = std.json.parse_escape(src, i, &mut out)?
+                run = i
+            }
+            Some(c) => {
+                if c < 32u8 {
+                    return Err(std.json.Error.Unexpected(i))
+                }
+                i = i.wrapping_add(1usize)
+            }
+        }
+    }
+    std.json.push_range(&mut out, src, run, i)?
+    Ok((out, i.wrapping_add(1usize)))
+end std.json.parse_string
+
+fn std.json.parse_unicode(src: &[u8], pos: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<usize, std.json.Error>
+    let first = std.json.hex4(src, pos.wrapping_add(2usize))?
+    let mut code = first
+    let mut next = pos.wrapping_add(6usize)
+    if first >= 56320u32 && first <= 57343u32 {
+        return Err(std.json.Error.BadEscape(pos))
+    }
+    if first >= 55296u32 && first <= 56319u32 {
+        if src.get(next) != Some(b'\\') || src.get(next.wrapping_add(1usize)) != Some(b'u') {
+            return Err(std.json.Error.BadEscape(pos))
+        }
+        let low = std.json.hex4(src, next.wrapping_add(2usize))?
+        if low < 56320u32 || low > 57343u32 {
+            return Err(std.json.Error.BadEscape(pos))
+        }
+        let high_bits = first.wrapping_sub(55296u32).wrapping_shl(10u32)
+        code = 65536u32.wrapping_add(high_bits).wrapping_add(low.wrapping_sub(56320u32))
+        next = next.wrapping_add(6usize)
+    }
+    match char.try_from_u32(code) {
+        Some(c) => {
+            out.push(c)?
+            Ok(next)
+        }
+        None => Err(std.json.Error.BadEscape(pos))
+    }
+end std.json.parse_unicode
+
+fn std.json.parse_value(doc: &mut std.json.Doc, src: &[u8], pos: usize, depth: usize) -> Result<(usize, usize), std.json.Error> uses [alloc] panics never stack 4096
+    if depth > 128usize {
+        return Err(std.json.Error.Depth(pos))
+    }
+    match src.get(pos) {
+        None => Err(std.json.Error.Eof)
+        Some(b'{') => std.json.parse_object(doc, src, pos, depth)
+        Some(b'[') => std.json.parse_array(doc, src, pos, depth)
+        Some(b'"') => {
+            let (text, after) = std.json.parse_string(src, pos)?
+            let at = std.json.push_node(doc, std.json.Node.Str(text))?
+            Ok((at, after))
+        }
+        Some(b't') => std.json.parse_literal(doc, src, pos, "true", std.json.Node.Bool(true))
+        Some(b'f') => std.json.parse_literal(doc, src, pos, "false", std.json.Node.Bool(false))
+        Some(b'n') => std.json.parse_literal(doc, src, pos, "null", std.json.Node.Null)
+        Some(_c) => std.json.parse_number(doc, src, pos)
+    }
+end std.json.parse_value
+
+fn std.json.push_control(out: &mut alloc.string.String<std.alloc.System>, unit: u32) -> Result<(), alloc.alloc.AllocError>
+    out.push_str("\\u00")?
+    out.push(std.json.hex_char(unit.wrapping_shr(4u32) & 15u32))?
+    out.push(std.json.hex_char(unit & 15u32))?
+    Ok(())
+end std.json.push_control
+
+fn std.json.push_node(doc: &mut std.json.Doc, node: std.json.Node) -> Result<usize, std.json.Error>
+    let at = doc.nodes.len()
+    doc.nodes.push(node)?
+    Ok(at)
+end std.json.push_node
+
+fn std.json.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    out.push('"')?
+    for c in text.chars() {
+        if c == '"' {
+            out.push_str("\\\"")?
+        } else if c == '\\' {
+            out.push_str("\\\\")?
+        } else if c == '\n' {
+            out.push_str("\\n")?
+        } else if c == '\r' {
+            out.push_str("\\r")?
+        } else if c == '\t' {
+            out.push_str("\\t")?
+        } else if c.to_u32() < 32u32 {
+            std.json.push_control(out, c.to_u32())?
+        } else {
+            out.push(c)?
+        }
+    }
+    out.push('"')?
+    Ok(())
+end std.json.push_quoted
+
+fn std.json.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], from: usize, to: usize) -> Result<(), std.json.Error>
+    match src.sub(from, to) {
+        Some(bytes) => {
+            match core.str.from_utf8(bytes) {
+                Ok(text) => {
+                    out.push_str(text)?
+                    Ok(())
+                }
+                Err(_e) => Err(std.json.Error.Unexpected(from))
+            }
+        }
+        None => Err(std.json.Error.Eof)
+    }
+end std.json.push_range
+
+fn std.json.skip_ws(src: &[u8], pos: usize) -> usize
+    let mut i = pos
+    loop {
+        match src.get(i) {
+            Some(c) => {
+                if c == b' ' || c == b'\n' || c == b'\t' || c == b'\r' {
+                    i = i.wrapping_add(1usize)
+                } else {
+                    break
+                }
+            }
+            None => break
+        }
+    }
+    i
+end std.json.skip_ws
+
+fn std.json.str_at(doc: &std.json.Doc, at: usize) -> Result<&str, std.json.Error>
+    match std.json.text_at(doc, at) {
+        Some(s) => Ok(s)
+        None => Err(std.json.Error.TypeMismatch(std.json.Kind.Str))
+    }
+end std.json.str_at
+
+fn std.json.text_at(doc: &std.json.Doc, at: usize) -> Option<&str>
+    match doc.nodes.as_slice().get(at) {
+        Some(std.json.Node.Str(s)) => Some(s.as_str())
+        Some(std.json.Node.Array(_a, _b)) => None
+        Some(std.json.Node.Bool(_b)) => None
+        Some(std.json.Node.Null) => None
+        Some(std.json.Node.Number(_n)) => None
+        Some(std.json.Node.Object(_a, _b)) => None
+        None => None
+    }
+end std.json.text_at
+
+fn std.json.to_string[T: std.json.ToJson](value: &T) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = std.json.new_text()
+    value.to_json(&mut out)?
+    Ok(out)
+end std.json.to_string
+
+fn std.json.write(v: std.json.Value, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
+    match v.doc.nodes.as_slice().get(v.at) {
+        None => out.push_str("null")
+        Some(std.json.Node.Null) => out.push_str("null")
+        Some(std.json.Node.Bool(b)) => {
+            if *b {
+                out.push_str("true")
+            } else {
+                out.push_str("false")
+            }
+        }
+        Some(std.json.Node.Number(s)) => out.push_str(s.as_str())
+        Some(std.json.Node.Str(s)) => std.json.push_quoted(out, s.as_str())
+        Some(std.json.Node.Array(first, count)) => {
+            out.push('[')?
+            for k in core.iter.range(0usize, *count) {
+                if k > 0usize {
+                    out.push(',')?
+                }
+                std.json.write_link(v.doc, first.wrapping_add(k), out)?
+            }
+            out.push(']')
+        }
+        Some(std.json.Node.Object(first, pairs)) => {
+            out.push('{')?
+            for k in core.iter.range(0usize, *pairs) {
+                if k > 0usize {
+                    out.push(',')?
+                }
+                let slot = first.wrapping_add(k.wrapping_mul(2usize))
+                std.json.write_link(v.doc, slot, out)?
+                out.push(':')?
+                std.json.write_link(v.doc, slot.wrapping_add(1usize), out)?
+            }
+            out.push('}')
+        }
+    }
+end std.json.write
+
+fn std.json.write_link(doc: &std.json.Doc, slot: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096
+    match doc.links.as_slice().get(slot) {
+        Some(n) => std.json.write(std.json.Value { doc: doc, at: *n }, out)
+        None => Ok(())
+    }
+end std.json.write_link

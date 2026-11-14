@@ -24,7 +24,7 @@ GROUP = {'import': 0, 'const': 1, 'static': 1, 'type': 2, 'enum': 2, 'trait': 2,
          'extern': 3, 'impl_only': 4, 'fn': 5, 'test': 6}
 BODY_KINDS = ('fn', 'test')
 FIELD_KINDS = ('type', 'enum', 'trait')
-DERIVE_ORDER = ['Debug', 'Clone', 'Copy', 'TryClone', 'PartialEq', 'Eq', 'PartialOrd', 'Ord', 'Hash', 'From']
+DERIVE_ORDER = ['Debug', 'Clone', 'Copy', 'TryClone', 'PartialEq', 'Eq', 'PartialOrd', 'Ord', 'Hash', 'From', 'ToJson', 'FromJson']
 PRIMS = {'i8', 'i16', 'i32', 'i64', 'i128', 'isize', 'u8', 'u16', 'u32', 'u64', 'u128', 'usize',
          'f32', 'f64', 'bool', 'char', 'str'}
 # 3.7: 語は英字で始まり、数字は直前の語に付ける (foo2 は可、foo_2 は不可)
@@ -456,10 +456,22 @@ class Lint:
                     elif cnt < 2:
                         self.err('unused', n, f'unused variable {nm}')
             # match 腕のパターン束縛 (Name(a, b) =>)
-            for m in re.finditer(r'^\s*[A-Za-z0-9_.]+\(([^)]*)\)\s*=>(.*)$', body, flags=re.M):
-                for nm in [x.strip() for x in m.group(1).split(',')]:
+            body_lines = body.split('\n')
+            for k, bl in enumerate(body_lines):
+                m = re.match(r'^(\s*)[A-Za-z0-9_.]+\(([^)]*)\)\s*=>(.*)$', bl)
+                if not m:
+                    continue
+                rest = m.group(3)
+                # 腕の本体が `{` で始まるブロックなら、同じ字下げの `}` までの行も本体に数える
+                if rest.rstrip().endswith('{'):
+                    ind = m.group(1)
+                    for nl in body_lines[k + 1:]:
+                        rest += '\n' + nl
+                        if nl.rstrip() == ind + '}':
+                            break
+                for nm in [x.strip() for x in m.group(2).split(',')]:
                     if nm and nm != '_' and SNAKE.match(nm) and not nm.startswith('_'):
-                        if not re.search(r'(?<![A-Za-z0-9_.])' + re.escape(nm) + r'(?![A-Za-z0-9_])', m.group(2)):
+                        if not re.search(r'(?<![A-Za-z0-9_.])' + re.escape(nm) + r'(?![A-Za-z0-9_])', rest):
                             self.err('unused', n, f'unused pattern binding {nm}')
 
     def check_imports(self, items):

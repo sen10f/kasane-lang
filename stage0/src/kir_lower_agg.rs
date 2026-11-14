@@ -1311,7 +1311,8 @@ end t.main
         for want in ["t.A", "t.B", "t.C", "t.E", "(u8,i64)", "(bool,i16,u8,i32)"] {
             assert!(names.contains(&want), "型表に {} がない: {:?}", want, names);
         }
-        for d in lo.module.aggs.iter().filter(|d| !super::STD_TYPES.contains(&d.name.as_str())) {
+        // `fat` / `vec` は、利用者の型ではなくスライス・`Vec` のヘッダ (他の module の `fn` (`std.json` など) を下ろすときに入る)。
+        for d in lo.module.aggs.iter().filter(|d| !super::STD_TYPES.contains(&d.name.as_str()) && d.name != "fat" && d.name != "vec") {
             // 期待値は、削除した clif.rs の `layout` / `enum_layout` が出していた配置 (C と同じ規則) を固定したもの。
             let (size, align, offs, vars): (u32, u32, Vec<u32>, Vec<Vec<u32>>) = match d.name.as_str() {
                 "t.A" => (24, 8, vec![0, 8, 16], vec![]),
