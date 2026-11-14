@@ -444,6 +444,7 @@ impl<'a> Fc<'a> {
             }
         };
         let i = match &inst.op {
+            Op::ScopeEnd(_) => return Ok(()),
             Op::Const(_) if self.skip_const.contains(&inst.dst) || self.hoisted.contains(&inst.dst) => return Ok(()),
             Op::Const(v) => match ty {
                 Ty::Opt(_) | Ty::Res(..) => {
@@ -735,7 +736,7 @@ impl<'a> Fc<'a> {
                 }
                 Ins::AddImm { d, a: self.s(*a), imm: *off as i64 }
             }
-            Op::AsShared(p) | Op::Reborrow(p) => Ins::Mov { d, s: self.s(*p) },
+            Op::AsShared(p) | Op::Reborrow(p) | Op::Borrow { a: p, .. } => Ins::Mov { d, s: self.s(*p) },
             Op::HeapAlloc(n) => Ins::HeapAlloc { d, n: self.s(*n) },
             Op::HeapRealloc { p, size } => Ins::HeapRealloc { d, p: self.s(*p), n: self.s(*size) },
             Op::HeapFree(p) => Ins::HeapFree { p: self.s(*p) },

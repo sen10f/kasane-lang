@@ -241,7 +241,12 @@ impl<'a> Lw<'a> {
         // 0. Vec / String の借用は、ヘッダのアドレスそのもの (ヘッダは所有者の関数のフレームにある)。
         if let Ok(Src::Ref(_, inner)) = self.src_ty(e) {
             if super::coll::is_hdr_named(&inner) {
-                return super::coll::borrow_header(self, operand, line).map(Some);
+                let h = super::coll::borrow_header(self, operand, line)?;
+                // 借用の開始の注釈 (設計_KIR.md 24 章): 実行では `h` の複製。借用検査が、この値の生きている間を借用の区間と読む。
+                if self.cur.is_some() && self.vty(h) == Ty::Ptr {
+                    return Ok(Some(self.emit(Ty::Ptr, Op::Borrow { a: h, mutable: !shared })));
+                }
+                return Ok(Some(h));
             }
         }
         let Ty::Ref(m, p) = self.ty_of(e)? else {

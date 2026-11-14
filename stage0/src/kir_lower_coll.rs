@@ -82,6 +82,8 @@ pub(crate) struct CollCx {
     /// 固定長配列への参照のスロット → 要素数 N (`&[T; N]` / `&mut [T; N]` のパラメータと、
     /// アドレスを取られた配列の局所変数)。長さは型から分かるので定数として扱う。
     pub(crate) arr_len: BTreeMap<usize, u32>,
+    /// 文の終わりに寿命が尽きる一時値のヘッダ (借用検査の注釈 `scope.end` 用。設計_KIR.md 24 章)。
+    pub(crate) temps: Vec<VId>,
     /// 所有する値 (スコープの番号, 所有物) の登録順。
     pub(crate) owned: Vec<(usize, Owned)>,
     /// `with` の後始末式の木と、`with` の束縛を置いたスコープの番号。
@@ -671,7 +673,12 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
 /// 所有物 1 つを解放する。印を持つ変数は、印が立っているときだけ現在の値を解放する。
 fn drop_owned(lw: &mut Lw, o: Owned) {
     match o {
-        Owned::Hdr(h) => drop_hdr(lw, h),
+        Owned::Hdr(h) => {
+            drop_hdr(lw, h);
+            if lw.cur.is_some() {
+                lw.emit(Ty::Unit, Op::ScopeEnd(h));
+            }
+        }
         Owned::Tmp(v) => {
             let t = lw.vty(v);
             drop_value(lw, v, t);
@@ -1677,6 +1684,7 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
                 && lw.aggs.borrow().is_vec(lw.vty(h)) =>
         {
             let hdr = adopt(lw, h);
+            lw.coll.temps.push(hdr);
             method_on(lw, e, line, None, kind, hdr, &m, items(&f[2]))
         }
         Ok(Some(h)) => method_on(lw, e, line, slot, kind, h, &m, items(&f[2])),

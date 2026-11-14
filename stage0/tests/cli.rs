@@ -24057,8 +24057,8 @@ fn kir_borrowck_has_no_false_positives() {
     }
     eprintln!("kir_borrowck (correct code): checked {} unknown {} false positives {}", checked, unknown, fps.len());
     assert!(fps.is_empty(), "KIR borrowck false positives:\n{}", fps.join("\n"));
-    // 下ろせる数が減らないこと (現在値 94 を下限にする。下ろしの対応が増えたら上げる)。
-    assert!(checked >= 94, "only {} correct programs were checked on KIR", checked);
+    // 下ろせる数が減らないこと (現在値 95 を下限にする。下ろしの対応が増えたら上げる)。
+    assert!(checked >= 95, "only {} correct programs were checked on KIR", checked);
 }
 
 /// `unsound/` の全件で、AST の借用検査 (E3010 / E3030) と KIR の検査の結果を並べる。
@@ -24091,9 +24091,39 @@ fn kir_borrowck_agreement_on_unsound_does_not_drop() {
         }
     }
     eprintln!("kir_borrowck (unsound): checked {} agree {} kir_reject {} unknown {}; mismatches: {}", checked, agree, kir_reject, unknown, mism.join(", "));
-    assert!(checked >= 119, "KIR checked only {} unsound programs", checked);
-    assert!(agree >= 112, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
-    assert!(kir_reject >= 9, "KIR rejects only {}", kir_reject);
+    assert!(checked >= 123, "KIR checked only {} unsound programs", checked);
+    assert!(agree >= 123, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
+    assert!(kir_reject >= 16, "KIR rejects only {}", kir_reject);
+}
+
+/// 借用検査の注釈 (`borrow.*` / `scope.end`。設計_KIR.md 24 章) は実行に影響しない: KIR のテキストに出て、
+/// 参照実行器・最適化後・LLVM のネイティブの結果が同じ (往復と検査は `ksn kir` が毎回行う)。
+#[test]
+fn kir_borrow_annotations_do_not_change_execution() {
+    let src = "fn t.f(n: u32) -> usize uses [alloc] panics never\n    let mut s = alloc.string.String.new(std.alloc.SYSTEM)\n    core.mem.drop(s.push_str(\"hello\"))\n    let r = &s\n    let k = t.peek(r)\n    let mut x = n\n    {\n        let y = &mut x\n        *y = 7u32\n    }\n    k.wrapping_add(t.peek(r))\nend t.f\n\nfn t.peek(s: &alloc.string.String) -> usize uses [] panics never\n    s.len()\nend t.peek\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_annot", src);
+    let txt = text(&run(&["kir", "t.f"], &t.0).stdout);
+    assert!(txt.contains("borrow.shared") && txt.contains("scope.end"), "annotations missing:\n{}", txt);
+    for extra in [&["--run"][..], &["--opt", "--run"][..], &["--native"][..]] {
+        let mut args = vec!["kir", "t.f"];
+        args.extend_from_slice(extra);
+        args.push("3");
+        let o = run(&args, &t.0);
+        assert_eq!(text(&o.stdout).trim(), "10", "{:?}: {}", extra, text(&o.stderr));
+    }
+    // 借用検査は、この正しいコードを通す。
+    assert_eq!(kir_bc(&t.0), Some(vec![]));
+}
+
+/// 第 2 段で解けるようになった不一致 (move 中の借用・ブロックを出る借用・文の終わりの一時値) は KIR の検査が止める。
+#[test]
+fn kir_borrowck_stage2_catches_scope_and_move_cases() {
+    for stem in ["borrow_then_consume_use_later", "borrow_then_branch_consume", "d05_block_value_borrow_escape", "temp_as_str_bound", "temp_method_owned_as_str"] {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound").join(format!("{}.ksnl", stem));
+        let t = Tmp::new(&format!("kirbc2_{}", stem), &fs::read_to_string(&p).unwrap());
+        let c = kir_bc(&t.0).unwrap_or_else(|| panic!("{} must be lowerable", stem));
+        assert!(!c.is_empty(), "{} must be rejected by the KIR borrowck", stem);
+    }
 }
 
 

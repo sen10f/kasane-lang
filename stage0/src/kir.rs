@@ -634,6 +634,12 @@ pub enum Op {
     FieldAddr { a: VId, off: u32 },
     /// `&mut T` を `&T` として使う (同じアドレス。結果は `ref<T>`)。
     AsShared(VId),
+    /// 借用の開始 (注釈。設計_KIR.md 24 章)。`a` と同じ値・同じ型の別名を作る (実行では複製と同じ)。`&x` / `&mut x` の結果として使い、
+    /// 借用検査が「この値が生きている間が借用の区間」と読む。`mutable` は `&mut`。
+    Borrow { a: VId, mutable: bool },
+    /// 局所変数の寿命の終わり (注釈。結果は unit、実行では何もしない)。`a` は局所のスロット (`alloca` / `frame.bytes`) の値。
+    /// この後も生きている、このスロットを指す値は、借用検査が違反とする。文の終わりの一時値にも使う。
+    ScopeEnd(VId),
     /// `mutref<T>` を同じアドレスの別の値として複製する。スタックスロットの値番号と、参照の値を
     /// 取り違えないために使う (スロットの番号を参照の値に流用すると、読み書きの区別がつかなくなる)。
     Reborrow(VId),
@@ -1143,6 +1149,8 @@ fn fmt_inst(i: &Inst) -> String {
         Op::FieldAddr { a, off } => format!("fieldaddr {}, +{}", fmt_val(*a), off),
         Op::AsShared(p) => format!("asshared {}", fmt_val(*p)),
         Op::Reborrow(p) => format!("reborrow {}", fmt_val(*p)),
+        Op::Borrow { a, mutable } => format!("borrow.{} {}", if *mutable { "mut" } else { "shared" }, fmt_val(*a)),
+        Op::ScopeEnd(a) => format!("scope.end {}", fmt_val(*a)),
         Op::FrameBytes { size } => format!("frame.bytes {}", size),
         Op::GlobalBytes { name, size } => format!("global.bytes {} {}", name, size),
         Op::StaticBytes(bytes) => {
@@ -1536,6 +1544,9 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         }
         ("asshared", []) => Ok(Op::AsShared(operands(1)?[0])),
         ("reborrow", []) => Ok(Op::Reborrow(operands(1)?[0])),
+        ("borrow", ["shared"]) => Ok(Op::Borrow { a: operands(1)?[0], mutable: false }),
+        ("borrow", ["mut"]) => Ok(Op::Borrow { a: operands(1)?[0], mutable: true }),
+        ("scope", ["end"]) if ty == Ty::Unit => Ok(Op::ScopeEnd(operands(1)?[0])),
         ("frame", ["bytes"]) if ty == Ty::Ptr => {
             let n = rest.trim().parse::<u32>().map_err(|_| perr(line, format!("frame.bytes の大きさ {} が不正", rest)))?;
             Ok(Op::FrameBytes { size: n })
@@ -2232,6 +2243,17 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             _ => return Err("store の被演算子の型が合わない".into()),
                         }
                     }
+                    Op::Borrow { a, .. } => {
+                        if ty_of(*a)? != i.ty || !matches!(i.ty, Ty::Ptr | Ty::Ref(..)) {
+                            return Err("borrow は ptr / 参照を同じ型で複製するだけのはず".into());
+                        }
+                    }
+                    Op::ScopeEnd(a) => {
+                        ty_of(*a)?;
+                        if i.ty != Ty::Unit {
+                            return Err("scope.end の結果は unit のはず".into());
+                        }
+                    }
                     Op::Reborrow(a) => {
                         if !matches!(i.ty, Ty::Ref(true, _)) || ty_of(*a)? != i.ty {
                             return Err("reborrow は mutref を同じ型で複製するだけのはず".into());
@@ -2753,6 +2775,8 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         | Op::Load(a)
         | Op::AsShared(a)
         | Op::Reborrow(a)
+        | Op::Borrow { a, .. }
+        | Op::ScopeEnd(a)
         | Op::Some(a)
         | Op::Ok(a)
         | Op::Err(a)
