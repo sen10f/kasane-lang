@@ -125,7 +125,7 @@ impl W {
         // 全フィールドを名指しで分解する (Def にフィールドが増えたらここがコンパイルエラーになる)。
         let Def {
             kw, name, line, end_line, file: _, module: _, header, generics, params, ret, is_const, uses, inferred, panics, stack,
-            derive, linear, layout_c, fields, variants, elided_refs, body, init, has_impls, impls_trait, methods, trait_sigs,
+            derive, linear, layout_c, fields, field_lifetimes, variants, elided_refs, body, init, has_impls, impls_trait, methods, trait_sigs,
             trait_effs, requires, generic_methods, impl_trait, link, impl_for, impl_targs,
         } = d;
         self.s(kw);
@@ -176,6 +176,11 @@ impl W {
             }
         }
         self.strs(elided_refs);
+        self.n(field_lifetimes.len() as u64);
+        for (f, lts) in field_lifetimes {
+            self.s(f);
+            self.strs(lts);
+        }
         for o in [body, init] {
             match o {
                 Some(v) => {
@@ -354,6 +359,8 @@ impl<'a> Rd<'a> {
             })
             .collect::<O<Vec<_>>>()?;
         let elided_refs = self.strs()?;
+        let nfl = self.len()?;
+        let field_lifetimes = (0..nfl).map(|_| Some((self.s()?, self.strs()?))).collect::<O<Vec<_>>>()?;
         let body = self.opt_v()?;
         let init = self.opt_v()?;
         let has_impls = self.b()?;
@@ -391,6 +398,7 @@ impl<'a> Rd<'a> {
             fields,
             variants,
             elided_refs,
+            field_lifetimes,
             body,
             init,
             has_impls,

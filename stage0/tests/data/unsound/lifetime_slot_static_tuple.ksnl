@@ -1,0 +1,8 @@
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.static_slot['a, 'b](x: &'a u32, _y: &'b u32) -> (&'static u32, &'a u32) uses [] panics never
+    (x, x)
+end t.static_slot

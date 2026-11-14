@@ -1,0 +1,11 @@
+type t.H['a]
+    r: &'a u32
+end t.H
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.struct_via_path(s: &t.H) -> &u32 uses [] panics never
+    s.r
+end t.struct_via_path
