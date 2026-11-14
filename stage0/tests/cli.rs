@@ -95,8 +95,6 @@ const KNOWN_HOLES: &[&str] = &[
     "header_lifetime_return_static",
     // 修正プラン A2: メソッドのレシーバ (`self: &mut t.H<'a>`) 経由で短い借用を長寿命の構造体に入れられる。
     "header_lifetime_method_setter",
-    // 修正プラン A3: `Fn<.., [], never>` の境界に添字で panic しうるクロージャを渡せる。
-    "panics_never_closure_index_bound",
 ];
 
 #[test]

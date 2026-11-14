@@ -1,0 +1,12 @@
+// expect: E4002
+fn t.ap[F: core.ops.Fn<(u32,), u32, [], never>](f: &F) -> u32 uses [] panics never
+    f.call((0u32,))
+end t.ap
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let g = fn(d: u32) -> u32 capture [] {
+        10u32 / d
+    }
+    core.mem.drop(t.ap(&g))
+    Ok(())
+end t.main

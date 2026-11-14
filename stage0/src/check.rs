@@ -6119,7 +6119,7 @@ fn ty_mentions(t: &V, name: &str) -> bool {
     }
 }
 
-const INT_PRIMS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"];
+pub(crate) const INT_PRIMS: &[&str] = &["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"];
 
 /// レーベンシュタイン距離。
 pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
