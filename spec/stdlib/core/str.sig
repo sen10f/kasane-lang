@@ -9,7 +9,7 @@ type core.str.Split['a, 'b] pub
 end core.str.Split
 
 type core.str.Utf8Error derive [Debug, Clone, Copy, PartialEq, Eq] pub
-    valid_up_to: usize
+    valid_up_to: usize pub
 end core.str.Utf8Error
 
 impl['a] core.iter.Iterator<char, [], never> for core.str.Chars<'a>

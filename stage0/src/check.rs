@@ -1508,7 +1508,9 @@ impl<'a> Checker<'a> {
             }
             let w = self.def(r.writer);
             let crate::types::Ty::Named(n, _) = r.recv.strip() else { continue };
-            if matches!(n.split('.').next(), Some("core" | "alloc" | "std")) {
+            // 標準ライブラリの型のメソッドは飛ばす (可視性は規範の `.sig` が決める)。フィールドは標準の型も検査する:
+            // `alloc.raw.Buf` の `initialized` のような内部の欄を利用者が外から書けてはならない (E1122)。
+            if !r.field && matches!(n.split('.').next(), Some("core" | "alloc" | "std")) {
                 continue;
             }
             let wmod = w.module.clone();
@@ -1566,7 +1568,7 @@ impl<'a> Checker<'a> {
                 let fq = p.expand(&segs, &d.file).join(".");
                 let Some(&ti) = p.types.get(&fq) else { continue };
                 let td = &p.defs[ti];
-                if td.kw != "type" || td.module == d.module || matches!(td.module.split('.').next(), Some("core" | "alloc" | "std")) {
+                if td.kw != "type" || td.module == d.module {
                     continue;
                 }
                 if let Some((_, _, false)) = td.fields.iter().find(|f| f.0 == field) {

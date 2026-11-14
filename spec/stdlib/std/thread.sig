@@ -5,7 +5,7 @@ type std.thread.JoinHandle[T: linear, A: alloc.alloc.Allocator] linear pub
 end std.thread.JoinHandle
 
 type std.thread.SpawnError derive [Debug, Clone, Copy, PartialEq, Eq] pub
-    code: i32
+    code: i32 pub
 end std.thread.SpawnError
 
 impl[T: linear + core.marker.Send, A: alloc.alloc.Allocator + core.marker.Send] core.marker.Send for std.thread.JoinHandle<T, A>

@@ -49,11 +49,11 @@ const core.num.usize.MAX: usize = 18446744073709551615usize pub
 const core.num.usize.MIN: usize = 0usize pub
 
 type core.num.ParseIntError derive [Debug, Clone, Copy, PartialEq, Eq] pub
-    kind: u8
+    kind: u8 pub
 end core.num.ParseIntError
 
 type core.num.TryFromIntError derive [Debug, Clone, Copy, PartialEq, Eq] pub
-    kind: u8
+    kind: u8 pub
 end core.num.TryFromIntError
 
 fn core.num.f32.abs(self: f32) -> f32 uses [] panics never pub

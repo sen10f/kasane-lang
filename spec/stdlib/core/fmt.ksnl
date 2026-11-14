@@ -7,7 +7,7 @@ trait core.fmt.Display pub
 end core.fmt.Display
 
 type core.fmt.Error derive [Debug, Clone, Copy] pub
-    code: u32
+    code: u32 pub
 end core.fmt.Error
 
 type core.fmt.Formatter['a] pub

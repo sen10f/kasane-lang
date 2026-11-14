@@ -12,7 +12,7 @@ type std.sync.Receiver[T: linear] pub
 end std.sync.Receiver
 
 type std.sync.RecvError derive [Debug, Clone, Copy, PartialEq, Eq] pub
-    code: u8
+    code: u8 pub
 end std.sync.RecvError
 
 type std.sync.SendError[T: linear] pub
