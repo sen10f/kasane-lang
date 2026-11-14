@@ -85,6 +85,8 @@ pub struct Vm<'a> {
     frames: Vec<Frame>,
     /// 集成体の置き場 (値は添字)。
     pub heap: Vec<Vec<u8>>,
+    /// 捨てた置き場の項目の `Vec<u8>` (確保し直さないための再利用の入れ物)。
+    pool: Vec<Vec<u8>>,
     /// 関数のフレームの領域 (`frame.bytes` / `alloca`)。戻るときに解放する。
     allocs: Vec<*mut std::ffi::c_void>,
     out: Vec<u8>,
@@ -145,7 +147,7 @@ fn addr(a: i128, n: usize) -> Result<*mut u8, String> {
 
 impl<'a> Vm<'a> {
     pub fn new(prog: &'a Prog) -> Vm<'a> {
-        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
+        Vm { prog, regs: vec![0; 1 << 14], frames: vec![], heap: vec![], pool: vec![], allocs: vec![], out: Vec::new(), capture: None, args: vec![], socks: Default::default(), next_fd: 0, top: 0, panic_at: None, cbs: vec![], vers: vec![prog as *const Prog], owned: vec![], hook: None }
     }
 
     /// ためた stdout を流す。
@@ -159,6 +161,11 @@ impl<'a> Vm<'a> {
             return None;
         }
         Some(format!("in {} at {}:{}", f.key, crate::cli::rel(&f.file), line))
+    }
+
+    fn recycle(&mut self, blobs: Vec<Vec<u8>>) {
+        let room = 512usize.saturating_sub(self.pool.len());
+        self.pool.extend(blobs.into_iter().take(room));
     }
 
     pub fn flush(&mut self) {
@@ -566,7 +573,12 @@ impl<'a> Vm<'a> {
                         let mut out: Vec<Vec<u8>> = vec![];
                         val = kir_exec::relocate(f.ret, val, &blobs, hbase, &mut out);
                         self.heap.extend(out);
+                        self.recycle(blobs);
                     } else if self.heap.len() > hbase {
+                        let room = 512usize.saturating_sub(self.pool.len());
+                        let n = (self.heap.len() - hbase).min(room);
+                        let from = self.heap.len() - n;
+                        self.pool.extend(self.heap.drain(from..));
                         self.heap.truncate(hbase);
                     }
                     match self.frames.pop() {
@@ -620,7 +632,9 @@ impl<'a> Vm<'a> {
                 Ins::Unreachable => return Err("到達しないブロックに入った".to_string()),
                 Ins::Make { d, info, argp } => {
                     let mi = &prog.makes[*info as usize];
-                    let mut buf = vec![0u8; mi.size as usize];
+                    let mut buf = self.pool.pop().unwrap_or_default();
+                    buf.clear();
+                    buf.resize(mi.size as usize, 0);
                     if let Some(k) = mi.variant {
                         buf[0..4].copy_from_slice(&(k as i32).to_le_bytes());
                     }
@@ -641,7 +655,13 @@ impl<'a> Vm<'a> {
                     let v = match t {
                         Ty::Agg(ai) => {
                             let n = prog.aggs[ai as usize].size as usize;
-                            let sub = if ok { self.heap[h][o..o + n].to_vec() } else { vec![0u8; n] };
+                            let mut sub = self.pool.pop().unwrap_or_default();
+                            sub.clear();
+                            if ok {
+                                sub.extend_from_slice(&self.heap[h][o..o + n]);
+                            } else {
+                                sub.resize(n, 0);
+                            }
                             self.heap.push(sub);
                             (self.heap.len() - 1) as i128
                         }
@@ -661,7 +681,9 @@ impl<'a> Vm<'a> {
                     let Some(fty) = kir_exec::field_ty_at(dd, *off) else {
                         return Err("setfield のフィールドがない".to_string());
                     };
-                    let mut buf = self.heap[h].clone();
+                    let mut buf = self.pool.pop().unwrap_or_default();
+                    buf.clear();
+                    buf.extend_from_slice(&self.heap[h]);
                     kir_exec::write_val(&mut buf, *off as usize, &prog.aggs, fty, r!(*v), &self.heap);
                     self.heap.push(buf);
                     w!(*d, (self.heap.len() - 1) as i128);

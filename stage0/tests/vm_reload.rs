@@ -103,10 +103,28 @@ fn vm_hot_reload_applies_a_body_change_while_running() {
 }
 
 #[test]
+fn vm_hot_reload_applies_an_added_function() {
+    let d = package(HR);
+    // 関数の追加を即時に反映する: 新しい関数 `hr.extra` を、書き換えた `hr.msg` が呼ぶ。
+    let edited = format!(
+        "{}\nfn hr.extra() -> Result<(), std.io.Error> uses [io.console] panics never\n    std.io.print_line(\"v2\")\nend hr.extra\n",
+        HR.replace("std.io.print_line(\"v1\")", "hr.extra()")
+    );
+    let r = run_watch(&d, &edited, 1500);
+    let _ = fs::remove_dir_all(&d);
+    assert_eq!(r.code, Some(0), "{}{}", r.out, r.err);
+    assert!(!r.err.contains("vm engine skipped"), "{}", r.err);
+    assert!(!r.err.contains("restart required"), "{}", r.err);
+    assert!(r.err.contains("hot reload: function bodies updated"), "{}", r.err);
+    let (v1, v2) = (count(&r.out, "v1"), count(&r.out, "v2"));
+    assert!(v1 >= 1 && v2 >= 1 && v1 + v2 == 25, "v1={} v2={}\n{}", v1, v2, r.out);
+}
+
+#[test]
 fn vm_hot_reload_asks_for_restart_on_a_header_change() {
     let d = package(HR);
-    // 関数の追加は、木走査と同じに再起動を促すだけで反映しない。
-    let edited = format!("{}\nfn hr.extra() -> u64 uses [] panics never pub\n    1u64\nend hr.extra\n", HR.replace("v1", "v2"));
+    // 関数の削除・ヘッダの変更は再起動を促すだけで反映しない。
+    let edited = HR.replace("v1", "v2").replace("fn hr.spin(n: u64) -> u64", "fn hr.spin(n: u64, m: u64) -> u64").replace("hr.spin(7000000u64)", "hr.spin(7000000u64, 1u64)");
     let r = run_watch(&d, &edited, 1500);
     let _ = fs::remove_dir_all(&d);
     assert_eq!(r.code, Some(0), "{}{}", r.out, r.err);
