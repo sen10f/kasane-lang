@@ -76,6 +76,8 @@ fn dce(m: &Module) -> Result<Module, String> {
 /// 命令が副作用を持つか。副作用を持つ命令は結果が未使用でも除去しない。
 fn side_effecting(op: &Op) -> bool {
     match op {
+        // 実時刻は呼ぶたびに値が変わる (結果が未使用でも読みは残す)。
+        Op::TimeNowNs => true,
         Op::Call { .. }
         | Op::Write { .. }
         | Op::Eprint { .. }
@@ -287,6 +289,7 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => vec![sock, buf, len],
         Op::EnvArgCount => vec![],
         Op::EnvArg { index } | Op::EnvVar { name: index } => vec![index],
+        Op::TimeNowNs => vec![],
         Op::Proc { args, .. } => args.iter_mut().collect(),
         Op::FsCreate { path } | Op::FsOpen { path } | Op::FsExists { path } | Op::FsRemove { path } => vec![path],
         Op::FsSys { args, .. } => args.iter_mut().collect(),

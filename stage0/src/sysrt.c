@@ -563,6 +563,20 @@ i64 ksn_rt_sys_var(const u8 *name, i64 nlen, i64 *len) {
     return (i64)(intptr_t)v;
 }
 
+/* 実時刻 (UNIX 時刻からのナノ秒、`std.time.system_nanos`)。失敗したら 0 (木走査と同じ)。 */
+i64 ksn_rt_sys_wall_ns(void) {
+#ifdef _WIN32
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    u64 t = ((u64)ft.dwHighDateTime << 32) | (u64)ft.dwLowDateTime; /* 1601 年からの 100 ns */
+    return (i64)((t - 116444736000000000ULL) * 100ULL);
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return 0;
+    return (i64)ts.tv_sec * 1000000000LL + (i64)ts.tv_nsec;
+#endif
+}
+
 /* 単調時計 (ナノ秒)。`std.time.Instant.ticks`。 */
 u64 ksn_rt_sys_now_ns(void) {
 #ifdef _WIN32

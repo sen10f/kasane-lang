@@ -1025,11 +1025,16 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         get(&stack[top], buf),
                         get(&stack[top], len),
                     );
-                    let Some(f) = files.get_mut(&fd) else {
-                        return Err(format!("書き込みできるのはファイル記述子だけ: {}", fd));
-                    };
                     let bytes = bm.read_bytes(p, n as usize)?;
-                    f.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+                    // 記述子 2 は標準エラー (`std.io.write_stderr`)。それ以外は開いているファイルだけ。
+                    if fd == 2 {
+                        std::io::stderr().write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+                    } else {
+                        let Some(f) = files.get_mut(&fd) else {
+                            return Err(format!("書き込みできるのはファイル記述子だけ: {}", fd));
+                        };
+                        f.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+                    }
                     n
                 }
                 Op::EnvArgCount => {
@@ -1054,6 +1059,10 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         TAG_BIT | (heap.len() - 1) as i128
                     }
                 }
+                Op::TimeNowNs => std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as i128)
+                    .unwrap_or(0),
                 Op::EnvVar { name } => {
                     let h = get(&stack[top], name) as usize;
                     let fat_buf = &heap[h];

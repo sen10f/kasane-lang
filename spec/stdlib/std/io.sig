@@ -48,3 +48,4 @@ fn std.io.print_line(text: &str) -> Result<(), std.io.Error> uses [io.console] p
 fn std.io.stderr() -> std.io.Stderr uses [] panics never pub
 fn std.io.stdin() -> std.io.Stdin uses [] panics never pub
 fn std.io.stdout() -> std.io.Stdout uses [] panics never pub
+fn std.io.write_stderr(buffer: &[u8]) -> Result<usize, std.io.Error> uses [io.console] panics never pub

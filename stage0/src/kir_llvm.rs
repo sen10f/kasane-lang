@@ -255,6 +255,8 @@ struct Ctx {
     net: bool,
     /// `std.env` 命令を使う (`@ksn_rt_sys_*` を呼ぶ)。
     env: bool,
+    /// `std.time` の実時刻命令を使う (`@ksn_rt_sys_wall_ns` を呼ぶ)。
+    time: bool,
     /// `std.fs` 命令を使う (`@ksn_rt_sys_*` を呼ぶ)。
     fs: bool,
     /// `FmtFloat` 命令を使う (浮動小数の書式化補助関数を出す)。
@@ -366,7 +368,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     };
     let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
     let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
-    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, fs: false, parse_int: has_parse_int };
+    let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
     let extern_links: HashMap<String, String> = m.funcs.iter()
         .filter_map(|f| f.link.as_ref().map(|l| {
@@ -449,6 +451,9 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         cx.decls.insert("declare i64 @ksn_rt_sys_arg_count()".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_arg(i64, ptr)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_var(ptr, i64, ptr)".to_string());
+    }
+    if cx.time {
+        cx.decls.insert("declare i64 @ksn_rt_sys_wall_ns()".to_string());
     }
     if cx.fs {
         cx.decls.insert("declare i64 @ksn_rt_sys_open(ptr, i64, i32, i32*)".to_string());
@@ -2022,6 +2027,11 @@ impl<'a> Fe<'a> {
                 let some = self.t(format!("or i129 {}, {}", tag, fat129));
                 let result = self.t(format!("select i1 {}, i129 0, i129 {}", isnull, some));
                 self.mov(&d, "i129", &result);
+            }
+            Op::TimeNowNs => {
+                self.cx.time = true;
+                let r = self.t(format!("call i64 @ksn_rt_sys_wall_ns()"));
+                self.mov(&d, "i64", &r);
             }
             Op::EnvVar { name } => {
                 self.cx.env = true;
