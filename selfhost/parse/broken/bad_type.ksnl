@@ -1,0 +1,3 @@
+fn a.f(x: ) -> i32 uses [] panics never
+    1i32
+end a.f

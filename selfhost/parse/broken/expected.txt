@@ -1,0 +1,21 @@
+# ファイル 行  (正しいエラー行。Rust 版の出力ではなく、壊した場所から人が決めたもの)
+unterminated_string 2
+bad_escape 2
+bad_char 2
+unexpected_char 2
+tab 2
+missing_end 4
+end_mismatch 3
+stray_end 5
+expr_expected 2
+missing_paren 2
+arm_no_arrow 3
+bad_type 1
+no_arrow 1
+unclosed_block 4
+toplevel_junk 5
+bad_pattern 3
+bad_enum 3
+bad_generics 1
+struct_lit_trailing 2
+closure_no_capture 2

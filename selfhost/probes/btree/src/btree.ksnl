@@ -1,0 +1,13 @@
+fn btree.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let mut m = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
+    core.mem.drop(m.insert(3u32, 4u32))
+    match m.get(&3u32) {
+        Some(v) => {
+            if *v == 4u32 {
+                return std.io.print_line("found")
+            }
+            std.io.print_line("wrong")
+        }
+        None => std.io.print_line("missing")
+    }
+end btree.main

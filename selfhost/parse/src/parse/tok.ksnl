@@ -1,0 +1,240 @@
+const parse.tok.CONTEXTUAL: &str = "stack impls derive linear layout requires capture link close" pub
+
+const parse.tok.CX_CAPTURE: u32 = 107u32 pub
+
+const parse.tok.CX_CLOSE: u32 = 109u32 pub
+
+const parse.tok.CX_DERIVE: u32 = 103u32 pub
+
+const parse.tok.CX_IMPLS: u32 = 102u32 pub
+
+const parse.tok.CX_LAYOUT: u32 = 105u32 pub
+
+const parse.tok.CX_LINEAR: u32 = 104u32 pub
+
+const parse.tok.CX_LINK: u32 = 108u32 pub
+
+const parse.tok.CX_REQUIRES: u32 = 106u32 pub
+
+const parse.tok.CX_STACK: u32 = 101u32 pub
+
+const parse.tok.ESCAPES: &str = "ntr\\0'\"xu" pub
+
+const parse.tok.KEYWORDS: &str = "fn type enum trait impl const static extern test end import let mut if else match loop while for in break continue return true false self Self pub uses panics unsafe move with dyn blanket never may async await where ref as" pub
+
+const parse.tok.KW_BLANKET: u32 = 35u32 pub
+
+const parse.tok.KW_BREAK: u32 = 21u32 pub
+
+const parse.tok.KW_CONST: u32 = 6u32 pub
+
+const parse.tok.KW_CONTINUE: u32 = 22u32 pub
+
+const parse.tok.KW_DYN: u32 = 34u32 pub
+
+const parse.tok.KW_ELSE: u32 = 15u32 pub
+
+const parse.tok.KW_END: u32 = 10u32 pub
+
+const parse.tok.KW_ENUM: u32 = 3u32 pub
+
+const parse.tok.KW_EXTERN: u32 = 8u32 pub
+
+const parse.tok.KW_FALSE: u32 = 25u32 pub
+
+const parse.tok.KW_FN: u32 = 1u32 pub
+
+const parse.tok.KW_FOR: u32 = 19u32 pub
+
+const parse.tok.KW_IF: u32 = 14u32 pub
+
+const parse.tok.KW_IMPL: u32 = 5u32 pub
+
+const parse.tok.KW_IMPORT: u32 = 11u32 pub
+
+const parse.tok.KW_IN: u32 = 20u32 pub
+
+const parse.tok.KW_LET: u32 = 12u32 pub
+
+const parse.tok.KW_LOOP: u32 = 17u32 pub
+
+const parse.tok.KW_MATCH: u32 = 16u32 pub
+
+const parse.tok.KW_MAY: u32 = 37u32 pub
+
+const parse.tok.KW_MOVE: u32 = 32u32 pub
+
+const parse.tok.KW_MUT: u32 = 13u32 pub
+
+const parse.tok.KW_NEVER: u32 = 36u32 pub
+
+const parse.tok.KW_PANICS: u32 = 30u32 pub
+
+const parse.tok.KW_PUB: u32 = 28u32 pub
+
+const parse.tok.KW_RETURN: u32 = 23u32 pub
+
+const parse.tok.KW_SELF: u32 = 26u32 pub
+
+const parse.tok.KW_SELF_TYPE: u32 = 27u32 pub
+
+const parse.tok.KW_STATIC: u32 = 7u32 pub
+
+const parse.tok.KW_TEST: u32 = 9u32 pub
+
+const parse.tok.KW_TRAIT: u32 = 4u32 pub
+
+const parse.tok.KW_TRUE: u32 = 24u32 pub
+
+const parse.tok.KW_TYPE: u32 = 2u32 pub
+
+const parse.tok.KW_UNSAFE: u32 = 31u32 pub
+
+const parse.tok.KW_USES: u32 = 29u32 pub
+
+const parse.tok.KW_WHILE: u32 = 18u32 pub
+
+const parse.tok.KW_WITH: u32 = 33u32 pub
+
+const parse.tok.OPS1: &str = "()[]{},.:;=<>+-*/%&|^!?" pub
+
+const parse.tok.OP_ANDAND: u32 = 307u32 pub
+
+const parse.tok.OP_ARROW: u32 = 302u32 pub
+
+const parse.tok.OP_COLONCOLON: u32 = 309u32 pub
+
+const parse.tok.OP_EQEQ: u32 = 303u32 pub
+
+const parse.tok.OP_FATARROW: u32 = 301u32 pub
+
+const parse.tok.OP_GE: u32 = 306u32 pub
+
+const parse.tok.OP_LE: u32 = 305u32 pub
+
+const parse.tok.OP_NE: u32 = 304u32 pub
+
+const parse.tok.OP_OROR: u32 = 308u32 pub
+
+const parse.tok.PRIMS: &str = "i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 bool char str" pub
+
+const parse.tok.PRIM_STR: u32 = 17u32 pub
+
+const parse.tok.SUFFIXES: &str = "i128 u128 isize usize i16 i32 i64 u16 u32 u64 i8 u8 f32 f64" pub
+
+const parse.tok.WILD: u32 = 200u32 pub
+
+enum parse.tok.Kind derive [Debug, Clone, Copy, PartialEq] pub
+    Bstr
+    Byte
+    Char
+    Eof
+    Float
+    Ident
+    Int
+    Kw
+    Life
+    Nl
+    Op
+    Prim
+    Str
+    Upper
+end parse.tok.Kind
+
+type parse.tok.Tok derive [Debug, Clone, Copy, PartialEq] pub
+    code: u32 pub
+    stop: usize pub
+    kind: parse.tok.Kind pub
+    line: usize pub
+    start: usize pub
+end parse.tok.Tok
+
+fn parse.tok.is_bool_kw(code: u32) -> bool uses [] panics never pub
+    code == parse.tok.KW_TRUE || code == parse.tok.KW_FALSE
+end parse.tok.is_bool_kw
+
+// 名前の位置に置ける予約語 (blanket / self / Self)。
+fn parse.tok.is_name_kw(code: u32) -> bool uses [] panics never pub
+    code == parse.tok.KW_BLANKET || code == parse.tok.KW_SELF || code == parse.tok.KW_SELF_TYPE
+end parse.tok.is_name_kw
+
+fn parse.tok.is_panic_kw(code: u32) -> bool uses [] panics never pub
+    code == parse.tok.KW_NEVER || code == parse.tok.KW_MAY
+end parse.tok.is_panic_kw
+
+// 識別子・大文字名・基本型名。
+fn parse.tok.is_plain_name(t: parse.tok.Tok) -> bool uses [] panics never pub
+    let k = t.kind
+    k == parse.tok.Kind.Ident || k == parse.tok.Kind.Upper || k == parse.tok.Kind.Prim
+end parse.tok.is_plain_name
+
+fn parse.tok.kind_name(kind: parse.tok.Kind) -> &'static str uses [] panics never pub
+    match kind {
+        parse.tok.Kind.Bstr => "bstr"
+        parse.tok.Kind.Byte => "byte"
+        parse.tok.Kind.Char => "char"
+        parse.tok.Kind.Eof => "eof"
+        parse.tok.Kind.Float => "float"
+        parse.tok.Kind.Ident => "ident"
+        parse.tok.Kind.Int => "int"
+        parse.tok.Kind.Kw => "kw"
+        parse.tok.Kind.Life => "life"
+        parse.tok.Kind.Nl => "nl"
+        parse.tok.Kind.Op => "op"
+        parse.tok.Kind.Prim => "prim"
+        parse.tok.Kind.Str => "str"
+        parse.tok.Kind.Upper => "upper"
+    }
+end parse.tok.kind_name
+
+fn parse.tok.new(kind: parse.tok.Kind, code: u32, start: usize, stop: usize, line: usize) -> parse.tok.Tok uses [] panics never pub
+    parse.tok.Tok { code: code, stop: stop, kind: kind, line: line, start: start }
+end parse.tok.new
+
+// 記号・予約語の符号を `'名前'` として追記する。
+fn parse.tok.push_code_name(out: &mut alloc.string.String<std.alloc.System>, code: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    out.push('\'')?
+    let ops2 = "=> -> == != <= >= && || ::"
+    let kws = parse.tok.KEYWORDS
+    let cxs = parse.tok.CONTEXTUAL
+    if code >= 1000u32 {
+        let kw = code.wrapping_sub(1000u32)
+        if kw >= 101u32 {
+            parse.tok.push_word(out, cxs, kw.wrapping_sub(100u32))?
+        } else {
+            parse.tok.push_word(out, kws, kw)?
+        }
+    } else if code >= 301u32 {
+        parse.tok.push_word(out, ops2, code.wrapping_sub(300u32))?
+    } else {
+        match char.try_from_u32(code) {
+            Some(c) => out.push(c)?
+            None => core.mem.drop(0u8)
+        }
+    }
+    out.push('\'')
+end parse.tok.push_code_name
+
+// 語表の n 番目 (1 始まり) の語を追記する。
+fn parse.tok.push_word(out: &mut alloc.string.String<std.alloc.System>, table: &str, n: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut i = 0u32
+    for w in table.split(" ") {
+        i = i.wrapping_add(1u32)
+        if i == n {
+            return out.push_str(w)
+        }
+    }
+    Ok(())
+end parse.tok.push_word
+
+// 語表 (空白区切り) の中の位置 (1 始まり)。無ければ 0。
+fn parse.tok.word_code(table: &str, word: &[u8]) -> u32 uses [] panics never pub
+    let mut n = 0u32
+    for w in table.split(" ") {
+        n = n.wrapping_add(1u32)
+        if w.as_bytes() == word {
+            return n
+        }
+    }
+    0u32
+end parse.tok.word_code

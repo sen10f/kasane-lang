@@ -1,0 +1,14 @@
+fn strmatch.kw(s: &str) -> u32 uses [] panics never
+    match s {
+        "fn" => 1u32
+        "let" => 2u32
+        _ => 0u32
+    }
+end strmatch.kw
+
+fn strmatch.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    if strmatch.kw("let") == 2u32 {
+        return std.io.print_line("ok")
+    }
+    std.io.print_line("bad")
+end strmatch.main

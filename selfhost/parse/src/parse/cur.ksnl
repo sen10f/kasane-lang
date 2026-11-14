@@ -1,0 +1,189 @@
+const parse.cur.MAX_DEPTH: usize = 160usize pub
+
+// 構文解析器の状態 (トークン列・現在位置・AST・入れ子の深さ)。
+type parse.cur.P pub
+    ast: parse.ast.Ast pub
+    depth: usize pub
+    pos: usize pub
+    toks: alloc.vec.Vec<parse.tok.Tok, std.alloc.System> pub
+end parse.cur.P
+
+fn parse.cur.accept_ch(p: &mut parse.cur.P, ch: u8) -> bool uses [] panics never pub
+    parse.cur.accept_op(p, u32.from_u8(ch))
+end parse.cur.accept_ch
+
+fn parse.cur.accept_kw(p: &mut parse.cur.P, code: u32) -> bool uses [] panics never pub
+    if parse.cur.is_kw(p, code) {
+        parse.cur.advance(p)
+        return true
+    }
+    false
+end parse.cur.accept_kw
+
+fn parse.cur.accept_op(p: &mut parse.cur.P, code: u32) -> bool uses [] panics never pub
+    if parse.cur.is_op(p, code) {
+        parse.cur.advance(p)
+        return true
+    }
+    false
+end parse.cur.accept_op
+
+fn parse.cur.advance(p: &mut parse.cur.P) -> () uses [] panics never pub
+    p.pos = p.pos.wrapping_add(1usize)
+end parse.cur.advance
+
+fn parse.cur.at_eof(p: &parse.cur.P) -> bool uses [] panics never pub
+    parse.cur.kind(p) == parse.tok.Kind.Eof
+end parse.cur.at_eof
+
+// `.` の次が FQN の成分 (識別子・大文字名・基本型名・blanket) なら続く。
+fn parse.cur.dot_continues(p: &parse.cur.P) -> bool uses [] panics never pub
+    if !parse.cur.is_ch(p, b'.') {
+        return false
+    }
+    let t = parse.cur.peek(p, 1usize)
+    parse.tok.is_plain_name(t) || (t.kind == parse.tok.Kind.Kw && t.code == parse.tok.KW_BLANKET)
+end parse.cur.dot_continues
+
+// 入れ子の深さを 1 つ進める。上限を超えたらエラー。
+fn parse.cur.enter(p: &mut parse.cur.P) -> Result<(), parse.err.Error> uses [] panics never pub
+    p.depth = p.depth.wrapping_add(1usize)
+    if p.depth > parse.cur.MAX_DEPTH {
+        return Err(parse.cur.fail(p, parse.err.E_DEPTH, 0u32))
+    }
+    Ok(())
+end parse.cur.enter
+
+fn parse.cur.expect_ch(p: &mut parse.cur.P, ch: u8) -> Result<(), parse.err.Error> uses [] panics never pub
+    parse.cur.expect_op(p, u32.from_u8(ch))
+end parse.cur.expect_ch
+
+fn parse.cur.expect_kw(p: &mut parse.cur.P, code: u32) -> Result<(), parse.err.Error> uses [] panics never pub
+    if !parse.cur.accept_kw(p, code) {
+        return Err(parse.cur.fail(p, parse.err.E_EXPECT, code.wrapping_add(1000u32)))
+    }
+    Ok(())
+end parse.cur.expect_kw
+
+fn parse.cur.expect_nl(p: &mut parse.cur.P) -> Result<(), parse.err.Error> uses [] panics never pub
+    let k = parse.cur.kind(p)
+    if k != parse.tok.Kind.Nl && k != parse.tok.Kind.Eof {
+        return Err(parse.cur.fail(p, parse.err.E_EXPECT_NL, 0u32))
+    }
+    parse.cur.skip_nl(p)
+    Ok(())
+end parse.cur.expect_nl
+
+fn parse.cur.expect_op(p: &mut parse.cur.P, code: u32) -> Result<(), parse.err.Error> uses [] panics never pub
+    if !parse.cur.accept_op(p, code) {
+        return Err(parse.cur.fail(p, parse.err.E_EXPECT, code))
+    }
+    Ok(())
+end parse.cur.expect_op
+
+fn parse.cur.fail(p: &parse.cur.P, code: u32, want: u32) -> parse.err.Error uses [] panics never pub
+    let t = parse.cur.tok(p)
+    parse.err.Error.Syntax(t.line, t.start, code, want)
+end parse.cur.fail
+
+// FQN を読み、(開始バイト, 終了バイト) を返す。
+fn parse.cur.fqn(p: &mut parse.cur.P) -> Result<(usize, usize), parse.err.Error> uses [] panics never pub
+    let start = parse.cur.start_byte(p)
+    core.mem.drop(parse.cur.name_tok(p)?)
+    while parse.cur.dot_continues(p) {
+        parse.cur.advance(p)
+        core.mem.drop(parse.cur.name_tok(p)?)
+    }
+    Ok((start, parse.cur.prev_stop(p)))
+end parse.cur.fqn
+
+// ch は 1 文字の記号。
+fn parse.cur.is_ch(p: &parse.cur.P, ch: u8) -> bool uses [] panics never pub
+    parse.cur.is_op(p, u32.from_u8(ch))
+end parse.cur.is_ch
+
+// 予約語、または文脈キーワード (識別子として書かれた stack など)。
+fn parse.cur.is_kw(p: &parse.cur.P, code: u32) -> bool uses [] panics never pub
+    let t = parse.cur.tok(p)
+    (t.kind == parse.tok.Kind.Kw || t.kind == parse.tok.Kind.Ident) && t.code == code
+end parse.cur.is_kw
+
+// 名前の位置になれるトークンか (識別子・大文字名・基本型名・blanket / self / Self)。
+fn parse.cur.is_name_at(p: &parse.cur.P, k: usize) -> bool uses [] panics never pub
+    let t = parse.cur.peek(p, k)
+    if parse.tok.is_plain_name(t) {
+        return true
+    }
+    t.kind == parse.tok.Kind.Kw && parse.tok.is_name_kw(t.code)
+end parse.cur.is_name_at
+
+fn parse.cur.is_op(p: &parse.cur.P, code: u32) -> bool uses [] panics never pub
+    let t = parse.cur.tok(p)
+    t.kind == parse.tok.Kind.Op && t.code == code
+end parse.cur.is_op
+
+fn parse.cur.kind(p: &parse.cur.P) -> parse.tok.Kind uses [] panics never pub
+    parse.cur.peek(p, 0usize).kind
+end parse.cur.kind
+
+fn parse.cur.leave(p: &mut parse.cur.P) -> () uses [] panics never pub
+    p.depth = p.depth.wrapping_sub(1usize)
+end parse.cur.leave
+
+// 名前を 1 つ読み、そのトークンの添字を返す。
+fn parse.cur.name_tok(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [] panics never pub
+    if !parse.cur.is_name_at(p, 0usize) {
+        return Err(parse.cur.fail(p, parse.err.E_EXPECT_NAME, 0u32))
+    }
+    let at = p.pos
+    parse.cur.advance(p)
+    Ok(at)
+end parse.cur.name_tok
+
+fn parse.cur.new(toks: alloc.vec.Vec<parse.tok.Tok, std.alloc.System>) -> Result<parse.cur.P, parse.err.Error> uses [alloc] panics never pub
+    let ast = parse.ast.new()?
+    Ok(parse.cur.P { ast: ast, depth: 0usize, pos: 0usize, toks: toks })
+end parse.cur.new
+
+// 先頭から k 個先のトークン (範囲外は最後の Eof)。
+fn parse.cur.peek(p: &parse.cur.P, k: usize) -> parse.tok.Tok uses [] panics never pub
+    let all = p.toks.as_slice()
+    let i = p.pos.wrapping_add(k)
+    match all.get(i) {
+        Some(t) => parse.tok.new(t.kind, t.code, t.start, t.stop, t.line)
+        None => match all.last() {
+            Some(t) => parse.tok.new(t.kind, t.code, t.start, t.stop, t.line)
+            None => parse.tok.new(parse.tok.Kind.Eof, 0u32, 0usize, 0usize, 0usize)
+        }
+    }
+end parse.cur.peek
+
+// 絶対位置 at のトークン。
+fn parse.cur.peek_at(p: &parse.cur.P, at: usize) -> parse.tok.Tok uses [] panics never pub
+    match p.toks.as_slice().get(at) {
+        Some(t) => parse.tok.new(t.kind, t.code, t.start, t.stop, t.line)
+        None => parse.tok.new(parse.tok.Kind.Eof, 0u32, 0usize, 0usize, 0usize)
+    }
+end parse.cur.peek_at
+
+fn parse.cur.prev_stop(p: &parse.cur.P) -> usize uses [] panics never pub
+    match p.toks.as_slice().get(p.pos.wrapping_sub(1usize)) {
+        Some(t) => t.stop
+        None => 0usize
+    }
+end parse.cur.prev_stop
+
+fn parse.cur.skip_nl(p: &mut parse.cur.P) -> () uses [] panics never pub
+    while parse.cur.kind(p) == parse.tok.Kind.Nl {
+        parse.cur.advance(p)
+    }
+end parse.cur.skip_nl
+
+// 現在位置のトークンの開始バイトと、1 つ前のトークンの終了バイト。
+fn parse.cur.start_byte(p: &parse.cur.P) -> usize uses [] panics never pub
+    parse.cur.tok(p).start
+end parse.cur.start_byte
+
+fn parse.cur.tok(p: &parse.cur.P) -> parse.tok.Tok uses [] panics never pub
+    parse.cur.peek(p, 0usize)
+end parse.cur.tok

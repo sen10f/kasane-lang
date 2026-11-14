@@ -1,0 +1,5 @@
+fn a.f(x: i32) -> i32 uses [] panics never
+    match x {
+        => 1i32
+    }
+end a.f
