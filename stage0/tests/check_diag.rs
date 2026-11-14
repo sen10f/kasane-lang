@@ -45,7 +45,6 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a05_nested_andmut_capture_01",
     // F3 スレッド: `spawn` の取り込みの `Send` (`MutexGuard`)。生ポインタ版の 4 件は、許可のないモジュールでの
     // 生ポインタとして E5001 で止まるので一覧から外した (許可モジュール内の `Send` の穴は別の担当)。
-    "hunt_a11_spawn_guard_03",
     // F7 定数: `const` の範囲・オーバーフロー・ターゲットの幅
     // hunt_a18_const_int_overflow と hunt_a18_const_lit_outofrange は塞いだ (E2026)。
     // hunt_a18_const_usize_range_wasm は `--target wasm32-unknown-unknown` でのみ検出されるので、

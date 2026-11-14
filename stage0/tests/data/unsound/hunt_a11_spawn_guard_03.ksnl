@@ -1,4 +1,4 @@
-// expect: E????
+// expect: E2037
 fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
     let m = std.sync.Mutex.new(5u32)
     let guard = m.lock()
