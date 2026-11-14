@@ -256,22 +256,81 @@ fn str_const(name: &str, s: &str) -> String {
     format!("@{} = private unnamed_addr constant [{} x i8] c\"{}\"\n", name, s.len(), c_escape(s))
 }
 
+/// クロスコンパイルの対象 (三つ組)。LLVM IR の `target triple` / `target datalayout` と、clang に渡す探索先を決める。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Target {
+    /// `ksn build --target` の値 (三つ組)。
+    pub name: &'static str,
+    /// LLVM IR の `target triple`。
+    pub triple: &'static str,
+    /// LLVM IR の `target datalayout` (LLVM 20 の既定の値に合わせる)。
+    pub datalayout: &'static str,
+    /// 既定の sysroot (C の開発ファイルと libc / libm)。空ならホストの既定 (clang に任せる)。`KSN_SYSROOT` で上書きする。
+    pub sysroot: &'static str,
+}
+
+/// 対応するターゲット。ほかの三つ組は `target_of` が `None` を返す (呼び出し側が理由を出す)。
+pub const TARGETS: [Target; 2] = [
+    Target {
+        name: "x86_64-linux-gnu",
+        triple: "x86_64-unknown-linux-gnu",
+        datalayout: "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+        sysroot: "",
+    },
+    Target {
+        name: "aarch64-linux-gnu",
+        triple: "aarch64-unknown-linux-gnu",
+        datalayout: "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
+        sysroot: "/usr/aarch64-linux-gnu",
+    },
+];
+
+/// 三つ組の名前から対象を引く。
+pub fn target_of(name: &str) -> Option<Target> {
+    TARGETS.iter().copied().find(|t| t.name == name)
+}
+
+/// 今の機械の対象 (LLVM IR の triple を書けるもの)。対応していないホストでは `None` (IR に triple を書かない従来の形)。
+pub fn host_target() -> Option<Target> {
+    let name = if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
+        "x86_64-linux-gnu"
+    } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+        "aarch64-linux-gnu"
+    } else {
+        return None;
+    };
+    target_of(name)
+}
+
 /// `entry` を入口とする実行可能な LLVM IR を作る。KIR の検査に通らない・入口が扱えない形は理由つきの `Err`。
+/// `target` が `None` なら triple と datalayout を書かない (`ksn kir --llvm` の従来の出力)。
 pub fn emit(m: &Module, entry: &str) -> R<String> {
-    emit_with(m, entry, false)
+    emit_with(m, entry, false, None)
 }
 
 /// `main` から始まるプログラム全体の実行ファイルの LLVM IR。入口は引数なしの関数 (`()` か `Result<T, E>` を返す) を呼び、
 /// `Err(e)` なら stderr に `Error: <e の Debug 表示>` と改行を出して終了コード 1、それ以外は 0 で終わる (設計_KIR.md 12.3)。
 /// `E` の表示は、KIR の関数 `ksn.entry.debug` (降格が作る) を呼ぶ。
-pub fn emit_program(m: &Module, entry: &str) -> R<String> {
-    emit_with(m, entry, true)
+/// `target` の triple と datalayout を書く。対象が x86_64 以外なら、構造体の値渡し・値返しの extern は未対応として `Err` を返す。
+pub fn emit_program(m: &Module, entry: &str, target: Option<Target>) -> R<String> {
+    emit_with(m, entry, true, target)
 }
 
-fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
+fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> R<String> {
     let errs = verify_module(m);
     if let Some((k, e)) = errs.first() {
         return Err(format!("KIR の検査に通らない ({}): {}", k, e));
+    }
+    if let Some(tg) = target.filter(|tg| tg.name != "x86_64-linux-gnu") {
+        // 構造体の値渡しの ABI (AAPCS64 の HFA・レジスタ分類など) は x86_64 だけ検証している。ほかは理由を出して退避させる。
+        for f in m.funcs.iter().filter(|f| f.link.is_some()) {
+            if f.params().iter().any(|(_, pt)| matches!(pt, Ty::Agg(_))) {
+                return Err(format!("extern {}: passing a struct by value is native-supported on x86_64 only (target {})", f.key, tg.name));
+            }
+            if matches!(f.ret, Ty::Agg(_)) {
+                return Err(format!("extern {}: returning a struct by value is native-supported on x86_64 only (target {})", f.key, tg.name));
+            }
+        }
     }
     let Some(ef) = m.find(entry) else {
         return Err(format!("関数 {} がない", entry));
@@ -374,6 +433,9 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         cx.decls.insert("declare i64 @ksn_rt_sys_sync(i32, i32*)".to_string());
     }
     let mut out = String::from("; ksn kir llvm 1\n\n");
+    if let Some(tg) = target {
+        out.push_str(&format!("target datalayout = \"{}\"\ntarget triple = \"{}\"\n\n", tg.datalayout, tg.triple));
+    }
     for d in &cx.decls {
         out.push_str(d);
         out.push('\n');
