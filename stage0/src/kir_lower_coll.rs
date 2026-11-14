@@ -212,7 +212,7 @@ pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
         Src::Named(n, _) if is_vecn(n) || n == STRING || n == HASHMAP => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).or_else(|| lw.conv_t(e)).and_then(|t| elem_size(lw, t)).is_some() => Some(lw.fat_ty()),
-        Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" => {
+        Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" || n == "std.net.UdpSocket" => {
             let ai = lw.aggs.borrow().agg_index(n).expect("std.net.Tcp* が型表にない");
             Some(Ty::Ref(*mutbl, Pointee::Agg(ai)))
         }

@@ -24,7 +24,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
-    "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.process.Command.new",
+    "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
 ];
 
 const NUM_EXTRA: &[&str] = &[
@@ -852,7 +852,7 @@ impl Interp {
                     Err(e) => Ok(err(io_error(&e))),
                 }
             }
-            "std.net.connect" | "std.net.listen" => self.net_native(name, &args),
+            "std.net.connect" | "std.net.listen" | "std.net.UdpSocket.bind" | "std.net.resolve_raw" => self.net_native(name, &args),
             "std.process.Command.new" => self.process_native(name, &args),
             _ => {
                 if let Some((ty, f)) = name.split_once('.') {
@@ -1034,7 +1034,7 @@ impl Interp {
                 panic("no such method on Rng")
             }
             Val::Struct(s) => {
-                if s.ty.starts_with("std.net.Tcp") {
+                if s.ty.starts_with("std.net.Tcp") || s.ty == "std.net.UdpSocket" {
                     return self.net_method(s, name, &args);
                 }
                 if s.ty.starts_with("std.process.") {
@@ -1639,6 +1639,7 @@ pub fn io_kind_name(e: &std::io::Error) -> &'static str {
         K::BrokenPipe => "BrokenPipe",
         K::Interrupted => "Interrupted",
         K::OutOfMemory => "OutOfMemory",
+        K::TimedOut | K::WouldBlock => "TimedOut",
         _ => "Other",
     }
 }

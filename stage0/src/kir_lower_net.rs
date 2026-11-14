@@ -8,7 +8,7 @@
 //!   記述子を取り出し、対応する `net.*` 命令を出す。
 
 use crate::check::{items, nf};
-use crate::kir::{Op, Pay, Pointee, Ty, VId};
+use crate::kir::{NetK, Op, Pay, Pointee, Ty, VId};
 use crate::parser::V;
 
 use super::{Lw, LR};
@@ -133,6 +133,63 @@ pub(super) fn net_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, arg
             }
             Op::NetLocalPort { sock: fd }
         }
+        // 追加分 (`NetK`): タイムアウト・shutdown・アドレス・UDP の送受信。
+        "set_read_timeout" | "set_write_timeout" => {
+            if args.len() != 1 {
+                return lw.err(line, format!("{} の引数は 1 個のはず", name));
+            }
+            let Some(ms) = lw.expr(&args[0])? else { return Ok(None) };
+            if lw.vty(ms) != Ty::U64 {
+                return lw.err(line, format!("{} の引数は u64 のはず", name));
+            }
+            let kind = if name == "set_read_timeout" { NetK::ReadTimeout } else { NetK::WriteTimeout };
+            let res_ty = net_err_ty(lw, Ty::Unit);
+            return Ok(Some(lw.emit(res_ty, Op::NetSys { kind, args: vec![fd, ms] })));
+        }
+        "shutdown" => {
+            if args.len() != 1 {
+                return lw.err(line, "shutdown の引数は 1 個のはず");
+            }
+            let Some(how) = lw.expr(&args[0])? else { return Ok(None) };
+            // `std.net.Shutdown` の変種の添字 (Read 0 / Write 1 / Both 2)。
+            let tag = lw.emit(Ty::I32, Op::Tag(how));
+            let res_ty = net_err_ty(lw, Ty::Unit);
+            return Ok(Some(lw.emit(res_ty, Op::NetSys { kind: NetK::Shutdown, args: vec![fd, tag] })));
+        }
+        "peer_addr_raw" | "local_addr_raw" => {
+            if args.len() != 1 {
+                return lw.err(line, format!("{} の引数は 1 個のはず", name));
+            }
+            let Some(buf) = lw.expr(&args[0])? else { return Ok(None) };
+            let (p, n) = buf_ptr_len(lw, buf, line)?;
+            let kind = if name == "peer_addr_raw" { NetK::PeerAddr } else { NetK::LocalAddr };
+            let res_ty = net_err_ty(lw, Ty::Usize);
+            return Ok(Some(lw.emit(res_ty, Op::NetSys { kind, args: vec![fd, p, n] })));
+        }
+        "send_to" => {
+            if args.len() != 2 {
+                return lw.err(line, "send_to の引数は 2 個のはず");
+            }
+            let Some(buf) = lw.expr(&args[0])? else { return Ok(None) };
+            let (p, n) = buf_ptr_len(lw, buf, line)?;
+            let Some(addr) = lw.expr(&args[1])? else { return Ok(None) };
+            if lw.vty(addr) != lw.fat_ty() {
+                return lw.err(line, "send_to のアドレスは &str ではない");
+            }
+            let res_ty = net_err_ty(lw, Ty::Usize);
+            return Ok(Some(lw.emit(res_ty, Op::NetSys { kind: NetK::UdpSendTo, args: vec![fd, p, n, addr] })));
+        }
+        "recv_from_raw" => {
+            if args.len() != 2 {
+                return lw.err(line, "recv_from_raw の引数は 2 個のはず");
+            }
+            let Some(buf) = lw.expr(&args[0])? else { return Ok(None) };
+            let (p, n) = buf_ptr_len(lw, buf, line)?;
+            let Some(from) = lw.expr(&args[1])? else { return Ok(None) };
+            let (fp, fnn) = buf_ptr_len(lw, from, line)?;
+            let res_ty = net_err_ty(lw, Ty::Usize);
+            return Ok(Some(lw.emit(res_ty, Op::NetSys { kind: NetK::UdpRecvFrom, args: vec![fd, p, n, fp, fnn] })));
+        }
         _ => return Ok(None),
     };
     let res_ty = match name {
@@ -149,13 +206,46 @@ pub(super) fn net_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, arg
     Ok(Some(lw.emit(res_ty, op)))
 }
 
-/// 型 `rt` が `std.net.TcpListener` / `TcpStream` (裸または参照) か。
+/// 自由関数 `std.net.resolve_raw(host, port, out)` / `std.net.UdpSocket.bind(addr)` の下ろし。
+pub(super) fn net_free_call(lw: &mut Lw, e: &V, name: &str, line: usize) -> LR<Option<VId>> {
+    let f = nf(e);
+    let args = items(&f[1]);
+    if name == "std.net.UdpSocket.bind" {
+        if args.len() != 1 {
+            return lw.err(line, "std.net.UdpSocket.bind の引数は 1 個のはず");
+        }
+        let Some(addr) = lw.expr(&args[0])? else { return Ok(None) };
+        if lw.vty(addr) != lw.fat_ty() {
+            return lw.err(line, "std.net.UdpSocket.bind のアドレスは &str ではない");
+        }
+        let agg = lw.aggs.borrow().agg_index("std.net.UdpSocket").expect("std.net.UdpSocket が型表にない");
+        let res_ty = net_sock_err_ty(lw, Pay::Agg(agg));
+        return Ok(Some(lw.emit(res_ty, Op::NetSys { kind: NetK::UdpBind, args: vec![addr] })));
+    }
+    if args.len() != 3 {
+        return lw.err(line, "std.net.resolve_raw の引数は 3 個のはず");
+    }
+    let Some(host) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(host) != lw.fat_ty() {
+        return lw.err(line, "std.net.resolve_raw のホストは &str ではない");
+    }
+    let Some(port) = lw.expr(&args[1])? else { return Ok(None) };
+    if lw.vty(port) != Ty::U16 {
+        return lw.err(line, "std.net.resolve_raw のポートは u16 ではない");
+    }
+    let Some(buf) = lw.expr(&args[2])? else { return Ok(None) };
+    let (p, n) = buf_ptr_len(lw, buf, line)?;
+    let res_ty = net_err_ty(lw, Ty::Usize);
+    Ok(Some(lw.emit(res_ty, Op::NetSys { kind: NetK::Resolve, args: vec![host, port, p, n] })))
+}
+
+/// 型 `rt` が `std.net.TcpListener` / `TcpStream` / `UdpSocket` (裸または参照) か。
 pub(super) fn is_net_ty(lw: &Lw, rt: Ty) -> bool {
     match rt {
         Ty::Agg(ai) | Ty::Ref(_, Pointee::Agg(ai)) => {
             matches!(
                 lw.aggs.borrow().defs[ai as usize].name.as_str(),
-                "std.net.TcpListener" | "std.net.TcpStream"
+                "std.net.TcpListener" | "std.net.TcpStream" | "std.net.UdpSocket"
             )
         }
         _ => false,

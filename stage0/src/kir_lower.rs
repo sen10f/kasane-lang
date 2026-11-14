@@ -83,7 +83,7 @@ use coll::CollCx;
 // `std.net` (TCP) の下ろし (設計_KIR.md 12 章)。
 #[path = "kir_lower_net.rs"]
 mod net_lower;
-use net_lower::{is_net_ty, net_call, net_method};
+use net_lower::{is_net_ty, net_call, net_free_call, net_method};
 
 // `std.fs` (ファイル) の下ろし (設計_KIR.md 12 章)。
 #[path = "kir_lower_fs.rs"]
@@ -1080,7 +1080,7 @@ impl<'a> Lw<'a> {
                 let rt = self.vty(recv);
                 if is_net_ty(self, rt) {
                     let meth = segs[segs.len() - 1].clone();
-                    if matches!(meth.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port") {
+                    if matches!(meth.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port" | "set_read_timeout" | "set_write_timeout" | "shutdown" | "peer_addr_raw" | "local_addr_raw" | "send_to" | "recv_from_raw") {
                         let args = items(&f[1]).to_vec();
                         return net_method(self, e, &meth, recv, rt, &args, line);
                     }
@@ -1156,6 +1156,9 @@ impl<'a> Lw<'a> {
         let callee_name = segs.join(".");
         if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
             return net_call(self, e, callee_name == "std.net.listen", line);
+        }
+        if matches!(callee_name.as_str(), "std.net.resolve_raw" | "std.net.UdpSocket.bind") {
+            return net_free_call(self, e, &callee_name, line);
         }
         if matches!(callee_name.as_str(), "std.fs.create" | "std.fs.open" | "std.fs.exists" | "std.fs.remove_file" | "std.fs.read_to_end" | "std.fs.open_append" | "std.fs.rename" | "std.fs.create_dir" | "std.fs.remove_dir" | "std.fs.stat_raw" | "std.fs.read_dir_raw") {
             return fs_call(self, e, &callee_name, args, line);
@@ -1282,15 +1285,15 @@ impl<'a> Lw<'a> {
         // `std.net.TcpListener` / `TcpStream` のメソッド (accept / read / write / flush / close)。
         if let Ok(rt) = self.src_ty(&nf(e)[0]) {
             let is_net = match &rt {
-                Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" => true,
+                Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" || n == "std.net.UdpSocket" => true,
                 Src::Ref(_, inner) => {
-                    matches!(&**inner, Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream")
+                    matches!(&**inner, Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" || n == "std.net.UdpSocket")
                 }
                 _ => false,
             };
             if is_net {
                 let m = st(&nf(e)[1]);
-                if matches!(m.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port") {
+                if matches!(m.as_str(), "accept" | "read" | "write" | "flush" | "close" | "local_port" | "set_read_timeout" | "set_write_timeout" | "shutdown" | "peer_addr_raw" | "local_addr_raw" | "send_to" | "recv_from_raw") {
                     let Some(recv) = self.expr(&nf(e)[0])? else { return Ok(None) };
                     let rt = self.vty(recv);
                     let args = items(&nf(e)[2]).to_vec();
@@ -1735,7 +1738,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     let tys = type_table(p, user, test_def);
     let aggs = RefCell::new(agg::AggTab::new(user));
     // `std.net.listen`/`connect`/`accept` が返すソケット集成体と、その失敗の `std.net.Error` を、誰も参照しなくても型表に入れる。
-    for name in ["std.net.TcpListener", "std.net.TcpStream", "std.net.Error"] {
+    for name in ["std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "std.net.Shutdown", "std.net.Error"] {
         if let Some(di) = p.defs.iter().position(|d| d.name == name) {
             let _ = aggs.borrow_mut().intern_def(p, di);
         }

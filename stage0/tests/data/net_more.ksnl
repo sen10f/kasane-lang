@@ -1,0 +1,292 @@
+fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": "))
+    core.mem.drop(s.push_i64(n))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show
+
+fn t.show_u(label: &str, n: usize) -> () uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": "))
+    core.mem.drop(s.push_u64(u64.from_usize(n)))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show_u
+
+fn t.show_text(label: &str, text: &str) -> () uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": "))
+    core.mem.drop(s.push_str(text))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show_text
+
+fn t.flag(b: bool) -> i64 uses [] panics never
+    if b {
+        1i64
+    } else {
+        0i64
+    }
+end t.flag
+
+fn t.kind_num(k: std.io.ErrorKind) -> i64 uses [] panics never
+    match k {
+        std.io.ErrorKind.NotFound => 1i64
+        std.io.ErrorKind.PermissionDenied => 2i64
+        std.io.ErrorKind.AlreadyExists => 3i64
+        std.io.ErrorKind.InvalidInput => 4i64
+        std.io.ErrorKind.UnexpectedEof => 5i64
+        std.io.ErrorKind.BrokenPipe => 6i64
+        std.io.ErrorKind.Interrupted => 7i64
+        std.io.ErrorKind.OutOfMemory => 8i64
+        std.io.ErrorKind.TimedOut => 9i64
+        std.io.ErrorKind.Other => 10i64
+    }
+end t.kind_num
+
+fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": kind "))
+    core.mem.drop(s.push_i64(t.kind_num(e.kind)))
+    core.mem.drop(s.push_str(" code "))
+    core.mem.drop(s.push_i64(i64.from_i32(e.code)))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show_err
+
+fn t.show_net_err(label: &str, e: std.net.Error) -> () uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": net code "))
+    core.mem.drop(s.push_i64(i64.from_i32(e.code)))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show_net_err
+
+fn t.addr(port: u16) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("127.0.0.1:"))
+    core.mem.drop(s.push_u64(u64.from_u16(port)))
+    s
+end t.addr
+
+fn t.show_list(label: &str, v: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> () uses [alloc, io.console] panics may
+    t.show_u(label, v.len())
+    let items = v.as_slice()
+    let mut i = 0usize
+    while i < v.len() {
+        match items.get(i) {
+            Some(s) => t.show_text(label, s.as_str())
+            None => t.show_text(label, "<missing>")
+        }
+        i = i.wrapping_add(1usize)
+    }
+end t.show_list
+
+fn t.main() -> () uses [alloc, io.console, io.net] panics may
+    match std.net.listen("127.0.0.1:0") {
+        Ok(l) => t.serve(l)
+        Err(e) => t.show_net_err("listen", e)
+    }
+    t.udp()
+    t.resolving()
+end t.main
+
+fn t.serve(listener: std.net.TcpListener) -> () uses [alloc, io.console, io.net] panics may
+    let port = match listener.local_port() {
+        Ok(p) => p
+        Err(_e) => 0u16
+    }
+    let addr = t.addr(port)
+    match std.net.connect(addr.as_str()) {
+        Ok(c) => {
+            match listener.accept() {
+                Ok(s) => t.exchange(c, s, port)
+                Err(e) => {
+                    core.mem.drop(c.close())
+                    t.show_net_err("accept", e)
+                }
+            }
+        }
+        Err(e) => t.show_net_err("connect", e)
+    }
+    t.by_name(&listener, port)
+    core.mem.drop(listener.close())
+end t.serve
+
+fn t.by_name(listener: &std.net.TcpListener, port: u16) -> () uses [alloc, io.console, io.net] panics may
+    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(name.push_str("localhost:"))
+    core.mem.drop(name.push_u64(u64.from_u16(port)))
+    match std.net.connect(name.as_str()) {
+        Ok(c) => {
+            match listener.accept() {
+                Ok(s) => {
+                    core.mem.drop(s.close())
+                    core.mem.drop(c.close())
+                    t.show("connect by name ok", 1i64)
+                }
+                Err(e) => {
+                    core.mem.drop(c.close())
+                    t.show_net_err("accept by name", e)
+                }
+            }
+        }
+        Err(e) => t.show_net_err("connect by name", e)
+    }
+end t.by_name
+
+fn t.exchange(c0: std.net.TcpStream, s0: std.net.TcpStream, port: u16) -> () uses [alloc, io.console, io.net] panics may
+    let mut c = c0
+    let mut s = s0
+    t.addresses(&c, &s, port)
+    t.timeouts(&mut c)
+    t.shutdowns(&mut c, &mut s)
+    core.mem.drop(c.close())
+    core.mem.drop(s.close())
+end t.exchange
+
+fn t.addresses(c: &std.net.TcpStream, s: &std.net.TcpStream, port: u16) -> () uses [alloc, io.console, io.net] panics may
+    let expect = t.addr(port)
+    match c.peer_addr() {
+        Ok(p) => {
+            t.show("client peer is listener", t.flag(p.as_str() == expect.as_str()))
+        }
+        Err(e) => t.show_err("client peer_addr", e)
+    }
+    match s.local_addr() {
+        Ok(a) => t.show("server local is listener", t.flag(a.as_str() == expect.as_str()))
+        Err(e) => t.show_err("server local_addr", e)
+    }
+    match c.local_addr() {
+        Ok(a) => {
+            match s.peer_addr() {
+                Ok(p) => t.show("client local is server peer", t.flag(a.as_str() == p.as_str()))
+                Err(e) => t.show_err("server peer_addr", e)
+            }
+        }
+        Err(e) => t.show_err("client local_addr", e)
+    }
+end t.addresses
+
+fn t.timeouts(c: &mut std.net.TcpStream) -> () uses [alloc, io.console, io.net] panics may
+    match c.set_read_timeout(100u64) {
+        Ok(_u) => t.show("set_read_timeout ok", 1i64)
+        Err(e) => t.show_err("set_read_timeout", e)
+    }
+    let mut buf = [0u8; 8]
+    match c.read(&mut buf) {
+        Ok(n) => t.show_u("read without data", n)
+        Err(e) => t.show_err("read timeout", e)
+    }
+    match c.set_read_timeout(0u64) {
+        Ok(_u) => t.show("clear read timeout ok", 1i64)
+        Err(e) => t.show_err("clear read timeout", e)
+    }
+    match c.set_write_timeout(100u64) {
+        Ok(_u) => t.show("set_write_timeout ok", 1i64)
+        Err(e) => t.show_err("set_write_timeout", e)
+    }
+end t.timeouts
+
+fn t.shutdowns(c: &mut std.net.TcpStream, s: &mut std.net.TcpStream) -> () uses [alloc, io.console, io.net] panics may
+    match c.shutdown(std.net.Shutdown.Write) {
+        Ok(_u) => t.show("client shutdown write ok", 1i64)
+        Err(e) => t.show_err("client shutdown write", e)
+    }
+    let mut buf = [0u8; 8]
+    match s.read(&mut buf) {
+        Ok(n) => t.show_u("server read after client shutdown", n)
+        Err(e) => t.show_err("server read", e)
+    }
+    match s.write("pong".as_bytes()) {
+        Ok(n) => t.show_u("server wrote", n)
+        Err(e) => t.show_err("server write", e)
+    }
+    let mut back = [0u8; 8]
+    match c.read(&mut back) {
+        Ok(n) => {
+            t.show_u("client read", n)
+            match back.get(0usize) {
+                Some(b) => t.show("client first byte", i64.from_u8(*b))
+                None => t.show("client first byte", -1i64)
+            }
+        }
+        Err(e) => t.show_err("client read", e)
+    }
+    match c.shutdown(std.net.Shutdown.Read) {
+        Ok(_u) => t.show("client shutdown read ok", 1i64)
+        Err(e) => t.show_err("client shutdown read", e)
+    }
+    match c.read(&mut back) {
+        Ok(n) => t.show_u("client read after shutdown read", n)
+        Err(e) => t.show_err("client read after shutdown read", e)
+    }
+end t.shutdowns
+
+fn t.udp() -> () uses [alloc, io.console, io.net] panics may
+    match std.net.UdpSocket.bind("127.0.0.1:0") {
+        Ok(a) => {
+            match std.net.UdpSocket.bind("127.0.0.1:0") {
+                Ok(b) => t.udp_pair(a, b)
+                Err(e) => {
+                    core.mem.drop(a.close())
+                    t.show_net_err("bind b", e)
+                }
+            }
+        }
+        Err(e) => t.show_net_err("bind a", e)
+    }
+end t.udp
+
+fn t.udp_pair(a: std.net.UdpSocket, b: std.net.UdpSocket) -> () uses [alloc, io.console, io.net] panics may
+    let pa = match a.local_port() {
+        Ok(p) => p
+        Err(_e) => 0u16
+    }
+    let pb = match b.local_port() {
+        Ok(p) => p
+        Err(_e) => 0u16
+    }
+    let addr_a = t.addr(pa)
+    let addr_b = t.addr(pb)
+    match a.send_to("hello".as_bytes(), addr_b.as_str()) {
+        Ok(n) => t.show_u("udp sent", n)
+        Err(e) => t.show_err("udp send", e)
+    }
+    let mut buf = [0u8; 16]
+    let mut from = alloc.string.String.new(std.alloc.SYSTEM)
+    match b.recv_from(&mut buf, &mut from) {
+        Ok(n) => {
+            t.show_u("udp received", n)
+            t.show("udp from is a", t.flag(from.as_str() == addr_a.as_str()))
+            match b.send_to("pong".as_bytes(), from.as_str()) {
+                Ok(m) => t.show_u("udp reply sent", m)
+                Err(e) => t.show_err("udp reply send", e)
+            }
+        }
+        Err(e) => t.show_err("udp recv", e)
+    }
+    let mut buf2 = [0u8; 16]
+    let mut from2 = alloc.string.String.new(std.alloc.SYSTEM)
+    match a.recv_from(&mut buf2, &mut from2) {
+        Ok(n) => {
+            t.show_u("udp reply received", n)
+            t.show("udp reply from is b", t.flag(from2.as_str() == addr_b.as_str()))
+        }
+        Err(e) => t.show_err("udp reply recv", e)
+    }
+    core.mem.drop(a.close())
+    core.mem.drop(b.close())
+end t.udp_pair
+
+fn t.resolving() -> () uses [alloc, io.console, io.net] panics may
+    match std.net.resolve("127.0.0.1", 80u16) {
+        Ok(v) => t.show_list("numeric", &v)
+        Err(e) => t.show_err("resolve numeric", e)
+    }
+    match std.net.resolve("localhost", 9u16) {
+        Ok(v) => t.show_list("localhost", &v)
+        Err(e) => t.show_err("resolve localhost", e)
+    }
+end t.resolving
