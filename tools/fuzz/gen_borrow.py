@@ -194,7 +194,9 @@ def escape(rng, k, inner):
             # 局所の借用を返す: ヘッダに借用の入力が無いので何らかの診断で落ちるべき
             hdr = "fn t.bad() -> " + (ty(k, "'static") if sink == "retfn" else "t.H<'static>")
             fb = blk([ex])
-            return (hdr + f" uses [alloc] panics never\n{indent(fb)}\nend t.bad", "bad", tags + ["header"], k, True)
+            # str の外側の借用は `"d"` (`'static`) なので、結びつかない包み方 (`fst("d", ..)` / `snd(.., "d")`) で返すのは健全。
+            label = "ok" if (k == "str" and not tied) else "bad"
+            return (hdr + f" uses [alloc] panics never\n{indent(fb)}\nend t.bad", label, tags + ["header"], k, True)
         # 外側: 引数 x のうち 'a の方を返す。fst/snd は同名を使うので引数名 x/y を使わず直接組み立てる
         return None
     if body is None:

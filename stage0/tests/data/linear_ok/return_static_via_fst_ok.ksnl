@@ -1,0 +1,29 @@
+type t.H['a]
+    r: &'a str
+end t.H
+
+fn t.bad() -> &'static str uses [alloc] panics never
+    let mut x = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(x.push_str("hello"))
+    let q = t.fst("d", x.as_str())
+    q
+end t.bad
+
+fn t.fst['a, 'b](x: &'a str, _y: &'b str) -> &'a str uses [] panics never
+    x
+end t.fst
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.snd['a, 'b](_x: &'a str, y: &'b str) -> &'b str uses [] panics never
+    y
+end t.snd
+
+fn t.wrap() -> t.H<'static> uses [alloc] panics never
+    let mut x = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(x.push_str("hello"))
+    let q = t.snd(x.as_str(), "d")
+    t.H { r: q }
+end t.wrap

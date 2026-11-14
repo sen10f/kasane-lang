@@ -665,7 +665,13 @@ impl<'a> Low<'a> {
             if !lts.iter().any(|l| ltys.contains(l)) {
                 continue;
             }
-            if matches!(tel(ty, 1), V::B(true)) {
+            // `&mut` で、指す先がさらに参照・ライフタイムを持つもの (`&mut &'a T`、`&mut Vec<&'a T>`、`&mut H<'a>`) だけが
+            // 受け手。`r: &'a mut u32` のように指す先が参照を持たない `&mut` は借用元 (保存される側)。
+            let pointee = ptexts[k].split_once(':').map_or("", |x| x.1).trim();
+            let pointee = pointee.strip_prefix('&').unwrap_or(pointee).trim_start();
+            let pointee = if pointee.starts_with('\'') { pointee.split_once(' ').map_or("", |x| x.1) } else { pointee };
+            let pointee = pointee.trim_start().strip_prefix("mut ").unwrap_or(pointee);
+            if matches!(tel(ty, 1), V::B(true)) && (pointee.contains('&') || pointee.contains('\'')) {
                 receivers.push(k);
             } else {
                 sources.push(k);
@@ -1068,6 +1074,26 @@ impl<'a> Low<'a> {
 
     /// `break` / `continue` で抜けるブロック (スコープ深さ `depth` 以降) の局所変数の寿命を、
     /// その場で終わらせる (ブロック末尾の `DropScope` は通らないため)。
+    /// `lower_block` と同じだが、ブロックの値の借用を、そのブロックの局所変数の寿命が尽きる前に合成の持ち主へ集める
+    /// (集めたローンの借用元がブロックの局所なら、そのあと `DropScope` で寿命切れになる)。
+    fn lower_block_value(&mut self, b: &V, mut cur: usize, holder: &str, binds: &[String]) -> usize {
+        if nname(b) != "Block" {
+            let end = self.lower_expr(b, cur);
+            self.collect_value(end, holder, binds, b);
+            return end;
+        }
+        self.scope_stack.push(vec![]);
+        for s in items(&nf(b)[0]) {
+            cur = self.lower_stmt(s, cur);
+        }
+        self.collect_value(cur, holder, binds, b);
+        let vars = self.scope_stack.pop().unwrap_or_default();
+        for v in vars {
+            self.emit(cur, Ev::DropScope(v));
+        }
+        cur
+    }
+
     fn drop_scopes_from(&mut self, cur: usize, depth: usize) {
         let vars: Vec<String> = self.scope_stack.iter().skip(depth).flatten().cloned().collect();
         for v in vars {
@@ -1426,15 +1452,19 @@ impl<'a> Low<'a> {
                 self.edge(c, else_n);
                 // `else` のある `if` は値を持つ: 両枝の末尾の値の借用を、枝の終わりで合成の持ち主に集める
                 let holder = if is_nil(&f[2]) { None } else { Some(self.value_holder(e)) };
-                let t_end = self.lower_block(&f[1], then_n);
-                if let Some(h) = &holder {
-                    self.collect_value(t_end, h, &[], &f[1]);
-                }
+                let t_end = match &holder {
+                    Some(h) => self.lower_block_value(&f[1], then_n, h, &[]),
+                    None => self.lower_block(&f[1], then_n),
+                };
                 self.edge(t_end, join);
-                let e_end = if is_nil(&f[2]) { else_n } else { self.lower_block(&f[2], else_n) };
-                if let Some(h) = &holder {
-                    self.collect_value(e_end, h, &[], &f[2]);
-                }
+                let e_end = if is_nil(&f[2]) {
+                    else_n
+                } else {
+                    match &holder {
+                        Some(h) => self.lower_block_value(&f[2], else_n, h, &[]),
+                        None => self.lower_block(&f[2], else_n),
+                    }
+                };
                 self.edge(e_end, join);
                 join
             }
@@ -1547,8 +1577,7 @@ impl<'a> Low<'a> {
                             }
                         }
                     }
-                    let end = self.lower_block(&a[1], an);
-                    self.collect_value(end, &holder, &binds, &a[1]);
+                    let end = self.lower_block_value(&a[1], an, &holder, &binds);
                     self.edge(end, join);
                 }
                 join
@@ -1616,9 +1645,7 @@ impl<'a> Low<'a> {
             "Block" => {
                 // ブロック式の値: 末尾の式の借用を、ブロックの終わりで合成の持ち主に集める
                 let holder = self.value_holder(e);
-                let end = self.lower_block(e, cur);
-                self.collect_value(end, &holder, &[], e);
-                end
+                self.lower_block_value(e, cur, &holder, &[])
             }
             "Unsafe" => self.lower_block(&f[2], cur),
             // `with 名前 = 初期化式 close 後始末式 { 本体 }`: 本体のあとに後始末式が続く経路で近似する
@@ -2702,6 +2729,20 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                                 continue;
                             }
                             out.push((*line, format!("use of `{root}` borrows `{}` which does not live long enough", l.root)));
+                        }
+                    }
+                }
+            }
+            // 借用を持つ変数そのものを move する (`let (r, n) = pr`、`let q = pr`): 借用元がすでに寿命切れなら、
+            // move した先は宙に浮いた借用を持つ (分解の束縛へは借用が伝わらないので、ここで見る)。
+            if let Ev::Access { root, kind: Acc::Move, line, .. } = ev {
+                if let Some(ids) = stt.holders.get(&Holder::Var(root.clone())) {
+                    for &id in ids {
+                        if stt.dead.contains(&id) && low.locals.contains(root) {
+                            let m = format!("use of `{root}` borrows `{}` which does not live long enough", low.loans[id].root);
+                            if !out.iter().any(|(l, t)| l == line && *t == m) {
+                                out.push((*line, m));
+                            }
                         }
                     }
                 }
