@@ -249,6 +249,10 @@ impl<'a> Lw<'a> {
                 return Ok(Some(h));
             }
         }
+        // `&*s` (`s: &mut [T]` / `&str`): スライスの値 (`fat`) は参照そのものなので、そのまま渡す (借用の付け替え)。
+        if nname(operand) == "Unary" && st(&nf(operand)[0]) == "*" && self.ty_of(e).is_ok_and(|t| t == self.fat_ty()) {
+            return self.expr(&nf(operand)[1]);
+        }
         let Ty::Ref(m, p) = self.ty_of(e)? else {
             return self.err(line, "参照の型が参照でない");
         };

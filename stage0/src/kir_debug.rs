@@ -638,6 +638,14 @@ impl<'a> Gen<'a> {
                 Ok(self.scalar_eq(&n, t, fat))
             }
             (_, t) if is_str(src, t, fat) || is_bytes(src, t, fat) => Ok(self.str_eq(fat, fat, "str")),
+            // `&[T]` / `&[T; N]` (T は 64 ビット以下の整数・bool・char): 長さと要素ごとの比較。
+            (Src::Ref(_, inner), t) if t == fat && matches!(&**inner, Src::Slice(_) | Src::Array(_)) => {
+                let (Src::Slice(e) | Src::Array(e)) = &**inner else { unreachable!() };
+                match super::conv(e).filter(|x| (x.is_int() && x.bits() <= 64) || *x == Ty::Bool) {
+                    Some(et) => Ok(self.slice_eq_elem(fat, fat, &format!("slice.{}", et.name()), et)),
+                    None => Err(format!("要素の型 {} の比較は未対応", show(e))),
+                }
+            }
             // `String` の等しさ: 値は {ptr, len, cap} の `vec`。先頭の {ptr, len} だけを `&str` と同じ規則で比べる (設計_KIR.md 23 章)。
             (Src::Named(name, _), t) if name == "alloc.string.String" && matches!(t, Ty::Agg(_)) => Ok(self.str_eq(fat, t, "string")),
             // 局所変数の `String` はヘッダの参照 (`ptr`) で渡る。
@@ -748,6 +756,11 @@ impl<'a> Gen<'a> {
 
     /// `ty` は比べる値の型 (`&str` / `&[u8]` は `fat`、`String` は先頭の {ptr, len} を持つ `vec`)。
     fn str_eq(&mut self, fat: Ty, ty: Ty, name: &str) -> String {
+        self.slice_eq_elem(fat, ty, name, Ty::U8)
+    }
+
+    /// 要素がスカラー `et` のスライス (`fat`) の等しさ: 長さが同じで、要素が先頭から順にすべて等しい。
+    fn slice_eq_elem(&mut self, fat: Ty, ty: Ty, name: &str, et: Ty) -> String {
         let k = eq_key(name);
         if !self.done.insert(k.clone()) {
             return k;
@@ -784,11 +797,18 @@ impl<'a> Gen<'a> {
         let done = b.cmp(Cc::Ge, Ty::Usize, lv[0], la);
         b.term(Term::BrIf(done, (yes, vec![]), (body, vec![])));
         b.at(body);
-        let qa = b.emit(Ty::Ptr, Op::PtrAdd { p: pa, off: lv[0] });
-        let qb = b.emit(Ty::Ptr, Op::PtrAdd { p: pb, off: lv[0] });
-        let ca = b.emit(Ty::U8, Op::MemLoad { p: qa, off: 0 });
-        let cb = b.emit(Ty::U8, Op::MemLoad { p: qb, off: 0 });
-        let eq = b.cmp(Cc::Eq, Ty::U8, ca, cb);
+        let sz = crate::kir::size_of(&self.aggs.borrow().defs, et);
+        let off = if sz == 1 {
+            lv[0]
+        } else {
+            let kk = b.c(Ty::Usize, sz as i128);
+            b.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: lv[0], b: kk })
+        };
+        let qa = b.emit(Ty::Ptr, Op::PtrAdd { p: pa, off });
+        let qb = b.emit(Ty::Ptr, Op::PtrAdd { p: pb, off });
+        let ca = b.emit(et, Op::MemLoad { p: qa, off: 0 });
+        let cb = b.emit(et, Op::MemLoad { p: qb, off: 0 });
+        let eq = b.cmp(Cc::Eq, et, ca, cb);
         b.br_if(eq, next, fail);
         b.at(next);
         let one = b.c(Ty::Usize, 1);

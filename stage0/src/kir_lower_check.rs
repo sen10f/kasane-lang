@@ -45,6 +45,13 @@ impl<'a> Lw<'a> {
         let Some(b) = self.expr_peek(&args[1])? else { return Ok(None) };
         let temp_a = super::coll::val_slot(self, &args[0]).is_none() && super::own::chain_of(self, &args[0]).is_none();
         let temp_b = super::coll::val_slot(self, &args[1]).is_none() && super::own::chain_of(self, &args[1]).is_none();
+        // `&[T; N]` の局所 (ref<fat>) と `&[T]` (fat) の比較: 参照を外して fat の値にそろえる。
+        let fat = self.fat_ty();
+        let unref = |lw: &mut Self, v: VId| match lw.vty(v) {
+            Ty::Ref(_, Pointee::Agg(i)) if Ty::Agg(i) == fat => lw.emit(fat, Op::Load(v)),
+            _ => v,
+        };
+        let (a, b) = (unref(self, a), unref(self, b));
         let (ta, tb) = (self.vty(a), self.vty(b));
         if ta != tb {
             return self.err(line, "core.check.eq の両辺の型が違う");

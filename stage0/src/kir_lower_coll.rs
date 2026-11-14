@@ -142,7 +142,7 @@ pub(super) fn table_ty(lw: &Lw, e: &V) -> Option<Src> {
     if id == 0 {
         return None;
     }
-    lw.tys.get(&(lw.def.name.clone(), id)).map(|x| x.ty.clone())
+    lw.tys.get(&(lw.def.name.clone(), id)).map(|x| if lw.subst.is_empty() { x.ty.clone() } else { super::mono::subst_ty(&x.ty, &lw.subst) })
 }
 
 fn strip_ref(t: &Src) -> &Src {
@@ -1367,10 +1367,24 @@ fn has_fn_param(cd: &crate::program::Def) -> bool {
     cd.params.iter().any(|(_, t)| matches!(from_v(t, &gn), Src::Closure { .. }))
 }
 
-/// 引数の型が型引数 `F: Fn` か `fn(..)` の型なら、束縛の名前 (型引数の名前、または `fn:引数名`)。
-fn cparam(pt: &V, pname: &str, tnames: &HashSet<String>) -> Option<String> {
-    match from_v(pt, tnames) {
-        Src::Param(g) => Some(g),
+/// 境界に `core.ops.Fn` / `FnMut` / `FnOnce` を持つ型パラメータの名前 (クロージャを取る型引数)。
+pub(crate) fn closure_params(cd: &crate::program::Def) -> HashSet<String> {
+    cd.generics
+        .iter()
+        .filter(|g| g.0 == "type" && format!("{:?}", g.2).contains("core.ops.Fn"))
+        .map(|g| g.1.clone())
+        .collect()
+}
+
+/// 引数の型が型引数 `F: Fn` (または `&F`) か `fn(..)` の型なら、束縛の名前 (型引数の名前、または `fn:引数名`)。
+/// `F` の位置の型パラメータが `Fn` の境界を持たないもの (`T`) は値の引数。
+fn cparam(pt: &V, pname: &str, tnames: &HashSet<String>, cps: &HashSet<String>) -> Option<String> {
+    let mut t = from_v(pt, tnames);
+    while let Src::Ref(_, x) = t {
+        t = *x;
+    }
+    match t {
+        Src::Param(g) if cps.contains(&g) => Some(g),
         Src::Closure { .. } => Some(format!("fn:{}", pname)),
         _ => None,
     }
@@ -1378,7 +1392,8 @@ fn cparam(pt: &V, pname: &str, tnames: &HashSet<String>) -> Option<String> {
 
 /// 単相化で束縛するクロージャの名前の列: 型引数 (宣言順)、続いて `fn(..)` の型の引数 (引数順)。
 fn cnames(cd: &crate::program::Def, tnames: &HashSet<String>) -> Vec<String> {
-    let mut v: Vec<String> = cd.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
+    let cps = closure_params(cd);
+    let mut v: Vec<String> = cd.generics.iter().filter(|g| g.0 == "type" && cps.contains(&g.1)).map(|g| g.1.clone()).collect();
     for (pn, pt) in &cd.params {
         if matches!(from_v(pt, tnames), Src::Closure { .. }) {
             v.push(format!("fn:{}", pn));
@@ -1402,51 +1417,101 @@ fn is_fn_item(lw: &Lw, e: &V) -> bool {
     }))
 }
 
-/// 引数にクロージャ (式、またはクロージャを束縛した局所) があるか。型引数に渡すクロージャの単相化の判定に使う。
-fn has_closure_arg(lw: &Lw, args: &[V]) -> bool {
-    args.iter().any(|a| nname(a) == "Closure" || is_fn_item(lw, a) || local_slot(lw, a).map_or(false, |s| matches!(lw.coll.kinds.get(&s), Some(Kind::Closure { .. }))))
+/// `&x` / `&mut x` の `x` (クロージャを参照で渡す形)。それ以外はそのまま。
+fn strip_addr(a: &V) -> &V {
+    if nname(a) == "Unary" && matches!(st(&nf(a)[0]).as_str(), "&" | "&mut") {
+        return &nf(a)[1];
+    }
+    a
 }
 
-/// 型引数に捕獲のないクロージャを取る関数の呼び出し。鍵は `関数名<クロージャの鍵,...>` で、
+/// 引数にクロージャ (式、またはクロージャを束縛した局所) があるか。型引数に渡すクロージャの単相化の判定に使う。
+pub(super) fn has_closure_arg(lw: &Lw, args: &[V]) -> bool {
+    args.iter().map(strip_addr).any(|a| nname(a) == "Closure" || is_fn_item(lw, a) || local_slot(lw, a).map_or(false, |s| matches!(lw.coll.kinds.get(&s), Some(Kind::Closure { .. }))))
+}
+
+/// 型引数に捕獲のないクロージャを取る関数の呼び出し。鍵は `関数名<型引数,クロージャの鍵,...>` で、
 /// クロージャの引数は実行時の値を持たず (鍵で呼び先が決まる)、値の引数だけを渡す。
+/// クロージャでない型引数 (`T`) は、引数の型から決めて `Lw::subst` で置き換えて下ろす。
 fn generic_call(lw: &mut Lw, e: &V, di: usize) -> LR<Option<VId>> {
     let line = nline(e);
-    let p = lw.p;
-    let cd = &p.defs[di];
+    let cd = &lw.p.defs[di];
     let f = nf(e);
     if cd.kw != "fn" || cd.body.is_none() || cd.is_method() || !matches!(f.get(2), Some(V::Nil) | None) {
         return lw.err(line, format!("呼び先 {} は段階 1 の対象外 (型引数の単相化は自由関数だけ)", cd.name));
     }
+    generic_call_with(lw, e, di, None, items(&f[1]))
+}
+
+/// `generic_call` の本体。`recv` は、メソッドの受け手の値と型 (`self` の型と同じ形: `&mut [T]` など)。
+pub(crate) fn generic_call_with(lw: &mut Lw, e: &V, di: usize, recv: Option<(VId, Src)>, argv: &[V]) -> LR<Option<VId>> {
+    let line = nline(e);
+    let p = lw.p;
+    let cd = &p.defs[di];
     let tnames: HashSet<String> = cd.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
-    let argv = items(&f[1]);
-    if argv.len() != cd.params.len() {
+    let cps = closure_params(cd);
+    let off = recv.is_some() as usize;
+    if argv.len() + off != cd.params.len() {
         return lw.err(line, format!("呼び先 {} の引数の個数が違う", cd.name));
+    }
+    // クロージャでない型引数: 引数と戻り値の型から決める。
+    let mut tb: std::collections::HashMap<String, Src> = std::collections::HashMap::new();
+    for (k, (pn, pt)) in cd.params.iter().enumerate() {
+        if cparam(pt, pn, &tnames, &cps).is_some() {
+            continue;
+        }
+        let act = if k < off { recv.as_ref().map(|r| r.1.clone()) } else { lw.src_ty(&argv[k - off]).ok() };
+        if let Some(a) = act {
+            super::mono::unify(&from_v(pt, &tnames), &a, &mut tb);
+        }
+    }
+    if let Ok(rt) = lw.src_ty(e) {
+        super::mono::unify(&from_v(&cd.ret, &tnames), &rt, &mut tb);
+    }
+    let mut tkeys = vec![];
+    for g in cd.generics.iter().filter(|g| g.0 == "type" && !cps.contains(&g.1)) {
+        match tb.get(&g.1) {
+            Some(t) if super::mono::concrete(t) => tkeys.push(t.show()),
+            _ => return lw.err(line, format!("{} の型引数 {} が決まらない", cd.name, g.1)),
+        }
     }
     let mut bound: BTreeMap<String, Kind> = BTreeMap::new();
     let mut vals = vec![];
-    for ((pn, pt), a) in cd.params.iter().zip(argv) {
-        match from_v(pt, &tnames) {
-            t if cparam(pt, pn, &tnames).is_some() => {
-                let g = cparam(pt, pn, &tnames).expect("直前に確認");
-                let _ = t;
-                let Some(k) = closure_arg_kind(lw, a)? else {
-                    return lw.err(line, "型引数に渡せるのは捕獲のないクロージャ (段階 1) だけ");
-                };
-                bound.insert(g, k);
-            }
-            t => {
-                let Some(pty) = conv(&t) else {
-                    return lw.err(line, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name));
-                };
-                let Some(v) = lw.expr(a)? else { return Ok(None) };
-                if lw.vty(v) != pty {
-                    return lw.err(line, format!("呼び先 {} の引数の型が合わない", cd.name));
-                }
-                vals.push(v);
-            }
+    let mut ptys = vec![];
+    for (k, (pn, pt)) in cd.params.iter().enumerate() {
+        if let Some(g) = cparam(pt, pn, &tnames, &cps) {
+            let a = strip_addr(&argv[k - off]);
+            let Some(kd) = closure_arg_kind(lw, a)? else {
+                return lw.err(line, "型引数に渡せるのは捕獲のないクロージャ (段階 1) だけ");
+            };
+            bound.insert(g, kd);
+            continue;
+        }
+        let Some(pty) = sig_ty(lw, &super::mono::subst_ty(&from_v(pt, &tnames), &tb)) else {
+            return lw.err(line, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name));
+        };
+        let v = if k < off {
+            recv.as_ref().expect("off > 0").0
+        } else {
+            let Some(v) = lw.expr(&argv[k - off])? else {
+                tmp_release(lw, &vals);
+                return Ok(None);
+            };
+            tmp_hold(lw, v);
+            v
+        };
+        vals.push(v);
+        ptys.push(pty);
+    }
+    tmp_release(lw, &vals[off..]);
+    let vals = lw.coerce_args(vals, &ptys);
+    for (v, t) in vals.iter().zip(&ptys) {
+        if lw.vty(*v) != *t {
+            return lw.err(line, format!("呼び先 {} の引数の型が合わない", cd.name));
         }
     }
-    let mut keys = vec![];
+    let mut vals = vals;
+    let mut keys = tkeys;
     for g in cnames(cd, &tnames) {
         match bound.get(&g) {
             Some(Kind::Closure { key, caps, .. }) => {
@@ -1457,17 +1522,22 @@ fn generic_call(lw: &mut Lw, e: &V, di: usize) -> LR<Option<VId>> {
             _ => return lw.err(line, format!("型引数 {} が決まらない", g)),
         }
     }
-    let ret = match ret_ty(cd, &tnames) {
-        Some(x) => x,
-        None => return lw.err(line, format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name)),
+    let ret = if is_nil(&cd.ret) {
+        Some(Ty::Unit)
+    } else {
+        sig_ty(lw, &super::mono::subst_ty(&from_v(&cd.ret, &tnames), &tb))
+    };
+    let Some(ret) = ret else {
+        return lw.err(line, format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name));
     };
     let key = format!("{}<{}>", cd.name, keys.join(","));
     lw.callees.insert(key.clone());
     if !lw.coll.instances.contains(&key) {
         lw.coll.instances.insert(key.clone());
         let mut child = Lw::new(lw.p, lw.tys, lw.aggs, cd);
+        child.subst = tb.clone();
         child.coll.instances = std::mem::take(&mut lw.coll.instances);
-        let r = lower_instance(&mut child, cd, &key, &tnames, &bound);
+        let r = lower_instance(&mut child, cd, &key, &tnames, &cps, &bound);
         lw.coll.instances = std::mem::take(&mut child.coll.instances);
         let (f, callees) = r?;
         lw.coll.extra.push((f, callees));
@@ -1535,15 +1605,17 @@ fn lower_instance(
     cd: &crate::program::Def,
     key: &str,
     tnames: &HashSet<String>,
+    cps: &HashSet<String>,
     bound: &BTreeMap<String, Kind>,
 ) -> LR<(Func, BTreeSet<String>)> {
     child.coll.prefix = key.to_string();
+    let sub = super::mono::subst_ty;
     let mut value_params = vec![];
     for (pn, pt) in &cd.params {
-        if cparam(pt, pn, tnames).is_some() {
+        if cparam(pt, pn, tnames, cps).is_some() {
             continue;
         }
-        match sig_ty(child, &from_v(pt, tnames)) {
+        match sig_ty(child, &sub(&from_v(pt, tnames), &child.subst)) {
             Some(x) => value_params.push(x),
             None => return child.err(0, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name)),
         }
@@ -1568,7 +1640,7 @@ fn lower_instance(
     child.scopes.push(vec![]);
     let mut vi = 0;
     for (pname, pt) in &cd.params {
-        if let Some(g) = cparam(pt, pname, tnames) {
+        if let Some(g) = cparam(pt, pname, tnames, cps) {
             let Some(mut k) = bound.get(&g).cloned() else {
                 return child.err(0, format!("型引数 {} が決まらない", g));
             };
@@ -1580,12 +1652,14 @@ fn lower_instance(
             let s = child.lookup(pname).expect("直前に束縛した名前");
             child.coll.kinds.insert(s, k);
         } else {
-            let t = sig_ty(child, &from_v(pt, tnames)).expect("上で検査済み");
-            bind_param(child, pname, pv[vi], t, &from_v(pt, tnames));
+            let src = sub(&from_v(pt, tnames), &child.subst);
+            let t = sig_ty(child, &src).expect("上で検査済み");
+            bind_param(child, pname, pv[vi], t, &src);
             vi += 1;
         }
     }
-    child.ret = ret_ty(cd, tnames).ok_or_else(|| format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name))?;
+    child.ret = if is_nil(&cd.ret) { Some(Ty::Unit) } else { sig_ty(child, &sub(&from_v(&cd.ret, tnames), &child.subst)) }
+        .ok_or_else(|| format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name))?;
     let body = cd.body.as_ref().expect("候補は本体を持つ");
     child.rf.begin(body);
     if let Some(v) = child.expr(body)? {
@@ -1677,6 +1751,8 @@ fn call_closure(lw: &mut Lw, e: &V, s: usize, tupled: bool) -> LR<Option<VId>> {
             None => return Ok(None),
         }
     }
+    // `Some(c)` の値 (`&スカラー` の値表現) を `&T` の引数に渡す形などは、呼び出しと同じに調整する。
+    let vs = lw.coerce_args(vs, &args);
     for (v, t) in vs.iter().zip(args.iter()) {
         if lw.vty(*v) != *t {
             return lw.err(line, "クロージャの引数の型が合わない");
@@ -1772,8 +1848,11 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if m == "contains" && matches!(kind, Kind::Vec(_) | Kind::Slice(_)) && args.len() == 1 {
         return contains_scalar(lw, line, &kind, h, args);
     }
-    if m == "sub" {
+    if m == "sub" || m == "sub_mut" {
         return slice_sub(lw, line, &kind, h, args);
+    }
+    if let Some(r) = super::ext::ext_call(lw, e, line, &kind, h, m, args) {
+        return r;
     }
     coll_method(lw, line, kind, h, m, args.len())
 }
