@@ -8,7 +8,7 @@ pub mod compile;
 pub mod reload;
 pub mod run;
 
-use crate::kir::{Ty, PAY_MASK, TAG_BIT};
+use crate::kir::Ty;
 use crate::kir_exec::Outcome;
 use crate::kir_lower::{self, Lowered};
 use crate::program::Program;
@@ -58,6 +58,15 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
     }
     let r = compile::compile(&m, &lo.lines);
     tick("compile");
+    // `KSN_VM_DUMP=<部分文字列>`: 鍵が一致する関数のバイトコードを stderr に出す (調査用)。
+    if let (Ok(p), Ok(filter)) = (&r, std::env::var("KSN_VM_DUMP")) {
+        for f in p.funcs.iter().filter(|f| f.key.contains(&filter)) {
+            eprintln!("== {} (nslots {}, ret_w {})", f.key, f.nslots, f.ret_w);
+            for (i, ins) in f.code.iter().enumerate() {
+                eprintln!("{:4} {:?}", i, ins);
+            }
+        }
+    }
     r
 }
 
@@ -74,12 +83,13 @@ pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], w
     let out = vm.run(entry, &[]);
     tick("vm-run");
     Ok(match out {
-        Ok(Outcome::Value(v)) => match ret {
+        Ok(Outcome::Value(_)) => match ret {
             // 入口が `Err(e)` を返したら、stderr に `Error: <e の Debug 表示>` を出して終了コード 1 (木走査の `run_entry` と同じ)。
-            Some(Ty::Res(_, e)) if v & TAG_BIT != 0 => {
+            Some(Ty::Res(_, e)) if vm.result.first().copied().unwrap_or(0) != 0 => {
                 vm.err_write(b"Error: ");
-                let w = crate::kir_exec::pay_read(e.ty(), v & PAY_MASK, &vm.heap);
-                match vm.run(kir_lower::debug::ENTRY_DEBUG, &[w]) {
+                let n = bc::slots_of(&bc.aggs, e.ty()) as usize;
+                let payload: Vec<u64> = vm.result[1..1 + n].to_vec();
+                match vm.run(kir_lower::debug::ENTRY_DEBUG, &payload) {
                     Ok(Outcome::Value(_)) => {}
                     other => {
                         vm.flush();
