@@ -1586,11 +1586,25 @@ impl Interp {
 
     // ------------------------------------------------------------ メソッド
     fn find_method(&self, v: &Val, name: &str) -> Option<usize> {
-        match v {
-            Val::Struct(s) => self.p.funcs.get(&format!("{}.{}", s.ty, name)).copied(),
-            Val::Enum(e) => self.p.funcs.get(&format!("{}.{}", e.en, name)).copied(),
-            _ => None,
+        let ty: &str = match v {
+            Val::Struct(s) => &s.ty,
+            Val::Enum(e) => match e.en.as_str() {
+                "Option" => "core.option.Option",
+                "Result" => "core.result.Result",
+                n => n,
+            },
+            Val::StrBuf(_) => "alloc.string.String",
+            Val::Vec(_) => "alloc.vec.Vec",
+            _ => return None,
+        };
+        if let Some(&i) = self.p.funcs.get(&format!("{}.{}", ty, name)) {
+            return Some(i);
         }
+        // トレイト側に置いた impl (3.2) のメソッド。
+        if self.p.trait_side.is_empty() {
+            return None;
+        }
+        self.p.trait_side.get(&(ty.to_string(), name.to_string())).copied()
     }
 
     fn prim_kind(v: &Val) -> Option<&'static str> {

@@ -437,6 +437,14 @@ impl<'a> TypeCk<'a> {
             if d.kw == "fn" && d.is_method() {
                 if let Some((o, m)) = d.name.rsplit_once('.') {
                     owners.entry(o.to_string()).or_default().entry(m.to_string()).or_default().push(i);
+                    // トレイト側に置いた impl (3.2) のメソッドは、対象の型の所有者としても引ける。
+                    if let Some(x) = d.trait_side_owner() {
+                        for k in impl_owner_keys(&x) {
+                            if k != o {
+                                owners.entry(k).or_default().entry(m.to_string()).or_default().push(i);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -3393,6 +3401,11 @@ impl<'a> TypeCk<'a> {
             }
             self.log_step(nline(callee), segs.len() - 1, false, &segs[segs.len() - 1], &t);
             self.arg_loose = loose_args;
+            // `x.m(..)` の経路形の呼び先ノードに、受け手の型を載せる (KIR が トレイト側の impl (3.2) を引くため)。
+            let cid = crate::parser::nid(callee);
+            if segs.len() == 2 && cid != 0 && !self.p.trait_side.is_empty() {
+                self.expr_pending.insert(cid, ("RecvPath".to_string(), nline(callee), t.clone()));
+            }
             return self.call_method(&t, Some(&segs[0]), &segs[segs.len() - 1], &argt, line, targs, true);
         }
         let _ = &argt;

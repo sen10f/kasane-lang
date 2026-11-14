@@ -30,6 +30,20 @@ fn recv_type_name(t: &Src) -> Option<String> {
     }
 }
 
+/// トレイト側に置いた impl のメソッド (3.2) を引く型の鍵 (参照は剥がす。名義型は FQN、基本型は型名)。
+fn trait_side_key(t: &Src) -> Option<String> {
+    match t {
+        Src::Named(n, _) => Some(match n.as_str() {
+            "Option" => "core.option.Option".to_string(),
+            "Result" => "core.result.Result".to_string(),
+            n => n.to_string(),
+        }),
+        Src::Prim(p) => Some(p.clone()),
+        Src::Ref(_, inner) => trait_side_key(inner),
+        _ => None,
+    }
+}
+
 /// 受け手の置き場所 (呼び出しの形ごと)。
 pub(super) enum Place<'v> {
     /// 局所の名前 `x` か、フィールドの経路 `x.f.g` (`segs` の先頭が局所)。
@@ -75,6 +89,42 @@ impl<'a> Lw<'a> {
     /// メソッドの `self` が `&mut` か。
     pub(super) fn method_takes_mut(&self, di: usize) -> bool {
         self.p.defs[di].params.first().map_or(false, |(_, t)| matches!(from_v(t, &HashSet::new()), Src::Ref(true, _)))
+    }
+
+    /// トレイト側に置いた impl のメソッド (3.2) の呼び出し `x.m(..)` (`Call` の経路形)。該当しなければ `None`。
+    pub(super) fn trait_side_call(&mut self, e: &V) -> Option<LR<Option<VId>>> {
+        if self.p.trait_side.is_empty() {
+            return None;
+        }
+        let f = nf(e);
+        if nname(&f[0]) != "Path" {
+            return None;
+        }
+        let segs = strs(&nf(&f[0])[0]);
+        if segs.len() != 2 {
+            return None;
+        }
+        self.lookup(&segs[0])?;
+        let rt = self.src_ty(&f[0]).ok()?;
+        let di = *self.p.trait_side.get(&(trait_side_key(&rt)?, segs[1].clone()))?;
+        let args = items(&f[1]).to_vec();
+        Some(self.call_method(e, di, Place::Path(vec![segs[0].clone()]), &args))
+    }
+
+    /// トレイト側に置いた impl のメソッド (3.2) の呼び出し `e.m(..)` (`MCall`)。該当しなければ `None`。
+    pub(super) fn trait_side_mcall(&mut self, e: &V) -> Option<LR<Option<VId>>> {
+        if self.p.trait_side.is_empty() {
+            return None;
+        }
+        let f = nf(e);
+        let rt = self.src_ty(&f[0]).ok()?;
+        let di = *self.p.trait_side.get(&(trait_side_key(&rt)?, st(&f[1])))?;
+        let place = match super::agg::field_segs(&f[0]) {
+            Some(s) if self.lookup(&s[0]).is_some() => Place::Path(s),
+            _ => Place::Expr(&f[0]),
+        };
+        let args = items(&f[2]).to_vec();
+        Some(self.call_method(e, di, place, &args))
     }
 
     /// `x.f.g.m(..)` の形 (`Call` で経路の先頭が局所) の利用者のメソッド。対象外なら `None` (何も下ろさない)。
@@ -249,6 +299,10 @@ impl<'a> Lw<'a> {
                     return self.err(line, format!("受け手 {} の型は段階 1 の対象外", segs[0]));
                 };
                 return Ok(Some((self.ref_value(sv, p, !want_mut), None, false)));
+            }
+            // `String` / `Vec` / `HashMap` の局所 (所有のヘッダ) と、それらへの参照の引数は、ヘッダのアドレスがそのまま `&self`。
+            if self_ty == Ty::Ptr && stt == Ty::Ptr && self.vty(sv) == Ty::Ptr {
+                return Ok(Some((sv, None, false)));
             }
             // 参照の値 (引数の `&mut` や `let r = &mut x`)
             if let Ty::Ref(m, _) = self.vty(sv) {

@@ -835,6 +835,9 @@ impl<'a> Lw<'a> {
     }
 
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = self.trait_side_call(e) {
+            return r;
+        }
         if let Some(r) = dyn_lower::try_call(self, e) {
             return r;
         }
@@ -1078,6 +1081,9 @@ impl<'a> Lw<'a> {
             if let Some(r) = thread_lower::join_call(self, e, a, t, line) {
                 return r;
             }
+        }
+        if let Some(r) = self.trait_side_mcall(e) {
+            return r;
         }
         if let Some(r) = dyn_lower::try_mcall(self, e) {
             return r;

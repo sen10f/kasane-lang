@@ -2157,6 +2157,91 @@ fn the_orphan_rule_allows_impls_with_a_local_side() {
     assert!(!codes(&out).iter().any(|c| c == "E2043"), "{}", out);
 }
 
+/// 複数ファイルのパッケージ (`files` は `src/` からの相対パスと中身)。
+fn tmp_files(name: &str, files: &[(&str, &str)]) -> Tmp {
+    let t = Tmp::new(name, "");
+    for (rel, body) in files {
+        let p = t.0.join("src").join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, body).unwrap();
+    }
+    t
+}
+
+const TRAIT_SIDE_TR: &str = "trait t.tr.Show pub
+    fn show(self: &Self) -> u32 uses [] panics never
+end t.tr.Show
+";
+const TRAIT_SIDE_TY: &str = "type t.ty.P pub
+    a: u32 pub
+end t.ty.P
+";
+const TRAIT_SIDE_MAIN: &str = "impl t.tr.Show for alloc.string.String
+fn t.tr.Show.alloc.string.String.show(self: &alloc.string.String) -> u32 uses [] panics never impls t.tr.Show
+    if self.is_empty() {
+        return 100u32
+    }
+    3u32
+end t.tr.Show.alloc.string.String.show
+
+impl t.tr.Show for t.ty.P
+fn t.tr.Show.t.ty.P.show(self: &t.ty.P) -> u32 uses [] panics never impls t.tr.Show
+    self.a.wrapping_add(1u32)
+end t.tr.Show.t.ty.P.show
+
+impl t.tr.Show for u32
+fn t.tr.Show.u32.show(self: &u32) -> u32 uses [] panics never impls t.tr.Show
+    let v = *self
+    v.wrapping_add(10u32)
+end t.tr.Show.u32.show
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let s = alloc.string.String.from_str(std.alloc.SYSTEM, \"abc\").unwrap()
+    let p = t.ty.P { a: 4u32 }
+    let n = 7u32
+    core.check.eq(s.show(), 3u32)
+    core.check.eq(p.show(), 5u32)
+    core.check.eq(n.show(), 17u32)
+    std.io.print_line(\"ok\")?
+    Ok(())
+end t.main
+";
+
+#[test]
+fn trait_side_impls_work_for_foreign_types_in_run_and_llvm_build() {
+    // 3.2: トレイトを定義したモジュール以外 (ここでは別モジュール) の型 (`alloc.string.String` / ユーザー型 / 基本型) への
+    // impl のメソッドは `<トレイトFQN>.<型FQN>.<名前>` に置け、メソッド探索 (3) で見つかる。
+    let t = tmp_files("trait_side", &[("t.ksnl", TRAIT_SIDE_MAIN), ("t/tr.ksnl", TRAIT_SIDE_TR), ("t/ty.ksnl", TRAIT_SIDE_TY)]);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).is_empty(), "{}", out);
+    let r = run(&["run"], &t.0);
+    assert_eq!(text(&r.stdout), "ok\n", "{}", text(&r.stderr));
+    let g = run(&["get", "t.tr.Show.t.ty.P.show"], &t.0);
+    assert!(text(&g.stdout).contains("impls t.tr.Show"), "{}", text(&g.stdout));
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        same_output(&r, &n);
+    }
+}
+
+#[test]
+fn trait_side_impl_rename_of_the_trait_method_follows_call_sites() {
+    let t = tmp_files("trait_side_rename", &[("t.ksnl", TRAIT_SIDE_MAIN), ("t/tr.ksnl", TRAIT_SIDE_TR), ("t/ty.ksnl", TRAIT_SIDE_TY)]);
+    let r = run(&["rename", "t.tr.Show.show", "t.tr.Show.shown"], &t.0);
+    assert_eq!(r.status.code(), Some(0), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert_eq!(text(&run(&["run"], &t.0).stdout), "ok\n");
+}
+
+#[test]
+fn an_impl_placed_on_both_the_type_side_and_the_trait_side_is_a_duplicate() {
+    let ty = format!(
+        "{}\nimpl t.tr.Show for t.ty.P\nfn t.ty.P.show(self: &t.ty.P) -> u32 uses [] panics never impls t.tr.Show\n    1u32\nend t.ty.P.show\n",
+        TRAIT_SIDE_TY
+    );
+    let t = tmp_files("trait_side_dup", &[("t.ksnl", TRAIT_SIDE_MAIN), ("t/tr.ksnl", TRAIT_SIDE_TR), ("t/ty.ksnl", &ty)]);
+    let out = text(&run(&["check", "--json"], &t.0).stdout);
+    assert!(codes(&out).iter().any(|c| c == "E1114"), "{}", out);
+}
+
 fn stack_pkg(name: &str, limit: u32, local: &str) -> (Vec<String>, String) {
     let nl = char::from(10u8).to_string();
     let src = [

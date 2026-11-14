@@ -67,6 +67,17 @@ impl Def {
     pub fn is_method(&self) -> bool {
         self.params.first().map_or(false, |p| p.0 == "self")
     }
+
+    /// トレイト側に置いた impl のメソッド `<トレイトFQN>.<型FQN>.<名前>` の型の FQN (基本型なら基本型名、blanket なら `blanket`)。
+    /// 型側の `<型FQN>.<名前>` や impls の無い fn では `None`。
+    pub fn trait_side_owner(&self) -> Option<String> {
+        if !self.has_impls {
+            return None;
+        }
+        let rest = self.name.strip_prefix(self.impls_trait.as_str())?.strip_prefix('.')?;
+        let (x, _) = rest.rsplit_once('.')?;
+        Some(x.to_string())
+    }
 }
 
 fn items(v: &V) -> &[V] {
@@ -612,6 +623,8 @@ pub struct Program {
     pub natives: HashSet<String>,
     pub imports: HashMap<String, HashMap<String, String>>,
     pub method_idx: HashMap<String, Vec<usize>>,
+    /// トレイト側に置いた impl のメソッド (`<トレイトFQN>.<型FQN>.<名前>`、3.2) の (型の FQN, メソッド名) -> 定義の添字。
+    pub trait_side: HashMap<(String, String), usize>,
     pub impls: HashSet<(String, String)>,
     /// `derive [From]` を宣言した `enum` の FQN (4.3 の `?` のエラー変換)。
     pub from_enums: HashSet<String>,
@@ -664,7 +677,12 @@ impl Program {
                 }
                 if d.is_method() {
                     let mn = d.name.rsplit('.').next().unwrap().to_string();
-                    self.method_idx.entry(mn).or_default().push(idx);
+                    self.method_idx.entry(mn.clone()).or_default().push(idx);
+                    if d.has_impls && d.body.is_some() {
+                        if let Some(x) = d.trait_side_owner() {
+                            self.trait_side.insert((x, mn), idx);
+                        }
+                    }
                 }
             }
             "extern" => {
