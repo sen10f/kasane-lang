@@ -51,6 +51,20 @@ pub struct FileCheck {
 pub struct FileMemo {
     pub lint: LintMemo,
     pub gram: GramMemo,
+    /// ファイル全体の結果 (`full_check` の `skip` と lint)。キーは (相対パス・文面) のハッシュ (`file_key`)。
+    /// 定義単位の再利用が全部命中しても、定義をまたぐ検査 (並び順・空行・import・pub) と正規表現の初期化が毎回かかるので、
+    /// 文面が前回と同じなら lint ごと省く (設計_KIR.md 18.11)。
+    pub file_old: Option<(String, FileCheck)>,
+    pub file_new: Option<(String, FileCheck)>,
+}
+
+/// ファイル全体の結果のキー。文面と lint 用の相対パスで決まる (実行体の識別子はスロットのキーが担う)。
+pub fn file_key(rel: &str, text: &str) -> String {
+    let mut h = Sha256::new();
+    h.update((rel.len() as u64).to_le_bytes());
+    h.update(rel.as_bytes());
+    h.update(text.as_bytes());
+    hex(&h.finalize())
 }
 
 /// 既定は有効。`KSN_CHECK_CACHE=0` で無効、`1` で有効。
@@ -173,7 +187,11 @@ fn data_of(m: &FileMemo) -> Value {
     let mut gram: Vec<&String> = m.gram.new.iter().collect();
     gram.sort();
     let cat = |v: Vec<&String>| v.iter().map(|s| s.as_str()).collect::<String>();
-    json!({ "clean": cat(clean), "lint": lint, "gram": cat(gram) })
+    let mut v = json!({ "clean": cat(clean), "lint": lint, "gram": cat(gram) });
+    if let Some((k, fc)) = &m.file_new {
+        v["file"] = json!({ "k": k, "skip": fc.skip, "lint": errs_json(&fc.lint) });
+    }
+    v
 }
 
 fn sum_of(data: &Value) -> String {
@@ -215,6 +233,10 @@ fn parse(v: &Value) -> Option<FileMemo> {
     }
     for g in split_keys(v.get("gram")?.as_str()?)? {
         m.gram.old.insert(g);
+    }
+    // ファイル全体の結果 (無くてもよい。形が違うものは捨てるだけ)。
+    if let Some(f) = v.get("file") {
+        m.file_old = (|| Some((f.get("k")?.as_str()?.to_string(), FileCheck { skip: f.get("skip")?.as_bool()?, lint: parse_errs(f.get("lint")?)? })))();
     }
     Some(m)
 }
@@ -268,6 +290,7 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 /// 今回使った結果 (`m.lint.new` / `m.gram.new`) を保存する。読み込んだものと同じなら何もしない。
 pub fn store(path: &str, rel: &str, m: &FileMemo) {
     let same = m.gram.new == m.gram.old
+        && m.file_new == m.file_old
         && m.lint.new.len() == m.lint.old.len()
         && m.lint.new.keys().all(|k| m.lint.old.contains_key(k));
     let p = slot(path, rel);

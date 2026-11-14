@@ -33,6 +33,7 @@ mod parser;
 mod program;
 mod resolve;
 mod rustisms;
+mod stdcache;
 mod types;
 mod typecov;
 mod vm;

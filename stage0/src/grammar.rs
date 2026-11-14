@@ -569,7 +569,13 @@ impl<'a> Matcher<'a> {
     }
 }
 
+/// 文法の実体。構築 (正規表現のコンパイルなど) が重いので、`Grammar` は最初に必要になるまで作らない
+/// (定義単位の再利用が全部命中する `ksn check` / `run` では、一度も作らずに済む。設計_KIR.md 18.11)。
 pub struct Grammar {
+    core: std::sync::OnceLock<Core>,
+}
+
+struct Core {
     rules: HashMap<usize, Node>,
     names: Vec<String>,
     file_id: usize,
@@ -589,6 +595,21 @@ pub struct GramMemo {
 
 impl Grammar {
     pub fn new() -> Grammar {
+        Grammar { core: std::sync::OnceLock::new() }
+    }
+
+    /// 構築を済ませておく (別スレッドで先に作って、使う側の待ちを減らすとき)。
+    pub fn force(&self) {
+        self.core();
+    }
+
+    fn core(&self) -> &Core {
+        self.core.get_or_init(Core::build)
+    }
+}
+
+impl Core {
+    fn build() -> Core {
         let (rules, ids) = load_grammar();
         let mut names = vec![String::new(); ids.len()];
         for (n, i) in &ids {
@@ -598,8 +619,11 @@ impl Grammar {
             .iter()
             .map(|n| (*n, ids[*n]))
             .collect();
-        Grammar { file_id: ids["file"], def_ids, rules, names, lx: Lexer::new(), _zero: HashSet::new() }
+        Core { file_id: ids["file"], def_ids, rules, names, lx: Lexer::new(), _zero: HashSet::new() }
     }
+}
+
+impl Grammar {
 
     /// `check` と同じ結果。ファイルを定義ごとに分け、各定義が自分の規則に一致するかを `memo` から再利用する。
     ///
@@ -708,7 +732,7 @@ impl Grammar {
                 .map_or(false, |l| l.starts_with('.') && !l.starts_with(".."));
             let key = def_key(rule, &lines[a..b], dot);
             if !memo.old.contains(&key) {
-                let Ok(toks) = lex_lines(&self.lx, &lines[a..b], false, dot) else { return false };
+                let Ok(toks) = lex_lines(&self.core().lx, &lines[a..b], false, dot) else { return false };
                 if !self.match_one(rule, &toks, &mut term_cache) {
                     return false;
                 }
@@ -719,23 +743,25 @@ impl Grammar {
     }
 
     fn match_one(&self, rule: &str, toks: &[Tok], term_cache: &mut HashMap<String, Vec<String>>) -> bool {
+        let c = self.core();
         let mut m = Matcher {
-            rules: &self.rules,
-            names: self.names.clone(),
+            rules: &c.rules,
+            names: c.names.clone(),
             toks,
-            lx: &self.lx,
+            lx: &c.lx,
             memo: HashMap::new(),
             term_cache: std::mem::take(term_cache),
             zero: HashSet::new(),
         };
-        let ends = m.rule(self.def_ids[rule], 0);
+        let ends = m.rule(c.def_ids[rule], 0);
         *term_cache = std::mem::take(&mut m.term_cache);
         ends.contains(&toks.len())
     }
 
     /// (一致したか, メッセージ, 行)。Python 版 cli.grammar_check と同じ形。
     pub fn check(&self, text: &str) -> (bool, String, usize) {
-        let toks = match lex_file(&self.lx, text, false) {
+        let c = self.core();
+        let toks = match lex_file(&c.lx, text, false) {
             Ok(t) => t,
             Err(e) => return (false, e, 1),
         };
@@ -743,16 +769,17 @@ impl Grammar {
     }
 
     fn check_toks(&self, toks: &[Tok]) -> (bool, String, usize) {
+        let c = self.core();
         let mut m = Matcher {
-            rules: &self.rules,
-            names: self.names.clone(),
+            rules: &c.rules,
+            names: c.names.clone(),
             toks,
-            lx: &self.lx,
+            lx: &c.lx,
             memo: HashMap::new(),
             term_cache: HashMap::new(),
             zero: HashSet::new(),
         };
-        let ends = m.rule(self.file_id, 0);
+        let ends = m.rule(c.file_id, 0);
         if ends.contains(&toks.len()) {
             return (true, String::new(), 0);
         }

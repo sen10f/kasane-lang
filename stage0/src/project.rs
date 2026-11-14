@@ -711,6 +711,11 @@ pub fn stdlib_dir() -> PathBuf {
     PathBuf::from("spec/stdlib")
 }
 
+#[cfg(test)]
+pub fn walk_files_for_test(root: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
+    walk_files(root, exts, out)
+}
+
 pub fn load_stdlib() -> Vec<Source> {
     let root = stdlib_dir();
     let rs = norm(&root);
@@ -722,26 +727,69 @@ pub fn load_stdlib() -> Vec<Source> {
         fs.sort();
         ps.extend(fs.into_iter().map(|p| (k, p)));
     }
-    // 構文解析は互いに独立なので、ファイルごとにスレッドで並列化する (起動時間の大半を占める)。順序は保つ。
-    // 読み込み用の overlay (`--watch` / LSP) は全体の共有状態なので、スレッドから読んでも同じ値が見える。
+    // 文面は先にまとめて読む (読み込み用の overlay (`--watch` / LSP) があればそちらが優先。`Source::load` と同じ)。
+    let texts: Vec<(String, String)> = ps
+        .iter()
+        .map(|(_, p)| {
+            let t = match overlay_get(p) {
+                Some(t) => t,
+                None => match String::from_utf8(fs::read(p).unwrap_or_default()) {
+                    Ok(t) => t,
+                    Err(e) => String::from_utf8_lossy(e.as_bytes()).to_string(),
+                },
+            };
+            (p.clone(), t)
+        })
+        .collect();
+    // 構文解析の結果は実行体の識別子と全文面を鍵にして保存してある (stdcache.rs)。命中すれば構文解析しない。
+    let use_cache = crate::check_cache::enabled();
+    let key = if use_cache { Some(crate::stdcache::key(&texts)) } else { None };
+    let mods: Vec<String> = texts.iter().map(|(p, _)| module_of(p, &rs)).collect();
+    if let Some(k) = &key {
+        let files: Vec<(&str, &str)> = texts.iter().zip(&mods).map(|((p, _), m)| (p.as_str(), m.as_str())).collect();
+        let ld = crate::stdcache::load(k, &files);
+        if let Some(defs) = ld {
+            return texts
+                .into_iter()
+                .zip(mods)
+                .zip(defs)
+                .map(|(((path, text), module), defs)| {
+                    let lines = text.split('\n').map(String::from).collect();
+                    Source { path, module, text, lines, defs, error: None, is_test: false }
+                })
+                .collect();
+        }
+    }
+    let out = parse_stdlib(texts, &rs);
+    if let Some(k) = &key {
+        if out.iter().all(|s| s.error.is_none()) {
+            let ds: Vec<&[Def]> = out.iter().map(|s| s.defs.as_slice()).collect();
+            crate::stdcache::store(k, &ds);
+        }
+    }
+    out
+}
+
+fn parse_stdlib(texts: Vec<(String, String)>, rs: &str) -> Vec<Source> {
+    // 構文解析は互いに独立なので、ファイルごとにスレッドで並列化する。順序は保つ。
     let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 8);
-    if n == 1 || ps.len() < 4 {
-        return ps.iter().map(|(_, p)| Source::load(p, &rs)).collect();
+    if n == 1 || texts.len() < 4 {
+        return texts.into_iter().map(|(p, t)| Source::from_text(&p, rs, t)).collect();
     }
     // 大きいファイルから始める (最後に残った 1 本が全体を待たせないように)。
-    let mut order: Vec<usize> = (0..ps.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(std::fs::metadata(&ps[i].1).map(|m| m.len()).unwrap_or(0)));
+    let mut order: Vec<usize> = (0..texts.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(texts[i].1.len()));
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let slots: Vec<std::sync::Mutex<Option<Source>>> = ps.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    let slots: Vec<std::sync::Mutex<Option<Source>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
     std::thread::scope(|sc| {
         for _ in 0..n {
             sc.spawn(|| loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if i >= ps.len() {
+                if i >= texts.len() {
                     break;
                 }
                 let i = order[i];
-                *slots[i].lock().unwrap() = Some(Source::load(&ps[i].1, &rs));
+                *slots[i].lock().unwrap() = Some(Source::from_text(&texts[i].0, rs, texts[i].1.clone()));
             });
         }
     });
