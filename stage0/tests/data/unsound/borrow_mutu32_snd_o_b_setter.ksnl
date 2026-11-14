@@ -1,0 +1,50 @@
+// expect: E3010
+type t.H['a]
+    r: &'a mut u32
+end t.H
+
+fn t.H.set['a](self: &mut t.H<'a>, r: &'a mut u32) -> () uses [] panics never
+    self.r = r
+end t.H.set
+
+fn t.bad() -> () uses [alloc] panics never
+    let mut o = 1u32
+    let mut p = 2u32
+    let mut h = t.H { r: &mut o }
+    {
+        let mut x = 7u32
+        let q = t.snd(&mut p, &mut x)
+        h.set(q)
+    }
+    core.mem.drop(*h.r)
+end t.bad
+
+fn t.fst['a, 'b](x: &'a mut u32, _y: &'b mut u32) -> &'a mut u32 uses [] panics never
+    x
+end t.fst
+
+fn t.id(x: &mut u32) -> &mut u32 uses [] panics never
+    x
+end t.id
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("x"))
+    s
+end t.mk
+
+fn t.peek(s: &alloc.string.String) -> usize uses [] panics never
+    s.len()
+end t.peek
+
+fn t.put['a](o: &mut &'a mut u32, r: &'a mut u32) -> () uses [] panics never
+    *o = r
+end t.put
+
+fn t.snd['a, 'b](_x: &'a mut u32, y: &'b mut u32) -> &'b mut u32 uses [] panics never
+    y
+end t.snd
