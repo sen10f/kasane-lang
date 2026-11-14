@@ -625,6 +625,8 @@ pub struct Program {
     pub method_idx: HashMap<String, Vec<usize>>,
     /// トレイト側に置いた impl のメソッド (`<トレイトFQN>.<型FQN>.<名前>`、3.2) の (型の FQN, メソッド名) -> 定義の添字。
     pub trait_side: HashMap<(String, String), usize>,
+    /// `derive [ToJson, FromJson]` から生成した Kasane の文面 (型の FQN → 文面)。`ksn get --derived` が表示する。
+    pub derived_json: HashMap<String, String>,
     pub impls: HashSet<(String, String)>,
     /// `derive [From]` を宣言した `enum` の FQN (4.3 の `?` のエラー変換)。
     pub from_enums: HashSet<String>,

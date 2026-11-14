@@ -69,7 +69,7 @@ pub const EXPLAIN: &[(&str, &str)] = &[
     ("E2034", r#"`core.ops.Fn` / `FnMut` / `FnOnce` は自動実装のみ。手動 `impl` はできない(4.3)。クロージャ・関数は使い方に応じて自動で実装される。"#),
     ("E2033", r#"`dyn Tr` を使うトレイトが dyn 安全でない(5.1)。ジェネリックなメソッド、`self: Self` の値渡し、レシーバ以外の引数・戻り値の `Self`、スーパートレイト(`requires`)の引数の `Self`、dyn 安全でないスーパートレイトが原因。"#),
     ("E2035", r#"`derive` するトレイトの `requires` が揃っていない。例えば `Copy` は `Clone` を、`Eq` は `PartialEq` を、`Ord` は `Eq` と `PartialOrd` を、`Hash` は `Eq` を要する(4.3)。"#),
-    ("E2036", r#"`Copy` を derive するには全フィールド(バリアントのペイロード)が `Copy` でなければならない(4.3)。`Clone` / `TryClone` など他のトレイトの derive も、フィールドの名義型がそのトレイトを実装していなければならない。"#),
+    ("E2036", r#"`Copy` を derive するには全フィールド(バリアントのペイロード)が `Copy` でなければならない(4.3)。`Clone` / `TryClone` など他のトレイトの derive も、フィールドの名義型がそのトレイトを実装していなければならない。`ToJson` / `FromJson` は、フィールドの型が整数・`bool`・`alloc.string.String<std.alloc.System>`・`Vec<T, std.alloc.System>`・`Option<T>`・実装する名義型のいずれかでなければならない(`FromJson` は型パラメータを持つ型に derive できない)。"#),
     ("E2049", r#"`?` のエラー変換が曖昧。関数(クロージャ)のエラー型 `E2`(`derive [From]` の `enum`)に、元のエラー型 `E1` を唯一のペイロードに持つバリアントが 2 つ以上ある。どれを使うかは決められないので、`map_err` で書くか、バリアントを 1 つにする(4.1)。"#),
     ("E2050", r#"`derive [From]` は、型パラメータを持たず、ペイロードがちょうど 1 つのバリアントを 1 つ以上持つ `enum` にだけ書ける(4.3)。`type` や、そのようなバリアントのない `enum` には書けない。"#),
     ("E2037", r#"`std.thread.spawn` に渡すクロージャは `'static` でなければならない(5.5)。局所束縛を `capture [&x]` / `[&mut x]` で参照すると 'static にならない。`move x` を使う。"#),

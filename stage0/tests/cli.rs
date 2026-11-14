@@ -24230,3 +24230,149 @@ end t.main.test_string_ord
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
     assert!(out.contains("test t.main.test_string_ord ... ok (both: bundle (llvm skipped: "), "{}", out);
 }
+
+/// `derive [ToJson, FromJson]` (std.json): 入れ子の型 (`Vec` / `Option` / `String` / 列挙を含む) を JSON に書き出して解析し直し、
+/// 元と同じ JSON に戻る。`test --both` と、`run` と `build` (LLVM → 下ろせなければバンドル) の出力の一致も見る。
+const DERIVE_JSON_SRC: &str = r#"type t.Doc derive [ToJson, FromJson] pub
+    items: alloc.vec.Vec<t.Item, std.alloc.System>
+    name: alloc.string.String<std.alloc.System>
+    note: Option<alloc.string.String<std.alloc.System>>
+    shape: t.Shape
+    tags: alloc.vec.Vec<Option<u8>, std.alloc.System>
+end t.Doc
+
+type t.Item derive [ToJson, FromJson] pub
+    count: u32
+    id: i64
+    label: alloc.string.String<std.alloc.System>
+    ok: bool
+end t.Item
+
+enum t.Shape derive [ToJson, FromJson] pub
+    Circle(u32)
+    Empty
+    Rect(u32, u32)
+end t.Shape
+
+fn t.decode(text: &str) -> Result<t.Doc, std.json.Error> uses [alloc] panics never
+    let doc = std.json.parse(text)?
+    t.Doc.from_json(doc.root())
+end t.decode
+
+fn t.error_of(text: &str) -> std.json.Error uses [alloc] panics may
+    match t.decode(text) {
+        Ok(_d) => core.panic.panic("expected an error")
+        Err(e) => e
+    }
+end t.error_of
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let text = t.sample_text()
+    let doc = match t.decode(text.as_str()) {
+        Ok(d) => d
+        Err(_e) => core.panic.panic("decode")
+    }
+    let again = match std.json.to_string(&doc) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("encode")
+    }
+    std.io.print_line(again.as_str())?
+    core.check.eq(again.as_str(), text.as_str())
+    Ok(())
+end t.main
+
+fn t.sample() -> Result<t.Doc, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let label = alloc.string.String.from_str(std.alloc.SYSTEM, "a\"b\n")?
+    items.push(t.Item { count: 3u32, id: -5i64, label: label, ok: true })?
+    let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    tags.push(Some(1u8))?
+    tags.push(None)?
+    let name = alloc.string.String.from_str(std.alloc.SYSTEM, "doc")?
+    let note = Some(alloc.string.String.from_str(std.alloc.SYSTEM, "n")?)
+    let shape = t.Shape.Rect(2u32, 3u32)
+    Ok(t.Doc { items: items, name: name, note: note, shape: shape, tags: tags })
+end t.sample
+
+fn t.sample_text() -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+    let doc = match t.sample() {
+        Ok(d) => d
+        Err(_e) => core.panic.panic("sample")
+    }
+    match std.json.to_string(&doc) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("encode")
+    }
+end t.sample_text
+
+test t.main.test_errors
+    core.check.eq(t.error_of("[1,2"), std.json.Error.Eof)
+    core.check.eq(t.error_of("{\"a\" 1}"), std.json.Error.Unexpected(5usize))
+    core.check.eq(t.error_of("[1] x"), std.json.Error.Trailing(4usize))
+    core.check.eq(t.error_of("{\"items\": 1}"), std.json.Error.TypeMismatch(std.json.Kind.Number))
+    core.check.eq(t.error_of("{}"), std.json.Error.MissingField(0usize))
+end t.main.test_errors
+
+test t.main.test_round_trip
+    let text = t.sample_text()
+    match t.decode(text.as_str()) {
+        Ok(d) => core.check.eq(d.items.len(), 1usize)
+        Err(_e) => core.panic.panic("decode")
+    }
+end t.main.test_round_trip
+"#;
+
+#[test]
+fn derive_json_round_trips_and_builds_alike() {
+    let t = Tmp::new("derive_json_round", DERIVE_JSON_SRC);
+    let chk = run(&["check"], &t.0);
+    assert_eq!(chk.status.code(), Some(0), "{}{}", text(&chk.stdout), text(&chk.stderr));
+    let interp = run(&["run"], &t.0);
+    assert_eq!(interp.status.code(), Some(0), "{}", text(&interp.stderr));
+    let want = "{\"items\":[{\"count\":3,\"id\":-5,\"label\":\"a\\\"b\\n\",\"ok\":true}],\"name\":\"doc\",\"note\":\"n\",\"shape\":{\"Rect\":[2,3]},\"tags\":[1,null]}\n";
+    assert_eq!(text(&interp.stdout), want);
+    let tb = run(&["test", "--both"], &t.0);
+    assert_eq!(tb.status.code(), Some(0), "{}{}", text(&tb.stdout), text(&tb.stderr));
+    assert!(text(&tb.stdout).contains("2 passed; 0 failed"), "{}", text(&tb.stdout));
+    let cache = std::env::temp_dir().join(format!("ksn_cache_derive_json_{}", std::process::id()));
+    let mut c = Command::new(exe());
+    c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
+    let o = c.output().unwrap();
+    let out = text(&o.stdout) + &text(&o.stderr);
+    let p = t.0.join("target").join("debug").join(if cfg!(windows) { "t.exe" } else { "t.native" });
+    let p = native_or_launcher(p, &out);
+    let r = Command::new(&p).output().unwrap();
+    assert_eq!(r.status.code(), Some(0), "{}", text(&r.stderr));
+    assert_eq!(text(&r.stdout), text(&interp.stdout), "build and run outputs differ");
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// 整数・`bool` だけの構造体の `derive [ToJson]` は、ネイティブ (LLVM) まで下ろせて、`run` と出力が一致する。
+#[test]
+fn derive_to_json_of_a_scalar_struct_builds_native() {
+    let src = "type t.P derive [ToJson] pub\n    ok: bool\n    x: u32\n    y: i64\nend t.P\n\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n    let p = t.P { ok: true, x: 1u32, y: -2i64 }\n    match std.json.to_string(&p) {\n        Ok(s) => std.io.print_line(s.as_str())?\n        Err(_e) => std.io.print_line(\"err\")?\n    }\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("derive_json_native", src);
+    let r = run(&["run"], &t.0);
+    assert_eq!(text(&r.stdout), "{\"ok\":true,\"x\":1,\"y\":-2}\n", "{}", text(&r.stderr));
+    if let Some((r, n)) = llvm_build_and_run(&t) {
+        same_output(&r, &n);
+    }
+}
+
+/// `derive [ToJson, FromJson]` は、フィールドの型が JSON の形を持つときだけ (E2036): 実装しない名義型・`f64`・タプル・
+/// 型パラメータ (`FromJson`)。`get --derived` は展開した Kasane の文面を表示する。
+#[test]
+fn derive_json_on_unsupported_field_is_e2036() {
+    let src = "type t.N pub\n    x: u32\nend t.N\n\ntype t.A derive [ToJson, FromJson] pub\n    n: t.N\nend t.A\n\ntype t.B derive [ToJson] pub\n    f: f64\nend t.B\n\ntype t.C derive [ToJson] pub\n    p: (u8, u8)\nend t.C\n\ntype t.G[T] derive [FromJson] pub\n    v: T\nend t.G\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("derive_json_bad", src);
+    let o = text(&run(&["check", "--json"], &t.0).stdout);
+    let n = o.matches("E2036").count();
+    assert!(n >= 5, "{}", o);
+    assert!(o.contains("does not implement std.json.ToJson"), "{}", o);
+    assert!(o.contains("does not implement std.json.FromJson"), "{}", o);
+    assert!(o.contains("`f64` has no JSON form"), "{}", o);
+    assert!(o.contains("cannot derive FromJson"), "{}", o);
+    let ok = Tmp::new("derive_json_get", DERIVE_JSON_SRC);
+    let g = text(&run(&["get", "--derived", "t.Shape"], &ok.0).stdout);
+    assert!(g.contains("fn t.Shape.to_json") && g.contains("fn t.Shape.from_json") && g.contains("\"Rect\""), "{}", g);
+}

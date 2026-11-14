@@ -366,6 +366,8 @@ pub(crate) const DERIVE_TRAITS: &[(&str, &str)] = &[
     ("PartialOrd", "core.cmp.PartialOrd"),
     ("Ord", "core.cmp.Ord"),
     ("Hash", "core.hash.Hash"),
+    ("ToJson", "std.json.ToJson"),
+    ("FromJson", "std.json.FromJson"),
 ];
 
 // ---------------------------------------------------------------- Checker
@@ -1134,9 +1136,11 @@ impl<'a> Checker<'a> {
                     let mut missing: Vec<String> = vec![];
                     for t in &tys {
                         let mut named = vec![];
-                        Self::named_in(t, &mut named);
+                        Self::named_in(t, &mut named, tr == "core.ops.Clone" || tr == "alloc.alloc.TryClone");
                         for n in named {
-                            if params.contains(&n) || n == d.name || n == "Option" || n == "Result" {
+                            // 型引数のアロケータ (`Vec<T, std.alloc.System>` の `System`) は値の部品ではないので見ない。
+                            let is_allocator = self.p.impls.contains(&("alloc.alloc.Allocator".to_string(), n.clone()));
+                            if params.contains(&n) || n == d.name || n == "Option" || n == "Result" || is_allocator {
                                 continue;
                             }
                             if self.p.types.contains_key(&n) && !self.implements(&n, tr) && !missing.contains(&n) {
@@ -1148,6 +1152,10 @@ impl<'a> Checker<'a> {
                         self.diag("E2036", format!("derive [{}] on {}: the field type {} does not implement {}", dv, d.name, n, tr), i, 0);
                     }
                 }
+            }
+            // 4.3: `ToJson` / `FromJson` は、フィールドの型が JSON の形を持つときだけ (E2036)。
+            for (tr, why) in crate::derive_json::problems(self.p, &d) {
+                self.diag("E2036", format!("derive [{}] on {}: {}", tr, d.name, why), i, 0);
             }
             if derived.contains("Copy") {
                 let tys: Vec<V> = if d.kw == "type" {
@@ -1163,19 +1171,24 @@ impl<'a> Checker<'a> {
     }
 
     /// 型の中に現れる名義型の FQN (参照・タプル・配列・スライス・型引数を通して)。
-    fn named_in(t: &V, out: &mut Vec<String>) {
+    /// `shared_ref_is_leaf` が真なら、`&T` (共有参照) は中を見ない (`&T` は常に `Clone` / `Copy`。4.2)。
+    fn named_in(t: &V, out: &mut Vec<String>, shared_ref_is_leaf: bool) {
         match tag(t).as_str() {
             "named" => {
                 out.push(st(tel(t, 1)));
                 for a in items(tel(t, 2)) {
                     if matches!(a, V::L(_)) {
-                        Self::named_in(a, out);
+                        Self::named_in(a, out, shared_ref_is_leaf);
                     }
                 }
             }
-            "ref" => Self::named_in(tel(t, 2), out),
-            "array" | "slice" => Self::named_in(tel(t, 1), out),
-            "tuple" => items(tel(t, 1)).iter().for_each(|x| Self::named_in(x, out)),
+            "ref" => {
+                if !(shared_ref_is_leaf && matches!(tel(t, 1), V::B(false))) {
+                    Self::named_in(tel(t, 2), out, shared_ref_is_leaf)
+                }
+            }
+            "array" | "slice" => Self::named_in(tel(t, 1), out, shared_ref_is_leaf),
+            "tuple" => items(tel(t, 1)).iter().for_each(|x| Self::named_in(x, out, shared_ref_is_leaf)),
             _ => {}
         }
     }

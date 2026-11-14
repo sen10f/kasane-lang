@@ -251,6 +251,7 @@ fn build_program_with(l: &Loaded, taken: Option<&mut Vec<Vec<Def>>>) -> (Program
             }
         }
     }
+    let n_std = prog.defs.len();
     for dp in &l.deps {
         for s in &dp.sources {
             for d in &s.defs {
@@ -265,6 +266,7 @@ fn build_program_with(l: &Loaded, taken: Option<&mut Vec<Vec<Def>>>) -> (Program
             prog.add_def(d.clone());
         }
     }
+    crate::derive_json::expand(&mut prog, n_std, &mut user);
     crate::infer::run(&mut prog);
     crate::infer::annotate_int_lits(&mut prog, &user);
     (prog, user)
@@ -1297,6 +1299,7 @@ fn spawn_watcher_with(l: &Loaded, allow_add: bool, send: impl Fn(Program, Vec<us
             for d in &std_defs {
                 prog.add_def(d.clone());
             }
+            let n_std = prog.defs.len();
             for d in &dep_defs {
                 prog.add_def(d.clone());
             }
@@ -1307,6 +1310,7 @@ fn spawn_watcher_with(l: &Loaded, allow_add: bool, send: impl Fn(Program, Vec<us
                     prog.add_def(d.clone());
                 }
             }
+            crate::derive_json::expand(&mut prog, n_std, &mut user);
             crate::infer::run(&mut prog);
             crate::infer::annotate_int_lits(&mut prog, &user);
             if !send(prog, user) {
@@ -1701,6 +1705,7 @@ fn derived_impls(d: &Def) -> Option<String> {
                     }
                 }
             }
+            "ToJson" | "FromJson" => out.push(format!("// {}: expanded to ordinary Kasane code (see below)", tr)),
             other => out.push(format!("// {}: built-in derived implementation for {}", other, n)),
         }
         out.push(String::new());
@@ -1734,7 +1739,16 @@ fn cmd_get(args: &[String]) -> i32 {
         Some(Found::Def(d, s)) => {
             if derived {
                 match derived_impls(d) {
-                    Some(o) => println!("{}", o),
+                    Some(o) => {
+                        println!("{}", o);
+                        if d.derive.iter().any(|x| x == "ToJson" || x == "FromJson") {
+                            let (prog, _) = build_program(&ev.l);
+                            match crate::derive_json::text_for(&prog, d) {
+                                Ok(t) => println!("\n{}", t.trim_end()),
+                                Err(m) => println!("\n// cannot expand: {}", m),
+                            }
+                        }
+                    }
                     None => {
                         eprintln!("ksn: {} has no derive", fqn);
                         return 1;
