@@ -1578,6 +1578,9 @@ impl Interp {
                 if d.name.starts_with("core.ptr.") {
                     return self.ptr_native(&d.name, args);
                 }
+                if d.name == "alloc.raw.Buf.with_capacity" {
+                    return self.call_native(&d.name, args);
+                }
                 panic(format!("function {} has no implementation in this interpreter", d.name))
             }
             _ => panic("cannot call value"),

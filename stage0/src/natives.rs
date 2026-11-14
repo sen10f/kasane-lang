@@ -17,7 +17,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "core.panic.todo", "core.panic.unreachable", "core.check.eq", "core.check.is_true", "std.io.print_line", "std.process.exit",
     "std.process.abort", "std.env.arg", "std.env.arg_count", "std.env.var", "core.iter.range", "core.iter.map",
     "core.iter.filter", "core.iter.enumerate", "core.iter.take", "core.iter.count", "core.iter.fold",
-    "core.str.from_utf8", "alloc.vec.Vec.new", "alloc.vec.Vec.with_capacity", "alloc.string.String.new",
+    "core.str.from_utf8", "alloc.vec.Vec.new", "alloc.raw.Buf.with_capacity", "alloc.vec.Vec.with_capacity", "alloc.string.String.new",
     "alloc.string.String.from_str", "alloc.string.String.replace", "alloc.string.String.join",
     "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
     "alloc.collections.VecDeque.new",
@@ -591,6 +591,17 @@ impl Interp {
                     })))),
                 }
             }
+            "alloc.raw.Buf.with_capacity" => {
+                let n = if let Some(Val::Int(c, _)) = args.get(1).map(dr) { c as usize } else { 0 };
+                Ok(ok(Val::Struct(Rc::new(StructV {
+                    ty: "alloc.raw.Buf".into(),
+                    f: RefCell::new(vec![
+                        ("allocator".into(), a0.clone()),
+                        ("capacity".into(), usz(n)),
+                        ("items".into(), Val::Vec(new_list(vec![]))),
+                    ]),
+                }))))
+            }
             "alloc.vec.Vec.new" => Ok(Val::Vec(new_list(vec![]))),
             "alloc.vec.Vec.with_capacity" => Ok(ok(Val::Vec(new_list(vec![])))),
             "alloc.string.String.new" => Ok(Val::StrBuf(Rc::new(RefCell::new(String::new())))),
@@ -911,6 +922,9 @@ impl Interp {
                 if s.ty == "std.sync.MutexGuard" && (name == "get" || name == "get_mut") {
                     return Ok(s.get("cell").unwrap());
                 }
+                if s.ty == "alloc.raw.Buf" {
+                    return self.buf_method(s, name, args);
+                }
                 if s.ty == "alloc.boxed.Box" {
                     if name == "as_ref" || name == "as_mut" {
                         return Ok(Val::Ref(Rc::new(FieldPlace(s.clone(), "value".into()))));
@@ -1078,6 +1092,99 @@ impl Interp {
             "eq" => Ok(Val::Bool(self.v_eq(v, &b)?)),
             "cmp" => Ok(ordering(self.v_cmp_derived(v, &b, true)?.unwrap_or(0))),
             _ => Ok(self.v_cmp_derived(v, &b, false)?.map_or_else(none, |c| some(ordering(c)))),
+        }
+    }
+
+    /// `alloc.raw.Buf<T, A>` (仕様 8.3): 構造体 { allocator, capacity, items }。`items` は先頭から初期化済みの要素。
+    fn buf_method(&mut self, s: &Rc<StructV>, name: &str, args: Vec<Val>) -> Res {
+        let items = match s.get("items") {
+            Some(Val::Vec(l)) => l,
+            _ => return panic("alloc.raw.Buf: broken"),
+        };
+        let cap = |s: &Rc<StructV>| if let Some(Val::Int(c, _)) = s.get("capacity") { c as usize } else { 0 };
+        let idx = |a: Option<&Val>| match a.map(dr) {
+            Some(Val::Int(i, _)) if i >= 0 => Some(i as usize),
+            _ => None,
+        };
+        let a0 = args.first().cloned().unwrap_or(Val::Unit);
+        let len = items.borrow().len();
+        match name {
+            "len" => Ok(usz(len)),
+            "cap" => Ok(usz(cap(s))),
+            "is_empty" => Ok(Val::Bool(len == 0)),
+            "push_within_cap" => {
+                if len < cap(s) {
+                    items.borrow_mut().push(a0);
+                    Ok(ok(Val::Unit))
+                } else {
+                    Ok(err(a0))
+                }
+            }
+            "insert_within_cap" => {
+                match idx(Some(&a0)) {
+                    Some(i) if i <= len && len < cap(s) => {
+                        items.borrow_mut().insert(i, args[1].clone());
+                        Ok(ok(Val::Unit))
+                    }
+                    _ => Ok(err(args[1].clone())),
+                }
+            }
+            "pop" => Ok(opt(items.borrow_mut().pop())),
+            "remove" => Ok(match idx(Some(&a0)) {
+                Some(i) if i < len => some(items.borrow_mut().remove(i)),
+                _ => none(),
+            }),
+            "swap_remove" => Ok(match idx(Some(&a0)) {
+                Some(i) if i < len => some(items.borrow_mut().swap_remove(i)),
+                _ => none(),
+            }),
+            "get" => Ok(match idx(Some(&a0)) {
+                Some(i) if i < len => some(items.borrow()[i].clone()),
+                _ => none(),
+            }),
+            "get_mut" => Ok(match idx(Some(&a0)) {
+                Some(i) if i < len => some(Val::Ref(Rc::new(IdxPlace(items, i)))),
+                _ => none(),
+            }),
+            "as_slice" | "as_mut_slice" => Ok(Val::View(items, 0, len)),
+            "truncate" => {
+                if let Some(n) = idx(Some(&a0)) {
+                    items.borrow_mut().truncate(n);
+                }
+                Ok(Val::Unit)
+            }
+            "clear" => {
+                items.borrow_mut().clear();
+                Ok(Val::Unit)
+            }
+            "drop" => Ok(Val::Unit),
+            "grow" => {
+                if let Some(n) = idx(Some(&a0)) {
+                    if n > cap(s) {
+                        s.set("capacity", usz(n));
+                    }
+                }
+                Ok(ok(Val::Unit))
+            }
+            "append_str_within_cap" => {
+                let t = str_of(&a0).unwrap_or_default();
+                if len + t.len() > cap(s) {
+                    return Ok(err(Val::Unit));
+                }
+                items.borrow_mut().extend(t.bytes().map(|b| int(b as i128, "u8")));
+                Ok(ok(Val::Unit))
+            }
+            "as_str" => {
+                let bytes = bytes_of(&Val::Vec(items));
+                Ok(match String::from_utf8(bytes) {
+                    Ok(t) => ok(s_val(&t)),
+                    Err(e) => err(Val::Struct(Rc::new(StructV {
+                        ty: "core.str.Utf8Error".into(),
+                        f: RefCell::new(vec![("valid_up_to".into(), usz(e.utf8_error().valid_up_to()))]),
+                    }))),
+                })
+            }
+            _ => panic(format!("no method {} on alloc.raw.Buf", name)),
         }
     }
 
