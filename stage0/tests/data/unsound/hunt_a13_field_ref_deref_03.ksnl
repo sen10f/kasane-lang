@@ -1,0 +1,14 @@
+// expect: E2020
+type t.Pub pub
+    v: u8
+end t.Pub
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let p = t.Pub { v: 1u8 }
+    let f = fn() -> u8 capture [&p] {
+        p.v
+    }
+    let y = f()
+    core.mem.drop(y)
+    Ok(())
+end t.main

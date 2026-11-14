@@ -1,0 +1,7 @@
+// expect: E5001
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let v = 0i32
+    let p = core.ptr.from_ref(&v)
+    let _b = core.ptr.is_null(p)
+    Ok(())
+end t.main

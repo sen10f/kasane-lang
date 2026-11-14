@@ -1,0 +1,9 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let _c = t.panico()
+    Ok(())
+end t.main
+
+// expect: E????
+fn t.panico[P: panics]() -> () uses [] panics P
+    core.panic.panic("x")
+end t.panico

@@ -1,0 +1,13 @@
+// expect: E????
+fn t.add2[P: panics](a: u32, b: u32) -> u32 uses [] panics P
+    a + b
+end t.add2
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let _c = t.second(1u32, 2u32)
+    Ok(())
+end t.main
+
+fn t.second[P: panics](a: u32, b: u32) -> u32 uses [] panics P
+    t.add2(a, b)
+end t.second

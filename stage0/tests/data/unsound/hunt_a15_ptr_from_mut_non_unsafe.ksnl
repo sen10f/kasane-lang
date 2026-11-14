@@ -1,0 +1,7 @@
+// expect: E5001
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut v = 0i32
+    let p = core.ptr.from_mut(&mut v)
+    core.mem.drop(p)
+    Ok(())
+end t.main

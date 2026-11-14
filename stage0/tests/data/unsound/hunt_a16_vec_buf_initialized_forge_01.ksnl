@@ -1,0 +1,14 @@
+// expect: E????
+// Vec の pub フィールド buf (raw.Buf) の initialized を偽装し、get で未初期化領域への参照を得る
+fn t.bad() -> u32 uses [] panics never
+    let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    v.buf.initialized = 1usize
+    match v.get(0usize) {
+        Some(x) => *x
+        None => 0u32
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

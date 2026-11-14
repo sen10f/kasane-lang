@@ -1,0 +1,13 @@
+// expect: E????
+fn t.f(r: Result<u32, std.io.Error>) -> u32 uses [] panics never
+    match r {
+        Ok(n) => n
+        Err(_) => "x"
+    }
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let r: Result<u32, std.io.Error> = Ok(1u32)
+    core.mem.drop(t.f(r))
+    Ok(())
+end t.main

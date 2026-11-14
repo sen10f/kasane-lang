@@ -1,0 +1,19 @@
+// expect: E????
+fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
+    let m = std.sync.Mutex.new(5u32)
+    let guard = m.lock()
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u32 capture [move guard] {
+            let v = *guard.get()
+            v
+        },
+    )
+    match spawned {
+        Ok(handle) => {
+            let _h = handle.join()
+        }
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    Ok(())
+end t.main

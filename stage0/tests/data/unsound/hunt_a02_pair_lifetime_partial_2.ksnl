@@ -1,0 +1,13 @@
+// expect: E3010
+type t.Pair['a, 'b]
+    f: &'a u32
+    s: &'b u32
+end t.Pair
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.pair_lifetime_partial['a, 'b](f: &'a u32, s: &'b u32) -> t.Pair<'b, 'a> uses [] panics never
+    t.Pair { f: s, s: s }
+end t.pair_lifetime_partial

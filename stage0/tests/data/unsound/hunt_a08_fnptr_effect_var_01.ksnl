@@ -1,0 +1,11 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    core.mem.drop(t.take(fn() -> () capture [] {
+        core.mem.drop(std.io.print_line("x"))
+    }))
+    Ok(())
+end t.main
+
+// expect: E4001
+fn t.take[E: uses](f: fn() -> () uses [E] panics never) -> () uses [] panics never
+    f()
+end t.take

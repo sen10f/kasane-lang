@@ -1,0 +1,7 @@
+// expect: E2026
+// target: wasm32-unknown-unknown
+const t.BIG: usize = 5000000000usize
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -1,0 +1,16 @@
+type t.Box[T] derive [TryClone]
+    x: T
+end t.Box
+
+// expect: E????
+type t.NoJson
+    a: u8
+end t.NoJson
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics never
+    let b = t.Box { x: t.NoJson { a: 1u8 } }
+    let r = b.try_clone()
+    core.mem.drop(r)
+    core.mem.drop(b)
+    Ok(())
+end t.main
