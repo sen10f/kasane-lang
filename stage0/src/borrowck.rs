@@ -252,6 +252,8 @@ impl<'a> Low<'a> {
                     }
                 }
             }
+            // 生ポインタは借用を追わない (`unsafe` の外へ出る値。`core.ptr.from_mut(&mut x)` が `x` を借り続けない)。
+            Some(V::S(tag)) if tag == "ptr" => {}
             Some(V::S(tag)) if tag == "fn" || tag == "dyn" || tag == "self" => {
                 out.insert("*".to_string());
             }
