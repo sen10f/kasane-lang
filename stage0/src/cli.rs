@@ -1080,7 +1080,7 @@ fn cmd_test(args: &[String]) -> i32 {
         .collect();
     tests.sort_by(|&a, &b| prog.defs[a].name.cmp(&prog.defs[b].name));
     let mut failed = 0;
-    let (mut n_llvm, mut n_native, mut n_bundle) = (0, 0, 0);
+    let (mut n_llvm, mut n_bundle) = (0, 0);
     let (mut n_vm, mut n_vm_skipped) = (0, 0);
     for ti in &tests {
         let name = prog.defs[*ti].name.clone();
@@ -1121,8 +1121,8 @@ fn cmd_test(args: &[String]) -> i32 {
         } else if cmp {
             n_vm_skipped += 1;
         }
-        // `--both` の相手は、KIR に下ろせればその LLVM の実行ファイル。下ろせなければ Cranelift の実行ファイル、
-        // それも作れなければバンドル (どれも作れない機能を含むテストだけ)。
+        // `--both` の相手は、KIR に下ろせればその LLVM の実行ファイル。下ろせない・clang が無いときは、
+        // 理由を出してバンドル (インタプリタ同梱) で走らせる。
         let mut other = "";
         let mut label = String::new();
         if both {
@@ -1133,19 +1133,9 @@ fn cmd_test(args: &[String]) -> i32 {
                     label = "both: llvm".into();
                 }
                 Err(why_llvm) => {
-                    let why_llvm = first_line(&why_llvm);
-                    match build_native_test(&root, &prog, &user, *ti) {
-                        Ok(exe) => {
-                            results.push(run_native_test(&root, &exe));
-                            other = "native";
-                            label = format!("both: native (llvm skipped: {})", why_llvm);
-                        }
-                        Err(why) => {
-                            results.push(run_in_bundle(&root, &name, &l));
-                            other = "bundle";
-                            label = format!("both: bundle (llvm skipped: {}; native skipped: {})", why_llvm, first_line(&why));
-                        }
-                    }
+                    results.push(run_in_bundle(&root, &name, &l));
+                    other = "bundle";
+                    label = format!("both: bundle (llvm skipped: {})", first_line(&why_llvm));
                 }
             }
         }
@@ -1158,7 +1148,6 @@ fn cmd_test(args: &[String]) -> i32 {
         let suffix = if label.is_empty() { String::new() } else { format!(" ({})", label) };
         match other {
             "llvm" => n_llvm += 1,
-            "native" => n_native += 1,
             "bundle" => n_bundle += 1,
             _ => {}
         }
@@ -1176,7 +1165,7 @@ fn cmd_test(args: &[String]) -> i32 {
     }
     println!("\n{} passed; {} failed", tests.len() - failed, failed);
     if both {
-        println!("compared with: llvm {}, native {}, bundle fallback {}", n_llvm, n_native, n_bundle);
+        println!("compared with: llvm {}, bundle fallback {}", n_llvm, n_bundle);
     }
     if cmp {
         println!("compared tree walker with vm: {} (vm skipped {})", n_vm, n_vm_skipped);
@@ -1254,52 +1243,6 @@ fn run_in_bundle(root: &Path, fqn: &str, l: &Loaded) -> Option<String> {
             Some(if e.is_empty() { format!("exit {}", o.status.code().unwrap_or(-1)) } else { e })
         }
         Err(e) => Some(e.to_string()),
-    }
-}
-
-/// `test --both` の機械語側: テスト `ti` を入口にして Cranelift で実行ファイルを作る (`target/test-native/`)。
-/// 作れなければ理由を返す (clif が未対応の機能、リンカが無い、など)。テストごとに 1 つ作る。
-/// Kasane で書かれた標準ライブラリ `core.fmt` (Formatter) の定義を、Cranelift の対象に加える。
-fn add_fmt_std<'a>(prog: &'a Program, funcs: &mut HashMap<String, &'a Def>, tdefs: &mut HashMap<String, &'a Def>) {
-    for d in &prog.defs {
-        if !(d.name.starts_with("core.fmt.") || d.name == "core.slice.LengthError" || d.name == "core.cmp.Ordering") {
-            continue;
-        }
-        if d.kw == "fn" && d.body.is_some() {
-            funcs.insert(d.name.clone(), d);
-        }
-        if d.kw == "type" || d.kw == "enum" {
-            tdefs.insert(d.name.clone(), d);
-        }
-    }
-}
-
-fn build_native_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> Result<PathBuf, String> {
-    let d = &prog.defs[ti];
-    let mut funcs: HashMap<String, &Def> = HashMap::new();
-    let mut tdefs: HashMap<String, &Def> = HashMap::new();
-    for &i in user {
-        let f = &prog.defs[i];
-        if f.kw == "fn" && f.body.is_some() {
-            funcs.insert(f.name.clone(), f);
-        }
-        if f.kw == "type" || f.kw == "enum" {
-            tdefs.insert(f.name.clone(), f);
-        }
-    }
-    funcs.insert(d.name.clone(), d);
-    add_fmt_std(prog, &mut funcs, &mut tdefs);
-    let dir = root.join("target").join("test-native");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let exe = dir.join(format!("{}_{}{}", ti, test_stem(&d.name), if cfg!(windows) { ".exe" } else { ".native" }));
-    let _ = fs::remove_file(&exe);
-    let out = norm(&exe);
-    // clif は未対応の形に出会うと Err を返す。万一それ以外で落ちても、バンドルへ戻すだけにする。
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::clif::compile_clif(prog, &funcs, &tdefs, &d.name, &out, false)));
-    match r {
-        Ok(Ok(())) => Ok(exe),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err("internal compiler error".into()),
     }
 }
 
@@ -2051,7 +1994,7 @@ const BUILD_STAMP: &str = ".build-key";
 
 /// ビルドキーの内訳: 生成条件 (ksn 本体・edition・debug/release・ターゲット・バックエンド)、
 /// パッケージと依存のソース、stdlib、ksn 本体のバイト列。
-/// バックエンドは出力が違うので (clif と c) キーに入れる。
+/// バックエンドは出力が違うので (llvm と c) キーに入れる。
 fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
     let mut h = Sha256::new();
     let edition = l.pkg.manifest["package"].get("edition").map(|e| e.to_string()).unwrap_or_default();
@@ -2088,8 +2031,16 @@ fn set_exec(_p: &Path) {}
 
 fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let release = args.iter().any(|a| a == "--release");
-    let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "clif".into());
+    let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "llvm".into());
     let target = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)).cloned();
+    if backend == "clif" {
+        eprintln!("ksn: E9040: `--backend clif` was removed: the Cranelift backend is gone and native generation goes through LLVM (KIR). Use `--backend llvm` (the default), or `--backend c`");
+        return 1;
+    }
+    if backend != "llvm" && backend != "c" {
+        eprintln!("ksn: E9040: unknown backend `{}` (expected llvm or c)", backend);
+        return 1;
+    }
     let mut rep = Report::new(false);
     let root = match find_root() {
         Ok(r) => r,
@@ -2210,26 +2161,11 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
                 }
             }
             if backend == "llvm" {
-                match build_llvm(&prog, &user, e, &exe, release) {
-                    Ok(()) => Ok(()),
-                    Err(why) => {
-                        println!("llvm backend skipped: {}; falling back to the default backend", why);
-                        crate::cnative::compile_native(&funcs, e, &norm(&exe), release)
-                    }
-                }
-            } else if backend == "clif" {
+                // 下ろせない・clang が無いなどなら、理由を出してインタプリタ同梱のバンドルだけにする。
                 let t_cc = std::time::Instant::now();
-                let mut tdefs: HashMap<String, &Def> = HashMap::new();
-                for &i in &user {
-                    let d = &prog.defs[i];
-                    if d.kw == "type" || d.kw == "enum" {
-                        tdefs.insert(d.name.clone(), d);
-                    }
-                }
-                add_fmt_std(&prog, &mut funcs, &mut tdefs);
-                let r = crate::clif::compile_clif(&prog, &funcs, &tdefs, e, &norm(&exe), release);
+                let r = build_llvm(&prog, &user, e, &exe, release);
                 if std::env::var_os("KSN_TIME").is_some() {
-                    eprintln!("KSN_TIME compile_clif_call_total={:.2} [ms]", t_cc.elapsed().as_secs_f64() * 1e3);
+                    eprintln!("KSN_TIME compile_llvm_total={:.2} [ms]", t_cc.elapsed().as_secs_f64() * 1e3);
                 }
                 r
             } else {
@@ -2242,7 +2178,7 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     }
     match native {
         Ok(()) => println!("native executable: {}", rel(&norm(&exe))),
-        Err(e) => println!("native backend skipped: {}", e),
+        Err(e) => println!("native backend skipped: {}; the interpreter bundle is used", e),
     }
     println!("built {} ({}, target {}; portable interpreter bundle)", rel(&norm(&out)), kind, target);
     0
@@ -2256,7 +2192,7 @@ fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: 
 }
 
 /// `ksn test --both` の LLVM 側: テスト `ti` を入口にして KIR → LLVM → clang の実行ファイルを作る (`target/test-llvm/`)。
-/// 下ろせない・clang が無いなどで作れなければ理由を返す (呼び出し側が Cranelift・バンドルへ退避する)。
+/// 下ろせない・clang が無いなどで作れなければ理由を返す (呼び出し側がバンドルへ退避する)。
 fn build_llvm_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> Result<PathBuf, String> {
     let d = &prog.defs[ti];
     let lo = crate::kir_lower::lower_test(prog, user, ti);

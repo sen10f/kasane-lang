@@ -1259,7 +1259,7 @@ impl<'a> Lw<'a> {
 mod tests {
     use crate::kir::AggKind;
 
-    /// 配置の照合用の定義。clif の `layout` と KIR の型表の大きさ・整列・オフセットが一致することを確かめる。
+    /// 配置の照合用の定義。C の配置規則 (旧 clif と同じ) と KIR の型表の大きさ・整列・オフセットが一致することを確かめる。
     /// 入れ子の構造体、整列の違うフィールド、タグだけの列挙型、バリアントごとに違う大きさを含む。
     const SRC: &str = "type t.A
     a: u8
@@ -1295,7 +1295,7 @@ end t.main
 ";
 
     #[test]
-    fn kir_agg_layout_matches_clif() {
+    fn kir_agg_layout_matches_c() {
         let root = std::env::temp_dir().join(format!("ksn_kir_agg_layout_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -1312,11 +1312,16 @@ end t.main
             assert!(names.contains(&want), "型表に {} がない: {:?}", want, names);
         }
         for d in lo.module.aggs.iter().filter(|d| !super::STD_TYPES.contains(&d.name.as_str())) {
-            let cname = match d.kind {
-                AggKind::Tuple(_) => format!("tuple<{}>", &d.name[1..d.name.len() - 1]),
-                _ => d.name.clone(),
+            // 期待値は、削除した clif.rs の `layout` / `enum_layout` が出していた配置 (C と同じ規則) を固定したもの。
+            let (size, align, offs, vars): (u32, u32, Vec<u32>, Vec<Vec<u32>>) = match d.name.as_str() {
+                "t.A" => (24, 8, vec![0, 8, 16], vec![]),
+                "t.B" => (40, 8, vec![0, 8, 32], vec![]),
+                "t.C" => (48, 8, vec![0, 40], vec![]),
+                "t.E" => (16, 8, vec![], vec![vec![8, 12], vec![8], vec![8, 10, 12], vec![]]),
+                "(u8,i64)" => (16, 8, vec![0, 8], vec![]),
+                "(bool,i16,u8,i32)" => (12, 4, vec![0, 2, 4, 8], vec![]),
+                other => panic!("期待値のない型: {}", other),
             };
-            let (size, align, offs, vars) = crate::clif::layout_probe(&prog, &cname).expect("clif の配置");
             assert_eq!((d.size, d.align), (size, align), "大きさ・整列: {}", d.name);
             match &d.kind {
                 AggKind::Struct(fs) | AggKind::Tuple(fs) => {

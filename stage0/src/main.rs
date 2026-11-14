@@ -6,7 +6,6 @@ mod lexer;
 mod check;
 mod check_cache;
 mod cli;
-mod clif;
 mod ffi;
 mod cnative;
 mod explain;
