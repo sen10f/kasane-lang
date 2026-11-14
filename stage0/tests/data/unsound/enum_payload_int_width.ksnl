@@ -1,0 +1,12 @@
+// expect: E2020
+enum t.E pub
+    A(u32)
+end t.E
+
+fn t.f() -> t.E uses [] panics never
+    t.E.A(5u8)
+end t.f
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main

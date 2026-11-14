@@ -45,8 +45,6 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a01_reborrow_mut_then_shared_read_01",
     "hunt_a01_reborrow_reassign_01",
     "hunt_a01_reborrow_shared_then_mut_01",
-    // F1 借用: hunt_a02_pair_lifetime_swap_1 は正しいコード (Pair<'b,'a> は f:&'b・s:&'a) なので穴ではなく、期待の E3010 が誤り。
-    "hunt_a02_pair_lifetime_swap_1",
     // F1 借用: `&mut` を取り込んだクロージャを共有参照 `&c` 越しに呼ぶ
     "hunt_a05_andmut_capture_then_assign_01",
     "hunt_a05_andmut_read_after_last_call_01",
@@ -82,31 +80,6 @@ const KNOWN_HOLES: &[&str] = &[
     // F3 スレッド: `spawn` の取り込みの `Send` (`MutexGuard`)。生ポインタ版の 4 件は、許可のないモジュールでの
     // 生ポインタとして E5001 で止まるので一覧から外した (許可モジュール内の `Send` の穴は別の担当)。
     "hunt_a11_spawn_guard_03",
-    // F6 型: 参照の段数・`size_of` の型引数・共有参照越しのフィールド代入
-    "hunt_a13_assign_through_shared_ref_04",
-    "hunt_a13_capture_mut_deref_02",
-    "hunt_a13_capture_ref_deref_01",
-    "hunt_a13_dbl_ref_deref_08",
-    "hunt_a13_field_ref_deref_03",
-    "hunt_a13_if_let_ref_deref_06",
-    "hunt_a13_match_ref_deref_07",
-    "hunt_a13_size_of_no_typearg_05",
-    // F6 型: else の無い `if`・`match` の腕・列挙子のペイロードの型の食い違い
-    "hunt_a14_enum_variant_payload_02",
-    "hunt_a14_if_else_arm_type_mismatch_01",
-    "hunt_a14_if_else_let_arm_mismatch_01",
-    "hunt_a14_if_let_arm_mismatch_01",
-    "hunt_a14_if_no_else_let_01",
-    "hunt_a14_if_no_else_let_infer_01",
-    "hunt_a14_if_no_else_value_02",
-    "hunt_a14_match_arm_type_mismatch_02",
-    "hunt_a14_match_bool_arm_mismatch_01",
-    "hunt_a14_match_option_none_unit_01",
-    "hunt_a14_match_result_arm_mismatch_01",
-    "hunt_a14_match_unit_vs_value_01",
-    "hunt_a14_nested_match_01",
-    // F6 型: 外れうるパターンの `let` (`let false = 5i32`)
-    "hunt_a17_reserved_false_bind",
     // F7 定数: `const` の範囲・オーバーフロー・ターゲットの幅
     // hunt_a18_const_int_overflow と hunt_a18_const_lit_outofrange は塞いだ (E2026)。
     // hunt_a18_const_usize_range_wasm は `--target wasm32-unknown-unknown` でのみ検出されるので、

@@ -1,4 +1,4 @@
-// expect: E????
+// expect: E2020
 fn t.f(r: Result<u32, std.io.Error>) -> u32 uses [] panics never
     match r {
         Ok(n) => n
