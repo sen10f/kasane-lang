@@ -71,7 +71,13 @@ pub(super) fn field_src(lw: &Lw, s: usize, names: &[String]) -> Option<Src> {
         let tn: HashSet<String> = bind.keys().cloned().collect();
         src = Some(super::mono::subst_ty(&from_v(v, &tn), &bind));
         if k + 1 < names.len() {
-            let Ty::Agg(next) = fty else { return None };
+            // 途中のフィールドは値の集成体か、共有の参照 (`&T`) の先の集成体。共有の参照は読むだけの経路 (`v.doc.nodes.as_slice()`) で通る。
+            // 可変の参照は、書き戻しの経路が無いので対象外。
+            let next = match fty {
+                Ty::Agg(next) => next,
+                Ty::Ref(false, Pointee::Agg(next)) => next,
+                _ => return None,
+            };
             ai = next;
         }
     }
