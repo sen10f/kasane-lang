@@ -23775,3 +23775,181 @@ fn ambiguous_elided_fn_effects_must_be_written_out() {
     let o = run(&["check"], &t.0);
     assert!(format!("{}{}", text(&o.stdout), text(&o.stderr)).contains("both the effect and the panic argument"), "{}{}", text(&o.stdout), text(&o.stderr));
 }
+
+
+// ---------------------------------------------------------------- LSP の増分検査 (修正プラン 6-5)
+
+/// `ksn lsp` を起動して `didChange` で編集を流し、診断が `ksn check --json` (全体検査) と一致することを確かめる。
+/// 変わったモジュールとその依存元だけを検査し直す経路 (`cli::analyze_inc`) が使われたことは、
+/// `KSN_TIMING=1` の stderr の `incremental: redo` で確かめる。
+struct LspDrive {
+    child: std::process::Child,
+    rx: std::sync::mpsc::Receiver<serde_json::Value>,
+    root: PathBuf,
+    next_id: i64,
+    diags: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl LspDrive {
+    fn start(root: &Path, stderr: &Path) -> LspDrive {
+        use std::io::{BufRead, Read};
+        let mut child = Command::new(exe())
+            .arg("lsp")
+            .env("KSN_TIMING", "1")
+            .current_dir(root)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(fs::File::create(stderr).unwrap())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut r = std::io::BufReader::new(out);
+            loop {
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let h = h.trim_end();
+                    if h.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = h.strip_prefix("Content-Length: ") {
+                        len = v.parse().unwrap();
+                    }
+                }
+                let mut buf = vec![0u8; len];
+                if r.read_exact(&mut buf).is_err() {
+                    return;
+                }
+                let _ = tx.send(serde_json::from_slice(&buf).unwrap());
+            }
+        });
+        let mut d = LspDrive { child, rx, root: root.to_path_buf(), next_id: 1, diags: Default::default() };
+        d.call("initialize", serde_json::json!({"rootUri": format!("file://{}", root.display()), "capabilities": {}}));
+        d.notify("initialized", serde_json::json!({}));
+        d
+    }
+    fn send(&mut self, v: serde_json::Value) {
+        use std::io::Write;
+        let b = v.to_string();
+        let si = self.child.stdin.as_mut().unwrap();
+        write!(si, "Content-Length: {}\r\n\r\n{}", b.len(), b).unwrap();
+        si.flush().unwrap();
+    }
+    fn notify(&mut self, m: &str, p: serde_json::Value) {
+        self.send(serde_json::json!({"jsonrpc": "2.0", "method": m, "params": p}));
+    }
+    /// 応答までに届いた publishDiagnostics を `diags` (URI → 診断コードの並び) に反映する。
+    fn call(&mut self, m: &str, p: serde_json::Value) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(serde_json::json!({"jsonrpc": "2.0", "id": id, "method": m, "params": p}));
+        loop {
+            let v = self.rx.recv_timeout(std::time::Duration::from_secs(60)).expect("lsp timed out");
+            if v.get("id") == Some(&serde_json::json!(id)) {
+                return;
+            }
+            if v["method"] == "textDocument/publishDiagnostics" {
+                let mut cs: Vec<String> = v["params"]["diagnostics"].as_array().unwrap().iter().map(|d| d["code"].as_str().unwrap().to_string()).collect();
+                cs.sort();
+                self.diags.insert(v["params"]["uri"].as_str().unwrap().to_string(), cs);
+            }
+        }
+    }
+    fn uri(&self, rel: &str) -> String {
+        format!("file://{}", self.root.join(rel).display())
+    }
+    fn open(&mut self, rel: &str) {
+        let text = fs::read_to_string(self.root.join(rel)).unwrap();
+        let uri = self.uri(rel);
+        self.notify("textDocument/didOpen", serde_json::json!({"textDocument": {"uri": uri, "languageId": "ksnl", "version": 1, "text": text}}));
+    }
+    /// ファイルを書き換え (全体検査はディスクを読む)、同じ内容を `didChange` で送り、診断が出そろうまで待つ。
+    fn edit(&mut self, rel: &str, text: &str, version: i64) {
+        fs::write(self.root.join(rel), text).unwrap();
+        let uri = self.uri(rel);
+        self.notify("textDocument/didChange", serde_json::json!({"textDocument": {"uri": uri, "version": version}, "contentChanges": [{"text": text}]}));
+        self.sync(&uri);
+    }
+    /// `hover` は検査が古ければ先に走らせてから答える。応答が返れば、その検査の診断は届いている。
+    fn sync(&mut self, uri: &str) {
+        self.call("textDocument/hover", serde_json::json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 0}}));
+    }
+    /// 全体検査 (`check --json`) のファイルごとの診断コード。
+    fn full(&self) -> std::collections::BTreeMap<String, Vec<String>> {
+        let o = run(&["check", "--json"], &self.root);
+        let mut m: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for l in text(&o.stdout).lines().filter(|l| l.starts_with('{')) {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            let f = v["file"].as_str().unwrap_or("kasane.toml");
+            m.entry(self.uri(f)).or_default().push(v["code"].as_str().unwrap().to_string());
+        }
+        m.values_mut().for_each(|v| v.sort());
+        m
+    }
+    fn assert_same(&self, what: &str) {
+        let mut got = self.diags.clone();
+        got.retain(|_, v| !v.is_empty());
+        assert_eq!(got, self.full(), "LSP と check --json の診断が違う: {}", what);
+    }
+}
+
+impl Drop for LspDrive {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+#[test]
+fn lsp_incremental_matches_full_check() {
+    let t = Tmp::new("lsp_inc", "");
+    let src = t.0.join("src");
+    fs::create_dir_all(src.join("t")).unwrap();
+    let mk_main = "import t.b\n\nfn t.main() -> u32 uses [] panics never\n    t.b.base(1u32)\nend t.main\n";
+    let mk_b = |sig: &str| format!("fn t.b.base{} uses [] panics never pub\n    x\nend t.b.base\n", sig);
+    let mk_leaf = |name: &str, body: &str| format!("fn t.{n}.f(x: u32) -> u32 uses [] panics never pub\n    {b}\nend t.{n}.f\n", n = name, b = body);
+    fs::write(src.join("t.ksnl"), mk_main).unwrap();
+    fs::write(src.join("t/b.ksnl"), mk_b("(x: u32) -> u32")).unwrap();
+    for n in ["c", "d", "e"] {
+        fs::write(src.join(format!("t/{}.ksnl", n)), mk_leaf(n, "x")).unwrap();
+    }
+    let err = std::env::temp_dir().join(format!("ksn_lsp_inc_err_{}", std::process::id()));
+    let mut d = LspDrive::start(&t.0, &err);
+    for f in ["src/t.ksnl", "src/t/b.ksnl", "src/t/c.ksnl", "src/t/d.ksnl", "src/t/e.ksnl"] {
+        d.open(f);
+    }
+    let u = d.uri("src/t/b.ksnl");
+    d.sync(&u);
+    d.assert_same("初回");
+    let mut v = 1;
+    let mut step = |d: &mut LspDrive, what: &str, rel: &str, text: &str| {
+        v += 1;
+        d.edit(rel, text, v);
+        d.assert_same(what);
+    };
+    // 依存先のシグネチャを変える: 依存元 (t.ksnl) に診断が出る。
+    step(&mut d, "引数を足す", "src/t/b.ksnl", &mk_b("(x: u32, y: u32) -> u32"));
+    assert!(!d.diags[&d.uri("src/t.ksnl")].is_empty(), "依存元に診断が出ていない: {:?}", d.diags);
+    // 戻す: 診断が消える。
+    step(&mut d, "引数を戻す", "src/t/b.ksnl", &mk_b("(x: u32) -> u32"));
+    assert!(d.diags[&d.uri("src/t.ksnl")].is_empty(), "依存元の診断が消えていない: {:?}", d.diags);
+    // 戻り値型を変える。
+    step(&mut d, "戻り値を変える", "src/t/b.ksnl", &mk_b("(x: u32) -> bool"));
+    step(&mut d, "戻り値を戻す", "src/t/b.ksnl", &mk_b("(x: u32) -> u32"));
+    // 依存元の無い葉の編集で、その葉だけに診断が出る・消える。
+    step(&mut d, "葉に型の誤り", "src/t/c.ksnl", &mk_leaf("c", "true"));
+    assert!(!d.diags[&d.uri("src/t/c.ksnl")].is_empty());
+    step(&mut d, "葉を直す", "src/t/c.ksnl", &mk_leaf("c", "x"));
+    // 構文の誤り (全体検査に戻る) と回復。
+    step(&mut d, "構文の誤り", "src/t/d.ksnl", &mk_leaf("d", "x +"));
+    step(&mut d, "構文を直す", "src/t/d.ksnl", &mk_leaf("d", "x"));
+    step(&mut d, "もう一度葉を編集", "src/t/e.ksnl", &mk_leaf("e", "x.wrapping_add(1u32)"));
+    drop(d);
+    let log = fs::read_to_string(&err).unwrap_or_default();
+    let _ = fs::remove_file(&err);
+    assert!(log.contains("incremental: redo"), "増分検査の経路が使われていない:\n{}", log);
+}

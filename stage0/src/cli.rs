@@ -37,6 +37,7 @@ fn lint_code(c: &str) -> &'static str {
 }
 
 // ------------------------------------------------------------ 診断
+#[derive(Clone)]
 pub struct Item {
     pub code: String,
     pub fatal: bool,
@@ -293,9 +294,14 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
 /// `take_std` のとき、返す `Loaded` の標準ライブラリの定義は空 (`Program` に移した)。
 fn full_check_opts(root: &Path, rep: &mut Report, run_mode: bool, take_std: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
     // 文法の構築 (正規表現のコンパイルが重い) は、定義単位の再利用が外れたときに初めてやる (grammar.rs)。
-    let grammar = Grammar::new();
-    let mut l = load_all(root)?;
+    let l = load_all(root)?;
     crate::vm::tick("load_all");
+    full_check_loaded(l, rep, run_mode, take_std)
+}
+
+/// `full_check_opts` の、読み込み済みの `Loaded` から始めるもの (LSP の増分検査が、一部のソースだけの `Loaded` で呼ぶ)。
+fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
+    let grammar = Grammar::new();
     check_lock(&l.pkg, &l.deps, rep);
     let srcroot = norm(&l.pkg.root.join("src"));
     crate::vm::tick("grammar_new");
@@ -479,8 +485,36 @@ pub struct Analysis {
 
 /// パッケージ `root` を検査して診断を返す (出力はしない。ソースは `overlay_set` の上書きを優先して読む)。
 pub fn analyze(root: &Path) -> Analysis {
+    analyze_inc(root, None)
+}
+
+/// 前回の検査 (読み込んだ `Loaded` と診断) を渡すと、変わったソースとその依存元だけを検査し直す。
+/// 結果は `analyze` (全体検査) と一致する。一致を保証できない形 (`plan_slice` が `None`) は全体を検査する。
+pub fn analyze_inc(root: &Path, prev: Option<(&Loaded, &[Item])>) -> Analysis {
+    let l = load_all(root);
+    match (prev, l) {
+        (Some((pl, pitems)), Ok(l)) => match plan_slice(&l, pl) {
+            Some(plan) => {
+                crate::vm::tick("plan");
+                if std::env::var_os("KSN_TIMING").is_some() {
+                    eprintln!("[timing] incremental: redo {} / keep {} / of {}", plan.redo.len(), plan.keep.len(), l.pkg.sources.len());
+                }
+                analyze_slice(l, plan, pitems)
+            }
+            None => {
+                if std::env::var_os("KSN_TIMING").is_some() {
+                    eprintln!("[timing] incremental: full");
+                }
+                analyze_loaded(root, Ok(l))
+            }
+        },
+        (_, l) => analyze_loaded(root, l),
+    }
+}
+
+fn analyze_loaded(_root: &Path, l: Result<Loaded, ProjectError>) -> Analysis {
     let mut rep = Report::new(false);
-    let loaded = match full_check(root, &mut rep, false) {
+    let loaded = match l.and_then(|l| full_check_loaded(l, &mut rep, false, false)) {
         Ok((l, p, _)) => Some((l, p)),
         Err(e) => {
             rep.add(&e.code, &e.msg, None, 1, 1, true);
@@ -490,6 +524,187 @@ pub fn analyze(root: &Path) -> Analysis {
     attach_fixes(&mut rep.items);
     rep.finish();
     Analysis { items: rep.items, loaded }
+}
+
+/// 増分検査の計画: 検査し直すソース (添字) と、検査に載せるソース (それらと、参照先の閉包)。
+struct SlicePlan {
+    redo: Vec<usize>,
+    keep: Vec<usize>,
+}
+
+/// ソースが参照するモジュール (自分以外)。ドットでつないだ識別子の接頭辞が、パッケージのモジュール名に当たるもの。
+/// `import` に限らず、FQN での参照 (import 無しでも検査は通る) と、コメント・文字列中の一致も含む (過大に数える側に倒す)。
+fn referenced_modules(text: &str, mods: &HashMap<&str, usize>, me: usize) -> Vec<usize> {
+    let mut out: Vec<usize> = vec![];
+    let b = text.as_bytes();
+    let is_id = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80;
+    let mut i = 0;
+    while i < b.len() {
+        if !is_id(b[i]) || (i > 0 && (is_id(b[i - 1]) || b[i - 1] == b'.')) {
+            i += 1;
+            continue;
+        }
+        // 1 つのドット連鎖 `a.b.c` を読み、各接頭辞を引く。
+        let start = i;
+        let mut j = i;
+        let mut best: Option<usize> = None;
+        loop {
+            while j < b.len() && is_id(b[j]) {
+                j += 1;
+            }
+            // 最長一致だけ数える (`syn.m5.f0` は `syn` ではなく `syn.m5` への参照)。
+            if let Some(&m) = mods.get(&text[start..j]) {
+                best = Some(m);
+            }
+            if j + 1 < b.len() && b[j] == b'.' && is_id(b[j + 1]) {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if let Some(m) = best {
+            if m != me && !out.contains(&m) {
+                out.push(m);
+            }
+        }
+        i = j.max(i + 1);
+    }
+    out
+}
+
+fn def_names(s: &Source) -> Vec<&str> {
+    let mut v: Vec<&str> = s.defs.iter().filter(|d| d.kw != "import").map(|d| d.name.as_str()).collect();
+    v.sort_unstable();
+    v
+}
+
+fn no(i: u32) -> Option<SlicePlan> {
+    if std::env::var_os("KSN_TIMING").is_some() {
+        eprintln!("[timing] plan_slice: 全体検査へ (理由 {})", i);
+    }
+    None
+}
+
+fn plan_slice(l: &Loaded, pl: &Loaded) -> Option<SlicePlan> {
+    let (a, b) = (&l.pkg.sources, &pl.pkg.sources);
+    if a.len() != b.len() || l.pkg.manifest != pl.pkg.manifest || l.deps.len() != pl.deps.len() {
+        return no(1);
+    }
+    for (x, y) in l.deps.iter().zip(&pl.deps) {
+        if x.name != y.name || x.sources.len() != y.sources.len() || x.sources.iter().zip(&y.sources).any(|(p, q)| p.path != q.path || p.text != q.text) {
+            return no(2);
+        }
+    }
+    // 構文エラーがあると Program が作れない。診断も古くなりうるので全体へ。
+    if a.iter().chain(b.iter()).any(|s| s.error.is_some()) {
+        return no(3);
+    }
+    let mut changed: Vec<usize> = vec![];
+    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+        if x.path != y.path || x.module != y.module || x.is_test != y.is_test {
+            return no(4);
+        }
+        if x.text != y.text {
+            // 統合テスト・トレイト・impl はプロジェクト全体に効く。定義名の増減は重複 (E1103) などを変える。
+            let global = |s: &Source| s.is_test || s.defs.iter().any(|d| matches!(d.kw.as_str(), "impl" | "trait"));
+            if global(x) || global(y) || def_names(x) != def_names(y) {
+                return no(5);
+            }
+            changed.push(i);
+        }
+    }
+    let mut mods: HashMap<&str, usize> = HashMap::new();
+    for (i, s) in a.iter().enumerate() {
+        if mods.insert(s.module.as_str(), i).is_some() {
+            return no(6);
+        }
+    }
+    let refs: Vec<Vec<usize>> = a.iter().enumerate().map(|(i, s)| referenced_modules(&s.text, &mods, i)).collect();
+    // 依存元 (参照している側) の推移閉包。
+    let mut redo: Vec<bool> = vec![false; a.len()];
+    for &c in &changed {
+        redo[c] = true;
+    }
+    loop {
+        let mut grew = false;
+        for i in 0..a.len() {
+            if !redo[i] && refs[i].iter().any(|&r| redo[r]) {
+                redo[i] = true;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    // 検査に載せるもの: 検査し直すもの、その参照先の閉包、トレイト・impl を持つモジュール (名前で参照されずに効く)。
+    let mut keep: Vec<bool> = redo.clone();
+    let mut stack: Vec<usize> = (0..a.len()).filter(|&i| redo[i] || a[i].defs.iter().any(|d| matches!(d.kw.as_str(), "impl" | "trait"))).collect();
+    for &i in &stack {
+        keep[i] = true;
+    }
+    while let Some(i) = stack.pop() {
+        for &r in &refs[i] {
+            if !keep[r] {
+                keep[r] = true;
+                stack.push(r);
+            }
+        }
+    }
+    if keep.iter().all(|&k| k) {
+        return no(99); // 全部載せるなら全体検査と同じ
+    }
+    Some(SlicePlan { redo: (0..a.len()).filter(|&i| redo[i]).collect(), keep: (0..a.len()).filter(|&i| keep[i]).collect() })
+}
+
+fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysis {
+    let n = l.pkg.sources.len();
+    let all_rel: Vec<String> = l.pkg.sources.iter().map(|s| rel(&s.path)).collect();
+    let redo_rel: std::collections::HashSet<&str> = plan.redo.iter().map(|&i| all_rel[i].as_str()).collect();
+    // 載せるソースだけを移した `Loaded` を作って検査する。終わったら元の位置へ戻す。
+    let mut slots: Vec<Option<Source>> = std::mem::take(&mut l.pkg.sources).into_iter().map(Some).collect();
+    let slice_sources: Vec<Source> = plan.keep.iter().map(|&i| slots[i].take().unwrap()).collect();
+    let slice = Loaded {
+        pkg: Package { name: l.pkg.name.clone(), root: l.pkg.root.clone(), manifest: l.pkg.manifest.clone(), sources: slice_sources, source: l.pkg.source.clone() },
+        deps: std::mem::take(&mut l.deps),
+        std: std::mem::take(&mut l.std),
+    };
+    let mut rep = Report::new(false);
+    let res = full_check_loaded(slice, &mut rep, false, true);
+    let back = match res {
+        Ok((sl, _, _)) => Some(sl),
+        Err(_) => None,
+    };
+    let Some(sl) = back else {
+        // ここには来ないはず (読み込みは済んでいる)。来たら全体検査へ。
+        return analyze_loaded(&l.pkg.root.clone(), load_all(&l.pkg.root));
+    };
+    let Loaded { pkg, deps, .. } = sl;
+    for (src, &i) in pkg.sources.into_iter().zip(&plan.keep) {
+        slots[i] = Some(src);
+    }
+    l.pkg.sources = slots.into_iter().map(|s| s.unwrap()).collect();
+    debug_assert_eq!(l.pkg.sources.len(), n);
+    l.deps = deps;
+    l.std = load_stdlib();
+    // 診断: 検査し直したファイルは新しい結果、ほかのソースファイルは前回のもの、ソースでないファイル (kasane.lock ほか) は前回のもの。
+    let mut items: Vec<Item> = prev_items
+        .iter()
+        .filter(|it| match it.file.as_deref() {
+            Some(f) => !redo_rel.contains(f) && !f.ends_with("kasane.lock"),
+            None => true,
+        })
+        .cloned()
+        .collect();
+    let mut fresh: Vec<Item> = rep.items.into_iter().filter(|it| it.file.as_deref().map_or(false, |f| redo_rel.contains(f))).collect();
+    let mut lock = Report::new(false);
+    check_lock(&l.pkg, &l.deps, &mut lock);
+    fresh.extend(lock.items);
+    attach_fixes(&mut fresh);
+    let mut rep = Report::new(false);
+    rep.items = items.drain(..).chain(fresh).collect();
+    rep.finish();
+    Analysis { items: rep.items, loaded: Some((l, None)) }
 }
 
 fn cmd_check(json: bool) -> i32 {
