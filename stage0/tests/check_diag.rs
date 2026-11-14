@@ -37,18 +37,9 @@ const KNOWN_HOLES: &[&str] = &[
     // 借用を持つ変数 (`let w = t.mk(&x)`) のフィールドを読み戻す (`let r = w.r`) と、借用が読んだ側へ移らない
     // (変数の型が分からないので、`w.n` のような Copy の値と区別できず、移すと誤検出になる)。
     "boundary_field_read_back",
-    // 2026-11-14 の一斉の穴探し (~/kasane-verify、20 台) で見つけたもの。分野ごとに塞いで外す。
-    // F1 借用: 最後の呼び出しのあとの `&mut` 取り込みクロージャの借用は終わっている (NLL)。正しい形なので、拒むには閉包の借用をスコープ末まで延ばす仕様の判断が要る (`inc(); inc(); x` まで拒むため残す)。
-    "hunt_a05_andmut_capture_then_assign_01",
-    "hunt_a05_andmut_read_after_last_call_01",
-    "hunt_a05_andmut_via_shared_borrow_01",
-    "hunt_a05_nested_andmut_capture_01",
-    // F3 スレッド: `spawn` の取り込みの `Send` (`MutexGuard`)。生ポインタ版の 4 件は、許可のないモジュールでの
-    // 生ポインタとして E5001 で止まるので一覧から外した (許可モジュール内の `Send` の穴は別の担当)。
-    // F7 定数: `const` の範囲・オーバーフロー・ターゲットの幅
-    // hunt_a18_const_int_overflow と hunt_a18_const_lit_outofrange は塞いだ (E2026)。
-    // hunt_a18_const_usize_range_wasm は `--target wasm32-unknown-unknown` でのみ検出されるので、
-    // `check_diag.rs` の `ksn check` (ターゲット指定なし) では検出できず、const_range.rs で個別に検査する。
+    // 2026-11-14 の一斉の穴探し (~/kasane-verify) で見つけたものの残り。
+    // F7 定数: wasm32 の `usize` の幅は `--target wasm32-unknown-unknown` でだけ検出されるので、ここ (ターゲット指定なし) では
+    // 通る。検出は `stage0/tests/const_range.rs` が `--target` 付きで確かめる。
     "hunt_a18_const_usize_range_wasm",
 ];
 
