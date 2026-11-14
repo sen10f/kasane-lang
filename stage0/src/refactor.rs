@@ -344,6 +344,10 @@ impl<'a> Engine<'a> {
                         if let Some((x, _)) = d.name.rsplit_once('.') {
                             op.owners.insert(x.to_string());
                         }
+                        // トレイト側に置いた impl (3.2) は、呼び出し側の受け手の型 (X) でも当たる。
+                        if let Some(x) = d.trait_side_owner() {
+                            op.owners.insert(x);
+                        }
                     }
                 }
             }
@@ -560,6 +564,7 @@ impl<'a> Engine<'a> {
                     Decision::Skip
                 }
             }
+            Ty::Prim(n) if op.owners.contains(n) => Decision::Hit,
             Ty::Unknown | Ty::Var(_) => unknown(self),
             Ty::Param(p) => {
                 if op.kind != Kind::TraitMethod || field {

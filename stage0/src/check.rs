@@ -920,7 +920,8 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let owner = prim_owner(&tgt);
-            let alt_owner = format!("{}.{}", tb, tgt.rsplit('.').next().unwrap_or(""));
+            // トレイト側に置いたメソッドの所有者は `<トレイトFQN>.<型FQN>` (基本型は型名。3.2)。
+            let alt_owner = format!("{}.{}", tb, tgt);
             // 同じ (トレイト, 型) は型引数が違っても 1 つ (3.2)。
             let tkey = tb.clone();
             if !seen.insert((tkey.clone(), tgt.clone())) {
@@ -929,6 +930,15 @@ impl<'a> Checker<'a> {
             let want = req.get(&tb).cloned().unwrap_or_default();
             let mut have = declared.get(&(tkey.clone(), owner.clone())).cloned().unwrap_or_default();
             if let Some(m) = declared.get(&(tkey.clone(), alt_owner.clone())) {
+                // 型側とトレイト側の両方に同じ (トレイト, 型) の impl のメソッドがある (3.2)。
+                if !have.is_empty() && owner != alt_owner {
+                    self.diag(
+                        "E1114",
+                        format!("duplicate impl of {} for {}: methods are placed both on the type and on the trait side", tkey, tgt),
+                        i,
+                        0,
+                    );
+                }
                 have.extend(m.iter().cloned());
             }
             impl_of.entry((tkey.clone(), owner.clone())).or_insert(i);

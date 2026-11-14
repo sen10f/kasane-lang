@@ -112,7 +112,7 @@ def main():
                 if '<' in tr and '>' in tr:
                     targs = lint.split_top(tr[tr.index('<') + 1:tr.rindex('>')])
                 impl_args[(tb, owner)] = targs
-                impl_args[(tb, f'{tb}.{gb.split(".")[-1]}')] = targs
+                impl_args[(tb, f'{tb}.{gb}')] = targs
             if it['kw'] == 'fn':
                 nm = it['name']
                 owner, meth = nm.rsplit('.', 1)
@@ -145,13 +145,13 @@ def main():
         want = set(trait_methods.get(tb, {}))
         have = impl_pairs.get((tb, owner), set())
         # 孤児規則のトレイト側配置 (<トレイト>.<型名>.<メソッド>) も許す
-        alt = impl_pairs.get((tb, f'{tb}.{gb.split(".")[-1]}'), set())
+        alt = impl_pairs.get((tb, f'{tb}.{gb}'), set())
         have = have | alt
         if want != have:
             err('impl', f, n, f'impl {tb} for {gb}: methods {sorted(have)} != required {sorted(want)}')
     # impls メソッドがあるのに対応する impl 行が無い (逆方向)
     declared = {(tb, owner) for _, _, tb, _, owner in impl_lines}
-    declared |= {(tb, f'{tb}.{gb.split(".")[-1]}') for _, _, tb, gb, _ in impl_lines}
+    declared |= {(tb, f'{tb}.{gb}') for _, _, tb, gb, _ in impl_lines}
     for key, ms in impl_pairs.items():
         if key not in declared:
             f, n = impl_where[key]
