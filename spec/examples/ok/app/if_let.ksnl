@@ -1,0 +1,11 @@
+fn app.if_let.is_some(o: Option<u32>) -> bool uses [] panics never pub
+    o is Some(_) && !(o is None)
+end app.if_let.is_some
+
+fn app.if_let.value_or(o: Option<u32>, fallback: u32) -> u32 uses [] panics never pub
+    if let Some(v) = o {
+        v
+    } else {
+        fallback
+    }
+end app.if_let.value_or

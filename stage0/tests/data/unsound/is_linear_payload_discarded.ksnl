@@ -1,0 +1,14 @@
+// expect: E3003
+type t.L linear pub
+    v: u32
+end t.L
+
+fn t.eat(l: t.L) -> () uses [] panics never
+    let t.L { v: v } = l
+    core.mem.drop(v)
+end t.eat
+
+fn t.main() -> () uses [] panics may
+    let o = Some(t.L { v: 1u32 })
+    core.check.is_true(o is Some(_))
+end t.main

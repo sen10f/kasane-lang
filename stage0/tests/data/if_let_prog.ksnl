@@ -1,0 +1,65 @@
+enum t.Kind
+    Ident(u32)
+    Num(u32)
+    Pair(u32, u32)
+    Eof
+end t.Kind
+
+type t.Pt
+    x: u32
+    y: u32
+end t.Pt
+
+fn t.both_ok(a: Option<u32>, b: Option<u32>) -> bool uses [] panics never
+    a is Some(_) && b is Some(_)
+end t.both_ok
+
+fn t.kind_code(k: t.Kind) -> u32 uses [] panics never
+    if let t.Kind.Ident(n) = k {
+        n
+    } else if let t.Kind.Pair(a, b) = k {
+        a.wrapping_add(b)
+    } else if let t.Kind.Eof = k {
+        1000u32
+    } else {
+        2000u32
+    }
+end t.kind_code
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut n = 0u32
+    if let Some(x) = Some(5u32) {
+        n = x
+    }
+    core.check.eq(n, 5u32)
+    if let Some(x) = None {
+        n = x
+    }
+    core.check.eq(n, 5u32)
+    core.check.eq(t.kind_code(t.Kind.Ident(3u32)), 3u32)
+    core.check.eq(t.kind_code(t.Kind.Pair(4u32, 5u32)), 9u32)
+    core.check.eq(t.kind_code(t.Kind.Eof), 1000u32)
+    core.check.eq(t.kind_code(t.Kind.Num(1u32)), 2000u32)
+    core.check.eq(t.both_ok(Some(1u32), Some(2u32)), true)
+    core.check.eq(t.both_ok(Some(1u32), None), false)
+    core.check.eq(t.pick(t.Pt { x: 1u32, y: 9u32 }), 9u32)
+    core.check.eq(t.pick(t.Pt { x: 0u32, y: 9u32 }), 0u32)
+    let k = t.Kind.Num(8u32)
+    core.check.is_true(k is t.Kind.Num(_))
+    core.check.is_true(!(k is t.Kind.Eof))
+    let tot = if let t.Kind.Num(v) = k {
+        v.wrapping_add(1u32)
+    } else {
+        0u32
+    }
+    core.check.eq(tot, 9u32)
+    std.io.print_line("iflet ok")
+    Ok(())
+end t.main
+
+fn t.pick(p: t.Pt) -> u32 uses [] panics never
+    if let t.Pt { x: 1u32, y: y } = p {
+        return y
+    }
+    0u32
+end t.pick
