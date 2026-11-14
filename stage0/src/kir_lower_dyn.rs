@@ -89,7 +89,12 @@ pub(super) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         let m = segs[segs.len() - 1].clone();
         let consume = m == "into_inner";
         let s = lw.lookup(&segs[0])?;
-        let base = if consume && segs.len() == 2 { coll::path_read(lw, s) } else { coll::path_peek(lw, s) };
+        let base = if consume && segs.len() == 2 {
+            lw.own_emit(&segs[0], s, crate::kir::OwnKind::Consume);
+            coll::path_read(lw, s)
+        } else {
+            coll::path_peek(lw, s)
+        };
         let recv = match lw.field_path(base, &segs[1..segs.len() - 1], nline(e)) {
             Ok(v) => v,
             Err(x) => return Some(Err(x)),

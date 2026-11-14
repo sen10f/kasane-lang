@@ -79,7 +79,9 @@ impl<'a> Lw<'a> {
         // 所有物を持つ Option / Result の局所は、unwrap がペイロードを取り出すので移す (印を下ろす)。
         // そうしないと、取り出した値とスコープの終わりの解放が重なって二重解放になる (Fable レビュー n7)。
         let recv = if super::coll::owns(self, self.slots[s].1) {
-            super::coll::path_read(self, s)
+            let v = super::coll::path_read(self, s);
+            self.own_emit(&segs[0], s, crate::kir::OwnKind::Consume);
+            v
         } else {
             self.read_slot(s)
         };

@@ -317,6 +317,8 @@ impl<'a> Lw<'a> {
                 // 値の受け手は関数の引数と同じ移動 (path_read: ヘッダを移し/印を下ろす)。
                 // 呼び先が所有を引き継ぐので、呼び出し元での二重解放を防ぐ (設計_KIR.md 17.1)。
                 let v = super::coll::path_read(self, s);
+                // Copy でない局所の値の受け手は move (所有の注釈。設計_KIR.md 24 章)。
+                self.own_emit(&segs[0], s, crate::kir::OwnKind::Consume);
                 // 移した値は、呼び出しまでの間 (引数の `?` で抜ける経路) は一時値として持つ。
                 let hold = super::coll::owns(self, self.vty(v));
                 return Ok(Some((v, None, hold)));
@@ -353,6 +355,8 @@ impl<'a> Lw<'a> {
         // `x.f.g`
         if !by_ref {
             let base = super::coll::path_read(self, s);
+            // 字段の値の受け手は部分的な move (義務は果たし、ほかの字段の move は許す。設計_KIR.md 24 章)。
+            self.own_emit(&segs[0], s, crate::kir::OwnKind::Part);
             let v = self.field_path(base, &segs[1..], line)?;
             return Ok(Some((v, None, false)));
         }
