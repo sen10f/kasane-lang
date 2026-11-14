@@ -422,7 +422,9 @@ impl Server {
 
     fn run_check(&mut self, root: &Path) {
         Self::enter(root);
-        let res = catch_unwind(AssertUnwindSafe(|| cli::analyze(root)));
+        // 前回の検査があれば、変わったソースとその依存元だけを検査し直す (cli::analyze_inc)。
+        let prev = self.roots.get(root).and_then(|st| st.loaded.as_ref().map(|l| (l, st.items.as_slice())));
+        let res = catch_unwind(AssertUnwindSafe(|| cli::analyze_inc(root, prev)));
         let st = self.roots.entry(root.to_path_buf()).or_default();
         st.dirty = false;
         st.analyzed = true;
