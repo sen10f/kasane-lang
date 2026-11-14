@@ -1710,3 +1710,10 @@ KIR は単相・SSA で、型にライフタイムがない。そこで領域は
 - **所有の注釈 `own.owe` / `own.consume` / `own.part` / `own.init` (実験)。** `KSN_BORROWCK=kir,own` のときだけ検査する (既定の `kir` は借用だけ)。Copy でない局所変数 (束縛の位置の unit 定数が識別子) の値渡しが `consume`、フィールドの move が `part`、再代入が `init` (線形なら `owe`)、線形な値の束縛 (let・引数) が `owe`。検査は前向きの解析で、「move 済み」の識別子の再 `consume` は E3002、「消費の義務」が残ったままの `ret` や再束縛は E3003。
 - **結果。** `unsound/` 307 件のうち 165 を検査でき、借用は一致 162 (残りの不一致 3 件: `boundary_field_read_back` = AST が通す穴を KIR が止める、`e01_method_chain_borrow` / `option_unwrap_returns_borrow` = `Option<&scalar>` を下ろしが値にする)。線形性は一致 109 (KIR が拒否 42、AST が拒否 98)、正しいコード (linear_ok・examples・参照解) の誤検出 4 件 (`ok_spawn_move_linear`、examples の `shortener` / `threads`、参照解 `resource`)。
 - **線形性の残り (実験のまま既定にしない理由)。** 値渡しの注釈は `path_val` と `capture [move]` だけ。`self` を値で受けるメソッド・`with` の後始末・`match` / `if let` の分解・チャネルの端・タプルや構造体の `_` での捨て・クロージャの本体は注釈がなく、消費の漏れ (E3003) と二重 move (E3002) の見逃しと、`spawn` / `with` の誤検出が出る。AST の検査を外せる条件は、これらに注釈を足して誤検出 0・一致が `unsound/` の下ろせる全件になること。
+
+### 24.9 Vec の push などを Kasane 版の呼び出しにしたときの借用・線形性 (check/kir-push-borrow、2026-11-14)
+
+- **呼び出しで借用が `&mut` の指す先へ入る規則 (一般の形)。** 引数 `j` が `&mut X<'a>` / `&mut X<T>` で、引数 `k` が借用を運びうる型 (`&` を含む、またはライフタイム・型引数を持つ) かつ `j` と `k` がライフタイムか型引数 `T` を共有するとき、`k` の借用は `j` の指す先へ入る (`Vec<T>::push(self: &mut Vec<T>, value: T)` の `T`)。前向きには `j` の指す先のセルに記録し、呼び出し元の引数 (`Param`) の指す先への書き込みなら、ヘッダのライフタイムで照合する (`keep_lifetime_mismatch` は E3010)。`push` だけの特例はない。組み込みの `vec_push` の「要素の借用が Vec に移る」注釈は、この規則が Kasane 版の署名から引き継ぐ。
+- **保持者による寿命の検査。** `v.push(&b)` で `b` の借用を `v` のセルに入れたとき、`b` の `scope.end` (`h18_block_local_pushed_into_outer_vec`)、所有物の move (`push_as_str_then_consume`) の後で `v` が読まれれば違反 (E3010)。保持者の判定は `scope.end` と同じ規則 (`holders_of_root`)。
+- **線形性。** 値渡しの注釈 (`own.consume`) は `path_val` が引数の値の読みで付けるので、呼び出しの規則は足していない。線形性の一致が落ちた原因は、チャネルの端 (`Receiver<T>`) の要素型を `elem_src` が型表に戻せず、`linear_receiver_in_vec` が判断できなくなったこと。`chan_elem` から戻すようにして解決。
+- **結果。** `unsound/` の検査できた 166 件のうち、借用は一致 163 (不一致 3 件は 24.7 と同じ)、線形性は一致 114 (KIR が拒否 48)。正しいコード (借用は 114 件、線形性は 114 件) の誤検出は 0。
