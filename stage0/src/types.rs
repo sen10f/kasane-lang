@@ -387,6 +387,8 @@ pub struct TypeCk<'a> {
     conv_quiet: bool,
     /// 入れ子のループごとの「`break` があったか」。
     loop_breaks: Vec<bool>,
+    /// 文として捨てられる `else` の無い `if` の節点 (`{ if c { 値 } 次の文 }`)。値は使われないので型を検査しない。
+    discard_if: Option<u32>,
     /// 名前が解決できない式 (別の診断が報告するので E2044 にしない)。
     quiet_sites: HashSet<usize>,
     /// 局所変数の名前 → 束縛の記録 (使用箇所から原因の束縛へたどる)。
@@ -455,7 +457,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], quiet_sites: HashSet::new(), local_sites: HashMap::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new() }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -1545,6 +1547,10 @@ impl<'a> TypeCk<'a> {
                 self.unify2(&x, &y)
             }
             (Ty::Unit, Ty::Unit) => Ok(()),
+            // `()` と `String` / `Vec` は決して合わない (下の除外は `str` やスライスとの近似のためで、`()` には要らない)。
+            (Ty::Unit, Ty::Named(..) | Ty::Array(_) | Ty::Slice(_)) | (Ty::Named(..) | Ty::Array(_) | Ty::Slice(_), Ty::Unit) => {
+                Err((a.clone(), b.clone()))
+            }
             // `Vec` は配列・スライスと別の型 (4.2: 暗黙の変換は `&[T; N]` → `&[T]` のみ)。
             (Ty::Named(n, _), Ty::Array(_) | Ty::Slice(_)) | (Ty::Array(_) | Ty::Slice(_), Ty::Named(n, _)) if n == "alloc.vec.Vec" => {
                 Err((a.clone(), b.clone()))
@@ -2650,6 +2656,10 @@ impl<'a> TypeCk<'a> {
                 let mut last = Ty::Unit;
                 let stmts = items(&f[0]);
                 for (i, s) in stmts.iter().enumerate() {
+                    // 途中の文の `else` の無い `if` は、値を捨てる文として置かれる (dev/plan の KIR は捨てる値を下ろす)。
+                    if i + 1 < stmts.len() && nname(s) == "ExprStmt" && nname(&nf(s)[0]) == "If" && is_nil(&nf(&nf(s)[0])[2]) {
+                        self.discard_if = Some(crate::parser::nid(&nf(s)[0]));
+                    }
                     let t = self.stmt(s);
                     if i + 1 == stmts.len() && nname(s) == "ExprStmt" {
                         last = t;
@@ -2845,7 +2855,17 @@ impl<'a> TypeCk<'a> {
                 self.infer(&f[0]);
                 let mut a = self.infer(&f[1]);
                 let has_else = !is_nil(&f[2]);
-                let b = if has_else { self.infer(&f[2]) } else { Ty::Unit };
+                if !has_else {
+                    // `else` を省いた `if` の型は `()` (仕様: 暗黙の空の `else` と同じ)。値を使う位置では then 枝も `()` か発散でなければならない。
+                    // 途中の文として値を捨てる位置は、then 枝の値を捨てて解放する (検査しない)。
+                    let discarded = self.discard_if == Some(crate::parser::nid(e));
+                    if !discarded && a != Ty::Never && self.unify2(&Ty::Unit, &a).is_err() {
+                        let got = self.deep(&a).show();
+                        self.diag("E2020", format!("type mismatch in `if` without `else`: expected (), found {}", got), nline(e));
+                    }
+                    return Ty::Unit;
+                }
+                let b = self.infer(&f[2]);
                 if a == Ty::Never {
                     return b;
                 }
@@ -3296,7 +3316,7 @@ impl<'a> TypeCk<'a> {
                         let v = self.fresh(0);
                         Ty::Named("Option".into(), vec![v])
                     } else if self.p.types.contains_key(&en) {
-                        self.variant_ctor(&en, &vn, &[])
+                        self.variant_ctor(&en, &vn, &[], 0)
                     } else {
                         Ty::Unknown
                     }
@@ -3334,7 +3354,7 @@ impl<'a> TypeCk<'a> {
 
     /// ユーザー定義の enum の列挙子 `en.vn(args)` の型。型パラメータは新しい型変数にし、
     /// ペイロードの宣言型と実引数を単一化して決める。
-    fn variant_ctor(&mut self, en: &str, vn: &str, argt: &[Ty]) -> Ty {
+    fn variant_ctor(&mut self, en: &str, vn: &str, argt: &[Ty], line: usize) -> Ty {
         let Some(td) = self.type_def(en) else { return Ty::Named(en.to_string(), vec![]) };
         let gn = td.gnames();
         let order: Vec<&String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| &g.1).collect();
@@ -3346,7 +3366,16 @@ impl<'a> TypeCk<'a> {
             }
             for (pt, a) in payload.iter().zip(argt) {
                 let declared = subst(&from_v(pt, &gn), &bind);
-                let _ = self.unify2(&declared, a);
+                // 列挙子のペイロードの食い違いは、関数の戻り値と同じく E2020 にする (黙ると `E.A(5u8)` を通してしまう)。
+                if let Err(err) = self.unify2(&declared, a) {
+                    if let Some((want, got)) = self.ann_conflict(&declared, a, &err) {
+                        self.diag("E2020", format!("type mismatch in payload of `{}`: expected {}, found {}{}", vn, want, got, conv_hint(&want, &got)), line);
+                    }
+                } else if self.owned_ref_clash(&declared, a) {
+                    // 所有型のペイロードに参照を渡す (`A(out)`、`out: &mut String`)。Copy のスカラーの参照は従来どおり通す。
+                    let (want, got) = (self.deep(&declared).show(), self.deep(a).show());
+                    self.diag("E2020", format!("type mismatch in payload of `{}`: expected {}, found {}; there is no implicit dereference: pass the owned value", vn, want, got), line);
+                }
                 // enum のペイロードの欄は「受け側」の関数型が分かる: 宣言 × 宣言の効果の食い違いをここで報告する。
                 self.check_fn_conv_dir(&declared, a);
             }
@@ -3451,7 +3480,7 @@ impl<'a> TypeCk<'a> {
                         let t = self.fresh(0);
                         Ty::Named("Result".into(), vec![t, a0])
                     }
-                    _ if self.p.types.contains_key(&en) => self.variant_ctor(&en, &vn, &argt),
+                    _ if self.p.types.contains_key(&en) => self.variant_ctor(&en, &vn, &argt, line),
                     _ => Ty::Unknown,
                 }
             }
@@ -4196,6 +4225,48 @@ impl<'a> TypeCk<'a> {
     }
 
     fn ref_level_conflict(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
+        if let Some(p) = self.top_ref_conflict(want, got) {
+            return Some(p);
+        }
+        // 入れ子の型引数: 所有型 (Copy でない値) を参照のまま包むと、戻り値・列挙子のペイロードの食い違い。
+        // Copy のスカラーの参照 (`Option<&u32>` を `Option<u32>` とする形) は既存の扱いのまま通す。
+        let (w, g) = (self.deep(want), self.deep(got));
+        if !w.has_param() && !g.has_param() && self.owned_ref_clash(&w, &g) {
+            return Some((w.show(), g.show()));
+        }
+        None
+    }
+
+    /// 所有型 (Copy でない型) か。`String`・`Vec`・所有物を持つ構造体 / 列挙は所有型、`Option` / `Result` は中身で決まる。
+    /// 型定義が分からない名前 (標準ライブラリの不透明な型) は所有型とみなす。
+    fn owned_ty(&self, t: &Ty) -> bool {
+        match self.deep(t) {
+            Ty::Named(n, args) if n == "Option" || n == "Result" => args.iter().any(|a| self.owned_ty(a)),
+            Ty::Named(n, _) => self.type_def(&n).map_or(true, |d| !d.derive.iter().any(|x| x == "Copy")),
+            Ty::Tuple(xs) => xs.iter().any(|x| self.owned_ty(x)),
+            Ty::Array(x) => self.owned_ty(&x),
+            _ => false,
+        }
+    }
+
+    /// 入れ子の位置 (同じ名前の `Named` の型引数、同じ長さの `Tuple` の要素) で、所有型の値が参照のまま現れるか。
+    /// 決まっていない型変数の所は黙る。先頭の段数は `top_ref_conflict` が見る。
+    fn owned_ref_clash(&self, want: &Ty, got: &Ty) -> bool {
+        let (w, g) = (self.deep(want), self.deep(got));
+        match (&w, &g) {
+            (Ty::Ref(_, a), Ty::Ref(_, b)) => self.owned_ref_clash(a, b),
+            (x @ (Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_)), Ty::Ref(..)) => {
+                self.owned_ty(x) && !self.undetermined(x)
+            }
+            (Ty::Named(n, xs), Ty::Named(m, ys)) if n == m && xs.len() == ys.len() => {
+                xs.iter().zip(ys.iter()).any(|(x, y)| self.owned_ref_clash(x, y))
+            }
+            (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => xs.iter().zip(ys.iter()).any(|(x, y)| self.owned_ref_clash(x, y)),
+            _ => false,
+        }
+    }
+
+    fn top_ref_conflict(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
         let w = self.deep(want);
         let g = self.deep(got);
         if self.undetermined(&w) || self.undetermined(&g) || w.has_param() || g.has_param() {

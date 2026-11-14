@@ -1,0 +1,12 @@
+// expect: E2020
+enum t.E pub
+    A(alloc.string.String<std.alloc.System>)
+end t.E
+
+fn t.f(out: &mut alloc.string.String<std.alloc.System>) -> t.E uses [] panics never
+    t.E.A(out)
+end t.f
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main

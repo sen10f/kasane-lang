@@ -1,0 +1,8 @@
+// expect: E2020
+fn t.f(out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [] panics never
+    Ok(out)
+end t.f
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(1u8)
+end t.main
