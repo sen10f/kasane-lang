@@ -1,0 +1,185 @@
+import todo.error
+import todo.model
+
+const todo.store.MAX_TITLE: usize = 2048usize
+
+type todo.store.Store pub
+    path: alloc.string.String<std.alloc.System>
+    todos: alloc.vec.Vec<todo.model.Todo, std.alloc.System>
+end todo.store.Store
+
+fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &str) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub
+    if title.len() > todo.store.MAX_TITLE {
+        return Err(error.Error.BadRequest)
+    }
+    let id_base = match i64.try_from_usize(self.todos.len()) {
+        Ok(n) => n
+        Err(_e) => return Err(error.Error.BadRequest)
+    }
+    let id = id_base.wrapping_add(1i64)
+    let title_copy = alloc.string.String.from_str(std.alloc.SYSTEM, title)?
+    let created_copy = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
+    let new_todo = model.Todo { id: id, title: title_copy, done: false, created_at: created_copy }
+    self.todos.push(new_todo)?
+    match self.save() {
+        Ok(_u) => {
+            let all = self.todos.as_slice()
+            match all.last() {
+                Some(t) => Ok(t)
+                None => Err(error.Error.Corrupt)
+            }
+        }
+        Err(e) => {
+            core.mem.drop(self.todos.pop())
+            Err(e)
+        }
+    }
+end todo.store.Store.add
+
+fn todo.store.Store.get(self: &todo.store.Store, id: i64) -> Option<&todo.model.Todo> uses [] panics never pub
+    let all = self.todos.as_slice()
+    for i in core.iter.range(0usize, all.len()) {
+        match all.get(i) {
+            Some(t) => {
+                if t.id == id {
+                    return Some(t)
+                }
+            }
+            None => return None
+        }
+    }
+    None
+end todo.store.Store.get
+
+fn todo.store.Store.index_of(self: &todo.store.Store, id: i64) -> Result<usize, todo.error.Error> uses [] panics never pub
+    let all = self.todos.as_slice()
+    for i in core.iter.range(0usize, all.len()) {
+        match all.get(i) {
+            Some(t) => {
+                if t.id == id {
+                    return Ok(i)
+                }
+            }
+            None => return Err(error.Error.Corrupt)
+        }
+    }
+    Err(error.Error.NotFound)
+end todo.store.Store.index_of
+
+fn todo.store.Store.len(self: &todo.store.Store) -> usize uses [] panics never pub
+    self.todos.len()
+end todo.store.Store.len
+
+fn todo.store.Store.list(self: &todo.store.Store) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("[")?
+    let all = self.todos.as_slice()
+    for i in core.iter.range(0usize, all.len()) {
+        if i > 0usize {
+            out.push_str(",")?
+        }
+        match all.get(i) {
+            Some(t) => {
+                let s = model.to_json(t)?
+                out.push_str(s.as_str())?
+            }
+            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+        }
+    }
+    out.push_str("]")?
+    Ok(out)
+end todo.store.Store.list
+
+fn todo.store.Store.load(path: &str) -> Result<todo.store.Store, todo.error.Error> uses [alloc, io.fs] panics never pub
+    let mut store = todo.store.Store.new("")?
+    if std.fs.exists(path) {
+        let text = todo.store.read_text(path)?
+        store.parse_into(text.as_str())?
+    }
+    store.path = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    Ok(store)
+end todo.store.Store.load
+
+fn todo.store.Store.new(path: &str) -> Result<todo.store.Store, todo.error.Error> uses [alloc] panics never pub
+    let saved = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    Ok(todo.store.Store { path: saved, todos: alloc.vec.Vec.new(std.alloc.SYSTEM) })
+end todo.store.Store.new
+
+fn todo.store.Store.parse_into(self: &mut todo.store.Store, text: &str) -> Result<(), todo.error.Error> uses [alloc] panics never pub
+    match std.json.parse(text) {
+        Ok(doc) => {
+            let root = doc.root()
+            let todos = model.decode_array(&doc, root.at)?
+            self.todos = todos
+        }
+        Err(e) => return Err(error.Error.Json(e))
+    }
+    Ok(())
+end todo.store.Store.parse_into
+
+fn todo.store.Store.remove(self: &mut todo.store.Store, id: i64) -> Result<(), todo.error.Error> uses [alloc, io.fs] panics never pub
+    let index = todo.store.Store.index_of(self, id)?
+    core.mem.drop(self.todos.remove(index))
+    self.save()
+end todo.store.Store.remove
+
+fn todo.store.Store.save(self: &todo.store.Store) -> Result<(), todo.error.Error> uses [alloc, io.fs] panics never pub
+    if self.path.is_empty() {
+        return Ok(())
+    }
+    let body = self.list()?
+    std.fs.write_atomic(self.path.as_str(), body.as_bytes())?
+    Ok(())
+end todo.store.Store.save
+
+fn todo.store.Store.set_done(self: &mut todo.store.Store, id: i64, done: bool) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub
+    let index = todo.store.Store.index_of(self, id)?
+    {
+        let t = match self.todos.get_mut(index) {
+            Some(t) => t
+            None => return Err(error.Error.NotFound)
+        }
+        t.done = done
+    }
+    match self.save() {
+        Ok(_u) => {
+            let all = self.todos.as_slice()
+            match all.get(index) {
+                Some(t) => Ok(t)
+                None => Err(error.Error.Corrupt)
+            }
+        }
+        Err(e) => Err(e)
+    }
+end todo.store.Store.set_done
+
+fn todo.store.Store.toggle(self: &mut todo.store.Store, id: i64) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub
+    let index = todo.store.Store.index_of(self, id)?
+    {
+        let t = match self.todos.get_mut(index) {
+            Some(t) => t
+            None => return Err(error.Error.NotFound)
+        }
+        t.done = !t.done
+    }
+    match self.save() {
+        Ok(_u) => {
+            let all = self.todos.as_slice()
+            match all.get(index) {
+                Some(t) => Ok(t)
+                None => Err(error.Error.Corrupt)
+            }
+        }
+        Err(e) => Err(e)
+    }
+end todo.store.Store.toggle
+
+fn todo.store.read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, io.fs] panics never
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
+    }
+    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    text.push_bytes(data.as_slice()).map_err(error.push_failed)?
+    Ok(text)
+end todo.store.read_text

@@ -1,0 +1,64 @@
+import todo.pool
+import todo.server
+import todo.store
+
+const todo.DEFAULT_ADDRESS: &str = "127.0.0.1:8080"
+
+const todo.DEFAULT_COUNT: usize = 100usize
+
+const todo.DEFAULT_DB: &str = "todos.json"
+
+fn todo.main() -> Result<(), todo.error.Error> uses [alloc, env, io.console, io.fs, io.net, thread, time] panics may
+    if std.env.arg_count() == 0usize {
+        std.io.print_line("usage: todo <address> <count> <db-path> <workers>")?
+        return Ok(())
+    }
+    todo.serve_cli()
+end todo.main
+
+fn todo.report(n: usize) -> Result<(), todo.error.Error> uses [alloc, io.console] panics never pub
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str("served ")?
+    line.push_u64(u64.from_usize(n))?
+    std.io.print_line(line.as_str())?
+    Ok(())
+end todo.report
+
+fn todo.serve_cli() -> Result<(), todo.error.Error> uses [alloc, env, io.console, io.fs, io.net, thread, time] panics may
+    let address = match std.env.arg(0usize) {
+        Some(a) => a
+        None => todo.DEFAULT_ADDRESS
+    }
+    let count = match std.env.arg(1usize) {
+        Some(c) => usize.parse(c).map_err(todo.error.bad_number)?
+        None => todo.DEFAULT_COUNT
+    }
+    let path = match std.env.arg(2usize) {
+        Some(p) => p
+        None => todo.DEFAULT_DB
+    }
+    let workers = match std.env.arg(3usize) {
+        Some(w) => usize.parse(w).map_err(todo.error.bad_number)?
+        None => 0usize
+    }
+    if workers == 0usize {
+        let n = todo.serve_in_turn(address, count, path)?
+        return todo.report(n)
+    }
+    let n = todo.serve_pooled(address, count, path, workers)?
+    todo.report(n)
+end todo.serve_cli
+
+fn todo.serve_in_turn(address: &str, count: usize, path: &str) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, time] panics never
+    with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
+        let mut db = store.Store.load(path)?
+        server.serve(&listener, &mut db, count)
+    }
+end todo.serve_in_turn
+
+fn todo.serve_pooled(address: &str, count: usize, path: &str, workers: usize) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, thread, time] panics may
+    with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
+        let db = store.Store.load(path)?
+        pool.serve(&listener, db, count, workers)
+    }
+end todo.serve_pooled

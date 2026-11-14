@@ -1,0 +1,87 @@
+import todo.error
+import todo.http
+
+const todo.wire.MAX_REPLY: usize = 65536usize
+
+fn todo.wire.read_chunk(stream: &mut std.net.TcpStream, data: &mut alloc.vec.Vec<u8, std.alloc.System>) -> Result<usize, todo.error.Error> uses [alloc, io.net] panics never pub
+    let mut chunk = [0u8; 512]
+    let n = stream.read(&mut chunk)?
+    for i in core.iter.range(0usize, n) {
+        match chunk.get(i) {
+            Some(b) => data.push(b)?
+            None => return Err(error.io_failed())
+        }
+    }
+    Ok(n)
+end todo.wire.read_chunk
+
+fn todo.wire.read_request(stream: &mut std.net.TcpStream) -> Result<todo.http.Request, todo.error.Error> uses [alloc, io.net] panics never pub
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut head_end = 0usize
+    loop {
+        if todo.wire.read_chunk(stream, &mut data)? == 0usize {
+            return Err(error.Error.Closed)
+        }
+        match http.find_head_end(data.as_slice()) {
+            Some(n) => {
+                head_end = n
+                break
+            }
+            None => core.mem.drop(0u8)
+        }
+        if data.len() > http.MAX_HEAD {
+            return Err(error.Error.TooLarge)
+        }
+    }
+    let head_bytes = match data.as_slice().sub(0usize, head_end) {
+        Some(b) => b
+        None => return Err(error.Error.BadRequest)
+    }
+    let head = http.parse_head(head_bytes)?
+    let total = match head_end.checked_add(head.content_length) {
+        Some(t) => t
+        None => return Err(error.Error.TooLarge)
+    }
+    while data.len() < total {
+        if todo.wire.read_chunk(stream, &mut data)? == 0usize {
+            return Err(error.Error.Closed)
+        }
+    }
+    let body_bytes = match data.as_slice().sub(head_end, total) {
+        Some(b) => b
+        None => return Err(error.Error.BadRequest)
+    }
+    let mut body = alloc.string.String.new(std.alloc.SYSTEM)
+    body.push_bytes(body_bytes).map_err(error.push_failed)?
+    Ok(http.Request { body: body, method: head.method, path: head.path })
+end todo.wire.read_request
+
+fn todo.wire.read_to_close(stream: &mut std.net.TcpStream) -> Result<alloc.vec.Vec<u8, std.alloc.System>, todo.error.Error> uses [alloc, io.net] panics never pub
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    loop {
+        if todo.wire.read_chunk(stream, &mut data)? == 0usize {
+            break
+        }
+        if data.len() > todo.wire.MAX_REPLY {
+            return Err(error.Error.TooLarge)
+        }
+    }
+    Ok(data)
+end todo.wire.read_to_close
+
+fn todo.wire.write_all(stream: &mut std.net.TcpStream, data: &[u8]) -> Result<(), todo.error.Error> uses [io.net] panics never pub
+    let mut sent = 0usize
+    while sent < data.len() {
+        let rest = match data.sub(sent, data.len()) {
+            Some(r) => r
+            None => return Err(error.io_failed())
+        }
+        let n = stream.write(rest)?
+        if n == 0usize {
+            return Err(error.io_failed())
+        }
+        sent = sent.saturating_add(n)
+    }
+    stream.flush()?
+    Ok(())
+end todo.wire.write_all

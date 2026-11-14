@@ -1,0 +1,44 @@
+import todo.error
+import todo.http
+import todo.router
+import todo.wire
+
+fn todo.server.respond(stream: &mut std.net.TcpStream, db: &mut todo.store.Store) -> Result<(), todo.error.Error> uses [alloc, io.fs, io.net, time] panics never pub
+    let response = match wire.read_request(stream) {
+        Ok(request) => router.route(db, &request)?
+        Err(error.Error.BadRequest) => router.error_response(400u16, "bad request")?
+        Err(error.Error.TooLarge) => router.error_response(413u16, "payload too large")?
+        Err(other) => return Err(other)
+    }
+    let text = http.render_response(&response)?
+    wire.write_all(stream, text.as_str().as_bytes())
+end todo.server.respond
+
+fn todo.server.serve(listener: &std.net.TcpListener, db: &mut todo.store.Store, count: usize) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, time] panics never pub
+    for _i in core.iter.range(0usize, count) {
+        todo.server.serve_one(listener, db)?
+    }
+    Ok(count)
+end todo.server.serve
+
+fn todo.server.serve_one(listener: &std.net.TcpListener, db: &mut todo.store.Store) -> Result<(), todo.error.Error> uses [alloc, io.fs, io.net, time] panics never pub
+    let handled = with mut stream = listener.accept()? close core.mem.drop(stream.close()) {
+        todo.server.respond(&mut stream, db)
+    }
+    todo.server.settle(handled)
+end todo.server.serve_one
+
+fn todo.server.settle(handled: Result<(), todo.error.Error>) -> Result<(), todo.error.Error> uses [] panics never pub
+    match handled {
+        Ok(_u) => Ok(())
+        Err(error.Error.Alloc(a)) => Err(error.Error.Alloc(a))
+        Err(error.Error.BadRequest) => Ok(())
+        Err(error.Error.Closed) => Ok(())
+        Err(error.Error.Corrupt) => Err(error.Error.Corrupt)
+        Err(error.Error.Io(_e)) => Ok(())
+        Err(error.Error.Json(_e)) => Ok(())
+        Err(error.Error.Net(_e)) => Ok(())
+        Err(error.Error.NotFound) => Ok(())
+        Err(error.Error.TooLarge) => Ok(())
+    }
+end todo.server.settle

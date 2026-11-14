@@ -1,0 +1,419 @@
+import todo.error
+
+const todo.http.MAX_BODY: usize = 4096usize
+
+const todo.http.MAX_HEAD: usize = 8192usize pub
+
+type todo.http.Head pub
+    content_length: usize pub
+    method: todo.http.Method pub
+    path: alloc.string.String<std.alloc.System> pub
+end todo.http.Head
+
+enum todo.http.Method derive [Debug, Clone, Copy, PartialEq] pub
+    Get
+    Delete
+    Other
+    Patch
+    Post
+end todo.http.Method
+
+type todo.http.Reply pub
+    body: alloc.string.String<std.alloc.System> pub
+    location: alloc.string.String<std.alloc.System> pub
+    status: u16 pub
+end todo.http.Reply
+
+type todo.http.Request pub
+    body: alloc.string.String<std.alloc.System> pub
+    method: todo.http.Method pub
+    path: alloc.string.String<std.alloc.System> pub
+end todo.http.Request
+
+type todo.http.Response pub
+    body: alloc.string.String<std.alloc.System> pub
+    location: alloc.string.String<std.alloc.System> pub
+    status: u16 pub
+end todo.http.Response
+
+fn todo.http.build_request(method: &str, path: &str, body: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str(method)?
+    out.push_str(" ")?
+    out.push_str(path)?
+    out.push_str(" HTTP/1.1\r\nHost: localhost\r\nContent-Length: ")?
+    out.push_u64(u64.from_usize(body.len()))?
+    out.push_str("\r\nConnection: close\r\n\r\n")?
+    out.push_str(body)?
+    Ok(out)
+end todo.http.build_request
+
+fn todo.http.find_head_end(buf: &[u8]) -> Option<usize> uses [] panics never pub
+    let len = buf.len()
+    for i in core.iter.range(0usize, len) {
+        let stop = i.saturating_add(4usize)
+        if stop <= len {
+            match buf.sub(i, stop) {
+                Some(window) => {
+                    if window == b"\r\n\r\n" {
+                        return Some(stop)
+                    }
+                }
+                None => return None
+            }
+        }
+    }
+    None
+end todo.http.find_head_end
+
+fn todo.http.header_value['a](head: &'a str, name: &str) -> Option<&'a str> uses [] panics never pub
+    for line in head.split("\r\n") {
+        match line.split_once(":") {
+            Some((key, value)) => {
+                if key.eq_ignore_ascii_case(name) {
+                    return Some(value.trim())
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    None
+end todo.http.header_value
+
+fn todo.http.headers_well_formed(lines: &str) -> bool uses [] panics never
+    for line in lines.split("\r\n") {
+        if !line.is_empty() {
+            match line.split_once(":") {
+                Some((key, _value)) => {
+                    if key.is_empty() || key.contains(" ") || key.contains("\t") {
+                        return false
+                    }
+                }
+                None => return false
+            }
+        }
+    }
+    true
+end todo.http.headers_well_formed
+
+fn todo.http.json_response(status: u16, body: alloc.string.String<std.alloc.System>) -> todo.http.Response uses [] panics never pub
+    let location = alloc.string.String.new(std.alloc.SYSTEM)
+    todo.http.Response { body: body, location: location, status: status }
+end todo.http.json_response
+
+fn todo.http.method_of(text: &str) -> Option<todo.http.Method> uses [] panics never
+    if text.is_empty() {
+        return None
+    }
+    for c in text.chars() {
+        if c < 'A' || c > 'Z' {
+            return None
+        }
+    }
+    if text == "GET" {
+        return Some(todo.http.Method.Get)
+    }
+    if text == "POST" {
+        return Some(todo.http.Method.Post)
+    }
+    if text == "PATCH" {
+        return Some(todo.http.Method.Patch)
+    }
+    if text == "DELETE" {
+        return Some(todo.http.Method.Delete)
+    }
+    Some(todo.http.Method.Other)
+end todo.http.method_of
+
+fn todo.http.parse_content_length(head: &str) -> Result<usize, todo.error.Error> uses [] panics never
+    let value = match todo.http.header_value(head, "content-length") {
+        Some(v) => v
+        None => return Ok(0usize)
+    }
+    if value.is_empty() {
+        return Err(error.Error.BadRequest)
+    }
+    for c in value.chars() {
+        if c < '0' || c > '9' {
+            return Err(error.Error.BadRequest)
+        }
+    }
+    let n = match usize.parse(value) {
+        Ok(n) => n
+        Err(_e) => return Err(error.Error.BadRequest)
+    }
+    if n > todo.http.MAX_BODY {
+        return Err(error.Error.TooLarge)
+    }
+    Ok(n)
+end todo.http.parse_content_length
+
+fn todo.http.parse_head(head: &[u8]) -> Result<todo.http.Head, todo.error.Error> uses [alloc] panics never pub
+    let text = core.str.from_utf8(head).map_err(error.bad_text)?
+    let (line, headers) = match text.split_once("\r\n") {
+        Some(pair) => pair
+        None => return Err(error.Error.BadRequest)
+    }
+    let (method_text, after) = match line.split_once(" ") {
+        Some(pair) => pair
+        None => return Err(error.Error.BadRequest)
+    }
+    let (path, version) = match after.split_once(" ") {
+        Some(pair) => pair
+        None => return Err(error.Error.BadRequest)
+    }
+    if version != "HTTP/1.1" && version != "HTTP/1.0" {
+        return Err(error.Error.BadRequest)
+    }
+    if !path.starts_with("/") {
+        return Err(error.Error.BadRequest)
+    }
+    let method = match todo.http.method_of(method_text) {
+        Some(m) => m
+        None => return Err(error.Error.BadRequest)
+    }
+    if !todo.http.headers_well_formed(headers) {
+        return Err(error.Error.BadRequest)
+    }
+    let content_length = todo.http.parse_content_length(headers)?
+    let owned = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    Ok(todo.http.Head { content_length: content_length, method: method, path: owned })
+end todo.http.parse_head
+
+fn todo.http.parse_reply(raw: &[u8]) -> Result<todo.http.Reply, todo.error.Error> uses [alloc] panics never pub
+    let head_end = match todo.http.find_head_end(raw) {
+        Some(n) => n
+        None => return Err(error.Error.BadRequest)
+    }
+    let (head_bytes, body_bytes) = match raw.split_at(head_end) {
+        Some(pair) => pair
+        None => return Err(error.Error.BadRequest)
+    }
+    let head = core.str.from_utf8(head_bytes).map_err(error.bad_text)?
+    let (status_line, headers) = match head.split_once("\r\n") {
+        Some(pair) => pair
+        None => return Err(error.Error.BadRequest)
+    }
+    let digits = match status_line.strip_prefix("HTTP/1.1 ") {
+        Some(rest) => rest
+        None => return Err(error.Error.BadRequest)
+    }
+    let (code_text, _reason) = match digits.split_once(" ") {
+        Some(pair) => pair
+        None => return Err(error.Error.BadRequest)
+    }
+    let status = match u16.parse(code_text) {
+        Ok(n) => n
+        Err(_e) => return Err(error.Error.BadRequest)
+    }
+    if todo.http.parse_content_length(headers)? != body_bytes.len() {
+        return Err(error.Error.BadRequest)
+    }
+    let mut body = alloc.string.String.new(std.alloc.SYSTEM)
+    body.push_bytes(body_bytes).map_err(error.push_failed)?
+    let mut location = alloc.string.String.new(std.alloc.SYSTEM)
+    match todo.http.header_value(headers, "location") {
+        Some(v) => location.push_str(v)?
+        None => core.mem.drop(0u8)
+    }
+    Ok(todo.http.Reply { body: body, location: location, status: status })
+end todo.http.parse_reply
+
+fn todo.http.reason(status: u16) -> &'static str uses [] panics never pub
+    match status {
+        200u16 => "OK"
+        201u16 => "Created"
+        204u16 => "No Content"
+        302u16 => "Found"
+        400u16 => "Bad Request"
+        404u16 => "Not Found"
+        405u16 => "Method Not Allowed"
+        413u16 => "Payload Too Large"
+        _ => "Internal Server Error"
+    }
+end todo.http.reason
+
+fn todo.http.redirect_response(location: &str, body: alloc.string.String<std.alloc.System>) -> Result<todo.http.Response, todo.error.Error> uses [alloc] panics never pub
+    let place = alloc.string.String.from_str(std.alloc.SYSTEM, location)?
+    Ok(todo.http.Response { body: body, location: place, status: 302u16 })
+end todo.http.redirect_response
+
+fn todo.http.render_response(response: &todo.http.Response) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("HTTP/1.1 ")?
+    out.push_u64(u64.from_u16(response.status))?
+    out.push_str(" ")?
+    out.push_str(todo.http.reason(response.status))?
+    out.push_str("\r\nContent-Type: application/json\r\nContent-Length: ")?
+    out.push_u64(u64.from_usize(response.body.len()))?
+    out.push_str("\r\n")?
+    if !response.location.is_empty() {
+        out.push_str("Location: ")?
+        out.push_str(response.location.as_str())?
+        out.push_str("\r\n")?
+    }
+    out.push_str("Connection: close\r\n\r\n")?
+    out.push_str(response.body.as_str())?
+    Ok(out)
+end todo.http.render_response
+
+fn todo.http.test_head(text: &str) -> Result<todo.http.Head, todo.error.Error> uses [alloc] panics never
+    todo.http.parse_head(text.as_bytes())
+end todo.http.test_head
+
+fn todo.http.test_head_err(text: &str) -> Result<(), todo.error.Error> uses [alloc] panics never
+    match todo.http.test_head(text) {
+        Ok(_h) => Ok(())
+        Err(e) => Err(e)
+    }
+end todo.http.test_head_err
+
+fn todo.http.test_len(head: &str) -> Result<usize, todo.error.Error> uses [] panics never
+    todo.http.parse_content_length(head)
+end todo.http.test_len
+
+test todo.http.build_request.test_format
+    match todo.http.build_request("POST", "/todos", "{\"title\":\"x\"}") {
+        Ok(text) => {
+            let want = "POST /todos HTTP/1.1\r\nHost: localhost\r\nContent-Length: 13\r\nConnection: close\r\n\r\n{\"title\":\"x\"}"
+            core.check.eq(text.as_str(), want)
+        }
+        Err(_e) => core.panic.panic("build_request")
+    }
+end todo.http.build_request.test_format
+
+test todo.http.find_head_end.test_finds_blank_line
+    core.check.eq(todo.http.find_head_end(b"a\r\n\r\nbody"), Some(5usize))
+    core.check.eq(todo.http.find_head_end(b"\r\n\r\n"), Some(4usize))
+    core.check.eq(todo.http.find_head_end(b"a\r\nb\r\n"), None)
+    core.check.eq(todo.http.find_head_end(b""), None)
+end todo.http.find_head_end.test_finds_blank_line
+
+test todo.http.header_value.test_lookup
+    let head = "Host: x\r\ncontent-LENGTH:  12 \r\nLocation: http://a.test/\r\n"
+    core.check.eq(todo.http.header_value(head, "Content-Length"), Some("12"))
+    core.check.eq(todo.http.header_value(head, "location"), Some("http://a.test/"))
+    core.check.eq(todo.http.header_value(head, "x-missing"), None)
+end todo.http.header_value.test_lookup
+
+test todo.http.parse_content_length.test_values
+    let bad = Err(error.Error.BadRequest)
+    core.check.eq(todo.http.test_len("Host: x\r\n"), Ok(0usize))
+    core.check.eq(todo.http.test_len("Content-Length: 17"), Ok(17usize))
+    core.check.eq(todo.http.test_len("Content-Length: 4096"), Ok(4096usize))
+    core.check.eq(todo.http.test_len("Content-Length: 4097"), Err(error.Error.TooLarge))
+    core.check.eq(todo.http.test_len("Content-Length: -1"), bad)
+    core.check.eq(todo.http.test_len("Content-Length: +1"), bad)
+    core.check.eq(todo.http.test_len("Content-Length: abc"), bad)
+    core.check.eq(todo.http.test_len("Content-Length:"), bad)
+    core.check.eq(todo.http.test_len("Content-Length: 99999999999999999999999999"), bad)
+end todo.http.parse_content_length.test_values
+
+test todo.http.parse_head.test_accepts_requests
+    match todo.http.test_head("GET /todos HTTP/1.1\r\nHost: x\r\n\r\n") {
+        Ok(h) => {
+            core.check.eq(h.method, todo.http.Method.Get)
+            core.check.eq(h.path.as_str(), "/todos")
+            core.check.eq(h.content_length, 0usize)
+        }
+        Err(_e) => core.panic.panic("get")
+    }
+    match todo.http.test_head("POST /todos HTTP/1.0\r\ncontent-length: 15\r\n\r\n") {
+        Ok(h) => {
+            core.check.eq(h.method, todo.http.Method.Post)
+            core.check.eq(h.path.as_str(), "/todos")
+            core.check.eq(h.content_length, 15usize)
+        }
+        Err(_e) => core.panic.panic("post")
+    }
+    match todo.http.test_head("DELETE /todos/1 HTTP/1.1\r\n\r\n") {
+        Ok(h) => core.check.eq(h.method, todo.http.Method.Delete)
+        Err(_e) => core.panic.panic("delete")
+    }
+    match todo.http.test_head("PATCH /todos/1 HTTP/1.1\r\n\r\n") {
+        Ok(h) => core.check.eq(h.method, todo.http.Method.Patch)
+        Err(_e) => core.panic.panic("patch")
+    }
+end todo.http.parse_head.test_accepts_requests
+
+test todo.http.parse_head.test_rejects_malformed
+    let bad = error.Error.BadRequest
+    core.check.eq(todo.http.test_head("GET /x HTTP/2\r\n\r\n").is_err(), true)
+    core.check.eq(todo.http.test_head_err("GET x HTTP/1.1\r\n\r\n"), Err(bad))
+    core.check.eq(todo.http.test_head_err("GET /x\r\n\r\n"), Err(bad))
+    core.check.eq(todo.http.test_head_err("GET\r\n\r\n"), Err(bad))
+    core.check.eq(todo.http.test_head_err("get /x HTTP/1.1\r\n\r\n"), Err(bad))
+    core.check.eq(todo.http.test_head_err(" /x HTTP/1.1\r\n\r\n"), Err(bad))
+    core.check.eq(todo.http.test_head_err("GET /x HTTP/1.1\r\nbroken header\r\n\r\n"), Err(bad))
+    core.check.eq(todo.http.test_head_err("GET /x HTTP/1.1\r\n: v\r\n\r\n"), Err(bad))
+    let bad_length = "GET /x HTTP/1.1\r\nContent-Length: x\r\n\r\n"
+    core.check.eq(todo.http.test_head_err(bad_length), Err(bad))
+    let too_long = "GET /x HTTP/1.1\r\nContent-Length: 9999\r\n\r\n"
+    core.check.eq(todo.http.test_head_err(too_long), Err(error.Error.TooLarge))
+    core.check.eq(todo.http.test_head("").is_err(), true)
+    core.check.eq(todo.http.parse_head(b"GET /\xff HTTP/1.1\r\n\r\n").is_err(), true)
+end todo.http.parse_head.test_rejects_malformed
+
+test todo.http.parse_reply.test_rejects_wrong_length
+    let short = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nabc"
+    core.check.eq(todo.http.parse_reply(short).is_err(), true)
+    let long = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nabc"
+    core.check.eq(todo.http.parse_reply(long).is_err(), true)
+    core.check.eq(todo.http.parse_reply(b"HTTP/1.1 200 OK\r\n").is_err(), true)
+    core.check.eq(todo.http.parse_reply(b"HTTP/1.1 abc OK\r\n\r\n").is_err(), true)
+    let found = b"HTTP/1.1 302 Found\r\nLocation: http://a.test/\r\nContent-Length: 2\r\n\r\n{}"
+    match todo.http.parse_reply(found) {
+        Ok(r) => {
+            core.check.eq(r.status, 302u16)
+            core.check.eq(r.location.as_str(), "http://a.test/")
+            core.check.eq(r.body.as_str(), "{}")
+        }
+        Err(_e) => core.panic.panic("302")
+    }
+end todo.http.parse_reply.test_rejects_wrong_length
+
+test todo.http.parse_reply.test_round_trip
+    let body = alloc.string.String.new(std.alloc.SYSTEM)
+    let response = todo.http.json_response(404u16, body)
+    match todo.http.render_response(&response) {
+        Ok(text) => {
+            match todo.http.parse_reply(text.as_str().as_bytes()) {
+                Ok(r) => {
+                    core.check.eq(r.status, 404u16)
+                    core.check.eq(r.body.as_str(), "")
+                    core.check.eq(r.location.as_str(), "")
+                }
+                Err(_e) => core.panic.panic("parse_reply")
+            }
+        }
+        Err(_e) => core.panic.panic("render")
+    }
+end todo.http.parse_reply.test_round_trip
+
+test todo.http.render_response.test_headers_and_length
+    let mut body = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(body.push_str("{\"a\":1}"))
+    let response = todo.http.json_response(201u16, body)
+    match todo.http.render_response(&response) {
+        Ok(text) => {
+            let want = "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 7\r\nConnection: close\r\n\r\n{\"a\":1}"
+            core.check.eq(text.as_str(), want)
+        }
+        Err(_e) => core.panic.panic("render")
+    }
+    let mut note = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(note.push_str("日本"))
+    match todo.http.redirect_response("http://a.test/x", note) {
+        Ok(r) => {
+            match todo.http.render_response(&r) {
+                Ok(text) => {
+                    core.check.eq(text.contains("Location: http://a.test/x\r\n"), true)
+                    core.check.eq(text.contains("Content-Length: 6\r\n"), true)
+                    core.check.eq(text.starts_with("HTTP/1.1 302 Found\r\n"), true)
+                }
+                Err(_e) => core.panic.panic("render 302")
+            }
+        }
+        Err(_e) => core.panic.panic("redirect")
+    }
+end todo.http.render_response.test_headers_and_length
