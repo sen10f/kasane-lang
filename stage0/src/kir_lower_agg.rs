@@ -559,7 +559,7 @@ impl AggTab {
         if let Some(&i) = self.by_name.get(&d.name) {
             return Ok(Ty::Agg(i));
         }
-        if (d.kw != "type" && d.kw != "enum") || !d.generics.is_empty() {
+        if (d.kw != "type" && d.kw != "enum") || !d.generics.iter().all(|g| g.0 == "life") {
             return Err(format!("型 {} は段階 1 の対象外 (構造体・列挙型でない、またはジェネリクス)", d.name));
         }
         if !self.busy.insert(d.name.clone()) {
