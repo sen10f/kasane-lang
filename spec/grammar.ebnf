@@ -64,7 +64,7 @@ stack_attr    = "stack" , int_dec ;
 impls_attr    = "impls" , trait_ref ;
 requires_attr = "requires" , trait_ref , { "," , trait_ref } ;
 derive_attr   = "derive" , "[" , derive_name , { "," , derive_name } , "]" ;
-derive_name   = "Debug" | "Clone" | "Copy" | "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Hash" | "From" ;
+derive_name   = "Debug" | "Clone" | "Copy" | "TryClone" | "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Hash" | "From" ;
 
 (* ---------- ジェネリクス ---------- *)
 generics      = "[" , gparam , { "," , gparam } , "]" ;

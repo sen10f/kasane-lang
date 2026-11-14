@@ -360,6 +360,7 @@ pub(crate) const DERIVE_TRAITS: &[(&str, &str)] = &[
     ("Debug", "core.fmt.Debug"),
     ("Clone", "core.ops.Clone"),
     ("Copy", "core.ops.Copy"),
+    ("TryClone", "alloc.alloc.TryClone"),
     ("PartialEq", "core.cmp.PartialEq"),
     ("Eq", "core.cmp.Eq"),
     ("PartialOrd", "core.cmp.PartialOrd"),
@@ -5560,6 +5561,10 @@ impl<'a> Checker<'a> {
     fn implements(&self, ty: &str, tr: &str) -> bool {
         let Some(&i) = self.p.types.get(ty) else { return true };
         if self.p.impls.contains(&(tr.to_string(), ty.to_string())) {
+            return true;
+        }
+        // `Clone` を実装する型は `TryClone` も持つ (確保なしの複製は確保ありの複製でもある)。
+        if tr == "alloc.alloc.TryClone" && self.implements(ty, "core.ops.Clone") {
             return true;
         }
         self.def(i).derive.iter().any(|x| DERIVE_TRAITS.iter().any(|(k, v)| k == x && *v == tr))

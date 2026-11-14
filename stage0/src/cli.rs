@@ -1408,6 +1408,22 @@ fn derived_impls(d: &Def) -> Option<String> {
                 }
                 out.push(format!("end {}.clone", n));
             }
+            "TryClone" => {
+                out.push(format!(
+                    "impl alloc.alloc.TryClone for {0}\nfn {0}.try_clone(self: &{0}) -> Result<{0}, alloc.alloc.AllocError> uses [alloc] panics never impls alloc.alloc.TryClone",
+                    n
+                ));
+                if d.kw == "type" {
+                    out.push(format!(
+                        "    Ok({} {{ {} }})",
+                        n,
+                        d.fields.iter().map(|f| format!("{0}: self.{0}.try_clone()?", f.0)).collect::<Vec<_>>().join(", ")
+                    ));
+                } else {
+                    out.push("    // try_clone each variant payload, propagating the error with `?`".into());
+                }
+                out.push(format!("end {}.try_clone", n));
+            }
             "PartialEq" => {
                 out.push(format!(
                     "impl core.cmp.PartialEq<{0}> for {0}\nfn {0}.eq(self: &{0}, other: &{0}) -> bool uses [] panics never impls core.cmp.PartialEq<{0}>",

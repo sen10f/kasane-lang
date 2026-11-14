@@ -28,5 +28,6 @@ fn alloc.vec.Vec.push[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A
 fn alloc.vec.Vec.remove[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>, index: usize) -> Option<T> uses [] panics never pub
 fn alloc.vec.Vec.reserve[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>, additional: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
 fn alloc.vec.Vec.truncate[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>, length: usize) -> () uses [] panics never pub
-fn alloc.vec.Vec.try_clone[T: core.ops.Clone, A: alloc.alloc.Allocator + core.ops.Clone](self: &alloc.vec.Vec<T, A>) -> Result<alloc.vec.Vec<T, A>, alloc.alloc.AllocError> uses [alloc] panics never pub
+impl[T: alloc.alloc.TryClone, A: alloc.alloc.Allocator + core.ops.Clone] alloc.alloc.TryClone for alloc.vec.Vec<T, A>
+fn alloc.vec.Vec.try_clone[T: alloc.alloc.TryClone, A: alloc.alloc.Allocator + core.ops.Clone](self: &alloc.vec.Vec<T, A>) -> Result<alloc.vec.Vec<T, A>, alloc.alloc.AllocError> uses [alloc] panics never impls alloc.alloc.TryClone pub
 fn alloc.vec.Vec.with_capacity[T, A: alloc.alloc.Allocator](allocator: A, capacity: usize) -> Result<alloc.vec.Vec<T, A>, alloc.alloc.AllocError> uses [alloc] panics never pub
