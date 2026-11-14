@@ -425,33 +425,57 @@ impl<'a> Vm<'a> {
                 Ins::MovN { d, s, n } => unsafe { std::ptr::copy(rp.add(*s as usize), rp.add(*d as usize), *n as usize) },
                 Ins::AddImm { d, a, imm } => w!(*d, r!(*a).wrapping_add(*imm as u64)),
                 Ins::PtrAdd { d, p, off } => w!(*d, r!(*p).wrapping_add(r!(*off))),
-                Ins::AddTI { d, a, t, imm } => {
-                    let v = ldv(*t, r!(*a)) + *imm as i128;
-                    let (lo, hi) = fast_lo_hi(*t);
-                    if v < lo || v > hi {
+                Ins::AddNI { d, a, t, imm } => {
+                    let v = r!(*a) as i64 + *imm as i64;
+                    if v < LO64[*t as usize] || v > HI64[*t as usize] {
                         panic_out!(kir_exec::overflow_msg(Aop::Add));
                     }
                     w!(*d, v as u64);
                 }
-                Ins::SubTI { d, a, t, imm } => {
-                    let v = ldv(*t, r!(*a)) - *imm as i128;
-                    let (lo, hi) = fast_lo_hi(*t);
-                    if v < lo || v > hi {
+                Ins::SubNI { d, a, t, imm } => {
+                    let v = r!(*a) as i64 - *imm as i64;
+                    if v < LO64[*t as usize] || v > HI64[*t as usize] {
                         panic_out!(kir_exec::overflow_msg(Aop::Sub));
                     }
                     w!(*d, v as u64);
                 }
-                Ins::MulTI { d, a, t, imm } => {
-                    let v = ldv(*t, r!(*a)).wrapping_mul(*imm as i128);
-                    let (lo, hi) = fast_lo_hi(*t);
-                    if v < lo || v > hi {
+                Ins::MulNI { d, a, t, imm } => {
+                    let v = (r!(*a) as i64).wrapping_mul(*imm as i64);
+                    if v < LO64[*t as usize] || v > HI64[*t as usize] {
                         panic_out!(kir_exec::overflow_msg(Aop::Mul));
                     }
                     w!(*d, v as u64);
                 }
-                Ins::AddWI { d, a, t, imm } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_add(*imm as i128))),
-                Ins::SubWI { d, a, t, imm } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_sub(*imm as i128))),
-                Ins::MulWI { d, a, t, imm } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_mul(*imm as i128))),
+                Ins::AddSI { d, a, imm } => match (r!(*a) as i64).checked_add(*imm as i64) {
+                    Some(v) => w!(*d, v as u64),
+                    None => panic_out!(kir_exec::overflow_msg(Aop::Add)),
+                },
+                Ins::SubSI { d, a, imm } => match (r!(*a) as i64).checked_sub(*imm as i64) {
+                    Some(v) => w!(*d, v as u64),
+                    None => panic_out!(kir_exec::overflow_msg(Aop::Sub)),
+                },
+                Ins::MulSI { d, a, imm } => match (r!(*a) as i64).checked_mul(*imm as i64) {
+                    Some(v) => w!(*d, v as u64),
+                    None => panic_out!(kir_exec::overflow_msg(Aop::Mul)),
+                },
+                Ins::AddUI { d, a, imm } => match r!(*a).checked_add(*imm as i64 as u64) {
+                    Some(v) if *imm >= 0 => w!(*d, v),
+                    _ => panic_out!(kir_exec::overflow_msg(Aop::Add)),
+                },
+                Ins::SubUI { d, a, imm } => match r!(*a).checked_sub(*imm as i64 as u64) {
+                    Some(v) if *imm >= 0 => w!(*d, v),
+                    _ => panic_out!(kir_exec::overflow_msg(Aop::Sub)),
+                },
+                Ins::MulUI { d, a, imm } => match r!(*a).checked_mul(*imm as i64 as u64) {
+                    Some(v) if *imm >= 0 => w!(*d, v),
+                    _ => panic_out!(kir_exec::overflow_msg(Aop::Mul)),
+                },
+                Ins::AddW64I { d, a, imm } => w!(*d, r!(*a).wrapping_add(*imm as i64 as u64)),
+                Ins::SubW64I { d, a, imm } => w!(*d, r!(*a).wrapping_sub(*imm as i64 as u64)),
+                Ins::MulW64I { d, a, imm } => w!(*d, r!(*a).wrapping_mul(*imm as i64 as u64)),
+                Ins::AddWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_add(*imm as i64 as u64))),
+                Ins::SubWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_sub(*imm as i64 as u64))),
+                Ins::MulWI { d, a, t, imm } => w!(*d, wrap_fast(*t, r!(*a).wrapping_mul(*imm as i64 as u64))),
                 Ins::CmpII { d, a, cx, imm } => w!(*d, cx_eval(*cx, r!(*a), *imm as i64 as u64) as u64),
                 Ins::JCmpNotI { cx, a, imm, to } => {
                     if !cx_eval(*cx, r!(*a), *imm as i64 as u64) {
@@ -484,33 +508,58 @@ impl<'a> Vm<'a> {
                         pc = *to as usize;
                     }
                 }
-                Ins::AddT { d, a, b, t } => {
-                    let v = ldv(*t, r!(*a)) + ldv(*t, r!(*b));
-                    let (lo, hi) = fast_lo_hi(*t);
-                    if v < lo || v > hi {
+                Ins::AddN { d, a, b, t } => {
+                    let v = r!(*a) as i64 + r!(*b) as i64;
+                    if v < LO64[*t as usize] || v > HI64[*t as usize] {
                         panic_out!(kir_exec::overflow_msg(Aop::Add));
                     }
                     w!(*d, v as u64);
                 }
-                Ins::SubT { d, a, b, t } => {
-                    let v = ldv(*t, r!(*a)) - ldv(*t, r!(*b));
-                    let (lo, hi) = fast_lo_hi(*t);
-                    if v < lo || v > hi {
+                Ins::SubN { d, a, b, t } => {
+                    let v = r!(*a) as i64 - r!(*b) as i64;
+                    if v < LO64[*t as usize] || v > HI64[*t as usize] {
                         panic_out!(kir_exec::overflow_msg(Aop::Sub));
                     }
                     w!(*d, v as u64);
                 }
-                Ins::MulT { d, a, b, t } => {
-                    let (lo, hi) = fast_lo_hi(*t);
-                    match ldv(*t, r!(*a)).checked_mul(ldv(*t, r!(*b))) {
-                        Some(v) if v >= lo && v <= hi => w!(*d, v as u64),
-                        _ => panic_out!(kir_exec::overflow_msg(Aop::Mul)),
+                Ins::MulN { d, a, b, t } => {
+                    let v = (r!(*a) as i64).wrapping_mul(r!(*b) as i64);
+                    if v < LO64[*t as usize] || v > HI64[*t as usize] {
+                        panic_out!(kir_exec::overflow_msg(Aop::Mul));
                     }
+                    w!(*d, v as u64);
                 }
-                Ins::AddW { d, a, b, t } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_add(ldv(*t, r!(*b))))),
-                Ins::SubW { d, a, b, t } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_sub(ldv(*t, r!(*b))))),
-                Ins::MulW { d, a, b, t } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)).wrapping_mul(ldv(*t, r!(*b))))),
-                Ins::WrapT { d, a, t } => w!(*d, wrap_fast(*t, ldv(*t, r!(*a)))),
+                Ins::AddS { d, a, b } => match (r!(*a) as i64).checked_add(r!(*b) as i64) {
+                    Some(v) => w!(*d, v as u64),
+                    None => panic_out!(kir_exec::overflow_msg(Aop::Add)),
+                },
+                Ins::SubS { d, a, b } => match (r!(*a) as i64).checked_sub(r!(*b) as i64) {
+                    Some(v) => w!(*d, v as u64),
+                    None => panic_out!(kir_exec::overflow_msg(Aop::Sub)),
+                },
+                Ins::MulS { d, a, b } => match (r!(*a) as i64).checked_mul(r!(*b) as i64) {
+                    Some(v) => w!(*d, v as u64),
+                    None => panic_out!(kir_exec::overflow_msg(Aop::Mul)),
+                },
+                Ins::AddU { d, a, b } => match r!(*a).checked_add(r!(*b)) {
+                    Some(v) => w!(*d, v),
+                    None => panic_out!(kir_exec::overflow_msg(Aop::Add)),
+                },
+                Ins::SubU { d, a, b } => match r!(*a).checked_sub(r!(*b)) {
+                    Some(v) => w!(*d, v),
+                    None => panic_out!(kir_exec::overflow_msg(Aop::Sub)),
+                },
+                Ins::MulU { d, a, b } => match r!(*a).checked_mul(r!(*b)) {
+                    Some(v) => w!(*d, v),
+                    None => panic_out!(kir_exec::overflow_msg(Aop::Mul)),
+                },
+                Ins::AddW64 { d, a, b } => w!(*d, r!(*a).wrapping_add(r!(*b))),
+                Ins::SubW64 { d, a, b } => w!(*d, r!(*a).wrapping_sub(r!(*b))),
+                Ins::MulW64 { d, a, b } => w!(*d, r!(*a).wrapping_mul(r!(*b))),
+                Ins::AddW { d, a, b, t } => w!(*d, wrap_fast(*t, r!(*a).wrapping_add(r!(*b)))),
+                Ins::SubW { d, a, b, t } => w!(*d, wrap_fast(*t, r!(*a).wrapping_sub(r!(*b)))),
+                Ins::MulW { d, a, b, t } => w!(*d, wrap_fast(*t, r!(*a).wrapping_mul(r!(*b)))),
+                Ins::WrapT { d, a, t } => w!(*d, wrap_fast(*t, r!(*a))),
                 Ins::Arith { d, a, b, op, mode, ty } => {
                     let t = tyof!(ty);
                     match kir_exec::arith(*op, *mode, t, rdv!(t, *a), rdv!(t, *b)) {

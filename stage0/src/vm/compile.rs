@@ -147,6 +147,8 @@ struct Fc<'a> {
     cv: HashMap<VId, i32>,
     /// 定数のうち、使われる箇所がすべて即値に埋められるもの (定数の命令を出さない)。
     skip_const: std::collections::HashSet<VId>,
+    /// 関数の入口で作る (ループの中の) 定数。
+    hoisted: std::collections::HashSet<VId>,
     vty: Vec<Ty>,
     uses: Vec<u32>,
     nslots: u32,
@@ -246,7 +248,66 @@ fn compile_func(m: &Module, index: &HashMap<&str, usize>, prog: &mut Prog, f: &F
         }
     }
     let skip_const: std::collections::HashSet<VId> = nfold.into_iter().filter(|(v, n)| uses[*v as usize] == *n).map(|(v, _)| v).collect();
-    let mut fc = Fc { m, index, prog, fl, marks: vec![], slot, cv, skip_const, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, last_pa: None, folded: HashMap::new(), pending: HashMap::new() };
+    // ループの中の定数は、関数の入口で 1 回だけ作る (後ろ辺 `to <= from` の範囲のブロックをループとみなす)。
+    let mut in_loop = vec![false; f.blocks.len()];
+    for (bi, b) in f.blocks.iter().enumerate() {
+        let targets: Vec<usize> = match &b.term {
+            Term::Br((t, _)) => vec![*t],
+            Term::BrIf(_, (t1, _), (t2, _)) => vec![*t1, *t2],
+            _ => vec![],
+        };
+        for t in targets {
+            if t <= bi {
+                in_loop[t..=bi].iter_mut().for_each(|x| *x = true);
+            }
+        }
+    }
+    let mut slot_users: HashMap<u32, u32> = HashMap::new();
+    for b in &f.blocks {
+        b.params.iter().for_each(|(v, _)| *slot_users.entry(slot[*v as usize]).or_insert(0) += 1);
+        b.insts.iter().for_each(|i| *slot_users.entry(slot[i.dst as usize]).or_insert(0) += 1);
+    }
+    let mut hoisted: Vec<VId> = vec![];
+    for (bi, b) in f.blocks.iter().enumerate() {
+        if !in_loop[bi] {
+            continue;
+        }
+        for i in &b.insts {
+            if matches!(i.op, Op::Const(_)) && !skip_const.contains(&i.dst) && slots_of(&m.aggs, i.ty) == 1 && !matches!(i.ty, Ty::Opt(_) | Ty::Res(..)) && slot_users[&slot[i.dst as usize]] == 1 {
+                hoisted.push(i.dst);
+            }
+        }
+    }
+    // 同じ値の定数は 1 つのスロットを共有する。
+    let mut canon: HashMap<i128, u32> = HashMap::new();
+    let mut prologue: Vec<(u32, i128)> = vec![];
+    for b in &f.blocks {
+        for i in &b.insts {
+            if !hoisted.contains(&i.dst) {
+                continue;
+            }
+            let Op::Const(v) = &i.op else { continue };
+            match canon.get(v) {
+                Some(s) => slot[i.dst as usize] = *s,
+                None => {
+                    canon.insert(*v, slot[i.dst as usize]);
+                    prologue.push((slot[i.dst as usize], *v));
+                }
+            }
+        }
+    }
+    let hoisted_set: std::collections::HashSet<VId> = hoisted.iter().copied().collect();
+    let mut fc = Fc { m, index, prog, fl, marks: vec![], slot, cv, skip_const, hoisted: hoisted_set, vty, uses, nslots: next, temps: 0, code: vec![], pool: vec![], last_cmp: None, last_pa: None, folded: HashMap::new(), pending: HashMap::new() };
+    for (s, v) in prologue {
+        let d = s as S;
+        match i64::try_from(v) {
+            Ok(x) => fc.code.push(Ins::ConstI { d, v: x }),
+            Err(_) => {
+                fc.prog.wide.push(v);
+                fc.code.push(Ins::ConstW { d, k: (fc.prog.wide.len() - 1) as u32 });
+            }
+        }
+    }
     let mut starts = vec![0u32; f.blocks.len()];
     // 分岐先が未確定の `Jmp` などの位置 → ブロック番号。
     let mut patches: Vec<(usize, usize)> = vec![];
@@ -383,7 +444,7 @@ impl<'a> Fc<'a> {
             }
         };
         let i = match &inst.op {
-            Op::Const(_) if self.skip_const.contains(&inst.dst) => return Ok(()),
+            Op::Const(_) if self.skip_const.contains(&inst.dst) || self.hoisted.contains(&inst.dst) => return Ok(()),
             Op::Const(v) => match ty {
                 Ty::Opt(_) | Ty::Res(..) => {
                     if *v != 0 {
@@ -407,13 +468,23 @@ impl<'a> Fc<'a> {
             Op::Arith { op, mode, a, b } => {
                 if let Some((x, imm, _)) = imm_arith(*op, *mode, ty, *a, *b, &self.cv) {
                     let (a, t) = (self.s(x), fast_ti(ty).unwrap());
-                    let i = match (op, mode) {
-                        (Aop::Add, Mode::Trap) => Ins::AddTI { d, a, t, imm },
-                        (Aop::Sub, Mode::Trap) => Ins::SubTI { d, a, t, imm },
-                        (Aop::Mul, Mode::Trap) => Ins::MulTI { d, a, t, imm },
-                        (Aop::Add, _) => Ins::AddWI { d, a, t, imm },
-                        (Aop::Sub, _) => Ins::SubWI { d, a, t, imm },
-                        _ => Ins::MulWI { d, a, t, imm },
+                    let trap = matches!(mode, Mode::Trap);
+                    let i = match (op, trap, arith_class(t)) {
+                        (Aop::Add, true, 0) => Ins::AddNI { d, a, t, imm },
+                        (Aop::Sub, true, 0) => Ins::SubNI { d, a, t, imm },
+                        (Aop::Mul, true, 0) => Ins::MulNI { d, a, t, imm },
+                        (Aop::Add, true, 1) => Ins::AddSI { d, a, imm },
+                        (Aop::Sub, true, 1) => Ins::SubSI { d, a, imm },
+                        (Aop::Mul, true, 1) => Ins::MulSI { d, a, imm },
+                        (Aop::Add, true, _) => Ins::AddUI { d, a, imm },
+                        (Aop::Sub, true, _) => Ins::SubUI { d, a, imm },
+                        (Aop::Mul, true, _) => Ins::MulUI { d, a, imm },
+                        (Aop::Add, false, 0) => Ins::AddWI { d, a, t, imm },
+                        (Aop::Sub, false, 0) => Ins::SubWI { d, a, t, imm },
+                        (_, false, 0) => Ins::MulWI { d, a, t, imm },
+                        (Aop::Add, false, _) => Ins::AddW64I { d, a, imm },
+                        (Aop::Sub, false, _) => Ins::SubW64I { d, a, imm },
+                        _ => Ins::MulW64I { d, a, imm },
                     };
                     self.push(i);
                     return Ok(());
@@ -421,12 +492,26 @@ impl<'a> Fc<'a> {
                 let (a, b) = (self.s(*a), self.s(*b));
                 use crate::kir::Aop::*;
                 match (fast_ti(ty), op, mode) {
-                    (Some(t), Add, Mode::Trap) => Ins::AddT { d, a, b, t },
-                    (Some(t), Sub, Mode::Trap) => Ins::SubT { d, a, b, t },
-                    (Some(t), Mul, Mode::Trap) => Ins::MulT { d, a, b, t },
-                    (Some(t), Add, Mode::Wrap) => Ins::AddW { d, a, b, t },
-                    (Some(t), Sub, Mode::Wrap) => Ins::SubW { d, a, b, t },
-                    (Some(t), Mul, Mode::Wrap) => Ins::MulW { d, a, b, t },
+                    (Some(t), Add | Sub | Mul, Mode::Trap | Mode::Wrap) => {
+                        let trap = matches!(mode, Mode::Trap);
+                        match (op, trap, arith_class(t)) {
+                            (Add, true, 0) => Ins::AddN { d, a, b, t },
+                            (Sub, true, 0) => Ins::SubN { d, a, b, t },
+                            (Mul, true, 0) => Ins::MulN { d, a, b, t },
+                            (Add, true, 1) => Ins::AddS { d, a, b },
+                            (Sub, true, 1) => Ins::SubS { d, a, b },
+                            (Mul, true, 1) => Ins::MulS { d, a, b },
+                            (Add, true, _) => Ins::AddU { d, a, b },
+                            (Sub, true, _) => Ins::SubU { d, a, b },
+                            (Mul, true, _) => Ins::MulU { d, a, b },
+                            (Add, false, 0) => Ins::AddW { d, a, b, t },
+                            (Sub, false, 0) => Ins::SubW { d, a, b, t },
+                            (Mul, false, 0) => Ins::MulW { d, a, b, t },
+                            (Add, false, _) => Ins::AddW64 { d, a, b },
+                            (Sub, false, _) => Ins::SubW64 { d, a, b },
+                            _ => Ins::MulW64 { d, a, b },
+                        }
+                    }
                     _ => Ins::Arith { d, a, b, op: *op, mode: *mode, ty: self.ty_of(ty) },
                 }
             }
@@ -749,7 +834,7 @@ impl<'a> Fc<'a> {
         if !a1.is_empty() || !a2.is_empty() || self.uses[*c as usize] != 1 {
             return None;
         }
-        let mut real = b.insts.iter().filter(|i| !(matches!(i.op, Op::Const(_)) && self.skip_const.contains(&i.dst)));
+        let mut real = b.insts.iter().filter(|i| !(matches!(i.op, Op::Const(_)) && (self.skip_const.contains(&i.dst) || self.hoisted.contains(&i.dst))));
         let i = real.next()?;
         if real.next().is_some() || i.dst != *c {
             return None;

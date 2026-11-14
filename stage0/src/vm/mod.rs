@@ -58,6 +58,15 @@ fn prepare(lo: Lowered, entry: &str) -> Result<bc::Prog, String> {
     }
     let r = compile::compile(&m, &lo.lines);
     tick("compile");
+    // `KSN_VM_DUMP=<部分文字列>`: 鍵が一致する関数のバイトコードを stderr に出す (調査用)。
+    if let (Ok(p), Ok(filter)) = (&r, std::env::var("KSN_VM_DUMP")) {
+        for f in p.funcs.iter().filter(|f| f.key.contains(&filter)) {
+            eprintln!("== {} (nslots {}, ret_w {})", f.key, f.nslots, f.ret_w);
+            for (i, ins) in f.code.iter().enumerate() {
+                eprintln!("{:4} {:?}", i, ins);
+            }
+        }
+    }
     r
 }
 

@@ -134,9 +134,19 @@ pub enum Ins {
     PtrAdd { d: S, p: S, off: S },
 
     // ---- 即値の演算 (定数の被演算子を命令に埋める。`i32` に収まる定数だけ)
-    AddTI { d: S, a: S, t: u8, imm: i32 },
-    SubTI { d: S, a: S, t: u8, imm: i32 },
-    MulTI { d: S, a: S, t: u8, imm: i32 },
+    // `溢れで panic する演算 (N = 64 ビット未満 / S = i64・isize / U = u64・usize)` と `wrapping_*` (W64 = 64 ビット、W = 64 ビット未満)。
+    AddNI { d: S, a: S, t: u8, imm: i32 },
+    SubNI { d: S, a: S, t: u8, imm: i32 },
+    MulNI { d: S, a: S, t: u8, imm: i32 },
+    AddSI { d: S, a: S, imm: i32 },
+    SubSI { d: S, a: S, imm: i32 },
+    MulSI { d: S, a: S, imm: i32 },
+    AddUI { d: S, a: S, imm: i32 },
+    SubUI { d: S, a: S, imm: i32 },
+    MulUI { d: S, a: S, imm: i32 },
+    AddW64I { d: S, a: S, imm: i32 },
+    SubW64I { d: S, a: S, imm: i32 },
+    MulW64I { d: S, a: S, imm: i32 },
     AddWI { d: S, a: S, t: u8, imm: i32 },
     SubWI { d: S, a: S, t: u8, imm: i32 },
     MulWI { d: S, a: S, t: u8, imm: i32 },
@@ -159,12 +169,19 @@ pub enum Ins {
     Ret { v: S },
     Unreachable,
 
-    // ---- 整数の算術 (64 ビット以下)
-    /// 溢れで panic する `+ - *`。`t` は `FAST_TYS` の添字。
-    AddT { d: S, a: S, b: S, t: u8 },
-    SubT { d: S, a: S, b: S, t: u8 },
-    MulT { d: S, a: S, b: S, t: u8 },
-    /// `wrapping_*`。
+    // ---- 整数の算術 (64 ビット以下。`t` は `FAST_TYS` の添字)
+    AddN { d: S, a: S, b: S, t: u8 },
+    SubN { d: S, a: S, b: S, t: u8 },
+    MulN { d: S, a: S, b: S, t: u8 },
+    AddS { d: S, a: S, b: S },
+    SubS { d: S, a: S, b: S },
+    MulS { d: S, a: S, b: S },
+    AddU { d: S, a: S, b: S },
+    SubU { d: S, a: S, b: S },
+    MulU { d: S, a: S, b: S },
+    AddW64 { d: S, a: S, b: S },
+    SubW64 { d: S, a: S, b: S },
+    MulW64 { d: S, a: S, b: S },
     AddW { d: S, a: S, b: S, t: u8 },
     SubW { d: S, a: S, b: S, t: u8 },
     MulW { d: S, a: S, b: S, t: u8 },
@@ -346,25 +363,28 @@ pub const HI: [i128; 10] = [
 
 /// 2 の補数の切り捨て (`Ty::wrap` の 64 ビット以下の専用版)。結果はスロットの表現 (符号付きは符号拡張)。
 #[inline(always)]
-pub fn wrap_fast(t: u8, v: i128) -> u64 {
+pub fn wrap_fast(t: u8, v: u64) -> u64 {
     match t {
         0 => v as i8 as i64 as u64,
         1 => v as i16 as i64 as u64,
         2 => v as i32 as i64 as u64,
-        3 | 4 => v as i64 as u64,
+        3 | 4 => v,
         5 => v as u8 as u64,
         6 => v as u16 as u64,
         7 => v as u32 as u64,
-        _ => v as u64,
+        _ => v,
     }
 }
 
-/// `FAST_TYS` の添字 `t` の型の値 (スロット) を `i128` にする。
-#[inline(always)]
-pub fn ldv(t: u8, x: u64) -> i128 {
-    if t < 5 {
-        x as i64 as i128
-    } else {
-        x as i128
+/// 64 ビット未満の整数の最小値・最大値 (`i64` で比べる。`FAST_TYS` の添字)。
+pub const LO64: [i64; 10] = [i8::MIN as i64, i16::MIN as i64, i32::MIN as i64, 0, 0, 0, 0, 0, 0, 0];
+pub const HI64: [i64; 10] = [i8::MAX as i64, i16::MAX as i64, i32::MAX as i64, 0, 0, u8::MAX as i64, u16::MAX as i64, u32::MAX as i64, 0, 0];
+
+/// `FAST_TYS` の添字 `t` の型の分類: 0 = 64 ビット未満、1 = i64 / isize、2 = u64 / usize。
+pub fn arith_class(t: u8) -> u8 {
+    match t {
+        3 | 4 => 1,
+        8 | 9 => 2,
+        _ => 0,
     }
 }
