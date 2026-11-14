@@ -34,6 +34,22 @@ fn alloc.vec.Vec.append[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T,
     Ok(())
 end alloc.vec.Vec.append
 
+fn alloc.vec.Vec.as_mut_slice[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>) -> &mut [T] uses [] panics never pub
+    self.buf.as_mut_slice()
+end alloc.vec.Vec.as_mut_slice
+
+fn alloc.vec.Vec.as_slice[T, A: alloc.alloc.Allocator](self: &alloc.vec.Vec<T, A>) -> &[T] uses [] panics never pub
+    self.buf.as_slice()
+end alloc.vec.Vec.as_slice
+
+fn alloc.vec.Vec.capacity[T, A: alloc.alloc.Allocator](self: &alloc.vec.Vec<T, A>) -> usize uses [] panics never pub
+    self.buf.cap()
+end alloc.vec.Vec.capacity
+
+fn alloc.vec.Vec.clear[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>) -> () uses [] panics never pub
+    self.buf.clear()
+end alloc.vec.Vec.clear
+
 fn alloc.vec.Vec.contains[T: core.cmp.PartialEq<T>, A: alloc.alloc.Allocator](self: &alloc.vec.Vec<T, A>, value: &T) -> bool uses [] panics never pub
     let mut i = 0usize
     while i < self.len() {
@@ -123,3 +139,97 @@ fn alloc.vec.Vec.extend_from_slice[T: alloc.alloc.TryClone, A: alloc.alloc.Alloc
     }
     Ok(())
 end alloc.vec.Vec.extend_from_slice
+
+fn alloc.vec.Vec.insert[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>, index: usize, value: T) -> Result<(), alloc.vec.InsertError> uses [alloc] panics never pub
+    if index > self.buf.len() {
+        return Err(alloc.vec.InsertError.OutOfBounds)
+    }
+    match self.buf.insert_within_cap(index, value) {
+        Ok(_done) => {
+            Ok(())
+        }
+        Err(back) => {
+            match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {
+                Ok(_grown) => {
+                }
+                Err(error) => {
+                    return Err(alloc.vec.InsertError.Alloc(error))
+                }
+            }
+            match self.buf.insert_within_cap(index, back) {
+                Ok(_done) => {
+                    Ok(())
+                }
+                Err(_lost) => {
+                    Err(alloc.vec.InsertError.Alloc(alloc.alloc.AllocError { code: 1u32 }))
+                }
+            }
+        }
+    }
+end alloc.vec.Vec.insert
+
+fn alloc.vec.Vec.is_empty[T, A: alloc.alloc.Allocator](self: &alloc.vec.Vec<T, A>) -> bool uses [] panics never pub
+    self.buf.is_empty()
+end alloc.vec.Vec.is_empty
+
+fn alloc.vec.Vec.len[T, A: alloc.alloc.Allocator](self: &alloc.vec.Vec<T, A>) -> usize uses [] panics never pub
+    self.buf.len()
+end alloc.vec.Vec.len
+
+fn alloc.vec.Vec.pop[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>) -> Option<T> uses [] panics never pub
+    self.buf.pop()
+end alloc.vec.Vec.pop
+
+fn alloc.vec.Vec.push[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>, value: T) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    match self.buf.push_within_cap(value) {
+        Ok(_done) => {
+            Ok(())
+        }
+        Err(back) => {
+            match self.buf.grow(self.buf.cap().wrapping_mul(2usize).wrapping_add(4usize)) {
+                Ok(_grown) => {
+                }
+                Err(error) => {
+                    return Err(error)
+                }
+            }
+            match self.buf.push_within_cap(back) {
+                Ok(_done) => {
+                    Ok(())
+                }
+                Err(_lost) => {
+                    Err(alloc.alloc.AllocError { code: 1u32 })
+                }
+            }
+        }
+    }
+end alloc.vec.Vec.push
+
+fn alloc.vec.Vec.remove[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>, index: usize) -> Option<T> uses [] panics never pub
+    self.buf.remove(index)
+end alloc.vec.Vec.remove
+
+fn alloc.vec.Vec.reserve[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>, additional: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let want = self.buf.len().wrapping_add(additional)
+    let cap = self.buf.cap()
+    if want > cap {
+        let doubled = cap.wrapping_mul(2usize).wrapping_add(4usize)
+        let target = if want > doubled {
+            want
+        } else {
+            doubled
+        }
+        match self.buf.grow(target) {
+            Ok(_grown) => {
+            }
+            Err(error) => {
+                return Err(error)
+            }
+        }
+    }
+    Ok(())
+end alloc.vec.Vec.reserve
+
+fn alloc.vec.Vec.truncate[T, A: alloc.alloc.Allocator](self: &mut alloc.vec.Vec<T, A>, length: usize) -> () uses [] panics never pub
+    self.buf.truncate(length)
+end alloc.vec.Vec.truncate

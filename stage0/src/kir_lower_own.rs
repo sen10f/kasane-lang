@@ -152,6 +152,13 @@ pub(super) fn field_call(lw: &mut Lw, e: &V, s: usize, names: &[String], m: &str
     if names.is_empty() {
         return None;
     }
+    // Kasane で書いた `Vec` のメソッド (`alloc/vec.ksnl`) の `self.buf`: `Vec` と `Buf` は同じヘッダなので、`self` のヘッダそのもの。
+    if names.len() == 1 && names[0] == "buf" && lw.def.name.starts_with("alloc.vec.Vec.") {
+        if let Some(kind @ Kind::Vec(_)) = lw.coll.kinds.get(&s).cloned() {
+            let h = lw.slots[s].0;
+            return Some(coll::method_on(lw, e, nline(e), Some(s), kind, h, m, args));
+        }
+    }
     let src = field_src(lw, s, names)?;
     let kind = coll::kind_of_src(lw, &src).filter(|k| matches!(k, Kind::Vec(_) | Kind::String))?;
     // `&Vec` などのフィールドは借用: ヘッダのアドレスではない
@@ -556,8 +563,12 @@ fn clear(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option
     match kind {
         Kind::Vec(Some(t)) if coll::size_of(*t).is_some() => {}
         // 要素が所有物: 各要素を解放してから長さを 0 にする
-        Kind::Vec(Some(Ty::Agg(_))) => {
-            let vt = lw.coll.hdr_ty.get(&h).copied();
+        Kind::Vec(Some(Ty::Agg(ea))) => {
+            // 局所のヘッダは `hdr_ty` に型がある。借用の引数のヘッダ (`&mut Vec`) は要素の型から求める。
+            let vt = match lw.coll.hdr_ty.get(&h).copied() {
+                Some(t) => Some(t),
+                None => Some(lw.aggs.borrow_mut().vec_of(Some(Ty::Agg(*ea)))),
+            };
             let elem = vt.and_then(|t| lw.aggs.borrow().vec_elem(t));
             let (Some(vt), Some(elem)) = (vt, elem) else {
                 return lw.err(line, "clear の要素の型は段階 1 の対象外 (スカラーと所有物だけ)");

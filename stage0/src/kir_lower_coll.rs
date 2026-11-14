@@ -31,6 +31,12 @@ const VEC: &str = "alloc.vec.Vec";
 /// `alloc.raw.Buf<T, A>` は Vec と同じ 24 バイトのヘッダ {ptr, len, cap} (cap は要素数)。
 const BUF: &str = "alloc.raw.Buf";
 
+/// `KSN_VEC_IMPL=kasane` か (`Vec` の基本メソッドを Kasane 版で下ろす隠しの切り替え)。
+pub(crate) fn vec_kasane() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KSN_VEC_IMPL").is_ok_and(|v| v == "kasane"))
+}
+
 /// ヘッダを持つ「Vec の仲間」(`Vec` と `Buf`) の名前か。
 pub(crate) fn is_vecn(n: &str) -> bool {
     n == VEC || n == BUF
@@ -1809,6 +1815,13 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
 
 /// ヘッダ (または `fat`) `h` を受け手とするメソッド呼び出し。所有の周りの新しいメソッド (`own`) を先に試す。
 pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: Kind, h: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
+    // `KSN_VEC_IMPL=kasane`: `Vec` の基本メソッドを、`alloc/vec.ksnl` の Kasane 版 (`Buf` の上) の単相インスタンスで下ろす。
+    // 中身 (`alloc.vec.Vec.*` の本体) は組み込みの下ろしを使う (同じヘッダ)。
+    if vec_kasane() && matches!(kind, Kind::Vec(Some(_))) && !lw.def.name.starts_with("alloc.vec.Vec.") && crate::interp::KASANE_VEC_BASE.contains(&m) {
+        if let Some(r) = super::ext::ext_call(lw, e, line, &kind, h, m, args, true) {
+            return r;
+        }
+    }
     if let Some(r) = lw.str_method_call(e, &kind, h, m, args) {
         return r;
     }
@@ -1851,7 +1864,7 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if m == "sub" || m == "sub_mut" {
         return slice_sub(lw, line, &kind, h, args);
     }
-    if let Some(r) = super::ext::ext_call(lw, e, line, &kind, h, m, args) {
+    if let Some(r) = super::ext::ext_call(lw, e, line, &kind, h, m, args, false) {
         return r;
     }
     coll_method(lw, line, kind, h, m, args.len())

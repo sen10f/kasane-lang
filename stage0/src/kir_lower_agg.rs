@@ -188,6 +188,7 @@ impl AggTab {
             Src::Named(name, _) if name == "alloc.string.String" => Ok(self.vec_hdr()),
             Src::Named(name, _) if name == "alloc.collections.HashMap" || name == "alloc.collections.BtreeMap" => Ok(self.vec_hdr()),
             Src::Named(name, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
+            Src::Named(name, _) if name == "alloc.vec.InsertError" => Ok(self.insert_err()),
             // `std.thread.JoinHandle<T, A>` = `{A, usize, *mut T}`。`T` はポインタの向こうにあるので配置には現れない。
             Src::Named(name, args) if name == "std.thread.JoinHandle" && args.len() == 2 => {
                 let elem_ty = self.lower_ty(p, file, &args[0])?;

@@ -23,6 +23,19 @@ fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
                 return Some(Src::Named(n.clone(), a.clone()));
             }
             let n = &aggs.defs[i as usize].name;
+            // `Vec` / `String` のヘッダ (`vec`、要素が所有物なら `vec<#N>`): 配置と解放は同じなので、`String` / `Vec<要素>` に戻す。
+            // `&str` と `&[T]` の値 (`fat`): 配置は同じなので `&str`。
+            if n == "fat" {
+                return Some(Src::Ref(false, Box::new(Src::Prim("str".into()))));
+            }
+            if n == "vec" {
+                return Some(Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![])]));
+            }
+            if let Some(k) = n.strip_prefix("vec<#").and_then(|r| r.strip_suffix('>')).and_then(|r| r.parse::<u32>().ok()) {
+                drop(aggs);
+                let inner = elem_src(lw, Ty::Agg(k))?;
+                return Some(Src::Named("alloc.vec.Vec".into(), vec![inner, Src::Named("std.alloc.System".into(), vec![])]));
+            }
             (n.contains('.') && !n.contains('<')).then(|| Src::Named(n.clone(), vec![]))
         }
         Ty::Unit | Ty::Ptr => None,
@@ -128,8 +141,8 @@ fn vec_reserve(lw: &mut Lw, e: &V, line: usize, elem: Ty, h: VId, args: &[V]) ->
 }
 
 /// `x.m(args)` (`x` は `Vec` / スライス) が Kasane の拡張メソッドなら下ろす。該当しなければ `None`。
-pub(super) fn ext_call(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, m: &str, args: &[V]) -> Option<LR<Option<VId>>> {
-    if m == "reserve" {
+pub(super) fn ext_call(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, m: &str, args: &[V], force: bool) -> Option<LR<Option<VId>>> {
+    if m == "reserve" && !force {
         if let Kind::Vec(Some(t)) = kind {
             return Some(vec_reserve(lw, e, line, *t, h, args));
         }
@@ -146,7 +159,9 @@ pub(super) fn ext_call(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, m: 
         _ => return None,
     };
     let (di, on_vec) = if is_vec {
-        match find_def(lw, &format!("alloc.vec.Vec.{}", m)) {
+        // 基本メソッドの Kasane 版は、切り替え (`force`) のときだけ使う。
+        let base = crate::interp::KASANE_VEC_BASE.contains(&m);
+        match find_def(lw, &format!("alloc.vec.Vec.{}", m)).filter(|_| force || !base) {
             Some(d) => (d, true),
             None => (find_def(lw, &format!("core.slice.{}", m))?, false),
         }
