@@ -110,7 +110,10 @@ pub(super) fn spawn_call(lw: &mut Lw, _e: &V, segs: &[String], args: &[V], line:
         return Some(lw.err(line, format!("spawn の結果の型が大きすぎる ({} バイト > {})", res_size, RESB)));
     }
 
-    let kind = match coll::closure_arg_kind(lw, closure_arg) {
+    lw.coll.spawn_arg = true;
+    let kind = coll::closure_arg_kind(lw, closure_arg);
+    lw.coll.spawn_arg = false;
+    let kind = match kind {
         Ok(c) => c,
         Err(err) => return Some(Err(err)),
     };

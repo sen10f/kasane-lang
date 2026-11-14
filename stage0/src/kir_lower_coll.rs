@@ -73,6 +73,8 @@ pub(crate) enum Owned {
 /// 下ろしの状態。`Lw` が 1 つ持つ。
 #[derive(Default)]
 pub(crate) struct CollCx {
+    /// `std.thread.spawn` のクロージャ引数を下ろしている間だけ true (チャネルの端の `move` の取り込みを許し、本体の終わりで落とす)。
+    pub(crate) spawn_arg: bool,
     /// スロット番号 → 種類。
     pub(crate) kinds: BTreeMap<usize, Kind>,
     /// 固定長配列への参照のスロット → 要素数 N (`&[T; N]` / `&mut [T; N]` のパラメータと、
@@ -551,7 +553,8 @@ pub(crate) fn drop_value(lw: &mut Lw, v: VId, t: Ty) {
             // チャネルの端: 本数を減らし、最後の 1 本なら状態を解放する (設計_KIR.md 22 章)。
             let end = lw.aggs.borrow().chan_kind(t);
             if let Some(sender) = end {
-                super::chan_lower::drop_end(lw, v, sender);
+                let elem = lw.aggs.borrow().chan_elem.get(&i).copied().unwrap_or(Ty::U8);
+                super::chan_lower::drop_end(lw, v, sender, elem);
                 return;
             }
             match d.kind {
@@ -2900,7 +2903,12 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     child.scopes.push(vec![]);
     let nc = cap_names.len();
     for ((n, v), t) in cap_names.iter().zip(pv.iter()).zip(cap_tys.iter()) {
-        child.bind_let(n, *v, *t);
+        // spawn のクロージャが取り込んだチャネルの端は、本体が所有して終わりで落とす (使わなかった端も)。
+        if lw.coll.spawn_arg && child.aggs.borrow().owns_heap(*t) {
+            bind_owned(&mut child, n, *v, *t);
+        } else {
+            child.bind_let(n, *v, *t);
+        }
     }
     for ((n, v), t) in names.iter().zip(pv[nc..].iter()).zip(ats.iter()) {
         child.bind_let(n, *v, *t);
@@ -2909,6 +2917,7 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         if child.vty(v) != rt {
             return lw.err(line, "クロージャの本体の型が戻り値の型と違う");
         }
+        drop_from(&mut child, 0);
         child.terminate(Term::Ret(v));
     }
     child.flush_allocas();
@@ -2955,7 +2964,7 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize) -> LR<(Vec<Strin
         }
         let t = lw.slots[s].1;
         // チャネルの端の `move` は取り込める (取り込み値を引き継いだ側が落とす。呼び出し元の印は `path_read` が下ろす)。
-        let chan_move = kind == "move" && lw.aggs.borrow().chan_kind(t).is_some();
+        let chan_move = kind == "move" && lw.coll.spawn_arg && lw.aggs.borrow().chan_kind(t).is_some();
         if lw.aggs.borrow().owns_heap(t) && !chan_move {
             return lw.err(line, format!("capture の {} は解放の要る値を持つので段階 1 の対象外 (所有の移動と解放の規則が要る)", name));
         }
