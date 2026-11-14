@@ -1,0 +1,8 @@
+// expect: E3010
+fn t.leak['a](x: &'a u32, _y: &'a u32) -> &'static u32 uses [] panics never
+    x
+end t.leak
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

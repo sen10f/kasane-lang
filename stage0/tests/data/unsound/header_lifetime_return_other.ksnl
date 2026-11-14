@@ -1,0 +1,16 @@
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let a = "static"
+    let r = {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(s.push_str("hello world, this is heap memory"))
+        t.pick(a, s.as_str())
+    }
+    let mut o = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(o.push_str("OVERWRITTEN BY ANOTHER ALLOCATION"))
+    std.io.print_line(r)
+end t.main
+
+fn t.pick['a, 'b](_x: &'a str, y: &'b str) -> &'a str uses [] panics never
+    y
+end t.pick

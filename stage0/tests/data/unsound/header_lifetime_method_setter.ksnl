@@ -1,0 +1,18 @@
+// expect: E3010
+type t.H['a]
+    r: &'a str
+end t.H
+
+fn t.H.set['a](self: &mut t.H<'a>, r: &'a str) -> () uses [] panics never
+    self.r = r
+end t.H.set
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let mut h = t.H { r: "x" }
+    {
+        let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(s.push_str("hello world, this is heap memory"))
+        h.set(s.as_str())
+    }
+    std.io.print_line(h.r)
+end t.main
