@@ -1,0 +1,20 @@
+// expect: E3010
+type t.H['a]
+    r: &'a u32
+end t.H
+
+fn t.bad() -> u32 uses [] panics never
+    let h = {
+        let x = 7u32
+        t.H { r: t.id(&x) }
+    }
+    *h.r
+end t.bad
+
+fn t.id(x: &u32) -> &u32 uses [] panics never
+    x
+end t.id
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
