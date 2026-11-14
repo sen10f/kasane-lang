@@ -13,7 +13,7 @@
 //! `std.fs.read_to_end(&mut file, &mut v)` (`v: Vec<u8>`) は、新しい命令を作らず `fs.read` を繰り返して
 //! ヘッダの末尾へ足す (`read_to_end`)。Vec の再確保は `kir_lower_own` の `reserve` (`push` と同じ規則) を使う。
 
-use crate::kir::{Aop, Cc, Mode, Op, Pay, Pointee, Ty, VId};
+use crate::kir::{Aop, Cc, FsK, Mode, Op, Pay, Pointee, Ty, VId};
 use crate::parser::V;
 use crate::program::Target as Tgt;
 
@@ -124,6 +124,58 @@ pub(super) fn read_fd_to_end(lw: &mut Lw, fd: VId, h: VId) -> VId {
     xp[0]
 }
 
+
+/// `std.fs.read_dir_raw(path, &mut v)` (`v: Vec<u8>`) の下ろし。`fs.read_dir` を、必要な容量が足りるまで `reserve` しながら呼び直す。
+/// 失敗したら `v` を変えずに `Err` を返す。成功したら `v` の末尾へ `[種別][名前][0]` の並びを足し、足したバイト数を `Ok` で返す。
+fn read_dir_raw(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
+    if args.len() != 2 {
+        return lw.err(line, "std.fs.read_dir_raw の引数は 2 個のはず");
+    }
+    let Some(path) = lw.expr(&args[0])? else { return Ok(None) };
+    if lw.vty(path) != lw.fat_ty() {
+        return lw.err(line, "std.fs.read_dir_raw のパスは &str ではない");
+    }
+    let Some(h) = lw.expr(&args[1])? else { return Ok(None) };
+    if lw.vty(h) != Ty::Ptr {
+        return lw.err(line, "std.fs.read_dir_raw の出力がヘッダのアドレスでない (Vec<u8> の &mut のはず)");
+    }
+    let res_ty = fs_err_ty(lw, Ty::Usize);
+    let first = lw.emit(Ty::Usize, Op::Const(4096));
+    let (hd, hp) = lw.new_block(&[Ty::Usize]);
+    let (exit, xp) = lw.new_block(&[res_ty]);
+    lw.goto(hd, vec![first]);
+    lw.cur = Some(hd);
+    let need = hp[0];
+    super::own::reserve(lw, h, need);
+    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
+    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
+    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
+    let dst = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: len });
+    let room = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: cap, b: len });
+    let r = lw.emit(res_ty, Op::FsSys { kind: FsK::ReadDir, args: vec![path, dst, room] });
+    let is_err = lw.emit(Ty::Bool, Op::Tag(r));
+    let (on_err, _) = lw.new_block(&[]);
+    let (on_ok, _) = lw.new_block(&[]);
+    lw.branch(is_err, (on_err, vec![]), (on_ok, vec![]));
+    lw.cur = Some(on_err);
+    lw.goto(exit, vec![r]);
+    lw.cur = Some(on_ok);
+    let n = lw.emit(Ty::Usize, Op::Payload(r));
+    let fits = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::Usize, a: n, b: room });
+    let (done, _) = lw.new_block(&[]);
+    let (again, _) = lw.new_block(&[]);
+    lw.branch(fits, (done, vec![]), (again, vec![]));
+    lw.cur = Some(done);
+    let nl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: n });
+    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });
+    let ok = lw.emit(res_ty, Op::Ok(n));
+    lw.goto(exit, vec![ok]);
+    lw.cur = Some(again);
+    lw.goto(hd, vec![n]);
+    lw.cur = Some(exit);
+    Ok(Some(xp[0]))
+}
+
 /// `std.fs.create` / `std.fs.open` / `std.fs.exists` / `std.fs.remove_file` / `std.fs.read_to_end` (フリー関数)。
 pub(super) fn fs_call(lw: &mut Lw, _e: &V, name: &str, args: &[V], line: usize) -> LR<Option<VId>> {
     let segs: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
@@ -193,6 +245,36 @@ pub(super) fn fs_call(lw: &mut Lw, _e: &V, name: &str, args: &[V], line: usize) 
                 return lw.err(line, "std.fs.remove_file のパスは &str ではない");
             }
             (Op::FsRemove { path }, fs_err_ty(lw, Ty::Unit))
+        }
+        "std.fs.read_dir_raw" => return read_dir_raw(lw, args, line),
+        "std.fs.rename" | "std.fs.create_dir" | "std.fs.remove_dir" | "std.fs.open_append" | "std.fs.stat_raw" => {
+            let kind = match name {
+                "std.fs.rename" => FsK::Rename,
+                "std.fs.create_dir" => FsK::CreateDir,
+                "std.fs.remove_dir" => FsK::RemoveDir,
+                "std.fs.open_append" => FsK::OpenAppend,
+                _ => FsK::Stat,
+            };
+            if args.len() != kind.arity() {
+                return lw.err(line, format!("{} の引数は {} 個のはず", name, kind.arity()));
+            }
+            let mut vs = Vec::new();
+            for a in args {
+                let Some(v) = lw.expr(a)? else { return Ok(None) };
+                vs.push(v);
+            }
+            let npaths = if matches!(kind, FsK::Rename) { 2 } else { 1 };
+            for v in &vs[..npaths] {
+                if lw.vty(*v) != lw.fat_ty() {
+                    return lw.err(line, format!("{} のパスは &str ではない", name));
+                }
+            }
+            let rt = match kind {
+                FsK::OpenAppend => Ty::Res(Pay::Agg(file), ioerr),
+                FsK::Stat => fs_err_ty(lw, Ty::U64),
+                _ => fs_err_ty(lw, Ty::Unit),
+            };
+            (Op::FsSys { kind, args: vs }, rt)
         }
         "std.fs.read_to_end" => return read_to_end(lw, args, line),
         _ => return Ok(None),

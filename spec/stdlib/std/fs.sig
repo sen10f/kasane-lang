@@ -10,7 +10,13 @@ fn std.fs.File.read(self: &mut std.fs.File, buffer: &mut [u8]) -> Result<usize, 
 fn std.fs.File.sync(self: &mut std.fs.File) -> Result<(), std.io.Error> uses [io.fs] panics never pub
 fn std.fs.File.write(self: &mut std.fs.File, buffer: &[u8]) -> Result<usize, std.io.Error> uses [io.fs] panics never impls std.io.Write<[io.fs]>
 fn std.fs.create(path: &str) -> Result<std.fs.File, std.io.Error> uses [io.fs] panics never pub
+fn std.fs.create_dir(path: &str) -> Result<(), std.io.Error> uses [io.fs] panics never pub
 fn std.fs.exists(path: &str) -> bool uses [io.fs] panics never pub
 fn std.fs.open(path: &str) -> Result<std.fs.File, std.io.Error> uses [io.fs] panics never pub
+fn std.fs.open_append(path: &str) -> Result<std.fs.File, std.io.Error> uses [io.fs] panics never pub
+fn std.fs.read_dir_raw[A: alloc.alloc.Allocator](path: &str, out: &mut alloc.vec.Vec<u8, A>) -> Result<usize, std.io.Error> uses [alloc, io.fs] panics never pub
 fn std.fs.read_to_end[A: alloc.alloc.Allocator](file: &mut std.fs.File, out: &mut alloc.vec.Vec<u8, A>) -> Result<usize, std.io.Error> uses [alloc, io.fs] panics never pub
+fn std.fs.remove_dir(path: &str) -> Result<(), std.io.Error> uses [io.fs] panics never pub
 fn std.fs.remove_file(path: &str) -> Result<(), std.io.Error> uses [io.fs] panics never pub
+fn std.fs.rename(from: &str, to: &str) -> Result<(), std.io.Error> uses [io.fs] panics never pub
+fn std.fs.stat_raw(path: &str, field: u32) -> Result<u64, std.io.Error> uses [io.fs] panics never pub

@@ -24,7 +24,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
-    "std.fs.create", "std.fs.read_to_end", "std.net.connect", "std.net.listen", "std.process.Command.new",
+    "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.process.Command.new",
 ];
 
 const NUM_EXTRA: &[&str] = &[
@@ -719,6 +719,104 @@ impl Interp {
                     }
                     Err(e) => err(io_error(&e)),
                 })
+            }
+            "std.fs.rename" | "std.fs.create_dir" | "std.fs.remove_dir" => {
+                let p0 = str_of(&a0).unwrap_or_default();
+                let r = match name {
+                    "std.fs.rename" => std::fs::rename(&p0, str_of(&args.get(1).cloned().unwrap_or(Val::Unit)).unwrap_or_default()),
+                    "std.fs.create_dir" => std::fs::create_dir(&p0),
+                    _ => std::fs::remove_dir(&p0),
+                };
+                Ok(match r {
+                    Ok(()) => ok(Val::Unit),
+                    Err(e) => err(io_error(&e)),
+                })
+            }
+            "std.fs.open_append" => {
+                let path = str_of(&a0).unwrap_or_default();
+                Ok(match std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+                    Ok(f) => {
+                        let fd = self.next_fd;
+                        self.next_fd += 1;
+                        self.files.insert(fd, f);
+                        ok(Val::Struct(Rc::new(StructV {
+                            ty: "std.fs.File".into(),
+                            f: RefCell::new(vec![("descriptor".into(), int(fd, "i32"))]),
+                        })))
+                    }
+                    Err(e) => err(io_error(&e)),
+                })
+            }
+            "std.fs.stat_raw" => {
+                let path = str_of(&a0).unwrap_or_default();
+                let field = match args.get(1).map(dr) {
+                    Some(Val::Int(i, _)) => i,
+                    _ => 0,
+                };
+                Ok(match std::fs::metadata(&path) {
+                    Ok(md) => {
+                        let v: u64 = match field {
+                            0 => md.len(),
+                            1 => {
+                                if md.is_file() {
+                                    0
+                                } else if md.is_dir() {
+                                    1
+                                } else {
+                                    2
+                                }
+                            }
+                            _ => md
+                                .modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_nanos().min(u64::MAX as u128) as u64)
+                                .unwrap_or(0),
+                        };
+                        ok(int(v as i128, "u64"))
+                    }
+                    Err(e) => err(io_error(&e)),
+                })
+            }
+            "std.fs.read_dir_raw" => {
+                let path = str_of(&a0).unwrap_or_default();
+                let rd = match std::fs::read_dir(&path) {
+                    Ok(rd) => rd,
+                    Err(e) => return Ok(err(io_error(&e))),
+                };
+                let mut ents: Vec<(Vec<u8>, u8)> = Vec::new();
+                for ent in rd {
+                    let ent = match ent {
+                        Ok(e) => e,
+                        Err(e) => return Ok(err(io_error(&e))),
+                    };
+                    #[cfg(unix)]
+                    let nm = {
+                        use std::os::unix::ffi::OsStrExt;
+                        ent.file_name().as_bytes().to_vec()
+                    };
+                    #[cfg(not(unix))]
+                    let nm = ent.file_name().to_string_lossy().as_bytes().to_vec();
+                    let kd = match std::fs::metadata(ent.path()) {
+                        Ok(md) if md.is_file() => 0u8,
+                        Ok(md) if md.is_dir() => 1u8,
+                        _ => 2u8,
+                    };
+                    ents.push((nm, kd));
+                }
+                ents.sort();
+                let mut raw: Vec<u8> = Vec::new();
+                for (n, kd) in &ents {
+                    raw.push(*kd);
+                    raw.extend_from_slice(n);
+                    raw.push(0);
+                }
+                if let Some(out) = args.get(1) {
+                    if let Some(l) = item_list(&dr(out)) {
+                        l.borrow_mut().extend(raw.iter().map(|b| int(*b as i128, "u8")));
+                    }
+                }
+                Ok(ok(int(raw.len() as i128, "usize")))
             }
             "std.fs.read_to_end" => {
                 use std::io::Read;

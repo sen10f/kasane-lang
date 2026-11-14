@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::fmath::{self, Ops};
 use crate::kir::{
-    size_of, verify_module, AggDef, AggKind, Aop, BitK, BoolOp, Cc, FBin, FUn, Func, Inst, Mode, Module, Op, Pay, ProcFn, Term, Ty, VId,
+    size_of, verify_module, AggDef, AggKind, Aop, BitK, BoolOp, Cc, FBin, FUn, Func, FsK, Inst, Mode, Module, Op, Pay, ProcFn, Term, Ty, VId,
 };
 
 /// 呼び出し深さの上限 (`kir_exec::MAX_DEPTH` と同じ)。
@@ -363,6 +363,11 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
         cx.decls.insert("declare i64 @ksn_rt_sys_open(ptr, i64, i32, i32*)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_exists(ptr, i64)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_remove(ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_rename(ptr, i64, ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_mkdir(ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_rmdir(ptr, i64, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_stat(ptr, i64, i32, i32*)".to_string());
+        cx.decls.insert("declare i64 @ksn_rt_sys_readdir(ptr, i64, ptr, i64, i32*)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_read(i32, ptr, i64, i32*)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_write(i32, ptr, i64, i32*)".to_string());
         cx.decls.insert("declare i64 @ksn_rt_sys_close(i32)".to_string());
@@ -1979,6 +1984,29 @@ impl<'a> Fe<'a> {
                 let ni = self.extract(&av, 128, 8, 64);
                 let ep = self.fs_err_slot();
                 let r = self.t(format!("call i64 @ksn_rt_sys_remove(ptr {}, i64 {}, ptr {})", p, ni, ep));
+                self.fs_result(&d, &r, &ep);
+            }
+            Op::FsSys { kind, args } => {
+                self.cx.fs = true;
+                let npaths = if matches!(kind, FsK::Rename) { 2 } else { 1 };
+                let mut pl: Vec<(String, String)> = Vec::new();
+                for a in &args[..npaths] {
+                    let Ty::Agg(_) = self.ty(*a) else { return Err("fs のパスが fat でない".into()) };
+                    let av = self.r(*a);
+                    let pi = self.extract(&av, 128, 0, 64);
+                    let p = self.t(format!("inttoptr i64 {} to ptr", pi));
+                    let ni = self.extract(&av, 128, 8, 64);
+                    pl.push((p, ni));
+                }
+                let ep = self.fs_err_slot();
+                let r = match kind {
+                    FsK::Rename => self.t(format!("call i64 @ksn_rt_sys_rename(ptr {}, i64 {}, ptr {}, i64 {}, ptr {})", pl[0].0, pl[0].1, pl[1].0, pl[1].1, ep)),
+                    FsK::CreateDir => self.t(format!("call i64 @ksn_rt_sys_mkdir(ptr {}, i64 {}, ptr {})", pl[0].0, pl[0].1, ep)),
+                    FsK::RemoveDir => self.t(format!("call i64 @ksn_rt_sys_rmdir(ptr {}, i64 {}, ptr {})", pl[0].0, pl[0].1, ep)),
+                    FsK::OpenAppend => self.t(format!("call i64 @ksn_rt_sys_open(ptr {}, i64 {}, i32 2, ptr {})", pl[0].0, pl[0].1, ep)),
+                    FsK::Stat => self.t(format!("call i64 @ksn_rt_sys_stat(ptr {}, i64 {}, i32 {}, ptr {})", pl[0].0, pl[0].1, self.r(args[1]), ep)),
+                    FsK::ReadDir => self.t(format!("call i64 @ksn_rt_sys_readdir(ptr {}, i64 {}, ptr {}, i64 {}, ptr {})", pl[0].0, pl[0].1, self.r(args[1]), self.r(args[2]), ep)),
+                };
                 self.fs_result(&d, &r, &ep);
             }
             Op::FsClose { fd } => {

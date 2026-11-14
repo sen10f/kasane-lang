@@ -1,0 +1,311 @@
+fn t.flag(label: &str, b: bool) -> () uses [alloc, io.console] panics may
+    if b {
+        t.show(label, 1i64)
+    } else {
+        t.show(label, 0i64)
+    }
+end t.flag
+
+fn t.kind_num(k: std.io.ErrorKind) -> i64 uses [] panics never
+    match k {
+        std.io.ErrorKind.NotFound => 1i64
+        std.io.ErrorKind.PermissionDenied => 2i64
+        std.io.ErrorKind.AlreadyExists => 3i64
+        std.io.ErrorKind.InvalidInput => 4i64
+        std.io.ErrorKind.UnexpectedEof => 5i64
+        std.io.ErrorKind.BrokenPipe => 6i64
+        std.io.ErrorKind.Interrupted => 7i64
+        std.io.ErrorKind.OutOfMemory => 8i64
+        std.io.ErrorKind.Other => 9i64
+    }
+end t.kind_num
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
+    t.ok_unit(t.dirs())
+    t.ok_unit(t.files())
+    t.ok_unit(t.listing())
+    t.ok_unit(t.big_listing())
+    t.paths()
+    std.io.print_line("fs more ok")
+end t.main
+
+fn t.say(label: &str, text: &str) -> () uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": "))
+    core.mem.drop(s.push_str(text))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.say
+
+fn t.fail_unit(label: &str, r: Result<(), std.io.Error>) -> () uses [alloc, io.console] panics may
+    match r {
+        Ok(_u) => t.show(label, 0i64)
+        Err(e) => t.show_err(label, e)
+    }
+end t.fail_unit
+
+fn t.read_all(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics may
+    let mut f = std.fs.open(path)?
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(std.fs.read_to_end(&mut f, &mut out))
+    t.ok_unit(f.close())
+    Ok(out)
+end t.read_all
+
+fn t.dirs() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
+    t.ok_unit(std.fs.create_dir("d"))
+    t.fail_unit("create_dir twice", std.fs.create_dir("d"))
+    t.fail_unit("create_dir without parent", std.fs.create_dir("d/x/y"))
+    t.ok_unit(std.fs.create_dir_all("d/a/b/c"))
+    t.ok_unit(std.fs.create_dir_all("d/a/b/c"))
+    t.ok_unit(std.fs.create_dir_all("d/a//b/c/"))
+    t.flag("deep dir exists", std.fs.exists("d/a/b/c"))
+    let mut f = t.ok_file(std.fs.create("d/plain"))
+    t.ok_unit(f.close())
+    t.fail_unit("create_dir_all through a file", std.fs.create_dir_all("d/plain/sub"))
+    t.fail_unit("create_dir_all over a file", std.fs.create_dir_all("d/plain"))
+    t.ok_unit(std.fs.remove_file("d/plain"))
+    t.fail_unit("remove_dir not empty", std.fs.remove_dir("d/a"))
+    t.fail_unit("remove_dir missing", std.fs.remove_dir("d/nope"))
+    Ok(())
+end t.dirs
+
+fn t.files() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
+    let mut a = t.ok_file(std.fs.open_append("d/log.txt"))
+    t.show("append 1", t.num(t.ok_size(a.write(b"ab"))))
+    t.ok_unit(a.close())
+    let mut b = t.ok_file(std.fs.open_append("d/log.txt"))
+    t.show("append 2", t.num(t.ok_size(b.write(b"cd"))))
+    t.ok_unit(b.close())
+    let log = t.read_all("d/log.txt")?
+    t.show("log length", t.num(log.len()))
+    t.show("log first", i64.from_u8(t.byte(&log, 0usize)))
+    t.show("log last", i64.from_u8(t.byte(&log, 3usize)))
+    match std.fs.open_append("d/a/b/c") {
+        Ok(h) => {
+            core.mem.drop(h.close())
+            t.show("append to a directory", 0i64)
+        }
+        Err(e) => t.show_err("append to a directory", e)
+    }
+    t.ok_unit(std.fs.write_atomic("d/atomic.txt", b"hello"))
+    t.show("atomic length 1", t.num(t.read_all("d/atomic.txt")?.len()))
+    t.ok_unit(std.fs.write_atomic("d/atomic.txt", b"bye"))
+    let again = t.read_all("d/atomic.txt")?
+    t.show("atomic length 2", t.num(again.len()))
+    t.show("atomic first", i64.from_u8(t.byte(&again, 0usize)))
+    t.flag("temporary file left behind", std.fs.exists("d/atomic.txt.ksn-tmp"))
+    t.fail_unit("write_atomic into a missing directory", std.fs.write_atomic("d/none/x.txt", b"x"))
+    t.ok_unit(std.fs.rename("d/atomic.txt", "d/moved.txt"))
+    t.flag("old name exists", std.fs.exists("d/atomic.txt"))
+    t.flag("new name exists", std.fs.exists("d/moved.txt"))
+    t.fail_unit("rename missing", std.fs.rename("d/atomic.txt", "d/other.txt"))
+    let md = std.fs.metadata("d/moved.txt")?
+    t.show("moved size", t.num_u64(md.size))
+    t.show("moved kind", t.kind_of(md.kind))
+    t.flag("moved modified", md.modified_ns > 1000000000u64)
+    let dm = std.fs.metadata("d/a")?
+    t.show("dir kind", t.kind_of(dm.kind))
+    match std.fs.metadata("d/missing") {
+        Ok(_m) => t.show("metadata missing", 0i64)
+        Err(e) => t.show_err("metadata missing", e)
+    }
+    Ok(())
+end t.files
+
+fn t.byte(v: &alloc.vec.Vec<u8, std.alloc.System>, i: usize) -> u8 uses [] panics never
+    match v.as_slice().get(i) {
+        Some(b) => *b
+        None => 0u8
+    }
+end t.byte
+
+fn t.kind_of(k: std.fs.FileKind) -> i64 uses [] panics never
+    match k {
+        std.fs.FileKind.File => 1i64
+        std.fs.FileKind.Dir => 2i64
+        std.fs.FileKind.Other => 3i64
+    }
+end t.kind_of
+
+fn t.num_u64(n: u64) -> i64 uses [] panics never
+    match i64.try_from_u64(n) {
+        Ok(v) => v
+        Err(_e) => -1i64
+    }
+end t.num_u64
+
+fn t.show_entries(label: &str, entries: &alloc.vec.Vec<std.fs.DirEntry, std.alloc.System>) -> () uses [alloc, io.console] panics may
+    let mut i = 0usize
+    while i < entries.len() {
+        match entries.get(i) {
+            Some(en) => {
+                let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+                core.mem.drop(s.push_str(label))
+                core.mem.drop(s.push_str(" "))
+                core.mem.drop(s.push_str(en.name.as_str()))
+                core.mem.drop(s.push_str(" kind "))
+                core.mem.drop(s.push_i64(t.kind_of(en.kind)))
+                core.mem.drop(std.io.print_line(s.as_str()))
+            }
+            None => {
+            }
+        }
+        i = i + 1usize
+    }
+end t.show_entries
+
+fn t.listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
+    let mut f = t.ok_file(std.fs.create("d/Zed"))
+    t.ok_unit(f.close())
+    let mut g = t.ok_file(std.fs.create("d/abc"))
+    t.ok_unit(g.close())
+    let entries: alloc.vec.Vec<std.fs.DirEntry, std.alloc.System> = std.fs.read_dir("d")?
+    t.show("entries", t.num(entries.len()))
+    t.show_entries("entry", &entries)
+    t.fail_unit("read_dir missing", t.drop_res(std.fs.read_dir("d/nope")))
+    t.fail_unit("read_dir of a file", t.drop_res(std.fs.read_dir("d/abc")))
+    let empty: alloc.vec.Vec<std.fs.DirEntry, std.alloc.System> = std.fs.read_dir("d/a/b/c")?
+    t.show("empty dir entries", t.num(empty.len()))
+    Ok(())
+end t.listing
+
+fn t.drop_res(r: Result<alloc.vec.Vec<std.fs.DirEntry, std.alloc.System>, std.io.Error>) -> Result<(), std.io.Error> uses [] panics may
+    match r {
+        Ok(v) => {
+            core.mem.drop(v)
+            Ok(())
+        }
+        Err(e) => Err(e)
+    }
+end t.drop_res
+
+fn t.big_listing() -> Result<(), std.io.Error> uses [alloc, io.console, io.fs] panics may
+    t.ok_unit(std.fs.create_dir("d/big"))
+    let mut i = 0usize
+    while i < 400usize {
+        let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+        core.mem.drop(name.push_str("d/big/file_with_a_longer_name_"))
+        core.mem.drop(name.push_i64(t.num(i)))
+        let mut f = t.ok_file(std.fs.create(name.as_str()))
+        t.ok_unit(f.close())
+        i = i + 1usize
+    }
+    let entries: alloc.vec.Vec<std.fs.DirEntry, std.alloc.System> = std.fs.read_dir("d/big")?
+    t.show("big entries", t.num(entries.len()))
+    match entries.get(0usize) {
+        Some(en) => t.say("big first", en.name.as_str())
+        None => t.say("big first", "")
+    }
+    match entries.get(399usize) {
+        Some(en) => t.say("big last", en.name.as_str())
+        None => t.say("big last", "")
+    }
+    let mut j = 0usize
+    while j < entries.len() {
+        match entries.get(j) {
+            Some(en) => {
+                let mut full = alloc.string.String.new(std.alloc.SYSTEM)
+                core.mem.drop(full.push_str("d/big/"))
+                core.mem.drop(full.push_str(en.name.as_str()))
+                t.ok_unit(std.fs.remove_file(full.as_str()))
+            }
+            None => {
+            }
+        }
+        j = j + 1usize
+    }
+    t.ok_unit(std.fs.remove_dir("d/big"))
+    Ok(())
+end t.big_listing
+
+fn t.opt(label: &str, v: Option<&str>) -> () uses [alloc, io.console] panics may
+    match v {
+        Some(s) => t.say(label, s)
+        None => t.say(label, "<none>")
+    }
+end t.opt
+
+fn t.paths() -> () uses [alloc, io.console] panics may
+    t.opt("parent a/b/c", std.path.parent("a/b/c"))
+    t.opt("parent /a", std.path.parent("/a"))
+    t.opt("parent /", std.path.parent("/"))
+    t.opt("parent a", std.path.parent("a"))
+    t.opt("parent a//b/", std.path.parent("a//b/"))
+    t.opt("parent empty", std.path.parent(""))
+    t.opt("name a/b.tar.gz", std.path.file_name("a/b.tar.gz"))
+    t.opt("name a/b/", std.path.file_name("a/b/"))
+    t.opt("name /", std.path.file_name("/"))
+    t.opt("name ..", std.path.file_name("a/.."))
+    t.opt("ext a/b.tar.gz", std.path.extension("a/b.tar.gz"))
+    t.opt("ext .bashrc", std.path.extension("/h/.bashrc"))
+    t.opt("ext noext", std.path.extension("a/noext"))
+    t.opt("ext trailing dot", std.path.extension("a/x."))
+    t.opt("stem a/b.tar.gz", std.path.file_stem("a/b.tar.gz"))
+    t.opt("stem .bashrc", std.path.file_stem(".bashrc"))
+    t.flag("absolute /x", std.path.is_absolute("/x"))
+    t.flag("absolute x", std.path.is_absolute("x"))
+    match std.path.join("a", "b") {
+        Ok(s) => t.say("join a b", s.as_str())
+        Err(_e) => t.say("join a b", "oom")
+    }
+    match std.path.join("a/", "b") {
+        Ok(s) => t.say("join a/ b", s.as_str())
+        Err(_e) => t.say("join a/ b", "oom")
+    }
+    match std.path.join("a", "/b") {
+        Ok(s) => t.say("join a /b", s.as_str())
+        Err(_e) => t.say("join a /b", "oom")
+    }
+    match std.path.join("", "b") {
+        Ok(s) => t.say("join empty b", s.as_str())
+        Err(_e) => t.say("join empty b", "oom")
+    }
+end t.paths
+
+fn t.num(n: usize) -> i64 uses [] panics never
+    match i64.try_from_usize(n) {
+        Ok(v) => v
+        Err(_e) => -1i64
+    }
+end t.num
+
+fn t.ok_file(r: Result<std.fs.File, std.io.Error>) -> std.fs.File uses [] panics may
+    match r {
+        Ok(v) => v
+        Err(_e) => core.panic.panic("unexpected I/O error")
+    }
+end t.ok_file
+
+fn t.ok_size(r: Result<usize, std.io.Error>) -> usize uses [] panics may
+    match r {
+        Ok(v) => v
+        Err(_e) => core.panic.panic("unexpected I/O error")
+    }
+end t.ok_size
+
+fn t.ok_unit(r: Result<(), std.io.Error>) -> () uses [] panics may
+    match r {
+        Ok(_u) => {
+        }
+        Err(_e) => core.panic.panic("unexpected I/O error")
+    }
+end t.ok_unit
+
+fn t.show(label: &str, n: i64) -> () uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": "))
+    core.mem.drop(s.push_i64(n))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show
+
+fn t.show_err(label: &str, e: std.io.Error) -> () uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(label))
+    core.mem.drop(s.push_str(": kind "))
+    core.mem.drop(s.push_i64(t.kind_num(e.kind)))
+    core.mem.drop(s.push_str(" code "))
+    core.mem.drop(s.push_i64(i64.from_i32(e.code)))
+    core.mem.drop(std.io.print_line(s.as_str()))
+end t.show_err

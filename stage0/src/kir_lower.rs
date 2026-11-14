@@ -1033,7 +1033,7 @@ impl<'a> Lw<'a> {
         if matches!(callee_name.as_str(), "std.net.listen" | "std.net.connect") {
             return net_call(self, e, callee_name == "std.net.listen", line);
         }
-        if matches!(callee_name.as_str(), "std.fs.create" | "std.fs.open" | "std.fs.exists" | "std.fs.remove_file" | "std.fs.read_to_end") {
+        if matches!(callee_name.as_str(), "std.fs.create" | "std.fs.open" | "std.fs.exists" | "std.fs.remove_file" | "std.fs.read_to_end" | "std.fs.open_append" | "std.fs.rename" | "std.fs.create_dir" | "std.fs.remove_dir" | "std.fs.stat_raw" | "std.fs.read_dir_raw") {
             return fs_call(self, e, &callee_name, args, line);
         }
         if callee_name == "std.process.Command.new" {
