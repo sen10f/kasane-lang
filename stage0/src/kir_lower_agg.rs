@@ -210,8 +210,8 @@ impl AggTab {
             // チャネルの端 `Sender<T>` / `Receiver<T>` (`{ state: ptr }`) と `SendError<T>` (`{ value: T }`)。T は 8 バイト以下のスカラー。
             Src::Named(name, args) if (name == "std.sync.Sender" || name == "std.sync.Receiver" || name == "std.sync.SendError") && args.len() == 1 => {
                 let elem = self.lower_ty(p, file, &args[0])?;
-                if !elem.is_scalar() || elem == Ty::Unit || matches!(elem, Ty::I128 | Ty::U128) {
-                    return Err(format!("{}<{}> は段階 1 の対象外 (要素は 64 ビット以下のスカラーだけ)", name, show(&args[0])));
+                if !(matches!(elem, Ty::Agg(_)) || (elem.is_scalar() && elem != Ty::Unit && !matches!(elem, Ty::I128 | Ty::U128))) {
+                    return Err(format!("{}<{}> は段階 1 の対象外 (要素は 64 ビット以下のスカラーか集成体だけ)", name, show(&args[0])));
                 }
                 Ok(if name == "std.sync.SendError" { self.send_err(elem) } else { self.chan_end(name == "std.sync.Sender", elem) })
             }
