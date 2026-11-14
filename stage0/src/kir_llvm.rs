@@ -969,7 +969,7 @@ impl<'a> Fe<'a> {
 
     fn field_w(&self, t: Ty) -> R<u32> {
         match t {
-            Ty::Unit | Ty::Opt(_) | Ty::Res(..) | Ty::Ref(..) => Err(format!("型 {} は集成体のフィールドにできない", t.name())),
+            Ty::Unit | Ty::Opt(_) | Ty::Res(..) => Err(format!("型 {} は集成体のフィールドにできない", t.name())),
             t => Ok(size_of(self.aggs, t) * 8),
         }
     }
@@ -980,7 +980,7 @@ impl<'a> Fe<'a> {
             Ty::Bool => self.t(format!("zext i1 {} to i8", v)),
             Ty::F32 => self.t(format!("bitcast float {} to i32", v)),
             Ty::F64 => self.t(format!("bitcast double {} to i64", v)),
-            Ty::Ptr => self.t(format!("ptrtoint ptr {} to i64", v)),
+            Ty::Ptr | Ty::Ref(..) => self.t(format!("ptrtoint ptr {} to i64", v)),
             t => {
                 self.field_w(t)?;
                 v.to_string()
@@ -993,7 +993,7 @@ impl<'a> Fe<'a> {
             Ty::Bool => self.line(format!("{} = icmp ne i8 {}, 0", dst, b)),
             Ty::F32 => self.line(format!("{} = bitcast i32 {} to float", dst, b)),
             Ty::F64 => self.line(format!("{} = bitcast i64 {} to double", dst, b)),
-            Ty::Ptr => self.line(format!("{} = inttoptr i64 {} to ptr", dst, b)),
+            Ty::Ptr | Ty::Ref(..) => self.line(format!("{} = inttoptr i64 {} to ptr", dst, b)),
             t => {
                 let ty = self.lt(t);
                 self.mov(dst, &ty, b)

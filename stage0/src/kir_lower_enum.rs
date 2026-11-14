@@ -232,7 +232,13 @@ impl<'a> Lw<'a> {
             _ => return self.err(line, format!("メソッド {} は型 {} に対して段階 1 の対象外", m, rt.name())),
         };
         // unwrap_or: 値を持つ枝 (Some、または Ok) はペイロードを読み、それ以外は既定値 d を取る。
-        let Some(d) = self.expr(&args[0])? else { return Ok(None) };
+        let Some(mut d) = self.expr(&args[0])? else { return Ok(None) };
+        // `Option<&スカラー>` は値のペイロードで持つので、既定値の `&x` は読んで値にする。
+        if let Ty::Ref(_, p) = self.vty(d) {
+            if p.ty() == pay_ty && is_opt {
+                d = self.emit(pay_ty, Op::Load(d));
+            }
+        }
         if self.vty(d) != pay_ty {
             return self.err(line, format!("unwrap_or の既定値の型が {} と違う", pay_ty.name()));
         }

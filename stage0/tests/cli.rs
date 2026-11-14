@@ -18299,11 +18299,9 @@ fn kir_agg_refs_vec_fields_are_read_through_references() {
 
 #[test]
 fn kir_agg_refs_reports_unsupported_references_with_a_reason() {
-    // 指す先が標準の型・Option の参照や、移動・Vec の借用の戻りは、理由を付けて拒否する。
+    // 指す先が標準の型の参照は、理由を付けて拒否する (要素が集成体のスライス `&[t.P]` は下ろせる)。
     let cases: &[(&str, &str, &str)] = &[
         ("fn t.f(e: &std.io.Stdout) -> u8 uses [] panics never\n    let _t = e\n    0u8\nend t.f\n", "t.f", "引数の型"),
-        // 要素が集成体のスライスは `fat` の対象外 (要素の大きさが要る。`Option<&[u8]>` は対象になった)
-        ("type t.P\n    a: u8\nend t.P\n\nfn t.f(s: &[t.P]) -> usize uses [] panics never\n    let _t = s\n    0usize\nend t.f\n", "t.f", "引数の型"),
     ];
     for (i, (src, f, why)) in cases.iter().enumerate() {
         let src = format!("{}\nfn t.main() -> Result<(), std.io.Error> uses [] panics may\n    Ok(())\nend t.main\n", src);
@@ -23362,27 +23360,12 @@ fn kir_copy_elem_fields_match_tree_walker() {
 }
 
 /// `linear_ok/` の正しい小プログラムは、すべてネイティブになり、出力・終了コードが `ksn run` と一致する (修正プラン 3-1)。
-/// `PENDING` は、まだバンドルへ退避するもの。ネイティブになったら外す (外し忘れはテストが落とす)。
 #[test]
 fn linear_ok_programs_build_native_and_match_run() {
-    const PENDING: &[&str] = &[
-        "e01_method_chain_borrow_ok",
-        "e02_d22_move_s_after_v_dead",
-        "fn_conv_wider_decl",
-        "fn_effects_bound_var_ok",
-        "genref_generic_ref_copy",
-        "h04_sibling_blocks_same_name_move",
-        "keep_lifetime_ok",
-        "lifetime_ties_inputs_unit_ret_ok",
-        "match_bind_field_assign",
-        "match_temp_subject_ok",
-        "move_fnonce_called_once",
-        "move_let_deref_copy_field",
-        "p25",
-    ];
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
     let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
     names.sort();
+    assert!(names.len() >= 100, "linear_ok cases missing");
     let mut bad = vec![];
     for p in names {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
@@ -23390,18 +23373,14 @@ fn linear_ok_programs_build_native_and_match_run() {
         let b = run(&["build"], &t.0);
         let out = format!("{}{}", text(&b.stdout), text(&b.stderr));
         let exe = t.0.join("target").join("debug").join("t.native");
-        let native = !out.contains("native backend skipped") && exe.exists();
-        let pending = PENDING.contains(&stem.as_str());
-        if native == pending {
-            bad.push(format!("{}: native={} pending={} {}", stem, native, pending, out.lines().find(|l| l.contains("skipped")).unwrap_or("")));
+        if out.contains("native backend skipped") || !exe.exists() {
+            bad.push(format!("{}: バンドルへ退避: {}", stem, out.lines().find(|l| l.contains("skipped")).unwrap_or("")));
             continue;
         }
-        if native {
-            let n = Command::new(&exe).current_dir(&t.0).output().unwrap();
-            let r = run(&["run"], &t.0);
-            if n.status.code() != r.status.code() || text(&n.stdout) != text(&r.stdout) {
-                bad.push(format!("{}: native と run が違う: {:?} {:?} / {:?} {:?}", stem, n.status.code(), text(&n.stdout), r.status.code(), text(&r.stdout)));
-            }
+        let n = Command::new(&exe).current_dir(&t.0).output().unwrap();
+        let r = run(&["run"], &t.0);
+        if n.status.code() != r.status.code() || text(&n.stdout) != text(&r.stdout) || text(&n.stderr) != text(&r.stderr) {
+            bad.push(format!("{}: native と run が違う: {:?} {:?} / {:?} {:?}", stem, n.status.code(), text(&n.stdout), r.status.code(), text(&r.stdout)));
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));

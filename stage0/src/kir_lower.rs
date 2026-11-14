@@ -372,6 +372,23 @@ impl<'a> Lw<'a> {
             return r;
         }
         let stt = self.src_ty(&scrut)?;
+        // `match &e { Some(p) => .. }` (e は所有物を持たない Option / Result): 共有の借用で読むだけなので `match e` と同じ
+        // (束縛した名前は値で持ち、`*p` は恒等になる)。
+        if nname(&scrut) == "Unary" && st(&nf(&scrut)[0]) == "&" {
+            if let Src::Ref(false, inner) = &stt {
+                if matches!(&**inner, Src::Named(n, _) if n == "Option" || n == "Result") {
+                    let operand = nf(&scrut)[1].clone();
+                    if self.ty_of(&operand).map(|t| !coll::owns(self, t)).unwrap_or(false) && !matches!(self.src_ty(&operand), Ok(Src::Ref(..))) {
+                        if let V::Node(n, fs, a, b) = e {
+                            let mut fs = fs.clone();
+                            fs[0] = operand;
+                            let e2 = V::Node(n, fs, *a, *b);
+                            return self.match_(&e2);
+                        }
+                    }
+                }
+            }
+        }
         match stt {
             Src::Named(n, _) if n == "Option" || n == "Result" => self.match_(e),
             _ => self.match_e(e),
@@ -663,6 +680,8 @@ impl<'a> Lw<'a> {
         match resolved.map(|r| r.target) {
             Some(Tgt::Const(ci)) => self.const_val(ci, e),
             Some(Tgt::Variant(en, vn)) => self.variant_value(&en, &vn, line),
+            // 関数の項目を値として使う: クロージャと同じ `unit` の印 (呼び先は鍵で決まる。種類は `coll::fn_item_kind`)。
+            Some(Tgt::Fn(_)) if coll::fn_item_kind(self, e).is_some() => Ok(self.unit()),
             _ => self.err(line, format!("名前 {} は段階 1 の対象外", segs.join("."))),
         }
     }
@@ -1570,12 +1589,23 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
 
 /// 入口 `e` の戻り値が `Result<T, E>` なら、`E` の Debug 表示の関数を `ok` に足す。
 fn debug_of_entry(p: &Program, aggs: &RefCell<agg::AggTab>, e: &str, ok: &mut Vec<(Func, BTreeSet<String>)>, pos: usize) -> Result<(), String> {
+    // テストの本体は `fn` ではないので、定義が無くてもよい (引数も戻り値の Debug 表示も要らない)。
+    let Some(d) = p.defs.iter().find(|d| d.name == e && d.kw == "fn") else {
+        return if matches!(ok[pos].0.ret, Ty::Res(..)) { Err(format!("入口 {} の定義がない", e)) } else { Ok(()) };
+    };
+    if !d.params.is_empty() {
+        // 引数のある入口は、木走査と同じく「引数の個数が違う」panic で終わる入口に置き換える (引数を渡す経路がない)。
+        let msg = format!("arity mismatch calling {}: expected {}, got 0", e, d.params.len());
+        let f = &mut ok[pos].0;
+        f.blocks = vec![Block {
+            params: vec![],
+            insts: vec![Inst { dst: 0, ty: Ty::Unit, op: Op::Panic { msg, arg: None } }],
+            term: Term::Unreachable,
+        }];
+        f.may_panic = true;
+    }
     // 戻り値が `()` の入口 (テストの本体を含む) は、Debug 表示の関数を要らない。
     let Ty::Res(_, err) = ok[pos].0.ret else { return Ok(()) };
-    let d = p.defs.iter().find(|d| d.name == e && d.kw == "fn").ok_or_else(|| format!("入口 {} の定義がない", e))?;
-    if !d.params.is_empty() {
-        return Err("入口の関数に引数がある".to_string());
-    }
     let rt = from_v(&d.ret, &HashSet::new());
     let Src::Named(n, args) = &rt else { return Err("入口の戻り値の型が読めない".to_string()) };
     if n != "Result" || args.len() != 2 {
