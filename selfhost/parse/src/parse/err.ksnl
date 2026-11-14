@@ -1,0 +1,58 @@
+const parse.err.E_BYTE_RANGE: u32 = 6u32 pub
+
+const parse.err.E_CHAR: u32 = 3u32 pub
+
+const parse.err.E_CHARACTER: u32 = 4u32 pub
+
+const parse.err.E_DEPTH: u32 = 16u32 pub
+
+const parse.err.E_END_NAME: u32 = 13u32 pub
+
+const parse.err.E_ESCAPE: u32 = 2u32 pub
+
+const parse.err.E_EXPECT: u32 = 5u32 pub
+
+const parse.err.E_EXPECT_ARM_END: u32 = 12u32 pub
+
+const parse.err.E_EXPECT_EXPR: u32 = 8u32 pub
+
+const parse.err.E_EXPECT_NAME: u32 = 9u32 pub
+
+const parse.err.E_EXPECT_NL: u32 = 10u32 pub
+
+const parse.err.E_EXPECT_PATTERN: u32 = 11u32 pub
+
+const parse.err.E_EXPECT_TYPE: u32 = 7u32 pub
+
+const parse.err.E_STRING: u32 = 1u32 pub
+
+const parse.err.E_TOPLEVEL: u32 = 14u32 pub
+
+const parse.err.E_UNEXPECTED_END: u32 = 15u32 pub
+
+enum parse.err.Error derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Syntax(usize, usize, u32, u32)
+end parse.err.Error
+
+fn parse.err.message(code: u32) -> &'static str uses [] panics never pub
+    match code {
+        1u32 => "unterminated string"
+        2u32 => "bad escape"
+        3u32 => "bad char literal"
+        4u32 => "unexpected character"
+        5u32 => "expected"
+        6u32 => "byte out of range"
+        7u32 => "expected a type"
+        8u32 => "expected an expression"
+        9u32 => "expected a name"
+        10u32 => "expected end of line"
+        11u32 => "expected a pattern"
+        12u32 => "expected end of match arm"
+        13u32 => "end name does not match the definition"
+        14u32 => "unexpected token at top level"
+        15u32 => "unexpected end"
+        16u32 => "nesting too deep"
+        _ => "syntax error"
+    }
+end parse.err.message

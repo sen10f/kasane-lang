@@ -1,0 +1,53 @@
+enum parse.Failure derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Io(std.io.Error)
+    Syntax(usize, usize, u32, u32)
+end parse.Failure
+
+fn parse.lex_one(path: &str) -> Result<(), parse.Failure> uses [alloc, io.console, io.fs] panics never
+    let buf = parse.read_file(path)?
+    let mut toks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    match parse.lex.lex(buf.as_slice(), &mut toks) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(parse.err.Error.Syntax(a, b, c, d)) => return Err(parse.Failure.Syntax(a, b, c, d))
+        Err(parse.err.Error.Alloc(e)) => return Err(parse.Failure.Alloc(e))
+    }
+    let src = buf.as_slice()
+    for t in toks.as_slice().iter() {
+        let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+        line.push_str(parse.tok.kind_name(t.kind))?
+        line.push_str("\t")?
+        line.push_u64(u64.from_usize(t.line))?
+        line.push_str("\t")?
+        match src.sub(t.start, t.stop) {
+            Some(b) => {
+                match core.str.from_utf8(b) {
+                    Ok(s) => line.push_str(s)?
+                    Err(_e) => line.push_str("?")?
+                }
+            }
+            None => line.push_str("?")?
+        }
+        std.io.print_line(line.as_str())?
+    }
+    Ok(())
+end parse.lex_one
+
+fn parse.main() -> Result<(), parse.Failure> uses [alloc, env, io.console, io.fs] panics never
+    let n = std.env.arg_count()
+    for k in core.iter.range(0usize, n) {
+        match std.env.arg(k) {
+            Some(path) => parse.lex_one(path)?
+            None => return Ok(())
+        }
+    }
+    Ok(())
+end parse.main
+
+fn parse.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics never
+    let mut buf: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut buf)?)
+    }
+    Ok(buf)
+end parse.read_file
