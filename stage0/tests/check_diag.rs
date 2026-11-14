@@ -119,10 +119,6 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a15_ptr_is_null_non_unsafe",
     "hunt_a15_ptr_read_non_unsafe",
     "hunt_a15_ptr_type_annot_non_unsafe",
-    // F5 標準ライブラリ: `Buf.initialized` の露出、`std.json.Value` の寿命
-    "hunt_a16_json_value_doc_drop_escape_01",
-    "hunt_a16_raw_buf_initialize_forge_01",
-    "hunt_a16_vec_buf_initialized_forge_01",
     // F6 型: 外れうるパターンの `let` (`let false = 5i32`)
     "hunt_a17_reserved_false_bind",
     // F7 定数: `const` の範囲・オーバーフロー・ターゲットの幅

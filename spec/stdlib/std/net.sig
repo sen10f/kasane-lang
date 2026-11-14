@@ -1,5 +1,5 @@
 type std.net.Error derive [Debug, Clone, Copy, PartialEq, Eq] pub
-    code: i32
+    code: i32 pub
 end std.net.Error
 
 trait std.net.Handler[E: uses, P: panics] pub

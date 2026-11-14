@@ -217,9 +217,12 @@ impl<'a> Low<'a> {
     /// 戻り値が参照を含むか。`ret_borrows` に加え、戻り値の型定義の欄が参照を持つ構造体
     /// (`t.H { r: &'a T }` など) も含む。省略規則で、戻り値は受け手・引数を借りる。
     fn ret_contains_ref(&self, d: &Def) -> bool {
-        if Self::ret_borrows(d) || Self::ret_has_type_param(d) {
-            return true;
-        }
+        Self::ret_borrows(d) || Self::ret_has_type_param(d) || self.ret_struct_holds_ref(d)
+    }
+
+    /// 戻り値が、参照を欄に持つ名前付きの構造体 (`-> std.json.Value` で `doc: &'a Doc`) か。
+    /// 型パラメータは含めない (`pop() -> Option<T>` を借用にすると、所有の戻り値まで誤って借りてしまう)。
+    fn ret_struct_holds_ref(&self, d: &Def) -> bool {
         let V::L(parts) = &d.ret else { return false };
         let [V::S(a), V::S(name), _] = parts.as_slice() else { return false };
         if a != "named" { return false; }
@@ -310,7 +313,8 @@ impl<'a> Low<'a> {
         for &i in cands {
             let d = &self.p.defs[i];
             let Some((_, t)) = d.params.first() else { return None };
-            if tag(t) != "ref" || !Self::ret_borrows(d) {
+            // 戻り値が借用を含む: 参照型・ライフタイム引数・参照を欄に持つ構造体 (`-> std.json.Value` の `doc: &'a Doc`)。
+            if tag(t) != "ref" || !(Self::ret_borrows(d) || self.ret_struct_holds_ref(d)) {
                 return None;
             }
             any_mut |= matches!(tel(t, 1), V::B(true));

@@ -1,5 +1,5 @@
 type core.slice.IndexError derive [Debug, Clone, Copy, PartialEq, Eq] pub
-    index: usize
+    index: usize pub
 end core.slice.IndexError
 
 type core.slice.Iter['a, T] pub
@@ -7,7 +7,7 @@ type core.slice.Iter['a, T] pub
 end core.slice.Iter
 
 type core.slice.LengthError derive [Debug, Clone, Copy, PartialEq, Eq] pub
-    expected: usize
+    expected: usize pub
 end core.slice.LengthError
 
 fn core.slice.Iter.count[T](self: core.slice.Iter<T>) -> usize uses [] panics never pub

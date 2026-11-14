@@ -45,8 +45,8 @@ trait std.json.ToJson pub
 end std.json.ToJson
 
 type std.json.Value['a] derive [Clone, Copy] pub
-    doc: &'a std.json.Doc
-    at: usize
+    doc: &'a std.json.Doc pub
+    at: usize pub
 end std.json.Value
 
 impl std.json.FromJson for alloc.string.String<std.alloc.System>
@@ -77,7 +77,7 @@ impl[T: std.json.FromJson] std.json.FromJson for alloc.vec.Vec<T, std.alloc.Syst
 
 impl[T: std.json.FromJson] std.json.FromJson for core.option.Option<T>
 
-fn std.json.Doc.root(self: &std.json.Doc) -> std.json.Value uses [] panics never pub
+fn std.json.Doc.root['a](self: &'a std.json.Doc) -> std.json.Value<'a> uses [] panics never pub
     std.json.Value { doc: self, at: self.top }
 end std.json.Doc.root
 

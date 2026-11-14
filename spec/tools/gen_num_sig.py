@@ -110,11 +110,11 @@ for g, key, text in ordered:
         print(text)
 print()
 print('type core.num.ParseIntError derive [Debug, Clone, Copy, PartialEq, Eq] pub')
-print('    kind: u8')
+print('    kind: u8 pub')
 print('end core.num.ParseIntError')
 print()
 print('type core.num.TryFromIntError derive [Debug, Clone, Copy, PartialEq, Eq] pub')
-print('    kind: u8')
+print('    kind: u8 pub')
 print('end core.num.TryFromIntError')
 print()
 for g, key, text in ordered:

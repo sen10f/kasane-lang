@@ -1,4 +1,4 @@
-// expect: E????
+// expect: E3010
 // std.json.parse で得た Doc から root() で Value を取り、Doc を drop してから Value を使う
 fn t.bad() -> () uses [alloc] panics never
     match std.json.parse("{\"a\": 42}") {

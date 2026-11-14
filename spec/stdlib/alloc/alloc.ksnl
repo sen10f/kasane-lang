@@ -1,5 +1,5 @@
 type alloc.alloc.AllocError derive [Debug, Clone, Copy, PartialEq, Eq] pub
-    code: u32
+    code: u32 pub
 end alloc.alloc.AllocError
 
 trait alloc.alloc.Allocator pub
