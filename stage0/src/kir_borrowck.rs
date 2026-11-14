@@ -615,12 +615,39 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                 let np = match &i.op {
                     Op::Alloca | Op::FrameBytes { .. } => Some((i.dst, Some(0))),
                     Op::Reborrow(a) | Op::AsShared(a) | Op::Borrow { a, .. } => place[*a as usize],
+                    Op::Bitcast { a, .. } if matches!(i.ty, Ty::Ptr | Ty::Ref(..)) => place[*a as usize],
                     Op::FieldAddr { a, off } => place[*a as usize].map(|(r, o)| (r, o.map(|o| o + off))),
                     Op::PtrAdd { p, .. } => place[*p as usize].map(|(r, _)| (r, None)),
                     _ => None,
                 };
                 if np != place[i.dst as usize] {
                     place[i.dst as usize] = np;
+                    ch = true;
+                }
+            }
+        }
+        if !ch {
+            break;
+        }
+    }
+    // フィールドの道 (根からの `fieldaddr` のオフセットの列)。`None` は不明 (何とでも重なるとみなす)。
+    let mut ppath: Vec<Option<Vec<u32>>> = vec![None; n];
+    loop {
+        let mut ch = false;
+        for b in &f.blocks {
+            for i in &b.insts {
+                let np = match &i.op {
+                    Op::Alloca | Op::FrameBytes { .. } => Some(vec![]),
+                    Op::Reborrow(a) | Op::AsShared(a) | Op::Borrow { a, .. } => ppath[*a as usize].clone(),
+                    Op::Bitcast { a, .. } if matches!(i.ty, Ty::Ptr | Ty::Ref(..)) => ppath[*a as usize].clone(),
+                    Op::FieldAddr { a, off } => ppath[*a as usize].clone().map(|mut p| {
+                        p.push(*off);
+                        p
+                    }),
+                    _ => None,
+                };
+                if np != ppath[i.dst as usize] {
+                    ppath[i.dst as usize] = np;
                     ch = true;
                 }
             }
@@ -881,8 +908,8 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
     };
     let overlap = |a: VId, b: VId| -> bool {
         match (an.place[a as usize], an.place[b as usize]) {
-            (Some((r1, o1)), Some((r2, o2))) if r1 == r2 => match (o1, o2) {
-                (Some(x), Some(y)) => x == y || x == 0 || y == 0,
+            (Some((r1, _)), Some((r2, _))) if r1 == r2 => match (&ppath[a as usize], &ppath[b as usize]) {
+                (Some(x), Some(y)) => x.starts_with(y) || y.starts_with(x),
                 _ => true,
             },
             _ => false,
