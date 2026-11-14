@@ -252,6 +252,14 @@ fn shortener.http.test_head(text: &str) -> Result<shortener.http.Head, shortener
     shortener.http.parse_head(text.as_bytes())
 end shortener.http.test_head
 
+/// `Head` は `String` を持ち `PartialEq` / `Debug` を derive できないので、エラー側だけを比べるテスト用の写し。
+fn shortener.http.test_head_err(text: &str) -> Result<(), shortener.error.Error> uses [alloc] panics never
+    match shortener.http.test_head(text) {
+        Ok(_h) => Ok(())
+        Err(e) => Err(e)
+    }
+end shortener.http.test_head_err
+
 fn shortener.http.test_len(head: &str) -> Result<usize, shortener.error.Error> uses [] panics never
     shortener.http.parse_content_length(head)
 end shortener.http.test_len
@@ -319,17 +327,17 @@ end shortener.http.parse_head.test_accepts_requests
 test shortener.http.parse_head.test_rejects_malformed
     let bad = error.Error.BadRequest
     core.check.eq(shortener.http.test_head("GET /x HTTP/2\r\n\r\n").is_err(), true)
-    core.check.eq(shortener.http.test_head("GET x HTTP/1.1\r\n\r\n"), Err(bad))
-    core.check.eq(shortener.http.test_head("GET /x\r\n\r\n"), Err(bad))
-    core.check.eq(shortener.http.test_head("GET\r\n\r\n"), Err(bad))
-    core.check.eq(shortener.http.test_head("get /x HTTP/1.1\r\n\r\n"), Err(bad))
-    core.check.eq(shortener.http.test_head(" /x HTTP/1.1\r\n\r\n"), Err(bad))
-    core.check.eq(shortener.http.test_head("GET /x HTTP/1.1\r\nbroken header\r\n\r\n"), Err(bad))
-    core.check.eq(shortener.http.test_head("GET /x HTTP/1.1\r\n: v\r\n\r\n"), Err(bad))
+    core.check.eq(shortener.http.test_head_err("GET x HTTP/1.1\r\n\r\n"), Err(bad))
+    core.check.eq(shortener.http.test_head_err("GET /x\r\n\r\n"), Err(bad))
+    core.check.eq(shortener.http.test_head_err("GET\r\n\r\n"), Err(bad))
+    core.check.eq(shortener.http.test_head_err("get /x HTTP/1.1\r\n\r\n"), Err(bad))
+    core.check.eq(shortener.http.test_head_err(" /x HTTP/1.1\r\n\r\n"), Err(bad))
+    core.check.eq(shortener.http.test_head_err("GET /x HTTP/1.1\r\nbroken header\r\n\r\n"), Err(bad))
+    core.check.eq(shortener.http.test_head_err("GET /x HTTP/1.1\r\n: v\r\n\r\n"), Err(bad))
     let bad_length = "GET /x HTTP/1.1\r\nContent-Length: x\r\n\r\n"
-    core.check.eq(shortener.http.test_head(bad_length), Err(bad))
+    core.check.eq(shortener.http.test_head_err(bad_length), Err(bad))
     let too_long = "GET /x HTTP/1.1\r\nContent-Length: 9999\r\n\r\n"
-    core.check.eq(shortener.http.test_head(too_long), Err(error.Error.TooLarge))
+    core.check.eq(shortener.http.test_head_err(too_long), Err(error.Error.TooLarge))
     core.check.eq(shortener.http.test_head("").is_err(), true)
     core.check.eq(shortener.http.parse_head(b"GET /\xff HTTP/1.1\r\n\r\n").is_err(), true)
 end shortener.http.parse_head.test_rejects_malformed
