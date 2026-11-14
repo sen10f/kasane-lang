@@ -137,6 +137,8 @@ pub enum Pay {
     F32,
     F64,
     Bool,
+    /// ヒープの番地 (`&String` / `&Vec<T>` の借用のヘッダのアドレスなど)。
+    Ptr,
     Unit,
     /// 集成体 (`Module::aggs` の添字)。
     Agg(u32),
@@ -204,6 +206,7 @@ impl Pay {
             Pay::F32 => Ty::F32,
             Pay::F64 => Ty::F64,
             Pay::Bool => Ty::Bool,
+            Pay::Ptr => Ty::Ptr,
             Pay::Unit => Ty::Unit,
             Pay::Agg(i) => Ty::Agg(i),
             Pay::Opt(x) => Ty::Opt(*x),
@@ -227,11 +230,12 @@ impl Pay {
             Ty::F32 => Pay::F32,
             Ty::F64 => Pay::F64,
             Ty::Bool => Pay::Bool,
+            Ty::Ptr => Pay::Ptr,
             Ty::Unit => Pay::Unit,
             Ty::Agg(i) => Pay::Agg(i),
             Ty::Opt(p) => Pay::Opt(intern(p)),
             Ty::Res(t, e) => Pay::Res(intern(t), intern(e)),
-            Ty::I128 | Ty::U128 | Ty::Ptr | Ty::Ref(..) => return None,
+            Ty::I128 | Ty::U128 | Ty::Ref(..) => return None,
         })
     }
 

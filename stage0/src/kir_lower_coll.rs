@@ -31,6 +31,11 @@ const VEC: &str = "alloc.vec.Vec";
 /// `alloc.raw.Buf<T, A>` は Vec と同じ 24 バイトのヘッダ {ptr, len, cap} (cap は要素数)。
 const BUF: &str = "alloc.raw.Buf";
 
+/// いま下ろしている関数が、`alloc/vec.ksnl` の `Vec` の基本メソッド (中身は `Buf` = 組み込みのヘッダ操作) か。
+pub(crate) fn in_vec_base(lw: &Lw) -> bool {
+    lw.def.name.strip_prefix("alloc.vec.Vec.").is_some_and(|m| crate::interp::KASANE_VEC_BASE.contains(&m))
+}
+
 /// ヘッダを持つ「Vec の仲間」(`Vec` と `Buf`) の名前か。
 pub(crate) fn is_vecn(n: &str) -> bool {
     n == VEC || n == BUF
@@ -154,7 +159,7 @@ pub(super) fn table_ty(lw: &Lw, e: &V) -> Option<Src> {
     if id == 0 {
         return None;
     }
-    lw.tys.get(&(lw.def.name.clone(), id)).map(|x| x.ty.clone())
+    lw.tys.get(&(lw.def.name.clone(), id)).map(|x| if lw.subst.is_empty() { x.ty.clone() } else { super::mono::subst_ty(&x.ty, &lw.subst) })
 }
 
 fn strip_ref(t: &Src) -> &Src {
@@ -296,7 +301,7 @@ pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
 pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
     match strip_ref(t) {
         // 要素が所有物 (`Vec<String>`) のときは、要素の型 (集成体 `vec` など) を持つ
-        Src::Named(n, args) if is_vecn(n) => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a))))),
+        Src::Named(n, args) if is_vecn(n) => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a)).or_else(|| sig_ty(lw, a).filter(|t| *t == Ty::Ptr))))),
         Src::Named(n, _) if n == STRING => Some(Kind::String),
         Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(lw, args))),
         Src::Named(n, args) if n == BTREEMAP => Some(Kind::BMap(map_kv(lw, args))),
@@ -1444,10 +1449,24 @@ fn has_fn_param(cd: &crate::program::Def) -> bool {
     cd.params.iter().any(|(_, t)| matches!(from_v(t, &gn), Src::Closure { .. }))
 }
 
-/// 引数の型が型引数 `F: Fn` か `fn(..)` の型なら、束縛の名前 (型引数の名前、または `fn:引数名`)。
-fn cparam(pt: &V, pname: &str, tnames: &HashSet<String>) -> Option<String> {
-    match from_v(pt, tnames) {
-        Src::Param(g) => Some(g),
+/// 境界に `core.ops.Fn` / `FnMut` / `FnOnce` を持つ型パラメータの名前 (クロージャを取る型引数)。
+pub(crate) fn closure_params(cd: &crate::program::Def) -> HashSet<String> {
+    cd.generics
+        .iter()
+        .filter(|g| g.0 == "type" && format!("{:?}", g.2).contains("core.ops.Fn"))
+        .map(|g| g.1.clone())
+        .collect()
+}
+
+/// 引数の型が型引数 `F: Fn` (または `&F`) か `fn(..)` の型なら、束縛の名前 (型引数の名前、または `fn:引数名`)。
+/// `F` の位置の型パラメータが `Fn` の境界を持たないもの (`T`) は値の引数。
+fn cparam(pt: &V, pname: &str, tnames: &HashSet<String>, cps: &HashSet<String>) -> Option<String> {
+    let mut t = from_v(pt, tnames);
+    while let Src::Ref(_, x) = t {
+        t = *x;
+    }
+    match t {
+        Src::Param(g) if cps.contains(&g) => Some(g),
         Src::Closure { .. } => Some(format!("fn:{}", pname)),
         _ => None,
     }
@@ -1455,7 +1474,8 @@ fn cparam(pt: &V, pname: &str, tnames: &HashSet<String>) -> Option<String> {
 
 /// 単相化で束縛するクロージャの名前の列: 型引数 (宣言順)、続いて `fn(..)` の型の引数 (引数順)。
 fn cnames(cd: &crate::program::Def, tnames: &HashSet<String>) -> Vec<String> {
-    let mut v: Vec<String> = cd.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
+    let cps = closure_params(cd);
+    let mut v: Vec<String> = cd.generics.iter().filter(|g| g.0 == "type" && cps.contains(&g.1)).map(|g| g.1.clone()).collect();
     for (pn, pt) in &cd.params {
         if matches!(from_v(pt, tnames), Src::Closure { .. }) {
             v.push(format!("fn:{}", pn));
@@ -1479,51 +1499,101 @@ fn is_fn_item(lw: &Lw, e: &V) -> bool {
     }))
 }
 
-/// 引数にクロージャ (式、またはクロージャを束縛した局所) があるか。型引数に渡すクロージャの単相化の判定に使う。
-fn has_closure_arg(lw: &Lw, args: &[V]) -> bool {
-    args.iter().any(|a| nname(a) == "Closure" || is_fn_item(lw, a) || local_slot(lw, a).map_or(false, |s| matches!(lw.coll.kinds.get(&s), Some(Kind::Closure { .. }))))
+/// `&x` / `&mut x` の `x` (クロージャを参照で渡す形)。それ以外はそのまま。
+fn strip_addr(a: &V) -> &V {
+    if nname(a) == "Unary" && matches!(st(&nf(a)[0]).as_str(), "&" | "&mut") {
+        return &nf(a)[1];
+    }
+    a
 }
 
-/// 型引数に捕獲のないクロージャを取る関数の呼び出し。鍵は `関数名<クロージャの鍵,...>` で、
+/// 引数にクロージャ (式、またはクロージャを束縛した局所) があるか。型引数に渡すクロージャの単相化の判定に使う。
+pub(super) fn has_closure_arg(lw: &Lw, args: &[V]) -> bool {
+    args.iter().map(strip_addr).any(|a| nname(a) == "Closure" || is_fn_item(lw, a) || local_slot(lw, a).map_or(false, |s| matches!(lw.coll.kinds.get(&s), Some(Kind::Closure { .. }))))
+}
+
+/// 型引数に捕獲のないクロージャを取る関数の呼び出し。鍵は `関数名<型引数,クロージャの鍵,...>` で、
 /// クロージャの引数は実行時の値を持たず (鍵で呼び先が決まる)、値の引数だけを渡す。
+/// クロージャでない型引数 (`T`) は、引数の型から決めて `Lw::subst` で置き換えて下ろす。
 fn generic_call(lw: &mut Lw, e: &V, di: usize) -> LR<Option<VId>> {
     let line = nline(e);
-    let p = lw.p;
-    let cd = &p.defs[di];
+    let cd = &lw.p.defs[di];
     let f = nf(e);
     if cd.kw != "fn" || cd.body.is_none() || cd.is_method() || !matches!(f.get(2), Some(V::Nil) | None) {
         return lw.err(line, format!("呼び先 {} は段階 1 の対象外 (型引数の単相化は自由関数だけ)", cd.name));
     }
+    generic_call_with(lw, e, di, None, items(&f[1]))
+}
+
+/// `generic_call` の本体。`recv` は、メソッドの受け手の値と型 (`self` の型と同じ形: `&mut [T]` など)。
+pub(crate) fn generic_call_with(lw: &mut Lw, e: &V, di: usize, recv: Option<(VId, Src)>, argv: &[V]) -> LR<Option<VId>> {
+    let line = nline(e);
+    let p = lw.p;
+    let cd = &p.defs[di];
     let tnames: HashSet<String> = cd.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
-    let argv = items(&f[1]);
-    if argv.len() != cd.params.len() {
+    let cps = closure_params(cd);
+    let off = recv.is_some() as usize;
+    if argv.len() + off != cd.params.len() {
         return lw.err(line, format!("呼び先 {} の引数の個数が違う", cd.name));
+    }
+    // クロージャでない型引数: 引数と戻り値の型から決める。
+    let mut tb: std::collections::HashMap<String, Src> = std::collections::HashMap::new();
+    for (k, (pn, pt)) in cd.params.iter().enumerate() {
+        if cparam(pt, pn, &tnames, &cps).is_some() {
+            continue;
+        }
+        let act = if k < off { recv.as_ref().map(|r| r.1.clone()) } else { lw.src_ty(&argv[k - off]).ok() };
+        if let Some(a) = act {
+            super::mono::unify(&from_v(pt, &tnames), &a, &mut tb);
+        }
+    }
+    if let Ok(rt) = lw.src_ty(e) {
+        super::mono::unify(&from_v(&cd.ret, &tnames), &rt, &mut tb);
+    }
+    let mut tkeys = vec![];
+    for g in cd.generics.iter().filter(|g| g.0 == "type" && !cps.contains(&g.1)) {
+        match tb.get(&g.1) {
+            Some(t) if super::mono::concrete(t) => tkeys.push(t.show()),
+            _ => return lw.err(line, format!("{} の型引数 {} が決まらない", cd.name, g.1)),
+        }
     }
     let mut bound: BTreeMap<String, Kind> = BTreeMap::new();
     let mut vals = vec![];
-    for ((pn, pt), a) in cd.params.iter().zip(argv) {
-        match from_v(pt, &tnames) {
-            t if cparam(pt, pn, &tnames).is_some() => {
-                let g = cparam(pt, pn, &tnames).expect("直前に確認");
-                let _ = t;
-                let Some(k) = closure_arg_kind(lw, a)? else {
-                    return lw.err(line, "型引数に渡せるのは捕獲のないクロージャ (段階 1) だけ");
-                };
-                bound.insert(g, k);
-            }
-            t => {
-                let Some(pty) = conv(&t) else {
-                    return lw.err(line, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name));
-                };
-                let Some(v) = lw.expr(a)? else { return Ok(None) };
-                if lw.vty(v) != pty {
-                    return lw.err(line, format!("呼び先 {} の引数の型が合わない", cd.name));
-                }
-                vals.push(v);
-            }
+    let mut ptys = vec![];
+    for (k, (pn, pt)) in cd.params.iter().enumerate() {
+        if let Some(g) = cparam(pt, pn, &tnames, &cps) {
+            let a = strip_addr(&argv[k - off]);
+            let Some(kd) = closure_arg_kind(lw, a)? else {
+                return lw.err(line, "型引数に渡せるのは捕獲のないクロージャ (段階 1) だけ");
+            };
+            bound.insert(g, kd);
+            continue;
+        }
+        let Some(pty) = sig_ty(lw, &super::mono::subst_ty(&from_v(pt, &tnames), &tb)) else {
+            return lw.err(line, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name));
+        };
+        let v = if k < off {
+            recv.as_ref().expect("off > 0").0
+        } else {
+            let Some(v) = lw.expr(&argv[k - off])? else {
+                tmp_release(lw, &vals);
+                return Ok(None);
+            };
+            tmp_hold(lw, v);
+            v
+        };
+        vals.push(v);
+        ptys.push(pty);
+    }
+    tmp_release(lw, &vals[off..]);
+    let vals = lw.coerce_args(vals, &ptys);
+    for (v, t) in vals.iter().zip(&ptys) {
+        if lw.vty(*v) != *t {
+            return lw.err(line, format!("呼び先 {} の引数の型が合わない", cd.name));
         }
     }
-    let mut keys = vec![];
+    let mut vals = vals;
+    let mut keys = tkeys;
     for g in cnames(cd, &tnames) {
         match bound.get(&g) {
             Some(Kind::Closure { key, caps, .. }) => {
@@ -1534,17 +1604,22 @@ fn generic_call(lw: &mut Lw, e: &V, di: usize) -> LR<Option<VId>> {
             _ => return lw.err(line, format!("型引数 {} が決まらない", g)),
         }
     }
-    let ret = match ret_ty(cd, &tnames) {
-        Some(x) => x,
-        None => return lw.err(line, format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name)),
+    let ret = if is_nil(&cd.ret) {
+        Some(Ty::Unit)
+    } else {
+        sig_ty(lw, &super::mono::subst_ty(&from_v(&cd.ret, &tnames), &tb))
+    };
+    let Some(ret) = ret else {
+        return lw.err(line, format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name));
     };
     let key = format!("{}<{}>", cd.name, keys.join(","));
     lw.callees.insert(key.clone());
     if !lw.coll.instances.contains(&key) {
         lw.coll.instances.insert(key.clone());
         let mut child = Lw::new(lw.p, lw.tys, lw.aggs, cd);
+        child.subst = tb.clone();
         child.coll.instances = std::mem::take(&mut lw.coll.instances);
-        let r = lower_instance(&mut child, cd, &key, &tnames, &bound);
+        let r = lower_instance(&mut child, cd, &key, &tnames, &cps, &bound);
         lw.coll.instances = std::mem::take(&mut child.coll.instances);
         let (f, callees) = r?;
         lw.coll.extra.push((f, callees));
@@ -1552,14 +1627,6 @@ fn generic_call(lw: &mut Lw, e: &V, di: usize) -> LR<Option<VId>> {
         lw.coll.extra.extend(nested);
     }
     Ok(Some(lw.emit(ret, Op::Call { callee: key, args: vals })))
-}
-
-/// 戻り値の型 (省略は unit)。段階 1 の型に入らないなら `None`。
-fn ret_ty(cd: &crate::program::Def, tnames: &HashSet<String>) -> Option<Ty> {
-    if is_nil(&cd.ret) {
-        return Some(Ty::Unit);
-    }
-    conv(&from_v(&cd.ret, tnames))
 }
 
 /// 関数の項目 (`t.loud` のような名前) の、クロージャとしての種類。取り込みはなく、鍵は関数の名前。
@@ -1612,15 +1679,17 @@ fn lower_instance(
     cd: &crate::program::Def,
     key: &str,
     tnames: &HashSet<String>,
+    cps: &HashSet<String>,
     bound: &BTreeMap<String, Kind>,
 ) -> LR<(Func, BTreeSet<String>)> {
     child.coll.prefix = key.to_string();
+    let sub = super::mono::subst_ty;
     let mut value_params = vec![];
     for (pn, pt) in &cd.params {
-        if cparam(pt, pn, tnames).is_some() {
+        if cparam(pt, pn, tnames, cps).is_some() {
             continue;
         }
-        match sig_ty(child, &from_v(pt, tnames)) {
+        match sig_ty(child, &sub(&from_v(pt, tnames), &child.subst)) {
             Some(x) => value_params.push(x),
             None => return child.err(0, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name)),
         }
@@ -1645,7 +1714,7 @@ fn lower_instance(
     child.scopes.push(vec![]);
     let mut vi = 0;
     for (pname, pt) in &cd.params {
-        if let Some(g) = cparam(pt, pname, tnames) {
+        if let Some(g) = cparam(pt, pname, tnames, cps) {
             let Some(mut k) = bound.get(&g).cloned() else {
                 return child.err(0, format!("型引数 {} が決まらない", g));
             };
@@ -1657,12 +1726,14 @@ fn lower_instance(
             let s = child.lookup(pname).expect("直前に束縛した名前");
             child.coll.kinds.insert(s, k);
         } else {
-            let t = sig_ty(child, &from_v(pt, tnames)).expect("上で検査済み");
-            bind_param(child, pname, pv[vi], t, &from_v(pt, tnames));
+            let src = sub(&from_v(pt, tnames), &child.subst);
+            let t = sig_ty(child, &src).expect("上で検査済み");
+            bind_param(child, pname, pv[vi], t, &src);
             vi += 1;
         }
     }
-    child.ret = ret_ty(cd, tnames).ok_or_else(|| format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name))?;
+    child.ret = if is_nil(&cd.ret) { Some(Ty::Unit) } else { sig_ty(child, &sub(&from_v(&cd.ret, tnames), &child.subst)) }
+        .ok_or_else(|| format!("呼び先 {} の戻り値の型は段階 1 の対象外", cd.name))?;
     let body = cd.body.as_ref().expect("候補は本体を持つ");
     child.rf.begin(body);
     if let Some(v) = child.expr(body)? {
@@ -1754,6 +1825,8 @@ fn call_closure(lw: &mut Lw, e: &V, s: usize, tupled: bool) -> LR<Option<VId>> {
             None => return Ok(None),
         }
     }
+    // `Some(c)` の値 (`&スカラー` の値表現) を `&T` の引数に渡す形などは、呼び出しと同じに調整する。
+    let vs = lw.coerce_args(vs, &args);
     for (v, t) in vs.iter().zip(args.iter()) {
         if lw.vty(*v) != *t {
             return lw.err(line, "クロージャの引数の型が合わない");
@@ -1810,6 +1883,26 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
 
 /// ヘッダ (または `fat`) `h` を受け手とするメソッド呼び出し。所有の周りの新しいメソッド (`own`) を先に試す。
 pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: Kind, h: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
+    // `Vec` の基本メソッドを、`alloc/vec.ksnl` の Kasane 版 (`Buf` の上) の単相インスタンスで下ろす。
+    // 中身 (`alloc.vec.Vec.*` の本体) は組み込みの下ろしを使う (同じヘッダ)。
+    // 要素型が局所の初期化から決まらなかった Vec (別の場所の `push` で決まる) は、`push` / `insert` の引数の型で決める。
+    let kind = match (&kind, m, args.last()) {
+        (Kind::Vec(None), "push" | "insert", Some(a)) => match lw.ty_of(a) {
+            Ok(t) if elem_size(lw, t).is_some() => {
+                if let Some(s) = slot {
+                    lw.coll.kinds.insert(s, Kind::Vec(Some(t)));
+                }
+                Kind::Vec(Some(t))
+            }
+            _ => kind,
+        },
+        _ => kind,
+    };
+    if matches!(kind, Kind::Vec(Some(_))) && !in_vec_base(lw) && crate::interp::KASANE_VEC_BASE.contains(&m) {
+        if let Some(r) = super::ext::ext_call(lw, e, line, &kind, h, m, args, true) {
+            return r;
+        }
+    }
     if let Some(r) = lw.str_method_call(e, &kind, h, m, args) {
         return r;
     }
@@ -1821,9 +1914,6 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     }
     if matches!(m, "cmp" | "partial_cmp") && matches!(kind, Kind::String | Kind::Str) {
         return lw.string_cmp_method(e, &kind, h, m, args);
-    }
-    if m == "push" && matches!(kind, Kind::Vec(_)) {
-        return vec_push(lw, e, line, slot, &kind, h, args);
     }
     if m == "push_str" && matches!(kind, Kind::String) {
         return string_push_str(lw, e, line, slot, h, args);
@@ -1849,8 +1939,11 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if m == "contains" && matches!(kind, Kind::Vec(_) | Kind::Slice(_)) && args.len() == 1 {
         return contains_scalar(lw, line, &kind, h, args);
     }
-    if m == "sub" {
+    if m == "sub" || m == "sub_mut" {
         return slice_sub(lw, line, &kind, h, args);
+    }
+    if let Some(r) = super::ext::ext_call(lw, e, line, &kind, h, m, args, false) {
+        return r;
     }
     coll_method(lw, line, kind, h, m, args.len())
 }
@@ -1908,71 +2001,6 @@ pub(super) fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str,
         "as_str" if kind == Kind::Str => Ok(Some(h)),
         other => lw.err(line, format!("メソッド {} は段階 1 の対象外", other)),
     }
-}
-
-/// `v.push(x)` (要素はスカラーの Vec): 満杯なら `heap.realloc` で広げ、末尾に書いて `len` を進める。結果は `Ok(())`。
-/// 確保に失敗することはない (`AllocError` の `Err` は作らない)。要素型が未確定の Vec は、引数の型で決める。
-pub(super) fn vec_push(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 1 {
-        return lw.err(line, "push の引数は 1 つのはず");
-    }
-    let Some(x) = lw.expr(&args[0])? else { return Ok(None) };
-    let xt = lw.vty(x);
-    let elem = match kind {
-        Kind::Vec(Some(t)) => *t,
-        _ => xt,
-    };
-    let Some(sz) = elem_size(lw, elem) else {
-        return lw.err(line, format!("push の要素の型 {} は段階 1 の対象外", elem.name()));
-    };
-    if xt != elem {
-        return lw.err(line, "push の引数の型が要素の型と違う");
-    }
-    if matches!(kind, Kind::Vec(None)) {
-        if let Some(s) = slot {
-            lw.coll.kinds.insert(s, Kind::Vec(Some(elem)));
-        }
-    }
-    let rt = lw.ty_of(e)?;
-    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
-        return lw.err(line, "push の結果の型が Result<(), AllocError> でない");
-    }
-    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
-    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
-    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: len, b: cap });
-    let (grow, _) = lw.new_block(&[]);
-    let (cont, _) = lw.new_block(&[]);
-    lw.branch(full, (grow, vec![]), (cont, vec![]));
-    lw.cur = Some(grow);
-    let dbl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: cap, b: cap });
-    let four = lw.emit(Ty::Usize, Op::Const(4));
-    let newcap = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: dbl, b: four });
-    let bytes = if sz == 1 {
-        newcap
-    } else {
-        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
-        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: newcap, b: k })
-    };
-    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: bytes });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: newcap });
-    lw.goto(cont, vec![]);
-    lw.cur = Some(cont);
-    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let off = if sz == 1 {
-        len
-    } else {
-        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
-        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: len, b: k })
-    };
-    let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
-    store_elem(lw, addr, elem, x);
-    let one = lw.emit(Ty::Usize, Op::Const(1));
-    let nl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: one });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });
-    let u = lw.unit();
-    Ok(Some(lw.emit(rt, Op::Ok(u))))
 }
 
 /// `String.push_str(text)`: `text` のバイトを `len` の位置へコピーして `len` を進める。

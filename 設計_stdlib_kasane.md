@@ -4,33 +4,41 @@
 
 | 段 | 状態 |
 | --- | --- |
-| 1 仕様 | 済み: 8.3・9 章 15・10 章と `spec/stdlib/alloc/raw.sig` (`Buf.new` を含む) |
-| 2 `Buf` の実装 | 済み: 木走査 (`natives.rs` の `buf_method`)、KIR (`kir_lower_buf.rs`。`Vec` と同じ 24 バイトのヘッダ、cap は要素数)、VM と LLVM (KIR を共有)。`stage0/tests/raw_buf.rs` が run / `--engine=vm` / `ksn build` のネイティブの出力の一致を見る |
-| (a) KIR の `Buf` | 済み: `with_capacity` / `new` / `push_within_cap` / `insert_within_cap` / `swap_remove` / `truncate` / `grow` / `append_str_within_cap` / `as_str`。共通の `len` `pop` `remove` `get` `clear` `as_slice` は `Vec` の下ろしを使う。要素はスカラー・所有物 (`String` など) |
-| (b) 一般の下ろし | 済み: 型引数付きの構造体の単相化 (`AggTab::intern_generic`、名前 `FQN<引数>`)、メソッドの型引数を受け手の型から推論 (`mono_targs` の `recv`)、フィールドの型の置換 (`field_src`)、`Buf` をフィールドに持つ構造体の暗黙の drop (既存のフィールドの drop glue)、参照を返すメソッド、`AllocError` を仕様どおり `{code: u32}` に、整数フィールドの構造体定数 (`std.alloc.SYSTEM`)。ほかに、`&mut self.f` が値の写しを指していた既存の誤りを直した |
-| (c) `vec.ksnl` / `string.ksnl` | **未着手**: Kasane で書いた `Vec` の試作は `stage0/tests/data/raw_buf/kvec.ksnl` (`Kvec<T, A>` = `{ buf: Buf<T, A> }`。`Vec` の .sig の全メソッドのうち `try_clone` 以外)。名前 `alloc.vec.Vec` への差し替え (切り替え) と `String` は未実装 |
-| (d) 性能 | `Kvec` と組み込み `Vec` の素朴な比較 (下) だけ。`perf/run_perf.py` での全体の比較は切り替えが無いので未実施 |
+| 1 仕様 | 済み: 8.3・9 章 15・10 章と `spec/stdlib/alloc/raw.sig` (`Buf.new` を含む)。`alloc.vec.Vec` の型定義を `{ buf: alloc.raw.Buf<T, A> }` に |
+| 2 `Buf` の実装 | 済み: 木走査 (`natives.rs` の `buf_method`)、KIR (`kir_lower_buf.rs`。`Vec` と同じ 24 バイトのヘッダ、cap は要素数)、VM と LLVM (KIR を共有)。`stage0/tests/raw_buf.rs` |
+| (a)(b) 一般の下ろし | 済み: 型引数付き構造体の単相化、受け手からの型引数の推論、`Buf` フィールドの暗黙の drop、参照を返すメソッド、`T` と `F: Fn` (効果変数つき) を取る総称関数の単相化 (`core.slice.sort` / `sort_by` / `binary_search` ほか、`Vec.append` / `contains` / `dedup` / `extend_from_slice` がネイティブに)、整数の `cmp` / `eq` / `try_clone`、`slice.swap` / `sub_mut`、`[T]` の比較 |
+| (c) `Vec` の基本メソッドを Kasane 版に | **KIR で既定**。`spec/stdlib/alloc/vec.ksnl` に `as_mut_slice` `as_slice` `capacity` `clear` `insert` `is_empty` `len` `pop` `push` `remove` `reserve` `truncate` を `Buf` の上に Kasane で書いた。木走査は組み込みのまま (`interp.rs` の `KASANE_VEC_BASE` は `Val::Vec` に Kasane 版を使わない) |
+| (d) 組み込みの下ろしを外す | **一部済み**: KIR の `vec_push` / `vec_insert` / `vec_reserve` (と `Vec.push` / `insert` / `reserve` の分岐) を削除。残りは下 |
 
-### 性能 (ネイティブ、`ksn build --release`、perf/vecops と同じ形で N = 30,000,000、3 回、壁時計)
+### 方式 (段階的)
 
-| 版 | 時間 (秒) | 最大 RSS |
-| --- | --- | --- |
-| 組み込み `Vec` (`v.get(i)`・`v[i] = x`) | 0.97 / 1.04 / 0.92 | 236 MB |
-| Kasane の `Kvec` (`v.as_slice().get(i)`・`let s = v.as_mut_slice(); s[i] = x`) | 0.96 / 0.61 / 0.85 | 236 MB |
+`Vec<T, A>` と `Buf<T, A>` は同じ 24 バイトのヘッダ {ptr, len, cap} なので、KIR は `Vec` の値・局所変数・フィールド・`v[i]`・`for`・drop を今までどおりヘッダで扱い、
+**基本メソッドの呼び出しだけ**を `alloc.vec.Vec.<m>[T, A]` の単相インスタンス (ヘッダのアドレスを `&self` に取る) にする (`kir_lower_coll.rs` の `method_on` が
+`kir_lower_ext.rs` の `ext_call` へ。切り替えの環境変数はない: 組み込みの `push` / `insert` / `reserve` を削除したので、戻す道は git の履歴だけ)。要素型が決まらない `Vec` は `push` / `insert` の引数の型で決める。インスタンスの本体の `self.buf.<m>(..)` は `self` のヘッダそのもの (`kir_lower_own.rs` の `field_call`) として `Buf` の下ろし (`kir_lower_buf.rs` と
+従来の `Vec` の操作) に渡る。`alloc.vec.Vec.*` の本体の中では組み込みの下ろしを使う (再帰しない)。
 
-比は約 0.9 倍 (目安の 1.2 倍以内)。ばらつきが大きい (同じ版でも 0.6〜1.0 秒) ので、確かな比は切り替えの後に `perf/run_perf.py` で測り直す。
-`Kvec<String>` と入れ子の `Kvec<Kvec<u32>>` の push / insert / remove / truncate を 300 万回繰り返しても RSS は 1.7 MB のまま (漏れなし)。
+### 検証 (Kasane 版が既定)
 
-### 切り替え (c) が止まっている理由
+- `cargo test --release` 全件が通る。`tests/native_ratio.py`: linear_ok 105/105、examples 14/14、perf 8/8 (下がっていない)。
+- `examples/` 全パッケージの `ksn test --both` が通り (LLVM 比較、バンドル退避 0)、`ksn run` と `ksn build` の出力が一致する (demo / tour / more_coll / features / more_str / plugins / json)。
+- `stage0/tests/raw_buf.rs` の `vec_methods_written_in_kasane_match_the_builtin_ones_natively`: 木走査 (組み込み) と Kasane 版のネイティブの出力が一致し、`alloc.vec.Vec.push<..>` が KIR に現れる。
 
-`alloc.vec.Vec` を Kasane 版に差し替えるには、次の「名前で固定された組み込み」を外す必要がある。
+### 性能 (ネイティブ、`perf/run_perf.py --repeat 5`、LLVM の列、ミリ秒。切り替え前後)
 
-- 検査 (`types.rs` / `check.rs` / `borrowck.rs`): `Vec` から `core.slice` への自動の参照外し、`v[i]`・`for x in v` の要素型。名前 `alloc.vec.Vec` のままなら、型の宣言を差し替えるだけで動くはず (未確認)。
-- 木走査 (`value.rs` の `Val::Vec`、`natives.rs` の `seq_method`): `Vec` を値 `Val::Vec` で持ち、添字・反復・`Debug`・`==` がそれを直接読む。Kasane 版 (構造体 `{ buf }`) にするには、これらを構造体経由にするか、`Buf` を `Val::Vec` で持つ。
-- KIR (`kir_lower_coll.rs`): `Vec` の局所変数・フィールド・`v[i]`・`for`・`v.get(i)` が `Kind::Vec` の専用経路。Kasane 版では `v.get(i)` を `v.as_slice().get(i)`、`v[i]` を `v.as_slice()[i]` に読み替える下ろしが要る (今の `Kvec` の例は利用者が手で書き換えた)。`v.as_mut_slice().get_mut(i)` の `match` も未対応 (`chain_of` が `Buf` でない構造体を見ない)。
-- `String` は `Vec<u8>` の上で `push(char)` の UTF-8 符号化、`push_display` / `push_debug` (整形)、`replace` / `join`、`Eq` / `Ord` / `Hash` / `Debug` / `Display` を Kasane で書く必要がある。
+| ワークロード | 組み込み (切り替え前) | Kasane 版 | 比 |
+| --- | ---: | ---: | ---: |
+| Vec の push・索引読み・索引書き (N=300,000) | 3.1 | 3.0 | 0.97 |
+| 同 (再測定、削除後) | 3.1 | 3.0 | 0.97 |
+| 他の 4 ワークロード (Vec を使わない/ほぼ使わない) | 差なし (ばらつきの範囲) | | |
 
-組み込みの下ろし (`kir_lower_coll.rs`) と木走査の組み込みは、この切り替えが済むまで **外せない**。
+入力が小さい (数 ms) ので、`Vec` だけを N = 30,000,000 で測り直した: 組み込み 0.26 / 0.26 / 0.23 秒、Kasane 版 0.25 / 0.27 / 0.27 秒、削除後の Kasane 版 0.20 / 0.19 / 0.20 秒 (比 約 1.0)。目安の 1.2 倍以内。
+
+### まだ外せないもの (d)
+
+- **木走査の `Val::Vec`** (`value.rs` / `natives.rs` の `seq_method`): 添字・反復・`Debug`・`==` が `Val::Vec` を直接読む。木走査を Kasane 版にするには `Vec` を構造体 `{ buf }` にして、これらを構造体経由にする (または `Buf` を `Val::Vec` で持つ) 必要がある。
+- **KIR の `Kind::Vec` (24 バイトのヘッダ)**: `Vec` の局所変数・フィールド・`v[i]`・`for`・`v.get(i)`・drop はヘッダの専用経路のまま。`Buf` の下ろし (`kir_lower_buf.rs`) と `pop` / `remove` / `clear` / `get` / `as_slice` の組み込みの操作がその上にあるので、
+  外すには `Vec` を単相化した構造体にして `v.get(i)` → `v.as_slice().get(i)` の読み替えと、`Buf` のヘッダ操作を `Kind::Buf` として独立させる必要がある。
+- `String` (`Vec<u8>` の上の UTF-8 `push` / 整形 / 比較) は未着手。`try_clone` と `with_capacity` の Kasane 版は、木走査が `Val::Vec` を作る組み込みと衝突するため入れていない。
 
 状態 (2026-11-14): **段 1 に入る前に、前提が足りず止まった**。実装は書いていない。
 下の試作は `core.ptr` + `alloc.alloc.Allocator` の上に書いた最小の `Vec` (`new` / `push` / `get`、

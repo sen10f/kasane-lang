@@ -242,6 +242,62 @@ impl<'a> Lw<'a> {
     }
 
     /// `e.name(args)` (受け手が式の形) の数値のメソッド。
+    /// `a.cmp(b)` (整数・`char`。値か、その参照): `core.cmp.Ordering` の `Less` / `Equal` / `Greater`。
+    pub(super) fn int_cmp(&mut self, a: VId, b: VId, line: usize) -> LR<Option<VId>> {
+        self.int_cmp_named("cmp", a, b, line)
+    }
+
+    /// `a.eq(b)` / `a.cmp(b)`。
+    pub(super) fn int_cmp_named(&mut self, name: &str, a: VId, b: VId, line: usize) -> LR<Option<VId>> {
+        let load = |lw: &mut Self, v: VId| match lw.vty(v) {
+            Ty::Ref(_, p) => lw.emit(p.ty(), Op::Load(v)),
+            _ => v,
+        };
+        let (a, b) = (load(self, a), load(self, b));
+        let t = self.vty(a);
+        if name == "try_clone" && t.is_int() {
+            let ae = self.aggs.borrow_mut().alloc_err();
+            let rt = Ty::Res(Pay::of(t).expect("整数はペイロードになる"), Pay::of(ae).expect("集成体はペイロードになる"));
+            return Ok(Some(self.emit(rt, Op::Ok(a))));
+        }
+        if !t.is_int() || self.vty(b) != t {
+            return self.err(line, "cmp の受け手と引数が同じ整数の型でない");
+        }
+        if name == "eq" {
+            return Ok(Some(self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: t, a, b })));
+        }
+        if name == "try_clone" {
+            let ae = self.aggs.borrow_mut().alloc_err();
+            let rt = Ty::Res(Pay::of(t).expect("整数はペイロードになる"), Pay::of(ae).expect("集成体はペイロードになる"));
+            return Ok(Some(self.emit(rt, Op::Ok(a))));
+        }
+        let lt = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: t, a, b });
+        let eq = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: t, a, b });
+        let (lb, _) = self.new_block(&[]);
+        let (nl, _) = self.new_block(&[]);
+        let (eb, _) = self.new_block(&[]);
+        let (gb, _) = self.new_block(&[]);
+        let ord = match self.conv_t(&crate::types::Ty::Named("core.cmp.Ordering".into(), vec![])) {
+            Some(o) => o,
+            None => return self.err(line, "core.cmp.Ordering が下ろせない"),
+        };
+        let (join, jp) = self.new_block(&[ord]);
+        self.branch(lt, (lb, vec![]), (nl, vec![]));
+        self.cur = Some(lb);
+        let less = self.variant_value("core.cmp.Ordering", "Less", line)?;
+        self.goto(join, vec![less]);
+        self.cur = Some(nl);
+        self.branch(eq, (eb, vec![]), (gb, vec![]));
+        self.cur = Some(eb);
+        let equal = self.variant_value("core.cmp.Ordering", "Equal", line)?;
+        self.goto(join, vec![equal]);
+        self.cur = Some(gb);
+        let greater = self.variant_value("core.cmp.Ordering", "Greater", line)?;
+        self.goto(join, vec![greater]);
+        self.cur = Some(join);
+        Ok(Some(jp[0]))
+    }
+
     pub(super) fn scalar_mcall(&mut self, e: &V) -> LR<Option<Option<VId>>> {
         let f = nf(e);
         let line = nline(e);
@@ -251,6 +307,15 @@ impl<'a> Lw<'a> {
         let name = st(&f[1]);
         let args = items(&f[2]);
         let Ok(rt) = self.ty_of(&f[0]) else { return Ok(None) };
+        if name == "try_clone" && args.is_empty() && deref_int(rt).is_some() {
+            let Some(a) = self.expr(&f[0])? else { return Ok(Some(None)) };
+            return Ok(Some(self.int_cmp_named("try_clone", a, a, line)?));
+        }
+        if matches!(name.as_str(), "cmp" | "eq") && args.len() == 1 && deref_int(rt).is_some() {
+            let Some(a) = self.expr(&f[0])? else { return Ok(Some(None)) };
+            let Some(b) = self.expr(&args[0])? else { return Ok(Some(None)) };
+            return Ok(Some(self.int_cmp_named(&name, a, b, line)?));
+        }
         if num_plan(rt, &name, args.len()).is_none() {
             return Ok(None);
         }
@@ -275,6 +340,15 @@ impl<'a> Lw<'a> {
         if let Some(s) = self.lookup(&segs[0]) {
             // 参照を取られた局所 (スタックスロット) は、読み出しの `load` を通す (`read_slot`)。
             let rt = self.slots[s].1;
+            if segs[1] == "try_clone" && args.is_empty() && deref_int(rt).is_some() {
+                let a = self.read_slot(s);
+                return Ok(Some(self.int_cmp_named("try_clone", a, a, line)?));
+            }
+            if matches!(segs[1].as_str(), "cmp" | "eq") && args.len() == 1 && deref_int(rt).is_some() {
+                let a = self.read_slot(s);
+                let Some(b) = self.expr(&args[0])? else { return Ok(Some(None)) };
+                return Ok(Some(self.int_cmp_named(&segs[1], a, b, line)?));
+            }
             if num_plan(rt, &segs[1], args.len()).is_none() {
                 return Ok(None);
             }
@@ -422,5 +496,14 @@ impl<'a> Lw<'a> {
         let Some(a) = self.expr(&args[0])? else { return Ok(Some(None)) };
         self.expect_ty(a, src, line)?;
         Ok(Some(Some(self.emit(dst, Op::Conv { src, a }))))
+    }
+}
+
+/// 値か参照の型 `t` の指す整数の型 (整数でなければ `None`)。
+fn deref_int(t: Ty) -> Option<Ty> {
+    match t {
+        Ty::Ref(_, p) if p.ty().is_int() => Some(p.ty()),
+        t if t.is_int() => Some(t),
+        _ => None,
     }
 }

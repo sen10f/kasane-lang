@@ -260,3 +260,30 @@ fn vec_and_slice_helpers_run_vm_build_agree() {
     let out = run_all("vec", VEC);
     assert_eq!(out, "");
 }
+
+/// `ksn build` がバンドルへ退避せずネイティブ (LLVM) の実行体を作り、その出力が木走査と一致することを見る
+/// (要素型 `T` と `F: Fn` を取る総称関数の単相化)。
+fn build_native_and_compare(name: &str, src: &str) {
+    let t = Tmp::new(name, src);
+    let tree = run(&["run", "--engine=tree"], &t.0);
+    assert_eq!(tree.status.code(), Some(0), "{}{}", text(&tree.stdout), text(&tree.stderr));
+    let cache = std::env::temp_dir().join(format!("ksn_slsort_ncache_{}_{}", std::process::id(), name));
+    let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    let log = format!("{}{}", text(&b.stdout), text(&b.stderr));
+    let native = t.0.join("target/debug/t.native");
+    assert!(b.status.success() && native.exists(), "ネイティブにならない: {}", log);
+    let o = Command::new(&native).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&tree.stdout), text(&o.stdout), "native の出力が run と違う");
+}
+
+#[test]
+fn sort_family_builds_native() {
+    build_native_and_compare("sort_native", SORT);
+}
+
+#[test]
+fn vec_and_slice_helpers_build_native() {
+    build_native_and_compare("vec_native", VEC);
+}

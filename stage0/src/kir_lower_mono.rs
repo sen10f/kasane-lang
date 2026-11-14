@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::check::{items, nf, nlineno as nline};
+use crate::check::{is_nil, items, nf, nlineno as nline};
 use crate::parser::V;
 use crate::program::Def;
 use crate::types::{from_v, Ty as Src};
@@ -32,12 +32,13 @@ pub(super) fn subst_ty(t: &Src, bind: &HashMap<String, Src>) -> Src {
         Src::Tuple(xs) => Src::Tuple(xs.iter().map(go).collect()),
         Src::Array(x) => Src::Array(Box::new(go(x))),
         Src::Slice(x) => Src::Slice(Box::new(go(x))),
+        Src::Closure { args, ret, cap, id, eff } => Src::Closure { args: args.iter().map(go).collect(), ret: Box::new(go(ret)), cap: cap.clone(), id: id.clone(), eff: eff.clone() },
         _ => t.clone(),
     }
 }
 
 /// 型が決まっているか (未確定・型変数・型パラメータが残っていない)。
-fn concrete(t: &Src) -> bool {
+pub(super) fn concrete(t: &Src) -> bool {
     match t {
         Src::Unknown | Src::Var(_) | Src::Param(_) | Src::Never => false,
         Src::Ref(_, x) | Src::Ptr(_, x) | Src::Array(x) | Src::Slice(x) => concrete(x),
@@ -47,7 +48,7 @@ fn concrete(t: &Src) -> bool {
 }
 
 /// 宣言の型 `pat` (型パラメータを含む) と実際の型 `act` を突き合わせて、`bind` を埋める。
-fn unify(pat: &Src, act: &Src, bind: &mut HashMap<String, Src>) {
+pub(super) fn unify(pat: &Src, act: &Src, bind: &mut HashMap<String, Src>) {
     match (pat, act) {
         (Src::Param(n), a) => {
             if concrete(a) {
@@ -57,6 +58,9 @@ fn unify(pat: &Src, act: &Src, bind: &mut HashMap<String, Src>) {
         (Src::Ref(_, p), Src::Ref(_, a)) | (Src::Ptr(_, p), Src::Ptr(_, a)) | (Src::Array(p), Src::Array(a)) | (Src::Slice(p), Src::Slice(a)) => {
             unify(p, a, bind)
         }
+        // `&[T]` の引数に配列・`Vec<T, A>` を渡す (参照外しの強制): 要素型を突き合わせる。
+        (Src::Slice(p), Src::Array(a)) => unify(p, a, bind),
+        (Src::Slice(p), Src::Named(v, a)) if v == "alloc.vec.Vec" && !a.is_empty() => unify(p, &a[0], bind),
         (Src::Named(n, ps), Src::Named(m, as_)) if n == m && ps.len() == as_.len() => {
             for (p, a) in ps.iter().zip(as_) {
                 unify(p, a, bind)
@@ -82,7 +86,7 @@ impl<'a> Lw<'a> {
     pub(super) fn mono_targs(&self, e: &V, di: usize, args: &[V], skip: usize, targs: &V, recv: Option<Src>) -> LR<HashMap<String, Src>> {
         let line = nline(e);
         let cd = &self.p.defs[di];
-        if let Some(g) = cd.generics.iter().find(|g| g.0 != "life" && g.0 != "type") {
+        if let Some(g) = cd.generics.iter().find(|g| g.0 != "life" && g.0 != "type" && (!matches!(g.0.as_str(), "uses" | "panics") || !is_nil(targs))) {
             return self.err(line, format!("{} は {} のパラメータ ({}) を持つので、単相化は対象外", cd.name, g.0, g.1));
         }
         let names: Vec<String> = cd.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();

@@ -316,3 +316,65 @@ fn a_kasane_vec_over_buf_lowers_to_native_with_owning_elements() {
     let src = include_str!("data/raw_buf/kvec.ksnl");
     assert_eq!(run_native("kvec", src), "ok\n");
 }
+
+const VEC_KASANE: &str = r#"fn t.name(text: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.check.eq(s.push_str(text), Ok(()))
+    s
+end t.name
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < 20u32 {
+        core.check.eq(v.push(i), Ok(()))
+        i = i.wrapping_add(1u32)
+    }
+    core.check.eq(v.len(), 20usize)
+    core.check.eq(v.pop(), Some(19u32))
+    core.check.eq(v.insert(0usize, 100u32).is_ok(), true)
+    core.check.eq(v.insert(99usize, 1u32).is_err(), true)
+    core.check.eq(v.remove(0usize), Some(100u32))
+    core.check.eq(v.remove(50usize), None)
+    core.check.eq(v.reserve(100usize), Ok(()))
+    core.check.eq(v.capacity() >= v.len(), true)
+    core.check.eq(v.as_slice().get(5usize), Some(&5u32))
+    v.truncate(3usize)
+    core.check.eq(v.len(), 3usize)
+    v.clear()
+    core.check.eq(v.is_empty(), true)
+    let mut names = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.check.eq(names.push(t.name("ann")), Ok(()))
+    core.check.eq(names.push(t.name("bob")), Ok(()))
+    core.check.eq(names.insert(1usize, t.name("cy")).is_ok(), true)
+    match names.remove(0usize) {
+        Some(s) => core.check.eq(s.len(), 3usize)
+        None => core.panic.panic("remove")
+    }
+    names.truncate(1usize)
+    core.check.eq(names.len(), 1usize)
+    names.clear()
+    std.io.print_line("vec ok")?
+    Ok(())
+end t.main
+"#;
+
+#[test]
+fn vec_methods_written_in_kasane_match_the_builtin_ones_natively() {
+    // KIR は `Vec` の基本メソッドを `alloc/vec.ksnl` (Kasane。`Buf` の上) の単相インスタンスで下ろす。
+    // 木走査 (組み込み) と、Kasane 版のネイティブの出力が一致する。
+    let t = Tmp::new("vec_kasane", VEC_KASANE);
+    let tree = run(&["run", "--engine=tree"], &t.0);
+    assert_eq!(tree.status.code(), Some(0), "{}{}", text(&tree.stdout), text(&tree.stderr));
+    let cache = std::env::temp_dir().join(format!("ksn_rawbuf_cache_{}_vk", std::process::id()));
+    let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    let native = t.0.join("target/debug/t.native");
+    assert!(b.status.success() && native.exists(), "ネイティブにならない: {}{}", text(&b.stdout), text(&b.stderr));
+    let o = Command::new(&native).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&tree.stdout), text(&o.stdout));
+    // Kasane 版が使われている (`alloc.vec.Vec.push<..>` の関数が KIR にある)。
+    let k = Command::new(exe()).args(["kir", "t.main"]).current_dir(&t.0).output().unwrap();
+    assert!(text(&k.stdout).contains("fn alloc.vec.Vec.push key=alloc.vec.Vec.push<"), "{}", text(&k.stdout));
+}

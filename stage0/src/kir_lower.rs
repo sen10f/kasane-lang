@@ -78,6 +78,8 @@ mod for_lower;
 mod own;
 #[path = "kir_lower_buf.rs"]
 mod buf;
+#[path = "kir_lower_ext.rs"]
+mod ext;
 use coll::CollCx;
 
 // `std.net` (TCP) の下ろし (設計_KIR.md 12 章)。
@@ -916,7 +918,12 @@ impl<'a> Lw<'a> {
                 if !t.is_int() {
                     return self.err(line, "算術の型が整数ではない");
                 }
-                if !self.def.panics.as_deref().map_or(true, |p| p == "may") {
+                // `panics never` の関数でも、正のリテラルでの `/` `%` は溢れも 0 除算も起きない (`x / 2usize`)。
+                let safe_div = matches!(op.as_str(), "/" | "%")
+                    && nname(r) == "Lit"
+                    && st(&nf(r)[0]) == "int"
+                    && parse_int(&nf(r)[1]).is_some_and(|v| v > 0);
+                if !safe_div && !self.def.panics.as_deref().map_or(true, |p| p == "may") {
                     return self.err(line, "panics never の関数に整数演算子 (溢れの検査が要る)");
                 }
                 let aop = match op.as_str() {
@@ -1126,6 +1133,13 @@ impl<'a> Lw<'a> {
                     Ty::Ref(_, p) if p.ty().is_int() => (self.emit(p.ty(), Op::Load(recv)), p.ty()),
                     _ => (recv, rt),
                 };
+                if meth == "try_clone" && args.is_empty() && rt.is_int() {
+                    return self.int_cmp_named("try_clone", recv, recv, line);
+                }
+                if matches!(meth.as_str(), "cmp" | "eq") && args.len() == 1 && rt.is_int() {
+                    let Some(b) = self.expr(&args[0])? else { return Ok(None) };
+                    return self.int_cmp_named(&meth, recv, b, line);
+                }
                 let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,
                     "wrapping_sub" => Aop::Sub,
