@@ -931,12 +931,17 @@ impl<'a> TypeCk<'a> {
     /// 結果は報告しない (不一致は別の検査が見る)。分からない型 (未知・型パラメータ)
     /// とは一致させない。2 つのクロージャが合流するときは、実際の効果 (`eff`) を和に
     /// して残す (先に入った方だけが残る穴を塞ぐ)。
-    fn join_arm(&mut self, a: &Ty, b: &Ty) -> Ty {
+    /// `if` の両枝・`match` の腕の型を合わせる。食い違いは E2020 (黙ると `if c { 1u32 } else { "x" }` が通る)。
+    fn join_arm(&mut self, a: &Ty, b: &Ty, line: usize, what: &str) -> Ty {
         let unknown = |t: &Ty| matches!(t, Ty::Unknown | Ty::Param(_));
         if unknown(&self.resolve(a)) || unknown(&self.resolve(b)) {
             return a.clone();
         }
-        let _ = self.unify2(a, b);
+        if let Err(err) = self.unify2(a, b) {
+            if let Some((want, got)) = self.ann_conflict(a, b, &err) {
+                self.diag("E2020", format!("type mismatch in {}: expected {}, found {}{}", what, want, got, conv_hint(&want, &got)), line);
+            }
+        }
         self.merge_closure_eff(a, b)
     }
 
@@ -1623,6 +1628,49 @@ impl<'a> TypeCk<'a> {
     // ------------------------------------------------------------ 型の情報
     fn type_def(&self, fqn: &str) -> Option<&'a Def> {
         self.p.types.get(fqn).map(|&i| &self.p.defs[i])
+    }
+
+    /// `let` の束縛パターンが外れうるか (反駁可能)。列挙子は、その列挙が 2 つ以上の列挙子を持つなら外れうる。
+    /// 名前が解決できない形は別の診断が報告するので外れないとみなす。
+    fn let_refutable(&self, p: &V) -> bool {
+        match nname(p) {
+            "PBind" | "PWild" => false,
+            "PRef" => self.let_refutable(&nf(p)[0]),
+            "PTuple" => items(&nf(p)[0]).iter().any(|x| self.let_refutable(x)),
+            "PLit" => true,
+            "PVariant" | "PPath" | "PStruct" => {
+                let segs = strs(&nf(p)[0]);
+                if segs.len() == 1 && matches!(segs[0].as_str(), "Some" | "None" | "Ok" | "Err") {
+                    return true;
+                }
+                match self.p.resolve(&segs, &self.def().file) {
+                    Some(r) if r.rest.is_empty() => match &r.target {
+                        Target::Variant(en, _) => {
+                            if en == "Option" || en == "Result" {
+                                return true;
+                            }
+                            let single = self.type_def(en).map_or(false, |td| td.variants.len() == 1);
+                            if !single {
+                                return true;
+                            }
+                            match nname(p) {
+                                "PVariant" => items(&nf(p)[1]).iter().any(|x| self.let_refutable(x)),
+                                "PStruct" => items(&nf(p)[1]).iter().any(|f| self.let_refutable(&items(f)[1])),
+                                _ => false,
+                            }
+                        }
+                        // 構造体のパターン: 欄のパターンだけで決まる。
+                        _ => match nname(p) {
+                            "PStruct" => items(&nf(p)[1]).iter().any(|f| self.let_refutable(&items(f)[1])),
+                            "PVariant" => items(&nf(p)[1]).iter().any(|x| self.let_refutable(x)),
+                            _ => false,
+                        },
+                    },
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
     }
 
     fn field_ty(&self, recv: &Ty, name: &str) -> Ty {
@@ -2871,7 +2919,7 @@ impl<'a> TypeCk<'a> {
                 }
                 // 6 の 2: 両方の枝は同じ型になる。`Ok(..)` と `Err(..)` の枝の型変数は、互いに一致させて決まる。
                 if has_else && b != Ty::Never {
-                    a = self.join_arm(&a, &b);
+                    a = self.join_arm(&a, &b, nline(e), "`if` branches");
                 }
                 a
             }
@@ -2892,7 +2940,7 @@ impl<'a> TypeCk<'a> {
                         out = t;
                     } else {
                         // 6 の 2: 他の腕と型を一致させる (`Some(v) => Ok(v)` と `None => Err(a)` など)。
-                        out = self.join_arm(&out, &t);
+                        out = self.join_arm(&out, &t, nline(e), "`match` arms");
                     }
                 }
                 // 腕がすべて発散するなら、match 自身も発散する。
@@ -3061,6 +3109,10 @@ impl<'a> TypeCk<'a> {
         let f = nf(s);
         match nname(s) {
             "Let" => {
+                // `let` は反駁不能パターンだけ (仕様 4.1)。外れうるパターンは `match` で書かせる。
+                if self.let_refutable(&f[0]) {
+                    self.diag("E2021", "refutable pattern in `let`: a `let` takes only irrefutable patterns; use `match`".into(), nline(s));
+                }
                 let rhs = self.infer(&f[3]);
                 let src = self.last_site;
                 let gn = self.def().gnames();
@@ -3670,6 +3722,16 @@ impl<'a> TypeCk<'a> {
         }
         let ret = from_v(&d.ret, &gn);
         let r = self.inst(&ret, &mut map);
+        // 引数にも戻り値にも現れず、明示の型引数もない型パラメータ (`core.mem.size_of()` の `T`) は、どこからも決まらない。
+        for g in &d.generics {
+            if g.0 == "type" && !map.contains_key(&g.1) {
+                self.diag(
+                    "E2044",
+                    format!("cannot determine the type parameter `{}` of `{}`: add a type argument (`{}[..]`)", g.1, d.name, d.name),
+                    line,
+                );
+            }
+        }
         self.box_hooks(d, &map, line);
         r
     }

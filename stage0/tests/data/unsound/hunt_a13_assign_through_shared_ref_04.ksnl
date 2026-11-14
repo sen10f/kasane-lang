@@ -1,4 +1,4 @@
-// expect: E3030
+// expect: E3001
 type t.Holder pub
     v: u8
 end t.Holder

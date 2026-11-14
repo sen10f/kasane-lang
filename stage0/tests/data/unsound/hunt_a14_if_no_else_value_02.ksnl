@@ -1,4 +1,4 @@
-// expect: E????
+// expect: E2020
 fn t.f(c: bool) -> u32 uses [] panics never
     if c {
         1u32

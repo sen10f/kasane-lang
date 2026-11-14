@@ -418,6 +418,10 @@ pub struct Checker<'a> {
     noncopy_closures: HashSet<String>,
     /// 参照越しの `match` の腕で、`&T` として束縛した名前 (Copy でない中身)。値を要る所へ渡すと move になってしまう。
     ref_binds: HashSet<String>,
+    /// `let r = &x` で、`x` を共有参照で借りた束縛 (欄への代入を E3001 にする)。関数ごと。
+    shared_lets: HashSet<String>,
+    /// `let` で束縛した名前 (仮引数と区別する。関数ごと)。
+    let_names: HashSet<String>,
     /// `a[i].f` (添字の先のフィールド) を値として使った (関数名, Field 式の ID, 文言, 位置)。
     /// フィールドの型を型表で引き、Copy でなければ E3002 (配列・Vec の要素の先からは move できない、4.1)。
     field_consumes: Vec<(String, u32, String, usize)>,
@@ -530,6 +534,8 @@ impl<'a> Checker<'a> {
             field_consumes: vec![],
             index_consumes: Vec::new(),
             ref_binds: HashSet::new(),
+            shared_lets: HashSet::new(),
+            let_names: HashSet::new(),
             mv_types: BTreeMap::new(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
@@ -3393,6 +3399,8 @@ impl<'a> Checker<'a> {
         self.fnonce_locals.clear();
         self.noncopy_closures.clear();
         self.ref_binds.clear();
+        self.shared_lets.clear();
+        self.let_names.clear();
         // `F: core.ops.FnOnce<..>` の型パラメータの引数は、呼ぶと消費される (一度きり)。
         for (pn, pt) in &d.params {
             if tag(pt) == "named" && items(tel(pt, 2)).is_empty() {
@@ -3682,13 +3690,21 @@ impl<'a> Checker<'a> {
                 // 決まらない束縛は下のパスで V::Nil になり、検査は黙る。
                 // 参照越しの分解 `let p = x` (`x: &T`): 束縛は `&T` の欄。所有値として消費させない (E3002)。
                 let src_is_ref = self.ety_is_ref(&f[3]) || tag(&got) == "ref" || tag(&ty) == "ref";
+                let shared_src = tag(&ty) == "ref" && matches!(tel(&ty, 1), V::B(false));
                 let pat_ty = if src_is_ref && tag(&ty) == "ref" { tel(&ty, 2).clone() } else { ty };
                 let mut typed: Vec<(String, V)> = vec![];
                 self.bind_pat_types(&f[0], &pat_ty, &mut typed);
                 self.lin_wild(&typed, nline(s));
                 let mut binds = vec![];
                 pat_binds(&f[0], &mut binds);
+                // `let r = &x` (共有参照): 束縛名を覚える。下の包み直しは `&mut` 由来の束縛も共有に見せるので、ここで元の向きを見る。
                 for n in binds {
+                    self.let_names.insert(n.clone());
+                    if shared_src && nname(&f[0]) == "PBind" {
+                        self.shared_lets.insert(n.clone());
+                    } else {
+                        self.shared_lets.remove(&n);
+                    }
                     let mut t = typed.iter().find(|(m, _)| *m == n).map(|(_, t)| t.clone()).unwrap_or(V::Nil);
                     if is_nil(&t) {
                         // 自前で決まらない束縛は、型推論の結果を使う (未決定の部分を含む型は使わない)。
@@ -3791,6 +3807,18 @@ impl<'a> Checker<'a> {
                         // (tag == "ref") への代入は E3001 にしない: 「分からなければ黙る」
                         // が既存の作法。`let x = S{..}` のような値束縛 (rt が named など)
                         // は従来どおりエラーにする。
+                        // 共有参照 `&T` 越しの欄への代入 (`r.v = ..`、`let r = &h` や `p: &T` のとき): 参照の中身は書けない。
+                        // 内部の可変性は `core.sync` のアトミック型で表すので、欄への代入は常に誤り。
+                        // let で束縛した名前は、`&mut` 由来の束縛も共有の形に包まれるので、`shared_lets` だけを見る。
+                        let shared_ref = self.shared_lets.contains(root)
+                            || (tag(&rt) == "ref" && matches!(tel(&rt, 1), V::B(false)) && !self.let_names.contains(root));
+                        if segs.len() >= 2 && root != "self" && shared_ref {
+                            self.tdiag(
+                                "E3001",
+                                format!("cannot assign to `{}` through the shared reference `{}`: write through `&mut`", segs.join("."), root),
+                                nline(s),
+                            );
+                        }
                         if !muts.contains(root)
                             && root != "self"
                             && !is_nil(&rt)

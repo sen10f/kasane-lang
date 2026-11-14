@@ -97,29 +97,16 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a12_derive_tryclone_generic_hole_01",
     "hunt_a12_generic_bound_leak_01",
     "hunt_a12_supertrait_missing_01",
-    // F6 型: 参照の段数・`size_of` の型引数・共有参照越しのフィールド代入
-    "hunt_a13_assign_through_shared_ref_04",
+    // F6 型: Copy のスカラーの参照を値として包む形 (`fn() -> u8 capture [&x] { x }`、`Some(p) => p` で `p: &u8`)。
+    // 方針 (2026-11-14 統括) で通してよい形なので、本来は穴の一覧に残さない。ただし unsound/ に置いたままだと
+    // テストが「通るのに拒否が要る」で落ちるため、統括者が unsound/ からも外すまでここに残す。
+    // field_ref_deref_03 は `p.v` (`p: &Pub` からの欄読み、u8) が正しいコードなので、ケースの期待が誤りの疑い。
     "hunt_a13_capture_mut_deref_02",
     "hunt_a13_capture_ref_deref_01",
     "hunt_a13_dbl_ref_deref_08",
     "hunt_a13_field_ref_deref_03",
     "hunt_a13_if_let_ref_deref_06",
     "hunt_a13_match_ref_deref_07",
-    "hunt_a13_size_of_no_typearg_05",
-    // F6 型: else の無い `if`・`match` の腕・列挙子のペイロードの型の食い違い
-    "hunt_a14_enum_variant_payload_02",
-    "hunt_a14_if_else_arm_type_mismatch_01",
-    "hunt_a14_if_else_let_arm_mismatch_01",
-    "hunt_a14_if_let_arm_mismatch_01",
-    "hunt_a14_if_no_else_let_01",
-    "hunt_a14_if_no_else_let_infer_01",
-    "hunt_a14_if_no_else_value_02",
-    "hunt_a14_match_arm_type_mismatch_02",
-    "hunt_a14_match_bool_arm_mismatch_01",
-    "hunt_a14_match_option_none_unit_01",
-    "hunt_a14_match_result_arm_mismatch_01",
-    "hunt_a14_match_unit_vs_value_01",
-    "hunt_a14_nested_match_01",
     // F4 unsafe: `extern`・`core.ptr`・生ポインタ型が `[unsafe] modules` の外で E5001 にならない
     "hunt_a15_extern_decl_non_unsafe",
     "hunt_a15_ptr_add_non_unsafe",
@@ -131,8 +118,6 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a16_json_value_doc_drop_escape_01",
     "hunt_a16_raw_buf_initialize_forge_01",
     "hunt_a16_vec_buf_initialized_forge_01",
-    // F6 型: 外れうるパターンの `let` (`let false = 5i32`)
-    "hunt_a17_reserved_false_bind",
     // F7 定数: `const` の範囲・オーバーフロー・ターゲットの幅
     "hunt_a18_const_int_overflow",
     "hunt_a18_const_lit_outofrange",
