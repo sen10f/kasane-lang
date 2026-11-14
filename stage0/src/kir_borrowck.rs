@@ -57,6 +57,8 @@ struct Hdr {
     /// 各引数の借用が戻り値の領域に入るか (`flow_params` と同じ規則)。
     flows: Vec<bool>,
     lts: Vec<BTreeSet<String>>,
+    /// 各引数の型の文面に現れる型引数 (`value: T` の `T`)。`&mut Self` と同じ型引数を持つ引数の借用は、呼び出しで `&mut` の指す先へ入る。
+    tps: Vec<BTreeSet<String>>,
     mut_ref: Vec<bool>,
     carries: Vec<bool>,
     /// 引数ごとの、参照そのものの領域 (`&'a T` の `'a`、省略なら引数ごとの新しい領域) と、中の領域 (`&mut H<'b>` の `'b`)。
@@ -194,6 +196,17 @@ fn mentions(text: &str, name: &str) -> bool {
     text.match_indices(name).any(|(i, _)| (i == 0 || !w(b[i - 1])) && (i + n >= b.len() || !w(b[i + n])))
 }
 
+impl Hdr {
+    /// 引数 `k` の借用が、`&mut` の引数 `j` の指す先へ入りうるか。`k` が借用を運びうる型で、`j` と `k` が
+    /// ライフタイムか型引数を共有するとき (`Vec<T>::push(self: &mut Vec<T>, value: T)` の `T`、`fn f<'a>(v: &mut X<'a>, s: &'a S)` の `'a`)。
+    fn writes_into(&self, j: usize, k: usize) -> bool {
+        self.mut_ref[j]
+            && k != j
+            && (self.carries[k] || !self.tps[k].is_empty())
+            && (self.lts[k].iter().any(|x| self.lts[j].contains(x)) || self.tps[k].iter().any(|x| self.tps[j].contains(x)))
+    }
+}
+
 fn parse_hdr(d: &Def) -> Option<Hdr> {
     let head = d.header.split(" uses ").next()?;
     let head = head.split(" panics ").next()?;
@@ -215,6 +228,14 @@ fn parse_hdr(d: &Def) -> Option<Hdr> {
     let ret_tps: Vec<&str> = d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.as_str()).filter(|g| mentions(&ret, g)).collect();
     let ret_has_ref = ret.contains('&') || !ret_lts.is_empty() || !ret_tps.is_empty();
     let lts: Vec<BTreeSet<String>> = params.iter().map(|p| lifetimes(p)).collect();
+    let tp_names: Vec<&str> = d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.as_str()).collect();
+    let tps: Vec<BTreeSet<String>> = params
+        .iter()
+        .map(|p| {
+            let ty = p.split_once(':').map_or(p.as_str(), |x| x.1);
+            tp_names.iter().filter(|g| mentions(ty, g)).map(|g| g.to_string()).collect()
+        })
+        .collect();
     let carries: Vec<bool> = params.iter().map(|p| p.contains('&') || p.contains('\'') || ret_tps.iter().any(|g| mentions(p, g))).collect();
     let flows: Vec<bool> = if !ret_has_ref {
         vec![false; params.len()]
@@ -275,7 +296,7 @@ fn parse_hdr(d: &Def) -> Option<Hdr> {
         }
     }
     let ret_amp = ret.contains('&');
-    Some(Hdr { params, ret_has_ref, ret_amp, flows, lts, mut_ref, carries, outer, inner, ret_rg, facts })
+    Some(Hdr { params, ret_has_ref, ret_amp, flows, lts, tps, mut_ref, carries, outer, inner, ret_rg, facts })
 }
 
 fn carries_ty(t: Ty) -> bool {
@@ -319,8 +340,9 @@ enum Req {
     Pairs,
     /// 局所の寿命の終わり (`scope.end`)。その後に生きている、このスロットの借用は違反。
     Scope { root: VId, holders: Vec<VId> },
-    /// 所有物の move。その後に生きている、このスロットへの借用 (`borrow.*`) は違反。
-    MoveBorrowed { root: VId, path: Option<Vec<u32>> },
+    /// 所有物の move。その後に生きている、このスロットへの借用 (`borrow.*`) は違反。`holders` は借用を
+    /// セルに持つ別の場所 (`v.push(&s)` の `v`)。その後で読まれるなら違反。
+    MoveBorrowed { root: VId, path: Option<Vec<u32>>, holders: Vec<VId> },
 }
 
 struct An<'a> {
@@ -480,13 +502,13 @@ impl<'a> An<'a> {
                                 }
                             }
                         }
-                        // `&mut X<'a>` 引数の指す先へ、同じ `'a` を持つ別の引数の借用が入る (セッター)。
+                        // `&mut X<'a>` / `&mut X<T>` の引数の指す先へ、同じ `'a` か `T` を持つ別の引数の借用が入る (セッター。`push` の `value` など)。
                         for j in 0..args.len() {
                             if !h.mut_ref[j] {
                                 continue;
                             }
                             for k in 0..args.len() {
-                                if k != j && h.carries[k] && h.lts[k].iter().any(|x| h.lts[j].contains(x)) {
+                                if h.writes_into(j, k) {
                                     let vorg = self.org[args[k] as usize].clone();
                                     for l in self.org[args[j] as usize].clone() {
                                         if let Loan::Slot(r) | Loan::Buf(r) = l {
@@ -584,6 +606,47 @@ fn term_uses(t: &Term) -> Vec<VId> {
         Term::Ret(v) => vec![*v],
         Term::Unreachable => vec![],
     }
+}
+
+/// 呼び出し `ch(args)` で、`&mut` の引数の指す先へ別の引数の借用が入るときの制約 (前向きの効果は `An::step` のセッター)。
+/// 指す先は呼び出し元 (`hdr`) の引数 `pi` の中の領域。入る借用が、その領域より長生きでなければ違反。
+fn call_stores(an: &An, hdr: &Hdr, ch: &Hdr, args: &[VId], line: usize, cons: &mut Vec<Cons>) {
+    for j in 0..args.len() {
+        if !ch.mut_ref[j] {
+            continue;
+        }
+        for pl in an.org[args[j] as usize].iter() {
+            let Loan::Param(pi) = *pl else { continue };
+            let pn = hdr.params[pi as usize].split(':').next().unwrap_or("").to_string();
+            let target = hdr.inner[pi as usize].first().cloned().unwrap_or_else(|| hdr.outer[pi as usize].clone());
+            for k in 0..args.len() {
+                if !ch.writes_into(j, k) {
+                    continue;
+                }
+                for vl in an.org[args[k] as usize].iter() {
+                    match vl {
+                        Loan::Slot(_) | Loan::Buf(_) => cons.push(Cons { sups: vec![Rg::Local], sub: target.clone(), line, msg: format!("cannot store a borrow of a local variable into `{}` (it outlives the function)", pn) }),
+                        Loan::Param(m) if *m != pi => {
+                            let mn = hdr.params[*m as usize].split(':').next().unwrap_or("");
+                            cons.push(Cons { sups: vec![hdr.outer[*m as usize].clone()], sub: target.clone(), line, msg: format!("cannot store `{}` into `{}`: its lifetime does not outlive the one `{}` holds (header lifetimes)", mn, pn, pn) });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 根 `root` の借用 (`Slot` / `Buf`) を、いまセルに持っている別の根 (保持者)。
+fn holders_of_root(st: &State, root: VId) -> Vec<VId> {
+    let mut h: Vec<VId> = vec![];
+    for ((r, _), c) in st {
+        if *r != root && c.loans.iter().any(|l| matches!(l, Loan::Slot(x) | Loan::Buf(x) if *x == root)) && !h.contains(r) {
+            h.push(*r);
+        }
+    }
+    h
 }
 
 fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, file: &str, lines: &[u32]) -> Vec<Diag> {
@@ -790,7 +853,8 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
             if let Some(p) = agg_moves.get(&(bi, ii)) {
                 for l in an.org[*p as usize].iter() {
                     if let Loan::Slot(r) = l {
-                        reqs.push((bi, ii, line, Req::MoveBorrowed { root: *r, path: ppath[*p as usize].clone() }));
+                        let holders = holders_of_root(&st_at, *r);
+                        reqs.push((bi, ii, line, Req::MoveBorrowed { root: *r, path: ppath[*p as usize].clone(), holders }));
                     }
                 }
             }
@@ -822,7 +886,8 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                     reqs.push((bi, ii, line, Req::Inval { loans, skip: vec![], holders, why: "moved" }));
                     for l in an.org[*p as usize].iter() {
                         if let Loan::Slot(r) = l {
-                            reqs.push((bi, ii, line, Req::MoveBorrowed { root: *r, path: ppath[*p as usize].clone() }));
+                            let holders = holders_of_root(&st_at, *r);
+                            reqs.push((bi, ii, line, Req::MoveBorrowed { root: *r, path: ppath[*p as usize].clone(), holders }));
                         }
                     }
                 }
@@ -853,6 +918,13 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                                 }
                             }
                         }
+                    }
+                }
+                // 呼び出しで `&mut` の引数の指す先へ、別の引数の借用が入る (`v.push(s)` の `s`)。入る借用の領域が、指す先の領域より長生きか。
+                Op::Call { callee, args } => {
+                    let key = callee.split('<').next().unwrap_or(callee);
+                    if let Some(ch) = an.callee.get(key).filter(|ch| ch.params.len() == args.len()) {
+                        call_stores(&an, hdr, ch, args, line, &mut cons);
                     }
                 }
                 _ => {}
@@ -1114,7 +1186,7 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                             add(&mut diags, *line, "borrowed value does not live long enough (the variable goes out of scope while it is still borrowed)".to_string());
                         }
                     }
-                    Req::MoveBorrowed { root, path } => {
+                    Req::MoveBorrowed { root, path, holders } => {
                         let hit = |w: &VId| {
                             is_borrow(*w)
                                 && matches!(an.place[*w as usize], Some((r, _)) if r == *root)
@@ -1123,7 +1195,8 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                                     _ => true,
                                 }
                         } || (an.place[*w as usize].is_none() && an.org[*w as usize].contains(&Loan::Slot(*root)));
-                        if live.iter().any(hit) {
+                        let bad_holder = holders.iter().any(|h| mem_uses.get(h).map_or(false, |us| us.iter().any(|(ub, ui)| (*ub == bi && *ui > ii) || reach[bi][*ub])));
+                        if live.iter().any(hit) || bad_holder {
                             add(&mut diags, *line, "cannot move out of a variable while it is borrowed".to_string());
                         }
                     }

@@ -22,6 +22,14 @@ fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
             if let Some((n, a)) = aggs.generic_args.get(&i) {
                 return Some(Src::Named(n.clone(), a.clone()));
             }
+            // チャネルの端 `Sender<T>` / `Receiver<T>` (`chan_elem` に要素の型がある)。
+            let chan = aggs.chan_kind(t).zip(aggs.chan_elem.get(&i).copied());
+            if let Some((sender, el)) = chan {
+                drop(aggs);
+                let inner = elem_src(lw, el)?;
+                let n = if sender { "std.sync.Sender" } else { "std.sync.Receiver" };
+                return Some(Src::Named(n.into(), vec![inner]));
+            }
             let n = &aggs.defs[i as usize].name;
             // `Vec` / `String` のヘッダ (`vec`、要素が所有物なら `vec<#N>`): 配置と解放は同じなので、`String` / `Vec<要素>` に戻す。
             // `&str` と `&[T]` の値 (`fat`): 配置は同じなので `&str`。
