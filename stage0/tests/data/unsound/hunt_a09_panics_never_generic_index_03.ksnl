@@ -1,4 +1,4 @@
-// expect: E????
+// expect: E4002
 fn t.get_o[P: panics](a: &[u32; 2], i: usize) -> u32 uses [] panics P
     a[i]
 end t.get_o
