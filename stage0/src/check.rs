@@ -2265,7 +2265,9 @@ impl<'a> Checker<'a> {
                                     nline(fnn),
                                 );
                             }
-                            self.check_method_exists(&name, di, nline(fnn));
+                            let fqn = segs.join(".");
+                            let shadow = self.p.resolve(&segs, &self.def(di).file).map(|_| fqn.as_str());
+                            self.check_method_exists(&name, di, nline(fnn), shadow);
                         } else if !free && self.cur_uses.is_some() {
                             // 関数ポインタ型の引数の呼び出し: 型が宣言する効果を呼び出し側が覆うこと (5.1)。
                             if let Some((uses, pn)) = crate::infer::fn_param_effects(self.def(di), &segs[0]) {
@@ -2357,7 +2359,7 @@ impl<'a> Checker<'a> {
                     self.visit(a, locals, di, free);
                 }
                 let name = st(&f[1]);
-                self.check_method_exists(&name, di, nline(e));
+                self.check_method_exists(&name, di, nline(e), None);
                 // 4.4: `core.ops.Drop.drop` (トレイトの drop) のメソッド呼び出しは直接呼べない。
                 if name == "drop" {
                     if self.has_drop_trait_method() {
@@ -2439,7 +2441,9 @@ impl<'a> Checker<'a> {
     }
 
     /// 呼ばれたメソッド名が、どこにも定義・宣言されていなければ E1108 (近い名前を提案する)。
-    fn check_method_exists(&mut self, name: &str, di: usize, line: usize) {
+    /// `shadow_fqn` が `Some` のときは、レシーバ側の先頭セグメントが局所変数で、かつ
+    /// `<局所名>.<残り>` がパッケージの関数 FQN として実在する場合で、その旨をメッセージに足す (3.2)。
+    fn check_method_exists(&mut self, name: &str, di: usize, line: usize, shadow_fqn: Option<&str>) {
         if self.method_known(name) {
             return;
         }
@@ -2459,13 +2463,23 @@ impl<'a> Checker<'a> {
             "ne" => Some("comparison is an operator, not a method; use `a != b` (the negation of `eq`)".into()),
             _ => op.map(|o| format!("comparison is an operator, not a method; use `a {} b` (PartialOrd, derived from partial_cmp)", o)),
         };
-        if let Some(h) = hint {
-            self.diag("E1108", format!("unknown method `{}`; {}", name, h), di, line);
-            return;
-        }
-        let msg = match self.nearest_method(name) {
-            Some(n) => format!("unknown method `{}`; did you mean `{}`?", name, n),
-            None => format!("unknown method `{}`", name),
+        let base_msg: String = if let Some(h) = hint {
+            format!("unknown method `{}`; {}", name, h)
+        } else {
+            match self.nearest_method(name) {
+                Some(n) => format!("unknown method `{}`; did you mean `{}`?", name, n),
+                None => format!("unknown method `{}`", name),
+            }
+        };
+        let msg = match shadow_fqn {
+            Some(fqn) => {
+                let local = fqn.split('.').next().unwrap_or(name);
+                format!(
+                    "{}; `{}` is a local variable, which shadows the module path (3.2); rename the local to call `{}`",
+                    base_msg, local, fqn
+                )
+            }
+            None => base_msg,
         };
         self.diag("E1108", msg, di, line);
     }
