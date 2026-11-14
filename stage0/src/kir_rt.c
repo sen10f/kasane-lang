@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static char ksn_fbuf[2][512];
+static _Thread_local char ksn_fbuf[2][512];
 
 /* `m` (`[-]d[.ddd]e[+-]X`) を、指数表記を使わない 10 進に直して `out` に書く。 */
 static void ksn_plain(const char *m, char *out) {
@@ -112,7 +112,7 @@ static const char *ksn_fmt(double f, int is32, char *out) {
         if (ok) {
             /* ちょうど中間 (正確な 10 進展開で、p 桁より後が 5000..) のとき、snprintf は偶数へ丸めるが、
              * Rust は絶対値の大きい方を取る。上の候補も往復するならそちらにする。 */
-            static char big[1200];
+            static _Thread_local char big[1200];
             snprintf(big, sizeof big, "%.*e", p + 800, f);
             char *e = strchr(big, 'e');
             char *q = strchr(big, '.');

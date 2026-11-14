@@ -674,7 +674,7 @@ fn kir_native(root: &Path, m: &crate::kir::Module, fqn: &str, args: &[i128], sho
         }
         let tmp = dir.join(format!("{:016x}.{}.tmp", h, std::process::id()));
         let rt = runtime_c_args(&ll, &src);
-        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(&tmp).arg("-lm").output();
+        let o = std::process::Command::new(&clang).args(["-O1", "-Wno-override-module"]).args(&extra).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(&tmp).arg("-lm").arg("-pthread").output();
         match o {
             Err(e) => {
                 eprintln!("ksn kir: --native には clang が必要です ({} を起動できない: {})", clang, e);
@@ -2352,7 +2352,7 @@ fn clang_ll(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
     let src = exe.with_extension("ll.tmp");
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
     let rt = runtime_c_args(ll, &src);
-    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(exe).arg("-lm").output();
+    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(exe).arg("-lm").arg("-pthread").output();
     let _ = fs::remove_file(&src);
     // 一時的な C ファイルを削除する (引数は "-x c <path>" の繰り返し)。
     for i in (2..rt.len()).step_by(3) {
