@@ -63,6 +63,9 @@ mod dyn_lower;
 mod iter_lower;
 #[path = "kir_lower_map.rs"]
 mod map_lower;
+// 文字列のキーの `BtreeMap` (`BtreeMap<String, V>` / `BtreeMap<&str, V>`)。
+#[path = "kir_lower_mapstr.rs"]
+mod mapstr_lower;
 #[path = "kir_lower_coll.rs"]
 mod coll;
 #[path = "kir_lower_for.rs"]
@@ -731,6 +734,11 @@ impl<'a> Lw<'a> {
                         return Ok(Some(r));
                     }
                 }
+                if matches!(op.as_str(), "<" | "<=" | ">" | ">=") {
+                    if let Some(r) = self.string_order(l, r, op.as_str(), line)? {
+                        return Ok(Some(r));
+                    }
+                }
                 let Some(a) = self.expr(l)? else { return Ok(None) };
                 let Some(b) = self.expr(r)? else { return Ok(None) };
                 // `Some(c) => c == &y` の `&y` は読んでから比べる。比べる型は emit した値の型で決める。
@@ -859,6 +867,9 @@ impl<'a> Lw<'a> {
     }
 
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
+        if let Some(r) = self.const_str_call(e) {
+            return r;
+        }
         if let Some(r) = self.trait_side_call(e) {
             return r;
         }

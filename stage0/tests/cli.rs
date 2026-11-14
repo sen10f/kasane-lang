@@ -24198,7 +24198,7 @@ end t.fill
     assert_eq!(text(&n.stdout), expect);
 }
 
-/// `String` の `==` / `!=` は `test --both` で LLVM と一致する。`<` / `cmp` は木走査で動き、LLVM は理由を出してバンドルへ退避する。
+/// `String` の `==` / `!=` / `<` / `cmp` は `test --both` で LLVM と一致する (`<` / `cmp` は 2026-11-14 の kir/string-keys からネイティブ)。
 #[test]
 fn string_eq_ord_run_and_native_eq() {
     let eq = "test t.main.test_string_eq
@@ -24228,7 +24228,7 @@ end t.main.test_string_ord
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    assert!(out.contains("test t.main.test_string_ord ... ok (both: bundle (llvm skipped: "), "{}", out);
+    assert!(out.contains("test t.main.test_string_ord ... ok (both: llvm)"), "{}", out);
 }
 
 /// `derive [ToJson, FromJson]` (std.json): 入れ子の型 (`Vec` / `Option` / `String` / 列挙を含む) を JSON に書き出して解析し直し、

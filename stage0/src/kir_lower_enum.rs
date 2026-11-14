@@ -395,6 +395,14 @@ impl<'a> Lw<'a> {
             let mut binds = vec![];
             if let Some((_, ss)) = self.coll.scrut_src.clone() {
                 pat_src_binds(pat, &ss, &mut binds);
+                // 利用者の列挙型の変種 (`Ok(E.V(text))`) や構造体の中の束縛も、型から種類を結び付ける
+                let mut deep = std::collections::BTreeMap::new();
+                super::coll::pat_srcs(self, pat, &ss, &mut deep);
+                for (k, v) in deep {
+                    if !binds.iter().any(|b| b.0 == k) {
+                        binds.push((k, v));
+                    }
+                }
             }
             self.coll.pat_srcs = binds.into_iter().collect();
             self.coll.pending_bref.clear();
@@ -451,7 +459,15 @@ impl<'a> Lw<'a> {
             "PWild" => Ok(self.emit(Ty::Bool, Op::Const(1))),
             "PBind" => {
                 let name = st(&nf(p)[0]);
+                // 所有する Vec / String の束縛 (`Ok(E.V(text))`) は、型から種類 (String など) を結び付ける。
+                let hinted = self.coll.pat_srcs.contains_key(&name);
+                if hinted {
+                    self.coll.hint = self.coll.pat_srcs.get(&name).cloned();
+                }
                 super::coll::bind_owned(self, &name, v, t);
+                if hinted {
+                    self.coll.hint = None;
+                }
                 // 借用 (`&str` など) の束縛は、腕の型 (`scrut_src` をパターンに沿って分解した型) から種類を結び付ける。
                 if let Some(src) = self.coll.pat_srcs.get(&name).cloned() {
                     super::coll::bind_param_kind(self, &name, &src);
@@ -473,6 +489,10 @@ impl<'a> Lw<'a> {
                     "bool" if t == Ty::Bool => {
                         let k = self.emit(Ty::Bool, Op::Const(matches!(lf[1], V::B(true)) as i128));
                         Ok(self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Bool, a: v, b: k }))
+                    }
+                    "str" if t == self.fat_ty() => {
+                        let k = super::coll::str_lit(self, &nf(p)[0])?;
+                        self.str_eq(v, k)
                     }
                     other => self.err(line, format!("リテラル {} のパターンは型 {} に対して段階 1 の対象外", other, t.name())),
                 }

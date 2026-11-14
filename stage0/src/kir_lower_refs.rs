@@ -331,6 +331,8 @@ impl<'a> Lw<'a> {
             _ if super::coll::local_slot(self, &f[1]).is_some_and(|s| self.coll.borrowed.contains(&s)) => Ok(Some(r)),
             t => match self.src_ty(&f[1]) {
                 Ok(Src::Ref(_, inner)) if super::conv(&inner) == Some(t) => Ok(Some(r)),
+                // `match v.last() { Some(t) => *t }`: 所有物を持たない集成体 (`Copy` の構造体) の `Option<&T>` の束縛は値そのもの (複製)。
+                Ok(Src::Ref(_, inner)) if matches!(t, Ty::Agg(_)) && !super::coll::owns(self, t) && self.conv_t(&inner) == Some(t) => Ok(Some(r)),
                 // 参照越しの分解 (`match &x { Some(p) => *p }`) で得た名前は、型表では段数が決まらない (検査は済んでいる)。
                 Ok(Src::Prim(s)) if Ty::parse(&s) == Some(t) => Ok(Some(r)),
                 _ => self.err(line, "* の被演算子が参照でない"),

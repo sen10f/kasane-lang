@@ -26,15 +26,22 @@ use super::{Lw, LR};
 
 const ENT0: i128 = 8;
 const TOMB: i128 = 0x7FFF_FFFF_FFFF_FFFF;
-/// キーの種類。`str_key` なら `&str` (ptr, len)、そうでなければ 8 バイトの語。
+/// キーの種類。`str_key` なら `&str` (ptr, len) か `String` (ptr, len, cap。`own`。組が所有する)、そうでなければ 8 バイトの語。
 #[derive(Clone, Copy)]
 struct Shape {
     str_key: bool,
+    own: bool,
 }
 
 impl Shape {
+    /// キーの型 `kt` から決める (`Ty::Ptr` = `&str`、Vec / String のヘッダ = `String`、それ以外 = 語)。
+    fn of(lw: &Lw, kt: Ty) -> Shape {
+        Shape { str_key: kt == Ty::Ptr || lw.aggs.borrow().is_vec(kt), own: lw.aggs.borrow().is_vec(kt) }
+    }
     fn ksz(self) -> i128 {
-        if self.str_key {
+        if self.own {
+            24
+        } else if self.str_key {
             16
         } else {
             8
@@ -44,13 +51,24 @@ impl Shape {
         self.ksz() + 16
     }
     fn tag(self) -> &'static str {
-        if self.str_key {
+        if self.own {
+            "o"
+        } else if self.str_key {
             "s"
         } else {
             "w"
         }
     }
+    /// `add` の引数のキー (組へ書く語)。`String` は ptr, len, cap。
     fn key_tys(self) -> Vec<Ty> {
+        if self.own {
+            vec![Ty::Ptr, Ty::Usize, Ty::Usize]
+        } else {
+            self.lookup_tys()
+        }
+    }
+    /// `hash` / `find` / `remove` の引数のキー (照合に使う語)。
+    fn lookup_tys(self) -> Vec<Ty> {
         if self.str_key {
             vec![Ty::Ptr, Ty::Usize]
         } else {
@@ -171,7 +189,7 @@ fn mix(b: &mut Fb, x: VId) -> VId {
 }
 
 fn hash_fn(sh: Shape) -> Func {
-    let mut b = Fb::new(&sh.key_tys());
+    let mut b = Fb::new(&sh.lookup_tys());
     if !sh.str_key {
         let h = mix(&mut b, 0);
         b.term(Term::Ret(h));
@@ -241,7 +259,7 @@ fn key_eq(b: &mut Fb, sh: Shape, ent: VId, key: &[VId], yes: usize, no: usize) {
 /// `find(hdr, key..) -> usize` (組の添字 + 1、無ければ 0) と `remove(hdr, key..) -> usize` (同じ。見つけたら削除する)。
 fn probe_fn(sh: Shape, remove: bool) -> Func {
     let mut tys = vec![Ty::Ptr];
-    tys.extend(sh.key_tys());
+    tys.extend(sh.lookup_tys());
     let mut b = Fb::new(&tys);
     let key: Vec<VId> = (1..tys.len() as u32).collect();
     let esz = sh.esz();
@@ -471,6 +489,9 @@ fn add_fn(sh: Shape) -> Func {
     if sh.str_key {
         b.store(Ty::Ptr, ent, 0, key[0]);
         b.store(Ty::Usize, ent, 8, key[1]);
+        if sh.own {
+            b.store(Ty::Usize, ent, 16, key[2]);
+        }
     } else {
         b.store(Ty::Usize, ent, 0, key[0]);
     }
@@ -486,7 +507,7 @@ fn add_fn(sh: Shape) -> Func {
     let ib = b.padd(buf2, ioff);
     let icap = b.add(cap2, cap2);
     let mask = b.sub(icap, one);
-    let h = b.emit(Ty::Usize, Op::Call { callee: sh.name("hash"), args: key.clone() });
+    let h = b.emit(Ty::Usize, Op::Call { callee: sh.name("hash"), args: key[..sh.lookup_tys().len()].to_vec() });
     let pos0 = b.and(h, mask);
     let (pl, plv) = b.block(&[Ty::Usize]);
     let (set, _) = b.block(&[]);
@@ -536,6 +557,63 @@ fn need(lw: &mut Lw, sh: Shape, ops: &[&str]) {
     }
 }
 
+/// `drop(hdr)`: `String` をキーにした表の、生きている組のキーのバッファを解放する (表の `buf` は呼び手が解放する)。`buf` が null なら何もしない。
+fn drop_fn(sh: Shape) -> Func {
+    let mut b = Fb::new(&[Ty::Ptr]);
+    let (go, _) = b.block(&[]);
+    let (done, _) = b.block(&[]);
+    let buf = b.load(Ty::Ptr, 0, 0);
+    let z = b.c(Ty::Usize, 0);
+    let np = b.emit(Ty::Ptr, Op::Const(0));
+    let isnull = b.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Ptr, a: buf, b: np });
+    b.br_if(isnull, done, go);
+    b.at(go);
+    let used = b.load(Ty::Usize, buf, 0);
+    let (lp, lv) = b.block(&[Ty::Usize]);
+    let (body, _) = b.block(&[]);
+    let (nx, _) = b.block(&[]);
+    let (fr, _) = b.block(&[]);
+    b.goto(lp, vec![z]);
+    b.at(lp);
+    let more = b.cmp(Cc::Lt, lv[0], used);
+    b.br_if(more, body, done);
+    b.at(body);
+    let ent = b.entry(buf, lv[0], sh.esz());
+    let live = b.load(Ty::Usize, ent, sh.ksz() + 8);
+    let isl = b.cmp(Cc::Ne, live, z);
+    b.br_if(isl, fr, nx);
+    b.at(fr);
+    let kp = b.load(Ty::Ptr, ent, 0);
+    b.emit(Ty::Unit, Op::HeapFree(kp));
+    b.goto(nx, vec![]);
+    b.at(nx);
+    let one = b.c(Ty::Usize, 1);
+    let i1 = b.add(lv[0], one);
+    b.goto(lp, vec![i1]);
+    b.at(done);
+    let u = b.emit(Ty::Unit, Op::Const(0));
+    b.term(Term::Ret(u));
+    b.build(&sh.name("drop"), &["alloc"], Ty::Unit)
+}
+
+/// 表のスコープの終わり (`drop_hdr`) で呼ぶ: ヘッダ `hdr` が `String` キーの `HashMap` の局所変数なら、キーを解放する命令列を置く。
+pub(crate) fn drop_owned_keys(lw: &mut Lw, hdr: VId) {
+    let bslot = lw.coll.kinds.iter().find(|(s, k)| matches!(k, Kind::BMap(Some(_))) && lw.slots.get(**s).map(|x| x.0) == Some(hdr)).map(|(s, _)| *s);
+    if let Some(Kind::BMap(Some((kt, _)))) = bslot.and_then(|s| lw.coll.kinds.get(&s).cloned()) {
+        return super::mapstr_lower::drop_owned_keys(lw, hdr, kt);
+    }
+    let slot = lw.coll.kinds.iter().find(|(s, k)| matches!(k, Kind::Map(Some(_))) && lw.slots.get(**s).map(|x| x.0) == Some(hdr)).map(|(s, _)| *s);
+    let Some(s) = slot else { return };
+    let Some(Kind::Map(Some((kt, _)))) = lw.coll.kinds.get(&s).cloned() else { return };
+    let sh = Shape::of(lw, kt);
+    if !sh.own {
+        return;
+    }
+    lw.coll.extra.push((drop_fn(sh), BTreeSet::new()));
+    lw.callees.insert(sh.name("drop"));
+    lw.emit(Ty::Unit, Op::Call { callee: sh.name("drop"), args: vec![hdr] });
+}
+
 // ------------------------------------------------ 下ろし
 
 fn scalar_word(t: Ty) -> bool {
@@ -565,9 +643,45 @@ fn eval_key(lw: &mut Lw, a: &V, line: usize) -> LR<Option<(Vec<VId>, Ty)>> {
         return Ok(Some((vec![p, n], Ty::Ptr)));
     }
     if !scalar_word(t) {
-        return lw.err(line, format!("HashMap のキーの型 {} は段階 1 の対象外 (整数・bool・char・&str だけ)", t.name()));
+        return lw.err(line, format!("HashMap のキーの型 {} は段階 1 の対象外 (整数・bool・char・&str・String だけ)", t.name()));
     }
     Ok(Some((vec![to_word(lw, v, t)], t)))
+}
+
+/// `get` / `contains_key` / `remove` のキー (`&k`): `String` のキーの表なら、借用のヘッダ (`&String`) から (ptr, len) を読む。
+/// `k` を値として読むと所有が移ってしまうので、`&k` の式をそのまま評価する (`borrow_header`)。
+fn eval_lookup_key(lw: &mut Lw, a: &V, kt: Ty, line: usize) -> LR<Option<(Vec<VId>, Ty)>> {
+    if !lw.aggs.borrow().is_vec(kt) {
+        return eval_key(lw, a, line);
+    }
+    let Some(v) = lw.expr(a)? else { return Ok(None) };
+    let t = lw.vty(v);
+    if t == lw.fat_ty() {
+        let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+        let n = lw.emit(Ty::Usize, Op::Field { a: v, off: 8 });
+        return Ok(Some((vec![p, n], kt)));
+    }
+    if t != Ty::Ptr {
+        return lw.err(line, format!("HashMap<String, _> の検索のキーの型 {} は段階 1 の対象外 (&String か &str だけ)", t.name()));
+    }
+    let p = lw.emit(Ty::Ptr, Op::MemLoad { p: v, off: 0 });
+    let n = lw.emit(Ty::Usize, Op::MemLoad { p: v, off: 8 });
+    Ok(Some((vec![p, n], kt)))
+}
+
+/// `insert` の `String` のキー (所有が組へ移る)。値を評価して (ptr, len, cap) に分ける。
+fn eval_own_key(lw: &mut Lw, a: &V, line: usize) -> LR<Option<(VId, Vec<VId>)>> {
+    match lw.src_ty(a) {
+        Ok(crate::types::Ty::Named(n, _)) if n == "alloc.string.String" => {}
+        _ => return lw.err(line, "HashMap のキーの型は段階 1 の対象外 (整数・bool・char・&str・String だけ)"),
+    }
+    let Some(v) = lw.expr(a)? else { return Ok(None) };
+    let t = lw.vty(v);
+    let p = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
+    let n = lw.emit(Ty::Usize, Op::Field { a: v, off: 8 });
+    let c = lw.emit(Ty::Usize, Op::Field { a: v, off: 16 });
+    let _ = t;
+    Ok(Some((v, vec![p, n, c])))
 }
 
 /// 受け手の種類から (K, V) を決める。未確定なら `learn` で補う (`insert` のとき)。
@@ -634,8 +748,22 @@ fn insert(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: 
             return lw.err(line, format!("キー {}.as_str() の元の String が関数の中で変更される形は段階 1 の対象外 (組のキーが解放後の領域を指す)", name));
         }
     }
-    let Some((key, kt)) = eval_key(lw, &args[0], line)? else { return Ok(None) };
-    let Some(val) = lw.expr(&args[1])? else { return Ok(None) };
+    let own_key = matches!(lw.src_ty(&args[0]), Ok(crate::types::Ty::Named(n, _)) if n == "alloc.string.String");
+    let (key, kt, held) = if own_key {
+        let Some((kv, words)) = eval_own_key(lw, &args[0], line)? else { return Ok(None) };
+        let kt = lw.vty(kv);
+        // 値の評価が `?` / `return` で抜けるときにキーを解放する
+        coll::tmp_hold(lw, kv);
+        (words, kt, Some(kv))
+    } else {
+        let Some((key, kt)) = eval_key(lw, &args[0], line)? else { return Ok(None) };
+        (key, kt, None)
+    };
+    let val = lw.expr(&args[1]);
+    if let Some(kv) = held {
+        coll::tmp_release(lw, &[kv]);
+    }
+    let Some(val) = val? else { return Ok(None) };
     let vt = lw.vty(val);
     if !scalar_word(vt) {
         return lw.err(line, format!("HashMap の値の型 {} は段階 1 の対象外 (整数・bool・char だけ)", vt.name()));
@@ -649,12 +777,14 @@ fn insert(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: 
         return lw.err(line, "insert の結果の型が Result<Option<V>, AllocError> でない");
     };
     let ot = Ty::Opt(*inner);
-    let sh = Shape { str_key: kt == Ty::Ptr };
+    let sh = Shape::of(lw, kt);
     need(lw, sh, &["find", "add"]);
     let vw = to_word(lw, val, vt);
     let mut fa = vec![h];
     fa.extend(key.iter().copied());
-    let idx1 = lw.emit(Ty::Usize, Op::Call { callee: sh.name("find"), args: fa.clone() });
+    let mut fl = vec![h];
+    fl.extend(key[..sh.lookup_tys().len()].iter().copied());
+    let idx1 = lw.emit(Ty::Usize, Op::Call { callee: sh.name("find"), args: fl });
     let z = lw.emit(Ty::Usize, Op::Const(0));
     let found = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ne, ty: Ty::Usize, a: idx1, b: z });
     let (upd, _) = lw.new_block(&[]);
@@ -666,6 +796,10 @@ fn insert(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: 
     let ent = entry_addr(lw, h, idx, sh.esz());
     let old = lw.emit(vt, Op::MemLoad { p: ent, off: sh.ksz() as u32 });
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: ent, off: sh.ksz() as u32, v: vw });
+    // 同じキーが既にあれば、渡したキーは捨てる (表のキーは替えない)
+    if sh.own {
+        lw.emit(Ty::Unit, Op::HeapFree(key[0]));
+    }
     let s = lw.emit(ot, Op::Some(old));
     let r = lw.emit(rt, Op::Ok(s));
     lw.goto(jb, vec![r]);
@@ -681,12 +815,12 @@ fn insert(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: 
 }
 
 fn lookup(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: VId, m: &str, arg: &V) -> LR<Option<VId>> {
-    let Some((key, kt)) = eval_key(lw, arg, line)? else { return Ok(None) };
     let (kt0, vt) = types(lw, slot, kind, None, line)?;
+    let Some((key, kt)) = eval_lookup_key(lw, arg, kt0, line)? else { return Ok(None) };
     if kt0 != kt {
         return lw.err(line, "キーの型が HashMap のキーの型と違う");
     }
-    let sh = Shape { str_key: kt == Ty::Ptr };
+    let sh = Shape::of(lw, kt);
     let op = if m == "remove" { "remove" } else { "find" };
     need(lw, sh, &[op]);
     let mut fa = vec![h];
@@ -709,6 +843,11 @@ fn lookup(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: 
     let idx = dec(lw, idx1);
     let ent = entry_addr(lw, h, idx, sh.esz());
     let v = lw.emit(vt, Op::MemLoad { p: ent, off: sh.ksz() as u32 });
+    // 削除した組のキーのバッファは (組が所有していたので) ここで解放する
+    if sh.own && m == "remove" {
+        let kp = lw.emit(Ty::Ptr, Op::MemLoad { p: ent, off: 0 });
+        lw.emit(Ty::Unit, Op::HeapFree(kp));
+    }
     let s = lw.emit(rt, Op::Some(v));
     lw.goto(jb, vec![s]);
     lw.cur = Some(no);
@@ -764,7 +903,7 @@ fn for_iter(lw: &mut Lw, e: &V, recv: usize, kv: Option<(Ty, Ty)>) -> LR<Option<
             _ => return lw.err(line, "HashMap の for の変数はただの名前か _ だけ段階 1 の対象"),
         }
     }
-    let sh = Shape { str_key: kt == Ty::Ptr };
+    let sh = Shape::of(lw, kt);
     let body = &f[2];
     let h = lw.slots[recv].0;
     let fat = lw.fat_ty();
@@ -819,7 +958,13 @@ fn for_iter(lw: &mut Lw, e: &V, recv: usize, kv: Option<(Ty, Ty)>) -> LR<Option<
     lw.cur = Some(bb);
     lw.scopes.push(vec![]);
     let depth = lw.scopes.len() - 1;
-    if let Some(n) = &names[0] {
+    if let (Some(n), true) = (&names[0], sh.own) {
+        // `String` のキーは組の中のヘッダ。借用の `&String` として束縛する (解放しない)
+        lw.bind(n, ent, Ty::Ptr);
+        let s = lw.lookup(n).expect("束縛した名前");
+        lw.coll.kinds.insert(s, Kind::String);
+        lw.coll.borrowed.insert(s);
+    } else if let Some(n) = &names[0] {
         let v = if sh.str_key {
             let p = lw.emit(Ty::Ptr, Op::MemLoad { p: ent, off: 0 });
             let l = lw.emit(Ty::Usize, Op::MemLoad { p: ent, off: 8 });
@@ -1129,6 +1274,19 @@ fn b_types(lw: &mut Lw, slot: Option<usize>, kind: &Kind, learn: Option<(Ty, Ty)
 /// `m.insert(k, v)` / `get` / `contains_key` / `remove` / `len` / `is_empty` (`BtreeMap`)。受け手のヘッダは `h`。
 pub(crate) fn bmap_method(lw: &mut Lw, e: &V, slot: Option<usize>, kind: &Kind, h: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
     let line = nline(e);
+    // 文字列のキー (`&str` / `String`) は別の表現 (`kir_lower_mapstr.rs`)。`insert` で初めて決まる表はキーの式の型から。
+    let skey = match kind {
+        Kind::BMap(Some((kt, _))) if *kt == Ty::Ptr || lw.aggs.borrow().is_vec(*kt) => Some(*kt),
+        Kind::BMap(None) if m == "insert" && args.len() == 2 => match lw.src_ty(&args[0]) {
+            Ok(crate::types::Ty::Named(n, _)) if n == "alloc.string.String" => Some(lw.aggs.borrow_mut().vec_hdr()),
+            Ok(crate::types::Ty::Ref(_, i)) if matches!(&*i, crate::types::Ty::Prim(s) if s == "str") => Some(Ty::Ptr),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(kt) = skey {
+        return super::mapstr_lower::method(lw, e, slot, kind, h, m, args, kt);
+    }
     match (m, args.len()) {
         ("len", 0) => Ok(Some(lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 }))),
         ("is_empty", 0) => {
