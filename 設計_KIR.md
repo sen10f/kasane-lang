@@ -1598,3 +1598,42 @@ LLVM のネイティブでは、`spawn` は pthread の実スレッド、チャ�
 - `stage0/tests/cli.rs` の `kir_str_rest_matches_tree_walker` (26 件の `bool` の関数: `split_at` (str 6・slice 3)、`eq_ignore_ascii_case` 7、`contains` 4、`String` の `contains` / `starts_with` / `ends_with` / `as_bytes`、一時の `as_str` / `as_bytes().len()`、`split_once` の `let` 分解。`--run` / `--native` が木走査と一致する)。
 - `kir_unwrap_err_enum_debug_matches_tree_walker` (`Err(Bad(3))` / `Err(Neg)` の文言と終了コード 101、値の枝)。
 - `kir_check_eq_on_string_matches_tree_walker` (`Result<String, _>` の等しい比べ・違う比べの文言 `Ok("ab")`、一時の値の解放)。
+
+## 24. KIR の上の借用検査 第 1 段 (check/kir-borrowck、2026-11-14)
+
+修正プラン 1-6 / 実装計画 P3 の第 1 段。`stage0/src/kir_borrowck.rs`。**隠しの切り替え**で動かし、既定の `ksn check` は変えない
+(`KSN_BORROWCK=kir ksn check`、または `ksn check --borrowck=kir`)。切り替えると、AST の検査 (`borrowck.rs`) の E3010 を KIR の検査の結果に置き換える。
+KIR に下ろせないときは AST の結果を残し、stderr に `kir-borrowck: unknown (理由)` を出す (検査できたときは `kir-borrowck: checked <符号の列>`)。
+
+### 24.1 領域の表現
+
+KIR は単相・SSA で、型にライフタイムがない。そこで領域は「借用の出どころ (`Loan`) の集合」で表す。
+
+- `Slot(r)`: 局所スロット (`alloca` / `frame.bytes`) のアドレス。`Buf(r)`: スロット `r` が持つヒープ領域 (Vec / String の中身)。`Param(i)`: 引数 `i` の借用元。`ParamIn(i)`: 引数の指す先から読んだ値 (戻り値の照合には引数と同じに使い、引数の指す先への書き込みの出どころには数えない)。
+- 値ごとの集合 `org[v]` を前向きに不動点まで解く (命令ごとの伝播: `ptr.add` / `field_addr` / `reborrow` / `make` / `field` / `Some` / `Ok` などは被演算子の和、`load` はスロットのセルの中身、入出力・算術の結果は所有する値で空)。ブロック引数は渡された値の和。
+- メモリに保存された借用は、スロットのセル `(r, オフセット)` が持つ。流れに敏感な前向きの解析で、`mem.store.ptr S+0, null` は強い更新 (move の後は空)、それ以外の書き込みは強い更新 (単一のスロットでオフセットが分かるとき) か `ELEMS` セルへの追加 (配列・ヒープの要素・オフセット不明)。
+- 領域の生存区間は、その出どころを持つ値の生存 (SSA の後ろ向き解析) と、セルを後で読む命令 (free だけが使う読み出しは数えない) の到達可能性で決める。NLL と同じく、使われなくなれば領域は終わる。
+
+### 24.2 制約の集め方と違反
+
+1. 無効化: `heap.free` / `heap.realloc` と所有物の move (同じブロックの `load.ptr S+o` のあとの `store.ptr S+o, null`) は `Buf(r)` を無効にする。その後に、`Buf(r)` を持つ値が生きている、または `Buf(r)` を保存したセルを後で読む場合は E3010 (`as_str` のあとの `push`、`push(&s)` のあとの `s` の move、解放のあとの戻り値の使用)。
+2. 排他: 同じスロットの独立した借用 (`reborrow` / `as_shared` / `field_addr`、フィールドの道が重なるもの) が同時に生きていて一方が可変なら E3010。場所を根や別の借用経由で読み書きするとき、生きている可変の借用 (書き込みなら共有の借用も) があれば E3010。呼び出しの戻り値で引き継いだ借用が生きていれば同様。
+3. ヘッダとの照合 (`parse_hdr`): ヘッダの文面から、各引数のライフタイムと「戻り値の領域に入る引数」(`flows`、AST の `flow_params` と同じ規則) を読む。(a) 戻り値の出どころは `flows` に入る引数でなければならない (`header_lifetime_return_other` / `return_static` を止める)、局所のアドレスを返すのは E3030。(b) 引数の指す先への書き込みは、局所の借用なら E3010、別の引数なら同じ名前付きライフタイムを共有するときだけ許す。(c) 呼び出しは、呼び先のヘッダ (標準ライブラリ・依存を含む) で戻り値が引数から借りるかを決め、`&mut X<'a>` 引数と同じ `'a` の引数があれば、後者の借用を前者の指す先に保存する (セッター)。
+
+### 24.3 判断できない (fail-closed)
+
+ユーザの関数の 1 つでも KIR に下ろせない (`Lowered::unsupported`)、ヘッダが読めない、引数の数がヘッダと合わない、ジェネリクスで下ろしたインスタンスがない、のどれかなら、プログラム全体を `Unknown` にして診断を出さない。最終的に AST の検査を外すときはこれをエラーにする。第 1 段では比較から除外し、数を報告する。
+
+### 24.4 結果 (2026-11-14)
+
+`stage0/tests/cli.rs` の `kir_borrowck_has_no_false_positives` と `kir_borrowck_agreement_on_unsound_does_not_drop` が下限を持つ。
+- `unsound/` 260 件: 検査できたもの 119、KIR が拒否 9、受理 110、判断できない 141。AST の借用検査 (E3010 / E3030) との一致 112 / 119。
+- `linear_ok/` 100 件 + 参照解 19 件 + examples 15 本: 検査できたもの 94、誤検出 0、判断できない 40。
+- 不一致 7 件: `header_lifetime_return_other` / `header_lifetime_return_static` (AST が通す穴を KIR が止める = 目標どおり)、`borrow_then_consume_use_later` / `borrow_then_branch_consume` (`&s` が `s` のスロットそのもので、借用と所有者のアクセスを KIR で区別できない)、`d05_block_value_borrow_escape` (スカラーのスロットにはブロックの終わりがない)、`temp_as_str_bound` / `temp_method_owned_as_str` (一時値が関数の終わりまで生きる形に下ろされ、文の終わりの解放がない)。`header_lifetime_method_setter` は参照を持つ構造体 `t.H` が下ろせないので判断できない。
+
+### 24.5 未対応と次の段
+
+- KIR には借用の命令も、局所変数の寿命の終わりもない。Vec / String / `&str` の借用は元のスロットのアドレスそのもの、スカラーの局所はブロックを出ても生きる。次の段で、下ろしが「借用の開始 (`borrow.shared` / `borrow.mut`、結果は元のスロットの別名)」と「局所の寿命の終わり (`scope.end`)」「文の終わりの一時値の解放」を注釈の命令として出す (実行・LLVM・VM は何もしない)。これで上の不一致 6 件を止められる。
+- 下ろせない形 (参照を持つ構造体、クロージャの取り込み、`&[String]`、`Option` への参照など。判断できない 141 + 40 件の大半) の対応は、KIR の下ろしの一般化 (修正プラン 3-1) に依存する。
+- 関数の効果 (E4xxx) と move・線形 (E3002 / E3003) はまだ KIR の上にない。AST の検査を外す条件は、`unsound/` の拒否が KIR 検査だけで一致し、判断できないがエラーになっても `linear_ok/` と examples が通ること。
+- 領域の制約は「出どころの集合」の近似で、領域変数と `'a: 'b` の制約を明示的に解く形にはまだなっていない (ヘッダの outlives 境界は読まない)。

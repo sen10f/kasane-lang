@@ -707,9 +707,38 @@ fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysi
     Analysis { items: rep.items, loaded: Some((l, None)) }
 }
 
+/// 隠しの切り替え `KSN_BORROWCK=kir` / `ksn check --borrowck=kir`: AST の借用検査の E3010 を、KIR の上の検査の結果に置き換える
+/// (設計_KIR.md 24 章)。KIR に下ろせないときは AST の結果を残し、stderr に `kir-borrowck: unknown` を出す。
+fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize]) {
+    let Some(p) = prog else {
+        eprintln!("kir-borrowck: unknown (no program)");
+        return;
+    };
+    let lo = crate::kir_lower::lower_user(p, user);
+    match crate::kir_borrowck::check(p, user, &lo) {
+        crate::kir_borrowck::Outcome::Unknown(why) => eprintln!("kir-borrowck: unknown ({})", why),
+        crate::kir_borrowck::Outcome::Checked(ds) => {
+            rep.items.retain(|i| i.code != "E3010");
+            let codes: Vec<&str> = ds.iter().map(|d| d.code).collect();
+            for d in &ds {
+                rep.add(d.code, &format!("[kir] {}", d.msg), Some(&d.file), d.line.max(1), 1, true);
+            }
+            eprintln!("kir-borrowck: checked {}", codes.join(","));
+        }
+    }
+}
+
 fn cmd_check(json: bool) -> i32 {
     let mut rep = Report::new(json);
-    match find_root().and_then(|r| full_check(&r, &mut rep, false).map(|(_, prog, user)| crate::kir_lower::dump_hidden(prog.as_ref(), &user))) {
+    let kir_bc = std::env::var("KSN_BORROWCK").map_or(false, |v| v == "kir") || std::env::args().any(|a| a == "--borrowck=kir");
+    match find_root().and_then(|r| {
+        full_check(&r, &mut rep, false).map(|(_, prog, user)| {
+            crate::kir_lower::dump_hidden(prog.as_ref(), &user);
+            if kir_bc {
+                kir_borrowck_hidden(&mut rep, prog.as_ref(), &user);
+            }
+        })
+    }) {
         Ok(()) => {}
         Err(e) => rep.add(&e.code, &e.msg, None, 1, 1, true),
     }
