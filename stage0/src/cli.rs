@@ -222,10 +222,32 @@ fn empty_program() -> Program {
 
 /// std + 依存 + 本体の順に登録する。返す添字は本体の定義。
 pub(crate) fn build_program(l: &Loaded) -> (Program, Vec<usize>) {
+    build_program_with(l, None)
+}
+
+/// `build_program` の、標準ライブラリの定義を複製せず `Loaded` から移すもの (起動時間の短縮)。
+/// 移したあとの `l.std[*].defs` は空になるので、あとで標準ライブラリの定義を読まない呼び出しだけが使う。
+pub(crate) fn build_program_take(l: &mut Loaded) -> (Program, Vec<usize>) {
+    let mut std_defs: Vec<Vec<Def>> = l.std.iter_mut().map(|s| std::mem::take(&mut s.defs)).collect();
+    build_program_with(l, Some(&mut std_defs))
+}
+
+fn build_program_with(l: &Loaded, taken: Option<&mut Vec<Vec<Def>>>) -> (Program, Vec<usize>) {
     let mut prog = empty_program();
-    for s in &l.std {
-        for d in &s.defs {
-            prog.add_def(d.clone());
+    match taken {
+        Some(t) => {
+            for ds in t.iter_mut() {
+                for d in std::mem::take(ds) {
+                    prog.add_def(d);
+                }
+            }
+        }
+        None => {
+            for s in &l.std {
+                for d in &s.defs {
+                    prog.add_def(d.clone());
+                }
+            }
         }
     }
     for dp in &l.deps {
@@ -265,13 +287,17 @@ fn check_lock(pkg: &Package, deps: &[Package], rep: &mut Report) {
 
 /// 構文・正規形・意味の検査。構文エラーが無ければ Program を返す。
 fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
-    // 文法の構築 (正規表現のコンパイルが重い) は、標準ライブラリの読み込みと並行にする。
-    let gh = std::thread::spawn(Grammar::new);
-    let l = load_all(root)?;
+    full_check_opts(root, rep, run_mode, false)
+}
+
+/// `take_std` のとき、返す `Loaded` の標準ライブラリの定義は空 (`Program` に移した)。
+fn full_check_opts(root: &Path, rep: &mut Report, run_mode: bool, take_std: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
+    // 文法の構築 (正規表現のコンパイルが重い) は、定義単位の再利用が外れたときに初めてやる (grammar.rs)。
+    let grammar = Grammar::new();
+    let mut l = load_all(root)?;
     crate::vm::tick("load_all");
     check_lock(&l.pkg, &l.deps, rep);
     let srcroot = norm(&l.pkg.root.join("src"));
-    let grammar = gh.join().expect("文法の構築");
     crate::vm::tick("grammar_new");
     let use_cache = crate::check_cache::enabled();
     for s in &l.pkg.sources {
@@ -319,26 +345,45 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
             rep.add("E0001", "file must end with exactly one LF", Some(&fl), s.lines.len(), 1, true);
         }
         let lt = s.text.replace("\r\n", "\n");
-        // 正規形でなくても、`ksn fmt` で正規形になり、その結果が検査を通るなら、並び順や空行は
-        // エラーにしない (`fmt --check` が差分として報告する)。意味に関する誤りは従来どおり報告する。
-        // 整形は安いので毎回やる。lint と文法は定義ごとの結果を再利用する (check_cache.rs)。
-        let run_lint = |text: &str, memo: &mut crate::check_cache::FileMemo| {
-            if use_cache {
-                Lint::new(&relpath, text).run_memo(&mut memo.lint)
-            } else {
-                Lint::new(&relpath, text).run()
+        // ファイル全体の結果は、文面と相対パスが前回と同じなら再利用する (check_cache::FileMemo::file_old)。
+        let fkey = if use_cache { Some(crate::check_cache::file_key(&relpath, &s.text)) } else { None };
+        let reused = match (&fkey, &memo.file_old) {
+            (Some(k), Some((ok, fc))) if k == ok => Some(fc.clone()),
+            _ => None,
+        };
+        let fc = match reused {
+            Some(fc) => {
+                // 定義単位の結果は前回のものをそのまま持ち越す (スロットを書き換えない)。
+                memo.lint.new = memo.lint.old.clone();
+                memo.gram.new.extend(memo.gram.old.iter().cloned());
+                fc
+            }
+            None => {
+                // 正規形でなくても、`ksn fmt` で正規形になり、その結果が検査を通るなら、並び順や空行は
+                // エラーにしない (`fmt --check` が差分として報告する)。意味に関する誤りは従来どおり報告する。
+                // 整形は安いので毎回やる。lint と文法は定義ごとの結果を再利用する (check_cache.rs)。
+                let run_lint = |text: &str, memo: &mut crate::check_cache::FileMemo| {
+                    if use_cache {
+                        Lint::new(&relpath, text).run_memo(&mut memo.lint)
+                    } else {
+                        Lint::new(&relpath, text).run()
+                    }
+                };
+                let formatted = crate::fmt::format_source(&s.text, &s.path);
+                let skip = formatted != s.text
+                    && !s.text.contains('\t')
+                    && run_lint(&formatted, &mut memo).is_empty()
+                    && (if use_cache { grammar.check_memo(&formatted, &mut memo.gram) } else { grammar.check(&formatted) }).0;
+                let lint = if skip { vec![] } else { run_lint(&lt, &mut memo) };
+                crate::check_cache::FileCheck { skip, lint }
             }
         };
-        let formatted = crate::fmt::format_source(&s.text, &s.path);
-        let skip = formatted != s.text
-            && !s.text.contains('\t')
-            && run_lint(&formatted, &mut memo).is_empty()
-            && (if use_cache { grammar.check_memo(&formatted, &mut memo.gram) } else { grammar.check(&formatted) }).0;
-        let lint = if skip { vec![] } else { run_lint(&lt, &mut memo) };
+        if let Some(k) = fkey {
+            memo.file_new = Some((k, fc.clone()));
+        }
         if use_cache {
             crate::check_cache::store(&s.path, &relpath, &memo);
         }
-        let fc = crate::check_cache::FileCheck { skip, lint };
         if fc.skip {
             continue;
         }
@@ -362,7 +407,7 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
     if l.pkg.sources.iter().any(|s| s.error.is_some()) {
         return Ok((l, None, vec![]));
     }
-    let (prog, user) = build_program(&l);
+    let (prog, user) = if take_std { build_program_take(&mut l) } else { build_program(&l) };
     crate::vm::tick("build_prog");
     let diags = {
         let mut ck = Checker::new(&prog, user.clone());
@@ -844,7 +889,7 @@ fn cmd_run(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let (l, prog, user) = match full_check(&root, &mut rep, true) {
+    let (l, prog, user) = match full_check_opts(&root, &mut rep, true, !watch) {
         Ok(x) => x,
         Err(e) => {
             rep.add(&e.code, &e.msg, None, 1, 1, true);
@@ -883,7 +928,12 @@ fn cmd_run(args: &[String]) -> i32 {
             None
         };
         match crate::vm::run_entry(&prog, &user, &entry, &rest, mk) {
-            Ok(code) => return code,
+            Ok(code) => {
+                // 終了時の解放 (標準ライブラリの定義表など。約 1 ms) を省く。このあとはプロセスが終わるだけ。
+                std::mem::forget(prog);
+                std::mem::forget(l);
+                return code;
+            }
             Err(why) => eprintln!("vm engine skipped: {}; falling back to the tree walker", first_line(&why)),
         }
     }

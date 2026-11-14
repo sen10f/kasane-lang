@@ -22024,6 +22024,38 @@ fn check_cache_is_on_by_default_and_can_be_turned_off() {
     let _ = fs::remove_dir_all(&off);
 }
 
+/// 標準ライブラリの構文解析結果 (`<置き場>/std/*.bin`) は 1 本だけ作られ、命中しても結果は同じ。
+/// 壊れていても (切れた・別の中身) 黙って作り直して同じ結果になる。`KSN_CHECK_CACHE=0` なら作らない。
+#[test]
+fn std_parse_cache_is_written_once_hit_and_survives_corruption() {
+    let t = many_files_package("std_parse_cache", 2);
+    let base = check_cached(&t.0, None);
+    let c = cache_tmp("std_parse");
+    let env = [("KSN_CACHE_DIR", c.to_str().unwrap())];
+    let bins = |c: &Path| -> Vec<PathBuf> {
+        fs::read_dir(c.join("std")).map(|r| r.map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "bin")).collect()).unwrap_or_default()
+    };
+    assert_eq!(base, check_cached_env(&t.0, &env), "cold run differs");
+    let b = bins(&c);
+    assert_eq!(b.len(), 1, "expected one std cache file, got {:?}", b);
+    let raw = fs::read(&b[0]).unwrap();
+    assert_eq!(base, check_cached_env(&t.0, &env), "warm run differs");
+    assert_eq!(raw, fs::read(&b[0]).unwrap(), "a hit rewrote the file");
+    fs::write(&b[0], &raw[..raw.len() / 2]).unwrap();
+    assert_eq!(base, check_cached_env(&t.0, &env), "truncated cache changed the result");
+    assert_eq!(raw, fs::read(&b[0]).unwrap(), "the truncated file was not rebuilt");
+    let mut bad = raw.clone();
+    bad[10] ^= 0xff; // 鍵が合わない
+    fs::write(&b[0], &bad).unwrap();
+    assert_eq!(base, check_cached_env(&t.0, &env), "wrong key changed the result");
+    assert_eq!(raw, fs::read(&b[0]).unwrap());
+    let off = cache_tmp("std_parse_off");
+    assert_eq!(base, check_cached_env(&t.0, &[("KSN_CHECK_CACHE", "0"), ("KSN_CACHE_DIR", off.to_str().unwrap())]));
+    assert!(!off.join("std").exists(), "KSN_CHECK_CACHE=0 still wrote the std cache");
+    let _ = fs::remove_dir_all(&c);
+    let _ = fs::remove_dir_all(&off);
+}
+
 /// スロット (`.` で始まる記録を除く) のファイル。
 fn slot_files(cache: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = fs::read_dir(cache.join("check"))
