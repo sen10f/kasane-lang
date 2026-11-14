@@ -1258,6 +1258,22 @@ impl<'a> TypeCk<'a> {
         t
     }
 
+    /// `t` が、共有参照を一つでも通ってから `FnMut` のクロージャに届くか (`&c` / `&&c`)。
+    fn shared_then_fnmut(&self, t: &Ty) -> bool {
+        let mut shared = false;
+        let mut cur = self.resolve(t);
+        loop {
+            match cur {
+                Ty::Ref(m, inner) => {
+                    shared |= !m;
+                    cur = self.resolve(&inner);
+                }
+                Ty::Closure { cap, .. } => return shared && cap == Cap::FnMut,
+                _ => return false,
+            }
+        }
+    }
+
     /// 中まで解決する。
     fn deep(&self, t: &Ty) -> Ty {
         match self.resolve(t) {
@@ -3530,6 +3546,15 @@ impl<'a> TypeCk<'a> {
             if segs.len() < 2 {
                 // `f(x)`: クロージャを持つ局所変数の直接呼び出し。
                 let mut t = self.lookup(&segs[0]).unwrap();
+                // `FnMut` のクロージャは可変借用で呼ぶ (4.2)。共有参照 `&f` を一つでも通して呼ぶと、
+                // 可変借用を共有参照越しに作ることになる (E3031。メソッドの `&mut self` と同じ)。
+                if self.shared_then_fnmut(&t) {
+                    self.diag(
+                        "E3031",
+                        format!("cannot call the `FnMut` closure `{}` through a shared reference: borrow it with `&mut`", segs[0]),
+                        line,
+                    );
+                }
                 // 取り込んだ `&f` / `&mut f` の呼び出しは、参照を外して呼ぶ。
                 while let Ty::Ref(_, inner) = &t {
                     let inner = (**inner).clone();

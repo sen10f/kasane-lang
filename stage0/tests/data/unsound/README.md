@@ -1,7 +1,7 @@
 # unsound/ — 通ってはいけないのに通るコード
 
 1 ファイル 1 ケース。`// expect: Exxxx` の診断が出ること、`ksn fmt --check` が通ることをテストが検査する。
-まだ塞げないものは `stage0/tests/cli.rs` の `KNOWN_HOLES` に載せる。
+まだ塞げないものは `stage0/tests/check_diag.rs` の `KNOWN_HOLES` に載せる。
 
 ## borrowck.rs の近似 (修正プラン 1-4)
 
@@ -18,5 +18,9 @@
 | `loan_sources` の `Unary *` | `let r2 = *rr` (`rr: &&T`) が内側の借用を落とす | `ref_of_ref_deref` | 塞いだ (`plain` でない束縛のみ) |
 | `loan_sources` の `Call` | 局所のクロージャ呼び出しの結果が、取り込んだ借用を落とす | `closure_returns_capture` | 塞いだ |
 | `hold_pat` の読み戻し (変数が持つ借用の欄) | `let w = mk(&x); let r = w.r` で欄の型が分からず借用が移らない | `boundary_field_read_back` | 穴 (`KNOWN_HOLES`) |
+| `loan_sources` の `&*P` / `&mut *P` (再借用) | 再借用が元の参照 `P` の上の借用を作らず、`P` の読み書きや再借用を止めない | `hunt_a01_*` | 塞いだ (`P.*` への借用とアクセス) |
+| `loan_sources` の `Closure` (`move r`) | `move` で取り込んだ参照が持つ借用 (`&mut x`) がクロージャへ移らない | `hunt_a05_move_andmut_ref_then_use_x_01` | 塞いだ (取り込んだ値の借用を写す) |
+| `types.rs` の `call` (`f(x)`、E3031) | `FnMut` のクロージャを `&c` 越しに呼べる | `hunt_a05_andmut_via_shared_ref_01`, `hunt_a05_fnmut_*` | 塞いだ (型で判定。`&` を一つでも通して FnMut に届くと E3031) |
+| 閉包の借用の寿命 (NLL) | `&mut` を取り込んだ `c` の最後の呼び出しのあとの借用は終わっている。`hunt_a05_andmut_capture_then_assign_01` などはこの正しい形 | `hunt_a05_andmut_capture_then_assign_01`, `_read_after_last_call_01`, `_via_shared_borrow_01`, `hunt_a05_nested_andmut_capture_01` | 仕様の判断待ち (`KNOWN_HOLES`。拒むと `inc(); inc(); x` を誤って拒む) |
 
 精密化の例 (誤検出を出さない側): `linear_ok/borrow_scalar_results_ok.ksnl`。

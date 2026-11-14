@@ -732,6 +732,56 @@ fn linear_ok_cases_pass_check() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// 再借用・`move` の参照の取り込み・共有参照越しの `Fn` / 可変参照越しの `FnMut` の呼び出しの、正しい形は
+/// `ksn check` を通る (`KNOWN_HOLES` の規則の誤検出の回帰)。閉包を参照する形は KIR に下ろせないので
+/// (ネイティブ一致の検査の対象になる) `linear_ok/` には置かず、ここで check だけを見る。
+#[test]
+fn reborrow_and_closure_call_controls_pass_check() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "ctl_move_ref_capture",
+            r#"fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut x = 1u32
+    let r = &mut x
+    let c = fn() -> u32 capture [move r] {
+        *r
+    }
+    let a = c()
+    core.mem.drop(a)
+    let y = x
+    core.mem.drop(y)
+    Ok(())
+end t.main
+"#,
+        ),
+        (
+            "ctl_shared_fn_and_mut_fn_calls",
+            r#"fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut x = 1u32
+    let c = fn() -> u32 capture [&x] {
+        x
+    }
+    let cr = &c
+    let a = cr()
+    core.mem.drop(a)
+    let mut m = fn() -> () capture [&mut x] {
+        x = 2u32
+    }
+    let mr = &mut m
+    mr()
+    core.mem.drop(x)
+    Ok(())
+end t.main
+"#,
+        ),
+    ];
+    for (name, src) in cases {
+        let t = Tmp::new(name, src);
+        let o = run(&["check", "--json"], &t.0);
+        assert_eq!(o.status.code(), Some(0), "{}: {}", name, text(&o.stdout));
+    }
+}
+
 // 木走査: 取り込みは作る時点で決まる (4.3)。外側の後の書き換えは見えない。
 #[test]
 fn move_capture_copies_the_value_when_the_closure_is_made() {

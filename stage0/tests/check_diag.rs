@@ -38,21 +38,10 @@ const KNOWN_HOLES: &[&str] = &[
     // (変数の型が分からないので、`w.n` のような Copy の値と区別できず、移すと誤検出になる)。
     "boundary_field_read_back",
     // 2026-11-14 の一斉の穴探し (~/kasane-verify、20 台) で見つけたもの。分野ごとに塞いで外す。
-    // F1 借用: 再借用 `&mut *r` / `&*r` が元の参照を止めない
-    "hunt_a01_reborrow_conflict",
-    "hunt_a01_reborrow_double_use_01",
-    "hunt_a01_reborrow_field_01",
-    "hunt_a01_reborrow_mut_then_shared_read_01",
-    "hunt_a01_reborrow_reassign_01",
-    "hunt_a01_reborrow_shared_then_mut_01",
-    // F1 借用: `&mut` を取り込んだクロージャを共有参照 `&c` 越しに呼ぶ
+    // F1 借用: 最後の呼び出しのあとの `&mut` 取り込みクロージャの借用は終わっている (NLL)。正しい形なので、拒むには閉包の借用をスコープ末まで延ばす仕様の判断が要る (`inc(); inc(); x` まで拒むため残す)。
     "hunt_a05_andmut_capture_then_assign_01",
     "hunt_a05_andmut_read_after_last_call_01",
     "hunt_a05_andmut_via_shared_borrow_01",
-    "hunt_a05_andmut_via_shared_ref_01",
-    "hunt_a05_fnmut_call_through_shared_ref_01",
-    "hunt_a05_fnmut_double_shared_ref_01",
-    "hunt_a05_move_andmut_ref_then_use_x_01",
     "hunt_a05_nested_andmut_capture_01",
     // F2 効果: 効果変数を `dyn` / `Fn*` / 関数値越しに呼ぶと呼び出し元に数えられない
     "hunt_a08_box_dyn_effect_var_03",

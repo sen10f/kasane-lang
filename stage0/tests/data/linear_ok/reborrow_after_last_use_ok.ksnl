@@ -1,0 +1,18 @@
+fn t.bump(r: &mut u32) -> () uses [] panics never
+    *r = r.wrapping_add(1u32)
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut x = 1u32
+    let mut r = &mut x
+    let r2 = &mut *r
+    *r2 = 3u32
+    *r = 4u32
+    let r3 = &*r
+    let v = *r3
+    let r4 = &mut *r
+    t.bump(r4)
+    core.mem.drop(v)
+    core.mem.drop(*r)
+    Ok(())
+end t.main
