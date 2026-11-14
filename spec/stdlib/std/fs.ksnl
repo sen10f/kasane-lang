@@ -1,0 +1,167 @@
+type std.fs.DirEntry pub
+    name: alloc.string.String<std.alloc.System> pub
+    kind: std.fs.FileKind pub
+end std.fs.DirEntry
+
+enum std.fs.FileKind derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    Dir
+    File
+    Other
+end std.fs.FileKind
+
+type std.fs.Metadata derive [Debug, Clone, Copy, PartialEq, Eq] pub
+    size: u64 pub
+    kind: std.fs.FileKind pub
+    modified_ns: u64 pub
+end std.fs.Metadata
+
+fn std.fs.create_dir_all(path: &str) -> Result<(), std.io.Error> uses [io.fs] panics never pub
+    let bytes = path.as_bytes()
+    let total = bytes.len()
+    let mut i = 1usize
+    while i <= total {
+        let at_end = i == total
+        let is_sep = match bytes.get(i) {
+            Some(b) => *b == b'/'
+            None => false
+        }
+        if at_end || is_sep {
+            let prefix = match path.split_at(i) {
+                Some((head, _tail)) => head
+                None => path
+            }
+            if !prefix.ends_with("/") {
+                std.fs.make_dir_if_absent(prefix)?
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(())
+end std.fs.create_dir_all
+
+fn std.fs.make_dir_if_absent(path: &str) -> Result<(), std.io.Error> uses [io.fs] panics never
+    match std.fs.create_dir(path) {
+        Ok(_u) => Ok(())
+        Err(e) => {
+            if e.kind == std.io.ErrorKind.AlreadyExists {
+                let md = std.fs.metadata(path)?
+                if md.kind == std.fs.FileKind.Dir {
+                    return Ok(())
+                }
+            }
+            Err(e)
+        }
+    }
+end std.fs.make_dir_if_absent
+
+fn std.fs.metadata(path: &str) -> Result<std.fs.Metadata, std.io.Error> uses [io.fs] panics never pub
+    let size = std.fs.stat_raw(path, 0u32)?
+    let code = std.fs.stat_raw(path, 1u32)?
+    let modified = std.fs.stat_raw(path, 2u32)?
+    let kind = match code {
+        0u64 => std.fs.FileKind.File
+        1u64 => std.fs.FileKind.Dir
+        _ => std.fs.FileKind.Other
+    }
+    Ok(std.fs.Metadata { size: size, kind: kind, modified_ns: modified })
+end std.fs.metadata
+
+fn std.fs.oom() -> std.io.Error uses [] panics never
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end std.fs.oom
+
+fn std.fs.read_dir(path: &str) -> Result<alloc.vec.Vec<std.fs.DirEntry, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics never pub
+    let mut raw: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    std.fs.read_dir_raw(path, &mut raw)?
+    let bytes = raw.as_slice()
+    let total = bytes.len()
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < total {
+        let kind = match bytes.get(i) {
+            Some(b) => {
+                if *b == 0u8 {
+                    std.fs.FileKind.File
+                } else if *b == 1u8 {
+                    std.fs.FileKind.Dir
+                } else {
+                    std.fs.FileKind.Other
+                }
+            }
+            None => std.fs.FileKind.Other
+        }
+        let start = i.wrapping_add(1usize)
+        let mut j = start
+        while j < total {
+            if bytes.get(j) == Some(0u8) {
+                break
+            }
+            j = j.wrapping_add(1usize)
+        }
+        let name_bytes = match bytes.sub(start, j) {
+            Some(s) => s
+            None => return Err(std.fs.oom())
+        }
+        let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+        match name.push_bytes(name_bytes) {
+            Ok(_u) => {
+            }
+            Err(_e) => return Err(std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 })
+        }
+        match out.push(std.fs.DirEntry { name: name, kind: kind }) {
+            Ok(_u) => {
+            }
+            Err(_e) => return Err(std.fs.oom())
+        }
+        i = j.wrapping_add(1usize)
+    }
+    Ok(out)
+end std.fs.read_dir
+
+fn std.fs.write_atomic(path: &str, bytes: &[u8]) -> Result<(), std.io.Error> uses [alloc, io.fs] panics never pub
+    let mut tmp = alloc.string.String.new(std.alloc.SYSTEM)
+    match tmp.push_str(path) {
+        Ok(_u) => {
+        }
+        Err(_e) => return Err(std.fs.oom())
+    }
+    match tmp.push_str(".ksn-tmp") {
+        Ok(_u) => {
+        }
+        Err(_e) => return Err(std.fs.oom())
+    }
+    let mut file = std.fs.create(tmp.as_str())?
+    match file.write(bytes) {
+        Ok(_n) => {
+        }
+        Err(e) => {
+            core.mem.drop(file.close())
+            core.mem.drop(std.fs.remove_file(tmp.as_str()))
+            return Err(e)
+        }
+    }
+    match file.sync() {
+        Ok(_u) => {
+        }
+        Err(e) => {
+            core.mem.drop(file.close())
+            core.mem.drop(std.fs.remove_file(tmp.as_str()))
+            return Err(e)
+        }
+    }
+    match file.close() {
+        Ok(_u) => {
+        }
+        Err(e) => {
+            core.mem.drop(std.fs.remove_file(tmp.as_str()))
+            return Err(e)
+        }
+    }
+    match std.fs.rename(tmp.as_str(), path) {
+        Ok(_u) => Ok(())
+        Err(e) => {
+            core.mem.drop(std.fs.remove_file(tmp.as_str()))
+            Err(e)
+        }
+    }
+end std.fs.write_atomic

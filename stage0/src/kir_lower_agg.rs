@@ -35,7 +35,7 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
-pub const STD_TYPES: [&str; 14] = ["std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec"];
+pub const STD_TYPES: [&str; 17] = ["std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec"];
 
 /// ソケットの型 (`std.net.TcpListener` / `TcpStream`)。型表には `lower_defs` が常に入れる。`&` の形の型も、同じ集成体として下ろす。
 pub fn is_net_socket(name: &str) -> bool {
@@ -1359,8 +1359,8 @@ end t.main
         for want in ["t.A", "t.B", "t.C", "t.E", "(u8,i64)", "(bool,i16,u8,i32)"] {
             assert!(names.contains(&want), "型表に {} がない: {:?}", want, names);
         }
-        // `fat` / `vec` は、利用者の型ではなくスライス・`Vec` のヘッダ (他の module の `fn` (`std.json` など) を下ろすときに入る)。
-        for d in lo.module.aggs.iter().filter(|d| !super::STD_TYPES.contains(&d.name.as_str()) && d.name != "fat" && d.name != "vec") {
+        // `fat` / `vec` は、利用者の型ではなくスライス・`Vec` のヘッダ (他の module の `fn` (`std.json` など) を下ろすときに入る)。`(fat,fat)` は `std.path` の `split_at` の結果。
+        for d in lo.module.aggs.iter().filter(|d| !super::STD_TYPES.contains(&d.name.as_str()) && d.name != "fat" && !super::is_vec_name(&d.name) && d.name != "(fat,fat)") {
             // 期待値は、削除した clif.rs の `layout` / `enum_layout` が出していた配置 (C と同じ規則) を固定したもの。
             let (size, align, offs, vars): (u32, u32, Vec<u32>, Vec<Vec<u32>>) = match d.name.as_str() {
                 "t.A" => (24, 8, vec![0, 8, 16], vec![]),

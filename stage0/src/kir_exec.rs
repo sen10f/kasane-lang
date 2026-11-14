@@ -11,7 +11,7 @@ use std::net::{TcpListener, TcpStream};
 
 use crate::interp::{py_float, py_float32};
 use crate::natives::io_kind_name;
-use crate::kir::{payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
+use crate::kir::{FsK, payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
 use crate::kir_scalar;
 
 // Option / Result の値の語 (設計_KIR.md 11.1)。タグは bit 64、ペイロードの語は下位 64 ビット。
@@ -889,6 +889,92 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
                     match std::fs::remove_file(std::path::Path::new(std::str::from_utf8(&bytes).unwrap_or(""))) {
                         Ok(()) => 0,
+                        Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    }
+                }
+                Op::FsSys { kind, args } => {
+                    // fat (`&str`) のパスを読む。
+                    let mut paths: Vec<String> = Vec::new();
+                    let npaths = if matches!(kind, FsK::Rename) { 2 } else { 1 };
+                    for a in &args[..npaths] {
+                        let h = get(&stack[top], a) as usize;
+                        let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;
+                        let len = u64::from_le_bytes(heap[h][8..16].try_into().expect("fat の len")) as usize;
+                        let bytes = if len == 0 { vec![] } else { bm.read_bytes(ptr, len)? };
+                        paths.push(String::from_utf8(bytes).unwrap_or_default());
+                    }
+                    let mut dir_out: Vec<u8> = Vec::new();
+                    let nul = paths.iter().any(|p| p.contains('\0'));
+                    let r: std::io::Result<i128> = if nul {
+                        Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+                    } else {
+                        match kind {
+                            FsK::Rename => std::fs::rename(&paths[0], &paths[1]).map(|_| 0),
+                            FsK::CreateDir => std::fs::create_dir(&paths[0]).map(|_| 0),
+                            FsK::RemoveDir => std::fs::remove_dir(&paths[0]).map(|_| 0),
+                            FsK::OpenAppend => OpenOptions::new().append(true).create(true).open(&paths[0]).map(|f| {
+                                let fd = alloc_next_fd(&mut next_fd);
+                                files.insert(fd, f);
+                                fd
+                            }),
+                            FsK::Stat => {
+                                let field = get(&stack[top], &args[1]);
+                                std::fs::metadata(&paths[0]).map(|md| match field {
+                                    0 => md.len() as i128,
+                                    1 => {
+                                        if md.is_file() {
+                                            0
+                                        } else if md.is_dir() {
+                                            1
+                                        } else {
+                                            2
+                                        }
+                                    }
+                                    _ => md
+                                        .modified()
+                                        .ok()
+                                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                        .map(|d| d.as_nanos().min(u64::MAX as u128) as i128)
+                                        .unwrap_or(0),
+                                })
+                            }
+                            FsK::ReadDir => std::fs::read_dir(&paths[0]).and_then(|rd| {
+                                let mut ents: Vec<(Vec<u8>, u8)> = Vec::new();
+                                for ent in rd {
+                                    let ent = ent?;
+                                    use std::os::unix::ffi::OsStrExt;
+                                    let name = ent.file_name().as_bytes().to_vec();
+                                    let kd = match std::fs::metadata(ent.path()) {
+                                        Ok(md) if md.is_file() => 0u8,
+                                        Ok(md) if md.is_dir() => 1u8,
+                                        _ => 2u8,
+                                    };
+                                    ents.push((name, kd));
+                                }
+                                ents.sort();
+                                let mut out = Vec::new();
+                                for (n, kd) in &ents {
+                                    out.push(*kd);
+                                    out.extend_from_slice(n);
+                                    out.push(0);
+                                }
+                                let n = out.len() as i128;
+                                dir_out = out;
+                                Ok(n)
+                            }),
+                        }
+                    };
+                    if matches!(kind, FsK::ReadDir) && !dir_out.is_empty() && dir_out.len() <= get(&stack[top], &args[2]) as usize {
+                        bm.write_bytes(get(&stack[top], &args[1]), &dir_out)?;
+                    }
+                    match r {
+                        Ok(v) => {
+                            if matches!(kind, FsK::OpenAppend) {
+                                desc_agg(&mut heap, v)?
+                            } else {
+                                v
+                            }
+                        }
                         Err(e) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
                     }
                 }

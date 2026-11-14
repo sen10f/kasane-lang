@@ -577,6 +577,44 @@ pub enum BoolOp {
     Xor,
 }
 
+/// `Op::FsSys` の種類。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FsK {
+    /// `rename(from, to)`: 結果は `Result<(), std.io.Error>`。引数は fat のパス 2 つ。
+    Rename,
+    /// `create_dir(path)`: 結果は `Result<(), std.io.Error>`。
+    CreateDir,
+    /// `remove_dir(path)`: 結果は `Result<(), std.io.Error>`。
+    RemoveDir,
+    /// `open_append(path)`: 追記で開く (なければ作る)。結果は `Result<std.fs.File, std.io.Error>`。
+    OpenAppend,
+    /// `stat(path, field: u32)`: リンクを辿る。field 0 = 大きさ、1 = 種別 (0 ファイル / 1 ディレクトリ / 2 それ以外)、2 = 更新時刻 (UNIX 時刻からのナノ秒、範囲外は 0)。結果は `Result<u64, std.io.Error>`。
+    Stat,
+    /// `read_dir(path, buf, cap)`: 名前のバイト順に整列した `[種別 1 バイト][名前][0]` の並びを `buf` (容量 `cap` バイト) へ書き、必要な総バイト数を返す (`cap` を超えたら何も書かず、呼び直す)。結果は `Result<usize, std.io.Error>`。
+    ReadDir,
+}
+
+impl FsK {
+    pub fn name(self) -> &'static str {
+        match self {
+            FsK::Rename => "rename",
+            FsK::CreateDir => "create_dir",
+            FsK::RemoveDir => "remove_dir",
+            FsK::OpenAppend => "open_append",
+            FsK::Stat => "stat",
+            FsK::ReadDir => "read_dir",
+        }
+    }
+    pub fn arity(self) -> usize {
+        match self {
+            FsK::Rename | FsK::Stat => 2,
+            FsK::CreateDir | FsK::RemoveDir | FsK::OpenAppend => 1,
+            FsK::ReadDir => 3,
+        }
+    }
+    pub const ALL: [FsK; 6] = [FsK::Rename, FsK::CreateDir, FsK::RemoveDir, FsK::OpenAppend, FsK::Stat, FsK::ReadDir];
+}
+
 /// 命令の本体。結果の型と番号は `Inst` が持つ。
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
@@ -707,6 +745,8 @@ pub enum Op {
     FsExists { path: VId },
     /// `std.fs.remove_file(path)`: ファイルを削除する。結果は `Result<(), std.io.Error>`。`uses [io.fs]` の関数だけ。
     FsRemove { path: VId },
+    /// `std.fs` のその他の原始操作 (`FsK`)。`args` の個数と結果の型は `FsK` ごとに決まる。`uses [io.fs]` の関数だけ。
+    FsSys { kind: FsK, args: Vec<VId> },
     /// `std.fs.File.close()`: 記述子を閉じる。結果は `Result<(), std.io.Error>`。`uses [io.fs]` の関数だけ。
     FsClose { fd: VId },
     /// `std.fs.File.flush()`: OS へ永続化する (`sync_all`)。結果は `Result<(), std.io.Error>`。`uses [io.fs]` の関数だけ。
@@ -1190,6 +1230,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::FsOpen { path } => format!("fs.open {}", fmt_val(*path)),
         Op::FsExists { path } => format!("fs.exists {}", fmt_val(*path)),
         Op::FsRemove { path } => format!("fs.remove_file {}", fmt_val(*path)),
+        Op::FsSys { kind, args } => format!("fs.{} {}", kind.name(), args.iter().map(|a| fmt_val(*a)).collect::<Vec<_>>().join(", ")),
         Op::FsClose { fd } => format!("fs.close {}", fmt_val(*fd)),
         Op::FsFlush { fd } => format!("fs.flush {}", fmt_val(*fd)),
         Op::FsRead { fd, buf, len } => format!("fs.read {}, {}, {}", fmt_val(*fd), fmt_val(*buf), fmt_val(*len)),
@@ -1649,6 +1690,11 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("fs", ["remove_file"]) => {
             let v = operands(1)?;
             Ok(Op::FsRemove { path: v[0] })
+        }
+        ("fs", [k]) if FsK::ALL.iter().any(|f| f.name() == *k) => {
+            let kind = *FsK::ALL.iter().find(|f| f.name() == *k).expect("種別");
+            let v = operands(kind.arity())?;
+            Ok(Op::FsSys { kind, args: v })
         }
         ("fs", ["close"]) => {
             let v = operands(1)?;
@@ -2497,6 +2543,32 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("std.fs.remove_file の結果は Result<(), std.io.Error> のはず".into());
                         }
                     }
+                    Op::FsSys { kind, args } => {
+                        if !f.uses.iter().any(|u| u == "io.fs") {
+                            return Err("std.fs の原始操作は uses [io.fs] の関数だけ".into());
+                        }
+                        if args.len() != kind.arity() {
+                            return Err(format!("fs.{} の引数は {} 個のはず", kind.name(), kind.arity()));
+                        }
+                        let paths = match kind {
+                            FsK::Rename => 2,
+                            _ => 1,
+                        };
+                        for a in &args[..paths] {
+                            if ty_of(*a)? != fat_ty(m)? {
+                                return Err(format!("fs.{} のパスは fat (&str) のはず", kind.name()));
+                            }
+                        }
+                        let ok = match kind {
+                            FsK::Rename | FsK::CreateDir | FsK::RemoveDir => matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty())),
+                            FsK::OpenAppend => matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty())),
+                            FsK::Stat => matches!(i.ty, Ty::Res(_, e) if is_io_error(m, e.ty())) && ty_of(args[1])? == Ty::U32,
+                            FsK::ReadDir => matches!(i.ty, Ty::Res(_, e) if is_io_error(m, e.ty())),
+                        };
+                        if !ok {
+                            return Err(format!("fs.{} の結果の型が合わない", kind.name()));
+                        }
+                    }
                     Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => {
                         if !f.uses.iter().any(|u| u == "io.fs") {
                             return Err("std.fs.File.{close,flush,sync} は uses [io.fs] の関数だけ".into());
@@ -2749,6 +2821,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
             vec![*sock, *buf, *len]
         }
         Op::FsCreate { path } | Op::FsOpen { path } | Op::FsExists { path } | Op::FsRemove { path } => vec![*path],
+        Op::FsSys { args, .. } => args.clone(),
         Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => vec![*fd],
         Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => vec![*fd, *buf, *len],
         Op::EnvArgCount => vec![],

@@ -780,6 +780,7 @@ impl<'a> Fc<'a> {
             | Op::FsOpen { .. }
             | Op::FsExists { .. }
             | Op::FsRemove { .. }
+            | Op::FsSys { .. }
             | Op::FsClose { .. }
             | Op::FsFlush { .. }
             | Op::FsRead { .. }

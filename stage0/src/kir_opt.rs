@@ -92,6 +92,7 @@ fn side_effecting(op: &Op) -> bool {
         | Op::FsOpen { .. }
         | Op::FsExists { .. }
         | Op::FsRemove { .. }
+        | Op::FsSys { .. }
         | Op::FsClose { .. }
         | Op::FsFlush { .. }
         | Op::FsRead { .. }
@@ -286,6 +287,7 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::EnvArgCount => vec![],
         Op::EnvArg { index } | Op::EnvVar { name: index } => vec![index],
         Op::FsCreate { path } | Op::FsOpen { path } | Op::FsExists { path } | Op::FsRemove { path } => vec![path],
+        Op::FsSys { args, .. } => args.iter_mut().collect(),
         Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => vec![fd],
         Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => vec![fd, buf, len],
         Op::ParseInt { s, radix, .. } => vec![s, radix],

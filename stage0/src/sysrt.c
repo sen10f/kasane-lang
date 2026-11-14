@@ -7,6 +7,7 @@
  * std.net.Error は e[1] だけを使う (OS エラー番号が無いときは -1)。
  * 振る舞いはインタプリタ (natives.rs / net.rs) と同じにする。 */
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -16,6 +17,7 @@
 
 #ifdef _WIN32
 #include <io.h>
+#include <direct.h>
 #include <windows.h>
 #else
 #include <unistd.h>
@@ -82,16 +84,17 @@ static char *cstr(const u8 *p, u64 n, int *nul) {
 
 /* ---------------------------------------------------------------- std.fs */
 
-/* create = 0: 読み取り専用で開く (std.fs.open)。create = 1: 作成して切り詰め、書き込み専用 (std.fs.create)。戻り値は記述子。 */
+/* create = 2: 追記で開く (なければ作る) std.fs.open_append。
+ * create = 0: 読み取り専用で開く (std.fs.open)。create = 1: 作成して切り詰め、書き込み専用 (std.fs.create)。戻り値は記述子。 */
 i64 ksn_rt_sys_open(const u8 *p, u64 n, i32 create, i32 *e) {
     int nul;
     char *path = cstr(p, n, &nul);
     if (!path) return nul ? fail_invalid(e) : fail(e, ENOMEM);
     int fd;
 #ifdef _WIN32
-    fd = create ? _open(path, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE) : _open(path, _O_RDONLY | _O_BINARY);
+    fd = create == 2 ? _open(path, _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY, _S_IREAD | _S_IWRITE) : create ? _open(path, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE) : _open(path, _O_RDONLY | _O_BINARY);
 #else
-    fd = create ? open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666) : open(path, O_RDONLY | O_CLOEXEC);
+    fd = create == 2 ? open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0666) : create ? open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666) : open(path, O_RDONLY | O_CLOEXEC);
 #endif
     int err = errno;
     free(path);
@@ -124,6 +127,173 @@ i64 ksn_rt_sys_remove(const u8 *p, u64 n, i32 *e) {
     if (r != 0) return fail(e, err);
     return 0;
 }
+
+
+i64 ksn_rt_sys_rename(const u8 *p, u64 n, const u8 *q, u64 m, i32 *e) {
+    int nul, nul2;
+    char *a = cstr(p, n, &nul);
+    if (!a) return nul ? fail_invalid(e) : fail(e, ENOMEM);
+    char *b = cstr(q, m, &nul2);
+    if (!b) {
+        free(a);
+        return nul2 ? fail_invalid(e) : fail(e, ENOMEM);
+    }
+    int r = rename(a, b);
+    int err = errno;
+    free(a);
+    free(b);
+    if (r != 0) return fail(e, err);
+    return 0;
+}
+
+i64 ksn_rt_sys_mkdir(const u8 *p, u64 n, i32 *e) {
+    int nul;
+    char *path = cstr(p, n, &nul);
+    if (!path) return nul ? fail_invalid(e) : fail(e, ENOMEM);
+#ifdef _WIN32
+    int r = _mkdir(path);
+#else
+    int r = mkdir(path, 0777);
+#endif
+    int err = errno;
+    free(path);
+    if (r != 0) return fail(e, err);
+    return 0;
+}
+
+i64 ksn_rt_sys_rmdir(const u8 *p, u64 n, i32 *e) {
+    int nul;
+    char *path = cstr(p, n, &nul);
+    if (!path) return nul ? fail_invalid(e) : fail(e, ENOMEM);
+#ifdef _WIN32
+    int r = _rmdir(path);
+#else
+    int r = rmdir(path);
+#endif
+    int err = errno;
+    free(path);
+    if (r != 0) return fail(e, err);
+    return 0;
+}
+
+/* リンクを辿る。field 0 = 大きさ、1 = 種別 (0 ファイル / 1 ディレクトリ / 2 それ以外)、2 = 更新時刻 (UNIX 時刻からのナノ秒。範囲外は 0)。 */
+static int kind_of_mode(unsigned mode) {
+    if ((mode & S_IFMT) == S_IFREG) return 0;
+    if ((mode & S_IFMT) == S_IFDIR) return 1;
+    return 2;
+}
+
+i64 ksn_rt_sys_stat(const u8 *p, u64 n, i32 field, i32 *e) {
+    int nul;
+    char *path = cstr(p, n, &nul);
+    if (!path) return nul ? fail_invalid(e) : fail(e, ENOMEM);
+    struct stat st;
+    int r = stat(path, &st);
+    int err = errno;
+    free(path);
+    if (r != 0) return fail(e, err);
+    if (field == 0) return (i64)st.st_size;
+    if (field == 1) return kind_of_mode((unsigned)st.st_mode);
+#ifdef _WIN32
+    i64 secs = (i64)st.st_mtime, ns = 0;
+#elif defined(__APPLE__)
+    i64 secs = (i64)st.st_mtimespec.tv_sec, ns = (i64)st.st_mtimespec.tv_nsec;
+#else
+    i64 secs = (i64)st.st_mtim.tv_sec, ns = (i64)st.st_mtim.tv_nsec;
+#endif
+    if (secs < 0 || secs > 9223372035LL) return 0;
+    return secs * 1000000000LL + ns;
+}
+
+#ifndef _WIN32
+#include <dirent.h>
+struct dent { u8 *name; int kind; };
+static int dent_cmp(const void *x, const void *y) {
+    const struct dent *a = (const struct dent *)x, *b = (const struct dent *)y;
+    size_t la = strlen((const char *)a->name), lb = strlen((const char *)b->name);
+    int c = memcmp(a->name, b->name, la < lb ? la : lb);
+    if (c != 0) return c;
+    return la < lb ? -1 : la > lb ? 1 : 0;
+}
+
+/* ディレクトリの列挙。名前のバイト順に整列した `[種別][名前][0]` の並びを buf (容量 cap) に書き、必要な総バイト数を返す
+ * (cap を超えるときは書かない)。種別は stat (リンクを辿る) の結果。 */
+i64 ksn_rt_sys_readdir(const u8 *p, u64 n, u8 *buf, u64 cap, i32 *e) {
+    int nul;
+    char *path = cstr(p, n, &nul);
+    if (!path) return nul ? fail_invalid(e) : fail(e, ENOMEM);
+    DIR *d = opendir(path);
+    if (!d) {
+        int err = errno;
+        free(path);
+        return fail(e, err);
+    }
+    size_t plen = strlen(path), count = 0, room = 16;
+    struct dent *ents = (struct dent *)malloc(room * sizeof(struct dent));
+    int err = 0;
+    if (!ents) err = ENOMEM;
+    struct dirent *de;
+    while (!err && (errno = 0, de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        size_t nl = strlen(de->d_name);
+        char *full = (char *)malloc(plen + nl + 2);
+        u8 *nm = (u8 *)malloc(nl + 1);
+        if (!full || !nm) {
+            free(full);
+            free(nm);
+            err = ENOMEM;
+            break;
+        }
+        memcpy(full, path, plen);
+        full[plen] = '/';
+        memcpy(full + plen + 1, de->d_name, nl + 1);
+        memcpy(nm, de->d_name, nl + 1);
+        struct stat st;
+        int kind = stat(full, &st) == 0 ? kind_of_mode((unsigned)st.st_mode) : 2;
+        free(full);
+        if (count == room) {
+            struct dent *g = (struct dent *)realloc(ents, room * 2 * sizeof(struct dent));
+            if (!g) {
+                free(nm);
+                err = ENOMEM;
+                break;
+            }
+            ents = g;
+            room *= 2;
+        }
+        ents[count].name = nm;
+        ents[count].kind = kind;
+        count++;
+    }
+    if (!err && errno != 0) err = errno;
+    closedir(d);
+    free(path);
+    u64 total = 0;
+    if (!err) {
+        if (count > 1) qsort(ents, count, sizeof(struct dent), dent_cmp);
+        for (size_t i = 0; i < count; i++) total += 2 + strlen((const char *)ents[i].name);
+        if (total <= cap) {
+            u8 *w = buf;
+            for (size_t i = 0; i < count; i++) {
+                size_t l = strlen((const char *)ents[i].name);
+                *w++ = (u8)ents[i].kind;
+                memcpy(w, ents[i].name, l);
+                w += l;
+                *w++ = 0;
+            }
+        }
+    }
+    for (size_t i = 0; i < count; i++) free(ents[i].name);
+    free(ents);
+    if (err) return fail(e, err);
+    return (i64)total;
+}
+#else
+i64 ksn_rt_sys_readdir(const u8 *p, u64 n, u8 *buf, u64 cap, i32 *e) {
+    (void)p; (void)n; (void)buf; (void)cap;
+    return fail(e, ENOSYS);
+}
+#endif
 
 /* 一度の read。戻り値は読んだバイト数 (0 は終端)。 */
 i64 ksn_rt_sys_read(i32 fd, u8 *buf, u64 len, i32 *e) {

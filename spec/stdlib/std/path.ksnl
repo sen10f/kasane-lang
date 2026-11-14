@@ -1,0 +1,123 @@
+fn std.path.extension(path: &str) -> Option<&str> uses [] panics never pub
+    let name = std.path.file_name(path)?
+    match std.path.last_byte(name, b'.') {
+        Some(at) => {
+            if at == 0usize {
+                None
+            } else {
+                match name.split_at(at.wrapping_add(1usize)) {
+                    Some((_head, tail)) => Some(tail)
+                    None => None
+                }
+            }
+        }
+        None => None
+    }
+end std.path.extension
+
+fn std.path.file_name(path: &str) -> Option<&str> uses [] panics never pub
+    let trimmed = std.path.trim_slashes(path)
+    if trimmed.is_empty() || trimmed == "/" {
+        return None
+    }
+    let name = match std.path.last_byte(trimmed, b'/') {
+        Some(at) => {
+            match trimmed.split_at(at.wrapping_add(1usize)) {
+                Some((_head, tail)) => tail
+                None => trimmed
+            }
+        }
+        None => trimmed
+    }
+    if name == ".." {
+        None
+    } else {
+        Some(name)
+    }
+end std.path.file_name
+
+fn std.path.file_stem(path: &str) -> Option<&str> uses [] panics never pub
+    let name = std.path.file_name(path)?
+    match std.path.last_byte(name, b'.') {
+        Some(at) => {
+            if at == 0usize {
+                Some(name)
+            } else {
+                match name.split_at(at) {
+                    Some((head, _tail)) => Some(head)
+                    None => None
+                }
+            }
+        }
+        None => Some(name)
+    }
+end std.path.file_stem
+
+fn std.path.is_absolute(path: &str) -> bool uses [] panics never pub
+    path.starts_with("/")
+end std.path.is_absolute
+
+fn std.path.join(base: &str, part: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    if part.starts_with("/") || base.is_empty() {
+        out.push_str(part)?
+        return Ok(out)
+    }
+    out.push_str(base)?
+    if !base.ends_with("/") {
+        out.push_str("/")?
+    }
+    out.push_str(part)?
+    Ok(out)
+end std.path.join
+
+fn std.path.last_byte(text: &str, wanted: u8) -> Option<usize> uses [] panics never
+    let bytes = text.as_bytes()
+    let mut i = bytes.len()
+    while i > 0usize {
+        i = i.wrapping_sub(1usize)
+        if bytes.get(i) == Some(wanted) {
+            return Some(i)
+        }
+    }
+    None
+end std.path.last_byte
+
+fn std.path.parent(path: &str) -> Option<&str> uses [] panics never pub
+    let trimmed = std.path.trim_slashes(path)
+    if trimmed.is_empty() || trimmed == "/" {
+        return None
+    }
+    match std.path.last_byte(trimmed, b'/') {
+        Some(at) => {
+            match trimmed.split_at(at) {
+                Some((head, _tail)) => {
+                    let up = std.path.trim_slashes(head)
+                    if up.is_empty() {
+                        Some("/")
+                    } else {
+                        Some(up)
+                    }
+                }
+                None => None
+            }
+        }
+        None => Some("")
+    }
+end std.path.parent
+
+fn std.path.trim_slashes(path: &str) -> &str uses [] panics never stack 4096
+    let mut cur = path
+    loop {
+        if cur.len() < 2usize {
+            break
+        }
+        match cur.strip_suffix("/") {
+            Some(rest) => {
+                cur = rest
+            }
+            None => break
+        }
+    }
+    cur
+end std.path.trim_slashes
