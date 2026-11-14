@@ -2547,7 +2547,7 @@ fn build_native_strict(name: &str, src: &str, release: bool) -> (Tmp, Option<Pat
     let mut c = Command::new(exe());
     c.args(["build"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     if release {
-        c.arg("--release");
+        c.args(["--release", "--allow-bundle"]);
     }
     let o = c.output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
@@ -4244,7 +4244,7 @@ fn the_llvm_backend_compiles_map_get_mut_and_hashmap_iter() {
         let mut c = Command::new(exe());
         c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
         if release {
-            c.arg("--release");
+            c.args(["--release", "--allow-bundle"]);
         }
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
@@ -4288,7 +4288,7 @@ fn the_llvm_backend_compiles_mutex_lock_and_guard() {
         let mut c = Command::new(exe());
         c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
         if release {
-            c.arg("--release");
+            c.args(["--release", "--allow-bundle"]);
         }
         let o = c.output().unwrap();
         let out = text(&o.stdout) + &text(&o.stderr);
@@ -6936,7 +6936,7 @@ fn threads_build(t: &Tmp, release: bool) -> PathBuf {
     let mut c = Command::new(exe());
     c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache);
     if release {
-        c.arg("--release");
+        c.args(["--release", "--allow-bundle"]);
     }
     let o = c.output().unwrap();
     let out = text(&o.stdout) + &text(&o.stderr);
@@ -10855,7 +10855,7 @@ end t.main
     let cache = std::env::temp_dir().join(format!("ksn_bundle_cache_{}", std::process::id()));
     let _ = fs::remove_dir_all(&cache);
     let o = Command::new(exe())
-        .args(["build", "--release"])
+        .args(["build", "--release", "--allow-bundle"])
         .current_dir(&t.0)
         .env("KSN_CACHE_DIR", &cache)
         .output()
@@ -18896,6 +18896,88 @@ end t.main
     // `--backend c` は残してある: llvm の理由は出さない。
     let c = run(&["build", "--backend", "c"], &t.0);
     assert!(!text(&c.stdout).contains("KIR に下ろせない"), "{}", text(&c.stdout));
+}
+
+/// 3-2: `ksn build --release` は、ネイティブ実行ファイルが作れないとき (下ろせない・clang が無い) インタプリタ同梱の
+/// バンドルへ退避せず、E9040 と理由と逃げ道を出して終了コード 1 で止まる。成果物 (`target/release`) を残さない。
+/// デバッグ (`--release` なし) は理由を出して退避する (終了コード 0)。`--allow-bundle` を付けると、リリースでも退避する。
+#[test]
+fn release_build_does_not_fall_back_to_the_bundle_but_debug_does() {
+    let src = "trait t.Speak[E: uses, P: panics]
+    fn speak(self: &Self) -> u32 uses [E] panics P
+end t.Speak
+
+type t.Dog
+    n: u32
+end t.Dog
+
+impl t.Speak<[], never> for t.Dog
+fn t.Dog.speak(self: &t.Dog) -> u32 uses [] panics never impls t.Speak<[], never>
+    self.n
+end t.Dog.speak
+
+fn t.call(s: &dyn t.Speak<[], never>) -> u32 uses [] panics never
+    s.speak()
+end t.call
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let d = t.Dog { n: 3u32 }
+    core.check.eq(t.call(&d), 3u32)
+    std.io.print_line(\"x\")
+end t.main
+";
+    let t = Tmp::new("release_no_bundle", src);
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_release_no_bundle", std::process::id()));
+    let build = |extra: &[&str]| {
+        let mut args = vec!["build"];
+        args.extend_from_slice(extra);
+        Command::new(exe()).args(&args).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap()
+    };
+    // リリース: 失敗し、理由と逃げ道を出し、何も残さない。
+    let r = build(&["--release"]);
+    let err = text(&r.stderr);
+    assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), err);
+    assert!(err.contains("E9040") && err.contains("t.main を KIR に下ろせない") && err.contains("--allow-bundle"), "{}", err);
+    assert!(!err.contains("interpreter bundle is used") && !text(&r.stdout).contains("built "), "{}", text(&r.stdout));
+    assert!(!t.0.join("target").join("release").exists(), "失敗したリリースは target/release を残さない");
+    // デバッグ: 今のとおり理由を出して退避し、終了コード 0。
+    let d = build(&[]);
+    assert_eq!(d.status.code(), Some(0), "{}{}", text(&d.stdout), text(&d.stderr));
+    assert!(text(&d.stdout).contains("native backend skipped: t.main を KIR に下ろせない") && text(&d.stdout).contains("the interpreter bundle is used"), "{}", text(&d.stdout));
+    assert!(t.0.join("target").join("debug").join("t").exists(), "デバッグはバンドルの起動スクリプトを作る");
+    // リリースでも `--allow-bundle` を付ければ退避する (理由を出し、終了コード 0)。
+    let a = build(&["--release", "--allow-bundle"]);
+    assert_eq!(a.status.code(), Some(0), "{}{}", text(&a.stdout), text(&a.stderr));
+    assert!(text(&a.stdout).contains("native backend skipped: t.main を KIR に下ろせない") && text(&a.stdout).contains("the interpreter bundle is used"), "{}", text(&a.stdout));
+    assert!(t.0.join("target").join("release").join("t").exists(), "--allow-bundle はリリースのバンドルを作る");
+    let _ = fs::remove_dir_all(&cache);
+}
+
+/// 3-2: clang が無いときも、リリースは退避せず E9040 で止まる (デバッグは理由を出して退避する)。
+#[test]
+fn release_build_without_clang_fails_instead_of_bundling() {
+    let t = Tmp::new("release_no_clang", "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    std.io.print_line(\"ok\")\nend t.main\n");
+    let cache = std::env::temp_dir().join(format!("ksn_cache_{}_release_no_clang", std::process::id()));
+    let build = |extra: &[&str]| {
+        let mut args = vec!["build"];
+        args.extend_from_slice(extra);
+        Command::new(exe())
+            .args(&args)
+            .current_dir(&t.0)
+            .env("KSN_CACHE_DIR", &cache)
+            .env("KSN_CLANG", "/nonexistent/ksn-test-no-clang")
+            .output()
+            .unwrap()
+    };
+    let r = build(&["--release"]);
+    let err = text(&r.stderr);
+    assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), err);
+    assert!(err.contains("E9040") && err.contains("clang を起動できない") && err.contains("--allow-bundle"), "{}", err);
+    assert!(!t.0.join("target").join("release").exists(), "失敗したリリースは target/release を残さない");
+    let d = build(&[]);
+    assert_eq!(d.status.code(), Some(0), "{}{}", text(&d.stdout), text(&d.stderr));
+    assert!(text(&d.stdout).contains("native backend skipped: clang を起動できない") && text(&d.stdout).contains("the interpreter bundle is used"), "{}", text(&d.stdout));
+    let _ = fs::remove_dir_all(&cache);
 }
 
 #[test]

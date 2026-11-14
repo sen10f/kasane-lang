@@ -2081,6 +2081,9 @@ fn set_exec(_p: &Path) {}
 
 fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let release = args.iter().any(|a| a == "--release");
+    // 3-2: リリースのネイティブ生成が失敗したとき、インタプリタ同梱のバンドルへ退避するのを明示的に許す。
+    // デバッグ (`--release` なし) は常に退避する (理由を出す) ので、このフラグは効かない。
+    let allow_bundle = args.iter().any(|a| a == "--allow-bundle");
     let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "llvm".into());
     let target = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)).cloned();
     if backend == "clif" {
@@ -2225,6 +2228,18 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     };
     if native.is_ok() && !reused {
         store_artifact(&cdir, &key, &exe);
+    }
+    if let Err(why) = &native {
+        // ライブラリ (entry なし) は実行ファイルを作らないものなので、退避の対象ではなく従来どおり扱う。
+        if release && !allow_bundle && entry.is_some() {
+            // 3-2: リリースは退避しない。作りかけの target/release を残さず、理由と逃げ道を出して失敗する。
+            let _ = fs::remove_dir_all(&out);
+            eprintln!(
+                "ksn: E9040: `ksn build --release` cannot make a native executable: {}. Release builds do not fall back to the interpreter bundle. Fix the cause, build without `--release` (the bundle is then made), or pass `--allow-bundle` to accept the bundle",
+                why
+            );
+            return 1;
+        }
     }
     match native {
         Ok(()) => println!("native executable: {}", rel(&norm(&exe))),
