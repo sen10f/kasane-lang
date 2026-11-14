@@ -17859,7 +17859,7 @@ fn kir_coll_reports_unsupported_constructs_with_a_reason() {
     // `Vec` の `remove` / `insert` はスカラー要素なら段階 1 で下ろせる (`push` / `pop` と同様)。
     // capture を持つクロージャは、理由を付けて拒否する。
     let cases: &[(&str, &str, &str)] = &[
-        ("t.captured", "    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let f = fn(x: usize) -> usize capture [move v] {\n        x\n    }\n    f(1usize)\n", "取り込みは段階 1 の対象外"),
+        ("t.captured", "    let v: Option<alloc.vec.Vec<u8, std.alloc.System>> = Some(alloc.vec.Vec.new(std.alloc.SYSTEM))\n    let f = fn(x: usize) -> usize capture [move v] {\n        x\n    }\n    f(1usize)\n", "解放の要る値を持つ"),
     ];
     for (i, (f, body, why)) in cases.iter().enumerate() {
         let src = format!(
@@ -20410,7 +20410,6 @@ fn kir_closure_environment_is_passed_as_leading_arguments() {
 fn kir_closure_reports_unsupported_captures_with_a_reason() {
     // 解放の要る値の取り込み、move で取り込んだ値の変更、反復子の未対応の元は理由付きで拒否する。
     let cases: &[(&str, &str, &str)] = &[
-        ("t.cap_vec", "    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)\n    let f = fn(x: usize) -> usize capture [&v] {\n        x\n    }\n    f(1usize)\n", "取り込みは段階 1 の対象外"),
         ("t.cap_mutate", "    let mut n = 1usize\n    let f = fn(x: usize) -> usize capture [move n] {\n        n = n.wrapping_add(x)\n        n\n    }\n    f(1usize)\n", "を本体が変更する形"),
         ("t.take", "    core.iter.count(core.iter.take(core.iter.range(0usize, 5usize), 2usize))\n", "take"),
     ];
@@ -23360,4 +23359,50 @@ fn kir_copy_elem_fields_match_tree_walker() {
         assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
         assert_eq!(text(&k.stdout).trim(), *want, "kir value of {}", call);
     }
+}
+
+/// `linear_ok/` の正しい小プログラムは、すべてネイティブになり、出力・終了コードが `ksn run` と一致する (修正プラン 3-1)。
+/// `PENDING` は、まだバンドルへ退避するもの。ネイティブになったら外す (外し忘れはテストが落とす)。
+#[test]
+fn linear_ok_programs_build_native_and_match_run() {
+    const PENDING: &[&str] = &[
+        "e01_method_chain_borrow_ok",
+        "e02_d22_move_s_after_v_dead",
+        "fn_conv_wider_decl",
+        "fn_effects_bound_var_ok",
+        "genref_generic_ref_copy",
+        "h04_sibling_blocks_same_name_move",
+        "keep_lifetime_ok",
+        "lifetime_ties_inputs_unit_ret_ok",
+        "match_bind_field_assign",
+        "match_temp_subject_ok",
+        "move_fnonce_called_once",
+        "move_let_deref_copy_field",
+        "p25",
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/linear_ok");
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    names.sort();
+    let mut bad = vec![];
+    for p in names {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("linear_native_{}", stem), &fs::read_to_string(&p).unwrap());
+        let b = run(&["build"], &t.0);
+        let out = format!("{}{}", text(&b.stdout), text(&b.stderr));
+        let exe = t.0.join("target").join("debug").join("t.native");
+        let native = !out.contains("native backend skipped") && exe.exists();
+        let pending = PENDING.contains(&stem.as_str());
+        if native == pending {
+            bad.push(format!("{}: native={} pending={} {}", stem, native, pending, out.lines().find(|l| l.contains("skipped")).unwrap_or("")));
+            continue;
+        }
+        if native {
+            let n = Command::new(&exe).current_dir(&t.0).output().unwrap();
+            let r = run(&["run"], &t.0);
+            if n.status.code() != r.status.code() || text(&n.stdout) != text(&r.stdout) {
+                bad.push(format!("{}: native と run が違う: {:?} {:?} / {:?} {:?}", stem, n.status.code(), text(&n.stdout), r.status.code(), text(&r.stdout)));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
