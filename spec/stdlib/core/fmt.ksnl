@@ -43,6 +43,6 @@ end core.fmt.Formatter.write_str
 fn core.fmt.Formatter.written(self: &core.fmt.Formatter) -> &[u8] uses [] panics never pub
     match self.buf.sub(0usize, self.len) {
         Some(part) => part
-        None => self.buf
+        None => &*self.buf
     }
 end core.fmt.Formatter.written

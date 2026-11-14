@@ -304,7 +304,8 @@ fn full_check_opts(root: &Path, rep: &mut Report, run_mode: bool, take_std: bool
 fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
     let grammar = Grammar::new();
     check_lock(&l.pkg, &l.deps, rep);
-    let srcroot = norm(&l.pkg.root.join("src"));
+    // 標準ライブラリを検査するときは `spec/stdlib` 自体がソースルート (モジュール名がファイルの位置から決まる)。
+    let srcroot = if l.pkg.source == STDLIB_SOURCE { norm(&l.pkg.root) } else { norm(&l.pkg.root.join("src")) };
     crate::vm::tick("grammar_new");
     let use_cache = crate::check_cache::enabled();
     for s in &l.pkg.sources {
@@ -744,6 +745,38 @@ fn cmd_check(json: bool) -> i32 {
     }) {
         Ok(()) => {}
         Err(e) => rep.add(&e.code, &e.msg, None, 1, 1, true),
+    }
+    attach_fixes(&mut rep.items);
+    rep.flush();
+    if rep.fatal() { 1 } else { 0 }
+}
+
+/// `Package::source` の印。標準ライブラリ (`spec/stdlib`) を 1 つのパッケージとして検査するときに使う。
+const STDLIB_SOURCE: &str = "stdlib";
+
+/// 標準ライブラリの本体 (`.ksnl`) を、利用者のパッケージと同じ検査 (文法・lint・型・効果・借用など) にかける読み込み。
+/// `.sig` は規範の宣言なので、検査の対象の外 (`std` 側) に置いて参照だけできるようにする。
+fn stdlib_loaded() -> Loaded {
+    let root = stdlib_dir();
+    let (bodies, sigs): (Vec<Source>, Vec<Source>) = load_stdlib().into_iter().partition(|s| s.path.ends_with(".ksnl"));
+    Loaded {
+        pkg: Package {
+            name: "std".to_string(),
+            root,
+            manifest: toml::Value::Table(Default::default()),
+            sources: bodies,
+            source: STDLIB_SOURCE.to_string(),
+        },
+        deps: vec![],
+        std: sigs,
+    }
+}
+
+/// `ksn check-stdlib [--json]` (隠し機能): 標準ライブラリの本体の診断を出す。標準ライブラリを書き換えたあとの回帰確認用。
+fn cmd_check_stdlib(json: bool) -> i32 {
+    let mut rep = Report::new(json);
+    if let Err(e) = full_check_loaded(stdlib_loaded(), &mut rep, false, false) {
+        rep.add(&e.code, &e.msg, None, 1, 1, true);
     }
     attach_fixes(&mut rep.items);
     rep.flush();
@@ -2785,6 +2818,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "check" => {
             cmd_check(rest.iter().any(|a| a == "--json"))
         }
+        "check-stdlib" => cmd_check_stdlib(rest.iter().any(|a| a == "--json")),
         "run" => cmd_run(&rest),
         "test" => cmd_test(&rest),
         "get" => cmd_get(&rest),

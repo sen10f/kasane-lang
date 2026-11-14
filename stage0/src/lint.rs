@@ -68,6 +68,20 @@ fn word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// 直後の文字リテラルの中身の長さ (閉じの `'` の手前まで)。`X'` または `\X'` の形だけ数える。
+/// ライフタイム (`'a` `'static`) や閉じのない `'` は None。`rest` は `'` の直後を指す。
+fn char_lit_inner_len(rest: &std::iter::Peekable<std::str::Chars>) -> Option<usize> {
+    let mut la = rest.clone();
+    match la.next()? {
+        '\\' => {
+            la.next()?;
+            (la.next()? == '\'').then_some(2)
+        }
+        '\'' | '\n' => None,
+        _ => (la.next()? == '\'').then_some(1),
+    }
+}
+
 /// 文字列リテラル (`"..."`、エスケープ `\"` を含む) と行コメント (`//` から行末まで) を空白に置き換える。
 /// 置き換えなので、残りの文字・行構造は保たれ、後続の正規表現や `count_word` の
 /// マッチ位置がずれない。
@@ -114,6 +128,15 @@ fn strip_literals_and_comments(s: &str) -> String {
                         // バイトリテラル `b'X'` の開始: 中身をそのまま出力。
                         out.push('\'');
                         state = State::Byte;
+                    } else if let Some(n) = char_lit_inner_len(&chars) {
+                        // 文字リテラル `'"'` `'\n'`: 中身は残すが、`"` は文字列の開始と誤らないように空白にする。
+                        out.push('\'');
+                        for _ in 0..n {
+                            let c = chars.next().unwrap_or(' ');
+                            out.push(if c == '"' { ' ' } else { c });
+                        }
+                        let _ = chars.next();
+                        out.push('\'');
                     } else {
                         out.push('\'');
                     }

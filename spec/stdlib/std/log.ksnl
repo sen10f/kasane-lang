@@ -13,7 +13,7 @@ enum std.log.Level derive [Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord] p
 end std.log.Level
 
 // JSON の `level` の値。
-fn std.log.Level.name(self: std.log.Level) -> &str uses [] panics never pub
+fn std.log.Level.name(self: std.log.Level) -> &'static str uses [] panics never pub
     match self {
         std.log.Level.Debug => "debug"
         std.log.Level.Info => "info"
