@@ -1265,6 +1265,104 @@ buf+8+cap*esz         索引表 (usize × cap*2。開番地法の線形探査。
 - **計測** (`taskset -c 3,4`、ロードアベレージ約 25。`KSN_TIMING=1` の `vm-run` の最小値 7 回、前後を交互。ms、旧 → 新): fib 20.1 → 18.7、loops 48.1 → 43.2、vecops 78.3 → 74.2、strcat 51.8 → 53.1、structs 55.5 → 50.8、closure 13.4 → 12.0。命令数は不変 (第 3 段の表のまま)。`perf/vm_compare.py --repeat 5` (同じ固定、VM の中央値、旧 → 新): fib 45.9 → 40.7、loops 81.6 → 76.7、vecops 106.1 → 112.8、hashmap 36.5 → 31.5、strcat 79.9 → 80.0、structs 83.3 → 84.2、closure 38.7 → 38.2。差は揺れの範囲 (±10%) と同程度で、確かな効果は fib・loops・structs・closure の数 % から 10%。
 - **次**: 値の符号化の VM 専用化 (上の (1)(2))。
 
+## 18.9 既定にする条件の点検 (vm/readiness、計測 2026-11-13〜14)
+
+第 7 章 17 (VM を既定にする条件) を実測した。計測は `python3 -I perf/vm_readiness.py` (標準ライブラリだけ、節 18.9.8)。対象は `vm/readiness` の `stage0/target/release/ksn` (HEAD `6051c57` から分岐した時点の処理系)。`cargo test` は `cargo test --release` を別に回した。処理系の挙動は変えていない。
+
+### 18.9.1 条件ごとの判定
+
+| 条件 (第 7 章 17) | 判定 | 根拠 |
+| --- | --- | --- |
+| cargo test が一致 | 満たす | `cargo test --release` が全件通過 (終了コード 0)。lib 69、cli 721、vm_parity 5、vm_reload 4、vm_lines 3 ほか |
+| examples の `test --both` が一致 | 満たす (VM で比べたのは 44 / 62 本) | 62 本を木走査・VM・LLVM の 3 者で比べ、不一致 0。18 本は VM が退避 (shortener、18.9.3) |
+| bench/reference が一致 | 満たす | 9 課題・12 テストを木走査と VM で比べ、全件一致。退避 0 |
+| perf の中央値で木走査の 5 倍以上 | **満たさない** | 6 ケースは 35〜171 倍。hashmap が 1.9 倍 (木走査 58.5 ms、起動 (noop) の約 25 ms が大半)。noop 1.0 倍は比較の対象外 |
+
+判定: 4 条件のうち 3 つは満たす。既定化を妨げるのは perf の hashmap だけ (ただし hashmap は起動時間に支配されており、18.9.6 のとおり入力を大きくして測るまで判断できない)。一致の条件は満たしても、VM が走るのは examples の run で 12 / 13 パッケージ (http と kvlib を除く)、test で 44 / 62 本。退避しても出力は木走査と同じなので、既定化の障害は性能と被覆であって、正しさではない。
+
+### 18.9.2 examples の `run` と `--engine=vm`
+
+| 区分 | 件数 | 内訳 |
+| --- | ---: | --- |
+| VM で走った | 12 | demo, features, ffi, json, kvapp, more_coll, more_str, native, plugins, realtime, threads, tour |
+| 退避 | 1 | shortener (`shortener.main` の `shortener.store.read_text` に `push_bytes` があり、段階 1 の対象外 (戻り値が Option / Result / 参照)) |
+| 飛ばした | 2 | http (サーバ、listen して待つ)、kvlib (entry なし。ライブラリ) |
+| 不一致 / 時間切れ / 検査で止まった | 0 / 0 / 0 | 終了コード・標準出力・標準エラーが木走査と一致 |
+
+### 18.9.3 examples の `test --both` (木走査・VM・LLVM の 3 者)
+
+`ksn test --both --engine=both` で 1 回に比べた (`--both` は LLVM、`--engine=both` は VM)。
+
+| パッケージ | テスト | ok | VM と不一致 | LLVM だけ不一致 | 両方の失敗 | VM で比べた | VM が退避 | LLVM が退避 (情報) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| demo / features / ffi / http / json | 1 / 2 / 2 / 3 / 4 | 全件 | 0 | 0 | 0 | 全件 | 0 | 0 |
+| kvapp / kvlib / more_coll / more_str | 2 / 4 / 1 / 2 | 全件 | 0 | 0 | 0 | 全件 | 0 | 0 |
+| plugins / realtime / tour | 1 / 2 / 3 | 全件 | 0 | 0 | 0 | 全件 | 0 | 0 |
+| shortener | 35 | 35 | 0 | 0 | 0 | 17 | 18 | 9 |
+| native / threads | 0 | - | - | - | - | - | - | - |
+| 合計 | 62 | 62 | 0 | 0 | 0 | 44 | 18 | 9 |
+
+退避の理由の上位 (テスト名を除いて種類で数えた):
+
+- 9 件: `std.fs の命令は VM 未対応` (`shortener.store.Store.save` を呼ぶテスト)。
+- 8 件: `メソッド push_bytes は段階 1 の対象外` (`parse_reply`・`read_text` を呼ぶテスト)。
+- 1 件: `core.check.eq の失敗の表示を下ろせない: 型 shortener.http.Head は derive [Debug] を持たない`。
+
+LLVM 側の退避 9 件 (情報): ネストした match・`String` の `as_bytes` などで native / bundle で比べた。
+
+### 18.9.4 bench/reference (課題のある参照解)
+
+9 課題 (12 テスト) すべて木走査と VM で一致し、VM が退避したものは 0。第 18.6 節の時点で退避していた `repeat_str` も VM で走るようになった。
+
+### 18.9.5 `stage0/tests/data` の単体プログラム
+
+`main` を持つ単体ファイル 122 本 (`diag`・`unsound`・`refactor_pkg`・`ffi` を除く)。VM で走った 91、退避 30、不一致 0、時間切れ 0。飛ばした 1 本は `kir_with_fns.ksnl` (`main` を持たない。cli テストの KIR 入力)。
+
+退避の理由の上位:
+
+- 6 件: `Vec / String の借用は局所変数だけ段階 1 の対象` (`linear_ok` の借用系)。
+- 2 件: `capture` の対象が `Vec / String / str / スライス / クロージャ` (所有の移動と解放の規則が要る)。
+- 2 件: `添字・for の対象は要素型の分かる Vec・スライスの変数だけ段階 1 の対象`。
+- 2 件: `Result<(Sender, Receiver), AllocError>` の型が段階 1 の対象外 (`threads/channel*.ksnl`)。
+- 1 件: `std.fs の命令は VM 未対応` (`native_fs.ksnl`)、ほか `rfind`・`std.time.Instant.now`・`uses` を持つ呼び先・単相化の失敗など、各 1 件。
+
+注意: `linear_ok/index_field_copy.ksnl` は、下ろしの検査で `t.main: %15: load は ptr から整数・浮動小数・bool・ptr を読むはず` と落ちる。木走査では正しく走るプログラムなので、VM の問題ではなく KIR の下ろしの誤りの疑い。不一致ではないが、KIR の担当に渡す。
+
+### 18.9.6 perf (`perf/vm_compare.py --repeat 5`)
+
+`taskset -c 6,7` で固定。実行前後のロードアベレージ (1 分) は 11.3 → 14.6 (他のジョブが動いている)。
+
+| ケース | 木走査 (ms) | VM (ms) | 倍率 |
+| --- | ---: | ---: | ---: |
+| noop | 24.6 | 25.7 | 1.0x |
+| fib | 2256.9 | 49.5 | 45.6x |
+| loops | 12689.2 | 74.1 | 171.3x |
+| vecops | 6261.9 | 101.9 | 61.5x |
+| hashmap | 58.5 | 30.3 | 1.9x |
+| strcat | 3087.3 | 83.2 | 37.1x |
+| structs | 2743.2 | 77.8 | 35.3x |
+| closure | 1775.6 | 38.6 | 46.1x |
+
+hashmap は木走査でも 58 ms しかなく、起動 (noop で約 25 ms) が大半。第 18.5 節に書いたとおり、入力を大きくした計測 (README の N = 20,000) はまだ行っていない。ここで 5 倍に届かないのは、この入力の大きさの問題で、VM の実行速度の問題とは限らない。
+
+### 18.9.7 不一致
+
+4 つの計測 (examples の run、examples の test、bench、data の 122 本) のどれにも、VM が走ったのに木走査と結果が違うものはなかった。最小の再現を作る対象はない。
+
+### 18.9.8 点検の仕組み
+
+- `perf/vm_readiness.py` (標準ライブラリだけ、`python3 -I` で動く): `--sections parity,test,bench,data,perf` で部分ごとに走らせる。`--perf-cpus` で固定するコア、`--repeat` で中央値の回数、`--json` で生データを書く (git 管理しない)。
+- 判定の定義: 「VM で走った」は標準エラーに `vm engine skipped` が無いこと。「不一致」は終了コード・標準出力が違うこと、または退避しなかったのに標準エラーが違うこと。「検査で止まった」は終了コードが 0 でなく、標準出力が空で、診断コードが出ること (ヒューリスティック)。
+- cargo test は本スクリプトの対象外 (`cargo test --release` を別に回した)。perf は他のジョブのロードが 11〜15 の中で測った (±10% 程度の揺れ)。
+
+### 18.9.9 既定化までに残るもの (優先順)
+
+1. hashmap の倍率: 入力を大きくして (N = 20,000) 測る。5 倍に届かなければ、起動時間 (noop で約 25 ms。第 18.6 節の内訳は 18 ms 台) の短縮が先。
+2. `std.fs` の命令: `shortener.store.Store.save` の 9 テストと `native_fs.ksnl`。VM 未対応。
+3. `push_bytes`・`rfind`・Option / Result の参照を含む型の下ろし: shortener の 8 テストと 1 パッケージ、`str_ext.ksnl`。段階 1 の対象外。
+4. Vec / String の借用・`capture`・添字の対象の下ろし (data の 10 本、大半は `linear_ok`)、`threads/channel*.ksnl` の `Result<(Sender, Receiver), AllocError>` の型 (2 本)。
+5. `linear_ok/index_field_copy.ksnl` の下ろしの検査の誤り (KIR 側。木走査は正しく走る)。
+
 ## 付録: 参照した箇所 (主要)
 
 - `stage0/src/interp.rs`: 26 (`keep`)、62 (`coerce`)、153-163 (`poll_reload`)、165-190 (`call_def`、深さ上限 177)、272-279 (`eval_block` の新しい Scope は 273)、281 (`eval` の文字列 match)、529 (`binary`)、956 (`e_call` の `file.to_string`)、1124 (`split`)、1156-1162 (`find_method` の `format!`)、1176 (`invoke_method`)、1691 (`int_arith`)。
