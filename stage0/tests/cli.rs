@@ -22801,21 +22801,30 @@ end t.un
     assert_eq!(text(&k.stdout).trim(), "7", "kir value");
 }
 
-/// `core.check.eq` で `String` を含む `Result` どうしを比べる (`String` の `$eq` と `$debug`)。
-/// 等しいときは木走査と同じく通り、違うときは木走査と同じ文言 (`Ok("ab")`) で 101 になる。
+/// `core.check.eq` で `String` の中身を `as_str()` の `&str` として比べる (`String` 自体は `PartialEq` / `Debug`
+/// を持たないので `core.check.eq` に渡せない。E2030)。等しいときは木走査と同じく通り、違うときは
+/// 木走査と同じ文言 (`"ab"`) で 101 になる。
 #[test]
 fn kir_check_eq_on_string_matches_tree_walker() {
-    let src = r#"fn t.mk_s(s: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics may
+    let src = r#"fn t.mk_s(s: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
     alloc.string.String.from_str(std.alloc.SYSTEM, s)
 end t.mk_s
 
+fn t.cmp(a: &str, b: &str) -> () uses [alloc] panics may
+    let x = t.mk_s(a).unwrap()
+    let y = t.mk_s(b).unwrap()
+    core.check.eq(x.as_str(), y.as_str())
+    core.mem.drop(x)
+    core.mem.drop(y)
+end t.cmp
+
 fn t.same() -> () uses [alloc] panics may
-    core.check.eq(t.mk_s("ab"), t.mk_s("ab"))
-    core.check.eq(t.mk_s(""), t.mk_s(""))
+    t.cmp("ab", "ab")
+    t.cmp("", "")
 end t.same
 
 fn t.differs() -> () uses [alloc] panics may
-    core.check.eq(t.mk_s("ab"), t.mk_s("ac"))
+    t.cmp("ab", "ac")
 end t.differs
 
 "#;
@@ -22823,10 +22832,10 @@ end t.differs
     let t = Tmp::new("kir_check_eq_string", &format!("{}{}", src, main));
     let o = run(&["run"], &t.0);
     assert_eq!(o.status.code(), Some(101), "tree-walker\n{}", text(&o.stderr));
-    assert!(text(&o.stderr).contains("panic: assertion failed: left: Ok(\"ab\"), right: Ok(\"ac\")"), "tree-walker\n{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("panic: assertion failed: left: \"ab\", right: \"ac\""), "tree-walker\n{}", text(&o.stderr));
     let k = kir_run(&["kir", "t.same", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(0), "kir same\n{}", text(&k.stderr));
     let k = kir_run(&["kir", "t.differs", "--run"], &t.0);
     assert_eq!(k.status.code(), Some(101), "kir differs\n{}", text(&k.stderr));
-    assert_eq!(text(&k.stderr).trim(), "panic: assertion failed: left: Ok(\"ab\"), right: Ok(\"ac\")", "kir differs");
+    assert_eq!(text(&k.stderr).trim(), "panic: assertion failed: left: \"ab\", right: \"ac\"", "kir differs");
 }
