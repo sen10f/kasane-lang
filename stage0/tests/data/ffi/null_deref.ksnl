@@ -1,6 +1,8 @@
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     std.io.print_line("start")
-    let p: *mut i32 = core.ptr.null_mut()
+    let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.null_mut()
+    }
     let v = unsafe "ptr" "null dereference (must crash, not exit 102)" {
         core.ptr.read(p)
     }

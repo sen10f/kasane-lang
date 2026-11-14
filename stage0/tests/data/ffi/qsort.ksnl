@@ -18,7 +18,9 @@ end t.ascending
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
     let mut v = [5i32, 3i32, 9i32, 1i32, 7i32, 2i32]
-    let p = core.ptr.from_mut(&mut v)
+    let p = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_mut(&mut v)
+    }
     unsafe "sort" "qsort with a Kasane comparator" {
         t.qsort(p, 6usize, 4usize, t.ascending)
     }

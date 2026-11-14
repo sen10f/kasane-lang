@@ -457,12 +457,22 @@ end t.main
 
 test t.main.test_add_const_cast_const
     let mut m: i32 = 7i32
-    let p: *mut i32 = core.ptr.from_mut(&mut m)
+    let p: *mut i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_mut(&mut m)
+    }
     let x: i32 = 41i32
-    let q: *const i32 = core.ptr.from_ref(&x)
-    let r: *const i32 = core.ptr.add_const(q, 0usize)
-    let c: *const i32 = core.ptr.cast_const::<i32, i32>(r)
-    let w: *const i32 = core.ptr.add_const(p, 0usize)
+    let q: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.from_ref(&x)
+    }
+    let r: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.add_const(q, 0usize)
+    }
+    let c: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.cast_const::<i32, i32>(r)
+    }
+    let w: *const i32 = unsafe "ptr" "make or convert a raw pointer" {
+        core.ptr.add_const(p, 0usize)
+    }
     unsafe "libc" "read through the const helpers" {
         core.check.eq(core.ptr.read(r), 41i32)
         core.check.eq(core.ptr.read(c), 41i32)

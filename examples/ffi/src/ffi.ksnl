@@ -35,7 +35,9 @@ end ffi.main
 
 fn ffi.sort_ints(values: &mut [i32]) -> () uses [] panics never
     let n = values.len()
-    let p = core.ptr.from_mut(values)
+    let p = unsafe "sort" "take a raw pointer to the slice" {
+        core.ptr.from_mut(values)
+    }
     unsafe "sort" "qsort calls the Kasane comparator" {
         ffi.qsort(p, n, 4usize, ffi.ascending)
     }
