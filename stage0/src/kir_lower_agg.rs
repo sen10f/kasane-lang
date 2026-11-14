@@ -514,6 +514,12 @@ impl AggTab {
                 return Pay::of(self.fat()).ok_or_else(|| "&[T; N] の fat は Option のペイロードに使えない".to_string());
             }
         }
+        // `&Vec` / `&String` / `&HashMap` は借用のヘッダのアドレス (`ptr`)。
+        if let Src::Ref(_, inner) = t {
+            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
+                return Ok(Pay::Ptr);
+            }
+        }
         let x = self.lower_ty(p, file, t)?;
         Pay::of(x).ok_or_else(|| format!("型 {} は Option / Result のペイロードに使えない", x.name()))
     }

@@ -31,10 +31,9 @@ const VEC: &str = "alloc.vec.Vec";
 /// `alloc.raw.Buf<T, A>` は Vec と同じ 24 バイトのヘッダ {ptr, len, cap} (cap は要素数)。
 const BUF: &str = "alloc.raw.Buf";
 
-/// `KSN_VEC_IMPL=kasane` か (`Vec` の基本メソッドを Kasane 版で下ろす隠しの切り替え)。
-pub(crate) fn vec_kasane() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("KSN_VEC_IMPL").is_ok_and(|v| v == "kasane"))
+/// いま下ろしている関数が、`alloc/vec.ksnl` の `Vec` の基本メソッド (中身は `Buf` = 組み込みのヘッダ操作) か。
+pub(crate) fn in_vec_base(lw: &Lw) -> bool {
+    lw.def.name.strip_prefix("alloc.vec.Vec.").is_some_and(|m| crate::interp::KASANE_VEC_BASE.contains(&m))
 }
 
 /// ヘッダを持つ「Vec の仲間」(`Vec` と `Buf`) の名前か。
@@ -287,7 +286,7 @@ pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
 pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
     match strip_ref(t) {
         // 要素が所有物 (`Vec<String>`) のときは、要素の型 (集成体 `vec` など) を持つ
-        Src::Named(n, args) if is_vecn(n) => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a))))),
+        Src::Named(n, args) if is_vecn(n) => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a)).or_else(|| sig_ty(lw, a).filter(|t| *t == Ty::Ptr))))),
         Src::Named(n, _) if n == STRING => Some(Kind::String),
         Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(lw, args))),
         Src::Named(n, args) if n == BTREEMAP => Some(Kind::BMap(map_kv(lw, args))),
@@ -1553,14 +1552,6 @@ pub(crate) fn generic_call_with(lw: &mut Lw, e: &V, di: usize, recv: Option<(VId
     Ok(Some(lw.emit(ret, Op::Call { callee: key, args: vals })))
 }
 
-/// 戻り値の型 (省略は unit)。段階 1 の型に入らないなら `None`。
-fn ret_ty(cd: &crate::program::Def, tnames: &HashSet<String>) -> Option<Ty> {
-    if is_nil(&cd.ret) {
-        return Some(Ty::Unit);
-    }
-    conv(&from_v(&cd.ret, tnames))
-}
-
 /// 関数の項目 (`t.loud` のような名前) の、クロージャとしての種類。取り込みはなく、鍵は関数の名前。
 /// 局所変数・型引数付きの関数・メソッド・本体のない関数は対象外。呼び先と効果を記録する。
 pub(crate) fn fn_item_kind(lw: &mut Lw, e: &V) -> Option<Kind> {
@@ -1815,9 +1806,22 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
 
 /// ヘッダ (または `fat`) `h` を受け手とするメソッド呼び出し。所有の周りの新しいメソッド (`own`) を先に試す。
 pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: Kind, h: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
-    // `KSN_VEC_IMPL=kasane`: `Vec` の基本メソッドを、`alloc/vec.ksnl` の Kasane 版 (`Buf` の上) の単相インスタンスで下ろす。
+    // `Vec` の基本メソッドを、`alloc/vec.ksnl` の Kasane 版 (`Buf` の上) の単相インスタンスで下ろす。
     // 中身 (`alloc.vec.Vec.*` の本体) は組み込みの下ろしを使う (同じヘッダ)。
-    if vec_kasane() && matches!(kind, Kind::Vec(Some(_))) && !lw.def.name.starts_with("alloc.vec.Vec.") && crate::interp::KASANE_VEC_BASE.contains(&m) {
+    // 要素型が局所の初期化から決まらなかった Vec (別の場所の `push` で決まる) は、`push` / `insert` の引数の型で決める。
+    let kind = match (&kind, m, args.last()) {
+        (Kind::Vec(None), "push" | "insert", Some(a)) => match lw.ty_of(a) {
+            Ok(t) if elem_size(lw, t).is_some() => {
+                if let Some(s) = slot {
+                    lw.coll.kinds.insert(s, Kind::Vec(Some(t)));
+                }
+                Kind::Vec(Some(t))
+            }
+            _ => kind,
+        },
+        _ => kind,
+    };
+    if matches!(kind, Kind::Vec(Some(_))) && !in_vec_base(lw) && crate::interp::KASANE_VEC_BASE.contains(&m) {
         if let Some(r) = super::ext::ext_call(lw, e, line, &kind, h, m, args, true) {
             return r;
         }
@@ -1833,9 +1837,6 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     }
     if matches!(m, "cmp" | "partial_cmp") && matches!(kind, Kind::String | Kind::Str) {
         return lw.string_cmp_method(e, &kind, h, m, args);
-    }
-    if m == "push" && matches!(kind, Kind::Vec(_)) {
-        return vec_push(lw, e, line, slot, &kind, h, args);
     }
     if m == "push_str" && matches!(kind, Kind::String) {
         return string_push_str(lw, e, line, slot, h, args);
@@ -1923,71 +1924,6 @@ pub(super) fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str,
         "as_str" if kind == Kind::Str => Ok(Some(h)),
         other => lw.err(line, format!("メソッド {} は段階 1 の対象外", other)),
     }
-}
-
-/// `v.push(x)` (要素はスカラーの Vec): 満杯なら `heap.realloc` で広げ、末尾に書いて `len` を進める。結果は `Ok(())`。
-/// 確保に失敗することはない (`AllocError` の `Err` は作らない)。要素型が未確定の Vec は、引数の型で決める。
-pub(super) fn vec_push(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 1 {
-        return lw.err(line, "push の引数は 1 つのはず");
-    }
-    let Some(x) = lw.expr(&args[0])? else { return Ok(None) };
-    let xt = lw.vty(x);
-    let elem = match kind {
-        Kind::Vec(Some(t)) => *t,
-        _ => xt,
-    };
-    let Some(sz) = elem_size(lw, elem) else {
-        return lw.err(line, format!("push の要素の型 {} は段階 1 の対象外", elem.name()));
-    };
-    if xt != elem {
-        return lw.err(line, "push の引数の型が要素の型と違う");
-    }
-    if matches!(kind, Kind::Vec(None)) {
-        if let Some(s) = slot {
-            lw.coll.kinds.insert(s, Kind::Vec(Some(elem)));
-        }
-    }
-    let rt = lw.ty_of(e)?;
-    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
-        return lw.err(line, "push の結果の型が Result<(), AllocError> でない");
-    }
-    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
-    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
-    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: len, b: cap });
-    let (grow, _) = lw.new_block(&[]);
-    let (cont, _) = lw.new_block(&[]);
-    lw.branch(full, (grow, vec![]), (cont, vec![]));
-    lw.cur = Some(grow);
-    let dbl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: cap, b: cap });
-    let four = lw.emit(Ty::Usize, Op::Const(4));
-    let newcap = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: dbl, b: four });
-    let bytes = if sz == 1 {
-        newcap
-    } else {
-        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
-        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: newcap, b: k })
-    };
-    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: bytes });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: newcap });
-    lw.goto(cont, vec![]);
-    lw.cur = Some(cont);
-    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let off = if sz == 1 {
-        len
-    } else {
-        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
-        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: len, b: k })
-    };
-    let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
-    store_elem(lw, addr, elem, x);
-    let one = lw.emit(Ty::Usize, Op::Const(1));
-    let nl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: one });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });
-    let u = lw.unit();
-    Ok(Some(lw.emit(rt, Op::Ok(u))))
 }
 
 /// `String.push_str(text)`: `text` のバイトを `len` の位置へコピーして `len` を進める。

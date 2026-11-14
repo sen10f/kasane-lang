@@ -361,13 +361,13 @@ end t.main
 
 #[test]
 fn vec_methods_written_in_kasane_match_the_builtin_ones_natively() {
-    // `KSN_VEC_IMPL=kasane`: KIR は `Vec` の基本メソッドを `alloc/vec.ksnl` (Kasane。`Buf` の上) の単相インスタンスで下ろす。
+    // KIR は `Vec` の基本メソッドを `alloc/vec.ksnl` (Kasane。`Buf` の上) の単相インスタンスで下ろす。
     // 木走査 (組み込み) と、Kasane 版のネイティブの出力が一致する。
     let t = Tmp::new("vec_kasane", VEC_KASANE);
     let tree = run(&["run", "--engine=tree"], &t.0);
     assert_eq!(tree.status.code(), Some(0), "{}{}", text(&tree.stdout), text(&tree.stderr));
     let cache = std::env::temp_dir().join(format!("ksn_rawbuf_cache_{}_vk", std::process::id()));
-    let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).env("KSN_VEC_IMPL", "kasane").output().unwrap();
+    let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
     let _ = fs::remove_dir_all(&cache);
     let native = t.0.join("target/debug/t.native");
     assert!(b.status.success() && native.exists(), "ネイティブにならない: {}{}", text(&b.stdout), text(&b.stderr));
@@ -375,8 +375,6 @@ fn vec_methods_written_in_kasane_match_the_builtin_ones_natively() {
     assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
     assert_eq!(text(&tree.stdout), text(&o.stdout));
     // Kasane 版が使われている (`alloc.vec.Vec.push<..>` の関数が KIR にある)。
-    let k = Command::new(exe()).args(["kir", "t.main"]).current_dir(&t.0).env("KSN_VEC_IMPL", "kasane").output().unwrap();
+    let k = Command::new(exe()).args(["kir", "t.main"]).current_dir(&t.0).output().unwrap();
     assert!(text(&k.stdout).contains("fn alloc.vec.Vec.push key=alloc.vec.Vec.push<"), "{}", text(&k.stdout));
-    let k0 = Command::new(exe()).args(["kir", "t.main"]).current_dir(&t.0).output().unwrap();
-    assert!(!text(&k0.stdout).contains("fn alloc.vec.Vec.push key="), "組み込みのときは Kasane 版が現れない");
 }

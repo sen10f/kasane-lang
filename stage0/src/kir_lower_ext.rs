@@ -38,7 +38,9 @@ fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
             }
             (n.contains('.') && !n.contains('<')).then(|| Src::Named(n.clone(), vec![]))
         }
-        Ty::Unit | Ty::Ptr => None,
+        // 借用のヘッダのアドレス (`&String` / `&Vec<T>`): 8 バイトのポインタ。配置と扱いは同じなので `&String`。
+        Ty::Ptr => Some(Src::Ref(false, Box::new(Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![])])))),
+        Ty::Unit => None,
         t if t.is_scalar() => Some(Src::Prim(t.name().to_string())),
         _ => None,
     }
@@ -100,53 +102,8 @@ fn slice_swap(lw: &mut Lw, e: &V, line: usize, elem: Ty, view: VId, args: &[V]) 
     Ok(Some(jp[0]))
 }
 
-/// `v.reserve(n)`: `len + n` が容量を超えるなら `max(cap * 2 + 4, len + n)` 個分に広げる。結果は `Ok(())` (確保の失敗は起きない)。
-fn vec_reserve(lw: &mut Lw, e: &V, line: usize, elem: Ty, h: VId, args: &[V]) -> LR<Option<VId>> {
-    use crate::kir::{Aop, Cc, Mode, Pay};
-    if args.len() != 1 {
-        return lw.err(line, "reserve の引数は 1 つのはず");
-    }
-    let Some(sz) = coll::elem_size(lw, elem) else {
-        return lw.err(line, "reserve の要素の型が段階 1 の対象外");
-    };
-    let rt = lw.ty_of(e)?;
-    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
-        return lw.err(line, "reserve の結果の型が Result<(), AllocError> でない");
-    }
-    let Some(n) = lw.expr(&args[0])? else { return Ok(None) };
-    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
-    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
-    let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: n });
-    let over = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
-    let (grow, _) = lw.new_block(&[]);
-    let (done, _) = lw.new_block(&[]);
-    lw.branch(over, (grow, vec![]), (done, vec![]));
-    lw.cur = Some(grow);
-    let dbl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: cap, b: cap });
-    let four = lw.emit(Ty::Usize, Op::Const(4));
-    let c2 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: dbl, b: four });
-    let nc = lw.emit(Ty::Usize, Op::MinMax { max: true, a: c2, b: need });
-    let bytes = if sz == 1 { nc } else {
-        let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
-        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: nc, b: k })
-    };
-    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: bytes });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: nc });
-    lw.goto(done, vec![]);
-    lw.cur = Some(done);
-    let u = lw.unit();
-    Ok(Some(lw.emit(rt, Op::Ok(u))))
-}
-
 /// `x.m(args)` (`x` は `Vec` / スライス) が Kasane の拡張メソッドなら下ろす。該当しなければ `None`。
 pub(super) fn ext_call(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, m: &str, args: &[V], force: bool) -> Option<LR<Option<VId>>> {
-    if m == "reserve" && !force {
-        if let Kind::Vec(Some(t)) = kind {
-            return Some(vec_reserve(lw, e, line, *t, h, args));
-        }
-    }
     if m == "swap" {
         if let Kind::Vec(Some(t)) | Kind::Slice(Some(t)) = kind {
             let view = if matches!(kind, Kind::Vec(_)) { coll::hdr_view(lw, h) } else { h };

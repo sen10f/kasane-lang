@@ -153,7 +153,7 @@ pub(super) fn field_call(lw: &mut Lw, e: &V, s: usize, names: &[String], m: &str
         return None;
     }
     // Kasane で書いた `Vec` のメソッド (`alloc/vec.ksnl`) の `self.buf`: `Vec` と `Buf` は同じヘッダなので、`self` のヘッダそのもの。
-    if names.len() == 1 && names[0] == "buf" && lw.def.name.starts_with("alloc.vec.Vec.") {
+    if names.len() == 1 && names[0] == "buf" && coll::in_vec_base(lw) {
         if let Some(kind @ Kind::Vec(_)) = lw.coll.kinds.get(&s).cloned() {
             let h = lw.slots[s].0;
             return Some(coll::method_on(lw, e, nline(e), Some(s), kind, h, m, args));
@@ -190,7 +190,6 @@ pub(super) fn method(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, m: &s
         (Kind::Vec(_), "clear") => Some(clear(lw, line, kind, h, args)),
         (Kind::Vec(_), "pop") => Some(vec_pop(lw, e, line, kind, h, args)),
         (Kind::Vec(_), "remove") => Some(vec_remove(lw, e, line, kind, h, args)),
-        (Kind::Vec(_), "insert") => Some(vec_insert(lw, e, line, kind, h, args)),
         (Kind::Vec(_) | Kind::String, "get_mut") => Some(lw.err(line, "get_mut は match の対象のときだけ段階 1 の対象")),
         _ => None,
     }
@@ -457,100 +456,6 @@ fn vec_remove(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, args: &[V]) 
     lw.cur = Some(eb);
     let none = lw.emit(opt, Op::Const(0));
     lw.goto(jb, vec![none]);
-    lw.cur = Some(jb);
-    Ok(Some(jp[0]))
-}
-
-/// `v.insert(i, x)` (要素はスカラー): `i <= len` なら要素を挿入して `Ok(())`、範囲外なら
-/// `Err(InsertError::OutOfBounds)`。後続の要素を右に詰めて `len` を 1 増やす。panic しない。
-fn vec_insert(lw: &mut Lw, _e: &V, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 2 {
-        return lw.err(line, "insert の引数は 2 つのはず");
-    }
-    let Kind::Vec(Some(elem)) = kind else {
-        return lw.err(line, "insert の対象は要素型の分かる Vec だけ段階 1 の対象");
-    };
-    let elem = *elem;
-    let (Some(sz), Some(_pay)) = (coll::elem_size(lw, elem), Pay::of(elem)) else {
-        return lw.err(line, format!("insert の要素の型 {} は段階 1 の対象外", elem.name()));
-    };
-    let err_ai = match lw.aggs.borrow_mut().insert_err() {
-        Ty::Agg(i) => i,
-        _ => return lw.err(line, "insert のエラー型が集成体でない"),
-    };
-    let rt = Ty::Res(Pay::Unit, Pay::Agg(err_ai));
-    let Some(i) = lw.expr(&args[0])? else { return Ok(None) };
-    let Some(x) = lw.expr(&args[1])? else { return Ok(None) };
-    if lw.vty(i) != Ty::Usize || lw.vty(x) != elem {
-        return lw.err(line, "insert の引数の型が違う");
-    }
-    let len = coll::load_len(lw, h);
-    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
-    let szc = usize_const(lw, sz as i128);
-    // 範囲チェック: i <= len
-    let ok = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::Usize, a: i, b: len });
-    let (tb, _) = lw.new_block(&[]);
-    let (eb, _) = lw.new_block(&[]);
-    let (jb, jp) = lw.new_block(&[rt]);
-    lw.branch(ok, (tb, vec![]), (eb, vec![]));
-    // 成功: 満杯なら成長、右に詰め、x を i に書き、len を増やす
-    lw.cur = Some(tb);
-    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: len, b: cap });
-    let (grow, _) = lw.new_block(&[]);
-    let (cont, _) = lw.new_block(&[]);
-    lw.branch(full, (grow, vec![]), (cont, vec![]));
-    lw.cur = Some(grow);
-    let dbl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: cap, b: cap });
-    let four = usize_const(lw, 4);
-    let newcap = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: dbl, b: four });
-    let bytes = if sz == 1 { newcap } else {
-        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: newcap, b: szc })
-    };
-    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: bytes });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: newcap });
-    lw.goto(cont, vec![]);
-    lw.cur = Some(cont);
-    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    // 右に詰め直しループ: buf[j] = buf[j-1] (j = len downto i+1)。j は常に >= 1 なので j-1 で下流しない。
-    let one = usize_const(lw, 1);
-    let (lh, lj) = lw.new_block(&[Ty::Usize]);
-    let (ls, _) = lw.new_block(&[]);
-    let (lexit, _) = lw.new_block(&[]);
-    lw.goto(lh, vec![len]);
-    lw.cur = Some(lh);
-    let j = lj[0];
-    let cont2 = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: j, b: i });
-    lw.branch(cont2, (ls, vec![]), (lexit, vec![]));
-    lw.cur = Some(ls);
-    let off_j = if sz == 1 { j } else {
-        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: j, b: szc })
-    };
-    let off_j1 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: off_j, b: szc });
-    let addr_j = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: off_j });
-    let addr_j1 = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: off_j1 });
-    let v = coll::load_elem(lw, addr_j1, elem);
-    coll::store_elem(lw, addr_j, elem, v);
-    let j1 = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: j, b: one });
-    lw.goto(lh, vec![j1]);
-    lw.cur = Some(lexit);
-    // x を i に書き、len = len + 1
-    let off_i = if sz == 1 { i } else {
-        lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: szc })
-    };
-    let addr_i = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: off_i });
-    coll::store_elem(lw, addr_i, elem, x);
-    let nl = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: one });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });
-    let u = lw.unit();
-    let ok_val = lw.emit(rt, Op::Ok(u));
-    lw.goto(jb, vec![ok_val]);
-    // 範囲外: Err(InsertError::OutOfBounds)
-    lw.cur = Some(eb);
-    let err_val = lw.emit(Ty::Agg(err_ai), Op::Make { variant: Some(0), fields: vec![] });
-    let err = lw.emit(rt, Op::Err(err_val));
-    lw.goto(jb, vec![err]);
     lw.cur = Some(jb);
     Ok(Some(jp[0]))
 }
