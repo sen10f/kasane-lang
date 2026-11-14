@@ -1,0 +1,385 @@
+// fn ヘッダの属性 `[const] [uses [..] panics P] [stack N] [impls T]` (pub は含まない)。
+// Attrs: a = 効果の List, b = panics (0 なし / 1 never / 2 may / 3 変数), c = impls のトレイト参照,
+// d = stack の整数トークン + 1, e = 1 なら const。
+fn parse.ty.attrs(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    let at = p.pos
+    let mut flags = 0usize
+    let mut eff = 0usize
+    let mut pv = 0usize
+    let mut stack = 0usize
+    let mut imp = 0usize
+    if parse.cur.accept_kw(p, parse.tok.KW_CONST) {
+        flags = 1usize
+    }
+    if parse.cur.accept_kw(p, parse.tok.KW_USES) {
+        eff = parse.ty.effect_set(p)?
+        parse.cur.expect_kw(p, parse.tok.KW_PANICS)?
+        pv = parse.ty.panic_val(p)?
+    }
+    if parse.cur.is_kw(p, parse.tok.CX_STACK) {
+        parse.cur.advance(p)
+        if parse.cur.kind(p) != parse.tok.Kind.Int {
+            return Err(parse.cur.fail(p, parse.err.E_EXPECT, 0u32))
+        }
+        stack = p.pos.wrapping_add(1usize)
+        parse.cur.advance(p)
+    }
+    if parse.cur.accept_kw(p, parse.tok.CX_IMPLS) {
+        imp = parse.ty.trait_ref(p)?
+    }
+    parse.ast.add6(&mut p.ast, parse.ast.Kind.Attrs, at, eff, pv, imp, stack, flags, 0usize)
+end parse.ty.attrs
+
+// 境界: トレイト参照、`linear`、ライフタイム。
+fn parse.ty.bound(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    let at = p.pos
+    if parse.cur.kind(p) == parse.tok.Kind.Life {
+        parse.cur.advance(p)
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.TArgLife, at, at)
+    }
+    if parse.cur.is_kw(p, parse.tok.CX_LINEAR) {
+        parse.cur.advance(p)
+        return parse.ast.add0(&mut p.ast, parse.ast.Kind.Linear, at)
+    }
+    parse.ty.trait_ref(p)
+end parse.ty.bound
+
+// const 引数・配列長: 整数、括弧、FQN。
+fn parse.ty.const_expr(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096 pub
+    let at = p.pos
+    if parse.cur.kind(p) == parse.tok.Kind.Int {
+        parse.cur.advance(p)
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.ConstInt, at, at)
+    }
+    if parse.cur.accept_ch(p, b'(') {
+        let inner = parse.ty.const_expr(p)?
+        parse.cur.expect_ch(p, b')')?
+        return Ok(inner)
+    }
+    let (start, stop) = parse.cur.fqn(p)?
+    parse.ast.add2(&mut p.ast, parse.ast.Kind.ConstPath, at, start, stop)
+end parse.ty.const_expr
+
+// `[` io, io.fs ... `]`。List ノード (子は Effect) を返す。
+fn parse.ty.effect_set(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    let at = p.pos
+    parse.cur.expect_ch(p, b'[')?
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if !parse.cur.is_ch(p, b']') {
+        loop {
+            let start = parse.cur.start_byte(p)
+            core.mem.drop(parse.cur.name_tok(p)?)
+            while parse.cur.accept_ch(p, b'.') {
+                core.mem.drop(parse.cur.name_tok(p)?)
+            }
+            let stop = parse.cur.prev_stop(p)
+            items.push(parse.ast.add2(&mut p.ast, parse.ast.Kind.Effect, at, start, stop)?)?
+            if !parse.cur.accept_ch(p, b',') {
+                break
+            }
+        }
+    }
+    parse.cur.expect_ch(p, b']')?
+    parse.ast.list(&mut p.ast, &items, at)
+end parse.ty.effect_set
+
+// `[` gparam, ... `]` (無ければ 0)。List を返す。
+fn parse.ty.generics(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    if !parse.cur.is_ch(p, b'[') {
+        return Ok(0usize)
+    }
+    let at = p.pos
+    parse.cur.advance(p)
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    items.push(parse.ty.gparam(p)?)?
+    while parse.cur.accept_ch(p, b',') {
+        items.push(parse.ty.gparam(p)?)?
+    }
+    parse.cur.expect_ch(p, b']')?
+    parse.ast.list(&mut p.ast, &items, at)
+end parse.ty.generics
+
+// ジェネリクス引数 1 つ。GParam の a = 種類 (1 ライフタイム, 2 uses, 3 panics, 4 const, 5 型)。
+fn parse.ty.gparam(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never
+    let at = p.pos
+    if parse.cur.kind(p) == parse.tok.Kind.Life {
+        parse.cur.advance(p)
+        return parse.ast.add2(&mut p.ast, parse.ast.Kind.GParam, at, 1usize, at)
+    }
+    if parse.cur.accept_kw(p, parse.tok.KW_CONST) {
+        let name = p.pos
+        if parse.cur.kind(p) != parse.tok.Kind.Upper {
+            return Err(parse.cur.fail(p, parse.err.E_EXPECT_NAME, 0u32))
+        }
+        parse.cur.advance(p)
+        parse.cur.expect_ch(p, b':')?
+        let t = parse.ty.ty(p)?
+        return parse.ast.add4(&mut p.ast, parse.ast.Kind.GParam, at, 4usize, name, 0usize, t)
+    }
+    let name = p.pos
+    if parse.cur.kind(p) != parse.tok.Kind.Upper {
+        return Err(parse.cur.fail(p, parse.err.E_EXPECT_NAME, 0u32))
+    }
+    parse.cur.advance(p)
+    let mut bounds = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut kind = 5usize
+    if parse.cur.accept_ch(p, b':') {
+        if parse.cur.accept_kw(p, parse.tok.KW_USES) {
+            kind = 2usize
+        } else if parse.cur.accept_kw(p, parse.tok.KW_PANICS) {
+            kind = 3usize
+        } else {
+            bounds.push(parse.ty.bound(p)?)?
+            while parse.cur.accept_ch(p, b'+') {
+                bounds.push(parse.ty.bound(p)?)?
+            }
+        }
+    }
+    let bl = parse.ast.list(&mut p.ast, &bounds, at)?
+    parse.ast.add4(&mut p.ast, parse.ast.Kind.GParam, at, kind, name, bl, 0usize)
+end parse.ty.gparam
+
+// never = 1, may = 2, 効果変数 (大文字名) = 3。
+fn parse.ty.panic_val(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [] panics never pub
+    let t = parse.cur.tok(p)
+    if t.kind == parse.tok.Kind.Kw && t.code == parse.tok.KW_NEVER {
+        parse.cur.advance(p)
+        return Ok(1usize)
+    }
+    if t.kind == parse.tok.Kind.Kw && t.code == parse.tok.KW_MAY {
+        parse.cur.advance(p)
+        return Ok(2usize)
+    }
+    if t.kind == parse.tok.Kind.Upper {
+        parse.cur.advance(p)
+        return Ok(3usize)
+    }
+    Err(parse.cur.fail(p, parse.err.E_EXPECT, parse.tok.KW_NEVER))
+end parse.ty.panic_val
+
+// `name: 型, ...` (閉じ括弧の手前まで)。List (子は Param) を返す。
+fn parse.ty.params(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    let at = p.pos
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if !parse.cur.is_ch(p, b')') {
+        loop {
+            let name = parse.cur.name_tok(p)?
+            parse.cur.expect_ch(p, b':')?
+            let t = parse.ty.ty(p)?
+            items.push(parse.ast.add2(&mut p.ast, parse.ast.Kind.Param, name, name, t)?)?
+            if !parse.cur.accept_ch(p, b',') {
+                break
+            }
+        }
+    }
+    parse.ast.list(&mut p.ast, &items, at)
+end parse.ty.params
+
+// `&` の後ろ: 任意のライフタイム、`mut`、スライス・配列・`str`・型。
+fn parse.ty.ref_rest(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
+    let at = p.pos
+    let mut life = 0usize
+    if parse.cur.kind(p) == parse.tok.Kind.Life {
+        life = p.pos.wrapping_add(1usize)
+        parse.cur.advance(p)
+    }
+    let mut m = 0usize
+    if parse.cur.accept_kw(p, parse.tok.KW_MUT) {
+        m = 1usize
+    }
+    let inner = parse.ty.ty(p)?
+    parse.ast.add3(&mut p.ast, parse.ast.Kind.TRef, at, inner, m, life)
+end parse.ty.ref_rest
+
+fn parse.ty.targ(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
+    let at = p.pos
+    let t = parse.cur.tok(p)
+    if t.kind == parse.tok.Kind.Life {
+        parse.cur.advance(p)
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.TArgLife, at, at)
+    }
+    if t.kind == parse.tok.Kind.Int || t.kind == parse.tok.Kind.Char {
+        parse.cur.advance(p)
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.TArgConst, at, at)
+    }
+    if t.kind == parse.tok.Kind.Kw && parse.tok.is_bool_kw(t.code) {
+        parse.cur.advance(p)
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.TArgConst, at, at)
+    }
+    if t.kind == parse.tok.Kind.Kw && parse.tok.is_panic_kw(t.code) {
+        parse.cur.advance(p)
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.TArgPanic, at, at)
+    }
+    if parse.cur.is_ch(p, b'[') {
+        let effects = parse.ty.effect_set(p)?
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.TArgEffects, at, effects)
+    }
+    parse.ty.ty(p)
+end parse.ty.targ
+
+// `<` targ, ... `>`。List を返す。
+fn parse.ty.targs(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096 pub
+    let at = p.pos
+    parse.cur.expect_ch(p, b'<')?
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    items.push(parse.ty.targ(p)?)?
+    while parse.cur.accept_ch(p, b',') {
+        items.push(parse.ty.targ(p)?)?
+    }
+    parse.cur.expect_ch(p, b'>')?
+    parse.ast.list(&mut p.ast, &items, at)
+end parse.ty.targs
+
+// トレイト参照: FQN と任意の `<型引数>`。
+fn parse.ty.trait_ref(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096 pub
+    let at = p.pos
+    let (start, stop) = parse.cur.fqn(p)?
+    let mut args = 0usize
+    if parse.cur.is_ch(p, b'<') {
+        args = parse.ty.targs(p)?
+    }
+    parse.ast.add3(&mut p.ast, parse.ast.Kind.TraitRef, at, start, stop, args)
+end parse.ty.trait_ref
+
+// `(` で始まる型: ユニット、括弧、タプル。
+fn parse.ty.tuple(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
+    let at = p.pos
+    parse.cur.advance(p)
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if parse.cur.accept_ch(p, b')') {
+        let l = parse.ast.list(&mut p.ast, &items, at)?
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.TTuple, at, l)
+    }
+    items.push(parse.ty.ty(p)?)?
+    let mut comma = false
+    while parse.cur.accept_ch(p, b',') {
+        comma = true
+        if parse.cur.is_ch(p, b')') {
+            break
+        }
+        items.push(parse.ty.ty(p)?)?
+    }
+    parse.cur.expect_ch(p, b')')?
+    if !comma && items.len() == 1usize {
+        match items.get(0usize) {
+            Some(only) => return Ok(*only)
+            None => return Err(parse.cur.fail(p, parse.err.E_EXPECT_TYPE, 0u32))
+        }
+    }
+    let l = parse.ast.list(&mut p.ast, &items, at)?
+    parse.ast.add1(&mut p.ast, parse.ast.Kind.TTuple, at, l)
+end parse.ty.tuple
+
+// 型。
+fn parse.ty.ty(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096 pub
+    parse.cur.enter(p)?
+    let r = parse.ty.ty_inner(p)
+    parse.cur.leave(p)
+    r
+end parse.ty.ty
+
+fn parse.ty.ty_inner(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
+    let at = p.pos
+    let t = parse.cur.tok(p)
+    if t.kind == parse.tok.Kind.Prim {
+        parse.cur.advance(p)
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.TPrim, at, usize.from_u32(t.code))
+    }
+    if t.kind == parse.tok.Kind.Op {
+        return parse.ty.ty_op(p, t.code)
+    }
+    if t.kind == parse.tok.Kind.Kw {
+        return parse.ty.ty_kw(p, t.code)
+    }
+    if t.kind == parse.tok.Kind.Ident || t.kind == parse.tok.Kind.Upper {
+        let (start, stop) = parse.cur.fqn(p)?
+        let mut args = 0usize
+        if parse.cur.is_ch(p, b'<') {
+            args = parse.ty.targs(p)?
+        }
+        return parse.ast.add3(&mut p.ast, parse.ast.Kind.TNamed, at, start, stop, args)
+    }
+    Err(parse.cur.fail(p, parse.err.E_EXPECT_TYPE, 0u32))
+end parse.ty.ty_inner
+
+// 予約語で始まる型: `fn(..) -> T uses [..] panics P`、`dyn`、`Self`。
+fn parse.ty.ty_kw(p: &mut parse.cur.P, code: u32) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
+    let at = p.pos
+    if code == parse.tok.KW_SELF_TYPE {
+        parse.cur.advance(p)
+        return parse.ast.add0(&mut p.ast, parse.ast.Kind.TSelf, at)
+    }
+    if code == parse.tok.KW_DYN {
+        parse.cur.advance(p)
+        let tr = parse.ty.trait_ref(p)?
+        let mut life = 0usize
+        if parse.cur.accept_ch(p, b'+') {
+            life = p.pos.wrapping_add(1usize)
+            parse.cur.advance(p)
+        }
+        return parse.ast.add2(&mut p.ast, parse.ast.Kind.TDyn, at, tr, life)
+    }
+    if code == parse.tok.KW_FN {
+        parse.cur.advance(p)
+        parse.cur.expect_ch(p, b'(')?
+        let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        if !parse.cur.is_ch(p, b')') {
+            items.push(parse.ty.ty(p)?)?
+            while parse.cur.accept_ch(p, b',') {
+                items.push(parse.ty.ty(p)?)?
+            }
+        }
+        parse.cur.expect_ch(p, b')')?
+        parse.cur.expect_op(p, parse.tok.OP_ARROW)?
+        let ret = parse.ty.ty(p)?
+        parse.cur.expect_kw(p, parse.tok.KW_USES)?
+        let eff = parse.ty.effect_set(p)?
+        parse.cur.expect_kw(p, parse.tok.KW_PANICS)?
+        let pv = parse.ty.panic_val(p)?
+        let ps = parse.ast.list(&mut p.ast, &items, at)?
+        return parse.ast.add4(&mut p.ast, parse.ast.Kind.TFn, at, ps, ret, eff, pv)
+    }
+    Err(parse.cur.fail(p, parse.err.E_EXPECT_TYPE, 0u32))
+end parse.ty.ty_kw
+
+// 記号で始まる型: `!` `(` `[` `&` `&&` `*`。
+fn parse.ty.ty_op(p: &mut parse.cur.P, code: u32) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
+    let at = p.pos
+    if code == 33u32 {
+        parse.cur.advance(p)
+        return parse.ast.add0(&mut p.ast, parse.ast.Kind.TNever, at)
+    }
+    if code == 40u32 {
+        return parse.ty.tuple(p)
+    }
+    if code == 91u32 {
+        parse.cur.advance(p)
+        let elem = parse.ty.ty(p)?
+        if parse.cur.accept_ch(p, b';') {
+            let n = parse.ty.const_expr(p)?
+            parse.cur.expect_ch(p, b']')?
+            return parse.ast.add2(&mut p.ast, parse.ast.Kind.TArray, at, elem, n)
+        }
+        parse.cur.expect_ch(p, b']')?
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.TSlice, at, elem)
+    }
+    if code == 38u32 || code == parse.tok.OP_ANDAND {
+        parse.cur.advance(p)
+        let inner = parse.ty.ref_rest(p)?
+        if code == parse.tok.OP_ANDAND {
+            return parse.ast.add3(&mut p.ast, parse.ast.Kind.TRef, at, inner, 0usize, 0usize)
+        }
+        return Ok(inner)
+    }
+    if code == 42u32 {
+        parse.cur.advance(p)
+        let mut m = 0usize
+        if parse.cur.is_kw(p, parse.tok.KW_MUT) {
+            m = 1usize
+        }
+        parse.cur.advance(p)
+        let inner = parse.ty.ty(p)?
+        return parse.ast.add2(&mut p.ast, parse.ast.Kind.TPtr, at, inner, m)
+    }
+    Err(parse.cur.fail(p, parse.err.E_EXPECT_TYPE, 0u32))
+end parse.ty.ty_op

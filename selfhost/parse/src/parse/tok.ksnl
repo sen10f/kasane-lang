@@ -122,6 +122,8 @@ const parse.tok.PRIM_STR: u32 = 17u32 pub
 
 const parse.tok.SUFFIXES: &str = "i128 u128 isize usize i16 i32 i64 u16 u32 u64 i8 u8 f32 f64" pub
 
+const parse.tok.WILD: u32 = 200u32 pub
+
 enum parse.tok.Kind derive [Debug, Clone, Copy, PartialEq] pub
     Bstr
     Byte
@@ -147,6 +149,25 @@ type parse.tok.Tok derive [Debug, Clone, Copy, PartialEq] pub
     start: usize pub
 end parse.tok.Tok
 
+fn parse.tok.is_bool_kw(code: u32) -> bool uses [] panics never pub
+    code == parse.tok.KW_TRUE || code == parse.tok.KW_FALSE
+end parse.tok.is_bool_kw
+
+// 名前の位置に置ける予約語 (blanket / self / Self)。
+fn parse.tok.is_name_kw(code: u32) -> bool uses [] panics never pub
+    code == parse.tok.KW_BLANKET || code == parse.tok.KW_SELF || code == parse.tok.KW_SELF_TYPE
+end parse.tok.is_name_kw
+
+fn parse.tok.is_panic_kw(code: u32) -> bool uses [] panics never pub
+    code == parse.tok.KW_NEVER || code == parse.tok.KW_MAY
+end parse.tok.is_panic_kw
+
+// 識別子・大文字名・基本型名。
+fn parse.tok.is_plain_name(t: parse.tok.Tok) -> bool uses [] panics never pub
+    let k = t.kind
+    k == parse.tok.Kind.Ident || k == parse.tok.Kind.Upper || k == parse.tok.Kind.Prim
+end parse.tok.is_plain_name
+
 fn parse.tok.kind_name(kind: parse.tok.Kind) -> &'static str uses [] panics never pub
     match kind {
         parse.tok.Kind.Bstr => "bstr"
@@ -169,6 +190,39 @@ end parse.tok.kind_name
 fn parse.tok.new(kind: parse.tok.Kind, code: u32, start: usize, stop: usize, line: usize) -> parse.tok.Tok uses [] panics never pub
     parse.tok.Tok { code: code, stop: stop, kind: kind, line: line, start: start }
 end parse.tok.new
+
+// 記号・予約語の符号を `'名前'` として追記する。
+fn parse.tok.push_code_name(out: &mut alloc.string.String<std.alloc.System>, code: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    out.push('\'')?
+    let ops2 = "=> -> == != <= >= && || ::"
+    let kws = parse.tok.KEYWORDS
+    let cxs = parse.tok.CONTEXTUAL
+    if code >= 301u32 && code <= 309u32 {
+        parse.tok.push_word(out, ops2, code.wrapping_sub(300u32))?
+    } else if code >= 101u32 && code <= 109u32 {
+        parse.tok.push_word(out, cxs, code.wrapping_sub(100u32))?
+    } else if code < 128u32 && code > 42u32 {
+        match char.try_from_u32(code) {
+            Some(c) => out.push(c)?
+            None => core.mem.drop(0u8)
+        }
+    } else {
+        parse.tok.push_word(out, kws, code)?
+    }
+    out.push('\'')
+end parse.tok.push_code_name
+
+// 語表の n 番目 (1 始まり) の語を追記する。
+fn parse.tok.push_word(out: &mut alloc.string.String<std.alloc.System>, table: &str, n: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut i = 0u32
+    for w in table.split(" ") {
+        i = i.wrapping_add(1u32)
+        if i == n {
+            return out.push_str(w)
+        }
+    }
+    Ok(())
+end parse.tok.push_word
 
 // 語表 (空白区切り) の中の位置 (1 始まり)。無ければ 0。
 fn parse.tok.word_code(table: &str, word: &[u8]) -> u32 uses [] panics never pub

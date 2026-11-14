@@ -1,0 +1,138 @@
+fn parse.pat.bool_node(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    let at = p.pos
+    parse.cur.advance(p)
+    parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, 7usize, at)
+end parse.pat.bool_node
+
+fn parse.pat.is_lit_kind(kind: parse.tok.Kind) -> bool uses [] panics never pub
+    parse.pat.lit_class(kind) > 0usize
+end parse.pat.is_lit_kind
+
+fn parse.pat.lit_class(kind: parse.tok.Kind) -> usize uses [] panics never pub
+    match kind {
+        parse.tok.Kind.Int => 1usize
+        parse.tok.Kind.Float => 2usize
+        parse.tok.Kind.Str => 3usize
+        parse.tok.Kind.Char => 4usize
+        parse.tok.Kind.Byte => 5usize
+        parse.tok.Kind.Bstr => 6usize
+        parse.tok.Kind.Ident => 0usize
+        parse.tok.Kind.Upper => 0usize
+        parse.tok.Kind.Prim => 0usize
+        parse.tok.Kind.Kw => 0usize
+        parse.tok.Kind.Life => 0usize
+        parse.tok.Kind.Nl => 0usize
+        parse.tok.Kind.Op => 0usize
+        parse.tok.Kind.Eof => 0usize
+    }
+end parse.pat.lit_class
+
+// 現在位置のリテラルトークンを Lit ノードにする。
+fn parse.pat.lit_node(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never pub
+    let at = p.pos
+    let class = parse.pat.lit_class(parse.cur.kind(p))
+    parse.cur.advance(p)
+    parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, class, at)
+end parse.pat.lit_node
+
+// 名前で始まるパターン: `_`、束縛、パス、`V(..)`、`S { f: p }`。
+fn parse.pat.named(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
+    let at = p.pos
+    let t = parse.cur.tok(p)
+    if t.kind == parse.tok.Kind.Ident && t.code == parse.tok.WILD {
+        parse.cur.advance(p)
+        return parse.ast.add0(&mut p.ast, parse.ast.Kind.PWild, at)
+    }
+    let start = t.start
+    let mut segs = 1usize
+    parse.cur.advance(p)
+    while parse.cur.is_ch(p, b'.') && parse.tok.is_plain_name(parse.cur.peek(p, 1usize)) {
+        parse.cur.advance(p)
+        parse.cur.advance(p)
+        segs = segs.wrapping_add(1usize)
+    }
+    let stop = parse.cur.prev_stop(p)
+    if parse.cur.accept_ch(p, b'(') {
+        let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        items.push(parse.pat.pattern(p)?)?
+        while parse.cur.accept_ch(p, b',') {
+            items.push(parse.pat.pattern(p)?)?
+        }
+        parse.cur.expect_ch(p, b')')?
+        let l = parse.ast.list(&mut p.ast, &items, at)?
+        return parse.ast.add3(&mut p.ast, parse.ast.Kind.PVariant, at, start, stop, l)
+    }
+    if parse.cur.accept_ch(p, b'{') {
+        let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        loop {
+            let name = parse.cur.name_tok(p)?
+            parse.cur.expect_ch(p, b':')?
+            let sub = parse.pat.pattern(p)?
+            items.push(parse.ast.add2(&mut p.ast, parse.ast.Kind.PField, name, name, sub)?)?
+            if !parse.cur.accept_ch(p, b',') {
+                break
+            }
+        }
+        parse.cur.expect_ch(p, b'}')?
+        let l = parse.ast.list(&mut p.ast, &items, at)?
+        return parse.ast.add3(&mut p.ast, parse.ast.Kind.PStruct, at, start, stop, l)
+    }
+    if segs == 1usize && t.kind == parse.tok.Kind.Ident {
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.PBind, at, at)
+    }
+    parse.ast.add2(&mut p.ast, parse.ast.Kind.PPath, at, start, stop)
+end parse.pat.named
+
+// パターン。
+fn parse.pat.pattern(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096 pub
+    parse.cur.enter(p)?
+    let r = parse.pat.pattern_inner(p)
+    parse.cur.leave(p)
+    r
+end parse.pat.pattern
+
+fn parse.pat.pattern_inner(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
+    let at = p.pos
+    let t = parse.cur.tok(p)
+    if parse.pat.is_lit_kind(t.kind) {
+        let l = parse.pat.lit_node(p)?
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.PLit, at, l)
+    }
+    if t.kind == parse.tok.Kind.Kw && parse.tok.is_bool_kw(t.code) {
+        let l = parse.pat.bool_node(p)?
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.PLit, at, l)
+    }
+    if t.kind == parse.tok.Kind.Op && t.code == 38u32 {
+        parse.cur.advance(p)
+        let inner = parse.pat.pattern(p)?
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.PRef, at, inner)
+    }
+    if t.kind == parse.tok.Kind.Op && t.code == 40u32 {
+        return parse.pat.tuple(p)
+    }
+    if parse.tok.is_plain_name(t) {
+        return parse.pat.named(p)
+    }
+    Err(parse.cur.fail(p, parse.err.E_EXPECT_PATTERN, 0u32))
+end parse.pat.pattern_inner
+
+// `(` p, ... `)`: ユニットまたはタプルのパターン。
+fn parse.pat.tuple(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
+    let at = p.pos
+    parse.cur.advance(p)
+    if parse.cur.accept_ch(p, b')') {
+        let u = parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, 8usize, at)?
+        return parse.ast.add1(&mut p.ast, parse.ast.Kind.PLit, at, u)
+    }
+    let mut items = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    items.push(parse.pat.pattern(p)?)?
+    while parse.cur.accept_ch(p, b',') {
+        if parse.cur.is_ch(p, b')') {
+            break
+        }
+        items.push(parse.pat.pattern(p)?)?
+    }
+    parse.cur.expect_ch(p, b')')?
+    let l = parse.ast.list(&mut p.ast, &items, at)?
+    parse.ast.add1(&mut p.ast, parse.ast.Kind.PTuple, at, l)
+end parse.pat.tuple

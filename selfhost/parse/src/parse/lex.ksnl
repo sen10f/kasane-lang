@@ -1,4 +1,4 @@
-fn parse.lex.at(src: &[u8], i: usize) -> u8 uses [] panics never
+fn parse.lex.at(src: &[u8], i: usize) -> u8 uses [] panics never pub
     match src.get(i) {
         Some(c) => *c
         None => 0u8
@@ -394,10 +394,12 @@ fn parse.lex.word(toks: &mut alloc.vec.Vec<parse.tok.Tok, std.alloc.System>, src
         return Ok(j)
     }
     let cx = parse.tok.word_code(parse.tok.CONTEXTUAL, w)
-    let code = if cx > 0u32 {
-        cx.wrapping_add(100u32)
-    } else {
-        0u32
+    let mut code = 0u32
+    if cx > 0u32 {
+        code = cx.wrapping_add(100u32)
+    }
+    if j == i.wrapping_add(1usize) && parse.lex.at(src, i) == b'_' {
+        code = parse.tok.WILD
     }
     parse.lex.emit(toks, parse.tok.Kind.Ident, code, i, j, line)?
     Ok(j)

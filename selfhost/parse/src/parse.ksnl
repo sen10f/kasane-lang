@@ -1,53 +1,219 @@
 enum parse.Failure derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
     Io(std.io.Error)
-    Syntax(usize, usize, u32, u32)
 end parse.Failure
 
-fn parse.lex_one(path: &str) -> Result<(), parse.Failure> uses [alloc, io.console, io.fs] panics never
-    let buf = parse.read_file(path)?
+// 1 ファイル分の結果。解析に失敗したときは Syntax (行, バイト位置, 符号, 期待)。
+enum parse.Outcome pub
+    Done(alloc.string.String<std.alloc.System>)
+    Syntax(usize, usize, u32, u32)
+end parse.Outcome
+
+// 字句解析と構文解析。
+fn parse.analyze(src: &[u8], path: &str, sig: bool, kinds: bool) -> Result<parse.Outcome, parse.Failure> uses [alloc] panics never
     let mut toks = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    match parse.lex.lex(buf.as_slice(), &mut toks) {
+    match parse.lex.lex(src, &mut toks) {
         Ok(_u) => core.mem.drop(0u8)
-        Err(parse.err.Error.Syntax(a, b, c, d)) => return Err(parse.Failure.Syntax(a, b, c, d))
+        Err(parse.err.Error.Syntax(a, b, c, d)) => return Ok(parse.Outcome.Syntax(a, b, c, d))
         Err(parse.err.Error.Alloc(e)) => return Err(parse.Failure.Alloc(e))
     }
-    let src = buf.as_slice()
-    for t in toks.as_slice().iter() {
-        let mut line = alloc.string.String.new(std.alloc.SYSTEM)
-        line.push_str(parse.tok.kind_name(t.kind))?
-        line.push_str("\t")?
-        line.push_u64(u64.from_usize(t.line))?
-        line.push_str("\t")?
-        match src.sub(t.start, t.stop) {
-            Some(b) => {
-                match core.str.from_utf8(b) {
-                    Ok(s) => line.push_str(s)?
-                    Err(_e) => line.push_str("?")?
-                }
-            }
-            None => line.push_str("?")?
-        }
-        std.io.print_line(line.as_str())?
+    let mut p = match parse.cur.new(toks) {
+        Ok(q) => q
+        Err(parse.err.Error.Syntax(a, b, c, d)) => return Ok(parse.Outcome.Syntax(a, b, c, d))
+        Err(parse.err.Error.Alloc(e)) => return Err(parse.Failure.Alloc(e))
     }
-    Ok(())
-end parse.lex_one
+    match parse.def.file(&mut p, src, sig) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(parse.err.Error.Syntax(a, b, c, d)) => return Ok(parse.Outcome.Syntax(a, b, c, d))
+        Err(parse.err.Error.Alloc(e)) => return Err(parse.Failure.Alloc(e))
+    }
+    let out = parse.summary(&p, src, path, kinds)?
+    Ok(parse.Outcome.Done(out))
+end parse.analyze
+
+// バイト位置の桁 (1 始まり、文字数)。
+fn parse.col_of(src: &[u8], pos: usize) -> usize uses [] panics never
+    let mut ls = pos
+    while ls > 0usize && parse.lex.at(src, ls.wrapping_sub(1usize)) != b'\n' {
+        ls = ls.wrapping_sub(1usize)
+    }
+    let mut col = 1usize
+    let mut i = ls
+    while i < pos {
+        if parse.lex.at(src, i) & 192u8 != 128u8 {
+            col = col.wrapping_add(1usize)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    col
+end parse.col_of
+
+fn parse.def_kind(kind: parse.ast.Kind) -> &'static str uses [] panics never
+    if kind == parse.ast.Kind.ConstDef {
+        return "const"
+    }
+    if kind == parse.ast.Kind.EnumDef {
+        return "enum"
+    }
+    if kind == parse.ast.Kind.ExternDef {
+        return "extern"
+    }
+    if kind == parse.ast.Kind.FnDef {
+        return "fn"
+    }
+    if kind == parse.ast.Kind.ImplLine {
+        return "impl"
+    }
+    if kind == parse.ast.Kind.Import {
+        return "import"
+    }
+    if kind == parse.ast.Kind.StaticDef {
+        return "static"
+    }
+    if kind == parse.ast.Kind.TestDef {
+        return "test"
+    }
+    if kind == parse.ast.Kind.TraitDef {
+        return "trait"
+    }
+    if kind == parse.ast.Kind.TypeDef {
+        return "type"
+    }
+    "?"
+end parse.def_kind
+
+// エラー 1 件を `error パス:行:桁: 説明 [期待]` にする。
+fn parse.error_text(src: &[u8], path: &str, line: usize, pos: usize, code: u32, want: u32) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("error ")?
+    out.push_str(path)?
+    out.push(':')?
+    out.push_u64(u64.from_usize(line))?
+    out.push(':')?
+    out.push_u64(u64.from_usize(parse.col_of(src, pos)))?
+    out.push_str(": ")?
+    out.push_str(parse.err.message(code))?
+    if want > 0u32 {
+        out.push_str(" ")?
+        parse.tok.push_code_name(&mut out, want)?
+    }
+    Ok(out)
+end parse.error_text
 
 fn parse.main() -> Result<(), parse.Failure> uses [alloc, env, io.console, io.fs] panics never
     let n = std.env.arg_count()
+    let mut kinds = false
     for k in core.iter.range(0usize, n) {
         match std.env.arg(k) {
-            Some(path) => parse.lex_one(path)?
+            Some(path) => {
+                if path == "--kinds" {
+                    kinds = true
+                } else {
+                    parse.process(path, kinds)?
+                }
+            }
             None => return Ok(())
         }
     }
     Ok(())
 end parse.main
 
+fn parse.process(path: &str, kinds: bool) -> Result<(), parse.Failure> uses [alloc, io.console, io.fs] panics never
+    let buf = parse.read_file(path)?
+    let src = buf.as_slice()
+    match parse.analyze(src, path, path.ends_with(".sig"), kinds)? {
+        parse.Outcome.Done(text) => std.io.print_line(text.as_str())?
+        parse.Outcome.Syntax(line, pos, code, want) => {
+            let text = parse.error_text(src, path, line, pos, code, want)?
+            std.io.print_line(text.as_str())?
+        }
+    }
+    Ok(())
+end parse.process
+
+// ノード種別ごとの個数を ` 種別=個数` で 1 行に追記する (0 個は省く)。
+fn parse.push_kinds(p: &parse.cur.P, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let names = parse.ast.KIND_NAMES
+    let mut counts = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for _w in names.split(" ") {
+        counts.push(0usize)?
+    }
+    // const / static の初期化式は ksn bodies が解析しないので数えない。定義 1 つのノードは
+    // 直前の定義のノードの次から、その定義のノード自身まで続く。
+    let mut first = 1usize
+    for d in p.ast.defs.as_slice().iter() {
+        let kind = parse.ast.get(&p.ast, *d).kind
+        if kind != parse.ast.Kind.ConstDef && kind != parse.ast.Kind.StaticDef {
+            for at in core.iter.range(first, d.wrapping_add(1usize)) {
+                let k = parse.ast.get(&p.ast, at).kind
+                match counts.as_mut_slice().get_mut(parse.ast.kind_index(k)) {
+                    Some(c) => {
+                        *c = c.wrapping_add(1usize)
+                    }
+                    None => core.mem.drop(0u8)
+                }
+            }
+        }
+        first = d.wrapping_add(1usize)
+    }
+    out.push_str("\nkinds")?
+    let mut k = 0usize
+    for w in names.split(" ") {
+        match counts.get(k) {
+            Some(c) => {
+                if *c > 0usize {
+                    out.push(' ')?
+                    out.push_str(w)?
+                    out.push('=')?
+                    out.push_u64(u64.from_usize(*c))?
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        k = k.wrapping_add(1usize)
+    }
+    Ok(())
+end parse.push_kinds
+
+fn parse.push_range(out: &mut alloc.string.String<std.alloc.System>, src: &[u8], a: usize, b: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    match src.sub(a, b) {
+        Some(bytes) => {
+            match core.str.from_utf8(bytes) {
+                Ok(text) => out.push_str(text)
+                Err(_e) => out.push_str("?")
+            }
+        }
+        None => out.push_str("?")
+    }
+end parse.push_range
+
 fn parse.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics never
-    let mut buf: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
     with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
         core.mem.drop(std.fs.read_to_end(&mut file, &mut buf)?)
     }
     Ok(buf)
 end parse.read_file
+
+// 定義ごとに「種別 名前 行番号」を 1 行、最後にノード数。
+fn parse.summary(p: &parse.cur.P, src: &[u8], path: &str, kinds: bool) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("== ")?
+    out.push_str(path)?
+    out.push('\n')?
+    for d in p.ast.defs.as_slice().iter() {
+        let n = parse.ast.get(&p.ast, *d)
+        out.push_str(parse.def_kind(n.kind))?
+        out.push(' ')?
+        parse.push_range(&mut out, src, n.a, n.b)?
+        out.push(' ')?
+        out.push_u64(u64.from_usize(parse.cur.peek_at(p, n.tok).line))?
+        out.push('\n')?
+    }
+    out.push_str("nodes ")?
+    out.push_u64(u64.from_usize(p.ast.nodes.len()))?
+    if kinds {
+        parse.push_kinds(p, &mut out)?
+    }
+    Ok(out)
+end parse.summary
