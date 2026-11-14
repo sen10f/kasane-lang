@@ -90,6 +90,26 @@ const KNOWN_HOLES: &[&str] = &[
     // 借用を持つ変数 (`let w = t.mk(&x)`) のフィールドを読み戻す (`let r = w.r`) と、借用が読んだ側へ移らない
     // (変数の型が分からないので、`w.n` のような Copy の値と区別できず、移すと誤検出になる)。
     "boundary_field_read_back",
+    // 型のない近似で追えない包み方 (タプル・関数呼び出しの戻り値・再借用 `&*&x`・`&mut &str` の引数) を通ると外へ出られる。
+    // タプルに包んでブロックの値にする。
+    "escape_tuple_block_value",
+    // `t.H { r: t.id(&x) }` (関数経由の借用を構造体に入れてブロックの値にする)。
+    "escape_ctor_via_fn_block_value",
+    // `t.put(&mut r, x.as_str())`: 引数が `&mut &'a str` の関数経由 (`&x` を直接渡す形は E3010 で止まる)。
+    "escape_put_as_str",
+    // `-> &'static u32` の関数が `t.id(&x)` (局所への借用を関数に通したもの) を返す (`&x` を直接返す形は E3030)。
+    "escape_return_static_via_fn",
+    // `h.r = &*&x`: 再借用を構造体のフィールドへ代入するとブロックを抜けられる。
+    "escape_field_assign_reborrow",
+    // `-> t.H<'static>` が `t.H { r: &*&x }` を返す (`&x` 直接は E3030)。
+    "escape_return_struct_reborrow",
+    // `v.push(&mut *&mut x)`: 再借用した `&mut` を Vec に入れてブロックを抜ける (`&mut x` 直接は E3010)。
+    "escape_vec_push_mut_reborrow",
+    // `t.H { r: x.as_str() }` をブロックの値にする (`t.H { r: &x }` 直接なら止まる)。
+    "escape_ctor_as_str_block_value",
+    // A1 を直した後も残る形: 本体が `'b` の引数を `t.H<'a>` / `Option<&'a T>` に包んで返す (`'b` を `&'a` で直接返す形は止まる)。
+    "header_wrapped_return_struct",
+    "header_wrapped_return_option",
 ];
 
 #[test]
