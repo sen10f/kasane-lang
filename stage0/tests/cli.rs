@@ -14867,6 +14867,69 @@ fn kir_native_threads_are_real_pthreads() {
     }
 }
 
+/// clang が `-fsanitize=thread` の実行ファイルを作って走らせられるか (環境変数 `KSN_NO_TSAN=1` で無効にできる)。
+fn tsan_available() -> bool {
+    use std::sync::OnceLock;
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        if cfg!(windows) || !clang_available() || std::env::var("KSN_NO_TSAN").is_ok() {
+            return false;
+        }
+        let d = std::env::temp_dir().join(format!("ksn_tsan_probe_{}", std::process::id()));
+        let _ = fs::create_dir_all(&d);
+        let c = d.join("a.c");
+        let o = d.join("a.out");
+        fs::write(&c, "int main(void){return 0;}\n").unwrap();
+        let ok = Command::new("clang").args(["-fsanitize=thread"]).arg(&c).arg("-o").arg(&o).output().map(|r| r.status.success()).unwrap_or(false)
+            && Command::new(&o).output().map(|r| r.status.success()).unwrap_or(false);
+        let _ = fs::remove_dir_all(&d);
+        if !ok {
+            eprintln!("skip: clang の ThreadSanitizer が使えないので、TSan の実行は飛ばす");
+        }
+        ok
+    })
+}
+
+/// ThreadSanitizer 付きのネイティブで、実スレッド (pthread) のプログラムを走らせてもデータ競合の警告が出ない (設計_KIR.md 22.7)。
+/// `KSN_CLANG_ARGS` で `-fsanitize=thread` を渡す。TSan が使えない環境では黙って飛ばす。
+#[test]
+fn kir_native_threads_have_no_data_races_under_threadsanitizer() {
+    if !tsan_available() {
+        return;
+    }
+    let tsan = |cmd: &mut Command| {
+        cmd.env("KSN_CLANG_ARGS", "-fsanitize=thread -g -O1").env("TSAN_OPTIONS", "halt_on_error=0");
+    };
+    // 1. Mutex の相互排他・チャネルを `ksn build` で TSan 付きにして走らせる。
+    for name in ["mutex_counter", "channel", "channel_clone"] {
+        let t = threads_pkg(name, "tsan");
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", std::env::temp_dir().join(format!("ksn_cache_tsan_{}_{}", std::process::id(), name)));
+        tsan(&mut c);
+        let o = c.output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        assert_native_or_reasoned_skip(&out);
+        let p = native_or_launcher(t.0.join("target").join("debug").join("t.native"), &out);
+        let r = Command::new(&p).env("TSAN_OPTIONS", "halt_on_error=0").output().unwrap();
+        let err = text(&r.stderr);
+        assert!(!err.contains("WARNING: ThreadSanitizer"), "{}: TSan が競合を報告した\n{}", name, err);
+        assert_eq!(r.status.code(), Some(0), "{}: {}", name, err);
+    }
+    // 2. 300 本・Mutex の競合・2 生産者 1 消費者 (`kir_native_threads_are_real_pthreads` と同じプログラム)。
+    let main = "\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    core.check.eq(t.fan300(), 45150u64)\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("kir_tsan_threads", &format!("{}{}", REAL_THREADS_SRC, main));
+    for (f, want) in [("t.fan300", "45150"), ("t.contended", "7016000"), ("t.pc_sum", "749500")] {
+        let mut c = Command::new(exe());
+        c.args(["kir", f, "--native"]).current_dir(&t.0);
+        tsan(&mut c);
+        let k = c.output().unwrap();
+        let err = text(&k.stderr);
+        assert!(!err.contains("WARNING: ThreadSanitizer"), "{}: TSan が競合を報告した\n{}", f, err);
+        assert_eq!(k.status.code(), Some(0), "{}: {}", f, err);
+        assert_eq!(text(&k.stdout).trim(), want, "{}", f);
+    }
+}
+
 const ARRAY_SRC: &str = r#"fn t.sum_lit() -> u32 uses [] panics never pub
     let mut s = 0u32
     for x in [1u32, 2u32, 3u32] {
