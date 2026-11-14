@@ -1388,7 +1388,45 @@ impl<'a> TypeCk<'a> {
             (Ty::Ptr(_, w), Ty::Ptr(_, g)) => {
                 self.check_fn_conv_dir_walk((**w).clone(), (**g).clone());
             }
+            // `dyn Tr<..>` どうしは、トレイトの効果・panic の型引数が受け側に含まれているかを見る (5.1)。
+            // 向きは関数型と同じ: 渡し側 (`got`) のメソッドの効果が受け側 (`want`) の中になければならない。
+            (Ty::Dyn(wt, wa), Ty::Dyn(gt, ga)) if wt == gt => {
+                let (wa, ga) = (wa.clone(), ga.clone());
+                self.check_dyn_conv(wt, &wa, &ga);
+            }
             _ => {}
+        }
+    }
+
+    /// `dyn Tr<want..>` の受け側へ `dyn Tr<got..>` の値を渡す (向きは `check_fn_conv_dir`)。トレイトの
+    /// 効果変数・panic 変数の実引数を、関数型の効果と同じ規則で比べる (`check_fn_eff`)。
+    fn check_dyn_conv(&mut self, tr: &str, want: &TArgs, got: &TArgs) {
+        let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else { return };
+        let Some(&ti) = self.p.types.get(&root) else { return };
+        let gens = self.p.defs[ti].generics.clone();
+        for (k, g) in gens.iter().enumerate() {
+            let (Some(w), Some(x)) = (want.0.get(k), got.0.get(k)) else { continue };
+            match g.0.as_str() {
+                "uses" => {
+                    let (Some(wu), Some(gu)) = (crate::check::targ_effs(w), crate::check::targ_effs(x)) else { continue };
+                    // 効果だけを比べる (panic は両側 `may` にして、`check_fn_eff` の panic 側の検査を外す)。
+                    let want = EffInfo { decl: true, uses: wu, may: Some(true), name: String::new() };
+                    let got = EffInfo { decl: true, uses: gu, may: Some(true), name: String::new() };
+                    self.check_fn_eff(&want, &got, self.cur_line);
+                }
+                "panics" => {
+                    let (Some(wp), Some(gp)) = (crate::check::targ_panic(w), crate::check::targ_panic(x)) else { continue };
+                    let to_may = |p: &str| match p {
+                        "never" => Some(false),
+                        "may" => Some(true),
+                        _ => None,
+                    };
+                    let want = EffInfo { decl: true, uses: vec![], may: to_may(&wp), name: String::new() };
+                    let got = EffInfo { decl: true, uses: vec![], may: to_may(&gp), name: String::new() };
+                    self.check_fn_eff(&want, &got, self.cur_line);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -1814,7 +1852,7 @@ impl<'a> TypeCk<'a> {
             .map(|(i, _)| {
                 let c = &self.p.defs[*i];
                 let (fu, fp, du, dm) = self.callee_effects(c, 1, args, targs);
-                let (cu, cp) = if local { (fu.clone(), fp.clone()) } else { (du, dm.then(|| "may".to_string())) };
+                let (cu, cp) = if local { (fu.clone(), fp.clone()) } else { (du, dm) };
                 (c.name.clone(), fu, fp, cu, cp)
             })
             .collect();
@@ -2193,22 +2231,28 @@ impl<'a> TypeCk<'a> {
         for (k, g) in td.generics.iter().enumerate() {
             let Some(a) = bargs.get(k) else { continue };
             match g.0.as_str() {
-                "uses" if tag(a) == "effects" => {
-                    bind_u.insert(g.1.clone(), items(tel(a, 1)).iter().map(st).collect());
+                "uses" => {
+                    if let Some(set) = crate::check::targ_effs(a) {
+                        bind_u.insert(g.1.clone(), set);
+                    }
                 }
-                "panics" if tag(a) == "panic" => {
-                    bind_p.insert(g.1.clone(), st(tel(a, 1)));
+                "panics" => {
+                    if let Some(p) = crate::check::targ_panic(a) {
+                        bind_p.insert(g.1.clone(), p);
+                    }
                 }
                 _ => {}
             }
         }
         let concrete = |e: &String| e.chars().next().map_or(false, |c| c.is_lowercase());
+        // 束縛された効果変数は、呼び出し元の効果変数 (大文字の名前) もそのまま残す。残った変数は
+        // 呼び出し元の `uses` に同じ名前がなければ E4001 になる (`violation_effs`)。
         let mut eu: Vec<String> = vec![];
         for e in us {
             if concrete(e) {
                 eu.push(e.clone());
             } else if let Some(set) = bind_u.get(e) {
-                eu.extend(set.iter().filter(|x| concrete(x)).cloned());
+                eu.extend(set.iter().cloned());
             }
         }
         let ep = match pv.as_str() {
@@ -2228,8 +2272,7 @@ impl<'a> TypeCk<'a> {
         if !self.eff_acc.is_empty() {
             // クロージャの本体の中: 境界・`dyn` 越しの呼び出しは、宣言の効果 (上限) をそのクロージャの効果に数える
             // (5.1 未宣言の副作用はエラー。確実でないので `unsure`)。効果変数は実体化されるまで数えない。
-            let low: BTreeSet<String> =
-                uses.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())).cloned().collect();
+            let low: BTreeSet<String> = uses.iter().cloned().collect();
             if let Some(acc) = self.eff_acc.last_mut() {
                 acc.0.extend(low);
                 if panics.as_deref() == Some("may") {
@@ -2292,7 +2335,7 @@ impl<'a> TypeCk<'a> {
                 // クロージャの本体の中なら、実体化した宣言の効果 (上限) をそのクロージャの効果に数える (5.1)。
                 if !self.def().inferred {
                     if let Some(acc) = self.eff_acc.last_mut() {
-                        acc.0.extend(u2.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())).cloned());
+                        acc.0.extend(u2.iter().cloned());
                         if p2 == "may" {
                             acc.1 = true;
                         }
@@ -3516,7 +3559,7 @@ impl<'a> TypeCk<'a> {
         // `Fn` 境界に渡したクロージャから推論した部分だけを検査の義務にする。クロージャの中では
         // 実体化した効果全体をそのクロージャの効果に足す。
         let (fu, fp, du, dm) = self.callee_effects(d, 0, argt, targs);
-        self.record_effects(line, vec![(d.name.clone(), fu, fp, du, dm.then(|| "may".to_string()))]);
+        self.record_effects(line, vec![(d.name.clone(), fu, fp, du, dm)]);
         let gn = d.gnames();
         // 明示型引数 (`f::<..>`, 4.3) のうち型・定数の実引数を、宣言のパラメータに束縛する。
         // 効果・panic の実引数は効果検査 (check.rs の inst_def_effects) で使う。
@@ -3798,6 +3841,40 @@ impl<'a> TypeCk<'a> {
         self.check_fn_eff(&want, &got, line);
     }
 
+    /// 関数の値 (クロージャの節・関数項目・関数ポインタ値) の効果 (`uses`, `may`)。分からないものは None。
+    /// クロージャの節は本体から推論した効果 (確実でない分も上限として使う = fail-closed)。
+    fn arg_fn_effects(&self, at: &Ty) -> Option<(Vec<String>, Option<bool>)> {
+        match at {
+            Ty::Closure { id: Some(node), .. } => {
+                let (u, m, _unsure) = self.closure_effs.get(node)?;
+                Some((u.iter().cloned().collect(), Some(*m)))
+            }
+            Ty::Closure { id: None, eff: Eff(Some(info)), .. } => Some((info.uses.clone(), info.may)),
+            _ => None,
+        }
+    }
+
+    /// 関数ポインタ型の仮引数 `pv` (`fn(..) uses [E] panics P` の V) に、実引数 `a` の効果を束縛する。
+    /// 宣言の効果変数 (`uses` の大文字の名前) と panic 変数 (`P`) だけを束縛する。
+    fn bind_fn_ptr_param(&self, d: &Def, pv: &V, a: &Ty, out: &mut EffBind) {
+        let mut at = self.deep(a);
+        while let Ty::Ref(_, x) = at {
+            at = self.deep(&x);
+        }
+        let Some((uses, may)) = self.arg_fn_effects(&at) else { return };
+        for e in strs(tel(pv, 3)) {
+            if crate::check::is_effect_var(&e) && d.generics.iter().any(|g| g.0 == "uses" && g.1 == e) {
+                out.uses.entry(e).or_default().extend(uses.iter().cloned());
+            }
+        }
+        let pn = st(tel(pv, 4));
+        if let Some(m) = may {
+            if crate::check::is_panic_var(&pn) && d.generics.iter().any(|g| g.0 == "panics" && g.1 == pn) {
+                *out.panics.entry(pn).or_default() |= m;
+            }
+        }
+    }
+
     /// `Fn` 境界 (`F: core.ops.Fn<Args, R, E, P>`) のパラメータに渡されたクロージャの本体の効果で、
     /// 境界の効果変数 `E`・panic 変数 `P` を束縛する (4.3 の引数からの効果推論)。
     /// `off` は引数と宣言の引数の添字のずれ (メソッドの `self` で 1)。同じ `E` / `P` が複数の境界に
@@ -3813,6 +3890,13 @@ impl<'a> TypeCk<'a> {
             while let Ty::Ref(_, x) = pt {
                 pt = *x;
             }
+            // 関数ポインタ型の引数 (`p: fn() uses [E] panics P`): 宣言の効果変数を、渡した値の効果で束縛する。
+            if matches!(pt, Ty::Closure { .. }) {
+                if tag(&p.1) == "fn" {
+                    self.bind_fn_ptr_param(d, &p.1, a, &mut out);
+                }
+                continue;
+            }
             let Ty::Param(name) = pt else { continue };
             let bounds = self.fn_bound(d, &name);
             if bounds.is_empty() {
@@ -3822,10 +3906,7 @@ impl<'a> TypeCk<'a> {
             while let Ty::Ref(_, x) = at {
                 at = self.deep(&x);
             }
-            let Ty::Closure { id: Some(node), .. } = at else { continue };
-            let Some((uses, may, unsure)) = self.closure_effs.get(&node) else { continue };
-            // 確実でない効果 (推論された関数・`dyn` / 境界越しの上限) も、5.1 に合わせて上限として束縛に使う (fail-closed)。
-            let _ = unsure;
+            let Some((uses, may)) = self.arg_fn_effects(&at) else { continue };
             for b in &bounds {
                 let bt = items(tel(b, 1));
                 let var = |i: usize, kind: &str| -> Option<String> {
@@ -3839,12 +3920,91 @@ impl<'a> TypeCk<'a> {
                 if let Some(e) = var(2, "uses") {
                     out.uses.entry(e).or_default().extend(uses.iter().cloned());
                 }
-                if let Some(pv) = var(3, "panics") {
-                    *out.panics.entry(pv).or_default() |= *may;
+                // panic が分からない (`fn() panics P` の変数) ときは束縛しない (呼び出し元で fail-closed)。
+                if let (Some(pv), Some(m)) = (var(3, "panics"), may) {
+                    *out.panics.entry(pv).or_default() |= m;
                 }
             }
         }
+        self.iter_effect_bind(d, off, argt, &mut out);
         out
+    }
+
+    /// `I: core.iter.Iterator<T, E, P>` の境界を持つ引数 (`it: I`) の効果変数・panic 変数を、引数の型の
+    /// `Iterator` の impl の効果実引数で束縛する (`core.iter.range` の `Range` は `[]` / `never`)。
+    /// impl の実引数が具体的なものだけ束縛する。impl 側も変数 (`Map<.., E, P>` の `E`) なら分からないので
+    /// 束縛しない (呼び出し元が同じ変数を持たなければ E4001 / E4002 になる = fail-closed)。
+    fn iter_effect_bind(&self, d: &Def, off: usize, argt: &[Ty], out: &mut EffBind) {
+        let gn = d.gnames();
+        for (k, a) in argt.iter().enumerate() {
+            let Some(p) = d.params.get(k + off) else { break };
+            let mut pt = from_v(&p.1, &gn);
+            while let Ty::Ref(_, x) = pt {
+                pt = *x;
+            }
+            let Ty::Param(name) = pt else { continue };
+            let mut at = self.deep(a);
+            while let Ty::Ref(_, x) = at {
+                at = self.deep(&x);
+            }
+            let Ty::Named(tn, _) = &at else { continue };
+            for g in d.generics.iter().filter(|g| g.0 == "type" && g.1 == name) {
+                for b in items(&g.2) {
+                    let V::L(bx) = b else { continue };
+                    if st(&bx[0]) != "core.iter.Iterator" {
+                        continue;
+                    }
+                    let bt = items(tel(b, 1));
+                    let Some(itargs) = self.impl_targs_of("core.iter.Iterator", tn) else { continue };
+                    // 境界の実引数 (`E` / `P` の変数名) と、impl の実引数 (具体的な効果・panic) を対応させる。
+                    let var = |i: usize, kind: &str| -> Option<String> {
+                        let v = bt.get(i)?;
+                        if tag(v) != "named" || !items(tel(v, 2)).is_empty() {
+                            return None;
+                        }
+                        let nm = st(tel(v, 1));
+                        d.generics.iter().any(|g| g.0 == kind && g.1 == nm).then_some(nm)
+                    };
+                    if let (Some(e), Some(ie)) = (var(1, "uses"), itargs.get(1)) {
+                        if let Some(set) = crate::check::targ_effs(ie) {
+                            if set.iter().all(|x| !crate::check::is_effect_var(x)) {
+                                out.uses.entry(e).or_default().extend(set);
+                            }
+                        }
+                    }
+                    if let (Some(pv), Some(ip)) = (var(2, "panics"), itargs.get(2)) {
+                        match crate::check::targ_panic(ip).as_deref() {
+                            Some("never") => {
+                                out.panics.entry(pv).or_insert(false);
+                            }
+                            Some("may") => {
+                                out.panics.insert(pv, true);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 定義 `d` の型パラメータに `core.iter.Iterator` の境界があるか (引数の型で効果が決まりうる)。
+    fn has_iterator_bound(&self, d: &Def) -> bool {
+        d.generics.iter().any(|g| g.0 == "type" && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == "core.iter.Iterator")))
+    }
+
+    /// 型 `ty` (完全名) に対するトレイト `tr` の impl の実引数 (トレイトの型引数の列)。impl が無ければ None。
+    fn impl_targs_of(&self, tr: &str, ty: &str) -> Option<Vec<V>> {
+        self.p.defs.iter().find_map(|x| {
+            if x.kw != "impl" || x.impl_trait != tr {
+                return None;
+            }
+            let tgt = match &x.impl_for {
+                V::L(xs) if matches!(xs.first(), Some(V::S(k)) if k == "named") => st(&xs[1]),
+                _ => return None,
+            };
+            (tgt == ty).then(|| items(&x.impl_targs).to_vec())
+        })
     }
 
     /// 型が整数のプリミティブと決まっているか (参照は外して見る)。
@@ -3892,7 +4052,7 @@ impl<'a> TypeCk<'a> {
                     let bl: Vec<String> = items(tel(v, 1)).iter().map(st).collect();
                     // 効果変数 (大文字) を含む境界は、ここでは検査しない。
                     if bl.iter().all(|e| e.chars().next().map_or(false, |c| c.is_lowercase())) {
-                        for e in uses.iter().filter(|e| !crate::check::covers(&bl, e)) {
+                        for e in uses.iter().filter(|e| crate::check::is_effect_var(e) || !crate::check::covers(&bl, e)) {
                             out.push((
                                 "E4001",
                                 format!(
@@ -3923,10 +4083,10 @@ impl<'a> TypeCk<'a> {
     /// 呼び出し先 `d` の効果を実体化する。明示型引数があればそれで (check.rs と同じ `inst_def_effects`)、
     /// なければクロージャから推論した束縛で置き換える。
     /// 戻り値は (実体化した uses, 実体化した panics, 束縛から来た uses, 束縛から来た panic が may か)。
-    fn callee_effects(&self, d: &Def, off: usize, argt: &[Ty], targs: &[V]) -> (Vec<String>, Option<String>, Vec<String>, bool) {
+    fn callee_effects(&self, d: &Def, off: usize, argt: &[Ty], targs: &[V]) -> (Vec<String>, Option<String>, Vec<String>, Option<String>) {
         if !targs.is_empty() {
             let (u, p) = crate::check::inst_def_effects(d, targs).unwrap_or_else(|| (d.uses.clone(), d.panics.clone()));
-            return (u, p, vec![], false);
+            return (u, p, vec![], None);
         }
         let bind = self.closure_effect_bind(d, off, argt);
         // 宣言にある具体名 (`uses [io.console, E]` の io.console) で覆われる効果は、従来の検査が
@@ -3939,20 +4099,32 @@ impl<'a> TypeCk<'a> {
             match bind.uses.get(e) {
                 Some(set) => {
                     full.extend(set.iter().cloned());
-                    derived.extend(set.iter().filter(|x| !crate::check::covers(&concrete, x)).cloned());
+                    // 効果変数 (大文字) は具体名の宣言では覆われないので、そのまま検査する。
+                    derived.extend(set.iter().filter(|x| crate::check::is_effect_var(x) || !crate::check::covers(&concrete, x)).cloned());
                 }
+                // 束縛のない効果変数は検査しない (実引数のない呼び出しは実体化できない。`unbound_effect_var_stays_silent`)。
                 None => full.push(e.clone()),
             }
         }
-        let mut derived_may = false;
+        // 束縛から来た panic (`may` のとき) と、束縛されない panic 変数 (そのまま検査する) を、検査の義務にする。
+        let mut derived_panic: Option<String> = None;
         let panics = d.panics.as_deref().map(|p| match bind.panics.get(p) {
             Some(&m) => {
-                derived_may = m;
+                if m {
+                    derived_panic = Some("may".to_string());
+                }
                 if m { "may".to_string() } else { "never".to_string() }
             }
-            None => p.to_string(),
+            None => {
+                // 束縛のない panic 変数は、呼び出し元が同じ変数を持たなければ E4002 (fail-closed)。ただし `Iterator`
+                // 境界の引数があるときは、panic の実体は引数の型 (イテレータの型は効果実引数を持たない) で決まるので黙る。
+                if crate::check::is_panic_var(p) && !self.has_iterator_bound(d) {
+                    derived_panic = Some(p.to_string());
+                }
+                p.to_string()
+            }
         });
-        (full, panics, derived, derived_may)
+        (full, panics, derived, derived_panic)
     }
 
     /// 型で解決できた呼び出しの効果を扱う。`cands` は候補ごとの (名前, 実体化した uses, 実体化した panics,
@@ -3963,9 +4135,9 @@ impl<'a> TypeCk<'a> {
             return;
         }
         if !self.eff_acc.is_empty() {
-            let lower = |u: &Vec<String>| -> BTreeSet<String> {
-                u.iter().filter(|e| e.chars().next().map_or(false, |c| c.is_lowercase())).cloned().collect()
-            };
+            // クロージャの効果には、具体名と (囲む関数の) 効果変数の両方を数える。変数は呼び出しごとに
+            // 呼び出し元の `uses` と比べられる (`closure_call_effects`)。
+            let lower = |u: &Vec<String>| -> BTreeSet<String> { u.iter().cloned().collect() };
             // 推論された関数の効果は上からの近似 (infer.rs) なので、それが効果を足すときは確実でないとする。
             let unsure = cands.iter().any(|c| {
                 self.inferred_def(&c.0) && (!lower(&c.1).is_empty() || c.2.as_deref() == Some("may"))
@@ -3975,7 +4147,8 @@ impl<'a> TypeCk<'a> {
                 let o = lower(&c.1);
                 common.retain(|e| o.contains(e));
             }
-            let all_may = cands.iter().all(|c| c.2.as_deref() == Some("may"));
+            // 変数のままの panic (`P`) は、クロージャの効果としては上限の `may` として数える (fail-closed)。
+            let all_may = cands.iter().all(|c| c.2.as_deref() == Some("may") || c.2.as_deref().map_or(false, crate::check::is_panic_var));
             if let Some(acc) = self.eff_acc.last_mut() {
                 acc.0.extend(common);
                 if all_may {
@@ -3995,7 +4168,7 @@ impl<'a> TypeCk<'a> {
         }
         let checks: Vec<(String, Vec<String>, Option<String>)> =
             cands.into_iter().map(|(n, _, _, u, p)| (n, u, p)).collect();
-        if checks.iter().all(|c| c.1.is_empty() && c.2.as_deref() != Some("may")) {
+        if checks.iter().all(|c| c.1.is_empty() && c.2.as_deref() != Some("may") && !c.2.as_deref().map_or(false, crate::check::is_panic_var)) {
             return;
         }
         self.eff_checks.push(EffCheck { di: self.cur, line, cands: checks });
@@ -4007,11 +4180,23 @@ impl<'a> TypeCk<'a> {
     /// `eff_name` が `Some` のときは、そのクロージャの本体から推論した効果を、呼び出し元の検査に足す (4.3 / 5.1)。
     fn call_closure(&mut self, cl: &Ty, argt: &[Ty], line: usize, eff_name: Option<&str>) -> Option<Ty> {
         let cl = self.deep(cl);
-        let Ty::Closure { args, ret, id, .. } = cl else { return None };
+        let Ty::Closure { args, ret, id, eff, .. } = cl else { return None };
         // 直接呼び出し (`let g = fn..; g(x)`) は、呼び出し元からクロージャの節への辺になる (5.3)。
         // 節の本体の呼び出しは書かれた関数に帰属するが、節そのもののフレームを数えるには辺が要る。
         if let Some(node) = id.clone() {
             self.add_edge(node);
+        }
+        // 関数ポインタ型の値 (`f: fn() uses [E]`) の呼び出しは、宣言された効果で検査する。
+        // 節 (`id` あり) は本体から推論した効果 (`closure_call_effects`) を使う。
+        if id.is_none() {
+            if let Eff(Some(info)) = &eff {
+                if info.decl {
+                    let uses = info.uses.clone();
+                    let panics = (info.may == Some(true)).then(|| "may".to_string());
+                    let nm = eff_name.unwrap_or("the function value").to_string();
+                    self.record_effects(line, vec![(nm, uses.clone(), panics.clone(), uses, panics)]);
+                }
+            }
         }
         if args.len() != argt.len() {
             self.diag(

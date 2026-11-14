@@ -3,7 +3,7 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics never
     Ok(())
 end t.main
 
-// expect: E????
+// expect: E4002
 fn t.panico[P: panics]() -> () uses [] panics P
     core.panic.panic("x")
 end t.panico

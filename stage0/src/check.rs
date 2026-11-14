@@ -248,6 +248,15 @@ pub(crate) fn pat_binds(p: &V, out: &mut Vec<String>) {
     }
 }
 
+/// 効果変数・panic 変数の名前か (大文字で始まる。具体名 `io.console` や `never` / `may` とは違う)。
+pub(crate) fn is_effect_var(eff: &str) -> bool {
+    eff.chars().next().map_or(false, |c| c.is_uppercase())
+}
+
+pub(crate) fn is_panic_var(p: &str) -> bool {
+    is_effect_var(p)
+}
+
 pub(crate) fn covers(caller: &[String], eff: &str) -> bool {
     if eff.chars().next().map_or(false, |c| c.is_uppercase()) {
         return true;
@@ -302,6 +311,25 @@ pub(crate) fn align_targs<'a>(
     Some(out)
 }
 
+/// 効果変数の実引数 (`uses [..]` の集合、または呼び出し元の効果変数の名前 `E`) の要素。
+/// 形が分からないものは None。`dyn Tr<E>` / `f::<E>` のように、呼び出し元の効果変数をそのまま渡す形も含む。
+pub(crate) fn targ_effs(t: &V) -> Option<Vec<String>> {
+    match tag(t).as_str() {
+        "effects" => Some(items(tel(t, 1)).iter().map(st).collect()),
+        "named" if items(tel(t, 2)).is_empty() && is_effect_var(&st(tel(t, 1))) => Some(vec![st(tel(t, 1))]),
+        _ => None,
+    }
+}
+
+/// panic 変数の実引数 (`never` / `may`、または呼び出し元の panic 変数の名前 `P`)。形が分からないものは None。
+pub(crate) fn targ_panic(t: &V) -> Option<String> {
+    match tag(t).as_str() {
+        "panic" => Some(st(tel(t, 1))),
+        "named" if items(tel(t, 2)).is_empty() && is_panic_var(&st(tel(t, 1))) => Some(st(tel(t, 1))),
+        _ => None,
+    }
+}
+
 /// callee の `uses` / `panics` を、呼び出しの明示型引数で実体化する (4.3 の単相化)。
 /// 効果変数 `E` は対応する `uses [..]` 実引数の集合に、panic 変数 `P` は `never` / `may` に置き換わる。
 /// 実引数がない・対応が取れない (推論できない) ときは None。呼び出し側はそのとき
@@ -311,20 +339,22 @@ pub(crate) fn inst_def_effects(callee: &Def, targs: &[V]) -> Option<(Vec<String>
         return None;
     }
     let pairs = align_targs(&callee.generics, targs)?;
-    let uses: Vec<String> = callee
-        .uses
-        .iter()
-        .flat_map(|e| match pairs.iter().find(|(n, k, _)| *k == "uses" && *n == e.as_str()) {
+    // 種別の並ばない実引数 (効果変数に型を渡す形) は、実体化できないものとして None (黙る。`violation` が見る)。
+    let mut uses: Vec<String> = vec![];
+    for e in &callee.uses {
+        match pairs.iter().find(|(n, k, _)| *k == "uses" && *n == e.as_str()) {
             // `uses [alloc, E]` は具体名と実引数の集合の和 (4.3)。
-            Some((_, _, t)) => items(tel(t, 1)).iter().map(st).collect(),
-            None => vec![e.clone()],
-        })
-        .collect();
-    let panics =
-        callee.panics.as_deref().map(|p| match pairs.iter().find(|(n, k, _)| *k == "panics" && *n == p) {
-            Some((_, _, t)) => st(tel(t, 1)),
-            None => p.to_string(),
-        });
+            Some((_, _, t)) => uses.extend(targ_effs(t)?),
+            None => uses.push(e.clone()),
+        }
+    }
+    let panics = match callee.panics.as_deref() {
+        None => None,
+        Some(p) => match pairs.iter().find(|(n, k, _)| *k == "panics" && *n == p) {
+            Some((_, _, t)) => Some(targ_panic(t)?),
+            None => Some(p.to_string()),
+        },
+    };
     Some((uses, panics))
 }
 
@@ -335,12 +365,12 @@ pub(crate) fn inst_effects(gens: &[(String, String, V)], targs: &[V], uses: &[St
     let u: Vec<String> = uses
         .iter()
         .flat_map(|e| match pairs.iter().find(|(n, k, _)| *k == "uses" && *n == e.as_str()) {
-            Some((_, _, t)) => items(tel(t, 1)).iter().map(st).collect(),
+            Some((_, _, t)) => targ_effs(t).unwrap_or_else(|| vec![e.clone()]),
             None => vec![e.clone()],
         })
         .collect();
     let p = match pairs.iter().find(|(n, k, _)| *k == "panics" && *n == panics) {
-        Some((_, _, t)) => st(tel(t, 1)),
+        Some((_, _, t)) => targ_panic(t).unwrap_or_else(|| panics.to_string()),
         None => panics.to_string(),
     };
     (u, p)
@@ -2622,25 +2652,38 @@ impl<'a> Checker<'a> {
         best.map(|(_, n)| n)
     }
 
+    /// 明示型引数がない呼び出しの、宣言のままの検査。効果変数・panic 変数は呼び出し元の束縛
+    /// (`Fn` 境界のクロージャ・`Iterator` の impl・関数項目) で決まるので、ここでは見ない (型の検査が見る)。
+    /// 束縛が分からない変数は、型の検査 (`callee_effects` の未束縛) が呼び出し元と比べる。
     fn violation(&self, callee: &Def) -> Option<(String, String)> {
-        self.violation_effs(&callee.name, &callee.uses, callee.panics.as_deref())
+        let uses: Vec<String> = callee.uses.iter().filter(|e| !is_effect_var(e)).cloned().collect();
+        let panics = callee.panics.as_deref().filter(|p| !is_panic_var(p));
+        self.violation_effs(&callee.name, &uses, panics)
     }
 
     /// 呼び出し側の `uses` / `panics` が、callee の効果 (5.1 の階層の部分型) を覆うか。
     fn violation_effs(&self, name: &str, uses: &[String], panics: Option<&str>) -> Option<(String, String)> {
         let cu = self.cur_uses.as_ref()?;
         for eff in uses {
-            if !covers(cu, eff) {
+            // 効果変数 (大文字) は、呼び出し先の実体化が分からないまま残ったもの。呼び出し元が同じ変数を
+            // `uses` に持つときだけ覆う (`covers` は具体名だけを見る)。それ以外は fail-closed で E4001。
+            let covered = if is_effect_var(eff) { cu.iter().any(|c| c == eff) } else { covers(cu, eff) };
+            if !covered {
                 return Some(("E4001".into(), format!("{} uses effect `{}` not declared by the caller", name, eff)));
             }
         }
-        if panics == Some("may") && self.cur_panics == "never" {
-            return Some((
+        match panics {
+            // 残った panic 変数 `P` は、呼び出し元が同じ `P: panics` を持つときだけ許す。
+            Some(p) if is_panic_var(p) && self.cur_panics != p => Some((
+                "E4002".into(),
+                format!("{} may panic (panic variable `{}`) but the caller does not declare `panics {}`", name, p, p),
+            )),
+            Some("may") if self.cur_panics == "never" => Some((
                 "E4002".into(),
                 format!("{} may panic but the caller declares `panics never`", name),
-            ));
+            )),
+            _ => None,
         }
-        None
     }
 
     /// 呼び出しの明示型引数 (`f::<..>`) で効果変数・panic 変数を実体化してから検査する (4.3)。

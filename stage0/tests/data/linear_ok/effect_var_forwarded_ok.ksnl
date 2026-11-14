@@ -1,0 +1,44 @@
+// 効果変数・panic 変数を、呼び出し元が同じ変数で宣言して渡すのは正しい: `dyn Tr<E, P>` 越しの呼び出し、
+// 関数ポインタ型 `fn() uses [E]` の値の呼び出し、`P` の総称関数を `panics P` の関数から呼ぶ形。
+// 実体化は呼び出し元の宣言と比べられ、同じ変数なら覆われる。
+type t.Boxed
+    x: u32
+end t.Boxed
+
+trait t.Tr[E: uses, P: panics]
+    fn m(self: &Self) -> () uses [E] panics P
+end t.Tr
+
+impl t.Tr<[io.console], never> for t.Boxed
+fn t.Boxed.m(self: &Self) -> () uses [io.console] panics never impls t.Tr<[io.console], never>
+    core.mem.drop(std.io.print_line("x"))
+end t.Boxed.m
+
+fn t.add2[P: panics](a: u32, b: u32) -> u32 uses [] panics P
+    a + b
+end t.add2
+
+fn t.apply[E: uses](f: fn() -> () uses [E] panics never) -> () uses [E] panics never
+    f()
+end t.apply
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    core.mem.drop(t.apply(t.quiet))
+    Ok(())
+end t.main
+
+fn t.quiet() -> () uses [] panics never
+    ()
+end t.quiet
+
+fn t.relay[E: uses, P: panics](h: &dyn t.Tr<E, P>) -> () uses [E] panics P
+    t.take(h)
+end t.relay
+
+fn t.second[P: panics](a: u32, b: u32) -> u32 uses [] panics P
+    t.add2(a, b)
+end t.second
+
+fn t.take[E: uses, P: panics](h: &dyn t.Tr<E, P>) -> () uses [E] panics P
+    h.m()
+end t.take
