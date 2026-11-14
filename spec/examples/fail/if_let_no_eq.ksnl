@@ -1,0 +1,6 @@
+fn app.x.f(o: Option<u32>) -> u32 uses [] panics never
+    if let Some(v) o {
+        return v
+    }
+    0u32
+end app.x.f

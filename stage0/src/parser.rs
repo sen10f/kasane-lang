@@ -596,6 +596,20 @@ impl Parser {
     pub(crate) fn cmp_expr(&mut self, ns: bool) -> R<V> {
         let l = self.bin_level(0, ns)?;
         let c = self.cur().clone();
+        if self.is_kw("is") {
+            // `式 is パターン` = `match 式 { パターン => true, <他> => false }` (名前を束縛しないパターンのみ)。
+            self.i += 1;
+            let pat = self.pattern()?;
+            let mut b = vec![];
+            crate::check::pat_binds(&pat, &mut b);
+            if !b.is_empty() {
+                return self.err("a pattern after `is` cannot bind names; use `_`");
+            }
+            let t = ndl(c.pos(), "Lit", vec![s("bool"), V::B(true)]);
+            let f = ndl(c.pos(), "Lit", vec![s("bool"), V::B(false)]);
+            let arms = vec![V::L(vec![pat, t]), V::L(vec![ndl(c.pos(), "PWild", vec![V::B(true)]), f])];
+            return Ok(ndl(anchor(c.pos(), &l), "Match", vec![l, V::L(arms)]));
+        }
         if c.kind == "op" && matches!(c.text.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=") {
             self.i += 1;
             let r = self.bin_level(0, ns)?;
@@ -935,6 +949,21 @@ impl Parser {
     pub(crate) fn if_expr(&mut self) -> R<V> {
         let ln = self.cur().pos();
         self.expect_kw("if")?;
+        if self.accept_kw("let") {
+            // `if let パターン = 式 { .. } [else ..]` = `match 式 { パターン => { .. }, <他> => else側 }`。
+            // 2 腕目の `PWild [true]` は構文から作った「他の全部」で、E2021 の対象外 (線形値は E3003)。
+            let pat = self.pattern()?;
+            self.expect_op("=")?;
+            let scrut = self.expr(true)?;
+            let then = self.block()?;
+            let els = if self.accept_kw("else") {
+                if self.is_kw("if") { self.if_expr()? } else { self.block()? }
+            } else {
+                ndl(ln, "Block", vec![V::L(vec![])])
+            };
+            let rest = ndl(ln, "PWild", vec![V::B(true)]);
+            return Ok(ndl(ln, "Match", vec![scrut, V::L(vec![V::L(vec![pat, then]), V::L(vec![rest, els])])]));
+        }
         let cond = self.expr(true)?;
         let then = self.block()?;
         let mut els = V::Nil;

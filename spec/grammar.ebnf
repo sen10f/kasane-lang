@@ -114,7 +114,7 @@ expr          = jump_expr | or_expr ;
 jump_expr     = "break" | "continue" | "return" , [ expr ] ;       (* 型は ! (4.2, 4.6) *)
 or_expr       = and_expr , { "||" , and_expr } ;
 and_expr      = cmp_expr , { "&&" , cmp_expr } ;
-cmp_expr      = bor_expr , [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) , bor_expr ] ;   (* 非結合 *)
+cmp_expr      = bor_expr , [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) , bor_expr | "is" , pattern ] ;   (* 非結合。"is" は文脈キーワード (4.1) *)
 bor_expr      = bxor_expr , { "|" , bxor_expr } ;
 bxor_expr     = band_expr , { "^" , band_expr } ;
 band_expr     = add_expr , { "&" , add_expr } ;
@@ -151,7 +151,7 @@ capture       = "&" , ident | "&" , "mut" , ident | "move" , ident ;
 expr_nostruct = jump_expr | or_ns ;
 or_ns         = and_ns , { "||" , and_ns } ;
 and_ns        = cmp_ns , { "&&" , cmp_ns } ;
-cmp_ns        = bor_ns , [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) , bor_ns ] ;
+cmp_ns        = bor_ns , [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) , bor_ns | "is" , pattern ] ;
 bor_ns        = bxor_ns , { "|" , bxor_ns } ;
 bxor_ns       = band_ns , { "^" , band_ns } ;
 band_ns       = add_ns , { "&" , add_ns } ;
@@ -167,7 +167,8 @@ primary_ns    = literal
               | "[" , [ args | args_wrap ] , "]" | "[" , expr , ";" , const_expr , "]"
               | closure | if_expr | match_expr | loop_expr
               | while_expr | for_expr | unsafe_block | with_expr | block ;
-if_expr       = "if" , expr_nostruct , block , [ "else" , ( block | if_expr ) ] ;
+if_expr       = "if" , ( "let" , pattern , "=" , expr_nostruct | expr_nostruct ) , block , [ "else" , ( block | if_expr ) ] ;
+                                                                  (* if let: 1 つの形だけを見る。"is" の pattern は名前を束縛しない (意味検査) *)
 match_expr    = "match" , expr_nostruct , "{" , NL , INDENT , pattern , "=>" , expr , NL ,
                 { INDENT , pattern , "=>" , expr , NL } , INDENT_BACK , "}" ;
 loop_expr     = "loop" , block ;

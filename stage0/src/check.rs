@@ -5146,6 +5146,10 @@ impl<'a> Checker<'a> {
     fn exhaustive(&mut self, m: &V, env: &Env) {
         let f = nf(m);
         let pats: Vec<&V> = items(&f[1]).iter().map(|a| &items(a)[0]).collect();
+        // `if let` / `is` が作る「他の全部」の腕 (`PWild [true]`) は、全列挙の強制の対象外。
+        if pats.iter().any(|p| nname(p) == "PWild" && !nf(p).is_empty()) {
+            return;
+        }
         if pats.iter().any(|p| matches!(nname(p), "PWild" | "PBind")) {
             let got = self.ty_of(&f[0], env);
             let s = self.strip(&got).clone();
