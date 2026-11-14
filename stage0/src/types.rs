@@ -1537,6 +1537,10 @@ impl<'a> TypeCk<'a> {
                 self.unify2(&x, &y)
             }
             (Ty::Unit, Ty::Unit) => Ok(()),
+            // `Vec` は配列・スライスと別の型 (4.2: 暗黙の変換は `&[T; N]` → `&[T]` のみ)。
+            (Ty::Named(n, _), Ty::Array(_) | Ty::Slice(_)) | (Ty::Array(_) | Ty::Slice(_), Ty::Named(n, _)) if n == "alloc.vec.Vec" => {
+                Err((a.clone(), b.clone()))
+            }
             // 構造が確定していて種類が違う組 (`()` と `Result<..>`、整数とタプルなど) は矛盾 (fail-closed)。
             // `Vec` / `String` はスライス・`str` として扱われる場所があるので、ここでは対象にしない。
             (x, y) if Self::concrete_kind(x).is_some() && Self::concrete_kind(y).is_some() && Self::concrete_kind(x) != Self::concrete_kind(y) => {
@@ -2773,7 +2777,7 @@ impl<'a> TypeCk<'a> {
                     let vt = self.infer(&items(x)[1]);
                     let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone()), &st(&items(x)[0]));
                     if let Err(err) = self.unify2(&declared, &vt) {
-                        if let Some((want, got)) = self.type_conflict(&err) {
+                        if let Some((want, got)) = self.type_conflict(&err).or_else(|| self.vec_seq_mismatch(&declared, &vt)) {
                             self.diag(
                                 "E2023",
                                 format!("field `{}` of `{}`: expected `{}`, found `{}`", st(&items(x)[0]), fq, want, got),
@@ -4044,7 +4048,26 @@ impl<'a> TypeCk<'a> {
             }
             (Ty::Ptr(..), o) => self.plain_show(o).map(|s| (w.show(), s)),
             (o, Ty::Ptr(..)) => self.plain_show(o).map(|s| (s, g.show())),
-            _ => None,
+            _ => self.vec_seq_mismatch(&w, &g),
+        }
+    }
+
+    /// `Vec` と配列・スライスの取り違え (4.2: 暗黙の変換は `&[T; N]` → `&[T]` だけ)。参照は剥がして比べる。
+    fn vec_seq_mismatch(&self, want: &Ty, got: &Ty) -> Option<(String, String)> {
+        let strip = |t: &Ty| {
+            let mut t = self.deep(t);
+            while let Ty::Ref(_, x) = t {
+                t = self.deep(&x);
+            }
+            t
+        };
+        let (w, g) = (strip(want), strip(got));
+        let is_vec = |t: &Ty| matches!(t, Ty::Named(n, _) if n == "alloc.vec.Vec");
+        let is_seq = |t: &Ty| matches!(t, Ty::Array(_) | Ty::Slice(_));
+        if (is_vec(&w) && is_seq(&g)) || (is_seq(&w) && is_vec(&g)) {
+            Some((w.show(), g.show()))
+        } else {
+            None
         }
     }
 
