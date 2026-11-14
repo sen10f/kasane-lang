@@ -6,6 +6,9 @@
  *   e[0] = std.io.ErrorKind のバリアント番号 (spec/stdlib/std/io.sig の宣言順)、e[1] = 発生源の OS エラー番号。
  * std.net.Error は e[1] だけを使う (OS エラー番号が無いときは -1)。
  * 振る舞いはインタプリタ (natives.rs / net.rs) と同じにする。 */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +23,10 @@
 #else
 #include <unistd.h>
 #include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <sys/mman.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -484,3 +491,306 @@ void *ksn_rt_sys_dlsym(const char *lib, const char *sym) {
     }
     return p;
 }
+
+/* ---------------------------------------------------------------- std.process (POSIX のみ)
+ * Command の設定は、この表のハンドル (i32) で持つ。spawn / output / cancel が消費して表から外す。
+ * 起動は posix_spawnp (複数スレッドから呼んでも安全。パイプの親側の記述子は O_CLOEXEC)。
+ * 命令の番号は kir.rs の `ProcFn::ALL` の並び。 */
+#ifndef _WIN32
+extern char **environ;
+
+enum { P_NEW = 0, P_ARG, P_ENV_REMOVE, P_DIR, P_ENV, P_ENV_CLEAR, P_IN_PIPED, P_IN_NULL, P_OUT_PIPED, P_OUT_NULL, P_ERR_PIPED, P_ERR_NULL, P_CANCEL };
+enum { IO_INHERIT = 0, IO_NULL, IO_PIPED };
+
+typedef struct { int set; char *k; char *v; } penv;
+typedef struct {
+    char *prog;
+    char **args; u64 nargs, capargs;
+    penv *env; u64 nenv, capenv;
+    int clear;
+    char *dir;
+    int io[3];
+    int bad; /* NUL を含む文字列が渡された (spawn は InvalidInput) */
+} pcmd;
+
+static pcmd **ptab;
+static u64 pcap;
+static pthread_mutex_t plock = PTHREAD_MUTEX_INITIALIZER;
+
+static char *pdup(const u8 *p, u64 n, int *bad) {
+    if (n > 0 && memchr(p, 0, n) != NULL) { *bad = 1; n = (u64)((const u8 *)memchr(p, 0, n) - p); }
+    char *s = (char *)malloc(n + 1);
+    if (!s) { *bad = 1; return NULL; }
+    if (n > 0) memcpy(s, p, n);
+    s[n] = 0;
+    return s;
+}
+
+static pcmd *pget(i32 id) {
+    pcmd *c = NULL;
+    pthread_mutex_lock(&plock);
+    if (id >= 0 && (u64)id < pcap) c = ptab[id];
+    pthread_mutex_unlock(&plock);
+    return c;
+}
+
+static void pfree(pcmd *c) {
+    if (!c) return;
+    free(c->prog);
+    for (u64 i = 0; i < c->nargs; i++) free(c->args[i]);
+    free(c->args);
+    for (u64 i = 0; i < c->nenv; i++) { free(c->env[i].k); free(c->env[i].v); }
+    free(c->env);
+    free(c->dir);
+    free(c);
+}
+
+/* 表から外して返す。 */
+static pcmd *ptake(i32 id) {
+    pcmd *c = NULL;
+    pthread_mutex_lock(&plock);
+    if (id >= 0 && (u64)id < pcap) { c = ptab[id]; ptab[id] = NULL; }
+    pthread_mutex_unlock(&plock);
+    return c;
+}
+
+/* Command.new。戻り値はハンドル (確保に失敗したら -1。spawn が ENOMEM で失敗する)。 */
+i32 ksn_rt_sys_proc_new(const u8 *p, u64 n) {
+    pcmd *c = (pcmd *)calloc(1, sizeof(pcmd));
+    if (!c) return -1;
+    c->prog = pdup(p, n, &c->bad);
+    pthread_mutex_lock(&plock);
+    u64 id = 0;
+    while (id < pcap && ptab[id]) id++;
+    if (id == pcap) {
+        u64 nc = pcap ? pcap * 2 : 8;
+        pcmd **nt = (pcmd **)realloc(ptab, nc * sizeof(pcmd *));
+        if (!nt) { pthread_mutex_unlock(&plock); pfree(c); return -1; }
+        memset(nt + pcap, 0, (nc - pcap) * sizeof(pcmd *));
+        ptab = nt; pcap = nc;
+    }
+    ptab[id] = c;
+    pthread_mutex_unlock(&plock);
+    return (i32)id;
+}
+
+void ksn_rt_sys_proc_cmd(i32 id, i32 sel, const u8 *a, u64 an, const u8 *b, u64 bn) {
+    if (sel == P_CANCEL) { pfree(ptake(id)); return; }
+    pcmd *c = pget(id);
+    if (!c) return;
+    switch (sel) {
+    case P_ARG: {
+        if (c->nargs == c->capargs) {
+            u64 nc = c->capargs ? c->capargs * 2 : 8;
+            char **na = (char **)realloc(c->args, nc * sizeof(char *));
+            if (!na) { c->bad = 1; return; }
+            c->args = na; c->capargs = nc;
+        }
+        c->args[c->nargs] = pdup(a, an, &c->bad);
+        if (c->args[c->nargs]) c->nargs++;
+        break;
+    }
+    case P_ENV:
+    case P_ENV_REMOVE: {
+        if (c->nenv == c->capenv) {
+            u64 nc = c->capenv ? c->capenv * 2 : 8;
+            penv *ne = (penv *)realloc(c->env, nc * sizeof(penv));
+            if (!ne) { c->bad = 1; return; }
+            c->env = ne; c->capenv = nc;
+        }
+        penv *x = &c->env[c->nenv++];
+        x->set = sel == P_ENV;
+        x->k = pdup(a, an, &c->bad);
+        x->v = sel == P_ENV ? pdup(b, bn, &c->bad) : NULL;
+        break;
+    }
+    case P_ENV_CLEAR:
+        c->clear = 1;
+        for (u64 i = 0; i < c->nenv; i++) { free(c->env[i].k); free(c->env[i].v); }
+        c->nenv = 0;
+        break;
+    case P_DIR: free(c->dir); c->dir = pdup(a, an, &c->bad); break;
+    case P_IN_PIPED: c->io[0] = IO_PIPED; break;
+    case P_IN_NULL: c->io[0] = IO_NULL; break;
+    case P_OUT_PIPED: c->io[1] = IO_PIPED; break;
+    case P_OUT_NULL: c->io[1] = IO_NULL; break;
+    case P_ERR_PIPED: c->io[2] = IO_PIPED; break;
+    case P_ERR_NULL: c->io[2] = IO_NULL; break;
+    default: break;
+    }
+}
+
+/* 子の環境 (`KEY=VALUE` の NULL 終端配列)。`own` には新しく確保した文字列を足す。 */
+static char **build_env(pcmd *c, char ***own, u64 *nown) {
+    u64 base = 0;
+    if (!c->clear) while (environ && environ[base]) base++;
+    u64 cap = base + c->nenv + 1, n = 0;
+    char **ev = (char **)calloc(cap, sizeof(char *));
+    *own = (char **)calloc(c->nenv + 1, sizeof(char *));
+    *nown = 0;
+    if (!ev || !*own) { free(ev); free(*own); *own = NULL; return NULL; }
+    if (!c->clear) for (u64 i = 0; i < base; i++) ev[n++] = environ[i];
+    for (u64 i = 0; i < c->nenv; i++) {
+        penv *x = &c->env[i];
+        size_t kl = strlen(x->k);
+        for (u64 j = 0; j < n; ) {
+            if (strncmp(ev[j], x->k, kl) == 0 && ev[j][kl] == '=') { memmove(ev + j, ev + j + 1, (n - j - 1) * sizeof(char *)); n--; }
+            else j++;
+        }
+        if (x->set) {
+            size_t vl = strlen(x->v);
+            char *s = (char *)malloc(kl + vl + 2);
+            if (!s) { free(ev); return NULL; }
+            memcpy(s, x->k, kl); s[kl] = '='; memcpy(s + kl + 1, x->v, vl + 1);
+            (*own)[(*nown)++] = s;
+            ev[n++] = s;
+        }
+    }
+    ev[n] = NULL;
+    return ev;
+}
+
+/* 無名の一時ファイル (output の受け皿)。 */
+static int anon_file(void) {
+    int fd = -1;
+#if defined(__linux__) && defined(MFD_CLOEXEC)
+    fd = memfd_create("ksn-output", MFD_CLOEXEC);
+    if (fd >= 0) return fd;
+#endif
+    char t[] = "/tmp/ksn_out_XXXXXX";
+    fd = mkstemp(t);
+    if (fd < 0) return -1;
+    unlink(t);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
+}
+
+static void decode_status(int st, i32 *code, i32 *sig) {
+    if (WIFEXITED(st)) { *code = WEXITSTATUS(st); *sig = 0; }
+    else if (WIFSIGNALED(st)) { *code = -1; *sig = WTERMSIG(st); }
+    else { *code = -1; *sig = 0; }
+}
+
+static int wait_pid(i32 pid, int *st) {
+    for (;;) {
+        pid_t r = waitpid(pid, st, 0);
+        if (r >= 0) return 0;
+        if (errno != EINTR) return errno;
+    }
+}
+
+/* spawn (capture = 0) は out[0..4] = { pid, stdin, stdout, stderr } (パイプの親側。ないものは -1)。
+ * output (capture = 1) は out[0..4] = { 終了コード, シグナル, 標準出力の記述子, 標準エラーの記述子 } (先頭へ巻き戻し済み)。 */
+i64 ksn_rt_sys_proc_spawn(i32 id, i32 capture, i32 *out, i32 *e) {
+    pcmd *c = ptake(id);
+    if (!c) return fail(e, ENOMEM);
+    if (c->bad || !c->prog) { pfree(c); return fail_invalid(e); }
+    int io[3] = { c->io[0], c->io[1], c->io[2] };
+    if (capture) { io[0] = IO_NULL; io[1] = io[2] = IO_PIPED; }
+    int parent[3] = { -1, -1, -1 }, child[3] = { -1, -1, -1 };
+    int err = 0;
+    for (int i = 0; i < 3 && !err; i++) {
+        if (io[i] != IO_PIPED) continue;
+        if (capture) {
+            int f = anon_file();
+            if (f < 0) { err = errno; break; }
+            parent[i] = f; child[i] = f;
+        } else {
+            int p[2];
+            if (pipe2(p, O_CLOEXEC) < 0) { err = errno; break; }
+            parent[i] = i == 0 ? p[1] : p[0];
+            child[i] = i == 0 ? p[0] : p[1];
+        }
+    }
+    posix_spawn_file_actions_t fa;
+    posix_spawnattr_t at;
+    int have_fa = 0, have_at = 0;
+    char **argv = NULL, **ev = NULL, **own = NULL;
+    u64 nown = 0;
+    pid_t pid = 0;
+    if (!err) { err = posix_spawn_file_actions_init(&fa); have_fa = err == 0; }
+    if (!err) { err = posix_spawnattr_init(&at); have_at = err == 0; }
+    if (!err) {
+        sigset_t none, dfl;
+        sigemptyset(&none);
+        sigemptyset(&dfl);
+        sigaddset(&dfl, SIGPIPE);
+        posix_spawnattr_setsigmask(&at, &none);
+        posix_spawnattr_setsigdefault(&at, &dfl);
+        posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+        for (int i = 0; i < 3 && !err; i++) {
+            if (io[i] == IO_NULL) err = posix_spawn_file_actions_addopen(&fa, i, "/dev/null", i == 0 ? O_RDONLY : O_WRONLY, 0);
+            else if (io[i] == IO_PIPED && child[i] != i) err = posix_spawn_file_actions_adddup2(&fa, child[i], i);
+        }
+    }
+    if (!err && c->dir) {
+#if (defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 29))) || defined(__APPLE__)
+        err = posix_spawn_file_actions_addchdir_np(&fa, c->dir);
+#else
+        err = ENOSYS;
+#endif
+    }
+    if (!err) {
+        argv = (char **)calloc(c->nargs + 2, sizeof(char *));
+        ev = build_env(c, &own, &nown);
+        if (!argv || !ev) err = ENOMEM;
+    }
+    if (!err) {
+        argv[0] = c->prog;
+        for (u64 i = 0; i < c->nargs; i++) argv[i + 1] = c->args[i];
+        err = posix_spawnp(&pid, c->prog, &fa, &at, argv, ev);
+    }
+    if (have_fa) posix_spawn_file_actions_destroy(&fa);
+    if (have_at) posix_spawnattr_destroy(&at);
+    free(argv); free(ev);
+    for (u64 i = 0; i < nown; i++) free(own[i]);
+    free(own);
+    pfree(c);
+    if (err) {
+        for (int i = 0; i < 3; i++) {
+            if (parent[i] >= 0) close(parent[i]);
+            if (child[i] >= 0 && child[i] != parent[i]) close(child[i]);
+        }
+        return fail(e, err);
+    }
+    /* 子の側の端は親では不要 */
+    for (int i = 0; i < 3; i++) if (child[i] >= 0 && child[i] != parent[i]) close(child[i]);
+    if (!capture) {
+        out[0] = (i32)pid;
+        for (int i = 0; i < 3; i++) out[1 + i] = parent[i];
+        return 0;
+    }
+    int st = 0;
+    int werr = wait_pid((i32)pid, &st);
+    if (werr) {
+        close(parent[1]); close(parent[2]);
+        return fail(e, werr);
+    }
+    decode_status(st, &out[0], &out[1]);
+    lseek(parent[1], 0, SEEK_SET);
+    lseek(parent[2], 0, SEEK_SET);
+    out[2] = parent[1];
+    out[3] = parent[2];
+    return 0;
+}
+
+/* st[0] = 終了コード (シグナルで死んだら -1)、st[1] = シグナル (なければ 0)。 */
+i64 ksn_rt_sys_proc_wait(i32 pid, i32 *st2, i32 *e) {
+    int st = 0;
+    int err = wait_pid(pid, &st);
+    if (err) return fail(e, err);
+    decode_status(st, &st2[0], &st2[1]);
+    return 0;
+}
+
+i64 ksn_rt_sys_proc_kill(i32 pid, i32 *e) {
+    if (kill((pid_t)pid, SIGKILL) < 0) return fail(e, errno);
+    return 0;
+}
+#else
+i32 ksn_rt_sys_proc_new(const u8 *p, u64 n) { (void)p; (void)n; return -1; }
+void ksn_rt_sys_proc_cmd(i32 id, i32 sel, const u8 *a, u64 an, const u8 *b, u64 bn) { (void)id; (void)sel; (void)a; (void)an; (void)b; (void)bn; }
+i64 ksn_rt_sys_proc_spawn(i32 id, i32 capture, i32 *out, i32 *e) { (void)id; (void)capture; (void)out; return fail(e, ENOSYS); }
+i64 ksn_rt_sys_proc_wait(i32 pid, i32 *st2, i32 *e) { (void)pid; (void)st2; return fail(e, ENOSYS); }
+i64 ksn_rt_sys_proc_kill(i32 pid, i32 *e) { (void)pid; return fail(e, ENOSYS); }
+#endif

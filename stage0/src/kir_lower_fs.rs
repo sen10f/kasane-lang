@@ -20,7 +20,7 @@ use crate::program::Target as Tgt;
 use super::{Lw, LR};
 
 /// `std.io.Error` 集成体をペイロードに持つ `Result<payload, std.io.Error>`。
-fn fs_err_ty(lw: &mut Lw, payload: Ty) -> Ty {
+pub(super) fn fs_err_ty(lw: &mut Lw, payload: Ty) -> Ty {
     let ioerr = lw.aggs.borrow_mut().io_error(lw.p).expect("std.io.Error の定義がない");
     Ty::Res(Pay::of(payload).expect("ペイロードがスカラーになる"), Pay::of(ioerr).expect("std.io.Error は集成体ペイロードになる"))
 }
@@ -43,7 +43,7 @@ fn fs_fd(lw: &mut Lw, rv: VId, rt: Ty, line: usize) -> LR<VId> {
 }
 
 /// `&mut [u8]` (fat) のバッファを `(ptr, len)` に分解する。
-fn fs_buf_ptr_len(lw: &mut Lw, buf: VId, line: usize) -> LR<(VId, VId)> {
+pub(super) fn fs_buf_ptr_len(lw: &mut Lw, buf: VId, line: usize) -> LR<(VId, VId)> {
     let buf = match lw.vty(buf) {
         Ty::Ref(_, Pointee::Agg(ai)) if lw.aggs.borrow().defs[ai as usize].name == "fat" => {
             lw.emit(lw.fat_ty(), Op::Load(buf))
@@ -74,6 +74,12 @@ fn read_to_end(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
     if lw.vty(h) != Ty::Ptr {
         return lw.err(line, "std.fs.read_to_end の出力がヘッダのアドレスでない (Vec<u8> の &mut のはず)");
     }
+    Ok(Some(read_fd_to_end(lw, fd, h)))
+}
+
+/// 記述子 `fd` を終端まで読んで、ヘッダ `h` の `Vec<u8>` の末尾へ足す (`read_to_end` の本体。`std.process.Command.output` も使う)。
+/// 結果は `Result<usize, std.io.Error>` の値。
+pub(super) fn read_fd_to_end(lw: &mut Lw, fd: VId, h: VId) -> VId {
     let res_ty = fs_err_ty(lw, Ty::Usize);
     let orig = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
     let zero = lw.emit(Ty::Usize, Op::Const(0));
@@ -115,7 +121,7 @@ fn read_to_end(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
     let nt = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: total, b: n });
     lw.goto(hd, vec![nt]);
     lw.cur = Some(exit);
-    Ok(Some(xp[0]))
+    xp[0]
 }
 
 /// `std.fs.create` / `std.fs.open` / `std.fs.exists` / `std.fs.remove_file` / `std.fs.read_to_end` (フリー関数)。

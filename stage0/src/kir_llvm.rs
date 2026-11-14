@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::fmath::{self, Ops};
 use crate::kir::{
-    size_of, verify_module, AggDef, AggKind, Aop, BitK, BoolOp, Cc, FBin, FUn, Func, Inst, Mode, Module, Op, Term, Ty, VId,
+    size_of, verify_module, AggDef, AggKind, Aop, BitK, BoolOp, Cc, FBin, FUn, Func, Inst, Mode, Module, Op, Pay, ProcFn, Term, Ty, VId,
 };
 
 /// 呼び出し深さの上限 (`kir_exec::MAX_DEPTH` と同じ)。
@@ -1010,6 +1010,73 @@ impl<'a> Fe<'a> {
         Ok(())
     }
 
+    /// `std.process` の命令 (`ProcFn`)。ランタイム `sysrt.c` の `ksn_rt_sys_proc_*` を呼ぶ。
+    fn proc_op(&mut self, d: &str, i: &Inst, f: ProcFn, args: &[VId]) -> R<()> {
+        use ProcFn::*;
+        self.cx.fs = true;
+        self.cx.decl("declare i32 @ksn_rt_sys_proc_new(ptr, i64)");
+        self.cx.decl("declare void @ksn_rt_sys_proc_cmd(i32, i32, ptr, i64, ptr, i64)");
+        self.cx.decl("declare i64 @ksn_rt_sys_proc_spawn(i32, i32, ptr, ptr)");
+        self.cx.decl("declare i64 @ksn_rt_sys_proc_wait(i32, ptr, ptr)");
+        self.cx.decl("declare i64 @ksn_rt_sys_proc_kill(i32, ptr)");
+        let mut fat = |me: &mut Self, v: VId| -> (String, String) {
+            let av = me.r(v);
+            let pi = me.extract(&av, 128, 0, 64);
+            let p = me.t(format!("inttoptr i64 {} to ptr", pi));
+            let n = me.extract(&av, 128, 8, 64);
+            (p, n)
+        };
+        match f {
+            New => {
+                let (p, n) = fat(self, args[0]);
+                self.line(format!("{} = call i32 @ksn_rt_sys_proc_new(ptr {}, i64 {})", d, p, n));
+            }
+            Arg | EnvRemove | Dir | Env | EnvClear | InPiped | InNull | OutPiped | OutNull | ErrPiped | ErrNull | Cancel => {
+                let id = self.r(args[0]);
+                let (a, an) = if args.len() > 1 { fat(self, args[1]) } else { ("null".to_string(), "0".to_string()) };
+                let (b, bn) = if args.len() > 2 { fat(self, args[2]) } else { ("null".to_string(), "0".to_string()) };
+                self.line(format!("call void @ksn_rt_sys_proc_cmd(i32 {}, i32 {}, ptr {}, i64 {}, ptr {}, i64 {})", id, f.code(), a, an, b, bn));
+            }
+            Spawn | Output => {
+                let Ty::Res(Pay::Agg(ca), _) = i.ty else { return Err("proc.spawn の結果が Result<Child, _> でない".into()) };
+                let w = agg_bits(self.aggs, ca);
+                if w != 128 {
+                    return Err("std.process.Child の大きさが 16 バイトでない".into());
+                }
+                let cs = self.t("alloca [4 x i32], align 4".to_string());
+                let ep = self.fs_err_slot();
+                let cap = if f == Output { 1 } else { 0 };
+                let r = self.t(format!("call i64 @ksn_rt_sys_proc_spawn(i32 {}, i32 {}, ptr {}, ptr {})", self.r(args[0]), cap, cs, ep));
+                let neg = self.t(format!("icmp slt i64 {}, 0", r));
+                let okp = self.t(format!("load i128, ptr {}, align 4", cs));
+                let ev = self.t(format!("load i64, ptr {}, align 4", ep));
+                let ev = self.t(format!("zext i64 {} to i128", ev));
+                let pay = self.t(format!("select i1 {}, i128 {}, i128 {}", neg, ev, okp));
+                self.pack(d, 128, &neg, &pay);
+            }
+            Wait => {
+                let Ty::Res(Pay::Agg(ca), _) = i.ty else { return Err("proc.wait の結果が Result<ExitStatus, _> でない".into()) };
+                if agg_bits(self.aggs, ca) != 64 {
+                    return Err("std.process.ExitStatus の大きさが 8 バイトでない".into());
+                }
+                let st = self.t("alloca [2 x i32], align 4".to_string());
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_proc_wait(i32 {}, ptr {}, ptr {})", self.r(args[0]), st, ep));
+                let neg = self.t(format!("icmp slt i64 {}, 0", r));
+                let okp = self.t(format!("load i64, ptr {}, align 4", st));
+                let ev = self.t(format!("load i64, ptr {}, align 4", ep));
+                let pay = self.t(format!("select i1 {}, i64 {}, i64 {}", neg, ev, okp));
+                self.pack(d, 64, &neg, &pay);
+            }
+            Kill => {
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_proc_kill(i32 {}, ptr {})", self.r(args[0]), ep));
+                self.fs_result(d, &r, &ep);
+            }
+        }
+        Ok(())
+    }
+
     /// `std.fs` の失敗の受け口 (`[ErrorKind の添字, errno]` の 2 つの i32)。`sysrt.c` の `fail` と同じ書き方。
     fn fs_err_slot(&mut self) -> String {
         let ep = self.t("alloca [2 x i32], align 4".to_string());
@@ -1465,6 +1532,7 @@ impl<'a> Fe<'a> {
                     self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
                     Ok(())
                 }
+                Op::Proc { f, args } => self.proc_op(&d, i, *f, args),
                 Op::Abort => {
                     // 文言は出さず、終了コード 101 で終わる (Panic と同じく、後ろは新しいラベルから続ける)
                     let n = self.n + 1;
@@ -1877,6 +1945,7 @@ impl<'a> Fe<'a> {
                 let result = self.t(format!("select i1 {}, i129 0, i129 {}", isnull, some));
                 self.mov(&d, "i129", &result);
             }
+            Op::Proc { f, args } => self.proc_op(&d, i, *f, args)?,
             Op::FsCreate { path } | Op::FsOpen { path } => {
                 self.cx.fs = true;
                 let is_create = matches!(i.op, Op::FsCreate { .. });

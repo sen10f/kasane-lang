@@ -47,6 +47,7 @@ pub struct Interp {
     ffi_depth: usize,
     /// std.net のソケット表
     pub net: crate::net::NetTable,
+    pub procs: crate::process::ProcTable,
     /// `std.thread.spawn` したスレッド (spawn の順)。
     ///
     /// インタプリタは単一スレッド (値は `Rc`)。スレッドは spawn の時点では走らせず、本体を保留する。
@@ -207,6 +208,7 @@ impl Interp {
             cbs: vec![],
             ffi_depth: 0,
             net: Default::default(),
+            procs: Default::default(),
             threads: vec![],
         }
     }
