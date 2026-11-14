@@ -1312,6 +1312,13 @@ impl Interp {
                 _ => {}
             }
         }
+        // 本体が Kasane の `core.slice.<name>` (spec/stdlib/core/slice.ksnl): 受け手をそのまま第 1 引数に渡す。
+        let vec_fn = if matches!(v, Val::Vec(_)) { self.p.funcs.get(&format!("alloc.vec.Vec.{}", name)).copied() } else { None };
+        if let Some(wi) = vec_fn.or_else(|| self.p.funcs.get(&format!("core.slice.{}", name)).copied()) {
+            let mut all = vec![v.clone()];
+            all.extend(args);
+            return self.call_def(wi, all);
+        }
         panic(format!("no method {} on slice/Vec", name))
     }
 

@@ -1,0 +1,251 @@
+fn core.slice.binary_search[T: core.cmp.Ord](self: &[T], x: &T) -> Result<usize, usize> uses [] panics never pub
+    let mut lo = 0usize
+    let mut hi = self.len()
+    while lo < hi {
+        let mid = lo.wrapping_add(hi.wrapping_sub(lo) / 2usize)
+        match self.get(mid) {
+            Some(y) => {
+                match y.cmp(x) {
+                    core.cmp.Ordering.Less => {
+                        lo = mid.wrapping_add(1usize)
+                    }
+                    core.cmp.Ordering.Equal => {
+                        return Ok(mid)
+                    }
+                    core.cmp.Ordering.Greater => {
+                        hi = mid
+                    }
+                }
+            }
+            None => {
+                return Err(lo)
+            }
+        }
+    }
+    Err(lo)
+end core.slice.binary_search
+
+fn core.slice.insertion_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](s: &mut [T], f: &F, from: usize, to: usize) -> () uses [E] panics P
+    let mut i = from.wrapping_add(1usize)
+    while i < to {
+        let mut j = i
+        while j > from && core.slice.less_at(&*s, f, j, j.wrapping_sub(1usize)) {
+            match s.swap(j, j.wrapping_sub(1usize)) {
+                Ok(_done) => {
+                }
+                Err(_error) => {
+                    return
+                }
+            }
+            j = j.wrapping_sub(1usize)
+        }
+        i = i.wrapping_add(1usize)
+    }
+end core.slice.insertion_by
+
+fn core.slice.less_at[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](s: &[T], f: &F, i: usize, j: usize) -> bool uses [E] panics P
+    match s.get(i) {
+        Some(a) => {
+            match s.get(j) {
+                Some(b) => {
+                    match f.call((a, b)) {
+                        core.cmp.Ordering.Less => {
+                            true
+                        }
+                        core.cmp.Ordering.Equal => {
+                            false
+                        }
+                        core.cmp.Ordering.Greater => {
+                            false
+                        }
+                    }
+                }
+                None => {
+                    false
+                }
+            }
+        }
+        None => {
+            false
+        }
+    }
+end core.slice.less_at
+
+fn core.slice.min_usize(a: usize, b: usize) -> usize uses [] panics never
+    if a < b {
+        a
+    } else {
+        b
+    }
+end core.slice.min_usize
+
+fn core.slice.reverse[T](self: &mut [T]) -> () uses [] panics never pub
+    core.slice.reverse_range(self, 0usize, self.len())
+end core.slice.reverse
+
+fn core.slice.reverse_range[T](s: &mut [T], from: usize, to: usize) -> () uses [] panics never
+    let mut i = from
+    let mut j = to
+    while i < j {
+        j = j.wrapping_sub(1usize)
+        match s.swap(i, j) {
+            Ok(_done) => {
+            }
+            Err(_error) => {
+                return
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+end core.slice.reverse_range
+
+fn core.slice.rotate_range[T](s: &mut [T], a: usize, m: usize, b: usize) -> () uses [] panics never
+    core.slice.reverse_range(s, a, m)
+    core.slice.reverse_range(s, m, b)
+    core.slice.reverse_range(s, a, b)
+end core.slice.rotate_range
+
+fn core.slice.sift_down_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](s: &mut [T], f: &F, from: usize, stop: usize) -> () uses [E] panics P
+    let mut root = from
+    loop {
+        let mut child = root.wrapping_mul(2usize).wrapping_add(1usize)
+        if child >= stop {
+            return
+        }
+        let next = child.wrapping_add(1usize)
+        if next < stop && core.slice.less_at(&*s, f, child, next) {
+            child = next
+        }
+        if core.slice.less_at(&*s, f, root, child) {
+            match s.swap(root, child) {
+                Ok(_done) => {
+                }
+                Err(_error) => {
+                    return
+                }
+            }
+            root = child
+        } else {
+            return
+        }
+    }
+end core.slice.sift_down_by
+
+fn core.slice.sort[T: core.cmp.Ord](self: &mut [T]) -> () uses [] panics never pub
+    self.sort_by(fn(a: &T, b: &T) -> core.cmp.Ordering capture [] {
+        a.cmp(b)
+    })
+end core.slice.sort
+
+fn core.slice.sort_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](self: &mut [T], compare: F) -> () uses [E] panics P pub
+    let n = self.len()
+    let block = 12usize
+    let mut start = 0usize
+    while start < n {
+        let stop = core.slice.min_usize(start.wrapping_add(block), n)
+        core.slice.insertion_by(self, &compare, start, stop)
+        start = stop
+    }
+    let mut width = block
+    while width < n {
+        let mut a = 0usize
+        while a < n {
+            let m = core.slice.min_usize(a.wrapping_add(width), n)
+            let b = core.slice.min_usize(m.wrapping_add(width), n)
+            core.slice.symmerge_by(self, &compare, a, m, b)
+            a = b
+        }
+        width = width.wrapping_mul(2usize)
+    }
+end core.slice.sort_by
+
+fn core.slice.sort_unstable[T: core.cmp.Ord](self: &mut [T]) -> () uses [] panics never pub
+    self.sort_unstable_by(fn(a: &T, b: &T) -> core.cmp.Ordering capture [] {
+        a.cmp(b)
+    })
+end core.slice.sort_unstable
+
+fn core.slice.sort_unstable_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](self: &mut [T], compare: F) -> () uses [E] panics P pub
+    let n = self.len()
+    let mut start = n / 2usize
+    while start > 0usize {
+        start = start.wrapping_sub(1usize)
+        core.slice.sift_down_by(self, &compare, start, n)
+    }
+    let mut stop = n
+    while stop > 1usize {
+        stop = stop.wrapping_sub(1usize)
+        match self.swap(0usize, stop) {
+            Ok(_done) => {
+            }
+            Err(_error) => {
+                return
+            }
+        }
+        core.slice.sift_down_by(self, &compare, 0usize, stop)
+    }
+end core.slice.sort_unstable_by
+
+fn core.slice.symmerge_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](s: &mut [T], f: &F, a: usize, m: usize, b: usize) -> () uses [E] panics P stack 4096
+    if a >= m || m >= b {
+        return
+    }
+    if m.wrapping_sub(a) == 1usize {
+        let mut i = m
+        let mut j = b
+        while i < j {
+            let h = i.wrapping_add(j.wrapping_sub(i) / 2usize)
+            if core.slice.less_at(&*s, f, h, a) {
+                i = h.wrapping_add(1usize)
+            } else {
+                j = h
+            }
+        }
+        core.slice.rotate_range(s, a, m, i)
+        return
+    }
+    if b.wrapping_sub(m) == 1usize {
+        let mut i = a
+        let mut j = m
+        while i < j {
+            let h = i.wrapping_add(j.wrapping_sub(i) / 2usize)
+            if core.slice.less_at(&*s, f, m, h) {
+                j = h
+            } else {
+                i = h.wrapping_add(1usize)
+            }
+        }
+        core.slice.rotate_range(s, i, m, b.wrapping_sub(0usize))
+        return
+    }
+    let mid = a.wrapping_add(b) / 2usize
+    let n = mid.wrapping_add(m)
+    let mut start = 0usize
+    let mut r = 0usize
+    if m > mid {
+        start = n.wrapping_sub(b)
+        r = mid
+    } else {
+        start = a
+        r = m
+    }
+    let p = n.wrapping_sub(1usize)
+    while start < r {
+        let c = start.wrapping_add(r.wrapping_sub(start) / 2usize)
+        if core.slice.less_at(&*s, f, p.wrapping_sub(c), c) {
+            r = c
+        } else {
+            start = c.wrapping_add(1usize)
+        }
+    }
+    let stop = n.wrapping_sub(start)
+    if start < m && m < stop {
+        core.slice.rotate_range(s, start, m, stop)
+    }
+    if a < start && start < mid {
+        core.slice.symmerge_by(s, f, a, start, mid)
+    }
+    if mid < stop && stop < b {
+        core.slice.symmerge_by(s, f, mid, stop, b)
+    }
+end core.slice.symmerge_by
