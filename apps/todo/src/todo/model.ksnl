@@ -86,7 +86,7 @@ fn todo.model.push_quoted(out: &mut alloc.string.String<std.alloc.System>, text:
         }
     }
     out.push_str("\"")?
-    Ok(out)
+    Ok(())
 end todo.model.push_quoted
 
 fn todo.model.test_memory() -> todo.model.Todo uses [alloc] panics may
