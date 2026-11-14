@@ -70,6 +70,10 @@ pub fn file_key(rel: &str, text: &str) -> String {
 /// 既定は有効。`KSN_CHECK_CACHE=0` で無効、`1` で有効。
 /// 置き場の上限と古いものの削除 (`trim`) を入れたので、既定で有効にできる (設計_増分検査.md 4 章)。
 pub fn enabled() -> bool {
+    // キーに対象の幅が入っていない。32 ビットの検査 (wasm32) が 64 ビットの結果を読まないよう、幅が違うときは使わない。
+    if crate::ptrwidth::bits() != 64 {
+        return false;
+    }
     match std::env::var("KSN_CHECK_CACHE").ok().as_deref() {
         Some("1") => true,
         Some("0") => false,

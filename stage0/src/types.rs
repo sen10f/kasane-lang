@@ -4449,6 +4449,8 @@ fn int_literal_problem(text: &str, ty: &str) -> Option<String> {
         "i16" | "u16" => 16,
         "i32" | "u32" => 32,
         "i128" | "u128" => 128,
+        // `usize` / `isize` はターゲットの幅 (4.5。wasm32 は 32 ビット)。
+        "isize" | "usize" => crate::ptrwidth::bits(),
         _ => 64,
     };
     let signed = ty.starts_with('i');

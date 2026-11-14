@@ -751,6 +751,21 @@ fn cmd_check(json: bool) -> i32 {
     if rep.fatal() { 1 } else { 0 }
 }
 
+/// `--target <三つ組>` の検査の幅 (ポインタの幅)。省略と `host` は今の機械 (64 ビット)。未知の三つ組は E9040。
+fn target_bits_arg(args: &[String]) -> Result<u32, String> {
+    let Some(name) = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)) else { return Ok(64) };
+    if name == "host" {
+        return Ok(64);
+    }
+    match crate::kir_llvm::target_of(name) {
+        Some(t) => Ok(t.ptr_bits),
+        None => {
+            let names: Vec<&str> = crate::kir_llvm::TARGETS.iter().map(|t| t.name).collect();
+            Err(format!("ksn: E9040: unsupported target `{}` (supported: {})", name, names.join(", ")))
+        }
+    }
+}
+
 /// `Package::source` の印。標準ライブラリ (`spec/stdlib`) を 1 つのパッケージとして検査するときに使う。
 const STDLIB_SOURCE: &str = "stdlib";
 
@@ -2426,6 +2441,8 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     } else {
         crate::kir_llvm::host_target()
     };
+    // `usize` / `isize` / ポインタの幅を対象から決める (検査のリテラル範囲と KIR の大きさの両方が読む)。
+    let _width = crate::ptrwidth::Guard::set(tgt.map_or(64, |t| t.ptr_bits));
     if explicit && backend != "llvm" {
         eprintln!("ksn: E9040: `--target {}` needs `--backend llvm` (the C backend builds only for this machine)", target);
         return 1;
@@ -2529,7 +2546,13 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     }
     let prog = prog.unwrap();
     let entry = l.pkg.entry();
-    let exe = out.join(if cfg!(windows) { format!("{}.exe", name) } else { format!("{}.native", name) });
+    let exe = out.join(if cfg!(windows) {
+        format!("{}.exe", name)
+    } else if crate::kir_llvm::is_wasm(tgt) {
+        format!("{}.wasm", name)
+    } else {
+        format!("{}.native", name)
+    });
     // キャッシュに同じキーの生成物があれば複製し、コンパイルとリンクを省く。
     let stored = cached.join(ARTIFACT_DIR).join(exe.file_name().expect("exe has a file name"));
     let reused = entry.is_some() && fs::copy(&stored, &exe).is_ok();
@@ -2723,12 +2746,82 @@ fn runtime_c_args(ll: &str, src: &Path) -> Vec<String> {
     args
 }
 
+/// wasm32-unknown-unknown の実行時 (C) と、libc の見出しの最小 (`src/wasm/`)。`wasm_link` が一時の場所へ書く。
+const WASM_RT: &str = include_str!("wasm/rt.c");
+const WASM_KIR_RT: &str = include_str!("kir_rt.c");
+const WASM_HEADERS: [(&str, &str); 4] = [
+    ("stdio.h", include_str!("wasm/include/stdio.h")),
+    ("stdlib.h", include_str!("wasm/include/stdlib.h")),
+    ("string.h", include_str!("wasm/include/string.h")),
+    ("math.h", include_str!("wasm/include/math.h")),
+];
+
+/// LLVM IR を `wasm32-unknown-unknown` の素の `.wasm` にする (修正プラン 5-3)。
+/// clang で IR と実行時 (`rt.c`、`kir_rt.c`) をそれぞれ wasm32 の目的ファイルにし、`wasm-ld` でつなぐ。
+/// 未定義の記号は `ksn_write` と `ksn_exit` だけ import として許す (それ以外は、リンクが失敗して理由が出る)。
+/// 道具は `KSN_CLANG` / `KSN_WASM_LD` で上書きできる (既定は `clang` と `wasm-ld-20`、無ければ `wasm-ld`)。
+fn wasm_link(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
+    let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let ld = std::env::var("KSN_WASM_LD").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "wasm-ld-20".to_string());
+    let dir = exe.with_extension("wasm.d");
+    let _ = fs::remove_dir_all(&dir);
+    let inc = dir.join("include");
+    fs::create_dir_all(&inc).map_err(|e| format!("{} を作れない: {}", inc.display(), e))?;
+    let put = |p: PathBuf, s: &str| fs::write(&p, s).map_err(|e| format!("{} を書けない: {}", p.display(), e));
+    for (name, text) in WASM_HEADERS {
+        put(inc.join(name), text)?;
+    }
+    let (ir, rt, krt, allow) = (dir.join("ir.ll"), dir.join("rt.c"), dir.join("kir_rt.c"), dir.join("allow.txt"));
+    put(ir.clone(), ll)?;
+    put(rt.clone(), WASM_RT)?;
+    put(krt.clone(), WASM_KIR_RT)?;
+    put(allow.clone(), "ksn_write\nksn_exit\n")?;
+    let (oir, ort, okrt) = (dir.join("ir.o"), dir.join("rt.o"), dir.join("kir_rt.o"));
+    let triple = "--target=wasm32-unknown-unknown";
+    let inc_arg = format!("-isystem{}", inc.display());
+    let run = |cmd: &str, args: Vec<String>, what: &str| -> Result<(), String> {
+        let o = std::process::Command::new(cmd).args(&args).output().map_err(|e| format!("{} を起動できない ({}: {})", what, cmd, e))?;
+        if o.status.success() {
+            Ok(())
+        } else {
+            Err(format!("{} が失敗した: {}", what, String::from_utf8_lossy(&o.stderr).trim()))
+        }
+    };
+    let s = |x: &str| x.to_string();
+    let p = |x: &Path| x.display().to_string();
+    let r1 = run(&clang, [vec![s(opt), s("-Wno-override-module"), s(triple), s("-c"), s("-x"), s("ir"), p(&ir), s("-o"), p(&oir)]].concat(), "clang (IR → wasm32)");
+    let r2 = r1.and_then(|_| run(&clang, vec![s("-O1"), s(triple), s("-ffreestanding"), s("-fno-builtin"), s(&inc_arg), s("-c"), s("-x"), s("c"), p(&rt), s("-o"), p(&ort)], "clang (rt.c)"));
+    let r3 = r2.and_then(|_| run(&clang, vec![s("-O1"), s(triple), s("-ffreestanding"), s("-fno-builtin"), s(&inc_arg), s("-c"), s("-x"), s("c"), p(&krt), s("-o"), p(&okrt)], "clang (kir_rt.c)"));
+    let r4 = r3.and_then(|_| {
+        let args = vec![
+            p(&oir),
+            p(&ort),
+            p(&okrt),
+            s("--no-entry"),
+            s("--export=ksn_main"),
+            s("--gc-sections"),
+            format!("--allow-undefined-file={}", p(&allow)),
+            s("-o"),
+            p(exe),
+        ];
+        run(&ld, args, "wasm-ld")
+    });
+    let _ = fs::remove_dir_all(&dir);
+    if r4.is_err() {
+        let _ = fs::remove_file(exe);
+    }
+    r4
+}
+
 fn clang_extra_args() -> Vec<String> {
     std::env::var("KSN_CLANG_ARGS").map(|s| s.split_whitespace().map(|x| x.to_string()).collect()).unwrap_or_default()
 }
 
 /// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。
 fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Target>) -> Result<(), String> {
+    if crate::kir_llvm::is_wasm(target) {
+        return wasm_link(ll, exe, opt);
+    }
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let src = exe.with_extension("ll.tmp");
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
@@ -2815,9 +2908,17 @@ pub fn main_cli(args: Vec<String>) -> i32 {
                 2
             }
         },
-        "check" => {
-            cmd_check(rest.iter().any(|a| a == "--json"))
-        }
+        "check" => match target_bits_arg(&rest) {
+            // `--target wasm32-unknown-unknown` は `usize` / `isize` の幅を 32 ビットにして検査する (リテラルの範囲、修正プラン 4-2)。
+            Ok(bits) => {
+                let _width = crate::ptrwidth::Guard::set(bits);
+                cmd_check(rest.iter().any(|a| a == "--json"))
+            }
+            Err(why) => {
+                eprintln!("{}", why);
+                1
+            }
+        },
         "check-stdlib" => cmd_check_stdlib(rest.iter().any(|a| a == "--json")),
         "run" => cmd_run(&rest),
         "test" => cmd_test(&rest),

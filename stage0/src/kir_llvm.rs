@@ -38,7 +38,8 @@ fn vbits(aggs: &[AggDef], t: Ty) -> u32 {
         Ty::Unit => 0,
         Ty::Bool => 1,
         Ty::F32 => 32,
-        Ty::F64 | Ty::Ptr | Ty::Ref(..) => 64,
+        Ty::F64 => 64,
+        Ty::Ptr | Ty::Ref(..) => crate::ptrwidth::bits(),
         Ty::Agg(i) => agg_bits(aggs, i),
         Ty::Opt(_) | Ty::Res(..) => 1 + slot_bits(aggs, t),
         t => t.bits(),
@@ -74,7 +75,8 @@ fn lty(aggs: &[AggDef], t: Ty) -> String {
         Ty::I8 | Ty::U8 | Ty::Unit => "i8".into(),
         Ty::I16 | Ty::U16 => "i16".into(),
         Ty::I32 | Ty::U32 => "i32".into(),
-        Ty::I64 | Ty::U64 | Ty::Isize | Ty::Usize => "i64".into(),
+        Ty::I64 | Ty::U64 => "i64".into(),
+        Ty::Isize | Ty::Usize => size_ty(),
         Ty::I128 | Ty::U128 => "i128".into(),
         Ty::F32 => "float".into(),
         Ty::F64 => "double".into(),
@@ -287,6 +289,30 @@ fn str_const(name: &str, s: &str) -> String {
     format!("@{} = private unnamed_addr constant [{} x i8] c\"{}\"\n", name, s.len(), c_escape(s))
 }
 
+/// wasm32 で作れない形 (スレッド・ファイル・ソケット・プロセス・環境・実時刻・浮動小数の書式化) を使っていれば、その理由。
+/// 出力は素の wasm で、libc もホストの資源もないので、対応しないものは理由つきで失敗させる (`WASM ABI` の章)。
+fn wasm_unsupported(ir: &str) -> Option<String> {
+    let has = |p: &str| ir.contains(p);
+    let why = if has("pthread_") || has("@ksn.thr.") {
+        "スレッド (spawn / join / チャネル / Mutex) は wasm32 では未対応 (単一スレッドの素の wasm)"
+    } else if has("@ksn_rt_sys_net_") || has("@ksn.net_") || has("@accept(") || has("@getsockname(") || has("@socket(") {
+        "std.net (ソケット) は wasm32 では未対応"
+    } else if has("@ksn_rt_sys_proc_") {
+        "std.process (外部コマンド) は wasm32 では未対応"
+    } else if has("@ksn_rt_sys_open(") || has("@ksn_rt_sys_exists(") || has("@ksn_rt_sys_remove(") || has("@ksn_rt_sys_rename(") || has("@ksn_rt_sys_stat(") || has("@ksn_rt_sys_readdir(") {
+        "std.fs (ファイル) は wasm32 では未対応"
+    } else if has("@ksn_rt_sys_arg") || has("@ksn_rt_sys_var(") {
+        "std.env・引数 (ホストの環境) は wasm32 では未対応"
+    } else if has("@ksn_rt_sys_wall_ns") {
+        "実時刻 (std.time.SystemTime) は wasm32 では未対応"
+    } else if has("@ksn_fmt_") {
+        "浮動小数の書式化 (表示・文字列化) は wasm32 では未対応 (最短の往復表示に libc の snprintf / strtod が要る)"
+    } else {
+        return None;
+    };
+    Some(format!("{}。WASM ABI の章 (仕様) を参照: wasm32 で使えるのは入出力 (標準出力・標準エラー)・確保・整数と論理の計算・文字列と配列", why))
+}
+
 /// クロスコンパイルの対象 (三つ組)。LLVM IR の `target triple` / `target datalayout` と、clang に渡す探索先を決める。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -298,23 +324,50 @@ pub struct Target {
     pub datalayout: &'static str,
     /// 既定の sysroot (C の開発ファイルと libc / libm)。空ならホストの既定 (clang に任せる)。`KSN_SYSROOT` で上書きする。
     pub sysroot: &'static str,
+    /// ポインタの幅 (ビット)。`usize` / `isize` / 生ポインタ / 参照の幅 (`ptrwidth`)。wasm32 は 32、ほかは 64。
+    pub ptr_bits: u32,
 }
 
 /// 対応するターゲット。ほかの三つ組は `target_of` が `None` を返す (呼び出し側が理由を出す)。
-pub const TARGETS: [Target; 2] = [
+/// `wasm32-unknown-unknown` は、ブラウザが主目標なので WASI ではなく素の wasm (import は `env` の数個だけ、`WASM ABI` 参照)。
+pub const TARGETS: [Target; 3] = [
     Target {
         name: "x86_64-linux-gnu",
         triple: "x86_64-unknown-linux-gnu",
         datalayout: "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
         sysroot: "",
+        ptr_bits: 64,
     },
     Target {
         name: "aarch64-linux-gnu",
         triple: "aarch64-unknown-linux-gnu",
         datalayout: "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
         sysroot: "/usr/aarch64-linux-gnu",
+        ptr_bits: 64,
+    },
+    Target {
+        name: "wasm32-unknown-unknown",
+        triple: "wasm32-unknown-unknown",
+        datalayout: "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20",
+        sysroot: "",
+        ptr_bits: 32,
     },
 ];
+
+/// `wasm32` の対象か (素の wasm。ファイルは `.wasm`、実行は `tools/wasm/run.mjs` か JS の `WebAssembly` で行う)。
+pub fn is_wasm(t: Option<Target>) -> bool {
+    t.is_some_and(|t| t.ptr_bits == 32 && t.triple.starts_with("wasm32"))
+}
+
+/// `usize` / `isize` の LLVM の型 (今のポインタの幅)。
+fn size_ty() -> String {
+    format!("i{}", crate::ptrwidth::bits())
+}
+
+/// 生ポインタを整数で表すときの型 (今のポインタの幅。`ptrtoint` / `inttoptr` の相手)。
+fn pty() -> String {
+    format!("i{}", crate::ptrwidth::bits())
+}
 
 /// 三つ組の名前から対象を引く。
 pub fn target_of(name: &str) -> Option<Target> {
@@ -366,6 +419,12 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     let Some(ef) = m.find(entry) else {
         return Err(format!("関数 {} がない", entry));
     };
+    if let Some(tg) = target.filter(|tg| tg.ptr_bits == 32) {
+        // C の関数を呼ぶ `extern` (FFI) は、wasm32 では呼び先がない。理由を出して止める。
+        if let Some(f) = m.funcs.iter().find(|f| f.link.is_some()) {
+            return Err(format!("extern {}: C の関数を呼ぶ FFI は {} では未対応 (libc もリンク先もない)", f.key, tg.name));
+        }
+    }
     let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
     let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
     let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int };
@@ -427,20 +486,22 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         math.push('\n');
         math.push_str(&emit_math(&mut cx, mf));
     }
+    // libc の `size_t` / `ssize_t` は、ターゲットのポインタの幅 (wasm32 は i32)。
+    let sz = size_ty();
     for d in [
-        "declare i32 @dprintf(i32, ptr, ...)",
-        "declare i32 @printf(ptr, ...)",
-        "declare void @exit(i32) noreturn",
-        "declare ptr @malloc(i64)",
-        "declare ptr @realloc(ptr, i64)",
-        "declare void @free(ptr)",
-        "declare i64 @strtoull(ptr, ptr, i32)",
+        "declare i32 @dprintf(i32, ptr, ...)".to_string(),
+        "declare i32 @printf(ptr, ...)".to_string(),
+        "declare void @exit(i32) noreturn".to_string(),
+        format!("declare ptr @malloc({sz})"),
+        format!("declare ptr @realloc(ptr, {sz})"),
+        "declare void @free(ptr)".to_string(),
+        "declare i64 @strtoull(ptr, ptr, i32)".to_string(),
     ] {
-        cx.decls.insert(d.to_string());
+        cx.decls.insert(d);
     }
     if cx.fmt_float {
-        cx.decls.insert("declare i32 @snprintf(ptr, i64, ptr, ...)".to_string());
-        cx.decls.insert("declare i64 @strlen(ptr)".to_string());
+        cx.decls.insert(format!("declare i32 @snprintf(ptr, {sz}, ptr, ...)"));
+        cx.decls.insert(format!("declare {sz} @strlen(ptr)"));
         cx.decls.insert("declare double @strtod(ptr, ptr)".to_string());
         cx.decls.insert("declare float @strtof(ptr, ptr)".to_string());
     }
@@ -478,7 +539,8 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         out.push('\n');
     }
     out.push('\n');
-    out.push_str("@ksn.depth = internal thread_local global i64 0\n");
+    // 単一スレッドの wasm32 には TLS がない (`thread_local` は LLVM が拒む)。大域の計数で足りる。
+    out.push_str(if is_wasm(target) { "@ksn.depth = internal global i64 0\n" } else { "@ksn.depth = internal thread_local global i64 0\n" });
     out.push_str(&str_const("ksn.fmt.res", "\x01%llx %llx\n\0"));
     out.push_str(&str_const("ksn.fmt.so", "stack overflow\n\0"));
     out.push_str(&str_const("ksn.fmt.index", "panic: index out of bounds: the len is %llu but the index is %llu\n\0"));
@@ -492,7 +554,23 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             "define private void @ksn.panic.{n}() noreturn cold {{\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.msg.{n})\n  call void @exit(i32 101)\n  unreachable\n}}\n\n"
         ));
     }
-    out.push_str("define private void @ksn.panic.index(i64 %len, i64 %ix) noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.index, i64 %len, i64 %ix)\n  call void @exit(i32 101)\n  unreachable\n}\n\n");
+    {
+        // `%llu` は 64 ビットの可変引数を読む。wasm32 の `usize` は 32 ビットなので、先に広げて渡す (x86_64 は広げない)。
+        let sz = size_ty();
+        let (a, b) = if sz == "i64" {
+            ("%len".to_string(), "%ix".to_string())
+        } else {
+            ("%len64".to_string(), "%ix64".to_string())
+        };
+        let widen = if sz == "i64" {
+            String::new()
+        } else {
+            format!("  %len64 = zext {sz} %len to i64\n  %ix64 = zext {sz} %ix to i64\n")
+        };
+        out.push_str(&format!(
+            "define private void @ksn.panic.index({sz} %len, {sz} %ix) noreturn cold {{\n{widen}  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.index, i64 {a}, i64 {b})\n  call void @exit(i32 101)\n  unreachable\n}}\n\n"
+        ));
+    }
     out.push_str("define private void @ksn.overflow() noreturn cold {\n  %r = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.fmt.so)\n  call void @exit(i32 102)\n  unreachable\n}\n");
     if cx.fmt_float {
         out.push_str(&fmt_float_helpers());
@@ -501,7 +579,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         out.push_str(&write_helper(&m.aggs)?);
     }
     if cx.eprint {
-        out.push_str(EPRINT_HELPER);
+        out.push_str(&eprint_helper());
     }
     if cx.net {
         out.push_str(&net_helpers(&mut cx, &m.aggs)?);
@@ -510,6 +588,11 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     out.push_str(&math);
     out.push('\n');
     out.push_str(&main);
+    if is_wasm(target) {
+        if let Some(why) = wasm_unsupported(&out) {
+            return Err(why);
+        }
+    }
     // AddressSanitizer が有効なら、全ての関数定義に sanitize_address を付ける (設計_KIR.md 17.9)。
     // `declare` は `define` ではないので置換されない。
     if std::env::var("KSN_CLANG_ARGS")
@@ -558,15 +641,16 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
             let dk = m.find(crate::kir_lower::debug::ENTRY_DEBUG).ok_or("Err の表示の関数 (ksn.entry.debug) がない")?;
             let et = e.ty();
             let w = vbits(aggs, et);
-            cx.decl("declare i64 @write(i32, ptr, i64)");
+            cx.decl(write_decl());
             cx.globals.push_str(&str_const("ksn.s.err", "Error: "));
             cx.globals.push_str(&str_const("ksn.s.nl", "\n"));
             s.push_str(&format!("  %t = lshr i{n} %r, {sb}\n  %tb = trunc i{n} %t to i1\n  br i1 %tb, label %err, label %ok\nerr:\n"));
             s.push_str(&format!("  %pw = trunc i{n} %r to i{sb}\n"));
             let x = if w == sb { "%pw".to_string() } else { s.push_str(&format!("  %pe = trunc i{sb} %pw to i{w}\n")); "%pe".to_string() };
-            s.push_str("  %w1 = call i64 @write(i32 2, ptr @ksn.s.err, i64 7)\n");
+            let z = size_ty();
+            s.push_str(&format!("  %w1 = call {z} @write(i32 2, ptr @ksn.s.err, {z} 7)\n"));
             s.push_str(&format!("  %d = call i8 {}({} {})\n", fname(&dk.key), lty(aggs, et), x));
-            s.push_str("  %w2 = call i64 @write(i32 2, ptr @ksn.s.nl, i64 1)\n  ret i32 1\nok:\n  ret i32 0\n}\n");
+            s.push_str(&format!("  %w2 = call {z} @write(i32 2, ptr @ksn.s.nl, {z} 1)\n  ret i32 1\nok:\n  ret i32 0\n}}\n"));
         }
         _ => s.push_str("  ret i32 0\n}\n"),
     }
@@ -583,7 +667,15 @@ fn errno_name() -> &'static str {
 
 /// `eprint` 命令の実体 `@ksn.eprint(ptr, len)`: stderr (fd 2) へ全バイトを書く。エラーは捨てる (panic の文言の途中なので、`write` の結果の表は要らない)。
 /// `write` と違い `std.io.ErrorKind` の表を使わないので、型表にそれが無くても作れる。
-const EPRINT_HELPER: &str = "define private void @ksn.eprint(ptr %p, i64 %n) {\nentry:\n  br label %loop\nloop:\n  %off = phi i64 [0, %entry], [%off2, %adv]\n  %left = sub i64 %n, %off\n  %done = icmp eq i64 %left, 0\n  br i1 %done, label %ret, label %try\ntry:\n  %q = getelementptr i8, ptr %p, i64 %off\n  %w = call i64 @write(i32 2, ptr %q, i64 %left)\n  %neg = icmp slt i64 %w, 0\n  br i1 %neg, label %ret, label %adv\nadv:\n  %off2 = add i64 %off, %w\n  br label %loop\nret:\n  ret void\n}\n";
+/// libc の `write(int, const void *, size_t) -> ssize_t` の宣言。`size_t` はポインタの幅 (wasm32 は i32)。
+fn write_decl() -> String {
+    let z = size_ty();
+    format!("declare {z} @write(i32, ptr, {z})")
+}
+
+fn eprint_helper() -> String {
+    "define private void @ksn.eprint(ptr %p, i64 %n) {\nentry:\n  br label %loop\nloop:\n  %off = phi i64 [0, %entry], [%off2, %adv]\n  %left = sub i64 %n, %off\n  %done = icmp eq i64 %left, 0\n  br i1 %done, label %ret, label %try\ntry:\n  %q = getelementptr i8, ptr %p, i64 %off\n  %w = call i64 @write(i32 2, ptr %q, i64 %left)\n  %neg = icmp slt i64 %w, 0\n  br i1 %neg, label %ret, label %adv\nadv:\n  %off2 = add i64 %off, %w\n  br label %loop\nret:\n  ret void\n}\n".replace("i64", &size_ty())
+}
 
 /// `write` 命令の実体 `@ksn.write(fd, ptr, len) -> i64` (設計_KIR.md 12.2)。全バイトを書くまで `write(2)` を繰り返し、EINTR は再試行する。
 /// 成功は 0。失敗は `(errno << 32) | ErrorKind の変種の添字` (errno は 0 にならないので、0 と区別できる)。
@@ -594,10 +686,11 @@ fn write_helper(aggs: &[AggDef]) -> R<String> {
     let idx = |n: &str| vs.iter().position(|v| v.name == n).ok_or_else(|| format!("ErrorKind に {} がない", n));
     let errno_fn = errno_name();
     let mut s = String::new();
-    s.push_str("define private i64 @ksn.write(i32 %fd, ptr %p, i64 %n) {\nentry:\n  br label %loop\nloop:\n");
-    s.push_str("  %off = phi i64 [0, %entry], [%off2, %adv], [%off, %fail]\n  %left = sub i64 %n, %off\n  %done = icmp eq i64 %left, 0\n  br i1 %done, label %ok, label %try\n");
-    s.push_str("try:\n  %q = getelementptr i8, ptr %p, i64 %off\n  %w = call i64 @write(i32 %fd, ptr %q, i64 %left)\n  %neg = icmp slt i64 %w, 0\n  br i1 %neg, label %fail, label %adv\n");
-    s.push_str("adv:\n  %off2 = add i64 %off, %w\n  br label %loop\n");
+    let z = size_ty();
+    s.push_str(&format!("define private i64 @ksn.write(i32 %fd, ptr %p, {z} %n) {{\nentry:\n  br label %loop\nloop:\n"));
+    s.push_str(&format!("  %off = phi {z} [0, %entry], [%off2, %adv], [%off, %fail]\n  %left = sub {z} %n, %off\n  %done = icmp eq {z} %left, 0\n  br i1 %done, label %ok, label %try\n"));
+    s.push_str(&format!("try:\n  %q = getelementptr i8, ptr %p, {z} %off\n  %w = call {z} @write(i32 %fd, ptr %q, {z} %left)\n  %neg = icmp slt {z} %w, 0\n  br i1 %neg, label %fail, label %adv\n"));
+    s.push_str(&format!("adv:\n  %off2 = add {z} %off, %w\n  br label %loop\n"));
     s.push_str(&format!("fail:\n  %ep = call ptr @{}()\n  %e = load i32, ptr %ep\n  %intr = icmp eq i32 %e, 4\n  br i1 %intr, label %loop, label %err\n", errno_fn));
     s.push_str("ok:\n  ret i64 0\nerr:\n");
     let mut cur = format!("{}", idx("Other")?);
@@ -645,8 +738,8 @@ fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
     let mut s = String::new();
     // `write` の libc 宣言は、`cx.write` (write/eprint 命令) が立っていればトップの declare ループ
     // (`cx.decls`) で出力される。そうでないときだけここに出力する。
-    let write_decl = "declare i64 @write(i32, ptr, i64)";
-    let write_already = cx.decls.iter().any(|d| d == write_decl);
+    let write_decl = write_decl();
+    let write_already = cx.decls.iter().any(|d| *d == write_decl);
     // 既に `cx.decls` に入っている宣言 (`errno` の取得など) は、トップの宣言の並びに任せて二重に出さない。
     for d in [
         "declare i32 @accept(i32, ptr, ptr)",
@@ -661,7 +754,7 @@ fn net_helpers(cx: &mut Ctx, aggs: &[AggDef]) -> R<String> {
         }
     }
     if !write_already {
-        s.push_str(write_decl);
+        s.push_str(&write_decl);
         s.push('\n');
     }
     macro_rules! hdr {
@@ -1001,6 +1094,27 @@ impl<'a> Fe<'a> {
         self.cx.decl(s);
     }
 
+    /// 64 ビットの語の成分 `v` (`i64`) を、長さ・添字の `usize` の型にする (wasm32 は trunc。x86_64 / aarch64 は同じ値)。
+    fn lane_sz(&mut self, v: &str) -> String {
+        let z = size_ty();
+        if z == "i64" {
+            v.to_string()
+        } else {
+            self.t(format!("trunc i64 {} to {}", v, z))
+        }
+    }
+
+    /// `usize` の値 `v` を `i64` の値にする (C の `long long` の引数など、幅を変えない境界のため)。
+    fn sz_to_i64(&mut self, v: VId) -> String {
+        let z = size_ty();
+        let x = self.r(v);
+        if z == "i64" {
+            x
+        } else {
+            self.t(format!("zext {} {} to i64", z, x))
+        }
+    }
+
     /// 同じ値を別の名前で持つ (同じ型の bitcast は LLVM が畳む)。
     fn mov(&mut self, dst: &str, ty: &str, v: &str) {
         if ty.starts_with('i') && !ty.contains('{') {
@@ -1044,7 +1158,7 @@ impl<'a> Fe<'a> {
         let x = match t {
             Ty::F32 => self.t(format!("bitcast float {} to i32", v)),
             Ty::F64 => self.t(format!("bitcast double {} to i64", v)),
-            Ty::Ptr | Ty::Ref(..) => self.t(format!("ptrtoint ptr {} to i64", v)),
+            Ty::Ptr | Ty::Ref(..) => self.t(format!("ptrtoint ptr {} to {}", v, pty())),
             _ => v.to_string(),
         };
         if w > s {
@@ -1067,7 +1181,7 @@ impl<'a> Fe<'a> {
         match t {
             Ty::F32 => self.t(format!("bitcast i32 {} to float", x)),
             Ty::F64 => self.t(format!("bitcast i64 {} to double", x)),
-            Ty::Ptr | Ty::Ref(..) => self.t(format!("inttoptr i64 {} to ptr", x)),
+            Ty::Ptr | Ty::Ref(..) => self.t(format!("inttoptr {} {} to ptr", pty(), x)),
             _ => x,
         }
     }
@@ -1219,7 +1333,7 @@ impl<'a> Fe<'a> {
             Ty::Bool => self.t(format!("zext i1 {} to i8", v)),
             Ty::F32 => self.t(format!("bitcast float {} to i32", v)),
             Ty::F64 => self.t(format!("bitcast double {} to i64", v)),
-            Ty::Ptr | Ty::Ref(..) => self.t(format!("ptrtoint ptr {} to i64", v)),
+            Ty::Ptr | Ty::Ref(..) => self.t(format!("ptrtoint ptr {} to {}", v, pty())),
             t => {
                 self.field_w(t)?;
                 v.to_string()
@@ -1232,7 +1346,7 @@ impl<'a> Fe<'a> {
             Ty::Bool => self.line(format!("{} = icmp ne i8 {}, 0", dst, b)),
             Ty::F32 => self.line(format!("{} = bitcast i32 {} to float", dst, b)),
             Ty::F64 => self.line(format!("{} = bitcast i64 {} to double", dst, b)),
-            Ty::Ptr | Ty::Ref(..) => self.line(format!("{} = inttoptr i64 {} to ptr", dst, b)),
+            Ty::Ptr | Ty::Ref(..) => self.line(format!("{} = inttoptr {} {} to ptr", dst, pty(), b)),
             t => {
                 let ty = self.lt(t);
                 self.mov(dst, &ty, b)
@@ -1611,12 +1725,13 @@ impl<'a> Fe<'a> {
                 }
                 Op::IndexCheck { i: ix, len } => {
                     let (x, n) = (self.r(*ix), self.r(*len));
-                    let c = self.t(format!("icmp uge i64 {}, {}", x, n));
+                    let sz = size_ty();
+                    let c = self.t(format!("icmp uge {} {}, {}", sz, x, n));
                     self.n += 1;
                     let (p, k) = (format!("p{}", self.n), format!("c{}", self.n));
                     self.line(format!("br i1 {}, label %{}, label %{}", c, p, k));
                     self.label(&p);
-                    self.line(format!("call void @ksn.panic.index(i64 {}, i64 {})", n, x));
+                    self.line(format!("call void @ksn.panic.index({} {}, {} {})", sz, n, sz, x));
                     self.line("unreachable".into());
                     self.label(&k);
                     Ok(())
@@ -1624,12 +1739,13 @@ impl<'a> Fe<'a> {
                 Op::Eprint { data } => {
                     // panic の文言の一部を stderr へ書く (`@ksn.eprint`。エラーは捨てる)。
                     self.cx.eprint = true;
-                    self.cx.decl("declare i64 @write(i32, ptr, i64)");
+                    self.cx.decl(write_decl());
                     let av = self.r(*data);
                     let pi = self.extract(&av, 128, 0, 64);
                     let p = self.t(format!("inttoptr i64 {} to ptr", pi));
                     let n = self.extract(&av, 128, 8, 64);
-                    self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
+                    let n = self.lane_sz(&n);
+                    self.line(format!("call void @ksn.eprint(ptr {}, {} {})", p, size_ty(), n));
                     Ok(())
                 }
                 Op::Proc { f, args } => self.proc_op(&d, i, *f, args),
@@ -1693,11 +1809,12 @@ impl<'a> Fe<'a> {
                     let len_shl = self.t(format!("shl i128 {}, 64", len_i128));
                     let fat = self.t(format!("or i128 {}, {}", len_shl, ptr_i128));
                     self.cx.eprint = true;
-                    self.cx.decl("declare i64 @write(i32, ptr, i64)".to_string());
+                    self.cx.decl(write_decl());
                     let pi = self.extract(&fat, 128, 0, 64);
                     let p = self.t(format!("inttoptr i64 {} to ptr", pi));
                     let n = self.extract(&fat, 128, 8, 64);
-                    self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
+                    let n = self.lane_sz(&n);
+                    self.line(format!("call void @ksn.eprint(ptr {}, {} {})", p, size_ty(), n));
                     Ok(())
                 }
                 _ => Ok(()),
@@ -1921,12 +2038,20 @@ impl<'a> Fe<'a> {
             }
             Op::PtrAdd { p, off } => {
                 let (pv, o) = (self.r(*p), self.r(*off));
-                self.line(format!("{} = getelementptr i8, ptr {}, i64 {}", d, pv, o));
+                let ot = self.lt(self.ty(*off));
+                self.line(format!("{} = getelementptr i8, ptr {}, {} {}", d, pv, ot, o));
             }
             Op::Utf8Valid { p, len } => {
                 self.cx.decl("declare i64 @ksn_utf8_valid(ptr, i64)".to_string());
-                let (pv, n) = (self.r(*p), self.r(*len));
-                self.line(format!("{} = call i64 @ksn_utf8_valid(ptr {}, i64 {})", d, pv, n));
+                let pv = self.r(*p);
+                let n = self.sz_to_i64(*len);
+                if size_ty() == "i64" {
+                    self.line(format!("{} = call i64 @ksn_utf8_valid(ptr {}, i64 {})", d, pv, n));
+                } else {
+                    // 結果は `usize` (wasm32 は 32 ビット)。C の戻り値 (64 ビット) を狭める。
+                    let r = self.t(format!("call i64 @ksn_utf8_valid(ptr {}, i64 {})", pv, n));
+                    self.line(format!("{} = trunc i64 {} to {}", d, r, size_ty()));
+                }
             }
             Op::MemLoad { p, off } => {
                 let pv = self.r(*p);
@@ -1948,13 +2073,14 @@ impl<'a> Fe<'a> {
                     return Err("std.io.Error の幅が 8 バイトでない".into());
                 }
                 self.cx.write = true;
-                self.cx.decl("declare i64 @write(i32, ptr, i64)");
+                self.cx.decl(write_decl());
                 self.cx.decl(format!("declare ptr @{}()", errno_name()));
                 let (f, av) = (self.r(*fd), self.r(*data));
                 let pi = self.extract(&av, 128, 0, 64);
                 let p = self.t(format!("inttoptr i64 {} to ptr", pi));
                 let n = self.extract(&av, 128, 8, 64);
-                let r = self.t(format!("call i64 @ksn.write(i32 {}, ptr {}, i64 {})", f, p, n));
+                let n = self.lane_sz(&n);
+                let r = self.t(format!("call i64 @ksn.write(i32 {}, ptr {}, {} {})", f, p, size_ty(), n));
                 let ok = self.t(format!("icmp eq i64 {}, 0", r));
                 let tag = self.t(format!("xor i1 {}, true", ok));
                 self.pack(&d, 64, &tag, &r);
@@ -2218,19 +2344,20 @@ impl<'a> Fe<'a> {
             }
             Op::ParseInt { ty, s, radix } => {
                 self.cx.parse_int = true;
-                self.cx.decl("declare i32 @ksn_parse_int(ptr, i64, i32, i32, i32, ptr, ptr)".to_string());
+                self.cx.decl(format!("declare i32 @ksn_parse_int(ptr, {}, i32, i32, i32, ptr, ptr)", size_ty()));
                 let av = self.r(*s);
                 let pi = self.extract(&av, 128, 0, 64);
                 let p = self.t(format!("inttoptr i64 {} to ptr", pi));
                 let n = self.extract(&av, 128, 8, 64);
+                let n = self.lane_sz(&n);
                 let rv = self.r(*radix);
                 let bits = ty.bits();
                 let iss = if ty.signed() { 1 } else { 0 };
                 let lo_ptr = self.t("alloca i64".to_string());
                 let hi_ptr = self.t("alloca i64".to_string());
                 let ret = self.t(format!(
-                    "call i32 @ksn_parse_int(ptr {}, i64 {}, i32 {}, i32 {}, i32 {}, ptr {}, ptr {})",
-                    p, n, rv, bits, iss, lo_ptr, hi_ptr
+                    "call i32 @ksn_parse_int(ptr {}, {} {}, i32 {}, i32 {}, i32 {}, ptr {}, ptr {})",
+                    p, size_ty(), n, rv, bits, iss, lo_ptr, hi_ptr
                 ));
                 let lo = self.t(format!("load i64, i64* {}", lo_ptr));
                 let is_ok = self.t(format!("icmp eq i32 {}, 0", ret));
@@ -2256,23 +2383,26 @@ impl<'a> Fe<'a> {
                 let len_shl = self.t(format!("shl i128 {}, 64", len_i128));
                 let fat = self.t(format!("or i128 {}, {}", len_shl, ptr_i128));
                 self.cx.eprint = true;
-                self.cx.decl("declare i64 @write(i32, ptr, i64)".to_string());
+                self.cx.decl(write_decl());
                 let pi = self.extract(&fat, 128, 0, 64);
                 let p = self.t(format!("inttoptr i64 {} to ptr", pi));
                 let n = self.extract(&fat, 128, 8, 64);
-                self.line(format!("call void @ksn.eprint(ptr {}, i64 {})", p, n));
+                let n = self.lane_sz(&n);
+                self.line(format!("call void @ksn.eprint(ptr {}, {} {})", p, size_ty(), n));
             }
             Op::HeapAlloc(n) => {
                 let nv = self.r(*n);
-                let z = self.t(format!("icmp eq i64 {}, 0", nv));
-                let m = self.t(format!("select i1 {}, i64 1, i64 {}", z, nv));
-                self.line(format!("{} = call ptr @malloc(i64 {})", d, m));
+                let sz = size_ty();
+                let z = self.t(format!("icmp eq {} {}, 0", sz, nv));
+                let m = self.t(format!("select i1 {}, {} 1, {} {}", z, sz, sz, nv));
+                self.line(format!("{} = call ptr @malloc({} {})", d, sz, m));
             }
             Op::HeapRealloc { p, size } => {
                 let (pv, nv) = (self.r(*p), self.r(*size));
-                let z = self.t(format!("icmp eq i64 {}, 0", nv));
-                let m = self.t(format!("select i1 {}, i64 1, i64 {}", z, nv));
-                self.line(format!("{} = call ptr @realloc(ptr {}, i64 {})", d, pv, m));
+                let sz = size_ty();
+                let z = self.t(format!("icmp eq {} {}, 0", sz, nv));
+                let m = self.t(format!("select i1 {}, {} 1, {} {}", z, sz, sz, nv));
+                self.line(format!("{} = call ptr @realloc(ptr {}, {} {})", d, pv, sz, m));
             }
         }
         Ok(())
