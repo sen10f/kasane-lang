@@ -13,7 +13,7 @@
 use crate::check::{items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{AggKind, Aop, BoolOp, Cc, Op, Pay, Pointee, Term, Ty, VId};
 use crate::parser::V;
-use crate::program::FromVariant;
+use crate::program::{FromVariant, Target as Tgt};
 use crate::types::{from_v, Ty as Src};
 use std::collections::HashSet;
 
@@ -300,9 +300,13 @@ impl<'a> Lw<'a> {
         }
         let t = self.ty_of(e)?;
         let Some(a) = self.expr(&args[0])? else { return Ok(None) };
-        // `Some(&x)` / `Some(x)` で `Option<&T>` (T は所有物を持つ型) を作る: 借用の番地を `bref` に包む。
-        let a = match (name, t) {
-            ("Some", Ty::Opt(Pay::Agg(bi))) if self.agg_def(bi).name == "bref" && matches!(self.vty(a), Ty::Ptr | Ty::Ref(..)) => {
+        // `Some(&x)` / `Ok(&x)` で `Option<&T>` / `Result<&T, E>` (T は所有物を持つ型) を作る: 借用の番地を `bref` に包む。
+        let bref_pay: Option<Pay> = match (name, t) {
+            ("Some", Ty::Opt(p)) | ("Ok", Ty::Res(p, _)) => Some(p),
+            _ => None,
+        };
+        let a = match bref_pay {
+            Some(Pay::Agg(bi)) if self.agg_def(bi).name == "bref" && matches!(self.vty(a), Ty::Ptr | Ty::Ref(..)) => {
                 let p = if self.vty(a) == Ty::Ptr { a } else { self.emit(Ty::Ptr, Op::Bitcast { src: self.vty(a), a }) };
                 self.emit(Ty::Agg(bi), Op::Make { variant: None, fields: vec![p] })
             }
@@ -539,9 +543,9 @@ impl<'a> Lw<'a> {
                 let tag_ok = if want_tag { tag } else { self.emit(Ty::Bool, Op::Not(tag)) };
                 let pv = self.emit(pay_ty, Op::Payload(v));
                 // `Option<&T>` (T は所有物を持つ型): ペイロードは要素の番地。腕では借用として束縛する (17.18)。
-                if let (Ty::Agg(bi), "Some") = (pay_ty, segs[0].as_str()) {
+                if let (Ty::Agg(bi), "Some" | "Ok") = (pay_ty, segs[0].as_str()) {
                     if self.agg_def(bi).name == "bref" {
-                        let c = self.bref_pat(sub, pv, t, line)?;
+                        let c = self.bref_pat(sub, pv, t, tag_ok, line)?;
                         return Ok(self.emit(Ty::Bool, Op::Bool(BoolOp::And, tag_ok, c)));
                     }
                 }
@@ -558,43 +562,81 @@ impl<'a> Lw<'a> {
         }
     }
 
-    /// `Some(sub)` の `sub` を、`Option<&T>` のペイロード `pv` (`bref`) に当てる。名前は要素の借用で束縛し、`_` は何もしない。
-    fn bref_pat(&mut self, sub: &V, pv: VId, t: Ty, line: usize) -> LR<VId> {
-        let one = self.emit(Ty::Bool, Op::Const(1));
+    /// `Some(sub)` の `sub` を、`Option<&T>` のペイロード `pv` (`bref`) に当てる。名前だけ・`_` は判定なし。
+    /// 構造体・列挙子の形は要素を読んで判定する。`None` (番地が無い) では読まないよう、`tag_ok` の枝の中で読む。
+    /// 束縛は腕の頭 (`bref_bind`) で行う。
+    fn bref_pat(&mut self, sub: &V, pv: VId, t: Ty, tag_ok: VId, line: usize) -> LR<VId> {
         if nname(sub) == "PWild" {
-            return Ok(one);
+            return Ok(self.emit(Ty::Bool, Op::Const(1)));
         }
         if self.coll.scrut_src.as_ref().is_none_or(|(st_ty, _)| *st_ty != t) {
             return self.err(line, "Option<&T> の値の型が分からない (match の対象が必要)");
         }
-        // 束縛は腕の頭 (`bref_bind`) で行う: 判定の時点では `None` の null の番地を読んでしまう。
+        // 束縛は腕の頭 (`bref_bind`) で行うので、ここで保留する。
         self.coll.pending_bref.push((sub.clone(), pv, t));
-        Ok(one)
+        if nname(sub) == "PBind" {
+            return Ok(self.emit(Ty::Bool, Op::Const(1)));
+        }
+        // 構造体・列挙子の形の判定: 要素を読むのは `tag_ok` の枝の中だけ。名前は `_` に置き換えた形を当てる。
+        let test_sub = strip_binds(sub);
+        let (_, elem) = self.bref_elem(t, line)?;
+        let (yes, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[Ty::Bool]);
+        let zero = self.emit(Ty::Bool, Op::Const(0));
+        self.branch(tag_ok, (yes, vec![]), (join, vec![zero]));
+        self.cur = Some(yes);
+        let ev = self.bref_load(pv, elem, line)?;
+        let c = self.pat_test(&test_sub, ev, elem)?;
+        self.goto(join, vec![c]);
+        self.cur = Some(join);
+        Ok(jp[0])
+    }
+
+    /// `Option<&T>` / `Result<&T, E>` の `T` (元の型とその下ろした型)。
+    fn bref_elem(&mut self, t: Ty, line: usize) -> LR<(Src, Ty)> {
+        let elem_src = match self.coll.scrut_src.clone() {
+            Some((st_ty, Src::Named(n, a))) if st_ty == t && (n == "Option" && a.len() == 1 || n == "Result" && a.len() == 2) => match &a[0] {
+                Src::Ref(_, i) => (**i).clone(),
+                _ => return self.err(line, "Option<&T> の T が分からない"),
+            },
+            _ => return self.err(line, "Option<&T> の値の型が分からない (match の対象が必要)"),
+        };
+        let elem = self.conv_t(&elem_src).ok_or_else(|| format!("行 {}: 型 {} は段階 1 の対象外", line, show(&elem_src)))?;
+        if !matches!(elem, Ty::Agg(_)) {
+            return self.err(line, format!("型 {} は借用の判定の対象として段階 1 の対象外", show(&elem_src)));
+        }
+        Ok((elem_src, elem))
+    }
+
+    /// 借用の番地 `pv` (`bref`) の指す要素を、値として読む (判定・束縛の補助。読むのは `Some` の枝の中だけ)。
+    fn bref_load(&mut self, pv: VId, elem: Ty, _line: usize) -> LR<VId> {
+        let Ty::Agg(ai) = elem else { unreachable!("bref_elem が集成体を確かめている") };
+        let addr = self.emit(Ty::Ptr, Op::Field { a: pv, off: 0 });
+        let r = self.emit(Ty::Ref(false, crate::kir::Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: addr });
+        Ok(self.emit(elem, Op::Load(r)))
     }
 
     /// `bref_pat` が保留した束縛を、当たった腕の頭で作る。
     fn bref_bind(&mut self, line: usize) -> LR<()> {
         for (sub, pv, t) in std::mem::take(&mut self.coll.pending_bref) {
-            let elem_src = match self.coll.scrut_src.clone() {
-                Some((st_ty, Src::Named(n, a))) if st_ty == t && n == "Option" && a.len() == 1 => match &a[0] {
-                    Src::Ref(_, i) => (**i).clone(),
-                    _ => return self.err(line, "Option<&T> の T が分からない"),
-                },
-                _ => return self.err(line, "Option<&T> の値の型が分からない (match の対象が必要)"),
-            };
-            let elem = self.conv_t(&elem_src).ok_or_else(|| format!("行 {}: 型 {} は段階 1 の対象外", line, show(&elem_src)))?;
-            let addr = self.emit(Ty::Ptr, Op::Field { a: pv, off: 0 });
+            let (elem_src, elem) = self.bref_elem(t, line)?;
             match nname(&sub) {
                 "PBind" => {
+                    let addr = self.emit(Ty::Ptr, Op::Field { a: pv, off: 0 });
                     let name = st(&nf(&sub)[0]);
                     super::own::bind_elem_ref(self, line, &name, addr, elem, Some(&elem_src), false)?;
                 }
                 "PStruct" => {
+                    let addr = self.emit(Ty::Ptr, Op::Field { a: pv, off: 0 });
                     let Ty::Agg(ai) = elem else { return self.err(line, "構造体のパターンの対象が集成体でない") };
                     let r = self.emit(Ty::Ref(false, crate::kir::Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: addr });
                     super::own::bind_struct_pat(self, line, &sub, r, Some(&elem_src))?;
                 }
-                other => return self.err(line, format!("Option<&T> の Some の中のパターン {} は段階 1 の対象外 (名前・_・構造体のパターンだけ)", other)),
+                "PVariant" | "PPath" => {
+                    let addr = self.emit(Ty::Ptr, Op::Field { a: pv, off: 0 });
+                    self.bind_variant_fields(line, &sub, addr, elem)?;
+                }
+                other => return self.err(line, format!("Option<&T> の Some の中のパターン {} は段階 1 の対象外 (名前・_・構造体・列挙子のパターンだけ)", other)),
             }
         }
         Ok(())
@@ -617,7 +659,8 @@ impl<'a> Lw<'a> {
                 super::coll::drop_from(self, 0);
                 self.terminate(Term::Ret(none));
                 self.cur = Some(okb);
-                Ok(Some(self.emit(p.ty(), Op::Payload(v))))
+                let pv = self.emit(p.ty(), Op::Payload(v));
+                Ok(Some(self.bref_out(pv, &nf(e)[0], line)?))
             }
             (Ty::Res(t0, e0), Ty::Res(_, e1)) if e0 == e1 => {
                 let tag = self.emit(Ty::Bool, Op::Tag(v));
@@ -630,7 +673,8 @@ impl<'a> Lw<'a> {
                 super::coll::drop_from(self, 0);
                 self.terminate(Term::Ret(r));
                 self.cur = Some(okb);
-                Ok(Some(self.emit(t0.ty(), Op::Payload(v))))
+                let pv = self.emit(t0.ty(), Op::Payload(v));
+                Ok(Some(self.bref_out(pv, &nf(e)[0], line)?))
             }
             // `Result<T, E1>` の `?` を `Result<U, E2>` (E1 ≠ E2) で使う。E2 が `derive [From]`
             // でペイロードがちょうど E1 の変種 V をちょうど 1 つ持つとき、エラーを
@@ -678,6 +722,96 @@ impl<'a> Lw<'a> {
         super::coll::drop_from(self, 0);
         self.terminate(Term::Ret(r));
         self.cur = Some(okb);
-        Ok(Some(self.emit(t0.ty(), Op::Payload(v))))
+        let pv = self.emit(t0.ty(), Op::Payload(v));
+        Ok(Some(self.bref_out(pv, &nf(e)[0], line)?))
+    }
+
+    /// 借用の番地 `addr` (要素の列挙体の番地) に、列挙子のパターン `V::Variant(sub..)` を当てて名前を束縛する。
+    /// スカラーのフィールドは読んだ写しを、所有物 (`Vec` / `String` など) のフィールドは番地の借用を束縛する (`match &x` と同じ)。
+    fn bind_variant_fields(&mut self, line: usize, sub: &V, addr: VId, elem: Ty) -> LR<()> {
+        let Ty::Agg(ai) = elem else { return self.err(line, "列挙子のパターンの対象が集成体でない") };
+        let segs = strs(&nf(sub)[0]);
+        let subs = if nname(sub) == "PVariant" { items(&nf(sub)[1]).to_vec() } else { vec![] };
+        let Some(Tgt::Variant(en, vn)) = self.p.resolve(&segs, &self.def.file).map(|r| r.target) else {
+            return self.err(line, format!("パターン {} は段階 1 の対象外", segs.join(".")));
+        };
+        let d = self.agg_def(ai);
+        let AggKind::Enum(vs) = &d.kind else { return self.err(line, format!("列挙子のパターンの対象 {} が列挙型でない", d.name)) };
+        if d.name != en {
+            return self.err(line, format!("パターン {} の型が対象の型 {} と違う", vn, d.name));
+        }
+        let Some(idx) = vs.iter().position(|x| x.name == vn) else { return self.err(line, format!("列挙子 {} がない", vn)) };
+        let fields = vs[idx].fields.clone();
+        if subs.len() != fields.len() {
+            return self.err(line, "列挙子のパターンの要素数が違う");
+        }
+        // 束縛の型の付け方 (Vec / String の種類) に使う、宣言どおりの列挙子のフィールドの型。
+        let fsrcs: Vec<Src> = self
+            .p
+            .defs
+            .iter()
+            .find(|x| x.kw == "enum" && x.name == en)
+            .and_then(|x| x.variants.iter().find(|v| v.0 == vn))
+            .map(|v| v.1.iter().map(|x| from_v(x, &HashSet::new())).collect())
+            .unwrap_or_default();
+        // 列挙体の番地に、フィールドの番地 (`addr + off`) を足す。列挙型には `fieldaddr` を使えない。
+        for (i, (sp, fd)) in subs.iter().zip(&fields).enumerate() {
+            match nname(sp) {
+                "PWild" | "PLit" => {}
+                "PBind" if !matches!(nf(sp).get(1), Some(V::B(true))) => {
+                    let name = st(&nf(sp)[0]);
+                    let fp = if fd.off == 0 {
+                        addr
+                    } else {
+                        let k = self.emit(Ty::Usize, Op::Const(fd.off as i128));
+                        self.emit(Ty::Ptr, Op::PtrAdd { p: addr, off: k })
+                    };
+                    if super::coll::owns(self, fd.ty) {
+                        super::own::bind_elem_ref(self, line, &name, fp, fd.ty, fsrcs.get(i), false)?;
+                    } else {
+                        let Some(pt) = Pointee::of(fd.ty) else {
+                            return self.err(line, format!("列挙子のフィールドの型 {} は借用の対象として段階 1 の対象外", crate::kir::fmt_ty(fd.ty)));
+                        };
+                        let r = self.emit(Ty::Ref(false, pt), Op::Bitcast { src: Ty::Ptr, a: fp });
+                        let v = self.emit(fd.ty, Op::Load(r));
+                        self.bind(&name, v, fd.ty);
+                    }
+                }
+                other => return self.err(line, format!("借用の列挙子の中のパターン {} は段階 1 の対象外 (名前・_・リテラルだけ)", other)),
+            }
+        }
+        Ok(())
+    }
+
+    /// `Option<&T>` / `Result<&T, E>` の値 (T は所有物を持つ型) から取り出したペイロード `pv` が `bref` なら、
+    /// 借用の `&T` (`ref<T>`) に直す。`operand` はその値の式 (型は `src_ty` で `&T` の T を知る)。`bref` でなければ `pv` のまま。
+    fn bref_out(&mut self, pv: VId, operand: &V, line: usize) -> LR<VId> {
+        let Ty::Agg(bi) = self.vty(pv) else { return Ok(pv) };
+        if self.agg_def(bi).name != "bref" {
+            return Ok(pv);
+        }
+        let src = self.src_ty(operand)?;
+        let inner = match &src {
+            Src::Named(_, a) if !a.is_empty() => match &a[0] {
+                Src::Ref(false, i) => (**i).clone(),
+                _ => return self.err(line, "Option<&T> / Result<&T, E> の T が分からない"),
+            },
+            _ => return self.err(line, "Option<&T> / Result<&T, E> の値の型が分からない"),
+        };
+        let Some(Ty::Agg(ai)) = self.conv_t(&inner) else {
+            return self.err(line, format!("型 {} は借用の対象として段階 1 の対象外", show(&inner)));
+        };
+        let addr = self.emit(Ty::Ptr, Op::Field { a: pv, off: 0 });
+        Ok(self.emit(Ty::Ref(false, crate::kir::Pointee::Agg(ai)), Op::Bitcast { src: Ty::Ptr, a: addr }))
+    }
+}
+
+/// 名前の束縛 (`PBind`) を `_` (`PWild`) に置き換えた判定用のパターン。判定の枝では束縛を作らないために使う。
+fn strip_binds(v: &V) -> V {
+    match v {
+        V::Node("PBind", _, line, id) => V::Node("PWild", vec![], *line, *id),
+        V::Node(n, fs, line, id) => V::Node(n, fs.iter().map(strip_binds).collect(), *line, *id),
+        V::L(xs) => V::L(xs.iter().map(strip_binds).collect()),
+        other => other.clone(),
     }
 }

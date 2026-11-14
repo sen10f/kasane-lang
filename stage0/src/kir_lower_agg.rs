@@ -35,7 +35,7 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
-pub const STD_TYPES: [&str; 30] = ["std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering", "std.time.SystemTime", "std.datetime.DateTime", "std.datetime.Error", "std.log.Level", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.slice.IndexError"];
+pub const STD_TYPES: [&str; 35] = ["std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering", "std.time.SystemTime", "std.datetime.DateTime", "std.datetime.Error", "std.log.Level", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.slice.IndexError", "std.json.Doc", "std.json.Error", "std.json.Kind", "std.json.Node", "std.json.Value"];
 
 /// ソケットの型 (`std.net.TcpListener` / `TcpStream`)。型表には `lower_defs` が常に入れる。`&` の形の型も、同じ集成体として下ろす。
 pub fn is_net_socket(name: &str) -> bool {
@@ -518,6 +518,13 @@ impl AggTab {
         if let Src::Ref(_, inner) = t {
             if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
                 return Ok(Pay::Ptr);
+            }
+        }
+        // `Option<&T>` / `Result<&T, E>` (T は所有物を持つ型): 番地 1 つの `bref` (設計_KIR.md 17.18)。Option と Result で同じ形にする。
+        if let Src::Ref(false, inner) = t {
+            if self.owning_src(p, file, inner) {
+                let b = self.bref();
+                return Pay::of(b).ok_or_else(|| "bref は Option / Result のペイロードに使えない".to_string());
             }
         }
         let x = self.lower_ty(p, file, t)?;
@@ -1450,7 +1457,7 @@ end t.main
             assert!(names.contains(&want), "型表に {} がない: {:?}", want, names);
         }
         // `fat` / `vec` は、利用者の型ではなくスライス・`Vec` のヘッダ (他の module の `fn` (`std.json` など) を下ろすときに入る)。`(fat,fat)` は `std.path` の `split_at` の結果。
-        for d in lo.module.aggs.iter().filter(|d| !super::STD_TYPES.contains(&d.name.as_str()) && d.name != "fat" && !super::is_vec_name(&d.name) && d.name != "(fat,fat)") {
+        for d in lo.module.aggs.iter().filter(|d| !super::STD_TYPES.contains(&d.name.as_str()) && d.name != "fat" && d.name != "bref" && !super::is_vec_name(&d.name) && d.name != "(fat,fat)") {
             // 期待値は、削除した clif.rs の `layout` / `enum_layout` が出していた配置 (C と同じ規則) を固定したもの。
             let (size, align, offs, vars): (u32, u32, Vec<u32>, Vec<Vec<u32>>) = match d.name.as_str() {
                 "t.A" => (24, 8, vec![0, 8, 16], vec![]),
@@ -1459,6 +1466,9 @@ end t.main
                 "t.E" => (16, 8, vec![], vec![vec![8, 12], vec![8], vec![8, 10, 12], vec![]]),
                 "(u8,i64)" => (16, 8, vec![0, 8], vec![]),
                 "(bool,i16,u8,i32)" => (12, 4, vec![0, 2, 4, 8], vec![]),
+                // 列挙子の番地の借用 (`Option<&T>` の `Some(E::V(..))`) が入れる 2 つのタプル。ヘッダ `vec` は 24 バイト・整列 8。
+                "(usize,usize)" => (16, 8, vec![0, 8], vec![]),
+                "(vec,usize)" => (32, 8, vec![0, 24], vec![]),
                 other => panic!("期待値のない型: {}", other),
             };
             assert_eq!((d.size, d.align), (size, align), "大きさ・整列: {}", d.name);

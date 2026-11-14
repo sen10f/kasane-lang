@@ -1501,7 +1501,11 @@ impl<'a> Lw<'a> {
             return self.err(line, "if の条件が bool ではない");
         }
         // 結果の型。両枝とも発散するなら `!` で、結果の値は持たない。unit の値は合流の引数に載せない。
+        // else が無い `if` は値が unit (then 枝の値は捨てる)。検査器はこの形の型を then 枝の型にすることがあるので、
+        // そのまま使うと合流の引数 (else 側の unit) と型が合わなくなる。
+        let no_else = matches!(f[2], V::Nil);
         let res: Option<Ty> = match self.src_ty(e)? {
+            _ if no_else => Some(Ty::Unit),
             Src::Never => None,
             t => Some(coll::value_ty(self, &t).or_else(|| self.conv_t(&t)).ok_or_else(|| format!("行 {}: if の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
@@ -1524,8 +1528,12 @@ impl<'a> Lw<'a> {
         };
         self.cur = Some(tb);
         if let Some(v) = self.expr(&f[1])? {
-            if res.is_some() && self.vty(v) != res.unwrap() {
+            if carry && self.vty(v) != res.unwrap() {
                 return self.err(line, "if の then 枝の型が結果の型と違う");
+            }
+            if !carry {
+                // 結果を運ばない枝の値は捨てる (所有物なら解放する)。
+                coll::drop_temp(self, v);
             }
             let args = join_args(self, Some(v));
             self.goto(jb, args);
