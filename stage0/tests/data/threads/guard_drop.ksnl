@@ -1,0 +1,30 @@
+static t.M: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let g = t.M.lock()
+    core.mem.drop(g)
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> u64 capture [] {
+            let mut h = t.M.lock()
+            let r = h.get_mut()
+            *r = *r + 5u64
+            core.mem.drop(h)
+            7u64
+        },
+    )
+    let worker = match spawned {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let v = worker.join()
+    core.check.eq(v, 7u64)
+    let fin = t.M.lock()
+    core.check.eq(*fin.get(), 5u64)
+    std.io.print_line("guard drop ok")
+    Ok(())
+end t.main
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end t.oom

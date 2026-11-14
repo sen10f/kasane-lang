@@ -1031,3 +1031,113 @@ fn kir_native_threads_have_no_data_races_under_threadsanitizer() {
         assert_eq!(text(&k.stdout).trim(), want, "{}", f);
     }
 }
+
+// ------------------------------------------------------------ 全員待ちの検出・Mutex のガードの寿命 (設計_KIR.md 22.7)
+
+/// 子プロセスを待つ。`Command::output` だと、全員待ちを検出できずに止まったとき、テストも止まってしまう。
+/// 制限時間を過ぎたら殺して失敗にする。
+fn output_within(mut c: Command, secs: u64) -> Output {
+    use std::time::{Duration, Instant};
+    c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    let start = Instant::now();
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if start.elapsed() > Duration::from_secs(secs) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{} 秒経っても終わらない (全員待ちを検出できていない)", secs);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
+}
+
+/// 全員が待ちで誰も進めないとき、止まらずに `deadlock` の panic (終了コード 101) で終わる (木走査と同じ文言)。
+/// `name` は `tests/data/threads/<name>.ksnl`。ネイティブは debug / release の両方で確かめる。
+fn assert_deadlock_exits_101(name: &str) {
+    let t = threads_pkg(name, "dl");
+    let mut c = Command::new(exe());
+    c.args(["run"]).current_dir(&t.0);
+    let interp = output_within(c, 60);
+    assert_eq!(interp.status.code(), Some(101), "木走査 {}: {}", name, text(&interp.stderr));
+    assert!(text(&interp.stderr).contains("panic: deadlock"), "木走査 {}: {}", name, text(&interp.stderr));
+    if cfg!(windows) {
+        return;
+    }
+    for release in [false, true] {
+        let p = threads_build(&t, release);
+        let r = output_within(Command::new(&p), 60);
+        assert_eq!(r.status.code(), Some(101), "{} (release={}): {}", name, release, text(&r.stderr));
+        assert!(text(&r.stderr).contains("panic: deadlock"), "{} (release={}): {}", name, release, text(&r.stderr));
+    }
+}
+
+/// 2 本のスレッドが互いの `recv` を待つ (main は worker の返事を、worker は main の送信を待つ)。どちらも進めないので deadlock。
+#[test]
+fn threads_native_mutual_recv_wait_is_a_deadlock_101() {
+    assert_deadlock_exits_101("deadlock_mutual");
+}
+
+/// main が worker を `join` し、worker は main が送り手を持っている空のチャネルを `recv` で待つ。`join` の待ちも数えて検出する。
+#[test]
+fn threads_native_join_wait_with_a_blocked_worker_is_a_deadlock_101() {
+    assert_deadlock_exits_101("deadlock_join");
+}
+
+/// worker が `static` の `Mutex` のガードを持ったまま `recv` で待ち、main が同じ `Mutex` を `lock` で待つ。Mutex の待ちも数える。
+#[test]
+fn threads_native_mutex_wait_with_a_blocked_holder_is_a_deadlock_101() {
+    assert_deadlock_exits_101("deadlock_mutex");
+}
+
+/// 正しいプール (受付の main、ワーカー 3 本、容量 2 のチャネル、Mutex の共有カウンタ) は誤検出されず、木走査と同じ結果で終わる。
+#[test]
+fn threads_worker_pool_with_shared_mutex_is_not_a_false_deadlock() {
+    threads_same_output("pool_shared");
+}
+
+/// `core.mem.drop(g)` で外したガードは、その時点で外れる (スコープの終わりまで保たない)。外したあとで別のスレッドが同じ `Mutex` を取れる。
+#[test]
+fn threads_mutex_guard_dropped_with_core_mem_drop_is_released_at_once() {
+    threads_same_output("guard_drop");
+}
+
+/// 文の中で取って束縛しなかったガードは文の終わりで外れる。`join` の前に外すので、worker は同じ `Mutex` を取れる。
+#[test]
+fn threads_mutex_temporary_guard_is_released_at_the_end_of_its_statement() {
+    threads_same_output("guard_temp");
+}
+
+/// `while` の条件の中の `Mutex` の取得は、条件の評価のたびに対で外れる (ループの後に残らない)。
+#[test]
+fn threads_mutex_guard_in_a_loop_is_released_each_round() {
+    threads_same_output("guard_while");
+}
+
+/// ThreadSanitizer: 正しいプール・ガードの試験と、全員待ちの試験 (101 で終わる) で、データ競合の警告が出ない。
+#[test]
+fn kir_native_pool_guards_and_deadlock_have_no_data_races_under_threadsanitizer() {
+    if !tsan_available() {
+        return;
+    }
+    for (name, want) in [("pool_shared", 0), ("guard_drop", 0), ("guard_temp", 0), ("guard_while", 0), ("deadlock_mutex", 101)] {
+        let t = threads_pkg(name, "tsan2");
+        let cache = std::env::temp_dir().join(format!("ksn_cache_tsan2_{}_{}", std::process::id(), name));
+        let mut c = Command::new(exe());
+        c.args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).env("KSN_CLANG_ARGS", "-fsanitize=thread -g -O1");
+        let o = c.output().unwrap();
+        let out = text(&o.stdout) + &text(&o.stderr);
+        assert_native_or_reasoned_skip(&out);
+        let p = native_or_launcher(t.0.join("target").join("debug").join("t.native"), &out);
+        let mut r = Command::new(&p);
+        r.env("TSAN_OPTIONS", "halt_on_error=0");
+        let r = output_within(r, 120);
+        let err = text(&r.stderr);
+        assert!(!err.contains("WARNING: ThreadSanitizer"), "{}: TSan が競合を報告した\n{}", name, err);
+        assert_eq!(r.status.code(), Some(want), "{}: {}", name, err);
+        let _ = fs::remove_dir_all(&cache);
+    }
+}

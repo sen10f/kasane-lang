@@ -1,0 +1,70 @@
+static t.M: std.sync.Mutex<u64> = std.sync.Mutex.new(0u64) pub
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may
+    let made = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let (job_tx, job_rx) = made.map_err(t.oom)?
+    let made2 = std.sync.channel::<u32, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let (reply_tx, reply_rx) = made2.map_err(t.oom)?
+    let h1 = t.spawn_one(job_rx.clone(), reply_tx.clone())
+    let h2 = t.spawn_one(job_rx.clone(), reply_tx.clone())
+    let h3 = t.spawn_one(job_rx, reply_tx)
+    let mut i = 0u32
+    while i < 30u32 {
+        match job_tx.send(i) {
+            Ok(_u) => core.check.eq(i, i)
+            Err(_e) => core.panic.panic("send failed")
+        }
+        i = i + 1u32
+    }
+    core.mem.drop(job_tx)
+    let mut sum = 0u32
+    let mut n = 0u32
+    while n < 30u32 {
+        match reply_rx.recv() {
+            Ok(v) => {
+                sum = sum + v
+            }
+            Err(_e) => core.panic.panic("recv failed")
+        }
+        n = n + 1u32
+    }
+    h1.join()
+    h2.join()
+    h3.join()
+    core.check.eq(sum, 870u32)
+    let fin = t.M.lock()
+    core.check.eq(*fin.get(), 30u64)
+    std.io.print_line("pool ok")
+    Ok(())
+end t.main
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end t.oom
+
+fn t.spawn_one(rx: std.sync.Receiver<u32>, reply: std.sync.Sender<u32>) -> std.thread.JoinHandle<(), std.alloc.System> uses [alloc, thread] panics may
+    match std.thread.spawn(std.alloc.SYSTEM, fn() -> () capture [move reply, move rx] {
+        t.work(rx, reply)
+    }) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.spawn_one
+
+fn t.work(rx: std.sync.Receiver<u32>, reply: std.sync.Sender<u32>) -> () uses [thread] panics may
+    loop {
+        match rx.recv() {
+            Ok(n) => {
+                let mut g = t.M.lock()
+                let r = g.get_mut()
+                *r = *r + 1u64
+                core.mem.drop(g)
+                match reply.send(n * 2u32) {
+                    Ok(_u) => core.check.eq(n, n)
+                    Err(_e) => core.panic.panic("send failed")
+                }
+            }
+            Err(_e) => break
+        }
+    }
+end t.work
