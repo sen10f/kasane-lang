@@ -75,8 +75,10 @@ pub(crate) enum Owned {
     /// `with` の後始末式 (`coll.closes` の添字)。出口 (末尾・`return`・`?`・`break`・`continue`) で、
     /// 束縛した変数の解放より前に (登録の逆順で) 下ろす。
     With(usize),
-    /// `static` の `Mutex` のガード (mutex の番地)。スコープの終わりで mutex を外す。
-    Unlock(VId),
+    /// `static` の `Mutex` のガード: mutex の番地と、ガードをまだ外していないことの印 (フレームの 1 バイト)。
+    /// 外すのは、束縛の変数のスコープの終わり・`core.mem.drop(g)`・一時のガードなら文の終わり (`end_guards`)。
+    /// 外すときに印を落とすので、同じガードを二度外さない (`release_guard`)。
+    Unlock { m: VId, flag: VId },
 }
 
 /// 下ろしの状態。`Lw` が 1 つ持つ。
@@ -93,6 +95,10 @@ pub(crate) struct CollCx {
     pub(crate) temps: Vec<VId>,
     /// 所有する値 (スコープの番号, 所有物) の登録順。
     pub(crate) owned: Vec<(usize, Owned)>,
+    /// `let g = M.lock()` で束縛された `Mutex` のガードの変数のスロット → (mutex の番地, 印)。`core.mem.drop(g)` で外すため。
+    pub(crate) guard_slots: BTreeMap<usize, (VId, VId)>,
+    /// いまの文の中で登録され、まだ束縛も外しもされていない `Mutex` のガード (値, mutex の番地, 印)。文の終わりに外す。
+    pub(crate) stmt_guards: Vec<(VId, VId, VId)>,
     /// `with` の後始末式の木と、`with` の束縛を置いたスコープの番号。
     pub(crate) closes: Vec<(V, usize)>,
     /// 後始末式を下ろしている間に起きた最初の下ろしの失敗 (`drop_from` は結果を返さないので持ち越す)。
@@ -720,9 +726,7 @@ fn drop_owned(lw: &mut Lw, o: Owned) {
             drop_value(lw, v, t);
         }
         Owned::With(i) => run_close(lw, i),
-        Owned::Unlock(m) => {
-            super::thread_lower::rt_call(lw, super::thread_lower::MUNLOCK, vec![m], Ty::Unit);
-        }
+        Owned::Unlock { m, flag } => release_guard(lw, m, flag),
         Owned::Val { slot, flag } => {
             let t = lw.slots[slot].1;
             let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
@@ -764,10 +768,51 @@ fn run_close(lw: &mut Lw, i: usize) {
     }
 }
 
-/// `static` の `Mutex` の `lock()` の結果 (ガード) を現在のスコープの所有に入れる: 終わりで `m` (mutex の番地) を外す。
-pub(crate) fn register_unlock(lw: &mut Lw, m: VId) {
+/// `static` の `Mutex` の `lock()` の結果 `value` (ガード) を登録する。印を立てて、現在のスコープの所有に入れる。
+/// 束縛されなければ、文の終わり (`end_guards`) に外す。束縛されれば (`bind_guard`) 変数の寿命か `core.mem.drop` まで保つ。
+pub(crate) fn register_unlock(lw: &mut Lw, m: VId, value: VId) {
+    let flag = emit_alloca(lw, 1);
+    set_flag(lw, flag, true);
     let scope = lw.scopes.len() - 1;
-    lw.coll.owned.push((scope, Owned::Unlock(m)));
+    lw.coll.owned.push((scope, Owned::Unlock { m, flag }));
+    lw.coll.stmt_guards.push((value, m, flag));
+}
+
+/// ガードを外す (印が立っているときだけ、`munlock` して印を落とす)。`munlock` は `mu` の下で `gen` を進めて待ちを起こす。
+pub(crate) fn release_guard(lw: &mut Lw, m: VId, flag: VId) {
+    if lw.cur.is_none() {
+        return;
+    }
+    let on = lw.emit(Ty::Bool, Op::MemLoad { p: flag, off: 0 });
+    let (yes, _) = lw.new_block(&[]);
+    let (join, _) = lw.new_block(&[]);
+    lw.branch(on, (yes, vec![]), (join, vec![]));
+    lw.cur = Some(yes);
+    set_flag(lw, flag, false);
+    super::thread_lower::rt_call(lw, super::thread_lower::MUNLOCK, vec![m], Ty::Unit);
+    lw.goto(join, vec![]);
+    lw.cur = Some(join);
+}
+
+/// 文・条件の始まりの、未束縛のガードの数 (`end_guards` に渡す)。
+pub(crate) fn guard_mark(lw: &Lw) -> usize {
+    lw.coll.stmt_guards.len()
+}
+
+/// 文 (または条件式) の終わり: `mark` より後に登録された、束縛されなかったガードを外す。
+pub(crate) fn end_guards(lw: &mut Lw, mark: usize) {
+    let ended = lw.coll.stmt_guards.split_off(mark);
+    for (_, m, flag) in ended {
+        release_guard(lw, m, flag);
+    }
+}
+
+/// `let g = M.lock()` の束縛: 値 `v` が未束縛のガードなら、その変数のスロットに結び付けて文の終わりで外さないようにする。
+pub(crate) fn bind_guard(lw: &mut Lw, name: &str, v: VId) {
+    let Some(pos) = lw.coll.stmt_guards.iter().position(|(x, _, _)| *x == v) else { return };
+    let (_, m, flag) = lw.coll.stmt_guards.remove(pos);
+    let s = lw.lookup(name).expect("直前に束縛した名前");
+    lw.coll.guard_slots.insert(s, (m, flag));
 }
 
 /// `with` の本体の前に呼ぶ: 後始末式を現在のスコープ (束縛を置いたスコープ) に登録する。
@@ -1279,6 +1324,18 @@ fn mem_drop(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let args = items(&nf(e)[1]);
     if args.len() != 1 {
         return lw.err(nline(e), "core.mem.drop の引数は 1 つのはず");
+    }
+    // `core.mem.drop(g)` で束縛された `Mutex` のガードを、その場で外す (ガードは値として消費される。4.4)。
+    if nname(&args[0]) == "Path" {
+        let segs = strs(&nf(&args[0])[0]);
+        if let [name] = segs.as_slice() {
+            if let Some(s) = lw.lookup(name) {
+                if let Some((m, flag)) = lw.coll.guard_slots.get(&s).copied() {
+                    release_guard(lw, m, flag);
+                    return Ok(Some(lw.unit()));
+                }
+            }
+        }
     }
     let Some(v) = lw.expr(&args[0])? else { return Ok(None) };
     drop_temp(lw, v);

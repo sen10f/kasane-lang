@@ -1235,7 +1235,10 @@ impl<'a> Lw<'a> {
         for (i, s) in stmts.iter().enumerate() {
             let last = i + 1 == stmts.len();
             let temp_mark = self.coll.temps.len();
+            let guard_mark = coll::guard_mark(self);
             let r = self.stmt(s)?;
+            // 文の終わりで、束縛されなかった `Mutex` のガードを外す (4.4: 一時の寿命は文の終わり)。
+            coll::end_guards(self, guard_mark);
             // 文の終わりで一時値の寿命が尽きる (借用検査の注釈)。
             for h in self.coll.temps.split_off(temp_mark) {
                 if self.cur.is_some() {
@@ -1299,6 +1302,7 @@ impl<'a> Lw<'a> {
                 let Some(v) = self.expr(&f[3])? else { return Ok(St::Div) };
                 let t = self.vty(v);
                 coll::bind_owned(self, &name, v, t);
+                coll::bind_guard(self, &name, v);
                 coll::after_let(self, &name, &f[3])?;
                 Ok(St::Unit)
             }
@@ -1345,7 +1349,10 @@ impl<'a> Lw<'a> {
     fn if_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
+        let gm = coll::guard_mark(self);
         let Some(c) = self.expr(&f[0])? else { return Ok(None) };
+        // 条件の中の一時のガードは、分岐の前に外す。
+        coll::end_guards(self, gm);
         if self.vty(c) != Ty::Bool {
             return self.err(line, "if の条件が bool ではない");
         }
@@ -1430,7 +1437,10 @@ impl<'a> Lw<'a> {
         let (xb, xp) = self.new_block(&tys);
         let mut body_start = hb;
         if let Some(c) = cond {
+            let gm = coll::guard_mark(self);
             let Some(cv) = self.expr(c)? else { return Ok(None) };
+            // 条件の中の一時のガードは、毎回の条件の評価の後で外す (ループの各回で対になる)。
+            coll::end_guards(self, gm);
             if self.vty(cv) != Ty::Bool {
                 return self.err(nline(e), "while の条件が bool ではない");
             }

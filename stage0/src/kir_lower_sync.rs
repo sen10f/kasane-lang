@@ -198,13 +198,14 @@ fn static_lock(lw: &mut Lw, di: usize, line: usize) -> LR<Option<VId>> {
     lw.goto(cont, vec![]);
     lw.cur = Some(cont);
     rt_call(lw, UNLOCK, vec![], Ty::Unit);
-    // 実スレッドの相互排他: 値ごとの再帰 mutex。ガードを落とす (スコープの終わり) まで保持する。協調実行では何もしない。
+    // 実スレッドの相互排他: 値ごとの再帰 mutex。ガードの寿命 (外す時点) は `coll::register_unlock` が決める (4.4):
+    // 束縛された変数のスコープの終わり・`core.mem.drop(g)`、束縛されない一時なら文の終わり。協調実行では何もしない。
     let mo = lw.emit(Ty::Usize, Op::Const(MUTEX_OFF as i128));
     let mp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off: mo });
     rt_call(lw, MLOCK, vec![mp], Ty::Unit);
-    super::coll::register_unlock(lw, mp);
     let off = lw.emit(Ty::Usize, Op::Const(8));
     let vp = lw.emit(Ty::Ptr, Op::PtrAdd { p: g, off });
     let r = lw.emit(Ty::Ref(true, p), Op::Bitcast { src: Ty::Ptr, a: vp });
+    super::coll::register_unlock(lw, mp, r);
     Ok(Some(r))
 }

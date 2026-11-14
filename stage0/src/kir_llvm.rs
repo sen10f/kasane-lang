@@ -137,6 +137,18 @@ fn fname(key: &str) -> String {
 /// スレッドの項目の大きさ (`kir_lower_thread.rs` の `ESZ` と同じ。余裕を持たせて 256)。
 const THREAD_ENTRY_SIZE: usize = 256;
 
+/// 全員待ちの検出 (設計_KIR.md 22.7)。Mutex の lock の待ちの文言 (木走査は Mutex の待ちを持たないので、ネイティブだけの文言)。
+const DEADLOCK_LOCK: &str = "deadlock: lock() on a Mutex that another thread holds, and every live thread is waiting";
+
+/// 待ちの本体 (`mu` を持って呼ぶ)。待っている数 `blocked` を 1 増やし、生きている数 `live` 以上なら全員が待っているので
+/// `msg` (`@ksn.rt.deadlock*`) を出して終了コード 101 で終わる。そうでなければ状態が変わる (`gen` が進む) まで条件変数で待つ。
+/// ラベル `dead` / `w` / `lp` / `done` を使うので、1 つの関数に 1 回だけ入れる。最後は `done:` の後に続ける。
+fn block_body(msg: &str) -> String {
+    format!(
+        "  %b = load i64, ptr @ksn.rt.blocked\n  %b1 = add i64 %b, 1\n  store i64 %b1, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %d = icmp uge i64 %b1, %l\n  br i1 %d, label %dead, label %w\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr {msg})\n  call void @exit(i32 101)\n  unreachable\nw:\n  %g0 = load i64, ptr @ksn.rt.gen\n  br label %lp\nlp:\n  %r = call i32 @pthread_cond_wait(ptr @ksn.rt.cv, ptr @ksn.rt.mu)\n  %g1 = load i64, ptr @ksn.rt.gen\n  %same = icmp eq i64 %g1, %g0\n  br i1 %same, label %lp, label %done\ndone:\n"
+    )
+}
+
 fn thread_override(key: &str, m: &Module) -> Option<String> {
     let f = m.find(key)?;
     let name = fname(key);
@@ -145,24 +157,41 @@ fn thread_override(key: &str, m: &Module) -> Option<String> {
         "ksn.thr.lock" => def("i8", "", "  %r = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  ret i8 0\n"),
         "ksn.thr.unlock" => def("i8", "", "  %g = load i64, ptr @ksn.rt.gen\n  %g1 = add i64 %g, 1\n  store i64 %g1, ptr @ksn.rt.gen\n  store i64 0, ptr @ksn.rt.blocked\n  %a = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %r = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret i8 0\n"),
         "ksn.thr.minit" => def("i8", "ptr %arg0", "  %attr = alloca [64 x i8], align 16\n  %a0 = call i32 @pthread_mutexattr_init(ptr %attr)\n  %a1 = call i32 @pthread_mutexattr_settype(ptr %attr, i32 1)\n  %a2 = call i32 @pthread_mutex_init(ptr %arg0, ptr %attr)\n  %a3 = call i32 @pthread_mutexattr_destroy(ptr %attr)\n  ret i8 0\n"),
-        "ksn.thr.mlock" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_mutex_lock(ptr %arg0)\n  ret i8 0\n"),
-        "ksn.thr.munlock" => def("i8", "ptr %arg0", "  %r = call i32 @pthread_mutex_unlock(ptr %arg0)\n  ret i8 0\n"),
-        "ksn.thr.wait" => def(
+        // Mutex の lock: まず trylock。取れなければ `mu` の下で trylock を繰り返し、取れないときは待ちに数えて条件変数で待つ。
+        // 解放 (`munlock`) は `mu` の下で行い、状態の変化として `gen` を進める (取り損ねた待ちが起こされる)。
+        "ksn.thr.mlock" => def(
             "i8",
-            "",
-            "  %b = load i64, ptr @ksn.rt.blocked\n  %b1 = add i64 %b, 1\n  store i64 %b1, ptr @ksn.rt.blocked\n  %l = load i64, ptr @ksn.rt.live\n  %d = icmp uge i64 %b1, %l\n  br i1 %d, label %dead, label %w\ndead:\n  %p = call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @ksn.rt.deadlock)\n  call void @exit(i32 101)\n  unreachable\nw:\n  %g0 = load i64, ptr @ksn.rt.gen\n  br label %lp\nlp:\n  %r = call i32 @pthread_cond_wait(ptr @ksn.rt.cv, ptr @ksn.rt.mu)\n  %g1 = load i64, ptr @ksn.rt.gen\n  %same = icmp eq i64 %g1, %g0\n  br i1 %same, label %lp, label %done\ndone:\n  ret i8 0\n",
+            "ptr %arg0",
+            &format!(
+                "  %t = call i32 @pthread_mutex_trylock(ptr %arg0)\n  %ok = icmp eq i32 %t, 0\n  br i1 %ok, label %got, label %slow\ngot:\n  ret i8 0\nslow:\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  br label %chk\nchk:\n  %t2 = call i32 @pthread_mutex_trylock(ptr %arg0)\n  %ok2 = icmp eq i32 %t2, 0\n  br i1 %ok2, label %took, label %blk\nblk:\n{}  br label %chk\ntook:\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret i8 0\n",
+                block_body("@ksn.rt.deadlock_lock")
+            ),
         ),
+        "ksn.thr.munlock" => def(
+            "i8",
+            "ptr %arg0",
+            "  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %u = call i32 @pthread_mutex_unlock(ptr %arg0)\n  %g = load i64, ptr @ksn.rt.gen\n  %g1 = add i64 %g, 1\n  store i64 %g1, ptr @ksn.rt.gen\n  store i64 0, ptr @ksn.rt.blocked\n  %bc = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret i8 0\n",
+        ),
+        "ksn.thr.wait" => def("i8", "", &format!("{}  ret i8 0\n", block_body("@ksn.rt.deadlock"))),
         "ksn.thr.new" => def("i64", "", &format!("  %p = call ptr @calloc(i64 1, i64 {})\n  %z = icmp eq ptr %p, null\n  br i1 %z, label %oom, label %ok\noom:\n  call void @exit(i32 101)\n  unreachable\nok:\n  %i = ptrtoint ptr %p to i64\n  ret i64 %i\n", THREAD_ENTRY_SIZE)),
         "ksn.thr.ent" => def("ptr", "i64 %arg0", "  %p = inttoptr i64 %arg0 to ptr\n  ret ptr %p\n"),
         "ksn.thr.release" => def("i8", "i64 %arg0", "  %p = inttoptr i64 %arg0 to ptr\n  call void @free(ptr %p)\n  ret i8 0\n"),
-        "ksn.thr.join" => def("i8", "i64 %arg0", "  %p = inttoptr i64 %arg0 to ptr\n  %t = getelementptr i8, ptr %p, i64 16\n  %tid = load i64, ptr %t\n  %r = call i32 @pthread_join(i64 %tid, ptr null)\n  ret i8 0\n"),
+        // join: 項目の完了の旗 (`+0` = 2、`tramp` が `mu` の下で立てる) を待ってから `pthread_join` する。待つ間は待ちに数える。
+        "ksn.thr.join" => def(
+            "i8",
+            "i64 %arg0",
+            &format!(
+                "  %ip = inttoptr i64 %arg0 to ptr\n  %lk = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  br label %chk\nchk:\n  %s = load i64, ptr %ip\n  %fin = icmp eq i64 %s, 2\n  br i1 %fin, label %joined, label %blk\nblk:\n{}  br label %chk\njoined:\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  %tg = getelementptr i8, ptr %ip, i64 16\n  %tid = load i64, ptr %tg\n  %jr = call i32 @pthread_join(i64 %tid, ptr null)\n  ret i8 0\n",
+                block_body("@ksn.rt.deadlock_join")
+            ),
+        ),
         "ksn.thr.start" => {
             let exec = m.find("ksn.thr.exec")?;
             let body = format!(
                 "  %p = inttoptr i64 %arg0 to ptr\n  %t = getelementptr i8, ptr %p, i64 16\n  %attr = alloca [64 x i8], align 16\n  %a0 = call i32 @pthread_attr_init(ptr %attr)\n  %a1 = call i32 @pthread_attr_setstacksize(ptr %attr, i64 16777216)\n  %m = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %l = load i64, ptr @ksn.rt.live\n  %l1 = add i64 %l, 1\n  store i64 %l1, ptr @ksn.rt.live\n  %mu = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  %r = call i32 @pthread_create(ptr %t, ptr %attr, ptr @ksn.rt.tramp, ptr %p)\n  %a2 = call i32 @pthread_attr_destroy(ptr %attr)\n  %bad = icmp ne i32 %r, 0\n  br i1 %bad, label %fail, label %ok\nfail:\n  call void @exit(i32 101)\n  unreachable\nok:\n  ret i8 0\n"
             );
             let tramp = format!(
-                "define internal ptr @ksn.rt.tramp(ptr %p) {{\nentry:\n  %i = ptrtoint ptr %p to i64\n  %r = call i8 {}(i64 %i)\n  %m = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %l = load i64, ptr @ksn.rt.live\n  %l1 = sub i64 %l, 1\n  store i64 %l1, ptr @ksn.rt.live\n  %g = load i64, ptr @ksn.rt.gen\n  %g1 = add i64 %g, 1\n  store i64 %g1, ptr @ksn.rt.gen\n  store i64 0, ptr @ksn.rt.blocked\n  %bc = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret ptr null\n}}\n\n",
+                "define internal ptr @ksn.rt.tramp(ptr %p) {{\nentry:\n  %i = ptrtoint ptr %p to i64\n  %r = call i8 {}(i64 %i)\n  %m = call i32 @pthread_mutex_lock(ptr @ksn.rt.mu)\n  %l = load i64, ptr @ksn.rt.live\n  %l1 = sub i64 %l, 1\n  store i64 %l1, ptr @ksn.rt.live\n  store i64 2, ptr %p\n  %g = load i64, ptr @ksn.rt.gen\n  %g1 = add i64 %g, 1\n  store i64 %g1, ptr @ksn.rt.gen\n  store i64 0, ptr @ksn.rt.blocked\n  %bc = call i32 @pthread_cond_broadcast(ptr @ksn.rt.cv)\n  %um = call i32 @pthread_mutex_unlock(ptr @ksn.rt.mu)\n  ret ptr null\n}}\n\n",
                 fname(&exec.key)
             );
             def("i8", "i64 %arg0", &body).map(|d| tramp + &d)
@@ -304,7 +333,10 @@ fn emit_with(m: &Module, entry: &str, program: bool) -> R<String> {
                 pthread_used = true;
                 cx.globals.push_str("@ksn.rt.mu = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.cv = internal global [64 x i8] zeroinitializer, align 16\n@ksn.rt.live = internal global i64 1\n@ksn.rt.blocked = internal global i64 0\n@ksn.rt.gen = internal global i64 0\n");
                 cx.globals.push_str(&str_const("ksn.rt.deadlock", &format!("panic: {}\n\0", crate::interp::DEADLOCK_RECV)));
+                cx.globals.push_str(&str_const("ksn.rt.deadlock_join", &format!("panic: {}\n\0", crate::interp::DEADLOCK_JOIN)));
+                cx.globals.push_str(&str_const("ksn.rt.deadlock_lock", &format!("panic: {}\n\0", DEADLOCK_LOCK)));
                 for d in [
+                    "declare i32 @pthread_mutex_trylock(ptr)",
                     "declare i32 @pthread_create(ptr, ptr, ptr, ptr)",
                     "declare i32 @pthread_join(i64, ptr)",
                     "declare i32 @pthread_attr_init(ptr)",
