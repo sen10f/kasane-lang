@@ -14011,6 +14011,189 @@ fn kir_thread_spawn_join_match_tree_walker() {
     assert_eq!(text(&k.stdout).lines().collect::<Vec<_>>(), [&want[..], &["123"][..]].concat(), "kir の表示が木走査と違う");
 }
 
+const CHAN_AGG_SRC: &str = r#"type t.Job
+    id: u32
+    name: alloc.string.String<std.alloc.System>
+    data: alloc.vec.Vec<u32, std.alloc.System>
+end t.Job
+
+fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
+    std.io.Error { kind: std.io.ErrorKind.OutOfMemory, code: 0i32 }
+end t.oom
+
+fn t.word(n: u32) -> alloc.string.String<std.alloc.System> uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(s.push_str("ab"))
+        i = i.wrapping_add(1u32)
+    }
+    s
+end t.word
+
+fn t.nums(n: u32) -> alloc.vec.Vec<u32, std.alloc.System> uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(v.push(i))
+        i = i.wrapping_add(1u32)
+    }
+    v
+end t.nums
+
+fn t.job(id: u32) -> t.Job uses [alloc] panics never
+    t.Job { id: id, name: t.word(id), data: t.nums(id) }
+end t.job
+
+fn t.str_pipe() -> Result<usize, std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<alloc.string.String<std.alloc.System>, std.alloc.System>(
+        std.alloc.SYSTEM,
+        4usize,
+    )
+    let (tx, rx) = made.map_err(t.oom)?
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> () capture [move tx] {
+            let mut i = 1u32
+            while i < 6u32 {
+                match tx.send(t.word(i)) {
+                    Ok(_u) => 0u32
+                    Err(_e) => core.panic.panic("send failed")
+                }
+                i = i.wrapping_add(1u32)
+            }
+        },
+    )
+    let h = match spawned {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    let mut total = 0usize
+    loop {
+        match rx.recv() {
+            Ok(s) => {
+                total = total + s.len()
+            }
+            Err(_e) => break
+        }
+    }
+    h.join()
+    Ok(total)
+end t.str_pipe
+
+fn t.str_pipe_value() -> usize uses [alloc, thread] panics may
+    match t.str_pipe() {
+        Ok(n) => n
+        Err(_e) => 0usize
+    }
+end t.str_pipe_value
+
+fn t.vec_same() -> Result<usize, std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<alloc.vec.Vec<u32, std.alloc.System>, std.alloc.System>(
+        std.alloc.SYSTEM,
+        2usize,
+    )
+    let (tx, rx) = made.map_err(t.oom)?
+    let tx2 = tx.clone()
+    core.mem.drop(tx.send(t.nums(3u32)))
+    core.mem.drop(tx2.send(t.nums(5u32)))
+    core.mem.drop(tx)
+    core.mem.drop(tx2)
+    let mut total = 0usize
+    loop {
+        match rx.recv() {
+            Ok(v) => {
+                total = total + v.len() * 10usize
+            }
+            Err(_e) => break
+        }
+    }
+    Ok(total)
+end t.vec_same
+
+fn t.vec_same_value() -> usize uses [alloc, thread] panics may
+    match t.vec_same() {
+        Ok(n) => n
+        Err(_e) => 0usize
+    }
+end t.vec_same_value
+
+fn t.struct_loop(n: u32) -> Result<usize, std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<t.Job, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let mut i = 0u32
+    while i < n {
+        core.mem.drop(tx.send(t.job(i)))
+        i = i.wrapping_add(1u32)
+    }
+    core.mem.drop(tx)
+    let mut total = 0usize
+    loop {
+        match rx.recv() {
+            Ok(j) => {
+                total = total + j.name.len() + j.data.len()
+            }
+            Err(_e) => break
+        }
+    }
+    Ok(total)
+end t.struct_loop
+
+fn t.struct_loop_value(n: u32) -> usize uses [alloc, thread] panics may
+    match t.struct_loop(n) {
+        Ok(v) => v
+        Err(_e) => 0usize
+    }
+end t.struct_loop_value
+
+fn t.drop_unreceived() -> Result<usize, std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<t.Job, std.alloc.System>(std.alloc.SYSTEM, 2usize)
+    let (tx, rx) = made.map_err(t.oom)?
+    let mut i = 0u32
+    while i < 40u32 {
+        core.mem.drop(tx.send(t.job(i)))
+        i = i.wrapping_add(1u32)
+    }
+    let first = match rx.recv() {
+        Ok(j) => j.data.len()
+        Err(_e) => 99usize
+    }
+    Ok(first + 1usize)
+end t.drop_unreceived
+
+fn t.drop_unreceived_value() -> usize uses [alloc, thread] panics may
+    match t.drop_unreceived() {
+        Ok(v) => v
+        Err(_e) => 0usize
+    }
+end t.drop_unreceived_value
+
+fn t.drop_strings() -> Result<usize, std.io.Error> uses [alloc, thread] panics may
+    let made = std.sync.channel::<alloc.string.String<std.alloc.System>, std.alloc.System>(
+        std.alloc.SYSTEM,
+        2usize,
+    )
+    let (tx, rx) = made.map_err(t.oom)?
+    core.mem.drop(tx.send(t.word(3u32)))
+    core.mem.drop(tx.send(t.word(4u32)))
+    core.mem.drop(rx)
+    match tx.send(t.word(7u32)) {
+        Ok(_u) => Ok(0usize)
+        Err(e) => {
+            let back = e.value
+            Ok(back.len())
+        }
+    }
+end t.drop_strings
+
+fn t.drop_strings_value() -> usize uses [alloc, thread] panics may
+    match t.drop_strings() {
+        Ok(v) => v
+        Err(_e) => 0usize
+    }
+end t.drop_strings_value
+"#;
+
 const SYNC_SRC: &str = r#"static t.TOTAL: std.sync.Mutex<u64> = std.sync.Mutex.new(5u64) pub
 
 fn t.oom(_e: alloc.alloc.AllocError) -> std.io.Error
@@ -14264,6 +14447,101 @@ fn kir_sync_values_match_tree_walker() {
     let m = format!("\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    core.check.eq(t.rng_ref(), {}u64)\n    Ok(())\nend t.main\n", want);
     let t3 = Tmp::new("kir_sync_rng2", &format!("{}{}", SYNC_SRC, m));
     assert_eq!(run(&["run"], &t3.0).status.code(), Some(0), "Rng (&mut の引数) の値が木走査と違う ({})", want);
+}
+
+#[test]
+fn kir_chan_aggregate_elements_match_tree_walker() {
+    // チャネルの要素が String / Vec / 構造体 (所有物を持つ)。送ると所有が受け手へ移り、受け取らずに最後の端が落ちたら残りを解放する
+    // (設計_KIR.md 22.6)。木走査と `--run` / `--native` (と ASan) の値が一致し、参照実行器が漏れ・二重解放を検出しない。
+    let cases: &[(&str, &str)] = &[
+        ("t.str_pipe_value", "30usize"),
+        ("t.vec_same_value", "80usize"),
+        ("t.struct_loop_value", "0usize"),
+        ("t.drop_unreceived_value", "1usize"),
+        ("t.drop_strings_value", "14usize"),
+    ];
+    for (i, (f, lit)) in cases.iter().enumerate() {
+        let call = if *f == "t.struct_loop_value" { format!("{}(6u32)", f) } else { format!("{}()", f) };
+        let lit = if *f == "t.struct_loop_value" { "45usize" } else { *lit };
+        let main = format!("\nfn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics may\n    core.check.eq({}, {})\n    Ok(())\nend t.main\n", call, lit);
+        let t = Tmp::new(&format!("kir_chan_agg_{}", i), &format!("{}{}", CHAN_AGG_SRC, main));
+        let tw = run(&["run"], &t.0);
+        assert_eq!(tw.status.code(), Some(0), "木走査: {}\n{}{}", call, text(&tw.stdout), text(&tw.stderr));
+        let mut args = vec!["kir", *f, "--run"];
+        if *f == "t.struct_loop_value" {
+            args.push("6");
+        }
+        let k = kir_run(&args, &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir: {}\n{}", call, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), lit.trim_end_matches("usize"), "kir value of {}", call);
+    }
+}
+
+#[test]
+fn kir_read_only_field_method_in_short_circuit_rhs_does_not_write_back() {
+    // `reply.location.is_empty()` を `||` の右辺に置いても、読むだけのメソッドはフィールドを書き戻さない
+    // (条件付きの位置の `setfield` が後の使用を支配しなかった。examples/shortener の `step` で見つかった)。
+    let t = Tmp::new("kir_ro_field_sc", r#"type t.Reply
+    body: alloc.string.String<std.alloc.System>
+    location: alloc.string.String<std.alloc.System>
+    status: u16
+end t.Reply
+
+fn t.parse(n: usize) -> Result<t.Reply, alloc.alloc.AllocError> uses [alloc] panics never
+    let mut body = alloc.string.String.new(std.alloc.SYSTEM)
+    body.push_str("hello")?
+    let mut location = alloc.string.String.new(std.alloc.SYSTEM)
+    if n == 1usize {
+        location.push_str("http://x")?
+    }
+    Ok(t.Reply { body: body, location: location, status: 200u16 })
+end t.parse
+
+fn t.step(method: &str, path: &str, n: usize, status: u16, expected: &str) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never
+    let reply = t.parse(n)?
+    if reply.status != status {
+        return Ok(0usize)
+    }
+    if reply.body.as_str() != expected {
+        return Ok(1usize)
+    }
+    if !(status != 302u16 || !reply.location.is_empty()) {
+        return Ok(2usize)
+    }
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    line.push_str(method)?
+    line.push_str(" ")?
+    line.push_str(path)?
+    line.push_str(" -> ")?
+    line.push_u64(u64.from_u16(reply.status))?
+    line.push_str(" ")?
+    line.push_str(reply.body.as_str())?
+    if !reply.location.is_empty() {
+        line.push_str(" Location: ")?
+        line.push_str(reply.location.as_str())?
+    }
+    Ok(line.len())
+end t.step
+
+fn t.go(n: usize) -> usize uses [alloc] panics never
+    match t.step("GET", "/stats", n, 200u16, "hello") {
+        Ok(k) => k
+        Err(_e) => 999usize
+    }
+end t.go
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    core.check.eq(t.go(0usize), 23usize)
+    Ok(())
+end t.main
+"#);
+    let o = run(&["run"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "木走査: {}", text(&o.stderr));
+    for (a, want) in [("0", "23"), ("1", "42")] {
+        let k = kir_run(&["kir", "t.go", "--run", a], &t.0);
+        assert_eq!(k.status.code(), Some(0), "kir {}: {}", a, text(&k.stderr));
+        assert_eq!(text(&k.stdout).trim(), want);
+    }
 }
 
 #[test]
@@ -20084,6 +20362,7 @@ fn llvm_builds_of_real_packages_match_run() {
         "examples/native",
         "examples/plugins",
         "examples/realtime",
+        "examples/shortener",
         "examples/threads",
         "examples/tour",
         "perf/closure",

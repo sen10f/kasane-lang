@@ -143,7 +143,10 @@ fn field_call_inner(lw: &mut Lw, e: &V, s: usize, names: &[String], kind: Kind, 
     let line = nline(e);
     let pl = place(lw, s, names, line)?;
     let r = coll::method_on(lw, e, line, None, kind, pl.hdr, m, args)?;
-    if r.is_some() {
+    // 読むだけのメソッドはヘッダを変えないので戻さない。`||` / `&&` の右辺のような条件付きの位置で `setfield` を置くと、
+    // 新しい値の定義が後の使用を支配しない (合流で受け渡す名前の集合は if / ループ / match だけが見る)。
+    let reads_only = matches!(m, "len" | "is_empty" | "as_str" | "as_slice" | "as_bytes" | "capacity" | "get" | "contains" | "starts_with" | "ends_with" | "chars" | "bytes" | "iter" | "clone" | "first" | "last");
+    if r.is_some() && !reads_only {
         commit(lw, &pl, line)?;
     }
     Ok(r)

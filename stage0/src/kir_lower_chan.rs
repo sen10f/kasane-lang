@@ -47,13 +47,45 @@ fn put(lw: &mut Lw, st: VId, off: u32, v: VId) {
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: st, off, v });
 }
 
+/// 要素の枠の幅 (8 の倍数に切り上げ)。スカラーは 8 のまま。
+fn stride_of(lw: &Lw, elem: Ty) -> i128 {
+    let sz = match elem {
+        Ty::Agg(i) => lw.aggs.borrow().defs[i as usize].size as i128,
+        _ => 8,
+    };
+    (sz.max(1) + 7) / 8 * 8
+}
+
+/// 枠の番地から要素を読む / 枠へ書く (集成体は `ptr` を参照にして `load` / `store`)。
+fn slot_load(lw: &mut Lw, slot: VId, elem: Ty) -> VId {
+    match elem {
+        Ty::Agg(i) => {
+            let r = lw.emit(Ty::Ref(true, Pointee::Agg(i)), Op::Bitcast { src: Ty::Ptr, a: slot });
+            lw.emit(elem, Op::Load(r))
+        }
+        _ => lw.emit(elem, Op::MemLoad { p: slot, off: 0 }),
+    }
+}
+
+fn slot_store(lw: &mut Lw, slot: VId, elem: Ty, v: VId) {
+    match elem {
+        Ty::Agg(i) => {
+            let r = lw.emit(Ty::Ref(true, Pointee::Agg(i)), Op::Bitcast { src: Ty::Ptr, a: slot });
+            lw.emit(Ty::Unit, Op::Store { ptr: r, val: v });
+        }
+        _ => {
+            lw.emit(Ty::Unit, Op::MemStore { ty: elem, p: slot, off: 0, v });
+        }
+    }
+}
+
 fn cmp_eq0(lw: &mut Lw, v: VId) -> VId {
     let z = us(lw, 0);
     lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: v, b: z })
 }
 
 /// 端 `v` (`Sender` なら `sender`) を落とす: 本数を 1 減らし、両方 0 なら `buf` と状態を解放する。
-pub(crate) fn drop_end(lw: &mut Lw, v: VId, sender: bool) {
+pub(crate) fn drop_end(lw: &mut Lw, v: VId, sender: bool, elem: Ty) {
     let st = lw.emit(Ty::Ptr, Op::Field { a: v, off: 0 });
     let off = if sender { SENDERS } else { RECEIVERS };
     let n = ld(lw, st, off);
@@ -68,6 +100,30 @@ pub(crate) fn drop_end(lw: &mut Lw, v: VId, sender: bool) {
     let (join, _) = lw.new_block(&[]);
     lw.branch(z, (free, vec![]), (join, vec![]));
     lw.cur = Some(free);
+    // 残った要素 (`buf[head..len]`) が所有物を持つなら、1 つずつ解放してから。
+    if super::coll::owns_heap_pub(lw, elem) {
+        let buf = lw.emit(Ty::Ptr, Op::MemLoad { p: st, off: BUF });
+        let head = ld(lw, st, HEAD);
+        let len = ld(lw, st, LEN);
+        let stride = us(lw, stride_of(lw, elem));
+        let (hd, hp) = lw.new_block(&[Ty::Usize]);
+        let (body, _) = lw.new_block(&[]);
+        let (exit, _) = lw.new_block(&[]);
+        lw.goto(hd, vec![head]);
+        lw.cur = Some(hd);
+        let i = hp[0];
+        let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: i, b: len });
+        lw.branch(c, (body, vec![]), (exit, vec![]));
+        lw.cur = Some(body);
+        let o = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: i, b: stride });
+        let slot = lw.emit(Ty::Ptr, Op::PtrAdd { p: buf, off: o });
+        let x = slot_load(lw, slot, elem);
+        super::coll::drop_value(lw, x, elem);
+        let one = us(lw, 1);
+        let i1 = add(lw, i, one);
+        lw.goto(hd, vec![i1]);
+        lw.cur = Some(exit);
+    }
     lw.callees.insert(FREE.to_string());
     lw.emit(Ty::Unit, Op::Call { callee: FREE.to_string(), args: vec![st] });
     lw.goto(join, vec![]);
@@ -110,10 +166,16 @@ pub(super) fn chan_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         "send" => sender && args.len() == 1,
         "recv" => !sender && args.is_empty(),
         "clone" => args.is_empty(),
+        "close" => !sender && args.is_empty() && !via_ref,
         _ => false,
     };
     if !supported {
-        return Some(lw.err(line, format!("チャネルの端のメソッド {} は段階 1 の対象外 (send / recv / clone だけ)", meth)));
+        return Some(lw.err(line, format!("チャネルの端のメソッド {} は段階 1 の対象外 (send / recv / clone / Receiver.close だけ)", meth)));
+    }
+    if meth == "close" {
+        // 受け手を消費する (局所の印を下ろす)。ほかに受信側があるか、キューが空なら端を畳んで `Ok(())`、残りがあれば端をそのまま `Err` で返す。
+        let end = super::coll::path_read(lw, s);
+        return Some(close_end(lw, e, end, end_t, line));
     }
     let end = if via_ref {
         let r = lw.read_slot(s);
@@ -134,6 +196,39 @@ pub(super) fn chan_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             Ok(Some(lw.emit(end_t, Op::Make { variant: None, fields: vec![st] })))
         }
     })
+}
+
+fn close_end(lw: &mut Lw, e: &V, end: VId, end_t: Ty, line: usize) -> LR<Option<VId>> {
+    let rty = lw.ty_of(e)?;
+    let Ty::Res(_, Pay::Agg(back)) = rty else { return lw.err(line, "Receiver.close の結果の型が Result<(), Receiver<T>> でない") };
+    if Ty::Agg(back) != end_t {
+        return lw.err(line, "Receiver.close の結果の型が Result<(), Receiver<T>> でない");
+    }
+    let elem = end_info(lw, end_t).map(|x| x.2).unwrap_or(Ty::U8);
+    let st = lw.emit(Ty::Ptr, Op::Field { a: end, off: 0 });
+    let (fin, fp) = lw.new_block(&[rty]);
+    let rc = ld(lw, st, RECEIVERS);
+    let one = us(lw, 1);
+    let many = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: rc, b: one });
+    let head = ld(lw, st, HEAD);
+    let len = ld(lw, st, LEN);
+    let empty = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: head, b: len });
+    let (try_empty, _) = lw.new_block(&[]);
+    let (shut, _) = lw.new_block(&[]);
+    let (keep, _) = lw.new_block(&[]);
+    lw.branch(many, (shut, vec![]), (try_empty, vec![]));
+    lw.cur = Some(try_empty);
+    lw.branch(empty, (shut, vec![]), (keep, vec![]));
+    lw.cur = Some(shut);
+    drop_end(lw, end, false, elem);
+    let u = lw.unit();
+    let ok = lw.emit(rty, Op::Ok(u));
+    lw.goto(fin, vec![ok]);
+    lw.cur = Some(keep);
+    let er = lw.emit(rty, Op::Err(end));
+    lw.goto(fin, vec![er]);
+    lw.cur = Some(fin);
+    Ok(Some(fp[0]))
 }
 
 fn channel(lw: &mut Lw, e: &V, args: &[V], line: usize) -> LR<Option<VId>> {
@@ -194,18 +289,17 @@ fn send(lw: &mut Lw, e: &V, st: VId, elem: Ty, arg: &V, line: usize) -> LR<Optio
     let (push, _) = lw.new_block(&[]);
     lw.branch(full, (grow, vec![]), (push, vec![]));
     lw.cur = Some(grow);
-    let ncap = cap;
-    let _ = ncap;
+    let stride = us(lw, stride_of(lw, elem));
     lw.callees.insert(GROW.to_string());
-    lw.emit(Ty::Unit, Op::Call { callee: GROW.to_string(), args: vec![st] });
+    lw.emit(Ty::Unit, Op::Call { callee: GROW.to_string(), args: vec![st, stride] });
     lw.goto(push, vec![]);
     lw.cur = Some(push);
     let len = ld(lw, st, LEN);
     let buf = lw.emit(Ty::Ptr, Op::MemLoad { p: st, off: BUF });
-    let eight = us(lw, 8);
+    let eight = us(lw, stride_of(lw, elem));
     let o = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: len, b: eight });
     let slot = lw.emit(Ty::Ptr, Op::PtrAdd { p: buf, off: o });
-    lw.emit(Ty::Unit, Op::MemStore { ty: elem, p: slot, off: 0, v });
+    slot_store(lw, slot, elem, v);
     let one = us(lw, 1);
     let l1 = add(lw, len, one);
     put(lw, st, LEN, l1);
@@ -235,10 +329,10 @@ fn recv(lw: &mut Lw, e: &V, st: VId, elem: Ty, line: usize) -> LR<Option<VId>> {
     lw.branch(has, (take, vec![]), (empty, vec![]));
     lw.cur = Some(take);
     let buf = lw.emit(Ty::Ptr, Op::MemLoad { p: st, off: BUF });
-    let eight = us(lw, 8);
+    let eight = us(lw, stride_of(lw, elem));
     let o = lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: head, b: eight });
     let slot = lw.emit(Ty::Ptr, Op::PtrAdd { p: buf, off: o });
-    let x = lw.emit(elem, Op::MemLoad { p: slot, off: 0 });
+    let x = slot_load(lw, slot, elem);
     let one = us(lw, 1);
     let h1 = add(lw, head, one);
     put(lw, st, HEAD, h1);
@@ -273,14 +367,13 @@ pub(super) fn finish(ok: &mut Vec<(crate::kir::Func, std::collections::BTreeSet<
     let called = |n: &str| ok.iter().any(|(_, cs)| cs.contains(n));
     let (want_grow, want_free) = (called(GROW), called(FREE));
     if want_grow {
-        let mut b = Fb::new(&[Ty::Ptr]);
+        let mut b = Fb::new(&[Ty::Ptr, Ty::Usize]);
         let cap = b.load(Ty::Usize, 0, CAPF as i128);
         let two = b.c(Ty::Usize, 2);
         let c2 = b.mul(cap, two);
         let four = b.c(Ty::Usize, 4);
         let ncap = b.add(c2, four);
-        let eight = b.c(Ty::Usize, 8);
-        let bytes = b.mul(ncap, eight);
+        let bytes = b.mul(ncap, 1);
         let buf = b.load(Ty::Ptr, 0, BUF as i128);
         let nb = b.emit(Ty::Ptr, Op::HeapRealloc { p: buf, size: bytes });
         b.store(Ty::Ptr, 0, BUF as i128, nb);
