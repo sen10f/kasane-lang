@@ -222,6 +222,32 @@ fn const_targ(a: &V) -> Option<String> {
     None
 }
 
+/// 2 つの `Send` / `Sync` の判定の連言。どちらかが満たさないなら `Some(false)`、決まらないものが混じれば `None`。
+fn and_marker(a: Option<bool>, b: Option<bool>) -> Option<bool> {
+    match (a, b) {
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        (Some(true), Some(true)) => Some(true),
+        _ => None,
+    }
+}
+
+/// 型実引数が省かれた位置の既定。`alloc.string.String` と `<A>` を省いて書くと `A` は省かれるので、
+/// アロケータの位置は既定の `std.alloc.SYSTEM` の型とみなす (`Allocator` は `Send` を境界で要求されるので、
+/// どのアロケータでも判定は変わらない)。それ以外の位置は決められないので `None` (fail-closed)。
+fn omitted_arg(g: &(String, String, V)) -> Option<Ty> {
+    let allocator = items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == "alloc.alloc.Allocator"));
+    allocator.then(|| Ty::Named("std.alloc.System".into(), vec![]))
+}
+
+/// クロージャの取り込みの型 (5.5)。`&a` は `&T`、`&mut a` は `&mut T`、`move a` は `T`。
+fn capture_ty(kind: &str, t: Ty) -> Ty {
+    match kind {
+        "&" => Ty::Ref(false, Box::new(t)),
+        "&mut" => Ty::Ref(true, Box::new(t)),
+        _ => t,
+    }
+}
+
 /// 型パラメータを束縛で置き換える。束縛のないものは `Unknown`。
 fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
     match t {
@@ -391,6 +417,11 @@ pub struct TypeCk<'a> {
     quiet_sites: HashSet<usize>,
     /// 局所変数の名前 → 束縛の記録 (使用箇所から原因の束縛へたどる)。
     local_sites: HashMap<String, usize>,
+    /// クロージャ節 → 取り込んだ名前 (取り込みの種類, 名前, 取り込んだ値の型)。spawn の `Send` 検査 (5.5) と、
+    /// クロージャの自動導出 (`auto_marker`) が使う。
+    closure_caps: HashMap<String, Vec<(String, String, Ty)>>,
+    /// `std.thread.spawn` に渡したクロージャ (節, 行)。関数の推論が終わってから取り込みの `Send` を見る。
+    spawn_closures: Vec<(String, usize)>,
     /// 推論中のクロージャ本体の効果 (`closure_nodes` と同じ深さのスタック)。型で解決できた呼び出しの
     /// 効果と添字の panic だけを足す (下からの近似。分からない呼び出しは足さない = 誤検出を出さない)。
     /// 3 つ目は「推論が確実でない」印 (推論された関数 `infer.rs` の効果を含む呼び出しがあった、
@@ -455,7 +486,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], quiet_sites: HashSet::new(), local_sites: HashMap::new() }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), spawn_closures: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -532,6 +563,8 @@ impl<'a> TypeCk<'a> {
         self.loop_breaks.clear();
         self.quiet_sites.clear();
         self.local_sites.clear();
+        self.closure_caps.clear();
+        self.spawn_closures.clear();
         self.scopes = vec![HashMap::new()];
         let gn = d.gnames();
         for (n, t) in &d.params {
@@ -563,6 +596,7 @@ impl<'a> TypeCk<'a> {
         self.finish_literals();
         self.check_unsize();
         self.report_undetermined();
+        self.check_spawn_captures();
         // 型変数は関数ごとの表なので、ここで解決してから外へ出す。
         for k in self.recv_start..self.recv_log.len() {
             let t = self.recv_log[k].recv.clone();
@@ -597,6 +631,203 @@ impl<'a> TypeCk<'a> {
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.undetermined(x)) || self.undetermined(&ret),
             _ => false,
         }
+    }
+
+    /// 5.5: `std.thread.spawn` に渡したクロージャの取り込みが `core.marker.Send` を満たすかを見る。
+    /// 取り込みは `&a` なら `&T`、`&mut a` なら `&mut T`、`move a` なら `T` として見る (仕様 5.5)。
+    /// 満たさないものと、決まらないもの (`None`) は E2040 (fail-closed)。
+    fn check_spawn_captures(&mut self) {
+        let spawns = std::mem::take(&mut self.spawn_closures);
+        for (node, line) in spawns {
+            let Some(caps) = self.closure_caps.get(&node).cloned() else { continue };
+            for (kind, name, t) in caps {
+                let t = self.deep(&t);
+                if self.auto_marker(&capture_ty(&kind, t.clone()), false, &mut Vec::new()) != Some(true) {
+                    self.diag(
+                        "E2040",
+                        format!("spawn closure captures `{}`, which is not known to be core.marker.Send (5.5)", name),
+                        line,
+                    );
+                }
+                // `move` で取り込んだ値が参照を持つなら、その参照の先が局所でないことを型からは示せない (fail-closed)。
+                // `&a` / `&mut a` の取り込みは check.rs (E2037) が見る。
+                if kind != "&" && kind != "&mut" && self.holds_ref(&t, &mut Vec::new()) {
+                    self.diag(
+                        "E2037",
+                        format!("spawn closure must be 'static; the captured `{}` holds a reference that may borrow a local (5.5)", name),
+                        line,
+                    );
+                }
+            }
+        }
+    }
+
+    /// 型が参照 (`&T` / `&mut T`、または参照を持つ名義型のフィールド) を含むか。含むなら `'static` を型からは示せない。
+    /// 型パラメータと分からない型は含まないとみなす (推論の穴は E2044 が見る)。
+    fn holds_ref(&self, t: &Ty, seen: &mut Vec<String>) -> bool {
+        match self.deep(t) {
+            Ty::Ref(..) => true,
+            Ty::Tuple(xs) => xs.iter().any(|x| self.holds_ref(x, seen)),
+            Ty::Array(x) | Ty::Slice(x) => self.holds_ref(&x, seen),
+            Ty::Named(n, args) => {
+                if args.iter().any(|x| self.holds_ref(x, seen)) {
+                    return true;
+                }
+                if seen.iter().any(|s| *s == n) {
+                    return false;
+                }
+                let Some(&idx) = self.p.types.get(&n) else { return false };
+                let d = &self.p.defs[idx];
+                if d.kw != "type" && d.kw != "enum" {
+                    return false;
+                }
+                let gn = d.gnames();
+                let tys: Vec<Ty> = if d.kw == "type" {
+                    d.fields.iter().map(|f| from_v(&f.1, &gn)).collect()
+                } else {
+                    d.variants.iter().flat_map(|v| v.1.iter()).map(|x| from_v(x, &gn)).collect()
+                };
+                seen.push(n.clone());
+                let r = tys.iter().any(|t| self.holds_ref(t, seen));
+                seen.pop();
+                r
+            }
+            Ty::Closure { id: Some(node), .. } => {
+                let caps = self.closure_caps.get(&node).cloned().unwrap_or_default();
+                caps.iter().any(|(k, _, t)| k == "&" || k == "&mut" || self.holds_ref(t, seen))
+            }
+            _ => false,
+        }
+    }
+
+    /// 型が `core.marker.Send` (`sync` = false) / `Sync` (true) を満たすか (5.5)。`Some(false)` は満たさない、
+    /// `None` は決まらない。`&T` は `T: Sync` のとき Send、`&mut T` は `T: Send` のとき Send。生ポインタは両方とも満たさない。
+    /// 手動の impl は境界 (`T: core.marker.Send` など) を実引数に当てて見る。無いものは型の定義から自動導出する
+    /// (循環は成立とみなす)。型パラメータは、その境界に当該マーカーがあるときだけ満たす。
+    fn auto_marker(&self, t: &Ty, sync: bool, seen: &mut Vec<String>) -> Option<bool> {
+        let marker = if sync { "core.marker.Sync" } else { "core.marker.Send" };
+        match self.deep(t) {
+            Ty::Never | Ty::Unit | Ty::Prim(_) | Ty::Const(_) => Some(true),
+            Ty::Ptr(..) => Some(false),
+            Ty::Ref(m, x) => self.auto_marker(&x, sync || !m, seen),
+            Ty::Tuple(xs) => xs.iter().fold(Some(true), |r, x| and_marker(r, self.auto_marker(x, sync, seen))),
+            Ty::Array(x) | Ty::Slice(x) => self.auto_marker(&x, sync, seen),
+            Ty::Param(p) => {
+                let bounded = self.def().generics.iter().any(|g| {
+                    g.0 == "type" && g.1 == p && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == marker))
+                });
+                if bounded { Some(true) } else { None }
+            }
+            Ty::Dyn(tr, _) => self.dyn_auto(&tr, marker),
+            // クロージャは、取り込んだ実際の型がすべて満たすとき (5.5)。節が分からない (関数ポインタ) なら取り込みはない。
+            Ty::Closure { id: Some(node), .. } => {
+                let caps = self.closure_caps.get(&node).cloned().unwrap_or_default();
+                caps.into_iter().fold(Some(true), |r, (k, _, t)| and_marker(r, self.auto_marker(&capture_ty(&k, t), sync, seen)))
+            }
+            Ty::Closure { id: None, .. } => Some(true),
+            Ty::Named(n, args) => self.auto_named(&n, &args, sync, seen),
+            Ty::Unknown | Ty::Var(_) => None,
+        }
+    }
+
+    /// 名義型 `n<args>` が `core.marker.Send` / `Sync` を満たすか。`auto_marker` の名義型の枝。
+    fn auto_named(&self, n: &str, args: &[Ty], sync: bool, seen: &mut Vec<String>) -> Option<bool> {
+        let marker = if sync { "core.marker.Sync" } else { "core.marker.Send" };
+        // `alloc.boxed.Box<T, A>` は `T` と `A` に従う (`T` が `dyn Tr` のときは `Tr` の `requires`、`Dyn` の枝)。
+        if n == "alloc.boxed.Box" {
+            return args.iter().fold(Some(true), |r, x| and_marker(r, self.auto_marker(x, sync, seen)));
+        }
+        // 手動の impl (`impl[T: Send, A: Send] Send for Vec<T, A>` など): 境界に書かれたマーカーだけを実引数に当てる。
+        if let Some(imp) = self.p.defs.iter().find(|d| d.kw == "impl" && d.impl_trait == marker && crate::check::impl_target(&d.impl_for) == n) {
+            let head: Vec<&V> = items(tel(&imp.impl_for, 2)).iter().filter(|a| matches!(a, V::L(_)) && tag(a) != "life").collect();
+            if args.len() > head.len() {
+                return None;
+            }
+            let mut r = Some(true);
+            for (i, a) in head.iter().enumerate() {
+                // 実引数の位置の型パラメータ名 (具体型の位置は境界を持たないので見ない)。
+                if tag(a) != "named" {
+                    continue;
+                }
+                let pname = st(tel(a, 1));
+                for g in imp.generics.iter().filter(|g| g.0 == "type" && g.1 == pname) {
+                    let t = match args.get(i) {
+                        Some(t) => t.clone(),
+                        None => omitted_arg(g)?,
+                    };
+                    for b in items(&g.2) {
+                        let V::L(bx) = b else { continue };
+                        let bn = st(&bx[0]);
+                        if bn == "core.marker.Send" {
+                            r = and_marker(r, self.auto_marker(&t, false, seen));
+                        } else if bn == "core.marker.Sync" {
+                            r = and_marker(r, self.auto_marker(&t, true, seen));
+                        }
+                    }
+                }
+            }
+            return r;
+        }
+        // 型の定義から自動導出する。定義の無い名義型は決まらない (fail-closed)。
+        let &idx = self.p.types.get(n)?;
+        let d = &self.p.defs[idx];
+        if d.kw != "type" && d.kw != "enum" {
+            return None;
+        }
+        let gens: Vec<&(String, String, V)> = d.generics.iter().filter(|g| g.0 != "life").collect();
+        if args.len() > gens.len() {
+            return None;
+        }
+        if seen.iter().any(|s| s == n) {
+            return Some(true);
+        }
+        let mut bind: HashMap<String, Ty> = HashMap::new();
+        for (i, g) in gens.iter().enumerate() {
+            let t = match args.get(i) {
+                Some(t) => t.clone(),
+                None => omitted_arg(g)?,
+            };
+            bind.insert(g.1.clone(), t);
+        }
+        let gn = d.gnames();
+        let tys: Vec<Ty> = if d.kw == "type" {
+            d.fields.iter().map(|f| from_v(&f.1, &gn)).collect()
+        } else {
+            d.variants.iter().flat_map(|v| v.1.iter()).map(|x| from_v(x, &gn)).collect()
+        };
+        seen.push(n.to_string());
+        let mut r = Some(true);
+        for t in &tys {
+            r = and_marker(r, self.auto_marker(&subst(t, &bind), sync, seen));
+        }
+        seen.pop();
+        r
+    }
+
+    /// `dyn Tr` が `core.marker.Send` / `Sync` を満たすか: `Tr` の `requires` (スーパートレイトを推移的に辿る) に含むときだけ (5.5)。
+    fn dyn_auto(&self, tr: &str, marker: &str) -> Option<bool> {
+        let root = crate::check::resolve_trait_fqn(self.p, tr)?;
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut stack = vec![root];
+        while let Some(cur) = stack.pop() {
+            if !seen.insert(cur.clone()) {
+                continue;
+            }
+            let Some(&i) = self.p.types.get(&cur) else { continue };
+            let td = &self.p.defs[i];
+            if td.kw != "trait" {
+                continue;
+            }
+            for (sup, _) in &td.requires {
+                if sup == marker {
+                    return Some(true);
+                }
+                if let Some(fq) = crate::check::resolve_trait_fqn(self.p, sup) {
+                    stack.push(fq);
+                }
+            }
+        }
+        Some(false)
     }
 
     /// strict: 関数の推論が終わった時点で型が決まっていない式・束縛を E2044 にする。
@@ -2905,21 +3136,24 @@ impl<'a> TypeCk<'a> {
                 self.eff_acc.push(Default::default());
                 self.scopes.push(HashMap::new());
                 // `&a` / `&mut a` で取り込んだ名前は、本体では `&T` / `&mut T` (move は `T` のまま)。
+                // 取り込んだ値の型も覚える (spawn の `Send` 検査 (5.5) は、推論の終わりに型を決めてから見る)。
+                let mut caps: Vec<(String, String, Ty)> = vec![];
                 for c in items(&f[2]) {
                     let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { continue };
+                    let Some(t) = self.lookup(n) else { continue };
+                    caps.push((k.clone(), n.clone(), t.clone()));
                     if k == "move" {
                         continue;
                     }
-                    if let Some(t) = self.lookup(n) {
-                        // Copy な型 (整数など) は、読むだけなら値のままで害がない。移せる (Copy でない) 型だけ参照にする。
-                        if self.ty_copy(&t) == Some(false) {
-                            let r = Ty::Ref(k == "&mut", Box::new(t));
-                            if let Some(s) = self.scopes.last_mut() {
-                                s.insert(n.clone(), r);
-                            }
+                    // Copy な型 (整数など) は、読むだけなら値のままで害がない。移せる (Copy でない) 型だけ参照にする。
+                    if self.ty_copy(&t) == Some(false) {
+                        let r = Ty::Ref(k == "&mut", Box::new(t));
+                        if let Some(s) = self.scopes.last_mut() {
+                            s.insert(n.clone(), r);
                         }
                     }
                 }
+                self.closure_caps.insert(node.clone(), caps);
                 for p in items(&f[0]) {
                     let ty = from_v(&items(p)[1], &gn);
                     self.bind(&st(&items(p)[0]), ty.clone());
@@ -3510,6 +3744,12 @@ impl<'a> TypeCk<'a> {
     fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
         let loose = std::mem::take(&mut self.arg_loose);
         let d = &self.p.defs[i];
+        // 5.5: spawn に渡したクロージャの取り込みは `Send` でなければならない (推論の終わりに見る)。
+        if d.name == "std.thread.spawn" {
+            if let Some(Ty::Closure { id: Some(node), .. }) = argt.get(1).map(|a| self.resolve(a)) {
+                self.spawn_closures.push((node, line));
+            }
+        }
         self.add_edge(d.name.clone());
         self.check_closure_bounds(d, 0, argt, line);
         // 効果 (4.3 / 5.1): 宣言どおりの効果は従来の検査 (check.rs の visit) が見るので、ここでは

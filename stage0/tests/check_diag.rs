@@ -84,7 +84,6 @@ const KNOWN_HOLES: &[&str] = &[
     // F3 スレッド: `spawn` の取り込みの `Send` (生ポインタ・`MutexGuard`)
     "hunt_a11_spawn_constptr_15",
     "hunt_a11_spawn_data_race_11",
-    "hunt_a11_spawn_guard_03",
     "hunt_a11_spawn_rawptr_04",
     "hunt_a11_spawn_struct_rawptr_10",
     // F8 ジェネリクス: 総称関数越しの境界のすり抜け、`derive` の型パラメータの境界、スーパートレイト

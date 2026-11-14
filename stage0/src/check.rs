@@ -5974,7 +5974,7 @@ pub(crate) fn resolve_trait_fqn(p: &Program, nm: &str) -> Option<String> {
 }
 
 /// `impl .. for X` の対象型の基底名 (型引数を落とす)。
-fn impl_target(v: &V) -> String {
+pub(crate) fn impl_target(v: &V) -> String {
     match tag(v).as_str() {
         "named" | "prim" => st(tel(v, 1)),
         "ref" | "ptr" => impl_target(tel(v, 2)),
