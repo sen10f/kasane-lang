@@ -24,7 +24,7 @@ use super::{coll, Lw, LR};
 /// 受け手の型の名前 (利用者の型の FQN)。`S` / `&S` / `&mut S` のとき `S`。
 fn recv_type_name(t: &Src) -> Option<String> {
     match t {
-        Src::Named(n, a) if a.is_empty() => Some(n.clone()),
+        Src::Named(n, _) => Some(n.clone()),
         Src::Ref(_, inner) => recv_type_name(inner),
         _ => None,
     }
@@ -65,6 +65,8 @@ impl<'a> Lw<'a> {
             _ => return None,
         };
         let name = self.aggs.borrow().defs[ai as usize].name.clone();
+        // 型引数付きの集成体は `FQN<引数,..>` という名前。メソッドは `FQN.m` の定義。
+        let name = name.split('<').next().unwrap_or("").to_string();
         let mut segs: Vec<String> = name.split('.').map(String::from).collect();
         segs.push(m.to_string());
         match self.p.resolve(&segs, &self.def.file)?.target {
@@ -235,6 +237,11 @@ impl<'a> Lw<'a> {
         };
         if self.vty(rv) != self_ty {
             return self.err(line, format!("メソッド {} の受け手の型が合わない", cd.name));
+        }
+        // SSA の局所を一時に写して `&mut self` で呼ぶ形 (書き戻しあり) は、戻り値の参照が一時の中を指すので、
+        // 参照を通した書き込みが元の局所に届かない。誤った値を出さないよう対象外にする。
+        if copy_back.is_some() && matches!(ret, Ty::Ref(..)) {
+            return self.err(line, format!("メソッド {} は &mut self で参照を返す。受け手がアドレスを取られていない局所のときは対象外", cd.name));
         }
         // `Call`/`MCall` の戻り値（スコープにまだ登録されていない一時値）だけ tmp_hold する。
         // `Path` で移した値や `&self` の alloca コピーはスコープ終了で解放される。

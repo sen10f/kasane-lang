@@ -267,8 +267,9 @@ impl<'a> Lw<'a> {
             }
         }
         // 1'. `&x.f.g`: x のスロット (または x の参照) からフィールドのアドレスをたどる
-        if nname(operand) == "Path" {
-            let segs = strs(&nf(operand)[0]);
+        // `x.f` は `Path` (名前の並び)、`self.f` や入れ子は `Field` の木で来ることがある。どちらも名前の並びにして扱う。
+        if matches!(nname(operand), "Path" | "Field") {
+            let segs = super::agg::field_segs(operand).unwrap_or_default();
             if segs.len() > 1 {
                 if let Some(s) = self.lookup(&segs[0]) {
                     let (base, _) = self.slots[s];
