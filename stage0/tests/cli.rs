@@ -24057,8 +24057,8 @@ fn kir_borrowck_has_no_false_positives() {
     }
     eprintln!("kir_borrowck (correct code): checked {} unknown {} false positives {}", checked, unknown, fps.len());
     assert!(fps.is_empty(), "KIR borrowck false positives:\n{}", fps.join("\n"));
-    // 下ろせる数が減らないこと (現在値 95 を下限にする。下ろしの対応が増えたら上げる)。
-    assert!(checked >= 95, "only {} correct programs were checked on KIR", checked);
+    // 下ろせる数が減らないこと (現在値 110 を下限にする。下ろしの対応が増えたら上げる)。
+    assert!(checked >= 110, "only {} correct programs were checked on KIR", checked);
 }
 
 /// `unsound/` の全件で、AST の借用検査 (E3010 / E3030) と KIR の検査の結果を並べる。
@@ -24091,9 +24091,9 @@ fn kir_borrowck_agreement_on_unsound_does_not_drop() {
         }
     }
     eprintln!("kir_borrowck (unsound): checked {} agree {} kir_reject {} unknown {}; mismatches: {}", checked, agree, kir_reject, unknown, mism.join(", "));
-    assert!(checked >= 123, "KIR checked only {} unsound programs", checked);
-    assert!(agree >= 123, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
-    assert!(kir_reject >= 16, "KIR rejects only {}", kir_reject);
+    assert!(checked >= 151, "KIR checked only {} unsound programs", checked);
+    assert!(agree >= 148, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
+    assert!(kir_reject >= 33, "KIR rejects only {}", kir_reject);
 }
 
 /// 借用検査の注釈 (`borrow.*` / `scope.end`。設計_KIR.md 24 章) は実行に影響しない: KIR のテキストに出て、
