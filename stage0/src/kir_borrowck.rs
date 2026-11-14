@@ -57,6 +57,63 @@ struct Hdr {
     lts: Vec<BTreeSet<String>>,
     mut_ref: Vec<bool>,
     carries: Vec<bool>,
+    /// 引数ごとの、参照そのものの領域 (`&'a T` の `'a`、省略なら引数ごとの新しい領域) と、中の領域 (`&mut H<'b>` の `'b`)。
+    outer: Vec<Rg>,
+    inner: Vec<Vec<Rg>>,
+    /// 戻り値の領域 (`&'a T` / `H<'a>`)。書かれていなければ None (省略規則か、型引数経由)。
+    ret_rg: Option<Rg>,
+    /// ヘッダの `'a: 'b` (a は b より長生き)。
+    facts: Vec<(Rg, Rg)>,
+}
+
+/// 領域 (ライフタイム) の定数。領域変数は、関数の本体を解くときの制約の両端として、ヘッダの領域を指す。
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Rg {
+    Static,
+    Named(String),
+    /// 省略された引数の領域 (引数の番号)。
+    Elided(usize),
+    /// この関数の局所 (関数を出ると終わる)。
+    Local,
+}
+
+fn rg_of(name: &str) -> Rg {
+    if name == "static" { Rg::Static } else { Rg::Named(name.to_string()) }
+}
+
+/// 制約 `sup: sub` (sup は sub より長生き)。`sups` のどれか 1 つが満たせばよい (中の領域のどれかなど)。
+struct Cons {
+    sups: Vec<Rg>,
+    sub: Rg,
+    line: usize,
+    msg: String,
+}
+
+fn outlives(facts: &[(Rg, Rg)], a: &Rg, b: &Rg) -> bool {
+    if a == b || *a == Rg::Static {
+        return true;
+    }
+    // ヘッダの `'a: 'b` の推移閉包。
+    let mut seen = vec![a.clone()];
+    let mut i = 0;
+    while i < seen.len() {
+        let x = seen[i].clone();
+        i += 1;
+        for (p, q) in facts {
+            if *p == x && !seen.contains(q) {
+                if q == b {
+                    return true;
+                }
+                seen.push(q.clone());
+            }
+        }
+    }
+    false
+}
+
+/// 制約の集合を解く。満たされない制約を返す。
+fn solve<'a>(facts: &[(Rg, Rg)], cons: &'a [Cons]) -> Vec<&'a Cons> {
+    cons.iter().filter(|c| !c.sups.iter().any(|s| outlives(facts, s, &c.sub))).collect()
 }
 
 fn match_close(s: &str, open: usize) -> Option<usize> {
@@ -124,6 +181,17 @@ fn lifetimes(s: &str) -> BTreeSet<String> {
     out
 }
 
+/// 型の文面 `text` に識別子 `name` が単語として現れるか。
+fn mentions(text: &str, name: &str) -> bool {
+    let b = text.as_bytes();
+    let n = name.len();
+    if n == 0 {
+        return false;
+    }
+    let w = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    text.match_indices(name).any(|(i, _)| (i == 0 || !w(b[i - 1])) && (i + n >= b.len() || !w(b[i + n])))
+}
+
 fn parse_hdr(d: &Def) -> Option<Hdr> {
     let head = d.header.split(" uses ").next()?;
     let head = head.split(" panics ").next()?;
@@ -141,13 +209,15 @@ fn parse_hdr(d: &Def) -> Option<Hdr> {
     }
     let ret = head[close + 1..].split_once("->").map_or("", |x| x.1).trim().to_string();
     let ret_lts = lifetimes(&ret);
-    let ret_has_ref = ret.contains('&') || !ret_lts.is_empty();
+    // 戻り値の型が型引数 `T` を含むなら、`T` を含む引数から借用が流れうる (呼び出しで `T` が参照になる)。
+    let ret_tps: Vec<&str> = d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.as_str()).filter(|g| mentions(&ret, g)).collect();
+    let ret_has_ref = ret.contains('&') || !ret_lts.is_empty() || !ret_tps.is_empty();
     let lts: Vec<BTreeSet<String>> = params.iter().map(|p| lifetimes(p)).collect();
-    let carries: Vec<bool> = params.iter().map(|p| p.contains('&') || p.contains('\'')).collect();
+    let carries: Vec<bool> = params.iter().map(|p| p.contains('&') || p.contains('\'') || ret_tps.iter().any(|g| mentions(p, g))).collect();
     let flows: Vec<bool> = if !ret_has_ref {
         vec![false; params.len()]
-    } else if !ret_lts.is_empty() {
-        lts.iter().map(|l| l.iter().any(|x| ret_lts.contains(x))).collect()
+    } else if !ret_lts.is_empty() || !ret_tps.is_empty() {
+        lts.iter().zip(params.iter()).map(|(l, p)| l.iter().any(|x| ret_lts.contains(x)) || ret_tps.iter().any(|g| mentions(p, g))).collect()
     } else if params.first().map_or(false, |p| p.starts_with("self") && p.contains('&')) {
         (0..params.len()).map(|k| k == 0).collect()
     } else {
@@ -160,7 +230,49 @@ fn parse_hdr(d: &Def) -> Option<Hdr> {
             t.starts_with("&mut") || t.starts_with("&'") && t.split_whitespace().nth(1) == Some("mut")
         })
         .collect();
-    Some(Hdr { params, ret_has_ref, flows, lts, mut_ref, carries })
+    let mut outer: Vec<Rg> = vec![];
+    let mut inner: Vec<Vec<Rg>> = vec![];
+    for (j, p) in params.iter().enumerate() {
+        let ty = p.split_once(':').map_or(p.as_str(), |x| x.1).trim();
+        let all = lifetimes(ty);
+        let o = if let Some(r) = ty.strip_prefix('&') {
+            match r.strip_prefix('\'') {
+                Some(r2) => Some(r2.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<String>()),
+                None => None,
+            }
+        } else {
+            all.iter().next().cloned()
+        };
+        let orr = match &o {
+            Some(n) => rg_of(n),
+            None => Rg::Elided(j),
+        };
+        let rest: Vec<Rg> = all.iter().filter(|n| Some(*n) != o.as_ref()).map(|n| rg_of(n)).collect();
+        outer.push(orr);
+        inner.push(rest);
+    }
+    let ret_rg = match ret.strip_prefix("&'") {
+        Some(r) => Some(rg_of(&r.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<String>())),
+        None => ret_lts.iter().next().map(|n| rg_of(n)),
+    };
+    // ヘッダの境界 `['a: 'b + 'c]`。
+    let mut facts: Vec<(Rg, Rg)> = vec![];
+    if head.as_bytes()[head.find(|c| c == '(' || c == '[').unwrap_or(0)] == b'[' {
+        let o = head.find('[').unwrap_or(0);
+        if let Some(c) = match_close(head, o) {
+            for g in split_top(&head[o + 1..c]) {
+                if let Some((a, bs)) = g.split_once(':') {
+                    let a = a.trim().trim_start_matches('\'');
+                    if g.trim_start().starts_with('\'') {
+                        for b in bs.split('+') {
+                            facts.push((rg_of(a), rg_of(b.trim().trim_start_matches('\''))));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some(Hdr { params, ret_has_ref, flows, lts, mut_ref, carries, outer, inner, ret_rg, facts })
 }
 
 fn carries_ty(t: Ty) -> bool {
@@ -202,6 +314,10 @@ enum Req {
     Access { via: VId, write: bool },
     /// 借用の同時生存の検査 (被演算子も含める)。
     Pairs,
+    /// 局所の寿命の終わり (`scope.end`)。その後に生きている、このスロットの借用は違反。
+    Scope { root: VId, holders: Vec<VId> },
+    /// 所有物の move。その後に生きている、このスロットへの借用 (`borrow.*`) は違反。
+    MoveBorrowed { root: VId },
 }
 
 struct An<'a> {
@@ -337,7 +453,7 @@ impl<'a> An<'a> {
                 res.insert(Loan::Slot(d));
             }
             Op::PtrAdd { p, .. } => res = self.org[*p as usize].clone(),
-            Op::FieldAddr { a, .. } | Op::Reborrow(a) | Op::AsShared(a) => res = self.org[*a as usize].clone(),
+            Op::FieldAddr { a, .. } | Op::Reborrow(a) | Op::AsShared(a) | Op::Borrow { a, .. } => res = self.org[*a as usize].clone(),
             Op::MemLoad { p, off } => {
                 res = self.load_from(st, *p, *off, t);
                 if self.move_loads.contains(&d) {
@@ -483,7 +599,7 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
     for b in &f.blocks {
         for i in &b.insts {
             match &i.op {
-                Op::Reborrow(a) | Op::AsShared(a) | Op::FieldAddr { a, .. } => {
+                Op::Reborrow(a) | Op::AsShared(a) | Op::FieldAddr { a, .. } | Op::Borrow { a, .. } => {
                     parent.insert(i.dst, *a);
                 }
                 _ => {}
@@ -498,7 +614,7 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
             for i in &b.insts {
                 let np = match &i.op {
                     Op::Alloca | Op::FrameBytes { .. } => Some((i.dst, Some(0))),
-                    Op::Reborrow(a) | Op::AsShared(a) => place[*a as usize],
+                    Op::Reborrow(a) | Op::AsShared(a) | Op::Borrow { a, .. } => place[*a as usize],
                     Op::FieldAddr { a, off } => place[*a as usize].map(|(r, o)| (r, o.map(|o| o + off))),
                     Op::PtrAdd { p, .. } => place[*p as usize].map(|(r, _)| (r, None)),
                     _ => None,
@@ -540,6 +656,7 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
     let mut an = An { f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, move_stores };
     let ins = an.run();
     let mut diags: Vec<Diag> = vec![];
+    let mut cons: Vec<Cons> = vec![];
     let line_of = |v: VId| lines.get(v as usize).copied().unwrap_or(0) as usize;
     // 命令の行。分からないときは、同じブロックの手前の命令の行、なければ後ろの命令の行。
     let line_at = |bi: usize, ii: usize| -> usize {
@@ -629,6 +746,11 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                     let mut holders = holders_of(&st_at, &loans);
                     holders.retain(|h| !own.contains(h));
                     reqs.push((bi, ii, line, Req::Inval { loans, skip: vec![], holders, why: "moved" }));
+                    for l in an.org[*p as usize].iter() {
+                        if let Loan::Slot(r) = l {
+                            reqs.push((bi, ii, line, Req::MoveBorrowed { root: *r }));
+                        }
+                    }
                 }
                 Op::MemLoad { p, .. } | Op::Load(p) => reqs.push((bi, ii, line, Req::Access { via: *p, write: false })),
                 Op::MemStore { p, .. } | Op::Store { ptr: p, .. } => {
@@ -642,14 +764,15 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                     if carries_ty(vt) {
                         for l in &an.org[pp as usize] {
                             if let Loan::Param(j) | Loan::ParamIn(j) = l {
+                                let jn = hdr.params[*j as usize].split(':').next().unwrap_or("").to_string();
+                                // 書き込み先の領域: 引数の中の領域 (なければ参照そのもの)。
+                                let target = hdr.inner[*j as usize].first().cloned().unwrap_or_else(|| hdr.outer[*j as usize].clone());
                                 for vl in &an.org[vv as usize] {
                                     match vl {
-                                        Loan::Slot(_) | Loan::Buf(_) => add(&mut diags, line, format!("cannot store a borrow of a local variable into `{}` (it outlives the function)", hdr.params[*j as usize])),
+                                        Loan::Slot(_) | Loan::Buf(_) => cons.push(Cons { sups: vec![Rg::Local], sub: target.clone(), line, msg: format!("cannot store a borrow of a local variable into `{}` (it outlives the function)", jn) }),
                                         Loan::Param(k) if k != j => {
-                                            let ok = hdr.lts[*k as usize].iter().any(|x| hdr.lts[*j as usize].contains(x));
-                                            if !ok {
-                                                add(&mut diags, line, format!("cannot store `{}` into `{}`: its lifetime is not the one `{}` holds (header lifetimes)", hdr.params[*k as usize].split(':').next().unwrap_or(""), hdr.params[*j as usize].split(':').next().unwrap_or(""), hdr.params[*j as usize].split(':').next().unwrap_or("")));
-                                            }
+                                            let kn = hdr.params[*k as usize].split(':').next().unwrap_or("");
+                                            cons.push(Cons { sups: vec![hdr.outer[*k as usize].clone()], sub: target.clone(), line, msg: format!("cannot store `{}` into `{}`: its lifetime does not outlive the one `{}` holds (header lifetimes)", kn, jn, jn) });
                                         }
                                         _ => {}
                                     }
@@ -660,7 +783,14 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                 }
                 _ => {}
             }
-            if matches!(i.op, Op::Reborrow(_) | Op::AsShared(_) | Op::FieldAddr { .. } | Op::Call { .. }) {
+            if let Op::ScopeEnd(a) = &i.op {
+                if let Some((r, _)) = an.place[*a as usize] {
+                    let loans: Set = [Loan::Slot(r), Loan::Buf(r)].into_iter().collect();
+                    let holders: Vec<VId> = holders_of(&st_at, &loans).into_iter().filter(|h| *h != r).collect();
+                    reqs.push((bi, ii, line, Req::Scope { root: r, holders }));
+                }
+            }
+            if matches!(i.op, Op::Reborrow(_) | Op::AsShared(_) | Op::Borrow { .. } | Op::FieldAddr { .. } | Op::Call { .. }) {
                 reqs.push((bi, ii, line, Req::Pairs));
             }
             let mut ch = false;
@@ -673,8 +803,19 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
             if hdr.ret_has_ref {
                 for l in &an.org[*v as usize] {
                     match l {
-                        Loan::Param(j) | Loan::ParamIn(j) if !hdr.flows[*j as usize] => {
-                            add(&mut diags, line, format!("cannot return a borrow from `{}`: its lifetime is not the return value's (header lifetimes)", hdr.params[*j as usize].split(':').next().unwrap_or("")));
+                        Loan::Param(j) | Loan::ParamIn(j) => {
+                            let ju = *j as usize;
+                            // 戻り値の領域: 書かれていればそれ。省略 / 型引数経由なら、流れる引数自身の領域 (流れないなら該当なし)。
+                            let sub = match &hdr.ret_rg {
+                                Some(r) => r.clone(),
+                                None if hdr.flows[ju] => hdr.outer[ju].clone(),
+                                None => Rg::Named("<return>".into()),
+                            };
+                            let mut sups = vec![hdr.outer[ju].clone()];
+                            if matches!(l, Loan::ParamIn(_)) {
+                                sups.extend(hdr.inner[ju].iter().cloned());
+                            }
+                            cons.push(Cons { sups, sub, line, msg: format!("cannot return a borrow from `{}`: its lifetime does not outlive the return value's (header lifetimes)", hdr.params[ju].split(':').next().unwrap_or("")) });
                         }
                         Loan::Slot(_) => add(&mut diags, line, "cannot return a reference to a local variable".to_string()),
                         _ => {}
@@ -682,6 +823,9 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                 }
             }
         }
+    }
+    for c in solve(&hdr.facts, &cons) {
+        add(&mut diags, c.line, c.msg.clone());
     }
     let _ = dummy_use(&an.n);
     // 後ろ向きの生存解析。
@@ -744,7 +888,16 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
             _ => false,
         }
     };
-    let is_mut = |v: VId| matches!(an.ty[v as usize], Ty::Ref(true, _));
+    let mut bmut: HashSet<VId> = HashSet::new();
+    let mut bshared: HashSet<VId> = HashSet::new();
+    for b in &f.blocks {
+        for i in &b.insts {
+            if let Op::Borrow { mutable, .. } = i.op {
+                if mutable { bmut.insert(i.dst); } else { bshared.insert(i.dst); }
+            }
+        }
+    }
+    let is_mut = |v: VId| bmut.contains(&v) || (matches!(an.ty[v as usize], Ty::Ref(true, _)) && !bshared.contains(&v));
     for bi in 0..nb {
         let b = &f.blocks[bi];
         let mut live: HashSet<VId> = HashSet::new();
@@ -793,6 +946,21 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                                     add(&mut diags, *line, "cannot access this place while a borrow of it is still in use".to_string());
                                 }
                             }
+                        }
+                    }
+                    Req::Scope { root, holders } => {
+                        let bad = live.iter().any(|w| {
+                            (is_borrow(*w) && matches!(an.place[*w as usize], Some((r, _)) if r == *root))
+                                || (an.place[*w as usize].is_none() && (an.org[*w as usize].contains(&Loan::Slot(*root)) || an.org[*w as usize].contains(&Loan::Buf(*root))))
+                        });
+                        let bad_holder = holders.iter().any(|h| mem_uses.get(h).map_or(false, |us| us.iter().any(|(ub, ui)| (*ub == bi && *ui > ii) || reach[bi][*ub])));
+                        if bad || bad_holder {
+                            add(&mut diags, *line, "borrowed value does not live long enough (the variable goes out of scope while it is still borrowed)".to_string());
+                        }
+                    }
+                    Req::MoveBorrowed { root } => {
+                        if live.iter().any(|w| is_borrow(*w) && matches!(an.place[*w as usize], Some((r, _)) if r == *root)) {
+                            add(&mut diags, *line, "cannot move out of a variable while it is borrowed".to_string());
                         }
                     }
                     Req::Pairs => {

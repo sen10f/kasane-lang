@@ -1232,7 +1232,8 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     0
                 }
                 Op::FieldAddr { a, off } => get(&stack[top], a) + *off as i128,
-                Op::AsShared(p) | Op::Reborrow(p) => get(&stack[top], p),
+                Op::AsShared(p) | Op::Reborrow(p) | Op::Borrow { a: p, .. } => get(&stack[top], p),
+                Op::ScopeEnd(_) => 0,
                 Op::FnPtr { .. } => 0,
             };
             stack[top].vals[inst.dst as usize] = result;

@@ -1155,7 +1155,15 @@ impl<'a> Lw<'a> {
         let mut diverged = false;
         for (i, s) in stmts.iter().enumerate() {
             let last = i + 1 == stmts.len();
-            match self.stmt(s)? {
+            let temp_mark = self.coll.temps.len();
+            let r = self.stmt(s)?;
+            // 文の終わりで一時値の寿命が尽きる (借用検査の注釈)。
+            for h in self.coll.temps.split_off(temp_mark) {
+                if self.cur.is_some() {
+                    self.emit(Ty::Unit, Op::ScopeEnd(h));
+                }
+            }
+            match r {
                 St::Div => {
                     diverged = true;
                     break;
@@ -1179,6 +1187,16 @@ impl<'a> Lw<'a> {
             out = Some(self.unit());
         }
         coll::block_end(self);
+        // 局所変数の寿命の終わり (借用検査の注釈)。Vec / String のヘッダは `block_end` の解放が出す。ここはスタックスロットのスカラー。
+        if self.cur.is_some() {
+            let locals: Vec<usize> = self.scopes.last().map(|sc| sc.iter().map(|x| x.1).collect()).unwrap_or_default();
+            for s in locals.into_iter().rev() {
+                let v = self.slots[s].0;
+                if self.is_mem_val(v) {
+                    self.emit(Ty::Unit, Op::ScopeEnd(v));
+                }
+            }
+        }
         self.scopes.pop();
         if diverged {
             return Ok(None);

@@ -144,6 +144,8 @@ fn side_effecting(op: &Op) -> bool {
         | Op::EnvArg { .. }
         | Op::EnvVar { .. } => false,
         | Op::Reborrow(_)
+        | Op::Borrow { .. }
+        | Op::ScopeEnd(_)
         | Op::FieldAddr { .. } => false,
     }
 }
@@ -164,7 +166,7 @@ fn copy_prop(m: &Module) -> Result<Module, String> {
                     .iter()
                     .flat_map(|b| {
                         b.insts.iter().filter_map(|i| {
-                            if let Op::Reborrow(a) = i.op {
+                            if let Op::Reborrow(a) | Op::Borrow { a, .. } = i.op {
                                 Some((i.dst, a))
                             } else {
                                 None
@@ -306,6 +308,8 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         | Op::Load(a)
         | Op::AsShared(a)
         | Op::Reborrow(a)
+        | Op::Borrow { a, .. }
+        | Op::ScopeEnd(a)
         | Op::Some(a)
         | Op::Ok(a)
         | Op::Err(a)
