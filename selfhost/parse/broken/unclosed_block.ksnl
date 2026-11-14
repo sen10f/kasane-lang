@@ -1,0 +1,7 @@
+fn a.f(x: bool) -> i32 uses [] panics never
+    if x {
+        1i32
+    else {
+        2i32
+    }
+end a.f

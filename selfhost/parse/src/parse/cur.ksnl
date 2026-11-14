@@ -60,7 +60,7 @@ end parse.cur.expect_ch
 
 fn parse.cur.expect_kw(p: &mut parse.cur.P, code: u32) -> Result<(), parse.err.Error> uses [] panics never pub
     if !parse.cur.accept_kw(p, code) {
-        return Err(parse.cur.fail(p, parse.err.E_EXPECT, code))
+        return Err(parse.cur.fail(p, parse.err.E_EXPECT, code.wrapping_add(1000u32)))
     }
     Ok(())
 end parse.cur.expect_kw

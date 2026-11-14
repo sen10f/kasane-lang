@@ -1,0 +1,4 @@
+fn a.f() -> i32 uses [] panics never
+    a.g(1i32, 2i32
+    1i32
+end a.f

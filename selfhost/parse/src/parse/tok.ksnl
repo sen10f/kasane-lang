@@ -197,17 +197,20 @@ fn parse.tok.push_code_name(out: &mut alloc.string.String<std.alloc.System>, cod
     let ops2 = "=> -> == != <= >= && || ::"
     let kws = parse.tok.KEYWORDS
     let cxs = parse.tok.CONTEXTUAL
-    if code >= 301u32 && code <= 309u32 {
+    if code >= 1000u32 {
+        let kw = code.wrapping_sub(1000u32)
+        if kw >= 101u32 {
+            parse.tok.push_word(out, cxs, kw.wrapping_sub(100u32))?
+        } else {
+            parse.tok.push_word(out, kws, kw)?
+        }
+    } else if code >= 301u32 {
         parse.tok.push_word(out, ops2, code.wrapping_sub(300u32))?
-    } else if code >= 101u32 && code <= 109u32 {
-        parse.tok.push_word(out, cxs, code.wrapping_sub(100u32))?
-    } else if code < 128u32 && code > 42u32 {
+    } else {
         match char.try_from_u32(code) {
             Some(c) => out.push(c)?
             None => core.mem.drop(0u8)
         }
-    } else {
-        parse.tok.push_word(out, kws, code)?
     }
     out.push('\'')
 end parse.tok.push_code_name

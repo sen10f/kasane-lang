@@ -154,7 +154,7 @@ fn parse.ty.panic_val(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
         parse.cur.advance(p)
         return Ok(3usize)
     }
-    Err(parse.cur.fail(p, parse.err.E_EXPECT, parse.tok.KW_NEVER))
+    Err(parse.cur.fail(p, parse.err.E_EXPECT, 1000u32.wrapping_add(parse.tok.KW_NEVER)))
 end parse.ty.panic_val
 
 // `name: 型, ...` (閉じ括弧の手前まで)。List (子は Param) を返す。

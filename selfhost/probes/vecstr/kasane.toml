@@ -1,0 +1,7 @@
+[package]
+name = "vecstr"
+version = "0.1.0"
+edition = 1
+entry = "vecstr.main"
+
+[dependencies]

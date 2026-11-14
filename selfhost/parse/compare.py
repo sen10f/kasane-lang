@@ -6,7 +6,7 @@
 
   --mine native   target/release/parse.native (既定)
   --mine interp   `ksn run` (木走査)。パッケージ直下で実行する
-  --group         examples / stdlib / linear_ok / bench / unsound / broken (複数回指定可。既定は broken 以外の全部)
+  --group         examples / stdlib / linear_ok / bench / unsound / self (parse 自身のソース) / broken (複数回指定可。既定は先頭 5 つ)
   --files         グループの代わりにこのファイルだけを比べる
 結果: 通った数 (parse がエラーなし) / 一致数 (Rust 版と定義一覧が同じ) / 全体、parse の所要時間。
 """
@@ -38,6 +38,8 @@ def corpus(group):
         return g("bench/tasks/*/reference.ksnl")
     if group == "unsound":
         return g("stage0/tests/data/unsound/*.ksnl")
+    if group == "self":
+        return sorted(glob.glob(os.path.join(HERE, "src", "**", "*.ksnl"), recursive=True))
     if group == "broken":
         return sorted(glob.glob(os.path.join(HERE, "broken", "*.ksnl")))
     raise SystemExit(f"unknown group {group}")
@@ -226,6 +228,18 @@ def main(argv):
             print("   mine:", b)
     if len(bad) > details:
         print(f"... {len(bad) - details} more")
+    if "broken" in stats:
+        exp = {}
+        for l in open(os.path.join(HERE, "broken", "expected.txt"), encoding="utf-8"):
+            if l.strip() and not l.startswith("#"):
+                n, ln = l.split()[:2]
+                exp[os.path.join(HERE, "broken", n + ".ksnl")] = int(ln)
+        hit = 0
+        for p in paths:
+            m = mine_of.get(p)
+            if group_of[p] == "broken" and m and not m[1] and err_loc(m[2]) == exp.get(p):
+                hit += 1
+        print(f"broken inputs: parse reports the expected line for {hit} of {stats['broken']['total']}")
     if show_list:
         for p in paths:
             print(p)

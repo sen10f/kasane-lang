@@ -1,0 +1,21 @@
+fn hashmap.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
+    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(name.push_str("fn"))
+    core.mem.drop(m.insert(name, 1usize))
+    let key = alloc.string.String.from_str(std.alloc.SYSTEM, "fn")
+    match key {
+        Ok(k) => {
+            match m.get(&k) {
+                Some(v) => {
+                    if *v == 1usize {
+                        return std.io.print_line("found")
+                    }
+                    std.io.print_line("wrong")
+                }
+                None => std.io.print_line("missing")
+            }
+        }
+        Err(_e) => std.io.print_line("alloc")
+    }
+end hashmap.main

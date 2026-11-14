@@ -1,0 +1,8 @@
+enum boxtree.Expr pub
+    Num(i64)
+    Neg(alloc.boxed.Box<boxtree.Expr, std.alloc.System>)
+end boxtree.Expr
+
+fn boxtree.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line("x")
+end boxtree.main
