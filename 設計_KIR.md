@@ -1564,8 +1564,13 @@ LLVM のネイティブでは、`spawn` は pthread の実スレッド、チャ�
 - チャネルは大域の 1 つの mutex + 条件変数。`send` / `recv` / `clone` / 端の drop / `close` が `lock` … `unlock` で囲む (`unlock` は世代を進めて全員を起こす)。空の `recv` は `wait`。要素の解放 (`drop_value`) はロックの外で行う。
 - 木走査の deadlock の panic (終了コード 101、同じ文言) は、生きているスレッド数 `live` と待っている数 `blocked` が等しくなったとき `wait` が出す。join 待ちは数えないので、join 先が空の recv で永久に待つ形は検出できない (止まる)。
 - `static` の `Mutex` は 80 バイト (`+16` に再帰 mutex)。初期化は大域のロックの下、`lock()` で mutex を取り、ガードはスコープの終わりの所有物 (`Owned::Unlock`) として外す。
-- `@ksn.depth` は thread_local、`kir_rt.c` の浮動小数の書式の作業領域は `_Thread_local`。リンクは `-pthread`。`malloc` はスレッド安全。残り: `sysrt.c` の `dlsym` の表は未保護。
+- `@ksn.depth` は thread_local、`kir_rt.c` の浮動小数の書式の作業領域は `_Thread_local`。リンクは `-pthread`。`malloc` はスレッド安全。`sysrt.c` の `dlsym` の表は 1 本の mutex で保護した (kir/tsan)。
 - 出力が順序に依存する試験 (`t.order_print`、`t.two_producers_order`) は実スレッドで決まらないので、参照実行器だけで比べる。ping_pong は、ネイティブで往復が進んで終わる (終了コード 0)。試験: `kir_native_threads_are_real_pthreads` (300 本・Mutex の競合・2 生産者 1 消費者を 5 回繰り返す)。
+
+**ThreadSanitizer (kir/tsan、2026-11-14)**: 隠しの環境変数 `KSN_CLANG_ARGS` (clang への追加の引数、ASan の試験と共通) に `-fsanitize=thread -g -O1` を渡すと、ネイティブを TSan 付きでビルドできる (例: `KSN_CLANG_ARGS="-fsanitize=thread -g -O1" ksn build --backend llvm`、`ksn kir <FQN> --native`)。専用の変数は足していない。
+- TSan で回して警告 0: `tests/data/threads/` の mutex_counter・channel・channel_clone、`REAL_THREADS_SRC` の fan300 / contended / pc_sum、`examples/threads`、`examples/shortener` (ワーカー 4 本、curl で 6 回叩いて count=6 で終了)。`kir_rt.c` の競合は見つからず、直したのは `sysrt.c` の `dlsym` の表 (static の表と `n` を mutex で保護) だけ。
+- 試験: `kir_native_threads_have_no_data_races_under_threadsanitizer` (TSan が使えないとき、または `KSN_NO_TSAN=1` では黙って飛ばす)。
+- 残りの課題は変わらず: join 先が空の recv で永久に待つ形は検出できない。Mutex のガードはスコープの終わりで外す近似。TSan の範囲では、どちらも競合としては現れない。
 
 ## 23. 文字列の残りの下ろし (kir/str-rest、2026-11-13)
 

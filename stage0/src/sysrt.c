@@ -429,7 +429,21 @@ void ksn_rt_sys_yield(void) {
 #endif
 #include <stdio.h>
 
+#ifndef _WIN32
+#include <pthread.h>
+static pthread_mutex_t ksn_dlsym_mu = PTHREAD_MUTEX_INITIALIZER;
+static void *ksn_rt_sys_dlsym_locked(const char *lib, const char *sym);
+/* 表と dlopen の再入を 1 本の mutex で守る (実スレッドから同時に呼ばれうる)。 */
 void *ksn_rt_sys_dlsym(const char *lib, const char *sym) {
+    pthread_mutex_lock(&ksn_dlsym_mu);
+    void *r = ksn_rt_sys_dlsym_locked(lib, sym);
+    pthread_mutex_unlock(&ksn_dlsym_mu);
+    return r;
+}
+static void *ksn_rt_sys_dlsym_locked(const char *lib, const char *sym) {
+#else
+void *ksn_rt_sys_dlsym(const char *lib, const char *sym) {
+#endif
     enum { N = 64 };
     static struct { const char *lib; const char *sym; void *h; void *p; } tab[N];
     static int n = 0;
