@@ -14,14 +14,14 @@ use crate::value::Scope;
 
 pub const NATIVE_NAMES: &[&str] = &[
     "core.mem.drop", "core.mem.swap", "core.mem.replace", "core.mem.size_of", "core.panic.panic",
-    "core.panic.todo", "core.panic.unreachable", "core.check.eq", "core.check.is_true", "std.io.print_line", "std.process.exit",
+    "core.panic.todo", "core.panic.unreachable", "core.check.eq", "core.check.is_true", "std.io.print_line", "std.io.write_stderr", "std.process.exit",
     "std.process.abort", "std.env.arg", "std.env.arg_count", "std.env.var", "core.iter.range", "core.iter.map",
     "core.iter.filter", "core.iter.enumerate", "core.iter.take", "core.iter.count", "core.iter.fold",
     "core.str.from_utf8", "alloc.vec.Vec.new", "alloc.raw.Buf.new", "alloc.raw.Buf.with_capacity", "alloc.vec.Vec.with_capacity", "alloc.string.String.new",
     "alloc.string.String.from_str", "alloc.string.String.replace", "alloc.string.String.join",
     "alloc.collections.HashMap.new", "alloc.collections.BtreeMap.new",
     "alloc.collections.VecDeque.new",
-    "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
+    "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
     "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.process.Command.new",
@@ -531,6 +531,15 @@ impl Interp {
                 self.write_out("\n");
                 Ok(ok(Val::Unit))
             }
+            // 標準エラーへ書く (1 回の書き込みで書いた長さ)。KIR の `FsWrite` (fd 2) と同じ結果。
+            "std.io.write_stderr" => {
+                use std::io::Write;
+                let bytes = bytes_of(&a0);
+                match std::io::stderr().write(&bytes) {
+                    Ok(n) => Ok(ok(usz(n))),
+                    Err(e) => Ok(err(io_error(&e))),
+                }
+            }
             "std.process.exit" => match dr(&a0) {
                 Val::Int(c, _) => Err(Ctl::Exit(c as i32)),
                 _ => Err(Ctl::Exit(1)),
@@ -638,6 +647,11 @@ impl Interp {
                 ty: "std.time.Instant".into(),
                 f: RefCell::new(vec![("ticks".into(), int(mono_ns() as i128, "u64"))]),
             }))),
+            // 実時刻 (UNIX 時刻からのナノ秒)。KIR の `TimeNowNs` と同じく、失敗したら 0。
+            "std.time.system_nanos" => {
+                let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as i128).unwrap_or(0);
+                Ok(int(ns, "i64"))
+            }
             "std.time.Duration.from_millis" => {
                 let ms = if let Val::Int(i, _) = dr(&a0) { i } else { 0 };
                 Ok(Val::Struct(Rc::new(StructV {

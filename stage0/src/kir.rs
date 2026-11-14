@@ -862,6 +862,9 @@ pub enum Op {
     /// `std.env.var(name)`: 環境変数 `name` の値。結果は `Option<&'static str>` (`Option<fat>`)。未設定なら `None`。
     /// `uses [env]` の関数だけ。
     EnvVar { name: VId },
+    /// `std.time.system_nanos()`: 実時刻 (UNIX 時刻からのナノ秒、`i64`)。`clock_gettime(CLOCK_REALTIME)`。
+    /// 失敗時は 0。`uses [time]` の関数だけ。
+    TimeNowNs,
     /// panic の途中の文言を stderr へ書く (`data` = `fat`)。`write` と違って `uses` を要らない: 文言は panic の一部で、
     /// `core.check.eq` のような効果の宣言のない関数からも呼べるため (設計_KIR.md 13.2)。結果は unit。`panics may` のときだけ。
     Eprint { data: VId },
@@ -1336,6 +1339,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::EnvArgCount => "env.arg_count".to_string(),
         Op::EnvArg { index } => format!("env.arg {}", fmt_val(*index)),
         Op::EnvVar { name } => format!("env.var {}", fmt_val(*name)),
+        Op::TimeNowNs => "time.now_ns".to_string(),
         Op::Eprint { data } => format!("eprint {}", fmt_val(*data)),
         Op::Abort => "abort".to_string(),
         Op::FmtFloat { bits, a } => format!("fmtfloat.{bits} {}", fmt_val(*a)),
@@ -1829,6 +1833,10 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("env", ["var"]) => {
             let v = operands(1)?;
             Ok(Op::EnvVar { name: v[0] })
+        }
+        ("time", ["now_ns"]) => {
+            let _ = operands(0)?;
+            Ok(Op::TimeNowNs)
         }
         ("eprint", []) if ty == Ty::Unit => {
             let v = operands(1)?;
@@ -2709,7 +2717,8 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                     }
                     Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => {
-                        if !f.uses.iter().any(|u| u == "io.fs" || u == "process") {
+                        // `std.io.write_stderr` (fd 2 への書き込み) は `io.console` で使える。
+                        if !f.uses.iter().any(|u| u == "io.fs" || u == "process" || u == "io.console") {
                             return Err("std.fs.File.{read,write} は uses [io.fs] の関数だけ".into());
                         }
                         if ty_of(*fd)? != Ty::I32 || ty_of(*buf)? != Ty::Ptr || ty_of(*len)? != Ty::Usize {
@@ -2752,6 +2761,14 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         let ok = matches!(i.ty, Ty::Opt(Pay::Agg(a)) if a == fat_idx);
                         if !ok {
                             return Err("std.env.arg / std.env.var の結果は Option<&'static str> (Option<fat>) のはず".into());
+                        }
+                    }
+                    Op::TimeNowNs => {
+                        if !f.uses.iter().any(|u| u == "time") {
+                            return Err("std.time.system_nanos は uses [time] の関数だけ".into());
+                        }
+                        if i.ty != Ty::I64 {
+                            return Err("std.time.system_nanos の結果は i64 のはず".into());
                         }
                     }
                     Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => {
@@ -2954,6 +2971,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => vec![*fd, *buf, *len],
         Op::EnvArgCount => vec![],
         Op::EnvArg { index } | Op::EnvVar { name: index } => vec![*index],
+        Op::TimeNowNs => vec![],
         Op::Eprint { data } => vec![*data],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }

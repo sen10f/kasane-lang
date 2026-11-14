@@ -269,6 +269,7 @@ pub enum Ins {
     EnvArgCount { d: S },
     EnvArg { d: S, i: S },
     EnvVar { d: S, name: S },
+    TimeNowNs { d: S },
 
     // ---- std.net (kir_exec と同じ意味。ソケット表は `Vm` が持つ)
     NetListen { d: S, addr: S },

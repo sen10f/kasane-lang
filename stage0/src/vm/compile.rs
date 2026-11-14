@@ -758,6 +758,7 @@ impl<'a> Fc<'a> {
             Op::EnvArgCount => Ins::EnvArgCount { d },
             Op::EnvArg { index } => Ins::EnvArg { d, i: self.s(*index) },
             Op::EnvVar { name } => Ins::EnvVar { d, name: self.s(*name) },
+            Op::TimeNowNs => Ins::TimeNowNs { d },
             Op::NetListen { addr } => Ins::NetListen { d, addr: self.s(*addr) },
             Op::NetConnect { addr } => Ins::NetConnect { d, addr: self.s(*addr) },
             Op::NetAccept { sock } => Ins::NetAccept { d, sock: self.s(*sock) },

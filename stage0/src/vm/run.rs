@@ -993,6 +993,11 @@ impl<'a> Vm<'a> {
                 Ins::EnvArgCount { d } => {
                     w!(*d, self.args.len() as u64);
                 }
+                Ins::TimeNowNs { d } => {
+                    // 実時刻 (UNIX 時刻からのナノ秒)。`i64` の bit 列で書く。失敗したら 0。
+                    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|x| x.as_nanos() as i64).unwrap_or(0);
+                    w!(*d, ns as u64);
+                }
                 Ins::EnvArg { d, i } => {
                     let i = r!(*i) as usize;
                     if i >= self.args.len() {
