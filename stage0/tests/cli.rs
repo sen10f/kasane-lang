@@ -95,7 +95,7 @@ const KNOWN_HOLES: &[&str] = &[
 #[test]
 fn unsound_programs_are_rejected() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/unsound");
-    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(names.len() >= 16, "unsound cases missing");
     let mut failures = Vec::new();
@@ -137,6 +137,9 @@ fn linear_corpus_is_rejected_for_linear_reasons() {
     let mut n = 0;
     for e in fs::read_dir(&dir).unwrap() {
         let p = e.unwrap().path();
+        if p.extension().map_or(true, |x| x != "ksnl") {
+            continue;
+        }
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         if !stem.starts_with("linear_") {
             continue;
@@ -22493,7 +22496,8 @@ fn check_cache_matches_uncached_for_unsound_and_linear_ok() {
     let cache = cache_tmp("unsound");
     for sub in ["unsound", "linear_ok"] {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(sub);
-        let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+        let mut names: Vec<_> = fs::read_dir(&dir).unwrap()
+            .map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
         names.sort();
         assert!(!names.is_empty());
         for (i, p) in names.into_iter().enumerate() {
