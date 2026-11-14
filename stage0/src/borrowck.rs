@@ -332,8 +332,13 @@ impl<'a> Low<'a> {
                     if let Some((root, path)) = self.place_of(&nf(operand)[1]) {
                         let mut out = vec![Src::Alias(root.clone())];
                         if !path.is_empty() {
-                            out.push(Src::Stored { root, path });
+                            out.push(Src::Stored { root: root.clone(), path: path.clone() });
                         }
+                        // 再借用は、借りた先 `*P` の上に新しい借用を作る (`P` の参照そのものを借りるのではない)。
+                        // だから `P` を読む・書く・もう一度借りると、再借用が生きている間は E3010 になる。
+                        let mut deref_path = path;
+                        deref_path.push("*".into());
+                        out.push(Src::Place { root, path: deref_path, mutable: op == "&mut" });
                         return out;
                     }
                 }
@@ -456,8 +461,14 @@ impl<'a> Low<'a> {
                 for c in items(&nf(e)[2]) {
                     let kind = st(tel(c, 0));
                     let name = st(tel(c, 1));
-                    if self.locals.contains(&name) && (kind == "&" || kind == "&mut") {
+                    if !self.locals.contains(&name) {
+                        continue;
+                    }
+                    if kind == "&" || kind == "&mut" {
                         out.push(Src::Place { root: name, path: vec![], mutable: kind == "&mut" });
+                    } else {
+                        // `move r` は値ごと取り込む。`r` が持つ借用 (`&mut x` を持つ参照) もクロージャへ移る。
+                        out.push(Src::Alias(name));
                     }
                 }
                 out
@@ -1174,8 +1185,16 @@ impl<'a> Low<'a> {
                     }
                     return c;
                 }
-                // `*r = v` は r を使うだけ。`s.f = v` / `v[i] = x` は根の変数への書き込み。
+                // `*r = v` は `*r` (根 r の道 `*`) への書き込み。再借用 `&mut *r` が生きていれば E3010。
+                // `s.f = v` / `v[i] = x` は根の変数への書き込み。
                 if nname(target) == "Unary" && st(&nf(target)[0]) == "*" {
+                    if let Some((root, path)) = self.place_of(target) {
+                        // 参照の指す先への書き込みは、参照そのもの (`h.r`) に保存されたローンを殺さない。
+                        // 競合の判定は `Write` と同じ (`MutB` は可変の書き込みとして競合する) ので、殺さない種類で出す。
+                        self.emit(c, Ev::Use(root.clone()));
+                        self.emit(c, Ev::Access { root, path, kind: Acc::MutB, line: nline(s) });
+                        return c;
+                    }
                     return self.lower_expr(&nf(target)[1], c);
                 }
                 let c = self.lower_index_parts(target, c);
@@ -1418,8 +1437,12 @@ impl<'a> Low<'a> {
                 let op = st(&f[0]);
                 if op == "&" || op == "&mut" {
                     let c = self.lower_index_parts(&f[1], cur);
-                    // `&*r` / `&mut *r` は r の使用
+                    // `&*r` / `&mut *r` は `*r` への共有・可変のアクセス (そこに新しい借用を作る)。
                     if nname(&f[1]) == "Unary" && st(&nf(&f[1])[0]) == "*" {
+                        let kind = if op == "&mut" { Acc::MutB } else { Acc::Shared };
+                        if self.access(c, &f[1], kind, nline(&f[1])) {
+                            return c;
+                        }
                         return self.lower_expr(&nf(&f[1])[1], c);
                     }
                     let kind = if op == "&mut" { Acc::MutB } else { Acc::Shared };
