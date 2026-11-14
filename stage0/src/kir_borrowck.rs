@@ -15,7 +15,7 @@
 //!   照らす (戻り値の領域に含まれない引数・局所の借用を返す/引数の指す先へ入れるのは違反)。呼び出しの戻り値は、
 //!   呼び先のヘッダ (`flows`) で引数から流れる。
 
-use crate::kir::{operands, Func, Module, Op, Term, Ty, VId};
+use crate::kir::{operands, Func, Module, Op, OwnKind, Term, Ty, VId};
 use crate::kir_lower::Lowered;
 use crate::program::{Def, Program};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -52,6 +52,8 @@ pub enum Outcome {
 struct Hdr {
     params: Vec<String>,
     ret_has_ref: bool,
+    /// 戻り値の型の文面に `&` がある (`Option<&u32>` など)。
+    ret_amp: bool,
     /// 各引数の借用が戻り値の領域に入るか (`flow_params` と同じ規則)。
     flows: Vec<bool>,
     lts: Vec<BTreeSet<String>>,
@@ -272,7 +274,8 @@ fn parse_hdr(d: &Def) -> Option<Hdr> {
             }
         }
     }
-    Some(Hdr { params, ret_has_ref, flows, lts, mut_ref, carries, outer, inner, ret_rg, facts })
+    let ret_amp = ret.contains('&');
+    Some(Hdr { params, ret_has_ref, ret_amp, flows, lts, mut_ref, carries, outer, inner, ret_rg, facts })
 }
 
 fn carries_ty(t: Ty) -> bool {
@@ -317,7 +320,7 @@ enum Req {
     /// 局所の寿命の終わり (`scope.end`)。その後に生きている、このスロットの借用は違反。
     Scope { root: VId, holders: Vec<VId> },
     /// 所有物の move。その後に生きている、このスロットへの借用 (`borrow.*`) は違反。
-    MoveBorrowed { root: VId },
+    MoveBorrowed { root: VId, path: Option<Vec<u32>> },
 }
 
 struct An<'a> {
@@ -680,6 +683,43 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
             }
         }
     }
+    // 集成体の move: `load p` (集成体) の後に、同じブロックで、所有の印 (`frame.bytes 1`) を false にするか、`p` へ全部 0 の値を書き戻す。
+    let mut agg_moves: HashMap<(usize, usize), VId> = HashMap::new();
+    let def_of = |v: VId| f.blocks.iter().flat_map(|b| b.insts.iter()).find(|i| i.dst == v);
+    for (bi, b) in f.blocks.iter().enumerate() {
+        let mut last_load: Option<VId> = None;
+        let mut loaded: HashSet<VId> = HashSet::new();
+        for (ii, i) in b.insts.iter().enumerate() {
+            match &i.op {
+                Op::Load(p) if matches!(i.ty, Ty::Agg(_)) => {
+                    last_load = Some(*p);
+                    loaded.insert(*p);
+                }
+                Op::MemStore { ty: Ty::Bool, p, v, .. } => {
+                    let flag = matches!(def_of(*p), Some(d) if matches!(d.op, Op::FrameBytes { size: 1 }));
+                    let off = matches!(def_of(*v), Some(d) if matches!(d.op, Op::Const(0)));
+                    if flag && off {
+                        if let Some(l) = last_load {
+                            agg_moves.insert((bi, ii), l);
+                        }
+                    }
+                }
+                Op::Store { ptr, val } if loaded.contains(ptr) => {
+                    let zero = match def_of(*val) {
+                        Some(d) => match &d.op {
+                            Op::Make { fields, .. } => fields.iter().all(|x| matches!(def_of(*x), Some(fd) if matches!(fd.op, Op::Const(0)))),
+                            _ => false,
+                        },
+                        None => false,
+                    };
+                    if zero {
+                        agg_moves.insert((bi, ii), *ptr);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     let mut an = An { f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, move_stores };
     let ins = an.run();
     let mut diags: Vec<Diag> = vec![];
@@ -747,6 +787,13 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
         let b = &f.blocks[bi];
         for (ii, i) in b.insts.iter().enumerate() {
             let line = line_at(bi, ii);
+            if let Some(p) = agg_moves.get(&(bi, ii)) {
+                for l in an.org[*p as usize].iter() {
+                    if let Loan::Slot(r) = l {
+                        reqs.push((bi, ii, line, Req::MoveBorrowed { root: *r, path: ppath[*p as usize].clone() }));
+                    }
+                }
+            }
             let holders_of = |st: &State, loans: &Set| -> Vec<VId> {
                 let mut h: Vec<VId> = vec![];
                 for ((r, _), c) in st {
@@ -775,7 +822,7 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                     reqs.push((bi, ii, line, Req::Inval { loans, skip: vec![], holders, why: "moved" }));
                     for l in an.org[*p as usize].iter() {
                         if let Loan::Slot(r) = l {
-                            reqs.push((bi, ii, line, Req::MoveBorrowed { root: *r }));
+                            reqs.push((bi, ii, line, Req::MoveBorrowed { root: *r, path: ppath[*p as usize].clone() }));
                         }
                     }
                 }
@@ -853,6 +900,88 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
     }
     for c in solve(&hdr.facts, &cons) {
         add(&mut diags, c.line, c.msg.clone());
+    }
+    // 所有の検査 (move 済みの再使用 E3002、線形な値の消費漏れ E3003)。`own.*` の注釈の上の前向きの解析。
+    {
+        type OS = (HashSet<VId>, HashSet<VId>); // (move 済み, 消費の義務が残っている)
+        let mut ins: Vec<Option<OS>> = vec![None; nb];
+        ins[0] = Some((HashSet::new(), HashSet::new()));
+        let mut found: Vec<(usize, &'static str, String)> = vec![];
+        for round in 0..2 {
+            // round 0: 不動点まで。round 1: 診断を集める。
+            loop {
+                let mut ch = false;
+                for bi in 0..nb {
+                    let Some(mut st) = ins[bi].clone() else { continue };
+                    let b = &f.blocks[bi];
+                    for (ii, i) in b.insts.iter().enumerate() {
+                        st.0.remove(&i.dst);
+                        match &i.op {
+                            Op::Own { a, kind: OwnKind::Consume } => {
+                                if st.0.contains(a) && round == 1 {
+                                    found.push((line_at(bi, ii), "E3002", "use of moved value (it was moved earlier on some path)".to_string()));
+                                }
+                                st.0.insert(*a);
+                                st.1.remove(a);
+                            }
+                            Op::Own { a, kind: OwnKind::Owe } => {
+                                if st.1.contains(a) && round == 1 {
+                                    found.push((line_at(bi, ii), "E3003", "linear value is not consumed on some path before it is bound again".to_string()));
+                                }
+                                st.1.insert(*a);
+                                st.0.remove(a);
+                            }
+                            Op::Own { a, kind: OwnKind::Part } => {
+                                st.1.remove(a);
+                            }
+                            Op::Own { a, kind: OwnKind::Init } => {
+                                st.0.remove(a);
+                            }
+                            Op::MemStore { p, .. } | Op::Store { ptr: p, .. } => {
+                                if let Some((r, _)) = an.place[*p as usize] {
+                                    st.0.remove(&r);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Term::Ret(_) = &b.term {
+                        if round == 1 && !st.1.is_empty() {
+                            let l = if b.insts.is_empty() { 0 } else { line_at(bi, b.insts.len() - 1) };
+                            found.push((l, "E3003", "linear value is not consumed on some path before the function returns".to_string()));
+                        }
+                    }
+                    for s in succs(&b.term) {
+                        let mut st2 = st.clone();
+                        for (p, _) in &f.blocks[s].params {
+                            st2.0.remove(p);
+                        }
+                        match &mut ins[s] {
+                            None => {
+                                ins[s] = Some(st2);
+                                ch = true;
+                            }
+                            Some(x) => {
+                                let (n0, n1) = (x.0.len(), x.1.len());
+                                x.0.extend(st2.0.iter().copied());
+                                x.1.extend(st2.1.iter().copied());
+                                if x.0.len() != n0 || x.1.len() != n1 {
+                                    ch = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if !ch {
+                    break;
+                }
+            }
+        }
+        for (l, code, msg) in found {
+            if !diags.iter().any(|d| d.line == l && d.code == code) {
+                diags.push(Diag { code, fqn: f.fqn.clone(), file: file.to_string(), line: l, msg });
+            }
+        }
     }
     let _ = dummy_use(&an.n);
     // 後ろ向きの生存解析。
@@ -985,8 +1114,16 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                             add(&mut diags, *line, "borrowed value does not live long enough (the variable goes out of scope while it is still borrowed)".to_string());
                         }
                     }
-                    Req::MoveBorrowed { root } => {
-                        if live.iter().any(|w| is_borrow(*w) && matches!(an.place[*w as usize], Some((r, _)) if r == *root)) {
+                    Req::MoveBorrowed { root, path } => {
+                        let hit = |w: &VId| {
+                            is_borrow(*w)
+                                && matches!(an.place[*w as usize], Some((r, _)) if r == *root)
+                                && match (path, &ppath[*w as usize]) {
+                                    (Some(x), Some(y)) => x.starts_with(y) || y.starts_with(x),
+                                    _ => true,
+                                }
+                        } || (an.place[*w as usize].is_none() && an.org[*w as usize].contains(&Loan::Slot(*root)));
+                        if live.iter().any(hit) {
                             add(&mut diags, *line, "cannot move out of a variable while it is borrowed".to_string());
                         }
                     }
@@ -1023,7 +1160,7 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
 fn dummy_use(_: &usize) {}
 
 /// ユーザの関数を KIR の上で検査する。下ろせない関数があれば `Unknown`。
-pub fn check(p: &Program, user: &[usize], lo: &Lowered) -> Outcome {
+pub fn check(p: &Program, user: &[usize], lo: &Lowered, own: bool) -> Outcome {
     let m: &Module = &lo.module;
     let mut hdrs: HashMap<String, Hdr> = HashMap::new();
     for &i in user {
@@ -1067,6 +1204,17 @@ pub fn check(p: &Program, user: &[usize], lo: &Lowered) -> Outcome {
         if !user.contains(&di) {
             continue;
         }
+        // `Option<&u32>` などを KIR が値 (`Option<u32>`) に下ろすと、借用の情報が消える: 判断できない。
+        if h.ret_amp {
+            let lost = match f.ret {
+                Ty::Opt(p) => !matches!(p.ty(), Ty::Ptr | Ty::Ref(..) | Ty::Agg(_)),
+                Ty::Res(t, _) => !matches!(t.ty(), Ty::Ptr | Ty::Ref(..) | Ty::Agg(_)),
+                _ => false,
+            };
+            if lost {
+                return Outcome::Unknown(format!("{}: 戻り値の借用が KIR では値になっている ({})", f.fqn, f.ret.name()));
+            }
+        }
         if h.params.len() != f.params().len() {
             return Outcome::Unknown(format!("{}: KIR の引数の数がヘッダと違う", f.fqn));
         }
@@ -1075,7 +1223,7 @@ pub fn check(p: &Program, user: &[usize], lo: &Lowered) -> Outcome {
             None => (p.defs[di].file.clone(), vec![]),
         };
         let dl = p.defs[di].line;
-        diags.extend(check_func(f, h, &hdrs, &file, &lines).into_iter().map(|mut d| {
+        diags.extend(check_func(f, h, &hdrs, &file, &lines).into_iter().filter(|d| own || !matches!(d.code, "E3002" | "E3003")).map(|mut d| {
             if d.line == 0 {
                 d.line = dl;
             }

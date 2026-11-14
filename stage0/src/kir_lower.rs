@@ -512,6 +512,9 @@ impl<'a> Lw<'a> {
         for ((name, pt), (v, t)) in d.params.iter().zip(pv.iter().zip(params.iter())) {
             let pst = self.decl_ty(pt);
             coll::bind_param(&mut self, name, *v, *t, &pst);
+            if let Some(s) = self.lookup(name) {
+                self.own_declare(name, s, &pst);
+            }
             // `&[T; N]` / `&mut [T; N]` のパラメータ: 長さ N は型から分かる (ptr にするだけ)。
             if let Some(n) = coll::ref_array_len(pt) {
                 let s = self.lookup(name).expect("直後に束縛したパラメータ");
@@ -659,12 +662,112 @@ impl<'a> Lw<'a> {
         }
     }
 
+    /// 型が Copy か (`check.rs` の `is_copy_ty` と同じ規則。決まらない型は Copy とみなして黙る)。
+    fn src_is_copy(&self, t: &Src) -> bool {
+        match t {
+            Src::Unknown | Src::Var(_) | Src::Param(_) | Src::Never | Src::Unit | Src::Prim(_) => true,
+            // `&mut` の値渡しは再借用 (move ではない) として扱う。
+            Src::Ref(..) => true,
+            Src::Tuple(xs) => xs.iter().all(|x| self.src_is_copy(x)),
+            Src::Named(nm, args) => {
+                if nm == "Option" || nm == "Result" {
+                    return args.iter().all(|a| self.src_is_copy(a));
+                }
+                self.p.types.get(nm).map_or(false, |&i| self.p.defs[i].derive.iter().any(|x| x == "Copy"))
+            }
+            Src::Array(el) | Src::Slice(el) => self.src_is_copy(el),
+            Src::Ptr(..) | Src::Const(_) | Src::Dyn(..) | Src::Closure { .. } => true,
+        }
+    }
+
+    /// 型が線形か (`check.rs` の `is_linear` と同じ規則。型パラメータは見ない)。
+    fn src_is_linear(&self, t: &Src, seen: &mut HashSet<String>) -> bool {
+        match t {
+            Src::Tuple(xs) => xs.iter().any(|x| self.src_is_linear(x, seen)),
+            Src::Array(el) => self.src_is_linear(el, seen),
+            Src::Named(nm, args) => {
+                if nm == "std.sync.Sender" {
+                    return false;
+                }
+                if args.iter().any(|a| self.src_is_linear(a, seen)) {
+                    return true;
+                }
+                let Some(&i) = self.p.types.get(nm) else { return false };
+                let d = &self.p.defs[i];
+                if d.linear {
+                    return true;
+                }
+                if !seen.insert(nm.clone()) {
+                    return false;
+                }
+                d.fields.iter().any(|f| self.v_is_linear(&f.1, seen)) || d.variants.iter().any(|v| v.1.iter().any(|x| self.v_is_linear(x, seen)))
+            }
+            _ => false,
+        }
+    }
+
+    fn v_is_linear(&self, t: &V, seen: &mut HashSet<String>) -> bool {
+        use crate::check::{tag, tel};
+        match tag(t).as_str() {
+            "tuple" => items(tel(t, 1)).iter().any(|x| self.v_is_linear(x, seen)),
+            "array" => self.v_is_linear(tel(t, 1), seen),
+            "named" => {
+                let name = st(tel(t, 1));
+                if name == "std.sync.Sender" {
+                    return false;
+                }
+                if items(tel(t, 2)).iter().any(|a| matches!(a, V::L(_)) && self.v_is_linear(a, seen)) {
+                    return true;
+                }
+                let Some(&i) = self.p.types.get(&name) else { return false };
+                let d = &self.p.defs[i];
+                if d.linear {
+                    return true;
+                }
+                if !seen.insert(name) {
+                    return false;
+                }
+                d.fields.iter().any(|f| self.v_is_linear(&f.1, seen)) || d.variants.iter().any(|v| v.1.iter().any(|x| self.v_is_linear(x, seen)))
+            }
+            _ => false,
+        }
+    }
+
+    /// 局所変数 `name` (スロット `s`) を所有の注釈で追う。束縛の位置に識別子 (unit 定数) を作る。Copy でも線形でもない型だけ。
+    fn own_declare(&mut self, name: &str, s: usize, t: &Src) {
+        let linear = self.src_is_linear(t, &mut HashSet::new());
+        if self.cur.is_none() || (self.src_is_copy(t) && !linear) {
+            return;
+        }
+        let id = self.unit();
+        self.coll.own_ids.insert((name.to_string(), s), id);
+        if linear {
+            self.emit(Ty::Unit, Op::Own { a: id, kind: kir::OwnKind::Owe });
+        }
+    }
+
+    fn own_emit(&mut self, name: &str, s: usize, kind: kir::OwnKind) {
+        if self.cur.is_none() {
+            return;
+        }
+        if let Some(id) = self.coll.own_ids.get(&(name.to_string(), s)).copied() {
+            self.emit(Ty::Unit, Op::Own { a: id, kind });
+        }
+    }
+
     fn path_val(&mut self, e: &V) -> LR<VId> {
         let segs = strs(&nf(e)[0]);
         let line = nline(e);
         if segs.len() == 1 {
             if let Some(s) = self.lookup(&segs[0]) {
-                return Ok(coll::path_read(self, s));
+                let v = coll::path_read(self, s);
+                // Copy でない局所変数の値渡し (move) の注釈 (借用・move の検査用。設計_KIR.md 24 章)。
+                if let Ok(t) = self.src_ty(e) {
+                    if !self.src_is_copy(&t) {
+                        self.own_emit(&segs[0], s, kir::OwnKind::Consume);
+                    }
+                }
+                return Ok(v);
             }
             if segs[0] == "None" {
                 return self.none_val(e);
@@ -675,6 +778,12 @@ impl<'a> Lw<'a> {
             if let Some(s) = self.lookup(&segs[0]) {
                 let base = self.read_slot(s);
                 let v = self.field_path(base, &segs[1..], line)?;
+                // Copy でないフィールドの値渡し: 部分的な move (義務は果たし、別のフィールドの move は許す。注釈)。
+                if let Ok(t) = self.src_ty(e) {
+                    if !self.src_is_copy(&t) {
+                        self.own_emit(&segs[0], s, kir::OwnKind::Part);
+                    }
+                }
                 if coll::owns(self, self.vty(v)) {
                     // 所有物のフィールドを値として使う: 部分的な移動 (設計_KIR.md 13.7)
                     return coll::field_move(self, s, &segs[1..], line);
@@ -1235,10 +1344,12 @@ impl<'a> Lw<'a> {
         for (i, s) in stmts.iter().enumerate() {
             let last = i + 1 == stmts.len();
             let temp_mark = self.coll.temps.len();
+            // `let r = &temp()` の一時値の寿命は束縛のスコープまで延びる (文の終わりでは尽きない)。
+            let extended = nname(s) == "Let" && nf(s).get(3).map_or(false, |init| nname(init) == "Unary" && st(&nf(init)[0]).starts_with('&'));
             let r = self.stmt(s)?;
             // 文の終わりで一時値の寿命が尽きる (借用検査の注釈)。
             for h in self.coll.temps.split_off(temp_mark) {
-                if self.cur.is_some() {
+                if self.cur.is_some() && !extended {
                     self.emit(Ty::Unit, Op::ScopeEnd(h));
                 }
             }
@@ -1300,6 +1411,10 @@ impl<'a> Lw<'a> {
                 let t = self.vty(v);
                 coll::bind_owned(self, &name, v, t);
                 coll::after_let(self, &name, &f[3])?;
+                // 局所変数の move・線形な値の消費の義務を追う (注釈)。
+                if let (Ok(it), Some(s)) = (self.src_ty(&f[3]), self.lookup(&name)) {
+                    self.own_declare(&name, s, &it);
+                }
                 Ok(St::Unit)
             }
             "Assign" => {
@@ -1332,6 +1447,9 @@ impl<'a> Lw<'a> {
                 coll::check_assign(self, s_idx, line)?;
                 let Some(v) = self.expr(&f[1])? else { return Ok(St::Div) };
                 coll::assign_checked(self, s_idx, v, line)?;
+                // 再代入: move 済みが解け、線形なら新しい値の義務を負う。
+                let linear = self.coll.own_ids.contains_key(&(name.clone(), s_idx)) && self.src_ty(&f[1]).map_or(false, |t| self.src_is_linear(&t, &mut HashSet::new()));
+                self.own_emit(&name, s_idx, if linear { kir::OwnKind::Owe } else { kir::OwnKind::Init });
                 Ok(St::Unit)
             }
             "ExprStmt" => match self.expr(&f[0])? {
@@ -1463,6 +1581,16 @@ impl<'a> Lw<'a> {
         };
         let (target, slots, depth) = (if is_break { lc.exit } else { lc.header }, lc.slots.clone(), lc.depth);
         coll::drop_from(self, depth);
+        // `break` / `continue` で抜けるスコープのスタックスロットの局所変数の寿命の終わり (借用検査の注釈)。
+        if self.cur.is_some() {
+            let locals: Vec<usize> = self.scopes.iter().skip(depth).flat_map(|sc| sc.iter().map(|x| x.1)).collect();
+            for sl in locals.into_iter().rev() {
+                let v = self.slots[sl].0;
+                if self.is_mem_val(v) {
+                    self.emit(Ty::Unit, Op::ScopeEnd(v));
+                }
+            }
+        }
         let args = self.vals_of(&slots);
         self.goto(target, args);
         Ok(None)

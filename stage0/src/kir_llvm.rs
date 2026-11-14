@@ -1778,7 +1778,7 @@ impl<'a> Fe<'a> {
                     self.line(format!("{} = load {}, ptr {}, align 1", d, mt, pv));
                 }
             }
-            Op::ScopeEnd(_) => {}
+            Op::ScopeEnd(_) | Op::Own { .. } => {}
             Op::AsShared(p) | Op::Reborrow(p) | Op::Borrow { a: p, .. } => {
                 let pv = self.r(*p);
                 self.line(format!("{} = getelementptr i8, ptr {}, i64 0", d, pv));

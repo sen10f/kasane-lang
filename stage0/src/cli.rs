@@ -711,16 +711,16 @@ fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysi
 
 /// 隠しの切り替え `KSN_BORROWCK=kir` / `ksn check --borrowck=kir`: AST の借用検査の E3010 を、KIR の上の検査の結果に置き換える
 /// (設計_KIR.md 24 章)。KIR に下ろせないときは AST の結果を残し、stderr に `kir-borrowck: unknown` を出す。
-fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize]) {
+fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize], own: bool) {
     let Some(p) = prog else {
         eprintln!("kir-borrowck: unknown (no program)");
         return;
     };
     let lo = crate::kir_lower::lower_user(p, user);
-    match crate::kir_borrowck::check(p, user, &lo) {
+    match crate::kir_borrowck::check(p, user, &lo, own) {
         crate::kir_borrowck::Outcome::Unknown(why) => eprintln!("kir-borrowck: unknown ({})", why),
         crate::kir_borrowck::Outcome::Checked(ds) => {
-            rep.items.retain(|i| i.code != "E3010");
+            rep.items.retain(|i| i.code != "E3010" && !(own && (i.code == "E3002" || i.code == "E3003")));
             let codes: Vec<&str> = ds.iter().map(|d| d.code).collect();
             for d in &ds {
                 rep.add(d.code, &format!("[kir] {}", d.msg), Some(&d.file), d.line.max(1), 1, true);
@@ -732,12 +732,14 @@ fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize])
 
 fn cmd_check(json: bool) -> i32 {
     let mut rep = Report::new(json);
-    let kir_bc = std::env::var("KSN_BORROWCK").map_or(false, |v| v == "kir") || std::env::args().any(|a| a == "--borrowck=kir");
+    let bc_mode = std::env::var("KSN_BORROWCK").ok().or_else(|| std::env::args().find_map(|a| a.strip_prefix("--borrowck=").map(String::from))).unwrap_or_default();
+    let kir_bc = bc_mode == "kir" || bc_mode == "kir,own";
+    let kir_own = bc_mode == "kir,own";
     match find_root().and_then(|r| {
         full_check(&r, &mut rep, false).map(|(_, prog, user)| {
             crate::kir_lower::dump_hidden(prog.as_ref(), &user);
             if kir_bc {
-                kir_borrowck_hidden(&mut rep, prog.as_ref(), &user);
+                kir_borrowck_hidden(&mut rep, prog.as_ref(), &user, kir_own);
             }
         })
     }) {

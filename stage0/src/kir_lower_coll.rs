@@ -91,6 +91,8 @@ pub(crate) struct CollCx {
     pub(crate) arr_len: BTreeMap<usize, u32>,
     /// 文の終わりに寿命が尽きる一時値のヘッダ (借用検査の注釈 `scope.end` 用。設計_KIR.md 24 章)。
     pub(crate) temps: Vec<VId>,
+    /// 追跡する局所変数 (名前, スロット番号) → 所有の注釈の識別子 (束縛の位置の unit 定数の値番号)。
+    pub(crate) own_ids: BTreeMap<(String, usize), VId>,
     /// 所有する値 (スコープの番号, 所有物) の登録順。
     pub(crate) owned: Vec<(usize, Owned)>,
     /// `with` の後始末式の木と、`with` の束縛を置いたスコープの番号。
@@ -271,7 +273,10 @@ pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
     if !matches!(nname(operand), "Path" | "Index") {
         if let Some(v) = lw.expr(operand)? {
             if lw.aggs.borrow().is_vec(lw.vty(v)) {
-                return Ok(adopt(lw, v));
+                let h = adopt(lw, v);
+                // 文の終わりで寿命が尽きる一時値 (借用検査の注釈。`let r = &t.mk()` の直接の借用は束縛まで延びるので `block` が除く)。
+                lw.coll.temps.push(h);
+                return Ok(h);
             }
         }
     }
@@ -3294,6 +3299,7 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize, fn_once: bool) -
             return lw.err(line, "capture の種類が不明");
         }
         if kind == "move" {
+            lw.own_emit(&name, s, crate::kir::OwnKind::Consume);
             moved.push(name.clone());
         }
         if let Some(k) = lw.coll.kinds.get(&s).cloned() {
