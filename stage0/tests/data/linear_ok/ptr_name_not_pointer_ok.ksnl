@@ -1,0 +1,9 @@
+fn t.main() -> () uses [] panics may
+    let ptr = 1i32
+    let next = t.ptr_next(ptr)
+    core.mem.drop(next)
+end t.main
+
+fn t.ptr_next(ptr: i32) -> i32 uses [] panics may
+    ptr + 1i32
+end t.ptr_next

@@ -1,4 +1,4 @@
-// expect: E????
+// expect: E5001
 type t.Ptr
     p: *mut u32
 end t.Ptr

@@ -81,12 +81,9 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a09_panics_never_generic_panic_04",
     "hunt_a09_panics_never_generic_relay_05",
     "hunt_a09_panics_never_generic_unwrap_02",
-    // F3 スレッド: `spawn` の取り込みの `Send` (生ポインタ・`MutexGuard`)
-    "hunt_a11_spawn_constptr_15",
-    "hunt_a11_spawn_data_race_11",
+    // F3 スレッド: `spawn` の取り込みの `Send` (`MutexGuard`)。生ポインタ版の 4 件は、許可のないモジュールでの
+    // 生ポインタとして E5001 で止まるので一覧から外した (許可モジュール内の `Send` の穴は別の担当)。
     "hunt_a11_spawn_guard_03",
-    "hunt_a11_spawn_rawptr_04",
-    "hunt_a11_spawn_struct_rawptr_10",
     // F8 ジェネリクス: 総称関数越しの境界のすり抜け、`derive` の型パラメータの境界、スーパートレイト
     "hunt_a12_derive_clone_generic_hole_01",
     "hunt_a12_derive_copy_generic_hole_01",
@@ -120,13 +117,6 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a14_match_result_arm_mismatch_01",
     "hunt_a14_match_unit_vs_value_01",
     "hunt_a14_nested_match_01",
-    // F4 unsafe: `extern`・`core.ptr`・生ポインタ型が `[unsafe] modules` の外で E5001 にならない
-    "hunt_a15_extern_decl_non_unsafe",
-    "hunt_a15_ptr_add_non_unsafe",
-    "hunt_a15_ptr_from_mut_non_unsafe",
-    "hunt_a15_ptr_is_null_non_unsafe",
-    "hunt_a15_ptr_read_non_unsafe",
-    "hunt_a15_ptr_type_annot_non_unsafe",
     // F5 標準ライブラリ: `Buf.initialized` の露出、`std.json.Value` の寿命
     "hunt_a16_json_value_doc_drop_escape_01",
     "hunt_a16_raw_buf_initialize_forge_01",

@@ -1,4 +1,4 @@
-// expect: E????
+// expect: E5001
 fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
     let mut x = 10u32
     let ptr = core.ptr.from_mut(&mut x)
