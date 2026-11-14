@@ -68,6 +68,80 @@ fn word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// 文字列リテラル (`"..."`、エスケープ `\"` を含む) と行コメント (`//` から行末まで) を空白に置き換える。
+/// 置き換えなので、残りの文字・行構造は保たれ、後続の正規表現や `count_word` の
+/// マッチ位置がずれない。
+/// `"` はバイトリテラル (`b'"'` など) の中にも現れうるため、バイトリテラル (`b'...'`) は
+/// 状態で追跡し、その中の `"` を文字列開始と誤らない。バイトリテラルと裸の `'`
+/// (文字リテラル・ライフタイム)はそのまま残す (閉じを持たないライフタイムを壊さず、
+/// `b','` のようなバイトリテラルをパターン束縛と誤読しないため)。
+fn strip_literals_and_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    let mut prev: Option<char> = None;
+    enum State { Normal, String, Byte }
+    let mut state = State::Normal;
+    while let Some(ch) = chars.next() {
+        match state {
+            State::String => {
+                if ch == '\\' {
+                    out.push(' ');
+                    let _ = chars.next();
+                } else if ch == '"' {
+                    out.push(' ');
+                    state = State::Normal;
+                } else {
+                    out.push(' ');
+                }
+            }
+            State::Byte => {
+                out.push(ch);
+                if ch == '\\' {
+                    if let Some(nc) = chars.next() {
+                        out.push(nc);
+                    }
+                } else if ch == '\'' {
+                    state = State::Normal;
+                }
+            }
+            State::Normal => match ch {
+                '"' => {
+                    out.push(' ');
+                    state = State::String;
+                }
+                '\'' => {
+                    if prev == Some('b') {
+                        // バイトリテラル `b'X'` の開始: 中身をそのまま出力。
+                        out.push('\'');
+                        state = State::Byte;
+                    } else {
+                        out.push('\'');
+                    }
+                }
+                '/' => {
+                    if chars.peek() == Some(&'/') {
+                        out.push(' ');
+                        let _ = chars.next();
+                        while let Some(c) = chars.next() {
+                            if c == '\n' {
+                                out.push('\n');
+                                break;
+                            }
+                            out.push(' ');
+                        }
+                    } else {
+                        out.push(ch);
+                    }
+                }
+                '\n' => out.push('\n'),
+                _ => out.push(ch),
+            },
+        }
+        prev = Some(ch);
+    }
+    out
+}
+
 /// `(?<![A-Za-z0-9_.])nm(?![A-Za-z0-9_])` の出現回数。
 fn count_word(text: &str, nm: &str) -> usize {
     if nm.is_empty() {
@@ -733,7 +807,11 @@ impl Lint {
                 }
             }
         }
-        let body = it.body.join("\n");
+        // 文字列リテラルとコメントの中の `let` などを宣言と誤らないため、
+        // それらは空白に置き換えてから走査・カウントする。
+        // (`'` は Kasane でバイトリテラル `b'X'` やライフタイム `'static` にも使われるため、
+        //  strip 対象から外している。)
+        let body = strip_literals_and_comments(&it.body.join("\n"));
         let re_let = re!(r"\blet (?:mut )?([a-z_][A-Za-z0-9_]*)\b");
         for m in re_let.captures_iter(&body) {
             let end = m.get(0).unwrap().end();
