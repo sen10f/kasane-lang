@@ -167,6 +167,30 @@ pub(crate) fn walk<'a>(v: &'a V, out: &mut Vec<&'a V>) {
     }
 }
 
+/// 生ポインタ型 `*const T` / `*mut T` (parser が `V::L [ptr, mut?, T]` で作る形)。
+/// 変数名の `ptr` (パスの `V::L` の先頭が文字列) とは、2 番目が真偽値であることで区別する。
+fn is_ptr_ty(v: &V) -> bool {
+    matches!(v, V::L(xs) if xs.len() == 3 && matches!(xs[1], V::B(_)) && st(&xs[0]) == "ptr")
+}
+
+/// 型・式・パターンのどこであれ、生ポインタ型を含む最初の位置 (近い節点の行)。型は `V::L` で、
+/// `children` は `V::L` の中の節点しか辿らないので、型の中まで見るにはこちらを使う。
+pub(crate) fn find_ptr_ty(v: &V, line: usize) -> Option<usize> {
+    if is_ptr_ty(v) {
+        return Some(line);
+    }
+    match v {
+        V::L(xs) => xs.iter().find_map(|x| find_ptr_ty(x, line)),
+        V::Node(_, fs, l, _) => fs.iter().find_map(|x| find_ptr_ty(x, *l)),
+        _ => None,
+    }
+}
+
+/// 定義のシグネチャ (引数・戻り値) に生ポインタ型があるか。
+pub(crate) fn sig_has_ptr(d: &Def) -> bool {
+    d.params.iter().any(|p| find_ptr_ty(&p.1, 0).is_some()) || find_ptr_ty(&d.ret, 0).is_some()
+}
+
 /// 型表 (`types.rs` の `tytab`) から、メソッド呼び出し (`v.pop();`) の式文で、戻り値が `()` / `!` 以外に
 /// 決まる行を集める (4.6, E2042)。`ty_of` は標準ライブラリのジェネリック型のメソッドの戻り値を決められないので、
 /// その戻り値 (レシーバの型引数を sig の戻り値型に代入した型) を型表から取る。
@@ -638,6 +662,9 @@ impl<'a> Checker<'a> {
         // 5.3: 再帰を含む型 (自己参照・相互再帰の両方) の集合。
         let recursive = self.recursive_types();
         for &i in &user {
+            if !self.module_may_use_unsafe(&self.def(i).module) {
+                self.check_unsafe_surface(i);
+            }
             let d = self.def(i);
             // 効果の推論 (非 pub の関数のみ): pub / impls の関数は宣言が必要。
             if d.kw == "fn" && d.inferred && (d.header.trim_end().ends_with(" pub") || d.header.contains(" impls ")) {
@@ -2410,6 +2437,16 @@ impl<'a> Checker<'a> {
                     .get(&name)
                     .map(|v| v.iter().map(|&i| self.def(i)).filter(|c| c.params.len() == n + 1).collect())
                     .unwrap_or_default();
+                // 3.5: 同名の候補に生ポインタを持つもの (例: `alloc.alloc.Allocator` の `alloc`) があれば、
+                // どの候補かは型が決まってから分かるので、名前で見て許可のないモジュールでは E5001。
+                if !self.unsafe_ok && cands.iter().any(|c| sig_has_ptr(c)) {
+                    self.diag(
+                        "E5001",
+                        format!("method `{}` takes or returns raw pointers; only allowed in modules listed in [unsafe] modules", name),
+                        di,
+                        nline(e),
+                    );
+                }
                 if !cands.is_empty() {
                     // 4.3: メソッド呼び出しの明示型引数 (`x.m::<..>`) があれば効果変数を実体化する。
                     self.effects_all(&cands, di, nline(e), free, items(&f[3]));
@@ -3762,6 +3799,55 @@ impl<'a> Checker<'a> {
                 di,
                 line,
             );
+        }
+    }
+
+    /// 3.5 / 3.8: `[unsafe] modules` に列挙されていないモジュールのユーザー定義は、`extern` の宣言、
+    /// 生ポインタ型 (注釈・引数・戻り値・フィールド・本体の型)、`core.ptr` の関数、生ポインタを
+    /// シグネチャに持つ関数・定数の参照を使えない (E5001)。`unsafe` ブロックだけを見ていた穴を、
+    /// 生ポインタと FFI の入口の全部で塞ぐ。判断できない参照は通さない (メソッドは名前で候補を見る)。
+    fn check_unsafe_surface(&mut self, di: usize) {
+        let mut found: Vec<(usize, String)> = vec![];
+        {
+            let d = self.def(di);
+            if d.kw == "extern" {
+                found.push((0, format!("extern function `{}` (FFI) is only allowed in modules listed in [unsafe] modules", d.name)));
+            }
+            let mut tys: Vec<&V> = d.params.iter().map(|p| &p.1).collect();
+            tys.push(&d.ret);
+            tys.extend(d.fields.iter().map(|f| &f.1));
+            tys.extend(d.variants.iter().flat_map(|v| v.1.iter()));
+            tys.extend(d.generics.iter().map(|g| &g.2));
+            if let Some(b) = &d.body {
+                tys.push(b);
+            }
+            for t in tys {
+                if let Some(l) = find_ptr_ty(t, 0) {
+                    found.push((l, "raw pointer type `*const T` / `*mut T` is only allowed in modules listed in [unsafe] modules".into()));
+                }
+            }
+            if let Some(b) = &d.body {
+                let mut nodes = vec![];
+                walk(b, &mut nodes);
+                for n in nodes {
+                    if nname(n) != "Path" {
+                        continue;
+                    }
+                    let segs = strs(&nf(n)[0]);
+                    let Some(r) = self.p.resolve(&segs, &d.file) else { continue };
+                    let target = match r.target {
+                        Target::Fn(i) | Target::Sig(i) | Target::Const(i) => i,
+                        _ => continue,
+                    };
+                    let Some(t) = self.p.defs.get(target) else { continue };
+                    if t.name.starts_with("core.ptr.") || sig_has_ptr(t) {
+                        found.push((nline(n), format!("`{}` uses raw pointers and is only allowed in modules listed in [unsafe] modules", t.name)));
+                    }
+                }
+            }
+        }
+        for (line, msg) in found {
+            self.diag("E5001", msg, di, line);
         }
     }
 

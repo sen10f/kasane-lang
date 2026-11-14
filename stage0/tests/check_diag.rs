@@ -81,14 +81,9 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a09_panics_never_generic_panic_04",
     "hunt_a09_panics_never_generic_relay_05",
     "hunt_a09_panics_never_generic_unwrap_02",
-    // F3 スレッド: `spawn` の取り込みの `Send` (生ポインタ・`MutexGuard`)
-    "hunt_a11_spawn_constptr_15",
-    "hunt_a11_spawn_data_race_11",
+    // F3 スレッド: `spawn` の取り込みの `Send` (`MutexGuard`)。生ポインタ版の 4 件は、許可のないモジュールでの
+    // 生ポインタとして E5001 で止まるので一覧から外した (許可モジュール内の `Send` の穴は別の担当)。
     "hunt_a11_spawn_guard_03",
-    "hunt_a11_spawn_rawptr_04",
-    "hunt_a11_spawn_struct_rawptr_10",
-    // F8 ジェネリクス: `derive [Copy]` の型パラメータに境界が無くても宣言は通る (既存の clif_generic_program が依存する)。
-    // 非 Copy の型引数の値は move になる (二回使うと E3002) ので、このケース (一回だけ move) は正しいプログラム。
     // F6 型: 参照の段数・`size_of` の型引数・共有参照越しのフィールド代入
     "hunt_a13_assign_through_shared_ref_04",
     "hunt_a13_capture_mut_deref_02",
@@ -112,13 +107,6 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a14_match_result_arm_mismatch_01",
     "hunt_a14_match_unit_vs_value_01",
     "hunt_a14_nested_match_01",
-    // F4 unsafe: `extern`・`core.ptr`・生ポインタ型が `[unsafe] modules` の外で E5001 にならない
-    "hunt_a15_extern_decl_non_unsafe",
-    "hunt_a15_ptr_add_non_unsafe",
-    "hunt_a15_ptr_from_mut_non_unsafe",
-    "hunt_a15_ptr_is_null_non_unsafe",
-    "hunt_a15_ptr_read_non_unsafe",
-    "hunt_a15_ptr_type_annot_non_unsafe",
     // F6 型: 外れうるパターンの `let` (`let false = 5i32`)
     "hunt_a17_reserved_false_bind",
     // F7 定数: `const` の範囲・オーバーフロー・ターゲットの幅
