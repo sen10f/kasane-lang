@@ -1702,6 +1702,9 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if m == "push_bytes" && matches!(kind, Kind::String) {
         return string_push_bytes(lw, e, line, slot, h, args);
     }
+    if (m == "push_display" || m == "push_debug") && matches!(kind, Kind::String) {
+        return lw.string_push_fmt(e, line, h, args, m == "push_debug");
+    }
     if m == "push_u64" && matches!(kind, Kind::String) {
         return string_push_u64(lw, e, line, slot, h, args);
     }

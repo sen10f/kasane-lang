@@ -8,7 +8,7 @@
 //! 両方とも、式として値 `()` を返す (成功の枝は続く)。引数の型が下ろせない・表示できないときは理由付きで止める。
 
 use crate::check::{items, nf, nlineno as nline, nname, strs};
-use crate::kir::{Cc, Op, Pointee, Term, Ty, VId};
+use crate::kir::{Cc, Op, Pay, Pointee, Term, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
 
@@ -186,6 +186,74 @@ impl<'a> Lw<'a> {
     }
 
     /// 表示の関数 `dbg` を値 `v` に呼ぶ。
+    /// `String.push_display(&x)` / `push_debug(&x)`: 値の型ごとの表示の関数 (`kir_debug` の `String` へ追記する版) を呼ぶ。
+    /// `h` は `String` の先頭 (`{ptr, len, cap}`) の参照。結果は常に `Ok(())`。
+    pub(super) fn string_push_fmt(&mut self, e: &V, line: usize, h: VId, args: &[V], debug: bool) -> LR<Option<VId>> {
+        if args.len() != 1 {
+            return self.err(line, "push_display / push_debug の引数は 1 つのはず");
+        }
+        let Some(mut a) = self.expr_peek(&args[0])? else { return Ok(None) };
+        let mut ta = self.vty(a);
+        let mut sa = self.src_ty(&args[0])?;
+        let file = self.def.file.clone();
+        // 参照越しのスカラーは参照先を読む (`core.check.eq` と同じ)。
+        if matches!(ta, Ty::Ref(_, p) if !matches!(p, Pointee::Agg(_))) {
+            if let Src::Ref(false, inner) = &sa {
+                let t = match ta { Ty::Ref(_, p) => p.ty(), _ => unreachable!() };
+                a = self.emit(t, Op::Load(a));
+                sa = (**inner).clone();
+                ta = t;
+            }
+        }
+        // 集成体 (構造体・列挙型) への参照は、値を読んで渡す。
+        if let Ty::Ref(_, Pointee::Agg(i)) = ta {
+            ta = Ty::Agg(i);
+            a = self.emit(ta, Op::Load(a));
+            if let Src::Ref(_, inner) = &sa {
+                sa = (**inner).clone();
+            }
+        }
+        let rt = self.ty_of(e)?;
+        if !matches!(rt, Ty::Res(Pay::Unit, _)) {
+            return self.err(line, "push_display / push_debug の結果の型が Result<(), AllocError> でない");
+        }
+        let mut g = Gen::new_sink(self.p, self.aggs);
+        let made = if debug { g.need(&sa, ta, &file) } else { g.need_display(&sa, ta, &file) };
+        let k = match made {
+            Ok(k) => k,
+            Err(w) => return self.err(line, format!("push_{} を下ろせない: {}", if debug { "debug" } else { "display" }, w)),
+        };
+        for (f, c) in std::mem::take(&mut g.out) {
+            self.coll.extra.push((f, c));
+        }
+        self.callees.insert(k.clone());
+        self.emit(Ty::Unit, Op::Call { callee: k, args: vec![a, h] });
+        let u = self.unit();
+        Ok(Some(self.emit(rt, Op::Ok(u))))
+    }
+
+    /// 局所変数どうしの `String == String` / `!=`: ヘッダの参照を `<String>.$eq` に渡す (読むだけで移さない)。
+    /// どちらかが局所変数の `String` でなければ `None` (従来の下ろしへ)。
+    pub(super) fn string_eq_locals(&mut self, l: &V, r: &V, neg: bool) -> LR<Option<VId>> {
+        let slot = |lw: &Lw, e: &V| super::coll::local_slot(lw, e).filter(|s| matches!(lw.coll.kinds.get(s), Some(super::coll::Kind::String)));
+        let (Some(sl), Some(sr)) = (slot(self, l), slot(self, r)) else { return Ok(None) };
+        let (hl, hr) = (self.slots[sl].0, self.slots[sr].0);
+        let fat = self.aggs.borrow_mut().stderr_fat(self.p)?;
+        let mut g = Gen::new(self.p, self.aggs);
+        let src = Src::Named("alloc.string.String".to_string(), vec![]);
+        let k = g.need_eq(&src, Ty::Ptr, &self.def.file.clone())?;
+        let _ = fat;
+        for (f, c) in std::mem::take(&mut g.out) {
+            self.coll.extra.push((f, c));
+        }
+        self.callees.insert(k.clone());
+        let same = self.emit(Ty::Bool, Op::Call { callee: k, args: vec![hl, hr] });
+        if neg {
+            return Ok(Some(self.emit(Ty::Bool, Op::Not(same))));
+        }
+        Ok(Some(same))
+    }
+
     pub(super) fn call_debug(&mut self, dbg: &str, v: VId) {
         self.emit(Ty::Unit, Op::Call { callee: dbg.to_string(), args: vec![v] });
     }
