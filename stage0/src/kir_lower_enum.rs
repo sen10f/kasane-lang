@@ -314,6 +314,12 @@ impl<'a> Lw<'a> {
                 a = self.emit(Ty::Agg(i), Op::Load(a));
             }
         }
+        // `Some(&x)` で `Option<&スカラー>` を作る: スカラーへの参照を持つ Option は値で持つ (設計_KIR.md 10.10) ので、参照の指す先を読む。
+        if let (Ty::Opt(p), Ty::Ref(_, pt)) = (t, self.vty(a)) {
+            if name == "Some" && pt.ty() == p.ty() && p.ty().is_scalar() {
+                a = self.emit(p.ty(), Op::Load(a));
+            }
+        }
         let (op, want) = match (name, t) {
             ("Some", Ty::Opt(p)) => (Op::Some(a), p.ty()),
             ("Ok", Ty::Res(t0, _)) => (Op::Ok(a), t0.ty()),

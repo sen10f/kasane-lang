@@ -65,6 +65,8 @@ pub struct AggTab {
     pub chan_elem: HashMap<u32, Ty>,
     /// `std.thread.JoinHandle<T, A>` の型の添字 → `T`。
     pub handle_elem: HashMap<u32, Ty>,
+    /// 型引数付きの集成体の添字 → (定義の FQN, 型引数)。メソッドの型引数の推論 (受け手の型) に使う。
+    pub generic_args: HashMap<u32, (String, Vec<Src>)>,
 }
 
 /// `Box<dyn Tr>` の vtable の登録 (設計_KIR.md 21 章)。vtable の「番地」は、登録順の番号 (`usize`)。
@@ -152,7 +154,7 @@ fn layout_enum(defs: &[AggDef], vs: &[(String, Vec<Ty>)]) -> (u32, u32, Vec<Vari
 impl AggTab {
     /// `user` は利用者のパッケージの定義の添字 (`lower_user` の引数と同じ)。
     pub fn new(user: &[usize]) -> AggTab {
-        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default(), chan_elem: HashMap::new(), handle_elem: HashMap::new() }
+        AggTab { defs: vec![], by_name: HashMap::new(), busy: HashSet::new(), user: user.iter().copied().collect(), box_elems: HashMap::new(), dynr: DynReg::default(), chan_elem: HashMap::new(), handle_elem: HashMap::new(), generic_args: HashMap::new() }
     }
 
     /// 推論済みの型 `t` を段階 1 の型にする。`file` は名前を解決するファイル。対象外なら理由付きで `Err`。
@@ -175,7 +177,7 @@ impl AggTab {
             }
             // 値渡しの `Vec` / `String` は 24 バイトのヘッダ `vec` の値 (所有の移動。設計_KIR.md 13 章)。
             // 参照 (`&Vec` など) は下の腕に入れず、借用のヘッダのアドレス (`ptr`) として `sig_ty` が受ける。
-            Src::Named(name, args) if name == "alloc.vec.Vec" => {
+            Src::Named(name, args) if name == "alloc.vec.Vec" || name == "alloc.raw.Buf" => {
                 let elem = args.first().and_then(|a| self.lower_ty(p, file, a).ok());
                 Ok(self.vec_of(elem))
             }
@@ -216,12 +218,11 @@ impl AggTab {
                 Ok(if name == "std.sync.SendError" { self.send_err(elem) } else { self.chan_end(name == "std.sync.Sender", elem) })
             }
             Src::Named(name, args) => {
-                if !args.is_empty() {
-                    return Err(format!("型 {} は型引数付きで段階 1 の対象外", name));
-                }
                 let segs: Vec<String> = name.split('.').map(String::from).collect();
                 match p.resolve(&segs, file).map(|r| r.target) {
                     // ソケットの型 (`std.net.TcpListener` / `TcpStream`) は `&` の形でも現れるので、型表に入れる (設計_KIR.md 12 章)。
+                    Some(Tgt::Type(di)) if !args.is_empty() && self.user.contains(&di) => self.intern_generic(p, di, args),
+                    _ if !args.is_empty() => Err(format!("型 {} は型引数付きで段階 1 の対象外", name)),
                     Some(Tgt::Type(di)) if self.user.contains(&di) || STD_TYPES.contains(&p.defs[di].name.as_str()) || is_net_socket(&p.defs[di].name) => self.intern_def(p, di),
                     // 上の一覧にない標準ライブラリの型は、KIR の型表に入れない (値は組み込みの実装が作るので、下ろせない)。
                     _ => Err(format!("{} は未対応 (標準ライブラリの型は KIR に組み込みがない)", name)),
@@ -235,7 +236,7 @@ impl AggTab {
                 self.intern_tuple(elems)
             }
             // 集成体への参照 `&S` / `&mut S` (スカラーへの参照は上の `conv` が済ませている)。
-            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") => {
+            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") => {
                 Err("Vec / String への参照はヘッダのアドレスで渡す".to_string())
             }
             Src::Ref(m, inner) if matches!(&**inner, Src::Named(..) | Src::Tuple(_)) => match self.lower_ty(p, file, inner)? {
@@ -412,14 +413,14 @@ impl AggTab {
         n.parse::<u32>().ok().map(Ty::Agg)
     }
 
-    /// `alloc.alloc.AllocError` (clif と同じ大きさ 1 の構造体)。`Vec::push` などの `Result` の E。
+    /// `alloc.alloc.AllocError` (仕様どおり `{ code: u32 }`。Kasane で書いた `Vec` が `AllocError { code: .. }` を作れるように)。`Vec::push` などの `Result` の E。
     pub fn alloc_err(&mut self) -> Ty {
         const NAME: &str = "alloc.alloc.AllocError";
         if let Some(&i) = self.by_name.get(NAME) {
             return Ty::Agg(i);
         }
-        let fields = vec![Field { name: "kind".to_string(), ty: Ty::U8, off: 0 }];
-        self.push(NAME.to_string(), 1, 1, AggKind::Struct(fields))
+        let fields = vec![Field { name: "code".to_string(), ty: Ty::U32, off: 0 }];
+        self.push(NAME.to_string(), 4, 4, AggKind::Struct(fields))
     }
 
     /// `alloc.vec.InsertError` 列挙型 (OutOfBounds / Alloc)。`insert` の `Err(InsertError::OutOfBounds)` を作るためだけに用いる。
@@ -512,13 +513,13 @@ impl AggTab {
             if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap" {
                 return Ok(self.vec_hdr());
             }
-            if n == "alloc.vec.Vec" || n == "alloc.string.String" {
+            if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" {
                 return self.lower_ty(p, file, t);
             }
         }
         // `&Vec` / `&String` / `&HashMap` のフィールドは、借用のヘッダのアドレス (`ptr`)。
         if let Src::Ref(_, inner) = t {
-            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
+            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
                 return Ok(Ty::Ptr);
             }
         }
@@ -570,12 +571,43 @@ impl AggTab {
         r
     }
 
-    fn build_def(&mut self, p: &Program, di: usize) -> Result<Ty, String> {
+    /// 型引数付きの利用者の構造体・列挙型 (`p2.Pair<u32>`) を、型パラメータを具体型で置き換えた別の集成体として登録する。
+    /// 名前は `FQN<引数,..>`。`type` の型パラメータだけを持つ定義が対象 (寿命の引数は無視する)。
+    fn intern_generic(&mut self, p: &Program, di: usize, args: &[Src]) -> Result<Ty, String> {
         let d = &p.defs[di];
+        let names: Vec<String> = d.generics.iter().filter(|g| g.0 == "type").map(|g| g.1.clone()).collect();
+        if (d.kw != "type" && d.kw != "enum") || d.generics.iter().any(|g| g.0 != "life" && g.0 != "type") || names.len() != args.len() {
+            return Err(format!("型 {} は段階 1 の対象外 (型パラメータ以外のジェネリクス、または型引数の個数が違う)", d.name));
+        }
+        let key = format!("{}<{}>", d.name, args.iter().map(show).collect::<Vec<_>>().join(","));
+        if let Some(&i) = self.by_name.get(&key) {
+            return Ok(Ty::Agg(i));
+        }
+        if !self.busy.insert(key.clone()) {
+            return Err(format!("再帰的な型 {} は段階 1 の対象外", key));
+        }
+        let bind: std::collections::HashMap<String, Src> = names.into_iter().zip(args.iter().cloned()).collect();
+        let r = self.build_def_with(p, di, &bind, key.clone());
+        self.busy.remove(&key);
+        if let Ok(Ty::Agg(i)) = r {
+            self.generic_args.insert(i, (d.name.clone(), args.to_vec()));
+        }
+        r
+    }
+
+    fn build_def(&mut self, p: &Program, di: usize) -> Result<Ty, String> {
+        let name = p.defs[di].name.clone();
+        self.build_def_with(p, di, &std::collections::HashMap::new(), name)
+    }
+
+    fn build_def_with(&mut self, p: &Program, di: usize, bind: &std::collections::HashMap<String, Src>, name: String) -> Result<Ty, String> {
+        let d = &p.defs[di];
+        let tn: HashSet<String> = bind.keys().cloned().collect();
+        let sub = |v: &V| super::mono::subst_ty(&from_v(v, &tn), bind);
         let (size, align, kind) = if d.kw == "type" {
             let mut fs = vec![];
             for (fname, fv, _) in &d.fields {
-                let t = self.field_ty(p, &d.file, &from_v(fv, &HashSet::new()))?;
+                let t = self.field_ty(p, &d.file, &sub(fv))?;
                 fs.push((fname.clone(), t));
             }
             let (size, align, fields) = layout_fields(&self.defs, &fs);
@@ -585,14 +617,14 @@ impl AggTab {
             for (vn, tys) in &d.variants {
                 let mut ts = vec![];
                 for tv in tys {
-                    ts.push(self.field_ty(p, &d.file, &from_v(tv, &HashSet::new()))?);
+                    ts.push(self.field_ty(p, &d.file, &sub(tv))?);
                 }
                 vs.push((vn.clone(), ts));
             }
             let (size, align, variants) = layout_enum(&self.defs, &vs);
             (size, align, AggKind::Enum(variants))
         };
-        Ok(self.push(d.name.clone(), size, align, kind))
+        Ok(self.push(name, size, align, kind))
     }
 }
 

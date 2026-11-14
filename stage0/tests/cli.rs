@@ -17541,12 +17541,12 @@ fn kir_agg_module_text_declares_the_layout() {
 
 #[test]
 fn kir_agg_refuses_generic_types_with_a_reason() {
-    // 型引数付きの型は段階 1 の型に入らない (単相化した配置をまだ持たない)。その関数は理由付きで未対応になる。
+    // 型引数付きの構造体は単相化して下ろせる (raw_buf.rs)。型引数が段階 1 の型に入らないもの (標準ライブラリの未対応の型) は、その関数が理由付きで未対応になる。
     let src = "type t.G[T]
     v: T
 end t.G
 
-fn t.gv(_g: t.G<i32>) -> i32 uses [] panics never
+fn t.gv(_g: t.G<std.sync.Mutex<i32>>) -> i32 uses [] panics never
     0i32
 end t.gv
 

@@ -22,6 +22,7 @@ fn alloc.raw.Buf.grow[T, A: alloc.alloc.Allocator](self: &mut alloc.raw.Buf<T, A
 fn alloc.raw.Buf.insert_within_cap[T, A: alloc.alloc.Allocator](self: &mut alloc.raw.Buf<T, A>, index: usize, value: T) -> Result<(), T> uses [] panics never pub
 fn alloc.raw.Buf.is_empty[T, A: alloc.alloc.Allocator](self: &alloc.raw.Buf<T, A>) -> bool uses [] panics never pub
 fn alloc.raw.Buf.len[T, A: alloc.alloc.Allocator](self: &alloc.raw.Buf<T, A>) -> usize uses [] panics never pub
+fn alloc.raw.Buf.new[T, A: alloc.alloc.Allocator](allocator: A) -> alloc.raw.Buf<T, A> uses [] panics never pub
 fn alloc.raw.Buf.pop[T, A: alloc.alloc.Allocator](self: &mut alloc.raw.Buf<T, A>) -> Option<T> uses [] panics never pub
 fn alloc.raw.Buf.push_within_cap[T, A: alloc.alloc.Allocator](self: &mut alloc.raw.Buf<T, A>, value: T) -> Result<(), T> uses [] panics never pub
 fn alloc.raw.Buf.remove[T, A: alloc.alloc.Allocator](self: &mut alloc.raw.Buf<T, A>, index: usize) -> Option<T> uses [] panics never pub

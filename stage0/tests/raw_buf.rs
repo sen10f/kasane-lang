@@ -61,6 +61,100 @@ fn run_all(name: &str, src: &str) -> String {
     text(&tree.stdout)
 }
 
+/// `run_all` と同じだが、ネイティブ (LLVM) の実行体ができることも要求する (バンドルへの退避は失敗)。
+fn run_native(name: &str, src: &str) -> String {
+    let t = Tmp::new(name, src);
+    let chk = run(&["check"], &t.0);
+    assert!(text(&chk.stdout).trim().is_empty() && chk.status.success(), "{}{}", text(&chk.stdout), text(&chk.stderr));
+    let tree = run(&["run", "--engine=tree"], &t.0);
+    assert_eq!(tree.status.code(), Some(0), "{}{}", text(&tree.stdout), text(&tree.stderr));
+    let vm = run(&["run", "--engine=vm"], &t.0);
+    assert_eq!(vm.status.code(), Some(0), "{}{}", text(&vm.stdout), text(&vm.stderr));
+    assert_eq!(text(&tree.stdout), text(&vm.stdout), "VM の出力が木走査と違う");
+    assert!(!text(&vm.stderr).contains("vm engine skipped"), "VM が KIR に下ろせず木走査へ退避した: {}", text(&vm.stderr));
+    let cache = std::env::temp_dir().join(format!("ksn_rawbuf_cache_{}_{}", std::process::id(), name));
+    let b = Command::new(exe()).arg("build").current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    let log = format!("{}{}", text(&b.stdout), text(&b.stderr));
+    let native = t.0.join("target/debug/t.native");
+    assert!(b.status.success() && native.exists(), "ネイティブにならない: {}", log);
+    let o = Command::new(&native).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&tree.stdout), text(&o.stdout), "native の出力が run と違う");
+    text(&tree.stdout)
+}
+
+const GENERIC: &str = r#"type t.Cell[T] pub
+    value: T
+    count: u32
+end t.Cell
+
+type t.Pair[T] pub
+    a: t.Cell<T>
+    b: T
+end t.Pair
+
+fn t.Cell.new[T](value: T) -> t.Cell<T> uses [] panics never
+    t.Cell { value: value, count: 0u32 }
+end t.Cell.new
+
+fn t.Cell.get[T](self: &t.Cell<T>) -> &T uses [] panics never
+    &self.value
+end t.Cell.get
+
+fn t.Cell.slot_mut[T](self: &mut t.Cell<T>) -> &mut T uses [] panics never
+    self.count = self.count.wrapping_add(1u32)
+    &mut self.value
+end t.Cell.slot_mut
+
+fn t.Cell.take[T](self: t.Cell<T>) -> T uses [] panics never
+    self.value
+end t.Cell.take
+
+fn t.bump(c: &mut t.Cell<u32>) -> () uses [] panics never
+    c.count = c.count.wrapping_add(1u32)
+end t.bump
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut c = t.Cell.new(7u32)
+    core.check.eq(*c.get(), 7u32)
+    t.bump(&mut c)
+    *c.slot_mut() = 9u32
+    core.check.eq(*c.get(), 9u32)
+    core.check.eq(c.count, 2u32)
+    let p = t.Pair { a: t.Cell.new(1u64), b: 2u64 }
+    core.check.eq(*p.a.get(), 1u64)
+    let q = t.Cell.new(p)
+    core.check.eq(q.get().b, 2u64)
+    core.check.eq(c.take(), 9u32)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+"#;
+
+const REF_FIELD: &str = r#"type t.Cu pub
+    value: u32
+    count: u32
+end t.Cu
+
+fn t.Cu.slot_mut(self: &mut t.Cu) -> &mut u32 uses [] panics never
+    &mut self.value
+end t.Cu.slot_mut
+
+fn t.set(c: &mut t.Cu) -> () uses [] panics never
+    let r = c.slot_mut()
+    *r = 9u32
+end t.set
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut d = t.Cu { value: 7u32, count: 0u32 }
+    t.set(&mut d)
+    core.check.eq(d.value, 9u32)
+    std.io.print_line("ok")?
+    Ok(())
+end t.main
+"#;
+
 const PROG: &str = r#"fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
     t.run()
 end t.main
@@ -150,12 +244,75 @@ end t.main
 
 #[test]
 fn buf_operations_agree_across_run_engines_and_build() {
-    let out = run_all("ops", PROG);
+    let out = run_native("ops", PROG);
     assert_eq!(out, "show\ndone\n");
 }
 
 #[test]
 fn buf_u8_utf8_checked_view() {
-    let out = run_all("bytes", BYTES);
+    let out = run_native("bytes", BYTES);
     assert_eq!(out, "héllo\n");
+}
+
+#[test]
+fn generic_structs_and_methods_lower_to_native() {
+    assert_eq!(run_native("generic", GENERIC), "ok\n");
+}
+
+#[test]
+fn address_of_a_field_through_a_reference_points_at_the_field() {
+    // `&mut self.value` は、フィールドそのもののアドレス (以前は読んだ値の一時の写しを指していた)。
+    assert_eq!(run_native("ref_field", REF_FIELD), "ok\n");
+}
+
+const OWNED: &str = r#"type t.Item pub
+    name: alloc.string.String<std.alloc.System>
+    n: u32
+end t.Item
+
+fn t.item(text: &str, n: u32) -> t.Item uses [alloc] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.check.eq(s.push_str(text), Ok(()))
+    t.Item { name: s, n: n }
+end t.item
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut b = match alloc.raw.Buf.with_capacity(std.alloc.SYSTEM, 4usize) {
+        Ok(b) => b
+        Err(_e) => core.panic.panic("oom")
+    }
+    core.check.eq(b.push_within_cap(t.item("a", 1u32)).is_ok(), true)
+    core.check.eq(b.push_within_cap(t.item("b", 2u32)).is_ok(), true)
+    core.check.eq(b.push_within_cap(t.item("c", 3u32)).is_ok(), true)
+    core.check.eq(b.insert_within_cap(1usize, t.item("x", 9u32)).is_ok(), true)
+    core.check.eq(b.len(), 4usize)
+    let full = b.push_within_cap(t.item("y", 10u32))
+    core.check.eq(full.is_err(), true)
+    match b.swap_remove(0usize) {
+        Some(it) => core.check.eq(it.n, 1u32)
+        None => core.panic.panic("swap_remove")
+    }
+    core.check.eq(b.len(), 3usize)
+    b.truncate(1usize)
+    core.check.eq(b.len(), 1usize)
+    match b.pop() {
+        Some(it) => core.check.eq(it.n, 3u32)
+        None => core.panic.panic("pop")
+    }
+    std.io.print_line("owned ok")?
+    Ok(())
+end t.main
+"#;
+
+#[test]
+fn buf_of_owning_elements_lowers_to_native() {
+    assert_eq!(run_native("owned", OWNED), "owned ok\n");
+}
+
+#[test]
+fn a_kasane_vec_over_buf_lowers_to_native_with_owning_elements() {
+    // ジェネリックな構造体 + `Buf` フィールド (暗黙の drop) + メソッド + 所有物の要素 (`String`・入れ子の Vec) を、
+    // 組み込みの `Vec` を使わず Kasane だけで書いた `Vec` (設計_stdlib_kasane.md)。
+    let src = include_str!("data/raw_buf/kvec.ksnl");
+    assert_eq!(run_native("kvec", src), "ok\n");
 }
