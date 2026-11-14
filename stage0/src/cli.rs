@@ -5,7 +5,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use regex::Regex;
 use sha2::{Digest, Sha256};
 
 use crate::check::Checker;
@@ -2368,7 +2367,7 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     // デバッグ (`--release` なし) は常に退避する (理由を出す) ので、このフラグは効かない。
     let allow_bundle = args.iter().any(|a| a == "--allow-bundle");
     let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "llvm".into());
-    let target = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)).cloned();
+    let target_arg = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)).cloned();
     if backend == "clif" {
         eprintln!("ksn: E9040: `--backend clif` was removed: the Cranelift backend is gone and native generation goes through LLVM (KIR). Use `--backend llvm` (the default), or `--backend c`");
         return 1;
@@ -2377,6 +2376,27 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         eprintln!("ksn: E9040: unknown backend `{}` (expected llvm or c)", backend);
         return 1;
     }
+    // `--target` (省略か `host` は今の機械)。対応は x86_64-linux-gnu と aarch64-linux-gnu (`kir_llvm::TARGETS`)。
+    let explicit = target_arg.as_deref().is_some_and(|t| t != "host");
+    let target = target_arg.clone().unwrap_or_else(|| "host".into());
+    let tgt = if explicit {
+        match crate::kir_llvm::target_of(&target) {
+            Some(t) => Some(t),
+            None => {
+                let names: Vec<&str> = crate::kir_llvm::TARGETS.iter().map(|t| t.name).collect();
+                eprintln!("ksn: E9040: unsupported target `{}` (supported: {})", target, names.join(", "));
+                return 1;
+            }
+        }
+    } else {
+        crate::kir_llvm::host_target()
+    };
+    if explicit && backend != "llvm" {
+        eprintln!("ksn: E9040: `--target {}` needs `--backend llvm` (the C backend builds only for this machine)", target);
+        return 1;
+    }
+    // 対象が今の機械なら、インタプリタ同梱のバンドル (ホストの ksn のコピー) もそのまま動く。違えば作らない。
+    let runs_here = !explicit || tgt == crate::kir_llvm::host_target();
     let mut rep = Report::new(false);
     let root = match find_root() {
         Ok(r) => r,
@@ -2396,11 +2416,6 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let _ = preloaded;
     rep.flush();
     if rep.fatal() {
-        return 1;
-    }
-    let target = target.unwrap_or("host".into());
-    if target != "host" && !Regex::new(r"^(x86_64|aarch64)-(linux|macos|windows)$").unwrap().is_match(&target) {
-        eprintln!("ksn: E9040: unsupported target {}", target);
         return 1;
     }
     let kind = if release { "release" } else { "debug" };
@@ -2439,18 +2454,20 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         }
         evict(&cdir, &key);
     }
-    let out = l.pkg.root.join("target").join(kind);
+    // 既定 (`--target` なし) は従来どおり `target/<kind>`。`--target` を付けたときは `target/<三つ組>/<kind>`。
+    let out = if explicit { l.pkg.root.join("target").join(&target).join(kind) } else { l.pkg.root.join("target").join(kind) };
     let _ = fs::remove_dir_all(&out);
-    copy_entry(&cached, &out);
-    let _ = fs::write(out.join(BUILD_STAMP), &key);
     let name = l.pkg.name.clone();
-    // %~dp0 は常に絶対パス。sh 版は $0 (相対パス・PATH 経由の名前) を絶対パスに直してから
-    // pkg へ cd する (cd 後に相対パスの $d/ksn を exec すると失敗するため)。
-    let _ = fs::write(out.join(format!("{}.cmd", name)), "@echo off\r\nset KSN_STDLIB=%~dp0stdlib\r\ncd /d \"%~dp0pkg\"\r\n\"%~dp0ksn.exe\" _exec %*\r\n");
-    let launcher = out.join(&name);
-    let _ = fs::write(
-        &launcher,
-        r#"#!/bin/sh
+    if runs_here {
+        copy_entry(&cached, &out);
+        let _ = fs::write(out.join(BUILD_STAMP), &key);
+        // %~dp0 は常に絶対パス。sh 版は $0 (相対パス・PATH 経由の名前) を絶対パスに直してから
+        // pkg へ cd する (cd 後に相対パスの $d/ksn を exec すると失敗するため)。
+        let _ = fs::write(out.join(format!("{}.cmd", name)), "@echo off\r\nset KSN_STDLIB=%~dp0stdlib\r\ncd /d \"%~dp0pkg\"\r\n\"%~dp0ksn.exe\" _exec %*\r\n");
+        let launcher = out.join(&name);
+        let _ = fs::write(
+            &launcher,
+            r#"#!/bin/sh
 case "$0" in
   */*) p="$0" ;;
   *) p="$(command -v "$0")" ;;
@@ -2470,8 +2487,11 @@ KSN_STDLIB="$d/stdlib"
 export KSN_STDLIB
 cd "$d/pkg" && exec "$d/ksn" _exec "$@"
 "#,
-    );
-    set_exec(&launcher);
+        );
+        set_exec(&launcher);
+    } else {
+        let _ = fs::create_dir_all(&out);
+    }
     let prog = prog.unwrap();
     let entry = l.pkg.entry();
     let exe = out.join(if cfg!(windows) { format!("{}.exe", name) } else { format!("{}.native", name) });
@@ -2499,7 +2519,7 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
             if backend == "llvm" {
                 // 下ろせない・clang が無いなどなら、理由を出してインタプリタ同梱のバンドルだけにする。
                 let t_cc = std::time::Instant::now();
-                let r = build_llvm(&prog, &user, e, &exe, release);
+                let r = build_llvm(&prog, &user, e, &exe, release, Tgt { ir: tgt, clang: if explicit { tgt } else { None } });
                 if std::env::var_os("KSN_TIME").is_some() {
                     eprintln!("KSN_TIME compile_llvm_total={:.2} [ms]", t_cc.elapsed().as_secs_f64() * 1e3);
                 }
@@ -2511,6 +2531,21 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
     };
     if native.is_ok() && !reused {
         store_artifact(&cdir, &key, &exe);
+    }
+    if !runs_here {
+        // 対象が今の機械でないときは、バンドル (ホストの ksn) で退避できない。作れなければ理由を出して失敗する。
+        return match native {
+            Ok(()) => {
+                println!("native executable: {}", rel(&norm(&exe)));
+                println!("built {} ({}, target {}; cross-compiled, not run here)", rel(&norm(&out)), kind, target);
+                0
+            }
+            Err(why) => {
+                let _ = fs::remove_dir_all(&out);
+                eprintln!("ksn: E9040: cannot make a native executable for target {}: {}", target, why);
+                1
+            }
+        };
     }
     if let Err(why) = &native {
         // ライブラリ (entry なし) は実行ファイルを作らないものなので、退避の対象ではなく従来どおり扱う。
@@ -2534,10 +2569,18 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
 
 /// `ksn build --backend llvm`: 入口の関数から届く関数すべてを KIR に下ろし、LLVM IR を作って clang で実行ファイルにする (設計_KIR.md 12.3)。
 /// 下ろせない関数が 1 つでもあれば、理由を `Err` で返す (呼び出し側が既定の経路へ退避する)。
-fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool) -> Result<(), String> {
+fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool, tg: Tgt) -> Result<(), String> {
     let lo = crate::kir_lower::lower_program(prog, user, Some(entry));
-    llvm_exe(lo, entry, exe, if release { "-O2" } else { "-O1" })
+    llvm_exe(lo, entry, exe, if release { "-O2" } else { "-O1" }, tg)
 }
+
+/// LLVM IR の対象 (`ir`: triple と datalayout を書く) と、clang に渡す対象 (`clang`: `--target` を付けるのは明示された対象だけ)。
+#[derive(Clone, Copy)]
+struct Tgt {
+    ir: Option<crate::kir_llvm::Target>,
+    clang: Option<crate::kir_llvm::Target>,
+}
+
 
 /// `ksn test --both` の LLVM 側: テスト `ti` を入口にして KIR → LLVM → clang の実行ファイルを作る (`target/test-llvm/`)。
 /// 下ろせない・clang が無いなどで作れなければ理由を返す (呼び出し側がバンドルへ退避する)。
@@ -2548,7 +2591,7 @@ fn build_llvm_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> Re
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let exe = dir.join(format!("{}_{}{}", ti, test_stem(&d.name), if cfg!(windows) { ".exe" } else { ".native" }));
     let _ = fs::remove_file(&exe);
-    llvm_exe(lo, &d.name, &exe, "-O1")?;
+    llvm_exe(lo, &d.name, &exe, "-O1", Tgt { ir: crate::kir_llvm::host_target(), clang: None })?;
     Ok(exe)
 }
 
@@ -2558,7 +2601,7 @@ fn test_stem(name: &str) -> String {
 }
 
 /// 下ろし済みの `lo` から、入口 `entry` の実行ファイル `exe` を作る。入口が下ろせなければ、根の理由を `Err` で返す。
-fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str) -> Result<(), String> {
+fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str, tg: Tgt) -> Result<(), String> {
     if lo.module.find(entry).is_none() {
         // 理由の鎖 (`呼び先 X が未対応`) をたどって、根の理由を出す。
         let mut key = entry.to_string();
@@ -2579,8 +2622,44 @@ fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str) -
         }
     }
     let m = lo.module.reachable_from(&[entry, crate::kir_lower::debug::ENTRY_DEBUG]);
-    let ll = crate::kir_llvm::emit_program(&m, entry)?;
-    clang_ll(&ll, exe, opt)
+    let ll = crate::kir_llvm::emit_program(&m, entry, tg.ir)?;
+    clang_ll(&ll, exe, opt, tg.clang)
+}
+
+/// クロスコンパイルの clang の引数 (対象を明示したときだけ)。`--target` と、ターゲットの C の開発ファイル・libc の探索先。
+/// sysroot は使わない: aarch64 の `libc.so` / `libm.so` はリンカスクリプトで絶対パスを書いており、`--sysroot` を付けると
+/// GNU ld / lld がそれに sysroot を二重に前置して見つからなくなる。代わりに `-isystem` と `-L` で同じ場所を探させる。
+/// 探索先は `KSN_SYSROOT` で上書きできる (空なら対象の既定)。
+fn clang_target_args(t: Option<crate::kir_llvm::Target>) -> Vec<String> {
+    let Some(t) = t else { return vec![] };
+    let mut a = vec![format!("--target={}", t.name)];
+    let root = std::env::var("KSN_SYSROOT").ok().filter(|s| !s.is_empty()).or_else(|| (!t.sysroot.is_empty()).then(|| t.sysroot.to_string()));
+    if let Some(r) = root {
+        a.push("-isystem".into());
+        a.push(format!("{}/include", r));
+        a.push(format!("-L{}/lib", r));
+        // crt とコンパイラの実行時 (libgcc) は、GCC の構成の下にある。Debian の `gcc-<arch>` の場所を使う。
+        if let Some(g) = gcc_install_dir(t.name) {
+            a.push(format!("--gcc-install-dir={}", g));
+        }
+    }
+    a
+}
+
+/// `/usr/lib/gcc-cross/<三つ組>/<版>` のうち版が最も新しいもの (クロス GCC の構成の場所)。無ければ `None`。
+fn gcc_install_dir(triple: &str) -> Option<String> {
+    let base = Path::new("/usr/lib/gcc-cross").join(triple);
+    let mut best: Option<(Vec<u32>, PathBuf)> = None;
+    for e in fs::read_dir(&base).ok()?.flatten() {
+        let p = e.path();
+        let ver: Option<Vec<u32>> = e.file_name().to_string_lossy().split('.').map(|x| x.parse().ok()).collect();
+        if let Some(v) = ver.filter(|_| p.is_dir()) {
+            if best.as_ref().is_none_or(|(b, _)| v > *b) {
+                best = Some((v, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p.display().to_string())
 }
 
 /// 環境変数 `KSN_CLANG_ARGS` (空白区切り) の clang への追加の引数。試験が `-fsanitize=address -g` などを渡すための隠し機能。
@@ -2614,12 +2693,23 @@ fn clang_extra_args() -> Vec<String> {
 }
 
 /// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。
-fn clang_ll(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
+fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Target>) -> Result<(), String> {
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let src = exe.with_extension("ll.tmp");
     fs::write(&src, ll).map_err(|e| format!("{} を書けない: {}", src.display(), e))?;
     let rt = runtime_c_args(ll, &src);
-    let o = std::process::Command::new(&clang).args([opt, "-Wno-override-module"]).args(clang_extra_args()).args(["-x", "ir"]).arg(&src).args(&rt).arg("-o").arg(exe).arg("-lm").arg("-pthread").output();
+    let o = std::process::Command::new(&clang)
+        .args([opt, "-Wno-override-module"])
+        .args(clang_target_args(target))
+        .args(clang_extra_args())
+        .args(["-x", "ir"])
+        .arg(&src)
+        .args(&rt)
+        .arg("-o")
+        .arg(exe)
+        .arg("-lm")
+        .arg("-pthread")
+        .output();
     let _ = fs::remove_file(&src);
     // 一時的な C ファイルを削除する (引数は "-x c <path>" の繰り返し)。
     for i in (2..rt.len()).step_by(3) {

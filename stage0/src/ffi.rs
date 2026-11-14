@@ -437,16 +437,126 @@ mod x64 {
     }
 }
 
-/// C の関数 `p` を、System V AMD64 の規則で呼ぶ (x86_64 Linux)。それ以外では `call_basic` を使う。
+/// AArch64 Linux の呼び出し (AAPCS64)。整数・ポインタ・浮動小数の引数と戻り値を扱う。
+/// 構造体の値渡し・値返しは、この経路では未対応 (ネイティブ生成と同じく x86_64 だけで検証している) なので、名前つきのエラーにする。
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+mod a64 {
+    use super::*;
+
+    /// 呼び出しの枠。先頭から 8 バイトずつ: fnptr (0)、x0..x7 (8..72)、d0..d7 (72..136)、スタックの引数 (136, 144)、戻り値 x0・x1・d0・d1 (152..184)。
+    #[repr(C)]
+    pub struct Frame {
+        pub fnptr: u64,
+        pub gp: [u64; 8],
+        pub sse: [u64; 8],
+        pub stack: *const u64,
+        pub nstack: u64,
+        pub ret: [u64; 4],
+    }
+
+    // 引数をレジスタとスタックへ置き、`blr` で呼び、戻り値を枠へ書き戻す。x19 は呼び出し中の枠の保持に使う (呼び出し先で保存される)。
+    std::arch::global_asm!(
+        ".text",
+        ".globl ksn_ffi_call_raw",
+        ".type ksn_ffi_call_raw,%function",
+        "ksn_ffi_call_raw:",
+        "stp x29, x30, [sp, #-32]!",
+        "mov x29, sp",
+        "str x19, [sp, #16]",
+        "mov x19, x0",
+        "ldr x9, [x19, #144]",
+        "add x10, x9, #1",
+        "and x10, x10, #-2",
+        "lsl x10, x10, #3",
+        "sub sp, sp, x10",
+        "ldr x1, [x19, #136]",
+        "mov x12, #0",
+        "2:",
+        "cmp x12, x9",
+        "b.ge 3f",
+        "ldr x11, [x1, x12, lsl #3]",
+        "str x11, [sp, x12, lsl #3]",
+        "add x12, x12, #1",
+        "b 2b",
+        "3:",
+        "ldr d0, [x19, #72]",
+        "ldr d1, [x19, #80]",
+        "ldr d2, [x19, #88]",
+        "ldr d3, [x19, #96]",
+        "ldr d4, [x19, #104]",
+        "ldr d5, [x19, #112]",
+        "ldr d6, [x19, #120]",
+        "ldr d7, [x19, #128]",
+        "ldr x0, [x19, #8]",
+        "ldr x1, [x19, #16]",
+        "ldr x2, [x19, #24]",
+        "ldr x3, [x19, #32]",
+        "ldr x4, [x19, #40]",
+        "ldr x5, [x19, #48]",
+        "ldr x6, [x19, #56]",
+        "ldr x7, [x19, #64]",
+        "ldr x16, [x19]",
+        "blr x16",
+        "str x0, [x19, #152]",
+        "str x1, [x19, #160]",
+        "str d0, [x19, #168]",
+        "str d1, [x19, #176]",
+        "mov sp, x29",
+        "ldr x19, [sp, #16]",
+        "ldp x29, x30, [sp], #32",
+        "ret",
+        ".size ksn_ffi_call_raw, .-ksn_ffi_call_raw",
+    );
+
+    extern "C" {
+        fn ksn_ffi_call_raw(f: *mut Frame);
+    }
+
+    pub unsafe fn call(p: *mut c_void, args: &[ArgV], ret: &RetTy) -> Result<RetV, String> {
+        let mut gp: Vec<u64> = vec![];
+        let mut sse: Vec<u64> = vec![];
+        // 8 個を超えた引数は、宣言の順にスタックへ 8 バイトずつ置く (AAPCS64 の規則どおり)。
+        let mut stack: Vec<u64> = vec![];
+        for a in args {
+            match a {
+                ArgV::Int(v) => {
+                    if gp.len() < 8 { gp.push(*v) } else { stack.push(*v) }
+                }
+                ArgV::F32(f) => {
+                    let v = f.to_bits() as u64;
+                    if sse.len() < 8 { sse.push(v) } else { stack.push(v) }
+                }
+                ArgV::F64(f) => {
+                    let v = f.to_bits();
+                    if sse.len() < 8 { sse.push(v) } else { stack.push(v) }
+                }
+                ArgV::Agg(..) => return Err("passing a struct by value is not supported by the interpreter on AArch64 yet (it works on x86_64 Linux)".into()),
+            }
+        }
+        let mut frame = Frame { fnptr: p as u64, gp: [0; 8], sse: [0; 8], stack: stack.as_ptr(), nstack: stack.len() as u64, ret: [0; 4] };
+        frame.gp[..gp.len()].copy_from_slice(&gp);
+        frame.sse[..sse.len()].copy_from_slice(&sse);
+        ksn_ffi_call_raw(&mut frame);
+        let [x0, _x1, d0, _d1] = frame.ret;
+        Ok(match ret {
+            RetTy::Void => RetV::None,
+            RetTy::Int => RetV::Int(x0),
+            RetTy::F32 => RetV::F32(f32::from_bits(d0 as u32)),
+            RetTy::F64 => RetV::F64(f64::from_bits(d0)),
+            RetTy::Agg(_) => return Err("returning a struct by value is not supported by the interpreter on AArch64 yet (it works on x86_64 Linux)".into()),
+        })
+    }
+}
+
+/// C の関数 `p` を、C の呼び出し規約で呼ぶ (x86_64 Linux は System V AMD64、AArch64 Linux は AAPCS64)。
+/// それ以外のホストでは `call_basic` (整数・浮動小数の 6 引数まで) を使う。
 pub fn call_generic(p: *mut c_void, args: &[ArgV], ret: &RetTy) -> Result<RetV, String> {
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-    unsafe {
-        x64::call(p, args, ret)
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
-    {
-        call_basic(p, args, ret)
-    }
+    return unsafe { x64::call(p, args, ret) };
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    return unsafe { a64::call(p, args, ret) };
+    #[cfg(not(all(any(target_arch = "x86_64", target_arch = "aarch64"), target_os = "linux")))]
+    call_basic(p, args, ret)
 }
 
 // ---------------------------------------------------------------- 従来の限定版 (x86_64 Linux 以外)
