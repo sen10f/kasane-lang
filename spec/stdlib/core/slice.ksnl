@@ -2,7 +2,7 @@ fn core.slice.binary_search[T: core.cmp.Ord](self: &[T], x: &T) -> Result<usize,
     let mut lo = 0usize
     let mut hi = self.len()
     while lo < hi {
-        let mid = lo.wrapping_add(hi.wrapping_sub(lo) / 2usize)
+        let mid = lo.wrapping_add(hi.wrapping_sub(lo).wrapping_shr(1u32))
         match self.get(mid) {
             Some(y) => {
                 match y.cmp(x) {
@@ -186,7 +186,7 @@ fn core.slice.sort_unstable_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E,
     }
 end core.slice.sort_unstable_by
 
-fn core.slice.symmerge_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](s: &mut [T], f: &F, a: usize, m: usize, b: usize) -> () uses [E] panics P stack 4096
+fn core.slice.symmerge_by[T, F: core.ops.Fn<(&T, &T), core.cmp.Ordering, E, P>, E: uses, P: panics](s: &mut [T], f: &F, a: usize, m: usize, b: usize) -> () uses [E] panics P
     if a >= m || m >= b {
         return
     }

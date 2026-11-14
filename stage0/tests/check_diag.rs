@@ -4966,3 +4966,52 @@ fn derive_json_on_unsupported_field_is_e2036() {
     let g = text(&run(&["get", "--derived", "t.Shape"], &ok.0).stdout);
     assert!(g.contains("fn t.Shape.to_json") && g.contains("fn t.Shape.from_json") && g.contains("\"Rect\""), "{}", g);
 }
+
+/// 標準ライブラリの本体 (`spec/stdlib/**/*.ksnl`) は、利用者のコードと同じ検査で診断 0 件 (`ksn check-stdlib`)。
+/// 本体の型誤りは LLVM の下ろしまで見つからなかったことがあるので、ここで止める。
+#[test]
+fn stdlib_bodies_have_no_diagnostics() {
+    let std_dir = root().join("spec").join("stdlib");
+    let o = run_with_env(&["check-stdlib", "--json"], &root(), &[("KSN_STDLIB", std_dir.to_str().unwrap())]);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
+    assert!(codes(&out).is_empty(), "{}", out);
+}
+
+fn copy_tree(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).unwrap();
+    for e in fs::read_dir(src).unwrap() {
+        let p = e.unwrap().path();
+        let to = dst.join(p.file_name().unwrap());
+        if p.is_dir() {
+            copy_tree(&p, &to);
+        } else {
+            fs::copy(&p, &to).unwrap();
+        }
+    }
+}
+
+/// 標準ライブラリの複製に型誤りを 1 つ入れると、`ksn check-stdlib` がそれを報告する (検査が本体に届いていること)。
+#[test]
+fn stdlib_injected_type_error_is_reported() {
+    let dir = std::env::temp_dir().join(format!("ksn_test_{}_stdlib_neg", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    copy_tree(&root().join("spec").join("stdlib"), &dir.join("stdlib"));
+    let mut log = fs::read_to_string(dir.join("stdlib").join("std").join("log.ksnl")).unwrap();
+    log.push_str("\nfn std.log.bad_probe() -> u32 uses [] panics never\n    let x: u32 = \"no\"\n    x\nend std.log.bad_probe\n");
+    fs::write(dir.join("stdlib").join("std").join("log.ksnl"), log).unwrap();
+    let o = run_with_env(&["check-stdlib", "--json"], &root(), &[("KSN_STDLIB", dir.join("stdlib").to_str().unwrap())]);
+    let out = text(&o.stdout);
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(o.status.code(), Some(1), "{}", out);
+    assert!(codes(&out).iter().any(|c| c == "E2020"), "{}", out);
+}
+
+/// 文字リテラル `'"'` の `"` を文字列の始まりと誤らない (誤ると後ろの変数の使用が消え、E1020 になる)。
+#[test]
+fn char_literal_double_quote_does_not_hide_later_uses() {
+    let src = "fn t.has_quote(text: &str) -> bool uses [] panics never\n    for c in text.chars() {\n        if c == '\"' {\n            return true\n        }\n    }\n    false\nend t.has_quote\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("char_quote", src);
+    let o = run(&["check", "--json"], &t.0);
+    assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
+}
