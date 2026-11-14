@@ -90,11 +90,6 @@ const KNOWN_HOLES: &[&str] = &[
     // 借用を持つ変数 (`let w = t.mk(&x)`) のフィールドを読み戻す (`let r = w.r`) と、借用が読んだ側へ移らない
     // (変数の型が分からないので、`w.n` のような Copy の値と区別できず、移すと誤検出になる)。
     "boundary_field_read_back",
-    // 修正プラン A1: 関数本体が自分のヘッダのライフタイムに照らして検査されない (`&'b` を `&'a` / `&'static` として返せる)。
-    "header_lifetime_return_other",
-    "header_lifetime_return_static",
-    // 修正プラン A2: メソッドのレシーバ (`self: &mut t.H<'a>`) 経由で短い借用を長寿命の構造体に入れられる。
-    "header_lifetime_method_setter",
     // 修正プラン A3: `Fn<.., [], never>` の境界に添字で panic しうるクロージャを渡せる。
     "panics_never_closure_index_bound",
 ];
