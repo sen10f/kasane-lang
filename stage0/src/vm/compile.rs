@@ -776,7 +776,8 @@ impl<'a> Fc<'a> {
                 Ins::FnPtr { d, f: ci as u32 }
             }
             // std.fs の命令は VM 未対応 (木走査へ退避する)。
-            Op::FsCreate { .. }
+            Op::Proc { .. }
+            | Op::FsCreate { .. }
             | Op::FsOpen { .. }
             | Op::FsExists { .. }
             | Op::FsRemove { .. }

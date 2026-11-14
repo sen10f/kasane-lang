@@ -577,9 +577,104 @@ pub enum BoolOp {
     Xor,
 }
 
+/// `std.process` の命令の種類 (`Op::Proc`)。`Command` は実行環境側の表のハンドル (i32) で、`Child` は `{ pid, stdin, stdout, stderr }`
+/// (4 つの i32。パイプの記述子で、ないものは -1) の集成体。パイプの読み書き・閉じるは `fs.read` / `fs.write` / `fs.close` をそのまま使う
+/// (`fs.*` は `uses [process]` の関数にも許す)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcFn {
+    /// `Command.new(program)`: `(fat) -> i32` (ハンドル)。
+    New,
+    /// `Command.arg(a)` / `env_remove(k)` / `current_dir(p)`: `(i32, fat) -> unit`。
+    Arg,
+    EnvRemove,
+    Dir,
+    /// `Command.env(k, v)`: `(i32, fat, fat) -> unit`。
+    Env,
+    /// `Command.env_clear()` / `stdin_piped()` ほか: `(i32) -> unit`。
+    EnvClear,
+    InPiped,
+    InNull,
+    OutPiped,
+    OutNull,
+    ErrPiped,
+    ErrNull,
+    /// `Command.cancel()`: `(i32) -> unit`。設定を捨てる。
+    Cancel,
+    /// `Command.spawn()`: `(i32) -> Result<Child, std.io.Error>`。設定を消費する。
+    Spawn,
+    /// `Command.output()` の前半: `(i32) -> Result<Child, std.io.Error>`。標準入力は /dev/null、標準出力・標準エラーは無名の一時ファイルに
+    /// 受けて、子の終了を待ち、先頭へ巻き戻す。結果の `Child` は `pid` = 終了コード、`stdin` = 終了させたシグナル (なければ 0)、`stdout` / `stderr` = 巻き戻した記述子。
+    Output,
+    /// `Child.wait()`: `(i32 pid) -> Result<ExitStatus, std.io.Error>` (`ExitStatus` は `{ code: i32, signal: i32 }`)。
+    Wait,
+    /// `Child.kill()`: `(i32 pid) -> Result<(), std.io.Error>`。
+    Kill,
+}
+
+impl ProcFn {
+    pub const ALL: [ProcFn; 17] = [
+        ProcFn::New,
+        ProcFn::Arg,
+        ProcFn::EnvRemove,
+        ProcFn::Dir,
+        ProcFn::Env,
+        ProcFn::EnvClear,
+        ProcFn::InPiped,
+        ProcFn::InNull,
+        ProcFn::OutPiped,
+        ProcFn::OutNull,
+        ProcFn::ErrPiped,
+        ProcFn::ErrNull,
+        ProcFn::Cancel,
+        ProcFn::Spawn,
+        ProcFn::Output,
+        ProcFn::Wait,
+        ProcFn::Kill,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            ProcFn::New => "new",
+            ProcFn::Arg => "arg",
+            ProcFn::EnvRemove => "env_remove",
+            ProcFn::Dir => "current_dir",
+            ProcFn::Env => "env",
+            ProcFn::EnvClear => "env_clear",
+            ProcFn::InPiped => "stdin_piped",
+            ProcFn::InNull => "stdin_null",
+            ProcFn::OutPiped => "stdout_piped",
+            ProcFn::OutNull => "stdout_null",
+            ProcFn::ErrPiped => "stderr_piped",
+            ProcFn::ErrNull => "stderr_null",
+            ProcFn::Cancel => "cancel",
+            ProcFn::Spawn => "spawn",
+            ProcFn::Output => "output",
+            ProcFn::Wait => "wait",
+            ProcFn::Kill => "kill",
+        }
+    }
+    /// ランタイムへ渡す番号 (`ALL` の添字)。
+    pub fn code(self) -> i32 {
+        ProcFn::ALL.iter().position(|f| *f == self).unwrap_or(0) as i32
+    }
+    pub fn parse(s: &str) -> Option<ProcFn> {
+        ProcFn::ALL.iter().copied().find(|f| f.name() == s)
+    }
+    /// 被演算子の個数。
+    pub fn arity(self) -> usize {
+        match self {
+            ProcFn::New => 1,
+            ProcFn::Arg | ProcFn::EnvRemove | ProcFn::Dir => 2,
+            ProcFn::Env => 3,
+            _ => 1,
+        }
+    }
+}
+
 /// 命令の本体。結果の型と番号は `Inst` が持つ。
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
+    /// `std.process` の命令 (`ProcFn` の説明を見る)。`uses [process]` の関数だけ。
+    Proc { f: ProcFn, args: Vec<VId> },
     /// 定数。`bool` は 0 / 1、`unit` は 0。
     Const(i128),
     /// 算術。結果の型 (`Inst::ty`) が演算の型。
@@ -1186,6 +1281,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::NetFlush { sock } => format!("net.flush {}", fmt_val(*sock)),
         Op::NetClose { sock } => format!("net.close {}", fmt_val(*sock)),
         Op::NetLocalPort { sock } => format!("net.local_port {}", fmt_val(*sock)),
+        Op::Proc { f, args } => format!("proc.{} {}", f.name(), args.iter().map(|a| fmt_val(*a)).collect::<Vec<_>>().join(", ")),
         Op::FsCreate { path } => format!("fs.create {}", fmt_val(*path)),
         Op::FsOpen { path } => format!("fs.open {}", fmt_val(*path)),
         Op::FsExists { path } => format!("fs.exists {}", fmt_val(*path)),
@@ -1633,6 +1729,11 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("net", ["local_port"]) => {
             let v = operands(1)?;
             Ok(Op::NetLocalPort { sock: v[0] })
+        }
+        ("proc", [name]) => {
+            let Some(f) = ProcFn::parse(name) else { return Err(perr(line, format!("proc.{} は不明", name))) };
+            let v = operands(f.arity())?;
+            Ok(Op::Proc { f, args: v })
         }
         ("fs", ["create"]) => {
             let v = operands(1)?;
@@ -2462,8 +2563,33 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             }
                         }
                     }
+                    Op::Proc { f: pf, args } => {
+                        if !f.uses.iter().any(|u| u == "process") {
+                            return Err("std.process の命令は uses [process] の関数だけ".into());
+                        }
+                        if args.len() != pf.arity() {
+                            return Err(format!("proc.{} の被演算子は {} 個のはず", pf.name(), pf.arity()));
+                        }
+                        for (k, a) in args.iter().enumerate() {
+                            let want_fat = matches!((pf, k), (ProcFn::New, 0) | (ProcFn::Arg | ProcFn::EnvRemove | ProcFn::Dir | ProcFn::Env, 1) | (ProcFn::Env, 2));
+                            let want = if want_fat { fat_ty(m)? } else { Ty::I32 };
+                            if ty_of(*a)? != want {
+                                return Err(format!("proc.{} の被演算子 {} の型が違う", pf.name(), k));
+                            }
+                        }
+                        let res_ok = match pf {
+                            ProcFn::New => i.ty == Ty::I32,
+                            ProcFn::Spawn | ProcFn::Output => matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty())),
+                            ProcFn::Wait => matches!(i.ty, Ty::Res(Pay::Agg(_), e) if is_io_error(m, e.ty())),
+                            ProcFn::Kill => matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty())),
+                            _ => i.ty == Ty::Unit,
+                        };
+                        if !res_ok {
+                            return Err(format!("proc.{} の結果の型が違う", pf.name()));
+                        }
+                    }
                     Op::FsCreate { path } | Op::FsOpen { path } => {
-                        if !f.uses.iter().any(|u| u == "io.fs") {
+                        if !f.uses.iter().any(|u| u == "io.fs" || u == "process") {
                             return Err("std.fs.create / std.fs.open は uses [io.fs] の関数だけ".into());
                         }
                         if ty_of(*path)? != fat_ty(m)? {
@@ -2475,7 +2601,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                     }
                     Op::FsExists { path } => {
-                        if !f.uses.iter().any(|u| u == "io.fs") {
+                        if !f.uses.iter().any(|u| u == "io.fs" || u == "process") {
                             return Err("std.fs.exists は uses [io.fs] の関数だけ".into());
                         }
                         if ty_of(*path)? != fat_ty(m)? {
@@ -2486,7 +2612,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                     }
                     Op::FsRemove { path } => {
-                        if !f.uses.iter().any(|u| u == "io.fs") {
+                        if !f.uses.iter().any(|u| u == "io.fs" || u == "process") {
                             return Err("std.fs.remove_file は uses [io.fs] の関数だけ".into());
                         }
                         if ty_of(*path)? != fat_ty(m)? {
@@ -2498,7 +2624,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                     }
                     Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => {
-                        if !f.uses.iter().any(|u| u == "io.fs") {
+                        if !f.uses.iter().any(|u| u == "io.fs" || u == "process") {
                             return Err("std.fs.File.{close,flush,sync} は uses [io.fs] の関数だけ".into());
                         }
                         if ty_of(*fd)? != Ty::I32 {
@@ -2510,7 +2636,7 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         }
                     }
                     Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => {
-                        if !f.uses.iter().any(|u| u == "io.fs") {
+                        if !f.uses.iter().any(|u| u == "io.fs" || u == "process") {
                             return Err("std.fs.File.{read,write} は uses [io.fs] の関数だけ".into());
                         }
                         if ty_of(*fd)? != Ty::I32 || ty_of(*buf)? != Ty::Ptr || ty_of(*len)? != Ty::Usize {
@@ -2748,6 +2874,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::NetRead { sock, buf, len } | Op::NetWrite { sock, buf, len } => {
             vec![*sock, *buf, *len]
         }
+        Op::Proc { args, .. } => args.clone(),
         Op::FsCreate { path } | Op::FsOpen { path } | Op::FsExists { path } | Op::FsRemove { path } => vec![*path],
         Op::FsClose { fd } | Op::FsFlush { fd } | Op::FsSync { fd } => vec![*fd],
         Op::FsRead { fd, buf, len } | Op::FsWrite { fd, buf, len } => vec![*fd, *buf, *len],

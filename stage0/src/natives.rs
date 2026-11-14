@@ -24,7 +24,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
-    "std.fs.create", "std.fs.read_to_end", "std.net.connect", "std.net.listen",
+    "std.fs.create", "std.fs.read_to_end", "std.net.connect", "std.net.listen", "std.process.Command.new",
 ];
 
 const NUM_EXTRA: &[&str] = &[
@@ -414,6 +414,10 @@ fn u128_op(name: &str, a: &[Val]) -> Option<Res> {
     })
 }
 
+pub(crate) fn item_list_pub(v: &Val) -> Option<Rc<RefCell<Vec<Val>>>> {
+    item_list(v)
+}
+
 fn item_list(v: &Val) -> Option<Rc<RefCell<Vec<Val>>>> {
     match v {
         Val::Arr(l) | Val::Vec(l) => Some(l.clone()),
@@ -733,6 +737,7 @@ impl Interp {
                 }
             }
             "std.net.connect" | "std.net.listen" => self.net_native(name, &args),
+            "std.process.Command.new" => self.process_native(name, &args),
             _ => {
                 if let Some((ty, f)) = name.split_once('.') {
                     if is_int_ty(ty) || ty == "f32" || ty == "f64" || ty == "bool" || ty == "char" {
@@ -915,6 +920,9 @@ impl Interp {
             Val::Struct(s) => {
                 if s.ty.starts_with("std.net.Tcp") {
                     return self.net_method(s, name, &args);
+                }
+                if s.ty.starts_with("std.process.") {
+                    return self.process_method(s, name, &args);
                 }
                 if s.ty == "std.fs.File" {
                     return self.file_method(s, name, &args);

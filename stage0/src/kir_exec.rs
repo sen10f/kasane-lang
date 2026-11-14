@@ -853,6 +853,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     };
                     l.local_addr().map(|a| a.port() as i128).map_err(|e| format!("local_port: {e}"))?
                 }
+                Op::Proc { .. } => return Err("std.process は参照実行器 (`ksn kir --run`) 未対応 (木走査 `ksn run` と LLVM ネイティブが対応)".into()),
                 Op::FsCreate { path } | Op::FsOpen { path } => {
                     let h = get(&stack[top], path) as usize;
                     let ptr = i64::from_le_bytes(heap[h][0..8].try_into().expect("fat の ptr")) as i128;

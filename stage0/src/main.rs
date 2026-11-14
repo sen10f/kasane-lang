@@ -29,6 +29,7 @@ mod refactor;
 mod interp;
 mod natives;
 mod net;
+mod process;
 mod value;
 mod parser;
 mod program;
