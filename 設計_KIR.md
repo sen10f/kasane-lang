@@ -1679,3 +1679,12 @@ KIR は単相・SSA で、型にライフタイムがない。そこで領域は
 - 解放: `drop_value` が、`Box<T>` (`T` が `rec_drop`) と `T` の値そのものについて、補助関数 `drop.<T の FQN>(p: ptr, skip: ptr)` の呼び出しに置き換える (値は一時のスロットへ `Store` して渡す。`skip` はスロットの番地で、返さない)。補助関数は `kir_lower_drop.rs` が、呼ばれた型ごとに最後に作る (`dyn.drop` と同じ作り。補助関数の中の解放がほかの型の補助関数を要すれば、要らなくなるまで繰り返す)。
 - 補助関数の本体 (再帰も確保もない反復): 節の確保 `cur` の値を読み、再帰でない所有物のフィールドを `drop_value` で解放し、`Box<Self>` の子を集める。子が 0 個なら `cur` を返して作業リストから取り出し、1 個なら `cur` を返してその子へ、k ≥ 2 個なら先頭の子へ進んで、残りの k − 1 個を `cur` の確保に枠 `[次の枠, 残りの数, 子の番地 × (k − 1)]` (`16 + 8(k − 1)` バイト) として書いて作業リストに積む。`enum` の確保は「タグの 8 バイト + 8k バイト」、枠は `8k + 8` バイトで収まる。取り出しは枠の最後の子を取り、空になった枠の確保を返す。ブロックの引数 (`cur` / `stack`) のループなので、スタックの使用量は木の深さに依らない。
 - 試験 (`stage0/tests/derive_drop.rs`): 木走査・VM、ネイティブ (深さ 100 万の鎖と偏った 2 分木・完全 2 分木を、`ulimit -s 512` / `-v 700000` で繰り返し破棄)、`selfhost/probes/boxtree` の複製 + `derive [Drop]` のネイティブ、診断・整形・`get --derived`。
+
+### 24.7 第 3 段 (check/kir-borrowck、2026-11-14)
+
+- **一時値と別フィールド。** `&t.mk()` の一時ヘッダは文の終わりで `scope.end` (`let r = &temp()` の直接の借用は束縛まで延びるので除く)。集成体の move (`load p` の後の所有の印の解除、または全部 0 の値の書き戻し) は move として扱い、move した道と重なる借用だけを違反にする (`d08`、`different_field_borrow_then_move` は通す)。借用と move の重なりは、`fieldaddr` のオフセット列 (道) の前置関係で見る。
+- **`break` / `continue`。** 抜けるスコープのスタックスロットの局所にも `scope.end` を出す。
+- **ヘッダの戻り値が `&` を含むのに KIR の戻り値が借用を持たない値 (`Option<&u32>` → `Option<u32>`) になる関数は、判断できない。** 借用の情報が下ろしで消えるため (`header_wrapped_return_option` など)。
+- **所有の注釈 `own.owe` / `own.consume` / `own.part` / `own.init` (実験)。** `KSN_BORROWCK=kir,own` のときだけ検査する (既定の `kir` は借用だけ)。Copy でない局所変数 (束縛の位置の unit 定数が識別子) の値渡しが `consume`、フィールドの move が `part`、再代入が `init` (線形なら `owe`)、線形な値の束縛 (let・引数) が `owe`。検査は前向きの解析で、「move 済み」の識別子の再 `consume` は E3002、「消費の義務」が残ったままの `ret` や再束縛は E3003。
+- **結果。** `unsound/` 307 件のうち 165 を検査でき、借用は一致 162 (残りの不一致 3 件: `boundary_field_read_back` = AST が通す穴を KIR が止める、`e01_method_chain_borrow` / `option_unwrap_returns_borrow` = `Option<&scalar>` を下ろしが値にする)。線形性は一致 109 (KIR が拒否 42、AST が拒否 98)、正しいコード (linear_ok・examples・参照解) の誤検出 4 件 (`ok_spawn_move_linear`、examples の `shortener` / `threads`、参照解 `resource`)。
+- **線形性の残り (実験のまま既定にしない理由)。** 値渡しの注釈は `path_val` と `capture [move]` だけ。`self` を値で受けるメソッド・`with` の後始末・`match` / `if let` の分解・チャネルの端・タプルや構造体の `_` での捨て・クロージャの本体は注釈がなく、消費の漏れ (E3003) と二重 move (E3002) の見逃しと、`spawn` / `with` の誤検出が出る。AST の検査を外せる条件は、これらに注釈を足して誤検出 0・一致が `unsound/` の下ろせる全件になること。

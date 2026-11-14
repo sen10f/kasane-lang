@@ -150,6 +150,7 @@ fn side_effecting(op: &Op) -> bool {
         | Op::Reborrow(_)
         | Op::Borrow { .. }
         | Op::ScopeEnd(_)
+        | Op::Own { .. }
         | Op::FieldAddr { .. } => false,
     }
 }
@@ -317,6 +318,7 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         | Op::Reborrow(a)
         | Op::Borrow { a, .. }
         | Op::ScopeEnd(a)
+        | Op::Own { a, .. }
         | Op::Some(a)
         | Op::Ok(a)
         | Op::Err(a)
