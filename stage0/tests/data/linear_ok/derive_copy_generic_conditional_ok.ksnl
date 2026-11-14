@@ -1,4 +1,3 @@
-// expect: E????
 type t.Box[T] derive [Clone, Copy]
     x: T
 end t.Box

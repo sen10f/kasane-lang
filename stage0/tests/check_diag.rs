@@ -89,7 +89,6 @@ const KNOWN_HOLES: &[&str] = &[
     "hunt_a11_spawn_struct_rawptr_10",
     // F8 ジェネリクス: `derive [Copy]` の型パラメータに境界が無くても宣言は通る (既存の clif_generic_program が依存する)。
     // 非 Copy の型引数の値は move になる (二回使うと E3002) ので、このケース (一回だけ move) は正しいプログラム。
-    "hunt_a12_derive_copy_generic_hole_01",
     // F6 型: 参照の段数・`size_of` の型引数・共有参照越しのフィールド代入
     "hunt_a13_assign_through_shared_ref_04",
     "hunt_a13_capture_mut_deref_02",
