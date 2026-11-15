@@ -95,7 +95,7 @@ fn todo.router.list_all(db: &todo.store.Store, q: &str, page: usize, page_size: 
     Ok(http.json_response(200u16, body))
 end todo.router.list_all
 
-fn todo.router.login(db: &mut todo.store.Store, body: &str, ttl_seconds: u64) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, time] panics never pub
+fn todo.router.login(db: &mut todo.store.Store, body: &str, ttl_seconds: u64) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, rand, time] panics never pub
     let doc = std.json.parse(body).map_err(error.from_json)?
     let root = doc.root()
     let username_v = std.json.decode_field(root, "username", 0usize)?
@@ -230,7 +230,7 @@ fn todo.router.read_page_size(query: &str) -> usize uses [alloc] panics never
     }
 end todo.router.read_page_size
 
-fn todo.router.register(db: &mut todo.store.Store, body: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, time] panics never pub
+fn todo.router.register(db: &mut todo.store.Store, body: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, rand, time] panics never pub
     let doc = std.json.parse(body).map_err(error.from_json)?
     let root = doc.root()
     let username_v = std.json.decode_field(root, "username", 0usize)?
@@ -259,7 +259,7 @@ fn todo.router.remove_one(db: &mut todo.store.Store, id: i64) -> Result<todo.htt
     }
 end todo.router.remove_one
 
-fn todo.router.route(db: &mut todo.store.Store, request: &todo.http.Request) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, time] panics never pub
+fn todo.router.route(db: &mut todo.store.Store, request: &todo.http.Request) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, rand, time] panics never pub
     let now = std.datetime.DateTime.now().unix_seconds()
     let (base_path, query) = todo.router.split_query(request.path.as_str())
     let path = base_path.as_str()
@@ -442,7 +442,7 @@ fn todo.router.store_len(db: &todo.store.Store) -> usize uses [] panics never pu
     db.len()
 end todo.router.store_len
 
-fn todo.router.test_call(db: &mut todo.store.Store, method: todo.http.Method, path: &str, body: &str, cookie: &str) -> todo.http.Response uses [alloc, io.fs, time] panics may
+fn todo.router.test_call(db: &mut todo.store.Store, method: todo.http.Method, path: &str, body: &str, cookie: &str) -> todo.http.Response uses [alloc, io.fs, rand, time] panics may
     let copy_path = match alloc.string.String.from_str(std.alloc.SYSTEM, path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("alloc")

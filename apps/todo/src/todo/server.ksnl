@@ -3,7 +3,7 @@ import todo.http
 import todo.router
 import todo.wire
 
-fn todo.server.respond(stream: &mut std.net.TcpStream, db: &mut todo.store.Store) -> Result<(), todo.error.Error> uses [alloc, io.fs, io.net, time] panics never pub
+fn todo.server.respond(stream: &mut std.net.TcpStream, db: &mut todo.store.Store) -> Result<(), todo.error.Error> uses [alloc, io.fs, io.net, rand, time] panics never pub
     let response = match wire.read_request(stream) {
         Ok(request) => router.route(db, &request)?
         Err(error.Error.BadRequest) => router.error_response(400u16, "bad request")?
@@ -14,14 +14,14 @@ fn todo.server.respond(stream: &mut std.net.TcpStream, db: &mut todo.store.Store
     wire.write_all(stream, text.as_str().as_bytes())
 end todo.server.respond
 
-fn todo.server.serve(listener: &std.net.TcpListener, db: &mut todo.store.Store, count: usize) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, time] panics never pub
+fn todo.server.serve(listener: &std.net.TcpListener, db: &mut todo.store.Store, count: usize) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, rand, time] panics never pub
     for _i in core.iter.range(0usize, count) {
         todo.server.serve_one(listener, db)?
     }
     Ok(count)
 end todo.server.serve
 
-fn todo.server.serve_one(listener: &std.net.TcpListener, db: &mut todo.store.Store) -> Result<(), todo.error.Error> uses [alloc, io.fs, io.net, time] panics never pub
+fn todo.server.serve_one(listener: &std.net.TcpListener, db: &mut todo.store.Store) -> Result<(), todo.error.Error> uses [alloc, io.fs, io.net, rand, time] panics never pub
     let handled = with mut stream = listener.accept()? close core.mem.drop(stream.close()) {
         todo.server.respond(&mut stream, db)
     }

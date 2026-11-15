@@ -1,0 +1,11 @@
+fn t.a(s: &str) -> &str uses [] panics never
+    let x = {
+        let p = s
+        p.trim()
+    }
+    x
+end t.a
+
+fn t.main() -> () uses [] panics never
+    core.mem.drop(t.a("hello"))
+end t.main
