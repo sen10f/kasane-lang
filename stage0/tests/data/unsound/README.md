@@ -2,6 +2,7 @@
 
 1 ファイル 1 ケース。`// expect: Exxxx` の診断が出ること、`ksn fmt --check` が通ることをテストが検査する。
 まだ塞げないものは `stage0/tests/check_diag.rs` の `KNOWN_HOLES` に載せる。
+`// target: X` の行があれば `ksn check --target X` で検査する (ポインタの幅で変わる穴。`wasi_*` `unknown_*` `hunt_a18_*`)。
 
 ## borrowck.rs の近似 (修正プラン 1-4)
 

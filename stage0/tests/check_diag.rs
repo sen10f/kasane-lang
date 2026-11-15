@@ -37,10 +37,6 @@ const KNOWN_HOLES: &[&str] = &[
     // 借用を持つ変数 (`let w = t.mk(&x)`) のフィールドを読み戻す (`let r = w.r`) と、借用が読んだ側へ移らない
     // (変数の型が分からないので、`w.n` のような Copy の値と区別できず、移すと誤検出になる)。
     "boundary_field_read_back",
-    // 2026-11-14 の一斉の穴探し (~/kasane-verify) で見つけたものの残り。
-    // F7 定数: wasm32 の `usize` の幅は `--target wasm32-unknown-unknown` でだけ検出されるので、ここ (ターゲット指定なし) では
-    // 通る。検出は `stage0/tests/const_range.rs` が `--target` 付きで確かめる。
-    "hunt_a18_const_usize_range_wasm",
 ];
 
 #[test]
@@ -54,7 +50,14 @@ fn unsound_programs_are_rejected() {
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let src = fs::read_to_string(&p).unwrap();
         let t = Tmp::new(&format!("unsound_{}", stem), &src);
-        let o = run(&["check", "--json"], &t.0);
+        // `// target: X` は `ksn check --target X` で検査する (ポインタの幅などターゲットで変わる穴)。
+        let target = src.lines().find_map(|l| l.trim().strip_prefix("// target:")).map(|w| w.trim().to_string());
+        let mut args = vec!["check"];
+        if let Some(tg) = &target {
+            args.extend(["--target", tg.as_str()]);
+        }
+        args.push("--json");
+        let o = run(&args, &t.0);
         let rejected = o.status.code() == Some(1);
         let hole = KNOWN_HOLES.contains(&stem.as_str());
         // `// expect: Exxxx` は全行から探す (どの行にあってもよい)。穴以外は必ず持つ。
