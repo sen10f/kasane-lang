@@ -22,6 +22,7 @@ mod kir_lower;
 mod kir_opt;
 mod kir_scalar;
 mod fmt;
+mod bindgen;
 mod grammar;
 mod lint;
 mod lsp;

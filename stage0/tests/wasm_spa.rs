@@ -96,3 +96,52 @@ fn c_ffi_is_still_refused_on_wasm32() {
     let s = both(&o);
     assert!(s.contains("FFI") && s.contains("未対応"), "{}", s);
 }
+
+/// `ksn bindgen` の生成物: Kasane は `check` を通り、生成したファイルは `fmt --check` の指摘がなく、JS は構文が正しい。
+/// `extern` の綴りは `link "env:<接頭辞><操作名>"`、安全な関数は `unsafe` の中で `raw_` を呼ぶ。
+#[test]
+fn bindgen_output_checks_formats_and_parses() {
+    let caller = "import bgen.dom\n\nfn bgen.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    let root = bgen.dom.body()\n    let li = bgen.dom.create(\"li\")\n    bgen.dom.set_text(li, \"hi\")\n    bgen.dom.append(root, li)\n    Ok(())\nend bgen.main\n";
+    let t = pkg("bgen", &[("bgen.ksnl", caller)]);
+    fs::write(t.0.join("dom.bindgen"), "# テスト\nmodule bgen.dom\nksnl src/bgen/dom.ksnl\njs web/dom.mjs\nop body\nop create\nop set_text\nop append\nop input_value\nop fetch\nop fetch_body\n").unwrap();
+    let o = run(&["bindgen", "dom.bindgen"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", both(&o));
+    let k = fs::read_to_string(t.0.join("src/bgen/dom.ksnl")).unwrap();
+    assert!(k.contains("extern bgen.dom.raw_create(tag_ptr: *const u8, tag_len: usize) -> u32 link \"env:ksn_dom_create\""), "{}", k);
+    assert!(k.contains("fn bgen.dom.input_value(node: u32, buf: &mut [u8]) -> i32 uses [] panics never pub"), "{}", k);
+    let c = run(&["check"], &t.0);
+    assert_eq!(c.status.code(), Some(0), "check\n{}", both(&c));
+    let f = run(&["fmt", "--check"], &t.0);
+    assert!(!both(&f).contains("dom.ksnl"), "生成物は fmt の指摘なし\n{}", both(&f));
+    let js = t.0.join("web/dom.mjs");
+    if have("node", "--version") {
+        let s = Command::new("node").args(["--check"]).arg(&js).output().expect("spawn node");
+        assert_eq!(s.status.code(), Some(0), "{}", both(&s));
+    } else {
+        eprintln!("skipped: node の構文検査 (node がない)");
+    }
+    let mjs = fs::read_to_string(&js).unwrap();
+    assert!(mjs.contains("ksn_dom_fetch: (p0, n0, p1, n1, p2, n2, a3) => ops.fetch("), "{}", mjs);
+    assert!(mjs.contains("ksn_dom_input_value: (a0, p1, n1) => ops.input_value(a0, p1, n1),"), "{}", mjs);
+}
+
+/// 定義の誤りは理由つきで止まる (終了コード 2、何も書かない)。
+#[test]
+fn bindgen_rejects_bad_definitions() {
+    let cases = [
+        ("module bgbad.dom\nksnl a.ksnl\njs a.mjs\nop nope\n", "未知の操作"),
+        ("module BAD\nksnl a.ksnl\njs a.mjs\nop body\n", "module は"),
+        ("module bgbad.dom\nksnl a.ksnl\njs a.mjs\n", "op が一つもない"),
+        ("module bgbad.dom\njs a.mjs\nop body\n", "ksnl が要る"),
+        ("module bgbad.dom\nksnl a.ksnl\njs a.mjs\nop body\nop body\n", "二度ある"),
+        ("module bgbad.dom\nksnl a.ksnl\njs a.mjs\nprefix dom\nop body\n", "prefix"),
+    ];
+    for (i, (def, want)) in cases.iter().enumerate() {
+        let t = pkg(&format!("bgbad{}", i), &[]);
+        fs::write(t.0.join("d.bindgen"), def).unwrap();
+        let o = run(&["bindgen", "d.bindgen"], &t.0);
+        assert_eq!(o.status.code(), Some(2), "{}: {}", def, both(&o));
+        assert!(both(&o).contains(want), "{}: {}", def, both(&o));
+        assert!(!t.0.join("a.ksnl").exists() && !t.0.join("a.mjs").exists(), "失敗したら何も書かない");
+    }
+}

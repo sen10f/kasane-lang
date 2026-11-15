@@ -2941,6 +2941,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "todo" => cmd_todo(),
         "context" => cmd_context(&rest),
         "explain" => cmd_explain(&rest),
+        "bindgen" => crate::bindgen::cmd_bindgen(&rest),
         "lsp" => crate::lsp::run(),
         "debug" => crate::debug::cmd_debug(&rest),
         "dap" => crate::debug::cmd_dap(),
