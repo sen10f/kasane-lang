@@ -339,7 +339,8 @@ pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
         g.sort_by(|a, b| items[*a].name.as_bytes().cmp(items[*b].name.as_bytes()));
     }
     let mut out: Vec<Vec<String>> = vec![];
-    let imp: Vec<String> = groups[0].iter().map(|&i| items[i].lines[0].clone()).collect();
+    // import の行は項目の最後の行 (直前の `//` `///` は項目の先頭に付くが、import の行ではない)。
+    let imp: Vec<String> = groups[0].iter().map(|&i| items[i].lines.last().unwrap().clone()).collect();
     if !imp.is_empty() {
         out.push(imp);
     }
@@ -367,6 +368,12 @@ pub fn format_source_with(text: &str, path: &str, canon: bool) -> String {
         out.push(items[i].lines.clone());
     }
     let mut res: Vec<String> = vec![];
+    // ファイル先頭のモジュールの説明 (3.2) は、先頭に空行 1 つを挟んでそのまま残す。
+    let md = crate::doclink::module_doc_len(&lines);
+    if md > 0 {
+        res.extend(lines[..md].iter().cloned());
+        res.push(String::new());
+    }
     for (k, chunk) in out.into_iter().enumerate() {
         if k > 0 {
             res.push(String::new());

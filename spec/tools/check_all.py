@@ -73,7 +73,7 @@ for r in rules.values():
             stack += x[1]
         elif x[0] in ('opt', 'rep'):
             stack.append(x[1])
-lex = {'NL', 'LF', 'BLANK', 'INDENT', 'INDENT_BACK', 'CONT_INDENT', 'CLOSE_INDENT', 'text', 'char_any', 'ascii',
+lex = {'NL', 'LF', 'BLANK', 'MDOC', 'INDENT', 'INDENT_BACK', 'CONT_INDENT', 'CLOSE_INDENT', 'text', 'char_any', 'ascii',
        'lower', 'upper', 'letter', 'digit', 'hex', 'bin', 'oct'}
 undefined = sorted(w for w in used if w not in rules and w not in lex)
 unused = sorted(n for n in rules if n not in used and n not in ('file', 'sig_file'))

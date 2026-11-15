@@ -366,17 +366,31 @@ fn lex_lines(lx: &Lexer, lines: &[&str], sig: bool, after_dot: bool) -> Result<V
     let mut out: Vec<Tok> = vec![];
     let mut inside = false;
     let mut prev_comment = false;
+    // ファイル先頭が `///` だけの塊のままか (その直後の空行 1 つはモジュールの説明の区切り、3.2)。
+    let mut head_doc = true;
     let mk = |k: &str, t: &str| Tok { kind: k.into(), text: t.into(), sp: false };
     for (idx, (n, l, s)) in info.iter().enumerate() {
         if s.is_empty() {
             if prev_comment {
+                if head_doc {
+                    // ファイル先頭の /// の塊は、文法の入力では MDOC 1 つに置き換える (3.2)。
+                    out.clear();
+                    out.push(mk("MDOC", ""));
+                    head_doc = false;
+                    prev_comment = false;
+                    continue;
+                }
                 return Err(format!("line {}: blank line after comment", n));
             }
+            head_doc = false;
             if inside {
                 out.push(mk("BLANK", ""));
             }
             prev_comment = false;
             continue;
+        }
+        if !s.starts_with("///") {
+            head_doc = false;
         }
         let head = if !l.starts_with(' ') { l.split(' ').next().unwrap_or("") } else { "" };
         if DEF_START.contains(&head) && !(sig && head == "fn") {
@@ -463,7 +477,7 @@ impl<'a> Matcher<'a> {
         if matches!(name, "INDENT" | "INDENT_BACK" | "CONT_INDENT" | "CLOSE_INDENT") {
             return Some([p].into_iter().collect());
         }
-        if matches!(name, "NL" | "LF" | "BLANK") {
+        if matches!(name, "NL" | "LF" | "BLANK" | "MDOC") {
             return Some(if t.map_or(false, |t| t.kind == name) { Self::one(p) } else { BTreeSet::new() });
         }
         let Some(t) = t else { return Some(BTreeSet::new()) };

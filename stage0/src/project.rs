@@ -153,6 +153,12 @@ impl Source {
         Source::from_text_in(path, module, text, true)
     }
 
+    /// テキストから `tests/` 配下のファイルを作る (`ksn test` が `///` のコード例を読み込むときに使う。3.2)。
+    pub fn from_text_test(path: &str, testsdir: &str, pkg: &str, text: String) -> Source {
+        let module = format!("{}.tests.{}", pkg, module_of(path, testsdir));
+        Source::from_text_in(path, module, text, true)
+    }
+
     fn from_text_in(path: &str, module: String, text: String, is_test: bool) -> Source {
         let lines = text.split('\n').map(String::from).collect();
         let (defs, error) = match load_file(path, &module, &text) {

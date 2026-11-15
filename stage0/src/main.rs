@@ -3,6 +3,7 @@ mod derive_drop;
 mod derive_json;
 mod defs;
 mod doc;
+mod doclink;
 mod headers;
 mod lexer;
 mod check;

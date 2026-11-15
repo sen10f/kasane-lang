@@ -563,8 +563,13 @@ impl Lint {
                 self.err("blank", b.line + 1, format!("exactly one blank line required (found {})", gap));
             }
         }
+        // ファイル先頭の `///` の塊の直後の空行は、モジュールの説明の区切り (3.2)
+        let head_doc = self.lines.iter().take_while(|l| l.starts_with("///")).count();
         for n in 0..self.lines.len().saturating_sub(1) {
             if self.lines[n].starts_with("//") && self.lines[n + 1].is_empty() {
+                if head_doc > 0 && n + 1 == head_doc {
+                    continue;
+                }
                 self.err("blank", n + 2, "blank line after comment".into());
             }
         }
