@@ -86,10 +86,101 @@ impl Gen<'_> {
             Ty::Unit => 0,
             Ty::Ref(..) | Ty::Ptr => 8,
             Ty::Agg(_) | Ty::Opt(_) => kir::size_of(self.aggs, t),
+            // `Result` は枠の中ではタグ (1 バイト、0 = Ok) と、Ok / Err の 2 つのペイロードの欄に分ける (`res_helpers`)。
+            Ty::Res(p, e) => res_layout(self.aggs, p.ty(), e.ty())?.1,
             _ if kir::memable(t) => kir::size_of(self.aggs, t),
             _ => return Err(format!("中断をまたぐ値の型 {} は枠に置けない", kir::fmt_ty(t))),
         })
     }
+}
+
+/// 枠の中の `Result<T, E>` の配置: タグは `[0]` (1 バイト)、Ok のペイロードは `[8]`、Err のペイロードは `[8 + Ok の欄]`。
+/// 戻り値は (Err のペイロードの位置, 全体の大きさ)。
+fn res_layout(aggs: &[AggDef], t: Ty, e: Ty) -> Result<(u32, u32), String> {
+    let slot = |x: Ty| -> Result<u32, String> {
+        Ok(match x {
+            Ty::Unit => 0,
+            Ty::Ref(..) | Ty::Ptr => 8,
+            Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..) => kir::size_of(aggs, x),
+            _ if kir::memable(x) => kir::size_of(aggs, x),
+            _ => return Err(format!("中断をまたぐ値の型 {} は枠に置けない", kir::fmt_ty(x))),
+        })
+    };
+    let eo = RES_OK + align8(slot(t)?);
+    Ok((eo, eo + align8(slot(e)?)))
+}
+
+/// `Result` の枠の中の、Ok のペイロードの位置 (タグの後の 8 バイト)。
+const RES_OK: u32 = 8;
+
+/// `Result<T, E>` を枠 (`base` の `off`) に書く補助関数の名前 (`put`) と読む関数 (`get`)。
+pub fn res_fn_names(t: Ty) -> (String, String) {
+    (format!("ksn.res.put<{}>", kir::fmt_ty(t)), format!("ksn.res.get<{}>", kir::fmt_ty(t)))
+}
+
+/// `Result<T, E>` の枠の補助関数を作る。`put(p: ptr, v: Result) -> unit` と `get(p: ptr) -> Result` の 2 つ。
+/// タグ (Err か) で分岐し、Ok / Err のペイロードを、枠の決まった欄へ書く・そこから読む。
+/// `put` は `v` の Ok / Err のどちらかだけを書き、`get` はタグを見てどちらかを作る (もう一方の欄は読まない)。
+pub fn res_helpers(t: Ty, aggs: &[AggDef], boxes: &[(Ty, Ty)]) -> Result<(Func, Func), String> {
+    let Ty::Res(pt, pe) = t else { return Err(format!("型 {} は Result でない", kir::fmt_ty(t))) };
+    let (tt, et) = (pt.ty(), pe.ty());
+    let (eo, _) = res_layout(aggs, tt, et)?;
+    let (put_name, get_name) = res_fn_names(t);
+    let mk = |key: String, ret: Ty, blocks: Vec<Block>| Func {
+        fqn: key.clone(),
+        key,
+        uses: vec![],
+        may_panic: false,
+        stack: None,
+        ret,
+        link: None,
+        blocks,
+    };
+    // 書く: %0 = 枠の番地、%1 = 値。
+    let mut g = Gen { next: 2, tys: HashMap::from([(0, Ty::Ptr), (1, t)]), aggs, boxes };
+    let mut b0 = vec![];
+    let tag = g.inst(&mut b0, Ty::Bool, Op::Tag(1));
+    let mut b1 = vec![];
+    let x = g.inst(&mut b1, tt, Op::Payload(1));
+    put(&mut g, &mut b1, 0, RES_OK, x, tt).map_err(|e| e.to_string())?;
+    let z = g.konst(&mut b1, Ty::Bool, 0);
+    g.inst(&mut b1, Ty::Unit, Op::MemStore { ty: Ty::Bool, p: 0, off: 0, v: z });
+    let u1 = g.konst(&mut b1, Ty::Unit, 0);
+    let mut b2 = vec![];
+    let y = g.inst(&mut b2, et, Op::Payload(1));
+    put(&mut g, &mut b2, 0, eo, y, et).map_err(|e| e.to_string())?;
+    let o = g.konst(&mut b2, Ty::Bool, 1);
+    g.inst(&mut b2, Ty::Unit, Op::MemStore { ty: Ty::Bool, p: 0, off: 0, v: o });
+    let u2 = g.konst(&mut b2, Ty::Unit, 0);
+    let put_fn = mk(
+        put_name.clone(),
+        Ty::Unit,
+        vec![
+            Block { params: vec![(0, Ty::Ptr), (1, t)], insts: b0, term: Term::BrIf(tag, (2, vec![]), (1, vec![])) },
+            Block { params: vec![], insts: b1, term: Term::Ret(u1) },
+            Block { params: vec![], insts: b2, term: Term::Ret(u2) },
+        ],
+    );
+    // 読む: %0 = 枠の番地。
+    let mut g = Gen { next: 1, tys: HashMap::from([(0, Ty::Ptr)]), aggs, boxes };
+    let mut b0 = vec![];
+    let tg = g.inst(&mut b0, Ty::Bool, Op::MemLoad { p: 0, off: 0 });
+    let mut b1 = vec![];
+    let a = get(&mut g, &mut b1, 0, RES_OK, tt).map_err(|e| e.to_string())?;
+    let ok = g.inst(&mut b1, t, Op::Ok(a));
+    let mut b2 = vec![];
+    let b = get(&mut g, &mut b2, 0, eo, et).map_err(|e| e.to_string())?;
+    let er = g.inst(&mut b2, t, Op::Err(b));
+    let get_fn = mk(
+        get_name,
+        t,
+        vec![
+            Block { params: vec![(0, Ty::Ptr)], insts: b0, term: Term::BrIf(tg, (2, vec![]), (1, vec![])) },
+            Block { params: vec![], insts: b1, term: Term::Ret(ok) },
+            Block { params: vec![], insts: b2, term: Term::Ret(er) },
+        ],
+    );
+    Ok((put_fn, get_fn))
 }
 
 /// `Option` / `Result` の型 `t` を包む集成体の型。
@@ -125,9 +216,21 @@ fn put(g: &mut Gen, out: &mut Vec<Inst>, base: VId, off: u32, v: VId, t: Ty) -> 
             let w = g.inst(out, bt, Op::Make { variant: None, fields: vec![v] });
             put(g, out, base, off, w, bt)?;
         }
+        Ty::Res(..) => {
+            res_helpers(t, g.aggs, g.boxes)?;
+            let p = ptr_at(g, out, base, off);
+            let (name, _) = res_fn_names(t);
+            g.inst(out, Ty::Unit, Op::Call { callee: name, args: vec![p, v] });
+        }
         _ => return Err(format!("中断をまたぐ値の型 {} は枠に置けない", kir::fmt_ty(t))),
     }
     Ok(())
+}
+
+/// 枠 `base` + `off` の番地 (ポインタ)。
+fn ptr_at(g: &mut Gen, out: &mut Vec<Inst>, base: VId, off: u32) -> VId {
+    let c = g.konst(out, Ty::Usize, off as i128);
+    g.inst(out, Ty::Ptr, Op::PtrAdd { p: base, off: c })
 }
 
 /// 枠 `base` の `off` から型 `t` の値を読む。単位型は単位の定数。
@@ -147,6 +250,12 @@ fn get(g: &mut Gen, out: &mut Vec<Inst>, base: VId, off: u32, t: Ty) -> Result<V
             let bt = box_of(g, t)?;
             let w = get(g, out, base, off, bt)?;
             g.inst(out, t, Op::Field { a: w, off: 0 })
+        }
+        Ty::Res(..) => {
+            res_helpers(t, g.aggs, g.boxes)?;
+            let p = ptr_at(g, out, base, off);
+            let (_, name) = res_fn_names(t);
+            g.inst(out, t, Op::Call { callee: name, args: vec![p] })
         }
         _ => return Err(format!("中断をまたぐ値の型 {} は枠に置けない", kir::fmt_ty(t))),
     })
@@ -620,16 +729,26 @@ pub fn transform(m: &mut Module, tasks: &[String]) -> Vec<(String, String)> {
     // 枠へ書く `Option` / `Result` の包み (1 つの値を持つ集成体) を、変換の前に表へ足す。添字を関数の間で揃えるため。
     let mut boxes: Vec<(Ty, Ty)> = vec![];
     let mut need: Vec<Ty> = vec![];
+    let mut res: Vec<Ty> = vec![];
+    let tys_of = |f: &Func| -> Vec<Ty> {
+        std::iter::once(f.ret).chain(f.blocks.iter().flat_map(|b| b.params.iter().map(|p| p.1).chain(b.insts.iter().map(|i| i.ty)))).collect()
+    };
     for f in m.funcs.iter().filter(|f| targets(f)) {
-        let tys = std::iter::once(f.ret).chain(f.blocks.iter().flat_map(|b| b.params.iter().map(|p| p.1).chain(b.insts.iter().map(|i| i.ty))));
-        for t in tys {
-            if matches!(t, Ty::Opt(_)) && !need.contains(&t) {
-                need.push(t);
-            }
+        for t in tys_of(f) {
+            collect_wrapped(t, &mut need, &mut res);
         }
     }
+    // 非中断の関数でも、`block_on` / `join_task` の結果 (`ksn.task.fp` / `ksn.task.wait` を呼ぶ関数) は枠から `Result` を読む。
+    // その型の補助関数だけ要る。それ以外の関数の `Result` は補助関数を使わないので、作らない (非中断の出力を変えないため)。
+    let mut dummy = vec![];
+    let reads_frame = |f: &Func| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(&i.op, Op::Call { callee, .. } if callee == FP || callee == WAIT)));
+    for f in m.funcs.iter().filter(|f| !targets(f) && reads_frame(f)) {
+        for t in tys_of(f) {
+            collect_wrapped(t, &mut dummy, &mut res);
+        }
+    }
+    // `Result` は集成体のフィールドに置けない (LLVM の制約) ので、包まない。枠へは補助関数 (`res_helpers`) で書く。
     for t in need {
-        // `Result` は集成体のフィールドに置けない (LLVM の制約) ので、包まない (枠に置けないとして変換が失敗する)。
         let size = kir::size_of(&m.aggs, t);
         let align = kir::align_of(&m.aggs, t);
         let name = format!("ksn.box<{}>", kir::fmt_ty(t));
@@ -661,8 +780,36 @@ pub fn transform(m: &mut Module, tasks: &[String]) -> Vec<(String, String)> {
             }
         }
     }
+    // `Result` の枠の補助関数。作れない型は作らない (枠へ書く・読む側が `res_helpers` を確かめて、理由つきで失敗する)。
+    for t in res {
+        if let Ok((p, g)) = res_helpers(t, aggs, &boxes) {
+            out.push(p);
+            out.push(g);
+        }
+    }
     m.funcs = out;
     fails
+}
+
+/// 型 `t` の中の `Option` (包みが要る) と `Result` (補助関数が要る) を集める。`Result` の中の型も見る。
+fn collect_wrapped(t: Ty, opts: &mut Vec<Ty>, ress: &mut Vec<Ty>) {
+    match t {
+        Ty::Opt(p) => {
+            let inner = p.ty();
+            if !opts.contains(&t) {
+                opts.push(t);
+            }
+            collect_wrapped(inner, opts, ress);
+        }
+        Ty::Res(a, b) => {
+            if !ress.contains(&t) {
+                ress.push(t);
+            }
+            collect_wrapped(a.ty(), opts, ress);
+            collect_wrapped(b.ty(), opts, ress);
+        }
+        _ => {}
+    }
 }
 
 /// タスクの番号を `ksn.task.dispatch` が引くための表 (番号 → 本体の `.poll`) の KIR テキスト。

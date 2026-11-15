@@ -95,6 +95,13 @@ fn result_of(lw: &mut Lw, base: VId, t: Ty, line: usize) -> LR<VId> {
             Ok(lw.emit(t, Op::Load(r)))
         }
         _ if crate::kir::memable(t) => Ok(lw.emit(t, Op::MemLoad { p: base, off: 8 })),
+        // `Result` は枠の補助関数 (`kir_suspend::res_helpers`、変換が作る) で読む。
+        Ty::Res(..) => {
+            let c = lw.emit(Ty::Usize, Op::Const(8));
+            let pa = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: c });
+            let (_, get) = crate::kir_suspend::res_fn_names(t);
+            Ok(lw.emit(t, Op::Call { callee: get, args: vec![pa] }))
+        }
         _ => Err(format!("{}行: std.task の結果の型 {} は段階 1 の対象外", line, crate::kir::fmt_ty(t))),
     }
 }
