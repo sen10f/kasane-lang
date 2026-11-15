@@ -1056,7 +1056,9 @@ fn kir_map_values_match_tree_walker() {
 }
 
 #[test]
-fn kir_map_reports_unsupported_methods_with_a_reason() {
+fn kir_map_get_mut_in_a_match_lowers_and_writes_through() {
+    // 旧: `HashMap::get_mut は段階 1 の対象外` (型ごとの下ろし)。段 2 (Kasane 版の `HashMap`) で `get_mut` は下りる。
+    // `match m.get_mut(k)` の `Some(v)` が指す番地に書いた値が、マップに残ること (木走査と同じ) を確かめる。
     let t = Tmp::new("kir_map_get_mut", "fn t.bump(n: u32) -> u32 uses [alloc] panics may
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     match m.insert(1u32, n) {
@@ -1069,17 +1071,22 @@ fn kir_map_reports_unsupported_methods_with_a_reason() {
         }
         None => core.panic.panic(\"none\")
     }
-    n
+    match m.get(&1u32) {
+        Some(v) => *v
+        None => 0u32
+    }
 end t.bump
 
 fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
-    core.check.eq(t.bump(3u32), 3u32)
+    core.check.eq(t.bump(3u32), 4u32)
     Ok(())
 end t.main
 ");
-    let o = run(&["kir", "t.bump", "--run", "3"], &t.0);
-    assert_ne!(o.status.code(), Some(0));
-    assert!(text(&o.stderr).contains("HashMap::get_mut は段階 1 の対象外"), "{}", text(&o.stderr));
+    let o = run(&["run", "--engine=tree"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let k = run(&["kir", "t.bump", "--run", "3"], &t.0);
+    assert_eq!(k.status.code(), Some(0), "{}", text(&k.stderr));
+    assert_eq!(text(&k.stdout).trim(), "4");
 }
 
 /// KIR の未対応の理由は、ソースの行番号を出す (`nline` は行と列を詰めた値なので、KIR は行だけを取り出す)。

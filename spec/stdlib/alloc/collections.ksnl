@@ -213,7 +213,8 @@ fn alloc.collections.HashMap.get[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.al
                 Some(cell) => {
                     match cell {
                         alloc.collections.HashCell.Entry(_h, _k, v) => {
-                            Some(v)
+                            let vr: &V = v
+                            Some(vr)
                         }
                         alloc.collections.HashCell.Empty => {
                             None
@@ -241,7 +242,8 @@ fn alloc.collections.HashMap.get_mut[K: core.cmp.Eq + core.hash.Hash, V, A: allo
                 Some(cell) => {
                     match cell {
                         alloc.collections.HashCell.Entry(_h, _k, v) => {
-                            Some(v)
+                            let vr: &mut V = v
+                            Some(vr)
                         }
                         alloc.collections.HashCell.Empty => {
                             None
@@ -486,12 +488,20 @@ fn alloc.collections.HashMap.remove[K: core.cmp.Eq + core.hash.Hash, V, A: alloc
 end alloc.collections.HashMap.remove
 
 fn alloc.collections.HashMap.reverse_range[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, lo: usize, hi: usize) -> () uses [] panics never
-    match self.cells.as_mut_slice().sub_mut(lo, hi) {
-        Some(part) => {
-            part.reverse()
+    let mut a = lo
+    let mut b = hi
+    while a < b {
+        b = b.wrapping_sub(1usize)
+        if a < b {
+            match self.cells.as_mut_slice().swap(a, b) {
+                Ok(_done) => {
+                }
+                Err(_error) => {
+                    return
+                }
+            }
         }
-        None => {
-        }
+        a = a.wrapping_add(1usize)
     }
 end alloc.collections.HashMap.reverse_range
 
@@ -503,11 +513,14 @@ fn alloc.collections.HashMapIter.next[K, V](self: &mut alloc.collections.HashMap
         }
         let p = self.position
         self.position = p.wrapping_add(1usize)
-        match self.cells.get(p) {
+        let cells = self.cells
+        match cells.get(p) {
             Some(cell) => {
                 match cell {
                     alloc.collections.HashCell.Entry(_h, k, v) => {
-                        return Some((k, v))
+                        let kr: &K = k
+                        let vr: &V = v
+                        return Some((kr, vr))
                     }
                     alloc.collections.HashCell.Empty => {
                     }
@@ -525,5 +538,23 @@ end alloc.collections.HashMapIter.next
 fn alloc.collections.hash_key[K: core.hash.Hash](key: &K) -> usize uses [] panics never
     let mut state = core.hash.Fnv64.new()
     key.hash(&mut state)
-    core.num.usize.from_u64(state.finish())
+    // 索引には下位 32 ビットを使う (どの型幅のターゲットでも `usize` に収まる)。
+    match u32.try_from_u64(state.finish() & 4294967295u64) {
+        Ok(lo) => {
+            usize.from_u32(lo)
+        }
+        Err(_e) => {
+            0usize
+        }
+    }
 end alloc.collections.hash_key
+
+fn alloc.collections.BtreeMap.new_empty[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.BtreeMap<K, V, A> uses [] panics never
+    let entries = alloc.raw.Buf.new(allocator)
+    alloc.collections.BtreeMap { entries: entries }
+end alloc.collections.BtreeMap.new_empty
+
+fn alloc.collections.HashMap.new_empty[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.HashMap<K, V, A> uses [] panics never
+    let cells = alloc.raw.Buf.new(allocator)
+    alloc.collections.HashMap { cells: cells, slots: 0usize }
+end alloc.collections.HashMap.new_empty

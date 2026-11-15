@@ -202,10 +202,12 @@ end t.main.test_d_to_string
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    for name in ["test_a_option_result_cmp", "test_b_slice_count", "test_c_str_derived_cmp"] {
+    for name in ["test_a_option_result_cmp", "test_b_slice_count"] {
         // 機械語とインタプリタの結果が一致する (KIR に下ろせないので LLVM で比べる)。
         assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (llvm skipped: ", name)), "{}", out);
     }
+    // `&str` / `String` の比較 (`cmp` / `eq`) は KIR に下りる (Kasane 版のマップのキーに要る。段 2): 機械語で比べる。
+    assert!(out.contains("t.main.test_c_str_derived_cmp ... ok (both: llvm)"), "{}", out);
     // 解放が要る値を作る `match` (`Ok(o) => o` / `Err(_e) => ..`) は機械語で動き、インタプリタと一致する。
     // `test` の入口は全部の効果を持つので、alloc を使う本体も LLVM で比べられる。
     assert!(out.contains("t.main.test_d_to_string ... ok (both: llvm)"), "{}", out);
@@ -322,9 +324,11 @@ end t.main.test_h_count_boundaries
     let o = run(&["test", "--both"], &t.0);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{}{}", out, text(&o.stderr));
-    for name in ["test_e_option_boundaries", "test_f_result_boundaries", "test_g_str_boundaries", "test_h_count_boundaries"] {
+    for name in ["test_e_option_boundaries", "test_f_result_boundaries", "test_h_count_boundaries"] {
         assert!(out.contains(&format!("t.main.{} ... ok (both: bundle (llvm skipped: ", name)), "{}", out);
     }
+    // `&str` の比較の境界は KIR に下りる (段 2 の `&str` のキー): 機械語で比べる。
+    assert!(out.contains("t.main.test_g_str_boundaries ... ok (both: llvm)"), "{}", out);
 }
 
 /// 解放が要る値を返す `match` (腕が Vec / String を返す、解放が要る payload を束縛する・捨てる、腕の `return`、

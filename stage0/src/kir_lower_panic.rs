@@ -9,7 +9,7 @@
 //! `expect` は Kasane の Option / Result のメソッドではない (E1108) ので扱わない。
 
 use crate::check::{items, nf, nlineno as nline, nname, st, strs};
-use crate::kir::{Op, Pay, Term, Ty, VId};
+use crate::kir::{Op, Pay, Pointee, Term, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
 
@@ -57,6 +57,7 @@ impl<'a> Lw<'a> {
             return Some(self.err(line, "unwrap の引数は 0 個のはず"));
         }
         Some(self.expr(&f[0]).and_then(|r| match r {
+            Some(recv) if matches!(self.vty(recv), Ty::Opt(Pay::Agg(bi)) if self.agg_def(bi).name == "bref") => self.unwrap_bref(recv, e),
             Some(recv) => self.unwrap_on(recv, line, err_src),
             None => Ok(None),
         }))
@@ -86,6 +87,27 @@ impl<'a> Lw<'a> {
             self.read_slot(s)
         };
         Some(self.unwrap_on(recv, nline(e), None))
+    }
+
+    /// `Option<&T>` (T は所有物を持つ型) の `unwrap`: 番地 (`bref`) の指す要素への参照 (`&T`) を返す。失敗の枝は panic。
+    fn unwrap_bref(&mut self, recv: VId, e: &V) -> LR<Option<VId>> {
+        let line = nline(e);
+        let rty = self.ty_of(e)?;
+        let Ty::Ref(_, Pointee::Agg(ei)) = rty else {
+            return self.err(line, "Option<&T> の unwrap の結果が集成体への参照でない");
+        };
+        let good = self.emit(Ty::Bool, Op::Tag(recv));
+        let (yes, _) = self.new_block(&[]);
+        let (no, _) = self.new_block(&[]);
+        self.branch(good, (yes, vec![]), (no, vec![]));
+        self.cur = Some(no);
+        self.emit(Ty::Unit, Op::Panic { msg: "called `Option::unwrap()` on a `None` value".to_string(), arg: None });
+        self.terminate(Term::Unreachable);
+        self.cur = Some(yes);
+        let Ty::Opt(Pay::Agg(bi)) = self.vty(recv) else { unreachable!("unwrap_bref は bref の Option") };
+        let pv = self.emit(Ty::Agg(bi), Op::Payload(recv));
+        let a = self.emit(Ty::Ptr, Op::Field { a: pv, off: 0 });
+        Ok(Some(self.emit(rty, Op::Bitcast { src: Ty::Ptr, a })))
     }
 
     /// `recv` (`Option` / `Result`) の unwrap。失敗の枝は panic、値の枝はペイロードを返す。
