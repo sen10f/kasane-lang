@@ -1780,3 +1780,31 @@ apps/todo の報告で挙がった 2 つ: `std.rand.Rng.from_entropy()` が段�
 - `stage0/tests/kir_rand_optvec.rs` (8 本): `from_seed` の列が木走査・LLVM (debug / release) で一致し、標準の splitmix64 の値 (独立に計算した列) に等しい。`while` と `loop` の中で進める `Rng` の回帰。`fill_secure` と `from_entropy` が呼ぶたびに違う値を返す。`from_entropy` の種が固定の定数でない。`ksn kir --run` の参照実行器が乱数を使う関数で木走査と一致する。`Option<Vec<u32>>` / `Option<String>` のフィールドの作成・代入・移動・`match` の 3 形 (木走査と一致)。参照実行器でのフィールドの読み書き。ループ 2000 回の作成と解放を ASan (`detect_leaks=1`) で走らせ、報告がないこと。
 - 回帰: `cargo test --release` 全件 (1031 本、通過)、`tests/native_ratio.py` (linear_ok 114/114、examples 14/14、perf 8/8。下限 105 を下回らない)、`bench/verify_reference.py` (19 本、bad 0)、`spec/tools/check_all.py` (全件通過)、`examples/*` の `ksn check` (診断 0 件)。
 - 残り: Windows の `rand_s` の経路は、この機械では試せない (コンパイルは未確認)。`from_entropy` の失敗経路 (OS の乱数源が両方とも読めない) も、この機械では起こせないので試していない。
+
+### 24.11 kir-only の見逃しを減らす (check/kir-only-lowering、2026-11-15)
+
+24.10 の見逃し (139 件) を、検査側の規則で直せるものから直した。`KSN_BORROWCK=kir-only` の拒否は 95/234 → 112/240 (誤拒否は 0 のまま。`linear_ok/`・参照解・`examples/` で確認)。見逃しは 128 件 (下ろせない unknown 81、下ろせて見逃す 47)。
+
+**1. 注釈の追加 (線形・move)。**
+- `own.use` (`OwnKind::Use`): 読み。move 済みなら E3002。Copy のフィールドの読み、`&x`、借用の受け手 (`&self`) とメソッドの受け手の局所に出す。`own.part` も move 済みの全体の後なら E3002 (以前は部分の move の義務だけ見ていた)。
+- `match` の対象が所有の印を持つ局所なら、値として移さずに読む (`path_peek`) + `use`。非 Copy の束縛をする腕、または対象が線形なら `_` 以外の腕の入口で `consume`。`if let` の省略された else (構文が作る `PWild`) は消費しない (AST と同じく義務が残る)。
+- 効果: `move_match_twice`、`if_let_linear_*`、`move_c_if_*_s` など +12 件。
+
+**2. 借用の運び (`carry`、Option<&スカラー>)。**
+- 注釈 `carry a, b` (`Op::Carry`、unit): 値 b が参照 a の指す先から読まれた値なら、b は a の借用を運ぶ。実行・VM・LLVM・最適化には影響しない。
+- 下ろし: `Some(&x)` (スカラー)、`get` / `first` / `last` (スカラーの要素) で、読んだ値に `carry` を出す。出どころは要素の番地ではなく所有者の場所 (Vec のヘッダ) にした (後の `push` と照らすため)。
+- 検査: 呼び出しの戻り値が引数の借用を運ぶのは、戻り値の型が借用を持ちうるとき (`may_hold`)。`stack.pop()` (`Option<u8>`) が `stack` の借用に見えていた誤拒否を止めた。
+- 検査: 呼び先のヘッダで `&mut` の引数に渡した局所の場所は、生きている借用 (値の運ぶ借用を含む) があれば拒否 (`Req::Access`)。`get` の結果を生かしたまま `push` する形 (`carry_get_then_push`) が拒否される。
+- 残り: `e01_method_chain_borrow` は、借用の出どころが引数 `xs` (`&mut Vec`) の指す先で、局所のスロットではない。排他の規則は局所の場所だけを追うので、見逃す。`option_unwrap_returns_borrow` は 24.8 の残りの原因を調べていない (未了)。
+
+**3. 下ろせない unknown 81 件 (未対応。検査のための注釈だけでは解けない)。** すべて下ろし側 (`kir_lower_*.rs` の `lw.err` / `unsupported`)。
+- 参照を持つ構造体の欄 (`t.H { r: &mut u32 }` の `set` / `get`、約 22 件)、Vec の要素の型 (`alloc.vec.Vec.push` の要素が型表に戻せない、約 6 件)、利用者のメソッドの受け手 (`t.S.into_name` など)、クロージャの引数・戻り値、`&型パラメータ Self`、`Array` の要素、ジェネリクスの単相化 (型引数を持つ関数で下ろしたインスタンスがない)。
+- 注釈だけの下ろし (関数の型を決めずに注釈だけ出す経路) は、型が決まらない関数の本体では作れない。構造体の参照欄とクロージャは、修正プラン 3-1 の下ろしの一般化に含まれる。
+
+**4. 残りの見逃し 47 件 (下ろせて見逃す)。** 線形の注釈の不足が中心。
+- `_` での捨て (`linear_discarded_by_wildcard`、`linear_wild_in_arm`、`linear_in_tuple_dropped` など、約 12 件): `_` の腕・パターンで線形の値の義務が残ることを、パターンごとの型から出す規則が要る (`pat_src_binds` は名前だけを見る)。
+- 一時値の受け手 (`linear_temp_*`、約 8 件)、クロージャの取り込みと呼び出し (`linear_closure_*`、`move_closure_*`、`move_fnonce_*`、約 10 件)、`spawn` の取り込み (2 件)、`for` の束縛 (`move_for_*`、2 件)、字段の部分的な move (`linear_partial_field_leak`、`move_self_field_twice`、約 3 件)。
+- 借用 (6 件): `e01`、`option_unwrap_returns_borrow` (上の 2 の残り)、`hunt_a01_reborrow_field_01` / `reassign_01` (参照を持つ構造体の欄、`let` の再代入)、`lifetime_slot_static_tuple` (タプルの戻り値の `'static` の照合)、`hunt_a16_json_value_doc_drop_escape_01` (`std.json` の `Doc` の解放)。
+- `*_str` (String を移した後の読み、`move_c_if_else_one_str` など 5 件): `s.len()` の受け手の読みに `use` が出ていない。`len` の呼び出しは `mcall` の入口を通らない経路 (`core.mem.drop` の引数) で下ろされている。未了。
+
+**5. 段ごとの扱い。** (1) 見逃し 58 件の分類と、検査側で直せるものを直した (上の 1・2)。(2) unknown 81 件は、注釈だけの下ろしでは解けない (上の 3)。(3) `Option<&スカラー>` は、`Some(&x)` と `get` / `first` / `last` の 2 経路で運ぶようにした。残りの 2 件は別の原因 (上の 2)。
