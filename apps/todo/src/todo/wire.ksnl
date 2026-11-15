@@ -53,7 +53,7 @@ fn todo.wire.read_request(stream: &mut std.net.TcpStream) -> Result<todo.http.Re
     }
     let mut body = alloc.string.String.new(std.alloc.SYSTEM)
     body.push_bytes(body_bytes).map_err(error.push_failed)?
-    Ok(http.Request { body: body, method: head.method, path: head.path })
+    Ok(http.Request { body: body, cookie: head.cookie, method: head.method, path: head.path })
 end todo.wire.read_request
 
 fn todo.wire.read_to_close(stream: &mut std.net.TcpStream) -> Result<alloc.vec.Vec<u8, std.alloc.System>, todo.error.Error> uses [alloc, io.net] panics never pub

@@ -1,0 +1,173 @@
+import alloc.string
+import todo.error
+
+// 設定ファイル (JSON) の読み込み。
+//
+// 設定ファイルの例:
+//   {
+//     "address": "127.0.0.1:8080",
+//     "db_path": "todos.json",
+//     "history_path": "history.log",
+//     "session_ttl_seconds": 3600,
+//     "max_title": 2048
+//   }
+//
+// 欠落している欄は規定値を使う。
+const todo.config.DEFAULT_ADDRESS: &str = "127.0.0.1:8080"
+
+const todo.config.DEFAULT_DB_PATH: &str = "todos.json"
+
+const todo.config.DEFAULT_HISTORY_PATH: &str = "history.log"
+
+const todo.config.DEFAULT_MAX_TITLE: usize = 2048usize
+
+const todo.config.DEFAULT_SESSION_TTL_SECONDS: u64 = 3600u64
+
+type todo.config.Config derive [Debug] pub
+    addr: alloc.string.String<std.alloc.System> pub
+    db: alloc.string.String<std.alloc.System> pub
+    hist: alloc.string.String<std.alloc.System> pub
+    ttl: u64 pub
+    max: usize pub
+end todo.config.Config
+
+// 規定値の設定を作る。
+fn todo.config.default() -> Result<todo.config.Config, todo.error.Error> uses [alloc] panics never pub
+    let a = alloc.string.String.from_str(std.alloc.SYSTEM, todo.config.DEFAULT_ADDRESS)?
+    let b = alloc.string.String.from_str(std.alloc.SYSTEM, todo.config.DEFAULT_DB_PATH)?
+    let h = alloc.string.String.from_str(std.alloc.SYSTEM, todo.config.DEFAULT_HISTORY_PATH)?
+    let t = todo.config.DEFAULT_SESSION_TTL_SECONDS
+    let m = todo.config.DEFAULT_MAX_TITLE
+    Ok(todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m })
+end todo.config.default
+
+// 設定ファイルを読み込む。ファイルがないときは規定値を返す。
+fn todo.config.load(path: &str) -> Result<todo.config.Config, todo.error.Error> uses [alloc, io.fs] panics never pub
+    if !std.fs.exists(path) {
+        return todo.config.default()
+    }
+    let text = todo.config.store_read_text(path)?
+    let doc = match std.json.parse(text.as_str()) {
+        Ok(d) => d
+        Err(e) => return Err(error.from_json(e))
+    }
+    let root = doc.root()
+    let addr_def = todo.config.DEFAULT_ADDRESS
+    let db_def = todo.config.DEFAULT_DB_PATH
+    let hist_def = todo.config.DEFAULT_HISTORY_PATH
+    let ttl_def = todo.config.DEFAULT_SESSION_TTL_SECONDS
+    let max_def = todo.config.DEFAULT_MAX_TITLE
+    let a = todo.config.read_string_field(root, "address", addr_def)?
+    let b = todo.config.read_string_field(root, "db_path", db_def)?
+    let h = todo.config.read_string_field(root, "history_path", hist_def)?
+    let t = todo.config.read_u64_field(root, "session_ttl_seconds", ttl_def)?
+    let m = todo.config.read_usize_field(root, "max_title", max_def)?
+    Ok(todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m })
+end todo.config.load
+
+// 文字列の JSON フィールドを読む。欠落または型不一致なら `fallback` を返す。
+fn todo.config.read_string_field(v: std.json.Value, name: &str, fallback: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+    match std.json.decode_field(v, name, 0usize) {
+        Ok(value) => match std.json.decode_string(value) {
+            Ok(text) => Ok(text)
+            Err(_e) => match alloc.string.String.from_str(std.alloc.SYSTEM, fallback) {
+                Ok(s) => Ok(s)
+                Err(e) => Err(error.Error.Alloc(e))
+            }
+        }
+        Err(_e) => match alloc.string.String.from_str(std.alloc.SYSTEM, fallback) {
+            Ok(s) => Ok(s)
+            Err(e) => Err(error.Error.Alloc(e))
+        }
+    }
+end todo.config.read_string_field
+
+// 整数の JSON フィールドを読む。欠落または型不一致なら `fallback` を返す。
+fn todo.config.read_u64_field(v: std.json.Value, name: &str, fallback: u64) -> Result<u64, todo.error.Error> uses [] panics never pub
+    match std.json.decode_field(v, name, 0usize) {
+        Ok(value) => match std.json.decode_u64(value) {
+            Ok(n) => Ok(n)
+            Err(_e) => Ok(fallback)
+        }
+        Err(_e) => Ok(fallback)
+    }
+end todo.config.read_u64_field
+
+fn todo.config.read_usize_field(v: std.json.Value, name: &str, fallback: usize) -> Result<usize, todo.error.Error> uses [] panics never pub
+    match std.json.decode_field(v, name, 0usize) {
+        Ok(value) => match std.json.decode_usize(value) {
+            Ok(n) => Ok(n)
+            Err(_e) => Ok(fallback)
+        }
+        Err(_e) => Ok(fallback)
+    }
+end todo.config.read_usize_field
+
+// store.read_text と同じ読み込みをここで行う (store は model に依存するため循環を避ける)。
+fn todo.config.store_read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, io.fs] panics never
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
+    }
+    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    text.push_bytes(data.as_slice()).map_err(error.push_failed)?
+    Ok(text)
+end todo.config.store_read_text
+
+// 設定の妥当性を検査する。
+fn todo.config.validate(config: &todo.config.Config) -> Result<(), todo.error.Error> uses [] panics never pub
+    if config.addr.is_empty() {
+        return Err(error.Error.Config)
+    }
+    if config.db.is_empty() {
+        return Err(error.Error.Config)
+    }
+    if config.max == 0usize {
+        return Err(error.Error.Config)
+    }
+    Ok(())
+end todo.config.validate
+
+test todo.config.default.test_uses_defaults
+    let config = todo.config.default()?
+    core.check.eq(config.addr.as_str(), "127.0.0.1:8080")
+    core.check.eq(config.db.as_str(), "todos.json")
+    core.check.eq(config.hist.as_str(), "history.log")
+    core.check.eq(config.ttl, 3600u64)
+    core.check.eq(config.max, 2048usize)
+end todo.config.default.test_uses_defaults
+
+test todo.config.load.test_missing_file_uses_defaults
+    let config = todo.config.load("/nonexistent/todo-config-9999.json")?
+    core.check.eq(config.addr.as_str(), "127.0.0.1:8080")
+end todo.config.load.test_missing_file_uses_defaults
+
+test todo.config.read_string_field.test_missing_and_present
+    let doc = std.json.parse("{\"address\": \"127.0.0.1:9000\"}")?
+    let root = doc.root()
+    let got = todo.config.read_string_field(root, "address", "default")?
+    core.check.eq(got.as_str(), "127.0.0.1:9000")
+    let missing = todo.config.read_string_field(root, "not_there", "default")?
+    core.check.eq(missing.as_str(), "default")
+end todo.config.read_string_field.test_missing_and_present
+
+test todo.config.read_u64_field.test_missing_and_present
+    let doc = std.json.parse("{\"session_ttl_seconds\": 7200}")?
+    let root = doc.root()
+    let got = todo.config.read_u64_field(root, "session_ttl_seconds", 100u64)?
+    core.check.eq(got, 7200u64)
+    let missing = todo.config.read_u64_field(root, "not_there", 100u64)?
+    core.check.eq(missing, 100u64)
+end todo.config.read_u64_field.test_missing_and_present
+
+test todo.config.validate.test_rejects_empty
+    let config = todo.config.default()?
+    core.check.eq(todo.config.validate(&config).is_ok(), true)
+    let ea = string.String.from_str(std.alloc.SYSTEM, "")?
+    let eb = string.String.from_str(std.alloc.SYSTEM, "x")?
+    let eh = string.String.from_str(std.alloc.SYSTEM, "x")?
+    let t = 3600u64
+    let m = 2048usize
+    let bad = todo.config.Config { addr: ea, db: eb, hist: eh, ttl: t, max: m }
+    core.check.eq(todo.config.validate(&bad).is_err(), true)
+end todo.config.validate.test_rejects_empty

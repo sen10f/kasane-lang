@@ -2,23 +2,36 @@
 
 本パッケージ (`apps/todo`) を実装する上で、想定通りに動作しなかった点や回避策を要した点を記録する。
 
-## 摩擦の件数: 5 件
+## 摩擦の件数: 9 件
 
-### 上位 3 件
+## 上位 3 件
 
-1. **`ksn build --release`（`--allow-bundle` なし）は純粋ネイティブ生成不可**  
-   `std.json.Error` が KIR ステージ1未対応のため `E9040` で失敗。`--allow-bundle` でインタプリタバンドルビルドすれば成功する。純粋ネイティブ化は未実施。
+1. **`rand` エフェクトが KIR ステージ1で未対応**
+   `auth.make_token` / `auth.make_salt` で `rand.Rng.from_entropy()` を使用すると `E9040` でネイティブビルド失敗。`std.datetime.DateTime.now()` + `hash_bytes` + `u64_to_hex` による決定論的生成に置き換え、`uses [alloc, rand]` を `uses [alloc, time]` に変更。`router.register`/`router.login`/`router.route` とその呼び出し元全体から `rand` を除去。
+   // 注意: 乱数 (std.rand) がネイティブに下りないための仮の実装。推測できるので本番では使わない (処理系の修正待ち)。
 
-2. **モジュール修飾の関数呼び出しがメソッド呼び出しとして誤認される**  
-   `todo.model.push_quoted(...)` がメソッド呼び出しと解釈され `E1108`/`E2044` になるため、`to_json` 内にインライン展開して回避（`push_quoted` 関数自体は残存）。
+2. **構造体フィールドに `Option<Vec<...>>` があるとステージ1で下ろせない**
+   `UpdateFields.tags: Option<alloc.vec.Vec<...>>` が `from_update_value` の戻り値型として `E9040` を引き起こす。`tags` を `Option<Vec<...>>` から plain `Vec<...>` に変更し、欠損時は空ベクトルを返すように `from_update_value` を修正。
 
-3. **`i64.from_u64` が存在しない**  
-   数値変換に `i64.try_from_usize` を使用した。
+3. **マッチアーム内の `String.as_str()` が生参照になりうる**
+   `router.route` で `query_param` の `Some(v) => v.as_str()` をマッチアームから直接返すと、`v` のドロップ後 `q` がダングリング参照になる。`q_string` 変数に `String` を束縛してから `as_str()` を呼ぶことで回避。
 
 ### その他
 
-4. **`AllocError` のフィールドは `u32`**  
+4. **モジュール修飾の関数呼び出しがメソッド呼び出しとして誤認される**
+   `todo.model.push_quoted(...)` がメソッド呼び出しと解釈され `E1108`/`E2044` になるため、`to_json` 内にインライン展開して回避（`push_quoted` 関数自体は残存）。
+
+5. **`i64.from_u64` が存在しない**
+   数値変換に `i64.try_from_usize` を使用した。
+
+6. **`AllocError` のフィールドは `u32`**
    `AllocError { code: 0u32 }` とする。
 
-5. **`decode_array` は `&doc` 引数で呼び出す**  
+7. **`decode_array` は `&doc` 引数で呼び出す**
    デコード関数にドキュメントへの不変参照を渡す必要がある。
+
+8. **検索JSON出力に先頭カンマが入る**
+   `store.search` の出力ループで `if i > 0usize` とすべきところ `if count > 0usize` とすべき。最初の一致アイテムがインデックス0以外の場合、`[,{...}]` のように不正なカンマが入る。動作上の問題はないがJSONとして不正。
+
+9. **`std.json.Value { doc, at }` の直接構築と `v.at` が非公開**
+   `dev/plan` では `std.json.Doc.value_at(doc, at)` と `v.index()` を使用。本ブランチではフィールドがまだ公開されているため一時的にそのまま使用しているが、将来的に非公開化された場合の移行が必要。
