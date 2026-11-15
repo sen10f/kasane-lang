@@ -399,7 +399,7 @@ fn todo.store.Store.parse_users_into(self: &mut todo.store.Store, text: &str) ->
     match std.json.parse(text) {
         Ok(doc) => {
             let root = doc.root()
-            let users = model.decode_user_array(&doc, root.at)?
+            let users = model.decode_user_array(&doc, root.index())?
             self.users = users
             let sessions_v = std.json.decode_field(root, "sessions", 0usize)
             match sessions_v {
