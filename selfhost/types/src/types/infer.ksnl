@@ -558,6 +558,10 @@ end types.infer.ifx
 fn types.infer.is_catch(env: &types.env.Env, cx: &types.chk.Ctx, p: &parse.cur.P, src: &[u8], pt: usize) -> Result<bool, resolve.Failure> uses [alloc] panics never pub
     let n = parse.ast.get(&p.ast, pt)
     if n.kind == parse.ast.Kind.PWild {
+        if n.a != 0usize {
+            // フラグ付き PWild = `if let` / `is` の暗黙の「他の全部」腕 (E2021 対象外)
+            return Ok(false)
+        }
         return Ok(true)
     }
     if n.kind != parse.ast.Kind.PBind {
@@ -762,9 +766,20 @@ fn types.infer.matchx(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut typ
         closed = true
     }
     let mut result = types.ty.NEVER
+    // `if let` / `is` が作る「他の全部」腕 (フラグ付き PWild) があれば、
+    // 全列挙チェックをスキップ (stage0/src/check.rs と同じ)。
+    let mut from_if_let = false
+    for j2 in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
+        let arm2 = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j2))
+        let pat2 = parse.ast.get(&p.ast, arm2.a)
+        if pat2.kind == parse.ast.Kind.PWild && pat2.a != 0usize {
+            from_if_let = true
+            break
+        }
+    }
     for j in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
         let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
-        if closed && types.infer.is_catch(env, cx, p, src, arm.a)? {
+        if closed && !from_if_let && types.infer.is_catch(env, cx, p, src, arm.a)? {
             catch_any = true
             types.chk.diag(cx, "E2021", resolve.ast.line_of(p, arm.tok), "catch-all arm")?
         }
@@ -786,7 +801,7 @@ fn types.infer.matchx(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut typ
     if sn.k == types.ty.K.Bool {
         total = 2usize
     }
-    if closed && !catch_any && seen.len() < total {
+    if closed && !from_if_let && !catch_any && seen.len() < total {
         types.chk.diag(cx, "E2021", resolve.ast.line_of(p, n.tok), "match misses variants")?
     }
     Ok(result)
