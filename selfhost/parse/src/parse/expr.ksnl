@@ -190,6 +190,11 @@ fn parse.expr.if_expr(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
     parse.cur.enter(p)?
     let at = p.pos
     parse.cur.advance(p)
+    if parse.cur.accept_kw(p, parse.tok.KW_LET) {
+        let r = parse.expr.if_let_rest(p, at)?
+        parse.cur.leave(p)
+        return Ok(r)
+    }
     let cond = parse.expr.expr(p, true)?
     let then = parse.expr.block(p)?
     let mut els = 0usize
@@ -203,6 +208,33 @@ fn parse.expr.if_expr(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
     parse.cur.leave(p)
     parse.ast.add3(&mut p.ast, parse.ast.Kind.If, at, cond, then, els)
 end parse.expr.if_expr
+
+// `if let` の残り (`let` の後)。stage0/src/parser.rs と同じく `match 式 { パターン => { .. }, _ => else側 }` に下ろす。
+// else が無いときは空のブロックを入れる。
+fn parse.expr.if_let_rest(p: &mut parse.cur.P, at: usize) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
+    let pat = parse.pat.pattern(p)?
+    parse.cur.expect_ch(p, b'=')?
+    let scrut = parse.expr.expr(p, true)?
+    let then = parse.expr.block(p)?
+    let mut els = 0usize
+    if parse.cur.accept_kw(p, parse.tok.KW_ELSE) {
+        if parse.cur.is_kw(p, parse.tok.KW_IF) {
+            els = parse.expr.if_expr(p)?
+        } else {
+            els = parse.expr.block(p)?
+        }
+    } else {
+        let none = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let nl = parse.ast.list(&mut p.ast, &none, at)?
+        els = parse.ast.add1(&mut p.ast, parse.ast.Kind.Block, at, nl)?
+    }
+    let mut arms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    arms.push(parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, pat, then)?)?
+    let rest = parse.ast.add0(&mut p.ast, parse.ast.Kind.PWild, at)?
+    arms.push(parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, rest, els)?)?
+    let l = parse.ast.list(&mut p.ast, &arms, at)?
+    parse.ast.add2(&mut p.ast, parse.ast.Kind.Match, at, scrut, l)
+end parse.expr.if_let_rest
 
 fn parse.expr.is_binop(lv: usize, code: u32) -> bool uses [] panics never
     match lv {
