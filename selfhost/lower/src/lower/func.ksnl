@@ -23,21 +23,22 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
         return lower.func.record(c, "", "総称の関数 (未対応)")
     }
     let at = parse.ast.get(&p.ast, sg.d)
-    let mark = c.tc.sc.len()
-    // 引数: 型を決め、値の番号を振り、局所の並びに入れる。
+    let mark = lower.cx.depth(c)
+    let mut bl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan(p, src, n.d, &mut bl, true)?
+    c.v.sl.bor = bl
+    // 引数: 型は型検査の表 (Param 節)、値の番号を振って局所に入れる。
     let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let np = resolve.ast.count(p, sg.b)
     for j in core.iter.range(0usize, np) {
-        let prm = parse.ast.get(&p.ast, resolve.ast.item(p, sg.b, j))
-        let pt = types.lower.ty(env, &mut c.ar, &c.tc, p, src, file, prm.b)?
+        let pnode = resolve.ast.item(p, sg.b, j)
+        let prm = parse.ast.get(&p.ast, pnode)
+        let pt = lower.expr.tyof(c, pnode)
         let kt = lower.tyk.text(env, c, pt)?
         let v = lower.cx.newval(c, kt.as_str())?
         ps.push(v)?
-        types.chk.push(&mut c.tc, resolve.ast.tok_text(p, src, prm.a), pt, false)?
-        lower.expr.sync(c)?
-        let k = c.tc.sc.len() - 1usize
-        lower.cx.set_val(c, k, v + 1usize)?
-        lower.expr.set_mut(c, k, false)?
+        let nm = resolve.ast.tok_text(p, src, prm.a)
+        lower.opt.bind(env, c, nm, v, false, pt)?
     }
     let ret = if sg.c == 0usize {
         types.ty.UNIT
@@ -62,7 +63,6 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
             lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(r.v)?.as_str())?)?
         }
     }
-    types.chk.truncate(&mut c.tc, mark)
     lower.expr.trunc(c, mark)
     // 頭の行。
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
@@ -88,7 +88,13 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     } else {
         return lower.func.record(c, "", "panics の値 (未対応)")
     }
-    out.push_str(" stack=-")?
+    if at.d == 0usize {
+        out.push_str(" stack=-")?
+    } else {
+        let stk = parse.cur.peek_at(p, at.d - 1usize)
+        out.push_str(" stack=")?
+        out.push_str(resolve.ast.text(src, stk.start, stk.stop))?
+    }
     out.push_str(" ret=")?
     out.push_str(rt.as_str())?
     out.push('\n')?
