@@ -20,6 +20,50 @@ fn lower.inst.args_of(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     lower.inst.sorted(&pairs)
 end lower.inst.args_of
 
+// 総称の関数の宣言の戻り値の型 (型引数は Param のまま)。注釈の名前を、引数の型の番号と結びつけて読む。
+fn lower.inst.decl_ret(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let cp = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(types.ty.UNKNOWN)
+    }
+    let src = match env.srcs.as_slice().get(file) {
+        Some(s) => s.text.as_slice()
+        None => return Ok(types.ty.UNKNOWN)
+    }
+    let fd = parse.ast.get(&cp.ast, node)
+    let sg = parse.ast.get(&cp.ast, fd.c)
+    if sg.c == 0usize {
+        return Ok(types.ty.UNIT)
+    }
+    let mut names = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut nos = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for j in core.iter.range(0usize, resolve.ast.count(cp, sg.b)) {
+        let pn = resolve.ast.item(cp, sg.b, j)
+        let prm = parse.ast.get(&cp.ast, pn)
+        let d = types.rec.ty_of(&c.tc.rec, file, pn)
+        if d != 0usize {
+            lower.inst.names_of(c, cp, src, prm.b, d, &mut names, &mut nos)?
+        }
+    }
+    let mark = c.tc.sc.len()
+    let mut k = 0usize
+    while k < names.len() {
+        let nm = match names.as_slice().get(k) {
+            Some(x) => lower.cx.own(x.as_str())?
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        let no = lower.tyk.at(nos.as_slice(), k)
+        let pt = types.ty.param(&mut c.ar, no)?
+        types.chk.push(&mut c.tc, nm.as_str(), pt, true)?
+        k = k + 1usize
+    }
+    let r = types.lower.ty(env, &mut c.ar, &c.tc, cp, src, file, sg.c)?
+    types.chk.truncate(&mut c.tc, mark)
+    Ok(r)
+end lower.inst.decl_ret
+
 // 型の中に型引数 (K.Param) があるか。
 fn lower.inst.has_param(c: &lower.cx.Cx, t: usize) -> bool uses [] panics may pub
     let f = types.ty.find(&c.ar, t)
@@ -161,6 +205,39 @@ fn lower.inst.method_args(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cu
     }
     lower.inst.sorted(&pairs)
 end lower.inst.method_args
+
+// 型の注釈 tn (構文) と、それに対応する型 d (型引数を含む) から、名前 (型引数の名前) と番号の組を集める。
+// 注釈の `T` / `&T` の形だけを見る (他の形は読まない)。
+fn lower.inst.names_of(c: &lower.cx.Cx, cp: &parse.cur.P, src: &[u8], tn: usize, d: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, nos: &mut alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let tnode = parse.ast.get(&cp.ast, tn)
+    let df = types.ty.find(&c.ar, d)
+    let dn = types.ty.node(&c.ar, df)
+    if (tnode.kind == parse.ast.Kind.TNamed && dn.k == types.ty.K.Param) {
+        out.push(lower.cx.own(resolve.ast.text(src, tnode.a, tnode.b))?)?
+        nos.push(dn.a)?
+        return Ok(())
+    }
+    if (tnode.kind == parse.ast.Kind.TRef && dn.k == types.ty.K.Ref) {
+        return lower.inst.names_of(c, cp, src, tnode.a, dn.a, out, nos)
+    }
+    Ok(())
+end lower.inst.names_of
+
+// 総称の関数の呼び出しの戻り値の型 (型引数で代入した宣言の戻り値)。
+fn lower.inst.ret_of(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let d = lower.inst.decl_ret(env, c, item)?
+    let mut sb = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for x in subs.as_slice().iter() {
+        sb.push(*x)?
+    }
+    let saved = c.v.subst.len()
+    let old = lower.cx.copy_u(&c.v.subst)?
+    c.v.subst = sb
+    let r = lower.inst.subst(c, d)?
+    c.v.subst = old
+    core.mem.drop(saved)
+    Ok(r)
+end lower.inst.ret_of
 
 // 番号の順に並べ直す (鍵の型引数の順)。
 fn lower.inst.sorted(pairs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub

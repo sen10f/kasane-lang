@@ -1,4 +1,4 @@
-// 関数 1 本の下ろし: 頭 (引数・戻り値・効果・panics・stack) と本体。結果は `c.g.texts` に、成否は `c.g.oks` に入れる。
+// 関数 1 本の下ろし: 頭 (引数・戻り値・効果・panics・stack) と本体。結果は `c.g.tx` に、成否は `c.g.oks` に入れる。
 // 呼び出し側 (lower.main) は名前の順に 1 回ずつ呼ぶので、両者は同じ添字になる。
 fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, key: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>, ret0: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     lower.cx.reset(c)?
@@ -146,10 +146,10 @@ end lower.func.lower_item
 fn lower.func.record(c: &mut lower.cx.Cx, text: &str, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if why.len() > 0usize {
         c.g.oks.push(false)?
-        c.g.texts.push(lower.cx.cat2(why, "")?)?
+        c.g.tx.push(lower.cx.cat2(why, "")?)?
         return Ok(())
     }
     c.g.oks.push(true)?
-    c.g.texts.push(lower.cx.cat2(text, "")?)?
+    c.g.tx.push(lower.cx.cat2(text, "")?)?
     Ok(())
 end lower.func.record

@@ -1048,3 +1048,55 @@ cd selfhost/lower && ksn check && ksn build --release
 python3 -I compare.py --group linear_ok --mine native --jobs 16   # 一致 115 / 下ろせた 291
 python3 -I compare.py --group examples --mine native               # 一致 11 / 下ろせた 35
 ```
+
+## 20. KIR への下ろしの段 (4b)
+
+前の章 (19) の残りを下ろした段。目標の `examples/demo`・`tour` の全体と `selfhost/parse` 自身までは届いていない (下の「まだ」を参照)。
+
+### 20.1 下ろしたもの
+
+- `let` の分解: 構造体の形 `S { f: p, .. }`、組 `(a, b)`、`_`。値が参照 (`x: &(..)`) なら欄の番地から取り、非スカラーの欄は番地で束縛する (`&T`)、スカラーは読み出して値で束縛する (Rust 版の既定の束縛の形と同じ)。
+- 組: 匿名の集成体 `tuple (T1,T2)` (位置の欄)。組の構築は `make`、読み出しは `field`。登録は綴りで重複を除く。
+- 整数以外の定数 (`const K: T = ...`): 初期化式を定数の書かれたファイルの中で下ろす (`std.alloc.SYSTEM` などが入る)。
+- 総称の型の中の呼び出し・構成子・局所の読み出し: 表の型が決まらないときは宣言から決める (`lower.inst.decl_ret` / `ret_of`)。局所の読み出しは局所の型を使う。
+- `String`: 枠は `Vec<u8>` と同じ `vec` = {ptr, len, cap}。`new`・`from_str`・`as_str`・`len`・`push_str` のみ (バイトの写しは命令のループ、Rust 版 `append_str` と同じ形)。
+- `for x in v.iter()` (要素の参照)・`for x in v` (要素の値) の `Vec`。添字の番号で回す。
+- 整数の算術 `+ - * / %` は `add.T.trap` などの trap 形、単項マイナスは `neg.T.trap`、ビット演算は `and.T` / `or.T` / `xor.T`、`&&` / `||` は短絡 (ブロックと bool の結び)。
+- 小数: 定数は Rust 版の表示 (`9.0`)、算術は `fadd.f64` 形 (trap なし)、比較は `fcmp`。型の決まらない小数は f64。
+- 総称の構造体 (利用者の定義のもの): 型の引数ごとに具体化の集成体 (`t.Box<alloc.string.String<std.alloc.System>>`)。欄の型は定義の総称の名前を `Param` として読み、具体化の代入を当てる。
+- `Option` / `Result` の `match` の真偽の向き: `Err` が真、`Some` が真 (Rust 版と同じ)。
+
+### 20.2 検証
+
+- 完全なプログラム (`t.main` が呼ぶものが全部下ろせた本) の emit → clang → 実行: 85 / 85 が Rust 版と標準出力・標準エラー・終了コードまで一致 (前の段の 48 から増えた分は、総称の具体化・分解・String・Vec の反復などの追加による)。
+- `linear_ok` 448 件: 一致 132 (前の段は 115)、下ろせた 392 (前の段は 291)。
+- `examples/demo`: 一致 2 / 4 (下ろせた 3)。`examples/tour`: 一致 0 / 7 (下ろせた 4)。
+
+### 20.3 まだ
+
+- 標準の総称の型 (`core.iter.Range<T>`、`alloc.collections.BtreeMap<K,V,A>` など) の具体化は未対応。試すと `BtreeMap::new` でも下ろしが再帰して落ちたので、`lower.tyk.is_generic_adt` で `alloc.`・`core.`・`std.` の型を外してある (標準の型は前と同じく未対応の理由になる)。原因は未特定 (ここでの `ksn` の実行ファイルには backtrace がない)。
+- `tour.main` の `wrapping_*` 以外のメソッド呼び出し、`tour.shapes` / `tour.csv_sum` の `for` (範囲と `Vec` 以外の対象) が残る。`demo.main` は `core.iter.Range` の値 (上の理由)。
+- 所有の注釈 `own.consume` / `own.use` は出していない (実行は変わらないが、テキストは Rust 版と違う)。
+- 型引数の未解決 (29 件) はまだ残る (総称の関数の型の値・`Param` の別の形)。
+- `String` の残りのメソッド、`str` のメソッド、`&[T]` のスライス、配列 `[T; N]`。
+- `selfhost/parse` 自身の下ろし: 未着手 (`String`・`&[T]`・`BtreeMap`・`HashMap` が要る)。
+
+### 20.4 未解決の理由 (`linear_ok` の未対応 152 件)
+
+| 理由 | 件数 | 中身 |
+| --- | ---: | --- |
+| 本体のない宣言 | 44 | 他の担当の `std` / `core` の組み込み (`std_calls.ksnl` 側) |
+| 型の下ろし: 型引数 | 29 | 総称の型の中の `Param` が代入に無い形 |
+| 式の形 | 18 | 未対応の式 |
+| panics の値 | 16 | `panics` の値の扱い |
+| match (列挙型以外) | 13 | 整数・`bool` などの `match` |
+| 型: 関数の型 | 10 | 関数の値 |
+| 型: その他 | 8 | 標準の総称の型 (上の理由) |
+
+### 20.5 再現
+
+```
+cd selfhost/lower && ksn check && timeout 1500 ksn build --release
+python3 -I compare.py --group linear_ok --mine native --jobs 16   # 一致 132 / 下ろせた 392
+python3 -I compare.py --group examples --mine native             # demo 2/4, tour 0/7
+```
