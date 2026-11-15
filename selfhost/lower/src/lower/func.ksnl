@@ -88,7 +88,13 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     } else {
         return lower.func.record(c, "", "panics の値 (未対応)")
     }
-    out.push_str(" stack=-")?
+    if at.d == 0usize {
+        out.push_str(" stack=-")?
+    } else {
+        let stk = parse.cur.peek_at(p, at.d - 1usize)
+        out.push_str(" stack=")?
+        out.push_str(resolve.ast.text(src, stk.start, stk.stop))?
+    }
     out.push_str(" ret=")?
     out.push_str(rt.as_str())?
     out.push('\n')?

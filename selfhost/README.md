@@ -855,3 +855,47 @@ python3 -I compare.py --group probe --mine native
 python3 -I compare.py --group linear_ok --mine native --jobs 16   # 一致 47 / 439 (約 1 分)
 python3 -I compare.py --group examples --mine native               # 一致 0 / 172
 ```
+
+## 17. KIR への下ろしの段 (2): 型の表を使い、Option / Result / 参照 を下ろす (修正プラン 5-5)
+
+2026-11-15。ブランチ `selfhost/lower-2` (`dev/plan` から)。`selfhost/lower/` を直した。新規は `selfhost/lower/src/lower/opt.ksnl` と、この節の追記だけ。`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` と他の `selfhost/` 部品は変えていない。
+
+結論を先に: **式ごとの型の推論のやり直しをやめ、型検査の表 (`types.export.run` の `types.rec.ty_of` / `callee_of`) から型と呼び出しの解決先を取る。** 局所の並びは下ろしの側で持つ。その上で `Option` / `Result` / `?` / 参照 (`&`・`&mut`・`*`・参照越しのフィールド) / 借用される局所のスロット / 列挙子の構築 / Option・Result の `match` / 整数の定数 / 値のない変種を下ろした。`Vec` / `String` (基本メソッドの単相インスタンス) と総称関数の単相化、`str` は未着手。
+
+| 対象 | 前 (16 章) | 後 |
+| --- | ---: | ---: |
+| `linear_ok` (439 関数): 下ろせた | 90 | **193** |
+| 同: Rust 版の `ksn kir` と一致 (番号の正規化後) | 47 | **94** |
+| `linear_ok` の全体が下ろせた本 (`t.main` が呼ぶもの全部) | 9 | **46** |
+| 同: `selfhost/emit` → clang → 実行の出力・終了コードが Rust 版と一致 | 9 / 9 | **46 / 46** |
+| `examples` (172 関数): 下ろせた / 一致 | 4 / 0 | 14 / 6 |
+| `examples/demo`・`tour` | 2 と 0 / 0 と 0 | 2 と 0 / 0 と 0 (`demo` は所有の注釈 `own.consume` の差) |
+
+- 型の表: `types.export.run` を一度だけ呼び、arena・`types.chk.Ctx` (表 `rec` を含む) を下ろしに渡す。式の型は `types.rec.ty_of`、`f(..)` の解決先は `types.rec.callee_of` で読む。`types.infer.expr` / `let_stmt` / `pat` の呼び直しはなくした。局所は `Vs.sl` (名前・型・スロットの印・借用される名前) で持つ。
+- 参照: 借用される局所 (`&x` / `&mut x` の `x`。関数の中の走査で集める) はスロット (`alloca` の `mutref<T>`)。読みは `load`、`&x` は `asshared`、`&mut x` は `reborrow`、`&*r` は再借用。一時の値の参照は一時のスロットを作る。参照越しのフィールドは `fieldaddr` + `load`。パターンの既定の束縛で参照になるものは、値をスロットに置いて参照にする。
+- Option / Result: `some` / `none` (`const.Option<T> none`)、`ok` / `err`、判別は `tag` (Option は Some、Result は Err のとき真)、中身は `payload`。`?` は `tag` で分けて、失敗は戻り値の型で `err` / `none` を作って返す。
+
+### 17.1 残り (下ろせていない 377 件の理由、`linear_ok`)
+
+| 理由 | 件数 | 中身 |
+| --- | ---: | --- |
+| 本体のない宣言 | 96 | `std.io`・`Vec` の基本メソッドなど、`.sig` だけの組み込み。Rust 版の `kir_lower_*.rs` の写しが要る |
+| 名前が局所でない | 56 | 定数 (整数以外の綴り) と関数の値 |
+| 総称の関数 | 46 | 単相化 (`key=f<u32>` の鍵、型引数の代入で本体を下ろす) が要る |
+| メソッド呼び出し (`wrapping_*` 以外) | 45 | 受け手の自動参照 (`&self`) と、基本メソッドの単相インスタンス |
+| `let` の形 | 34 | 分解の束縛 (タプル・構造体) |
+| 型: `str` / `alloc.vec.Vec` / 関数の型 ほか | 約 40 | `&str` の `fat` 表現、`Vec` の枠、関数値 |
+
+### 17.2 処理系の不足 (この段で当たったもの)
+
+1. 型検査の表には「自動参照・自動逆参照 (メソッドの受け手)」と「パターンの既定の束縛モード」の記録がない。下ろしは `Option` の match で値を読み、参照束縛は値をスロットに置く形で補った (Rust 版と同じ形ではない箇所がある)。
+2. `ksn build --release` の E9040 の根の理由は、連鎖の先頭に隠れる (16 章の 14.5 章 3)。この段でも、根を探すのに関数を外して何度も作った。
+3. 所有の注釈 (`own.consume` / `own.use`、線形の値の移動) の出力を写していない。`demo.shape.area` などの差はこれ。
+
+### 17.3 再現
+
+```
+cd selfhost/lower && ksn check && ksn build --release
+python3 -I compare.py --group linear_ok --mine native --jobs 16    # 一致 94 / 全体 439 (下ろせた 193)
+python3 -I compare.py --group examples --mine native                # 一致 6 / 全体 172 (下ろせた 14)
+```
