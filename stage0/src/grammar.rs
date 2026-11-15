@@ -803,7 +803,11 @@ impl Grammar {
                 best = best.max(mx);
             }
         }
-        let t = &toks[best.min(toks.len().saturating_sub(1))];
+        // 空のトークン列 (定義の無いファイル) は一致とする (定義ごとの `check_memo` と同じ答え。
+        // 空のファイルの形は E0001 などの字面の検査が見る)。
+        let Some(t) = toks.get(best.min(toks.len().saturating_sub(1))) else {
+            return (true, String::new(), 0);
+        };
         let shown = if t.text.is_empty() { t.kind.clone() } else { t.text.clone() };
         (false, format!("does not match the canonical grammar near {}", py_repr(&shown)), 1)
     }

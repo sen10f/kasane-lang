@@ -1,0 +1,34 @@
+type t.H['a]
+    r: &'a mut u32
+end t.H
+
+fn t.H.set['a](self: &mut t.H<'a>, r: &'a mut u32) -> () uses [] panics never
+    self.r = r
+end t.H.set
+
+fn t.go() -> u32 uses [] panics never
+    let mut x = 1u32
+    let mut y = 5u32
+    let mut h = t.H { r: &mut x }
+    let a = t.read(&h)
+    h.set(&mut y)
+    let b = t.read(&h)
+    a.wrapping_mul(10u32).wrapping_add(b)
+end t.go
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
+    let mut x = 1u32
+    let mut y = 5u32
+    let mut h = t.H { r: &mut x }
+    let a = t.read(&h)
+    h.set(&mut y)
+    let b = t.read(&h)
+    core.check.eq(a, 1u32)
+    core.check.eq(b, 5u32)
+    std.io.print_line("ok")
+    Ok(())
+end t.main
+
+fn t.read(h: &t.H) -> u32 uses [] panics never
+    *h.r
+end t.read

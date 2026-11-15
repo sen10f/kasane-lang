@@ -1370,7 +1370,9 @@ fn spawn_watcher_with(l: &Loaded, allow_add: bool, send: impl Fn(Program, Vec<us
             path: s.path.clone(),
             lines: s.lines.clone(),
             defs: s.defs.clone(),
-            mtime: fs::metadata(&s.path).and_then(|m| m.modified()).ok(),
+            // 基準の時刻は持たずに始める。読み込みから監視を始めるまでの間に書き換わった変更も、
+            // 最初の見回りで中身を比べて拾う (中身が同じなら何もしない)。
+            mtime: None,
         })
         .collect();
     std::thread::spawn(move || loop {
@@ -1384,6 +1386,9 @@ fn spawn_watcher_with(l: &Loaded, allow_add: bool, send: impl Fn(Program, Vec<us
             }
             w.mtime = m;
             let new = Source::load(&w.path, &srcroot);
+            if new.error.is_none() && new.lines == w.lines {
+                continue;
+            }
             if let Some(e) = &new.error {
                 eprintln!("hot reload: {}: {} (kept old code)", rel(&w.path), e.msg);
                 continue;

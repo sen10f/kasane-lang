@@ -313,6 +313,9 @@ impl<'a> Lw<'a> {
         }
         // 3. 式のままの値: 一時のスロットに入れて、そのアドレスを取る
         let Some(v) = self.expr(operand)? else { return Ok(None) };
+        if let Ok(t) = self.src_ty(operand) {
+            self.own_temp(&t);
+        }
         if Pointee::of(self.vty(v)) != Some(p) {
             return self.err(line, "参照の指す先の型が合わない");
         }

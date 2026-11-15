@@ -19,3 +19,7 @@ Friction records for apps/wiki (Markdown wiki HTTP server for ksn).
 1. `std.rand.fill_secure` (セグメント破損): ランダムバイト生成後の文字列リテラル引数が破壊される。最小再現: `fn t.main` で `let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM); buf.push(0u8)?; buf.push(0u8)?; std.rand.fill_secure(buf.as_mut_slice())?; let s = alloc.string.String.from_str(std.alloc.SYSTEM, "literal")?;` とし、from_str の直後の戻り値や後続の文字列操作が壊れるか確認する。
 2. `core.slice.sort` (ネイティブ segfault): 空ベクトルを含むスライスに対して `core.slice.sort` を呼ぶとネイティブバックエンドで segfault。最小再現: `fn t.main` で `let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM); core.slice.sort(v.as_mut_slice());` だけを実行し、クラッシュするか確認する。
 3. `try_mcall` / `method_on` (KIR 段階 1): 未知のメソッド呼び出しが `Err` を返したとき `Ok(None)` にしないと `user_mcall` へのフォールバックが発動せず、組み込みメソッド扱いで型チェックに失敗する。最小再現: `fn t.main` で `let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM); v.push(1u8)?;` とし、`push` が組み込みメソッドでない場合に `user_mcall` フォールバックが働くか確認する。
+
+## 追記 (2026-11-15、統括者)
+
+処理系の不具合として挙げた 3 件 (`std.rand.fill_secure` の後のリテラルの破損、空のスライスへの `core.slice.sort` の segfault、`try_mcall` が `user_mcall` へ回らない) は、後の `dev/plan` では ASan 付きでも再現しなかった。回帰テストを `stage0/tests/kir_wiki_bugs.rs` に置いた。アプリの回避 (並べ替えをやめた箇所など) は残している。

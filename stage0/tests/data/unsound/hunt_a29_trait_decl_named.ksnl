@@ -1,0 +1,8 @@
+// expect: E3020
+trait t.Tr pub
+    fn get(self: &Self, x: &u32) -> &'a u32 uses [] panics never
+end t.Tr
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -837,6 +837,11 @@ impl<'a> Lw<'a> {
     pub(super) fn field_of(&mut self, base: VId, name: &str, line: usize) -> LR<VId> {
         // 参照を通した読み出し `r.f`: フィールドのアドレスを取って読む。
         if let Ty::Ref(_, Pointee::Agg(_)) = self.vty(base) {
+            // 参照型のフィールド (`r: &'a mut u32`): 番地の中身は ptr (8 バイト)。読んで参照に戻す。
+            if let Some((addr, fty)) = self.ref_field_ptr(base, name, line)? {
+                let raw = self.emit(Ty::Ptr, Op::MemLoad { p: addr, off: 0 });
+                return Ok(self.emit(fty, Op::Bitcast { src: Ty::Ptr, a: raw }));
+            }
             let addr = self.field_addr(base, name, line)?;
             let Ty::Ref(_, p) = self.vty(addr) else {
                 return self.err(line, "フィールドのアドレスが参照でない");
@@ -851,6 +856,24 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("フィールド {} がない", name));
         };
         Ok(self.emit(fd.ty, Op::Field { a: base, off: fd.off }))
+    }
+
+    /// 集成体への参照 `base` の構造体のフィールド `name` が参照型のとき、その番地 (ptr) と欄の型を返す。
+    /// 参照は指す先を持たない 8 バイトの ptr として置くので、番地は `base` の ptr に欄の位置を足したもの。それ以外は `None`。
+    pub(super) fn ref_field_ptr(&mut self, base: VId, name: &str, line: usize) -> LR<Option<(VId, Ty)>> {
+        let bty = self.vty(base);
+        let Ty::Ref(_, Pointee::Agg(ai)) = bty else { return Ok(None) };
+        let d = self.agg_def(ai);
+        let AggKind::Struct(fs) = &d.kind else { return Ok(None) };
+        let Some(fd) = fs.iter().find(|x| x.name == name) else { return Ok(None) };
+        if !matches!(fd.ty, Ty::Ref(..)) {
+            return Ok(None);
+        }
+        let (off, fty) = (fd.off, fd.ty);
+        let _ = line;
+        let bp = self.emit(Ty::Ptr, Op::Bitcast { src: bty, a: base });
+        let k = self.emit(Ty::Usize, Op::Const(off as i128));
+        Ok(Some((self.emit(Ty::Ptr, Op::PtrAdd { p: bp, off: k }), fty)))
     }
 
     /// 集成体への参照 `base` の構造体のフィールド `name` へのアドレス (`fieldaddr`)。可変性は `base` と同じ。
@@ -1018,6 +1041,15 @@ impl<'a> Lw<'a> {
             let mut cur = base0;
             for name in &segs[1..segs.len() - 1] {
                 cur = self.field_addr(cur, name, line)?;
+            }
+            // 最後の欄が参照型: 番地の ptr に参照を ptr として書く (参照は所有物を持たないので古い値の解放はない)。
+            if let Some((addr, fty)) = self.ref_field_ptr(cur, &segs[segs.len() - 1], line)? {
+                if fty != self.vty(v) {
+                    return self.err(line, "フィールドへの代入の型が違う");
+                }
+                let bits = self.emit(Ty::Ptr, Op::Bitcast { src: fty, a: v });
+                self.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: addr, off: 0, v: bits });
+                return Ok(St::Unit);
             }
             let last = self.field_addr(cur, &segs[segs.len() - 1], line)?;
             let Ty::Ref(_, p) = self.vty(last) else {

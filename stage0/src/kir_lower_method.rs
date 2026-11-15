@@ -401,6 +401,12 @@ impl<'a> Lw<'a> {
             }
         }
         let Some(v) = self.expr(r)? else { return Ok(None) };
+        // 借用の受け手の一時 (呼び出しの結果): 借りるだけなので、線形なら義務が残る。
+        if by_ref && matches!(nname(r), "Call" | "MCall") {
+            if let Ok(t) = self.src_ty(r) {
+                self.own_temp(&t);
+            }
+        }
         if !by_ref {
             // `Path` の `Owned::Val`（スロットあり）はスコープ終了で drop されるので tmp_hold しない。
             // 一時値（Call の戻り値など）はスコープにまだ登録されていないので tmp_hold する。

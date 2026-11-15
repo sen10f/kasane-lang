@@ -151,7 +151,15 @@ fn resolve.scope.lookup_key(t: &resolve.table.Table, key: &str, file: usize) -> 
         Some(ix) => {
             let d = resolve.table.at(t, *ix)
             if !d.public && d.file != file {
-                return Ok(resolve.scope.Res.Private)
+                // `core` / `alloc` / `std` の標準ライブラリ定義は可視性チェックの対象外
+                // (stage0/src/check.rs と同じ)。`pub` なしでも std.http.Decoder.feed_part 等が参照できる。
+                let root = match key.split_once(".") {
+                    Some((r, _)) => r
+                    None => key
+                }
+                if !(root == "core" || root == "alloc" || root == "std") {
+                    return Ok(resolve.scope.Res.Private)
+                }
             }
             return Ok(resolve.scope.Res.Def(d.kind))
         }
