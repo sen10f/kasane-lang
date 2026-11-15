@@ -402,27 +402,6 @@ end t.main
 
 // ------------------------------------------------------------ ネイティブ生成 (第 1 段は退避しない)
 
-/// `ksn build --release` は、中断を木走査へ退避せず E9040 で失敗する (第 1 段はネイティブ未対応、設計_KIR.md)。
-/// 第 2 段 (0.10.18) で `block_on` / `yield_now` などをネイティブに下ろした。この期待は古い: ネイティブの一致は
-/// `tests/suspend_native.rs` が確かめる。入力と期待は変えず、無視するだけにしている。
-#[ignore = "第 2 段でネイティブ化した (期待は古い。ネイティブの一致は tests/suspend_native.rs)"]
-#[test]
-fn release_native_build_refuses_std_task_with_e9040() {
-    let t = Tmp::new(
-        "suspend_native_release",
-        "fn t.main() -> () uses [suspend] panics may
-    std.task.block_on(fn() -> () capture [] {
-        std.task.yield_now()
-    })
-end t.main
-",
-    );
-    let o = run(&["build", "--release"], &t.0);
-    let out = text(&o.stdout) + &text(&o.stderr);
-    assert!(!o.status.success(), "{}", out);
-    assert!(out.contains("E9040"), "{}", out);
-}
-
 /// 同じ名前 `join` の `std.thread.JoinHandle.join` (中断しない) の上の借用は、中断点ではないので通る。
 #[test]
 fn thread_join_with_live_borrow_is_not_a_suspension_point() {
