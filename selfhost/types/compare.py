@@ -144,7 +144,7 @@ def main(argv):
     t0 = time.time()
     stats = {"n": 0, "accepted_ok": 0, "correct_n": 0, "rust_rej": 0, "mine_rej": 0,
              "typed_match": 0, "typed_code_match": 0, "typed_total": 0,
-             "e2044_rust": 0, "e2044_mine": 0, "errors": 0}
+             "e2044_rust": 0, "e2044_mine": 0, "errors": 0, "over": 0}
     detail = []
     for name, pkg, correct in items:
         stats["n"] += 1
@@ -176,6 +176,9 @@ def main(argv):
                 detail.append(("TYPED-DIFF", name, (r_typed[:4], m_typed[:4])))
         if m_typed:
             stats["mine_rej"] += 1
+            if not r_typed:
+                stats["over"] += 1
+                detail.append(("OVER-REJECT", name, m_typed[:3]))
         if not keep and tmp and name.startswith(("diag/", "linear_ok/", "unsound/")):
             pass
     secs = time.time() - t0
@@ -187,6 +190,7 @@ def main(argv):
           f"accepted {stats['accepted_ok']}/{stats['correct_n']}")
     print(f"rust-typed-cases {stats['typed_total']}  exact (code,line) match "
           f"{stats['typed_match']}  code-only match {stats['typed_code_match']}")
+    print(f"over-rejected (mine type error, rust none) {stats['over']}")
     print(f"mine-rejected {stats['mine_rej']}  rust-E2044 {stats['e2044_rust']}  "
           f"mine-E2044 {stats['e2044_mine']}  crashes {stats['errors']}  "
           f"time {secs:.1f}s")

@@ -116,7 +116,14 @@ fn types.lower.ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.C
     if (k == parse.ast.Kind.TNever) {
         return Ok(types.ty.NEVER)
     }
-    if (k == parse.ast.Kind.TPtr || k == parse.ast.Kind.TFn || k == parse.ast.Kind.TDyn) {
+    if (k == parse.ast.Kind.TFn) {
+        // fn(A, B) -> R: 引数の列 (型ノードの List) と戻り値。
+        let ps = types.lower.targs(env, ar, cx, p, src, file, n.a)?
+        let ret = types.lower.ty(env, ar, cx, p, src, file, n.b)?
+        let (b, c) = types.ty.args(ar, &ps)?
+        return types.ty.push(ar, types.ty.mk(types.ty.K.Fnty, ret, b, c, false))
+    }
+    if (k == parse.ast.Kind.TPtr || k == parse.ast.Kind.TDyn) {
         return types.ty.push(ar, types.ty.mk(types.ty.K.Opaque, 0usize, 0usize, 0usize, false))
     }
     Ok(types.ty.UNKNOWN)

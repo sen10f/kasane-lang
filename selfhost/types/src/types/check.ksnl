@@ -73,14 +73,39 @@ fn types.check.fn_def(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut typ
 end types.check.fn_def
 
 // 定義 1 件の終わり: 整数リテラルの既定 (i32) を決め、変数を空にする。
-fn types.check.settle(ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
-    for k_v in core.iter.range(0usize, cx.lits.len()) {
-        match cx.lits.as_slice().get(k_v) {
-            Some(v) => types.ty.default_lit(ar, *v)?
-            None => core.mem.drop(0u8)
+fn types.check.settle(ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    for k_v in core.iter.range(0usize, cx.pend.lits.len()) {
+        let v = match cx.pend.lits.as_slice().get(k_v) {
+            Some(x) => *x
+            None => types.ty.UNKNOWN
+        }
+        let line = match cx.pend.lit_lines.as_slice().get(k_v) {
+            Some(x) => *x
+            None => 0usize
+        }
+        let r = types.ty.find(ar, v)
+        let rn = types.ty.node(ar, r)
+        if rn.k == types.ty.K.Var && rn.c != 0usize {
+            types.chk.diag(cx, "E2027", line, "unsuffixed literal: type not determined")?
         }
     }
-    cx.lits.clear()
+    for k_l in core.iter.range(0usize, cx.pend.lets.len()) {
+        let t = match cx.pend.lets.as_slice().get(k_l) {
+            Some(x) => *x
+            None => types.ty.UNKNOWN
+        }
+        let line = match cx.pend.let_lines.as_slice().get(k_l) {
+            Some(x) => *x
+            None => 0usize
+        }
+        if types.ty.has_free(ar, t, 0usize) {
+            types.infer.unknown_bind(cx, line, "type not determined")?
+        }
+    }
+    cx.pend.lits.clear()
+    cx.pend.lit_lines.clear()
+    cx.pend.lets.clear()
+    cx.pend.let_lines.clear()
     Ok(())
 end types.check.settle
 

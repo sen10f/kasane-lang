@@ -264,3 +264,91 @@ ksn build --release
 python3 -I compare.py --group all          # 定義 113 ファイル・診断 (正常 0 件、broken 7/12)
 python3 -I compare.py --group broken -v    # 差の中身
 ```
+
+## 10. 型検査の段 (修正プラン 5-5 の型の段)
+
+2026-11-15。ブランチ `selfhost/types`。新規は `selfhost/types/` だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/`・他の `selfhost/` 部品は変えていない)。
+
+結論を先に: **関数本体の型検査は Kasane で書けて、`ksn build --release` で退避なしにネイティブになった** (`types.native`、約 0.04 秒で 63 ファイルの `apps/todo`)。ネイティブと木走査の出力は `apps/todo` で同一。正しいコードの受理は **139 / 139** (例 15、apps 3、selfhost の parse・resolve・types 3、`linear_ok` 118)。型の診断は、Rust 版と (コード, 行) が一致したのが `diag/E20*` で 38 件中 **10**、`unsound/` の型の診断を出すべきもので 66 件中 **15** (コードだけなら 23)。残りは型の規則そのものが未実装 (E2033 線形・E2036 derive・E2046 `?`・E2049 effects など) か、推論の不足。
+
+### 10.1 構成と行数
+
+`selfhost/types/` が ksn パッケージ (`entry = "types.main"`、依存 `parse` と `resolve` を `path` で直接)。
+
+| ファイル | 行数 | 中身 |
+| --- | ---: | --- |
+| `src/types.ksnl` | 25 | 入口: 読み込み → 検査 → 集計 (`summary errors N unknown M files K`) |
+| `src/types/env.ksnl` | 280 | 読み込み (`resolve.manifest` / `resolve.load` / `resolve.parse_file` を再利用)、項目の表 (FQN → 項目、列挙子、import)、名前の解決 (プレリュード、基本型の関連関数 `core.num.<T>.`) |
+| `src/types/ty.ksnl` | 320 | 型の arena (添字)、型変数の束縛 (`bind`)、単一化 (`unify`、参照は段数を見ず、不明・仮の型・`!` は一致とみなす)、整数リテラルの変数 (`c=1`) と小数の変数 (`c=2`) |
+| `src/types/lower.ksnl` | 125 | 型の注釈 → 型 id (総称は検査の並びから引く。`&str` は `Str`、`fn(..)` は `Fnty`) |
+| `src/types/chk.ksnl` | 90 | 検査の状態 (名前の並び、関数の終わりに決める項目、診断の文) |
+| `src/types/infer.ksnl` | 1,250 | 式・文・パターン・呼び出し・メソッド探索 (`.sig` の規範。`FQN 接頭辞.名前`)、フィールド、`match` の網羅、`for` の要素 (`next` の戻り値) |
+| `src/types/check.ksnl` | 150 | 関数 (頭の総称・引数・戻り値・本体)、テスト、定数・静的。関数の終わりの決定 |
+| `compare.py` | 201 | Rust 版 `ksn check --json` との比較 (受理・一致の数、時間) |
+
+Kasane 合計 2,255 行 (`compare.py` 除く)。`ksn check` は通る。
+
+使い方:
+
+```
+cd selfhost/types
+ksn build --release                       # target/release/types.native (退避なし)
+./target/release/types.native PKG_DIR STD_DIR   # 例: ../../apps/todo ../../spec/stdlib
+python3 -I compare.py --group examples|apps|self|linear_ok|diag|unsound   # 比較 (Rust 版 stage0/target/release/ksn が要る)
+```
+
+出力は `error CODE パス:行: 内容` と末尾の `summary errors N unknown M files K`。
+
+### 10.2 確かめ
+
+| 対象 | 受理 / 全体 | 備考 |
+| --- | ---: | --- |
+| `examples/*` (ksn パッケージ) | 15 / 15 | Rust 版も 0 件 |
+| `apps/*` | 3 / 3 | |
+| `selfhost/parse`・`resolve`・`types` (自分自身) | 3 / 3 | |
+| `stage0/tests/data/linear_ok/*.ksnl` | 118 / 118 | 単一ファイルは一時パッケージにする |
+| 正しいコードの合計 | **139 / 139** | |
+
+| 対象 | 結果 |
+| --- | --- |
+| `diag/E20*.ksnl` (Rust 版が型の診断を出すもの 38 件) | (コード, 行) が一致 **10 / 38**、コードだけ一致 10 |
+| `unsound/*.ksnl` (Rust 版が型の診断を出すもの 66 件) | (コード, 行) が一致 **15 / 66**、コードだけ一致 23 |
+| `unsound/` で Rust 版は通すのに自分は型の診断を出したもの | 10 件 (下の 10.5) |
+
+時間: ネイティブ `types.native` は `examples/demo` 0.11 秒、`apps/todo` 0.04 秒 (標準ライブラリ 52 ファイルの読み込みを含む)。木走査 `ksn run` は `apps/todo` で約 30 秒 (標準ライブラリの解析が大半)。`compare.py` は 139 件の正しいコードを約 10 秒で回す。
+
+### 10.3 この段が見る規則
+
+- E2020 (型の不一致): 両辺が具体的で単一化できないときだけ。引数・戻り値 (本体の末尾式の行に出す)・let の注釈・代入・`if` / `match` の腕・算術の両辺・条件 (bool)。
+- E2044 (型が決まらない): 型の決まらない `let` (初期化式が未知)、型変数が残る `let` (初期化式が `None` の名前だけのとき)、未決まりの型変数へのメソッド呼び出し。
+- E2027 (接尾辞のないリテラル): 関数の終わりまで型が決まらない整数・小数リテラル (既定の i32 は当てない)。
+- E2001 (引数の個数)、E2010 / E2011 (構造体リテラルの未知・不足のフィールド)、E2021 (enum / bool の `match` は `_` と束縛を使わず全部を列挙する)、E2042 (`()` 以外の値の捨て。下の 10.5 の範囲のみ)。
+- メソッド: 受け手の型から `FQN 接頭辞.名前` を引く (`core.num.<T>.`、`core.str.`、`core.slice.`、`core.bool.bool.`、`core.char.char.`、Adt は項目の FQN)。見つからなければ `Vec → [T]`、`String → str` の参照外しを試す。`clone` だけは Self を返す (derive は表に出ないため)。
+- ジェネリクス: 呼び出しごとに総称を新しい型変数にして署名を下ろす。受け手で単一化して引数を見る。
+
+### 10.4 処理系の不足 (重要度順)
+
+1. **ネイティブの下ろしの制限が、書き方を大きく縛る** (このパッケージで直した数は 20 箇所を超える)。E9040 の理由は 1 件ずつしか出ず、直しては再ビルドした: (a) 構造体の `Vec` を、フィールド経由 (`env.srcs.as_slice().iter()`、`env.tab.imps`) や `&mut` の引数の `Vec<String>` で `for` すると下りない (「要素型の分かる Vec の変数だけ」)。添字の `for k in core.iter.range(0usize, v.len())` と `match v.as_slice().get(k)` で書き直した。(b) `match` の腕に `continue` を書くと型が合わないと言われる。(c) `CONST.method()` (定数の `usize` や `&str` への直接の呼び出し) は下りない (局所に受けてから呼ぶ)。(d) 100 桁を超える行・1 行に収まらない構造体リテラルは `ksn check` が止める (`E0053` / `E0055`)。`if c { a } else { b }` の 1 行は `E0056`。書式の規則が多く、生成したコードは `ksn fmt` 後も手で割る必要があった。
+2. **構文木が「局所の受け手のメソッド」と「フィールド」を区別しない**。`s.len()` も `p.x` も `Path("s.len")` / `Path("p.x")` になり、`MCall` / `Dot` にならない (FQN の字句の規則で読まれる)。型検査は、先頭の成分が局所か項目かを見て、残りをフィールドかメソッドとして読み直す必要がある (`types.infer.path_text` / `call` / `method_call`)。`resolve` も同じ読み直しをしている。構文木の段で、局所に続く `.名前` を `Dot` / `MCall` にするのが望ましい (`parse.expr.path` で `FQN` の先頭が局所かは分からないので、名前解決の結果を見る後段で直すしかない)。
+3. **標準ライブラリの署名の表が、推論に足りない** (E2044 の誤りの大半の原因)。(a) トレイトの既定メソッド (`map` / `filter` などの反復子の操作) の FQN が `.sig` の表にないので、受け手の型から引けない。(b) 総称の型を閉包の境界 (`F: FnOnce<(T,), U, E, P>`) から決める推論がない (`std.thread.spawn` の結果が決まらない)。(c) `derive` の実装 (`clone` など) は表に出ない。(d) 基本型の関連 FQN の綴りが仕様 4.5 の文と違う (`core.char.char.to_u32`、`core.bool.bool.then_some`)。表の綴りをそのまま使う必要があった。仕様かライブラリの名前を揃えるとよい。
+
+### 10.5 Rust 版との差 (報告のみ。処理系は直していない)
+
+- E2042 (`()` 以外の値を捨てる式文): Rust 版は `e?`・`if`・`match`・ブロックの捨てを見ない、`std` の `.sig` の関数呼び出しの捨ても見ない (`io.print_line(..)` の `Result`)。仕様 4.6 からは捨てになるが、ここでは Rust 版の判定に合わせた (`examples/http`・`examples/threads` が Rust 版で 0 件のため)。
+- `unsound/` の 10 件は Rust 版が型の診断を出さずに通す (`float_to_string`・`int_to_string`・`str_to_string`・`num_from_not_in_stdlib`・`index_move_vec_string`・`fn_effects_match`・`fn_effects_reassign`・`hunt_a12_derive_tryclone_generic_hole_01`・`fn_bound_elided_*`)。この段は E2044 / E2027 で拒否する。
+
+### 10.6 未実装 (型の段の範囲外)
+
+線形性 (E2033 ほか)、derive の検査 (E2036 / E2050 / E2051)、効果・panic の整合 (E4xxx)、`?` の変換 (E2046)、トレイト境界の検査と既定メソッドの解決、クロージャの境界からの総称の推論、`impl` の孤児規則 (E2043)、`with` の検査 (E2045)、ライフタイム。`uses` / `panics` は見ない。
+
+### 10.7 再現
+
+```
+. ~/.cargo/env
+cd stage0 && cargo build --release && cd ..
+cd selfhost/types
+ksn check && ksn build --release
+./target/release/types.native ../../apps/todo ../../spec/stdlib
+python3 -I compare.py --group examples && python3 -I compare.py --group linear_ok
+python3 -I compare.py --group diag && python3 -I compare.py --group unsound
+```

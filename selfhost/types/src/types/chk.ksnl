@@ -1,7 +1,7 @@
 type types.chk.Ctx pub
     file: usize pub
     sc: alloc.vec.Vec<types.chk.Ent, std.alloc.System> pub
-    lits: alloc.vec.Vec<usize, std.alloc.System> pub
+    pend: types.chk.Pend pub
     ret: usize pub
     rep: types.chk.Rep pub
     unknown: usize pub
@@ -14,10 +14,20 @@ type types.chk.Ent pub
     generic: bool pub
 end types.chk.Ent
 
+// 関数の終わりに決める項目: 整数リテラル (行つき) と、let の束縛の型 (行つき)。
+type types.chk.Pend pub
+    lits: alloc.vec.Vec<usize, std.alloc.System> pub
+    lit_lines: alloc.vec.Vec<usize, std.alloc.System> pub
+    lets: alloc.vec.Vec<usize, std.alloc.System> pub
+    let_lines: alloc.vec.Vec<usize, std.alloc.System> pub
+end types.chk.Pend
+
+// 診断の文の出力。sigcall は直前に完了した関数呼び出しが .sig の宣言だったか (E2042 の判定用)。
 type types.chk.Rep pub
     out: alloc.string.String<std.alloc.System> pub
     path: alloc.string.String<std.alloc.System> pub
     errors: usize pub
+    sigcall: bool pub
 end types.chk.Rep
 
 // 診断 1 件: `error CODE 路径:行: 内容`。
@@ -58,10 +68,14 @@ end types.chk.mark
 fn types.chk.new() -> Result<types.chk.Ctx, alloc.alloc.AllocError> uses [alloc] panics never pub
     let sc = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let lits = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let lit_lines = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let lets = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let let_lines = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let out = alloc.string.String.new(std.alloc.SYSTEM)
     let path = alloc.string.String.new(std.alloc.SYSTEM)
-    let rep = types.chk.Rep { out: out, path: path, errors: 0usize }
-    Ok(types.chk.Ctx { file: 0usize, sc: sc, lits: lits, ret: 0usize, rep: rep, unknown: 0usize })
+    let rep = types.chk.Rep { out: out, path: path, errors: 0usize, sigcall: false }
+    let pend = types.chk.Pend { lits: lits, lit_lines: lit_lines, lets: lets, let_lines: let_lines }
+    Ok(types.chk.Ctx { file: 0usize, sc: sc, pend: pend, ret: 0usize, rep: rep, unknown: 0usize })
 end types.chk.new
 
 fn types.chk.push(cx: &mut types.chk.Ctx, name: &str, ty: usize, generic: bool) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub

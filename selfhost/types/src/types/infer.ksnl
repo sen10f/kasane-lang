@@ -83,6 +83,15 @@ fn types.infer.block(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut type
                 wt = want
             }
             let t = types.infer.expr(env, ar, cx, p, src, sn.a, wt)?
+            // `e?` / if / match / ブロックを捨てる形は Rust 版も見ていない (取りこぼし。README の報告)。
+            let ek = parse.ast.get(&p.ast, sn.a).kind
+            let skip_k = ek == parse.ast.Kind.Try || ek == parse.ast.Kind.If
+            let skip_s = ek == parse.ast.Kind.Call && cx.rep.sigcall
+            let skip_m = ek == parse.ast.Kind.Match || ek == parse.ast.Kind.Block
+            if !last && !skip_k && !skip_m && !skip_s && types.infer.discards(ar, t) {
+                let dl = resolve.ast.line_of(p, parse.ast.get(&p.ast, sn.a).tok)
+                types.chk.diag(cx, "E2042", dl, "discarded value")?
+            }
             if last {
                 out = t
             }
@@ -103,6 +112,7 @@ end types.infer.block
 // `受け手.メソッド(..)` はパスの形で来るので、接頭辞を値として見てメソッドに回す。
 fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
     let cn = parse.ast.get(&p.ast, n.a)
+    let cline = resolve.ast.line_of(p, n.tok)
     if cn.kind == parse.ast.Kind.Path {
         let name = resolve.ast.text(src, cn.a, cn.b)
         let loc = types.chk.find(cx, name, false)
@@ -115,7 +125,8 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
             let kind = types.infer.item_kind(env, item)
             if kind == parse.ast.Kind.FnDef {
                 let (params, ret) = types.infer.sig_of(env, ar, cx, item)?
-                types.infer.check_args(env, ar, cx, p, src, n.b, &params, 0usize)?
+                types.infer.check_args(env, ar, cx, p, src, n.b, &params, 0usize, cline)?
+                cx.rep.sigcall = types.infer.item_is_sig(env, item)
                 return Ok(ret)
             }
             if kind == parse.ast.Kind.Variant {
@@ -126,8 +137,20 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
                     let pt = types.infer.payload_ty(env, ar, cx, item, enum_item, &args, j)?
                     params.push(pt)?
                 }
-                types.infer.check_args(env, ar, cx, p, src, n.b, &params, 0usize)?
+                types.infer.check_args(env, ar, cx, p, src, n.b, &params, 0usize, cline)?
                 return Ok(types.ty.adt(ar, enum_item, &args)?)
+            }
+        }
+        if loc != 0usize {
+            let lt = types.ty.strip(ar, types.chk.ty_at(cx, loc.wrapping_sub(1usize)))
+            let ln = types.ty.node(ar, lt)
+            if ln.k == types.ty.K.Fnty {
+                let mut params = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                for j in core.iter.range(0usize, ln.c) {
+                    params.push(types.ty.arg(ar, ln.b, j))?
+                }
+                types.infer.check_args(env, ar, cx, p, src, n.b, &params, 0usize, cline)?
+                return Ok(ln.a)
             }
         }
         let pre = resolve.scope.prefix(name)?
@@ -135,7 +158,7 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
         if pre.len() > 0usize && last != "" {
             let rt = types.infer.path_text(env, ar, cx, pre.as_str())?
             if rt != types.ty.UNKNOWN {
-                return types.infer.method_call(env, ar, cx, p, src, rt, last, n.b)
+                return types.infer.method_call(env, ar, cx, p, src, rt, last, n.b, cline)
             }
         }
     }
@@ -148,7 +171,15 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
 end types.infer.call
 
 // 引数の列を、params (の skip 番目以降) と照らす。
-fn types.infer.check_args(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], l: usize, params: &alloc.vec.Vec<usize, std.alloc.System>, skip: usize) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+fn types.infer.check_args(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], l: usize, params: &alloc.vec.Vec<usize, std.alloc.System>, skip: usize, callline: usize) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let nargs = resolve.ast.count(p, l)
+    let mut expect = 0usize
+    if params.len() >= skip {
+        expect = params.len().wrapping_sub(skip)
+    }
+    if nargs != expect {
+        types.chk.diag(cx, "E2001", callline, "wrong number of arguments")?
+    }
     for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
         let arg = resolve.ast.item(p, l, j)
         let want = match params.as_slice().get(j.wrapping_add(skip)) {
@@ -164,22 +195,25 @@ end types.infer.check_args
 
 // クロージャ: 引数と戻り値の型で本体を検査する。値の型は見ない (UNKNOWN)。
 fn types.infer.closure(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
-    let mut ret = types.lower.ty(env, ar, cx, p, src, cx.file, n.b)?
-    if n.b == 0usize {
-        ret = types.ty.UNIT
+    let mut ret = types.ty.UNIT
+    if n.b != 0usize {
+        ret = types.lower.ty(env, ar, cx, p, src, cx.file, n.b)?
     }
     let mark = types.chk.mark(cx)
+    let mut pts = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
         let prm = parse.ast.get(&p.ast, resolve.ast.item(p, n.a, j))
         let pt = types.lower.ty(env, ar, cx, p, src, cx.file, prm.b)?
         types.chk.push(cx, resolve.ast.tok_text(p, src, prm.a), pt, false)?
+        pts.push(pt)?
     }
     let saved = cx.ret
     cx.ret = ret
     core.mem.drop(types.infer.expr(env, ar, cx, p, src, n.d, ret)?)
     cx.ret = saved
     types.chk.truncate(cx, mark)
-    Ok(types.ty.UNKNOWN)
+    let (b, c) = types.ty.args(ar, &pts)?
+    Ok(types.ty.push(ar, types.ty.mk(types.ty.K.Fnty, ret, b, c, false))?)
 end types.infer.closure
 
 // 式の値を型に合わせて検査する。両方が具体的で単一化できないなら E2020。
@@ -209,6 +243,15 @@ fn types.infer.deref_target(env: &types.env.Env, ar: &mut types.ty.Arena, rs: us
     }
     Ok(types.ty.UNKNOWN)
 end types.infer.deref_target
+
+// 式文の値を捨ててよいか: () と ! と未決まり以外の具体的な値は捨てられない (E2042)。
+fn types.infer.discards(ar: &types.ty.Arena, t: usize) -> bool uses [] panics never pub
+    let n = types.ty.node(ar, types.ty.find(ar, t))
+    let a = n.k == types.ty.K.Adt || n.k == types.ty.K.Int || n.k == types.ty.K.Float
+    let b = n.k == types.ty.K.Bool || n.k == types.ty.K.Char || n.k == types.ty.K.Str
+    let c = n.k == types.ty.K.Ref || n.k == types.ty.K.Array || n.k == types.ty.K.Tuple
+    a || b || c
+end types.infer.discards
 
 // 式。e の型を返す。want は期待する型 (UNKNOWN なら期待なし)。
 fn types.infer.expr(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], e: usize, want: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
@@ -451,6 +494,28 @@ fn types.infer.fresh_args(env: &types.env.Env, ar: &mut types.ty.Arena, item: us
     Ok(out)
 end types.infer.fresh_args
 
+// フィールド name を型の定義が持つか。
+fn types.infer.has_field(env: &types.env.Env, item: usize, fname: &str) -> bool uses [alloc] panics never pub
+    let node = types.infer.item_node(env, item)
+    let file = types.infer.item_file(env, item)
+    let p2 = match env.units.as_slice().get(file) {
+        Some(q) => q
+        None => return false
+    }
+    let s2 = match env.srcs.as_slice().get(file) {
+        Some(s) => s.text.as_slice()
+        None => return false
+    }
+    let n = parse.ast.get(&p2.ast, node)
+    for j in core.iter.range(0usize, resolve.ast.count(p2, n.d)) {
+        let fd = parse.ast.get(&p2.ast, resolve.ast.item(p2, n.d, j))
+        if resolve.ast.tok_text(p2, s2, fd.a) == fname {
+            return true
+        }
+    }
+    false
+end types.infer.has_field
+
 // if: 条件は bool。else が無ければ値は (). 両腕が値を持つなら一致させる。
 fn types.infer.ifx(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, want: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
     let line = resolve.ast.line_of(p, parse.ast.get(&p.ast, n.a).tok)
@@ -476,12 +541,42 @@ fn types.infer.ifx(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
     Ok(t1)
 end types.infer.ifx
 
+// 列挙や bool の match で、_ か束縛だけの腕 (全部を列挙していない) か。
+fn types.infer.is_catch(env: &types.env.Env, cx: &types.chk.Ctx, p: &parse.cur.P, src: &[u8], pt: usize) -> Result<bool, resolve.Failure> uses [alloc] panics never pub
+    let n = parse.ast.get(&p.ast, pt)
+    if n.kind == parse.ast.Kind.PWild {
+        return Ok(true)
+    }
+    if n.kind != parse.ast.Kind.PBind {
+        return Ok(false)
+    }
+    let tk = parse.cur.peek_at(p, n.a)
+    let upper = match src.get(tk.start) {
+        Some(c) => *c >= 65u8 && *c <= 90u8
+        None => false
+    }
+    let nm = resolve.ast.text(src, tk.start, tk.stop)
+    let hit = types.env.lookup(env, cx.file, nm)?
+    if upper && hit != 0usize {
+        return Ok(false)
+    }
+    Ok(true)
+end types.infer.is_catch
+
 fn types.infer.item_file(env: &types.env.Env, item: usize) -> usize uses [] panics never pub
     match env.tab.items.as_slice().get(item) {
         Some(it) => it.file
         None => 0usize
     }
 end types.infer.item_file
+
+// 項目が .sig の宣言か (本体のない標準ライブラリの署名)。
+fn types.infer.item_is_sig(env: &types.env.Env, item: usize) -> bool uses [] panics never pub
+    match env.tab.items.as_slice().get(item) {
+        Some(it) => it.sig
+        None => false
+    }
+end types.infer.item_is_sig
 
 fn types.infer.item_kind(env: &types.env.Env, item: usize) -> parse.ast.Kind uses [] panics never pub
     match env.tab.items.as_slice().get(item) {
@@ -558,6 +653,16 @@ fn types.infer.let_stmt(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut t
     if declared != types.ty.UNKNOWN {
         bt = declared
     }
+    // 型が決まらない (変数が残る) 束縛は、初期化式が `None` のような名前だけのとき見る (E2044)。
+    // 総称の呼び出しは、クロージャの境界からの推論をまだ持たないので、ここでは見ない。
+    let mut bare = false
+    if s.d != 0usize {
+        bare = parse.ast.get(&p.ast, s.d).kind == parse.ast.Kind.Path
+    }
+    if bt != types.ty.UNKNOWN && bare {
+        cx.pend.lets.push(bt)?
+        cx.pend.let_lines.push(line)?
+    }
     let pn = parse.ast.get(&p.ast, s.a)
     if (pn.kind == parse.ast.Kind.PBind && bt == types.ty.UNKNOWN) {
         let tk = parse.cur.peek_at(p, pn.a)
@@ -601,7 +706,8 @@ fn types.infer.literal(ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &pars
             return Ok(types.ty.strip(ar, want))
         }
         let v = types.ty.fresh(ar, true)?
-        cx.lits.push(v)?
+        cx.pend.lits.push(v)?
+        cx.pend.lit_lines.push(resolve.ast.line_of(p, lit.tok))?
         return Ok(v)
     }
     if class == 2usize {
@@ -609,7 +715,13 @@ fn types.infer.literal(ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &pars
         if suf != types.ty.UNKNOWN {
             return Ok(suf)
         }
-        return Ok(types.ty.UNKNOWN)
+        if types.ty.node(ar, types.ty.strip(ar, want)).k == types.ty.K.Float {
+            return Ok(types.ty.strip(ar, want))
+        }
+        let fv = types.ty.fresh_float(ar)?
+        cx.pend.lits.push(fv)?
+        cx.pend.lit_lines.push(resolve.ast.line_of(p, lit.tok))?
+        return Ok(fv)
     }
     Ok(types.ty.UNKNOWN)
 end types.infer.literal
@@ -628,9 +740,22 @@ end types.infer.lower_in
 // match: 腕ごとに束縛して本体の型を一致させる。発散する腕 (!) は一致の対象外。
 fn types.infer.matchx(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, want: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
     let st = types.infer.expr(env, ar, cx, p, src, n.a, types.ty.UNKNOWN)?
+    let sst = types.ty.strip(ar, st)
+    let sn = types.ty.node(ar, sst)
+    let mut closed = sn.k == types.ty.K.Bool
+    let mut catch_any = false
+    let mut seen = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if sn.k == types.ty.K.Adt && types.infer.item_kind(env, sn.a) == parse.ast.Kind.EnumDef {
+        closed = true
+    }
     let mut result = types.ty.NEVER
     for j in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
         let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
+        if closed && types.infer.is_catch(env, cx, p, src, arm.a)? {
+            catch_any = true
+            types.chk.diag(cx, "E2021", resolve.ast.line_of(p, arm.tok), "catch-all arm")?
+        }
+        types.infer.note_arm(p, src, arm.a, &mut seen)?
         let mark = types.chk.mark(cx)
         types.infer.pat(env, ar, cx, p, src, arm.a, st)?
         let bt = types.infer.expr(env, ar, cx, p, src, arm.b, want)?
@@ -644,6 +769,13 @@ fn types.infer.matchx(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut typ
             types.infer.coerce(ar, cx, bt, result, line)?
         }
     }
+    let mut total = types.infer.variant_total(env, sn.a)
+    if sn.k == types.ty.K.Bool {
+        total = 2usize
+    }
+    if closed && !catch_any && seen.len() < total {
+        types.chk.diag(cx, "E2021", resolve.ast.line_of(p, n.tok), "match misses variants")?
+    }
     Ok(result)
 end types.infer.matchx
 
@@ -651,12 +783,16 @@ end types.infer.matchx
 fn types.infer.mcall(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
     let rt = types.infer.expr(env, ar, cx, p, src, n.a, types.ty.UNKNOWN)?
     let mname = resolve.ast.tok_text(p, src, n.b)
-    types.infer.method_call(env, ar, cx, p, src, rt, mname, n.d)
+    types.infer.method_call(env, ar, cx, p, src, rt, mname, n.d, resolve.ast.line_of(p, n.tok))
 end types.infer.mcall
 
 // 受け手の型 rt のメソッド mname を、引数の列 l で呼ぶ。署名が決まらなければ UNKNOWN (引数は見る)。
-fn types.infer.method_call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], rt: usize, mname: &str, l: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
+fn types.infer.method_call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], rt: usize, mname: &str, l: usize, line: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
     let rs = types.ty.strip(ar, rt)
+    let rv = types.ty.node(ar, types.ty.find(ar, rs))
+    if rv.k == types.ty.K.Var {
+        types.infer.unknown_bind(cx, line, mname)?
+    }
     let key = types.infer.method_key(env, ar, rs, mname)?
     let mut it = types.env.get_def(&env.tab, key.as_str())
     let mut rs2 = rs
@@ -690,7 +826,7 @@ fn types.infer.method_call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mu
         let self_t = types.ty.strip(ar, s0)
         core.mem.drop(types.ty.unify(ar, self_t, rs2)?)
     }
-    types.infer.check_args(env, ar, cx, p, src, l, &params, 1usize)?
+    types.infer.check_args(env, ar, cx, p, src, l, &params, 1usize, line)?
     Ok(ret)
 end types.infer.method_call
 
@@ -707,6 +843,36 @@ fn types.infer.method_key(env: &types.env.Env, ar: &types.ty.Arena, rs: usize, m
     pre.push_str(mname)?
     Ok(pre)
 end types.infer.method_key
+
+// 腕のパターンが覆う名前 (列挙子の末尾名・bool の綴り) を seen に入れる (重複はなし)。
+fn types.infer.note_arm(p: &parse.cur.P, src: &[u8], pt: usize, seen: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let n = parse.ast.get(&p.ast, pt)
+    let mut name = ""
+    if n.kind == parse.ast.Kind.PPath || n.kind == parse.ast.Kind.PVariant {
+        name = resolve.ast.last_part(resolve.ast.text(src, n.a, n.b))
+    }
+    if n.kind == parse.ast.Kind.PLit {
+        let lit = parse.ast.get(&p.ast, n.a)
+        if lit.a == 7usize {
+            name = resolve.ast.tok_text(p, src, lit.b)
+        }
+    }
+    if name == "" {
+        return Ok(())
+    }
+    for k in core.iter.range(0usize, seen.len()) {
+        match seen.as_slice().get(k) {
+            Some(v) => {
+                if v.as_str() == name {
+                    return Ok(())
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    seen.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+    Ok(())
+end types.infer.note_arm
 
 // 引数の並びの k 番目 (範囲外は UNKNOWN)。
 fn types.infer.param_at(params: &alloc.vec.Vec<usize, std.alloc.System>, k: usize) -> usize uses [] panics never pub
@@ -730,7 +896,11 @@ fn types.infer.pat(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
         if upper && types.env.lookup(env, cx.file, name)? != 0usize {
             return Ok(())
         }
-        types.chk.push(cx, name, ty, false)?
+        let mut bt = ty
+        if ty == types.ty.UNKNOWN {
+            bt = types.ty.push(ar, types.ty.mk(types.ty.K.Opaque, 0usize, 0usize, 0usize, false))?
+        }
+        types.chk.push(cx, name, bt, false)?
         return Ok(())
     }
     if (k == parse.ast.Kind.PVariant) {
@@ -745,6 +915,7 @@ fn types.infer.pat(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
         let vitem = it.wrapping_sub(1usize)
         let enum_item = types.infer.item_owner(env, vitem).wrapping_sub(1usize)
         let rn = types.ty.node(ar, rs)
+        let by_ref = types.ty.node(ar, types.ty.find(ar, ty)).k == types.ty.K.Ref
         let args = if rn.k == types.ty.K.Adt && rn.a == enum_item {
             types.infer.adt_args(ar, rs)?
         } else {
@@ -755,7 +926,11 @@ fn types.infer.pat(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
         }
         for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
             let sub = resolve.ast.item(p, n.c, j)
-            let pty = types.infer.payload_ty(env, ar, cx, vitem, enum_item, &args, j)?
+            let pty0 = types.infer.payload_ty(env, ar, cx, vitem, enum_item, &args, j)?
+            let mut pty = pty0
+            if by_ref {
+                pty = types.infer.ref_of(ar, pty0)?
+            }
             types.infer.pat(env, ar, cx, p, src, sub, pty)?
         }
         return Ok(())
@@ -771,7 +946,11 @@ fn types.infer.pat(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.
                 let args = types.infer.adt_args(ar, rs)?
                 fty = types.infer.field_ty(env, ar, cx, it.wrapping_sub(1usize), &args, fname)?
             }
-            types.infer.pat(env, ar, cx, p, src, f.b, fty)?
+            let mut fty2 = fty
+            if types.ty.node(ar, types.ty.find(ar, ty)).k == types.ty.K.Ref {
+                fty2 = types.infer.ref_of(ar, fty)?
+            }
+            types.infer.pat(env, ar, cx, p, src, f.b, fty2)?
         }
         return Ok(())
     }
@@ -904,6 +1083,14 @@ fn types.infer.push_generics(env: &types.env.Env, cx: &mut types.chk.Ctx, item: 
     Ok(mark)
 end types.infer.push_generics
 
+// 参照越しの分解の既定の束縛 (default binding mode): 中身が決まっていれば &中身。
+fn types.infer.ref_of(ar: &mut types.ty.Arena, t: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+    if t == types.ty.UNKNOWN {
+        return Ok(t)
+    }
+    types.ty.push(ar, types.ty.mk(types.ty.K.Ref, t, 0usize, 0usize, false))
+end types.infer.ref_of
+
 // 関数項目の署名を、総称を新しい型変数にして具体化する。(引数の型の並び, 戻り値の型)。
 fn types.infer.sig_of(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, item: usize) -> Result<(alloc.vec.Vec<usize, std.alloc.System>, usize), resolve.Failure> uses [alloc] panics never pub
     let mut params = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -958,10 +1145,16 @@ fn types.infer.structlit(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut 
     for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
         let fi = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
         let fname = resolve.ast.tok_text(p, src, fi.a)
+        if !types.infer.has_field(env, item, fname) {
+            types.chk.diag(cx, "E2010", resolve.ast.line_of(p, fi.a), "no such field")?
+        }
         let fty = types.infer.field_ty(env, ar, cx, item, &args, fname)?
         let got = types.infer.expr(env, ar, cx, p, src, fi.b, fty)?
         let line = resolve.ast.line_of(p, parse.ast.get(&p.ast, fi.b).tok)
         types.infer.coerce(ar, cx, got, fty, line)?
+    }
+    if resolve.ast.count(p, n.c) < types.infer.variant_total(env, item) {
+        types.chk.diag(cx, "E2011", resolve.ast.line_of(p, n.tok), "missing fields")?
     }
     Ok(types.ty.adt(ar, item, &args)?)
 end types.infer.structlit
@@ -1024,3 +1217,16 @@ fn types.infer.variant_arity(env: &types.env.Env, item: usize) -> usize uses [] 
         None => 0usize
     }
 end types.infer.variant_arity
+
+// 型の定義の要素数 (構造体のフィールド・列挙の列挙子)。
+fn types.infer.variant_total(env: &types.env.Env, item: usize) -> usize uses [] panics never pub
+    let node = types.infer.item_node(env, item)
+    let file = types.infer.item_file(env, item)
+    match env.units.as_slice().get(file) {
+        Some(p2) => {
+            let n = parse.ast.get(&p2.ast, node)
+            resolve.ast.count(p2, n.d)
+        }
+        None => 0usize
+    }
+end types.infer.variant_total

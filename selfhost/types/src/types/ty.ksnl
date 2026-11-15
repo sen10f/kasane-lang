@@ -84,11 +84,15 @@ fn types.ty.args(ar: &mut types.ty.Arena, ids: &alloc.vec.Vec<usize, std.alloc.S
 end types.ty.args
 
 // 変数 v を t に束縛する (v は未束縛の Var)。整数リテラル変数は整数型とだけ一致する。
-fn types.ty.bind(ar: &mut types.ty.Arena, v: usize, t: usize, lit: bool) -> Result<bool, alloc.alloc.AllocError> uses [alloc] panics never pub
+fn types.ty.bind(ar: &mut types.ty.Arena, v: usize, t: usize, litc: usize) -> Result<bool, alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut n = types.ty.node(ar, v)
-    if lit {
+    if litc != 0usize {
         let tn = types.ty.node(ar, t)
-        if (tn.k != types.ty.K.Int) {
+        let mut want_k = types.ty.K.Float
+        if litc == 1usize {
+            want_k = types.ty.K.Int
+        }
+        if tn.k != want_k {
             return Ok(false)
         }
     }
@@ -114,7 +118,7 @@ fn types.ty.default_lit(ar: &mut types.ty.Arena, v: usize) -> Result<(), alloc.a
     let r = types.ty.find(ar, v)
     let n = types.ty.node(ar, r)
     if (n.k == types.ty.K.Var && n.c == 1usize) {
-        core.mem.drop(types.ty.bind(ar, r, types.ty.I32, true)?)
+        core.mem.drop(types.ty.bind(ar, r, types.ty.I32, 1usize)?)
     }
     Ok(())
 end types.ty.default_lit
@@ -142,6 +146,35 @@ fn types.ty.fresh(ar: &mut types.ty.Arena, lit: bool) -> Result<usize, alloc.all
     }
     types.ty.push(ar, types.ty.mk(types.ty.K.Var, 0usize, 0usize, c, false))
 end types.ty.fresh
+
+// 小数リテラル由来の型変数 (c = 2)。
+fn types.ty.fresh_float(ar: &mut types.ty.Arena) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+    types.ty.push(ar, types.ty.mk(types.ty.K.Var, 0usize, 0usize, 2usize, false))
+end types.ty.fresh_float
+
+// 束縛されていない (整数リテラルでない) 型変数を含むか。
+fn types.ty.has_free(ar: &types.ty.Arena, id: usize, depth: usize) -> bool uses [] panics never stack 4096 pub
+    if depth > 64usize {
+        return false
+    }
+    let r = types.ty.find(ar, id)
+    let n = types.ty.node(ar, r)
+    if n.k == types.ty.K.Var {
+        return n.c == 0usize
+    }
+    if n.k == types.ty.K.Adt || n.k == types.ty.K.Tuple {
+        for k in core.iter.range(0usize, n.c) {
+            if types.ty.has_free(ar, types.ty.arg(ar, n.b, k), depth.wrapping_add(1usize)) {
+                return true
+            }
+        }
+        return false
+    }
+    if n.k == types.ty.K.Ref || n.k == types.ty.K.Array || n.k == types.ty.K.Slice {
+        return types.ty.has_free(ar, n.a, depth.wrapping_add(1usize))
+    }
+    false
+end types.ty.has_free
 
 // 整数の名前 (`i32` など) の型。整数でなければ UNKNOWN。
 fn types.ty.int_id(name: &str) -> usize uses [] panics never pub
@@ -247,17 +280,20 @@ fn types.ty.unify(ar: &mut types.ty.Arena, x: usize, y: usize) -> Result<bool, a
     if (na.k == types.ty.K.Opaque || nb.k == types.ty.K.Opaque) {
         return Ok(true)
     }
+    if (na.k == types.ty.K.Fnty && nb.k == types.ty.K.Fnty) {
+        return Ok(true)
+    }
     if (na.k == types.ty.K.Var && nb.k == types.ty.K.Var) {
         if na.c == 1usize && nb.c == 0usize {
-            return types.ty.bind(ar, b, a, false)
+            return types.ty.bind(ar, b, a, 0usize)
         }
-        return types.ty.bind(ar, a, b, false)
+        return types.ty.bind(ar, a, b, 0usize)
     }
     if (na.k == types.ty.K.Var) {
-        return types.ty.bind(ar, a, b, na.c == 1usize)
+        return types.ty.bind(ar, a, b, na.c)
     }
     if (nb.k == types.ty.K.Var) {
-        return types.ty.bind(ar, b, a, nb.c == 1usize)
+        return types.ty.bind(ar, b, a, nb.c)
     }
     if (na.k == types.ty.K.Ref) {
         return types.ty.unify(ar, na.a, b)
