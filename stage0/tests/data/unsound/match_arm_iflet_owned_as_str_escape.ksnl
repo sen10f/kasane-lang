@@ -1,0 +1,13 @@
+// expect: E3030
+fn t.dangling(s: &str) -> &str uses [alloc] panics never
+    let x = if let Ok(v) = alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        v.as_str()
+    } else {
+        ""
+    }
+    x
+end t.dangling
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line("main")
+end t.main

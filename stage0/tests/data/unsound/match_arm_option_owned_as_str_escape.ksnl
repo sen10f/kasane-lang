@@ -1,0 +1,16 @@
+// expect: E3030
+fn t.dangling(s: &str) -> &str uses [alloc] panics never
+    let o = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(v) => Some(v)
+        Err(_e) => None
+    }
+    let x = match o {
+        Some(v) => v.as_str()
+        None => ""
+    }
+    x
+end t.dangling
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line("main")
+end t.main

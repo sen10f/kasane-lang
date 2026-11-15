@@ -1,0 +1,13 @@
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line(t.pick("  ok  "))
+end t.main
+
+fn t.pick(s: &str) -> &str uses [] panics never
+    let o: Result<&str, &str> = Ok(s)
+    let x = if let Ok(p) = &o {
+        p.trim()
+    } else {
+        ""
+    }
+    x
+end t.pick
