@@ -215,6 +215,10 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         Some(x) => lower.cx.own(x.fqn.as_str())?
         None => alloc.string.String.new(std.alloc.SYSTEM)
     }
+    // 本体のない標準の宣言で、KIR の命令に下ろす表にあるもの (`lower.std_calls`)。
+    if lower.std_calls.has_fn(fqn.as_str()) {
+        return lower.std_calls.call(env, c, p, src, n, t, fqn.as_str())
+    }
     // `core.mem.drop(x)`: 組み込み (本体のない宣言)。引数を評価し、単位の値を返す。
     if fqn.as_str() == "core.mem.drop" {
         let mut dv = 0usize
@@ -725,7 +729,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
                     let stk_tok = parse.cur.peek_at(p, sp.a)
                     let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
                     let fv2 = lower.opt.wrap_ref(env, c, fv, pt)?
-                    lower.opt.bind(env, c, stk, fv2, false, pt)?
+                    core.mem.drop(lower.opt.bind(env, c, stk, fv2, false, pt)?)
                 }
                 i = i + 1usize
             }
@@ -843,7 +847,7 @@ fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let mut v = 0usize
     if rt.as_str() == "unit" {
         if n.a != 0usize {
-            lower.expr.expr(env, c, p, src, n.a, c.s.ret_t)?
+            core.mem.drop(lower.expr.expr(env, c, p, src, n.a, c.s.ret_t)?)
         }
         v = lower.expr.unit(c)?
     } else {
@@ -1135,7 +1139,7 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             let mt = lower.opt.refty(true, st.as_str())?
             slot = lower.cx.def(c, mt.as_str(), "alloca")?
             let so = lower.opt.two_op("store ", slot, x.v)?
-            lower.cx.def(c, "unit", so.as_str())?
+            core.mem.drop(lower.cx.def(c, "unit", so.as_str())?)
         }
         let tt = lower.tyk.text(env, c, t)?
         let head = if mutable {
