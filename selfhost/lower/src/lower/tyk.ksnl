@@ -3,6 +3,9 @@
 // 文字列の参照 (`&str`) の集成体 `fat` = {ptr, len}。項目の代わりに番号 FAT を使う。
 const lower.tyk.FAT: usize = 4294967295usize pub
 
+// 組の集成体の項目の基点 (TUP + 添字)。
+const lower.tyk.TUP: usize = 1000000000usize pub
+
 // `Vec<T>` の枠 `vec` = {ptr, len, cap} (24 バイト。要素の型は枠に入れない)。項目の代わりに番号 VEC を使う。
 const lower.tyk.VEC: usize = 4294967294usize pub
 
@@ -29,6 +32,9 @@ fn lower.tyk.agg_id(c: &mut lower.cx.Cx, item: usize) -> Result<usize, resolve.F
 end lower.tyk.agg_id
 
 fn lower.tyk.agg_line(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    if item >= lower.tyk.TUP {
+        return lower.tup.agg_line(env, c, item, id)
+    }
     if item == lower.tyk.VEC {
         let mut vs = alloc.string.String.new(std.alloc.SYSTEM)
         vs.push_str("agg#")?
@@ -269,6 +275,27 @@ end lower.tyk.kind_word
 
 // 項目 (構造体・列挙型) のレイアウト。
 fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Result<lower.tyk.Lay, resolve.Failure> uses [alloc] panics may pub
+    if item >= lower.tyk.TUP {
+        let tt = lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.TUP)
+        let f = types.ty.find(&c.ar, tt)
+        let n = types.ty.node(&c.ar, f)
+        let mut offs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut off = 0usize
+        let mut al = 1usize
+        for k in core.iter.range(0usize, n.c) {
+            let et = types.ty.arg(&c.ar, n.b, k)
+            let (sz, a) = lower.tyk.size_of(env, c, et)?
+            off = lower.tyk.up(off, a)
+            offs.push(off)?
+            off = off + sz
+            if a > al {
+                al = a
+            }
+        }
+        let size = lower.tyk.up(off, al)
+        let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        return Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vl })
+    }
     if item == lower.tyk.VEC {
         let vo = alloc.vec.Vec.new(std.alloc.SYSTEM)
         let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -367,6 +394,11 @@ fn lower.tyk.size_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Resu
     if n.k == types.ty.K.Str {
         return Ok((16usize, 8usize))
     }
+    if (n.k == types.ty.K.Tuple && n.c > 0usize) {
+        let ti = lower.tup.item(env, c, f)?
+        let lay = lower.tyk.layout(env, c, ti)?
+        return Ok((lay.size, lay.align))
+    }
     if (n.k == types.ty.K.Adt && lower.tyk.is_vec(env, n.a)) {
         return Ok((24usize, 8usize))
     }
@@ -410,6 +442,13 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
         let vid = lower.tyk.agg_id(c, lower.tyk.VEC)?
         s.push_str("agg#")?
         s.push_str(lower.cx.dec(vid)?.as_str())?
+        return Ok(s)
+    }
+    if (n.k == types.ty.K.Tuple && n.c > 0usize) {
+        let ti = lower.tup.item(env, c, f)?
+        let tid = lower.tyk.agg_id(c, ti)?
+        s.push_str("agg#")?
+        s.push_str(lower.cx.dec(tid)?.as_str())?
         return Ok(s)
     }
     if n.k == types.ty.K.Str {

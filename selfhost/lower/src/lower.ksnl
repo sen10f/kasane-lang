@@ -27,7 +27,7 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
     }
     // 呼ばれた関数を順に下ろす (下ろす途中で呼び出し先が増える)。
     let mut i = 0usize
-    while i < c.g.names.len() {
+    while i < c.g.nms.len() {
         let key = lower.cx.name_of(&c, i)?
         let it = lower.cx.item_at(&c, i)
         let subs = lower.cx.subs_at(&c, i)?
@@ -50,20 +50,20 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
     }
     // 関数は名前の順 (選択で並べる)。
     let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    for _k in core.iter.range(0usize, c.g.names.len()) {
+    for _k in core.iter.range(0usize, c.g.nms.len()) {
         used.push(false)?
     }
     let mut firstf = true
     let mut bad = alloc.string.String.new(std.alloc.SYSTEM)
     loop {
-        let mut pick = c.g.names.len()
-        for k in core.iter.range(0usize, c.g.names.len()) {
+        let mut pick = c.g.nms.len()
+        for k in core.iter.range(0usize, c.g.nms.len()) {
             let taken = match used.as_slice().get(k) {
                 Some(x) => *x
                 None => true
             }
             if !taken {
-                if pick == c.g.names.len() {
+                if pick == c.g.nms.len() {
                     pick = k
                 } else {
                     let a = lower.cx.name_of(&c, k)?
@@ -74,7 +74,7 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
                 }
             }
         }
-        if pick == c.g.names.len() {
+        if pick == c.g.nms.len() {
             break
         }
         // 取り出した印を付ける (組み直し)。
@@ -93,11 +93,11 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
             Some(b) => *b
             None => false
         }
-        let text = match c.g.texts.as_slice().get(pick) {
+        let text = match c.g.tx.as_slice().get(pick) {
             Some(s) => lower.cx.own(s.as_str())?
             None => alloc.string.String.new(std.alloc.SYSTEM)
         }
-        let nm = match c.g.names.as_slice().get(pick) {
+        let nm = match c.g.nms.as_slice().get(pick) {
             Some(s) => lower.cx.own(s.as_str())?
             None => alloc.string.String.new(std.alloc.SYSTEM)
         }

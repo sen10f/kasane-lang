@@ -272,8 +272,8 @@ end lower.expr.dummy
 // 関数の下ろしを予約する (未処理なら末尾に足す)。
 fn lower.expr.enqueue(c: &mut lower.cx.Cx, key: &str, item1: usize, subs: alloc.vec.Vec<usize, std.alloc.System>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let mut i = 0usize
-    while i < c.g.names.len() {
-        let same = match c.g.names.as_slice().get(i) {
+    while i < c.g.nms.len() {
+        let same = match c.g.nms.as_slice().get(i) {
             Some(s) => s.as_str() == key
             None => false
         }
@@ -282,10 +282,10 @@ fn lower.expr.enqueue(c: &mut lower.cx.Cx, key: &str, item1: usize, subs: alloc.
         }
         i = i + 1usize
     }
-    c.g.names.push(lower.cx.own(key)?)?
-    c.g.items.push(item1)?
-    c.g.subs.push(subs)?
-    c.g.rets.push(ret)?
+    c.g.nms.push(lower.cx.own(key)?)?
+    c.g.itm.push(item1)?
+    c.g.sbs.push(subs)?
+    c.g.rts.push(ret)?
     Ok(())
 end lower.expr.enqueue
 
@@ -335,6 +335,9 @@ fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     }
     if (k == parse.ast.Kind.Loop) {
         return lower.expr.loopx(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.TupleE) {
+        return lower.tup.make(env, c, p, src, n, t)
     }
     if (k == parse.ast.Kind.Index) {
         return lower.vec.index_expr(env, c, p, src, n, t)
@@ -520,6 +523,11 @@ end lower.expr.last_seg
 // `let` 文 (束縛は PBind だけ)。初期化式は束縛より前の並びで下ろす。
 fn lower.expr.letx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], sn: parse.ast.Node) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let pn = parse.ast.get(&p.ast, sn.a)
+    if (sn.d != 0usize && (pn.kind == parse.ast.Kind.PStruct || pn.kind == parse.ast.Kind.PTuple)) {
+        let rr = lower.expr.expr(env, c, p, src, sn.d, types.ty.UNKNOWN)?
+        lower.pat.bind(env, c, p, src, sn.a, rr.v, rr.t, sn.b != 0usize)?
+        return Ok(())
+    }
     if (sn.d == 0usize || pn.kind != parse.ast.Kind.PBind) {
         lower.cx.fail(c, "let (初期化式のない束縛と、PBind 以外の形は未対応)")?
         return Ok(())

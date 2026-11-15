@@ -1,0 +1,42 @@
+fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], pn: usize, v: usize, t: usize, m: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let pat = parse.ast.get(&p.ast, pn)
+    if pat.kind == parse.ast.Kind.PWild {
+        return Ok(())
+    }
+    if pat.kind == parse.ast.Kind.PBind {
+        let tk = parse.cur.peek_at(p, pat.a)
+        let name = resolve.ast.text(src, tk.start, tk.stop)
+        let _bv = lower.opt.bind(env, c, name, v, m, t)?
+        return Ok(())
+    }
+    if pat.kind == parse.ast.Kind.PStruct {
+        // 参照なら読み出す (分解は値で行う)。
+        let r0 = lower.cx.R { v: v, t: t }
+        let r = lower.opt.deref_val(env, c, r0)?
+        let (inner, _th, _mu) = lower.opt.deref_ty(c, r.t)
+        let rs = types.ty.strip(&c.ar, inner)
+        let rn = types.ty.node(&c.ar, rs)
+        if (rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef) {
+            lower.cx.fail(c, "let の構造体の分解 (構造体以外は未対応)")?
+            return Ok(())
+        }
+        let lay = lower.tyk.layout(env, c, rn.a)?
+        for j in core.iter.range(0usize, resolve.ast.count(p, pat.c)) {
+            let fi = parse.ast.get(&p.ast, resolve.ast.item(p, pat.c, j))
+            let fname = resolve.ast.tok_text(p, src, fi.a)
+            let k = lower.tyk.field_index(env, rn.a, fname)?
+            let off = lower.tyk.at(lay.offs.as_slice(), k)
+            let sub = fi.b
+            let st = lower.tyk.text(env, c, lower.expr.tyof(c, sub)?)?
+            let fv = lower.cx.def(c, st.as_str(), lower.expr.field_src(r.v, off)?.as_str())?
+            let ft = lower.expr.tyof(c, sub)?
+            lower.pat.bind(env, c, p, src, sub, fv, ft, m)?
+        }
+        return Ok(())
+    }
+    if pat.kind == parse.ast.Kind.PTuple {
+        return lower.tup.bind(env, c, p, src, pn, v, t, m)
+    }
+    lower.cx.fail(c, "let の分解 (この形は未対応)")?
+    Ok(())
+end lower.pat.bind
