@@ -1,0 +1,492 @@
+// 波括弧の中の文の並び。ブロックの入口と出口で局所束縛を揃える。
+fn resolve.walk.block(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, b: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let n = parse.ast.get(&p.ast, b)
+    if n.kind != parse.ast.Kind.Block {
+        return resolve.walk.ex(t, p, src, st, b, rep)
+    }
+    let mark = st.mark()
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
+        resolve.walk.stmt(t, p, src, st, resolve.ast.item(p, n.a, j), rep)?
+    }
+    st.truncate(mark)
+    Ok(())
+end resolve.walk.block
+
+// 名前 1 件の判定と診断。tok は診断の行を決めるトークン。
+fn resolve.walk.check(p: &parse.cur.P, rep: &mut resolve.report.Report, tok: usize, name: &str, mode: usize, r: resolve.scope.Res) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let v = resolve.walk.verdict(r, mode)
+    let line = resolve.ast.line_of(p, tok)
+    if v == 0usize {
+        resolve.walk.hit(rep)
+        return Ok(())
+    }
+    if v == 2usize {
+        return resolve.report.diag(rep, "E1119", line, "private definition", name)
+    }
+    if mode == 1usize {
+        if v == 1usize {
+            return resolve.report.diag(rep, "E1102", line, "unknown type", name)
+        }
+        return resolve.report.diag(rep, "E1102", line, "not a type", name)
+    }
+    if mode == 4usize {
+        return resolve.report.diag(rep, "E1104", line, "unknown trait", name)
+    }
+    if mode == 0usize && v == 3usize {
+        return resolve.report.diag(rep, "E1109", line, "type name used as a value", name)
+    }
+    if mode == 2usize {
+        return resolve.report.diag(rep, "E1101", line, "unknown struct", name)
+    }
+    if mode == 3usize {
+        return resolve.report.diag(rep, "E1101", line, "unresolved pattern", name)
+    }
+    resolve.report.diag(rep, "E1101", line, "unresolved name", name)
+end resolve.walk.check
+
+// 閉包: 引数の型を見る。本体に見えるのは引数とキャプチャした名前だけ (キャプチャは外側で見えている必要がある)。
+fn resolve.walk.closure(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, n: parse.ast.Node, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
+        let prm = parse.ast.get(&p.ast, resolve.ast.item(p, n.a, j))
+        resolve.walk.ty(t, p, src, st, prm.b, rep)?
+    }
+    resolve.walk.ty(t, p, src, st, n.b, rep)?
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
+        let cap = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
+        let cname = resolve.ast.tok_text(p, src, cap.b)
+        let line = resolve.ast.line_of(p, n.tok)
+        if !st.has_local(cname) {
+            resolve.report.diag(rep, "E1101", line, "unresolved capture", cname)?
+        } else {
+            resolve.walk.hit(rep)
+        }
+    }
+    let saved = st.base
+    let top = st.mark()
+    st.base = top
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
+        let cap = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
+        st.push_local(resolve.ast.tok_text(p, src, cap.b))?
+    }
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
+        let prm = parse.ast.get(&p.ast, resolve.ast.item(p, n.a, j))
+        st.push_local(resolve.ast.tok_text(p, src, prm.a))?
+    }
+    resolve.walk.block(t, p, src, st, n.d, rep)?
+    st.truncate(top)
+    st.base = saved
+    Ok(())
+end resolve.walk.closure
+
+// 定義 1 件 (トップレベル)。
+fn resolve.walk.def(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, d: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let n = parse.ast.get(&p.ast, d)
+    let k = n.kind
+    if k == parse.ast.Kind.FnDef {
+        return resolve.walk.fn_def(t, p, src, st, n, rep)
+    }
+    if k == parse.ast.Kind.ConstDef || k == parse.ast.Kind.StaticDef {
+        resolve.walk.ty(t, p, src, st, n.c, rep)?
+        resolve.walk.ex(t, p, src, st, n.d, rep)?
+        return Ok(())
+    }
+    if k == parse.ast.Kind.TypeDef || k == parse.ast.Kind.EnumDef {
+        let gmark = st.gens.len()
+        resolve.walk.generics(t, p, src, st, n.c, rep)?
+        for j in core.iter.range(0usize, resolve.ast.count(p, n.d)) {
+            let it = parse.ast.get(&p.ast, resolve.ast.item(p, n.d, j))
+            if k == parse.ast.Kind.EnumDef {
+                resolve.walk.ty_list(t, p, src, st, it.b, rep)?
+            } else {
+                resolve.walk.ty(t, p, src, st, it.b, rep)?
+            }
+        }
+        st.gens.truncate(gmark)
+        return Ok(())
+    }
+    if k == parse.ast.Kind.TraitDef {
+        let gmark = st.gens.len()
+        resolve.walk.generics(t, p, src, st, n.c, rep)?
+        for j in core.iter.range(0usize, resolve.ast.count(p, n.d)) {
+            let f = parse.ast.get(&p.ast, resolve.ast.item(p, n.d, j))
+            resolve.walk.sig(t, p, src, st, f.b, f.c, f.d, rep)?
+        }
+        st.gens.truncate(gmark)
+        return Ok(())
+    }
+    if k == parse.ast.Kind.ImplLine {
+        let gmark = st.gens.len()
+        resolve.walk.generics(t, p, src, st, n.c, rep)?
+        resolve.walk.trait_ref(t, p, src, st, n.d, rep)?
+        resolve.walk.ty(t, p, src, st, n.e, rep)?
+        st.gens.truncate(gmark)
+        return Ok(())
+    }
+    if k == parse.ast.Kind.ExternDef {
+        resolve.walk.sig(t, p, src, st, 0usize, n.c, n.d, rep)?
+        return Ok(())
+    }
+    if k == parse.ast.Kind.TestDef {
+        if n.d != 0usize {
+            resolve.walk.block(t, p, src, st, n.d, rep)?
+        }
+        return Ok(())
+    }
+    Ok(())
+end resolve.walk.def
+
+// 式。種類ごとに子の並びを見る (ast.ksnl の表どおり)。
+fn resolve.walk.ex(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, e: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let n = parse.ast.get(&p.ast, e)
+    let k = n.kind
+    if k == parse.ast.Kind.Path {
+        resolve.walk.name(t, p, src, st, rep, n.tok, n.a, n.b, 0usize)?
+        return resolve.walk.ty_list(t, p, src, st, n.c, rep)
+    }
+    if k == parse.ast.Kind.Block {
+        return resolve.walk.block(t, p, src, st, e, rep)
+    }
+    if k == parse.ast.Kind.Call {
+        resolve.walk.ex(t, p, src, st, n.a, rep)?
+        return resolve.walk.ex_list(t, p, src, st, n.b, rep)
+    }
+    if k == parse.ast.Kind.MCall {
+        resolve.walk.ex(t, p, src, st, n.a, rep)?
+        resolve.walk.ty_list(t, p, src, st, n.c, rep)?
+        return resolve.walk.ex_list(t, p, src, st, n.d, rep)
+    }
+    let b1 = k == parse.ast.Kind.Dot || k == parse.ast.Kind.Try || k == parse.ast.Kind.Return
+    let b2 = k == parse.ast.Kind.ExprStmt || k == parse.ast.Kind.Loop
+    if b1 || b2 {
+        return resolve.walk.ex(t, p, src, st, n.a, rep)
+    }
+    if k == parse.ast.Kind.Unary {
+        return resolve.walk.ex(t, p, src, st, n.b, rep)
+    }
+    let c1 = k == parse.ast.Kind.Index || k == parse.ast.Kind.Assign
+    let c2 = k == parse.ast.Kind.ArrayRep || k == parse.ast.Kind.While
+    if c1 || c2 {
+        if k == parse.ast.Kind.While {
+            resolve.walk.ex(t, p, src, st, n.a, rep)?
+            return resolve.walk.ex(t, p, src, st, n.b, rep)
+        }
+        resolve.walk.ex(t, p, src, st, n.a, rep)?
+        return resolve.walk.ex(t, p, src, st, n.b, rep)
+    }
+    if k == parse.ast.Kind.Bin {
+        resolve.walk.ex(t, p, src, st, n.b, rep)?
+        return resolve.walk.ex(t, p, src, st, n.c, rep)
+    }
+    if k == parse.ast.Kind.ArrayE || k == parse.ast.Kind.TupleE {
+        return resolve.walk.ex_list(t, p, src, st, n.a, rep)
+    }
+    if k == parse.ast.Kind.If {
+        resolve.walk.ex(t, p, src, st, n.a, rep)?
+        resolve.walk.ex(t, p, src, st, n.b, rep)?
+        return resolve.walk.ex(t, p, src, st, n.c, rep)
+    }
+    if k == parse.ast.Kind.Unsafe {
+        return resolve.walk.ex(t, p, src, st, n.c, rep)
+    }
+    if k == parse.ast.Kind.For {
+        resolve.walk.ex(t, p, src, st, n.b, rep)?
+        let mark = st.mark()
+        resolve.walk.pat(t, p, src, st, n.a, rep)?
+        resolve.walk.ex(t, p, src, st, n.c, rep)?
+        st.truncate(mark)
+        return Ok(())
+    }
+    if k == parse.ast.Kind.Match {
+        resolve.walk.ex(t, p, src, st, n.a, rep)?
+        for j in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
+            let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
+            let mark = st.mark()
+            resolve.walk.pat(t, p, src, st, arm.a, rep)?
+            resolve.walk.ex(t, p, src, st, arm.b, rep)?
+            st.truncate(mark)
+        }
+        return Ok(())
+    }
+    if k == parse.ast.Kind.With {
+        resolve.walk.ex(t, p, src, st, n.c, rep)?
+        let mark = st.mark()
+        st.push_local(resolve.ast.tok_text(p, src, n.a))?
+        resolve.walk.ex(t, p, src, st, n.d, rep)?
+        resolve.walk.ex(t, p, src, st, n.e, rep)?
+        st.truncate(mark)
+        return Ok(())
+    }
+    if k == parse.ast.Kind.StructLit {
+        resolve.walk.name(t, p, src, st, rep, n.tok, n.a, n.b, 2usize)?
+        for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
+            let fi = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
+            resolve.walk.ex(t, p, src, st, fi.b, rep)?
+        }
+        return Ok(())
+    }
+    if k == parse.ast.Kind.Closure {
+        return resolve.walk.closure(t, p, src, st, n, rep)
+    }
+    Ok(())
+end resolve.walk.ex
+
+fn resolve.walk.ex_list(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, l: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        resolve.walk.ex(t, p, src, st, resolve.ast.item(p, l, j), rep)?
+    }
+    Ok(())
+end resolve.walk.ex_list
+
+// 定義のヘッダと本体を走査し、名前の参照を解決する (仕様 3.3)。
+// mode: 0 = 値 (E1101)、1 = 型 (E1102)、2 = 構造体リテラル (E1101)、3 = パターン (E1101)、4 = トレイト (E1104)。
+// 解決できても表の中身は見ない (型検査はしない)。読み飛ばすもの: 定数式の中身、属性、効果、panics、リテラル。
+// ファイル 1 つを走査する。
+fn resolve.walk.file(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], file: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let mut st = resolve.scope.new(file, p, src)?
+    for d in p.ast.defs.as_slice().iter() {
+        resolve.walk.def(t, p, src, &mut st, *d, rep)?
+    }
+    Ok(())
+end resolve.walk.file
+
+// 関数の頭 (ジェネリクス・引数の型・戻り値の型) と本体。
+fn resolve.walk.fn_def(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, n: parse.ast.Node, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let sg = parse.ast.get(&p.ast, n.c)
+    let gmark = st.gens.len()
+    resolve.walk.generics(t, p, src, st, sg.a, rep)?
+    resolve.walk.sig(t, p, src, st, 0usize, sg.b, sg.c, rep)?
+    if n.d != 0usize {
+        let mark = st.mark()
+        for j in core.iter.range(0usize, resolve.ast.count(p, sg.b)) {
+            let prm = parse.ast.get(&p.ast, resolve.ast.item(p, sg.b, j))
+            st.push_local(resolve.ast.tok_text(p, src, prm.a))?
+        }
+        resolve.walk.block(t, p, src, st, n.d, rep)?
+        st.truncate(mark)
+    }
+    st.gens.truncate(gmark)
+    Ok(())
+end resolve.walk.fn_def
+
+// ジェネリクスの並び。型引数の名前を押す (寿命は名前を持たない)。境界の trait と const 型も見る。
+fn resolve.walk.generics(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, l: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    // 名前を先に全部押す (境界が後ろの名前を使うことがある: `impl[I: Iterator<T>, T]`)。
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        let g = parse.ast.get(&p.ast, resolve.ast.item(p, l, j))
+        if g.a != 1usize {
+            st.push_generic(resolve.ast.tok_text(p, src, g.b))?
+        }
+    }
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        let g = parse.ast.get(&p.ast, resolve.ast.item(p, l, j))
+        if g.a == 4usize {
+            resolve.walk.ty(t, p, src, st, g.d, rep)?
+        }
+        resolve.walk.trait_list(t, p, src, st, g.c, rep)?
+    }
+    Ok(())
+end resolve.walk.generics
+
+// 解決した参照を数える。
+fn resolve.walk.hit(rep: &mut resolve.report.Report) -> () uses [] panics never pub
+    rep.refs = rep.refs.wrapping_add(1usize)
+end resolve.walk.hit
+
+// 名前 [a, b) を解決して判定する。
+fn resolve.walk.name(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &resolve.scope.St, rep: &mut resolve.report.Report, tok: usize, a: usize, b: usize, mode: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let name = resolve.ast.text(src, a, b)
+    let r = resolve.scope.find(t, st, name)?
+    resolve.walk.check(p, rep, tok, name, mode, r)?
+    Ok(())
+end resolve.walk.name
+
+// 束縛を作るパターン。束縛名は局所に押す。大文字で始まる単独の名前は列挙子・定数として解決する。
+fn resolve.walk.pat(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, pt: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let n = parse.ast.get(&p.ast, pt)
+    let k = n.kind
+    if k == parse.ast.Kind.PBind {
+        let tk = parse.cur.peek_at(p, n.a)
+        let upper = match src.get(tk.start) {
+            Some(c) => *c >= 65u8 && *c <= 90u8
+            None => false
+        }
+        if upper {
+            resolve.walk.name(t, p, src, st, rep, n.tok, tk.start, tk.stop, 3usize)?
+        } else {
+            st.push_local(resolve.ast.text(src, tk.start, tk.stop))?
+        }
+        return Ok(())
+    }
+    if k == parse.ast.Kind.PPath || k == parse.ast.Kind.PVariant || k == parse.ast.Kind.PStruct {
+        resolve.walk.name(t, p, src, st, rep, n.tok, n.a, n.b, 3usize)?
+        for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
+            let sub = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
+            if k == parse.ast.Kind.PStruct {
+                resolve.walk.pat(t, p, src, st, sub.b, rep)?
+            } else {
+                resolve.walk.pat(t, p, src, st, resolve.ast.item(p, n.c, j), rep)?
+            }
+        }
+        return Ok(())
+    }
+    if k == parse.ast.Kind.PTuple {
+        for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
+            resolve.walk.pat(t, p, src, st, resolve.ast.item(p, n.a, j), rep)?
+        }
+        return Ok(())
+    }
+    if k == parse.ast.Kind.PRef {
+        return resolve.walk.pat(t, p, src, st, n.a, rep)
+    }
+    Ok(())
+end resolve.walk.pat
+
+// 関数の引数 (Param の型) と戻り値の型。gl は既に押したジェネリクス (0 なら何もしない)。
+fn resolve.walk.sig(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, gl: usize, ps: usize, ret: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    if gl != 0usize {
+        resolve.walk.generics(t, p, src, st, gl, rep)?
+    }
+    for j in core.iter.range(0usize, resolve.ast.count(p, ps)) {
+        let prm = parse.ast.get(&p.ast, resolve.ast.item(p, ps, j))
+        resolve.walk.ty(t, p, src, st, prm.b, rep)?
+    }
+    resolve.walk.ty(t, p, src, st, ret, rep)?
+    Ok(())
+end resolve.walk.sig
+
+// 文: let は型・初期化式を見てから束縛する。それ以外は式。
+fn resolve.walk.stmt(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, s: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let n = parse.ast.get(&p.ast, s)
+    if n.kind == parse.ast.Kind.Let {
+        resolve.walk.ty(t, p, src, st, n.c, rep)?
+        resolve.walk.ex(t, p, src, st, n.d, rep)?
+        resolve.walk.pat(t, p, src, st, n.a, rep)?
+        return Ok(())
+    }
+    resolve.walk.ex(t, p, src, st, s, rep)
+end resolve.walk.stmt
+
+fn resolve.walk.trait_list(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &resolve.scope.St, l: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        resolve.walk.trait_ref(t, p, src, st, resolve.ast.item(p, l, j), rep)?
+    }
+    Ok(())
+end resolve.walk.trait_list
+
+// トレイトの参照 (TraitRef: a..b = 名前、c = 型引数)。
+fn resolve.walk.trait_ref(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &resolve.scope.St, tr: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let n = parse.ast.get(&p.ast, tr)
+    if n.kind == parse.ast.Kind.TraitRef {
+        resolve.walk.name(t, p, src, st, rep, n.tok, n.a, n.b, 4usize)?
+        resolve.walk.ty_list(t, p, src, st, n.c, rep)?
+    }
+    Ok(())
+end resolve.walk.trait_ref
+
+// 型 (TNamed の名前は型として解決する)。
+fn resolve.walk.ty(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &resolve.scope.St, ty: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let n = parse.ast.get(&p.ast, ty)
+    let k = n.kind
+    if k == parse.ast.Kind.TNamed {
+        resolve.walk.name(t, p, src, st, rep, n.tok, n.a, n.b, 1usize)?
+        resolve.walk.ty_list(t, p, src, st, n.c, rep)?
+        return Ok(())
+    }
+    let a1 = k == parse.ast.Kind.TRef || k == parse.ast.Kind.TSlice
+    let a2 = k == parse.ast.Kind.TPtr || k == parse.ast.Kind.TArray
+    if a1 || a2 {
+        resolve.walk.ty(t, p, src, st, n.a, rep)?
+        return Ok(())
+    }
+    if k == parse.ast.Kind.TTuple {
+        resolve.walk.ty_list(t, p, src, st, n.a, rep)?
+        return Ok(())
+    }
+    if k == parse.ast.Kind.TFn {
+        resolve.walk.ty_list(t, p, src, st, n.a, rep)?
+        resolve.walk.ty(t, p, src, st, n.b, rep)?
+        return Ok(())
+    }
+    if k == parse.ast.Kind.TDyn {
+        resolve.walk.trait_ref(t, p, src, st, n.a, rep)?
+    }
+    Ok(())
+end resolve.walk.ty
+
+fn resolve.walk.ty_list(t: &resolve.table.Table, p: &parse.cur.P, src: &[u8], st: &resolve.scope.St, l: usize, rep: &mut resolve.report.Report) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        resolve.walk.ty(t, p, src, st, resolve.ast.item(p, l, j), rep)?
+    }
+    Ok(())
+end resolve.walk.ty_list
+
+// 名前の判定。0 = 解決、1 = 未解決、2 = 非 pub、3 = 種別が合わない。
+fn resolve.walk.verdict(r: resolve.scope.Res, mode: usize) -> usize uses [] panics never pub
+    match r {
+        resolve.scope.Res.Local => {
+            if mode == 0usize {
+                return 0usize
+            }
+            3usize
+        }
+        resolve.scope.Res.Generic => {
+            if mode == 2usize || mode == 3usize || mode == 4usize {
+                return 3usize
+            }
+            0usize
+        }
+        resolve.scope.Res.Builtin => {
+            if mode == 2usize || mode == 4usize {
+                return 3usize
+            }
+            0usize
+        }
+        resolve.scope.Res.Def(kd) => {
+            let is_ty = kd == parse.ast.Kind.TypeDef || kd == parse.ast.Kind.EnumDef
+            let is_tr = kd == parse.ast.Kind.TraitDef
+            if mode == 0usize {
+                if is_ty || is_tr {
+                    return 3usize
+                }
+                return 0usize
+            }
+            if mode == 1usize {
+                if is_ty || is_tr {
+                    return 0usize
+                }
+                return 3usize
+            }
+            if mode == 2usize {
+                if kd == parse.ast.Kind.TypeDef {
+                    return 0usize
+                }
+                return 3usize
+            }
+            if mode == 3usize {
+                let cs = kd == parse.ast.Kind.ConstDef || kd == parse.ast.Kind.StaticDef
+                if cs || kd == parse.ast.Kind.TypeDef {
+                    return 0usize
+                }
+                return 3usize
+            }
+            if is_tr {
+                return 0usize
+            }
+            3usize
+        }
+        resolve.scope.Res.Variant => {
+            if mode == 1usize || mode == 2usize || mode == 4usize {
+                return 3usize
+            }
+            0usize
+        }
+        resolve.scope.Res.Private => 2usize
+        resolve.scope.Res.Missing => 1usize
+        resolve.scope.Res.Member => {
+            if mode == 0usize {
+                return 0usize
+            }
+            1usize
+        }
+    }
+end resolve.walk.verdict

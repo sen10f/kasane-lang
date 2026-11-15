@@ -1,0 +1,240 @@
+// 基本型の名前 (4.5)。`i32.MAX` や `u64.from_usize` の先頭に来る。
+const resolve.scope.PRIMS: &str = "i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 bool char str" pub
+
+// 解決の結果。
+enum resolve.scope.Res derive [Debug, Clone, Copy, PartialEq] pub
+    Local
+    Generic
+    Builtin
+    Def(parse.ast.Kind)
+    Variant
+    Private
+    Missing
+    Member
+end resolve.scope.Res
+
+// 名前の解決 (仕様 3.3 の順)。名前 `a.b.c` の先頭成分 a を、
+// (1) 局所束縛 (本体の変数・引数。閉包の中は外側のうちキャプチャしたものだけ)、
+// (2) ジェネリクス引数 (ヘッダ)、
+// (3) import の末尾名 (`import app.net` の `net` → `app.net`)、
+// (4) それ以外は FQN として、の順に調べる。プレリュード (Option/Some/...) と基本型の名前は別扱い (4.2 / 4.5)。
+// 1 ファイルの解決の状態。locals[base..] が今見える局所束縛。
+type resolve.scope.St pub
+    file: usize pub
+    tails: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    fulls: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    gens: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    locals: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    base: usize pub
+end resolve.scope.St
+
+fn resolve.scope.St.has_generic(self: &resolve.scope.St, name: &str) -> bool uses [] panics never pub
+    for k in core.iter.range(0usize, self.gens.len()) {
+        match self.gens.as_slice().get(k) {
+            Some(g) => {
+                if g.as_str() == name {
+                    return true
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    false
+end resolve.scope.St.has_generic
+
+fn resolve.scope.St.has_local(self: &resolve.scope.St, name: &str) -> bool uses [] panics never pub
+    for k in core.iter.range(self.base, self.locals.len()) {
+        match self.locals.as_slice().get(k) {
+            Some(l) => {
+                if l.as_str() == name {
+                    return true
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    false
+end resolve.scope.St.has_local
+
+// import の末尾名 name に一致する import の添字 + 1 (なければ 0)。
+fn resolve.scope.St.import_index(self: &resolve.scope.St, name: &str) -> usize uses [] panics never pub
+    for j in core.iter.range(0usize, self.tails.len()) {
+        match self.tails.as_slice().get(j) {
+            Some(t) => {
+                if t.as_str() == name {
+                    return j.wrapping_add(1usize)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    0usize
+end resolve.scope.St.import_index
+
+// 局所束縛の数 (ブロックの入口で取り、出口で truncate する)。
+fn resolve.scope.St.mark(self: &resolve.scope.St) -> usize uses [] panics never pub
+    self.locals.len()
+end resolve.scope.St.mark
+
+fn resolve.scope.St.push_generic(self: &mut resolve.scope.St, name: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    self.gens.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+    Ok(())
+end resolve.scope.St.push_generic
+
+fn resolve.scope.St.push_local(self: &mut resolve.scope.St, name: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    self.locals.push(alloc.string.String.from_str(std.alloc.SYSTEM, name)?)?
+    Ok(())
+end resolve.scope.St.push_local
+
+fn resolve.scope.St.truncate(self: &mut resolve.scope.St, mark: usize) -> () uses [] panics never pub
+    self.locals.truncate(mark)
+end resolve.scope.St.truncate
+
+// 名前 name (1 成分以上) を解決する。
+fn resolve.scope.find(t: &resolve.table.Table, st: &resolve.scope.St, name: &str) -> Result<resolve.scope.Res, alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
+    let (first, rest) = match name.split_once(".") {
+        Some((a, b)) => (a, b)
+        None => (name, "")
+    }
+    if st.has_local(first) {
+        return Ok(resolve.scope.Res.Local)
+    }
+    if st.has_generic(first) {
+        return Ok(resolve.scope.Res.Generic)
+    }
+    let prelude = first == "Option" || first == "Some" || first == "None"
+    let prelude2 = first == "Result" || first == "Ok" || first == "Err"
+    if rest == "" && (prelude || prelude2) {
+        return Ok(resolve.scope.Res.Builtin)
+    }
+    if resolve.scope.is_prim(first) {
+        return Ok(resolve.scope.Res.Builtin)
+    }
+    let imp = st.import_index(first)
+    let mut key = alloc.string.String.new(std.alloc.SYSTEM)
+    if imp > 0usize {
+        match st.fulls.as_slice().get(imp.wrapping_sub(1usize)) {
+            Some(f) => key.push_str(f.as_str())?
+            None => core.mem.drop(0u8)
+        }
+        if rest != "" {
+            key.push('.')?
+            key.push_str(rest)?
+        }
+    } else {
+        key.push_str(name)?
+    }
+    let direct = resolve.scope.lookup_key(t, key.as_str(), st.file)?
+    if direct != resolve.scope.Res.Missing {
+        return Ok(direct)
+    }
+    // `値.メソッド` (`threads.TOTAL.lock`、`realtime.Phase.Idle.next`) は、接頭辞が値 (定数・静的・列挙子)
+    // なら残りは型検査でメソッドとして解く。ここでは接頭辞が値かどうかだけを見る (Member)。
+    resolve.scope.member(t, st, key.as_str())
+end resolve.scope.find
+
+fn resolve.scope.is_prim(name: &str) -> bool uses [] panics never pub
+    let names = resolve.scope.PRIMS
+    for w in names.split(" ") {
+        if w == name {
+            return true
+        }
+    }
+    false
+end resolve.scope.is_prim
+
+// 定義の表で FQN key を引く。別ファイルの非 pub は Private。
+fn resolve.scope.lookup_key(t: &resolve.table.Table, key: &str, file: usize) -> Result<resolve.scope.Res, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let k = alloc.string.String.from_str(std.alloc.SYSTEM, key)?
+    let dm = &t.defs.m
+    match dm.get(&k) {
+        Some(ix) => {
+            let d = resolve.table.at(t, *ix)
+            if !d.public && d.file != file {
+                return Ok(resolve.scope.Res.Private)
+            }
+            return Ok(resolve.scope.Res.Def(d.kind))
+        }
+        None => core.mem.drop(0u8)
+    }
+    let vm = &t.variants.m
+    match vm.get(&k) {
+        Some(_v) => Ok(resolve.scope.Res.Variant)
+        None => Ok(resolve.scope.Res.Missing)
+    }
+end resolve.scope.lookup_key
+
+// 接頭辞が値 (列挙子・定数・静的) に解決できるなら Member (残りは型検査でメソッドとして解く)。
+fn resolve.scope.member(t: &resolve.table.Table, st: &resolve.scope.St, name: &str) -> Result<resolve.scope.Res, alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
+    let pre = resolve.scope.prefix(name)?
+    if pre.len() == 0usize {
+        return Ok(resolve.scope.Res.Missing)
+    }
+    let pr = resolve.scope.find(t, st, pre.as_str())?
+    if pr == resolve.scope.Res.Variant {
+        return Ok(resolve.scope.Res.Member)
+    }
+    if pr == resolve.scope.Res.Def(parse.ast.Kind.ConstDef) {
+        return Ok(resolve.scope.Res.Member)
+    }
+    if pr == resolve.scope.Res.Def(parse.ast.Kind.StaticDef) {
+        return Ok(resolve.scope.Res.Member)
+    }
+    Ok(resolve.scope.Res.Missing)
+end resolve.scope.member
+
+// 空の状態 (ファイル番号だけ入れる)。
+fn resolve.scope.mk(file: usize) -> Result<resolve.scope.St, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let a = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let b = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let c = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let d = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    Ok(resolve.scope.St { file: file, tails: a, fulls: b, gens: c, locals: d, base: 0usize })
+end resolve.scope.mk
+
+// ファイルの import から状態を作る。末尾名は最後の成分。
+fn resolve.scope.new(file: usize, p: &parse.cur.P, src: &[u8]) -> Result<resolve.scope.St, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut st = resolve.scope.mk(file)?
+    for d in p.ast.defs.as_slice().iter() {
+        let n = parse.ast.get(&p.ast, *d)
+        if n.kind == parse.ast.Kind.Import {
+            let full = resolve.ast.text(src, n.a, n.b)
+            let tail = resolve.ast.last_part(full)
+            st.tails.push(alloc.string.String.from_str(std.alloc.SYSTEM, tail)?)?
+            st.fulls.push(alloc.string.String.from_str(std.alloc.SYSTEM, full)?)?
+        }
+    }
+    Ok(st)
+end resolve.scope.new
+
+// 末尾の成分を外した接頭辞 (`a.b.c` → `a.b`。成分が 1 つだけなら空)。
+fn resolve.scope.prefix(name: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut prev = ""
+    let mut has = false
+    for c in name.split(".") {
+        if has {
+            if out.len() > 0usize {
+                out.push('.')?
+            }
+            out.push_str(prev)?
+        }
+        prev = c
+        has = true
+    }
+    Ok(out)
+end resolve.scope.prefix
+
+test resolve.scope.prefix.test_drops_last
+    match resolve.scope.prefix("a.b.c") {
+        Ok(p) => core.check.eq(p.as_str(), "a.b")
+        Err(_e) => core.check.eq(1u8, 2u8)
+    }
+end resolve.scope.prefix.test_drops_last
+
+test resolve.scope.prefix.test_single
+    match resolve.scope.prefix("a") {
+        Ok(p) => core.check.eq(p.len(), 0usize)
+        Err(_e) => core.check.eq(1u8, 2u8)
+    }
+end resolve.scope.prefix.test_single

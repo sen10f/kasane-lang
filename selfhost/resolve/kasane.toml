@@ -1,0 +1,8 @@
+[package]
+name = "resolve"
+version = "0.1.0"
+edition = 1
+entry = "resolve.main"
+
+[dependencies]
+parse = { path = "../parse" }

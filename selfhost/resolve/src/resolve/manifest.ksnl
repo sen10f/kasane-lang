@@ -1,0 +1,91 @@
+// kasane.toml の読み取り。必要な部分だけ: [package] の name と、[dependencies] の path 依存。
+// それ以外の書式 (git 依存など) は読まない (この段では path 依存だけを使う)。
+type resolve.manifest.Dep pub
+    name: alloc.string.String<std.alloc.System> pub
+    path: alloc.string.String<std.alloc.System> pub
+end resolve.manifest.Dep
+
+type resolve.manifest.Pkg pub
+    name: alloc.string.String<std.alloc.System> pub
+    deps: alloc.vec.Vec<resolve.manifest.Dep, std.alloc.System> pub
+end resolve.manifest.Pkg
+
+// 依存 1 件 (名前と path)。
+fn resolve.manifest.dep(name: &str, path: &str) -> Result<resolve.manifest.Dep, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let n = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    let p = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    Ok(resolve.manifest.Dep { name: n, path: p })
+end resolve.manifest.dep
+
+// dir と rel を `/` で結ぶ。
+fn resolve.manifest.join(dir: &str, rel: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str(dir)?
+    out.push('/')?
+    out.push_str(rel)?
+    Ok(out)
+end resolve.manifest.join
+
+// `"..."` の中身 (引用符がなければそのまま)。
+fn resolve.manifest.quoted(v: &str) -> &str uses [] panics never pub
+    let a = match v.strip_prefix("\"") {
+        Some(s) => s
+        None => v
+    }
+    match a.strip_suffix("\"") {
+        Some(s) => s
+        None => a
+    }
+end resolve.manifest.quoted
+
+// kasane.toml を読む。dir はパッケージのディレクトリ。
+fn resolve.manifest.read(dir: &str) -> Result<resolve.manifest.Pkg, resolve.Failure> uses [alloc, io.fs] panics never pub
+    let path = resolve.manifest.join(dir, "kasane.toml")?
+    let bytes = resolve.load.read_bytes(path.as_str())?
+    let text = match core.str.from_utf8(bytes.as_slice()) {
+        Ok(s) => s
+        Err(_e) => return Err(resolve.Failure.Manifest)
+    }
+    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut deps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    // 0 = その他, 1 = [package], 2 = [dependencies]
+    let mut sec = 0usize
+    for raw in text.split("\n") {
+        let line = raw.trim()
+        if line == "[package]" {
+            sec = 1usize
+        } else if line == "[dependencies]" {
+            sec = 2usize
+        } else if line.starts_with("[") {
+            sec = 0usize
+        } else if sec == 1usize {
+            match line.split_once(" = ") {
+                Some((k, v)) => {
+                    if k == "name" {
+                        name.push_str(resolve.manifest.quoted(v))?
+                    }
+                }
+                None => core.mem.drop(0u8)
+            }
+        } else if sec == 2usize {
+            match line.split_once(" = ") {
+                Some((k, v)) => {
+                    match v.split_once("path = ") {
+                        Some((_a, rest)) => {
+                            match rest.split_once("}") {
+                                Some((body, _b)) => {
+                                    let dpath = resolve.manifest.quoted(body.trim())
+                                    deps.push(resolve.manifest.dep(k, dpath)?)?
+                                }
+                                None => core.mem.drop(0u8)
+                            }
+                        }
+                        None => core.mem.drop(0u8)
+                    }
+                }
+                None => core.mem.drop(0u8)
+            }
+        }
+    }
+    Ok(resolve.manifest.Pkg { name: name, deps: deps })
+end resolve.manifest.read

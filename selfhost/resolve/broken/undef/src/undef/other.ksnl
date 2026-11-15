@@ -1,0 +1,12 @@
+fn undef.other.f() -> i32 uses [] panics never pub
+    1i32
+end undef.other.f
+
+fn undef.other.g() -> i32 uses [] panics never
+    2i32
+end undef.other.g
+
+enum undef.other.E pub
+    A
+    B(i32)
+end undef.other.E
