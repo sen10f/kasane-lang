@@ -973,3 +973,55 @@ cd selfhost/lower && ksn check && ksn build --release
 python3 -I compare.py --group linear_ok --mine native --jobs 16    # 一致 94 / 全体 439 (下ろせた 193)
 python3 -I compare.py --group examples --mine native                # 一致 6 / 全体 172 (下ろせた 14)
 ```
+
+## 19. KIR への下ろしの段 (3): 総称・文字列・入出力・for・Vec・メソッド (修正プラン 5-5)
+
+2026-11-15。ブランチ `selfhost/lower-3` (`dev/plan` から)。`selfhost/lower/` を直した。新規は `src/lower/inst.ksnl` `io.ksnl` `loops.ksnl` `vec.ksnl`、既存の変更は `expr.ksnl` `opt.ksnl` `tyk.ksnl` `cx.ksnl` `func.ksnl` `lower.ksnl`。他の部品は変えていない。
+
+結論を先に: **総称の関数とメソッドの単相化、`&str`、`std.io.print_line`、整数の範囲の `for`、フィールドへの代入、利用者のメソッド (自動参照)、`Vec` (`new` `push` `pop` `len` `is_empty` と `v[i]`) を下ろした。** `examples/demo` と `tour` はまだ全部は下ろせない (残りは 19.3 章)。
+
+| 対象 | 前 (18 章) | 後 |
+| --- | ---: | ---: |
+| `linear_ok` (439 関数): 下ろせた | 193 | **291** |
+| 同: Rust 版と一致 (番号の正規化後) | 94 | **115** |
+| `linear_ok` で `t.main` が呼ぶものがすべて下ろせた本 | 46 | 48 (48 / 48 が emit → clang → 実行で Rust 版と一致) |
+| `examples` (172 関数): 下ろせた / 一致 | 14 / 6 | **35 / 11** |
+| `examples/demo` (4 関数) | 2 / 0 | 3 / 2 |
+| `examples/tour` (7 関数) | 0 / 0 | 2 / 0 |
+
+- 単相化: 鍵は `fqn<型,..>` (Rust 版と同じ形)。型引数は、宣言の引数の型 (型検査の表に型引数 `Param` のまま記録) と実際の引数の型の照合で決める。受け手 (`self`) も同じ照合で決まるので、総称の型の impl のメソッドも下ろせる。本体の下ろしは代入 (`lower.inst.subst`) を型の表の読み出し (`lower.expr.tyof`) と型の文字列 (`lower.tyk.text`) に作用させる。
+- `&str`: 集成体 `fat` = {ptr, len} (擬似の項目 `lower.tyk.FAT`)。文字列の値は `static.bytes <16 進>` と `make`。`std.io.print_line` は `write` を fd 1 に 2 回 (本文・改行) 出す形で、Rust 版 `kir_lower.rs` の `print_line` と同じ命令列。
+- `for`: 整数の範囲 `core.iter.range(lo, hi)` だけ。先頭で `icmp.lt`、続きのブロックで `add.T.wrap` の 1 増やし、可変の局所は引数で引き回す (Rust 版 `kir_lower_for.rs` と同じ形)。
+- `Vec`: 枠 `vec` = {ptr, len, cap} (Rust 版と同じ 24 バイト)。`push` は `cap * 2 + 4` に `heap.realloc` で広げ、末尾へ `mem.store`。`pop` は空なら `none`。`v[i]` は `index.check` の後で `mem.load`。Kasane の本体 (`Buf` を使う版) は下ろさず、命令を直に作る。
+- 自動参照: メソッドの受け手は、宣言の `self` が参照なら番地 (借用される局所はスロット、参照は値のまま)、値なら読み出す。`Vec` のメソッドの `self` は常に参照扱い (宣言が `.sig` で型の表に記録がないため)。
+
+### 19.1 検証
+
+- 完全な 48 本 (`t.main` が呼ぶものが全部下ろせた本) の emit → clang → 実行: 48 / 48 が Rust 版と標準出力・標準エラー・終了コードまで一致。
+- 追加の確かめ (`/tmp` の小さな入力): `print_line("hello")` と `Vec` の push・pop・len・添字は Rust 版と一致。
+
+### 19.2 まだ書いていないこと
+
+- 所有の注釈 (`own.consume` / `own.use`)。実行の意味は変えないので e2e は通るが、テキストは Rust 版と違う (`demo.shape.area` など)。
+- `String` (基本メソッドの単相インスタンス)、`str` のメソッド、`&[T]` のスライス、`Vec` の反復 (`for x in v.iter()`)、`core.iter.fold`・`core.check.eq`・`core.panic.panic`・`from_str_radix`・`try_from_u32`・`BtreeMap`。
+- 利用者の列挙型の値のない変種の値 (`E.B`) は `make.vK()` で下ろす。Option / Result の変種の値は `None` だけ。
+- `selfhost/parse` と `selfhost/driver` (ksnc) の自身の下ろし: まだ試していない (`Vec<String>`・`String`・`&[T]`・`BtreeMap`・`HashMap` が要る)。
+
+### 19.3 残り (`linear_ok` の未対応 359 件の理由)
+
+| 理由 | 件数 | 中身 |
+| --- | ---: | --- |
+| 本体のない宣言 | 106 | `std`・`core` の組み込み (`String`・`fold`・`eq`・`panic`・`BtreeMap` など) |
+| 名前が局所でない | 55 | 整数以外の定数・関数の値・`Option` 以外の変種の値 |
+| 型: その他 | 53 | `String`・`&[T]` などの未対応の型 |
+| `let` の形 | 34 | 分解の束縛 (タプル・構造体)、初期化式のない `let` |
+| 型引数の未解決 | 29 | 総称の型の中の `Param` が代入に無い形 (要調査) |
+| 式の形・`panics` の値・`match` の形 | 約 40 | 整数・`bool` の `match`、`panics may` の算術の溢れ検査 |
+
+### 19.4 再現
+
+```
+cd selfhost/lower && ksn check && ksn build --release
+python3 -I compare.py --group linear_ok --mine native --jobs 16   # 一致 115 / 下ろせた 291
+python3 -I compare.py --group examples --mine native               # 一致 11 / 下ろせた 35
+```
