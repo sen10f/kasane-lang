@@ -221,33 +221,63 @@ impl MapV {
     }
 }
 
-/// `String` の木走査の値: 内容と、直前の `as_str` の結果 (`Rc<str>`)。書き換え (`edit`) で結果を捨てるので、
-/// 変更がない間の `as_str` は同じ `Rc<str>` を返す (O(1))。
+/// `String` の木走査の値 (`alloc.string.String` の `buf: Buf<u8>` の格納)。
+/// 格納はバイト列 `bytes` (UTF-8 を保つ。書くのは `String` のメソッドだけで、Kasane 版の書き手は 1 文字ぶんを書き終えてから
+/// 読まれる。途中の状態を読む経路はない)、容量 `cap` (`Buf` の容量。要素数 = バイト数)、直前の `as_str` の結果 `snap`。
+/// 書き換え (`edit`) で `snap` を捨てるので、変更がない間の `as_str` は同じ `Rc<str>` を返す (O(1))。
+/// Kasane の本体が見る `self.buf` は、この格納を共有する `alloc.raw.Buf` の構造体 (`str_buf_view`)。
+/// Kasane の本体は `self.buf` (`Val::StrBuf` のフィールド) を、この格納を共有する `Buf<u8>` として見る (`natives.rs` の `str_buf_buf`)。
 #[derive(Debug)]
 pub struct StrBufV {
-    s: RefCell<String>,
+    bytes: RefCell<Vec<u8>>,
+    cap: Cell<usize>,
     snap: RefCell<Option<Rc<str>>>,
+}
+
+/// `String` の値の `buf` フィールド: 格納 (`items`) を `b` と共有する `alloc.raw.Buf` の構造体。
+/// `Buf<u8>` の基本操作は木走査で `natives.rs` の `str_buf_method` が `b` に対して行う (複製しない)。
+pub fn str_buf_view(b: &Rc<StrBufV>) -> Val {
+    Val::Struct(Rc::new(StructV {
+        ty: "alloc.raw.Buf".into(),
+        f: RefCell::new(vec![("allocator".into(), Val::Unit), ("capacity".into(), Val::Unit), ("items".into(), Val::StrBuf(b.clone()))]),
+    }))
 }
 
 impl StrBufV {
     pub fn new(s: String) -> Rc<StrBufV> {
-        Rc::new(StrBufV { s: RefCell::new(s), snap: RefCell::new(None) })
+        let n = s.len();
+        Rc::new(StrBufV { bytes: RefCell::new(s.into_bytes()), cap: Cell::new(n), snap: RefCell::new(None) })
     }
-    /// 読む (複製しない)。
-    pub fn get(&self) -> std::cell::Ref<'_, String> {
-        self.s.borrow()
+    /// 格納のバイト列を読む (複製しない)。
+    pub fn get(&self) -> std::cell::Ref<'_, Vec<u8>> {
+        self.bytes.borrow()
+    }
+    /// 内容を文字列として複製する (UTF-8 の不変条件のもとでは損失がない)。
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.bytes.borrow()).into_owned()
     }
     /// 書き換える。直前の `as_str` の結果は捨てる。
-    pub fn edit(&self) -> std::cell::RefMut<'_, String> {
+    pub fn edit(&self) -> std::cell::RefMut<'_, Vec<u8>> {
         *self.snap.borrow_mut() = None;
-        self.s.borrow_mut()
+        self.bytes.borrow_mut()
+    }
+    /// 末尾に UTF-8 の文字列を足す (容量の検査は呼び出し側)。
+    pub fn push_text(&self, t: &str) {
+        self.edit().extend_from_slice(t.as_bytes());
+    }
+    /// 容量 (`Buf` の `cap`)。
+    pub fn cap(&self) -> usize {
+        self.cap.get()
+    }
+    pub fn set_cap(&self, n: usize) {
+        self.cap.set(n);
     }
     /// 内容を `Rc<str>` で返す (変わるまでは同じものを共有する)。
     pub fn snapshot(&self) -> Rc<str> {
         if let Some(r) = self.snap.borrow().as_ref() {
             return r.clone();
         }
-        let r: Rc<str> = Rc::from(self.s.borrow().as_str());
+        let r: Rc<str> = Rc::from(String::from_utf8_lossy(&self.bytes.borrow()).as_ref());
         *self.snap.borrow_mut() = Some(r.clone());
         r
     }
@@ -482,7 +512,7 @@ pub fn seq_get(v: &Val, i: usize) -> Option<Val> {
 pub fn str_of(v: &Val) -> Option<String> {
     match dr(v) {
         Val::Str(s) => Some(s.to_string()),
-        Val::StrBuf(b) => Some(b.get().clone()),
+        Val::StrBuf(b) => Some(b.text()),
         _ => None,
     }
 }

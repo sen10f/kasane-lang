@@ -235,14 +235,38 @@
 - 木走査で組み込みのまま (Kasane 版の本体がない、または基本メソッドの表に入らない): `get` `get_mut` `iter` `sub` `sub_mut` `swap` `split_at` `first` `last` `copy_from` など。`contains` `append` `dedup` `extend_from_slice` は変更前から本体 (Kasane) を通している。
 - 基本メソッドのうち `len` / `is_empty` / `push` / `pop` は、ループの中で呼ぶと木走査で 2〜4 倍になる。官方の計測 (`vecops`) では 1.05〜1.21 倍に収まったので、今回は 12 個すべてを Kasane 版にした。遅さを戻すなら、木走査だけ組み込みに戻す表を別に作る (`KASANE_VEC_BASE` は KIR も使うので、そのまま外すと KIR の下ろしも変わる)。
 
-### 段 2 (未着手、外せない理由): `String` を木走査で Kasane 版にする
+### 段 2 (済み): `String` を木走査でも Kasane 版の本体で動かす (2026-11-15、`std/treewalk-string`)
 
-- 木走査の `String` は `Val::StrBuf` (`value.rs` の `StrBufV`: 内容 `String` と直前の `as_str` の結果 `Rc<str>`)。`as_str` が O(1) なのは、この `Rc<str>` のキャッシュがあるから (0.10.18 の表)。
-- `String` を `{ buf: Buf<u8> }` にすると、格納は `Val::Int` の列になり、`as_str` は呼ぶたびに長さ分の複製が要る。0.10.18 の性質 (`as_str` は回数に依らない) が崩れる。
-- 文字列の内容を読む箇所 (`str_of` の呼び出し 28 箇所、`Val::StrBuf` の一致 18 箇所) も、構造体から内容を組み立てる経路が要る。
-- 切り替えるには、格納を `Buf<u8>` 専用のバイト列にし、`as_str` の結果を内容と一緒にキャッシュする (`StrBufV` と同じ方式で、変更のたびに捨てる) 必要がある。値の表現の変更なので、今回は着手しない。`KASANE_STRING_BASE` は木走査では今までどおり使わない (`find_method`)。
+- `String` の値は `Val::StrBuf` のまま。内部の格納 `StrBufV` を `String` (UTF-8) のバイト列 `Vec<u8>` と容量 `cap` と `as_str` の結果 `snap` にした (`value.rs`)。
+- Kasane 版の本体が見る `self.buf` は、同じ格納を `items` に持つ `alloc.raw.Buf` の構造体 (`value::str_buf_view`。`interp.rs` の `Field`)。
+  格納は複製されず、`Buf<u8>` の基本操作 (`len` `cap` `is_empty` `clear` `push_within_cap` `insert_within_cap` `append_str_within_cap` `grow`) は
+  `natives.rs` の `str_buf_method` が格納の上で行う。UTF-8 の検査はしない (書くのは `String` の本体だけ。書き手は 1 文字ぶんを書き終えてから読まれる)。
+- `as_str` は変更がない間、同じ `Rc<str>` を返す (`snap`)。変更 (`edit`) で捨てる。`String` の値を完全な構造体 `{buf}` にはしなかった
+  (`Val::StrBuf` を見る 18 箇所と文字列の読み取り全部を変える必要があり、表現の共有の効果は同じ)。
+- `KASANE_STRING_BASE` の 9 個 (`clear` `is_empty` `len` `push` `push_bytes` `push_i64` `push_str` `push_u64` `reserve_bytes`) は、木走査でも本体を通す (`find_method` の除外を外した)。
+  木走査の組み込みの分岐 (`push` `push_str` `push_u64` `push_i64` `push_bytes` `clear` `len` `is_empty`) は外した。組み込みのまま残るのは `as_str` (格納の `snap`)、
+  `push_display` / `push_debug` (`Formatter` の整形。4-4 の担当と衝突しうる)、`eq` / `cmp` / `hash` など。
+
+検証:
+- `cargo test --release`: `string_kasane.rs` の既存の検査 (木走査・VM・ネイティブの出力一致、`as_str` の後の書き込み) と、新しいテスト
+  `string_kasane_tree_walk_buf_shares_the_string_storage` (無効な UTF-8 は `push_bytes` が拒み格納を変えない、`clear` の後の `as_str`) が通る。
+- `examples/` 14 パッケージの `ksn test --both` が 0 件失敗。`apps/todo` `apps/shortener_https` `selfhost/parse` `selfhost/resolve` の `ksn test` が通る。`ksn check-stdlib` 0 件。
+- `tests/native_ratio.py`: linear_ok 123/123、examples 14/14、perf 8/8。
+- 多様な文字列操作 (1〜4 バイトの文字、`push_u64` 最大値・`push_i64` 最小値、`push_bytes` の拒否、`clear` 後の再利用) の出力が、変更前・木走査・VM・LLVM で一致する。
+
+性能 (木走査 `ksn run`、起動を含む壁時計、交互に計測した最小値):
+
+| 計測 | 変更前 | 変更後 | 比 |
+| --- | ---: | ---: | ---: |
+| `perf/run_perf.py` の `strcat` (N=200,000、`push_str("ab")`) | 3785 ms | 1754 ms | 0.46 |
+| `len()` を 200,000 回 (格納 8 バイト) | 723 ms | 1448 ms | 約 2.0 |
+| `push('x')` を 200,000 回 | 2080 ms | 6954 ms | 約 3.3 |
+
+- `strcat` が速くなったのは、変更前の `str_method` が呼び出しごとに内容全体を複製していた (`let s = str_of(v)`) のを、Kasane 版の経路が避けるため。
+- `len` / `push(char)` の遅さは Kasane 版の本体の呼び出しと、`push(char)` の本体の長さ (1 文字ぶんの符号化を Kasane で書いている)。
+  目安 1.5 倍は文字列のワークロード (`strcat`) で満たす。`push(char)` が要るなら、ASCII の 1 バイトだけを組み込みで足す経路を後で考える。
 
 ### 段 3 (今回の結果)
 
-- 外した: 木走査の `Vec` の値 (`Val::Vec` を `Vec` の値として作る・読むこと) と、`Vec` の基本メソッドの組み込み実装 (木走査の `KASANE_VEC_BASE` の除外)。
-- 外せない (理由): `Val::Vec` は `Buf` の格納と `VecDeque` で使う (`Buf` は組み込みのまま)。`Val::StrBuf` は段 2 の理由で残す。
+- 外した: 木走査の `Vec` の値 (`Val::Vec` を `Vec` の値として作る・読むこと) と、`Vec` の基本メソッドの組み込み実装 (段 1)。`String` の基本メソッドの組み込み実装 (段 2)。
+- 外せない (理由): `Val::Vec` は `Buf` の格納と `VecDeque` で使う (`Buf` は組み込みのまま)。`Val::StrBuf` は `String` の値そのもの (格納は段 2 のとおり `Buf<u8>` の本体と共有する)。
