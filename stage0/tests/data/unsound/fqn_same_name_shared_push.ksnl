@@ -1,0 +1,30 @@
+// expect: E3010
+type t.Bag
+    n: u32
+end t.Bag
+
+fn t.Bag.push(self: &t.Bag, k: u32) -> u32 uses [] panics never
+    self.n.wrapping_add(k)
+end t.Bag.push
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(t.mk()))
+    let k = v.get(0usize)
+    let mut i = 0u32
+    while i < 1000u32 {
+        core.mem.drop(v.push(t.mk()))
+        i = i + 1u32
+    }
+    match k {
+        Some(x) => core.mem.drop(std.io.print_line(x.as_str()))
+        None => core.mem.drop(std.io.print_line("none"))
+    }
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello world, this is heap memory"))
+    s
+end t.mk

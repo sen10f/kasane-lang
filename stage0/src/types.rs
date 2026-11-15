@@ -418,6 +418,10 @@ pub struct TypeCk<'a> {
     pub resolved_calls: Vec<ResolvedCall>,
     /// メソッド呼び出し・フィールド参照のレシーバの型 (改名ツール用)。
     pub recv_log: Vec<RecvSite>,
+    /// メソッド呼び出しごと (書き手の定義, 式の位置, 名前) の解決先。`None` は決められない呼び出し
+    /// (借用検査は安全側に倒す)。候補が複数なら引数の個数が合うものすべて。
+    pub call_res: HashMap<(usize, usize, String), Option<Vec<usize>>>,
+    last_fit: Option<Vec<usize>>,
     recv_start: usize,
     /// いま推論している `Path` ノードの位置 (`path()` が局所変数の連鎖を記録するのに使う)。
     path_pos: usize,
@@ -524,7 +528,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -2236,6 +2240,21 @@ impl<'a> TypeCk<'a> {
     /// それ以外 (`x.f().m()` などの MCall) は従来の名前ベースの検査が宣言どおりの効果を見るので、
     /// クロージャから推論した部分だけを検査する。
     fn call_method(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
+        let saved = self.last_fit.take();
+        let t = self.call_method_in(recv, base, name, args, line, targs, local);
+        let fit = std::mem::replace(&mut self.last_fit, saved);
+        let key = (self.cur, line, name.to_string());
+        match (self.call_res.get_mut(&key), fit) {
+            (None, f) => {
+                self.call_res.insert(key, f);
+            }
+            (Some(Some(old)), Some(f)) => old.extend(f),
+            (Some(slot), _) => *slot = None,
+        }
+        t
+    }
+
+    fn call_method_in(&mut self, recv: &Ty, base: Option<&str>, name: &str, args: &[Ty], line: usize, targs: &[V], local: bool) -> Ty {
         let loose = std::mem::take(&mut self.arg_loose);
         // トレイトオブジェクト (5.1): `&dyn Tr` のメソッド呼び出しは、Tr とそのスーパートレイトの
         // シグネチャで検査する (Self は `dyn Tr` 自身)。
@@ -2363,6 +2382,9 @@ impl<'a> TypeCk<'a> {
             })
             .collect();
         self.record_effects(line, effs);
+        if complete {
+            self.last_fit = Some(fit.iter().map(|(i, _)| *i).collect());
+        }
         let (di, owner) = fit[0].clone();
         // 効果検査 (check.rs) のため、型で一意に解決できたメソッド呼び出しを記録する。
         // メソッド表が完全で、引数の個数が合う候補がちょうど 1 つのときだけ (不確かなときは黙る)。

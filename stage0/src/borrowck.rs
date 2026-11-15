@@ -98,6 +98,9 @@ enum Src {
 
 struct Low<'a> {
     p: &'a Program,
+    /// 型検査が解決したメソッド呼び出し先 (書き手の定義, 式の位置, 名前)。
+    res: std::rc::Rc<HashMap<(usize, usize, String), Option<Vec<usize>>>>,
+    cur: usize,
     file: String,
     nodes: Vec<Node>,
     loans: Vec<LoanInfo>,
@@ -197,11 +200,22 @@ impl<'a> Low<'a> {
     }
 
     // ------------------------------------------------------------ メソッド・関数の署名
-    /// 名前 `name` のメソッドの `self` の受け方 (すべての候補が一致するとき)。
-    fn self_mode(&self, name: &str) -> SelfMode {
-        let Some(cands) = self.p.method_idx.get(name) else { return SelfMode::Other };
+    /// 位置 `pos` のメソッド呼び出し `name` の候補。型検査が解決先を決めていればそれだけ、決められないときは
+    /// 同名のすべて (fail-closed)。`nargs` は `self` を除く引数の個数で、合わない候補は外す。
+    fn callees(&self, name: &str, pos: usize, nargs: usize) -> Vec<usize> {
+        let all: &[usize] = self.p.method_idx.get(name).map_or(&[], |v| v.as_slice());
+        let c: Vec<usize> = match self.res.get(&(self.cur, pos, name.to_string())) {
+            Some(Some(r)) if !r.is_empty() => r.clone(),
+            _ => all.to_vec(),
+        };
+        c.into_iter().filter(|&i| self.p.defs[i].params.len() == nargs + 1).collect()
+    }
+
+    /// 位置 `pos` のメソッド呼び出しの `self` の受け方。候補のどれかが `&mut self` なら `Mut` (fail-closed)、
+    /// すべて `&self` なら `Shared`、それ以外 (値で受ける・候補なし) は `Other`。
+    fn self_mode(&self, name: &str, pos: usize, nargs: usize) -> SelfMode {
         let mut mode: Option<SelfMode> = None;
-        for &i in cands {
+        for i in self.callees(name, pos, nargs) {
             let d = &self.p.defs[i];
             let m = match d.params.first() {
                 Some((_, t)) if tag(t) == "ref" => {
@@ -209,11 +223,12 @@ impl<'a> Low<'a> {
                 }
                 _ => SelfMode::Other,
             };
-            match mode {
-                None => mode = Some(m),
-                Some(x) if x == m => {}
-                Some(_) => return SelfMode::Other,
-            }
+            mode = Some(match (mode, m) {
+                (None, m) => m,
+                (Some(SelfMode::Mut), _) | (_, SelfMode::Mut) => SelfMode::Mut,
+                (Some(x), m) if x == m => m,
+                _ => SelfMode::Other,
+            });
         }
         mode.unwrap_or(SelfMode::Other)
     }
@@ -444,7 +459,7 @@ impl<'a> Low<'a> {
                 if matches!(name.as_str(), "unwrap" | "expect" | "unwrap_or") && self.place_of(recv).is_none() {
                     return self.loan_sources(recv);
                 }
-                self.method_sources(recv, &name, items(&nf(e)[2]))
+                self.method_sources(recv, &name, nline(e), items(&nf(e)[2]))
             }
             "Call" => {
                 if nname(&nf(e)[0]) != "Path" {
@@ -461,7 +476,7 @@ impl<'a> Low<'a> {
                     let name = segs[segs.len() - 1].clone();
                     let recv_segs = segs[..segs.len() - 1].to_vec();
                     if matches!(name.as_str(), "unwrap" | "expect" | "unwrap_or") {
-                        return self.passthrough_sources(&name, Some((recv_segs[0].clone(), recv_segs[1..].to_vec())), None, items(&nf(e)[1]));
+                        return self.passthrough_sources(&name, nline(e), Some((recv_segs[0].clone(), recv_segs[1..].to_vec())), None, items(&nf(e)[1]));
                     }
                     return match self.method_borrows(&name) {
                         Some(m) => {
@@ -471,10 +486,10 @@ impl<'a> Low<'a> {
                             ];
                             // レシーバの変数が持つ借用 (`let w = mk(&mut x); w.get()`) も結果へ流れる。
                             out.push(Src::Alias(recv_segs[0].clone()));
-                            out.extend(self.method_arg_sources(&name, items(&nf(e)[1])));
+                            out.extend(self.method_arg_sources(&name, nline(e), items(&nf(e)[1])));
                             out
                         }
-                        None => self.passthrough_sources(&name, Some((recv_segs[0].clone(), recv_segs[1..].to_vec())), None, items(&nf(e)[1])),
+                        None => self.passthrough_sources(&name, nline(e), Some((recv_segs[0].clone(), recv_segs[1..].to_vec())), None, items(&nf(e)[1])),
                     };
                 }
                 // 関数の戻り値が借用を含むなら、借用の引数 (`&x` / `&mut x` / 参照の変数) から借りる
@@ -566,9 +581,9 @@ impl<'a> Low<'a> {
 
     /// 戻り値が型パラメータを含む (`v.pop()` / `o.unwrap()`) メソッド: レシーバを新しく借りはしないが、
     /// レシーバの中の借用と、型パラメータを共有する引数の借用は戻り値へ通り抜ける (fail-closed)。
-    fn passthrough_sources(&self, name: &str, place: Option<(String, Vec<String>)>, recv: Option<&V>, args: &[V]) -> Vec<Src> {
-        let Some(cands) = self.p.method_idx.get(name) else { return vec![] };
-        if cands.is_empty() || !cands.iter().all(|&i| Self::ret_has_type_param(&self.p.defs[i])) {
+    fn passthrough_sources(&self, name: &str, pos: usize, place: Option<(String, Vec<String>)>, recv: Option<&V>, args: &[V]) -> Vec<Src> {
+        let cands = self.callees(name, pos, args.len());
+        if !cands.iter().any(|&i| Self::ret_has_type_param(&self.p.defs[i])) {
             return vec![];
         }
         let mut out = match (place, recv) {
@@ -576,13 +591,13 @@ impl<'a> Low<'a> {
             (None, Some(r)) if matches!(nname(r), "MCall" | "Call") => self.loan_sources(r),
             _ => vec![],
         };
-        out.extend(self.method_arg_sources(name, args));
+        out.extend(self.method_arg_sources(name, pos, args));
         out
     }
 
-    fn method_sources(&self, recv: &V, name: &str, args: &[V]) -> Vec<Src> {
+    fn method_sources(&self, recv: &V, name: &str, pos: usize, args: &[V]) -> Vec<Src> {
         let Some(m) = self.method_borrows(name) else {
-            return self.passthrough_sources(name, self.place_of(recv), Some(recv), args);
+            return self.passthrough_sources(name, pos, self.place_of(recv), Some(recv), args);
         };
         let mut out = match self.place_of(recv) {
             Some((root, path)) => {
@@ -610,19 +625,18 @@ impl<'a> Low<'a> {
                 }
             }
         };
-        out.extend(self.method_arg_sources(name, args));
+        out.extend(self.method_arg_sources(name, pos, args));
         out
     }
 
     /// メソッドの `self` 以外の引数のうち、戻り値へ流れるもの (すべての候補のヘッダが一致して流すとき) の借用。
-    fn method_arg_sources(&self, name: &str, args: &[V]) -> Vec<Src> {
-        let Some(cands) = self.p.method_idx.get(name) else { return vec![] };
-        let mut flow: Vec<bool> = vec![true; args.len()];
-        for &i in cands {
-            let d = &self.p.defs[i];
-            let f = Self::flow_params(d);
+    fn method_arg_sources(&self, name: &str, pos: usize, args: &[V]) -> Vec<Src> {
+        // 候補のどれかが流すなら流す (fail-closed。解決先が決まらないときは同名で個数の合うものすべて)。
+        let mut flow: Vec<bool> = vec![false; args.len()];
+        for i in self.callees(name, pos, args.len()) {
+            let f = Self::flow_params(&self.p.defs[i]);
             for (k, slot) in flow.iter_mut().enumerate() {
-                *slot &= d.params.len() == args.len() + 1 && f.as_ref().map_or(false, |f| f.get(k + 1).copied().unwrap_or(false));
+                *slot |= f.as_ref().map_or(true, |f| f.get(k + 1).copied().unwrap_or(false));
             }
         }
         args.iter().zip(flow).filter(|(_, f)| *f).flat_map(|(a, _)| { let mut v = self.loan_sources(a); v.extend(self.lit_sources(a)); v }).collect()
@@ -776,17 +790,14 @@ impl<'a> Low<'a> {
 
     /// メソッド呼び出し `h.set(x)`: 名前のメソッドがただ 1 つなら、そのヘッダで `&mut self` と参照の引数が
     /// 同じライフタイムを共有するとき、引数の借用をレシーバ `h` に持たせる。
-    fn bind_method_setter(&mut self, c: usize, name: &str, root: &str, args: &[V]) {
-        let Some(cands) = self.p.method_idx.get(name) else { return };
-        if cands.len() != 1 {
-            return;
+    fn bind_method_setter(&mut self, c: usize, name: &str, pos: usize, root: &str, args: &[V]) {
+        // 解決先が決まらないときは、同名で個数の合う候補すべての束縛を足す (fail-closed)。
+        for di in self.callees(name, pos, args.len()) {
+            if self.p.defs[di].params.first().map_or(true, |p| p.0 != "self") {
+                continue;
+            }
+            self.bind_receiver_arg_borrow(c, di, args, Some(root.to_string()));
         }
-        let di = cands[0];
-        let d = &self.p.defs[di];
-        if d.params.len() != args.len() + 1 || d.params.first().map_or(true, |p| p.0 != "self") {
-            return;
-        }
-        self.bind_receiver_arg_borrow(c, di, args, Some(root.to_string()));
     }
 
     /// 式 `a` が `&<場所>` / `&mut <場所>` ならその場所の (根, 道)。
@@ -1437,6 +1448,8 @@ impl<'a> Low<'a> {
         }
         let mut sub = Low {
             p: self.p,
+            res: self.res.clone(),
+            cur: self.cur,
             file: self.file.clone(),
             nodes: vec![],
             loans: vec![],
@@ -1481,8 +1494,8 @@ impl<'a> Low<'a> {
     }
 
     /// レシーバに `&mut self` で触れるときのアクセスの種類。
-    fn recv_kind(&self, name: &str) -> Acc {
-        match self.self_mode(name) {
+    fn recv_kind(&self, name: &str, pos: usize, nargs: usize) -> Acc {
+        match self.self_mode(name, pos, nargs) {
             SelfMode::Mut if matches!(name, "push" | "push_back" | "push_front" | "insert" | "extend" | "extend_from_slice" | "append") => Acc::MutKeep,
             SelfMode::Mut => Acc::MutB,
             _ => Acc::Read,
@@ -1795,7 +1808,7 @@ impl<'a> Low<'a> {
                         let name = segs[segs.len() - 1].clone();
                         let root = segs[0].clone();
                         let path = segs[1..segs.len() - 1].to_vec();
-                        let mut kind = self.recv_kind(&name);
+                        let mut kind = self.recv_kind(&name, nline(e), args.len());
                         // `self` を値で受けるメソッド (`x.into_name()` など) はレシーバを move する:
                         // check 側が move_sites に載せたレシーバの場所なら、Read を Move に格上げする。
                         if kind == Acc::Read && self.moves.contains(&(nline(e), place_key(&root, &path))) {
@@ -1805,7 +1818,7 @@ impl<'a> Low<'a> {
                         self.emit(c, Ev::Access { root: root.clone(), path: path.clone(), kind, line: nline(e) });
                         self.store_into(c, &name, &root, &path, args);
                         if path.is_empty() {
-                            self.bind_method_setter(c, &name, &root, args);
+                            self.bind_method_setter(c, &name, nline(e), &root, args);
                         }
                         self.end_temps(c, temps);
                         if self.suspends(None, Some(&name)) {
@@ -1860,12 +1873,12 @@ impl<'a> Low<'a> {
                 if self.place_of(recv).is_some() {
                     let c = self.lower_index_parts(recv, cur);
                     let c = self.lower_args_held(args, c, &mut temps);
-                    self.access(c, recv, self.recv_kind(&name), nline(recv));
+                    self.access(c, recv, self.recv_kind(&name, nline(e), args.len()), nline(recv));
                     // `v.push(&x)` / `m.insert(k, &x)`: レシーバの中に借用を保存する。
                     if let Some((root, path)) = self.place_of(recv) {
                         self.store_into(c, &name, &root, &path, args);
                         if path.is_empty() {
-                            self.bind_method_setter(c, &name, &root, args);
+                            self.bind_method_setter(c, &name, nline(e), &root, args);
                         }
                     }
                     self.end_temps(c, temps);
@@ -2906,6 +2919,8 @@ impl<'a> Checker<'a> {
         let plain = self.plain_binds(di);
         let mut low = Low {
             p: self.p,
+            res: self.call_res.clone(),
+            cur: di,
             file: d.file.clone(),
             nodes: vec![],
             loans: vec![],
