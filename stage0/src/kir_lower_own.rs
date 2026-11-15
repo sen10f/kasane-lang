@@ -165,6 +165,11 @@ pub(super) fn field_call(lw: &mut Lw, e: &V, s: usize, names: &[String], m: &str
             return Some(coll::method_on(lw, e, nline(e), Some(s), kind, h, m, args));
         }
     }
+    // `alloc/string.ksnl` の `String` の基本メソッドの `self.buf`: `String` も `Buf<u8>` も同じヘッダなので、要素型 `u8` の `Buf` として扱う。
+    if names.len() == 1 && names[0] == "buf" && coll::in_string_base(lw) && matches!(lw.coll.kinds.get(&s), Some(Kind::String)) {
+        let h = lw.slots[s].0;
+        return Some(coll::method_on(lw, e, nline(e), Some(s), Kind::Vec(Some(Ty::U8)), h, m, args));
+    }
     let src = field_src(lw, s, names)?;
     let kind = coll::kind_of_src(lw, &src).filter(|k| matches!(k, Kind::Vec(_) | Kind::String))?;
     // `&Vec` などのフィールドは借用: ヘッダのアドレスではない

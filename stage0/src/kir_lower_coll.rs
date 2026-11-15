@@ -36,6 +36,11 @@ pub(crate) fn in_vec_base(lw: &Lw) -> bool {
     lw.def.name.strip_prefix("alloc.vec.Vec.").is_some_and(|m| crate::interp::KASANE_VEC_BASE.contains(&m))
 }
 
+/// いま下ろしている関数が、`alloc/string.ksnl` の `String` の基本メソッドか (中身は `Buf<u8>` = `String` と同じヘッダ)。
+pub(crate) fn in_string_base(lw: &Lw) -> bool {
+    lw.def.name.strip_prefix("alloc.string.String.").is_some_and(|m| crate::interp::KASANE_STRING_BASE.contains(&m))
+}
+
 /// ヘッダを持つ「Vec の仲間」(`Vec` と `Buf`) の名前か。
 pub(crate) fn is_vecn(n: &str) -> bool {
     n == VEC || n == BUF
@@ -1898,7 +1903,13 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
         },
         _ => kind,
     };
-    if matches!(kind, Kind::Vec(Some(_))) && !in_vec_base(lw) && crate::interp::KASANE_VEC_BASE.contains(&m) {
+    // `String` の基本メソッドを、`alloc/string.ksnl` の Kasane 版 (`Buf<u8>` の上) の単相インスタンスで下ろす。
+    if matches!(kind, Kind::String) {
+        if let Some(r) = super::ext::string_call(lw, e, line, h, m, args) {
+            return r;
+        }
+    }
+    if matches!(kind, Kind::Vec(Some(_))) && !in_vec_base(lw) && !in_string_base(lw) && crate::interp::KASANE_VEC_BASE.contains(&m) {
         if let Some(r) = super::ext::ext_call(lw, e, line, &kind, h, m, args, true) {
             return r;
         }
