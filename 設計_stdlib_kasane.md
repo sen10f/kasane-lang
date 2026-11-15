@@ -38,7 +38,7 @@
 - **木走査の `Val::Vec`** (`value.rs` / `natives.rs` の `seq_method`): 添字・反復・`Debug`・`==` が `Val::Vec` を直接読む。木走査を Kasane 版にするには `Vec` を構造体 `{ buf }` にして、これらを構造体経由にする (または `Buf` を `Val::Vec` で持つ) 必要がある。
 - **KIR の `Kind::Vec` (24 バイトのヘッダ)**: `Vec` の局所変数・フィールド・`v[i]`・`for`・`v.get(i)`・drop はヘッダの専用経路のまま。`Buf` の下ろし (`kir_lower_buf.rs`) と `pop` / `remove` / `clear` / `get` / `as_slice` の組み込みの操作がその上にあるので、
   外すには `Vec` を単相化した構造体にして `v.get(i)` → `v.as_slice().get(i)` の読み替えと、`Buf` のヘッダ操作を `Kind::Buf` として独立させる必要がある。
-- `String` (`Vec<u8>` の上の UTF-8 `push` / 整形 / 比較) は未着手。`try_clone` と `with_capacity` の Kasane 版は、木走査が `Val::Vec` を作る組み込みと衝突するため入れていない。
+- `String` の基本メソッドは段 1〜3 を済ませた (下の「String」の節)。整形・比較・`from_str` / `join` / `replace` は組み込みのまま。`try_clone` と `with_capacity` の Kasane 版は、木走査が `Val::Vec` を作る組み込みと衝突するため入れていない。
 
 状態 (2026-11-14): **段 1 に入る前に、前提が足りず止まった**。実装は書いていない。
 下の試作は `core.ptr` + `alloc.alloc.Allocator` の上に書いた最小の `Vec` (`new` / `push` / `get`、
@@ -104,3 +104,62 @@
 
 - `kir_lower_map.rs` の型ごとの下ろしは、段 2 が済むまで外せない (上の 1〜5)。
 - チャネル (`std.sync`) は Kasane の `Mutex` + `Buf` の待ち行列に**移せない**。ネイティブの待ちは `ksn.thr.wait` (条件変数) と `ksn.thr.{lock,unlock}` で、`gen` / `blocked` / `live` の数で全員待ちの deadlock を検出する (設計_KIR.md 22.7)。Kasane の側に条件変数の原語がなく、待ちを Kasane から書けない。木走査 (協調実行) と VM は別の待ち方をする。移すには、条件変数を標準ライブラリの原語 (unsafe の境界の中) として決める必要がある。
+
+
+## String (修正プラン 3-3 の残り、2026-11-15、`std/string-kasane`)
+
+`alloc.string.String` を `{ buf: alloc.raw.Buf<u8, A> }` にして (`spec/stdlib/alloc/string.sig`)、基本メソッドを `spec/stdlib/alloc/string.ksnl` に unsafe なしの Kasane で書いた。
+`Vec` と同じ 24 バイトのヘッダなので、KIR は要素型 `u8` の `Buf` (`Kind::Vec(Some(u8))`) として `self.buf` を下ろす。
+
+| 段 | 状態 |
+| --- | --- |
+| 1 仕様 | 済み。Kasane 版: `as_str` `clear` `is_empty` `len` `push` (char の UTF-8 符号化) `push_bytes` (`core.str.from_utf8` を通す) `push_i64` `push_str` `push_u64`、内部の `reserve_bytes` (非公開)。`.sig` からこれらの宣言を外した |
+| 2 KIR | 済み。`KASANE_STRING_BASE` の名前は `string_call` (`kir_lower_ext.rs`) で `alloc.string.String.<m>` の単相インスタンスへ。`ext_lower` の後半は `kasane_call` に切り出して Vec と共用 |
+| 3 組み込みの除去 | 済み (下の一覧)。木走査 (`natives.rs` の `StrBuf` 系) は組み込みのまま。`interp.rs` の `KASANE_STRING_BASE` が `Val::StrBuf` に Kasane 版を使わないようにしている |
+
+### 外した組み込み (KIR)
+
+- `kir_lower_own.rs`: `String` の `push_str` / `push` / `clear` と、その補助 `string_push_str` / `string_push` / `utf8_store` / `ok_unit` (`Vec` の `clear` は残す)。
+- `kir_lower_coll.rs`: `String` の `push_str` / `push_bytes` / `push_u64` / `push_i64` の分岐と `string_push_str` / `string_push_bytes` / `string_push_u64` / `string_push_i64` / `push_u64_digits`。`String` の `as_str` の分岐 (`len` / `is_empty` は `Str` / スライス / `Vec` / `Buf` の本体で使うので残す)。
+
+### 残した組み込み (理由)
+
+- `new`: KIR の `new_header` (`std.alloc.System` 固定の構築)。
+- `from_str`: KIR の `from_str_call` だけが下ろす。`join` / `replace` は KIR に下ろす経路がなく、木走査だけ。A を受け取る構築の Kasane 化は、総称の関数の単相化 (A の推論) が要るので後回し。
+- `push_display` / `push_debug` / `debug_fmt` / `display_fmt`: 整形 (`Formatter`) は 4-4 の担当と衝突しうるので、本文書は触らない。
+- `eq` / `cmp` / `partial_cmp` / `hash`: `string_cmp_method` と `str` の比較。同じく 4-4 の担当と衝突しうる。
+- `contains` / `starts_with` / `ends_with` / `as_bytes`: `str` の組み込みの経路 (`str_method_call`)。`.sig` に宣言がない。
+- `Buf` の基礎操作 (`append_str_within_cap` / `push_within_cap` / `insert_within_cap` / `grow` / `cap` / `as_str` の UTF-8 検査): 段 1 の土台 (`kir_lower_buf.rs`)。外すと `Vec` も外れる。
+
+### 変えたこと (性能のための KIR の変更)
+
+- Kasane 版の単相インスタンス (`alloc.string.String.*` / `alloc.vec.Vec.*`) を `alwaysinline` にし、再帰しない (呼び先も有界) ので `ksn.depth` の記録を省く (`kir_llvm.rs`)。
+- 初めは `alwaysinline` だけで、`push_str` の呼び出し 1 回ごとに `ksn.depth` の 3 回の書き込みが残り、組み込み比 1.4 倍だった。省いて約 1.0 倍になった。
+- 基本メソッドは再帰せず、呼び先も有界なので、上限 (2500) の意味は保たれる。ただし `extend_from_slice` のように `T` の関数 (利用者の関数) を呼ぶ形では、その関数の再帰の 1 段ごとに基本メソッドの 1 フレームが深さに数えられない (スタックの使用量は定数倍だけ増える)。
+
+### 性能 (ネイティブ、LLVM)
+
+- strcat (`s.push_str("ab")` を N 回)、N = 20,000,000 の複製 (`perf/strcat` の入力だけ増やした。リポジトリの外の `/tmp` で計測):
+
+| 計測 | 版 | 最小 | 中央値 |
+| --- | --- | ---: | ---: |
+| 1 回目 (交互 31 回) | 組み込み (変更前) | 39.3 ms | 45.9 ms |
+| 1 回目 (交互 31 回) | Kasane 版 | 39.7 ms | 43.9 ms |
+| 2 回目 (別の時間) | 組み込み (変更前) | 28.8 ms | 37.6 ms |
+| 2 回目 (別の時間) | Kasane 版 (最終) | 28.8 ms | 40.2 ms |
+
+  比は 0.96〜1.07 (最小値の比 1.00〜1.01)。目安の 1.2 倍以内。N = 200,000 の `perf/run_perf.py` は起動の時間 (1 ms 前後) と同じ大きさで、ばらつきの範囲 (文字列 LLVM 1.3〜1.9 ms、変更前も同じ)。
+- Vec・構造体の `run_perf` (`vecops` / `structs`) は変更前と差なし (ばらつきの範囲)。
+
+### 検証
+
+- `ksn check-stdlib`: 0 件。`tests/native_ratio.py`: linear_ok 111/111、examples 14/14、perf 8/8 (下限 105 / 14 / 8 を下回らない。下限のファイルは書き換えていない)。
+- examples・apps・selfhost・perf の全パッケージで `ksn check` 0 件、`ksn test --both` 通過、`ksn run` と `ksn build` の出力が一致 (`examples/kvlib` はライブラリで入口がない)。`bench/verify_reference.py`: 19 件中 0 件の不一致。
+- `stage0/tests/string_kasane.rs`: push 系の全経路 (1〜4 バイトの文字、最大・最小・0 の整数、`push_bytes`) の出力が木走査とネイティブで期待値と一致し、ネイティブの KIR が `alloc.string.String.push_str<std.alloc.System>` を呼ぶことを見る。
+- `cargo test --release` 全件 通過。
+
+### 残り・確かめていないこと
+
+- `String::as_str` は `Buf::as_str` の UTF-8 検査を通るので、呼び出しごとに長さに比例する (以前は O(1) のヘッダの見せ方だけ)。文字列の性能の計測には入っていない。検査を省くには不変条件に頼る経路 (unsafe か、検査済みの印) が要る。オーナーの判断。
+- 初回の `cargo test --release` (ビルドの直後) で、別々のテストが一度ずつ落ちた (`spawn ... Text file busy`、ネイティブの実行体の不在、`exit code None`)。直後の再実行では全件通過 (計 4 回)。並列実行でのテストの競合と見られるが、原因は未確定。テストに再試行は足していない。
+- `native_ratio_floor.json` の linear_ok の下限 (105) は、現在の 111 に上げられる (note どおり。書き換えていない)。

@@ -36,6 +36,11 @@ pub(crate) fn in_vec_base(lw: &Lw) -> bool {
     lw.def.name.strip_prefix("alloc.vec.Vec.").is_some_and(|m| crate::interp::KASANE_VEC_BASE.contains(&m))
 }
 
+/// いま下ろしている関数が、`alloc/string.ksnl` の `String` の基本メソッドか (中身は `Buf<u8>` = `String` と同じヘッダ)。
+pub(crate) fn in_string_base(lw: &Lw) -> bool {
+    lw.def.name.strip_prefix("alloc.string.String.").is_some_and(|m| crate::interp::KASANE_STRING_BASE.contains(&m))
+}
+
 /// ヘッダを持つ「Vec の仲間」(`Vec` と `Buf`) の名前か。
 pub(crate) fn is_vecn(n: &str) -> bool {
     n == VEC || n == BUF
@@ -1943,7 +1948,13 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
         },
         _ => kind,
     };
-    if matches!(kind, Kind::Vec(Some(_))) && !in_vec_base(lw) && crate::interp::KASANE_VEC_BASE.contains(&m) {
+    // `String` の基本メソッドを、`alloc/string.ksnl` の Kasane 版 (`Buf<u8>` の上) の単相インスタンスで下ろす。
+    if matches!(kind, Kind::String) {
+        if let Some(r) = super::ext::string_call(lw, e, line, h, m, args) {
+            return r;
+        }
+    }
+    if matches!(kind, Kind::Vec(Some(_))) && !in_vec_base(lw) && !in_string_base(lw) && crate::interp::KASANE_VEC_BASE.contains(&m) {
         if let Some(r) = super::ext::ext_call(lw, e, line, &kind, h, m, args, true) {
             return r;
         }
@@ -1960,20 +1971,9 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
     if matches!(m, "cmp" | "partial_cmp") && matches!(kind, Kind::String | Kind::Str) {
         return lw.string_cmp_method(e, &kind, h, m, args);
     }
-    if m == "push_str" && matches!(kind, Kind::String) {
-        return string_push_str(lw, e, line, slot, h, args);
-    }
-    if m == "push_bytes" && matches!(kind, Kind::String) {
-        return string_push_bytes(lw, e, line, slot, h, args);
-    }
+    // `push_display` / `push_debug` は組み込みの整形のまま (`alloc.fmt` の規範と `Formatter` の扱いを待つ)。
     if (m == "push_display" || m == "push_debug") && matches!(kind, Kind::String) {
         return lw.string_push_fmt(e, line, h, args, m == "push_debug");
-    }
-    if m == "push_u64" && matches!(kind, Kind::String) {
-        return string_push_u64(lw, e, line, slot, h, args);
-    }
-    if m == "push_i64" && matches!(kind, Kind::String) {
-        return string_push_i64(lw, e, line, h, args);
     }
     if m == "get" {
         return get_elem(lw, line, &kind, h, args);
@@ -2039,313 +2039,11 @@ pub(super) fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str,
         "as_bytes" if kind == Kind::Str => Ok(Some(h)),
         // `String.as_bytes()`: ヘッダの {ptr, len} を借用の `&[u8]` (fat) にする (所有は移さない)。
         "as_bytes" if kind == Kind::String => Ok(Some(hdr_view(lw, h))),
-        // `String.as_str()` / `Vec.as_slice()`: ヘッダの {ptr, len} を借用の `fat` にする (所有は移さない)。
-        "as_str" if kind == Kind::String => Ok(Some(hdr_view(lw, h))),
         "as_slice" | "as_mut_slice" if matches!(kind, Kind::Vec(_)) => Ok(Some(hdr_view(lw, h))),
         // `&str.as_str()` はそのまま。
         "as_str" if kind == Kind::Str => Ok(Some(h)),
         other => lw.err(line, format!("メソッド {} は段階 1 の対象外", other)),
     }
-}
-
-/// `String.push_str(text)`: `text` のバイトを `len` の位置へコピーして `len` を進める。
-/// 満杯なら `heap.realloc` で `need` に広げる (正確なサイズ確保)。
-pub(super) fn string_push_str(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 1 {
-        return lw.err(line, "push_str の引数は 1 つのはず");
-    }
-    let Some(text) = lw.expr(&args[0])? else { return Ok(None) };
-    if lw.vty(text) != lw.fat_ty() {
-        return lw.err(line, "push_str の引数は &str ではない");
-    }
-    let rt = lw.ty_of(e)?;
-    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
-        return lw.err(line, "push_str の結果の型が Result<(), AllocError> でない");
-    }
-    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
-    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
-    let tlen = lw.emit(Ty::Usize, Op::MemLoad { p: text, off: 8 });
-    let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: tlen });
-    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
-    let (grow, _) = lw.new_block(&[]);
-    let (cont, _) = lw.new_block(&[]);
-    lw.branch(full, (grow, vec![]), (cont, vec![]));
-    lw.cur = Some(grow);
-    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: need });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
-    lw.goto(cont, vec![]);
-    lw.cur = Some(cont);
-    // `for i in core.iter.range(0usize, tlen) { base[len + i] = text[i] }` を展開:
-    // ここでは範囲ループを使わず、tlen が定数小さいことを想定して命令列を並べるわけにいかないため、
-    // coll::for_expr を使う。ただし this 関数内で直接 for 式を下ろすのは複雑なので、
-    // 単純に tlen 回のロード/ストアを `range` ループで行う。
-    // ここでは `core.iter.range` を使う for 式は Lw::expr 経由で下ろせるため、この関数では
-    // `lw.expr` で For 式を下ろせない (For は expr で扱う)。よって range ループを使わず、
-    // 呼び出し側が十分な cap を確保している前提 (String::new は cap 0 なのでここでは grow 済み)。
-    // grow 後は cap == need で十分なので、そのままコピーする。
-    // コピー: `for` 式を `expr` で下ろせないので、ここでは命令を直接並べられない。
-    // 代替: `text` のバイトを `core.iter.range` で回す for 式は Lw ではなく coll 側で下ろすため、
-    // ここでは未対応とし、tlen==0 のみ対応 (grow のみ行う)。
-    if tlen != 0 {
-        return lw.err(line, "push_str のコピーは空でない &str には未対応");
-    }
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: need });
-    let u = lw.unit();
-    Ok(Some(lw.emit(rt, Op::Ok(u))))
-}
-
-/// `String.push_bytes(bytes)`: `bytes` が UTF-8 なら末尾へコピーして `Ok(())`、
-/// そうでなければ `Err(PushBytesError::InvalidUtf8(Utf8Error{valid_up_to}))`。
-/// `push_str` の再確保と `core.str.from_utf8` の `Op::Utf8Valid` による検証を手本にする。
-pub(super) fn string_push_bytes(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 1 {
-        return lw.err(line, "push_bytes の引数は 1 つのはず");
-    }
-    let Some(bytes) = lw.expr(&args[0])? else { return Ok(None) };
-    let fat = lw.vty(bytes);
-    let Ty::Agg(_fat_idx) = fat else {
-        return lw.err(line, "push_bytes の引数が &[u8] ではない");
-    };
-    let rt = lw.ty_of(e)?;
-    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
-        return lw.err(line, "push_bytes の結果の型が Result<(), PushBytesError> ではない");
-    }
-    let pbe = lw.aggs.borrow_mut().lower_ty(lw.p, &lw.def.file, &Src::Named("alloc.string.PushBytesError".into(), vec![]))?;
-    let Ty::Agg(pbe_idx) = pbe else {
-        return lw.err(line, "PushBytesError の型が集成体でない");
-    };
-    let utf8_err = lw.aggs.borrow_mut().lower_ty(lw.p, &lw.def.file, &Src::Named("core.str.Utf8Error".into(), vec![]))?;
-    let Ty::Agg(ue_idx) = utf8_err else {
-        return lw.err(line, "Utf8Error の型が集成体でない");
-    };
-    let pbe_ty = Ty::Agg(pbe_idx);
-    let ue_ty = Ty::Agg(ue_idx);
-    // `bytes` の fat ptr: off 0 = ptr, off 8 = len。
-    let bptr = lw.emit(Ty::Ptr, Op::Field { a: bytes, off: 0 });
-    let tlen = lw.emit(Ty::Usize, Op::Field { a: bytes, off: 8 });
-    // UTF-8 検証: valid_up_to (vu)。全長と等しければ全部正しい UTF-8。
-    let vu = lw.emit(Ty::Usize, Op::Utf8Valid { p: bptr, len: tlen });
-    let all = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: vu, b: tlen });
-    // String のヘッダ: off 0 = ptr, off 8 = len, off 16 = cap。
-    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
-    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
-    let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: tlen });
-    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
-    let (grow, _) = lw.new_block(&[]);
-    let (cont, _) = lw.new_block(&[]);
-    let (okb, _) = lw.new_block(&[]);
-    let (badb, _) = lw.new_block(&[]);
-    let (join, jp) = lw.new_block(&[rt]);
-    lw.branch(full, (grow, vec![]), (cont, vec![]));
-    lw.cur = Some(grow);
-    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: need });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
-    lw.goto(cont, vec![]);
-    lw.cur = Some(cont);
-    lw.branch(all, (okb, vec![]), (badb, vec![]));
-    // ok: バイト列を len の位置からコピーし、len を need に進めて Ok(())。
-    // grow 後に ptr が変わっているため、ここでは h から base を再ロードする。
-    lw.cur = Some(okb);
-    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let zero = lw.emit(Ty::Usize, Op::Const(0));
-    let one = lw.emit(Ty::Usize, Op::Const(1));
-    let (hd, hp) = lw.new_block(&[Ty::Usize]);
-    let (body, _) = lw.new_block(&[]);
-    let (done, _) = lw.new_block(&[]);
-    lw.goto(hd, vec![zero]);
-    lw.cur = Some(hd);
-    let i = hp[0];
-    let done_cmp = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::Usize, a: i, b: tlen });
-    lw.branch(done_cmp, (done, vec![]), (body, vec![]));
-    lw.cur = Some(body);
-    let bp = lw.emit(Ty::Ptr, Op::PtrAdd { p: bptr, off: i });
-    let bc = lw.emit(Ty::U8, Op::MemLoad { p: bp, off: 0 });
-    let li = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: i });
-    let dp = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: li });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: dp, off: 0, v: bc });
-    let ni = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: one });
-    lw.goto(hd, vec![ni]);
-    lw.cur = Some(done);
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: need });
-    let u = lw.unit();
-    let ok = lw.emit(rt, Op::Ok(u));
-    lw.goto(join, vec![ok]);
-    // bad: Err(PushBytesError::InvalidUtf8(Utf8Error{valid_up_to: vu}))。
-    lw.cur = Some(badb);
-    let ue_val = lw.emit(ue_ty, Op::Make { variant: None, fields: vec![vu] });
-    let pbe_val = lw.emit(pbe_ty, Op::Make { variant: Some(1), fields: vec![ue_val] });
-    let err = lw.emit(rt, Op::Err(pbe_val));
-    lw.goto(join, vec![err]);
-    lw.cur = Some(join);
-    Ok(Some(jp[0]))
-}
-
-/// `String.push_u64(value)`: `value` を10進数の桁として1バイトずつバッファに追加する。
-/// 桁テーブルから1バイトをロードして `mem.store.u8` で書き込む (`Conv u64->u8` は verify で拒否されるため)。
-/// 符号なしの十進の桁 `value` (u64) を、文字列 `h` の末尾へ 1 バイトずつ書く (容量が足りなければ広げる)。
-fn push_u64_digits(lw: &mut Lw, h: VId, value: VId) {
-    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
-    let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
-    let maxdigits = lw.emit(Ty::Usize, Op::Const(20));
-    let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: maxdigits });
-    let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
-    let (grow, _) = lw.new_block(&[]);
-    let (cont, _) = lw.new_block(&[]);
-    lw.branch(full, (grow, vec![]), (cont, vec![]));
-    lw.cur = Some(grow);
-    let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: need });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
-    lw.goto(cont, vec![]);
-    lw.cur = Some(cont);
-    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let digits = lw.emit(Ty::Ptr, Op::StaticBytes(b"0123456789".to_vec()));
-    let ten = lw.emit(Ty::U64, Op::Const(10));
-    let zero = lw.emit(Ty::U64, Op::Const(0));
-    let one = lw.emit(Ty::Usize, Op::Const(1));
-    // ---- カウントパス: ndigits = 0; tmp = value; while tmp > 0 { tmp /= 10; nd++ }
-    // ヘッダのブロック引数がループ携帯変数の phi となる。
-    let (chb, chp) = lw.new_block(&[Ty::U64, Ty::Usize]);
-    let (ccb, _) = lw.new_block(&[]);
-    let (ce, _) = lw.new_block(&[]);
-    // 桁数 = 1 + (value / 10 の桁数)。value == 0 でも 1 桁 ("0") になる。
-    let initial_nd = lw.emit(Ty::Usize, Op::Const(1));
-    let first_q = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: value, b: ten });
-    lw.goto(chb, vec![first_q, initial_nd]);
-    lw.cur = Some(chb);
-    {
-        let tmp = chp[0];
-        let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::U64, a: tmp, b: zero });
-        lw.branch(c, (ccb, vec![]), (ce, vec![]));
-    }
-    lw.cur = Some(ccb);
-    {
-        let tmp = chp[0];
-        let nd = chp[1];
-        let nv = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: tmp, b: ten });
-        let nn = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: nd, b: one });
-        lw.goto(chb, vec![nv, nn]);
-    }
-    lw.cur = Some(ce);
-    let ndigits = chp[1];
-    let final_len = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: ndigits });
-    // ---- 書き戻しパス: pos = final_len - 1; while value > 0 { buffer[pos] = digit; pos--; value /= 10 }
-    let (whb, whp) = lw.new_block(&[Ty::U64, Ty::Usize]);
-    let (wb, _) = lw.new_block(&[]);
-    let (wd, _) = lw.new_block(&[]);
-    let start_pos = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: final_len, b: one });
-    // 最下位の桁は必ず書く (value == 0 なら "0")。残りの桁は value / 10 から書く。
-    {
-        let digit = lw.emit(Ty::U64, Op::Arith { op: Aop::Rem, mode: Mode::Trap, a: value, b: ten });
-        let di = lw.emit(Ty::Usize, Op::Conv { src: Ty::U64, a: digit });
-        let cptr = lw.emit(Ty::Ptr, Op::PtrAdd { p: digits, off: di });
-        let ch = lw.emit(Ty::U8, Op::MemLoad { p: cptr, off: 0 });
-        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: start_pos });
-        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: addr, off: 0, v: ch });
-    }
-    let rest = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: value, b: ten });
-    let next_pos = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: start_pos, b: one });
-    lw.goto(whb, vec![rest, next_pos]);
-    lw.cur = Some(whb);
-    {
-        let val = whp[0];
-        let c = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::U64, a: val, b: zero });
-        lw.branch(c, (wb, vec![]), (wd, vec![]));
-    }
-    lw.cur = Some(wb);
-    {
-        let val = whp[0];
-        let pos = whp[1];
-        let digit = lw.emit(Ty::U64, Op::Arith { op: Aop::Rem, mode: Mode::Trap, a: val, b: ten });
-        let di = lw.emit(Ty::Usize, Op::Conv { src: Ty::U64, a: digit });
-        let cptr = lw.emit(Ty::Ptr, Op::PtrAdd { p: digits, off: di });
-        let ch = lw.emit(Ty::U8, Op::MemLoad { p: cptr, off: 0 });
-        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: pos });
-        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: addr, off: 0, v: ch });
-        let nv = lw.emit(Ty::U64, Op::Arith { op: Aop::Div, mode: Mode::Trap, a: val, b: ten });
-        let np = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: pos, b: one });
-        lw.goto(whb, vec![nv, np]);
-    }
-    lw.cur = Some(wd);
-    {
-        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: final_len });
-    }
-}
-
-pub(super) fn string_push_u64(lw: &mut Lw, e: &V, line: usize, _slot: Option<usize>, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 1 {
-        return lw.err(line, "push_u64 の引数は 1 つのはず");
-    }
-    let Some(value) = lw.expr(&args[0])? else { return Ok(None) };
-    if lw.vty(value) != Ty::U64 {
-        return lw.err(line, "push_u64 の引数は u64 ではない");
-    }
-    let rt = lw.ty_of(e)?;
-    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
-        return lw.err(line, "push_u64 の結果の型が Result<(), AllocError> でない");
-    }
-    push_u64_digits(lw, h, value);
-    let u = lw.unit();
-    Ok(Some(lw.emit(rt, Op::Ok(u))))
-}
-
-/// `String.push_i64(value)`: 負なら `-` を書き、絶対値 (`wrapping_neg` の bit 列を u64 に読む。`i64::MIN` も正しい) の桁を書く。
-pub(super) fn string_push_i64(lw: &mut Lw, e: &V, line: usize, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 1 {
-        return lw.err(line, "push_i64 の引数は 1 つのはず");
-    }
-    let Some(value) = lw.expr(&args[0])? else { return Ok(None) };
-    if lw.vty(value) != Ty::I64 {
-        return lw.err(line, "push_i64 の引数は i64 ではない");
-    }
-    let rt = lw.ty_of(e)?;
-    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
-        return lw.err(line, "push_i64 の結果の型が Result<(), AllocError> でない");
-    }
-    let zero = lw.emit(Ty::I64, Op::Const(0));
-    let neg = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::I64, a: value, b: zero });
-    let (yb, _) = lw.new_block(&[]);
-    let (nb, _) = lw.new_block(&[]);
-    let (mb, mp) = lw.new_block(&[Ty::I64]);
-    lw.branch(neg, (yb, vec![]), (nb, vec![]));
-    // 負: `-` を 1 バイト書いてから、絶対値へ進む。
-    lw.cur = Some(yb);
-    {
-        let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
-        let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
-        let one = lw.emit(Ty::Usize, Op::Const(1));
-        let need = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: len, b: one });
-        let full = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Gt, ty: Ty::Usize, a: need, b: cap });
-        let (grow, _) = lw.new_block(&[]);
-        let (cont, _) = lw.new_block(&[]);
-        lw.branch(full, (grow, vec![]), (cont, vec![]));
-        lw.cur = Some(grow);
-        let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-        let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: need });
-        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
-        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: need });
-        lw.goto(cont, vec![]);
-        lw.cur = Some(cont);
-        let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: len });
-        let dash = lw.emit(Ty::U8, Op::Const(b'-' as i128));
-        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: addr, off: 0, v: dash });
-        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: need });
-        let mag = lw.emit(Ty::I64, Op::Neg { a: value, mode: Mode::Wrap });
-        lw.goto(mb, vec![mag]);
-    }
-    lw.cur = Some(nb);
-    lw.goto(mb, vec![value]);
-    lw.cur = Some(mb);
-    let mag = lw.emit(Ty::U64, Op::Conv { src: Ty::I64, a: mp[0] });
-    push_u64_digits(lw, h, mag);
-    let u = lw.unit();
-    Ok(Some(lw.emit(rt, Op::Ok(u))))
 }
 
 

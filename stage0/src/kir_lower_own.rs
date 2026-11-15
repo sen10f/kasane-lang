@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use super::coll::{self, Kind, Seq};
 use super::{Lw, LR};
 use crate::check::{items, nf, nlineno as nline, nname, st, strs};
-use crate::kir::{AggKind, Aop, BoolOp, Cc, Mode, Op, Pay, Pointee, Term, Ty, VId};
+use crate::kir::{AggKind, Aop, Cc, Mode, Op, Pay, Pointee, Term, Ty, VId};
 use crate::parser::V;
 use crate::types::{from_v, Ty as Src};
 
@@ -165,6 +165,11 @@ pub(super) fn field_call(lw: &mut Lw, e: &V, s: usize, names: &[String], m: &str
             return Some(coll::method_on(lw, e, nline(e), Some(s), kind, h, m, args));
         }
     }
+    // `alloc/string.ksnl` の `String` の基本メソッドの `self.buf`: `String` も `Buf<u8>` も同じヘッダなので、要素型 `u8` の `Buf` として扱う。
+    if names.len() == 1 && names[0] == "buf" && coll::in_string_base(lw) && matches!(lw.coll.kinds.get(&s), Some(Kind::String)) {
+        let h = lw.slots[s].0;
+        return Some(coll::method_on(lw, e, nline(e), Some(s), Kind::Vec(Some(Ty::U8)), h, m, args));
+    }
     let src = field_src(lw, s, names)?;
     let kind = coll::kind_of_src(lw, &src).filter(|k| matches!(k, Kind::Vec(_) | Kind::String))?;
     // `&Vec` などのフィールドは借用: ヘッダのアドレスではない
@@ -190,9 +195,6 @@ fn field_call_inner(lw: &mut Lw, e: &V, s: usize, names: &[String], kind: Kind, 
 /// 所有の周りの新しいメソッド。扱わない名前は `None` (既存の経路へ)。
 pub(super) fn method(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, m: &str, args: &[V]) -> Option<LR<Option<VId>>> {
     match (kind, m) {
-        (Kind::String, "push_str") => Some(string_push_str(lw, e, line, h, args)),
-        (Kind::String, "push") => Some(string_push(lw, e, line, h, args)),
-        (Kind::String, "clear") => Some(clear(lw, line, kind, h, args)),
         (Kind::Vec(_), "clear") => Some(clear(lw, line, kind, h, args)),
         (Kind::Vec(_), "pop") => Some(vec_pop(lw, e, line, kind, h, args)),
         (Kind::Vec(_), "remove") => Some(vec_remove(lw, e, line, kind, h, args)),
@@ -251,102 +253,6 @@ pub(super) fn copy_bytes(lw: &mut Lw, dst: VId, src: VId, n: VId) {
     let i1 = add(lw, Ty::Usize, i, one);
     lw.goto(hd, vec![i1]);
     lw.cur = Some(exit);
-}
-
-/// `Result<(), AllocError>` の結果の型と、`Ok(())` の値。
-fn ok_unit(lw: &mut Lw, e: &V, line: usize, what: &str) -> LR<VId> {
-    let rt = lw.ty_of(e)?;
-    if !matches!(rt, Ty::Res(Pay::Unit, _)) {
-        return lw.err(line, format!("{} の結果の型が Result<(), AllocError> でない", what));
-    }
-    let u = lw.unit();
-    Ok(lw.emit(rt, Op::Ok(u)))
-}
-
-/// `s.push_str(text)`: 容量を広げて末尾へバイト列を写し、`len` を進める。確保に失敗することはない (`Ok(())`)。
-fn string_push_str(lw: &mut Lw, e: &V, line: usize, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 1 {
-        return lw.err(line, "push_str の引数は 1 つのはず");
-    }
-    let Some(t) = lw.expr(&args[0])? else { return Ok(None) };
-    let fat = lw.fat_ty();
-    if lw.vty(t) != fat {
-        return lw.err(line, "push_str の引数が &str の値でない");
-    }
-    let src = lw.emit(Ty::Ptr, Op::Field { a: t, off: 0 });
-    let n = lw.emit(Ty::Usize, Op::Field { a: t, off: 8 });
-    reserve(lw, h, n);
-    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
-    let dst = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: len });
-    copy_bytes(lw, dst, src, n);
-    let nl = add(lw, Ty::Usize, len, n);
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });
-    Ok(Some(ok_unit(lw, e, line, "push_str")?))
-}
-
-/// `s.push(c)`: `c` (u32 の Unicode スカラー値) を UTF-8 の 1〜4 バイトにして末尾へ書く。
-fn string_push(lw: &mut Lw, e: &V, line: usize, h: VId, args: &[V]) -> LR<Option<VId>> {
-    if args.len() != 1 {
-        return lw.err(line, "push の引数は 1 つのはず");
-    }
-    let Some(c) = lw.expr(&args[0])? else { return Ok(None) };
-    if lw.vty(c) != Ty::U32 {
-        return lw.err(line, "String.push の引数が char でない");
-    }
-    let four = usize_const(lw, 4);
-    reserve(lw, h, four);
-    let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
-    let len = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 8 });
-    let at = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off: len });
-    let scratch = coll::emit_alloca(lw, 4);
-    let (jb, jp) = lw.new_block(&[Ty::Usize]);
-    // 文字の大きさの境目 (0x80 / 0x800 / 0x10000)。n 番目の符号化の先頭のバイトは `lead | (c >> shift)`、続きは `0x80 | ((c >> shift) & 0x3F)`。
-    let bounds = [0x80i128, 0x800, 0x10000];
-    for (k, bound) in bounds.iter().enumerate() {
-        let b = lw.emit(Ty::U32, Op::Const(*bound));
-        let lt = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U32, a: c, b });
-        let (yes, _) = lw.new_block(&[]);
-        let (no, _) = lw.new_block(&[]);
-        lw.branch(lt, (yes, vec![]), (no, vec![]));
-        lw.cur = Some(yes);
-        utf8_store(lw, at, c, k + 1, scratch);
-        let n = usize_const(lw, (k + 1) as i128);
-        lw.goto(jb, vec![n]);
-        lw.cur = Some(no);
-    }
-    utf8_store(lw, at, c, 4, scratch);
-    let n = usize_const(lw, 4);
-    lw.goto(jb, vec![n]);
-    lw.cur = Some(jb);
-    let nl = add(lw, Ty::Usize, len, jp[0]);
-    lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 8, v: nl });
-    Ok(Some(ok_unit(lw, e, line, "push")?))
-}
-
-/// `c` を `n` バイト (1〜4) の UTF-8 として `at` から書く。
-fn utf8_store(lw: &mut Lw, at: VId, c: VId, n: usize, scratch: VId) {
-    let lead = [0x00u32, 0xC0, 0xE0, 0xF0][n - 1];
-    for i in 0..n {
-        let shift = 6 * (n - 1 - i) as i128;
-        let sh = lw.emit(Ty::U32, Op::Const(shift));
-        let x = lw.emit(Ty::U32, Op::Shift { left: false, a: c, n: sh });
-        let byte = if n == 1 {
-            x
-        } else if i == 0 {
-            let l = lw.emit(Ty::U32, Op::Const(lead as i128));
-            lw.emit(Ty::U32, Op::Bool(BoolOp::Or, x, l))
-        } else {
-            let m = lw.emit(Ty::U32, Op::Const(0x3F));
-            let lo = lw.emit(Ty::U32, Op::Bool(BoolOp::And, x, m));
-            let k = lw.emit(Ty::U32, Op::Const(0x80));
-            lw.emit(Ty::U32, Op::Bool(BoolOp::Or, lo, k))
-        };
-        // u32 → u8 の切り詰め (KIR に縮める変換はない): 一時の 4 バイトへ書いて、リトルエンディアンの先頭の 1 バイトを読む。
-        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U32, p: scratch, off: 0, v: byte });
-        let b8 = lw.emit(Ty::U8, Op::MemLoad { p: scratch, off: 0 });
-        lw.emit(Ty::Unit, Op::MemStore { ty: Ty::U8, p: at, off: i as u32, v: b8 });
-    }
 }
 
 /// `v.pop()` (要素はスカラー): 空なら `None`、そうでなければ末尾を取り除いて `Some(要素)`。

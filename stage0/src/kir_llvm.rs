@@ -819,6 +819,11 @@ fn fmt_float_helpers() -> String {
 /// C の実行時補助 (`kir_rt.c`) の本文。生成した IR が `@ksn_fmt_` / `@ksn_utf8_` を呼ぶときだけ、clang に一緒に渡す。
 pub const RUNTIME_C: &str = include_str!("kir_rt.c");
 
+/// Kasane で書いた基本メソッドの単相インスタンス (`alloc/vec.ksnl` / `alloc/string.ksnl`) か。再帰せず、呼び先も有界。
+fn kasane_base_inst(key: &str) -> bool {
+    key.starts_with("alloc.string.String.") || key.starts_with("alloc.vec.Vec.")
+}
+
 /// IR が C の実行時補助を要するか。
 pub fn needs_runtime(ll: &str) -> bool {
     ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_") || ll.contains("@ksn_ext_resolve")
@@ -2532,6 +2537,8 @@ impl<'a> Fe<'a> {
             }
         }
         let mut hoisted = String::new();
+        // Kasane の基本メソッドの単相インスタンス (下の先頭と戻りで深さの記録を省く)。
+        let bare = kasane_base_inst(&f.key);
         let mut texts: Vec<String> = vec![String::new(); f.blocks.len()];
         for (k, b) in f.blocks.iter().enumerate() {
             if !reach[k] {
@@ -2595,7 +2602,9 @@ impl<'a> Fe<'a> {
                 Term::Ret(v) => {
                     let t = self.lt(f.ret);
                     let rv = self.r(*v);
-                    self.line("store i64 %depth, ptr @ksn.depth".into());
+                    if !bare {
+                        self.line("store i64 %depth, ptr @ksn.depth".into());
+                    }
                     self.line(format!("ret {} {}", t, rv));
                 }
                 Term::Unreachable => self.line("unreachable".into()),
@@ -2605,12 +2614,21 @@ impl<'a> Fe<'a> {
         // 先頭 (静的な確保と深さの検査) と本体。
         let params: Vec<String> = f.params().iter().enumerate().map(|(j, (_, t))| format!("{} %arg{}", lty(self.aggs, *t), j)).collect();
         // `null-pointer-is-valid`: `core.ptr.read(null)` などの null 参照を、最適化で消える未定義動作にせず、実際の fault (SIGSEGV) にする。
-        let mut s = format!("define internal {} {}({}) null_pointer_is_valid {{\nentry:\n", self.lt(f.ret), fname(&f.key), params.join(", "));
+        // Kasane で書いた基本メソッド (`alloc/vec.ksnl` / `alloc/string.ksnl` の単相インスタンス) は、組み込みの下ろしと同じく呼び出しを残さない。
+        // 再帰せず、呼び先も有界なので、呼び出しの深さの記録 (`ksn.depth`) を省いて、LLVM が展開できるようにする
+        // (組み込みは呼び出しなしで展開されていたので、深さの記録の分だけ遅くなるのを防ぐ。深さの上限の検査は呼び出し側が行う)。
+        let inline = if bare { "alwaysinline " } else { "" };
+        let mut s = format!("define internal {} {}({}) {}null_pointer_is_valid {{\nentry:\n", self.lt(f.ret), fname(&f.key), params.join(", "), inline);
         s.push_str(&hoisted);
-        s.push_str(&format!(
-            "  %depth = load i64, ptr @ksn.depth\n  %over = icmp uge i64 %depth, {}\n  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n  unreachable\ngo:\n  %depth1 = add i64 %depth, 1\n  store i64 %depth1, ptr @ksn.depth\n  br label %b0\n",
-            MAX_DEPTH
-        ));
+        if bare {
+            // `b0` の phi は `go` を前の辺として参照するので、空の `go` を残す (最適化で消える)。
+            s.push_str("  br label %go\ngo:\n  br label %b0\n");
+        } else {
+            s.push_str(&format!(
+                "  %depth = load i64, ptr @ksn.depth\n  %over = icmp uge i64 %depth, {}\n  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n  unreachable\ngo:\n  %depth1 = add i64 %depth, 1\n  store i64 %depth1, ptr @ksn.depth\n  br label %b0\n",
+                MAX_DEPTH
+            ));
+        }
         for (k, b) in f.blocks.iter().enumerate() {
             if !reach[k] {
                 continue;

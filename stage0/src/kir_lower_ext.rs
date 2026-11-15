@@ -136,9 +136,19 @@ pub(super) fn ext_call(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, m: 
     Some(ext_lower(lw, e, line, di, on_vec, elem, h, args, is_vec))
 }
 
+/// `s.m(args)` (`s` は `String` のヘッダのアドレス) の基本メソッドを、`alloc/string.ksnl` の Kasane 版の単相インスタンスで下ろす。
+/// 名前が `KASANE_STRING_BASE` に無い、または Kasane 版の定義が無ければ `None` (組み込みの経路へ)。
+pub(super) fn string_call(lw: &mut Lw, e: &V, line: usize, h: VId, m: &str, args: &[V]) -> Option<LR<Option<VId>>> {
+    if !crate::interp::KASANE_STRING_BASE.contains(&m) {
+        return None;
+    }
+    let di = find_def(lw, &format!("alloc.string.String.{}", m))?;
+    let recv = Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![])]);
+    Some(kasane_call(lw, e, line, di, h, recv, args))
+}
+
 fn ext_lower(lw: &mut Lw, e: &V, line: usize, di: usize, on_vec: bool, elem: Ty, h: VId, args: &[V], is_vec: bool) -> LR<Option<VId>> {
-    let p = lw.p;
-    let cd = &p.defs[di];
+    let cd = &lw.p.defs[di];
     if cd.params.len() != args.len() + 1 {
         return lw.err(line, format!("メソッド {} の引数の個数が違う", cd.name));
     }
@@ -150,9 +160,16 @@ fn ext_lower(lw: &mut Lw, e: &V, line: usize, di: usize, on_vec: bool, elem: Ty,
     } else {
         Src::Slice(Box::new(es))
     };
+    let self_v = if is_vec && !on_vec { coll::hdr_view(lw, h) } else { h };
+    kasane_call(lw, e, line, di, self_v, recv, args)
+}
+
+/// Kasane の定義 `di` (メソッド) を、受け手 `self_v` と受け手の型 `recv` で呼ぶ。総称の型引数は受け手と引数から推論して単相化する。
+fn kasane_call(lw: &mut Lw, e: &V, line: usize, di: usize, self_v: VId, recv: Src, args: &[V]) -> LR<Option<VId>> {
+    let p = lw.p;
+    let cd = &p.defs[di];
     // クロージャを引数に取る (`sort_by(fn ..)`): クロージャごとの単相インスタンス (`generic_call_with`)。
     if coll::has_closure_arg(lw, args) {
-        let self_v = if is_vec && !on_vec { coll::hdr_view(lw, h) } else { h };
         let rs = Src::Ref(true, Box::new(recv));
         return coll::generic_call_with(lw, e, di, Some((self_v, rs)), args);
     }
@@ -175,7 +192,6 @@ fn ext_lower(lw: &mut Lw, e: &V, line: usize, di: usize, on_vec: bool, elem: Ty,
             None => return lw.err(line, format!("メソッド {} の戻り値の型は段階 1 の対象外", cd.name)),
         }
     };
-    let self_v = if is_vec && !on_vec { coll::hdr_view(lw, h) } else { h };
     let mut vs = vec![self_v];
     for a in args {
         match lw.expr(a)? {
