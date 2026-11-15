@@ -92,6 +92,8 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
     let (t1, _) = lw.new_block(&chty);                    // cmp 中継 (from, k, i, slots)
     let bhty: Vec<Ty> = std::iter::once(Ty::Usize).chain(std::iter::once(Ty::Usize)).chain(slot_tys.iter().copied()).collect();
     let (bb, bp) = lw.new_block(&bhty);                   // body(from, end, slots)
+    let cbty: Vec<Ty> = std::iter::once(Ty::Usize).chain(slot_tys.iter().copied()).collect();
+    let (aft, cbp) = lw.new_block(&cbty);                  // after(end, slots): 末尾なら抜け、次の区切りへ (本体の末尾と continue の飛び先)
 
     let entry: Vec<VId> = std::iter::once(zero).chain(lw.vals_of(&slots)).collect();
     lw.goto(hb, entry);
@@ -163,6 +165,8 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
     let piece_len = lw.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: bend, b: bfrom });
     let fat = lw.fat_ty();
     let piece = lw.emit(fat, Op::Make { variant: None, fields: vec![piece_ptr, piece_len] });
+    lw.scopes.push(vec![]);
+    let depth = lw.scopes.len() - 1;
     if let Some(n) = &name {
         coll::bind_owned(lw, n, piece, fat);
         // 束縛した `x` は `&str` (fat) としてメソッド (`is_empty` など) から参照できるように種類を登録する。
@@ -170,14 +174,27 @@ fn split_for(lw: &mut Lw, _line: usize, s: VId, sep: VId, name: Option<String>, 
             lw.coll.kinds.insert(s, coll::Kind::Str);
         }
     }
-    lw.scopes.push(vec![]);
+    // `continue` は後続 (aft) へ、`break` は抜けへ。aft は区切りの位置 (bend) を受け取る。
+    lw.loops.push(super::LoopCx { header: aft, exit: xb, slots: slots.clone(), depth, cont: vec![bend] });
     let r = lw.expr(body)?;
+    lw.loops.pop();
     lw.scopes.pop();
     if r.is_some() {
-        let done = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: bend, b: s_len });
-        let next_from = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: bend, b: sep_len });
-        lw.branch(done, (xb, slot_vals(lw, &slots)), (hb, next_from_args(lw, next_from, &slots)));
+        let mut args = vec![bend];
+        args.extend(lw.vals_of(&slots));
+        lw.goto(aft, args);
     }
+
+    // ---- after(end, slots): 末尾の区切りなら抜ける。そうでなければ次の片を探す ----
+    lw.cur = Some(aft);
+    let cend = cbp[0];
+    for (k, s) in slots.iter().enumerate() {
+        lw.slots[*s] = (cbp[k + 1], slot_tys[k]);
+    }
+    let done = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: cend, b: s_len });
+    let next_from = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: cend, b: sep_len });
+    lw.branch(done, (xb, slot_vals(lw, &slots)), (hb, next_from_args(lw, next_from, &slots)));
+
     lw.cur = Some(xb);
     for (k, s) in slots.iter().enumerate() {
         lw.slots[*s] = (xp[k], slot_tys[k]);
@@ -294,14 +311,18 @@ fn chars_for(lw: &mut Lw, _line: usize, s: VId, name: Option<String>, body: &V) 
     for (k, s) in slots.iter().enumerate() {
         lw.slots[*s] = (dp[k + 3], slot_tys[k]);
     }
+    let next_i = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: di, b: width });
+    lw.scopes.push(vec![]);
+    let depth = lw.scopes.len() - 1;
     if let Some(n) = &name {
         coll::bind_owned(lw, n, ch, Ty::U32);
     }
-    lw.scopes.push(vec![]);
+    // `continue` は次の文字の位置 (next_i) を header へ渡す。
+    lw.loops.push(super::LoopCx { header: hb, exit: xb, slots: slots.clone(), depth, cont: vec![next_i] });
     let r = lw.expr(body)?;
+    lw.loops.pop();
     lw.scopes.pop();
     if r.is_some() {
-        let next_i = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: di, b: width });
         lw.goto(hb, next_from_args(lw, next_i, &slots));
     }
     lw.cur = Some(xb);

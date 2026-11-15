@@ -134,6 +134,8 @@ pub enum Outcome {
     Panic(String),
     /// 文言を `eprint` で書き終えた panic の終わり (終了コード 101。文言は出さない)。
     Abort,
+    /// `std.process.exit` で終わる (終了コードは引数の値)。
+    Exit(i32),
     /// 呼び出し深さの超過 (木走査と同じく終了コード 102)。
     StackOverflow,
 }
@@ -1346,6 +1348,7 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     }
                 }
                 Op::Abort => return Ok(Outcome::Abort),
+                Op::Exit { code } => return Ok(Outcome::Exit(get(&stack[top], code) as i32)),
                 Op::Panic { msg, arg } => {
                     let m = match arg {
                         Some(v) => format!("{}: {}", msg, get(&stack[top], v)),

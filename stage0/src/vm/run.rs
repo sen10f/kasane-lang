@@ -291,6 +291,7 @@ impl<'a> Vm<'a> {
             // コールバックは `panics never`。C のフレームを越えて巻き戻せない異常は、その場でプロセスを止める。
             Ok(Outcome::Panic(m)) => self.die(101, Some(format!("panic: {}", m))),
             Ok(Outcome::Abort) => self.die(101, None),
+            Ok(Outcome::Exit(c)) => self.die(c, None),
             Ok(Outcome::StackOverflow) => self.die(102, Some("stack overflow".to_string())),
             Err(e) => self.die(3, Some(format!("ksn: vm: 内部エラー: {}", e))),
         }
@@ -969,6 +970,11 @@ impl<'a> Vm<'a> {
                     self.panic_at = Some((vi, fi, pc as u32 - 1));
                     self.flush();
                     return Ok(Outcome::Abort);
+                }
+                Ins::Exit { code } => {
+                    let c = r!(*code) as i32;
+                    self.flush();
+                    return Ok(Outcome::Exit(c));
                 }
                 Ins::Write { d, fd, data } => {
                     let bytes = Self::fat_bytes(rp, *data as usize)?;

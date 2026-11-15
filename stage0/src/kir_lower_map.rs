@@ -979,7 +979,7 @@ fn for_iter(lw: &mut Lw, e: &V, recv: usize, kv: Option<(Ty, Ty)>) -> LR<Option<
         let v = lw.emit(vt, Op::MemLoad { p: ent, off: sh.ksz() as u32 });
         lw.bind(n, v, vt);
     }
-    lw.loops.push(super::LoopCx { header: ib, exit: xb, slots: slots.clone(), depth });
+    lw.loops.push(super::LoopCx { header: ib, exit: xb, slots: slots.clone(), depth, cont: vec![] });
     let r = lw.expr(body)?;
     if r.is_some() {
         let args = lw.vals_of(&slots);

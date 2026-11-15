@@ -255,6 +255,9 @@ struct LoopCx {
     slots: Vec<usize>,
     /// break / continue が後始末する最初のスコープの番号 (これより内側の所有値を解放する)。
     depth: usize,
+    /// `continue` が header へ渡す先頭の引数 (header が取る値のうち、スロットより前の分)。無ければ空。
+    /// `for x in s.split(sep)` / `chars()` は、区切りの位置などをここで渡す。
+    cont: Vec<VId>,
 }
 
 struct Lw<'a> {
@@ -500,7 +503,9 @@ impl<'a> Lw<'a> {
                 None => return Err(format!("引数の型 {} は段階 1 の対象外 ({})", show(&st), sig_why(&self, &st))),
             }
         }
-        let ret = if is_nil(&d.ret) {
+        // `-> !` は戻らない関数。KIR の戻り値は unit にして、本体の末尾は到達しないものとして扱う。
+        let never_ret = !is_nil(&d.ret) && matches!(self.decl_ty(&d.ret), Src::Never);
+        let ret = if is_nil(&d.ret) || never_ret {
             Ty::Unit
         } else {
             let st = self.decl_ty(&d.ret);
@@ -528,6 +533,10 @@ impl<'a> Lw<'a> {
             }
         }
         if let Some(v) = self.expr(body)? {
+            if never_ret {
+                // 検査を通った `-> !` の本体は末尾に届かない (exit・発散する呼び出し・無限ループで終わる)。届くなら下ろせない。
+                return Err(format!("! を返す関数 {} の本体が戻りうる (発散しない形は段階 1 の対象外)", d.name));
+            }
             if self.vty(v) != ret {
                 return Err("本体の値の型が戻り値の型と合わない".into());
             }
@@ -1206,6 +1215,9 @@ impl<'a> Lw<'a> {
         if callee_name == "std.process.Command.new" {
             return proc_call(self, args, line);
         }
+        if callee_name == "std.process.exit" {
+            return self.process_exit(args, line);
+        }
         if let Some(r) = env_call(self, e, &callee_name, args, line)? {
             return Ok(Some(r));
         }
@@ -1234,7 +1246,9 @@ impl<'a> Lw<'a> {
                 None => return self.err(line, format!("呼び先 {} の引数の型は段階 1 の対象外", cd.name)),
             }
         }
-        let rt = if is_nil(&cd.ret) {
+        // `-> !` の呼び先は戻らない: 結果は持たず、呼び出しの後ろは到達しない (`panic` と同じ扱い)。
+        let diverges = !is_nil(&cd.ret) && matches!(mono::subst_ty(&from_v(&cd.ret, &gn), &tmap), Src::Never);
+        let rt = if is_nil(&cd.ret) || diverges {
             Ty::Unit
         } else {
             match coll::sig_ty(self, &mono::subst_ty(&from_v(&cd.ret, &gn), &tmap)) {
@@ -1266,7 +1280,26 @@ impl<'a> Lw<'a> {
             }
         }
         self.callees.insert(name.clone());
-        Ok(Some(self.emit(rt, Op::Call { callee: name, args: vs })))
+        let res = self.emit(rt, Op::Call { callee: name, args: vs });
+        if diverges {
+            self.terminate(Term::Unreachable);
+            return Ok(None);
+        }
+        Ok(Some(res))
+    }
+
+    /// `std.process.exit(code)`: 終了コード `code` (i32) で戻らずに終わる。後ろは到達しない (`Ok(None)`)。
+    fn process_exit(&mut self, args: &[V], line: usize) -> LR<Option<VId>> {
+        if args.len() != 1 {
+            return self.err(line, "std.process.exit の引数は 1 個のはず");
+        }
+        let Some(c) = self.expr(&args[0])? else { return Ok(None) };
+        if self.vty(c) != Ty::I32 {
+            return self.err(line, "std.process.exit の引数は i32 だけ段階 1 の対象");
+        }
+        self.emit(Ty::Unit, Op::Exit { code: c });
+        self.terminate(Term::Unreachable);
+        Ok(None)
     }
 
     /// `std.io.print_line(s)`: `write 1, s` の後に `write 1, "\n"` (設計_KIR.md 12.2)。どちらかが失敗したら、その `Err` が結果になる。
@@ -1625,7 +1658,7 @@ impl<'a> Lw<'a> {
             self.branch(cv, (bb, vec![]), (xb, exit_args));
             body_start = bb;
         }
-        self.loops.push(LoopCx { header: hb, exit: xb, slots: slots.clone(), depth: self.scopes.len() });
+        self.loops.push(LoopCx { header: hb, exit: xb, slots: slots.clone(), depth: self.scopes.len(), cont: vec![] });
         self.cur = Some(body_start);
         let r = self.expr(body)?;
         if r.is_some() {
@@ -1648,6 +1681,7 @@ impl<'a> Lw<'a> {
             return self.err(nline(e), "ループの外の break / continue");
         };
         let (target, slots, depth) = (if is_break { lc.exit } else { lc.header }, lc.slots.clone(), lc.depth);
+        let lead = if is_break { vec![] } else { lc.cont.clone() };
         coll::drop_from(self, depth);
         // `break` / `continue` で抜けるスコープのスタックスロットの局所変数の寿命の終わり (借用検査の注釈)。
         if self.cur.is_some() {
@@ -1659,7 +1693,8 @@ impl<'a> Lw<'a> {
                 }
             }
         }
-        let args = self.vals_of(&slots);
+        let mut args = lead;
+        args.extend(self.vals_of(&slots));
         self.goto(target, args);
         Ok(None)
     }

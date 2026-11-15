@@ -123,6 +123,10 @@ pub fn run_entry(prog: &Program, user: &[usize], entry: &str, args: &[String], w
             }
             101
         }
+        Ok(Outcome::Exit(c)) => {
+            vm.flush();
+            c
+        }
         Ok(Outcome::StackOverflow) => {
             vm.flush();
             eprintln!("stack overflow");
@@ -156,6 +160,7 @@ pub fn run_test(prog: &Program, user: &[usize], ti: usize) -> Result<Option<Stri
             let s = s.trim_end_matches('\n');
             Some(s.strip_prefix("panic: ").unwrap_or(s).to_string())
         }
+        Ok(Outcome::Exit(c)) => Some(format!("exit({})", c)),
         Ok(Outcome::StackOverflow) => {
             eprintln!("stack overflow");
             Some("exit(102)".to_string())

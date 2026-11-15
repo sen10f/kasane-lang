@@ -1421,6 +1421,105 @@ fn mem_drop(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     Ok(Some(lw.unit()))
 }
 
+/// `&mut` の先 (値の読み書きの仕方を決めた形)。`Ref` は参照 (スカラー・所有物を持たない値・構造体)、
+/// `Hdr` は所有する Vec / String のヘッダ (3 語の番地。`adopt` と同じ並び)。
+enum MutPlace {
+    Ref(VId, Ty),
+    Hdr(VId, Ty),
+}
+
+impl MutPlace {
+    fn ty(&self) -> Ty {
+        match self {
+            MutPlace::Ref(_, t) | MutPlace::Hdr(_, t) => *t,
+        }
+    }
+}
+
+/// `core.mem.replace` / `swap` の引数 `e` (`&mut 先` の式や、`&mut` の型の変数) を、先の形に直す。
+fn mut_place(lw: &mut Lw, e: &V, line: usize) -> LR<Option<MutPlace>> {
+    let inner = match lw.src_ty(e) {
+        Ok(Src::Ref(true, inner)) => inner,
+        _ => return lw.err(line, "core.mem の引数は &mut の先 (名前・フィールド・参照) だけ段階 1 の対象"),
+    };
+    if matches!(&*inner, Src::Named(n, _) if n == HASHMAP) {
+        return lw.err(line, "core.mem の引数の HashMap は段階 1 の対象外 (ヘッダの種類を保てない)");
+    }
+    let Some(t) = lw.conv_t(&inner) else {
+        return lw.err(line, format!("core.mem の引数の指す先の型 {} は段階 1 の対象外", super::show(&inner)));
+    };
+    let Some(v) = lw.expr(e)? else { return Ok(None) };
+    if is_hdr_named(&inner) {
+        if lw.vty(v) != Ty::Ptr {
+            return lw.err(line, "所有する Vec / String の &mut の形が段階 1 の対象外");
+        }
+        return Ok(Some(MutPlace::Hdr(v, t)));
+    }
+    match lw.vty(v) {
+        Ty::Ref(true, _) => Ok(Some(MutPlace::Ref(v, t))),
+        _ => lw.err(line, "core.mem の引数は &mut の参照でない"),
+    }
+}
+
+/// 先の値を読む。`Ref` は指す先を複写し、`Hdr` は 3 語から値を作る (どちらも先は書き換えるまで元の値を持つ)。
+fn place_load(lw: &mut Lw, p: &MutPlace) -> VId {
+    match p {
+        MutPlace::Ref(r, t) => lw.emit(*t, Op::Load(*r)),
+        MutPlace::Hdr(h, t) => {
+            let ptr = lw.emit(Ty::Ptr, Op::MemLoad { p: *h, off: 0 });
+            let len = lw.emit(Ty::Usize, Op::MemLoad { p: *h, off: 8 });
+            let cap = lw.emit(Ty::Usize, Op::MemLoad { p: *h, off: 16 });
+            lw.emit(*t, Op::Make { variant: None, fields: vec![ptr, len, cap] })
+        }
+    }
+}
+
+/// 先に値を書く。古い値は解放しない (呼び出し側が受け取るか、入れ替えの相手が持つ)。
+fn place_store(lw: &mut Lw, p: &MutPlace, v: VId) {
+    match p {
+        MutPlace::Ref(r, _) => {
+            lw.emit(Ty::Unit, Op::Store { ptr: *r, val: v });
+        }
+        MutPlace::Hdr(h, _) => store_vec(lw, *h, v),
+    }
+}
+
+/// `core.mem.replace(dst, v)`: `dst` の古い値を返し、先に `v` を書く。古い値は解放しない (返した値の持ち主になる)。
+fn mem_replace(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
+    let args = items(&nf(e)[1]);
+    let line = nline(e);
+    if args.len() != 2 {
+        return lw.err(line, "core.mem.replace の引数は 2 つのはず");
+    }
+    let Some(dst) = mut_place(lw, &args[0], line)? else { return Ok(None) };
+    let Some(v) = lw.expr(&args[1])? else { return Ok(None) };
+    if lw.vty(v) != dst.ty() {
+        return lw.err(line, "core.mem.replace の値の型が指す先の型と違う");
+    }
+    let old = place_load(lw, &dst);
+    place_store(lw, &dst, v);
+    Ok(Some(old))
+}
+
+/// `core.mem.swap(a, b)`: 二つの先の値を入れ替える (両方を読んでから書く)。
+fn mem_swap(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
+    let args = items(&nf(e)[1]);
+    let line = nline(e);
+    if args.len() != 2 {
+        return lw.err(line, "core.mem.swap の引数は 2 つのはず");
+    }
+    let Some(a) = mut_place(lw, &args[0], line)? else { return Ok(None) };
+    let Some(b) = mut_place(lw, &args[1], line)? else { return Ok(None) };
+    if a.ty() != b.ty() {
+        return lw.err(line, "core.mem.swap の二つの値の型が違う");
+    }
+    let va = place_load(lw, &a);
+    let vb = place_load(lw, &b);
+    place_store(lw, &a, vb);
+    place_store(lw, &b, va);
+    Ok(Some(lw.unit()))
+}
+
 /// 関数呼び出しのうち、コレクションの生成と、クロージャ値の呼び出しを扱う。扱わないなら `None`。
 pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     let f = nf(e);
@@ -1493,6 +1592,8 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         ["alloc", "collections", "BtreeMap", "new"] => Some(new_header(lw, e)),
         // `core.mem.drop(x)`: 値を移して、その場で解放する。
         ["core", "mem", "drop"] => Some(mem_drop(lw, e)),
+        ["core", "mem", "replace"] => Some(mem_replace(lw, e)),
+        ["core", "mem", "swap"] => Some(mem_swap(lw, e)),
         _ => None,
     }
 }
@@ -2981,7 +3082,7 @@ fn user_iter(lw: &mut Lw, e: &V, it: &V, s: usize, di: usize, name: Option<Strin
         let v = lw.emit(pay.ty(), Op::Payload(o));
         drop_temp(lw, v);
     }
-    lw.loops.push(super::LoopCx { header: hb, exit: xb, slots: slots.clone(), depth });
+    lw.loops.push(super::LoopCx { header: hb, exit: xb, slots: slots.clone(), depth, cont: vec![] });
     let r = lw.expr(body)?;
     // 1 周の終わり: 変数が所有する値を先に解放してから、ヘッダへ戻る (戻った後の解放は到達しない)。
     block_end(lw);
@@ -3082,7 +3183,7 @@ fn counted(lw: &mut Lw, _line: usize, c: Counted, name: Option<String>, body: &V
             }
         }
     }
-    lw.loops.push(super::LoopCx { header: ib, exit: xb, slots: slots.clone(), depth });
+    lw.loops.push(super::LoopCx { header: ib, exit: xb, slots: slots.clone(), depth, cont: vec![] });
     let r = lw.expr(body)?;
     if r.is_some() {
         // 1 周の終わり: 変数が所有する値を先に解放してから戻る

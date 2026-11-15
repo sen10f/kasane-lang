@@ -751,6 +751,7 @@ impl<'a> Fc<'a> {
                 Ins::Panic { msg: (self.prog.strs.len() - 1) as u32, arg: arg.map(|a| self.s(a)).unwrap_or(NO_SLOT), aty: self.ty_of(aty) }
             }
             Op::Abort => Ins::Abort,
+            Op::Exit { code } => Ins::Exit { code: self.s(*code) },
             Op::Write { fd, data } => Ins::Write { d, fd: self.s(*fd), data: self.s(*data) },
             Op::Eprint { data } => Ins::Eprint { data: self.s(*data) },
             Op::FmtFloat { bits, a } => Ins::FmtFloat { a: self.s(*a), bits: *bits },
