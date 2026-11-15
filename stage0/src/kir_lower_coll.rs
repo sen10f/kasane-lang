@@ -269,8 +269,9 @@ pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
         }
     }
     // `&x.f.g` (x は構造体の局所変数で、f.g は Vec / String のフィールド): フィールドのヘッダのアドレス。
-    if nname(operand) == "Path" {
-        let segs = strs(&nf(operand)[0]);
+    // `x.f` は `Path` (名前の並び)、`self.f` や入れ子は `Field` の木で来ることがある。どちらも名前の並びにして扱う。
+    if matches!(nname(operand), "Path" | "Field") {
+        let segs = super::agg::field_segs(operand).unwrap_or_default();
         if segs.len() > 1 {
             if let Some(s) = lw.lookup(&segs[0]) {
                 let base = lw.slots[s].0;
@@ -294,7 +295,7 @@ pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
     }
     // 局所変数でも局所の経路でもない式 (`&t.mk()` の一時値): 評価した所有値をフレームのヘッダに置き、
     // 現在のスコープの終わりまで所有する (木走査では文の終わりまでだが、解放の時期は観測できない)。
-    if !matches!(nname(operand), "Path" | "Index") {
+    if !matches!(nname(operand), "Path" | "Field" | "Index") {
         if let Some(v) = lw.expr(operand)? {
             if lw.aggs.borrow().is_vec(lw.vty(v)) {
                 let h = adopt(lw, v);
