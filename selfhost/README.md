@@ -705,3 +705,93 @@ python3 -I compare.py --group linear_ok          # 誤検出と受理 (118)
 python3 -I compare.py --group unsound            # 拒否・一致・余分 (Rust 版を 409 回呼ぶ。約 16 秒)
 python3 -I compare.py --group all                # 全部
 ```
+
+
+## 16. KIR への下ろしの段 (修正プラン 5-5)
+
+2026-11-15。ブランチ `selfhost/lower`。新規は `selfhost/lower/` と、この節の追記だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` と `selfhost/` の他の部品は変えていない。`dev/plan` は `selfhost/emit` の統合のために取り込んだ)。
+
+結論を先に: **関数の本体を KIR のテキストに下ろす段は Kasane で書けて、`ksn build --release` で退避なしにネイティブになった (`lower.native`。probe の 5 関数で 0.06 秒。木走査 `ksn run` の 26〜32 秒に比べる)。** 下ろせるのは、整数・`bool`・`if` / `while` / `loop` / `break` / `continue` / `return`・列挙型の `match`・構造体の構築と読み出し・関数呼び出し・`core.mem.drop` (単位の値) まで。`Option` / `Result` / `?` / `Vec` / `String` / 参照 / 総称関数は未着手で、ここが対象の大半 (14.4 章)。出力は Rust 版 `ksn kir` と、値・ブロック・集成体の番号を出た順に直して比べると、`linear_ok` の 439 関数のうち **47 が一致** (下ろせたのは 90)。下ろせた関数だけを数えると、一致は 47 / 90。
+
+### 16.1 構成と行数
+
+`selfhost/lower/` が ksn パッケージ (`entry = "lower.main"`、依存 `parse`・`resolve`・`types` を `path` で直接)。
+
+| ファイル | 行数 | 中身 |
+| --- | ---: | --- |
+| `src/lower.ksnl` | 117 | 入口: 読み込み (`types.env.load`)、呼ばれた関数の列 (FQN の順に広げる)、名前の順の出力 |
+| `src/lower/cx.ksnl` | 395 | 下ろしの状態 (`Cx` = 型検査の arena・`types.chk.Ctx`・表・関数ごとの出力)、値・ブロック・命令の組み立て、可変の局所の引き回し |
+| `src/lower/tyk.ksnl` | 356 | 型の下ろし (`types` の型 id → KIR の型の文字列)、集成体のレイアウト (大きさ・そろえ・オフセット)、`agg#N` の行 |
+| `src/lower/expr.ksnl` | 1,053 | 式と文 (`lower.expr.expr` が `types.infer.expr` で型を得て、形ごとに下ろす)、`if` / `while` / `loop` / `match` の合流 |
+| `src/lower/func.ksnl` | 142 | 関数 1 本の頭 (`uses`・`panics`・`stack`・`ret`) と本体、結果の記録 |
+| `compare.py` | 211 | 比較: Rust 版 `ksn kir FQN` と、この段の出力を関数ごとに並べ、番号だけ正規化して比べる |
+| `probes/probe/` | 1 パッケージ | 手で確かめた小さな入力 (整数・`while`・構造体・列挙の `match`) |
+
+Kasane 合計 2,063 行 (`compare.py` を除く)。`ksn check` と `ksn fmt --check` は通る。
+
+### 16.2 使い方
+
+```
+cd selfhost/lower
+ksn build --release                              # target/release/lower.native
+./target/release/lower.native PKG_DIR STD_DIR FQN...   # 例: ./target/release/lower.native ../../examples/demo ../../spec/stdlib demo.main
+python3 -I compare.py --group probe --mine native           # 比較 (probe / examples / linear_ok / all)
+```
+
+出力は `kir 1` で始まり、集成体の行 (`agg#N`)、関数 (FQN の順)、末尾に下ろせなかった関数の `unsupported FQN: 理由` の行。`unsupported` の行を外すと、`ksn kir` と同じ形になる。`ksn run` でも動くが、標準ライブラリの読み込みが木走査で 26〜32 秒かかる (ネイティブは 0.06 秒)。
+
+### 16.3 確かめ
+
+| 対象 | 結果 |
+| --- | --- |
+| `ksn build --release` | ネイティブ (`target/release/lower.native`)。退避なし |
+| `probes/probe` (5 関数) | `add`・`mk`・`cnt` が Rust 版と一致。`pick` (列挙の `match`) と `main` (`core.mem.drop` の後の値の扱い) は違う (14.5 章) |
+| `stage0/tests/data/linear_ok/*.ksnl` (118 本、定義された関数 439 本) | **一致 47 / 439** (下ろせた 90、未対応 481 の理由) |
+| `examples/*` (172 関数) | 一致 0 / 172 (下ろせた 4)。ほとんどが `Vec` / `String` / `Option` / 総称の関数 |
+| 端から端まで (`t.main` が呼ぶ関数がすべて下ろせた 9 本) | Kasane 版の KIR → `selfhost/emit` (`emit.native`) → clang (`kir_rt.c`・`sysrt.c`) → 実行。Rust 版のネイティブと、標準出力・標準エラー・終了コードが **9 / 9 一致** |
+
+9 本の内訳: `temp_linear_consumed` `ok_pair_destructured` `for_owned_vec_by_ref` `for_linear_array_consumed` `generic_linear_consumed` `linear_ok_method_on_bound` `linear_ok_pair_fields_consumed` `ok_pair_both_fields` `ok_pair_match_both`。いずれも標準出力は空 (終了コードは 0)。実行の確かめは「下ろして、LLVM まで通して、同じ結果になる」ことまでで、出力の中身は見ていない。
+
+一致しない関数の差は、(a) Rust 版の `own.*` (所有の注釈。線形の値の移動)、(b) `frame.bytes` / `mem.store` (借用の値を書き出す形)、(c) `if` の合流で使う値の番号と単位の定数の作り方 (番号は正規化で消えるが、単位の定数を作る場所は違う)。(a) と (b) は、下ろしていない型 (参照・`Vec`・`String`) に伴うもの。
+
+### 16.4 下ろせなかった形 (`linear_ok` の 118 本、理由の件数)
+
+| 理由 | 件数 | 理由の中身 |
+| --- | ---: | --- |
+| 型の下ろし (未対応の型) | 215 | `Option` / `Result` / `Vec` / `String` / 参照 / タプル。KIR の枠とタグの表現 (設計_KIR 27 章) を写していない |
+| 本体のない宣言 | 94 | `.sig` だけの関数 (`std.io`・`Vec` の基本メソッドなど)。KIR の命令を写す表がない (`core.mem.drop` だけ写した) |
+| 総称の関数 | 46 | 単相化 (型引数ごとのインスタンス) を書いていない |
+| 名前が局所でない | 35 | 定数・関数の値・列挙子の値 (`E.B` の値) |
+| `let` の形 | 33 | 分解の束縛 (`let (a, b) = ...`)、初期化式のない `let` |
+| メソッド呼び出し | 15 | `wrapping_*` 以外 |
+| 式の形・`match` (列挙型以外)・単項 (`!` 以外)・列挙子の構築 | 37 | 整数・`bool` 以外の `match`、`-x`、`Some(x)` など |
+
+算術 (`+` など) は `panics may` の関数で溢れの検査を伴うので、まだ書いていない (`add.T.trap` と panic の枝)。`&&` / `||` も未対応 (短絡の枝を書いていない)。
+
+### 16.5 処理系の不足 (重要度順)
+
+この段で当たったもの。処理系は直していない。
+
+1. **型検査器が式ごとの型を残さない。** 下ろしは、式ごとに `types.infer.expr` を呼び直して型を得ている (設計_KIR 2.4 の (a) が未実装)。入れ子の深さ分だけ同じ部分木を検査し直すので、大きい関数では無駄が多い。型のないリテラル (`let x = 0`) は、呼び直すときに型が決まらないことがあり、既定の `i32` で補った (検査器の既定と同じ。後で型が決まる場合は違う可能性がある)。
+2. **ネイティブの下ろしが、文字列と参照の書き方を狭くする。** `for` が `Vec<String>` (構造体の欄や引数) を回せない (`要素の借用の種類 (Vec / String) が分からない`)。`String == "unit"` は比較の両辺の型が違うと言われる (`as_str()` が要る)。`match` の束縛から取った `&[u8]` を関数の値として返すと、借用検査が `does not live long enough` (E3010) と言う。どれも添字での回し・`as_str()`・局所への取り出しで回避した (`lower.cx.name_of` など)。
+3. **E9040 の報告が根の理由を隠す。** `ksn build --release` は、最初に失敗した関数の「呼び先 X が未対応」の連鎖だけを出し、根の理由 (葉) は他の行に紛れる。根を探すために、関数を 1 本ずつ外して何度もビルドした。さらに `cache hit` の表示のもとで、古い結果を見て誤った判定をしかけた。根の理由を先頭に出す、または全件を出すとよい。
+
+### 16.6 まだ書いていないこと
+
+- `Option` / `Result` / `?`、`Vec` / `String` (`alloc.vec` / `alloc.string` の基本メソッドの単相インスタンス)、参照 (`&T` / `&mut T`)、タプル、関数値、クロージャ (14.4 章)。
+- 総称の関数の単相化 (`key=` が型引数付きの鍵になる形)。
+- 算術の溢れの検査 (`trap` と panic の枝)、`&&` / `||`、`-x`、`!` 以外の単項。
+- 読み込み (`ksn kir` の `--opt`・`--llvm`) との比較。`unsupported` の関数は本体を出さないので、関数ごとの一致だけを数えた。
+- 大きな入力 (数千行) での時間は測っていない。
+
+### 16.7 再現
+
+```
+. ~/.cargo/env
+cd stage0 && cargo build --release && cd ..
+cd selfhost/lower
+ksn check && ksn fmt --check && ksn build --release
+python3 -I compare.py --group probe --mine native
+python3 -I compare.py --group linear_ok --mine native --jobs 16   # 一致 47 / 439 (約 1 分)
+python3 -I compare.py --group examples --mine native               # 一致 0 / 172
+```

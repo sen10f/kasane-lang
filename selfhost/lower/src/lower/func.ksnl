@@ -1,0 +1,142 @@
+// 関数 1 本の下ろし: 頭 (引数・戻り値・効果・panics・stack) と本体。結果は `c.g.texts` に、成否は `c.g.oks` に入れる。
+// 呼び出し側 (lower.main) は名前の順に 1 回ずつ呼ぶので、両者は同じ添字になる。
+fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, fqn: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    lower.cx.reset(c)?
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    c.s.file = file
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return lower.func.record(c, "", "ファイルがない")
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(s) => s
+        None => return lower.func.record(c, "", "ソースがない")
+    }
+    let src = src_r.text.as_slice()
+    let n = parse.ast.get(&p.ast, node)
+    if n.d == 0usize {
+        return lower.func.record(c, "", "本体のない宣言")
+    }
+    let sg = parse.ast.get(&p.ast, n.c)
+    if sg.a != 0usize {
+        return lower.func.record(c, "", "総称の関数 (未対応)")
+    }
+    let at = parse.ast.get(&p.ast, sg.d)
+    let mark = c.tc.sc.len()
+    // 引数: 型を決め、値の番号を振り、局所の並びに入れる。
+    let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let np = resolve.ast.count(p, sg.b)
+    for j in core.iter.range(0usize, np) {
+        let prm = parse.ast.get(&p.ast, resolve.ast.item(p, sg.b, j))
+        let pt = types.lower.ty(env, &mut c.ar, &c.tc, p, src, file, prm.b)?
+        let kt = lower.tyk.text(env, c, pt)?
+        let v = lower.cx.newval(c, kt.as_str())?
+        ps.push(v)?
+        types.chk.push(&mut c.tc, resolve.ast.tok_text(p, src, prm.a), pt, false)?
+        lower.expr.sync(c)?
+        let k = c.tc.sc.len() - 1usize
+        lower.cx.set_val(c, k, v + 1usize)?
+        lower.expr.set_mut(c, k, false)?
+    }
+    let ret = if sg.c == 0usize {
+        types.ty.UNIT
+    } else {
+        types.lower.ty(env, &mut c.ar, &c.tc, p, src, file, sg.c)?
+    }
+    c.s.ret_t = ret
+    let rt = lower.tyk.text(env, c, ret)?
+    let _b0 = lower.cx.blk(c, &ps)?
+    lower.cx.goto(c, 0usize)
+    let r = lower.expr.expr(env, c, p, src, n.d, ret)?
+    if !c.s.term {
+        if rt.as_str() == "unit" {
+            // 本体の値が単位ならそれを返す (Rust 版と同じく、余分な単位の定数を作らない)。
+            let bt = lower.tyk.text(env, c, r.t)?
+            let mut u = r.v
+            if bt.as_str() != "unit" {
+                u = lower.expr.unit(c)?
+            }
+            lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(u)?.as_str())?)?
+        } else {
+            lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(r.v)?.as_str())?)?
+        }
+    }
+    types.chk.truncate(&mut c.tc, mark)
+    lower.expr.trunc(c, mark)
+    // 頭の行。
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("fn ")?
+    out.push_str(fqn)?
+    out.push_str(" key=")?
+    out.push_str(fqn)?
+    out.push_str(" uses=[")?
+    let mut first = true
+    for j in core.iter.range(0usize, resolve.ast.count(p, at.a)) {
+        if !first {
+            out.push_str(", ")?
+        }
+        first = false
+        let en = parse.ast.get(&p.ast, resolve.ast.item(p, at.a, j))
+        out.push_str(resolve.ast.text(src, en.a, en.b))?
+    }
+    out.push_str("] panics=")?
+    if at.b == 1usize {
+        out.push_str("never")?
+    } else if at.b == 2usize {
+        out.push_str("may")?
+    } else {
+        return lower.func.record(c, "", "panics の値 (未対応)")
+    }
+    out.push_str(" stack=-")?
+    out.push_str(" ret=")?
+    out.push_str(rt.as_str())?
+    out.push('\n')?
+    // ブロック。
+    let mut b = 0usize
+    while b < c.v.hdr.len() {
+        match c.v.hdr.as_slice().get(b) {
+            Some(h) => out.push_str(h.as_str())?
+            None => core.mem.drop(0u8)
+        }
+        let mut i = 0usize
+        while i < c.v.lines.len() {
+            let mine = match c.v.lblk.as_slice().get(i) {
+                Some(x) => *x == b
+                None => false
+            }
+            if mine {
+                match c.v.lines.as_slice().get(i) {
+                    Some(l) => {
+                        out.push_str("    ")?
+                        out.push_str(l.as_str())?
+                        out.push('\n')?
+                    }
+                    None => core.mem.drop(0u8)
+                }
+            }
+            i = i + 1usize
+        }
+        b = b + 1usize
+    }
+    out.push_str("end ")?
+    out.push_str(fqn)?
+    out.push('\n')?
+    let why = c.s.unsup.as_str()
+    if c.s.unsup.len() > 0usize {
+        return lower.func.record(c, "", why)
+    }
+    lower.func.record(c, out.as_str(), "")
+end lower.func.lower_item
+
+// 結果を記録する (成功なら本文、失敗なら理由)。順番は呼び出しの順。
+fn lower.func.record(c: &mut lower.cx.Cx, text: &str, why: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if why.len() > 0usize {
+        c.g.oks.push(false)?
+        c.g.texts.push(lower.cx.cat2(why, "")?)?
+        return Ok(())
+    }
+    c.g.oks.push(true)?
+    c.g.texts.push(lower.cx.cat2(text, "")?)?
+    Ok(())
+end lower.func.record
