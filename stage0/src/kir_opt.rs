@@ -153,6 +153,7 @@ fn side_effecting(op: &Op) -> bool {
         | Op::Reborrow(_)
         | Op::Borrow { .. }
         | Op::ScopeEnd(_)
+        | Op::Carry { .. }
         | Op::Own { .. }
         | Op::FieldAddr { .. } => false,
     }
@@ -277,6 +278,7 @@ fn copy_prop(m: &Module) -> Result<Module, String> {
 pub(crate) fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
     match op {
         Op::Const(_) | Op::Alloca | Op::FrameBytes { .. } | Op::StaticBytes(_) | Op::GlobalBytes { .. } | Op::FnPtr { .. } => vec![],
+        Op::Carry { a, b } => vec![a, b],
         Op::PtrAdd { p, off } => vec![p, off],
         Op::MemLoad { p, .. } | Op::HeapFree(p) => vec![p],
         Op::HeapAlloc(n) => vec![n],

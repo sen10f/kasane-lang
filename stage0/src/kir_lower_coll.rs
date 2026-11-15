@@ -261,6 +261,10 @@ pub(crate) fn bind_param_kind(lw: &mut Lw, name: &str, t: &Src) {
 pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
     if let Some(s) = local_slot(lw, operand) {
         if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_)) | Some(Kind::BMap(_))) {
+            // 借用・メソッドの受け手の読みは、move 済みの値の読み (注釈)。
+            if let Some(n) = super::path1(operand) {
+                lw.own_emit(&n, s, crate::kir::OwnKind::Use);
+            }
             return Ok(lw.slots[s].0);
         }
     }
@@ -1911,6 +1915,10 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     }
     let m = st(&f[1]);
     let slot = local_slot(lw, &f[0]);
+    // 局所の受け手の読みは、move 済みの値の読み (注釈。値の受け手の move は下の呼び出しが出す)。
+    if let (Some(s), Some(n)) = (slot, super::path1(&f[0])) {
+        lw.own_emit(&n, s, crate::kir::OwnKind::Use);
+    }
     Some(match place(lw, &f[0]) {
         Ok(Some(h)) if matches!(kind, Kind::Map(_)) => super::map_lower::method(lw, e, slot, &kind, h, &m, items(&f[2])),
         Ok(Some(h)) if matches!(kind, Kind::BMap(_)) => super::map_lower::bmap_method(lw, e, slot, &kind, h, &m, items(&f[2])),
@@ -2281,6 +2289,15 @@ fn pick_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, pick: Pick, m: &str)
     };
     let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
     let x = if borrowed { lw.emit(pay.ty(), Op::Make { variant: None, fields: vec![addr] }) } else { load_elem(lw, addr, elem) };
+    // スカラーの要素は値で持つ。`get` / `first` / `last` は木走査で `Option<&T>` なので、読んだ値は要素の借用を運ぶ (注釈。設計_KIR.md 24.11)。
+    if !borrowed {
+        // 借用の出どころは、要素の番地ではなく所有者の場所 (Vec のヘッダ・スライスの元): 後の `push` などの排他と照らすため。
+        let src = match seq {
+            Seq::Hdr(hh) if matches!(lw.vty(hh), Ty::Ptr | Ty::Ref(..)) => hh,
+            _ => addr,
+        };
+        lw.emit(Ty::Unit, Op::Carry { a: src, b: x });
+    }
     let some = lw.emit(opt, Op::Some(x));
     lw.goto(jb, vec![some]);
     lw.cur = Some(eb);

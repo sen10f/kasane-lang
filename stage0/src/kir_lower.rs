@@ -785,9 +785,12 @@ impl<'a> Lw<'a> {
                 let base = self.read_slot(s);
                 let v = self.field_path(base, &segs[1..], line)?;
                 // Copy でないフィールドの値渡し: 部分的な move (義務は果たし、別のフィールドの move は許す。注釈)。
+                // Copy のフィールドの読みは move 済みの値の読みになる (`use`)。
                 if let Ok(t) = self.src_ty(e) {
                     if !self.src_is_copy(&t) {
                         self.own_emit(&segs[0], s, kir::OwnKind::Part);
+                    } else {
+                        self.own_emit(&segs[0], s, kir::OwnKind::Use);
                     }
                 }
                 if coll::owns(self, self.vty(v)) {

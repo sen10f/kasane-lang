@@ -312,6 +312,10 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("受け手 {} が局所でない", segs[0]));
         };
         let (sv, stt) = self.slots[s];
+        // 借用の受け手 (`x.len()` の `&self`) は、move 済みの値の読み (注釈)。
+        if by_ref {
+            self.own_emit(&segs[0], s, crate::kir::OwnKind::Use);
+        }
         if segs.len() == 1 {
             if !by_ref {
                 // 値の受け手は関数の引数と同じ移動 (path_read: ヘッダを移し/印を下ろす)。
@@ -387,6 +391,14 @@ impl<'a> Lw<'a> {
                 return self.err(line, "共有参照を通した &mut の受け手は段階 1 の対象外");
             }
             return Ok(Some((self.coerce(rv, self_ty), None, false)));
+        }
+        // 借用の受け手が局所の名前なら、move 済みの値の読み (注釈)。
+        if by_ref {
+            if let Some(n) = super::path1(r) {
+                if let Some(s) = self.lookup(&n) {
+                    self.own_emit(&n, s, crate::kir::OwnKind::Use);
+                }
+            }
         }
         let Some(v) = self.expr(r)? else { return Ok(None) };
         if !by_ref {

@@ -267,6 +267,8 @@ impl<'a> Lw<'a> {
                         format!("局所 {} のアドレスを取れない (段階 1 の対象外の型)", name),
                     );
                 }
+                // 借用は move 済みの値から作れない (注釈)。
+                self.own_emit(&name, s, crate::kir::OwnKind::Use);
                 return Ok(Some(self.ref_value(ptr, p, shared)));
             }
         }

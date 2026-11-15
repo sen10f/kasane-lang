@@ -1,0 +1,15 @@
+// expect: E3010
+fn t.h() -> u32 uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(1u32))
+    let k = v.get(0usize)
+    core.mem.drop(v.push(2u32))
+    match k {
+        Some(x) => *x
+        None => 0u32
+    }
+end t.h
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

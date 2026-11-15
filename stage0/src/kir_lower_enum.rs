@@ -322,7 +322,10 @@ impl<'a> Lw<'a> {
         // `Some(&x)` で `Option<&スカラー>` を作る: スカラーへの参照を持つ Option は値で持つ (設計_KIR.md 10.10) ので、参照の指す先を読む。
         if let (Ty::Opt(p), Ty::Ref(_, pt)) = (t, self.vty(a)) {
             if name == "Some" && pt.ty() == p.ty() && p.ty().is_scalar() {
-                a = self.emit(p.ty(), Op::Load(a));
+                let r = a;
+                a = self.emit(p.ty(), Op::Load(r));
+                // 借用の運び (注釈。設計_KIR.md 24.11): 読んだ値は参照の借用を運ぶ (検査用。実行には影響しない)。
+                self.emit(Ty::Unit, Op::Carry { a: r, b: a });
             }
         }
         let (op, want) = match (name, t) {
@@ -379,7 +382,18 @@ impl<'a> Lw<'a> {
             Src::Never => None,
             t => Some(self.conv_t(&t).ok_or_else(|| format!("行 {}: match の型 {} は段階 1 の対象外", line, show(&t)))?),
         };
-        let Some(s) = self.expr_peek(&f[0])? else { return Ok(None) };
+        // 所有の印を持つ局所の対象は、読む (`use`) だけ。移すのは、非 Copy の束縛をする腕の入口 (下の `consume`)。
+        let scrut_local = super::path1(&f[0]).and_then(|n| self.lookup(&n).map(|s| (n, s)));
+        let scrut_linear = self.src_ty(&f[0]).is_ok_and(|t| self.src_is_linear(&t, &mut std::collections::HashSet::new()));
+        let peeked = match &scrut_local {
+            Some((n, s)) if self.coll.own_ids.contains_key(&(n.clone(), *s)) => {
+                self.coll.peek_field = false;
+                self.own_emit(n, *s, crate::kir::OwnKind::Use);
+                Some(super::coll::path_peek(self, *s))
+            }
+            _ => self.expr_peek(&f[0])?,
+        };
+        let Some(s) = peeked else { return Ok(None) };
         let sty = self.vty(s);
         let arms = items(&f[1]);
         let pats: Vec<&V> = arms.iter().map(|a| &items(a)[0]).collect();
@@ -434,6 +448,14 @@ impl<'a> Lw<'a> {
             for (name, src) in &arm_binds {
                 if let Some(bs) = self.lookup(name) {
                     self.own_declare(name, bs, src);
+                }
+            }
+            // 非 Copy の値を束縛する腕は、対象の局所を移す (以後の読みは move 済み)。
+            // 線形な対象は、`_` 以外の腕では義務を果たす (空の変種の腕も含む)。
+            if let Some((n, s)) = &scrut_local {
+                // `if let` の省略された else (構文が作る `PWild`) は消費しない: 対象の線形値の義務が残る (AST と同じ)。
+                if arm_binds.iter().any(|(_, src)| !self.src_is_copy(src)) || (scrut_linear && nname(pat) != "PWild") {
+                    self.own_emit(n, *s, crate::kir::OwnKind::Consume);
                 }
             }
             self.bref_bind(line)?;

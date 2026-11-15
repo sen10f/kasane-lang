@@ -444,7 +444,7 @@ impl<'a> Fc<'a> {
             }
         };
         let i = match &inst.op {
-            Op::ScopeEnd(_) | Op::Own { .. } => return Ok(()),
+            Op::ScopeEnd(_) | Op::Carry { .. } | Op::Own { .. } => return Ok(()),
             Op::Const(_) if self.skip_const.contains(&inst.dst) || self.hoisted.contains(&inst.dst) => return Ok(()),
             Op::Const(v) => match ty {
                 Ty::Opt(_) | Ty::Res(..) => {
