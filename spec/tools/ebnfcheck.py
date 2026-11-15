@@ -230,14 +230,24 @@ def lex_file(text, sig=False):
     lines = text.split('\n')[:-1]
     info = [(n, l, l.strip()) for n, l in enumerate(lines, 1)]
     out, inside, prev_comment = [], False, False
+    # ファイル先頭が `///` だけの塊で、その直後の空行 1 つだけがモジュールの説明の区切り (3.2)。
+    head_doc = True
     for idx, (n, l, s) in enumerate(info):
         if s == '':
             if prev_comment:
+                if head_doc:
+                    out.append(Tok('kw', 'MDOC'))
+                    head_doc = False
+                    prev_comment = False
+                    continue
                 raise SyntaxError(f'line {n}: blank line after comment')
+            head_doc = False
             if inside:
                 out.append(Tok('BLANK', ''))
             prev_comment = False
             continue
+        if not s.startswith('///'):
+            head_doc = False
         head = l.split(' ', 1)[0] if not l.startswith(' ') else ''
         if head in DEF_START and not (sig and head == 'fn'):
             inside = True

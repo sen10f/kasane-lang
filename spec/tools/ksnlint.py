@@ -200,8 +200,14 @@ class Lint:
                 if gap != 1:
                     self.err('blank', b['line'] + 1, f'exactly one blank line required (found {gap})')
         # コメント直後の空行
+        # ファイル先頭の `///` だけの塊の直後の空行は、モジュールの説明の区切り (3.2)
+        head_doc = 0
+        while head_doc < len(L) and L[head_doc].startswith('///'):
+            head_doc += 1
         for n in range(len(L) - 1):
             if L[n].startswith('//') and L[n + 1] == '':
+                if n + 1 == head_doc and head_doc > 0 and all(x.startswith('///') for x in L[:head_doc]):
+                    continue
                 self.err('blank', n + 2, 'blank line after comment')
 
     def split_top(self, s, sep=','):
