@@ -4,6 +4,7 @@
  *   - 確保: 線形メモリ上の first-fit の空きリスト (`memory.grow` で伸ばす)。
  *   - 書式: printf 系の最小 (`%d %u %x %c %s %%` と `l` / `ll`、幅なし)。浮動小数の書式 (`%e %f %g`) は出さない。
  *   - 入出力: `env` の import 2 つだけ (WASM ABI の章): `ksn_write(fd, ptr, len) -> i32` と `ksn_exit(code)`。
+ *     `KSN_WASI` を定義してビルドするとき (wasm32-wasi) は、この 2 つと getenv を `wasi.c` が定義する (WASI の fd_write / proc_exit / environ_get)。
  *   - 入口: `ksn_main() -> i32` を export する (IR の `main` を呼ぶ)。
  * 浮動小数の文字列化・getenv・時刻・ファイル・ソケット・プロセスは対応しない (`wasm_unsupported` が生成前に止める)。
  * このファイルは clang の `--target=wasm32-unknown-unknown -ffreestanding -fno-builtin` で作る (`kir_llvm` の `wasm_link`)。 */
@@ -14,8 +15,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-__attribute__((import_module("env"), import_name("ksn_write"))) int ksn_write(int fd, const void *p, size_t n);
-__attribute__((import_module("env"), import_name("ksn_exit"))) void ksn_exit(int code);
+/* wasm32-wasi は wasi.c が定義する (WASI の fd_write / proc_exit)。素の wasm は env の import。 */
+#ifndef KSN_WASI
+__attribute__((import_module("env"), import_name("ksn_write")))
+#endif
+int ksn_write(int fd, const void *p, size_t n);
+#ifndef KSN_WASI
+__attribute__((import_module("env"), import_name("ksn_exit")))
+#endif
+void ksn_exit(int code);
 
 int main(int argc, char **argv);
 
@@ -356,11 +364,13 @@ int atoi(const char *s) {
     return neg ? -v : v;
 }
 
-/* 環境変数はない (std.env は wasm32 では未対応)。 */
+#ifndef KSN_WASI
+/* 環境変数はない (std.env は wasm32-unknown-unknown では未対応。wasm32-wasi は wasi.c の getenv)。 */
 char *getenv(const char *name) {
     (void)name;
     return 0;
 }
+#endif
 
 /* ---- 128 ビット整数の組み込み (libcall)。
  * wasm32 には i128 の命令がないので、LLVM は `__multi3` などを呼ぶ。呼び出しの形: 結果はポインタの第 1 引数へ書き
