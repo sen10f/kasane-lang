@@ -1,0 +1,11 @@
+fn t.count(s: &str) -> usize uses [alloc] panics never
+    let n = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(v) => v.as_str().len()
+        Err(_e) => 0usize
+    }
+    n
+end t.count
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    std.io.print_line("main")
+end t.main

@@ -1,0 +1,12 @@
+fn t.keep(s: &str) -> &str uses [alloc] panics never
+    let o = alloc.string.String.from_str(std.alloc.SYSTEM, s)
+    let x = match o {
+        Ok(_v) => s
+        Err(_e) => ""
+    }
+    x
+end t.keep
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    std.io.print_line(t.keep("kept"))
+end t.main

@@ -60,6 +60,9 @@ enum Ev {
     ScopeAdd(String),
     /// ブロックの末尾で、そのブロックで宣言した局所変数の寿命が終わる。
     DropScope(String),
+    /// ブロック・`match` の腕・`if` の枝の値 (持ち主 `holder`) が、その枝で束縛した所有物 `vars` の借用を運ぶ。
+    /// 枝の終わりで `vars` は寿命が尽きるので、運んでいれば E3030 (`analyze` が見る)。
+    Escape { holder: String, vars: Vec<String>, line: usize },
     Access { root: String, path: Vec<String>, kind: Acc, line: usize },
 }
 
@@ -119,6 +122,10 @@ struct Low<'a> {
     /// 型が決まっていて、借用を持ち得ない束縛の名前 (スカラー・所有値)。形が分からない分解で、
     /// これ以外の束縛へは右辺の借用を配る (fail-closed)。
     plain: HashSet<String>,
+    /// 所有物の局所: 同じ名前の束縛のすべてが型を記録され、どれも借用を持ち得ない型の名前 (`borrowck` で求める)。
+    /// 枝の値がこれの借用を運ぶと E3030 (`Ev::Escape`)。参照を通した分解 (`match &o { Some(p) => .. }`) の束縛は
+    /// 型が記録されないので、同名のものがあれば入らない (黙る)。
+    owned: HashSet<String>,
 }
 
 /// 値を持つ式 (`match` の腕、`if` の枝、ブロック式) の値として外へ運ぶ借用を、どの枝から集めるか。
@@ -1125,6 +1132,7 @@ impl<'a> Low<'a> {
         if nname(b) != "Block" {
             let end = self.lower_expr(b, cur);
             self.collect_value(end, holder, binds, b);
+            self.escape_check(end, holder, binds.to_vec(), b);
             return end;
         }
         self.scope_stack.push(vec![]);
@@ -1132,11 +1140,26 @@ impl<'a> Low<'a> {
             cur = self.lower_stmt(s, cur);
         }
         self.collect_value(cur, holder, binds, b);
+        // 枝の束縛 (`match` の腕) と、ブロックの中で宣言した局所が、この枝の終わりで寿命が尽きる。
+        let mut dying = binds.to_vec();
+        dying.extend(self.scope_stack.last().cloned().unwrap_or_default());
+        self.escape_check(cur, holder, dying, b);
         let vars = self.scope_stack.pop().unwrap_or_default();
         for v in vars {
             self.emit(cur, Ev::DropScope(v));
         }
         cur
+    }
+
+    /// 枝の値 (持ち主 `holder`) が、枝の終わりで寿命が尽きる所有物 `dying` の借用を運んでいないかを、
+    /// `analyze` で見るために `Ev::Escape` を置く。`dying` のうち所有物の局所 (`owned`) だけを対象にする。
+    fn escape_check(&mut self, n: usize, holder: &str, dying: Vec<String>, body: &V) {
+        let vars: Vec<String> = dying.into_iter().filter(|v| self.owned.contains(v)).collect();
+        if vars.is_empty() {
+            return;
+        }
+        let line = Self::arm_tail(body).map_or(nline(body), nline);
+        self.emit(n, Ev::Escape { holder: holder.to_string(), vars, line });
     }
 
     fn drop_scopes_from(&mut self, cur: usize, depth: usize) {
@@ -1382,6 +1405,7 @@ impl<'a> Low<'a> {
             locals,
             temp_extended: HashSet::new(),
             plain: self.plain.clone(),
+            owned: self.owned.clone(),
         };
         let entry = sub.new_node();
         let exit = sub.new_node();
@@ -2549,23 +2573,47 @@ impl<'a> Checker<'a> {
         let scope_seed: Vec<String> = d.params.iter().map(|p| p.0.clone()).collect();
         let mut all = vec![];
         walk(body, &mut all);
+        // 束縛の総数 (仮引数を含む) を名前ごとに数える。
+        let mut total: HashMap<String, usize> = scope_seed.iter().map(|p| (p.clone(), 1)).collect();
         for n in &all {
             match nname(n) {
                 "Let" | "For" | "With" => {
                     let mut b = vec![];
                     pat_binds(&nf(n)[0], &mut b);
+                    for x in &b {
+                        *total.entry(x.clone()).or_insert(0) += 1;
+                    }
                     locals.extend(b);
                 }
                 "Match" => {
                     for arm in items(&nf(n)[1]) {
                         let mut b = vec![];
                         pat_binds(&items(arm)[0], &mut b);
+                        for x in &b {
+                            *total.entry(x.clone()).or_insert(0) += 1;
+                        }
                         locals.extend(b);
                     }
                 }
                 _ => {}
             }
         }
+        // 所有物の局所: 同じ名前の束縛のすべてが型を記録されていて、どれも借用を持ち得ない型のもの。
+        // 参照を通した分解 (`match &o { Some(p) => .. }`) は型を記録されないので、同名のものが 1 つでもあれば入らない (黙る)。
+        let mut recorded: HashMap<String, (usize, bool)> = HashMap::new();
+        for ((d, _, name), ty) in self.let_tys.iter() {
+            if *d == di {
+                let e = recorded.entry(name.clone()).or_insert((0, true));
+                e.0 += 1;
+                e.1 &= self.ty_borrow_free(ty);
+            }
+        }
+        let owned: HashSet<String> = total
+            .iter()
+            .filter(|(n, t)| recorded.get(*n).map_or(false, |&(c, free)| free && c == **t))
+            .map(|(n, _)| n.clone())
+            .collect();
+        let plain = self.plain_binds(di);
         let mut low = Low {
             p: self.p,
             file: d.file.clone(),
@@ -2581,7 +2629,8 @@ impl<'a> Checker<'a> {
             scope_stack: vec![],
             scope_seed,
             temp_extended: HashSet::new(),
-            plain: self.plain_binds(di),
+            plain,
+            owned,
         };
         // 参照を別の引数の指す先 (Vec 要素・構造体欄) に保存する際の
         // ライフタイム不一致 (d22)。
@@ -2612,8 +2661,14 @@ impl<'a> Checker<'a> {
         let mut seen: HashSet<(usize, String)> = HashSet::new();
         for (line, msg) in diags {
             if seen.insert((line, msg.clone())) {
-                // 中断点をまたぐ借用は E3050 (仕様 5.6)。それ以外の借用の競合は E3010。
-                let code = if msg.contains("across a suspension point") { "E3050" } else { "E3010" };
+                // 中断点をまたぐ借用は E3050 (仕様 5.6)、局所の借用を外へ出すのは E3030。それ以外の借用の競合は E3010。
+                let code = if msg.contains("across a suspension point") {
+                    "E3050"
+                } else if msg.starts_with("returns a reference to the local variable") {
+                    "E3030"
+                } else {
+                    "E3010"
+                };
                 self.tdiag(code, msg, line);
             }
         }
@@ -2939,6 +2994,21 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                     for &id in ids {
                         if stt.dead.contains(&id) && low.locals.contains(root) {
                             let m = format!("use of `{root}` borrows `{}` which does not live long enough", low.loans[id].root);
+                            if !out.iter().any(|(l, t)| l == line && *t == m) {
+                                out.push((*line, m));
+                            }
+                        }
+                    }
+                }
+            }
+            // 枝の値が、枝の終わりで寿命が尽きる所有物の借用を運ぶ (`match` の腕 `Ok(v) => v.as_str()` など)。
+            // 値を使うかどうかに関係なく、その値は外へ出てしまうので E3030。
+            if let Ev::Escape { holder, vars, line } = ev {
+                if let Some(ids) = stt.holders.get(&Holder::Var(holder.clone())) {
+                    for &id in ids {
+                        let r = &low.loans[id].root;
+                        if vars.contains(r) {
+                            let m = format!("returns a reference to the local variable `{}`, which does not live long enough", r);
                             if !out.iter().any(|(l, t)| l == line && *t == m) {
                                 out.push((*line, m));
                             }
