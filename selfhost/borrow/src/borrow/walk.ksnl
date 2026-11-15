@@ -2,6 +2,9 @@ const borrow.walk.READ: usize = 1usize pub
 
 const borrow.walk.RECV: usize = 2usize pub
 
+// 関数名 (`c.ar.len`) の呼び出し: 受け手 (`c.ar`) の道で借りる。
+const borrow.walk.CALLNAME: usize = 3usize pub
+
 const borrow.walk.VAL: usize = 0usize pub
 
 // 代入: 右辺を先に走査し、左辺の根へ書き込みとして記録する。
@@ -14,17 +17,20 @@ fn borrow.walk.assign(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.ast
         if idx != 0usize {
             let s_dot = resolve.ast.last_part(s) != s
             let kind = borrow.base.pick(s_dot, borrow.cx.K_PART, borrow.cx.K_WRITE)
-            borrow.cx.access(cx, idx.wrapping_sub(1usize), kind, ln.tok)?
+            let (ps, pe) = borrow.cx.place_path(cx, n.a)
+            borrow.cx.access_at(cx, idx.wrapping_sub(1usize), kind, ln.tok, ps, pe)?
         }
         return Ok(d)
     }
     if ln.kind == parse.ast.Kind.Dot || ln.kind == parse.ast.Kind.Index {
         let root = borrow.cx.place_root(cx, n.a)
         if root != 0usize {
-            borrow.cx.access(cx, root.wrapping_sub(1usize), borrow.cx.K_PART, ln.tok)?
+            let (ps, pe) = borrow.cx.place_path(cx, n.a)
+            borrow.cx.access_at(cx, root.wrapping_sub(1usize), borrow.cx.K_PART, ln.tok, ps, pe)?
         }
         if ln.kind == parse.ast.Kind.Index {
-            borrow.walk.expr(tab, cx, ln.b, borrow.walk.VAL)?
+            let di = borrow.walk.expr(tab, cx, ln.b, borrow.walk.VAL)?
+            core.mem.drop(di)
         }
         return Ok(d)
     }
@@ -74,7 +80,8 @@ fn borrow.walk.borrow_of(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, e: usize,
         return borrow.walk.expr(tab, cx, e, borrow.walk.READ)
     }
     let k = borrow.base.pick(mutb, borrow.cx.K_BMUT, borrow.cx.K_BSHR)
-    borrow.cx.access(cx, root.wrapping_sub(1usize), k, tok)?
+    let (ps, pe) = borrow.cx.place_path(cx, e)
+    borrow.cx.access_at(cx, root.wrapping_sub(1usize), k, tok, ps, pe)?
     Ok(0usize)
 end borrow.walk.borrow_of
 
@@ -84,7 +91,7 @@ fn borrow.walk.call(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.ast.N
     if cn.kind == parse.ast.Kind.Path {
         let s = resolve.ast.text(cx.src.as_slice(), cn.a, cn.b)
         let s_dot = resolve.ast.last_part(s) != s
-        let ctx = borrow.base.pick(s_dot, borrow.walk.RECV, borrow.walk.READ)
+        let ctx = borrow.base.pick(s_dot, borrow.walk.CALLNAME, borrow.walk.READ)
         borrow.walk.path(cx, cn.a, cn.b, cn.tok, ctx)?
     } else {
         let d0 = borrow.walk.expr(tab, cx, n.a, borrow.walk.VAL)?
@@ -140,15 +147,17 @@ fn borrow.walk.check_pairs(cx: &mut borrow.cx.Cx, roots: &alloc.vec.Vec<usize, s
                 Some(x) => *x
                 None => 0usize
             }
-            let fi = match flds.as_slice().get(i) {
+            let ni = match flds.as_slice().get(i) {
                 Some(x) => *x
                 None => 0usize
             }
-            let fj = match flds.as_slice().get(j) {
+            let nj = match flds.as_slice().get(j) {
                 Some(x) => *x
                 None => 0usize
             }
-            let same = borrow.walk.same_field(cx.src.as_slice(), fi, fj)
+            let (pis, pie) = borrow.cx.place_path(cx, ni)
+            let (pjs, pje) = borrow.cx.place_path(cx, nj)
+            let same = borrow.cx.paths_overlap(cx.src.as_slice(), pis, pie, pjs, pje)
             if ri == rj && (mi == 1usize || mj == 1usize) && same {
                 borrow.cx.diag(cx, "E3010", tok, "同じ式で同じ値を競合して借りる")?
                 return Ok(())
@@ -185,17 +194,13 @@ fn borrow.walk.is_dot_at(src: &[u8], i: usize) -> bool uses [] panics never pub
     }
 end borrow.walk.is_dot_at
 
-// 二つの欄 (`first_field` の値) が同じ名前か。0 は根そのもの・添字 (欄が決まらない) なので、同じと見る。
-fn borrow.walk.same_field(src: &[u8], fi: usize, fj: usize) -> bool uses [] panics never pub
-    if fi == 0usize || fj == 0usize {
-        return true
+// 位置 i のバイト (範囲外は 0)。
+fn borrow.walk.byte_at(src: &[u8], i: usize) -> u8 uses [] panics never pub
+    match src.get(i) {
+        Some(c) => *c
+        None => 0u8
     }
-    let si = fi.wrapping_sub(1usize)
-    let sj = fj.wrapping_sub(1usize)
-    let ei = borrow.walk.ident_end(src, si)
-    let ej = borrow.walk.ident_end(src, sj)
-    resolve.ast.text(src, si, ei) == resolve.ast.text(src, sj, ej)
-end borrow.walk.same_field
+end borrow.walk.byte_at
 
 // 閉包 (トークン from から本体の終わりまで) に名前が出る外の局所を、判断保留にする。
 fn borrow.walk.closure_mark(cx: &mut borrow.cx.Cx, from: usize, body: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
@@ -473,6 +478,8 @@ fn borrow.walk.let_stmt(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.a
     let mut cls = borrow.base.UNK
     let mut root = 0usize
     let mut bmut = 0usize
+    let mut rps = 0usize
+    let mut rpe = 0usize
     if n.c != 0usize {
         cls = borrow.base.ty_cls(tab, &cx.p, cx.src.as_slice(), n.c)
     }
@@ -487,8 +494,14 @@ fn borrow.walk.let_stmt(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.a
         if inode.kind == parse.ast.Kind.Unary && ref_op {
             root = borrow.cx.place_root(cx, inode.b)
             bmut = borrow.base.flag(inode.a == borrow.base.OP_REF_MUT)
+            let (ps, pe) = borrow.cx.place_path(cx, inode.b)
+            rps = ps
+            rpe = pe
         }
         if inode.kind == parse.ast.Kind.MCall {
+            let (ps, pe) = borrow.cx.place_path(cx, inode.a)
+            rps = ps
+            rpe = pe
             root = borrow.walk.method_root(cx, inode, &mut bmut)
         }
         if is_wild && inode.kind == parse.ast.Kind.Path {
@@ -507,7 +520,7 @@ fn borrow.walk.let_stmt(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.a
     if pn.kind == parse.ast.Kind.PBind {
         let at = borrow.cx.declare_tok(cx, pn.a, cls, n.b)?
         if root != 0usize {
-            borrow.cx.add_borrow(cx, at, root.wrapping_sub(1usize), bmut)?
+            borrow.cx.add_borrow(cx, at, root.wrapping_sub(1usize), bmut, rps, rpe)?
         }
         if n.d != 0usize {
             let mut roots = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -523,7 +536,12 @@ fn borrow.walk.let_stmt(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.a
                     Some(x) => *x
                     None => 0usize
                 }
-                borrow.cx.add_borrow(cx, at, r, m)?
+                let node = match flds.as_slice().get(k) {
+                    Some(x) => *x
+                    None => 0usize
+                }
+                let (fs, fe) = borrow.cx.place_path(cx, node)
+                borrow.cx.add_borrow(cx, at, r, m, fs, fe)?
             }
         }
     } else {
@@ -664,7 +682,7 @@ fn borrow.walk.operand_borrows(cx: &borrow.cx.Cx, e: usize, roots: &mut alloc.ve
             roots.push(root.wrapping_sub(1usize))?
             let m = borrow.base.flag(n.a == borrow.base.OP_REF_MUT)
             muts.push(m)?
-            flds.push(borrow.cx.first_field(cx, n.b))?
+            flds.push(n.b)?
         }
         return Ok(())
     }
@@ -742,11 +760,14 @@ fn borrow.walk.path(cx: &mut borrow.cx.Cx, a: usize, b: usize, tok: usize, ctx: 
     }
     let k = idx.wrapping_sub(1usize)
     let l = borrow.cx.loc(cx, k)
-    if dotted || ctx == borrow.walk.RECV {
-        if (ctx == borrow.walk.VAL || ctx == borrow.walk.RECV) && l.cl == borrow.base.LIN {
+    // 欄の道 (`c.ar.x` → `ar.x`)。関数名 (`c.ar.len`) は受け手の道 (`ar`) にする。
+    let (ps, pe) = borrow.cx.path_fields(cx.src.as_slice(), a, b, ctx)
+    let recv = ctx == borrow.walk.RECV || ctx == borrow.walk.CALLNAME
+    if dotted || recv {
+        if (ctx == borrow.walk.VAL || recv) && l.cl == borrow.base.LIN {
             borrow.cx.mark_undec(cx, k)
         }
-        return borrow.cx.access(cx, k, borrow.cx.K_READ, tok)
+        return borrow.cx.access_at(cx, k, borrow.cx.K_READ, tok, ps, pe)
     }
     if ctx == borrow.walk.READ {
         return borrow.cx.access(cx, k, borrow.cx.K_READ, tok)
