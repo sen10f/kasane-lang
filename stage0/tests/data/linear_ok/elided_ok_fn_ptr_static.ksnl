@@ -1,0 +1,7 @@
+fn t.bad(f: fn(&u32) -> &'static u32 uses [] panics never, x: &u32) -> &'static u32 uses [] panics never
+    f(x)
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

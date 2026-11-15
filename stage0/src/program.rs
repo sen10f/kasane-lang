@@ -304,6 +304,9 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                         if has_elided_ref(&bp.t[start..bp.i]) {
                             d.elided_refs.push(vn.clone());
                         }
+                        // 列挙子の payload が運ぶ領域 (`'static` を含む)。欄の `field_lifetimes` と同じ置き場に、列挙子名で入れる。
+                        let lts: Vec<String> = bp.t[start..bp.i].iter().filter(|t| t.kind == "life").map(|t| t.text.trim_start_matches('\'').to_string()).collect();
+                        d.field_lifetimes.push((vn.clone(), lts));
                         d.variants.push((vn, tys));
                     }
                 }
@@ -333,12 +336,15 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                     bp.expect_kw("fn")?;
                     let mname = bp.name_tok()?;
                     d.methods.push(mname.clone());
+                    let gstart = bp.i;
+                    let mut declared_lts: Vec<String> = vec![];
                     let mut sig_ok = true;
                     match bp.generics() {
                         Ok(g) => {
                             if !items(&g).is_empty() {
                                 d.generic_methods.push(mname.clone());
                             }
+                            declared_lts = conv_generics(&g).into_iter().filter(|x| x.0 == "life").map(|x| x.1.trim_start_matches('\'').to_string()).collect();
                         }
                         Err(_) => sig_ok = false,
                     }
@@ -364,6 +370,14 @@ pub fn load_file(path: &str, module: &str, src: &str) -> R<Vec<Def>> {
                         Err(String::new())
                     };
                     if let Ok((ps, r, eff)) = sig {
+                        // 署名が使うライフタイム (`'a`) のうち、メソッド・トレイトのどこでも宣言されていないもの。
+                        // 本体の無い宣言は借用の流れを見られないので、ここで宣言の有無を見る (`check_trait_lifetimes`)。
+                        let used: BTreeSet<String> = bp.t[gstart..bp.i].iter().filter(|t| t.kind == "life").map(|t| t.text.trim_start_matches('\'').to_string()).collect();
+                        let outer: Vec<String> = d.generics.iter().filter(|g| g.0 == "life").map(|g| g.1.trim_start_matches('\'').to_string()).collect();
+                        let undeclared: Vec<String> = used.into_iter().filter(|l| l != "static" && !declared_lts.contains(l) && !outer.contains(l)).collect();
+                        if !undeclared.is_empty() {
+                            d.field_lifetimes.push((mname.clone(), undeclared));
+                        }
                         if let Some((u, pv)) = eff {
                             d.trait_effs.push((mname.clone(), u, pv));
                         }
