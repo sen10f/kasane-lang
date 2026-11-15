@@ -843,6 +843,8 @@ pub enum Op {
     /// 局所変数の寿命の終わり (注釈。結果は unit、実行では何もしない)。`a` は局所のスロット (`alloca` / `frame.bytes`) の値。
     /// この後も生きている、このスロットを指す値は、借用検査が違反とする。文の終わりの一時値にも使う。
     ScopeEnd(VId),
+    /// 借用の運び (注釈。設計_KIR.md 24.11): 値 `b` が参照 `a` の指す先から読まれた値なら、`b` は `a` の借用を運ぶ。実行には影響しない。
+    Carry { a: VId, b: VId },
     /// 所有の注釈 (設計_KIR.md 24 章。結果は unit、実行では何もしない)。`owe` なら、`a` の値に線形 (消費の義務) が生じた。
     /// そうでなければ、`a` の値が move された (Copy でない局所変数の値渡し)。`a` は SSA の値か、Vec / String のヘッダのスロット。
     Own { a: VId, kind: OwnKind },
@@ -1428,6 +1430,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::Reborrow(p) => format!("reborrow {}", fmt_val(*p)),
         Op::Borrow { a, mutable } => format!("borrow.{} {}", if *mutable { "mut" } else { "shared" }, fmt_val(*a)),
         Op::ScopeEnd(a) => format!("scope.end {}", fmt_val(*a)),
+        Op::Carry { a, b } => format!("carry {}, {}", fmt_val(*a), fmt_val(*b)),
         Op::Own { a, kind } => format!("own.{} {}", match kind { OwnKind::Owe => "owe", OwnKind::Consume => "consume", OwnKind::Part => "part", OwnKind::Init => "init", OwnKind::Use => "use" }, fmt_val(*a)),
         Op::FrameBytes { size } => format!("frame.bytes {}", size),
         Op::GlobalBytes { name, size } => format!("global.bytes {} {}", name, size),
@@ -1830,6 +1833,10 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("borrow", ["shared"]) => Ok(Op::Borrow { a: operands(1)?[0], mutable: false }),
         ("borrow", ["mut"]) => Ok(Op::Borrow { a: operands(1)?[0], mutable: true }),
         ("scope", ["end"]) if ty == Ty::Unit => Ok(Op::ScopeEnd(operands(1)?[0])),
+        ("carry", []) if ty == Ty::Unit => {
+            let v = operands(2)?;
+            Ok(Op::Carry { a: v[0], b: v[1] })
+        }
         ("own", ["owe"]) if ty == Ty::Unit => Ok(Op::Own { a: operands(1)?[0], kind: OwnKind::Owe }),
         ("own", ["consume"]) if ty == Ty::Unit => Ok(Op::Own { a: operands(1)?[0], kind: OwnKind::Consume }),
         ("own", ["init"]) if ty == Ty::Unit => Ok(Op::Own { a: operands(1)?[0], kind: OwnKind::Init }),
@@ -2575,6 +2582,13 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("scope.end の結果は unit のはず".into());
                         }
                     }
+                    Op::Carry { a, b } => {
+                        let ta = ty_of(*a)?;
+                        ty_of(*b)?;
+                        if !(ta.is_ref() || ta == Ty::Ptr) || i.ty != Ty::Unit {
+                            return Err("carry は参照 (a) と値 (b) を取り、結果は unit のはず".into());
+                        }
+                    }
                     Op::Reborrow(a) => {
                         if !matches!(i.ty, Ty::Ref(true, _)) || ty_of(*a)? != i.ty {
                             return Err("reborrow は mutref を同じ型で複製するだけのはず".into());
@@ -3197,6 +3211,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::FmtFloat { a, .. } => vec![*a],
         Op::ParseInt { s, radix, .. } => vec![*s, *radix],
         Op::Store { ptr, val } => vec![*ptr, *val],
+        Op::Carry { a, b } => vec![*a, *b],
         Op::Neg { a, .. }
         | Op::Not(a)
         | Op::FUn { a, .. }

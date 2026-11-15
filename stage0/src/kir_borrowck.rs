@@ -303,6 +303,16 @@ fn carries_ty(t: Ty) -> bool {
     matches!(t, Ty::Ptr | Ty::Ref(..) | Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..))
 }
 
+/// 型の値が借用を持ちうるか (スカラーだけの `Option` / `Result` は持たない)。呼び出しの戻り値が引数の借用を運ぶかの判定に使う。
+fn may_hold(t: Ty) -> bool {
+    match t {
+        Ty::Ptr | Ty::Ref(..) | Ty::Agg(_) => true,
+        Ty::Opt(p) => may_hold(p.ty()),
+        Ty::Res(a, e) => may_hold(a.ty()) || may_hold(e.ty()),
+        _ => false,
+    }
+}
+
 const ELEMS: u32 = u32::MAX;
 
 #[derive(Clone, Default, PartialEq)]
@@ -472,6 +482,17 @@ impl<'a> An<'a> {
         let inst = &self.f.blocks[bi].insts[ii];
         let d = inst.dst;
         let t = inst.ty;
+        // 借用の運び (注釈 `carry`): 値 `b` は参照 `a` の借用を足して運ぶ (単調に伸ばす)。
+        if let Op::Carry { a, b } = inst.op {
+            let src = self.org[a as usize].clone();
+            let dst = &mut self.org[b as usize];
+            let n = dst.len();
+            dst.extend(src);
+            if dst.len() != n {
+                *ch = true;
+            }
+            return;
+        }
         let mut res = Set::new();
         match &inst.op {
             Op::Alloca | Op::FrameBytes { .. } => {
@@ -495,7 +516,7 @@ impl<'a> An<'a> {
                 let key = callee.split('<').next().unwrap_or(callee);
                 match self.callee.get(key) {
                     Some(h) if h.params.len() == args.len() => {
-                        if carries_ty(t) && h.ret_has_ref {
+                        if may_hold(t) && h.ret_has_ref {
                             for (j, a) in args.iter().enumerate() {
                                 if h.flows[j] {
                                     res.extend(self.org[*a as usize].iter().copied());
@@ -924,6 +945,12 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                 Op::Call { callee, args } => {
                     let key = callee.split('<').next().unwrap_or(callee);
                     if let Some(ch) = an.callee.get(key).filter(|ch| ch.params.len() == args.len()) {
+                        // `&mut` の引数に渡した局所の場所は、呼び出しで書き換えられる (生きている借用があれば拒否)。
+                        for (j, &a) in args.iter().enumerate() {
+                            if ch.params[j].contains("&mut") && an.place[a as usize].is_some() {
+                                reqs.push((bi, ii, line, Req::Access { via: a, write: true }));
+                            }
+                        }
                         call_stores(&an, hdr, ch, args, line, &mut cons);
                     }
                 }

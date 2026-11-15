@@ -2286,6 +2286,15 @@ fn pick_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, pick: Pick, m: &str)
     };
     let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
     let x = if borrowed { lw.emit(pay.ty(), Op::Make { variant: None, fields: vec![addr] }) } else { load_elem(lw, addr, elem) };
+    // スカラーの要素は値で持つ。`get` / `first` / `last` は木走査で `Option<&T>` なので、読んだ値は要素の借用を運ぶ (注釈。設計_KIR.md 24.11)。
+    if !borrowed {
+        // 借用の出どころは、要素の番地ではなく所有者の場所 (Vec のヘッダ・スライスの元): 後の `push` などの排他と照らすため。
+        let src = match seq {
+            Seq::Hdr(hh) if matches!(lw.vty(hh), Ty::Ptr | Ty::Ref(..)) => hh,
+            _ => addr,
+        };
+        lw.emit(Ty::Unit, Op::Carry { a: src, b: x });
+    }
     let some = lw.emit(opt, Op::Some(x));
     lw.goto(jb, vec![some]);
     lw.cur = Some(eb);

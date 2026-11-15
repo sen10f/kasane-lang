@@ -2803,9 +2803,9 @@ fn kir_borrowck_agreement_on_unsound_does_not_drop() {
         }
     }
     eprintln!("kir_borrowck (unsound): checked {} agree {} kir_reject {} unknown {}; mismatches: {}", checked, agree, kir_reject, unknown, mism.join(", "));
-    assert!(checked >= 196, "KIR checked only {} unsound programs", checked);
-    assert!(agree >= 189, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
-    assert!(kir_reject >= 57, "KIR rejects only {}", kir_reject);
+    assert!(checked >= 197, "KIR checked only {} unsound programs", checked);
+    assert!(agree >= 190, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
+    assert!(kir_reject >= 58, "KIR rejects only {}", kir_reject);
 }
 
 /// 借用検査の注釈 (`borrow.*` / `scope.end`。設計_KIR.md 24 章) は実行に影響しない: KIR のテキストに出て、
@@ -2903,8 +2903,8 @@ fn kir_own_linearity_agreement_floor() {
     eprintln!("kir own (unsound): checked {} agree {} kir_reject {}; correct code checked {} false positives {:?}", checked, agree, kir_reject, ok_checked, fps);
     assert!(fps.is_empty(), "KIR linearity false positives on correct code:\n{}", fps.join("\n"));
     // 下限 (現在値。下げない): 検査できた不正・一致・KIR の拒否・正しいコードの検査数。
-    assert!(checked >= 196, "KIR (own) checked only {} unsound programs", checked);
-    assert!(agree >= 154, "agreement dropped to {}", agree);
+    assert!(checked >= 197, "KIR (own) checked only {} unsound programs", checked);
+    assert!(agree >= 155, "agreement dropped to {}", agree);
     assert!(kir_reject >= 59, "KIR (own) rejects only {}", kir_reject);
     assert!(ok_checked >= 125, "only {} correct programs were checked by the KIR linearity", ok_checked);
 }
@@ -2960,6 +2960,6 @@ fn kir_only_rejects_floor() {
     eprintln!("kir-only: borrow/linear expected {} rejected {}; correct code rejected {:?}", expected, rejected, fps);
     assert!(fps.is_empty(), "kir-only rejects correct code:\n{}", fps.join("\n"));
     // 下限 (現在値。下げない)。
-    assert!(expected >= 239, "only {} borrow/linear programs in unsound/", expected);
-    assert!(rejected >= 111, "kir-only rejects only {} of {}", rejected, expected);
+    assert!(expected >= 240, "only {} borrow/linear programs in unsound/", expected);
+    assert!(rejected >= 112, "kir-only rejects only {} of {}", rejected, expected);
 }

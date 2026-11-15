@@ -392,6 +392,14 @@ impl<'a> Lw<'a> {
             }
             return Ok(Some((self.coerce(rv, self_ty), None, false)));
         }
+        // 借用の受け手が局所の名前なら、move 済みの値の読み (注釈)。
+        if by_ref {
+            if let Some(n) = super::path1(r) {
+                if let Some(s) = self.lookup(&n) {
+                    self.own_emit(&n, s, crate::kir::OwnKind::Use);
+                }
+            }
+        }
         let Some(v) = self.expr(r)? else { return Ok(None) };
         if !by_ref {
             // `Path` の `Owned::Val`（スロットあり）はスコープ終了で drop されるので tmp_hold しない。

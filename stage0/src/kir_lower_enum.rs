@@ -322,7 +322,10 @@ impl<'a> Lw<'a> {
         // `Some(&x)` で `Option<&スカラー>` を作る: スカラーへの参照を持つ Option は値で持つ (設計_KIR.md 10.10) ので、参照の指す先を読む。
         if let (Ty::Opt(p), Ty::Ref(_, pt)) = (t, self.vty(a)) {
             if name == "Some" && pt.ty() == p.ty() && p.ty().is_scalar() {
-                a = self.emit(p.ty(), Op::Load(a));
+                let r = a;
+                a = self.emit(p.ty(), Op::Load(r));
+                // 借用の運び (注釈。設計_KIR.md 24.11): 読んだ値は参照の借用を運ぶ (検査用。実行には影響しない)。
+                self.emit(Ty::Unit, Op::Carry { a: r, b: a });
             }
         }
         let (op, want) = match (name, t) {
