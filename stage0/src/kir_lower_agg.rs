@@ -20,6 +20,7 @@ use crate::types::{from_v, Ty as Src};
 use super::{conv, parse_int, show, Lw, St, LR};
 
 /// 代入先の `x.f.g` (`Field` の鎖) の名前の並び。根が名前でなければ `None`。
+#[inline(never)]
 pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
     match nname(v) {
         "Path" => Some(strs(&nf(v)[0])),

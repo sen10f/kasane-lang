@@ -1802,6 +1802,17 @@ pub fn lower_program(p: &Program, user: &[usize], entry: Option<&str>) -> Lowere
 /// (check.rs の `check_fn_sema` で `cur_uses = None`) ので、入口はこの全部の効果を持つ関数として下ろす。
 const ALL_EFFECTS: [&str; 9] = ["alloc", "env", "io.console", "io.fs", "io.net", "process", "rand", "thread", "time"];
 
+/// 標準ライブラリのモジュールかどうか (core / alloc / std で始まる)。
+fn is_stdlib_module(m: &str) -> bool {
+    matches!(m.split('.').next(), Some("core" | "alloc" | "std"))
+}
+
+/// 未対応の型を持つ標準ライブラリモジュールかどうか。
+fn is_unsupported_stdlib_module(m: &str) -> bool {
+    matches!(m.split('.').next(), Some("core" | "alloc" | "std")) &&
+    (m.starts_with("core.fmt") || m.starts_with("core.hash"))
+}
+
 /// `ksn test` (`--both` の LLVM 側・`--engine=vm`) の入口: テスト本体 `test_def` (定義の添字) を入口にして下ろす。
 /// テストは引数を持たず、戻り値は `()` (`test` の本体)。入口の名前はテストの FQN。
 /// 入口は全部の効果を持つ (上の `ALL_EFFECTS`)。呼び先の uses を満たさないことで下ろせなくなるのを避ける。
@@ -1812,22 +1823,18 @@ pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
 fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
     LINES.with(|l| l.borrow_mut().clear());
     task_lower::reset();
-    // このパッケージから呼び出す依存パッケージ (別 module) の fn も下ろし対象にする。
-    // そうしなければ、依存先が「呼び先が未対応」となり、このパッケージの関数も下ろせなくなる。
+    // `user` には利用者のパッケージと依存パッケージの関数が含まれている (cli.rs で追加済み)。
+    // 標準ライブラリの関数も、本体を持つものを追加する (組み込みでないものは下ろす必要がある)。
+    // ただし、`core.fmt` と `core.hash` は未対応の型 (`Formatter`, `Fnv64`) を使うので除外する。
     let mut user_vec: Vec<usize> = user.to_vec();
-    let cur_module = entry
-        .and_then(|e| p.funcs.get(e).copied())
-        .or_else(|| user.first().copied())
-        .and_then(|i| Some(p.defs[i].module.clone()));
-    if let Some(m) = cur_module {
-        for (i, d) in p.defs.iter().enumerate() {
-            if d.kw == "fn"
-                && d.body.is_some()
-                && d.module != m
-                && !user_vec.contains(&i)
-            {
-                user_vec.push(i);
-            }
+    for (i, d) in p.defs.iter().enumerate() {
+        if d.kw == "fn"
+            && d.body.is_some()
+            && !user_vec.contains(&i)
+            && is_stdlib_module(&d.module)
+            && !is_unsupported_stdlib_module(&d.module)
+        {
+            user_vec.push(i);
         }
     }
     let user = &user_vec;
