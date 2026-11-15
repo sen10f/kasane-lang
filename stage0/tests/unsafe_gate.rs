@@ -82,3 +82,77 @@ end t.main
     // 違反は `core.ptr.read` (`t.rd` の本体) と `core.ptr.from_ref` (`t.main`) の 2 か所。
     assert_eq!(got.iter().filter(|c| *c == "E5003").count(), 2, "{}", out);
 }
+
+#[test]
+fn core_ptr_value_outside_unsafe_is_e5003_in_allowed_module() {
+    // `core.ptr` の関数を値として束縛・引数として渡すのも `unsafe` の外では E5003。
+    let src = "fn t.rd(p: *const i32) -> i32 uses [] panics never
+    let f = core.ptr.read
+    let x: i32 = f(p)
+    core.mem.drop(x)
+end t.rd
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let v = 7i32
+    let p = core.ptr.from_ref(&v)
+    let a = t.rd(p)
+    unsafe \"read\" \"v is a live local\" {
+        core.mem.drop(core.ptr.read(p))
+    }
+    core.mem.drop(a)
+    Ok(())
+end t.main
+";
+    let t = pkg("ug_ptr_value_e5003", src, Some("t"));
+    let (rc, got, out) = check(&t);
+    assert_eq!(rc, Some(1), "{}", out);
+    assert!(got.iter().any(|c| c == "E5003"), "{}", out);
+    assert!(!got.iter().any(|c| c == "E5001"), "{}", out);
+}
+
+#[test]
+fn extern_value_outside_unsafe_is_e5003_in_allowed_module() {
+    // `extern` の関数を値として渡すのも `unsafe` の外では E5003。
+    let src = "extern t.getpid() -> i32 link \"getpid\"
+
+fn t.call0(f: fn() -> i32 uses [] panics may) -> i32 uses [] panics may
+    f()
+end t.call0
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics may
+    let a = t.call0(t.getpid)
+    core.mem.drop(a)
+    Ok(())
+end t.main
+";
+    let t = pkg("ug_ext_value_e5003", src, Some("t"));
+    let (rc, got, out) = check(&t);
+    assert_eq!(rc, Some(1), "{}", out);
+    assert!(got.iter().any(|c| c == "E5003"), "{}", out);
+    assert!(!got.iter().any(|c| c == "E5001"), "{}", out);
+}
+
+#[test]
+fn core_ptr_value_inside_unsafe_is_accepted_in_allowed_module() {
+    // `unsafe` の中で `core.ptr` や `extern` の関数を値として参照するのは通る。
+    let src = "extern t.getpid() -> i32 link \"getpid\"
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let v = 7i32
+    unsafe \"read\" \"v is a live local\" {
+        let f = core.ptr.read
+        let p = core.ptr.from_ref(&v)
+        let x: i32 = f(p)
+        core.mem.drop(x)
+        let g = t.getpid
+        let y: i32 = g()
+        core.mem.drop(y)
+    }
+    Ok(())
+end t.main
+";
+    let t = pkg("ug_ptr_value_inside", src, Some("t"));
+    let (rc, got, out) = check(&t);
+    assert_eq!(rc, Some(0), "{}", out);
+    assert!(got.is_empty(), "{}", out);
+}
