@@ -305,6 +305,35 @@ fn borrow.cx.place_root(cx: &borrow.cx.Cx, e: usize) -> usize uses [] panics nev
     0usize
 end borrow.cx.place_root
 
+// 根の直下の欄 (`c.ar` の `ar`) の名前の開始バイト + 1。欄でない (根そのもの・添字・根の先が式) なら 0。
+// `c.ar` は 1 つの Path (`c.ar.x` も同じ) なので、Path の文字列の中の最初の `.` を見る。
+// 同じ呼び出しで `&mut c.ar` と `&c.tc` を借りる形を、欄が違うなら競合と数えないために使う (walk.check_pairs)。
+fn borrow.cx.first_field(cx: &borrow.cx.Cx, e: usize) -> usize uses [] panics never stack 8192 pub
+    let n = parse.ast.get(&cx.p.ast, e)
+    let src = cx.src.as_slice()
+    if n.kind == parse.ast.Kind.Path {
+        let e1 = borrow.walk.ident_end(src, n.a)
+        if e1 < n.b && borrow.walk.is_dot_at(src, e1) {
+            return e1.wrapping_add(2usize)
+        }
+        return 0usize
+    }
+    if n.kind == parse.ast.Kind.Dot {
+        let b = parse.ast.get(&cx.p.ast, n.a)
+        if b.kind == parse.ast.Kind.Path {
+            let e1 = borrow.walk.ident_end(src, b.a)
+            if e1 < b.b && borrow.walk.is_dot_at(src, e1) {
+                return borrow.cx.first_field(cx, n.a)
+            }
+            return parse.cur.peek_at(&cx.p, n.b).start.wrapping_add(1usize)
+        }
+        if b.kind == parse.ast.Kind.Dot {
+            return borrow.cx.first_field(cx, n.a)
+        }
+    }
+    0usize
+end borrow.cx.first_field
+
 // 写しの状態へ戻す (局所の数は同じ)。
 fn borrow.cx.restore(cx: &mut borrow.cx.Cx, s: &alloc.vec.Vec<usize, std.alloc.System>) -> () uses [] panics never pub
     for k in core.iter.range(0usize, s.len()) {
