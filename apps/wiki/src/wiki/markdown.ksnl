@@ -1,0 +1,615 @@
+import wiki.html
+
+fn wiki.markdown.find_closing(text: &str, from: usize, close: u8) -> Option<usize> uses [] panics never pub
+    let mut i = from
+    let total = text.len()
+    while i < total {
+        let b = match text.as_bytes().get(i) {
+            Some(v) => *v
+            None => 0u8
+        }
+        if b == close {
+            return Some(i)
+        }
+        i = i.saturating_add(1usize)
+    }
+    None
+end wiki.markdown.find_closing
+
+fn wiki.markdown.find_closing_backtick(text: &str, from: usize) -> Option<usize> uses [] panics never pub
+    let mut i = from
+    let total = text.len()
+    while i < total {
+        let b = match text.as_bytes().get(i) {
+            Some(v) => *v
+            None => 0u8
+        }
+        if b == b'`' {
+            return Some(i)
+        }
+        i = i.saturating_add(1usize)
+    }
+    None
+end wiki.markdown.find_closing_backtick
+
+// 段落を flush して `<p>` で包む。
+fn wiki.markdown.flush_paragraph(out: &mut alloc.string.String<std.alloc.System>, block: &mut alloc.string.String<std.alloc.System>) -> Result<(), wiki.error.Error> uses [alloc] panics never
+    let inline = wiki.markdown.inline(block.as_str())?
+    out.push_str("<p>")?
+    out.push_str(inline.as_str())?
+    out.push_str("</p>")?
+    Ok(())
+end wiki.markdown.flush_paragraph
+
+fn wiki.markdown.heading_level(line: &str) -> Option<u32> uses [] panics never
+    let mut level: u32 = 0u32
+    let mut done = false
+    for c in line.chars() {
+        if !done {
+            if c == '#' {
+                level = level.saturating_add(1u32)
+            } else {
+                done = true
+            }
+        }
+    }
+    if level == 0u32 || level > 6u32 {
+        return None
+    }
+    let idx = usize.from_u32(level)
+    match line.split_at(idx) {
+        Some((_, rest)) => {
+            if rest.is_empty() || rest.starts_with(" ") || rest.starts_with("\t") {
+                Some(level)
+            } else {
+                None
+            }
+        }
+        None => Some(level)
+    }
+end wiki.markdown.heading_level
+
+// インライン要素を変換: コード、強調、リンク、残りはエスケープ。
+fn wiki.markdown.inline(text: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    let total = text.len()
+    while i < total {
+        let b = match text.as_bytes().get(i) {
+            Some(v) => *v
+            None => 0u8
+        }
+        // インラインコード `...`
+        if b == b'`' {
+            let closing = wiki.markdown.find_closing_backtick(text, i.saturating_add(1usize))
+            match closing {
+                Some(found) => {
+                    let code = wiki.markdown.substring(text, i.saturating_add(1usize), found)
+                    let escaped = html.escape(code)?
+                    out.push_str("<code>")?
+                    out.push_str(escaped.as_str())?
+                    out.push_str("</code>")?
+                    i = found.saturating_add(1usize)
+                    continue
+                }
+                None => {
+                    out.push_str("&#96;")?
+                    i = i.saturating_add(1usize)
+                    continue
+                }
+            }
+        }
+        // 太字 **...**
+        if i.saturating_add(1usize) < total && b == b'*' {
+            let b2 = match text.as_bytes().get(i.saturating_add(1usize)) {
+                Some(v) => *v
+                None => 0u8
+            }
+            if b2 == b'*' {
+                // **強調**: 閉じる "**" を探す（単独の "*" では閉じない）
+                let mut p = i.saturating_add(2usize)
+                let mut strong_ok = false
+                let mut found2 = 0usize
+                while p.saturating_add(1usize) < total {
+                    let bp = match text.as_bytes().get(p) {
+                        Some(v) => *v
+                        None => 0u8
+                    }
+                    let bp2 = match text.as_bytes().get(p.saturating_add(1usize)) {
+                        Some(v) => *v
+                        None => 0u8
+                    }
+                    if bp == b'*' && bp2 == b'*' {
+                        strong_ok = true
+                        found2 = p
+                        break
+                    }
+                    p = p.saturating_add(1usize)
+                }
+                if strong_ok {
+                    let inner = wiki.markdown.substring(text, i.saturating_add(2usize), found2)
+                    let escaped = html.escape(inner)?
+                    out.push_str("<strong>")?
+                    out.push_str(escaped.as_str())?
+                    out.push_str("</strong>")?
+                    i = found2.saturating_add(2usize)
+                    continue
+                }
+                // "**" の閉じが無ければ最初の "*" をそのまま出力
+                out.push('*')?
+                i = i.saturating_add(1usize)
+                continue
+            }
+            // イタリック *...*
+            let closing = wiki.markdown.find_closing(text, i.saturating_add(1usize), b'*')
+            match closing {
+                Some(found) => {
+                    let inner = wiki.markdown.substring(text, i.saturating_add(1usize), found)
+                    let escaped = html.escape(inner)?
+                    out.push_str("<em>")?
+                    out.push_str(escaped.as_str())?
+                    out.push_str("</em>")?
+                    i = found.saturating_add(1usize)
+                    continue
+                }
+                None => {
+                    out.push('*')?
+                    i = i.saturating_add(1usize)
+                    continue
+                }
+            }
+        }
+        // [[WikiPage]] ウィキリンク
+        if i.saturating_add(1usize) < total && b == b'[' {
+            let b2 = match text.as_bytes().get(i.saturating_add(1usize)) {
+                Some(v) => *v
+                None => 0u8
+            }
+            if b2 == b'[' {
+                let closing = wiki.markdown.find_closing(text, i.saturating_add(2usize), b']')
+                match closing {
+                    Some(found) => {
+                        if found.saturating_add(1usize) < total {
+                            let b3 = match text.as_bytes().get(found.saturating_add(1usize)) {
+                                Some(v) => *v
+                                None => 0u8
+                            }
+                            if b3 == b']' {
+                                let page_start = i.saturating_add(2usize)
+                                let page = wiki.markdown.substring(text, page_start, found)
+                                let escaped = html.escape(page)?
+                                out.push_str("<a href=\"/page/")?
+                                out.push_str(escaped.as_str())?
+                                out.push_str("\">")?
+                                out.push_str(escaped.as_str())?
+                                out.push_str("</a>")?
+                                i = found.saturating_add(2usize)
+                                continue
+                            }
+                        }
+                        out.push_str("&#91;")?
+                        i = i.saturating_add(1usize)
+                        continue
+                    }
+                    None => {
+                        out.push_str("&#91;")?
+                        i = i.saturating_add(1usize)
+                        continue
+                    }
+                }
+            }
+            // [text](url) リンク
+            let closing = wiki.markdown.find_closing(text, i.saturating_add(1usize), b']')
+            match closing {
+                Some(found) => {
+                    if found.saturating_add(1usize) < total {
+                        let b3 = match text.as_bytes().get(found.saturating_add(1usize)) {
+                            Some(v) => *v
+                            None => 0u8
+                        }
+                        if b3 == b'(' {
+                            let from2 = found.saturating_add(2usize)
+                            let url_closing = wiki.markdown.find_closing(text, from2, b')')
+                            match url_closing {
+                                Some(url_end) => {
+                                    let lt_start = i.saturating_add(1usize)
+                                    let link_text = wiki.markdown.substring(text, lt_start, found)
+                                    let url = wiki.markdown.substring(text, from2, url_end)
+                                    let text_escaped = html.escape(link_text)?
+                                    let url_escaped = html.escape(url)?
+                                    out.push_str("<a href=\"")?
+                                    out.push_str(url_escaped.as_str())?
+                                    out.push_str("\">")?
+                                    out.push_str(text_escaped.as_str())?
+                                    out.push_str("</a>")?
+                                    i = url_end.saturating_add(1usize)
+                                    continue
+                                }
+                                None => {
+                                    out.push_str("&#91;")?
+                                    i = i.saturating_add(1usize)
+                                    continue
+                                }
+                            }
+                        }
+                    }
+                    out.push_str("&#91;")?
+                    i = i.saturating_add(1usize)
+                    continue
+                }
+                None => {
+                    out.push_str("&#91;")?
+                    i = i.saturating_add(1usize)
+                    continue
+                }
+            }
+        }
+        // それ以外は 1 文字出力（ASCII 以外は UTF-8 バイト列そのままコピー）
+        let cp = match char.try_from_u32(u32.from_u8(b)) {
+            Some(ch) => ch
+            None => {
+                '?'
+            }
+        }
+        if cp == '&' {
+            out.push_str("&amp;")?
+        } else if cp == '<' {
+            out.push_str("&lt;")?
+        } else if cp == '>' {
+            out.push_str("&gt;")?
+        } else if cp == '"' {
+            out.push_str("&quot;")?
+        } else if cp == '\'' {
+            out.push_str("&#39;")?
+        } else {
+            out.push(cp)?
+        }
+        let clen = if cp.to_u32() <= 127u32 {
+            1usize
+        } else if cp.to_u32() <= 2047u32 {
+            2usize
+        } else if cp.to_u32() <= 65535u32 {
+            3usize
+        } else {
+            4usize
+        }
+        i = i.saturating_add(clen)
+    }
+    Ok(out)
+end wiki.markdown.inline
+
+fn wiki.markdown.is_blank(line: &str) -> bool uses [] panics never
+    for c in line.chars() {
+        if c != ' ' && c != '\t' && c != '\r' {
+            return false
+        }
+    }
+    true
+end wiki.markdown.is_blank
+
+// `s` の `from` から `to` までの部分文字列を返す（`str` に `sub` がないためバイト列経由で取得）。
+fn wiki.markdown.substring(s: &str, from: usize, to: usize) -> &str uses [] panics never pub
+    let bytes = s.as_bytes()
+    match bytes.sub(from, to) {
+        Some(b) => match core.str.from_utf8(b) {
+            Ok(t) => t
+            Err(_e) => s
+        }
+        None => s
+    }
+end wiki.markdown.substring
+
+// Markdown の部分集合を HTML に変換する。
+// 対応: 見出し (1-6 レベル)、段落、強調 (**bold / *italic*)、リンク ([text](url) と [[WikiPage]])、
+// 箇条書き (- item)、コード (`inline` と ```fenced```)。
+// 入力中のテキストは必ず HTML エスケープする。
+fn wiki.markdown.to_html(text: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut block = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut in_code_block = false
+    let mut in_list = false
+    for line in text.split("\n") {
+        let is_blank = wiki.markdown.is_blank(line)
+        if in_code_block {
+            if line.starts_with("```") {
+                in_code_block = false
+                out.push_str("</pre>")?
+            } else {
+                let escaped = html.escape(line)?
+                out.push_str(escaped.as_str())?
+                out.push_str("\n")?
+            }
+        } else if is_blank {
+            if !block.is_empty() {
+                wiki.markdown.flush_paragraph(&mut out, &mut block)?
+                block = alloc.string.String.new(std.alloc.SYSTEM)
+            }
+        } else if line.starts_with("```") {
+            if !block.is_empty() {
+                wiki.markdown.flush_paragraph(&mut out, &mut block)?
+                block = alloc.string.String.new(std.alloc.SYSTEM)
+            }
+            in_code_block = true
+            out.push_str("<pre><code>")?
+        } else {
+            match wiki.markdown.heading_level(line) {
+                Some(level) => {
+                    if !block.is_empty() {
+                        wiki.markdown.flush_paragraph(&mut out, &mut block)?
+                        block = alloc.string.String.new(std.alloc.SYSTEM)
+                    }
+                    let (_, rest) = match line.split_at(usize.from_u32(level)) {
+                        Some(pair) => pair
+                        None => ("", line)
+                    }
+                    let trimmed = wiki.markdown.trim_start(rest)
+                    let inline = wiki.markdown.inline(trimmed)?
+                    let mut h = alloc.string.String.new(std.alloc.SYSTEM)
+                    h.push_str("<h")?
+                    let mut lv = alloc.string.String.new(std.alloc.SYSTEM)
+                    lv.push_u64(u64.from_u32(level))?
+                    h.push_str(lv.as_str())?
+                    h.push_str(">")?
+                    h.push_str(inline.as_str())?
+                    h.push_str("</h")?
+                    h.push_str(lv.as_str())?
+                    h.push_str(">")?
+                    out.push_str(h.as_str())?
+                }
+                None => {
+                    if line.starts_with("- ") {
+                        if !block.is_empty() {
+                            wiki.markdown.flush_paragraph(&mut out, &mut block)?
+                            block = alloc.string.String.new(std.alloc.SYSTEM)
+                        }
+                        if !in_list {
+                            out.push_str("<ul>")?
+                            in_list = true
+                        }
+                        let (_, item_text) = match line.split_at(2usize) {
+                            Some(pair) => pair
+                            None => ("", "")
+                        }
+                        let inline = wiki.markdown.inline(item_text)?
+                        out.push_str("<li>")?
+                        out.push_str(inline.as_str())?
+                        out.push_str("</li>")?
+                    } else {
+                        if in_list {
+                            out.push_str("</ul>")?
+                            in_list = false
+                        }
+                        if !block.is_empty() {
+                            block.push_str("\n")?
+                        }
+                        block.push_str(line)?
+                    }
+                }
+            }
+        }
+    }
+    if in_code_block {
+        out.push_str("</pre>")?
+    }
+    if in_list {
+        out.push_str("</ul>")?
+    }
+    if !block.is_empty() {
+        wiki.markdown.flush_paragraph(&mut out, &mut block)?
+    }
+    Ok(out)
+end wiki.markdown.to_html
+
+fn wiki.markdown.trim_start(s: &str) -> &str uses [] panics never
+    let mut start = 0usize
+    let mut done = false
+    for c in s.chars() {
+        if !done {
+            if c == ' ' || c == '\t' {
+                start = start.saturating_add(1usize)
+            } else {
+                done = true
+            }
+        }
+    }
+    wiki.markdown.substring(s, start, s.len())
+end wiki.markdown.trim_start
+
+test wiki.markdown.heading_level.test_levels
+    match wiki.markdown.heading_level("# Hello") {
+        Some(l) => core.check.eq(l, 1u32)
+        None => core.panic.panic("heading level 1")
+    }
+    match wiki.markdown.heading_level("###### h6") {
+        Some(l) => core.check.eq(l, 6u32)
+        None => core.panic.panic("heading level 6")
+    }
+    match wiki.markdown.heading_level("####### h7") {
+        Some(_l) => core.panic.panic("heading level 7 should be None")
+        None => core.mem.drop(0u8)
+    }
+    match wiki.markdown.heading_level("plain text") {
+        Some(_l) => core.panic.panic("plain text should be None")
+        None => core.mem.drop(0u8)
+    }
+end wiki.markdown.heading_level.test_levels
+
+test wiki.markdown.heading_level.test_space_required
+    match wiki.markdown.heading_level("#NoSpace") {
+        Some(_l) => core.panic.panic("#NoSpace should be None")
+        None => core.mem.drop(0u8)
+    }
+end wiki.markdown.heading_level.test_space_required
+
+test wiki.markdown.is_blank.test_cases
+    core.check.eq(wiki.markdown.is_blank(""), true)
+    core.check.eq(wiki.markdown.is_blank("   "), true)
+    core.check.eq(wiki.markdown.is_blank("\t\t"), true)
+    core.check.eq(wiki.markdown.is_blank(" text "), false)
+    core.check.eq(wiki.markdown.is_blank("a"), false)
+end wiki.markdown.is_blank.test_cases
+
+test wiki.markdown.substring.test_cases
+    let sub = wiki.markdown.substring("Hello World", 0usize, 5usize)
+    core.check.eq(sub, "Hello")
+    let sub2 = wiki.markdown.substring("Hello World", 6usize, 11usize)
+    core.check.eq(sub2, "World")
+end wiki.markdown.substring.test_cases
+
+test wiki.markdown.to_html.test_code
+    match wiki.markdown.to_html("`code` here\n") {
+        Ok(s) => core.check.eq(s.as_str(), "<p><code>code</code> here</p>")
+        Err(_e) => core.panic.panic("code")
+    }
+end wiki.markdown.to_html.test_code
+
+test wiki.markdown.to_html.test_code_block
+    match wiki.markdown.to_html("```\ncode\n```\n") {
+        Ok(s) => {
+            core.check.eq(s.as_str().contains("<pre><code>"), true)
+            core.check.eq(s.as_str().contains("code"), true)
+            core.check.eq(s.as_str().contains("</pre>"), true)
+        }
+        Err(_e) => core.panic.panic("code block")
+    }
+end wiki.markdown.to_html.test_code_block
+
+test wiki.markdown.to_html.test_empty_input
+    match wiki.markdown.to_html("") {
+        Ok(s) => core.check.eq(s.as_str(), "")
+        Err(_e) => core.panic.panic("empty input")
+    }
+end wiki.markdown.to_html.test_empty_input
+
+test wiki.markdown.to_html.test_escape
+    match wiki.markdown.to_html("<script>bad</script>\n") {
+        Ok(s) => core.check.eq(s.as_str(), "<p>&lt;script&gt;bad&lt;/script&gt;</p>")
+        Err(_e) => core.panic.panic("escape")
+    }
+end wiki.markdown.to_html.test_escape
+
+test wiki.markdown.to_html.test_heading
+    match wiki.markdown.to_html("# Hello\n") {
+        Ok(s) => core.check.eq(s.as_str(), "<h1>Hello</h1>")
+        Err(_e) => core.panic.panic("heading")
+    }
+end wiki.markdown.to_html.test_heading
+
+test wiki.markdown.to_html.test_heading_levels
+    match wiki.markdown.to_html("# h1\n## h2\n### h3\n#### h4\n##### h5\n###### h6\n") {
+        Ok(s) => {
+            core.check.eq(s.as_str().contains("<h1>h1</h1>"), true)
+            core.check.eq(s.as_str().contains("<h2>h2</h2>"), true)
+            core.check.eq(s.as_str().contains("<h3>h3</h3>"), true)
+            core.check.eq(s.as_str().contains("<h4>h4</h4>"), true)
+            core.check.eq(s.as_str().contains("<h5>h5</h5>"), true)
+            core.check.eq(s.as_str().contains("<h6>h6</h6>"), true)
+        }
+        Err(_e) => core.panic.panic("heading levels")
+    }
+end wiki.markdown.to_html.test_heading_levels
+
+test wiki.markdown.to_html.test_heading_not_heading
+    match wiki.markdown.to_html("#notheading\n") {
+        Ok(s) => core.check.eq(s.as_str().contains("<p>#notheading</p>"), true)
+        Err(_e) => core.panic.panic("not heading")
+    }
+end wiki.markdown.to_html.test_heading_not_heading
+
+test wiki.markdown.to_html.test_inline_code_escape
+    match wiki.markdown.to_html("`<script>`\n") {
+        Ok(s) => core.check.eq(s.as_str(), "<p><code>&lt;script&gt;</code></p>")
+        Err(_e) => core.panic.panic("inline code escape")
+    }
+end wiki.markdown.to_html.test_inline_code_escape
+
+test wiki.markdown.to_html.test_link_and_wikilink
+    match wiki.markdown.to_html("[a](http://x.test/) and [[WikiPage]]\n") {
+        Ok(s) => {
+            let expected = "<p><a href=\"http://x.test/\">a</a> and <a href=\"/page/WikiPage\">WikiPage</a></p>"
+            core.check.eq(s.as_str(), expected)
+        }
+        Err(_e) => core.panic.panic("links")
+    }
+end wiki.markdown.to_html.test_link_and_wikilink
+
+test wiki.markdown.to_html.test_list
+    match wiki.markdown.to_html("- a\n- b\n") {
+        Ok(s) => core.check.eq(s.as_str(), "<ul><li>a</li><li>b</li></ul>")
+        Err(_e) => core.panic.panic("list")
+    }
+end wiki.markdown.to_html.test_list
+
+test wiki.markdown.to_html.test_list_with_content
+    match wiki.markdown.to_html("- item one\n- item two\n") {
+        Ok(s) => {
+            core.check.eq(s.as_str().contains("<ul>"), true)
+            core.check.eq(s.as_str().contains("<li>item one</li>"), true)
+            core.check.eq(s.as_str().contains("<li>item two</li>"), true)
+            core.check.eq(s.as_str().contains("</ul>"), true)
+        }
+        Err(_e) => core.panic.panic("list content")
+    }
+end wiki.markdown.to_html.test_list_with_content
+
+test wiki.markdown.to_html.test_mixed
+    match wiki.markdown.to_html("# Title\n\n**bold** and *italic*\n\n[[WikiPage]] and [link](http://x.test/)\n") {
+        Ok(s) => {
+            core.check.eq(s.as_str().contains("<h1>Title</h1>"), true)
+            core.check.eq(s.as_str().contains("<strong>bold</strong>"), true)
+            core.check.eq(s.as_str().contains("<em>italic</em>"), true)
+            core.check.eq(s.as_str().contains("/page/WikiPage"), true)
+            core.check.eq(s.as_str().contains("http://x.test/"), true)
+        }
+        Err(_e) => core.panic.panic("mixed")
+    }
+end wiki.markdown.to_html.test_mixed
+
+test wiki.markdown.to_html.test_multiple_paragraphs
+    match wiki.markdown.to_html("para one\n\npara two\n") {
+        Ok(s) => {
+            core.check.eq(s.as_str().contains("<p>para one</p>"), true)
+            core.check.eq(s.as_str().contains("<p>para two</p>"), true)
+        }
+        Err(_e) => core.panic.panic("paragraphs")
+    }
+end wiki.markdown.to_html.test_multiple_paragraphs
+
+test wiki.markdown.to_html.test_paragraph
+    match wiki.markdown.to_html("Just text\n") {
+        Ok(s) => core.check.eq(s.as_str(), "<p>Just text</p>")
+        Err(_e) => core.panic.panic("paragraph")
+    }
+end wiki.markdown.to_html.test_paragraph
+
+test wiki.markdown.to_html.test_strong_and_emph
+    match wiki.markdown.to_html("**bold** and *italic*\n") {
+        Ok(s) => core.check.eq(s.as_str(), "<p><strong>bold</strong> and <em>italic</em></p>")
+        Err(_e) => core.panic.panic("inline")
+    }
+end wiki.markdown.to_html.test_strong_and_emph
+
+test wiki.markdown.to_html.test_url_link_escape
+    match wiki.markdown.to_html("[click](http://x.test/\"bad)\")\n") {
+        Ok(s) => core.check.eq(s.as_str().contains("<a href="), true)
+        Err(_e) => core.panic.panic("url link escape")
+    }
+end wiki.markdown.to_html.test_url_link_escape
+
+test wiki.markdown.to_html.test_wikilink_escape
+    match wiki.markdown.to_html("[[<bad>]]\n") {
+        Ok(s) => core.check.eq(s.as_str(), "<p><a href=\"/page/&lt;bad&gt;\">&lt;bad&gt;</a></p>")
+        Err(_e) => core.panic.panic("wikilink escape")
+    }
+end wiki.markdown.to_html.test_wikilink_escape
+
+test wiki.markdown.trim_start.test_cases
+    let t1 = wiki.markdown.trim_start("  hello")
+    core.check.eq(t1, "hello")
+    let t2 = wiki.markdown.trim_start("\t\tworld")
+    core.check.eq(t2, "world")
+    let t3 = wiki.markdown.trim_start("no spaces")
+    core.check.eq(t3, "no spaces")
+    let t4 = wiki.markdown.trim_start("")
+    core.check.eq(t4, "")
+end wiki.markdown.trim_start.test_cases

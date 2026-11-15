@@ -1,0 +1,288 @@
+import wiki.markdown
+
+fn wiki.search.index_add_page(index: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, name: &str, content: &str) -> Result<(), wiki.error.Error> uses [alloc] panics never pub
+    for word in content.split(" ") {
+        if word.len() > 0usize {
+            let key = alloc.string.String.from_str(std.alloc.SYSTEM, word)?
+            let nm = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+            let mut entry = alloc.string.String.new(std.alloc.SYSTEM)
+            core.mem.drop(entry.push_str(key.as_str())?)
+            core.mem.drop(entry.push_str(" ")?)
+            core.mem.drop(entry.push_str(nm.as_str())?)
+            core.mem.drop(index.push(entry)?)
+        }
+    }
+    Ok(())
+end wiki.search.index_add_page
+
+fn wiki.search.index_new() -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc] panics never pub
+    alloc.vec.Vec.new(std.alloc.SYSTEM)
+end wiki.search.index_new
+
+fn wiki.search.index_search(index: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, query: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let mut results = wiki.search.index_new()
+    for word in query.split(" ") {
+        if word.len() > 0usize {
+            let key = alloc.string.String.from_str(std.alloc.SYSTEM, word)?
+            let mut i = 0usize
+            let n = index.len()
+            while i < n {
+                match index.as_slice().get(i) {
+                    Some(entry) => {
+                        let es = entry.as_str()
+                        let mut sp_idx = 0usize
+                        let es_len = es.len()
+                        let mut has_space = false
+                        while sp_idx < es_len {
+                            match es.as_bytes().get(sp_idx) {
+                                Some(b) => {
+                                    if *b == b' ' {
+                                        has_space = true
+                                        break
+                                    }
+                                }
+                                None => core.mem.drop(0u8)
+                            }
+                            sp_idx = sp_idx.saturating_add(1usize)
+                        }
+                        if has_space {
+                            let w = markdown.substring(es, 0usize, sp_idx)
+                            let start = sp_idx.saturating_add(1usize)
+                            let to = es.len()
+                            let page = markdown.substring(es, start, to)
+                            let key_str = key.as_str()
+                            if w == key_str {
+                                let mut found = false
+                                let mut k = 0usize
+                                let r = results.len()
+                                while k < r {
+                                    match results.as_slice().get(k) {
+                                        Some(existing) => {
+                                            if existing.as_str() == page {
+                                                found = true
+                                            }
+                                        }
+                                        None => core.mem.drop(0u8)
+                                    }
+                                    k = k.saturating_add(1usize)
+                                }
+                                if !found {
+                                    let mut pc = alloc.string.String.new(std.alloc.SYSTEM)
+                                    core.mem.drop(pc.push_str(page)?)
+                                    core.mem.drop(results.push(pc)?)
+                                }
+                            }
+                        }
+                    }
+                    None => core.mem.drop(0u8)
+                }
+                i = i.saturating_add(1usize)
+            }
+        }
+    }
+    Ok(results)
+end wiki.search.index_search
+
+test wiki.search.index_add_page.test_add_and_search
+    let mut index = wiki.search.index_new()
+
+    // 文字列リテラルを直接関数引数に渡すと std.rand.fill_secure の呼び出し後に
+    // 処理系側で破損することがあるため、すべてヒープ文字列として組み立てる。
+    let mut name_a = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(name_a.push('A')?)
+    core.mem.drop(name_a.push('l')?)
+    core.mem.drop(name_a.push('p')?)
+    core.mem.drop(name_a.push('h')?)
+    core.mem.drop(name_a.push('a')?)
+    let mut content_a = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(content_a.push('a')?)
+    core.mem.drop(content_a.push('a')?)
+    core.mem.drop(content_a.push('a')?)
+    core.mem.drop(content_a.push(' ')?)
+    core.mem.drop(content_a.push('b')?)
+    core.mem.drop(content_a.push('b')?)
+    core.mem.drop(content_a.push('b')?)
+    let mut name_b = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(name_b.push('B')?)
+    core.mem.drop(name_b.push('e')?)
+    core.mem.drop(name_b.push('t')?)
+    core.mem.drop(name_b.push('a')?)
+    let mut content_b = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(content_b.push('b')?)
+    core.mem.drop(content_b.push('b')?)
+    core.mem.drop(content_b.push('b')?)
+    core.mem.drop(content_b.push(' ')?)
+    core.mem.drop(content_b.push('c')?)
+    core.mem.drop(content_b.push('c')?)
+    core.mem.drop(content_b.push('c')?)
+    let mut name_c = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(name_c.push('G')?)
+    core.mem.drop(name_c.push('a')?)
+    core.mem.drop(name_c.push('m')?)
+    core.mem.drop(name_c.push('m')?)
+    core.mem.drop(name_c.push('a')?)
+    let mut content_c = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(content_c.push('c')?)
+    core.mem.drop(content_c.push('c')?)
+    core.mem.drop(content_c.push('c')?)
+    core.mem.drop(content_c.push(' ')?)
+    core.mem.drop(content_c.push('d')?)
+    core.mem.drop(content_c.push('d')?)
+    core.mem.drop(content_c.push('d')?)
+    core.mem.drop(wiki.search.index_add_page(&mut index, name_a.as_str(), content_a.as_str())?)
+    core.mem.drop(wiki.search.index_add_page(&mut index, name_b.as_str(), content_b.as_str())?)
+    core.mem.drop(wiki.search.index_add_page(&mut index, name_c.as_str(), content_c.as_str())?)
+
+    // "bbb" は Alpha と Beta の両方に含まれる
+    let mut q_bbb = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(q_bbb.push('b')?)
+    core.mem.drop(q_bbb.push('b')?)
+    core.mem.drop(q_bbb.push('b')?)
+    let r_bbb = wiki.search.index_search(&index, q_bbb.as_str())?
+    let mut found_a = false
+    let mut found_b = false
+    let mut i = 0usize
+    let n = r_bbb.len()
+    while i < n {
+        match r_bbb.as_slice().get(i) {
+            Some(p) => {
+                if p.as_str() == "Alpha" {
+                    found_a = true
+                }
+                if p.as_str() == "Beta" {
+                    found_b = true
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.saturating_add(1usize)
+    }
+    core.check.eq(found_a, true)
+    core.check.eq(found_b, true)
+
+    // "ccc" は Beta と Gamma の両方に含まれる
+    let mut q_ccc = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(q_ccc.push('c')?)
+    core.mem.drop(q_ccc.push('c')?)
+    core.mem.drop(q_ccc.push('c')?)
+    let r_ccc = wiki.search.index_search(&index, q_ccc.as_str())?
+    let mut found_b2 = false
+    let mut found_c = false
+    let mut j = 0usize
+    let m = r_ccc.len()
+    while j < m {
+        match r_ccc.as_slice().get(j) {
+            Some(p) => {
+                if p.as_str() == "Beta" {
+                    found_b2 = true
+                }
+                if p.as_str() == "Gamma" {
+                    found_c = true
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        j = j.saturating_add(1usize)
+    }
+    core.check.eq(found_b2, true)
+    core.check.eq(found_c, true)
+
+    // "zzz" はどのページにも含まれない
+    let mut q_zzz = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(q_zzz.push('z')?)
+    core.mem.drop(q_zzz.push('z')?)
+    core.mem.drop(q_zzz.push('z')?)
+    let r_zzz = wiki.search.index_search(&index, q_zzz.as_str())?
+    core.check.eq(r_zzz.len(), 0usize)
+end wiki.search.index_add_page.test_add_and_search
+
+test wiki.search.index_search.test_duplicate_words
+    let mut index = wiki.search.index_new()
+    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(name.push('P')?)
+    let mut content = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(content.push('w')?)
+    core.mem.drop(content.push('o')?)
+    core.mem.drop(content.push('r')?)
+    core.mem.drop(content.push('d')?)
+    core.mem.drop(content.push(' ')?)
+    core.mem.drop(content.push('w')?)
+    core.mem.drop(content.push('o')?)
+    core.mem.drop(content.push('r')?)
+    core.mem.drop(content.push('d')?)
+    core.mem.drop(content.push(' ')?)
+    core.mem.drop(content.push('w')?)
+    core.mem.drop(content.push('o')?)
+    core.mem.drop(content.push('r')?)
+    core.mem.drop(content.push('d')?)
+    core.mem.drop(wiki.search.index_add_page(&mut index, name.as_str(), content.as_str())?)
+    let mut q = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(q.push('w')?)
+    core.mem.drop(q.push('o')?)
+    core.mem.drop(q.push('r')?)
+    core.mem.drop(q.push('d')?)
+    let r = wiki.search.index_search(&index, q.as_str())?
+    core.check.eq(r.len(), 1usize)
+end wiki.search.index_search.test_duplicate_words
+
+test wiki.search.index_search.test_empty_index
+    let empty = wiki.search.index_new()
+    let mut q = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(q.push('a')?)
+    let r = wiki.search.index_search(&empty, q.as_str())?
+    core.check.eq(r.len(), 0usize)
+end wiki.search.index_search.test_empty_index
+
+test wiki.search.index_search.test_empty_query
+    let mut index = wiki.search.index_new()
+    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(name.push('P')?)
+    let mut content = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(content.push('h')?)
+    core.mem.drop(content.push('e')?)
+    core.mem.drop(content.push('l')?)
+    core.mem.drop(content.push('l')?)
+    core.mem.drop(content.push('o')?)
+    core.mem.drop(wiki.search.index_add_page(&mut index, name.as_str(), content.as_str())?)
+    let empty_q = alloc.string.String.from_str(std.alloc.SYSTEM, "")?
+    let r = wiki.search.index_search(&index, empty_q.as_str())?
+    core.check.eq(r.len(), 0usize)
+end wiki.search.index_search.test_empty_query
+
+test wiki.search.index_search.test_multi_word_query
+    let mut index = wiki.search.index_new()
+    let mut name = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(name.push('P')?)
+    let mut content = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(content.push('a')?)
+    core.mem.drop(content.push('l')?)
+    core.mem.drop(content.push('p')?)
+    core.mem.drop(content.push('h')?)
+    core.mem.drop(content.push('a')?)
+    core.mem.drop(content.push(' ')?)
+    core.mem.drop(content.push('b')?)
+    core.mem.drop(content.push('e')?)
+    core.mem.drop(content.push('t')?)
+    core.mem.drop(content.push('a')?)
+    core.mem.drop(content.push(' ')?)
+    core.mem.drop(content.push('g')?)
+    core.mem.drop(content.push('a')?)
+    core.mem.drop(content.push('m')?)
+    core.mem.drop(content.push('m')?)
+    core.mem.drop(content.push('a')?)
+    core.mem.drop(wiki.search.index_add_page(&mut index, name.as_str(), content.as_str())?)
+    let mut q = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(q.push('a')?)
+    core.mem.drop(q.push('l')?)
+    core.mem.drop(q.push('p')?)
+    core.mem.drop(q.push('h')?)
+    core.mem.drop(q.push('a')?)
+    core.mem.drop(q.push(' ')?)
+    core.mem.drop(q.push('g')?)
+    core.mem.drop(q.push('a')?)
+    core.mem.drop(q.push('m')?)
+    core.mem.drop(q.push('m')?)
+    core.mem.drop(q.push('a')?)
+    let r = wiki.search.index_search(&index, q.as_str())?
+    core.check.eq(r.len(), 1usize)
+end wiki.search.index_search.test_multi_word_query
