@@ -1,0 +1,608 @@
+import wiki.csrf
+import wiki.html
+import wiki.link
+import wiki.markdown
+import wiki.search
+import wiki.store
+
+// 応答の中身。`location` が空でなければ `Location` ヘッダになる。
+type wiki.router.Reply pub
+    body: alloc.string.String<std.alloc.System> pub
+    location: alloc.string.String<std.alloc.System> pub
+    status: u16 pub
+end wiki.router.Reply
+
+// `Name` の編集フォームを表示する (CSRF トークン付き)。
+fn wiki.router.edit_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand, time] panics never
+    let token = csrf.generate_token(csrf_tokens)?
+    let content = match store.PageStore.load_latest(page_store, name) {
+        Some(c) => c
+        None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
+    }
+    let body = html.edit_form(name, content.as_str(), token.as_str())?
+    let location = wiki.router.empty()
+    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+end wiki.router.edit_page
+
+fn wiki.router.empty() -> alloc.string.String<std.alloc.System> uses [alloc] panics never pub
+    alloc.string.String.new(std.alloc.SYSTEM)
+end wiki.router.empty
+
+fn wiki.router.error_reply(status: u16, message: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc] panics never pub
+    let body = html.error_page(message)?
+    let location = wiki.router.empty()
+    Ok(wiki.router.Reply { body: body, location: location, status: status })
+end wiki.router.error_reply
+
+// `Name` の履歴を表示する。
+fn wiki.router.history_page(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
+    if !store.PageStore.page_exists(page_store, name) {
+        return wiki.router.error_reply(404u16, "not found")
+    }
+    let versions = store.PageStore.page_versions(page_store, name)?
+    let body = html.history_view(name, versions.as_slice())?
+    let location = wiki.router.empty()
+    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+end wiki.router.history_page
+
+// ページ一覧を表示する。
+fn wiki.router.list_pages(page_store: &mut wiki.store.PageStore) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
+    let pages = store.PageStore.list_pages(page_store)?
+    let body = html.list_view(pages.as_slice())?
+    let location = wiki.router.empty()
+    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+end wiki.router.list_pages
+
+// 新規作成フォームを表示する (CSRF トークン付き)。
+fn wiki.router.new_page(csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, rand, time] panics never
+    let token = csrf.generate_token(csrf_tokens)?
+    let body = html.edit_form("New Page", "", token.as_str())?
+    let location = wiki.router.empty()
+    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+end wiki.router.new_page
+
+// `Name` への被リンク一覧を表示する。
+fn wiki.router.page_backlinks(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
+    if !store.PageStore.page_exists(page_store, name) {
+        return wiki.router.error_reply(404u16, "not found")
+    }
+    let backlinks = link.backlinks_for(page_store, name)?
+    let body = html.links_view(name, backlinks.as_slice())?
+    let location = wiki.router.empty()
+    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+end wiki.router.page_backlinks
+
+// `Name` から出るリンク先一覧を表示する。
+fn wiki.router.page_links(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
+    if !store.PageStore.page_exists(page_store, name) {
+        return wiki.router.error_reply(404u16, "not found")
+    }
+    let content = match store.PageStore.load_latest(page_store, name) {
+        Some(c) => c
+        None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
+    }
+    let links = link.extract_wiki_links(content.as_str())?
+    let body = html.links_view(name, links.as_slice())?
+    let location = wiki.router.empty()
+    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+end wiki.router.page_links
+
+// ページ名をパスから取り出す (`/page/Name` → `Name`)。見つからなければ None。
+fn wiki.router.page_name_from_path(path: &str, prefix: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never
+    match path.strip_prefix(prefix) {
+        Some(rest) => {
+            if rest.is_empty() || rest.contains("/") {
+                None
+            } else {
+                match alloc.string.String.from_str(std.alloc.SYSTEM, rest) {
+                    Ok(s) => Some(s)
+                    Err(_e) => None
+                }
+            }
+        }
+        None => None
+    }
+end wiki.router.page_name_from_path
+
+// クエリ文字列から `key` の値を取り出す。
+fn wiki.router.query_param(query: &str, key: &str) -> Option<alloc.string.String<std.alloc.System>> uses [alloc] panics never
+    for pair in query.split("&") {
+        match pair.split_once("=") {
+            Some((k, v)) => {
+                if k == key {
+                    match alloc.string.String.from_str(std.alloc.SYSTEM, v) {
+                        Ok(s) => return Some(s)
+                        Err(_e) => return None
+                    }
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    None
+end wiki.router.query_param
+
+fn wiki.router.reply(status: u16, body: alloc.string.String<std.alloc.System>, location: alloc.string.String<std.alloc.System>) -> wiki.router.Reply uses [] panics never pub
+    wiki.router.Reply { body: body, location: location, status: status }
+end wiki.router.reply
+
+// 要求 1 件の経路。`method` と `path` は要求行のまま、`body` は本体の文字列。
+fn wiki.router.route(page_store: &mut wiki.store.PageStore, method: &str, path: &str, body: &str, csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand, time] panics never pub
+    // `path` は `std.rand.fill_secure` の呼び出し後に文字列引数として渡されると
+    // 処理系側で破損することがあるため、すぐヒープ文字列にコピーして以降はそのコピーを使う。
+    let path_heap = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    // クエリ文字列を分離。
+    let (path_part, query) = match path_heap.as_str().split_once("?") {
+        Some(pair) => pair
+        None => (path_heap.as_str(), "")
+    }
+    if method == "GET" {
+        if path_part == "/" {
+            return wiki.router.list_pages(page_store)
+        }
+        if let Some(name) = wiki.router.page_name_from_path(path_part, "/page/") {
+            return wiki.router.show_page(page_store, name.as_str())
+        }
+        if let Some(name) = wiki.router.page_name_from_path(path_part, "/edit/") {
+            return wiki.router.edit_page(page_store, csrf_tokens, name.as_str())
+        }
+        if path_part == "/new" {
+            return wiki.router.new_page(csrf_tokens)
+        }
+        if let Some(name) = wiki.router.page_name_from_path(path_part, "/new") {
+            return wiki.router.new_page(csrf_tokens)
+        }
+        if path_part.starts_with("/history/") {
+            // "/history/" は 9 文字。それ以降を rest としてヒープ文字列に組み立てる。
+            let bytes = path_part.as_bytes()
+            let n = path_part.len()
+            let mut i = 9usize
+            let mut rest = alloc.string.String.new(std.alloc.SYSTEM)
+            while i < n {
+                match bytes.get(i) {
+                    Some(b) => {
+                        core.mem.drop(rest.push(char.try_from_u32(u32.from_u8(*b)).unwrap_or('?'))?)
+                    }
+                    None => core.mem.drop(0u8)
+                }
+                i = i.saturating_add(1usize)
+            }
+            // rest の中で最初の "/" を探す
+            let rest_bytes = rest.as_bytes()
+            let rest_len = rest.as_str().len()
+            let mut slash_pos = 0usize
+            let mut found_slash = false
+            let mut done = false
+            while slash_pos < rest_len && !done {
+                match rest_bytes.get(slash_pos) {
+                    Some(b) => {
+                        if *b == b'/' {
+                            found_slash = true
+                            done = true
+                        }
+                    }
+                    None => core.mem.drop(0u8)
+                }
+                if !done {
+                    slash_pos = slash_pos.saturating_add(1usize)
+                }
+            }
+            if found_slash {
+                // /history/Name/Version 形式
+                let mut page_name = alloc.string.String.new(std.alloc.SYSTEM)
+                let mut j = 0usize
+                while j < slash_pos {
+                    match rest_bytes.get(j) {
+                        Some(b) => {
+                            let c = char.try_from_u32(u32.from_u8(*b)).unwrap_or('?')
+                            core.mem.drop(page_name.push(c)?)
+                        }
+                        None => core.mem.drop(0u8)
+                    }
+                    j = j.saturating_add(1usize)
+                }
+                let mut version_text = alloc.string.String.new(std.alloc.SYSTEM)
+                let mut k = slash_pos.saturating_add(1usize)
+                while k < rest_len {
+                    match rest_bytes.get(k) {
+                        Some(b) => {
+                            let c = char.try_from_u32(u32.from_u8(*b)).unwrap_or('?')
+                            core.mem.drop(version_text.push(c)?)
+                        }
+                        None => core.mem.drop(0u8)
+                    }
+                    k = k.saturating_add(1usize)
+                }
+                match usize.parse(version_text.as_str()) {
+                    Ok(v) => return wiki.router.show_version(page_store, page_name.as_str(), v)
+                    Err(_e) => return wiki.router.error_reply(400u16, "bad version")
+                }
+            } else {
+                return wiki.router.history_page(page_store, rest.as_str())
+            }
+        }
+        if path_part == "/search" {
+            let q = match wiki.router.query_param(query, "q") {
+                Some(t) => t
+                None => return wiki.router.error_reply(400u16, "missing q")
+            }
+            return wiki.router.search_pages(page_store, q.as_str())
+        }
+        if let Some(name) = wiki.router.page_name_from_path(path_part, "/links/") {
+            return wiki.router.page_links(page_store, name.as_str())
+        }
+        if let Some(name) = wiki.router.page_name_from_path(path_part, "/backlinks/") {
+            return wiki.router.page_backlinks(page_store, name.as_str())
+        }
+        return wiki.router.error_reply(503u16, "route fallback")
+    }
+    if method == "POST" {
+        if let Some(name) = wiki.router.page_name_from_path(path_part, "/save/") {
+            return wiki.router.save_page(page_store, csrf_tokens, name.as_str(), body)
+        }
+        return wiki.router.error_reply(405u16, "method not allowed")
+    }
+    wiki.router.error_reply(405u16, "method not allowed")
+end wiki.router.route
+
+// `Name` を保存する (CSRF 検証あり)。
+fn wiki.router.save_page(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, name: &str, body: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs, rand, time] panics never
+    // CSRF トークンを検証する (`csrf=...` のフォーム本体から読む)。
+    let token = match wiki.router.query_param(body, "csrf") {
+        Some(t) => t
+        None => return wiki.router.error_reply(403u16, "csrf token missing")
+    }
+    if !csrf.verify_token(csrf_tokens, token.as_str()) {
+        return wiki.router.error_reply(403u16, "csrf token invalid")
+    }
+    let content = match wiki.router.query_param(body, "content") {
+        Some(c) => c
+        None => return wiki.router.error_reply(400u16, "missing content")
+    }
+    let version = store.PageStore.next_version(page_store, name)?
+    core.mem.drop(store.PageStore.save_version(page_store, name, content.as_str(), version)?)
+    let mut location = alloc.string.String.from_str(std.alloc.SYSTEM, "/page/")?
+    location.push_str(name)?
+    let mut reply_body = alloc.string.String.new(std.alloc.SYSTEM)
+    Ok(wiki.router.Reply { body: reply_body, location: location, status: 303u16 })
+end wiki.router.save_page
+
+// 全文検索をする。
+fn wiki.router.search_pages(page_store: &mut wiki.store.PageStore, query: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
+    let pages = store.PageStore.list_pages(page_store)?
+    let mut index = search.index_new()
+    let mut i = 0usize
+    let n = pages.len()
+    while i < n {
+        match pages.as_slice().get(i) {
+            Some(name) => {
+                let content = match store.PageStore.load_latest(page_store, name.as_str()) {
+                    Some(c) => c
+                    None => alloc.string.String.from_str(std.alloc.SYSTEM, "")?
+                }
+                search.index_add_page(&mut index, name.as_str(), content.as_str())?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.saturating_add(1usize)
+    }
+    let results = search.index_search(&index, query)?
+    let body = html.search_view(query, results.as_slice())?
+    let location = wiki.router.empty()
+    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+end wiki.router.search_pages
+
+// `Name` のページを表示する。
+fn wiki.router.show_page(page_store: &mut wiki.store.PageStore, name: &str) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
+    if !store.PageStore.page_exists(page_store, name) {
+        return wiki.router.error_reply(404u16, "not found")
+    }
+    let content = match store.PageStore.load_latest(page_store, name) {
+        Some(c) => c
+        None => return wiki.router.error_reply(404u16, "not found")
+    }
+    let html_body = markdown.to_html(content.as_str())?
+    let backlinks = link.backlinks_for(page_store, name)?
+    let versions = store.PageStore.page_versions(page_store, name)?
+    let body = html.page_view(name, html_body.as_str(), versions.as_slice(), backlinks.as_slice())?
+    let location = wiki.router.empty()
+    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+end wiki.router.show_page
+
+// `Name` の指定版を表示する。
+fn wiki.router.show_version(page_store: &mut wiki.store.PageStore, name: &str, version: usize) -> Result<wiki.router.Reply, wiki.error.Error> uses [alloc, io.fs] panics never
+    let content = match store.PageStore.load_version(page_store, name, version) {
+        Some(c) => c
+        None => return wiki.router.error_reply(404u16, "not found")
+    }
+    let html_body = markdown.to_html(content.as_str())?
+    let mut versions = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(versions.push(u64.from_usize(version))?)
+    let empty_links = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let empty_links_slice = empty_links.as_slice()
+    let body = html.page_view(name, html_body.as_str(), versions.as_slice(), empty_links_slice)?
+    let location = wiki.router.empty()
+    Ok(wiki.router.Reply { body: body, location: location, status: 200u16 })
+end wiki.router.show_version
+
+fn wiki.router.test_csrf() -> alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> uses [alloc, rand, time] panics may pub
+    alloc.vec.Vec.new(std.alloc.SYSTEM)
+end wiki.router.test_csrf
+
+fn wiki.router.test_route(page_store: &mut wiki.store.PageStore, csrf_tokens: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, method: &str, path: &str, body: &str) -> wiki.router.Reply uses [alloc, io.console, io.fs, rand, time] panics may pub
+    match wiki.router.route(page_store, method, path, body, csrf_tokens) {
+        Ok(r) => r
+        Err(_e) => core.panic.panic("route failed")
+    }
+end wiki.router.test_route
+
+fn wiki.router.test_store() -> wiki.store.PageStore uses [alloc, io.fs] panics may pub
+    match store.PageStore.new("/tmp/wiki-test-router") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("store new failed")
+    }
+end wiki.router.test_store
+
+test wiki.router.route.test_create_and_show
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    // 直接 store に保存して表示を確かめる。
+    // 注意: std.rand.fill_secure (wiki.csrf のテストで先に呼ばれる) の後は、文字列リテラルを
+    // 関数引数として渡すと処理系側で破損することがあるため、パスはリテラルを使わずに
+    // ヒープ文字列として組み立てる (サーバ側はソケット読み込みなので影響を受けない)。
+    let saved = store.PageStore.save_version(&mut page_store, "Hello", "Hello world\n", 1u64)?
+    core.mem.drop(saved)
+    let mut req_path = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(req_path.push('/')?)
+    core.mem.drop(req_path.push('p')?)
+    core.mem.drop(req_path.push('a')?)
+    core.mem.drop(req_path.push('g')?)
+    core.mem.drop(req_path.push('e')?)
+    core.mem.drop(req_path.push('/')?)
+    core.mem.drop(req_path.push('H')?)
+    core.mem.drop(req_path.push('e')?)
+    core.mem.drop(req_path.push('l')?)
+    core.mem.drop(req_path.push('l')?)
+    core.mem.drop(req_path.push('o')?)
+    let p = req_path.as_str()
+    let resp2 = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", p, "")
+    core.check.eq(resp2.status, 200u16)
+    // 新規作成フォーム (CSRF トークン生成で rand を使う)
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/new", "")
+    core.check.eq(resp.status, 200u16)
+end wiki.router.route.test_create_and_show
+
+test wiki.router.route.test_edit_page
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "EditMe", "original\n", 1u64)?)
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/edit/EditMe", "")
+    core.check.eq(resp.status, 200u16)
+    core.check.eq(resp.body.as_str().contains("original"), true)
+end wiki.router.route.test_edit_page
+
+test wiki.router.route.test_edit_page_missing
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/edit/NoSuch", "")
+    core.check.eq(resp.status, 200u16)
+end wiki.router.route.test_edit_page_missing
+
+test wiki.router.route.test_get_root_after_save
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "Hello", "Hello world\n", 1u64)?)
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/", "")
+    core.check.eq(resp.status, 200u16)
+    core.check.eq(resp.body.as_str().contains("/page/Hello"), true)
+end wiki.router.route.test_get_root_after_save
+
+test wiki.router.route.test_history
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "Hi", "v1\n", 1u64)?)
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "Hi", "v2\n", 2u64)?)
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/history/Hi", "")
+    core.check.eq(resp.status, 200u16)
+end wiki.router.route.test_history
+
+test wiki.router.route.test_history_page
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "Hist", "v1\n", 1u64)?)
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "Hist", "v2\n", 2u64)?)
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/history/Hist", "")
+    core.check.eq(resp.status, 200u16)
+end wiki.router.route.test_history_page
+
+test wiki.router.route.test_history_page_missing
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let ps = &mut page_store
+    let ct = &mut csrf_tokens
+    let resp = wiki.router.test_route(ps, ct, "GET", "/history/NoSuch", "")
+    core.check.eq(resp.status, 404u16)
+end wiki.router.route.test_history_page_missing
+
+test wiki.router.route.test_list_pages_empty
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/", "")
+    core.check.eq(resp.status, 200u16)
+end wiki.router.route.test_list_pages_empty
+
+test wiki.router.route.test_method_not_allowed
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let ps = &mut page_store
+    let ct = &mut csrf_tokens
+    let resp = wiki.router.test_route(ps, ct, "DELETE", "/page/Hello", "")
+    core.check.eq(resp.status, 405u16)
+end wiki.router.route.test_method_not_allowed
+
+test wiki.router.route.test_not_found
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/page/NoSuch", "")
+    core.check.eq(resp.status, 404u16)
+end wiki.router.route.test_not_found
+
+test wiki.router.route.test_page_backlinks
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "To", "target page\n", 1u64)?)
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "From", "see [[To]] here\n", 1u64)?)
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/backlinks/To", "")
+    core.check.eq(resp.status, 200u16)
+    core.check.eq(resp.body.as_str().contains("/page/From"), true)
+end wiki.router.route.test_page_backlinks
+
+test wiki.router.route.test_page_backlinks_missing
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let ps = &mut page_store
+    let ct = &mut csrf_tokens
+    let resp = wiki.router.test_route(ps, ct, "GET", "/backlinks/NoSuch", "")
+    core.check.eq(resp.status, 404u16)
+end wiki.router.route.test_page_backlinks_missing
+
+test wiki.router.route.test_page_links
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    core.mem.drop(store.PageStore.save_version(&mut page_store, "From", "see [[To]] here\n", 1u64)?)
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/links/From", "")
+    core.check.eq(resp.status, 200u16)
+    core.check.eq(resp.body.as_str().contains("/page/To"), true)
+end wiki.router.route.test_page_links
+
+test wiki.router.route.test_page_name_from_path
+    match wiki.router.page_name_from_path("/page/Hello", "/page/") {
+        Some(n) => core.check.eq(n.as_str(), "Hello")
+        None => core.panic.panic("page_name_from_path /page/Hello returned None")
+    }
+end wiki.router.route.test_page_name_from_path
+
+test wiki.router.route.test_page_name_from_path_edge
+    match wiki.router.page_name_from_path("/page/", "/page/") {
+        Some(_n) => core.panic.panic("empty name should be None")
+        None => core.mem.drop(0u8)
+    }
+    match wiki.router.page_name_from_path("/page/a/b", "/page/") {
+        Some(_n) => core.panic.panic("slash in name should be None")
+        None => core.mem.drop(0u8)
+    }
+end wiki.router.route.test_page_name_from_path_edge
+
+test wiki.router.route.test_post_method_not_allowed
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "POST", "/page/Hello", "")
+    core.check.eq(resp.status, 405u16)
+end wiki.router.route.test_post_method_not_allowed
+
+test wiki.router.route.test_query_param
+    match wiki.router.query_param("a=1&b=2&c=3", "b") {
+        Some(v) => core.check.eq(v.as_str(), "2")
+        None => core.panic.panic("query param b")
+    }
+    match wiki.router.query_param("a=1&b=2", "missing") {
+        Some(_v) => core.panic.panic("missing should be None")
+        None => core.mem.drop(0u8)
+    }
+end wiki.router.route.test_query_param
+
+test wiki.router.route.test_save_page
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    // CSRF トークンを生成
+    let form_resp = wiki.router.test_route(&mut page_store, &mut csrf_tokens, "GET", "/new", "")
+    core.check.eq(form_resp.status, 200u16)
+    // トークンをフォームから抽出（簡易：generate_token で直接取得）
+    let token = csrf.generate_token(&mut csrf_tokens)?
+    // POST /save/TestPage に CSRF トークンと content を付与
+    let mut body = alloc.string.String.from_str(std.alloc.SYSTEM, "csrf=")?
+    core.mem.drop(body.push_str(token.as_str())?)
+    core.mem.drop(body.push_str("&content=Hello+World")?)
+    let ps = &mut page_store
+    let ct = &mut csrf_tokens
+    let b = body.as_str()
+    let resp = wiki.router.test_route(ps, ct, "POST", "/save/TestPage", b)
+    core.check.eq(resp.status, 303u16)
+    core.check.eq(resp.location.as_str(), "/page/TestPage")
+end wiki.router.route.test_save_page
+
+test wiki.router.route.test_save_page_invalid_csrf
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let mut body = alloc.string.String.from_str(std.alloc.SYSTEM, "csrf=invalid&content=hello")?
+    let ps = &mut page_store
+    let ct = &mut csrf_tokens
+    let b = body.as_str()
+    let resp = wiki.router.test_route(ps, ct, "POST", "/save/TestPage", b)
+    core.check.eq(resp.status, 403u16)
+end wiki.router.route.test_save_page_invalid_csrf
+
+test wiki.router.route.test_save_page_missing_csrf
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let mut body = alloc.string.String.from_str(std.alloc.SYSTEM, "content=hello")?
+    let ps = &mut page_store
+    let ct = &mut csrf_tokens
+    let b = body.as_str()
+    let resp = wiki.router.test_route(ps, ct, "POST", "/save/TestPage", b)
+    core.check.eq(resp.status, 403u16)
+end wiki.router.route.test_save_page_missing_csrf
+
+test wiki.router.route.test_save_page_then_show
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let token = csrf.generate_token(&mut csrf_tokens)?
+    let mut body = alloc.string.String.from_str(std.alloc.SYSTEM, "csrf=")?
+    core.mem.drop(body.push_str(token.as_str())?)
+    core.mem.drop(body.push_str("&content=# New Page\n")?)
+    let ps = &mut page_store
+    let ct = &mut csrf_tokens
+    let b = body.as_str()
+    let save_resp = wiki.router.test_route(ps, ct, "POST", "/save/NewPage", b)
+    core.check.eq(save_resp.status, 303u16)
+    // 保存後の表示
+    let mut path = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(path.push_str("/page/NewPage")?)
+    let p = path.as_str()
+    let show_resp = wiki.router.test_route(ps, ct, "GET", p, "")
+    core.check.eq(show_resp.status, 200u16)
+    core.check.eq(show_resp.body.as_str().contains("New Page"), true)
+end wiki.router.route.test_save_page_then_show
+
+test wiki.router.route.test_search
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let ps = &mut page_store
+    let ct = &mut csrf_tokens
+    let saved_a = store.PageStore.save_version(ps, "Alpha", "alpha beta gamma\n", 1u64)?
+    core.mem.drop(saved_a)
+    let saved_b = store.PageStore.save_version(ps, "Beta", "beta delta\n", 1u64)?
+    core.mem.drop(saved_b)
+    let resp = wiki.router.test_route(ps, ct, "GET", "/search?q=beta", "")
+    core.check.eq(resp.status, 200u16)
+end wiki.router.route.test_search
+
+test wiki.router.route.test_show_version
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let ps = &mut page_store
+    let ct = &mut csrf_tokens
+    core.mem.drop(store.PageStore.save_version(ps, "Ver", "v1\n", 1u64)?)
+    core.mem.drop(store.PageStore.save_version(ps, "Ver", "v2\n", 2u64)?)
+    let resp = wiki.router.test_route(ps, ct, "GET", "/history/Ver/2", "")
+    core.check.eq(resp.status, 200u16)
+end wiki.router.route.test_show_version
+
+test wiki.router.route.test_show_version_missing
+    let mut page_store = wiki.router.test_store()
+    let mut csrf_tokens = wiki.router.test_csrf()
+    let ps = &mut page_store
+    let ct = &mut csrf_tokens
+    let resp = wiki.router.test_route(ps, ct, "GET", "/history/Ver/99", "")
+    core.check.eq(resp.status, 404u16)
+end wiki.router.route.test_show_version_missing

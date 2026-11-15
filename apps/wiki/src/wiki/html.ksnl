@@ -1,0 +1,389 @@
+fn wiki.html.edit_form(name: &str, content: &str, token: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let escaped_name = wiki.html.escape(name)?
+    let escaped_content = wiki.html.escape(content)?
+    let escaped_token = wiki.html.escape(token)?
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("<h1>編集: ")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("</h1>")?
+    out.push_str("<form method=\"POST\" action=\"/save/")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("\">")?
+    out.push_str("<input type=\"hidden\" name=\"csrf\" value=\"")?
+    out.push_str(escaped_token.as_str())?
+    out.push_str("\">")?
+    out.push_str("<textarea name=\"content\" rows=\"20\" cols=\"80\">")?
+    out.push_str(escaped_content.as_str())?
+    out.push_str("</textarea><br>")?
+    out.push_str("<button type=\"submit\">保存</button>")?
+    out.push_str("</form><p><a href=\"/\">一覧へ戻る</a></p>")?
+    let mut title = alloc.string.String.new(std.alloc.SYSTEM)
+    title.push_str("編集: ")?
+    title.push_str(escaped_name.as_str())?
+    wiki.html.page_shell(title.as_str(), out.as_str())
+end wiki.html.edit_form
+
+fn wiki.html.error_page(message: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let escaped = wiki.html.escape(message)?
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("<h1>エラー</h1><p>")?
+    out.push_str(escaped.as_str())?
+    out.push_str("</p><p><a href=\"/\">一覧へ戻る</a></p>")?
+    wiki.html.page_shell("エラー", out.as_str())
+end wiki.html.error_page
+
+// HTML の特殊文字を必ず実体参照にする (`& < > " '`)。
+fn wiki.html.escape(text: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    for c in text.chars() {
+        if c == '&' {
+            out.push_str("&amp;")?
+        } else if c == '<' {
+            out.push_str("&lt;")?
+        } else if c == '>' {
+            out.push_str("&gt;")?
+        } else if c == '"' {
+            out.push_str("&quot;")?
+        } else if c == '\'' {
+            out.push_str("&#39;")?
+        } else {
+            out.push(c)?
+        }
+    }
+    Ok(out)
+end wiki.html.escape
+
+fn wiki.html.history_view(name: &str, versions: &[u64]) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let escaped_name = wiki.html.escape(name)?
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("<h1>履歴: ")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("</h1><ul>")?
+    let mut i = versions.len()
+    while i > 0usize {
+        let at = i.wrapping_sub(1usize)
+        match versions.get(at) {
+            Some(v) => {
+                out.push_str("<li><a href=\"/history/")?
+                out.push_str(escaped_name.as_str())?
+                out.push_str("/")?
+                let mut vs = alloc.string.String.new(std.alloc.SYSTEM)
+                vs.push_u64(*v)?
+                out.push_str(vs.as_str())?
+                out.push_str("\">版 ")?
+                out.push_str(vs.as_str())?
+                out.push_str("</a></li>")?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = at
+    }
+    out.push_str("</ul><p><a href=\"/page/")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("\">ページに戻る</a></p>")?
+    let mut title = alloc.string.String.new(std.alloc.SYSTEM)
+    title.push_str("履歴: ")?
+    title.push_str(escaped_name.as_str())?
+    wiki.html.page_shell(title.as_str(), out.as_str())
+end wiki.html.history_view
+
+fn wiki.html.links_view(name: &str, links: &[alloc.string.String<std.alloc.System>]) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let escaped_name = wiki.html.escape(name)?
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("<h1>リンク: ")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("</h1><ul>")?
+    let mut i = 0usize
+    let n = links.len()
+    while i < n {
+        match links.get(i) {
+            Some(target) => {
+                let e = wiki.html.escape(target.as_str())?
+                out.push_str("<li><a href=\"/page/")?
+                out.push_str(e.as_str())?
+                out.push_str("\">")?
+                out.push_str(e.as_str())?
+                out.push_str("</a></li>")?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.saturating_add(1usize)
+    }
+    out.push_str("</ul><p><a href=\"/page/")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("\">ページに戻る</a></p>")?
+    let mut title = alloc.string.String.new(std.alloc.SYSTEM)
+    title.push_str("リンク: ")?
+    title.push_str(escaped_name.as_str())?
+    wiki.html.page_shell(title.as_str(), out.as_str())
+end wiki.html.links_view
+
+fn wiki.html.list_view(pages: &[alloc.string.String<std.alloc.System>]) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("<h1>ページ一覧</h1><ul>")?
+    let mut i = 0usize
+    let n = pages.len()
+    while i < n {
+        match pages.get(i) {
+            Some(name) => {
+                let e = wiki.html.escape(name.as_str())?
+                out.push_str("<li><a href=\"/page/")?
+                out.push_str(e.as_str())?
+                out.push_str("\">")?
+                out.push_str(e.as_str())?
+                out.push_str("</a></li>")?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.saturating_add(1usize)
+    }
+    out.push_str("</ul><p><a href=\"/new\">新規ページを作成</a></p>")?
+    wiki.html.page_shell("ページ一覧", out.as_str())
+end wiki.html.list_view
+
+fn wiki.html.page_shell(title: &str, body: &str) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>")?
+    out.push_str(title)?
+    out.push_str("</title></head><body><nav><a href=\"/\">一覧</a> | <a href=\"/new\">新規作成</a> | <a href=\"/search?q=\">検索</a></nav><hr>")?
+    out.push_str(body)?
+    out.push_str("</body></html>")?
+    Ok(out)
+end wiki.html.page_shell
+
+fn wiki.html.page_view(name: &str, content_html: &str, versions: &[u64], backlinks: &[alloc.string.String<std.alloc.System>]) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let escaped_name = wiki.html.escape(name)?
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("<h1>")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("</h1>")?
+    out.push_str("<div>")?
+    out.push_str(content_html)?
+    out.push_str("</div>")?
+    out.push_str("<hr><p><a href=\"/edit/")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("\">編集</a> | <a href=\"/history/")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("\">履歴</a> | <a href=\"/links/")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("\">リンク</a> | <a href=\"/backlinks/")?
+    out.push_str(escaped_name.as_str())?
+    out.push_str("\">被リンク</a></p>")?
+    // 履歴一覧（最新版順に表示するため逆順に）
+    out.push_str("<h2>履歴</h2><ul>")?
+    let mut i = versions.len()
+    while i > 0usize {
+        let at = i.wrapping_sub(1usize)
+        match versions.get(at) {
+            Some(v) => {
+                out.push_str("<li><a href=\"/history/")?
+                out.push_str(escaped_name.as_str())?
+                out.push_str("/")?
+                let mut vs = alloc.string.String.new(std.alloc.SYSTEM)
+                vs.push_u64(*v)?
+                out.push_str(vs.as_str())?
+                out.push_str("\">版 ")?
+                out.push_str(vs.as_str())?
+                out.push_str("</a></li>")?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = at
+    }
+    out.push_str("</ul>")?
+    // 被リンク一覧
+    out.push_str("<h2>被リンク</h2><ul>")?
+    let mut j = 0usize
+    let m = backlinks.len()
+    while j < m {
+        match backlinks.get(j) {
+            Some(b) => {
+                let be = wiki.html.escape(b.as_str())?
+                out.push_str("<li><a href=\"/page/")?
+                out.push_str(be.as_str())?
+                out.push_str("\">")?
+                out.push_str(be.as_str())?
+                out.push_str("</a></li>")?
+            }
+            None => core.mem.drop(0u8)
+        }
+        j = j.saturating_add(1usize)
+    }
+    out.push_str("</ul>")?
+    wiki.html.page_shell(name, out.as_str())
+end wiki.html.page_view
+
+fn wiki.html.search_view(query: &str, results: &[alloc.string.String<std.alloc.System>]) -> Result<alloc.string.String<std.alloc.System>, wiki.error.Error> uses [alloc] panics never pub
+    let escaped_q = wiki.html.escape(query)?
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("<h1>検索: ")?
+    out.push_str(escaped_q.as_str())?
+    out.push_str("</h1><ul>")?
+    let mut i = 0usize
+    let n = results.len()
+    while i < n {
+        match results.get(i) {
+            Some(name) => {
+                let e = wiki.html.escape(name.as_str())?
+                out.push_str("<li><a href=\"/page/")?
+                out.push_str(e.as_str())?
+                out.push_str("\">")?
+                out.push_str(e.as_str())?
+                out.push_str("</a></li>")?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.saturating_add(1usize)
+    }
+    out.push_str("</ul><p><a href=\"/\">一覧へ戻る</a></p>")?
+    wiki.html.page_shell("検索", out.as_str())
+end wiki.html.search_view
+
+test wiki.html.edit_form.test_csrf_present
+    let s = wiki.html.edit_form("Hello", "", "tok")?
+    core.check.eq(s.as_str().contains("name=\"csrf\" value=\"tok\""), true)
+    core.check.eq(s.as_str().contains("action=\"/save/Hello\""), true)
+    core.check.eq(s.as_str().contains("<textarea"), true)
+    core.check.eq(s.as_str().contains("保存"), true)
+end wiki.html.edit_form.test_csrf_present
+
+test wiki.html.edit_form.test_empty_content
+    let s = wiki.html.edit_form("Page", "", "tok")?
+    core.check.eq(s.as_str().contains("<textarea"), true)
+    core.check.eq(s.as_str().contains("/save/Page"), true)
+end wiki.html.edit_form.test_empty_content
+
+test wiki.html.edit_form.test_has_csrf_and_action
+    let s = wiki.html.edit_form("Hello", "# hi", "tok123")?
+    core.check.eq(s.as_str().contains("/save/Hello"), true)
+    core.check.eq(s.as_str().contains("name=\"csrf\" value=\"tok123\""), true)
+    core.check.eq(s.as_str().contains("# hi"), true)
+end wiki.html.edit_form.test_has_csrf_and_action
+
+test wiki.html.error_page.test_message
+    let s = wiki.html.error_page("not found")?
+    core.check.eq(s.as_str().contains("<h1>エラー</h1>"), true)
+    core.check.eq(s.as_str().contains("not found"), true)
+end wiki.html.error_page.test_message
+
+test wiki.html.escape.test_all_special
+    let e = wiki.html.escape("&<>\")'")?
+    core.check.eq(e.as_str(), "&amp;&lt;&gt;&quot;)&#39;")
+end wiki.html.escape.test_all_special
+
+test wiki.html.escape.test_ampersand
+    let e = wiki.html.escape("a & b")?
+    core.check.eq(e.as_str(), "a &amp; b")
+end wiki.html.escape.test_ampersand
+
+test wiki.html.escape.test_cases
+    let e1 = wiki.html.escape("a&b<c>d\"e'f")?
+    core.check.eq(e1.as_str(), "a&amp;b&lt;c&gt;d&quot;e&#39;f")
+    let e2 = wiki.html.escape("plain text")?
+    core.check.eq(e2.as_str(), "plain text")
+    let e3 = wiki.html.escape("")?
+    core.check.eq(e3.as_str(), "")
+end wiki.html.escape.test_cases
+
+test wiki.html.escape.test_lt_gt
+    let e = wiki.html.escape("<tag>")?
+    core.check.eq(e.as_str(), "&lt;tag&gt;")
+end wiki.html.escape.test_lt_gt
+
+test wiki.html.escape.test_quotes
+    let e = wiki.html.escape("a\"b'c")?
+    core.check.eq(e.as_str(), "a&quot;b&#39;c")
+end wiki.html.escape.test_quotes
+
+test wiki.html.history_view.test_versions
+    let mut versions = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(versions.push(5u64)?)
+    core.mem.drop(versions.push(3u64)?)
+    core.mem.drop(versions.push(1u64)?)
+    let s = wiki.html.history_view("Page", versions.as_slice())?
+    core.check.eq(s.as_str().contains("<h1>履歴: Page</h1>"), true)
+    core.check.eq(s.as_str().contains("版 1"), true)
+    core.check.eq(s.as_str().contains("版 3"), true)
+    core.check.eq(s.as_str().contains("版 5"), true)
+end wiki.html.history_view.test_versions
+
+test wiki.html.list_view.test_empty
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let s = wiki.html.list_view(v.as_slice())?
+    core.check.eq(s.as_str().contains("<h1>ページ一覧</h1>"), true)
+    core.check.eq(s.as_str().contains("<ul></ul>"), true)
+    core.check.eq(s.as_str().contains("/new"), true)
+end wiki.html.list_view.test_empty
+
+test wiki.html.list_view.test_renders_links
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(alloc.string.String.from_str(std.alloc.SYSTEM, "Alpha")?)?)
+    core.mem.drop(v.push(alloc.string.String.from_str(std.alloc.SYSTEM, "Beta")?)?)
+    let s = wiki.html.list_view(v.as_slice())?
+    core.check.eq(s.as_str().contains("/page/Alpha"), true)
+    core.check.eq(s.as_str().contains("/page/Beta"), true)
+end wiki.html.list_view.test_renders_links
+
+test wiki.html.list_view.test_three_pages
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(alloc.string.String.from_str(std.alloc.SYSTEM, "A")?)?)
+    core.mem.drop(v.push(alloc.string.String.from_str(std.alloc.SYSTEM, "B")?)?)
+    core.mem.drop(v.push(alloc.string.String.from_str(std.alloc.SYSTEM, "C")?)?)
+    let s = wiki.html.list_view(v.as_slice())?
+    core.check.eq(s.as_str().contains("/page/A"), true)
+    core.check.eq(s.as_str().contains("/page/B"), true)
+    core.check.eq(s.as_str().contains("/page/C"), true)
+end wiki.html.list_view.test_three_pages
+
+test wiki.html.page_shell.test_nav_links
+    let s = wiki.html.page_shell("T", "<p>b</p>")?
+    core.check.eq(s.as_str().contains("/new"), true)
+    core.check.eq(s.as_str().contains("検索"), true)
+    core.check.eq(s.as_str().contains("/"), true)
+end wiki.html.page_shell.test_nav_links
+
+test wiki.html.page_shell.test_wraps
+    let s = wiki.html.page_shell("T", "<p>body</p>")?
+    core.check.eq(s.as_str().starts_with("<!DOCTYPE html>"), true)
+    core.check.eq(s.as_str().contains("<title>T</title>"), true)
+    core.check.eq(s.as_str().contains("<p>body</p>"), true)
+end wiki.html.page_shell.test_wraps
+
+test wiki.html.page_view.test_no_backlinks
+    let mut versions = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(versions.push(1u64)?)
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let s = wiki.html.page_view("Hello", "<p>body</p>", versions.as_slice(), empty.as_slice())?
+    core.check.eq(s.as_str().contains("<h2>被リンク</h2>"), true)
+end wiki.html.page_view.test_no_backlinks
+
+test wiki.html.page_view.test_renders_content_and_links
+    let mut versions = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(versions.push(1u64)?)
+    core.mem.drop(versions.push(2u64)?)
+    let mut backlinks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(backlinks.push(alloc.string.String.from_str(std.alloc.SYSTEM, "Other")?)?)
+    let s = wiki.html.page_view("Hello", "<p>body</p>", versions.as_slice(), backlinks.as_slice())?
+    core.check.eq(s.as_str().contains("<h1>Hello</h1>"), true)
+    core.check.eq(s.as_str().contains("<p>body</p>"), true)
+    core.check.eq(s.as_str().contains("/page/Other"), true)
+    core.check.eq(s.as_str().contains("版 1"), true)
+    core.check.eq(s.as_str().contains("版 2"), true)
+end wiki.html.page_view.test_renders_content_and_links
+
+test wiki.html.search_view.test_empty_results
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let s = wiki.html.search_view("nothing", empty.as_slice())?
+    core.check.eq(s.as_str().contains("<h1>検索: nothing</h1>"), true)
+    core.check.eq(s.as_str().contains("<ul></ul>"), true)
+end wiki.html.search_view.test_empty_results
+
+test wiki.html.search_view.test_results
+    let mut results = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(results.push(alloc.string.String.from_str(std.alloc.SYSTEM, "Alpha")?)?)
+    core.mem.drop(results.push(alloc.string.String.from_str(std.alloc.SYSTEM, "Beta")?)?)
+    let s = wiki.html.search_view("query", results.as_slice())?
+    core.check.eq(s.as_str().contains("<h1>検索: query</h1>"), true)
+    core.check.eq(s.as_str().contains("/page/Alpha"), true)
+    core.check.eq(s.as_str().contains("/page/Beta"), true)
+end wiki.html.search_view.test_results

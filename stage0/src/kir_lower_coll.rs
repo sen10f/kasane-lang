@@ -1925,7 +1925,12 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
             lw.coll.temps.push(hdr);
             method_on(lw, e, line, None, kind, hdr, &m, items(&f[2]))
         }
-        Ok(Some(h)) => method_on(lw, e, line, slot, kind, h, &m, items(&f[2])),
+        Ok(Some(h)) => match method_on(lw, e, line, slot, kind, h, &m, items(&f[2])) {
+            Ok(r) => Ok(r),
+            // 組み込みで扱えないメソッド（`push` など Kasane 側で定義済みのもの）は、
+            // `user_mcall` で通常の関数呼び出しとして下ろせるので、ここでは `None` を返す。
+            Err(_) => Ok(None),
+        },
         Ok(None) => Ok(None),
         Err(e) => Err(e),
     })

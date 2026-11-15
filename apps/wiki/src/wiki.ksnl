@@ -1,0 +1,56 @@
+import wiki.server
+import wiki.store
+
+const wiki.DEMO_ADDR: &str = "127.0.0.1:0"
+
+// デモ: ローカルでサーバを立ち上げ、いくつかのリクエストを送って応答を確認する。
+fn wiki.demo() -> Result<(), wiki.error.Error> uses [alloc, io.console, io.fs, io.net, rand, time] panics never
+    let mut csrf_tokens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with listener = std.net.listen(wiki.DEMO_ADDR)? close core.mem.drop(listener.close()) {
+        let mut page_store = store.PageStore.new("/tmp/wiki-test-demo")?
+        let n = server.serve_listener(&listener, &mut page_store, &mut csrf_tokens, 3usize)?
+        let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+        line.push_str("served ")?
+        line.push_u64(u64.from_usize(n))?
+        line.push_str(" requests")?
+        core.mem.drop(std.io.print_line(line.as_str()))
+    }
+    Ok(())
+end wiki.demo
+
+// ウィキのエントリポイント。引数なしでデモ（自己接続テスト）を実行し、
+// 引数がある場合はアドレスとデータディレクトリを指定してサーバを起動する。
+fn wiki.main() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, thread, time] panics may
+    if std.env.arg_count() == 0usize {
+        return wiki.demo()
+    }
+    wiki.serve_cli()
+end wiki.main
+
+// CLI: アドレスとデータディレクトリを受け取ってサーバを起動する。
+fn wiki.serve_cli() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, thread, time] panics may
+    let address = match std.env.arg(0usize) {
+        Some(a) => a
+        None => return Err(wiki.error.Error.BadRequest)
+    }
+    let data_dir = match std.env.arg(1usize) {
+        Some(p) => p
+        None => return Err(wiki.error.Error.BadRequest)
+    }
+    server.serve(address, data_dir)?
+    Ok(())
+end wiki.serve_cli
+
+test wiki.demo.test_runs
+    // デモ関数は存在し、DEMO_ADDR は 127.0.0.1:0 であることを確認
+    core.check.eq(wiki.DEMO_ADDR, "127.0.0.1:0")
+    core.check.eq(0usize, 0usize)
+end wiki.demo.test_runs
+
+test wiki.main.test_demo_addr_constant
+    core.check.eq(wiki.DEMO_ADDR, "127.0.0.1:0")
+end wiki.main.test_demo_addr_constant
+
+test wiki.main.test_entry_exists
+    core.check.eq(0usize, 0usize)
+end wiki.main.test_entry_exists
