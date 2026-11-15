@@ -1,0 +1,268 @@
+// 局所の名前を束縛する。借用されるものはスロット (alloca + store) に置く。
+fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    if lower.cx.is_bor(c, name) {
+        let tt = lower.tyk.text(env, c, t)?
+        let mt = lower.cx.cat2("mutref<", tt.as_str())?
+        let mt2 = lower.cx.cat2(mt.as_str(), ">")?
+        let slot = lower.cx.def(c, mt2.as_str(), "alloca")?
+        let st = lower.opt.two_op("store ", slot, v)?
+        lower.cx.def(c, "unit", st.as_str())?
+        return lower.cx.push_local(c, name, slot + 1usize, m, t, true)
+    }
+    lower.cx.push_local(c, name, v + 1usize, m, t, false)
+end lower.opt.bind
+
+// 列挙子の構築: Some / Ok / Err (Option・Result) と、利用者の列挙型の変種 (`make.vK(..)`)。
+fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, item: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let owner = types.infer.item_owner(env, item).wrapping_sub(1usize)
+    let k = lower.opt.kind(env, owner)
+    let fq = lower.tyk.item_fqn(env, item)
+    let vname = lower.expr.last_seg(fq.as_str())
+    let nargs = resolve.ast.count(p, n.b)
+    if k == 0usize {
+        // 利用者の列挙型: 変種の番号 k と、フィールドの値を並べた make.vK。
+        let vi = lower.tyk.variant_index(env, owner, vname)?
+        let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        for j in core.iter.range(0usize, nargs) {
+            let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, j), types.ty.UNKNOWN)?
+            vs.push(a.v)?
+        }
+        let agg = lower.tyk.agg_id(c, owner)?
+        let ty = lower.cx.cat2("agg#", lower.cx.dec(agg)?.as_str())?
+        let op = lower.cx.cat2("make.v", lower.cx.dec(vi)?.as_str())?
+        let op2 = lower.cx.cat2(op.as_str(), "(")?
+        let op3 = lower.cx.cat2(op2.as_str(), lower.cx.vlist(&vs)?.as_str())?
+        let op4 = lower.cx.cat2(op3.as_str(), ")")?
+        let v = lower.cx.def(c, ty.as_str(), op4.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if nargs != 1usize {
+        lower.cx.fail(c, "列挙子の構築 (引数の個数)")?
+        return lower.expr.dummy(c, t)
+    }
+    let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), types.ty.UNKNOWN)?
+    let tt = lower.tyk.text(env, c, t)?
+    let head = if (vname == "Some" || vname == "Ok") {
+        if vname == "Some" {
+            "some "
+        } else {
+            "ok "
+        }
+    } else {
+        "err "
+    }
+    let op = lower.cx.cat2(head, lower.cx.vs(a.v)?.as_str())?
+    let v = lower.cx.def(c, tt.as_str(), op.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.opt.ctor
+
+// 参照の型 (ref / mutref) の中身と可変かどうか。参照でなければ (e, false, false)。
+fn lower.opt.deref_ty(c: &lower.cx.Cx, t: usize) -> (usize, bool, bool) uses [] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if (n.k == types.ty.K.Ref) {
+        return (n.a, true, n.m)
+    }
+    (t, false, false)
+end lower.opt.deref_ty
+
+// `fieldaddr %v, +off` の文字列。
+fn lower.opt.faddr_src(v: usize, off: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    s.push_str("fieldaddr ")?
+    s.push_str(lower.cx.vs(v)?.as_str())?
+    s.push_str(", +")?
+    s.push_str(lower.cx.dec(off)?.as_str())?
+    Ok(s)
+end lower.opt.faddr_src
+
+// 構造体 (`bt` の中身) のフィールド name を、値 v から読む。参照越しなら fieldaddr + load。
+fn lower.opt.field(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, bt: usize, name: &str, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let (inner, through, mutable) = lower.opt.deref_ty(c, bt)
+    let rs = types.ty.strip(&c.ar, inner)
+    let rn = types.ty.node(&c.ar, rs)
+    let fty = lower.tyk.text(env, c, t)?
+    let j = lower.tyk.field_index(env, rn.a, name)?
+    let lay = lower.tyk.layout(env, c, rn.a)?
+    let off = lower.tyk.at(lay.offs.as_slice(), j)
+    if through {
+        let rt = lower.opt.refty(mutable, fty.as_str())?
+        let fa_src = lower.opt.faddr_src(v, off)?
+        let fa = lower.cx.def(c, rt.as_str(), fa_src.as_str())?
+        let ld = lower.cx.cat2("load ", lower.cx.vs(fa)?.as_str())?
+        let fv = lower.cx.def(c, fty.as_str(), ld.as_str())?
+        return Ok(lower.cx.R { v: fv, t: t })
+    }
+    let fv = lower.cx.def(c, fty.as_str(), lower.expr.field_src(v, off)?.as_str())?
+    Ok(lower.cx.R { v: fv, t: t })
+end lower.opt.field
+
+// 項目が Option (1) / Result (2) / それ以外 (0) か。
+fn lower.opt.kind(env: &types.env.Env, item: usize) -> usize uses [alloc] panics may pub
+    let f = lower.tyk.item_fqn(env, item)
+    if f.as_str() == "core.option.Option" {
+        return 1usize
+    }
+    if f.as_str() == "core.result.Result" {
+        return 2usize
+    }
+    0usize
+end lower.opt.kind
+
+// 局所 k の値 (スロットなら読み出す)。t は局所の型。
+fn lower.opt.local_val(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let v = lower.cx.get_val(c, k).wrapping_sub(1usize)
+    if lower.cx.is_slot(c, k) {
+        let tt = lower.tyk.text(env, c, t)?
+        let op = lower.cx.cat2("load ", lower.cx.vs(v)?.as_str())?
+        return lower.cx.def(c, tt.as_str(), op.as_str())
+    }
+    Ok(v)
+end lower.opt.local_val
+
+// match の Option / Result: `tag` で分け、中身を `payload` で読む。Some / Ok / Err の腕は真の枝、None は偽。
+fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, sv: usize, _st: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let base = lower.cx.depth(c)
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
+    let rty = lower.tyk.text(env, c, t)?
+    let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
+    let jb = lower.cx.blk(c, &jps)?
+    let tg = lower.cx.def(c, "bool", lower.cx.cat2("tag ", lower.cx.vs(sv)?.as_str())?.as_str())?
+    let nv = resolve.ast.count(p, n.b)
+    let mut done = false
+    for j in core.iter.range(0usize, nv) {
+        if done {
+            break
+        }
+        let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
+        let pat = parse.ast.get(&p.ast, arm.a)
+        let mark = lower.cx.depth(c)
+        if pat.kind == parse.ast.Kind.PWild {
+            done = true
+            let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let nb = lower.cx.blk(c, &empty)?
+            lower.expr.br_to(c, nb)?
+            lower.cx.goto(c, nb)
+            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
+        } else if pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath {
+            let name = resolve.ast.text(src, pat.a, pat.b)
+            let last = lower.expr.last_seg(name)
+            let positive = last == "Some" || last == "Ok"
+            let mut cond = tg
+            if !positive {
+                cond = lower.cx.def(c, "bool", lower.cx.cat2("not.bool ", lower.cx.vs(tg)?.as_str())?.as_str())?
+            }
+            let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let armb = lower.cx.blk(c, &empty)?
+            let nextb = lower.cx.blk(c, &empty)?
+            let mut br = alloc.string.String.new(std.alloc.SYSTEM)
+            br.push_str("br_if ")?
+            br.push_str(lower.cx.vs(cond)?.as_str())?
+            br.push_str(", ")?
+            br.push_str(lower.cx.target(armb, &empty)?.as_str())?
+            br.push_str(", ")?
+            br.push_str(lower.cx.target(nextb, &empty)?.as_str())?
+            lower.cx.finish(c, br)?
+            lower.cx.goto(c, armb)
+            if pat.kind == parse.ast.Kind.PVariant && resolve.ast.count(p, pat.c) == 1usize {
+                let sub = resolve.ast.item(p, pat.c, 0usize)
+                let sp = parse.ast.get(&p.ast, sub)
+                if sp.kind == parse.ast.Kind.PBind {
+                    let pt = lower.expr.tyof(c, sub)
+                    let pty = lower.tyk.text(env, c, pt)?
+                    let pv = lower.cx.def(c, pty.as_str(), lower.cx.cat2("payload ", lower.cx.vs(sv)?.as_str())?.as_str())?
+                    let stk_tok = parse.cur.peek_at(p, sp.a)
+                    let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
+                    let _bv = lower.opt.bind(env, c, stk, pv, false, pt)?
+                }
+            }
+            lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
+            lower.cx.goto(c, nextb)
+        } else {
+            lower.cx.fail(c, "match の腕 (Option と Result の形は未対応)")?
+            return lower.expr.dummy(c, t)
+        }
+    }
+    if !done {
+        lower.cx.finish(c, lower.cx.cat2("unreachable", "")?)?
+    }
+    lower.cx.goto(c, jb)
+    lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
+    if rty.as_str() == "unit" {
+        let u = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u, t: t })
+    }
+    let rv = lower.tyk.at(jps.as_slice(), 0usize)
+    Ok(lower.cx.R { v: rv, t: t })
+end lower.opt.optmatch
+
+// 参照の型の文字列 (`ref<T>` / `mutref<T>`)。
+fn lower.opt.refty(mutable: bool, t: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let head = if mutable {
+        "mutref<"
+    } else {
+        "ref<"
+    }
+    let h = lower.cx.cat2(head, t)?
+    lower.cx.cat2(h.as_str(), ">")
+end lower.opt.refty
+
+// `e?`: Result なら Err のとき戻り値の Err を返し、Option なら None を返す。それ以外は値の中身。
+fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let x = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
+    let xf = types.ty.find(&c.ar, x.t)
+    let xn = types.ty.node(&c.ar, xf)
+    let k = if (xn.k == types.ty.K.Adt) {
+        lower.opt.kind(env, xn.a)
+    } else {
+        0usize
+    }
+    if k == 0usize {
+        lower.cx.fail(c, "`?` (Option と Result 以外は未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let tg = lower.cx.def(c, "bool", lower.cx.cat2("tag ", lower.cx.vs(x.v)?.as_str())?.as_str())?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let errb = lower.cx.blk(c, &empty)?
+    let okb = lower.cx.blk(c, &empty)?
+    let mut br = alloc.string.String.new(std.alloc.SYSTEM)
+    br.push_str("br_if ")?
+    br.push_str(lower.cx.vs(tg)?.as_str())?
+    br.push_str(", ")?
+    if k == 2usize {
+        br.push_str(lower.cx.target(errb, &empty)?.as_str())?
+        br.push_str(", ")?
+        br.push_str(lower.cx.target(okb, &empty)?.as_str())?
+    } else {
+        br.push_str(lower.cx.target(okb, &empty)?.as_str())?
+        br.push_str(", ")?
+        br.push_str(lower.cx.target(errb, &empty)?.as_str())?
+    }
+    lower.cx.finish(c, br)?
+    // 失敗の枝: 戻り値の型で作り直して返す。
+    lower.cx.goto(c, errb)
+    let rt = lower.tyk.text(env, c, c.s.ret_t)?
+    if k == 2usize {
+        let a1 = types.ty.arg(&c.ar, xn.b, 1usize)
+        let et = lower.tyk.text(env, c, a1)?
+        let pv = lower.cx.def(c, et.as_str(), lower.cx.cat2("payload ", lower.cx.vs(x.v)?.as_str())?.as_str())?
+        let ev = lower.cx.def(c, rt.as_str(), lower.cx.cat2("err ", lower.cx.vs(pv)?.as_str())?.as_str())?
+        lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(ev)?.as_str())?)?
+    } else {
+        let nv = lower.cx.def(c, rt.as_str(), lower.cx.cat2("const.", lower.cx.cat2(rt.as_str(), " none")?.as_str())?.as_str())?
+        lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(nv)?.as_str())?)?
+    }
+    // 成功の枝: 中身。
+    lower.cx.goto(c, okb)
+    let tt = lower.tyk.text(env, c, t)?
+    let val = lower.cx.def(c, tt.as_str(), lower.cx.cat2("payload ", lower.cx.vs(x.v)?.as_str())?.as_str())?
+    Ok(lower.cx.R { v: val, t: t })
+end lower.opt.tryx
+
+// `op %a, %b` の文字列。
+fn lower.opt.two_op(op: &str, a: usize, b: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let t = lower.expr.two(a, b)?
+    lower.cx.cat2(op, t.as_str())
+end lower.opt.two_op

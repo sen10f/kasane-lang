@@ -24,6 +24,9 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     }
     let at = parse.ast.get(&p.ast, sg.d)
     let mark = lower.cx.depth(c)
+    let mut bl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan(p, src, n.d, &mut bl, true)?
+    c.v.sl.bor = bl
     // 引数: 型は型検査の表 (Param 節)、値の番号を振って局所に入れる。
     let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let np = resolve.ast.count(p, sg.b)
@@ -35,7 +38,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
         let v = lower.cx.newval(c, kt.as_str())?
         ps.push(v)?
         let nm = resolve.ast.tok_text(p, src, prm.a)
-        lower.cx.push_local(c, nm, v + 1usize, false, pt)?
+        lower.opt.bind(env, c, nm, v, false, pt)?
     }
     let ret = if sg.c == 0usize {
         types.ty.UNIT
