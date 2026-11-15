@@ -14,7 +14,8 @@
    - 折り返し形は args_wrap で表す。メソッドチェーンの継続行は chain_cont で表す。 *)
 
 (* ---------- ファイル ---------- *)
-file          = [ module_doc ] , { import_line } , { const_def | static_def } ,
+(* MDOC: ファイル先頭の /// の塊 + 空行ちょうど1行 (モジュールの説明。3.2)。字句層がその塊を MDOC 1 トークンに置き換える (/// は文法の入力に出ない) *)
+file          = [ MDOC ] , { import_line } , { const_def | static_def } ,
                 { type_def | enum_def | trait_def } , { extern_def } ,
                 { impl_only } , { fn_group } , { test_def } ;
 (* 定義と定義の間は空行ちょうど1行、import は連続、群内はUTF-8バイト列順 (構文では強制せず ksn fmt/check が検査) *)
@@ -46,7 +47,6 @@ static_def    = lead , "static" , fqn , ":" , type , "=" , expr , [ "pub" ] , NL
 extern_def    = lead , "extern" , fqn , "(" , [ params ] , ")" , "->" , type ,
                 [ "link" , string ] , NL ;
 doc           = { "///" , text , NL } ;
-module_doc    = doc , "MDOC" ;                        (* ファイル先頭の /// の塊の直後に空行ちょうど1行 (字句層が零幅の MDOC を出す)。3.2 *)
 lead          = { comment , NL } , doc ;                          (* 定義の直前: 独立行 // コメント → /// ドキュメント (どちらも省略可)。impl_line には付けない *)
 
 field         = ident , ":" , type , [ "pub" ] ;

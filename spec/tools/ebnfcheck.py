@@ -236,7 +236,7 @@ def lex_file(text, sig=False):
         if s == '':
             if prev_comment:
                 if head_doc:
-                    out.append(Tok('kw', 'MDOC'))
+                    out = [Tok('MDOC', '')]  # ファイル先頭の /// の塊は MDOC 1 つに置き換える (3.2)
                     head_doc = False
                     prev_comment = False
                     continue
@@ -292,7 +292,7 @@ class Matcher:
         t = self.tok_at(p)
         if name in ZERO_WIDTH:
             return {p}
-        if name in ('NL', 'LF', 'BLANK'):
+        if name in ('NL', 'LF', 'BLANK', 'MDOC'):
             return {p + 1} if t and t.kind == name else set()
         if t is None:
             return set()
