@@ -50,11 +50,14 @@ step('bench/test_harness.py', r.returncode == 0, (r.stdout + r.stderr)[-800:])
 # 2. Rust 版の cargo test (ビルドは 0 で先に済ませる)
 r = subprocess.run(['cargo', 'test', '--release'], cwd=os.path.join(ROOT, 'stage0'), capture_output=True, text=True,
                    encoding='utf-8', errors='replace')
-step('stage0: cargo test', r.returncode == 0, (r.stdout + r.stderr)[-1500:])
+# 落ちたときは、失敗したテストの名前と panic の行を先に出す (末尾は警告で埋まることがある)。
+_ct = r.stdout + r.stderr
+_fails = '\n'.join(l for l in _ct.splitlines() if ' FAILED' in l or 'panicked at' in l or l.startswith('error: test failed'))[:3000]
+step('stage0: cargo test', r.returncode == 0, (_fails + '\n---\n' + _ct[-1500:]) if _fails else _ct[-1500:])
 
 HR = """fn hr.main() -> Result<(), std.io.Error> uses [io.console, thread, time] panics may
     let mut i = 0u8
-    while i < 25u8 {
+    while i < 80u8 {
         let r = hr.msg()
         core.mem.drop(r)
         std.thread.sleep(100u64)

@@ -803,7 +803,10 @@ impl Grammar {
                 best = best.max(mx);
             }
         }
-        let t = &toks[best.min(toks.len().saturating_sub(1))];
+        // 空のトークン列 (中身の無いファイルなど) は、先頭の位置で不一致を報告する。
+        let Some(t) = toks.get(best.min(toks.len().saturating_sub(1))) else {
+            return (false, "does not match the canonical grammar near end of file".to_string(), 1);
+        };
         let shown = if t.text.is_empty() { t.kind.clone() } else { t.text.clone() };
         (false, format!("does not match the canonical grammar near {}", py_repr(&shown)), 1)
     }
