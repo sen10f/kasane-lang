@@ -156,7 +156,7 @@ fn elide_fn_effects(d: &mut Def) -> Result<(), String> {
     }
     Ok(())
 }
-fn conv_params(v: &V) -> Vec<(String, V)> {
+pub(crate) fn conv_params(v: &V) -> Vec<(String, V)> {
     items(v).iter().map(|p| (text(&items(p)[0]), items(p)[1].clone())).collect()
 }
 

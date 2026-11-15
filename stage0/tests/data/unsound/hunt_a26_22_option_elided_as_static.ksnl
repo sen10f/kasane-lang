@@ -1,0 +1,8 @@
+// expect: E3010
+fn t.bad(x: &u32) -> Option<&'static u32> uses [] panics never
+    Some(x)
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

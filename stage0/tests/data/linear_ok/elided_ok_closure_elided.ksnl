@@ -1,0 +1,8 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 1u32
+    let f = fn(x: &u32) -> &u32 capture [] {
+        x
+    }
+    core.mem.drop(*f(&a))
+    Ok(())
+end t.main

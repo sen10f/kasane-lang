@@ -1,0 +1,12 @@
+// expect: E3010
+type t.S
+    v: u32
+end t.S
+
+fn t.S.get['b](self: &t.S, _y: &'b u32) -> &'b u32 uses [] panics never
+    &self.v
+end t.S.get
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -1,0 +1,12 @@
+// expect: E3010
+type t.H['a]
+    r: &'a u32
+end t.H
+
+fn t.H.get['a](self: &t.H<'a>, x: &u32) -> &'a u32 uses [] panics never
+    x
+end t.H.get
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

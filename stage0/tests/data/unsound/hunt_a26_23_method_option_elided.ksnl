@@ -1,0 +1,12 @@
+// expect: E3010
+type t.H['a]
+    r: &'a u32
+end t.H
+
+fn t.H.opt['a](self: &t.H<'a>, x: &u32) -> Option<&'a u32> uses [] panics never
+    Some(x)
+end t.H.opt
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

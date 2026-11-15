@@ -1,0 +1,14 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 1u32
+    let r = {
+        let b = 2u32
+        t.pick(&b, &a)
+    }
+    core.mem.drop(*r)
+    Ok(())
+end t.main
+
+// expect: E3010
+fn t.pick['b](x: &u32, _y: &'b u32) -> &'b u32 uses [] panics never
+    x
+end t.pick

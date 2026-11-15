@@ -897,11 +897,15 @@ impl Parser {
     pub(crate) fn closure(&mut self) -> R<V> {
         let ln = self.cur().pos();
         self.expect_kw("fn")?;
+        let hdr_start = self.i;
         self.expect_op("(")?;
         let ps = self.params()?;
         self.expect_op(")")?;
         self.expect_op("->")?;
         let ret = self.ty()?;
+        // ヘッダの字面 (`( x : & u32 ) -> & 'static u32`)。型の `V` はライフタイムを持たないので、
+        // 借用検査が省略の有無と戻り値の領域を読むためにここに残す (5 番目の要素)。
+        let header = self.t[hdr_start..self.i].iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" ");
         self.expect_kw("capture")?;
         self.expect_op("[")?;
         let mut caps = Vec::new();
@@ -923,7 +927,7 @@ impl Parser {
         }
         self.expect_op("]")?;
         let body = self.block()?;
-        Ok(ndl(ln, "Closure", vec![ps, ret, V::L(caps), body]))
+        Ok(ndl(ln, "Closure", vec![ps, ret, V::L(caps), body, V::S(header)]))
     }
 
     /// `with [mut] 名前 = 初期化式 close 後始末式 { 本体 }` (4.4)。

@@ -1,0 +1,13 @@
+// expect: E3010
+type t.Pair['a, 'b]
+    f: &'a u32
+    s: &'b u32
+end t.Pair
+
+fn t.bad['a, 'b](x: &u32, y: &'b u32) -> t.Pair<'a, 'b> uses [] panics never
+    t.Pair { f: x, s: y }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

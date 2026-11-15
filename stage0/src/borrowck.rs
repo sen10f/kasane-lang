@@ -1997,7 +1997,8 @@ impl<'a> Low<'a> {
                     }
                     let Some((root, path)) = self.place_of(&f[0]) else { continue };
                     let Some(&p) = param_of.get(root.as_str()) else { continue };
-                    let element_lt = if path.is_empty() {
+                    // `*p = v` は引数そのものの指す先への書き込み (欄ではない)。その指す先の領域は `p` の型の領域。
+                    let element_lt = if path.is_empty() || path == ["*"] {
                         lt[p].clone()
                     } else {
                         self.field_lifetime(d, p, &path[0])
@@ -2064,6 +2065,15 @@ impl<'a> Low<'a> {
                 }
                 None
             }
+            // `Some(x)` / `Ok(x)` / `Err(x)` に包んだ参照も、包まれた値の出どころ (戻り値の `ret_slots` と同じ形)。
+            "Call" => {
+                let f = nf(e);
+                let args = items(&f[1]);
+                let wrap = nname(&f[0]) == "Path" && matches!(strs(&nf(&f[0])[0]).as_slice(), [s] if matches!(s.as_str(), "Some" | "Ok" | "Err"));
+                if wrap && args.len() == 1 { self.store_source(&args[0], param_of, is_ref, inits) } else { None }
+            }
+            // 構造体リテラルの欄に入る参照 (`t.H { r: x }`)。
+            "StructLit" => items(&nf(e)[1]).iter().filter_map(|f| items(f).get(1)).find_map(|x| self.store_source(x, param_of, is_ref, inits)),
             _ => None,
         }
     }
@@ -2071,8 +2081,7 @@ impl<'a> Low<'a> {
     /// 戻り値が `&'L T` と宣言された関数の本体が、別の名前の領域 `'M` を持つ参照引数をそのまま返す
     /// (`'M: 'L` の境界もない) と、宣言より短い (または無関係な) 借用が戻り値に流れる。`'L` が `'static` なら、
     /// `'static` でない名前付きの領域の引数を返すのも同じ。読める形 (引数そのものが末尾式・`return` の値) だけを見る。
-    fn check_return_lifetime(&self, di: usize, body: &V) -> Vec<(usize, String)> {
-        let d = &self.p.defs[di];
+    fn check_return_lifetime(&self, d: &Def, body: &V) -> Vec<(usize, String)> {
         let Some(head) = d.header.split(" uses ").next() else { return vec![] };
         let Some(mut i) = head.find(|c| c == '(' || c == '[') else { return vec![] };
         let gen_text = if head.as_bytes()[i] == b'[' {
@@ -2167,7 +2176,20 @@ impl<'a> Low<'a> {
                 continue;
             }
             let Some(q) = d.params.iter().position(|p| p.0 == segs[0]) else { continue };
-            let Some(have) = ptexts[q].split_once(':').and_then(|x| ref_lt(x.1)) else { continue };
+            let Some(have) = ptexts[q].split_once(':').and_then(|x| ref_lt(x.1)) else {
+                // 省略した入力の参照をそのまま名前付きの戻り値の領域として返す (`x: &u32` を `&'b u32` で返す) は、
+                // 省略された領域が `'b` に収まらない。
+                if is_elided_ref(&ptexts[q]) {
+                    out.push((
+                        nlineno(v),
+                        format!(
+                            "{}: returns argument `{}` (`{}`), whose lifetime is elided (a new region per call), but the header declares the return type `&'{} ..`",
+                            d.name, d.params[q].0, ptexts[q], want
+                        ),
+                    ));
+                }
+                continue;
+            };
             if have == "static" || have == want {
                 continue;
             }
@@ -2184,6 +2206,28 @@ impl<'a> Low<'a> {
             ));
         }
         out
+    }
+
+    /// 構造体パラメータ `p` の欄 `fname` が宣言の上で持つ名前付きの領域 (`'static` を除く)。
+    /// 型の抽象木には領域が残らないので、宣言の `field_lifetimes` を見る。空なら、その欄は引数の領域を運ばない。
+    fn field_named_lifetimes(&self, d: &Def, p: usize, fname: &str) -> BTreeSet<String> {
+        let mut ty = &d.params[p].1;
+        while tag(ty) == "ref" {
+            ty = tel(ty, 2);
+        }
+        let V::L(parts) = ty else { return BTreeSet::new() };
+        if parts.is_empty() || st(&parts[0]) != "named" || parts.len() < 2 {
+            return BTreeSet::new();
+        }
+        let segs: Vec<String> = st(&parts[1]).split('.').map(|s| s.to_string()).collect();
+        let Some(r) = self.p.resolve(&segs, &self.file) else { return BTreeSet::new() };
+        let Target::Type(tdi) = r.target else { return BTreeSet::new() };
+        self.p.defs[tdi]
+            .field_lifetimes
+            .iter()
+            .filter(|(f, _)| f == fname)
+            .flat_map(|(_, lts)| lts.iter().filter(|l| l.as_str() != "static").cloned())
+            .collect()
     }
 
     /// 構造体パラメータ `p` の欄 `fname` の型に現れる名前付きライフタイム集合。
@@ -2266,6 +2310,22 @@ impl<'a> Low<'a> {
         }
     }
 
+    /// 関数 `d` の `q` 番目の引数が、省略したライフタイムの参照 (`x: &u32`) か。ヘッダが読めなければ false。
+    fn elided_param(d: &Def, q: usize) -> bool {
+        let Some(head) = d.header.split(" uses ").next() else { return false };
+        let Some(mut i) = head.find(|c| c == '(' || c == '[') else { return false };
+        if head.as_bytes()[i] == b'[' {
+            let Some(j) = match_close(head, i) else { return false };
+            i = j + 1;
+        }
+        if head.as_bytes().get(i) != Some(&b'(') {
+            return false;
+        }
+        let Some(close) = match_close(head, i) else { return false };
+        let ptexts = split_top(&head[i + 1..close]);
+        ptexts.len() == d.params.len() && is_elided_ref(&ptexts[q])
+    }
+
     /// 式 `e` が運ぶ借用の出どころ。`inits` は 1 回だけ束縛された `let` の初期化式 (変数をたどる)。
     fn origins(&self, e: &V, d: &Def, inits: &HashMap<String, &V>, depth: usize, out: &mut Vec<Origin>) {
         if depth > 8 {
@@ -2275,6 +2335,11 @@ impl<'a> Low<'a> {
         Self::value_leaves(e, &mut leaves);
         for leaf in leaves {
             for s in self.borrow_expr_sources(leaf) {
+                // 欄の読み戻し `p.f` (`Stored`) の先頭の欄名。省略した参照の引数では、欄の領域だけが引数の借用に当たる。
+                let read_field = match &s {
+                    Src::Stored { path, .. } => path.first().cloned(),
+                    _ => None,
+                };
                 match s {
                     Src::Place { root, path, .. } => {
                         if let Some(q) = d.params.iter().position(|p| p.0 == root) {
@@ -2292,7 +2357,15 @@ impl<'a> Low<'a> {
                     }
                     Src::Alias(v) | Src::Stored { root: v, .. } => {
                         if let Some(q) = d.params.iter().position(|p| p.0 == v) {
-                            out.push(Origin::Param(q));
+                            // 省略した参照の引数の欄を読み戻した値は、欄が名前付き (`'static` でない) の領域を持つときだけ
+                            // その引数の領域から来る (`self.name: &'static str` の複写は引数の借用ではない)。
+                            let carries = match &read_field {
+                                Some(f) if f != "*" && Self::elided_param(d, q) => !self.field_named_lifetimes(d, q, f).is_empty(),
+                                _ => true,
+                            };
+                            if carries {
+                                out.push(Origin::Param(q));
+                            }
                         } else if let Some(init) = inits.get(&v) {
                             self.origins(init, d, inits, depth + 1, out);
                         }
@@ -2315,10 +2388,12 @@ impl<'a> Low<'a> {
     /// タプルは型の成分ごとに、構造体リテラルは欄の宣言の領域を戻り値の型引数で置き換えた集合ごとに、
     /// `Some` / `Ok` / `Err` は包まれる型の位置へ送る。それ以外の葉は戻り値の型の全領域を期待とする。
     /// 形が型と合わないとき (型の名前が違う・成分の数が違う) は期待を空にする (fail-closed)。
-    fn ret_slots<'v>(&self, e: &'v V, ty: &str, out: &mut Vec<(&'v V, BTreeSet<String>)>) {
+    fn ret_slots<'v>(&self, e: &'v V, ty: &str, out: &mut Vec<(&'v V, BTreeSet<String>, bool)>) {
         // 戻り値の型の後ろの修飾 (`-> core.fmt.Formatter<'a> const`) は型ではない。
         let ty = ty.trim();
         let ty = ty.strip_suffix(" const").unwrap_or(ty).trim_end();
+        // 型の文面が領域を明示しているか (`'a` / `'static`)。明示がなければ、出力の領域は省略規則 (4.3) で決まる。
+        let explicit = ty.contains('\'');
         // 型の引数 `T<a, b>` を (名前, 引数)。
         let generic = |t: &str| -> Option<(String, Vec<String>)> {
             let i = t.find('<')?;
@@ -2335,17 +2410,17 @@ impl<'a> Low<'a> {
                             self.ret_slots(x, c, out);
                         }
                     }
-                    _ => out.extend(elems.iter().map(|x| (x, BTreeSet::new()))),
+                    _ => out.extend(elems.iter().map(|x| (x, BTreeSet::new(), explicit))),
                 }
             }
             "StructLit" => {
                 let Some(tdi) = self.type_of_name(&st(&nf(e)[0])) else {
-                    out.extend(items(&nf(e)[1]).iter().filter_map(|f| items(f).get(1)).map(|x| (x, BTreeSet::new())));
+                    out.extend(items(&nf(e)[1]).iter().filter_map(|f| items(f).get(1)).map(|x| (x, BTreeSet::new(), explicit)));
                     return;
                 };
                 let (rname, rargs) = generic(ty).unwrap_or((ty.to_string(), vec![]));
                 if self.type_of_name(&rname) != Some(tdi) {
-                    out.extend(items(&nf(e)[1]).iter().filter_map(|f| items(f).get(1)).map(|x| (x, BTreeSet::new())));
+                    out.extend(items(&nf(e)[1]).iter().filter_map(|f| items(f).get(1)).map(|x| (x, BTreeSet::new(), explicit)));
                     return;
                 }
                 // 型の仮引数 (宣言の順) と戻り値の型引数を並べて、ライフタイムの置き換えを作る。
@@ -2365,11 +2440,11 @@ impl<'a> Low<'a> {
                     let flts = self.p.defs[tdi].field_lifetimes.iter().find(|f| f.0 == fname).map(|f| f.1.clone()).unwrap_or_default();
                     // 欄に名前付きの領域がなければ (型引数で決まる欄) 戻り値の全領域を期待とする。
                     let expected: BTreeSet<String> = if flts.is_empty() {
-                        lifetimes(ty)
+                        lifetimes_with_static(ty)
                     } else {
                         flts.iter().map(|l| subst.get(l).cloned().unwrap_or_else(|| l.clone())).collect()
                     };
-                    out.push((&it[1], expected));
+                    out.push((&it[1], expected, explicit));
                 }
             }
             "Call" => {
@@ -2389,10 +2464,10 @@ impl<'a> Low<'a> {
                 });
                 match inner {
                     Some(t) => self.ret_slots(&args[0], &t, out),
-                    None => out.push((e, lifetimes(ty))),
+                    None => out.push((e, lifetimes_with_static(ty), explicit)),
                 }
             }
-            _ => out.push((e, lifetimes(ty))),
+            _ => out.push((e, lifetimes_with_static(ty), explicit)),
         }
     }
 
@@ -2401,8 +2476,7 @@ impl<'a> Low<'a> {
     /// タプル・構造体・`Some(..)` に包んだ形も同じ関数 (`origins`) で求める。
     /// 組・構造体・`Some` / `Ok` / `Err` は `ret_slots` で位置ごとに照らす (`(y, x)` を `(&'a, &'b)` で返す形を通さない)。
     /// 返り値は (診断コード, 行, 文面)。
-    fn check_return_flow(&self, di: usize, body: &V) -> Vec<(&'static str, usize, String)> {
-        let d = &self.p.defs[di];
+    fn check_return_flow(&self, d: &Def, body: &V) -> Vec<(&'static str, usize, String)> {
         let Some(head) = d.header.split(" uses ").next() else { return vec![] };
         let Some(mut i) = head.find(|c| c == '(' || c == '[') else { return vec![] };
         let gen_text = if head.as_bytes()[i] == b'[' {
@@ -2465,13 +2539,13 @@ impl<'a> Low<'a> {
             }
         }
         // 葉ごとに、その葉が運んでよい領域 (戻り値の型の位置) を付ける。
-        let mut slots: Vec<(&V, BTreeSet<String>)> = vec![];
+        let mut slots: Vec<(&V, BTreeSet<String>, bool)> = vec![];
         for v in vals {
             self.ret_slots(v, ret, &mut slots);
         }
         let mut out = vec![];
         let mut seen: BTreeSet<(usize, String)> = BTreeSet::new();
-        for (v, expected) in slots {
+        for (v, expected, explicit) in slots {
             // `&'L T` を返す形で引数そのものを返すのは check_return_lifetime が見る。
             if ret.trim().starts_with('&') && nname(v) == "Path" && strs(&nf(v)[0]).len() == 1 && d.params.iter().any(|p| p.0 == strs(&nf(v)[0])[0]) {
                 continue;
@@ -2491,7 +2565,28 @@ impl<'a> Low<'a> {
                     }
                     Origin::Param(q) => {
                         let have = lifetimes(&ptexts[q]);
-                        if have.is_empty() || ptexts[q].contains("'static") || have.intersection(&expected).next().is_some() {
+                        if ptexts[q].contains("'static") {
+                            continue;
+                        }
+                        // 省略した入力の参照 (`x: &u32`) は、名前付きの出力の領域 (`'b`・`'static`) に収まらない。
+                        // 省略した出力 (`-> &u32`) へ流れるのは省略規則 (4.3) の正規形なので通す。
+                        if have.is_empty() {
+                            if is_elided_ref(&ptexts[q]) && explicit && !expected.is_empty() && seen.insert((nlineno(v), d.params[q].0.clone())) {
+                                out.push((
+                                    "E3010",
+                                    nlineno(v),
+                                    format!(
+                                        "{}: the returned value carries a borrow from argument `{}` (`{}`), whose lifetime is elided (a new region per call); the return type `{}` names a lifetime it does not outlive",
+                                        d.name,
+                                        d.params[q].0,
+                                        ptexts[q],
+                                        ret.trim(),
+                                    ),
+                                ));
+                            }
+                            continue;
+                        }
+                        if have.intersection(&expected).next().is_some() {
                             continue;
                         }
                         if have.iter().any(|h| gen_text.contains(&format!("'{}:", h)) || gen_text.contains(&format!("'{} :", h))) {
@@ -2514,6 +2609,47 @@ impl<'a> Low<'a> {
                     }
                 }
             }
+        }
+        out
+    }
+}
+
+impl<'a> Low<'a> {
+    /// 関数 `d` の本体にあるクロージャ式 (`fn(x: &u32) -> &'static u32 capture [] { .. }`) の戻り値を、
+    /// 関数と同じ省略・領域の規則で検査する (E3020 / E3010)。クロージャは字面のヘッダを 5 番目の要素に持つ
+    /// (`parser` の `closure`)。その字面から仮の定義を作り、`check_return_lifetime` / `check_return_flow` に通す。
+    fn check_closure_returns(&self, d: &Def, body: &V) -> Vec<(&'static str, usize, String)> {
+        let mut all = vec![];
+        walk(body, &mut all);
+        let mut out = vec![];
+        for cl in all {
+            if nname(cl) != "Closure" || nf(cl).len() < 5 {
+                continue;
+            }
+            let f = nf(cl);
+            let cd = Def {
+                name: format!("{}.<closure>", d.name),
+                file: d.file.clone(),
+                header: st(&f[4]),
+                params: crate::program::conv_params(&f[0]),
+                ret: f[1].clone(),
+                body: Some(f[3].clone()),
+                ..Def::default()
+            };
+            // 戻り値の参照は、引数の参照がちょうど 1 つのときだけ省略できる (関数の E3020 と同じ)。
+            let refs = cd.params.iter().filter(|p| p.1.dump().contains("ref")).count();
+            let ret_txt = cd.header.split("->").nth(1).unwrap_or("");
+            if cd.ret.dump().contains("ref") && !ret_txt.contains('\'') && refs != 1 {
+                out.push((
+                    "E3020",
+                    nlineno(cl),
+                    format!("{}: lifetime of the returned reference cannot be elided; declare lifetimes", cd.name),
+                ));
+            }
+            for (line, msg) in self.check_return_lifetime(&cd, &f[3]) {
+                out.push(("E3010", line, msg));
+            }
+            out.extend(self.check_return_flow(&cd, &f[3]));
         }
         out
     }
@@ -2638,17 +2774,21 @@ impl<'a> Checker<'a> {
             self.tdiag("E3010", msg, line);
         }
         // 戻り値の参照が、ヘッダの宣言と違う領域の引数から来る (修正プラン A1)。
-        for (line, msg) in low.check_return_lifetime(di, body) {
+        for (line, msg) in low.check_return_lifetime(d, body) {
             self.tdiag("E3010", msg, line);
         }
         // 戻り値へ流れる借用の出どころ (局所・ヘッダと違う領域の引数) を、式の形によらず一般に求める。
-        for (code, line, msg) in low.check_return_flow(di, body) {
+        for (code, line, msg) in low.check_return_flow(d, body) {
             let ln = crate::parser::unpack_pos(if line != 0 { line } else { d.line }).0;
             let dup = self.diags.iter().any(|x| x.code == code && x.fqn == d.name && x.line == ln)
                 || (code == "E3010" && self.diags.iter().any(|x| x.code == "E3010" && x.fqn == d.name && x.line == ln && x.msg.contains("returns argument")));
             if !dup {
                 self.tdiag(code, msg, line);
             }
+        }
+        // クロージャ式の戻り値も、関数と同じ省略・領域の規則で見る (E3020 / E3010)。
+        for (code, line, msg) in low.check_closure_returns(d, body) {
+            self.tdiag(code, msg, line);
         }
         let entry = low.new_node();
         let exit = low.new_node();
@@ -3107,6 +3247,22 @@ fn split_top(s: &str) -> Vec<String> {
 }
 
 /// 文面に現れる名前付きライフタイム (`'static` を除く)。
+/// 引数の型 (`x: &u32`・`self: &Self`) が、省略したライフタイムの参照か (名前のある領域を持たない参照)。
+/// 省略した入力の領域は、呼び出しごとに別の新しい領域であり (仕様 4.3)、どの名前付きの出力にも収まらない。
+fn is_elided_ref(ptext: &str) -> bool {
+    let ty = ptext.split_once(':').map_or(ptext, |x| x.1).trim();
+    ty.starts_with('&') && !ty.contains('\'')
+}
+
+/// `lifetimes` と同じ (名前付きの領域)。ただし `'static` も含める。戻り値の型が `'static` を名指すかを見るため。
+fn lifetimes_with_static(s: &str) -> BTreeSet<String> {
+    let mut out = lifetimes(s);
+    if s.contains("'static") {
+        out.insert("static".to_string());
+    }
+    out
+}
+
 fn lifetimes(s: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let cs: Vec<char> = s.chars().collect();
