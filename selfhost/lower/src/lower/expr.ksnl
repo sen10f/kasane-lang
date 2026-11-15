@@ -166,6 +166,18 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         Some(x) => lower.cx.own(x.fqn.as_str())?
         None => alloc.string.String.new(std.alloc.SYSTEM)
     }
+    // `core.mem.drop(x)`: 組み込み (本体のない宣言)。引数を評価し、単位の値を返す。
+    if fqn.as_str() == "core.mem.drop" {
+        let mut dv = 0usize
+        if resolve.ast.count(p, n.b) == 1usize {
+            let a0node = resolve.ast.item(p, n.b, 0usize)
+            let a0 = lower.expr.expr(env, c, p, src, a0node, types.ty.UNKNOWN)?
+            dv = a0.v
+        }
+        core.mem.drop(dv)
+        let u = lower.expr.unit(c)?
+        return Ok(lower.cx.R { v: u, t: t })
+    }
     lower.expr.enqueue(c, fqn.as_str())?
     let (params, ret) = types.infer.sig_of(env, &mut c.ar, &mut c.tc, item)?
     let mut args = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -630,7 +642,8 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
             lower.cx.goto(c, nextb)
         } else {
-            lower.cx.fail(c, lower.cx.cat2("match の腕 (未対応の形): ", parse.ast.kind_name(pat.kind))?.as_str())?
+            let kn = parse.ast.kind_name(pat.kind)
+            lower.cx.fail(c, lower.cx.cat2("match の腕 (未対応の形): ", kn)?.as_str())?
             return lower.expr.dummy(c, t)
         }
     }
@@ -866,11 +879,21 @@ fn lower.expr.structlit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
     }
     let decl = lower.tyk.field_names(env, item)?
     let mut ordered = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    for dn in decl.as_slice().iter() {
+    let mut di = 0usize
+    while di < decl.len() {
+        let dn = match decl.as_slice().get(di) {
+            Some(x) => lower.cx.own(x.as_str())?
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        di = di + 1usize
         let mut found = 0usize
         let mut i = 0usize
-        for nm in names.as_slice().iter() {
-            if nm.as_str() == dn.as_str() {
+        while i < names.len() {
+            let same = match names.as_slice().get(i) {
+                Some(x) => x.as_str() == dn.as_str()
+                None => false
+            }
+            if same {
                 found = i + 1usize
             }
             i = i + 1usize

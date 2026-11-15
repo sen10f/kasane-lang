@@ -130,8 +130,12 @@ end lower.tyk.at
 fn lower.tyk.field_index(env: &types.env.Env, item: usize, name: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
     let names = lower.tyk.field_names(env, item)?
     let mut k = 0usize
-    for nm in names.as_slice().iter() {
-        if nm.as_str() == name {
+    while k < names.len() {
+        let same = match names.as_slice().get(k) {
+            Some(nm) => nm.as_str() == name
+            None => false
+        }
+        if same {
             return Ok(k)
         }
         k = k + 1usize

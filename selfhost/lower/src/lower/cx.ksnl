@@ -242,10 +242,16 @@ fn lower.cx.mlist_in(c: &lower.cx.Cx, base: usize, names: &alloc.vec.Vec<alloc.s
             None => alloc.string.String.new(std.alloc.SYSTEM)
         }
         let mut hit = false
-        for w in names.as_slice().iter() {
-            if w.as_str() == nm.as_str() {
+        let mut wi = 0usize
+        while wi < names.len() {
+            let same = match names.as_slice().get(wi) {
+                Some(w) => w.as_str() == nm.as_str()
+                None => false
+            }
+            if same {
                 hit = true
             }
+            wi = wi + 1usize
         }
         if hit {
             out.push(k)?

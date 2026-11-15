@@ -73,8 +73,11 @@ def norm(lines):
             d = maps[prefix]
             if k not in d:
                 d[k] = len(d)
-            return prefix + "#" + str(d[k]) if prefix == "agg#" else (
-                "%v" + str(d[k]) if prefix == "%" else "b" + str(d[k]))
+            if prefix == "agg#":
+                return "agg#" + str(d[k])
+            if prefix == "%":
+                return "%v" + str(d[k])
+            return "b" + str(d[k])
         return f
 
     # 出た順に番号を振る (全体の走査の順)。

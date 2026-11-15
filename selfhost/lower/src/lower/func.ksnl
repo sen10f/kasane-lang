@@ -50,8 +50,13 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     lower.cx.goto(c, 0usize)
     let r = lower.expr.expr(env, c, p, src, n.d, ret)?
     if !c.s.term {
-        if rt == "unit" {
-            let u = lower.expr.unit(c)?
+        if rt.as_str() == "unit" {
+            // 本体の値が単位ならそれを返す (Rust 版と同じく、余分な単位の定数を作らない)。
+            let bt = lower.tyk.text(env, c, r.t)?
+            let mut u = r.v
+            if bt.as_str() != "unit" {
+                u = lower.expr.unit(c)?
+            }
             lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(u)?.as_str())?)?
         } else {
             lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(r.v)?.as_str())?)?
