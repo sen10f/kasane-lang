@@ -1,0 +1,15 @@
+// expect: E1101
+enum t.E
+    A
+    B(i32)
+end t.E
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    let m = match t.E.A {
+        t.E.Nope(v) => v
+        t.E.A => 0i32
+        t.E.B(q) => q
+    }
+    core.mem.drop(m)
+    Ok(())
+end t.main
