@@ -147,6 +147,12 @@ fn lower.cx.def(c: &mut lower.cx.Cx, ty: &str, op: &str) -> Result<usize, resolv
     Ok(v)
 end lower.cx.def
 
+// `pre %v` という命令を、型 ty で作る (値を 1 つ取る命令の短い形)。
+fn lower.cx.def1(c: &mut lower.cx.Cx, ty: &str, pre: &str, v: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let s = lower.cx.cat2(pre, lower.cx.vs(v)?.as_str())?
+    lower.cx.def(c, ty, s.as_str())
+end lower.cx.def1
+
 // 局所の並びの長さ (ブロックの印に使う)。
 fn lower.cx.depth(c: &lower.cx.Cx) -> usize uses [] panics may pub
     c.v.vals.len()

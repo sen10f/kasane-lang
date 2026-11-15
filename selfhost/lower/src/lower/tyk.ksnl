@@ -1,5 +1,8 @@
 // 型の下ろし: types の型 id を KIR の型の文字列にし、集成体 (構造体・列挙型) の番号とレイアウトを決める。
 // 集成体は見つけた順に agg#N を振る (ksn kir の番号とは一致しないことがある。比べるときは名前で正規化する)。
+// 文字列の参照 (`&str`) の集成体 `fat` = {ptr, len}。項目の代わりに番号 FAT を使う。
+const lower.tyk.FAT: usize = 4294967295usize pub
+
 // 集成体のレイアウト: 大きさ・そろえ・フィールドの末尾からのバイト位置。
 // 列挙型は `offs` を変種の順に並べ (変種 j の i 番目は vlens の和 + i)、`vlens` に変種ごとの個数を入れる。
 type lower.tyk.Lay pub
@@ -23,6 +26,13 @@ fn lower.tyk.agg_id(c: &mut lower.cx.Cx, item: usize) -> Result<usize, resolve.F
 end lower.tyk.agg_id
 
 fn lower.tyk.agg_line(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    if item == lower.tyk.FAT {
+        let mut fs = alloc.string.String.new(std.alloc.SYSTEM)
+        fs.push_str("agg#")?
+        fs.push_str(lower.cx.dec(id)?.as_str())?
+        fs.push_str(" struct fat size=16 align=8 {ptr:ptr@0 len:usize@8}\n")?
+        return Ok(fs)
+    }
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
     let lay = lower.tyk.layout(env, c, item)?
     let kind = types.infer.item_kind(env, item)
@@ -237,6 +247,11 @@ end lower.tyk.kind_word
 
 // 項目 (構造体・列挙型) のレイアウト。
 fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Result<lower.tyk.Lay, resolve.Failure> uses [alloc] panics may pub
+    if item == lower.tyk.FAT {
+        let fo = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let fl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        return Ok(lower.tyk.Lay { size: 16usize, align: 8usize, offs: fo, vlens: fl })
+    }
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
     let mut offs = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -322,6 +337,9 @@ fn lower.tyk.size_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Resu
     if n.k == types.ty.K.Char {
         return Ok((4usize, 4usize))
     }
+    if n.k == types.ty.K.Str {
+        return Ok((16usize, 8usize))
+    }
     if n.k == types.ty.K.Unit {
         return Ok((0usize, 1usize))
     }
@@ -356,6 +374,12 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
     }
     if n.k == types.ty.K.Bool {
         s.push_str("bool")?
+        return Ok(s)
+    }
+    if n.k == types.ty.K.Str {
+        let id = lower.tyk.agg_id(c, lower.tyk.FAT)?
+        s.push_str("agg#")?
+        s.push_str(lower.cx.dec(id)?.as_str())?
         return Ok(s)
     }
     if n.k == types.ty.K.Unit {

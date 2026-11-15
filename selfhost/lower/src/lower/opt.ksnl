@@ -1,6 +1,8 @@
 // 局所の名前を束縛する。借用されるものはスロット (alloca + store) に置く。
 fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
-    if lower.cx.is_bor(c, name) {
+    let tf = types.ty.find(&c.ar, t)
+    let is_ref = types.ty.node(&c.ar, tf).k == types.ty.K.Ref
+    if lower.cx.is_bor(c, name) && !is_ref {
         let tt = lower.tyk.text(env, c, t)?
         let mt = lower.cx.cat2("mutref<", tt.as_str())?
         let mt2 = lower.cx.cat2(mt.as_str(), ">")?
@@ -132,6 +134,21 @@ fn lower.opt.field(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, bt: usize
     Ok(lower.cx.R { v: fv, t: t })
 end lower.opt.field
 
+// 構造体のフィールドの番地 (`fieldaddr`)。bv は参照 (ref / mutref) か、スロット (mutref<構造体>)。
+// 結果の型は `mutref<F>` (F は fty の型)。
+fn lower.opt.field_addr(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, bt: usize, name: &str, fty: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let (inner, _through, _m) = lower.opt.deref_ty(c, bt)
+    let rs = types.ty.strip(&c.ar, inner)
+    let rn = types.ty.node(&c.ar, rs)
+    let j = lower.tyk.field_index(env, rn.a, name)?
+    let lay = lower.tyk.layout(env, c, rn.a)?
+    let off = lower.tyk.at(lay.offs.as_slice(), j)
+    let ft = lower.tyk.text(env, c, fty)?
+    let mt = lower.opt.refty(true, ft.as_str())?
+    let fa = lower.opt.faddr_src(bv, off)?
+    lower.cx.def(c, mt.as_str(), fa.as_str())
+end lower.opt.field_addr
+
 // 項目が Option (1) / Result (2) / それ以外 (0) か。
 fn lower.opt.kind(env: &types.env.Env, item: usize) -> usize uses [alloc] panics may pub
     let f = lower.tyk.item_fqn(env, item)
@@ -166,7 +183,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let rty = lower.tyk.text(env, c, t)?
     let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
     let jb = lower.cx.blk(c, &jps)?
-    let tg = lower.cx.def(c, "bool", lower.cx.cat2("tag ", lower.cx.vs(sv)?.as_str())?.as_str())?
+    let tg = lower.cx.def1(c, "bool", "tag ", sv)?
     let nv = resolve.ast.count(p, n.b)
     let mut done = false
     for j in core.iter.range(0usize, nv) {
@@ -183,13 +200,13 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
             lower.expr.br_to(c, nb)?
             lower.cx.goto(c, nb)
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
-        } else if pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath {
+        } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
             let name = resolve.ast.text(src, pat.a, pat.b)
             let last = lower.expr.last_seg(name)
             let positive = last == "Some" || last == "Ok"
             let mut cond = tg
             if !positive {
-                cond = lower.cx.def(c, "bool", lower.cx.cat2("not.bool ", lower.cx.vs(tg)?.as_str())?.as_str())?
+                cond = lower.cx.def1(c, "bool", "not.bool ", tg)?
             }
             let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
             let armb = lower.cx.blk(c, &empty)?
@@ -209,7 +226,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                 if sp.kind == parse.ast.Kind.PBind {
                     let pt = lower.expr.tyof(c, sub)?
                     let pty = lower.tyk.text(env, c, pt)?
-                    let pv = lower.cx.def(c, pty.as_str(), lower.cx.cat2("payload ", lower.cx.vs(sv)?.as_str())?.as_str())?
+                    let pv = lower.cx.def1(c, pty.as_str(), "payload ", sv)?
                     let stk_tok = parse.cur.peek_at(p, sp.a)
                     let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
                     let pv2 = lower.opt.wrap_ref(env, c, pv, pt)?
@@ -236,6 +253,28 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     Ok(lower.cx.R { v: rv, t: t })
 end lower.opt.optmatch
 
+// 受け手の値を宣言の self に合わせる: 参照が要るのに値なら一時のスロット、参照でないのに参照なら読み出す。
+fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R, want_ref: bool) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let (inner, through, m) = lower.opt.deref_ty(c, r.t)
+    if want_ref == through {
+        return Ok(r.v)
+    }
+    if through {
+        let it = lower.tyk.text(env, c, inner)?
+        let op = lower.cx.cat2("load ", lower.cx.vs(r.v)?.as_str())?
+        return lower.cx.def(c, it.as_str(), op.as_str())
+    }
+    // 値を参照にしたい: 一時のスロットに置いて参照を作る。
+    let st = lower.tyk.text(env, c, r.t)?
+    let mt = lower.opt.refty(true, st.as_str())?
+    let slot = lower.cx.def(c, mt.as_str(), "alloca")?
+    let so = lower.opt.two_op("store ", slot, r.v)?
+    lower.cx.def(c, "unit", so.as_str())?
+    let rt = lower.opt.refty(m, st.as_str())?
+    let sh = lower.cx.cat2("asshared ", lower.cx.vs(slot)?.as_str())?
+    lower.cx.def(c, rt.as_str(), sh.as_str())
+end lower.opt.recv_value
+
 // 参照の型の文字列 (`ref<T>` / `mutref<T>`)。
 fn lower.opt.refty(mutable: bool, t: &str) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let head = if mutable {
@@ -261,7 +300,7 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         lower.cx.fail(c, "`?` (Option と Result 以外は未対応)")?
         return lower.expr.dummy(c, t)
     }
-    let tg = lower.cx.def(c, "bool", lower.cx.cat2("tag ", lower.cx.vs(x.v)?.as_str())?.as_str())?
+    let tg = lower.cx.def1(c, "bool", "tag ", x.v)?
     let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let errb = lower.cx.blk(c, &empty)?
     let okb = lower.cx.blk(c, &empty)?
@@ -285,8 +324,8 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     if k == 2usize {
         let a1 = types.ty.arg(&c.ar, xn.b, 1usize)
         let et = lower.tyk.text(env, c, a1)?
-        let pv = lower.cx.def(c, et.as_str(), lower.cx.cat2("payload ", lower.cx.vs(x.v)?.as_str())?.as_str())?
-        let ev = lower.cx.def(c, rt.as_str(), lower.cx.cat2("err ", lower.cx.vs(pv)?.as_str())?.as_str())?
+        let pv = lower.cx.def1(c, et.as_str(), "payload ", x.v)?
+        let ev = lower.cx.def1(c, rt.as_str(), "err ", pv)?
         lower.cx.finish(c, lower.cx.cat2("ret ", lower.cx.vs(ev)?.as_str())?)?
     } else {
         let nv = lower.cx.def(c, rt.as_str(), lower.cx.cat2("const.", lower.cx.cat2(rt.as_str(), " none")?.as_str())?.as_str())?
@@ -295,7 +334,7 @@ fn lower.opt.tryx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     // 成功の枝: 中身。
     lower.cx.goto(c, okb)
     let tt = lower.tyk.text(env, c, t)?
-    let val = lower.cx.def(c, tt.as_str(), lower.cx.cat2("payload ", lower.cx.vs(x.v)?.as_str())?.as_str())?
+    let val = lower.cx.def1(c, tt.as_str(), "payload ", x.v)?
     Ok(lower.cx.R { v: val, t: t })
 end lower.opt.tryx
 
@@ -322,6 +361,69 @@ fn lower.opt.unit_variant(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize,
     let v = lower.cx.def(c, ty.as_str(), op2.as_str())?
     Ok(lower.cx.R { v: v, t: t })
 end lower.opt.unit_variant
+
+// メソッドの呼び出し (利用者の関数): 受け手は宣言の `self` の型に合わせて参照する (自動参照・自動逆参照)。
+// recv は受け手の式 (局所の名前なら loc の添字、それ以外は recv_node の式)。
+fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], item: usize, recv_node: usize, loc: usize, args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    if lower.inst.is_generic(env, item) {
+        lower.cx.fail(c, "総称のメソッド (未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let cp = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return lower.expr.dummy(c, t)
+    }
+    let fd = parse.ast.get(&cp.ast, node)
+    let sg = parse.ast.get(&cp.ast, fd.c)
+    if resolve.ast.count(cp, sg.b) == 0usize {
+        lower.cx.fail(c, "メソッドに self がない")?
+        return lower.expr.dummy(c, t)
+    }
+    let self_node = resolve.ast.item(cp, sg.b, 0usize)
+    let sdecl = types.rec.ty_of(&c.tc.rec, file, self_node)
+    let sdn = types.ty.node(&c.ar, types.ty.find(&c.ar, sdecl))
+    let self_ref = sdn.k == types.ty.K.Ref
+    // 受け手の値。
+    let mut recv = 0usize
+    if loc != 0usize {
+        let bt = lower.cx.tyof_t(c, loc - 1usize)
+        if lower.cx.is_slot(c, loc - 1usize) && self_ref {
+            let slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
+            let st = lower.tyk.text(env, c, sdecl)?
+            let mut head = "asshared "
+            if sdn.m {
+                head = "reborrow "
+            }
+            let so = lower.cx.cat2(head, lower.cx.vs(slot)?.as_str())?
+            recv = lower.cx.def(c, st.as_str(), so.as_str())?
+        } else {
+            let rv = lower.opt.local_val(env, c, loc - 1usize, bt)?
+            let rr = lower.cx.R { v: rv, t: bt }
+            recv = lower.opt.recv_value(env, c, rr, self_ref)?
+        }
+    } else {
+        let r = lower.expr.expr(env, c, p, src, recv_node, types.ty.UNKNOWN)?
+        recv = lower.opt.recv_value(env, c, r, self_ref)?
+    }
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    vs.push(recv)?
+    let na = resolve.ast.count(p, args)
+    for j in core.iter.range(0usize, na) {
+        let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, j), types.ty.UNKNOWN)?
+        vs.push(a.v)?
+    }
+    let fqn = lower.tyk.item_fqn(env, item)
+    lower.expr.enqueue(c, fqn.as_str(), item + 1usize, alloc.vec.Vec.new(std.alloc.SYSTEM), 0usize)?
+    let rt = lower.tyk.text(env, c, t)?
+    let co = lower.cx.cat2("call ", fqn.as_str())?
+    let co2 = lower.cx.cat2(co.as_str(), "(")?
+    let co3 = lower.cx.cat2(co2.as_str(), lower.cx.vlist(&vs)?.as_str())?
+    let co4 = lower.cx.cat2(co3.as_str(), ")")?
+    let v = lower.cx.def(c, rt.as_str(), co4.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.opt.user_method
 
 // 束縛の型が参照で、値が参照でないとき (パターンの既定の束縛): 値をスロットに置いて参照にする。
 fn lower.opt.wrap_ref(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, pt: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
