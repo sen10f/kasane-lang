@@ -137,7 +137,7 @@ fn ptr_call(lw: &mut Lw, e: &V, name: &str, targs: V) -> LR<Option<VId>> {
             }
             return lw.err(line, "core.ptr.from_mut/from_ref の引数は参照のはず");
         }
-        "cast" | "cast_const" => {
+        "cast" | "cast_const" | "as_const" | "as_mut" => {
             if args.len() != 1 {
                 return lw.err(line, "core.ptr.cast は 1 個の引数を取る");
             }

@@ -1795,7 +1795,14 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     thread_lower::finish(&mut ok);
     chan_lower::finish(&mut ok);
     // `extern` 宣言を KIR の関数宣言 (本体なし) にする。リンク名は `Func.link` に持つ。
-    for &i in user {
+    // 同梱の `std` の extern (`std.tls` の OpenSSL の関数) も、呼ぶ側の関数の呼び先として下ろす (`user` に入らないため)。
+    let mut externs: Vec<usize> = user.to_vec();
+    for (i, d) in p.defs.iter().enumerate() {
+        if d.kw == "extern" && d.name.starts_with("std.") && !externs.contains(&i) {
+            externs.push(i);
+        }
+    }
+    for &i in &externs {
         let d = &p.defs[i];
         if d.kw != "extern" {
             continue;

@@ -68,6 +68,8 @@ pub enum Pointee {
     F32,
     F64,
     Bool,
+    /// 生ポインタ (番地。`std.tls` の SSL の値などを、構造体のフィールドとして参照越しに読む)。
+    Ptr,
     /// 集成体 (型表 `Module::aggs` の添字)。
     Agg(u32),
 }
@@ -90,11 +92,12 @@ impl Pointee {
             Pointee::F32 => Ty::F32,
             Pointee::F64 => Ty::F64,
             Pointee::Bool => Ty::Bool,
+            Pointee::Ptr => Ty::Ptr,
             Pointee::Agg(i) => Ty::Agg(i),
         }
     }
 
-    /// 指す先に使える型なら、その `Pointee`。unit・ptr・参照・Option・Result は `None`。
+    /// 指す先に使える型なら、その `Pointee`。unit・参照・Option・Result は `None`。
     pub fn of(t: Ty) -> Option<Pointee> {
         Some(match t {
             Ty::I8 => Pointee::I8,
@@ -112,8 +115,9 @@ impl Pointee {
             Ty::F32 => Pointee::F32,
             Ty::F64 => Pointee::F64,
             Ty::Bool => Pointee::Bool,
+            Ty::Ptr => Pointee::Ptr,
             Ty::Agg(i) => Pointee::Agg(i),
-            Ty::Unit | Ty::Ptr | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => return None,
+            Ty::Unit | Ty::Ref(..) | Ty::Opt(_) | Ty::Res(..) => return None,
         })
     }
 }

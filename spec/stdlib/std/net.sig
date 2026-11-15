@@ -17,7 +17,7 @@ type std.net.TcpListener linear pub
 end std.net.TcpListener
 
 type std.net.TcpStream linear pub
-    descriptor: i32
+    descriptor: i32 pub
 end std.net.TcpStream
 
 type std.net.UdpSocket linear pub
