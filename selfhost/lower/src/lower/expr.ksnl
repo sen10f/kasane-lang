@@ -227,6 +227,9 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: t })
     }
+    if fqn.as_str() == "alloc.vec.Vec.new" {
+        return lower.vec.new(env, c, t)
+    }
     if fqn.as_str() == "std.io.print_line" {
         return lower.io.print_line(env, c, p, src, n, t)
     }
@@ -326,6 +329,9 @@ fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     }
     if (k == parse.ast.Kind.Loop) {
         return lower.expr.loopx(env, c, p, src, n, t)
+    }
+    if (k == parse.ast.Kind.Index) {
+        return lower.vec.index_expr(env, c, p, src, n, t)
     }
     if (k == parse.ast.Kind.For) {
         return lower.loops.forx(env, c, p, src, n, t)
@@ -878,6 +884,12 @@ fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Ve
             if f1 != "" && !lower.expr.is_wrapping(f2) {
                 out.push(lower.cx.own(f1)?)?
             }
+        }
+    }
+    if k == parse.ast.Kind.Index && bor {
+        let ib = parse.ast.get(&p.ast, n.a)
+        if ib.kind == parse.ast.Kind.Path {
+            out.push(lower.cx.own(resolve.ast.text(src, ib.a, ib.b))?)?
         }
     }
     if k == parse.ast.Kind.MCall && bor {

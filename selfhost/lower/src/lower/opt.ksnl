@@ -392,16 +392,24 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     let self_node = resolve.ast.item(cp, sg.b, 0usize)
     let sdecl = types.rec.ty_of(&c.tc.rec, file, self_node)
     let sdn = types.ty.node(&c.ar, types.ty.find(&c.ar, sdecl))
-    let self_ref = sdn.k == types.ty.K.Ref
+    // `Vec` のメソッドの self は常に参照 (宣言が .sig にあり、型の表に記録がない)。
+    let mut self_ref = sdn.k == types.ty.K.Ref
+    if lower.tyk.item_fqn(env, item).as_str().starts_with("alloc.vec.Vec.") {
+        self_ref = true
+    }
     // 受け手の値。
     let mut recv = 0usize
     if loc != 0usize {
         let bt = lower.cx.tyof_t(c, loc - 1usize)
         if lower.cx.is_slot(c, loc - 1usize) && self_ref {
             let slot = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
-            let st = lower.tyk.text(env, c, sdecl)?
+            let inner_t = types.ty.strip(&c.ar, bt)
+            let st0 = lower.tyk.text(env, c, inner_t)?
+            let st = lower.opt.refty(sdn.m, st0.as_str())?
+            let fqn_m = lower.tyk.item_fqn(env, item)
+            let mname = lower.expr.last_seg(fqn_m.as_str())
             let mut head = "asshared "
-            if sdn.m {
+            if sdn.m || mname == "push" || mname == "pop" {
                 head = "reborrow "
             }
             let so = lower.cx.cat2(head, lower.cx.vs(slot)?.as_str())?
@@ -421,6 +429,15 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     for j in core.iter.range(0usize, na) {
         let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, j), types.ty.UNKNOWN)?
         vs.push(a.v)?
+    }
+    let owner_fqn = lower.tyk.item_fqn(env, item)
+    if owner_fqn.as_str().starts_with("alloc.vec.Vec.") {
+        let rty2 = if loc != 0usize {
+            lower.cx.tyof_t(c, loc - 1usize)
+        } else {
+            lower.expr.tyof(c, recv_node)?
+        }
+        return lower.vec.method(env, c, owner_fqn.as_str(), rty2, &vs, t)
     }
     lower.expr.enqueue(c, key.as_str(), item + 1usize, subs, t)?
     let rt = lower.tyk.text(env, c, t)?
