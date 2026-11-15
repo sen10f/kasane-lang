@@ -1,0 +1,279 @@
+import shortener_https.code
+import shortener_https.error
+
+type shortener_https.store.Store pub
+    path: alloc.string.String<std.alloc.System>
+    urls: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>
+end shortener_https.store.Store
+
+fn shortener_https.store.Store.add(self: &mut shortener_https.store.Store, url: &str) -> Result<alloc.string.String<std.alloc.System>, shortener_https.error.Error> uses [alloc, io.fs] panics never pub
+    let code_text = code.for_index(u64.from_usize(self.urls.len()))?
+    let copy = alloc.string.String.from_str(std.alloc.SYSTEM, url)?
+    self.urls.push(copy)?
+    match self.save() {
+        Ok(_u) => Ok(code_text)
+        Err(e) => {
+            core.mem.drop(self.urls.pop())
+            Err(e)
+        }
+    }
+end shortener_https.store.Store.add
+
+fn shortener_https.store.Store.len(self: &shortener_https.store.Store) -> usize uses [] panics never pub
+    self.urls.len()
+end shortener_https.store.Store.len
+
+fn shortener_https.store.Store.load(path: &str) -> Result<shortener_https.store.Store, shortener_https.error.Error> uses [alloc, io.fs] panics never pub
+    let mut store = shortener_https.store.Store.new("")?
+    if std.fs.exists(path) {
+        let text = shortener_https.store.read_text(path)?
+        store.parse_into(text.as_str())?
+    }
+    store.path = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    Ok(store)
+end shortener_https.store.Store.load
+
+fn shortener_https.store.Store.lookup(self: &shortener_https.store.Store, code_text: &str) -> Option<&str> uses [] panics never pub
+    let index = code.to_index(code_text)?
+    let at = usize.from_u64(index)
+    match self.urls.as_slice().get(at) {
+        Some(url) => Some(url.as_str())
+        None => None
+    }
+end shortener_https.store.Store.lookup
+
+fn shortener_https.store.Store.new(path: &str) -> Result<shortener_https.store.Store, shortener_https.error.Error> uses [alloc] panics never pub
+    let saved = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    Ok(shortener_https.store.Store { path: saved, urls: alloc.vec.Vec.new(std.alloc.SYSTEM) })
+end shortener_https.store.Store.new
+
+fn shortener_https.store.Store.parse_into(self: &mut shortener_https.store.Store, text: &str) -> Result<(), shortener_https.error.Error> uses [alloc] panics never pub
+    for line in text.split("\n") {
+        if !line.is_empty() {
+            let (code_text, url) = match line.split_once(" ") {
+                Some(pair) => pair
+                None => return Err(error.Error.Corrupt)
+            }
+            let expected = code.for_index(u64.from_usize(self.urls.len()))?
+            if expected.as_str() != code_text || !shortener_https.store.is_valid_url(url) {
+                return Err(error.Error.Corrupt)
+            }
+            let copy = alloc.string.String.from_str(std.alloc.SYSTEM, url)?
+            self.urls.push(copy)?
+        }
+    }
+    Ok(())
+end shortener_https.store.Store.parse_into
+
+fn shortener_https.store.Store.render(self: &shortener_https.store.Store) -> Result<alloc.string.String<std.alloc.System>, shortener_https.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    for i in core.iter.range(0usize, self.urls.len()) {
+        let code_text = code.for_index(u64.from_usize(i))?
+        match self.urls.as_slice().get(i) {
+            Some(url) => {
+                out.push_str(code_text.as_str())?
+                out.push_str(" ")?
+                out.push_str(url.as_str())?
+                out.push_str("\n")?
+            }
+            None => return Err(error.Error.Corrupt)
+        }
+    }
+    Ok(out)
+end shortener_https.store.Store.render
+
+fn shortener_https.store.Store.save(self: &shortener_https.store.Store) -> Result<(), shortener_https.error.Error> uses [alloc, io.fs] panics never pub
+    if self.path.is_empty() {
+        return Ok(())
+    }
+    let text = self.render()?
+    with mut file = std.fs.create(self.path.as_str())? close core.mem.drop(file.close()) {
+        shortener_https.store.write_all(&mut file, text.as_str().as_bytes())?
+        file.sync()?
+    }
+    Ok(())
+end shortener_https.store.Store.save
+
+fn shortener_https.store.is_valid_url(url: &str) -> bool uses [] panics never pub
+    if url.len() > 2048usize {
+        return false
+    }
+    let rest = match url.strip_prefix("https://") {
+        Some(r) => r
+        None => match url.strip_prefix("http://") {
+            Some(r) => r
+            None => return false
+        }
+    }
+    if rest.is_empty() {
+        return false
+    }
+    for c in url.chars() {
+        if c.to_u32() <= 32u32 || c.to_u32() == 127u32 {
+            return false
+        }
+    }
+    true
+end shortener_https.store.is_valid_url
+
+fn shortener_https.store.read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, shortener_https.error.Error> uses [alloc, io.fs] panics never
+    let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut data)?)
+    }
+    let mut text = alloc.string.String.new(std.alloc.SYSTEM)
+    text.push_bytes(data.as_slice()).map_err(error.push_failed)?
+    Ok(text)
+end shortener_https.store.read_text
+
+fn shortener_https.store.test_add(store: &mut shortener_https.store.Store, url: &str) -> alloc.string.String<std.alloc.System> uses [alloc, io.fs] panics may
+    match store.add(url) {
+        Ok(c) => c
+        Err(_e) => core.panic.panic("add failed")
+    }
+end shortener_https.store.test_add
+
+fn shortener_https.store.test_load(path: &str) -> shortener_https.store.Store uses [alloc, io.fs] panics may
+    match shortener_https.store.Store.load(path) {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("load failed")
+    }
+end shortener_https.store.test_load
+
+fn shortener_https.store.test_memory() -> shortener_https.store.Store uses [alloc] panics may
+    match shortener_https.store.Store.new("") {
+        Ok(s) => s
+        Err(_e) => core.panic.panic("new failed")
+    }
+end shortener_https.store.test_memory
+
+fn shortener_https.store.test_path(name: &str) -> alloc.string.String<std.alloc.System> uses [alloc] panics may
+    let mut path = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(path.push_str("shortener-test-"))
+    core.mem.drop(path.push_str(name))
+    core.mem.drop(path.push_str(".tmp"))
+    path
+end shortener_https.store.test_path
+
+fn shortener_https.store.write_all(file: &mut std.fs.File, data: &[u8]) -> Result<(), shortener_https.error.Error> uses [io.fs] panics never
+    let mut sent = 0usize
+    while sent < data.len() {
+        let rest = match data.sub(sent, data.len()) {
+            Some(r) => r
+            None => return Err(error.io_failed())
+        }
+        let n = file.write(rest)?
+        if n == 0usize {
+            return Err(error.io_failed())
+        }
+        sent = sent.saturating_add(n)
+    }
+    file.flush()?
+    Ok(())
+end shortener_https.store.write_all
+
+test shortener_https.store.Store.add.test_assigns_sequential_codes
+    let mut store = shortener_https.store.test_memory()
+    core.check.eq(shortener_https.store.test_add(&mut store, "http://a.test/").as_str(), "1000")
+    core.check.eq(shortener_https.store.test_add(&mut store, "http://b.test/").as_str(), "1001")
+    core.check.eq(store.len(), 2usize)
+    core.check.eq(store.lookup("1000"), Some("http://a.test/"))
+    core.check.eq(store.lookup("1001"), Some("http://b.test/"))
+end shortener_https.store.Store.add.test_assigns_sequential_codes
+
+test shortener_https.store.Store.load.test_corrupt_file_is_an_error
+    let path = shortener_https.store.test_path("corrupt")
+    match std.fs.create(path.as_str()) {
+        Ok(f) => {
+            let mut file = f
+            core.mem.drop(shortener_https.store.write_all(&mut file, b"1000 http://a.test/\nbroken line\n"))
+            core.mem.drop(file.close())
+        }
+        Err(_e) => core.panic.panic("create")
+    }
+    core.check.eq(shortener_https.store.Store.load(path.as_str()).is_err(), true)
+    core.mem.drop(std.fs.remove_file(path.as_str()))
+    core.check.eq(std.fs.exists(path.as_str()), false)
+end shortener_https.store.Store.load.test_corrupt_file_is_an_error
+
+test shortener_https.store.Store.lookup.test_unknown_codes
+    let mut store = shortener_https.store.test_memory()
+    core.mem.drop(shortener_https.store.test_add(&mut store, "http://a.test/"))
+    core.check.eq(store.lookup("1001"), None)
+    core.check.eq(store.lookup("0"), None)
+    core.check.eq(store.lookup(""), None)
+    core.check.eq(store.lookup("stats"), None)
+    core.check.eq(store.lookup("99999999999999999999999"), None)
+end shortener_https.store.Store.lookup.test_unknown_codes
+
+test shortener_https.store.Store.parse_into.test_rejects_corrupt_files
+    let mut store = shortener_https.store.test_memory()
+    let ok = store.parse_into("1000 http://a.test/\n1001 http://b.test/\n")
+    core.check.eq(ok, Ok(()))
+    core.check.eq(store.len(), 2usize)
+    let bad = error.Error.Corrupt
+    core.check.eq(store.parse_into("zzzz http://c.test/\n"), Err(bad))
+    core.check.eq(store.parse_into("1002\n"), Err(bad))
+    core.check.eq(store.parse_into("1002 \n"), Err(bad))
+    core.check.eq(store.len(), 2usize)
+end shortener_https.store.Store.parse_into.test_rejects_corrupt_files
+
+test shortener_https.store.Store.render.test_format
+    let mut store = shortener_https.store.test_memory()
+    core.check.eq(store.parse_into("1000 http://a.test/\n"), Ok(()))
+    core.check.eq(store.parse_into("1001 http://b.test/q?x=1&y=2\n"), Ok(()))
+    let want = "1000 http://a.test/\n1001 http://b.test/q?x=1&y=2\n"
+    match store.render() {
+        Ok(s) => core.check.eq(s.as_str(), want)
+        Err(_e) => core.panic.panic("render")
+    }
+end shortener_https.store.Store.render.test_format
+
+test shortener_https.store.Store.save.test_round_trip_through_file
+    let path = shortener_https.store.test_path("round-trip")
+    let mut first = shortener_https.store.test_load(path.as_str())
+    core.check.eq(first.len(), 0usize)
+    core.mem.drop(shortener_https.store.test_add(&mut first, "http://a.test/"))
+    core.mem.drop(shortener_https.store.test_add(&mut first, "http://b.test/x"))
+    let mut second = shortener_https.store.test_load(path.as_str())
+    core.check.eq(second.len(), 2usize)
+    core.check.eq(second.lookup("1000"), Some("http://a.test/"))
+    core.check.eq(second.lookup("1001"), Some("http://b.test/x"))
+    core.check.eq(shortener_https.store.test_add(&mut second, "http://c.test/").as_str(), "1002")
+    let third = shortener_https.store.test_load(path.as_str())
+    core.check.eq(third.len(), 3usize)
+    core.mem.drop(std.fs.remove_file(path.as_str()))
+    core.check.eq(std.fs.exists(path.as_str()), false)
+end shortener_https.store.Store.save.test_round_trip_through_file
+
+test shortener_https.store.Store.save.test_write_failure_is_reported_and_rolled_back
+    if std.fs.exists("/dev/full") {
+        match shortener_https.store.Store.new("/dev/full") {
+            Ok(s) => {
+                let mut store = s
+                core.check.eq(store.add("http://a.test/").is_err(), true)
+                core.check.eq(store.len(), 0usize)
+            }
+            Err(_e) => core.panic.panic("new failed")
+        }
+    }
+end shortener_https.store.Store.save.test_write_failure_is_reported_and_rolled_back
+
+test shortener_https.store.is_valid_url.test_cases
+    core.check.eq(shortener_https.store.is_valid_url("http://a.test/"), true)
+    core.check.eq(shortener_https.store.is_valid_url("https://a.test/p?q=1#f"), true)
+    core.check.eq(shortener_https.store.is_valid_url("https://日本.test/"), true)
+    core.check.eq(shortener_https.store.is_valid_url(""), false)
+    core.check.eq(shortener_https.store.is_valid_url("http://"), false)
+    core.check.eq(shortener_https.store.is_valid_url("ftp://a.test/"), false)
+    core.check.eq(shortener_https.store.is_valid_url("a.test"), false)
+    core.check.eq(shortener_https.store.is_valid_url("http://a b"), false)
+    core.check.eq(shortener_https.store.is_valid_url("http://a\r\nX: y"), false)
+    core.check.eq(shortener_https.store.is_valid_url("http://a\u{7f}"), false)
+    let mut long = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(long.push_str("http://a.test/"))
+    for _i in core.iter.range(0usize, 2040usize) {
+        core.mem.drop(long.push('x'))
+    }
+    core.check.eq(shortener_https.store.is_valid_url(long.as_str()), false)
+end shortener_https.store.is_valid_url.test_cases
