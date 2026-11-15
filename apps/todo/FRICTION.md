@@ -6,9 +6,8 @@
 
 ## 上位 3 件
 
-1. **`rand` エフェクトが KIR ステージ1で未対応**
-   `auth.make_token` / `auth.make_salt` で `rand.Rng.from_entropy()` を使用すると `E9040` でネイティブビルド失敗。`std.datetime.DateTime.now()` + `hash_bytes` + `u64_to_hex` による決定論的生成に置き換え、`uses [alloc, rand]` を `uses [alloc, time]` に変更。`router.register`/`router.login`/`router.route` とその呼び出し元全体から `rand` を除去。
-   // 注意: 乱数 (std.rand) がネイティブに下りないための仮の実装。推測できるので本番では使わない (処理系の修正待ち)。
+1. **`rand` エフェクトが KIR ステージ1で未対応** → 解決 (fill_secure)
+   `auth.make_token` / `auth.make_salt` で `rand.Rng.from_entropy()` を使用すると `E9040` でネイティブビルド失敗。`std.rand.fill_secure(&mut [u8; 16])` で OS の乱数を生成し、`bytes_to_hex` で 16 進数文字列にするよう置き換え。`uses [alloc, time]` を `uses [alloc, rand]` に戻し、`router.register`/`router.login`/`router.route` とその呼び出し元全体から `rand` を除去した。
 
 2. **構造体フィールドに `Option<Vec<...>>` があるとステージ1で下ろせない**
    `UpdateFields.tags: Option<alloc.vec.Vec<...>>` が `from_update_value` の戻り値型として `E9040` を引き起こす。`tags` を `Option<Vec<...>>` から plain `Vec<...>` に変更し、欠損時は空ベクトルを返すように `from_update_value` を修正。

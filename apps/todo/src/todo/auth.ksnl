@@ -1,6 +1,25 @@
 import alloc.string
 import todo.error
 
+// バイト列を 16 進数文字列に変換する。
+fn todo.auth.bytes_to_hex(bytes: &[u8]) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i: usize = 0usize
+    while i < bytes.len() {
+        match bytes.get(i) {
+            Some(b) => {
+                let hi = todo.auth.nibble_to_char((u64.from_u8(*b).wrapping_shr(4)) & 15u64)?
+                let lo = todo.auth.nibble_to_char(u64.from_u8(*b) & 15u64)?
+                out.push(hi)?
+                out.push(lo)?
+                i = i.wrapping_add(1usize)
+            }
+            None => break
+        }
+    }
+    Ok(out)
+end todo.auth.bytes_to_hex
+
 // 2 つの String を連結した新しい String を返す。
 fn todo.auth.concat_strings(a: &str, b: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
@@ -33,24 +52,16 @@ fn todo.auth.hash_password(password: &str, salt: &str) -> Result<alloc.string.St
     Ok(s)
 end todo.auth.hash_password
 
-// 注意: 乱数 (std.rand) がネイティブに下りないための仮の実装。推測できるので本番では使わない (処理系の修正待ち)。
-// 決定論的なソルト (16 文字の 16 進数) を生成する。
-fn todo.auth.make_salt() -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, time] panics never pub
-    let now = std.datetime.DateTime.now().to_rfc3339()?
-    let combined = todo.auth.concat_strings("salt:", now.as_str())?
-    let digest = todo.auth.hash_bytes(combined.as_bytes())
-    let s = todo.auth.u64_to_hex(digest)?
-    Ok(s)
+fn todo.auth.make_salt() -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, rand] panics never pub
+    let mut buf = [0u8; 16]
+    std.rand.fill_secure(&mut buf)?
+    todo.auth.bytes_to_hex(&buf)
 end todo.auth.make_salt
 
-// 注意: 乱数 (std.rand) がネイティブに下りないための仮の実装。推測できるので本番では使わない (処理系の修正待ち)。
-// 決定論的なセッショントークン (32 文字の 16 進数) を生成する。
-fn todo.auth.make_token() -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, time] panics never pub
-    let now = std.datetime.DateTime.now().to_rfc3339()?
-    let combined = todo.auth.concat_strings("token:", now.as_str())?
-    let digest = todo.auth.hash_bytes(combined.as_bytes())
-    let s = todo.auth.u64_to_hex(digest)?
-    Ok(s)
+fn todo.auth.make_token() -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, rand] panics never pub
+    let mut buf = [0u8; 16]
+    std.rand.fill_secure(&mut buf)?
+    todo.auth.bytes_to_hex(&buf)
 end todo.auth.make_token
 
 fn todo.auth.nibble_to_char(n: u64) -> Result<char, todo.error.Error> uses [] panics never pub

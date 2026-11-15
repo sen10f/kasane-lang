@@ -8,7 +8,7 @@ const todo.DEFAULT_COUNT: usize = 100usize
 
 const todo.DEFAULT_DB: &str = "todos.json"
 
-fn todo.main() -> Result<(), todo.error.Error> uses [alloc, env, io.console, io.fs, io.net, thread, time] panics may
+fn todo.main() -> Result<(), todo.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, thread, time] panics may
     if std.env.arg_count() == 0usize {
         std.io.print_line("usage: todo <address> <count> <db-path> <workers>")?
         return Ok(())
@@ -24,7 +24,7 @@ fn todo.report(n: usize) -> Result<(), todo.error.Error> uses [alloc, io.console
     Ok(())
 end todo.report
 
-fn todo.serve_cli() -> Result<(), todo.error.Error> uses [alloc, env, io.console, io.fs, io.net, thread, time] panics may
+fn todo.serve_cli() -> Result<(), todo.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, thread, time] panics may
     let address = match std.env.arg(0usize) {
         Some(a) => a
         None => todo.DEFAULT_ADDRESS
@@ -49,14 +49,14 @@ fn todo.serve_cli() -> Result<(), todo.error.Error> uses [alloc, env, io.console
     todo.report(n)
 end todo.serve_cli
 
-fn todo.serve_in_turn(address: &str, count: usize, path: &str) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, time] panics never
+fn todo.serve_in_turn(address: &str, count: usize, path: &str) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, rand, time] panics never
     with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
         let mut db = store.Store.load(path, "")?
         server.serve(&listener, &mut db, count)
     }
 end todo.serve_in_turn
 
-fn todo.serve_pooled(address: &str, count: usize, path: &str, workers: usize) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, thread, time] panics may
+fn todo.serve_pooled(address: &str, count: usize, path: &str, workers: usize) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, rand, thread, time] panics may
     with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
         let db = store.Store.load(path, "")?
         pool.serve(&listener, db, count, workers)
