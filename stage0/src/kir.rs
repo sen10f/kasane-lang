@@ -3062,11 +3062,13 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                         // スレッドの補助の関数 (`ksn.thr.*`、設計_KIR.md 22 章) は、spawn した側のクロージャの効果を呼ぶので、
                         // 効果と panic の包含は spawn 側 (クロージャの下ろし) で確かめ済みとして、ここでは見ない。
                         let thr = callee.starts_with("ksn.thr.") || callee.starts_with("ksn.chan.");
+                        // 中断の枠の関数 (`ksn.task.*`、`F.new` / `F.poll`) も、呼び出し元の宣言で効果を検査済みとして見ない (設計_KIR.md 26 章)。
+                        let thr = thr || crate::kir_suspend::exempt_uses(callee);
                         if g.may_panic && !f.may_panic && !thr && !f.key.starts_with("ksn.thr.") {
                             return Err(format!("panics never の関数が panics may の {} を呼ぶ", callee));
                         }
                         if let Some(u) = g.uses.iter().find(|u| !fu.contains(u.as_str())) {
-                            if !thr && !f.key.starts_with("ksn.thr.") {
+                            if !thr && !f.key.starts_with("ksn.thr.") && !crate::kir_suspend::exempt_uses(&f.key) {
                                 return Err(format!("{} の uses {} が呼び出し元にない", callee, u));
                             }
                         }

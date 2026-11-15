@@ -403,6 +403,9 @@ end t.main
 // ------------------------------------------------------------ ネイティブ生成 (第 1 段は退避しない)
 
 /// `ksn build --release` は、中断を木走査へ退避せず E9040 で失敗する (第 1 段はネイティブ未対応、設計_KIR.md)。
+/// 第 2 段 (0.10.18) で `block_on` / `yield_now` などをネイティブに下ろした。この期待は古い: ネイティブの一致は
+/// `tests/suspend_native.rs` が確かめる。入力と期待は変えず、無視するだけにしている。
+#[ignore = "第 2 段でネイティブ化した (期待は古い。ネイティブの一致は tests/suspend_native.rs)"]
 #[test]
 fn release_native_build_refuses_std_task_with_e9040() {
     let t = Tmp::new(

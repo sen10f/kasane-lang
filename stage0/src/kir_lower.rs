@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::check::{is_nil, items, nf, nlineno as nline, nname, st, strs};
 use crate::kir::{self, Aop, Block, BoolOp, Cc, Func, Inst, Mode, Module, Op, Term, Ty, VId};
+use crate::kir_suspend;
 use crate::parser::{nid, V};
 use crate::program::{Def, Program, Target as Tgt};
 use crate::types::{from_v, ExprTy, Ty as Src, TypeCk};
@@ -44,6 +45,9 @@ mod method_lower;
 // `std.thread.spawn` / `JoinHandle.join` の下ろし (子モジュール)。
 #[path = "kir_lower_thread.rs"]
 mod thread_lower;
+// `std.task` (`block_on` / `spawn_local` / `yield_now` / `join_task`) の下ろし (子モジュール、設計_KIR.md 26 章)。
+#[path = "kir_lower_task.rs"]
+mod task_lower;
 #[path = "kir_lower_sync.rs"]
 mod sync_lower;
 #[path = "kir_lower_chan.rs"]
@@ -1064,6 +1068,10 @@ impl<'a> Lw<'a> {
         }
         let segs = strs(&nf(callee)[0]);
         let args = items(&f[1]);
+        // `std.task.block_on` / `spawn_local` / `yield_now` (仕様 5.6)。
+        if let Some(r) = task_lower::path_call(self, &segs, args, line) {
+            return r;
+        }
         // `std.thread.spawn(allocator, closure)`。
         if segs == ["std", "thread", "spawn"] {
             let Some(r) = thread_lower::spawn_call(self, e, &segs, args, line) else {
@@ -1116,6 +1124,12 @@ impl<'a> Lw<'a> {
                 let meth = segs[segs.len() - 1].clone();
                 if meth == "clone" {
                     return self.lower_clone(line, recv, rt);
+                }
+                // `task.join_task()`: 実行器のタスクの結果を取り出す (中断点、仕様 5.6)。
+                if meth == "join_task" && args.len() == 0 {
+                    if let Some(r) = task_lower::join_call(self, recv, rt, line) {
+                        return r;
+                    }
                 }
                 // `handle.join()`: スレッドの結果を取り出す。
                 if meth == "join" {
@@ -1285,6 +1299,13 @@ impl<'a> Lw<'a> {
         let f = nf(e);
         let line = nline(e);
         // `handle.join()`: スレッドの結果を取り出す。
+        if st(&f[1]) == "join_task" && items(&f[2]).is_empty() {
+            let t = self.ty_of(&f[0])?;
+            let Some(a) = self.expr(&f[0])? else { return Ok(None) };
+            if let Some(r) = task_lower::join_call(self, a, t, line) {
+                return r;
+            }
+        }
         if st(&f[1]) == "join" {
             let t = self.ty_of(&f[0])?;
             let Some(a) = self.expr(&f[0])? else { return Ok(None) };
@@ -1752,6 +1773,7 @@ pub fn lower_test(p: &Program, user: &[usize], test_def: usize) -> Lowered {
 
 fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option<usize>) -> Lowered {
     LINES.with(|l| l.borrow_mut().clear());
+    task_lower::reset();
     // このパッケージから呼び出す依存パッケージ (別 module) の fn も下ろし対象にする。
     // そうしなければ、依存先が「呼び先が未対応」となり、このパッケージの関数も下ろせなくなる。
     let mut user_vec: Vec<usize> = user.to_vec();
@@ -1794,6 +1816,8 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     // スレッドの補助の関数 (`ksn.thr.*`) は、全部の入口 (クロージャ) が揃ってから作る。
     thread_lower::finish(&mut ok);
     chan_lower::finish(&mut ok);
+    // `std.task` の実行器 (使われたときだけ)。閉包の表は、この後の変換 (`kir_suspend::transform`) が `.poll` を作る。
+    task_lower::finish(&mut ok);
     // `extern` 宣言を KIR の関数宣言 (本体なし) にする。リンク名は `Func.link` に持つ。
     // 同梱の `std` の extern (`std.tls` の OpenSSL の関数) も、呼ぶ側の関数の呼び先として下ろす (`user` に入らないため)。
     let mut externs: Vec<usize> = user.to_vec();
@@ -1828,7 +1852,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     // 同じ単相インスタンスを、別々の呼び出し元が下ろしていることがある (内容は同じ)。鍵の重複は先の一つだけ残す。
     let mut seen: HashSet<String> = HashSet::new();
     ok.retain(|(f, _)| seen.insert(f.key.clone()));
-    let funcs = loop {
+    let (funcs, all_aggs) = loop {
         let keys: HashSet<String> = ok.iter().map(|(f, _)| f.key.clone()).collect();
         let mut drop: Vec<(String, String)> = vec![];
         for (f, callees) in &ok {
@@ -1837,12 +1861,14 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
             }
         }
         if drop.is_empty() {
-            let m = Module { funcs: ok.iter().map(|(f, _)| f.clone()).collect(), aggs: aggs.borrow().defs.clone() };
+            let mut m = Module { funcs: ok.iter().map(|(f, _)| f.clone()).collect(), aggs: aggs.borrow().defs.clone() };
+            // 中断する関数と閉包の本体を、枠の形 (`.new` / `.poll`) にする (設計_KIR.md 26 章)。変換できなければ落とす。
+            drop.extend(kir_suspend::transform(&mut m, &task_lower::task_keys()));
             for (key, msg) in kir::verify_module(&m) {
                 drop.push((key, format!("下ろしの検査に失敗: {}", msg)));
             }
             if drop.is_empty() {
-                break m.funcs;
+                break (m.funcs, m.aggs);
             }
         }
         ok.retain(|(f, _)| !drop.iter().any(|(k, _)| *k == f.key));
@@ -1851,7 +1877,7 @@ fn lower_defs(p: &Program, user: &[usize], entry: Option<&str>, test_def: Option
     let mut funcs = funcs;
     funcs.sort_by(|a, b| a.key.cmp(&b.key));
     bad.sort();
-    let mut module = Module { funcs, aggs: aggs.into_inner().defs };
+    let mut module = Module { funcs, aggs: all_aggs };
     kir::prune_aggs(&mut module);
     Lowered { module, unsupported: bad, lines: LINES.with(|l| std::mem::take(&mut *l.borrow_mut())) }
 }

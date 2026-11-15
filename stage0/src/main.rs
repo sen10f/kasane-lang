@@ -20,6 +20,7 @@ mod kir_exec;
 mod kir_llvm;
 mod kir_lower;
 mod kir_opt;
+mod kir_suspend;
 mod kir_scalar;
 mod fmt;
 mod bindgen;
