@@ -3822,28 +3822,84 @@ impl<'a> Checker<'a> {
     }
 
     /// `extern` の関数と `core.ptr` の関数 (生ポインタの生成・変換・読み書き) は `unsafe` ブロックの中でしか呼べない (3.8, E5003)。
+    /// 呼び出しの他に、関数を値として参照する (`let f = core.ptr.read` や引数として渡す) のも
+    /// `unsafe` ブロックの外では E5003 (呼び出しの関数位置以外に名前が現れる)。
     fn check_extern_calls(&mut self, di: usize) {
         let d = self.def(di);
         let Some(body) = &d.body else { return };
-        fn scan<'b>(ck: &Checker, v: &'b V, in_unsafe: bool, file: &str, out: &mut Vec<(usize, String)>) {
-            if nname(v) == "Call" && nname(&nf(v)[0]) == "Path" && !in_unsafe {
-                let segs = strs(&nf(&nf(v)[0])[0]);
-                if let Some(r) = ck.p.resolve(&segs, file) {
-                    if let Target::Sig(i) = r.target {
-                        let t = &ck.p.defs[i];
-                        if r.rest.is_empty() && (t.kw == "extern" || t.name.starts_with("core.ptr.")) {
-                            out.push((nline(v), t.name.clone()));
+        fn scan<'b>(
+            ck: &Checker,
+            v: &'b V,
+            in_unsafe: bool,
+            in_call_pos: bool,
+            file: &str,
+            out: &mut Vec<(usize, String)>,
+        ) {
+            match nname(v) {
+                "Call" => {
+                    // 呼び出しの関数位置 (callee) にある extern/core.ptr 関数は「呼び出し」として検査する。
+                    // callee は関数位置、それ以降の子は値位置。
+                    if !in_unsafe {
+                        if let Some(callee) = nf(v).first() {
+                            if nname(callee) == "Path" {
+                                let segs = strs(&nf(callee)[0]);
+                                if let Some(r) = ck.p.resolve(&segs, file) {
+                                    if let Target::Sig(i) = r.target {
+                                        let t = &ck.p.defs[i];
+                                        if r.rest.is_empty() && (t.kw == "extern" || t.name.starts_with("core.ptr.")) {
+                                            out.push((nline(v), t.name.clone()));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
+                    let f = nf(v);
+                    if !f.is_empty() {
+                        scan(ck, &f[0], in_unsafe, true, file, out);
+                        for c in &f[1..] {
+                            scan(ck, c, in_unsafe, false, file, out);
+                        }
+                    }
+                    return;
                 }
+                "Unsafe" => {
+                    let f = nf(v);
+                    for c in f {
+                        scan(ck, c, true, false, file, out);
+                    }
+                    return;
+                }
+                "Path" => {
+                    // 呼び出しの関数位置以外に名前が現れる = 関数を値として参照
+                    if !in_unsafe && !in_call_pos {
+                        let segs = strs(&nf(v)[0]);
+                        if let Some(r) = ck.p.resolve(&segs, file) {
+                            if let Target::Sig(i) = r.target {
+                                let t = &ck.p.defs[i];
+                                if r.rest.is_empty() && (t.kw == "extern" || t.name.starts_with("core.ptr.")) {
+                                    out.push((nline(v), t.name.clone()));
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+                _ => {}
             }
-            let iu = in_unsafe || nname(v) == "Unsafe";
             for c in children(v) {
-                scan(ck, c, iu, file, out);
+                scan(ck, c, in_unsafe, false, file, out);
+            }
+            // `children` は Node のみを辿るため、`V::L` (引数リストなど) が直接渡されたときは
+            // その要素も辿る。
+            if let V::L(xs) = v {
+                for c in xs {
+                    scan(ck, c, in_unsafe, false, file, out);
+                }
             }
         }
         let mut found = vec![];
-        scan(self, body, false, &d.file, &mut found);
+        scan(self, body, false, false, &d.file, &mut found);
         for (line, name) in found {
             self.diag(
                 "E5003",
