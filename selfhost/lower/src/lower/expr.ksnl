@@ -725,7 +725,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
                     let stk_tok = parse.cur.peek_at(p, sp.a)
                     let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
                     let fv2 = lower.opt.wrap_ref(env, c, fv, pt)?
-                    lower.opt.bind(env, c, stk, fv2, false, pt)?
+                    let _bf = lower.opt.bind(env, c, stk, fv2, false, pt)?
                 }
                 i = i + 1usize
             }
@@ -843,7 +843,7 @@ fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let mut v = 0usize
     if rt.as_str() == "unit" {
         if n.a != 0usize {
-            lower.expr.expr(env, c, p, src, n.a, c.s.ret_t)?
+            let _rv = lower.expr.expr(env, c, p, src, n.a, c.s.ret_t)?
         }
         v = lower.expr.unit(c)?
     } else {
@@ -1135,7 +1135,7 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             let mt = lower.opt.refty(true, st.as_str())?
             slot = lower.cx.def(c, mt.as_str(), "alloca")?
             let so = lower.opt.two_op("store ", slot, x.v)?
-            lower.cx.def(c, "unit", so.as_str())?
+            let _sd = lower.cx.def(c, "unit", so.as_str())?
         }
         let tt = lower.tyk.text(env, c, t)?
         let head = if mutable {
