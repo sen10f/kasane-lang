@@ -415,6 +415,10 @@ end lower.opt.unit_variant
 // メソッドの呼び出し (利用者の関数): 受け手は宣言の `self` の型に合わせて参照する (自動参照・自動逆参照)。
 // recv は受け手の式 (局所の名前なら loc の添字、それ以外は recv_node の式)。
 fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], item: usize, recv_node: usize, loc: usize, args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let sfq = lower.tyk.item_fqn(env, item)
+    if lower.std_calls.has_method(sfq.as_str()) {
+        return lower.std_calls.recv_call(env, c, p, src, sfq.as_str(), recv_node, loc, args, t)
+    }
     let generic = lower.inst.is_generic(env, c, item)
     let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let mut key = lower.tyk.item_fqn(env, item)
