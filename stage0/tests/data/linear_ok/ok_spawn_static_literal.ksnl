@@ -1,0 +1,16 @@
+fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
+    let s = "hello"
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> usize capture [move s] {
+            s.len()
+        },
+    )
+    match spawned {
+        Ok(handle) => {
+            let _n = handle.join()
+        }
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    Ok(())
+end t.main

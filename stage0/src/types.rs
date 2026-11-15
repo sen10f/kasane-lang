@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::check::{edit_distance, is_nil, items, nf, nline, nname, pat_binds, st, strs, tag, tel, Diag};
 use crate::parser::V;
 use crate::program::{Def, Program, Target};
+use crate::check::borrowck::match_close;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
@@ -454,6 +455,8 @@ pub struct TypeCk<'a> {
     /// クロージャ節 → 取り込んだ名前 (取り込みの種類, 名前, 取り込んだ値の型)。spawn の `Send` 検査 (5.5) と、
     /// クロージャの自動導出 (`auto_marker`) が使う。
     closure_caps: HashMap<String, Vec<(String, String, Ty)>>,
+    /// クロージャ節 → `move` で取り込んだ名前のうち、取り込み元が `'static` と分かるもの (5.5 の spawn 検査で参照を許す)。
+    closure_static: HashMap<String, HashSet<String>>,
     /// `std.thread.spawn` に渡したクロージャ (節, 行)。関数の推論が終わってから取り込みの `Send` を見る。
     spawn_closures: Vec<(String, usize)>,
     /// 推論中のクロージャ本体の効果 (`closure_nodes` と同じ深さのスタック)。型で解決できた呼び出しの
@@ -520,7 +523,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), spawn_closures: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -598,6 +601,7 @@ impl<'a> TypeCk<'a> {
         self.quiet_sites.clear();
         self.local_sites.clear();
         self.closure_caps.clear();
+        self.closure_static.clear();
         self.spawn_closures.clear();
         self.scopes = vec![HashMap::new()];
         let gn = d.gnames();
@@ -685,7 +689,8 @@ impl<'a> TypeCk<'a> {
                 }
                 // `move` で取り込んだ値が参照を持つなら、その参照の先が局所でないことを型からは示せない (fail-closed)。
                 // `&a` / `&mut a` の取り込みは check.rs (E2037) が見る。
-                if kind != "&" && kind != "&mut" && self.holds_ref(&t, &mut Vec::new()) {
+                let is_static = self.closure_static.get(&node).map_or(false, |s| s.contains(&name));
+                if kind != "&" && kind != "&mut" && !is_static && self.holds_ref(&t, &mut Vec::new()) {
                     self.diag(
                         "E2037",
                         format!("spawn closure must be 'static; the captured `{}` holds a reference that may borrow a local (5.5)", name),
@@ -1453,7 +1458,56 @@ impl<'a> TypeCk<'a> {
             self.loose.remove(name);
         }
         if let Some(s) = self.scopes.last_mut() {
+            s.remove(&static_mark(name));
             s.insert(name.to_string(), ty);
+        }
+    }
+
+    /// 見えている `name` の束縛に、`'static` と分かっている印を付ける (on) / 外す。印は束縛と同じ scope に置く。
+    /// 外すのは再代入・`&mut` の借用・`&mut` の取り込みのとき (後から局所の借用を入れられるので、印を残せない)。
+    fn set_static(&mut self, name: &str, on: bool) {
+        if let Some(s) = self.scopes.iter_mut().rev().find(|s| s.contains_key(name)) {
+            if on {
+                s.insert(static_mark(name), Ty::Unit);
+            } else {
+                s.remove(&static_mark(name));
+            }
+        }
+    }
+
+    /// 今見えている `name` の束縛が `'static` の値だと分かっているか。印は束縛と同じ scope に置く。
+    fn lookup_static(&self, name: &str) -> bool {
+        self.scopes.iter().rev().find(|s| s.contains_key(name)).map_or(false, |s| s.contains_key(&static_mark(name)))
+    }
+
+    /// 式の値が `'static` の参照だと型以外の根拠で分かるか (5.5: spawn の取り込みを通す根拠)。
+    /// 文字列リテラル (`str` / `bstr`)、`const` / `static` の名前、`&'static` の戻り値を返す関数の呼び出し、
+    /// `'static` と分かる局所変数の別名。どれにも当たらなければ false (fail-closed)。
+    fn static_expr(&self, e: &V) -> bool {
+        match nname(e) {
+            "Lit" => matches!(st(&nf(e)[0]).as_str(), "str" | "bstr"),
+            "Path" => {
+                let segs = strs(&nf(e)[0]);
+                if self.lookup(&segs[0]).is_some() {
+                    return segs.len() == 1 && self.lookup_static(&segs[0]);
+                }
+                matches!(self.p.resolve(&segs, &self.def().file).map(|r| r.target), Some(Target::Const(_)))
+            }
+            "Call" => {
+                let callee = &nf(e)[0];
+                if nname(callee) != "Path" {
+                    return false;
+                }
+                let segs = strs(&nf(callee)[0]);
+                if segs.is_empty() || self.lookup(&segs[0]).is_some() {
+                    return false;
+                }
+                match self.p.resolve(&segs, &self.def().file).map(|r| r.target) {
+                    Some(Target::Fn(i)) | Some(Target::Sig(i)) => ret_is_static(&self.p.defs[i].header),
+                    _ => false,
+                }
+            }
+            _ => false,
         }
     }
 
@@ -3162,7 +3216,16 @@ impl<'a> TypeCk<'a> {
                 }
                 match st(&f[0]).as_str() {
                     "&" => Ty::Ref(false, Box::new(t)),
-                    "&mut" => Ty::Ref(true, Box::new(t)),
+                    "&mut" => {
+                        // `&mut x` で x の値を後から差し替えられるので、x の `'static` の印を外す。
+                        if nname(&f[1]) == "Path" {
+                            let segs = strs(&nf(&f[1])[0]);
+                            if segs.len() == 1 {
+                                self.set_static(&segs[0], false);
+                            }
+                        }
+                        Ty::Ref(true, Box::new(t))
+                    }
                     // 参照は透過的なので、参照でない型の `*` も同じ型 (型が決まらないときは Unknown)。
                     "*" => match self.resolve(&t) {
                         Ty::Ref(_, x) => *x,
@@ -3338,11 +3401,18 @@ impl<'a> TypeCk<'a> {
                 // `&a` / `&mut a` で取り込んだ名前は、本体では `&T` / `&mut T` (move は `T` のまま)。
                 // 取り込んだ値の型も覚える (spawn の `Send` 検査 (5.5) は、推論の終わりに型を決めてから見る)。
                 let mut caps: Vec<(String, String, Ty)> = vec![];
+                let mut statics: HashSet<String> = HashSet::new();
                 for c in items(&f[2]) {
                     let (Some(V::S(k)), Some(V::S(n))) = (items(c).first(), items(c).get(1)) else { continue };
                     let Some(t) = self.lookup(n) else { continue };
                     caps.push((k.clone(), n.clone(), t.clone()));
+                    if k == "&mut" {
+                        self.set_static(n, false);
+                    }
                     if k == "move" {
+                        if self.lookup_static(n) {
+                            statics.insert(n.clone());
+                        }
                         continue;
                     }
                     // Copy な型 (整数など) は、読むだけなら値のままで害がない。移せる (Copy でない) 型だけ参照にする。
@@ -3354,6 +3424,7 @@ impl<'a> TypeCk<'a> {
                     }
                 }
                 self.closure_caps.insert(node.clone(), caps);
+                self.closure_static.insert(node.clone(), statics);
                 for p in items(&f[0]) {
                     let ty = from_v(&items(p)[1], &gn);
                     self.bind(&st(&items(p)[0]), ty.clone());
@@ -3480,6 +3551,7 @@ impl<'a> TypeCk<'a> {
                     self.diag("E2021", "refutable pattern in `let`: a `let` takes only irrefutable patterns; use `match`".into(), nline(s));
                 }
                 let rhs = self.infer(&f[3]);
+                let init_static = self.static_expr(&f[3]);
                 let src = self.last_site;
                 let gn = self.def().gnames();
                 let ty = if !is_nil(&f[2]) {
@@ -3504,6 +3576,9 @@ impl<'a> TypeCk<'a> {
                     self.mutable.extend(b);
                 }
                 self.bind_pat_from(&f[0], &ty, src, nline(s));
+                if init_static && nname(&f[0]) == "PBind" {
+                    self.set_static(&st(&nf(&f[0])[0]), true);
+                }
                 let mut names = vec![];
                 pat_binds(&f[0], &mut names);
                 for n in names {
@@ -3516,6 +3591,13 @@ impl<'a> TypeCk<'a> {
             "Assign" => {
                 let target = self.infer(&f[0]);
                 let value = self.infer(&f[1]);
+                // 再代入された名前は、以後 `'static` と分かる印を外す (分岐の中の代入でも残さない)。
+                if nname(&f[0]) == "Path" {
+                    let segs = strs(&nf(&f[0])[0]);
+                    if segs.len() == 1 {
+                        self.set_static(&segs[0], false);
+                    }
+                }
                 // 変数への代入は従来の検査 (E2020) が見る。フィールド・添字への代入をここで見る。
                 if nname(&f[0]) != "Path" || strs(&nf(&f[0])[0]).len() > 1 {
                     if let Err(e) = self.unify2(&target, &value) {
@@ -5175,6 +5257,28 @@ pub(crate) fn conv_hint(want: &str, got: &str) -> String {
             g = got
         )
     }
+}
+
+/// 関数ヘッダの戻り値の型が `'static` の参照だけか (`-> &'static str`)。参照を含まない型は false。
+fn ret_is_static(header: &str) -> bool {
+    let Some(head) = header.split(" uses ").next() else { return false };
+    let Some(mut i) = head.find(|c| c == '(' || c == '[') else { return false };
+    if head.as_bytes()[i] == b'[' {
+        let Some(j) = match_close(head, i) else { return false };
+        i = j + 1;
+    }
+    if head.as_bytes().get(i) != Some(&b'(') {
+        return false;
+    }
+    let Some(close) = match_close(head, i) else { return false };
+    let Some((_, ret)) = head[close + 1..].split_once("->") else { return false };
+    let amp = ret.matches('&').count();
+    amp > 0 && amp == ret.matches("&'static").count()
+}
+
+/// `'static` と分かる束縛に付ける印の名前 (変数名と衝突しないよう、空白と制御文字を含む)。
+fn static_mark(name: &str) -> String {
+    format!("\u{1}static {}", name)
 }
 
 /// 型 V の中に参照 (`&T` / `&mut T`) があるか ('static でないことの近似。5.1 の `Box<dyn>`)。
