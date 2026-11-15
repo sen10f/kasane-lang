@@ -917,7 +917,14 @@ impl Interp {
                         let pick_self = if name == "min" { c <= 0 } else { c > 0 };
                         return Ok(if pick_self { v.clone() } else { dr(&a0) });
                     }
-                    "hash" => return Ok(Val::Unit),
+                    // 整数・bool・char の `Hash` (仕様 4.2): 値のリトルエンディアンのバイト列を `Fnv64.write_bytes` へ渡す。
+                    "hash" => {
+                        let bytes = hash_bytes(v);
+                        if let Some(&wi) = self.p.funcs.get("core.hash.Fnv64.write_bytes") {
+                            self.call_def(wi, vec![a0.clone(), Val::Arr(new_list(bytes))])?;
+                        }
+                        return Ok(Val::Unit);
+                    }
                     // `core.fmt.Debug` / `Display` の組み込み実装 (仕様 4.2): 整形先の Formatter に追記する。
                     "debug_fmt" | "display_fmt" => return self.fmt_into(name, v, &a0),
                     _ => {}
@@ -1607,6 +1614,26 @@ impl Interp {
             _ => panic(format!("no method {} on map", name)),
         }
     }
+}
+
+/// `Hash` の組み込み実装 (仕様 4.2) が `Fnv64` へ渡すバイト列: 整数は型幅のリトルエンディアン、bool は 1 バイト、char は 4 バイト。
+fn hash_bytes(v: &Val) -> Vec<Val> {
+    let (x, w): (i128, usize) = match v {
+        Val::Bool(b) => (i128::from(*b), 1),
+        Val::Char(c) => (*c as i128, 4),
+        Val::Int(x, t) => {
+            let w = match t.unwrap_or("i32") {
+                "u8" | "i8" => 1,
+                "u16" | "i16" => 2,
+                "u64" | "i64" | "usize" | "isize" => 8,
+                "u128" | "i128" => 16,
+                _ => 4,
+            };
+            (*x, w)
+        }
+        _ => (0, 0),
+    };
+    (0..w).map(|i| int((x >> (8 * i)) & 0xff, "u8")).collect()
 }
 
 /// 文字列の引数 (なければ空)。

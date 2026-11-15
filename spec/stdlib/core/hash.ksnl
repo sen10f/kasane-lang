@@ -6,3 +6,26 @@ trait core.hash.Hasher pub
     fn finish(self: &Self) -> u64 uses [] panics never
     fn write_bytes(self: &mut Self, bytes: &[u8]) -> () uses [] panics never
 end core.hash.Hasher
+
+impl core.hash.Hasher for core.hash.Fnv64
+fn core.hash.Fnv64.finish(self: &core.hash.Fnv64) -> u64 uses [] panics never impls core.hash.Hasher
+    self.state
+end core.hash.Fnv64.finish
+
+fn core.hash.Fnv64.new() -> core.hash.Fnv64 const uses [] panics never pub
+    core.hash.Fnv64 { state: 14695981039346656037u64 }
+end core.hash.Fnv64.new
+
+fn core.hash.Fnv64.write_bytes(self: &mut core.hash.Fnv64, bytes: &[u8]) -> () uses [] panics never impls core.hash.Hasher
+    let mut i = 0usize
+    while i < bytes.len() {
+        match bytes.get(i) {
+            Some(b) => {
+                self.state = (self.state ^ core.num.u64.from_u8(*b)).wrapping_mul(1099511628211u64)
+            }
+            None => {
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+end core.hash.Fnv64.write_bytes
