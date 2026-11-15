@@ -1,0 +1,13 @@
+// expect: E3010
+fn t.bad() -> usize uses [alloc] panics never
+    let mut m = alloc.collections.BtreeMap.new(std.alloc.SYSTEM)
+    let mut k = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(k.push_str("abc"))
+    core.mem.drop(m.insert(k.as_str(), 1u32))
+    core.mem.drop(k.push_str("x"))
+    m.len()
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics never
+    Ok(())
+end t.main
