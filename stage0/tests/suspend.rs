@@ -427,3 +427,122 @@ end t.main
     );
     assert!(!codes.iter().any(|c| c == "E3050"), "codes: {:?}", codes);
 }
+
+// ------------------------------------------------------------ 第 3 段: dyn 越しの中断と Fn 境界の suspend (仕様 5.6)
+
+/// `dyn` の先のメソッドが `uses [suspend]` (トレイトのシグネチャで宣言) のとき、`block_on` の中で実行でき、結果は一致する。
+#[test]
+fn dyn_method_with_suspend_runs_under_block_on() {
+    let src = with_say(
+        r#"trait t.Waiter[E: uses, P: panics]
+    fn wait_one(self: &Self) -> u32 uses [E] panics P
+end t.Waiter
+
+type t.Pause
+    n: u32
+end t.Pause
+
+impl t.Waiter<[suspend], may> for t.Pause
+fn t.Pause.wait_one(self: &t.Pause) -> u32 uses [suspend] panics may impls t.Waiter<[suspend], may>
+    std.task.yield_now()
+    self.n
+end t.Pause.wait_one
+
+fn t.call(w: &dyn t.Waiter<[suspend], may>) -> u32 uses [suspend] panics may
+    let a = w.wait_one()
+    std.task.yield_now()
+    a.wrapping_add(1u32)
+end t.call
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    let p = t.Pause { n: 4u32 }
+    let r = std.task.block_on(fn() -> u32 capture [] {
+        t.call(&p)
+    })
+    if r == 5u32 {
+        t.say("dyn ok")
+    } else {
+        t.say("dyn bad")
+    }
+end t.main
+"#,
+    );
+    let (out, rc, err) = run_src("dyn_suspend_runs", &src);
+    assert_eq!((out.as_str(), rc), ("dyn ok\n", Some(0)), "{}", err);
+}
+
+/// `dyn` 越しの中断するメソッドを、`suspend` を宣言しない関数から呼ぶと E4001 (効果の伝播は 5.1 の規則どおり)。
+#[test]
+fn dyn_suspend_method_from_pure_caller_is_e4001() {
+    let src = r#"trait t.Waiter[E: uses, P: panics]
+    fn wait_one(self: &Self) -> u32 uses [E] panics P
+end t.Waiter
+
+type t.Pause
+    n: u32
+end t.Pause
+
+impl t.Waiter<[suspend], may> for t.Pause
+fn t.Pause.wait_one(self: &t.Pause) -> u32 uses [suspend] panics may impls t.Waiter<[suspend], may>
+    std.task.yield_now()
+    self.n
+end t.Pause.wait_one
+
+fn t.plain(w: &dyn t.Waiter<[suspend], may>) -> u32 uses [] panics may
+    w.wait_one()
+end t.plain
+
+fn t.main() -> () uses [io.console] panics may
+    let p = t.Pause { n: 4u32 }
+    core.check.eq(t.plain(&p), 4u32)
+end t.main
+"#;
+    let codes = check_codes("dyn_suspend_pure", src);
+    assert!(codes.iter().any(|c| c == "E4001"), "{:?}", codes);
+}
+
+/// `Fn` 境界の効果実引数 `E` に `suspend` が入る形: 中断する閉包を `block_on` の中で渡すと、同じ結果になる。
+#[test]
+fn fn_bound_suspend_closure_runs_under_block_on() {
+    let src = with_say(
+        r#"fn t.apply[F: core.ops.FnOnce<(), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [E] panics P
+    f()
+end t.apply
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    let r = std.task.block_on(fn() -> u32 capture [] {
+        t.apply(fn() -> u32 capture [] {
+            std.task.yield_now()
+            3u32
+        })
+    })
+    if r == 3u32 {
+        t.say("fn ok")
+    } else {
+        t.say("fn bad")
+    }
+end t.main
+"#,
+    );
+    let (out, rc, err) = run_src("fn_bound_suspend_runs", &src);
+    assert_eq!((out.as_str(), rc), ("fn ok\n", Some(0)), "{}", err);
+}
+
+/// `Fn` 境界に中断する閉包を渡しても、呼び出し側が `suspend` を宣言しなければ E4001 (`E` の和に `suspend` が入る)。
+#[test]
+fn fn_bound_suspend_closure_from_pure_caller_is_e4001() {
+    let src = r#"fn t.apply[F: core.ops.FnOnce<(), u32, E, P>, E: uses, P: panics](f: F) -> u32 uses [E] panics P
+    f()
+end t.apply
+
+fn t.main() -> () uses [io.console] panics may
+    let r = t.apply(fn() -> u32 capture [] {
+        std.task.yield_now()
+        3u32
+    })
+    core.check.eq(r, 3u32)
+end t.main
+"#;
+    let codes = check_codes("fn_bound_suspend_pure", src);
+    assert!(codes.iter().any(|c| c == "E4001"), "{:?}", codes);
+}
