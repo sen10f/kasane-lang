@@ -306,3 +306,18 @@ void *ksn_ext_resolve(const char *lib, const char *sym, void **slot) {
     return 0;
 }
 #endif
+
+
+#if defined(__wasm__)
+/* wasm には OS の乱数源が無い (WASI の random_get は未対応)。`sysrt.c` の `ksn_rt_sys_random` と同じ規約で、
+ * 失敗 (ENOSYS = 38、ErrorKind の Other = 9) を返す。`std.rand.fill_secure` は Err になり、`Rng.from_entropy` は終了する。
+ * ネイティブでは `sysrt.c` の定義を使う (両方をリンクするので、ここでは wasm だけに置く)。 */
+i64 ksn_rt_sys_random(unsigned char *p, unsigned long long n, int *e) {
+    (void)p;
+    (void)n;
+    if (!e) __builtin_trap(); /* 致命的な形 (`Rng.from_entropy`): 0 の種で続けない */
+    e[0] = 9;
+    e[1] = 38;
+    return -1;
+}
+#endif

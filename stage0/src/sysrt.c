@@ -9,6 +9,9 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#ifdef _WIN32
+#define _CRT_RAND_S /* rand_s (乱数の OS 源) を出す */
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +20,9 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#if defined(__linux__)
+#include <sys/random.h> /* getrandom(2) */
+#endif
 
 #ifdef _WIN32
 #include <io.h>
@@ -79,6 +85,65 @@ static i64 fail_net(i32 *e) {
     e[0] = K_OTHER;
     e[1] = -1;
     return -1;
+}
+
+/* OS の乱数で `n` バイトを `p` に書く (std.rand.fill_secure と Rng.from_entropy の源。設計_KIR.md 26 章)。
+ * Linux は getrandom(2) (無ければ /dev/urandom)、Windows は rand_s、ほかの Unix は /dev/urandom。
+ * 成功は 0、失敗は -1 (e[0..2] にエラー)。インタプリタの natives.rs の os_random と同じ源。 */
+/* 失敗: `e` が NULL なら (致命的な形。`Rng.from_entropy`) 文言を出して終了コード 101 で終わる。そうでなければ Err にする。 */
+static i64 random_fail(i32 *e, int err) {
+    if (!e) {
+        fputs("ksn: std.rand.Rng.from_entropy: OS の乱数源が読めない\n", stderr);
+        exit(101);
+    }
+    return fail(e, err);
+}
+
+i64 ksn_rt_sys_random(u8 *p, u64 n, i32 *e) {
+#ifdef _WIN32
+    u64 i = 0;
+    while (i < n) {
+        unsigned int w;
+        if (rand_s(&w) != 0) return random_fail(e, EIO);
+        for (int k = 0; k < 4 && i < n; k++) p[i++] = (u8)(w >> (8 * k));
+    }
+    return 0;
+#else
+#if defined(__linux__)
+    u64 got = 0;
+    while (got < n) {
+        ssize_t r = getrandom(p + got, (size_t)(n - got), 0);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            if (errno == ENOSYS) break; /* 古いカーネル: /dev/urandom へ */
+            return random_fail(e, errno);
+        }
+        got += (u64)r;
+    }
+    if (got == n) return 0;
+    p += got;
+    n -= got;
+#endif
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return random_fail(e, errno);
+    u64 k = 0;
+    while (k < n) {
+        ssize_t r = read(fd, p + k, (size_t)(n - k));
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            int err = errno;
+            close(fd);
+            return random_fail(e, err);
+        }
+        if (r == 0) {
+            close(fd);
+            return random_fail(e, EIO);
+        }
+        k += (u64)r;
+    }
+    close(fd);
+    return 0;
+#endif
 }
 
 /* str を NUL 終端の C 文字列にする。NUL を含むなら NULL (*nul = 1)、確保に失敗しても NULL (*nul = 0)。 */

@@ -1033,12 +1033,24 @@ pub(crate) fn scrut_begin(lw: &mut Lw, scrut: &V, sv: VId, pats: &[&V]) -> LR<Op
     }
     let covers: Vec<Cover> = pats.iter().map(|p| pat_cover(lw, p, t)).collect::<LR<_>>()?;
     let moves = covers.contains(&Cover::All);
-    // 構造体のフィールド (場所) の値を対象にする `match`: 所有物を束縛しない腕だけなら借りて見るだけ。束縛するなら部分的な移動が要る。
+    // 構造体のフィールド (場所) の値を対象にする `match`: 所有物を束縛しない腕だけなら借りて見るだけ。
+    // 束縛する腕があるなら、フィールドから移し出す (部分的な移動。元のフィールドは空になり、`match` が値を所有する)。
     if peeked {
-        if moves {
-            return lw.err(nline(scrut), "フィールドの値を所有物を束縛する match の対象にする形 (部分的な移動) は段階 1 の対象外");
+        if !moves {
+            return Ok(Some(Scrut { owned: false, t, covers }));
         }
-        return Ok(Some(Scrut { owned: false, t, covers }));
+        let line = nline(scrut);
+        let Some((s, names)) = super::own::chain_of(lw, scrut) else {
+            return lw.err(line, "フィールドの値を所有物を束縛する match の対象にする形 (部分的な移動) は段階 1 の対象外");
+        };
+        if names.is_empty() {
+            return lw.err(line, "フィールドの値を所有物を束縛する match の対象にする形 (部分的な移動) は段階 1 の対象外");
+        }
+        if let Some(root) = root_name(scrut) {
+            lw.own_emit(&root, s, crate::kir::OwnKind::Part);
+        }
+        field_clear(lw, s, &names, sv, line)?;
+        return Ok(Some(Scrut { owned: true, t, covers }));
     }
     let slot = val_slot(lw, scrut);
     if let (Some(s), true) = (slot, moves) {
@@ -1047,6 +1059,15 @@ pub(crate) fn scrut_begin(lw: &mut Lw, scrut: &V, sv: VId, pats: &[&V]) -> LR<Op
         }
     }
     Ok(Some(Scrut { owned: slot.is_none() || moves, t, covers }))
+}
+
+/// `x.f.g` の根の局所変数の名前 (`x`)。根が名前でなければ `None`。
+fn root_name(e: &V) -> Option<String> {
+    match nname(e) {
+        "Path" => strs(&nf(e)[0]).first().cloned(),
+        "Field" => root_name(&nf(e)[0]),
+        _ => None,
+    }
 }
 
 /// 腕 `i` の頭 (パターンが当たった後): 所有していて、この腕が所有物を束縛しないなら、対象の値を丸ごと解放する。
@@ -1191,33 +1212,57 @@ pub(crate) fn pat_srcs(lw: &Lw, p: &V, src: &Src, out: &mut BTreeMap<String, Src
 /// 元の場所には「空」の値 (`vec` は `{null, 0, 0}`、`Option` は `None`、構造体・タプルは所有物のフィールドだけ空) を書くので、
 /// 元の構造体を後で解放しても何も起きない。別のフィールドの使用や、移したフィールドへの再代入では元に戻る (4.1)。
 pub(crate) fn field_move(lw: &mut Lw, s: usize, names: &[String], line: usize) -> LR<VId> {
+    let v = field_read(lw, s, names, line)?;
+    field_clear(lw, s, names, v, line)?;
+    Ok(v)
+}
+
+/// 局所変数 `s` のフィールド `names` の現在の値 (読むだけ)。
+fn field_read(lw: &mut Lw, s: usize, names: &[String], line: usize) -> LR<VId> {
     let (p, t) = lw.slots[s];
     match t {
         Ty::Ref(..) => lw.err(line, "参照を通したフィールドの移動は段階 1 の対象外 (借用の中身を移すことになる)"),
         Ty::Agg(_) if lw.is_mem_val(p) => {
-            let mut cur = p;
-            for n in names {
-                cur = lw.field_addr(cur, n, line)?;
-            }
+            let cur = field_addr_path(lw, p, names, line)?;
             let Ty::Ref(_, pt) = lw.vty(cur) else { return lw.err(line, "フィールドのアドレスが参照でない") };
-            let ft = pt.ty();
-            let v = lw.emit(ft, Op::Load(cur));
-            let nv = null_value(lw, v, ft, line)?;
-            lw.emit(Ty::Unit, Op::Store { ptr: cur, val: nv });
-            Ok(v)
+            Ok(lw.emit(pt.ty(), Op::Load(cur)))
         }
         Ty::Agg(_) => {
             let base = lw.read_slot(s);
-            let v = lw.field_path(base, names, line)?;
-            let ft = lw.vty(v);
-            let nv = null_value(lw, v, ft, line)?;
-            let mut segs = vec![String::new()];
-            segs.extend(names.iter().cloned());
-            lw.store_segs(s, &segs, nv, line, false)?;
-            Ok(v)
+            lw.field_path(base, names, line)
         }
         _ => lw.err(line, "フィールドの移動の根が構造体でない"),
     }
+}
+
+/// `field_read` で読んだ値 `v` (所有物を持つ) を、元のフィールドから移し出した後の「空」にする (解放しても何も起きない)。
+/// `match` の対象のフィールドを束縛付きの腕で移すときも、同じ後始末を使う。
+pub(crate) fn field_clear(lw: &mut Lw, s: usize, names: &[String], v: VId, line: usize) -> LR<()> {
+    let (p, t) = lw.slots[s];
+    let ft = lw.vty(v);
+    let nv = null_value(lw, v, ft, line)?;
+    match t {
+        Ty::Agg(_) if lw.is_mem_val(p) => {
+            let cur = field_addr_path(lw, p, names, line)?;
+            lw.emit(Ty::Unit, Op::Store { ptr: cur, val: nv });
+        }
+        Ty::Agg(_) => {
+            let mut segs = vec![String::new()];
+            segs.extend(names.iter().cloned());
+            lw.store_segs(s, &segs, nv, line, false)?;
+        }
+        _ => return lw.err(line, "フィールドの移動の根が構造体でない"),
+    }
+    Ok(())
+}
+
+/// 集成体への参照 (メモリ上の局所) `p` からフィールドの列 `names` をたどったアドレス。
+fn field_addr_path(lw: &mut Lw, p: VId, names: &[String], line: usize) -> LR<VId> {
+    let mut cur = p;
+    for n in names {
+        cur = lw.field_addr(cur, n, line)?;
+    }
+    Ok(cur)
 }
 
 /// 所有物を持つ値 `old` (型 `t`) の「空」の値。解放しても何も起きない。作れない型 (ペイロードを持つ列挙型など) は拒否する。
