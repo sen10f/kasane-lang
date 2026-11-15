@@ -2770,7 +2770,7 @@ fn kir_borrowck_has_no_false_positives() {
     eprintln!("kir_borrowck (correct code): checked {} unknown {} false positives {}", checked, unknown, fps.len());
     assert!(fps.is_empty(), "KIR borrowck false positives:\n{}", fps.join("\n"));
     // 下ろせる数が減らないこと (現在値 125 を下限にする。下ろしの対応が増えたら上げる)。
-    assert!(checked >= 125, "only {} correct programs were checked on KIR", checked);
+    assert!(checked >= 130, "only {} correct programs were checked on KIR", checked);
 }
 
 /// `unsound/` の全件で、AST の借用検査 (E3010 / E3030) と KIR の検査の結果を並べる。
@@ -2803,9 +2803,9 @@ fn kir_borrowck_agreement_on_unsound_does_not_drop() {
         }
     }
     eprintln!("kir_borrowck (unsound): checked {} agree {} kir_reject {} unknown {}; mismatches: {}", checked, agree, kir_reject, unknown, mism.join(", "));
-    assert!(checked >= 197, "KIR checked only {} unsound programs", checked);
-    assert!(agree >= 190, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
-    assert!(kir_reject >= 58, "KIR rejects only {}", kir_reject);
+    assert!(checked >= 223, "KIR checked only {} unsound programs", checked);
+    assert!(agree >= 213, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
+    assert!(kir_reject >= 77, "KIR rejects only {}", kir_reject);
 }
 
 /// 借用検査の注釈 (`borrow.*` / `scope.end`。設計_KIR.md 24 章) は実行に影響しない: KIR のテキストに出て、
@@ -2903,10 +2903,10 @@ fn kir_own_linearity_agreement_floor() {
     eprintln!("kir own (unsound): checked {} agree {} kir_reject {}; correct code checked {} false positives {:?}", checked, agree, kir_reject, ok_checked, fps);
     assert!(fps.is_empty(), "KIR linearity false positives on correct code:\n{}", fps.join("\n"));
     // 下限 (現在値。下げない): 検査できた不正・一致・KIR の拒否・正しいコードの検査数。
-    assert!(checked >= 197, "KIR (own) checked only {} unsound programs", checked);
-    assert!(agree >= 155, "agreement dropped to {}", agree);
+    assert!(checked >= 223, "KIR (own) checked only {} unsound programs", checked);
+    assert!(agree >= 181, "agreement dropped to {}", agree);
     assert!(kir_reject >= 59, "KIR (own) rejects only {}", kir_reject);
-    assert!(ok_checked >= 125, "only {} correct programs were checked by the KIR linearity", ok_checked);
+    assert!(ok_checked >= 130, "only {} correct programs were checked by the KIR linearity", ok_checked);
 }
 
 /// 第 5 段 (計測): AST の借用・線形の検査を外し、KIR の検査だけ (隠しの切り替え `KSN_BORROWCK=kir-only`) で見る。
@@ -2960,6 +2960,6 @@ fn kir_only_rejects_floor() {
     eprintln!("kir-only: borrow/linear expected {} rejected {}; correct code rejected {:?}", expected, rejected, fps);
     assert!(fps.is_empty(), "kir-only rejects correct code:\n{}", fps.join("\n"));
     // 下限 (現在値。下げない)。
-    assert!(expected >= 240, "only {} borrow/linear programs in unsound/", expected);
-    assert!(rejected >= 112, "kir-only rejects only {} of {}", rejected, expected);
+    assert!(expected >= 268, "only {} borrow/linear programs in unsound/", expected);
+    assert!(rejected >= 131, "kir-only rejects only {} of {}", rejected, expected);
 }
