@@ -45,7 +45,7 @@ fn trait_side_key(t: &Src) -> Option<String> {
 }
 
 /// 受け手の置き場所 (呼び出しの形ごと)。
-pub(super) enum Place<'v> {
+pub(crate) enum Place<'v> {
     /// 局所の名前 `x` か、フィールドの経路 `x.f.g` (`segs` の先頭が局所)。
     Path(Vec<String>),
     /// 式 (`*r` は参照をたどる)。

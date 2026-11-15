@@ -344,19 +344,21 @@ impl<'a> Low<'a> {
     }
 
     /// 名前 `name` のメソッドが、レシーバを借りた結果を返すか。(借りるなら `self` が可変か)
+    /// 複数の候補 (トレイト実装など) があるとき、少なくとも 1 つが該当すれば `Some` を返す (fail-closed)。
     fn method_borrows(&self, name: &str) -> Option<bool> {
         let cands = self.p.method_idx.get(name)?;
         let mut any_mut = false;
+        let mut found = false;
         for &i in cands {
             let d = &self.p.defs[i];
-            let Some((_, t)) = d.params.first() else { return None };
+            let Some((_, t)) = d.params.first() else { continue };
             // 戻り値が借用を含む: 参照型・ライフタイム引数・参照を欄に持つ構造体 (`-> std.json.Value` の `doc: &'a Doc`)。
-            if tag(t) != "ref" || !(Self::ret_borrows(d) || self.ret_struct_holds_ref(d)) {
-                return None;
+            if tag(t) == "ref" && (Self::ret_borrows(d) || self.ret_struct_holds_ref(d)) {
+                found = true;
+                any_mut |= matches!(tel(t, 1), V::B(true));
             }
-            any_mut |= matches!(tel(t, 1), V::B(true));
         }
-        Some(any_mut)
+        if found { Some(any_mut) } else { None }
     }
 
     // ------------------------------------------------------------ 借用の出どころ
@@ -1030,9 +1032,18 @@ impl<'a> Low<'a> {
             }
             _ => {}
         }
-        let mut srcs = self.loan_sources(e);
+        // `&[&x]` (リテラルを借りる): 借りた値の中の参照 (`&x`) が、受け手へ入る (リテラルの一時の借用ではなく)。
+        let lit_borrow = nname(e) == "Unary" && matches!(st(&nf(e)[0]).as_str(), "&" | "&mut") && matches!(nname(&nf(e)[1]), "ArrayE" | "TupleE" | "ArrayRep" | "StructLit");
+        let mut srcs = if lit_borrow { self.lit_sources(&nf(e)[1]) } else { self.loan_sources(e) };
         if srcs.is_empty() {
             srcs = self.lit_sources(e);
+        }
+        // `&arr` (局所の変数を借りる): その変数が持つ借用 (`[&x]` の `x`) も受け手へ入る。
+        if nname(e) == "Unary" && matches!(st(&nf(e)[0]).as_str(), "&" | "&mut") && nname(&nf(e)[1]) == "Path" {
+            let segs = crate::check::strs(&nf(&nf(e)[1])[0]);
+            if segs.len() == 1 {
+                srcs.push(Src::Alias(segs[0].clone()));
+            }
         }
         if !srcs.is_empty() {
             self.hold(n, Holder::Place { root: root.to_string(), path: path.to_vec() }, srcs);
@@ -1089,9 +1100,29 @@ impl<'a> Low<'a> {
     /// `push` / `insert` など、コンテナに値を入れるメソッド。値の式に入る借用を、
     /// レシーバの場所 (根の変数 + 道) に保存されたローンとして記録する。
     fn store_into(&mut self, n: usize, name: &str, root: &str, path: &[String], args: &[V]) {
+        // `insert` は、値だけでなく引数の全部を入れる: `HashMap::insert(k, v)` / `BtreeMap::insert(k, v)` の
+        // キー (0 番目) も格納される。`Vec::insert(i, v)` の添字は借用を持たないので、何も保存しない。
+        // `extend` / `extend_from_slice` は、渡された列の要素 (参照を含む) を入れる。
+        // 引数の中の参照を受け手が保存する (格納する) メソッド。`&mut` の引数 (`append(&mut other)`) は移すのではなく
+        // 相手を借りるだけなので、格納しない。
+        if matches!(name, "insert" | "extend" | "extend_from_slice" | "append") {
+            for a in args {
+                if nname(a) == "Unary" && st(&nf(a)[0]) == "&mut" {
+                    continue;
+                }
+                if nname(a) == "StructLit" {
+                    let srcs = self.lit_sources(a);
+                    if !srcs.is_empty() {
+                        self.hold(n, Holder::Place { root: root.to_string(), path: path.to_vec() }, srcs);
+                    }
+                    continue;
+                }
+                self.store_value(n, root, path, a);
+            }
+            return;
+        }
         let slot = match name {
             "push" | "push_back" | "push_front" => 0,
-            "insert" => 1,
             _ => return,
         };
         let Some(a) = args.get(slot) else { return };
@@ -1452,7 +1483,7 @@ impl<'a> Low<'a> {
     /// レシーバに `&mut self` で触れるときのアクセスの種類。
     fn recv_kind(&self, name: &str) -> Acc {
         match self.self_mode(name) {
-            SelfMode::Mut if matches!(name, "push" | "push_back" | "push_front" | "insert") => Acc::MutKeep,
+            SelfMode::Mut if matches!(name, "push" | "push_back" | "push_front" | "insert" | "extend" | "extend_from_slice" | "append") => Acc::MutKeep,
             SelfMode::Mut => Acc::MutB,
             _ => Acc::Read,
         }

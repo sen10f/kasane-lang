@@ -135,7 +135,8 @@ impl<'a> Lw<'a> {
     pub(super) fn mono_instance(&mut self, di: usize, tm: &HashMap<String, Src>, line: usize) -> LR<String> {
         let p = self.p;
         let cd = &p.defs[di];
-        let shown: Vec<String> = cd.generics.iter().filter(|g| g.0 == "type").map(|g| tm[&g.1].show()).collect();
+        // 名前に空白を入れない (KIR のテキストの関数のヘッダは空白で区切る)。
+        let shown: Vec<String> = cd.generics.iter().filter(|g| g.0 == "type").map(|g| tm[&g.1].show().replace(", ", ",")).collect();
         let key = format!("{}<{}>", cd.name, shown.join(","));
         self.callees.insert(key.clone());
         if !self.mono_done.borrow_mut().insert(key.clone()) {

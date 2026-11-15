@@ -1,0 +1,9 @@
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [alloc] panics may
+    let mut x = 10u32
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.extend_from_slice(&[&x]))
+    x = 20u32
+    core.check.eq(v.len(), 1usize)
+    Ok(())
+end t.main

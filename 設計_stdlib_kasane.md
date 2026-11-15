@@ -88,23 +88,73 @@
 - 整数・`bool`・`char` の `Hash` (仕様 4.2 の組み込み) は、木走査で値のリトルエンディアンのバイト列を `Fnv64.write_bytes` へ渡す (`natives.rs` の `hash_bytes`)。以前は何もしなかった (`Hash` の結果が常に同じで、索引が 1 本の連なりになっていた)。反復順は挿入順なので、ハッシュの値は出力に影響しない。
 - `String` のキーは `Hash` の既存の実装 (`alloc/string.sig`) を通す。木走査での動作は未確認 (Kasane 版の試験は整数キーだけ)。KIR での下ろしは段 2 の対象。
 
-### 段 2 (未): KIR の下ろし (`kir_lower_map.rs` を外す)
+### 段 2 (済): KIR の下ろし (`kir_lower_map.rs` を外した、2026-11-15、`std/map-native`)
 
-現状は KIR の `HashMap` が専用の 24 バイトのヘッダ (`kir_lower_map.rs` の `Shape` は `ksz` 8 / 16 / 24 の 3 種類のキーだけ)。Kasane 版へ切り替えるには、下の 5 つが要る。確かめた結果 (2026-11-15、一時的な計測):
+KIR の `HashMap` / `BtreeMap` は、専用の 24 バイトのヘッダ (`kir_lower_map.rs` と `kir_lower_mapstr.rs`、合わせて約 2,000 行) から、
+`spec/stdlib/alloc/collections.ksnl` の Kasane 版の集成体 (`{cells: Buf<HashCell<K, V>>, slots: usize}` と `{entries: Buf<MapEntry<K, V>>}`) に変えた。
+メソッドは利用者の総称型と同じ経路で、単相インスタンス (`alloc.collections.HashMap.insert<K,V,A>` など) として下ろす。
+前提の 5 つは次のように解いた:
 
-1. **型表**: `core.hash.Fnv64` を `STD_TYPES` に足すと `Fnv64.new` が下りる (足した実験で確認。戻した)。`HashCell` / `HashMapIter` / `MapEntry` は利用者の型でも `STD_TYPES` でもないので、`lower_ty` が `未対応` で拒否する (`kir_lower_agg.rs`)。
-2. **整数の `hash`**: KIR に `x.hash(&mut state)` の下ろしがない (`メソッド hash は段階 1 の対象外`)。`FNV` の 1 バイトずつの更新を IR で出すか、`write_bytes` へ `[u8; N]` を渡す。
-3. **`HashMap` の表現**: `HashMap` は `kir_lower_agg.rs` で `vec_hdr()` (専用のヘッダ) になっている。`cells` 1 本の構造体にすれば 24 バイトで `Vec` と同じ配置になり、`Vec` の方式 (基本メソッドを単相インスタンスへ、ヘッダのアドレスを `&self` に) を使える。ただし `slots` を `cells[0]` の `Header(usize)` に入れる必要がある (構造体を 1 本のフィールドにする)。
-4. **反復**: KIR は自作の反復子の `for` を下ろさない (`kir_lower_iter.rs` の対象外に「自作の反復子」)。`HashMapIter` の `for` と `next` 呼び出しは、その下ろしが要る。
-5. **`new`**: `HashMap.new` / `BtreeMap.new` は規範の宣言だけで本体がない。KIR のために Kasane の本体を書くと、木走査も Kasane 版を見る (`NATIVE_NAMES` の扱いを確かめる必要がある)。
+1. **型表**: `core.hash.Fnv64` は `STD_TYPES` に入れた。`HashCell` / `HashMapIter` / `MapEntry` / `HashMap` / `BtreeMap` は
+   `is_kasane_std_generic` (`kir_lower_agg.rs`) で、利用者の総称型と同じく `intern_generic` で集成体にする。列挙子の値 `HashCell.Empty` は、型引数を
+   式の型 (型検査の結果) から取る (`variant_make` の `e`)。
+2. **整数の `hash`**: `x.hash(&mut state)` は `core.hash.fnv_int` (`hash.ksnl`、FNV-1a を型幅のバイトに対して回す) の呼び出しに下ろす。
+   木走査の `Hash` (`natives.rs` の `hash_bytes`) と同じバイト列。`&str` / `String` の `hash` は `Fnv64.write_bytes` へ、`eq` / `cmp` / `partial_cmp` は `str_eq` / `string_cmp_method` へ下ろす。
+3. **`HashMap` の表現**: 集成体 (32 バイト、`cells` の `Buf` が 24 バイト) で、フィールドの `Buf` は既存の `Buf` の下ろしを使う。
+   `HashMap.new` は KIR だけ `new_empty` (本体のある Kasane 版) を呼ぶ (`call` の振り分け)。木走査は `NATIVE_NAMES` の `Val::Map` のまま (本体のある定義が優先されるため、名前を変えた)。
+4. **反復子の `for`**: `for PAT in IT BODY` で `IT` が `next` を持つ集成体のとき、反復子を**スタックの局所**に置いて毎周 `next(&mut it)` を呼び、`Some(PAT)` を束縛する
+   (`user_iter_for`、`kir_lower_coll.rs`)。局所の反復子は従来の `user_iter` (値を合流の引数に載せる) のまま。値のままだと周ごとに初めの値へ戻るので、局所は番地で持つ。
+5. **`HashMap.new`**: 上の 3 と同じ。`new_empty` は `alloc.raw.Buf.new` と構造体の組み立てだけ。
 
-性能の表 (目安 1.2 倍以内) は段 2 が済むまで作れない。
+このほか、下ろしに足したもの: `core.mem.replace` (`mem_replace`)、列挙型の参照の `match` (`match e { E.A(x) => .. }` の `x` は番地。`FieldAddr` は列挙型に使えないので `PtrAdd`)、
+`Option<&T>` / `Option<&mut T>` の番地 (`bref`) を集成体の要素と `&mut` のスカラーにも広げた (`bref_ref`、`pick_elem` の `get` の要素)、
+`bref` の組の束縛 (`PTuple`)、`unwrap` の `Option<&T>` (`unwrap_bref`)、`&&str` の型 (`ref<fat>`)、
+総称型の名前に空白を入れない (KIR のテキストのヘッダは空白で区切るため)、欄が `&スカラー` で要素が値のときは一時の枠に置いて番地を渡す (`tuple_e`)。
 
-### 段 3 (調べた結果): チャネルと `HashMap` の型ごとの下ろし
+**借用の穴を塞いだ点**: `m.insert(k.as_str(), v)` のあと同じ関数で `k` を変えると、マップが解放後の文字列を読む。KIR の借用検査は、汎用の型 (マップ) の中に
+保存された借用を追わない。そこで、キーが `&str` で、同じ関数の本体に `k` を変えるメソッド (`push_str` など) があれば、下ろしを拒む
+(`call_method` の検査、理由は「元の String が関数の中で変更される」)。`ksn check` は通るが、KIR はこの形を下ろさない。
 
-- `kir_lower_map.rs` の型ごとの下ろしは、段 2 が済むまで外せない (上の 1〜5)。
-- チャネル (`std.sync`) は Kasane の `Mutex` + `Buf` の待ち行列に**移せない**。ネイティブの待ちは `ksn.thr.wait` (条件変数) と `ksn.thr.{lock,unlock}` で、`gen` / `blocked` / `live` の数で全員待ちの deadlock を検出する (設計_KIR.md 22.7)。Kasane の側に条件変数の原語がなく、待ちを Kasane から書けない。木走査 (協調実行) と VM は別の待ち方をする。移すには、条件変数を標準ライブラリの原語 (unsafe の境界の中) として決める必要がある。
+**残した下ろしと理由**: 集成体の値を読む `Op::Load` は、スカラー・ポインタ・集成体の番地だけ (集成体の番地からは欄を読む)。`Option<&スカラー>` は値のまま (設計_KIR.md 10.10)。
 
+**外した下ろし**: `kir_lower_map.rs` (1,333 行、`Kind::Map` / `Kind::BMap` の全部、`Shape` の 3 種類のキー、`try_for`、`drop_owned_keys`)、
+`kir_lower_mapstr.rs` (705 行、文字列キーの `BtreeMap` と `drop`)。残したもの (マップに依らない):
+`Fb` (関数の組み立て) は `kir_lower_fb.rs` へ、文字列の比較 (`string_order` / `string_cmp_method` / `const_str_call` と `ksn.bs.cmp`) は `kir_lower_strord.rs` へ移した。
+
+### 段 3 (済の部分と外せなかった部分): チャネル
+
+- `kir_lower_map.rs` の型ごとの下ろしは、段 2 で外した (上)。
+- チャネル (`std.sync`) は、Kasane の `Mutex` + `Buf` の待ち行列には**まだ移せない**。ネイティブの待ちは `ksn.thr.wait` (条件変数) と `ksn.thr.{lock,unlock}` で、
+  `gen` / `blocked` / `live` の数で全員待ちの deadlock を検出する (設計_KIR.md 22.7)。Kasane の側に条件変数の原語がなく、待ちを Kasane から書けない。
+  木走査 (協調実行) と VM は別の待ち方をする。移すには、条件変数を標準ライブラリの原語 (`unsafe` の境界の中) として決める必要がある (未決)。
+
+### 段 2・段 3 の性能 (ネイティブ、LLVM、`perf/run_perf.py`)
+
+制御した計測 (`perf/hashmap` の入力だけを N = 300,000 に増やした copy を `/tmp` で作り、`ksn build --release` の実行体を交互に 10 回ずつ走らせた。
+挿入 300,000 件と検索 600,000 件 (半分は不在)。単位 ms、中央値 (最小値)):
+
+| 版 | 中央値 | 最小値 |
+| --- | ---: | ---: |
+| 組み込みの KIR の下ろし (dev/plan、`kir_lower_map.rs`) | 68 | 63 |
+| Kasane 版 (本段) | 81 | 78 |
+
+比は 中央値 1.19、最小値 1.24。目安の 1.2 倍にほぼ並ぶが、わずかに超える。ハッシュは `Fnv64` の FNV-1a を型幅のバイトに対して回すので、
+組み込み (`kir_lower_map.rs` の混ぜ関数) より 1 件あたりの命令が多い。改善の候補は、整数キーの `fnv_int` の展開と、`find` の 2 段の `get`。
+
+`perf/run_perf.py` (N = 2,000、5 回の中央値。負荷の高い時間帯で、起動の時間 (1〜2 ms) が大半):
+hashmap 基準 6.0 ms / 新 1.3 ms、vecops 4.5 / 2.9、structs 2.6 / 1.6。入力が小さく、同じ時間帯の計測でないので、比としては使わない
+(退行は見えないが、ばらつきの範囲)。
+
+### 段 2・段 3 の検証
+
+- `tests/native_ratio.py`: 下限を下回らない (下の数字)。`ksn check-stdlib`: 0 件。examples・`selfhost/parse`・`apps/todo` の `check` は 0 件。
+- examples の全パッケージで `ksn build --backend llvm` が下り (バンドルの退避 0)、ネイティブと `ksn run` の出力が一致 (`kvlib` は library のため対象外)。
+- 新しいテスト `stage0/tests/kir_map_kasane.rs`: 構造体のフィールドに置いた `HashMap<String, 構造体>` を `self.map.insert` / `get` / `get_mut` で使う (記号表の必須形)、
+  `get_mut` が書いた値が残る、`for (k, v) in m.iter()` の挿入順 (削除後も相対順を保つ)、`BtreeMap<u32, _>` の操作。すべて木走査とネイティブ (退避なし) の出力が一致。
+- 既存のテストの期待の変更 (理由つき): `kir_lower3.rs` の `kir_map_reports_unsupported_methods_with_a_reason` は、`get_mut` が下りるようになったので
+  `kir_map_get_mut_in_a_match_lowers_and_writes_through` に置き換えた (限界の表示の試験から、値が書き換わる試験へ)。
+  `tooling.rs` の `str_slice_option_result_sig_methods_run_in_both` と `derived_cmp_and_iter_count_boundaries_run_native` は、`&str` の比較が
+  下りるようになったので、その 2 件 (`test_c_str_derived_cmp`、`test_g_str_boundaries`) の期待を「機械語で動く」に変えた。
 
 ## String (修正プラン 3-3 の残り、2026-11-15、`std/string-kasane`)
 

@@ -35,7 +35,12 @@ pub(super) fn field_segs(v: &V) -> Option<Vec<String>> {
 
 /// Kasane の定義 (`spec/stdlib` の `type` / `enum`) を持ち、利用者の型と同じ集成体として型表に入れる標準ライブラリの型 (設計_KIR.md 12.1)。
 /// 利用者のエラー型 (`shortener.error.Error` / `http.Error` など) がペイロードや変種に持つ標準型もここに入れる (段階 2)。
-pub const STD_TYPES: [&str; 44] = ["std.http.Decoder", "std.http.Error", "std.http.Framing", "std.http.Head", "std.http.Header", "std.http.Request", "std.tls.TlsAcceptor", "std.tls.Error", "std.tls.TlsStream", "std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering", "std.time.SystemTime", "std.datetime.DateTime", "std.datetime.Error", "std.log.Level", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.slice.IndexError", "std.json.Doc", "std.json.Error", "std.json.Kind", "std.json.Node", "std.json.Value"];
+pub const STD_TYPES: [&str; 45] = ["core.hash.Fnv64", "std.http.Decoder", "std.http.Error", "std.http.Framing", "std.http.Head", "std.http.Header", "std.http.Request", "std.tls.TlsAcceptor", "std.tls.Error", "std.tls.TlsStream", "std.process.Command", "std.process.Child", "std.process.ExitStatus", "std.sync.RecvError", "std.rand.Rng", "std.io.Error", "std.io.ErrorKind", "std.fs.File", "alloc.alloc.AllocError", "std.net.Error", "core.str.Utf8Error", "core.num.ParseIntError", "core.num.TryFromIntError", "std.alloc.System", "std.thread.SpawnError", "alloc.string.PushBytesError", "alloc.fmt.Spec", "std.fs.DirEntry", "std.fs.FileKind", "std.fs.Metadata", "core.cmp.Ordering", "std.time.SystemTime", "std.datetime.DateTime", "std.datetime.Error", "std.log.Level", "std.net.Shutdown", "std.net.TcpListener", "std.net.TcpStream", "std.net.UdpSocket", "core.slice.IndexError", "std.json.Doc", "std.json.Error", "std.json.Kind", "std.json.Node", "std.json.Value"];
+
+/// Kasane で書いた標準ライブラリの総称型 (`spec/stdlib/alloc/collections.ksnl`)。利用者の型と同じ集成体として下ろす。
+pub fn is_kasane_std_generic(name: &str) -> bool {
+    matches!(name, "alloc.collections.HashMap" | "alloc.collections.BtreeMap" | "alloc.collections.HashCell" | "alloc.collections.MapEntry" | "alloc.collections.HashMapIter")
+}
 
 /// ソケットの型 (`std.net.TcpListener` / `TcpStream`)。型表には `lower_defs` が常に入れる。`&` の形の型も、同じ集成体として下ろす。
 pub fn is_net_socket(name: &str) -> bool {
@@ -168,7 +173,7 @@ impl AggTab {
         }
         match t {
             // `Option<&T>` (T は所有物を持つ型): ペイロードは要素の番地を 1 つ持つ集成体 `bref` (設計_KIR.md 17.18)。
-            Src::Named(name, args) if name == "Option" && args.len() == 1 && matches!(&args[0], Src::Ref(false, i) if self.owning_src(p, file, i)) => {
+            Src::Named(name, args) if name == "Option" && args.len() == 1 && matches!(&args[0], Src::Ref(m, i) if self.bref_ref(p, file, *m, i)) => {
                 let b = self.bref();
                 Ok(Ty::Opt(Pay::of(b).expect("集成体はペイロードになる")))
             }
@@ -186,7 +191,6 @@ impl AggTab {
                 Ok(self.vec_of(elem))
             }
             Src::Named(name, _) if name == "alloc.string.String" => Ok(self.vec_hdr()),
-            Src::Named(name, _) if name == "alloc.collections.HashMap" || name == "alloc.collections.BtreeMap" => Ok(self.vec_hdr()),
             Src::Named(name, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
             Src::Named(name, _) if name == "alloc.vec.InsertError" => Ok(self.insert_err()),
             // `std.thread.JoinHandle<T, A>` = `{A, usize, *mut T}`。`T` はポインタの向こうにあるので配置には現れない。
@@ -232,6 +236,8 @@ impl AggTab {
                 match p.resolve(&segs, file).map(|r| r.target) {
                     // ソケットの型 (`std.net.TcpListener` / `TcpStream`) は `&` の形でも現れるので、型表に入れる (設計_KIR.md 12 章)。
                     Some(Tgt::Type(di)) if !args.is_empty() && self.user.contains(&di) => self.intern_generic(p, di, args),
+                    // 段 2 の `HashMap` などは、利用者の型と同じ集成体として下ろす (`spec/stdlib/alloc/collections.ksnl`)。
+                    Some(Tgt::Sig(di) | Tgt::Type(di)) if !args.is_empty() && is_kasane_std_generic(name) => self.intern_generic(p, di, args),
                     _ if !args.is_empty() => Err(format!("型 {} は型引数付きで段階 1 の対象外", name)),
                     Some(Tgt::Sig(di)) if p.defs[di].kw == "type" && STD_TYPES.contains(&p.defs[di].name.as_str()) => self.intern_def(p, di),
                     Some(Tgt::Type(di)) if self.user.contains(&di) || STD_TYPES.contains(&p.defs[di].name.as_str()) || is_net_socket(&p.defs[di].name) => self.intern_def(p, di),
@@ -247,7 +253,7 @@ impl AggTab {
                 self.intern_tuple(elems)
             }
             // 集成体への参照 `&S` / `&mut S` (スカラーへの参照は上の `conv` が済ませている)。
-            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") => {
+            Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") => {
                 Err("Vec / String への参照はヘッダのアドレスで渡す".to_string())
             }
             Src::Ref(m, inner) if matches!(&**inner, Src::Named(..) | Src::Tuple(_)) => match self.lower_ty(p, file, inner)? {
@@ -259,6 +265,18 @@ impl AggTab {
             Src::Ref(m, inner) if matches!(&**inner, Src::Array(_)) => {
                 let Ty::Agg(fat_ai) = self.fat() else { unreachable!() };
                 Ok(Ty::Ref(*m, Pointee::Agg(fat_ai)))
+            }
+            // `&&str` (`&K` の K が `&str` の型) は、`&str` の値 (`fat`) の番地 (`ref<fat>`)。
+            Src::Ref(m, inner) if matches!(&**inner, Src::Ref(_, i) if matches!(&**i, Src::Prim(s) if s == "str")) => {
+                let fat = self.fat();
+                let Ty::Agg(fi) = fat else { unreachable!() };
+                Ok(Ty::Ref(*m, Pointee::Agg(fi)))
+            }
+            // 集成体の要素のスライス `&[S]` (`HashMapIter` の欄など) も `fat` (`{ptr, len}`)。要素の型が下ろせるときだけ。
+            Src::Ref(_, inner) if matches!(&**inner, Src::Slice(e) if matches!(&**e, Src::Named(..))) => {
+                let Src::Slice(e) = &**inner else { unreachable!() };
+                self.lower_ty(p, file, e)?;
+                Ok(self.fat())
             }
             // `&str` とスライスの値は `fat` (`{ptr, len}`)。要素はスカラーのものだけ (`sig_ty` と同じ条件)。Option のペイロードにも置ける。
             Src::Ref(_, inner) if matches!(&**inner, Src::Prim(s) if s == "str") || matches!(&**inner, Src::Slice(e) if conv(&**e).is_some()) => Ok(self.fat()),
@@ -526,6 +544,12 @@ impl AggTab {
         }
     }
 
+    /// `Option<&T>` / `Option<&mut T>` を番地 1 つの `bref` にする型か: 所有物を持つ型、集成体 (名前・タプル)、`&mut` のスカラー。
+    /// `&str` と `&[T]` (fat) と共有のスカラーは値のまま (`Option<&スカラー>` の決まり、設計_KIR.md 10.10)。
+    fn bref_ref(&mut self, p: &Program, file: &str, m: bool, inner: &Src) -> bool {
+        self.owning_src(p, file, inner) || matches!(inner, Src::Named(..) | Src::Tuple(_)) || (m && matches!(inner, Src::Prim(s) if s != "str"))
+    }
+
     /// `Option` / `Result` のペイロードの型。スカラー・unit・集成体・入れ子は `Pay` になる (128 ビット整数・参照は拒否)。
     fn pay_of(&mut self, p: &Program, file: &str, t: &Src) -> Result<Pay, String> {
         // `Option<&[T; N]>` は `Option<&[T]>` と同じ値 (`fat`) で持つ。長さ N は型検査が両辺を揃えるので、値には要らない。
@@ -537,13 +561,14 @@ impl AggTab {
         }
         // `&Vec` / `&String` / `&HashMap` は借用のヘッダのアドレス (`ptr`)。
         if let Src::Ref(_, inner) = t {
-            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
+            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") {
                 return Ok(Pay::Ptr);
             }
         }
         // `Option<&T>` / `Result<&T, E>` (T は所有物を持つ型): 番地 1 つの `bref` (設計_KIR.md 17.18)。Option と Result で同じ形にする。
-        if let Src::Ref(false, inner) = t {
-            if self.owning_src(p, file, inner) {
+        if let Src::Ref(_, inner) = t {
+            // 集成体への参照 (所有物を持つか否か) は番地 1 つの `bref`: 値の複製では `&mut` の書き込みが残らない。
+            if self.bref_ref(p, file, matches!(t, Src::Ref(true, _)), inner) {
                 let b = self.bref();
                 return Pay::of(b).ok_or_else(|| "bref は Option / Result のペイロードに使えない".to_string());
             }
@@ -555,16 +580,13 @@ impl AggTab {
     /// フィールド・要素の型。ユニット型は値を置けないので拒否する。
     fn field_ty(&mut self, p: &Program, file: &str, t: &Src) -> Result<Ty, String> {
         if let Src::Named(n, _) = t {
-            if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap" {
-                return Ok(self.vec_hdr());
-            }
             if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" {
                 return self.lower_ty(p, file, t);
             }
         }
         // `&Vec` / `&String` / `&HashMap` のフィールドは、借用のヘッダのアドレス (`ptr`)。
         if let Src::Ref(_, inner) = t {
-            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String" || n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
+            if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") {
                 return Ok(Ty::Ptr);
             }
         }
@@ -777,7 +799,7 @@ impl<'a> Lw<'a> {
             };
             let fname = st(&xs[0]);
             let Some(k) = decl.iter().position(|x| x.name == fname) else {
-                return self.err(line, format!("フィールド {} がない", fname));
+                return self.err(line, format!("フィールド {} がない (型 {} の欄: {:?})", fname, d.name, decl.iter().map(|x| x.name.clone()).collect::<Vec<_>>()));
             };
             if vals[k].is_some() {
                 return self.err(line, format!("フィールド {} が二度書かれている", fname));
@@ -818,13 +840,32 @@ impl<'a> Lw<'a> {
         }
         let mut fields = vec![];
         for (x, fd) in xs.iter().zip(decl) {
-            let Some(v) = self.expr(x)? else {
+            // 参照の要素 (`(&K, &V)`) は、読んで値にせず参照のまま渡す (`expr` は参照を読むことがある)。
+            let got = if matches!(fd.ty, Ty::Ref(..)) { self.expr_peek(x)? } else { self.expr(x)? };
+            let Some(v) = got else {
                 super::coll::tmp_release(self, &fields);
                 return Ok(None);
             };
+            // 欄が `&スカラー` で、要素が値 (束縛が値のとき): 値を一時の枠に置き、その番地を渡す (共有の参照は読むだけなので複製と同じ)。
+            let v = match fd.ty {
+                Ty::Ref(false, p) if self.vty(v) == p.ty() && p.ty().is_scalar() => {
+                    let slot = self.alloca(p);
+                    self.emit(Ty::Unit, Op::Store { ptr: slot, val: v });
+                    self.emit(fd.ty, Op::Bitcast { src: self.vty(slot), a: slot })
+                }
+                _ => v,
+            };
+            let v = match self.vty(v) {
+                Ty::Ref(_, p) if p.ty() == fd.ty && fd.ty.is_scalar() => self.emit(fd.ty, Op::Load(v)),
+                // 借用のヘッダ (`&String` の欄は `ptr`): 集成体の番地をヘッダのポインタとして渡す。
+                Ty::Ref(_, Pointee::Agg(_)) if fd.ty == Ty::Ptr => self.emit(Ty::Ptr, Op::Bitcast { src: self.vty(v), a: v }),
+                // 参照の集成体 (`&&str` の番地) を、値の欄 (`fat`) へ読む。
+                Ty::Ref(_, Pointee::Agg(i)) if fd.ty == Ty::Agg(i) => self.emit(fd.ty, Op::Load(v)),
+                _ => v,
+            };
             super::coll::tmp_hold(self, v);
             if self.vty(v) != fd.ty {
-                return self.err(line, "タプルの要素の型が違う");
+                return self.err(line, format!("タプルの要素の型が違う ({} / {})", crate::kir::fmt_ty(self.vty(v)), crate::kir::fmt_ty(fd.ty)));
             }
             fields.push(v);
         }
@@ -927,9 +968,14 @@ impl<'a> Lw<'a> {
     }
 
     /// 列挙型のバリアントを作る (引数は宣言の順)。`args` が空なら、ペイロードのない変種。
-    pub(super) fn variant_make(&mut self, en: &str, vn: &str, args: &[V], line: usize) -> LR<Option<VId>> {
-        let Some(ty) = self.conv_t(&Src::Named(en.to_string(), vec![])) else {
-            return self.err(line, format!("列挙型 {} は段階 1 の対象外", en));
+    pub(super) fn variant_make(&mut self, en: &str, vn: &str, args: &[V], e: Option<&V>, line: usize) -> LR<Option<VId>> {
+        // 型引数のある列挙型 (`HashCell<K, V>`) の変種は、型の名前だけでは決まらない: 式の型 (型検査が決めたもの) から取る。
+        let ty = match self.conv_t(&Src::Named(en.to_string(), vec![])) {
+            Some(t) => t,
+            None => match e.and_then(|e| self.src_ty(e).ok()).and_then(|s| self.conv_t(&s)) {
+                Some(t) => t,
+                None => return self.err(line, format!("列挙型 {} は段階 1 の対象外", en)),
+            },
         };
         let Ty::Agg(ai) = ty else {
             return self.err(line, format!("列挙型 {} は集成体でない", en));
@@ -964,12 +1010,12 @@ impl<'a> Lw<'a> {
     /// 呼び出し形 `E.V(args)` (`call` から呼ぶ)。
     pub(super) fn variant_call(&mut self, e: &V, en: &str, vn: &str) -> LR<Option<VId>> {
         let args = items(&nf(e)[1]);
-        self.variant_make(en, vn, args, nline(e))
+        self.variant_make(en, vn, args, Some(e), nline(e))
     }
 
     /// 値の形 `E.V` (ペイロードのない列挙子、`path_val` から呼ぶ)。
-    pub(super) fn variant_value(&mut self, en: &str, vn: &str, line: usize) -> LR<VId> {
-        match self.variant_make(en, vn, &[], line)? {
+    pub(super) fn variant_value(&mut self, en: &str, vn: &str, e: Option<&V>, line: usize) -> LR<VId> {
+        match self.variant_make(en, vn, &[], e, line)? {
             Some(v) => Ok(v),
             None => self.err(line, "列挙子の値が作れない"),
         }
@@ -1127,7 +1173,7 @@ impl<'a> Lw<'a> {
         let AggKind::Enum(vs) = &d.kind else {
             return self.err(line, "列挙型のパターンの対象が列挙型でない");
         };
-        if d.name != en {
+        if d.name.split('<').next() != Some(en.as_str()) {
             return self.err(line, format!("パターン {} の型が対象の型 {} と違う", vn, d.name));
         }
         let Some(idx) = vs.iter().position(|v| v.name == vn) else {
@@ -1145,7 +1191,7 @@ impl<'a> Lw<'a> {
 
     /// パターン `p` を値 `val` (型 `ty`) に当てる。試験が偽なら `fail` へ飛ぶ (`None` は反駁できない形のみ)。
     /// 返すのは束縛 (名前、値、型) の列。試験は現在のブロックから連鎖で作る。
-    fn pat(&mut self, p: &V, val: VId, ty: Ty, fail: Option<usize>) -> LR<Vec<(String, VId, Ty)>> {
+    pub(super) fn pat(&mut self, p: &V, val: VId, ty: Ty, fail: Option<usize>) -> LR<Vec<(String, VId, Ty)>> {
         let line = nline(p);
         let mut out = vec![];
         match nname(p) {
@@ -1277,6 +1323,35 @@ impl<'a> Lw<'a> {
                     out.extend(self.pat(&xs[1], fv, fd.ty, fail)?);
                 }
             }
+            // `match r { V(a, b) => .. }` (r は列挙型への参照): 名前はペイロードへの参照 (既定の参照の束縛)。
+            // 木走査と同じく、スカラーのペイロードは指す先の番地で持つ。Vec / String のペイロードはまだ対象外。
+            "PVariant" | "PPath" if matches!(ty, Ty::Ref(_, Pointee::Agg(ai)) if matches!(self.agg_def(ai).kind, AggKind::Enum(_))) => {
+                let Ty::Ref(m, Pointee::Agg(ai)) = ty else { unreachable!() };
+                let segs = strs(&nf(p)[0]);
+                let subs = if nname(p) == "PVariant" { items(&nf(p)[1]).to_vec() } else { vec![] };
+                let cur = self.emit(Ty::Agg(ai), Op::Load(val));
+                let fields = self.variant_test(&segs, cur, Ty::Agg(ai), fail, line)?;
+                if nname(p) == "PVariant" && subs.len() != fields.len() {
+                    return self.err(line, "列挙子のパターンの要素数が違う");
+                }
+                for (sp, fd) in subs.iter().zip(&fields) {
+                    match nname(sp) {
+                        "PWild" => continue,
+                        "PBind" => {}
+                        _ => return self.err(line, "参照越しの列挙子のパターンは名前と _ だけ段階 1 の対象"),
+                    }
+                    let name = st(&nf(sp)[0]);
+                    let Some(fp) = Pointee::of(fd.ty) else {
+                        return self.err(line, "参照越しの列挙子のペイロードの型は段階 1 の対象外");
+                    };
+                    // 列挙型のペイロードは `fieldaddr` ではなく番地の加算で指す (`fieldaddr` は構造体・タプルだけ)。
+                    let base = self.emit(Ty::Ptr, Op::Bitcast { src: Ty::Ref(m, Pointee::Agg(ai)), a: val });
+                    let k = self.emit(Ty::Usize, Op::Const(fd.off as i128));
+                    let pa = self.emit(Ty::Ptr, Op::PtrAdd { p: base, off: k });
+                    let addr = self.emit(Ty::Ref(m, fp), Op::Bitcast { src: Ty::Ptr, a: pa });
+                    out.push((name, addr, Ty::Ref(m, fp)));
+                }
+            }
             "PVariant" => {
                 let segs = strs(&nf(p)[0]);
                 let subs = items(&nf(p)[1]);
@@ -1320,7 +1395,7 @@ impl<'a> Lw<'a> {
                 let AggKind::Enum(vs) = &d.kind else {
                     return self.err(line, format!("列挙子のパターンの対象 {} が列挙型でない", d.name));
                 };
-                if d.name != en {
+                if d.name.split('<').next() != Some(en.as_str()) {
                     return self.err(line, format!("パターン {} の型が対象の型 {} と違う", vn, d.name));
                 }
                 let Some(idx) = vs.iter().position(|x| x.name == vn) else {

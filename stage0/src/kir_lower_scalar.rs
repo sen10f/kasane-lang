@@ -284,18 +284,39 @@ impl<'a> Lw<'a> {
         let (join, jp) = self.new_block(&[ord]);
         self.branch(lt, (lb, vec![]), (nl, vec![]));
         self.cur = Some(lb);
-        let less = self.variant_value("core.cmp.Ordering", "Less", line)?;
+        let less = self.variant_value("core.cmp.Ordering", "Less", None, line)?;
         self.goto(join, vec![less]);
         self.cur = Some(nl);
         self.branch(eq, (eb, vec![]), (gb, vec![]));
         self.cur = Some(eb);
-        let equal = self.variant_value("core.cmp.Ordering", "Equal", line)?;
+        let equal = self.variant_value("core.cmp.Ordering", "Equal", None, line)?;
         self.goto(join, vec![equal]);
         self.cur = Some(gb);
-        let greater = self.variant_value("core.cmp.Ordering", "Greater", line)?;
+        let greater = self.variant_value("core.cmp.Ordering", "Greater", None, line)?;
         self.goto(join, vec![greater]);
         self.cur = Some(join);
         Ok(Some(jp[0]))
+    }
+
+    /// `x.hash(state)` (整数): 値を符号なし 64 ビットに広げ、型幅のバイト数を `core.hash.fnv_int` へ渡す。
+    pub(super) fn int_hash(&mut self, a: VId, state: VId, line: usize) -> LR<VId> {
+        let a = match self.vty(a) {
+            Ty::Ref(_, p) => self.emit(p.ty(), Op::Load(a)),
+            _ => a,
+        };
+        let t = self.vty(a);
+        let w = match t {
+            Ty::U8 | Ty::I8 => 1,
+            Ty::U16 | Ty::I16 => 2,
+            Ty::U32 | Ty::I32 => 4,
+            Ty::U64 | Ty::I64 | Ty::Usize | Ty::Isize => 8,
+            _ => return self.err(line, "hash の受け手の整数の型が段階 1 の対象外"),
+        };
+        let x = if t == Ty::U64 { a } else { self.emit(Ty::U64, Op::Conv { src: t, a }) };
+        let wv = self.emit(Ty::Usize, Op::Const(w));
+        let callee = "core.hash.fnv_int".to_string();
+        self.callees.insert(callee.clone());
+        Ok(self.emit(Ty::Unit, Op::Call { callee, args: vec![state, x, wv] }))
     }
 
     pub(super) fn scalar_mcall(&mut self, e: &V) -> LR<Option<Option<VId>>> {
@@ -315,6 +336,12 @@ impl<'a> Lw<'a> {
             let Some(a) = self.expr(&f[0])? else { return Ok(Some(None)) };
             let Some(b) = self.expr(&args[0])? else { return Ok(Some(None)) };
             return Ok(Some(self.int_cmp_named(&name, a, b, line)?));
+        }
+        // 整数の `Hash` (仕様 4.2): `Fnv64` の状態へ値のリトルエンディアンのバイトを足す (`core.hash.fnv_int`、`hash.ksnl`)。
+        if name == "hash" && args.len() == 1 && deref_int(rt).is_some() {
+            let Some(a) = self.expr(&f[0])? else { return Ok(Some(None)) };
+            let Some(state) = self.expr(&args[0])? else { return Ok(Some(None)) };
+            return Ok(Some(Some(self.int_hash(a, state, line)?)));
         }
         if num_plan(rt, &name, args.len()).is_none() {
             return Ok(None);

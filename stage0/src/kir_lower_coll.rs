@@ -46,8 +46,6 @@ pub(crate) fn is_vecn(n: &str) -> bool {
     n == VEC || n == BUF
 }
 const STRING: &str = "alloc.string.String";
-const HASHMAP: &str = "alloc.collections.HashMap";
-const BTREEMAP: &str = "alloc.collections.BtreeMap";
 /// `Vec<T>` と `String` のヘッダの大きさ (ptr, len, cap)。
 const HDR_VEC: u32 = 24;
 
@@ -64,9 +62,9 @@ pub(crate) enum Kind {
     Slice(Option<Ty>),
     /// `HashMap<K, V>` (設計_KIR.md 16 章)。キーと値の型が分かれば `Some`。キーの `Ty::Ptr` は `&str` のキーの印。
     /// ヘッダは Vec と同じ 24 バイト (所有と移動と解放は Vec と同じ規則)。
-    Map(Option<(Ty, Ty)>),
+
     /// `BtreeMap<K, V>` (キーの順を保つ。ヘッダは Map と同じ 24 バイト。設計_KIR.md 17.21)。
-    BMap(Option<(Ty, Ty)>),
+
     /// 下ろした関数の鍵と、引数・戻り値の型。`caps` は取り込みの値 (この関数の中の値番号。値の取り込みはその値、
     /// 参照の取り込みは参照の値) で、`cap_tys` がその型。呼び出しでは先頭の追加の引数として渡す (設計_KIR.md 13 章)。
     Closure { key: String, args: Vec<Ty>, ret: Ty, caps: Vec<VId>, cap_tys: Vec<Ty> },
@@ -177,6 +175,12 @@ fn strip_ref(t: &Src) -> &Src {
 
 /// 式の値の段階 1 の型 (Vec / String は `ptr`、`&str` とスライスは `fat`、クロージャは `unit` の値)。対象外なら `None`。
 pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
+    // `&&str` (`&K` の K が `&str`) は、`&str` の値の番地 (参照の参照は段を外さない)。
+    if let Src::Ref(_, i) = t {
+        if matches!(&**i, Src::Ref(..)) {
+            return None;
+        }
+    }
     // 値渡しの Vec / String は集成体 `vec` (所有の移動)、参照は借用なのでヘッダのアドレス。
     if let Src::Named(n, args) = t {
         if is_vecn(n) {
@@ -186,12 +190,9 @@ pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
         if n == STRING {
             return Some(lw.aggs.borrow_mut().vec_hdr());
         }
-        if n == HASHMAP {
-            return Some(lw.aggs.borrow_mut().vec_hdr());
-        }
     }
     match strip_ref(t) {
-        Src::Named(n, _) if is_vecn(n) || n == STRING || n == HASHMAP => Some(Ty::Ptr),
+        Src::Named(n, _) if is_vecn(n) || n == STRING => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).or_else(|| lw.conv_t(e)).and_then(|t| elem_size(lw, t)).is_some() => Some(lw.fat_ty()),
         Src::Closure { .. } => Some(Ty::Unit),
@@ -201,7 +202,7 @@ pub(crate) fn value_ty(lw: &Lw, t: &Src) -> Option<Ty> {
 
 /// `Vec` / `String` の名前の型か。
 pub(crate) fn is_hdr_named(t: &Src) -> bool {
-    matches!(t, Src::Named(n, _) if is_vecn(n) || n == STRING || n == HASHMAP)
+    matches!(t, Src::Named(n, _) if is_vecn(n) || n == STRING)
 }
 
 /// 関数の引数・戻り値の型。通常の型に加えて、Vec / String / `str` / スライスへの参照 (借用) を受ける。
@@ -223,7 +224,7 @@ pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     }
     let Src::Ref(mutbl, inner) = t else { return None };
     match &**inner {
-        Src::Named(n, _) if is_vecn(n) || n == STRING || n == HASHMAP => Some(Ty::Ptr),
+        Src::Named(n, _) if is_vecn(n) || n == STRING => Some(Ty::Ptr),
         Src::Prim(s) if s == "str" => Some(lw.fat_ty()),
         Src::Slice(e) if conv(e).or_else(|| lw.conv_t(e)).and_then(|t| elem_size(lw, t)).is_some() => Some(lw.fat_ty()),
         Src::Named(n, _) if n == "std.net.TcpListener" || n == "std.net.TcpStream" || n == "std.net.UdpSocket" => {
@@ -260,7 +261,7 @@ pub(crate) fn bind_param_kind(lw: &mut Lw, name: &str, t: &Src) {
 /// `&v` / `&mut v` (v は Vec / String の局所変数): ヘッダのアドレスそのもの。
 pub(crate) fn borrow_header(lw: &mut Lw, operand: &V, line: usize) -> LR<VId> {
     if let Some(s) = local_slot(lw, operand) {
-        if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_)) | Some(Kind::BMap(_))) {
+        if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) {
             // 借用・メソッドの受け手の読みは、move 済みの値の読み (注釈)。
             if let Some(n) = super::path1(operand) {
                 lw.own_emit(&n, s, crate::kir::OwnKind::Use);
@@ -313,8 +314,6 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
         // 要素が所有物 (`Vec<String>`) のときは、要素の型 (集成体 `vec` など) を持つ
         Src::Named(n, args) if is_vecn(n) => Some(Kind::Vec(args.first().and_then(|a| conv(a).or_else(|| lw.conv_t(a)).or_else(|| sig_ty(lw, a).filter(|t| *t == Ty::Ptr))))),
         Src::Named(n, _) if n == STRING => Some(Kind::String),
-        Src::Named(n, args) if n == HASHMAP => Some(Kind::Map(map_kv(lw, args))),
-        Src::Named(n, args) if n == BTREEMAP => Some(Kind::BMap(map_kv(lw, args))),
         Src::Prim(s) if s == "str" => Some(Kind::Str),
         // 要素が所有物 (`String` など、集成体) のときも要素の型を持つ。`as_slice()` の一時値
         // が続く `get` / `len` / 添字 / `iter` で要素型を引き継ぐため、`size_of` ではなく
@@ -327,17 +326,6 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
     }
 }
 
-/// `HashMap<K, V, _>` の型引数から (キー, 値) の KIR の型。キーは整数・bool・char (`Ty`) か `&str` (`Ty::Ptr` の印)、値は整数・bool・char。
-fn map_kv(lw: &Lw, args: &[Src]) -> Option<(Ty, Ty)> {
-    let k = match args.first()? {
-        Src::Ref(_, i) if matches!(&**i, Src::Prim(s) if s == "str") => Ty::Ptr,
-        // `String` のキー: 型はヘッダ `vec` (表が所有する。設計_KIR.md 16.4)
-        Src::Named(n, _) if n == STRING => lw.aggs.borrow_mut().vec_hdr(),
-        other => conv(other).filter(|t| size_of(*t).is_some())?,
-    };
-    let v = conv(args.get(1)?).filter(|t| size_of(*t).is_some())?;
-    Some((k, v))
-}
 
 /// クロージャの鍵。式 ID は関数 (または単相インスタンス) の中で一意なので、同じ中の別のクロージャと衝突しない。
 fn closure_key(lw: &Lw, id: u32) -> String {
@@ -452,7 +440,6 @@ pub(super) fn size_of(t: Ty) -> Option<u32> {
 
 /// 局所変数のヘッダ `hdr` の所有物を解放する。要素が所有物の Vec は、各要素を解放してからバッファを解放する。
 fn drop_hdr(lw: &mut Lw, hdr: VId) {
-    super::map_lower::drop_owned_keys(lw, hdr);
     let vt = lw.coll.hdr_ty.get(&hdr).copied();
     if let Some(vt) = vt.filter(|t| lw.aggs.borrow().vec_elem(*t).is_some()) {
         let p = lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 });
@@ -546,7 +533,7 @@ pub(crate) fn val_slot_of(lw: &Lw, s: usize) -> bool {
 
 /// 局所変数の読み (値としての使用 = 移動)。所有する Vec / String はヘッダから値を移し、印を持つ変数は印を下ろす。
 pub(crate) fn path_read(lw: &mut Lw, s: usize) -> VId {
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_)) | Some(Kind::BMap(_))) && !lw.coll.borrowed.contains(&s) {
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) && !lw.coll.borrowed.contains(&s) {
         let h = lw.slots[s].0;
         return move_hdr(lw, h);
     }
@@ -928,7 +915,7 @@ pub(crate) fn bind_owned(lw: &mut Lw, name: &str, v: VId, t: Ty) {
 /// 局所変数への代入 `x = v`。所有物は、古い値を解放してから新しい値を入れる (Vec / String はヘッダを書き直す)。
 /// 印を持つ変数は印を立て直す (移した後の再代入を含む)。
 pub(crate) fn assign_checked(lw: &mut Lw, s: usize, v: VId, line: usize) -> LR<()> {
-    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String) | Some(Kind::Map(_)) | Some(Kind::BMap(_))) && !lw.coll.borrowed.contains(&s) {
+    if matches!(lw.coll.kinds.get(&s), Some(Kind::Vec(_)) | Some(Kind::String)) && !lw.coll.borrowed.contains(&s) {
         let h = lw.slots[s].0;
         let vt = lw.coll.hdr_ty.get(&h).copied().unwrap_or_else(|| lw.aggs.borrow_mut().vec_hdr());
         if lw.vty(v) != vt {
@@ -1443,7 +1430,7 @@ fn mut_place(lw: &mut Lw, e: &V, line: usize) -> LR<Option<MutPlace>> {
         Ok(Src::Ref(true, inner)) => inner,
         _ => return lw.err(line, "core.mem の引数は &mut の先 (名前・フィールド・参照) だけ段階 1 の対象"),
     };
-    if matches!(&*inner, Src::Named(n, _) if n == HASHMAP) {
+    if matches!(&*inner, Src::Named(n, _) if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
         return lw.err(line, "core.mem の引数の HashMap は段階 1 の対象外 (ヘッダの種類を保てない)");
     }
     let Some(t) = lw.conv_t(&inner) else {
@@ -1589,8 +1576,6 @@ pub(crate) fn try_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         ["core", "str", "from_utf8"] => {
             Some(lw.from_utf8_call(e, items(&f[1]), nline(e)))
         }
-        ["alloc", "collections", "HashMap", "new"] => Some(new_header(lw, e)),
-        ["alloc", "collections", "BtreeMap", "new"] => Some(new_header(lw, e)),
         // `core.mem.drop(x)`: 値を移して、その場で解放する。
         ["core", "mem", "drop"] => Some(mem_drop(lw, e)),
         ["core", "mem", "replace"] => Some(mem_replace(lw, e)),
@@ -2022,8 +2007,6 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
         lw.own_emit(&n, s, crate::kir::OwnKind::Use);
     }
     Some(match place(lw, &f[0]) {
-        Ok(Some(h)) if matches!(kind, Kind::Map(_)) => super::map_lower::method(lw, e, slot, &kind, h, &m, items(&f[2])),
-        Ok(Some(h)) if matches!(kind, Kind::BMap(_)) => super::map_lower::bmap_method(lw, e, slot, &kind, h, &m, items(&f[2])),
         // 一時の `String` / `Vec` (`f().unwrap().as_str()` など) の読むだけのメソッド: 値を所有のヘッダ (フレーム) に
         // 置いて、そのアドレスを受け手にする。ヘッダはスコープの終わりに解放する (設計_KIR.md 23 章)。
         Ok(Some(h))
@@ -2043,6 +2026,30 @@ pub(crate) fn try_mcall(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
 
 /// ヘッダ (または `fat`) `h` を受け手とするメソッド呼び出し。所有の周りの新しいメソッド (`own`) を先に試す。
 pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, kind: Kind, h: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
+    // `a.cmp(&b)` / `a.partial_cmp(&b)` (`&str` / `String`、仕様 8.3 の `Ord`)。
+    if matches!(m, "cmp" | "partial_cmp") && args.len() == 1 && matches!(kind, Kind::Str | Kind::String) {
+        let recv = match (kind.clone(), lw.vty(h)) {
+            (Kind::Str, _) => load_fat_ref(lw, h),
+            (_, Ty::Ref(_, Pointee::Agg(_))) => lw.emit(Ty::Ptr, Op::Bitcast { src: lw.vty(h), a: h }),
+            _ => h,
+        };
+        return lw.string_cmp_method(e, &kind, recv, m, args);
+    }
+    // `a.eq(b)` (`&str` / `String` の受け手。仕様 4.2 の `PartialEq`)。`&&str` の値は読んでから比べる。
+    if m == "eq" && args.len() == 1 && matches!(kind, Kind::Str | Kind::String) {
+        let a = if kind == Kind::Str { load_fat_ref(lw, h) } else { hdr_view(lw, h) };
+        let Some(b0) = lw.expr_peek(&args[0])? else { return Ok(None) };
+        let b = if kind == Kind::Str { load_fat_ref(lw, b0) } else { hdr_view(lw, b0) };
+        return Ok(Some(lw.str_eq(a, b)?));
+    }
+    // `x.hash(&mut state)` (`&str` / `String`、仕様 4.2): バイト列を `Fnv64.write_bytes` へ渡す。受け手が `&&str` なら値を読む。
+    if m == "hash" && args.len() == 1 && matches!(kind, Kind::Str | Kind::String) {
+        let bytes = if kind == Kind::Str { load_fat_ref(lw, h) } else { hdr_view(lw, h) };
+        let Some(state) = lw.expr_peek(&args[0])? else { return Ok(None) };
+        let callee = "core.hash.Fnv64.write_bytes".to_string();
+        lw.callees.insert(callee.clone());
+        return Ok(Some(lw.emit(Ty::Unit, Op::Call { callee, args: vec![state, bytes] })));
+    }
     // `Vec` の基本メソッドを、`alloc/vec.ksnl` の Kasane 版 (`Buf` の上) の単相インスタンスで下ろす。
     // 中身 (`alloc.vec.Vec.*` の本体) は組み込みの下ろしを使う (同じヘッダ)。
     // 要素型が局所の初期化から決まらなかった Vec (別の場所の `push` で決まる) は、`push` / `insert` の引数の型で決める。
@@ -2116,12 +2123,6 @@ fn try_local_method(lw: &mut Lw, e: &V, s: usize, kind: Kind, m: &str) -> LR<Opt
     if m == "len" && matches!(kind, Kind::Slice(_)) && lw.slots[s].1 == Ty::Ptr {
         let n = arr_len_of(lw, s).expect("&[T; N] のパラメータに arr_len が入っている");
         return Ok(Some(lw.emit(Ty::Usize, Op::Const(n as i128))));
-    }
-    if matches!(kind, Kind::Map(_)) {
-        return super::map_lower::method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
-    }
-    if matches!(kind, Kind::BMap(_)) {
-        return super::map_lower::bmap_method(lw, e, Some(s), &kind, hdr, m, items(&f[1]));
     }
     method_on(lw, e, line, Some(s), kind, hdr, m, items(&f[1]))
 }
@@ -2338,7 +2339,9 @@ fn pick_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, pick: Pick, m: &str)
         Kind::Slice(Some(e)) => (Seq::Fat(h), *e),
         _ => return lw.err(line, format!("{} の対象は要素型の分かる Vec・スライスだけ段階 1 の対象", m)),
     };
-    let borrowed = owns_heap(lw, elem);
+    // 集成体の要素 (所有物を持つか否か) は、要素の番地を `bref` に包んで持つ (写さない。17.18)。
+    // 写すと、`&T` の欄 (`(&K, &V)` など) の束縛が値になり、借用の型と合わなくなる。
+    let borrowed = owns_heap(lw, elem) || matches!(elem, Ty::Agg(_));
     let pay = if borrowed {
         // 所有物を持つ要素: 要素の番地を `bref` に包んで持つ (写さない。17.18)
         let b = lw.aggs.borrow_mut().bref();
@@ -2413,8 +2416,13 @@ fn pick_elem(lw: &mut Lw, line: usize, kind: &Kind, h: VId, pick: Pick, m: &str)
 pub(super) fn hdr_view(lw: &mut Lw, hdr: VId) -> VId {
     // 呼び出しの結果などヘッダが集成体の値のときは、メモリから読まずにフィールドを取る。
     let by_val = matches!(lw.vty(hdr), Ty::Agg(_));
-    let p = if by_val { lw.emit(Ty::Ptr, Op::Field { a: hdr, off: 0 }) } else { lw.emit(Ty::Ptr, Op::MemLoad { p: hdr, off: 0 }) };
-    let l = load_len(lw, hdr);
+    let hp = match lw.vty(hdr) {
+        // 借用の番地 (`ref<集成体>`) はヘッダのポインタとして読む。
+        Ty::Ref(_, Pointee::Agg(_)) => lw.emit(Ty::Ptr, Op::Bitcast { src: lw.vty(hdr), a: hdr }),
+        _ => hdr,
+    };
+    let p = if by_val { lw.emit(Ty::Ptr, Op::Field { a: hdr, off: 0 }) } else { lw.emit(Ty::Ptr, Op::MemLoad { p: hp, off: 0 }) };
+    let l = load_len(lw, if by_val { hdr } else { hp });
     let fat = lw.fat_ty();
     lw.emit(fat, Op::Make { variant: None, fields: vec![p, l] })
 }
@@ -2719,15 +2727,16 @@ pub(super) fn unhex(s: &str) -> Vec<u8> {
 
 /// `for PAT in IT BODY`。`IT` は `core.iter.range(a, b)` か、要素型の分かる Vec の変数。
 pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
-    if let Some(r) = super::map_lower::try_for(lw, e) {
-        return r;
-    }
     let f = nf(e);
     let line = nline(e);
     let name = match nname(&f[0]) {
         "PBind" if !matches!(nf(&f[0]).get(1), Some(V::B(true))) => Some(st(&nf(&f[0])[0])),
         "PWild" => None,
-        _ => return lw.err(line, "for の変数はただの名前か _ だけ段階 1 の対象"),
+        // 組などの形のパターン (`for (k, v) in m.iter()`): 反復子の `next` の結果を分解する。
+        _ => match user_iter_for(lw, e, &f[0], &f[1], &f[2]) {
+            Some(r) => return r,
+            None => return lw.err(line, "for の変数はただの名前か _ だけ段階 1 の対象"),
+        },
     };
     let it = &f[1];
     if nname(it) == "Call" {
@@ -2860,6 +2869,10 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     // `for x in s.split(sep)` / `for c in s.chars()` (`s` は `&str` = fat)。
     if let Some(r) = super::for_lower::try_str_for(lw, e)? {
         return Ok(Some(r));
+    }
+    // 反復子の式 (`m.iter()` など、局所でない利用者の反復子): 隠しの局所に置いて `next` を回す。
+    if let Some(r) = user_iter_for(lw, e, &f[0], &f[1], &f[2]) {
+        return r;
     }
     lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数・利用者の反復子の変数だけ段階 1 の対象")
 }
@@ -3447,4 +3460,128 @@ fn capture_values(lw: &mut Lw, caps: &V, body: &V, line: usize, fn_once: bool) -
         out.push(CapItem { name, vals: vec![v], tys: vec![lw.vty(v)], how: CapHow::Plain });
     }
     Ok((out, moved))
+}
+
+/// `&str` の値 (fat) か、その番地 (`&&str`) か。
+pub(crate) fn is_str_value(lw: &Lw, t: Ty) -> bool {
+    let fat = lw.fat_ty();
+    t == fat || matches!(t, Ty::Ref(_, Pointee::Agg(i)) if fat == Ty::Agg(i))
+}
+
+/// `&str` の番地 (`&&str`) なら、読んだ fat の値。値ならそのまま。
+fn load_fat_ref(lw: &mut Lw, v: VId) -> VId {
+    match lw.vty(v) {
+        // 集成体の値は番地から直接読めない (フィールドを読む): `&str` の番地は、ptr と len を読んで fat を作る。
+        Ty::Ref(_, Pointee::Agg(_)) => hdr_view(lw, v),
+        _ => v,
+    }
+}
+
+/// 受け手の式の型から、文字列の種類 (`&str` / `String`) を決める。それ以外は `None`。
+pub(crate) fn str_kind_of(lw: &Lw, e: &V) -> Option<Kind> {
+    let t = lw.src_ty(e).ok()?;
+    let mut t = &t;
+    while let Src::Ref(_, i) = t {
+        t = i;
+    }
+    match t {
+        Src::Prim(s) if s == "str" => Some(Kind::Str),
+        Src::Named(n, _) if n == STRING => Some(Kind::String),
+        _ => None,
+    }
+}
+
+/// `for PAT in IT BODY` で `IT` が `next` を持つ集成体 (反復子) のとき。反復子は局所に置き、毎周 `next(&mut it)` を呼ぶ。
+/// `Some(x)` の中身を PAT に束縛して本体を回し、`None` で抜ける。`IT` が範囲・Vec・配列などなら `None` (従来の経路へ)。
+fn user_iter_for(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V) -> Option<LR<Option<VId>>> {
+    let line = nline(e);
+    // 範囲・Vec・スライス・文字列などは従来の経路 (ここでは型だけ見る)。
+    let it_src = lw.src_ty(it_e).ok()?;
+    let base = match &it_src {
+        Src::Named(n, _) => n.clone(),
+        _ => return None,
+    };
+    if is_hdr_named(&it_src) || base.starts_with("core.iter.") || base.starts_with("std.") && !base.contains("Iter") {
+        return None;
+    }
+    let mut segs: Vec<String> = base.split('.').map(String::from).collect();
+    segs.push("next".to_string());
+    let di = match lw.p.resolve(&segs, &lw.def.file).map(|r| r.target) {
+        Some(Target::Fn(di)) if lw.p.defs[di].is_method() => di,
+        _ => return None,
+    };
+    Some(user_iter_loop(lw, e, pat, it_e, body, di, line))
+}
+
+fn user_iter_loop(lw: &mut Lw, e: &V, pat: &V, it_e: &V, body: &V, di: usize, line: usize) -> LR<Option<VId>> {
+    let Some(itv) = lw.expr(it_e)? else { return Ok(None) };
+    let ity = lw.vty(itv);
+    // 反復子を隠しの局所に置く (毎周 `next` の受け手)。
+    let hidden = format!("#iter{}", lw.slots.len());
+    // 反復子は毎周 `next` が書き換えるので、スタックスロットに置く (値のままだと周ごとに初めの値へ戻る)。
+    lw.mark_addr(&hidden);
+    if owns_heap(lw, ity) {
+        lw.coll.hint = Some(lw.src_ty(it_e)?);
+        lw.bind_let(&hidden, itv, ity);
+        lw.coll.hint = None;
+    } else {
+        lw.bind_let(&hidden, itv, ity);
+    }
+    let slots = lw.assigned(&[body]);
+    let slot_tys: Vec<Ty> = slots.iter().map(|s| lw.slots[*s].1).collect();
+    let (xb, xp) = lw.new_block(&slot_tys);
+    let (hb, hp) = lw.new_block(&slot_tys);
+    let entry = lw.vals_of(&slots);
+    lw.goto(hb, entry);
+
+    // 先頭: `next(&mut it)` の結果で抜けるか決める。
+    lw.cur = Some(hb);
+    for (k, s) in slots.iter().enumerate() {
+        lw.slots[*s] = (hp[k], slot_tys[k]);
+    }
+    let Some(o) = lw.call_method(it_e, di, super::method_lower::Place::Path(vec![hidden.clone()]), &[])? else {
+        return Ok(None);
+    };
+    let Ty::Opt(pay) = lw.vty(o) else {
+        return lw.err(line, "for の反復子の next は Option を返すはず");
+    };
+    let (bb, _) = lw.new_block(&[]);
+    let tag = lw.emit(Ty::Bool, Op::Tag(o));
+    let exit_args = lw.vals_of(&slots);
+    lw.branch(tag, (bb, vec![]), (xb, exit_args));
+
+    // 本体: `Some(PAT)` を束縛して 1 周。
+    lw.cur = Some(bb);
+    lw.scopes.push(vec![]);
+    let depth = lw.scopes.len() - 1;
+    let pv = lw.emit(pay.ty(), Op::Payload(o));
+    let binds = lw.pat(pat, pv, pay.ty(), None)?;
+    for (n, v, t) in binds {
+        // 借用のヘッダ (`&String` の欄は `ptr`): 借用の `String` として束縛する (メソッドの下ろしが種類を見る)。
+        if t == Ty::Ptr {
+            lw.bind(&n, v, Ty::Ptr);
+            if let Some(sl) = lw.lookup(&n) {
+                lw.coll.kinds.insert(sl, Kind::String);
+                lw.coll.borrowed.insert(sl);
+            }
+            continue;
+        }
+        bind_owned(lw, &n, v, t);
+    }
+    lw.loops.push(super::LoopCx { header: hb, exit: xb, slots: slots.clone(), depth, cont: vec![] });
+    let r = lw.expr(body)?;
+    if r.is_some() {
+        block_end(lw);
+        let args = lw.vals_of(&slots);
+        lw.goto(hb, args);
+    }
+    lw.loops.pop();
+    block_end(lw);
+    lw.scopes.pop();
+
+    lw.cur = Some(xb);
+    for (k, s) in slots.iter().enumerate() {
+        lw.slots[*s] = (xp[k], slot_tys[k]);
+    }
+    Ok(Some(lw.unit()))
 }
