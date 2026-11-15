@@ -308,7 +308,7 @@ void *ksn_ext_resolve(const char *lib, const char *sym, void **slot) {
 #endif
 
 
-#if defined(__wasm__)
+#if defined(__wasm__) && !defined(KSN_WASI)
 /* wasm には OS の乱数源が無い (WASI の random_get は未対応)。`sysrt.c` の `ksn_rt_sys_random` と同じ規約で、
  * 失敗 (ENOSYS = 38、ErrorKind の Other = 9) を返す。`std.rand.fill_secure` は Err になり、`Rng.from_entropy` は終了する。
  * ネイティブでは `sysrt.c` の定義を使う (両方をリンクするので、ここでは wasm だけに置く)。 */

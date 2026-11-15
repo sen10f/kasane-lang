@@ -291,7 +291,9 @@ fn str_const(name: &str, s: &str) -> String {
 
 /// wasm32 で作れない形 (スレッド・ファイル・ソケット・プロセス・環境・実時刻・浮動小数の書式化) を使っていれば、その理由。
 /// 出力は素の wasm で、libc もホストの資源もないので、対応しないものは理由つきで失敗させる (`WASM ABI` の章)。
-fn wasm_unsupported(ir: &str) -> Option<String> {
+/// `wasi` のとき (`wasm32-wasi`) は、ファイル・環境・実時刻を WASI の import で実現する (`wasi.c`) ので通す。
+/// スレッド・ソケット・プロセス・浮動小数の書式化は WASI でも対応しない。
+fn wasm_unsupported(ir: &str, wasi: bool) -> Option<String> {
     let has = |p: &str| ir.contains(p);
     let why = if has("pthread_") || has("@ksn.thr.") {
         "スレッド (spawn / join / チャネル / Mutex) は wasm32 では未対応 (単一スレッドの素の wasm)"
@@ -299,18 +301,23 @@ fn wasm_unsupported(ir: &str) -> Option<String> {
         "std.net (ソケット) は wasm32 では未対応"
     } else if has("@ksn_rt_sys_proc_") {
         "std.process (外部コマンド) は wasm32 では未対応"
-    } else if has("@ksn_rt_sys_open(") || has("@ksn_rt_sys_exists(") || has("@ksn_rt_sys_remove(") || has("@ksn_rt_sys_rename(") || has("@ksn_rt_sys_stat(") || has("@ksn_rt_sys_readdir(") {
+    } else if !wasi && (has("@ksn_rt_sys_open(") || has("@ksn_rt_sys_exists(") || has("@ksn_rt_sys_remove(") || has("@ksn_rt_sys_rename(") || has("@ksn_rt_sys_stat(") || has("@ksn_rt_sys_readdir(")) {
         "std.fs (ファイル) は wasm32 では未対応"
-    } else if has("@ksn_rt_sys_arg") || has("@ksn_rt_sys_var(") {
+    } else if !wasi && (has("@ksn_rt_sys_arg") || has("@ksn_rt_sys_var(")) {
         "std.env・引数 (ホストの環境) は wasm32 では未対応"
-    } else if has("@ksn_rt_sys_wall_ns") {
+    } else if !wasi && has("@ksn_rt_sys_wall_ns") {
         "実時刻 (std.time.SystemTime) は wasm32 では未対応"
     } else if has("@ksn_fmt_") {
         "浮動小数の書式化 (表示・文字列化) は wasm32 では未対応 (最短の往復表示に libc の snprintf / strtod が要る)"
     } else {
         return None;
     };
-    Some(format!("{}。WASM ABI の章 (仕様) を参照: wasm32 で使えるのは入出力 (標準出力・標準エラー)・確保・整数と論理の計算・文字列と配列", why))
+    let ok = if wasi {
+        "WASM ABI の章 (仕様) の WASI の項を参照: wasm32-wasi で使えるのは入出力・ファイル (前開きのディレクトリの下)・引数と環境・実時刻・乱数・確保・整数と論理の計算・文字列と配列"
+    } else {
+        "WASM ABI の章 (仕様) を参照: wasm32 で使えるのは入出力 (標準出力・標準エラー)・確保・整数と論理の計算・文字列と配列"
+    };
+    Some(format!("{}。{}", why, ok))
 }
 
 /// クロスコンパイルの対象 (三つ組)。LLVM IR の `target triple` / `target datalayout` と、clang に渡す探索先を決める。
@@ -330,7 +337,8 @@ pub struct Target {
 
 /// 対応するターゲット。ほかの三つ組は `target_of` が `None` を返す (呼び出し側が理由を出す)。
 /// `wasm32-unknown-unknown` は、ブラウザが主目標なので WASI ではなく素の wasm (import は `env` の数個だけ、`WASM ABI` 参照)。
-pub const TARGETS: [Target; 3] = [
+/// `wasm32-wasi` は WASI preview 1 の import (`wasi_snapshot_preview1`) で、ファイル・引数と環境・実時刻・乱数を使える (`WASM ABI` の WASI の項)。
+pub const TARGETS: [Target; 4] = [
     Target {
         name: "x86_64-linux-gnu",
         triple: "x86_64-unknown-linux-gnu",
@@ -352,11 +360,23 @@ pub const TARGETS: [Target; 3] = [
         sysroot: "",
         ptr_bits: 32,
     },
+    Target {
+        name: "wasm32-wasi",
+        triple: "wasm32-unknown-wasi",
+        datalayout: "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20",
+        sysroot: "",
+        ptr_bits: 32,
+    },
 ];
 
-/// `wasm32` の対象か (素の wasm。ファイルは `.wasm`、実行は `tools/wasm/run.mjs` か JS の `WebAssembly` で行う)。
+/// `wasm32` の対象か (素の wasm と WASI。ファイルは `.wasm`、実行は `tools/wasm/run.mjs` / `run_wasi.mjs` か JS の `WebAssembly` で行う)。
 pub fn is_wasm(t: Option<Target>) -> bool {
     t.is_some_and(|t| t.ptr_bits == 32 && t.triple.starts_with("wasm32"))
+}
+
+/// `wasm32-wasi` の対象か (WASI preview 1 の import を使う。`wasm32-unknown-unknown` は素の wasm のまま)。
+pub fn is_wasi(t: Option<Target>) -> bool {
+    t.is_some_and(|t| t.name == "wasm32-wasi")
 }
 
 /// wasm32 の import の名前: `link "env:名前"` の `名前` (WASM ABI。JS の `env` の関数を呼ぶ)。`env:` 以外の前置きは `None`。
@@ -644,7 +664,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
     out.push('\n');
     out.push_str(&main);
     if is_wasm(target) {
-        if let Some(why) = wasm_unsupported(&out) {
+        if let Some(why) = wasm_unsupported(&out, is_wasi(target)) {
             return Err(why);
         }
     }
@@ -1122,6 +1142,17 @@ impl<'a> Fe<'a> {
 
     fn r(&self, v: VId) -> String {
         self.lit.get(&v).cloned().unwrap_or_else(|| format!("%v{}", v))
+    }
+
+    /// `usize` の値を、C のランタイムの長さの引数 (`i64`) の形にする。wasm32 の `usize` は i32 なので広げる
+    /// (x86_64 / aarch64 は `usize` が i64 なので、値の名前をそのまま返す。出力は変わらない)。
+    fn len64(&mut self, v: VId) -> String {
+        let s = self.r(v);
+        if size_ty() == "i64" {
+            s
+        } else {
+            self.t(format!("zext {} {} to i64", size_ty(), s))
+        }
     }
 
     fn ty(&self, v: VId) -> Ty {
@@ -2303,11 +2334,13 @@ impl<'a> Fe<'a> {
             Op::EnvArgCount => {
                 self.cx.env = true;
                 let r = self.t(format!("call i64 @ksn_rt_sys_arg_count()"));
-                self.mov(&d, "i64", &r);
+                // 結果は `usize` (wasm32 は i32 なので狭める。x86_64 / aarch64 は従来どおり i64)。
+                let r = if size_ty() == "i64" { r } else { self.t(format!("trunc i64 {} to {}", r, size_ty())) };
+                self.mov(&d, &size_ty(), &r);
             }
             Op::EnvArg { index } => {
                 self.cx.env = true;
-                let iv = self.r(*index);
+                let iv = self.len64(*index);
                 let lenp = self.t("alloca i64, align 8".to_string());
                 self.line(format!("store i64 0, ptr {}, align 8", lenp));
                 let ptr = self.t(format!("call i64 @ksn_rt_sys_arg(i64 {}, ptr {})", iv, lenp));
@@ -2404,7 +2437,10 @@ impl<'a> Fe<'a> {
                     FsK::RemoveDir => self.t(format!("call i64 @ksn_rt_sys_rmdir(ptr {}, i64 {}, ptr {})", pl[0].0, pl[0].1, ep)),
                     FsK::OpenAppend => self.t(format!("call i64 @ksn_rt_sys_open(ptr {}, i64 {}, i32 2, ptr {})", pl[0].0, pl[0].1, ep)),
                     FsK::Stat => self.t(format!("call i64 @ksn_rt_sys_stat(ptr {}, i64 {}, i32 {}, ptr {})", pl[0].0, pl[0].1, self.r(args[1]), ep)),
-                    FsK::ReadDir => self.t(format!("call i64 @ksn_rt_sys_readdir(ptr {}, i64 {}, ptr {}, i64 {}, ptr {})", pl[0].0, pl[0].1, self.r(args[1]), self.r(args[2]), ep)),
+                    FsK::ReadDir => {
+                        let cap = self.len64(args[2]);
+                        self.t(format!("call i64 @ksn_rt_sys_readdir(ptr {}, i64 {}, ptr {}, i64 {}, ptr {})", pl[0].0, pl[0].1, self.r(args[1]), cap, ep))
+                    }
                 };
                 self.fs_result(&d, &r, &ep);
             }
@@ -2429,20 +2465,23 @@ impl<'a> Fe<'a> {
             Op::FsRead { fd, buf, len } => {
                 self.cx.fs = true;
                 let ep = self.fs_err_slot();
-                let r = self.t(format!("call i64 @ksn_rt_sys_read(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), ep));
+                let n = self.len64(*len);
+                let r = self.t(format!("call i64 @ksn_rt_sys_read(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), n, ep));
                 self.fs_result(&d, &r, &ep);
             }
             Op::FsWrite { fd, buf, len } => {
                 self.cx.fs = true;
                 let ep = self.fs_err_slot();
-                let r = self.t(format!("call i64 @ksn_rt_sys_write(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), ep));
+                let n = self.len64(*len);
+                let r = self.t(format!("call i64 @ksn_rt_sys_write(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), n, ep));
                 self.fs_result(&d, &r, &ep);
             }
             // OS の乱数 (sysrt.c の `ksn_rt_sys_random`)。失敗は ErrorKind と errno の受け口を `fs_result` が Err に詰める。
             Op::RandFill { buf, len, .. } => {
                 self.decl("declare i64 @ksn_rt_sys_random(ptr, i64, ptr)".to_string());
                 let ep = self.fs_err_slot();
-                let r = self.t(format!("call i64 @ksn_rt_sys_random(ptr {}, i64 {}, ptr {})", self.r(*buf), self.r(*len), ep));
+                let n = self.len64(*len);
+                let r = self.t(format!("call i64 @ksn_rt_sys_random(ptr {}, i64 {}, ptr {})", self.r(*buf), n, ep));
                 self.fs_result(&d, &r, &ep);
             }
             Op::ParseInt { ty, s, radix } => {

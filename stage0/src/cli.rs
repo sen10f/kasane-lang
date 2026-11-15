@@ -2777,6 +2777,8 @@ fn runtime_c_args(ll: &str, src: &Path) -> Vec<String> {
 /// wasm32-unknown-unknown の実行時 (C) と、libc の見出しの最小 (`src/wasm/`)。`wasm_link` が一時の場所へ書く。
 const WASM_RT: &str = include_str!("wasm/rt.c");
 const WASM_KIR_RT: &str = include_str!("kir_rt.c");
+/// wasm32-wasi だけ: WASI の入口 (`_start`)、`ksn_write` / `ksn_exit` / `getenv`、`ksn_rt_sys_*` (std.fs・時刻・乱数・環境)。
+const WASM_WASI_RT: &str = include_str!("wasm/wasi.c");
 const WASM_HEADERS: [(&str, &str); 4] = [
     ("stdio.h", include_str!("wasm/include/stdio.h")),
     ("stdlib.h", include_str!("wasm/include/stdlib.h")),
@@ -2784,11 +2786,13 @@ const WASM_HEADERS: [(&str, &str); 4] = [
     ("math.h", include_str!("wasm/include/math.h")),
 ];
 
-/// LLVM IR を `wasm32-unknown-unknown` の素の `.wasm` にする (修正プラン 5-3)。
-/// clang で IR と実行時 (`rt.c`、`kir_rt.c`) をそれぞれ wasm32 の目的ファイルにし、`wasm-ld` でつなぐ。
-/// 未定義の記号は `ksn_write` と `ksn_exit` だけ import として許す (それ以外は、リンクが失敗して理由が出る)。
+/// LLVM IR を `wasm32-unknown-unknown` の素の `.wasm` にする (修正プラン 5-3)。`wasm32-wasi` なら WASI preview 1 の `.wasm` にする。
+/// clang で IR と実行時 (`rt.c`、`kir_rt.c`、WASI なら `wasi.c`) をそれぞれ wasm32 の目的ファイルにし、`wasm-ld` でつなぐ。
+/// 未定義の記号は `ksn_write` と `ksn_exit` (素の wasm) と、IR が `wasm-import-name` で宣言した JS の import (`link "env:名前"`) だけ import として許す (それ以外は、リンクが失敗して理由が出る)。
+/// WASI の import (`wasi_snapshot_preview1`) は `wasi.c` が import 属性つきで宣言するので、許可の一覧には要らない。
 /// 道具は `KSN_CLANG` / `KSN_WASM_LD` で上書きできる (既定は `clang` と `wasm-ld-20`、無ければ `wasm-ld`)。
-fn wasm_link(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
+fn wasm_link(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Target>) -> Result<(), String> {
+    let wasi = crate::kir_llvm::is_wasi(target);
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let ld = std::env::var("KSN_WASM_LD").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "wasm-ld-20".to_string());
     let dir = exe.with_extension("wasm.d");
@@ -2803,12 +2807,19 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
     put(ir.clone(), ll)?;
     put(rt.clone(), WASM_RT)?;
     put(krt.clone(), WASM_KIR_RT)?;
+    let wasi_c = dir.join("wasi.c");
+    if wasi {
+        put(wasi_c.clone(), WASM_WASI_RT)?;
+    }
     // 未定義の記号として許すのは、`ksn_write` `ksn_exit` と、IR が `wasm-import-name` で宣言した JS の import (`link "env:名前"`) だけ。
     let mut names: Vec<&str> = vec!["ksn_write", "ksn_exit"];
     names.extend(ll.split("\"wasm-import-name\"=\"").skip(1).filter_map(|p| p.split('"').next()));
     put(allow.clone(), &(names.join("\n") + "\n"))?;
-    let (oir, ort, okrt) = (dir.join("ir.o"), dir.join("rt.o"), dir.join("kir_rt.o"));
-    let triple = "--target=wasm32-unknown-unknown";
+    let (oir, ort, okrt, owasi) = (dir.join("ir.o"), dir.join("rt.o"), dir.join("kir_rt.o"), dir.join("wasi.o"));
+    // 三つ組の綴り (素の wasm は `wasm32-unknown-unknown`、WASI は `wasm32-unknown-wasi`)。
+    let triple = format!("--target={}", target.map_or("wasm32-unknown-unknown", |t| t.triple));
+    // WASI のときは `KSN_WASI` を立てる (rt.c は `write` / `exit` / `getenv` を wasi.c に任せ、kir_rt.c は乱数の stub を外す)。
+    let defs: Vec<String> = if wasi { vec!["-DKSN_WASI=1".to_string()] } else { vec![] };
     let inc_arg = format!("-isystem{}", inc.display());
     let run = |cmd: &str, args: Vec<String>, what: &str| -> Result<(), String> {
         let o = std::process::Command::new(cmd).args(&args).output().map_err(|e| format!("{} を起動できない ({}: {})", what, cmd, e))?;
@@ -2820,21 +2831,23 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
     };
     let s = |x: &str| x.to_string();
     let p = |x: &Path| x.display().to_string();
-    let r1 = run(&clang, [vec![s(opt), s("-Wno-override-module"), s(triple), s("-c"), s("-x"), s("ir"), p(&ir), s("-o"), p(&oir)]].concat(), "clang (IR → wasm32)");
-    let r2 = r1.and_then(|_| run(&clang, vec![s("-O1"), s(triple), s("-ffreestanding"), s("-fno-builtin"), s(&inc_arg), s("-c"), s("-x"), s("c"), p(&rt), s("-o"), p(&ort)], "clang (rt.c)"));
-    let r3 = r2.and_then(|_| run(&clang, vec![s("-O1"), s(triple), s("-ffreestanding"), s("-fno-builtin"), s(&inc_arg), s("-c"), s("-x"), s("c"), p(&krt), s("-o"), p(&okrt)], "clang (kir_rt.c)"));
+    let c_args = |src: &Path, obj: &Path| -> Vec<String> {
+        [vec![s("-O1"), triple.clone(), s("-ffreestanding"), s("-fno-builtin")], defs.clone(), vec![s(&inc_arg), s("-c"), s("-x"), s("c"), p(src), s("-o"), p(obj)]].concat()
+    };
+    let r1 = run(&clang, [vec![s(opt), s("-Wno-override-module"), triple.clone(), s("-c"), s("-x"), s("ir"), p(&ir), s("-o"), p(&oir)]].concat(), "clang (IR → wasm32)");
+    let r2 = r1.and_then(|_| run(&clang, c_args(&rt, &ort), "clang (rt.c)"));
+    let r3 = r2.and_then(|_| run(&clang, c_args(&krt, &okrt), "clang (kir_rt.c)"));
+    let r3 = r3.and_then(|_| if wasi { run(&clang, c_args(&wasi_c, &owasi), "clang (wasi.c)") } else { Ok(()) });
     let r4 = r3.and_then(|_| {
-        let args = vec![
-            p(&oir),
-            p(&ort),
-            p(&okrt),
-            s("--no-entry"),
-            s("--export=ksn_main"),
-            s("--gc-sections"),
-            format!("--allow-undefined-file={}", p(&allow)),
-            s("-o"),
-            p(exe),
-        ];
+        let mut args = vec![p(&oir), p(&ort), p(&okrt)];
+        if wasi {
+            args.push(p(&owasi));
+        }
+        args.extend([s("--no-entry"), s("--export=ksn_main")]);
+        if wasi {
+            args.push(s("--export=_start"));
+        }
+        args.extend([s("--gc-sections"), format!("--allow-undefined-file={}", p(&allow)), s("-o"), p(exe)]);
         run(&ld, args, "wasm-ld")
     });
     let _ = fs::remove_dir_all(&dir);
@@ -2851,7 +2864,7 @@ fn clang_extra_args() -> Vec<String> {
 /// LLVM IR (`.ll` のテキスト) を clang で実行ファイル `exe` にする。
 fn clang_ll(ll: &str, exe: &Path, opt: &str, target: Option<crate::kir_llvm::Target>) -> Result<(), String> {
     if crate::kir_llvm::is_wasm(target) {
-        return wasm_link(ll, exe, opt);
+        return wasm_link(ll, exe, opt, target);
     }
     let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
     let src = exe.with_extension("ll.tmp");
