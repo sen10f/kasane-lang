@@ -803,9 +803,10 @@ impl Grammar {
                 best = best.max(mx);
             }
         }
-        // 空のトークン列 (中身の無いファイルなど) は、先頭の位置で不一致を報告する。
+        // 空のトークン列 (定義の無いファイル) は一致とする (定義ごとの `check_memo` と同じ答え。
+        // 空のファイルの形は E0001 などの字面の検査が見る)。
         let Some(t) = toks.get(best.min(toks.len().saturating_sub(1))) else {
-            return (false, "does not match the canonical grammar near end of file".to_string(), 1);
+            return (true, String::new(), 0);
         };
         let shown = if t.text.is_empty() { t.kind.clone() } else { t.text.clone() };
         (false, format!("does not match the canonical grammar near {}", py_repr(&shown)), 1)
