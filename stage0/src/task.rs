@@ -25,6 +25,9 @@ use crate::value::*;
 /// 全タスクが互いに待ち合って誰も進めないときの panic の文面。
 pub const DEADLOCK_TASK: &str = "deadlock: every std.task task is waiting for another task that cannot finish (a join cycle, or a join on the task itself)";
 
+/// 取り消されたタスクの結果を `join_task` で受けたときの panic の文面。木走査とネイティブで同じ文面にする。
+pub const TASK_CANCELLED: &str = "std.task.Task.join_task: the task was cancelled";
+
 /// タスクのスレッドのスタック量 (木走査の再帰の深さの上限 (約 2500 フレーム) を支える。`main` と同じ)。
 /// 仮想メモリの予約なので、使わない分は実メモリを取らない。
 const STACK_BYTES: usize = 1 << 30;
@@ -68,6 +71,8 @@ struct Slot {
     body: Option<Val>,
     /// 完了したタスクの結果。
     result: Option<Val>,
+    /// 取り消された (仕様 5.6 の第 4 段)。取り消したタスクは、この欄を立てて合図を渡し、本体を抜けて終わる。
+    cancelled: bool,
 }
 
 /// `Interp` が持つ、実行器の状態。`block_on` の間だけ `sched` が `Some`。
@@ -79,6 +84,8 @@ pub struct Tasks {
     cur: usize,
     /// 根以外のタスクが投げたエラー。根のタスクへ渡す (根が次に合図を受けたとき `Err` で返る)。
     error: Option<Ctl>,
+    /// 取り消したタスクの番号。取り消されたタスクは、終わるときに合図をこの番号へ返す。
+    cancel_by: usize,
 }
 
 /// タスクのスレッドへ `Interp` の生ポインタを渡すための包み。合図の順序で一度に 1 つだけが使う。
@@ -134,7 +141,7 @@ impl Interp {
             return panic("std.task.block_on: already running (nested block_on is not supported in stage 1)");
         }
         let sched = Arc::new(Sched { m: Mutex::new(Shared { cur: 0, states: vec![St::Runnable] }), cv: Condvar::new() });
-        self.tasks = Tasks { sched: Some(sched), slots: vec![Slot { body: None, result: None }], cur: 0, error: None };
+        self.tasks = Tasks { sched: Some(sched), slots: vec![Slot { body: None, result: None, cancelled: false }], cur: 0, error: None, cancel_by: 0 };
         let r = match self.call_value(&f, vec![]) {
             Ok(v) => self.task_drain().map(|_| v),
             Err(e) => Err(e),
@@ -175,12 +182,24 @@ impl Interp {
                 it.tasks.cur = id;
                 let body = it.tasks.slots[id].body.take();
                 let r = match body {
-                    Some(b) => it.call_value(&b, vec![]),
-                    None => Ok(Val::Unit),
+                    // 始まる前に取り消されたときは、本体を走らせない (枠は作られているが、中身の値は持たない)。
+                    Some(b) if !it.tasks.slots[id].cancelled => it.call_value(&b, vec![]),
+                    _ => Ok(Val::Unit),
                 };
                 match r {
                     Ok(v) => it.tasks.slots[id].result = Some(v),
+                    // 取り消しの巻き戻し: エラーではない。結果は持たない。
+                    Err(Ctl::Cancel) => {}
                     Err(e) => it.tasks.error = Some(e),
+                }
+                // 取り消されたタスクは、終わったあと合図を取り消したタスクへ返す (中断点で止まる)。
+                if it.tasks.slots[id].cancelled {
+                    let mut g = s2.m.lock().unwrap();
+                    g.states[id] = St::Done;
+                    g.cur = it.tasks.cancel_by;
+                    drop(g);
+                    s2.cv.notify_all();
+                    return;
                 }
                 // ここから先は、合図を渡す (インタプリタに触らない)。渡す前に、次の走者へ渡すエラーを確定させる。
                 let had_err = it.tasks.error.is_some();
@@ -206,7 +225,7 @@ impl Interp {
             })
             .map_err(|e| Ctl::Panic(format!("std.task.spawn_local: cannot create a task thread ({})", e)))?;
         // 合図はまだ根のタスクが持つ。スレッドは合図が `id` に来るまで `Interp` に触らないので、ここで登録してよい。
-        self.tasks.slots.push(Slot { body: Some(f), result: None });
+        self.tasks.slots.push(Slot { body: Some(f), result: None, cancelled: false });
         sched.m.lock().unwrap().states.push(St::Runnable);
         Ok(id)
     }
@@ -221,7 +240,7 @@ impl Interp {
         self.task_switch(me)
     }
 
-    /// `Task.join_task`: タスク `id` が終わるまで待ち、その結果を返す。
+    /// `Task.join_task`: タスク `id` が終わるまで待ち、その結果を返す。取り消されたタスクは結果を持たないので panic。
     pub fn task_join(&mut self, id: usize) -> Res {
         if !self.task_running() {
             return panic("std.task.Task.join_task: no executor (the task was not created inside std.task.block_on)");
@@ -230,7 +249,44 @@ impl Interp {
             return panic("std.task.Task.join_task: unknown task");
         }
         self.task_wait_for(id)?;
+        if self.tasks.slots[id].cancelled {
+            return panic(TASK_CANCELLED);
+        }
         Ok(self.tasks.slots[id].result.clone().unwrap_or(Val::Unit))
+    }
+
+    /// `Task<T>.cancel` (仕様 5.6 の第 4 段): タスク `id` を取り消す。終わったタスクへの取り消しは何もしない。
+    /// 取り消されたタスクは、次に合図を受けたところ (中断点) で本体を抜けて終わり、結果を持たない。
+    /// 合図は取り消したタスクから取り消されたタスクへ渡り、その後、取り消したタスクへ戻る (同期の巻き戻し)。
+    /// 中断点をまたぐ値は、取り消しの対象になる前の検査 (E4022) で、解放の要る値を持たないと確かめてある。
+    pub fn task_cancel(&mut self, id: usize) -> Result<(), Ctl> {
+        if !self.task_running() {
+            return panic("std.task.Task.cancel: no executor (the task was not created inside std.task.block_on)");
+        }
+        let me = self.tasks.cur;
+        if id >= self.tasks.slots.len() {
+            return panic("std.task.Task.cancel: unknown task");
+        }
+        if id == me {
+            return panic("std.task.Task.cancel: a task cannot cancel itself");
+        }
+        if self.task_state(id) == St::Done {
+            return Ok(());
+        }
+        self.tasks.slots[id].cancelled = true;
+        self.tasks.cancel_by = me;
+        let sched = self.tasks.sched.clone().expect("std.task: no executor");
+        let depth = self.depth;
+        // 待っている間に別のスレッドが `Interp` を書き換えるので、`task_switch` と同じく生ポインタで読み書きする。
+        let p: *mut Interp = std::hint::black_box(self as *mut Interp);
+        sched.m.lock().unwrap().cur = id;
+        sched.cv.notify_all();
+        sched.wait_turn(me);
+        // SAFETY: 合図が戻った時点で、このスレッドだけが `Interp` に触る (モジュールの説明)。
+        let it = unsafe { &mut *p };
+        it.depth = depth;
+        it.tasks.cur = me;
+        Ok(())
     }
 
     /// 相手 `target` が終わるまで、いまのタスクを待たせる (ほかのタスクを走らせる)。
@@ -273,6 +329,10 @@ impl Interp {
         // 合図が戻った。このタスクの状態を戻す。
         it.depth = depth;
         it.tasks.cur = me;
+        // 取り消されたタスクは、ここで止まる (中断点から戻らず、本体を抜ける)。
+        if it.tasks.slots[me].cancelled {
+            return Err(Ctl::Cancel);
+        }
         if me == 0 {
             if let Some(e) = it.tasks.error.take() {
                 return Err(e);

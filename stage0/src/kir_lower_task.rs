@@ -173,6 +173,26 @@ fn yield_now(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
     Ok(Some(lw.unit()))
 }
 
+/// 型が `std.task.Task<T>` か (集成体の名前で決める)。
+pub(super) fn is_task_ty(lw: &Lw, t: Ty) -> bool {
+    let Ty::Agg(ai) = t else { return false };
+    lw.aggs.borrow().defs[ai as usize].name.starts_with("std.task.Task<")
+}
+
+/// `h.cancel()` (`Task<T>` の受け手、仕様 5.6 の第 4 段): 枠を解放して取り消す。対象外なら `None`。
+/// 取り消しは中断点ではない (呼び出し元の `uses` は要らない)。`Task<T>` は `{id}` の集成体なので、番号を取り出して渡す。
+pub(super) fn cancel_call(lw: &mut Lw, recv: VId, recv_ty: Ty, line: usize) -> Option<LR<Option<VId>>> {
+    let _ = line;
+    if !is_task_ty(lw, recv_ty) {
+        return None;
+    }
+    mark_used();
+    let id = lw.emit(Ty::Usize, Op::Field { a: recv, off: 0 });
+    lw.callees.insert(ks::CANCEL.to_string());
+    lw.emit(Ty::Unit, Op::Call { callee: ks::CANCEL.to_string(), args: vec![id] });
+    Some(Ok(Some(lw.unit())))
+}
+
 /// `h.join_task()` (`Task<T>` の受け手): 中断点 (完了まで待つ) の後、結果を取り出す。対象外なら `None`。
 pub(super) fn join_call(lw: &mut Lw, recv: VId, recv_ty: Ty, line: usize) -> Option<LR<Option<VId>>> {
     let Ty::Agg(ai) = recv_ty else { return None };

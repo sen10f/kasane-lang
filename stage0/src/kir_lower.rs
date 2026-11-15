@@ -1143,6 +1143,12 @@ impl<'a> Lw<'a> {
                         return r;
                     }
                 }
+                // `task.cancel()`: 実行器のタスクを取り消す (仕様 5.6 の第 4 段)。
+                if meth == "cancel" && args.len() == 0 {
+                    if let Some(r) = task_lower::cancel_call(self, recv, rt, line) {
+                        return r;
+                    }
+                }
                 // `handle.join()`: スレッドの結果を取り出す。
                 if meth == "join" {
                     if args.len() != 0 {
@@ -1340,6 +1346,17 @@ impl<'a> Lw<'a> {
             let Some(a) = self.expr(&f[0])? else { return Ok(None) };
             if let Some(r) = task_lower::join_call(self, a, t, line) {
                 return r;
+            }
+        }
+        // `h.cancel()` (仕様 5.6 の第 4 段)。
+        // 受け手の型で先に選ぶ (対象外の `cancel` は式を二度評価しないように、ここで止める)。
+        if st(&f[1]) == "cancel" && items(&f[2]).is_empty() {
+            let t = self.ty_of(&f[0])?;
+            if task_lower::is_task_ty(self, t) {
+                let Some(a) = self.expr(&f[0])? else { return Ok(None) };
+                if let Some(r) = task_lower::cancel_call(self, a, t, line) {
+                    return r;
+                }
             }
         }
         if st(&f[1]) == "join" {

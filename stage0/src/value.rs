@@ -354,6 +354,8 @@ pub enum Ctl {
     Return(Val),
     Panic(String),
     Exit(i32),
+    /// 取り消されたタスクの巻き戻し (仕様 5.6 の第 4 段)。タスクの本体を抜けるだけで、エラーにはしない。
+    Cancel,
 }
 pub type Res = Result<Val, Ctl>;
 

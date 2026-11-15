@@ -1205,6 +1205,10 @@ impl Interp {
                 if s.ty == "std.task.Task" && name == "join_task" {
                     return self.task_join(field(v, "id") as usize);
                 }
+                if s.ty == "std.task.Task" && name == "cancel" {
+                    self.task_cancel(field(v, "id") as usize)?;
+                    return Ok(Val::Unit);
+                }
                 if s.ty == "std.time.Instant" && name == "elapsed" {
                     return Ok(nanos(mono_ns().saturating_sub(field(v, "ticks"))));
                 }

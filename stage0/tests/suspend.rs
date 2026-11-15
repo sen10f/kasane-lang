@@ -546,3 +546,246 @@ end t.main
     let codes = check_codes("fn_bound_suspend_pure", src);
     assert!(codes.iter().any(|c| c == "E4001"), "{:?}", codes);
 }
+
+// ------------------------------------------------------------ 第 4 段: 取り消し `Task<T>.cancel` (仕様 5.6)
+
+/// 中断で止まったタスクは、次に走る機会 (中断点から戻るところ) で本体を抜ける。残りのタスクは続く。
+/// 取り消したタスクの後の出力 (`a2`・`7`) は出ない。取り消しは合図を取り消したタスクへ渡して同期的に巻き戻す。
+#[test]
+fn cancel_suspended_task_stops_at_its_suspension_point() {
+    let src = with_say(
+        r#"fn t.body() -> () uses [io.console, suspend] panics may
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            t.say("a1")
+            std.task.yield_now()
+            t.say("a2")
+            7u32
+        },
+    )
+    let b = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            t.say("b1")
+            std.task.yield_now()
+            t.say("b2")
+            9u32
+        },
+    )
+    std.task.yield_now()
+    a.cancel()
+    t.say("after-cancel")
+    let rb = b.join_task()
+    if rb == 9u32 {
+        t.say("joined")
+    }
+end t.body
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+    t.say("main done")
+end t.main
+"#,
+    );
+    let (out, rc, err) = run_src("cancel_suspended", &src);
+    assert_eq!(rc, Some(0), "stderr: {}", err);
+    assert_eq!(out, "a1\nb1\nafter-cancel\nb2\njoined\nmain done\n");
+}
+
+/// 始まる前に取り消したタスクは、本体を一度も走らせない。
+#[test]
+fn cancel_unstarted_task_never_runs_its_body() {
+    let src = with_say(
+        r#"fn t.body() -> () uses [io.console, suspend] panics may
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            t.say("never")
+            3u32
+        },
+    )
+    a.cancel()
+    t.say("cancelled")
+end t.body
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+    t.say("main done")
+end t.main
+"#,
+    );
+    let (out, rc, err) = run_src("cancel_unstarted", &src);
+    assert_eq!(rc, Some(0), "stderr: {}", err);
+    assert_eq!(out, "cancelled\nmain done\n");
+}
+
+/// 枠に解放の要る値 (`Vec`) を中断をまたいで持つタスクの取り消しは E4022 (枠の値を後始末できない)。
+#[test]
+fn cancel_of_task_holding_vec_across_suspension_is_e4022() {
+    let src = r#"fn t.body() -> () uses [alloc, suspend] panics may
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            let mut v: alloc.vec.Vec<u32, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            std.task.yield_now()
+            3u32
+        },
+    )
+    a.cancel()
+end t.body
+
+fn t.main() -> () uses [alloc, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+end t.main
+"#;
+    let codes = check_codes("cancel_vec_e4022", src);
+    assert!(codes.iter().any(|c| c == "E4022"), "{:?}", codes);
+}
+
+/// 閉包の中で中断しうるユーザの関数を呼ぶタスクは取り消せない (その関数の枠を検査できないので、保守側に倒す)。
+#[test]
+fn cancel_of_task_calling_user_suspending_fn_is_e4022() {
+    let src = r#"fn t.step() -> u32 uses [suspend] panics may
+    std.task.yield_now()
+    1u32
+end t.step
+
+fn t.body() -> () uses [suspend] panics may
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            t.step()
+        },
+    )
+    a.cancel()
+end t.body
+
+fn t.main() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+end t.main
+"#;
+    let codes = check_codes("cancel_user_suspend_e4022", src);
+    assert!(codes.iter().any(|c| c == "E4022"), "{:?}", codes);
+}
+
+/// 取り消せるかは、`let` で束縛した handle の出どころで決まる。引数で受けた handle は E4022 (保守側)。
+#[test]
+fn cancel_of_handle_from_parameter_is_e4022() {
+    let src = r#"fn t.kill(h: std.task.Task<u32>) -> () uses [] panics never
+    h.cancel()
+end t.kill
+
+fn t.body() -> () uses [suspend] panics may
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            std.task.yield_now()
+            3u32
+        },
+    )
+    t.kill(a)
+end t.body
+
+fn t.main() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+end t.main
+"#;
+    let codes = check_codes("cancel_param_e4022", src);
+    assert!(codes.iter().any(|c| c == "E4022"), "{:?}", codes);
+}
+
+/// 取り消しは handle を消費する (`cancel(self)`)。二度取り消すと、移動済みの値の E3002。
+#[test]
+fn cancel_consumes_the_handle() {
+    let src = r#"fn t.body() -> () uses [suspend] panics may
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            3u32
+        },
+    )
+    a.cancel()
+    a.cancel()
+end t.body
+
+fn t.main() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+end t.main
+"#;
+    let codes = check_codes("cancel_twice_e3002", src);
+    assert!(codes.iter().any(|c| c == "E3002"), "{:?}", codes);
+}
+
+/// 取り消せるタスク (枠が数だけを持つ) は、`ksn check` を通る。
+#[test]
+fn cancel_of_scalar_task_is_accepted_by_check() {
+    let src = r#"fn t.add(x: u32, y: u32) -> u32 uses [] panics never
+    x.wrapping_add(y)
+end t.add
+
+fn t.body() -> () uses [suspend] panics may
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            let mut i = 0u32
+            while i < 3u32 {
+                std.task.yield_now()
+                i = t.add(i, 1u32)
+            }
+            i
+        },
+    )
+    std.task.yield_now()
+    a.cancel()
+end t.body
+
+fn t.main() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+end t.main
+"#;
+    let codes = check_codes("cancel_scalar_ok", src);
+    assert!(!codes.iter().any(|c| c.starts_with("E4") || c.starts_with("E3")), "{:?}", codes);
+}
+
+/// `join_task` で待っているタスクを取り消すと、待ちの枠も解放されて、そのタスクは本体の続きを走らない。
+#[test]
+fn cancel_task_waiting_in_join_stops_it() {
+    let src = with_say(
+        r#"fn t.body() -> () uses [io.console, suspend] panics may
+    let b = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            t.say("b1")
+            std.task.yield_now()
+            4u32
+        },
+    )
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [move b] {
+            let rb = b.join_task()
+            rb
+        },
+    )
+    std.task.yield_now()
+    a.cancel()
+    t.say("after")
+end t.body
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+    t.say("main done")
+end t.main
+"#,
+    );
+    let (out, rc, err) = run_src("cancel_join_waiting", &src);
+    assert_eq!(rc, Some(0), "stderr: {}", err);
+    assert_eq!(out, "b1\nafter\nmain done\n");
+}

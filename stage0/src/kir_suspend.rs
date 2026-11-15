@@ -32,6 +32,8 @@ const RES: u32 = 8;
 /// 葉の中断点 (`std.task.yield_now` と `Task.join_task` の待ち)。枠の形は `EXEC_TEXT` が書く。
 pub const YIELD: &str = "ksn.task.yield";
 pub const WAIT: &str = "ksn.task.wait";
+/// `Task<T>.cancel` (取り消し。枠を解放して、状態を取り消しにする)。
+pub const CANCEL: &str = "ksn.task.cancel";
 /// 実行器の入口 (`block_on` の本体) と、生成 (`spawn_local`) と、後始末。
 pub const RUN: &str = "ksn.task.run";
 pub const SPAWN: &str = "ksn.task.spawn";
