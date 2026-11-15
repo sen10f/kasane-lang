@@ -1,0 +1,9 @@
+type t.P
+    x: u32
+end t.P
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let p = t.P(x: 1u32)
+    core.mem.drop(p)
+    Ok(())
+end t.main

@@ -12,7 +12,8 @@ use common::*;
 #[test]
 fn diagnostics_each_case_reports_its_code() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/diag");
-    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+    // `README.md` (点検表) などケース以外のファイルは無視する。
+    let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().map_or(false, |x| x == "ksnl")).collect();
     names.sort();
     assert!(names.len() >= 20, "diag cases missing");
     let mut failures = Vec::new();

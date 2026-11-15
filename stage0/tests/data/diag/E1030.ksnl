@@ -1,0 +1,5 @@
+extern t.f(x: u32) -> u32 link "ksn_rt_x"
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

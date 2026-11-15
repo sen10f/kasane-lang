@@ -1,0 +1,7 @@
+fn t.f(a: u8, b: u8) -> u8 uses [] panics never
+    a + b
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

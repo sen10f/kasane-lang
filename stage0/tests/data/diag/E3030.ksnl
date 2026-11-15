@@ -1,0 +1,8 @@
+fn t.f() -> &u32 uses [] panics never
+    let n = 1u32
+    &n
+end t.f
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

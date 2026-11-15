@@ -1,0 +1,13 @@
+type t.P[T]
+    v: T
+end t.P
+
+fn t.P.of[T](v: T) -> t.P<T> uses [] panics never
+    t.P { v: v }
+end t.P.of
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let p = t.P<u32>.of(1u32)
+    core.mem.drop(p)
+    Ok(())
+end t.main
