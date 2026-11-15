@@ -1,0 +1,160 @@
+// KIR への下ろし (4a): 本体のない標準の宣言 (`.sig` だけ。Rust 版は組み込みの KIR 命令に下ろす) の呼び出し。
+// 呼び出し側 (`lower.expr.call` と `lower.opt.user_method`) は、解決先の FQN がこの表にあるときだけ来る。
+// 表にないものは従来どおり `本体のない宣言` で止まる。命令の形は Rust 版の `ksn kir` と同じにする。
+// 自由関数: `alloc.string.String.new` (枠 {null, 0, 0}・`Vec.new` と同じ)、`core.panic.panic("文言")`。
+// メソッド: `String.as_str` (枠の ptr と len から fat)、`str.len` (fat の欄 +8)、
+//           `Option.is_none` / `is_some` (tag・not.bool)、`Option.unwrap_or` (tag と br_if と payload)。
+fn lower.std_calls.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, fqn: &str) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    if fqn == "alloc.string.String.new" {
+        return lower.vec.new(env, c, t)
+    }
+    // `core.panic.panic("文言")`: 引数は文字列リテラル。Rust 版と同じく `panic "文言"` と `unreachable`。
+    // 文言は引用符の中の綴りをそのまま使う (`\` と `"` を含むものは未対応)。
+    if resolve.ast.count(p, n.b) != 1usize {
+        lower.cx.fail(c, "core.panic.panic の引数の個数")?
+        return lower.expr.dummy(c, t)
+    }
+    let an = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, 0usize))
+    if an.kind != parse.ast.Kind.Lit || an.a != 3usize {
+        lower.cx.fail(c, "core.panic.panic の引数は文字列リテラルだけ (未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let tk = parse.cur.peek_at(p, an.b)
+    let msg = resolve.ast.text(src, tk.start + 1usize, tk.stop - 1usize)
+    if msg.contains("\\") || msg.contains("\"") {
+        lower.cx.fail(c, "core.panic.panic の文言のエスケープ (未対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let mut o = lower.cx.cat2("panic \"", msg)?
+    o.push('"')?
+    lower.cx.def(c, "unit", o.as_str())?
+    lower.cx.finish(c, lower.cx.own("unreachable")?)?
+    lower.expr.dummy(c, t)
+end lower.std_calls.call
+
+// 自由関数の呼び出しを、この表で下ろせるか。
+fn lower.std_calls.has_fn(fqn: &str) -> bool uses [] panics may pub
+    fqn == "alloc.string.String.new" || fqn == "core.panic.panic"
+end lower.std_calls.has_fn
+
+// メソッド呼び出しを、この表で下ろせるか。
+fn lower.std_calls.has_method(fqn: &str) -> bool uses [] panics may pub
+    let a = fqn == "alloc.string.String.as_str" || fqn == "core.str.len"
+    let b = fqn == "core.option.Option.is_none" || fqn == "core.option.Option.is_some"
+    a || b || fqn == "core.option.Option.unwrap_or"
+end lower.std_calls.has_method
+
+// メソッド呼び出し。`vs` は受け手と引数の値 (受け手は宣言の self に合わせて参照か値)。
+// `rty` は受け手の式の型 (参照の中身の型を読むのに使う)。
+fn lower.std_calls.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, rty: usize, vs: &alloc.vec.Vec<usize, std.alloc.System>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let recv = lower.tyk.at(vs.as_slice(), 0usize)
+    if fqn == "alloc.string.String.as_str" {
+        // 枠の先頭の番地と長さから fat を作る (Rust 版 hdr_view と同じ: load ptr, load len, make)。
+        let p1 = lower.vec.load_ptr(c, recv)?
+        let l1 = lower.vec.load_usize(c, recv, 8usize)?
+        let mk = lower.cx.cat2("make(", lower.expr.two(p1, l1)?.as_str())?
+        let mk2 = lower.cx.cat2(mk.as_str(), ")")?
+        let tt = lower.tyk.text(env, c, t)?
+        let v = lower.cx.def(c, tt.as_str(), mk2.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if fqn == "core.str.len" {
+        let fat = lower.std_calls.val_of(env, c, recv, rty)?
+        let fs = lower.cx.vs(fat)?
+        let ln = lower.cx.cat2("field ", fs.as_str())?
+        let ln2 = lower.cx.cat2(ln.as_str(), ", +8")?
+        let v = lower.cx.def(c, "usize", ln2.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if fqn == "core.option.Option.is_none" || fqn == "core.option.Option.is_some" {
+        let ov = lower.std_calls.val_of(env, c, recv, rty)?
+        let os = lower.cx.vs(ov)?
+        let ts = lower.cx.cat2("tag ", os.as_str())?
+        let tg = lower.cx.def(c, "bool", ts.as_str())?
+        let mut v = tg
+        if fqn == "core.option.Option.is_none" {
+            let ns = lower.cx.cat2("not.bool ", lower.cx.vs(tg)?.as_str())?
+            v = lower.cx.def(c, "bool", ns.as_str())?
+        }
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if fqn == "core.option.Option.unwrap_or" {
+        return lower.std_calls.unwrap_or(env, c, vs, rty, t)
+    }
+    let why = lower.cx.cat2("標準のメソッド (未対応): ", fqn)?
+    lower.cx.fail(c, why.as_str())?
+    lower.expr.dummy(c, t)
+end lower.std_calls.method
+
+// メソッド呼び出しの受け手と引数を評価して、`method` へ渡す。受け手は局所なら値 (スロットなら読み出し)、
+// 式なら式の値。`&self` でも参照の一時を作らない (Rust 版と同じく、値のまま使う)。
+fn lower.std_calls.recv_call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], fqn: &str, recv_node: usize, loc: usize, args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let mut vs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rty = 0usize
+    if loc != 0usize {
+        rty = lower.cx.tyof_t(c, loc - 1usize)
+        let rv = lower.opt.local_val(env, c, loc - 1usize, rty)?
+        vs.push(rv)?
+    } else {
+        let r = lower.expr.expr(env, c, p, src, recv_node, types.ty.UNKNOWN)?
+        rty = r.t
+        vs.push(r.v)?
+    }
+    let na = resolve.ast.count(p, args)
+    for j in core.iter.range(0usize, na) {
+        let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, j), types.ty.UNKNOWN)?
+        vs.push(a.v)?
+    }
+    lower.std_calls.method(env, c, fqn, rty, &vs, t)
+end lower.std_calls.recv_call
+
+// `opt.unwrap_or(d)`: Rust 版と同じ形。tag で分け、Some なら payload、None なら既定の値を、
+// join のブロックの引数で受ける。ブロックは some・none・join の順に作る。
+fn lower.std_calls.unwrap_or(env: &types.env.Env, c: &mut lower.cx.Cx, vs: &alloc.vec.Vec<usize, std.alloc.System>, rty: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let recv = lower.tyk.at(vs.as_slice(), 0usize)
+    let dflt = lower.tyk.at(vs.as_slice(), 1usize)
+    let ov = lower.std_calls.val_of(env, c, recv, rty)?
+    let tt = lower.tyk.text(env, c, t)?
+    let os = lower.cx.vs(ov)?
+    let ts = lower.cx.cat2("tag ", os.as_str())?
+    let tg = lower.cx.def(c, "bool", ts.as_str())?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let sb = lower.cx.blk(c, &empty)?
+    let nb = lower.cx.blk(c, &empty)?
+    let jp = lower.cx.newval(c, tt.as_str())?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(jp)?
+    let jb = lower.cx.blk(c, &jps)?
+    let mut br = lower.cx.cat2("br_if ", lower.cx.vs(tg)?.as_str())?
+    br.push_str(", ")?
+    br.push_str(lower.cx.target(sb, &empty)?.as_str())?
+    br.push_str(", ")?
+    br.push_str(lower.cx.target(nb, &empty)?.as_str())?
+    lower.cx.finish(c, br)?
+    lower.cx.goto(c, sb)
+    let ps = lower.cx.cat2("payload ", os.as_str())?
+    let pv = lower.cx.def(c, tt.as_str(), ps.as_str())?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(pv)?
+    let b1 = lower.cx.cat2("br ", lower.cx.target(jb, &a1)?.as_str())?
+    lower.cx.finish(c, b1)?
+    lower.cx.goto(c, nb)
+    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a2.push(dflt)?
+    let b2 = lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?
+    lower.cx.finish(c, b2)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: jp, t: t })
+end lower.std_calls.unwrap_or
+
+// 受け手の値。型が参照 (`ref<T>` / `mutref<T>`) なら、中身を読む (`load`)。値なら、そのまま。
+fn lower.std_calls.val_of(env: &types.env.Env, c: &mut lower.cx.Cx, v: usize, rty: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let vt = lower.cx.tyof(c, v)
+    if !(vt.as_str().starts_with("ref") || vt.as_str().starts_with("mutref")) {
+        return Ok(v)
+    }
+    let inner = types.ty.strip(&c.ar, rty)
+    let it = lower.tyk.text(env, c, inner)?
+    let op = lower.cx.cat2("load ", lower.cx.vs(v)?.as_str())?
+    lower.cx.def(c, it.as_str(), op.as_str())
+end lower.std_calls.val_of

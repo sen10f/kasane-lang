@@ -1036,3 +1036,74 @@ cd selfhost/lower && ksn check && ksn build --release
 python3 -I compare.py --group linear_ok --mine native --jobs 16   # 一致 115 / 下ろせた 291
 python3 -I compare.py --group examples --mine native               # 一致 11 / 下ろせた 35
 ```
+
+## 20. KIR への下ろしの段 (4a): 標準ライブラリの呼び出し (修正プラン 5-5)
+
+2026-11-15。ブランチ `selfhost/lower-std` (`dev/plan` から)。新規は `selfhost/lower/src/lower/std_calls.ksnl` (`lower.std_calls`) と、この節の追記だけ。既存の変更は、呼び出しの分岐と E2042 の修正 (下の 20.4 章) で、`expr.ksnl` と `opt.ksnl` に数行。`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` と他の `selfhost/` 部品は変えていない。
+
+結論を先に: **本体のない標準の宣言のうち、Rust 版が KIR の命令に下ろすものを表 (`lower.std_calls`) で下ろした。** 表は 7 件 (自由関数 2・メソッド 5)。呼び出し側は、解決先の FQN が表にあるときだけそこへ回す。`linear_ok` の一致は 119 → **120**、下ろせた関数は 301 → **302**。`examples` の下ろせた関数は 35 → **39** (一致は 11 のまま)。端から端まで (emit → clang → 実行) で Rust 版と一致する本は 51 件のまま、差は 0 件。
+
+### 20.1 下ろした宣言
+
+| 宣言 (FQN) | Rust 版の KIR | この段の形 |
+| --- | --- | --- |
+| `alloc.string.String.new(SYSTEM)` | 枠 `make(null, 0, 0)` (`Vec.new` と同じ) | `lower.vec.new` を流用。ただし `String` の型そのものが下ろせない (20.3 章 1) ので、届いても止まる |
+| `core.panic.panic("文言")` | `panic "文言"` の後に `unreachable` | 引用符の中の綴りをそのまま使う。`\` と `"` を含む文言は未対応 |
+| `alloc.string.String.as_str` | `mem.load.ptr` / `mem.load.usize` (+8) / `make(p, l)` | 受け手は枠の番地 (参照の値) をそのまま使う |
+| `core.str.len` | `field v, +8` | fat の値をそのまま使う (受け手が参照なら `load`) |
+| `core.option.Option.is_none` | `tag` と `not.bool` | 受け手の値 (参照なら `load`) |
+| `core.option.Option.is_some` | `tag` | 同上 |
+| `core.option.Option.unwrap_or` | `tag`・`br_if`・`payload`・join の `br` | ブロックは some・none・join の順。既定の値は引数として先に評価する (Rust 版は `tag` の後に作る) |
+
+- 受け手の評価は `lower.std_calls.recv_call` にまとめた。局所なら `lower.opt.local_val` (スロットなら読み出し)、式なら式の値。`lower.opt.recv_value` の一時スロットは作らない。
+- 呼び出しの入口は 2 箇所: `lower.expr.call` (自由関数。`core.mem.drop` の前) と `lower.opt.user_method` (メソッド。先頭で判定)。どちらも表にない FQN は従来の経路 (本体のない宣言で止まる)。
+
+### 20.2 数字
+
+| 対象 | 前 (この段の開始時の実測) | 後 |
+| --- | ---: | ---: |
+| `linear_ok` (448 関数): 下ろせた | 301 | **302** |
+| 同: Rust 版と一致 (番号の正規化後) | 119 | **120** |
+| `examples` (172 関数): 下ろせた / 一致 | 35 / 11 | **39 / 11** |
+| `linear_ok` の「本体のない宣言」の理由 (件数) | 108 | **35** |
+| 端から端まで (`t.main` が全部下ろせた本 → emit → clang → 実行で Rust 版と一致) | 51 / 51 | **51 / 51** (差 0) |
+
+- 「前」は 19 章の記録 (291 / 115) とは違う。この段の基底 (`d542ed4`、19 章の後の統合) で、表を外して測り直した値。
+- 「本体のない宣言」の 108 → 35 は、同じ宣言が消えたのではない: `String.new` の 43 件は、届いても `String` の型で止まるので、「型の下ろし」の理由へ移った (44 件)。表で実際に下ろせた呼び出しは、`String.as_str` 18・`core.panic.panic` 6・`core.str.len` 4・`Option.unwrap_or` と述語 (少数)。
+- 端から端まで: `linear_ok` の 123 本のうち 51 本が `t.main` まで全部下ろせて、Rust 版と出力・終了コードが一致した (差 0)。表の追加では、この集合は増えていない (表を外しても 51 件)。
+
+確かめに使った小さな入力 (`/tmp` の 2 本、リポジトリの外):
+- `t.main` が `unwrap_or` (Some と None)、`is_none`・`is_some`、`str.len`、`print_line` を使う: Rust 版と同じ 5 行を出す (`a ok` ... `len ok`)、終了コード 0。
+- `core.panic.panic("boom here")` を通る: 標準エラーの `panic: boom here`、終了コード 101 (Rust 版と同じ)。
+
+### 20.3 残り (この段で届いたが下ろせなかったもの)
+
+`linear_ok` で `本体のない宣言` のまま残った 35 件 (延べ件数):
+
+| 宣言 | 件数 | 理由 |
+| --- | ---: | --- |
+| `core.check.eq` | 11 | Rust 版は `u32.$eq` と失敗時の `$debug` の展開 (生成された関数) を作る。生成関数の仕組みがない |
+| `std.thread.spawn` / `JoinHandle.join` / `Receiver.*` / `Sender.send` | 12 | 並行処理。Rust 版の `kir_lower_thread.rs` などの写しが要る |
+| `core.str.trim` | 3 | 空白の走査の形 (Rust 版の専用の形) |
+| `alloc.string.String.from_str` | 2 | `Result` と `AllocError` の型が要る |
+| `core.slice.get` / `get_mut` | 3 | `Option<&T>` の値の形 (Rust 版は `carry` を使う) |
+| `core.num.u32.wrapping_add`・`core.str.len` (残り 1) | 2 | 関数の形 (`u32.wrapping_add(a, b)`) と、受け手が式の形 |
+
+1. **`String` の型が下ろせない** (最も効く未対応): `alloc.string.String` の値 (引数・局所) は `型の下ろし` で止まる (44 件)。`String.new` と `as_str` は表に入ったが、その型を使う関数はまだ下ろせない。`String` / `str` のメソッドを進めている別の担当の範囲。
+2. **受け手の一時スロット (借用の印)**: `lower.expr.scan` は、局所に対する `&self` の呼び出しを名前だけで「借用」と数え、関数の先頭で `alloca` に置く。`Option` の述語・`str.len` の受け手は、そのため `alloca` / `store` / `load` の形になる (Rust 版は値のまま `tag` / `field`)。意味は同じで、テキストの一致だけが落ちる。直すには型を知る段で「借用」を決める必要がある (`scan` は型を持たない)。
+3. **`unwrap_or` の順序**: 既定の値は引数として先に評価するので、`const` が `tag` の前に出る (Rust 版は後)。
+
+### 20.4 処理系・部品の修正 (この段の基底で必要だったもの)
+
+- **E2042 (文の位置の `if` の値の捨て)**: この基底の `ksn check` が、`selfhost/lower` の 3 箇所で E2042 を出し、ビルドできなかった (`dev/plan` にある検査が、この枝より後に入ったため)。直し方は 3 箇所の `if` の then 枝の末尾の値を `core.mem.drop(...)` で捨てる形 (`expr.ksnl` の `matchx`・`retx`・`unary` の 3 箇所)。意味は変えていない。`stage0/` は変えていない。
+- 処理系の不足は 20.3 章 1・2 のとおり。`ksn build --release` の E9040 の根の理由は、この段でも先頭に出ない (16 章 14.5 章 3 と同じ)。
+
+### 20.5 確かめ方
+
+```
+cd selfhost/lower && ksn check && ksn fmt --check && ksn build --release
+python3 -I compare.py --group linear_ok --mine native --jobs 16   # 一致 120 / 全体 448 (下ろせた 302)
+python3 -I compare.py --group examples --mine native               # 一致 11 / 全体 172 (下ろせた 39)
+```
+
+端から端まで (`t.main` が全部下ろせた本だけ): `selfhost/emit` の `emit.native` を `ksn build` で作り (`selfhost/emit/target/debug/emit.native`)、各 `linear_ok` の本を `lower.native` → `emit.native` → clang (`kir_rt.c`・`sysrt.c`) → 実行で、Rust 版の実行ファイルと標準出力・標準エラー・終了コードを比べた。作業は `/tmp` (リポジトリの外)。結果は 51 件が一致、差 0。
