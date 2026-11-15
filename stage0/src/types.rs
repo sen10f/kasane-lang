@@ -1999,7 +1999,10 @@ impl<'a> TypeCk<'a> {
             (x, y) if Self::concrete_kind(x).is_some() && Self::concrete_kind(y).is_some() && Self::concrete_kind(x) != Self::concrete_kind(y) => {
                 Err((a.clone(), b.clone()))
             }
-            _ => Ok(()), // それ以外の構造の違いは、近似の限界かもしれないので何も言わない
+            // 意図した近似 (明示): `String` は `str`、`dyn Tr` は `&T` の受け側 (境界は別の検査が見る)。
+            (Ty::Named(n, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _)) if n == "alloc.string.String" && p == "str" => Ok(()),
+            (Ty::Dyn(..), _) | (_, Ty::Dyn(..)) => Ok(()),
+            _ => Err((a.clone(), b.clone())),
         }
     }
 
