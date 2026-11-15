@@ -27,6 +27,36 @@ fn wiki.main() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.
     wiki.serve_cli()
 end wiki.main
 
+// path で示すディレクトリ（存在すれば中身ごと）を削除する。
+// remove_dir_all は無いので、read_dir で中を走査してファイルは remove_file、
+// ディレクトリは再帰的に remove_dir_all してから remove_dir する。
+fn wiki.remove_dir_all(path: &str) -> Result<(), wiki.error.Error> uses [alloc, io.fs] panics never stack 256 pub
+    if !std.fs.exists(path) {
+        return Ok(())
+    }
+    let entries = std.fs.read_dir(path)?
+    let mut i = 0usize
+    let n = entries.len()
+    while i < n {
+        match entries.as_slice().get(i) {
+            Some(e) => {
+                let mut p = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+                core.mem.drop(p.push_str("/"))
+                core.mem.drop(p.push_str(e.name.as_str()))
+                if e.kind == std.fs.FileKind.Dir {
+                    core.mem.drop(wiki.remove_dir_all(p.as_str()))
+                } else {
+                    core.mem.drop(std.fs.remove_file(p.as_str()))
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.saturating_add(1usize)
+    }
+    core.mem.drop(std.fs.remove_dir(path))
+    Ok(())
+end wiki.remove_dir_all
+
 // CLI: アドレスとデータディレクトリを受け取ってサーバを起動する。
 fn wiki.serve_cli() -> Result<(), wiki.error.Error> uses [alloc, env, io.console, io.fs, io.net, rand, thread, time] panics may
     let address = match std.env.arg(0usize) {

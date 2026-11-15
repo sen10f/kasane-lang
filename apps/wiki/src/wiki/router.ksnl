@@ -337,6 +337,7 @@ fn wiki.router.test_route(page_store: &mut wiki.store.PageStore, csrf_tokens: &m
 end wiki.router.test_route
 
 fn wiki.router.test_store() -> wiki.store.PageStore uses [alloc, io.fs] panics may pub
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-router"))
     match store.PageStore.new("/tmp/wiki-test-router") {
         Ok(s) => s
         Err(_e) => core.panic.panic("store new failed")
