@@ -8,10 +8,11 @@ type todo.model.Todo derive [Debug, PartialEq, Eq] pub
 end todo.model.Todo
 
 fn todo.model.decode_array(doc: &std.json.Doc, at: usize) -> Result<alloc.vec.Vec<todo.model.Todo, std.alloc.System>, std.json.Error> uses [alloc] panics never pub
-    let len = std.json.decode_len(std.json.Value { doc: doc, at: at })?
+    let root = std.json.decode_payload(std.json.Doc.value_at(doc, at))?
+    let len = std.json.decode_len(root)?
     let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for i in core.iter.range(0usize, len) {
-        let item = std.json.decode_item(std.json.Value { doc: doc, at: at }, i)?
+        let item = std.json.decode_item(root, i)?
         out.push(todo.model.from_json_value(item)?)?
     }
     Ok(out)

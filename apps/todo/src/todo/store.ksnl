@@ -109,7 +109,7 @@ fn todo.store.Store.parse_into(self: &mut todo.store.Store, text: &str) -> Resul
     match std.json.parse(text) {
         Ok(doc) => {
             let root = doc.root()
-            let todos = model.decode_array(&doc, root.at)?
+            let todos = model.decode_array(&doc, root.index())?
             self.todos = todos
         }
         Err(e) => return Err(error.Error.Json(e))
