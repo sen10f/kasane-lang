@@ -209,7 +209,7 @@ pub(crate) fn is_hdr_named(t: &Src) -> bool {
 pub(crate) fn sig_ty(lw: &Lw, t: &Src) -> Option<Ty> {
     // `&mut [T]` / `&[T]` (配列への参照) は、配列の値は `fat` だがパラメータとしては要素の先頭 `ptr` を受け取る。
     if let Src::Ref(_, inner) = t {
-        if matches!(&**inner, Src::Array(_)) {
+        if matches!(&**inner, Src::Array(_, _)) {
             return Some(Ty::Ptr);
         }
     }
@@ -321,7 +321,7 @@ pub(super) fn kind_of_src(lw: &Lw, t: &Src) -> Option<Kind> {
         // 行番号を正しく保つ)。
         Src::Slice(e) => Some(Kind::Slice(conv(e).or_else(|| lw.conv_t(e)).filter(|t| elem_size(lw, *t).is_some()))),
         // 固定長配列 `&[T; N]` の要素型。長さ N は `arr_len` で別途追跡する。
-        Src::Array(e) => Some(Kind::Slice(conv(e).or_else(|| lw.conv_t(e)).filter(|t| elem_size(lw, *t).is_some()))),
+        Src::Array(e, _) => Some(Kind::Slice(conv(e).or_else(|| lw.conv_t(e)).filter(|t| elem_size(lw, *t).is_some()))),
         _ => None,
     }
 }

@@ -1,0 +1,17 @@
+// expect: E2023
+type t.P
+    a: u64
+    b: u64
+end t.P
+
+fn t.arr(a: [u64; 2]) -> u64 uses [] panics may
+    a[0usize]
+end t.arr
+
+fn t.bad() -> u64 uses [] panics may
+    t.arr(t.P { a: 1u64, b: 2u64 })
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -2207,7 +2207,7 @@ fn a_write_through_a_mutable_reference_is_visible_in_the_native_build() {
 
 #[test]
 fn a_question_mark_error_in_main_exits_with_code_1_in_the_native_build() {
-    let (_t, exe_path, out) = build_native("clif_try_main", &clif_try_program("    core.check.eq(t.parse(0u32)?, 0u32)"), false);
+    let (_t, exe_path, out) = build_native("clif_try_main", &clif_try_program("    core.check.eq(t.parse(0u32)?, 0u32)").replace("-> Result<(), std.io.Error> uses [alloc, io.console]", "-> Result<(), u8> uses [alloc, io.console]"), false);
     let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
     let o = Command::new(&p).output().unwrap();
     assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
@@ -3239,7 +3239,7 @@ end t.main
 /// `with` の診断の確認用。`t.R` と、その `get` / `shut` / `status` / `bump` を足した上に `main` の本体を置く。
 fn with_main(body: &str) -> String {
     format!(
-        "type t.R linear\n    id: u32\nend t.R\n\nfn t.R.bump(self: &mut t.R) -> () uses [] panics never\n    self.id = self.id.wrapping_add(1u32)\nend t.R.bump\n\nfn t.R.get(self: &t.R) -> u32 uses [] panics never\n    self.id\nend t.R.get\n\nfn t.R.new(id: u32) -> t.R uses [] panics never\n    t.R {{ id: id }}\nend t.R.new\n\nfn t.R.shut(self: t.R) -> () uses [] panics never\n    let t.R {{ id: id }} = self\n    core.mem.drop(id)\nend t.R.shut\n\nfn t.R.status(self: t.R) -> Result<(), u8> uses [] panics never\n    let t.R {{ id: id }} = self\n    core.mem.drop(id)\n    Ok(())\nend t.R.status\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n{}    Ok(())\nend t.main\n",
+        "type t.R linear\n    id: u32\nend t.R\n\nfn t.R.bump(self: &mut t.R) -> () uses [] panics never\n    self.id = self.id.wrapping_add(1u32)\nend t.R.bump\n\nfn t.R.get(self: &t.R) -> u32 uses [] panics never\n    self.id\nend t.R.get\n\nfn t.R.new(id: u32) -> t.R uses [] panics never\n    t.R {{ id: id }}\nend t.R.new\n\nfn t.R.shut(self: t.R) -> () uses [] panics never\n    let t.R {{ id: id }} = self\n    core.mem.drop(id)\nend t.R.shut\n\nfn t.R.status(self: t.R) -> Result<(), std.io.Error> uses [] panics never\n    let t.R {{ id: id }} = self\n    core.mem.drop(id)\n    Ok(())\nend t.R.status\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n{}    Ok(())\nend t.main\n",
         body
     )
 }

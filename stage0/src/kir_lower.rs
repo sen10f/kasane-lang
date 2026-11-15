@@ -689,7 +689,7 @@ impl<'a> Lw<'a> {
                 }
                 self.p.types.get(nm).map_or(false, |&i| self.p.defs[i].derive.iter().any(|x| x == "Copy"))
             }
-            Src::Array(el) | Src::Slice(el) => self.src_is_copy(el),
+            Src::Array(el, _) | Src::Slice(el) => self.src_is_copy(el),
             Src::Ptr(..) | Src::Const(_) | Src::Dyn(..) | Src::Closure { .. } => true,
         }
     }
@@ -698,7 +698,7 @@ impl<'a> Lw<'a> {
     fn src_is_linear(&self, t: &Src, seen: &mut HashSet<String>) -> bool {
         match t {
             Src::Tuple(xs) => xs.iter().any(|x| self.src_is_linear(x, seen)),
-            Src::Array(el) => self.src_is_linear(el, seen),
+            Src::Array(el, _) => self.src_is_linear(el, seen),
             Src::Named(nm, args) => {
                 if nm == "std.sync.Sender" {
                     return false;

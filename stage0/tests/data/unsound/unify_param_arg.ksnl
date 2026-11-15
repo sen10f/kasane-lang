@@ -1,0 +1,13 @@
+// expect: E2023
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+// expect: E2023
+fn t.num(n: u64) -> u64 uses [] panics never
+    n
+end t.num
+
+fn t.pass[T](x: T) -> u64 uses [] panics never
+    t.num(x)
+end t.pass
