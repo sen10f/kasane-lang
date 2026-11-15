@@ -57,7 +57,7 @@ uses_attr     = "uses" , effect_set ;
 effect_set    = "[" , [ effect , { "," , effect } ] , "]" ;
 effect        = effect_name | effect_var ;
 effect_name   = "io" | "io.fs" | "io.net" | "io.console" | "time" | "rand"
-              | "thread" | "alloc" | "env" | "process" ;
+              | "thread" | "alloc" | "env" | "process" | "suspend" ;
 effect_var    = upper_ident ;                       (* E: uses で宣言した変数 *)
 panics_attr   = "panics" , ( "never" | "may" | upper_ident ) ;
 stack_attr    = "stack" , int_dec ;

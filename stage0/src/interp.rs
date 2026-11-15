@@ -59,6 +59,8 @@ pub struct Interp {
     /// 後の `send` を `recv` で待つ往復の通信、`join` の循環、送信側が生きたままの空チャネルの `recv` など) は、
     /// 止まらずに「deadlock」の panic で失敗する。
     pub threads: Vec<Rc<ThreadV>>,
+    /// `std.task` の協調実行器の状態 (task.rs。`block_on` の間だけ動く)。
+    pub tasks: crate::task::Tasks,
 }
 
 pub const DEADLOCK_JOIN: &str = "deadlock: a thread waits for itself, or two threads wait for each other (the interpreter runs each thread to completion and cannot suspend one)";
@@ -210,6 +212,7 @@ impl Interp {
             net: Default::default(),
             procs: Default::default(),
             threads: vec![],
+            tasks: Default::default(),
         }
     }
 
