@@ -2710,6 +2710,10 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
             return counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc, by_ref, by_mut, take: false }, name, &f[2]);
         }
     }
+    // `for x in self.items.iter()` などフィールドの Vec: ヘッダのアドレスから反復する (要素はその場で借りる)。
+    if let Some(r) = field_vec_for(lw, e, it, by_ref, by_mut, name.clone(), &f[2])? {
+        return Ok(Some(r));
+    }
     // `for x in f(..)` で、式の型が `&[T]` (スカラーの要素): 評価した `fat` の値の要素を回す。
     if !by_mut && nname(it) == "Call" {
         if let Ok(Src::Ref(false, inner)) = lw.src_ty(it) {
@@ -2736,6 +2740,107 @@ pub(crate) fn for_expr(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
         return Ok(Some(r));
     }
     lw.err(line, "for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数・利用者の反復子の変数だけ段階 1 の対象")
+}
+
+/// `for x in R BODY` の `R` が、構造体の Vec のフィールド (`self.items` / `p.defs` / `x.f.v`) のとき、
+/// フィールドのヘッダのアドレス (局所の名前から `field_addr` でたどる) から反復する。要素は Vec の中を
+/// その場で借りる (所有物の要素は借用で束縛し、解放しない)。対象外 (フィールドでない・Vec でない) なら `None`。
+fn field_vec_for(lw: &mut Lw, e: &V, it: &V, by_ref: bool, by_mut: bool, name: Option<String>, body: &V) -> LR<Option<VId>> {
+    let line = nline(e);
+    let (recv, by_ref, by_mut) = strip_seq_wrap(it, by_ref, by_mut);
+    let Some(segs) = super::agg::field_segs(&recv).filter(|s| s.len() >= 2) else { return Ok(None) };
+    let Some(vs) = lw.lookup(&segs[0]) else { return Ok(None) };
+    // フィールドの型 (型表の型)。`.iter()` の形の受け手 (`b.names`) は木に型の記録が無いので、定義の列から求める。
+    let Some(src) = super::own::field_src(lw, vs, &segs[1..]) else { return Ok(None) };
+    // 要素の型 (Vec の型引数の先頭)。参照越しの Vec も同じ。
+    let vec_elem_src = match &src {
+        Src::Named(n, a) if is_vecn(n) => a.first().cloned(),
+        Src::Ref(_, i) => match &**i {
+            Src::Named(n, a) if is_vecn(n) => a.first().cloned(),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(elem_src) = vec_elem_src else { return Ok(None) };
+    let Some(elem) = lw.conv_t(&elem_src) else { return Ok(None) };
+    // 先頭の局所: 構造体の参照 (`self`) か、メモリ上の値。それ以外 (スカラーなど) は対象外。
+    let base = lw.slots[vs].0;
+    let mut cur = match lw.vty(base) {
+        Ty::Ref(_, Pointee::Agg(_)) => base,
+        _ if lw.is_mem_val(base) => base,
+        _ => return Ok(None),
+    };
+    for n in &segs[1..] {
+        cur = lw.field_addr(cur, n, line)?;
+    }
+    if !matches!(lw.vty(cur), Ty::Ref(_, Pointee::Agg(k)) if super::agg::is_vec_name(&lw.agg_def(k).name)) {
+        return Ok(None);
+    }
+    if by_mut && matches!(lw.vty(cur), Ty::Ref(false, _)) {
+        return lw.err(line, "共有の参照の先の Vec を可変で回す形は段階 1 の対象外");
+    }
+    if !by_ref && owns_heap(lw, elem) {
+        return lw.err(line, "フィールドの所有物の Vec を値で回す for は段階 1 の対象外 (借用の先から要素を移せない)");
+    }
+    if body_mutates_place(body, &segs) {
+        return lw.err(line, "for の本体で反復中の Vec を変更する形は段階 1 の対象外 (再確保で反復が解放後の領域を読む)");
+    }
+    // 添字・反復の対象のヘッダは生のアドレス (`ptr`) で持つ (`Seq::Hdr` の約束)。参照は bitcast で同じ番地の ptr に変える。
+    let cur_ty = lw.vty(cur);
+    let hdr = lw.emit(Ty::Ptr, Op::Bitcast { src: cur_ty, a: cur });
+    let (len, base) = Seq::Hdr(hdr).len_and_base(lw, None);
+    let zero = lw.emit(Ty::Usize, Op::Const(0));
+    let esrc = Some(elem_src);
+    counted(lw, line, Counted { start: zero, end: len, ity: Ty::Usize, elem: Some((base, elem)), esrc, by_ref, by_mut, take: false }, name, body)
+}
+
+/// 反復の対象の木から、外側の借用・反復の包みを外す: `&x` `&mut x` `x.iter()` `x.as_slice()`
+/// (引数なし)、経路の形 (`a.b.iter()` は `Call` の `a.b.iter`)。
+/// 返すのは受け手の木と、共有・可変の借用の有無。
+fn strip_seq_wrap(it: &V, by_ref: bool, by_mut: bool) -> (V, bool, bool) {
+    let (mut cur, mut r, mut m) = (it.clone(), by_ref, by_mut);
+    loop {
+        let next: Option<V> = match nname(&cur) {
+            "Unary" if st(&nf(&cur)[0]) == "&" => {
+                r = true;
+                Some(nf(&cur)[1].clone())
+            }
+            "Unary" if st(&nf(&cur)[0]) == "&mut" => {
+                m = true;
+                Some(nf(&cur)[1].clone())
+            }
+            "MCall" if items(&nf(&cur)[2]).is_empty() => {
+                let recv = nf(&cur)[0].clone();
+                match st(&nf(&cur)[1]).as_str() {
+                    "iter" => {
+                        r = true;
+                        Some(recv)
+                    }
+                    "as_slice" => Some(recv),
+                    _ => None,
+                }
+            }
+            // `a.b.iter()` は `Call` の経路 `a.b.iter` (引数なし)。受け手は経路の先頭から一つ手前まで。
+            "Call" if nf(&cur).len() >= 2 && nname(&nf(&cur)[0]) == "Path" && items(&nf(&cur)[1]).is_empty() => {
+                let segs = strs(&nf(&nf(&cur)[0])[0]);
+                match segs.last().map(|s| s.as_str()) {
+                    Some(last @ ("iter" | "as_slice")) if segs.len() >= 3 => {
+                        if last == "iter" {
+                            r = true;
+                        }
+                        let rs: Vec<V> = segs[..segs.len() - 1].iter().map(|s| V::S(s.clone())).collect();
+                        Some(V::Node("Path", vec![V::L(rs), V::Nil], 0, 0))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        match next {
+            Some(n) => cur = n,
+            None => return (cur, r, m),
+        }
+    }
 }
 
 /// `&v` / `v.iter()` (共有の借用) なら (`v`, true)。それ以外はそのまま (式, false)。
@@ -2767,24 +2872,37 @@ fn path1_name(e: &V) -> Option<String> {
 
 /// 木 `v` の中で、名前 `name` の局所を変えうる形があるか: 代入、`&mut name`、読むだけとは限らないメソッド呼び出し。
 pub(super) fn body_mutates(v: &V, name: &str) -> bool {
+    body_mutates_place(v, &[name.to_string()])
+}
+
+/// 木 `v` の中で、場所 `target` (局所 `x`、またはフィールド `x.f.g` の名前の並び) を変えうる形があるか。
+/// 代入の左辺・`&mut` の対象・読むだけとは限らないメソッドの受け手の場所が、`target` と先頭から
+/// 一致するもの (片方がもう片方の前の並び) を数える。`self.count` の書き換えは `self.items` の反復を変えない。
+pub(super) fn body_mutates_place(v: &V, target: &[String]) -> bool {
     const READ_ONLY: [&str; 10] = ["len", "is_empty", "get", "as_slice", "as_str", "first", "last", "contains", "capacity", "iter"];
+    let overlaps = |p: &[String]| {
+        let n = p.len().min(target.len());
+        !p.is_empty() && p[..n] == target[..n]
+    };
     match v {
         V::Node(n, fs, _, _) => {
             let hit = match *n {
-                "Assign" => fs.first().and_then(super::path_base).as_deref() == Some(name),
-                "Unary" => fs.len() == 2 && st(&fs[0]) == "&mut" && super::agg::field_segs(&fs[1]).is_some_and(|s| s[0] == name),
+                "Assign" => fs.first().and_then(|l| {
+                    super::agg::field_segs(l).or_else(|| super::path_base(l).map(|b| vec![b]))
+                }).is_some_and(|p| overlaps(&p)),
+                "Unary" => fs.len() == 2 && st(&fs[0]) == "&mut" && super::agg::field_segs(&fs[1]).is_some_and(|p| overlaps(&p)),
                 "Call" if fs.len() >= 2 && nname(&fs[0]) == "Path" => {
                     let segs = strs(&nf(&fs[0])[0]);
-                    segs.len() >= 2 && segs[0] == name && !READ_ONLY.contains(&segs[segs.len() - 1].as_str())
+                    segs.len() >= 2 && !READ_ONLY.contains(&segs[segs.len() - 1].as_str()) && overlaps(&segs[..segs.len() - 1])
                 }
                 "MCall" if fs.len() >= 2 => {
-                    super::agg::field_segs(&fs[0]).is_some_and(|s| s[0] == name) && !READ_ONLY.contains(&st(&fs[1]).as_str())
+                    super::agg::field_segs(&fs[0]).is_some_and(|p| overlaps(&p)) && !READ_ONLY.contains(&st(&fs[1]).as_str())
                 }
                 _ => false,
             };
-            hit || fs.iter().any(|f| body_mutates(f, name))
+            hit || fs.iter().any(|f| body_mutates_place(f, target))
         }
-        V::L(xs) => xs.iter().any(|x| body_mutates(x, name)),
+        V::L(xs) => xs.iter().any(|x| body_mutates_place(x, target)),
         _ => false,
     }
 }

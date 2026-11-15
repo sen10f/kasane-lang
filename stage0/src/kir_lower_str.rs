@@ -157,6 +157,25 @@ impl<'a> Lw<'a> {
                 }
                 Some(self.find_call(h, pat).map(Some))
             }
+            // `self.rfind(pat)`: 最後の一致の先頭のバイト位置 (空のパターンは `Some(len)`)。組み込みは持たず、
+            // Kasane で書いた `core.str.rfind` (`spec/stdlib/core/str.ksnl`) を単相化して呼ぶ (設計_KIR.md 29 章)。
+            "rfind" => {
+                if !matches!(kind, coll::Kind::Str) {
+                    return None;
+                }
+                if args.len() != 1 {
+                    return Some(self.err(line, "メソッド rfind の引数は 1 個のはず"));
+                }
+                let t = self.ty_of(e).ok()?;
+                if t != Ty::Opt(Pay::Usize) {
+                    return Some(self.err(line, "メソッド rfind の結果の型が Option<usize> ではない"));
+                }
+                let at = self.ty_of(&args[0]).ok()?;
+                if at != self.fat_ty() {
+                    return Some(self.err(line, "メソッド rfind の引数の型が受け手と違う"));
+                }
+                Some(self.str_kasane_call(e, line, h, "rfind", args))
+            }
             // `self.split_once(sep)`。空の区切りは「見つからない」(None)。
             // 見つかれば `Option<(&str, &str)>` で、タプル集成体を Option のペイロードにする。
             "split_once" => {
@@ -181,6 +200,16 @@ impl<'a> Lw<'a> {
             }
             _ => None,
         }
+    }
+
+    /// `s.m(args)` (`s` は `&str` の fat): Kasane で書いた `core.str.<m>` (`spec/stdlib/core/str.ksnl`) を、受け手 `h` で呼ぶ。
+    /// 引数は `kasane_call` が評価する (ここでは先に評価しない)。定義が無ければ診断を出す。
+    fn str_kasane_call(&mut self, e: &V, line: usize, h: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
+        let Some(di) = super::ext::find_def(self, &format!("core.str.{}", m)) else {
+            return self.err(line, format!("メソッド {} は段階 1 の対象外 (core.str.{} の Kasane 版がない)", m, m));
+        };
+        let recv = Src::Ref(false, Box::new(Src::Prim("str".into())));
+        super::ext::kasane_call(self, e, line, di, h, recv, args)
     }
 
     /// ASCII 空白 (`\t` `\n` `\x0C` `\r` ` `) か。0x0B は含まない (natives.rs と合わせる)。

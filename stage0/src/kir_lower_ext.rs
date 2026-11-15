@@ -54,7 +54,7 @@ fn elem_src(lw: &Lw, t: Ty) -> Option<Src> {
     }
 }
 
-fn find_def(lw: &Lw, name: &str) -> Option<usize> {
+pub(super) fn find_def(lw: &Lw, name: &str) -> Option<usize> {
     lw.p.defs.iter().position(|d| d.kw == "fn" && d.name == name && d.body.is_some() && d.is_method())
 }
 
@@ -165,7 +165,7 @@ fn ext_lower(lw: &mut Lw, e: &V, line: usize, di: usize, on_vec: bool, elem: Ty,
 }
 
 /// Kasane の定義 `di` (メソッド) を、受け手 `self_v` と受け手の型 `recv` で呼ぶ。総称の型引数は受け手と引数から推論して単相化する。
-fn kasane_call(lw: &mut Lw, e: &V, line: usize, di: usize, self_v: VId, recv: Src, args: &[V]) -> LR<Option<VId>> {
+pub(super) fn kasane_call(lw: &mut Lw, e: &V, line: usize, di: usize, self_v: VId, recv: Src, args: &[V]) -> LR<Option<VId>> {
     let p = lw.p;
     let cd = &p.defs[di];
     // クロージャを引数に取る (`sort_by(fn ..)`): クロージャごとの単相インスタンス (`generic_call_with`)。
