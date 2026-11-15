@@ -1,5 +1,5 @@
 type std.task.Task[T] pub
-    id: usize pub
+    id: usize
 end std.task.Task
 
 fn std.task.Task.cancel[T](self: std.task.Task<T>) -> () uses [] panics never pub

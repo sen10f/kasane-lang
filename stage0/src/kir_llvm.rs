@@ -716,14 +716,21 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
     s.push_str(&exit_tail(cx, m, f)?);
     if await_mode(m) {
         // 再開の入口 `ksn_resume(h, v)`: JS が待っていた Promise の結果 `v` を `h` に入れて、枠を進める。戻り値は `main` と同じ。
+        // 実行器が終了済みならエラーを返す (Issue 8 対策: ksn_resume after program end)。
         s.push_str(&format!(
-            "define i32 @ksn_resume(i32 %h, i32 %v) \"wasm-export-name\"=\"ksn_resume\" null_pointer_is_valid {{\nentry:\n  %put = call i1 {}(i32 %h, i32 %v)\n  %r = call {} {}()\n  %pend = call i1 {}()\n  br i1 %pend, label %waiting, label %go\nwaiting:\n  ret i32 -1\ngo:\n",
+            "define i32 @ksn_resume(i32 %h, i32 %v) \"wasm-export-name\"=\"ksn_resume\" null_pointer_is_valid {{\nentry:\n  %running = call i1 {}()\n  br i1 %running, label %active, label %dead\nactive:\n  %put = call i1 {}(i32 %h, i32 %v)\n  %r = call {} {}()\n  %pend = call i1 {}()\n  br i1 %pend, label %waiting, label %go\nwaiting:\n  ret i32 -1\ngo:\n",
+            fname("ksn.task.running"),
             fname("ksn.js.put"),
             rt,
             fname(&format!("{}.resume", f.key)),
             fname(&format!("{}.pending", f.key))
         ));
-        s.push_str(&exit_tail(cx, m, f)?);
+        let tail = exit_tail(cx, m, f)?;
+        // `exit_tail` は関数を `}` で閉じるので、終了後の入口 `dead` はその手前に置く。
+        let close = tail.rfind('}').expect("exit_tail ends the function");
+        s.push_str(&tail[..close]);
+        s.push_str("dead:\n  ret i32 -2\n");
+        s.push_str(&tail[close..]);
     }
     Ok(s)
 }

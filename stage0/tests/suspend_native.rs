@@ -508,3 +508,36 @@ end t.main
     );
     same_as_interpreter("native_cancel_join", &src, "b1\nafter\nmain done\n", Some(0));
 }
+
+/// 前の `block_on` から持ち出した `Task` を次の `block_on` で `join_task` すると panic (世代の検査。Fable レビュー R2#4)。
+#[test]
+fn stale_task_from_earlier_block_on_panics_101() {
+    let src = with_say(
+        "fn t.mk() -> std.task.Task<alloc.string.String<std.alloc.System>> uses [alloc, io.console, suspend] panics may
+    std.task.block_on(fn() -> std.task.Task<alloc.string.String<std.alloc.System>> capture [] {
+        std.task.spawn_local(
+            fn() -> alloc.string.String<std.alloc.System> capture [] {
+                alloc.string.String.new(std.alloc.SYSTEM)
+            },
+        )
+    })
+end t.mk
+
+fn t.main() -> () uses [alloc, io.console, suspend] panics may
+    let h = t.mk()
+    let s = std.task.block_on(fn() -> alloc.string.String<std.alloc.System> capture [move h] {
+        let x = std.task.spawn_local(
+            fn() -> u64 capture [] {
+                1311768467463790320u64
+            },
+        )
+        let r = h.join_task()
+        core.mem.drop(x.join_task())
+        r
+    })
+    t.say(s.as_str())
+end t.main
+",
+    );
+    same_as_interpreter("stale_task", &src, "", Some(101));
+}

@@ -86,6 +86,8 @@ pub struct Tasks {
     error: Option<Ctl>,
     /// 取り消したタスクの番号。取り消されたタスクは、終わるときに合図をこの番号へ返す。
     cancel_by: usize,
+    /// 実行器の世代番号。`block_on` ごとに増やし、古い世代の `Task` ハンドルを拒否するために使う (Issue 4 対策)。
+    generation: usize,
 }
 
 /// タスクのスレッドへ `Interp` の生ポインタを渡すための包み。合図の順序で一度に 1 つだけが使う。
@@ -140,15 +142,17 @@ impl Interp {
         if self.task_running() {
             return panic("std.task.block_on: already running (nested block_on is not supported in stage 1)");
         }
+        let gen = self.tasks.generation.wrapping_add(1);
         let sched = Arc::new(Sched { m: Mutex::new(Shared { cur: 0, states: vec![St::Runnable] }), cv: Condvar::new() });
-        self.tasks = Tasks { sched: Some(sched), slots: vec![Slot { body: None, result: None, cancelled: false }], cur: 0, error: None, cancel_by: 0 };
+        self.tasks = Tasks { sched: Some(sched), slots: vec![Slot { body: None, result: None, cancelled: false }], cur: 0, error: None, cancel_by: 0, generation: gen };
         let r = match self.call_value(&f, vec![]) {
             Ok(v) => self.task_drain().map(|_| v),
             Err(e) => Err(e),
         };
         // 実行器を畳む。まだ終わっていないタスク (エラーで中断したとき) のスレッドは、合図を待ったまま残る
         // (プロセスの終了で消える)。
-        self.tasks = Tasks::default();
+        // 世代番号は畳んだ後も残す (次の `block_on` で古い `Task` を拒むため)。
+        self.tasks = Tasks { generation: gen, ..Tasks::default() };
         r
     }
 
@@ -162,12 +166,13 @@ impl Interp {
         }
     }
 
-    /// `std.task.spawn_local`: タスクを作る (まだ走らせない)。返すのはタスクの id。
-    pub fn task_spawn(&mut self, f: Val) -> Result<usize, Ctl> {
+    /// `std.task.spawn_local`: タスクを作る (まだ走らせない)。返すのは (タスクの id, 実行器の世代番号)。
+    pub fn task_spawn(&mut self, f: Val) -> Result<(usize, usize), Ctl> {
         let Some(sched) = self.tasks.sched.clone() else {
             return panic("std.task.spawn_local: no executor (call it inside std.task.block_on)");
         };
         let id = self.tasks.slots.len();
+        let gen = self.tasks.generation;
         let ptr = SendPtr(self as *mut Interp);
         let s2 = sched.clone();
         // スレッドを先に作る (失敗したらタスクを登録しない)。新しいスレッドは合図が来るまで何もしない。
@@ -227,7 +232,7 @@ impl Interp {
         // 合図はまだ根のタスクが持つ。スレッドは合図が `id` に来るまで `Interp` に触らないので、ここで登録してよい。
         self.tasks.slots.push(Slot { body: Some(f), result: None, cancelled: false });
         sched.m.lock().unwrap().states.push(St::Runnable);
-        Ok(id)
+        Ok((id, gen))
     }
 
     /// `std.task.yield_now`: 走れる他のタスクがあれば、そちらへ譲る。なければそのまま戻る。
@@ -241,9 +246,13 @@ impl Interp {
     }
 
     /// `Task.join_task`: タスク `id` が終わるまで待ち、その結果を返す。取り消されたタスクは結果を持たないので panic。
-    pub fn task_join(&mut self, id: usize) -> Res {
+    /// 世代番号が一致しない場合 (古い `block_on` のタスク) は panic する (Issue 4 対策)。
+    pub fn task_join(&mut self, id: usize, gen: usize) -> Res {
         if !self.task_running() {
             return panic("std.task.Task.join_task: no executor (the task was not created inside std.task.block_on)");
+        }
+        if gen != self.tasks.generation {
+            return panic("std.task.Task.join_task: task from a different block_on (generation mismatch)");
         }
         if id >= self.tasks.slots.len() {
             return panic("std.task.Task.join_task: unknown task");
@@ -259,9 +268,13 @@ impl Interp {
     /// 取り消されたタスクは、次に合図を受けたところ (中断点) で本体を抜けて終わり、結果を持たない。
     /// 合図は取り消したタスクから取り消されたタスクへ渡り、その後、取り消したタスクへ戻る (同期の巻き戻し)。
     /// 中断点をまたぐ値は、取り消しの対象になる前の検査 (E4022) で、解放の要る値を持たないと確かめてある。
-    pub fn task_cancel(&mut self, id: usize) -> Result<(), Ctl> {
+    /// 世代番号が一致しない場合は panic する (Issue 4 対策)。
+    pub fn task_cancel(&mut self, id: usize, gen: usize) -> Result<(), Ctl> {
         if !self.task_running() {
             return panic("std.task.Task.cancel: no executor (the task was not created inside std.task.block_on)");
+        }
+        if gen != self.tasks.generation {
+            return panic("std.task.Task.cancel: task from a different block_on (generation mismatch)");
         }
         let me = self.tasks.cur;
         if id >= self.tasks.slots.len() {

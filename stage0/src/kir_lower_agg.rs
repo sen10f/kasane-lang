@@ -364,14 +364,17 @@ impl AggTab {
         t
     }
 
-    /// `std.task.Task<T>` = `{id: usize}`。`T` は名前に埋め込み、`handle_elem` に持つ (`join_task` の結果の型)。
+    /// `std.task.Task<T>` = `{id: usize, gen: usize}`。`T` は名前に埋め込み、`handle_elem` に持つ (`join_task` の結果の型)。
     pub fn task_handle(&mut self, elem_ty: Ty) -> Ty {
         let name = format!("std.task.Task<{}", elem_ty.name());
         if let Some(&i) = self.by_name.get(&name) {
             return Ty::Agg(i);
         }
-        let fields = vec![Field { name: "id".to_string(), ty: Ty::Usize, off: 0 }];
-        let t = self.push(name, 8, 8, AggKind::Struct(fields));
+        let fields = vec![
+            Field { name: "id".to_string(), ty: Ty::Usize, off: 0 },
+            Field { name: "gen".to_string(), ty: Ty::Usize, off: 8 },
+        ];
+        let t = self.push(name, 16, 8, AggKind::Struct(fields));
         if let Ty::Agg(i) = t {
             self.handle_elem.insert(i, elem_ty);
         }
