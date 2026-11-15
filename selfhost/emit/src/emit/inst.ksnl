@@ -1,0 +1,1662 @@
+// `abort`: 文言を出さずに終了コード 101。
+fn emit.inst.abort(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+    let p = emit.newlab(g)
+    let k = emit.newlab(g)
+    emit.w(g, "  br label %L")
+    emit.wn(g, p)
+    emit.w(g, "\n")
+    emit.label(g, p)
+    emit.w(g, "  call void @exit(i32 101)\n  unreachable\n")
+    emit.label(g, k)
+end emit.inst.abort
+
+fn emit.inst.addr_at(g: &mut emit.G, p: usize, off: usize) -> usize uses [alloc, io.console, process] panics may pub
+    let t = emit.tmp(g)
+    emit.inst.def_head(g, t)
+    emit.w(g, "getelementptr i8, ptr ")
+    emit.wv(g, p)
+    emit.w(g, ", i64 ")
+    emit.wn(g, off)
+    emit.w(g, "\n")
+    t
+end emit.inst.addr_at
+
+// `alloca`: 領域は関数の先頭 (`g.buf.hoisted`) に置き、ここでは 0 で初期化する (Rust 版と同じ)。
+fn emit.inst.alloca(g: &mut emit.G, dst: usize, ty: usize) -> () uses [alloc, io.console, process] panics may pub
+    let pointee = emit.ty.get(g, ty).a
+    let mt = emit.ty.text_of(g, pointee, true)
+    let mut h: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut h, "  %v")
+    emit.util.push_num(&mut h, dst)
+    emit.util.push_str(&mut h, " = alloca ")
+    emit.util.push_str(&mut h, mt.as_str())
+    emit.util.push_str(&mut h, "\n")
+    emit.util.push_str(&mut g.buf.hoisted, h.as_str())
+    let zz = if mt.as_str() == "ptr" {
+        "null"
+    } else {
+        "0"
+    }
+    emit.w(g, "  store ")
+    emit.w(g, mt.as_str())
+    emit.w(g, " ")
+    emit.w(g, zz)
+    emit.w(g, ", ptr ")
+    emit.wv(g, dst)
+    emit.w(g, "\n")
+end emit.inst.alloca
+
+// `bN(%a, %b)` の括弧の中身。
+fn emit.inst.arg_text(tok: &str) -> &str uses [] panics may pub
+    let pos = match tok.find("(") {
+        Some(p) => p
+        None => tok.len()
+    }
+    emit.util.inner(emit.util.after(tok, pos))
+end emit.inst.arg_text
+
+// `%v<dst>` の型 `ty` の算術。`s1` は型の名前 (`usize`)、`s2` は溢れの扱い (`wrap` / `trap`)。
+fn emit.inst.arith(g: &mut emit.G, dst: usize, ty: usize, op: &str, mode: &str, _s1: &str, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    let b = emit.util.arg_vid(args, 1usize)
+    let signed = emit.ty.is_signed(g, ty)
+    let w = emit.ty.int_bits(g, ty)
+    if w == 0usize {
+        core.panic.panic("arithmetic on a non-integer type")
+    }
+    if mode == "wrap" {
+        if op == "div" || op == "rem" {
+            core.panic.panic("wrapping division is not in KIR")
+        }
+        emit.inst.def_head(g, dst)
+        emit.w(g, op)
+        emit.w(g, " ")
+        emit.ty.wlty(g, ty)
+        emit.w(g, " ")
+        emit.wv(g, a)
+        emit.w(g, ", ")
+        emit.wv(g, b)
+        emit.w(g, "\n")
+    } else if mode == "trap" {
+        if op == "add" || op == "sub" || op == "mul" {
+            let oname = if op == "add" {
+                "add"
+            } else if op == "sub" {
+                "sub"
+            } else {
+                "mul"
+            }
+            let sg = if signed {
+                "s"
+            } else {
+                "u"
+            }
+            emit.inst.decl_overflow(g, sg, oname, ty, w)
+            let pr = emit.tmp(g)
+            emit.inst.def_head(g, pr)
+            emit.w(g, "call { ")
+            emit.ty.wlty(g, ty)
+            emit.w(g, ", i1 } @llvm.")
+            emit.w(g, sg)
+            emit.w(g, oname)
+            emit.w(g, ".with.overflow.i")
+            emit.wn(g, w)
+            emit.w(g, "(")
+            emit.ty.wlty(g, ty)
+            emit.w(g, " ")
+            emit.wv(g, a)
+            emit.w(g, ", ")
+            emit.ty.wlty(g, ty)
+            emit.w(g, " ")
+            emit.wv(g, b)
+            emit.w(g, ")\n")
+            emit.inst.def_head(g, dst)
+            emit.w(g, "extractvalue { ")
+            emit.ty.wlty(g, ty)
+            emit.w(g, ", i1 } ")
+            emit.wv(g, pr)
+            emit.w(g, ", 0\n")
+            let f = emit.tmp(g)
+            emit.inst.def_head(g, f)
+            emit.w(g, "extractvalue { ")
+            emit.ty.wlty(g, ty)
+            emit.w(g, ", i1 } ")
+            emit.wv(g, pr)
+            emit.w(g, ", 1\n")
+            emit.inst.trap(g, f, oname)
+        } else {
+            let zero = emit.inst.const_int(g, ty, 0i128)
+            let z = emit.tmp(g)
+            emit.inst.icmp(g, z, "eq", ty, b, zero)
+            emit.inst.trap(g, z, if op == "div" {
+                "div0"
+            } else {
+                "rem0"
+            })
+            if signed {
+                let mv = 0i128.wrapping_sub(emit.inst.pow2(w.wrapping_sub(1usize)))
+                let minv = emit.inst.const_int(g, ty, mv)
+                let mn = emit.tmp(g)
+                emit.inst.icmp(g, mn, "eq", ty, a, minv)
+                let mone = emit.inst.const_int(g, ty, -1i128)
+                let m1 = emit.tmp(g)
+                emit.inst.icmp(g, m1, "eq", ty, b, mone)
+                let both = emit.tmp(g)
+                emit.inst.def_head(g, both)
+                emit.w(g, "and i1 ")
+                emit.wv(g, mn)
+                emit.w(g, ", ")
+                emit.wv(g, m1)
+                emit.w(g, "\n")
+                emit.inst.trap(g, both, op)
+            }
+            let k = if op == "div" {
+                if signed {
+                    "sdiv"
+                } else {
+                    "udiv"
+                }
+            } else {
+                if signed {
+                    "srem"
+                } else {
+                    "urem"
+                }
+            }
+            emit.inst.def_head(g, dst)
+            emit.w(g, k)
+            emit.w(g, " ")
+            emit.ty.wlty(g, ty)
+            emit.w(g, " ")
+            emit.wv(g, a)
+            emit.w(g, ", ")
+            emit.wv(g, b)
+            emit.w(g, "\n")
+        }
+    } else {
+        core.panic.panic("saturating arithmetic is not handled yet")
+    }
+end emit.inst.arith
+
+fn emit.inst.bare_ptr(g: &mut emit.G, dst: usize, p: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.inst.fieldaddr(g, dst, p, 0usize)
+end emit.inst.bare_ptr
+
+// 一時の値 `%v<t>` を、型 `t` で定義する (右辺は `text` を続けて書く)。
+fn emit.inst.begin_tmp(g: &mut emit.G, t: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.inst.def_head(g, t)
+end emit.inst.begin_tmp
+
+fn emit.inst.bitcast(g: &mut emit.G, dst: usize, ty: usize, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    let src = emit.inst.vt(g, a)
+    emit.inst.def_head(g, dst)
+    emit.w(g, "bitcast ")
+    emit.ty.wlty(g, src)
+    emit.w(g, " ")
+    emit.wv(g, a)
+    emit.w(g, " to ")
+    emit.ty.wlty(g, ty)
+    emit.w(g, "\n")
+end emit.inst.bitcast
+
+fn emit.inst.bitnot(g: &mut emit.G, dst: usize, ty: usize, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    emit.inst.def_head(g, dst)
+    emit.w(g, "xor ")
+    emit.ty.wlty(g, ty)
+    emit.w(g, " ")
+    emit.wv(g, a)
+    if emit.ty.get(g, ty).kind == (emit.ty.K_BOOL) {
+        emit.w(g, ", true\n")
+    } else {
+        emit.w(g, ", -1\n")
+    }
+end emit.inst.bitnot
+
+fn emit.inst.bool_op(g: &mut emit.G, dst: usize, ty: usize, op: &str, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    let b = emit.util.arg_vid(args, 1usize)
+    emit.inst.def_head(g, dst)
+    emit.w(g, op)
+    emit.w(g, " ")
+    emit.ty.wlty(g, ty)
+    emit.w(g, " ")
+    emit.wv(g, a)
+    emit.w(g, ", ")
+    emit.wv(g, b)
+    emit.w(g, "\n")
+end emit.inst.bool_op
+
+// `call NAME(args)`。`rest` は `call` を含む右辺全体。
+fn emit.inst.call(g: &mut emit.G, dst: usize, ty: usize, rest: &str) -> () uses [alloc, io.console, process] panics may pub
+    let t = emit.util.after(rest, 4usize).trim()
+    let name = emit.util.head(t)
+    let argstr = emit.util.inner(emit.util.after(t, name.len()))
+    emit.inst.def_head(g, dst)
+    emit.w(g, "call ")
+    emit.ty.wlty(g, ty)
+    emit.w(g, " @\"k.")
+    emit.w(g, name)
+    emit.w(g, "\"(")
+    let mut j = 0usize
+    let np_item_ii = emit.util.piece_count(argstr, ", ")
+    let mut kk_item_ii = 0usize
+    while kk_item_ii < np_item_ii {
+        let item = emit.util.piece_at(argstr, ", ", kk_item_ii)
+        if !item.is_empty() {
+            let v = emit.util.vid(item.trim())
+            if j > 0usize {
+                emit.w(g, ", ")
+            }
+            emit.ty.wlty(g, emit.inst.vt(g, v))
+            emit.w(g, " ")
+            emit.wv(g, v)
+            j = j.wrapping_add(1usize)
+        }
+        kk_item_ii = kk_item_ii.wrapping_add(1usize)
+    }
+    emit.w(g, ")\n")
+end emit.inst.call
+
+fn emit.inst.cmp(g: &mut emit.G, dst: usize, cc: &str, _ty: &str, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    let b = emit.util.arg_vid(args, 1usize)
+    let opt = emit.inst.vt(g, a)
+    let sg = emit.ty.is_signed(g, opt)
+    let pred = if cc == "eq" {
+        "eq"
+    } else if cc == "ne" {
+        "ne"
+    } else if cc == "lt" {
+        if sg {
+            "slt"
+        } else {
+            "ult"
+        }
+    } else if cc == "le" {
+        if sg {
+            "sle"
+        } else {
+            "ule"
+        }
+    } else if cc == "gt" {
+        if sg {
+            "sgt"
+        } else {
+            "ugt"
+        }
+    } else if cc == "ge" {
+        if sg {
+            "sge"
+        } else {
+            "uge"
+        }
+    } else {
+        core.panic.panic("unknown comparison")
+    }
+    emit.inst.icmp(g, dst, pred, opt, a, b)
+end emit.inst.cmp
+
+// 整数の定数 `v` を型 `ty` の一時の値にする。
+fn emit.inst.const_int(g: &mut emit.G, ty: usize, v: i128) -> usize uses [alloc, io.console, process] panics may pub
+    let t = emit.tmp(g)
+    emit.inst.def_head(g, t)
+    emit.w(g, "add ")
+    emit.ty.wlty(g, ty)
+    emit.w(g, " ")
+    emit.util.push_i128(&mut g.buf.cur, v)
+    emit.w(g, ", 0\n")
+    t
+end emit.inst.const_int
+
+fn emit.inst.conv(g: &mut emit.G, dst: usize, ty: usize, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    let src = emit.inst.vt(g, a)
+    let from = emit.ty.int_bits(g, src)
+    let to = emit.ty.int_bits(g, ty)
+    if from == 0usize || to == 0usize {
+        core.panic.panic("conversion between non-integer types is not handled yet")
+    }
+    if from == to {
+        emit.inst.copy_from(g, dst, ty, a)
+    } else {
+        let k = if from < to {
+            if emit.ty.is_signed(g, src) {
+                "sext"
+            } else {
+                "zext"
+            }
+        } else {
+            "trunc"
+        }
+        emit.inst.def_head(g, dst)
+        emit.w(g, k)
+        emit.w(g, " ")
+        emit.ty.wlty(g, src)
+        emit.w(g, " ")
+        emit.wv(g, a)
+        emit.w(g, " to ")
+        emit.ty.wlty(g, ty)
+        emit.w(g, "\n")
+    }
+end emit.inst.conv
+
+// 型 `t` の値の定義: `%v<dst> = add <t> <x>, 0` (`x` は値の名前か、数の文字)。
+fn emit.inst.copy_from(g: &mut emit.G, dst: usize, t: usize, x: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.inst.def_head(g, dst)
+    emit.w(g, "add ")
+    emit.ty.wlty(g, t)
+    emit.w(g, " ")
+    emit.wv(g, x)
+    emit.w(g, ", 0\n")
+end emit.inst.copy_from
+
+// `llvm.<s|u><op>.with.overflow.i<w>` の宣言。
+fn emit.inst.decl_overflow(g: &mut emit.G, sg: &str, op: &str, ty: usize, w: usize) -> () uses [alloc, io.console, process] panics may pub
+    let t = emit.ty.text_of(g, ty, false)
+    let mut d: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut d, "declare { ")
+    emit.util.push_str(&mut d, t.as_str())
+    emit.util.push_str(&mut d, ", i1 } @llvm.")
+    emit.util.push_str(&mut d, sg)
+    emit.util.push_str(&mut d, op)
+    emit.util.push_str(&mut d, ".with.overflow.i")
+    emit.util.push_num(&mut d, w)
+    emit.util.push_str(&mut d, "(")
+    emit.util.push_str(&mut d, t.as_str())
+    emit.util.push_str(&mut d, ", ")
+    emit.util.push_str(&mut d, t.as_str())
+    emit.util.push_str(&mut d, ")")
+    emit.decl(g, d.as_str())
+end emit.inst.decl_overflow
+
+// `%v<dst> = ` の頭を書く。
+fn emit.inst.def_head(g: &mut emit.G, dst: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.w(g, "  ")
+    emit.wv(g, dst)
+    emit.w(g, " = ")
+end emit.inst.def_head
+
+// 対象 `to` のブロックの引数へ、今の出所から辺を足す。
+fn emit.inst.edges_of(g: &mut emit.G, to: usize, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let mut j = 0usize
+    let np_item_np = emit.util.piece_count(args, ", ")
+    let mut kk_item_np = 0usize
+    while kk_item_np < np_item_np {
+        let item = emit.util.piece_at(args, ", ", kk_item_np)
+        if !item.is_empty() {
+            let v = emit.util.vid(item.trim())
+            emit.edge(g, to, j, v)
+            j = j.wrapping_add(1usize)
+        }
+        kk_item_np = kk_item_np.wrapping_add(1usize)
+    }
+end emit.inst.edges_of
+
+// `eprint data`: stderr へ全部書く (`@ksn.eprint`)。
+fn emit.inst.eprint(g: &mut emit.G, data: usize) -> () uses [alloc, io.console, process] panics may pub
+    g.flags.eprint_used = true
+    let (pi, n) = emit.inst.fat_parts(g, data)
+    let p = emit.tmp(g)
+    emit.inst.def_head(g, p)
+    emit.w(g, "inttoptr i64 ")
+    emit.wv(g, pi)
+    emit.w(g, " to ptr\n")
+    emit.w(g, "  call void @ksn.eprint(ptr ")
+    emit.wv(g, p)
+    emit.w(g, ", i64 ")
+    emit.wv(g, n)
+    emit.w(g, ")\n")
+end emit.inst.eprint
+
+// 幅 `n` の集成体 `a` のバイト `off` から、幅 `w` の値を取り出す。
+fn emit.inst.extract(g: &mut emit.G, a: usize, n: usize, off: usize, w: usize) -> usize uses [alloc, io.console, process] panics may pub
+    let mut x = a
+    if off > 0usize {
+        let s = emit.tmp(g)
+        emit.inst.def_head(g, s)
+        emit.w(g, "lshr i")
+        emit.wn(g, n)
+        emit.w(g, " ")
+        emit.wv(g, a)
+        emit.w(g, ", ")
+        emit.wn(g, off.wrapping_mul(8usize))
+        emit.w(g, "\n")
+        x = s
+    }
+    if w < n {
+        let t = emit.tmp(g)
+        emit.inst.def_head(g, t)
+        emit.w(g, "trunc i")
+        emit.wn(g, n)
+        emit.w(g, " ")
+        emit.wv(g, x)
+        emit.w(g, " to i")
+        emit.wn(g, w)
+        emit.w(g, "\n")
+        x = t
+    }
+    x
+end emit.inst.extract
+
+// 値 `data` (`fat`、`&str` の i128) を (ポインタ、長さ) の i64 に分ける。
+fn emit.inst.fat_parts(g: &mut emit.G, data: usize) -> (usize, usize) uses [alloc, io.console, process] panics may pub
+    let w = emit.inst.extract(g, data, 128usize, 0usize, 64usize)
+    let l = emit.inst.extract(g, data, 128usize, 8usize, 64usize)
+    (w, l)
+end emit.inst.fat_parts
+
+// `field %a, +off`
+fn emit.inst.field(g: &mut emit.G, dst: usize, ty: usize, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    let off = emit.util.off(emit.util.nth(args, ",", 1usize))
+    let at = emit.inst.vt(g, a)
+    let n = emit.agg.size_bits(g, emit.ty.get(g, at).a)
+    let w = emit.agg.field_w(g, ty)
+    let x = emit.inst.extract(g, a, n, off, w)
+    emit.inst.from_bits(g, dst, ty, x, w)
+end emit.inst.field
+
+fn emit.inst.fieldaddr(g: &mut emit.G, dst: usize, a: usize, off: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.inst.def_head(g, dst)
+    emit.w(g, "getelementptr i8, ptr ")
+    emit.wv(g, a)
+    emit.w(g, ", i64 ")
+    emit.wn(g, off)
+    emit.w(g, "\n")
+end emit.inst.fieldaddr
+
+// `frame.bytes N`: 先頭に置いて 0 で埋める。
+fn emit.inst.frame(g: &mut emit.G, dst: usize, size: usize) -> () uses [alloc, io.console, process] panics may pub
+    let mut h: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut h, "  %v")
+    emit.util.push_num(&mut h, dst)
+    emit.util.push_str(&mut h, " = alloca i8, i64 ")
+    emit.util.push_num(&mut h, size)
+    emit.util.push_str(&mut h, ", align 16\n")
+    emit.util.push_str(&mut g.buf.hoisted, h.as_str())
+    emit.decl(g, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)")
+    emit.w(g, "  call void @llvm.memset.p0.i64(ptr ")
+    emit.wv(g, dst)
+    emit.w(g, ", i8 0, i64 ")
+    emit.wn(g, size)
+    emit.w(g, ", i1 false)\n")
+end emit.inst.frame
+
+// フィールドの幅 `w` の値 `x` から、型 `ty` の値 `dst` を作る (Rust 版の `from_bits`)。
+fn emit.inst.from_bits(g: &mut emit.G, dst: usize, ty: usize, x: usize, w: usize) -> () uses [alloc, io.console, process] panics may pub
+    let k = emit.ty.get(g, ty).kind
+    if k == (emit.ty.K_BOOL) {
+        emit.inst.def_head(g, dst)
+        emit.w(g, "icmp ne i8 ")
+        emit.wv(g, x)
+        emit.w(g, ", 0\n")
+    } else if k == (emit.ty.K_PTR) || k == (emit.ty.K_REF) {
+        emit.inst.def_head(g, dst)
+        emit.w(g, "inttoptr i64 ")
+        emit.wv(g, x)
+        emit.w(g, " to ptr\n")
+    } else if k == (emit.ty.K_OPT) || k == (emit.ty.K_RES) {
+        let l = emit.ty.vbits(g, ty)
+        emit.inst.def_head(g, dst)
+        emit.w(g, "trunc i")
+        emit.wn(g, w)
+        emit.w(g, " ")
+        emit.wv(g, x)
+        emit.w(g, " to i")
+        emit.wn(g, l)
+        emit.w(g, "\n")
+    } else {
+        core.mem.drop(w)
+        emit.inst.copy_from(g, dst, ty, x)
+    }
+end emit.inst.from_bits
+
+// `global.bytes NAME SIZE`
+fn emit.inst.global(g: &mut emit.G, dst: usize, _s1: &str, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let t = args.trim()
+    let name = emit.util.nth(t, " ", 0usize)
+    let size = emit.util.dec(emit.util.nth(t, " ", 1usize))
+    let mut d: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut d, "@\"ksn.g.")
+    emit.util.push_str(&mut d, name)
+    emit.util.push_str(&mut d, "\" = internal global [")
+    emit.util.push_num(&mut d, size)
+    emit.util.push_str(&mut d, " x i8] zeroinitializer, align 16\n")
+    emit.global(g, d.as_str())
+    emit.inst.def_head(g, dst)
+    emit.w(g, "getelementptr i8, ptr @\"ksn.g.")
+    emit.w(g, name)
+    emit.w(g, "\", i64 0\n")
+end emit.inst.global
+
+// `heap.alloc n` (`is_realloc` が偽) / `heap.realloc p, n`。空の確保は 1 バイトにする (Rust 版と同じ)。
+fn emit.inst.heap_alloc(g: &mut emit.G, dst: usize, n: usize, is_realloc: bool, p: usize) -> () uses [alloc, io.console, process] panics may pub
+    let z = emit.tmp(g)
+    emit.inst.def_head(g, z)
+    emit.w(g, "icmp eq i64 ")
+    emit.wv(g, n)
+    emit.w(g, ", 0\n")
+    let m = emit.tmp(g)
+    emit.inst.def_head(g, m)
+    emit.w(g, "select i1 ")
+    emit.wv(g, z)
+    emit.w(g, ", i64 1, i64 ")
+    emit.wv(g, n)
+    emit.w(g, "\n")
+    emit.inst.def_head(g, dst)
+    if is_realloc {
+        emit.w(g, "call ptr @realloc(ptr ")
+        emit.wv(g, p)
+        emit.w(g, ", i64 ")
+    } else {
+        emit.w(g, "call ptr @malloc(i64 ")
+    }
+    emit.wv(g, m)
+    emit.w(g, ")\n")
+end emit.inst.heap_alloc
+
+fn emit.inst.heap_free(g: &mut emit.G, p: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.w(g, "  call void @free(ptr ")
+    emit.wv(g, p)
+    emit.w(g, ")\n")
+end emit.inst.heap_free
+
+// 比較 `dst = icmp <pred> <ty> a, b`。
+fn emit.inst.icmp(g: &mut emit.G, dst: usize, pred: &str, ty: usize, a: usize, b: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.inst.def_head(g, dst)
+    emit.w(g, "icmp ")
+    emit.w(g, pred)
+    emit.w(g, " ")
+    emit.ty.wlty(g, ty)
+    emit.w(g, " ")
+    emit.wv(g, a)
+    emit.w(g, ", ")
+    emit.wv(g, b)
+    emit.w(g, "\n")
+end emit.inst.icmp
+
+// `index.check i, len`: `i < len` でなければ `ksn.panic.index(len, i)`。
+fn emit.inst.index_check(g: &mut emit.G, i: usize, len: usize) -> () uses [alloc, io.console, process] panics may pub
+    let c = emit.tmp(g)
+    emit.inst.def_head(g, c)
+    emit.w(g, "icmp uge i64 ")
+    emit.wv(g, i)
+    emit.w(g, ", ")
+    emit.wv(g, len)
+    emit.w(g, "\n")
+    let p = emit.newlab(g)
+    let k = emit.newlab(g)
+    emit.w(g, "  br i1 ")
+    emit.wv(g, c)
+    emit.w(g, ", label %L")
+    emit.wn(g, p)
+    emit.w(g, ", label %L")
+    emit.wn(g, k)
+    emit.w(g, "\n")
+    emit.label(g, p)
+    emit.w(g, "  call void @ksn.panic.index(i64 ")
+    emit.wv(g, len)
+    emit.w(g, ", i64 ")
+    emit.wv(g, i)
+    emit.w(g, ")\n  unreachable\n")
+    emit.label(g, k)
+end emit.inst.index_check
+
+// 命令 1 行 `%D: TY = REST` を書く。
+fn emit.inst.inst(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, process] panics may pub
+    let (dt, rest0) = match l.split_once(": ") {
+        Some(p) => p
+        None => core.panic.panic("internal: instruction line")
+    }
+    let rest = match rest0.split_once(" = ") {
+        Some(q) => {
+            let (_t, r) = q
+            r
+        }
+        None => core.panic.panic("internal: instruction line without =")
+    }
+    let dst = emit.util.vid(dt)
+    let ty = emit.inst.vt(g, dst)
+    let kind = emit.ty.get(g, ty).kind
+    let head = emit.util.head(rest)
+    let base = emit.util.part(head, 0usize)
+    let s1 = emit.util.part(head, 1usize)
+    let s2 = emit.util.part(head, 2usize)
+    let args = emit.util.after(rest, head.len())
+    if base == "const" {
+        emit.inst.konst(g, dst, ty, s1, args.trim())
+    } else if base == "add" || base == "sub" || base == "mul" || base == "div" || base == "rem" {
+        emit.inst.arith(g, dst, ty, base, s2, s1, emit.util.inner(args))
+    } else if base == "icmp" {
+        emit.inst.cmp(g, dst, s1, s2, emit.util.inner(args))
+    } else if base == "neg" {
+        emit.inst.neg(g, dst, ty, s1, s2, emit.util.inner(args))
+    } else if base == "shl" || base == "shr" {
+        emit.inst.shift(g, dst, ty, base == "shl", emit.util.inner(args))
+    } else if base == "max" || base == "min" {
+        emit.inst.minmax(g, dst, ty, base == "max", emit.util.inner(args))
+    } else if base == "not" {
+        emit.inst.bitnot(g, dst, ty, emit.util.inner(args))
+    } else if base == "and" || base == "or" || base == "xor" {
+        emit.inst.bool_op(g, dst, ty, base, emit.util.inner(args))
+    } else if base == "conv" {
+        emit.inst.conv(g, dst, ty, emit.util.inner(args))
+    } else if base == "bitcast" {
+        emit.inst.bitcast(g, dst, ty, emit.util.inner(args))
+    } else if base == "call" {
+        emit.inst.call(g, dst, ty, rest)
+    } else if base == "make" {
+        emit.inst.make(g, dst, ty, s1, emit.util.inner(args))
+    } else if base == "field" {
+        emit.inst.field(g, dst, ty, args)
+    } else if base == "setfield" {
+        emit.inst.setfield(g, dst, ty, args)
+    } else if base == "tag" {
+        emit.inst.tag(g, dst, ty, emit.util.arg_vid(args, 0usize))
+    } else if base == "payload" {
+        emit.inst.payload(g, dst, ty, emit.util.arg_vid(args, 0usize))
+    } else if base == "some" || base == "ok" || base == "err" {
+        emit.inst.wrap_opt(g, dst, ty, base != "ok", emit.util.arg_vid(args, 0usize))
+    } else if base == "alloca" {
+        emit.inst.alloca(g, dst, ty)
+    } else if base == "load" {
+        emit.inst.load(g, dst, ty, emit.util.arg_vid(args, 0usize))
+    } else if base == "store" {
+        emit.inst.store(g, emit.util.arg_vid(args, 0usize), emit.util.arg_vid(args, 1usize))
+    } else if base == "fieldaddr" {
+        let fa = emit.util.arg_vid(args, 0usize)
+        let fo = emit.util.off(emit.util.nth(args, ",", 1usize))
+        emit.inst.fieldaddr(g, dst, fa, fo)
+    } else if base == "asshared" || base == "reborrow" || base == "borrow" {
+        emit.inst.bare_ptr(g, dst, emit.util.arg_vid(args, 0usize))
+    } else if base == "scope" || base == "own" {
+        core.mem.drop(0u8)
+    } else if base == "frame" {
+        emit.inst.frame(g, dst, emit.util.dec(args.trim()))
+    } else if base == "global" {
+        emit.inst.global(g, dst, s1, args)
+    } else if base == "static" {
+        emit.inst.static_bytes(g, dst, args.trim())
+    } else if base == "ptr" {
+        emit.inst.ptr_add(g, dst, emit.util.arg_vid(args, 0usize), emit.util.arg_vid(args, 1usize))
+    } else if base == "mem" {
+        let t = args.trim()
+        let p = emit.util.vid(emit.util.nth(t, " ", 0usize))
+        let tail = emit.util.after(t, t.find(" ").unwrap_or(t.len()))
+        if s1 == "load" {
+            emit.inst.mem_load(g, dst, ty, p, emit.util.off(emit.util.nth(tail, ",", 0usize)))
+        } else {
+            let so = emit.util.off(emit.util.nth(tail, ",", 0usize))
+            let sv = emit.util.arg_vid(tail, 1usize)
+            emit.inst.mem_store(g, p, so, sv)
+        }
+    } else if base == "heap" {
+        if s1 == "alloc" {
+            emit.inst.heap_alloc(g, dst, emit.util.arg_vid(args, 0usize), false, 0usize)
+        } else if s1 == "realloc" {
+            let hn = emit.util.arg_vid(args, 1usize)
+            let hp = emit.util.arg_vid(args, 0usize)
+            emit.inst.heap_alloc(g, dst, hn, true, hp)
+        } else {
+            emit.inst.heap_free(g, emit.util.arg_vid(args, 0usize))
+        }
+    } else if base == "index" {
+        emit.inst.index_check(g, emit.util.arg_vid(args, 0usize), emit.util.arg_vid(args, 1usize))
+    } else if base == "panic" {
+        emit.inst.panic(g, dst, rest)
+    } else if base == "write" {
+        let wf = emit.util.arg_vid(args, 0usize)
+        let wd = emit.util.arg_vid(args, 1usize)
+        emit.inst.write(g, dst, ty, wf, wd)
+    } else if base == "eprint" {
+        emit.inst.eprint(g, emit.util.arg_vid(args, 0usize))
+    } else if base == "abort" {
+        emit.inst.abort(g)
+    } else {
+        core.panic.panic("unsupported KIR instruction in this emitter")
+    }
+    if kind == (emit.ty.K_UNIT) && base != "call" {
+        emit.inst.unit_def(g, dst)
+    }
+end emit.inst.inst
+
+// 整数型 `t` の定数の書き方 (2 の補数の符号つき十進)。
+fn emit.inst.int_text(g: &mut emit.G, dst: usize, t: usize, lit: &str) -> () uses [alloc, io.console, process] panics may pub
+    let w = emit.ty.int_bits(g, t)
+    let v = emit.util.lit_i128(lit)
+    let mut r = v
+    if w < 128usize {
+        let m = emit.inst.pow2(w)
+        r = v % m
+        if r < 0i128 {
+            r = r.wrapping_add(m)
+        }
+        if r >= emit.inst.pow2(w.wrapping_sub(1usize)) {
+            r = r.wrapping_sub(m)
+        }
+    }
+    emit.inst.def_head(g, dst)
+    emit.w(g, "add ")
+    emit.ty.wlty(g, t)
+    emit.w(g, " ")
+    emit.util.push_i128(&mut g.buf.cur, r)
+    emit.w(g, ", 0\n")
+end emit.inst.int_text
+
+// `const.<型> <値>`。
+fn emit.inst.konst(g: &mut emit.G, dst: usize, ty: usize, _s1: &str, lit: &str) -> () uses [alloc, io.console, process] panics may pub
+    let k = emit.ty.get(g, ty).kind
+    if k == (emit.ty.K_BOOL) {
+        emit.inst.def_head(g, dst)
+        if lit == "true" {
+            emit.w(g, "add i1 1, 0\n")
+        } else {
+            emit.w(g, "add i1 0, 0\n")
+        }
+    } else if k == (emit.ty.K_INT) {
+        emit.inst.int_text(g, dst, ty, lit)
+    } else if k == (emit.ty.K_UNIT) {
+        core.mem.drop(dst)
+    } else if k == (emit.ty.K_OPT) {
+        emit.inst.def_head(g, dst)
+        emit.w(g, "add ")
+        emit.ty.wlty(g, ty)
+        emit.w(g, " 0, 0\n")
+    } else if k == (emit.ty.K_PTR) {
+        emit.inst.def_head(g, dst)
+        emit.w(g, "getelementptr i8, ptr null, i64 0\n")
+    } else {
+        core.panic.panic("unsupported constant type in this emitter (floats are not handled yet)")
+    }
+end emit.inst.konst
+
+// `load %p` (参照の指す先の型で読む)。
+fn emit.inst.load(g: &mut emit.G, dst: usize, ty: usize, p: usize) -> () uses [alloc, io.console, process] panics may pub
+    let mt = emit.ty.text_of(g, ty, true)
+    if emit.ty.get(g, ty).kind == (emit.ty.K_BOOL) {
+        let t = emit.tmp(g)
+        emit.inst.def_head(g, t)
+        emit.w(g, "load i8, ptr ")
+        emit.wv(g, p)
+        emit.w(g, ", align 1\n")
+        emit.inst.def_head(g, dst)
+        emit.w(g, "icmp ne i8 ")
+        emit.wv(g, t)
+        emit.w(g, ", 0\n")
+    } else {
+        emit.inst.def_head(g, dst)
+        emit.w(g, "load ")
+        emit.w(g, mt.as_str())
+        emit.w(g, ", ptr ")
+        emit.wv(g, p)
+        emit.w(g, ", align 1\n")
+    }
+end emit.inst.load
+
+// `make(...)` / `make.v<k>(...)`
+fn emit.inst.make(g: &mut emit.G, dst: usize, ty: usize, s1: &str, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let aid = emit.ty.get(g, ty).a
+    let n = emit.agg.size_bits(g, aid)
+    let has_var = s1.starts_with("v")
+    let variant = if has_var {
+        emit.util.dec(emit.util.after(s1, 1usize))
+    } else {
+        0usize
+    }
+    let mut acc = emit.tmp(g)
+    emit.inst.def_head(g, acc)
+    emit.w(g, "add i")
+    emit.wn(g, n)
+    emit.w(g, " 0, 0\n")
+    if has_var {
+        let o = emit.tmp(g)
+        emit.inst.def_head(g, o)
+        emit.w(g, "or i")
+        emit.wn(g, n)
+        emit.w(g, " ")
+        emit.wv(g, acc)
+        emit.w(g, ", ")
+        emit.wn(g, variant)
+        emit.w(g, "\n")
+        acc = o
+    }
+    let mut j = 0usize
+    let np_item_aei = emit.util.piece_count(args, ", ")
+    let mut kk_item_aei = 0usize
+    while kk_item_aei < np_item_aei {
+        let item = emit.util.piece_at(args, ", ", kk_item_aei)
+        if !item.is_empty() {
+            let v = emit.util.vid(item.trim())
+            let (off, fty) = emit.agg.field(g, aid, variant, j)
+            let bits = emit.inst.to_bits(g, fty, v)
+            let w = emit.agg.field_w(g, fty)
+            let placed = emit.inst.place(g, bits, w, n, off)
+            let o = emit.tmp(g)
+            emit.inst.def_head(g, o)
+            emit.w(g, "or i")
+            emit.wn(g, n)
+            emit.w(g, " ")
+            emit.wv(g, acc)
+            emit.w(g, ", ")
+            emit.wv(g, placed)
+            emit.w(g, "\n")
+            acc = o
+            j = j.wrapping_add(1usize)
+        }
+        kk_item_aei = kk_item_aei.wrapping_add(1usize)
+    }
+    emit.inst.copy_from(g, dst, ty, acc)
+end emit.inst.make
+
+// `mem.load.T %p +off`
+fn emit.inst.mem_load(g: &mut emit.G, dst: usize, ty: usize, p: usize, off: usize) -> () uses [alloc, io.console, process] panics may pub
+    let addr = emit.inst.addr_at(g, p, off)
+    if emit.ty.get(g, ty).kind == (emit.ty.K_BOOL) {
+        let t = emit.tmp(g)
+        emit.inst.def_head(g, t)
+        emit.w(g, "load i8, ptr ")
+        emit.wv(g, addr)
+        emit.w(g, ", align 1\n")
+        emit.inst.def_head(g, dst)
+        emit.w(g, "icmp ne i8 ")
+        emit.wv(g, t)
+        emit.w(g, ", 0\n")
+    } else {
+        let mt = emit.ty.text_of(g, ty, true)
+        emit.inst.def_head(g, dst)
+        emit.w(g, "load ")
+        emit.w(g, mt.as_str())
+        emit.w(g, ", ptr ")
+        emit.wv(g, addr)
+        emit.w(g, ", align 1\n")
+    }
+end emit.inst.mem_load
+
+// `mem.store.T %p +off, %v`
+fn emit.inst.mem_store(g: &mut emit.G, p: usize, off: usize, v: usize) -> () uses [alloc, io.console, process] panics may pub
+    let addr = emit.inst.addr_at(g, p, off)
+    let vt = emit.inst.vt(g, v)
+    if emit.ty.get(g, vt).kind == (emit.ty.K_BOOL) {
+        let z = emit.tmp(g)
+        emit.inst.def_head(g, z)
+        emit.w(g, "zext i1 ")
+        emit.wv(g, v)
+        emit.w(g, " to i8\n")
+        emit.w(g, "  store i8 ")
+        emit.wv(g, z)
+        emit.w(g, ", ptr ")
+        emit.wv(g, addr)
+        emit.w(g, ", align 1\n")
+    } else {
+        emit.w(g, "  store ")
+        emit.ty.wlty(g, vt)
+        emit.w(g, " ")
+        emit.wv(g, v)
+        emit.w(g, ", ptr ")
+        emit.wv(g, addr)
+        emit.w(g, ", align 1\n")
+    }
+end emit.inst.mem_store
+
+fn emit.inst.minmax(g: &mut emit.G, dst: usize, ty: usize, max: bool, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    let b = emit.util.arg_vid(args, 1usize)
+    let w = emit.ty.int_bits(g, ty)
+    let t = emit.ty.text_of(g, ty, false)
+    let mut name: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut name, "llvm.")
+    let sgn = if emit.ty.is_signed(g, ty) {
+        "s"
+    } else {
+        "u"
+    }
+    emit.util.push_str(&mut name, sgn)
+    let mm = if max {
+        "max"
+    } else {
+        "min"
+    }
+    emit.util.push_str(&mut name, mm)
+    emit.util.push_str(&mut name, ".i")
+    emit.util.push_num(&mut name, w)
+    let mut d: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut d, "declare ")
+    emit.util.push_str(&mut d, t.as_str())
+    emit.util.push_str(&mut d, " @")
+    emit.util.push_str(&mut d, name.as_str())
+    emit.util.push_str(&mut d, "(")
+    emit.util.push_str(&mut d, t.as_str())
+    emit.util.push_str(&mut d, ", ")
+    emit.util.push_str(&mut d, t.as_str())
+    emit.util.push_str(&mut d, ")")
+    emit.decl(g, d.as_str())
+    emit.inst.def_head(g, dst)
+    emit.w(g, "call ")
+    emit.w(g, t.as_str())
+    emit.w(g, " @")
+    emit.w(g, name.as_str())
+    emit.w(g, "(")
+    emit.w(g, t.as_str())
+    emit.w(g, " ")
+    emit.wv(g, a)
+    emit.w(g, ", ")
+    emit.w(g, t.as_str())
+    emit.w(g, " ")
+    emit.wv(g, b)
+    emit.w(g, ")\n")
+end emit.inst.minmax
+
+// 関数ごとの名前 `<接頭辞><関数番号>.<値番号>` (大域の名前の一意化)。
+fn emit.inst.name_fv(g: &mut emit.G, prefix: &str, dst: usize) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
+    let mut s: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut s, prefix)
+    emit.util.push_num(&mut s, g.misc.fidx)
+    emit.util.push_str(&mut s, ".")
+    emit.util.push_num(&mut s, dst)
+    s
+end emit.inst.name_fv
+
+fn emit.inst.neg(g: &mut emit.G, dst: usize, ty: usize, _s1: &str, mode: &str, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    let w = emit.ty.int_bits(g, ty)
+    if w == 0usize {
+        core.panic.panic("negation on a non-integer type")
+    }
+    if mode != "wrap" {
+        let mv = 0i128.wrapping_sub(emit.inst.pow2(w.wrapping_sub(1usize)))
+        let mn = emit.inst.const_int(g, ty, mv)
+        let m = emit.tmp(g)
+        emit.inst.icmp(g, m, "eq", ty, a, mn)
+        emit.inst.trap(g, m, "neg")
+    }
+    emit.inst.def_head(g, dst)
+    emit.w(g, "sub ")
+    emit.ty.wlty(g, ty)
+    emit.w(g, " 0, ")
+    emit.wv(g, a)
+    emit.w(g, "\n")
+end emit.inst.neg
+
+// `枠 + タグ`: 幅 `s + 1` の値 (タグは最上位ビット、`tag` が真なら 1)。
+fn emit.inst.pack_const(g: &mut emit.G, dst: usize, s: usize, tag: bool, pay: usize) -> () uses [alloc, io.console, process] panics may pub
+    let n = s.wrapping_add(1usize)
+    let z = emit.tmp(g)
+    emit.inst.def_head(g, z)
+    emit.w(g, "zext i")
+    emit.wn(g, s)
+    emit.w(g, " ")
+    emit.wv(g, pay)
+    emit.w(g, " to i")
+    emit.wn(g, n)
+    emit.w(g, "\n")
+    let top = if tag {
+        let t = emit.tmp(g)
+        emit.inst.def_head(g, t)
+        emit.w(g, "shl i")
+        emit.wn(g, n)
+        emit.w(g, " ")
+        if tag {
+            emit.w(g, "1")
+        } else {
+            emit.w(g, "0")
+        }
+        emit.w(g, ", ")
+        emit.wn(g, s)
+        emit.w(g, "\n")
+        t
+    } else {
+        0usize
+    }
+    emit.inst.def_head(g, dst)
+    emit.w(g, "or i")
+    emit.wn(g, n)
+    emit.w(g, " ")
+    emit.wv(g, z)
+    emit.w(g, ", ")
+    if tag {
+        emit.wv(g, top)
+    } else {
+        emit.w(g, "0")
+    }
+    emit.w(g, "\n")
+end emit.inst.pack_const
+
+// `Some(a)` などのタグ (`tag` の値) を、枠の上に 1 ビット置く (`write` の結果など、タグが値のとき)。
+fn emit.inst.pack_vid(g: &mut emit.G, dst: usize, s: usize, tagv: usize, pay: usize) -> () uses [alloc, io.console, process] panics may pub
+    let n = s.wrapping_add(1usize)
+    let z = emit.tmp(g)
+    emit.inst.def_head(g, z)
+    emit.w(g, "zext i")
+    emit.wn(g, s)
+    emit.w(g, " ")
+    emit.wv(g, pay)
+    emit.w(g, " to i")
+    emit.wn(g, n)
+    emit.w(g, "\n")
+    let tz = emit.tmp(g)
+    emit.inst.def_head(g, tz)
+    emit.w(g, "zext i1 ")
+    emit.wv(g, tagv)
+    emit.w(g, " to i")
+    emit.wn(g, n)
+    emit.w(g, "\n")
+    let top = emit.tmp(g)
+    emit.inst.def_head(g, top)
+    emit.w(g, "shl i")
+    emit.wn(g, n)
+    emit.w(g, " ")
+    emit.wv(g, tz)
+    emit.w(g, ", ")
+    emit.wn(g, s)
+    emit.w(g, "\n")
+    emit.inst.def_head(g, dst)
+    emit.w(g, "or i")
+    emit.wn(g, n)
+    emit.w(g, " ")
+    emit.wv(g, z)
+    emit.w(g, ", ")
+    emit.wv(g, top)
+    emit.w(g, "\n")
+end emit.inst.pack_vid
+
+// `panic "文言" [%値]`: stderr に `panic: 文言[: 値]` と改行を出して終了コード 101 (Rust 版と同じ文言)。
+fn emit.inst.panic(g: &mut emit.G, dst: usize, rest: &str) -> () uses [alloc, io.console, process] panics may pub
+    let q = emit.util.after(rest, 5usize).trim()
+    let mut raw: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let stop = emit.util.unquote(q, &mut raw)
+    let tail = emit.util.after(q, stop.wrapping_add(1usize)).trim()
+    let mut fmt: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let bb_b_anp = "panic: ".as_bytes()
+    let mut kk_b_anp = 0usize
+    while kk_b_anp < bb_b_anp.len() {
+        let b = match bb_b_anp.get(kk_b_anp) {
+            Some(x) => *x
+            None => 0u8
+        }
+        emit.util.push_byte(&mut fmt, b)
+        kk_b_anp = kk_b_anp.wrapping_add(1usize)
+    }
+    let bb_b_ans = raw.as_slice()
+    let mut kk_b_ans = 0usize
+    while kk_b_ans < bb_b_ans.len() {
+        let b = match bb_b_ans.get(kk_b_ans) {
+            Some(x) => *x
+            None => 0u8
+        }
+        if b == 37u8 {
+            emit.util.push_byte(&mut fmt, 37u8)
+        }
+        emit.util.push_byte(&mut fmt, b)
+        kk_b_ans = kk_b_ans.wrapping_add(1usize)
+    }
+    let mut vals = alloc.string.String.new(std.alloc.SYSTEM)
+    if tail.starts_with("%") {
+        let v = emit.util.vid(tail)
+        let vt = emit.inst.vt(g, v)
+        let bits = emit.ty.int_bits(g, vt)
+        if bits == 0usize || bits > 64usize {
+            core.panic.panic("panic value must be an integer of at most 64 bits")
+        }
+        let mut x = v
+        if bits < 64usize {
+            x = emit.tmp(g)
+            emit.inst.def_head(g, x)
+            if emit.ty.is_signed(g, vt) {
+                emit.w(g, "sext i")
+            } else {
+                emit.w(g, "zext i")
+            }
+            emit.wn(g, bits)
+            emit.w(g, " ")
+            emit.wv(g, v)
+            emit.w(g, " to i64\n")
+        }
+        let suffix = if emit.ty.is_signed(g, vt) {
+            ": %lld"
+        } else {
+            ": %llu"
+        }
+        let bb_b_aoz = suffix.as_bytes()
+        let mut kk_b_aoz = 0usize
+        while kk_b_aoz < bb_b_aoz.len() {
+            let b = match bb_b_aoz.get(kk_b_aoz) {
+                Some(bv) => *bv
+                None => 0u8
+            }
+            emit.util.push_byte(&mut fmt, b)
+            kk_b_aoz = kk_b_aoz.wrapping_add(1usize)
+        }
+        emit.util.push_str(&mut vals, ", i64 %v")
+        emit.util.push_num(&mut vals, x)
+    }
+    emit.util.push_byte(&mut fmt, 10u8)
+    emit.util.push_byte(&mut fmt, 0u8)
+    let name = emit.inst.name_fv(g, "ksn.pm.", dst)
+    let mut esc: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.c_escape(fmt.as_slice(), &mut esc)
+    let mut d: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut d, "@")
+    emit.util.push_str(&mut d, name.as_str())
+    emit.util.push_str(&mut d, " = private unnamed_addr constant [")
+    emit.util.push_num(&mut d, fmt.len())
+    emit.util.push_str(&mut d, " x i8] c\"")
+    emit.util.push_str(&mut d, esc.as_str())
+    emit.util.push_str(&mut d, "\"\n")
+    emit.global(g, d.as_str())
+    let p = emit.newlab(g)
+    emit.w(g, "  br label %L")
+    emit.wn(g, p)
+    emit.w(g, "\n")
+    emit.label(g, p)
+    emit.w(g, "  call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @")
+    emit.w(g, name.as_str())
+    emit.w(g, vals.as_str())
+    emit.w(g, ")\n  call void @exit(i32 101)\n  unreachable\n")
+    let k = emit.newlab(g)
+    emit.label(g, k)
+end emit.inst.panic
+
+// `payload %a`
+fn emit.inst.payload(g: &mut emit.G, dst: usize, ty: usize, a: usize) -> () uses [alloc, io.console, process] panics may pub
+    if emit.ty.get(g, ty).kind != emit.ty.K_UNIT {
+        let at = emit.inst.vt(g, a)
+        let s = emit.ty.slot(g, at)
+        let w = emit.tmp(g)
+        emit.inst.def_head(g, w)
+        emit.w(g, "trunc i")
+        emit.wn(g, s.wrapping_add(1usize))
+        emit.w(g, " ")
+        emit.wv(g, a)
+        emit.w(g, " to i")
+        emit.wn(g, s)
+        emit.w(g, "\n")
+        let n = emit.ty.vbits(g, ty)
+        let mut x = w
+        if n < s {
+            x = emit.tmp(g)
+            emit.inst.def_head(g, x)
+            emit.w(g, "trunc i")
+            emit.wn(g, s)
+            emit.w(g, " ")
+            emit.wv(g, w)
+            emit.w(g, " to i")
+            emit.wn(g, n)
+            emit.w(g, "\n")
+        }
+        let k = emit.ty.get(g, ty).kind
+        if k == (emit.ty.K_PTR) || k == (emit.ty.K_REF) {
+            emit.inst.def_head(g, dst)
+            emit.w(g, "inttoptr i64 ")
+            emit.wv(g, x)
+            emit.w(g, " to ptr\n")
+        } else {
+            emit.inst.copy_from(g, dst, ty, x)
+        }
+    }
+end emit.inst.payload
+
+// 整数 `v` (幅 `w`) を、幅 `n` の整数のバイト `off` に置く (幅 `n` の一時の値)。
+fn emit.inst.place(g: &mut emit.G, v: usize, w: usize, n: usize, off: usize) -> usize uses [alloc, io.console, process] panics may pub
+    let mut x = v
+    if w < n {
+        let z = emit.tmp(g)
+        emit.inst.def_head(g, z)
+        emit.w(g, "zext i")
+        emit.wn(g, w)
+        emit.w(g, " ")
+        emit.wv(g, v)
+        emit.w(g, " to i")
+        emit.wn(g, n)
+        emit.w(g, "\n")
+        x = z
+    }
+    if off > 0usize {
+        let s = emit.tmp(g)
+        emit.inst.def_head(g, s)
+        emit.w(g, "shl i")
+        emit.wn(g, n)
+        emit.w(g, " ")
+        emit.wv(g, x)
+        emit.w(g, ", ")
+        emit.wn(g, off.wrapping_mul(8usize))
+        emit.w(g, "\n")
+        x = s
+    }
+    x
+end emit.inst.place
+
+// `2^w` (i128、`w` は 127 まで。128 は折り返す)。
+fn emit.inst.pow2(w: usize) -> i128 uses [] panics may pub
+    let mut m = 1i128
+    let mut k = 0usize
+    while k < w {
+        m = m.wrapping_mul(2i128)
+        k = k.wrapping_add(1usize)
+    }
+    m
+end emit.inst.pow2
+
+// `ptr.add %p, %off`
+fn emit.inst.ptr_add(g: &mut emit.G, dst: usize, p: usize, o: usize) -> () uses [alloc, io.console, process] panics may pub
+    let ot = emit.inst.vt(g, o)
+    emit.inst.def_head(g, dst)
+    emit.w(g, "getelementptr i8, ptr ")
+    emit.wv(g, p)
+    emit.w(g, ", ")
+    emit.ty.wlty(g, ot)
+    emit.w(g, " ")
+    emit.wv(g, o)
+    emit.w(g, "\n")
+end emit.inst.ptr_add
+
+// `setfield %a, +off, %v`
+fn emit.inst.setfield(g: &mut emit.G, dst: usize, ty: usize, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    let off = emit.util.off(emit.util.nth(args, ",", 1usize))
+    let v = emit.util.arg_vid(args, 2usize)
+    let vt = emit.inst.vt(g, v)
+    let w = emit.agg.field_w(g, vt)
+    let n = emit.agg.size_bits(g, emit.ty.get(g, ty).a)
+    let bits = emit.inst.to_bits(g, vt, v)
+    if w == n && off == 0usize {
+        emit.inst.copy_from(g, dst, ty, bits)
+    } else {
+        let z = emit.tmp(g)
+        emit.inst.def_head(g, z)
+        emit.w(g, "zext i")
+        emit.wn(g, w)
+        emit.w(g, " -1 to i")
+        emit.wn(g, n)
+        emit.w(g, "\n")
+        let mut sh = z
+        if off > 0usize {
+            sh = emit.tmp(g)
+            emit.inst.def_head(g, sh)
+            emit.w(g, "shl i")
+            emit.wn(g, n)
+            emit.w(g, " ")
+            emit.wv(g, z)
+            emit.w(g, ", ")
+            emit.wn(g, off.wrapping_mul(8usize))
+            emit.w(g, "\n")
+        }
+        let inv = emit.tmp(g)
+        emit.inst.def_head(g, inv)
+        emit.w(g, "xor i")
+        emit.wn(g, n)
+        emit.w(g, " ")
+        emit.wv(g, sh)
+        emit.w(g, ", -1\n")
+        let kept = emit.tmp(g)
+        emit.inst.def_head(g, kept)
+        emit.w(g, "and i")
+        emit.wn(g, n)
+        emit.w(g, " ")
+        emit.wv(g, a)
+        emit.w(g, ", ")
+        emit.wv(g, inv)
+        emit.w(g, "\n")
+        let put = emit.inst.place(g, bits, w, n, off)
+        emit.inst.def_head(g, dst)
+        emit.w(g, "or i")
+        emit.wn(g, n)
+        emit.w(g, " ")
+        emit.wv(g, kept)
+        emit.w(g, ", ")
+        emit.wv(g, put)
+        emit.w(g, "\n")
+    }
+end emit.inst.setfield
+
+fn emit.inst.shift(g: &mut emit.G, dst: usize, ty: usize, left: bool, args: &str) -> () uses [alloc, io.console, process] panics may pub
+    let a = emit.util.arg_vid(args, 0usize)
+    let n = emit.util.arg_vid(args, 1usize)
+    let w = emit.ty.int_bits(g, ty)
+    let amt = emit.tmp(g)
+    emit.inst.def_head(g, amt)
+    emit.w(g, "urem i32 ")
+    emit.wv(g, n)
+    emit.w(g, ", ")
+    emit.wn(g, w)
+    emit.w(g, "\n")
+    let amt2 = emit.tmp(g)
+    emit.inst.def_head(g, amt2)
+    if w == 32usize {
+        emit.w(g, "add i32 ")
+        emit.wv(g, amt)
+        emit.w(g, ", 0\n")
+    } else if w < 32usize {
+        emit.w(g, "trunc i32 ")
+        emit.wv(g, amt)
+        emit.w(g, " to i")
+        emit.wn(g, w)
+        emit.w(g, "\n")
+    } else {
+        emit.w(g, "zext i32 ")
+        emit.wv(g, amt)
+        emit.w(g, " to i")
+        emit.wn(g, w)
+        emit.w(g, "\n")
+    }
+    let k = if left {
+        "shl"
+    } else if emit.ty.is_signed(g, ty) {
+        "ashr"
+    } else {
+        "lshr"
+    }
+    emit.inst.def_head(g, dst)
+    emit.w(g, k)
+    emit.w(g, " ")
+    emit.ty.wlty(g, ty)
+    emit.w(g, " ")
+    emit.wv(g, a)
+    emit.w(g, ", ")
+    emit.wv(g, amt2)
+    emit.w(g, "\n")
+end emit.inst.shift
+
+// `static.bytes <16 進>`: 読み取り専用のバイト列 (`ksn.s.<関数番号>.<値番号>`)。
+fn emit.inst.static_bytes(g: &mut emit.G, dst: usize, hex: &str) -> () uses [alloc, io.console, process] panics may pub
+    let mut bytes: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let hb = hex.as_bytes()
+    let mut i = 0usize
+    while i.wrapping_add(1usize) < hb.len() {
+        let hi = emit.util.hex_at(hb, i)
+        let lo = emit.util.hex_at(hb, i.wrapping_add(1usize))
+        emit.util.push_byte(&mut bytes, hi.wrapping_mul(16u8).wrapping_add(lo))
+        i = i.wrapping_add(2usize)
+    }
+    let mut esc: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.c_escape(bytes.as_slice(), &mut esc)
+    let name = emit.inst.name_fv(g, "ksn.s.", dst)
+    let mut d: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    emit.util.push_str(&mut d, "@")
+    emit.util.push_str(&mut d, name.as_str())
+    emit.util.push_str(&mut d, " = private unnamed_addr constant [")
+    emit.util.push_num(&mut d, bytes.len())
+    emit.util.push_str(&mut d, " x i8] c\"")
+    emit.util.push_str(&mut d, esc.as_str())
+    emit.util.push_str(&mut d, "\"\n")
+    emit.global(g, d.as_str())
+    emit.inst.def_head(g, dst)
+    emit.w(g, "getelementptr i8, ptr @")
+    emit.w(g, name.as_str())
+    emit.w(g, ", i64 0\n")
+end emit.inst.static_bytes
+
+// `store %p, %v`
+fn emit.inst.store(g: &mut emit.G, p: usize, v: usize) -> () uses [alloc, io.console, process] panics may pub
+    let vt = emit.inst.vt(g, v)
+    if emit.ty.get(g, vt).kind == (emit.ty.K_BOOL) {
+        let z = emit.tmp(g)
+        emit.inst.def_head(g, z)
+        emit.w(g, "zext i1 ")
+        emit.wv(g, v)
+        emit.w(g, " to i8\n")
+        emit.w(g, "  store i8 ")
+        emit.wv(g, z)
+        emit.w(g, ", ptr ")
+        emit.wv(g, p)
+        emit.w(g, ", align 1\n")
+    } else {
+        emit.w(g, "  store ")
+        emit.ty.wlty(g, vt)
+        emit.w(g, " ")
+        emit.wv(g, v)
+        emit.w(g, ", ptr ")
+        emit.wv(g, p)
+        emit.w(g, ", align 1\n")
+    }
+end emit.inst.store
+
+// `tag %a`
+fn emit.inst.tag(g: &mut emit.G, dst: usize, ty: usize, a: usize) -> () uses [alloc, io.console, process] panics may pub
+    let at = emit.inst.vt(g, a)
+    let k = emit.ty.get(g, at).kind
+    if k == (emit.ty.K_AGG) {
+        let n = emit.agg.size_bits(g, emit.ty.get(g, at).a)
+        let x = emit.inst.extract(g, a, n, 0usize, 32usize)
+        emit.inst.copy_from(g, dst, ty, x)
+    } else {
+        let s = emit.ty.slot(g, at)
+        let sh = emit.tmp(g)
+        emit.inst.def_head(g, sh)
+        emit.w(g, "lshr i")
+        emit.wn(g, s.wrapping_add(1usize))
+        emit.w(g, " ")
+        emit.wv(g, a)
+        emit.w(g, ", ")
+        emit.wn(g, s)
+        emit.w(g, "\n")
+        emit.inst.def_head(g, dst)
+        emit.w(g, "trunc i")
+        emit.wn(g, s.wrapping_add(1usize))
+        emit.w(g, " ")
+        emit.wv(g, sh)
+        emit.w(g, " to i1\n")
+    }
+end emit.inst.tag
+
+// 終端命令: `ret`、`br`、`br_if`、`unreachable`。
+fn emit.inst.term(g: &mut emit.G, l: &str) -> () uses [alloc, io.console, process] panics may pub
+    if l.starts_with("unreachable") {
+        emit.w(g, "  unreachable\n")
+    } else if l.starts_with("ret ") {
+        let v = emit.util.vid(emit.util.after(l, 4usize).trim())
+        let rt = g.flags.ret
+        emit.w(g, "  store i64 %depth, ptr @ksn.depth\n  ret ")
+        emit.ty.wlty(g, rt)
+        emit.w(g, " ")
+        emit.wv(g, v)
+        emit.w(g, "\n")
+    } else if l.starts_with("br_if ") {
+        let (cs, rest) = match emit.util.after(l, 6usize).split_once(", ") {
+            Some(p) => p
+            None => core.panic.panic("internal: br_if")
+        }
+        let (ta, tb) = match rest.split_once("), ") {
+            Some(p) => p
+            None => core.panic.panic("internal: br_if targets")
+        }
+        let c = emit.util.vid(cs.trim())
+        let to_a = emit.func.target(ta)
+        let to_b = emit.func.target(tb)
+        let args_a = emit.inst.arg_text(ta)
+        let args_b = emit.inst.arg_text(tb)
+        if to_a != to_b {
+            emit.w(g, "  br i1 ")
+            emit.wv(g, c)
+            emit.w(g, ", label %b")
+            emit.wn(g, to_a)
+            emit.w(g, ", label %b")
+            emit.wn(g, to_b)
+            emit.w(g, "\n")
+            emit.inst.edges_of(g, to_a, args_a)
+            emit.inst.edges_of(g, to_b, args_b)
+        } else {
+            let ea = emit.newlab(g)
+            let eb = emit.newlab(g)
+            emit.w(g, "  br i1 ")
+            emit.wv(g, c)
+            emit.w(g, ", label %L")
+            emit.wn(g, ea)
+            emit.w(g, ", label %L")
+            emit.wn(g, eb)
+            emit.w(g, "\n")
+            emit.label(g, ea)
+            emit.w(g, "  br label %b")
+            emit.wn(g, to_a)
+            emit.w(g, "\n")
+            emit.inst.edges_of(g, to_a, args_a)
+            emit.label(g, eb)
+            emit.w(g, "  br label %b")
+            emit.wn(g, to_a)
+            emit.w(g, "\n")
+            emit.inst.edges_of(g, to_b, args_b)
+        }
+    } else if l.starts_with("br ") {
+        let tok = emit.util.after(l, 3usize).trim()
+        let to = emit.func.target(tok)
+        emit.w(g, "  br label %b")
+        emit.wn(g, to)
+        emit.w(g, "\n")
+        emit.inst.edges_of(g, to, emit.inst.arg_text(tok))
+    } else {
+        core.panic.panic("unsupported terminator")
+    }
+end emit.inst.term
+
+// 値 `v` (型 `vt` の値) を、フィールドの幅 `w` の整数にする (Rust 版の `to_bits`)。
+fn emit.inst.to_bits(g: &mut emit.G, fty: usize, v: usize) -> usize uses [alloc, io.console, process] panics may pub
+    let k = emit.ty.get(g, fty).kind
+    if k == (emit.ty.K_BOOL) {
+        let t = emit.tmp(g)
+        emit.inst.def_head(g, t)
+        emit.w(g, "zext i1 ")
+        emit.wv(g, v)
+        emit.w(g, " to i8\n")
+        t
+    } else if k == (emit.ty.K_PTR) || k == (emit.ty.K_REF) {
+        let t = emit.tmp(g)
+        emit.inst.def_head(g, t)
+        emit.w(g, "ptrtoint ptr ")
+        emit.wv(g, v)
+        emit.w(g, " to i64\n")
+        t
+    } else if k == (emit.ty.K_OPT) || k == (emit.ty.K_RES) {
+        let w = emit.agg.field_w(g, fty)
+        let t = emit.tmp(g)
+        emit.inst.def_head(g, t)
+        emit.w(g, "zext ")
+        emit.ty.wlty(g, fty)
+        emit.w(g, " ")
+        emit.wv(g, v)
+        emit.w(g, " to i")
+        emit.wn(g, w)
+        emit.w(g, "\n")
+        t
+    } else {
+        v
+    }
+end emit.inst.to_bits
+
+// `trap`: `cond` が真なら文言 `ksn.panic.<name>` で止まり、以後は新しいラベルから続ける (Rust 版の `trap` と同じ)。
+fn emit.inst.trap(g: &mut emit.G, cond: usize, name: &str) -> () uses [alloc, io.console, process] panics may pub
+    let p = emit.newlab(g)
+    let c = emit.newlab(g)
+    emit.w(g, "  br i1 ")
+    emit.wv(g, cond)
+    emit.w(g, ", label %L")
+    emit.wn(g, p)
+    emit.w(g, ", label %L")
+    emit.wn(g, c)
+    emit.w(g, "\n")
+    emit.label(g, p)
+    emit.w(g, "  call void @ksn.panic.")
+    emit.w(g, name)
+    emit.w(g, "()\n  unreachable\n")
+    emit.label(g, c)
+end emit.inst.trap
+
+// 単位型の値 (本体のない命令の結果) は `i8 0`。
+fn emit.inst.unit_def(g: &mut emit.G, dst: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.inst.def_head(g, dst)
+    emit.w(g, "add i8 0, 0\n")
+end emit.inst.unit_def
+
+fn emit.inst.vt(g: &emit.G, v: usize) -> usize uses [] panics may pub
+    *g.lay.vty.get(v).unwrap_or(&0usize)
+end emit.inst.vt
+
+// `Option` / `Result` の枠に載せる (Rust 版の `pay_to_slot` と `pack`)。`some` / `err` は 1、`ok` は 0 のタグ。
+fn emit.inst.wrap_opt(g: &mut emit.G, dst: usize, ty: usize, tag: bool, a: usize) -> () uses [alloc, io.console, process] panics may pub
+    let s = emit.ty.slot(g, ty)
+    let vt = emit.inst.vt(g, a)
+    let w = emit.ty.vbits(g, vt)
+    let pay = emit.tmp(g)
+    if w == 0usize {
+        emit.inst.def_head(g, pay)
+        emit.w(g, "add i")
+        emit.wn(g, s)
+        emit.w(g, " 0, 0\n")
+    } else {
+        if w > s {
+            core.panic.panic("the payload does not fit the Option/Result slot")
+        }
+        let mut x = a
+        let k = emit.ty.get(g, vt).kind
+        if k == (emit.ty.K_PTR) || k == (emit.ty.K_REF) {
+            x = emit.tmp(g)
+            emit.inst.def_head(g, x)
+            emit.w(g, "ptrtoint ptr ")
+            emit.wv(g, a)
+            emit.w(g, " to i64\n")
+        }
+        let wx = if k == (emit.ty.K_PTR) || k == (emit.ty.K_REF) {
+            64usize
+        } else {
+            w
+        }
+        if wx == s {
+            emit.inst.def_head(g, pay)
+            emit.w(g, "add i")
+            emit.wn(g, s)
+            emit.w(g, " ")
+            emit.wv(g, x)
+            emit.w(g, ", 0\n")
+        } else {
+            emit.inst.def_head(g, pay)
+            if emit.ty.is_signed(g, vt) {
+                emit.w(g, "sext i")
+            } else {
+                emit.w(g, "zext i")
+            }
+            emit.wn(g, wx)
+            emit.w(g, " ")
+            emit.wv(g, x)
+            emit.w(g, " to i")
+            emit.wn(g, s)
+            emit.w(g, "\n")
+        }
+    }
+    emit.inst.pack_const(g, dst, s, tag, pay)
+end emit.inst.wrap_opt
+
+// `write fd, data`: `@ksn.write` の結果を `Result<(), std.io.Error>` に詰める (Rust 版と同じ)。
+fn emit.inst.write(g: &mut emit.G, dst: usize, ty: usize, fd: usize, data: usize) -> () uses [alloc, io.console, process] panics may pub
+    let e = emit.ty.get(g, ty).b
+    if emit.ty.vbits(g, e) != 64usize {
+        core.panic.panic("std.io.Error must be 8 bytes")
+    }
+    g.flags.write_used = true
+    emit.decl(g, "declare ptr @__errno_location()")
+    let (pi, n) = emit.inst.fat_parts(g, data)
+    let p = emit.tmp(g)
+    emit.inst.def_head(g, p)
+    emit.w(g, "inttoptr i64 ")
+    emit.wv(g, pi)
+    emit.w(g, " to ptr\n")
+    let r = emit.tmp(g)
+    emit.inst.def_head(g, r)
+    emit.w(g, "call i64 @ksn.write(i32 ")
+    emit.wv(g, fd)
+    emit.w(g, ", ptr ")
+    emit.wv(g, p)
+    emit.w(g, ", i64 ")
+    emit.wv(g, n)
+    emit.w(g, ")\n")
+    let ok = emit.tmp(g)
+    emit.inst.def_head(g, ok)
+    emit.w(g, "icmp eq i64 ")
+    emit.wv(g, r)
+    emit.w(g, ", 0\n")
+    let tag = emit.tmp(g)
+    emit.inst.def_head(g, tag)
+    emit.w(g, "xor i1 ")
+    emit.wv(g, ok)
+    emit.w(g, ", true\n")
+    emit.inst.pack_vid(g, dst, 64usize, tag, r)
+end emit.inst.write

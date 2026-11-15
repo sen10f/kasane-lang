@@ -1,0 +1,433 @@
+// `n` バイト目から後ろ。
+fn emit.util.after(s: &str, n: usize) -> &str uses [] panics may pub
+    match s.split_at(n) {
+        Some(q) => {
+            let (_h, r) = q
+            r
+        }
+        None => "?"
+    }
+end emit.util.after
+
+// `sep` の後ろ (無ければ全体)。
+fn emit.util.after_first['a](s: &'a str, sep: &str) -> &'a str uses [] panics may pub
+    match s.find(sep) {
+        Some(p) => emit.util.after(s, p.wrapping_add(sep.len()))
+        None => s
+    }
+end emit.util.after_first
+
+// 値 `%v<番号>` を `s` の `k` 番目のカンマ区切りから読む。
+fn emit.util.arg_vid(s: &str, k: usize) -> usize uses [io.console, process] panics may pub
+    emit.util.vid(emit.util.nth(s, ",", k))
+end emit.util.arg_vid
+
+// 位置 `i` の一バイトを、文字列として (ASCII だけを想定)。
+fn emit.util.ascii_at(bytes: &[u8], i: usize) -> &str uses [io.console, process] panics may pub
+    let tbl = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    let c = match bytes.get(i) {
+        Some(x) => *x
+        None => 0u8
+    }
+    match tbl.split_at(usize.from_u8(c).wrapping_sub(32usize)) {
+        Some(q) => {
+            let (_h, r) = q
+            match r.split_at(1usize) {
+                Some(q2) => {
+                    let (one, _r2) = q2
+                    one
+                }
+                None => core.panic.panic("internal: ascii table")
+            }
+        }
+        None => core.panic.panic("internal: ascii table")
+    }
+end emit.util.ascii_at
+
+// バイト列を LLVM の `c"..."` の中身の形に書く (印字可能な ASCII のほかは `\HH`、`"` と `\` も `\HH`)。
+fn emit.util.c_escape(bytes: &[u8], out: &mut alloc.string.String<std.alloc.System>) -> () uses [alloc, io.console, process] panics may pub
+    let mut i = 0usize
+    while i < bytes.len() {
+        let c = match bytes.get(i) {
+            Some(x) => *x
+            None => 0u8
+        }
+        if c >= 32u8 && c < 127u8 && c != 34u8 && c != 92u8 {
+            emit.util.push_str(out, emit.util.ascii_at(bytes, i))
+        } else {
+            emit.util.push_hex(out, c)
+        }
+        i = i.wrapping_add(1usize)
+    }
+end emit.util.c_escape
+
+// 先頭の十進の数字の列を読む (数字でない文字で止まる。数字が無ければ 0)。
+fn emit.util.dec(s: &str) -> usize uses [] panics may pub
+    let b = s.as_bytes()
+    let mut v = 0usize
+    let mut i = 0usize
+    let mut going = true
+    while going && i < b.len() {
+        let c = match b.get(i) {
+            Some(x) => *x
+            None => 0u8
+        }
+        if c >= 48u8 && c <= 57u8 {
+            v = v.wrapping_mul(10usize).wrapping_add(usize.from_u8(c).wrapping_sub(48usize))
+            i = i.wrapping_add(1usize)
+        } else {
+            going = false
+        }
+    }
+    v
+end emit.util.dec
+
+// 数字 `d` (0..9) の一文字。
+fn emit.util.digit(d: usize) -> &'static str uses [io.console, process] panics may pub
+    let tbl = "0123456789"
+    match tbl.split_at(d) {
+        Some(q) => {
+            let (_h, r) = q
+            match r.split_at(1usize) {
+                Some(q2) => {
+                    let (one, _r2) = q2
+                    one
+                }
+                None => core.panic.panic("internal: digit table")
+            }
+        }
+        None => core.panic.panic("internal: digit table")
+    }
+end emit.util.digit
+
+// 0..=9 の数字を、i128 の一桁 (`r`) から求める。
+fn emit.util.digit_of(r: i128) -> usize uses [] panics may pub
+    let mut k = 0usize
+    while k < 9usize && r != i128.from_usize(k) {
+        k = k.wrapping_add(1usize)
+    }
+    k
+end emit.util.digit_of
+
+// 先頭の語 (空白か `(` まで)。
+fn emit.util.head(s: &str) -> &str uses [] panics may pub
+    let a = match s.find(" ") {
+        Some(p) => p
+        None => s.len()
+    }
+    let b = match s.find("(") {
+        Some(p) => p
+        None => s.len()
+    }
+    let k = if a < b {
+        a
+    } else {
+        b
+    }
+    match s.split_at(k) {
+        Some(q) => {
+            let (h, _r) = q
+            h
+        }
+        None => s
+    }
+end emit.util.head
+
+fn emit.util.hex_at(b: &[u8], i: usize) -> u8 uses [io.console, process] panics may pub
+    let c = match b.get(i) {
+        Some(x) => *x
+        None => 0u8
+    }
+    if c >= 48u8 && c <= 57u8 {
+        c.wrapping_sub(48u8)
+    } else if c >= 97u8 && c <= 102u8 {
+        c.wrapping_sub(87u8)
+    } else if c >= 65u8 && c <= 70u8 {
+        c.wrapping_sub(55u8)
+    } else {
+        core.panic.panic("internal: bad hex digit in a message")
+    }
+end emit.util.hex_at
+
+fn emit.util.hexchar(d: u8) -> &'static str uses [io.console, process] panics may pub
+    let tbl = "0123456789ABCDEF"
+    match tbl.split_at(usize.from_u8(d)) {
+        Some(q) => {
+            let (_h, r) = q
+            match r.split_at(1usize) {
+                Some(q2) => {
+                    let (one, _r2) = q2
+                    one
+                }
+                None => core.panic.panic("internal: hex table")
+            }
+        }
+        None => core.panic.panic("internal: hex table")
+    }
+end emit.util.hexchar
+
+// `(a, b)` の中身 (前後の空白と括弧を除く)。括弧が無ければ空白だけ除く。
+fn emit.util.inner(s: &str) -> &str uses [] panics may pub
+    let t = s.trim()
+    let a = match t.strip_prefix("(") {
+        Some(r) => r
+        None => t
+    }
+    match a.strip_suffix(")") {
+        Some(r) => r.trim()
+        None => a.trim()
+    }
+end emit.util.inner
+
+// 十進の文字列の整数を i128 にする (先頭に `-` があれば負)。
+fn emit.util.lit_i128(s: &str) -> i128 uses [] panics may pub
+    let (neg, body) = match s.strip_prefix("-") {
+        Some(r) => (true, r)
+        None => (false, s)
+    }
+    let mut v = 0i128
+    let b = body.as_bytes()
+    let mut i = 0usize
+    while i < b.len() {
+        let c = match b.get(i) {
+            Some(x) => *x
+            None => 0u8
+        }
+        if c >= 48u8 && c <= 57u8 {
+            v = v.wrapping_mul(10i128).wrapping_add(i128.from_u8(c.wrapping_sub(48u8)))
+        }
+        i = i.wrapping_add(1usize)
+    }
+    if neg {
+        0i128.wrapping_sub(v)
+    } else {
+        v
+    }
+end emit.util.lit_i128
+
+// `s` を `sep` で割った `k` 番目 (前後の空白は除く)。無ければ空。
+fn emit.util.nth['a](s: &'a str, sep: &str, k: usize) -> &'a str uses [] panics may pub
+    emit.util.piece_at(s, sep, k).trim()
+end emit.util.nth
+
+// `+12` の 12。
+fn emit.util.off(tok: &str) -> usize uses [io.console, process] panics may pub
+    match tok.strip_prefix("+") {
+        Some(r) => emit.util.dec(r)
+        None => core.panic.panic("internal: expected an offset")
+    }
+end emit.util.off
+
+// 最初の `(` の位置 (無ければ長さ)。
+fn emit.util.open_pos(s: &str) -> usize uses [] panics may pub
+    match s.find("(") {
+        Some(p) => p
+        None => s.len()
+    }
+end emit.util.open_pos
+
+// `.` で区切った `k` 番目の成分 (0 始まり)。無ければ空。
+fn emit.util.part(s: &str, k: usize) -> &str uses [] panics may pub
+    let mut i = 0usize
+    let np_p_ie = emit.util.piece_count(s, ".")
+    let mut kk_p_ie = 0usize
+    while kk_p_ie < np_p_ie {
+        let p = emit.util.piece_at(s, ".", kk_p_ie)
+        if i == k {
+            return p
+        }
+        i = i.wrapping_add(1usize)
+        kk_p_ie = kk_p_ie.wrapping_add(1usize)
+    }
+    ""
+end emit.util.part
+
+// `s` を `sep` で割った `k` 番目の片 (0 始まり)。範囲外は空。
+fn emit.util.piece_at['a](s: &'a str, sep: &str, k: usize) -> &'a str uses [] panics may pub
+    let mut r = s
+    let mut i = 0usize
+    while i < k {
+        match r.find(sep) {
+            Some(p) => {
+                r = emit.util.after(r, p.wrapping_add(sep.len()))
+            }
+            None => {
+                return ""
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    match r.find(sep) {
+        Some(p) => {
+            match r.split_at(p) {
+                Some(q) => {
+                    let (h, _t) = q
+                    h
+                }
+                None => r
+            }
+        }
+        None => r
+    }
+end emit.util.piece_at
+
+// `s` を `sep` で割ったときの片の数 (空の片も数える)。
+fn emit.util.piece_count(s: &str, sep: &str) -> usize uses [] panics may pub
+    let mut n = 1usize
+    let mut r = s
+    let mut going = true
+    while going {
+        match r.find(sep) {
+            Some(p) => {
+                r = emit.util.after(r, p.wrapping_add(sep.len()))
+                n = n.wrapping_add(1usize)
+            }
+            None => {
+                going = false
+            }
+        }
+    }
+    n
+end emit.util.piece_count
+
+fn emit.util.push_byte(out: &mut alloc.vec.Vec<u8, std.alloc.System>, c: u8) -> () uses [alloc, io.console, process] panics may pub
+    match out.push(c) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.util.push_byte
+
+// `\HH` (大文字の 16 進 2 桁)。
+fn emit.util.push_hex(out: &mut alloc.string.String<std.alloc.System>, c: u8) -> () uses [alloc, io.console, process] panics may pub
+    emit.util.push_str(out, "\\")
+    emit.util.push_str(out, emit.util.hexchar(c / 16u8))
+    emit.util.push_str(out, emit.util.hexchar(c % 16u8))
+end emit.util.push_hex
+
+// 整数の十進 (符号つき、i128)。
+fn emit.util.push_i128(out: &mut alloc.string.String<std.alloc.System>, v: i128) -> () uses [alloc, io.console, process] panics may pub
+    let mut x = v
+    if x < 0i128 {
+        emit.util.push_str(out, "-")
+        x = 0i128.wrapping_sub(x)
+    }
+    let mut digits: alloc.vec.Vec<usize, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if x == 0i128 {
+        emit.util.vec_push(&mut digits, 0usize)
+    }
+    while x > 0i128 {
+        let r = x % 10i128
+        emit.util.vec_push(&mut digits, emit.util.digit_of(r))
+        x = x / 10i128
+    }
+    let mut i = digits.len()
+    while i > 0usize {
+        i = i.wrapping_sub(1usize)
+        let d = match digits.get(i) {
+            Some(q) => *q
+            None => 0usize
+        }
+        emit.util.push_str(out, emit.util.digit(d))
+    }
+end emit.util.push_i128
+
+// 十進の数を `out` へ追加する。
+fn emit.util.push_num(out: &mut alloc.string.String<std.alloc.System>, n: usize) -> () uses [alloc, io.console, process] panics may pub
+    match out.push_u64(u64.from_usize(n)) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.util.push_num
+
+fn emit.util.push_str(out: &mut alloc.string.String<std.alloc.System>, s: &str) -> () uses [alloc, io.console, process] panics may pub
+    match out.push_str(s) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.util.push_str
+
+fn emit.util.set_bool(v: &mut alloc.vec.Vec<bool, std.alloc.System>, i: usize, x: bool) -> () uses [io.console, process] panics may pub
+    match v.as_mut_slice().get_mut(i) {
+        Some(p) => {
+            *p = x
+        }
+        None => core.panic.panic("internal: vector index (bool)")
+    }
+end emit.util.set_bool
+
+// 末尾の `>` を外す (無ければそのまま)。
+fn emit.util.strip_gt(s: &str) -> &str uses [] panics never pub
+    match s.strip_suffix(">") {
+        Some(r) => r
+        None => s
+    }
+end emit.util.strip_gt
+
+// 引用符つきの文言 `"..."` を、中身のバイト列へ戻す (`quote_msg` の逆: `\"` `\\` `\n` `\xHH`)。
+// 結果は `out` へ追加する。`text` は先頭の `"` から始まる。閉じた後ろの文字は読まない。
+fn emit.util.unquote(text: &str, out: &mut alloc.vec.Vec<u8, std.alloc.System>) -> usize uses [alloc, io.console, process] panics may pub
+    let b = text.as_bytes()
+    let mut i = 1usize
+    let mut done = false
+    while !done && i < b.len() {
+        let c = match b.get(i) {
+            Some(x) => *x
+            None => 0u8
+        }
+        if c == 34u8 {
+            done = true
+        } else if c == 92u8 {
+            let d = match b.get(i.wrapping_add(1usize)) {
+                Some(x) => *x
+                None => 0u8
+            }
+            if d == 110u8 {
+                emit.util.push_byte(out, 10u8)
+                i = i.wrapping_add(2usize)
+            } else if d == 120u8 {
+                let h1 = emit.util.hex_at(b, i.wrapping_add(2usize))
+                let h2 = emit.util.hex_at(b, i.wrapping_add(3usize))
+                emit.util.push_byte(out, h1.wrapping_mul(16u8).wrapping_add(h2))
+                i = i.wrapping_add(4usize)
+            } else {
+                emit.util.push_byte(out, d)
+                i = i.wrapping_add(2usize)
+            }
+        } else {
+            emit.util.push_byte(out, c)
+            i = i.wrapping_add(1usize)
+        }
+    }
+    i
+end emit.util.unquote
+
+fn emit.util.vec_push(v: &mut alloc.vec.Vec<usize, std.alloc.System>, x: usize) -> () uses [alloc, io.console, process] panics may pub
+    match v.push(x) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.util.vec_push
+
+// `v[i] = x` (必要なら 0 で伸ばす)。
+fn emit.util.vec_set(v: &mut alloc.vec.Vec<usize, std.alloc.System>, i: usize, x: usize) -> () uses [alloc, io.console, process] panics may pub
+    while v.len() <= i {
+        match v.push(0usize) {
+            Ok(_u) => core.mem.drop(0u8)
+            Err(_e) => core.panic.panic("emit: out of memory")
+        }
+    }
+    match v.as_mut_slice().get_mut(i) {
+        Some(p) => {
+            *p = x
+        }
+        None => core.panic.panic("internal: vector index")
+    }
+end emit.util.vec_set
+
+// `%番号` の番号。`%` で始まらなければ `emit.fail`。
+fn emit.util.vid(tok: &str) -> usize uses [io.console, process] panics may pub
+    match tok.strip_prefix("%") {
+        Some(r) => emit.util.dec(r)
+        None => core.panic.panic("internal: expected a value operand")
+    }
+end emit.util.vid
