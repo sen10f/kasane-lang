@@ -1,14 +1,3 @@
-fn alloc.string.String.as_str[A: alloc.alloc.Allocator](self: &alloc.string.String<A>) -> &str uses [] panics never pub
-    match self.buf.as_str() {
-        Ok(text) => {
-            text
-        }
-        Err(_error) => {
-            ""
-        }
-    }
-end alloc.string.String.as_str
-
 fn alloc.string.String.clear[A: alloc.alloc.Allocator](self: &mut alloc.string.String<A>) -> () uses [] panics never pub
     self.buf.clear()
 end alloc.string.String.clear

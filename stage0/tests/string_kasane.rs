@@ -107,3 +107,35 @@ fn string_kasane_push_str_is_a_kasane_instance_natively() {
     assert!(s.contains("call alloc.string.String.push_str<std.alloc.System>"), "push_str が Kasane 版の単相インスタンスになっていない:\n{}", s);
     assert!(s.contains("fn alloc.string.String.reserve_bytes key=alloc.string.String.reserve_bytes<std.alloc.System>"), "reserve_bytes の単相インスタンスがない:\n{}", s);
 }
+
+/// `as_str` の結果は、書き換えの後で新しい内容を返す (木走査の直前の結果の共有が古くならないこと)。3 つの経路で同じ。
+const INTERLEAVE: &str = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"ab\"))
+    std.io.print_line(s.as_str())?
+    core.mem.drop(s.push('c'))
+    std.io.print_line(s.as_str())?
+    core.mem.drop(s.push_u64(42u64))
+    std.io.print_line(s.as_str())?
+    s.clear()
+    core.mem.drop(s.push_str(\"xy\"))
+    std.io.print_line(s.as_str())?
+    Ok(())
+end t.main
+";
+
+#[test]
+fn string_kasane_as_str_sees_later_writes_in_all_paths() {
+    const EXPECT_I: &str = "ab\nabc\nabc42\nxy\n";
+    let t = Tmp::new("interleave", "t.main", INTERLEAVE);
+    let tree = run(&["run"], &t.0);
+    assert_eq!(text(&tree.stdout), EXPECT_I, "木走査: {}", text(&tree.stderr));
+    let vm = run(&["run", "--engine=vm"], &t.0);
+    assert_eq!(text(&vm.stdout), EXPECT_I, "VM: {}", text(&vm.stderr));
+    let cache = std::env::temp_dir().join(format!("ksn_string_kasane_icache_{}", std::process::id()));
+    let b = Command::new(exe()).args(["build", "--backend", "llvm"]).current_dir(&t.0).env("KSN_CACHE_DIR", &cache).output().unwrap();
+    let _ = fs::remove_dir_all(&cache);
+    assert!(b.status.success(), "{}{}", text(&b.stdout), text(&b.stderr));
+    let o = Command::new(t.0.join("target").join("debug").join("t.native")).output().expect("run native");
+    assert_eq!(text(&o.stdout), EXPECT_I, "ネイティブ");
+}

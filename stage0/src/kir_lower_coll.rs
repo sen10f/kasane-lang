@@ -2039,6 +2039,9 @@ pub(super) fn coll_method(lw: &mut Lw, line: usize, kind: Kind, h: VId, m: &str,
         "as_bytes" if kind == Kind::Str => Ok(Some(h)),
         // `String.as_bytes()`: ヘッダの {ptr, len} を借用の `&[u8]` (fat) にする (所有は移さない)。
         "as_bytes" if kind == Kind::String => Ok(Some(hdr_view(lw, h))),
+        // `String.as_str()`: ヘッダの {ptr, len} を借用の `fat` にする (検査を省く O(1))。`String` のバイト列は UTF-8 を保つ
+        // `String` のメソッドだけが書く (非公開のフィールド、8.3)。`Buf<u8>.as_str` は検査つき (`alloc/raw.sig`)。
+        "as_str" if kind == Kind::String => Ok(Some(hdr_view(lw, h))),
         "as_slice" | "as_mut_slice" if matches!(kind, Kind::Vec(_)) => Ok(Some(hdr_view(lw, h))),
         // `&str.as_str()` はそのまま。
         "as_str" if kind == Kind::Str => Ok(Some(h)),
