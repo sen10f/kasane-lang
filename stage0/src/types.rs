@@ -3390,8 +3390,9 @@ impl<'a> TypeCk<'a> {
                 self.bind_pat_from(&f[0], &elem, src, nline(e));
                 self.note_pat_binds(&f[0], nline(e));
                 self.loop_breaks.push(false);
-                self.infer(&f[2]);
+                let t = self.infer(&f[2]);
                 self.loop_breaks.pop();
+                self.loop_body_discard(&f[2], &t);
                 self.scopes.pop();
                 Ty::Unit
             }
@@ -3504,13 +3505,15 @@ impl<'a> TypeCk<'a> {
             "While" => {
                 self.infer(&f[0]);
                 self.loop_breaks.push(false);
-                self.infer(&f[1]);
+                let t = self.infer(&f[1]);
                 self.loop_breaks.pop();
+                self.loop_body_discard(&f[1], &t);
                 Ty::Unit
             }
             "Loop" => {
                 self.loop_breaks.push(false);
-                self.infer(&f[0]);
+                let t = self.infer(&f[0]);
+                self.loop_body_discard(&f[0], &t);
                 // `break` のない `loop` は戻らない。
                 if self.loop_breaks.pop() == Some(true) { Ty::Unit } else { Ty::Never }
             }
@@ -3558,6 +3561,25 @@ impl<'a> TypeCk<'a> {
             let got = self.deep(t).show();
             self.diag("E2042", format!("a value other than () is discarded at {}: its type is {}; use `core.mem.drop(x)` or make it `()`", what, got), line);
         }
+    }
+
+    /// 4.6: `while` / `loop` / `for` の本体の末尾の値は捨てる。本体の末尾が `()` / `!` 以外なら E2042。
+    /// 末尾が `else` のある `if` と `match` の形は対象外 (従来どおり黙る。統括者の判断)。
+    /// `break` は値を取らない (パーサは `break` の値を受けない) ので、`loop` の型は `()` か `!` のまま。
+    fn loop_body_discard(&mut self, body: &V, t: &Ty) {
+        if nname(body) != "Block" {
+            return;
+        }
+        let stmts = items(&nf(body)[0]);
+        let Some(last) = stmts.last() else { return };
+        if nname(last) != "ExprStmt" {
+            return;
+        }
+        let tail = &nf(last)[0];
+        if (nname(tail) == "If" && !is_nil(&nf(tail)[2])) || nname(tail) == "Match" {
+            return;
+        }
+        self.discard_value(t, nline(last), "the end of this loop body");
     }
 
     fn stmt(&mut self, s: &V) -> Ty {
