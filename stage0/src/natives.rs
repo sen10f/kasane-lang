@@ -23,6 +23,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.collections.VecDeque.new",
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
+    "std.task.block_on", "std.task.spawn_local", "std.task.yield_now",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
     "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
 ];
@@ -39,6 +40,41 @@ const NUM_EXTRA: &[&str] = &[
 pub fn mono_ns() -> u64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START.get_or_init(std::time::Instant::now).elapsed().as_nanos() as u64
+}
+
+/// クロージャの取り込み (`move x`) を、生成の時点の値で固定した写しを作る (`std.thread.spawn` と `std.task.spawn_local`)。
+/// 保留している間に元の変数が変わっても影響しない。チャネルの端を取り込んだときは、元の変数を空にする (所有権の移動の近似)。
+pub fn snapshot_closure(v: &Val) -> Val {
+    match v {
+        Val::Closure(c) => {
+            let file = c.scope.borrow().file.clone();
+            let snap = new_scope(None, file);
+            for (_, name) in &c.caps {
+                if let Some(v) = sc_get(&c.scope, name) {
+                    if has_chan(&v, 0) {
+                        // 取り込んだチャネルの端は移る: 元の変数は空にする
+                        if let Some(o) = sc_owner(&c.scope, name) {
+                            o.borrow_mut().vars.insert(name.clone(), Val::Unit);
+                        }
+                    }
+                    sc_declare(&snap, name, v);
+                }
+            }
+            Val::Closure(Rc::new(ClosureV {
+                params: c.params.clone(),
+                ret: c.ret.clone(),
+                body: c.body.clone(),
+                scope: snap,
+                caps: c.caps.clone(),
+            }))
+        }
+        other => other.clone(),
+    }
+}
+
+/// `std.task.Task` の値 (タスクの id を持つ構造体)。
+fn task_value(id: usize) -> Val {
+    Val::Struct(Rc::new(StructV { ty: "std.task.Task".into(), f: RefCell::new(vec![("id".into(), int(id as i128, "usize"))]) }))
 }
 
 pub fn known_num(name: &str) -> bool {
@@ -660,32 +696,7 @@ impl Interp {
                 })))
             }
             "std.thread.spawn" => {
-                // クロージャの取り込み (`move x`) は、spawn の時点の値で固定する (保留している間に元の変数が変わっても影響しない)。
-                let body = match dr(&args[1]) {
-                    Val::Closure(c) => {
-                        let file = c.scope.borrow().file.clone();
-                        let snap = new_scope(None, file);
-                        for (_, name) in &c.caps {
-                            if let Some(v) = sc_get(&c.scope, name) {
-                                if has_chan(&v, 0) {
-                                    // 取り込んだチャネルの端はスレッドへ移る: 元の変数は空にする
-                                    if let Some(o) = sc_owner(&c.scope, name) {
-                                        o.borrow_mut().vars.insert(name.clone(), Val::Unit);
-                                    }
-                                }
-                                sc_declare(&snap, name, v);
-                            }
-                        }
-                        Val::Closure(Rc::new(ClosureV {
-                            params: c.params.clone(),
-                            ret: c.ret.clone(),
-                            body: c.body.clone(),
-                            scope: snap,
-                            caps: c.caps.clone(),
-                        }))
-                    }
-                    other => other,
-                };
+                let body = snapshot_closure(&dr(&args[1]));
                 let t = Rc::new(ThreadV { body: RefCell::new(Some(body)), result: RefCell::new(None), state: Cell::new(0) });
                 self.threads.push(t.clone());
                 Ok(ok(Val::Join(t)))
@@ -697,6 +708,16 @@ impl Interp {
                 Ok(Val::Unit)
             }
             "std.thread.yield_now" => Ok(Val::Unit),
+            // 協調実行器 (task.rs、仕様 5.6)。タスクは id で持ち、`std.task.Task` の値は `id` の欄だけを持つ。
+            "std.task.block_on" => self.task_block_on(dr(&a0)),
+            "std.task.spawn_local" => {
+                let id = self.task_spawn(snapshot_closure(&dr(&a0)))?;
+                Ok(task_value(id))
+            }
+            "std.task.yield_now" => {
+                self.task_yield()?;
+                Ok(Val::Unit)
+            }
             "std.sync.channel" => {
                 let st = Rc::new(ChanState { q: RefCell::new(VecDeque::new()), senders: Cell::new(0), receivers: Cell::new(0) });
                 let tx = Val::Chan(Rc::new(ChanEnd::new(st.clone(), true)));
@@ -1084,6 +1105,9 @@ impl Interp {
                 };
                 if matches!(name, "debug_fmt" | "display_fmt") {
                     return self.fmt_into(name, v, &a0);
+                }
+                if s.ty == "std.task.Task" && name == "join_task" {
+                    return self.task_join(field(v, "id") as usize);
                 }
                 if s.ty == "std.time.Instant" && name == "elapsed" {
                     return Ok(nanos(mono_ns().saturating_sub(field(v, "ticks"))));

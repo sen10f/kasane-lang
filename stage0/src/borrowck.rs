@@ -54,6 +54,8 @@ enum Ev {
     Peek { to: Holder, root: String, path: Vec<String> },
     /// 場所の値を消費する (`core.mem.drop(s.f)`)。そこに保存されたローンは死ぬ。
     Kill { root: String, path: Vec<String> },
+    /// 中断点 (`uses [suspend]` の関数の呼び出しの直後)。ここで生きている借用は、中断をまたぐので E3050 (仕様 5.6)。
+    Suspend { line: usize },
     /// ブロックで局所変数が宣言され、スコープに入る。
     ScopeAdd(String),
     /// ブロックの末尾で、そのブロックで宣言した局所変数の寿命が終わる。
@@ -304,6 +306,34 @@ impl<'a> Low<'a> {
             Target::Fn(i) | Target::Sig(i) => r.rest.is_empty() && self.p.defs[i].name == "core.mem.drop",
             _ => false,
         }
+    }
+
+    /// 呼び出しが中断点か (5.6)。関数は解決した定義の `uses` に `suspend` があるか、メソッドは同名の候補の
+    /// どれかが `suspend` を持てば中断点とみなす (fail-closed。型で候補を絞れないため、同名の別の型のメソッドも含む)。
+    fn suspends(&self, di: Option<usize>, method: Option<&str>) -> bool {
+        let has = |i: usize| self.p.defs[i].uses.iter().any(|u| u == "suspend");
+        if let Some(i) = di {
+            return has(i);
+        }
+        match method.and_then(|m| self.p.method_idx.get(m)) {
+            Some(cands) => cands.iter().any(|&i| has(i)),
+            None => false,
+        }
+    }
+
+    /// 関数呼び出し (`Path` の呼び先) が中断点か。ネイティブ (`Target::Native`) は、同名の sig の `uses` で見る。
+    fn call_suspends(&self, callee: &V) -> bool {
+        if nname(callee) != "Path" {
+            return false;
+        }
+        let segs = strs(&nf(callee)[0]);
+        let Some(r) = self.p.resolve(&segs, &self.file) else { return false };
+        let di = match &r.target {
+            Target::Fn(i) | Target::Sig(i) => Some(*i),
+            Target::Native(n) => self.p.sigs.get(n).copied(),
+            _ => None,
+        };
+        di.map_or(false, |i| self.p.defs[i].uses.iter().any(|u| u == "suspend"))
     }
 
     /// 名前 `name` のメソッドが、レシーバを借りた結果を返すか。(借りるなら `self` が可変か)
@@ -1708,6 +1738,9 @@ impl<'a> Low<'a> {
                             self.bind_method_setter(c, &name, &root, args);
                         }
                         self.end_temps(c, temps);
+                        if self.suspends(None, Some(&name)) {
+                            self.emit(c, Ev::Suspend { line: nline(e) });
+                        }
                         return c;
                     }
                     if segs.len() == 1 && self.locals.contains(&segs[0]) {
@@ -1736,6 +1769,9 @@ impl<'a> Low<'a> {
                     self.bind_receiver_arg_borrow(c, di, args, None);
                 }
                 self.end_temps(c, temps);
+                if self.call_suspends(callee) {
+                    self.emit(c, Ev::Suspend { line: nline(e) });
+                }
                 // `core.mem.drop(p)`: 場所の値を消費する。そこに保存された借用はここで死ぬ。
                 if nname(callee) == "Path" && self.is_drop_fn(&strs(&nf(callee)[0])) {
                     if let Some(arg) = args.first() {
@@ -1763,6 +1799,9 @@ impl<'a> Low<'a> {
                         }
                     }
                     self.end_temps(c, temps);
+                    if self.suspends(None, Some(&name)) {
+                        self.emit(c, Ev::Suspend { line: nline(e) });
+                    }
                     return c;
                 }
                 let mut c = self.lower_expr(recv, cur);
@@ -1772,6 +1811,9 @@ impl<'a> Low<'a> {
                 }
                 c = self.lower_args_held(args, c, &mut temps);
                 self.end_temps(c, temps);
+                if self.suspends(None, Some(&name)) {
+                    self.emit(c, Ev::Suspend { line: nline(e) });
+                }
                 c
             }
             _ => {
@@ -2570,7 +2612,9 @@ impl<'a> Checker<'a> {
         let mut seen: HashSet<(usize, String)> = HashSet::new();
         for (line, msg) in diags {
             if seen.insert((line, msg.clone())) {
-                self.tdiag("E3010", msg, line);
+                // 中断点をまたぐ借用は E3050 (仕様 5.6)。それ以外の借用の競合は E3010。
+                let code = if msg.contains("across a suspension point") { "E3050" } else { "E3010" };
+                self.tdiag(code, msg, line);
             }
         }
     }
@@ -2776,6 +2820,33 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
             }
         }
         for (k, ev) in node.evs.iter().enumerate() {
+            // 中断点をまたいで生きる借用 (中断の間に、借りた先へ他のタスクが触るかもしれない)。保守側に、
+            // 中断点の後で使われる持ち主 (変数・保存場所・式の一時) のローンはすべて報告する。
+            if let Ev::Suspend { line } = ev {
+                for (holder, ids) in &stt.holders {
+                    let live = match holder {
+                        Holder::Var(v) => live_after[k].contains(v),
+                        Holder::Place { root: r, .. } => live_after[k].contains(r),
+                    };
+                    if !live {
+                        continue;
+                    }
+                    let who = match holder {
+                        Holder::Var(v) if v.starts_with("$iter") => "the loop iterator".to_string(),
+                        Holder::Var(v) if v.starts_with("$cap") => "the shared capture of the closure".to_string(),
+                        Holder::Var(v) if v.starts_with("$e") => "an earlier operand of the same expression".to_string(),
+                        Holder::Var(v) => format!("`{}`", v),
+                        Holder::Place { root: r, path: p } => format!("`{}`", place_name(r, p)),
+                    };
+                    for &id in ids {
+                        if stt.dead.contains(&id) {
+                            continue;
+                        }
+                        let l = &low.loans[id];
+                        out.push((*line, format!("cannot hold a borrow of `{}` across a suspension point: {} is used after the call that may suspend", l.root, who)));
+                    }
+                }
+            }
             if let Ev::Access { root, path, kind, line } = ev {
                 for (holder, ids) in &stt.holders {
                     // 変数のローンは変数が、保存場所のローンは根の変数が生きている間だけ競合する。

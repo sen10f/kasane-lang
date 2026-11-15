@@ -28,6 +28,7 @@ mod lsp;
 mod project;
 mod refactor;
 mod interp;
+mod task;
 mod natives;
 mod net;
 mod process;
