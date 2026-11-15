@@ -24,6 +24,7 @@ type lower.cx.Lp pub
     exit: usize pub
     base: usize pub
     brk: usize pub
+    ks: alloc.vec.Vec<usize, std.alloc.System> pub
 end lower.cx.Lp
 
 // 値の結果: VId と、その型 (types の型 id)。
@@ -94,6 +95,15 @@ fn lower.cx.cat2(a: &str, b: &str) -> Result<alloc.string.String<std.alloc.Syste
     s.push_str(b)?
     Ok(s)
 end lower.cx.cat2
+
+// 添字の並びの複製。
+fn lower.cx.copy_u(xs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for x in xs.as_slice().iter() {
+        out.push(*x)?
+    }
+    Ok(out)
+end lower.cx.copy_u
 
 // 可変の局所の現在の値の並び (mlist の順)。
 fn lower.cx.cur_vals(c: &lower.cx.Cx, ks: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
@@ -216,6 +226,34 @@ fn lower.cx.mlist(c: &lower.cx.Cx, base: usize) -> Result<alloc.vec.Vec<usize, s
     Ok(out)
 end lower.cx.mlist
 
+// 可変の局所のうち、名前が names に入るもの (sc の添字 < base、順に)。分岐と合流で引き回すものを絞る。
+fn lower.cx.mlist_in(c: &lower.cx.Cx, base: usize, names: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.vec.Vec<usize, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for k in core.iter.range(0usize, base) {
+        let mutable = match c.v.mutf.as_slice().get(k) {
+            Some(m) => *m
+            None => false
+        }
+        if !mutable {
+            continue
+        }
+        let nm = match c.tc.sc.as_slice().get(k) {
+            Some(e) => lower.cx.own(e.name.as_str())?
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        let mut hit = false
+        for w in names.as_slice().iter() {
+            if w.as_str() == nm.as_str() {
+                hit = true
+            }
+        }
+        if hit {
+            out.push(k)?
+        }
+    }
+    Ok(out)
+end lower.cx.mlist_in
+
 // 関数の名前 (k 番目、なければ空)。
 fn lower.cx.name_of(c: &lower.cx.Cx, k: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     match c.g.names.as_slice().get(k) {
@@ -233,7 +271,8 @@ fn lower.cx.new() -> Result<lower.cx.Cx, resolve.Failure> uses [alloc] panics ma
     let oks = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let g = lower.cx.Glob { aggs: aggs, names: names, texts: texts, oks: oks }
     let v = lower.cx.vs_new()
-    let lp = lower.cx.Lp { head: 0usize, exit: 0usize, base: 0usize, brk: 0usize }
+    let lks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let lp = lower.cx.Lp { head: 0usize, exit: 0usize, base: 0usize, brk: 0usize, ks: lks }
     let us = alloc.string.String.new(std.alloc.SYSTEM)
     let s = lower.cx.Sc { cur: 0usize, term: false, file: 0usize, ret_t: 0usize, unsup: us }
     Ok(lower.cx.Cx { ar: ar, tc: tc, g: g, v: v, lp: lp, s: s })

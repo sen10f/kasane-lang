@@ -22,7 +22,8 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     }
     let r = lower.expr.expr(env, c, p, src, n.b, lt)?
     lower.cx.set_val(c, loc - 1usize, r.v + 1usize)?
-    Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
+    let u = lower.expr.unit(c)?
+    Ok(lower.cx.R { v: u, t: types.ty.UNIT })
 end lower.expr.assign
 
 fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -195,10 +196,16 @@ end lower.expr.dummy
 
 // 関数の下ろしを予約する (未処理なら末尾に足す)。
 fn lower.expr.enqueue(c: &mut lower.cx.Cx, fqn: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
-    for s in c.g.names.as_slice().iter() {
-        if s.as_str() == fqn {
+    let mut i = 0usize
+    while i < c.g.names.len() {
+        let same = match c.g.names.as_slice().get(i) {
+            Some(s) => s.as_str() == fqn
+            None => false
+        }
+        if same {
             return Ok(())
         }
+        i = i + 1usize
     }
     c.g.names.push(lower.cx.own(fqn)?)?
     Ok(())
@@ -310,7 +317,10 @@ end lower.expr.field_src
 fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = c.tc.sc.len()
     let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
-    let ks = lower.cx.mlist(c, base)?
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan(p, src, n.b, &mut nms)?
+    lower.expr.scan(p, src, n.c, &mut nms)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
     let rty = lower.tyk.text(env, c, t)?
     let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let tb = lower.cx.blk(c, &empty)?
@@ -338,9 +348,6 @@ fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     let mut er = lower.cx.R { v: 0usize, t: t }
     if n.c != 0usize {
         er = lower.expr.expr(env, c, p, src, n.c, t)?
-    } else {
-        let u = lower.expr.unit(c)?
-        er = lower.cx.R { v: u, t: t }
     }
     let else_term = c.s.term
     if !else_term {
@@ -355,7 +362,7 @@ fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         return lower.expr.dummy(c, t)
     }
     lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
-    if rty == "unit" {
+    if rty.as_str() == "unit" {
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: t })
     }
@@ -394,9 +401,7 @@ end lower.expr.join_params
 
 // break (`is_break`) と continue: 可変の局所の現在の値を持って飛ぶ。
 fn lower.expr.jump(c: &mut lower.cx.Cx, is_break: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    let base = c.lp.base
-    let ks = lower.cx.mlist(c, base)?
-    let a = lower.cx.cur_vals(c, &ks)?
+    let a = lower.cx.cur_vals(c, &c.lp.ks)?
     let mut s = lower.cx.own("br ")?
     if is_break {
         s.push_str(lower.cx.target(c.lp.exit, &a)?.as_str())?
@@ -480,7 +485,9 @@ end lower.expr.lit
 
 fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = c.tc.sc.len()
-    let ks = lower.cx.mlist(c, base)?
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan(p, src, n.a, &mut nms)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
     let hps = lower.cx.fresh_vals(c, &ks)?
     let head = lower.cx.blk(c, &hps)?
     let eps = lower.cx.fresh_vals(c, &ks)?
@@ -494,10 +501,12 @@ fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     let se = c.lp.exit
     let sb = c.lp.base
     let sk = c.lp.brk
+    let sks = lower.cx.copy_u(&c.lp.ks)?
     c.lp.head = head
     c.lp.exit = exitb
     c.lp.base = base
     c.lp.brk = 0usize
+    c.lp.ks = lower.cx.copy_u(&ks)?
     lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
     if !c.s.term {
         let a = lower.cx.cur_vals(c, &ks)?
@@ -509,6 +518,7 @@ fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     c.lp.exit = se
     c.lp.base = sb
     c.lp.brk = sk
+    c.lp.ks = sks
     lower.cx.goto(c, exitb)
     if got == 0usize {
         lower.cx.finish(c, lower.cx.own("unreachable")?)?
@@ -530,7 +540,9 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         return lower.expr.dummy(c, t)
     }
     let item = sn.a
-    let ks = lower.cx.mlist(c, base)?
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan_arms(p, src, n.b, &mut nms)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
     let rty = lower.tyk.text(env, c, t)?
     let tag_src = lower.cx.cat2("tag ", lower.cx.vs(sc.v)?.as_str())?
     let tg = lower.cx.def(c, "i32", tag_src.as_str())?
@@ -627,7 +639,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     }
     lower.cx.goto(c, jb)
     lower.expr.bind_join(c, rty.as_str(), &ks, &jps)?
-    if rty == "unit" {
+    if rty.as_str() == "unit" {
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: t })
     }
@@ -707,7 +719,7 @@ end lower.expr.path
 fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let rt = lower.tyk.text(env, c, c.s.ret_t)?
     let mut v = 0usize
-    if rt == "unit" {
+    if rt.as_str() == "unit" {
         if n.a != 0usize {
             lower.expr.expr(env, c, p, src, n.a, c.s.ret_t)?
         }
@@ -720,6 +732,82 @@ fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     lower.cx.finish(c, s)?
     lower.expr.dummy(c, types.ty.NEVER)
 end lower.expr.retx
+
+// 式の中で代入されている局所の名前 (`x = e` の x) を集める。分岐と合流で引き回す局所を絞るため。
+fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if e == 0usize {
+        return Ok(())
+    }
+    let n = parse.ast.get(&p.ast, e)
+    let k = n.kind
+    if k == parse.ast.Kind.Assign {
+        let ln = parse.ast.get(&p.ast, n.a)
+        if ln.kind == parse.ast.Kind.Path {
+            out.push(lower.cx.own(resolve.ast.text(src, ln.a, ln.b))?)?
+        }
+        return lower.expr.scan(p, src, n.b, out)
+    }
+    if k == parse.ast.Kind.Block {
+        return lower.expr.scan_list(p, src, n.a, out)
+    }
+    if k == parse.ast.Kind.ExprStmt {
+        return lower.expr.scan(p, src, n.a, out)
+    }
+    if k == parse.ast.Kind.Let {
+        return lower.expr.scan(p, src, n.d, out)
+    }
+    if k == parse.ast.Kind.If {
+        lower.expr.scan(p, src, n.a, out)?
+        lower.expr.scan(p, src, n.b, out)?
+        return lower.expr.scan(p, src, n.c, out)
+    }
+    if k == parse.ast.Kind.While {
+        lower.expr.scan(p, src, n.a, out)?
+        return lower.expr.scan(p, src, n.b, out)
+    }
+    if k == parse.ast.Kind.Loop || k == parse.ast.Kind.Return || k == parse.ast.Kind.Unary {
+        if k == parse.ast.Kind.Unary {
+            return lower.expr.scan(p, src, n.b, out)
+        }
+        return lower.expr.scan(p, src, n.a, out)
+    }
+    if k == parse.ast.Kind.Match {
+        lower.expr.scan(p, src, n.a, out)?
+        return lower.expr.scan_arms(p, src, n.b, out)
+    }
+    if k == parse.ast.Kind.Bin {
+        lower.expr.scan(p, src, n.b, out)?
+        return lower.expr.scan(p, src, n.c, out)
+    }
+    if k == parse.ast.Kind.Call {
+        return lower.expr.scan_list(p, src, n.b, out)
+    }
+    if k == parse.ast.Kind.MCall {
+        lower.expr.scan(p, src, n.a, out)?
+        return lower.expr.scan_list(p, src, n.d, out)
+    }
+    if k == parse.ast.Kind.Dot {
+        return lower.expr.scan(p, src, n.a, out)
+    }
+    Ok(())
+end lower.expr.scan
+
+// match の腕の並び: 腕の本体を集める。
+fn lower.expr.scan_arms(p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        let arm = parse.ast.get(&p.ast, resolve.ast.item(p, l, j))
+        lower.expr.scan(p, src, arm.b, out)?
+    }
+    Ok(())
+end lower.expr.scan_arms
+
+// 式の並び (リスト) の中を集める。
+fn lower.expr.scan_list(p: &parse.cur.P, src: &[u8], l: usize, out: &mut alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        lower.expr.scan(p, src, resolve.ast.item(p, l, j), out)?
+    }
+    Ok(())
+end lower.expr.scan_list
 
 // 可変かどうかの印を立てる (k < 長さ)。set_val と同じ組み直し。
 fn lower.expr.set_mut(c: &mut lower.cx.Cx, k: usize, m: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
@@ -862,7 +950,10 @@ end lower.expr.unit
 
 fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = c.tc.sc.len()
-    let ks = lower.cx.mlist(c, base)?
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan(p, src, n.a, &mut nms)?
+    lower.expr.scan(p, src, n.b, &mut nms)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
     let hps = lower.cx.fresh_vals(c, &ks)?
     let head = lower.cx.blk(c, &hps)?
     let eps = lower.cx.fresh_vals(c, &ks)?
@@ -887,10 +978,12 @@ fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     let se = c.lp.exit
     let sb = c.lp.base
     let sk = c.lp.brk
+    let sks = lower.cx.copy_u(&c.lp.ks)?
     c.lp.head = head
     c.lp.exit = exitb
     c.lp.base = base
     c.lp.brk = 0usize
+    c.lp.ks = lower.cx.copy_u(&ks)?
     lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?
     if !c.s.term {
         let a = lower.cx.cur_vals(c, &ks)?
@@ -901,6 +994,7 @@ fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     c.lp.exit = se
     c.lp.base = sb
     c.lp.brk = sk
+    c.lp.ks = sks
     lower.cx.goto(c, exitb)
     lower.cx.bind_vals(c, &ks, &eps)?
     let u = lower.expr.unit(c)?
