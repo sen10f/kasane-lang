@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { FakeStorage, installGlobals, textOf } from './fake_dom.mjs';
+import { FakeStorage, installCookieJar, installGlobals, textOf } from './fake_dom.mjs';
 
 const [webDir, wasmPath, apiBase] = process.argv.slice(2);
 if (!webDir || !wasmPath || apiBase === undefined) {
@@ -40,6 +40,8 @@ async function waitFor(pred, what) {
 const storage = new FakeStorage();
 storage.setItem('todo_spa.api', apiBase);
 let restoreGlobals = installGlobals(storage);
+// サーバは利用者の認証を要る (session の cookie)。ブラウザの代わりに cookie を受け渡す (起動のたびに同じ jar)。
+const cookies = installCookieJar();
 
 // 一覧の行: { span, toggle, del } (ul の子の li)。
 function rows() {
@@ -121,4 +123,5 @@ try {
     }
 } finally {
     restoreGlobals();
+    cookies.restore();
 }

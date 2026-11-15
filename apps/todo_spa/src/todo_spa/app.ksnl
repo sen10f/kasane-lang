@@ -4,13 +4,20 @@ import todo_spa.model
 // 状態は持たない。正は apps/todo のサーバで、localStorage (ITEMS_KEY) は最後に受け取った一覧の写し。
 // 操作のたびにサーバへ送り、完了の通知 (ksn_fetch_done) を受けてから一覧を取り直す。
 // イベントの tag は `id * 4 + 種類` (種類 0 = 追加、1 = 完了の切り替え、2 = 削除)。
+// 試験用の固定の利用者 (ログインの画面はない)。起動のたびに登録し (既にあれば 400 で無視)、ログインして cookie を受ける。
+const todo_spa.app.ACCOUNT: &str = "{\"username\":\"demo\",\"password\":\"demo-pass\"}"
+
 const todo_spa.app.API_KEY: &str = "todo_spa.api"
 
 const todo_spa.app.ITEMS_KEY: &str = "todo_spa.items"
 
 const todo_spa.app.TAG_LIST: u32 = 1u32
 
+const todo_spa.app.TAG_LOGIN: u32 = 4u32
+
 const todo_spa.app.TAG_MUT: u32 = 2u32
+
+const todo_spa.app.TAG_REG: u32 = 3u32
 
 fn todo_spa.app.add_item() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
     let input = dom.by_id("todo-input")
@@ -85,6 +92,11 @@ fn todo_spa.app.find_done(cache: &str, want: &str) -> Option<bool> uses [] panic
     None
 end todo_spa.app.find_done
 
+// ログイン: 成功すると、サーバの Set-Cookie の session を以後の要求が運ぶ (ブラウザは自動で付ける)。
+fn todo_spa.app.login() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may
+    todo_spa.app.send("POST", "/login", todo_spa.app.ACCOUNT, todo_spa.app.TAG_LOGIN)
+end todo_spa.app.login
+
 fn todo_spa.app.on_event(tag: u32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may pub
     let id = tag / 4u32
     let kind = tag % 4u32
@@ -99,7 +111,18 @@ end todo_spa.app.on_event
 
 fn todo_spa.app.on_fetch(tag: u32, status: i32) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may pub
     let ok = status >= 200i32 && status < 300i32
-    if tag == todo_spa.app.TAG_LIST {
+    if tag == todo_spa.app.TAG_REG {
+        todo_spa.app.login()?
+    } else if tag == todo_spa.app.TAG_LOGIN {
+        if ok {
+            todo_spa.app.refresh()?
+        } else {
+            todo_spa.app.status_code("ログインできない", status)?
+        }
+    } else if status == 401i32 {
+        todo_spa.app.status("ログインが切れた。ログインし直す")
+        todo_spa.app.login()?
+    } else if tag == todo_spa.app.TAG_LIST {
         if ok {
             todo_spa.app.on_list_body()?
         } else {
@@ -213,7 +236,7 @@ end todo_spa.app.show_cache
 fn todo_spa.app.start() -> Result<(), alloc.alloc.AllocError> uses [alloc] panics may pub
     todo_spa.app.build_ui()
     todo_spa.app.show_cache()?
-    todo_spa.app.refresh()?
+    todo_spa.app.send("POST", "/register", todo_spa.app.ACCOUNT, todo_spa.app.TAG_REG)?
     Ok(())
 end todo_spa.app.start
 

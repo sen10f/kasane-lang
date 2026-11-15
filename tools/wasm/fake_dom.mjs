@@ -140,3 +140,32 @@ export function installGlobals(storage = new FakeStorage()) {
 export function textOf(el) {
     return el ? el.textContent : null;
 }
+
+// node の fetch には cookie の入れ物がない。ブラウザが自動でしていること (Set-Cookie を保存し、以後の要求に付ける。
+// `Max-Age=0` で消す) を、1 つの接続先について真似る。戻りの `restore` で元の fetch に戻す。
+export function installCookieJar() {
+    const jar = new Map();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+        const headers = new Headers(init.headers ?? {});
+        if (jar.size > 0) {
+            headers.set('cookie', [...jar].map(([k, v]) => `${k}=${v}`).join('; '));
+        }
+        const res = await realFetch(url, { ...init, headers });
+        for (const setCookie of res.headers.getSetCookie()) {
+            const pair = setCookie.split(';')[0];
+            const eq = pair.indexOf('=');
+            const name = pair.slice(0, eq).trim();
+            const value = pair.slice(eq + 1).trim();
+            if (/max-age=0/i.test(setCookie)) jar.delete(name);
+            else jar.set(name, value);
+        }
+        return res;
+    };
+    return {
+        jar,
+        restore: () => {
+            globalThis.fetch = realFetch;
+        },
+    };
+}
