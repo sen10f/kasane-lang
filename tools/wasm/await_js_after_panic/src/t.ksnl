@@ -1,0 +1,35 @@
+extern t.raw_timer_start(ms: i32) -> u32 link "env:ksn_timer_start"
+
+fn t.timer_start(ms: i32) -> u32 uses [] panics never
+    unsafe "t" "call the JS import ksn_timer_start (a timer that resolves later)" {
+        t.raw_timer_start(ms)
+    }
+end t.timer_start
+
+fn t.say(text: &str) -> () uses [io.console] panics never
+    match std.io.print_line(text) {
+        Ok(u) => u
+        Err(_e) => ()
+    }
+end t.say
+
+fn t.wait_value(ms: i32) -> i32 uses [suspend] panics may
+    let h = t.timer_start(ms)
+    std.task.await_js(h)
+end t.wait_value
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.say("waiting")
+        let later = t.timer_start(40)
+        core.mem.drop(later)
+        let a = t.wait_value(5)
+        if a == 7 {
+            t.say("got 7, now panic")
+            core.panic.panic("boom")
+        }
+        t.say("body end")
+    })
+    t.say("main end")
+    Ok(())
+end t.main

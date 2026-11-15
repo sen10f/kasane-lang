@@ -716,9 +716,10 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
     s.push_str(&exit_tail(cx, m, f)?);
     if await_mode(m) {
         // 再開の入口 `ksn_resume(h, v)`: JS が待っていた Promise の結果 `v` を `h` に入れて、枠を進める。戻り値は `main` と同じ。
-        // 実行器が終了済みならエラーを返す (Issue 8 対策: ksn_resume after program end)。
+        // 実行器が動いていない (正常に終わった) か、`exit` を通った (panic など) なら、何もせず -2 を返す。
+        s.push_str("@ksn_exited = external global i32\n");
         s.push_str(&format!(
-            "define i32 @ksn_resume(i32 %h, i32 %v) \"wasm-export-name\"=\"ksn_resume\" null_pointer_is_valid {{\nentry:\n  %running = call i1 {}()\n  br i1 %running, label %active, label %dead\nactive:\n  %put = call i1 {}(i32 %h, i32 %v)\n  %r = call {} {}()\n  %pend = call i1 {}()\n  br i1 %pend, label %waiting, label %go\nwaiting:\n  ret i32 -1\ngo:\n",
+            "define i32 @ksn_resume(i32 %h, i32 %v) \"wasm-export-name\"=\"ksn_resume\" null_pointer_is_valid {{\nentry:\n  %ex = load i32, ptr @ksn_exited\n  %exd = icmp ne i32 %ex, 0\n  br i1 %exd, label %dead, label %live\nlive:\n  %running = call i1 {}()\n  br i1 %running, label %active, label %dead\nactive:\n  %put = call i1 {}(i32 %h, i32 %v)\n  %r = call {} {}()\n  %pend = call i1 {}()\n  br i1 %pend, label %waiting, label %go\nwaiting:\n  ret i32 -1\ngo:\n",
             fname("ksn.task.running"),
             fname("ksn.js.put"),
             rt,
