@@ -496,3 +496,78 @@ ksn check && ksn build --release
 python3 -I compare.py --group examples && python3 -I compare.py --group linear_ok
 python3 -I compare.py --group diag && python3 -I compare.py --group unsound
 ```
+
+
+## 13. LLVM 出力の段 (修正プラン 5-5 の次の段)
+
+`selfhost/emit/` (ブランチ `selfhost/emit`)。KIR のテキスト (`ksn kir t.main` の出力) を読み、Rust 版 `kir_llvm.rs` と同じ規則で LLVM IR のテキスト (入口 `main` の包みを含む実行可能な形) を標準出力へ書く。Kasane で書いた `emit` を `ksn build --release` でネイティブにした。処理系 (`stage0/`) は変えていない。
+
+### 13.1 構成と行数
+
+| ファイル | 行数 | 中身 |
+| --- | ---: | --- |
+| `src/emit.ksnl` | 338 | 入口 (引数の読み込み・モジュールの順序・表と作業場所の型) |
+| `src/emit/ty.ksnl` | 269 | 型の表 (KIR の型の文字列を添字に。LLVM の型の文字列・大きさ・`Option` / `Result` の枠) |
+| `src/emit/agg.ksnl` | 201 | 集成体の表 (`agg#N` の行。フィールドの型・オフセット・列挙型の変種) |
+| `src/emit/func.ksnl` | 377 | 関数ごと (1 走査: 値の型・ブロックの引数・後続 / 到達性 / 本体 / phi を含む組み立て) |
+| `src/emit/inst.ksnl` | 1,662 | 命令 1 つと終端命令の写し (整数・比較・集成体の値のモデル・メモリ・ヒープ・`write` / `eprint` / panic) |
+| `src/emit/rt.ksnl` | 175 | 固定の本体 (`ksn.depth`・文言・`ksn.panic.*`・`ksn.write` / `ksn.eprint`・入口 `main`) |
+| `src/emit/util.ksnl` | 438 | 文字列の補助 (十進・トークン・引用符の中身・C の文字列の表記・i128 の表示) |
+| `compare.py` | 137 | 比較: Rust 版の `ksn build` の実行ファイル と、Kasane 版の `.ll` を clang で繋いだ実行ファイルの出力・終了コードを比べる |
+
+Kasane 側は合計 3,460 行 (空行・注釈を含む)。`panics may` を全部に付けた (`panics never` は添字や `+ - *` を使えないため)。
+
+### 13.2 使い方
+
+```
+cd selfhost/emit
+ksn check && ksn build --release               # target/release/emit.native
+target/release/emit.native FILE.kir t.main > out.ll
+python3 -I compare.py --work /tmp/emit-work     # linear_ok の 118 件を比べる (作業場所は既定の外に)
+```
+
+### 13.3 確かめ
+
+| 項目 | 結果 |
+| --- | --- |
+| `linear_ok/` の 118 件: Kasane 版 `.ll` を Rust 版と同じランタイム (`kir_rt.c`・`sysrt.c`) と clang でリンクして走らせ、標準出力・標準エラー・終了コードが Rust 版のネイティブと一致 | **118 / 118** |
+| `ksn build --release` (退避なし、E9040 なし) | ネイティブ (`target/release/emit.native`)、約 5.5 秒 (この機械の負荷込み) |
+| 118 件の変換の時間 (release、プロセス起動を含む) | 合計 0.16 秒。debug 版とは全件で出力が同じ |
+| IR の文字列の一致 (Rust 版の `ksn kir --llvm` と) | 測っていない。Rust 版は入口の包みや一時の名前の付け方が違い、文字列としては一致しない見込み。比べたのは実行結果 |
+
+一致の数え方: `compare.py` は Rust 版の `ksn build` の実行ファイルを基準にする。Rust 版が退避 (インタプリタ同梱) になった組は比較から外して数に出す (今回は 0)。`h04_sibling_blocks_same_name_move` は、入口が引数を取るため Rust 版も「引数の個数が合わない」panic (終了コード 101) で走る。Kasane 版も同じ文言・同じ終了コードで出すようにした。
+
+### 13.4 対応していない形 (`emit` が止まる、または未確認)
+
+- 浮動小数 (型の表で `f32` / `f64` を拒否する。KIR の `fadd` / `fcmp` / `conv` 系、`fmtfloat`)。linear_ok の 118 件の KIR には `f32` / `f64` の型が一つも出てこない (確認済み)。
+- `std.net` / `std.fs` / `std.env` / `std.time` / `std.process` / `std.rand` / `std.thread`、`ParseInt`、`Utf8Valid`、`checked.*`、`saturating` の算術、`bitcount`、外部関数 (`link`)、関数ポインタ (`fnptr`)。
+- 入口が `()` 以外を返す形 (`Result` の表示)。wasm32・aarch64 の出力。
+- 引数を受ける入口は、Rust 版と同じく「引数の個数が合わない」panic (101) を出す形だけを写している。
+
+### 13.5 処理系の不足 (重要度順)
+
+この段で当たったもの。処理系は直していない (コードの書き方で回避した)。エラーの文言はそのまま。
+
+1. **段階 1 の下ろしで、`!` を返すユーザ関数と `std.process.exit`、`core.mem.replace` が使えない。** 最初は `fn emit.fail(msg) -> !` (`std.process.exit` を呼ぶ) を作ったが、`呼び先 emit.fail の戻り値の型は段階 1 の対象外` で止まった。`std.process.exit` は `呼び出し std.process.exit は段階 1 の対象外`、`core.mem.replace` は `呼び出し core.mem.replace は段階 1 の対象外`。結果: 致命的な終了 (終了コードを選ぶ) を書けず、`core.panic.panic` (101) だけで止めた。`&mut` の中の文字列を取り出して差し替える手段もなく、`let d = g.f` は `E3002 cannot move out of ... borrow it` (参照越しに移せない)。文字列は中身を複写して作り直した。
+2. **`for` の対象が限られる。** `for x in s.split(sep)`・`for b in bytes.iter()` は `for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数 ... だけ段階 1 の対象` で止まる。この部品では、区切りの個数と `piece_at` (k 番目の片) を返す関数で `while` に書き直した (`util.ksnl`)。文字列を扱うセルフホストでは、この書き直しが全体に出る。
+3. **借用検査の誤検出らしきもの (E3010 / E3020 / E3021)。** `let l = f(text, k)` で借りた `&str` を、同じ関数の中で分解し、その後に `&mut G` を使うと `use of ... borrows l which does not live long enough` になる (最小の例で再現)。引数として渡す形にすると通る。また `fn f(lines: &Vec<&str>, i) -> &str` は寿命を書いても `E3021 lifetimes can be elided` と言われ、本体の借用が外まで伸びる。`fn f['a](text: &'a str, starts: &Vec<usize>, k) -> &'a str` (文字列の本体を最初の引数に置く) なら通った。
+4. **構造体の値の書き方が狭い (E0053)。** 構造体の値は一行で、フィールドの値は識別子だけ。フィールドが 10 を超えると一行に収まらず、状態を 5 つ前後の群に分けた (`emit.G` の `tab` `lay` `flow` `buf` `outs` `misc` `flags`)。
+5. **書式の制約。** 1 行の `if c { a } else { b }` (E0056)、腕のタプルの束縛 `Some((a, b)) =>` と腕の本体の代入 (E0057)、`let _ = e` (E2041、`core.mem.drop` を使う)、本体の 100 文字超の行 (E0002 / E0055。署名の行は対象外)。`ksn fmt` は並べ替えと空行を直すが、長い行と上の 5 つは直さない。
+6. **未対応の標準ライブラリ型 (段階 1)。** `core.fmt.Formatter`・`core.hash.Fnv64` は、到達する関数の戻り値・引数にあると段階 1 で拒否される (この部品では到達しなかったので、影響は出ていない)。
+
+### 13.6 まだ書いていないこと
+
+- 浮動小数・外部関数・標準ライブラリの実行系の呼び出し (10.4)。
+- IR の文字列の一致 (Rust 版との比較は実行結果だけ)。
+- 型検査・KIR への下ろし (前段) は Kasane で書いていない。入力は Rust 版の `ksn kir` の出力。
+- 大きな入力での性能は未計測 (118 件は各数 KB)。
+
+### 13.7 再現
+
+```
+. ~/.cargo/env
+cd stage0 && cargo build --release && cd ..
+cd selfhost/emit
+ksn check && ksn build --release
+python3 -I compare.py --work /tmp/emit-work     # 118 / 118 (約 5 分)
+```
