@@ -1,0 +1,10 @@
+[package]
+name = "lower"
+version = "0.1.0"
+edition = 1
+entry = "lower.main"
+
+[dependencies]
+parse = { path = "../parse" }
+resolve = { path = "../resolve" }
+types = { path = "../types" }

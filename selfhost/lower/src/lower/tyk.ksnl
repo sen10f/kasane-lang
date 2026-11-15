@@ -1,0 +1,352 @@
+// 型の下ろし: types の型 id を KIR の型の文字列にし、集成体 (構造体・列挙型) の番号とレイアウトを決める。
+// 集成体は見つけた順に agg#N を振る (ksn kir の番号とは一致しないことがある。比べるときは名前で正規化する)。
+// 集成体のレイアウト: 大きさ・そろえ・フィールドの末尾からのバイト位置。
+// 列挙型は `offs` を変種の順に並べ (変種 j の i 番目は vlens の和 + i)、`vlens` に変種ごとの個数を入れる。
+type lower.tyk.Lay pub
+    size: usize pub
+    align: usize pub
+    offs: alloc.vec.Vec<usize, std.alloc.System> pub
+    vlens: alloc.vec.Vec<usize, std.alloc.System> pub
+end lower.tyk.Lay
+
+// 集成体の番号 (なければ登録する)。
+fn lower.tyk.agg_id(c: &mut lower.cx.Cx, item: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let mut k = 0usize
+    for it in c.g.aggs.as_slice().iter() {
+        if *it == item {
+            return Ok(k)
+        }
+        k = k + 1usize
+    }
+    c.g.aggs.push(item)?
+    Ok(c.g.aggs.len() - 1usize)
+end lower.tyk.agg_id
+
+fn lower.tyk.agg_line(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    let lay = lower.tyk.layout(env, c, item)?
+    let kind = types.infer.item_kind(env, item)
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let fqn = match env.tab.items.as_slice().get(item) {
+        Some(it) => lower.cx.own(it.fqn.as_str())?
+        None => alloc.string.String.new(std.alloc.SYSTEM)
+    }
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(s)
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(x) => x
+        None => return Ok(s)
+    }
+    let src = src_r.text.as_slice()
+    let nd = parse.ast.get(&p.ast, node)
+    s.push_str("agg#")?
+    s.push_str(lower.cx.dec(id)?.as_str())?
+    if (kind == parse.ast.Kind.TypeDef) {
+        s.push_str(" struct ")?
+    } else {
+        s.push_str(" enum ")?
+    }
+    s.push_str(fqn.as_str())?
+    s.push_str(" size=")?
+    s.push_str(lower.cx.dec(lay.size)?.as_str())?
+    s.push_str(" align=")?
+    s.push_str(lower.cx.dec(lay.align)?.as_str())?
+    s.push_str(" {")?
+    if (kind == parse.ast.Kind.TypeDef) {
+        for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+            let fd = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+            let ft = types.lower.ty(env, &mut c.ar, &c.tc, p, src, file, fd.b)?
+            let tt = lower.tyk.text(env, c, ft)?
+            if j > 0usize {
+                s.push(' ')?
+            }
+            s.push_str(resolve.ast.tok_text(p, src, fd.a))?
+            s.push(':')?
+            s.push_str(tt.as_str())?
+            s.push('@')?
+            let o = match lay.offs.as_slice().get(j) {
+                Some(x) => *x
+                None => 0usize
+            }
+            s.push_str(lower.cx.dec(o)?.as_str())?
+        }
+    } else {
+        let mut base = 0usize
+        for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+            let vn = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+            if j > 0usize {
+                s.push(' ')?
+            }
+            s.push_str(resolve.ast.tok_text(p, src, vn.a))?
+            s.push('(')?
+            let cnt = resolve.ast.count(p, vn.b)
+            for i in core.iter.range(0usize, cnt) {
+                let pn = resolve.ast.item(p, vn.b, i)
+                let pt = types.lower.ty(env, &mut c.ar, &c.tc, p, src, file, pn)?
+                let tt = lower.tyk.text(env, c, pt)?
+                if i > 0usize {
+                    s.push(',')?
+                }
+                s.push_str(tt.as_str())?
+                s.push('@')?
+                let o = match lay.offs.as_slice().get(base + i) {
+                    Some(x) => *x
+                    None => 0usize
+                }
+                s.push_str(lower.cx.dec(o)?.as_str())?
+            }
+            base = base + cnt
+            s.push(')')?
+        }
+    }
+    s.push_str("}\n")?
+    Ok(s)
+end lower.tyk.agg_line
+
+// 集成体の定義の行 (`agg#N struct FQN size=S align=A {...}`) を、登録の順に全部作る。
+fn lower.tyk.agg_lines(env: &types.env.Env, c: &mut lower.cx.Cx) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < c.g.aggs.len() {
+        let item = lower.tyk.at(c.g.aggs.as_slice(), i)
+        out.push_str(lower.tyk.agg_line(env, c, item, i)?.as_str())?
+        i = i + 1usize
+    }
+    Ok(out)
+end lower.tyk.agg_lines
+
+// 並びの i 番目 (なければ 0)。
+fn lower.tyk.at(xs: &[usize], i: usize) -> usize uses [] panics may pub
+    match xs.get(i) {
+        Some(x) => *x
+        None => 0usize
+    }
+end lower.tyk.at
+
+// 構造体のフィールドの添字 (見つからなければ 0。呼び出し側は未対応として扱う)。
+fn lower.tyk.field_index(env: &types.env.Env, item: usize, name: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let names = lower.tyk.field_names(env, item)?
+    let mut k = 0usize
+    for nm in names.as_slice().iter() {
+        if nm.as_str() == name {
+            return Ok(k)
+        }
+        k = k + 1usize
+    }
+    Ok(0usize)
+end lower.tyk.field_index
+
+// 構造体の宣言の順のフィールド名 (0 から)。
+fn lower.tyk.field_names(env: &types.env.Env, item: usize) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(out)
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(s) => s
+        None => return Ok(out)
+    }
+    let src = src_r.text.as_slice()
+    let nd = parse.ast.get(&p.ast, node)
+    for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+        let fd = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+        out.push(lower.cx.own(resolve.ast.tok_text(p, src, fd.a))?)?
+    }
+    Ok(out)
+end lower.tyk.field_names
+
+fn lower.tyk.int_bytes(name: &str) -> usize uses [] panics may pub
+    if name == "i8" || name == "u8" {
+        return 1usize
+    }
+    if name == "i16" || name == "u16" {
+        return 2usize
+    }
+    if name == "i32" || name == "u32" {
+        return 4usize
+    }
+    if name == "i128" || name == "u128" {
+        return 16usize
+    }
+    8usize
+end lower.tyk.int_bytes
+
+// 項目 (構造体・列挙型) のレイアウト。
+fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Result<lower.tyk.Lay, resolve.Failure> uses [alloc] panics may pub
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let mut offs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut vlens = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let kind = types.infer.item_kind(env, item)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(lower.tyk.Lay { size: 0usize, align: 1usize, offs: offs, vlens: vlens })
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(s) => s
+        None => return Ok(lower.tyk.Lay { size: 0usize, align: 1usize, offs: offs, vlens: vlens })
+    }
+    let src = src_r.text.as_slice()
+    let nd = parse.ast.get(&p.ast, node)
+    if (kind == parse.ast.Kind.TypeDef) {
+        let mut off = 0usize
+        let mut al = 1usize
+        for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+            let fd = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+            let ft = types.lower.ty(env, &mut c.ar, &c.tc, p, src, file, fd.b)?
+            let (sz, a) = lower.tyk.size_of(env, c, ft)?
+            off = lower.tyk.up(off, a)
+            offs.push(off)?
+            off = off + sz
+            if a > al {
+                al = a
+            }
+        }
+        let size = lower.tyk.up(off, al)
+        return Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vlens })
+    }
+    // 列挙型: 先頭に 4 バイトの i32 のタグ、変種のペイロードはその後ろ。
+    let mut endp = 4usize
+    let mut al = 4usize
+    for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+        let vn = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+        let cnt = resolve.ast.count(p, vn.b)
+        vlens.push(cnt)?
+        let mut vend = 4usize
+        for i in core.iter.range(0usize, cnt) {
+            let pn = resolve.ast.item(p, vn.b, i)
+            let pt = types.lower.ty(env, &mut c.ar, &c.tc, p, src, file, pn)?
+            let (sz, a) = lower.tyk.size_of(env, c, pt)?
+            let off = lower.tyk.up(vend, a)
+            offs.push(off)?
+            vend = off + sz
+            if a > al {
+                al = a
+            }
+        }
+        if vend > endp {
+            endp = vend
+        }
+    }
+    let size = lower.tyk.up(endp, al)
+    Ok(lower.tyk.Lay { size: size, align: al, offs: offs, vlens: vlens })
+end lower.tyk.layout
+
+// 整数・bool・文字の大きさ (バイト) とそろえ。未知は 0。
+fn lower.tyk.prim_size(t: usize) -> usize uses [] panics may pub
+    let f = t
+    if f == types.ty.BOOL {
+        return 1usize
+    }
+    if f == types.ty.CHAR {
+        return 4usize
+    }
+    0usize
+end lower.tyk.prim_size
+
+// 型 (types の型 id) の大きさとそろえ。集成体はレイアウトから。
+fn lower.tyk.size_of(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<(usize, usize), resolve.Failure> uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if n.k == types.ty.K.Int {
+        let b = lower.tyk.int_bytes(types.ty.int_name(n.a))
+        return Ok((b, b))
+    }
+    if n.k == types.ty.K.Bool {
+        return Ok((1usize, 1usize))
+    }
+    if n.k == types.ty.K.Char {
+        return Ok((4usize, 4usize))
+    }
+    if n.k == types.ty.K.Unit {
+        return Ok((0usize, 1usize))
+    }
+    if n.k == types.ty.K.Var {
+        return Ok((4usize, 4usize))
+    }
+    if n.k == types.ty.K.Adt && n.c == 0usize {
+        let lay = lower.tyk.layout(env, c, n.a)?
+        return Ok((lay.size, lay.align))
+    }
+    lower.cx.fail(c, "型の大きさが分からない")?
+    Ok((0usize, 1usize))
+end lower.tyk.size_of
+
+// types の型 id → KIR の型の文字列。未対応の型は fail して "unit" を返す。
+fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    if n.k == types.ty.K.Int {
+        s.push_str(types.ty.int_name(n.a))?
+        return Ok(s)
+    }
+    if n.k == types.ty.K.Bool {
+        s.push_str("bool")?
+        return Ok(s)
+    }
+    if n.k == types.ty.K.Unit {
+        s.push_str("unit")?
+        return Ok(s)
+    }
+    if n.k == types.ty.K.Char {
+        s.push_str("char")?
+        return Ok(s)
+    }
+    if n.k == types.ty.K.Var && n.c == 1usize {
+        // 型の決まらない整数リテラル: 既定の i32 (検査器の既定と同じ)。
+        s.push_str("i32")?
+        return Ok(s)
+    }
+    if n.k == types.ty.K.Adt && n.c == 0usize {
+        let kind = types.infer.item_kind(env, n.a)
+        if (kind == parse.ast.Kind.TypeDef || kind == parse.ast.Kind.EnumDef) {
+            let id = lower.tyk.agg_id(c, n.a)?
+            s.push_str("agg#")?
+            s.push_str(lower.cx.dec(id)?.as_str())?
+            return Ok(s)
+        }
+    }
+    lower.cx.fail(c, "型の下ろし (未対応の型)")?
+    s.push_str("unit")?
+    Ok(s)
+end lower.tyk.text
+
+// そろえ `a` の倍数に切り上げる。
+fn lower.tyk.up(x: usize, a: usize) -> usize uses [] panics may pub
+    if a <= 1usize {
+        return x
+    }
+    (x + a - 1usize) / a * a
+end lower.tyk.up
+
+// 列挙型の変種の添字 (宣言の順)。見つからなければ 0 (呼び出し側が形を確かめる)。
+fn lower.tyk.variant_index(env: &types.env.Env, item: usize, name: &str) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return Ok(0usize)
+    }
+    let src_r = match env.srcs.as_slice().get(file) {
+        Some(s) => s
+        None => return Ok(0usize)
+    }
+    let src = src_r.text.as_slice()
+    let nd = parse.ast.get(&p.ast, node)
+    let mut k = 0usize
+    for j in core.iter.range(0usize, resolve.ast.count(p, nd.d)) {
+        let vn = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+        if resolve.ast.tok_text(p, src, vn.a) == name {
+            return Ok(j)
+        }
+        k = k + 1usize
+    }
+    Ok(0usize)
+end lower.tyk.variant_index
