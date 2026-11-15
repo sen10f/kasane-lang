@@ -1,0 +1,16 @@
+// expect: E2020
+fn t.bad(c: bool) -> u32 uses [] panics never
+    let mut y = 1u32
+    let x = 2u32
+    let m: &mut u32 = if c {
+        &mut y
+    } else {
+        &x
+    }
+    *m = 3u32
+    y
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
