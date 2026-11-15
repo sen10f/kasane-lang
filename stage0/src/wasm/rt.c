@@ -361,3 +361,113 @@ char *getenv(const char *name) {
     (void)name;
     return 0;
 }
+
+/* ---- 128 ビット整数の組み込み (libcall)。
+ * wasm32 には i128 の命令がないので、LLVM は `__multi3` などを呼ぶ。呼び出しの形: 結果はポインタの第 1 引数へ書き
+ * (lo が +0、hi が +8)、引数は (lo, hi) の 64 ビットの組。ここは 64 ビットの演算だけで書く (自分自身の i128 を使うと再帰する)。
+ * `ksn_parse_int` (kir_rt.c) が使う乗算・除算・シフトを足す。 */
+typedef unsigned long long ksn_u64;
+typedef struct {
+    ksn_u64 lo;
+    ksn_u64 hi;
+} ksn_u128;
+
+static void ksn_mul64(ksn_u64 a, ksn_u64 b, ksn_u64 *hi, ksn_u64 *lo) {
+    ksn_u64 a0 = (unsigned)a, a1 = a >> 32, b0 = (unsigned)b, b1 = b >> 32;
+    ksn_u64 p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+    ksn_u64 mid = (p00 >> 32) + (unsigned)p01 + (unsigned)p10;
+    *lo = (mid << 32) | (unsigned)p00;
+    *hi = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+}
+
+void __multi3(ksn_u128 *r, ksn_u64 al, ksn_u64 ah, ksn_u64 bl, ksn_u64 bh) {
+    ksn_u64 hi, lo;
+    ksn_mul64(al, bl, &hi, &lo);
+    hi += al * bh + ah * bl;
+    r->lo = lo;
+    r->hi = hi;
+}
+
+void __ashlti3(ksn_u128 *r, ksn_u64 lo, ksn_u64 hi, int n) {
+    n &= 127;
+    if (n == 0) {
+        r->lo = lo;
+        r->hi = hi;
+    } else if (n >= 64) {
+        r->lo = 0;
+        r->hi = lo << (n - 64);
+    } else {
+        r->lo = lo << n;
+        r->hi = (hi << n) | (lo >> (64 - n));
+    }
+}
+
+void __lshrti3(ksn_u128 *r, ksn_u64 lo, ksn_u64 hi, int n) {
+    n &= 127;
+    if (n == 0) {
+        r->lo = lo;
+        r->hi = hi;
+    } else if (n >= 64) {
+        r->lo = hi >> (n - 64);
+        r->hi = 0;
+    } else {
+        r->lo = (lo >> n) | (hi << (64 - n));
+        r->hi = hi >> n;
+    }
+}
+
+void __ashrti3(ksn_u128 *r, ksn_u64 lo, ksn_u64 hi, int n) {
+    n &= 127;
+    ksn_u64 sign = (ksn_u64)0 - (hi >> 63);
+    if (n == 0) {
+        r->lo = lo;
+        r->hi = hi;
+    } else if (n >= 64) {
+        r->lo = (hi >> (n - 64)) | (n == 64 ? 0 : sign << (128 - n));
+        r->hi = sign;
+    } else {
+        r->lo = (lo >> n) | (hi << (64 - n));
+        r->hi = (hi >> n) | (sign << (64 - n));
+    }
+}
+
+/* 符号なしの除算: 1 ビットずつ (128 回)。商と余りを返す。0 で割れば 0 と元の値。 */
+static void ksn_udivmod(ksn_u64 alo, ksn_u64 ahi, ksn_u64 blo, ksn_u64 bhi, ksn_u128 *q, ksn_u128 *m) {
+    ksn_u64 qlo = 0, qhi = 0, rlo = 0, rhi = 0;
+    if (blo == 0 && bhi == 0) {
+        q->lo = 0;
+        q->hi = 0;
+        m->lo = alo;
+        m->hi = ahi;
+        return;
+    }
+    for (int i = 127; i >= 0; i--) {
+        /* r = r << 1 | bit i of a */
+        rhi = (rhi << 1) | (rlo >> 63);
+        rlo <<= 1;
+        ksn_u64 bit = i >= 64 ? (ahi >> (i - 64)) & 1 : (alo >> i) & 1;
+        rlo |= bit;
+        /* r >= b なら r -= b、商の bit i を立てる */
+        if (rhi > bhi || (rhi == bhi && rlo >= blo)) {
+            ksn_u64 nlo = rlo - blo;
+            rhi = rhi - bhi - (rlo < blo ? 1 : 0);
+            rlo = nlo;
+            if (i >= 64) qhi |= (ksn_u64)1 << (i - 64);
+            else qlo |= (ksn_u64)1 << i;
+        }
+    }
+    q->lo = qlo;
+    q->hi = qhi;
+    m->lo = rlo;
+    m->hi = rhi;
+}
+
+void __udivti3(ksn_u128 *r, ksn_u64 alo, ksn_u64 ahi, ksn_u64 blo, ksn_u64 bhi) {
+    ksn_u128 m;
+    ksn_udivmod(alo, ahi, blo, bhi, r, &m);
+}
+
+void __umodti3(ksn_u128 *r, ksn_u64 alo, ksn_u64 ahi, ksn_u64 blo, ksn_u64 bhi) {
+    ksn_u128 q;
+    ksn_udivmod(alo, ahi, blo, bhi, &q, r);
+}

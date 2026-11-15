@@ -542,7 +542,8 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         cx.decls.insert("declare float @strtof(ptr, ptr)".to_string());
     }
     if cx.parse_int {
-        cx.decls.insert("declare i32 @ksn_parse_int(ptr, i64, i32, i32, i32, ptr, ptr)".to_string());
+        // 長さはポインタの幅 (wasm32 は i32)。呼び出し側の宣言 (`ParseInt`) と同じ型にする。x86_64 / aarch64 は従来どおり i64。
+        cx.decls.insert(format!("declare i32 @ksn_parse_int(ptr, {}, i32, i32, i32, ptr, ptr)", size_ty()));
     }
     if cx.env {
         cx.decls.insert("declare i64 @ksn_rt_sys_arg_count()".to_string());

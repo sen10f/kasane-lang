@@ -54,9 +54,11 @@ use K::{Buf, Str, U32};
 /// 組み込みの操作の表 (DOM・localStorage・fetch の小さな部分集合)。
 static OPS: &[Op] = &[
     Op { name: "body", names: &[], params: &[], ret: R::U32, js: "() => push(document.body)" },
+    Op { name: "by_id", names: &["id"], params: &[Str], ret: R::U32, js: "(id) => push(document.getElementById(id))" },
     Op { name: "create", names: &["tag"], params: &[Str], ret: R::U32, js: "(tag) => push(document.createElement(tag))" },
     Op { name: "create_text", names: &["text"], params: &[Str], ret: R::U32, js: "(text) => push(document.createTextNode(text))" },
     Op { name: "set_attr", names: &["node", "name", "value"], params: &[U32, Str, Str], ret: R::Unit, js: "(node, name, value) => { N(node).setAttribute(name, value); }" },
+    Op { name: "set_value", names: &["node", "text"], params: &[U32, Str], ret: R::Unit, js: "(node, text) => { N(node).value = text; }" },
     Op { name: "set_text", names: &["node", "text"], params: &[U32, Str], ret: R::Unit, js: "(node, text) => { N(node).textContent = text; }" },
     Op { name: "append", names: &["parent", "child"], params: &[U32, U32], ret: R::Unit, js: "(parent, child) => { N(parent).appendChild(N(child)); }" },
     Op { name: "remove", names: &["node"], params: &[U32], ret: R::Unit, js: "(node) => { N(node).remove(); }" },
@@ -215,7 +217,7 @@ fn gen_ksnl(d: &Def) -> String {
                 K::Str => {
                     sig.push(format!("{}: &str", n));
                     pre.push(format!("    let {}_len = {}.len()\n", n, n));
-                    inner.push(format!("        let {0}_p = core.ptr.from_ref(core.str.as_bytes({0}))\n", n));
+                    inner.push(format!("        let {0}_p = core.ptr.from_ref({0}.as_bytes())\n", n));
                     call.push(format!("{}_p", n));
                     call.push(format!("{}_len", n));
                 }

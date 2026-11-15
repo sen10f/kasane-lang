@@ -1,0 +1,21 @@
+# TODO の SPA が使う DOM・localStorage・fetch の部分集合 (修正プラン 5-3 段 3)。
+# 生成: cd apps/todo_spa && ksn bindgen bindgen/dom.bindgen
+module todo_spa.dom
+ksnl src/todo_spa/dom.ksnl
+js web/dom.mjs
+op body
+op by_id
+op create
+op create_text
+op set_attr
+op set_value
+op set_text
+op append
+op remove
+op clear
+op listen
+op input_value
+op storage_get
+op storage_set
+op fetch
+op fetch_body
