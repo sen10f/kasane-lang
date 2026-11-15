@@ -1,0 +1,75 @@
+// `std.tls` の利用者側の試験。引数: `<アドレス> <CA の PEM>`。サーバへ `GET /stats` を送り、最初の行を書く。
+// そのあと、既定の CA (この証明書は信頼されない) と、名前の違うホストへの接続が拒否されることを書く。
+fn t.push_part(out: &mut alloc.vec.Vec<u8, std.alloc.System>, chunk: &[u8], n: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    match chunk.sub(0usize, n) {
+        Some(part) => out.extend_from_slice(part)?
+        None => core.mem.drop(0u8)
+    }
+    Ok(())
+end t.push_part
+
+fn t.fetch(address: &str, ca: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.tls.Error> uses [alloc, io.fs, io.net] panics may
+    let conn = std.tls.connect_with(address, "localhost", ca)?
+    let mut tls = conn
+    let request = "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    core.mem.drop(tls.write(request.as_bytes()))
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut chunk = [0u8; 512]
+    let mut more = true
+    while more {
+        match tls.read(&mut chunk) {
+            Ok(k) => {
+                if k == 0usize {
+                    more = false
+                } else {
+                    core.mem.drop(t.push_part(&mut out, &chunk, k))
+                }
+            }
+            Err(_e) => {
+                more = false
+            }
+        }
+    }
+    core.mem.drop(tls.close())
+    Ok(out)
+end t.fetch
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, io.fs, io.net] panics may
+    let address = match std.env.arg(0usize) {
+        Some(a) => a
+        None => core.panic.panic("usage: client <address> <ca.pem>")
+    }
+    let ca = match std.env.arg(1usize) {
+        Some(c) => c
+        None => core.panic.panic("usage: client <address> <ca.pem>")
+    }
+    match t.fetch(address, ca) {
+        Ok(bytes) => {
+            match core.str.from_utf8(bytes.as_slice()) {
+                Ok(text) => {
+                    match text.split_once("\r\n") {
+                        Some((first, _rest)) => std.io.print_line(first)?
+                        None => std.io.print_line("no status line")?
+                    }
+                }
+                Err(_e) => std.io.print_line("not utf-8")?
+            }
+        }
+        Err(_e) => std.io.print_line("fetch failed")?
+    }
+    match std.tls.connect(address, "localhost") {
+        Ok(conn) => {
+            core.mem.drop(conn.close())
+            std.io.print_line("default CA: accepted")?
+        }
+        Err(_e) => std.io.print_line("default CA: refused")?
+    }
+    match std.tls.connect_with(address, "wrong.test", ca) {
+        Ok(conn) => {
+            core.mem.drop(conn.close())
+            std.io.print_line("wrong host: accepted")?
+        }
+        Err(_e) => std.io.print_line("wrong host: refused")?
+    }
+    Ok(())
+end t.main

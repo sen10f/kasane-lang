@@ -273,3 +273,36 @@ i64 ksn_rt_sys_var(const u8 *name, i64 nlen, i64 *len) {
     *len = (i64)strlen(v);
     return (i64)(intptr_t)v;
 }
+
+#if !defined(__wasm__)
+#include <dlfcn.h>
+/* `extern` の動的ロード (`link "ライブラリ:名前"`、3.8): 初回の呼び出しで `dlopen` / `dlsym` して、
+ * 関数ポインタを `slot` に覚える。読めなければ、インタプリタと同じ panic の文言で終了コード 101。 */
+void *ksn_ext_resolve(const char *lib, const char *sym, void **slot) {
+    if (*slot) {
+        return *slot;
+    }
+    void *h = dlopen(lib, RTLD_NOW | RTLD_LOCAL);
+    if (!h) {
+        fprintf(stderr, "panic: cannot load the shared library `%s`: %s\n", lib, dlerror());
+        fflush(stderr);
+        exit(101);
+    }
+    void *p = dlsym(h, sym);
+    if (!p) {
+        fprintf(stderr, "panic: symbol `%s` was not found in `%s`\n", sym, lib);
+        fflush(stderr);
+        exit(101);
+    }
+    *slot = p;
+    return p;
+}
+#else
+/* wasm32 には共有ライブラリの読み込みがない。`extern` は wasm32 では下ろさない (ksn の検査が理由を出す) ので、ここには来ない。 */
+void *ksn_ext_resolve(const char *lib, const char *sym, void **slot) {
+    (void)lib;
+    (void)sym;
+    (void)slot;
+    return 0;
+}
+#endif

@@ -435,8 +435,23 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             (f.key.clone(), sym.to_string())
         }))
         .collect();
+    // `link "ライブラリ:名前"` (動的ロード、3.8): 実行時に `dlopen` / `dlsym` で引く。呼び出しは `ksn_ext_resolve` が覚えた
+    // 関数ポインタを間接に呼ぶ。静的な `link "名前"` は従来どおり直接リンクする。
+    let extern_dl: HashMap<String, (String, String)> = m.funcs.iter()
+        .filter_map(|f| f.link.as_ref().and_then(|l| l.rsplit_once(':').map(|(lib, s)| (f.key.clone(), (lib.to_string(), s.to_string())))))
+        .collect();
+    let mut dl_seen: BTreeSet<String> = BTreeSet::new();
     for (key, sym) in &extern_links {
         let Some(f) = m.funcs.iter().find(|f| f.key == *key) else { continue };
+        if let Some((lib, name)) = extern_dl.get(key) {
+            if dl_seen.insert(sym.clone()) {
+                cx.globals.push_str(&format!("@ksn.ext.slot.{} = internal global ptr null\n", sym));
+                cx.globals.push_str(&str_const(&format!("ksn.ext.lib.{}", sym), &format!("{}\0", lib)));
+                cx.globals.push_str(&str_const(&format!("ksn.ext.sym.{}", sym), &format!("{}\0", name)));
+            }
+            cx.decl("declare ptr @ksn_ext_resolve(ptr, ptr, ptr)".to_string());
+            continue;
+        }
         let params: Vec<String> = f.params().iter().map(|(_, t)| lty(&m.aggs, *t)).collect();
         let rt = lty(&m.aggs, f.ret);
         cx.decl(format!("declare {} @{}({})", rt, sym, params.join(", ")));
@@ -478,7 +493,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             funcs.push_str(&text);
             continue;
         }
-        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
+        funcs.push_str(&Fe::new(&mut cx, &m.aggs, f, &extern_links, &extern_dl, &m.funcs, fi).emit().map_err(|e| format!("{}: {}", f.key, e))?);
     }
     let main = if program { emit_program_main(&mut cx, m, ef)? } else { emit_main(&mut cx, &m.aggs, ef)? };
     let mut math = String::new();
@@ -806,7 +821,7 @@ pub const RUNTIME_C: &str = include_str!("kir_rt.c");
 
 /// IR が C の実行時補助を要するか。
 pub fn needs_runtime(ll: &str) -> bool {
-    ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_")
+    ll.contains("@ksn_fmt_") || ll.contains("@ksn_utf8_") || ll.contains("@ksn_parse_int") || ll.contains("@ksn_rt_sys_") || ll.contains("@ksn_ext_resolve")
 }
 
 fn emit_main(cx: &mut Ctx, aggs: &[AggDef], f: &Func) -> R<String> {
@@ -1032,6 +1047,8 @@ struct Fe<'a> {
     f: &'a Func,
     /// `extern` 関数の `キー → LLVM シンボル名`。`Op::Call` で `declare` したシンボルを直接呼ぶ。
     extern_links: &'a HashMap<String, String>,
+    /// 動的ロードの `extern` (`キー → (ライブラリ, 名前)`)。
+    extern_dl: &'a HashMap<String, (String, String)>,
     /// 全関数 (`Op::Fnptr` の呼び先の型を引くため)。
     funcs: &'a [Func],
     fi: usize,
@@ -1046,8 +1063,8 @@ struct Fe<'a> {
 }
 
 impl<'a> Fe<'a> {
-    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
-        Fe { cx, aggs, f, extern_links, funcs, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
+    fn new(cx: &'a mut Ctx, aggs: &'a [AggDef], f: &'a Func, extern_links: &'a HashMap<String, String>, extern_dl: &'a HashMap<String, (String, String)>, funcs: &'a [Func], fi: usize) -> Fe<'a> {
+        Fe { cx, aggs, f, extern_links, extern_dl, funcs, fi, tys: HashMap::new(), lit: HashMap::new(), n: 0, body: String::new(), cur: String::new(), edges: BTreeMap::new() }
     }
 
     fn lt(&self, t: Ty) -> String {
@@ -1895,7 +1912,16 @@ impl<'a> Fe<'a> {
                 let rt = self.lt(i.ty);
                 let a: Vec<String> = args.iter().map(|v| format!("{} {}", lty(aggs, self.ty(*v)), self.r(*v))).collect();
                 if let Some(sym) = self.extern_links.get(callee) {
-                    self.line(format!("{} = call {} @{}({})", d, rt, sym, a.join(", ")));
+                    if self.extern_dl.contains_key(callee) {
+                        let fp = self.tmp();
+                        self.line(format!(
+                            "{} = call ptr @ksn_ext_resolve(ptr @ksn.ext.lib.{}, ptr @ksn.ext.sym.{}, ptr @ksn.ext.slot.{})",
+                            fp, sym, sym, sym
+                        ));
+                        self.line(format!("{} = call {} {}({})", d, rt, fp, a.join(", ")));
+                    } else {
+                        self.line(format!("{} = call {} @{}({})", d, rt, sym, a.join(", ")));
+                    }
                 } else {
                     self.line(format!("{} = call {} {}({})", d, rt, fname(callee), a.join(", ")));
                 }

@@ -2,6 +2,8 @@
 //! 失敗は panic ではなく `Err(std.net.Error)` / `Err(std.io.Error)` の値で返す。
 
 use std::cell::RefCell;
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
@@ -81,10 +83,23 @@ fn io_error_kind_invalid() -> Val {
 }
 
 impl Interp {
+    #[cfg_attr(unix, allow(dead_code))]
     fn alloc_fd(&mut self) -> i128 {
         let fd = self.next_fd;
         self.next_fd += 1;
         fd
+    }
+
+    /// ソケットの記述子の番号。Unix では OS の fd (ネイティブ生成と同じ番号)。`std.tls` は `descriptor` を
+    /// `SSL_set_fd` に渡すので、仮想の番号では別のファイルを指してしまう (3.8 の FFI と 8.3 の `std.tls`)。
+    #[cfg(unix)]
+    fn sock_fd<T: std::os::unix::io::AsRawFd>(&mut self, s: &T) -> i128 {
+        s.as_raw_fd() as i128
+    }
+
+    #[cfg(not(unix))]
+    fn sock_fd<T>(&mut self, _s: &T) -> i128 {
+        self.alloc_fd()
     }
 
     /// 自由関数: `std.net.connect` / `std.net.listen` / `std.net.UdpSocket.bind` / `std.net.resolve_raw`。
@@ -94,7 +109,7 @@ impl Interp {
         match name {
             "std.net.connect" => Ok(match TcpStream::connect(addr.as_str()) {
                 Ok(s) => {
-                    let fd = self.alloc_fd();
+                    let fd = self.sock_fd(&s);
                     self.net.streams.insert(fd, s);
                     ok(handle("std.net.TcpStream", fd))
                 }
@@ -102,7 +117,7 @@ impl Interp {
             }),
             "std.net.listen" => Ok(match TcpListener::bind(addr.as_str()) {
                 Ok(l) => {
-                    let fd = self.alloc_fd();
+                    let fd = self.sock_fd(&l);
                     self.net.listeners.insert(fd, l);
                     ok(handle("std.net.TcpListener", fd))
                 }
@@ -110,7 +125,7 @@ impl Interp {
             }),
             "std.net.UdpSocket.bind" => Ok(match UdpSocket::bind(addr.as_str()) {
                 Ok(s) => {
-                    let fd = self.alloc_fd();
+                    let fd = self.sock_fd(&s);
                     self.net.udps.insert(fd, s);
                     ok(handle("std.net.UdpSocket", fd))
                 }
@@ -147,7 +162,7 @@ impl Interp {
                 "accept" => match self.net.listeners.get(&fd) {
                     Some(l) => match l.accept() {
                         Ok((st, _)) => {
-                            let nfd = self.alloc_fd();
+                            let nfd = self.sock_fd(&st);
                             self.net.streams.insert(nfd, st);
                             ok(handle("std.net.TcpStream", nfd))
                         }

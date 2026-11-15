@@ -20,6 +20,8 @@ pub struct Pin {
 
 enum PinTarget {
     List(Rc<RefCell<Vec<Val>>>),
+    /// 部分スライス (`Val::View`): 元の配列の `[from, to)` だけを C へ渡す。書き戻しは同じ範囲へ。
+    Range(Rc<RefCell<Vec<Val>>>, usize, usize),
     One(Rc<dyn Place>),
 }
 
@@ -303,10 +305,12 @@ impl Interp {
                 let cur = dr(&p.get());
                 match &cur {
                     Val::Arr(l) | Val::Vec(l) => (PinTarget::List(l.clone()), cur.clone()),
+                    Val::View(l, a, b) => (PinTarget::Range(l.clone(), *a, *b), cur.clone()),
                     _ => (PinTarget::One(p.clone()), cur),
                 }
             }
             Val::Arr(l) | Val::Vec(l) => (PinTarget::List(l.clone()), arg.clone()),
+            Val::View(l, a, b) => (PinTarget::Range(l.clone(), *a, *b), arg.clone()),
             other => (PinTarget::One(Rc::new(CellPlace(RefCell::new(other.clone())))), other.clone()),
         };
         let (elem, count) = match (&target, &cur) {
@@ -317,6 +321,13 @@ impl Interp {
                     None => return panic(format!("{}: the interpreter cannot pass an empty or non-C array to C", name)),
                 }
             }
+            (PinTarget::Range(l, a, b), _) => {
+                let first = l.borrow().get(*a).filter(|_| a < b).cloned();
+                match first.and_then(|f| self.cty_of_val(&f)) {
+                    Some(e) => (e, b.saturating_sub(*a)),
+                    None => return panic(format!("{}: the interpreter cannot pass an empty or non-C slice to C", name)),
+                }
+            }
             (_, v) => match self.cty_of_val(v) {
                 Some(e) => (e, 1),
                 None => return panic(format!("{}: the value is not a C type (a `layout c` struct, a number or an array of them)", name)),
@@ -325,6 +336,7 @@ impl Interp {
         // 同じ配列・変数のピンは使い回す
         let same = |p: &Pin| match (&p.target, &target) {
             (PinTarget::List(a), PinTarget::List(b)) => Rc::ptr_eq(a, b) && p.count == count,
+            (PinTarget::Range(a, a0, a1), PinTarget::Range(b, b0, b1)) => Rc::ptr_eq(a, b) && (a0, a1) == (b0, b1) && p.count == count,
             (PinTarget::One(a), PinTarget::One(b)) => Rc::ptr_eq(a, b) || a.key().is_some_and(|k| Some(k) == b.key()),
             _ => false,
         };
@@ -358,6 +370,7 @@ impl Interp {
             let p = &self.pins[idx];
             let vals = match &p.target {
                 PinTarget::List(l) => l.borrow().clone(),
+                PinTarget::Range(l, a, b) => l.borrow().get(*a..*b).map(|s| s.to_vec()).unwrap_or_default(),
                 PinTarget::One(pl) => vec![pl.get()],
             };
             (p.elem.clone(), vals)
@@ -383,6 +396,14 @@ impl Interp {
                 for (i, v) in vals.into_iter().enumerate() {
                     if i < l.len() {
                         l[i] = v;
+                    }
+                }
+            }
+            PinTarget::Range(l, a, _) => {
+                let mut l = l.borrow_mut();
+                for (i, v) in vals.into_iter().enumerate() {
+                    if a + i < l.len() {
+                        l[a + i] = v;
                     }
                 }
             }
