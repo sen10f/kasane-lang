@@ -1854,9 +1854,12 @@ impl<'a> TypeCk<'a> {
             }
             (Ty::Ptr(..), Ty::Prim(_) | Ty::Named(..)) | (Ty::Prim(_) | Ty::Named(..), Ty::Ptr(..)) => Err((a.clone(), b.clone())),
             // 両側が参照なら、指す先どうしを合わせる (`from_ref(&x)` の `&T` に `&i32` を渡して `T = &i32` にしない)。
-            (Ty::Ref(_, x), Ty::Ref(_, y)) => {
+            // 可変性は向きがある: 左 (期待) が `&mut` で右 (実際) が `&` は不一致 (`&mut` → `&` は許す)。
+            (Ty::Ref(m, x), Ty::Ref(n, y)) => {
+                let (m, n) = (*m, *n);
                 let (x, y) = (x.clone(), y.clone());
-                self.unify2(&x, &y)
+                self.unify2(&x, &y)?;
+                if m && !n { Err((a.clone(), b.clone())) } else { Ok(()) }
             }
             // 参照は透過的。左右の順序 (期待, 実際) は診断の文面に使うので保つ。
             (Ty::Ref(_, x), y) => {
@@ -1992,6 +1995,7 @@ impl<'a> TypeCk<'a> {
         match (&e.0, &e.1) {
             (Ty::Prim(a), Ty::Prim(b)) => Some((a.clone(), b.clone())),
             (Ty::Const(a), Ty::Const(b)) => Some((a.clone(), b.clone())),
+            (Ty::Ref(true, _), Ty::Ref(false, _)) => Some((e.0.show(), e.1.show())),
             _ => None,
         }
     }
@@ -4176,7 +4180,7 @@ impl<'a> TypeCk<'a> {
                     (Ty::Named(x, _), Ty::Named(y, _)) => x == y,
                     _ => false,
                 };
-                let const_mismatch = matches!((&e.0, &e.1), (Ty::Const(_), Ty::Const(_)));
+                let const_mismatch = matches!((&e.0, &e.1), (Ty::Const(_), Ty::Const(_)) | (Ty::Ref(true, _), Ty::Ref(false, _)));
                 // 生ポインタの取り違え (`*const` を `*mut` の引数へ、ポインタと値など) は宣言に型パラメータがなくても報告する。
                 let ptr = self.ptr_mismatch(&pt, &av);
                 if raw.has_param() || const_mismatch || ptr.is_some() || (sl.get(k).copied().unwrap_or(false) && same_named) {
@@ -4906,6 +4910,7 @@ impl<'a> TypeCk<'a> {
             (Ty::Prim(a), Ty::Prim(b)) if a != b => Some((a.clone(), b.clone())),
             (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
             (Ty::Const(a), Ty::Const(b)) if a != b => Some((a.clone(), b.clone())),
+            (Ty::Ref(true, _), Ty::Ref(false, _)) => Some((e.0.show(), e.1.show())),
             _ => None,
         }
     }
@@ -5056,6 +5061,7 @@ impl<'a> TypeCk<'a> {
             (Ty::Prim(a), Ty::Prim(b)) => Some((a.clone(), b.clone())),
             (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
             // `()` と値の型の食い違い (`-> Result<..>` の関数が `()` で終わるなど)。
+            (Ty::Ref(true, _), Ty::Ref(false, _)) => Some((err.0.show(), err.1.show())),
             (Ty::Unit, x @ (Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_))) => Some(("()".into(), x.show())),
             (x @ (Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_)), Ty::Unit) => Some((x.show(), "()".into())),
             _ => None,
