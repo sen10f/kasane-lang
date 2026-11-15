@@ -1,0 +1,8 @@
+// expect: E2026
+// target: wasm32-wasi
+// wasm32-wasi では usize は 32 ビット。配列の長さ [e; N] が範囲外なら E2026
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x = [0u8; 4294967296]
+    core.mem.drop(x)
+    Ok(())
+end t.main

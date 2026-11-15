@@ -649,7 +649,7 @@ impl<'a> Checker<'a> {
                     if let Some(init) = &d.init {
                         self.cur_uses = self.cur_uses.take();
                         self.visit(init, &mut HashSet::new(), i, true);
-                        self.check_const_range(init, i);
+                        self.check_const_range(init, &d.ret, i);
                     }
                 }
                 "type" => {
@@ -3234,13 +3234,34 @@ impl<'a> Checker<'a> {
 
     /// `const` / `static` の初期化式に含まれる整数リテラル・定数式が、
     /// 型の範囲に収まるか検査する。範囲外は E2026 を報告する (仕様 3.7, 4.5)。
-    fn check_const_range(&mut self, init: &V, di: usize) {
-        let _ = self.const_eval(init, di);
+    /// 初期化式の中の配列の長さ (`[e; N]`) も、`usize` の幅で検査する (4.5)。
+    fn check_const_range(&mut self, init: &V, declared: &V, di: usize) {
+        // 宣言の型が整数の基本型なら、接尾辞のない整数リテラルはその型と見る (`const N: usize = 4294967296`)。
+        let expect = if tag(declared) == "prim" {
+            let name = st(tel(declared, 1));
+            INT_PRIMS.contains(&name.as_str()).then_some(name)
+        } else {
+            None
+        };
+        let _ = self.const_eval(init, expect.as_deref(), di);
+        self.check_array_lens(init, di);
     }
 
-    /// 定数式を評価し、型の範囲を検査する。
+    /// `[e; N]` の長さ `N` (整数リテラル) が `usize` の範囲に収まるか検査する (E2026)。
+    fn check_array_lens(&mut self, e: &V, di: usize) {
+        if nname(e) == "ArrayRep" {
+            if let Some(msg) = crate::types::array_len_problem(&nf(e)[1]) {
+                self.diag("E2026", msg, di, nline(e));
+            }
+        }
+        for c in children(e) {
+            self.check_array_lens(c, di);
+        }
+    }
+
+    /// 定数式を評価し、型の範囲を検査する。`expect` は接尾辞のない整数リテラルの型 (宣言の型)。
     /// 返り値: `Some((i128 の値, 型名))`、評価不能の場合は `None`。
-    fn const_eval(&mut self, e: &V, di: usize) -> Option<(i128, String)> {
+    fn const_eval(&mut self, e: &V, expect: Option<&str>, di: usize) -> Option<(i128, String)> {
         let f = nf(e);
         match nname(e) {
             "Lit" => {
@@ -3248,7 +3269,11 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let text = st(&f[1]);
-                let ty = if is_nil(&f[2]) { return None; } else { st(&f[2]) };
+                let ty = if is_nil(&f[2]) {
+                    expect?.to_string()
+                } else {
+                    st(&f[2])
+                };
                 // リテラルの範囲検査 (E2026)
                 if let Some(msg) = crate::types::int_literal_problem(&text, &ty) {
                     self.diag("E2026", msg, di, nline(e));
@@ -3264,8 +3289,8 @@ impl<'a> Checker<'a> {
                 if !matches!(op.as_str(), "+" | "-" | "*" | "/" | "%") {
                     return None;
                 }
-                let (lv, lt) = self.const_eval(&f[1], di)?;
-                let (rv, _rt) = self.const_eval(&f[2], di)?;
+                let (lv, lt) = self.const_eval(&f[1], expect, di)?;
+                let (rv, _rt) = self.const_eval(&f[2], Some(lt.as_str()), di)?;
                 let result = match op.as_str() {
                     "+" => lv.checked_add(rv)?,
                     "-" => lv.checked_sub(rv)?,
@@ -3299,7 +3324,7 @@ impl<'a> Checker<'a> {
                 if st(&f[0]) != "-" {
                     return None;
                 }
-                let (v, ty) = self.const_eval(&f[1], di)?;
+                let (v, ty) = self.const_eval(&f[1], expect, di)?;
                 Some((-v, ty))
             }
             _ => None,

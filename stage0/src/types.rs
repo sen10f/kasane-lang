@@ -3538,6 +3538,10 @@ impl<'a> TypeCk<'a> {
             "ArrayRep" => {
                 let t = self.infer(&f[0]);
                 // 長さは `const_expr` (整数・定数名・括弧) で式ではないので、推論にかけない。
+                // 整数リテラルの長さだけは `usize` の幅で範囲を検査する (4.5。wasm32 は 32 ビット)。
+                if let Some(msg) = array_len_problem(&f[1]) {
+                    self.diag("E2026", msg, nline(e));
+                }
                 Ty::Array(Box::new(t))
             }
             _ => {
@@ -5185,6 +5189,15 @@ fn place_root_is(e: &V, name: &str) -> bool {
 }
 
 /// 整数リテラルの綴り `text` が型 `ty` に収まらなければ、その説明を返す。
+/// 配列の長さ (`[e; N]` の `N`。`const_expr` が `V::N` の綴りで持つ) が `usize` の範囲に収まらないときの説明。
+/// 長さが整数の綴りでないもの (定数名) は None (その定数の初期化式の範囲で検査される)。
+pub(crate) fn array_len_problem(len: &V) -> Option<String> {
+    match len {
+        V::N(text) => int_literal_problem(text, "usize"),
+        _ => None,
+    }
+}
+
 pub(crate) fn int_literal_problem(text: &str, ty: &str) -> Option<String> {
     let neg = text.starts_with('-');
     let t = text.trim_start_matches('-').replace('_', "");
