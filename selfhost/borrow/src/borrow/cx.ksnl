@@ -1,0 +1,373 @@
+const borrow.cx.K_BMUT: usize = 5usize pub
+
+const borrow.cx.K_BSHR: usize = 6usize pub
+
+const borrow.cx.K_MOVE: usize = 2usize pub
+
+const borrow.cx.K_PART: usize = 4usize pub
+
+// 使い方の種類: 読む・移動する・全体を書く・一部を書く・可変で借りる・共有で借りる。
+const borrow.cx.K_READ: usize = 1usize pub
+
+const borrow.cx.K_WRITE: usize = 3usize pub
+
+const borrow.cx.ST_CONS: usize = 3usize pub
+
+const borrow.cx.ST_LIVE: usize = 0usize pub
+
+const borrow.cx.ST_MOVED: usize = 1usize pub
+
+const borrow.cx.ST_UNDEC: usize = 2usize pub
+
+// 借用 1 件: holder (借り手の局所) が target (借り先の局所) を借りている。
+type borrow.cx.Br derive [Clone, Copy] pub
+    holder: usize pub
+    target: usize pub
+    mutb: usize pub
+end borrow.cx.Br
+
+type borrow.cx.Cx pub
+    p: parse.cur.P pub
+    src: alloc.vec.Vec<u8, std.alloc.System> pub
+    dat: borrow.cx.Dat pub
+    rep: borrow.cx.Rep pub
+    fnr: borrow.cx.FnInfo pub
+end borrow.cx.Cx
+
+// 局所と借用の表、深さごとの「次の文の先頭トークン」と「ブロックの閉じ位置」。
+type borrow.cx.Dat pub
+    locs: alloc.vec.Vec<borrow.cx.Loc, std.alloc.System> pub
+    brs: alloc.vec.Vec<borrow.cx.Br, std.alloc.System> pub
+    nexts: alloc.vec.Vec<usize, std.alloc.System> pub
+    bends: alloc.vec.Vec<usize, std.alloc.System> pub
+    depth: usize pub
+end borrow.cx.Dat
+
+// 関数の頭の情報: 戻り値が参照か、その寿命 (トークン番号、0 は省略)、省略の規則の源の局所 (1 始まり、0 は無し)。
+type borrow.cx.FnInfo pub
+    ret_ref: usize pub
+    ret_life: usize pub
+    elide: usize pub
+end borrow.cx.FnInfo
+
+// 局所 1 本。a・b は名前の範囲、depth は宣言したブロックの深さ、fin はそのブロックの閉じ波括弧。
+type borrow.cx.Loc derive [Clone, Copy] pub
+    a: usize pub
+    b: usize pub
+    cl: usize pub
+    mu: usize pub
+    rf: usize pub
+    pa: usize pub
+    li: usize pub
+    ir: usize pub
+    dp: usize pub
+    fi: usize pub
+    st: usize pub
+end borrow.cx.Loc
+
+// 診断の出力と数え。
+type borrow.cx.Rep pub
+    path: alloc.string.String<std.alloc.System> pub
+    out: alloc.string.String<std.alloc.System> pub
+    errors: usize pub
+    undec: usize pub
+end borrow.cx.Rep
+
+// 局所 idx への使い方 kind を記録する。移動済み・消費済みの使用、借用の競合を E3002・E3003・E3010 で報告する。
+fn borrow.cx.access(cx: &mut borrow.cx.Cx, idx: usize, kind: usize, tok: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let l = borrow.cx.loc(cx, idx)
+    if kind != borrow.cx.K_WRITE {
+        if l.st == borrow.cx.ST_MOVED {
+            borrow.cx.diag(cx, "E3002", tok, "移動した後の値を使う")?
+        }
+        if l.st == borrow.cx.ST_CONS {
+            borrow.cx.diag(cx, "E3003", tok, "消費した線形値を使う")?
+        }
+        if l.st == borrow.cx.ST_UNDEC {
+            borrow.cx.undec(cx)
+        }
+    }
+    let mut clash = false
+    let nb = cx.dat.brs.len()
+    for k in core.iter.range(0usize, nb) {
+        if !clash {
+            let br = match cx.dat.brs.as_slice().get(k) {
+                Some(x) => *x
+                None => borrow.cx.Br { holder: 0usize, target: 0usize, mutb: 0usize }
+            }
+            let writes0 = kind == borrow.cx.K_WRITE || kind == borrow.cx.K_PART
+            let writes = writes0 || kind == borrow.cx.K_MOVE
+            let conflict = br.mutb == 1usize || writes || kind == borrow.cx.K_BMUT
+            if br.target == idx && br.holder != idx && conflict && borrow.cx.alive(cx, br.holder) {
+                clash = true
+                borrow.cx.diag(cx, "E3010", tok, "借用中の値を変更・移動・借用する")?
+            }
+        }
+    }
+    if kind == borrow.cx.K_MOVE {
+        if l.cl == borrow.base.LIN {
+            borrow.cx.set_st(cx, idx, borrow.cx.ST_CONS)
+        } else {
+            borrow.cx.set_st(cx, idx, borrow.cx.ST_MOVED)
+        }
+    }
+    if kind == borrow.cx.K_WRITE {
+        borrow.cx.set_st(cx, idx, borrow.cx.ST_LIVE)
+    }
+    Ok(())
+end borrow.cx.access
+
+// 局所 k を借用の借り手にする: 借り先 target (番号) を借り、借り手の参照先を記録する。
+fn borrow.cx.add_borrow(cx: &mut borrow.cx.Cx, k: usize, target: usize, mutb: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut l = borrow.cx.loc(cx, k)
+    l.rf = target.wrapping_add(1usize)
+    match cx.dat.locs.as_mut_slice().get_mut(k) {
+        Some(x) => {
+            *x = l
+        }
+        None => core.mem.drop(0u8)
+    }
+    cx.dat.brs.push(borrow.cx.Br { holder: k, target: target, mutb: mutb })?
+    Ok(())
+end borrow.cx.add_borrow
+
+// 借り手 h が、トークン tok の後でまだ使われるか。深さ h.depth の現在の文の後から、閉じ位置までを見る。
+// 同じ名前の `let` が先に出たら、もう別の束縛なので使われない。
+fn borrow.cx.alive(cx: &borrow.cx.Cx, h: usize) -> bool uses [] panics never pub
+    let l = borrow.cx.loc(cx, h)
+    let from = match cx.dat.nexts.as_slice().get(l.dp) {
+        Some(x) => *x
+        None => 0usize
+    }
+    let name = resolve.ast.text(cx.src.as_slice(), l.a, l.b)
+    let mut k = from
+    while k < l.fi {
+        let t = parse.cur.peek_at(&cx.p, k)
+        let same_text = resolve.ast.tok_text(&cx.p, cx.src.as_slice(), k) == name
+        if t.kind == parse.tok.Kind.Ident && same_text {
+            return true
+        }
+        if borrow.base.is_kw_tok(&cx.p, k, parse.tok.KW_LET) {
+            let j = if borrow.base.is_kw_tok(&cx.p, k.wrapping_add(1usize), parse.tok.KW_MUT) {
+                k.wrapping_add(2usize)
+            } else {
+                k.wrapping_add(1usize)
+            }
+            if resolve.ast.tok_text(&cx.p, cx.src.as_slice(), j) == name {
+                return false
+            }
+        }
+        k = k.wrapping_add(1usize)
+    }
+    false
+end borrow.cx.alive
+
+// 局所を一つ宣言する。戻り値は新しい番号。
+fn borrow.cx.declare(cx: &mut borrow.cx.Cx, a: usize, b: usize, cls: usize, mutb: usize, tok: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let d = cx.dat.depth
+    let fin = match cx.dat.bends.as_slice().get(d) {
+        Some(x) => *x
+        None => 0usize
+    }
+    let l = borrow.cx.mk_loc(a, b, cls, mutb, d, fin)
+    let at = cx.dat.locs.len()
+    cx.dat.locs.push(l)?
+    core.mem.drop(tok)
+    Ok(at)
+end borrow.cx.declare
+
+// 名前の付いた束縛 (PBind のトークン ti) を宣言する。
+fn borrow.cx.declare_tok(cx: &mut borrow.cx.Cx, ti: usize, cls: usize, mutb: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let (a, b) = borrow.base.tok_range(&cx.p, ti)
+    borrow.cx.declare(cx, a, b, cls, mutb, ti)
+end borrow.cx.declare_tok
+
+// 診断 1 件: `error CODE パス:行: 内容`。tok の行を使う。
+fn borrow.cx.diag(cx: &mut borrow.cx.Cx, code: &str, tok: usize, msg: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let line = resolve.ast.line_of(&cx.p, tok)
+    cx.rep.out.push_str("error ")?
+    cx.rep.out.push_str(code)?
+    cx.rep.out.push(' ')?
+    cx.rep.out.push_str(cx.rep.path.as_str())?
+    cx.rep.out.push(':')?
+    cx.rep.out.push_u64(u64.from_usize(line))?
+    cx.rep.out.push_str(": ")?
+    cx.rep.out.push_str(msg)?
+    cx.rep.out.push('\n')?
+    cx.rep.errors = cx.rep.errors.wrapping_add(1usize)
+    Ok(())
+end borrow.cx.diag
+
+// 空の局所 (範囲外の参照の既定)。
+fn borrow.cx.empty_loc() -> borrow.cx.Loc uses [] panics never pub
+    borrow.cx.mk_loc(0usize, 0usize, 0usize, 0usize, 0usize, 0usize)
+end borrow.cx.empty_loc
+
+// 名前の範囲が src の [a, b) と同じ局所の番号 + 1 (最も内側。無ければ 0)。
+fn borrow.cx.find(cx: &borrow.cx.Cx, a: usize, b: usize) -> usize uses [] panics never pub
+    let s = resolve.ast.text(cx.src.as_slice(), a, b)
+    borrow.cx.find_text(cx, s)
+end borrow.cx.find
+
+// 名前 (文字列) で局所を引く (最も内側の番号 + 1、無ければ 0)。
+fn borrow.cx.find_text(cx: &borrow.cx.Cx, s: &str) -> usize uses [] panics never pub
+    let n = cx.dat.locs.len()
+    let mut k = n
+    while k > 0usize {
+        k = k.wrapping_sub(1usize)
+        let l = borrow.cx.loc(cx, k)
+        if resolve.ast.text(cx.src.as_slice(), l.a, l.b) == s {
+            return k.wrapping_add(1usize)
+        }
+    }
+    0usize
+end borrow.cx.find_text
+
+// 分岐の合流: acc (none なら未確定) に cur を足す。
+fn borrow.cx.join_into(cx: &borrow.cx.Cx, acc: &mut alloc.vec.Vec<usize, std.alloc.System>, cur: &alloc.vec.Vec<usize, std.alloc.System>) -> () uses [] panics never pub
+    for k in core.iter.range(0usize, acc.len()) {
+        let a = match acc.as_slice().get(k) {
+            Some(x) => *x
+            None => borrow.cx.ST_UNDEC
+        }
+        let b = match cur.as_slice().get(k) {
+            Some(x) => *x
+            None => borrow.cx.ST_UNDEC
+        }
+        let cls = borrow.cx.loc(cx, k).cl
+        borrow.base.set_usize(acc, k, borrow.cx.join_st(a, b, cls))
+    }
+end borrow.cx.join_into
+
+// 二つの分岐の状態の合流。線形値の生存と消費が食い違うときは不明にする。
+fn borrow.cx.join_st(a: usize, b: usize, cls: usize) -> usize uses [] panics never pub
+    if a == b {
+        return a
+    }
+    if a == borrow.cx.ST_UNDEC || b == borrow.cx.ST_UNDEC {
+        return borrow.cx.ST_UNDEC
+    }
+    if cls == borrow.base.LIN {
+        return borrow.cx.ST_UNDEC
+    }
+    borrow.cx.ST_MOVED
+end borrow.cx.join_st
+
+// 局所 k の写し (範囲外は既定の値)。
+fn borrow.cx.loc(cx: &borrow.cx.Cx, k: usize) -> borrow.cx.Loc uses [] panics never pub
+    match cx.dat.locs.as_slice().get(k) {
+        Some(l) => *l
+        None => borrow.cx.empty_loc()
+    }
+end borrow.cx.loc
+
+// 生存中の局所の状態を不明にする (移動したかもしれないとき)。
+fn borrow.cx.mark_undec(cx: &mut borrow.cx.Cx, idx: usize) -> () uses [] panics never pub
+    let l = borrow.cx.loc(cx, idx)
+    if l.st == borrow.cx.ST_LIVE {
+        borrow.cx.set_st(cx, idx, borrow.cx.ST_UNDEC)
+    }
+end borrow.cx.mark_undec
+
+// 局所の作り方 (宣言の直後は生存、参照情報は無し)。
+fn borrow.cx.mk_loc(a: usize, b: usize, cls: usize, mb: usize, dp: usize, fi: usize) -> borrow.cx.Loc uses [] panics never pub
+    let z = 0usize
+    borrow.cx.Loc { a: a, b: b, cl: cls, mu: mb, rf: z, pa: z, li: z, ir: z, dp: dp, fi: fi, st: z }
+end borrow.cx.mk_loc
+
+fn borrow.cx.new(p: parse.cur.P, src: alloc.vec.Vec<u8, std.alloc.System>, path: &str) -> Result<borrow.cx.Cx, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut nx = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    nx.push(0usize)?
+    let mut be = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    be.push(0usize)?
+    let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let vb = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let dat = borrow.cx.Dat { locs: vl, brs: vb, nexts: nx, bends: be, depth: 0usize }
+    let pth = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    let ob = alloc.string.String.new(std.alloc.SYSTEM)
+    let rep = borrow.cx.Rep { path: pth, out: ob, errors: 0usize, undec: 0usize }
+    let fnr = borrow.cx.FnInfo { ret_ref: 0usize, ret_life: 0usize, elide: 0usize }
+    Ok(borrow.cx.Cx { p: p, src: src, dat: dat, rep: rep, fnr: fnr })
+end borrow.cx.new
+
+// 式の根となる局所 (番号 + 1、無ければ 0)。フィールド・添字をたどり、参照の外しは根としない。
+fn borrow.cx.place_root(cx: &borrow.cx.Cx, e: usize) -> usize uses [] panics never stack 8192 pub
+    let n = parse.ast.get(&cx.p.ast, e)
+    if n.kind == parse.ast.Kind.Path {
+        let s = resolve.ast.text(cx.src.as_slice(), n.a, n.b)
+        return borrow.cx.find_text(cx, borrow.base.first_seg(s))
+    }
+    if n.kind == parse.ast.Kind.Dot || n.kind == parse.ast.Kind.Index {
+        return borrow.cx.place_root(cx, n.a)
+    }
+    0usize
+end borrow.cx.place_root
+
+// 写しの状態へ戻す (局所の数は同じ)。
+fn borrow.cx.restore(cx: &mut borrow.cx.Cx, s: &alloc.vec.Vec<usize, std.alloc.System>) -> () uses [] panics never pub
+    for k in core.iter.range(0usize, s.len()) {
+        let v = match s.as_slice().get(k) {
+            Some(x) => *x
+            None => borrow.cx.ST_UNDEC
+        }
+        borrow.cx.set_st(cx, k, v)
+    }
+end borrow.cx.restore
+
+// 局所を scope の末尾で外す。消費していない線形値は E3003。mark より後の局所と、それを借りる借用を捨てる。
+fn borrow.cx.scope_exit(cx: &mut borrow.cx.Cx, mark: usize, tok: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let n = cx.dat.locs.len()
+    for k in core.iter.range(mark, n) {
+        let l = borrow.cx.loc(cx, k)
+        if l.cl == borrow.base.LIN && l.st == borrow.cx.ST_LIVE && l.pa == 0usize {
+            borrow.cx.diag(cx, "E3003", tok, "線形値を消費せずにスコープを出る")?
+        }
+    }
+    cx.dat.locs.truncate(mark)
+    let mut keep = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for br in cx.dat.brs.as_slice().iter() {
+        if br.holder < mark && br.target < mark {
+            keep.push(*br)?
+        }
+    }
+    cx.dat.brs = keep
+    Ok(())
+end borrow.cx.scope_exit
+
+// 局所 k の寿命の情報を書く (参照の引数・ライフタイムの記録)。
+fn borrow.cx.set_ref_info(cx: &mut borrow.cx.Cx, k: usize, isref: usize, life: usize, param: usize) -> () uses [] panics never pub
+    let mut l = borrow.cx.loc(cx, k)
+    l.ir = isref
+    l.li = life
+    l.pa = param
+    match cx.dat.locs.as_mut_slice().get_mut(k) {
+        Some(x) => {
+            *x = l
+        }
+        None => core.mem.drop(0u8)
+    }
+end borrow.cx.set_ref_info
+
+// 局所 k の状態を書き換える。
+fn borrow.cx.set_st(cx: &mut borrow.cx.Cx, k: usize, st: usize) -> () uses [] panics never pub
+    match cx.dat.locs.as_mut_slice().get_mut(k) {
+        Some(l) => {
+            l.st = st
+        }
+        None => core.mem.drop(0u8)
+    }
+end borrow.cx.set_st
+
+// 局所の並び (現在の状態) の写し。分岐の前後で使う。
+fn borrow.cx.snap(cx: &borrow.cx.Cx) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for k in core.iter.range(0usize, cx.dat.locs.len()) {
+        out.push(borrow.cx.loc(cx, k).st)?
+    }
+    Ok(out)
+end borrow.cx.snap
+
+// 判断保留を 1 件数える (誤りとは数えない)。
+fn borrow.cx.undec(cx: &mut borrow.cx.Cx) -> () uses [] panics never pub
+    cx.rep.undec = cx.rep.undec.wrapping_add(1usize)
+end borrow.cx.undec

@@ -1,0 +1,9 @@
+[package]
+name = "borrow"
+version = "0.1.0"
+edition = 1
+entry = "borrow.main"
+
+[dependencies]
+parse = { path = "../parse" }
+resolve = { path = "../resolve" }
