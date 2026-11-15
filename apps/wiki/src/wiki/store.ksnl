@@ -232,6 +232,7 @@ end wiki.store.PageStore.write_atomic_str
 
 test wiki.store.PageStore.current_path.test_format
     let path = "/tmp/wiki-test-store-current"
+    core.mem.drop(wiki.remove_dir_all(path))
     let mut page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
@@ -242,49 +243,7 @@ end wiki.store.PageStore.current_path.test_format
 
 test wiki.store.PageStore.list_pages.test_empty_and_sorted
     let path = "/tmp/wiki-test-store-list-empty"
-    // 先行実行の汚染を掃除する（remove_dir_all は無いので、ファイルを消してから
-    // ページごとのサブディレクトリと pages/ 自体を削除する）。
-    let mut pages_dir = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
-    core.mem.drop(pages_dir.push_str("/pages"))
-    if std.fs.exists(pages_dir.as_str()) {
-        let entries = std.fs.read_dir(pages_dir.as_str())?
-        let mut i = 0usize
-        let n = entries.len()
-        while i < n {
-            match entries.as_slice().get(i) {
-                Some(e) => {
-                    if e.kind == std.fs.FileKind.Dir {
-                        let mut sub = alloc.string.String.new(std.alloc.SYSTEM)
-                        core.mem.drop(sub.push_str(pages_dir.as_str()))
-                        core.mem.drop(sub.push_str("/"))
-                        core.mem.drop(sub.push_str(e.name.as_str()))
-                        let sub_entries = std.fs.read_dir(sub.as_str())?
-                        let mut j = 0usize
-                        let m = sub_entries.len()
-                        while j < m {
-                            match sub_entries.as_slice().get(j) {
-                                Some(fe) => {
-                                    if fe.kind == std.fs.FileKind.File {
-                                        let mut fpath = alloc.string.String.new(std.alloc.SYSTEM)
-                                        core.mem.drop(fpath.push_str(sub.as_str()))
-                                        core.mem.drop(fpath.push_str("/"))
-                                        core.mem.drop(fpath.push_str(fe.name.as_str()))
-                                        core.mem.drop(std.fs.remove_file(fpath.as_str()))
-                                    }
-                                }
-                                None => core.mem.drop(0u8)
-                            }
-                            j = j.saturating_add(1usize)
-                        }
-                        core.mem.drop(std.fs.remove_dir(sub.as_str()))
-                    }
-                }
-                None => core.mem.drop(0u8)
-            }
-            i = i.saturating_add(1usize)
-        }
-        core.mem.drop(std.fs.remove_dir(pages_dir.as_str()))
-    }
+    core.mem.drop(wiki.remove_dir_all(path))
     let mut page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
@@ -307,6 +266,7 @@ end wiki.store.PageStore.list_pages.test_empty_and_sorted
 
 test wiki.store.PageStore.load_latest.test_nonexistent_page
     let path = "/tmp/wiki-test-store-nonexistent-page"
+    core.mem.drop(wiki.remove_dir_all(path))
     let mut page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
@@ -317,6 +277,7 @@ end wiki.store.PageStore.load_latest.test_nonexistent_page
 
 test wiki.store.PageStore.load_version.test_nonexistent_version
     let path = "/tmp/wiki-test-store-nonexistent-ver"
+    core.mem.drop(wiki.remove_dir_all(path))
     let mut page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
@@ -328,6 +289,7 @@ end wiki.store.PageStore.load_version.test_nonexistent_version
 
 test wiki.store.PageStore.new.test_creates_pages_dir
     let path = "/tmp/wiki-test-store-new-dir"
+    core.mem.drop(wiki.remove_dir_all(path))
     match wiki.store.PageStore.new(path) {
         Ok(_s) => {
             let mut pages_path = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
@@ -340,6 +302,7 @@ end wiki.store.PageStore.new.test_creates_pages_dir
 
 test wiki.store.PageStore.next_version.test_after_versions
     let path = "/tmp/wiki-test-store-next-after"
+    core.mem.drop(wiki.remove_dir_all(path))
     let mut page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
@@ -352,6 +315,7 @@ end wiki.store.PageStore.next_version.test_after_versions
 
 test wiki.store.PageStore.next_version.test_empty
     let path = "/tmp/wiki-test-store-next-empty"
+    core.mem.drop(wiki.remove_dir_all(path))
     let mut page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
@@ -362,6 +326,7 @@ end wiki.store.PageStore.next_version.test_empty
 
 test wiki.store.PageStore.page_exists.test_cases
     let path = "/tmp/wiki-test-store-exists"
+    core.mem.drop(wiki.remove_dir_all(path))
     let mut page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
@@ -373,6 +338,7 @@ end wiki.store.PageStore.page_exists.test_cases
 
 test wiki.store.PageStore.page_path.test_format
     let path = "/tmp/wiki-test-store-pagepath"
+    core.mem.drop(wiki.remove_dir_all(path))
     let mut page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
@@ -383,6 +349,7 @@ end wiki.store.PageStore.page_path.test_format
 
 test wiki.store.PageStore.page_versions.test_empty
     let path = "/tmp/wiki-test-store-versions-empty"
+    core.mem.drop(wiki.remove_dir_all(path))
     let mut page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")
@@ -424,6 +391,7 @@ test wiki.store.PageStore.sanitize_name.test_unicode_and_control
 end wiki.store.PageStore.sanitize_name.test_unicode_and_control
 
 test wiki.store.PageStore.save_version.test_hello_persist_router
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-router"))
     let mut ps = wiki.store.PageStore.new("/tmp/wiki-test-router")?
     core.mem.drop(wiki.store.PageStore.save_version(&mut ps, "Hello", "Hello world\n", 1u64)?)
     let ex = wiki.store.PageStore.page_exists(&ps, "Hello")
@@ -437,6 +405,7 @@ end wiki.store.PageStore.save_version.test_hello_persist_router
 
 test wiki.store.PageStore.save_version.test_round_trip
     let path = "/tmp/wiki-test-store-round-trip"
+    core.mem.drop(wiki.remove_dir_all(path))
     let mut page_store = match wiki.store.PageStore.new(path) {
         Ok(s) => s
         Err(_e) => core.panic.panic("new failed")

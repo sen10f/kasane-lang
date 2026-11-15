@@ -161,6 +161,7 @@ fn wiki.link.extract_wiki_links(text: &str) -> Result<alloc.vec.Vec<alloc.string
 end wiki.link.extract_wiki_links
 
 test wiki.link.backlinks_for.test_cases
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks"))
     let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks")?
     core.mem.drop(store.PageStore.save_version(&mut page_store, "A", "content [[B]] here\n", 1u64)?)
     let b_page = "content [[A]] and [[C]]\n"
@@ -174,6 +175,7 @@ test wiki.link.backlinks_for.test_cases
 end wiki.link.backlinks_for.test_cases
 
 test wiki.link.backlinks_for.test_multiple_backlinks
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks-multi"))
     let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks-multi")?
     core.mem.drop(store.PageStore.save_version(&mut page_store, "C", "link to [[A]] and [[B]]\n", 1u64)?)
     core.mem.drop(store.PageStore.save_version(&mut page_store, "D", "also [[A]]\n", 1u64)?)
@@ -182,6 +184,7 @@ test wiki.link.backlinks_for.test_multiple_backlinks
 end wiki.link.backlinks_for.test_multiple_backlinks
 
 test wiki.link.backlinks_for.test_no_backlinks
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks-none"))
     let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks-none")?
     core.mem.drop(store.PageStore.save_version(&mut page_store, "A", "no links here\n", 1u64)?)
     core.mem.drop(store.PageStore.save_version(&mut page_store, "B", "nothing\n", 1u64)?)
@@ -190,6 +193,7 @@ test wiki.link.backlinks_for.test_no_backlinks
 end wiki.link.backlinks_for.test_no_backlinks
 
 test wiki.link.backlinks_for.test_self_link_excluded
+    core.mem.drop(wiki.remove_dir_all("/tmp/wiki-test-backlinks-self"))
     let mut page_store = store.PageStore.new("/tmp/wiki-test-backlinks-self")?
     core.mem.drop(store.PageStore.save_version(&mut page_store, "A", "link to [[A]] myself\n", 1u64)?)
     let links = wiki.link.backlinks_for(&mut page_store, "A")?
