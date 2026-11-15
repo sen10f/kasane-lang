@@ -19,7 +19,7 @@ use crate::kir::{size_of as ty_size, Cc, Func, Op, Pay, Pointee, Term, Ty, VId};
 use crate::parser::V;
 use crate::types::Ty as Src;
 
-use super::map_lower::Fb;
+use super::fb::Fb;
 use super::{coll, Lw, LR};
 
 /// 表の大域領域の名前。

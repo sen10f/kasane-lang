@@ -45,7 +45,7 @@ fn trait_side_key(t: &Src) -> Option<String> {
 }
 
 /// 受け手の置き場所 (呼び出しの形ごと)。
-pub(super) enum Place<'v> {
+pub(crate) enum Place<'v> {
     /// 局所の名前 `x` か、フィールドの経路 `x.f.g` (`segs` の先頭が局所)。
     Path(Vec<String>),
     /// 式 (`*r` は参照をたどる)。
@@ -215,6 +215,15 @@ impl<'a> Lw<'a> {
         let line = nline(e);
         let p = self.p;
         let cd = &p.defs[di];
+        // `m.insert(k.as_str(), v)` (キーが `String` の借用): マップは借用を持ち続けるので、同じ関数で `k` を変えると解放後の読みになる。
+        // 借用の寿命は検査が見ないので、ここで拒む (`ksn check` は通るが、KIR は下ろさない)。
+        if matches!(cd.name.as_str(), "alloc.collections.HashMap.insert" | "alloc.collections.BtreeMap.insert") {
+            if let (Some(root), Some(body)) = (args.first().and_then(borrowed_root), self.def.body.as_ref()) {
+                if mutates_later(body, &root) {
+                    return self.err(line, format!("元の String が関数の中で変更される: {} の借用をマップのキーにしている (段階 1 の対象外)", root));
+                }
+            }
+        }
         if cd.params.len() != args.len() + 1 {
             return self.err(line, format!("メソッド {} の引数の個数が違う", cd.name));
         }
@@ -618,5 +627,49 @@ impl<'a> Lw<'a> {
         self.cur = Some(exit);
         // 新しい Vec/String 集成体を作る
         Ok(self.emit(fty, Op::Make { variant: None, fields: vec![new_ptr, len, cap] }))
+    }
+}
+
+/// 借用の式の根の局所 (`k.as_str()` と `&k` の `k`)。それ以外は `None`。
+fn borrowed_root(e: &V) -> Option<String> {
+    match nname(e) {
+        "MCall" if st(&nf(e)[1]) == "as_str" => path1(&nf(e)[0]),
+        // `k.as_str()` は局所の受け手では `Call` の経路 `[k, as_str]` で書かれる。
+        "Call" if nname(&nf(e)[0]) == "Path" && crate::check::strs(&nf(&nf(e)[0])[0]).len() == 2 && crate::check::strs(&nf(&nf(e)[0])[0])[1] == "as_str" => {
+            crate::check::strs(&nf(&nf(e)[0])[0]).first().cloned()
+        }
+        "Unary" if st(&nf(e)[0]) == "&" => path1(&nf(e)[1]),
+        _ => None,
+    }
+}
+
+/// 一つの名前だけの経路 (`k`) なら、その名前。
+fn path1(e: &V) -> Option<String> {
+    if nname(e) != "Path" {
+        return None;
+    }
+    let segs = crate::check::strs(&nf(e)[0]);
+    (segs.len() == 1).then(|| segs[0].clone())
+}
+
+/// 本体の中で、局所 `root` を変える呼び出し (`root.push_str(..)` などの変更のメソッド) があるか。
+fn mutates_later(v: &V, root: &str) -> bool {
+    const MUT: &[&str] = &["push_str", "push", "push_u64", "push_i64", "clear", "truncate", "insert", "remove", "pop", "swap_remove"];
+    match v {
+        V::Node(kind, fs, _, _) => {
+            if *kind == "MCall" && fs.len() >= 2 && MUT.contains(&st(&fs[1]).as_str()) && path1(&fs[0]).as_deref() == Some(root) {
+                return true;
+            }
+            // `k.push_str(..)` は `Call` の経路 `[k, push_str]` で書かれる (局所の受け手)。
+            if *kind == "Call" && !fs.is_empty() && nname(&fs[0]) == "Path" {
+                let segs = crate::check::strs(&nf(&fs[0])[0]);
+                if segs.len() == 2 && segs[0] == root && MUT.contains(&segs[1].as_str()) {
+                    return true;
+                }
+            }
+            fs.iter().any(|x| mutates_later(x, root))
+        }
+        V::L(xs) => xs.iter().any(|x| mutates_later(x, root)),
+        _ => false,
     }
 }

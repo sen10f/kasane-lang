@@ -409,6 +409,51 @@ fn clear(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option
 pub(super) fn match_get_mut(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     let f = nf(e);
     let scrut = &f[0];
+    // 受け手が `HashMap` / `BtreeMap` (Kasane 版の集成体) なら、`match` の特別扱いは使わず、メソッドの呼び出しとして下ろす。
+    // `m.get_mut(k)` の形 (`Call` の経路 `m.get_mut`) も同じ: 局所 `m` が `HashMap` (Kasane 版) なら特別扱いにしない。
+    if nname(scrut) == "Call" {
+        let g = nf(scrut);
+        if nname(&g[0]) == "Path" {
+            let segs = strs(&nf(&g[0])[0]);
+            if segs.len() == 2 {
+                if let Some(s) = lw.lookup(&segs[0]) {
+                    if let Ty::Agg(i) | Ty::Ref(_, Pointee::Agg(i)) = lw.slots[s].1 {
+                        if lw.aggs.borrow().defs[i as usize].name.starts_with("alloc.collections.") {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if nname(scrut) == "MCall" {
+        let g = nf(scrut);
+        // 局所の型 (集成体の名前) からも決める: 型引数の推論が取れない `let` でも、`HashMap` の局所は `get_mut` の特別扱いにしない。
+        if let Some((s, names)) = chain_of(lw, &g[0]) {
+            if names.is_empty() {
+                let t = lw.slots[s].1;
+                let ai = match t {
+                    Ty::Agg(i) | Ty::Ref(_, Pointee::Agg(i)) => Some(i),
+                    _ => None,
+                };
+                if let Some(i) = ai {
+                    let n = lw.aggs.borrow().defs[i as usize].name.clone();
+                    if n.starts_with("alloc.collections.") {
+                        return None;
+                    }
+                }
+            }
+        }
+        if let Ok(t) = lw.src_ty(&g[0]) {
+            let base = match &t {
+                Src::Ref(_, i) => (**i).clone(),
+                t => t.clone(),
+            };
+            if matches!(&base, Src::Named(n, _) if n == "alloc.collections.HashMap" || n == "alloc.collections.BtreeMap") {
+                return None;
+            }
+        }
+    }
     // 受け手と添字の式
     let (recv, idx): ((usize, Vec<String>), &V) = match nname(scrut) {
         "MCall" => {
@@ -536,8 +581,6 @@ fn get_mut_match(lw: &mut Lw, e: &V, recv: (usize, Vec<String>), idx: &V, arms: 
                 };
                 (Seq::Fat(fat_val), t)
             }
-            // HashMap の get_mut は `Option<&mut V>` を持てないので未対応 (設計_KIR.md 16 章)。
-            Some(Kind::Map(_)) => return lw.err(line, "HashMap::get_mut は段階 1 の対象外"),
             _ => return lw.err(line, "get_mut の対象は要素型の分かる Vec・スライスだけ段階 1 の対象"),
         }
     } else {

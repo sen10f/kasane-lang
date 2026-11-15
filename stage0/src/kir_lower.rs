@@ -69,11 +69,10 @@ mod drop_lower;
 // コレクション・文字列・クロージャの下ろし (子モジュール。`Lw` の非公開の項目を使う)。
 #[path = "kir_lower_iter.rs"]
 mod iter_lower;
-#[path = "kir_lower_map.rs"]
-mod map_lower;
-// 文字列のキーの `BtreeMap` (`BtreeMap<String, V>` / `BtreeMap<&str, V>`)。
-#[path = "kir_lower_mapstr.rs"]
-mod mapstr_lower;
+#[path = "kir_lower_fb.rs"]
+mod fb;
+#[path = "kir_lower_strord.rs"]
+mod strord;
 #[path = "kir_lower_coll.rs"]
 mod coll;
 #[path = "kir_lower_for.rs"]
@@ -538,7 +537,7 @@ impl<'a> Lw<'a> {
                 return Err(format!("! を返す関数 {} の本体が戻りうる (発散しない形は段階 1 の対象外)", d.name));
             }
             if self.vty(v) != ret {
-                return Err("本体の値の型が戻り値の型と合わない".into());
+                return Err(format!("本体の値の型が戻り値の型と合わない ({} / {})", self.name_ty_dbg(self.vty(v)), self.name_ty_dbg(ret)));
             }
             coll::drop_from(&mut self, 0);
             self.terminate(Term::Ret(v));
@@ -818,7 +817,7 @@ impl<'a> Lw<'a> {
         }
         match resolved.map(|r| r.target) {
             Some(Tgt::Const(ci)) => self.const_val(ci, e),
-            Some(Tgt::Variant(en, vn)) => self.variant_value(&en, &vn, line),
+            Some(Tgt::Variant(en, vn)) => self.variant_value(&en, &vn, Some(e), line),
             // 関数の項目を値として使う: クロージャと同じ `unit` の印 (呼び先は鍵で決まる。種類は `coll::fn_item_kind`)。
             Some(Tgt::Fn(_)) if coll::fn_item_kind(self, e).is_some() => Ok(self.unit()),
             _ => self.err(line, format!("名前 {} は段階 1 の対象外", segs.join("."))),
@@ -1032,6 +1031,35 @@ impl<'a> Lw<'a> {
         }
     }
 
+    /// `x.m(..)` / `x.f.m(..)` の受け手の文字列の種類 (`&str` / `String`)。局所の種類、または欄の型から決める。
+    fn str_kind_of_path(&self, s: usize, segs: &[String]) -> Option<coll::Kind> {
+        if segs.len() == 2 {
+            if let Some(k) = self.coll.kinds.get(&s) {
+                if matches!(k, coll::Kind::String | coll::Kind::Str) {
+                    return Some(k.clone());
+                }
+            }
+            // 種類を結び付けていない局所: `&str` の値 (fat) か、`String` のヘッダ (集成体 `vec` の値・借用の番地)。
+            let t = self.slots[s].1;
+            let plain_vec = |n: &str| n == "vec";
+            return match t {
+                t if coll::is_str_value(self, t) => Some(coll::Kind::Str),
+                Ty::Agg(i) | Ty::Ref(_, kir::Pointee::Agg(i)) if plain_vec(&self.aggs.borrow().defs[i as usize].name) => Some(coll::Kind::String),
+                Ty::Ptr => Some(coll::Kind::String),
+                _ => None,
+            };
+        }
+        let mut t = own::field_src(self, s, &segs[1..segs.len() - 1])?;
+        while let Src::Ref(_, i) = t {
+            t = *i;
+        }
+        match t {
+            Src::Prim(p) if p == "str" => Some(coll::Kind::Str),
+            Src::Named(n, _) if n == "alloc.string.String" => Some(coll::Kind::String),
+            _ => None,
+        }
+    }
+
     fn call(&mut self, e: &V) -> LR<Option<VId>> {
         if let Some(r) = self.const_str_call(e) {
             return r;
@@ -1090,6 +1118,16 @@ impl<'a> Lw<'a> {
                 return self.err(line, "std.thread.spawn は段階 1 の対象外");
             };
             return r;
+        }
+        // `x.m(..)` (x は利用者の集成体の局所変数で、`m` がそのメソッド): 受け手は局所の番地 (Kasane 版の HashMap など)。
+        if segs.len() == 2 {
+            if let Some(s) = self.lookup(&segs[0]) {
+                let rt = self.slots[s].1;
+                if let Some(di) = self.method_of_ty(rt, &segs[1]) {
+                    let args = items(&f[1]).to_vec();
+                    return self.call_method(e, di, method_lower::Place::Path(vec![segs[0].clone()]), &args);
+                }
+            }
         }
         // `x.f.v.len()`: 構造体のフィールドの Vec / String の長さ (x は参照またはスタックスロットの構造体)
         if segs.len() >= 3 && matches!(segs[segs.len() - 1].as_str(), "len" | "is_empty") && args.is_empty() {
@@ -1166,6 +1204,17 @@ impl<'a> Lw<'a> {
                     let Some(b) = self.expr(&args[0])? else { return Ok(None) };
                     return self.int_cmp_named(&meth, recv, b, line);
                 }
+                if meth == "hash" && args.len() == 1 && rt.is_int() {
+                    let Some(st) = self.expr(&args[0])? else { return Ok(None) };
+                    return Ok(Some(self.int_hash(recv, st, line)?));
+                }
+                // `&str` の値 (fat、または `&&str` の番地) の `eq` / `hash`: 文字列の下ろし。
+                if matches!(meth.as_str(), "eq" | "hash" | "cmp" | "partial_cmp") {
+                    if let Some(k) = self.str_kind_of_path(s, &segs) {
+                        let args = items(&f[1]).to_vec();
+                        return coll::method_on(self, e, line, None, k, recv, &meth, &args);
+                    }
+                }
                 let aop = match meth.as_str() {
                     "wrapping_add" => Aop::Add,
                     "wrapping_sub" => Aop::Sub,
@@ -1225,15 +1274,28 @@ impl<'a> Lw<'a> {
             let (en, vn) = (en.clone(), vn.clone());
             return self.variant_call(e, &en, &vn);
         }
+        // `HashMap::new(a)` / `BtreeMap::new(a)` (組み込みの宣言だけ) は、Kasane 版の `new_empty` (本体あり) を呼ぶ。
+        if matches!(callee_name.as_str(), "alloc.collections.HashMap.new" | "alloc.collections.BtreeMap.new") {
+            let alt: Vec<String> = format!("{}_empty", callee_name).split('.').map(String::from).collect();
+            let Some(Tgt::Fn(di)) = self.p.resolve(&alt, &self.def.file).map(|r| r.target) else {
+                return self.err(line, format!("{} の Kasane 版がない", callee_name));
+            };
+            return self.call_def(e, di, args, line);
+        }
         let Some(Tgt::Fn(di)) = target else {
             return self.err(line, format!("呼び出し {} は段階 1 の対象外", segs.join(".")));
         };
+        self.call_def(e, di, args, line)
+    }
+
+    /// 関数の定義 `di` への呼び出し (総称関数は型引数を推論して単相インスタンスにする)。
+    fn call_def(&mut self, e: &V, di: usize, args: &[V], line: usize) -> LR<Option<VId>> {
         let cd = &self.p.defs[di];
         if cd.kw != "fn" || cd.body.is_none() {
             return self.err(line, format!("呼び先 {} は段階 1 の対象外 (メソッド・本体なし)", cd.name));
         }
         let (name, tmap) = if cd.generics.iter().any(|g| g.0 != "life") {
-            let tm = self.mono_targs(e, di, args, 0, &f[2], None)?;
+            let tm = self.mono_targs(e, di, args, 0, &nf(e)[2], None)?;
             (self.mono_instance(di, &tm, line)?, tm)
         } else {
             (cd.name.clone(), HashMap::new())
@@ -1699,6 +1761,15 @@ impl<'a> Lw<'a> {
         Ok(None)
     }
 
+    fn name_ty_dbg(&self, t: Ty) -> String {
+        let a = self.aggs.borrow();
+        match t {
+            Ty::Agg(i) => a.defs[i as usize].name.clone(),
+            Ty::Opt(crate::kir::Pay::Agg(i)) => format!("Option<{}>", a.defs[i as usize].name),
+            _ => crate::kir::fmt_ty(t),
+        }
+    }
+
     fn ret_(&mut self, e: &V) -> LR<Option<VId>> {
         let f = nf(e);
         let line = nline(e);
@@ -1711,7 +1782,7 @@ impl<'a> Lw<'a> {
             }
         };
         if self.vty(v) != self.ret {
-            return self.err(line, "return の値の型が戻り値の型と違う");
+            return self.err(line, format!("return の値の型が戻り値の型と違う ({} / {})", self.name_ty_dbg(self.vty(v)), self.name_ty_dbg(self.ret)));
         }
         coll::drop_from(self, 0);
         self.terminate(Term::Ret(v));

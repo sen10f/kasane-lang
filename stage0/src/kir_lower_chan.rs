@@ -374,7 +374,7 @@ fn recv(lw: &mut Lw, e: &V, st: VId, elem: Ty, line: usize) -> LR<Option<VId>> {
 
 /// 補助の関数 (`ksn.chan.grow` / `ksn.chan.free`) を、呼ばれていれば足す。
 pub(super) fn finish(ok: &mut Vec<(crate::kir::Func, std::collections::BTreeSet<String>)>) {
-    use super::map_lower::Fb;
+    use super::fb::Fb;
     use std::collections::BTreeSet;
     let called = |n: &str| ok.iter().any(|(_, cs)| cs.contains(n));
     let (want_grow, want_free) = (called(GROW), called(FREE));

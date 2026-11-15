@@ -88,12 +88,18 @@ fn addr_names(v: &V, out: &mut BTreeSet<String>) {
 /// 型 `&T` / `&mut T` を段階 1 の型へ写す。指す先がスカラーのときだけ (集成体への参照は `AggTab::lower_ty`)。
 pub(super) fn conv_ref(m: bool, inner: &Src) -> Option<Ty> {
     match inner {
+        Src::Prim(s) if s == "char" => Some(Ty::Ref(m, Pointee::of(Ty::U32)?)),
         Src::Prim(s) => Ty::parse(s).and_then(Pointee::of).map(|p| Ty::Ref(m, p)),
         _ => None,
     }
 }
 
 impl<'a> Lw<'a> {
+    /// 名前 `name` の局所をスタックスロットに置く印 (`bind_let` より前に付ける。反復子のように、毎回番地で触る局所)。
+    pub(super) fn mark_addr(&mut self, name: &str) {
+        self.rf.addr.insert(name.to_string());
+    }
+
     /// 局所変数 (let と引数) を束縛する。アドレスを取られる変数はスタックスロットに置く。
     pub(super) fn bind_let(&mut self, name: &str, v: VId, t: Ty) {
         match Pointee::of(t) {
@@ -254,7 +260,7 @@ impl<'a> Lw<'a> {
             return self.expr(&nf(operand)[1]);
         }
         let Ty::Ref(m, p) = self.ty_of(e)? else {
-            return self.err(line, "参照の型が参照でない");
+            return self.err(line, format!("参照の型が参照でない ({} / {:?})", crate::kir::fmt_ty(self.ty_of(e).unwrap_or(Ty::Unit)), self.src_ty(e).ok().map(|t| t.show())));
         };
         let rt = Ty::Ref(m, p);
         // 1. 局所変数: 名前がスタックスロットに置かれていれば、そのアドレス
