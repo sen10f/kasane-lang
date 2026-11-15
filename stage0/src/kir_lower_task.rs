@@ -113,6 +113,7 @@ pub(super) fn path_call(lw: &mut Lw, segs: &[String], args: &[V], line: usize) -
         ["std", "task", "block_on"] => Some(block_on(lw, args, line)),
         ["std", "task", "spawn_local"] => Some(spawn_local(lw, args, line)),
         ["std", "task", "yield_now"] => Some(yield_now(lw, args, line)),
+        ["std", "task", "await_js"] => Some(await_js(lw, args, line)),
         _ => None,
     }
 }
@@ -171,6 +172,39 @@ fn yield_now(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
     lw.callees.insert(ks::YIELD.to_string());
     lw.emit(Ty::Unit, Op::Call { callee: ks::YIELD.to_string(), args: vec![] });
     Ok(Some(lw.unit()))
+}
+
+/// 型が `std.task.Task<T>` か (集成体の名前で決める)。
+pub(super) fn is_task_ty(lw: &Lw, t: Ty) -> bool {
+    let Ty::Agg(ai) = t else { return false };
+    lw.aggs.borrow().defs[ai as usize].name.starts_with("std.task.Task<")
+}
+
+/// `h.cancel()` (`Task<T>` の受け手、仕様 5.6 の第 4 段): 枠を解放して取り消す。対象外なら `None`。
+/// 取り消しは中断点ではない (呼び出し元の `uses` は要らない)。`Task<T>` は `{id}` の集成体なので、番号を取り出して渡す。
+pub(super) fn cancel_call(lw: &mut Lw, recv: VId, recv_ty: Ty, line: usize) -> Option<LR<Option<VId>>> {
+    let _ = line;
+    if !is_task_ty(lw, recv_ty) {
+        return None;
+    }
+    mark_used();
+    let id = lw.emit(Ty::Usize, Op::Field { a: recv, off: 0 });
+    lw.callees.insert(ks::CANCEL.to_string());
+    lw.emit(Ty::Unit, Op::Call { callee: ks::CANCEL.to_string(), args: vec![id] });
+    Some(Ok(Some(lw.unit())))
+}
+
+/// `std.task.await_js(h)` (仕様 5.6 の第 5 段): JS の Promise の完了を待つ中断点。結果は JS が `ksn_resume(h, 値)` で渡した `i32`。
+/// wasm32 だけで使える (JS の host がない木走査とネイティブでは使えない)。
+fn await_js(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
+    let [arg] = args else { return lw.err(line, "std.task.await_js の引数の個数が違う") };
+    if crate::ptrwidth::bits() != 32 {
+        return lw.err(line, "std.task.await_js は wasm32 のビルドだけで使える (JS の完了を待つ。E9040)");
+    }
+    let Some(h) = lw.expr(arg)? else { return Ok(None) };
+    mark_used();
+    lw.callees.insert(ks::AWAIT.to_string());
+    Ok(Some(lw.emit(Ty::I32, Op::Call { callee: ks::AWAIT.to_string(), args: vec![h] })))
 }
 
 /// `h.join_task()` (`Task<T>` の受け手): 中断点 (完了まで待つ) の後、結果を取り出す。対象外なら `None`。

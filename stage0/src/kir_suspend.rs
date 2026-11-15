@@ -32,6 +32,12 @@ const RES: u32 = 8;
 /// 葉の中断点 (`std.task.yield_now` と `Task.join_task` の待ち)。枠の形は `EXEC_TEXT` が書く。
 pub const YIELD: &str = "ksn.task.yield";
 pub const WAIT: &str = "ksn.task.wait";
+/// `Task<T>.cancel` (取り消し。枠を解放して、状態を取り消しにする)。
+pub const CANCEL: &str = "ksn.task.cancel";
+/// `std.task.await_js` (JS の完了を待つ中断、仕様 5.6 の第 5 段。葉。`ksn_resume` が結果を入れて再開する)。
+pub const AWAIT: &str = "ksn.task.await";
+/// 入口の枠の置き場 (大域のバイト列、16 バイト): `[0]` 待っている枠、`[8]` 待ちの有無 (u32)。JS の完了を待つ入口が使う。
+pub const WRAP_PEND: &str = "ksn.wrap.pend";
 /// 実行器の入口 (`block_on` の本体) と、生成 (`spawn_local`) と、後始末。
 pub const RUN: &str = "ksn.task.run";
 pub const SPAWN: &str = "ksn.task.spawn";
@@ -408,11 +414,14 @@ fn remap(t: &Term, first: &[usize]) -> Term {
     }
 }
 
-/// 関数 1 つぶんの変換の結果: 元の鍵の関数 (中断するときは包み)、`.new`、`.poll`。
+/// 関数 1 つぶんの変換の結果: 元の鍵の関数 (中断するときは包み)、`.new`、`.poll`、再開 `.resume` (待っている枠を進める)、
+/// 待ちの有無 `.pending`。`resume` と `pending` は、入口が JS の完了を待つとき (`ksn_resume`) に使う。
 pub struct Parts {
     pub wrapper: Func,
     pub new: Func,
     pub poll: Func,
+    pub resume: Func,
+    pub pending: Func,
 }
 
 /// 関数 `f` の枠の形 (`new` / `poll` / 包み) を作る。`susp` は中断しうる関数の鍵 (葉を含む)。
@@ -687,6 +696,27 @@ pub fn lower_func(f: &Func, aggs: &[AggDef], boxes: &[(Ty, Ty)], susp: &HashSet<
         blocks: cv.blocks,
     };
     // 元の鍵の関数: 枠を作って、一度だけ進め、結果を取り出して解放する (中断しない実行の形)。
+    // 待ちが残った (JS の完了を待つ) ときは、枠を `WRAP_PEND` に置いて戻る (結果は読めない。`pending` で確かめてから使う)。
+    // 再開 `resume` は、置いた枠を進めて、同じ形で結果を返す。
+    let fin = |g: &mut Gen, ret: Ty| -> Result<Vec<Block>, String> {
+        let mut b1 = vec![];
+        let fpd = g.fresh(Ty::Ptr);
+        let res = get(g, &mut b1, fpd, RES, ret)?;
+        b1.push(Inst { dst: g.fresh(Ty::Unit), ty: Ty::Unit, op: Op::HeapFree(fpd) });
+        let gb = g.inst(&mut b1, Ty::Ptr, Op::GlobalBytes { name: WRAP_PEND.into(), size: 16 });
+        let z = g.konst(&mut b1, Ty::U32, 0);
+        b1.push(Inst { dst: g.fresh(Ty::Unit), ty: Ty::Unit, op: Op::MemStore { ty: Ty::U32, p: gb, off: 8, v: z } });
+        let mut b2 = vec![];
+        let fpp = g.fresh(Ty::Ptr);
+        let res2 = get(g, &mut b2, fpp, RES, ret)?;
+        let gb2 = g.inst(&mut b2, Ty::Ptr, Op::GlobalBytes { name: WRAP_PEND.into(), size: 16 });
+        b2.push(Inst { dst: g.fresh(Ty::Unit), ty: Ty::Unit, op: Op::MemStore { ty: Ty::Ptr, p: gb2, off: 0, v: fpp } });
+        let one = g.konst(&mut b2, Ty::U32, 1);
+        b2.push(Inst { dst: g.fresh(Ty::Unit), ty: Ty::Unit, op: Op::MemStore { ty: Ty::U32, p: gb2, off: 8, v: one } });
+        let _ = res2;
+        Ok(vec![Block { params: vec![(fpd, Ty::Ptr)], insts: b1, term: Term::Ret(res) }, Block { params: vec![(fpp, Ty::Ptr)], insts: b2, term: Term::Ret(res2) }])
+    };
+    let blocks_after = fin(&mut g, ret).map_err(err)?;
     let wrapper = {
         let params = f.params().to_vec();
         let mut b0 = vec![];
@@ -694,26 +724,57 @@ pub fn lower_func(f: &Func, aggs: &[AggDef], boxes: &[(Ty, Ty)], susp: &HashSet<
         let okw = g.fresh(Ty::Bool);
         b0.push(Inst { dst: fpw, ty: Ty::Ptr, op: Op::Call { callee: format!("{}.new", f.key), args: params.iter().map(|p| p.0).collect() } });
         b0.push(Inst { dst: okw, ty: Ty::Bool, op: Op::Call { callee: format!("{}.poll", f.key), args: vec![fpw] } });
-        let mut b1 = vec![];
-        let fpd = g.fresh(Ty::Ptr);
-        let res = get(&mut g, &mut b1, fpd, RES, ret).map_err(err)?;
-        b1.push(Inst { dst: g.fresh(Ty::Unit), ty: Ty::Unit, op: Op::HeapFree(fpd) });
+        let mut blocks = vec![Block { params, insts: b0, term: Term::BrIf(okw, (1, vec![fpw]), (2, vec![fpw])) }];
+        blocks.extend(blocks_after.clone());
         Func {
             fqn: f.fqn.clone(),
             key: f.key.clone(),
-            uses,
+            uses: uses.clone(),
             may_panic: f.may_panic,
             stack: f.stack,
             ret,
             link: None,
-            blocks: vec![
-                Block { params, insts: b0, term: Term::BrIf(okw, (1, vec![fpw]), (2, vec![])) },
-                Block { params: vec![(fpd, Ty::Ptr)], insts: b1, term: Term::Ret(res) },
-                Block { params: vec![], insts: vec![], term: Term::Unreachable },
-            ],
+            blocks,
         }
     };
-    Ok(Parts { wrapper, new: new_fn, poll: poll_fn })
+    // 再開: 大域に置いた枠を進める (`ksn_resume` が使う)。
+    let resume_fn = {
+        let mut ins = vec![];
+        let gb = g.inst(&mut ins, Ty::Ptr, Op::GlobalBytes { name: WRAP_PEND.into(), size: 16 });
+        let fpr = g.inst(&mut ins, Ty::Ptr, Op::MemLoad { p: gb, off: 0 });
+        let okr = g.inst(&mut ins, Ty::Bool, Op::Call { callee: format!("{}.poll", f.key), args: vec![fpr] });
+        let mut blocks = vec![Block { params: vec![], insts: ins, term: Term::BrIf(okr, (1, vec![fpr]), (2, vec![fpr])) }];
+        blocks.extend(blocks_after.clone());
+        Func {
+            fqn: format!("{}.resume", f.fqn),
+            key: format!("{}.resume", f.key),
+            uses: uses.clone(),
+            may_panic: f.may_panic,
+            stack: None,
+            ret,
+            link: None,
+            blocks,
+        }
+    };
+    // 待ちの有無: `WRAP_PEND` の印 (待ちの枠を置いたとき 1)。
+    let pending_fn = {
+        let mut ins = vec![];
+        let gb = g.inst(&mut ins, Ty::Ptr, Op::GlobalBytes { name: WRAP_PEND.into(), size: 16 });
+        let fl = g.inst(&mut ins, Ty::U32, Op::MemLoad { p: gb, off: 8 });
+        let z = g.konst(&mut ins, Ty::U32, 0);
+        let r = g.inst(&mut ins, Ty::Bool, Op::Cmp { cc: Cc::Ne, ty: Ty::U32, a: fl, b: z });
+        Func {
+            fqn: format!("{}.pending", f.fqn),
+            key: format!("{}.pending", f.key),
+            uses: vec![],
+            may_panic: false,
+            stack: None,
+            ret: Ty::Bool,
+            link: None,
+            blocks: vec![Block { params: vec![], insts: ins, term: Term::Ret(r) }],
+        }
+    };
+    Ok(Parts { wrapper, new: new_fn, poll: poll_fn, resume: resume_fn, pending: pending_fn })
 }
 
 /// `subjects` (鍵と、タスクの番号) を枠の形にする。`tasks` の順 (番号) は `DISPATCH` の表 (`exec_funcs`) と合わせる。
@@ -768,6 +829,8 @@ pub fn transform(m: &mut Module, tasks: &[String]) -> Vec<(String, String)> {
             Ok(p) => {
                 if is_susp {
                     out.push(p.wrapper);
+                    out.push(p.resume);
+                    out.push(p.pending);
                 } else {
                     out.push(f);
                 }

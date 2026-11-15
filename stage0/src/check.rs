@@ -63,6 +63,35 @@ pub(crate) fn st(v: &V) -> String {
 pub(crate) fn is_nil(v: &V) -> bool {
     matches!(v, V::Nil)
 }
+
+/// 取り消せないタスクを取り消したときの E4022 の文面 (木走査・ネイティブの検査で同じ文面)。
+pub(crate) fn cancel_msg() -> String {
+    "cannot cancel this task: its frame may hold a value that needs release (a linear or owning value, or a value whose type is not known); cancel only a handle bound by `let t = std.task.spawn_local(move closure)` whose closure holds only scalar values and calls no user function".to_string()
+}
+
+/// 取り消せるタスクの枠に持ってよい型 (仕様 5.6 の第 4 段): 数・`bool`・`char`・単位・参照、と `std.task.Task` (番号だけの値)。
+/// 解放の要る値 (所有する `Vec`・`String`・線形の型など) と、型が決まらない値 (`Nil`) は含まない。
+pub(crate) fn frame_scalar(t: &V) -> bool {
+    if is_nil(t) {
+        return false;
+    }
+    match tag(t).as_str() {
+        "unit" | "ref" => true,
+        // 単位型は要素の空なタプルとして表される。タプルは要素がすべて枠に置けるときだけ。
+        "tuple" => items(tel(t, 1)).iter().all(frame_scalar),
+        "prim" => matches!(
+            st(tel(t, 1)).as_str(),
+            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "f32" | "f64" | "bool" | "char"
+        ),
+        "named" => st(tel(t, 1)) == "std.task.Task",
+        _ => false,
+    }
+}
+
+/// 型が名前の付いた型 `name` か (型引数は問わない)。
+pub(crate) fn is_named_ty(t: &V, name: &str) -> bool {
+    !is_nil(t) && tag(t) == "named" && st(tel(t, 1)) == name
+}
 /// 型の値の構造的な等しさ (`V` は `PartialEq` を持たない)。節点を含むものは等しいとみなさない (黙る方向)。
 pub(crate) fn same_v(a: &V, b: &V) -> bool {
     match (a, b) {
@@ -470,6 +499,11 @@ pub struct Checker<'a> {
     /// Copy でないクロージャの値 (`move` で Copy でない値・`&mut` を取り込んだ、または `FnOnce` の) を束縛した局所の名前。
     /// 値として渡す・別の名前へ移すと、そのクロージャ自身が move される (4.1)。
     noncopy_closures: HashSet<String>,
+    /// 取り消し (`Task<T>.cancel`、仕様 5.6 の第 4 段) の検査: `let t = spawn_local(閉包)` の閉包を調べている間の入れ子の
+    /// 印。閉包の中で解放の要る値・解決できない値・ユーザの関数の呼び出しが出たら、外側のすべての印を立てる。
+    spawn_scan: Vec<bool>,
+    /// `let t = spawn_local(閉包)` で束縛した局所 `(定義の番号, 名前)` → 閉包が取り消せるか (`cancel` の検査)。
+    task_safe: HashMap<(usize, String), bool>,
     /// 参照越しの `match` の腕で、`&T` として束縛した名前 (Copy でない中身)。値を要る所へ渡すと move になってしまう。
     ref_binds: HashSet<String>,
     /// `let r = &x` で、`x` を共有参照で借りた束縛 (欄への代入を E3001 にする)。関数ごと。
@@ -585,6 +619,8 @@ impl<'a> Checker<'a> {
             let_tys: HashMap::new(),
             fnonce_locals: HashSet::new(),
             noncopy_closures: HashSet::new(),
+            spawn_scan: Vec::new(),
+            task_safe: HashMap::new(),
             field_consumes: vec![],
             index_consumes: Vec::new(),
             ref_binds: HashSet::new(),
@@ -4110,7 +4146,17 @@ impl<'a> Checker<'a> {
         match nname(s) {
             "Let" => {
                 self.lin_closure_took = false;
+                let spawn_began = self.spawn_begin(&f[3], env);
                 self.tc_expr(&f[3], env, muts, true);
+                let spawn_safe = if spawn_began {
+                    let unsafe_ = self.spawn_scan.pop().unwrap_or(true);
+                    if unsafe_ {
+                        self.spawn_unsafe();
+                    }
+                    Some(!unsafe_)
+                } else {
+                    None
+                };
                 let took = nname(&f[3]) == "Closure" && self.lin_closure_took;
                 self.lin_closure_took = false;
                 let got = self.ty_of(&f[3], env);
@@ -4209,10 +4255,24 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // 取り消しの検査: `let t = spawn_local(..)` の束縛 `t` を、閉包が取り消せるかの表に載せる (上の束縛で外れた分を戻す)。
+                if let Some(safe) = spawn_safe {
+                    let mut ns = vec![];
+                    pat_binds(&f[0], &mut ns);
+                    if nname(&f[0]) == "PBind" && ns.len() == 1 {
+                        self.task_safe.insert((self.d, ns[0].clone()), safe);
+                    }
+                }
             }
             "Assign" => {
                 self.tc_expr(&f[1], env, muts, true);
                 let tg = &f[0];
+                if nname(tg) == "Path" {
+                    let segs = strs(&nf(tg)[0]);
+                    if segs.len() == 1 {
+                        self.task_safe.remove(&(self.d, segs[0].clone()));
+                    }
+                }
                 // 参照越しの代入 (`*slot = n`、`p.a = n` で `p` が参照): 古い値は消費されずに消えるので、
                 // 代入先の型が線形なら E3003 (4.4)。
                 if self.assign_through_ref(tg, env) && self.is_linear(&self.lin_ty(tg, env)) {
@@ -4702,6 +4762,38 @@ impl<'a> Checker<'a> {
                 let mut callee: Option<&Def> = None;
                 let mut lin_callee: Option<(&Def, usize)> = None;
                 let fnn = &f[0];
+                // 局所変数のメソッド呼び出し `t.m()` は `Path` の形で来る (`v.push(x)` と同じ)。レシーバの型で検査する。
+                let local_method = nname(fnn) == "Path" && {
+                    let segs = strs(&nf(fnn)[0]);
+                    segs.len() == 2 && env.contains_key(&segs[0])
+                };
+                // 取り消しの検査 (仕様 5.6 の第 4 段): 閉包の中では、中断しうる関数・解放の要る結果を持つ呼び出しを禁じる。
+                if !self.spawn_scan.is_empty() {
+                    let ok = if local_method {
+                        let segs = strs(&nf(fnn)[0]);
+                        let rt = env.get(&segs[0]).cloned().unwrap_or(V::Nil);
+                        is_named_ty(&rt, "std.task.Task") || tag(&rt) == "prim"
+                    } else {
+                        matches!(self.callee_target(fnn, env), Some((_, false)))
+                    };
+                    if !ok || !frame_scalar(&self.lin_ty(e, env)) {
+                        self.spawn_unsafe();
+                    }
+                }
+                // `t.cancel()` (局所のメソッドの形): 閉包が取り消せると分かった `let t = spawn_local(..)` の束縛だけ通す (E4022)。
+                if local_method {
+                    let segs = strs(&nf(fnn)[0]);
+                    let rt = env.get(&segs[0]).cloned().unwrap_or(V::Nil);
+                    if segs[1] == "cancel" && is_named_ty(&rt, "std.task.Task") {
+                        if self.task_safe.get(&(self.d, segs[0].clone())) != Some(&true) {
+                            self.tdiag("E4022", cancel_msg(), nline(e));
+                        }
+                    }
+                }
+                // `std.task.Task.cancel(t)` の形は扱わない (メソッドの形 `t.cancel()` だけ。E4022)。
+                if matches!(self.callee_target(fnn, env), Some((ref n, _)) if n == "std.task.Task.cancel") {
+                    self.tdiag("E4022", cancel_msg(), nline(e));
+                }
                 if nname(fnn) == "Path" {
                     let segs = strs(&nf(fnn)[0]);
                     if !env.contains_key(&segs[0]) {
@@ -4804,6 +4896,24 @@ impl<'a> Checker<'a> {
                 }
             }
             "MCall" => {
+                // 取り消しの検査 (仕様 5.6 の第 4 段): 閉包の中のメソッド呼び出しは、`Task` と数などの型に限る (ユーザのメソッドは中断しうる)。
+                if !self.spawn_scan.is_empty() {
+                    let rt = self.lin_ty(&f[0], env);
+                    let rt_ok = is_named_ty(&rt, "std.task.Task") || matches!(tag(&rt).as_str(), "prim");
+                    if !rt_ok || !frame_scalar(&self.lin_ty(e, env)) {
+                        self.spawn_unsafe();
+                    }
+                }
+                // `t.cancel()` は、`let t = spawn_local(閉包)` で束縛した局所で、閉包が取り消せるときだけ通す (E4022)。
+                if st(&f[1]) == "cancel" && is_named_ty(&self.lin_ty(&f[0], env), "std.task.Task") {
+                    let local = nname(&f[0]) == "Path" && {
+                        let segs = strs(&nf(&f[0])[0]);
+                        segs.len() == 1 && self.task_safe.get(&(self.d, segs[0].clone())) == Some(&true)
+                    };
+                    if !local {
+                        self.tdiag("E4022", cancel_msg(), nline(e));
+                    }
+                }
                 // 一時値の線形値に `&self` / `&mut self` のメソッドを呼ぶと、値は束縛も消費もされず漏れる (4.4)。
                 if Self::is_temp_value(&f[0]) {
                     let t = self.lin_ty(&f[0], env);
@@ -5778,7 +5888,70 @@ impl<'a> Checker<'a> {
 
     /// 束縛を宣言する。線形な型なら消費の義務を負う (4.4)。線形でない束縛 (型が決まらないものを含む) も、
     /// 同名の外側の束縛を隠す目印として積む。
+    /// 取り消しの検査の印を、開いているすべての `spawn_local` の閉包について立てる (解放の要る値などを見つけたとき)。
+    fn spawn_unsafe(&mut self) {
+        for u in self.spawn_scan.iter_mut() {
+            *u = true;
+        }
+    }
+
+    /// 呼び出しの解決先 `(FQN, 中断しうるか)`。中断しうるのは `uses` に `suspend` を持つ関数だけ (中断しない関数は
+    /// 呼び出しの間しか生きず、枠の値にならない)。ローカル変数の呼び出し・解決できない呼び出しは `None`。
+    fn callee_target(&self, fnn: &V, env: &Env) -> Option<(String, bool)> {
+        if nname(fnn) != "Path" {
+            return None;
+        }
+        let segs = strs(&nf(fnn)[0]);
+        if env.contains_key(&segs[0]) {
+            return None;
+        }
+        let r = self.p.resolve(&segs, &self.def(self.d).file)?;
+        if !r.rest.is_empty() {
+            return None;
+        }
+        // `std.task.yield_now` は葉の中断点 (枠を作らない)。取り消しの検査では、枠を作る呼び出しだけを数える。
+        let susp = |i: usize| self.def(i).uses.iter().any(|u| u == "suspend") && !matches!(self.def(i).name.as_str(), "std.task.yield_now");
+        match r.target {
+            Target::Fn(i) | Target::Sig(i) => Some((self.def(i).name.clone(), susp(i))),
+            Target::Native(n) => Some((n, false)),
+            _ => None,
+        }
+    }
+
+    /// `let t = std.task.spawn_local(閉包)` の初期化なら、閉包を調べる印を開いて `true` を返す。
+    /// 取り消せる条件: 閉包の結果 (`Task<T>` の `T`) と、`move` で取り込んだ局所が、解放の要らない型であること。
+    fn spawn_begin(&mut self, init: &V, env: &Env) -> bool {
+        if nname(init) != "Call" {
+            return false;
+        }
+        let args = items(&nf(init)[1]);
+        let is_spawn = matches!(self.callee_target(&nf(init)[0], env), Some((n, _)) if n == "std.task.spawn_local");
+        if !is_spawn || args.len() != 1 || nname(&args[0]) != "Closure" {
+            return false;
+        }
+        let cl = &args[0];
+        self.spawn_scan.push(false);
+        // 結果 (`T`) は閉包の宣言の戻り値の型 (`fn() -> T`)。中断の間は枠の中にあるので、解放の要らない型に限る。
+        if !frame_scalar(&nf(cl)[1]) {
+            self.spawn_unsafe();
+        }
+        for c in items(&nf(cl)[2]) {
+            let name = st(&items(c)[1]);
+            if let Some(t) = env.get(&name) {
+                if !frame_scalar(t) {
+                    self.spawn_unsafe();
+                }
+            }
+        }
+        true
+    }
+
     fn lin_declare(&mut self, name: &str, ty: &V, line: usize) {
+        // 取り消しの検査: 閉包の中の束縛が解放の要る型なら印を立てる。同じ名前の取り消し可能な印は消す (隠す束縛)。
+        if !self.spawn_scan.is_empty() && !frame_scalar(ty) {
+            self.spawn_unsafe();
+        }
+        self.task_safe.remove(&(self.d, name.to_string()));
         // 線形な欄を持つ、線形でない構造体は、欄ごとに義務を負う。根の束縛は義務を持たず、
         // 欄の部分 move で根全体を消費済みにしない (`p.a` を渡しても `p.b` の漏れを見る)。
         let split = self.split_fields(ty);

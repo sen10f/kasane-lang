@@ -23,7 +23,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.collections.VecDeque.new",
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
-    "std.task.block_on", "std.task.spawn_local", "std.task.yield_now",
+    "std.task.block_on", "std.task.spawn_local", "std.task.yield_now", "std.task.await_js",
     "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.rand.fill_secure", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
     "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
 ];
@@ -791,6 +791,8 @@ impl Interp {
                 self.task_yield()?;
                 Ok(Val::Unit)
             }
+            // JS の Promise を待つ中断は wasm32 の入口だけが再開できる (木走査には JS の相手がいない)。
+            "std.task.await_js" => panic("std.task.await_js: needs a JavaScript host (build for wasm32-unknown-unknown and resume with ksn_resume); the tree-walker has none"),
             "std.sync.channel" => {
                 let st = Rc::new(ChanState { q: RefCell::new(VecDeque::new()), senders: Cell::new(0), receivers: Cell::new(0) });
                 let tx = Val::Chan(Rc::new(ChanEnd::new(st.clone(), true)));
@@ -1208,6 +1210,10 @@ impl Interp {
                 }
                 if s.ty == "std.task.Task" && name == "join_task" {
                     return self.task_join(field(v, "id") as usize);
+                }
+                if s.ty == "std.task.Task" && name == "cancel" {
+                    self.task_cancel(field(v, "id") as usize)?;
+                    return Ok(Val::Unit);
                 }
                 if s.ty == "std.time.Instant" && name == "elapsed" {
                     return Ok(nanos(mono_ns().saturating_sub(field(v, "ticks"))));

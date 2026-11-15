@@ -1,0 +1,19 @@
+fn t.wait_one() -> u32 uses [suspend] panics may
+    std.task.yield_now()
+    1u32
+end t.wait_one
+
+fn t.body() -> () uses [suspend] panics may
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            t.wait_one()
+        },
+    )
+    a.cancel()
+end t.body
+
+fn t.main() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+end t.main

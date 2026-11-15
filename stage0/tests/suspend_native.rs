@@ -426,3 +426,85 @@ end t.main
     );
     same_as_interpreter("native_question", &src, "q ok six\nq err five\n", Some(0));
 }
+
+/// 取り消し (仕様 5.6 の第 4 段): 中断で止まったタスクと、始まる前に取り消したタスクは、木走査と同じ出力・終了コードになる。
+#[test]
+fn native_cancel_matches_interpreter() {
+    let src = with_say(
+        r#"fn t.body() -> () uses [io.console, suspend] panics may
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            t.say("a1")
+            std.task.yield_now()
+            t.say("a2")
+            7u32
+        },
+    )
+    let b = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            t.say("b1")
+            std.task.yield_now()
+            t.say("b2")
+            9u32
+        },
+    )
+    let c = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            t.say("never")
+            1u32
+        },
+    )
+    c.cancel()
+    std.task.yield_now()
+    a.cancel()
+    t.say("after-cancel")
+    let rb = b.join_task()
+    if rb == 9u32 {
+        t.say("joined")
+    }
+end t.body
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+    t.say("main done")
+end t.main
+"#,
+    );
+    same_as_interpreter("native_cancel", &src, "a1\nb1\nafter-cancel\nb2\njoined\nmain done\n", Some(0));
+}
+
+/// 取り消し: `join_task` で待っているタスクの待ちの枠 (葉) も解放される。木走査と同じ出力になる。
+#[test]
+fn native_cancel_of_joining_task_matches_interpreter() {
+    let src = with_say(
+        r#"fn t.body() -> () uses [io.console, suspend] panics may
+    let b = std.task.spawn_local(
+        fn() -> u32 capture [] {
+            t.say("b1")
+            std.task.yield_now()
+            4u32
+        },
+    )
+    let a = std.task.spawn_local(
+        fn() -> u32 capture [move b] {
+            let rb = b.join_task()
+            rb
+        },
+    )
+    std.task.yield_now()
+    a.cancel()
+    t.say("after")
+end t.body
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.body()
+    })
+    t.say("main done")
+end t.main
+"#,
+    );
+    same_as_interpreter("native_cancel_join", &src, "b1\nafter\nmain done\n", Some(0));
+}

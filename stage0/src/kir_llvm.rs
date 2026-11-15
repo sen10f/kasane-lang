@@ -709,6 +709,29 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
     s.push_str("  store i32 %argc, ptr @ksn_rt_argc\n");
     s.push_str("  store ptr %argv, ptr @ksn_rt_argv\n");
     s.push_str(&format!("  %r = call {} {}()\n", rt, fname(&f.key)));
+    // JS の完了を待つ入口 (`await_js` を使う wasm32): 待ちが残っていれば終了の戻り値 -1 (JS は `ksn_resume` で再開する)。
+    if await_mode(m) {
+        s.push_str(&format!("  %pend = call i1 {}()\n  br i1 %pend, label %waiting, label %go\nwaiting:\n  ret i32 -1\ngo:\n", fname(&format!("{}.pending", f.key))));
+    }
+    s.push_str(&exit_tail(cx, m, f)?);
+    if await_mode(m) {
+        // 再開の入口 `ksn_resume(h, v)`: JS が待っていた Promise の結果 `v` を `h` に入れて、枠を進める。戻り値は `main` と同じ。
+        s.push_str(&format!(
+            "define i32 @ksn_resume(i32 %h, i32 %v) \"wasm-export-name\"=\"ksn_resume\" null_pointer_is_valid {{\nentry:\n  %put = call i1 {}(i32 %h, i32 %v)\n  %r = call {} {}()\n  %pend = call i1 {}()\n  br i1 %pend, label %waiting, label %go\nwaiting:\n  ret i32 -1\ngo:\n",
+            fname("ksn.js.put"),
+            rt,
+            fname(&format!("{}.resume", f.key)),
+            fname(&format!("{}.pending", f.key))
+        ));
+        s.push_str(&exit_tail(cx, m, f)?);
+    }
+    Ok(s)
+}
+
+/// `ksn_resume` / `main` の終わり: 戻り値 `%r` を終了コードにする (Err の表示を含む)。`%r` を使う直前までは呼び出し側が作る。
+fn exit_tail(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
+    let aggs = &m.aggs;
+    let mut s = String::new();
     match f.ret {
         Ty::Res(_, e) => {
             let sb = slot_bits(aggs, f.ret);
@@ -717,8 +740,11 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
             let et = e.ty();
             let w = vbits(aggs, et);
             cx.decl(write_decl());
-            cx.globals.push_str(&str_const("ksn.s.err", "Error: "));
-            cx.globals.push_str(&str_const("ksn.s.nl", "\n"));
+            // 入口と `ksn_resume` の両方が終わりの処理を書くので、文字列の定義は一度だけ出す。
+            if !cx.globals.contains("@ksn.s.err =") {
+                cx.globals.push_str(&str_const("ksn.s.err", "Error: "));
+                cx.globals.push_str(&str_const("ksn.s.nl", "\n"));
+            }
             s.push_str(&format!("  %t = lshr i{n} %r, {sb}\n  %tb = trunc i{n} %t to i1\n  br i1 %tb, label %err, label %ok\nerr:\n"));
             s.push_str(&format!("  %pw = trunc i{n} %r to i{sb}\n"));
             let x = if w == sb { "%pw".to_string() } else { s.push_str(&format!("  %pe = trunc i{sb} %pw to i{w}\n")); "%pe".to_string() };
@@ -730,6 +756,11 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
         _ => s.push_str("  ret i32 0\n}\n"),
     }
     Ok(s)
+}
+
+/// 入口が JS の完了を待つ形か (`ksn.task.await` の呼び出しが、変換で `ksn.task.await.poll` になって残っている)。
+pub fn await_mode(m: &Module) -> bool {
+    m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(&i.op, Op::Call { callee, .. } if callee == "ksn.task.await.poll"))))
 }
 
 fn errno_name() -> &'static str {

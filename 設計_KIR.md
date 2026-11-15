@@ -1833,6 +1833,19 @@ KIR は単相・SSA で、型にライフタイムがない。そこで領域は
 - **検証**: `tests/suspend_native.rs` の `native_result_return_and_across_suspension_match_interpreter`（`Result` の返り値と、中断をまたいで持つ `Ok` / `Err`）と `native_question_mark_in_suspending_fn_matches_interpreter`（中断関数の中の `?`）が、木走査と同じ出力を確かめる。第 2 段で「E9040 を期待していた」試験 `native_result_return_of_suspending_fn_is_e9040_for_now` は、この段の期待（成功）に合わせて差し替えた。
 - **残り**: 取り消し（`Task.cancel`、5.6 の決定 2）と、wasm32 の JS の Promise を待つ中断（5.6 の決定 5。実行器の「待ち」の戻り値と、`block_on` の呼び出し側の状態機械化が要る）。
 
+### 26.5 第 4 段: 取り消し `Task<T>.cancel` (suspend-4、2026-11-15、0.10.25)
+
+仕様 5.6 の「決定 (第 4 段、取り消し)」の実装。
+
+- **表の項目（40 バイト）**: `[0]` 状態（0 走れる・1 待ち・2 終わり・3 取り消し）、`[8]` 待つ相手、`[16]` 本体の番号、`[24]` 枠、`[32]` いま待っている葉の枠（新設）。`ksn.task.entry` の寸法と、`spawn` の表の拡張（`realloc`）と、`run` の初期確保（8 件 = 320 バイト）を 40 バイト基準に直した。
+- **葉の枠の記録**: 葉の中断点 `yield.poll`（中断するとき）と `wait.poll`（中断するとき）が、今の番号の `[32]` に自分の枠を記録する。`run` は、タスクを再開する前（`dispatch` の前）に `[32]` を 0 に戻す。葉の枠は親の枠が持つ子の枠で、完了のときに親が解放する。取り消しは、この記録の枠も解放しないと漏れる（ASan で 8 バイトの漏れとして見つけた。`yield_now` の枠）。
+- **`ksn.task.cancel(id)`**: 終わり（2 以上）なら何もしない。自分自身なら panic。それ以外は、葉の枠（あれば）と、タスクの枠を解放し、`[24]` を 0 にして、状態を 3 にする。始まる前のタスクも、枠（引数の欄を含む）を解放するだけで、本体は走らない。枠の中の値は後始末しない（検査 E4022 で、解放の要る値を持たないことを保証する）。
+- **待ち・後始末**: `ready` と `first_undone` は、相手が 2 以上（終わり・取り消し）なら終わったとみなす。`wait.poll` は、相手が 3 なら panic（"std.task.Task.join_task: the task was cancelled"。木走査と同じ文面）。`free_from` は枠が 0 の項目（取り消し）を飛ばす（二重解放を防ぐ）。
+- **木走査**（`src/task.rs`）: 取り消しは `Slot.cancelled` を立て、合図を取り消されたタスクへ渡す（同期の巻き戻し）。取り消されたタスクは、`task_switch` の戻りで `Err(Ctl::Cancel)` を受けて本体を抜け、スレッドの終わりで合図を取り消した側へ返す。始まる前なら、スレッドは本体を走らせずに返す。`Ctl::Cancel` は値の `Ctl` の一つで、エラーにはならない。
+- **検査**（`src/check.rs`、E4022）: `let t = std.task.spawn_local(閉包)` の閉包を調べる印 `spawn_scan`（入れ子は全部に立てる）を、閉包の中の束縛（`lin_declare`、すべての束縛がここを通る）・呼び出し（`Call` の解決先と戻り値の型）・メソッド呼び出し（`MCall` と、局所のメソッドの形 `Path [x, m]`）・取り込み（`move` の局所の型）で見る。型は `frame_scalar`（数・`bool`・`char`・単位・参照・要素が枠に置けるタプル・`std.task.Task`）だけ通す。`task_safe` は `(定義, 名前)` → 取り消せるか。`let` の束縛が全部終わったあとに登録し（`lin_declare` が外すため）、代入で外す。中断しうる関数は `uses` の `suspend` で決める（`std.task.yield_now` は除く）。
+- **試験**: `tests/suspend.rs` に 8 件（途中の取り消し・始まる前の取り消し・`join_task` で待つ相手の取り消し・`Vec` を持つ閉包の E4022・中断する関数を呼ぶ閉包の E4022・引数の handle の E4022・二度取り消しの E3002・数だけの閉包は通る）、`tests/suspend_native.rs` に 2 件（木走査との一致）、`tests/data/diag/E4022.ksnl`（診断データ、`ksn explain`）。ASan（`KSN_CLANG_ARGS=-fsanitize=address`）で、途中の取り消し・始まる前の取り消し・待ちの取り消しの各プログラムがリークも不正アクセスも出ない。
+- **残り**: 解放の要る値を持つタスクの取り消し（中断点ごとの後始末）、handle の出どころを越える検査、`Task<T>` の線形化（5.6 の決定 5 の後）。
+
 ## 27. 乱数の OS 源と `Option` のフィールド (kir/rand-optvec、2026-11-15)
 
 apps/todo の報告で挙がった 2 つ: `std.rand.Rng.from_entropy()` が段階 1 の対象外 (E9040) で、回避にセッションのトークンを時刻のハッシュで作っていた (推測できる)。構造体のフィールド `Option<alloc.vec.Vec<T, A>>` が下りなかった (E9040)。
