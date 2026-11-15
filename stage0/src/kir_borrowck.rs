@@ -303,12 +303,28 @@ fn carries_ty(t: Ty) -> bool {
     matches!(t, Ty::Ptr | Ty::Ref(..) | Ty::Agg(_) | Ty::Opt(_) | Ty::Res(..))
 }
 
-/// 型の値が借用を持ちうるか (スカラーだけの `Option` / `Result` は持たない)。呼び出しの戻り値が引数の借用を運ぶかの判定に使う。
-fn may_hold(t: Ty) -> bool {
+/// 型の値が借用を持ちうるか (借用を持たない欄だけの集成体・`Option` / `Result` は持たない)。呼び出しの戻り値が引数の借用を運ぶかの判定に使う。
+/// 集成体は欄をたどる (`AllocError { code: u32 }` のような値は持たない。`Result<Option<V>, E>` の `V` が整数なら運ばない)。
+fn may_hold(aggs: &[crate::kir::AggDef], t: Ty) -> bool {
+    may_hold_d(aggs, t, 0)
+}
+
+fn may_hold_d(aggs: &[crate::kir::AggDef], t: Ty, depth: u32) -> bool {
+    use crate::kir::AggKind;
     match t {
-        Ty::Ptr | Ty::Ref(..) | Ty::Agg(_) => true,
-        Ty::Opt(p) => may_hold(p.ty()),
-        Ty::Res(a, e) => may_hold(a.ty()) || may_hold(e.ty()),
+        Ty::Ptr | Ty::Ref(..) => true,
+        Ty::Agg(i) => {
+            if depth > 16 {
+                return true;
+            }
+            let Some(d) = aggs.get(i as usize) else { return true };
+            match &d.kind {
+                AggKind::Struct(fs) | AggKind::Tuple(fs) => fs.iter().any(|f| may_hold_d(aggs, f.ty, depth + 1)),
+                AggKind::Enum(vs) => vs.iter().any(|v| v.fields.iter().any(|f| may_hold_d(aggs, f.ty, depth + 1))),
+            }
+        }
+        Ty::Opt(p) => may_hold_d(aggs, p.ty(), depth + 1),
+        Ty::Res(a, e) => may_hold_d(aggs, a.ty(), depth + 1) || may_hold_d(aggs, e.ty(), depth + 1),
         _ => false,
     }
 }
@@ -356,6 +372,7 @@ enum Req {
 }
 
 struct An<'a> {
+    aggs: &'a [crate::kir::AggDef],
     f: &'a Func,
     hdr: &'a Hdr,
     callee: &'a HashMap<String, Hdr>,
@@ -516,7 +533,7 @@ impl<'a> An<'a> {
                 let key = callee.split('<').next().unwrap_or(callee);
                 match self.callee.get(key) {
                     Some(h) if h.params.len() == args.len() => {
-                        if may_hold(t) && h.ret_has_ref {
+                        if may_hold(self.aggs, t) && h.ret_has_ref {
                             for (j, a) in args.iter().enumerate() {
                                 if h.flows[j] {
                                     res.extend(self.org[*a as usize].iter().copied());
@@ -670,7 +687,7 @@ fn holders_of_root(st: &State, root: VId) -> Vec<VId> {
     h
 }
 
-fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, file: &str, lines: &[u32]) -> Vec<Diag> {
+fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, file: &str, lines: &[u32]) -> Vec<Diag> {
     let n = f.value_count();
     let nb = f.blocks.len();
     let mut ty = vec![Ty::Unit; n];
@@ -804,7 +821,7 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
             }
         }
     }
-    let mut an = An { f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, move_stores };
+    let mut an = An { aggs, f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, move_stores };
     let ins = an.run();
     let mut diags: Vec<Diag> = vec![];
     let mut cons: Vec<Cons> = vec![];
@@ -912,7 +929,8 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                         }
                     }
                 }
-                Op::MemLoad { p, .. } | Op::Load(p) => reqs.push((bi, ii, line, Req::Access { via: *p, write: false })),
+                // 結果を使わない読み (書き戻しのための複製など) は、場所への使用ではない (借用の区間を延ばさない)。
+                Op::MemLoad { p, .. } | Op::Load(p) if used_non_free.contains(&i.dst) => reqs.push((bi, ii, line, Req::Access { via: *p, write: false })),
                 Op::MemStore { p, .. } | Op::Store { ptr: p, .. } => {
                     reqs.push((bi, ii, line, Req::Access { via: *p, write: true }));
                     // 引数の指す先への書き込み: 局所の借用は入れられない。他の引数は同じライフタイムを共有するときだけ。
@@ -1199,7 +1217,9 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                     }
                     Req::Access { via, write } => {
                         let ch = chain(*via);
-                        for w in live.iter() {
+                        // 呼び出しが作る値 (戻り値) は、その呼び出しの時点ではまだ無い。引数の借用を運ぶ戻り値を、自分の引数への使用とみない。
+                        let own_dst = f.blocks[bi].insts[ii].dst;
+                        for w in live.iter().filter(|w| **w != own_dst) {
                             if is_borrow(*w) && !ch.contains(w) && overlap(*via, *w) && (is_mut(*w) || *write) {
                                 add(&mut diags, *line, "cannot access this place while it is borrowed".to_string());
                             }
@@ -1331,7 +1351,7 @@ pub fn check(p: &Program, user: &[usize], lo: &Lowered, own: bool) -> Outcome {
             None => (p.defs[di].file.clone(), vec![]),
         };
         let dl = p.defs[di].line;
-        diags.extend(check_func(f, h, &hdrs, &file, &lines).into_iter().filter(|d| own || !matches!(d.code, "E3002" | "E3003")).map(|mut d| {
+        diags.extend(check_func(&m.aggs, f, h, &hdrs, &file, &lines).into_iter().filter(|d| own || !matches!(d.code, "E3002" | "E3003")).map(|mut d| {
             if d.line == 0 {
                 d.line = dl;
             }
