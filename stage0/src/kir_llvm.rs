@@ -359,6 +359,21 @@ pub fn is_wasm(t: Option<Target>) -> bool {
     t.is_some_and(|t| t.ptr_bits == 32 && t.triple.starts_with("wasm32"))
 }
 
+/// wasm32 の import の名前: `link "env:名前"` の `名前` (WASM ABI。JS の `env` の関数を呼ぶ)。`env:` 以外の前置きは `None`。
+pub fn wasm_import_of(link: &str) -> Option<&str> {
+    link.strip_prefix("env:").filter(|n| !n.is_empty())
+}
+
+/// wasm32 の export 名: FQN の最後の成分が `ksn_` で始まる関数 (`ksn_rt_` と `ksn_main` は予約) は、その名前で JS から呼べる。
+/// 対象は wasm32 だけ (ほかの三つ組では `None` で、出力を変えない)。
+pub fn wasm_export_name(key: &str) -> Option<&str> {
+    if crate::ptrwidth::bits() != 32 {
+        return None;
+    }
+    let last = key.rsplit('.').next()?;
+    (last.starts_with("ksn_") && !last.starts_with("ksn_rt_") && last != "ksn_main").then_some(last)
+}
+
 /// `usize` / `isize` の LLVM の型 (今のポインタの幅)。
 fn size_ty() -> String {
     format!("i{}", crate::ptrwidth::bits())
@@ -420,9 +435,25 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         return Err(format!("関数 {} がない", entry));
     };
     if let Some(tg) = target.filter(|tg| tg.ptr_bits == 32) {
-        // C の関数を呼ぶ `extern` (FFI) は、wasm32 では呼び先がない。理由を出して止める。
-        if let Some(f) = m.funcs.iter().find(|f| f.link.is_some()) {
-            return Err(format!("extern {}: C の関数を呼ぶ FFI は {} では未対応 (libc もリンク先もない)", f.key, tg.name));
+        // C の関数を呼ぶ `extern` (FFI) は、wasm32 では呼び先がない。`link "env:名前"` だけは JS から来る import (WASM ABI) として許す。
+        if let Some(f) = m.funcs.iter().find(|f| f.link.as_deref().is_some_and(|l| wasm_import_of(l).is_none())) {
+            return Err(format!("extern {}: C の関数を呼ぶ FFI は {} では未対応 (libc もリンク先もない。JS の関数は link \"env:名前\" で呼ぶ)", f.key, tg.name));
+        }
+        for f in m.funcs.iter().filter(|f| f.link.is_some()) {
+            if f.params().iter().any(|(_, pt)| matches!(pt, Ty::Agg(_))) || matches!(f.ret, Ty::Agg(_)) {
+                return Err(format!("extern {}: wasm32 の import は構造体を値で渡せない (スカラーとポインタだけ)", f.key));
+            }
+        }
+        // 公開する関数 (`ksn_` で始まる名前) は、同じ名前の export になるので重ねられない。構造体の値渡しも不可。
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for f in m.funcs.iter() {
+            let Some(name) = wasm_export_name(&f.key) else { continue };
+            if !seen.insert(name) {
+                return Err(format!("export {}: 同じ名前 {} の関数が二つある (export 名は一意)", f.key, name));
+            }
+            if f.params().iter().any(|(_, pt)| matches!(pt, Ty::Agg(_))) || matches!(f.ret, Ty::Agg(_)) {
+                return Err(format!("export {}: wasm32 の export は構造体を値で渡せない (スカラーとポインタだけ)", f.key));
+            }
         }
     }
     let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
@@ -454,7 +485,12 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         }
         let params: Vec<String> = f.params().iter().map(|(_, t)| lty(&m.aggs, *t)).collect();
         let rt = lty(&m.aggs, f.ret);
-        cx.decl(format!("declare {} @{}({})", rt, sym, params.join(", ")));
+        // wasm32 の `link "env:名前"` は JS の関数の import (`env.名前`)。属性で import の綴りを固定する (WASM ABI)。
+        let imp = match f.link.as_deref().and_then(wasm_import_of) {
+            Some(n) if crate::ptrwidth::bits() == 32 => format!(" \"wasm-import-module\"=\"env\" \"wasm-import-name\"=\"{}\"", n),
+            _ => String::new(),
+        };
+        cx.decl(format!("declare {} @{}({}){}", rt, sym, params.join(", "), imp));
     }
     let mut funcs = String::new();
     let mut pthread_used = false;
@@ -521,7 +557,8 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         cx.decls.insert("declare float @strtof(ptr, ptr)".to_string());
     }
     if cx.parse_int {
-        cx.decls.insert("declare i32 @ksn_parse_int(ptr, i64, i32, i32, i32, ptr, ptr)".to_string());
+        // 長さはポインタの幅 (wasm32 は i32)。呼び出し側の宣言 (`ParseInt`) と同じ型にする。x86_64 / aarch64 は従来どおり i64。
+        cx.decls.insert(format!("declare i32 @ksn_parse_int(ptr, {}, i32, i32, i32, ptr, ptr)", size_ty()));
     }
     if cx.env {
         cx.decls.insert("declare i64 @ksn_rt_sys_arg_count()".to_string());
@@ -2618,7 +2655,12 @@ impl<'a> Fe<'a> {
         // 再帰せず、呼び先も有界なので、呼び出しの深さの記録 (`ksn.depth`) を省いて、LLVM が展開できるようにする
         // (組み込みは呼び出しなしで展開されていたので、深さの記録の分だけ遅くなるのを防ぐ。深さの上限の検査は呼び出し側が行う)。
         let inline = if bare { "alwaysinline " } else { "" };
-        let mut s = format!("define internal {} {}({}) {}null_pointer_is_valid {{\nentry:\n", self.lt(f.ret), fname(&f.key), params.join(", "), inline);
+        // wasm32 で公開する関数は外部リンケージの `define` にして、`wasm-export-name` で export の名前を決める (WASM ABI)。
+        let (head, exp) = match wasm_export_name(&f.key) {
+            Some(n) => ("define", format!(" \"wasm-export-name\"=\"{}\"", n)),
+            None => ("define internal", String::new()),
+        };
+        let mut s = format!("{} {} {}({}){} {}null_pointer_is_valid {{\nentry:\n", head, self.lt(f.ret), fname(&f.key), params.join(", "), exp, inline);
         s.push_str(&hoisted);
         if bare {
             // `b0` の phi は `go` を前の辺として参照するので、空の `go` を残す (最適化で消える)。

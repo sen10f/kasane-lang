@@ -1,0 +1,10 @@
+[package]
+name = "todo_spa"
+version = "0.1.0"
+edition = 1
+entry = "todo_spa.main"
+
+[dependencies]
+
+[unsafe]
+modules = ["todo_spa.dom"]
