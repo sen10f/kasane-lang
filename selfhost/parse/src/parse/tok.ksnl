@@ -1,4 +1,4 @@
-const parse.tok.CONTEXTUAL: &str = "stack impls derive linear layout requires capture link close" pub
+const parse.tok.CONTEXTUAL: &str = "stack impls derive linear layout requires capture link close is" pub
 
 const parse.tok.CX_CAPTURE: u32 = 107u32 pub
 
@@ -53,6 +53,8 @@ const parse.tok.KW_IMPL: u32 = 5u32 pub
 const parse.tok.KW_IMPORT: u32 = 11u32 pub
 
 const parse.tok.KW_IN: u32 = 20u32 pub
+
+const parse.tok.KW_IS: u32 = 110u32 pub
 
 const parse.tok.KW_LET: u32 = 12u32 pub
 

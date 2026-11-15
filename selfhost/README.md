@@ -898,7 +898,7 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
 | 段 | 対象 | 一致 | 残り |
 | --- | --- | --- | --- |
 | 1・2 読み込み・名前解決 (`resolve`) | 検査の 34 パッケージ | 検査の表 (下の行) に含む。単独では数えていない | E1020 (未使用の変数・引数)・E1021 (シャドーイング) など、`resolve` の外の検査は Rust 版だけ |
-| 3 検査 (`types`・`effects`・`borrow`) | examples 16・apps 3・selfhost 15 (計 34 パッケージ) | **34 / 34** (examples 16/16・apps 3/3・selfhost 15/15。修正前は 32 / 34)。Rust 版が 0 件のもののうち Kasane 版も 0 件: 33/33 | 残りの不足は 17.5 の 2 (let の経路で欄を区別しない形) と 17.5 の 3 (`is` を引数に書く形の構文解析) |
+| 3 検査 (`types`・`effects`・`borrow`) | examples 16・apps 3・selfhost 15 (計 34 パッケージ) | **34 / 34** (examples 16/16・apps 3/3・selfhost 15/15。修正前は 32 / 34)。Rust 版が 0 件のもののうち Kasane 版も 0 件: 33/33 | 残りの不足は 17.5 の 2 (let の経路で欄を区別しない形) |
 | 4 整形 (`fmt`) | 34 パッケージ | **34 / 34** (書き換えの要否のファイルの集合が Rust 版と同じ。書き換えた後の内容の一致は、1 件 (`examples/tour` に末尾の空行を足した複製) で確かめた) | `ksn fmt` の lint 行 (`not auto-fixable`) と文法検査 (`grammar.check`) は Kasane 版になし |
 | 5 下ろし (`lower`) | linear_ok 118 件 (Rust 版 `ksn build --release` が作れたのは 118 件) | 作れた **9 / 118** | 作れなかった 109 件の理由 (1 ファイルに複数の理由があるので合計は 109 を超える): 型の下ろし 90 (`Option` `Result` `Vec` `String` 参照など)、本体のない宣言 42 (`alloc.*` `std.*` の署名だけの関数)、名前が局所でない 15、式の形 10、総称の関数 10、`let` の形 8、メソッド呼び出し 7、単項演算 5、関数でない呼び出し 4、二項演算 1、構文解析の失敗 (PARSE) 1 |
 | 6 LLVM 出力 (`emit`) | 下ろせた 9 件 | **9 / 9** (実行の標準出力と終了コードが Rust 版の実行ファイルと同じ) | `emit` の 13.4 章の範囲 (浮動小数・外部関数・`std.fs` など)。下ろしが広がらない限り対象が増えない |
@@ -916,7 +916,7 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
 
 1. **下ろしの範囲** (表の 5): 型の下ろし (`Option` `Result` `Vec` `String` 参照) と、署名だけの標準ライブラリの呼び出しが、ほぼすべての関数に当たる。`ksnc` 自身を作るにはこの 2 つが要る (表の 8)。
 2. **借用の誤検出 (let の経路)**: 同じ呼び出しで根の別の欄を借りる形は 17.7 で直した。一方、`let a = &mut c.ar` と `let b = &c.tc` を順に書く形は、`selfhost/borrow` の局所ごとの借用状態が欄を区別しないので E3010 の誤検出が残る (Rust 版は通す。17.7 の再現)。
-3. **構文解析の不足 (`is` を引数に書く形)**: `o is Some(_)` を呼び出しの引数に書くと、`selfhost/parse` が `expected ')'` で止まる (`stage0/tests/data/unsound/is_linear_payload_discarded.ksnl`。Rust 版は通す。拒否すべきコードなので、直すまで unsound の 1 件が取りこぼしになるだけ)。
+3. **構文解析の不足 (`is` を引数に書く形)** (解決): `o is Some(_)` を呼び出しの引数に書くと、`selfhost/parse` が `expected ')'` で止まっていた (`stage0/tests/data/unsound/is_linear_payload_discarded.ksnl`。Rust 版は通す。`cmp_expr` で `is` パターンを処理し `Match` ノードに下ろす形で直した。unsound の取りこぼしは解消)。
 4. **検査の不足** (表の 3(b)): E4013 は 17.7 で直した。
 5. **IR を外へ出す入口がない** (11.4 章 1 と同じ): `ksn` に IR を外へ出す CLI がない。`ksnc` は `emit.module` を直接呼び、`lower.main` の手順は表示しない版 (`kir.ksnl`) に写した。
 6. **Kasane の `build` の検査は、Rust の検査より寛容** (表の 3 の残り): 型・効果・借用の検査で、Kasane 版が見落とすものは、`kasane` の `build` でも通る。`unsound/` の一部がそれ。
@@ -939,7 +939,7 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
 - **E4013** (`selfhost/effects`): 再帰する型に `core.ops.Drop` の明示実装か `derive [Drop]` が無いもの。`effects/drop.ksnl` を足し、`effects.main` と driver の `kcheck` (効果の段) から呼ぶ。再帰は型の欄に書かれた型名の有向グラフの閉路 (Rust 版 `recursive_types` と同じ)。確かめ: `probes/boxtree` が E4013 を出す (Rust 版と一致)。`compare.py` の比べる集合に E4013 を足した (diag E40 は 7/13 → 9/15 で、E4013・E4013b が一致)。clean・linear_ok で誤検出 0。手で作った例 (`derive [Drop]`・手書き Drop・Option 経由の自己参照は通す。相互再帰・自己参照は出す) は Rust 版と完全に一致。
 - **判定**: `ksnc check --stages=both` の 34 パッケージの一致は **32/34 → 34/34** (修正前の driver を一時的に戻して測った)。
 
-残り (この節で直していないもの): 17.5 の 2 (let の経路の欄の誤検出)、17.5 の 3 (`is` を引数に書く形の構文解析)。
+残り (この節で直していないもの): 17.5 の 2 (let の経路の欄の誤検出)。
 
 ## 18. KIR への下ろしの段 (2): 型の表を使い、Option / Result / 参照 を下ろす (修正プラン 5-5)
 
