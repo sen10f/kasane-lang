@@ -123,6 +123,11 @@ fn alloc.collections.BtreeMap.len[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](
     self.entries.len()
 end alloc.collections.BtreeMap.len
 
+fn alloc.collections.BtreeMap.new_empty[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.BtreeMap<K, V, A> uses [] panics never
+    let entries = alloc.raw.Buf.new(allocator)
+    alloc.collections.BtreeMap { entries: entries }
+end alloc.collections.BtreeMap.new_empty
+
 fn alloc.collections.BtreeMap.remove[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.BtreeMap<K, V, A>, key: &K) -> Option<V> uses [] panics never pub
     match self.find(key) {
         Ok(i) => {
@@ -367,6 +372,11 @@ fn alloc.collections.HashMap.len[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.al
     self.cells.len().wrapping_sub(self.slots)
 end alloc.collections.HashMap.len
 
+fn alloc.collections.HashMap.new_empty[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.HashMap<K, V, A> uses [] panics never
+    let cells = alloc.raw.Buf.new(allocator)
+    alloc.collections.HashMap { cells: cells, slots: 0usize }
+end alloc.collections.HashMap.new_empty
+
 fn alloc.collections.HashMap.place[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, h: usize, pos: usize) -> () uses [] panics never
     let slots = self.slots
     if slots == 0usize {
@@ -548,13 +558,3 @@ fn alloc.collections.hash_key[K: core.hash.Hash](key: &K) -> usize uses [] panic
         }
     }
 end alloc.collections.hash_key
-
-fn alloc.collections.BtreeMap.new_empty[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.BtreeMap<K, V, A> uses [] panics never
-    let entries = alloc.raw.Buf.new(allocator)
-    alloc.collections.BtreeMap { entries: entries }
-end alloc.collections.BtreeMap.new_empty
-
-fn alloc.collections.HashMap.new_empty[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](allocator: A) -> alloc.collections.HashMap<K, V, A> uses [] panics never
-    let cells = alloc.raw.Buf.new(allocator)
-    alloc.collections.HashMap { cells: cells, slots: 0usize }
-end alloc.collections.HashMap.new_empty
