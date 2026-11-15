@@ -2679,7 +2679,13 @@ fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str, t
             eprintln!("kir: 未対応 {}: {}", f, why);
         }
     }
-    let m = lo.module.reachable_from(&[entry, crate::kir_lower::debug::ENTRY_DEBUG]);
+    // wasm32 は `ksn_` の関数 (JS から呼ぶ export、WASM ABI) も根にする。ほかの三つ組は出力を変えない。
+    let mut roots: Vec<String> = vec![entry.to_string(), crate::kir_lower::debug::ENTRY_DEBUG.to_string()];
+    if crate::kir_llvm::is_wasm(tg.ir) {
+        roots.extend(lo.module.funcs.iter().filter(|f| crate::kir_llvm::wasm_export_name(&f.key).is_some()).map(|f| f.key.clone()));
+    }
+    let refs: Vec<&str> = roots.iter().map(|s| s.as_str()).collect();
+    let m = lo.module.reachable_from(&refs);
     let ll = crate::kir_llvm::emit_program(&m, entry, tg.ir)?;
     clang_ll(&ll, exe, opt, tg.clang)
 }
@@ -2775,7 +2781,10 @@ fn wasm_link(ll: &str, exe: &Path, opt: &str) -> Result<(), String> {
     put(ir.clone(), ll)?;
     put(rt.clone(), WASM_RT)?;
     put(krt.clone(), WASM_KIR_RT)?;
-    put(allow.clone(), "ksn_write\nksn_exit\n")?;
+    // 未定義の記号として許すのは、`ksn_write` `ksn_exit` と、IR が `wasm-import-name` で宣言した JS の import (`link "env:名前"`) だけ。
+    let mut names: Vec<&str> = vec!["ksn_write", "ksn_exit"];
+    names.extend(ll.split("\"wasm-import-name\"=\"").skip(1).filter_map(|p| p.split('"').next()));
+    put(allow.clone(), &(names.join("\n") + "\n"))?;
     let (oir, ort, okrt) = (dir.join("ir.o"), dir.join("rt.o"), dir.join("kir_rt.o"));
     let triple = "--target=wasm32-unknown-unknown";
     let inc_arg = format!("-isystem{}", inc.display());
