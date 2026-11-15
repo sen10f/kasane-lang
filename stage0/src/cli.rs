@@ -2396,13 +2396,16 @@ const ARTIFACT_DIR: &str = "artifact";
 /// `target/<kind>` に置く、そのビルドのキー。バンドルが今の ksn・ソースに対応するかの判定に使う。
 const BUILD_STAMP: &str = ".build-key";
 
-/// ビルドキーの内訳: 生成条件 (ksn 本体・edition・debug/release・ターゲット・バックエンド)、
+/// ビルドキーの内訳: 生成条件 (ksn 本体・edition・debug/release・ターゲット・バックエンド・clang とそのバージョン・clang の追加引数)、
 /// パッケージと依存のソース、stdlib、ksn 本体のバイト列。
-/// バックエンドは出力が違うので (llvm と c) キーに入れる。
+/// バックエンドは出力が違うので (llvm と c) キーに入れる。clang を差し替えたり引数を変えたりしても前の成果物が `cache hit` で出ないように、
+/// clang 自体もキーに含める。
 fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
     let mut h = Sha256::new();
     let edition = l.pkg.manifest["package"].get("edition").map(|e| e.to_string()).unwrap_or_default();
-    h.update(format!("{}|{}|{}|{}|{}", VERSION, edition, if release { "release" } else { "debug" }, target, backend).as_bytes());
+    let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let clang_args = clang_extra_args().join(" ");
+    h.update(format!("{}|{}|{}|{}|{}|{}|{}|{}", VERSION, edition, if release { "release" } else { "debug" }, target, backend, clang, clang_version_line(&clang), clang_args).as_bytes());
     h.update(package_hash(&l.pkg.root).as_bytes());
     for dp in &l.deps {
         h.update(package_hash(&dp.root).as_bytes());
@@ -2421,6 +2424,18 @@ fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
         h.update(fs::read(exe).unwrap_or_default());
     }
     h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// `clang --version` の 1 行目 (clang が起動できなければ空)。キャッシュキーに clang の世代を入れるために使う。
+fn clang_version_line(clang: &str) -> String {
+    match std::process::Command::new(clang).arg("--version").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+        Err(_) => String::new(),
+    }
 }
 
 /// 実行権限を付ける (Unix のみ。Windows は拡張子 .exe / .cmd で起動されるので不要)。
