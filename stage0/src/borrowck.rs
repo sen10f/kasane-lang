@@ -59,10 +59,10 @@ enum Ev {
     /// ブロックで局所変数が宣言され、スコープに入る。
     ScopeAdd(String),
     /// ブロックの末尾で、そのブロックで宣言した局所変数の寿命が終わる。
-    DropScope(String),
+    DropScope(String, usize),
     /// ブロック・`match` の腕・`if` の枝の値 (持ち主 `holder`) が、その枝で束縛した所有物 `vars` の借用を運ぶ。
     /// 枝の終わりで `vars` は寿命が尽きるので、運んでいれば E3030 (`analyze` が見る)。
-    Escape { holder: String, vars: Vec<String>, line: usize },
+    Escape { holder: String, vars: Vec<(String, usize)>, line: usize },
     Access { root: String, path: Vec<String>, kind: Acc, line: usize },
 }
 
@@ -77,6 +77,8 @@ struct LoanInfo {
     root: String,
     path: Vec<String>,
     mutable: bool,
+    /// 借用元 (`root`) の束縛の位置 (束縛点)。同じ名前の別の束縛と取り違えない。仮引数・分からないときは `None`。
+    site: Option<usize>,
 }
 
 #[derive(Default)]
@@ -116,7 +118,7 @@ struct Low<'a> {
     /// 型検査が move と判定した場所 (式の位置, 場所の鍵)。`Acc::Move` に変える。
     moves: HashSet<(usize, String)>,
     /// ブロックごとの局所変数スタック。ブロックの末尾でそのブロックの変数の寿命が終わる。
-    scope_stack: Vec<Vec<String>>,
+    scope_stack: Vec<Vec<(String, usize)>>,
     /// 関数の仮引数。スコープ解析の初期値 (関数の間ずっと生きている)。
     scope_seed: Vec<String>,
     /// `let x = &<一時値>` / `match &<一時値> { .. }` で、一時値の寿命が束縛先のスコープまで
@@ -128,7 +130,10 @@ struct Low<'a> {
     /// 所有物の局所: 同じ名前の束縛のすべてが型を記録され、どれも借用を持ち得ない型の名前 (`borrowck` で求める)。
     /// 枝の値がこれの借用を運ぶと E3030 (`Ev::Escape`)。参照を通した分解 (`match &o { Some(p) => .. }`) の束縛は
     /// 型が記録されないので、同名のものがあれば入らない (黙る)。
-    owned: HashSet<String>,
+    owned: HashSet<(usize, String)>,
+    /// 型が記録されていて、参照でないと分かる束縛点。参照の変数 (または型の分からない束縛) の場所への保存は、
+    /// その参照の指す先にも保存されたとみなす (`p = &mut h; p.r = s.as_str()`)。ここに入る束縛は指す先を持たない。
+    nonref: HashSet<(usize, String)>,
 }
 
 /// 値を持つ式 (`match` の腕、`if` の枝、ブロック式) の値として外へ運ぶ借用を、どの枝から集めるか。
@@ -774,12 +779,7 @@ impl<'a> Low<'a> {
                 if sroot == rroot {
                     continue;
                 }
-                let id = self.loans.len();
-                self.loans.push(LoanInfo {
-                    root: sroot.clone(),
-                    path: vec![],
-                    mutable,
-                });
+                let id = self.new_loan(sroot.clone(), vec![], mutable);
                 self.emit(c, Ev::Loan {
                     holder: Holder::Var(rroot.clone()),
                     id,
@@ -838,8 +838,7 @@ impl<'a> Low<'a> {
         for s in srcs {
             match s {
                 Src::Place { root, path, mutable } => {
-                    let id = self.loans.len();
-                    self.loans.push(LoanInfo { root, path, mutable });
+                    let id = self.new_loan(root, path, mutable);
                     self.emit(n, Ev::Loan { holder: holder.clone(), id });
                 }
                 Src::Alias(from) => {
@@ -1162,23 +1161,40 @@ impl<'a> Low<'a> {
         // 寿命が尽きるのは「ブロックで作った所有物」だけ。参照の別名 (`let p = s`) は
         // 元の借用の寿命を持つので、ここで DropScope しない。
         let vars = self.scope_stack.pop().unwrap_or_default();
-        for v in vars {
-            if self.owned.contains(&v) {
-                self.emit(cur, Ev::DropScope(v));
+        self.drop_owned(cur, vars);
+        cur
+    }
+
+    /// 束縛点ごとに、所有物 (`owned`) だけ寿命を終わらせる。参照の別名は元の借用の寿命を持つ。
+    fn drop_owned(&mut self, cur: usize, vars: Vec<(String, usize)>) {
+        for (v, site) in vars {
+            if self.owned.contains(&(site, v.clone())) {
+                self.emit(cur, Ev::DropScope(v, site));
             }
         }
-        cur
+    }
+
+    /// 名前 `name` が今指す束縛の束縛点 (内側のスコープから探す)。仮引数・不明は `None`。
+    fn site_of(&self, name: &str) -> Option<usize> {
+        self.scope_stack.iter().rev().flat_map(|l| l.iter().rev()).find(|(n, _)| n == name).map(|(_, s)| *s)
+    }
+
+    fn new_loan(&mut self, root: String, path: Vec<String>, mutable: bool) -> usize {
+        let site = self.site_of(&root);
+        self.loans.push(LoanInfo { root, path, mutable, site });
+        self.loans.len() - 1
     }
 
     /// `break` / `continue` で抜けるブロック (スコープ深さ `depth` 以降) の局所変数の寿命を、
     /// その場で終わらせる (ブロック末尾の `DropScope` は通らないため)。
     /// `lower_block` と同じだが、ブロックの値の借用を、そのブロックの局所変数の寿命が尽きる前に合成の持ち主へ集める
     /// (集めたローンの借用元がブロックの局所なら、そのあと `DropScope` で寿命切れになる)。
-    fn lower_block_value(&mut self, b: &V, mut cur: usize, holder: &str, binds: &[String]) -> usize {
+    fn lower_block_value(&mut self, b: &V, mut cur: usize, holder: &str, binds: &[String], base: usize) -> usize {
         if nname(b) != "Block" {
             let end = self.lower_expr(b, cur);
             self.collect_value(end, holder, binds, b);
-            self.escape_check(end, holder, binds.to_vec(), b);
+            let dying: Vec<(String, usize)> = self.scope_stack.iter().skip(base).flatten().cloned().collect();
+            self.escape_check(end, holder, dying, b);
             return end;
         }
         self.scope_stack.push(vec![]);
@@ -1187,22 +1203,17 @@ impl<'a> Low<'a> {
         }
         self.collect_value(cur, holder, binds, b);
         // 枝の束縛 (`match` の腕) と、ブロックの中で宣言した局所が、この枝の終わりで寿命が尽きる。
-        let mut dying = binds.to_vec();
-        dying.extend(self.scope_stack.last().cloned().unwrap_or_default());
+        let dying: Vec<(String, usize)> = self.scope_stack.iter().skip(base).flatten().cloned().collect();
         self.escape_check(cur, holder, dying, b);
         let vars = self.scope_stack.pop().unwrap_or_default();
-        for v in vars {
-            if self.owned.contains(&v) {
-                self.emit(cur, Ev::DropScope(v));
-            }
-        }
+        self.drop_owned(cur, vars);
         cur
     }
 
     /// 枝の値 (持ち主 `holder`) が、枝の終わりで寿命が尽きる所有物 `dying` の借用を運んでいないかを、
     /// `analyze` で見るために `Ev::Escape` を置く。`dying` のうち所有物の局所 (`owned`) だけを対象にする。
-    fn escape_check(&mut self, n: usize, holder: &str, dying: Vec<String>, body: &V) {
-        let vars: Vec<String> = dying.into_iter().filter(|v| self.owned.contains(v)).collect();
+    fn escape_check(&mut self, n: usize, holder: &str, dying: Vec<(String, usize)>, body: &V) {
+        let vars: Vec<(String, usize)> = dying.into_iter().filter(|(v, s)| self.owned.contains(&(*s, v.clone()))).collect();
         if vars.is_empty() {
             return;
         }
@@ -1213,17 +1224,8 @@ impl<'a> Low<'a> {
     fn drop_scopes_from(&mut self, cur: usize, depth: usize) {
         // `break`/`continue` で抜けるブロックの局所も、寿命が尽きるのは「所有物」だけ。
         // 参照の別名は元の借用の寿命を持つ。
-        let vars: Vec<String> = self
-            .scope_stack
-            .iter()
-            .skip(depth)
-            .flatten()
-            .cloned()
-            .filter(|v| self.owned.contains(v))
-            .collect();
-        for v in vars {
-            self.emit(cur, Ev::DropScope(v));
-        }
+        let vars: Vec<(String, usize)> = self.scope_stack.iter().skip(depth).flatten().cloned().collect();
+        self.drop_owned(cur, vars);
     }
 
     fn lower_stmt(&mut self, s: &V, cur: usize) -> usize {
@@ -1239,12 +1241,6 @@ impl<'a> Low<'a> {
                 if self.is_direct_temp_ref(init) {
                     for b in &binds {
                         self.temp_extended.insert(b.clone());
-                    }
-                }
-                // `let` で宣言した変数は、このブロックのスコープに入る。
-                if let Some(top) = self.scope_stack.last_mut() {
-                    for b in &binds {
-                        top.push(b.clone());
                     }
                 }
                 // `let r2 = *rr` (`rr: &&T`) は、型が借用を持ち得ないと分かる (`plain`) 場合以外は、
@@ -1278,6 +1274,12 @@ impl<'a> Low<'a> {
                 // 分解の束縛 (`let (a, b) = t`) は、右辺の要素・フィールドの借用 (保存されたローンを含む) を伝える。
                 if matches!(nname(&f[0]), "PTuple" | "PStruct") && !is_nil(init) {
                     self.hold_pat(c, &f[0], init);
+                }
+                // `let` で宣言した変数は、このブロックのスコープに入る。借用元の名前は、右辺を見終えてから (遮蔽の前の束縛を指す)。
+                if let Some(top) = self.scope_stack.last_mut() {
+                    for b in &binds {
+                        top.push((b.clone(), nline(s)));
+                    }
                 }
                 c
             }
@@ -1465,6 +1467,7 @@ impl<'a> Low<'a> {
             temp_extended: HashSet::new(),
             plain: self.plain.clone(),
             owned: self.owned.clone(),
+            nonref: self.nonref.clone(),
         };
         let entry = sub.new_node();
         let exit = sub.new_node();
@@ -1474,7 +1477,7 @@ impl<'a> Low<'a> {
             if st(tel(c, 0)) == "&" && self.locals.contains(&name) {
                 let h = format!("$cap{}", k);
                 let id = sub.loans.len();
-                sub.loans.push(LoanInfo { root: name, path: vec![], mutable: false });
+                sub.loans.push(LoanInfo { root: name, path: vec![], mutable: false, site: None });
                 sub.emit(entry, Ev::Def(h.clone()));
                 sub.emit(entry, Ev::Loan { holder: Holder::Var(h.clone()), id });
                 sub.emit(exit, Ev::Use(h));
@@ -1593,7 +1596,7 @@ impl<'a> Low<'a> {
                 // `else` のある `if` は値を持つ: 両枝の末尾の値の借用を、枝の終わりで合成の持ち主に集める
                 let holder = if is_nil(&f[2]) { None } else { Some(self.value_holder(e)) };
                 let t_end = match &holder {
-                    Some(h) => self.lower_block_value(&f[1], then_n, h, &[]),
+                    Some(h) => { let base = self.scope_stack.len(); self.lower_block_value(&f[1], then_n, h, &[], base) }
                     None => self.lower_block(&f[1], then_n),
                 };
                 self.edge(t_end, join);
@@ -1601,7 +1604,7 @@ impl<'a> Low<'a> {
                     else_n
                 } else {
                     match &holder {
-                        Some(h) => self.lower_block_value(&f[2], else_n, h, &[]),
+                        Some(h) => { let base = self.scope_stack.len(); self.lower_block_value(&f[2], else_n, h, &[], base) }
                         None => self.lower_block(&f[2], else_n),
                     }
                 };
@@ -1653,18 +1656,20 @@ impl<'a> Low<'a> {
                         self.temp_extended.insert(b.clone());
                     }
                 }
+                // 束縛は反復ごとの層に入れ、反復の終わり (と `break` / `continue`) で寿命が尽きる。
+                let depth = self.scope_stack.len();
                 for b in &binds {
                     self.emit(body, Ev::Def(b.clone()));
                     self.emit(body, Ev::ScopeAdd(b.clone()));
-                    if let Some(top) = self.scope_stack.last_mut() {
-                        top.push(b.clone());
-                    }
                     let srcs = self.loan_sources(&f[1]);
                     self.hold(body, Holder::Var(b.clone()), srcs);
                 }
-                self.loops.push((head, exit, self.scope_stack.len()));
+                self.scope_stack.push(binds.iter().map(|b| (b.clone(), nline(e))).collect());
+                self.loops.push((head, exit, depth));
                 let end = self.lower_block(&f[2], body);
                 self.loops.pop();
+                let vars = self.scope_stack.pop().unwrap_or_default();
+                self.drop_owned(end, vars);
                 self.edge(end, head);
                 exit
             }
@@ -1691,14 +1696,14 @@ impl<'a> Low<'a> {
                             self.temp_extended.insert(b.clone());
                         }
                     }
+                    // 腕の束縛は腕ごとの層に入れ、腕の終わりで寿命が尽きる (囲むブロックの終わりまで延ばさない)。
+                    // 借用元の名前は、束縛を入れる前の見え方で決める (`Some(o) => ..` が被検査式 `o` を遮らない)。
+                    let base = self.scope_stack.len();
                     // 分解の腕は、部分パターンごとに要素・フィールドの借用を伝える。形が分からなければ従来どおり。
                     let known = matches!(nname(&a[0]), "PTuple" | "PStruct") && {
                         for b in &binds {
                             self.emit(an, Ev::Def(b.clone()));
                             self.emit(an, Ev::ScopeAdd(b.clone()));
-                            if let Some(top) = self.scope_stack.last_mut() {
-                                top.push(b.clone());
-                            }
                         }
                         self.hold_pat(an, &a[0], &f[0])
                     };
@@ -1706,9 +1711,6 @@ impl<'a> Low<'a> {
                         for b in &binds {
                             self.emit(an, Ev::Def(b.clone()));
                             self.emit(an, Ev::ScopeAdd(b.clone()));
-                            if let Some(top) = self.scope_stack.last_mut() {
-                                top.push(b.clone());
-                            }
                             // 形が分からない分解 (`(a, n) => ..` を関数呼び出しの戻り値に対して行う) は、
                             // 型が借用を持ち得ないと分かる束縛 (`plain`) 以外へ右辺の借用を配る (fail-closed)。
                             if !(matches!(nname(&a[0]), "PTuple" | "PStruct") && self.plain.contains(b)) {
@@ -1717,7 +1719,10 @@ impl<'a> Low<'a> {
                             }
                         }
                     }
-                    let end = self.lower_block_value(&a[1], an, &holder, &binds);
+                    self.scope_stack.push(binds.iter().map(|b| (b.clone(), nline(&a[0]))).collect());
+                    let end = self.lower_block_value(&a[1], an, &holder, &binds, base);
+                    let vars = self.scope_stack.pop().unwrap_or_default();
+                    self.drop_owned(end, vars);
                     self.edge(end, join);
                 }
                 join
@@ -1785,7 +1790,8 @@ impl<'a> Low<'a> {
             "Block" => {
                 // ブロック式の値: 末尾の式の借用を、ブロックの終わりで合成の持ち主に集める
                 let holder = self.value_holder(e);
-                self.lower_block_value(e, cur, &holder, &[])
+                let base = self.scope_stack.len();
+                self.lower_block_value(e, cur, &holder, &[], base)
             }
             "Unsafe" => self.lower_block(&f[2], cur),
             // `with 名前 = 初期化式 close 後始末式 { 本体 }`: 本体のあとに後始末式が続く経路で近似する
@@ -2901,21 +2907,22 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
-        // 所有物の局所: 同じ名前の束縛のすべてが型を記録されていて、どれも借用を持ち得ない型のもの。
-        // 参照を通した分解 (`match &o { Some(p) => .. }`) は型を記録されないので、同名のものが 1 つでもあれば入らない (黙る)。
-        let mut recorded: HashMap<String, (usize, bool)> = HashMap::new();
-        for ((d, _, name), ty) in self.let_tys.iter() {
-            if *d == di {
-                let e = recorded.entry(name.clone()).or_insert((0, true));
-                e.0 += 1;
-                e.1 &= self.ty_borrow_free(ty);
+        // 所有物の局所: 型を記録されていて、借用を持ち得ない型の束縛点 (束縛の位置 + 名前)。名前でなく束縛点で数えるので、
+        // 同じ名前の兄弟ブロックの別の束縛 (`&str` など) が、所有物の束縛の寿命の終わりを消さない。
+        // 参照を通した分解 (`match &o { Some(p) => .. }`) は型を記録されないので、入らない (黙る)。
+        let mut owned: HashSet<(usize, String)> = HashSet::new();
+        let mut nonref: HashSet<(usize, String)> = HashSet::new();
+        for ((d, line, name), ty) in self.let_tys.iter() {
+            if *d != di {
+                continue;
+            }
+            if self.ty_borrow_free(ty) {
+                owned.insert((*line, name.clone()));
+            }
+            if !matches!(ty, crate::types::Ty::Ref(..) | crate::types::Ty::Unknown | crate::types::Ty::Var(_) | crate::types::Ty::Param(_)) {
+                nonref.insert((*line, name.clone()));
             }
         }
-        let owned: HashSet<String> = total
-            .iter()
-            .filter(|(n, t)| recorded.get(*n).map_or(false, |&(c, free)| free && c == **t))
-            .map(|(n, _)| n.clone())
-            .collect();
         let plain = self.plain_binds(di);
         let mut low = Low {
             p: self.p,
@@ -2936,6 +2943,7 @@ impl<'a> Checker<'a> {
             temp_extended: HashSet::new(),
             plain,
             owned,
+            nonref,
         };
         // 参照を別の引数の指す先 (Vec 要素・構造体欄) に保存する際の
         // ライフタイム不一致 (d22)。
@@ -3110,10 +3118,10 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                 st_.holders.remove(&h);
             }
         }
-        Ev::DropScope(v) => {
+        Ev::DropScope(v, site) => {
             st_.scope.remove(v);
             for (id, l) in low.loans.iter().enumerate() {
-                if &l.root == v {
+                if &l.root == v && l.site == Some(*site) {
                     st_.dead.insert(id);
                 }
             }
@@ -3316,7 +3324,7 @@ fn analyze(low: &Low) -> Vec<(usize, String)> {
                 if let Some(ids) = stt.holders.get(&Holder::Var(holder.clone())) {
                     for &id in ids {
                         let r = &low.loans[id].root;
-                        if vars.contains(r) {
+                        if vars.iter().any(|(v, s)| v == r && low.loans[id].site == Some(*s)) {
                             let m = format!("returns a reference to the local variable `{}`, which does not live long enough", r);
                             if !out.iter().any(|(l, t)| l == line && *t == m) {
                                 out.push((*line, m));
