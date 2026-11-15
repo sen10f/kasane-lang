@@ -45,8 +45,8 @@ trait std.json.ToJson pub
 end std.json.ToJson
 
 type std.json.Value['a] derive [Clone, Copy] pub
-    doc: &'a std.json.Doc pub
-    at: usize pub
+    doc: &'a std.json.Doc
+    at: usize
 end std.json.Value
 
 impl std.json.FromJson for alloc.string.String<std.alloc.System>
@@ -80,6 +80,14 @@ impl[T: std.json.FromJson] std.json.FromJson for core.option.Option<T>
 fn std.json.Doc.root['a](self: &'a std.json.Doc) -> std.json.Value<'a> uses [] panics never pub
     std.json.Value { doc: self, at: self.top }
 end std.json.Doc.root
+
+fn std.json.Doc.value_at['a](self: &'a std.json.Doc, at: usize) -> Option<std.json.Value<'a>> uses [] panics never pub
+    if at >= self.nodes.len() {
+        None
+    } else {
+        Some(std.json.Value { doc: self, at: at })
+    }
+end std.json.Doc.value_at
 
 impl[A: alloc.alloc.Allocator] std.json.ToJson for alloc.string.String<A>
 fn std.json.ToJson.alloc.string.String.to_json[A: alloc.alloc.Allocator](self: &alloc.string.String<A>, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
@@ -173,6 +181,10 @@ impl std.json.ToJson for usize
 fn std.json.ToJson.usize.to_json(self: &usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
     out.push_u64(u64.from_usize(*self))
 end std.json.ToJson.usize.to_json
+
+fn std.json.Value.index(self: &std.json.Value) -> usize uses [] panics never pub
+    self.at
+end std.json.Value.index
 
 fn std.json.arr_at(doc: &std.json.Doc, at: usize) -> Option<(usize, usize)>
     match doc.nodes.as_slice().get(at) {
