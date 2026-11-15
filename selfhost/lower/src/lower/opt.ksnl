@@ -365,9 +365,17 @@ end lower.opt.unit_variant
 // メソッドの呼び出し (利用者の関数): 受け手は宣言の `self` の型に合わせて参照する (自動参照・自動逆参照)。
 // recv は受け手の式 (局所の名前なら loc の添字、それ以外は recv_node の式)。
 fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], item: usize, recv_node: usize, loc: usize, args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    if lower.inst.is_generic(env, item) {
-        lower.cx.fail(c, "総称のメソッド (未対応)")?
-        return lower.expr.dummy(c, t)
+    let generic = lower.inst.is_generic(env, c, item)
+    let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut key = lower.tyk.item_fqn(env, item)
+    if generic {
+        let rt0 = if loc != 0usize {
+            lower.cx.tyof_t(c, loc - 1usize)
+        } else {
+            lower.expr.tyof(c, recv_node)?
+        }
+        subs = lower.inst.method_args(env, c, p, item, rt0, args)?
+        key = lower.inst.key(env, c, key.as_str(), &subs)?
     }
     let file = types.infer.item_file(env, item)
     let node = types.infer.item_node(env, item)
@@ -414,10 +422,9 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, args, j), types.ty.UNKNOWN)?
         vs.push(a.v)?
     }
-    let fqn = lower.tyk.item_fqn(env, item)
-    lower.expr.enqueue(c, fqn.as_str(), item + 1usize, alloc.vec.Vec.new(std.alloc.SYSTEM), 0usize)?
+    lower.expr.enqueue(c, key.as_str(), item + 1usize, subs, t)?
     let rt = lower.tyk.text(env, c, t)?
-    let co = lower.cx.cat2("call ", fqn.as_str())?
+    let co = lower.cx.cat2("call ", key.as_str())?
     let co2 = lower.cx.cat2(co.as_str(), "(")?
     let co3 = lower.cx.cat2(co2.as_str(), lower.cx.vlist(&vs)?.as_str())?
     let co4 = lower.cx.cat2(co3.as_str(), ")")?

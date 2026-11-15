@@ -233,7 +233,7 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     // 総称の関数は型引数を照合で決めて、インスタンスの鍵 (fqn<型,..>) で下ろす。
     let mut key = lower.cx.own(fqn.as_str())?
     let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    if lower.inst.is_generic(env, item) {
+    if lower.inst.is_generic(env, c, item) {
         subs = lower.inst.args_of(env, c, p, item, n)?
         key = lower.inst.key(env, c, fqn.as_str(), &subs)?
     }
