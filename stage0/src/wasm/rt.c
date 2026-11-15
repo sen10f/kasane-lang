@@ -185,7 +185,11 @@ long write(int fd, const void *p, size_t n) {
     return (long)r;
 }
 
+/* `exit` を通った (panic・終了コード) なら 1。JS が `ksn_exit` の例外を捕まえた後の `ksn_resume` を拒む。 */
+int ksn_exited;
+
 void exit(int code) {
+    ksn_exited = 1;
     ksn_exit(code);
     __builtin_unreachable();
 }

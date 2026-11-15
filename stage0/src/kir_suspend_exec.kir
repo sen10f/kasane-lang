@@ -1,35 +1,22 @@
 fn ksn.task.running key=ksn.task.running uses=[] panics=never stack=- ret=bool
   b0():
-    %0: ptr = global.bytes ksn.task.g 64
+    %0: ptr = global.bytes ksn.task.g 56
     %1: ptr = mem.load.ptr %0 +0
     %2: ptr = const.ptr 0
     %3: bool = icmp.ne.ptr %1, %2
-    %4: u32 = mem.load.u32 %0 +56
-    %5: u32 = const.u32 0
-    %6: bool = icmp.eq.u32 %4, %5
-    %7: bool = and.bool %3, %6
-    ret %7
-end ksn.task.running
-
-fn ksn.task.ended key=ksn.task.ended uses=[] panics=never stack=- ret=bool
-  b0():
-    %0: ptr = global.bytes ksn.task.g 64
-    %1: u32 = mem.load.u32 %0 +56
-    %2: u32 = const.u32 0
-    %3: bool = icmp.ne.u32 %1, %2
     ret %3
-end ksn.task.ended
+end ksn.task.running
 
 fn ksn.task.count key=ksn.task.count uses=[] panics=never stack=- ret=usize
   b0():
-    %0: ptr = global.bytes ksn.task.g 64
+    %0: ptr = global.bytes ksn.task.g 56
     %1: usize = mem.load.usize %0 +8
     ret %1
 end ksn.task.count
 
 fn ksn.task.entry key=ksn.task.entry uses=[] panics=never stack=- ret=ptr
   b0(%0: usize):
-    %1: ptr = global.bytes ksn.task.g 64
+    %1: ptr = global.bytes ksn.task.g 56
     %2: ptr = mem.load.ptr %1 +0
     %3: usize = const.usize 40
     %4: usize = mul.usize.wrap %0, %3
@@ -86,7 +73,7 @@ fn ksn.task.spawn key=ksn.task.spawn uses=[alloc] panics=may stack=- ret=ptr
     %2: bool = call ksn.task.running()
     br_if %2, b1(%0, %1), b2()
   b1(%3: u32, %4: ptr):
-    %5: ptr = global.bytes ksn.task.g 64
+    %5: ptr = global.bytes ksn.task.g 56
     %6: usize = mem.load.usize %5 +8
     %7: usize = mem.load.usize %5 +16
     %8: bool = icmp.eq.usize %6, %7
@@ -201,7 +188,7 @@ end ksn.task.first_undone
 
 fn ksn.task.block key=ksn.task.block uses=[] panics=never stack=- ret=unit
   b0(%0: usize):
-    %1: ptr = global.bytes ksn.task.g 64
+    %1: ptr = global.bytes ksn.task.g 56
     %2: usize = mem.load.usize %1 +24
     %3: u32 = const.u32 1
     %4: unit = call ksn.task.set_state(%2, %3)
@@ -212,7 +199,7 @@ end ksn.task.block
 
 fn ksn.task.yield_mark key=ksn.task.yield_mark uses=[] panics=never stack=- ret=unit
   b0():
-    %0: ptr = global.bytes ksn.task.g 64
+    %0: ptr = global.bytes ksn.task.g 56
     %1: usize = mem.load.usize %0 +24
     %2: u32 = const.u32 0
     %3: unit = call ksn.task.set_state(%1, %2)
@@ -242,7 +229,7 @@ fn ksn.task.run.new key=ksn.task.run.new uses=[alloc] panics=may stack=- ret=ptr
     %3: unit = panic "std.task.block_on: already running (nested block_on is not supported in stage 1)"
     unreachable
   b2(%4: u32, %5: ptr):
-    %6: ptr = global.bytes ksn.task.g 64
+    %6: ptr = global.bytes ksn.task.g 56
     %7: usize = const.usize 320
     %8: ptr = heap.alloc %7
     %9: ptr = const.ptr 0
@@ -260,8 +247,6 @@ fn ksn.task.run.new key=ksn.task.run.new uses=[alloc] panics=may stack=- ret=ptr
     %18: unit = mem.store.usize %6 +24, %16
     %19: unit = mem.store.usize %6 +32, %16
     %20: unit = mem.store.usize %6 +40, %16
-    %21: u32 = const.u32 0
-    %22: unit = mem.store.u32 %6 +56, %21
     %23: usize = mem.load.usize %6 +48
     %24: usize = const.usize 1
     %25: usize = add.usize.wrap %23, %24
@@ -285,7 +270,7 @@ end ksn.task.run.new
 fn ksn.task.run.poll key=ksn.task.run.poll uses=[alloc] panics=may stack=- ret=bool
   b0(%0: ptr):
     %1: unit = call ksn.task.deliver()
-    %2: ptr = global.bytes ksn.task.g 64
+    %2: ptr = global.bytes ksn.task.g 56
     %3: usize = mem.load.usize %2 +40
     %4: usize = const.usize 0
     %5: bool = icmp.eq.usize %3, %4
@@ -302,7 +287,7 @@ fn ksn.task.run.poll key=ksn.task.run.poll uses=[alloc] panics=may stack=- ret=b
     %12: bool = icmp.eq.usize %10, %11
     br_if %12, b15(%10), b16(%10)
   b4():
-    %13: ptr = global.bytes ksn.task.g 64
+    %13: ptr = global.bytes ksn.task.g 56
     %14: usize = mem.load.usize %13 +24
     br b13(%14)
   b5():
@@ -338,7 +323,7 @@ fn ksn.task.run.poll key=ksn.task.run.poll uses=[alloc] panics=may stack=- ret=b
     %36: bool = icmp.eq.usize %32, %35
     br_if %36, b12(), b13(%32)
   b12():
-    %37: ptr = global.bytes ksn.task.g 64
+    %37: ptr = global.bytes ksn.task.g 56
     %38: usize = const.usize 1
     %39: unit = mem.store.usize %37 +32, %38
     %40: usize = const.usize 0
@@ -354,20 +339,20 @@ fn ksn.task.run.poll key=ksn.task.run.poll uses=[alloc] panics=may stack=- ret=b
     %47: bool = call ksn.task.js_waiting()
     br_if %47, b17(%46), b18()
   b15(%48: usize):
-    %49: ptr = global.bytes ksn.task.g 64
+    %49: ptr = global.bytes ksn.task.g 56
     %50: usize = mem.load.usize %49 +32
     %51: usize = const.usize 1
     %52: bool = icmp.eq.usize %50, %51
     br_if %52, b6(), b16(%48)
   b16(%53: usize):
-    %54: ptr = global.bytes ksn.task.g 64
+    %54: ptr = global.bytes ksn.task.g 56
     %55: unit = mem.store.usize %54 +24, %53
     %56: u32 = call ksn.task.tag(%53)
     %57: ptr = call ksn.task.fp(%53)
     %58: bool = call ksn.task.dispatch(%56, %57)
     br_if %58, b11(%53), b13(%53)
   b17(%59: usize):
-    %60: ptr = global.bytes ksn.task.g 64
+    %60: ptr = global.bytes ksn.task.g 56
     %61: unit = mem.store.usize %60 +40, %59
     %62: bool = const.bool false
     ret %62
@@ -576,7 +561,7 @@ fn ksn.task.await.poll key=ksn.task.await.poll uses=[suspend,alloc] panics=may s
   b6(%17: ptr, %18: usize):
     %19: u32 = const.u32 1
     %20: unit = mem.store.u32 %17 +0, %19
-    %21: ptr = global.bytes ksn.task.g 64
+    %21: ptr = global.bytes ksn.task.g 56
     %22: usize = mem.load.usize %21 +24
     %23: u32 = const.u32 4
     %24: unit = call ksn.task.set_state(%22, %23)
@@ -614,7 +599,7 @@ fn ksn.task.finish key=ksn.task.finish uses=[alloc] panics=never stack=- ret=uni
   b0():
     %0: usize = const.usize 0
     %1: unit = call ksn.task.free_from(%0)
-    %2: ptr = global.bytes ksn.task.g 64
+    %2: ptr = global.bytes ksn.task.g 56
     %3: ptr = mem.load.ptr %2 +0
     %4: unit = heap.free %3
     %5: ptr = const.ptr 0
@@ -624,10 +609,8 @@ fn ksn.task.finish key=ksn.task.finish uses=[alloc] panics=never stack=- ret=uni
     %9: unit = mem.store.usize %2 +16, %7
     %10: unit = mem.store.usize %2 +24, %7
     %11: unit = mem.store.usize %2 +32, %7
-    %12: u32 = const.u32 1
-    %13: unit = mem.store.u32 %2 +56, %12
-    %14: unit = const.unit ()
-    ret %14
+    %12: unit = const.unit ()
+    ret %12
 end ksn.task.finish
 
 fn ksn.task.yield key=ksn.task.yield uses=[suspend] panics=never stack=- ret=unit
@@ -672,7 +655,7 @@ fn ksn.task.yield.poll key=ksn.task.yield.poll uses=[suspend,alloc] panics=never
     %8: u32 = const.u32 1
     %9: unit = mem.store.u32 %7 +0, %8
     %10: unit = call ksn.task.yield_mark()
-    %11: ptr = global.bytes ksn.task.g 64
+    %11: ptr = global.bytes ksn.task.g 56
     %12: usize = mem.load.usize %11 +24
     %13: unit = call ksn.task.set_leaf(%12, %7)
     %14: bool = const.bool false
@@ -681,7 +664,7 @@ end ksn.task.yield.poll
 
 fn ksn.task.cancel key=ksn.task.cancel uses=[alloc] panics=may stack=- ret=unit
   b0(%0: usize, %1: usize):
-    %2: ptr = global.bytes ksn.task.g 64
+    %2: ptr = global.bytes ksn.task.g 56
     %3: bool = call ksn.task.running()
     br_if %3, b1(%0, %1, %2), b11()
   b1(%4: usize, %5: usize, %6: ptr):
@@ -784,7 +767,7 @@ fn ksn.task.wait.poll key=ksn.task.wait.poll uses=[suspend,alloc] panics=may sta
   b3(%7: ptr):
     %8: usize = mem.load.usize %7 +8
     %9: usize = mem.load.usize %7 +16
-    %10: ptr = global.bytes ksn.task.g 64
+    %10: ptr = global.bytes ksn.task.g 56
     %11: usize = mem.load.usize %10 +48
     %12: bool = icmp.ne.usize %9, %11
     br_if %12, b4(), b5(%7, %8, %9)
@@ -805,7 +788,7 @@ fn ksn.task.wait.poll key=ksn.task.wait.poll uses=[suspend,alloc] panics=may sta
     %26: u32 = const.u32 1
     %27: unit = mem.store.u32 %24 +0, %26
     %28: unit = call ksn.task.block(%25)
-    %29: ptr = global.bytes ksn.task.g 64
+    %29: ptr = global.bytes ksn.task.g 56
     %30: usize = mem.load.usize %29 +24
     %31: unit = call ksn.task.set_leaf(%30, %24)
     %32: bool = const.bool false

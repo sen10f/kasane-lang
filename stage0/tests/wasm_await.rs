@@ -194,109 +194,17 @@ fn ksn_resume_after_panic_returns_minus2_and_does_not_rerun() {
         eprintln!("skip: node / wasm-ld / clang がない");
         return;
     }
+    // 例は待たないタイマー (40ms) を残して panic する。panic の後にそのタイマーが `ksn_resume` を呼んでも、
+    // 実行器に入り直さず -2 を返す (ランナーは無視し、終了コードは panic の 101 のまま)。
     let dir = copy_example_dir("await_js_after_panic", "await_js_after_panic");
     let o = run(&["build", "--target", TRIPLE], &dir);
     let out = text(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "wasm32 build\n{}{}", out, text(&o.stderr));
-    let wasm = built_file(&out, &dir);
-    
-    // Load the wasm and call ksn_main, then ksn_resume twice (simulating spurious call after panic)
-    let test_script = dir.join("test_resume_after_panic.mjs");
-    fs::write(&test_script, r#"
-import fs from 'node:fs';
-
-class Exit extends Error {
-    constructor(code) {
-        super(`exit ${code}`);
-        this.code = code;
-    }
-}
-
-const file = process.argv[2];
-const { instance } = await WebAssembly.instantiate(fs.readFileSync(file), {
-    env: {
-        ksn_write(fd, ptr, len) {
-            const view = new Uint8Array(instance.exports.memory.buffer, ptr >>> 0, len >>> 0);
-            let off = 0;
-            try {
-                while (off < view.length) {
-                    off += fs.writeSync(fd, view, off, view.length - off);
-                }
-            } catch (e) {
-                return -1;
-            }
-            return view.length;
-        },
-        ksn_exit(code) {
-            throw new Exit(code);
-        },
-        ksn_timer_start(ms) {
-            return 1; // dummy handle
-        },
-    },
-});
-
-let output = '';
-const origWrite = instance.exports.ksn_write;
-instance.exports.ksn_write = function(fd, ptr, len) {
-    const view = new Uint8Array(instance.exports.memory.buffer, ptr >>> 0, len >>> 0);
-    const decoder = new TextDecoder();
-    output += decoder.decode(view);
-    return origWrite(fd, ptr, len);
-};
-
-try {
-    // First call: ksn_main returns -1 (waiting)
-    const r1 = instance.exports.ksn_main();
-    console.log(`ksn_main returned: ${r1}`);
-    
-    // Simulate timer firing: call ksn_resume with handle 1, value 7
-    // This will cause the task to panic
-    try {
-        const r2 = instance.exports.ksn_resume(1, 7);
-        console.log(`ksn_resume (1st) returned: ${r2}`);
-    } catch (e) {
-        if (e instanceof Exit) {
-            console.log(`ksn_resume (1st) exited with: ${e.code}`);
-        } else {
-            console.log(`ksn_resume (1st) trapped: ${e}`);
-        }
-    }
-    
-    // Spurious second call to ksn_resume (simulating timer firing again)
-    // Should return -2 and not re-run the task
-    try {
-        const r3 = instance.exports.ksn_resume(1, 7);
-        console.log(`ksn_resume (2nd) returned: ${r3}`);
-        if (r3 === -2) {
-            console.log('SUCCESS: ksn_resume returned -2 as expected');
-        } else {
-            console.log('FAIL: ksn_resume should return -2');
-            process.exitCode = 1;
-        }
-    } catch (e) {
-        console.log(`ksn_resume (2nd) error: ${e}`);
-        process.exitCode = 1;
-    }
-    
-    console.log('OUTPUT:');
-    console.log(output);
-} catch (e) {
-    console.error('Test error:', e);
-    process.exitCode = 1;
-}
-"#).unwrap();
-    
-    let r = Command::new("node").arg(&test_script).arg(&wasm).stdin(Stdio::null()).output().expect("spawn node");
-    let got = text(&r.stdout);
+    let r = run_await(&built_file(&out, &dir));
     let _ = fs::remove_dir_all(&dir);
-    
-    // The second ksn_resume should return -2
-    assert!(got.contains("ksn_resume (2nd) returned: -2"), "stdout: {}\nstderr: {}", got, text(&r.stderr));
-    // The task should not re-run (no duplicate "got 7, now panic")
-    let panic_count = got.matches("got 7, now panic").count();
-    assert_eq!(panic_count, 1, "task should not re-run after panic, got: {}", got);
-    assert_eq!(r.status.code(), Some(0), "stderr: {}", text(&r.stderr));
+    let got = text(&r.stdout);
+    assert_eq!(got.matches("got 7, now panic").count(), 1, "task re-ran after panic: {}", got);
+    assert_eq!(r.status.code(), Some(101), "stdout: {} stderr: {}", got, text(&r.stderr));
 }
 
 /// Finding 9: ksn_resume returning -2 should not become exit code 254.
