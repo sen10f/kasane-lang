@@ -1,0 +1,28 @@
+// 型検査の結果から、メソッド呼び出しの解決先を 1 ファイル分だけ用意する (効果の表の番号)。
+// acc.tix[節] = 効果の表の番号 + 1。型の表で解決したメソッド (呼び出しの種別 2) で、効果の表にあるものだけ。
+// 解決できない・dyn・閉包の呼び出しは 0 (従来どおり数えるだけ)。
+fn effects.tyinfo.fill(acc: &mut effects.walk.Acc, tout: &types.export.Out, fs: &effects.fns.Fns, file: usize, p: &parse.cur.P) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut tix = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for k in core.iter.range(0usize, p.ast.nodes.len()) {
+        let mut v = 0usize
+        if types.rec.ck_of(&tout.cx.rec, file, k) == 2usize {
+            let it = types.rec.callee_of(&tout.cx.rec, file, k)
+            if it != 0usize {
+                match tout.env.tab.items.as_slice().get(it.wrapping_sub(1usize)) {
+                    Some(item) => {
+                        match effects.fns.lookup(fs, item.fqn.as_str())? {
+                            Some(ix) => {
+                                v = ix.wrapping_add(1usize)
+                            }
+                            None => core.mem.drop(0u8)
+                        }
+                    }
+                    None => core.mem.drop(0u8)
+                }
+            }
+        }
+        tix.push(v)?
+    }
+    acc.tix = tix
+    Ok(())
+end effects.tyinfo.fill

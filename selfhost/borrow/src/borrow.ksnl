@@ -1,6 +1,7 @@
 // 借用・線形性の検査 (セルフホストの段)。使い方: ksn run -- PKG_DIR STD_DIR
 // 出力: `error CODE 路径:行: 内容` の行と、末尾の `summary errors N undec M files K`。
 // undec は判断保留 (誤りとは数えない。受理は errors 0 かつ undec 0)。
+// 型は types.export (型検査の結果の表) から取る。単位の添字は env の srcs と揃う。
 fn borrow.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.fs] panics never
     let pkg = match std.env.arg(0usize) {
         Some(s) => s
@@ -10,40 +11,35 @@ fn borrow.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io
         Some(s) => s
         None => return Ok(())
     }
-    let man = resolve.manifest.read(pkg)?
-    let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let own_src = resolve.manifest.join(pkg, "src")?
-    resolve.load.collect(own_src.as_str(), "", true, &mut srcs)?
-    let deps = man.deps
-    for d in deps.as_slice().iter() {
-        let dir = resolve.manifest.join(pkg, d.path.as_str())?
-        let dsrc = resolve.manifest.join(dir.as_str(), "src")?
-        resolve.load.collect(dsrc.as_str(), "", false, &mut srcs)?
-    }
-    resolve.load.collect(std_dir, "", false, &mut srcs)?
+    let tout = types.export.run(pkg, std_dir)?
     let mut rep = resolve.report.new()?
     let mut tab = borrow.base.tab_new()
-    for s in srcs.as_slice().iter() {
+    let mut k = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
         if s.own && !s.sig {
-            match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
-                Some(p) => borrow.tabfill.types(&mut tab, &p, s.text.as_slice())?
+            match types.env.unit(&tout.env, k) {
+                Some(p) => borrow.tabfill.types(&mut tab, p, s.text.as_slice())?
                 None => core.mem.drop(0u8)
             }
         }
+        k = k.wrapping_add(1usize)
     }
-    for s in srcs.as_slice().iter() {
+    k = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
         if s.own && !s.sig {
-            match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
-                Some(p) => borrow.tabfill.fns(&mut tab, &p, s.text.as_slice())?
+            match types.env.unit(&tout.env, k) {
+                Some(p) => borrow.tabfill.fns(&mut tab, p, s.text.as_slice())?
                 None => core.mem.drop(0u8)
             }
         }
+        k = k.wrapping_add(1usize)
     }
     let mut out = alloc.string.String.new(std.alloc.SYSTEM)
     let mut errors = 0usize
     let mut undec = 0usize
     let mut files = 0usize
-    for s in srcs.as_slice().iter() {
+    k = 0usize
+    for s in tout.env.srcs.as_slice().iter() {
         if s.own && !s.sig {
             match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
                 Some(p) => {
@@ -52,6 +48,7 @@ fn borrow.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io
                         buf.push(*b)?
                     }
                     let mut cx = borrow.cx.new(p, buf, s.path.as_str())?
+                    cx.tcls = borrow.tcls.table(&tout, k, &tab)?
                     borrow.fns.check_file(&tab, &mut cx)?
                     out.push_str(cx.rep.out.as_str())?
                     errors = errors.wrapping_add(cx.rep.errors)
@@ -61,6 +58,7 @@ fn borrow.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io
                 None => core.mem.drop(0u8)
             }
         }
+        k = k.wrapping_add(1usize)
     }
     out.push_str("summary errors ")?
     out.push_u64(u64.from_usize(errors))?

@@ -6,6 +6,7 @@ type effects.walk.Acc pub
     cu: alloc.vec.Vec<bool, std.alloc.System> pub
     fnu: usize pub
     cnt: alloc.vec.Vec<usize, std.alloc.System> pub
+    tix: alloc.vec.Vec<usize, std.alloc.System> pub
 end effects.walk.Acc
 
 // 本体の走査と効果・panic・添字・整数演算の検査。走査の並びは resolve.walk と同じ (局所束縛と名前解決も同じ)。
@@ -28,7 +29,8 @@ fn effects.walk.acc_new() -> Result<effects.walk.Acc, alloc.alloc.AllocError> us
     for _k in core.iter.range(0usize, 10usize) {
         cnt.push(0usize)?
     }
-    Ok(effects.walk.Acc { rep: rep, edges: edges, cs: cs, cu: cu, fnu: 0usize, cnt: cnt })
+    let tix = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    Ok(effects.walk.Acc { rep: rep, edges: edges, cs: cs, cu: cu, fnu: 0usize, cnt: cnt, tix: tix })
 end effects.walk.acc_new
 
 // 二項演算。panics never では、整数の + - * / % は E4004。整数リテラルがないものは型が要る。
@@ -73,7 +75,7 @@ fn effects.walk.bump(acc: &mut effects.walk.Acc, k: usize) -> () uses [] panics 
 end effects.walk.bump
 
 // 呼び出し `f(..)` (callee は Path)。名前を解決して、定義が分かるものだけ callee に渡す。
-fn effects.walk.call_path(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], st: &resolve.scope.St, cx: effects.walk.Cx, acc: &mut effects.walk.Acc, call: parse.ast.Node, callee: parse.ast.Node) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+fn effects.walk.call_path(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], st: &resolve.scope.St, cx: effects.walk.Cx, acc: &mut effects.walk.Acc, call: parse.ast.Node, callee: parse.ast.Node, e: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
     let name = resolve.ast.text(src, callee.a, callee.b)
     let r = resolve.scope.find(t, st, name)?
     let local = r == resolve.scope.Res.Local || r == resolve.scope.Res.Generic
@@ -82,7 +84,13 @@ fn effects.walk.call_path(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &par
         if local && name.ends_with(".unwrap") {
             return effects.walk.unwrap_at(p, acc, cx, call.tok)
         }
-        // `x.m(..)` (局所 x のメソッド) は Path + Call と書かれる。型が要るので数える。
+        // `x.m(..)` (局所 x のメソッド) は、型の表で解決できれば定義の効果と比べる。
+        let tix = effects.walk.tix_at(acc, e)
+        if tix != 0usize {
+            let line = resolve.ast.line_of(p, call.tok)
+            return effects.walk.callee(fs, cx, acc, line, tix.wrapping_sub(1usize), name)
+        }
+        // 解決できなければ数えるだけ。型が要るので、メソッドとして数える。
         let method = name.contains(".")
         if method || r == resolve.scope.Res.Member {
             effects.walk.und(acc, cx, 1usize)
@@ -203,7 +211,7 @@ fn effects.walk.ex(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.
     if k == parse.ast.Kind.Call {
         let callee = parse.ast.get(&p.ast, n.a)
         if callee.kind == parse.ast.Kind.Path {
-            effects.walk.call_path(t, fs, p, src, st, cx, acc, n, callee)?
+            effects.walk.call_path(t, fs, p, src, st, cx, acc, n, callee, e)?
         } else {
             effects.walk.und(acc, cx, 0usize)
             effects.walk.ex(t, fs, p, src, st, cx, acc, n.a)?
@@ -211,10 +219,18 @@ fn effects.walk.ex(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.
         return effects.walk.ex_list(t, fs, p, src, st, cx, acc, n.b)
     }
     if k == parse.ast.Kind.MCall {
-        if resolve.ast.tok_text(p, src, n.b) == "unwrap" {
+        let mname = resolve.ast.tok_text(p, src, n.b)
+        if mname == "unwrap" {
             effects.walk.unwrap_at(p, acc, cx, n.tok)?
         } else {
-            effects.walk.und(acc, cx, 1usize)
+            // レシーバの型から解決したメソッドは、定義の効果と比べる。解決できなければ数えるだけ。
+            let tix = effects.walk.tix_at(acc, e)
+            if tix != 0usize {
+                let line = resolve.ast.line_of(p, n.tok)
+                effects.walk.callee(fs, cx, acc, line, tix.wrapping_sub(1usize), mname)?
+            } else {
+                effects.walk.und(acc, cx, 1usize)
+            }
         }
         effects.walk.ex(t, fs, p, src, st, cx, acc, n.a)?
         return effects.walk.ex_list(t, fs, p, src, st, cx, acc, n.d)
@@ -487,6 +503,14 @@ fn effects.walk.stmt(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cu
     }
     effects.walk.ex(t, fs, p, src, st, cx, acc, s)
 end effects.walk.stmt
+
+// 節 e の型の表による解決先 (効果の表の番号 + 1、0 = 解決できず)。
+fn effects.walk.tix_at(acc: &effects.walk.Acc, e: usize) -> usize uses [] panics never pub
+    match acc.tix.as_slice().get(e) {
+        Some(v) => *v
+        None => 0usize
+    }
+end effects.walk.tix_at
 
 // 判断できなかった数を数える。which: 0 値の呼び出し、1 メソッド、2 推論された宣言、3 効果・panic の変数、4 解決できない名前、5 整数演算 (型が要る)。
 // 呼び出し元が自パッケージの関数のときだけ数える。閉包の本体の中は closure に数える。

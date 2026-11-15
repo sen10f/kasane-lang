@@ -1,0 +1,124 @@
+// 型検査の結果の表 (ノードごと)。検査の途中で書き、終わったあと外から読む。
+// 添字は base[file] + node (file は env の単位の添字、node は単位の AST の節の番号)。
+// ty: 節の型 (arena の添字。読むときは types.ty.find で束縛をたどる。0 = 記録なし)。
+// callee: 呼び出しの解決先 (env の項目の添字 + 1、0 = 解決できず)。
+// ck: 呼び出し・経路の種別 (0 不明、1 関数項目、2 メソッド、3 局所の関数値、4 列挙子、5 局所に続くフィールドの経路)。
+// now_ck・now_callee: 直前に解決した呼び出し (types.rec.note_call が節に書く)。
+type types.rec.Rec pub
+    base: alloc.vec.Vec<usize, std.alloc.System> pub
+    ty: alloc.vec.Vec<usize, std.alloc.System> pub
+    callee: alloc.vec.Vec<usize, std.alloc.System> pub
+    ck: alloc.vec.Vec<usize, std.alloc.System> pub
+    now_ck: usize pub
+    now_callee: usize pub
+end types.rec.Rec
+
+// 直前に解決した呼び出しを空にする (式の検査の入口と出口で呼ぶ)。
+fn types.rec.begin(rec: &mut types.rec.Rec) -> () uses [] panics never pub
+    rec.now_ck = 0usize
+    rec.now_callee = 0usize
+end types.rec.begin
+
+// 節 node の呼び出しの解決先の項目 (env の添字 + 1、0 = 解決できず)。
+fn types.rec.callee_of(rec: &types.rec.Rec, file: usize, node: usize) -> usize uses [] panics never pub
+    let k = types.rec.slot(rec, file, node)
+    match rec.callee.as_slice().get(k) {
+        Some(t) => *t
+        None => 0usize
+    }
+end types.rec.callee_of
+
+// 節 node の呼び出しの種別 (0 = 記録なし)。
+fn types.rec.ck_of(rec: &types.rec.Rec, file: usize, node: usize) -> usize uses [] panics never pub
+    let k = types.rec.slot(rec, file, node)
+    match rec.ck.as_slice().get(k) {
+        Some(t) => *t
+        None => 0usize
+    }
+end types.rec.ck_of
+
+// 記録のない表 (検査の前の初期値)。
+fn types.rec.empty() -> Result<types.rec.Rec, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let base = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let ty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let callee = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let ck = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let now = 0usize
+    Ok(types.rec.Rec { base: base, ty: ty, callee: callee, ck: ck, now_ck: now, now_callee: now })
+end types.rec.empty
+
+// 単位ごとの節の数に合わせて、表を 0 で用意する。
+fn types.rec.new(env: &types.env.Env) -> Result<types.rec.Rec, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut rec = types.rec.empty()?
+    let mut total = 0usize
+    for p in env.units.as_slice().iter() {
+        rec.base.push(total)?
+        total = total.wrapping_add(p.ast.nodes.len())
+    }
+    for k in core.iter.range(0usize, total) {
+        rec.ty.push(0usize)?
+        rec.callee.push(0usize)?
+        rec.ck.push(0usize)?
+        core.mem.drop(k)
+    }
+    Ok(rec)
+end types.rec.new
+
+// 節 node の型を記録する (cx.file の単位)。
+fn types.rec.note(cx: &mut types.chk.Ctx, node: usize, t: usize) -> () uses [] panics never pub
+    let k = types.rec.slot(&cx.rec, cx.file, node)
+    if k < cx.rec.ty.len() {
+        types.rec.set(&mut cx.rec.ty, k, t)
+    }
+end types.rec.note
+
+// 呼び出しの種別と解決先を節 node へ書く (now_ck が 0 なら書かない)。
+fn types.rec.note_call(cx: &mut types.chk.Ctx, node: usize) -> () uses [] panics never pub
+    let k = types.rec.slot(&cx.rec, cx.file, node)
+    if cx.rec.now_ck != 0usize && k < cx.rec.ty.len() {
+        let ck = cx.rec.now_ck
+        let cal = cx.rec.now_callee
+        types.rec.set(&mut cx.rec.ck, k, ck)
+        types.rec.set(&mut cx.rec.callee, k, cal)
+    }
+end types.rec.note_call
+
+// 呼び出しの解決を今の呼び出しとして置く (種別 ck、解決先の項目 callee。0 は解決できず)。
+fn types.rec.resolved(rec: &mut types.rec.Rec, ck: usize, callee: usize) -> () uses [] panics never pub
+    rec.now_ck = ck
+    rec.now_callee = callee
+end types.rec.resolved
+
+// Vec の k 番目を書き換える (範囲外は何もしない)。
+fn types.rec.set(v: &mut alloc.vec.Vec<usize, std.alloc.System>, k: usize, val: usize) -> () uses [] panics never pub
+    match v.as_mut_slice().get_mut(k) {
+        Some(x) => {
+            *x = val
+        }
+        None => core.mem.drop(0u8)
+    }
+end types.rec.set
+
+// 単位 file の節 node の添字。範囲外なら表の長さを返す (読むと記録なし、書くと何もしない)。
+fn types.rec.slot(rec: &types.rec.Rec, file: usize, node: usize) -> usize uses [] panics never pub
+    match rec.base.as_slice().get(file) {
+        Some(b) => {
+            let k = b.wrapping_add(node)
+            if k < rec.ty.len() {
+                k
+            } else {
+                rec.ty.len()
+            }
+        }
+        None => rec.ty.len()
+    }
+end types.rec.slot
+
+// 節 node の記録された型 (記録がなければ 0 = UNKNOWN)。
+fn types.rec.ty_of(rec: &types.rec.Rec, file: usize, node: usize) -> usize uses [] panics never pub
+    let k = types.rec.slot(rec, file, node)
+    match rec.ty.as_slice().get(k) {
+        Some(t) => *t
+        None => 0usize
+    }
+end types.rec.ty_of

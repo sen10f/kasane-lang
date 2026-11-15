@@ -1,5 +1,6 @@
 // 自パッケージの非 sig の単位をすべて検査する。
 fn types.check.all(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    cx.rec = types.rec.new(env)?
     for k_s in core.iter.range(0usize, env.srcs.len()) {
         match env.srcs.as_slice().get(k_s) {
             Some(s) => {
@@ -56,6 +57,7 @@ fn types.check.fn_def(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut typ
     for j in core.iter.range(0usize, resolve.ast.count(p, sg.b)) {
         let prm = parse.ast.get(&p.ast, resolve.ast.item(p, sg.b, j))
         let pt = types.lower.ty(env, ar, cx, p, src, file, prm.b)?
+        types.rec.note(cx, resolve.ast.item(p, sg.b, j), pt)
         types.chk.push(cx, resolve.ast.tok_text(p, src, prm.a), pt, false)?
     }
     let mut ret = types.lower.ty(env, ar, cx, p, src, file, sg.c)?
