@@ -5083,3 +5083,20 @@ fn char_literal_double_quote_does_not_hide_later_uses() {
     let o = run(&["check", "--json"], &t.0);
     assert!(!codes(&text(&o.stdout)).iter().any(|c| c == "E1020"), "{}", text(&o.stdout));
 }
+
+/// 未解決のパターン名 (`Nope.X(v)`) の診断は、そのパターンの行を指す。関数の先頭行 (本体の 0 行扱い) ではない。
+#[test]
+fn unresolved_pattern_reports_its_own_line() {
+    let src = "enum t.E\n    A\n    B(i32)\nend t.E\n\nfn t.main() -> Result<(), std.io.Error> uses [io.console] panics never\n    let m = match t.E.A {\n        Nope.X(v) => v\n        t.E.A => 0i32\n        t.E.B(q) => q\n    }\n    core.mem.drop(m)\n    Ok(())\nend t.main\n";
+    let want = src.lines().position(|l| l.contains("Nope.X")).unwrap() + 1;
+    let t = Tmp::new("pattern_line", src);
+    let o = run(&["check", "--json"], &t.0);
+    let out = text(&o.stdout);
+    let line = out
+        .lines()
+        .find(|l| l.starts_with('{') && l.contains("\"code\": \"E1101\"") && l.contains("unresolved pattern"))
+        .unwrap_or_else(|| panic!("no E1101 for the pattern:\n{}", out));
+    let i = line.find("\"line\": ").expect("line field") + 8;
+    let got: usize = line[i..].chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap();
+    assert_eq!(got, want, "{}", line);
+}

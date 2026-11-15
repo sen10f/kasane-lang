@@ -2057,59 +2057,59 @@ impl<'a> Checker<'a> {
     fn check_header_types(&mut self, di: usize, tys: &[V]) {
         let names = self.def(di).gnames();
         for t in tys {
-            self.ty_names(t, di, &names);
+            self.ty_names(t, di, &names, 0);
         }
     }
 
-    fn ty_names(&mut self, t: &V, di: usize, names: &HashSet<String>) {
+    fn ty_names(&mut self, t: &V, di: usize, names: &HashSet<String>, line: usize) {
         match tag(t).as_str() {
             "named" => {
                 let nm = st(tel(t, 1));
                 if PRELUDE_FQN.contains(&nm.as_str()) {
                     let bare = nm.rsplit('.').next().unwrap();
-                    self.diag("E1110", format!("write the prelude name `{}` without its module path", bare), di, 0);
+                    self.diag("E1110", format!("write the prelude name `{}` without its module path", bare), di, line);
                 }
                 if !nm.contains('.') {
                     if !names.contains(&nm) && !PRELUDE_TYPES.contains(&nm.as_str()) {
-                        self.diag("E1102", format!("unknown type {}", nm), di, 0);
+                        self.diag("E1102", format!("unknown type {}", nm), di, line);
                     }
                 } else if !self.p.types.contains_key(&nm) {
-                    self.diag("E1102", format!("unknown type {}", nm), di, 0);
+                    self.diag("E1102", format!("unknown type {}", nm), di, line);
                 }
                 for (k, a) in items(tel(t, 2)).iter().enumerate() {
                     if tag(a) == "dyn" {
                         // `dyn` は `alloc.boxed.Box` の第1型引数にだけ置ける。ライフタイム境界は `'static` のみ (5.1)。
                         if nm == "alloc.boxed.Box" && k == 0 {
                             if st(tel(a, 2)) != "'static" {
-                                self.diag("E2047", "`Box<dyn ..>` must be written `dyn Tr + 'static`".into(), di, 0);
+                                self.diag("E2047", "`Box<dyn ..>` must be written `dyn Tr + 'static`".into(), di, line);
                             }
                             self.check_dyn_types(tel(a, 1), di);
                         } else {
-                            self.diag("E2047", "`dyn` may appear only behind `&` / `&mut` or as the first type argument of `alloc.boxed.Box`".into(), di, 0);
+                            self.diag("E2047", "`dyn` may appear only behind `&` / `&mut` or as the first type argument of `alloc.boxed.Box`".into(), di, line);
                             self.check_dyn_types(tel(a, 1), di);
                         }
                     } else if matches!(tag(a).as_str(), "named" | "ref" | "tuple" | "array" | "slice" | "prim") {
-                        self.ty_names(a, di, names);
+                        self.ty_names(a, di, names, line);
                     }
                 }
             }
             "dyn" => {
-                self.diag("E2047", "`dyn` may appear only behind `&` / `&mut` or as the first type argument of `alloc.boxed.Box`".into(), di, 0);
+                self.diag("E2047", "`dyn` may appear only behind `&` / `&mut` or as the first type argument of `alloc.boxed.Box`".into(), di, line);
                 self.check_dyn_types(tel(t, 1), di);
             }
             "ref" if tag(tel(t, 2)) == "dyn" => self.check_dyn_types(tel(tel(t, 2), 1), di),
-            "ref" | "ptr" => self.ty_names(tel(t, 2), di, names),
-            "slice" | "array" => self.ty_names(tel(t, 1), di, names),
+            "ref" | "ptr" => self.ty_names(tel(t, 2), di, names, line),
+            "slice" | "array" => self.ty_names(tel(t, 1), di, names, line),
             "tuple" => {
                 for x in items(tel(t, 1)) {
-                    self.ty_names(x, di, names);
+                    self.ty_names(x, di, names, line);
                 }
             }
             "fn" => {
                 for x in items(tel(t, 1)) {
-                    self.ty_names(x, di, names);
+                    self.ty_names(x, di, names, line);
                 }
-                self.ty_names(tel(t, 2), di, names);
+                self.ty_names(tel(t, 2), di, names, line);
             }
             _ => {}
         }
@@ -2257,7 +2257,58 @@ impl<'a> Checker<'a> {
         self.in_const_fn = !test && d.is_const;
         self.unsafe_ok = self.module_may_use_unsafe(&d.module);
         let body = d.body.as_ref().unwrap();
+        let names = self.def(di).gnames();
+        self.check_body_types(body, di, &names);
         self.visit(body, &mut locals, di, test);
+    }
+
+    /// 本体の中の型 (`let x: T` の注釈、クロージャの引数と戻り値、`f::<T>` / `x.m::<T>` の型引数) の名前を
+    /// ヘッダと同じ規則で確かめる (E1102・E1110・E2047)。木を前順で全部辿る。
+    fn check_body_types(&mut self, e: &V, di: usize, names: &HashSet<String>) {
+        match nname(e) {
+            "Let" => {
+                if let Some(t) = nf(e).get(2) {
+                    if !matches!(t, V::Nil) {
+                        self.ty_names(t, di, names, nline(e));
+                    }
+                }
+            }
+            "Closure" => {
+                if let Some(ps) = nf(e).first() {
+                    for p in items(ps) {
+                        if let Some(t) = items(p).get(1) {
+                            self.ty_names(t, di, names, nline(e));
+                        }
+                    }
+                }
+                if let Some(t) = nf(e).get(1) {
+                    self.ty_names(t, di, names, nline(e));
+                }
+            }
+            // 呼び出しの型引数は `Call` の中の `Path` と同じ V を持つので、`Path` と `MCall` だけ見る。
+            "Path" | "MCall" => {
+                let k = if nname(e) == "Path" { 1 } else { 3 };
+                if let Some(ta) = nf(e).get(k) {
+                    for a in items(ta) {
+                        self.ty_names(a, di, names, nline(e));
+                    }
+                }
+            }
+            _ => {}
+        }
+        match e {
+            V::Node(_, fs, _, _) => {
+                for f in fs {
+                    self.check_body_types(f, di, names);
+                }
+            }
+            V::L(xs) => {
+                for x in xs {
+                    self.check_body_types(x, di, names);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn visit(&mut self, e: &V, locals: &mut HashSet<String>, di: usize, free: bool) {
@@ -2306,6 +2357,16 @@ impl<'a> Checker<'a> {
                 self.visit(&f[2], &mut inner, di, free);
             }
             "Closure" => {
+                // 取り込み (`capture [&a, move b]`) は外側の局所でなければならない (仕様 4.4)。
+                for c in items(&f[2]) {
+                    let parts = items(c);
+                    if parts.len() == 2 {
+                        let name = st(&parts[1]);
+                        if !locals.contains(&name) {
+                            self.diag("E1101", format!("unresolved name {} in the capture list", name), di, nline(e));
+                        }
+                    }
+                }
                 let mut inner = locals.clone();
                 let names: Vec<String> = items(&f[0]).iter().map(|p| st(&items(p)[0])).collect();
                 self.shadow_check(&names, locals, di, nline(e));
@@ -2316,6 +2377,10 @@ impl<'a> Checker<'a> {
                 let segs = strs(&f[0]);
                 if !locals.contains(&segs[0]) {
                     if let Some(r) = self.resolve_path(&segs, di, nline(e)) {
+                        // 列挙型の後ろに無い列挙子 (`E.Nope`) は未解決の名前 (E1101)。型の一部として解けない。
+                        if self.is_enum_member_miss(&r) {
+                            self.diag("E1101", format!("unresolved name {}: `{}` has no such variant", segs.join("."), r.name), di, nline(e));
+                        }
                         // 型の名前を値として使っている (`std.alloc.System` ではなく `std.alloc.SYSTEM`)。
                         if matches!(r.target, Target::Type(_)) && r.rest.is_empty() {
                             let name = segs.join(".");
@@ -2647,6 +2712,15 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// 列挙型の名前の後ろに、その型の列挙子でない成分が続く (`E.Nope`)。`resolve` は先頭の型まで解けて
+    /// 残りを `rest` に返すので、型の後ろが列挙子でなければ未解決。
+    fn is_enum_member_miss(&self, r: &Resolved) -> bool {
+        match r.target {
+            Target::Type(i) => !r.rest.is_empty() && self.def(i).kw == "enum",
+            _ => false,
+        }
+    }
+
     fn visit_pat(&mut self, p: &V, di: usize) {
         let n = nname(p);
         let f = nf(p);
@@ -2657,12 +2731,13 @@ impl<'a> Checker<'a> {
             }
             if PRELUDE_FQN.contains(&segs.join(".").as_str()) {
                 let bare = segs.last().unwrap();
-                self.diag("E1110", format!("write the prelude name `{}` without its module path", bare), di, 0);
+                self.diag("E1110", format!("write the prelude name `{}` without its module path", bare), di, nline(p));
             }
             let r = self.p.resolve(&segs, &self.def(di).file);
-            let ok = matches!(r, Some(ref x) if matches!(x.target, Target::Variant(..) | Target::Const(_) | Target::Type(_)));
+            // 型の名前だけを指すパターン (残りなし) か、列挙子・定数。型の後ろに続く成分は見ない (`E.Nope` は未解決)。
+            let ok = matches!(r, Some(ref x) if matches!(x.target, Target::Variant(..) | Target::Const(_)) || (matches!(x.target, Target::Type(_)) && x.rest.is_empty()));
             if !ok {
-                self.diag("E1101", format!("unresolved pattern {}", segs.join(".")), di, 0);
+                self.diag("E1101", format!("unresolved pattern {}", segs.join(".")), di, nline(p));
             }
         }
         match n {

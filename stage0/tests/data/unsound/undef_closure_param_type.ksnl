@@ -1,0 +1,8 @@
+// expect: E1102
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    let f = fn(x: Foo) -> i32 capture [] {
+        0i32
+    }
+    core.mem.drop(f(1i32))
+    Ok(())
+end t.main
