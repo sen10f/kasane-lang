@@ -1,0 +1,144 @@
+// 自パッケージの非 sig の単位をすべて検査する。
+fn types.check.all(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    for k_s in core.iter.range(0usize, env.srcs.len()) {
+        match env.srcs.as_slice().get(k_s) {
+            Some(s) => {
+                if s.own && !s.sig {
+                    types.check.unit(env, ar, cx, k_s, s)?
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    Ok(())
+end types.check.all
+
+// 定義 1 件。
+fn types.check.def(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], file: usize, d: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let n = parse.ast.get(&p.ast, d)
+    if (n.kind == parse.ast.Kind.FnDef) {
+        return types.check.fn_def(env, ar, cx, p, src, file, d)
+    }
+    if (n.kind == parse.ast.Kind.TestDef) {
+        if n.d != 0usize {
+            let saved = cx.ret
+            cx.ret = types.ty.UNKNOWN
+            core.mem.drop(types.infer.expr(env, ar, cx, p, src, n.d, types.ty.UNKNOWN)?)
+            cx.ret = saved
+        }
+        return Ok(())
+    }
+    if (n.kind == parse.ast.Kind.ConstDef || n.kind == parse.ast.Kind.StaticDef) {
+        let declared = types.lower.ty(env, ar, cx, p, src, file, n.c)?
+        if n.d != 0usize {
+            let t = types.infer.expr(env, ar, cx, p, src, n.d, declared)?
+            types.infer.coerce(ar, cx, t, declared, resolve.ast.line_of(p, n.tok))?
+        }
+    }
+    Ok(())
+end types.check.def
+
+// 定義ごとの検査: 関数 (頭の総称・引数・戻り値と本体)、テスト、定数・静的。
+fn types.check.fn_def(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], file: usize, d: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let n = parse.ast.get(&p.ast, d)
+    if n.d == 0usize {
+        return Ok(())
+    }
+    let sg = parse.ast.get(&p.ast, n.c)
+    let mark = types.chk.mark(cx)
+    let tps_tk = types.lower.tparams(p, sg.a)?
+    for tk in tps_tk.as_slice().iter() {
+        let no = ar.params
+        ar.params = no.wrapping_add(1usize)
+        let pt = types.ty.param(ar, no)?
+        types.chk.push(cx, resolve.ast.tok_text(p, src, *tk), pt, true)?
+    }
+    for j in core.iter.range(0usize, resolve.ast.count(p, sg.b)) {
+        let prm = parse.ast.get(&p.ast, resolve.ast.item(p, sg.b, j))
+        let pt = types.lower.ty(env, ar, cx, p, src, file, prm.b)?
+        types.chk.push(cx, resolve.ast.tok_text(p, src, prm.a), pt, false)?
+    }
+    let mut ret = types.lower.ty(env, ar, cx, p, src, file, sg.c)?
+    if sg.c == 0usize {
+        ret = types.ty.UNIT
+    }
+    let saved = cx.ret
+    cx.ret = ret
+    let t = types.infer.expr(env, ar, cx, p, src, n.d, ret)?
+    let tail = types.check.tail_line(p, n.d)
+    types.infer.coerce(ar, cx, t, ret, tail)?
+    cx.ret = saved
+    types.chk.truncate(cx, mark)
+    Ok(())
+end types.check.fn_def
+
+// 定義 1 件の終わり: 整数リテラルの既定 (i32) を決め、変数を空にする。
+fn types.check.settle(ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    for k_v in core.iter.range(0usize, cx.pend.lits.len()) {
+        let v = match cx.pend.lits.as_slice().get(k_v) {
+            Some(x) => *x
+            None => types.ty.UNKNOWN
+        }
+        let line = match cx.pend.lit_lines.as_slice().get(k_v) {
+            Some(x) => *x
+            None => 0usize
+        }
+        let r = types.ty.find(ar, v)
+        let rn = types.ty.node(ar, r)
+        if rn.k == types.ty.K.Var && rn.c != 0usize {
+            types.chk.diag(cx, "E2027", line, "unsuffixed literal: type not determined")?
+        }
+    }
+    for k_l in core.iter.range(0usize, cx.pend.lets.len()) {
+        let t = match cx.pend.lets.as_slice().get(k_l) {
+            Some(x) => *x
+            None => types.ty.UNKNOWN
+        }
+        let line = match cx.pend.let_lines.as_slice().get(k_l) {
+            Some(x) => *x
+            None => 0usize
+        }
+        if types.ty.has_free(ar, t, 0usize) {
+            types.infer.unknown_bind(cx, line, "type not determined")?
+        }
+    }
+    cx.pend.lits.clear()
+    cx.pend.lit_lines.clear()
+    cx.pend.lets.clear()
+    cx.pend.let_lines.clear()
+    Ok(())
+end types.check.settle
+
+// 本体の末尾の式の行 (戻り値の不一致はここに出す)。
+fn types.check.tail_line(p: &parse.cur.P, body: usize) -> usize uses [] panics never pub
+    let bn = parse.ast.get(&p.ast, body)
+    if bn.kind != parse.ast.Kind.Block {
+        return resolve.ast.line_of(p, bn.tok)
+    }
+    let cnt = resolve.ast.count(p, bn.a)
+    if cnt == 0usize {
+        return resolve.ast.line_of(p, bn.tok)
+    }
+    let sn = parse.ast.get(&p.ast, resolve.ast.item(p, bn.a, cnt.wrapping_sub(1usize)))
+    if sn.kind == parse.ast.Kind.ExprStmt {
+        return resolve.ast.line_of(p, parse.ast.get(&p.ast, sn.a).tok)
+    }
+    resolve.ast.line_of(p, sn.tok)
+end types.check.tail_line
+
+// 1 単位 (file) の定義をすべて検査する。
+fn types.check.unit(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, file: usize, s: &resolve.load.Src) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    match env.units.as_slice().get(file) {
+        Some(p) => {
+            cx.file = file
+            cx.rep.path.clear()
+            cx.rep.path.push_str(s.path.as_str())?
+            for d in p.ast.defs.as_slice().iter() {
+                types.check.def(env, ar, cx, p, s.text.as_slice(), file, *d)?
+                types.check.settle(ar, cx)?
+            }
+        }
+        None => core.mem.drop(0u8)
+    }
+    Ok(())
+end types.check.unit

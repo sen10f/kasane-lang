@@ -1,0 +1,25 @@
+// 型検査 (セルフホストの段の一部)。使い方: ksn run -- PKG_DIR STD_DIR
+// 出力: `error CODE 路径:行: 内容` の行と、末尾の `summary errors N unknown M files K`。
+fn types.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.fs] panics never
+    let pkg = match std.env.arg(0usize) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    let std_dir = match std.env.arg(1usize) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    let env = types.env.load(pkg, std_dir)?
+    let mut ar = types.ty.new()?
+    let mut cx = types.chk.new()?
+    types.check.all(&env, &mut ar, &mut cx)?
+    cx.rep.out.push_str("summary errors ")?
+    cx.rep.out.push_u64(u64.from_usize(cx.rep.errors))?
+    cx.rep.out.push_str(" unknown ")?
+    cx.rep.out.push_u64(u64.from_usize(cx.unknown))?
+    cx.rep.out.push_str(" files ")?
+    cx.rep.out.push_u64(u64.from_usize(env.srcs.len()))?
+    cx.rep.out.push('\n')?
+    std.io.print_line(cx.rep.out.as_str())?
+    Ok(())
+end types.main

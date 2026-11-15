@@ -1,0 +1,9 @@
+[package]
+name = "types"
+version = "0.1.0"
+edition = 1
+entry = "types.main"
+
+[dependencies]
+parse = { path = "../parse" }
+resolve = { path = "../resolve" }
