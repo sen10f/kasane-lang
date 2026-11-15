@@ -209,7 +209,8 @@ end lower.tyk.int_bytes
 
 // 項目が `alloc.vec.Vec` か。
 fn lower.tyk.is_vec(env: &types.env.Env, item: usize) -> bool uses [alloc] panics may pub
-    lower.tyk.item_fqn(env, item).as_str() == "alloc.vec.Vec"
+    let fq = lower.tyk.item_fqn(env, item)
+    fq.as_str() == "alloc.vec.Vec" || fq.as_str() == "alloc.string.String"
 end lower.tyk.is_vec
 
 // 型 (参照を外した後) が Vec か。

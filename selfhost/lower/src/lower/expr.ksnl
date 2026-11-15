@@ -230,6 +230,12 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     if fqn.as_str() == "alloc.vec.Vec.new" {
         return lower.vec.new(env, c, t)
     }
+    if fqn.as_str() == "alloc.string.String.new" {
+        return lower.vec.new(env, c, t)
+    }
+    if fqn.as_str() == "alloc.string.String.from_str" {
+        return lower.str.from_str(env, c, p, src, n, t)
+    }
     if fqn.as_str() == "std.io.print_line" {
         return lower.io.print_line(env, c, p, src, n, t)
     }

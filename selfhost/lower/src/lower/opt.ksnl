@@ -444,7 +444,7 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
     let sdn = types.ty.node(&c.ar, types.ty.find(&c.ar, sdecl))
     // `Vec` のメソッドの self は常に参照 (宣言が .sig にあり、型の表に記録がない)。
     let mut self_ref = sdn.k == types.ty.K.Ref
-    if lower.tyk.item_fqn(env, item).as_str().starts_with("alloc.vec.Vec.") {
+    if lower.tyk.item_fqn(env, item).as_str().starts_with("alloc.vec.Vec.") || lower.tyk.item_fqn(env, item).as_str().starts_with("alloc.string.String.") {
         self_ref = true
     }
     // 受け手の値。
@@ -481,6 +481,15 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
         vs.push(a.v)?
     }
     let owner_fqn = lower.tyk.item_fqn(env, item)
+    if owner_fqn.as_str().starts_with("alloc.string.String.") {
+        let rty3 = if loc != 0usize {
+            lower.cx.tyof_t(c, loc - 1usize)
+        } else {
+            lower.expr.tyof(c, recv_node)?
+        }
+        core.mem.drop(rty3)
+        return lower.str.method(env, c, owner_fqn.as_str(), &vs, t)
+    }
     if owner_fqn.as_str().starts_with("alloc.vec.Vec.") {
         let rty2 = if loc != 0usize {
             lower.cx.tyof_t(c, loc - 1usize)

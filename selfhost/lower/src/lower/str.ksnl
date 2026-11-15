@@ -1,0 +1,170 @@
+// `s.as_str()`: 枠の番地 `h` から `&str` の値を作る。
+fn lower.str.as_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let pv = lower.vec.load_ptr(c, h)?
+    let lv = lower.vec.load_usize(c, h, 8usize)?
+    let ft = lower.tyk.text(env, c, t)?
+    let mk = lower.cx.cat2("make(", lower.expr.two(pv, lv)?.as_str())?
+    let mk2 = lower.cx.cat2(mk.as_str(), ")")?
+    let v = lower.cx.def(c, ft.as_str(), mk2.as_str())?
+    Ok(lower.cx.R { v: v, t: t })
+end lower.str.as_str
+
+// `String::from_str(alloc, text)`: 一時の枠 (スロット) に空から `push_str` して、Ok(枠) または Err。
+fn lower.str.from_str(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let text = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 1usize), types.ty.UNKNOWN)?
+    let tf = types.ty.find(&c.ar, t)
+    let tn = types.ty.node(&c.ar, tf)
+    let st = types.ty.arg(&c.ar, tn.b, 0usize)
+    let et = types.ty.arg(&c.ar, tn.b, 1usize)
+    let stxt = lower.tyk.text(env, c, st)?
+    let etxt = lower.tyk.text(env, c, et)?
+    let ttxt = lower.tyk.text(env, c, t)?
+    let mt = lower.opt.refty(true, stxt.as_str())?
+    let slot = lower.cx.def(c, mt.as_str(), "alloca")?
+    let nul = lower.cx.def(c, "ptr", "const.ptr 0")?
+    let z = lower.vec.usize_c(c, 0usize)?
+    let mk = lower.cx.cat2("make(", lower.expr.two(nul, z)?.as_str())?
+    let mk2 = lower.cx.cat2(mk.as_str(), ", ")?
+    let mk3 = lower.cx.cat2(mk2.as_str(), lower.cx.vs(z)?.as_str())?
+    let mk4 = lower.cx.cat2(mk3.as_str(), ")")?
+    let hv = lower.cx.def(c, stxt.as_str(), mk4.as_str())?
+    let so = lower.opt.two_op("store ", slot, hv)?
+    lower.cx.def(c, "unit", so.as_str())?
+    // `push_str` の結果は Result<(), E> (型を作る)。
+    let ids_u = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ids = ids_u
+    ids.push(types.ty.UNIT)?
+    ids.push(et)?
+    let rid = types.ty.adt(&mut c.ar, tn.a, &ids)?
+    let r = lower.str.push_str(env, c, slot, text.v, rid)?
+    let tg = lower.cx.def1(c, "bool", "tag ", r.v)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let errb = lower.cx.blk(c, &empty)?
+    let okb = lower.cx.blk(c, &empty)?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(lower.cx.newval(c, ttxt.as_str())?)?
+    let jb = lower.cx.blk(c, &jps)?
+    let mut brs = lower.cx.cat2("br_if ", lower.cx.vs(tg)?.as_str())?
+    brs.push_str(", ")?
+    brs.push_str(lower.cx.target(errb, &empty)?.as_str())?
+    brs.push_str(", ")?
+    brs.push_str(lower.cx.target(okb, &empty)?.as_str())?
+    lower.cx.finish(c, brs)?
+    lower.cx.goto(c, errb)
+    let pl = lower.cx.def1(c, etxt.as_str(), "payload ", r.v)?
+    let ev = lower.cx.def1(c, ttxt.as_str(), "err ", pl)?
+    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a0.push(ev)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a0)?.as_str())?)?
+    lower.cx.goto(c, okb)
+    let ld = lower.cx.def1(c, stxt.as_str(), "load ", slot)?
+    let ov = lower.cx.def1(c, ttxt.as_str(), "ok ", ld)?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(ov)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a1)?.as_str())?)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+end lower.str.from_str
+
+// `String` のメソッド (受け手 vs[0] は枠の番地、引数はその後)。
+fn lower.str.method(env: &types.env.Env, c: &mut lower.cx.Cx, fqn: &str, vs: &alloc.vec.Vec<usize, std.alloc.System>, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let name = lower.expr.last_seg(fqn)
+    let recv = lower.tyk.at(vs.as_slice(), 0usize)
+    if name == "len" {
+        return lower.vec.len(env, c, recv, false, t)
+    }
+    if name == "as_str" {
+        return lower.str.as_str(env, c, recv, t)
+    }
+    if name == "push_str" {
+        let text = lower.tyk.at(vs.as_slice(), 1usize)
+        return lower.str.push_str(env, c, recv, text, t)
+    }
+    lower.cx.fail(c, lower.cx.cat2("String のメソッド (未対応): ", name)?.as_str())?
+    lower.expr.dummy(c, t)
+end lower.str.method
+
+// `s.push_str(text)`: 足りなければ広げ、バイトを写し、長さを直す。結果は Ok(())。
+fn lower.str.push_str(env: &types.env.Env, c: &mut lower.cx.Cx, h: usize, text: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let src = lower.cx.def(c, "ptr", lower.expr.field_src(text, 0usize)?.as_str())?
+    let tlen = lower.cx.def(c, "usize", lower.expr.field_src(text, 8usize)?.as_str())?
+    let len0 = lower.vec.load_usize(c, h, 8usize)?
+    let cap0 = lower.vec.load_usize(c, h, 16usize)?
+    let need = lower.vec.arith(c, "add", len0, tlen)?
+    let ogs = lower.cx.cat2("icmp.gt.usize ", lower.expr.two(need, cap0)?.as_str())?
+    let over = lower.cx.def(c, "bool", ogs.as_str())?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let growb = lower.cx.blk(c, &empty)?
+    let okb = lower.cx.blk(c, &empty)?
+    let rt = lower.tyk.text(env, c, t)?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(lower.cx.newval(c, rt.as_str())?)?
+    let jb = lower.cx.blk(c, &jps)?
+    let mut brs = lower.cx.cat2("br_if ", lower.cx.vs(over)?.as_str())?
+    brs.push_str(", ")?
+    brs.push_str(lower.cx.target(growb, &empty)?.as_str())?
+    brs.push_str(", ")?
+    brs.push_str(lower.cx.target(okb, &empty)?.as_str())?
+    lower.cx.finish(c, brs)?
+    // 広げる: 新しい容量 (cap + need) * 2 + 4 バイト。
+    lower.cx.goto(c, growb)
+    let s1 = lower.vec.arith(c, "add", cap0, need)?
+    let two = lower.vec.usize_c(c, 2usize)?
+    let s2 = lower.vec.arith(c, "mul", s1, two)?
+    let four = lower.vec.usize_c(c, 4usize)?
+    let ncap = lower.vec.arith(c, "add", s2, four)?
+    let p0 = lower.vec.load_ptr(c, h)?
+    let rls = lower.cx.cat2("heap.realloc ", lower.expr.two(p0, ncap)?.as_str())?
+    let np = lower.cx.def(c, "ptr", rls.as_str())?
+    lower.vec.store_at(c, "ptr", h, 0usize, np)?
+    lower.vec.store_at(c, "usize", h, 16usize, ncap)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(okb, &empty)?.as_str())?)?
+    // 写す: バイト i を dst + i へ (i は 0 から tlen まで)。
+    lower.cx.goto(c, okb)
+    let p1 = lower.vec.load_ptr(c, h)?
+    let dst = lower.vec.padd(c, p1, len0)?
+    let ivs = lower.cx.newval(c, "usize")?
+    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    hps.push(ivs)?
+    let hb = lower.cx.blk(c, &hps)?
+    let bodyb = lower.cx.blk(c, &empty)?
+    let exitb = lower.cx.blk(c, &empty)?
+    let zero = lower.vec.usize_c(c, 0usize)?
+    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a0.push(zero)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(hb, &a0)?.as_str())?)?
+    lower.cx.goto(c, hb)
+    let lcs = lower.cx.cat2("icmp.lt.usize ", lower.expr.two(ivs, tlen)?.as_str())?
+    let lc = lower.cx.def(c, "bool", lcs.as_str())?
+    let mut lb = lower.cx.cat2("br_if ", lower.cx.vs(lc)?.as_str())?
+    lb.push_str(", ")?
+    lb.push_str(lower.cx.target(bodyb, &empty)?.as_str())?
+    lb.push_str(", ")?
+    lb.push_str(lower.cx.target(exitb, &empty)?.as_str())?
+    lower.cx.finish(c, lb)?
+    lower.cx.goto(c, bodyb)
+    let sa = lower.vec.padd(c, src, ivs)?
+    let lds = lower.cx.cat2("mem.load.u8 ", lower.cx.vs(sa)?.as_str())?
+    let lds2 = lower.cx.cat2(lds.as_str(), " +0")?
+    let byte = lower.cx.def(c, "u8", lds2.as_str())?
+    let da = lower.vec.padd(c, dst, ivs)?
+    let sts = lower.cx.cat2("mem.store.u8 ", lower.cx.vs(da)?.as_str())?
+    let sts2 = lower.cx.cat2(sts.as_str(), " +0, ")?
+    let sts3 = lower.cx.cat2(sts2.as_str(), lower.cx.vs(byte)?.as_str())?
+    lower.cx.def(c, "unit", sts3.as_str())?
+    let one = lower.vec.usize_c(c, 1usize)?
+    let iv1 = lower.vec.arith(c, "add", ivs, one)?
+    let mut a1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a1.push(iv1)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(hb, &a1)?.as_str())?)?
+    // 出口: 長さを直し、Ok(())。
+    lower.cx.goto(c, exitb)
+    lower.vec.store_at(c, "usize", h, 8usize, need)?
+    let u = lower.expr.unit(c)?
+    let okv = lower.cx.def1(c, rt.as_str(), "ok ", u)?
+    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a2.push(okv)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &a2)?.as_str())?)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+end lower.str.push_str
