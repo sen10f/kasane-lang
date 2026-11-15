@@ -468,7 +468,10 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
         .collect();
     // `link "ライブラリ:名前"` (動的ロード、3.8): 実行時に `dlopen` / `dlsym` で引く。呼び出しは `ksn_ext_resolve` が覚えた
     // 関数ポインタを間接に呼ぶ。静的な `link "名前"` は従来どおり直接リンクする。
+    // wasm32 の `link "env:名前"` は動的ロードではなく JS の関数の import (WASM ABI) なので、ここには入れない。
+    let wasm32 = crate::ptrwidth::bits() == 32;
     let extern_dl: HashMap<String, (String, String)> = m.funcs.iter()
+        .filter(|f| !(wasm32 && f.link.as_deref().and_then(wasm_import_of).is_some()))
         .filter_map(|f| f.link.as_ref().and_then(|l| l.rsplit_once(':').map(|(lib, s)| (f.key.clone(), (lib.to_string(), s.to_string())))))
         .collect();
     let mut dl_seen: BTreeSet<String> = BTreeSet::new();
