@@ -1,0 +1,9 @@
+type t.Hidden
+    n: i64
+end t.Hidden
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x = t.Hidden
+    core.mem.drop(x)
+    Ok(())
+end t.main

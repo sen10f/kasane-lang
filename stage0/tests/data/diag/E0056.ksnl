@@ -1,0 +1,4 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    if true { return Ok(()) }
+    Ok(())
+end t.main

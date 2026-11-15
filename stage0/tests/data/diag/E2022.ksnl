@@ -1,0 +1,14 @@
+type t.P
+    n: u32
+end t.P
+
+fn t.P.plus(self: &t.P, a: u32) -> u32 uses [] panics never
+    a
+end t.P.plus
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let p = t.P { n: 1u32 }
+    let x = p.plus(1u32, 2u32)
+    core.mem.drop((p, x))
+    Ok(())
+end t.main

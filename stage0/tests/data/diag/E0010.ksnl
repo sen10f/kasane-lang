@@ -1,0 +1,7 @@
+type t.HTTPThing
+    n: u32
+end t.HTTPThing
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

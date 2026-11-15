@@ -1,0 +1,3 @@
+fn demo.f() -> u32 uses [] panics never
+    1u32
+end demo.f
