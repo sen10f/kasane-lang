@@ -16,7 +16,11 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
     let mut j = 2usize
     loop {
         match std.env.arg(j) {
-            Some(s) => lower.expr.enqueue(&mut c, s)?
+            Some(s) => {
+                let it = types.env.get_def(&env.tab, s)
+                let none = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                lower.expr.enqueue(&mut c, s, it, none, 0usize)?
+            }
             None => break
         }
         j = j + 1usize
@@ -24,17 +28,16 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
     // 呼ばれた関数を順に下ろす (下ろす途中で呼び出し先が増える)。
     let mut i = 0usize
     while i < c.g.names.len() {
-        let name = match c.g.names.as_slice().get(i) {
-            Some(s) => lower.cx.own(s.as_str())?
-            None => alloc.string.String.new(std.alloc.SYSTEM)
-        }
-        let it = types.env.get_def(&env.tab, name.as_str())
+        let key = lower.cx.name_of(&c, i)?
+        let it = lower.cx.item_at(&c, i)
+        let subs = lower.cx.subs_at(&c, i)?
+        let ret = lower.cx.ret_at(&c, i)
         if it == 0usize {
             lower.func.record(&mut c, "", "定義がない")?
         } else if (types.infer.item_kind(&env, it - 1usize) != parse.ast.Kind.FnDef) {
             lower.func.record(&mut c, "", "関数でない")?
         } else {
-            lower.func.lower_item(&env, &mut c, it - 1usize, name.as_str())?
+            lower.func.lower_item(&env, &mut c, it - 1usize, key.as_str(), &subs, ret)?
         }
         i = i + 1usize
     }
