@@ -1,0 +1,18 @@
+// expect: E2037
+fn t.main() -> Result<(), std.io.Error> uses [alloc, thread] panics may
+    let local = alloc.string.String.new(std.alloc.SYSTEM)
+    let r = local.as_str()
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> usize capture [move r] {
+            r.len()
+        },
+    )
+    match spawned {
+        Ok(handle) => {
+            let _n = handle.join()
+        }
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+    Ok(())
+end t.main

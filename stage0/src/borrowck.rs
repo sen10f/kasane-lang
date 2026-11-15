@@ -2921,7 +2921,7 @@ fn place_name(root: &str, path: &[String]) -> String {
 }
 
 /// `s[open]` の括弧 (`(`・`[`・`<`) に対応する閉じ括弧の位置。`->` の `>` は数えない。
-fn match_close(s: &str, open: usize) -> Option<usize> {
+pub(crate) fn match_close(s: &str, open: usize) -> Option<usize> {
     let b = s.as_bytes();
     let mut depth = 0i32;
     let mut i = open;

@@ -6,7 +6,7 @@ use crate::program::{Def, Program, Resolved, Target};
 use crate::parser::{V, nid};
 
 #[path = "borrowck.rs"]
-mod borrowck;
+pub(crate) mod borrowck;
 #[path = "with_check.rs"]
 mod with_check;
 pub(crate) use with_check::cleanup_exit;
