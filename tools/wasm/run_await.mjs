@@ -54,7 +54,7 @@ const env = {
     },
 };
 
-// 入口・再開の結果を受ける。-1 は「まだ待つ」、それ以外は終了コード。
+// 入口・再開の結果を受ける。-1 は「まだ待つ」、-2 は「待つプログラムがない (無視)」、それ以外は終了コード。
 function settle(call) {
     let code;
     try {
@@ -68,7 +68,7 @@ function settle(call) {
             code = 134;
         }
     }
-    if (code !== -1) {
+    if (code !== -1 && code !== -2) {
         process.exitCode = code & 0xff;
     }
 }

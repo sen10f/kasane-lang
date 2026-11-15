@@ -37,6 +37,31 @@ fn example() -> PathBuf {
     root().join("tools").join("wasm").join("await")
 }
 
+/// 任意の wasm 例パッケージを一時ディレクトリにコピーする。
+fn copy_example_dir(src_name: &str, dst_name: &str) -> PathBuf {
+    let src = root().join("tools").join("wasm").join(src_name);
+    let dst = std::env::temp_dir().join(format!("ksn_test_{}_{}", std::process::id(), dst_name));
+    let _ = fs::remove_dir_all(&dst);
+    fn copy(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for e in fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            let p = e.path();
+            let name = e.file_name();
+            if name == "target" {
+                continue;
+            }
+            if p.is_dir() {
+                copy(&p, &to.join(&name));
+            } else {
+                fs::copy(&p, to.join(&name)).unwrap();
+            }
+        }
+    }
+    copy(&src, &dst);
+    dst
+}
+
 /// 例を一時ディレクトリにコピーする (`target/` は持っていかない)。
 fn copy_example(name: &str) -> PathBuf {
     let dst = std::env::temp_dir().join(format!("ksn_test_{}_{}", std::process::id(), name));
@@ -157,4 +182,143 @@ fn await_js_is_refused_by_the_native_release_build() {
     assert_ne!(o.status.code(), Some(0), "{}", all);
     assert!(all.contains("E9040"), "{}", all);
     assert!(all.contains("await_js"), "{}", all);
+}
+
+/// Finding 8: ksn_resume after program end (panic) should not re-enter the executor.
+/// This test builds a program that panics during await_js, then simulates a spurious
+/// ksn_resume call by calling the export directly. The second call should return -2
+/// and not re-run the task.
+#[test]
+fn ksn_resume_after_panic_returns_minus2_and_does_not_rerun() {
+    if !wasm_ready() {
+        eprintln!("skip: node / wasm-ld / clang がない");
+        return;
+    }
+    let dir = copy_example_dir("await_js_after_panic", "await_js_after_panic");
+    let o = run(&["build", "--target", TRIPLE], &dir);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "wasm32 build\n{}{}", out, text(&o.stderr));
+    let wasm = built_file(&out, &dir);
+    
+    // Load the wasm and call ksn_main, then ksn_resume twice (simulating spurious call after panic)
+    let test_script = dir.join("test_resume_after_panic.mjs");
+    fs::write(&test_script, r#"
+import fs from 'node:fs';
+
+class Exit extends Error {
+    constructor(code) {
+        super(`exit ${code}`);
+        this.code = code;
+    }
+}
+
+const file = process.argv[2];
+const { instance } = await WebAssembly.instantiate(fs.readFileSync(file), {
+    env: {
+        ksn_write(fd, ptr, len) {
+            const view = new Uint8Array(instance.exports.memory.buffer, ptr >>> 0, len >>> 0);
+            let off = 0;
+            try {
+                while (off < view.length) {
+                    off += fs.writeSync(fd, view, off, view.length - off);
+                }
+            } catch (e) {
+                return -1;
+            }
+            return view.length;
+        },
+        ksn_exit(code) {
+            throw new Exit(code);
+        },
+        ksn_timer_start(ms) {
+            return 1; // dummy handle
+        },
+    },
+});
+
+let output = '';
+const origWrite = instance.exports.ksn_write;
+instance.exports.ksn_write = function(fd, ptr, len) {
+    const view = new Uint8Array(instance.exports.memory.buffer, ptr >>> 0, len >>> 0);
+    const decoder = new TextDecoder();
+    output += decoder.decode(view);
+    return origWrite(fd, ptr, len);
+};
+
+try {
+    // First call: ksn_main returns -1 (waiting)
+    const r1 = instance.exports.ksn_main();
+    console.log(`ksn_main returned: ${r1}`);
+    
+    // Simulate timer firing: call ksn_resume with handle 1, value 7
+    // This will cause the task to panic
+    try {
+        const r2 = instance.exports.ksn_resume(1, 7);
+        console.log(`ksn_resume (1st) returned: ${r2}`);
+    } catch (e) {
+        if (e instanceof Exit) {
+            console.log(`ksn_resume (1st) exited with: ${e.code}`);
+        } else {
+            console.log(`ksn_resume (1st) trapped: ${e}`);
+        }
+    }
+    
+    // Spurious second call to ksn_resume (simulating timer firing again)
+    // Should return -2 and not re-run the task
+    try {
+        const r3 = instance.exports.ksn_resume(1, 7);
+        console.log(`ksn_resume (2nd) returned: ${r3}`);
+        if (r3 === -2) {
+            console.log('SUCCESS: ksn_resume returned -2 as expected');
+        } else {
+            console.log('FAIL: ksn_resume should return -2');
+            process.exitCode = 1;
+        }
+    } catch (e) {
+        console.log(`ksn_resume (2nd) error: ${e}`);
+        process.exitCode = 1;
+    }
+    
+    console.log('OUTPUT:');
+    console.log(output);
+} catch (e) {
+    console.error('Test error:', e);
+    process.exitCode = 1;
+}
+"#).unwrap();
+    
+    let r = Command::new("node").arg(&test_script).arg(&wasm).stdin(Stdio::null()).output().expect("spawn node");
+    let got = text(&r.stdout);
+    let _ = fs::remove_dir_all(&dir);
+    
+    // The second ksn_resume should return -2
+    assert!(got.contains("ksn_resume (2nd) returned: -2"), "stdout: {}\nstderr: {}", got, text(&r.stderr));
+    // The task should not re-run (no duplicate "got 7, now panic")
+    let panic_count = got.matches("got 7, now panic").count();
+    assert_eq!(panic_count, 1, "task should not re-run after panic, got: {}", got);
+    assert_eq!(r.status.code(), Some(0), "stderr: {}", text(&r.stderr));
+}
+
+/// Finding 9: ksn_resume returning -2 should not become exit code 254.
+/// Test that a normal program completion followed by spurious ksn_resume returns -2
+/// and the runner ignores it (exit code 0, not 254).
+#[test]
+fn ksn_resume_minus2_does_not_become_exit_code_254() {
+    if !wasm_ready() {
+        eprintln!("skip: node / wasm-ld / clang がない");
+        return;
+    }
+    let dir = copy_example_dir("await_js_normal_end", "await_js_normal_end");
+    let o = run(&["build", "--target", TRIPLE], &dir);
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "wasm32 build\n{}{}", out, text(&o.stderr));
+    let wasm = built_file(&out, &dir);
+    
+    // Use the standard runner which should exit with code 0 (not 254)
+    let r = run_await(&wasm);
+    let _ = fs::remove_dir_all(&dir);
+    
+    // The program should exit with code 0 (normal completion)
+    // If -2 were treated as exit code, it would be 254
+    assert_eq!(r.status.code(), Some(0), "exit code should be 0, not 254. stderr: {}", text(&r.stderr));
 }
