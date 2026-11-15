@@ -195,6 +195,11 @@ impl AggTab {
                 let alloc_ty = self.lower_ty(p, file, &args[1])?;
                 Ok(self.join_handle(elem_ty, alloc_ty))
             }
+            // `std.task.Task<T>` = `{usize}` (実行器の表のタスクの番号)。`T` は名前に埋め込み、`join_task` で読む型として持つ (設計_KIR.md 26 章)。
+            Src::Named(name, args) if name == "std.task.Task" && args.len() == 1 => {
+                let elem_ty = self.lower_ty(p, file, &args[0])?;
+                Ok(self.task_handle(elem_ty))
+            }
             // `Box<T, System>` は 8 バイトの所有ポインタ (`box<..>`)、`Box<dyn Tr, System>` はデータと vtable の組 (`dynbox`)。設計_KIR.md 21 章。
             Src::Named(name, args) if name == "alloc.boxed.Box" && args.len() == 2 => {
                 if !matches!(&args[1], Src::Named(a, _) if a == "std.alloc.System") {
@@ -335,6 +340,20 @@ impl AggTab {
             Field { name: "result".to_string(), ty: Ty::Ptr, off: off_result },
         ];
         let t = self.push(name, size, align, AggKind::Struct(fields));
+        if let Ty::Agg(i) = t {
+            self.handle_elem.insert(i, elem_ty);
+        }
+        t
+    }
+
+    /// `std.task.Task<T>` = `{id: usize}`。`T` は名前に埋め込み、`handle_elem` に持つ (`join_task` の結果の型)。
+    pub fn task_handle(&mut self, elem_ty: Ty) -> Ty {
+        let name = format!("std.task.Task<{}", elem_ty.name());
+        if let Some(&i) = self.by_name.get(&name) {
+            return Ty::Agg(i);
+        }
+        let fields = vec![Field { name: "id".to_string(), ty: Ty::Usize, off: 0 }];
+        let t = self.push(name, 8, 8, AggKind::Struct(fields));
         if let Ty::Agg(i) = t {
             self.handle_elem.insert(i, elem_ty);
         }
