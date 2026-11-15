@@ -93,7 +93,7 @@ extern std.tls.c_tls_server_method() -> *const u8 link "libssl.so.3:TLS_server_m
 
 // 受けた `TcpStream` の上で TLS の握手をする。失敗したら `tcp` を閉じて理由を返す。
 fn std.tls.TlsAcceptor.accept(self: &std.tls.TlsAcceptor, tcp: std.net.TcpStream) -> Result<std.tls.TlsStream, std.tls.Error> uses [io.net] panics never pub
-    let fd = tcp.descriptor
+    let fd = tcp.fd()
     let ssl = std.tls.new_session(self.ctx)
     if std.tls.is_null(ssl) {
         return std.tls.refuse(tcp, std.tls.Error.Ssl(0i32))
@@ -270,7 +270,7 @@ fn std.tls.connect_with(address: &str, host: &str, ca_file: &str) -> Result<std.
         return std.tls.refuse(tcp, std.tls.Error.Ssl(0i32))
     }
     let bound = std.tls.bind_host(ssl, host_name.as_slice())
-    if bound != 1i32 || std.tls.set_fd(ssl, tcp.descriptor) != 1i32 {
+    if bound != 1i32 || std.tls.set_fd(ssl, tcp.fd()) != 1i32 {
         std.tls.free_session(ssl)
         return std.tls.refuse(tcp, std.tls.Error.Ssl(0i32))
     }

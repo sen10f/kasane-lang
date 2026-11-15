@@ -127,6 +127,12 @@ pub(super) fn net_method(lw: &mut Lw, _e: &V, name: &str, recv: VId, rt: Ty, arg
             }
             Op::NetClose { sock: fd }
         }
+        "fd" => {
+            if !args.is_empty() {
+                return lw.err(line, "fd の引数は 0 個のはず");
+            }
+            return Ok(Some(fd));
+        }
         "local_port" => {
             if !args.is_empty() {
                 return lw.err(line, "local_port の引数は 0 個のはず");
