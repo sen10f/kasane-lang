@@ -543,7 +543,8 @@ end lower.expr.loopx
 // match (列挙型のみ): 変種の番号をタグで比べる。変種の中の PBind は `field` で読む。
 fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
-    let sc = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
+    let sc0 = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
+    let sc = lower.opt.deref_val(env, c, sc0)?
     let ss = types.ty.strip(&c.ar, sc.t)
     let sn = types.ty.node(&c.ar, ss)
     if (sn.k != types.ty.K.Adt || types.infer.item_kind(env, sn.a) != parse.ast.Kind.EnumDef) {
@@ -552,7 +553,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     }
     let item = sn.a
     if lower.opt.kind(env, item) != 0usize {
-        return lower.opt.optmatch(env, c, p, src, n, t, sc.v, sc.t)
+        return lower.opt.optmatch(env, c, p, src, n, t, sc0)
     }
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan_arms(p, src, n.b, &mut nms, false)?
@@ -620,7 +621,8 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
                     let fv = lower.cx.def(c, pty.as_str(), fsrc.as_str())?
                     let stk_tok = parse.cur.peek_at(p, sp.a)
                     let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
-                    lower.opt.bind(env, c, stk, fv, false, pt)?
+                    let fv2 = lower.opt.wrap_ref(env, c, fv, pt)?
+                    lower.opt.bind(env, c, stk, fv2, false, pt)?
                 }
                 i = i + 1usize
             }
@@ -690,6 +692,21 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
             let op2 = lower.cx.cat2(op.as_str(), " none")?
             let v = lower.cx.def(c, tt.as_str(), op2.as_str())?
             return Ok(lower.cx.R { v: v, t: t })
+        }
+        // 項目の値: 整数の定数 (初期化式が整数の綴り) と、利用者の列挙型の変種 (値を持たないもの)。
+        let it = types.env.lookup(env, c.s.file, name)?
+        if it != 0usize {
+            let item = it - 1usize
+            let ik = types.infer.item_kind(env, item)
+            if ik == parse.ast.Kind.ConstDef {
+                let r = lower.opt.const_value(env, c, item, t)?
+                if r.v != 0usize {
+                    return Ok(r)
+                }
+            }
+            if ik == parse.ast.Kind.Variant {
+                return lower.opt.unit_variant(env, c, item, t)
+            }
         }
         lower.cx.fail(c, "名前が局所でない (定数・関数の値は未対応)")?
         return lower.expr.dummy(c, t)
@@ -946,6 +963,19 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         let mutable = n.a == 1000usize
         let mut slot = 0usize
         let mut sty = types.ty.UNKNOWN
+        if (inner.kind == parse.ast.Kind.Unary && inner.a == 42usize) {
+            // `&*r` / `&mut *r`: 同じ参照の再借用 (asshared / reborrow)。
+            let rr = lower.expr.expr(env, c, p, src, inner.b, types.ty.UNKNOWN)?
+            let tt2 = lower.tyk.text(env, c, t)?
+            let head2 = if mutable {
+                "reborrow "
+            } else {
+                "asshared "
+            }
+            let op2 = lower.cx.cat2(head2, lower.cx.vs(rr.v)?.as_str())?
+            let v2 = lower.cx.def(c, tt2.as_str(), op2.as_str())?
+            return Ok(lower.cx.R { v: v2, t: t })
+        }
         if inner.kind == parse.ast.Kind.Path {
             let loc = lower.cx.find(c, resolve.ast.text(src, inner.a, inner.b))
             if loc != 0usize && lower.cx.is_slot(c, loc - 1usize) {
@@ -1045,8 +1075,10 @@ end lower.expr.whilex
 // `局所.wrapping_add(x)` などの形 (整数の既定の演算の下ろし)。
 fn lower.expr.wrapping(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], rv: &str, meth: &str, args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let k = lower.cx.find(c, rv) - 1usize
-    let rvv = lower.cx.get_val(c, k).wrapping_sub(1usize)
-    let rty = lower.cx.tyof(c, rvv)
+    let rv0 = lower.opt.local_val(env, c, k, lower.cx.tyof_t(c, k))?
+    let rr = lower.opt.deref_val(env, c, lower.cx.R { v: rv0, t: lower.cx.tyof_t(c, k) })?
+    let rvv = rr.v
+    let rty = lower.tyk.text(env, c, rr.t)?
     let mut op = ""
     if meth == "wrapping_add" {
         op = "add"
