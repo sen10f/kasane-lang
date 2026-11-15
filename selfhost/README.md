@@ -278,12 +278,12 @@ python3 -I compare.py --group broken -v    # 差の中身
 | ファイル | 行数 | 中身 |
 | --- | ---: | --- |
 | `src/types.ksnl` | 25 | 入口: 読み込み → 検査 → 集計 (`summary errors N unknown M files K`) |
-| `src/types/env.ksnl` | 280 | 読み込み (`resolve.manifest` / `resolve.load` / `resolve.parse_file` を再利用)、項目の表 (FQN → 項目、列挙子、import)、名前の解決 (プレリュード、基本型の関連関数 `core.num.<T>.`) |
-| `src/types/ty.ksnl` | 320 | 型の arena (添字)、型変数の束縛 (`bind`)、単一化 (`unify`、参照は段数を見ず、不明・仮の型・`!` は一致とみなす)、整数リテラルの変数 (`c=1`) と小数の変数 (`c=2`) |
-| `src/types/lower.ksnl` | 125 | 型の注釈 → 型 id (総称は検査の並びから引く。`&str` は `Str`、`fn(..)` は `Fnty`) |
-| `src/types/chk.ksnl` | 90 | 検査の状態 (名前の並び、関数の終わりに決める項目、診断の文) |
-| `src/types/infer.ksnl` | 1,250 | 式・文・パターン・呼び出し・メソッド探索 (`.sig` の規範。`FQN 接頭辞.名前`)、フィールド、`match` の網羅、`for` の要素 (`next` の戻り値) |
-| `src/types/check.ksnl` | 150 | 関数 (頭の総称・引数・戻り値・本体)、テスト、定数・静的。関数の終わりの決定 |
+| `src/types/env.ksnl` | 277 | 読み込み (`resolve.manifest` / `resolve.load` / `resolve.parse_file` を再利用)、項目の表 (FQN → 項目、列挙子、import)、名前の解決 (プレリュード、基本型の関連関数 `core.num.<T>.`) |
+| `src/types/ty.ksnl` | 350 | 型の arena (添字)、型変数の束縛 (`bind`)、単一化 (`unify`、参照は段数を見ず、不明・仮の型・`!` は一致とみなす)、整数リテラルの変数 (`c=1`) と小数の変数 (`c=2`) |
+| `src/types/lower.ksnl` | 130 | 型の注釈 → 型 id (総称は検査の並びから引く。`&str` は `Str`、`fn(..)` は `Fnty`) |
+| `src/types/chk.ksnl` | 97 | 検査の状態 (名前の並び、関数の終わりに決める項目、診断の文) |
+| `src/types/infer.ksnl` | 1,232 | 式・文・パターン・呼び出し・メソッド探索 (`.sig` の規範。`FQN 接頭辞.名前`)、フィールド、`match` の網羅、`for` の要素 (`next` の戻り値) |
+| `src/types/check.ksnl` | 144 | 関数 (頭の総称・引数・戻り値・本体)、テスト、定数・静的。関数の終わりの決定 |
 | `compare.py` | 201 | Rust 版 `ksn check --json` との比較 (受理・一致の数、時間) |
 
 Kasane 合計 2,255 行 (`compare.py` 除く)。`ksn check` は通る。
@@ -315,7 +315,7 @@ python3 -I compare.py --group examples|apps|self|linear_ok|diag|unsound   # 比�
 | `unsound/*.ksnl` (Rust 版が型の診断を出すもの 66 件) | (コード, 行) が一致 **15 / 66**、コードだけ一致 23 |
 | `unsound/` で Rust 版は通すのに自分は型の診断を出したもの | 10 件 (下の 10.5) |
 
-時間: ネイティブ `types.native` は `examples/demo` 0.11 秒、`apps/todo` 0.04 秒 (標準ライブラリ 52 ファイルの読み込みを含む)。木走査 `ksn run` は `apps/todo` で約 30 秒 (標準ライブラリの解析が大半)。`compare.py` は 139 件の正しいコードを約 10 秒で回す。
+時間: ネイティブ `types.native` は `examples/demo` 0.11 秒、`apps/todo` 0.04 秒 (標準ライブラリ 52 ファイルの読み込みを含む)。木走査 `ksn run` は `apps/todo` で約 47 秒 (標準ライブラリの解析が大半)。`compare.py` は 139 件の正しいコードを約 10 秒で回す。
 
 ### 10.3 この段が見る規則
 
