@@ -259,9 +259,14 @@ fn lower.tyk.int_bytes(name: &str) -> usize uses [] panics may pub
 end lower.tyk.int_bytes
 
 // 総称の型 (引数のある構造体・列挙型) か。Option と Result は別に扱う。
-fn lower.tyk.is_generic_adt(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> bool uses [] panics may pub
+fn lower.tyk.is_generic_adt(env: &types.env.Env, c: &lower.cx.Cx, f: usize) -> bool uses [alloc] panics may pub
     let n = types.ty.node(&c.ar, f)
     if n.k != types.ty.K.Adt || n.c == 0usize {
+        return false
+    }
+    // 標準ライブラリの総称の型 (alloc・core・std) は、具体化の再帰を別に扱うまで未対応のままにする。
+    let fq = lower.tyk.item_fqn(env, n.a)
+    if fq.as_str().starts_with("alloc.") || fq.as_str().starts_with("core.") || fq.as_str().starts_with("std.") {
         return false
     }
     let kind = types.infer.item_kind(env, n.a)
@@ -347,6 +352,15 @@ end lower.tyk.kind_word
 // 項目 (構造体・列挙型) のレイアウト。
 fn lower.tyk.layout(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize) -> Result<lower.tyk.Lay, resolve.Failure> uses [alloc] panics may pub
     if (item >= lower.tyk.INS && item < lower.tyk.VEC) {
+        // 代入の組が深すぎる = 総称の型が自分を含む (再帰)。未対応として空の大きさを返す。
+        if c.v.subst.len() > 400usize {
+            let nm = lower.tup.name(env, c, lower.tyk.at(c.g.tps.as_slice(), item - lower.tyk.INS))?
+            let msg = lower.cx.cat2("総称の型の大きさ (再帰する型は未対応): ", nm.as_str())?
+            lower.cx.fail(c, msg.as_str())?
+            let e1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let e2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            return Ok(lower.tyk.Lay { size: 0usize, align: 1usize, offs: e1, vlens: e2 })
+        }
         let saved = lower.tyk.enter(c, item)?
         let r = lower.tyk.layout(env, c, lower.tyk.real_item(c, item))?
         lower.tyk.leave(c, saved)
