@@ -35,6 +35,41 @@ fn byte_off(lw: &mut Lw, idx: VId, sz: u32) -> VId {
     arith(lw, Aop::Mul, idx, k)
 }
 
+/// `Err(AllocError { code: 1 })` を作って `join` へ送る (大きさのあふれ・確保の失敗)。
+fn goto_alloc_err(lw: &mut Lw, rt: Ty, join: usize) {
+    let Pay::Agg(i) = alloc_err_pay(lw) else { unreachable!() };
+    let code = lw.emit(Ty::U32, Op::Const(1));
+    let ae = lw.emit(Ty::Agg(i), Op::Make { variant: None, fields: vec![code] });
+    let r = lw.emit(rt, Op::Err(ae));
+    lw.goto(join, vec![r]);
+}
+
+/// `ok` が偽なら `Err(AllocError)` で `join` へ、真なら続きの新しいブロックへ進む。
+fn alloc_check(lw: &mut Lw, ok: VId, rt: Ty, join: usize) {
+    let (yes, _) = lw.new_block(&[]);
+    let (no, _) = lw.new_block(&[]);
+    lw.branch(ok, (yes, vec![]), (no, vec![]));
+    lw.cur = Some(no);
+    goto_alloc_err(lw, rt, join);
+    lw.cur = Some(yes);
+}
+
+/// `n * sz` のバイト数。`n * sz` が `isize::MAX` (ターゲットの幅) を超えるなら `Err(AllocError)` で `join` へ。
+fn checked_bytes(lw: &mut Lw, n: VId, sz: u32, rt: Ty, join: usize) -> VId {
+    let max = ((1u128 << (crate::ptrwidth::bits() - 1)) - 1) / sz.max(1) as u128;
+    let lim = usize_const(lw, max as i128);
+    let fits = cmp(lw, Cc::Le, n, lim);
+    alloc_check(lw, fits, rt, join);
+    byte_off(lw, n, sz)
+}
+
+/// 確保したポインタが null でないことを確かめる (null なら `Err(AllocError)` で `join` へ)。
+fn check_non_null(lw: &mut Lw, p: VId, rt: Ty, join: usize) {
+    let null = lw.emit(Ty::Ptr, Op::Const(0));
+    let ok = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ne, ty: Ty::Ptr, a: p, b: null });
+    alloc_check(lw, ok, rt, join);
+}
+
 /// バッファの `idx` 番目の要素のアドレス。
 fn elem_addr(lw: &mut Lw, h: VId, idx: VId, sz: u32) -> VId {
     let base = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
@@ -89,7 +124,7 @@ pub(super) fn new(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     Ok(Some(lw.emit(vt, Op::Make { variant: None, fields: vec![null, zero, zero] })))
 }
 
-/// `alloc.raw.Buf.with_capacity(allocator, n)`: `n` 個分のバッファを確保して `Ok(Buf)` (確保の失敗は起きない)。
+/// `alloc.raw.Buf.with_capacity(allocator, n)`: `n` 個分のバッファを確保して `Ok(Buf)`。溢れ・確保失敗は `Err(AllocError)`。
 pub(super) fn with_capacity(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let f = nf(e);
     let line = nline(e);
@@ -122,11 +157,16 @@ pub(super) fn with_capacity(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let Some(sz) = elem.and_then(|t| coll::elem_size(lw, t)) else {
         return lw.err(line, "Buf の要素の型が段階 1 の対象外");
     };
-    let bytes = byte_off(lw, n, sz);
+    let (join, jp) = lw.new_block(&[rt]);
+    let bytes = checked_bytes(lw, n, sz, rt, join);
     let p = lw.emit(Ty::Ptr, Op::HeapAlloc(bytes));
+    check_non_null(lw, p, rt, join);
     let zero = usize_const(lw, 0);
     let hdr = lw.emit(vt, Op::Make { variant: None, fields: vec![p, zero, n] });
-    Ok(Some(lw.emit(rt, Op::Ok(hdr))))
+    let r = lw.emit(rt, Op::Ok(hdr));
+    lw.goto(join, vec![r]);
+    lw.cur = Some(join);
+    Ok(Some(jp[0]))
 }
 
 /// `Buf` だけのメソッド。扱わない名前は `None` (`Vec` と共通の下ろしへ)。
@@ -326,14 +366,13 @@ fn truncate(lw: &mut Lw, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Opt
     Ok(Some(lw.unit()))
 }
 
-/// `b.grow(new_cap)`: `new_cap > cap` ならバッファを広げて `cap` を `new_cap` にする。結果は `Ok(())`。
+/// `b.grow(new_cap)`: `new_cap > cap` ならバッファを広げて `cap` を `new_cap` にする。溢れ・確保失敗は `Err(AllocError)`。
 fn grow(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<Option<VId>> {
     if args.len() != 1 {
         return lw.err(line, "grow の引数は 1 つのはず");
     }
     let (_elem, sz) = elem_of(lw, line, kind, "grow")?;
     let rt = result_ty(lw, e, line, "grow")?;
-    let _ = alloc_err_pay(lw);
     let Some(n) = lw.expr(&args[0])? else { return Ok(None) };
     if lw.vty(n) != Ty::Usize {
         return lw.err(line, "grow の容量が usize でない");
@@ -341,18 +380,26 @@ fn grow(lw: &mut Lw, e: &V, line: usize, kind: &Kind, h: VId, args: &[V]) -> LR<
     let cap = lw.emit(Ty::Usize, Op::MemLoad { p: h, off: 16 });
     let bigger = cmp(lw, Cc::Gt, n, cap);
     let (yes, _) = lw.new_block(&[]);
-    let (done, _) = lw.new_block(&[]);
-    lw.branch(bigger, (yes, vec![]), (done, vec![]));
+    let (no, _) = lw.new_block(&[]);
+    let (done, jp) = lw.new_block(&[rt]);
+    lw.branch(bigger, (yes, vec![]), (no, vec![]));
+    lw.cur = Some(no);
+    let u = lw.unit();
+    let ok_res = lw.emit(rt, Op::Ok(u));
+    lw.goto(done, vec![ok_res]);
     lw.cur = Some(yes);
-    let bytes = byte_off(lw, n, sz);
+    let bytes = checked_bytes(lw, n, sz, rt, done);
     let old = lw.emit(Ty::Ptr, Op::MemLoad { p: h, off: 0 });
     let np = lw.emit(Ty::Ptr, Op::HeapRealloc { p: old, size: bytes });
+    // 失敗した realloc は元の領域を残すので、ヘッダはそのままでよい。
+    check_non_null(lw, np, rt, done);
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Ptr, p: h, off: 0, v: np });
     lw.emit(Ty::Unit, Op::MemStore { ty: Ty::Usize, p: h, off: 16, v: n });
-    lw.goto(done, vec![]);
-    lw.cur = Some(done);
     let u = lw.unit();
-    Ok(Some(lw.emit(rt, Op::Ok(u))))
+    let ok_res = lw.emit(rt, Op::Ok(u));
+    lw.goto(done, vec![ok_res]);
+    lw.cur = Some(done);
+    Ok(Some(jp[0]))
 }
 
 /// `Buf<u8>.append_str_within_cap(text)`: 余裕が `text` の長さ以上ならバイトを写して `Ok(())`、なければ `Err(())`。

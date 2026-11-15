@@ -42,7 +42,11 @@ static unsigned char *heap_top;
 static unsigned char *heap_end;
 static struct blk *free_list;
 
-static size_t align16(size_t n) { return (n + 15) & ~(size_t)15; }
+/* オーバーフローチェック付きの整列関数 */
+static size_t align16(size_t n) {
+    if (n > SIZE_MAX - 15) return 0; /* 溢れを示す */
+    return (n + 15) & ~(size_t)15;
+}
 
 static int heap_grow(size_t need) {
     if (!heap_top) {
@@ -51,15 +55,20 @@ static int heap_grow(size_t need) {
     }
     size_t have = (size_t)(heap_end - heap_top);
     if (have >= need) return 1;
-    size_t pages = (need - have + 65535) / 65536;
+    /* need - have が溢れないことは have < need より保証される */
+    size_t diff = need - have;
+    if (diff > SIZE_MAX - 65535) return 0; /* ページ計算で溢れる */
+    size_t pages = (diff + 65535) / 65536;
     int old = __builtin_wasm_memory_grow(0, (int)pages);
     if (old < 0) return 0;
+    /* (old + pages) * 65536 の溢れチェック: wasm32 では 4 GiB が上限なので問題ない */
     heap_end = (unsigned char *)((size_t)(old + (int)pages) * 65536);
     return 1;
 }
 
 void *malloc(size_t n) {
     size_t want = align16(n ? n : 1);
+    if (want == 0) return 0; /* align16 で溢れた */
     struct blk **pp = &free_list;
     for (struct blk *b = free_list; b; pp = &b->next, b = b->next) {
         if (b->cap >= want) {
@@ -67,6 +76,7 @@ void *malloc(size_t n) {
             return (void *)(b + 1);
         }
     }
+    if (want > SIZE_MAX - sizeof(struct blk)) return 0; /* need 計算で溢れる */
     size_t need = sizeof(struct blk) + want;
     if (!heap_grow(need)) return 0;
     struct blk *b = (struct blk *)heap_top;
@@ -95,6 +105,7 @@ void *realloc(void *p, size_t n) {
 }
 
 void *calloc(size_t n, size_t m) {
+    if (n != 0 && m > SIZE_MAX / n) return 0; /* 溢れ */
     size_t total = n * m;
     void *p = malloc(total);
     if (p) memset(p, 0, total);
