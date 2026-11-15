@@ -1,0 +1,68 @@
+import notes.cmd
+import notes.error
+
+const notes.USAGE: &str = "usage: notes <add|list|show|edit|rm|tag|search|export> ..."
+
+fn notes.args() -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, notes.error.Error> uses [alloc, env] panics never
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    let n = std.env.arg_count()
+    while i < n {
+        match std.env.arg(i) {
+            Some(s) => {
+                let t = alloc.string.String.from_str(std.alloc.SYSTEM, s)?
+                out.push(t)?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end notes.args
+
+fn notes.main() -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs, time] panics may
+    if std.env.arg_count() == 0usize {
+        std.io.print_line(notes.USAGE)?
+        return Ok(())
+    }
+    let args = notes.args()?
+    let sub = match args.get(0) {
+        Some(s) => s.as_str()
+        None => return Err(error.Error.Usage)
+    }
+    if sub == "add" {
+        return cmd.add(1usize)
+    }
+    if sub == "list" {
+        return cmd.list()
+    }
+    if sub == "show" {
+        return cmd.show(1usize)
+    }
+    if sub == "edit" {
+        return cmd.edit(1usize, 2usize, 3usize)
+    }
+    if sub == "rm" {
+        return cmd.rm(1usize)
+    }
+    if sub == "tag" {
+        return cmd.tag(1usize, 2usize)
+    }
+    if sub == "search" {
+        return cmd.search(1usize)
+    }
+    if sub == "export" {
+        return cmd.export(1usize, 2usize)
+    }
+    std.io.print_line(notes.USAGE)?
+    Err(error.Error.Usage)
+end notes.main
+
+test notes.main.test_args_empty
+    let args = notes.args()?
+    core.check.eq(args.len(), 0usize)
+end notes.main.test_args_empty
+
+test notes.main.test_usage_constant
+    core.check.eq(notes.USAGE, "usage: notes <add|list|show|edit|rm|tag|search|export> ...")
+end notes.main.test_usage_constant
