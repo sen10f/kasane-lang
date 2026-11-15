@@ -191,6 +191,7 @@ impl Interp {
                 self.net.streams.remove(&fd);
                 Ok(ok(Val::Unit))
             }
+            "fd" => Ok(int(fd, "i32")),
             "flush" => Ok(match self.net.streams.get_mut(&fd) {
                 Some(st) => match st.flush() {
                     Ok(()) => ok(Val::Unit),

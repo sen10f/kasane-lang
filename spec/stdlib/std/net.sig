@@ -17,7 +17,7 @@ type std.net.TcpListener linear pub
 end std.net.TcpListener
 
 type std.net.TcpStream linear pub
-    descriptor: i32 pub
+    descriptor: i32
 end std.net.TcpStream
 
 type std.net.UdpSocket linear pub
@@ -28,6 +28,7 @@ fn std.net.TcpListener.accept(self: &std.net.TcpListener) -> Result<std.net.TcpS
 fn std.net.TcpListener.close(self: std.net.TcpListener) -> Result<(), std.net.Error> uses [io.net] panics never pub
 fn std.net.TcpListener.local_port(self: &std.net.TcpListener) -> Result<u16, std.net.Error> uses [io.net] panics never pub
 fn std.net.TcpStream.close(self: std.net.TcpStream) -> Result<(), std.net.Error> uses [io.net] panics never pub
+fn std.net.TcpStream.fd(self: &std.net.TcpStream) -> i32 uses [] panics never pub
 impl std.io.Write<[io.net]> for std.net.TcpStream
 fn std.net.TcpStream.flush(self: &mut std.net.TcpStream) -> Result<(), std.io.Error> uses [io.net] panics never impls std.io.Write<[io.net]>
 fn std.net.TcpStream.local_addr_raw(self: &std.net.TcpStream, out: &mut [u8]) -> Result<usize, std.io.Error> uses [io.net] panics never pub
