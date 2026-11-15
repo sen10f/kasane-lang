@@ -15,9 +15,11 @@
 //!   照らす (戻り値の領域に含まれない引数・局所の借用を返す/引数の指す先へ入れるのは違反)。呼び出しの戻り値は、
 //!   呼び先のヘッダ (`flows`) で引数から流れる。
 
-use crate::kir::{operands, Func, Module, Op, OwnKind, Term, Ty, VId};
+use crate::check::{st, tag, tel};
+use crate::kir::{operands, AggKind, Func, Module, Op, OwnKind, Term, Ty, VId};
 use crate::kir_lower::Lowered;
-use crate::program::{Def, Program};
+use crate::parser::V;
+use crate::program::{Def, Program, Target};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
@@ -367,6 +369,39 @@ struct An<'a> {
     parent: HashMap<VId, VId>,
     move_loads: HashSet<VId>,
     move_stores: HashSet<(usize, usize)>,
+    /// 値 → (入口の引数の番号, その引数の指す先からのオフセット)。アドレスの命令をたどって分かる値だけ。
+    pabs: Vec<Option<(u32, u32)>>,
+    /// 引数ごとの、`'static` だけの領域を持つ欄のオフセット (指す先の構造体の欄)。
+    sfo: Vec<BTreeSet<u32>>,
+}
+
+/// 引数 `d.params` ごとに、指す先の構造体の欄のうち、宣言の上で領域が `'static` だけのもの (`&'static str` など) のオフセット。
+/// そこから読んだ値は `'static` で、引数の借用ではない (AST の `field_lifetimes` と同じ規則)。
+fn static_field_offsets(p: &Program, m: &Module, d: &Def) -> Vec<BTreeSet<u32>> {
+    d.params
+        .iter()
+        .map(|(_, ty)| {
+            let mut t = ty;
+            while tag(t) == "ref" {
+                t = tel(t, 2);
+            }
+            let V::L(parts) = t else { return BTreeSet::new() };
+            if parts.len() < 2 || st(&parts[0]) != "named" {
+                return BTreeSet::new();
+            }
+            let segs: Vec<String> = st(&parts[1]).split('.').map(|s| s.to_string()).collect();
+            let Some(r) = p.resolve(&segs, &d.file) else { return BTreeSet::new() };
+            let Target::Type(tdi) = r.target else { return BTreeSet::new() };
+            let td = &p.defs[tdi];
+            let Some(agg) = m.aggs.iter().find(|a| a.name == td.name) else { return BTreeSet::new() };
+            let AggKind::Struct(fields) = &agg.kind else { return BTreeSet::new() };
+            td.field_lifetimes
+                .iter()
+                .filter(|(_, lts)| !lts.is_empty() && lts.iter().all(|l| l == "static"))
+                .filter_map(|(fname, _)| fields.iter().find(|f| f.name == *fname).map(|f| f.off))
+                .collect()
+        })
+        .collect()
 }
 
 fn is_null_const(f: &Func, v: VId) -> bool {
@@ -434,11 +469,23 @@ impl<'a> An<'a> {
                     }
                 }
                 Loan::Param(j) | Loan::ParamIn(j) => {
+                    // `'static` だけの欄 (`&'static str`) を読んだ値は、引数の借用ではない (`self` の借用は数えない)。
+                    if self.static_field_load(p, j, off) {
+                        continue;
+                    }
                     out.insert(Loan::ParamIn(j));
                 }
             }
         }
         out
+    }
+
+    /// `p` が入口の引数 `j` の指す先の、`'static` だけの欄 (オフセット `off` を足した先) を指すか。
+    fn static_field_load(&self, p: VId, j: u32, off: u32) -> bool {
+        match self.pabs[p as usize] {
+            Some((pj, k)) if pj == j => self.sfo.get(j as usize).map_or(false, |s| s.contains(&(k + off))),
+            _ => false,
+        }
     }
 
     /// `p` の指す先へ値 `v` (型 `t`、オフセット `off`) を書く。
@@ -670,7 +717,7 @@ fn holders_of_root(st: &State, root: VId) -> Vec<VId> {
     h
 }
 
-fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, file: &str, lines: &[u32]) -> Vec<Diag> {
+fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, sfo: Vec<BTreeSet<u32>>, file: &str, lines: &[u32]) -> Vec<Diag> {
     let n = f.value_count();
     let nb = f.blocks.len();
     let mut ty = vec![Ty::Unit; n];
@@ -743,6 +790,31 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
             break;
         }
     }
+    // 入口の引数の指す先からのオフセット (`field_addr` / 再借用だけをたどる)。
+    let mut pabs: Vec<Option<(u32, u32)>> = vec![None; n];
+    for (i, (v, _)) in f.params().iter().enumerate() {
+        pabs[*v as usize] = Some((i as u32, 0));
+    }
+    loop {
+        let mut ch = false;
+        for b in &f.blocks {
+            for i in &b.insts {
+                let np = match &i.op {
+                    Op::Reborrow(a) | Op::AsShared(a) | Op::Borrow { a, .. } => pabs[*a as usize],
+                    Op::Bitcast { a, .. } if matches!(i.ty, Ty::Ptr | Ty::Ref(..)) => pabs[*a as usize],
+                    Op::FieldAddr { a, off } => pabs[*a as usize].map(|(j, k)| (j, k + off)),
+                    _ => None,
+                };
+                if np != pabs[i.dst as usize] {
+                    pabs[i.dst as usize] = np;
+                    ch = true;
+                }
+            }
+        }
+        if !ch {
+            break;
+        }
+    }
     // move の検出: 同じブロックで `mem.load.ptr S+o` の後に `mem.store.ptr S+o, null`。
     let mut move_loads = HashSet::new();
     let mut move_stores = HashSet::new();
@@ -804,7 +876,7 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
             }
         }
     }
-    let mut an = An { f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, move_stores };
+    let mut an = An { f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, move_stores, pabs, sfo };
     let ins = an.run();
     let mut diags: Vec<Diag> = vec![];
     let mut cons: Vec<Cons> = vec![];
@@ -1331,7 +1403,8 @@ pub fn check(p: &Program, user: &[usize], lo: &Lowered, own: bool) -> Outcome {
             None => (p.defs[di].file.clone(), vec![]),
         };
         let dl = p.defs[di].line;
-        diags.extend(check_func(f, h, &hdrs, &file, &lines).into_iter().filter(|d| own || !matches!(d.code, "E3002" | "E3003")).map(|mut d| {
+        let sfo = static_field_offsets(p, m, &p.defs[di]);
+        diags.extend(check_func(f, h, &hdrs, sfo, &file, &lines).into_iter().filter(|d| own || !matches!(d.code, "E3002" | "E3003")).map(|mut d| {
             if d.line == 0 {
                 d.line = dl;
             }

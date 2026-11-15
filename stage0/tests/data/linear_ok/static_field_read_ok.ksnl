@@ -1,0 +1,13 @@
+type t.Q
+    src: &'static str
+end t.Q
+
+fn t.Q.rest(self: &t.Q) -> &'static str uses [] panics never
+    self.src
+end t.Q.rest
+
+fn t.main() -> Result<(), std.io.Error> uses [io.console] panics never
+    let q = t.Q { src: "hello" }
+    std.io.print_line(q.rest())
+    Ok(())
+end t.main
