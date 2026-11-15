@@ -312,6 +312,10 @@ impl<'a> Lw<'a> {
             return self.err(line, format!("受け手 {} が局所でない", segs[0]));
         };
         let (sv, stt) = self.slots[s];
+        // 借用の受け手 (`x.len()` の `&self`) は、move 済みの値の読み (注釈)。
+        if by_ref {
+            self.own_emit(&segs[0], s, crate::kir::OwnKind::Use);
+        }
         if segs.len() == 1 {
             if !by_ref {
                 // 値の受け手は関数の引数と同じ移動 (path_read: ヘッダを移し/印を下ろす)。

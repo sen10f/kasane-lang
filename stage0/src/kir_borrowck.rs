@@ -1004,7 +1004,15 @@ fn check_func<'a>(f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, f
                                 st.0.remove(a);
                             }
                             Op::Own { a, kind: OwnKind::Part } => {
+                                if st.0.contains(a) && round == 1 {
+                                    found.push((line_at(bi, ii), "E3002", "use of moved value (its field is read or moved after the whole value was moved)".to_string()));
+                                }
                                 st.1.remove(a);
+                            }
+                            Op::Own { a, kind: OwnKind::Use } => {
+                                if st.0.contains(a) && round == 1 {
+                                    found.push((line_at(bi, ii), "E3002", "use of moved value (it was moved earlier on some path)".to_string()));
+                                }
                             }
                             Op::Own { a, kind: OwnKind::Init } => {
                                 st.0.remove(a);

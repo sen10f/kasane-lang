@@ -972,6 +972,8 @@ pub enum OwnKind {
     Part,
     /// 再代入 (move 済みが解ける。義務は変わらない)。
     Init,
+    /// 読み (フィールドの読み・借用)。move 済みなら E3002 (義務は変わらない)。
+    Use,
 }
 
 /// `BitCount` の種類。
@@ -1426,7 +1428,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::Reborrow(p) => format!("reborrow {}", fmt_val(*p)),
         Op::Borrow { a, mutable } => format!("borrow.{} {}", if *mutable { "mut" } else { "shared" }, fmt_val(*a)),
         Op::ScopeEnd(a) => format!("scope.end {}", fmt_val(*a)),
-        Op::Own { a, kind } => format!("own.{} {}", match kind { OwnKind::Owe => "owe", OwnKind::Consume => "consume", OwnKind::Part => "part", OwnKind::Init => "init" }, fmt_val(*a)),
+        Op::Own { a, kind } => format!("own.{} {}", match kind { OwnKind::Owe => "owe", OwnKind::Consume => "consume", OwnKind::Part => "part", OwnKind::Init => "init", OwnKind::Use => "use" }, fmt_val(*a)),
         Op::FrameBytes { size } => format!("frame.bytes {}", size),
         Op::GlobalBytes { name, size } => format!("global.bytes {} {}", name, size),
         Op::StaticBytes(bytes) => {
@@ -1832,6 +1834,7 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("own", ["consume"]) if ty == Ty::Unit => Ok(Op::Own { a: operands(1)?[0], kind: OwnKind::Consume }),
         ("own", ["init"]) if ty == Ty::Unit => Ok(Op::Own { a: operands(1)?[0], kind: OwnKind::Init }),
         ("own", ["part"]) if ty == Ty::Unit => Ok(Op::Own { a: operands(1)?[0], kind: OwnKind::Part }),
+        ("own", ["use"]) if ty == Ty::Unit => Ok(Op::Own { a: operands(1)?[0], kind: OwnKind::Use }),
         ("frame", ["bytes"]) if ty == Ty::Ptr => {
             let n = rest.trim().parse::<u32>().map_err(|_| perr(line, format!("frame.bytes の大きさ {} が不正", rest)))?;
             Ok(Op::FrameBytes { size: n })
