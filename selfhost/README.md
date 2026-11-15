@@ -915,8 +915,16 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
 ### 17.5 処理系・部品の不足 (重要度順)
 
 1. **下ろしの範囲** (表の 5): 型の下ろし (`Option` `Result` `Vec` `String` 参照) と、署名だけの標準ライブラリの呼び出しが、ほぼすべての関数に当たる。`ksnc` 自身を作るにはこの 2 つが要る (表の 8)。
+<<<<<<< ours
 2. **借用の誤検出 (let の経路)**: 同じ呼び出しで根の別の欄を借りる形は 17.7 で直した。一方、`let a = &mut c.ar` と `let b = &c.tc` を順に書く形は、`selfhost/borrow` の局所ごとの借用状態が欄を区別しないので E3010 の誤検出が残る (Rust 版は通す。17.7 の再現)。
 3. **構文解析の不足 (`is` を引数に書く形)** (解決): `o is Some(_)` を呼び出しの引数に書くと、`selfhost/parse` が `expected ')'` で止まっていた (`stage0/tests/data/unsound/is_linear_payload_discarded.ksnl`。Rust 版は通す。`cmp_expr` で `is` パターンを処理し `Match` ノードに下ろす形で直した。unsound の取りこぼしは解消)。
+||||||| base
+2. **借用の誤検出 (let の経路)**: 同じ呼び出しで根の別の欄を借りる形は 17.7 で直した。一方、`let a = &mut c.ar` と `let b = &c.tc` を順に書く形は、`selfhost/borrow` の局所ごとの借用状態が欄を区別しないので E3010 の誤検出が残る (Rust 版は通す。17.7 の再現)。
+3. **構文解析の不足 (`is` を引数に書く形)**: `o is Some(_)` を呼び出しの引数に書くと、`selfhost/parse` が `expected ')'` で止まる (`stage0/tests/data/unsound/is_linear_payload_discarded.ksnl`。Rust 版は通す。拒否すべきコードなので、直すまで unsound の 1 件が取りこぼしになるだけ)。
+=======
+2. **借用の誤検出 (let の経路)**: 直した (17.8)。同じ呼び出しの形は 17.7、`let a = &mut c.ar` と `let b = &c.tc` を順に書く形は 17.8。
+3. **構文解析の不足 (`is` を引数に書く形)**: `o is Some(_)` を呼び出しの引数に書くと、`selfhost/parse` が `expected ')'` で止まる (`stage0/tests/data/unsound/is_linear_payload_discarded.ksnl`。Rust 版は通す。拒否すべきコードなので、直すまで unsound の 1 件が取りこぼしになるだけ)。
+>>>>>>> theirs
 4. **検査の不足** (表の 3(b)): E4013 は 17.7 で直した。
 5. **IR を外へ出す入口がない** (11.4 章 1 と同じ): `ksn` に IR を外へ出す CLI がない。`ksnc` は `emit.module` を直接呼び、`lower.main` の手順は表示しない版 (`kir.ksnl`) に写した。
 6. **Kasane の `build` の検査は、Rust の検査より寛容** (表の 3 の残り): 型・効果・借用の検査で、Kasane 版が見落とすものは、`kasane` の `build` でも通る。`unsound/` の一部がそれ。
@@ -940,6 +948,18 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
 - **判定**: `ksnc check --stages=both` の 34 パッケージの一致は **32/34 → 34/34** (修正前の driver を一時的に戻して測った)。
 
 残り (この節で直していないもの): 17.5 の 2 (let の経路の欄の誤検出)。
+
+### 17.8 借用の誤検出 (let の経路の欄)
+
+2026-11-15。ブランチ `selfhost/borrow-fields`。`selfhost/borrow` の借用の状態を (根の局所, 欄の道) で持つ形にした。新規は無し (`selfhost/borrow/src/borrow/cx.ksnl` と `walk.ksnl` の修正と、この節の追記だけ)。
+
+- 原因: 借用 `Br` が根の局所だけを持ち、`access` が根単位で競合を見ていたので、`let a = &mut c.ar` の後の `let b = &c.tc` が E3010 になった。
+- 直し: `Br` に欄の道 `ps`・`pe` (ソース上の範囲。空は根全体) を足し、`access_at` は道が前置関係で重なるときだけ競合とする (`paths_overlap`)。道は `place_path` が式から求める (添字より先は見ない: `c.v[i].x` は `v`。関数名 `c.ar.len` は受け手の `ar`)。同じ呼び出しの組 (17.7) も同じ道の判定を使う。`first_field` と `same_field` は消した。
+- 確かめ: 手で作った例 (`h1` = `let a = &mut c.ar; let b = &c.tc`、`&mut c.ar` と `c.tc = ..` など 10 本) は Rust 版と一致。`compare.py --group all` は修正前と同一 (誤検出 0、拒否の一致 54、DIFF の一覧は不変、undec 96)。`selfhost/borrow` 自身の undec は 3 のまま。
+- 別に見つけたもの (直していない):
+  1. **`borrow.base.block_end` は関数の本体の終わりを正しく求めない。** 本体が `fn ... end` (波括弧を持たない) のとき、本体の中の最初の波括弧の組 (例: 構造体リテラル `t.C { .. }`) の閉じで本体が終わったとみなす。そのため、後の文で使われる借り手が「もう使われない」と判定され、E3010 を取りこぼす (`let mut c = t.C { .. }` の関数で `let a = &mut c; let b = &c; *a = ..` が通る。Rust 版は E3010)。取りこぼしの方向で、誤検出ではない。
+  2. **`selfhost/driver` が HEAD で作れない**: `src/ksnc/kir.ksnl` の `lower.cx.new`・`lower.expr.enqueue`・`lower.func.lower_item` の引数の数が `selfhost/lower` と合わない (E2001)。この節の変更とは無関係。そのため `ksnc check --stages=both` の 34/34 は今回は測れず、代わりに借用の段を 32 パッケージ (examples 16・apps 3・selfhost 13) で Rust 版 `ksn check` と比べ、E30xx が両方 0 件で一致した。
+  3. `selfhost/borrow` の `ksn check` が HEAD で通らなかった (E2042: `walk.ksnl` の `if ln.kind == Index { expr(..)? }` の値を捨てていた)。`core.mem.drop` で捨てる形に直した。
 
 ## 18. KIR への下ろしの段 (2): 型の表を使い、Option / Result / 参照 を下ろす (修正プラン 5-5)
 

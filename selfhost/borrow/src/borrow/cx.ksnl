@@ -19,11 +19,13 @@ const borrow.cx.ST_MOVED: usize = 1usize pub
 
 const borrow.cx.ST_UNDEC: usize = 2usize pub
 
-// 借用 1 件: holder (借り手の局所) が target (借り先の局所) を借りている。
+// 借用 1 件: holder (借り手の局所) が target (借り先の局所) の欄の道 [ps, pe) を借りている (空の道は根全体)。
 type borrow.cx.Br derive [Clone, Copy] pub
     holder: usize pub
     target: usize pub
     mutb: usize pub
+    ps: usize pub
+    pe: usize pub
 end borrow.cx.Br
 
 type borrow.cx.Cx pub
@@ -74,8 +76,14 @@ type borrow.cx.Rep pub
     undec: usize pub
 end borrow.cx.Rep
 
-// 局所 idx への使い方 kind を記録する。移動済み・消費済みの使用、借用の競合を E3002・E3003・E3010 で報告する。
+// 局所 idx の根全体への使い方 kind を記録する (欄の道は空 = すべての欄と重なる)。
 fn borrow.cx.access(cx: &mut borrow.cx.Cx, idx: usize, kind: usize, tok: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    borrow.cx.access_at(cx, idx, kind, tok, 0usize, 0usize)
+end borrow.cx.access
+
+// 局所 idx の欄の道 [ps, pe) への使い方 kind を記録する。移動済み・消費済みの使用、借用の競合を E3002・E3003・E3010 で報告する。
+// 競合は借用の欄の道と重なるときだけ (`c.ar` を借りている間の `c.tc` の使用は競合しない)。
+fn borrow.cx.access_at(cx: &mut borrow.cx.Cx, idx: usize, kind: usize, tok: usize, ps: usize, pe: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let l = borrow.cx.loc(cx, idx)
     if kind != borrow.cx.K_WRITE {
         if l.st == borrow.cx.ST_MOVED {
@@ -94,12 +102,14 @@ fn borrow.cx.access(cx: &mut borrow.cx.Cx, idx: usize, kind: usize, tok: usize) 
         if !clash {
             let br = match cx.dat.brs.as_slice().get(k) {
                 Some(x) => *x
-                None => borrow.cx.Br { holder: 0usize, target: 0usize, mutb: 0usize }
+                None => borrow.cx.empty_br()
             }
             let writes0 = kind == borrow.cx.K_WRITE || kind == borrow.cx.K_PART
             let writes = writes0 || kind == borrow.cx.K_MOVE
             let conflict = br.mutb == 1usize || writes || kind == borrow.cx.K_BMUT
-            if br.target == idx && br.holder != idx && conflict && borrow.cx.alive(cx, br.holder) {
+            let hit = br.target == idx && br.holder != idx && conflict
+            let ov = hit && borrow.cx.paths_overlap(cx.src.as_slice(), br.ps, br.pe, ps, pe)
+            if ov && borrow.cx.alive(cx, br.holder) {
                 clash = true
                 borrow.cx.diag(cx, "E3010", tok, "借用中の値を変更・移動・借用する")?
             }
@@ -116,10 +126,10 @@ fn borrow.cx.access(cx: &mut borrow.cx.Cx, idx: usize, kind: usize, tok: usize) 
         borrow.cx.set_st(cx, idx, borrow.cx.ST_LIVE)
     }
     Ok(())
-end borrow.cx.access
+end borrow.cx.access_at
 
-// 局所 k を借用の借り手にする: 借り先 target (番号) を借り、借り手の参照先を記録する。
-fn borrow.cx.add_borrow(cx: &mut borrow.cx.Cx, k: usize, target: usize, mutb: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+// 局所 k を借用の借り手にする: 借り先 target (番号) の欄の道 [ps, pe) を借り、借り手の参照先を記録する。
+fn borrow.cx.add_borrow(cx: &mut borrow.cx.Cx, k: usize, target: usize, mutb: usize, ps: usize, pe: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
     let mut l = borrow.cx.loc(cx, k)
     l.rf = target.wrapping_add(1usize)
     match cx.dat.locs.as_mut_slice().get_mut(k) {
@@ -128,7 +138,7 @@ fn borrow.cx.add_borrow(cx: &mut borrow.cx.Cx, k: usize, target: usize, mutb: us
         }
         None => core.mem.drop(0u8)
     }
-    cx.dat.brs.push(borrow.cx.Br { holder: k, target: target, mutb: mutb })?
+    cx.dat.brs.push(borrow.cx.Br { holder: k, target: target, mutb: mutb, ps: ps, pe: pe })?
     Ok(())
 end borrow.cx.add_borrow
 
@@ -198,6 +208,11 @@ fn borrow.cx.diag(cx: &mut borrow.cx.Cx, code: &str, tok: usize, msg: &str) -> R
     cx.rep.errors = cx.rep.errors.wrapping_add(1usize)
     Ok(())
 end borrow.cx.diag
+
+// 空の借用 (範囲外の参照の既定)。
+fn borrow.cx.empty_br() -> borrow.cx.Br uses [] panics never pub
+    borrow.cx.Br { holder: 0usize, target: 0usize, mutb: 0usize, ps: 0usize, pe: 0usize }
+end borrow.cx.empty_br
 
 // 空の局所 (範囲外の参照の既定)。
 fn borrow.cx.empty_loc() -> borrow.cx.Loc uses [] panics never pub
@@ -305,34 +320,110 @@ fn borrow.cx.place_root(cx: &borrow.cx.Cx, e: usize) -> usize uses [] panics nev
     0usize
 end borrow.cx.place_root
 
-// 根の直下の欄 (`c.ar` の `ar`) の名前の開始バイト + 1。欄でない (根そのもの・添字・根の先が式) なら 0。
-// `c.ar` は 1 つの Path (`c.ar.x` も同じ) なので、Path の文字列の中の最初の `.` を見る。
-// 同じ呼び出しで `&mut c.ar` と `&c.tc` を借りる形を、欄が違うなら競合と数えないために使う (walk.check_pairs)。
-fn borrow.cx.first_field(cx: &borrow.cx.Cx, e: usize) -> usize uses [] panics never stack 8192 pub
+// 名前の範囲 [a, b) (`c.ar.x`) の根の直下の道 [開始, 終わり) (`ar.x`)。根だけなら (0, 0)。
+fn borrow.cx.tail_path(src: &[u8], a: usize, b: usize) -> (usize, usize) uses [] panics never pub
+    borrow.cx.tail_from(src, b, borrow.walk.ident_end(src, a))
+end borrow.cx.tail_path
+
+// 根の直後の位置 e1 (識別子の終わり) から道を切り出す。
+fn borrow.cx.tail_from(src: &[u8], b: usize, e1: usize) -> (usize, usize) uses [] panics never pub
+    if e1 < b && borrow.walk.is_dot_at(src, e1) {
+        return (e1.wrapping_add(1usize), b)
+    }
+    (0usize, 0usize)
+end borrow.cx.tail_from
+
+// 名前 [a, b) の欄の道 (path の access に渡す)。関数名 (CALLNAME) は最後の成分 (メソッド名) を外した受け手の道。
+fn borrow.cx.path_fields(src: &[u8], a: usize, b: usize, ctx: usize) -> (usize, usize) uses [] panics never pub
+    if ctx == borrow.walk.CALLNAME {
+        let (ps, pe) = borrow.cx.tail_path(src, a, b)
+        return borrow.cx.recv_path(src, ps, pe)
+    }
+    borrow.cx.tail_path(src, a, b)
+end borrow.cx.path_fields
+
+// 道の結合: 根からの道 [bs, be) (空なら根そのもの) に欄 [fs, fe) を足す。
+fn borrow.cx.dot_join(bs: usize, be: usize, fs: usize, fe: usize) -> (usize, usize) uses [] panics never pub
+    if bs == be {
+        return (fs, fe)
+    }
+    (bs, fe)
+end borrow.cx.dot_join
+
+// 式 e の根の下の欄の道 [開始, 終わり) (根の直後の `.` の次から道の終わりまで)。根そのもの (`c`) は (0, 0)。
+// 添字 (`c.v[i]`) は根の全体を借りるので、添字より先の欄は見ない (`c.v[i].x` は `v`)。
+// 道は同じソースの続きなので、範囲のまま比べる。
+fn borrow.cx.place_path(cx: &borrow.cx.Cx, e: usize) -> (usize, usize) uses [] panics never stack 8192 pub
+    if e == 0usize {
+        return (0usize, 0usize)
+    }
     let n = parse.ast.get(&cx.p.ast, e)
-    let src = cx.src.as_slice()
     if n.kind == parse.ast.Kind.Path {
-        let e1 = borrow.walk.ident_end(src, n.a)
-        if e1 < n.b && borrow.walk.is_dot_at(src, e1) {
-            return e1.wrapping_add(2usize)
-        }
-        return 0usize
+        return borrow.cx.tail_path(cx.src.as_slice(), n.a, n.b)
+    }
+    if n.kind == parse.ast.Kind.Index {
+        return borrow.cx.place_path(cx, n.a)
     }
     if n.kind == parse.ast.Kind.Dot {
-        let b = parse.ast.get(&cx.p.ast, n.a)
-        if b.kind == parse.ast.Kind.Path {
-            let e1 = borrow.walk.ident_end(src, b.a)
-            if e1 < b.b && borrow.walk.is_dot_at(src, e1) {
-                return borrow.cx.first_field(cx, n.a)
-            }
-            return parse.cur.peek_at(&cx.p, n.b).start.wrapping_add(1usize)
+        if borrow.cx.has_index(cx, n.a) {
+            return borrow.cx.place_path(cx, n.a)
         }
-        if b.kind == parse.ast.Kind.Dot {
-            return borrow.cx.first_field(cx, n.a)
+        let (bs, be) = borrow.cx.place_path(cx, n.a)
+        let f = parse.cur.peek_at(&cx.p, n.b)
+        return borrow.cx.dot_join(bs, be, f.start, f.stop)
+    }
+    (0usize, 0usize)
+end borrow.cx.place_path
+
+// 式の根の下に添字があるか (`c.v[i].x` など)。
+fn borrow.cx.has_index(cx: &borrow.cx.Cx, e: usize) -> bool uses [] panics never stack 8192 pub
+    if e == 0usize {
+        return false
+    }
+    let n = parse.ast.get(&cx.p.ast, e)
+    if n.kind == parse.ast.Kind.Index {
+        return true
+    }
+    if n.kind == parse.ast.Kind.Dot {
+        return borrow.cx.has_index(cx, n.a)
+    }
+    false
+end borrow.cx.has_index
+
+// 関数名の道 [ps, pe) (`tc.len`) の受け手の道: 最後の成分 (メソッド名) を外す。受け手が根だけなら (0, 0)。
+fn borrow.cx.recv_path(src: &[u8], ps: usize, pe: usize) -> (usize, usize) uses [] panics never pub
+    let mut k = pe
+    while k > ps {
+        k = k.wrapping_sub(1usize)
+        if borrow.walk.is_dot_at(src, k) {
+            return (ps, k)
         }
     }
-    0usize
-end borrow.cx.first_field
+    (0usize, 0usize)
+end borrow.cx.recv_path
+
+// 二つの欄の道 [ps, pe) と [qs, qe) が重なるか。空の道は根全体なので、すべての道と重なる。
+// 一方が他方の前置 (成分の並びの先頭) なら重なる (`ar` と `ar.x`)。`ar` と `arx` は重ならない。
+fn borrow.cx.paths_overlap(src: &[u8], ps: usize, pe: usize, qs: usize, qe: usize) -> bool uses [] panics never pub
+    if pe == ps || qe == qs {
+        return true
+    }
+    let lp = pe.wrapping_sub(ps)
+    let lq = qe.wrapping_sub(qs)
+    let n = borrow.base.pick(lp < lq, lp, lq)
+    for k in core.iter.range(0usize, n) {
+        let x = borrow.walk.byte_at(src, ps.wrapping_add(k))
+        let y = borrow.walk.byte_at(src, qs.wrapping_add(k))
+        if x != y {
+            return false
+        }
+    }
+    if lp == lq {
+        return true
+    }
+    let at = borrow.base.pick(lp < lq, qs.wrapping_add(n), ps.wrapping_add(n))
+    borrow.walk.byte_at(src, at) == 46u8
+end borrow.cx.paths_overlap
 
 // 写しの状態へ戻す (局所の数は同じ)。
 fn borrow.cx.restore(cx: &mut borrow.cx.Cx, s: &alloc.vec.Vec<usize, std.alloc.System>) -> () uses [] panics never pub
