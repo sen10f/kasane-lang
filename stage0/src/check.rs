@@ -515,6 +515,8 @@ pub struct Checker<'a> {
     field_consumes: Vec<(String, u32, String, usize)>,
     /// 型表 (`TypeCk::tytab`) の写し。`tc_fn` より前に作り、注釈のない `let` の型を引くのに使う (4.1)。
     mv_types: BTreeMap<(String, u32), crate::types::ExprTy>,
+    /// 型検査が解決したメソッド呼び出し先 (`TypeCk::call_res`)。借用検査が名前でなく解決先で引く。
+    call_res: std::rc::Rc<HashMap<(usize, usize, String), Option<Vec<usize>>>>,
     final_env: HashMap<String, V>,
     graph: BTreeMap<String, BTreeSet<String>>,
     /// クロージャ節 (5.3 の `関数名#番号`) → そのクロージャの AST ノード。
@@ -627,6 +629,7 @@ impl<'a> Checker<'a> {
             shared_lets: HashSet::new(),
             let_names: HashSet::new(),
             mv_types: BTreeMap::new(),
+            call_res: Default::default(),
             final_env: HashMap::new(),
             graph: BTreeMap::new(),
             closure_asts: BTreeMap::new(),
@@ -2978,6 +2981,7 @@ impl<'a> Checker<'a> {
         }
         self.let_tys = std::mem::take(&mut tk.let_tys);
         self.mv_types = std::mem::take(&mut tk.tytab);
+        self.call_res = std::rc::Rc::new(std::mem::take(&mut tk.call_res));
         for &i in &user {
             let d = self.def(i);
             if (d.kw == "fn" || d.kw == "test") && d.body.is_some() {

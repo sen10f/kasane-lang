@@ -1,0 +1,23 @@
+// expect: E3010
+type t.Bag
+    n: u32
+end t.Bag
+
+fn t.Bag.pop(self: &mut t.Bag) -> u32 uses [] panics never
+    self.n
+end t.Bag.pop
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello world, this is heap memory"))
+    core.mem.drop(v.push(&s))
+    match v.pop() {
+        Some(r) => {
+            core.mem.drop(s)
+            core.mem.drop(std.io.print_line(r.as_str()))
+        }
+        None => core.mem.drop(std.io.print_line("none"))
+    }
+    Ok(())
+end t.main
