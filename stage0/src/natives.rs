@@ -551,6 +551,19 @@ fn deep(v: &Val) -> Val {
     }
 }
 
+/// 確保の大きさの上限: `n * size_of(T)` が `isize::MAX` を超える要求は `Err(AllocError)`。
+// shortcut: 木走査は要素の大きさを持たないので `core.mem.size_of` と同じ 8 バイトで数える。u8 などの小さい要素では、ネイティブより早く Err になる。
+fn too_big(n: usize) -> bool {
+    n > isize::MAX as usize / 8
+}
+
+fn alloc_error() -> Val {
+    Val::Struct(Rc::new(StructV {
+        ty: "alloc.alloc.AllocError".into(),
+        f: RefCell::new(vec![("code".into(), int(1, "u32"))]),
+    }))
+}
+
 impl Interp {
     pub fn num_const_val(&self, name: &str) -> Val {
         let (ty, n) = name.split_once('.').unwrap_or(("", name));
@@ -716,6 +729,9 @@ impl Interp {
             }))),
             "alloc.raw.Buf.with_capacity" => {
                 let n = if let Some(Val::Int(c, _)) = args.get(1).map(dr) { c as usize } else { 0 };
+                if too_big(n) {
+                    return Ok(err(alloc_error()));
+                }
                 Ok(ok(Val::Struct(Rc::new(StructV {
                     ty: "alloc.raw.Buf".into(),
                     f: RefCell::new(vec![
@@ -728,6 +744,9 @@ impl Interp {
             "alloc.vec.Vec.new" => Ok(new_vec(dr(&a0), 0)),
             "alloc.vec.Vec.with_capacity" => {
                 let n = if let Some(Val::Int(c, _)) = args.get(1).map(dr) { c as usize } else { 0 };
+                if too_big(n) {
+                    return Ok(err(alloc_error()));
+                }
                 Ok(ok(new_vec(dr(&a0), n)))
             }
             "alloc.string.String.new" => Ok(Val::StrBuf(StrBufV::new(String::new()))),
@@ -1414,6 +1433,9 @@ impl Interp {
             "drop" => Ok(Val::Unit),
             "grow" => {
                 if let Some(n) = idx(Some(&a0)) {
+                    if too_big(n) {
+                    return Ok(err(alloc_error()));
+                }
                     if n > cap(s) {
                         s.set("capacity", usz(n));
                     }
@@ -1633,6 +1655,9 @@ impl Interp {
             }
             "grow" => {
                 if let Some(n) = idx(&a0) {
+                    if too_big(n) {
+                    return Ok(err(alloc_error()));
+                }
                     if n > cap {
                         b.set_cap(n);
                     }

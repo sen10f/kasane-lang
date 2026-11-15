@@ -2546,3 +2546,32 @@ fn linear_ok_programs_build_native_and_match_run() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// `Vec.reserve` / `Buf.with_capacity` で `n * size_of(T)` があふれる要求は `Err(AllocError)` (木走査とネイティブで同じ。Fable レビュー R2#1・#2)。
+#[test]
+fn huge_alloc_requests_are_err_not_wrapped() {
+    let src = [
+        "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may",
+        "    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)",
+        "    core.mem.drop(v.push(1u64))",
+        "    match v.reserve(2305843009213693952usize) {",
+        "        Ok(_u) => std.io.print_line(\"reserve ok\")?",
+        "        Err(_e) => std.io.print_line(\"reserve err\")?",
+        "    }",
+        "    match t.huge_buf() {",
+        "        Ok(_b) => std.io.print_line(\"cap ok\")?",
+        "        Err(_e) => std.io.print_line(\"cap err\")?",
+        "    }",
+        "    core.mem.drop(v.push(2u64))",
+        "    Ok(())",
+        "end t.main",
+        "",
+        "fn t.huge_buf() -> Result<alloc.raw.Buf<u64, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never",
+        "    alloc.raw.Buf.with_capacity(std.alloc.SYSTEM, 2305843009213693953usize)",
+        "end t.huge_buf",
+        "",
+    ]
+    .join("\n");
+    let out = agree_with_interpreter("huge_alloc", &src);
+    assert_eq!(out, "reserve err\ncap err\n");
+}
