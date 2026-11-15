@@ -3427,7 +3427,7 @@ fn named_types(v: &V, out: &mut Vec<String>) {
     }
 }
 
-fn split_top(s: &str) -> Vec<String> {
+pub(crate) fn split_top(s: &str) -> Vec<String> {
     let b = s.as_bytes();
     let (mut depth, mut start) = (0i32, 0usize);
     let mut out = vec![];

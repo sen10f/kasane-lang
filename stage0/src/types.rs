@@ -464,6 +464,10 @@ pub struct TypeCk<'a> {
     closure_static: HashMap<String, HashSet<String>>,
     /// `std.thread.spawn` に渡したクロージャ (節, 行)。関数の推論が終わってから取り込みの `Send` を見る。
     spawn_closures: Vec<(String, usize)>,
+    /// 呼び出しの実引数ごとの「`'static` の値と式から分かる」印 (`call` が `call_def` へ渡す)。
+    arg_static: Vec<bool>,
+    /// `'static` の境界を持つ位置へ渡した値: (型, 出どころが `'static`, 行, 説明)。関数の終わりに型が決まってから見る。
+    static_checks: Vec<(Ty, bool, usize, String)>,
     /// 推論中のクロージャ本体の効果 (`closure_nodes` と同じ深さのスタック)。型で解決できた呼び出しの
     /// 効果と添字の panic だけを足す (下からの近似。分からない呼び出しは足さない = 誤検出を出さない)。
     /// 3 つ目は「推論が確実でない」印 (推論された関数 `infer.rs` の効果を含む呼び出しがあった、
@@ -528,7 +532,7 @@ impl<'a> TypeCk<'a> {
             }
         }
         let cov = (std::env::var("KSN_TYPE_COVERAGE").as_deref() == Ok("1")).then(Default::default);
-        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![] }
+        TypeCk { p, owners, trait_methods, diags: vec![], cur: 0, scopes: vec![], vars: vec![], kinds: vec![], escaped: HashSet::new(), mutable: HashSet::new(), lits: vec![], rets: vec![], let_tys: HashMap::new(), let_pending: vec![], edges: Default::default(), closure_nodes: vec![], closure_seq: 0, fn_closures: HashMap::new(), param_called: HashMap::new(), closure_asts: Default::default(), eff_acc: vec![], closure_effs: HashMap::new(), eff_checks: vec![], cov, expr_pending: HashMap::new(), tytab: BTreeMap::new(), resolved_calls: vec![], recv_log: vec![], call_res: HashMap::new(), last_fit: None, recv_start: 0, path_pos: 0, strict: strict_types(), sites: vec![], site_stack: vec![], last_site: None, pat_src: None, pat_loose: false, loose: HashSet::new(), arg_loose: vec![], unsize: vec![], pat_line: 0, cur_line: 0, eff_seen: HashSet::new(), conv_quiet: false, loop_breaks: vec![], discard_if: None, quiet_sites: HashSet::new(), local_sites: HashMap::new(), closure_caps: HashMap::new(), closure_static: HashMap::new(), spawn_closures: vec![], arg_static: vec![], static_checks: vec![] }
     }
 
     /// 関数 `d` の本体が、局所名 `param` の (`Fn` 境界の) パラメータを呼んでいるか (5.3)。
@@ -608,6 +612,8 @@ impl<'a> TypeCk<'a> {
         self.closure_caps.clear();
         self.closure_static.clear();
         self.spawn_closures.clear();
+        self.static_checks.clear();
+        self.arg_static.clear();
         self.scopes = vec![HashMap::new()];
         let gn = d.gnames();
         for (n, t) in &d.params {
@@ -615,6 +621,12 @@ impl<'a> TypeCk<'a> {
             // 関数自身の型パラメータ (Ty::Param) は、単一化では「分からない型」と同じに働くが、
             // メソッド呼び出しでは境界のトレイトを引くために名前を残す。
             self.scopes[0].insert(n.clone(), ty);
+        }
+        // `&'static T` と宣言した引数は `'static` の値 (呼び出し側が `'static` を渡す義務を負う)。
+        for ((n, _), st_) in d.params.iter().zip(static_ref_params(&d.header)) {
+            if st_ {
+                self.set_static(n, true);
+            }
         }
         // `?` のエラー型の検査のため、この関数の戻り値型を覚える (クロージャはその注釈を重ねる)。
         let ret = from_v(&d.ret, &gn);
@@ -641,6 +653,7 @@ impl<'a> TypeCk<'a> {
         self.check_unsize();
         self.report_undetermined();
         self.check_spawn_captures();
+        self.check_static_bounds();
         // 型変数は関数ごとの表なので、ここで解決してから外へ出す。
         for k in self.recv_start..self.recv_log.len() {
             let t = self.recv_log[k].recv.clone();
@@ -693,22 +706,22 @@ impl<'a> TypeCk<'a> {
                         line,
                     );
                 }
-                // `move` で取り込んだ値が参照を持つなら、その参照の先が局所でないことを型からは示せない (fail-closed)。
-                // `&a` / `&mut a` の取り込みは check.rs (E2037) が見る。
-                let is_static = self.closure_static.get(&node).map_or(false, |s| s.contains(&name));
-                if kind != "&" && kind != "&mut" && !is_static && self.holds_ref(&t, &mut Vec::new()) {
-                    self.diag(
-                        "E2037",
-                        format!("spawn closure must be 'static; the captured `{}` holds a reference that may borrow a local (5.5)", name),
-                        line,
-                    );
-                }
+            }
+        }
+    }
+
+    /// `'static` の境界を持つ位置 (`&'static T` の引数・`F: 'static` の型パラメータ) へ渡した値が、局所の借用を
+    /// 含みうるなら E2037 (5.5)。出どころが `'static` と分かる値 (リテラル・`const`・`'static` の戻り値など) は通す。
+    fn check_static_bounds(&mut self) {
+        for (t, origin, line, what) in std::mem::take(&mut self.static_checks) {
+            if !origin && self.holds_ref(&t, &mut Vec::new()) {
+                self.diag("E2037", format!("{} must be 'static, but the value may hold a borrow of a local (5.5)", what), line);
             }
         }
     }
 
     /// 型が参照 (`&T` / `&mut T`、または参照を持つ名義型のフィールド) を含むか。含むなら `'static` を型からは示せない。
-    /// 型パラメータと分からない型は含まないとみなす (推論の穴は E2044 が見る)。
+    /// 型パラメータは `'static` の境界が無ければ参照を持ちうる。決まらない型も持ちうる (fail-closed)。
     fn holds_ref(&self, t: &Ty, seen: &mut Vec<String>) -> bool {
         match self.deep(t) {
             Ty::Ref(..) => true,
@@ -739,8 +752,16 @@ impl<'a> TypeCk<'a> {
             }
             Ty::Closure { id: Some(node), .. } => {
                 let caps = self.closure_caps.get(&node).cloned().unwrap_or_default();
-                caps.iter().any(|(k, _, t)| k == "&" || k == "&mut" || self.holds_ref(t, seen))
+                let stat = self.closure_static.get(&node).cloned().unwrap_or_default();
+                caps.iter().any(|(k, n, t)| k == "&" || k == "&mut" || (!stat.contains(n) && self.holds_ref(t, seen)))
             }
+            // 定義の欄の中の型パラメータは、実引数 (`args`) の側で見ているので数えない。
+            Ty::Param(_) if !seen.is_empty() => false,
+            Ty::Param(p) => !self.def().generics.iter().any(|g| {
+                g.0 == "type" && g.1 == p && items(&g.2).iter().any(|b| matches!(b, V::S(x) if x == "'static"))
+            }),
+            Ty::Unknown => true,
+            Ty::Var(v) => self.kinds[v] == 0,
             _ => false,
         }
     }
@@ -1501,6 +1522,7 @@ impl<'a> TypeCk<'a> {
     fn static_expr(&self, e: &V) -> bool {
         match nname(e) {
             "Lit" => matches!(st(&nf(e)[0]).as_str(), "str" | "bstr"),
+            "Unary" => st(&nf(e)[0]) == "&" && matches!(nname(&nf(e)[1]), "Lit" | "Path") && self.static_expr(&nf(e)[1]),
             "Path" => {
                 let segs = strs(&nf(e)[0]);
                 if self.lookup(&segs[0]).is_some() {
@@ -4082,6 +4104,7 @@ impl<'a> TypeCk<'a> {
         let loose_args: Vec<bool> = args.iter().map(|a| self.root_loose(a)).collect();
         // 構造体リテラルの引数: 従来の検査は型引数を見ないので、呼び出し側でも型引数の矛盾を見る。
         let sl: Vec<bool> = args.iter().map(|a| nname(a) == "StructLit").collect();
+        let arg_stat: Vec<bool> = args.iter().map(|a| self.static_expr(a)).collect();
         // その位置にクロージャ式が直接書かれているか (効果検査 ② が変数経由を避けるのに使う)。
         if nname(callee) != "Path" {
             // `fn(..) {..}(x)` のように、クロージャを直接呼ぶ形。
@@ -4190,6 +4213,7 @@ impl<'a> TypeCk<'a> {
             Target::Native(ref fq) | Target::Value(ref fq) if self.p.sigs.contains_key(fq) => {
                 let i = self.p.sigs[fq];
                 self.arg_loose = loose_args;
+                self.arg_static = arg_stat;
                 self.call_def(i, &argt, line, &sl, targs)
             }
             // 規範のシグネチャにない基本型の関連関数 (`usize.try_from_u64` など)。実行系は整数の変換を一般の規則で
@@ -4221,6 +4245,7 @@ impl<'a> TypeCk<'a> {
             }
             Target::Fn(i) | Target::Sig(i) => {
                 self.arg_loose = loose_args;
+                self.arg_static = arg_stat;
                 self.call_def(i, &argt, line, &sl, targs)
             }
             _ => {
@@ -4241,7 +4266,9 @@ impl<'a> TypeCk<'a> {
     /// (名前しか比べない) ので、同じ名前どうしの型引数の矛盾はここで報告する。
     fn call_def(&mut self, i: usize, argt: &[Ty], line: usize, sl: &[bool], targs: &[V]) -> Ty {
         let loose = std::mem::take(&mut self.arg_loose);
+        let arg_stat = std::mem::take(&mut self.arg_static);
         let d = &self.p.defs[i];
+        self.note_static_args(d, argt, &arg_stat, line);
         // 5.5: spawn に渡したクロージャの取り込みは `Send` でなければならない (推論の終わりに見る)。
         if d.name == "std.thread.spawn" {
             if let Some(Ty::Closure { id: Some(node), .. }) = argt.get(1).map(|a| self.resolve(a)) {
@@ -4722,6 +4749,28 @@ impl<'a> TypeCk<'a> {
     /// 確実な効果がそれを超えないかを検査する (4.3)。クロージャの効果は下からの近似 (確実に含まれる効果
     /// だけ) なので、超えていれば境界の違反、分からなければ黙る。境界の効果変数 (`E` / `P`) は
     /// `closure_effect_bind` が扱うので、ここでは具体名の部分だけを見る。
+    /// 呼び先の宣言で `'static` の境界を持つ位置 (`&'static T` の引数・`'static` 境界の型パラメータを含む引数) に
+    /// 渡した値を覚える。`&'static T` は出どころが `'static` と分かる式だけを通す (`static_expr`)。
+    fn note_static_args(&mut self, d: &Def, argt: &[Ty], arg_stat: &[bool], line: usize) {
+        let gn = d.gnames();
+        let bounded: HashSet<String> = d
+            .generics
+            .iter()
+            .filter(|g| g.0 == "type" && items(&g.2).iter().any(|b| matches!(b, V::S(x) if x == "'static")))
+            .map(|g| g.1.clone())
+            .collect();
+        let refs = static_ref_params(&d.header);
+        for (k, a) in argt.iter().enumerate() {
+            let Some(p) = d.params.get(k) else { break };
+            let origin = arg_stat.get(k).copied().unwrap_or(false);
+            if refs.get(k).copied().unwrap_or(false) {
+                self.static_checks.push((Ty::Ref(false, Box::new(Ty::Unit)), origin, line, format!("the argument `{}` of `{}` (`&'static`)", p.0, d.name)));
+            } else if mentions_param(&from_v(&p.1, &gn), &bounded) {
+                self.static_checks.push((a.clone(), origin, line, format!("the argument `{}` of `{}` (a `'static` bound)", p.0, d.name)));
+            }
+        }
+    }
+
     fn check_closure_bounds(&mut self, d: &Def, off: usize, argt: &[Ty], line: usize) {
         let gn = d.gnames();
         let mut out: Vec<(&'static str, String)> = vec![];
@@ -5491,6 +5540,35 @@ fn ret_is_static(header: &str) -> bool {
     let Some((_, ret)) = head[close + 1..].split_once("->") else { return false };
     let amp = ret.matches('&').count();
     amp > 0 && amp == ret.matches("&'static").count()
+}
+
+/// 関数ヘッダの各引数が `&'static ..` と宣言されているか。
+fn static_ref_params(header: &str) -> Vec<bool> {
+    let Some(head) = header.split(" uses ").next() else { return vec![] };
+    let Some(mut i) = head.find(|c| c == '(' || c == '[') else { return vec![] };
+    if head.as_bytes()[i] == b'[' {
+        let Some(j) = crate::check::borrowck::match_close(head, i) else { return vec![] };
+        i = j + 1;
+    }
+    if head.as_bytes().get(i) != Some(&b'(') {
+        return vec![];
+    }
+    let Some(close) = crate::check::borrowck::match_close(head, i) else { return vec![] };
+    crate::check::borrowck::split_top(&head[i + 1..close])
+        .iter()
+        .map(|t| t.split_once(':').map_or(false, |(_, ty)| ty.trim_start().starts_with("&'static")))
+        .collect()
+}
+
+/// 型の中に、名前が `names` にある型パラメータがあるか。
+fn mentions_param(t: &Ty, names: &HashSet<String>) -> bool {
+    match t {
+        Ty::Param(p) => names.contains(p),
+        Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| mentions_param(x, names)),
+        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => mentions_param(x, names),
+        Ty::Closure { args, ret, .. } => args.iter().any(|x| mentions_param(x, names)) || mentions_param(ret, names),
+        _ => false,
+    }
 }
 
 /// `'static` と分かる束縛に付ける印の名前 (変数名と衝突しないよう、空白と制御文字を含む)。

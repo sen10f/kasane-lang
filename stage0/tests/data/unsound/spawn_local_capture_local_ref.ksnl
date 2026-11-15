@@ -1,0 +1,13 @@
+// expect: E2037
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.start() -> std.task.Task<()> uses [alloc] panics may
+    let s = t.mk()
+    std.task.spawn_local(
+        fn() -> () capture [&s] {
+            core.mem.drop(s.len())
+        },
+    )
+end t.start

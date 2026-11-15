@@ -1,0 +1,15 @@
+// expect: E2037
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.start() -> std.thread.JoinHandle<usize, std.alloc.System> uses [alloc, thread] panics may
+    let s = t.mk()
+    let c = fn() -> usize capture [&s] {
+        s.len()
+    }
+    match std.thread.spawn(std.alloc.SYSTEM, c) {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.start
