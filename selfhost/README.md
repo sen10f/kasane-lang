@@ -264,3 +264,49 @@ ksn build --release
 python3 -I compare.py --group all          # 定義 113 ファイル・診断 (正常 0 件、broken 7/12)
 python3 -I compare.py --group broken -v    # 差の中身
 ```
+
+## 10. 整形の段 (修正プラン 5-5 の次の段)
+
+2026-11-15。ブランチ `selfhost/fmt`。新規は `selfhost/fmt/` と、この節の追記だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` は変えていない)。
+
+結論を先に: **字句・構文解析後の整形 (`ksn fmt`) は Kasane で書けて、`ksn build --release` で退避なしにネイティブになった。** Rust 版 `stage0/src/fmt.rs` の並び順・空行・インデント規則を Kasane で再実装し、`ksn check` / `ksn fmt --check` は通る。`examples/*/src/**/*.ksnl`、`apps/*/src/**/*.ksnl`、`selfhost/*/src/**/*.ksnl`、`stage0/tests/data/linear_ok/*.ksnl`、`stage0/tests/data/unsound/*.ksnl` の 594 ファイルすべてについて、Kasane 版と Rust 版の出力がバイト単位で一致した。
+
+### 10.1 構成と行数
+
+`selfhost/fmt/` が ksn パッケージ (`kasane.toml` `kasane.lock`、`entry = "fmt.main"`、依存 `parse = { path = "../parse" }`)。
+
+| ファイル | 行数 | 中身 |
+| --- | ---: | --- |
+| `src/fmt.ksnl` | 約 820 | 入口: 引数のファイルを読み、機械的整形 (タブ→4スペース・末尾空白除去・行末空行削除) → 定義走査 → 7 グループ (import/const-static/type-enum-trait/extern/impl/fn/その他) に分類 → UTF-8 バイト順で各グループ内を挿入ソート → impl は最初の子 fn と隣接して出力 → チャンク間に空行 1 行 → 最終改行 |
+| `compare.py` | 約 90 | Kasane 版 (`fmt.native`) と Rust 版 (`ksn fmt`) の出力をバイト単位で比較。4 行出力: コミットハッシュ・総行数・一致数/総数・native か否か |
+
+Kasane 合計 約 910 行。`ksn check` / `ksn fmt --check` / `ksn build --release` はすべて通る。
+
+### 10.2 実装上の注意
+
+- 段階 1 で使えない std API (`starts_with` `split_at` `trim_end` `trim_start` `String.replace` `slice.sub` `slice.swap` `slice.len` `str.contains` `str.find` `core.str.contains` ほか) は、バイト配列 (`as_bytes().get()`) と `Vec<u8>` バッファ・手動ループで再実装した。
+- `Vec<Vec<usize>>` は段階 1 で `&mut Vec` が拒否されるため、7 つの独立した `Vec<usize>` (g0〜g6) に分けた。
+- `sort_by` は手動の挿入ソート (`fmt.sort_def_indices`) で再実装。`get_mut` の並行借用を避けるため、2 回の独立した `get_mut` 呼び出しでスワップする。
+- `end` は予約語なので、変数名に使わない (`end_pos` など)。
+- `break` は `match` アームの初期化子では使えない (`0u8` や `false` で代替)。`if matched { true }` は関数から返らないので、`return true` を使う。
+- `impl` の名前は行の残り全部 (`fn` などは識別子部分のみ)。
+
+### 10.3 使い方
+
+```
+cd selfhost/fmt
+ksn build --release                                   # target/release/fmt.native (退避なし)
+./target/release/fmt.native FILE...                   # 整形結果を stdout に出力
+python3 -I compare.py [--group examples|apps|selfhost|linear_ok|unsound|all] [--files F...] [-v]
+```
+
+### 10.4 再現
+
+```
+. ~/.cargo/env
+cd stage0 && cargo build --release && cd ..
+cd selfhost/fmt
+ksn check && ksn fmt --check
+ksn build --release
+python3 -I compare.py --group all -v                  # 594 件すべて一致
+```

@@ -1,0 +1,859 @@
+// selfhost/fmt: Kasane source formatter.
+// Ordering, blank lines, tabs are normalized. Name reference rewriting is not done.
+type fmt.Def pub
+    kw: alloc.string.String<std.alloc.System> pub
+    name: alloc.string.String<std.alloc.System> pub
+    line: usize pub
+    last_line: usize pub
+    has_impls: bool pub
+end fmt.Def
+
+enum fmt.Failure derive [Debug, Clone, Copy, PartialEq, From] pub
+    Io(std.io.Error)
+    Alloc(alloc.alloc.AllocError)
+end fmt.Failure
+
+fn fmt.def_new(kw: alloc.string.String<std.alloc.System>, name: alloc.string.String<std.alloc.System>, line: usize, last_line: usize, has_impls: bool) -> fmt.Def uses [] panics never pub
+    fmt.Def { kw: kw, name: name, line: line, last_line: last_line, has_impls: has_impls }
+end fmt.def_new
+
+fn fmt.def_range(d: &fmt.Def, lines: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> (usize, usize) uses [] panics never pub
+    let mut s = d.line.wrapping_sub(1usize)
+    let ls = lines.as_slice()
+    while s > 0usize {
+        let prev = match ls.get(s.wrapping_sub(1usize)) {
+            Some(x) => x.as_str()
+            None => break
+        }
+        let pb = prev.as_bytes()
+        let b0 = match pb.get(0usize) {
+            Some(c) => *c
+            None => 0u8
+        }
+        let b1 = match pb.get(1usize) {
+            Some(c) => *c
+            None => 0u8
+        }
+        if b0 == 47u8 && b1 == 47u8 {
+            s = s.wrapping_sub(1usize)
+        } else {
+            break
+        }
+    }
+    let e = match d.last_line > 0usize {
+        true => d.last_line
+        false => d.line
+    }
+    (s, e)
+end fmt.def_range
+
+fn fmt.def_text(s: usize, e: usize, lines: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, fmt.Failure> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut k = s
+    let ls = lines.as_slice()
+    while k < e {
+        let l = match ls.get(k) {
+            Some(x) => x.as_str()
+            None => break
+        }
+        out.push_str(l)?
+        if k.wrapping_add(1usize) < e {
+            out.push('\n')?
+        }
+        k = k.wrapping_add(1usize)
+    }
+    Ok(out)
+end fmt.def_text
+
+fn fmt.format_source(text: &str) -> Result<alloc.string.String<std.alloc.System>, fmt.Failure> uses [alloc] panics never pub
+    let lines = fmt.mechanical(text)?
+    let defs = fmt.scan_defs(lines.as_slice())?
+    let n = defs.len()
+    let ds = defs.as_slice()
+
+    let mut g0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut g1 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut g2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut g3 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut g4 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut g5 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut g6 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+
+    let mut pending = n
+    let mut impl_has_child = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut zi = 0usize
+    while zi < n {
+        impl_has_child.push(false)?
+        zi = zi.wrapping_add(1usize)
+    }
+    let mut fn_impl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut fi = 0usize
+    while fi < n {
+        fn_impl.push(n)?
+        fi = fi.wrapping_add(1usize)
+    }
+    let ihc = impl_has_child.as_mut_slice()
+    let fis = fn_impl.as_mut_slice()
+
+    let mut di = 0usize
+    while di < n {
+        let d = match ds.get(di) {
+            Some(x) => x
+            None => break
+        }
+        let kw = d.kw.as_str()
+        if kw == "impl" {
+            pending = di
+        } else if kw == "fn" && d.has_impls && pending != n {
+            match ihc.get_mut(pending) {
+                Some(p) => {
+                    *p = true
+                }
+                None => ()
+            }
+            match fis.get_mut(di) {
+                Some(p) => {
+                    *p = pending
+                }
+                None => ()
+            }
+        } else {
+            pending = n
+        }
+        di = di.wrapping_add(1usize)
+    }
+
+    let mut di2 = 0usize
+    while di2 < n {
+        let d = match ds.get(di2) {
+            Some(x) => x
+            None => break
+        }
+        let kw = d.kw.as_str()
+        if kw == "impl" {
+            let has_child = match ihc.get(di2) {
+                Some(x) => *x
+                None => false
+            }
+            if !has_child {
+                g4.push(di2)?
+            }
+        } else {
+            match fmt.group(kw) {
+                0usize => g0.push(di2)?
+                1usize => g1.push(di2)?
+                2usize => g2.push(di2)?
+                3usize => g3.push(di2)?
+                4usize => g4.push(di2)?
+                5usize => g5.push(di2)?
+                6usize => g6.push(di2)?
+                _ => ()
+            }
+        }
+        di2 = di2.wrapping_add(1usize)
+    }
+
+    let g0m = g0.as_mut_slice()
+    fmt.sort_def_indices(ds, g0m)
+    let g1m = g1.as_mut_slice()
+    fmt.sort_def_indices(ds, g1m)
+    let g2m = g2.as_mut_slice()
+    fmt.sort_def_indices(ds, g2m)
+    let g3m = g3.as_mut_slice()
+    fmt.sort_def_indices(ds, g3m)
+    let g4m = g4.as_mut_slice()
+    fmt.sort_def_indices(ds, g4m)
+    let g5m = g5.as_mut_slice()
+    fmt.sort_def_indices(ds, g5m)
+    let g6m = g6.as_mut_slice()
+    fmt.sort_def_indices(ds, g6m)
+
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut first_chunk = true
+
+    let g0len = g0.len()
+    if g0len > 0usize {
+        let mut ki = 0usize
+        while ki < g0len {
+            let di3 = match g0.get(ki) {
+                Some(x) => *x
+                None => break
+            }
+            let d = match ds.get(di3) {
+                Some(x) => x
+                None => break
+            }
+            let (s, e) = fmt.def_range(d, &lines)
+            let chunk = fmt.def_text(s, e, &lines)?
+            out.push_str(chunk.as_str())?
+            if ki.wrapping_add(1usize) < g0len {
+                out.push('\n')?
+            }
+            ki = ki.wrapping_add(1usize)
+        }
+        first_chunk = false
+    }
+
+    let mut ki2 = 0usize
+    let g1len = g1.len()
+    while ki2 < g1len {
+        let di3 = match g1.get(ki2) {
+            Some(x) => *x
+            None => break
+        }
+        let d = match ds.get(di3) {
+            Some(x) => x
+            None => break
+        }
+        let (s, e) = fmt.def_range(d, &lines)
+        let chunk = fmt.def_text(s, e, &lines)?
+        if !first_chunk {
+            out.push('\n')?
+            out.push('\n')?
+        }
+        first_chunk = false
+        out.push_str(chunk.as_str())?
+        ki2 = ki2.wrapping_add(1usize)
+    }
+
+    let mut ki2b = 0usize
+    let g2len = g2.len()
+    while ki2b < g2len {
+        let di3 = match g2.get(ki2b) {
+            Some(x) => *x
+            None => break
+        }
+        let d = match ds.get(di3) {
+            Some(x) => x
+            None => break
+        }
+        let (s, e) = fmt.def_range(d, &lines)
+        let chunk = fmt.def_text(s, e, &lines)?
+        if !first_chunk {
+            out.push('\n')?
+            out.push('\n')?
+        }
+        first_chunk = false
+        out.push_str(chunk.as_str())?
+        ki2b = ki2b.wrapping_add(1usize)
+    }
+
+    let mut ki2c = 0usize
+    let g3len = g3.len()
+    while ki2c < g3len {
+        let di3 = match g3.get(ki2c) {
+            Some(x) => *x
+            None => break
+        }
+        let d = match ds.get(di3) {
+            Some(x) => x
+            None => break
+        }
+        let (s, e) = fmt.def_range(d, &lines)
+        let chunk = fmt.def_text(s, e, &lines)?
+        if !first_chunk {
+            out.push('\n')?
+            out.push('\n')?
+        }
+        first_chunk = false
+        out.push_str(chunk.as_str())?
+        ki2c = ki2c.wrapping_add(1usize)
+    }
+
+    let mut ki2d = 0usize
+    let g4len = g4.len()
+    while ki2d < g4len {
+        let di3 = match g4.get(ki2d) {
+            Some(x) => *x
+            None => break
+        }
+        let d = match ds.get(di3) {
+            Some(x) => x
+            None => break
+        }
+        let (s, e) = fmt.def_range(d, &lines)
+        let chunk = fmt.def_text(s, e, &lines)?
+        if !first_chunk {
+            out.push('\n')?
+            out.push('\n')?
+        }
+        first_chunk = false
+        out.push_str(chunk.as_str())?
+        ki2d = ki2d.wrapping_add(1usize)
+    }
+
+    let mut emitted_impls = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut ei = 0usize
+    while ei < n {
+        emitted_impls.push(false)?
+        ei = ei.wrapping_add(1usize)
+    }
+    let eism = emitted_impls.as_mut_slice()
+
+    let g5len = g5.len()
+    let mut ki3 = 0usize
+    let mut impl_just_emitted = false
+    while ki3 < g5len {
+        let di3 = match g5.get(ki3) {
+            Some(x) => *x
+            None => break
+        }
+        let d = match ds.get(di3) {
+            Some(x) => x
+            None => break
+        }
+        let p = match fis.get(di3) {
+            Some(x) => *x
+            None => n
+        }
+        if p != n {
+            let em = match eism.get(p) {
+                Some(x) => *x
+                None => false
+            }
+            if !em {
+                let impl_d = match ds.get(p) {
+                    Some(x) => x
+                    None => break
+                }
+                let (ps, pe) = fmt.def_range(impl_d, &lines)
+                let ptext = fmt.def_text(ps, pe, &lines)?
+                if !first_chunk {
+                    out.push('\n')?
+                    out.push('\n')?
+                }
+                first_chunk = false
+                out.push_str(ptext.as_str())?
+                match eism.get_mut(p) {
+                    Some(pp) => {
+                        *pp = true
+                    }
+                    None => ()
+                }
+                impl_just_emitted = true
+            }
+        }
+        let (s, e) = fmt.def_range(d, &lines)
+        let chunk = fmt.def_text(s, e, &lines)?
+        if impl_just_emitted {
+            out.push('\n')?
+            out.push_str(chunk.as_str())?
+            impl_just_emitted = false
+        } else {
+            if !first_chunk {
+                out.push('\n')?
+                out.push('\n')?
+            }
+            first_chunk = false
+            out.push_str(chunk.as_str())?
+        }
+        ki3 = ki3.wrapping_add(1usize)
+    }
+
+    let g6len = g6.len()
+    let mut ki4 = 0usize
+    while ki4 < g6len {
+        let di3 = match g6.get(ki4) {
+            Some(x) => *x
+            None => break
+        }
+        let d = match ds.get(di3) {
+            Some(x) => x
+            None => break
+        }
+        let (s, e) = fmt.def_range(d, &lines)
+        let chunk = fmt.def_text(s, e, &lines)?
+        if !first_chunk {
+            out.push('\n')?
+            out.push('\n')?
+        }
+        first_chunk = false
+        out.push_str(chunk.as_str())?
+        ki4 = ki4.wrapping_add(1usize)
+    }
+
+    Ok(out)
+end fmt.format_source
+
+fn fmt.group(kw: &str) -> usize uses [] panics never pub
+    if kw == "import" {
+        0usize
+    } else if kw == "const" || kw == "static" {
+        1usize
+    } else if kw == "type" || kw == "enum" || kw == "trait" {
+        2usize
+    } else if kw == "extern" {
+        3usize
+    } else if kw == "impl" {
+        4usize
+    } else if kw == "fn" {
+        5usize
+    } else {
+        6usize
+    }
+end fmt.group
+
+fn fmt.has_body(kw: &str) -> bool uses [] panics never pub
+    kw == "fn" || kw == "type" || kw == "enum" || kw == "trait" || kw == "test"
+end fmt.has_body
+
+fn fmt.has_impls_attr(header: &str) -> bool uses [] panics never pub
+    let hb = header.as_bytes()
+    let p0 = 32u8
+    let p1 = 105u8
+    let p2 = 109u8
+    let p3 = 112u8
+    let p4 = 108u8
+    let p5 = 115u8
+    let p6 = 32u8
+    let mut i = 0usize
+    while i.wrapping_add(7usize) <= hb.len() {
+        let c0 = match hb.get(i) {
+            Some(x) => *x
+            None => 0u8
+        }
+        let c1 = match hb.get(i.wrapping_add(1usize)) {
+            Some(x) => *x
+            None => 0u8
+        }
+        let c2 = match hb.get(i.wrapping_add(2usize)) {
+            Some(x) => *x
+            None => 0u8
+        }
+        let c3 = match hb.get(i.wrapping_add(3usize)) {
+            Some(x) => *x
+            None => 0u8
+        }
+        let c4 = match hb.get(i.wrapping_add(4usize)) {
+            Some(x) => *x
+            None => 0u8
+        }
+        let c5 = match hb.get(i.wrapping_add(5usize)) {
+            Some(x) => *x
+            None => 0u8
+        }
+        let c6 = match hb.get(i.wrapping_add(6usize)) {
+            Some(x) => *x
+            None => 0u8
+        }
+        if c0 == p0 && c1 == p1 && c2 == p2 && c3 == p3 && c4 == p4 && c5 == p5 && c6 == p6 {
+            return true
+        }
+        i = i.wrapping_add(1usize)
+    }
+    false
+end fmt.has_impls_attr
+
+fn fmt.is_end_line(l: &str, name: &str) -> bool uses [] panics never pub
+    let lb = l.as_bytes()
+    let mut ok = true
+    if lb.len() < 4usize {
+        ok = false
+    } else {
+        let c0 = match lb.get(0usize) {
+            Some(x) => *x
+            None => 0u8
+        }
+        let c1 = match lb.get(1usize) {
+            Some(x) => *x
+            None => 0u8
+        }
+        let c2 = match lb.get(2usize) {
+            Some(x) => *x
+            None => 0u8
+        }
+        let c3 = match lb.get(3usize) {
+            Some(x) => *x
+            None => 0u8
+        }
+        if c0 != 101u8 || c1 != 110u8 || c2 != 100u8 || c3 != 32u8 {
+            ok = false
+        }
+    }
+    if !ok {
+        false
+    } else {
+        let nameb = name.as_bytes()
+        let mut end_pos = lb.len()
+        while end_pos > 4usize {
+            let c = match lb.get(end_pos.wrapping_sub(1usize)) {
+                Some(x) => *x
+                None => 0u8
+            }
+            if c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8 || c == 12u8 {
+                end_pos = end_pos.wrapping_sub(1usize)
+            } else {
+                break
+            }
+        }
+        if end_pos.wrapping_sub(4usize) != nameb.len() {
+            false
+        } else {
+            let mut k = 0usize
+            while k < nameb.len() {
+                let lc = match lb.get(4usize.wrapping_add(k)) {
+                    Some(x) => *x
+                    None => 0u8
+                }
+                let nc = match nameb.get(k) {
+                    Some(x) => *x
+                    None => 0u8
+                }
+                if lc != nc {
+                    return false
+                }
+                k = k.wrapping_add(1usize)
+            }
+            true
+        }
+    }
+end fmt.is_end_line
+
+fn fmt.is_kw_line(l: &str, kw: &str) -> bool uses [] panics never pub
+    let kl = kw.as_bytes().len()
+    let ll = l.as_bytes().len()
+    if ll < kl {
+        false
+    } else {
+        let lb = l.as_bytes()
+        let kwb = kw.as_bytes()
+        let mut k = 0usize
+        let mut same = true
+        while k < kl && same {
+            let lc = match lb.get(k) {
+                Some(x) => *x
+                None => 0u8
+            }
+            let pc = match kwb.get(k) {
+                Some(x) => *x
+                None => 0u8
+            }
+            if lc != pc {
+                same = false
+            }
+            k = k.wrapping_add(1usize)
+        }
+        if !same {
+            false
+        } else if ll == kl {
+            true
+        } else {
+            match lb.get(kl) {
+                Some(c) => {
+                    let v = *c
+                    v == 32u8
+                }
+                None => false
+            }
+        }
+    }
+end fmt.is_kw_line
+
+fn fmt.leading_kw(l: &str) -> &str uses [] panics never pub
+    if fmt.is_kw_line(l, "import") {
+        "import"
+    } else if fmt.is_kw_line(l, "const") {
+        "const"
+    } else if fmt.is_kw_line(l, "static") {
+        "static"
+    } else if fmt.is_kw_line(l, "extern") {
+        "extern"
+    } else if fmt.is_kw_line(l, "type") {
+        "type"
+    } else if fmt.is_kw_line(l, "enum") {
+        "enum"
+    } else if fmt.is_kw_line(l, "trait") {
+        "trait"
+    } else if fmt.is_kw_line(l, "impl") {
+        "impl"
+    } else if fmt.is_kw_line(l, "fn") {
+        "fn"
+    } else if fmt.is_kw_line(l, "test") {
+        "test"
+    } else {
+        ""
+    }
+end fmt.leading_kw
+
+fn fmt.main() -> Result<(), fmt.Failure> uses [alloc, env, io.console, io.fs] panics never
+    let n = std.env.arg_count()
+    let mut k = 0usize
+    while k < n {
+        match std.env.arg(k) {
+            Some(path) => {
+                fmt.process(path)?
+            }
+            None => return Ok(())
+        }
+        k = k.wrapping_add(1usize)
+    }
+    Ok(())
+end fmt.main
+
+fn fmt.mechanical(src: &str) -> Result<alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, fmt.Failure> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for l in src.split("\n") {
+        let bytes = l.as_bytes()
+        let mut trimmed_len = bytes.len()
+        while trimmed_len > 0usize {
+            trimmed_len = trimmed_len.wrapping_sub(1usize)
+            let c = match bytes.get(trimmed_len) {
+                Some(x) => *x
+                None => break
+            }
+            if c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8 || c == 12u8 {
+                continue
+            }
+            trimmed_len = trimmed_len.wrapping_add(1usize)
+            break
+        }
+        let mut tabs = 0usize
+        while tabs < trimmed_len {
+            let c = match bytes.get(tabs) {
+                Some(x) => *x
+                None => 0u8
+            }
+            if c == 9u8 {
+                tabs = tabs.wrapping_add(1usize)
+            } else {
+                break
+            }
+        }
+        let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut t2 = 0usize
+        while t2 < tabs.wrapping_mul(4usize) {
+            buf.push(32u8)?
+            t2 = t2.wrapping_add(1usize)
+        }
+        let mut ci = tabs
+        while ci < trimmed_len {
+            let c = match bytes.get(ci) {
+                Some(x) => *x
+                None => 0u8
+            }
+            buf.push(c)?
+            ci = ci.wrapping_add(1usize)
+        }
+        let buf_slice = buf.as_slice()
+        let buf_str = match core.str.from_utf8(buf_slice) {
+            Ok(t) => t
+            Err(_e) => {
+                let err = std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 }
+                return Err(fmt.Failure.Io(err))
+            }
+        }
+        let result = alloc.string.String.from_str(std.alloc.SYSTEM, buf_str)?
+        out.push(result)?
+    }
+    while out.len() > 0usize {
+        let len = out.len()
+        let is_empty = {
+            let os = out.as_slice()
+            match os.get(len.wrapping_sub(1usize)) {
+                Some(x) => x.as_str().is_empty()
+                None => break
+            }
+        }
+        if is_empty {
+            out.truncate(len.wrapping_sub(1usize))
+        } else {
+            break
+        }
+    }
+    Ok(out)
+end fmt.mechanical
+
+fn fmt.name_of(kw: &str, l: &str) -> Result<alloc.string.String<std.alloc.System>, fmt.Failure> uses [alloc] panics never pub
+    let kl = kw.as_bytes().len()
+    let lb = l.as_bytes()
+    let kwb = kw.as_bytes()
+    let mut same = true
+    let mut k = 0usize
+    while k < kl && same {
+        let lc = match lb.get(k) {
+            Some(x) => *x
+            None => 0u8
+        }
+        let pc = match kwb.get(k) {
+            Some(x) => *x
+            None => 0u8
+        }
+        if lc != pc {
+            same = false
+        }
+        k = k.wrapping_add(1usize)
+    }
+    let mut start = kl
+    if same && kw != "impl" {
+        while start < lb.len() {
+            let c = match lb.get(start) {
+                Some(x) => *x
+                None => break
+            }
+            if c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8 || c == 12u8 {
+                start = start.wrapping_add(1usize)
+            } else {
+                break
+            }
+        }
+    }
+    if !same {
+        start = 0usize
+    }
+    let mut end_pos = start
+    if kw == "impl" {
+        end_pos = lb.len()
+    } else {
+        while end_pos < lb.len() {
+            let c = match lb.get(end_pos) {
+                Some(x) => *x
+                None => 0u8
+            }
+            let is_id1 = (c >= 48u8 && c <= 57u8) || (c >= 65u8 && c <= 90u8)
+            let is_id = is_id1 || c == 95u8 || (c >= 97u8 && c <= 122u8) || c == 46u8
+            if is_id {
+                end_pos = end_pos.wrapping_add(1usize)
+            } else {
+                break
+            }
+        }
+    }
+    let mut name_buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = start
+    while i < end_pos {
+        let c = match lb.get(i) {
+            Some(x) => *x
+            None => 0u8
+        }
+        name_buf.push(c)?
+        i = i.wrapping_add(1usize)
+    }
+    let name_slice = name_buf.as_slice()
+    let name_str = match core.str.from_utf8(name_slice) {
+        Ok(t) => t
+        Err(_e) => {
+            let err = std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 }
+            return Err(fmt.Failure.Io(err))
+        }
+    }
+    Ok(alloc.string.String.from_str(std.alloc.SYSTEM, name_str)?)
+end fmt.name_of
+
+fn fmt.process(path: &str) -> Result<(), fmt.Failure> uses [alloc, io.console, io.fs] panics never pub
+    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut buf)?)
+    }
+    let src = match core.str.from_utf8(buf.as_slice()) {
+        Ok(t) => t
+        Err(_e) => {
+            let err = std.io.Error { kind: std.io.ErrorKind.InvalidInput, code: 0i32 }
+            return Err(fmt.Failure.Io(err))
+        }
+    }
+    let formatted = fmt.format_source(src)?
+    std.io.print_line(formatted.as_str())?
+    Ok(())
+end fmt.process
+
+fn fmt.scan_defs(lines: &[alloc.string.String<std.alloc.System>]) -> Result<alloc.vec.Vec<fmt.Def, std.alloc.System>, fmt.Failure> uses [alloc] panics never pub
+    let n = lines.len()
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    while i < n {
+        let s = match lines.get(i) {
+            Some(x) => match alloc.string.String.from_str(std.alloc.SYSTEM, x.as_str()) {
+                Ok(owned) => owned
+                Err(_e) => break
+            }
+            None => break
+        }
+        let kw = fmt.leading_kw(s.as_str())
+        if kw == "" {
+            i = i.wrapping_add(1usize)
+            continue
+        }
+        let ln = i.wrapping_add(1usize)
+        let name = fmt.name_of(kw, s.as_str())?
+        let mut end_line = 0usize
+        if fmt.has_body(kw) {
+            let mut j = i.wrapping_add(1usize)
+            while j < n {
+                let sj = match lines.get(j) {
+                    Some(x) => match alloc.string.String.from_str(std.alloc.SYSTEM, x.as_str()) {
+                        Ok(owned) => owned
+                        Err(_e) => break
+                    }
+                    None => break
+                }
+                if fmt.is_end_line(sj.as_str(), name.as_str()) {
+                    end_line = j.wrapping_add(1usize)
+                    break
+                }
+                j = j.wrapping_add(1usize)
+            }
+            if end_line == 0usize {
+                let err = std.io.Error { kind: std.io.ErrorKind.UnexpectedEof, code: 0i32 }
+                return Err(fmt.Failure.Io(err))
+            }
+        }
+        let mut has_impls = false
+        if kw == "fn" {
+            has_impls = fmt.has_impls_attr(s.as_str())
+        }
+        let kw_str = alloc.string.String.from_str(std.alloc.SYSTEM, kw)?
+        let def = fmt.def_new(kw_str, name, ln, end_line, has_impls)
+        out.push(def)?
+        let ni = match end_line > 0usize {
+            true => end_line
+            false => ln
+        }
+        i = ni
+    }
+    Ok(out)
+end fmt.scan_defs
+
+fn fmt.sort_def_indices(ds: &[fmt.Def], idxs: &mut [usize]) -> () uses [] panics never pub
+    let n = idxs.len()
+    let mut i = 0usize
+    while i < n {
+        let mut j = i
+        while j > 0usize {
+            let left = match idxs.get(j.wrapping_sub(1usize)) {
+                Some(x) => *x
+                None => break
+            }
+            let right = match idxs.get(j) {
+                Some(x) => *x
+                None => break
+            }
+            let ld = match ds.get(left) {
+                Some(x) => x
+                None => break
+            }
+            let rd = match ds.get(right) {
+                Some(x) => x
+                None => break
+            }
+            if ld.name.cmp(&rd.name) == core.cmp.Ordering.Greater {
+                let a = j.wrapping_sub(1usize)
+                match idxs.get_mut(a) {
+                    Some(lref) => {
+                        *lref = right
+                    }
+                    None => break
+                }
+                match idxs.get_mut(j) {
+                    Some(rref) => {
+                        *rref = left
+                    }
+                    None => break
+                }
+                j = j.wrapping_sub(1usize)
+            } else {
+                break
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+end fmt.sort_def_indices
