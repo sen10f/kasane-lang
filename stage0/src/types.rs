@@ -3126,6 +3126,11 @@ impl<'a> TypeCk<'a> {
                         self.discard_if = Some(crate::parser::nid(&nf(s)[0]));
                     }
                     let t = self.stmt(s);
+                    // 途中の式文のブロック・`unsafe`・`with` の値は捨てる (4.6, E2042)。
+                    // `if`(else あり)・`match`・ループ本体の末尾は、既存の検査 0 件のテストが捨てる形を使うため未対応。
+                    if i + 1 < stmts.len() && nname(s) == "ExprStmt" && matches!(nname(&nf(s)[0]), "Block" | "Unsafe" | "With") {
+                        self.discard_value(&t, nline(s), "this statement");
+                    }
                     if i + 1 == stmts.len() && nname(s) == "ExprStmt" {
                         last = t;
                     }
@@ -3331,11 +3336,16 @@ impl<'a> TypeCk<'a> {
                 let has_else = !is_nil(&f[2]);
                 if !has_else {
                     // `else` を省いた `if` の型は `()` (仕様: 暗黙の空の `else` と同じ)。値を使う位置では then 枝も `()` か発散でなければならない。
-                    // 途中の文として値を捨てる位置は、then 枝の値を捨てて解放する (検査しない)。
+                    // 途中の文として置かれた `if` は、then 枝の値を捨てる (4.6)。`()` と `!` 以外は E2042
+                    // (`if c { x }` の `x` が黙って捨てられ、`return x` の書き違いが通るのを防ぐ)。
                     let discarded = self.discard_if == Some(crate::parser::nid(e));
-                    if !discarded && a != Ty::Never && self.unify2(&Ty::Unit, &a).is_err() {
+                    if a != Ty::Never && self.unify2(&Ty::Unit, &a).is_err() {
                         let got = self.deep(&a).show();
-                        self.diag("E2020", format!("type mismatch in `if` without `else`: expected (), found {}", got), nline(e));
+                        if discarded {
+                            self.diag("E2042", format!("a value other than () is discarded: the `then` branch of this `if` without `else` has type {}; use `return` or `core.mem.drop(x)`", got), nline(e));
+                        } else {
+                            self.diag("E2020", format!("type mismatch in `if` without `else`: expected (), found {}", got), nline(e));
+                        }
                     }
                     return Ty::Unit;
                 }
@@ -3539,6 +3549,14 @@ impl<'a> TypeCk<'a> {
                 }
                 Ty::Unknown
             }
+        }
+    }
+
+    /// 4.6: 値を捨てる位置 (途中の式文) の型が `()` / `!` 以外ならE2042。`what` は診断に出す捨て場所の説明。
+    fn discard_value(&mut self, t: &Ty, line: usize, what: &str) {
+        if *t != Ty::Never && self.unify2(&Ty::Unit, t).is_err() {
+            let got = self.deep(t).show();
+            self.diag("E2042", format!("a value other than () is discarded at {}: its type is {}; use `core.mem.drop(x)` or make it `()`", what, got), line);
         }
     }
 

@@ -1,0 +1,12 @@
+// expect: E2042
+fn t.is_match(x: u8) -> bool uses [] panics never
+    let matched = x == 1u8
+    if matched {
+        true
+    }
+    false
+end t.is_match
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

@@ -40,7 +40,7 @@ fn a_one_armed_if_with_a_non_unit_tail_lowers_natively() {
                fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may\n\
                \x20   let c = true\n\
                \x20   if c {\n\
-               \x20       t.hello(3u32)?\n\
+               \x20       core.mem.drop(t.hello(3u32)?)\n\
                \x20   }\n\
                \x20   std.io.print_line(\"end\")?\n\
                \x20   Ok(())\n\
@@ -62,7 +62,7 @@ fn a_one_armed_if_discards_an_owned_tail_value() {
                fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
                \x20   let c = true\n\
                \x20   if c {\n\
-               \x20       t.name()\n\
+               \x20       core.mem.drop(t.name())\n\
                \x20   }\n\
                \x20   std.io.print_line(\"end\")?\n\
                \x20   Ok(())\n\
