@@ -1603,6 +1603,10 @@ impl Interp {
             _ => return None,
         };
         // `Vec` の基本メソッドの Kasane 版 (`alloc/vec.ksnl`、`Buf` の上。KIR 用) は、木走査の `Val::Vec` には使わない (組み込みの実装を使う)。
+        // `String` の基本メソッドの Kasane 版 (`alloc/string.ksnl`) も同じく、木走査の `Val::StrBuf` には使わない。
+        if matches!(v, Val::StrBuf(_)) && KASANE_STRING_BASE.contains(&name) {
+            return None;
+        }
         if matches!(v, Val::Vec(_)) && KASANE_VEC_BASE.contains(&name) {
             return None;
         }
@@ -1998,3 +2002,6 @@ fn int_arith(op: &str, x: i128, y: i128, ty: Ity) -> Res {
 
 /// `alloc/vec.ksnl` が Kasane で書いた `Vec` の基本メソッド (木走査は組み込みを使う)。
 pub const KASANE_VEC_BASE: &[&str] = &["as_mut_slice", "as_slice", "capacity", "clear", "insert", "is_empty", "len", "pop", "push", "remove", "reserve", "truncate"];
+
+/// `alloc/string.ksnl` が Kasane で書いた `String` の基本メソッド (`Buf<u8>` の上。木走査は組み込みを使う)。
+pub const KASANE_STRING_BASE: &[&str] = &["as_str", "clear", "is_empty", "len", "push", "push_bytes", "push_i64", "push_str", "push_u64", "reserve_bytes"];
