@@ -1,0 +1,423 @@
+import notes.error
+import notes.note
+import notes.store
+
+const notes.cmd.COL_DATE: usize = 24usize
+
+const notes.cmd.COL_ID: usize = 6usize
+
+const notes.cmd.COL_TAGS: usize = 20usize
+
+const notes.cmd.COL_TITLE: usize = 24usize
+
+const notes.cmd.NOTES_DIR: &str = ".notes"
+
+// ---- add ----
+// notes add <title> <body> [tag...]
+fn notes.cmd.add(start: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs, time] panics may pub
+    let title = match std.env.arg(start) {
+        Some(t) => t
+        None => return Err(error.Error.Usage)
+    }
+    let body = match std.env.arg(start.wrapping_add(1usize)) {
+        Some(b) => b
+        None => return Err(error.Error.Usage)
+    }
+    let now = std.time.SystemTime.now()
+    let secs = now.unix_seconds()
+    let dt = std.datetime.from_unix_seconds(secs)
+    let created_at = dt.to_rfc3339()?
+    let mut tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = start.wrapping_add(2usize)
+    let n = std.env.arg_count()
+    while i < n {
+        match std.env.arg(i) {
+            Some(tag) => {
+                let tag_str = alloc.string.String.from_str(std.alloc.SYSTEM, tag)?
+                core.mem.drop(tags.push(tag_str)?)
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let memo = note.Note.new(0i64, title, body, tags, created_at.as_str())?
+    let mut db = notes.cmd.load_store()?
+    let id = store.Store.add(&mut db, memo)?
+    let id_text = notes.cmd.fmt_i64(id, 0usize)?
+    std.io.print_line(id_text.as_str())?
+    Ok(())
+end notes.cmd.add
+
+// ---- edit ----
+// notes edit <id> <title> <body>
+fn notes.cmd.edit(id_index: usize, title_index: usize, body_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs, time] panics may pub
+    let id_text = match std.env.arg(id_index) {
+        Some(s) => s
+        None => return Err(error.Error.Usage)
+    }
+    let id = match i64.parse(id_text) {
+        Ok(v) => v
+        Err(_e) => return Err(error.Error.Usage)
+    }
+    let title = match std.env.arg(title_index) {
+        Some(t) => t
+        None => return Err(error.Error.Usage)
+    }
+    let body = match std.env.arg(body_index) {
+        Some(b) => b
+        None => return Err(error.Error.Usage)
+    }
+    let mut db = notes.cmd.load_store()?
+    match store.Store.get(&db, id) {
+        Some(memo) => {
+            let mut new_tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let all = memo.tags.as_slice()
+            let mut i = 0usize
+            let n = all.len()
+            while i < n {
+                match all.get(i) {
+                    Some(t) => {
+                        let c = alloc.string.String.from_str(std.alloc.SYSTEM, t.as_str())?
+                        core.mem.drop(new_tags.push(c)?)
+                    }
+                    None => core.mem.drop(0u8)
+                }
+                i = i.wrapping_add(1usize)
+            }
+            let created_at = memo.created_at.as_str()
+            let updated = note.Note.new(0i64, title, body, new_tags, created_at)?
+            store.Store.set(&mut db, id, updated)?
+        }
+        None => return Err(error.Error.NotFound)
+    }
+    Ok(())
+end notes.cmd.edit
+
+// メモの保存先ディレクトリを作成する。
+fn notes.cmd.ensure_dir() -> Result<(), notes.error.Error> uses [alloc, io.fs] panics never pub
+    std.fs.create_dir_all(notes.cmd.NOTES_DIR)?
+    Ok(())
+end notes.cmd.ensure_dir
+
+// ---- export ----
+// notes export <path> <format>  (format: json | md)
+fn notes.cmd.export(path_index: usize, format_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
+    let path = match std.env.arg(path_index) {
+        Some(p) => p
+        None => return Err(error.Error.Usage)
+    }
+    let format = match std.env.arg(format_index) {
+        Some(f) => f
+        None => return Err(error.Error.Usage)
+    }
+    let db = notes.cmd.load_store()?
+    let mut i = 0usize
+    let n = store.Store.all_notes_len(&db)
+    if format == "json" {
+        let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+        out.push_str("[")?
+        while i < n {
+            match store.Store.get_at(&db, i) {
+                Some(memo) => {
+                    if i > 0usize {
+                        out.push_str(",")?
+                    }
+                    let json = store.note_to_json(memo)?
+                    out.push_str(json.as_str())?
+                }
+                None => core.mem.drop(0u8)
+            }
+            i = i.wrapping_add(1usize)
+        }
+        out.push_str("]")?
+        std.fs.write_atomic(path, out.as_bytes())?
+    } else if format == "md" {
+        let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+        while i < n {
+            match store.Store.get_at(&db, i) {
+                Some(memo) => {
+                    if i > 0usize {
+                        out.push_str("\n\n")?
+                    }
+                    out.push_str("# メモ ")?
+                    let id_str = notes.cmd.fmt_i64(memo.id, 0usize)?
+                    out.push_str(id_str.as_str())?
+                    out.push_str("\n")?
+                    out.push_str("タイトル: ")?
+                    out.push_str(memo.title.as_str())?
+                    out.push_str("\n")?
+                    out.push_str("本文: ")?
+                    out.push_str(memo.body.as_str())?
+                    out.push_str("\n")?
+                    let tags_text = notes.cmd.tags_to_string(&memo.tags)?
+                    out.push_str("タグ: ")?
+                    out.push_str(tags_text.as_str())?
+                    out.push_str("\n")?
+                    out.push_str("作成日: ")?
+                    out.push_str(memo.created_at.as_str())?
+                    out.push_str("\n")?
+                    out.push_str("更新日: ")?
+                    out.push_str(memo.updated_at.as_str())?
+                    out.push_str("\n")?
+                }
+                None => core.mem.drop(0u8)
+            }
+            i = i.wrapping_add(1usize)
+        }
+        std.fs.write_atomic(path, out.as_bytes())?
+    } else {
+        return Err(error.Error.Usage)
+    }
+    Ok(())
+end notes.cmd.export
+
+// i64 を幅指定で文字列化する。
+fn notes.cmd.fmt_i64(value: i64, width: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let spec = alloc.fmt.Spec.new().with_left().with_width(width)
+    alloc.fmt.write_i64(&mut out, value, &spec)?
+    Ok(out)
+end notes.cmd.fmt_i64
+
+// ---- list ----
+fn notes.cmd.list() -> Result<(), notes.error.Error> uses [alloc, io.console, io.fs] panics never pub
+    let db = notes.cmd.load_store()?
+    notes.cmd.print_header()?
+    let mut i = 0usize
+    let n = store.Store.all_notes_len(&db)
+    while i < n {
+        match store.Store.get_at(&db, i) {
+            Some(memo) => {
+                notes.cmd.print_row(memo)?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(())
+end notes.cmd.list
+
+// ストアをロードする（ディレクトリがない場合は作成する）。
+fn notes.cmd.load_store() -> Result<notes.store.Store, notes.error.Error> uses [alloc, io.fs] panics never pub
+    notes.cmd.ensure_dir()?
+    store.Store.load(notes.cmd.NOTES_DIR)
+end notes.cmd.load_store
+
+// 文字列を指定幅で左詰めにする（幅を超える場合はそのまま）。
+fn notes.cmd.pad_left(text: &str, width: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    if text.len() >= width {
+        out.push_str(text)?
+    } else {
+        out.push_str(text)?
+        let pad_count = width.wrapping_sub(text.len())
+        let mut i = 0usize
+        while i < pad_count {
+            out.push(' ')?
+            i = i.wrapping_add(1usize)
+        }
+    }
+    Ok(out)
+end notes.cmd.pad_left
+
+// テーブルのヘッダ行を出力する。
+fn notes.cmd.print_header() -> Result<(), notes.error.Error> uses [alloc, io.console] panics never pub
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let id_col = notes.cmd.pad_left("ID", notes.cmd.COL_ID)?
+    line.push_str(id_col.as_str())?
+    let title_col = notes.cmd.pad_left("TITLE", notes.cmd.COL_TITLE)?
+    line.push_str(title_col.as_str())?
+    let tags_col = notes.cmd.pad_left("TAGS", notes.cmd.COL_TAGS)?
+    line.push_str(tags_col.as_str())?
+    let date_col = notes.cmd.pad_left("CREATED", notes.cmd.COL_DATE)?
+    line.push_str(date_col.as_str())?
+    std.io.print_line(line.as_str())?
+    Ok(())
+end notes.cmd.print_header
+
+// 1 メモをテーブル形式で1行出力する。
+fn notes.cmd.print_row(n: &notes.note.Note) -> Result<(), notes.error.Error> uses [alloc, io.console] panics never pub
+    let mut line = alloc.string.String.new(std.alloc.SYSTEM)
+    let id_text = notes.cmd.fmt_i64(n.id, notes.cmd.COL_ID)?
+    line.push_str(id_text.as_str())?
+    let title_col = notes.cmd.pad_left(n.title.as_str(), notes.cmd.COL_TITLE)?
+    line.push_str(title_col.as_str())?
+    let tags_text = notes.cmd.tags_to_string(&n.tags)?
+    let tags_col = notes.cmd.pad_left(tags_text.as_str(), notes.cmd.COL_TAGS)?
+    line.push_str(tags_col.as_str())?
+    let date_col = notes.cmd.pad_left(n.created_at.as_str(), notes.cmd.COL_DATE)?
+    line.push_str(date_col.as_str())?
+    std.io.print_line(line.as_str())?
+    Ok(())
+end notes.cmd.print_row
+
+// ---- rm ----
+// notes rm <id>
+fn notes.cmd.rm(index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics may pub
+    let id_text = match std.env.arg(index) {
+        Some(s) => s
+        None => return Err(error.Error.Usage)
+    }
+    let id = match i64.parse(id_text) {
+        Ok(v) => v
+        Err(_e) => return Err(error.Error.Usage)
+    }
+    let mut db = notes.cmd.load_store()?
+    store.Store.remove(&mut db, id)?
+    Ok(())
+end notes.cmd.rm
+
+// ---- search ----
+// notes search <query>
+fn notes.cmd.search(index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
+    let q = match std.env.arg(index) {
+        Some(s) => s
+        None => return Err(error.Error.Usage)
+    }
+    let db = notes.cmd.load_store()?
+    let found = store.Store.search_ids(&db, q)?
+    notes.cmd.print_header()?
+    let mut i = 0usize
+    let n = found.len()
+    while i < n {
+        match found.get(i) {
+            Some(found_id) => {
+                match store.Store.get(&db, *found_id) {
+                    Some(memo) => {
+                        notes.cmd.print_row(memo)?
+                    }
+                    None => core.mem.drop(0u8)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(())
+end notes.cmd.search
+
+// ---- show ----
+// notes show <id>
+fn notes.cmd.show(index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
+    let id_text = match std.env.arg(index) {
+        Some(s) => s
+        None => return Err(error.Error.Usage)
+    }
+    let id = match i64.parse(id_text) {
+        Ok(v) => v
+        Err(_e) => return Err(error.Error.Usage)
+    }
+    let db = notes.cmd.load_store()?
+    match store.Store.get(&db, id) {
+        Some(memo) => {
+            std.io.print_line("ID: ")?
+            let id_str = notes.cmd.fmt_i64(memo.id, 0usize)?
+            std.io.print_line(id_str.as_str())?
+            std.io.print_line("タイトル: ")?
+            std.io.print_line(memo.title.as_str())?
+            std.io.print_line("本文: ")?
+            std.io.print_line(memo.body.as_str())?
+            let tags_text = notes.cmd.tags_to_string(&memo.tags)?
+            std.io.print_line("タグ: ")?
+            std.io.print_line(tags_text.as_str())?
+            std.io.print_line("作成日: ")?
+            std.io.print_line(memo.created_at.as_str())?
+            std.io.print_line("更新日: ")?
+            std.io.print_line(memo.updated_at.as_str())?
+        }
+        None => return Err(error.Error.NotFound)
+    }
+    Ok(())
+end notes.cmd.show
+
+// ---- tag ----
+// notes tag <id> <tag>
+fn notes.cmd.tag(id_index: usize, tag_index: usize) -> Result<(), notes.error.Error> uses [alloc, env, io.console, io.fs] panics never pub
+    let id_text = match std.env.arg(id_index) {
+        Some(s) => s
+        None => return Err(error.Error.Usage)
+    }
+    let id = match i64.parse(id_text) {
+        Ok(v) => v
+        Err(_e) => return Err(error.Error.Usage)
+    }
+    let tag = match std.env.arg(tag_index) {
+        Some(t) => t
+        None => return Err(error.Error.Usage)
+    }
+    let mut db = notes.cmd.load_store()?
+    match store.Store.get(&db, id) {
+        Some(memo) => {
+            let mut new_tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            let all = memo.tags.as_slice()
+            let mut i = 0usize
+            let n = all.len()
+            while i < n {
+                match all.get(i) {
+                    Some(t) => {
+                        let c = alloc.string.String.from_str(std.alloc.SYSTEM, t.as_str())?
+                        core.mem.drop(new_tags.push(c)?)
+                    }
+                    None => core.mem.drop(0u8)
+                }
+                i = i.wrapping_add(1usize)
+            }
+            let tag_str = alloc.string.String.from_str(std.alloc.SYSTEM, tag)?
+            core.mem.drop(new_tags.push(tag_str)?)
+            let title = memo.title.as_str()
+            let body = memo.body.as_str()
+            let created = memo.created_at.as_str()
+            let updated = note.Note.new(0i64, title, body, new_tags, created)?
+            store.Store.set(&mut db, id, updated)?
+        }
+        None => return Err(error.Error.NotFound)
+    }
+    Ok(())
+end notes.cmd.tag
+
+// タグベクトルをカンマ区切り文字列にする。
+fn notes.cmd.tags_to_string(tags: &alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let all = tags.as_slice()
+    let mut i = 0usize
+    let n = all.len()
+    while i < n {
+        match all.get(i) {
+            Some(tag) => {
+                if i > 0usize {
+                    out.push_str(",")?
+                }
+                out.push_str(tag.as_str())?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end notes.cmd.tags_to_string
+
+// JSON 文字列リテラルを出力用にエスケープして書き出す。
+fn notes.cmd.write_json_string(out: &mut alloc.string.String<std.alloc.System>, text: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    out.push_str("\"")?
+    for c in text.chars() {
+        if c == '"' {
+            out.push_str("\\\"")?
+        } else if c == '\\' {
+            out.push_str("\\\\")?
+        } else if c == '\n' {
+            out.push_str("\\n")?
+        } else if c == '\r' {
+            out.push_str("\\r")?
+        } else if c == '\t' {
+            out.push_str("\\t")?
+        } else {
+            out.push(c)?
+        }
+    }
+    out.push_str("\"")?
+    Ok(())
+end notes.cmd.write_json_string
+
+test notes.cmd.add.test_stub
+    core.check.eq(0usize, 0usize)
+end notes.cmd.add.test_stub
