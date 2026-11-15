@@ -1,0 +1,12 @@
+// expect: E3010
+enum t.E derive [Debug, Clone, Copy, PartialEq, From] pub
+    Borrowed(&'static u32)
+end t.E
+
+fn t.bad(x: &u32) -> Result<(), t.E> uses [] panics never
+    Err(t.E.Borrowed(x))?
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

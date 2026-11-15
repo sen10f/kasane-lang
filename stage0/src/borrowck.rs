@@ -2341,9 +2341,97 @@ impl<'a> Low<'a> {
         ptexts.len() == d.params.len() && is_elided_ref(&ptexts[q])
     }
 
+    /// 呼び出し `t.E.V(args)` が列挙子の構成なら、列挙の名前・列挙子名・引数 (プレリュードの `Some` 等は除く)。
+    fn ctor_call<'v>(&self, e: &'v V) -> Option<(String, String, &'v [V])> {
+        if nname(e) != "Call" {
+            return None;
+        }
+        let f = nf(e);
+        if nname(&f[0]) != "Path" {
+            return None;
+        }
+        let segs: Vec<String> = strs(&nf(&f[0])[0]);
+        let r = self.p.resolve(&segs, &self.file)?;
+        let Target::Variant(en, vn) = r.target else { return None };
+        if en == "Option" || en == "Result" {
+            return None;
+        }
+        Some((en, vn, items(&f[1])))
+    }
+
+    /// 包む形 (`Some(x)`・`Ok(x)`・`Err(x)`・`(x, y)`・`t.H { r: x }`・`t.E.V(x)`) の中身。包んだ値の借用は、中身の借用と同じ。
+    fn wrapped_parts<'v>(&self, e: &'v V) -> Option<Vec<&'v V>> {
+        match nname(e) {
+            "TupleE" => Some(items(&nf(e)[0]).iter().collect()),
+            "StructLit" => Some(items(&nf(e)[1]).iter().filter_map(|f| items(f).get(1)).collect()),
+            "Call" => {
+                let f = nf(e);
+                let prelude = nname(&f[0]) == "Path" && matches!(strs(&nf(&f[0])[0]).as_slice(), [s] if s == "Some" || s == "Ok" || s == "Err");
+                if prelude && items(&f[1]).len() == 1 {
+                    return Some(vec![&items(&f[1])[0]]);
+                }
+                let (_, _, args) = self.ctor_call(e)?;
+                Some(args.iter().collect())
+            }
+            _ => None,
+        }
+    }
+
+    /// 型 `ty` の列挙子の構成 (`t.E.V(x)`) を、戻り値の位置として分ける。期待は列挙子の payload が運ぶ領域。
+    /// 列挙子の構成でなければ false (呼び出し側が葉として扱う)。
+    fn ctor_slots<'v>(&self, e: &'v V, ty: &str, out: &mut Vec<(&'v V, BTreeSet<String>, bool)>) -> bool {
+        let Some((en, vn, args)) = self.ctor_call(e) else { return false };
+        let Some(tdi) = self.type_of_name(&en) else { return false };
+        let (rname, rargs) = type_args(ty);
+        if self.type_of_name(&rname) != Some(tdi) {
+            return false;
+        }
+        let mut subst: HashMap<String, String> = HashMap::new();
+        for (g, a) in self.p.defs[tdi].generics.iter().zip(&rargs) {
+            if g.0 == "life" && a.starts_with('\'') {
+                subst.insert(g.1.trim_start_matches('\'').to_string(), a.trim_start_matches('\'').to_string());
+            }
+        }
+        let decl = self.p.defs[tdi].field_lifetimes.iter().find(|f| f.0 == vn).map(|f| f.1.clone()).unwrap_or_default();
+        let expected: BTreeSet<String> = decl.iter().map(|l| subst.get(l).cloned().unwrap_or_else(|| l.clone())).collect();
+        let explicit = ty.contains('\'') || !self.p.defs[tdi].generics.iter().any(|g| g.0 == "life");
+        out.extend(args.iter().map(|x| (x, expected.clone(), explicit)));
+        true
+    }
+
+    /// 戻り値の型が、領域を運ぶ名前付きの型 (欄・列挙子の payload に参照を持つ構造体・列挙) を含むか。
+    fn ret_names_lifetime_type(&self, t: &V) -> bool {
+        let mut names = vec![];
+        named_types(t, &mut names);
+        names.iter().any(|n| {
+            let segs: Vec<String> = n.split('.').map(|s| s.to_string()).collect();
+            match self.p.resolve(&segs, &self.file).map(|r| r.target) {
+                Some(Target::Type(tdi)) => self.p.defs[tdi].field_lifetimes.iter().any(|(_, l)| !l.is_empty()),
+                _ => false,
+            }
+        })
+    }
+
+    /// 型の文面 `ty` が、ライフタイムを持たない名前付きの型か。その欄・列挙子の領域は宣言どおりの具体的な領域
+    /// (`'static` など) で、省略された出力ではない。
+    fn named_without_life_generics(&self, ty: &str) -> bool {
+        let (n, _) = type_args(ty);
+        match self.type_of_name(&n) {
+            Some(t) => !self.p.defs[t].generics.iter().any(|g| g.0 == "life"),
+            None => false,
+        }
+    }
+
     /// 式 `e` が運ぶ借用の出どころ。`inits` は 1 回だけ束縛された `let` の初期化式 (変数をたどる)。
     fn origins(&self, e: &V, d: &Def, inits: &HashMap<String, &V>, depth: usize, out: &mut Vec<Origin>) {
         if depth > 8 {
+            return;
+        }
+        // 包んだ値 (`Some(x)` など) の借用は、中身の借用そのもの。変数に束縛されたときもそのまま運ぶ。
+        if let Some(parts) = self.wrapped_parts(e) {
+            for p in parts {
+                self.origins(p, d, inits, depth + 1, out);
+            }
             return;
         }
         let mut leaves = vec![];
@@ -2408,7 +2496,7 @@ impl<'a> Low<'a> {
         let ty = ty.trim();
         let ty = ty.strip_suffix(" const").unwrap_or(ty).trim_end();
         // 型の文面が領域を明示しているか (`'a` / `'static`)。明示がなければ、出力の領域は省略規則 (4.3) で決まる。
-        let explicit = ty.contains('\'');
+        let explicit = ty.contains('\'') || self.named_without_life_generics(ty);
         // 型の引数 `T<a, b>` を (名前, 引数)。
         let generic = |t: &str| -> Option<(String, Vec<String>)> {
             let i = t.find('<')?;
@@ -2479,7 +2567,11 @@ impl<'a> Low<'a> {
                 });
                 match inner {
                     Some(t) => self.ret_slots(&args[0], &t, out),
-                    None => out.push((e, lifetimes_with_static(ty), explicit)),
+                    None => {
+                        if !self.ctor_slots(e, ty, out) {
+                            out.push((e, lifetimes_with_static(ty), explicit));
+                        }
+                    }
                 }
             }
             _ => out.push((e, lifetimes_with_static(ty), explicit)),
@@ -2513,7 +2605,7 @@ impl<'a> Low<'a> {
         let Some((_, ret)) = head[close + 1..].split_once("->") else { return vec![] };
         let want = lifetimes(ret);
         let static_ret = ret.contains("'static");
-        if want.is_empty() && !static_ret && !ret.contains('&') && !self.ret_contains_ref(d) {
+        if want.is_empty() && !static_ret && !ret.contains('&') && !self.ret_contains_ref(d) && !self.ret_names_lifetime_type(&d.ret) {
             return vec![];
         }
         let mut all = vec![];
@@ -2534,11 +2626,17 @@ impl<'a> Low<'a> {
                     }
                 }
                 "Match" => {
+                    // `if let` も `match` の形。局所 (`match o`) を調べるとき、腕の束縛は局所 `o` の借用を運ぶ。
+                    // 関数呼び出し・メソッド呼び出しを調べる式は受け手の自動借用を含むので、束縛へは配らない。
+                    let scrut_is_local = nname(&nf(n)[0]) == "Path";
                     for arm in items(&nf(n)[1]) {
                         let mut b = vec![];
                         pat_binds(&items(arm)[0], &mut b);
                         for x in &b {
                             *count.entry(x.clone()).or_insert(0) += 1;
+                            if scrut_is_local {
+                                inits.insert(x.clone(), &nf(n)[0]);
+                            }
                         }
                     }
                 }
@@ -2557,6 +2655,16 @@ impl<'a> Low<'a> {
         let mut slots: Vec<(&V, BTreeSet<String>, bool)> = vec![];
         for v in vals {
             self.ret_slots(v, ret, &mut slots);
+        }
+        // `Err(e)?` は、エラーの値 `e` を戻り値の `Result<_, E>` のエラーの位置へ返す (`?` の早期の戻り)。
+        if let Some(et) = ret.trim().strip_prefix("Result<").and_then(|r| r.strip_suffix('>')).and_then(|r| split_top(r).get(1).cloned()) {
+            for n in &all {
+                if nname(n) == "Try" {
+                    if let Some(p) = err_payload(&nf(n)[0]) {
+                        self.ret_slots(p, &et, &mut slots);
+                    }
+                }
+            }
         }
         let mut out = vec![];
         let mut seen: BTreeSet<(usize, String)> = BTreeSet::new();
@@ -3238,6 +3346,41 @@ pub(crate) fn match_close(s: &str, open: usize) -> Option<usize> {
 }
 
 /// 最上位のカンマで分ける (括弧の中のカンマは区切りにしない)。
+/// 型の文面 `Name<a, b>` を (名前, 引数)。引数がなければ空。
+fn type_args(t: &str) -> (String, Vec<String>) {
+    let t = t.trim();
+    match t.find('<') {
+        Some(i) if t.ends_with('>') => (t[..i].trim().to_string(), split_top(&t[i + 1..t.len() - 1])),
+        _ => (t.to_string(), vec![]),
+    }
+}
+
+/// `Err(x)` の payload `x` (`?` の対象が `Err(..)` の形のとき)。
+fn err_payload(op: &V) -> Option<&V> {
+    if nname(op) != "Call" {
+        return None;
+    }
+    let f = nf(op);
+    if nname(&f[0]) != "Path" || strs(&nf(&f[0])[0]).as_slice() != ["Err"] {
+        return None;
+    }
+    items(&f[1]).first()
+}
+
+/// 型の文面の中の名前付きの型 (`["named", name, ..]`) の名前を集める。
+fn named_types(v: &V, out: &mut Vec<String>) {
+    if let V::L(parts) = v {
+        if let [V::S(a), V::S(n), ..] = parts.as_slice() {
+            if a.as_str() == "named" {
+                out.push(n.clone());
+            }
+        }
+        for p in parts {
+            named_types(p, out);
+        }
+    }
+}
+
 fn split_top(s: &str) -> Vec<String> {
     let b = s.as_bytes();
     let (mut depth, mut start) = (0i32, 0usize);

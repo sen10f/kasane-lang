@@ -2921,6 +2921,9 @@ impl<'a> Checker<'a> {
     fn typeck(&mut self) {
         let user = self.user.clone();
         for &i in &user {
+            if self.def(i).kw == "trait" {
+                self.check_trait_lifetimes(i);
+            }
             if self.def(i).kw == "fn" {
                 self.check_elision(i);
             }
@@ -3076,6 +3079,22 @@ impl<'a> Checker<'a> {
                 0,
             );
         }
+    }
+
+    /// トレイトのメソッドの宣言 (本体なし) が、宣言していないライフタイム (`'a`) を使う。本体の流れは見られないので、
+    /// 宣言の有無だけを見る。`program.rs` がメソッドごとの未宣言の名前を `field_lifetimes` に入れている。
+    fn check_trait_lifetimes(&mut self, di: usize) {
+        let d = self.def(di);
+        let names: Vec<String> = d.field_lifetimes.iter().filter(|(_, l)| !l.is_empty()).map(|(m, l)| format!("{}: '{}", m, l.join(", '"))).collect();
+        if names.is_empty() {
+            return;
+        }
+        let msg = format!(
+            "{}: lifetime of the returned reference is not declared (`{}`); declare it in the method's generics (for example `fn m['a](...)`)",
+            d.name,
+            names.join("`, `")
+        );
+        self.diag("E3020", msg, di, 0);
     }
 
     /// 4.1: `type` / `enum` のフィールド・バリアントの参照は、ライフタイムを省略できない (`'static` も明示)。
