@@ -742,6 +742,31 @@ python3 -I compare.py --group all                # 全部
 ```
 
 
+### 15.8 型の表を使った後 (修正プラン 5-5 の借用の段、型の表つき)
+
+2026-11-15。ブランチ `selfhost/type-export`。`borrow` は `types.export.run` の型を読む。Copy か移動かを型で決める: `borrow.tcls` が型を分類に直す (基本の値・`&str` は SREF、参照は SREF / MREF、組・配列は要素の合成、Adt は Option・Result が引数の合成、容器は MOVE、他は型の表 `borrow.tabfill` の線形・Copy の派生)。節に型があれば、式の値 (`expr_cls`)・`let` の束縛・パターンの束縛 (`declare_pat`、`match`・`for` の中も) がその分類になり、型が不明な節だけ 15.3 の近似に任せる。
+
+| `compare.py --group all` | 前 (15.4 の近似) | 後 (型の表) |
+| --- | ---: | ---: |
+| 正しいコードの誤検出 (141 件) | 0 | **0** |
+| 正しいコードで判断保留なしに受理 | 106 | **112** |
+| 判断保留の合計 (577 件) | 481 | **95** |
+| Rust 版が E30xx を出すもの (289 件): 拒否 | 36 | **55** |
+| 同: コードの多重集合まで一致 | 32 | **48** |
+| 同: Rust 版が出さないのに拒否 (余分) | 0 | 0 |
+
+- 15.4 の表の 262 件・31 件・27 件は `unsound/` だけの数で、この表は `all` (diag を含む) の数。前後は同じ `all` で比べた。
+- 15.5 の 1 (型の情報が外へ出ない) は解決した。残りは 15.5 の 2 (閉包の本体、列挙子の payload の型で `Err` の中の線形値を追う) と、ループの二回目の反復。
+- 型の段の `expr` の包みは節ごとに記録する (12.8)。借用の表は `borrow.cx.Cx.tcls` に単位ごとに持つ。
+
+再現:
+
+```
+. ~/.cargo/env
+cd selfhost/borrow && ksn check && ksn fmt --check && ksn build --release
+python3 -I compare.py --group all      # 約 110 秒
+```
+
 ## 16. KIR への下ろしの段 (修正プラン 5-5)
 
 2026-11-15。ブランチ `selfhost/lower`。新規は `selfhost/lower/` と、この節の追記だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` と `selfhost/` の他の部品は変えていない。`dev/plan` は `selfhost/emit` の統合のために取り込んだ)。
@@ -829,31 +854,4 @@ ksn check && ksn fmt --check && ksn build --release
 python3 -I compare.py --group probe --mine native
 python3 -I compare.py --group linear_ok --mine native --jobs 16   # 一致 47 / 439 (約 1 分)
 python3 -I compare.py --group examples --mine native               # 一致 0 / 172
-```
-
-
-
-### 15.8 型の表を使った後 (修正プラン 5-5 の借用の段、型の表つき)
-
-2026-11-15。ブランチ `selfhost/type-export`。`borrow` は `types.export.run` の型を読む。Copy か移動かを型で決める: `borrow.tcls` が型を分類に直す (基本の値・`&str` は SREF、参照は SREF / MREF、組・配列は要素の合成、Adt は Option・Result が引数の合成、容器は MOVE、他は型の表 `borrow.tabfill` の線形・Copy の派生)。節に型があれば、式の値 (`expr_cls`)・`let` の束縛・パターンの束縛 (`declare_pat`、`match`・`for` の中も) がその分類になり、型が不明な節だけ 15.3 の近似に任せる。
-
-| `compare.py --group all` | 前 (15.4 の近似) | 後 (型の表) |
-| --- | ---: | ---: |
-| 正しいコードの誤検出 (141 件) | 0 | **0** |
-| 正しいコードで判断保留なしに受理 | 106 | **112** |
-| 判断保留の合計 (577 件) | 481 | **95** |
-| Rust 版が E30xx を出すもの (289 件): 拒否 | 36 | **55** |
-| 同: コードの多重集合まで一致 | 32 | **48** |
-| 同: Rust 版が出さないのに拒否 (余分) | 0 | 0 |
-
-- 15.4 の表の 262 件・31 件・27 件は `unsound/` だけの数で、この表は `all` (diag を含む) の数。前後は同じ `all` で比べた。
-- 15.5 の 1 (型の情報が外へ出ない) は解決した。残りは 15.5 の 2 (閉包の本体、列挙子の payload の型で `Err` の中の線形値を追う) と、ループの二回目の反復。
-- 型の段の `expr` の包みは節ごとに記録する (12.8)。借用の表は `borrow.cx.Cx.tcls` に単位ごとに持つ。
-
-再現:
-
-```
-. ~/.cargo/env
-cd selfhost/borrow && ksn check && ksn fmt --check && ksn build --release
-python3 -I compare.py --group all      # 約 110 秒
 ```
