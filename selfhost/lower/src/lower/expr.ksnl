@@ -13,9 +13,9 @@ end lower.expr.arm_body
 // `x = e` (局所の書き換え)。
 fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let ln = parse.ast.get(&p.ast, n.a)
-    let lt = types.infer.expr(env, &mut c.ar, &mut c.tc, p, src, n.a, types.ty.UNKNOWN)?
+    let lt = lower.expr.tyof(c, n.a)
     let name = resolve.ast.text(src, ln.a, ln.b)
-    let loc = types.chk.find(&c.tc, name, false)
+    let loc = lower.cx.find(c, name)
     if (ln.kind != parse.ast.Kind.Path || loc == 0usize) {
         lower.cx.fail(c, "代入 (局所以外への代入は未対応)")?
         return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
@@ -79,7 +79,7 @@ end lower.expr.bind_join
 
 // 波括弧のブロック: 局所の並びは終わりに戻す。値は最後の文の値 (なければ unit)。
 fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], l: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    let mark = c.tc.sc.len()
+    let mark = lower.cx.depth(c)
     let cnt = resolve.ast.count(p, l)
     let mut has = false
     let mut res = 0usize
@@ -141,7 +141,7 @@ fn lower.expr.br_to(c: &mut lower.cx.Cx, b: usize) -> Result<(), resolve.Failure
 end lower.expr.br_to
 
 // 関数呼び出し: 項目の関数の直接の呼び出し、または `局所.wrapping_*(..)` の形。
-fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let cn = parse.ast.get(&p.ast, n.a)
     if (cn.kind != parse.ast.Kind.Path) {
         lower.cx.fail(c, "呼び出しの先 (未対応)")?
@@ -149,12 +149,13 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     }
     let name = resolve.ast.text(src, cn.a, cn.b)
     let (rv, meth) = lower.expr.split2(name)
-    if rv != "" && types.chk.find(&c.tc, rv, false) != 0usize {
+    if rv != "" && lower.cx.find(c, rv) != 0usize {
         return lower.expr.wrapping(env, c, p, src, rv, meth, n.b, t)
     }
-    let it = types.env.lookup(env, c.s.file, name)?
+    // 解決先は型検査の表 (env の項目 + 1)。
+    let it = types.rec.callee_of(&c.tc.rec, c.s.file, e)
     if it == 0usize {
-        lower.cx.fail(c, "呼び出しの名前が解決しない")?
+        lower.cx.fail(c, "呼び出しの解決先が記録されていない")?
         return lower.expr.dummy(c, t)
     }
     let item = it - 1usize
@@ -179,17 +180,12 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         return Ok(lower.cx.R { v: u, t: t })
     }
     lower.expr.enqueue(c, fqn.as_str())?
-    let (params, ret) = types.infer.sig_of(env, &mut c.ar, &mut c.tc, item)?
     let mut args = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for j in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
-        let want = match params.as_slice().get(j) {
-            Some(x) => *x
-            None => types.ty.UNKNOWN
-        }
-        let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, j), want)?
+        let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, j), types.ty.UNKNOWN)?
         args.push(a.v)?
     }
-    let rt = lower.tyk.text(env, c, ret)?
+    let rt = lower.tyk.text(env, c, t)?
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     o.push_str("call ")?
     o.push_str(fqn.as_str())?
@@ -225,12 +221,11 @@ end lower.expr.enqueue
 
 // 式。`want` は期待する型 (types の型 id。分からなければ UNKNOWN)。
 fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], e: usize, want: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    lower.expr.sync(c)?
     let n = parse.ast.get(&p.ast, e)
     if c.s.term {
         return lower.expr.dummy(c, want)
     }
-    let t = types.infer.expr(env, &mut c.ar, &mut c.tc, p, src, e, want)?
+    let t = lower.expr.tyof(c, e)
     let k = n.kind
     if (k == parse.ast.Kind.Lit) {
         return lower.expr.lit(env, c, p, src, n, t)
@@ -245,7 +240,7 @@ fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         return lower.expr.unary(env, c, p, src, n, t)
     }
     if (k == parse.ast.Kind.Call) {
-        return lower.expr.call(env, c, p, src, n, t)
+        return lower.expr.call(env, c, p, src, e, n, t)
     }
     if (k == parse.ast.Kind.MCall) {
         return lower.expr.mcall(env, c, p, src, n, t)
@@ -327,7 +322,7 @@ fn lower.expr.field_src(v: usize, off: usize) -> Result<alloc.string.String<std.
 end lower.expr.field_src
 
 fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    let base = c.tc.sc.len()
+    let base = lower.cx.depth(c)
     let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan(p, src, n.b, &mut nms)?
@@ -441,17 +436,12 @@ fn lower.expr.letx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         lower.cx.fail(c, "let (初期化式のない束縛と、PBind 以外の形は未対応)")?
         return Ok(())
     }
-    let mut declared = types.ty.UNKNOWN
-    if sn.c != 0usize {
-        declared = types.lower.ty(env, &mut c.ar, &c.tc, p, src, c.s.file, sn.c)?
-    }
-    let r = lower.expr.expr(env, c, p, src, sn.d, declared)?
-    types.infer.let_stmt(env, &mut c.ar, &mut c.tc, p, src, sn)?
-    lower.expr.sync(c)?
-    let k = c.tc.sc.len() - 1usize
-    lower.cx.set_val(c, k, r.v + 1usize)?
-    let m = sn.b != 0usize
-    lower.expr.set_mut(c, k, m)?
+    // 初期化式は束縛より前の局所で下ろす (`let x = x + 1` の右辺の x は外の x)。
+    let r = lower.expr.expr(env, c, p, src, sn.d, types.ty.UNKNOWN)?
+    let tk = parse.cur.peek_at(p, pn.a)
+    let name = resolve.ast.text(src, tk.start, tk.stop)
+    let t = lower.expr.tyof(c, sn.d)
+    lower.cx.push_local(c, name, r.v + 1usize, sn.b != 0usize, t)?
     Ok(())
 end lower.expr.letx
 
@@ -496,7 +486,7 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
 end lower.expr.lit
 
 fn lower.expr.loopx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    let base = c.tc.sc.len()
+    let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan(p, src, n.a, &mut nms)?
     let ks = lower.cx.mlist_in(c, base, &nms)?
@@ -543,7 +533,7 @@ end lower.expr.loopx
 
 // match (列挙型のみ): 変種の番号をタグで比べる。変種の中の PBind は `field` で読む。
 fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    let base = c.tc.sc.len()
+    let base = lower.cx.depth(c)
     let sc = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
     let ss = types.ty.strip(&c.ar, sc.t)
     let sn = types.ty.node(&c.ar, ss)
@@ -561,18 +551,6 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     let lay = lower.tyk.layout(env, c, item)?
     let jps = lower.expr.join_params(c, rty.as_str(), &ks)?
     let jb = lower.cx.blk(c, &jps)?
-    let enode = types.infer.item_node(env, item)
-    let file = types.infer.item_file(env, item)
-    let ep = match types.env.unit(env, file) {
-        Some(q) => q
-        None => return lower.expr.dummy(c, t)
-    }
-    let esrc_r = match env.srcs.as_slice().get(file) {
-        Some(x) => x
-        None => return lower.expr.dummy(c, t)
-    }
-    let esrc = esrc_r.text.as_slice()
-    let edef = parse.ast.get(&ep.ast, enode)
     let nv = resolve.ast.count(p, n.b)
     let mut done = false
     for j in core.iter.range(0usize, nv) {
@@ -581,7 +559,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
         }
         let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
         let pat = parse.ast.get(&p.ast, arm.a)
-        let mark = c.tc.sc.len()
+        let mark = lower.cx.depth(c)
         if (pat.kind == parse.ast.Kind.PWild) {
             done = true
             let nb = lower.cx.blk(c, &alloc.vec.Vec.new(std.alloc.SYSTEM))?
@@ -611,33 +589,28 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
                 vbase = vbase + add
                 q = q + 1usize
             }
-            let vn = parse.ast.get(&ep.ast, resolve.ast.item(ep, edef.d, vidx))
             let mut subs = 0usize
             if pat.kind == parse.ast.Kind.PVariant {
                 subs = resolve.ast.count(p, pat.c)
             }
-            let has_pat = subs > 0usize
-            if has_pat {
-                types.infer.pat(env, &mut c.ar, &mut c.tc, p, src, arm.a, sc.t)?
-            }
-            lower.expr.sync(c)?
-            let mut bi = mark
-            for i in core.iter.range(0usize, subs) {
-                let sp = parse.ast.get(&p.ast, resolve.ast.item(p, pat.c, i))
+            let mut i = 0usize
+            while i < subs {
+                let sub = resolve.ast.item(p, pat.c, i)
+                let sp = parse.ast.get(&p.ast, sub)
                 if (sp.kind == parse.ast.Kind.PBind) {
-                    let pn = resolve.ast.item(ep, vn.b, i)
-                    let pt = types.lower.ty(env, &mut c.ar, &c.tc, ep, esrc, file, pn)?
-                    let pty = lower.tyk.text(env, c, pt)?
                     let off = match lay.offs.as_slice().get(vbase + i) {
                         Some(x) => *x
                         None => 0usize
                     }
+                    let pt = lower.expr.tyof(c, sub)
+                    let pty = lower.tyk.text(env, c, pt)?
                     let fsrc = lower.expr.field_src(sc.v, off)?
                     let fv = lower.cx.def(c, pty.as_str(), fsrc.as_str())?
-                    lower.cx.set_val(c, bi, fv + 1usize)?
-                    lower.expr.set_mut(c, bi, false)?
-                    bi = bi + 1usize
+                    let stk_tok = parse.cur.peek_at(p, sp.a)
+                    let stk = resolve.ast.text(src, stk_tok.start, stk_tok.stop)
+                    lower.cx.push_local(c, stk, fv + 1usize, false, pt)?
                 }
+                i = i + 1usize
             }
             lower.expr.arm_body(env, c, p, src, arm.b, t, rty.as_str(), &ks, jb, mark)?
             lower.cx.goto(c, nextb)
@@ -695,7 +668,7 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
     if first != "" {
         lname = first
     }
-    let loc = types.chk.find(&c.tc, lname, false)
+    let loc = lower.cx.find(c, lname)
     if loc == 0usize {
         lower.cx.fail(c, "名前が局所でない (定数・関数の値は未対応)")?
         return lower.expr.dummy(c, t)
@@ -924,25 +897,13 @@ end lower.expr.structlit
 // 未対応の形は `lower.cx.fail` で記録し、型だけ合った仮の値を返す (関数は出力しない)。
 // 局所の並び (types の sc) と vals・mutf の長さを合わせる (types の push の後に呼ぶ)。
 fn lower.expr.sync(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [alloc] panics may pub
-    let n = c.tc.sc.len()
-    while c.v.vals.len() < n {
-        c.v.vals.push(0usize)?
-    }
-    while c.v.mutf.len() < n {
-        c.v.mutf.push(false)?
-    }
+    core.mem.drop(c.v.vals.len())
     Ok(())
 end lower.expr.sync
 
 // 局所の並びを mark の長さに戻す (ブロックの終わり)。
 fn lower.expr.trunc(c: &mut lower.cx.Cx, mark: usize) -> () uses [alloc] panics may pub
-    while c.v.vals.len() > mark {
-        let _x = c.v.vals.pop()
-    }
-    while c.v.mutf.len() > mark {
-        let _y = c.v.mutf.pop()
-    }
-    types.chk.truncate(&mut c.tc, mark)
+    lower.cx.trunc_to(c, mark)
 end lower.expr.trunc
 
 // 2 つの値の並び `%a, %b`。
@@ -952,6 +913,11 @@ fn lower.expr.two(a: usize, b: usize) -> Result<alloc.string.String<std.alloc.Sy
     vs.push(b)?
     lower.cx.vlist(&vs)
 end lower.expr.two
+
+// 節 e の型 (型検査の表。束縛をたどった型、記録がなければ UNKNOWN)。
+fn lower.expr.tyof(c: &mut lower.cx.Cx, e: usize) -> usize uses [] panics may pub
+    types.ty.find(&c.ar, types.rec.ty_of(&c.tc.rec, c.s.file, e))
+end lower.expr.tyof
 
 fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     if n.a != 33usize {
@@ -972,7 +938,7 @@ fn lower.expr.unit(c: &mut lower.cx.Cx) -> Result<usize, resolve.Failure> uses [
 end lower.expr.unit
 
 fn lower.expr.whilex(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    let base = c.tc.sc.len()
+    let base = lower.cx.depth(c)
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan(p, src, n.a, &mut nms)?
     lower.expr.scan(p, src, n.b, &mut nms)?
@@ -1026,7 +992,7 @@ end lower.expr.whilex
 
 // `局所.wrapping_add(x)` などの形 (整数の既定の演算の下ろし)。
 fn lower.expr.wrapping(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], rv: &str, meth: &str, args: usize, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
-    let k = types.chk.find(&c.tc, rv, false) - 1usize
+    let k = lower.cx.find(c, rv) - 1usize
     let rvv = lower.cx.get_val(c, k).wrapping_sub(1usize)
     let rty = lower.cx.tyof(c, rvv)
     let mut op = ""

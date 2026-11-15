@@ -44,6 +44,8 @@ end lower.cx.Sc
 
 // 関数ごとの出力: 値の型、ブロックの頭、命令と所属ブロック、局所の値と可変の印。
 type lower.cx.Vs pub
+    names: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+    tys: alloc.vec.Vec<usize, std.alloc.System> pub
     vty: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
     hdr: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
     lines: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
@@ -135,6 +137,11 @@ fn lower.cx.def(c: &mut lower.cx.Cx, ty: &str, op: &str) -> Result<usize, resolv
     Ok(v)
 end lower.cx.def
 
+// 局所の並びの長さ (ブロックの印に使う)。
+fn lower.cx.depth(c: &lower.cx.Cx) -> usize uses [] panics may pub
+    c.v.vals.len()
+end lower.cx.depth
+
 // 命令を現在のブロックに足す (終わったブロックには足さない)。
 fn lower.cx.emit(c: &mut lower.cx.Cx, line: alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     if !c.s.term {
@@ -151,6 +158,22 @@ fn lower.cx.fail(c: &mut lower.cx.Cx, why: &str) -> Result<(), resolve.Failure> 
     }
     Ok(())
 end lower.cx.fail
+
+// 局所の名前を後ろから探す (k + 1、なければ 0)。
+fn lower.cx.find(c: &lower.cx.Cx, name: &str) -> usize uses [] panics may pub
+    let mut k = c.v.names.len()
+    while k > 0usize {
+        k = k - 1usize
+        let same = match c.v.names.as_slice().get(k) {
+            Some(n) => n.as_str() == name
+            None => false
+        }
+        if same {
+            return k + 1usize
+        }
+    }
+    0usize
+end lower.cx.find
 
 // 終わりの命令 (`br` `ret` `unreachable` など) を足し、ブロックを終わりにする。
 fn lower.cx.finish(c: &mut lower.cx.Cx, op: alloc.string.String<std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
@@ -237,8 +260,8 @@ fn lower.cx.mlist_in(c: &lower.cx.Cx, base: usize, names: &alloc.vec.Vec<alloc.s
         if !mutable {
             continue
         }
-        let nm = match c.tc.sc.as_slice().get(k) {
-            Some(e) => lower.cx.own(e.name.as_str())?
+        let nm = match c.v.names.as_slice().get(k) {
+            Some(e) => lower.cx.own(e.as_str())?
             None => alloc.string.String.new(std.alloc.SYSTEM)
         }
         let mut hit = false
@@ -268,9 +291,7 @@ fn lower.cx.name_of(c: &lower.cx.Cx, k: usize) -> Result<alloc.string.String<std
     }
 end lower.cx.name_of
 
-fn lower.cx.new() -> Result<lower.cx.Cx, resolve.Failure> uses [alloc] panics may pub
-    let ar = types.ty.new()?
-    let tc = types.chk.new()?
+fn lower.cx.new(ar: types.ty.Arena, tc: types.chk.Ctx) -> Result<lower.cx.Cx, resolve.Failure> uses [alloc] panics may pub
     let aggs = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let names = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let texts = alloc.vec.Vec.new(std.alloc.SYSTEM)
@@ -297,6 +318,15 @@ fn lower.cx.own(s: &str) -> Result<alloc.string.String<std.alloc.System>, resolv
     o.push_str(s)?
     Ok(o)
 end lower.cx.own
+
+// 局所を 1 つ足す (名前・値 (VId + 1)・可変・型)。添字を返す。
+fn lower.cx.push_local(c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    c.v.names.push(lower.cx.own(name)?)?
+    c.v.tys.push(t)?
+    c.v.vals.push(v)?
+    c.v.mutf.push(m)?
+    Ok(c.v.vals.len() - 1usize)
+end lower.cx.push_local
 
 // 関数の下ろしの前に、関数ごとの状態を空にする (型の並びと arena は残す)。
 fn lower.cx.reset(c: &mut lower.cx.Cx) -> Result<(), resolve.Failure> uses [alloc] panics may pub
@@ -340,6 +370,22 @@ fn lower.cx.target(b: usize, args: &alloc.vec.Vec<usize, std.alloc.System>) -> R
     Ok(s)
 end lower.cx.target
 
+// 局所を mark の長さに戻す。
+fn lower.cx.trunc_to(c: &mut lower.cx.Cx, mark: usize) -> () uses [alloc] panics may pub
+    while c.v.names.len() > mark {
+        let _a = c.v.names.pop()
+    }
+    while c.v.tys.len() > mark {
+        let _b = c.v.tys.pop()
+    }
+    while c.v.vals.len() > mark {
+        let _c = c.v.vals.pop()
+    }
+    while c.v.mutf.len() > mark {
+        let _d = c.v.mutf.pop()
+    }
+end lower.cx.trunc_to
+
 // 値の型の文字列 (範囲外は unit)。
 fn lower.cx.tyof(c: &lower.cx.Cx, v: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
     match c.v.vty.as_slice().get(v) {
@@ -355,8 +401,8 @@ end lower.cx.tyof
 
 // 局所 k の型 (types の型 id)。
 fn lower.cx.tyof_t(c: &lower.cx.Cx, k: usize) -> usize uses [] panics may pub
-    match c.tc.sc.as_slice().get(k) {
-        Some(e) => e.ty
+    match c.v.tys.as_slice().get(k) {
+        Some(t) => *t
         None => types.ty.UNKNOWN
     }
 end lower.cx.tyof_t
@@ -385,11 +431,13 @@ end lower.cx.vs
 
 // 関数ごとの出力の空の状態。
 fn lower.cx.vs_new() -> lower.cx.Vs uses [alloc] panics may pub
-    let vty = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let hdr = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let lines = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let lblk = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let vals = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    let mutf = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.cx.Vs { vty: vty, hdr: hdr, lines: lines, lblk: lblk, vals: vals, mutf: mutf }
+    let nm = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let ty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let vt = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let hd = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let ln = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let lb = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let vl = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.cx.Vs { names: nm, tys: ty, vty: vt, hdr: hd, lines: ln, lblk: lb, vals: vl, mutf: mf }
 end lower.cx.vs_new

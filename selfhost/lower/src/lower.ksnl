@@ -10,8 +10,9 @@ fn lower.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.
         Some(s) => s
         None => return Ok(())
     }
-    let env = types.env.load(pkg, std_dir)?
-    let mut c = lower.cx.new()?
+    let tout = types.export.run(pkg, std_dir)?
+    let env = tout.env
+    let mut c = lower.cx.new(tout.ar, tout.cx)?
     let mut j = 2usize
     loop {
         match std.env.arg(j) {
