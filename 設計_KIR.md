@@ -1737,6 +1737,34 @@ KIR は単相・SSA で、型にライフタイムがない。そこで領域は
 3. 借用: `Option<&スカラー>` (24.8)、参照を持つ構造体の再借用と再代入、タプルの戻り値の `'static` の照合。
 4. 正しいコードの誤拒否は、今の計測で 0 のままだが、2 の注釈を足すたびに `kir_only_rejects_floor` と `kir_own_linearity_agreement_floor` で確かめる。
 
+### 24.11 kir-only の見逃しを減らす (check/kir-only-lowering、2026-11-15)
+
+24.10 の見逃し (139 件) を、検査側の規則で直せるものから直した。`KSN_BORROWCK=kir-only` の拒否は 95/234 → 112/240 (誤拒否は 0 のまま。`linear_ok/`・参照解・`examples/` で確認)。見逃しは 128 件 (下ろせない unknown 81、下ろせて見逃す 47)。
+
+**1. 注釈の追加 (線形・move)。**
+- `own.use` (`OwnKind::Use`): 読み。move 済みなら E3002。Copy のフィールドの読み、`&x`、借用の受け手 (`&self`) とメソッドの受け手の局所に出す。`own.part` も move 済みの全体の後なら E3002 (以前は部分の move の義務だけ見ていた)。
+- `match` の対象が所有の印を持つ局所なら、値として移さずに読む (`path_peek`) + `use`。非 Copy の束縛をする腕、または対象が線形なら `_` 以外の腕の入口で `consume`。`if let` の省略された else (構文が作る `PWild`) は消費しない (AST と同じく義務が残る)。
+- 効果: `move_match_twice`、`if_let_linear_*`、`move_c_if_*_s` など +12 件。
+
+**2. 借用の運び (`carry`、Option<&スカラー>)。**
+- 注釈 `carry a, b` (`Op::Carry`、unit): 値 b が参照 a の指す先から読まれた値なら、b は a の借用を運ぶ。実行・VM・LLVM・最適化には影響しない。
+- 下ろし: `Some(&x)` (スカラー)、`get` / `first` / `last` (スカラーの要素) で、読んだ値に `carry` を出す。出どころは要素の番地ではなく所有者の場所 (Vec のヘッダ) にした (後の `push` と照らすため)。
+- 検査: 呼び出しの戻り値が引数の借用を運ぶのは、戻り値の型が借用を持ちうるとき (`may_hold`)。`stack.pop()` (`Option<u8>`) が `stack` の借用に見えていた誤拒否を止めた。
+- 検査: 呼び先のヘッダで `&mut` の引数に渡した局所の場所は、生きている借用 (値の運ぶ借用を含む) があれば拒否 (`Req::Access`)。`get` の結果を生かしたまま `push` する形 (`carry_get_then_push`) が拒否される。
+- 残り: `e01_method_chain_borrow` は、借用の出どころが引数 `xs` (`&mut Vec`) の指す先で、局所のスロットではない。排他の規則は局所の場所だけを追うので、見逃す。`option_unwrap_returns_borrow` は 24.8 の残りの原因を調べていない (未了)。
+
+**3. 下ろせない unknown 81 件 (未対応。検査のための注釈だけでは解けない)。** すべて下ろし側 (`kir_lower_*.rs` の `lw.err` / `unsupported`)。
+- 参照を持つ構造体の欄 (`t.H { r: &mut u32 }` の `set` / `get`、約 22 件)、Vec の要素の型 (`alloc.vec.Vec.push` の要素が型表に戻せない、約 6 件)、利用者のメソッドの受け手 (`t.S.into_name` など)、クロージャの引数・戻り値、`&型パラメータ Self`、`Array` の要素、ジェネリクスの単相化 (型引数を持つ関数で下ろしたインスタンスがない)。
+- 注釈だけの下ろし (関数の型を決めずに注釈だけ出す経路) は、型が決まらない関数の本体では作れない。構造体の参照欄とクロージャは、修正プラン 3-1 の下ろしの一般化に含まれる。
+
+**4. 残りの見逃し 47 件 (下ろせて見逃す)。** 線形の注釈の不足が中心。
+- `_` での捨て (`linear_discarded_by_wildcard`、`linear_wild_in_arm`、`linear_in_tuple_dropped` など、約 12 件): `_` の腕・パターンで線形の値の義務が残ることを、パターンごとの型から出す規則が要る (`pat_src_binds` は名前だけを見る)。
+- 一時値の受け手 (`linear_temp_*`、約 8 件)、クロージャの取り込みと呼び出し (`linear_closure_*`、`move_closure_*`、`move_fnonce_*`、約 10 件)、`spawn` の取り込み (2 件)、`for` の束縛 (`move_for_*`、2 件)、字段の部分的な move (`linear_partial_field_leak`、`move_self_field_twice`、約 3 件)。
+- 借用 (6 件): `e01`、`option_unwrap_returns_borrow` (上の 2 の残り)、`hunt_a01_reborrow_field_01` / `reassign_01` (参照を持つ構造体の欄、`let` の再代入)、`lifetime_slot_static_tuple` (タプルの戻り値の `'static` の照合)、`hunt_a16_json_value_doc_drop_escape_01` (`std.json` の `Doc` の解放)。
+- `*_str` (String を移した後の読み、`move_c_if_else_one_str` など 5 件): `s.len()` の受け手の読みに `use` が出ていない。`len` の呼び出しは `mcall` の入口を通らない経路 (`core.mem.drop` の引数) で下ろされている。未了。
+
+**5. 段ごとの扱い。** (1) 見逃し 58 件の分類と、検査側で直せるものを直した (上の 1・2)。(2) unknown 81 件は、注釈だけの下ろしでは解けない (上の 3)。(3) `Option<&スカラー>` は、`Some(&x)` と `get` / `first` / `last` の 2 経路で運ぶようにした。残りの 2 件は別の原因 (上の 2)。
+
 ## 25. `derive [Drop]` の再帰する型 (check/derive-drop、2026-11-14)
 
 - 型表: `derive [Drop]` の型は、`intern_def` が型の組み立ての前に添字を予約し (`AggTab::rec_drop`)、`Box<Self>` のフィールドから自分を指せる (箱は 8 バイトなので中身の配置は要らない)。ほかの再帰 (`Vec<Self>` など) は従来どおり「再帰的な型は対象外」。検査器が `derive [Drop]` の再帰を `Box<Self>` / `Option<Box<Self>>` に限っている (E2051)。KIR は集成体のフィールドに `Option` を置けないので、`Option<Box<Self>>` の欄を持つ型は下ろせずバンドルへ退避する。
@@ -1824,30 +1852,67 @@ apps/todo の報告で挙がった 2 つ: `std.rand.Rng.from_entropy()` が段�
 - 回帰: `cargo test --release` 全件 (1031 本、通過)、`tests/native_ratio.py` (linear_ok 114/114、examples 14/14、perf 8/8。下限 105 を下回らない)、`bench/verify_reference.py` (19 本、bad 0)、`spec/tools/check_all.py` (全件通過)、`examples/*` の `ksn check` (診断 0 件)。
 - 残り: Windows の `rand_s` の経路は、この機械では試せない (コンパイルは未確認)。`from_entropy` の失敗経路 (OS の乱数源が両方とも読めない) も、この機械では起こせないので試していない。
 
-### 24.11 kir-only の見逃しを減らす (check/kir-only-lowering、2026-11-15)
+## 28. フィールド経由の `for` (kir/field-for-str、2026-11-15)
 
-24.10 の見逃し (139 件) を、検査側の規則で直せるものから直した。`KSN_BORROWCK=kir-only` の拒否は 95/234 → 112/240 (誤拒否は 0 のまま。`linear_ok/`・参照解・`examples/` で確認)。見逃しは 128 件 (下ろせない unknown 81、下ろせて見逃す 47)。
+selfhost の試作 (`selfhost/README.md` 9.4 の 3・4) で、構造体のフィールドの Vec を `for` で回す形が下りなかった (E9040 `for の対象は core.iter.range(a, b) か、要素型の分かる Vec の変数 ... だけ`)。局所の Vec の `for` は下りるので、フィールドも同じ形で回す。
 
-**1. 注釈の追加 (線形・move)。**
-- `own.use` (`OwnKind::Use`): 読み。move 済みなら E3002。Copy のフィールドの読み、`&x`、借用の受け手 (`&self`) とメソッドの受け手の局所に出す。`own.part` も move 済みの全体の後なら E3002 (以前は部分の move の義務だけ見ていた)。
-- `match` の対象が所有の印を持つ局所なら、値として移さずに読む (`path_peek`) + `use`。非 Copy の束縛をする腕、または対象が線形なら `_` 以外の腕の入口で `consume`。`if let` の省略された else (構文が作る `PWild`) は消費しない (AST と同じく義務が残る)。
-- 効果: `move_match_twice`、`if_let_linear_*`、`move_c_if_*_s` など +12 件。
+### 28.1 下りるようになった形
 
-**2. 借用の運び (`carry`、Option<&スカラー>)。**
-- 注釈 `carry a, b` (`Op::Carry`、unit): 値 b が参照 a の指す先から読まれた値なら、b は a の借用を運ぶ。実行・VM・LLVM・最適化には影響しない。
-- 下ろし: `Some(&x)` (スカラー)、`get` / `first` / `last` (スカラーの要素) で、読んだ値に `carry` を出す。出どころは要素の番地ではなく所有者の場所 (Vec のヘッダ) にした (後の `push` と照らすため)。
-- 検査: 呼び出しの戻り値が引数の借用を運ぶのは、戻り値の型が借用を持ちうるとき (`may_hold`)。`stack.pop()` (`Option<u8>`) が `stack` の借用に見えていた誤拒否を止めた。
-- 検査: 呼び先のヘッダで `&mut` の引数に渡した局所の場所は、生きている借用 (値の運ぶ借用を含む) があれば拒否 (`Req::Access`)。`get` の結果を生かしたまま `push` する形 (`carry_get_then_push`) が拒否される。
-- 残り: `e01_method_chain_borrow` は、借用の出どころが引数 `xs` (`&mut Vec`) の指す先で、局所のスロットではない。排他の規則は局所の場所だけを追うので、見逃す。`option_unwrap_returns_borrow` は 24.8 の残りの原因を調べていない (未了)。
+- 受け手: `self.f.iter()`、`self.f.as_slice().iter()`、`&self.f`、`&mut self.f`、`x.f.g.iter()` (入れ子)、`Call` の経路の形 (`a.b.iter`) と `MCall` の形の両方。`self` は `&T` / `&mut T` の参照でも、局所の値でもよい。`iter_mut` は規範に無いので対象外。
+- 要素: 構造体 (所有物を持つもの・持たないもの)、`String`、`Vec`、`Copy` の構造体 (`*d` の参照外しも下りる)、スカラー (`usize` など)。
+- 下りないまま残すもの: 所有物の要素を、フィールドから値で回す形 (`for x in self.items` で `items` の要素が `String` など)。借用の先から要素を移せないので、`ksn check` の通らない形であっても E9040 のまま。
 
-**3. 下ろせない unknown 81 件 (未対応。検査のための注釈だけでは解けない)。** すべて下ろし側 (`kir_lower_*.rs` の `lw.err` / `unsupported`)。
-- 参照を持つ構造体の欄 (`t.H { r: &mut u32 }` の `set` / `get`、約 22 件)、Vec の要素の型 (`alloc.vec.Vec.push` の要素が型表に戻せない、約 6 件)、利用者のメソッドの受け手 (`t.S.into_name` など)、クロージャの引数・戻り値、`&型パラメータ Self`、`Array` の要素、ジェネリクスの単相化 (型引数を持つ関数で下ろしたインスタンスがない)。
-- 注釈だけの下ろし (関数の型を決めずに注釈だけ出す経路) は、型が決まらない関数の本体では作れない。構造体の参照欄とクロージャは、修正プラン 3-1 の下ろしの一般化に含まれる。
+### 28.2 実装
 
-**4. 残りの見逃し 47 件 (下ろせて見逃す)。** 線形の注釈の不足が中心。
-- `_` での捨て (`linear_discarded_by_wildcard`、`linear_wild_in_arm`、`linear_in_tuple_dropped` など、約 12 件): `_` の腕・パターンで線形の値の義務が残ることを、パターンごとの型から出す規則が要る (`pat_src_binds` は名前だけを見る)。
-- 一時値の受け手 (`linear_temp_*`、約 8 件)、クロージャの取り込みと呼び出し (`linear_closure_*`、`move_closure_*`、`move_fnonce_*`、約 10 件)、`spawn` の取り込み (2 件)、`for` の束縛 (`move_for_*`、2 件)、字段の部分的な move (`linear_partial_field_leak`、`move_self_field_twice`、約 3 件)。
-- 借用 (6 件): `e01`、`option_unwrap_returns_borrow` (上の 2 の残り)、`hunt_a01_reborrow_field_01` / `reassign_01` (参照を持つ構造体の欄、`let` の再代入)、`lifetime_slot_static_tuple` (タプルの戻り値の `'static` の照合)、`hunt_a16_json_value_doc_drop_escape_01` (`std.json` の `Doc` の解放)。
-- `*_str` (String を移した後の読み、`move_c_if_else_one_str` など 5 件): `s.len()` の受け手の読みに `use` が出ていない。`len` の呼び出しは `mcall` の入口を通らない経路 (`core.mem.drop` の引数) で下ろされている。未了。
+- `kir_lower_coll.rs` の `field_vec_for`: 受け手の木 (`strip_seq_wrap` で `&` / `iter` / `as_slice` などの包みを外す) を名前の並びにし、先頭の局所のスロットから `field_addr` を連ねてフィールドのヘッダのアドレスを取る。ヘッダは `Ref` 型なので、`Seq::Hdr` に渡す前に `ptr` へ bitcast する (`MemLoad` は `ptr` の被演算子だけを取る)。以降は局所の Vec と同じ `counted` へ流す。
+- 要素の型は型表 (`own::field_src`) から取る。`.iter()` の受け手 (`b.names`) には木に型の記録が無い (`src_ty` が引けない) ので、構造体の定義の列をたどる。
+- 反復中の変更の検査は、名前だけでなくフィールドの経路で行う (`body_mutates_place`): `self.count = ..` は `self.items` の反復を変えないので通し、`self.items.push(..)` や `self.bump()` (`self` のメソッドで、経路の前の並びが重なる) は止める。`self.bump()` のような読むだけとは限らない呼び出しは、安全側に止める (変更しないメソッドでも止まる)。
+- `counted` の変更: 借用で回すスカラー・集成体の要素は、既存の `load_elem` (`Op::Load`) で値として束縛する。`&mut` の束縛だけは参照。`Op::Load` は集成体を読めるので、値で回す所有物のない集成体も下りる (`examples/tour` の `for s in shapes` が依る)。
 
-**5. 段ごとの扱い。** (1) 見逃し 58 件の分類と、検査側で直せるものを直した (上の 1・2)。(2) unknown 81 件は、注釈だけの下ろしでは解けない (上の 3)。(3) `Option<&スカラー>` は、`Some(&x)` と `get` / `first` / `last` の 2 経路で運ぶようにした。残りの 2 件は別の原因 (上の 2)。
+### 28.3 試験
+
+- `stage0/tests/kir_field_for_str.rs`: フィールドの 8 形 (構造体・`String`・`Vec`・`Copy` の構造体と `*d`・入れ子・`&mut self` の変更・`self` の別フィールドへの代入) が、`ksn run` と `ksn build --release` のネイティブの標準出力・終了コードで一致する。反復中の Vec の変更は、ネイティブの実行ファイルを作らない (今は借用の検査 E3010 が止める)。
+
+## 29. 文字列 API の下ろし (kir/field-for-str、2026-11-15)
+
+`spec/stdlib/core/str.sig` の全メソッドを、KIR (ネイティブ) で下りるかどうかで調べた。ネイティブの実行ファイルを作って、標準出力が `ksn run` と一致するかを見た (`stage0/tests/kir_field_for_str.rs` の `str_api_native_matches_run`)。
+
+### 29.1 表 (下ろしの前後)
+
+| メソッド | 下ろしの前 | 下ろしの後 | 下ろし方 |
+| --- | --- | --- | --- |
+| `len` / `is_empty` | 下りる | 下りる | 組み込み |
+| `as_bytes` | 下りる | 下りる | 組み込み |
+| `contains` | 下りる | 下りる | 組み込み |
+| `starts_with` / `ends_with` | 下りる | 下りる | 組み込み (`kir_lower_str.rs`) |
+| `eq_ignore_ascii_case` | 下りる | 下りる | 組み込み |
+| `find` | 下りる | 下りる | 組み込み |
+| `rfind` | **下りない** (E9040) | 下りる | Kasane 版 `core.str.rfind` (`spec/stdlib/core/str.ksnl`) を単相化 |
+| `from_utf8` | 下りる | 下りる | 組み込み |
+| `split_at` / `split_once` | 下りる | 下りる | 組み込み |
+| `strip_prefix` / `strip_suffix` | 下りる | 下りる | 組み込み |
+| `trim` / `trim_start` / `trim_end` | 下りる | 下りる | 組み込み |
+| `split` (`for` の形) | 下りる | 下りる | `kir_lower_for.rs` |
+| `chars` (`for` の形) | 下りる | 下りる | `kir_lower_for.rs` |
+| `split` (値。`let mut it = s.split(p)` と `it.next()`) | **下りない** (E9040) | 未対応 (29.3) | — |
+| `chars` (値)・`Chars::next`・`Split::next` | **下りない** (E9040) | 未対応 (29.3) | — |
+
+規範に無いので足していない: `rsplit_once`、`char_indices`、`replace`、`to_ascii_lowercase` (`str.sig` に無い)。
+
+### 29.2 `rfind` の下ろし
+
+- Kasane 版 (`spec/stdlib/core/str.ksnl` の `core.str.rfind`) を、`kir_lower_ext.rs` の `kasane_call` で単相化して呼ぶ。受け手は `&str` の fat。KIR の組み込みは増やしていない (修正プラン段階 3 の方針)。`str_method_call` (`kir_lower_str.rs`) から `str_kasane_call` で呼ぶ。
+- Kasane 版は添字 (`[]`) を使わない (`panics never` の宣言に反するため `get` で比べる)。空のパターンは `Some(len)` (木走査の Rust と同じ)。
+- `find_def` / `kasane_call` は `pub(super)` にした (`kir_lower_str.rs` から呼ぶため)。
+
+### 29.3 値の反復子 (`split` / `chars` の値) は未対応
+
+値の `split` / `chars` (`let mut it = s.split(p)` と `it.next()`) は、Kasane で書いた `Split.next` / `Chars.next` で下ろせることを一度確かめた (構造体の値を返す形と、`&mut self` の `next` は、利用者の構造体と同じ仕組みで下りる)。しかし `stage0/tests/kir_native.rs` の `a_split_iterator_held_in_a_variable_is_interpreter_only` が、この形はネイティブに退く (インタプリタだけ) と固定している。その試験を変えるのは別の判断なので、今回は入れていない。入れるには、その試験の期待を「ネイティブで同じ値を返す」に変える必要がある。
+
+- 理由の所在: 試験の書き換えは今回の制約 (他のテストを書き換えない) に反する。
+- 下ろしの中身 (参考): `Split.next` の戻り値は省略形 `Option<&str>` にする (明示の `'a` は `ksn check-stdlib` の E3021 が「省略できる」と判定する: 入力の参照が 1 つで戻り値が参照なら、省略が正規形)。`let a = it.next()` と `it.next()` を続けて使う形も検査・木走査・ネイティブで通ることは確かめた。`Split` / `Chars` は値の型なので `STD_TYPES` (`kir_lower_agg.rs`) に入れる必要がある。`impl` 行は型のメソッドを本体付きで書くので、`str.sig` から `str.ksnl` へ移す (`hash.ksnl` の `Fnv64` と同じ。sig と ksnl の両方に書くと `xref` が重複と判定する)。
+
+### 29.4 試験
+
+- `stage0/tests/kir_field_for_str.rs`: `rfind` (空のパターン・複数回・重なり・先頭・全体一致・無い・長いパターン・空の中の空)、`split` と `chars` の `for` の形 (末尾・先頭・連続・空の文字列・空の区切り・長い区切り・断片の長さ、UTF-8 の 1〜4 バイト `aé日😀`、空、ASCII)、`contains` / `find`。`run` とネイティブの出力が一致し、`NG` が無い。
+- 検査: `python3 -I spec/tools/check_all.py` が全件通過。`ksn check-stdlib` が診断 0 件 (`str.ksnl` の `rfind` を含む)。
