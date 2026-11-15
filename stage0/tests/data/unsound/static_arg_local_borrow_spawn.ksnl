@@ -1,0 +1,23 @@
+// expect: E2037
+fn t.id(r: &'static str) -> &'static str uses [] panics never
+    r
+end t.id
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    alloc.string.String.new(std.alloc.SYSTEM)
+end t.mk
+
+fn t.start() -> std.thread.JoinHandle<usize, std.alloc.System> uses [alloc, thread] panics may
+    let s = t.mk()
+    let r = t.id(s.as_str())
+    let spawned = std.thread.spawn(
+        std.alloc.SYSTEM,
+        fn() -> usize capture [move r] {
+            r.len()
+        },
+    )
+    match spawned {
+        Ok(h) => h
+        Err(_e) => core.panic.panic("spawn failed")
+    }
+end t.start
