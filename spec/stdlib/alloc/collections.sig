@@ -2,26 +2,26 @@ type alloc.collections.BtreeMap[K: core.cmp.Ord, V, A: alloc.alloc.Allocator] pu
     entries: alloc.raw.Buf<alloc.collections.MapEntry<K, V>, A>
 end alloc.collections.BtreeMap
 
-type alloc.collections.MapEntry[K, V] pub
-    key: K
-    value: V
-end alloc.collections.MapEntry
-
-type alloc.collections.HashMap[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator] pub
-    cells: alloc.raw.Buf<alloc.collections.HashCell<K, V>, A>
-    slots: usize
-end alloc.collections.HashMap
-
 enum alloc.collections.HashCell[K, V] pub
     Empty
     Index(usize)
     Entry(usize, K, V)
 end alloc.collections.HashCell
 
+type alloc.collections.HashMap[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator] pub
+    cells: alloc.raw.Buf<alloc.collections.HashCell<K, V>, A>
+    slots: usize
+end alloc.collections.HashMap
+
 type alloc.collections.HashMapIter['a, K, V] pub
     cells: &'a [alloc.collections.HashCell<K, V>]
     position: usize
 end alloc.collections.HashMapIter
+
+type alloc.collections.MapEntry[K, V] pub
+    key: K
+    value: V
+end alloc.collections.MapEntry
 
 type alloc.collections.VecDeque[T, A: alloc.alloc.Allocator] pub
     allocator: A

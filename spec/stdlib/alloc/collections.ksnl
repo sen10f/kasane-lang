@@ -434,6 +434,28 @@ fn alloc.collections.HashMap.rebuild[K: core.cmp.Eq + core.hash.Hash, V, A: allo
     Ok(())
 end alloc.collections.HashMap.rebuild
 
+fn alloc.collections.HashMap.reindex[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>) -> () uses [] panics never
+    let slots = self.slots
+    let total = self.cells.len()
+    let mut i = 0usize
+    while i < slots {
+        match self.cells.get_mut(i) {
+            Some(slot) => {
+                *slot = alloc.collections.HashCell.Empty
+            }
+            None => {
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let mut p = slots
+    while p < total {
+        let h = self.hash_at(p)
+        self.place(h, p)
+        p = p.wrapping_add(1usize)
+    }
+end alloc.collections.HashMap.reindex
+
 fn alloc.collections.HashMap.remove[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, key: &K) -> Option<V> uses [] panics never pub
     match self.find(key) {
         Some(p) => {
@@ -462,28 +484,6 @@ fn alloc.collections.HashMap.remove[K: core.cmp.Eq + core.hash.Hash, V, A: alloc
         }
     }
 end alloc.collections.HashMap.remove
-
-fn alloc.collections.HashMap.reindex[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>) -> () uses [] panics never
-    let slots = self.slots
-    let total = self.cells.len()
-    let mut i = 0usize
-    while i < slots {
-        match self.cells.get_mut(i) {
-            Some(slot) => {
-                *slot = alloc.collections.HashCell.Empty
-            }
-            None => {
-            }
-        }
-        i = i.wrapping_add(1usize)
-    }
-    let mut p = slots
-    while p < total {
-        let h = self.hash_at(p)
-        self.place(h, p)
-        p = p.wrapping_add(1usize)
-    }
-end alloc.collections.HashMap.reindex
 
 fn alloc.collections.HashMap.reverse_range[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, lo: usize, hi: usize) -> () uses [] panics never
     match self.cells.as_mut_slice().sub_mut(lo, hi) {
