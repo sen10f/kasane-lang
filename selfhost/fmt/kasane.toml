@@ -1,0 +1,8 @@
+[package]
+name = "fmt"
+version = "0.1.0"
+edition = 1
+entry = "fmt.main"
+
+[dependencies]
+parse = { path = "../parse" }
