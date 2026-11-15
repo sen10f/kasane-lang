@@ -292,6 +292,68 @@ fn full_check(root: &Path, rep: &mut Report, run_mode: bool) -> Result<(Loaded, 
     full_check_opts(root, rep, run_mode, false)
 }
 
+/// `ksn test` の検査: 本体に加えて、`src/` の `///` のコード例 (```` ```ksn ````) を `tests/` の統合テストとして読み込む (3.2)。
+/// 例は `tests/doc_<番号>.ksnl` の仮想ファイルになり、その中の診断は元の囲みの行 (`src/...:行`) に直して出す。
+fn full_check_with_examples(root: &Path, rep: &mut Report) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
+    let mut l = load_all(root)?;
+    let testsdir = norm(&l.pkg.root.join("tests"));
+    let pkg = l.pkg.name.clone();
+    // (仮想ファイル, 元のファイル, 仮想ファイルでの本文の先頭行, 元の本文の先頭行)
+    let mut origins: Vec<(String, String, usize, usize)> = vec![];
+    let mut extra: Vec<Source> = vec![];
+    let mut k = 0;
+    for s in &l.pkg.sources {
+        if s.is_test || s.error.is_some() {
+            continue;
+        }
+        for ex in crate::doclink::examples(&s.lines) {
+            k += 1;
+            let vpath = format!("{}/doc_{}.ksnl", testsdir, k);
+            let name = format!("{}.tests.doc_{}.test_example", pkg, k);
+            // 本文がモジュールの名前を使うときだけ import を付ける (使わない import は E1020)。
+            let tail = s.module.rsplit('.').next().unwrap_or("").to_string();
+            let uses_mod = ex.body.iter().any(|x| {
+                x.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).any(|t| {
+                    t == s.module || t == tail || t.starts_with(&format!("{}.", s.module)) || t.starts_with(&format!("{}.", tail))
+                })
+            });
+            let mut text = String::new();
+            let mut head = 2;
+            if uses_mod {
+                text.push_str(&format!("import {}\n\n", s.module));
+                head += 2;
+            }
+            text.push_str(&format!("// {}:{}\n", rel(&s.path), ex.line));
+            text.push_str(&format!("test {}\n", name));
+            for line in &ex.body {
+                if line.trim().is_empty() {
+                    text.push('\n');
+                } else {
+                    text.push_str(&format!("    {}\n", line));
+                }
+            }
+            text.push_str(&format!("end {}\n", name));
+            origins.push((vpath.clone(), rel(&s.path), head + 1, ex.line + 1));
+            extra.push(Source::from_text_test(&vpath, &testsdir, &pkg, text));
+        }
+    }
+    l.pkg.sources.extend(extra);
+    let (l, prog, user) = full_check_loaded(l, rep, false, false)?;
+    for it in rep.items.iter_mut() {
+        let Some(f) = it.file.clone() else { continue };
+        if let Some((_, orig, vstart, ostart)) = origins.iter().find(|o| rel(&o.0) == f) {
+            it.file = Some(orig.clone());
+            if it.line >= *vstart {
+                it.line = ostart + (it.line - vstart);
+            } else {
+                it.line = *ostart;
+            }
+            it.message = format!("in a doc example: {}", it.message);
+        }
+    }
+    Ok((l, prog, user))
+}
+
 /// `take_std` のとき、返す `Loaded` の標準ライブラリの定義は空 (`Program` に移した)。
 fn full_check_opts(root: &Path, rep: &mut Report, run_mode: bool, take_std: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
     // 文法の構築 (正規表現のコンパイルが重い) は、定義単位の再利用が外れたときに初めてやる (grammar.rs)。
@@ -304,6 +366,16 @@ fn full_check_opts(root: &Path, rep: &mut Report, run_mode: bool, take_std: bool
 fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: bool) -> Result<(Loaded, Option<Program>, Vec<usize>), ProjectError> {
     let grammar = Grammar::new();
     check_lock(&l.pkg, &l.deps, rep);
+    // ``[`FQN`]`` のリンクは読み込んだ全定義に解決しなければならない (3.2、E1125)。
+    {
+        let known = crate::doclink::Known::of_loaded(&l);
+        for s in &l.pkg.sources {
+            let fl = rel(&s.path);
+            for (ln, f) in crate::doclink::unresolved(&s.lines, &known) {
+                rep.add("E1125", &format!("doc link to unknown definition `{}`", f), Some(&fl), ln, 1, true);
+            }
+        }
+    }
     // 標準ライブラリを検査するときは `spec/stdlib` 自体がソースルート (モジュール名がファイルの位置から決まる)。
     let srcroot = if l.pkg.source == STDLIB_SOURCE { norm(&l.pkg.root) } else { norm(&l.pkg.root.join("src")) };
     crate::vm::tick("grammar_new");
@@ -378,7 +450,10 @@ fn full_check_loaded(mut l: Loaded, rep: &mut Report, run_mode: bool, take_std: 
                     }
                 };
                 let formatted = crate::fmt::format_source(&s.text, &s.path);
+                // `///` の行を落とす整形 (付く定義のない説明など) は、正規形とみなさない (E0002 のまま)。
+                let docs = |t: &str| t.lines().filter(|l| l.starts_with("///")).count();
                 let skip = formatted != s.text
+                    && docs(&formatted) == docs(&s.text)
                     && !s.text.contains('\t')
                     && run_lint(&formatted, &mut memo).is_empty()
                     && (if use_cache { grammar.check_memo(&formatted, &mut memo.gram) } else { grammar.check(&formatted) }).0;
@@ -1405,10 +1480,13 @@ fn cmd_test(args: &[String]) -> i32 {
         }
     };
     let mut both = false;
+    let mut doc_only = false;
     let mut prefix: Option<String> = None;
     for a in &args {
         if a == "--both" {
             both = true;
+        } else if a == "--doc" {
+            doc_only = true;
         } else {
             prefix = Some(a.clone());
         }
@@ -1422,7 +1500,7 @@ fn cmd_test(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let (l, prog, user) = match full_check(&root, &mut rep, false) {
+    let (l, prog, user) = match full_check_with_examples(&root, &mut rep) {
         Ok(x) => x,
         Err(e) => {
             rep.add(&e.code, &e.msg, None, 1, 1, true);
@@ -1435,6 +1513,10 @@ fn cmd_test(args: &[String]) -> i32 {
         return 1;
     }
     rep.flush();
+    if doc_only {
+        // `--doc`: `src/` の `///` のコード例 (tests/ の仮想ファイル doc_<番号>.ksnl) だけを走らせる (3.2)。
+        prefix = Some(format!("{}.tests.doc_", l.pkg.name));
+    }
     let prog = Rc::new(prog.unwrap());
     let mut tests: Vec<usize> = user
         .iter()
@@ -1926,6 +2008,77 @@ fn cmd_sig(args: &[String]) -> i32 {
     }
 }
 
+/// `build_program` が定義を登録した順 (標準ライブラリ → 依存 → 本体) に、文書化する定義を対応づける。
+/// 戻り値は (標準ライブラリの定義, 本体の定義)。
+fn doc_items<'a>(l: &'a Loaded, prog: &'a Program) -> (Vec<crate::doc::Item<'a>>, Vec<crate::doc::Item<'a>>) {
+    let mut std_items = vec![];
+    let mut pkg_items = vec![];
+    let mut k = 0;
+    for s in &l.std {
+        for _ in &s.defs {
+            std_items.push(crate::doc::Item { d: &prog.defs[k], lines: &s.lines });
+            k += 1;
+        }
+    }
+    for dp in &l.deps {
+        for s in &dp.sources {
+            k += s.defs.len();
+        }
+    }
+    for s in &l.pkg.sources {
+        for _ in &s.defs {
+            pkg_items.push(crate::doc::Item { d: &prog.defs[k], lines: &s.lines });
+            k += 1;
+        }
+    }
+    (std_items, pkg_items)
+}
+
+/// `ksn index [--std]`: LLM 向けの索引。1 定義 1 行の JSON (FQN のバイト順)。仕様 7 章。
+fn cmd_index(args: &[String]) -> i32 {
+    for a in args {
+        if a != "--std" {
+            eprintln!("ksn: usage: ksn index [--std]");
+            return 2;
+        }
+    }
+    let with_std = args.iter().any(|a| a == "--std");
+    let root = match find_root() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let l = match load_all(&root) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("ksn: {}: {}", e.code, e.msg);
+            return 1;
+        }
+    };
+    let (prog, _) = build_program(&l);
+    let (std_items, pkg_items) = doc_items(&l, &prog);
+    let mut module_docs = std::collections::BTreeMap::new();
+    let mut srcs: Vec<&crate::project::Source> = l.pkg.sources.iter().collect();
+    if with_std {
+        srcs.extend(l.std.iter());
+    }
+    for s in srcs {
+        if let Some(md) = crate::doclink::module_doc(&s.lines) {
+            module_docs.insert(s.module.clone(), (rel(&s.path), s.lines.len(), md));
+        }
+    }
+    let mut items = pkg_items;
+    if with_std {
+        items.extend(std_items);
+    }
+    for line in crate::doc::index(&items, &module_docs) {
+        println!("{}", line);
+    }
+    0
+}
+
 /// `ksn doc [--std] [--private]`: 静的 HTML の API ドキュメントを `target/doc/` に生成する (生成器は doc.rs)。
 fn cmd_doc(args: &[String]) -> i32 {
     for a in args {
@@ -1951,36 +2104,35 @@ fn cmd_doc(args: &[String]) -> i32 {
         }
     };
     let (prog, _) = build_program(&l);
-    // build_program は std -> 依存 -> 本体の順に定義を登録する。同じ順で推論済みの定義と対応づける。
-    let mut std_items = vec![];
-    let mut pkg_items = vec![];
-    let mut k = 0;
-    for s in &l.std {
-        for _ in &s.defs {
-            std_items.push(crate::doc::Item { d: &prog.defs[k], lines: &s.lines });
-            k += 1;
+    let (std_items, pkg_items) = doc_items(&l, &prog);
+    // ``[`FQN`]`` は読み込んだ全定義に対して解決する。解決しないものはページを書かずに失敗する (E1125、3.2)。
+    let known = crate::doclink::Known::of_loaded(&l);
+    let doc_sources: Vec<&crate::project::Source> = if std_only { l.std.iter().collect() } else { l.pkg.sources.iter().collect() };
+    let mut bad = 0;
+    for s in &doc_sources {
+        for (ln, f) in crate::doclink::unresolved(&s.lines, &known) {
+            eprintln!("{}:{}:1: E1125: doc link to unknown definition `{}`", rel(&s.path), ln, f);
+            bad += 1;
         }
     }
-    for dp in &l.deps {
-        for s in &dp.sources {
-            k += s.defs.len();
-        }
+    if bad > 0 {
+        return 1;
     }
-    for s in &l.pkg.sources {
-        for _ in &s.defs {
-            pkg_items.push(crate::doc::Item { d: &prog.defs[k], lines: &s.lines });
-            k += 1;
+    let mut module_docs = std::collections::BTreeMap::new();
+    for s in &doc_sources {
+        if let Some(md) = crate::doclink::module_doc(&s.lines) {
+            module_docs.insert(s.module.clone(), md);
         }
     }
     let out = root.join("target").join("doc");
     let std_dir = out.join("std");
     let (dir, pages) = if std_only {
-        let cfg = crate::doc::Config { title: "標準ライブラリ", is_std: true, private, std_link: None };
+        let cfg = crate::doc::Config { title: "標準ライブラリ", is_std: true, private, std_link: None, known: &known, module_docs: &module_docs };
         (std_dir, crate::doc::generate(&std_items, &cfg))
     } else {
         let name = l.pkg.name.clone();
         let link = if std_dir.join("index.html").exists() { Some(&std_items[..]) } else { None };
-        let cfg = crate::doc::Config { title: &name, is_std: false, private, std_link: link };
+        let cfg = crate::doc::Config { title: &name, is_std: false, private, std_link: link, known: &known, module_docs: &module_docs };
         (out, crate::doc::generate(&pkg_items, &cfg))
     };
     if let Err(e) = fs::create_dir_all(&dir) {
@@ -3008,6 +3160,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         "get" => cmd_get(&rest),
         "sig" => cmd_sig(&rest),
         "doc" => cmd_doc(&rest),
+        "index" => cmd_index(&rest),
         "refs" => cmd_refs(&rest),
         "rename" => cmd_rename(&rest),
         "fmt" => cmd_fmt(&rest),
@@ -3030,7 +3183,7 @@ pub fn main_cli(args: Vec<String>) -> i32 {
         }
         _ => {
             eprintln!(
-                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|refs|rename|explain|lsp|update|vendor> [args]"
+                "usage: ksn <new|check|fix|todo|context|fmt|run|test|debug|dap|build|get|sig|doc|index|refs|rename|explain|lsp|update|vendor> [args]"
             );
             2
         }

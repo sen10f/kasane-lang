@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::doclink::{self, Block, Inline, Known};
 use crate::program::Def;
 
 /// 1 つの定義とそのソース行。`d` は効果推論済みの定義。
@@ -24,6 +25,10 @@ pub struct Config<'a> {
     pub private: bool,
     /// 標準ライブラリのページへリンクするときの定義群 (生成済みのときだけ与える)。
     pub std_link: Option<&'a [Item<'a>]>,
+    /// ``[`FQN`]`` の解決に使う、読み込んだ全定義 (パッケージ・依存・標準ライブラリ)。
+    pub known: &'a Known,
+    /// モジュール名 -> モジュールの説明 (3.2。ファイル先頭の `///` と空行 1 行)。
+    pub module_docs: &'a BTreeMap<String, Vec<String>>,
 }
 
 fn esc(s: &str) -> String {
@@ -46,11 +51,11 @@ fn sanitize(s: &str) -> String {
     s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '_' }).collect()
 }
 
-fn is_pub(d: &Def) -> bool {
+pub(crate) fn is_pub(d: &Def) -> bool {
     d.header.split_whitespace().last() == Some("pub")
 }
 
-fn def_kind(d: &Def) -> &'static str {
+pub(crate) fn def_kind(d: &Def) -> &'static str {
     match d.kw.as_str() {
         "fn" => "fn",
         "type" => "type",
@@ -83,6 +88,9 @@ struct Links {
     /// 短い名前 (プレリュード相当) -> FQN。標準ライブラリで一意なものだけ。
     short_own: BTreeMap<String, String>,
     short_other: BTreeMap<String, String>,
+    /// ``[`FQN`]`` のリンク先: 文書化される定義 (anchor は定義の名前) とモジュール (anchor は空)。
+    fqn_own: BTreeMap<String, Target>,
+    fqn_other: BTreeMap<String, Target>,
 }
 
 fn type_index(items: &[Item], private: bool) -> BTreeMap<String, Target> {
@@ -114,9 +122,49 @@ struct Ctx<'a> {
     links: &'a Links,
     cur_module: &'a str,
     is_std: bool,
+    known: &'a Known,
 }
 
 impl Ctx<'_> {
+    /// FQN (解決済み) のページへのリンク。文書化されていなければ `None` (文字として出す)。
+    fn href_fqn(&self, fqn: &str) -> Option<String> {
+        let (t, other) = match self.links.fqn_own.get(fqn) {
+            Some(t) => (t, false),
+            None => (self.links.fqn_other.get(fqn)?, true),
+        };
+        let file = if other { format!("std/{}", page_file(&t.module)) } else { page_file(&t.module) };
+        Some(if t.anchor.is_empty() {
+            file
+        } else if !other && t.module == self.cur_module {
+            format!("#{}", t.anchor)
+        } else {
+            format!("{}#{}", file, t.anchor)
+        })
+    }
+
+    /// ``[`FQN`]`` の書き方 (FQN か一意な短い名前) からリンク先を得る。
+    fn link_href(&self, tok: &str) -> Option<String> {
+        let f = self.known.resolve(tok)?;
+        self.href_fqn(&f)
+    }
+
+    /// 本文 1 行を HTML にする (3.2 の部分集合。文字は必ずエスケープする)。
+    fn inline_html(&self, line: &str) -> String {
+        let mut o = String::new();
+        for x in doclink::inline(line) {
+            match x {
+                Inline::Text(t) => o.push_str(&esc(&t)),
+                Inline::Code(c) => o.push_str(&format!("<code>{}</code>", esc(&c))),
+                Inline::Strong(s) => o.push_str(&format!("<strong>{}</strong>", esc(&s))),
+                Inline::Link(f) => match self.link_href(&f) {
+                    Some(h) => o.push_str(&format!("<a href=\"{}\"><code>{}</code></a>", esc(&h), esc(&f))),
+                    None => o.push_str(&format!("<code>{}</code>", esc(&f))),
+                },
+            }
+        }
+        o
+    }
+
     fn href(&self, fqn: &str) -> Option<String> {
         let (t, other) = if let Some(t) = self.links.own.get(fqn) {
             (t, false)
@@ -185,7 +233,7 @@ impl Ctx<'_> {
 }
 
 // ------------------------------------------------------------ ドキュメントコメント
-fn doc_lines(it: &Item) -> Vec<String> {
+pub(crate) fn doc_lines(it: &Item) -> Vec<String> {
     let mut out = vec![];
     let mut i = it.d.line as isize - 2;
     while i >= 0 {
@@ -201,79 +249,34 @@ fn doc_lines(it: &Item) -> Vec<String> {
     out
 }
 
-fn inline_md(s: &str) -> String {
-    let e = esc(s);
-    let parts: Vec<&str> = e.split('`').collect();
-    if parts.len() % 2 == 0 {
-        return e;
-    }
-    let mut o = String::new();
-    for (k, p) in parts.iter().enumerate() {
-        if k % 2 == 1 {
-            o.push_str("<code>");
-            o.push_str(p);
-            o.push_str("</code>");
-        } else {
-            o.push_str(p);
-        }
-    }
-    o
-}
-
-fn render_doc(lines: &[String]) -> String {
+/// 本文 (3.2 の部分集合) を HTML にする。コード例 (```` ```ksn ````) は例として印を付ける。
+fn render_doc(lines: &[String], ctx: &Ctx) -> String {
     if lines.is_empty() {
         return String::new();
     }
     let mut o = String::from("<div class=\"doc\">");
-    let mut para: Vec<String> = vec![];
-    let mut in_list = false;
-    let mut i = 0;
-    let flush = |para: &mut Vec<String>, o: &mut String| {
-        if !para.is_empty() {
-            o.push_str(&format!("<p>{}</p>", para.join("\n")));
-            para.clear();
-        }
-    };
-    while i < lines.len() {
-        let l = &lines[i];
-        if l.trim_start().starts_with("```") {
-            flush(&mut para, &mut o);
-            if in_list {
-                o.push_str("</ul>");
-                in_list = false;
+    for b in doclink::blocks(lines) {
+        match b {
+            Block::Para(ls) => {
+                let ps: Vec<String> = ls.iter().map(|l| ctx.inline_html(l)).collect();
+                o.push_str(&format!("<p>{}</p>", ps.join("\n")));
             }
-            let mut code = vec![];
-            i += 1;
-            while i < lines.len() && !lines[i].trim_start().starts_with("```") {
-                code.push(esc(&lines[i]));
-                i += 1;
-            }
-            o.push_str(&format!("<pre><code>{}</code></pre>", code.join("\n")));
-        } else if let Some(r) = l.strip_prefix("- ") {
-            flush(&mut para, &mut o);
-            if !in_list {
+            Block::List(items) => {
                 o.push_str("<ul>");
-                in_list = true;
-            }
-            o.push_str(&format!("<li>{}</li>", inline_md(r)));
-        } else if l.trim().is_empty() {
-            flush(&mut para, &mut o);
-            if in_list {
+                for it in items {
+                    o.push_str(&format!("<li>{}</li>", ctx.inline_html(&it)));
+                }
                 o.push_str("</ul>");
-                in_list = false;
             }
-        } else {
-            if in_list {
-                o.push_str("</ul>");
-                in_list = false;
+            Block::Fence { info, lines } => {
+                let code: Vec<String> = lines.iter().map(|l| esc(l)).collect();
+                if info == "ksn" {
+                    o.push_str(&format!("<pre class=\"example\"><code>{}</code></pre>", code.join("\n")));
+                } else {
+                    o.push_str(&format!("<pre><code>{}</code></pre>", code.join("\n")));
+                }
             }
-            para.push(inline_md(l));
         }
-        i += 1;
-    }
-    flush(&mut para, &mut o);
-    if in_list {
-        o.push_str("</ul>");
     }
     o.push_str("</div>");
     o
@@ -387,7 +390,7 @@ fn impl_type_of(d: &Def) -> String {
     after.chars().take_while(|c| is_ident(*c) || *c == '.').collect()
 }
 
-fn owner_of(name: &str) -> Option<&str> {
+pub(crate) fn owner_of(name: &str) -> Option<&str> {
     name.rsplit_once('.').map(|x| x.0)
 }
 
@@ -436,7 +439,7 @@ fn def_block(
     if d.has_impls {
         out.push_str(&format!("<p class=\"note\">実装: <code>impls {}</code></p>", ctx.linkify(&d.impls_trait, "")));
     }
-    out.push_str(&render_doc(&doc_lines(it)));
+    out.push_str(&render_doc(&doc_lines(it), ctx));
     if d.kw == "trait" {
         if let Some(ts) = g.impls_by_trait.get(&d.name) {
             out.push_str("<div class=\"impls\"><h5>実装している型</h5><ul>");
@@ -460,7 +463,7 @@ fn def_block(
     }
 }
 
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut o = String::from("\"");
     for c in s.chars() {
         match c {
@@ -556,7 +559,25 @@ pub fn generate(items: &[Item], cfg: &Config) -> Pages {
     };
     let short_own = if cfg.is_std { short_index(&own, false) } else { BTreeMap::new() };
     let short_other = short_index(&other, true);
-    let links = Links { own, other, short_own, short_other };
+    // FQN のリンク先: 文書化される定義とモジュール。標準ライブラリは公開の定義だけ。
+    let fqn_targets = |its: &[&Item], only_pub: bool| {
+        let mut m: BTreeMap<String, Target> = BTreeMap::new();
+        for it in its {
+            let d = it.d;
+            if def_kind(d) != "" && (!only_pub || is_pub(d)) {
+                m.insert(d.name.clone(), Target { module: d.module.clone(), anchor: sanitize(&d.name) });
+            }
+            m.entry(d.module.clone()).or_insert(Target { module: d.module.clone(), anchor: String::new() });
+        }
+        m
+    };
+    let own_items: Vec<&Item> = items.iter().filter(|i| visible(i.d)).collect();
+    let fqn_own = fqn_targets(&own_items, false);
+    let fqn_other = match cfg.std_link {
+        Some(s) => fqn_targets(&s.iter().collect::<Vec<_>>(), true),
+        None => BTreeMap::new(),
+    };
+    let links = Links { own, other, short_own, short_other, fqn_own, fqn_other };
 
     // グローバル情報 (impl / test)
     let mut g = Global { impls_by_type: BTreeMap::new(), impls_by_trait: BTreeMap::new(), tests: BTreeMap::new() };
@@ -620,9 +641,12 @@ pub fn generate(items: &[Item], cfg: &Config) -> Pages {
 
     // 各モジュールのページ
     for (mn, m) in &mods {
-        let ctx = Ctx { links: &links, cur_module: mn, is_std: cfg.is_std };
+        let ctx = Ctx { links: &links, cur_module: mn, is_std: cfg.is_std, known: cfg.known };
         let mut uniq = Unique(BTreeSet::new());
         let mut body = format!("<h1>モジュール {}</h1>", esc(mn));
+        if let Some(md) = cfg.module_docs.get(mn) {
+            body.push_str(&render_doc(md, &ctx));
+        }
         // 目次
         body.push_str("<nav class=\"toc\"><ul>");
         for it in &m.items {
@@ -722,4 +746,65 @@ fn owner_in<'a>(d: &'a Def, m: &Module) -> Option<&'a str> {
     }
     let o = owner_of(&d.name)?;
     m.items.iter().any(|x| x.d.name == o && matches!(x.d.kw.as_str(), "type" | "enum" | "trait")).then_some(o)
+}
+
+/// LLM 向けの索引 (仕様 7 章 `ksn index`)。1 定義 1 行の JSON を、FQN のバイト順 (同じ FQN は種別順) に返す。
+/// `items` の `test` 定義は、対象の定義の `tests` 欄に入る。`module_docs` は、モジュールの説明があるモジュール
+/// (モジュール名 -> (ファイル, 行数, 本文))。行番号は呼び出しのたびに計算した値。
+pub fn index(items: &[Item], module_docs: &BTreeMap<String, (String, usize, Vec<String>)>) -> Vec<String> {
+    let pub_types: BTreeSet<&str> = items
+        .iter()
+        .filter(|i| matches!(i.d.kw.as_str(), "type" | "enum" | "trait") && is_pub(i.d))
+        .map(|i| i.d.name.as_str())
+        .collect();
+    let mut by_owner: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for it in items {
+        if it.d.kw == "test" {
+            if let Some(o) = owner_of(&it.d.name) {
+                by_owner.entry(o).or_default().push(it.d.name.as_str());
+            }
+        }
+    }
+    for v in by_owner.values_mut() {
+        v.sort();
+        v.dedup();
+    }
+    let strs = |v: &[&str]| v.iter().map(|x| json_str(x)).collect::<Vec<_>>().join(",");
+    let mut rows: Vec<(String, String, String)> = Vec::new();
+    for it in items {
+        let d = it.d;
+        let kind = def_kind(d);
+        if kind.is_empty() {
+            continue;
+        }
+        let public = is_pub(d) || (d.has_impls && owner_of(&d.name).map_or(false, |o| pub_types.contains(o)));
+        let tests = by_owner.get(d.name.as_str()).cloned().unwrap_or_default();
+        let json = format!(
+            "{{\"fqn\":{},\"kind\":{},\"file\":{},\"start\":{},\"end\":{},\"header\":{},\"doc\":{},\"uses\":[{}],\"panics\":{},\"tests\":[{}],\"pub\":{}}}",
+            json_str(&d.name),
+            json_str(kind),
+            json_str(&crate::cli::rel(&d.file)),
+            d.line,
+            if d.end_line > 0 { d.end_line } else { d.line },
+            json_str(d.header.trim()),
+            json_str(&doc_lines(it).join("\n")),
+            strs(&d.uses.iter().map(|u| u.as_str()).collect::<Vec<_>>()),
+            d.panics.as_deref().map_or("null".to_string(), json_str),
+            strs(&tests),
+            public
+        );
+        rows.push((d.name.clone(), kind.to_string(), json));
+    }
+    for (m, (file, end, doc)) in module_docs {
+        let json = format!(
+            "{{\"fqn\":{},\"kind\":\"module\",\"file\":{},\"start\":1,\"end\":{},\"header\":\"\",\"doc\":{},\"uses\":[],\"panics\":null,\"tests\":[],\"pub\":true}}",
+            json_str(m),
+            json_str(file),
+            end,
+            json_str(&doc.join("\n"))
+        );
+        rows.push((m.clone(), "module".to_string(), json));
+    }
+    rows.sort();
+    rows.into_iter().map(|r| r.2).collect()
 }
