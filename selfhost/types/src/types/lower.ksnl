@@ -1,0 +1,123 @@
+// 基本型の名前 (TPrim の綴り)。
+fn types.lower.prim(name: &str) -> usize uses [] panics never pub
+    if name == "bool" {
+        return types.ty.BOOL
+    }
+    if name == "char" {
+        return types.ty.CHAR
+    }
+    if name == "str" {
+        return types.ty.STR
+    }
+    if name == "f32" {
+        return types.ty.F32
+    }
+    if name == "f64" {
+        return types.ty.F64
+    }
+    types.ty.int_id(name)
+end types.lower.prim
+
+// 型の列 (型引数・タプルの要素)。総称の種類 (ライフタイム・効果・panic) は列に入れない。
+// 定数の引数は位置だけ取る (UNKNOWN)。
+fn types.lower.targs(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.Ctx, p: &parse.cur.P, src: &[u8], file: usize, l: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if l == 0usize {
+        return Ok(out)
+    }
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        let it = resolve.ast.item(p, l, j)
+        let kk = parse.ast.get(&p.ast, it).kind
+        let skip1 = kk == parse.ast.Kind.TArgLife || kk == parse.ast.Kind.TArgEffects
+        if skip1 || kk == parse.ast.Kind.TArgPanic {
+            core.mem.drop(0u8)
+        } else if (kk == parse.ast.Kind.TArgConst) {
+            out.push(types.ty.UNKNOWN)?
+        } else {
+            let v = types.lower.ty(env, ar, cx, p, src, file, it)?
+            out.push(v)?
+        }
+    }
+    Ok(out)
+end types.lower.targs
+
+// 定義の総称の並び (ライフタイム・効果・panic を除く型と定数) の名前トークン。gl は GParam の並び (0 なら空)。
+fn types.lower.tparams(p: &parse.cur.P, gl: usize) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if gl == 0usize {
+        return Ok(out)
+    }
+    for j in core.iter.range(0usize, resolve.ast.count(p, gl)) {
+        let g = parse.ast.get(&p.ast, resolve.ast.item(p, gl, j))
+        if g.a == 4usize || g.a == 5usize {
+            out.push(g.b)?
+        }
+    }
+    Ok(out)
+end types.lower.tparams
+
+// 型の注釈 (AST の型ノード) を型の arena の id にする。名前は cx の総称の並び、それ以外は env で引く。
+// file は名前を解く単位 (import の範囲)。p と src はその単位の解析結果と本文。
+fn types.lower.ty(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &types.chk.Ctx, p: &parse.cur.P, src: &[u8], file: usize, t: usize) -> Result<usize, alloc.alloc.AllocError> uses [alloc] panics never stack 8192 pub
+    if t == 0usize {
+        return Ok(types.ty.UNIT)
+    }
+    let n = parse.ast.get(&p.ast, t)
+    let k = n.kind
+    if (k == parse.ast.Kind.TPrim) {
+        let name = resolve.ast.tok_text(p, src, n.tok)
+        return Ok(types.lower.prim(name))
+    }
+    if (k == parse.ast.Kind.TNamed) {
+        let name = resolve.ast.text(src, n.a, n.b)
+        let g = types.chk.find(cx, name, true)
+        if g != 0usize {
+            return Ok(types.chk.ty_at(cx, g.wrapping_sub(1usize)))
+        }
+        let it = types.env.lookup(env, file, name)?
+        if it == 0usize {
+            return Ok(types.ty.UNKNOWN)
+        }
+        let item = it.wrapping_sub(1usize)
+        let ik = env.tab.items.as_slice().get(item)
+        let is_ty = match ik {
+            Some(x) => x.kind == parse.ast.Kind.TypeDef || x.kind == parse.ast.Kind.EnumDef
+            None => false
+        }
+        if !is_ty {
+            return Ok(types.ty.UNKNOWN)
+        }
+        let args = types.lower.targs(env, ar, cx, p, src, file, n.c)?
+        return types.ty.adt(ar, item, &args)
+    }
+    if (k == parse.ast.Kind.TRef) {
+        let inner = types.lower.ty(env, ar, cx, p, src, file, n.a)?
+        if (types.ty.node(ar, inner).k == types.ty.K.Str) {
+            return Ok(types.ty.STR)
+        }
+        return types.ty.push(ar, types.ty.mk(types.ty.K.Ref, inner, 0usize, 0usize, n.b != 0usize))
+    }
+    if (k == parse.ast.Kind.TSlice || k == parse.ast.Kind.TArray) {
+        let el = types.lower.ty(env, ar, cx, p, src, file, n.a)?
+        let mut kk = types.ty.K.Array
+        if (k == parse.ast.Kind.TSlice) {
+            kk = types.ty.K.Slice
+        }
+        return types.ty.push(ar, types.ty.mk(kk, el, 0usize, 0usize, false))
+    }
+    if (k == parse.ast.Kind.TTuple) {
+        let items = types.lower.targs(env, ar, cx, p, src, file, n.a)?
+        if items.len() == 0usize {
+            return Ok(types.ty.UNIT)
+        }
+        let (b, c) = types.ty.args(ar, &items)?
+        return types.ty.push(ar, types.ty.mk(types.ty.K.Tuple, 0usize, b, c, false))
+    }
+    if (k == parse.ast.Kind.TNever) {
+        return Ok(types.ty.NEVER)
+    }
+    if (k == parse.ast.Kind.TPtr || k == parse.ast.Kind.TFn || k == parse.ast.Kind.TDyn) {
+        return types.ty.push(ar, types.ty.mk(types.ty.K.Opaque, 0usize, 0usize, 0usize, false))
+    }
+    Ok(types.ty.UNKNOWN)
+end types.lower.ty

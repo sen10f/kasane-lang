@@ -1,0 +1,83 @@
+type types.chk.Ctx pub
+    file: usize pub
+    sc: alloc.vec.Vec<types.chk.Ent, std.alloc.System> pub
+    lits: alloc.vec.Vec<usize, std.alloc.System> pub
+    ret: usize pub
+    rep: types.chk.Rep pub
+    unknown: usize pub
+end types.chk.Ctx
+
+// 検査の状態: 名前の並び (局所と総称)・整数リテラルの変数・戻り値の型・診断の文。
+type types.chk.Ent pub
+    name: alloc.string.String<std.alloc.System> pub
+    ty: usize pub
+    generic: bool pub
+end types.chk.Ent
+
+type types.chk.Rep pub
+    out: alloc.string.String<std.alloc.System> pub
+    path: alloc.string.String<std.alloc.System> pub
+    errors: usize pub
+end types.chk.Rep
+
+// 診断 1 件: `error CODE 路径:行: 内容`。
+fn types.chk.diag(cx: &mut types.chk.Ctx, code: &str, line: usize, msg: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    cx.rep.out.push_str("error ")?
+    cx.rep.out.push_str(code)?
+    cx.rep.out.push(' ')?
+    cx.rep.out.push_str(cx.rep.path.as_str())?
+    cx.rep.out.push(':')?
+    cx.rep.out.push_u64(u64.from_usize(line))?
+    cx.rep.out.push_str(": ")?
+    cx.rep.out.push_str(msg)?
+    cx.rep.out.push('\n')?
+    cx.rep.errors = cx.rep.errors.wrapping_add(1usize)
+    Ok(())
+end types.chk.diag
+
+// 名前を最も内側から探す (添字 + 1、なければ 0)。
+fn types.chk.find(cx: &types.chk.Ctx, name: &str, generic: bool) -> usize uses [] panics never pub
+    let mut found = 0usize
+    for k in core.iter.range(0usize, cx.sc.len()) {
+        match cx.sc.as_slice().get(k) {
+            Some(e) => {
+                if e.generic == generic && e.name.as_str() == name {
+                    found = k.wrapping_add(1usize)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    found
+end types.chk.find
+
+fn types.chk.mark(cx: &types.chk.Ctx) -> usize uses [] panics never pub
+    cx.sc.len()
+end types.chk.mark
+
+fn types.chk.new() -> Result<types.chk.Ctx, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let sc = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let lits = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let out = alloc.string.String.new(std.alloc.SYSTEM)
+    let path = alloc.string.String.new(std.alloc.SYSTEM)
+    let rep = types.chk.Rep { out: out, path: path, errors: 0usize }
+    Ok(types.chk.Ctx { file: 0usize, sc: sc, lits: lits, ret: 0usize, rep: rep, unknown: 0usize })
+end types.chk.new
+
+fn types.chk.push(cx: &mut types.chk.Ctx, name: &str, ty: usize, generic: bool) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    let nm = alloc.string.String.from_str(std.alloc.SYSTEM, name)?
+    cx.sc.push(types.chk.Ent { name: nm, ty: ty, generic: generic })?
+    Ok(())
+end types.chk.push
+
+fn types.chk.truncate(cx: &mut types.chk.Ctx, m: usize) -> () uses [] panics never pub
+    cx.sc.truncate(m)
+end types.chk.truncate
+
+// 添字 k (find の結果 - 1) の型。
+fn types.chk.ty_at(cx: &types.chk.Ctx, k: usize) -> usize uses [] panics never pub
+    match cx.sc.as_slice().get(k) {
+        Some(e) => e.ty
+        None => 0usize
+    }
+end types.chk.ty_at
