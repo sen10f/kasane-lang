@@ -1,0 +1,40 @@
+// 段 1・2: 読み込み (kasane.toml・自パッケージと直接の path 依存の src/・spec/stdlib) と名前解決の診断。Kasane 製。
+// 処理は selfhost/resolve の resolve.main と同じ順。違いは、表示せず診断の本文を集めて、誤りがあれば失敗にすること。
+fn ksnc.front.check(dir: &str, std_dir: &str) -> Result<(), ksnc.Failure> uses [alloc, io.console, io.fs] panics never pub
+    let man = resolve.manifest.read(dir)?
+    let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let own_src = resolve.manifest.join(dir, "src")?
+    resolve.load.collect(own_src.as_str(), "", true, &mut srcs)?
+    let deps = man.deps
+    for d in deps.as_slice().iter() {
+        let pdir = resolve.manifest.join(dir, d.path.as_str())?
+        let dsrc = resolve.manifest.join(pdir.as_str(), "src")?
+        resolve.load.collect(dsrc.as_str(), "", false, &mut srcs)?
+    }
+    resolve.load.collect(std_dir, "", false, &mut srcs)?
+    let mut rep = resolve.report.new()?
+    let mut t = resolve.table.new()?
+    let mut i = 0usize
+    for s in srcs.as_slice().iter() {
+        match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
+            Some(p) => resolve.table.add_file(&mut t, &p, s.text.as_slice(), i, &mut rep)?
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    i = 0usize
+    for s in srcs.as_slice().iter() {
+        if s.own {
+            match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut rep)? {
+                Some(p) => resolve.walk.file(&t, &p, s.text.as_slice(), i, &mut rep)?
+                None => core.mem.drop(0u8)
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    if rep.errors != 0usize {
+        ksnc.tool.say_err(rep.text.as_str())?
+        return Err(ksnc.Failure.Diag)
+    }
+    Ok(())
+end ksnc.front.check
