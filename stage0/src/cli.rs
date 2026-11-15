@@ -2942,6 +2942,10 @@ fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str, t
     let mut roots: Vec<String> = vec![entry.to_string(), crate::kir_lower::debug::ENTRY_DEBUG.to_string()];
     if crate::kir_llvm::is_wasm(tg.ir) {
         roots.extend(lo.module.funcs.iter().filter(|f| crate::kir_llvm::wasm_export_name(&f.key).is_some()).map(|f| f.key.clone()));
+        // JS の完了を待つ入口 (`await_js`): `ksn_resume` が使う関数 (結果の置き場・再開・待ちの有無) を根にする。
+        if crate::kir_llvm::await_mode(&lo.module) {
+            roots.extend(["ksn.js.put".to_string(), format!("{}.resume", entry), format!("{}.pending", entry)]);
+        }
     }
     let refs: Vec<&str> = roots.iter().map(|s| s.as_str()).collect();
     let m = lo.module.reachable_from(&refs);
