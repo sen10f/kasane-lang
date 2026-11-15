@@ -930,6 +930,17 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
 - `aarch64` などの `--target` は試していない (kasane は失敗する)。
 
 
+### 17.7 修正 (修正プラン 5-5 の統合の後始末、2026-11-15)
+
+ブランチ `selfhost/fixes`。変えたのは `selfhost/parse`・`selfhost/borrow`・`selfhost/effects`・`selfhost/driver` だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` は変えていない)。
+
+- **値としての `if let`** (`selfhost/parse`): `let x = if let P = e { .. } else { .. }` を構文エラーにしていた。`parse.expr.if_let_rest` を足し、`stage0/src/parser.rs` と同じく `match 式 { P => {..}, _ => else側 }` に下ろす (else が無ければ空のブロック)。確かめ: `linear_ok` 118/118 が通る (修正前 117/118。`if_let_ref_scrut_trim_ok` が通るようになった)。`compare.py` の一致は下がっていない (examples・stdlib・bench・self の一致は前後とも同じ)。
+- **借用の誤検出 13 件** (`selfhost/borrow`): 原因は、同じ呼び出しの引数で根 (`c`) の別の欄 (`&mut c.ar` と `&c.tc`) を借りる組を、欄を見ずに競合と数えていたこと (`walk.check_pairs`)。根の直下の欄 (`borrow.cx.first_field`) を借用ごとに記録し、欄の名前が違う組は競合と数えない。欄が決まらない形 (根そのもの・添字) は従来どおり競合と数える。確かめ: `selfhost/lower` の E3010 が 13 → 0。`compare.py --group all` の結果 (誤検出 0、拒否の一致 48、DIFF の一覧) は修正前と同一。手で作った例で Rust 版と一致 (`&mut c.ar`・`&c.tc` は通る。同じ欄 `&c.ar` と `&mut c` と `&c.tc` は E3010)。
+- **E4013** (`selfhost/effects`): 再帰する型に `core.ops.Drop` の明示実装か `derive [Drop]` が無いもの。`effects/drop.ksnl` を足し、`effects.main` と driver の `kcheck` (効果の段) から呼ぶ。再帰は型の欄に書かれた型名の有向グラフの閉路 (Rust 版 `recursive_types` と同じ)。確かめ: `probes/boxtree` が E4013 を出す (Rust 版と一致)。`compare.py` の比べる集合に E4013 を足した (diag E40 は 7/13 → 9/15 で、E4013・E4013b が一致)。clean・linear_ok で誤検出 0。手で作った例 (`derive [Drop]`・手書き Drop・Option 経由の自己参照は通す。相互再帰・自己参照は出す) は Rust 版と完全に一致。
+- **判定**: `ksnc check --stages=both` の 34 パッケージの一致は **32/34 → 34/34** (修正前の driver を一時的に戻して測った)。
+
+残り (この節で直していないもの): 17.5 の 2 (let の経路の欄の誤検出)、17.5 の 3 (`is` を引数に書く形の構文解析)。
+
 ## 18. KIR への下ろしの段 (2): 型の表を使い、Option / Result / 参照 を下ろす (修正プラン 5-5)
 
 2026-11-15。ブランチ `selfhost/lower-2` (`dev/plan` から)。`selfhost/lower/` を直した。新規は `selfhost/lower/src/lower/opt.ksnl` と、この節の追記だけ。`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` と他の `selfhost/` 部品は変えていない。
@@ -973,15 +984,3 @@ cd selfhost/lower && ksn check && ksn build --release
 python3 -I compare.py --group linear_ok --mine native --jobs 16    # 一致 94 / 全体 439 (下ろせた 193)
 python3 -I compare.py --group examples --mine native                # 一致 6 / 全体 172 (下ろせた 14)
 ```
-
-
-### 17.7 修正 (修正プラン 5-5 の統合の後始末、2026-11-15)
-
-ブランチ `selfhost/fixes`。変えたのは `selfhost/parse`・`selfhost/borrow`・`selfhost/effects`・`selfhost/driver` だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` は変えていない)。
-
-- **値としての `if let`** (`selfhost/parse`): `let x = if let P = e { .. } else { .. }` を構文エラーにしていた。`parse.expr.if_let_rest` を足し、`stage0/src/parser.rs` と同じく `match 式 { P => {..}, _ => else側 }` に下ろす (else が無ければ空のブロック)。確かめ: `linear_ok` 118/118 が通る (修正前 117/118。`if_let_ref_scrut_trim_ok` が通るようになった)。`compare.py` の一致は下がっていない (examples・stdlib・bench・self の一致は前後とも同じ)。
-- **借用の誤検出 13 件** (`selfhost/borrow`): 原因は、同じ呼び出しの引数で根 (`c`) の別の欄 (`&mut c.ar` と `&c.tc`) を借りる組を、欄を見ずに競合と数えていたこと (`walk.check_pairs`)。根の直下の欄 (`borrow.cx.first_field`) を借用ごとに記録し、欄の名前が違う組は競合と数えない。欄が決まらない形 (根そのもの・添字) は従来どおり競合と数える。確かめ: `selfhost/lower` の E3010 が 13 → 0。`compare.py --group all` の結果 (誤検出 0、拒否の一致 48、DIFF の一覧) は修正前と同一。手で作った例で Rust 版と一致 (`&mut c.ar`・`&c.tc` は通る。同じ欄 `&c.ar` と `&mut c` と `&c.tc` は E3010)。
-- **E4013** (`selfhost/effects`): 再帰する型に `core.ops.Drop` の明示実装か `derive [Drop]` が無いもの。`effects/drop.ksnl` を足し、`effects.main` と driver の `kcheck` (効果の段) から呼ぶ。再帰は型の欄に書かれた型名の有向グラフの閉路 (Rust 版 `recursive_types` と同じ)。確かめ: `probes/boxtree` が E4013 を出す (Rust 版と一致)。`compare.py` の比べる集合に E4013 を足した (diag E40 は 7/13 → 9/15 で、E4013・E4013b が一致)。clean・linear_ok で誤検出 0。手で作った例 (`derive [Drop]`・手書き Drop・Option 経由の自己参照は通す。相互再帰・自己参照は出す) は Rust 版と完全に一致。
-- **判定**: `ksnc check --stages=both` の 34 パッケージの一致は **32/34 → 34/34** (修正前の driver を一時的に戻して測った)。
-
-残り (この節で直していないもの): 17.5 の 2 (let の経路の欄の誤検出)、17.5 の 3 (`is` を引数に書く形の構文解析)。
