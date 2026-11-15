@@ -32,7 +32,12 @@ fn lower.opt.const_value(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     }
     let init = parse.ast.get(&p2.ast, cn.d)
     if (init.kind != parse.ast.Kind.Lit || init.a != 1usize) {
-        return Ok(lower.cx.R { v: 0usize, t: t })
+        // それ以外の定数: 初期化式を、定数の書かれたファイルの中で下ろす (型・名前はそのファイルで読む)。
+        let saved = c.s.file
+        c.s.file = file
+        let r = lower.expr.expr(env, c, p2, src2, cn.d, t)?
+        c.s.file = saved
+        return Ok(r)
     }
     lower.expr.lit(env, c, p2, src2, init, t)
 end lower.opt.const_value
