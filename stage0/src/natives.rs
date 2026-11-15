@@ -536,7 +536,7 @@ fn deep(v: &Val) -> Val {
         Val::Arr(l) => Val::Arr(new_list(l.borrow().iter().map(deep).collect())),
         Val::Vec(l) => Val::Vec(new_list(l.borrow().iter().map(deep).collect())),
         Val::View(l, a, b) => Val::Arr(new_list(l.borrow()[*a..*b].iter().map(deep).collect())),
-        Val::StrBuf(b) => Val::StrBuf(Rc::new(RefCell::new(b.borrow().clone()))),
+        Val::StrBuf(b) => Val::StrBuf(StrBufV::new(b.get().clone())),
         Val::Map(m) => Val::Map(Rc::new(RefCell::new(MapV::new(
             &m.borrow().kind,
             m.borrow().d.iter().map(|(k, x)| (deep(k), deep(x))).collect(),
@@ -721,18 +721,18 @@ impl Interp {
             }
             "alloc.vec.Vec.new" => Ok(Val::Vec(new_list(vec![]))),
             "alloc.vec.Vec.with_capacity" => Ok(ok(Val::Vec(new_list(vec![])))),
-            "alloc.string.String.new" => Ok(Val::StrBuf(Rc::new(RefCell::new(String::new())))),
-            "alloc.string.String.from_str" => Ok(ok(Val::StrBuf(Rc::new(RefCell::new(str_of(&args[1]).unwrap_or_default()))))),
+            "alloc.string.String.new" => Ok(Val::StrBuf(StrBufV::new(String::new()))),
+            "alloc.string.String.from_str" => Ok(ok(Val::StrBuf(StrBufV::new(str_of(&args[1]).unwrap_or_default())))),
             "alloc.string.String.replace" => {
                 let (text, from, to) = (str_of(&args[1]).unwrap_or_default(), str_of(&args[2]).unwrap_or_default(), str_of(&args[3]).unwrap_or_default());
                 // 空の `from` は置き換えず、そのまま複製する。
                 let out = if from.is_empty() { text } else { text.replace(&from, &to) };
-                Ok(ok(Val::StrBuf(Rc::new(RefCell::new(out)))))
+                Ok(ok(Val::StrBuf(StrBufV::new(out))))
             }
             "alloc.string.String.join" => {
                 let parts: Vec<String> = seq_items(&dr(&args[1])).unwrap_or_default().iter().map(|x| str_of(x).unwrap_or_default()).collect();
                 let sep = str_of(&args[2]).unwrap_or_default();
-                Ok(ok(Val::StrBuf(Rc::new(RefCell::new(parts.join(&sep))))))
+                Ok(ok(Val::StrBuf(StrBufV::new(parts.join(&sep)))))
             }
             "alloc.collections.VecDeque.new" => Ok(Val::Vec(new_list(vec![]))),
             "alloc.collections.HashMap.new" => Ok(Val::Map(Rc::new(RefCell::new(MapV::new("HashMap", vec![]))))),
@@ -1553,6 +1553,16 @@ impl Interp {
     }
 
     fn str_method(&mut self, v: &Val, name: &str, args: Vec<Val>) -> Res {
+        // 内容を複製せずに答えられるもの: 長さ・空か・`as_str` (変更がなければ `String` の直前の結果と同じ `Rc<str>`、O(1))。
+        match (name, dr(v)) {
+            ("len", Val::Str(r)) => return Ok(usz(r.len())),
+            ("is_empty", Val::Str(r)) => return Ok(Val::Bool(r.is_empty())),
+            ("as_str", Val::Str(r)) => return Ok(Val::Str(r)),
+            ("len", Val::StrBuf(b)) => return Ok(usz(b.get().len())),
+            ("is_empty", Val::StrBuf(b)) => return Ok(Val::Bool(b.get().is_empty())),
+            ("as_str", Val::StrBuf(b)) => return Ok(Val::Str(b.snapshot())),
+            _ => {}
+        }
         let s = str_of(v).unwrap_or_default();
         let a0 = args.first().map(dr);
         match name {
@@ -1606,7 +1616,7 @@ impl Interp {
                 let Val::StrBuf(b) = v else { return panic(format!("no method {} on str", name)) };
                 let x = a0.clone().unwrap_or(Val::Unit);
                 let text = if name == "push_debug" { self.debug_str(&x)? } else { self.display_str(&x)? };
-                b.borrow_mut().push_str(&text);
+                b.edit().push_str(&text);
                 Ok(ok(Val::Unit))
             }
             "push_u64" | "push_i64" | "push_bytes" => {
@@ -1615,7 +1625,7 @@ impl Interp {
                     let bytes: Vec<u8> = seq_items(&dr(a0.as_ref().unwrap_or(&Val::Unit))).unwrap_or_default().iter().map(|x| if let Val::Int(i, _) = x { *i as u8 } else { 0 }).collect();
                     return Ok(match String::from_utf8(bytes) {
                         Ok(t) => {
-                            b.borrow_mut().push_str(&t);
+                            b.edit().push_str(&t);
                             ok(Val::Unit)
                         }
                         Err(e) => err(mk_enum(
@@ -1630,7 +1640,7 @@ impl Interp {
                 }
                 if let Some(Val::Int(n, _)) = a0 {
                     // u64 は Val::Int(i128) にそのまま入るので、符号つき / なしを区別せず 10 進に直せる。
-                    b.borrow_mut().push_str(&n.to_string());
+                    b.edit().push_str(&n.to_string());
                 }
                 Ok(ok(Val::Unit))
             }
@@ -1639,11 +1649,11 @@ impl Interp {
                     match name {
                         "push" => {
                             if let Some(Val::Char(c)) = a0 {
-                                b.borrow_mut().push(c);
+                                b.edit().push(c);
                             }
                         }
-                        "push_str" => b.borrow_mut().push_str(&a0.as_ref().and_then(str_of).unwrap_or_default()),
-                        _ => b.borrow_mut().clear(),
+                        "push_str" => b.edit().push_str(&a0.as_ref().and_then(str_of).unwrap_or_default()),
+                        _ => b.edit().clear(),
                     }
                     return Ok(if name == "clear" { Val::Unit } else { ok(Val::Unit) });
                 }

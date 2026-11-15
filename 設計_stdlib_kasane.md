@@ -160,6 +160,37 @@
 
 ### 残り・確かめていないこと
 
-- `String::as_str` は `Buf::as_str` の UTF-8 検査を通るので、呼び出しごとに長さに比例する (以前は O(1) のヘッダの見せ方だけ)。文字列の性能の計測には入っていない。検査を省くには不変条件に頼る経路 (unsafe か、検査済みの印) が要る。オーナーの判断。
-- 初回の `cargo test --release` (ビルドの直後) で、別々のテストが一度ずつ落ちた (`spawn ... Text file busy`、ネイティブの実行体の不在、`exit code None`)。直後の再実行では全件通過 (計 4 回)。並列実行でのテストの競合と見られるが、原因は未確定。テストに再試行は足していない。
+- `String::as_str` は 0.10.18 で検査を省く組み込みにした (下の「`String::as_str` の O(1) 化」)。`Buf<u8>::as_str` は検査つきのまま。
+- 木走査の `String` は `Val::StrBuf` の内容を、`len` / `is_empty` / `as_str` 以外のメソッドで複製する (`str_method` の先頭)。他のメソッドを O(1) にするのは値の表現を変える作業で、今回は範囲外。
+- `todo_spa_scenario` (`tests/wasm_spa.rs`) は `dev/plan` (`f008117`) の時点で既に落ちる。この変更を退避しても落ちる。`035e20f` (wasm 枝) に String の 3 コミットだけを載せると通る。失敗が出るのは wasm 枝を String を含む主流へ取り込んだ `cc939da` からで (`RuntimeError: null function or function signature mismatch`)、主流側のどの変更と組み合わさるかは未確定。
+- （前の作業の記録）初回の `cargo test --release` (ビルドの直後) で、別々のテストが一度ずつ落ちた (`spawn ... Text file busy`、ネイティブの実行体の不在、`exit code None`)。直後の再実行では全件通過 (計 4 回)。並列実行でのテストの競合と見られるが、原因は未確定。テストに再試行は足していない。
 - `native_ratio_floor.json` の linear_ok の下限 (105) は、現在の 111 に上げられる (note どおり。書き換えていない)。
+
+
+### `String::as_str` の O(1) 化 (2026-11-15、`std/string-utf8-flag`)
+
+- 最初は `Buf<u8>::as_str` (UTF-8 の検査つき) を通していたので、`as_str` は長さに比例していた (ネイティブで 1 MB を 1 万回: 約 4.6 秒)。
+- 直し方: 2 案 (`Buf` に UTF-8 のフラグを持たせる / `String` 専用の組み込み) のうち後者。フラグを持つには、ヘッダの 4 語目か `cap` の最上位ビットが要り、`off: 16` を読む 109 箇所 (Vec・マップ・ファイル入出力を含む) を直すことになるため。
+- `String` の組み込み `as_str` は `hdr_view` (ヘッダの {ptr, len} の借用) に戻した。根拠: バイト列 `buf` は非公開 (`private to module alloc.string`、E1122) で、書くのは UTF-8 を保つ `String` のメソッドだけ。`push(char)` の 1〜4 バイトは容量を先に確保してから書き、途中で `as_str` は呼べない。
+- 木走査: `Val::StrBuf` を `StrBufV` (内容 + 直前の `as_str` の結果 `Rc<str>`) にした。書き換えは `edit()` を通って結果を捨てる。`len` / `is_empty` / `as_str` は内容を複製しない (`str_method` の先頭)。
+
+計測 (`ksn run` / `ksn run --engine=vm` / `ksn build` の実行体。入力は `as_str().len()` を回数だけ呼ぶプログラム。充填は 100 バイトずつ。最小値):
+
+| 入力 (長さ × 回数) | 版 | ネイティブ | 木走査 | VM |
+| --- | --- | ---: | ---: | ---: |
+| 100 KB × 100 | 変更前 | 6.0 ms | 28.6 ms | 132.7 ms |
+| 100 KB × 100 | 変更後 | 1.0 ms | 29.2 ms | 136.7 ms |
+| 1 MB × 1000 | 変更前 | 621.0 ms | 811.2 ms | 255.3 ms |
+| 1 MB × 1000 | 変更後 | 1.8 ms | 516.0 ms | 184.7 ms |
+| 1 MB × 10000 | 変更前 | 4632.5 ms | 2325.0 ms | 545.9 ms |
+| 1 MB × 10000 | 変更後 | 1.7 ms | 443.6 ms | 142.0 ms |
+
+- 変更後は回数に依らない (1 MB の 1000 回と 1 万回で、ネイティブは 1.8 と 1.7 ms、木走査 516 と 444 ms、VM 185 と 142 ms)。木走査と VM の残りの時間は、充填 (`push_str` の繰り返し) と起動。
+- 変更前は回数と長さに比例 (1 MB の 1 万回は 1000 回の約 7.5 倍 (ネイティブ)、長さ 10 倍で約 10 倍)。
+
+検証: `stage0/tests/string_kasane.rs` に、書き換えを挟んだ `as_str` の検査 (3 経路で同じ出力) を足した。
+- `cargo test --release --no-fail-fast`: 1064 件通過、2 件失敗。`linear_ok` (`kir_native`) は並列実行の一時ファイルの競合 (単独で 89/89 通過)。`todo_spa_scenario` は下の「残り」を参照。
+- `native_ratio`: linear_ok 118/118 (下限 105)、examples 14/14、perf 8/8。下限のファイルは書き換えていない。
+- `check-stdlib` 0 件、`spec/tools/check_all.py` 全件通過 (`string.sig` の空行を fmtsig の形に直した)。
+- examples・apps・selfhost・perf の `ksn check` 0 件、`test --both` 通過、`run` と `build` の出力一致。`examples/kvlib` はライブラリ、`apps/shortener_https` は引数が要る、`apps/todo_spa` は wasm の外部関数が要る (いずれも `run` の失敗は想定どおり)。
+- `bench/verify_reference.py`: 19 件中 0 件の不一致。

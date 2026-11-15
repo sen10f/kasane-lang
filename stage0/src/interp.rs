@@ -1820,7 +1820,7 @@ impl Interp {
             Val::Bool(b) => (if *b { "true" } else { "false" }).into(),
             Val::Char(c) => format!("{:?}", c),
             Val::Str(s) => py_quote(s),
-            Val::StrBuf(b) => py_quote(&b.borrow()),
+            Val::StrBuf(b) => py_quote(&b.get()),
             Val::Float(f) => py_float(*f),
             Val::F32(f) => py_float32(*f),
             Val::Int(x, t) => {
@@ -2007,4 +2007,4 @@ fn int_arith(op: &str, x: i128, y: i128, ty: Ity) -> Res {
 pub const KASANE_VEC_BASE: &[&str] = &["as_mut_slice", "as_slice", "capacity", "clear", "insert", "is_empty", "len", "pop", "push", "remove", "reserve", "truncate"];
 
 /// `alloc/string.ksnl` が Kasane で書いた `String` の基本メソッド (`Buf<u8>` の上。木走査は組み込みを使う)。
-pub const KASANE_STRING_BASE: &[&str] = &["as_str", "clear", "is_empty", "len", "push", "push_bytes", "push_i64", "push_str", "push_u64", "reserve_bytes"];
+pub const KASANE_STRING_BASE: &[&str] = &["clear", "is_empty", "len", "push", "push_bytes", "push_i64", "push_str", "push_u64", "reserve_bytes"];

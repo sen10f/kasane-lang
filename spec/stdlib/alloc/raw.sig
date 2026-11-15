@@ -1,4 +1,5 @@
 // 処理系が持つ唯一の unsafe の部品。`Vec` / `String` を安全な Kasane で書くための土台 (8.3)。
+// `Buf<u8>.as_str` は UTF-8 を検査する。`String.as_str` は組み込みで検査を省く (仕様 8.3 `alloc.string`)。
 type alloc.raw.Buf[T, A: alloc.alloc.Allocator] pub
     allocator: A
     capacity: usize

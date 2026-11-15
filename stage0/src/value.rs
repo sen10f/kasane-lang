@@ -221,6 +221,38 @@ impl MapV {
     }
 }
 
+/// `String` の木走査の値: 内容と、直前の `as_str` の結果 (`Rc<str>`)。書き換え (`edit`) で結果を捨てるので、
+/// 変更がない間の `as_str` は同じ `Rc<str>` を返す (O(1))。
+#[derive(Debug)]
+pub struct StrBufV {
+    s: RefCell<String>,
+    snap: RefCell<Option<Rc<str>>>,
+}
+
+impl StrBufV {
+    pub fn new(s: String) -> Rc<StrBufV> {
+        Rc::new(StrBufV { s: RefCell::new(s), snap: RefCell::new(None) })
+    }
+    /// 読む (複製しない)。
+    pub fn get(&self) -> std::cell::Ref<'_, String> {
+        self.s.borrow()
+    }
+    /// 書き換える。直前の `as_str` の結果は捨てる。
+    pub fn edit(&self) -> std::cell::RefMut<'_, String> {
+        *self.snap.borrow_mut() = None;
+        self.s.borrow_mut()
+    }
+    /// 内容を `Rc<str>` で返す (変わるまでは同じものを共有する)。
+    pub fn snapshot(&self) -> Rc<str> {
+        if let Some(r) = self.snap.borrow().as_ref() {
+            return r.clone();
+        }
+        let r: Rc<str> = Rc::from(self.s.borrow().as_str());
+        *self.snap.borrow_mut() = Some(r.clone());
+        r
+    }
+}
+
 #[derive(Clone)]
 pub enum Val {
     Unit,
@@ -243,7 +275,7 @@ pub enum Val {
     Ctor(Rc<(String, String)>),
     Iter(Rc<RefCell<IterV>>),
     Map(Rc<RefCell<MapV>>),
-    StrBuf(Rc<RefCell<String>>),
+    StrBuf(Rc<StrBufV>),
     Fmt(Rc<RefCell<String>>),
     Chan(Rc<ChanEnd>),
     Mutex(Rc<CellPlace>),
@@ -412,7 +444,7 @@ pub fn seq_get(v: &Val, i: usize) -> Option<Val> {
 pub fn str_of(v: &Val) -> Option<String> {
     match dr(v) {
         Val::Str(s) => Some(s.to_string()),
-        Val::StrBuf(b) => Some(b.borrow().clone()),
+        Val::StrBuf(b) => Some(b.get().clone()),
         _ => None,
     }
 }

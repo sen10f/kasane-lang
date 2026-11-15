@@ -9,6 +9,8 @@ end alloc.string.String
 
 impl[A: alloc.alloc.Allocator] core.cmp.Eq for alloc.string.String<A>
 
+// 組み込み (KIR の `hdr_view`)。検査を省く O(1)。バイト列は非公開で、書くのは UTF-8 を保つ `String` のメソッドだけ (8.3)。
+fn alloc.string.String.as_str[A: alloc.alloc.Allocator](self: &alloc.string.String<A>) -> &str uses [] panics never pub
 impl[A: alloc.alloc.Allocator] core.cmp.Ord for alloc.string.String<A>
 fn alloc.string.String.cmp[A: alloc.alloc.Allocator](self: &alloc.string.String<A>, other: &alloc.string.String<A>) -> core.cmp.Ordering uses [] panics never impls core.cmp.Ord
 impl[A: alloc.alloc.Allocator] core.fmt.Debug for alloc.string.String<A>
