@@ -78,7 +78,7 @@ pub const EXPLAIN: &[(&str, &str)] = &[
     ("E2039", r#"トレイトの必須メソッドのレシーバは `self: Self` / `&Self` / `&mut Self` のいずれかでなければならない(3.2)。"#),
     ("E2040", r#"`std.thread.spawn` の結果型、または取り込んだ値の型が `core.marker.Send` を満たさない(5.5)。生ポインタ(`*const T` / `*mut T`)を含む型などはスレッドに渡せない。取り込みは `move x` なら `T` が `Send`、`&x` なら `&T` が `Send`(`T: Sync`)として見る。"#),
     ("E2041", r#"`let _ = e` は禁止(4.6)。値の破棄は `core.mem.drop(x)` のみ。"#),
-    ("E2042", r#"`()` 以外の値を捨てる式文はエラー(4.6)。`core.mem.drop(x)` を使う。途中の文に置いた `else` の無い `if` は、then 枝の値（末尾の式）を捨てるので、then 枝が `()` 以外なら同じくE2042。`return` にするか `core.mem.drop(x)` で明示する（`if c { core.mem.drop(x) }` は通る）。"#),
+    ("E2042", r#"`()` 以外の値を捨てる式文はエラー(4.6)。`core.mem.drop(x)` を使う。途中の文に置いた `else` の無い `if` は、then 枝の値（末尾の式）を捨てるので、then 枝が `()` 以外なら同じくE2042。`return` にするか `core.mem.drop(x)` で明示する（`if c { core.mem.drop(x) }` は通る）。`while` / `loop` / `for` の本体の末尾の値も同じく捨てるので、`()` / `!` 以外なら E2042（`core.mem.drop(x)` で包む）。"#),
     ("E2043", r#"`impl Tr for T` が孤児規則に違反している(3.2)。impl は Tr と T のどちらか一方をこのパッケージ内で定義したときだけ置ける。標準ライブラリのトレイトを標準ライブラリの型(基本型を含む)に実装することはできない。自分の型に対する impl にするか、自分のトレイトを定義してそれを実装する。"#),
     ("E2046", r#"`alloc.boxed.Box.into_dyn` の使い方が誤っている(5.1)。変換先は `Box<dyn Tr + 'static, A>` でなければならず、元の型 `T` は `Tr` を実装し、参照を持たない('static)必要がある。`dyn` を持つ `Box` の `into_inner` も呼べない。"#),
     ("E2047", r#"`dyn` の位置が誤っている(5.1)。`dyn Tr` は `&` / `&mut` の背後か `alloc.boxed.Box` の第1型引数にだけ書ける(`Vec<dyn Tr>` やフィールドの `dyn Tr` は不可。`Vec<Box<dyn Tr + 'static, A>>` と書く)。`Box` に入れる `dyn` のライフタイム境界は `+ 'static` と明示する。"#),
