@@ -1,0 +1,69 @@
+// ksnc: Kasane のビルドのドライバ (修正プラン 5-5)。段の並びと担当は `ksnc --stages` と selfhost/README.md の「ドライバの段」を見る。
+// 読み込みと名前解決は selfhost/resolve (Kasane 製)。検査と KIR → LLVM IR は Rust 製の ksn。実行ファイルを作る clang の段は ksnc
+// 自身が担う (ksn の KSN_CLANG 経由で、この実行ファイルを clang の代わりに呼ばせる。clang.ksnl)。
+enum ksnc.Failure derive [Debug, Clone, Copy, PartialEq, From] pub
+    Alloc(alloc.alloc.AllocError)
+    Io(std.io.Error)
+    Front(resolve.Failure)
+    Diag
+    Tool
+    Usage
+end ksnc.Failure
+
+fn ksnc.main() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics never
+    // ksn が KSN_CLANG として呼んだときは clang の段になる (KSNC_SHIM は ksnc が ksn を起動するときだけ付ける)。
+    match std.env.var("KSNC_SHIM") {
+        Some(_s) => return ksnc.clang.shim()
+        None => core.mem.drop(0u8)
+    }
+    let verb = ksnc.tool.env_or_arg(0usize)
+    if verb == "--stages" {
+        std.io.print_line(ksnc.plan.text())?
+        return Ok(())
+    }
+    if verb != "check" && verb != "build" {
+        ksnc.tool.say_err("usage: ksnc check [DIR] | ksnc build [--release] [--target <三つ組>] [DIR] | ksnc --stages\n")?
+        return Err(ksnc.Failure.Usage)
+    }
+    let mut release = false
+    let mut target = "host"
+    let mut dir = "."
+    let n = std.env.arg_count()
+    let mut i = 1usize
+    while i < n {
+        match std.env.arg(i) {
+            Some(a) => {
+                if a == "--release" {
+                    release = true
+                } else if a == "--target" {
+                    i = i.wrapping_add(1usize)
+                    let t = match std.env.arg(i) {
+                        Some(x) => x
+                        None => "host"
+                    }
+                    target = t
+                } else {
+                    dir = a
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let pwd = ksnc.tool.env_or("PWD")
+    let abs = ksnc.tool.absolute(pwd, dir)?
+    let root = ksnc.tool.root(abs.as_str())?
+    let ksn = ksnc.tool.ksn_path(root.as_str())?
+    let std_dir = ksnc.tool.std_dir(root.as_str())?
+    // 段 1・2: 読み込みと名前解決 (Kasane 製)。
+    ksnc.front.check(abs.as_str(), std_dir.as_str())?
+    // 段 3: 型・効果の検査 (Rust 製の ksn check)。
+    ksnc.build.check(ksn.as_str(), abs.as_str())?
+    if verb == "check" {
+        std.io.print_line("ok")?
+        return Ok(())
+    }
+    // 段 4・5: 下ろし (ksn build、Rust) と実行ファイル (ksnc の clang 段)。
+    ksnc.build.make(ksn.as_str(), root.as_str(), abs.as_str(), release, target)?
+    Ok(())
+end ksnc.main

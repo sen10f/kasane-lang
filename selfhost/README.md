@@ -338,3 +338,72 @@ ksn build --release                             # target/release/effects.native 
 ./target/release/effects.native . ../../spec/stdlib    # 自分自身。末尾の summary 行
 cd ../.. && python3 -I selfhost/effects/compare.py --group all   # 約 3.5 分 (Rust 版を 2 回ずつ呼ぶ)
 ```
+
+
+## 11. ドライバの段 (修正プラン 5-5)
+
+2026-11-15。ブランチ `selfhost/driver`。新規は `selfhost/driver/` と、この節の追記だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` と `selfhost/` の他の部品は変えていない)。
+
+結論を先に: **ビルドのドライバ `ksnc` は Kasane で書けて、`ksnc build --release` で自分自身を作れる (3 段の不動点を確認)。** 読み込みと名前解決は `selfhost/resolve` (Kasane 製) を使う。検査と LLVM IR への下ろしは Rust 版 `ksn` の中で行い、実行ファイルを作る clang の段だけを `ksnc` が担う。作った実行ファイルは、Rust 版 `ksn build --release` とバイト単位で同一 (下の 10.3 章)。
+
+### 11.1 構成と使い方
+
+`selfhost/driver/` が ksn パッケージ (`name = "ksnc"`、`entry = "ksnc.main"`、依存 `parse` と `resolve` を path で)。Kasane 396 行 (`src/ksnc.ksnl` 69、`src/ksnc/front.ksnl` 40、`src/ksnc/build.ksnl` 59、`src/ksnc/clang.ksnl` 117、`src/ksnc/tool.ksnl` 106、`src/ksnc/plan.ksnl` 5 など)。
+
+```
+cd selfhost/driver
+ksn build --release                              # Rust 版で ksnc を作る (不動点の出発点)
+./target/release/ksnc.native --stages            # 段の表 (どれが Kasane 製か Rust 製か)
+./target/release/ksnc.native check [DIR]         # 読み込み・名前解決・ksn check
+./target/release/ksnc.native build [--release] [--target <三つ組>] [DIR]
+```
+
+`DIR` は省略時 `.`。入口の場所は、PWD と上へ辿った先の `spec/stdlib` から決める (`KSN_STDLIB` があればそれ)。`ksn` は `KSNC_KSN`、無ければ `<根>/stage0/target/release/ksn`、それも無ければ PATH の `ksn`。実際の clang は `KSNC_CLANG`、無ければ `KSN_CLANG`、それも無ければ `clang`。
+
+出力は `target/<kind>/<名前>.native` (`--target` 付きは `target/<三つ組>/<kind>/`)。隣に `<名前>.ll` (LLVM IR) が残る。
+
+### 11.2 段の並び
+
+| 段 | 担当 | 実装 |
+| --- | --- | --- |
+| 1 読み込み | Kasane | `selfhost/resolve`: `kasane.toml`・`src/`・直接の path 依存・`spec/stdlib` |
+| 2 名前解決 | Kasane | `selfhost/resolve`: 名前の診断 (誤りがあれば表示して失敗) |
+| 3 検査 | Rust | `ksn check` (型・効果・借用) |
+| 4 下ろし | Rust | `ksn build` の中の KIR → LLVM IR (下の 10.4 章 1) |
+| 5 実行ファイル | Kasane | `ksnc` の clang 段。`ksn` が `KSN_CLANG` で `ksnc` (この実行ファイル) を呼ぶ |
+
+差し替え方: 段 1・2 は `front.ksnl` の 1 関数、段 3 は `build.ksnl` の `check`、段 4・5 は `build.ksnl` の `make` が `ksn build` を呼ぶ入口と `clang.ksnl` の `shim`。段 5 を Rust 版に戻すには `KSN_CLANG` を外せばよい (ksn の既定の clang が動く)。
+
+段 4・5 の仕組み: `ksn build` が LLVM IR を作ると clang を呼ぶ。その呼び先を `KSN_CLANG=<ksnc>` と `KSNC_SHIM=1` で `ksnc` にする。`ksnc` は `KSNC_SHIM` が付いていれば clang の段として動き、引数 (`-x ir <IR>`・`-o <実行ファイル>`・最適化の段階) を読み、ランタイム C (`stage0/src/kir_rt.c`・`sysrt.c`) を `<名前>.ll.rt.c` などの名前で隣に写して、clang を起動する。ksn が同じ名前の一時ファイルを書くので、実行ファイルに埋まる文字列も同じになる。
+
+### 11.3 確かめ
+
+| 対象 | 結果 |
+| --- | --- |
+| `examples/*` と `apps/todo` (エントリのある 16 パッケージ) を `ksnc build --release` と `ksn build --release` で作る | **15 / 16 がバイト単位で同一** (`cmp`)。残り 1 件 `examples/ffi/shapes` は Rust 版も作れない (`Ptr(true, Named("shapes.Rect"))` は未対応、E9040) ので、ksnc は同じ理由で失敗する |
+| 同じ 15 件の実行結果 (標準出力と終了コード、入力なし、10 秒の制限) | **15 / 15 同じ** |
+| `examples/demo` の `--target aarch64-linux-gnu` | Rust 版とバイト単位で同一 |
+| `examples/tour` の `--target x86_64-linux-gnu` | Rust 版とバイト単位で同一 |
+| 不動点 (`ksnc` が `ksnc` を作る) | 0 段 (Rust 版で作ったもの) → 1 段 (それで作ったもの) → 2 段 (1 段で作ったもの)。**3 つのバイト列がすべて同一** |
+| 診断 | `resolve/broken/undef` で `ksnc check` が 11 件の名前解決の誤りを出して終了コード 1 |
+
+ksnc が作ったものの確かめは、比べる前に `ksn` のビルドキャッシュを空にする必要があった (10.4 章 2)。最初の比べ方では、16 件中 16 件が `cache hit` で Rust 版の実行ファイルを写しただけになり、一致の数が意味を持たなかった。
+
+### 11.4 処理系の不足 (重要度順、処理系は直していない)
+
+1. **プログラム全体の LLVM IR を外へ出す入口がない**。`ksn kir <FQN> --llvm` は `emit` を使い、テスト用の `main` (結果を `printf` して終了コード 0) を付ける。`Result` を返す入口は「この入口では扱えない」と断る。実際の実行ファイルに使う `emit_program` (入口の後始末つき) は `ksn build` の中からしか呼ばれない。そのため段 4 は `ksn build` を呼び、clang の段だけを差し替える (10.2 章)。`ksn kir` に `--target` もない。
+2. **ビルドキャッシュの鍵が clang を含まない** (`KSN_CLANG` を変えても、前の結果を再利用する)。ksnc の clang 段に差し替えたあと、`ksn` の既定のキャッシュ (`~/.ksn/cache`) に当たると clang の段を通らず、前に作った実行ファイルを写すだけになる。ksnc は `KSN_CACHE_DIR=target/ksnc-cache` を使い、呼ぶ前に毎回そこを空にする。`ksn` 側は、鍵に clang の場所とその内容 (または `KSN_CLANG` の指す実行ファイルの版) を入れるべき。
+3. **ネイティブの下ろしの不足が 4 つ** (ドライバを書く途中で当たった):
+   - `std.process.exit` が段階 1 の対象外 (`呼び出し std.process.exit は段階 1 の対象外`)。終了コードは、入口が `Result` を返して `Error: <Debug>` と終了コード 1 になる形に頼った (2 にはできない)。
+   - カレントディレクトリを得る API がない (`std.env` は引数と環境変数だけ)。`PWD` を読んで絶対パスを作った。
+   - ディレクトリの再帰削除がない (`std.fs.remove_dir` は空のディレクトリだけ)。キャッシュの掃除は `rm -rf` の子プロセスにした。
+   - `for a in v.as_slice().iter()` で `Vec<String>` (関数の戻り値) の要素に `a.as_str()` を呼ぶと、「要素の借用の種類 (Vec / String) が分からない」。`Vec<&'static str>` なら通る。
+4. (ほか) `ksn build --release` は、ネイティブが成功しても「portable interpreter bundle」(`ksn` の複製と `stdlib`) を `target/<kind>/` に作り、その文言を出す。ksnc はそのまま表示する。`match` の arm に文字列リテラルを直接書くと `E0057` (書式の検査)。`resolve.main` は表示するだけで結果を返さないので、ドライバは同じ手順を `resolve` の公開 API で書き直した (パッケージの API の不足で、処理系ではない)。
+
+### 11.5 まだ確かめていないこと
+
+- `examples/ffi/shapes` は両方とも作れないので、ksnc 固有の経路 (clang の段) は通っていない。
+- `apps/shortener_https`・`apps/todo_spa` と、エントリのない `examples/kvlib` (ライブラリ) は対象外。
+- `aarch64` は `demo` の 1 件だけ (qemu での実行は見ていない。バイト列は Rust 版と同一)。
+- 実行時間と並列化は測っていない (`ksn check` を 2 回呼ぶ分だけ遅い)。
+- 検査 (`ksn check`) は `ksnc` の前後で 2 回走る (段 3 と、`ksn build` の中)。

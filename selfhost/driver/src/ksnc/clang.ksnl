@@ -1,0 +1,117 @@
+// 引数 i 番目 (無ければ空)。
+fn ksnc.clang.at(i: usize) -> &'static str uses [env] panics never pub
+    ksnc.tool.env_or_arg(i)
+end ksnc.clang.at
+
+// 引数の並び (ksn が渡した、clang へそのまま渡す引数)。
+fn ksnc.clang.new_list() -> alloc.vec.Vec<&'static str, std.alloc.System> uses [] panics never pub
+    alloc.vec.Vec.new(std.alloc.SYSTEM)
+end ksnc.clang.new_list
+
+// ksn が渡した引数を読み、clang の引数を組み直して実行する。
+fn ksnc.clang.shim() -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics never pub
+    let root = ksnc.tool.env_or("KSNC_ROOT")
+    if root == "" {
+        ksnc.tool.say_err("ksnc: KSNC_ROOT がない (ksnc build が付ける)\n")?
+        return Err(ksnc.Failure.Tool)
+    }
+    let mut ir = ""
+    let mut exe = ""
+    let mut opt = "-O1"
+    let mut rt_core = false
+    let mut rt_sys = false
+    let mut extra = ksnc.clang.new_list()
+    let n = std.env.arg_count()
+    let mut i = 0usize
+    while i < n {
+        let a = ksnc.clang.at(i)
+        if a == "-x" {
+            let kind = ksnc.clang.at(i.wrapping_add(1usize))
+            let file = ksnc.clang.at(i.wrapping_add(2usize))
+            if kind == "ir" {
+                ir = file
+            } else if file.ends_with("sys.c") {
+                rt_sys = true
+            } else {
+                rt_core = true
+            }
+            i = i.wrapping_add(3usize)
+        } else if a == "-o" {
+            exe = ksnc.clang.at(i.wrapping_add(1usize))
+            i = i.wrapping_add(2usize)
+        } else if a == "-O1" || a == "-O2" {
+            opt = a
+            i = i.wrapping_add(1usize)
+        } else {
+            // -lm と -pthread は下で付け直す。そのほか (--target=… や sysroot の探索先) は渡す。
+            if a != "-lm" && a != "-pthread" && a != "-Wno-override-module" {
+                extra.push(a)?
+            }
+            i = i.wrapping_add(1usize)
+        }
+    }
+    if ir == "" || exe == "" {
+        ksnc.tool.say_err("ksnc: clang の段: -x ir と -o が要る\n")?
+        return Err(ksnc.Failure.Tool)
+    }
+    // IR を実行ファイルの隣へ残す (<名前>.ll)。
+    let bytes = resolve.load.read_bytes(ir)?
+    let base = match exe.strip_suffix(".native") {
+        Some(b) => b
+        None => exe
+    }
+    let mut ll = alloc.string.String.from_str(std.alloc.SYSTEM, base)?
+    ll.push_str(".ll")?
+    std.fs.write_atomic(ll.as_str(), bytes.as_slice())?
+    // ランタイム C は stage0/src の同じ内容を、ksn と同じ名前 (<名前>.ll.rt.c・<名前>.ll.sys.c) で隣に写して渡す。
+    // 名前が違うと、実行ファイルに埋まる文字列が変わる (バイト列の一致の確認に効く)。
+    let clang = ksnc.tool.clang()?
+    let mut rt_path = alloc.string.String.from_str(std.alloc.SYSTEM, base)?
+    rt_path.push_str(".ll.rt.c")?
+    let mut sys_path = alloc.string.String.from_str(std.alloc.SYSTEM, base)?
+    sys_path.push_str(".ll.sys.c")?
+    if rt_core {
+        let src = std.path.join(root, "stage0/src/kir_rt.c")?
+        let text = resolve.load.read_bytes(src.as_str())?
+        std.fs.write_atomic(rt_path.as_str(), text.as_slice())?
+    }
+    if rt_sys {
+        let src = std.path.join(root, "stage0/src/sysrt.c")?
+        let text = resolve.load.read_bytes(src.as_str())?
+        std.fs.write_atomic(sys_path.as_str(), text.as_slice())?
+    }
+    let mut cc = std.process.Command.new(clang.as_str())
+    cc.arg(opt)
+    cc.arg("-Wno-override-module")
+    for a in extra.as_slice().iter() {
+        cc.arg(*a)
+    }
+    cc.arg("-x")
+    cc.arg("ir")
+    cc.arg(ir)
+    if rt_core {
+        cc.arg("-x")
+        cc.arg("c")
+        cc.arg(rt_path.as_str())
+    }
+    if rt_sys {
+        cc.arg("-x")
+        cc.arg("c")
+        cc.arg(sys_path.as_str())
+    }
+    cc.arg("-o")
+    cc.arg(exe)
+    cc.arg("-lm")
+    cc.arg("-pthread")
+    let mut out = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut err = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let st = cc.output(&mut out, &mut err)?
+    if rt_core {
+        core.mem.drop(std.fs.remove_file(rt_path.as_str())?)
+    }
+    if rt_sys {
+        core.mem.drop(std.fs.remove_file(sys_path.as_str())?)
+    }
+    ksnc.tool.expect_ok("ksnc: clang の段が失敗した\n", st.code, &out, &err)?
+    Ok(())
+end ksnc.clang.shim
