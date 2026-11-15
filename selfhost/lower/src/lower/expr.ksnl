@@ -78,8 +78,53 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     } else if op == 62usize {
         cc = "gt"
     }
+    if op == 307usize || op == 308usize {
+        return lower.expr.shortc(env, c, p, src, n, t, op == 308usize)
+    }
+    if (op == 43usize || op == 45usize || op == 42usize || op == 47usize || op == 37usize) {
+        // 整数の算術 (溢れと 0 除算は trap)。
+        let l = lower.expr.expr(env, c, p, src, n.b, t)?
+        let r = lower.expr.expr(env, c, p, src, n.c, l.t)?
+        let ty = lower.tyk.text(env, c, l.t)?
+        let mut an = "add"
+        if op == 45usize {
+            an = "sub"
+        } else if op == 42usize {
+            an = "mul"
+        } else if op == 47usize {
+            an = "div"
+        } else if op == 37usize {
+            an = "rem"
+        }
+        let aop = lower.cx.cat2(an, ".")?
+        let aop2 = lower.cx.cat2(aop.as_str(), ty.as_str())?
+        let aop3 = lower.cx.cat2(aop2.as_str(), ".trap ")?
+        let aop4 = lower.cx.cat2(aop3.as_str(), lower.expr.two(l.v, r.v)?.as_str())?
+        let rt = lower.tyk.text(env, c, t)?
+        let v = lower.cx.def(c, rt.as_str(), aop4.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if (op == 38usize || op == 124usize || op == 94usize) {
+        // ビットの演算 (整数と bool): 非短絡の and / or / xor。
+        let l = lower.expr.expr(env, c, p, src, n.b, t)?
+        let r = lower.expr.expr(env, c, p, src, n.c, l.t)?
+        let ty = lower.tyk.text(env, c, l.t)?
+        let mut bn = "and"
+        if op == 124usize {
+            bn = "or"
+        } else if op == 94usize {
+            bn = "xor"
+        }
+        let b1 = lower.cx.cat2(bn, ".")?
+        let b2 = lower.cx.cat2(b1.as_str(), ty.as_str())?
+        let b3 = lower.cx.cat2(b2.as_str(), " ")?
+        let b4 = lower.cx.cat2(b3.as_str(), lower.expr.two(l.v, r.v)?.as_str())?
+        let rt = lower.tyk.text(env, c, t)?
+        let v = lower.cx.def(c, rt.as_str(), b4.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
     if cc == "" {
-        lower.cx.fail(c, "二項演算 (算術・論理は未対応)")?
+        lower.cx.fail(c, "二項演算 (未対応)")?
         return lower.expr.dummy(c, t)
     }
     let l = lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?
@@ -1009,6 +1054,43 @@ fn lower.expr.set_mut(c: &mut lower.cx.Cx, k: usize, m: bool) -> Result<(), reso
     Ok(())
 end lower.expr.set_mut
 
+// `a && b` / `a || b`: 右辺は必要なときだけ評価する (短絡)。Rust 版 `short_circuit` と同じ枝。
+fn lower.expr.shortc(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, is_or: bool) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let a = lower.expr.expr(env, c, p, src, n.b, types.ty.BOOL)?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let rhs = lower.cx.blk(c, &empty)?
+    let mut jps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    jps.push(lower.cx.newval(c, "bool")?)?
+    let jb = lower.cx.blk(c, &jps)?
+    let kc = if is_or {
+        "const.bool true"
+    } else {
+        "const.bool false"
+    }
+    let k = lower.cx.def(c, "bool", kc)?
+    let mut kv = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    kv.push(k)?
+    let mut ev = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut br = lower.cx.cat2("br_if ", lower.cx.vs(a.v)?.as_str())?
+    br.push_str(", ")?
+    if is_or {
+        br.push_str(lower.cx.target(jb, &kv)?.as_str())?
+        br.push_str(", ")?
+        br.push_str(lower.cx.target(rhs, &ev)?.as_str())?
+    } else {
+        br.push_str(lower.cx.target(rhs, &ev)?.as_str())?
+        br.push_str(", ")?
+        br.push_str(lower.cx.target(jb, &kv)?.as_str())?
+    }
+    lower.cx.finish(c, br)?
+    lower.cx.goto(c, rhs)
+    let b = lower.expr.expr(env, c, p, src, n.c, types.ty.BOOL)?
+    ev.push(b.v)?
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(jb, &ev)?.as_str())?)?
+    lower.cx.goto(c, jb)
+    Ok(lower.cx.R { v: lower.tyk.at(jps.as_slice(), 0usize), t: t })
+end lower.expr.shortc
+
 // 名前が `a.b` の形なら (a, b) を返す。それ以外は ("", "")。
 fn lower.expr.split2(name: &str) -> (&str, &str) uses [] panics may pub
     let mut cnt = 0usize
@@ -1166,6 +1248,15 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         }
         let op = lower.cx.cat2(head, lower.cx.vs(slot)?.as_str())?
         let v = lower.cx.def(c, tt.as_str(), op.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    if n.a == 45usize {
+        let x = lower.expr.expr(env, c, p, src, n.b, t)?
+        let tt = lower.tyk.text(env, c, t)?
+        let nop = lower.cx.cat2("neg.", tt.as_str())?
+        let nop2 = lower.cx.cat2(nop.as_str(), ".trap ")?
+        let nop3 = lower.cx.cat2(nop2.as_str(), lower.cx.vs(x.v)?.as_str())?
+        let v = lower.cx.def(c, tt.as_str(), nop3.as_str())?
         return Ok(lower.cx.R { v: v, t: t })
     }
     if n.a != 33usize {
