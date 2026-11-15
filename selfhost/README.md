@@ -860,7 +860,7 @@ python3 -I compare.py --group examples --mine native               # 一致 0 / 
 
 2026-11-15。ブランチ `selfhost/ksnc-stages`。変えたのは `selfhost/driver/` と、この節の追記だけ。`selfhost/` の他の部品 (parse・resolve・types・effects・borrow・fmt・lower・emit) の中身と公開の関数は変えていない (driver から path 依存で呼ぶだけ)。`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` は変えていない。
 
-結論を先に: **ドライバ `ksnc` の各段に Kasane 版を差し込んだ。** `ksnc --stages=kasane` は、検査 (名前解決・型・効果・借用)・整形・下ろし・LLVM 出力を Kasane 製の部品で行い、clang だけを外部のものにする。`--stages=both` は Rust 版と Kasane 版を並べて出す。既定 (`--stages=rust`) は従来どおり。作れるものはまだ少ない: 下ろしは linear_ok の 118 件のうち 9 件だけ作れ (その 9 件はすべて Rust 版と実行結果が同じ)、`ksnc` 自身は作れない。
+結論を先に: **ドライバ `ksnc` の各段に Kasane 版を差し込んだ。** `ksnc --stages=kasane` は、検査 (名前解決・型・効果・借用)・整形・下ろし・LLVM 出力を Kasane 製の部品で行い、clang だけを外部のものにする。`--stages=both` は Rust 版と Kasane 版を並べて出す。既定 (`--stages=rust`) は従来どおり。作れるものはまだ少ない: 下ろしは linear_ok の 123 件のうち 81 件だけ作れ (その 81 件はすべて Rust 版と実行結果が同じ)、`ksnc` 自身は作れない (数は 17.9 で測り直した)。
 
 ### 17.1 使い方
 
@@ -898,12 +898,12 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
 | 段 | 対象 | 一致 | 残り |
 | --- | --- | --- | --- |
 | 1・2 読み込み・名前解決 (`resolve`) | 検査の 34 パッケージ | 検査の表 (下の行) に含む。単独では数えていない | E1020 (未使用の変数・引数)・E1021 (シャドーイング) など、`resolve` の外の検査は Rust 版だけ |
-| 3 検査 (`types`・`effects`・`borrow`) | examples 16・apps 3・selfhost 15 (計 34 パッケージ) | **34 / 34** (examples 16/16・apps 3/3・selfhost 15/15。修正前は 32 / 34)。Rust 版が 0 件のもののうち Kasane 版も 0 件: 33/33 | 残りの不足は 17.5 の 2 (let の経路で欄を区別しない形) |
+| 3 検査 (`types`・`effects`・`borrow`) | examples 16・apps 4・selfhost 15 (計 35 パッケージ、17.9 で測り直し) | **34 / 35** (不一致は `apps/wiki` 1 件: Kasane 版が E2021・E1119 を 7 件出し、Rust 版は 0 件。原因は未調査)。Rust 版が 0 件のもののうち Kasane 版も 0 件: 33/34 | 残りの不足は 17.5 の 2 (let の経路で欄を区別しない形)。`apps/wiki` の不一致 |
 | 4 整形 (`fmt`) | 34 パッケージ | **34 / 34** (書き換えの要否のファイルの集合が Rust 版と同じ。書き換えた後の内容の一致は、1 件 (`examples/tour` に末尾の空行を足した複製) で確かめた) | `ksn fmt` の lint 行 (`not auto-fixable`) と文法検査 (`grammar.check`) は Kasane 版になし |
-| 5 下ろし (`lower`) | linear_ok 118 件 (Rust 版 `ksn build --release` が作れたのは 118 件) | 作れた **9 / 118** | 作れなかった 109 件の理由 (1 ファイルに複数の理由があるので合計は 109 を超える): 型の下ろし 90 (`Option` `Result` `Vec` `String` 参照など)、本体のない宣言 42 (`alloc.*` `std.*` の署名だけの関数)、名前が局所でない 15、式の形 10、総称の関数 10、`let` の形 8、メソッド呼び出し 7、単項演算 5、関数でない呼び出し 4、二項演算 1、構文解析の失敗 (PARSE) 1 |
-| 6 LLVM 出力 (`emit`) | 下ろせた 9 件 | **9 / 9** (実行の標準出力と終了コードが Rust 版の実行ファイルと同じ) | `emit` の 13.4 章の範囲 (浮動小数・外部関数・`std.fs` など)。下ろしが広がらない限り対象が増えない |
-| 7 実行ファイル (clang 段) | 9 件 | **9 / 9** (Kasane 版の clang 段で作れた件数と、上の一致の件数は同じ) | `--target` は host だけ (aarch64 などは失敗する) |
-| 8 ksnc 自身 (`ksnc build --stages=kasane`) | `selfhost/driver` | **0** (作れない) | 下ろしの入口から届く関数 13 件が未対応 (`std.env.arg`・`std.env.var`・`std.process.Command.new`・`alloc.vec.Vec.new` の本体がない。`ksnc.main` の `Option`・`String`・`&str` の型が下ろせない。`ksnc.tool.after` は総称の関数)。届く先が増えるのは、下ろしの範囲が広がったとき |
+| 5 下ろし (`lower`) | linear_ok 123 件 (Rust 版 `ksn build --release` が作れたのは 123 件、17.9 で測り直し) | 作れた **81 / 123** (作れた 81 件は、実行の出力・終了コードが Rust 版と一致) | 作れなかった 42 件の理由 (1 ファイルに複数の理由があるので合計は 42 を超える): 本体のない宣言 18、式の形 13、型の下ろし 10、名前が局所でない 3、panics の値 2、Vec のメソッド 1、Diag 1、match 1、for 1、理由が `Tool` のもの 5 |
+| 6 LLVM 出力 (`emit`) | 下ろせた 81 件 | **81 / 81** (実行の標準出力と終了コードが Rust 版の実行ファイルと同じ) | `emit` の 13.4 章の範囲 (浮動小数・外部関数・`std.fs` など)。下ろしが広がらない限り対象が増えない |
+| 7 実行ファイル (clang 段) | 81 件 | **81 / 81** (Kasane 版の clang 段で作れた件数と、上の一致の件数は同じ) | `--target` は host だけ (aarch64 などは失敗する) |
+| 8 ksnc 自身 (`ksnc build --stages=kasane`) | `selfhost/driver` | **0** (作れない。17.9 で測り直し) | 下ろせない関数 78 件 (理由の件数: 型の下ろし (未対応の型) 31・本体のない宣言 23・文字列のエスケープ 7・呼び出しの解決先が記録されていない 6・for 4・`Vec` の `as_slice` 3・型の大きさが分からない 1・スライスの型 1・局所以外への代入 1・`String` の `push_u64` 1)。届く先が増えるのは、下ろしの範囲が広がったとき |
 
 ### 17.4 確かめ方と注意
 
@@ -952,6 +952,17 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
   1. **`borrow.base.block_end` は関数の本体の終わりを正しく求めない。** 本体が `fn ... end` (波括弧を持たない) のとき、本体の中の最初の波括弧の組 (例: 構造体リテラル `t.C { .. }`) の閉じで本体が終わったとみなす。そのため、後の文で使われる借り手が「もう使われない」と判定され、E3010 を取りこぼす (`let mut c = t.C { .. }` の関数で `let a = &mut c; let b = &c; *a = ..` が通る。Rust 版は E3010)。取りこぼしの方向で、誤検出ではない。
   2. **`selfhost/driver` が HEAD で作れない**: `src/ksnc/kir.ksnl` の `lower.cx.new`・`lower.expr.enqueue`・`lower.func.lower_item` の引数の数が `selfhost/lower` と合わない (E2001)。この節の変更とは無関係。そのため `ksnc check --stages=both` の 34/34 は今回は測れず、代わりに借用の段を 32 パッケージ (examples 16・apps 3・selfhost 13) で Rust 版 `ksn check` と比べ、E30xx が両方 0 件で一致した。
   3. `selfhost/borrow` の `ksn check` が HEAD で通らなかった (E2042: `walk.ksnl` の `if ln.kind == Index { expr(..)? }` の値を捨てていた)。`core.mem.drop` で捨てる形に直した。
+
+### 17.9 driver の API 合わせと再発防止 (2026-11-15、ブランチ `selfhost/driver-api`)
+
+- 原因: `selfhost/lower` の公開の関数 (`lower.cx.new`・`lower.expr.enqueue`・`lower.func.lower_item`) の引数が、型の表を使う拡張で変わったのに、`ksnc/kir.ksnl` が古い呼び方のままだった (E2001)。また `lower.cx.Glob` の欄名が変わっていた (`names` → `nms`、`texts` → `tx`)。
+- 直し: `ksnc/kir.ksnl` を `lower.main` と同じ手順に合わせた (`types.export.run` → `lower.cx.new(tout.ar, tout.cx)` → `lower.expr.enqueue` → `name_of`・`item_at`・`subs_at`・`ret_at` → `lower.func.lower_item(.., key, &subs, ret)`)。`selfhost/lower` は変えていない。ドライバが呼ぶ関数は、この段が使うものだけ。
+- 測り直し (`selfhost/lower` の統合 `1fa7f31` を取り込んだ後):
+  - `compare.py check --pkgs all`: 35 パッケージ中 34 が一致 (17.3 の表の 3 行目)。
+  - `compare.py build`: linear_ok 123 件のうち 81 件が作れ、すべて Rust 版と一致 (17.3 の表の 5〜7 行目)。
+  - `ksnc build --stages=kasane` の自己ビルド: 0 件 (78 件が未対応。17.3 の表の 8 行目)。
+- 再発防止: `tests/run_tests.py` の段 11 で、`selfhost/*` の全パッケージ (`selfhost/probes/*`・`selfhost/lower/probes/*` を含む、`target/`・`broken/`・`tests/` を除く 15 件) の Rust 版 `ksn check` の診断を見る。既定は 0 件。期待で診断を出すパッケージだけを `SELFHOST_EXPECT` の表に書く (`selfhost/probes/boxtree`: E4013 1 件)。表にない診断・件数の違い・表に書いたパッケージが無いことは失敗にする。段の時間は、全件検査の実行では 36.6 秒 (他の実行と並行した負荷時。`ksn check` を 15 件、直列)。無負荷の計測では 12.6 秒。
+- 注意: 段 11 は Rust 版 `ksn check` だけを見る。Kasane 版 (`ksnc --stages=kasane check`) の一致は見ていない (`compare.py check` が担当)。
 
 ## 18. KIR への下ろしの段 (2): 型の表を使い、Option / Result / 参照 を下ろす (修正プラン 5-5)
 
