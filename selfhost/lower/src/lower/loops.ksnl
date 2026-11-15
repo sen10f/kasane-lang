@@ -1,3 +1,114 @@
+// `for x in v.iter()` (`x` は要素への参照) と `for x in v` (要素の値) の `Vec`。添字の番号で回す。
+// 先頭で `i < len`、本体の先頭で要素の番地 (`ptr.add`)、続きで `i + 1`。
+fn lower.loops.forvec(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize, by_ref: bool, hv: usize, hbt: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let (inner, _th, _mu) = lower.opt.deref_ty(c, hbt)
+    let elem = lower.vec.elem(c, inner)
+    let (sz, _al) = lower.tyk.size_of(env, c, elem)?
+    let et = lower.tyk.text(env, c, elem)?
+    let base = lower.cx.depth(c)
+    let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.expr.scan(p, src, n.c, &mut nms, false)?
+    let ks = lower.cx.mlist_in(c, base, &nms)?
+    let szc = lower.vec.usize_c(c, sz)?
+    let len0 = lower.vec.load_usize(c, hv, 8usize)?
+    let zero = lower.vec.usize_c(c, 0usize)?
+    let iv = lower.cx.newval(c, "usize")?
+    let mut hps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    hps.push(iv)?
+    let mvh = lower.cx.fresh_vals(c, &ks)?
+    for v in mvh.as_slice().iter() {
+        hps.push(*v)?
+    }
+    let head = lower.cx.blk(c, &hps)?
+    let eps = lower.cx.fresh_vals(c, &ks)?
+    let exitb = lower.cx.blk(c, &eps)?
+    let cps = lower.cx.fresh_vals(c, &ks)?
+    let contb = lower.cx.blk(c, &cps)?
+    let mut a0 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a0.push(zero)?
+    let cur = lower.cx.cur_vals(c, &ks)?
+    for v in cur.as_slice().iter() {
+        a0.push(*v)?
+    }
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(head, &a0)?.as_str())?)?
+    lower.cx.goto(c, head)
+    lower.cx.bind_vals(c, &ks, &mvh)?
+    let cmp_s = lower.cx.cat2("icmp.lt.usize ", lower.expr.two(iv, len0)?.as_str())?
+    let cmp = lower.cx.def(c, "bool", cmp_s.as_str())?
+    let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let bodyb = lower.cx.blk(c, &empty)?
+    let cv = lower.cx.cur_vals(c, &ks)?
+    let mut s1 = lower.cx.cat2("br_if ", lower.cx.vs(cmp)?.as_str())?
+    s1.push_str(", ")?
+    s1.push_str(lower.cx.target(bodyb, &empty)?.as_str())?
+    s1.push_str(", ")?
+    s1.push_str(lower.cx.target(exitb, &cv)?.as_str())?
+    lower.cx.finish(c, s1)?
+    // 本体: 要素の番地と、変数の束縛。
+    lower.cx.goto(c, bodyb)
+    let mark = lower.cx.depth(c)
+    let p1 = lower.vec.load_ptr(c, hv)?
+    let off = lower.vec.arith(c, "mul", iv, szc)?
+    let pn = parse.ast.get(&p.ast, n.a)
+    if pn.kind != parse.ast.Kind.PBind {
+        lower.cx.fail(c, "for の束縛 (名前だけ対応)")?
+        return lower.expr.dummy(c, t)
+    }
+    let ptk = parse.cur.peek_at(p, pn.a)
+    let pname = resolve.ast.text(src, ptk.start, ptk.stop)
+    let addr = lower.vec.padd(c, p1, off)?
+    let saved_head = c.lp.head
+    let saved_exit = c.lp.exit
+    let saved_base = c.lp.base
+    let saved_ks = lower.cx.copy_u(&c.lp.ks)?
+    let saved_brk = c.lp.brk
+    let mut ety = elem
+    let ebind = if by_ref {
+        let rt = lower.opt.refty(false, et.as_str())?
+        let rs = lower.cx.cat2("ptr.add ", lower.expr.two(p1, off)?.as_str())?
+        ety = types.ty.push(&mut c.ar, types.ty.mk(types.ty.K.Ref, elem, 0usize, 0usize, false))?
+        lower.cx.def(c, rt.as_str(), rs.as_str())?
+    } else {
+        let ls = lower.cx.cat2("mem.load.", et.as_str())?
+        let ls2 = lower.cx.cat2(ls.as_str(), " ")?
+        let ls3 = lower.cx.cat2(ls2.as_str(), lower.cx.vs(addr)?.as_str())?
+        lower.cx.def(c, et.as_str(), lower.cx.cat2(ls3.as_str(), " +0")?.as_str())?
+    }
+    lower.cx.push_local(c, pname, ebind + 1usize, false, ety, false)?
+    c.lp.head = contb
+    c.lp.exit = exitb
+    c.lp.base = base
+    c.lp.ks = lower.cx.copy_u(&ks)?
+    c.lp.brk = 0usize
+    lower.expr.expr(env, c, p, src, n.c, types.ty.UNKNOWN)?
+    if !c.s.term {
+        let a1 = lower.cx.cur_vals(c, &ks)?
+        lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(contb, &a1)?.as_str())?)?
+    }
+    c.lp.head = saved_head
+    c.lp.exit = saved_exit
+    c.lp.base = saved_base
+    c.lp.ks = saved_ks
+    c.lp.brk = saved_brk
+    lower.expr.trunc(c, mark)
+    // 続き: i + 1 を先頭へ。
+    lower.cx.goto(c, contb)
+    lower.cx.bind_vals(c, &ks, &cps)?
+    let one = lower.vec.usize_c(c, 1usize)?
+    let inc = lower.vec.arith(c, "add", iv, one)?
+    let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    a2.push(inc)?
+    let cur2 = lower.cx.cur_vals(c, &ks)?
+    for v in cur2.as_slice().iter() {
+        a2.push(*v)?
+    }
+    lower.cx.finish(c, lower.cx.cat2("br ", lower.cx.target(head, &a2)?.as_str())?)?
+    lower.cx.goto(c, exitb)
+    lower.cx.bind_vals(c, &ks, &eps)?
+    let u = lower.expr.unit(c)?
+    Ok(lower.cx.R { v: u, t: t })
+end lower.loops.forvec
+
 fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let it = parse.ast.get(&p.ast, n.b)
     let mut is_range = false
@@ -9,7 +120,33 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
         }
     }
     if !is_range {
-        lower.cx.fail(c, "for (整数の範囲 core.iter.range 以外は未対応)")?
+        // `v.iter()` (参照の要素) と `v` (値の要素) の Vec。枠の番地は局所のスロット (または参照の値)。
+        let mut name = ""
+        let mut by_ref = false
+        if (it.kind == parse.ast.Kind.Call && resolve.ast.count(p, it.b) == 0usize) {
+            let cn = parse.ast.get(&p.ast, it.a)
+            if cn.kind == parse.ast.Kind.Path {
+                let (f1, f2) = lower.expr.split2(resolve.ast.text(src, cn.a, cn.b))
+                if (f1 != "" && f2 == "iter") {
+                    name = f1
+                    by_ref = true
+                }
+            }
+        } else if (it.kind == parse.ast.Kind.Path) {
+            name = resolve.ast.text(src, it.a, it.b)
+        }
+        if name != "" {
+            let loc = lower.cx.find(c, name)
+            if loc != 0usize {
+                let lt = lower.cx.tyof_t(c, loc - 1usize)
+                let (_di, is_thr, _dm) = lower.opt.deref_ty(c, lt)
+                if lower.tyk.is_vec_ty(env, c, lt) || is_thr {
+                    let hv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
+                    return lower.loops.forvec(env, c, p, src, n, t, by_ref, hv, lt)
+                }
+            }
+        }
+        lower.cx.fail(c, "for (整数の範囲と Vec 以外は未対応)")?
         return lower.expr.dummy(c, t)
     }
     let lo = lower.expr.expr(env, c, p, src, resolve.ast.item(p, it.b, 0usize), types.ty.UNKNOWN)?
@@ -46,7 +183,9 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     lower.cx.bind_vals(c, &ks, &mvh)?
     let cmp_op = lower.expr.two(iv, hi.v)?
     let cmp_src = lower.cx.cat2("icmp.lt.", ity.as_str())?
-    let cmp = lower.cx.def(c, "bool", lower.cx.cat2(cmp_src.as_str(), lower.cx.cat2(" ", cmp_op.as_str())?.as_str())?.as_str())?
+    let cmp_s0 = lower.cx.cat2(" ", cmp_op.as_str())?
+    let cmp_s = lower.cx.cat2(cmp_src.as_str(), cmp_s0.as_str())?
+    let cmp = lower.cx.def(c, "bool", cmp_s.as_str())?
     let empty = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let bodyb = lower.cx.blk(c, &empty)?
     let cv = lower.cx.cur_vals(c, &ks)?
@@ -92,10 +231,14 @@ fn lower.loops.forx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     // 続き: i + 1 を先頭へ。
     lower.cx.goto(c, contb)
     lower.cx.bind_vals(c, &ks, &cps)?
-    let one = lower.cx.def(c, ity.as_str(), lower.cx.cat2("const.", lower.cx.cat2(ity.as_str(), " 1")?.as_str())?.as_str())?
+    let one_s0 = lower.cx.cat2(ity.as_str(), " 1")?
+    let one_s = lower.cx.cat2("const.", one_s0.as_str())?
+    let one = lower.cx.def(c, ity.as_str(), one_s.as_str())?
     let inc_op = lower.expr.two(iv, one)?
     let inc_src = lower.cx.cat2("add.", ity.as_str())?
-    let inc = lower.cx.def(c, ity.as_str(), lower.cx.cat2(inc_src.as_str(), lower.cx.cat2(".wrap ", inc_op.as_str())?.as_str())?.as_str())?
+    let inc_s0 = lower.cx.cat2(".wrap ", inc_op.as_str())?
+    let inc_s = lower.cx.cat2(inc_src.as_str(), inc_s0.as_str())?
+    let inc = lower.cx.def(c, ity.as_str(), inc_s.as_str())?
     let mut a2 = alloc.vec.Vec.new(std.alloc.SYSTEM)
     a2.push(inc)?
     let cur2 = lower.cx.cur_vals(c, &ks)?

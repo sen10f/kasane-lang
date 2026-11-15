@@ -517,6 +517,11 @@ fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     Ok(lower.cx.R { v: rv, t: t })
 end lower.expr.ifx
 
+// メソッド名が `iter` か。
+fn lower.expr.is_iter_name(p: &parse.cur.P, src: &[u8], tok: usize) -> bool uses [] panics may pub
+    resolve.ast.tok_text(p, src, tok) == "iter"
+end lower.expr.is_iter_name
+
 // 整数の既定の演算のメソッド (`wrapping_*`): 受け手は値のまま使う。
 fn lower.expr.is_wrapping(m: &str) -> bool uses [] panics may pub
     m == "wrapping_add" || m == "wrapping_sub" || m == "wrapping_mul"
@@ -949,6 +954,20 @@ fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Ve
             let (f1, f2) = lower.expr.split2(resolve.ast.text(src, cnb.a, cnb.b))
             if f1 != "" && !lower.expr.is_wrapping(f2) {
                 out.push(lower.cx.own(f1)?)?
+            }
+        }
+    }
+    if k == parse.ast.Kind.For && bor {
+        let fit = parse.ast.get(&p.ast, n.b)
+        if fit.kind == parse.ast.Kind.Path {
+            out.push(lower.cx.own(resolve.ast.text(src, fit.a, fit.b))?)?
+        } else if fit.kind == parse.ast.Kind.Call {
+            let fcn = parse.ast.get(&p.ast, fit.a)
+            if fcn.kind == parse.ast.Kind.Path {
+                let (g1, _g2) = lower.expr.split2(resolve.ast.text(src, fcn.a, fcn.b))
+                if g1 != "" {
+                    out.push(lower.cx.own(g1)?)?
+                }
             }
         }
     }
