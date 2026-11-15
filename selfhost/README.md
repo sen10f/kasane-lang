@@ -340,6 +340,31 @@ cd ../.. && python3 -I selfhost/effects/compare.py --group all   # 約 3.5 分 (
 ```
 
 
+### 10.7 型の表を使った後 (修正プラン 5-5 の型の表の段)
+
+2026-11-15。ブランチ `selfhost/type-export`。`effects` は `types.export.run` (型検査の結果) を読む。メソッド呼び出し (`x.m()`・`s.len()`) の解決先を、型の表の項目 (FQN) から効果の表へ引き、定義の効果・panic と比べる。単位の添字は型の env と揃えた (`effects.main` は `types.env.unit` で単位を取る)。
+
+| 対象 | 前 (10.3) | 後 |
+| --- | ---: | ---: |
+| 21 パッケージ (clean) の判断できない形 | 2366 | **325** |
+| 同・診断の不一致 (E40) | 0 | 0 |
+| `stage0/tests/data/linear_ok/*.ksnl` | 一致 118 / 誤検出 0 | 一致 118 / **誤検出 0** |
+| `diag/E40*` (13 件) | 一致 4 / 判断できない 9 | **一致 7** / 判断できない 6 / 余分 0 |
+| `unsound/` の効果・panic (58 件) | 一致 0 / 判断できない 55 / 取りこぼし 3 | 同じ (変化なし) |
+
+- `apps/todo` の判断できなかったメソッド呼び出しは 511 → 0 (解決した呼び出しは 456 → 967 件を検査した)。`examples/demo` も誤検出 0。
+- 変わらなかった理由: `unsound/` の 55 件は閉包・関数値・`dyn` の呼び出しで、型の表に解決先がない。`K.Opaque` (`dyn`) は trait を持たず、`Fnty` は効果を持たないため。ここは型の表に項目を足すまで判断できない (10.5 の 1 の残り)。
+- 作り方: `types.rec` が節 (ノード) ごとに型・呼び出しの種別 (`ck`: 1 関数・2 メソッド・3 局所の関数値・4 列挙子・5 局所のフィールド)・解決先の項目を記録する。`effects.tyinfo` が種別 2 の解決先を効果の表の番号へ変える。
+- 注意 (処理系と無関係の落とし穴): `resolve.table.add_file` は `rep.sig` で宣言ファイルかを見る。`resolve.parse_file` を通さずに呼ぶと `rep.sig` が古いままになり、標準の `.sig` で E1103 (`duplicate definition`) が出る。直接呼ぶ側で設定すること。
+
+再現 (10.6 と同じ。`effects.native` は `ksn build --release`):
+
+```
+cd selfhost/effects && ksn check && ksn fmt --check && ksn build --release
+python3 -I compare.py --group all      # 約 105 秒
+```
+
+
 ## 11. ドライバの段 (修正プラン 5-5)
 
 2026-11-15。ブランチ `selfhost/driver`。新規は `selfhost/driver/` と、この節の追記だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` と `selfhost/` の他の部品は変えていない)。
@@ -496,6 +521,16 @@ ksn check && ksn build --release
 python3 -I compare.py --group examples && python3 -I compare.py --group linear_ok
 python3 -I compare.py --group diag && python3 -I compare.py --group unsound
 ```
+
+
+### 12.8 型の表 (効果・借用へ出す)
+
+2026-11-15。ブランチ `selfhost/type-export`。新規は `types/src/types/rec.ksnl` (表) と `types/src/types/export.ksnl` (`types.export.run`)、既存の変更は `infer.ksnl`・`check.ksnl`・`chk.ksnl` の記録だけ。`types.main` の診断は変えていない。
+
+- 記録: `types.infer.expr` を、本体の `expr_in` を呼んで節の型を書く包みにした。`pat` は束縛パターンの型、関数の引数 (Param 節) は宣言の型を書く。呼び出しは `types.rec.resolved` で種別と解決先 (env の項目 + 1) を置き、包みで節に書く。局所に続くフィールド (`p.x`) は種別 5 と記録する (構文木で `s.len()` と `p.x` が同じ `Path` になる問題 (12.4 の 2) は、種別で区別する形で読める)。
+- 読み出し: `types.export.run(pkg, std_dir)` が `Out { env, ar, cx }` を返す。節の型は `types.rec.ty_of(&out.cx.rec, 単位, 節)` で取り、`types.ty.find` で束縛をたどる。単位の添字は `out.env.srcs` と揃う。
+- 診断は変えない: `types.native` の出力は `apps/todo`・`examples/demo`・`examples/threads`・`examples/http` で HEAD と同一 (md5 一致)。受理は `linear_ok` 118/118、`examples` 15/15 で変わらず。
+- 使う側: `borrow` (15.8) と `effects` (10.7)。
 
 
 ## 13. LLVM 出力の段 (修正プラン 5-5 の次の段)
@@ -704,4 +739,30 @@ ksn build --release                              # target/release/borrow.native 
 python3 -I compare.py --group linear_ok          # 誤検出と受理 (118)
 python3 -I compare.py --group unsound            # 拒否・一致・余分 (Rust 版を 409 回呼ぶ。約 16 秒)
 python3 -I compare.py --group all                # 全部
+```
+
+
+### 15.8 型の表を使った後 (修正プラン 5-5 の借用の段、型の表つき)
+
+2026-11-15。ブランチ `selfhost/type-export`。`borrow` は `types.export.run` の型を読む。Copy か移動かを型で決める: `borrow.tcls` が型を分類に直す (基本の値・`&str` は SREF、参照は SREF / MREF、組・配列は要素の合成、Adt は Option・Result が引数の合成、容器は MOVE、他は型の表 `borrow.tabfill` の線形・Copy の派生)。節に型があれば、式の値 (`expr_cls`)・`let` の束縛・パターンの束縛 (`declare_pat`、`match`・`for` の中も) がその分類になり、型が不明な節だけ 15.3 の近似に任せる。
+
+| `compare.py --group all` | 前 (15.4 の近似) | 後 (型の表) |
+| --- | ---: | ---: |
+| 正しいコードの誤検出 (141 件) | 0 | **0** |
+| 正しいコードで判断保留なしに受理 | 106 | **112** |
+| 判断保留の合計 (577 件) | 481 | **95** |
+| Rust 版が E30xx を出すもの (289 件): 拒否 | 36 | **55** |
+| 同: コードの多重集合まで一致 | 32 | **48** |
+| 同: Rust 版が出さないのに拒否 (余分) | 0 | 0 |
+
+- 15.4 の表の 262 件・31 件・27 件は `unsound/` だけの数で、この表は `all` (diag を含む) の数。前後は同じ `all` で比べた。
+- 15.5 の 1 (型の情報が外へ出ない) は解決した。残りは 15.5 の 2 (閉包の本体、列挙子の payload の型で `Err` の中の線形値を追う) と、ループの二回目の反復。
+- 型の段の `expr` の包みは節ごとに記録する (12.8)。借用の表は `borrow.cx.Cx.tcls` に単位ごとに持つ。
+
+再現:
+
+```
+. ~/.cargo/env
+cd selfhost/borrow && ksn check && ksn fmt --check && ksn build --release
+python3 -I compare.py --group all      # 約 110 秒
 ```

@@ -32,6 +32,7 @@ type borrow.cx.Cx pub
     dat: borrow.cx.Dat pub
     rep: borrow.cx.Rep pub
     fnr: borrow.cx.FnInfo pub
+    tcls: alloc.vec.Vec<usize, std.alloc.System> pub
 end borrow.cx.Cx
 
 // 局所と借用の表、深さごとの「次の文の先頭トークン」と「ブロックの閉じ位置」。
@@ -287,7 +288,8 @@ fn borrow.cx.new(p: parse.cur.P, src: alloc.vec.Vec<u8, std.alloc.System>, path:
     let ob = alloc.string.String.new(std.alloc.SYSTEM)
     let rep = borrow.cx.Rep { path: pth, out: ob, errors: 0usize, undec: 0usize }
     let fnr = borrow.cx.FnInfo { ret_ref: 0usize, ret_life: 0usize, elide: 0usize }
-    Ok(borrow.cx.Cx { p: p, src: src, dat: dat, rep: rep, fnr: fnr })
+    let tcls = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    Ok(borrow.cx.Cx { p: p, src: src, dat: dat, rep: rep, fnr: fnr, tcls: tcls })
 end borrow.cx.new
 
 // 式の根となる局所 (番号 + 1、無ければ 0)。フィールド・添字をたどり、参照の外しは根としない。

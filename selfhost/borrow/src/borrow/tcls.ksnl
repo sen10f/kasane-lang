@@ -1,0 +1,94 @@
+// 型検査の結果 (types.export) を借用の分類に直す。型が決まらないものは UNK (従来の近似に任せる)。
+// Adt の分類。Option と Result は引数の合成、容器は MOVE、他は型の表 (線形・Copy の派生) から引く。
+fn borrow.tcls.adt(tab: &borrow.base.Tab, env: &types.env.Env, ar: &types.ty.Arena, n: types.ty.Node) -> usize uses [] panics never stack 8192 pub
+    let mut name = ""
+    match env.tab.items.as_slice().get(n.a) {
+        Some(it) => {
+            name = resolve.ast.last_part(it.fqn.as_str())
+        }
+        None => core.mem.drop(0u8)
+    }
+    if name == "Option" || name == "Result" {
+        let mut acc = borrow.base.COPY
+        for j in core.iter.range(0usize, n.c) {
+            let c = borrow.tcls.of_ty(tab, env, ar, types.ty.arg(ar, n.b, j))
+            acc = borrow.base.combine(acc, c)
+        }
+        return acc
+    }
+    if borrow.base.is_container(name) {
+        return borrow.base.MOVE
+    }
+    borrow.base.ty_lookup(tab, name)
+end borrow.tcls.adt
+
+// 節 node の分類 (表の添字が範囲外なら UNK)。
+fn borrow.tcls.at(v: &alloc.vec.Vec<usize, std.alloc.System>, k: usize) -> usize uses [] panics never pub
+    match v.as_slice().get(k) {
+        Some(c) => *c
+        None => borrow.base.UNK
+    }
+end borrow.tcls.at
+
+// 型 t (arena の添字) の分類。基本の値は COPY、&str は SREF、参照は SREF / MREF、
+// 組・配列は要素の合成、Adt は borrow.tcls.adt。関数値・総称・dyn・不明は UNK。
+fn borrow.tcls.of_ty(tab: &borrow.base.Tab, env: &types.env.Env, ar: &types.ty.Arena, t: usize) -> usize uses [] panics never stack 8192 pub
+    let id = types.ty.find(ar, t)
+    let n = types.ty.node(ar, id)
+    if borrow.tcls.scalar(n.k) {
+        return borrow.base.COPY
+    }
+    if n.k == types.ty.K.Str {
+        return borrow.base.SREF
+    }
+    if n.k == types.ty.K.Ref {
+        if n.m {
+            return borrow.base.MREF
+        }
+        return borrow.base.SREF
+    }
+    if n.k == types.ty.K.Array {
+        return borrow.base.norm(borrow.tcls.of_ty(tab, env, ar, n.a))
+    }
+    if n.k == types.ty.K.Tuple {
+        let mut acc = borrow.base.COPY
+        for j in core.iter.range(0usize, n.c) {
+            let c = borrow.tcls.of_ty(tab, env, ar, types.ty.arg(ar, n.b, j))
+            acc = borrow.base.combine(acc, c)
+        }
+        return acc
+    }
+    if n.k == types.ty.K.Adt {
+        return borrow.tcls.adt(tab, env, ar, n)
+    }
+    borrow.base.UNK
+end borrow.tcls.of_ty
+
+// 基本の値 (整数・小数・真偽・文字・単位・never) か。
+fn borrow.tcls.scalar(k: types.ty.K) -> bool uses [] panics never pub
+    if k == types.ty.K.Unit || k == types.ty.K.Bool || k == types.ty.K.Char {
+        return true
+    }
+    if k == types.ty.K.Int || k == types.ty.K.Float || k == types.ty.K.Never {
+        return true
+    }
+    false
+end borrow.tcls.scalar
+
+// 単位 file の節ごとの分類の表 (節の数だけ。型の記録がない節は UNK)。
+fn borrow.tcls.table(out: &types.export.Out, file: usize, tab: &borrow.base.Tab) -> Result<alloc.vec.Vec<usize, std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let cnt = match types.env.unit(&out.env, file) {
+        Some(p) => p.ast.nodes.len()
+        None => 0usize
+    }
+    for k in core.iter.range(0usize, cnt) {
+        let t = types.rec.ty_of(&out.cx.rec, file, k)
+        let mut c = borrow.base.UNK
+        if t != 0usize {
+            c = borrow.tcls.of_ty(tab, &out.env, &out.ar, t)
+        }
+        v.push(c)?
+    }
+    Ok(v)
+end borrow.tcls.table

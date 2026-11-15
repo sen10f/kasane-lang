@@ -173,7 +173,13 @@ fn borrow.walk.declare_pat(cx: &mut borrow.cx.Cx, pat: usize, cls: usize) -> Res
     }
     let n = parse.ast.get(&cx.p.ast, pat)
     if n.kind == parse.ast.Kind.PBind {
-        borrow.cx.declare_tok(cx, n.a, cls, 0usize)?
+        // 束縛の型が分かれば、複合の中の束縛でもそれを分類にする。
+        let tc = borrow.tcls.at(&cx.tcls, pat)
+        let mut cl = cls
+        if tc != borrow.base.UNK {
+            cl = tc
+        }
+        borrow.cx.declare_tok(cx, n.a, cl, 0usize)?
         return Ok(())
     }
     if n.kind == parse.ast.Kind.PRef {
@@ -296,6 +302,11 @@ end borrow.walk.expr
 fn borrow.walk.expr_cls(tab: &borrow.base.Tab, cx: &borrow.cx.Cx, e: usize) -> usize uses [] panics never stack 8192 pub
     if e == 0usize {
         return borrow.base.UNK
+    }
+    // 型検査の結果がある節は、その型で分類する (型が決まらなければ下の形による近似)。
+    let tc = borrow.tcls.at(&cx.tcls, e)
+    if tc != borrow.base.UNK {
+        return tc
     }
     let n = parse.ast.get(&cx.p.ast, e)
     if n.kind == parse.ast.Kind.Lit {
@@ -438,6 +449,11 @@ fn borrow.walk.let_stmt(tab: &borrow.base.Tab, cx: &mut borrow.cx.Cx, n: parse.a
                 borrow.cx.diag(cx, "E3003", n.tok, "線形値を _ で捨てる")?
             }
         }
+    }
+    // 束縛パターンの節の型があれば、それを分類にする。
+    let pc = borrow.tcls.at(&cx.tcls, n.a)
+    if pc != borrow.base.UNK {
+        cls = pc
     }
     if pn.kind == parse.ast.Kind.PBind {
         let at = borrow.cx.declare_tok(cx, pn.a, cls, n.b)?

@@ -9,3 +9,8 @@ deps = []
 name = "resolve"
 source = "path+../resolve"
 deps = ["parse"]
+
+[[package]]
+name = "types"
+source = "path+../types"
+deps = ["parse", "resolve"]

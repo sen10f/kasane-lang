@@ -127,6 +127,7 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
                 let (params, ret) = types.infer.sig_of(env, ar, cx, item)?
                 types.infer.check_args(env, ar, cx, p, src, n.b, &params, 0usize, cline)?
                 cx.rep.sigcall = types.infer.item_is_sig(env, item)
+                types.rec.resolved(&mut cx.rec, 1usize, it)
                 return Ok(ret)
             }
             if kind == parse.ast.Kind.Variant {
@@ -138,6 +139,7 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
                     params.push(pt)?
                 }
                 types.infer.check_args(env, ar, cx, p, src, n.b, &params, 0usize, cline)?
+                types.rec.resolved(&mut cx.rec, 4usize, it)
                 return Ok(types.ty.adt(ar, enum_item, &args)?)
             }
         }
@@ -150,6 +152,7 @@ fn types.infer.call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
                     params.push(types.ty.arg(ar, ln.b, j))?
                 }
                 types.infer.check_args(env, ar, cx, p, src, n.b, &params, 0usize, cline)?
+                types.rec.resolved(&mut cx.rec, 3usize, 0usize)
                 return Ok(ln.a)
             }
         }
@@ -254,7 +257,17 @@ fn types.infer.discards(ar: &types.ty.Arena, t: usize) -> bool uses [] panics ne
 end types.infer.discards
 
 // 式。e の型を返す。want は期待する型 (UNKNOWN なら期待なし)。
+// 式 e の型を検査し、型と呼び出しの解決先を表に記録する (本体は types.infer.expr_in)。
 fn types.infer.expr(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], e: usize, want: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
+    types.rec.begin(&mut cx.rec)
+    let t = types.infer.expr_in(env, ar, cx, p, src, e, want)?
+    types.rec.note(cx, e, t)
+    types.rec.note_call(cx, e)
+    types.rec.begin(&mut cx.rec)
+    Ok(t)
+end types.infer.expr
+
+fn types.infer.expr_in(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], e: usize, want: usize) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
     let n = parse.ast.get(&p.ast, e)
     let k = n.kind
     if (k == parse.ast.Kind.Lit) {
@@ -392,7 +405,7 @@ fn types.infer.expr(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types
         return Ok(types.ty.UNIT)
     }
     Ok(types.ty.UNKNOWN)
-end types.infer.expr
+end types.infer.expr_in
 
 // フィールド: 構造体の名前付きフィールドの型。
 fn types.infer.field(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node) -> Result<usize, resolve.Failure> uses [alloc] panics never stack 8192 pub
@@ -806,7 +819,8 @@ fn types.infer.method_call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mu
         }
     }
     if it == 0usize && mname == "clone" {
-        // derive [Clone] の clone は Self を返す (実装は表に出ない)。
+        // derive [Clone] の clone は Self を返す (実装は表に出ない)。解決先は無い。
+        types.rec.resolved(&mut cx.rec, 2usize, 0usize)
         return Ok(rs)
     }
     let mut fk = parse.ast.Kind.Nil
@@ -818,6 +832,7 @@ fn types.infer.method_call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mu
             let ex5 = resolve.ast.item(p, l, j)
             core.mem.drop(types.infer.expr(env, ar, cx, p, src, ex5, types.ty.UNKNOWN)?)
         }
+        types.rec.resolved(&mut cx.rec, 2usize, 0usize)
         return Ok(types.ty.UNKNOWN)
     }
     let (params, ret) = types.infer.sig_of(env, ar, cx, it.wrapping_sub(1usize))?
@@ -827,6 +842,7 @@ fn types.infer.method_call(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mu
         core.mem.drop(types.ty.unify(ar, self_t, rs2)?)
     }
     types.infer.check_args(env, ar, cx, p, src, l, &params, 1usize, line)?
+    types.rec.resolved(&mut cx.rec, 2usize, it)
     Ok(ret)
 end types.infer.method_call
 
@@ -884,6 +900,8 @@ end types.infer.param_at
 
 // パターンを型 ty に当てて、束縛する名前を cx に押す。
 fn types.infer.pat(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut types.chk.Ctx, p: &parse.cur.P, src: &[u8], pt: usize, ty: usize) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    // パターンの節の型 (局所の束縛は PBind の節の型になる)。
+    types.rec.note(cx, pt, ty)
     let n = parse.ast.get(&p.ast, pt)
     let k = n.kind
     if (k == parse.ast.Kind.PBind) {
@@ -987,6 +1005,10 @@ fn types.infer.path_text(env: &types.env.Env, ar: &mut types.ty.Arena, cx: &mut 
     let loc = types.chk.find(cx, first, false)
     if loc != 0usize {
         let t = types.chk.ty_at(cx, loc.wrapping_sub(1usize))
+        if rest != "" {
+            // 局所に続くフィールド (`p.x`)。呼び出しの前の段でも使うので、呼び出しが決めた種別は後で上書きされる。
+            types.rec.resolved(&mut cx.rec, 5usize, 0usize)
+        }
         return types.infer.fields_of(env, ar, cx, t, rest)
     }
     let it = types.env.lookup(env, cx.file, name)?

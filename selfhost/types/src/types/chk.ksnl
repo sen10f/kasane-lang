@@ -5,6 +5,7 @@ type types.chk.Ctx pub
     ret: usize pub
     rep: types.chk.Rep pub
     unknown: usize pub
+    rec: types.rec.Rec pub
 end types.chk.Ctx
 
 // 検査の状態: 名前の並び (局所と総称)・整数リテラルの変数・戻り値の型・診断の文。
@@ -75,7 +76,9 @@ fn types.chk.new() -> Result<types.chk.Ctx, alloc.alloc.AllocError> uses [alloc]
     let path = alloc.string.String.new(std.alloc.SYSTEM)
     let rep = types.chk.Rep { out: out, path: path, errors: 0usize, sigcall: false }
     let pend = types.chk.Pend { lits: lits, lit_lines: lit_lines, lets: lets, let_lines: let_lines }
-    Ok(types.chk.Ctx { file: 0usize, sc: sc, pend: pend, ret: 0usize, rep: rep, unknown: 0usize })
+    let rec = types.rec.empty()?
+    let z = 0usize
+    Ok(types.chk.Ctx { file: z, sc: sc, pend: pend, ret: z, rep: rep, unknown: z, rec: rec })
 end types.chk.new
 
 fn types.chk.push(cx: &mut types.chk.Ctx, name: &str, ty: usize, generic: bool) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub

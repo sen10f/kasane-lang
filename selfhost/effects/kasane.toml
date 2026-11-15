@@ -7,3 +7,4 @@ entry = "effects.main"
 [dependencies]
 parse = { path = "../parse" }
 resolve = { path = "../resolve" }
+types = { path = "../types" }
