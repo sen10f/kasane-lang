@@ -1,0 +1,338 @@
+// 関数の本体を作る途中の文字列。
+type emit.Buf pub
+    cur: alloc.string.String<std.alloc.System> pub
+    hoisted: alloc.string.String<std.alloc.System> pub
+    globals: alloc.string.String<std.alloc.System> pub
+end emit.Buf
+
+type emit.Edge derive [Clone, Copy] pub
+    to: usize pub
+    fromblk: bool pub
+    num: usize pub
+    j: usize pub
+    v: usize pub
+end emit.Edge
+
+// 使った補助の印と、関数の名前・戻り値の型。
+type emit.Flags pub
+    write_used: bool pub
+    eprint_used: bool pub
+    ret: usize pub
+    fkey: alloc.string.String<std.alloc.System> pub
+end emit.Flags
+
+// 関数ごとの流れ (辺・後続・ブロックごとの本体)。
+type emit.Flow pub
+    edges: alloc.vec.Vec<emit.Edge, std.alloc.System> pub
+    succ: alloc.vec.Vec<usize, std.alloc.System> pub
+    stk: alloc.vec.Vec<usize, std.alloc.System> pub
+    blocks: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
+end emit.Flow
+
+type emit.G pub
+    tab: emit.Tab pub
+    lay: emit.Lay pub
+    flow: emit.Flow pub
+    buf: emit.Buf pub
+    outs: emit.Outs pub
+    misc: emit.Misc pub
+    flags: emit.Flags pub
+end emit.G
+
+// 関数ごとの配置 (値の型・ブロックの引数・到達性)。
+type emit.Lay pub
+    vty: alloc.vec.Vec<usize, std.alloc.System> pub
+    bpar: alloc.vec.Vec<usize, std.alloc.System> pub
+    bpty: alloc.vec.Vec<usize, std.alloc.System> pub
+    bpst: alloc.vec.Vec<usize, std.alloc.System> pub
+    reach: alloc.vec.Vec<bool, std.alloc.System> pub
+end emit.Lay
+
+// 番号と現在の位置。
+type emit.Misc pub
+    n: usize pub
+    nblk: usize pub
+    fidx: usize pub
+    curfromblk: bool pub
+    curnum: usize pub
+end emit.Misc
+
+// 出力の全体 (宣言・関数・入口)。
+type emit.Outs pub
+    intr: alloc.string.String<std.alloc.System> pub
+    out: alloc.string.String<std.alloc.System> pub
+    fns: alloc.string.String<std.alloc.System> pub
+end emit.Outs
+
+// 型・集成体の表 (関数をまたいで残る)。
+type emit.Tab pub
+    tys: alloc.vec.Vec<emit.ty.Ty, std.alloc.System> pub
+    aggs: alloc.vec.Vec<emit.agg.Agg, std.alloc.System> pub
+    foffs: alloc.vec.Vec<usize, std.alloc.System> pub
+    ftys: alloc.vec.Vec<usize, std.alloc.System> pub
+    vars: alloc.vec.Vec<emit.agg.Var, std.alloc.System> pub
+end emit.Tab
+
+// 宣言 `def` を `g.outs.intr` へ追加する (同じ宣言は一度だけ)。
+fn emit.decl(g: &mut emit.G, def: &str) -> () uses [alloc, io.console, process] panics may pub
+    if !g.outs.intr.as_str().contains(def) {
+        emit.util.push_str(&mut g.outs.intr, def)
+        emit.util.push_str(&mut g.outs.intr, "\n")
+    }
+end emit.decl
+
+// 辺を記録する (今の出所から、ブロック `to` の引数 `j` へ値 `%v<v>`)。
+fn emit.edge(g: &mut emit.G, to: usize, j: usize, v: usize) -> () uses [alloc, io.console, process] panics may pub
+    let fb = g.misc.curfromblk
+    let nm = g.misc.curnum
+    let e = emit.Edge { to: to, fromblk: fb, num: nm, j: j, v: v }
+    match g.flow.edges.push(e) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.edge
+
+// 大域の定義 `def` を `g.buf.globals` へ追加する (同じ定義は一度だけ)。
+fn emit.global(g: &mut emit.G, def: &str) -> () uses [alloc, io.console, process] panics may pub
+    if !g.buf.globals.as_str().contains(def) {
+        emit.util.push_str(&mut g.buf.globals, def)
+    }
+end emit.global
+
+// ラベル `L<番号>:` を置き、以後の辺の出所にする。
+fn emit.label(g: &mut emit.G, num: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.w(g, "L")
+    emit.wn(g, num)
+    emit.w(g, ":\n")
+    g.misc.curfromblk = false
+    g.misc.curnum = num
+end emit.label
+
+// 1 行を書く (字下げ 2 つ + 本文 + 改行)。
+fn emit.line(g: &mut emit.G, s: &str) -> () uses [alloc, io.console, process] panics may pub
+    emit.w(g, "  ")
+    emit.w(g, s)
+    emit.w(g, "\n")
+end emit.line
+
+// 行 `k` の本文 (前後の空白を除く)。`starts` は各行の先頭のバイト位置。行は `text` の部分列として借りる。
+fn emit.line_at['a](text: &'a str, starts: &alloc.vec.Vec<usize, std.alloc.System>, k: usize) -> &'a str uses [] panics may pub
+    let a = match starts.get(k) {
+        Some(x) => *x
+        None => text.len()
+    }
+    let b = match starts.get(k.wrapping_add(1usize)) {
+        Some(x) => x.wrapping_sub(1usize)
+        None => text.len()
+    }
+    match text.split_at(a) {
+        Some(q) => {
+            let (_h, r) = q
+            match r.split_at(b.wrapping_sub(a)) {
+                Some(q2) => {
+                    let (line, _t) = q2
+                    line.trim()
+                }
+                None => text
+            }
+        }
+        None => text
+    }
+end emit.line_at
+
+// 各行の先頭のバイト位置。
+fn emit.line_starts(text: &str) -> alloc.vec.Vec<usize, std.alloc.System> uses [alloc, io.console, process] panics may pub
+    let mut starts: alloc.vec.Vec<usize, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    emit.util.vec_push(&mut starts, 0usize)
+    let b = text.as_bytes()
+    let mut k = 0usize
+    while k < b.len() {
+        let c = match b.get(k) {
+            Some(x) => *x
+            None => 0u8
+        }
+        if c == 10u8 {
+            emit.util.vec_push(&mut starts, k.wrapping_add(1usize))
+        }
+        k = k.wrapping_add(1usize)
+    }
+    starts
+end emit.line_starts
+
+fn emit.main() -> () uses [alloc, env, io.console, io.fs, process] panics may pub
+    let path = match std.env.arg(0usize) {
+        Some(p) => p
+        None => core.panic.panic("usage: emit <kir-file> <entry-fqn>")
+    }
+    let entry = match std.env.arg(1usize) {
+        Some(p) => p
+        None => core.panic.panic("usage: emit <kir-file> <entry-fqn>")
+    }
+    let bytes = match emit.read_file(path) {
+        Ok(b) => b
+        Err(_e) => core.panic.panic("cannot read the KIR file")
+    }
+    let text = match core.str.from_utf8(bytes.as_slice()) {
+        Ok(t) => t
+        Err(_e) => core.panic.panic("the KIR file is not UTF-8")
+    }
+    let mut g = emit.new_g()
+    emit.module(&mut g, text, entry)
+    match std.io.print_line(g.outs.out.as_str()) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("cannot write the output")
+    }
+end emit.main
+
+// モジュール全体: 集成体の表 → 関数ごと → 固定の本体、の順に `g.outs.out` を組む。
+fn emit.module(g: &mut emit.G, text: &str, entry: &str) -> () uses [alloc, io.console, process] panics may pub
+    let starts = emit.line_starts(text)
+    let n = starts.len()
+    let mut i = 0usize
+    while i < n {
+        let l = emit.line_at(text, &starts, i)
+        if l.starts_with("agg#") {
+            emit.agg.parse_line(g, l)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let mut entry_found = false
+    let mut entry_params = 0usize
+    i = 0usize
+    while i < n {
+        let l = emit.line_at(text, &starts, i)
+        if l.starts_with("fn ") {
+            let mut j = i.wrapping_add(1usize)
+            while j < n && !emit.line_at(text, &starts, j).starts_with("end ") {
+                j = j.wrapping_add(1usize)
+            }
+            if j >= n {
+                core.panic.panic("the function has no end line")
+            }
+            if emit.func.key_of(l) == entry {
+                entry_found = true
+                let hd = emit.line_at(text, &starts, i.wrapping_add(1usize))
+                if hd.contains("%") {
+                    entry_params = emit.util.piece_count(hd, "%").wrapping_sub(1usize)
+                }
+            }
+            emit.func.emit_fn(g, text, &starts, i, j)
+            i = j.wrapping_add(1usize)
+        } else {
+            i = i.wrapping_add(1usize)
+        }
+    }
+    if !entry_found {
+        core.panic.panic("the entry function is not in the KIR file")
+    }
+    emit.rt.assemble(g, entry, entry_params)
+end emit.module
+
+fn emit.new_g() -> emit.G uses [alloc, io.console, process] panics may pub
+    let tys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let aggs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let foffs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let ftys = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let vars = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let tab = emit.Tab { tys: tys, aggs: aggs, foffs: foffs, ftys: ftys, vars: vars }
+    let vty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let bpar = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let bpty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let bpst = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let reach = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let lay = emit.Lay { vty: vty, bpar: bpar, bpty: bpty, bpst: bpst, reach: reach }
+    let edges = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let succ = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let stk = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let blocks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let flow = emit.Flow { edges: edges, succ: succ, stk: stk, blocks: blocks }
+    let cur = alloc.string.String.new(std.alloc.SYSTEM)
+    let hoisted = alloc.string.String.new(std.alloc.SYSTEM)
+    let globals = alloc.string.String.new(std.alloc.SYSTEM)
+    let buf = emit.Buf { cur: cur, hoisted: hoisted, globals: globals }
+    let intr = alloc.string.String.new(std.alloc.SYSTEM)
+    let out = alloc.string.String.new(std.alloc.SYSTEM)
+    let fns = alloc.string.String.new(std.alloc.SYSTEM)
+    let outs = emit.Outs { intr: intr, out: out, fns: fns }
+    let n = 0usize
+    let nblk = 0usize
+    let fidx = 0usize
+    let curfromblk = true
+    let curnum = 0usize
+    let misc = emit.Misc { n: n, nblk: nblk, fidx: fidx, curfromblk: curfromblk, curnum: curnum }
+    let wu = false
+    let eu = false
+    let ret = 0usize
+    let fkey = alloc.string.String.new(std.alloc.SYSTEM)
+    let flags = emit.Flags { write_used: wu, eprint_used: eu, ret: ret, fkey: fkey }
+    emit.G { tab: tab, lay: lay, flow: flow, buf: buf, outs: outs, misc: misc, flags: flags }
+end emit.new_g
+
+// 新しいラベル (`L<番号>`) の番号を作る。
+fn emit.newlab(g: &mut emit.G) -> usize uses [] panics may pub
+    g.misc.n = g.misc.n.wrapping_add(1usize)
+    g.misc.n
+end emit.newlab
+
+// ファイルを全部読む (`parse` の `read_file` と同じ形)。
+fn emit.read_file(path: &str) -> Result<alloc.vec.Vec<u8, std.alloc.System>, std.io.Error> uses [alloc, io.fs] panics may pub
+    let mut buf = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    with mut file = std.fs.open(path)? close core.mem.drop(file.close()) {
+        core.mem.drop(std.fs.read_to_end(&mut file, &mut buf)?)
+    }
+    Ok(buf)
+end emit.read_file
+
+// 関数の作業場所を空にする (表は残す)。
+fn emit.reset_fn(g: &mut emit.G) -> () uses [alloc, io.console, process] panics may pub
+    g.lay.vty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    g.lay.bpar = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    g.lay.bpty = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    g.lay.bpst = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    g.lay.reach = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    g.flow.edges = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    g.flow.succ = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    g.flow.stk = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    g.flow.blocks = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    g.buf.cur = alloc.string.String.new(std.alloc.SYSTEM)
+    g.buf.hoisted = alloc.string.String.new(std.alloc.SYSTEM)
+    g.misc.n = 0usize
+    g.misc.nblk = 0usize
+    g.misc.curfromblk = true
+    g.misc.curnum = 0usize
+end emit.reset_fn
+
+// 一時の値の番号を新しく作って返す。値の番号は KIR の値 (1000000 より小さい) と重ならない `1000000 + n` にし、`%v<番号>` と書く。
+fn emit.tmp(g: &mut emit.G) -> usize uses [] panics may pub
+    g.misc.n = g.misc.n.wrapping_add(1usize)
+    1000000usize.wrapping_add(g.misc.n)
+end emit.tmp
+
+// 文字列を現在の作業場所 (`g.buf.cur`) へ書く。
+fn emit.w(g: &mut emit.G, s: &str) -> () uses [alloc, io.console, process] panics may pub
+    match g.buf.cur.push_str(s) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("emit: out of memory")
+    }
+end emit.w
+
+// 出所のラベルの文字列 (`b<番号>` または `L<番号>`) を書く。`%` は付けない。
+fn emit.wfrom(g: &mut emit.G, fromblk: bool, num: usize) -> () uses [alloc, io.console, process] panics may pub
+    if fromblk {
+        emit.w(g, "b")
+    } else {
+        emit.w(g, "L")
+    }
+    emit.wn(g, num)
+end emit.wfrom
+
+// 十進の数を現在の作業場所へ書く。
+fn emit.wn(g: &mut emit.G, n: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.util.push_num(&mut g.buf.cur, n)
+end emit.wn
+
+// 値 `%v<番号>`。
+fn emit.wv(g: &mut emit.G, v: usize) -> () uses [alloc, io.console, process] panics may pub
+    emit.w(g, "%v")
+    emit.wn(g, v)
+end emit.wv
