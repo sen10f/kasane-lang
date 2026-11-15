@@ -34,7 +34,8 @@ pub enum Ty {
     /// (`*mut` → `*const` の縮小だけ暗黙に許す。`*const` → `*mut` は `core.ptr.as_mut` のみ)。
     Ptr(bool, Box<Ty>),
     Tuple(Vec<Ty>),
-    Array(Box<Ty>),
+    /// 2 つ目は整数リテラルで書かれた長さ (定数名・式は `None` = 比べない)。
+    Array(Box<Ty>, Option<u128>),
     Slice(Box<Ty>),
     /// ジェネリクスの型パラメータ (シグネチャの中だけに現れる)
     Param(String),
@@ -117,7 +118,7 @@ impl Ty {
             Ty::Ref(m, t) => format!("&{}{}", if *m { "mut " } else { "" }, t.show()),
             Ty::Ptr(m, t) => format!("{} {}", if *m { "*mut" } else { "*const" }, t.show()),
             Ty::Tuple(ts) => format!("({})", ts.iter().map(|x| x.show()).collect::<Vec<_>>().join(", ")),
-            Ty::Array(t) => format!("[{}; _]", t.show()),
+            Ty::Array(t, n) => match n { Some(n) => format!("[{}; {}]", t.show(), n), None => format!("[{}; _]", t.show()) },
             Ty::Slice(t) => format!("[{}]", t.show()),
             Ty::Param(p) => p.clone(),
             Ty::Const(c) => c.clone(),
@@ -131,7 +132,7 @@ impl Ty {
         match self {
             Ty::Param(_) => true,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| x.has_param()),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => x.has_param(),
+            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => x.has_param(),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| x.has_param()) || ret.has_param(),
             _ => false,
         }
@@ -156,7 +157,7 @@ pub fn from_v(v: &V, params: &HashSet<String>) -> Ty {
             let xs: Vec<Ty> = items(tel(v, 1)).iter().map(|x| from_v(x, params)).collect();
             if xs.is_empty() { Ty::Unit } else { Ty::Tuple(xs) }
         }
-        "array" => Ty::Array(Box::new(from_v(tel(v, 1), params))),
+        "array" => Ty::Array(Box::new(from_v(tel(v, 1), params)), array_len(tel(v, 2))),
         "slice" => Ty::Slice(Box::new(from_v(tel(v, 1), params))),
         "ref" => Ty::Ref(matches!(tel(v, 1), V::B(true)), Box::new(from_v(tel(v, 2), params))),
         // 関数ポインタ型 `fn(A) -> R uses [..] panics ..`。効果は型の同一性に入れない (効果検査が見る)。
@@ -257,7 +258,7 @@ fn subst(t: &Ty, bind: &HashMap<String, Ty>) -> Ty {
         Ty::Ref(m, x) => Ty::Ref(*m, Box::new(subst(x, bind))),
         Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(subst(x, bind))),
         Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| subst(x, bind)).collect()),
-        Ty::Array(x) => Ty::Array(Box::new(subst(x, bind))),
+        Ty::Array(x, n) => Ty::Array(Box::new(subst(x, bind)), *n),
         Ty::Slice(x) => Ty::Slice(Box::new(subst(x, bind))),
         Ty::Closure { args, ret, cap, id, eff } => Ty::Closure {
             args: args.iter().map(|x| subst(x, bind)).collect(),
@@ -665,7 +666,7 @@ impl<'a> TypeCk<'a> {
             Ty::Unknown => true,
             Ty::Var(v) => self.kinds[v] == 0 || self.escaped.contains(&v),
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.undetermined(x)),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => self.undetermined(&x),
+            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.undetermined(&x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.undetermined(x)) || self.undetermined(&ret),
             _ => false,
         }
@@ -707,7 +708,7 @@ impl<'a> TypeCk<'a> {
         match self.deep(t) {
             Ty::Ref(..) => true,
             Ty::Tuple(xs) => xs.iter().any(|x| self.holds_ref(x, seen)),
-            Ty::Array(x) | Ty::Slice(x) => self.holds_ref(&x, seen),
+            Ty::Array(x, _) | Ty::Slice(x) => self.holds_ref(&x, seen),
             Ty::Named(n, args) => {
                 if args.iter().any(|x| self.holds_ref(x, seen)) {
                     return true;
@@ -750,7 +751,7 @@ impl<'a> TypeCk<'a> {
             Ty::Ptr(..) => Some(false),
             Ty::Ref(m, x) => self.auto_marker(&x, sync || !m, seen),
             Ty::Tuple(xs) => xs.iter().fold(Some(true), |r, x| and_marker(r, self.auto_marker(x, sync, seen))),
-            Ty::Array(x) | Ty::Slice(x) => self.auto_marker(&x, sync, seen),
+            Ty::Array(x, _) | Ty::Slice(x) => self.auto_marker(&x, sync, seen),
             Ty::Param(p) => {
                 let bounded = self.def().generics.iter().any(|g| {
                     g.0 == "type" && g.1 == p && items(&g.2).iter().any(|b| matches!(b, V::L(bx) if st(&bx[0]) == marker))
@@ -939,7 +940,7 @@ impl<'a> TypeCk<'a> {
             Ty::Prim(p) => V::L(vec![s("prim"), s(p)]),
             Ty::Unit => V::L(vec![s("tuple"), V::L(vec![])]),
             Ty::Tuple(xs) => V::L(vec![s("tuple"), V::L(xs.iter().map(Self::to_v).collect::<Option<Vec<V>>>()?)]),
-            Ty::Array(x) => V::L(vec![s("array"), Self::to_v(x)?]),
+            Ty::Array(x, _) => V::L(vec![s("array"), Self::to_v(x)?]),
             Ty::Slice(x) => V::L(vec![s("slice"), Self::to_v(x)?]),
             Ty::Ref(m, x) => V::L(vec![s("ref"), V::B(*m), Self::to_v(x).unwrap_or(V::Nil)]),
             Ty::Ptr(m, x) => V::L(vec![s("ptr"), V::B(*m), Self::to_v(x)?]),
@@ -1259,7 +1260,7 @@ impl<'a> TypeCk<'a> {
                 self.escaped.insert(v);
             }
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().for_each(|x| self.escape(x)),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => self.escape(&x),
+            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.escape(&x),
             Ty::Closure { args, ret, .. } => {
                 args.iter().for_each(|x| self.escape(x));
                 self.escape(&*ret);
@@ -1415,7 +1416,7 @@ impl<'a> TypeCk<'a> {
         match t {
             Ty::Prim(_) | Ty::Unit | Ty::Never => Some(true),
             Ty::Ref(m, _) => Some(!*m),
-            Ty::Array(x) => self.ty_copy(x),
+            Ty::Array(x, _) => self.ty_copy(x),
             Ty::Tuple(xs) => {
                 let parts: Vec<Option<bool>> = xs.iter().map(|x| self.ty_copy(x)).collect();
                 if parts.contains(&Some(false)) {
@@ -1566,7 +1567,7 @@ impl<'a> TypeCk<'a> {
             Ty::Ref(m, x) => Ty::Ref(m, Box::new(self.deep(&x))),
             Ty::Ptr(m, x) => Ty::Ptr(m, Box::new(self.deep(&x))),
             Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.deep(x)).collect()),
-            Ty::Array(x) => Ty::Array(Box::new(self.deep(&x))),
+            Ty::Array(x, n) => Ty::Array(Box::new(self.deep(&x)), n),
             Ty::Slice(x) => Ty::Slice(Box::new(self.deep(&x))),
             Ty::Closure { args, ret, cap, id, eff } => Ty::Closure {
                 args: args.iter().map(|x| self.deep(x)).collect(),
@@ -1583,7 +1584,7 @@ impl<'a> TypeCk<'a> {
         match self.resolve(t) {
             Ty::Var(i) => i == v,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.occurs(v, x)),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => self.occurs(v, &x),
+            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.occurs(v, &x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.occurs(v, x)) || self.occurs(v, &*ret),
             _ => false,
         }
@@ -1595,9 +1596,27 @@ impl<'a> TypeCk<'a> {
             Ty::Unit => Some("unit"),
             Ty::Prim(_) => Some("prim"),
             Ty::Tuple(_) => Some("tuple"),
+            Ty::Array(..) | Ty::Slice(_) => Some("seq"),
+            Ty::Closure { .. } => Some("closure"),
             Ty::Named(n, _) if n != "alloc.vec.Vec" && n != "alloc.string.String" => Some("named"),
             _ => None,
         }
+    }
+
+    /// 構造そのものが合わない組 (`unify2` が必ず `Err` にするもの) を、報告用の文字列にする。
+    /// 型パラメータどうしの取り違え、タプルの要素数、種類の違い (整数と配列、構造体とクロージャなど)、配列の長さ。
+    fn shape_conflict(e: &(Ty, Ty)) -> Option<(String, String)> {
+        let hit = match (&e.0, &e.1) {
+            (Ty::Param(a), Ty::Param(b)) => a != b,
+            (Ty::Param(_), t) | (t, Ty::Param(_)) => !matches!(t, Ty::Var(_) | Ty::Ref(..) | Ty::Unknown | Ty::Never),
+            (Ty::Tuple(a), Ty::Tuple(b)) => a.len() != b.len(),
+            (Ty::Array(_, Some(a)), Ty::Array(_, Some(b))) => a != b,
+            (x, y) => match (Self::concrete_kind(x), Self::concrete_kind(y)) {
+                (Some(p), Some(q)) => p != q,
+                _ => false,
+            },
+        };
+        hit.then(|| (e.0.show(), e.1.show()))
     }
 
     /// 関数・クロージャを関数型 `fn(..) uses [E] panics P` に合わせる所 (仕様 5.1) の効果の検査。
@@ -1722,7 +1741,7 @@ impl<'a> TypeCk<'a> {
                     self.check_fn_conv_dir_walk(w.clone(), g.clone());
                 }
             }
-            (Ty::Array(w), Ty::Array(g)) | (Ty::Slice(w), Ty::Slice(g)) => {
+            (Ty::Array(w, _), Ty::Array(g, _)) | (Ty::Slice(w), Ty::Slice(g)) => {
                 self.check_fn_conv_dir_walk((**w).clone(), (**g).clone());
             }
             (Ty::Ptr(_, w), Ty::Ptr(_, g)) => {
@@ -1801,7 +1820,10 @@ impl<'a> TypeCk<'a> {
             self.escape(&a);
         }
         match (&a, &b) {
-            (Ty::Unknown, _) | (_, Ty::Unknown) | (Ty::Never, _) | (_, Ty::Never) | (Ty::Param(_), _) | (_, Ty::Param(_)) => Ok(()),
+            (Ty::Unknown, _) | (_, Ty::Unknown) | (Ty::Never, _) | (_, Ty::Never) => Ok(()),
+            // 型パラメータは剛な型 (自分自身とだけ一致する)。変数・参照 (透過) は下の腕で扱う。
+            (Ty::Param(p), Ty::Param(q)) => if p == q { Ok(()) } else { Err((a.clone(), b.clone())) },
+            (Ty::Param(_), t) | (t, Ty::Param(_)) if !matches!(t, Ty::Var(_) | Ty::Ref(..)) => Err((a.clone(), b.clone())),
             (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
             (Ty::Var(x), Ty::Var(y)) => {
                 let k = self.kinds[*x].max(self.kinds[*y]);
@@ -1848,7 +1870,13 @@ impl<'a> TypeCk<'a> {
             // 呼び出し側 (`ptr_mismatch`) が `*mut` → `*const` の許される向きかどうかを決める。
             (Ty::Ptr(m, x), Ty::Ptr(n, y)) => {
                 let (m, n) = (*m, *n);
-                let (x, y) = (x.clone(), y.clone());
+                let (x, y) = (self.resolve(x), self.resolve(y));
+                // `*mut [T]` (スライスへのポインタ) は先頭要素へのポインタ `*mut T` として渡せる (FFI の慣習)。
+                let (x, y) = match (&x, &y) {
+                    (Ty::Slice(e) | Ty::Array(e, _), t) if !matches!(t, Ty::Slice(_) | Ty::Array(..) | Ty::Var(_)) => ((**e).clone(), y.clone()),
+                    (t, Ty::Slice(e) | Ty::Array(e, _)) if !matches!(t, Ty::Slice(_) | Ty::Array(..) | Ty::Var(_)) => (x.clone(), (**e).clone()),
+                    _ => (x, y),
+                };
                 self.unify2(&x, &y).map_err(|_| (a.clone(), b.clone()))?;
                 if m == n { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
@@ -1895,6 +1923,9 @@ impl<'a> TypeCk<'a> {
                 Ok(())
             }
             (Ty::Tuple(xs), Ty::Tuple(ys)) => {
+                if xs.len() != ys.len() {
+                    return Err((a.clone(), b.clone()));
+                }
                 let (xs, ys) = (xs.clone(), ys.clone());
                 for (x, y) in xs.iter().zip(&ys) {
                     self.unify2(x, y)?;
@@ -1921,17 +1952,18 @@ impl<'a> TypeCk<'a> {
                 }
                 Ok(())
             }
-            (Ty::Slice(x), Ty::Slice(y)) | (Ty::Slice(x), Ty::Array(y)) | (Ty::Array(x), Ty::Slice(y)) | (Ty::Array(x), Ty::Array(y)) => {
+            (Ty::Array(_, Some(m)), Ty::Array(_, Some(n))) if m != n => Err((a.clone(), b.clone())),
+            (Ty::Slice(x), Ty::Slice(y)) | (Ty::Slice(x), Ty::Array(y, _)) | (Ty::Array(x, _), Ty::Slice(y)) | (Ty::Array(x, _), Ty::Array(y, _)) => {
                 let (x, y) = (x.clone(), y.clone());
                 self.unify2(&x, &y)
             }
             (Ty::Unit, Ty::Unit) => Ok(()),
             // `()` と `String` / `Vec` は決して合わない (下の除外は `str` やスライスとの近似のためで、`()` には要らない)。
-            (Ty::Unit, Ty::Named(..) | Ty::Array(_) | Ty::Slice(_)) | (Ty::Named(..) | Ty::Array(_) | Ty::Slice(_), Ty::Unit) => {
+            (Ty::Unit, Ty::Named(..) | Ty::Array(_, _) | Ty::Slice(_)) | (Ty::Named(..) | Ty::Array(_, _) | Ty::Slice(_), Ty::Unit) => {
                 Err((a.clone(), b.clone()))
             }
             // `Vec` は配列・スライスと別の型 (4.2: 暗黙の変換は `&[T; N]` → `&[T]` のみ)。
-            (Ty::Named(n, _), Ty::Array(_) | Ty::Slice(_)) | (Ty::Array(_) | Ty::Slice(_), Ty::Named(n, _)) if n == "alloc.vec.Vec" => {
+            (Ty::Named(n, _), Ty::Array(_, _) | Ty::Slice(_)) | (Ty::Array(_, _) | Ty::Slice(_), Ty::Named(n, _)) if n == "alloc.vec.Vec" => {
                 Err((a.clone(), b.clone()))
             }
             // 構造が確定していて種類が違う組 (`()` と `Result<..>`、整数とタプルなど) は矛盾 (fail-closed)。
@@ -1958,7 +1990,7 @@ impl<'a> TypeCk<'a> {
             Ty::Ref(m, x) => Ty::Ref(*m, Box::new(self.inst(x, map))),
             Ty::Ptr(m, x) => Ty::Ptr(*m, Box::new(self.inst(x, map))),
             Ty::Tuple(xs) => Ty::Tuple(xs.iter().map(|x| self.inst(x, map)).collect()),
-            Ty::Array(x) => Ty::Array(Box::new(self.inst(x, map))),
+            Ty::Array(x, n) => Ty::Array(Box::new(self.inst(x, map)), *n),
             Ty::Slice(x) => Ty::Slice(Box::new(self.inst(x, map))),
             other => other.clone(),
         }
@@ -1992,6 +2024,9 @@ impl<'a> TypeCk<'a> {
     /// 矛盾した 2 つが両方プリミティブ (リテラル型を含む)、または定数実引数どうしの違い
     /// (異なる定数は別単相、4.3) なら、診断のための文字列を返す。
     fn prim_conflict(&self, e: &(Ty, Ty)) -> Option<(String, String)> {
+        if let Some(p) = Self::shape_conflict(e) {
+            return Some(p);
+        }
         match (&e.0, &e.1) {
             (Ty::Prim(a), Ty::Prim(b)) => Some((a.clone(), b.clone())),
             (Ty::Const(a), Ty::Const(b)) => Some((a.clone(), b.clone())),
@@ -2076,7 +2111,7 @@ impl<'a> TypeCk<'a> {
             Ty::Prim(p) if p == "bool" => (vec!["core.bool.bool".into()], true),
             Ty::Prim(p) if p == "char" => (vec!["core.char.char".into()], true),
             Ty::Prim(p) => (vec![format!("core.num.{}", p)], true),
-            Ty::Slice(_) | Ty::Array(_) => (vec!["core.slice".into(), "core.array".into()], true),
+            Ty::Slice(_) | Ty::Array(_, _) => (vec!["core.slice".into(), "core.array".into()], true),
             Ty::Named(n, _) => match n.as_str() {
                 "Option" => (vec!["core.option.Option".into()], true),
                 "Result" => (vec!["core.result.Result".into()], true),
@@ -2580,7 +2615,7 @@ impl<'a> TypeCk<'a> {
     fn iter_elem(&mut self, it: &Ty) -> Ty {
         let deep = self.deep(it);
         match deep.strip() {
-            Ty::Array(x) | Ty::Slice(x) => return (**x).clone(),
+            Ty::Array(x, _) | Ty::Slice(x) => return (**x).clone(),
             Ty::Named(n, a) if n == "alloc.vec.Vec" => return a.first().cloned().unwrap_or(Ty::Unknown),
             _ => {}
         }
@@ -2947,7 +2982,7 @@ impl<'a> TypeCk<'a> {
         match self.deep(t) {
             Ty::Var(_) => true,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.has_var(x)),
-            Ty::Ref(_, x) | Ty::Array(x) | Ty::Slice(x) => self.has_var(&x),
+            Ty::Ref(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.has_var(&x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.has_var(x)) || self.has_var(&ret),
             _ => false,
         }
@@ -3063,7 +3098,7 @@ impl<'a> TypeCk<'a> {
                 matches!(tr, "core.cmp.Eq" | "core.cmp.Ord" | "core.hash.Hash").then(|| t.clone())
             }
             Ty::Tuple(ts) => ts.iter().find_map(|x| self.unsatisfied(self.deep(x).strip(), tr)),
-            Ty::Array(x) | Ty::Slice(x) => self.unsatisfied(self.deep(x).strip(), tr),
+            Ty::Array(x, _) | Ty::Slice(x) => self.unsatisfied(self.deep(x).strip(), tr),
             _ => None,
         }
     }
@@ -3211,7 +3246,7 @@ impl<'a> TypeCk<'a> {
                     }
                 }
                 match self.deep(&t).strip() {
-                    Ty::Array(x) | Ty::Slice(x) => (**x).clone(),
+                    Ty::Array(x, _) | Ty::Slice(x) => (**x).clone(),
                     Ty::Named(n, a) if n == "alloc.vec.Vec" => a.first().cloned().unwrap_or(Ty::Unknown),
                     _ => Ty::Unknown,
                 }
@@ -3332,7 +3367,7 @@ impl<'a> TypeCk<'a> {
                         self.vars[*v] = Some(m);
                     }
                 }
-                Ty::Array(Box::new(elem))
+                Ty::Array(Box::new(elem), Some(ts.len() as u128))
             }
             "If" => {
                 self.infer(&f[0]);
@@ -3549,7 +3584,7 @@ impl<'a> TypeCk<'a> {
                 if let Some(msg) = array_len_problem(&f[1]) {
                     self.diag("E2026", msg, nline(e));
                 }
-                Ty::Array(Box::new(t))
+                Ty::Array(Box::new(t), array_len(&f[1]))
             }
             _ => {
                 // その他: 子の式をたどる (パターンは除く)。
@@ -4180,7 +4215,7 @@ impl<'a> TypeCk<'a> {
                     (Ty::Named(x, _), Ty::Named(y, _)) => x == y,
                     _ => false,
                 };
-                let const_mismatch = matches!((&e.0, &e.1), (Ty::Const(_), Ty::Const(_)) | (Ty::Ref(true, _), Ty::Ref(false, _)));
+                let const_mismatch = matches!((&e.0, &e.1), (Ty::Const(_), Ty::Const(_)) | (Ty::Ref(true, _), Ty::Ref(false, _))) || Self::shape_conflict(&e).is_some();
                 // 生ポインタの取り違え (`*const` を `*mut` の引数へ、ポインタと値など) は宣言に型パラメータがなくても報告する。
                 let ptr = self.ptr_mismatch(&pt, &av);
                 if raw.has_param() || const_mismatch || ptr.is_some() || (sl.get(k).copied().unwrap_or(false) && same_named) {
@@ -4859,7 +4894,7 @@ impl<'a> TypeCk<'a> {
         };
         let (w, g) = (strip(want), strip(got));
         let is_vec = |t: &Ty| matches!(t, Ty::Named(n, _) if n == "alloc.vec.Vec");
-        let is_seq = |t: &Ty| matches!(t, Ty::Array(_) | Ty::Slice(_));
+        let is_seq = |t: &Ty| matches!(t, Ty::Array(_, _) | Ty::Slice(_));
         if (is_vec(&w) && is_seq(&g)) || (is_seq(&w) && is_vec(&g)) {
             Some((w.show(), g.show()))
         } else {
@@ -4872,7 +4907,7 @@ impl<'a> TypeCk<'a> {
         match self.deep(t) {
             Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Ref(..) | Ty::Closure { .. } | Ty::Dyn(..) | Ty::Never => true,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.open(x)),
-            Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => self.open(&x),
+            Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.open(&x),
             _ => false,
         }
     }
@@ -4903,6 +4938,9 @@ impl<'a> TypeCk<'a> {
     }
 
     fn type_conflict(&self, e: &(Ty, Ty)) -> Option<(String, String)> {
+        if let Some(p) = Self::shape_conflict(e) {
+            return Some(p);
+        }
         match (&e.0, &e.1) {
             (Ty::Named(a, xs), Ty::Named(b, ys)) if a == b && a == "alloc.boxed.Box" && self.box_dyn_mismatch(xs, ys) => {
                 Some((e.0.show(), e.1.show()))
@@ -4960,7 +4998,7 @@ impl<'a> TypeCk<'a> {
             Ty::Named(n, args) if n == "Option" || n == "Result" => args.iter().any(|a| self.owned_ty(a)),
             Ty::Named(n, _) => self.type_def(&n).map_or(true, |d| !d.derive.iter().any(|x| x == "Copy")),
             Ty::Tuple(xs) => xs.iter().any(|x| self.owned_ty(x)),
-            Ty::Array(x) => self.owned_ty(&x),
+            Ty::Array(x, _) => self.owned_ty(&x),
             _ => false,
         }
     }
@@ -4971,7 +5009,7 @@ impl<'a> TypeCk<'a> {
         let (w, g) = (self.deep(want), self.deep(got));
         match (&w, &g) {
             (Ty::Ref(_, a), Ty::Ref(_, b)) => self.owned_ref_clash(a, b),
-            (x @ (Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_)), Ty::Ref(..)) => {
+            (x @ (Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_, _)), Ty::Ref(..)) => {
                 self.owned_ty(x) && !self.undetermined(x)
             }
             (Ty::Named(n, xs), Ty::Named(m, ys)) if n == m && xs.len() == ys.len() => {
@@ -4989,7 +5027,7 @@ impl<'a> TypeCk<'a> {
             return None;
         }
         fn value_like(t: &Ty) -> bool {
-            matches!(t, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_) | Ty::Unit)
+            matches!(t, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_, _) | Ty::Unit)
         }
         let (mut wi, mut gi) = (&w, &g);
         // 参照の段数を揃えて比べる。
@@ -5015,7 +5053,7 @@ impl<'a> TypeCk<'a> {
     fn arg_ref_conflict(&self, want: &Ty, got: &Ty, loose: bool) -> Option<(String, String)> {
         let g0 = self.deep(got);
         fn plain(t: &Ty) -> bool {
-            matches!(t, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_) | Ty::Unit)
+            matches!(t, Ty::Prim(_) | Ty::Named(..) | Ty::Tuple(_) | Ty::Array(_, _) | Ty::Unit)
         }
         let (mut wi, mut gi) = (want.clone(), g0.clone());
         loop {
@@ -5057,6 +5095,9 @@ impl<'a> TypeCk<'a> {
                 return None;
             }
         }
+        if let Some(p) = Self::shape_conflict(err) {
+            return Some(p);
+        }
         match (&err.0, &err.1) {
             (Ty::Prim(a), Ty::Prim(b)) => Some((a.clone(), b.clone())),
             (Ty::Named(a, _), Ty::Named(b, _)) if a != b => Some((a.clone(), b.clone())),
@@ -5074,7 +5115,7 @@ impl<'a> TypeCk<'a> {
         match self.deep(t) {
             Ty::Var(_) => true,
             Ty::Named(_, a) | Ty::Tuple(a) => a.iter().any(|x| self.unresolved(x)),
-            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => self.unresolved(&x),
+            Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => self.unresolved(&x),
             Ty::Closure { args, ret, .. } => args.iter().any(|x| self.unresolved(x)) || self.unresolved(&ret),
             _ => false,
         }
@@ -5219,6 +5260,14 @@ fn place_root_is(e: &V, name: &str) -> bool {
 /// 整数リテラルの綴り `text` が型 `ty` に収まらなければ、その説明を返す。
 /// 配列の長さ (`[e; N]` の `N`。`const_expr` が `V::N` の綴りで持つ) が `usize` の範囲に収まらないときの説明。
 /// 長さが整数の綴りでないもの (定数名) は None (その定数の初期化式の範囲で検査される)。
+/// 配列の長さが整数リテラルならその値 (定数名・式は `None`)。
+fn array_len(len: &V) -> Option<u128> {
+    let V::N(text) = len else { return None };
+    let t = text.replace('_', "");
+    let (d, r) = if let Some(x) = t.strip_prefix("0x") { (x, 16) } else if let Some(x) = t.strip_prefix("0b") { (x, 2) } else if let Some(x) = t.strip_prefix("0o") { (x, 8) } else { (t.as_str(), 10) };
+    u128::from_str_radix(d, r).ok()
+}
+
 pub(crate) fn array_len_problem(len: &V) -> Option<String> {
     match len {
         V::N(text) => int_literal_problem(text, "usize"),

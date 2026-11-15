@@ -262,7 +262,7 @@ impl AggTab {
             },
             // `&[T; N]` / `&mut [T; N]`: 配列の値は `{ptr, len}` の `fat` なので、参照は `ref<fat>` / `mutref<fat>`。
             // 要素の先頭ポインタは `fat` の 0 番フィールド (呼び出し側の `coerce_args` で ptr に調整する)。
-            Src::Ref(m, inner) if matches!(&**inner, Src::Array(_)) => {
+            Src::Ref(m, inner) if matches!(&**inner, Src::Array(_, _)) => {
                 let Ty::Agg(fat_ai) = self.fat() else { unreachable!() };
                 Ok(Ty::Ref(*m, Pointee::Agg(fat_ai)))
             }
@@ -558,7 +558,7 @@ impl AggTab {
         // `Option<&[T; N]>` は `Option<&[T]>` と同じ値 (`fat`) で持つ。長さ N は型検査が両辺を揃えるので、値には要らない。
         // (`lower_ty` の `&[T; N]` は参照 `ref<fat>` で、Option のペイロードには置けないため。)
         if let Src::Ref(_, inner) = t {
-            if matches!(&**inner, Src::Array(e) if conv(e).is_some()) {
+            if matches!(&**inner, Src::Array(e, _) if conv(e).is_some()) {
                 return Pay::of(self.fat()).ok_or_else(|| "&[T; N] の fat は Option のペイロードに使えない".to_string());
             }
         }

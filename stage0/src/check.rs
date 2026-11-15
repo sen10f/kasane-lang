@@ -274,7 +274,7 @@ fn ty_fully_known(t: &crate::types::Ty) -> bool {
         Ty::Unknown | Ty::Var(_) | Ty::Param(_) | Ty::Closure { .. } => false,
         Ty::Never | Ty::Unit | Ty::Prim(_) | Ty::Const(_) | Ty::Dyn(..) => true,
         Ty::Named(_, xs) | Ty::Tuple(xs) => xs.iter().all(ty_fully_known),
-        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x) | Ty::Slice(x) => ty_fully_known(x),
+        Ty::Ref(_, x) | Ty::Ptr(_, x) | Ty::Array(x, _) | Ty::Slice(x) => ty_fully_known(x),
     }
 }
 
@@ -2998,7 +2998,7 @@ impl<'a> Checker<'a> {
                 base = inner.as_ref();
             }
             let el = match base {
-                crate::types::Ty::Array(el) | crate::types::Ty::Slice(el) => Some(el.as_ref()),
+                crate::types::Ty::Array(el, _) | crate::types::Ty::Slice(el) => Some(el.as_ref()),
                 crate::types::Ty::Named(_, args) => args.first(),
                 _ => None,
             };
@@ -3240,7 +3240,7 @@ impl<'a> Checker<'a> {
                     .map_or(false, |&i| self.def(i).derive.iter().any(|x| x == "Copy"))
                     && args.iter().all(|a| self.is_copy_ty(a))
             }
-            crate::types::Ty::Array(el) | crate::types::Ty::Slice(el) => self.is_copy_ty(el),
+            crate::types::Ty::Array(el, _) | crate::types::Ty::Slice(el) => self.is_copy_ty(el),
             crate::types::Ty::Ptr(_, _) | crate::types::Ty::Const(_) | crate::types::Ty::Dyn(..) => true,
             crate::types::Ty::Closure { .. } => true,
         }
@@ -5149,7 +5149,7 @@ impl<'a> Checker<'a> {
             // 型パラメータに Copy の境界が無ければ、`*r` で値を取り出すのは不正 (e11)。
             Ty::Param(p) => !self.generic_may_be_copy(p),
             Ty::Tuple(xs) => xs.iter().any(|x| self.ty_certainly_not_copy(x)),
-            Ty::Array(el) => self.ty_certainly_not_copy(el),
+            Ty::Array(el, _) => self.ty_certainly_not_copy(el),
             Ty::Named(nm, args) if nm == "Option" || nm == "Result" => args.iter().any(|a| self.ty_certainly_not_copy(a)),
             _ => !self.is_copy_ty(t),
         }

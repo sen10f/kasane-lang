@@ -30,7 +30,7 @@ pub(super) fn subst_ty(t: &Src, bind: &HashMap<String, Src>) -> Src {
         Src::Ptr(m, x) => Src::Ptr(*m, Box::new(go(x))),
         Src::Named(n, a) => Src::Named(n.clone(), a.iter().map(go).collect()),
         Src::Tuple(xs) => Src::Tuple(xs.iter().map(go).collect()),
-        Src::Array(x) => Src::Array(Box::new(go(x))),
+        Src::Array(x, n) => Src::Array(Box::new(go(x)), *n),
         Src::Slice(x) => Src::Slice(Box::new(go(x))),
         Src::Closure { args, ret, cap, id, eff } => Src::Closure { args: args.iter().map(go).collect(), ret: Box::new(go(ret)), cap: cap.clone(), id: id.clone(), eff: eff.clone() },
         _ => t.clone(),
@@ -41,7 +41,7 @@ pub(super) fn subst_ty(t: &Src, bind: &HashMap<String, Src>) -> Src {
 pub(super) fn concrete(t: &Src) -> bool {
     match t {
         Src::Unknown | Src::Var(_) | Src::Param(_) | Src::Never => false,
-        Src::Ref(_, x) | Src::Ptr(_, x) | Src::Array(x) | Src::Slice(x) => concrete(x),
+        Src::Ref(_, x) | Src::Ptr(_, x) | Src::Array(x, _) | Src::Slice(x) => concrete(x),
         Src::Named(_, a) | Src::Tuple(a) => a.iter().all(concrete),
         _ => true,
     }
@@ -55,11 +55,11 @@ pub(super) fn unify(pat: &Src, act: &Src, bind: &mut HashMap<String, Src>) {
                 bind.entry(n.clone()).or_insert_with(|| a.clone());
             }
         }
-        (Src::Ref(_, p), Src::Ref(_, a)) | (Src::Ptr(_, p), Src::Ptr(_, a)) | (Src::Array(p), Src::Array(a)) | (Src::Slice(p), Src::Slice(a)) => {
+        (Src::Ref(_, p), Src::Ref(_, a)) | (Src::Ptr(_, p), Src::Ptr(_, a)) | (Src::Array(p, _), Src::Array(a, _)) | (Src::Slice(p), Src::Slice(a)) => {
             unify(p, a, bind)
         }
         // `&[T]` の引数に配列・`Vec<T, A>` を渡す (参照外しの強制): 要素型を突き合わせる。
-        (Src::Slice(p), Src::Array(a)) => unify(p, a, bind),
+        (Src::Slice(p), Src::Array(a, _)) => unify(p, a, bind),
         (Src::Slice(p), Src::Named(v, a)) if v == "alloc.vec.Vec" && !a.is_empty() => unify(p, &a[0], bind),
         (Src::Named(n, ps), Src::Named(m, as_)) if n == m && ps.len() == as_.len() => {
             for (p, a) in ps.iter().zip(as_) {

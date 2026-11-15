@@ -1,0 +1,8 @@
+// expect: E2020
+fn t.cast[T, U](x: T) -> U uses [] panics never
+    x
+end t.cast
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

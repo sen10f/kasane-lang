@@ -616,7 +616,7 @@ impl<'a> Gen<'a> {
             (Src::Named(name, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || (self.sink && t == Ty::Ptr)) => Ok(self.string_debug(t, fat)),
             (Src::Named(name, args), Ty::Agg(i)) if args.is_empty() => self.agg(name, i, file),
             (_, t) if two_arms(src, t).is_some() => self.two(src, t, file, false),
-            (Src::Slice(e) | Src::Array(e), t) if t == fat => self.slice_debug(e, file),
+            (Src::Slice(e) | Src::Array(e, _), t) if t == fat => self.slice_debug(e, file),
             (Src::Tuple(es), Ty::Agg(i)) => self.tuple(es, i, file),
             (Src::Ref(_, inner), t) => self.need(inner, t, file),
             (other, t) => Err(format!("型 {} ({}) の Debug 表示は未対応", show(other), t.name())),
@@ -639,8 +639,8 @@ impl<'a> Gen<'a> {
             }
             (_, t) if is_str(src, t, fat) || is_bytes(src, t, fat) => Ok(self.str_eq(fat, fat, "str")),
             // `&[T]` / `&[T; N]` (T は 64 ビット以下の整数・bool・char): 長さと要素ごとの比較。
-            (Src::Ref(_, inner), t) if t == fat && matches!(&**inner, Src::Slice(_) | Src::Array(_)) => {
-                let (Src::Slice(e) | Src::Array(e)) = &**inner else { unreachable!() };
+            (Src::Ref(_, inner), t) if t == fat && matches!(&**inner, Src::Slice(_) | Src::Array(_, _)) => {
+                let (Src::Slice(e) | Src::Array(e, _)) = &**inner else { unreachable!() };
                 match super::conv(e).filter(|x| (x.is_int() && x.bits() <= 64) || *x == Ty::Bool) {
                     Some(et) => Ok(self.slice_eq_elem(fat, fat, &format!("slice.{}", et.name()), et)),
                     None => Err(format!("要素の型 {} の比較は未対応", show(e))),
