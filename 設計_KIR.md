@@ -9,16 +9,16 @@
 - **KIR の定義 (2 章)**: 型付き・単相化済み・SSA の中間表現。1 関数 = 鍵・効果・型の参照・基本ブロックで、テキスト形式は `print(parse(text)) == text` で往復可能。`FnTable` のスロット経由で呼び出し、ホットリロードは安全点で表エントリを差し替える。
 - **下ろしの入口と段階 (9, 10 章)**: `kir/lower-1` が段階 1 の土台。式 ID と型表 (`TypeCk` は式ごとの型表を残さないため新設) が下ろしの入口。`kir_lower.rs` がソースから KIR へ下ろし、`ref`/`mutref` などの拡張は子モジュールで追加する。
 - **集成体と単相化 (11, 20, 21 章)**: `Option`/`Result` は枠＋タグ 1 ビットで表現。単相化はインスタンス鍵（定義ハッシュ＋推移依存の外部面）で行い、`Box<dyn Tr>` は vtable 番号の比較連鎖で間接呼び出しを補助関数に分解する。
-- **Vec / String / Buf / マップ (13, 16 章)**: `Vec`/`String` は `heap.realloc` で `cap*2+4` に拡張し、所有の移動と解放は印・登録の逆順。`HashMap` は `kir/hashmap` で下ろし、移動と解放は 13 章の規則に従う。
+- **Vec / String / Buf / マップ (13, 16 章、`設計_stdlib_kasane.md`)**: `Vec` / `String` は `alloc.raw.Buf` の上の Kasane 版 (`spec/stdlib/alloc/vec.ksnl`・`string.ksnl`) の単相インスタンスに下ろす (基本メソッド)。ヘッダは `{ptr, len, cap}` の 24 バイトで `Buf` と共通。`HashMap` / `BtreeMap` は今は `kir_lower_map.rs` の専用の下ろし (Kasane 版への切り替えは修正プラン 3-4 で進行中)。
 - **クロージャ・dyn・反復子 (14, 21 章)**: 取り込みのあるクロージャは `own.*` の注釈で移動と消費を追跡。`dyn` は閉じた世界の単相化で vtable 番号の比較連鎖に分解し、`Op` は新設しない。反復子は `map`/`filter` 等を `Fn` 境界で下ろす。
-- **スレッドと pthread (22 章)**: `FnTable` とチャネル、`static` の `Mutex`、`Rng` を扱う。22.7 で実スレッドの上にタスクを載せ、順序は非決定。`spawn_local`/`join_task` でタスク生成と合流。
-- **FFI と動的ロード (12 章)**: 入出力と入口は段階 4 の次の作業。`std.fs` 等のネイティブ命令は VM 未対応で木走査へ退避。動的ロードについては設計上の記述あり。
-- **LLVM の出力とターゲット (5, 9 章)**: バックエンドは LLVM（デバッグ・リリースとも）。`x86_64`/`aarch64`/`wasm32` をターゲットに `kir_llvm.rs` で下ろし。Cranelift は `clif.rs` を凍結し、LLVM 経路が全テストを通したら削除予定。
+- **スレッドと pthread (22 章、22.7)**: ネイティブの `spawn` / `join` / チャネル / `Mutex` は pthread の実スレッド (本数の上限なし、順序は非決定)。全員待ちは `deadlock` (終了コード 101) で終える。木走査・`ksn test`・VM は決定的な協調実行 (仕様 5.5)。
+- **FFI と動的ロード (12 章)**: `extern` は C ABI で直接リンクし、`link "ライブラリ:名前"` は実行時に `dlopen` / `dlsym` で引く (`ksn_ext_resolve`)。wasm32 の `link "env:名前"` は動的ロードではなく JS の import。`extern` と `core.ptr` の呼び出し・値の参照は `unsafe` ブロックの中だけ (仕様 3.8)。
+- **LLVM の出力とターゲット (5, 9 章)**: ネイティブ生成は LLVM だけ (Cranelift は 2026-11-14 に削除)。`ksn build --target` で `x86_64-linux-gnu`・`aarch64-linux-gnu`・`wasm32-unknown-unknown` (`usize` は 32 ビット) を出す。下ろせない形は理由を出し、`--release` では退避せず E9040。
 - **KIR の上の借用・線形性の検査 (24 章)**: `&T`/`&mut T` の下ろしと `verify_module` で借用違反を検査。`scope.end` でライフタイムを終了し、`fieldaddr` のオフセット列で借用と move の重なりを見る。線形性は実験（既定にしない）。
 - **derive [Drop] (25 章)**: `Box<Self>` / `Option<Box<Self>>` の再帰型に対応。`intern_def` で添字を予約し、`drop.<T>` 補助関数で反復的な解放。`Option<Box<Self>>` の欄を持つ型は下ろせずバンドルへ退避。
 - **suspend の変換 (26 章)**: 状態機械への変換（方式 A）を採用。`new`/`poll` に分解し、中断点をまたぐ局所をタスクの枠に保存。wasm32 でも同じ形で、ブラウザのイベントループは第 3 段。
 - **乱数と Option のフィールド (27 章)**: `rand.fill` 命令で OS の乱数源（Linux `getrandom`、Windows `rand_s`）を読み、`splitmix64` で生成。構造体の `Option` フィールドは枠＋タグで表現し、移動・代入・match を下ろし。入れ子の `Option`/`Result` フィールドは対象外。
-- **現状のコードと決定事項 (1, 7 章)**: 実コードに基づく現状と、2026-11-12 に確定した決定事項。`clif.rs` は型を `String` で持ち単相化とコード生成が 6759 行に混ざる。決定事項は LLVM バックエンドへの移行など。
+- **当初の現状と決定事項 (1, 7 章)**: 2026-11-12 時点の記録 (Cranelift の `clif.rs` を前提にした記述を含む。Cranelift は削除済み)。決定事項のうち LLVM への一本化は実施済み。
 - **バイトコードインタプリタと VM (4, 18 章)**: 木走査のインタプリタを KIR バイトコード VM に置き換え。VM は第 1 段〜第 5 段で実装・計測し、起動時間の短縮も行う。
 - **LLM の組み込み (3 章)**: LLM は KIR 上の判断 (a) と LLVM パス内の判断 (b) の 2 層。性能だけを判断対象にし、結果は変えない。
 - **型推論の被覆率と計測 (8 章)**: `KSN_TYPE_COVERAGE=1` で型推論の被覆率を計測。型変数・診断の変化を追跡する。
