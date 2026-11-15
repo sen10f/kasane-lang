@@ -2303,7 +2303,13 @@ fn copy_tree(src: &Path, dst: &Path, skip: &[&str]) {
             if skip.contains(&name.as_str()) {
                 continue;
             }
-            let (s, d) = (e.path(), dst.join(&name));
+            let s = e.path();
+            // キャッシュディレクトリや `.git` などの隠しディレクトリはバンドルに含めない。
+            // 入れ子膨張 (`pkg/.cache/.../pkg/.cache/…`) の元になる。
+            if s.is_dir() && name.starts_with('.') {
+                continue;
+            }
+            let d = dst.join(&name);
             if s.is_dir() {
                 copy_tree(&s, &d, skip);
             } else {
