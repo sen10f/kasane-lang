@@ -29,19 +29,20 @@ fn lower.tup.agg_line(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, id:
     Ok(s)
 end lower.tup.agg_line
 
-// 組の分解 `let (a, b) = e` (要素の部分のパターン)。
+// 組の分解 `let (a, b) = e` (要素の部分のパターン)。値が参照なら欄の番地から。
 fn lower.tup.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], pn: usize, v: usize, t: usize, m: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let pat = parse.ast.get(&p.ast, pn)
-    let item = lower.tup.item(env, c, t)?
+    let (inner, through, mutable) = lower.opt.deref_ty(c, t)
+    let item = lower.tup.item(env, c, inner)?
     let lay = lower.tyk.layout(env, c, item)?
     for j in core.iter.range(0usize, resolve.ast.count(p, pat.a)) {
         let sub = resolve.ast.item(p, pat.a, j)
-        let st = lower.expr.tyof(c, sub)?
         let sk = parse.ast.get(&p.ast, sub)
         if sk.kind != parse.ast.Kind.PWild {
-            let stt = lower.tyk.text(env, c, st)?
+            let st0 = lower.expr.tyof(c, sub)?
+            let st = lower.pat.bind_ty(c, through, mutable, st0)?
             let off = lower.tyk.at(lay.offs.as_slice(), j)
-            let fv = lower.cx.def(c, stt.as_str(), lower.expr.field_src(v, off)?.as_str())?
+            let fv = lower.pat.field_val(env, c, v, through, mutable, off, st)?
             lower.pat.bind(env, c, p, src, sub, fv, st, m)?
         }
     }
@@ -50,18 +51,7 @@ end lower.tup.bind
 
 // 組の型の集成体の項目 (TUP + 添字)。同じ綴りのものは既存の添字を返す。
 fn lower.tup.item(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
-    let want = lower.tup.text(env, c, t)?
-    let mut k = 0usize
-    while k < c.g.tps.len() {
-        let ts = lower.tyk.at(c.g.tps.as_slice(), k)
-        let tw = lower.tup.text(env, c, ts)?
-        if tw.as_str() == want.as_str() {
-            return Ok(lower.tyk.TUP + k)
-        }
-        k = k + 1usize
-    }
-    c.g.tps.push(t)?
-    Ok(lower.tyk.TUP + k)
+    lower.tup.reg(env, c, t, lower.tyk.TUP)
 end lower.tup.item
 
 // 組の値の構築 `(a, b)`: 要素を書かれた順に評価し、`make` で作る。
@@ -81,6 +71,53 @@ fn lower.tup.make(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     Ok(lower.cx.R { v: v, t: t })
 end lower.tup.make
 
+// 組の欄の名 (綴り用): 項目は FQN、参照は `&`、組は括弧、基本の型は型の綴り。
+fn lower.tup.name(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if n.k == types.ty.K.Adt {
+        let mut r = lower.tyk.item_fqn(env, n.a)
+        if n.c > 0usize {
+            r.push('<')?
+            for k in core.iter.range(0usize, n.c) {
+                if k > 0usize {
+                    r.push(',')?
+                }
+                let an = lower.tup.name(env, c, types.ty.arg(&c.ar, n.b, k))?
+                r.push_str(an.as_str())?
+            }
+            r.push('>')?
+        }
+        return Ok(r)
+    }
+    if n.k == types.ty.K.Ref {
+        let inner = lower.tup.name(env, c, n.a)?
+        let mut r = lower.cx.own("&")?
+        r.push_str(inner.as_str())?
+        return Ok(r)
+    }
+    if (n.k == types.ty.K.Tuple && n.c > 0usize) {
+        return lower.tup.text(env, c, f)
+    }
+    lower.tyk.text(env, c, t)
+end lower.tup.name
+
+// 登録表 (tps) に同じ綴りの型がなければ足し、基点 base + 添字を返す。組と総称の具体化で共用。
+fn lower.tup.reg(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize, base: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let want = lower.tup.name(env, c, t)?
+    let mut k = 0usize
+    while k < c.g.tps.len() {
+        let ts = lower.tyk.at(c.g.tps.as_slice(), k)
+        let tw = lower.tup.name(env, c, ts)?
+        if tw.as_str() == want.as_str() {
+            return Ok(base + k)
+        }
+        k = k + 1usize
+    }
+    c.g.tps.push(t)?
+    Ok(base + k)
+end lower.tup.reg
+
 // 組の綴り `(T1,T2)` (要素の型の綴りを並べる)。
 fn lower.tup.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<alloc.string.String<std.alloc.System>, resolve.Failure> uses [alloc] panics may pub
     let f = types.ty.find(&c.ar, t)
@@ -92,7 +129,7 @@ fn lower.tup.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
             s.push(',')?
         }
         let et = types.ty.arg(&c.ar, n.b, k)
-        let tt = lower.tyk.text(env, c, et)?
+        let tt = lower.tup.name(env, c, et)?
         s.push_str(tt.as_str())?
     }
     s.push(')')?

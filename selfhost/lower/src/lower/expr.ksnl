@@ -96,9 +96,20 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         } else if op == 37usize {
             an = "rem"
         }
-        let aop = lower.cx.cat2(an, ".")?
-        let aop2 = lower.cx.cat2(aop.as_str(), ty.as_str())?
-        let aop3 = lower.cx.cat2(aop2.as_str(), ".trap ")?
+        let lf = types.ty.find(&c.ar, l.t)
+        let is_fl = types.ty.node(&c.ar, lf).k == types.ty.K.Float
+        let aop = if is_fl {
+            lower.cx.cat2("f", an)?
+        } else {
+            lower.cx.cat2(an, "")?
+        }
+        let aop2 = lower.cx.cat2(aop.as_str(), ".")?
+        let aop2b = lower.cx.cat2(aop2.as_str(), ty.as_str())?
+        let aop3 = if is_fl {
+            lower.cx.cat2(aop2b.as_str(), " ")?
+        } else {
+            lower.cx.cat2(aop2b.as_str(), ".trap ")?
+        }
         let aop4 = lower.cx.cat2(aop3.as_str(), lower.expr.two(l.v, r.v)?.as_str())?
         let rt = lower.tyk.text(env, c, t)?
         let v = lower.cx.def(c, rt.as_str(), aop4.as_str())?
@@ -131,7 +142,12 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     let r = lower.expr.expr(env, c, p, src, n.c, l.t)?
     let ty = lower.tyk.text(env, c, l.t)?
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
-    o.push_str("icmp.")?
+    let lf3 = types.ty.find(&c.ar, l.t)
+    if types.ty.node(&c.ar, lf3).k == types.ty.K.Float {
+        o.push_str("fcmp.")?
+    } else {
+        o.push_str("icmp.")?
+    }
     o.push_str(cc)?
     o.push('.')?
     o.push_str(ty.as_str())?
@@ -643,6 +659,32 @@ fn lower.expr.lit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         let v = lower.cx.def(c, ft.as_str(), mk3.as_str())?
         return Ok(lower.cx.R { v: v, t: t })
     }
+    if n.a == 2usize {
+        // 小数: 接尾辞 (f32 / f64) を外し、綴りが `.` を含むようにして Rust 版の表示 (Debug) と合わせる。
+        let mut stop_at = txt.len()
+        let tb = txt.as_bytes()
+        let mut k = 0usize
+        while k < txt.len() {
+            let is_f = match tb.get(k) {
+                Some(x) => *x == 102u8
+                None => false
+            }
+            if is_f {
+                stop_at = k
+                break
+            }
+            k = k + 1usize
+        }
+        let body = resolve.ast.text(src, tk.start, tk.start + stop_at)
+        let mut fo3 = lower.cx.cat2("const.", ty.as_str())?
+        fo3.push(' ')?
+        fo3.push_str(body)?
+        if !body.contains(".") {
+            fo3.push_str(".0")?
+        }
+        let v = lower.cx.def(c, ty.as_str(), fo3.as_str())?
+        return Ok(lower.cx.R { v: v, t: t })
+    }
     if n.a != 1usize {
         lower.cx.fail(c, "リテラルの種類 (未対応)")?
         let d = lower.expr.dummy(c, t)?
@@ -959,9 +1001,9 @@ fn lower.expr.scan(p: &parse.cur.P, src: &[u8], e: usize, out: &mut alloc.vec.Ve
     }
     if k == parse.ast.Kind.For && bor {
         let fit = parse.ast.get(&p.ast, n.b)
-        if fit.kind == parse.ast.Kind.Path {
+        if (fit.kind == parse.ast.Kind.Path) {
             out.push(lower.cx.own(resolve.ast.text(src, fit.a, fit.b))?)?
-        } else if fit.kind == parse.ast.Kind.Call {
+        } else if (fit.kind == parse.ast.Kind.Call) {
             let fcn = parse.ast.get(&p.ast, fit.a)
             if fcn.kind == parse.ast.Kind.Path {
                 let (g1, _g2) = lower.expr.split2(resolve.ast.text(src, fcn.a, fcn.b))
@@ -1176,7 +1218,8 @@ fn lower.expr.structlit(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.
         }
         ordered.push(vv)?
     }
-    let agg = lower.tyk.agg_id(c, item)?
+    let key = lower.tyk.key_of(env, c, t, item)?
+    let agg = lower.tyk.agg_id(c, key)?
     let mut ty = alloc.string.String.new(std.alloc.SYSTEM)
     ty.push_str("agg#")?
     ty.push_str(lower.cx.dec(agg)?.as_str())?

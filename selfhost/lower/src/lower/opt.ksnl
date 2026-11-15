@@ -245,7 +245,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
         } else if (pat.kind == parse.ast.Kind.PVariant || pat.kind == parse.ast.Kind.PPath) {
             let name = resolve.ast.text(src, pat.a, pat.b)
             let last = lower.expr.last_seg(name)
-            let positive = last == "Some" || last == "Ok"
+            let positive = last == "Some" || last == "Err"
             let mut cond = tg
             if !positive {
                 cond = lower.cx.def1(c, "bool", "not.bool ", tg)?

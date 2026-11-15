@@ -10,10 +10,7 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         return Ok(())
     }
     if pat.kind == parse.ast.Kind.PStruct {
-        // 参照なら読み出す (分解は値で行う)。
-        let r0 = lower.cx.R { v: v, t: t }
-        let r = lower.opt.deref_val(env, c, r0)?
-        let (inner, _th, _mu) = lower.opt.deref_ty(c, r.t)
+        let (inner, through, mutable) = lower.opt.deref_ty(c, t)
         let rs = types.ty.strip(&c.ar, inner)
         let rn = types.ty.node(&c.ar, rs)
         if (rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef) {
@@ -27,10 +24,10 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
             let k = lower.tyk.field_index(env, rn.a, fname)?
             let off = lower.tyk.at(lay.offs.as_slice(), k)
             let sub = fi.b
-            let st = lower.tyk.text(env, c, lower.expr.tyof(c, sub)?)?
-            let fv = lower.cx.def(c, st.as_str(), lower.expr.field_src(r.v, off)?.as_str())?
-            let ft = lower.expr.tyof(c, sub)?
-            lower.pat.bind(env, c, p, src, sub, fv, ft, m)?
+            let st0 = lower.expr.tyof(c, sub)?
+            let st = lower.pat.bind_ty(c, through, mutable, st0)?
+            let fv = lower.pat.field_val(env, c, v, through, mutable, off, st)?
+            lower.pat.bind(env, c, p, src, sub, fv, st, m)?
         }
         return Ok(())
     }
@@ -40,3 +37,48 @@ fn lower.pat.bind(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     lower.cx.fail(c, "let の分解 (この形は未対応)")?
     Ok(())
 end lower.pat.bind
+
+// 参照を通して束縛する欄の型。スカラー以外 (参照でない) は番地を借りるので `&T` (可変なら `&mut T`)。
+// スカラーは読み出して値で束縛する (Rust の既定の束縛の形と同じ)。
+fn lower.pat.bind_ty(c: &mut lower.cx.Cx, through: bool, mutable: bool, sub_t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    if !through {
+        return Ok(sub_t)
+    }
+    let f = types.ty.find(&c.ar, sub_t)
+    let n = types.ty.node(&c.ar, f)
+    let scalar = n.k == types.ty.K.Int || n.k == types.ty.K.Float || n.k == types.ty.K.Bool
+    let scalar2 = scalar || n.k == types.ty.K.Char || n.k == types.ty.K.Unit
+    if n.k == types.ty.K.Ref || scalar2 {
+        return Ok(sub_t)
+    }
+    let rn = types.ty.mk(types.ty.K.Ref, sub_t, 0usize, 0usize, mutable)
+    let rid = types.ty.push(&mut c.ar, rn)?
+    Ok(rid)
+end lower.pat.bind_ty
+
+// 分解の欄の値 (番地 off の欄、部分のパターンの型 sub_t)。値が参照 (through) なら欄の番地 (`fieldaddr`) を取り、
+// 部分の型が参照なら番地を、値なら読み出す。値の分解のときは欄を読み、部分の型が参照なら一時のスロットに置く。
+fn lower.pat.field_val(env: &types.env.Env, c: &mut lower.cx.Cx, base: usize, through: bool, mutable: bool, off: usize, sub_t: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let sf = types.ty.find(&c.ar, sub_t)
+    let sn = types.ty.node(&c.ar, sf)
+    let want_ref = sn.k == types.ty.K.Ref
+    let mut ftid = sub_t
+    if want_ref {
+        ftid = sn.a
+    }
+    let ftxt = lower.tyk.text(env, c, ftid)?
+    let st = lower.tyk.text(env, c, sub_t)?
+    if through {
+        if want_ref {
+            return lower.cx.def(c, st.as_str(), lower.opt.faddr_src(base, off)?.as_str())
+        }
+        let mt = lower.opt.refty(mutable, ftxt.as_str())?
+        let fa = lower.cx.def(c, mt.as_str(), lower.opt.faddr_src(base, off)?.as_str())?
+        return lower.cx.def1(c, ftxt.as_str(), "load ", fa)
+    }
+    let fv = lower.cx.def(c, ftxt.as_str(), lower.expr.field_src(base, off)?.as_str())?
+    if want_ref {
+        return lower.opt.wrap_ref(env, c, fv, sub_t)
+    }
+    Ok(fv)
+end lower.pat.field_val
