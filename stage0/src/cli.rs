@@ -943,6 +943,7 @@ fn cmd_kir(rest: &[String]) -> i32 {
             101
         }
         Ok(crate::kir_exec::Outcome::Abort) => 101,
+        Ok(crate::kir_exec::Outcome::Exit(c)) => c,
         Ok(crate::kir_exec::Outcome::StackOverflow) => {
             eprintln!("stack overflow");
             102

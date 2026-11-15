@@ -1867,6 +1867,12 @@ impl<'a> Fe<'a> {
                     Ok(())
                 }
                 Op::Proc { f, args } => self.proc_op(&d, i, *f, args),
+                Op::Exit { code } => {
+                    // `std.process.exit`: 終了コードで戻らずに終わる。後続は下ろし側が `unreachable` で切る。
+                    let c = self.r(*code);
+                    self.line(format!("call void @exit(i32 {})", c));
+                    Ok(())
+                }
                 Op::Abort => {
                     // 文言は出さず、終了コード 101 で終わる (Panic と同じく、後ろは新しいラベルから続ける)
                     let n = self.n + 1;
@@ -2191,7 +2197,7 @@ impl<'a> Fe<'a> {
                     self.line(format!("{} = load {}, ptr {}, align 1", d, mt, addr));
                 }
             }
-            Op::MemStore { .. } | Op::Store { .. } | Op::HeapFree(_) | Op::IndexCheck { .. } | Op::Panic { .. } | Op::Eprint { .. } | Op::Abort => {
+            Op::MemStore { .. } | Op::Store { .. } | Op::HeapFree(_) | Op::IndexCheck { .. } | Op::Panic { .. } | Op::Eprint { .. } | Op::Abort | Op::Exit { .. } => {
                 return Err("unit 以外の結果を持つ副作用命令".into())
             }
             Op::Write { fd, data } => {

@@ -105,6 +105,7 @@ fn side_effecting(op: &Op) -> bool {
         | Op::FsSync { .. }
         | Op::FsWrite { .. }
         | Op::Abort
+        | Op::Exit { .. }
         | Op::Panic { .. }
         | Op::Store { .. }
         | Op::MemStore { .. }
@@ -288,6 +289,7 @@ pub(crate) fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::Panic { arg, .. } => arg.iter_mut().collect(),
         Op::Write { fd, data } => vec![fd, data],
         Op::Eprint { data } => vec![data],
+        Op::Exit { code } => vec![code],
         Op::FmtFloat { a, .. } => vec![a],
         Op::Utf8Valid { p, len } => vec![p, len],
         Op::NetListen { addr } | Op::NetConnect { addr } => vec![addr],

@@ -262,6 +262,7 @@ pub enum Ins {
     // ---- 入出力・panic
     Panic { msg: u32, arg: S, aty: u32 },
     Abort,
+    Exit { code: S },
     Write { d: S, fd: S, data: S },
     Eprint { data: S },
     FmtFloat { a: S, bits: u32 },

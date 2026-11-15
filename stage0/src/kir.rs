@@ -952,6 +952,9 @@ pub enum Op {
     Eprint { data: VId },
     /// 文言を出さずに終了コード 101 で終わる (`Eprint` で文言を書いた後の終わり)。結果は unit。`panics may` のときだけ。
     Abort,
+    /// `std.process.exit(code)`: 終了コード `code` (i32) で戻らずに終わる。結果は unit (後続は `unreachable` で切る)。
+    /// `uses [process]` の関数だけ。`panics never` の関数からも使える (panic の経路ではない)。
+    Exit { code: VId },
     /// 浮動小数を `py_float` / `py_float32` と同じ規則で書式化して stderr へ出力する。
     /// 被演算子は `f32` または `f64`、結果は `unit`。`panics may` のときだけ。
     FmtFloat { bits: u32, a: VId },
@@ -1480,6 +1483,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::FsRead { fd, buf, len } => format!("fs.read {}, {}, {}", fmt_val(*fd), fmt_val(*buf), fmt_val(*len)),
         Op::FsSync { fd } => format!("fs.sync {}", fmt_val(*fd)),
         Op::FsWrite { fd, buf, len } => format!("fs.write {}, {}, {}", fmt_val(*fd), fmt_val(*buf), fmt_val(*len)),
+        Op::Exit { code } => format!("exit {}", fmt_val(*code)),
         Op::EnvArgCount => "env.arg_count".to_string(),
         Op::EnvArg { index } => format!("env.arg {}", fmt_val(*index)),
         Op::EnvVar { name } => format!("env.var {}", fmt_val(*name)),
@@ -2009,6 +2013,10 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             Ok(Op::Eprint { data: v[0] })
         }
         ("abort", []) if ty == Ty::Unit => Ok(Op::Abort),
+        ("exit", []) if ty == Ty::Unit => {
+            let v = operands(1)?;
+            Ok(Op::Exit { code: v[0] })
+        }
         ("fmtfloat", [bits]) if ty == Ty::Unit => {
             let bits = bits.parse::<u32>().map_err(|_| perr(line, "fmtfloat のビット数は 32 または 64"))?;
             if bits != 32 && bits != 64 {
@@ -3020,6 +3028,14 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("eprint の被演算子は fat のはず".into());
                         }
                     }
+                    Op::Exit { code } => {
+                        if !f.uses.iter().any(|u| u == "process") {
+                            return Err("std.process.exit は uses [process] の関数だけ".into());
+                        }
+                        if i.ty != Ty::Unit || ty_of(*code)? != Ty::I32 {
+                            return Err("std.process.exit の引数は i32 で、結果は unit のはず".into());
+                        }
+                    }
                     Op::Abort => {
                         if !f.may_panic {
                             return Err("panics never の関数に abort".into());
@@ -3201,6 +3217,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::TimeNowNs => vec![],
         Op::RandFill { buf, len, .. } => vec![*buf, *len],
         Op::Eprint { data } => vec![*data],
+        Op::Exit { code } => vec![*code],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }
         | Op::Cmp { a, b, .. }
