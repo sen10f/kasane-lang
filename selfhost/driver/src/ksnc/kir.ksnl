@@ -1,0 +1,109 @@
+// 段 4 (Kasane 版): KIR への下ろし。selfhost/lower の lower.main と同じ手順
+// (入口の FQN から呼ばれた関数を順に下ろし、集成体の行・関数を名前の順に並べる) を、
+// 表示せず KIR のテキストにして返す。下ろせなかった関数は本文を出さず、理由を bad に集める。
+type ksnc.kir.Kir pub
+    text: alloc.string.String<std.alloc.System> pub
+    bad: alloc.string.String<std.alloc.System> pub
+    nbad: usize pub
+end ksnc.kir.Kir
+
+// 入口 `entry` (FQN) から届く関数を下ろす。パッケージの読み込みは selfhost/types の env (resolve と同じ読み込み)。
+fn ksnc.kir.lower(dir: &str, std_dir: &str, entry: &str) -> Result<ksnc.kir.Kir, ksnc.Failure> uses [alloc, io.fs] panics may pub
+    let env = types.env.load(dir, std_dir)?
+    let mut c = lower.cx.new()?
+    lower.expr.enqueue(&mut c, entry)?
+    // 呼ばれた関数を順に下ろす (下ろす途中で呼び出し先が増える)。
+    let mut i = 0usize
+    while i < c.g.names.len() {
+        let name = match c.g.names.as_slice().get(i) {
+            Some(s) => lower.cx.own(s.as_str())?
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        let it = types.env.get_def(&env.tab, name.as_str())
+        if it == 0usize {
+            lower.func.record(&mut c, "", "定義がない")?
+        } else if (types.infer.item_kind(&env, it - 1usize) != parse.ast.Kind.FnDef) {
+            lower.func.record(&mut c, "", "関数でない")?
+        } else {
+            lower.func.lower_item(&env, &mut c, it - 1usize, name.as_str())?
+        }
+        i = i + 1usize
+    }
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("kir 1\n\n")?
+    let aggs = lower.tyk.agg_lines(&env, &mut c)?
+    out.push_str(aggs.as_str())?
+    if c.g.aggs.len() > 0usize {
+        out.push('\n')?
+    }
+    // 関数は名前の順 (選択で並べる)。
+    let mut used = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for _k in core.iter.range(0usize, c.g.names.len()) {
+        used.push(false)?
+    }
+    let mut firstf = true
+    let mut bad = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut nbad = 0usize
+    loop {
+        let mut pick = c.g.names.len()
+        for k in core.iter.range(0usize, c.g.names.len()) {
+            let taken = match used.as_slice().get(k) {
+                Some(x) => *x
+                None => true
+            }
+            if !taken {
+                if pick == c.g.names.len() {
+                    pick = k
+                } else {
+                    let a = lower.cx.name_of(&c, k)?
+                    let b = lower.cx.name_of(&c, pick)?
+                    if lower.cx.lt(a.as_str(), b.as_str()) {
+                        pick = k
+                    }
+                }
+            }
+        }
+        if pick == c.g.names.len() {
+            break
+        }
+        // 取り出した印を付ける (組み直し)。
+        let mut nused = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        let mut q = 0usize
+        for flag in used.as_slice().iter() {
+            if q == pick {
+                nused.push(true)?
+            } else {
+                nused.push(*flag)?
+            }
+            q = q + 1usize
+        }
+        used = nused
+        let ok = match c.g.oks.as_slice().get(pick) {
+            Some(b) => *b
+            None => false
+        }
+        let text = match c.g.texts.as_slice().get(pick) {
+            Some(s) => lower.cx.own(s.as_str())?
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        let nm = match c.g.names.as_slice().get(pick) {
+            Some(s) => lower.cx.own(s.as_str())?
+            None => alloc.string.String.new(std.alloc.SYSTEM)
+        }
+        if ok {
+            if !firstf {
+                out.push('\n')?
+            }
+            firstf = false
+            out.push_str(text.as_str())?
+        } else {
+            bad.push_str("unsupported ")?
+            bad.push_str(nm.as_str())?
+            bad.push_str(": ")?
+            bad.push_str(text.as_str())?
+            bad.push('\n')?
+            nbad = nbad.wrapping_add(1usize)
+        }
+    }
+    Ok(ksnc.kir.Kir { text: out, bad: bad, nbad: nbad })
+end ksnc.kir.lower

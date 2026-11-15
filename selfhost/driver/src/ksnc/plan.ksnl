@@ -1,5 +1,6 @@
-// 段の表 (`ksnc --stages`)。どの段が Kasane 製か Rust 製かを示す。
-// 差し替え: 段は front.ksnl (読み込み・名前解決)、build.ksnl (検査と下ろしを呼ぶ入口)、clang.ksnl (実行ファイル) に分けてある。
+// 段の表 (`ksnc --stages`)。どの段が Kasane 製か Rust 製かを示す。既定 (rust) と --stages=kasane の担当を並べる。
+// 差し替え: 段は front.ksnl (読み込み・名前解決)、kcheck.ksnl (検査の Kasane 版)、build.ksnl (Rust 版の検査と下ろし)、
+// kir.ksnl・kbuild.ksnl (Kasane 版の下ろしと LLVM 出力)、clang.ksnl (実行ファイル)、kfmt.ksnl (整形) に分けてある。
 fn ksnc.plan.text() -> &'static str uses [] panics never pub
-    "段          担当    実装\n読み込み     Kasane  selfhost/resolve: kasane.toml・src/・直接の path 依存・spec/stdlib\n名前解決     Kasane  selfhost/resolve: 名前の診断 (E1101 E1102 E1104 E1109 E1119 など)\n検査         Rust    ksn check (型・効果・借用)\n下ろし       Rust    ksn build の KIR -> LLVM IR (ksn の中で行う。IR を外へ出す CLI がない)\n実行ファイル Kasane  ksnc の clang 段 (ksn が KSN_CLANG で呼ぶ。ランタイム C は stage0/src)\n"
+    "段            既定    --stages=kasane の担当 (selfhost/)\n読み込み       Kasane  Kasane: resolve (kasane.toml・src/・path 依存・spec/stdlib)\n名前解決       Kasane  Kasane: resolve (名前の診断)\n型             Rust    Kasane: types (型の誤り E20xx・E2044 など)\n効果           Rust    Kasane: effects (E4001〜E4010)\n借用           Rust    Kasane: borrow (E30xx)\n整形 (fmt)     Rust    Kasane: fmt (ksnc fmt)\n下ろし         Rust    Kasane: lower (KIR。下ろせない関数があれば理由を出して失敗)\nLLVM IR        Rust    Kasane: emit (ksn の中で行う既定。--stages=kasane は emit)\n実行ファイル   Kasane  Kasane: ksnc の clang 段 (既定は ksn が KSN_CLANG で呼ぶ。kasane は ksnc が直接呼ぶ)\n\n--stages=both は Rust 版と Kasane 版を並べて出す (build の Kasane 版は target/kasane/ に作る)。\n"
 end ksnc.plan.text

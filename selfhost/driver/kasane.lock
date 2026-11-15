@@ -1,6 +1,31 @@
 version = 1
 
 [[package]]
+name = "borrow"
+source = "path+../borrow"
+deps = ["parse", "resolve", "types"]
+
+[[package]]
+name = "effects"
+source = "path+../effects"
+deps = ["parse", "resolve", "types"]
+
+[[package]]
+name = "emit"
+source = "path+../emit"
+deps = []
+
+[[package]]
+name = "fmt"
+source = "path+../fmt"
+deps = ["parse"]
+
+[[package]]
+name = "lower"
+source = "path+../lower"
+deps = ["parse", "resolve", "types"]
+
+[[package]]
 name = "parse"
 source = "path+../parse"
 deps = []
@@ -9,3 +34,8 @@ deps = []
 name = "resolve"
 source = "path+../resolve"
 deps = ["parse"]
+
+[[package]]
+name = "types"
+source = "path+../types"
+deps = ["parse", "resolve"]
