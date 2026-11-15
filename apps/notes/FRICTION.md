@@ -2,23 +2,15 @@
 
 本パッケージ (`apps/notes`, CLI ノート帳) を実装する上で、想定通りに動作しなかった点や回避策を要した点を記録する。
 
-## 摩擦の件数: 4 件
+## 摩擦の件数: 2 件 (処理系の不足)
 
-## 上位 3 件
+統括者の注: 担当の初版は、自分のコードの誤り 2 件 (`cmd.edit` の引数の数、`match` の腕の外での束縛の使用) を摩擦に数えていた。言語・処理系の書きにくさではないので外した。
 
-1. **`notes.cmd.edit` の引数数とディスパッチ側の呼び出しが一致しない**
-   `edit` は `<id> <title> <body>` の 3 引数を取るが、`notes.ksnl` のディスパッチが `cmd.edit(1usize, 2usize)` と 2 引数しか渡しておらず `E2001` (argument count mismatch) になる。`cmd.edit(1usize, 2usize, 3usize)` に修正。
+1. **`std.json.to_string` がネイティブに下りない (E9040)**
+   `ksn build --release` で退避する。`notes.store.note_to_json` と `notes.cmd.write_json_string` で、フィールドごとに手で JSON を組んで回避した。
 
-2. **`edit` の `match` アームが空で `memo` がスコープ外になる**
-   `notes.store.Store.get(&db, id)` の `Some(memo)` アームが空 (`{}`) で、アームの外で `memo.tags.as_slice()` を参照するとスコープ外 / 未解決 (`E1020` 未使用のパターン束縛、`E1101` 未解決名) になる。`tag` と同様に、アーム内でタグを複製し `note.Note.new` で再構築して `Store.set(&mut db, id, updated)` までを行うよう再構成。
-
-3. **`std.json.to_string` が KIR ステージ 1 で未対応**
-   `std.json.to_string` を使った JSON シリアライズが `E9040` でネイティブビルドに失敗。`notes.store.note_to_json` と `notes.cmd.write_json_string` でフィールドごとに手動シリアライズするよう置き換え。
-
-### その他
-
-4. **`&self.notes` のフィールド移動 (E9040)**
-   `all_notes()` が `&self.notes` を返すとステージ 1 で `E9040` (フィールドの移動) になる。`all_notes()` を `all_notes_len()` / `get_at()` に分割し、参照をインデクス経由で取り出すようにした (`store.ksnl`)。
+2. **`&self.notes` (フィールドの `Vec` への参照) を返すメソッドが E9040**
+   `all_notes()` が `&self.notes` を返すと、ネイティブの下ろしが「フィールドの移動」として退避する。`all_notes_len()` / `get_at()` に分け、添字で取り出して回避した (`store.ksnl`)。
 
 ## 動作確認
 
