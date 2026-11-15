@@ -236,17 +236,23 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     // 総称の関数は型引数を照合で決めて、インスタンスの鍵 (fqn<型,..>) で下ろす。
     let mut key = lower.cx.own(fqn.as_str())?
     let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut rty = t
     if lower.inst.is_generic(env, c, item) {
         subs = lower.inst.args_of(env, c, p, item, n)?
         key = lower.inst.key(env, c, fqn.as_str(), &subs)?
+        // 戻り値は宣言から代入する (呼び出しの型の表は、総称の中の呼び出しで決まらないことがある)。
+        let rr = lower.inst.ret_of(env, c, item, &subs)?
+        if rr != types.ty.UNKNOWN {
+            rty = rr
+        }
     }
-    lower.expr.enqueue(c, key.as_str(), item + 1usize, subs, t)?
+    lower.expr.enqueue(c, key.as_str(), item + 1usize, subs, rty)?
     let mut args = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for j in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
         let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, j), types.ty.UNKNOWN)?
         args.push(a.v)?
     }
-    let rt = lower.tyk.text(env, c, t)?
+    let rt = lower.tyk.text(env, c, rty)?
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     o.push_str("call ")?
     o.push_str(key.as_str())?
@@ -254,7 +260,7 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     o.push_str(lower.cx.vlist(&args)?.as_str())?
     o.push(')')?
     let v = lower.cx.def(c, rt.as_str(), o.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R { v: v, t: rty })
 end lower.expr.call
 
 // 型の合わない仮の値 (未対応のとき)。
@@ -522,7 +528,7 @@ fn lower.expr.letx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let r = lower.expr.expr(env, c, p, src, sn.d, types.ty.UNKNOWN)?
     let tk = parse.cur.peek_at(p, pn.a)
     let name = resolve.ast.text(src, tk.start, tk.stop)
-    let t = lower.expr.tyof(c, sn.d)?
+    let t = r.t
     lower.opt.bind(env, c, name, r.v, sn.b != 0usize, t)?
     Ok(())
 end lower.expr.letx
@@ -831,7 +837,8 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
         return lower.expr.dummy(c, t)
     }
     if first == "" {
-        return Ok(lower.cx.R { v: base, t: t })
+        // 局所の読み出し: 型は局所の型 (束縛のとき決まったもの)。
+        return Ok(lower.cx.R { v: base, t: bt })
     }
     // `局所.フィールド` (構造体の読み出し。参照なら参照越し)。
     lower.opt.field(env, c, base, bt, second, t)

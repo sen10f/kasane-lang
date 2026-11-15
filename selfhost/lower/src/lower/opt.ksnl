@@ -66,7 +66,44 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
         return lower.expr.dummy(c, t)
     }
     let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, 0usize), types.ty.UNKNOWN)?
-    let tt = lower.tyk.text(env, c, t)?
+    // 戻り値の型: 表が決まっていれば使い、決まらなければ引数から組み立てる (Option は引数、Result は残りを戻り値の型から)。
+    let mut rty = t
+    let tf = types.ty.find(&c.ar, t)
+    let tn = types.ty.node(&c.ar, tf)
+    let mut known = tn.k == types.ty.K.Adt && tn.c > 0usize
+    if known {
+        let a0 = types.ty.node(&c.ar, types.ty.find(&c.ar, types.ty.arg(&c.ar, tn.b, 0usize)))
+        if a0.k == types.ty.K.Var || a0.k == types.ty.K.Unknown {
+            known = false
+        }
+    }
+    if !known {
+        let mut ids = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        if lower.opt.owner_k(vname) == 1usize {
+            ids.push(a.t)?
+        } else {
+            let rf = types.ty.find(&c.ar, c.s.ret_t)
+            let rn = types.ty.node(&c.ar, rf)
+            let mut other = a.t
+            if rn.k == types.ty.K.Adt && rn.c == 2usize {
+                let k2 = if vname == "Ok" {
+                    1usize
+                } else {
+                    0usize
+                }
+                other = types.ty.arg(&c.ar, rn.b, k2)
+            }
+            if vname == "Ok" {
+                ids.push(a.t)?
+                ids.push(other)?
+            } else {
+                ids.push(other)?
+                ids.push(a.t)?
+            }
+        }
+        rty = types.ty.adt(&mut c.ar, owner, &ids)?
+    }
+    let tt = lower.tyk.text(env, c, rty)?
     let head = if (vname == "Some" || vname == "Ok") {
         if vname == "Some" {
             "some "
@@ -78,7 +115,7 @@ fn lower.opt.ctor(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     }
     let op = lower.cx.cat2(head, lower.cx.vs(a.v)?.as_str())?
     let v = lower.cx.def(c, tt.as_str(), op.as_str())?
-    Ok(lower.cx.R { v: v, t: t })
+    Ok(lower.cx.R { v: v, t: rty })
 end lower.opt.ctor
 
 // 参照の型 (ref / mutref) の中身と可変かどうか。参照でなければ (e, false, false)。
@@ -252,6 +289,14 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
     let rv = lower.tyk.at(jps.as_slice(), 0usize)
     Ok(lower.cx.R { v: rv, t: t })
 end lower.opt.optmatch
+
+// 変種の名前から、組み立てる型の引数の数 (Option は 1、Result は 2) を決める。
+fn lower.opt.owner_k(vname: &str) -> usize uses [] panics may pub
+    if vname == "Some" {
+        return 1usize
+    }
+    2usize
+end lower.opt.owner_k
 
 // 受け手の値を宣言の self に合わせる: 参照が要るのに値なら一時のスロット、参照でないのに参照なら読み出す。
 fn lower.opt.recv_value(env: &types.env.Env, c: &mut lower.cx.Cx, r: lower.cx.R, want_ref: bool) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
