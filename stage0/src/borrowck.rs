@@ -1117,9 +1117,13 @@ impl<'a> Low<'a> {
             cur = self.lower_stmt(s, cur);
         }
         // ブロックの末尾で、このブロックで宣言した変数のスコープを抜ける。
+        // 寿命が尽きるのは「ブロックで作った所有物」だけ。参照の別名 (`let p = s`) は
+        // 元の借用の寿命を持つので、ここで DropScope しない。
         let vars = self.scope_stack.pop().unwrap_or_default();
         for v in vars {
-            self.emit(cur, Ev::DropScope(v));
+            if self.owned.contains(&v) {
+                self.emit(cur, Ev::DropScope(v));
+            }
         }
         cur
     }
@@ -1146,7 +1150,9 @@ impl<'a> Low<'a> {
         self.escape_check(cur, holder, dying, b);
         let vars = self.scope_stack.pop().unwrap_or_default();
         for v in vars {
-            self.emit(cur, Ev::DropScope(v));
+            if self.owned.contains(&v) {
+                self.emit(cur, Ev::DropScope(v));
+            }
         }
         cur
     }
@@ -1163,7 +1169,16 @@ impl<'a> Low<'a> {
     }
 
     fn drop_scopes_from(&mut self, cur: usize, depth: usize) {
-        let vars: Vec<String> = self.scope_stack.iter().skip(depth).flatten().cloned().collect();
+        // `break`/`continue` で抜けるブロックの局所も、寿命が尽きるのは「所有物」だけ。
+        // 参照の別名は元の借用の寿命を持つ。
+        let vars: Vec<String> = self
+            .scope_stack
+            .iter()
+            .skip(depth)
+            .flatten()
+            .cloned()
+            .filter(|v| self.owned.contains(v))
+            .collect();
         for v in vars {
             self.emit(cur, Ev::DropScope(v));
         }
