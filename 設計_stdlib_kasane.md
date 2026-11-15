@@ -67,3 +67,40 @@
 2. `core.slice.from_raw_parts(_mut)` を仕様に足して実装 (3)。
 3. 3-1 が生ポインタ入りのジェネリック構造体を下ろせるようにしたのを確認 (2・4)。
 4. `spec/stdlib/alloc/vec.ksnl` / `string.ksnl` に本体を書き、`examples/` と `perf/` を組み込みと比べて、ここに表を足す。
+
+## HashMap / BtreeMap (修正プラン 3-4、2026-11-15)
+
+### 段 1 (済み): 本体を Kasane で書く
+
+`spec/stdlib/alloc/collections.ksnl` に規範の API を全て書いた (`new` だけは組み込みのまま: 木走査の `Val::Map` と KIR の下ろしが作る)。
+`ksn check-stdlib` は 0 件、`stage0/tests/map_kasane.rs` が素朴なモデル (線形探索の配列) と 1200 手で比べて通る (木走査)。
+
+表現は **アロケータを 1 本の `Buf` にまとめる**。`A: Allocator` は `Clone` を要求しないので、2 本目の `Buf` を作るアロケータがない
+(`Buf` は `allocator: A` を持つ)。そこで 1 つのコンテナは `Buf` を 1 本だけ持つ。
+
+| 型 | 内部表現 | 反復順 | 計算量 (n = 組の数、B = 索引の大きさ、B ≥ 2n) |
+| --- | --- | --- | --- |
+| `HashMap<K, V, A>` | `cells: Buf<HashCell<K,V>, A>`、`slots: usize` (= B)。先頭 B 個が開番地法の索引 (`Empty` / `Index(位置)`、線形探査)、その後に `Entry(ハッシュ, キー, 値)` が挿入順に並ぶ | 挿入順。削除後も相対順を保つ (8.3・表 `挙動一致`) | `get` / `insert` / `contains_key` 平均 O(1)。`insert` の増設は B を 2 倍にして組の列を回転 (区間の入れ替え) し索引を組み直すので、増設 1 回が O(B + n)、償却 O(1)。`remove` は組を `Buf.remove` で詰めて索引を組み直す O(B + n)。`iter` は組の列を前から見る O(B + n) |
+| `BtreeMap<K, V, A>` | `entries: Buf<MapEntry<K,V>, A>` (キーで整列) | キーの順 (`Ord`) | `get` / `contains_key` O(log n) 回の比較。`insert` / `remove` は要素の移動で O(n) (挿入 `insert_within_cap`) |
+| `HashMapIter` | `cells: &[HashCell]` と位置 | 同上 | 1 件 O(1) (空きは飛ばす) |
+
+- ハッシュ: `core.hash.Fnv64` (FNV-1a 64) を `spec/stdlib/core/hash.ksnl` に Kasane で書いた (従来は規範だけで実装がなかった)。`hash_key` は `key.hash(&mut state)` と `state.finish()`。
+- 整数・`bool`・`char` の `Hash` (仕様 4.2 の組み込み) は、木走査で値のリトルエンディアンのバイト列を `Fnv64.write_bytes` へ渡す (`natives.rs` の `hash_bytes`)。以前は何もしなかった (`Hash` の結果が常に同じで、索引が 1 本の連なりになっていた)。反復順は挿入順なので、ハッシュの値は出力に影響しない。
+- `String` のキーは `Hash` の既存の実装 (`alloc/string.sig`) を通す。木走査での動作は未確認 (Kasane 版の試験は整数キーだけ)。KIR での下ろしは段 2 の対象。
+
+### 段 2 (未): KIR の下ろし (`kir_lower_map.rs` を外す)
+
+現状は KIR の `HashMap` が専用の 24 バイトのヘッダ (`kir_lower_map.rs` の `Shape` は `ksz` 8 / 16 / 24 の 3 種類のキーだけ)。Kasane 版へ切り替えるには、下の 5 つが要る。確かめた結果 (2026-11-15、一時的な計測):
+
+1. **型表**: `core.hash.Fnv64` を `STD_TYPES` に足すと `Fnv64.new` が下りる (足した実験で確認。戻した)。`HashCell` / `HashMapIter` / `MapEntry` は利用者の型でも `STD_TYPES` でもないので、`lower_ty` が `未対応` で拒否する (`kir_lower_agg.rs`)。
+2. **整数の `hash`**: KIR に `x.hash(&mut state)` の下ろしがない (`メソッド hash は段階 1 の対象外`)。`FNV` の 1 バイトずつの更新を IR で出すか、`write_bytes` へ `[u8; N]` を渡す。
+3. **`HashMap` の表現**: `HashMap` は `kir_lower_agg.rs` で `vec_hdr()` (専用のヘッダ) になっている。`cells` 1 本の構造体にすれば 24 バイトで `Vec` と同じ配置になり、`Vec` の方式 (基本メソッドを単相インスタンスへ、ヘッダのアドレスを `&self` に) を使える。ただし `slots` を `cells[0]` の `Header(usize)` に入れる必要がある (構造体を 1 本のフィールドにする)。
+4. **反復**: KIR は自作の反復子の `for` を下ろさない (`kir_lower_iter.rs` の対象外に「自作の反復子」)。`HashMapIter` の `for` と `next` 呼び出しは、その下ろしが要る。
+5. **`new`**: `HashMap.new` / `BtreeMap.new` は規範の宣言だけで本体がない。KIR のために Kasane の本体を書くと、木走査も Kasane 版を見る (`NATIVE_NAMES` の扱いを確かめる必要がある)。
+
+性能の表 (目安 1.2 倍以内) は段 2 が済むまで作れない。
+
+### 段 3 (調べた結果): チャネルと `HashMap` の型ごとの下ろし
+
+- `kir_lower_map.rs` の型ごとの下ろしは、段 2 が済むまで外せない (上の 1〜5)。
+- チャネル (`std.sync`) は Kasane の `Mutex` + `Buf` の待ち行列に**移せない**。ネイティブの待ちは `ksn.thr.wait` (条件変数) と `ksn.thr.{lock,unlock}` で、`gen` / `blocked` / `live` の数で全員待ちの deadlock を検出する (設計_KIR.md 22.7)。Kasane の側に条件変数の原語がなく、待ちを Kasane から書けない。木走査 (協調実行) と VM は別の待ち方をする。移すには、条件変数を標準ライブラリの原語 (unsafe の境界の中) として決める必要がある。

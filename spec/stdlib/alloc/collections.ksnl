@@ -1,0 +1,529 @@
+fn alloc.collections.BtreeMap.contains_key[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>, key: &K) -> bool uses [] panics never pub
+    match self.find(key) {
+        Ok(_i) => {
+            true
+        }
+        Err(_i) => {
+            false
+        }
+    }
+end alloc.collections.BtreeMap.contains_key
+
+fn alloc.collections.BtreeMap.find[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>, key: &K) -> Result<usize, usize> uses [] panics never
+    let mut lo = 0usize
+    let mut hi = self.entries.len()
+    while lo < hi {
+        let mid = lo.wrapping_add(hi.wrapping_sub(lo).wrapping_shr(1u32))
+        match self.entries.get(mid) {
+            Some(entry) => {
+                match entry.key.cmp(key) {
+                    core.cmp.Ordering.Less => {
+                        lo = mid.wrapping_add(1usize)
+                    }
+                    core.cmp.Ordering.Equal => {
+                        return Ok(mid)
+                    }
+                    core.cmp.Ordering.Greater => {
+                        hi = mid
+                    }
+                }
+            }
+            None => {
+                return Err(lo)
+            }
+        }
+    }
+    Err(lo)
+end alloc.collections.BtreeMap.find
+
+fn alloc.collections.BtreeMap.get[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>, key: &K) -> Option<&V> uses [] panics never pub
+    match self.find(key) {
+        Ok(i) => {
+            match self.entries.get(i) {
+                Some(entry) => {
+                    Some(&entry.value)
+                }
+                None => {
+                    None
+                }
+            }
+        }
+        Err(_i) => {
+            None
+        }
+    }
+end alloc.collections.BtreeMap.get
+
+fn alloc.collections.BtreeMap.get_mut[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.BtreeMap<K, V, A>, key: &K) -> Option<&mut V> uses [] panics never pub
+    match self.find(key) {
+        Ok(i) => {
+            match self.entries.get_mut(i) {
+                Some(entry) => {
+                    Some(&mut entry.value)
+                }
+                None => {
+                    None
+                }
+            }
+        }
+        Err(_i) => {
+            None
+        }
+    }
+end alloc.collections.BtreeMap.get_mut
+
+fn alloc.collections.BtreeMap.insert[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.BtreeMap<K, V, A>, key: K, value: V) -> Result<Option<V>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    match self.find(&key) {
+        Ok(i) => {
+            match self.entries.get_mut(i) {
+                Some(entry) => {
+                    entry.key = key
+                    let old = core.mem.replace(&mut entry.value, value)
+                    Ok(Some(old))
+                }
+                None => {
+                    Err(alloc.alloc.AllocError { code: 1u32 })
+                }
+            }
+        }
+        Err(i) => {
+            let fresh = alloc.collections.MapEntry { key: key, value: value }
+            match self.entries.insert_within_cap(i, fresh) {
+                Ok(_done) => {
+                    Ok(None)
+                }
+                Err(back) => {
+                    let want = self.entries.cap().wrapping_mul(2usize).wrapping_add(4usize)
+                    match self.entries.grow(want) {
+                        Ok(_grown) => {
+                        }
+                        Err(error) => {
+                            return Err(error)
+                        }
+                    }
+                    match self.entries.insert_within_cap(i, back) {
+                        Ok(_done) => {
+                            Ok(None)
+                        }
+                        Err(_lost) => {
+                            Err(alloc.alloc.AllocError { code: 1u32 })
+                        }
+                    }
+                }
+            }
+        }
+    }
+end alloc.collections.BtreeMap.insert
+
+fn alloc.collections.BtreeMap.is_empty[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>) -> bool uses [] panics never pub
+    self.entries.is_empty()
+end alloc.collections.BtreeMap.is_empty
+
+fn alloc.collections.BtreeMap.len[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &alloc.collections.BtreeMap<K, V, A>) -> usize uses [] panics never pub
+    self.entries.len()
+end alloc.collections.BtreeMap.len
+
+fn alloc.collections.BtreeMap.remove[K: core.cmp.Ord, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.BtreeMap<K, V, A>, key: &K) -> Option<V> uses [] panics never pub
+    match self.find(key) {
+        Ok(i) => {
+            match self.entries.remove(i) {
+                Some(entry) => {
+                    Some(entry.value)
+                }
+                None => {
+                    None
+                }
+            }
+        }
+        Err(_i) => {
+            None
+        }
+    }
+end alloc.collections.BtreeMap.remove
+
+fn alloc.collections.HashMap.contains_key[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>, key: &K) -> bool uses [] panics never pub
+    match self.find(key) {
+        Some(_p) => {
+            true
+        }
+        None => {
+            false
+        }
+    }
+end alloc.collections.HashMap.contains_key
+
+fn alloc.collections.HashMap.find[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>, key: &K) -> Option<usize> uses [] panics never
+    let h = alloc.collections.hash_key(key)
+    self.find_hashed(h, key)
+end alloc.collections.HashMap.find
+
+fn alloc.collections.HashMap.find_hashed[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>, h: usize, key: &K) -> Option<usize> uses [] panics never
+    let slots = self.slots
+    if slots == 0usize {
+        return None
+    }
+    let mask = slots.wrapping_sub(1usize)
+    let mut i = h & mask
+    let mut n = 0usize
+    while n < slots {
+        match self.cells.get(i) {
+            Some(cell) => {
+                match cell {
+                    alloc.collections.HashCell.Empty => {
+                        return None
+                    }
+                    alloc.collections.HashCell.Index(p) => {
+                        match self.cells.get(*p) {
+                            Some(found) => {
+                                match found {
+                                    alloc.collections.HashCell.Entry(eh, ek, _ev) => {
+                                        if *eh == h && ek.eq(key) {
+                                            return Some(*p)
+                                        }
+                                    }
+                                    alloc.collections.HashCell.Empty => {
+                                    }
+                                    alloc.collections.HashCell.Index(_q) => {
+                                    }
+                                }
+                            }
+                            None => {
+                            }
+                        }
+                    }
+                    alloc.collections.HashCell.Entry(_eh, _ek, _ev) => {
+                        return None
+                    }
+                }
+            }
+            None => {
+                return None
+            }
+        }
+        i = i.wrapping_add(1usize) & mask
+        n = n.wrapping_add(1usize)
+    }
+    None
+end alloc.collections.HashMap.find_hashed
+
+fn alloc.collections.HashMap.get[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>, key: &K) -> Option<&V> uses [] panics never pub
+    match self.find(key) {
+        Some(p) => {
+            match self.cells.get(p) {
+                Some(cell) => {
+                    match cell {
+                        alloc.collections.HashCell.Entry(_h, _k, v) => {
+                            Some(v)
+                        }
+                        alloc.collections.HashCell.Empty => {
+                            None
+                        }
+                        alloc.collections.HashCell.Index(_q) => {
+                            None
+                        }
+                    }
+                }
+                None => {
+                    None
+                }
+            }
+        }
+        None => {
+            None
+        }
+    }
+end alloc.collections.HashMap.get
+
+fn alloc.collections.HashMap.get_mut[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, key: &K) -> Option<&mut V> uses [] panics never pub
+    match self.find(key) {
+        Some(p) => {
+            match self.cells.get_mut(p) {
+                Some(cell) => {
+                    match cell {
+                        alloc.collections.HashCell.Entry(_h, _k, v) => {
+                            Some(v)
+                        }
+                        alloc.collections.HashCell.Empty => {
+                            None
+                        }
+                        alloc.collections.HashCell.Index(_q) => {
+                            None
+                        }
+                    }
+                }
+                None => {
+                    None
+                }
+            }
+        }
+        None => {
+            None
+        }
+    }
+end alloc.collections.HashMap.get_mut
+
+fn alloc.collections.HashMap.hash_at[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>, pos: usize) -> usize uses [] panics never
+    match self.cells.get(pos) {
+        Some(cell) => {
+            match cell {
+                alloc.collections.HashCell.Entry(h, _k, _v) => {
+                    *h
+                }
+                alloc.collections.HashCell.Empty => {
+                    0usize
+                }
+                alloc.collections.HashCell.Index(_q) => {
+                    0usize
+                }
+            }
+        }
+        None => {
+            0usize
+        }
+    }
+end alloc.collections.HashMap.hash_at
+
+fn alloc.collections.HashMap.insert[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, key: K, value: V) -> Result<Option<V>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let h = alloc.collections.hash_key(&key)
+    match self.find_hashed(h, &key) {
+        Some(p) => {
+            match self.cells.get_mut(p) {
+                Some(cell) => {
+                    let fresh = alloc.collections.HashCell.Entry(h, key, value)
+                    let old = core.mem.replace(cell, fresh)
+                    match old {
+                        alloc.collections.HashCell.Entry(_oh, _ok, ov) => {
+                            Ok(Some(ov))
+                        }
+                        alloc.collections.HashCell.Empty => {
+                            Ok(None)
+                        }
+                        alloc.collections.HashCell.Index(_q) => {
+                            Ok(None)
+                        }
+                    }
+                }
+                None => {
+                    Err(alloc.alloc.AllocError { code: 1u32 })
+                }
+            }
+        }
+        None => {
+            let n = self.len()
+            if n.wrapping_add(1usize).wrapping_mul(2usize) > self.slots {
+                let want = if self.slots > 4usize {
+                    self.slots.wrapping_mul(2usize)
+                } else {
+                    8usize
+                }
+                match self.rebuild(want) {
+                    Ok(_done) => {
+                    }
+                    Err(error) => {
+                        return Err(error)
+                    }
+                }
+            }
+            let fresh = alloc.collections.HashCell.Entry(h, key, value)
+            match self.cells.push_within_cap(fresh) {
+                Ok(_done) => {
+                }
+                Err(back) => {
+                    let want = self.cells.cap().wrapping_mul(2usize).wrapping_add(4usize)
+                    match self.cells.grow(want) {
+                        Ok(_grown) => {
+                        }
+                        Err(error) => {
+                            return Err(error)
+                        }
+                    }
+                    match self.cells.push_within_cap(back) {
+                        Ok(_done) => {
+                        }
+                        Err(_lost) => {
+                            return Err(alloc.alloc.AllocError { code: 1u32 })
+                        }
+                    }
+                }
+            }
+            let pos = self.cells.len().wrapping_sub(1usize)
+            self.place(h, pos)
+            Ok(None)
+        }
+    }
+end alloc.collections.HashMap.insert
+
+fn alloc.collections.HashMap.is_empty[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>) -> bool uses [] panics never pub
+    self.len() == 0usize
+end alloc.collections.HashMap.is_empty
+
+fn alloc.collections.HashMap.iter['a, K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &'a alloc.collections.HashMap<K, V, A>) -> alloc.collections.HashMapIter<'a, K, V> uses [] panics never pub
+    alloc.collections.HashMapIter { cells: self.cells.as_slice(), position: self.slots }
+end alloc.collections.HashMap.iter
+
+fn alloc.collections.HashMap.len[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &alloc.collections.HashMap<K, V, A>) -> usize uses [] panics never pub
+    self.cells.len().wrapping_sub(self.slots)
+end alloc.collections.HashMap.len
+
+fn alloc.collections.HashMap.place[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, h: usize, pos: usize) -> () uses [] panics never
+    let slots = self.slots
+    if slots == 0usize {
+        return
+    }
+    let mask = slots.wrapping_sub(1usize)
+    let mut i = h & mask
+    let mut n = 0usize
+    while n < slots {
+        match self.cells.get(i) {
+            Some(cell) => {
+                match cell {
+                    alloc.collections.HashCell.Empty => {
+                        match self.cells.get_mut(i) {
+                            Some(slot) => {
+                                *slot = alloc.collections.HashCell.Index(pos)
+                            }
+                            None => {
+                            }
+                        }
+                        return
+                    }
+                    alloc.collections.HashCell.Index(_q) => {
+                    }
+                    alloc.collections.HashCell.Entry(_eh, _ek, _ev) => {
+                    }
+                }
+            }
+            None => {
+                return
+            }
+        }
+        i = i.wrapping_add(1usize) & mask
+        n = n.wrapping_add(1usize)
+    }
+end alloc.collections.HashMap.place
+
+fn alloc.collections.HashMap.rebuild[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, slots: usize) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
+    let old = self.slots
+    let n = self.cells.len().wrapping_sub(old)
+    let total = slots.wrapping_add(n)
+    if total > self.cells.cap() {
+        match self.cells.grow(total.wrapping_mul(2usize)) {
+            Ok(_grown) => {
+            }
+            Err(error) => {
+                return Err(error)
+            }
+        }
+    }
+    while self.cells.len() < total {
+        match self.cells.push_within_cap(alloc.collections.HashCell.Empty) {
+            Ok(_done) => {
+            }
+            Err(_back) => {
+                return Err(alloc.alloc.AllocError { code: 1u32 })
+            }
+        }
+    }
+    // 古い添字の区間と増やした空きの区間を入れ替えて、組の列を slots の後ろへ送る (挿入順は保つ)。
+    let mid = old.wrapping_add(n)
+    self.reverse_range(old, mid)
+    self.reverse_range(mid, total)
+    self.reverse_range(old, total)
+    self.slots = slots
+    self.reindex()
+    Ok(())
+end alloc.collections.HashMap.rebuild
+
+fn alloc.collections.HashMap.remove[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, key: &K) -> Option<V> uses [] panics never pub
+    match self.find(key) {
+        Some(p) => {
+            match self.cells.remove(p) {
+                Some(cell) => {
+                    self.reindex()
+                    match cell {
+                        alloc.collections.HashCell.Entry(_h, _k, v) => {
+                            Some(v)
+                        }
+                        alloc.collections.HashCell.Empty => {
+                            None
+                        }
+                        alloc.collections.HashCell.Index(_q) => {
+                            None
+                        }
+                    }
+                }
+                None => {
+                    None
+                }
+            }
+        }
+        None => {
+            None
+        }
+    }
+end alloc.collections.HashMap.remove
+
+fn alloc.collections.HashMap.reindex[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>) -> () uses [] panics never
+    let slots = self.slots
+    let total = self.cells.len()
+    let mut i = 0usize
+    while i < slots {
+        match self.cells.get_mut(i) {
+            Some(slot) => {
+                *slot = alloc.collections.HashCell.Empty
+            }
+            None => {
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    let mut p = slots
+    while p < total {
+        let h = self.hash_at(p)
+        self.place(h, p)
+        p = p.wrapping_add(1usize)
+    }
+end alloc.collections.HashMap.reindex
+
+fn alloc.collections.HashMap.reverse_range[K: core.cmp.Eq + core.hash.Hash, V, A: alloc.alloc.Allocator](self: &mut alloc.collections.HashMap<K, V, A>, lo: usize, hi: usize) -> () uses [] panics never
+    match self.cells.as_mut_slice().sub_mut(lo, hi) {
+        Some(part) => {
+            part.reverse()
+        }
+        None => {
+        }
+    }
+end alloc.collections.HashMap.reverse_range
+
+impl['a, K, V] core.iter.Iterator<(&'a K, &'a V), [], never> for alloc.collections.HashMapIter<'a, K, V>
+fn alloc.collections.HashMapIter.next[K, V](self: &mut alloc.collections.HashMapIter<'a, K, V>) -> Option<(&'a K, &'a V)> uses [] panics never impls core.iter.Iterator<(&'a K, &'a V), [], never>
+    loop {
+        if self.position >= self.cells.len() {
+            return None
+        }
+        let p = self.position
+        self.position = p.wrapping_add(1usize)
+        match self.cells.get(p) {
+            Some(cell) => {
+                match cell {
+                    alloc.collections.HashCell.Entry(_h, k, v) => {
+                        return Some((k, v))
+                    }
+                    alloc.collections.HashCell.Empty => {
+                    }
+                    alloc.collections.HashCell.Index(_q) => {
+                    }
+                }
+            }
+            None => {
+                return None
+            }
+        }
+    }
+end alloc.collections.HashMapIter.next
+
+fn alloc.collections.hash_key[K: core.hash.Hash](key: &K) -> usize uses [] panics never
+    let mut state = core.hash.Fnv64.new()
+    key.hash(&mut state)
+    core.num.usize.from_u64(state.finish())
+end alloc.collections.hash_key
