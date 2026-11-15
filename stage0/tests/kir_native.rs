@@ -637,7 +637,10 @@ fn t.main() -> Result<(), std.io.Error> uses [] panics may
         t.emit(t.bits_d(t.mix2(0.5f64, 7i32, 0.25f32, 1.5f64)))
         t.emit(t.bits_d(t.six(0.5f64, 1.5f64, 2.5f64, 3.5f64, 4.5f64, 0.25f32)))
         t.emit(t.bits_d(t.six_i(1i32, 2i32, 3i32, 4i32, 5i32, 6i32)))
-        t.emit(t.scale_i(1.5f32))
+        match core.num.u64.try_from_i32(t.scale_i(1.5f32)) {
+            Ok(v) => t.emit(v)
+            Err(_e) => t.emit(0u64)
+        }
         let p = t.alloc_d()
         t.store_d(p, 2.5f64)
         core.ptr.write(core.ptr.add(p, 1usize), 3.5f64)
@@ -1506,8 +1509,8 @@ end t.main
 
 #[test]
 #[cfg(target_os = "linux")]
-fn ffi_integer_argument_for_float_parameter_panics() {
-    // 整数の値を f32 / f64 の引数に渡すのは型が合わないので、黙って変換せず 101 で止まる。
+fn ffi_integer_argument_for_float_parameter_is_e2023() {
+    // 整数の値を f32 / f64 の引数に渡すのは型が合わないので、黙って変換せず E2023 で止まる。
     let src = r#"extern t.k_half(x: f32) -> f32 link "k_half"
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
@@ -1520,15 +1523,15 @@ end t.main
 "#;
     let t = Tmp::new("ffi_int_for_f32", src);
     fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
-    let so = build_c_helpers(&t.0, FFI_C_SRC);
-    let r = run_with_c_helpers(&t.0, &so);
-    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
-    assert!(text(&r.stderr).contains("unsupported type or value"), "{}", text(&r.stderr));
+    // 型の検査が先に止める (E2023)。黙って変換しない。
+    let r = run(&["check"], &t.0);
+    assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stdout).contains("E2023"), "{}", text(&r.stdout));
 }
 
 #[test]
 #[cfg(target_os = "linux")]
-fn ffi_integer_argument_for_f64_parameter_panics() {
+fn ffi_integer_argument_for_f64_parameter_is_e2023() {
     let src = r#"extern t.k_scale(x: f64, n: i32, y: f64) -> f64 link "k_scale"
 
 fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may
@@ -1541,10 +1544,10 @@ end t.main
 "#;
     let t = Tmp::new("ffi_int_for_f64", src);
     fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
-    let so = build_c_helpers(&t.0, FFI_C_SRC);
-    let r = run_with_c_helpers(&t.0, &so);
-    assert_eq!(r.status.code(), Some(101), "{}{}", text(&r.stdout), text(&r.stderr));
-    assert!(text(&r.stderr).contains("unsupported type or value"), "{}", text(&r.stderr));
+    // 型の検査が先に止める (E2023)。黙って変換しない。
+    let r = run(&["check"], &t.0);
+    assert_eq!(r.status.code(), Some(1), "{}{}", text(&r.stdout), text(&r.stderr));
+    assert!(text(&r.stdout).contains("E2023"), "{}", text(&r.stdout));
 }
 
 #[test]

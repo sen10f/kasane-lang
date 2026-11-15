@@ -4305,20 +4305,11 @@ impl<'a> TypeCk<'a> {
                     _ => false,
                 };
                 let _ = (same_named, &sl);
-                // `extern` の呼び出しの数値の食い違いは、境界 (E5004/E5005 と実行時の拒否) が見る (従来どおりここで黙る)。
-                let extern_prim = is_extern && matches!((&e.0, &e.1), (Ty::Prim(_), Ty::Prim(_)));
                 // 生ポインタの取り違え (`*const` を `*mut` の引数へ、ポインタと値など) は宣言に型パラメータがなくても報告する。
+                // `extern` の呼び出しも同じ (数値の食い違いは黙って変換しない)。
                 let ptr = self.ptr_mismatch(&pt, &av);
-                if !extern_prim {
-                    {
-                        let (want, got) = self.prim_conflict(&e).or(ptr).unwrap_or_else(|| Self::raw_pair(&e));
-                        self.diag(
-                            "E2023",
-                            format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
-                            line,
-                        );
-                    }
-                }
+                let (want, got) = self.prim_conflict(&e).or(ptr).unwrap_or_else(|| Self::raw_pair(&e));
+                self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got), line);
             }
         }
         // `I: core.iter.Iterator<T, ..>` の境界: 引数 `I` の型が分かれば、その要素の型を `T` に結びつける。
