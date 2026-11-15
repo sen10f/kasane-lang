@@ -1,0 +1,16 @@
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let a = t.mk()
+    let b = t.mk()
+    let mut arr = [a.as_str(), b.as_str()]
+    arr[1usize] = "lit"
+    core.mem.drop(a)
+    core.mem.drop(std.io.print_line(arr[0usize]))
+    Ok(())
+end t.main
+
+fn t.mk() -> alloc.string.String uses [alloc] panics never
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str("hello world, this is heap memory"))
+    s
+end t.mk
