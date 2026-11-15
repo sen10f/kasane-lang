@@ -141,7 +141,8 @@ fn parse.expr.closure(p: &mut parse.cur.P) -> Result<usize, parse.err.Error> use
     parse.ast.add4(&mut p.ast, parse.ast.Kind.Closure, at, ps, ret, cl, body)
 end parse.expr.closure
 
-// 比較は非結合で 1 回だけ。
+// 比較は非結合で 1 回だけ。`式 is パターン` もここで処理する
+// (grammar.ebnf の cmp_expr と Rust 版 parser.rs の cmp_expr に合わせる)。
 fn parse.expr.cmp_expr(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err.Error> uses [alloc] panics never stack 4096
     let l = parse.expr.bin_level(p, 0usize, ns)?
     let op = parse.cur.tok(p)
@@ -149,6 +150,22 @@ fn parse.expr.cmp_expr(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err
         parse.cur.advance(p)
         let r = parse.expr.bin_level(p, 0usize, ns)?
         return parse.expr.bin(p, op, l, r)
+    }
+    if parse.cur.is_kw(p, parse.tok.KW_IS) {
+        let at = parse.ast.get(&p.ast, l).tok
+        parse.cur.advance(p)
+        let pat = parse.pat.pattern(p)?
+        let true_lit = parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, 7usize, at)?
+        let wild = parse.ast.add0(&mut p.ast, parse.ast.Kind.PWild, at)?
+        let false_lit = parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, 7usize, at)?
+        let arm1 = parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, pat, true_lit)?
+        let arm2 = parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, wild, false_lit)?
+        let mut arms = alloc.vec.Vec.new(std.alloc.SYSTEM)
+        arms.push(arm1)?
+        arms.push(arm2)?
+        let arm_list = parse.ast.list(&mut p.ast, &arms, at)?
+        let m = parse.ast.add2(&mut p.ast, parse.ast.Kind.Match, at, l, arm_list)?
+        return Ok(m)
     }
     Ok(l)
 end parse.expr.cmp_expr
