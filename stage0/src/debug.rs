@@ -566,7 +566,7 @@ fn fmt_val(it: &mut Interp, v: &Val) -> String {
 
 /// 値の子 (DAP の展開と `print` 用)。
 pub fn children_of(v: &Val) -> Vec<(String, Val)> {
-    let v = dr(v);
+    let v = as_raw(&dr(v));
     match &v {
         Val::Struct(s) => s.f.borrow().clone(),
         Val::Enum(e) => e.pl.iter().enumerate().map(|(i, x)| (i.to_string(), x.clone())).collect(),

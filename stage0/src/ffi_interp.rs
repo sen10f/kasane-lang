@@ -282,7 +282,7 @@ impl Interp {
     // ------------------------------------------------------------ ピン
 
     fn cty_of_val(&self, v: &Val) -> Option<CTy> {
-        Some(match dr(v) {
+        Some(match as_raw(&dr(v)) {
             Val::Int(_, t) => CTy::Scalar(scalar_name(t.unwrap_or("i32"))?),
             Val::Bool(_) => CTy::Scalar("bool"),
             Val::Char(_) => CTy::Scalar("char"),
@@ -300,17 +300,18 @@ impl Interp {
     /// `core.ptr.from_mut` / `from_ref`: Kasane の配列・構造体・変数を指す生ポインタを作る。C のメモリへ写して、
     /// そのアドレスを返す (C の呼び出しの前後と `core.ptr.read` / `write` で、元の値と同期する)。
     pub(super) fn make_pin(&mut self, name: &str, arg: &Val) -> Res {
-        let (target, cur) = match arg {
+        let raw_arg = as_raw(arg);
+        let (target, cur) = match &raw_arg {
             Val::Ref(p) => {
-                let cur = dr(&p.get());
+                let cur = as_raw(&dr(&p.get()));
                 match &cur {
                     Val::Arr(l) | Val::Vec(l) => (PinTarget::List(l.clone()), cur.clone()),
                     Val::View(l, a, b) => (PinTarget::Range(l.clone(), *a, *b), cur.clone()),
                     _ => (PinTarget::One(p.clone()), cur),
                 }
             }
-            Val::Arr(l) | Val::Vec(l) => (PinTarget::List(l.clone()), arg.clone()),
-            Val::View(l, a, b) => (PinTarget::Range(l.clone(), *a, *b), arg.clone()),
+            Val::Arr(l) | Val::Vec(l) => (PinTarget::List(l.clone()), raw_arg.clone()),
+            Val::View(l, a, b) => (PinTarget::Range(l.clone(), *a, *b), raw_arg.clone()),
             other => (PinTarget::One(Rc::new(CellPlace(RefCell::new(other.clone())))), other.clone()),
         };
         let (elem, count) = match (&target, &cur) {

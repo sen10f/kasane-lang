@@ -977,7 +977,8 @@ impl Interp {
     pub fn v_eq(&mut self, a: &Val, b: &Val) -> Result<bool, Ctl> {
         let (a, b) = (dr(a), dr(b));
         match (&a, &b) {
-            (Val::Struct(x), Val::Struct(y)) => {
+            // `Vec` の値は要素の列として比べる (格納の容量で違わないように、下の列の枝へ)。
+            (Val::Struct(x), Val::Struct(y)) if x.ty != VEC_TY => {
                 if let Some(&di) = self.p.funcs.get(&format!("{}.eq", x.ty)) {
                     let r = self.call_def(di, vec![a.clone(), b.clone()])?;
                     return Ok(matches!(r, Val::Bool(true)));
@@ -1109,7 +1110,8 @@ impl Interp {
                 let (xs, ys) = (x.pl.clone(), y.pl.clone());
                 self.cmp_seq(&xs, &ys, total)
             }
-            (Val::Struct(x), Val::Struct(y)) => {
+            // `Vec` は要素の列として比べる (下の列の枝)。
+            (Val::Struct(x), Val::Struct(y)) if x.ty != VEC_TY => {
                 // 型定義の宣言順 (`fields`) で並べる。定義が無いとき (標準の型) は格納順。
                 let names: Vec<String> = match self.p.types.get(&x.ty) {
                     Some(&i) => self.p.defs[i].fields.iter().map(|f| f.0.clone()).collect(),
@@ -1185,7 +1187,7 @@ impl Interp {
                 }
             }
             "Index" => {
-                let b = dr(&self.eval(&f[0], sc)?);
+                let b = as_raw(&dr(&self.eval(&f[0], sc)?));
                 let i = match dr(&self.eval(&f[1], sc)?) {
                     Val::Int(x, _) => x,
                     _ => return panic("bad index"),
@@ -1602,15 +1604,11 @@ impl Interp {
                 n => n,
             },
             Val::StrBuf(_) => "alloc.string.String",
-            Val::Vec(_) => "alloc.vec.Vec",
+            // 生の列 (`Val::Vec`: `Buf` の格納と `VecDeque`) には `Vec` の本体を引かない。`Vec` の値は構造体 (`value::VEC_TY`)。
             _ => return None,
         };
-        // `Vec` の基本メソッドの Kasane 版 (`alloc/vec.ksnl`、`Buf` の上。KIR 用) は、木走査の `Val::Vec` には使わない (組み込みの実装を使う)。
-        // `String` の基本メソッドの Kasane 版 (`alloc/string.ksnl`) も同じく、木走査の `Val::StrBuf` には使わない。
+        // `String` の基本メソッドの Kasane 版 (`alloc/string.ksnl`) は、木走査の `Val::StrBuf` には使わない (組み込みの実装を使う)。
         if matches!(v, Val::StrBuf(_)) && KASANE_STRING_BASE.contains(&name) {
-            return None;
-        }
-        if matches!(v, Val::Vec(_)) && KASANE_VEC_BASE.contains(&name) {
             return None;
         }
         if let Some(&i) = self.p.funcs.get(&format!("{}.{}", ty, name)) {
@@ -1699,7 +1697,7 @@ impl Interp {
 
     // ------------------------------------------------------------ イテレータ
     pub fn to_iter(&mut self, v: &Val) -> Result<Rc<RefCell<IterV>>, Ctl> {
-        let v = dr(v);
+        let v = as_raw(&dr(v));
         match &v {
             Val::Iter(it) => Ok(it.clone()),
             Val::Arr(l) | Val::Vec(l) => Ok(Rc::new(RefCell::new(IterV::List { items: l.clone(), i: 0, end: None }))),
@@ -1815,7 +1813,7 @@ impl Interp {
 
     // ------------------------------------------------------------ 表示
     pub fn debug_str(&mut self, v: &Val) -> Result<String, Ctl> {
-        let v = dr(v);
+        let v = as_raw(&dr(v));
         Ok(match &v {
             Val::Bool(b) => (if *b { "true" } else { "false" }).into(),
             Val::Char(c) => format!("{:?}", c),
@@ -2003,7 +2001,7 @@ fn int_arith(op: &str, x: i128, y: i128, ty: Ity) -> Res {
     }
 }
 
-/// `alloc/vec.ksnl` が Kasane で書いた `Vec` の基本メソッド (木走査は組み込みを使う)。
+/// `alloc/vec.ksnl` が Kasane で書いた `Vec` の基本メソッド (木走査・KIR とも Kasane 版を使う。`Vec` の値は構造体 `{ buf }`)。
 pub const KASANE_VEC_BASE: &[&str] = &["as_mut_slice", "as_slice", "capacity", "clear", "insert", "is_empty", "len", "pop", "push", "remove", "reserve", "truncate"];
 
 /// `alloc/string.ksnl` が Kasane で書いた `String` の基本メソッド (`Buf<u8>` の上。木走査は組み込みを使う)。

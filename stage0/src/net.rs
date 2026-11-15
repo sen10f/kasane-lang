@@ -58,7 +58,7 @@ fn put(target: &Val, data: &[u8]) -> Val {
 
 /// バッファへ書く (容量の検査は呼び出し側)。
 pub(crate) fn fill(target: &Val, data: &[u8]) {
-    match target {
+    match &crate::value::as_raw(target) {
         Val::View(l, a, _) => {
             let mut l = l.borrow_mut();
             for (i, b) in data.iter().enumerate() {
