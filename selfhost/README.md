@@ -855,3 +855,76 @@ python3 -I compare.py --group probe --mine native
 python3 -I compare.py --group linear_ok --mine native --jobs 16   # 一致 47 / 439 (約 1 分)
 python3 -I compare.py --group examples --mine native               # 一致 0 / 172
 ```
+
+## 17. 統合の段 (修正プラン 5-5 の統合)
+
+2026-11-15。ブランチ `selfhost/ksnc-stages`。変えたのは `selfhost/driver/` と、この節の追記だけ。`selfhost/` の他の部品 (parse・resolve・types・effects・borrow・fmt・lower・emit) の中身と公開の関数は変えていない (driver から path 依存で呼ぶだけ)。`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` は変えていない。
+
+結論を先に: **ドライバ `ksnc` の各段に Kasane 版を差し込んだ。** `ksnc --stages=kasane` は、検査 (名前解決・型・効果・借用)・整形・下ろし・LLVM 出力を Kasane 製の部品で行い、clang だけを外部のものにする。`--stages=both` は Rust 版と Kasane 版を並べて出す。既定 (`--stages=rust`) は従来どおり。作れるものはまだ少ない: 下ろしは linear_ok の 118 件のうち 9 件だけ作れ (その 9 件はすべて Rust 版と実行結果が同じ)、`ksnc` 自身は作れない。
+
+### 17.1 使い方
+
+```
+cd selfhost/driver
+ksn build --release                                  # Rust 版で ksnc を作る (既定の経路)
+./target/release/ksnc.native --stages                # 段の表 (既定と --stages=kasane の担当)
+./target/release/ksnc.native check [--stages=rust|kasane|both] [DIR]
+./target/release/ksnc.native fmt   [--stages=rust|kasane|both] [--check] [DIR]
+./target/release/ksnc.native build [--stages=rust|kasane|both] [--release] [--target host] [DIR]
+python3 -I compare.py check|fmt --pkgs all|examples|apps|selfhost
+python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、実行を Rust 版と比べる
+```
+
+- `kasane` の `build` の出力は `target/kasane/<release|debug>/<名前>.native` と `.ll` (Rust 版の成果物と分けて、上書きしない)。`--target` は host だけ (それ以外は失敗)。
+- `kasane` の `fmt` は書き換え。`both` の整形は書き換えず、両方とも `--check` として並べる。
+- `kasane` の `build` は、先に Kasane 版の検査 (名前解決・型・効果・借用) を通す。Rust 版の検査は通らない (Rust 版より寛容な検査で作ることがある)。
+- 下ろせない関数があると、理由 (`unsupported FQN: 理由`) を出して失敗する。Rust 版へは戻らない。
+
+### 17.2 差し替えの形
+
+| 段 | 既定 (`rust`) | `kasane` の実装 (ファイル) |
+| --- | --- | --- |
+| 読み込み・名前解決 | Kasane (`resolve`) | 同じ (`ksnc/front.ksnl` の `front.text`: 診断の本文と数を返す) |
+| 検査 (型・効果・借用) | Rust (`ksn check`) | Kasane: `types.export.run` → `effects` の本体・`borrow` の本体 (`ksnc/kcheck.ksnl`。`effects.main`・`borrow.main` の手順を組み直した) |
+| 整形 | Rust (`ksn fmt`) | Kasane: `fmt.format_source` (`ksnc/kfmt.ksnl`。最終の改行は `fmt.process` と同じく付ける) |
+| 下ろし | Rust (`ksn build` の中) | Kasane: `lower` の手順 (`ksnc/kir.ksnl`。`lower.main` の写し、本文は文字列で返す) |
+| LLVM IR | Rust (`ksn build` の中) | Kasane: `emit.new_g` と `emit.module` (`ksnc/kbuild.ksnl`) |
+| 実行ファイル | Kasane (`ksnc` の clang 段) | 同じ。kasane は ksnc が clang を直接呼ぶ (`kbuild.ksnl`)。実行時補助は `stage0/src/kir_rt.c`・`sysrt.c` を読むだけで写さない |
+
+依存: `kasane.toml` に `types` `effects` `borrow` `fmt` `lower` `emit` を path 依存で足した (`kasane.lock` は `ksn update` で更新)。Rust 版の経路 (既定) は、ksnc 自身の構築も従来どおり動く: `KSNC_SELF` に複製を渡して `ksnc build --release` を回し、作った 1 段目 (gen1) と、それで作った 2 段目 (gen2) のバイト列が同一 (不動点)。
+
+### 17.3 到達度の表 (段 / 対象 / 一致 / 残り)
+
+| 段 | 対象 | 一致 | 残り |
+| --- | --- | --- | --- |
+| 1・2 読み込み・名前解決 (`resolve`) | 検査の 34 パッケージ | 検査の表 (下の行) に含む。単独では数えていない | E1020 (未使用の変数・引数)・E1021 (シャドーイング) など、`resolve` の外の検査は Rust 版だけ |
+| 3 検査 (`types`・`effects`・`borrow`) | examples 16・apps 3・selfhost 15 (計 34 パッケージ) | **32 / 34** (examples 16/16・apps 3/3・selfhost 13/15)。Rust 版が 0 件のもののうち Kasane 版も 0 件: 32/33 | (a) `selfhost/lower` で Kasane の借用が E3010 (「同じ式で同じ値を競合して借りる」) を 13 件出す (Rust 版は 0 件)。1 つの呼び出しで `&mut c.ar` と `&mut c.tc` (同じ `c` の別の欄) を借りる形を、欄の違いを見ずに衝突と数えている (`lower/expr.ksnl:16` など)。(b) `selfhost/probes/boxtree` は Rust 版が E4013 (再帰する型の Drop) を出すが、Kasane 版に E4013 がない。(c) `let x = if let P = e { .. } else { .. }` が Kasane の構文解析器で PARSE エラー (`selfhost/parse` の不足。`linear_ok/if_let_ref_scrut_trim_ok` で確認) |
+| 4 整形 (`fmt`) | 34 パッケージ | **34 / 34** (書き換えの要否のファイルの集合が Rust 版と同じ。書き換えた後の内容の一致は、1 件 (`examples/tour` に末尾の空行を足した複製) で確かめた) | `ksn fmt` の lint 行 (`not auto-fixable`) と文法検査 (`grammar.check`) は Kasane 版になし |
+| 5 下ろし (`lower`) | linear_ok 118 件 (Rust 版 `ksn build --release` が作れたのは 118 件) | 作れた **9 / 118** | 作れなかった 109 件の理由 (1 ファイルに複数の理由があるので合計は 109 を超える): 型の下ろし 90 (`Option` `Result` `Vec` `String` 参照など)、本体のない宣言 42 (`alloc.*` `std.*` の署名だけの関数)、名前が局所でない 15、式の形 10、総称の関数 10、`let` の形 8、メソッド呼び出し 7、単項演算 5、関数でない呼び出し 4、二項演算 1、構文解析の失敗 (PARSE) 1 |
+| 6 LLVM 出力 (`emit`) | 下ろせた 9 件 | **9 / 9** (実行の標準出力と終了コードが Rust 版の実行ファイルと同じ) | `emit` の 13.4 章の範囲 (浮動小数・外部関数・`std.fs` など)。下ろしが広がらない限り対象が増えない |
+| 7 実行ファイル (clang 段) | 9 件 | **9 / 9** (Kasane 版の clang 段で作れた件数と、上の一致の件数は同じ) | `--target` は host だけ (aarch64 などは失敗する) |
+| 8 ksnc 自身 (`ksnc build --stages=kasane`) | `selfhost/driver` | **0** (作れない) | 下ろしの入口から届く関数 13 件が未対応 (`std.env.arg`・`std.env.var`・`std.process.Command.new`・`alloc.vec.Vec.new` の本体がない。`ksnc.main` の `Option`・`String`・`&str` の型が下ろせない。`ksnc.tool.after` は総称の関数)。届く先が増えるのは、下ろしの範囲が広がったとき |
+
+### 17.4 確かめ方と注意
+
+- `compare.py check`: 検査は `ksn check` の `path:line:col: CODE` と、Kasane 版の `error CODE path:line:` を、(コード・パス・行) の多重集合で比べる。Rust 版の non-fatal 行 (`E0020`) は比べない。
+- `compare.py fmt`: 書き換えの要否のファイルの集合を比べる。内容の一致は、一時の複製で `ksn fmt` と `ksnc fmt` の結果を比べて確かめた (`examples/tour` に末尾の空行を足したもの)。
+- `compare.py build`: 作業場所は既定で `/tmp/ksnc_stages_work` (リポジトリの外)。各ファイルを `t` パッケージに入れ、`ksn build --release` と `ksnc build --stages=kasane --release` を作って、標準入力を空にして実行する (10 秒の制限)。
+- 比べ方の注意: `ksnc` は作業ディレクトリを `PWD` から得る (`cwd=` だけでは変わらない)。最初の比べ方ではこれを忘れ、別のパッケージを見ていた (検査の一致 34 が偽だった)。`compare.py` は `PWD` を合わせるようにした。
+
+### 17.5 処理系・部品の不足 (重要度順)
+
+1. **下ろしの範囲** (表の 5): 型の下ろし (`Option` `Result` `Vec` `String` 参照) と、署名だけの標準ライブラリの呼び出しが、ほぼすべての関数に当たる。`ksnc` 自身を作るにはこの 2 つが要る (表の 8)。
+2. **借用の誤検出** (表の 3(a)): 同じ呼び出しで同じ構造体の別の欄を `&mut` と `&` で借りる形 (`f(&mut c.ar, &c.tc)`) を、`selfhost/borrow` が衝突と数える。Rust 版は通す。欄ごとに別の値として扱うかを、`selfhost/borrow` の担当が決める。
+3. **構文解析の不足** (表の 3(c)): `let x = if let P = e { .. } else { .. }` が PARSE エラー。`if let` を式の位置で受ける形が `selfhost/parse` にない。
+4. **検査の不足** (表の 3(b)): E4013 (再帰する型の Drop) は `effects` にも `types` にもない。
+5. **IR を外へ出す入口がない** (11.4 章 1 と同じ): `ksn` に IR を外へ出す CLI がない。`ksnc` は `emit.module` を直接呼び、`lower.main` の手順は表示しない版 (`kir.ksnl`) に写した。
+6. **Kasane の `build` の検査は、Rust の検査より寛容** (表の 3 の残り): 型・効果・借用の検査で、Kasane 版が見落とすものは、`kasane` の `build` でも通る。`unsound/` の一部がそれ。
+
+### 17.6 まだ確かめていないこと
+
+- `examples/*` と `apps/*` の `build --stages=kasane` は、下ろしの範囲の外なので作れないと見込んでいる (試していない。`examples/` を変えないように、一時の複製でだけ試す場合は別に)。
+- `linear_ok` の検査 (`check --stages=kasane`) の一致は数えていない (`compare.py check` は examples・apps・selfhost の 34 パッケージだけ)。
+- `fmt` の Kasane 版が書く内容は、`ksn fmt` の結果と一致したのは一時の複製 1 件の確かめ。全件の内容の一致は数えていない (`fmt` の一致は書き換えの要否の集合)。
+- `--stages=both` の build の出力 (両方の実行ファイルの比較) は作っていない。
+- `aarch64` などの `--target` は試していない (kasane は失敗する)。

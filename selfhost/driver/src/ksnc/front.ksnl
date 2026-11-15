@@ -1,6 +1,24 @@
-// 段 1・2: 読み込み (kasane.toml・自パッケージと直接の path 依存の src/・spec/stdlib) と名前解決の診断。Kasane 製。
-// 処理は selfhost/resolve の resolve.main と同じ順。違いは、表示せず診断の本文を集めて、誤りがあれば失敗にすること。
-fn ksnc.front.check(dir: &str, std_dir: &str) -> Result<(), ksnc.Failure> uses [alloc, io.console, io.fs] panics never pub
+// 段 1・2 (Kasane 製): 読み込みと名前解決の診断。
+// 読み込みは kasane.toml・自パッケージと直接の path 依存の src/・spec/stdlib。
+// 処理は selfhost/resolve の resolve.main と同じ順。違いは、表示せず診断の本文を集めること。
+// `text` は診断の本文と誤りの数。`check` は既定の経路で、誤りがあれば本文を流して失敗する。
+// 検査の結果: 本文 (行の並び) と誤りの数。
+type ksnc.front.Text pub
+    text: alloc.string.String<std.alloc.System> pub
+    errors: usize pub
+end ksnc.front.Text
+
+// 段 1・2 の既定の経路: 誤りがあれば本文を流して失敗する。
+fn ksnc.front.check(dir: &str, std_dir: &str) -> Result<(), ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
+    let r = ksnc.front.text(dir, std_dir)?
+    if r.errors != 0usize {
+        ksnc.tool.say_err(r.text.as_str())?
+        return Err(ksnc.Failure.Diag)
+    }
+    Ok(())
+end ksnc.front.check
+
+fn ksnc.front.text(dir: &str, std_dir: &str) -> Result<ksnc.front.Text, ksnc.Failure> uses [alloc, io.console, io.fs] panics may pub
     let man = resolve.manifest.read(dir)?
     let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let own_src = resolve.manifest.join(dir, "src")?
@@ -32,9 +50,5 @@ fn ksnc.front.check(dir: &str, std_dir: &str) -> Result<(), ksnc.Failure> uses [
         }
         i = i.wrapping_add(1usize)
     }
-    if rep.errors != 0usize {
-        ksnc.tool.say_err(rep.text.as_str())?
-        return Err(ksnc.Failure.Diag)
-    }
-    Ok(())
-end ksnc.front.check
+    Ok(ksnc.front.Text { text: rep.text, errors: rep.errors })
+end ksnc.front.text

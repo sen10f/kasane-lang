@@ -9,6 +9,27 @@ fn ksnc.build.check(ksn: &str, dir: &str) -> Result<(), ksnc.Failure> uses [allo
     ksnc.tool.expect_ok("ksnc: ksn check が失敗した\n", st.code, &out, &err)
 end ksnc.build.check
 
+// 検査 (Rust 版) の出力を標準出力へ流す版 (`--stages=both` 用)。成功なら true。
+fn ksnc.build.check_show(ksn: &str, dir: &str) -> Result<bool, ksnc.Failure> uses [alloc, io.console, process] panics may pub
+    let mut cmd = std.process.Command.new(ksn)
+    cmd.arg("check")
+    cmd.current_dir(dir)
+    let code = ksnc.tool.run_show(cmd, "")?
+    Ok(code == 0i32)
+end ksnc.build.check_show
+
+// 整形 (Rust 版): `ksn fmt` (check なら `--check`) をパッケージ dir で走らせ、出力を流す。成功なら true。
+fn ksnc.build.fmt(ksn: &str, dir: &str, check: bool) -> Result<bool, ksnc.Failure> uses [alloc, io.console, process] panics may pub
+    let mut cmd = std.process.Command.new(ksn)
+    cmd.arg("fmt")
+    if check {
+        cmd.arg("--check")
+    }
+    cmd.current_dir(dir)
+    let code = ksnc.tool.run_show(cmd, "")?
+    Ok(code == 0i32)
+end ksnc.build.fmt
+
 // 下ろし → 実行ファイル: `ksn build` を走らせる。その clang は KSN_CLANG で ksnc (この実行ファイル) に向ける。
 // 出力 (target/<kind>/<名前>.native と .ll) は ksn の既定の場所に置かれる。
 fn ksnc.build.make(ksn: &str, root: &str, dir: &str, release: bool, target: &str) -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics never pub

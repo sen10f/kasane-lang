@@ -7,3 +7,9 @@ entry = "ksnc.main"
 [dependencies]
 parse = { path = "../parse" }
 resolve = { path = "../resolve" }
+types = { path = "../types" }
+effects = { path = "../effects" }
+borrow = { path = "../borrow" }
+fmt = { path = "../fmt" }
+lower = { path = "../lower" }
+emit = { path = "../emit" }

@@ -1,0 +1,131 @@
+// build: rust (既定) は従来どおり。kasane は検査 (Kasane 版)・下ろし・LLVM・clang。
+// both は両方 (Kasane 版は target/kasane/ に作る)。
+fn ksnc.stage.build(stages: &str, ksn: &str, root: &str, dir: &str, release: bool, target: &str) -> Result<(), ksnc.Failure> uses [alloc, env, io.console, io.fs, process] panics may pub
+    let std_path = ksnc.tool.std_dir(root)?
+    let std_dir = std_path.as_str()
+    if stages == "rust" {
+        ksnc.front.check(dir, std_dir)?
+        ksnc.build.check(ksn, dir)?
+        ksnc.build.make(ksn, root, dir, release, target)?
+        return Ok(())
+    }
+    if stages == "kasane" {
+        let r = ksnc.kcheck.run(dir, std_dir)?
+        if r.errors != 0usize {
+            ksnc.stage.text(r.text.as_str())?
+            return Err(ksnc.Failure.Diag)
+        }
+        ksnc.kbuild.make(dir, root, std_dir, release, target)?
+        return Ok(())
+    }
+    std.io.print_line("== rust (ksn build)")?
+    let rust_ok = match ksnc.front.check(dir, std_dir) {
+        Ok(_u) => match ksnc.build.check(ksn, dir) {
+            Ok(_v) => true
+            Err(_e) => false
+        }
+        Err(_e) => false
+    }
+    if rust_ok {
+        ksnc.build.make(ksn, root, dir, release, target)?
+    }
+    std.io.print_line("== kasane (ksnc build --stages=kasane)")?
+    let kasane_ok = match ksnc.kbuild.make(dir, root, std_dir, release, target) {
+        Ok(_u) => true
+        Err(_e) => false
+    }
+    if !rust_ok || !kasane_ok {
+        return Err(ksnc.Failure.Tool)
+    }
+    Ok(())
+end ksnc.stage.build
+
+// check: rust (既定) は従来どおり (前段の名前解決、その後 ksn check)。kasane は ksnc.kcheck.run。both は両方。
+fn ksnc.stage.check(stages: &str, ksn: &str, dir: &str, std_dir: &str) -> Result<(), ksnc.Failure> uses [alloc, io.console, io.fs, process] panics may pub
+    if stages == "rust" {
+        ksnc.front.check(dir, std_dir)?
+        ksnc.build.check(ksn, dir)?
+        std.io.print_line("ok")?
+        return Ok(())
+    }
+    if stages == "kasane" {
+        let r = ksnc.kcheck.run(dir, std_dir)?
+        ksnc.stage.text(r.text.as_str())?
+        if r.errors != 0usize {
+            return Err(ksnc.Failure.Diag)
+        }
+        std.io.print_line("ok (kasane)")?
+        return Ok(())
+    }
+    std.io.print_line("== rust (ksn check)")?
+    let rust_ok = ksnc.build.check_show(ksn, dir)?
+    std.io.print_line("== kasane (resolve・types・effects・borrow)")?
+    let r = ksnc.kcheck.run(dir, std_dir)?
+    ksnc.stage.text(r.text.as_str())?
+    let mut sum = alloc.string.String.new(std.alloc.SYSTEM)
+    sum.push_str("== summary: rust ")?
+    if rust_ok {
+        sum.push_str("ok")?
+    } else {
+        sum.push_str("errors")?
+    }
+    sum.push_str(", kasane errors ")?
+    sum.push_str(ksnc.stage.num(r.errors).as_str())?
+    std.io.print_line(sum.as_str())?
+    Ok(())
+end ksnc.stage.check
+
+// fmt: rust (既定) は ksn fmt、kasane は ksnc.kfmt.run、both は両方を --check として並べる。
+fn ksnc.stage.fmt(stages: &str, ksn: &str, dir: &str, check: bool) -> Result<(), ksnc.Failure> uses [alloc, io.console, io.fs, process] panics may pub
+    if stages == "rust" {
+        if !ksnc.build.fmt(ksn, dir, check)? {
+            return Err(ksnc.Failure.Diag)
+        }
+        return Ok(())
+    }
+    if stages == "kasane" {
+        let n = ksnc.kfmt.run(dir, check)?
+        if n == 0usize {
+            std.io.print_line("ok (kasane)")?
+        } else if check {
+            return Err(ksnc.Failure.Diag)
+        }
+        return Ok(())
+    }
+    std.io.print_line("== rust (ksn fmt --check)")?
+    let rust_ok = ksnc.build.fmt(ksn, dir, true)?
+    std.io.print_line("== kasane (fmt --check)")?
+    let n = ksnc.kfmt.run(dir, true)?
+    let mut sum = alloc.string.String.new(std.alloc.SYSTEM)
+    sum.push_str("== summary: rust ")?
+    if rust_ok {
+        sum.push_str("ok")?
+    } else {
+        sum.push_str("diff")?
+    }
+    sum.push_str(", kasane would reformat ")?
+    sum.push_str(ksnc.stage.num(n).as_str())?
+    std.io.print_line(sum.as_str())?
+    Ok(())
+end ksnc.stage.fmt
+
+// 整数 (誤りの数) を十進の文字列にする。
+fn ksnc.stage.num(n: usize) -> alloc.string.String<std.alloc.System> uses [alloc] panics may pub
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    match s.push_u64(u64.from_usize(n)) {
+        Ok(_u) => core.mem.drop(0u8)
+        Err(_e) => core.panic.panic("ksnc: out of memory")
+    }
+    s
+end ksnc.stage.num
+
+// `--stages` による段の選び方 (rust 既定・kasane・both)。verb ごとの入口。
+// both は Rust 版と Kasane 版を両方走らせて並べる。both の整形は書き換えない (--check として走らせる)。
+// 本文を標準出力へ流す (末尾の空白を除き、空なら何もしない)。
+fn ksnc.stage.text(s: &str) -> Result<(), ksnc.Failure> uses [io.console] panics may pub
+    let t = s.trim_end()
+    if t != "" {
+        std.io.print_line(t)?
+    }
+    Ok(())
+end ksnc.stage.text
