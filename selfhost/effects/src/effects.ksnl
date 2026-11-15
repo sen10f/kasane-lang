@@ -1,0 +1,99 @@
+fn effects.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, io.fs] panics never
+    let pkg = match std.env.arg(0usize) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    let std_dir = match std.env.arg(1usize) {
+        Some(s) => s
+        None => return Ok(())
+    }
+    let man = resolve.manifest.read(pkg)?
+    // (1) 読み込み: 自パッケージ、直接の path 依存の src/、標準ライブラリ (resolve.main と同じ)。
+    let mut srcs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let own_src = resolve.manifest.join(pkg, "src")?
+    resolve.load.collect(own_src.as_str(), "", true, &mut srcs)?
+    let deps = man.deps
+    for d in deps.as_slice().iter() {
+        let dir = resolve.manifest.join(pkg, d.path.as_str())?
+        let dsrc = resolve.manifest.join(dir.as_str(), "src")?
+        resolve.load.collect(dsrc.as_str(), "", false, &mut srcs)?
+    }
+    resolve.load.collect(std_dir, "", false, &mut srcs)?
+    // (2) 構文解析と定義の表 (resolve の表と同じ)。構文エラーのファイルは飛ばす (resolve が報告する)。
+    let mut acc = effects.walk.acc_new()?
+    let mut t = resolve.table.new()?
+    let mut ps = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut pfile = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut i = 0usize
+    for s in srcs.as_slice().iter() {
+        match resolve.parse_file(s.text.as_slice(), s.path.as_str(), s.sig, &mut acc.rep)? {
+            Some(p) => {
+                resolve.table.add_file(&mut t, &p, s.text.as_slice(), i, &mut acc.rep)?
+                ps.push(p)?
+                pfile.push(i)?
+            }
+            None => core.mem.drop(0u8)
+        }
+        i = i.wrapping_add(1usize)
+    }
+    // (3) 関数の表: 全ファイルの FnDef。sig の宣言は実装を上書きしない。
+    let mut fs = effects.fns.new()?
+    let mut k = 0usize
+    for p in ps.as_slice().iter() {
+        let file = match pfile.as_slice().get(k) {
+            Some(f) => *f
+            None => 0usize
+        }
+        match srcs.as_slice().get(file) {
+            Some(s) => effects.fns.add_file(&mut fs, p, s.text.as_slice(), file, s.own, s.sig)?
+            None => core.mem.drop(0u8)
+        }
+        k = k.wrapping_add(1usize)
+    }
+    // 利用者が panics never の unwrap を定義しているか (あれば .unwrap() は判断できない)。
+    for j in core.iter.range(0usize, fs.items.len()) {
+        let nm = effects.fns.name_of(&fs, j)
+        if effects.fns.at(&fs, j).pan == 1usize && nm.ends_with(".unwrap") {
+            effects.walk.bump(&mut acc, 9usize)
+        }
+    }
+    // (4) 本体の走査。全ファイル (辺は依存の関数も要る)。診断は自パッケージだけ。
+    k = 0usize
+    for p in ps.as_slice().iter() {
+        let file = match pfile.as_slice().get(k) {
+            Some(f) => *f
+            None => 0usize
+        }
+        k = k.wrapping_add(1usize)
+        match srcs.as_slice().get(file) {
+            Some(s) => {
+                acc.rep.path.clear()
+                acc.rep.path.push_str(s.path.as_str())?
+                effects.run.walk_file(&t, &fs, p, s.text.as_slice(), file, &mut acc)?
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    // (5) スタック (E4010): 候補のうち呼び出しの図で自分に戻るものに、stack が要る。
+    let ncand = acc.cs.len()
+    for j in core.iter.range(0usize, ncand) {
+        let c = match acc.cs.as_slice().get(j) {
+            Some(v) => *v
+            None => 0usize
+        }
+        let und = match acc.cu.as_slice().get(j) {
+            Some(b) => *b
+            None => false
+        }
+        if effects.walk.reaches(&acc.edges, c)? {
+            effects.run.report_rec(&mut acc, &fs, &srcs, c)?
+        } else if und {
+            effects.walk.bump(&mut acc, 8usize)
+        }
+    }
+    // (6) 出力: 診断と集計。
+    let s = effects.run.summary(&acc)?
+    acc.rep.text.push_str(s.as_str())?
+    std.io.print_line(acc.rep.text.as_str())?
+    Ok(())
+end effects.main

@@ -264,3 +264,77 @@ ksn build --release
 python3 -I compare.py --group all          # 定義 113 ファイル・診断 (正常 0 件、broken 7/12)
 python3 -I compare.py --group broken -v    # 差の中身
 ```
+
+## 10. 効果の検査の段 (修正プラン 5-5 の次の段)
+
+2026-11-15。ブランチ `selfhost/effects`。新規は `selfhost/effects/` と、この節の追記だけ (`stage0/`・`examples/`・`spec/`・`apps/`・`bench/`・`perf/` と `selfhost/` の他の部品は変えていない)。
+
+結論を先に: **効果 (E4001)・panic (E4002)・添字 (E4003)・整数演算 (E4004)・再帰の stack (E4010) の検査は、型を見ずに Kasane で書けて、`ksn build --release` で退避なしにネイティブになった** (ELF、終了コード 0、E9040 なし)。自分自身 (+ parse・resolve・標準ライブラリ) の検査は 0.09 秒。Rust 版と比べると、効果・panic の分野の 58 件 (Rust 版が E4001〜E4010 で拒否する unsound) のうち **判断できたのは 0 件**。残りは型が要る形 (55 件) と、関数項目の型注釈への変換 (3 件、型の段が要る) で、名前だけの検査は一致も余分も出さない。診断が出た形 (直接の呼び出し・添字・整数の演算・unwrap・相互再帰) は Rust 版と一致した。
+
+### 10.1 構成と行数
+
+`selfhost/effects/` が ksn パッケージ (`kasane.toml` `kasane.lock`、`entry = "effects.main"`、依存 `parse` と `resolve` を `path` で)。
+
+| ファイル | 行数 | 中身 |
+| --- | ---: | --- |
+| `src/effects.ksnl` | 99 | 入口: 読み込み → 解析と表 → 関数の表 → 本体の走査 → 再帰 (E4010) → 集計 |
+| `src/effects/fns.ksnl` | 128 | 関数の表: FnDef ごとの行・本体・panic (never=1/may=2/変数=3)・`stack` の有無・uses (空白区切り) と FQN → 番号 |
+| `src/effects/walk.ksnl` | 542 | 本体の走査 (局所束縛と名前解決は `resolve.walk` と同じ並び)、呼び出しの検査、添字・整数演算・unwrap、辺の収集 |
+| `src/effects/run.ksnl` | 58 | 関数 1 本の走査の入口、E4010 の報告、末尾の集計 |
+| `compare.py` | 195 | Rust 版 `ksn check --json` との比較 (`clean` `diag` `unsound` `all`) |
+| **合計** | **827 (Kasane) + 195 (Python)** | |
+
+### 10.2 検査の中身
+
+- **E4001**: 呼び出しの先の宣言 `uses` の各要素が、呼び出し元の `uses` に覆われるか (5.1 の階層: `io` は `io.fs` を覆う)。先の宣言が無い (推論される) ときは判断できない。
+- **E4002**: `panics never` の関数から `panics may` の関数を呼ぶ。`.unwrap()` は `Option`・`Result` の `unwrap` が `panics may` なので同じ扱い (利用者が `panics never` の `unwrap` を定義していれば判断できない)。
+- **E4003**: 添字 (`panics never` の関数の `a[i]`)。Rust 版の番号に合わせた (修正プランの「E4004」は整数演算)。
+- **E4004**: `+ - * / %` の一方が接尾辞つきの整数リテラル (`1u32`) のとき。リテラルが無い二項演算は型が要るので判断できない。
+- **E4010**: 自パッケージの `panics never`・`stack` なし関数について、呼び出しの辺 (解決できた `f(..)` の呼び出し、依存の本体も含む) で自分に戻るかを幅優先で見る (強連結成分に入るかと同じ)。戻るなら E4010。
+- 名前は `resolve.scope.find` (3.3 の順: 局所 → ジェネリクス → import → FQN) で解く。局所変数の束縛は `resolve.walk` と同じ規則で押す。閉包の本体は、呼び出しを「閉包の中」として数えるだけで検査しない。
+
+### 10.3 確かめ
+
+| 対象 | 件数 | 結果 |
+| --- | ---: | --- |
+| `examples/*`・`apps/*`・`selfhost/{parse,resolve,effects}` (パッケージ) | 21 | Kasane 版 0 件、Rust 版 0 件。不一致 0。判断できない形は合計 (下の 10.4) |
+| `stage0/tests/data/linear_ok/*.ksnl` | 118 | 0 件で一致 118 |
+| `stage0/tests/data/diag/E4001〜E4010*` (1 ファイル 1 ケース) | 13 | **一致 4** (E4001 E4002 E4003 E4010) / 判断できない 9 / 取りこぼし 0 / 余分 0 |
+| `stage0/tests/data/unsound/*` (Rust 版が E4001〜E4010 で拒否するもの) | 58 / 408 | **一致 0** / 判断できない 55 / 取りこぼし 3 / 余分 0 |
+
+- 「一致」= Kasane 版の E40 の集合が Rust 版と同じ。「判断できない」= 一致せず、型が要る形を数えた。「取りこぼし」= 一致せず、数えたものも無い。「余分」= Rust 版に無いコードを Kasane 版が出した。
+- 判断できなかった 9 件 (diag): メソッドと `dyn` 越しの呼び出し (`E4001b` `E4002b` `E4002c` `E4002e` `E4001d` `E4010b`)、`Fn` 境界に渡した閉包 (`E4001c` `E4002d` `E4010c`)。
+- unsound の取りこぼし 3 件 (`fn_conv_option_decl` `fn_conv_return_decl` `fn_type_return`): 関数項目や関数型の値を、効果の小さい関数型へ渡す変換 (戻り値 `-> fn() uses []` に `t.loud` を返す、`Some(l)` の中の `l`)。関数型の注釈と値の照合が要るので、名前だけでは出ない (10.5 の 1)。
+- 追加の確かめ (リポジトリには入れていない小さな入力): 相互再帰 `a ⇄ b` (E4010 ×2)、`stack` 付きの再帰 (出ない)、`n + 1u32` (E4004)、`xs[0usize]` (E4003)、`v.unwrap()` (E4002) を Rust 版と比べて、E4010・E4003・E4004 は一致、`unwrap` は Rust 版の `core.option.Option.unwrap` の E4002 と一致。
+
+### 10.4 判断できない形 (21 パッケージの合計)
+
+| 形 | 件数 | 理由 |
+| --- | ---: | --- |
+| メソッド呼び出し (`x.m()`、局所の `v.m()` を含む) | 1845 | レシーバの型が要る |
+| 再帰の候補 (`panics never`・stack なし) で未確定の呼び出しを含む | 341 | 辺が張れない呼び出し (メソッド・閉包) が自分に戻るかもしれない (重なるので合計には入れない) |
+| 解決できない名前 | 127 | 基本型の関数 (`u64.from_usize` 等、標準の宣言なし) と `extern` 宣言 (表に入れていない) |
+| 推論された宣言 (`uses` を省略した非 pub 関数) | 35 | 本体からの推論は未実装 |
+| 効果・panic の変数 (`E: uses` `P: panics`) | 14 | 実体化が要る |
+| 閉包の中の呼び出し | 10 | 閉包の効果は呼び出されるまで決まらない |
+| 整数演算 (リテラルなし) | 2 | 型が要る |
+
+### 10.5 処理系の不足 (重要度順)
+
+1. **型の段が要る** (unsound の 55/58 と取りこぼし 3): 関数値・`Fn` 境界・`dyn`・閉包の推論・効果変数の実体化・関数型の注釈と値の照合は、名前だけでは決まらない。この段は型の段 (`selfhost/types`) の出力を使うのが筋で、名前の検査は「型が要らない部分」しか確かめられない。
+2. **呼び出しの表現が名前解決に頼る**: 局所変数のメソッド `v.m(..)` は `Call(Path "v.m")` として書かれ (`MCall` ではない)、AST だけでは関数の経路呼び出し `a.b(..)` と区別できない。`unwrap` の判定も、`Path` の呼び出しと `MCall` の両方で書く必要があった。AST に「レシーバが局所か」を持たせるか、名前解決の結果 (`ksn resolve` 相当) を入力にできると、1845 件の判断できない形の大半が区別できる。
+3. **字句・構文の診断と書式の摩擦**: 予約語 `panics`・`uses`・`stack` をフィールド名に使うと `E0002: expected a name (found 'panics')` が **1:1** に出る (位置も説明も誤っている)。構造体リテラルは 1 行 100 字 (E0053・E0055) なので、長いものは関数に切り出す必要があった (`effects.fns.mk`)。`Vec` の要素を書き換える API がない (`as_mut_slice().get_mut` で代用)。`ksn fmt` は並びを直すが、関数の並びの違反は `check` の非致命的な E0020 で出る。
+
+その他: `extern` 宣言 (`ExternDef`) は `resolve` の表に入らず、呼び出しは判断できない扱い。`ksn defs` は `.sig` を読まない (`resolve` と同じ)。推論された `uses`・`panics` (5.1 の非 pub) は未実装なので、そうした関数は判断できない。E4011・E4012・E4013 は対象外。
+
+### 10.6 再現
+
+```
+. ~/.cargo/env
+cd stage0 && cargo build --release && cd ..
+cd selfhost/effects
+ksn check && ksn fmt --check
+ksn build --release                             # target/release/effects.native (退避なし)
+./target/release/effects.native . ../../spec/stdlib    # 自分自身。末尾の summary 行
+cd ../.. && python3 -I selfhost/effects/compare.py --group all   # 約 3.5 分 (Rust 版を 2 回ずつ呼ぶ)
+```

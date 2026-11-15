@@ -1,0 +1,542 @@
+// 走査の蓄積: 診断、呼び出しの辺 (from, to の組)、判断できなかった数。
+type effects.walk.Acc pub
+    rep: resolve.report.Report pub
+    edges: alloc.vec.Vec<usize, std.alloc.System> pub
+    cs: alloc.vec.Vec<usize, std.alloc.System> pub
+    cu: alloc.vec.Vec<bool, std.alloc.System> pub
+    fnu: usize pub
+    cnt: alloc.vec.Vec<usize, std.alloc.System> pub
+end effects.walk.Acc
+
+// 本体の走査と効果・panic・添字・整数演算の検査。走査の並びは resolve.walk と同じ (局所束縛と名前解決も同じ)。
+// 型は見ない。判断できないもの (値の呼び出し・メソッド・効果変数・推論された宣言) は数えるだけ。
+// 関数 1 本の文脈。fi は呼び出し元の番号、inclo は閉包の本体の中 (閉包の効果は呼び出されるまで決まらない)。
+type effects.walk.Cx derive [Debug, Clone, Copy, PartialEq] pub
+    fi: usize pub
+    own: bool pub
+    hasu: bool pub
+    pan: usize pub
+    inclo: bool pub
+end effects.walk.Cx
+
+fn effects.walk.acc_new() -> Result<effects.walk.Acc, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let rep = resolve.report.new()?
+    let edges = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let cs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let cu = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut cnt = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    for _k in core.iter.range(0usize, 10usize) {
+        cnt.push(0usize)?
+    }
+    Ok(effects.walk.Acc { rep: rep, edges: edges, cs: cs, cu: cu, fnu: 0usize, cnt: cnt })
+end effects.walk.acc_new
+
+// 二項演算。panics never では、整数の + - * / % は E4004。整数リテラルがないものは型が要る。
+fn effects.walk.bin_at(p: &parse.cur.P, src: &[u8], acc: &mut effects.walk.Acc, cx: effects.walk.Cx, n: parse.ast.Node) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    if !cx.own || cx.inclo || cx.pan != 1usize || !effects.walk.is_arith(n.a) {
+        return Ok(())
+    }
+    if effects.walk.is_int_lit(p, src, n.b) || effects.walk.is_int_lit(p, src, n.c) {
+        let line = resolve.ast.line_of(p, n.tok)
+        let msg = "integer operator may panic; use checked_ / wrapping_ / saturating_"
+        effects.walk.diag(acc, "E4004", line, msg, "")?
+    } else {
+        effects.walk.und(acc, cx, 5usize)
+    }
+    Ok(())
+end effects.walk.bin_at
+
+// 波括弧の中の文の並び。ブロックの入口と出口で局所束縛を揃える。
+fn effects.walk.block(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, cx: effects.walk.Cx, acc: &mut effects.walk.Acc, b: usize) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let n = parse.ast.get(&p.ast, b)
+    if n.kind != parse.ast.Kind.Block {
+        return effects.walk.ex(t, fs, p, src, st, cx, acc, b)
+    }
+    let mark = st.mark()
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
+        effects.walk.stmt(t, fs, p, src, st, cx, acc, resolve.ast.item(p, n.a, j))?
+    }
+    st.truncate(mark)
+    Ok(())
+end effects.walk.block
+
+// cnt の添字: 0 解決した呼び出し (検査した)、1 値の呼び出し、2 メソッド、3 推論された宣言、4 効果・panic の変数、
+// 5 解決できない名前、6 閉包の中、7 整数演算 (型が要る)、8 再帰 (型が要る)、9 利用者の panics never の unwrap の数。
+fn effects.walk.bump(acc: &mut effects.walk.Acc, k: usize) -> () uses [] panics never pub
+    match acc.cnt.as_mut_slice().get_mut(k) {
+        Some(x) => {
+            let v = *x
+            *x = v.wrapping_add(1usize)
+        }
+        None => core.mem.drop(0u8)
+    }
+end effects.walk.bump
+
+// 呼び出し `f(..)` (callee は Path)。名前を解決して、定義が分かるものだけ callee に渡す。
+fn effects.walk.call_path(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], st: &resolve.scope.St, cx: effects.walk.Cx, acc: &mut effects.walk.Acc, call: parse.ast.Node, callee: parse.ast.Node) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let name = resolve.ast.text(src, callee.a, callee.b)
+    let r = resolve.scope.find(t, st, name)?
+    let local = r == resolve.scope.Res.Local || r == resolve.scope.Res.Generic
+    if local || r == resolve.scope.Res.Member {
+        // `v.unwrap()` (局所 v のメソッド) も Path + Call と書かれる。
+        if local && name.ends_with(".unwrap") {
+            return effects.walk.unwrap_at(p, acc, cx, call.tok)
+        }
+        // `x.m(..)` (局所 x のメソッド) は Path + Call と書かれる。型が要るので数える。
+        let method = name.contains(".")
+        if method || r == resolve.scope.Res.Member {
+            effects.walk.und(acc, cx, 1usize)
+        } else {
+            effects.walk.und(acc, cx, 0usize)
+        }
+        return Ok(())
+    }
+    if r == resolve.scope.Res.Variant {
+        return Ok(())
+    }
+    let prelude = name == "Some" || name == "Ok" || name == "Err" || name == "None"
+    if r == resolve.scope.Res.Builtin && prelude {
+        return Ok(())
+    }
+    let is_fn = r == resolve.scope.Res.Def(parse.ast.Kind.FnDef) || r == resolve.scope.Res.Builtin
+    if !is_fn {
+        effects.walk.und(acc, cx, 4usize)
+        return Ok(())
+    }
+    let key = effects.walk.key_of(st, name)?
+    match effects.fns.lookup(fs, key.as_str())? {
+        Some(ix) => {
+            let line = resolve.ast.line_of(p, call.tok)
+            effects.walk.callee(fs, cx, acc, line, ix, name)
+        }
+        None => {
+            effects.walk.und(acc, cx, 4usize)
+            Ok(())
+        }
+    }
+end effects.walk.call_path
+
+// 呼び出し 1 件 (定義が分かったもの)。辺を足し、効果と panic を呼び出し元と比べる。
+fn effects.walk.callee(fs: &effects.fns.Fns, cx: effects.walk.Cx, acc: &mut effects.walk.Acc, line: usize, ix: usize, name: &str) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    if !cx.inclo {
+        acc.edges.push(cx.fi)?
+        acc.edges.push(ix)?
+    }
+    if !cx.own {
+        return Ok(())
+    }
+    if cx.inclo {
+        effects.walk.und(acc, cx, 0usize)
+        return Ok(())
+    }
+    if !cx.hasu {
+        return Ok(())
+    }
+    let f = effects.fns.at(fs, ix)
+    if !f.hasu {
+        effects.walk.und(acc, cx, 2usize)
+        return Ok(())
+    }
+    effects.walk.bump(acc, 0usize)
+    let cu = effects.fns.uses_of(fs, cx.fi)
+    let cal = effects.fns.uses_of(fs, ix)
+    for eff in cal.split(" ") {
+        if eff != "" {
+            if effects.walk.is_var(eff) {
+                effects.walk.und(acc, cx, 3usize)
+            } else if !effects.walk.covered(cu, eff) {
+                let mut m = alloc.string.String.new(std.alloc.SYSTEM)
+                m.push_str(eff)?
+                m.push_str(" is not declared by the caller")?
+                effects.walk.diag(acc, "E4001", line, m.as_str(), name)?
+            }
+        }
+    }
+    if f.pan == 2usize && cx.pan == 1usize {
+        let msg = "callee may panic but the caller declares `panics never`"
+        effects.walk.diag(acc, "E4002", line, msg, name)?
+    } else if f.pan == 3usize || cx.pan == 3usize {
+        effects.walk.und(acc, cx, 3usize)
+    }
+    Ok(())
+end effects.walk.callee
+
+// 閉包: 見えるのはキャプチャと引数だけ (resolve.walk.closure と同じ)。本体の呼び出しは closure に数える。
+fn effects.walk.closure(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, cx: effects.walk.Cx, acc: &mut effects.walk.Acc, n: parse.ast.Node) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let inner = effects.walk.Cx { fi: cx.fi, own: cx.own, hasu: cx.hasu, pan: cx.pan, inclo: true }
+    let saved = st.base
+    let top = st.mark()
+    st.base = top
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
+        let cap = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
+        st.push_local(resolve.ast.tok_text(p, src, cap.b))?
+    }
+    for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
+        let prm = parse.ast.get(&p.ast, resolve.ast.item(p, n.a, j))
+        st.push_local(resolve.ast.tok_text(p, src, prm.a))?
+    }
+    effects.walk.block(t, fs, p, src, st, inner, acc, n.d)?
+    st.truncate(top)
+    st.base = saved
+    Ok(())
+end effects.walk.closure
+
+// 呼び出し元の uses (空白区切り) が効果 eff を覆うか (5.1 の階層の部分型)。
+fn effects.walk.covered(cu: &str, eff: &str) -> bool uses [] panics never pub
+    for d in cu.split(" ") {
+        if d != "" && effects.walk.under(d, eff) {
+            return true
+        }
+    }
+    false
+end effects.walk.covered
+
+// 診断 1 件 (resolve.report と同じ書式)。
+fn effects.walk.diag(acc: &mut effects.walk.Acc, code: &str, line: usize, msg: &str, name: &str) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never pub
+    resolve.report.diag(&mut acc.rep, code, line, msg, name)
+end effects.walk.diag
+
+// 式 1 つ。種類ごとに子を見る (resolve.walk.ex と同じ並び)。
+fn effects.walk.ex(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, cx: effects.walk.Cx, acc: &mut effects.walk.Acc, e: usize) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let n = parse.ast.get(&p.ast, e)
+    let k = n.kind
+    if k == parse.ast.Kind.Call {
+        let callee = parse.ast.get(&p.ast, n.a)
+        if callee.kind == parse.ast.Kind.Path {
+            effects.walk.call_path(t, fs, p, src, st, cx, acc, n, callee)?
+        } else {
+            effects.walk.und(acc, cx, 0usize)
+            effects.walk.ex(t, fs, p, src, st, cx, acc, n.a)?
+        }
+        return effects.walk.ex_list(t, fs, p, src, st, cx, acc, n.b)
+    }
+    if k == parse.ast.Kind.MCall {
+        if resolve.ast.tok_text(p, src, n.b) == "unwrap" {
+            effects.walk.unwrap_at(p, acc, cx, n.tok)?
+        } else {
+            effects.walk.und(acc, cx, 1usize)
+        }
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.a)?
+        return effects.walk.ex_list(t, fs, p, src, st, cx, acc, n.d)
+    }
+    if k == parse.ast.Kind.Path {
+        return Ok(())
+    }
+    if k == parse.ast.Kind.Block {
+        return effects.walk.block(t, fs, p, src, st, cx, acc, e)
+    }
+    let b1 = k == parse.ast.Kind.Dot || k == parse.ast.Kind.Try || k == parse.ast.Kind.Return
+    let b2 = k == parse.ast.Kind.ExprStmt || k == parse.ast.Kind.Loop
+    if b1 || b2 {
+        return effects.walk.ex(t, fs, p, src, st, cx, acc, n.a)
+    }
+    if k == parse.ast.Kind.Unary {
+        let neg = n.a == 45usize && cx.pan == 1usize
+        if neg && cx.own && !cx.inclo && !effects.walk.is_int_lit(p, src, n.b) {
+            effects.walk.und(acc, cx, 5usize)
+        }
+        return effects.walk.ex(t, fs, p, src, st, cx, acc, n.b)
+    }
+    if k == parse.ast.Kind.Index {
+        effects.walk.index_at(p, acc, cx, n.tok)?
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.a)?
+        return effects.walk.ex(t, fs, p, src, st, cx, acc, n.b)
+    }
+    let c1 = k == parse.ast.Kind.Assign || k == parse.ast.Kind.ArrayRep
+    if c1 {
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.a)?
+        return effects.walk.ex(t, fs, p, src, st, cx, acc, n.b)
+    }
+    if k == parse.ast.Kind.While {
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.a)?
+        return effects.walk.ex(t, fs, p, src, st, cx, acc, n.b)
+    }
+    if k == parse.ast.Kind.Bin {
+        effects.walk.bin_at(p, src, acc, cx, n)?
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.b)?
+        return effects.walk.ex(t, fs, p, src, st, cx, acc, n.c)
+    }
+    if k == parse.ast.Kind.ArrayE || k == parse.ast.Kind.TupleE {
+        return effects.walk.ex_list(t, fs, p, src, st, cx, acc, n.a)
+    }
+    if k == parse.ast.Kind.If {
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.a)?
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.b)?
+        return effects.walk.ex(t, fs, p, src, st, cx, acc, n.c)
+    }
+    if k == parse.ast.Kind.Unsafe {
+        return effects.walk.ex(t, fs, p, src, st, cx, acc, n.c)
+    }
+    if k == parse.ast.Kind.For {
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.b)?
+        let mark = st.mark()
+        effects.walk.pat(p, src, st, n.a)?
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.c)?
+        st.truncate(mark)
+        return Ok(())
+    }
+    if k == parse.ast.Kind.Match {
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.a)?
+        for j in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
+            let arm = parse.ast.get(&p.ast, resolve.ast.item(p, n.b, j))
+            let mark = st.mark()
+            effects.walk.pat(p, src, st, arm.a)?
+            effects.walk.ex(t, fs, p, src, st, cx, acc, arm.b)?
+            st.truncate(mark)
+        }
+        return Ok(())
+    }
+    if k == parse.ast.Kind.With {
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.c)?
+        let mark = st.mark()
+        st.push_local(resolve.ast.tok_text(p, src, n.a))?
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.d)?
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.e)?
+        st.truncate(mark)
+        return Ok(())
+    }
+    if k == parse.ast.Kind.StructLit {
+        for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
+            let fi = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
+            effects.walk.ex(t, fs, p, src, st, cx, acc, fi.b)?
+        }
+        return Ok(())
+    }
+    if k == parse.ast.Kind.Closure {
+        return effects.walk.closure(t, fs, p, src, st, cx, acc, n)
+    }
+    Ok(())
+end effects.walk.ex
+
+fn effects.walk.ex_list(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, cx: effects.walk.Cx, acc: &mut effects.walk.Acc, l: usize) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    for j in core.iter.range(0usize, resolve.ast.count(p, l)) {
+        effects.walk.ex(t, fs, p, src, st, cx, acc, resolve.ast.item(p, l, j))?
+    }
+    Ok(())
+end effects.walk.ex_list
+
+// 関数 1 本の本体 (FnDef の node n)。ヘッダの効果と panic を文脈にして走査する。
+fn effects.walk.fn_body(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, fi: usize, n: parse.ast.Node, acc: &mut effects.walk.Acc) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    let info = effects.fns.at(fs, fi)
+    let sg = parse.ast.get(&p.ast, n.c)
+    let at = parse.ast.get(&p.ast, sg.d)
+    let cx = effects.walk.Cx { fi: fi, own: info.own, hasu: info.hasu, pan: at.b, inclo: false }
+    acc.fnu = 0usize
+    let mark = st.mark()
+    for j in core.iter.range(0usize, resolve.ast.count(p, sg.b)) {
+        let prm = parse.ast.get(&p.ast, resolve.ast.item(p, sg.b, j))
+        st.push_local(resolve.ast.tok_text(p, src, prm.a))?
+    }
+    effects.walk.block(t, fs, p, src, st, cx, acc, n.d)?
+    st.truncate(mark)
+    if info.own && at.b == 1usize && !info.stk {
+        acc.cs.push(fi)?
+        acc.cu.push(acc.fnu > 0usize)?
+    }
+    Ok(())
+end effects.walk.fn_body
+
+// cnt の値 k。
+fn effects.walk.get(acc: &effects.walk.Acc, k: usize) -> usize uses [] panics never pub
+    match acc.cnt.as_slice().get(k) {
+        Some(x) => *x
+        None => 0usize
+    }
+end effects.walk.get
+
+// 添字 (panics never では E4003)。
+fn effects.walk.index_at(p: &parse.cur.P, acc: &mut effects.walk.Acc, cx: effects.walk.Cx, tok: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    if !cx.own || cx.inclo {
+        return Ok(())
+    }
+    if cx.pan == 1usize {
+        let line = resolve.ast.line_of(p, tok)
+        let msg = "indexing may panic; use .get() in a `panics never` function"
+        effects.walk.diag(acc, "E4003", line, msg, "")?
+    } else if cx.pan == 3usize {
+        effects.walk.und(acc, cx, 3usize)
+    }
+    Ok(())
+end effects.walk.index_at
+
+// 算術の演算子の符号 (文字コード): + - * / %。
+fn effects.walk.is_arith(op: usize) -> bool uses [] panics never pub
+    op == 43usize || op == 45usize || op == 42usize || op == 47usize || op == 37usize
+end effects.walk.is_arith
+
+// 整数リテラル (接尾辞つき。`1usize` など) か。式のリテラルは Lit の class 1 (整数)。
+fn effects.walk.is_int_lit(p: &parse.cur.P, src: &[u8], e: usize) -> bool uses [] panics never pub
+    let n = parse.ast.get(&p.ast, e)
+    if n.kind != parse.ast.Kind.Lit || n.a != 1usize {
+        return false
+    }
+    let t = resolve.ast.tok_text(p, src, n.b)
+    t.contains("u") || t.contains("i")
+end effects.walk.is_int_lit
+
+// 効果の変数 (大文字で始まる名前。`E` `P`)。
+fn effects.walk.is_var(eff: &str) -> bool uses [] panics never pub
+    match eff.as_bytes().get(0usize) {
+        Some(c) => *c >= 65u8 && *c <= 90u8
+        None => false
+    }
+end effects.walk.is_var
+
+// 名前 name の解決の鍵 (scope.find と同じ規則: 先頭成分が import なら完全名に置き換える)。
+fn effects.walk.key_of(st: &resolve.scope.St, name: &str) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let (first, rest) = match name.split_once(".") {
+        Some((a, b)) => (a, b)
+        None => (name, "")
+    }
+    let imp = st.import_index(first)
+    let mut key = alloc.string.String.new(std.alloc.SYSTEM)
+    if imp > 0usize {
+        match st.fulls.as_slice().get(imp.wrapping_sub(1usize)) {
+            Some(f) => key.push_str(f.as_str())?
+            None => core.mem.drop(0u8)
+        }
+        if rest != "" {
+            key.push('.')?
+            key.push_str(rest)?
+        }
+    } else {
+        key.push_str(name)?
+    }
+    Ok(key)
+end effects.walk.key_of
+
+// 束縛を作るパターン。小文字の名前は局所に押す。大文字の単独の名前は列挙子・定数 (束縛しない)。
+fn effects.walk.pat(p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, pt: usize) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let n = parse.ast.get(&p.ast, pt)
+    let k = n.kind
+    if k == parse.ast.Kind.PBind {
+        let tk = parse.cur.peek_at(p, n.a)
+        let upper = match src.get(tk.start) {
+            Some(c) => *c >= 65u8 && *c <= 90u8
+            None => false
+        }
+        if !upper {
+            st.push_local(resolve.ast.text(src, tk.start, tk.stop))?
+        }
+        return Ok(())
+    }
+    if k == parse.ast.Kind.PPath || k == parse.ast.Kind.PVariant || k == parse.ast.Kind.PStruct {
+        for j in core.iter.range(0usize, resolve.ast.count(p, n.c)) {
+            let sub = parse.ast.get(&p.ast, resolve.ast.item(p, n.c, j))
+            if k == parse.ast.Kind.PStruct {
+                effects.walk.pat(p, src, st, sub.b)?
+            } else {
+                effects.walk.pat(p, src, st, resolve.ast.item(p, n.c, j))?
+            }
+        }
+        return Ok(())
+    }
+    if k == parse.ast.Kind.PTuple {
+        for j in core.iter.range(0usize, resolve.ast.count(p, n.a)) {
+            effects.walk.pat(p, src, st, resolve.ast.item(p, n.a, j))?
+        }
+        return Ok(())
+    }
+    if k == parse.ast.Kind.PRef {
+        return effects.walk.pat(p, src, st, n.a)
+    }
+    Ok(())
+end effects.walk.pat
+
+// 候補 (自パッケージの panics never で stack のない関数) のうち、呼び出しの辺で自分に戻るものを探す (幅優先)。
+fn effects.walk.reaches(edges: &alloc.vec.Vec<usize, std.alloc.System>, start: usize) -> Result<bool, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut seen = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut work = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    work.push(start)?
+    loop {
+        let cur = match work.pop() {
+            Some(c) => c
+            None => return Ok(false)
+        }
+        let mut k = 0usize
+        while k < edges.len() {
+            let from = match edges.as_slice().get(k) {
+                Some(v) => *v
+                None => start
+            }
+            let to = match edges.as_slice().get(k.wrapping_add(1usize)) {
+                Some(v) => *v
+                None => start
+            }
+            if from == cur {
+                if to == start {
+                    return Ok(true)
+                }
+                if !seen.contains(&to) {
+                    seen.push(to)?
+                    work.push(to)?
+                }
+            }
+            k = k.wrapping_add(2usize)
+        }
+    }
+end effects.walk.reaches
+
+// 文: let は初期化式を見てから束縛する。それ以外は式。
+fn effects.walk.stmt(t: &resolve.table.Table, fs: &effects.fns.Fns, p: &parse.cur.P, src: &[u8], st: &mut resolve.scope.St, cx: effects.walk.Cx, acc: &mut effects.walk.Acc, s: usize) -> Result<(), resolve.Failure> uses [alloc] panics never stack 8192 pub
+    let n = parse.ast.get(&p.ast, s)
+    if n.kind == parse.ast.Kind.Let {
+        effects.walk.ex(t, fs, p, src, st, cx, acc, n.d)?
+        effects.walk.pat(p, src, st, n.a)?
+        return Ok(())
+    }
+    effects.walk.ex(t, fs, p, src, st, cx, acc, s)
+end effects.walk.stmt
+
+// 判断できなかった数を数える。which: 0 値の呼び出し、1 メソッド、2 推論された宣言、3 効果・panic の変数、4 解決できない名前、5 整数演算 (型が要る)。
+// 呼び出し元が自パッケージの関数のときだけ数える。閉包の本体の中は closure に数える。
+fn effects.walk.und(acc: &mut effects.walk.Acc, cx: effects.walk.Cx, which: usize) -> () uses [] panics never pub
+    if !cx.own {
+        return
+    }
+    if which == 5usize {
+        effects.walk.bump(acc, 7usize)
+        return
+    }
+    acc.fnu = acc.fnu.wrapping_add(1usize)
+    if cx.inclo {
+        effects.walk.bump(acc, 6usize)
+    } else if which == 0usize {
+        effects.walk.bump(acc, 1usize)
+    } else if which == 1usize {
+        effects.walk.bump(acc, 2usize)
+    } else if which == 2usize {
+        effects.walk.bump(acc, 3usize)
+    } else if which == 3usize {
+        effects.walk.bump(acc, 4usize)
+    } else {
+        effects.walk.bump(acc, 5usize)
+    }
+end effects.walk.und
+
+// 名前の末尾の成分を外した接頭辞の下にある効果か (`io.fs` は `io` の下、`io` 自身も含む)。
+fn effects.walk.under(root: &str, eff: &str) -> bool uses [] panics never pub
+    if root == eff {
+        return true
+    }
+    match eff.strip_prefix(root) {
+        Some(rest) => rest.starts_with(".")
+        None => false
+    }
+end effects.walk.under
+
+// `.unwrap()` (Option・Result の unwrap は `panics may`。レシーバの型は見ないので、利用者が panics never の
+// unwrap を定義していない限り E4002 とする。定義があれば判断できない = slot 9 で判定する)。
+fn effects.walk.unwrap_at(p: &parse.cur.P, acc: &mut effects.walk.Acc, cx: effects.walk.Cx, tok: usize) -> Result<(), resolve.Failure> uses [alloc] panics never pub
+    if !cx.own || cx.inclo || cx.pan != 1usize {
+        return Ok(())
+    }
+    if effects.walk.get(acc, 9usize) > 0usize {
+        effects.walk.und(acc, cx, 1usize)
+        return Ok(())
+    }
+    let line = resolve.ast.line_of(p, tok)
+    let msg = "unwrap may panic (Option and Result unwrap are `panics may`)"
+    effects.walk.diag(acc, "E4002", line, msg, "unwrap")?
+    Ok(())
+end effects.walk.unwrap_at

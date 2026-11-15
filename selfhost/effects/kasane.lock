@@ -1,0 +1,11 @@
+version = 1
+
+[[package]]
+name = "parse"
+source = "path+../parse"
+deps = []
+
+[[package]]
+name = "resolve"
+source = "path+../resolve"
+deps = ["parse"]
