@@ -1695,6 +1695,33 @@ KIR は単相・SSA で、型にライフタイムがない。そこで領域は
 
 **残り。** 字段の注釈は `x.f.m()` の受け手と `with` の後始末に限る。`match` の腕の束縛は `match_` の腕だけ (`if let` は `match` に下ろされるので同じ経路)。`for` や `let` の分解の束縛は追っていない (`pat_test` の経路は未注釈)。
 
+### 24.10 KIR だけの検査への移行 (check/kir-borrowck-full、2026-11-15)
+
+修正プラン 1-6 の最終段。隠しの切り替え `KSN_BORROWCK=kir-only` を足した (既定の `ksn check` は変えない)。`kir,own` と同じく KIR の借用・線形の結果を使い、AST の E3010 / E3030 / E3002 / E3003 を外す。KIR に下ろせないときは AST に戻さず、何も出さない (`kir-borrowck: unknown` を stderr に出す)。
+
+**1. 計測の前後 (借用、`KSN_BORROWCK=kir`)。**
+- `unsound/` 391 件 (`.ksnl`): 検査できた数 185 → 185、unknown 206 → 206、一致 175 → 178 (`kir_reject` 49 → 52)、不一致 10 → 7。
+- 正しいコード (`linear_ok/`・参照解・`examples/`) 145 件: 検査できた数 118 → 118、unknown 27 → 27、誤検出 0 → 0。
+- 不一致の残り 7 件: `boundary_field_read_back` (AST が通す穴を KIR が止める)、`e01_method_chain_borrow` / `option_unwrap_returns_borrow` (`Option<&スカラー>`、24.8)、`hunt_a01_reborrow_field_01` / `hunt_a01_reborrow_reassign_01` (参照を持つ構造体の欄、`let` での再代入と再借用)、`lifetime_slot_static_tuple` (タプルの戻り値の `'static` の照合)、`hunt_a16_json_value_doc_drop_escape_01` (`std.json` の `Doc` の解放)。
+
+**2. 修正 (下ろしの 1 箇所)。** `&mut *r` (可変の参照の再借用) は、同じ値を返していたため、`r` と `&mut *r` が 1 つの借用になり、両方が生きている間の競合を検査できなかった (`kir_lower_refs.rs` の `addr_of` の `*r` の枝)。今は `Reborrow` を出す (実行には影響しない: 複製)。`hunt_a01_reborrow_conflict` などが KIR で拒否されるようになった。
+
+**3. kir-only の計測 (`kir_only_rejects_floor`)。** 借用・線形で拒否されるべき `unsound/` (`// expect:` が E3010 / E3030 / E3002 / E3003) は 234 件。kir-only で拒否したのは 95 件、拒否されなかった 139 件 (下ろせない unknown 81、下ろせて見逃す 58)。正しいコード (`linear_ok/` 111・参照解 19・`examples/` 15) の誤拒否は 0。
+- **unknown 81 件の理由** (すべて下ろし側。`kir_lower_*.rs` の `lw.err` / `unsupported`): 参照を持つ構造体の欄 (`t.H { r: &mut u32 }` の `set`、22 件)、Vec の要素型が型表に戻せない (6 件)、利用者のメソッドの受け手 (`t.S.into_name` など 3 件)、クロージャの引数・戻り値 (13 件前後)、`&型パラメータ Self` (11 件)、`Array` の要素・引数 (数件)、ジェネリクスの単相化 (型引数を持つ関数のインスタンス不足)。
+- **見逃し 58 件の内訳** (下ろせて検査が通る): 線形・move が 52 件 (`if let` / `match` の腕の束縛と分岐の move (`move_c_if_*`、`move_match_twice`)、`_` での捨て (`linear_discarded_by_wildcard` など)、一時値のメソッド受け手、クロージャの取り込み、字段の部分的な move)、借用が 6 件 (上の 1. の不一致のうち KIR が下ろせたもの: `e01` / `option_unwrap` / `hunt_a01_reborrow_field_01` / `hunt_a01_reborrow_reassign_01` / `lifetime_slot_static_tuple` / `hunt_a16_json_value_doc_drop_escape_01`)。
+
+**4. 段ごとの扱い (今回の依頼)。**
+- 段 2 (検査側の未対応の注釈): 未対応の大半は下ろし側なので、注釈だけの経路では解けない (関数全体の型が要る)。残りの線形の注釈不足 (分岐・`match` の腕・`_` の捨て) は、`own.*` の注釈を足す作業として残す。今回は手を付けていない。
+- 段 3 (`Option<&スカラー>`): 24.8 の 2 案のまま未対応。`e01_method_chain_borrow` と `option_unwrap_returns_borrow` は kir-only でも見逃す。
+- 段 4 (下限): 上の実測値に上げた (借用の検査 185・一致 178・拒否 52、線形の検査 185・一致 132・拒否 48、正しいコード 118)。kir-only の下限を新設 (234 中 95 拒否、正しいコードの拒否 0)。
+- 計測の副産物: `sorted_ksnl` が `unsound/README.md` を読んで、検査できた 1 件として数えていた (テストの数字が 1 多かった)。`.ksnl` だけを数えるよう直した。下限は、この修正後の実測値に合わせた (元の下限 165 / 162 / 45、166 / 114 / 48 は下回らない)。
+
+**5. AST の検査を外すまでの残り (足りない件数)。** `unsound/` の借用・線形の 234 件のうち 139 件 (unknown 81 + 見逃し 58)。`unsound/` 全件は、借用・線形以外 (E4xxx・型・`unsafe` など) の検査も含むので、この段では外せない。AST の借用・線形の検査を外すには、次が要る。
+1. 下ろし: 参照を持つ構造体の欄、Vec 要素の型、利用者のメソッドの受け手、クロージャ、`&型パラメータ Self` (修正プラン 3-1 と同じ作業)。
+2. 線形の注釈: `if` / `match` の分岐ごとの義務、`_` の捨て、一時値の受け手、クロージャの取り込み (`own.*` の追加)。
+3. 借用: `Option<&スカラー>` (24.8)、参照を持つ構造体の再借用と再代入、タプルの戻り値の `'static` の照合。
+4. 正しいコードの誤拒否は、今の計測で 0 のままだが、2 の注釈を足すたびに `kir_only_rejects_floor` と `kir_own_linearity_agreement_floor` で確かめる。
+
 ## 25. `derive [Drop]` の再帰する型 (check/derive-drop、2026-11-14)
 
 - 型表: `derive [Drop]` の型は、`intern_def` が型の組み立ての前に添字を予約し (`AggTab::rec_drop`)、`Box<Self>` のフィールドから自分を指せる (箱は 8 バイトなので中身の配置は要らない)。ほかの再帰 (`Vec<Self>` など) は従来どおり「再帰的な型は対象外」。検査器が `derive [Drop]` の再帰を `Box<Self>` / `Option<Box<Self>>` に限っている (E2051)。KIR は集成体のフィールドに `Option` を置けないので、`Option<Box<Self>>` の欄を持つ型は下ろせずバンドルへ退避する。

@@ -2726,7 +2726,7 @@ fn ast_borrow_rejects(dir: &Path) -> bool {
 }
 
 fn sorted_ksnl(sub: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(sub)).unwrap().map(|e| e.unwrap().path()).collect();
+    let mut v: Vec<PathBuf> = fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(sub)).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|x| x == "ksnl")).collect();
     v.sort();
     v
 }
@@ -2769,8 +2769,8 @@ fn kir_borrowck_has_no_false_positives() {
     }
     eprintln!("kir_borrowck (correct code): checked {} unknown {} false positives {}", checked, unknown, fps.len());
     assert!(fps.is_empty(), "KIR borrowck false positives:\n{}", fps.join("\n"));
-    // 下ろせる数が減らないこと (現在値 114 を下限にする。下ろしの対応が増えたら上げる)。
-    assert!(checked >= 114, "only {} correct programs were checked on KIR", checked);
+    // 下ろせる数が減らないこと (現在値 118 を下限にする。下ろしの対応が増えたら上げる)。
+    assert!(checked >= 118, "only {} correct programs were checked on KIR", checked);
 }
 
 /// `unsound/` の全件で、AST の借用検査 (E3010 / E3030) と KIR の検査の結果を並べる。
@@ -2803,9 +2803,9 @@ fn kir_borrowck_agreement_on_unsound_does_not_drop() {
         }
     }
     eprintln!("kir_borrowck (unsound): checked {} agree {} kir_reject {} unknown {}; mismatches: {}", checked, agree, kir_reject, unknown, mism.join(", "));
-    assert!(checked >= 165, "KIR checked only {} unsound programs", checked);
-    assert!(agree >= 162, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
-    assert!(kir_reject >= 45, "KIR rejects only {}", kir_reject);
+    assert!(checked >= 185, "KIR checked only {} unsound programs", checked);
+    assert!(agree >= 178, "agreement dropped to {} (mismatches: {})", agree, mism.join(", "));
+    assert!(kir_reject >= 52, "KIR rejects only {}", kir_reject);
 }
 
 /// 借用検査の注釈 (`borrow.*` / `scope.end`。設計_KIR.md 24 章) は実行に影響しない: KIR のテキストに出て、
@@ -2903,8 +2903,63 @@ fn kir_own_linearity_agreement_floor() {
     eprintln!("kir own (unsound): checked {} agree {} kir_reject {}; correct code checked {} false positives {:?}", checked, agree, kir_reject, ok_checked, fps);
     assert!(fps.is_empty(), "KIR linearity false positives on correct code:\n{}", fps.join("\n"));
     // 下限 (現在値。下げない): 検査できた不正・一致・KIR の拒否・正しいコードの検査数。
-    assert!(checked >= 166, "KIR (own) checked only {} unsound programs", checked);
-    assert!(agree >= 114, "agreement dropped to {}", agree);
+    assert!(checked >= 185, "KIR (own) checked only {} unsound programs", checked);
+    assert!(agree >= 132, "agreement dropped to {}", agree);
     assert!(kir_reject >= 48, "KIR (own) rejects only {}", kir_reject);
-    assert!(ok_checked >= 114, "only {} correct programs were checked by the KIR linearity", ok_checked);
+    assert!(ok_checked >= 118, "only {} correct programs were checked by the KIR linearity", ok_checked);
+}
+
+/// 第 5 段 (計測): AST の借用・線形の検査を外し、KIR の検査だけ (隠しの切り替え `KSN_BORROWCK=kir-only`) で見る。
+/// `// expect:` が E3010 / E3030 / E3002 / E3003 の `unsound/` (借用・線形の不正) のうち拒否できた数の下限と、
+/// 正しいコード (`linear_ok/`、参照解、`examples/`) の誤拒否 0 を固定する。足りない件数と理由は設計_KIR.md 24.10。
+#[test]
+fn kir_only_rejects_floor() {
+    fn only_rejects(dir: &Path) -> bool {
+        let cache = std::env::temp_dir().join(format!("ksn_kironly_cache_{}", std::process::id()));
+        let o = run_with_env(&["check", "--json"], dir, &[("KSN_BORROWCK", "kir-only"), ("KSN_CACHE_DIR", cache.to_str().unwrap())]);
+        codes(&text(&o.stdout)).iter().any(|c| matches!(c.as_str(), "E3010" | "E3030" | "E3002" | "E3003"))
+    }
+    let (mut expected, mut rejected) = (0, 0);
+    for p in sorted_ksnl("unsound") {
+        let src = fs::read_to_string(&p).unwrap();
+        let bl = src.lines().any(|l| l.starts_with("// expect:") && ["E3010", "E3030", "E3002", "E3003"].iter().any(|c| l.contains(c)));
+        if !bl {
+            continue;
+        }
+        expected += 1;
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("kironly_{}", stem), &src);
+        if only_rejects(&t.0) {
+            rejected += 1;
+        }
+    }
+    let mut fps = vec![];
+    for p in sorted_ksnl("linear_ok") {
+        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("kironly_ok_{}", stem), &fs::read_to_string(&p).unwrap());
+        if only_rejects(&t.0) {
+            fps.push(format!("linear_ok/{}", stem));
+        }
+    }
+    let mut refs: Vec<PathBuf> = fs::read_dir(root().join("bench").join("tasks")).unwrap().map(|e| e.unwrap().path().join("reference.ksnl")).filter(|p| p.exists()).collect();
+    refs.sort();
+    for p in refs {
+        let name = p.parent().unwrap().file_name().unwrap().to_string_lossy().to_string();
+        let t = Tmp::new(&format!("kironly_ref_{}", name), &fs::read_to_string(&p).unwrap());
+        if only_rejects(&t.0) {
+            fps.push(format!("reference {}", name));
+        }
+    }
+    let mut ex: Vec<PathBuf> = fs::read_dir(root().join("examples")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("kasane.toml").exists()).collect();
+    ex.sort();
+    for d in ex {
+        if only_rejects(&d) {
+            fps.push(format!("examples/{}", d.file_name().unwrap().to_string_lossy()));
+        }
+    }
+    eprintln!("kir-only: borrow/linear expected {} rejected {}; correct code rejected {:?}", expected, rejected, fps);
+    assert!(fps.is_empty(), "kir-only rejects correct code:\n{}", fps.join("\n"));
+    // 下限 (現在値。下げない)。
+    assert!(expected >= 234, "only {} borrow/linear programs in unsound/", expected);
+    assert!(rejected >= 95, "kir-only rejects only {} of {}", rejected, expected);
 }
