@@ -207,7 +207,7 @@ fn lower.opt.optmatch(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P,
                 let sub = resolve.ast.item(p, pat.c, 0usize)
                 let sp = parse.ast.get(&p.ast, sub)
                 if sp.kind == parse.ast.Kind.PBind {
-                    let pt = lower.expr.tyof(c, sub)
+                    let pt = lower.expr.tyof(c, sub)?
                     let pty = lower.tyk.text(env, c, pt)?
                     let pv = lower.cx.def(c, pty.as_str(), lower.cx.cat2("payload ", lower.cx.vs(sv)?.as_str())?.as_str())?
                     let stk_tok = parse.cur.peek_at(p, sp.a)

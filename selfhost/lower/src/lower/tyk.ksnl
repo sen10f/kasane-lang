@@ -344,6 +344,12 @@ fn lower.tyk.text(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Result<
     let f = types.ty.find(&c.ar, t)
     let n = types.ty.node(&c.ar, f)
     let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    if n.k == types.ty.K.Param {
+        let r = lower.inst.lookup(c, n.a)
+        if r != 0usize {
+            return lower.tyk.text(env, c, r)
+        }
+    }
     if n.k == types.ty.K.Int {
         s.push_str(types.ty.int_name(n.a))?
         return Ok(s)

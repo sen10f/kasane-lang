@@ -13,7 +13,7 @@ end lower.expr.arm_body
 // `x = e` (局所の書き換え)。
 fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let ln = parse.ast.get(&p.ast, n.a)
-    let lt = lower.expr.tyof(c, n.a)
+    let lt = lower.expr.tyof(c, n.a)?
     if (ln.kind == parse.ast.Kind.Unary && ln.a == 42usize) {
         // `*r = v`: 参照越しの書き込み。
         let ptr = lower.expr.expr(env, c, p, src, ln.b, types.ty.UNKNOWN)?
@@ -197,7 +197,14 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: t })
     }
-    lower.expr.enqueue(c, fqn.as_str())?
+    // 総称の関数は型引数を照合で決めて、インスタンスの鍵 (fqn<型,..>) で下ろす。
+    let mut key = lower.cx.own(fqn.as_str())?
+    let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if lower.inst.is_generic(env, item) {
+        subs = lower.inst.args_of(env, c, p, item, n)?
+        key = lower.inst.key(env, c, fqn.as_str(), &subs)?
+    }
+    lower.expr.enqueue(c, key.as_str(), item + 1usize, subs, t)?
     let mut args = alloc.vec.Vec.new(std.alloc.SYSTEM)
     for j in core.iter.range(0usize, resolve.ast.count(p, n.b)) {
         let a = lower.expr.expr(env, c, p, src, resolve.ast.item(p, n.b, j), types.ty.UNKNOWN)?
@@ -206,7 +213,7 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let rt = lower.tyk.text(env, c, t)?
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     o.push_str("call ")?
-    o.push_str(fqn.as_str())?
+    o.push_str(key.as_str())?
     o.push('(')?
     o.push_str(lower.cx.vlist(&args)?.as_str())?
     o.push(')')?
@@ -221,11 +228,11 @@ fn lower.expr.dummy(c: &mut lower.cx.Cx, t: usize) -> Result<lower.cx.R, resolve
 end lower.expr.dummy
 
 // 関数の下ろしを予約する (未処理なら末尾に足す)。
-fn lower.expr.enqueue(c: &mut lower.cx.Cx, fqn: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.expr.enqueue(c: &mut lower.cx.Cx, key: &str, item1: usize, subs: alloc.vec.Vec<usize, std.alloc.System>, ret: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let mut i = 0usize
     while i < c.g.names.len() {
         let same = match c.g.names.as_slice().get(i) {
-            Some(s) => s.as_str() == fqn
+            Some(s) => s.as_str() == key
             None => false
         }
         if same {
@@ -233,7 +240,10 @@ fn lower.expr.enqueue(c: &mut lower.cx.Cx, fqn: &str) -> Result<(), resolve.Fail
         }
         i = i + 1usize
     }
-    c.g.names.push(lower.cx.own(fqn)?)?
+    c.g.names.push(lower.cx.own(key)?)?
+    c.g.items.push(item1)?
+    c.g.subs.push(subs)?
+    c.g.rets.push(ret)?
     Ok(())
 end lower.expr.enqueue
 
@@ -243,7 +253,7 @@ fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     if c.s.term {
         return lower.expr.dummy(c, want)
     }
-    let t = lower.expr.tyof(c, e)
+    let t = lower.expr.tyof(c, e)?
     let k = n.kind
     if (k == parse.ast.Kind.Lit) {
         return lower.expr.lit(env, c, p, src, n, t)
@@ -449,7 +459,7 @@ fn lower.expr.letx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     let r = lower.expr.expr(env, c, p, src, sn.d, types.ty.UNKNOWN)?
     let tk = parse.cur.peek_at(p, pn.a)
     let name = resolve.ast.text(src, tk.start, tk.stop)
-    let t = lower.expr.tyof(c, sn.d)
+    let t = lower.expr.tyof(c, sn.d)?
     lower.opt.bind(env, c, name, r.v, sn.b != 0usize, t)?
     Ok(())
 end lower.expr.letx
@@ -615,7 +625,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
                         Some(x) => *x
                         None => 0usize
                     }
-                    let pt = lower.expr.tyof(c, sub)
+                    let pt = lower.expr.tyof(c, sub)?
                     let pty = lower.tyk.text(env, c, pt)?
                     let fsrc = lower.expr.field_src(sc.v, off)?
                     let fv = lower.cx.def(c, pty.as_str(), fsrc.as_str())?
@@ -944,8 +954,9 @@ fn lower.expr.two(a: usize, b: usize) -> Result<alloc.string.String<std.alloc.Sy
 end lower.expr.two
 
 // 節 e の型 (型検査の表。束縛をたどった型、記録がなければ UNKNOWN)。
-fn lower.expr.tyof(c: &mut lower.cx.Cx, e: usize) -> usize uses [] panics may pub
-    types.ty.find(&c.ar, types.rec.ty_of(&c.tc.rec, c.s.file, e))
+fn lower.expr.tyof(c: &mut lower.cx.Cx, e: usize) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let t = types.ty.find(&c.ar, types.rec.ty_of(&c.tc.rec, c.s.file, e))
+    lower.inst.subst(c, t)
 end lower.expr.tyof
 
 fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
