@@ -801,6 +801,10 @@ impl Interp {
                         return Ok(self.cp(v));
                     }
                 }
+                // `String` の格納 (`self.buf`、Kasane 版の本体だけが書く): 格納を共有する `Buf<u8>` の構造体。
+                if let (Val::StrBuf(sb), "buf") = (&b, name.as_str()) {
+                    return Ok(str_buf_view(sb));
+                }
                 panic(format!("no field {}", name))
             }
             "Index" => {
@@ -1607,10 +1611,6 @@ impl Interp {
             // 生の列 (`Val::Vec`: `Buf` の格納と `VecDeque`) には `Vec` の本体を引かない。`Vec` の値は構造体 (`value::VEC_TY`)。
             _ => return None,
         };
-        // `String` の基本メソッドの Kasane 版 (`alloc/string.ksnl`) は、木走査の `Val::StrBuf` には使わない (組み込みの実装を使う)。
-        if matches!(v, Val::StrBuf(_)) && KASANE_STRING_BASE.contains(&name) {
-            return None;
-        }
         if let Some(&i) = self.p.funcs.get(&format!("{}.{}", ty, name)) {
             return Some(i);
         }
@@ -1818,7 +1818,7 @@ impl Interp {
             Val::Bool(b) => (if *b { "true" } else { "false" }).into(),
             Val::Char(c) => format!("{:?}", c),
             Val::Str(s) => py_quote(s),
-            Val::StrBuf(b) => py_quote(&b.get()),
+            Val::StrBuf(b) => py_quote(&b.text()),
             Val::Float(f) => py_float(*f),
             Val::F32(f) => py_float32(*f),
             Val::Int(x, t) => {

@@ -139,3 +139,32 @@ fn string_kasane_as_str_sees_later_writes_in_all_paths() {
     let o = Command::new(t.0.join("target").join("debug").join("t.native")).output().expect("run native");
     assert_eq!(text(&o.stdout), EXPECT_I, "ネイティブ");
 }
+
+/// 木走査の `String` の格納は `Buf<u8>` の本体 (`alloc/string.ksnl`) と共有される。無効な UTF-8 は `push_bytes` が拒み、
+/// 拒まれた書き込みは格納を変えない。`clear` の後の書き直しは `as_str` に見える (直前の `as_str` の結果を使い回さない)。
+const TREE_BUF: &str = "fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    core.mem.drop(s.push_str(\"ab\"))
+    std.io.print_line(s.as_str())?
+    match s.push_bytes(&[255u8, 0u8]) {
+        Ok(_done) => core.panic.panic(\"accepted invalid utf-8\")
+        Err(_e) => ()
+    }
+    core.check.eq(s.len(), 2usize)
+    s.clear()
+    core.mem.drop(s.push_str(\"xyz\"))
+    std.io.print_line(s.as_str())?
+    core.check.eq(s.as_str().len(), 3usize)
+    Ok(())
+end t.main
+";
+
+#[test]
+fn string_kasane_tree_walk_buf_shares_the_string_storage() {
+    const EXPECT_T: &str = "ab\nxyz\n";
+    let t = Tmp::new("tree_buf", "t.main", TREE_BUF);
+    let tree = run(&["run", "--engine=tree"], &t.0);
+    assert_eq!(text(&tree.stdout), EXPECT_T, "木走査: {}", text(&tree.stderr));
+    let vm = run(&["run", "--engine=vm"], &t.0);
+    assert_eq!(text(&vm.stdout), EXPECT_T, "VM: {}", text(&vm.stderr));
+}

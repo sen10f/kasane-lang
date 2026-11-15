@@ -542,7 +542,7 @@ fn deep(v: &Val) -> Val {
         Val::Arr(l) => Val::Arr(new_list(l.borrow().iter().map(deep).collect())),
         Val::Vec(l) => Val::Vec(new_list(l.borrow().iter().map(deep).collect())),
         Val::View(l, a, b) => Val::Arr(new_list(l.borrow()[*a..*b].iter().map(deep).collect())),
-        Val::StrBuf(b) => Val::StrBuf(StrBufV::new(b.get().clone())),
+        Val::StrBuf(b) => Val::StrBuf(StrBufV::new(b.text())),
         Val::Map(m) => Val::Map(Rc::new(RefCell::new(MapV::new(
             &m.borrow().kind,
             m.borrow().d.iter().map(|(k, x)| (deep(k), deep(x))).collect(),
@@ -1160,6 +1160,10 @@ impl Interp {
                     return Ok(s.get("cell").unwrap());
                 }
                 if s.ty == "alloc.raw.Buf" {
+                    // `String` の格納を共有する `Buf<u8>` (`str_buf_view`) なら、その格納の上で答える。
+                    if let Some(Val::StrBuf(b)) = s.get("items") {
+                        return self.str_buf_method(&b, name, args);
+                    }
                     return self.buf_method(s, name, args);
                 }
                 // `Vec` の本体が Kasane にないメソッド: 格納の列を View にして列のメソッドで答える。
@@ -1573,14 +1577,72 @@ impl Interp {
         panic(format!("no method {} on slice/Vec", name))
     }
 
+    /// `String` の格納 (`StrBufV`) の上の `Buf<u8>` の基本操作 (`alloc/string.ksnl` が使う分)。
+    /// 容量 (`cap`) は格納が持つ。UTF-8 の検査はしない (書くのは `String` の本体だけ)。
+    fn str_buf_method(&mut self, b: &Rc<StrBufV>, name: &str, args: Vec<Val>) -> Res {
+        let a0 = args.first().cloned().unwrap_or(Val::Unit);
+        let len = b.get().len();
+        let cap = b.cap();
+        let byte = |a: Option<&Val>| match a.map(dr) {
+            Some(Val::Int(i, _)) => i as u8,
+            _ => 0,
+        };
+        let idx = |a: &Val| match dr(a) {
+            Val::Int(i, _) if i >= 0 => Some(i as usize),
+            _ => None,
+        };
+        match name {
+            "len" => Ok(usz(len)),
+            "cap" => Ok(usz(cap)),
+            "is_empty" => Ok(Val::Bool(len == 0)),
+            "clear" => {
+                b.edit().clear();
+                Ok(Val::Unit)
+            }
+            "push_within_cap" => {
+                if len < cap {
+                    b.edit().push(byte(Some(&a0)));
+                    Ok(ok(Val::Unit))
+                } else {
+                    Ok(err(a0))
+                }
+            }
+            "insert_within_cap" => {
+                let value = args.get(1).cloned().unwrap_or(Val::Unit);
+                match idx(&a0) {
+                    Some(i) if i <= len && len < cap => {
+                        b.edit().insert(i, byte(Some(&value)));
+                        Ok(ok(Val::Unit))
+                    }
+                    _ => Ok(err(value)),
+                }
+            }
+            "append_str_within_cap" => {
+                let t = str_of(&a0).unwrap_or_default();
+                if len + t.len() > cap {
+                    return Ok(err(Val::Unit));
+                }
+                b.push_text(&t);
+                Ok(ok(Val::Unit))
+            }
+            "grow" => {
+                if let Some(n) = idx(&a0) {
+                    if n > cap {
+                        b.set_cap(n);
+                    }
+                }
+                Ok(ok(Val::Unit))
+            }
+            _ => panic(format!("no method {} on alloc.raw.Buf<u8>", name)),
+        }
+    }
+
     fn str_method(&mut self, v: &Val, name: &str, args: Vec<Val>) -> Res {
         // 内容を複製せずに答えられるもの: 長さ・空か・`as_str` (変更がなければ `String` の直前の結果と同じ `Rc<str>`、O(1))。
         match (name, dr(v)) {
             ("len", Val::Str(r)) => return Ok(usz(r.len())),
             ("is_empty", Val::Str(r)) => return Ok(Val::Bool(r.is_empty())),
             ("as_str", Val::Str(r)) => return Ok(Val::Str(r)),
-            ("len", Val::StrBuf(b)) => return Ok(usz(b.get().len())),
-            ("is_empty", Val::StrBuf(b)) => return Ok(Val::Bool(b.get().is_empty())),
             ("as_str", Val::StrBuf(b)) => return Ok(Val::Str(b.snapshot())),
             _ => {}
         }
@@ -1633,52 +1695,14 @@ impl Interp {
                 self.fmt_into(name, v, &f)
             }
             // `String.push_display(&x)` / `push_debug(&x)` (`alloc.fmt.write` / `alloc.fmt.debug` の実体)。
+            // 残りの `String` の基本メソッド (`push` `push_str` `push_u64` `push_i64` `push_bytes` `clear` `len` `is_empty`) は
+            // `alloc/string.ksnl` の本体 (`find_method` が引く) で動く。
             "push_display" | "push_debug" => {
                 let Val::StrBuf(b) = v else { return panic(format!("no method {} on str", name)) };
                 let x = a0.clone().unwrap_or(Val::Unit);
                 let text = if name == "push_debug" { self.debug_str(&x)? } else { self.display_str(&x)? };
-                b.edit().push_str(&text);
+                b.push_text(&text);
                 Ok(ok(Val::Unit))
-            }
-            "push_u64" | "push_i64" | "push_bytes" => {
-                let Val::StrBuf(b) = v else { return panic(format!("no method {} on str", name)) };
-                if name == "push_bytes" {
-                    let bytes: Vec<u8> = seq_items(&dr(a0.as_ref().unwrap_or(&Val::Unit))).unwrap_or_default().iter().map(|x| if let Val::Int(i, _) = x { *i as u8 } else { 0 }).collect();
-                    return Ok(match String::from_utf8(bytes) {
-                        Ok(t) => {
-                            b.edit().push_str(&t);
-                            ok(Val::Unit)
-                        }
-                        Err(e) => err(mk_enum(
-                            "alloc.string.PushBytesError",
-                            "InvalidUtf8",
-                            vec![Val::Struct(Rc::new(StructV {
-                                ty: "core.str.Utf8Error".into(),
-                                f: RefCell::new(vec![("valid_up_to".into(), usz(e.utf8_error().valid_up_to()))]),
-                            }))],
-                        )),
-                    });
-                }
-                if let Some(Val::Int(n, _)) = a0 {
-                    // u64 は Val::Int(i128) にそのまま入るので、符号つき / なしを区別せず 10 進に直せる。
-                    b.edit().push_str(&n.to_string());
-                }
-                Ok(ok(Val::Unit))
-            }
-            "push" | "push_str" | "clear" => {
-                if let Val::StrBuf(b) = v {
-                    match name {
-                        "push" => {
-                            if let Some(Val::Char(c)) = a0 {
-                                b.edit().push(c);
-                            }
-                        }
-                        "push_str" => b.edit().push_str(&a0.as_ref().and_then(str_of).unwrap_or_default()),
-                        _ => b.edit().clear(),
-                    }
-                    return Ok(if name == "clear" { Val::Unit } else { ok(Val::Unit) });
-                }
-                panic(format!("no method {} on str", name))
             }
             _ => panic(format!("no method {} on str", name)),
         }
