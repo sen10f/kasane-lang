@@ -66,7 +66,7 @@ pub(crate) fn is_nil(v: &V) -> bool {
 
 /// 取り消せないタスクを取り消したときの E4022 の文面 (木走査・ネイティブの検査で同じ文面)。
 pub(crate) fn cancel_msg() -> String {
-    "cannot cancel this task: its frame may hold a value that needs release (a linear or owning value, or a value whose type is not known); cancel only a handle bound by `let t = std.task.spawn_local(move closure)` whose closure holds only scalar values and calls no user function".to_string()
+    "cannot cancel this task: its frame may hold a value that needs release (a linear or owning value, or a value whose type is not known); cancel only a handle bound by `let t = std.task.spawn_local(closure)` whose closure holds only scalar values and calls no suspending user function".to_string()
 }
 
 /// 取り消せるタスクの枠に持ってよい型 (仕様 5.6 の第 4 段): 数・`bool`・`char`・単位・参照、と `std.task.Task` (番号だけの値)。
