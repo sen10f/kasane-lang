@@ -1,0 +1,17 @@
+// expect: E2023
+type t.W
+    n: u64
+end t.W
+
+fn t.call(f: fn(&t.W) -> () uses [] panics may, w: &t.W) -> () uses [] panics may
+    f(w)
+end t.call
+
+fn t.grow(m: &mut t.W) -> () uses [] panics may
+    m.n = 2u64
+end t.grow
+
+fn t.main() -> () uses [] panics may
+    let w = t.W { n: 1u64 }
+    t.call(t.grow, &w)
+end t.main

@@ -5104,3 +5104,37 @@ fn unresolved_pattern_reports_its_own_line() {
     let got: usize = line[i..].chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap();
     assert_eq!(got, want, "{}", line);
 }
+
+/// 生ポインタの指す先は不変 (round2 finding 13): `*mut u8` と `*mut [u8; 4]` は取り違えられない。
+/// 許すのは値の位置の `*mut [T; N]` → `*mut T` (先頭要素のポインタ) と `*mut T` → `*const T` だけ。
+#[test]
+fn raw_pointer_pointee_is_invariant() {
+    let bad = "fn t.g[T](p: *mut T, q: *mut T) -> () uses [] panics never
+    core.mem.drop(p)
+    core.mem.drop(q)
+end t.g
+
+fn t.main(s: *mut [u8; 4], e: *mut u8) -> () uses [] panics never
+    t.g(s, e)
+end t.main
+";
+    let ok = "fn t.g(p: *mut u8, q: *const u8) -> () uses [] panics never
+    core.mem.drop(p)
+    core.mem.drop(q)
+end t.g
+
+fn t.main(s: *mut [u8; 4], e: *mut u8) -> () uses [] panics never
+    t.g(s, e)
+end t.main
+";
+    for (name, src, want_err) in [("ptr_inv_bad", bad, true), ("ptr_inv_ok", ok, false)] {
+        let t = Tmp::new(name, src);
+        fs::write(t.0.join("kasane.toml"), format!("{}\n[unsafe]\nmodules = [\"t\"]\n", TOML)).unwrap();
+        let o = run(&["check", "--json"], &t.0);
+        let got = codes(&text(&o.stdout));
+        assert_eq!(got.iter().any(|c| c == "E2023"), want_err, "{}: {}", name, text(&o.stdout));
+        if !want_err {
+            assert!(got.is_empty(), "{}: {}", name, text(&o.stdout));
+        }
+    }
+}

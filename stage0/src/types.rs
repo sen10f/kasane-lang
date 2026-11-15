@@ -618,7 +618,8 @@ impl<'a> TypeCk<'a> {
         let value = self.infer(body);
         self.rets.pop();
         if let Err(err) = self.unify2(&ret, &value) {
-            if let Some((want, got)) = self.ann_conflict(&ret, &value, &err) {
+            {
+                let (want, got) = self.ann_conflict(&ret, &value, &err).unwrap_or_else(|| Self::raw_pair(&err));
                 let stmts = items(&nf(body)[0]);
                 let line = stmts.last().map(nline).unwrap_or(0);
                 self.diag("E2020", format!("type mismatch in return value: expected {}, found {}{}", want, got, conv_hint(&want, &got)), line);
@@ -1207,8 +1208,17 @@ impl<'a> TypeCk<'a> {
             return a.clone();
         }
         if let Err(err) = self.unify2(a, b) {
-            if let Some((want, got)) = self.ann_conflict(a, b, &err) {
+            {
+                let (want, got) = self.ann_conflict(a, b, &err).unwrap_or_else(|| Self::raw_pair(&err));
                 self.diag("E2020", format!("type mismatch in {}: expected {}, found {}{}", what, want, got, conv_hint(&want, &got)), line);
+            }
+        }
+        // 枝の参照の可変性は順序によらず一致させる (`&x` と `&mut y` の混在は、先の枝が期待になって
+        // 順序で通ったり通らなかったりしていた。ネイティブの下ろしも枝の型の違いを拒む)。
+        if let (Ty::Ref(m, _), Ty::Ref(n, _)) = (self.resolve(a), self.resolve(b)) {
+            if m != n {
+                let (w, g) = (self.deep(a).show(), self.deep(b).show());
+                self.diag("E2020", format!("type mismatch in {}: the branches have different reference mutability: {} and {}; write `&*` / `&mut *` explicitly so both are the same", what, w, g), line);
             }
         }
         self.merge_closure_eff(a, b)
@@ -1603,6 +1613,31 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// `unify2` の矛盾 (`Err`) を報告用の文字列にする。絞り込み (`filtered`) が形を知っていればその文面、
+    /// 知らなければ矛盾した箇所の 2 つの型をそのまま出す。矛盾は必ず報告される (黙るのは「試すだけ」の `try_unify` だけ)。
+    fn raw_pair(e: &(Ty, Ty)) -> (String, String) {
+        (e.0.show(), e.1.show())
+    }
+
+    /// トレイトのメソッドの署名の型。メソッド自身の型パラメータ (`fn hash[H: Hasher](..)` の `H`) は
+    /// 署名に宣言が残らず、`from_v` では点を含まない未解決の名前になる。それを型パラメータにして
+    /// (`inst` が呼び出しごとの変数にする)、利用者の型と取り違えない。
+    fn sig_ty(&self, v: &V, gn: &HashSet<String>) -> Ty {
+        fn lift(s: &TypeCk, t: Ty) -> Ty {
+            match t {
+                Ty::Named(n, a) if a.is_empty() && !n.contains('.') && s.type_def(&n).is_none() && !matches!(n.as_str(), "Option" | "Result") => Ty::Param(n),
+                Ty::Named(n, a) => Ty::Named(n, a.into_iter().map(|x| lift(s, x)).collect()),
+                Ty::Ref(m, x) => Ty::Ref(m, Box::new(lift(s, *x))),
+                Ty::Ptr(m, x) => Ty::Ptr(m, Box::new(lift(s, *x))),
+                Ty::Tuple(a) => Ty::Tuple(a.into_iter().map(|x| lift(s, x)).collect()),
+                Ty::Array(x, n) => Ty::Array(Box::new(lift(s, *x)), n),
+                Ty::Slice(x) => Ty::Slice(Box::new(lift(s, *x))),
+                other => other,
+            }
+        }
+        lift(self, from_v(v, gn))
+    }
+
     /// 構造そのものが合わない組 (`unify2` が必ず `Err` にするもの) を、報告用の文字列にする。
     /// 型パラメータどうしの取り違え、タプルの要素数、種類の違い (整数と配列、構造体とクロージャなど)、配列の長さ。
     fn shape_conflict(e: &(Ty, Ty)) -> Option<(String, String)> {
@@ -1790,7 +1825,16 @@ impl<'a> TypeCk<'a> {
     }
 
     /// 2 つの型を等しくする。矛盾したら、その箇所の 2 つの型を返す。参照は透過的。
+    ///
+    /// `a` は期待 (受け側)、`b` は実際 (渡し側)。変性は `unify_v` が持つ: 値の位置 (共変) でだけ
+    /// `&mut T` → `&T`、`&[T; N]` → `&[T]`、`*mut T` → `*const T`、`*mut [T]` → `*mut T` を許し、
+    /// `&mut` の下・生ポインタの指す先・利用者の型やコンテナの型引数では不変、関数の引数では反変。
     fn unify2(&mut self, a: &Ty, b: &Ty) -> Result<(), (Ty, Ty)> {
+        self.unify_v(a, b, false)
+    }
+
+    /// `inv` が true なら不変の位置 (参照の可変性も、配列とスライスも、一切の変換を許さない)。
+    fn unify_v(&mut self, a: &Ty, b: &Ty, inv: bool) -> Result<(), (Ty, Ty)> {
         // 単一化前に、どちらかが型変数に束縛されていればその変数を記録する
         // (resolve で束縛先が展開されてしまうため)。
         let (va, vb) = (
@@ -1824,6 +1868,8 @@ impl<'a> TypeCk<'a> {
             // 型パラメータは剛な型 (自分自身とだけ一致する)。変数・参照 (透過) は下の腕で扱う。
             (Ty::Param(p), Ty::Param(q)) => if p == q { Ok(()) } else { Err((a.clone(), b.clone())) },
             (Ty::Param(_), t) | (t, Ty::Param(_)) if !matches!(t, Ty::Var(_) | Ty::Ref(..)) => Err((a.clone(), b.clone())),
+            // 型パラメータの値が要る所に参照 (`fn own[T](x: &T) -> T { x }`): 参照は所有された `T` ではない。
+            (Ty::Param(_), Ty::Ref(..)) => Err((a.clone(), b.clone())),
             (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
             (Ty::Var(x), Ty::Var(y)) => {
                 let k = self.kinds[*x].max(self.kinds[*y]);
@@ -1856,7 +1902,7 @@ impl<'a> TypeCk<'a> {
                 }
                 if let (Ty::Ref(_, inner), true) = (&t, self.kinds[*x] != 0) {
                     // 参照は透過的: リテラルの型は参照の中身に合わせる。
-                    return self.unify2(&Ty::Var(*x), inner);
+                    return self.unify_v(&Ty::Var(*x), inner, inv);
                 }
                 if self.occurs(*x, &t) {
                     return Ok(());
@@ -1871,32 +1917,47 @@ impl<'a> TypeCk<'a> {
             (Ty::Ptr(m, x), Ty::Ptr(n, y)) => {
                 let (m, n) = (*m, *n);
                 let (x, y) = (self.resolve(x), self.resolve(y));
-                // `*mut [T]` (スライスへのポインタ) は先頭要素へのポインタ `*mut T` として渡せる (FFI の慣習)。
+                // 指す先は不変。値の位置では、`*mut [T]` (スライスへのポインタ) は先頭要素へのポインタ `*mut T` として渡せる (FFI の慣習)。
+                // 実際がスライス・配列で、期待がそれ以外の確定した型のときだけ (逆向きは許さない)。
                 let (x, y) = match (&x, &y) {
-                    (Ty::Slice(e) | Ty::Array(e, _), t) if !matches!(t, Ty::Slice(_) | Ty::Array(..) | Ty::Var(_)) => ((**e).clone(), y.clone()),
-                    (t, Ty::Slice(e) | Ty::Array(e, _)) if !matches!(t, Ty::Slice(_) | Ty::Array(..) | Ty::Var(_)) => (x.clone(), (**e).clone()),
+                    (t, Ty::Slice(e) | Ty::Array(e, _)) if !inv && !matches!(t, Ty::Slice(_) | Ty::Array(..) | Ty::Var(_)) => (x.clone(), (**e).clone()),
                     _ => (x, y),
                 };
-                self.unify2(&x, &y).map_err(|_| (a.clone(), b.clone()))?;
-                if m == n { Ok(()) } else { Err((a.clone(), b.clone())) }
+                self.unify_v(&x, &y, true).map_err(|_| (a.clone(), b.clone()))?;
+                // 期待が `*const`・実際が `*mut` は値の位置でだけ許す (`*mut T` → `*const T`)。逆は不一致。
+                if m == n || (!inv && !m && n) { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
             (Ty::Ptr(..), Ty::Prim(_) | Ty::Named(..)) | (Ty::Prim(_) | Ty::Named(..), Ty::Ptr(..)) => Err((a.clone(), b.clone())),
             // 両側が参照なら、指す先どうしを合わせる (`from_ref(&x)` の `&T` に `&i32` を渡して `T = &i32` にしない)。
             // 可変性は向きがある: 左 (期待) が `&mut` で右 (実際) が `&` は不一致 (`&mut` → `&` は許す)。
             (Ty::Ref(m, x), Ty::Ref(n, y)) => {
                 let (m, n) = (*m, *n);
-                let (x, y) = (x.clone(), y.clone());
-                self.unify2(&x, &y)?;
-                if m && !n { Err((a.clone(), b.clone())) } else { Ok(()) }
+                let (x, y) = (self.resolve(x), self.resolve(y));
+                // 可変性は向きがある: 期待が `&mut`・実際が `&` は不一致、期待が `&`・実際が `&mut` は値の位置でだけ許す。
+                // 不変の位置 (`&mut` の下など) では一致させる。
+                if (m && !n) || (inv && m != n) {
+                    return Err((a.clone(), b.clone()));
+                }
+                // `&mut` の下は不変 (`&mut Option<&mut T>` を `&mut Option<&T>` にできない)。
+                let inner_inv = inv || m;
+                // `&[T; N]` → `&[T]` は参照の直下の値の位置でだけ許す (逆向き・値渡しは許さない)。
+                if let (Ty::Slice(e), Ty::Array(f, _)) = (&x, &y) {
+                    if inv {
+                        return Err((a.clone(), b.clone()));
+                    }
+                    let (e, f) = ((**e).clone(), (**f).clone());
+                    return self.unify_v(&e, &f, inner_inv);
+                }
+                self.unify_v(&x, &y, inner_inv)
             }
             // 参照は透過的。左右の順序 (期待, 実際) は診断の文面に使うので保つ。
             (Ty::Ref(_, x), y) => {
                 let (x, y) = (x.clone(), y.clone());
-                self.unify2(&x, &y)
+                self.unify_v(&x, &y, inv)
             }
             (x, Ty::Ref(_, y)) => {
                 let (x, y) = (x.clone(), y.clone());
-                self.unify2(&x, &y)
+                self.unify_v(&x, &y, inv)
             }
             (Ty::Prim(p), Ty::Prim(q)) => {
                 if p == q { Ok(()) } else { Err((a.clone(), b.clone())) }
@@ -1917,8 +1978,10 @@ impl<'a> TypeCk<'a> {
                 if n == "alloc.boxed.Box" && self.box_dyn_mismatch(&xs, &ys) {
                     return Err((a.clone(), b.clone()));
                 }
+                // 型引数は不変 (`Option` / `Result` は値として運ぶだけなので共変)。
+                let arg_inv = inv || !matches!(n.as_str(), "Option" | "Result");
                 for (x, y) in xs.iter().zip(&ys) {
-                    self.unify2(x, y)?;
+                    self.unify_v(x, y, arg_inv)?;
                 }
                 Ok(())
             }
@@ -1928,7 +1991,7 @@ impl<'a> TypeCk<'a> {
                 }
                 let (xs, ys) = (xs.clone(), ys.clone());
                 for (x, y) in xs.iter().zip(&ys) {
-                    self.unify2(x, y)?;
+                    self.unify_v(x, y, inv)?;
                 }
                 Ok(())
             }
@@ -1940,10 +2003,11 @@ impl<'a> TypeCk<'a> {
                 // 2 つの実際のクロージャを単一化する (合流・代入): 実際の効果を和にして残す。
                 let merged = self.merge_closure_eff(&a, &b);
                 let (xs, ys, rx, ry) = (xs.clone(), ys.clone(), (**rx).clone(), (**ry).clone());
+                // 引数は反変 (期待と実際を入れ替えて比べる)、戻り値は共変。
                 for (x, y) in xs.iter().zip(&ys) {
-                    self.unify2(x, y)?;
+                    self.unify_v(y, x, inv).map_err(|(p, q)| (q, p))?;
                 }
-                self.unify2(&rx, &ry)?;
+                self.unify_v(&rx, &ry, inv)?;
                 // どちらかが型変数に束縛されていれば、束縛先も効果の和に更新する。
                 for opt in [va, vb] {
                     if let Some((x, Some(Ty::Closure { .. }))) = opt {
@@ -1953,10 +2017,12 @@ impl<'a> TypeCk<'a> {
                 Ok(())
             }
             (Ty::Array(_, Some(m)), Ty::Array(_, Some(n))) if m != n => Err((a.clone(), b.clone())),
-            (Ty::Slice(x), Ty::Slice(y)) | (Ty::Slice(x), Ty::Array(y, _)) | (Ty::Array(x, _), Ty::Slice(y)) | (Ty::Array(x, _), Ty::Array(y, _)) => {
+            // 配列とスライスは別の型 (`&[T; N]` → `&[T]` は参照の腕だけが許す)。
+            (Ty::Slice(x), Ty::Slice(y)) | (Ty::Array(x, _), Ty::Array(y, _)) => {
                 let (x, y) = (x.clone(), y.clone());
-                self.unify2(&x, &y)
+                self.unify_v(&x, &y, inv)
             }
+            (Ty::Slice(_), Ty::Array(..)) | (Ty::Array(..), Ty::Slice(_)) => Err((a.clone(), b.clone())),
             (Ty::Unit, Ty::Unit) => Ok(()),
             // `()` と `String` / `Vec` は決して合わない (下の除外は `str` やスライスとの近似のためで、`()` には要らない)。
             (Ty::Unit, Ty::Named(..) | Ty::Array(_, _) | Ty::Slice(_)) | (Ty::Named(..) | Ty::Array(_, _) | Ty::Slice(_), Ty::Unit) => {
@@ -1971,8 +2037,22 @@ impl<'a> TypeCk<'a> {
             (x, y) if Self::concrete_kind(x).is_some() && Self::concrete_kind(y).is_some() && Self::concrete_kind(x) != Self::concrete_kind(y) => {
                 Err((a.clone(), b.clone()))
             }
-            _ => Ok(()), // それ以外の構造の違いは、近似の限界かもしれないので何も言わない
+            // 意図した近似 (明示): `String` は `str`、`dyn Tr` は `&T` の受け側 (境界は別の検査が見る)。
+            (Ty::Named(n, _), Ty::Prim(p)) | (Ty::Prim(p), Ty::Named(n, _)) if n == "alloc.string.String" && p == "str" => Ok(()),
+            (Ty::Dyn(..), _) | (_, Ty::Dyn(..)) => Ok(()),
+            _ => Err((a.clone(), b.clone())),
         }
+    }
+
+    /// メソッドのレシーバの型 (`self_ty`) と、呼び出しの実際のレシーバ (`view`) を合わせる。
+    /// レシーバは暗黙に借用されるので、配列はスライスのメソッドを呼べる (`&[T; N]` → `&[T]`)。
+    fn unify_recv(&mut self, self_ty: &Ty, view: &Ty) -> Result<(), (Ty, Ty)> {
+        let (w, g) = (self.resolve(self_ty).strip().clone(), self.resolve(view).strip().clone());
+        if let (Ty::Slice(x), Ty::Array(y, _)) = (&w, &g) {
+            let (x, y) = ((**x).clone(), (**y).clone());
+            return self.unify2(&x, &y);
+        }
+        self.unify2(self_ty, view)
     }
 
     /// シグネチャの型パラメータを、呼び出しごとの新しい型変数に置き換える。
@@ -2310,7 +2390,7 @@ impl<'a> TypeCk<'a> {
         let self_ty = from_v(&d.params[0].1, &gn);
         let self_ty = self.inst(&self_ty, &mut map);
         let view = self.view_for(recv, &owner);
-        let _ = self.unify2(&self_ty, &view);
+        let _ = self.unify_recv(&self_ty, &view);
         for (k, a) in args.iter().enumerate() {
             let raw_pt = from_v(&d.params[k + 1].1, &gn);
             let pt = self.inst(&raw_pt, &mut map);
@@ -2319,7 +2399,8 @@ impl<'a> TypeCk<'a> {
             }
             if let Err(e) = self.unify2(&pt, a) {
                 if fit.len() == 1 {
-                    if let Some((want, got)) = self.prim_conflict(&e).or_else(|| self.ptr_mismatch(&pt, a)) {
+                    {
+                        let (want, got) = self.prim_conflict(&e).or_else(|| self.ptr_mismatch(&pt, a)).unwrap_or_else(|| Self::raw_pair(&e));
                         self.diag(
                             "E2023",
                             format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
@@ -2525,7 +2606,7 @@ impl<'a> TypeCk<'a> {
             let mut gn = td.gnames();
             gn.insert("Self".to_string());
             let mut map: HashMap<String, Ty> = HashMap::new();
-            map.insert("Self".to_string(), deep.clone());
+            map.insert("Self".to_string(), deep.strip().clone());
             seed_effects(td, &mut map);
             // トレイトの型パラメータ (`Fn<Args, R, ..>` の `R` など) を、境界に書かれた実引数に束縛する。
             // 実引数の `Self` (スーパートレイトの `PartialEq<Self>`) は、レシーバの型。
@@ -2537,10 +2618,11 @@ impl<'a> TypeCk<'a> {
                 }
             }
             for (k, a) in args.iter().enumerate() {
-                let pt = from_v(&params[k + 1].1, &gn);
+                let pt = self.sig_ty(&params[k + 1].1, &gn);
                 let pt = self.inst(&pt, &mut map);
                 if let Err(e) = self.unify2(&pt, a) {
-                    if let Some((want, got)) = self.prim_conflict(&e) {
+                    {
+                        let (want, got) = self.prim_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                         self.diag(
                             "E2023",
                             format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
@@ -2552,7 +2634,7 @@ impl<'a> TypeCk<'a> {
             if let Some((u, p)) = eff {
                 self.check_trait_effects(format!("{}.{}", tr, name), u, p, line);
             }
-            let r = from_v(ret, &gn);
+            let r = self.sig_ty(ret, &gn);
             return Some(self.inst(&r, &mut map));
         }
         None
@@ -2603,11 +2685,11 @@ impl<'a> TypeCk<'a> {
             map.entry(g.1.clone()).or_insert_with(|| self_ty.clone());
         }
         for (k, a) in args.iter().enumerate() {
-            let pt = from_v(&params[k + 1].1, &gn);
+            let pt = self.sig_ty(&params[k + 1].1, &gn);
             let pt = self.inst(&pt, &mut map);
             let _ = self.unify2(&pt, a);
         }
-        let r = from_v(ret, &gn);
+        let r = self.sig_ty(ret, &gn);
         Some(self.inst(&r, &mut map))
     }
 
@@ -2644,7 +2726,7 @@ impl<'a> TypeCk<'a> {
             seed_effects(d, &mut map);
             let self_ty = self.inst(&from_v(&d.params[0].1, &gn), &mut map);
             let view = self.view_for(&deep, o);
-            let _ = self.unify2(&self_ty, &view);
+            let _ = self.unify_recv(&self_ty, &view);
             let ret = self.inst(&from_v(&d.ret, &gn), &mut map);
             if let Ty::Named(n, a) = self.deep(&ret) {
                 if n == "Option" {
@@ -2812,10 +2894,11 @@ impl<'a> TypeCk<'a> {
                 }
             }
             for (k, a) in args.iter().enumerate() {
-                let pt = from_v(&params[k + 1].1, &gn);
+                let pt = self.sig_ty(&params[k + 1].1, &gn);
                 let pt = self.inst(&pt, &mut map);
                 if let Err(e) = self.unify2(&pt, a) {
-                    if let Some((want, got)) = self.prim_conflict(&e) {
+                    {
+                        let (want, got) = self.prim_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                         self.diag(
                             "E2023",
                             format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
@@ -2830,7 +2913,7 @@ impl<'a> TypeCk<'a> {
             if let Some((u, p)) = eff {
                 self.check_trait_effects(format!("{}.{}", cur, name), u, p, line);
             }
-            let r = from_v(ret, &gn);
+            let r = self.sig_ty(ret, &gn);
             return self.inst(&r, &mut map);
         }
         escape_all(self);
@@ -3241,7 +3324,8 @@ impl<'a> TypeCk<'a> {
                 let idx = self.infer(&f[1]);
                 let want = Ty::Prim("usize".into());
                 if let Err(err) = self.unify2(&want, &idx) {
-                    if let Some((_, got)) = self.prim_conflict(&err) {
+                    {
+                        let (_, got) = self.prim_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
                         self.diag("E2025", format!("an index must be `usize`, found `{}`", got), nline(e));
                     }
                 }
@@ -3287,7 +3371,8 @@ impl<'a> TypeCk<'a> {
                     return Ty::Prim("bool".into());
                 }
                 if let Err(err) = self.unify2(&a, &b) {
-                    if let Some((l, r)) = self.prim_conflict(&err) {
+                    {
+                        let (l, r) = self.prim_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
                         self.diag("E2024", format!("operands of `{}` have different types: `{}` and `{}`", op, l, r), nline(e));
                     }
                 }
@@ -3329,7 +3414,8 @@ impl<'a> TypeCk<'a> {
                     let vt = self.infer(&items(x)[1]);
                     let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone()), &st(&items(x)[0]));
                     if let Err(err) = self.unify2(&declared, &vt) {
-                        if let Some((want, got)) = self.type_conflict(&err).or_else(|| self.vec_seq_mismatch(&declared, &vt)) {
+                        {
+                            let (want, got) = self.type_conflict(&err).or_else(|| self.vec_seq_mismatch(&declared, &vt)).unwrap_or_else(|| Self::raw_pair(&err));
                             self.diag(
                                 "E2023",
                                 format!("field `{}` of `{}`: expected `{}`, found `{}`", st(&items(x)[0]), fq, want, got),
@@ -3503,7 +3589,8 @@ impl<'a> TypeCk<'a> {
                 }));
                 self.closure_effs.insert(node.clone(), effs);
                 if let Err(err) = self.unify2(&ret, &body) {
-                    if let Some((want, got)) = self.ann_conflict(&ret, &body, &err) {
+                    {
+                        let (want, got) = self.ann_conflict(&ret, &body, &err).unwrap_or_else(|| Self::raw_pair(&err));
                         self.diag(
                             "E2020",
                             format!("type mismatch in return value of closure: expected {}, found {}{}", want, got, conv_hint(&want, &got)),
@@ -3526,7 +3613,8 @@ impl<'a> TypeCk<'a> {
                     // `rets` は関数・クロージャの入れ子に合わせて積まれている。
                     if let Some(ret) = self.rets.last().cloned() {
                         if let Err(err) = self.unify2(&ret, &v) {
-                            if let Some((want, got)) = self.ann_conflict(&ret, &v, &err) {
+                            {
+                                let (want, got) = self.ann_conflict(&ret, &v, &err).unwrap_or_else(|| Self::raw_pair(&err));
                                 self.diag(
                                     "E2020",
                                     format!("type mismatch in return value: expected {}, found {}{}", want, got, conv_hint(&want, &got)),
@@ -3640,7 +3728,8 @@ impl<'a> TypeCk<'a> {
                 let ty = if !is_nil(&f[2]) {
                     let ann = from_v(&f[2], &gn);
                     if let Err(err) = self.unify2(&ann, &rhs) {
-                        if let Some((want, got)) = self.ann_conflict(&ann, &rhs, &err) {
+                        {
+                            let (want, got) = self.ann_conflict(&ann, &rhs, &err).unwrap_or_else(|| Self::raw_pair(&err));
                             self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}{}", want, got, conv_hint(&want, &got)), nline(s));
                         }
                     }
@@ -3681,15 +3770,14 @@ impl<'a> TypeCk<'a> {
                         self.set_static(&segs[0], false);
                     }
                 }
-                // 変数への代入は従来の検査 (E2020) が見る。フィールド・添字への代入をここで見る。
-                if nname(&f[0]) != "Path" || strs(&nf(&f[0])[0]).len() > 1 {
-                    if let Err(e) = self.unify2(&target, &value) {
-                        if let Some((want, got)) = self.prim_conflict(&e) {
-                            self.diag("E2024", format!("assignment: expected `{}`, found `{}`", want, got), nline(&f[1]));
-                        }
+                // 代入は `let` と同じ経路で報告する (変数・フィールド・添字のどれも)。
+                if let Err(e) = self.unify2(&target, &value) {
+                    {
+                        let (want, got) = self.prim_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
+                        self.diag("E2024", format!("assignment: expected `{}`, found `{}`", want, got), nline(&f[1]));
                     }
-                } else {
-                    let _ = self.unify2(&target, &value);
+                }
+                if nname(&f[0]) == "Path" && strs(&nf(&f[0])[0]).len() == 1 {
                     // 再代入でクロージャが合流する: 実際の効果を和にして束縛を更新する。
                     if matches!(self.resolve(&target), Ty::Closure { .. })
                         && matches!(self.resolve(&value), Ty::Closure { .. })
@@ -3951,7 +4039,8 @@ impl<'a> TypeCk<'a> {
                 let declared = subst(&from_v(pt, &gn), &bind);
                 // 列挙子のペイロードの食い違いは、関数の戻り値と同じく E2020 にする (黙ると `E.A(5u8)` を通してしまう)。
                 if let Err(err) = self.unify2(&declared, a) {
-                    if let Some((want, got)) = self.ann_conflict(&declared, a, &err) {
+                    {
+                        let (want, got) = self.ann_conflict(&declared, a, &err).unwrap_or_else(|| Self::raw_pair(&err));
                         self.diag("E2020", format!("type mismatch in payload of `{}`: expected {}, found {}{}", vn, want, got, conv_hint(&want, &got)), line);
                     }
                 } else if self.owned_ref_clash(&declared, a) {
@@ -4215,18 +4304,12 @@ impl<'a> TypeCk<'a> {
                     (Ty::Named(x, _), Ty::Named(y, _)) => x == y,
                     _ => false,
                 };
-                let const_mismatch = matches!((&e.0, &e.1), (Ty::Const(_), Ty::Const(_)) | (Ty::Ref(true, _), Ty::Ref(false, _))) || Self::shape_conflict(&e).is_some();
+                let _ = (same_named, &sl);
                 // 生ポインタの取り違え (`*const` を `*mut` の引数へ、ポインタと値など) は宣言に型パラメータがなくても報告する。
+                // `extern` の呼び出しも同じ (数値の食い違いは黙って変換しない)。
                 let ptr = self.ptr_mismatch(&pt, &av);
-                if raw.has_param() || const_mismatch || ptr.is_some() || (sl.get(k).copied().unwrap_or(false) && same_named) {
-                    if let Some((want, got)) = self.prim_conflict(&e).or(ptr) {
-                        self.diag(
-                            "E2023",
-                            format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
-                            line,
-                        );
-                    }
-                }
+                let (want, got) = self.prim_conflict(&e).or(ptr).unwrap_or_else(|| Self::raw_pair(&e));
+                self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got), line);
             }
         }
         // `I: core.iter.Iterator<T, ..>` の境界: 引数 `I` の型が分かれば、その要素の型を `T` に結びつける。
@@ -4314,7 +4397,8 @@ impl<'a> TypeCk<'a> {
                 } else {
                     for (w, g) in want_args.iter().zip(&args) {
                         if let Err(e) = self.unify2(w, g) {
-                            if let Some((want, got)) = self.type_conflict(&e) {
+                            {
+                                let (want, got) = self.type_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                                 self.diag(
                                     "E2023",
                                     format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
@@ -4327,7 +4411,8 @@ impl<'a> TypeCk<'a> {
             }
             let want_ret = self.inst(&from_v(tel(&targs, 1), &gn), map);
             if let Err(e) = self.unify2(&want_ret, &ret) {
-                if let Some((want, got)) = self.type_conflict(&e) {
+                {
+                    let (want, got) = self.type_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                     self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got), line);
                 }
             }
@@ -4803,7 +4888,8 @@ impl<'a> TypeCk<'a> {
         }
         for (i, (w, g)) in args.iter().zip(argt).enumerate() {
             if let Err(e) = self.unify2(w, g) {
-                if let Some((want, got)) = self.type_conflict(&e) {
+                {
+                    let (want, got) = self.type_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                     self.diag(
                         "E2023",
                         format!("argument {} of the closure: expected `{}`, found `{}`", i + 1, want, got),
@@ -5176,7 +5262,8 @@ impl<'a> TypeCk<'a> {
                         _ => {}
                     }
                     if let Err(err) = self.unify2(&e_want, &e_got) {
-                        if let Some((w, g)) = self.type_conflict(&err) {
+                        {
+                            let (w, g) = self.type_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
                             self.diag(
                                 "E2020",
                                 format!(

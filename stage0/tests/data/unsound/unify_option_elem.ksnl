@@ -1,0 +1,6 @@
+// expect: E2020
+fn t.main() -> () uses [alloc] panics may
+    let a: Option<u64> = Some(1u64)
+    let b: Option<alloc.string.String> = a
+    core.mem.drop(b)
+end t.main

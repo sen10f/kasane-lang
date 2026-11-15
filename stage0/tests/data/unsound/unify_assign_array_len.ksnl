@@ -1,0 +1,10 @@
+// expect: E2024
+fn t.last(p: &[u64; 3]) -> u64 uses [] panics may
+    p[2usize]
+end t.last
+
+fn t.main() -> () uses [] panics may
+    let mut a = [1u64, 2u64, 3u64]
+    a = [1u64, 2u64]
+    core.mem.drop(t.last(&a))
+end t.main
