@@ -1213,6 +1213,14 @@ impl<'a> TypeCk<'a> {
                 self.diag("E2020", format!("type mismatch in {}: expected {}, found {}{}", what, want, got, conv_hint(&want, &got)), line);
             }
         }
+        // 枝の参照の可変性は順序によらず一致させる (`&x` と `&mut y` の混在は、先の枝が期待になって
+        // 順序で通ったり通らなかったりしていた。ネイティブの下ろしも枝の型の違いを拒む)。
+        if let (Ty::Ref(m, _), Ty::Ref(n, _)) = (self.resolve(a), self.resolve(b)) {
+            if m != n {
+                let (w, g) = (self.deep(a).show(), self.deep(b).show());
+                self.diag("E2020", format!("type mismatch in {}: the branches have different reference mutability: {} and {}; write `&*` / `&mut *` explicitly so both are the same", what, w, g), line);
+            }
+        }
         self.merge_closure_eff(a, b)
     }
 
@@ -1817,7 +1825,16 @@ impl<'a> TypeCk<'a> {
     }
 
     /// 2 つの型を等しくする。矛盾したら、その箇所の 2 つの型を返す。参照は透過的。
+    ///
+    /// `a` は期待 (受け側)、`b` は実際 (渡し側)。変性は `unify_v` が持つ: 値の位置 (共変) でだけ
+    /// `&mut T` → `&T`、`&[T; N]` → `&[T]`、`*mut T` → `*const T`、`*mut [T]` → `*mut T` を許し、
+    /// `&mut` の下・生ポインタの指す先・利用者の型やコンテナの型引数では不変、関数の引数では反変。
     fn unify2(&mut self, a: &Ty, b: &Ty) -> Result<(), (Ty, Ty)> {
+        self.unify_v(a, b, false)
+    }
+
+    /// `inv` が true なら不変の位置 (参照の可変性も、配列とスライスも、一切の変換を許さない)。
+    fn unify_v(&mut self, a: &Ty, b: &Ty, inv: bool) -> Result<(), (Ty, Ty)> {
         // 単一化前に、どちらかが型変数に束縛されていればその変数を記録する
         // (resolve で束縛先が展開されてしまうため)。
         let (va, vb) = (
@@ -1851,6 +1868,8 @@ impl<'a> TypeCk<'a> {
             // 型パラメータは剛な型 (自分自身とだけ一致する)。変数・参照 (透過) は下の腕で扱う。
             (Ty::Param(p), Ty::Param(q)) => if p == q { Ok(()) } else { Err((a.clone(), b.clone())) },
             (Ty::Param(_), t) | (t, Ty::Param(_)) if !matches!(t, Ty::Var(_) | Ty::Ref(..)) => Err((a.clone(), b.clone())),
+            // 型パラメータの値が要る所に参照 (`fn own[T](x: &T) -> T { x }`): 参照は所有された `T` ではない。
+            (Ty::Param(_), Ty::Ref(..)) => Err((a.clone(), b.clone())),
             (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
             (Ty::Var(x), Ty::Var(y)) => {
                 let k = self.kinds[*x].max(self.kinds[*y]);
@@ -1883,7 +1902,7 @@ impl<'a> TypeCk<'a> {
                 }
                 if let (Ty::Ref(_, inner), true) = (&t, self.kinds[*x] != 0) {
                     // 参照は透過的: リテラルの型は参照の中身に合わせる。
-                    return self.unify2(&Ty::Var(*x), inner);
+                    return self.unify_v(&Ty::Var(*x), inner, inv);
                 }
                 if self.occurs(*x, &t) {
                     return Ok(());
@@ -1898,33 +1917,47 @@ impl<'a> TypeCk<'a> {
             (Ty::Ptr(m, x), Ty::Ptr(n, y)) => {
                 let (m, n) = (*m, *n);
                 let (x, y) = (self.resolve(x), self.resolve(y));
-                // `*mut [T]` (スライスへのポインタ) は先頭要素へのポインタ `*mut T` として渡せる (FFI の慣習)。
+                // 指す先は不変。値の位置では、`*mut [T]` (スライスへのポインタ) は先頭要素へのポインタ `*mut T` として渡せる (FFI の慣習)。
+                // 実際がスライス・配列で、期待がそれ以外の確定した型のときだけ (逆向きは許さない)。
                 let (x, y) = match (&x, &y) {
-                    (Ty::Slice(e) | Ty::Array(e, _), t) if !matches!(t, Ty::Slice(_) | Ty::Array(..) | Ty::Var(_)) => ((**e).clone(), y.clone()),
-                    (t, Ty::Slice(e) | Ty::Array(e, _)) if !matches!(t, Ty::Slice(_) | Ty::Array(..) | Ty::Var(_)) => (x.clone(), (**e).clone()),
+                    (t, Ty::Slice(e) | Ty::Array(e, _)) if !inv && !matches!(t, Ty::Slice(_) | Ty::Array(..) | Ty::Var(_)) => (x.clone(), (**e).clone()),
                     _ => (x, y),
                 };
-                self.unify2(&x, &y).map_err(|_| (a.clone(), b.clone()))?;
-                // 期待が `*const`・実際が `*mut` は許す (`*mut T` → `*const T`)。逆は不一致。
-                if m == n || (!m && n) { Ok(()) } else { Err((a.clone(), b.clone())) }
+                self.unify_v(&x, &y, true).map_err(|_| (a.clone(), b.clone()))?;
+                // 期待が `*const`・実際が `*mut` は値の位置でだけ許す (`*mut T` → `*const T`)。逆は不一致。
+                if m == n || (!inv && !m && n) { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
             (Ty::Ptr(..), Ty::Prim(_) | Ty::Named(..)) | (Ty::Prim(_) | Ty::Named(..), Ty::Ptr(..)) => Err((a.clone(), b.clone())),
             // 両側が参照なら、指す先どうしを合わせる (`from_ref(&x)` の `&T` に `&i32` を渡して `T = &i32` にしない)。
             // 可変性は向きがある: 左 (期待) が `&mut` で右 (実際) が `&` は不一致 (`&mut` → `&` は許す)。
             (Ty::Ref(m, x), Ty::Ref(n, y)) => {
                 let (m, n) = (*m, *n);
-                let (x, y) = (x.clone(), y.clone());
-                self.unify2(&x, &y)?;
-                if m && !n { Err((a.clone(), b.clone())) } else { Ok(()) }
+                let (x, y) = (self.resolve(x), self.resolve(y));
+                // 可変性は向きがある: 期待が `&mut`・実際が `&` は不一致、期待が `&`・実際が `&mut` は値の位置でだけ許す。
+                // 不変の位置 (`&mut` の下など) では一致させる。
+                if (m && !n) || (inv && m != n) {
+                    return Err((a.clone(), b.clone()));
+                }
+                // `&mut` の下は不変 (`&mut Option<&mut T>` を `&mut Option<&T>` にできない)。
+                let inner_inv = inv || m;
+                // `&[T; N]` → `&[T]` は参照の直下の値の位置でだけ許す (逆向き・値渡しは許さない)。
+                if let (Ty::Slice(e), Ty::Array(f, _)) = (&x, &y) {
+                    if inv {
+                        return Err((a.clone(), b.clone()));
+                    }
+                    let (e, f) = ((**e).clone(), (**f).clone());
+                    return self.unify_v(&e, &f, inner_inv);
+                }
+                self.unify_v(&x, &y, inner_inv)
             }
             // 参照は透過的。左右の順序 (期待, 実際) は診断の文面に使うので保つ。
             (Ty::Ref(_, x), y) => {
                 let (x, y) = (x.clone(), y.clone());
-                self.unify2(&x, &y)
+                self.unify_v(&x, &y, inv)
             }
             (x, Ty::Ref(_, y)) => {
                 let (x, y) = (x.clone(), y.clone());
-                self.unify2(&x, &y)
+                self.unify_v(&x, &y, inv)
             }
             (Ty::Prim(p), Ty::Prim(q)) => {
                 if p == q { Ok(()) } else { Err((a.clone(), b.clone())) }
@@ -1945,8 +1978,10 @@ impl<'a> TypeCk<'a> {
                 if n == "alloc.boxed.Box" && self.box_dyn_mismatch(&xs, &ys) {
                     return Err((a.clone(), b.clone()));
                 }
+                // 型引数は不変 (`Option` / `Result` は値として運ぶだけなので共変)。
+                let arg_inv = inv || !matches!(n.as_str(), "Option" | "Result");
                 for (x, y) in xs.iter().zip(&ys) {
-                    self.unify2(x, y)?;
+                    self.unify_v(x, y, arg_inv)?;
                 }
                 Ok(())
             }
@@ -1956,7 +1991,7 @@ impl<'a> TypeCk<'a> {
                 }
                 let (xs, ys) = (xs.clone(), ys.clone());
                 for (x, y) in xs.iter().zip(&ys) {
-                    self.unify2(x, y)?;
+                    self.unify_v(x, y, inv)?;
                 }
                 Ok(())
             }
@@ -1968,10 +2003,11 @@ impl<'a> TypeCk<'a> {
                 // 2 つの実際のクロージャを単一化する (合流・代入): 実際の効果を和にして残す。
                 let merged = self.merge_closure_eff(&a, &b);
                 let (xs, ys, rx, ry) = (xs.clone(), ys.clone(), (**rx).clone(), (**ry).clone());
+                // 引数は反変 (期待と実際を入れ替えて比べる)、戻り値は共変。
                 for (x, y) in xs.iter().zip(&ys) {
-                    self.unify2(x, y)?;
+                    self.unify_v(y, x, inv).map_err(|(p, q)| (q, p))?;
                 }
-                self.unify2(&rx, &ry)?;
+                self.unify_v(&rx, &ry, inv)?;
                 // どちらかが型変数に束縛されていれば、束縛先も効果の和に更新する。
                 for opt in [va, vb] {
                     if let Some((x, Some(Ty::Closure { .. }))) = opt {
@@ -1981,10 +2017,12 @@ impl<'a> TypeCk<'a> {
                 Ok(())
             }
             (Ty::Array(_, Some(m)), Ty::Array(_, Some(n))) if m != n => Err((a.clone(), b.clone())),
-            (Ty::Slice(x), Ty::Slice(y)) | (Ty::Slice(x), Ty::Array(y, _)) | (Ty::Array(x, _), Ty::Slice(y)) | (Ty::Array(x, _), Ty::Array(y, _)) => {
+            // 配列とスライスは別の型 (`&[T; N]` → `&[T]` は参照の腕だけが許す)。
+            (Ty::Slice(x), Ty::Slice(y)) | (Ty::Array(x, _), Ty::Array(y, _)) => {
                 let (x, y) = (x.clone(), y.clone());
-                self.unify2(&x, &y)
+                self.unify_v(&x, &y, inv)
             }
+            (Ty::Slice(_), Ty::Array(..)) | (Ty::Array(..), Ty::Slice(_)) => Err((a.clone(), b.clone())),
             (Ty::Unit, Ty::Unit) => Ok(()),
             // `()` と `String` / `Vec` は決して合わない (下の除外は `str` やスライスとの近似のためで、`()` には要らない)。
             (Ty::Unit, Ty::Named(..) | Ty::Array(_, _) | Ty::Slice(_)) | (Ty::Named(..) | Ty::Array(_, _) | Ty::Slice(_), Ty::Unit) => {
@@ -2004,6 +2042,17 @@ impl<'a> TypeCk<'a> {
             (Ty::Dyn(..), _) | (_, Ty::Dyn(..)) => Ok(()),
             _ => Err((a.clone(), b.clone())),
         }
+    }
+
+    /// メソッドのレシーバの型 (`self_ty`) と、呼び出しの実際のレシーバ (`view`) を合わせる。
+    /// レシーバは暗黙に借用されるので、配列はスライスのメソッドを呼べる (`&[T; N]` → `&[T]`)。
+    fn unify_recv(&mut self, self_ty: &Ty, view: &Ty) -> Result<(), (Ty, Ty)> {
+        let (w, g) = (self.resolve(self_ty).strip().clone(), self.resolve(view).strip().clone());
+        if let (Ty::Slice(x), Ty::Array(y, _)) = (&w, &g) {
+            let (x, y) = ((**x).clone(), (**y).clone());
+            return self.unify2(&x, &y);
+        }
+        self.unify2(self_ty, view)
     }
 
     /// シグネチャの型パラメータを、呼び出しごとの新しい型変数に置き換える。
@@ -2341,7 +2390,7 @@ impl<'a> TypeCk<'a> {
         let self_ty = from_v(&d.params[0].1, &gn);
         let self_ty = self.inst(&self_ty, &mut map);
         let view = self.view_for(recv, &owner);
-        let _ = self.unify2(&self_ty, &view);
+        let _ = self.unify_recv(&self_ty, &view);
         for (k, a) in args.iter().enumerate() {
             let raw_pt = from_v(&d.params[k + 1].1, &gn);
             let pt = self.inst(&raw_pt, &mut map);
@@ -2557,7 +2606,7 @@ impl<'a> TypeCk<'a> {
             let mut gn = td.gnames();
             gn.insert("Self".to_string());
             let mut map: HashMap<String, Ty> = HashMap::new();
-            map.insert("Self".to_string(), deep.clone());
+            map.insert("Self".to_string(), deep.strip().clone());
             seed_effects(td, &mut map);
             // トレイトの型パラメータ (`Fn<Args, R, ..>` の `R` など) を、境界に書かれた実引数に束縛する。
             // 実引数の `Self` (スーパートレイトの `PartialEq<Self>`) は、レシーバの型。
@@ -2677,7 +2726,7 @@ impl<'a> TypeCk<'a> {
             seed_effects(d, &mut map);
             let self_ty = self.inst(&from_v(&d.params[0].1, &gn), &mut map);
             let view = self.view_for(&deep, o);
-            let _ = self.unify2(&self_ty, &view);
+            let _ = self.unify_recv(&self_ty, &view);
             let ret = self.inst(&from_v(&d.ret, &gn), &mut map);
             if let Ty::Named(n, a) = self.deep(&ret) {
                 if n == "Option" {
@@ -4256,9 +4305,11 @@ impl<'a> TypeCk<'a> {
                     _ => false,
                 };
                 let _ = (same_named, &sl);
+                // `extern` の呼び出しの数値の食い違いは、境界 (E5004/E5005 と実行時の拒否) が見る (従来どおりここで黙る)。
+                let extern_prim = is_extern && matches!((&e.0, &e.1), (Ty::Prim(_), Ty::Prim(_)));
                 // 生ポインタの取り違え (`*const` を `*mut` の引数へ、ポインタと値など) は宣言に型パラメータがなくても報告する。
                 let ptr = self.ptr_mismatch(&pt, &av);
-                {
+                if !extern_prim {
                     {
                         let (want, got) = self.prim_conflict(&e).or(ptr).unwrap_or_else(|| Self::raw_pair(&e));
                         self.diag(

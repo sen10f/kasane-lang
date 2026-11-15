@@ -1,0 +1,4 @@
+// expect: E2020
+fn t.own[T](x: &T) -> T uses [] panics never
+    x
+end t.own

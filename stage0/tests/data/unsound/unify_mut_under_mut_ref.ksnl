@@ -1,0 +1,14 @@
+// expect: E2023
+type t.W
+    n: u64
+end t.W
+
+fn t.main() -> () uses [] panics may
+    let w = t.W { n: 1u64 }
+    let mut o: Option<&mut t.W> = None
+    t.put(&mut o, &w)
+end t.main
+
+fn t.put['a](slot: &mut Option<&'a t.W>, v: &'a t.W) -> () uses [] panics never
+    *slot = Some(v)
+end t.put
