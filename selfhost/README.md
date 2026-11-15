@@ -898,7 +898,7 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
 | 段 | 対象 | 一致 | 残り |
 | --- | --- | --- | --- |
 | 1・2 読み込み・名前解決 (`resolve`) | 検査の 34 パッケージ | 検査の表 (下の行) に含む。単独では数えていない | E1020 (未使用の変数・引数)・E1021 (シャドーイング) など、`resolve` の外の検査は Rust 版だけ |
-| 3 検査 (`types`・`effects`・`borrow`) | examples 16・apps 4・selfhost 15 (計 35 パッケージ、17.9 で測り直し) | **34 / 35** (不一致は `apps/wiki` 1 件: Kasane 版が E2021・E1119 を 7 件出し、Rust 版は 0 件。原因は未調査)。Rust 版が 0 件のもののうち Kasane 版も 0 件: 33/34 | 残りの不足は 17.5 の 2 (let の経路で欄を区別しない形)。`apps/wiki` の不一致 |
+| 3 検査 (`types`・`effects`・`borrow`) | examples 16・apps 4・selfhost 15 (計 35 パッケージ、17.9 で測り直し) | **35 / 35** (すべて一致。`apps/wiki` の不一致は 17.10 で直した: Kasane 版が E2021・E1119 を 7 件出していた。Rust 版が 0 件のもののうち Kasane 版も 0 件: 34/34) | 残りの不足は 17.5 の 2 (let の経路で欄を区別しない形) |
 | 4 整形 (`fmt`) | 34 パッケージ | **34 / 34** (書き換えの要否のファイルの集合が Rust 版と同じ。書き換えた後の内容の一致は、1 件 (`examples/tour` に末尾の空行を足した複製) で確かめた) | `ksn fmt` の lint 行 (`not auto-fixable`) と文法検査 (`grammar.check`) は Kasane 版になし |
 | 5 下ろし (`lower`) | linear_ok 123 件 (Rust 版 `ksn build --release` が作れたのは 123 件、17.9 で測り直し) | 作れた **81 / 123** (作れた 81 件は、実行の出力・終了コードが Rust 版と一致) | 作れなかった 42 件の理由 (1 ファイルに複数の理由があるので合計は 42 を超える): 本体のない宣言 18、式の形 13、型の下ろし 10、名前が局所でない 3、panics の値 2、Vec のメソッド 1、Diag 1、match 1、for 1、理由が `Tool` のもの 5 |
 | 6 LLVM 出力 (`emit`) | 下ろせた 81 件 | **81 / 81** (実行の標準出力と終了コードが Rust 版の実行ファイルと同じ) | `emit` の 13.4 章の範囲 (浮動小数・外部関数・`std.fs` など)。下ろしが広がらない限り対象が増えない |
@@ -958,11 +958,17 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
 - 原因: `selfhost/lower` の公開の関数 (`lower.cx.new`・`lower.expr.enqueue`・`lower.func.lower_item`) の引数が、型の表を使う拡張で変わったのに、`ksnc/kir.ksnl` が古い呼び方のままだった (E2001)。また `lower.cx.Glob` の欄名が変わっていた (`names` → `nms`、`texts` → `tx`)。
 - 直し: `ksnc/kir.ksnl` を `lower.main` と同じ手順に合わせた (`types.export.run` → `lower.cx.new(tout.ar, tout.cx)` → `lower.expr.enqueue` → `name_of`・`item_at`・`subs_at`・`ret_at` → `lower.func.lower_item(.., key, &subs, ret)`)。`selfhost/lower` は変えていない。ドライバが呼ぶ関数は、この段が使うものだけ。
 - 測り直し (`selfhost/lower` の統合 `1fa7f31` を取り込んだ後):
-  - `compare.py check --pkgs all`: 35 パッケージ中 34 が一致 (17.3 の表の 3 行目)。
+  - `compare.py check --pkgs all`: 35 パッケージ中 35 が一致 (17.3 の表の 3 行目)。
   - `compare.py build`: linear_ok 123 件のうち 81 件が作れ、すべて Rust 版と一致 (17.3 の表の 5〜7 行目)。
   - `ksnc build --stages=kasane` の自己ビルド: 0 件 (78 件が未対応。17.3 の表の 8 行目)。
 - 再発防止: `tests/run_tests.py` の段 11 で、`selfhost/*` の全パッケージ (`selfhost/probes/*`・`selfhost/lower/probes/*` を含む、`target/`・`broken/`・`tests/` を除く 15 件) の Rust 版 `ksn check` の診断を見る。既定は 0 件。期待で診断を出すパッケージだけを `SELFHOST_EXPECT` の表に書く (`selfhost/probes/boxtree`: E4013 1 件)。表にない診断・件数の違い・表に書いたパッケージが無いことは失敗にする。段の時間は、全件検査の実行では 36.6 秒 (他の実行と並行した負荷時。`ksn check` を 15 件、直列)。無負荷の計測では 12.6 秒。
 - 注意: 段 11 は Rust 版 `ksn check` だけを見る。Kasane 版 (`ksnc --stages=kasane check`) の一致は見ていない (`compare.py check` が担当)。
+
+### 17.10 `if let` / `is` の暗黙のキャッチアール腕と `std` 可視性の誤検出 (2026-11-15)
+
+- **E2021 (match misses variants / catch-all arm)** (`selfhost/parse` + `selfhost/types`): `if let` / `is` の暗黙の「他の全部」腕が `PWild` (フラグなし) として出力され、`types.infer.is_catch` がどの `PWild` もキャッチアールと見なして E2021 を出していた。`stage0/src/check.rs` と同じく、`PWild [true]` (フラグ付き) はキャッチアール対象外とする。`parse.expr.if_let_rest` と `parse.expr.cmp_expr` (`is`) で、暗黙のキャッチアール腕の `PWild` にフラグ子 (`add1` で `Lit` を1つ持つ) を付ける。`is_catch` はフラグ付き `PWild` で `false` を返し、`matchx` はフラグ付き `PWild` 腕があるときは「match misses variants」チェックをスキップする (`from_if_let`)。かつキャッチアール腕の `E2021` もスキップする (`!from_if_let`)。
+- **E1119 (visibility)** (`selfhost/resolve`): `resolve.scope.lookup_key` が非 `pub` の定義を別ファイルから参照すると常に `Private` を返していたが、`stage0/src/check.rs` と同じく `core`/`alloc`/`std` のルートは可視性チェックの対象外とする。`std.http.Decoder.feed_part` などが別パッケージから参照できる。
+- 確かめ: `apps/wiki` が `ksnc --stages=kasane check` で 0 件 (`compare.py check --pkgs all` が 35/35)。`selfhost/types`/`selfhost/resolve`/`selfhost/parse` の `ksn check`/`ksn fmt --check`/`ksn build --release --allow-bundle` が通る。最小の再現コードを 8 本 (`e1119_feed_part` `e1119_consume` `e2021_iflet_some` `e2021_iflet_none` `e2021_iflet_no_else` `e2021_is_op` `e2021_result_ok` `e2021_iflet_chain`) で Rust 版と Kasane 版の両方で 0 件を確かめた。
 
 ## 18. KIR への下ろしの段 (2): 型の表を使い、Option / Result / 参照 を下ろす (修正プラン 5-5)
 

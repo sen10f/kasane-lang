@@ -156,7 +156,8 @@ fn parse.expr.cmp_expr(p: &mut parse.cur.P, ns: bool) -> Result<usize, parse.err
         parse.cur.advance(p)
         let pat = parse.pat.pattern(p)?
         let true_lit = parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, 7usize, at)?
-        let wild = parse.ast.add0(&mut p.ast, parse.ast.Kind.PWild, at)?
+        let wild_flag = parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, 7usize, at)?
+        let wild = parse.ast.add1(&mut p.ast, parse.ast.Kind.PWild, at, wild_flag)?
         let false_lit = parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, 7usize, at)?
         let arm1 = parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, pat, true_lit)?
         let arm2 = parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, wild, false_lit)?
@@ -247,7 +248,8 @@ fn parse.expr.if_let_rest(p: &mut parse.cur.P, at: usize) -> Result<usize, parse
     }
     let mut arms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     arms.push(parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, pat, then)?)?
-    let rest = parse.ast.add0(&mut p.ast, parse.ast.Kind.PWild, at)?
+    let rest_flag = parse.ast.add2(&mut p.ast, parse.ast.Kind.Lit, at, 7usize, at)?
+    let rest = parse.ast.add1(&mut p.ast, parse.ast.Kind.PWild, at, rest_flag)?
     arms.push(parse.ast.add2(&mut p.ast, parse.ast.Kind.Arm, at, rest, els)?)?
     let l = parse.ast.list(&mut p.ast, &arms, at)?
     parse.ast.add2(&mut p.ast, parse.ast.Kind.Match, at, scrut, l)
