@@ -2509,7 +2509,18 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         }
         copy_tree(&stdlib_dir(), &tmp.join("stdlib"), &[]);
         let pk = tmp.join("pkg");
-        copy_tree(&l.pkg.root, &pk, &["target", "__pycache__", ".git"]);
+        let mut skip: Vec<&str> = vec!["target", "__pycache__", ".git"];
+        // KSN_CACHE_DIR がパッケージの中を指すと、バンドル時にパッケージと一緒にコピーされて
+        // `pkg/<キャッシュ>/…/pkg/…` と入れ子に膨らむ。最上位の名前を除く。
+        let cdir = cache_dir();
+        if let Ok(rel) = cdir.strip_prefix(&l.pkg.root) {
+            if let Some(top) = rel.iter().next().and_then(|n| n.to_str()) {
+                if !top.starts_with('.') && !skip.contains(&top) {
+                    skip.push(top);
+                }
+            }
+        }
+        copy_tree(&l.pkg.root, &pk, &skip);
         if release {
             // 3.2: テストはリリースビルドから除外する (統合テストのファイルも同梱しない)。
             let _ = fs::remove_dir_all(pk.join("tests"));
