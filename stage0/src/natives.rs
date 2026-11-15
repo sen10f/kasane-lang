@@ -72,9 +72,9 @@ pub fn snapshot_closure(v: &Val) -> Val {
     }
 }
 
-/// `std.task.Task` の値 (タスクの id を持つ構造体)。
-fn task_value(id: usize) -> Val {
-    Val::Struct(Rc::new(StructV { ty: "std.task.Task".into(), f: RefCell::new(vec![("id".into(), int(id as i128, "usize"))]) }))
+/// `std.task.Task` の値 (タスクの id と世代番号を持つ構造体)。
+fn task_value(id: usize, gen: usize) -> Val {
+    Val::Struct(Rc::new(StructV { ty: "std.task.Task".into(), f: RefCell::new(vec![("id".into(), int(id as i128, "usize")), ("gen".into(), int(gen as i128, "usize"))]) }))
 }
 
 pub fn known_num(name: &str) -> bool {
@@ -784,8 +784,8 @@ impl Interp {
             // 協調実行器 (task.rs、仕様 5.6)。タスクは id で持ち、`std.task.Task` の値は `id` の欄だけを持つ。
             "std.task.block_on" => self.task_block_on(dr(&a0)),
             "std.task.spawn_local" => {
-                let id = self.task_spawn(snapshot_closure(&dr(&a0)))?;
-                Ok(task_value(id))
+                let (id, gen) = self.task_spawn(snapshot_closure(&dr(&a0)))?;
+                Ok(task_value(id, gen))
             }
             "std.task.yield_now" => {
                 self.task_yield()?;
@@ -1209,10 +1209,14 @@ impl Interp {
                     return self.fmt_into(name, v, &a0);
                 }
                 if s.ty == "std.task.Task" && name == "join_task" {
-                    return self.task_join(field(v, "id") as usize);
+                    let id = field(v, "id") as usize;
+                    let gen = field(v, "gen") as usize;
+                    return self.task_join(id, gen);
                 }
                 if s.ty == "std.task.Task" && name == "cancel" {
-                    self.task_cancel(field(v, "id") as usize)?;
+                    let id = field(v, "id") as usize;
+                    let gen = field(v, "gen") as usize;
+                    self.task_cancel(id, gen)?;
                     return Ok(Val::Unit);
                 }
                 if s.ty == "std.time.Instant" && name == "elapsed" {

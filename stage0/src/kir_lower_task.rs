@@ -158,9 +158,11 @@ fn spawn_local(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
     let tag = task_no(&key);
     let root = new_frame(lw, &key, &caps);
     let tagv = lw.emit(Ty::U32, Op::Const(tag as i128));
-    let id = rt_call(lw, ks::SPAWN, vec![tagv, root], Ty::Usize);
+    let ptr = rt_call(lw, ks::SPAWN, vec![tagv, root], Ty::Ptr);
+    let id = lw.emit(Ty::Usize, Op::MemLoad { p: ptr, off: 0 });
+    let gen = lw.emit(Ty::Usize, Op::MemLoad { p: ptr, off: 8 });
     let hty = lw.aggs.borrow_mut().task_handle(ret);
-    Ok(Some(lw.emit(hty, Op::Make { variant: None, fields: vec![id] })))
+    Ok(Some(lw.emit(hty, Op::Make { variant: None, fields: vec![id, gen] })))
 }
 
 /// `std.task.yield_now()`: 中断点 (実行器の外では何もしない)。
@@ -181,7 +183,7 @@ pub(super) fn is_task_ty(lw: &Lw, t: Ty) -> bool {
 }
 
 /// `h.cancel()` (`Task<T>` の受け手、仕様 5.6 の第 4 段): 枠を解放して取り消す。対象外なら `None`。
-/// 取り消しは中断点ではない (呼び出し元の `uses` は要らない)。`Task<T>` は `{id}` の集成体なので、番号を取り出して渡す。
+/// 取り消しは中断点ではない (呼び出し元の `uses` は要らない)。`Task<T>` は `{id, gen}` の集成体なので、番号と世代を取り出して渡す。
 pub(super) fn cancel_call(lw: &mut Lw, recv: VId, recv_ty: Ty, line: usize) -> Option<LR<Option<VId>>> {
     let _ = line;
     if !is_task_ty(lw, recv_ty) {
@@ -189,8 +191,9 @@ pub(super) fn cancel_call(lw: &mut Lw, recv: VId, recv_ty: Ty, line: usize) -> O
     }
     mark_used();
     let id = lw.emit(Ty::Usize, Op::Field { a: recv, off: 0 });
+    let gen = lw.emit(Ty::Usize, Op::Field { a: recv, off: 8 });
     lw.callees.insert(ks::CANCEL.to_string());
-    lw.emit(Ty::Unit, Op::Call { callee: ks::CANCEL.to_string(), args: vec![id] });
+    lw.emit(Ty::Unit, Op::Call { callee: ks::CANCEL.to_string(), args: vec![id, gen] });
     Some(Ok(Some(lw.unit())))
 }
 
@@ -221,8 +224,9 @@ pub(super) fn join_call(lw: &mut Lw, recv: VId, recv_ty: Ty, line: usize) -> Opt
     let Some(elem) = elem else { return Some(lw.err(line, "Task の結果の型が無い")) };
     mark_used();
     let id = lw.emit(Ty::Usize, Op::Field { a: recv, off: 0 });
+    let gen = lw.emit(Ty::Usize, Op::Field { a: recv, off: 8 });
     lw.callees.insert(ks::WAIT.to_string());
-    lw.emit(Ty::Unit, Op::Call { callee: ks::WAIT.to_string(), args: vec![id] });
+    lw.emit(Ty::Unit, Op::Call { callee: ks::WAIT.to_string(), args: vec![id, gen] });
     let fp = rt_call(lw, ks::FP, vec![id], Ty::Ptr);
     Some(result_of(lw, fp, elem, line).map(Some))
 }

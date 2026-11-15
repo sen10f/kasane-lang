@@ -1,0 +1,24 @@
+// expect: E1122
+fn t.forge(id: usize) -> std.task.Task<alloc.vec.Vec<u8, std.alloc.System>> uses [] panics never
+    std.task.Task { id: id }
+end t.forge
+
+fn t.main() -> () uses [alloc, io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        let b = std.task.spawn_local(
+            fn() -> alloc.vec.Vec<u8, std.alloc.System> capture [] {
+                let mut v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                match v.push(7u8) {
+                    Ok(u) => u
+                    Err(_e) => ()
+                }
+                v
+            },
+        )
+        let forged = t.forge(1usize)
+        let v1 = b.join_task()
+        let v2 = forged.join_task()
+        core.mem.drop(v1)
+        core.mem.drop(v2)
+    })
+end t.main
