@@ -1773,3 +1773,32 @@ fn derive_json_round_trips_and_builds_alike() {
     assert_eq!(text(&r.stdout), text(&interp.stdout), "build and run outputs differ");
     let _ = fs::remove_dir_all(&cache);
 }
+
+#[test]
+fn build_key_changes_with_ksn_clang_args() {
+    // `KSN_CLANG_ARGS` を変えるとキャッシュキーが変わり、前の成果物が `cache hit` で出ない。
+    let t = Tmp::new("cache_key_clang_args", CACHE_SRC);
+    let cache = std::env::temp_dir().join(format!("ksn_cache_key_clang_args_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&cache);
+    let hit = |o: &Output| text(&o.stdout).contains("cache hit");
+    let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
+    let o = build_with_cache(exe(), &t.0, &cache, &[], &[]);
+    ok(&o);
+    assert!(!hit(&o));
+    let o = build_with_cache(exe(), &t.0, &cache, &[], &[]);
+    ok(&o);
+    assert!(hit(&o), "同じ引数ならキャッシュヒット: {}", text(&o.stdout));
+
+    // KSN_CLANG_ARGS を変えると別のキー (ヒットしない)。
+    let o = build_with_cache(exe(), &t.0, &cache, &[], &[("KSN_CLANG_ARGS", "-O2")]);
+    ok(&o);
+    assert!(!hit(&o), "KSN_CLANG_ARGS の変更は鍵を変える: {}", text(&o.stdout));
+
+    // 同じ KSN_CLANG_ARGS で再度 → ヒット。
+    let o = build_with_cache(exe(), &t.0, &cache, &[], &[("KSN_CLANG_ARGS", "-O2")]);
+    ok(&o);
+    assert!(hit(&o), "同じ KSN_CLANG_ARGS ならキャッシュヒット: {}", text(&o.stdout));
+
+    let _ = fs::remove_dir_all(&cache);
+}

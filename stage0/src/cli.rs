@@ -2396,13 +2396,16 @@ const ARTIFACT_DIR: &str = "artifact";
 /// `target/<kind>` に置く、そのビルドのキー。バンドルが今の ksn・ソースに対応するかの判定に使う。
 const BUILD_STAMP: &str = ".build-key";
 
-/// ビルドキーの内訳: 生成条件 (ksn 本体・edition・debug/release・ターゲット・バックエンド)、
+/// ビルドキーの内訳: 生成条件 (ksn 本体・edition・debug/release・ターゲット・バックエンド・clang とそのバージョン・clang の追加引数)、
 /// パッケージと依存のソース、stdlib、ksn 本体のバイト列。
-/// バックエンドは出力が違うので (llvm と c) キーに入れる。
+/// バックエンドは出力が違うので (llvm と c) キーに入れる。clang を差し替えたり引数を変えたりしても前の成果物が `cache hit` で出ないように、
+/// clang 自体もキーに含める。
 fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
     let mut h = Sha256::new();
     let edition = l.pkg.manifest["package"].get("edition").map(|e| e.to_string()).unwrap_or_default();
-    h.update(format!("{}|{}|{}|{}|{}", VERSION, edition, if release { "release" } else { "debug" }, target, backend).as_bytes());
+    let clang = std::env::var("KSN_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let clang_args = clang_extra_args().join(" ");
+    h.update(format!("{}|{}|{}|{}|{}|{}|{}|{}", VERSION, edition, if release { "release" } else { "debug" }, target, backend, clang, clang_version_line(&clang), clang_args).as_bytes());
     h.update(package_hash(&l.pkg.root).as_bytes());
     for dp in &l.deps {
         h.update(package_hash(&dp.root).as_bytes());
@@ -2423,6 +2426,18 @@ fn build_key(l: &Loaded, release: bool, target: &str, backend: &str) -> String {
     h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// `clang --version` の 1 行目 (clang が起動できなければ空)。キャッシュキーに clang の世代を入れるために使う。
+fn clang_version_line(clang: &str) -> String {
+    match std::process::Command::new(clang).arg("--version").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+        Err(_) => String::new(),
+    }
+}
+
 /// 実行権限を付ける (Unix のみ。Windows は拡張子 .exe / .cmd で起動されるので不要)。
 #[cfg(unix)]
 fn set_exec(p: &Path) {
@@ -2440,6 +2455,17 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     let allow_bundle = args.iter().any(|a| a == "--allow-bundle");
     let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "llvm".into());
     let target_arg = args.iter().position(|a| a == "--target").and_then(|i| args.get(i + 1)).cloned();
+    // `--emit-llvm <ファイル>`: ネイティブを作らず、clang に渡す前の LLVM IR (`.ll`) を書き出す。
+    let emit_llvm = match args.iter().position(|a| a == "--emit-llvm") {
+        Some(i) => match args.get(i + 1) {
+            Some(v) => Some(PathBuf::from(v)),
+            None => {
+                eprintln!("ksn: E9040: `--emit-llvm <ファイル>`: 出力ファイルを指定してください");
+                return 1;
+            }
+        },
+        None => None,
+    };
     if backend == "clif" {
         eprintln!("ksn: E9040: `--backend clif` was removed: the Cranelift backend is gone and native generation goes through LLVM (KIR). Use `--backend llvm` (the default), or `--backend c`");
         return 1;
@@ -2469,6 +2495,10 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
         eprintln!("ksn: E9040: `--target {}` needs `--backend llvm` (the C backend builds only for this machine)", target);
         return 1;
     }
+    if backend == "c" && emit_llvm.is_some() {
+        eprintln!("ksn: E9040: `--emit-llvm` needs `--backend llvm` (the C backend does not produce LLVM IR)");
+        return 1;
+    }
     // 対象が今の機械なら、インタプリタ同梱のバンドル (ホストの ksn のコピー) もそのまま動く。違えば作らない。
     let runs_here = !explicit || tgt == crate::kir_llvm::host_target();
     let mut rep = Report::new(false);
@@ -2491,6 +2521,44 @@ fn cmd_build(args: &[String], preloaded: Option<&Loaded>) -> i32 {
     rep.flush();
     if rep.fatal() {
         return 1;
+    }
+    // `--emit-llvm <ファイル>`: ネイティブを作らず、clang に渡す前の LLVM IR (`.ll`) を書き出して終了する。
+    // キャッシュ・バンドル・インタプリタ退避は行わない。
+    if let Some(emit_path) = &emit_llvm {
+        let entry = match l.pkg.entry() {
+            Some(e) => e,
+            None => {
+                eprintln!("ksn: E9040: `--emit-llvm` needs an entry point (`entry` in kasane.toml)");
+                return 1;
+            }
+        };
+        let p = prog.as_ref().expect("entry is set");
+        let test_files: std::collections::HashSet<&str> =
+            l.pkg.sources.iter().filter(|s| s.is_test).map(|s| s.path.as_str()).collect();
+        let mut user_ll: Vec<usize> = user.iter().copied().filter(|&i| !test_files.contains(p.defs[i].file.as_str())).collect();
+        let dep_files: std::collections::HashSet<&str> =
+            l.deps.iter().flat_map(|dp| dp.sources.iter().map(|s| s.path.as_str())).collect();
+        user_ll.extend((0..p.defs.len()).filter(|&i| dep_files.contains(p.defs[i].file.as_str())));
+        let lo = crate::kir_lower::lower_program(p, &user_ll, Some(&entry));
+        if lo.module.find(&entry).is_none() {
+            eprintln!("ksn: E9040: `--emit-llvm`: entry `{}` cannot be lowered to LLVM IR", entry);
+            return 1;
+        }
+        let roots: Vec<&str> = vec![&entry, crate::kir_lower::debug::ENTRY_DEBUG];
+        let m = lo.module.reachable_from(&roots);
+        let ll = match crate::kir_llvm::emit_program(&m, &entry, tgt) {
+            Ok(ll) => ll,
+            Err(e) => {
+                eprintln!("ksn: E9040: `--emit-llvm`: {}", e);
+                return 1;
+            }
+        };
+        if let Err(e) = fs::write(emit_path, &ll) {
+            eprintln!("ksn: {} を書けない: {}", emit_path.display(), e);
+            return 1;
+        }
+        println!("wrote {}", emit_path.display());
+        return 0;
     }
     let kind = if release { "release" } else { "debug" };
     let key = build_key(&l, release, &target, &backend);
