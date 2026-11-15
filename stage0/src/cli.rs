@@ -2651,7 +2651,11 @@ cd "$d/pkg" && exec "$d/ksn" _exec "$@"
 /// 下ろせない関数が 1 つでもあれば、理由を `Err` で返す (呼び出し側が既定の経路へ退避する)。
 fn build_llvm(prog: &Program, user: &[usize], entry: &str, exe: &Path, release: bool, tg: Tgt) -> Result<(), String> {
     let lo = crate::kir_lower::lower_program(prog, user, Some(entry));
-    llvm_exe(lo, entry, exe, if release { "-O2" } else { "-O1" }, tg)
+    match llvm_exe(lo, entry, exe, if release { "-O2" } else { "-O1" }, tg) {
+        Ok(()) => Ok(()),
+        Err(BuildFail::Unsupported(unsupported)) => Err(format_reasons(prog, &unsupported, entry, if release { Some(20) } else { None })),
+        Err(BuildFail::Tool(s)) => Err(s),
+    }
 }
 
 /// LLVM IR の対象 (`ir`: triple と datalayout を書く) と、clang に渡す対象 (`clang`: `--target` を付けるのは明示された対象だけ)。
@@ -2671,8 +2675,11 @@ fn build_llvm_test(root: &Path, prog: &Program, user: &[usize], ti: usize) -> Re
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let exe = dir.join(format!("{}_{}{}", ti, test_stem(&d.name), if cfg!(windows) { ".exe" } else { ".native" }));
     let _ = fs::remove_file(&exe);
-    llvm_exe(lo, &d.name, &exe, "-O1", Tgt { ir: crate::kir_llvm::host_target(), clang: None })?;
-    Ok(exe)
+    match llvm_exe(lo, &d.name, &exe, "-O1", Tgt { ir: crate::kir_llvm::host_target(), clang: None }) {
+        Ok(()) => Ok(exe),
+        Err(BuildFail::Unsupported(unsupported)) => Err(format_reasons(prog, &unsupported, &d.name, None)),
+        Err(BuildFail::Tool(s)) => Err(s),
+    }
 }
 
 /// テストの FQN を、実行ファイル名に使える形にする。
@@ -2680,21 +2687,19 @@ fn test_stem(name: &str) -> String {
     name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '.' { c } else { '_' }).collect()
 }
 
-/// 下ろし済みの `lo` から、入口 `entry` の実行ファイル `exe` を作る。入口が下ろせなければ、根の理由を `Err` で返す。
-fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str, tg: Tgt) -> Result<(), String> {
+/// 下ろしの失敗原因。`Unsupported` は下ろせない関数の一覧（呼び出し側でファイル・行を付けて出力する）、
+/// `Tool` は clang / IR 出力などツール側の生のエラー文字列。
+enum BuildFail {
+    Unsupported(Vec<(String, String)>),
+    Tool(String),
+}
+
+/// 下ろし済みの `lo` から、入口 `entry` の実行ファイル `exe` を作る。入口が下ろせれば `Ok(())` を返す。
+/// 入口が下ろせなければ、`lo.unsupported` にある下ろせない関数の理由を全件 `Err` で返す
+/// (呼び出し側でファイル・行を付けて出力する)。
+fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str, tg: Tgt) -> Result<(), BuildFail> {
     if lo.module.find(entry).is_none() {
-        // 理由の鎖 (`呼び先 X が未対応`) をたどって、根の理由を出す。
-        let mut key = entry.to_string();
-        let mut why = String::from("理由不明");
-        for _ in 0..64 {
-            let Some((_, w)) = lo.unsupported.iter().find(|(k, _)| *k == key) else { break };
-            why = format!("{}: {}", key, w);
-            match w.strip_prefix("呼び先 ").and_then(|r| r.strip_suffix(" が未対応")) {
-                Some(next) => key = next.to_string(),
-                None => break,
-            }
-        }
-        return Err(format!("{} を KIR に下ろせない ({})", entry, why));
+        return Err(BuildFail::Unsupported(lo.unsupported.clone()));
     }
     if std::env::var_os("KSN_DUMP_KIR").is_some() {
         for (f, why) in &lo.unsupported {
@@ -2708,8 +2713,42 @@ fn llvm_exe(lo: crate::kir_lower::Lowered, entry: &str, exe: &Path, opt: &str, t
     }
     let refs: Vec<&str> = roots.iter().map(|s| s.as_str()).collect();
     let m = lo.module.reachable_from(&refs);
-    let ll = crate::kir_llvm::emit_program(&m, entry, tg.ir)?;
-    clang_ll(&ll, exe, opt, tg.clang)
+    let ll = crate::kir_llvm::emit_program(&m, entry, tg.ir).map_err(|e| BuildFail::Tool(e))?;
+    clang_ll(&ll, exe, opt, tg.clang).map_err(|e| BuildFail::Tool(e))
+}
+
+/// `lo.unsupported` の `(関数FQN, 理由)` を、プログラムの定義からファイル・行を付けて
+/// 「関数ごとに 1 行」のメッセージにする。`entry` が指定されるとその理由を先頭に出す
+/// (ユーザが下ろそうとした入口が最も目立つように)。`max` が `Some(n)` のときは先頭 `n` 件だけ出し、
+/// 超えた分は「... 他 N 件」と件数を出す。
+fn format_reasons(prog: &Program, unsupported: &[(String, String)], entry: &str, max: Option<usize>) -> String {
+    let limit = max.unwrap_or(usize::MAX);
+    // 入口の理由を先頭に、それ以外を元の順序でその後ろに。
+    let entry_pos = unsupported.iter().position(|(fq, _)| fq == entry);
+    let mut ordered: Vec<&(String, String)> = Vec::new();
+    if let Some(pos) = entry_pos {
+        ordered.push(&unsupported[pos]);
+    }
+    for (i, item) in unsupported.iter().enumerate() {
+        if entry_pos.map_or(false, |p| i == p) { continue; }
+        ordered.push(item);
+    }
+    let mut lines: Vec<String> = Vec::new();
+    for (fq, why) in ordered.iter().take(limit) {
+        let loc = prog
+            .defs
+            .iter()
+            .find(|d| d.name == **fq)
+            .map(|d| format!("{}:{}", d.file, d.line))
+            .unwrap_or_else(|| fq.clone());
+        lines.push(format!("{} を KIR に下ろせない ({}): {}", fq, loc, why));
+    }
+    if let Some(max) = max {
+        if unsupported.len() > max {
+            lines.push(format!("... 他 {} 件が下ろせない", unsupported.len() - max));
+        }
+    }
+    lines.join("\n")
 }
 
 /// クロスコンパイルの clang の引数 (対象を明示したときだけ)。`--target` と、ターゲットの C の開発ファイル・libc の探索先。

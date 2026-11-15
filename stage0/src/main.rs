@@ -71,8 +71,14 @@ fn dev_main(_args: Vec<String>) {
             }
         }
     } else if args.len() >= 3 && args[1] == "defs" {
-        let src = std::fs::read_to_string(&args[2]).expect("read");
-        match defs::scan(&src) {
+        let src = match std::fs::read_to_string(&args[2]) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("ksn: {} を読めない: {}", args[2], e);
+                std::process::exit(1);
+            }
+        };
+        match defs::scan_with(&src, args[2].ends_with(".sig")) {
             Ok(ds) => {
                 for d in ds {
                     println!("{}	{}	{}	{}", d.kw, d.name, d.line, d.end_line);
