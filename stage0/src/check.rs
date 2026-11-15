@@ -3897,8 +3897,9 @@ impl<'a> Checker<'a> {
     }
 
     /// `extern` の関数と `core.ptr` の関数 (生ポインタの生成・変換・読み書き) は `unsafe` ブロックの中でしか呼べない (3.8, E5003)。
-    /// 呼び出しの他に、関数を値として参照する (`let f = core.ptr.read` や引数として渡す) のも
-    /// `unsafe` ブロックの外では E5003 (呼び出しの関数位置以外に名前が現れる)。
+    /// 呼び出しの関数位置 (`t.getpid()`) にしか書けず、値としての参照 (`let f = t.getpid`、
+    /// フィールドへの代入、引数、戻り値、クロージャの捕捉) は `unsafe` の中でも外でも E5003
+    /// (2026-11-15 の決定: `extern` と `core.ptr` の関数は値として扱わない。C へ渡すコールバックは Kasane の関数を渡すので対象外)。
     fn check_extern_calls(&mut self, di: usize) {
         let d = self.def(di);
         let Some(body) = &d.body else { return };
@@ -3908,7 +3909,7 @@ impl<'a> Checker<'a> {
             in_unsafe: bool,
             in_call_pos: bool,
             file: &str,
-            out: &mut Vec<(usize, String)>,
+            out: &mut Vec<(usize, String, bool)>,
         ) {
             match nname(v) {
                 "Call" => {
@@ -3922,7 +3923,7 @@ impl<'a> Checker<'a> {
                                     if let Target::Sig(i) = r.target {
                                         let t = &ck.p.defs[i];
                                         if r.rest.is_empty() && (t.kw == "extern" || t.name.starts_with("core.ptr.")) {
-                                            out.push((nline(v), t.name.clone()));
+                                            out.push((nline(v), t.name.clone(), false));
                                         }
                                     }
                                 }
@@ -3946,14 +3947,15 @@ impl<'a> Checker<'a> {
                     return;
                 }
                 "Path" => {
-                    // 呼び出しの関数位置以外に名前が現れる = 関数を値として参照
-                    if !in_unsafe && !in_call_pos {
+                    // 呼び出しの関数位置以外に名前が現れる = 関数を値として参照。
+                    // 値としての参照は `unsafe` の中でも拒否する (`extern` と `core.ptr` の関数は値にならない)。
+                    if !in_call_pos {
                         let segs = strs(&nf(v)[0]);
                         if let Some(r) = ck.p.resolve(&segs, file) {
                             if let Target::Sig(i) = r.target {
                                 let t = &ck.p.defs[i];
                                 if r.rest.is_empty() && (t.kw == "extern" || t.name.starts_with("core.ptr.")) {
-                                    out.push((nline(v), t.name.clone()));
+                                    out.push((nline(v), t.name.clone(), true));
                                 }
                             }
                         }
@@ -3975,13 +3977,13 @@ impl<'a> Checker<'a> {
         }
         let mut found = vec![];
         scan(self, body, false, false, &d.file, &mut found);
-        for (line, name) in found {
-            self.diag(
-                "E5003",
-                format!("the external or raw-pointer function `{}` can only be called inside an `unsafe` block", name),
-                di,
-                line,
-            );
+        for (line, name, as_value) in found {
+            let msg = if as_value {
+                format!("the external or raw-pointer function `{}` cannot be used as a value (it can only be called directly, e.g. `{}(..)`)", name, name)
+            } else {
+                format!("the external or raw-pointer function `{}` can only be called inside an `unsafe` block", name)
+            };
+            self.diag("E5003", msg, di, line);
         }
     }
 
