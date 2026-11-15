@@ -1,0 +1,132 @@
+import alloc.string
+import todo.error
+
+// 2 つの String を連結した新しい String を返す。
+fn todo.auth.concat_strings(a: &str, b: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str(a)?
+    out.push_str(b)?
+    Ok(out)
+end todo.auth.concat_strings
+
+// バイト列を単純なハッシュ関数 (FNV-1a 風) で u64 にハッシュする。
+fn todo.auth.hash_bytes(bytes: &[u8]) -> u64 uses [] panics never pub
+    let mut h: u64 = 0u64
+    let mut i: usize = 0usize
+    while i < bytes.len() {
+        match bytes.get(i) {
+            Some(b) => {
+                h = h.wrapping_mul(31u64).wrapping_add(u64.from_u8(*b))
+                i = i.wrapping_add(1usize)
+            }
+            None => break
+        }
+    }
+    h
+end todo.auth.hash_bytes
+
+// パスワードを salt とともにハッシュし、16 文字の 16 進数文字列を返す。
+fn todo.auth.hash_password(password: &str, salt: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+    let combined = todo.auth.concat_strings(password, salt)?
+    let digest = todo.auth.hash_bytes(combined.as_bytes())
+    let s = todo.auth.u64_to_hex(digest)?
+    Ok(s)
+end todo.auth.hash_password
+
+// 注意: 乱数 (std.rand) がネイティブに下りないための仮の実装。推測できるので本番では使わない (処理系の修正待ち)。
+// 決定論的なソルト (16 文字の 16 進数) を生成する。
+fn todo.auth.make_salt() -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, time] panics never pub
+    let now = std.datetime.DateTime.now().to_rfc3339()?
+    let combined = todo.auth.concat_strings("salt:", now.as_str())?
+    let digest = todo.auth.hash_bytes(combined.as_bytes())
+    let s = todo.auth.u64_to_hex(digest)?
+    Ok(s)
+end todo.auth.make_salt
+
+// 注意: 乱数 (std.rand) がネイティブに下りないための仮の実装。推測できるので本番では使わない (処理系の修正待ち)。
+// 決定論的なセッショントークン (32 文字の 16 進数) を生成する。
+fn todo.auth.make_token() -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, time] panics never pub
+    let now = std.datetime.DateTime.now().to_rfc3339()?
+    let combined = todo.auth.concat_strings("token:", now.as_str())?
+    let digest = todo.auth.hash_bytes(combined.as_bytes())
+    let s = todo.auth.u64_to_hex(digest)?
+    Ok(s)
+end todo.auth.make_token
+
+fn todo.auth.nibble_to_char(n: u64) -> Result<char, todo.error.Error> uses [] panics never pub
+    if n < 10u64 {
+        let code = n.wrapping_add(48u64)
+        let code32 = match u32.try_from_u64(code) {
+            Ok(c32) => c32
+            Err(_e) => return Err(error.Error.BadRequest)
+        }
+        match char.try_from_u32(code32) {
+            Some(c) => Ok(c)
+            None => Err(error.Error.BadRequest)
+        }
+    } else {
+        let code = n.wrapping_sub(10u64).wrapping_add(97u64)
+        let code32 = match u32.try_from_u64(code) {
+            Ok(c32) => c32
+            Err(_e) => return Err(error.Error.BadRequest)
+        }
+        match char.try_from_u32(code32) {
+            Some(c) => Ok(c)
+            None => Err(error.Error.BadRequest)
+        }
+    }
+end todo.auth.nibble_to_char
+
+// u64 を 16 文字の 16 進数文字列に変換する。
+fn todo.auth.u64_to_hex(n: u64) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut i: u32 = 0u32
+    while i < 16u32 {
+        let shift = (15u32.wrapping_sub(i)).wrapping_mul(4u32)
+        let nibble = (n.wrapping_shr(shift)) & 15u64
+        let c = todo.auth.nibble_to_char(nibble)?
+        out.push(c)?
+        i = i.wrapping_add(1u32)
+    }
+    Ok(out)
+end todo.auth.u64_to_hex
+
+// パスワードがソルトとハッシュに一致するかを検証する。
+fn todo.auth.verify(password: &str, salt: &str, digest: &str) -> bool uses [alloc] panics never pub
+    match todo.auth.hash_password(password, salt) {
+        Ok(h) => h.as_str() == digest
+        Err(_e) => false
+    }
+end todo.auth.verify
+
+test todo.auth.hash_password.test_deterministic
+    let salt = string.String.from_str(std.alloc.SYSTEM, "abcd1234")?
+    let h1 = todo.auth.hash_password("password", salt.as_str())?
+    let h2 = todo.auth.hash_password("password", salt.as_str())?
+    core.check.eq(h1.as_str(), h2.as_str())
+end todo.auth.hash_password.test_deterministic
+
+test todo.auth.hash_password.test_differs_by_salt
+    let h1 = todo.auth.hash_password("password", "salt1")?
+    let h2 = todo.auth.hash_password("password", "salt2")?
+    core.check.eq(h1.as_str() == h2.as_str(), false)
+end todo.auth.hash_password.test_differs_by_salt
+
+test todo.auth.u64_to_hex.test_shape
+    let s = todo.auth.u64_to_hex(0u64)?
+    core.check.eq(s.as_str(), "0000000000000000")
+    let s2 = todo.auth.u64_to_hex(255u64)?
+    core.check.eq(s2.as_str(), "00000000000000ff")
+end todo.auth.u64_to_hex.test_shape
+
+test todo.auth.verify.test_correct
+    let salt = todo.auth.make_salt()?
+    let digest = todo.auth.hash_password("secret", salt.as_str())?
+    core.check.eq(todo.auth.verify("secret", salt.as_str(), digest.as_str()), true)
+end todo.auth.verify.test_correct
+
+test todo.auth.verify.test_wrong_password
+    let salt = todo.auth.make_salt()?
+    let digest = todo.auth.hash_password("secret", salt.as_str())?
+    core.check.eq(todo.auth.verify("wrong", salt.as_str(), digest.as_str()), false)
+end todo.auth.verify.test_wrong_password

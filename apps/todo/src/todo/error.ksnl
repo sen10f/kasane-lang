@@ -1,16 +1,27 @@
 import alloc.string
 
+// アプリ全体で共通のエラー型。
+// `derive [From]` は `enum` だけに使える (E2050)。`From` バリアントは元のエラー型を
+// 唯一のペイロードに持つ 1 つだけに限られる (E2049)。
 enum todo.error.Error derive [Debug, Clone, Copy, PartialEq, From] pub
     Alloc(alloc.alloc.AllocError)
+    AuthFailed
     BadRequest
     Closed
+    Config
     Corrupt
+    History
     Io(std.io.Error)
     Json(std.json.Error)
     Net(std.net.Error)
+    NotAuthenticated
     NotFound
     TooLarge
 end todo.error.Error
+
+fn todo.error.auth_failed() -> todo.error.Error uses [] panics never pub
+    todo.error.Error.AuthFailed
+end todo.error.auth_failed
 
 fn todo.error.bad_number(_value: core.num.ParseIntError) -> todo.error.Error uses [] panics never pub
     todo.error.Error.BadRequest
@@ -20,13 +31,25 @@ fn todo.error.bad_text(_value: core.str.Utf8Error) -> todo.error.Error uses [] p
     todo.error.Error.BadRequest
 end todo.error.bad_text
 
+fn todo.error.config_failed() -> todo.error.Error uses [] panics never pub
+    todo.error.Error.Config
+end todo.error.config_failed
+
 fn todo.error.from_json(value: std.json.Error) -> todo.error.Error uses [] panics never pub
     todo.error.Error.Json(value)
 end todo.error.from_json
 
+fn todo.error.history_failed() -> todo.error.Error uses [] panics never pub
+    todo.error.Error.History
+end todo.error.history_failed
+
 fn todo.error.io_failed() -> todo.error.Error uses [] panics never pub
     todo.error.Error.Io(std.io.Error { kind: std.io.ErrorKind.Other, code: 0i32 })
 end todo.error.io_failed
+
+fn todo.error.not_authenticated() -> todo.error.Error uses [] panics never pub
+    todo.error.Error.NotAuthenticated
+end todo.error.not_authenticated
 
 fn todo.error.push_failed(value: alloc.string.PushBytesError) -> todo.error.Error uses [] panics never pub
     match value {

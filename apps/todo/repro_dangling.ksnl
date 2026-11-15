@@ -1,0 +1,17 @@
+import alloc.string
+
+// match の腕で String を束縛し、その as_str() をそのまま返すと、
+// String がドロップされた後 &str がぶら下がる。
+fn t.dangling(s: &str) -> &str uses [alloc] panics never pub
+    let x = match alloc.string.String.from_str(std.alloc.SYSTEM, s) {
+        Ok(v) => v.as_str()
+        Err(_e) => ""
+    }
+    x
+end t.dangling
+
+fn t.main() -> Result<(), todo.error.Error> uses [alloc] panics never pub
+    let r = todo.t.dangling("hi")
+    core.mem.drop(r)
+    Ok(())
+end t.main

@@ -1,14 +1,30 @@
 import todo.error
 import todo.model
 
-const todo.store.MAX_TITLE: usize = 2048usize
+const todo.store.DEFAULT_PAGE_SIZE: usize = 20usize pub
+
+const todo.store.MAX_HISTORY_ENTRY: usize = 4096usize
+
+const todo.store.MAX_TITLE: usize = 2048usize pub
+
+type todo.store.Stats pub
+    total: usize pub
+    completed: usize pub
+    active: usize pub
+    users: usize pub
+    sessions: usize pub
+end todo.store.Stats
 
 type todo.store.Store pub
     path: alloc.string.String<std.alloc.System>
+    users_path: alloc.string.String<std.alloc.System>
     todos: alloc.vec.Vec<todo.model.Todo, std.alloc.System>
+    extras: alloc.vec.Vec<todo.model.TodoExtra, std.alloc.System>
+    users: alloc.vec.Vec<todo.model.User, std.alloc.System>
+    sessions: alloc.vec.Vec<todo.model.Session, std.alloc.System>
 end todo.store.Store
 
-fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &str) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub
+fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &str, owner_id: i64) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub
     if title.len() > todo.store.MAX_TITLE {
         return Err(error.Error.BadRequest)
     }
@@ -19,8 +35,19 @@ fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &s
     let id = id_base.wrapping_add(1i64)
     let title_copy = alloc.string.String.from_str(std.alloc.SYSTEM, title)?
     let created_copy = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
+    let created_extra = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
     let new_todo = model.Todo { id: id, title: title_copy, done: false, created_at: created_copy }
     self.todos.push(new_todo)?
+    let empty_tags = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let ua = created_extra
+    let tg = empty_tags
+    let dl = match alloc.string.String.from_str(std.alloc.SYSTEM, "") {
+        Ok(s) => s
+        Err(_e) => return Err(error.Error.BadRequest)
+    }
+    let od = owner_id
+    let new_extra = model.TodoExtra { updated_at: ua, tags: tg, deadline: dl, owner_id: od }
+    self.extras.push(new_extra)?
     match self.save() {
         Ok(_u) => {
             let all = self.todos.as_slice()
@@ -31,10 +58,182 @@ fn todo.store.Store.add(self: &mut todo.store.Store, title: &str, created_at: &s
         }
         Err(e) => {
             core.mem.drop(self.todos.pop())
+            core.mem.drop(self.extras.pop())
             Err(e)
         }
     }
 end todo.store.Store.add
+
+fn todo.store.Store.add_extra(self: &mut todo.store.Store, id: i64, updated_at: &str, tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, deadline: alloc.string.String<std.alloc.System>, owner_id: i64) -> Result<&todo.model.TodoExtra, todo.error.Error> uses [alloc, io.fs] panics never pub
+    let index = todo.store.Store.index_of(self, id)?
+    {
+        let e = match self.extras.get_mut(index) {
+            Some(e) => e
+            None => return Err(error.Error.NotFound)
+        }
+        e.updated_at = alloc.string.String.from_str(std.alloc.SYSTEM, updated_at)?
+        e.tags = tags
+        e.deadline = deadline
+        e.owner_id = owner_id
+    }
+    match self.save() {
+        Ok(_u) => {
+            let all = self.extras.as_slice()
+            match all.get(index) {
+                Some(e) => Ok(e)
+                None => Err(error.Error.Corrupt)
+            }
+        }
+        Err(e) => Err(e)
+    }
+end todo.store.Store.add_extra
+
+fn todo.store.Store.add_session(self: &mut todo.store.Store, token: &str, user_id: i64, expires_at: i64) -> Result<&todo.model.Session, todo.error.Error> uses [alloc, io.fs] panics never pub
+    let token_copy = alloc.string.String.from_str(std.alloc.SYSTEM, token)?
+    let new_session = model.Session { token: token_copy, user_id: user_id, expires_at: expires_at }
+    self.sessions.push(new_session)?
+    match self.save_users() {
+        Ok(_u) => {
+            let all = self.sessions.as_slice()
+            match all.last() {
+                Some(s) => Ok(s)
+                None => Err(error.Error.Corrupt)
+            }
+        }
+        Err(e) => {
+            core.mem.drop(self.sessions.pop())
+            Err(e)
+        }
+    }
+end todo.store.Store.add_session
+
+fn todo.store.Store.add_user(self: &mut todo.store.Store, username: &str, password_hash: &str, salt: &str, created_at: &str) -> Result<&todo.model.User, todo.error.Error> uses [alloc, io.fs] panics never pub
+    if todo.store.Store.find_user_by_username(self, username).is_some() {
+        return Err(error.Error.BadRequest)
+    }
+    let id_base = match i64.try_from_usize(self.users.len()) {
+        Ok(n) => n
+        Err(_e) => return Err(error.Error.BadRequest)
+    }
+    let id = id_base.wrapping_add(1i64)
+    let username_copy = alloc.string.String.from_str(std.alloc.SYSTEM, username)?
+    let hash_copy = alloc.string.String.from_str(std.alloc.SYSTEM, password_hash)?
+    let salt_copy = alloc.string.String.from_str(std.alloc.SYSTEM, salt)?
+    let created_copy = alloc.string.String.from_str(std.alloc.SYSTEM, created_at)?
+    let ui = id
+    let un = username_copy
+    let ph = hash_copy
+    let sl = salt_copy
+    let ca = created_copy
+    let new_user = model.User { id: ui, username: un, password_hash: ph, salt: sl, created_at: ca }
+    self.users.push(new_user)?
+    match self.save_users() {
+        Ok(_u) => {
+            let all = self.users.as_slice()
+            match all.last() {
+                Some(u) => Ok(u)
+                None => Err(error.Error.Corrupt)
+            }
+        }
+        Err(e) => {
+            core.mem.drop(self.users.pop())
+            Err(e)
+        }
+    }
+end todo.store.Store.add_user
+
+fn todo.store.Store.append_history(self: &mut todo.store.Store, action: &str, todo_id: i64, user_id: i64, ts: &str) -> Result<(), todo.error.Error> uses [alloc, io.fs, time] panics never pub
+    if self.users_path.is_empty() {
+        return Ok(())
+    }
+    let hist_path = self.hist_path()?
+    if hist_path.is_empty() {
+        return Ok(())
+    }
+    let mut entry = alloc.string.String.new(std.alloc.SYSTEM)
+    entry.push_str("{\"ts\":")?
+    model.push_quoted(&mut entry, ts)?
+    entry.push_str(",\"action\":")?
+    model.push_quoted(&mut entry, action)?
+    entry.push_str(",\"todo_id\":")?
+    entry.push_i64(todo_id)?
+    entry.push_str(",\"user_id\":")?
+    entry.push_i64(user_id)?
+    entry.push_str("}\n")?
+    with mut file = std.fs.open_append(hist_path.as_str())? close core.mem.drop(file.close()) {
+        core.mem.drop(file.write(entry.as_bytes())?)
+        file.sync()?
+    }
+    Ok(())
+end todo.store.Store.append_history
+
+fn todo.store.Store.delete_expired_sessions(self: &mut todo.store.Store, now: i64) -> Result<usize, todo.error.Error> uses [alloc, io.fs] panics never pub
+    let mut removed = 0usize
+    let mut i = 0usize
+    while i < self.sessions.len() {
+        let all = self.sessions.as_slice()
+        match all.get(i) {
+            Some(s) => {
+                if s.expires_at <= now {
+                    core.mem.drop(self.sessions.remove(i))
+                    removed = removed.saturating_add(1usize)
+                } else {
+                    i = i.wrapping_add(1usize)
+                }
+            }
+            None => return Err(error.Error.Corrupt)
+        }
+    }
+    match self.save_users() {
+        Ok(_u) => Ok(removed)
+        Err(e) => Err(e)
+    }
+end todo.store.Store.delete_expired_sessions
+
+fn todo.store.Store.find_session(self: &todo.store.Store, token: &str) -> Option<&todo.model.Session> uses [] panics never pub
+    let all = self.sessions.as_slice()
+    for i in core.iter.range(0usize, all.len()) {
+        match all.get(i) {
+            Some(s) => {
+                if s.token.as_str() == token {
+                    return Some(s)
+                }
+            }
+            None => return None
+        }
+    }
+    None
+end todo.store.Store.find_session
+
+fn todo.store.Store.find_user_by_id(self: &todo.store.Store, id: i64) -> Option<&todo.model.User> uses [] panics never pub
+    let all = self.users.as_slice()
+    for i in core.iter.range(0usize, all.len()) {
+        match all.get(i) {
+            Some(u) => {
+                if u.id == id {
+                    return Some(u)
+                }
+            }
+            None => return None
+        }
+    }
+    None
+end todo.store.Store.find_user_by_id
+
+fn todo.store.Store.find_user_by_username(self: &todo.store.Store, username: &str) -> Option<&todo.model.User> uses [] panics never pub
+    let all = self.users.as_slice()
+    for i in core.iter.range(0usize, all.len()) {
+        match all.get(i) {
+            Some(u) => {
+                if u.username.as_str() == username {
+                    return Some(u)
+                }
+            }
+            None => return None
+        }
+    }
+    None
+end todo.store.Store.find_user_by_username
 
 fn todo.store.Store.get(self: &todo.store.Store, id: i64) -> Option<&todo.model.Todo> uses [] panics never pub
     let all = self.todos.as_slice()
@@ -50,6 +249,31 @@ fn todo.store.Store.get(self: &todo.store.Store, id: i64) -> Option<&todo.model.
     }
     None
 end todo.store.Store.get
+
+fn todo.store.Store.get_extra(self: &todo.store.Store, id: i64) -> Option<&todo.model.TodoExtra> uses [] panics never pub
+    let index = match todo.store.Store.index_of(self, id) {
+        Ok(n) => n
+        Err(_e) => return None
+    }
+    self.extras.get(index)
+end todo.store.Store.get_extra
+
+fn todo.store.Store.hist_path(self: &todo.store.Store) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let path_str = self.path.as_str()
+    let dot = match path_str.rfind(".") {
+        Some(p) => p
+        None => path_str.len()
+    }
+    let (base, rest) = match path_str.split_at(dot) {
+        Some((b, r)) => (b, r)
+        None => (path_str, "")
+    }
+    let mut hist = alloc.string.String.new(std.alloc.SYSTEM)
+    hist.push_str(base)?
+    hist.push_str("_hist")?
+    hist.push_str(rest)?
+    Ok(hist)
+end todo.store.Store.hist_path
 
 fn todo.store.Store.index_of(self: &todo.store.Store, id: i64) -> Result<usize, todo.error.Error> uses [] panics never pub
     let all = self.todos.as_slice()
@@ -90,19 +314,65 @@ fn todo.store.Store.list(self: &todo.store.Store) -> Result<alloc.string.String<
     Ok(out)
 end todo.store.Store.list
 
-fn todo.store.Store.load(path: &str) -> Result<todo.store.Store, todo.error.Error> uses [alloc, io.fs] panics never pub
-    let mut store = todo.store.Store.new("")?
+fn todo.store.Store.list_users(self: &todo.store.Store) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("{\"users\":[")?
+    let all = self.users.as_slice()
+    for i in core.iter.range(0usize, all.len()) {
+        if i > 0usize {
+            out.push_str(",")?
+        }
+        match all.get(i) {
+            Some(u) => {
+                let s = model.user_to_json(u)?
+                out.push_str(s.as_str())?
+            }
+            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+        }
+    }
+    out.push_str("],\"sessions\":[")?
+    let all2 = self.sessions.as_slice()
+    for i in core.iter.range(0usize, all2.len()) {
+        if i > 0usize {
+            out.push_str(",")?
+        }
+        match all2.get(i) {
+            Some(s) => {
+                let s2 = model.session_to_json(s)?
+                out.push_str(s2.as_str())?
+            }
+            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+        }
+    }
+    out.push_str("]}")?
+    Ok(out)
+end todo.store.Store.list_users
+
+fn todo.store.Store.load(path: &str, users_path: &str) -> Result<todo.store.Store, todo.error.Error> uses [alloc, io.fs] panics never pub
+    let mut store = todo.store.Store.new(path, users_path)?
     if std.fs.exists(path) {
         let text = todo.store.read_text(path)?
         store.parse_into(text.as_str())?
     }
     store.path = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
+    if std.fs.exists(users_path) {
+        let text = todo.store.read_text(users_path)?
+        store.parse_users_into(text.as_str())?
+    }
+    store.users_path = alloc.string.String.from_str(std.alloc.SYSTEM, users_path)?
     Ok(store)
 end todo.store.Store.load
 
-fn todo.store.Store.new(path: &str) -> Result<todo.store.Store, todo.error.Error> uses [alloc] panics never pub
+fn todo.store.Store.new(path: &str, users_path: &str) -> Result<todo.store.Store, todo.error.Error> uses [alloc] panics never pub
     let saved = alloc.string.String.from_str(std.alloc.SYSTEM, path)?
-    Ok(todo.store.Store { path: saved, todos: alloc.vec.Vec.new(std.alloc.SYSTEM) })
+    let users_saved = alloc.string.String.from_str(std.alloc.SYSTEM, users_path)?
+    let ts = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let es = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let us = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let ss = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let p = saved
+    let up = users_saved
+    Ok(todo.store.Store { path: p, users_path: up, todos: ts, extras: es, users: us, sessions: ss })
 end todo.store.Store.new
 
 fn todo.store.Store.parse_into(self: &mut todo.store.Store, text: &str) -> Result<(), todo.error.Error> uses [alloc] panics never pub
@@ -111,17 +381,68 @@ fn todo.store.Store.parse_into(self: &mut todo.store.Store, text: &str) -> Resul
             let root = doc.root()
             let todos = model.decode_array(&doc, root.index())?
             self.todos = todos
+            let extras_v = std.json.decode_field(root, "extras", 0usize)
+            match extras_v {
+                Ok(ev) => {
+                    let extras = model.decode_extra_array(&doc, std.json.decode_len(ev)?)
+                    self.extras = extras?
+                }
+                Err(_e) => core.mem.drop(0u8)
+            }
         }
         Err(e) => return Err(error.Error.Json(e))
     }
     Ok(())
 end todo.store.Store.parse_into
 
+fn todo.store.Store.parse_users_into(self: &mut todo.store.Store, text: &str) -> Result<(), todo.error.Error> uses [alloc] panics never pub
+    match std.json.parse(text) {
+        Ok(doc) => {
+            let root = doc.root()
+            let users = model.decode_user_array(&doc, root.at)?
+            self.users = users
+            let sessions_v = std.json.decode_field(root, "sessions", 0usize)
+            match sessions_v {
+                Ok(sv) => {
+                    let sessions = model.decode_session_array(&doc, std.json.decode_len(sv)?)
+                    self.sessions = sessions?
+                }
+                Err(_e) => core.mem.drop(0u8)
+            }
+        }
+        Err(e) => return Err(error.Error.Json(e))
+    }
+    Ok(())
+end todo.store.Store.parse_users_into
+
 fn todo.store.Store.remove(self: &mut todo.store.Store, id: i64) -> Result<(), todo.error.Error> uses [alloc, io.fs] panics never pub
     let index = todo.store.Store.index_of(self, id)?
     core.mem.drop(self.todos.remove(index))
+    core.mem.drop(self.extras.remove(index))
     self.save()
 end todo.store.Store.remove
+
+fn todo.store.Store.remove_session(self: &mut todo.store.Store, token: &str) -> Result<(), todo.error.Error> uses [alloc, io.fs] panics never pub
+    let all = self.sessions.as_slice()
+    let mut found = None
+    for i in core.iter.range(0usize, all.len()) {
+        match all.get(i) {
+            Some(s) => {
+                if s.token.as_str() == token {
+                    found = Some(i)
+                }
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    match found {
+        Some(i) => {
+            core.mem.drop(self.sessions.remove(i))
+            self.save_users()
+        }
+        None => Ok(())
+    }
+end todo.store.Store.remove_session
 
 fn todo.store.Store.save(self: &todo.store.Store) -> Result<(), todo.error.Error> uses [alloc, io.fs] panics never pub
     if self.path.is_empty() {
@@ -131,6 +452,69 @@ fn todo.store.Store.save(self: &todo.store.Store) -> Result<(), todo.error.Error
     std.fs.write_atomic(self.path.as_str(), body.as_bytes())?
     Ok(())
 end todo.store.Store.save
+
+fn todo.store.Store.save_users(self: &todo.store.Store) -> Result<(), todo.error.Error> uses [alloc, io.fs] panics never pub
+    if self.users_path.is_empty() {
+        return Ok(())
+    }
+    let body = self.list_users()?
+    std.fs.write_atomic(self.users_path.as_str(), body.as_bytes())?
+    Ok(())
+end todo.store.Store.save_users
+
+fn todo.store.Store.search(self: &todo.store.Store, q: &str, page: usize, page_size: usize) -> Result<alloc.string.String<std.alloc.System>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut total = 0usize
+    let all = self.todos.as_slice()
+    for i in core.iter.range(0usize, all.len()) {
+        match all.get(i) {
+            Some(t) => {
+                if t.title.as_str().contains(q) {
+                    total = total.saturating_add(1usize)
+                }
+            }
+            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+        }
+    }
+    let mut out = alloc.string.String.new(std.alloc.SYSTEM)
+    out.push_str("{\"total\":")?
+    out.push_u64(u64.from_usize(total))?
+    out.push_str(",\"page\":")?
+    out.push_u64(u64.from_usize(page))?
+    out.push_str(",\"page_size\":")?
+    out.push_u64(u64.from_usize(page_size))?
+    out.push_str(",\"todos\":[")?
+    let mut count = 0usize
+    let offset = page.saturating_sub(1usize).wrapping_mul(page_size)
+    for i in core.iter.range(0usize, all.len()) {
+        if count >= page_size {
+            break
+        }
+        match all.get(i) {
+            Some(t) => {
+                if !t.title.as_str().contains(q) {
+                    continue
+                }
+                let idx = total
+                core.mem.drop(idx)
+                let skipped = count
+                core.mem.drop(skipped)
+                if count.saturating_sub(0usize) < offset {
+                    count = count.saturating_add(1usize)
+                    continue
+                }
+                if i > 0usize {
+                    out.push_str(",")?
+                }
+                let s = model.to_json(t)?
+                out.push_str(s.as_str())?
+                count = count.saturating_add(1usize)
+            }
+            None => return Err(alloc.alloc.AllocError { code: 0u32 })
+        }
+    }
+    out.push_str("]}")?
+    Ok(out)
+end todo.store.Store.search
 
 fn todo.store.Store.set_done(self: &mut todo.store.Store, id: i64, done: bool) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub
     let index = todo.store.Store.index_of(self, id)?
@@ -153,6 +537,30 @@ fn todo.store.Store.set_done(self: &mut todo.store.Store, id: i64, done: bool) -
     }
 end todo.store.Store.set_done
 
+fn todo.store.Store.stats(self: &todo.store.Store) -> Result<todo.store.Stats, todo.error.Error> uses [] panics never pub
+    let mut total = 0usize
+    let mut completed = 0usize
+    let all = self.todos.as_slice()
+    for i in core.iter.range(0usize, all.len()) {
+        match all.get(i) {
+            Some(t) => {
+                total = total.saturating_add(1usize)
+                if t.done {
+                    completed = completed.saturating_add(1usize)
+                }
+            }
+            None => return Err(error.Error.Corrupt)
+        }
+    }
+    let active = total.saturating_sub(completed)
+    let ulen = self.users.len()
+    let slen = self.sessions.len()
+    let t = total
+    let c = completed
+    let a = active
+    Ok(todo.store.Stats { total: t, completed: c, active: a, users: ulen, sessions: slen })
+end todo.store.Store.stats
+
 fn todo.store.Store.toggle(self: &mut todo.store.Store, id: i64) -> Result<&todo.model.Todo, todo.error.Error> uses [alloc, io.fs] panics never pub
     let index = todo.store.Store.index_of(self, id)?
     {
@@ -173,6 +581,30 @@ fn todo.store.Store.toggle(self: &mut todo.store.Store, id: i64) -> Result<&todo
         Err(e) => Err(e)
     }
 end todo.store.Store.toggle
+
+fn todo.store.Store.update_extra(self: &mut todo.store.Store, id: i64, updated_at: &str, tags: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System>, deadline: alloc.string.String<std.alloc.System>, owner_id: i64) -> Result<&todo.model.TodoExtra, todo.error.Error> uses [alloc, io.fs] panics never pub
+    let index = todo.store.Store.index_of(self, id)?
+    {
+        let e = match self.extras.get_mut(index) {
+            Some(e) => e
+            None => return Err(error.Error.NotFound)
+        }
+        e.updated_at = alloc.string.String.from_str(std.alloc.SYSTEM, updated_at)?
+        e.tags = tags
+        e.deadline = deadline
+        e.owner_id = owner_id
+    }
+    match self.save() {
+        Ok(_u) => {
+            let all = self.extras.as_slice()
+            match all.get(index) {
+                Some(e) => Ok(e)
+                None => Err(error.Error.Corrupt)
+            }
+        }
+        Err(e) => Err(e)
+    }
+end todo.store.Store.update_extra
 
 fn todo.store.read_text(path: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc, io.fs] panics never
     let mut data = alloc.vec.Vec.new(std.alloc.SYSTEM)

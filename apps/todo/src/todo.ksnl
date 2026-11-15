@@ -51,14 +51,14 @@ end todo.serve_cli
 
 fn todo.serve_in_turn(address: &str, count: usize, path: &str) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, time] panics never
     with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
-        let mut db = store.Store.load(path)?
+        let mut db = store.Store.load(path, "")?
         server.serve(&listener, &mut db, count)
     }
 end todo.serve_in_turn
 
 fn todo.serve_pooled(address: &str, count: usize, path: &str, workers: usize) -> Result<usize, todo.error.Error> uses [alloc, io.fs, io.net, thread, time] panics may
     with listener = std.net.listen(address)? close core.mem.drop(listener.close()) {
-        let db = store.Store.load(path)?
+        let db = store.Store.load(path, "")?
         pool.serve(&listener, db, count, workers)
     }
 end todo.serve_pooled
