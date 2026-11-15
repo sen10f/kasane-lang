@@ -313,19 +313,116 @@ end t.main
     same_as_interpreter("native_owned_values", &src, "ok\n", Some(0));
 }
 
-/// `Result` を返す中断関数は、まだネイティブにしない (枠の結果に `Result` を置けない、LLVM の制約)。E9040 で理由を出す。
+/// `Result` を返す中断関数と、`Result` を中断をまたいで持つ形 (第 3 段: 枠のタグとペイロードの欄で運ぶ)。
 #[test]
-fn native_result_return_of_suspending_fn_is_e9040_for_now() {
-    let t = Tmp::new(
-        "native_result_e9040",
-        "fn t.main() -> Result<(), std.io.Error> uses [io.console, suspend] panics may
+fn native_result_return_and_across_suspension_match_interpreter() {
+    let src = with_say(
+        "fn t.step(n: u32) -> Result<u32, u32> uses [suspend] panics never
     std.task.yield_now()
-    Ok(())
+    if n > 2u32 {
+        Err(n)
+    } else {
+        Ok(n.wrapping_mul(3u32))
+    }
+end t.step
+
+fn t.work(n: u32) -> Result<u32, u32> uses [suspend] panics may
+    let a = t.step(n)
+    std.task.yield_now()
+    let b = t.step(1u32)
+    match a {
+        Ok(x) => {
+            match b {
+                Ok(y) => Ok(x.wrapping_add(y))
+                Err(e) => Err(e)
+            }
+        }
+        Err(e) => Err(e)
+    }
+end t.work
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    let r = std.task.block_on(fn() -> Result<u32, u32> capture [] {
+        t.work(1u32)
+    })
+    match r {
+        Ok(v) => {
+            if v == 6u32 {
+                t.say(\"ok six\")
+            } else {
+                t.say(\"ok other\")
+            }
+        }
+        Err(_e) => t.say(\"err\")
+    }
+    let s = std.task.block_on(fn() -> Result<u32, u32> capture [] {
+        t.work(5u32)
+    })
+    match s {
+        Ok(_v) => t.say(\"ok\")
+        Err(e) => {
+            if e == 5u32 {
+                t.say(\"err five\")
+            } else {
+                t.say(\"err other\")
+            }
+        }
+    }
 end t.main
 ",
     );
-    let o = run(&["build", "--release"], &t.0);
-    let out = text(&o.stdout) + &text(&o.stderr);
-    assert!(!o.status.success(), "{}", out);
-    assert!(out.contains("E9040") && out.contains("Result"), "{}", out);
+    same_as_interpreter("native_result", &src, "ok six\nerr five\n", Some(0));
+}
+
+/// 中断関数の中の `?` (`Result` を返す中断関数の呼び出しに付ける) は、ネイティブでも木走査と同じ結果になる (第 3 段)。
+#[test]
+fn native_question_mark_in_suspending_fn_matches_interpreter() {
+    let src = with_say(
+        r#"fn t.step(n: u32) -> Result<u32, u32> uses [suspend] panics never
+    std.task.yield_now()
+    if n > 2u32 {
+        Err(n)
+    } else {
+        Ok(n.wrapping_mul(3u32))
+    }
+end t.step
+
+fn t.work(n: u32) -> Result<u32, u32> uses [suspend] panics may
+    let a = t.step(n)?
+    std.task.yield_now()
+    let b = t.step(1u32)?
+    Ok(a.wrapping_add(b))
+end t.work
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    let r = std.task.block_on(fn() -> Result<u32, u32> capture [] {
+        t.work(1u32)
+    })
+    let s = std.task.block_on(fn() -> Result<u32, u32> capture [] {
+        t.work(5u32)
+    })
+    match r {
+        Ok(v) => {
+            if v == 6u32 {
+                t.say("q ok six")
+            } else {
+                t.say("q ok other")
+            }
+        }
+        Err(_e) => t.say("q err")
+    }
+    match s {
+        Ok(_v) => t.say("q ok")
+        Err(e) => {
+            if e == 5u32 {
+                t.say("q err five")
+            } else {
+                t.say("q err other")
+            }
+        }
+    }
+end t.main
+"#,
+    );
+    same_as_interpreter("native_question", &src, "q ok six\nq err five\n", Some(0));
 }
