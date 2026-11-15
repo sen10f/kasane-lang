@@ -725,8 +725,12 @@ fn emit_program_main(cx: &mut Ctx, m: &Module, f: &Func) -> R<String> {
             fname(&format!("{}.resume", f.key)),
             fname(&format!("{}.pending", f.key))
         ));
+        let tail = exit_tail(cx, m, f)?;
+        // `exit_tail` は関数を `}` で閉じるので、終了後の入口 `dead` はその手前に置く。
+        let close = tail.rfind('}').expect("exit_tail ends the function");
+        s.push_str(&tail[..close]);
         s.push_str("dead:\n  ret i32 -2\n");
-        s.push_str(&exit_tail(cx, m, f)?);
+        s.push_str(&tail[close..]);
     }
     Ok(s)
 }

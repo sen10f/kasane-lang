@@ -151,7 +151,8 @@ impl Interp {
         };
         // 実行器を畳む。まだ終わっていないタスク (エラーで中断したとき) のスレッドは、合図を待ったまま残る
         // (プロセスの終了で消える)。
-        self.tasks = Tasks::default();
+        // 世代番号は畳んだ後も残す (次の `block_on` で古い `Task` を拒むため)。
+        self.tasks = Tasks { generation: gen, ..Tasks::default() };
         r
     }
 

@@ -161,6 +161,7 @@ fn spawn_local(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
     let ptr = rt_call(lw, ks::SPAWN, vec![tagv, root], Ty::Ptr);
     let id = lw.emit(Ty::Usize, Op::MemLoad { p: ptr, off: 0 });
     let gen = lw.emit(Ty::Usize, Op::MemLoad { p: ptr, off: 8 });
+    lw.emit(Ty::Unit, Op::HeapFree(ptr));
     let hty = lw.aggs.borrow_mut().task_handle(ret);
     Ok(Some(lw.emit(hty, Op::Make { variant: None, fields: vec![id, gen] })))
 }

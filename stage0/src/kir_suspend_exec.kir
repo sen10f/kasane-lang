@@ -104,7 +104,7 @@ fn ksn.task.spawn key=ksn.task.spawn uses=[alloc] panics=may stack=- ret=ptr
     %32: usize = const.usize 1
     %33: usize = add.usize.wrap %24, %32
     %34: unit = mem.store.usize %6 +8, %33
-    %37: usize = mem.load.usize %6 +40
+    %37: usize = mem.load.usize %6 +48
     %41: usize = const.usize 16
     %38: ptr = heap.alloc %41
     %39: unit = mem.store.usize %38 +0, %24
@@ -225,10 +225,11 @@ fn ksn.task.run.new key=ksn.task.run.new uses=[alloc] panics=may stack=- ret=ptr
     %13: unit = mem.store.usize %6 +8, %12
     %14: unit = mem.store.usize %6 +24, %12
     %15: unit = mem.store.usize %6 +32, %12
-    %16: usize = mem.load.usize %6 +40
+    %26: unit = mem.store.usize %6 +40, %12
+    %16: usize = mem.load.usize %6 +48
     %17: usize = const.usize 1
     %18: usize = add.usize.wrap %16, %17
-    %19: unit = mem.store.usize %6 +40, %18
+    %19: unit = mem.store.usize %6 +48, %18
     %20: ptr = call ksn.task.spawn(%4, %5)
     %21: usize = const.usize 16
     %22: ptr = heap.alloc %21
@@ -573,9 +574,8 @@ fn ksn.task.finish key=ksn.task.finish uses=[alloc] panics=never stack=- ret=uni
     %9: unit = mem.store.usize %2 +16, %7
     %10: unit = mem.store.usize %2 +24, %7
     %11: unit = mem.store.usize %2 +32, %7
-    %12: unit = mem.store.usize %2 +40, %7
-    %13: unit = const.unit ()
-    ret %13
+    %12: unit = const.unit ()
+    ret %12
 end ksn.task.finish
 
 fn ksn.task.yield key=ksn.task.yield uses=[suspend] panics=never stack=- ret=unit
@@ -630,7 +630,7 @@ fn ksn.task.cancel key=ksn.task.cancel uses=[alloc] panics=may stack=- ret=unit
     %5: unit = panic "std.task.Task.cancel: a task cannot cancel itself"
     unreachable
   b2(%6: usize, %7: usize):
-    %8: usize = mem.load.usize %2 +40
+    %8: usize = mem.load.usize %2 +48
     %9: bool = icmp.ne.usize %7, %8
     br_if %9, b3(), b4(%6, %7)
   b3():
@@ -713,7 +713,7 @@ fn ksn.task.wait.poll key=ksn.task.wait.poll uses=[suspend,alloc] panics=may sta
     unreachable
   b5(%12: ptr, %13: usize, %14: usize):
     %15: ptr = global.bytes ksn.task.g 56
-    %16: usize = mem.load.usize %15 +40
+    %16: usize = mem.load.usize %15 +48
     %17: bool = icmp.ne.usize %14, %16
     br_if %17, b8(), b7(%12, %13)
   b6():
