@@ -618,7 +618,8 @@ impl<'a> TypeCk<'a> {
         let value = self.infer(body);
         self.rets.pop();
         if let Err(err) = self.unify2(&ret, &value) {
-            if let Some((want, got)) = self.ann_conflict(&ret, &value, &err) {
+            {
+                let (want, got) = self.ann_conflict(&ret, &value, &err).unwrap_or_else(|| Self::raw_pair(&err));
                 let stmts = items(&nf(body)[0]);
                 let line = stmts.last().map(nline).unwrap_or(0);
                 self.diag("E2020", format!("type mismatch in return value: expected {}, found {}{}", want, got, conv_hint(&want, &got)), line);
@@ -1207,7 +1208,8 @@ impl<'a> TypeCk<'a> {
             return a.clone();
         }
         if let Err(err) = self.unify2(a, b) {
-            if let Some((want, got)) = self.ann_conflict(a, b, &err) {
+            {
+                let (want, got) = self.ann_conflict(a, b, &err).unwrap_or_else(|| Self::raw_pair(&err));
                 self.diag("E2020", format!("type mismatch in {}: expected {}, found {}{}", what, want, got, conv_hint(&want, &got)), line);
             }
         }
@@ -1603,6 +1605,31 @@ impl<'a> TypeCk<'a> {
         }
     }
 
+    /// `unify2` の矛盾 (`Err`) を報告用の文字列にする。絞り込み (`filtered`) が形を知っていればその文面、
+    /// 知らなければ矛盾した箇所の 2 つの型をそのまま出す。矛盾は必ず報告される (黙るのは「試すだけ」の `try_unify` だけ)。
+    fn raw_pair(e: &(Ty, Ty)) -> (String, String) {
+        (e.0.show(), e.1.show())
+    }
+
+    /// トレイトのメソッドの署名の型。メソッド自身の型パラメータ (`fn hash[H: Hasher](..)` の `H`) は
+    /// 署名に宣言が残らず、`from_v` では点を含まない未解決の名前になる。それを型パラメータにして
+    /// (`inst` が呼び出しごとの変数にする)、利用者の型と取り違えない。
+    fn sig_ty(&self, v: &V, gn: &HashSet<String>) -> Ty {
+        fn lift(s: &TypeCk, t: Ty) -> Ty {
+            match t {
+                Ty::Named(n, a) if a.is_empty() && !n.contains('.') && s.type_def(&n).is_none() && !matches!(n.as_str(), "Option" | "Result") => Ty::Param(n),
+                Ty::Named(n, a) => Ty::Named(n, a.into_iter().map(|x| lift(s, x)).collect()),
+                Ty::Ref(m, x) => Ty::Ref(m, Box::new(lift(s, *x))),
+                Ty::Ptr(m, x) => Ty::Ptr(m, Box::new(lift(s, *x))),
+                Ty::Tuple(a) => Ty::Tuple(a.into_iter().map(|x| lift(s, x)).collect()),
+                Ty::Array(x, n) => Ty::Array(Box::new(lift(s, *x)), n),
+                Ty::Slice(x) => Ty::Slice(Box::new(lift(s, *x))),
+                other => other,
+            }
+        }
+        lift(self, from_v(v, gn))
+    }
+
     /// 構造そのものが合わない組 (`unify2` が必ず `Err` にするもの) を、報告用の文字列にする。
     /// 型パラメータどうしの取り違え、タプルの要素数、種類の違い (整数と配列、構造体とクロージャなど)、配列の長さ。
     fn shape_conflict(e: &(Ty, Ty)) -> Option<(String, String)> {
@@ -1878,7 +1905,8 @@ impl<'a> TypeCk<'a> {
                     _ => (x, y),
                 };
                 self.unify2(&x, &y).map_err(|_| (a.clone(), b.clone()))?;
-                if m == n { Ok(()) } else { Err((a.clone(), b.clone())) }
+                // 期待が `*const`・実際が `*mut` は許す (`*mut T` → `*const T`)。逆は不一致。
+                if m == n || (!m && n) { Ok(()) } else { Err((a.clone(), b.clone())) }
             }
             (Ty::Ptr(..), Ty::Prim(_) | Ty::Named(..)) | (Ty::Prim(_) | Ty::Named(..), Ty::Ptr(..)) => Err((a.clone(), b.clone())),
             // 両側が参照なら、指す先どうしを合わせる (`from_ref(&x)` の `&T` に `&i32` を渡して `T = &i32` にしない)。
@@ -2319,7 +2347,8 @@ impl<'a> TypeCk<'a> {
             }
             if let Err(e) = self.unify2(&pt, a) {
                 if fit.len() == 1 {
-                    if let Some((want, got)) = self.prim_conflict(&e).or_else(|| self.ptr_mismatch(&pt, a)) {
+                    {
+                        let (want, got) = self.prim_conflict(&e).or_else(|| self.ptr_mismatch(&pt, a)).unwrap_or_else(|| Self::raw_pair(&e));
                         self.diag(
                             "E2023",
                             format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
@@ -2537,10 +2566,11 @@ impl<'a> TypeCk<'a> {
                 }
             }
             for (k, a) in args.iter().enumerate() {
-                let pt = from_v(&params[k + 1].1, &gn);
+                let pt = self.sig_ty(&params[k + 1].1, &gn);
                 let pt = self.inst(&pt, &mut map);
                 if let Err(e) = self.unify2(&pt, a) {
-                    if let Some((want, got)) = self.prim_conflict(&e) {
+                    {
+                        let (want, got) = self.prim_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                         self.diag(
                             "E2023",
                             format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
@@ -2552,7 +2582,7 @@ impl<'a> TypeCk<'a> {
             if let Some((u, p)) = eff {
                 self.check_trait_effects(format!("{}.{}", tr, name), u, p, line);
             }
-            let r = from_v(ret, &gn);
+            let r = self.sig_ty(ret, &gn);
             return Some(self.inst(&r, &mut map));
         }
         None
@@ -2603,11 +2633,11 @@ impl<'a> TypeCk<'a> {
             map.entry(g.1.clone()).or_insert_with(|| self_ty.clone());
         }
         for (k, a) in args.iter().enumerate() {
-            let pt = from_v(&params[k + 1].1, &gn);
+            let pt = self.sig_ty(&params[k + 1].1, &gn);
             let pt = self.inst(&pt, &mut map);
             let _ = self.unify2(&pt, a);
         }
-        let r = from_v(ret, &gn);
+        let r = self.sig_ty(ret, &gn);
         Some(self.inst(&r, &mut map))
     }
 
@@ -2812,10 +2842,11 @@ impl<'a> TypeCk<'a> {
                 }
             }
             for (k, a) in args.iter().enumerate() {
-                let pt = from_v(&params[k + 1].1, &gn);
+                let pt = self.sig_ty(&params[k + 1].1, &gn);
                 let pt = self.inst(&pt, &mut map);
                 if let Err(e) = self.unify2(&pt, a) {
-                    if let Some((want, got)) = self.prim_conflict(&e) {
+                    {
+                        let (want, got) = self.prim_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                         self.diag(
                             "E2023",
                             format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, name, want, got),
@@ -2830,7 +2861,7 @@ impl<'a> TypeCk<'a> {
             if let Some((u, p)) = eff {
                 self.check_trait_effects(format!("{}.{}", cur, name), u, p, line);
             }
-            let r = from_v(ret, &gn);
+            let r = self.sig_ty(ret, &gn);
             return self.inst(&r, &mut map);
         }
         escape_all(self);
@@ -3241,7 +3272,8 @@ impl<'a> TypeCk<'a> {
                 let idx = self.infer(&f[1]);
                 let want = Ty::Prim("usize".into());
                 if let Err(err) = self.unify2(&want, &idx) {
-                    if let Some((_, got)) = self.prim_conflict(&err) {
+                    {
+                        let (_, got) = self.prim_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
                         self.diag("E2025", format!("an index must be `usize`, found `{}`", got), nline(e));
                     }
                 }
@@ -3287,7 +3319,8 @@ impl<'a> TypeCk<'a> {
                     return Ty::Prim("bool".into());
                 }
                 if let Err(err) = self.unify2(&a, &b) {
-                    if let Some((l, r)) = self.prim_conflict(&err) {
+                    {
+                        let (l, r) = self.prim_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
                         self.diag("E2024", format!("operands of `{}` have different types: `{}` and `{}`", op, l, r), nline(e));
                     }
                 }
@@ -3329,7 +3362,8 @@ impl<'a> TypeCk<'a> {
                     let vt = self.infer(&items(x)[1]);
                     let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone()), &st(&items(x)[0]));
                     if let Err(err) = self.unify2(&declared, &vt) {
-                        if let Some((want, got)) = self.type_conflict(&err).or_else(|| self.vec_seq_mismatch(&declared, &vt)) {
+                        {
+                            let (want, got) = self.type_conflict(&err).or_else(|| self.vec_seq_mismatch(&declared, &vt)).unwrap_or_else(|| Self::raw_pair(&err));
                             self.diag(
                                 "E2023",
                                 format!("field `{}` of `{}`: expected `{}`, found `{}`", st(&items(x)[0]), fq, want, got),
@@ -3503,7 +3537,8 @@ impl<'a> TypeCk<'a> {
                 }));
                 self.closure_effs.insert(node.clone(), effs);
                 if let Err(err) = self.unify2(&ret, &body) {
-                    if let Some((want, got)) = self.ann_conflict(&ret, &body, &err) {
+                    {
+                        let (want, got) = self.ann_conflict(&ret, &body, &err).unwrap_or_else(|| Self::raw_pair(&err));
                         self.diag(
                             "E2020",
                             format!("type mismatch in return value of closure: expected {}, found {}{}", want, got, conv_hint(&want, &got)),
@@ -3526,7 +3561,8 @@ impl<'a> TypeCk<'a> {
                     // `rets` は関数・クロージャの入れ子に合わせて積まれている。
                     if let Some(ret) = self.rets.last().cloned() {
                         if let Err(err) = self.unify2(&ret, &v) {
-                            if let Some((want, got)) = self.ann_conflict(&ret, &v, &err) {
+                            {
+                                let (want, got) = self.ann_conflict(&ret, &v, &err).unwrap_or_else(|| Self::raw_pair(&err));
                                 self.diag(
                                     "E2020",
                                     format!("type mismatch in return value: expected {}, found {}{}", want, got, conv_hint(&want, &got)),
@@ -3640,7 +3676,8 @@ impl<'a> TypeCk<'a> {
                 let ty = if !is_nil(&f[2]) {
                     let ann = from_v(&f[2], &gn);
                     if let Err(err) = self.unify2(&ann, &rhs) {
-                        if let Some((want, got)) = self.ann_conflict(&ann, &rhs, &err) {
+                        {
+                            let (want, got) = self.ann_conflict(&ann, &rhs, &err).unwrap_or_else(|| Self::raw_pair(&err));
                             self.diag("E2020", format!("type mismatch in let binding: expected {}, found {}{}", want, got, conv_hint(&want, &got)), nline(s));
                         }
                     }
@@ -3683,7 +3720,8 @@ impl<'a> TypeCk<'a> {
                 }
                 // 代入は `let` と同じ経路で報告する (変数・フィールド・添字のどれも)。
                 if let Err(e) = self.unify2(&target, &value) {
-                    if let Some((want, got)) = self.prim_conflict(&e) {
+                    {
+                        let (want, got) = self.prim_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                         self.diag("E2024", format!("assignment: expected `{}`, found `{}`", want, got), nline(&f[1]));
                     }
                 }
@@ -3949,7 +3987,8 @@ impl<'a> TypeCk<'a> {
                 let declared = subst(&from_v(pt, &gn), &bind);
                 // 列挙子のペイロードの食い違いは、関数の戻り値と同じく E2020 にする (黙ると `E.A(5u8)` を通してしまう)。
                 if let Err(err) = self.unify2(&declared, a) {
-                    if let Some((want, got)) = self.ann_conflict(&declared, a, &err) {
+                    {
+                        let (want, got) = self.ann_conflict(&declared, a, &err).unwrap_or_else(|| Self::raw_pair(&err));
                         self.diag("E2020", format!("type mismatch in payload of `{}`: expected {}, found {}{}", vn, want, got, conv_hint(&want, &got)), line);
                     }
                 } else if self.owned_ref_clash(&declared, a) {
@@ -4213,11 +4252,12 @@ impl<'a> TypeCk<'a> {
                     (Ty::Named(x, _), Ty::Named(y, _)) => x == y,
                     _ => false,
                 };
-                let const_mismatch = matches!((&e.0, &e.1), (Ty::Const(_), Ty::Const(_)) | (Ty::Ref(true, _), Ty::Ref(false, _))) || Self::shape_conflict(&e).is_some();
+                let _ = (same_named, &sl);
                 // 生ポインタの取り違え (`*const` を `*mut` の引数へ、ポインタと値など) は宣言に型パラメータがなくても報告する。
                 let ptr = self.ptr_mismatch(&pt, &av);
-                if raw.has_param() || const_mismatch || ptr.is_some() || (sl.get(k).copied().unwrap_or(false) && same_named) {
-                    if let Some((want, got)) = self.prim_conflict(&e).or(ptr) {
+                {
+                    {
+                        let (want, got) = self.prim_conflict(&e).or(ptr).unwrap_or_else(|| Self::raw_pair(&e));
                         self.diag(
                             "E2023",
                             format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
@@ -4312,7 +4352,8 @@ impl<'a> TypeCk<'a> {
                 } else {
                     for (w, g) in want_args.iter().zip(&args) {
                         if let Err(e) = self.unify2(w, g) {
-                            if let Some((want, got)) = self.type_conflict(&e) {
+                            {
+                                let (want, got) = self.type_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                                 self.diag(
                                     "E2023",
                                     format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got),
@@ -4325,7 +4366,8 @@ impl<'a> TypeCk<'a> {
             }
             let want_ret = self.inst(&from_v(tel(&targs, 1), &gn), map);
             if let Err(e) = self.unify2(&want_ret, &ret) {
-                if let Some((want, got)) = self.type_conflict(&e) {
+                {
+                    let (want, got) = self.type_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                     self.diag("E2023", format!("argument {} of `{}`: expected `{}`, found `{}`", k + 1, d.name, want, got), line);
                 }
             }
@@ -4801,7 +4843,8 @@ impl<'a> TypeCk<'a> {
         }
         for (i, (w, g)) in args.iter().zip(argt).enumerate() {
             if let Err(e) = self.unify2(w, g) {
-                if let Some((want, got)) = self.type_conflict(&e) {
+                {
+                    let (want, got) = self.type_conflict(&e).unwrap_or_else(|| Self::raw_pair(&e));
                     self.diag(
                         "E2023",
                         format!("argument {} of the closure: expected `{}`, found `{}`", i + 1, want, got),
@@ -5174,7 +5217,8 @@ impl<'a> TypeCk<'a> {
                         _ => {}
                     }
                     if let Err(err) = self.unify2(&e_want, &e_got) {
-                        if let Some((w, g)) = self.type_conflict(&err) {
+                        {
+                            let (w, g) = self.type_conflict(&err).unwrap_or_else(|| Self::raw_pair(&err));
                             self.diag(
                                 "E2020",
                                 format!(
