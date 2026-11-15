@@ -915,16 +915,8 @@ python3 -I compare.py build [--limit N] [-v]         # linear_ok を作って、
 ### 17.5 処理系・部品の不足 (重要度順)
 
 1. **下ろしの範囲** (表の 5): 型の下ろし (`Option` `Result` `Vec` `String` 参照) と、署名だけの標準ライブラリの呼び出しが、ほぼすべての関数に当たる。`ksnc` 自身を作るにはこの 2 つが要る (表の 8)。
-<<<<<<< ours
-2. **借用の誤検出 (let の経路)**: 同じ呼び出しで根の別の欄を借りる形は 17.7 で直した。一方、`let a = &mut c.ar` と `let b = &c.tc` を順に書く形は、`selfhost/borrow` の局所ごとの借用状態が欄を区別しないので E3010 の誤検出が残る (Rust 版は通す。17.7 の再現)。
-3. **構文解析の不足 (`is` を引数に書く形)** (解決): `o is Some(_)` を呼び出しの引数に書くと、`selfhost/parse` が `expected ')'` で止まっていた (`stage0/tests/data/unsound/is_linear_payload_discarded.ksnl`。Rust 版は通す。`cmp_expr` で `is` パターンを処理し `Match` ノードに下ろす形で直した。unsound の取りこぼしは解消)。
-||||||| base
-2. **借用の誤検出 (let の経路)**: 同じ呼び出しで根の別の欄を借りる形は 17.7 で直した。一方、`let a = &mut c.ar` と `let b = &c.tc` を順に書く形は、`selfhost/borrow` の局所ごとの借用状態が欄を区別しないので E3010 の誤検出が残る (Rust 版は通す。17.7 の再現)。
-3. **構文解析の不足 (`is` を引数に書く形)**: `o is Some(_)` を呼び出しの引数に書くと、`selfhost/parse` が `expected ')'` で止まる (`stage0/tests/data/unsound/is_linear_payload_discarded.ksnl`。Rust 版は通す。拒否すべきコードなので、直すまで unsound の 1 件が取りこぼしになるだけ)。
-=======
 2. **借用の誤検出 (let の経路)**: 直した (17.8)。同じ呼び出しの形は 17.7、`let a = &mut c.ar` と `let b = &c.tc` を順に書く形は 17.8。
-3. **構文解析の不足 (`is` を引数に書く形)**: `o is Some(_)` を呼び出しの引数に書くと、`selfhost/parse` が `expected ')'` で止まる (`stage0/tests/data/unsound/is_linear_payload_discarded.ksnl`。Rust 版は通す。拒否すべきコードなので、直すまで unsound の 1 件が取りこぼしになるだけ)。
->>>>>>> theirs
+3. **構文解析の不足 (`is` を引数に書く形)** (解決): `o is Some(_)` を呼び出しの引数に書くと、`selfhost/parse` が `expected ')'` で止まっていた (`stage0/tests/data/unsound/is_linear_payload_discarded.ksnl`。Rust 版は通す。`cmp_expr` で `is` パターンを処理し `Match` ノードに下ろす形で直した。unsound の取りこぼしは解消)。
 4. **検査の不足** (表の 3(b)): E4013 は 17.7 で直した。
 5. **IR を外へ出す入口がない** (11.4 章 1 と同じ): `ksn` に IR を外へ出す CLI がない。`ksnc` は `emit.module` を直接呼び、`lower.main` の手順は表示しない版 (`kir.ksnl`) に写した。
 6. **Kasane の `build` の検査は、Rust の検査より寛容** (表の 3 の残り): 型・効果・借用の検査で、Kasane 版が見落とすものは、`kasane` の `build` でも通る。`unsound/` の一部がそれ。
