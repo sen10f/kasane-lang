@@ -1,0 +1,10 @@
+// expect: E2024
+fn t.main() -> () uses [alloc] panics may
+    let mut v: alloc.vec.Vec<u64, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut w: alloc.vec.Vec<u64, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(1u64))
+    core.mem.drop(w.push(1u64))
+    let mut m = &mut w
+    m = &v
+    core.mem.drop(m.push(2u64))
+end t.main

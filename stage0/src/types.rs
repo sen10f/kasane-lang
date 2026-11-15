@@ -3681,15 +3681,13 @@ impl<'a> TypeCk<'a> {
                         self.set_static(&segs[0], false);
                     }
                 }
-                // 変数への代入は従来の検査 (E2020) が見る。フィールド・添字への代入をここで見る。
-                if nname(&f[0]) != "Path" || strs(&nf(&f[0])[0]).len() > 1 {
-                    if let Err(e) = self.unify2(&target, &value) {
-                        if let Some((want, got)) = self.prim_conflict(&e) {
-                            self.diag("E2024", format!("assignment: expected `{}`, found `{}`", want, got), nline(&f[1]));
-                        }
+                // 代入は `let` と同じ経路で報告する (変数・フィールド・添字のどれも)。
+                if let Err(e) = self.unify2(&target, &value) {
+                    if let Some((want, got)) = self.prim_conflict(&e) {
+                        self.diag("E2024", format!("assignment: expected `{}`, found `{}`", want, got), nline(&f[1]));
                     }
-                } else {
-                    let _ = self.unify2(&target, &value);
+                }
+                if nname(&f[0]) == "Path" && strs(&nf(&f[0])[0]).len() == 1 {
                     // 再代入でクロージャが合流する: 実際の効果を和にして束縛を更新する。
                     if matches!(self.resolve(&target), Ty::Closure { .. })
                         && matches!(self.resolve(&value), Ty::Closure { .. })
