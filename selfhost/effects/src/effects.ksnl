@@ -48,6 +48,8 @@ fn effects.main() -> Result<(), resolve.Failure> uses [alloc, env, io.console, i
         }
         i = i.wrapping_add(1usize)
     }
+    // (3b) 型の宣言 (E4013): 再帰する型には Drop の明示実装か derive [Drop] が要る (5.3)。
+    effects.drop.check(&mut acc, &tout)?
     // (4) スタック (E4010): 候補のうち呼び出しの図で自分に戻るものに、stack が要る。
     let ncand = acc.cs.len()
     for j in core.iter.range(0usize, ncand) {

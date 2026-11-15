@@ -83,6 +83,7 @@ fn ksnc.kcheck.effects(tout: &types.export.Out) -> Result<ksnc.front.Text, ksnc.
         }
         i = i.wrapping_add(1usize)
     }
+    effects.drop.check(&mut acc, tout)?
     let ncand = acc.cs.len()
     for j in core.iter.range(0usize, ncand) {
         let c = match acc.cs.as_slice().get(j) {

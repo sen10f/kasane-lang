@@ -5,11 +5,11 @@
   python3 -I selfhost/effects/compare.py [--group clean|diag|unsound|all] [-v]
   （先に `cd selfhost/effects && ksn build --release` で target/release/effects.native を作る）
 
-比べるのは E4001 E4002 E4003 E4004 E4010 だけ (効果・panic・再帰の分野)。
+比べるのは E4001 E4002 E4003 E4004 E4010 E4013 だけ (効果・panic・再帰・再帰する型の Drop の分野)。
 - clean: examples/*・apps/*・selfhost/{parse,resolve,effects}・stage0/tests/data/linear_ok/*.ksnl。
   Kasane 版が診断 0 件であること、Rust 版も 0 件であることを確かめる。
 - diag: stage0/tests/data/diag/E40*.ksnl (1 ファイル 1 ケース)。
-- unsound: stage0/tests/data/unsound/*.ksnl のうち、Rust 版が E4001〜E4010 のどれかで拒否するもの。
+- unsound: stage0/tests/data/unsound/*.ksnl のうち、Rust 版が E4001〜E4010・E4013 のどれかで拒否するもの。
 
 1 ファイルずつ判定する (`src/t.ksnl` の 1 パッケージに置く。接頭辞は `t`):
   一致   Kasane 版の E40 の集合が Rust 版と同じ
@@ -31,7 +31,7 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 KSN = os.path.join(ROOT, "stage0", "target", "release", "ksn")
 EFF = os.path.join(HERE, "target", "release", "effects.native")
 STD = os.path.join(ROOT, "spec", "stdlib")
-SET = {"E4001", "E4002", "E4003", "E4004", "E4010"}
+SET = {"E4001", "E4002", "E4003", "E4004", "E4010", "E4013"}
 UND_KEYS = ["und_value", "und_method", "und_infer", "und_var", "und_missing",
             "und_closure", "und_op", "und_rec"]
 
@@ -171,7 +171,7 @@ def main(argv):
         run_clean(verbose)
     if group in ("diag", "all"):
         files = sorted(glob.glob(os.path.join(ROOT, "stage0", "tests", "data", "diag", "E40*.ksnl")))
-        # 対象は E4001〜E4010 (効果・panic・再帰)。E4011〜E4013・E4021 は別の検査。
+        # 対象は E4001〜E4010 と E4013 (効果・panic・再帰・再帰する型の Drop)。E4011・E4012・E4021 は別の検査。
         files = [f for f in files if os.path.basename(f)[:5] in SET]
         run_single(files, verbose, "diag E40")
     if group in ("unsound", "all"):
@@ -185,7 +185,7 @@ def main(argv):
                 shutil.rmtree(d, ignore_errors=True)
             if any(c in SET for c in rc):
                 sel.append(f)
-        print("[unsound] Rust 版が E4001〜E4010 で拒否するもの: %d / %d" % (len(sel), len(allf)))
+        print("[unsound] Rust 版が E4001〜E4010・E4013 で拒否するもの: %d / %d" % (len(sel), len(allf)))
         run_single(sel, verbose, "unsound 効果・panic")
     print("elapsed %.1f s" % (time.time() - t0))
     return 0
