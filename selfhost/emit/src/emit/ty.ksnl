@@ -229,7 +229,7 @@ end emit.ty.split_top
 
 // 型 `id` の LLVM の型の文字列 (`mem` なら `bool` を `i8` にする)。`g` は読むだけ。
 fn emit.ty.text_of(g: &emit.G, id: usize, mem: bool) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
-    let mut out: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = emit.util.new_str()
     if mem {
         emit.ty.mty_into(g, id, &mut out)
     } else {

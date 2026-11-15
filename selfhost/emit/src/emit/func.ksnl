@@ -15,8 +15,10 @@ fn emit.func.assemble(g: &mut emit.G) -> () uses [alloc, io.console, process] pa
     g.buf.hoisted = alloc.string.String.new(std.alloc.SYSTEM)
     emit.w(g, hoisted.as_str())
     emit.w(g, "  %depth = load i64, ptr @ksn.depth\n  %over = icmp uge i64 %depth, 2500\n")
-    emit.w(g, "  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n  unreachable\n")
-    emit.w(g, "go:\n  %depth1 = add i64 %depth, 1\n  store i64 %depth1, ptr @ksn.depth\n  br label %b0\n")
+    emit.w(g, "  br i1 %over, label %so, label %go\nso:\n  call void @ksn.overflow()\n")
+    emit.w(g, "  unreachable\n")
+    emit.w(g, "go:\n  %depth1 = add i64 %depth, 1\n  store i64 %depth1, ptr @ksn.depth\n")
+    emit.w(g, "  br label %b0\n")
     let nb = g.misc.nblk
     let mut k = 0usize
     while k < nb {
@@ -91,7 +93,7 @@ end emit.func.body_text
 
 // 文字列の複製 (`String` は移せないので、中身を新しい文字列へ写す)。
 fn emit.func.copy_str(s: &alloc.string.String<std.alloc.System>) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
-    let mut out: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut out = emit.util.new_str()
     emit.util.push_str(&mut out, s.as_str())
     out
 end emit.func.copy_str

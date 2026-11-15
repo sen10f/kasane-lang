@@ -197,6 +197,7 @@ fn emit.module(g: &mut emit.G, text: &str, entry: &str) -> () uses [alloc, io.co
         i = i.wrapping_add(1usize)
     }
     let mut entry_found = false
+    let mut entry_params = 0usize
     i = 0usize
     while i < n {
         let l = emit.line_at(text, &starts, i)
@@ -210,8 +211,9 @@ fn emit.module(g: &mut emit.G, text: &str, entry: &str) -> () uses [alloc, io.co
             }
             if emit.func.key_of(l) == entry {
                 entry_found = true
-                if emit.line_at(text, &starts, i.wrapping_add(1usize)).contains("%") {
-                    core.panic.panic("the entry function takes parameters: no native program")
+                let hd = emit.line_at(text, &starts, i.wrapping_add(1usize))
+                if hd.contains("%") {
+                    entry_params = emit.util.piece_count(hd, "%").wrapping_sub(1usize)
                 }
             }
             emit.func.emit_fn(g, text, &starts, i, j)
@@ -223,7 +225,7 @@ fn emit.module(g: &mut emit.G, text: &str, entry: &str) -> () uses [alloc, io.co
     if !entry_found {
         core.panic.panic("the entry function is not in the KIR file")
     }
-    emit.rt.assemble(g, entry)
+    emit.rt.assemble(g, entry, entry_params)
 end emit.module
 
 fn emit.new_g() -> emit.G uses [alloc, io.console, process] panics may pub

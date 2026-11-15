@@ -25,7 +25,7 @@ end emit.inst.addr_at
 fn emit.inst.alloca(g: &mut emit.G, dst: usize, ty: usize) -> () uses [alloc, io.console, process] panics may pub
     let pointee = emit.ty.get(g, ty).a
     let mt = emit.ty.text_of(g, pointee, true)
-    let mut h: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut h = emit.util.new_str()
     emit.util.push_str(&mut h, "  %v")
     emit.util.push_num(&mut h, dst)
     emit.util.push_str(&mut h, " = alloca ")
@@ -355,7 +355,7 @@ end emit.inst.copy_from
 // `llvm.<s|u><op>.with.overflow.i<w>` の宣言。
 fn emit.inst.decl_overflow(g: &mut emit.G, sg: &str, op: &str, ty: usize, w: usize) -> () uses [alloc, io.console, process] panics may pub
     let t = emit.ty.text_of(g, ty, false)
-    let mut d: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut d = emit.util.new_str()
     emit.util.push_str(&mut d, "declare { ")
     emit.util.push_str(&mut d, t.as_str())
     emit.util.push_str(&mut d, ", i1 } @llvm.")
@@ -469,7 +469,7 @@ end emit.inst.fieldaddr
 
 // `frame.bytes N`: 先頭に置いて 0 で埋める。
 fn emit.inst.frame(g: &mut emit.G, dst: usize, size: usize) -> () uses [alloc, io.console, process] panics may pub
-    let mut h: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut h = emit.util.new_str()
     emit.util.push_str(&mut h, "  %v")
     emit.util.push_num(&mut h, dst)
     emit.util.push_str(&mut h, " = alloca i8, i64 ")
@@ -518,7 +518,7 @@ fn emit.inst.global(g: &mut emit.G, dst: usize, _s1: &str, args: &str) -> () use
     let t = args.trim()
     let name = emit.util.nth(t, " ", 0usize)
     let size = emit.util.dec(emit.util.nth(t, " ", 1usize))
-    let mut d: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut d = emit.util.new_str()
     emit.util.push_str(&mut d, "@\"ksn.g.")
     emit.util.push_str(&mut d, name)
     emit.util.push_str(&mut d, "\" = internal global [")
@@ -905,7 +905,7 @@ fn emit.inst.minmax(g: &mut emit.G, dst: usize, ty: usize, max: bool, args: &str
     let b = emit.util.arg_vid(args, 1usize)
     let w = emit.ty.int_bits(g, ty)
     let t = emit.ty.text_of(g, ty, false)
-    let mut name: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut name = emit.util.new_str()
     emit.util.push_str(&mut name, "llvm.")
     let sgn = if emit.ty.is_signed(g, ty) {
         "s"
@@ -921,7 +921,7 @@ fn emit.inst.minmax(g: &mut emit.G, dst: usize, ty: usize, max: bool, args: &str
     emit.util.push_str(&mut name, mm)
     emit.util.push_str(&mut name, ".i")
     emit.util.push_num(&mut name, w)
-    let mut d: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut d = emit.util.new_str()
     emit.util.push_str(&mut d, "declare ")
     emit.util.push_str(&mut d, t.as_str())
     emit.util.push_str(&mut d, " @")
@@ -950,7 +950,7 @@ end emit.inst.minmax
 
 // 関数ごとの名前 `<接頭辞><関数番号>.<値番号>` (大域の名前の一意化)。
 fn emit.inst.name_fv(g: &mut emit.G, prefix: &str, dst: usize) -> alloc.string.String<std.alloc.System> uses [alloc, io.console, process] panics may pub
-    let mut s: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut s = emit.util.new_str()
     emit.util.push_str(&mut s, prefix)
     emit.util.push_num(&mut s, g.misc.fidx)
     emit.util.push_str(&mut s, ".")
@@ -1134,9 +1134,9 @@ fn emit.inst.panic(g: &mut emit.G, dst: usize, rest: &str) -> () uses [alloc, io
     emit.util.push_byte(&mut fmt, 10u8)
     emit.util.push_byte(&mut fmt, 0u8)
     let name = emit.inst.name_fv(g, "ksn.pm.", dst)
-    let mut esc: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut esc = emit.util.new_str()
     emit.util.c_escape(fmt.as_slice(), &mut esc)
-    let mut d: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut d = emit.util.new_str()
     emit.util.push_str(&mut d, "@")
     emit.util.push_str(&mut d, name.as_str())
     emit.util.push_str(&mut d, " = private unnamed_addr constant [")
@@ -1369,10 +1369,10 @@ fn emit.inst.static_bytes(g: &mut emit.G, dst: usize, hex: &str) -> () uses [all
         emit.util.push_byte(&mut bytes, hi.wrapping_mul(16u8).wrapping_add(lo))
         i = i.wrapping_add(2usize)
     }
-    let mut esc: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut esc = emit.util.new_str()
     emit.util.c_escape(bytes.as_slice(), &mut esc)
     let name = emit.inst.name_fv(g, "ksn.s.", dst)
-    let mut d: alloc.string.String<std.alloc.System> = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut d = emit.util.new_str()
     emit.util.push_str(&mut d, "@")
     emit.util.push_str(&mut d, name.as_str())
     emit.util.push_str(&mut d, " = private unnamed_addr constant [")

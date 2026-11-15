@@ -205,6 +205,11 @@ fn emit.util.lit_i128(s: &str) -> i128 uses [] panics may pub
     }
 end emit.util.lit_i128
 
+// 空の文字列を作る。
+fn emit.util.new_str() -> alloc.string.String<std.alloc.System> uses [] panics may pub
+    alloc.string.String.new(std.alloc.SYSTEM)
+end emit.util.new_str
+
 // `s` を `sep` で割った `k` 番目 (前後の空白は除く)。無ければ空。
 fn emit.util.nth['a](s: &'a str, sep: &str, k: usize) -> &'a str uses [] panics may pub
     emit.util.piece_at(s, sep, k).trim()
