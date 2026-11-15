@@ -2000,3 +2000,14 @@ fn tdisc_generic_element_type_stays_silent() {
     let (lines, out) = tdisc_lines("tdisc_generic", extra, &["t.drop_top(&mut v)"]);
     assert!(lines.is_empty(), "{}", out);
 }
+
+/// 省略した入力 (`&self`) の欄 (`&'static str`) を、`'static` の戻り値へ複写するのは正しい。欄の領域は引数の借用ではない
+/// (修正プラン 1-2 の省略規則の検査で、欄の読み戻しを引数の領域と取り違えない)。借用検査 (AST) は通す。
+#[test]
+fn elided_self_static_field_copy_is_accepted() {
+    let src = "type t.Q\n    src: &'static str\nend t.Q\n\nfn t.Q.rest['b](self: &t.Q, _y: &'b u32) -> &'static str uses [] panics never\n    self.src\nend t.Q.rest\n\nfn t.main() -> Result<(), std.io.Error> uses [] panics never\n    Ok(())\nend t.main\n";
+    let t = Tmp::new("elided_self_static_field", src);
+    let o = run(&["check", "--json"], &t.0);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stdout));
+    assert!(codes(&text(&o.stdout)).is_empty(), "{}", text(&o.stdout));
+}

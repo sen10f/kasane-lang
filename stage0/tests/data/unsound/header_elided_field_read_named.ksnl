@@ -1,0 +1,12 @@
+// expect: E3010
+type t.P['a]
+    src: &'a str
+end t.P
+
+fn t.get['b](p: &t.P, _y: &'b u32) -> &'b str uses [] panics never
+    p.src
+end t.get
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

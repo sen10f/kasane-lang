@@ -1,0 +1,7 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.w['b](x: &'b u32, out: &mut Option<&'b u32>, _y: &'b u32) -> () uses [] panics never
+    *out = Some(x)
+end t.w

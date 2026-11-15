@@ -1,0 +1,13 @@
+fn t.id(x: &u32) -> &u32 uses [] panics never
+    x
+end t.id
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 1u32
+    core.mem.drop(*t.id(&a))
+    Ok(())
+end t.main
+
+fn t.opt(x: &u32) -> Option<&u32> uses [] panics never
+    Some(x)
+end t.opt

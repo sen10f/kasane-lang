@@ -61,7 +61,7 @@ fn addr_names(v: &V, out: &mut BTreeSet<String>) {
                 }
             }
             // `capture [&x]` / `[&mut x]` は x のアドレスを取る。
-            if *n == "Closure" && fs.len() == 4 {
+            if *n == "Closure" && fs.len() >= 4 {
                 if let V::L(caps) = &fs[2] {
                     for c in caps {
                         if let V::L(kv) = c {

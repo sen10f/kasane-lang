@@ -1,0 +1,8 @@
+// expect: E3010
+fn t.bad['a](x: &u32, _y: &'a u32) -> &'a u32 uses [] panics never
+    x
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
