@@ -35,7 +35,7 @@
 
 ### まだ外せないもの (d)
 
-- **木走査の `Val::Vec`** (`value.rs` / `natives.rs` の `seq_method`): 添字・反復・`Debug`・`==` が `Val::Vec` を直接読む。木走査を Kasane 版にするには `Vec` を構造体 `{ buf }` にして、これらを構造体経由にする (または `Buf` を `Val::Vec` で持つ) 必要がある。
+- **木走査の `Val::Vec`**: 2026-11-15 に `Vec` の値を構造体 `{ buf }` にして外した (下の「木走査の Vec」の節)。`Val::Vec` は `Buf` の格納 (`items`) と `VecDeque` に残る。
 - **KIR の `Kind::Vec` (24 バイトのヘッダ)**: `Vec` の局所変数・フィールド・`v[i]`・`for`・`v.get(i)`・drop はヘッダの専用経路のまま。`Buf` の下ろし (`kir_lower_buf.rs`) と `pop` / `remove` / `clear` / `get` / `as_slice` の組み込みの操作がその上にあるので、
   外すには `Vec` を単相化した構造体にして `v.get(i)` → `v.as_slice().get(i)` の読み替えと、`Buf` のヘッダ操作を `Kind::Buf` として独立させる必要がある。
 - `String` の基本メソッドは段 1〜3 を済ませた (下の「String」の節)。整形・比較・`from_str` / `join` / `replace` は組み込みのまま。`try_clone` と `with_capacity` の Kasane 版は、木走査が `Val::Vec` を作る組み込みと衝突するため入れていない。
@@ -194,3 +194,55 @@
 - `check-stdlib` 0 件、`spec/tools/check_all.py` 全件通過 (`string.sig` の空行を fmtsig の形に直した)。
 - examples・apps・selfhost・perf の `ksn check` 0 件、`test --both` 通過、`run` と `build` の出力一致。`examples/kvlib` はライブラリ、`apps/shortener_https` は引数が要る、`apps/todo_spa` は wasm の外部関数が要る (いずれも `run` の失敗は想定どおり)。
 - `bench/verify_reference.py`: 19 件中 0 件の不一致。
+
+## 木走査の Vec / String (修正プラン 3-3 の残り、2026-11-15、`std/treewalk-vec`)
+
+### 段 1 (済み): `Vec` の値を構造体にし、基本メソッドを木走査でも Kasane 版で動かす
+
+- `Vec<T, A>` の値は `Val::Struct` (型名 `value::VEC_TY` = `alloc.vec.Vec`、フィールド `buf` = `alloc.raw.Buf` の構造体) になった。`Buf` は今までどおり組み込み (`buf_method`)。`Val::Vec` は `Buf` の格納 (`items`) と `VecDeque` (組み込みのまま) にだけ残る。
+- `alloc.vec.Vec.new` / `with_capacity` が上の構造体を作る (`natives.rs` の `new_vec`)。
+- `KASANE_VEC_BASE` の 12 個 (`as_mut_slice` `as_slice` `capacity` `clear` `insert` `is_empty` `len` `pop` `push` `remove` `reserve` `truncate`) は、木走査でも `alloc/vec.ksnl` の本体を通る (`find_method` の除外を外した)。その他の `alloc.vec.Vec.*` (`append` `contains` `dedup` `extend_from_slice`) は今までどおり本体を通る。
+- 格納の列を読む経路 (添字の読み書き・`for` / `iter`・`Debug`・`==`・順序・ハッシュのキー・FFI・ネット・プロセス・ファイル読み) は `value::raw_list` (格納の列) と `value::as_raw` (`Vec` を `Val::Vec` に直した値) で読む。`hkey` と `==` / 順序は `Vec` を格納 (`buf` の容量を含む) で比べず、要素の列で比べる。
+- 本体が Kasane にないメソッド (`iter` `get` `sub` `swap` など) は、格納を全体の `View` にして従来の `seq_method` で答える (`vec_method`)。
+
+### 検証
+
+- `cargo test --release` 全件 (`--no-fail-fast`) が通る。新しいテスト `raw_buf.rs` の `vec_tree_walker_runs_the_kasane_body_for_capacity_and_insert`: 木走査の `capacity()` が Kasane の規則 (10 → 11 個目で 24、`reserve(50)` で 61)、範囲外の `insert` が `Err`、`remove` の `None` を返す。
+- `examples/` 14 パッケージの `ksn test --both` が 0 件失敗 (`llvm` と比べる)。`apps/todo` `apps/shortener_https` `selfhost/parse` `selfhost/resolve` の `ksn test` が通る。`ksn check-stdlib` 0 件。
+- `tests/native_ratio.py`: linear_ok 118/118、examples 14/14、perf 8/8 (下限 105 / 14 / 8 を下回らない)。
+- 同じ Vec のプログラムを木走査・VM・KIR (LLVM) で実行し、出力が一致する (`capacity` を含む)。VM は `with_capacity` を KIR に下ろせず木走査へ退避する (変更前からの挙動)。
+- 挙動の変化: 木走査の `capacity()` は確保した容量を返すようになった (変更前は長さを返していた。KIR と一致する形)。`reserve` は容量を増やす。
+
+### 性能 (木走査 `ksn run`、起動を含む壁時計、最小値)
+
+| 計測 | 変更前 | 変更後 | 比 |
+| --- | ---: | ---: | ---: |
+| `perf/run_perf.py` の `vecops` (N=300,000) 1 回目 (3 回) | 7801 ms | 8198 ms | 1.05 |
+| 同 2 回目 (5 回、交互) | 7787 ms | 9451 ms | 1.21 |
+
+目安 1.5 倍以内 (官方の計測はこの行)。
+
+メソッド単体 (200,000 回の呼び出し。`push` 200k 回だけの版を基準に引いた追加分、交互に 3 回の最小値。揺れが大きく概算):
+
+| 呼び出し | 変更前 | 変更後 | 比 (概算) | 経路 |
+| --- | ---: | ---: | ---: | --- |
+| `len()` | 0.72 s | 2.67 s | 約 3.7 | Kasane 版 |
+| `is_empty()` | 0.82 s | 1.77 s | 約 2.2 | Kasane 版 |
+| `push` + `pop` (組) | 1.51 s | 4.05 s | 約 2.7 | Kasane 版 |
+| `get(i)` | 1.19 s | 1.16 s | 約 1.0 | 組み込み (変更なし) |
+| `v[i]` (読み) | 0.77 s | 0.87 s | 約 1.1 | 組み込み (変更なし) |
+
+- 木走査で組み込みのまま (Kasane 版の本体がない、または基本メソッドの表に入らない): `get` `get_mut` `iter` `sub` `sub_mut` `swap` `split_at` `first` `last` `copy_from` など。`contains` `append` `dedup` `extend_from_slice` は変更前から本体 (Kasane) を通している。
+- 基本メソッドのうち `len` / `is_empty` / `push` / `pop` は、ループの中で呼ぶと木走査で 2〜4 倍になる。官方の計測 (`vecops`) では 1.05〜1.21 倍に収まったので、今回は 12 個すべてを Kasane 版にした。遅さを戻すなら、木走査だけ組み込みに戻す表を別に作る (`KASANE_VEC_BASE` は KIR も使うので、そのまま外すと KIR の下ろしも変わる)。
+
+### 段 2 (未着手、外せない理由): `String` を木走査で Kasane 版にする
+
+- 木走査の `String` は `Val::StrBuf` (`value.rs` の `StrBufV`: 内容 `String` と直前の `as_str` の結果 `Rc<str>`)。`as_str` が O(1) なのは、この `Rc<str>` のキャッシュがあるから (0.10.18 の表)。
+- `String` を `{ buf: Buf<u8> }` にすると、格納は `Val::Int` の列になり、`as_str` は呼ぶたびに長さ分の複製が要る。0.10.18 の性質 (`as_str` は回数に依らない) が崩れる。
+- 文字列の内容を読む箇所 (`str_of` の呼び出し 28 箇所、`Val::StrBuf` の一致 18 箇所) も、構造体から内容を組み立てる経路が要る。
+- 切り替えるには、格納を `Buf<u8>` 専用のバイト列にし、`as_str` の結果を内容と一緒にキャッシュする (`StrBufV` と同じ方式で、変更のたびに捨てる) 必要がある。値の表現の変更なので、今回は着手しない。`KASANE_STRING_BASE` は木走査では今までどおり使わない (`find_method`)。
+
+### 段 3 (今回の結果)
+
+- 外した: 木走査の `Vec` の値 (`Val::Vec` を `Vec` の値として作る・読むこと) と、`Vec` の基本メソッドの組み込み実装 (木走査の `KASANE_VEC_BASE` の除外)。
+- 外せない (理由): `Val::Vec` は `Buf` の格納と `VecDeque` で使う (`Buf` は組み込みのまま)。`Val::StrBuf` は段 2 の理由で残す。

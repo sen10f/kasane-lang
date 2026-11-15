@@ -519,10 +519,16 @@ pub(crate) fn item_list_pub(v: &Val) -> Option<Rc<RefCell<Vec<Val>>>> {
 }
 
 fn item_list(v: &Val) -> Option<Rc<RefCell<Vec<Val>>>> {
-    match v {
-        Val::Arr(l) | Val::Vec(l) => Some(l.clone()),
-        _ => None,
-    }
+    raw_list(v)
+}
+
+/// `alloc.vec.Vec<T, A>` の値 (`{ buf: Buf { allocator, capacity, items } }`) を作る。`cap` は容量 (要素数)。
+fn new_vec(allocator: Val, cap: usize) -> Val {
+    let buf = Val::Struct(Rc::new(StructV {
+        ty: "alloc.raw.Buf".into(),
+        f: RefCell::new(vec![("allocator".into(), allocator), ("capacity".into(), usz(cap)), ("items".into(), Val::Vec(new_list(vec![])))]),
+    }));
+    Val::Struct(Rc::new(StructV { ty: VEC_TY.into(), f: RefCell::new(vec![("buf".into(), buf)]) }))
 }
 
 fn deep(v: &Val) -> Val {
@@ -719,8 +725,11 @@ impl Interp {
                     ]),
                 }))))
             }
-            "alloc.vec.Vec.new" => Ok(Val::Vec(new_list(vec![]))),
-            "alloc.vec.Vec.with_capacity" => Ok(ok(Val::Vec(new_list(vec![])))),
+            "alloc.vec.Vec.new" => Ok(new_vec(dr(&a0), 0)),
+            "alloc.vec.Vec.with_capacity" => {
+                let n = if let Some(Val::Int(c, _)) = args.get(1).map(dr) { c as usize } else { 0 };
+                Ok(ok(new_vec(dr(&a0), n)))
+            }
             "alloc.string.String.new" => Ok(Val::StrBuf(StrBufV::new(String::new()))),
             "alloc.string.String.from_str" => Ok(ok(Val::StrBuf(StrBufV::new(str_of(&args[1]).unwrap_or_default())))),
             "alloc.string.String.replace" => {
@@ -984,6 +993,7 @@ impl Interp {
         // 演算子 `==` `<` 等と同じ `v_eq` / `v_cmp` に委ねる (spec 3.2 / 8.3)。
         if matches!(name, "eq" | "cmp" | "partial_cmp")
             && (matches!(v, Val::Str(_) | Val::StrBuf(_) | Val::Arr(_) | Val::Vec(_) | Val::View(..))
+                || matches!(v, Val::Struct(s) if s.ty == VEC_TY)
                 || matches!(v, Val::Enum(e) if e.en == "Option" || e.en == "Result"))
         {
             return self.derived_cmp(v, name, &a0);
@@ -1151,6 +1161,10 @@ impl Interp {
                 }
                 if s.ty == "alloc.raw.Buf" {
                     return self.buf_method(s, name, args);
+                }
+                // `Vec` の本体が Kasane にないメソッド: 格納の列を View にして列のメソッドで答える。
+                if s.ty == VEC_TY {
+                    return self.vec_method(v, name, args);
                 }
                 if s.ty == "alloc.boxed.Box" {
                     if name == "as_ref" || name == "as_mut" {
@@ -1418,6 +1432,14 @@ impl Interp {
         }
     }
 
+    /// `Vec` の値の組み込みのメソッド (本体が Kasane の `alloc.vec.Vec.<m>` のものは `find_method` が先に引く)。
+    /// 格納の列を全体の View にして `seq_method` へ渡す (`iter` / `get` / `sub` / `swap` など)。
+    fn vec_method(&mut self, v: &Val, name: &str, args: Vec<Val>) -> Res {
+        let Some(list) = raw_list(v) else { return panic("alloc.vec.Vec: broken") };
+        let len = list.borrow().len();
+        self.seq_method(&Val::View(list, 0, len), name, args)
+    }
+
     fn seq_method(&mut self, v: &Val, name: &str, args: Vec<Val>) -> Res {
         let a0 = args.first().cloned().unwrap_or(Val::Unit);
         let idx = |a: &Val| if let Val::Int(i, _) = dr(a) { i } else { -1 };
@@ -1543,8 +1565,7 @@ impl Interp {
             }
         }
         // 本体が Kasane の `core.slice.<name>` (spec/stdlib/core/slice.ksnl): 受け手をそのまま第 1 引数に渡す。
-        let vec_fn = if matches!(v, Val::Vec(_)) { self.p.funcs.get(&format!("alloc.vec.Vec.{}", name)).copied() } else { None };
-        if let Some(wi) = vec_fn.or_else(|| self.p.funcs.get(&format!("core.slice.{}", name)).copied()) {
+        if let Some(wi) = self.p.funcs.get(&format!("core.slice.{}", name)).copied() {
             let mut all = vec![v.clone()];
             all.extend(args);
             return self.call_def(wi, all);
@@ -1841,7 +1862,7 @@ impl Interp {
                 }
             }
             "read" => {
-                let target = dr(args.first().unwrap_or(&Val::Unit));
+                let target = as_raw(&dr(args.first().unwrap_or(&Val::Unit)));
                 let cap = seq_len(&target).unwrap_or(0);
                 let mut buf = vec![0u8; cap];
                 let n = match self.files.get_mut(&fd) {

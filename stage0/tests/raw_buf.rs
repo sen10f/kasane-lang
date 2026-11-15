@@ -378,3 +378,65 @@ fn vec_methods_written_in_kasane_match_the_builtin_ones_natively() {
     let k = Command::new(exe()).args(["kir", "t.main"]).current_dir(&t.0).output().unwrap();
     assert!(text(&k.stdout).contains("fn alloc.vec.Vec.push key=alloc.vec.Vec.push<"), "{}", text(&k.stdout));
 }
+
+/// 木走査の `Vec` の基本メソッドは Kasane 版の本体を通る (`Vec` の値は `{ buf }` の構造体、`Buf` の格納は組み込み)。
+/// 容量の規則 (`cap * 2 + 4` で増やす、`reserve` は必要量と `cap * 2 + 4` の大きいほう) と範囲外の `insert` の結果を固定する。
+const VEC_TREE: &str = r#"
+fn t.line(label: &str, n: usize) -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let mut s = alloc.string.String.new(std.alloc.SYSTEM)
+    match s.push_str(label) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    match s.push_u64(u64.from_usize(n)) {
+        Ok(_) => ()
+        Err(_e) => core.panic.panic("oom")
+    }
+    std.io.print_line(s.as_str())?
+    Ok(())
+end t.line
+
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may
+    let made = alloc.vec.Vec.with_capacity(std.alloc.SYSTEM, 10usize)
+    match made {
+        Ok(v0) => {
+            let mut v = v0
+            t.line("cap=", v.capacity())?
+            let mut i = 0usize
+            while i < 11usize {
+                match v.push(i) {
+                    Ok(_) => ()
+                    Err(_e) => core.panic.panic("oom")
+                }
+                i = i.wrapping_add(1usize)
+            }
+            t.line("cap=", v.capacity())?
+            t.line("len=", v.len())?
+            match v.insert(20usize, 1usize) {
+                Ok(_) => std.io.print_line("inserted")?
+                Err(_e) => std.io.print_line("oob")?
+            }
+            match v.remove(100usize) {
+                Some(_r) => std.io.print_line("some")?
+                None => std.io.print_line("none")?
+            }
+            match v.reserve(50usize) {
+                Ok(_) => ()
+                Err(_e) => core.panic.panic("oom")
+            }
+            t.line("cap=", v.capacity())?
+        }
+        Err(_e) => core.panic.panic("with_capacity")
+    }
+    Ok(())
+end t.main
+"#;
+
+#[test]
+fn vec_tree_walker_runs_the_kasane_body_for_capacity_and_insert() {
+    let t = Tmp::new("vec_tree", VEC_TREE);
+    let tree = run(&["run", "--engine=tree"], &t.0);
+    assert_eq!(tree.status.code(), Some(0), "{}{}", text(&tree.stdout), text(&tree.stderr));
+    // 期待値: 容量 10 → 11 個目で 10 * 2 + 4 = 24 → reserve(50) は必要量 61 (> 52)。
+    assert_eq!(text(&tree.stdout), "cap=10\ncap=24\nlen=11\noob\nnone\ncap=61\n");
+}

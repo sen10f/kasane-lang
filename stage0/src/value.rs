@@ -401,10 +401,44 @@ pub fn new_list(items: Vec<Val>) -> Rc<RefCell<Vec<Val>>> {
     Rc::new(RefCell::new(items))
 }
 
+/// `alloc.vec.Vec<T, A>` の値の型名 (構造体 `{ buf: alloc.raw.Buf<T, A> }`、仕様 8.3 と `spec/stdlib/alloc/vec.sig`)。
+pub const VEC_TY: &str = "alloc.vec.Vec";
+
+/// 列の実体 (要素の `Rc<RefCell<Vec<Val>>>`) を返す: 配列 `Arr`、生の列 `Val::Vec` (`Buf` の格納と `VecDeque`)、
+/// `Vec` の値 (`buf` の `items`)。列でなければ None。View の範囲は含まない (呼び出し側が範囲を見る)。
+pub fn raw_list(v: &Val) -> Option<Rc<RefCell<Vec<Val>>>> {
+    match v {
+        Val::Arr(l) | Val::Vec(l) => Some(l.clone()),
+        Val::Struct(s) if s.ty == VEC_TY => match s.get("buf") {
+            Some(Val::Struct(b)) => match b.get("items") {
+                Some(Val::Vec(l)) => Some(l),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `Vec` の値なら、その格納の生の列 (`Val::Vec`) に置き換えた値を返す。それ以外は複製 (Rc の増分だけ)。
+/// 添字・反復・表示・比較など、列を直接読む経路が `Val::Vec` の形で扱えるようにする。
+pub fn as_raw(v: &Val) -> Val {
+    if let Val::Struct(s) = v {
+        if s.ty == VEC_TY {
+            if let Some(l) = raw_list(v) {
+                return Val::Vec(l);
+            }
+        }
+    }
+    v.clone()
+}
+
 /// 列として見られる値の要素を複製して返す (Arr / Vec / View / Tuple)。
 pub fn seq_items(v: &Val) -> Option<Vec<Val>> {
+    if let Some(l) = raw_list(v) {
+        return Some(l.borrow().clone());
+    }
     match v {
-        Val::Arr(l) | Val::Vec(l) => Some(l.borrow().clone()),
         Val::View(l, a, b) => Some(l.borrow()[*a..*b].to_vec()),
         Val::Tuple(t) => Some(t.to_vec()),
         _ => None,
@@ -413,8 +447,10 @@ pub fn seq_items(v: &Val) -> Option<Vec<Val>> {
 
 /// 列の長さ (Arr / Vec / View / Tuple)。列でなければ None。複製はしない。
 pub fn seq_len(v: &Val) -> Option<usize> {
+    if let Some(l) = raw_list(v) {
+        return Some(l.borrow().len());
+    }
     match v {
-        Val::Arr(l) | Val::Vec(l) => Some(l.borrow().len()),
         Val::View(_, a, b) => Some(b - a),
         Val::Tuple(t) => Some(t.len()),
         _ => None,
@@ -423,8 +459,10 @@ pub fn seq_len(v: &Val) -> Option<usize> {
 
 /// 列の i 番目の要素だけを複製して返す (範囲外・列でない場合は None)。O(1)。
 pub fn seq_elem(v: &Val, i: usize) -> Option<Val> {
+    if let Some(l) = raw_list(v) {
+        return l.borrow().get(i).cloned();
+    }
     match v {
-        Val::Arr(l) | Val::Vec(l) => l.borrow().get(i).cloned(),
         Val::View(l, a, b) => {
             if i < b - a {
                 l.borrow().get(a + i).cloned()
@@ -540,7 +578,8 @@ fn vcmp_seq(x: &[Val], y: &[Val], order: &dyn Fn(&str, &str) -> (usize, usize)) 
 pub fn hkey(v: &Val) -> String {
     let v = dr(v);
     match &v {
-        Val::Struct(s) => format!("S{}{{{}}}", s.ty, s.f.borrow().iter().map(|(k, x)| format!("{}={}", k, hkey(x))).collect::<Vec<_>>().join(",")),
+        // `Vec` は格納 (`buf` の容量を含む) で比べず、要素の列として表す (下の `seq_items` の枝)。
+        Val::Struct(s) if s.ty != VEC_TY => format!("S{}{{{}}}", s.ty, s.f.borrow().iter().map(|(k, x)| format!("{}={}", k, hkey(x))).collect::<Vec<_>>().join(",")),
         Val::Enum(e) => format!("E{}.{}({})", e.en, e.var, e.pl.iter().map(hkey).collect::<Vec<_>>().join(",")),
         Val::Int(x, _) => format!("i{}", x),
         Val::Char(c) => format!("c{}", c),
