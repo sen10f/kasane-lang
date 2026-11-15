@@ -11,7 +11,7 @@ use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 
 use crate::interp::{py_float, py_float32};
 use crate::natives::io_kind_name;
-use crate::kir::{FsK, NetK, payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
+use crate::kir::{opt_slot_bits, FsK, NetK, payload_bits, payload_of, size_of, AggDef, AggKind, Aop, BoolOp, Field, Func, Mode, Module, Op, Pay, Term, Ty, PAY_MASK, TAG_BIT, VId};
 use crate::kir_scalar;
 
 // Option / Result の値の語 (設計_KIR.md 11.1)。タグは bit 64、ペイロードの語は下位 64 ビット。
@@ -403,8 +403,60 @@ fn arith_u128(op: Aop, mode: Mode, x: u128, y: u128) -> Result<u128, String> {
     }
 }
 
+/// `Option<P>` の値 `v` を、バイト列 `buf` の `off` に書く (設計_KIR.md 26 章)。枠 (`opt_slot_bits / 8` バイト) に
+/// ペイロードのバイト列 (集成体は置き場の項目の中身、スカラーは `payload_bits` の 8 バイト) を置き、その直後の 1 バイトに
+/// タグ (Some = 1) を置く。LLVM の整数の並び (枠の上のビットがタグ) と同じ配置。
+fn write_opt(buf: &mut [u8], off: usize, aggs: &[AggDef], t: Ty, v: i128, heap: &[Vec<u8>]) {
+    let Ty::Opt(p) = t else { return };
+    let slot = (opt_slot_bits(aggs, t) / 8) as usize;
+    buf[off..off + size_of(aggs, t) as usize].fill(0);
+    if v & TAG_BIT == 0 {
+        return;
+    }
+    match p.ty() {
+        Ty::Agg(_) => {
+            let src = &heap[(v & PAY_MASK) as usize];
+            let n = src.len().min(slot);
+            buf[off..off + n].copy_from_slice(&src[..n]);
+        }
+        Ty::Unit => {}
+        _ => {
+            let b = (payload_bits(v) as u64).to_le_bytes();
+            let n = b.len().min(slot);
+            buf[off..off + n].copy_from_slice(&b[..n]);
+        }
+    }
+    buf[off + slot] = 1;
+}
+
+/// `write_opt` の逆。タグが 0 なら `None` (0)。集成体のペイロードは新しい置き場の項目にして、その添字を語にする。
+fn read_opt(buf: &[u8], off: usize, aggs: &[AggDef], t: Ty, heap: &mut Vec<Vec<u8>>) -> i128 {
+    let Ty::Opt(p) = t else { return 0 };
+    let slot = (opt_slot_bits(aggs, t) / 8) as usize;
+    if buf[off + slot] & 1 == 0 {
+        return 0;
+    }
+    match p.ty() {
+        Ty::Agg(ai) => {
+            let n = aggs[ai as usize].size as usize;
+            heap.push(buf[off..off + n].to_vec());
+            TAG_BIT | (heap.len() - 1) as i128
+        }
+        Ty::Unit => TAG_BIT,
+        _ => {
+            let mut raw = [0u8; 8];
+            let n = raw.len().min(slot);
+            raw[..n].copy_from_slice(&buf[off..off + n]);
+            TAG_BIT | u64::from_le_bytes(raw) as i128
+        }
+    }
+}
+
 /// 値 `v` (スカラー、または置き場の添字の集成体) を、バイト列 `buf` の `off` に書く。
 pub(crate) fn write_val(buf: &mut [u8], off: usize, aggs: &[AggDef], t: Ty, v: i128, heap: &[Vec<u8>]) {
+    if let Ty::Opt(_) = t {
+        return write_opt(buf, off, aggs, t, v, heap);
+    }
     if let Ty::Agg(_) = t {
         let src = &heap[v as usize];
         buf[off..off + src.len()].copy_from_slice(src);
@@ -1175,6 +1227,24 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                     }
                     n
                 }
+                Op::RandFill { buf, len, fatal } => {
+                    let (p, n) = (get(&stack[top], buf), get(&stack[top], len));
+                    let mut bytes = vec![0u8; n as usize];
+                    match (crate::natives::os_random(&mut bytes), *fatal) {
+                        (Ok(()), _) => {
+                            if n > 0 {
+                                bm.write_bytes(p, &bytes)?;
+                            }
+                            0
+                        }
+                        // 致命的な形 (`Rng.from_entropy`): 文言を出して終わる (LLVM のランタイムと同じ)。
+                        (Err(_), true) => {
+                            eprint!("{}", crate::natives::ENTROPY_FAILED);
+                            return Ok(Outcome::Abort);
+                        }
+                        (Err(e), false) => TAG_BIT | io_error_value(&m.aggs, &mut heap, io_kind_name(&e), e.raw_os_error().unwrap_or(0))?,
+                    }
+                }
                 Op::EnvArgCount => {
                     let n = std::env::args().len() as i128;
                     n.saturating_sub(1)
@@ -1398,13 +1468,20 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         Some(b) if b.len() >= o + size_of(&m.aggs, inst.ty) as usize => b,
                         _ => &zero,
                     };
-                    let o = if std::ptr::eq(blob, &zero) { 0 } else { o };
+                    let missing = std::ptr::eq(blob, &zero);
+                    let o = if missing { 0 } else { o };
                     match inst.ty {
                         Ty::Agg(ai) => {
                             let n = m.aggs[ai as usize].size as usize;
-                            let sub = if std::ptr::eq(blob, &zero) { vec![0u8; n] } else { blob[o..o + n].to_vec() };
+                            let sub = if missing { vec![0u8; n] } else { blob[o..o + n].to_vec() };
                             heap.push(sub);
                             (heap.len() - 1) as i128
+                        }
+                        // 項目が無いときは `None` (タグが別の腕の値を読むことがある)。
+                        Ty::Opt(_) if missing => 0,
+                        t @ Ty::Opt(_) => {
+                            let raw = blob[o..o + size_of(&m.aggs, t) as usize].to_vec();
+                            read_opt(&raw, 0, &m.aggs, t, &mut heap)
                         }
                         t => read_scalar(blob, o, t),
                     }

@@ -23,7 +23,7 @@ pub const NATIVE_NAMES: &[&str] = &[
     "alloc.collections.VecDeque.new",
     "alloc.boxed.Box.new", "alloc.boxed.Box.into_dyn", "std.time.Instant.now", "std.time.system_nanos", "std.time.Duration.from_millis", "std.thread.spawn",
     "std.thread.sleep", "std.thread.yield_now", "std.sync.channel", "std.sync.Mutex.new",
-    "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
+    "std.rand.Rng.from_seed", "std.rand.Rng.from_entropy", "std.rand.fill_secure", "std.fs.exists", "std.fs.remove_file", "std.fs.open",
     "std.fs.create", "std.fs.read_to_end", "std.fs.open_append", "std.fs.rename", "std.fs.create_dir", "std.fs.remove_dir", "std.fs.stat_raw", "std.fs.read_dir_raw", "std.net.connect", "std.net.listen", "std.net.UdpSocket.bind", "std.net.resolve_raw", "std.process.Command.new",
 ];
 
@@ -58,6 +58,70 @@ fn pick_ty(args: &[Val], default: &str) -> &'static str {
 fn ordering(c: i32) -> Val {
     mk_enum("core.cmp.Ordering", ["Less", "Equal", "Greater"][(c + 1) as usize], vec![])
 }
+
+/// OS の乱数で `buf` を埋める (暗号用途に使える。設計_KIR.md 26 章)。Linux は getrandom(2) (ENOSYS なら /dev/urandom)、
+/// Windows は `RtlGenRandom` (`SystemFunction036`)、ほかの Unix は /dev/urandom。KIR の `ksn_rt_sys_random` (sysrt.c) と同じ源。
+pub fn os_random(buf: &mut [u8]) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        #[link(name = "advapi32")]
+        extern "system" {
+            #[link_name = "SystemFunction036"]
+            fn RtlGenRandom(buf: *mut u8, len: u32) -> u8;
+        }
+        for chunk in buf.chunks_mut(1 << 30) {
+            // SAFETY: `chunk` は有効な書き込み可能な領域で、長さは `len` (u32) に収まる (1 GiB ずつ)。
+            if unsafe { RtlGenRandom(chunk.as_mut_ptr(), chunk.len() as u32) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut done = 0usize;
+        #[cfg(target_os = "linux")]
+        {
+            extern "C" {
+                fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> isize;
+            }
+            while done < buf.len() {
+                // SAFETY: `buf[done..]` は有効な書き込み可能な領域で、長さは `buflen` と一致する。
+                let r = unsafe { getrandom(buf[done..].as_mut_ptr(), buf.len() - done, 0) };
+                if r < 0 {
+                    let e = std::io::Error::last_os_error();
+                    match e.raw_os_error() {
+                        Some(4) => continue, // EINTR
+                        Some(38) => break,   // ENOSYS: /dev/urandom へ
+                        _ => return Err(e),
+                    }
+                } else {
+                    done += r as usize;
+                }
+            }
+            if done == buf.len() {
+                return Ok(());
+            }
+        }
+        use std::io::Read;
+        std::fs::File::open("/dev/urandom")?.read_exact(&mut buf[done..])
+    }
+}
+
+/// `Rng.from_entropy` の種。OS の乱数源が読めなければ、KIR と同じ文言で標準エラーに出して終了コード 101 で止まる
+/// (`panics never` の関数なので panic はしない。設計_KIR.md 26 章)。
+fn entropy_seed() -> u64 {
+    let mut b = [0u8; 8];
+    if os_random(&mut b).is_err() {
+        eprint!("{}", ENTROPY_FAILED);
+        std::process::exit(101);
+    }
+    u64::from_le_bytes(b)
+}
+
+/// OS の乱数源が読めないときの文言 (KIR の `Eprint` と同じ文字列)。
+pub const ENTROPY_FAILED: &str = "ksn: std.rand.Rng.from_entropy: OS の乱数源が読めない\n";
 
 fn splitmix(s: u64) -> (u64, u64) {
     let s = s.wrapping_add(0x9E3779B97F4A7C15);
@@ -705,7 +769,18 @@ impl Interp {
             }
             "std.sync.Mutex.new" => Ok(Val::Mutex(Rc::new(CellPlace(RefCell::new(a0))))),
             "std.rand.Rng.from_seed" => Ok(Val::Rng(Rc::new(Cell::new(if let Val::Int(i, _) = dr(&a0) { i as u64 } else { 0 })))),
-            "std.rand.Rng.from_entropy" => Ok(Val::Rng(Rc::new(Cell::new(0x9E3779B97F4A7C15)))),
+            // 種だけを OS から取る。生成器は木走査・KIR と同じ splitmix64 (暗号用途には使えない。仕様 8.3)。
+            "std.rand.Rng.from_entropy" => Ok(Val::Rng(Rc::new(Cell::new(entropy_seed())))),
+            // 暗号用途の乱数: OS の乱数を直接 `buf` に書く (`Result<(), std.io.Error>`)。
+            "std.rand.fill_secure" => {
+                let target = dr(&a0);
+                let mut buf = vec![0u8; seq_len(&target).unwrap_or(0)];
+                if let Err(e) = os_random(&mut buf) {
+                    return Ok(err(io_error(&e)));
+                }
+                crate::net::fill(&target, &buf);
+                Ok(ok(Val::Unit))
+            }
             "std.fs.exists" => Ok(Val::Bool(std::path::Path::new(&str_of(&a0).unwrap_or_default()).exists())),
             "std.fs.remove_file" => {
                 let path = str_of(&a0).unwrap_or_default();

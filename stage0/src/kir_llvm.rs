@@ -1322,18 +1322,25 @@ impl<'a> Fe<'a> {
 
     fn field_w(&self, t: Ty) -> R<u32> {
         match t {
-            Ty::Unit | Ty::Opt(_) | Ty::Res(..) => Err(format!("型 {} は集成体のフィールドにできない", t.name())),
+            Ty::Unit | Ty::Res(..) => Err(format!("型 {} は集成体のフィールドにできない", t.name())),
+            // `Option<P>` の幅はバイト単位に広げた枠 (kir.rs の `size_of` と同じ)。
+            Ty::Opt(_) => Ok(size_of(self.aggs, t) * 8),
             t => Ok(size_of(self.aggs, t) * 8),
         }
     }
 
-    /// フィールドの値を、その幅の整数にする。
+    /// フィールドの値を、その幅の整数にする。`Option` は枠とタグの幅 (`1 + 枠`) の整数を、フィールドの幅へ 0 で広げる。
     fn to_bits(&mut self, t: Ty, v: &str) -> R<String> {
         Ok(match t {
             Ty::Bool => self.t(format!("zext i1 {} to i8", v)),
             Ty::F32 => self.t(format!("bitcast float {} to i32", v)),
             Ty::F64 => self.t(format!("bitcast double {} to i64", v)),
             Ty::Ptr | Ty::Ref(..) => self.t(format!("ptrtoint ptr {} to {}", v, pty())),
+            Ty::Opt(_) => {
+                let w = self.field_w(t)?;
+                let src = self.lt(t);
+                self.t(format!("zext {} {} to i{}", src, v, w))
+            }
             t => {
                 self.field_w(t)?;
                 v.to_string()
@@ -1347,11 +1354,22 @@ impl<'a> Fe<'a> {
             Ty::F32 => self.line(format!("{} = bitcast i32 {} to float", dst, b)),
             Ty::F64 => self.line(format!("{} = bitcast i64 {} to double", dst, b)),
             Ty::Ptr | Ty::Ref(..) => self.line(format!("{} = inttoptr {} {} to ptr", dst, pty(), b)),
+            Ty::Opt(_) => {
+                // フィールドの幅 (上のバイトは 0) から、枠とタグの幅 (`1 + 枠`) へ切り詰める。
+                let ty = self.lt(t);
+                let w = self.field_w(t).unwrap_or_else(|_| self.opt_bits_of(t));
+                self.line(format!("{} = trunc i{} {} to {}", dst, w, b, ty));
+            }
             t => {
                 let ty = self.lt(t);
                 self.mov(dst, &ty, b)
             }
         }
+    }
+
+    /// `Option` / `Result` の値の幅 (タグを含む、`1 + 枠`)。フィールドの幅 (`field_w`) 以下。
+    fn opt_bits_of(&self, t: Ty) -> u32 {
+        1 + slot_bits(self.aggs, t)
     }
 
     /// 集成体 `a` (`n` ビットの整数) のバイト `off` から `w` ビットを取り出す。
@@ -1734,6 +1752,13 @@ impl<'a> Fe<'a> {
                     self.line(format!("call void @ksn.panic.index({} {}, {} {})", sz, n, sz, x));
                     self.line("unreachable".into());
                     self.label(&k);
+                    Ok(())
+                }
+                // 致命的な乱数 (`Rng.from_entropy`): 受け口を null にすると、ランタイムは失敗で文言を出して終了コード 101 で終わる。
+                Op::RandFill { buf, len, fatal: true } => {
+                    self.decl("declare i64 @ksn_rt_sys_random(ptr, i64, ptr)".to_string());
+                    let (b, n) = (self.r(*buf), self.r(*len));
+                    self.line(format!("call i64 @ksn_rt_sys_random(ptr {}, i64 {}, ptr null)", b, n));
                     Ok(())
                 }
                 Op::Eprint { data } => {
@@ -2340,6 +2365,13 @@ impl<'a> Fe<'a> {
                 self.cx.fs = true;
                 let ep = self.fs_err_slot();
                 let r = self.t(format!("call i64 @ksn_rt_sys_write(i32 {}, ptr {}, i64 {}, ptr {})", self.r(*fd), self.r(*buf), self.r(*len), ep));
+                self.fs_result(&d, &r, &ep);
+            }
+            // OS の乱数 (sysrt.c の `ksn_rt_sys_random`)。失敗は ErrorKind と errno の受け口を `fs_result` が Err に詰める。
+            Op::RandFill { buf, len, .. } => {
+                self.decl("declare i64 @ksn_rt_sys_random(ptr, i64, ptr)".to_string());
+                let ep = self.fs_err_slot();
+                let r = self.t(format!("call i64 @ksn_rt_sys_random(ptr {}, i64 {}, ptr {})", self.r(*buf), self.r(*len), ep));
                 self.fs_result(&d, &r, &ep);
             }
             Op::ParseInt { ty, s, radix } => {

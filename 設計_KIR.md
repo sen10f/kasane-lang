@@ -1717,3 +1717,30 @@ KIR は単相・SSA で、型にライフタイムがない。そこで領域は
 - **保持者による寿命の検査。** `v.push(&b)` で `b` の借用を `v` のセルに入れたとき、`b` の `scope.end` (`h18_block_local_pushed_into_outer_vec`)、所有物の move (`push_as_str_then_consume`) の後で `v` が読まれれば違反 (E3010)。保持者の判定は `scope.end` と同じ規則 (`holders_of_root`)。
 - **線形性。** 値渡しの注釈 (`own.consume`) は `path_val` が引数の値の読みで付けるので、呼び出しの規則は足していない。線形性の一致が落ちた原因は、チャネルの端 (`Receiver<T>`) の要素型を `elem_src` が型表に戻せず、`linear_receiver_in_vec` が判断できなくなったこと。`chan_elem` から戻すようにして解決。
 - **結果。** `unsound/` の検査できた 166 件のうち、借用は一致 163 (不一致 3 件は 24.7 と同じ)、線形性は一致 114 (KIR が拒否 48)。正しいコード (借用は 114 件、線形性は 114 件) の誤検出は 0。
+
+## 26. 乱数の OS 源と `Option` のフィールド (kir/rand-optvec、2026-11-15)
+
+apps/todo の報告で挙がった 2 つ: `std.rand.Rng.from_entropy()` が段階 1 の対象外 (E9040) で、回避にセッションのトークンを時刻のハッシュで作っていた (推測できる)。構造体のフィールド `Option<alloc.vec.Vec<T, A>>` が下りなかった (E9040)。
+
+### 26.1 乱数 (`Op::RandFill`)
+
+- 命令 `rand.fill %buf, %len`: OS の乱数で `buf` (`ptr`) の `len` バイトを埋める。結果は `Result<(), std.io.Error>` (`std.rand.fill_secure`)。`rand.fill.fatal` は結果が unit で、失敗は文言 `ksn: std.rand.Rng.from_entropy: OS の乱数源が読めない` を出して終了コード 101 で止まる (panic ではない。`panics never` の `from_entropy` で使う)。どちらも `uses [rand]` の関数だけ。
+- `Rng.from_entropy()` は 8 バイトのフレーム領域を `rand.fill.fatal` で埋め、その 8 バイトを種にして `{ state: 種 }` を作る。生成器は従来どおり splitmix64 (`from_seed` と同じ算法)。
+- ランタイム: `sysrt.c` の `ksn_rt_sys_random(p, n, e)` (Linux は `getrandom(2)`、`ENOSYS` なら `/dev/urandom`。Windows は `rand_s`、ほかの Unix は `/dev/urandom`)。失敗は `e` に ErrorKind と errno を書いて `-1` を返す。受け口 `e` が NULL のときは文言を出して終了 101 (`fatal`)。wasm32 は `kir_rt.c` で失敗を返し、`fatal` は trap する (wasm には OS の乱数源がない。WASI は未対応)。
+- 木走査は `natives.rs` の `os_random` (同じ源)、参照実行器は同じ関数を呼ぶ。VM は未対応 (理由付きで木走査へ退避する)。
+- **乱数の性質** (仕様 8.3 に明記): `from_entropy` の生成器は CSPRNG ではない (64 ビットの種から出る splitmix64 の列で、出力から状態を復元できる)。暗号用途 (トークン・鍵・nonce) は `fill_secure` を使う。こちらは OS の乱数を毎回直接読む。
+- 既存の不具合を直した: 局所の `Rng` を `while` / `loop` の中で `r.next_u64()` と進めると、状態が合流の受け渡しに入らず、次の周で古い値を読んでいた (ネイティブだけ同じ値が繰り返された。`ksn` の本線も同じ)。組み込みの `next_u64` は `&mut self` なので、`kir_lower_method.rs` の `builtin_rng_mut` で、`Call` (経路の呼び出し `r.next_u64()` の形) と `MCall` の両方を、受け渡す局所の名前に入れる。
+
+### 26.2 `Option` のフィールドとペイロード
+
+- 値の表現は 11.1 のまま (枠 + タグ 1 ビット)。構造体のバイト列では、枠 (`opt_slot_bits / 8` バイト。集成体のペイロードは中身のバイト列、スカラーは 8 バイトの語) の直後の 1 バイトがタグ (Some = 1)。大きさは `1 + 枠` ビットを 8 の倍数のバイトに切り上げ (`Option<u32>` は 16、`Option<Vec<T>>` は 32)、整列は 8 (`kir.rs` の `size_of` / `align_of` / `opt_slot_bits`)。
+- LLVM の集成体は整数で、フィールドは `to_bits` / `from_bits` で `Option` の整数を 0 で広げ・切り詰める (`kir_llvm.rs`)。参照実行器は `write_opt` / `read_opt` で同じ配置にする (`kir_exec.rs`)。
+- 下ろし: フィールドの型に `Option<P>` を許す (P は unit・スカラー・集成体・`Vec` / `String`)。入れ子の `Option` と `Result` のフィールドは、従来どおり段階 1 の対象外 (理由付き)。
+- 所有: `Option<Vec>` のフィールドは構造体の所有物 (`owns_heap`)。構築 `S { f: Some(v) }`、代入 `s.f = ..` (古い値を解放)、`let w = s.f` (移動。元は `None` になる)、値の `match s.f { Some(w) => .., None => .. }` (束縛する腕が所有し、束縛しない腕は頭で解放)。`match` の対象が構造体のフィールドで束縛を含むときは、`kir_lower_coll.rs` の `field_clear` で元のフィールドを空にしてから `match` が値を所有する (従来は部分的な移動として拒否していた)。
+- 未対応 (理由付き、段階 1 の対象外のまま): `Option` への参照 (`&s.f`、`&mut s.f`、`&Option<..>` の引数、`match &s.f`)。`Pointee` が `Option` を持たないため。`&mut self` のメソッドからこのフィールドを読み書きする形も同じ理由で止まる。次の段は `Pointee` に `Option` の番地 (枠とタグの読み書き) を足すこと。
+
+### 26.3 試験
+
+- `stage0/tests/kir_rand_optvec.rs` (8 本): `from_seed` の列が木走査・LLVM (debug / release) で一致し、標準の splitmix64 の値 (独立に計算した列) に等しい。`while` と `loop` の中で進める `Rng` の回帰。`fill_secure` と `from_entropy` が呼ぶたびに違う値を返す。`from_entropy` の種が固定の定数でない。`ksn kir --run` の参照実行器が乱数を使う関数で木走査と一致する。`Option<Vec<u32>>` / `Option<String>` のフィールドの作成・代入・移動・`match` の 3 形 (木走査と一致)。参照実行器でのフィールドの読み書き。ループ 2000 回の作成と解放を ASan (`detect_leaks=1`) で走らせ、報告がないこと。
+- 回帰: `cargo test --release` 全件 (1031 本、通過)、`tests/native_ratio.py` (linear_ok 114/114、examples 14/14、perf 8/8。下限 105 を下回らない)、`bench/verify_reference.py` (19 本、bad 0)、`spec/tools/check_all.py` (全件通過)、`examples/*` の `ksn check` (診断 0 件)。
+- 残り: Windows の `rand_s` の経路は、この機械では試せない (コンパイルは未確認)。`from_entropy` の失敗経路 (OS の乱数源が両方とも読めない) も、この機械では起こせないので試していない。

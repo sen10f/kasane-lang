@@ -936,6 +936,11 @@ pub enum Op {
     /// `std.time.system_nanos()`: 実時刻 (UNIX 時刻からのナノ秒、`i64`)。`clock_gettime(CLOCK_REALTIME)`。
     /// 失敗時は 0。`uses [time]` の関数だけ。
     TimeNowNs,
+    /// OS の乱数で `buf` (`ptr`) の `len` バイトを埋める (`getrandom(2)`、無ければ `/dev/urandom`。設計_KIR.md 26 章)。
+    /// `fatal` が偽なら結果は `Result<(), std.io.Error>` (`std.rand.fill_secure`)。真なら結果は unit で、失敗は文言
+    /// (`natives::ENTROPY_FAILED`) を出して終了コード 101 で止まる (`Rng.from_entropy`。`panics never` の関数で使える)。
+    /// `uses [rand]` の関数だけ。暗号用途に使える。
+    RandFill { buf: VId, len: VId, fatal: bool },
     /// panic の途中の文言を stderr へ書く (`data` = `fat`)。`write` と違って `uses` を要らない: 文言は panic の一部で、
     /// `core.check.eq` のような効果の宣言のない関数からも呼べるため (設計_KIR.md 13.2)。結果は unit。`panics may` のときだけ。
     Eprint { data: VId },
@@ -1144,18 +1149,43 @@ pub fn size_of(aggs: &[AggDef], t: Ty) -> u32 {
         Ty::Isize | Ty::Usize | Ty::Ptr => crate::ptrwidth::bits() / 8,
         Ty::I128 | Ty::U128 => 16,
         Ty::Unit => 0,
-        // 参照・Option・Result は集成体のフィールドに来ない (`field_ty` が拒否する)。値の幅だけ与える。
+        // 参照は集成体のフィールドに来ない (`field_ty` が拒否する)。値の幅だけ与える。
         Ty::Ref(..) => crate::ptrwidth::bits() / 8,
-        Ty::Opt(_) | Ty::Res(..) => 16,
+        // `Option` / `Result` は「枠 (ペイロードの語の幅) + タグ 1 ビット」の整数 (`opt_slot_bits`)。フィールドに置くときは
+        // その整数を 8 の倍数のバイト数に広げる (枠の後ろにタグのバイトが来る: 設計_KIR.md 11.1 / 26 章)。
+        Ty::Opt(_) | Ty::Res(..) => {
+            let bits = 1 + opt_slot_bits(aggs, t);
+            (bits.div_ceil(8)).div_ceil(8) * 8
+        }
         Ty::Agg(i) => aggs[i as usize].size,
     }
 }
 
+/// `Option` / `Result` の枠の幅 (ビット)。ペイロードのどれもが入る幅で、64 ビット以上 (設計_KIR.md 11.1 と LLVM の `slot_bits` と同じ)。
+/// 集成体は `size * 8` (0 のときも 8)、入れ子の `Option` / `Result` は タグを含む幅 (`1 + 枠`)。
+pub fn opt_slot_bits(aggs: &[AggDef], t: Ty) -> u32 {
+    fn pay_bits(aggs: &[AggDef], t: Ty) -> u32 {
+        match t {
+            Ty::Agg(i) => aggs[i as usize].size.max(1) * 8,
+            Ty::Opt(_) | Ty::Res(..) => 1 + opt_slot_bits(aggs, t),
+            Ty::Bool => 1,
+            t => size_of(aggs, t) * 8,
+        }
+    }
+    match t {
+        Ty::Opt(p) => pay_bits(aggs, p.ty()).max(64),
+        Ty::Res(a, e) => pay_bits(aggs, a.ty()).max(pay_bits(aggs, e.ty())).max(64),
+        _ => 64,
+    }
+}
+
 /// 集成体の整列 (バイト)。スカラーは大きさと同じ (clif.rs の `scalar_size` と同じ)。
+/// `Option` / `Result` は 8 バイトの整列 (枠の語が 8 バイトの単位で置かれる)。
 pub fn align_of(aggs: &[AggDef], t: Ty) -> u32 {
     match t {
         Ty::Unit => 1,
         Ty::Agg(i) => aggs[i as usize].align,
+        Ty::Opt(_) | Ty::Res(..) => 8,
         t => size_of(aggs, t),
     }
 }
@@ -1416,6 +1446,7 @@ fn fmt_inst(i: &Inst) -> String {
             None => format!("panic {}", quote_msg(msg)),
         },
         Op::Write { fd, data } => format!("write {}, {}", fmt_val(*fd), fmt_val(*data)),
+        Op::RandFill { buf, len, fatal } => format!("rand.fill{} {}, {}", if *fatal { ".fatal" } else { "" }, fmt_val(*buf), fmt_val(*len)),
         Op::NetListen { addr } => format!("net.listen {}", fmt_val(*addr)),
         Op::NetConnect { addr } => format!("net.connect {}", fmt_val(*addr)),
         Op::NetAccept { sock } => format!("net.accept {}", fmt_val(*sock)),
@@ -1934,6 +1965,14 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
         ("fs", ["write"]) => {
             let v = operands(3)?;
             Ok(Op::FsWrite { fd: v[0], buf: v[1], len: v[2] })
+        }
+        ("rand", ["fill"]) => {
+            let v = operands(2)?;
+            Ok(Op::RandFill { buf: v[0], len: v[1], fatal: false })
+        }
+        ("rand", ["fill", "fatal"]) => {
+            let v = operands(2)?;
+            Ok(Op::RandFill { buf: v[0], len: v[1], fatal: true })
         }
         ("env", ["arg_count"]) => {
             let _ = operands(0)?;
@@ -2881,6 +2920,18 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err("std.fs.File.{read,write} の結果は Result<usize, std.io.Error> のはず".into());
                         }
                     }
+                    Op::RandFill { buf, len, fatal } => {
+                        if !f.uses.iter().any(|u| u == "rand") {
+                            return Err("std.rand.fill_secure は uses [rand] の関数だけ".into());
+                        }
+                        if ty_of(*buf)? != Ty::Ptr || ty_of(*len)? != Ty::Usize {
+                            return Err("rand.fill は ptr のバッファと usize の長さを取る".into());
+                        }
+                        let ok = if *fatal { i.ty == Ty::Unit } else { matches!(i.ty, Ty::Res(Pay::Unit, e) if is_io_error(m, e.ty())) };
+                        if !ok {
+                            return Err("rand.fill の結果は Result<(), std.io.Error> (fatal なら unit) のはず".into());
+                        }
+                    }
                     Op::EnvArgCount => {
                         if !f.uses.iter().any(|u| u == "env") {
                             return Err("std.env.arg_count は uses [env] の関数だけ".into());
@@ -3125,6 +3176,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         Op::EnvArgCount => vec![],
         Op::EnvArg { index } | Op::EnvVar { name: index } => vec![*index],
         Op::TimeNowNs => vec![],
+        Op::RandFill { buf, len, .. } => vec![*buf, *len],
         Op::Eprint { data } => vec![*data],
         Op::Abort => vec![],
         Op::Arith { a, b, .. }

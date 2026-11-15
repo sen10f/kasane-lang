@@ -78,6 +78,8 @@ fn side_effecting(op: &Op) -> bool {
     match op {
         // 実時刻は呼ぶたびに値が変わる (結果が未使用でも読みは残す)。
         Op::TimeNowNs => true,
+        // 乱数は呼ぶたびに値が変わり、バッファへ書く (結果が未使用でも除かない)。
+        Op::RandFill { .. } => true,
         Op::Call { .. }
         | Op::Write { .. }
         | Op::Eprint { .. }
@@ -293,6 +295,7 @@ fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::EnvArgCount => vec![],
         Op::EnvArg { index } | Op::EnvVar { name: index } => vec![index],
         Op::TimeNowNs => vec![],
+        Op::RandFill { buf, len, .. } => vec![buf, len],
         Op::Proc { args, .. } => args.iter_mut().collect(),
         Op::FsCreate { path } | Op::FsOpen { path } | Op::FsExists { path } | Op::FsRemove { path } => vec![path],
         Op::FsSys { args, .. } => args.iter_mut().collect(),

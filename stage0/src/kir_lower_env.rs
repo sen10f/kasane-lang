@@ -29,6 +29,16 @@ pub(super) fn env_call(lw: &mut Lw, _e: &V, name: &str, args: &[V], line: usize)
         let res = super::fs_lower::fs_err_ty(lw, Ty::Usize);
         return Ok(Some(lw.emit(res, Op::FsWrite { fd, buf: ptr, len })));
     }
+    // `std.rand.fill_secure(buf)`: OS の乱数で `buf` を埋める (`RandFill`)。結果は `Result<(), std.io.Error>`。
+    if name == "std.rand.fill_secure" {
+        if args.len() != 1 {
+            return lw.err(line, "std.rand.fill_secure の引数は 1 個のはず");
+        }
+        let Some(buf) = lw.expr(&args[0])? else { return Ok(None) };
+        let (ptr, len) = super::fs_lower::fs_buf_ptr_len(lw, buf, line)?;
+        let res = super::fs_lower::fs_err_ty(lw, Ty::Unit);
+        return Ok(Some(lw.emit(res, Op::RandFill { buf: ptr, len, fatal: false })));
+    }
     let fat = lw.fat_ty();
     let opt_fat = Ty::Opt(Pay::Agg(match fat {
         Ty::Agg(a) => a,

@@ -81,6 +81,9 @@ pub(super) fn sync_call(lw: &mut Lw, e: &V) -> Option<LR<Option<VId>>> {
     if segs.join(".") == "std.rand.Rng.from_seed" {
         return Some(from_seed(lw, &args, line));
     }
+    if segs.join(".") == "std.rand.Rng.from_entropy" {
+        return Some(from_entropy(lw, &args, line));
+    }
     if segs.len() >= 2 {
         let meth = segs[segs.len() - 1].as_str();
         if let (Some(s), 2) = (lw.lookup(&segs[0]), segs.len()) {
@@ -118,6 +121,21 @@ fn from_seed(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
         return lw.err(line, "Rng.from_seed の引数が u64 でない");
     }
     let Some(ty) = rng_ty(lw) else { return lw.err(line, "std.rand.Rng が型表に入らない") };
+    Ok(Some(lw.emit(ty, Op::Make { variant: None, fields: vec![seed] })))
+}
+
+/// `Rng.from_entropy()`: OS の乱数で 8 バイトの種を作り、`{ state: 種 }` にする (生成器は splitmix64。暗号用途ではない。仕様 8.3)。
+/// 乱数源が読めなければ `ENTROPY_FAILED` を出して終了する (`Abort`。`panics never` のまま。木走査も同じ)。
+fn from_entropy(lw: &mut Lw, args: &[V], line: usize) -> LR<Option<VId>> {
+    if !args.is_empty() {
+        return lw.err(line, "Rng.from_entropy の引数は 0 個のはず");
+    }
+    let Some(ty) = rng_ty(lw) else { return lw.err(line, "std.rand.Rng が型表に入らない") };
+    let buf = lw.emit(Ty::Ptr, Op::FrameBytes { size: 8 });
+    let len = lw.emit(Ty::Usize, Op::Const(8));
+    // 失敗は文言を出して終了する (`fatal`。ランタイムが `ENTROPY_FAILED` を出す)。
+    lw.emit(Ty::Unit, Op::RandFill { buf, len, fatal: true });
+    let seed = lw.emit(Ty::U64, Op::MemLoad { p: buf, off: 0 });
     Ok(Some(lw.emit(ty, Op::Make { variant: None, fields: vec![seed] })))
 }
 

@@ -549,7 +549,11 @@ impl AggTab {
         }
         match self.lower_ty(p, file, t)? {
             Ty::Unit => Err("ユニット型のフィールドは段階 1 の対象外".to_string()),
-            Ty::Opt(_) | Ty::Res(..) => Err("Option・Result のフィールドは段階 1 の対象外".to_string()),
+            // `Option<P>` のフィールド (P は 64 ビット以下のスカラー・unit・集成体。所有物を持つ `Vec` / `String` も含む)。
+            // 値はペイロードの枠とタグの整数で、バイト列の枠の後ろにタグのバイトを置く (設計_KIR.md 26 章)。
+            Ty::Opt(q) if !matches!(q.ty(), Ty::Opt(_) | Ty::Res(..)) => Ok(Ty::Opt(q)),
+            Ty::Opt(_) => Err("入れ子の Option のフィールドは段階 1 の対象外".to_string()),
+            Ty::Res(..) => Err("Result のフィールドは段階 1 の対象外".to_string()),
             x => Ok(x),
         }
     }
@@ -1469,6 +1473,8 @@ end t.main
                 // 列挙子の番地の借用 (`Option<&T>` の `Some(E::V(..))`) が入れる 2 つのタプル。ヘッダ `vec` は 24 バイト・整列 8。
                 "(usize,usize)" => (16, 8, vec![0, 8], vec![]),
                 "(vec,usize)" => (32, 8, vec![0, 24], vec![]),
+                // `Option<&str>` (枠 128 ビット + タグ = 17 バイトを 8 の倍数に広げて 24 バイト) を持つ組。`fat` は 16 バイト。
+                n if n.starts_with("(fat,Option<") => (40, 8, vec![0, 16], vec![]),
                 other => panic!("期待値のない型: {}", other),
             };
             assert_eq!((d.size, d.align), (size, align), "大きさ・整列: {}", d.name);

@@ -436,6 +436,17 @@ impl<'a> Lw<'a> {
         self.method_takes_mut(di).then(|| segs[0].clone())
     }
 
+    /// 組み込みの `Rng.next_u64` (`&mut self`。状態を進める) の受け手が局所の `Rng` なら、その局所の名前。
+    /// 局所の `Rng` は SSA の値なので、合流 (ループ・分岐) へ受け渡す局所に入れる。入れないと、ループの中で進めた状態が次の周に残らない。
+    fn builtin_rng_mut(&self, recv: &[String], meth: &str) -> Option<String> {
+        if meth != "next_u64" || recv.len() != 1 {
+            return None;
+        }
+        let s = self.lookup(&recv[0])?;
+        let Ty::Agg(ai) = self.slots[s].1 else { return None };
+        (self.agg_def(ai).name == "std.rand.Rng").then(|| recv[0].clone())
+    }
+
     fn scan_mut(&self, v: &V, out: &mut Vec<String>) {
         match v {
             V::Node(n, fs, _, _) => {
@@ -476,6 +487,7 @@ impl<'a> Lw<'a> {
                     let segs = strs(&nf(&fs[0])[0]);
                     if segs.len() >= 2 {
                         out.extend(self.mut_root_of(&segs[..segs.len() - 1], &segs[segs.len() - 1]));
+                        out.extend(self.builtin_rng_mut(&segs[..segs.len() - 1], &segs[segs.len() - 1]));
                     }
                     if segs.len() >= 3 {
                         out.extend(super::own::vec_field_root(self, &segs[..segs.len() - 1]));
@@ -485,6 +497,7 @@ impl<'a> Lw<'a> {
                     if let Some(segs) = super::agg::field_segs(&fs[0]) {
                         out.extend(self.mut_root_of(&segs, &st(&fs[1])));
                         out.extend(super::own::vec_field_root(self, &segs));
+                        out.extend(self.builtin_rng_mut(&segs, &st(&fs[1])));
                     }
                 }
                 for f in fs {
