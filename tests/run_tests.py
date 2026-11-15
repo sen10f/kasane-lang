@@ -4,6 +4,7 @@
 Python 参照実装との比較テストは凍結済みで tests/legacy/ にある (拡張子統一前の仕様向け)。
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -111,6 +112,38 @@ if r.returncode == 0:
     for ln in r.stdout.splitlines():
         if ln.startswith('note: '):
             print('     ' + ln)
+
+# 11. selfhost/* の全パッケージ (selfhost/probes/*・selfhost/lower/probes/* を含む) で Rust 版 `ksn check` の診断が
+# 期待どおりであること。既定は 0 件。期待で診断を出すパッケージだけを下の表に書く (コード → 件数)。
+# target/・broken/・tests/ は対象外 (`selfhost/driver/compare.py` の packages() と同じ)。
+# 表にない診断・表の件数の違い・表にあるのに無いパッケージ (書き間違い) は失敗にする。
+SELFHOST_EXPECT = {
+    # 再帰する型 boxtree.Expr に Drop の明示実装が無い (効果の段 E4013 の確かめ用の probe)。
+    'selfhost/probes/boxtree': {'E4013': 1},
+}
+DIAG_RE = re.compile(r'^\S+?:\d+:\d+: (E\d{4})\b')
+t0 = time.monotonic()
+sh_pkgs = []
+for dp, dns, fns in os.walk(os.path.join(ROOT, 'selfhost')):
+    dns[:] = sorted(x for x in dns if x not in ('target', 'broken', 'tests'))
+    if 'kasane.toml' in fns:
+        sh_pkgs.append(os.path.relpath(dp, ROOT).replace(os.sep, '/'))
+sh_pkgs.sort()
+for k in SELFHOST_EXPECT:
+    if k not in sh_pkgs:
+        step(f'selfhost: expected package exists: {k}', False, 'SELFHOST_EXPECT に書いたパッケージが無い')
+for rel in sh_pkgs:
+    r = subprocess.run([RSEXE, 'check'], cwd=os.path.join(ROOT, rel), capture_output=True, text=True,
+                       encoding='utf-8', errors='replace')
+    got = {}
+    for ln in (r.stdout + r.stderr).splitlines():
+        m = DIAG_RE.match(ln)
+        if m:
+            got[m.group(1)] = got.get(m.group(1), 0) + 1
+    want = SELFHOST_EXPECT.get(rel, {})
+    step(f'selfhost: ksn check {rel}', got == want and (r.returncode == 0) == (not want),
+         f'got={got} want={want} rc={r.returncode}\n' + (r.stdout + r.stderr)[-800:])
+print(f'     selfhost の ksn check: {len(sh_pkgs)} パッケージ, {time.monotonic() - t0:.1f} 秒')
 
 print()
 print('ALL TESTS PASSED' if not failures else f'{len(failures)} FAILED: {failures}')
