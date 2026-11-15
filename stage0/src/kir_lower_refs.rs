@@ -302,6 +302,11 @@ impl<'a> Lw<'a> {
             if self.vty(v) != rt {
                 return self.err(line, "参照の型が合わない");
             }
+            // `&mut *r` (可変の参照の再借用): 値は同じ複製だが、借用の開始を KIR に残す (設計_KIR.md 24.10)。
+            // 同じ値を返すと、`r` と `&mut *r` が 1 つの借用になり、両方が生きている間の競合を検査できない。
+            if let Ty::Ref(true, _) = rt {
+                return Ok(Some(self.emit(rt, Op::Reborrow(v))));
+            }
             return Ok(Some(v));
         }
         // 3. 式のままの値: 一時のスロットに入れて、そのアドレスを取る

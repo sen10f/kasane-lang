@@ -711,15 +711,30 @@ fn analyze_slice(mut l: Loaded, plan: SlicePlan, prev_items: &[Item]) -> Analysi
 
 /// 隠しの切り替え `KSN_BORROWCK=kir` / `ksn check --borrowck=kir`: AST の借用検査の E3010 を、KIR の上の検査の結果に置き換える
 /// (設計_KIR.md 24 章)。KIR に下ろせないときは AST の結果を残し、stderr に `kir-borrowck: unknown` を出す。
-fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize], own: bool) {
+///
+/// `only` (`KSN_BORROWCK=kir-only`、計測用): AST の借用・線形の診断 (E3010 / E3030 / E3002 / E3003) を外し、
+/// KIR の結果だけを残す。KIR に下ろせないときは何も出さない (AST に戻さない)。既定の検査は変わらない。
+fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize], own: bool, only: bool) {
+    let drop_ast = |rep: &mut Report| rep.items.retain(|i| !matches!(i.code.as_str(), "E3010" | "E3030" | "E3002" | "E3003"));
     let Some(p) = prog else {
+        if only {
+            drop_ast(rep);
+        }
         eprintln!("kir-borrowck: unknown (no program)");
         return;
     };
     let lo = crate::kir_lower::lower_user(p, user);
     match crate::kir_borrowck::check(p, user, &lo, own) {
-        crate::kir_borrowck::Outcome::Unknown(why) => eprintln!("kir-borrowck: unknown ({})", why),
+        crate::kir_borrowck::Outcome::Unknown(why) => {
+            if only {
+                drop_ast(rep);
+            }
+            eprintln!("kir-borrowck: unknown ({})", why)
+        }
         crate::kir_borrowck::Outcome::Checked(ds) => {
+            if only {
+                drop_ast(rep);
+            }
             rep.items.retain(|i| i.code != "E3010" && !(own && (i.code == "E3002" || i.code == "E3003")));
             let codes: Vec<&str> = ds.iter().map(|d| d.code).collect();
             for d in &ds {
@@ -733,13 +748,14 @@ fn kir_borrowck_hidden(rep: &mut Report, prog: Option<&Program>, user: &[usize],
 fn cmd_check(json: bool) -> i32 {
     let mut rep = Report::new(json);
     let bc_mode = std::env::var("KSN_BORROWCK").ok().or_else(|| std::env::args().find_map(|a| a.strip_prefix("--borrowck=").map(String::from))).unwrap_or_default();
-    let kir_bc = bc_mode == "kir" || bc_mode == "kir,own";
-    let kir_own = bc_mode == "kir,own";
+    let kir_only = bc_mode == "kir-only";
+    let kir_bc = bc_mode == "kir" || bc_mode == "kir,own" || kir_only;
+    let kir_own = bc_mode == "kir,own" || kir_only;
     match find_root().and_then(|r| {
         full_check(&r, &mut rep, false).map(|(_, prog, user)| {
             crate::kir_lower::dump_hidden(prog.as_ref(), &user);
             if kir_bc {
-                kir_borrowck_hidden(&mut rep, prog.as_ref(), &user, kir_own);
+                kir_borrowck_hidden(&mut rep, prog.as_ref(), &user, kir_own, kir_only);
             }
         })
     }) {
