@@ -761,6 +761,15 @@ impl<'a> Lw<'a> {
         }
     }
 
+    /// 束縛されない一時の線形な値を、借用する (`&f()`、借用の受け手 `f().m()`) とき: 借りるだけで消費しないので義務が残る (E3003)。
+    pub(super) fn own_temp(&mut self, t: &Src) {
+        if self.cur.is_none() || !self.src_is_linear(t, &mut HashSet::new()) {
+            return;
+        }
+        let id = self.unit();
+        self.emit(Ty::Unit, Op::Own { a: id, kind: kir::OwnKind::Owe });
+    }
+
     fn own_emit(&mut self, name: &str, s: usize, kind: kir::OwnKind) {
         if self.cur.is_none() || self.coll.own_mute == Some(s) {
             return;
