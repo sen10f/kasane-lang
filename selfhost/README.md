@@ -306,7 +306,7 @@ python3 -I compare.py --work /tmp/emit-work     # linear_ok の 118 件を比べ
 
 ### 10.4 対応していない形 (`emit` が止まる、または未確認)
 
-- 浮動小数 (型の表で `f32` / `f64` を拒否する。KIR の `fadd` / `fcmp` / `conv` 系、`fmtfloat`)。linear_ok の 118 件には浮動小数の定数はあるが、命令は通らない組がなかった。
+- 浮動小数 (型の表で `f32` / `f64` を拒否する。KIR の `fadd` / `fcmp` / `conv` 系、`fmtfloat`)。linear_ok の 118 件の KIR には `f32` / `f64` の型が一つも出てこない (確認済み)。
 - `std.net` / `std.fs` / `std.env` / `std.time` / `std.process` / `std.rand` / `std.thread`、`ParseInt`、`Utf8Valid`、`checked.*`、`saturating` の算術、`bitcount`、外部関数 (`link`)、関数ポインタ (`fnptr`)。
 - 入口が `()` 以外を返す形 (`Result` の表示)。wasm32・aarch64 の出力。
 - 引数を受ける入口は、Rust 版と同じく「引数の個数が合わない」panic (101) を出す形だけを写している。
