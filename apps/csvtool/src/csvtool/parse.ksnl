@@ -1,0 +1,192 @@
+import alloc.string
+import csvtool.table
+
+const csvtool.parse.ST_FIELD: u8 = 0u8
+
+const csvtool.parse.ST_QUOTE: u8 = 3u8
+
+const csvtool.parse.ST_QUOTED: u8 = 2u8
+
+const csvtool.parse.ST_TEXT: u8 = 1u8
+
+// 区切り文字でテキストを表に分解する。`"..."` で囲んだフィールドは区切り文字・
+// 改行・`""` (エスケープされた引用符) を含められる。空行は読み飛ばす。
+// `data.delim` には引数の区切り文字をそのまま入れる。
+fn csvtool.parse.parse_text(text: &str, delim: char) -> Result<csvtool.table.Table, csvtool.error.Error> uses [alloc] panics never pub
+    let clean = alloc.string.String.replace(std.alloc.SYSTEM, text, "\r\n", "\n")?
+    let clean2 = alloc.string.String.replace(std.alloc.SYSTEM, clean.as_str(), "\r", "\n")?
+    let mut rows = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut field = alloc.string.String.new(std.alloc.SYSTEM)
+    let mut row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    let mut state = csvtool.parse.ST_FIELD
+    for c in clean2.as_str().chars() {
+        if state == csvtool.parse.ST_FIELD {
+            if c == '"' {
+                state = csvtool.parse.ST_QUOTED
+            } else if c == delim {
+                core.mem.drop(row.push(alloc.string.String.new(std.alloc.SYSTEM))?)
+            } else if c == '\n' {
+                if row.len() > 0usize {
+                    core.mem.drop(row.push(field)?)
+                    field = alloc.string.String.new(std.alloc.SYSTEM)
+                    core.mem.drop(rows.push(table.Row { fields: row })?)
+                    row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+                }
+            } else {
+                core.mem.drop(field.push(c)?)
+                state = csvtool.parse.ST_TEXT
+            }
+        } else if state == csvtool.parse.ST_TEXT {
+            if c == delim {
+                core.mem.drop(row.push(field)?)
+                field = alloc.string.String.new(std.alloc.SYSTEM)
+                state = csvtool.parse.ST_FIELD
+            } else if c == '\n' {
+                core.mem.drop(row.push(field)?)
+                field = alloc.string.String.new(std.alloc.SYSTEM)
+                state = csvtool.parse.ST_FIELD
+                core.mem.drop(rows.push(table.Row { fields: row })?)
+                row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            } else {
+                core.mem.drop(field.push(c)?)
+            }
+        } else if state == csvtool.parse.ST_QUOTED {
+            if c == '"' {
+                state = csvtool.parse.ST_QUOTE
+            } else {
+                core.mem.drop(field.push(c)?)
+            }
+        } else {
+            if c == '"' {
+                core.mem.drop(field.push(c)?)
+                state = csvtool.parse.ST_QUOTED
+            } else if c == delim {
+                core.mem.drop(row.push(field)?)
+                field = alloc.string.String.new(std.alloc.SYSTEM)
+                state = csvtool.parse.ST_FIELD
+            } else if c == '\n' {
+                core.mem.drop(row.push(field)?)
+                field = alloc.string.String.new(std.alloc.SYSTEM)
+                state = csvtool.parse.ST_FIELD
+                core.mem.drop(rows.push(table.Row { fields: row })?)
+                row = alloc.vec.Vec.new(std.alloc.SYSTEM)
+            } else {
+                // 引用の直後に他の文字が来たときは、いったん閉じて普通のフィールドとして続ける
+                core.mem.drop(field.push('"')?)
+                core.mem.drop(field.push(c)?)
+                state = csvtool.parse.ST_TEXT
+            }
+        }
+    }
+    if field.len() > 0usize || row.len() > 0usize || state != csvtool.parse.ST_FIELD {
+        core.mem.drop(row.push(field)?)
+        core.mem.drop(rows.push(table.Row { fields: row })?)
+    } else {
+        core.mem.drop(field)
+        core.mem.drop(row)
+    }
+    let mut header = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    if rows.len() > 0usize {
+        match rows.remove(0usize) {
+            Some(first) => {
+                header = first.fields
+            }
+            None => core.mem.drop(0u8)
+        }
+    }
+    let t = table.Table { header: header, rows: rows, delim: delim }
+    Ok(t)
+end csvtool.parse.parse_text
+
+// 区切り文字を拡張子と最初の行から決める (.tsv / .tab はタブ、.csv はカンマ、
+// それ以外は最初の行のタブとカンマの数が多いほう)。
+fn csvtool.parse.sniff_delim(path: &str, text: &str) -> char uses [] panics never pub
+    if path.ends_with(".tsv") || path.ends_with(".tab") {
+        return '\t'
+    }
+    if path.ends_with(".csv") {
+        return ','
+    }
+    let mut line_end = text.len()
+    match text.find("\n") {
+        Some(at) => {
+            line_end = at
+        }
+        None => core.mem.drop(0u8)
+    }
+    match text.split_at(line_end) {
+        Some((head, _tail)) => {
+            let mut tabs = 0usize
+            let mut commas = 0usize
+            for c in head.chars() {
+                if c == '\t' {
+                    tabs = tabs.wrapping_add(1usize)
+                }
+                if c == ',' {
+                    commas = commas.wrapping_add(1usize)
+                }
+            }
+            if tabs > 0usize && tabs >= commas {
+                return '\t'
+            }
+            ','
+        }
+        None => ','
+    }
+end csvtool.parse.sniff_delim
+
+test csvtool.parse.parse_text.test_basic_csv
+    let t = csvtool.parse.parse_text("name,amount\nalice,3\nbob,-2.5\n", ',')?
+    core.check.eq(t.height(), 2usize)
+    core.check.eq(t.width(), 2usize)
+    core.check.eq(t.cell(0usize, 0usize), Some("alice"))
+    core.check.eq(t.cell(0usize, 1usize), Some("3"))
+    core.check.eq(t.cell(1usize, 1usize), Some("-2.5"))
+    core.check.eq(t.header_name(0usize), Some("name"))
+    core.check.eq(t.delim, ',')
+end csvtool.parse.parse_text.test_basic_csv
+
+test csvtool.parse.parse_text.test_embedded_newline_and_empty_fields
+    let t = csvtool.parse.parse_text("a,\"x\ny\",,\nz,1,2\n", ',')?
+    core.check.eq(t.height(), 1usize)
+    core.check.eq(t.width(), 4usize)
+    core.check.eq(t.cell(0usize, 1usize), Some("1"))
+    core.check.eq(t.header_name(1usize), Some("x\ny"))
+    core.check.eq(t.header_name(2usize), Some(""))
+    core.check.eq(t.header_name(3usize), Some(""))
+    core.check.eq(t.cell(0usize, 0usize), Some("z"))
+    core.check.eq(t.cell(0usize, 2usize), Some("2"))
+end csvtool.parse.parse_text.test_embedded_newline_and_empty_fields
+
+test csvtool.parse.parse_text.test_quoted
+    let t = csvtool.parse.parse_text("name,note\n\"a, b\",\"say \"\"hi\"\"\"\n", ',')?
+    core.check.eq(t.height(), 1usize)
+    core.check.eq(t.cell(0usize, 0usize), Some("a, b"))
+    core.check.eq(t.cell(0usize, 1usize), Some("say \"hi\""))
+end csvtool.parse.parse_text.test_quoted
+
+test csvtool.parse.parse_text.test_tsv_blank_and_no_newline
+    let t1 = csvtool.parse.parse_text("a\tb\n\n1\t2\n", '\t')?
+    core.check.eq(t1.height(), 1usize)
+    core.check.eq(t1.width(), 2usize)
+    core.check.eq(t1.cell(0usize, 1usize), Some("2"))
+    let t2 = csvtool.parse.parse_text("a,b", ',')?
+    core.check.eq(t2.height(), 0usize)
+    core.check.eq(t2.width(), 2usize)
+    let t3 = csvtool.parse.parse_text("", ',')?
+    core.check.eq(t3.height(), 0usize)
+    core.check.eq(t3.width(), 0usize)
+end csvtool.parse.parse_text.test_tsv_blank_and_no_newline
+
+test csvtool.parse.sniff_delim.test_by_path_and_content
+    let d1 = csvtool.parse.sniff_delim("a.tsv", "a,b")
+    core.check.is_true(d1 == '\t')
+    let d2 = csvtool.parse.sniff_delim("a.csv", "a\tb")
+    core.check.is_true(d2 == ',')
+    let d3 = csvtool.parse.sniff_delim("a.txt", "a\tb\tc")
+    core.check.is_true(d3 == '\t')
+    let d4 = csvtool.parse.sniff_delim("a.txt", "a,b,c")
+    core.check.is_true(d4 == ',')
+    let d5 = csvtool.parse.sniff_delim("a.txt", "a,b\tc")
+    core.check.is_true(d5 == '\t')
+end csvtool.parse.sniff_delim.test_by_path_and_content
