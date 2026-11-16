@@ -86,6 +86,8 @@ struct Hdr {
     inner: Vec<Vec<Rg>>,
     /// 戻り値の領域 (`&'a T` / `H<'a>`)。書かれていなければ None (省略規則か、型引数経由)。
     ret_rg: Option<Rg>,
+    /// 戻り値の型に別々のライフタイムが 2 つ以上あり (`Pair<'b, 'a>`)、先頭が `&'x` でない: 欄ごとの領域の対応を持たないので、戻り値への流れは検査しない (AST 側の検査に任せる)。
+    ret_multi: bool,
     /// ヘッダの `'a: 'b` (a は b より長生き)。
     facts: Vec<(Rg, Rg)>,
 }
@@ -223,7 +225,20 @@ impl Hdr {
         self.mut_ref[j]
             && k != j
             && (self.carries[k] || !self.tps[k].is_empty())
-            && (self.lts[k].iter().any(|x| self.lts[j].contains(x)) || self.tps[k].iter().any(|x| self.tps[j].contains(x)))
+            && (self.lts[k].iter().any(|x| self.lts[j].contains(x)) || (!self.copy_only_flow(j, k) && self.tps[k].iter().any(|x| self.tps[j].contains(x))))
+    }
+
+    /// 引数 `k` が型引数の参照そのもの (`key: &K`、`&mut K`) で、`j` の指す先に `&` もライフタイムもないとき
+    /// (`HashMap<K, V, A>::remove(self, key: &K)`): `j` に入りうるのは `*key` のコピー (`K` の中身) であって、`key` の借用そのものではない。
+    /// 型引数を共有していても、その借用 (`&local`) が入ったことにはしない。
+    fn copy_only_flow(&self, j: usize, k: usize) -> bool {
+        let body = |i: usize| self.params[i].split_once(':').map_or(self.params[i].as_str(), |x| x.1).trim().to_string();
+        let kt = body(k);
+        let Some(inner) = kt.strip_prefix("&mut ").or_else(|| kt.strip_prefix('&')) else { return false };
+        let inner = inner.trim();
+        let jt = body(j);
+        let Some(dest) = jt.strip_prefix("&mut ") else { return false };
+        !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_') && !dest.contains('&') && !dest.contains('\'')
     }
 }
 
@@ -315,10 +330,11 @@ fn parse_hdr(d: &Def) -> Option<Hdr> {
             }
         }
     }
+    let ret_multi = ret_lts.len() > 1 && !ret.starts_with("&'");
     let ret_amp = ret.contains('&');
     let ret_tp_only = ret_has_ref && !ret_amp && ret_lts.is_empty();
     let ref_param = params.iter().map(|p| p.split_once(':').map_or(p.as_str(), |x| x.1).trim().starts_with('&')).collect();
-    Some(Hdr { params, ret_has_ref, ret_amp, flows, lts, tps, mut_ref, ret_tp_only, ref_param, carries, outer, inner, ret_rg, facts })
+    Some(Hdr { params, ret_has_ref, ret_amp, flows, lts, tps, mut_ref, ret_tp_only, ref_param, carries, outer, inner, ret_rg, ret_multi, facts })
 }
 
 fn carries_ty(t: Ty) -> bool {
@@ -383,7 +399,8 @@ enum Req {
     /// `Buf` の無効化 (free / realloc / 所有物の move)。`skip` はその命令の被演算子 (無効化の後は使われない)。
     Inval { loans: Set, skip: Vec<VId>, holders: Vec<VId>, why: &'static str },
     /// 場所 `(root, off)` を値 `via` 経由で読み書きする。
-    Access { via: VId, write: bool },
+    /// `only`: 集成体を丸ごと読み書きするが、実際に触る欄 (先頭からのオフセット) が分かるとき (`s.b = v` の読み・書き戻し)。
+    Access { via: VId, write: bool, only: Option<Vec<u32>> },
     /// 借用の同時生存の検査 (被演算子も含める)。
     Pairs,
     /// 局所の寿命の終わり (`scope.end`)。その後に生きている、このスロットの借用は違反。
@@ -862,6 +879,20 @@ fn term_uses(t: &Term) -> Vec<VId> {
 
 /// 呼び出し `ch(args)` で、`&mut` の引数の指す先へ別の引数の借用が入るときの制約 (前向きの効果は `An::step` のセッター)。
 /// 指す先は呼び出し元 (`hdr`) の引数 `pi` の中の領域。入る借用が、その領域より長生きでなければ違反。
+/// 引数 `j` の指す先が、借用を持ち得ない型 (標準の所有型と基本型だけ。`&` / ライフタイム / 型引数なし。`Vec<u8>` など) か。
+/// そこへ別の引数の中身を書き込んでも、借用は入らない (`out.extend_from_slice(part)` の `part` の中身は `u8` のコピー)。
+fn holds_no_borrow(hdr: &Hdr, j: usize) -> bool {
+    let text = hdr.params[j].split_once(':').map_or(hdr.params[j].as_str(), |x| x.1).trim();
+    let Some(rest) = text.strip_prefix("&mut ") else { return false };
+    if rest.contains('&') || rest.contains('\'') || !hdr.tps[j].is_empty() {
+        return false;
+    }
+    const PRIM: [&str; 16] = ["u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64", "bool", "char"];
+    rest.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .filter(|t| !t.is_empty())
+        .all(|t| PRIM.contains(&t) || t.chars().all(|c| c.is_ascii_digit()) || t.starts_with("alloc.") || t.starts_with("std.") || t.starts_with("core."))
+}
+
 fn call_stores(an: &An, hdr: &Hdr, ch: &Hdr, args: &[VId], line: usize, cons: &mut Vec<Cons>) {
     for j in 0..args.len() {
         if !ch.mut_ref[j] {
@@ -869,6 +900,9 @@ fn call_stores(an: &An, hdr: &Hdr, ch: &Hdr, args: &[VId], line: usize, cons: &m
         }
         for pl in an.org[args[j] as usize].iter() {
             let Loan::Param(pi) = *pl else { continue };
+            if holds_no_borrow(hdr, pi as usize) {
+                continue;
+            }
             let pn = hdr.params[pi as usize].split(':').next().unwrap_or("").to_string();
             let target = hdr.inner[pi as usize].first().cloned().unwrap_or_else(|| hdr.outer[pi as usize].clone());
             for k in 0..args.len() {
@@ -1152,6 +1186,43 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
         }
     };
 
+    // 集成体を丸ごと読むが、その値の使い道が `field` / `setfield` の `a` だけのとき、触る欄のオフセット (`s.b = v` の読み・書き戻し)。
+    let mut defs: HashMap<VId, &Op> = HashMap::new();
+    let mut use_ops: HashMap<VId, Vec<&Op>> = HashMap::new();
+    for b in &f.blocks {
+        for i in &b.insts {
+            defs.insert(i.dst, &i.op);
+            for o in operands(&i.op) {
+                use_ops.entry(o).or_default().push(&i.op);
+            }
+        }
+    }
+    let touched_fields = |v: VId| -> Option<Vec<u32>> {
+        let mut out = vec![];
+        for u in use_ops.get(&v)? {
+            match u {
+                Op::Field { a, off } if *a == v => out.push(*off),
+                Op::SetField { a, off, v: x } if *a == v && *x != v => out.push(*off),
+                _ => return None,
+            }
+        }
+        if out.is_empty() { None } else { Some(out) }
+    };
+    // `store p, setfield(.. setfield(load p, o1, ..), o2, ..)` が書く欄 (ほかの欄は読んだ値のまま)。
+    let stored_fields = |val: VId, p: VId| -> Option<Vec<u32>> {
+        let mut out = vec![];
+        let mut x = val;
+        loop {
+            match defs.get(&x)? {
+                Op::SetField { a, off, .. } => {
+                    out.push(*off);
+                    x = *a;
+                }
+                Op::Load(q) if *q == p && !out.is_empty() => return Some(out),
+                _ => return None,
+            }
+        }
+    };
     // 値の使用 (free 以外)。メモリを後で読むかの判定に使う。
     let mut used_non_free: HashSet<VId> = HashSet::new();
     for b in &f.blocks {
@@ -1244,9 +1315,14 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                     }
                 }
                 // 結果を使わない読み (書き戻しのための複製など) は、場所への使用ではない (借用の区間を延ばさない)。
-                Op::MemLoad { p, .. } | Op::Load(p) if used_non_free.contains(&i.dst) => reqs.push((bi, ii, line, Req::Access { via: *p, write: false })),
+                Op::MemLoad { p, .. } | Op::Load(p) if used_non_free.contains(&i.dst) => reqs.push((bi, ii, line, Req::Access { via: *p, write: false, only: touched_fields(i.dst) })),
                 Op::MemStore { p, .. } | Op::Store { ptr: p, .. } => {
-                    reqs.push((bi, ii, line, Req::Access { via: *p, write: true }));
+                    let only = match &i.op {
+                        Op::MemStore { .. } => None,
+                        Op::Store { val, .. } => stored_fields(*val, *p),
+                        _ => None,
+                    };
+                    reqs.push((bi, ii, line, Req::Access { via: *p, write: true, only }));
                     // 引数の指す先への書き込み: 局所の借用は入れられない。他の引数は同じライフタイムを共有するときだけ。
                     let (pp, vv, vt) = match &i.op {
                         Op::MemStore { p, v, ty, .. } => (*p, *v, *ty),
@@ -1256,6 +1332,9 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                     if carries_ty(vt) {
                         for l in &an.org[pp as usize] {
                             if let Loan::Param(j) | Loan::ParamIn(j) | Loan::ParamFld(j, _, _) = l {
+                                if holds_no_borrow(hdr, *j as usize) {
+                                    continue;
+                                }
                                 let jn = hdr.params[*j as usize].split(':').next().unwrap_or("").to_string();
                                 // 書き込み先の領域: 引数の中の領域 (なければ参照そのもの)。
                                 let target = match (an.pabs[pp as usize], &i.op) {
@@ -1291,7 +1370,7 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                         // `&mut` の引数に渡した局所の場所は、呼び出しで書き換えられる (生きている借用があれば拒否)。
                         for (j, &a) in args.iter().enumerate() {
                             if ch.params[j].contains("&mut") && an.place[a as usize].is_some() {
-                                reqs.push((bi, ii, line, Req::Access { via: a, write: true }));
+                                reqs.push((bi, ii, line, Req::Access { via: a, write: true, only: None }));
                             }
                         }
                         call_stores(&an, hdr, ch, args, line, &mut cons);
@@ -1316,7 +1395,7 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
         // 戻り値をヘッダに照らす。
         if let Term::Ret(v) = &b.term {
             let line = if b.insts.is_empty() { 0 } else { line_at(bi, b.insts.len() - 1) };
-            if hdr.ret_has_ref {
+            if hdr.ret_has_ref && !hdr.ret_multi {
                 for l in &an.org[*v as usize] {
                     match l {
                         Loan::Param(j) | Loan::ParamIn(j) | Loan::ParamFld(j, _, _) => {
@@ -1499,6 +1578,13 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
             _ => false,
         }
     };
+    // 丸ごとの読み書きでも、触る欄が分かっていて、借用が別の欄の中を指すなら重ならない。
+    let disjoint_field = |via: VId, w: VId, only: &Option<Vec<u32>>| -> bool {
+        match (only, &ppath[via as usize], &ppath[w as usize]) {
+            (Some(set), Some(x), Some(y)) => y.len() > x.len() && y.starts_with(x) && !set.contains(&y[x.len()]),
+            _ => false,
+        }
+    };
     let mut bmut: HashSet<VId> = HashSet::new();
     let mut bshared: HashSet<VId> = HashSet::new();
     for b in &f.blocks {
@@ -1545,12 +1631,12 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                             add(&mut diags, *line, format!("cannot invalidate (the buffer is {}) while it is still borrowed", why));
                         }
                     }
-                    Req::Access { via, write } => {
+                    Req::Access { via, write, only } => {
                         let ch = chain(*via);
                         // 呼び出しが作る値 (戻り値) は、その呼び出しの時点ではまだ無い。引数の借用を運ぶ戻り値を、自分の引数への使用とみない。
                         let own_dst = f.blocks[bi].insts[ii].dst;
                         for w in live.iter().filter(|w| **w != own_dst) {
-                            if is_borrow(*w) && !ch.contains(w) && overlap(*via, *w) && (is_mut(*w) || *write) {
+                            if is_borrow(*w) && !ch.contains(w) && overlap(*via, *w) && !disjoint_field(*via, *w, only) && (is_mut(*w) || *write) {
                                 add(&mut diags, *line, "cannot access this place while it is borrowed".to_string());
                             }
                             // 呼び出しの戻り値などを通して引き継いだ借用 (場所を持たない値) が、この場所を指している。
