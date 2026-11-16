@@ -1,0 +1,6 @@
+// expect: E2020
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let r: &u64 = 4702111234474983745u64
+    core.mem.drop(*r)
+    Ok(())
+end t.main

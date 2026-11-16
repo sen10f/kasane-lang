@@ -1,0 +1,15 @@
+// expect: E2037
+type t.S
+    n: u32
+end t.S
+
+fn t.S.keep[F: 'static](self: &t.S, f: F) -> u32 uses [] panics never
+    self.n
+end t.S.keep
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let v = t.S { n: 1u32 }
+    let x = 5u32
+    core.mem.drop(v.keep(&x))
+    Ok(())
+end t.main

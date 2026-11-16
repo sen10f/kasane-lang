@@ -1,0 +1,14 @@
+// expect: E4001
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let it = core.iter.map(
+        core.iter.range(0i32, 3i32),
+        fn(a: i32) -> i32 capture [] {
+            core.mem.drop(std.io.print_line("x"))
+            a
+        },
+    )
+    for x in it {
+        core.mem.drop(x)
+    }
+    Ok(())
+end t.main
