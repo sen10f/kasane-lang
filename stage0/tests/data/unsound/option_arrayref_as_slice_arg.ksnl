@@ -1,0 +1,13 @@
+// expect: E2023
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = [1u8, 2u8]
+    core.mem.drop(t.sink(Some(&a)))
+    Ok(())
+end t.main
+
+fn t.sink(o: Option<&[u8]>) -> () uses [] panics never
+    match o {
+        Some(b) => core.mem.drop(b)
+        None => core.mem.drop(())
+    }
+end t.sink

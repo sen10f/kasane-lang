@@ -1,0 +1,12 @@
+// expect: E2023
+fn t.cap(s: &alloc.string.String<std.alloc.System>) -> usize uses [] panics never
+    s.len()
+end t.cap
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.zbad() -> usize uses [] panics never
+    t.cap("literal")
+end t.zbad

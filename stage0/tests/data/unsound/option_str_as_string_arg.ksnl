@@ -1,0 +1,13 @@
+// expect: E2023
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x: &str = "hi"
+    core.mem.drop(t.sink(Some(x)))
+    Ok(())
+end t.main
+
+fn t.sink(o: Option<&alloc.string.String<std.alloc.System>>) -> () uses [] panics never
+    match o {
+        Some(c) => core.mem.drop(c)
+        None => core.mem.drop(())
+    }
+end t.sink

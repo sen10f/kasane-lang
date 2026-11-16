@@ -1,0 +1,13 @@
+// expect: E2023
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut n = 0u32
+    core.mem.drop(t.sink(fn(x: u32) -> u32 capture [&mut n] {
+        n = n.wrapping_add(x)
+        n
+    }))
+    Ok(())
+end t.main
+
+fn t.sink(f: fn(u32) -> u32 uses [] panics never) -> u32 uses [] panics never
+    f(1u32)
+end t.sink

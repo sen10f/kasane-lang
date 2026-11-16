@@ -1,0 +1,16 @@
+// expect: E4001
+fn t.apply[F: core.ops.Fn<(u32,), u32, [], never>](f: F) -> u32 uses [] panics never
+    f(2u32)
+end t.apply
+
+fn t.chatty(x: u32) -> u32 uses [io.console] panics never
+    x
+end t.chatty
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.zpure() -> u32 uses [] panics never
+    t.apply(t.chatty)
+end t.zpure

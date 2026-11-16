@@ -1,0 +1,9 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let mut a = [1u8, 2u8]
+    core.mem.drop(t.sink(&mut a))
+    Ok(())
+end t.main
+
+fn t.sink(b: &[u8]) -> () uses [] panics never
+    core.mem.drop(b)
+end t.sink
