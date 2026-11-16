@@ -1494,3 +1494,63 @@ python3 -I compare.py --group parse --mine native --reasons          # 一致 14
 python3 -I compare.py --group linear_ok --mine native --jobs 8       # 一致 347 / 全体 459 (下ろせた 401)
 python3 -I compare.py --group examples --mine native                 # 一致 49 / 全体 172 (下ろせた 59)、demo 3/4、tour 4/7
 ```
+
+## 27. KIR への下ろしの段 (4h)
+
+2026-11-16。ブランチ `selfhost/lower-4h` (`selfhost/lower-4g` の先頭から)。触ったのは `selfhost/lower/src/` (新規 `lower/drop.ksnl`、ほか `lower/expr` `opt` `own` `pat` `loops` `std_calls` `str` `vec` `tyk` `func` `cx`)、`selfhost/lower/e2e.py` と `e2e_parse.py` (新規)、`selfhost/emit/src/emit/` (`inst` `rt`)、この章だけ。`stage0/`・`examples/`・テストの期待値は変えていない。
+
+結論を先に: **`selfhost/parse` の 155 関数のうち 154 が下ろせて、154 が Rust 版 (`ksn kir`) と一致する形になった** (前の段は 144 / 145)。残る 1 本は `parse.read_file` (`with` と `fs.*`) で、下ろせない。それ以外の 154 関数を下ろした KIR を、`emit` → clang でネイティブにして走らせ、Rust 版でビルドした同じ本と標準出力・終了コードを比べると、**174 本の入力 × `--kinds` の有無 = 348 回のすべてで一致した** (27.3 の変形つき)。`linear_ok` は一致 347 → **363**、`examples` は一致 49 → **57**。
+
+### 27.1 下ろしたもの・直したもの
+
+- **所有物を持つ値の「移したかの印」と解放** (新規 `lower/drop.ksnl`。Rust 版 `kir_lower_coll.rs` の `Owned::Val` と `drop_value` の写し): 構造体・列挙型・`Option` / `Result` の局所 (`Vec` / `String` の局所は従来どおり枠) は、束縛の前に `frame.bytes 1` の枠を作り (`lower.drop.pre`)、束縛の後で `const.bool true` と `mem.store.bool` で印を立てる (`lower.drop.mark`)。値として読んで移したとき (`lower.expr.path` の非 Copy の読み・`self` で受ける呼び出し・非 Copy を束縛する腕) に印を落とす (`lower.drop.moved`)。出口 (本体の終わり・`return`・`?`・`break` / `continue`・ブロックの終わり) では、`mem.load.bool` → `br_if` → 解放 → 合流の形で、印が立っているときだけ値を解放する (`lower.drop.exit`)。解放 (`lower.drop.value`) は構造体なら欄を逆順に、`Option` / `Result` はタグで枝を分けて、列挙型は所有物を持つ変種ごとにタグを比べて、`Vec` / `String` は `field +0` の `heap.free` (Rust 版と同じ並び)。`parse.cur.new` の差と、`linear_ok` の食い違いの約 20 件はこれで消えた。
+- **枠の並び**: 入口の先頭には `frame.bytes` (`24` と `1`) を先に、`alloca` をその後に、どちらも作った順で集める (Rust 版の並び。`lower.func.body_text`)。ブロックの終わりは、所有する局所の解放を逆順に出してから、所有しないスロットの `scope.end` を逆順に出す (`lower.expr.end_locals`)。
+- **`match` の対象の所有** (Rust 版の `scrut_begin` / `scrut_arm`): 対象が呼び出し・`?` の結果 (一時の値) で所有物を持つとき、所有物を束縛しない腕の頭 (束縛の後) で値を丸ごと解放する (`lower.drop.arm_head`)。束縛する腕は束縛した変数が引き継ぎ、束縛を確かめる読み直し (`payload` / `field`) だけを出す。`Option` / `Result` の腕で所有物を束縛するときは、束縛を条件のブロックで先に行う (Rust 版と同じ)。腕の中で作った局所は、腕の終わりで解放して `scope.end` する (これまでは何もしなかった)。
+- **入れ子の腕** (`lower.opt.nested`): `Err(parse.err.Error.Syntax(a, b, c, d))` のように、`Option` / `Result` の中が列挙型の変種のパターンのとき、内側のタグを `icmp.eq.i32` で比べ、束ねる欄ごとに `field` と `const.bool true` と `and.bool` を重ねた条件にする。
+- **`match NAME.as_mut_slice().get_mut(i) { Some(x) => .., None => .. }`** (`lower.expr.getmut_match`): Rust 版と同じく `Option` を作らず、範囲の検査で枝を分け、要素の番地を `bitcast.mutref<T>.ptr` の値として束ねる。
+- **`let` の構造体の分解**は、欄を全部先に読んでから名前に束ね、所有する欄を逆順に読み直す (`lower.pat.bind`)。
+- **標準の呼び出し**: `String.push_u64` (生成した小関数。本体は Rust 版の形ではない)、`Vec` の局所の `get` / `last` (ヘッダから直に。`carry` の第 1 引数は `Vec` のヘッダ)、`str.ends_with`・`&str` どうしの `==` / `!=` (その場の比べるループ。Rust 版の `str_eq`)、`core.str.from_utf8` (`utf8.valid`)、`char.try_from_u32`、`std.env.arg`。`never` 型の `match` (どの腕も `return`) は、合流のブロックを `unreachable` にする。スカラー要素の `.iter()` の `for` は、要素を本体の頭で先に読む (Rust 版と同じ)。
+- **列挙型のレイアウト**: 変種の欄は、列挙型全体のそろえの位置から並べる (`Alloc(AllocError)` が `+4` ではなく `+8`)。Rust 版の集成体の定義と一致する。
+- **`emit` の命令**: `carry` (何もしない)・`utf8.valid`・`env.arg`・`env.arg_count` を足した。これまで `get` と `env` を使う本は `emit` が通らなかった。
+- **端から端まで** (新規 `lower/e2e.py`、`lower/e2e_parse.py`。27.4 の再現)。
+
+### 27.2 数字
+
+| 対象 | 前 (4g) | 後 (4h) |
+| --- | ---: | ---: |
+| **`selfhost/parse` (155 関数)**: 一致 / 下ろせた | 144 / 145 | **154 / 154** |
+| `linear_ok` (459 関数): 一致 / 下ろせた | 347 / 401 | **363 / 403** |
+| `examples` (172 関数): 一致 / 下ろせた | 49 / 59 | **57 / 65** |
+| `examples/demo`: 一致 / 全体 | 3 / 4 | 3 / 4 |
+| `examples/tour`: 一致 / 全体 | 4 / 7 | 4 / 7 |
+| 端から端まで `linear_ok` (一致 / `t.main` から呼ぶ関数が全部下ろせた本) | 98 / 98 | **99 / 99** |
+| **端から端まで `selfhost/parse`** (348 回の実行のうち、Rust 版と標準出力・終了コードが一致) | (未着手) | **348 / 348** |
+
+- `selfhost/parse` の「下ろせた」154 は、`parse.read_file` だけが下ろせず (27.3)、一致 154 は下ろせた全部と同じ。
+- `linear_ok` の「全部下ろせた」は、`t.main` から呼ぶ関数が全部下ろせた本 (呼び先が 1 つでも未対応なら除く)。4g の `lower.native` を作り直して同じ数え方で数えると 98 本で、この段は 99 本。途中で、部分的な移動と総称の解放を「未対応」で止めて 96 本まで減らしたが、解放しない形 (27.3) に直して戻した。
+- `cargo test --release` (`--no-fail-fast`) は全件通過 (`/tmp/s7f_cargo.log`、rc=0)。1 度目に落ちた `http_tls` の `https_app_keeps_one_connection_for_several_requests` は、負荷が高いときの既知の不安定な試験で、2 度目は通った。
+- `ksn check`: `selfhost/` の全パッケージで診断 0 件 (`probes/boxtree` の E4013 だけ期待どおり)。`selfhost/lower` と `selfhost/emit` の `ksn fmt --check` は通る (`selfhost/borrow` の E0020 は前からで、この段では触っていない)。
+
+### 27.3 まだ
+
+- **`parse.read_file`** (`with mut file = std.fs.open(path)? close core.mem.drop(file.close()) { .. }`): 下ろせない。`with` の後始末を出口 (`?`・`return`) ごとに出す仕組み (Rust 版の `Owned::With`)、`fs.open` / `fs.read` / `fs.close` の組み込み、`std.fs.read_to_end` の展開、`emit` 側の `fs.*` が要る。これが `selfhost/parse` を丸ごと下ろす最後の 1 本。
+- **`selfhost/parse` の端から端まで**は、そのため丸ごとではなく変形つき: `e2e_parse.py` は parse の写しを /tmp に作り、`parse.process` が引数の文字列そのものをソースとして読む形 (`path.as_bytes()`。`parse.read_file` は消す) に替える。残りの 154 関数は `selfhost/parse` のまま。入力は `examples` と `linear_ok` と `selfhost/parse/broken` のソースの中身を引数として渡す (120 KB 以下)。構文エラーの入力 (`broken`) の出力も含めて一致した。`read_file` を含む本物の `selfhost/parse` を走らせる (ファイル名を渡す) のは未着手。
+- **解放しないもの** (Rust 版は解放する。実行は安全で、メモリが漏れるだけ): (1) 所有物の欄を局所から移したとき (部分的な移動) は、その局所の残りの欄も解放しない (Rust 版は移した欄を空にして残りを解放する)。印は落とす。(2) 総称の構造体・列挙型が所有物を持つ値は解放しない。(3) 要素が所有物の `Vec` は、バッファだけ返して要素は解放しない (`Vec<String>` の局所も、これまでどおり)。(4) `match` の対象が局所 (印を持つ値) のときの、束縛しない腕での丸ごとの解放 (腕の頭) は出さない。印が立ったまま残り、スコープの終わりで解放される。
+- **`linear_ok` の食い違い 40 関数** (下ろせた 403 のうち): 最初の差は、`Option<&T>` の中の参照の型 (`ref<T>` と `ptr`)・欄の参照 (`fieldaddr` の型)・`if` / `while` の合流で引き回す局所の組 (move の後の復活)・一時値の `scope.end` と解放 (文の終わり)・`match` の対象の欄 (`x.f`) の部分的な移動・借用される局所の `alloca` の並び、など。`examples` の残りは 22.4 の 2 (`core.iter.fold`) と、`for` の範囲と `Vec` 以外・クロージャ。
+- 生成した小関数 (`Vec.push` ほか) の本体は、呼び出し側だけ Rust 版と一致し、本体は Rust 版の形ではない (24.3 のまま。`push_u64` も同じ)。
+
+### 27.4 処理系の不足 (stage0。直していない)
+
+新しく見つかったものはない。22.4 の 1・2 は変わらない。見つけた癖 (不足ではない): `let S { name, other: _o } = self` の分解は、Rust 版では `self` の印を落とさず、本体の終わりで印を見て残りを解放する枝を出す (実行では印が落ちているので解放されない)。この段の下ろしも同じ形を出す。
+
+### 27.5 再現
+
+```
+cd selfhost/lower && ksn check && ksn fmt --check && ksn build --release
+(cd ../emit && ksn build --release)
+python3 -I compare.py --group parse --mine native --reasons          # 一致 154 / 全体 155 (下ろせた 154)
+python3 -I compare.py --group linear_ok --mine native --jobs 8       # 一致 363 / 全体 459 (下ろせた 403)
+python3 -I compare.py --group examples --mine native                 # 一致 57 / 全体 172 (下ろせた 65)、demo 3/4、tour 4/7
+python3 -I e2e.py                                                    # linear_ok の端から端まで
+python3 -I e2e_parse.py                                              # selfhost/parse の端から端まで (read_file を除いた写し)
+```
