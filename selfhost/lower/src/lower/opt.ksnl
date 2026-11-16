@@ -9,6 +9,7 @@ fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize
         lower.vec.store_hdr(c, slot, v)?
         return lower.cx.push_local(c, name, slot + 1usize, m, t, true)
     }
+    let fl = lower.drop.pre(env, c, t)?
     if lower.cx.is_bor(c, name) && !is_ref {
         let tt = lower.tyk.text(env, c, t)?
         let mt = lower.cx.cat2("mutref<", tt.as_str())?
@@ -16,9 +17,13 @@ fn lower.opt.bind(env: &types.env.Env, c: &mut lower.cx.Cx, name: &str, v: usize
         let slot = lower.cx.def(c, mt2.as_str(), "alloca")?
         let st = lower.opt.two_op("store ", slot, v)?
         lower.cx.def(c, "unit", st.as_str())?
-        return lower.cx.push_local(c, name, slot + 1usize, m, t, true)
+        let bk = lower.cx.push_local(c, name, slot + 1usize, m, t, true)?
+        lower.drop.mark(c, bk, fl)?
+        return Ok(bk)
     }
-    lower.cx.push_local(c, name, v + 1usize, m, t, false)
+    let lk = lower.cx.push_local(c, name, v + 1usize, m, t, false)?
+    lower.drop.mark(c, lk, fl)?
+    Ok(lk)
 end lower.opt.bind
 
 // `Option<&T>` の中身 `bref` の値 bv から、`ref<T>` を取り出す (`field bv, +0` の後に `bitcast.ref<T>.ptr`)。
@@ -618,6 +623,7 @@ fn lower.opt.user_method(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur
             let rr = lower.cx.R { v: rv, t: bt }
             recv = lower.opt.recv_value(env, c, rr, self_ref)?
             if !self_ref {
+                lower.drop.moved(c, loc - 1usize)?
                 lower.own.emit(c, loc - 1usize, "own.consume ")?
             }
         }

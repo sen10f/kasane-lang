@@ -74,6 +74,7 @@ fn lower.vec.exit_drops(env: &types.env.Env, c: &mut lower.cx.Cx, hi: usize, lo:
     let mut k = hi
     while k > lo {
         k = k - 1usize
+        lower.drop.exit(env, c, k)?
         if lower.cx.is_slot(c, k) && lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
             let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
             lower.vec.free_hdr(c, sv)?
@@ -89,6 +90,7 @@ fn lower.vec.exit_scope(env: &types.env.Env, c: &mut lower.cx.Cx, hi: usize, lo:
     let mut k = hi
     while k > lo {
         k = k - 1usize
+        lower.drop.exit(env, c, k)?
         if lower.cx.is_slot(c, k) {
             let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
             if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {

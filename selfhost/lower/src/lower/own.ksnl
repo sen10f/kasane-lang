@@ -1,5 +1,8 @@
 // 腕に入るとき、対象の局所を移す (非 Copy の値を束縛する腕、線形な対象の `_` 以外の腕)。
 fn lower.own.arm_consume(c: &mut lower.cx.Cx, sloc: usize, slin: bool, noncopy: bool, wild: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if sloc != 0usize && noncopy {
+        lower.drop.moved(c, sloc - 1usize)?
+    }
     if sloc != 0usize && (noncopy || (slin && !wild)) {
         lower.own.emit(c, sloc - 1usize, "own.consume ")?
     }

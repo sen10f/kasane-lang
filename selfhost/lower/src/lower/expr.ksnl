@@ -258,6 +258,7 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
     let mut k = c.v.vals.len()
     while k > mark {
         k = k - 1usize
+        lower.drop.exit(env, c, k)?
         if lower.cx.is_slot(c, k) {
             let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
             if lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
@@ -1451,6 +1452,7 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
         if c.s.peek {
             lower.own.emit(c, loc - 1usize, "own.use ")?
         } else if !lower.own.is_copy(env, c, bt) {
+            lower.drop.moved(c, loc - 1usize)?
             lower.own.emit(c, loc - 1usize, "own.consume ")?
         }
         return Ok(lower.cx.R { v: base, t: bt })
@@ -1460,6 +1462,9 @@ fn lower.expr.path(env: &types.env.Env, c: &mut lower.cx.Cx, src: &[u8], n: pars
     if lower.own.is_copy(env, c, t) {
         lower.own.emit(c, loc - 1usize, "own.use ")?
     } else {
+        if lower.drop.flag_of(c, loc - 1usize) != 0usize && !c.s.peek {
+            lower.cx.fail(c, "所有物の欄の部分的な移動 (未対応)")?
+        }
         lower.own.emit(c, loc - 1usize, "own.part ")?
     }
     Ok(fr)

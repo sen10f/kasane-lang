@@ -54,6 +54,7 @@ type lower.cx.Sl pub
     slotf: alloc.vec.Vec<bool, std.alloc.System> pub
     bor: alloc.vec.Vec<alloc.string.String<std.alloc.System>, std.alloc.System> pub
     own: alloc.vec.Vec<usize, std.alloc.System> pub
+    flag: alloc.vec.Vec<usize, std.alloc.System> pub
 end lower.cx.Sl
 
 type lower.cx.Vs pub
@@ -385,6 +386,7 @@ fn lower.cx.push_local(c: &mut lower.cx.Cx, name: &str, v: usize, m: bool, t: us
     c.v.mutf.push(m)?
     c.v.sl.slotf.push(slot)?
     c.v.sl.own.push(0usize)?
+    c.v.sl.flag.push(0usize)?
     Ok(c.v.vals.len() - 1usize)
 end lower.cx.push_local
 
@@ -431,7 +433,8 @@ fn lower.cx.sl_new() -> lower.cx.Sl uses [alloc] panics may pub
     let sf = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let br = alloc.vec.Vec.new(std.alloc.SYSTEM)
     let ow = alloc.vec.Vec.new(std.alloc.SYSTEM)
-    lower.cx.Sl { names: nm, tys: ty, slotf: sf, bor: br, own: ow }
+    let fg = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    lower.cx.Sl { names: nm, tys: ty, slotf: sf, bor: br, own: ow, flag: fg }
 end lower.cx.sl_new
 
 // 型引数の組の複製 (k 番目)。
@@ -478,6 +481,9 @@ fn lower.cx.trunc_to(c: &mut lower.cx.Cx, mark: usize) -> () uses [alloc] panics
     }
     while c.v.sl.own.len() > mark {
         let _f = c.v.sl.own.pop()
+    }
+    while c.v.sl.flag.len() > mark {
+        let _g = c.v.sl.flag.pop()
     }
 end lower.cx.trunc_to
 
