@@ -69,6 +69,20 @@ fn lower.vec.elem_addr(c: &mut lower.cx.Cx, p1: usize, idx: usize, szc: usize) -
     lower.vec.padd(c, p1, off)
 end lower.vec.elem_addr
 
+// 出口 (本体の終わり・`return`・`?` の失敗) で、局所 [lo, hi) のうち所有する `Vec` / `String` の枠を逆順に解放し、`scope.end` を出す。
+fn lower.vec.exit_drops(env: &types.env.Env, c: &mut lower.cx.Cx, hi: usize, lo: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let mut k = hi
+    while k > lo {
+        k = k - 1usize
+        if lower.cx.is_slot(c, k) && lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            lower.vec.free_hdr(c, sv)?
+            core.mem.drop(lower.cx.def1(c, "unit", "scope.end ", sv)?)
+        }
+    }
+    Ok(())
+end lower.vec.exit_drops
+
 // 枠の先頭の番地を解放する (`mem.load.ptr` と `heap.free`)。
 fn lower.vec.free_hdr(c: &mut lower.cx.Cx, slot: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let pv = lower.vec.load_ptr(c, slot)?

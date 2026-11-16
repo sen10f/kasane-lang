@@ -89,6 +89,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
         let pk = lower.opt.bind(env, c, nm, v, false, pt)?
         lower.own.declare(env, c, pk, pt)?
     }
+    let pstop = lower.cx.depth(c)
     let ret = if ret0 != 0usize {
         ret0
     } else if sg.c == 0usize {
@@ -104,15 +105,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     let r = lower.expr.expr(env, c, p, src, n.d, ret)?
     if !c.s.term {
         // 値で受けた `Vec` / `String` の引数 (枠) は、本体の後で逆順に解放する。
-        let mut k = mark
-        while k > 0usize {
-            k = k - 1usize
-            if lower.cx.is_slot(c, k) && lower.vec.is_hdr(env, c, lower.cx.tyof_t(c, k)) {
-                let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
-                lower.vec.free_hdr(c, sv)?
-                let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
-            }
-        }
+        lower.vec.exit_drops(env, c, pstop, mark)?
         if rt.as_str() == "unit" {
             // 本体の値が単位ならそれを返す (Rust 版と同じく、余分な単位の定数を作らない)。
             let bt = lower.tyk.text(env, c, r.t)?

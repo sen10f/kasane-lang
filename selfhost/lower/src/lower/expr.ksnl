@@ -1135,6 +1135,7 @@ fn lower.expr.retx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         let r = lower.expr.expr(env, c, p, src, n.a, c.s.ret_t)?
         v = r.v
     }
+    lower.vec.exit_drops(env, c, c.v.vals.len(), 0usize)?
     let s = lower.cx.cat2("ret ", lower.cx.vs(v)?.as_str())?
     lower.cx.finish(c, s)?
     lower.expr.dummy(c, types.ty.NEVER)
