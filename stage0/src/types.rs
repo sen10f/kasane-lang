@@ -1816,8 +1816,20 @@ impl<'a> TypeCk<'a> {
                 let (wa, ga) = (wa.clone(), ga.clone());
                 self.check_dyn_conv(wt, &wa, &ga);
             }
+            // `&T` → `&dyn Tr<..>` / `Box<T>` → `Box<dyn Tr<..>>`: `T` の impl のトレイト引数を渡し側として比べる。
+            (Ty::Dyn(wt, wa), Ty::Named(n, _)) => {
+                let (wt, wa, n) = (wt.clone(), wa.clone(), n.clone());
+                self.check_dyn_impl(&wt, &wa, &n);
+            }
             _ => {}
         }
+    }
+
+    /// `dyn Tr<want..>` の受け側へ型 `ty` の値を渡す: `ty` の `impl Tr<got..>` の実引数を渡し側として比べる。
+    fn check_dyn_impl(&mut self, tr: &str, want: &TArgs, ty: &str) {
+        let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else { return };
+        let Some(got) = self.impl_targs_of(&root, ty) else { return };
+        self.check_dyn_conv(tr, want, &TArgs(got));
     }
 
     /// `dyn Tr<want..>` の受け側へ `dyn Tr<got..>` の値を渡す (向きは `check_fn_conv_dir`)。トレイトの
@@ -2618,6 +2630,38 @@ impl<'a> TypeCk<'a> {
                 }
             }
         }
+        // 複数のトレイト (境界とそのスーパートレイトの推移閉包) が同名のメソッドを宣言するなら曖昧 (3.2: 複数該当はエラー)。
+        {
+            let mut seen2: HashSet<String> = HashSet::new();
+            let mut q2: Vec<String> = queue.iter().map(|x| x.0.clone()).collect();
+            let mut hits: Vec<String> = vec![];
+            let mut k = 0;
+            while k < q2.len() {
+                let tr = q2[k].clone();
+                k += 1;
+                if !seen2.insert(tr.clone()) {
+                    continue;
+                }
+                let Some(&ti) = self.p.types.get(&tr) else { continue };
+                let td = &self.p.defs[ti];
+                if td.trait_sigs.iter().any(|s| s.0 == name) {
+                    hits.push(tr.clone());
+                }
+                for (sup, _) in &td.requires {
+                    if let Some(fq) = crate::check::resolve_trait_fqn(self.p, sup) {
+                        q2.push(fq);
+                    }
+                }
+            }
+            if hits.len() > 1 {
+                self.quiet_here();
+                self.diag("E1108", format!("method `{}` on type parameter `{}` is ambiguous: declared by {}", name, pn, hits.join(", ")), line);
+                for a in args {
+                    self.escape(a);
+                }
+                return Some(Ty::Unknown);
+            }
+        }
         let mut seen: HashSet<String> = HashSet::new();
         let mut qi = 0;
         while qi < queue.len() {
@@ -3219,7 +3263,7 @@ impl<'a> TypeCk<'a> {
     fn check_unsize(&mut self) {
         for (t, d, line) in std::mem::take(&mut self.unsize) {
             let (t, d) = (self.deep(&t), self.deep(&d));
-            let Ty::Dyn(tr, _) = &d else {
+            let Ty::Dyn(tr, dargs) = &d else {
                 if matches!(d, Ty::Named(..) | Ty::Prim(_) | Ty::Tuple(_)) {
                     self.diag("E2046", format!("`Box.into_dyn` must produce a `Box<dyn ..>`, found `{}`", d.show()), line);
                 }
@@ -3228,6 +3272,9 @@ impl<'a> TypeCk<'a> {
             let Some(root) = crate::check::resolve_trait_fqn(self.p, tr) else { continue };
             let Ty::Named(n, _) = t.strip() else { continue };
             let Some(&i) = self.p.types.get(n) else { continue };
+            let (tr, dargs, n2) = (tr.clone(), dargs.clone(), n.clone());
+            self.cur_line = line;
+            self.check_dyn_impl(&tr, &dargs, &n2);
             if !self.p.impls.iter().any(|(tb, tgt)| tgt == n && crate::check::resolve_trait_fqn(self.p, tb).as_deref() == Some(root.as_str())) {
                 self.diag("E2046", format!("`{}` does not implement the trait `{}`", n, root), line);
             }
@@ -3590,8 +3637,26 @@ impl<'a> TypeCk<'a> {
                 // 決まった型引数はリテラル式の型になり、以降のフィールド・メソッド検査に流れる。
                 let order: Vec<&String> = td.generics.iter().filter(|g| g.0 == "type").map(|g| &g.1).collect();
                 let args: Vec<Ty> = order.iter().map(|_| self.fresh(0)).collect();
+                let gn = td.gnames();
+                let bounded: HashSet<String> = td
+                    .generics
+                    .iter()
+                    .filter(|g| g.0 == "type" && items(&g.2).iter().any(|b| matches!(b, V::S(x) if x == "'static")))
+                    .map(|g| g.1.clone())
+                    .collect();
+                let decl_fields: Vec<(String, V)> = td.fields.iter().map(|fl| (fl.0.clone(), fl.1.clone())).collect();
                 for x in items(&f[1]) {
                     let vt = self.infer(&items(x)[1]);
+                    // `type T[X: 'static]` の欄へ入れる値は、`'static` の境界の位置と同じ判定 (5.5)。
+                    if !bounded.is_empty() {
+                        let fname = st(&items(x)[0]);
+                        if let Some((_, fv)) = decl_fields.iter().find(|(n, _)| *n == fname) {
+                            if mentions_param(&from_v(fv, &gn), &bounded) {
+                                let origin = self.static_expr(&items(x)[1]);
+                                self.static_checks.push((vt.clone(), origin, nline(e), format!("the field `{}` of `{}` (a `'static` bound)", fname, fq)));
+                            }
+                        }
+                    }
                     let declared = self.field_ty(&Ty::Named(fq.clone(), args.clone()), &st(&items(x)[0]));
                     if let Err(err) = self.unify2(&declared, &vt) {
                         {

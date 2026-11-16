@@ -1,0 +1,24 @@
+// expect: E4001
+trait t.H[E: uses, P: panics] pub
+    fn handle(self: &Self) -> u32 uses [E] panics P
+end t.H
+
+type t.X
+    v: u32
+end t.X
+
+impl t.H<[io.console], never> for t.X
+fn t.X.handle(self: &t.X) -> u32 uses [io.console] panics never impls t.H<[io.console], never>
+    self.v
+end t.X.handle
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let x = t.X { v: 7u32 }
+    let r = t.takes_ref(&x)
+    core.mem.drop(r)
+    Ok(())
+end t.main
+
+fn t.takes_ref(h: &dyn t.H<[], never>) -> u32 uses [] panics never
+    h.handle()
+end t.takes_ref
