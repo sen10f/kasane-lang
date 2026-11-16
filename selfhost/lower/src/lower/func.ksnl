@@ -82,7 +82,7 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
     let mut first = true
     for j in core.iter.range(0usize, resolve.ast.count(p, at.a)) {
         if !first {
-            out.push_str(", ")?
+            out.push_str(",")?
         }
         first = false
         let en = parse.ast.get(&p.ast, resolve.ast.item(p, at.a, j))

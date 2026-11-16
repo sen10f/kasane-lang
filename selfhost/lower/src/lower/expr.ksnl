@@ -300,6 +300,9 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         let u = lower.expr.unit(c)?
         return Ok(lower.cx.R { v: u, t: t })
     }
+    if fqn.as_str() == "core.check.eq" {
+        return lower.chk.eq(env, c, p, src, n, t)
+    }
     if fqn.as_str() == "alloc.vec.Vec.new" {
         return lower.vec.new(env, c, t)
     }
