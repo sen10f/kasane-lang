@@ -459,6 +459,45 @@ fn lower.tyk.leave(c: &mut lower.cx.Cx, saved: alloc.vec.Vec<usize, std.alloc.Sy
     c.v.subst = saved
 end lower.tyk.leave
 
+// 列挙型の項目の変種の数。
+fn lower.tyk.nvariants(env: &types.env.Env, item: usize) -> usize uses [alloc] panics may pub
+    let file = types.infer.item_file(env, item)
+    let node = types.infer.item_node(env, item)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return 0usize
+    }
+    let nd = parse.ast.get(&p.ast, node)
+    resolve.ast.count(p, nd.d)
+end lower.tyk.nvariants
+
+// 型 t が、どの変種も値を持たない (欄のない) 利用者の列挙型か。
+fn lower.tyk.plain_enum(env: &types.env.Env, c: &lower.cx.Cx, t: usize) -> bool uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, t)
+    let n = types.ty.node(&c.ar, f)
+    if n.k != types.ty.K.Adt || n.c != 0usize {
+        return false
+    }
+    if types.infer.item_kind(env, n.a) != parse.ast.Kind.EnumDef {
+        return false
+    }
+    let file = types.infer.item_file(env, n.a)
+    let node = types.infer.item_node(env, n.a)
+    let p = match types.env.unit(env, file) {
+        Some(q) => q
+        None => return false
+    }
+    let nd = parse.ast.get(&p.ast, node)
+    let cnt = resolve.ast.count(p, nd.d)
+    for j in core.iter.range(0usize, cnt) {
+        let vn = parse.ast.get(&p.ast, resolve.ast.item(p, nd.d, j))
+        if resolve.ast.count(p, vn.b) != 0usize {
+            return false
+        }
+    }
+    cnt > 0usize
+end lower.tyk.plain_enum
+
 // 整数・bool・文字の大きさ (バイト) とそろえ。未知は 0。
 fn lower.tyk.prim_size(t: usize) -> usize uses [] panics may pub
     let f = t

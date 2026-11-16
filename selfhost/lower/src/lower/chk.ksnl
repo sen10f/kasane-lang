@@ -102,6 +102,29 @@ fn lower.chk.digits(o: &mut alloc.string.String<std.alloc.System>, fat: &str, bl
     lower.chk.nl(o)
 end lower.chk.digits
 
+// 欄のない列挙型の `==` / `!=`: `T.$eq` を呼ぶ (`!=` は結果を `xor.bool` で反転)。
+fn lower.chk.enum_cmp(env: &types.env.Env, c: &mut lower.cx.Cx, l: lower.cx.R, r: lower.cx.R, ne: bool, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
+    let f = types.ty.find(&c.ar, l.t)
+    let n = types.ty.node(&c.ar, f)
+    let fqn = lower.tyk.item_fqn(env, n.a)
+    let key = lower.cx.cat2(fqn.as_str(), ".$eq")?
+    let mut subs = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    subs.push(n.a)?
+    lower.expr.enqueue(c, key.as_str(), lower.chk.GEN, subs, types.ty.BOOL)?
+    let co = lower.cx.cat2("call ", key.as_str())?
+    let co2 = lower.cx.cat2(co.as_str(), "(")?
+    let co3 = lower.cx.cat2(co2.as_str(), lower.expr.two(l.v, r.v)?.as_str())?
+    let co4 = lower.cx.cat2(co3.as_str(), ")")?
+    let v = lower.cx.def(c, "bool", co4.as_str())?
+    if !ne {
+        return Ok(lower.cx.R { v: v, t: t })
+    }
+    let tr = lower.cx.def(c, "bool", "const.bool true")?
+    let xo = lower.cx.cat2("xor.bool ", lower.expr.two(v, tr)?.as_str())?
+    let nv = lower.cx.def(c, "bool", xo.as_str())?
+    Ok(lower.cx.R { v: nv, t: t })
+end lower.chk.enum_cmp
+
 // 固定の文字列 (16 進の綴りと長さ) を stderr へ書く。
 fn lower.chk.eprint(c: &mut lower.cx.Cx, hex: &str, len: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let ft = lower.chk.fat(c)?
@@ -226,7 +249,12 @@ fn lower.chk.p(o: &mut alloc.string.String<std.alloc.System>, s: &str) -> Result
 end lower.chk.p
 
 // 生成した関数 (`T.$eq` / `T.$debug`) を記録する。key の `.` の前が型の名前。
-fn lower.chk.record(c: &mut lower.cx.Cx, key: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+fn lower.chk.record(env: &types.env.Env, c: &mut lower.cx.Cx, key: &str, subs: &alloc.vec.Vec<usize, std.alloc.System>) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if subs.len() > 0usize {
+        let mut eo = alloc.string.String.new(std.alloc.SYSTEM)
+        lower.chk.text_enum_eq(env, c, &mut eo, key, lower.tyk.at(subs.as_slice(), 0usize))?
+        return lower.func.record(c, eo.as_str(), "")
+    }
     let mut ty = key
     for w in key.split(".") {
         ty = w
@@ -329,6 +357,90 @@ fn lower.chk.text_debug(c: &mut lower.cx.Cx, o: &mut alloc.string.String<std.all
     lower.chk.p(o, ty)?
     lower.chk.l(o, ".$debug")
 end lower.chk.text_debug
+
+// 欄のない列挙型の `$eq` の本体 (Rust 版 `derive(PartialEq)` の形: 変種の番号を順に比べる)。
+fn lower.chk.text_enum_eq(env: &types.env.Env, c: &mut lower.cx.Cx, o: &mut alloc.string.String<std.alloc.System>, key: &str, item: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    let agg = lower.tyk.agg_id(c, item)?
+    let at = lower.cx.cat2("agg#", lower.cx.dec(agg)?.as_str())?
+    let nv = lower.tyk.nvariants(env, item)
+    lower.chk.p(o, "fn ")?
+    lower.chk.p(o, key)?
+    lower.chk.p(o, " key=")?
+    lower.chk.p(o, key)?
+    lower.chk.l(o, " uses=[] panics=never stack=- ret=bool")?
+    lower.chk.p(o, "  b0(%0: ")?
+    lower.chk.p(o, at.as_str())?
+    lower.chk.p(o, ", %1: ")?
+    lower.chk.p(o, at.as_str())?
+    lower.chk.l(o, "):")?
+    lower.chk.d1(o, 2usize, "i32", "tag ", 0usize)?
+    lower.chk.d1(o, 3usize, "i32", "tag ", 1usize)?
+    lower.chk.d2(o, 4usize, "bool", "icmp.eq.i32 ", 2usize, 3usize)?
+    lower.chk.l(o, "    br_if %4, b2(), b1()")?
+    let tv = 5usize + 2usize * (nv - 1usize)
+    lower.chk.l(o, "  b1():")?
+    lower.chk.d0(o, tv + 1usize, "bool", "const.bool false")?
+    lower.chk.p(o, "    ret ")?
+    lower.chk.v(o, tv + 1usize)?
+    lower.chk.nl(o)?
+    lower.chk.l(o, "  b2():")?
+    if nv < 2usize {
+        lower.chk.l(o, "    br b3()")?
+    }
+    let mut k = 0usize
+    while k + 1usize < nv {
+        let cb = if k == 0usize {
+            2usize
+        } else {
+            2usize * k + 3usize
+        }
+        if k > 0usize {
+            lower.chk.p(o, "  b")?
+            lower.chk.p(o, lower.cx.dec(cb)?.as_str())?
+            lower.chk.l(o, "():")?
+        }
+        if k == 0usize {
+            // b2 は上で出した。
+        }
+        lower.chk.d(o, 5usize + 2usize * k, "i32", "const.i32 ")?
+        lower.chk.l(o, lower.cx.dec(k)?.as_str())?
+        lower.chk.d2(o, 6usize + 2usize * k, "bool", "icmp.eq.i32 ", 2usize, 5usize + 2usize * k)?
+        lower.chk.p(o, "    br_if ")?
+        lower.chk.v(o, 6usize + 2usize * k)?
+        lower.chk.p(o, ", b")?
+        lower.chk.p(o, lower.cx.dec(2usize * k + 4usize)?.as_str())?
+        lower.chk.p(o, "(), b")?
+        lower.chk.p(o, lower.cx.dec(2usize * k + 5usize)?.as_str())?
+        lower.chk.l(o, "()")?
+        if k == 0usize {
+            // b3 (true) は最初の比べの後に置く。
+            lower.chk.l(o, "  b3():")?
+            lower.chk.d0(o, tv, "bool", "const.bool true")?
+            lower.chk.p(o, "    ret ")?
+            lower.chk.v(o, tv)?
+            lower.chk.nl(o)?
+        }
+        lower.chk.p(o, "  b")?
+        lower.chk.p(o, lower.cx.dec(2usize * k + 4usize)?.as_str())?
+        lower.chk.l(o, "():")?
+        lower.chk.l(o, "    br b3()")?
+        k = k + 1usize
+    }
+    if nv >= 2usize {
+        lower.chk.p(o, "  b")?
+        lower.chk.p(o, lower.cx.dec(2usize * nv + 1usize)?.as_str())?
+        lower.chk.l(o, "():")?
+        lower.chk.l(o, "    br b3()")?
+    } else {
+        lower.chk.l(o, "  b3():")?
+        lower.chk.d0(o, tv, "bool", "const.bool true")?
+        lower.chk.p(o, "    ret ")?
+        lower.chk.v(o, tv)?
+        lower.chk.nl(o)?
+    }
+    lower.chk.p(o, "end ")?
+    lower.chk.l(o, key)
+end lower.chk.text_enum_eq
 
 fn lower.chk.text_eq(o: &mut alloc.string.String<std.alloc.System>, ty: &str) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     lower.chk.head(o, ty, ".$eq", "never stack=- ret=bool")?

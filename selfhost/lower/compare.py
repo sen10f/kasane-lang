@@ -4,6 +4,7 @@
 # 一致 = 正規化した本文が同じ。未対応 = lower が「unsupported」と出した関数 (本文なし)。
 #
 # 使い方: python3 -I compare.py [--group probe|examples|linear_ok|all] [--jobs N] [-v]
+#   --reasons  未対応の理由の内訳を出す (parse などで)。
 #   --mine native|interp  既定は interp (`ksn run`)。native は `target/release/lower.native` を使う (作れていれば)。
 import argparse
 import concurrent.futures as cf
@@ -118,12 +119,20 @@ def rust_fns(pkg, fqns):
     return fns, fails
 
 
+REASONS = {}
+RFAILS = {}
+
+
 def compare_pkg(pkg, mode, label):
     fqns = defs(pkg)
     if not fqns:
         return label, 0, 0, 0, 0, "定義がない"
     rust, rfail = rust_fns(pkg, fqns)
     mine, unsup, rc, err = mine_fns(pkg, fqns, mode)
+    for q, why in unsup.items():
+        REASONS[(label, q)] = why
+    for q, why in rfail.items():
+        RFAILS[(label, q)] = why
     total = 0
     match = 0
     ok = 0
@@ -175,10 +184,11 @@ def pkgs_linear_ok(tmp):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--group", default="probe", choices=["probe", "examples", "linear_ok", "all"])
+    ap.add_argument("--group", default="probe", choices=["probe", "examples", "linear_ok", "parse", "all"])
     ap.add_argument("--mine", default="interp", choices=["interp", "native"])
     ap.add_argument("--jobs", type=int, default=12)
     ap.add_argument("-v", action="store_true")
+    ap.add_argument("--reasons", action="store_true")
     a = ap.parse_args()
     tmp = tempfile.mkdtemp(prefix="lower-cmp-")
     groups = []
@@ -186,6 +196,8 @@ def main():
         groups += pkgs_probe()
     if a.group in ("examples", "all"):
         groups += pkgs_examples()
+    if a.group in ("parse", "all"):
+        groups += [("selfhost/parse", os.path.join(ROOT, "selfhost", "parse"))]
     if a.group in ("linear_ok", "all"):
         groups += pkgs_linear_ok(tmp)
     T = M = O = U = 0
@@ -203,6 +215,16 @@ def main():
         M += match
         O += ok
         U += nu
+    if a.reasons:
+        import collections
+        cnt = collections.Counter(re.sub(r"[0-9]+", "N", why)[:90] for why in REASONS.values())
+        print("未対応の理由 (lower):")
+        for why, n in cnt.most_common():
+            print("  %4d  %s" % (n, why))
+        rc2 = collections.Counter(re.sub(r"[0-9]+", "N", why)[:90] for why in RFAILS.values())
+        print("Rust 版が下ろせない (比べられない):")
+        for why, n in rc2.most_common():
+            print("  %4d  %s" % (n, why))
     print("合計: 一致 %d / 全体 %d (下ろせた %d, 未対応の理由 %d)" % (M, T, O, U))
     shutil.rmtree(tmp, ignore_errors=True)
 

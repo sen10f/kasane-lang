@@ -197,6 +197,20 @@ fn lower.opt.field_addr(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, bt:
     lower.cx.def(c, mt.as_str(), fa.as_str())
 end lower.opt.field_addr
 
+// `field_addr` の可変性を指定する版 (`&x.f` の連鎖。Rust 版は土台の参照と同じ可変性の `fieldaddr` を出す)。
+fn lower.opt.field_addr_m(env: &types.env.Env, c: &mut lower.cx.Cx, bv: usize, bt: usize, name: &str, fty: usize, mutable: bool) -> Result<usize, resolve.Failure> uses [alloc] panics may pub
+    let (inner, _through, _m) = lower.opt.deref_ty(c, bt)
+    let rs = types.ty.strip(&c.ar, inner)
+    let rn = types.ty.node(&c.ar, rs)
+    let j = lower.tyk.field_index(env, rn.a, name)?
+    let lay = lower.tyk.layout(env, c, rn.a)?
+    let off = lower.tyk.at(lay.offs.as_slice(), j)
+    let ft = lower.tyk.text(env, c, fty)?
+    let mt = lower.opt.refty(mutable, ft.as_str())?
+    let fa = lower.opt.faddr_src(bv, off)?
+    lower.cx.def(c, mt.as_str(), fa.as_str())
+end lower.opt.field_addr_m
+
 // 項目が Option (1) / Result (2) / それ以外 (0) か。
 fn lower.opt.kind(env: &types.env.Env, item: usize) -> usize uses [alloc] panics may pub
     let f = lower.tyk.item_fqn(env, item)

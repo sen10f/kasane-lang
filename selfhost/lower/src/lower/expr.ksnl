@@ -162,6 +162,9 @@ fn lower.expr.bin(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src
     }
     let l = lower.expr.expr(env, c, p, src, n.b, types.ty.UNKNOWN)?
     let r = lower.expr.expr(env, c, p, src, n.c, l.t)?
+    if (cc == "eq" || cc == "ne") && lower.tyk.plain_enum(env, c, l.t) {
+        return lower.chk.enum_cmp(env, c, l, r, cc == "ne", t)
+    }
     let ty = lower.tyk.text(env, c, l.t)?
     let mut o = alloc.string.String.new(std.alloc.SYSTEM)
     let lf3 = types.ty.find(&c.ar, l.t)
@@ -549,6 +552,65 @@ fn lower.expr.expr(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
     lower.cx.fail(c, "式の形 (未対応)")?
     lower.expr.dummy(c, t)
 end lower.expr.expr
+
+// `&x.f.g` の連鎖: 土台の局所 (構造体のスロット・構造体への参照) から `fieldaddr` をたどる。
+// 戻りは (番地の値, 番地の指す型, 可変か, 成功か)。`x.f` は Path (名前が 2 つ)、それ以外の入れ子は Dot。
+fn lower.expr.faddr_chain(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], node: usize) -> Result<(usize, usize, bool, bool), resolve.Failure> uses [alloc] panics may pub
+    let n = parse.ast.get(&p.ast, node)
+    let mut bv = 0usize
+    let mut bt = types.ty.UNKNOWN
+    let mut m = false
+    let mut fname = ""
+    if n.kind == parse.ast.Kind.Path {
+        let (first, second) = lower.expr.split2(resolve.ast.text(src, n.a, n.b))
+        if first == "" {
+            return Ok((0usize, bt, false, false))
+        }
+        let loc = lower.cx.find(c, first)
+        if loc == 0usize {
+            return Ok((0usize, bt, false, false))
+        }
+        bt = lower.cx.tyof_t(c, loc - 1usize)
+        bv = lower.cx.get_val(c, loc - 1usize).wrapping_sub(1usize)
+        if lower.cx.is_slot(c, loc - 1usize) {
+            if lower.vec.is_hdr(env, c, bt) {
+                return Ok((0usize, bt, false, false))
+            }
+            m = true
+        } else {
+            let (_inner, through, m0) = lower.opt.deref_ty(c, bt)
+            if !through {
+                return Ok((0usize, bt, false, false))
+            }
+            m = m0
+        }
+        fname = second
+    } else if (n.kind == parse.ast.Kind.Dot) {
+        let (bv1, bt1, m1, ok) = lower.expr.faddr_chain(env, c, p, src, n.a)?
+        if !ok {
+            return Ok((0usize, bt1, false, false))
+        }
+        bv = bv1
+        bt = bt1
+        m = m1
+        fname = resolve.ast.tok_text(p, src, n.b)
+    } else {
+        return Ok((0usize, bt, false, false))
+    }
+    let ft = lower.expr.tyof(c, node)?
+    let (_i2, thr2, _m2) = lower.opt.deref_ty(c, ft)
+    if thr2 || lower.vec.is_hdr(env, c, ft) {
+        return Ok((0usize, ft, false, false))
+    }
+    let (inner, _th, _mm) = lower.opt.deref_ty(c, bt)
+    let rs = types.ty.strip(&c.ar, inner)
+    let rn = types.ty.node(&c.ar, rs)
+    if (rn.k != types.ty.K.Adt || types.infer.item_kind(env, rn.a) != parse.ast.Kind.TypeDef) {
+        return Ok((0usize, ft, false, false))
+    }
+    let a = lower.opt.field_addr_m(env, c, bv, bt, fname, ft, m)?
+    Ok((a, ft, m, true))
+end lower.expr.faddr_chain
 
 // フィールドの読み出し (構造体のみ)。
 fn lower.expr.field(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
@@ -1474,6 +1536,20 @@ fn lower.expr.unary(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
                 sty = lower.cx.tyof_t(c, loc - 1usize)
                 // 借用は move 済みの値から作れない (注釈)。
                 lower.own.emit(c, loc - 1usize, "own.use ")?
+            }
+        }
+        let place = inner.kind == parse.ast.Kind.Dot || inner.kind == parse.ast.Kind.Path
+        if slot == 0usize && place {
+            // `&x.f` / `&mut x.f`: 欄の番地 (`fieldaddr`) をそのまま借りる (一時の複製を作らない)。
+            let (fa, _ft, fm, fok) = lower.expr.faddr_chain(env, c, p, src, n.b)?
+            if fok && (fm || !mutable) {
+                if fm && !mutable {
+                    let tt3 = lower.tyk.text(env, c, t)?
+                    let o3 = lower.cx.cat2("asshared ", lower.cx.vs(fa)?.as_str())?
+                    let v3 = lower.cx.def(c, tt3.as_str(), o3.as_str())?
+                    return Ok(lower.cx.R { v: v3, t: t })
+                }
+                return Ok(lower.cx.R { v: fa, t: t })
             }
         }
         if slot == 0usize {
