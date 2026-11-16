@@ -63,6 +63,14 @@ fn lower.expr.assign(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     } else {
         lower.cx.set_val(c, loc - 1usize, r.v + 1usize)?
     }
+    // 再代入: move 済みが解け、線形なら新しい値の義務を負う (所有の注釈があるときだけ)。
+    if lower.own.id(c, loc - 1usize) != 0usize {
+        if lower.own.linear(env, c, r.t)? {
+            lower.own.emit(c, loc - 1usize, "own.owe ")?
+        } else {
+            lower.own.emit(c, loc - 1usize, "own.init ")?
+        }
+    }
     if stmt {
         return Ok(lower.cx.R { v: 0usize, t: types.ty.UNIT })
     }
@@ -787,7 +795,19 @@ end lower.expr.loopx
 // match (列挙型のみ): 変種の番号をタグで比べる。変種の中の PBind は `field` で読む。
 fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
+    // 局所の対象は読むだけ (`own.use`)。移すのは、非 Copy の束縛をする腕の入口。
+    // (Option / Result だけ。利用者の列挙型の対象は普通の読み = move)
+    let st0 = lower.expr.tyof(c, n.a)?
+    let sn0 = types.ty.node(&c.ar, types.ty.strip(&c.ar, st0))
+    let is_opt = sn0.k == types.ty.K.Adt && lower.opt.kind(env, sn0.a) != 0usize
+    let mut sloc = 0usize
+    if is_opt {
+        sloc = lower.own.scrut_loc(c, p, src, n.a)
+    }
+    c.s.peek = sloc != 0usize
     let sc0 = lower.expr.expr(env, c, p, src, n.a, types.ty.UNKNOWN)?
+    c.s.peek = false
+    let slin = lower.own.linear(env, c, sc0.t)?
     let sc = lower.opt.deref_val(env, c, sc0)?
     let ss = types.ty.strip(&c.ar, sc.t)
     let sn = types.ty.node(&c.ar, ss)
@@ -797,7 +817,7 @@ fn lower.expr.matchx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, 
     }
     let item = sn.a
     if lower.opt.kind(env, item) != 0usize {
-        return lower.opt.optmatch(env, c, p, src, n, t, sc0)
+        return lower.opt.optmatch(env, c, p, src, n, t, sc0, sloc, slin)
     }
     let mut nms = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.expr.scan_arms(p, src, n.b, &mut nms, false)?

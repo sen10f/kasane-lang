@@ -1,3 +1,11 @@
+// 腕に入るとき、対象の局所を移す (非 Copy の値を束縛する腕、線形な対象の `_` 以外の腕)。
+fn lower.own.arm_consume(c: &mut lower.cx.Cx, sloc: usize, slin: bool, noncopy: bool, wild: bool) -> Result<(), resolve.Failure> uses [alloc] panics may pub
+    if sloc != 0usize && (noncopy || (slin && !wild)) {
+        lower.own.emit(c, sloc - 1usize, "own.consume ")?
+    }
+    Ok(())
+end lower.own.arm_consume
+
 // 局所 k (添字) を所有の注釈で追う。束縛の位置に単位の定数を作る。Copy でも線形でもない型だけ。線形なら義務 (`own.owe`) を負う。
 fn lower.own.declare(env: &types.env.Env, c: &mut lower.cx.Cx, k: usize, t: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
     let linear = lower.own.linear(env, c, t)?
@@ -183,6 +191,23 @@ fn lower.own.linear(env: &types.env.Env, c: &mut lower.cx.Cx, t: usize) -> Resul
     let mut seen = alloc.vec.Vec.new(std.alloc.SYSTEM)
     lower.own.is_linear(env, c, t, &mut seen)
 end lower.own.linear
+
+// match の対象が単純な名前の局所なら、その局所 (添字 + 1、なければ 0)。
+fn lower.own.scrut_loc(c: &lower.cx.Cx, p: &parse.cur.P, src: &[u8], node: usize) -> usize uses [] panics may pub
+    let nd = parse.ast.get(&p.ast, node)
+    if nd.kind != parse.ast.Kind.Path {
+        return 0usize
+    }
+    let name = resolve.ast.text(src, nd.a, nd.b)
+    if name.contains(".") {
+        return 0usize
+    }
+    let loc = lower.cx.find(c, name)
+    if loc != 0usize && lower.own.id(c, loc - 1usize) != 0usize {
+        return loc
+    }
+    0usize
+end lower.own.scrut_loc
 
 // 局所 k の注釈の識別子 (VId + 1、無ければ 0) を置く。
 fn lower.own.set(c: &mut lower.cx.Cx, k: usize, id: usize) -> Result<(), resolve.Failure> uses [alloc] panics may pub
