@@ -1,0 +1,10 @@
+// expect: E3002
+fn t.bad(x: &mut u32) -> Option<&mut u32> uses [] panics never
+    let o = Some(x)
+    *x = 5u32
+    o
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

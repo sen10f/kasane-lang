@@ -1,0 +1,8 @@
+// expect: E3030
+fn t.bad() -> &'static str uses [] panics never
+    alloc.string.String.new(std.alloc.SYSTEM).as_str()
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

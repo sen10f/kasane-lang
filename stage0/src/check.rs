@@ -4299,6 +4299,9 @@ impl<'a> Checker<'a> {
                 self.lin_closure_took = false;
                 let spawn_began = self.spawn_begin(&f[3], env);
                 self.tc_expr(&f[3], env, muts, true);
+                if is_nil(&f[2]) && nname(&f[0]) == "PBind" {
+                    self.move_mut_ref(&f[3], env, nline(s));
+                }
                 let spawn_safe = if spawn_began {
                     let unsafe_ = self.spawn_scan.pop().unwrap_or(true);
                     if unsafe_ {
@@ -4421,6 +4424,13 @@ impl<'a> Checker<'a> {
             "Assign" => {
                 self.tc_expr(&f[1], env, muts, true);
                 let tg = &f[0];
+                // `*x = ..` の `x` は読まれる: move 済みの参照を通した書き込みは E3002。
+                if nname(tg) == "Unary" && st(&nf(tg)[0]) == "*" && nname(&nf(tg)[1]) == "Path" {
+                    let segs = strs(&nf(&nf(tg)[1])[0]);
+                    if env.contains_key(&segs[0]) {
+                        self.use_place(&segs[0], &segs[1..], env, nline(s), false);
+                    }
+                }
                 if nname(tg) == "Path" {
                     let segs = strs(&nf(tg)[0]);
                     if segs.len() == 1 {
@@ -4594,6 +4604,25 @@ impl<'a> Checker<'a> {
             self.record_move(root, path, env, line);
             self.lin_consume_place(root, path, env);
         }
+    }
+
+    /// `&mut T` の局所 (引数・束縛) の、値としての move を記録する。`&mut` は Copy でなく、暗黙の再借用 (`&mut` の仮引数への
+    /// 受け渡し) が起きない位置 (型注釈のない `let y = x`・列挙子の引数・型パラメータそのものを受ける引数) で move になる。
+    /// 以後の `x` の使用は E3002。
+    fn move_mut_ref(&mut self, a: &V, env: &Env, line: usize) {
+        if nname(a) != "Path" {
+            return;
+        }
+        let segs = strs(&nf(a)[0]);
+        if segs.len() != 1 {
+            return;
+        }
+        let Some(t) = env.get(&segs[0]) else { return };
+        if is_nil(t) || tag(t) != "ref" || !matches!(tel(t, 1), V::B(true)) || self.moved_overlap(&segs[0], &[]).is_some() {
+            return;
+        }
+        self.moved.insert(segs[0].clone(), line);
+        self.move_sites.insert((line, segs[0].clone()));
     }
 
     /// 参照 (`&T` / `&mut T`) の先のフィールドを、Copy でない型のまま値として使った (move した) なら E3002 (4.1)。
@@ -5023,11 +5052,23 @@ impl<'a> Checker<'a> {
                 } else {
                     self.tc_expr(fnn, env, muts, false);
                 }
+                // 列挙子の構築 (`Some(x)`): 引数は型パラメータの位置なので、`&mut` の局所は再借用でなく move される。
+                let is_variant = nname(fnn) == "Path" && !env.contains_key(&strs(&nf(fnn)[0])[0]) && matches!(
+                    self.p.resolve(&strs(&nf(fnn)[0]), &self.def(self.d).file),
+                    Some(r) if r.rest.is_empty() && matches!(r.target, Target::Variant(..))
+                );
                 for (i, a) in items(&f[1]).iter().enumerate() {
                     self.tc_expr(a, env, muts, true);
+                    if is_variant {
+                        self.move_mut_ref(a, env, nline(a));
+                    }
                     if let Some(c) = callee {
                         if i < c.params.len() {
                             let pt = &c.params[i].1;
+                            // 型パラメータそのものを受ける仮引数 (`fn id[T](x: T)`) へ `&mut` の局所を渡すと move (再借用にならない)。
+                            if tag(pt) == "named" && items(tel(pt, 2)).is_empty() && c.gnames().contains(&st(tel(pt, 1))) {
+                                self.move_mut_ref(a, env, nline(a));
+                            }
                             // 参照越しの `match` で `&T` として束縛した名前を、値 `T` の引数に渡す (= 参照の先を move する)。
                             if nname(a) == "Path"
                                 && strs(&nf(a)[0]).len() == 1
