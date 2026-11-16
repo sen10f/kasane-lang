@@ -390,6 +390,8 @@ struct An<'a> {
     pabs: Vec<Option<(u32, u32)>>,
     /// 引数ごとの、`'static` だけの領域を持つ欄のオフセット (指す先の構造体の欄)。
     sfo: Vec<BTreeSet<u32>>,
+    /// 引数ごとの、指す先の構造体の領域を持つ欄 (入れ子も) のオフセット → 欄の宣言の領域。
+    freg: Vec<HashMap<u32, Rg>>,
 }
 
 /// 引数 `d.params` ごとに、指す先の構造体の欄のうち、宣言の上で領域が `'static` だけのもの (`&'static str` など) のオフセット。
@@ -417,6 +419,81 @@ fn static_field_offsets(p: &Program, m: &Module, d: &Def) -> Vec<BTreeSet<u32>> 
                 .filter(|(_, lts)| !lts.is_empty() && lts.iter().all(|l| l == "static"))
                 .filter_map(|(fname, _)| fields.iter().find(|f| f.name == *fname).map(|f| f.off))
                 .collect()
+        })
+        .collect()
+}
+
+/// 型の `V` が名前つきの型 (`t.Pair<..>`) なら、その定義の番号。
+fn named_type_def(p: &Program, file: &str, t: &V) -> Option<usize> {
+    let V::L(parts) = t else { return None };
+    if parts.len() < 2 || st(&parts[0]) != "named" {
+        return None;
+    }
+    let segs: Vec<String> = st(&parts[1]).split('.').map(|s| s.to_string()).collect();
+    match p.resolve(&segs, file)?.target {
+        Target::Type(i) => Some(i),
+        _ => None,
+    }
+}
+
+/// 構造体 `tdi` (ライフタイム引数 `args`) の、領域を持つ欄 (葉) のオフセット → 欄の宣言の領域 (引数を代入したもの)。
+/// 入れ子の構造体の欄 (`inner: t.Pair<'a, 'b>`) は、型引数を代入して中へたどる。葉の領域は、欄の型の最初のライフタイム。
+fn walk_field_regions(p: &Program, m: &Module, tdi: usize, args: &[Rg], base: u32, depth: u32, out: &mut HashMap<u32, Rg>) {
+    let td = &p.defs[tdi];
+    let names: Vec<String> = td.generics.iter().filter(|g| g.0 == "life").map(|g| g.1.trim_start_matches('\'').to_string()).collect();
+    if depth > 8 || names.len() != args.len() {
+        return;
+    }
+    let Some(agg) = m.aggs.iter().find(|a| a.name == td.name) else { return };
+    let AggKind::Struct(fields) = &agg.kind else { return };
+    for (fname, fty, _) in &td.fields {
+        let Some((_, lts)) = td.field_lifetimes.iter().find(|(n, _)| n == fname) else { continue };
+        let Some(f) = fields.iter().find(|f| f.name == *fname) else { continue };
+        if lts.is_empty() {
+            continue;
+        }
+        let regs: Vec<Rg> = lts.iter().map(|l| if l == "static" { Rg::Static } else { names.iter().position(|n| n == l).map_or_else(|| rg_of(l), |i| args[i].clone()) }).collect();
+        if tag(fty) == "named" {
+            if let Some(ntd) = named_type_def(p, &td.file, fty) {
+                let nn = p.defs[ntd].generics.iter().filter(|g| g.0 == "life").count();
+                if p.defs[ntd].kw == "type" && nn == regs.len() {
+                    walk_field_regions(p, m, ntd, &regs, base + f.off, depth + 1, out);
+                    continue;
+                }
+            }
+        }
+        out.insert(base + f.off, regs[0].clone());
+    }
+}
+
+/// 引数ごとの、指す先の構造体の欄 (入れ子も) のオフセット → 欄の宣言の領域 (関数のヘッダの領域に直したもの)。
+/// 引数の型のライフタイムの数が構造体の宣言と合わないとき (省略など) は空 (従来どおり引数の中の最初の領域で見る)。
+fn field_regions(p: &Program, m: &Module, d: &Def, hdr: &Hdr) -> Vec<HashMap<u32, Rg>> {
+    d.params
+        .iter()
+        .enumerate()
+        .map(|(j, (_, ty))| {
+            let mut out = HashMap::new();
+            let mut t = ty;
+            while tag(t) == "ref" {
+                t = tel(t, 2);
+            }
+            let (Some(tdi), Some(text)) = (named_type_def(p, &d.file, t), hdr.params.get(j)) else { return out };
+            let ty_text = text.split_once(':').map_or(text.as_str(), |x| x.1).trim();
+            let mut lts: Vec<String> = vec![];
+            let mut rest = ty_text;
+            while let Some(i) = rest.find('\'') {
+                let tail = &rest[i + 1..];
+                let n = tail.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(tail.len());
+                lts.push(tail[..n].to_string());
+                rest = &tail[n..];
+            }
+            if ty_text.starts_with("&'") && !lts.is_empty() {
+                lts.remove(0);
+            }
+            let args: Vec<Rg> = lts.iter().map(|l| rg_of(l)).collect();
+            walk_field_regions(p, m, tdi, &args, 0, 0, &mut out);
+            out
         })
         .collect()
 }
@@ -734,7 +811,7 @@ fn holders_of_root(st: &State, root: VId) -> Vec<VId> {
     h
 }
 
-fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, sfo: Vec<BTreeSet<u32>>, file: &str, lines: &[u32]) -> Vec<Diag> {
+fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, callee: &'a HashMap<String, Hdr>, sfo: Vec<BTreeSet<u32>>, freg: Vec<HashMap<u32, Rg>>, file: &str, lines: &[u32]) -> Vec<Diag> {
     let n = f.value_count();
     let nb = f.blocks.len();
     let mut ty = vec![Ty::Unit; n];
@@ -808,6 +885,7 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
         }
     }
     // 入口の引数の指す先からのオフセット (`field_addr` / 再借用だけをたどる)。
+    let consts: HashMap<VId, i128> = f.blocks.iter().flat_map(|b| b.insts.iter()).filter_map(|i| if let Op::Const(c) = i.op { Some((i.dst, c)) } else { None }).collect();
     let mut pabs: Vec<Option<(u32, u32)>> = vec![None; n];
     for (i, (v, _)) in f.params().iter().enumerate() {
         pabs[*v as usize] = Some((i as u32, 0));
@@ -820,6 +898,10 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                     Op::Reborrow(a) | Op::AsShared(a) | Op::Borrow { a, .. } => pabs[*a as usize],
                     Op::Bitcast { a, .. } if matches!(i.ty, Ty::Ptr | Ty::Ref(..)) => pabs[*a as usize],
                     Op::FieldAddr { a, off } => pabs[*a as usize].map(|(j, k)| (j, k + off)),
+                    Op::PtrAdd { p, off } => match (pabs[*p as usize], consts.get(off)) {
+                        (Some((j, k)), Some(c)) if *c >= 0 && *c < u32::MAX as i128 => Some((j, k + *c as u32)),
+                        _ => None,
+                    },
                     _ => None,
                 };
                 if np != pabs[i.dst as usize] {
@@ -893,7 +975,7 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
             }
         }
     }
-    let mut an = An { aggs, f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, move_stores, pabs, sfo };
+    let mut an = An { aggs, f, hdr, callee, n, ty, org: vec![Set::new(); n], place, parent, move_loads, move_stores, pabs, sfo, freg };
     let ins = an.run();
     let mut diags: Vec<Diag> = vec![];
     let mut cons: Vec<Cons> = vec![];
@@ -1016,7 +1098,12 @@ fn check_func<'a>(aggs: &'a [crate::kir::AggDef], f: &'a Func, hdr: &'a Hdr, cal
                             if let Loan::Param(j) | Loan::ParamIn(j) = l {
                                 let jn = hdr.params[*j as usize].split(':').next().unwrap_or("").to_string();
                                 // 書き込み先の領域: 引数の中の領域 (なければ参照そのもの)。
-                                let target = hdr.inner[*j as usize].first().cloned().unwrap_or_else(|| hdr.outer[*j as usize].clone());
+                                let target = match (an.pabs[pp as usize], &i.op) {
+                                    (Some((pj, k)), Op::MemStore { off, .. }) if pj == *j => an.freg.get(*j as usize).and_then(|m| m.get(&(k + off))).cloned(),
+                                    (Some((pj, k)), Op::Store { .. }) if pj == *j => an.freg.get(*j as usize).and_then(|m| m.get(&k)).cloned(),
+                                    _ => None,
+                                }
+                                .unwrap_or_else(|| hdr.inner[*j as usize].first().cloned().unwrap_or_else(|| hdr.outer[*j as usize].clone()));
                                 for vl in &an.org[vv as usize] {
                                     match vl {
                                         Loan::Slot(_) | Loan::Buf(_) => cons.push(Cons { sups: vec![Rg::Local], sub: target.clone(), line, msg: format!("cannot store a borrow of a local variable into `{}` (it outlives the function)", jn) }),
@@ -1424,7 +1511,8 @@ pub fn check(p: &Program, user: &[usize], lo: &Lowered, own: bool) -> Outcome {
         };
         let dl = p.defs[di].line;
         let sfo = static_field_offsets(p, m, &p.defs[di]);
-        diags.extend(check_func(&m.aggs, f, h, &hdrs, sfo, &file, &lines).into_iter().filter(|d| own || !matches!(d.code, "E3002" | "E3003")).map(|mut d| {
+        let freg = field_regions(p, m, &p.defs[di], h);
+        diags.extend(check_func(&m.aggs, f, h, &hdrs, sfo, freg, &file, &lines).into_iter().filter(|d| own || !matches!(d.code, "E3002" | "E3003")).map(|mut d| {
             if d.line == 0 {
                 d.line = dl;
             }
