@@ -1,0 +1,20 @@
+type t.L linear
+    v: u32
+end t.L
+
+type t.Pair linear
+    a: t.L
+    b: u32
+end t.Pair
+
+fn t.eat(l: t.L) -> () uses [] panics never
+    let t.L { v: v } = l
+    core.mem.drop(v)
+end t.eat
+
+fn t.main() -> () uses [] panics never
+    let p = t.Pair { a: t.L { v: 1u32 }, b: 2u32 }
+    if let t.Pair { a: x, b: _ } = p {
+        t.eat(x)
+    }
+end t.main

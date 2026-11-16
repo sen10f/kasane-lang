@@ -1,0 +1,12 @@
+// expect: E4023
+fn t.inner() -> () uses [suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        std.task.yield_now()
+    })
+end t.inner
+
+fn t.main() -> () uses [io.console, suspend] panics may
+    std.task.block_on(fn() -> () capture [] {
+        t.inner()
+    })
+end t.main
