@@ -349,6 +349,19 @@ fn lower.expr.call(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, sr
         let v = lower.cx.def(c, rt0.as_str(), op2.as_str())?
         return Ok(lower.cx.R { v: v, t: t })
     }
+    if lower.expr.is_widen(nty, nm) && resolve.ast.count(p, n.b) == 1usize {
+        // `u32.from_u8(x)` などの整数の広げ: `conv.DST.SRC x` (Rust 版と同じ)。
+        let sty = lower.expr.from_src(nm)
+        let an = resolve.ast.item(p, n.b, 0usize)
+        let a0 = lower.expr.expr(env, c, p, src, an, types.ty.UNKNOWN)?
+        let cv0 = lower.cx.cat2("conv.", nty)?
+        let cv1 = lower.cx.cat2(cv0.as_str(), ".")?
+        let cv2 = lower.cx.cat2(cv1.as_str(), sty)?
+        let cv3 = lower.cx.cat2(cv2.as_str(), " ")?
+        let cv4 = lower.cx.cat2(cv3.as_str(), lower.cx.vs(a0.v)?.as_str())?
+        let cv = lower.cx.def(c, nty, cv4.as_str())?
+        return Ok(lower.cx.R { v: cv, t: t })
+    }
     if fqn.as_str() == "core.check.eq" {
         return lower.chk.eq(env, c, p, src, n, t)
     }
@@ -675,6 +688,14 @@ fn lower.expr.field_src(v: usize, off: usize) -> Result<alloc.string.String<std.
     Ok(s)
 end lower.expr.field_src
 
+// `from_u8` の `u8` (接頭辞がなければ空)。
+fn lower.expr.from_src(nm: &str) -> &str uses [] panics may pub
+    match nm.strip_prefix("from_") {
+        Some(s) => s
+        None => ""
+    }
+end lower.expr.from_src
+
 fn lower.expr.ifx(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, src: &[u8], n: parse.ast.Node, t: usize) -> Result<lower.cx.R, resolve.Failure> uses [alloc] panics may pub
     let base = lower.cx.depth(c)
     let cr = lower.expr.expr(env, c, p, src, n.a, types.ty.BOOL)?
@@ -744,6 +765,16 @@ end lower.expr.is_assign
 fn lower.expr.is_iter_name(p: &parse.cur.P, src: &[u8], tok: usize) -> bool uses [] panics may pub
     resolve.ast.tok_text(p, src, tok) == "iter"
 end lower.expr.is_iter_name
+
+// `core.num.DST.from_SRC` (整数どうしの広げ) か。
+fn lower.expr.is_widen(nty: &str, nm: &str) -> bool uses [alloc] panics may pub
+    if !nm.starts_with("from_") || nm == "from_str_radix" {
+        return false
+    }
+    let sty = lower.expr.from_src(nm)
+    let src_ok = lower.chk.is_unsigned(sty) || lower.chk.is_signed(sty)
+    src_ok && (lower.chk.is_unsigned(nty) || lower.chk.is_signed(nty))
+end lower.expr.is_widen
 
 // 整数の `wrapping_add/sub/mul/shl/shr` (命令 `add.T.wrap` など)。
 fn lower.expr.is_wrap_op(m: &str) -> bool uses [] panics may pub
