@@ -28,17 +28,37 @@ fn iter_call<'a>(e: &'a V, name: &str) -> Option<&'a [V]> {
     (strs(&nf(&nf(e)[0])[0]) == ["core", "iter", name]).then(|| items(&nf(e)[1]))
 }
 
-/// 反復子の式を、元の範囲の 2 引数と、段 (内側から順) に分ける。
-fn parse_pipe<'a>(it: &'a V, stages: &mut Vec<(Stage, &'a V)>) -> Option<(&'a V, &'a V)> {
+/// 連なりの元の範囲: 式の 2 引数、または `let r = core.iter.range(a, b)` で評価済みの端。
+enum Src<'a> {
+    Exprs(&'a V, &'a V),
+    Vals(VId, VId, Ty),
+}
+
+/// `let r = core.iter.range(a, b)` の右辺なら、その 2 引数。
+pub(crate) fn range_args(e: &V) -> Option<(&V, &V)> {
+    let a = iter_call(e, "range")?;
+    (a.len() == 2).then(|| (&a[0], &a[1]))
+}
+
+/// 反復子の式を、元の範囲と、段 (内側から順) に分ける。
+fn parse_pipe<'a>(lw: &Lw, it: &'a V, stages: &mut Vec<(Stage, &'a V)>) -> Option<Src<'a>> {
     if let Some(a) = iter_call(it, "range") {
-        return (a.len() == 2).then(|| (&a[0], &a[1]));
+        return (a.len() == 2).then(|| Src::Exprs(&a[0], &a[1]));
+    }
+    if nname(it) == "Path" {
+        let segs = strs(&nf(it)[0]);
+        if segs.len() == 1 {
+            if let Some(super::coll::Kind::Range { start, end, ty }) = lw.lookup(&segs[0]).and_then(|s| lw.coll.kinds.get(&s)) {
+                return Some(Src::Vals(*start, *end, *ty));
+            }
+        }
     }
     for (name, st) in [("map", Stage::Map), ("filter", Stage::Filter)] {
         if let Some(a) = iter_call(it, name) {
             if a.len() != 2 {
                 return None;
             }
-            let r = parse_pipe(&a[0], stages)?;
+            let r = parse_pipe(lw, &a[0], stages)?;
             stages.push((st, &a[1]));
             return Some(r);
         }
@@ -74,12 +94,17 @@ pub(crate) fn pipe_call(lw: &mut Lw, e: &V, fold: bool) -> LR<Option<VId>> {
         return lw.err(line, "反復子の終端の引数の個数が違う");
     }
     let mut stages = vec![];
-    let Some((a, b)) = parse_pipe(&argv[0], &mut stages) else {
+    let Some(src) = parse_pipe(lw, &argv[0], &mut stages) else {
         return lw.err(line, "反復子の元は core.iter.range(a, b) と map / filter の連なりだけ段階 1 の対象 (take・enumerate・Vec の iter は未対応)");
     };
-    let Some(start) = lw.expr(a)? else { return Ok(None) };
-    let Some(end) = lw.expr(b)? else { return Ok(None) };
-    let ity = lw.ty_of(a)?;
+    let (start, end, ity) = match src {
+        Src::Exprs(a, b) => {
+            let Some(start) = lw.expr(a)? else { return Ok(None) };
+            let Some(end) = lw.expr(b)? else { return Ok(None) };
+            (start, end, lw.ty_of(a)?)
+        }
+        Src::Vals(start, end, ty) => (start, end, ty),
+    };
     if !ity.is_int() || lw.vty(end) != ity {
         return lw.err(line, "core.iter.range の範囲は同じ整数の型だけ段階 1 の対象");
     }

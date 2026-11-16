@@ -577,10 +577,10 @@ fn test_both_runs_a_test_without_uses_that_calls_alloc_and_console_functions_on_
 
 #[test]
 fn test_both_falls_back_from_llvm_to_the_bundle_with_the_reason() {
-    // `char.is_ascii_digit` は KIR に下ろせない (段階 1 の対象外) ので、LLVM は理由を出してバンドルへ退避する。
+    // `i32.successor` は KIR に下ろせない (段階 1 の対象外) ので、LLVM は理由を出してバンドルへ退避する (以前の例 `char.is_ascii_digit` は kir/native-gaps-3 で下りるようになった)。
     // バンドルの文言は木走査と同じなので一致になる。
     let src = format!(
-        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq('a'.is_ascii_digit(), false)\nend t.main.test_mixed\n",
+        "{}\ntest t.main.test_mixed\n    let x = 255u8\n    let y = x + 1u8\n    core.check.eq(y, 0u8)\n    core.check.eq(i32.successor(&1i32), Some(2i32))\nend t.main.test_mixed\n",
         BOTH_SRC
     );
     let t = Tmp::new("both_llvm_to_native", &src);

@@ -808,6 +808,12 @@ pub fn run(m: &Module, key: &str, args: &[i128]) -> Result<Outcome, String> {
                         Err(e) => e.valid_up_to() as i128,
                     }
                 }
+                Op::FloatText { bits, a, dst } => {
+                    let x = get(&stack[top], a);
+                    let s = if *bits == 32 { py_float32(f32::from_bits(x as u32)) } else { py_float(f64::from_bits(x as u64)) };
+                    bm.write_bytes(get(&stack[top], dst), s.as_bytes())?;
+                    s.len() as i128
+                }
                 Op::MemLoad { p, off } => bm.read(get(&stack[top], p) + *off as i128, inst.ty)?,
                 Op::MemStore { ty, p, off, v } => {
                     let (a, x) = (get(&stack[top], p) + *off as i128, get(&stack[top], v));

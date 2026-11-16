@@ -151,6 +151,20 @@ static const char *ksn_fmt(double f, int is32, char *out) {
 const char *ksn_fmt_f64(double f) { return ksn_fmt(f, 0, ksn_fbuf[0]); }
 const char *ksn_fmt_f32(float f) { return ksn_fmt((double)f, 1, ksn_fbuf[1]); }
 
+/* 書式化した文字列を `dst` (32 バイト以上) へ複写し、長さを返す (`String` へ追記する `Display` 用)。 */
+long long ksn_fmt_f64_to(double f, char *dst) {
+    const char *s = ksn_fmt_f64(f);
+    size_t n = strlen(s);
+    memcpy(dst, s, n);
+    return (long long)n;
+}
+long long ksn_fmt_f32_to(float f, char *dst) {
+    const char *s = ksn_fmt_f32(f);
+    size_t n = strlen(s);
+    memcpy(dst, s, n);
+    return (long long)n;
+}
+
 /* `p` から `n` バイトを UTF-8 として検証し、正しい接頭辞の長さ (Rust の `Utf8Error::valid_up_to`) を返す。
  * 全体が正しければ `n`。規則は Rust の `core::str::from_utf8` と同じ (過長な符号化・サロゲート・U+10FFFF 超を拒む)。 */
 long long ksn_utf8_valid(const unsigned char *p, long long n) {

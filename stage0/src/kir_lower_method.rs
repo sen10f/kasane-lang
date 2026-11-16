@@ -509,7 +509,7 @@ impl<'a> Lw<'a> {
                         // `it.next()` (局所の `s.chars()`): 残りの `&str` を進める。
                         if segs.len() == 2 && segs[1] == "next" {
                             if let Some(s) = self.lookup(&segs[0]) {
-                                if self.slots[s].1 == self.fat_ty() {
+                                if self.slots[s].1 == self.fat_ty() || matches!(self.slots[s].1, Ty::Agg(i) if self.aggs.borrow().defs[i as usize].name == "split_it") {
                                     out.push(segs[0].clone());
                                 }
                             }

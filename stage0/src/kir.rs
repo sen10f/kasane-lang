@@ -958,6 +958,9 @@ pub enum Op {
     /// 浮動小数を `py_float` / `py_float32` と同じ規則で書式化して stderr へ出力する。
     /// 被演算子は `f32` または `f64`、結果は `unit`。`panics may` のときだけ。
     FmtFloat { bits: u32, a: VId },
+    /// 浮動小数を `FmtFloat` と同じ規則で書式化して、`dst` (32 バイト以上の領域) へ書き、書いたバイト数 (`usize`) を返す。
+    /// 被演算子は `f32` または `f64`。`String` へ追記する `Display` が使う (`push_display`)。
+    FloatText { bits: u32, a: VId, dst: VId },
     /// `p` から `len` バイトを UTF-8 として検証し、正しい接頭辞の長さ (`valid_up_to`) を返す。全体が正しければ `len`。
     Utf8Valid { p: VId, len: VId },
     /// `core.num.<int>.from_str_radix(text, radix)`。`ty` は結果の整数型、`s` は `&str` (fat)、`radix` は `u32`。
@@ -1491,6 +1494,7 @@ fn fmt_inst(i: &Inst) -> String {
         Op::Eprint { data } => format!("eprint {}", fmt_val(*data)),
         Op::Abort => "abort".to_string(),
         Op::FmtFloat { bits, a } => format!("fmtfloat.{bits} {}", fmt_val(*a)),
+        Op::FloatText { bits, a, dst } => format!("floattext.{bits} {}", fmt_vals(&[*a, *dst])),
         Op::ParseInt { ty, s, radix } => format!("parseint.{} {}", ty.name(), fmt_vals(&[*s, *radix])),
     };
     format!("%{}: {} = {}", i.dst, fmt_ty(i.ty), body)
@@ -2024,6 +2028,14 @@ fn parse_rhs(rhs: &str, ty: Ty, line: usize) -> Result<Op, String> {
             }
             let v = operands(1)?;
             Ok(Op::FmtFloat { bits, a: v[0] })
+        }
+        ("floattext", [bits]) if ty == Ty::Usize => {
+            let bits = bits.parse::<u32>().map_err(|_| perr(line, "floattext のビット数は 32 または 64"))?;
+            if bits != 32 && bits != 64 {
+                return Err(perr(line, "floattext のビット数は 32 または 64"));
+            }
+            let v = operands(2)?;
+            Ok(Op::FloatText { bits, a: v[0], dst: v[1] })
         }
         ("parseint", [t]) => {
             let Some(ty) = Ty::parse(t) else {
@@ -3061,6 +3073,18 @@ fn verify_func(m: &Module, f: &Func) -> Result<(), String> {
                             return Err(format!("fmtfloat の被演算子は f{} のはず", bits));
                         }
                     }
+                    Op::FloatText { bits, a, dst } => {
+                        if i.ty != Ty::Usize {
+                            return Err("floattext の結果は usize のはず".into());
+                        }
+                        let at = ty_of(*a)?;
+                        if !(matches!((bits, at), (32, Ty::F32) | (64, Ty::F64))) {
+                            return Err(format!("floattext の被演算子は f{} のはず", bits));
+                        }
+                        if ty_of(*dst)? != Ty::Ptr {
+                            return Err("floattext の書き先は ptr のはず".into());
+                        }
+                    }
                     Op::ParseInt { ty, s, radix } => {
                         if !ty.is_int() {
                             return Err(format!("parseint の結果の整数型 {} は整数ではない", ty.name()));
@@ -3228,6 +3252,7 @@ pub(crate) fn operands(op: &Op) -> Vec<VId> {
         | Op::FBin { a, b, .. } => vec![*a, *b],
         Op::Shift { a, n, .. } => vec![*a, *n],
         Op::FmtFloat { a, .. } => vec![*a],
+        Op::FloatText { a, dst, .. } => vec![*a, *dst],
         Op::ParseInt { s, radix, .. } => vec![*s, *radix],
         Op::Store { ptr, val } => vec![*ptr, *val],
         Op::Carry { a, b } => vec![*a, *b],

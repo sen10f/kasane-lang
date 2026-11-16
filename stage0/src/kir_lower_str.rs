@@ -21,7 +21,7 @@ impl<'a> Lw<'a> {
     pub(super) fn str_method_call(&mut self, e: &V, kind: &coll::Kind, h: VId, m: &str, args: &[V]) -> Option<LR<Option<VId>>> {
         // `String` の `contains` / `starts_with` / `ends_with`: 受け手はヘッダなので、先頭の {ptr, len} を借用の
         // `fat` として `&str` の規則で比べる (設計_KIR.md 23 章)。
-        if matches!(kind, coll::Kind::String) && matches!(m, "contains" | "starts_with" | "ends_with") {
+        if matches!(kind, coll::Kind::String) && matches!(m, "contains" | "starts_with" | "ends_with" | "find" | "rfind" | "split_once" | "strip_prefix" | "strip_suffix" | "trim" | "trim_start" | "trim_end" | "split_at" | "eq_ignore_ascii_case") {
             let view = super::coll::hdr_view(self, h);
             return self.str_method_call(e, &coll::Kind::Str, view, m, args);
         }
@@ -110,6 +110,24 @@ impl<'a> Lw<'a> {
                     return None;
                 }
                 Some(Ok(Some(h)))
+            }
+            // `s.split(sep)` を局所に持つ: 残りと区切りの状態 (`split_it`)。`for` の対象の `split` は for の下ろしが先に扱う。
+            "split" => {
+                if !matches!(kind, coll::Kind::Str) || args.len() != 1 {
+                    return None;
+                }
+                let sep = self.expr(&args[0]).ok()??;
+                let fat = self.fat_ty();
+                let it = self.aggs.borrow_mut().split_it();
+                if self.vty(h) != fat || self.vty(sep) != fat || self.ty_of(e).ok() != Some(it) {
+                    return Some(self.err(line, "メソッド split の受け手・区切り・結果の型が段階 1 の対象外"));
+                }
+                let rp = self.emit(Ty::Ptr, Op::Field { a: h, off: 0 });
+                let rl = self.emit(Ty::Usize, Op::Field { a: h, off: 8 });
+                let sp = self.emit(Ty::Ptr, Op::Field { a: sep, off: 0 });
+                let sl = self.emit(Ty::Usize, Op::Field { a: sep, off: 8 });
+                let no = self.emit(Ty::Bool, Op::Const(0));
+                Some(Ok(Some(self.emit(it, Op::Make { variant: None, fields: vec![rp, rl, sp, sl, no] }))))
             }
             // `&str` の先頭/末尾から ASCII 空白だけを削る。結果は元の文字列の部分 (ptr, len) の fat 値。
             "trim" | "trim_start" | "trim_end" => {
@@ -462,7 +480,7 @@ impl<'a> Lw<'a> {
     /// 式 `e` の型が `&str` か (演算子 `==` を `str_eq` に回すかの判定)。型表に無ければ false。
     /// `s.find(pat)` (`&str` のパターン)。空のパターンは `Some(0)`、`pat` が `s` より長ければ `None`。
     /// 外側は開始位置 `i` (0..=len-plen)、内側は `k` (0..plen) で `s[i+k] == pat[k]` を比べる。
-    fn find_call(&mut self, s: VId, pat: VId) -> LR<VId> {
+    pub(super) fn find_call(&mut self, s: VId, pat: VId) -> LR<VId> {
         let sp = self.emit(Ty::Ptr, Op::Field { a: s, off: 0 });
         let sl = self.emit(Ty::Usize, Op::Field { a: s, off: 8 });
         let pp = self.emit(Ty::Ptr, Op::Field { a: pat, off: 0 });
@@ -786,6 +804,64 @@ impl<'a> Lw<'a> {
 
 
 impl<'a> Lw<'a> {
+    /// `it.next()` (`it` は局所の `s.split(sep)` の反復子 `split_it`): 次の片 `Some(&str)`、尽きたら `None`。
+    /// 区切りが空か残りが空なら、残り全部を最後の片にする (`for x in s.split(sep)` と同じ。`"a,"` は `"a"`, `""` の 2 片)。
+    pub(super) fn split_next(&mut self, e: &V, s: usize) -> LR<Option<VId>> {
+        let line = nline(e);
+        let res = self.ty_of(e)?;
+        let fat = self.fat_ty();
+        let it = self.slots[s].1;
+        if res != Ty::Opt(Pay::of(fat).expect("集成体はペイロードになる")) {
+            return self.err(line, "split の next の結果が Option<&str> ではない");
+        }
+        let cur = self.read_slot(s);
+        let rp = self.emit(Ty::Ptr, Op::Field { a: cur, off: 0 });
+        let rl = self.emit(Ty::Usize, Op::Field { a: cur, off: 8 });
+        let sp = self.emit(Ty::Ptr, Op::Field { a: cur, off: 16 });
+        let sl = self.emit(Ty::Usize, Op::Field { a: cur, off: 24 });
+        let done = self.emit(Ty::Bool, Op::Field { a: cur, off: 32 });
+        let zero = self.emit(Ty::Usize, Op::Const(0));
+        let rest = self.emit(fat, Op::Make { variant: None, fields: vec![rp, rl] });
+        let sep = self.emit(fat, Op::Make { variant: None, fields: vec![sp, sl] });
+        let (chk, _) = self.new_block(&[]);
+        let (srch, _) = self.new_block(&[]);
+        let (last, _) = self.new_block(&[]);
+        let (fnd, _) = self.new_block(&[]);
+        // join(結果, 次の状態)
+        let (join, jp) = self.new_block(&[res, it]);
+        let none = self.emit(res, Op::Const(0));
+        self.branch(done, (join, vec![none, cur]), (chk, vec![]));
+        self.cur = Some(chk);
+        let sep_empty = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: sl, b: zero });
+        let rest_empty = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Eq, ty: Ty::Usize, a: rl, b: zero });
+        let trivial = self.emit(Ty::Bool, Op::Bool(BoolOp::Or, sep_empty, rest_empty));
+        self.branch(trivial, (last, vec![]), (srch, vec![]));
+        self.cur = Some(srch);
+        let found = self.find_call(rest, sep)?;
+        let tag = self.emit(Ty::Bool, Op::Tag(found));
+        self.branch(tag, (fnd, vec![]), (last, vec![]));
+        // 見つからない: 残り全部が最後の片
+        self.cur = Some(last);
+        let yes = self.emit(Ty::Bool, Op::Const(1));
+        let st = self.emit(it, Op::Make { variant: None, fields: vec![rp, rl, sp, sl, yes] });
+        let some = self.emit(res, Op::Some(rest));
+        self.goto(join, vec![some, st]);
+        // 見つかった: 手前が片、区切りの後ろが残り
+        self.cur = Some(fnd);
+        let i = self.emit(Ty::Usize, Op::Payload(found));
+        let piece = self.emit(fat, Op::Make { variant: None, fields: vec![rp, i] });
+        let skip = self.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: i, b: sl });
+        let np = self.emit(Ty::Ptr, Op::PtrAdd { p: rp, off: skip });
+        let nl = self.emit(Ty::Usize, Op::Arith { op: Aop::Sub, mode: Mode::Wrap, a: rl, b: skip });
+        let no = self.emit(Ty::Bool, Op::Const(0));
+        let st2 = self.emit(it, Op::Make { variant: None, fields: vec![np, nl, sp, sl, no] });
+        let some2 = self.emit(res, Op::Some(piece));
+        self.goto(join, vec![some2, st2]);
+        self.cur = Some(join);
+        self.assign_slot(s, jp[1]);
+        Ok(Some(jp[0]))
+    }
+
     /// `it.next()` (`it` は局所の `s.chars()` の反復子 = 残りの `&str`): 空なら `None`、そうでなければ先頭の文字を UTF-8 から復号して
     /// `Some(c)` にし、`it` を文字の幅だけ進める (`for c in s.chars()` と同じ復号。`it` は合流へ渡す局所)。
     pub(super) fn chars_next(&mut self, e: &V, s: usize) -> LR<Option<VId>> {

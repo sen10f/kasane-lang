@@ -241,6 +241,15 @@ fn int_fn(t: Ty, fat: Ty) -> Func {
 }
 
 /// `&str` / `String` の中身をそのまま `String` へ書く (`Display`)。値の先頭 2 語が `{ptr, len}`。
+/// `f32` / `f64` の表示: 32 バイトの枠へ書式化して (`FloatText`)、書いた分を出す。
+fn float_fn(t: Ty, fat: Ty) -> Func {
+    let mut b = Fb::new_d(&[t], fat);
+    let buf = b.emit(Ty::Ptr, Op::FrameBytes { size: 40 });
+    let n = b.emit(Ty::Usize, Op::FloatText { bits: if t == Ty::F32 { 32 } else { 64 }, a: b.v, dst: buf });
+    b.put(buf, n);
+    b.finish(&key(&format!("{}.disp", t.name())))
+}
+
 fn raw_fn(ty: Ty, fat: Ty, name: &str) -> Func {
     let mut b = Fb::new_d(&[ty], fat);
     let (p, l) = if ty == Ty::Ptr {
@@ -553,6 +562,8 @@ impl<'a> Gen<'a> {
             (Src::Prim(s), Ty::Bool) if s == "bool" => self.need(src, ty, file),
             (Src::Prim(s), Ty::U32) if s == "char" => Err("char の Display の String への追記は未対応".to_string()),
             (Src::Prim(_), t) if t.is_int() && t.bits() <= 64 => self.need(src, ty, file),
+            // `f32` / `f64` の Display は Debug と同じ文字列 (`py_float` / `py_float32`)。
+            (Src::Prim(_), t) if t.is_float() => Ok(self.scalar(&format!("{}.disp", t.name()), || float_fn(t, fat))),
             (_, t) if is_str(src, t, fat) => Ok(self.scalar("str.raw", || raw_fn(fat, fat, "str.raw"))),
             (Src::Named(name, _), t) if name == "alloc.string.String" && (matches!(t, Ty::Agg(_)) || t == Ty::Ptr) => {
                 Ok(self.scalar("string.raw", || raw_fn(t, fat, "string.raw")))
