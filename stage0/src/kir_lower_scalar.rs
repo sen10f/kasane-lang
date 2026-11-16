@@ -358,7 +358,11 @@ impl<'a> Lw<'a> {
         if !matches!(f.get(2), Some(V::Nil) | None) || nname(&f[0]) != "Path" {
             return Ok(None);
         }
-        let segs = strs(&nf(&f[0])[0]);
+        let mut segs = strs(&nf(&f[0])[0]);
+        // 長い形 `core.num.<T>.<name>(..)` は短い形 `<T>.<name>(..)` と同じ下ろしに乗せる。
+        if segs.len() == 4 && segs[0] == "core" && segs[1] == "num" && Ty::parse(&segs[2]).is_some() {
+            segs.drain(0..2);
+        }
         if segs.len() != 2 {
             return Ok(None);
         }

@@ -456,3 +456,16 @@ fn t.main() -> Result<(), std.io.Error> uses [alloc, env, io.console, io.fs, ran
     Ok(())
 end t.main
 "#;
+
+/// review2 12: ホストが返す引数の個数・大きさが 32 ビットの計算を溢れさせても、`_start` は確保の大きさを巻かず、
+/// 範囲外へ書かずに終了コード 101 で止まる。
+#[test]
+fn hostile_wasi_host_sizes_stop_the_program_instead_of_overflowing() {
+    if !wasi_ready() {
+        return;
+    }
+    let t = Tmp::new("wasi_hostile", "fn t.main() -> () uses [] panics never\nend t.main\n");
+    let wasm = build_wasi(&t.0);
+    let o = Command::new("node").arg(root().join("tools").join("wasm").join("hostile_args.mjs")).arg(&wasm).stdin(Stdio::null()).output().unwrap();
+    assert_eq!(o.status.code(), Some(101), "{}{}", text(&o.stdout), text(&o.stderr));
+}

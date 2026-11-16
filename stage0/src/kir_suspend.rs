@@ -666,6 +666,11 @@ pub fn lower_func(f: &Func, aggs: &[AggDef], boxes: &[(Ty, Ty)], susp: &HashSet<
         let fpn = g.inst(&mut ins, Ty::Ptr, Op::HeapAlloc(sz));
         let st = g.konst(&mut ins, Ty::U32, 0);
         ins.push(Inst { dst: g.fresh(Ty::Unit), ty: Ty::Unit, op: Op::MemStore { ty: Ty::U32, p: fpn, off: STATE, v: st } });
+        // 結果の置き場を 0 にしておく (`poll` が偽のまま wrapper が結果を読んでも、未初期化の値にならない)。
+        let z64 = g.konst(&mut ins, Ty::U64, 0);
+        for k in 0..(align8(ret_sz) / 8) {
+            ins.push(Inst { dst: g.fresh(Ty::Unit), ty: Ty::Unit, op: Op::MemStore { ty: Ty::U64, p: fpn, off: RES + 8 * k, v: z64 } });
+        }
         for (p, t) in f.params() {
             put(&mut g, &mut ins, fpn, slot_of(*p), *p, *t).map_err(err)?;
         }
@@ -713,7 +718,6 @@ pub fn lower_func(f: &Func, aggs: &[AggDef], boxes: &[(Ty, Ty)], susp: &HashSet<
         b2.push(Inst { dst: g.fresh(Ty::Unit), ty: Ty::Unit, op: Op::MemStore { ty: Ty::Ptr, p: gb2, off: 0, v: fpp } });
         let one = g.konst(&mut b2, Ty::U32, 1);
         b2.push(Inst { dst: g.fresh(Ty::Unit), ty: Ty::Unit, op: Op::MemStore { ty: Ty::U32, p: gb2, off: 8, v: one } });
-        let _ = res2;
         Ok(vec![Block { params: vec![(fpd, Ty::Ptr)], insts: b1, term: Term::Ret(res) }, Block { params: vec![(fpp, Ty::Ptr)], insts: b2, term: Term::Ret(res2) }])
     };
     let blocks_after = fin(&mut g, ret).map_err(err)?;

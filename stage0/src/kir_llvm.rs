@@ -2196,7 +2196,9 @@ impl<'a> Fe<'a> {
             }
             Op::GlobalBytes { name, size } => {
                 let g = format!("@\"ksn.g.{}\"", name);
-                let def = format!("{} = internal global [{} x i8] zeroinitializer, align 16\n", g, size);
+                // 実行器の状態 (`ksn.task.g`・`ksn.wrap.pend`) はスレッドごとに持つ (2 本のスレッドの `block_on` が同じ表を触らない)。単一スレッドの wasm32 には TLS がない。
+                let tls = (name.starts_with("ksn.task.") || name == "ksn.wrap.pend") && size_ty() == "i64";
+                let def = format!("{} = internal {}global [{} x i8] zeroinitializer, align 16\n", g, if tls { "thread_local " } else { "" }, size);
                 if !self.cx.globals.contains(&def) {
                     self.cx.globals.push_str(&def);
                 }

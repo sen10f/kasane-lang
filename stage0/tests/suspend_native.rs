@@ -616,3 +616,43 @@ end t.main
     // The cancel should work normally (task a is still running when cancelled)
     same_as_interpreter("cancel_valid_task", &src, "a1\nbefore cancel\nafter cancel\nmain done\n", Some(0));
 }
+
+/// review2 9: 2 本のスレッドが同時に `block_on` を走らせても、実行器の状態はスレッドごと (表を共有しない)。
+#[test]
+fn native_block_on_in_two_threads_does_not_share_the_executor() {
+    let src = with_say(
+        "fn t.run(n: u32) -> u64 uses [alloc, suspend] panics may
+    std.task.block_on(fn() -> u64 capture [move n] {
+        let mut total = 0u64
+        for i in core.iter.range(0u32, n) {
+            let h = std.task.spawn_local(
+                fn() -> u64 capture [move i] {
+                    std.task.yield_now()
+                    u64.from_u32(i)
+                },
+            )
+            std.task.yield_now()
+            total = total.wrapping_add(h.join_task())
+        }
+        total
+    })
+end t.run
+
+fn t.main() -> () uses [alloc, io.console, suspend, thread] panics may
+    let a = match std.thread.spawn(std.alloc.SYSTEM, fn() -> u64 capture [] {
+        t.run(2000u32)
+    }) {
+        Ok(h) => h
+        Err(_e) => return ()
+    }
+    let y = t.run(2000u32)
+    let x = a.join()
+    if x == y {
+        t.say(\"same\")
+    }
+end t.main
+",
+    );
+    let (no, nc) = native("susp_two_threads", &src);
+    assert_eq!((no.as_str(), nc), ("same\n", Some(0)));
+}
