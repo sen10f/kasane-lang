@@ -1,0 +1,6 @@
+// expect: E3010
+fn t.main() -> u64 uses [thread] panics never
+    let m = std.sync.Mutex.new(5u64)
+    let r = m.lock().get()
+    *r
+end t.main

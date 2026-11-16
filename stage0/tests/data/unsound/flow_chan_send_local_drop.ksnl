@@ -1,0 +1,16 @@
+// expect: E3010
+fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console, thread] panics never
+    match std.sync.channel(std.alloc.SYSTEM, 2usize) {
+        Ok((tx, rx)) => {
+            let s = alloc.string.String.new(std.alloc.SYSTEM)
+            core.mem.drop(tx.send(&s))
+            core.mem.drop(s)
+            match rx.recv() {
+                Ok(x) => std.io.print_line(x.as_str())?
+                Err(_e) => std.io.print_line("closed")?
+            }
+        }
+        Err(_e) => std.io.print_line("alloc")?
+    }
+    Ok(())
+end t.main

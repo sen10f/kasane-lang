@@ -1,0 +1,11 @@
+// expect: E3010
+fn t.main() -> () uses [alloc] panics never
+    let mut v = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.push(1u32))
+    core.mem.drop(v.push(2u32))
+    let s = v.as_mut_slice()
+    let left = core.slice.sub_mut(s, 0, 2usize)
+    let right = core.slice.sub_mut(s, 1, 2usize)
+    core.mem.drop(left)
+    core.mem.drop(right)
+end t.main

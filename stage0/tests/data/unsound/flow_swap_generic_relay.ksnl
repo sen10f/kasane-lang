@@ -1,0 +1,17 @@
+// expect: E3010
+fn t.bad() -> u32 uses [] panics never
+    let mut x = 1u32
+    let mut y = 2u32
+    let mut rx = &mut x
+    let mut ry = &mut y
+    t.swap2(&mut rx, &mut ry)
+    x = 3u32
+    *ry
+end t.bad
+
+fn t.main() -> () uses [] panics never
+end t.main
+
+fn t.swap2[T](a: &mut T, b: &mut T) -> () uses [] panics never
+    core.mem.swap(a, b)
+end t.swap2
