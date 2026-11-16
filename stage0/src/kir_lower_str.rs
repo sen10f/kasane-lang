@@ -744,8 +744,12 @@ impl<'a> Lw<'a> {
         // `&[0xffu8, 0xfeu8]` (配列リテラルへの参照): 配列の値がすでにスライスと同じ `{ptr, len}` なので、それをそのまま検査する。
         let a0 = &args[0];
         let bytes = if nname(a0) == "Unary" && st(&nf(a0)[0]) == "&" && nname(&nf(a0)[1]) == "ArrayE" {
-            let Some((v, _)) = self.array_lit(&nf(a0)[1])? else { return Ok(None) };
-            v
+            if items(&nf(&nf(a0)[1])[0]).is_empty() {
+                self.empty_array()
+            } else {
+                let Some((v, _)) = self.array_lit(&nf(a0)[1])? else { return Ok(None) };
+                v
+            }
         } else if let Some(v) = self.array_local_fat(a0) {
             v
         } else {

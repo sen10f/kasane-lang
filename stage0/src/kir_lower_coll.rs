@@ -1357,7 +1357,7 @@ pub(crate) fn after_let(lw: &mut Lw, name: &str, init: &V) -> LR<()> {
 /// クロージャの式 (本体は `closure_lit` で下ろした後) の種類。型表の `Closure` 型から作る。
 fn closure_kind_from_table(lw: &Lw, e: &V) -> Option<Kind> {
     let Some(Src::Closure { args, ret, .. }) = table_ty(lw, e) else { return None };
-    let ats: Option<Vec<Ty>> = args.iter().map(|a| lw.conv_t(a)).collect();
+    let ats: Option<Vec<Ty>> = args.iter().map(|a| sig_ty(lw, a)).collect();
     let (args, ret) = (ats?, lw.conv_t(&ret)?);
     let (caps, cap_tys) = lw.coll.caps.get(&nid(e)).cloned().unwrap_or_default();
     Some(Kind::Closure { key: closure_key(lw, nid(e)), args, ret, caps, cap_tys })
@@ -3013,6 +3013,52 @@ fn borrowed_iter(it: &V) -> (&V, bool) {
     }
 }
 
+/// 反復子の連なりの元 `X.iter()` (`X` は局所の Vec・スライス、または `&[T]` の式): 置き場と要素の型。
+/// 要素はスカラーか、所有物を持たない集成体だけ。対象外なら `None` (理由は呼び出し側で付ける)。
+pub(crate) fn iter_source(lw: &mut Lw, it: &V) -> LR<Option<(Seq, Ty)>> {
+    let (inner, by_ref) = borrowed_iter(it);
+    if !by_ref {
+        return Ok(None);
+    }
+    let call_iter = nname(inner) == "Call";
+    let slot = if call_iter { lw.lookup(&strs(&nf(&nf(inner)[0])[0])[0]) } else { local_slot(lw, inner) };
+    let ok_elem = |lw: &Lw, t: Ty| elem_size(lw, t).is_some() && !owns_heap(lw, t);
+    if let Some(s) = slot {
+        let kind = lw.coll.kinds.get(&s).cloned();
+        let slot_ptr = lw.slots[s].0;
+        let seq = match kind {
+            Some(Kind::Vec(Some(elem))) => Some((Seq::Hdr(slot_ptr), elem)),
+            Some(Kind::Slice(Some(elem))) if lw.vty(slot_ptr) == Ty::Ptr => {
+                let n = lw.coll.arr_len[&s];
+                Some((Seq::Ptr(slot_ptr, n), elem))
+            }
+            Some(Kind::Slice(Some(elem))) => {
+                let fat_val = match lw.vty(slot_ptr) {
+                    Ty::Ref(_, Pointee::Agg(agg_ai)) => lw.emit(Ty::Agg(agg_ai), Op::Load(slot_ptr)),
+                    _ => slot_ptr,
+                };
+                Some((Seq::Fat(fat_val), elem))
+            }
+            _ => None,
+        };
+        return Ok(seq.filter(|(_, el)| ok_elem(lw, *el)));
+    }
+    if call_iter {
+        return Ok(None);
+    }
+    // `&[T]` を返す式 (`v.as_slice()` など)。
+    if let Ok(Src::Ref(false, i)) = lw.src_ty(inner) {
+        if let Src::Slice(el) = &*i {
+            let elem = conv(el).filter(|t| size_of(*t).is_some()).or_else(|| lw.conv_t(el).filter(|t| matches!(t, Ty::Agg(_))));
+            if let Some(elem) = elem.filter(|t| ok_elem(lw, *t)) {
+                let Some(fat) = lw.expr(inner)? else { return Ok(None) };
+                return Ok(Some((Seq::Fat(fat), elem)));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// 単一の名前の経路 (`v`) ならその名前。
 fn path1_name(e: &V) -> Option<String> {
     if nname(e) != "Path" {
@@ -3262,7 +3308,7 @@ pub(crate) fn closure_lit(lw: &mut Lw, e: &V) -> LR<Option<VId>> {
     let Some(Src::Closure { args, ret, .. }) = table_ty(lw, e) else {
         return lw.err(line, "クロージャの型が決まらない");
     };
-    let ats: Option<Vec<Ty>> = args.iter().map(|a| lw.conv_t(a)).collect();
+    let ats: Option<Vec<Ty>> = args.iter().map(|a| sig_ty(lw, a)).collect();
     let (Some(ats), Some(rt)) = (ats, lw.conv_t(&ret)) else {
         return lw.err(line, "クロージャの引数か戻り値の型は段階 1 の対象外");
     };

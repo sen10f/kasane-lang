@@ -584,7 +584,7 @@ fn kir_closure_reports_unsupported_captures_with_a_reason() {
     // 解放の要る値の取り込み、move で取り込んだ値の変更、反復子の未対応の元は理由付きで拒否する。
     let cases: &[(&str, &str, &str)] = &[
         ("t.cap_mutate", "    let mut n = 1usize\n    let f = fn(x: usize) -> usize capture [move n] {\n        n = n.wrapping_add(x)\n        n\n    }\n    f(1usize)\n", "を本体が変更する形"),
-        ("t.enumerate", "    core.iter.count(core.iter.enumerate(core.iter.range(0usize, 5usize)))\n", "enumerate"),
+        ("t.chars", "    core.iter.count(\"héllo\".chars())\n", "反復子の元は"),
     ];
     for (i, (f, body, why)) in cases.iter().enumerate() {
         let src = format!(
@@ -2334,8 +2334,8 @@ fn kir_box_dyn_dispatch_uses_a_per_trait_helper_without_new_ops() {
 }
 
 #[test]
-fn kir_box_dyn_reports_unsupported_with_a_reason() {
-    // `Box<dyn>` から `&dyn` を作る `as_ref` は対象外。誤った KIR を出さず理由を付けて拒否する。
+fn kir_box_dyn_as_ref_makes_a_dyn_ref() {
+    // `Box<dyn>` から `&dyn` を作る `as_ref` は `dynref` (所有しない {ptr, vt}) になり、KIR に下りる (kir/native-gaps-5)。
     let tail = "
 fn t.via_ref_r() -> Result<u32, alloc.alloc.AllocError> uses [alloc] panics never
     let s = t.slot_sq(3u32)?
@@ -2359,8 +2359,8 @@ end t.main
     let r = run(&["run"], &t.0);
     assert_eq!(r.status.code(), Some(0), "tree-walker: {}{}", text(&r.stdout), text(&r.stderr));
     let k = run(&["kir", "t.via_ref_r"], &t.0);
-    assert_ne!(k.status.code(), Some(0), "{}", text(&k.stdout));
-    assert!(text(&k.stderr).contains("Box<dyn> の as_ref"), "{}", text(&k.stderr));
+    assert_eq!(k.status.code(), Some(0), "{}", text(&k.stderr));
+    assert!(text(&k.stdout).contains("dynref<t.Shape>"), "{}", text(&k.stdout));
 }
 
 /// フィールドの `Vec` に対する `as_slice().get(i)` が、要素がスカラー (`u8`) と

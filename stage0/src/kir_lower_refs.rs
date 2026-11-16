@@ -199,6 +199,10 @@ impl<'a> Lw<'a> {
                     self.ref_value(ptr, p, true)
                 }
                 _ if pt.is_ref() => self.coerce(v, pt),
+                // `&T` の値を `&dyn Tr` の引数に渡す: (番地, vtable の番号) の組にする。
+                Ty::Agg(_) if super::dyn_lower::is_dynref(self, pt) && matches!(self.vty(v), Ty::Ref(..)) => {
+                    super::dyn_lower::coerce_dynref(self, v, pt, 0).unwrap_or(v)
+                }
                 // `&[T; N]` / `&mut [T; N]` のローカル (ref<fat> / mutref<fat>) を、要素の先頭 ptr に調整する。
                 Ty::Ptr => match self.vty(v) {
                     Ty::Ref(_, Pointee::Agg(agg_ai)) => {

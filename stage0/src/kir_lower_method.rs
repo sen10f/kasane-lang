@@ -196,6 +196,12 @@ impl<'a> Lw<'a> {
             Place::Expr(r) => self.src_ty(r).ok(),
             Place::Path(segs) => {
                 let s = self.lookup(&segs[0])?;
+                // 受け手がフィールド (`self.name.to_json(out)`) なら、構造体の定義が持つフィールドの型 (`String<System>` など)。
+                if segs.len() > 1 {
+                    if let Some(t) = super::own::field_src(self, s, &segs[1..]) {
+                        return Some(t);
+                    }
+                }
                 let mut t = self.slots[s].1;
                 for n in &segs[1..] {
                     t = self.field_ty_of(t, n)?;
@@ -379,6 +385,15 @@ impl<'a> Lw<'a> {
         let mut cur = base;
         for n in &segs[1..] {
             cur = self.field_addr(cur, n, line)?;
+        }
+        // `String` / `Vec` のフィールドの `&self`: フィールドの番地がそのままヘッダのアドレス (`ptr`)。
+        if self_ty == Ty::Ptr {
+            if let Ty::Ref(_, Pointee::Agg(k)) = self.vty(cur) {
+                if self.aggs.borrow().is_vec(Ty::Agg(k)) {
+                    let src = self.vty(cur);
+                    cur = self.emit(Ty::Ptr, Op::Bitcast { src, a: cur });
+                }
+            }
         }
         Ok(Some((self.coerce(cur, self_ty), back, false)))
     }

@@ -241,6 +241,32 @@ impl<'a> Lw<'a> {
                     let args = items(&f[1]).to_vec();
                     return Some(self.opt_map(e, recv, segs[1] == "and_then", &args));
                 }
+                if matches!(self.vty(recv), Ty::Res(..)) {
+                    let recv = if super::coll::owns(self, self.vty(recv)) {
+                        let r = super::coll::path_read(self, s);
+                        self.own_emit(&segs[0], s, crate::kir::OwnKind::Consume);
+                        r
+                    } else {
+                        recv
+                    };
+                    let args = items(&f[1]).to_vec();
+                    return Some(self.res_map(e, recv, &segs[1], &args));
+                }
+            }
+        }
+        if segs.len() == 2 && segs[1] == "ok" && items(&f[1]).is_empty() {
+            if let Some(s) = self.lookup(&segs[0]) {
+                let recv = super::coll::path_peek(self, s);
+                if matches!(self.vty(recv), Ty::Res(..)) {
+                    let recv = if super::coll::owns(self, self.vty(recv)) {
+                        let r = super::coll::path_read(self, s);
+                        self.own_emit(&segs[0], s, crate::kir::OwnKind::Consume);
+                        r
+                    } else {
+                        recv
+                    };
+                    return Some(self.res_map(e, recv, "ok", &[]));
+                }
             }
         }
         if segs.len() == 2 && segs[1] == "take" {
@@ -276,6 +302,17 @@ impl<'a> Lw<'a> {
         let m = st(&nf(e)[1]);
         if m.starts_with("checked_") || m.starts_with("trunc_to_") {
             return Some(self.checked_mcall(e));
+        }
+        if matches!(m.as_str(), "map" | "and_then" | "ok") {
+            let f = nf(e);
+            let args = items(&f[2]).to_vec();
+            if (m == "ok") == args.is_empty() && self.ty_of(&f[0]).map_or(false, |t| matches!(t, Ty::Res(..))) {
+                return Some(match self.expr(&f[0]) {
+                    Ok(Some(recv)) => self.res_map(e, recv, &m, &args),
+                    Ok(None) => Ok(None),
+                    Err(x) => Err(x),
+                });
+            }
         }
         if m == "map_err" {
             let f = nf(e);
@@ -429,6 +466,54 @@ impl<'a> Lw<'a> {
         self.cur = Some(none_b);
         let none = self.emit(rt, Op::Const(0));
         self.goto(join, vec![none]);
+        self.cur = Some(join);
+        Ok(Some(jp[0]))
+    }
+
+    /// `r.map(f)` / `r.and_then(f)` / `r.ok()` (`f` は捕獲のないクロージャか関数の項目)。
+    /// `Ok(t)` は `Ok(f(t))` / `f(t)` / `Some(t)`、`Err(x)` は `Err(x)` / `Err(x)` / `None`。
+    pub(super) fn res_map(&mut self, e: &V, recv: VId, m: &str, args: &[V]) -> LR<Option<VId>> {
+        let line = nline(e);
+        let want_args = if m == "ok" { 0 } else { 1 };
+        if args.len() != want_args {
+            return self.err(line, format!("{} の引数の数が違う", m));
+        }
+        let rt = self.ty_of(e)?;
+        let Ty::Res(t0, e0) = self.vty(recv) else {
+            return self.err(line, format!("{} の受け手が Result でない", m));
+        };
+        let callee = if m == "ok" { None } else { Some(super::coll::callable(self, &args[0])?) };
+        // 結果の型と関数の型の確認。
+        match (m, rt) {
+            ("ok", Ty::Opt(p)) if p == t0 => {}
+            ("map", Ty::Res(t1, e1)) if e1 == e0 && callee.as_ref().map_or(false, |(_, a, r)| a[..] == [t0.ty()] && *r == t1.ty()) => {}
+            ("and_then", Ty::Res(_, e1)) if e1 == e0 && callee.as_ref().map_or(false, |(_, a, r)| a[..] == [t0.ty()] && *r == rt) => {}
+            _ => return self.err(line, format!("{} の型が Result の型と合わない", m)),
+        }
+        let tag = self.emit(Ty::Bool, Op::Tag(recv));
+        let (errb, _) = self.new_block(&[]);
+        let (okb, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[rt]);
+        self.branch(tag, (errb, vec![]), (okb, vec![]));
+        self.cur = Some(errb);
+        let out = if m == "ok" {
+            self.emit(rt, Op::Const(0))
+        } else {
+            let ep = self.emit(e0.ty(), Op::Payload(recv));
+            self.emit(rt, Op::Err(ep))
+        };
+        self.goto(join, vec![out]);
+        self.cur = Some(okb);
+        let tv = self.emit(t0.ty(), Op::Payload(recv));
+        let out = match m {
+            "ok" => self.emit(rt, Op::Some(tv)),
+            _ => {
+                let (key, _, fret) = callee.unwrap();
+                let r = self.emit(fret, Op::Call { callee: key, args: vec![tv] });
+                if m == "map" { self.emit(rt, Op::Ok(r)) } else { r }
+            }
+        };
+        self.goto(join, vec![out]);
         self.cur = Some(join);
         Ok(Some(jp[0]))
     }

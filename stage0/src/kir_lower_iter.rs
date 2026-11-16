@@ -20,6 +20,8 @@ enum Stage {
     Filter,
     /// `take(n)`: 通した個数が n に達したら、元を引かずに終わる。
     Take,
+    /// `enumerate`: (通した個数, 要素) の組にする。個数は take と同じ受け渡しの数。
+    Enumerate,
 }
 
 /// `core.iter.<name>` の呼び出しなら、その引数。
@@ -36,6 +38,8 @@ enum Src<'a> {
     Vals(VId, VId, Ty),
     /// 利用者の反復子 (`core.iter.Iterator` を実装した型の式。`next` の定義の番号を持つ)。
     User(&'a V, usize),
+    /// `X.iter()` (局所の Vec・スライス、または `&[T]` の式。要素は `&T` で渡す)。
+    Slice(&'a V),
 }
 
 /// `let r = core.iter.range(a, b)` の右辺なら、その 2 引数。
@@ -48,6 +52,25 @@ pub(crate) fn range_args(e: &V) -> Option<(&V, &V)> {
 fn parse_pipe<'a>(lw: &Lw, it: &'a V, stages: &mut Vec<(Stage, &'a V)>) -> Option<Src<'a>> {
     if let Some(a) = iter_call(it, "range") {
         return (a.len() == 2).then(|| Src::Exprs(&a[0], &a[1]));
+    }
+    let iter_form = match nname(it) {
+        "MCall" => crate::check::st(&nf(it)[1]) == "iter" && items(&nf(it)[2]).is_empty(),
+        "Call" => nname(&nf(it)[0]) == "Path" && items(&nf(it)[1]).is_empty() && {
+            let segs = strs(&nf(&nf(it)[0])[0]);
+            segs.len() == 2 && segs[1] == "iter"
+        },
+        _ => false,
+    };
+    if iter_form {
+        return Some(Src::Slice(it));
+    }
+    if let Some(a) = iter_call(it, "enumerate") {
+        if a.len() != 1 {
+            return None;
+        }
+        let r = parse_pipe(lw, &a[0], stages)?;
+        stages.push((Stage::Enumerate, it));
+        return Some(r);
     }
     if nname(it) == "Path" {
         let segs = strs(&nf(it)[0]);
@@ -117,12 +140,22 @@ pub(crate) fn pipe_call(lw: &mut Lw, e: &V, fold: bool) -> LR<Option<VId>> {
     }
     let mut stages = vec![];
     let Some(src) = parse_pipe(lw, &argv[0], &mut stages) else {
-        return lw.err(line, "反復子の元は core.iter.range(a, b)・利用者の反復子と map / filter / take の連なりだけ段階 1 の対象 (enumerate・Vec の iter は未対応)");
+        return lw.err(line, "反復子の元は core.iter.range(a, b)・利用者の反復子と map / filter / take の連なりだけ段階 1 の対象 (Vec の iter は局所の Vec・スライスの `.iter()` だけ)");
     };
     let mut hidden = String::new();
     let user_di = if let Src::User(_, di) = &src { Some(*di) } else { None };
     let user_it: Option<&V> = if let Src::User(it, _) = &src { Some(*it) } else { None };
+    let mut slice_src: Option<(super::coll::Seq, Ty)> = None;
     let (start, end, ity) = match src {
+        Src::Slice(it) => {
+            let Some((seq, elem)) = super::coll::iter_source(lw, it)? else {
+                return lw.err(line, "iter() の元は要素がスカラーか所有物を持たない集成体の、局所の Vec・スライスだけ段階 1 の対象");
+            };
+            let (len, base) = seq.len_and_base(lw, None);
+            let zero = lw.emit(Ty::Usize, Op::Const(0));
+            slice_src = Some((super::coll::Seq::Ptr(base, 0), elem));
+            (zero, len, Ty::Usize)
+        }
         Src::Exprs(a, b) => {
             let Some(start) = lw.expr(a)? else { return Ok(None) };
             let Some(end) = lw.expr(b)? else { return Ok(None) };
@@ -150,6 +183,9 @@ pub(crate) fn pipe_call(lw: &mut Lw, e: &V, fold: bool) -> LR<Option<VId>> {
     // take の個数 (ループの前に 1 度だけ評価する)。クロージャの段は `ks` に、take の段は `ns` に置く。
     let mut ns: Vec<VId> = vec![];
     for (st, c) in &stages {
+        if *st == Stage::Enumerate {
+            continue;
+        }
         if *st == Stage::Take {
             let Some(n) = lw.expr(c)? else { return Ok(None) };
             if lw.vty(n) != Ty::Usize {
@@ -169,11 +205,12 @@ pub(crate) fn pipe_call(lw: &mut Lw, e: &V, fold: bool) -> LR<Option<VId>> {
         (lw.emit(Ty::Usize, Op::Const(0)), None)
     };
     let acc_ty = lw.vty(init);
-    if !(acc_ty.is_int() || acc_ty.is_float() || acc_ty == Ty::Bool) {
-        return lw.err(line, "fold の累積はスカラーだけ段階 1 の対象");
+    if !(acc_ty.is_int() || acc_ty.is_float() || acc_ty == Ty::Bool || (matches!(acc_ty, Ty::Agg(_)) && !super::coll::owns_heap_pub(lw, acc_ty))) {
+        return lw.err(line, "fold の累積はスカラーか所有物を持たない集成体だけ段階 1 の対象");
     }
 
-    let nt = ns.len();
+    // 個数の受け渡し: take と enumerate が 1 つずつ持つ (段の順)。take の個数の値 `ns` はその部分列。
+    let nt = stages.iter().filter(|(st, _)| matches!(st, Stage::Take | Stage::Enumerate)).count();
     let mut ib_tys = vec![acc_ty];
     ib_tys.extend(std::iter::repeat(Ty::Usize).take(nt));
     let mut hb_tys = vec![ity];
@@ -189,11 +226,22 @@ pub(crate) fn pipe_call(lw: &mut Lw, e: &V, fold: bool) -> LR<Option<VId>> {
 
     lw.cur = Some(hb);
     // hp = [i, acc, taken_0, ..]。通した個数が n に達した take があれば、元を引かずに終わる。
-    for k in 0..nt {
-        let (nb, _) = lw.new_block(&[]);
-        let more = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: hp[2 + k], b: ns[k] });
-        lw.branch(more, (nb, vec![]), (xb, vec![hp[1]]));
-        lw.cur = Some(nb);
+    {
+        let (mut c, mut k) = (0usize, 0usize);
+        for (st, _) in stages.iter() {
+            match st {
+                Stage::Take => {
+                    let (nb, _) = lw.new_block(&[]);
+                    let more = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::Usize, a: hp[2 + c], b: ns[k] });
+                    lw.branch(more, (nb, vec![]), (xb, vec![hp[1]]));
+                    lw.cur = Some(nb);
+                    c += 1;
+                    k += 1;
+                }
+                Stage::Enumerate => c += 1,
+                _ => {}
+            }
+        }
     }
     let (bb, _) = lw.new_block(&[]);
     let mut user_item: Option<(VId, Ty)> = None;
@@ -217,10 +265,36 @@ pub(crate) fn pipe_call(lw: &mut Lw, e: &V, fold: bool) -> LR<Option<VId>> {
     lw.branch(cond, (bb, vec![]), (xb, vec![hp[1]]));
 
     lw.cur = Some(bb);
-    let (mut item, mut item_ty) = user_item.unwrap_or((hp[0], ity));
+    let (mut item, mut item_ty) = if let Some((seq, elem)) = slice_src {
+        let super::coll::Seq::Ptr(base, _) = seq else { unreachable!() };
+        let sz = super::coll::elem_size(lw, elem).expect("要素の大きさ");
+        let off = if sz == 1 {
+            hp[0]
+        } else {
+            let k = lw.emit(Ty::Usize, Op::Const(sz as i128));
+            lw.emit(Ty::Usize, Op::Arith { op: Aop::Mul, mode: Mode::Wrap, a: hp[0], b: k })
+        };
+        let addr = lw.emit(Ty::Ptr, Op::PtrAdd { p: base, off });
+        let Some(pt) = Pointee::of(elem) else { return lw.err(line, "iter() の要素の型は段階 1 の対象外") };
+        let rt = Ty::Ref(false, pt);
+        (lw.emit(rt, Op::Bitcast { src: Ty::Ptr, a: addr }), rt)
+    } else {
+        user_item.unwrap_or((hp[0], ity))
+    };
     let mut taken: Vec<VId> = hp[2..].to_vec();
     let (mut ki, mut ti) = (0usize, 0usize);
     for (st, _) in stages.iter() {
+        if *st == Stage::Enumerate {
+            let idx = taken[ti];
+            let one = lw.emit(Ty::Usize, Op::Const(1));
+            taken[ti] = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: taken[ti], b: one });
+            ti += 1;
+            let tt = lw.aggs.borrow_mut().intern_tuple(vec![Ty::Usize, item_ty]);
+            let Ok(tt) = tt else { return lw.err(line, "enumerate の組の型を作れない") };
+            item = lw.emit(tt, Op::Make { variant: None, fields: vec![idx, item] });
+            item_ty = tt;
+            continue;
+        }
         if *st == Stage::Take {
             let one = lw.emit(Ty::Usize, Op::Const(1));
             taken[ti] = lw.emit(Ty::Usize, Op::Arith { op: Aop::Add, mode: Mode::Wrap, a: taken[ti], b: one });
@@ -238,7 +312,7 @@ pub(crate) fn pipe_call(lw: &mut Lw, e: &V, fold: bool) -> LR<Option<VId>> {
                 item = call(lw, k, vec![item]);
                 item_ty = ret;
             }
-            Stage::Take => unreachable!("take は上で処理済み"),
+            Stage::Take | Stage::Enumerate => unreachable!("take / enumerate は上で処理済み"),
             Stage::Filter => {
                 let Some(p) = Pointee::of(item_ty) else {
                     return lw.err(line, "filter の要素はスカラーだけ段階 1 の対象");

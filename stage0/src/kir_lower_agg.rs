@@ -256,6 +256,12 @@ impl AggTab {
                 }
                 self.intern_tuple(elems)
             }
+            // `&dyn Tr` / `&mut dyn Tr`: データの番地と vtable の番号の組 (`dynref<Tr>`。所有しない借用で、`Box<dyn>` と同じ呼び出しの補助関数を使う)。
+            Src::Ref(_, inner) if matches!(&**inner, Src::Dyn(..)) => {
+                let Src::Dyn(tr, _) = &**inner else { unreachable!() };
+                let fq = trait_fqn(p, file, tr);
+                Ok(self.dynbox_named("dynref", &fq))
+            }
             // 集成体への参照 `&S` / `&mut S` (スカラーへの参照は上の `conv` が済ませている)。
             Src::Ref(_, inner) if matches!(&**inner, Src::Named(n, _) if n == "alloc.vec.Vec" || n == "alloc.raw.Buf" || n == "alloc.string.String") => {
                 Err("Vec / String への参照はヘッダのアドレスで渡す".to_string())
@@ -438,7 +444,12 @@ impl AggTab {
 
     /// `Box<dyn Tr>` の型 `{ptr, vt}` (データの番地と vtable の番号)。トレイトごとに別の型 (名前 `dynbox<トレイトの FQN>`)。
     pub fn dynbox(&mut self, tr: &str) -> Ty {
-        let name = format!("dynbox<{}>", tr);
+        self.dynbox_named("dynbox", tr)
+    }
+
+    /// `dynbox<Tr>` (所有) か `dynref<Tr>` (`&dyn Tr` の借用。配置は同じ)。
+    pub fn dynbox_named(&mut self, kind: &str, tr: &str) -> Ty {
+        let name = format!("{}<{}>", kind, tr);
         if let Some(&i) = self.by_name.get(&name) {
             return Ty::Agg(i);
         }
@@ -452,7 +463,8 @@ impl AggTab {
     /// `Box<dyn Tr>` の型なら、トレイトの FQN。
     pub fn dynbox_trait(&self, t: Ty) -> Option<String> {
         let Ty::Agg(i) = t else { return None };
-        self.defs[i as usize].name.strip_prefix("dynbox<")?.strip_suffix('>').map(String::from)
+        let n = &self.defs[i as usize].name;
+        n.strip_prefix("dynbox<").or_else(|| n.strip_prefix("dynref<"))?.strip_suffix('>').map(String::from)
     }
 
     /// `derive [Drop]` の再帰する型か。
@@ -640,7 +652,7 @@ impl AggTab {
         Ty::Agg(i)
     }
 
-    fn intern_tuple(&mut self, elems: Vec<Ty>) -> Result<Ty, String> {
+    pub(super) fn intern_tuple(&mut self, elems: Vec<Ty>) -> Result<Ty, String> {
         let name = format!("({})", elems.iter().map(|t| self.name_of(*t)).collect::<Vec<_>>().join(","));
         if let Some(&i) = self.by_name.get(&name) {
             return Ok(Ty::Agg(i));

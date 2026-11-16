@@ -6,6 +6,39 @@ fn alloc.string.String.is_empty[A: alloc.alloc.Allocator](self: &alloc.string.St
     self.buf.is_empty()
 end alloc.string.String.is_empty
 
+// `parts` を `separator` で連結した新しい `String` (`parts` が空なら空の文字列)。
+fn alloc.string.String.join[A: alloc.alloc.Allocator](allocator: A, parts: &[&str], separator: &str) -> Result<alloc.string.String<A>, alloc.alloc.AllocError> uses [alloc] panics never pub
+    let mut out = alloc.string.String.new(allocator)
+    let n = parts.len()
+    let mut i = 0usize
+    while i < n {
+        if i > 0usize {
+            match out.push_str(separator) {
+                Ok(_done) => {
+                }
+                Err(error) => {
+                    return Err(error)
+                }
+            }
+        }
+        match parts.get(i) {
+            Some(piece) => {
+                match out.push_str(*piece) {
+                    Ok(_done) => {
+                    }
+                    Err(error) => {
+                        return Err(error)
+                    }
+                }
+            }
+            None => {
+            }
+        }
+        i = i.wrapping_add(1usize)
+    }
+    Ok(out)
+end alloc.string.String.join
+
 fn alloc.string.String.len[A: alloc.alloc.Allocator](self: &alloc.string.String<A>) -> usize uses [] panics never pub
     self.buf.len()
 end alloc.string.String.len
