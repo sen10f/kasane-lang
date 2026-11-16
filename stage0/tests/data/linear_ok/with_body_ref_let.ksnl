@@ -1,0 +1,49 @@
+// expect-accept
+type t.Res linear
+    id: u32
+    inner: Option<alloc.vec.Vec<u64, std.alloc.System>>
+end t.Res
+
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
+    let t.Res { id: id, inner: inner } = self
+    core.mem.drop(id)
+    core.mem.drop(inner)
+end t.Res.shut
+
+fn t.id_of(x: &t.Res) -> u32 uses [] panics never
+    x.id
+end t.id_of
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main
+
+fn t.mk() -> t.Res uses [] panics never
+    t.Res { id: 1u32, inner: None }
+end t.mk
+
+fn t.ok() -> u32 uses [] panics never
+    with r = t.mk() close r.shut() {
+        let x = &r
+        let n = x.id
+        n
+    }
+end t.ok
+
+fn t.ok_field() -> u32 uses [] panics never
+    with r = t.mk() close r.shut() {
+        let x = &r.id
+        *x
+    }
+end t.ok_field
+
+fn t.ok_fn() -> u32 uses [] panics never
+    with r = t.mk() close r.shut() {
+        let x = t.wrap(&r)
+        t.id_of(x)
+    }
+end t.ok_fn
+
+fn t.wrap(x: &t.Res) -> &t.Res uses [] panics never
+    x
+end t.wrap

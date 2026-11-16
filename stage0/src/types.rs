@@ -3941,6 +3941,8 @@ impl<'a> TypeCk<'a> {
                     self.let_pending.push((nline(e), st(&nf(&f[0])[0]), t));
                 }
                 let body = self.infer(&f[4]);
+                // 本体の値の型 (借用を持ち得ない型なら、借用検査は値の借用を追わない)。
+                self.let_pending.push((nline(e), "$with_val".to_string(), body.clone()));
                 let cl = self.infer(&f[3]);
                 if let Ty::Named(..) | Ty::Prim(_) | Ty::Tuple(_) | Ty::Ref(..) = self.deep(&cl) {
                     self.diag("E2045", format!("the `close` expression of `with` must have type (), found {}", self.deep(&cl).show()), nline(&f[3]));
