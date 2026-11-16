@@ -1,4 +1,4 @@
-// expect: E3010
+// expect: E3060
 fn t.bad() -> usize uses [alloc] panics never
     let mut m = alloc.collections.HashMap.new(std.alloc.SYSTEM)
     let mut k = alloc.string.String.new(std.alloc.SYSTEM)

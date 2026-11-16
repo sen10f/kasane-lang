@@ -1,4 +1,4 @@
-// expect: E3020
+// expect: E3060
 type t.H['b]
     r: &'b u32
 end t.H

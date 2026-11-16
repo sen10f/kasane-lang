@@ -1,11 +1,7 @@
-type t.S['a]
-    f: &'a u8
-end t.S
-
 fn t.main() -> Result<(), std.io.Error> uses [] panics may
     let mut x = 1u8
-    let s = t.S { f: &x }
+    let s = Some(&x)
     x = 2u8
-    core.check.eq(s.f, &x)
+    core.check.eq(s, Some(&x))
     Ok(())
 end t.main

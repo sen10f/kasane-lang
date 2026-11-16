@@ -1,3 +1,4 @@
+// expect: E3060
 fn t.consume(s: alloc.string.String) -> () uses [io.console] panics never
     core.mem.drop(std.io.print_line(s.as_str()))
     core.mem.drop(s)

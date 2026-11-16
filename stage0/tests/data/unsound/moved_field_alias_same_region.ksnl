@@ -1,3 +1,4 @@
+// expect: E3060
 // expect-accept
 type t.P['a, 'b]
     x: &'a u64

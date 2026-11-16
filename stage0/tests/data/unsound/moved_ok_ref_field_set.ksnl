@@ -1,3 +1,4 @@
+// expect: E3060
 type t.H['a]
     r: &'a mut u32
 end t.H

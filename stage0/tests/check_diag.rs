@@ -35,9 +35,6 @@ fn diagnostics_each_case_reports_its_code() {
 /// (別の診断で落ちているだけのケースを許さない)。まだ検査できない穴は `KNOWN_HOLES` に名前を載せる (その間は「通ること」を
 /// 確かめるので、塞いだら一覧から外さないとテストが落ちる = 一覧は減る方向にしか変わらない)。
 const KNOWN_HOLES: &[&str] = &[
-    // 借用を持つ変数 (`let w = t.mk(&x)`) のフィールドを読み戻す (`let r = w.r`) と、借用が読んだ側へ移らない
-    // (変数の型が分からないので、`w.n` のような Copy の値と区別できず、移すと誤検出になる)。
-    "boundary_field_read_back",
 ];
 
 #[test]

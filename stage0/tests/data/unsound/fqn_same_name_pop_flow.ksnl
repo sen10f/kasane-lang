@@ -1,4 +1,4 @@
-// expect: E3010
+// expect: E3060
 type t.Bag
     n: u32
 end t.Bag

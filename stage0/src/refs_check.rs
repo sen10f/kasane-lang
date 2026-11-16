@@ -411,6 +411,16 @@ pub fn inferred_container_ref(ty: &Ty) -> Option<(String, bool)> {
     }
 }
 
+/// `let [mut] name: 型 = ..` (型注釈つきの束縛)。
+fn annotated_let(toks: &[Tok], name: &str) -> bool {
+    (0..toks.len().saturating_sub(3)).any(|i| {
+        toks[i].kind == "kw" && toks[i].text == "let" && {
+            let j = if toks[i + 1].kind == "kw" && toks[i + 1].text == "mut" { i + 2 } else { i + 1 };
+            j + 1 < toks.len() && is_path_tok(&toks[j]) && toks[j].text == name && is_op(&toks[j + 1], ":")
+        }
+    })
+}
+
 /// `let [mut] name = a.b.f(..)` の `f` が、戻り値に `&'static` を書いた関数 (`-> Vec<&'static str, A>`)。
 fn init_from_static_fn(p: &Program, toks: &[Tok], name: &str) -> bool {
     for i in 0..toks.len().saturating_sub(4) {
@@ -520,6 +530,10 @@ pub fn check(p: &Program, user: &[usize], let_tys: &HashMap<(usize, usize, Strin
         }
         let ty = &let_tys[&(*di, *line, name.clone())];
         if let Some((c, weak)) = inferred_container_ref(ty) {
+            // 型注釈つきの `let` は、書かれた型 (上の字句の検査) が決める
+            if toks_of.get(di).map_or(false, |t| annotated_let(t, name)) {
+                continue;
+            }
             if weak && toks_of.get(di).map_or(false, |t| static_stores_only(p, t, name)) {
                 continue;
             }
