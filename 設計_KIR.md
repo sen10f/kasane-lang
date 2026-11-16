@@ -1937,3 +1937,16 @@ selfhost の試作 (`selfhost/README.md` 9.4 の 3・4) で、構造体のフィ
 
 - `stage0/tests/kir_field_for_str.rs`: `rfind` (空のパターン・複数回・重なり・先頭・全体一致・無い・長いパターン・空の中の空)、`split` と `chars` の `for` の形 (末尾・先頭・連続・空の文字列・空の区切り・長い区切り・断片の長さ、UTF-8 の 1〜4 バイト `aé日😀`、空、ASCII)、`contains` / `find`。`run` とネイティブの出力が一致し、`NG` が無い。
 - 検査: `python3 -I spec/tools/check_all.py` が全件通過。`ksn check-stdlib` が診断 0 件 (`str.ksnl` の `rfind` を含む)。
+
+## 30. ネイティブの下ろしの穴 その 3 (kir/native-gaps-3、穴探し a63、2026-11-16)
+
+セルフホストの前に、普通のコードが `ksn build --release` で E9040 になる形を減らした。ケースは `kasane-verify/agents/a63/cases/` の 9 件で、すべてネイティブになった。試験は `stage0/tests/kir_native_gaps3.rs`。
+
+- `alloc.fmt.write` の `char`: `String.push` (Kasane 版) を呼ぶ (`kir_lower_ext.rs` の `string_push_char`)。`f64` / `f32`: 新しい命令 `floattext.N %値, %枠` (`Op::FloatText`) が `py_float` / `py_float32` と同じ文字列を 32 バイトの枠へ書き、長さを返す。LLVM は C の補助 `ksn_fmt_f64_to` / `ksn_fmt_f32_to` (`kir_rt.c`)、`kir_exec` と `vm` は Rust の `py_float` を使う。`Display` は `Debug` と同じ文字列。
+- `let r = core.iter.range(a, b)`: 端だけ評価して `Kind::Range` で覚える。`fold` / `count` / `map` / `filter` の元になる (反復子の値は作らない)。端は束縛の時点で評価するので、後で `a` / `b` の変数を変えても影響しない。
+- `core.option.Option.map` / `and_then` (捕獲のないクロージャか関数の項目、所有物を持たない `Option`) と、完全修飾の `Option.unwrap_or` / `Result.unwrap_or`。局所の `o.map(f)` / `o.and_then(f)` も同じ下ろし (`opt_map`)。
+- `String` の受け手の `find` / `rfind` / `split_once` / `strip_prefix` / `strip_suffix` / `trim*` / `split_at` / `eq_ignore_ascii_case`: ヘッダの先頭の {ptr, len} を `&str` として渡す (`contains` と同じ)。
+- `char` の `is_ascii_alphabetic` / `is_ascii_digit` / `is_ascii_whitespace` (0x0B は含まない、`natives.rs` と同じ) と `len_utf8`。
+- `&str` の `try_clone` (`&&str` の受け手も)。`Vec<&str>.extend_from_slice` が下りる。
+- 局所の `s.split(sep)` の `next`: 反復子は平らな 5 つの欄 `{rest_ptr, rest_len, sep_ptr, sep_len, done}` の集成体 `split_it` (40 バイト)。`for x in s.split(sep)` と同じ規則 (空の区切り・空の残りは最後の片、`"a,"` は `"a"` と `""`)。`it.next()` が進める局所は、ループの合流へ受け渡す局所に入れる (`scan_mut`)。29.3 で退いていた形の一部 (`Split` の値を局所に持つ形) が下りるようになった。`Chars` は従来どおり。
+- 取りこぼした形: `Split` を関数の引数・戻り値・構造体の欄にする、`it.next()` 以外のアダプタ (`count` / `collect` など)。局所の `next` だけ。

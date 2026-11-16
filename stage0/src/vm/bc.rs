@@ -266,6 +266,7 @@ pub enum Ins {
     Write { d: S, fd: S, data: S },
     Eprint { data: S },
     FmtFloat { a: S, bits: u32 },
+    FloatText { d: S, a: S, dst: S, bits: u32 },
     ParseInt { d: S, s: S, radix: S, ty: u32 },
     EnvArgCount { d: S },
     EnvArg { d: S, i: S },

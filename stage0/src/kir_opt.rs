@@ -117,6 +117,7 @@ fn side_effecting(op: &Op) -> bool {
         | Op::Load(_)
         | Op::MemLoad { .. }
         | Op::Utf8Valid { .. }
+        | Op::FloatText { .. }
         | Op::FrameBytes { .. } => true,
         // 純粋な演算・構築・変換は副作用を持たない。
         Op::Const(_)
@@ -291,6 +292,7 @@ pub(crate) fn operands_mut(op: &mut Op) -> Vec<&mut VId> {
         Op::Eprint { data } => vec![data],
         Op::Exit { code } => vec![code],
         Op::FmtFloat { a, .. } => vec![a],
+        Op::FloatText { a, dst, .. } => vec![a, dst],
         Op::Utf8Valid { p, len } => vec![p, len],
         Op::NetListen { addr } | Op::NetConnect { addr } => vec![addr],
         Op::NetAccept { sock } | Op::NetFlush { sock } | Op::NetClose { sock } | Op::NetLocalPort { sock } => vec![sock],

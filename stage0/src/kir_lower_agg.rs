@@ -193,6 +193,8 @@ impl AggTab {
             Src::Named(name, _) if name == "alloc.string.String" => Ok(self.vec_hdr()),
             // `core.str.Chars` (局所に持つ `s.chars()`) は、まだ読んでいない残りの `&str` (`fat`)。`next` が先頭の文字を読んで進める。
             Src::Named(name, _) if name == "core.str.Chars" => Ok(self.fat()),
+            // `core.str.Split` (局所に持つ `s.split(sep)`): 残りと区切りと終わりの印 (`split_it`)。`next` が進める。
+            Src::Named(name, _) if name == "core.str.Split" => Ok(self.split_it()),
             Src::Named(name, _) if name == "alloc.alloc.AllocError" => Ok(self.alloc_err()),
             Src::Named(name, _) if name == "alloc.vec.InsertError" => Ok(self.insert_err()),
             // `std.thread.JoinHandle<T, A>` = `{A, usize, *mut T}`。`T` はポインタの向こうにあるので配置には現れない。
@@ -326,6 +328,22 @@ impl AggTab {
             Field { name: "len".to_string(), ty: Ty::Usize, off: 8 },
         ];
         self.push("fat".to_string(), 16, 8, AggKind::Struct(fields))
+    }
+
+    /// 局所に持つ `s.split(sep)` の反復子 `core.str.Split` (sig の欄 `rest` / `sep` / `done` を平らに並べたもの。40 バイト)。
+    /// `next` が読んで進める (`split_next`)。名前は `split_it`。
+    pub fn split_it(&mut self) -> Ty {
+        if let Some(&i) = self.by_name.get("split_it") {
+            return Ty::Agg(i);
+        }
+        let fields = vec![
+            Field { name: "rest_ptr".to_string(), ty: Ty::Ptr, off: 0 },
+            Field { name: "rest_len".to_string(), ty: Ty::Usize, off: 8 },
+            Field { name: "sep_ptr".to_string(), ty: Ty::Ptr, off: 16 },
+            Field { name: "sep_len".to_string(), ty: Ty::Usize, off: 24 },
+            Field { name: "done".to_string(), ty: Ty::Bool, off: 32 },
+        ];
+        self.push("split_it".to_string(), 40, 8, AggKind::Struct(fields))
     }
 
     /// `Vec<T>` / `String` のヘッダ `{ptr, len, cap}` (24 バイト)。構造体のフィールドに埋め込む形 (clif の配置と同じ)。名前は `vec`。
@@ -1594,7 +1612,7 @@ end t.main
             assert!(names.contains(&want), "型表に {} がない: {:?}", want, names);
         }
         // `fat` / `vec` は、利用者の型ではなくスライス・`Vec` のヘッダ (他の module の `fn` (`std.json` など) を下ろすときに入る)。`(fat,fat)` は `std.path` の `split_at` の結果。
-        for d in lo.module.aggs.iter().filter(|d| !super::STD_TYPES.contains(&d.name.as_str()) && d.name != "fat" && d.name != "bref" && !super::is_vec_name(&d.name) && d.name != "(fat,fat)") {
+        for d in lo.module.aggs.iter().filter(|d| !super::STD_TYPES.contains(&d.name.as_str()) && d.name != "fat" && d.name != "split_it" && d.name != "bref" && !super::is_vec_name(&d.name) && d.name != "(fat,fat)") {
             // 期待値は、削除した clif.rs の `layout` / `enum_layout` が出していた配置 (C と同じ規則) を固定したもの。
             let (size, align, offs, vars): (u32, u32, Vec<u32>, Vec<Vec<u32>>) = match d.name.as_str() {
                 "t.A" => (24, 8, vec![0, 8, 16], vec![]),

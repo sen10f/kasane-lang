@@ -1240,7 +1240,7 @@ impl<'a> Lw<'a> {
                     return Ok(Some(self.int_hash(recv, st, line)?));
                 }
                 // `&str` の値 (fat、または `&&str` の番地) の `eq` / `hash`: 文字列の下ろし。
-                if matches!(meth.as_str(), "eq" | "hash" | "cmp" | "partial_cmp") {
+                if matches!(meth.as_str(), "eq" | "hash" | "cmp" | "partial_cmp" | "try_clone") {
                     if let Some(k) = self.str_kind_of_path(s, &segs) {
                         let args = items(&f[1]).to_vec();
                         return coll::method_on(self, e, line, None, k, recv, &meth, &args);
@@ -1317,6 +1317,19 @@ impl<'a> Lw<'a> {
                 return self.err(line, format!("{} の Kasane 版がない", callee_name));
             };
             return self.call_def(e, di, args, line);
+        }
+        // `core.option.Option.map(o, f)` / `and_then(o, f)` (完全修飾の呼び出し)。
+        if matches!(callee_name.as_str(), "core.option.Option.map" | "core.option.Option.and_then") && args.len() == 2 {
+            let Some(recv) = self.expr(&args[0])? else { return Ok(None) };
+            if matches!(self.vty(recv), Ty::Opt(_)) {
+                return self.opt_map(e, recv, callee_name.ends_with("and_then"), &args[1..]);
+            }
+        }
+        if matches!(callee_name.as_str(), "core.option.Option.unwrap_or" | "core.result.Result.unwrap_or") && args.len() == 2 {
+            let Some(recv) = self.expr(&args[0])? else { return Ok(None) };
+            if matches!(self.vty(recv), Ty::Opt(_) | Ty::Res(..)) {
+                return self.optres_on(e, recv, false, "unwrap_or", &args[1..]);
+            }
         }
         let Some(Tgt::Fn(di)) = target else {
             return self.err(line, format!("呼び出し {} は段階 1 の対象外", segs.join(".")));
@@ -1602,6 +1615,20 @@ impl<'a> Lw<'a> {
                     return self.err(line, "let の束縛はただの名前だけ段階 1 の対象");
                 }
                 let name = st(&nf(pat)[0]);
+                // `let r = core.iter.range(a, b)`: 端だけ評価して覚える (反復子の値は作らない。`fold` / `count` が使う)。
+                if let Some((a, b)) = iter_lower::range_args(&f[3]) {
+                    let Some(start) = self.expr(a)? else { return Ok(St::Div) };
+                    let Some(end) = self.expr(b)? else { return Ok(St::Div) };
+                    let ty = self.vty(start);
+                    if ty.is_int() && self.vty(end) == ty {
+                        coll::bind_owned(self, &name, start, ty);
+                        if let Some(sl) = self.lookup(&name) {
+                            self.coll.kinds.insert(sl, coll::Kind::Range { start, end, ty });
+                        }
+                        return Ok(St::Unit);
+                    }
+                    return self.err(line, "core.iter.range の範囲は同じ整数の型だけ段階 1 の対象");
+                }
                 let Some(v) = self.expr(&f[3])? else { return Ok(St::Div) };
                 let t = self.vty(v);
                 coll::bind_owned(self, &name, v, t);

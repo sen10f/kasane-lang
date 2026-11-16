@@ -147,6 +147,26 @@ pub(super) fn string_call(lw: &mut Lw, e: &V, line: usize, h: VId, m: &str, args
     Some(kasane_call(lw, e, line, di, h, recv, args))
 }
 
+/// `String.push(c)` (`alloc/string.ksnl` の Kasane 版) を、評価済みの `char` の値 `c` で呼ぶ (`char` の `Display` の追記)。
+pub(super) fn string_push_char(lw: &mut Lw, e: &V, line: usize, h: VId, c: VId) -> Option<LR<Option<VId>>> {
+    let di = find_def(lw, "alloc.string.String.push")?;
+    let recv = Src::Named("alloc.string.String".into(), vec![Src::Named("std.alloc.System".into(), vec![])]);
+    let tm = match lw.mono_targs(e, di, &[], 1, super::mono::targs_of(e), Some(recv)) {
+        Ok(t) => t,
+        Err(x) => return Some(Err(x)),
+    };
+    let callee = match lw.mono_instance(di, &tm, line) {
+        Ok(c) => c,
+        Err(x) => return Some(Err(x)),
+    };
+    lw.callees.insert(callee.clone());
+    let rt = match lw.ty_of(e) {
+        Ok(t) => t,
+        Err(x) => return Some(Err(x)),
+    };
+    Some(Ok(Some(lw.emit(rt, Op::Call { callee, args: vec![h, c] }))))
+}
+
 fn ext_lower(lw: &mut Lw, e: &V, line: usize, di: usize, on_vec: bool, elem: Ty, h: VId, args: &[V], is_vec: bool) -> LR<Option<VId>> {
     let cd = &lw.p.defs[di];
     if cd.params.len() != args.len() + 1 {

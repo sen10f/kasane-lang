@@ -224,6 +224,12 @@ impl<'a> Lw<'a> {
         if !matches!(rt, Ty::Res(Pay::Unit, _)) {
             return self.err(line, "push_display / push_debug の結果の型が Result<(), AllocError> でない");
         }
+        // `char` の Display は文字そのもの: `String.push(c)` (UTF-8 に符号化。Kasane 版)。
+        if !debug && ta == Ty::U32 && matches!(&sa, Src::Prim(p) if p == "char") {
+            if let Some(r) = super::ext::string_push_char(self, e, line, h, a) {
+                return r;
+            }
+        }
         let mut g = Gen::new_sink(self.p, self.aggs);
         let made = if debug { g.need(&sa, ta, &file) } else { g.need_display(&sa, ta, &file) };
         let k = match made {

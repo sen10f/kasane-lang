@@ -68,6 +68,8 @@ pub(crate) enum Kind {
     /// 下ろした関数の鍵と、引数・戻り値の型。`caps` は取り込みの値 (この関数の中の値番号。値の取り込みはその値、
     /// 参照の取り込みは参照の値) で、`cap_tys` がその型。呼び出しでは先頭の追加の引数として渡す (設計_KIR.md 13 章)。
     Closure { key: String, args: Vec<Ty>, ret: Ty, caps: Vec<VId>, cap_tys: Vec<Ty> },
+    /// `let r = core.iter.range(a, b)` の局所: 端の値は束縛の時点で評価済み (`fold` / `count` / `map` / `filter` の元になる。値は作らない)。
+    Range { start: VId, end: VId, ty: Ty },
 }
 
 /// 所有している値。スコープの終わりに、移していなければ解放する。
@@ -2044,6 +2046,13 @@ pub(super) fn method_on(lw: &mut Lw, e: &V, line: usize, slot: Option<usize>, ki
         let Some(b0) = lw.expr_peek(&args[0])? else { return Ok(None) };
         let b = if kind == Kind::Str { load_fat_ref(lw, b0) } else { hdr_view(lw, b0) };
         return Ok(Some(lw.str_eq(a, b)?));
+    }
+    // `x.try_clone()` (`&str`。`&&str` の受け手も): 借用は複製しても同じ `{ptr, len}`。`Ok(値)` (仕様 8.3 の `TryClone`)。
+    if m == "try_clone" && args.is_empty() && kind == Kind::Str {
+        if let Ok(rt @ Ty::Res(..)) = lw.ty_of(e) {
+            let v = load_fat_ref(lw, h);
+            return Ok(Some(lw.emit(rt, Op::Ok(v))));
+        }
     }
     // `x.hash(&mut state)` (`&str` / `String`、仕様 4.2): バイト列を `Fnv64.write_bytes` へ渡す。受け手が `&&str` なら値を読む。
     if m == "hash" && args.len() == 1 && matches!(kind, Kind::Str | Kind::String) {

@@ -38,6 +38,10 @@ enum Plan {
     Same,
     /// `char.to_ascii_uppercase()` / `to_ascii_lowercase()` (`true` で大文字)。ASCII の英字だけを変える。
     AsciiCase(bool),
+    /// `char.is_ascii_alphabetic()` (0) / `is_ascii_digit()` (1) / `is_ascii_whitespace()` (2)。結果は `bool`。
+    CharIs(u8),
+    /// `char.len_utf8()`。結果は `usize`。
+    LenUtf8,
 }
 
 /// 数値のメソッドの対応表。対象外なら `None` (引数の個数は一致している必要がある)。
@@ -86,6 +90,10 @@ fn num_plan(rt: Ty, name: &str, n: usize) -> Option<Plan> {
         ("to_u32", 0) if rt == Ty::U32 => Plan::Same,
         ("to_ascii_uppercase", 0) if rt == Ty::U32 => Plan::AsciiCase(true),
         ("to_ascii_lowercase", 0) if rt == Ty::U32 => Plan::AsciiCase(false),
+        ("is_ascii_alphabetic", 0) if rt == Ty::U32 => Plan::CharIs(0),
+        ("is_ascii_digit", 0) if rt == Ty::U32 => Plan::CharIs(1),
+        ("is_ascii_whitespace", 0) if rt == Ty::U32 => Plan::CharIs(2),
+        ("len_utf8", 0) if rt == Ty::U32 => Plan::LenUtf8,
         _ => return None,
     })
 }
@@ -175,7 +183,8 @@ impl<'a> Lw<'a> {
         let Some(plan) = num_plan(rt, name, args.len()) else { return Ok(None) };
         let out = match plan {
             Plan::BitCount(_) => Ty::U32,
-            Plan::Unary(FUn::IsNan | FUn::IsFinite) => Ty::Bool,
+            Plan::Unary(FUn::IsNan | FUn::IsFinite) | Plan::CharIs(_) => Ty::Bool,
+            Plan::LenUtf8 => Ty::Usize,
             Plan::Conv | Plan::Bitcast => res,
             _ => rt,
         };
@@ -214,8 +223,55 @@ impl<'a> Lw<'a> {
             Plan::Binary(f) => self.emit(rt, Op::FBin { f, a: recv, b: argv[0] }),
             Plan::Same => recv,
             Plan::AsciiCase(upper) => self.ascii_case(recv, upper),
+            Plan::CharIs(k) => self.char_is(recv, k),
+            Plan::LenUtf8 => {
+                // 1 / 2 / 3 / 4 バイト (0x80・0x800・0x10000 を境にする)。
+                let (join, jp) = self.new_block(&[Ty::Usize]);
+                for (b, n) in [(0x80i128, 1i128), (0x800, 2), (0x10000, 3)] {
+                    let bv = self.emit(Ty::U32, Op::Const(b));
+                    let lt = self.emit(Ty::Bool, Op::Cmp { cc: Cc::Lt, ty: Ty::U32, a: recv, b: bv });
+                    let (yes, _) = self.new_block(&[]);
+                    let (next, _) = self.new_block(&[]);
+                    self.branch(lt, (yes, vec![]), (next, vec![]));
+                    self.cur = Some(yes);
+                    let nv = self.emit(Ty::Usize, Op::Const(n));
+                    self.goto(join, vec![nv]);
+                    self.cur = Some(next);
+                }
+                let four = self.emit(Ty::Usize, Op::Const(4));
+                self.goto(join, vec![four]);
+                self.cur = Some(join);
+                jp[0]
+            }
         };
         Ok(Some(Some(v)))
+    }
+
+    /// ASCII の分類 (`char` は `u32`)。0 = 英字、1 = 数字、2 = 空白 (`\t \n \x0C \r` と空白。0x0B は含まない)。
+    fn char_is(&mut self, c: VId, k: u8) -> VId {
+        let rng = |lw: &mut Self, lo: i128, hi: i128| {
+            let l = lw.emit(Ty::U32, Op::Const(lo));
+            let h = lw.emit(Ty::U32, Op::Const(hi));
+            let ge = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Ge, ty: Ty::U32, a: c, b: l });
+            let le = lw.emit(Ty::Bool, Op::Cmp { cc: Cc::Le, ty: Ty::U32, a: c, b: h });
+            lw.emit(Ty::Bool, Op::Bool(BoolOp::And, ge, le))
+        };
+        let or = |lw: &mut Self, a: VId, b: VId| lw.emit(Ty::Bool, Op::Bool(BoolOp::Or, a, b));
+        match k {
+            0 => {
+                let u = rng(self, 65, 90);
+                let l = rng(self, 97, 122);
+                or(self, u, l)
+            }
+            1 => rng(self, 48, 57),
+            _ => {
+                let a = rng(self, 9, 10);
+                let b = rng(self, 12, 13);
+                let c2 = rng(self, 32, 32);
+                let ab = or(self, a, b);
+                or(self, ab, c2)
+            }
+        }
     }
 
     /// ASCII の英字の大文字・小文字 (`char` は `u32` で持つ)。英字以外はそのまま返す。

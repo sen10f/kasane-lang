@@ -755,6 +755,7 @@ impl<'a> Fc<'a> {
             Op::Write { fd, data } => Ins::Write { d, fd: self.s(*fd), data: self.s(*data) },
             Op::Eprint { data } => Ins::Eprint { data: self.s(*data) },
             Op::FmtFloat { bits, a } => Ins::FmtFloat { a: self.s(*a), bits: *bits },
+            Op::FloatText { bits, a, dst } => Ins::FloatText { d, a: self.s(*a), dst: self.s(*dst), bits: *bits },
             Op::ParseInt { ty: pty, s, radix } => Ins::ParseInt { d, s: self.s(*s), radix: self.s(*radix), ty: self.ty_of(*pty) },
             Op::EnvArgCount => Ins::EnvArgCount { d },
             Op::EnvArg { index } => Ins::EnvArg { d, i: self.s(*index) },

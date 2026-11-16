@@ -476,7 +476,7 @@ fn emit_with(m: &Module, entry: &str, program: bool, target: Option<Target>) -> 
             }
         }
     }
-    let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. }))));
+    let has_fmt_float = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::FmtFloat { .. } | Op::FloatText { .. }))));
     let has_parse_int = m.funcs.iter().any(|f| f.blocks.iter().any(|b| b.insts.iter().any(|i| matches!(i.op, Op::ParseInt { .. }))));
     let mut cx = Ctx { decls: BTreeSet::new(), globals: String::new(), math: BTreeSet::new(), write: false, eprint: false, fmt_float: has_fmt_float, net: false, env: false, time: false, fs: false, parse_int: has_parse_int };
     // `extern` 宣言は `define` ではなく `declare` として出す。本体の emission はスキップする。
@@ -2222,6 +2222,17 @@ impl<'a> Fe<'a> {
                 let (pv, o) = (self.r(*p), self.r(*off));
                 let ot = self.lt(self.ty(*off));
                 self.line(format!("{} = getelementptr i8, ptr {}, {} {}", d, pv, ot, o));
+            }
+            Op::FloatText { bits, a, dst } => {
+                self.cx.fmt_float = true;
+                let (func, arg_ty) = if *bits == 64 { ("@ksn_fmt_f64_to", "double") } else { ("@ksn_fmt_f32_to", "float") };
+                self.cx.decl(format!("declare i64 {}({}, ptr)", func, arg_ty));
+                let r = self.t(format!("call i64 {}({} {}, ptr {})", func, arg_ty, self.r(*a), self.r(*dst)));
+                if size_ty() == "i64" {
+                    self.line(format!("{} = add i64 {}, 0", d, r));
+                } else {
+                    self.line(format!("{} = trunc i64 {} to {}", d, r, size_ty()));
+                }
             }
             Op::Utf8Valid { p, len } => {
                 self.cx.decl("declare i64 @ksn_utf8_valid(ptr, i64)".to_string());

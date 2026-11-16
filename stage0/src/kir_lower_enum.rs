@@ -229,6 +229,18 @@ impl<'a> Lw<'a> {
                 if self.slots[s].1 == self.fat_ty() {
                     return Some(self.chars_next(e, s));
                 }
+                if matches!(self.slots[s].1, Ty::Agg(i) if self.aggs.borrow().defs[i as usize].name == "split_it") {
+                    return Some(self.split_next(e, s));
+                }
+            }
+        }
+        if segs.len() == 2 && matches!(segs[1].as_str(), "map" | "and_then") && items(&f[1]).len() == 1 {
+            if let Some(s) = self.lookup(&segs[0]) {
+                let recv = super::coll::path_peek(self, s);
+                if matches!(self.vty(recv), Ty::Opt(_)) {
+                    let args = items(&f[1]).to_vec();
+                    return Some(self.opt_map(e, recv, segs[1] == "and_then", &args));
+                }
             }
         }
         if segs.len() == 2 && segs[1] == "take" {
@@ -328,7 +340,7 @@ impl<'a> Lw<'a> {
     }
 
     /// 値 `recv` (局所変数なら `local`) に対する `Option` / `Result` のメソッド。
-    fn optres_on(&mut self, e: &V, recv: VId, local: bool, m: &str, args: &[V]) -> LR<Option<VId>> {
+    pub(super) fn optres_on(&mut self, e: &V, recv: VId, local: bool, m: &str, args: &[V]) -> LR<Option<VId>> {
         let line = nline(e);
         let rt = self.vty(recv);
         let want_args = if m == "unwrap_or" { 1 } else { 0 };
@@ -380,6 +392,43 @@ impl<'a> Lw<'a> {
         self.goto(join, vec![pv]);
         self.cur = Some(no);
         self.goto(join, vec![d]);
+        self.cur = Some(join);
+        Ok(Some(jp[0]))
+    }
+
+    /// `o.map(f)` / `o.and_then(f)` (`o` は所有物を持たない `Option`、`f` は捕獲のないクロージャか関数の項目)。
+    /// `Some(x)` は `Some(f(x))` (`and_then` は `f(x)` そのもの)、`None` は `None`。
+    pub(super) fn opt_map(&mut self, e: &V, recv: VId, and_then: bool, args: &[V]) -> LR<Option<VId>> {
+        let line = nline(e);
+        let name = if and_then { "and_then" } else { "map" };
+        if args.len() != 1 {
+            return self.err(line, format!("{} の引数は 1 つのはず", name));
+        }
+        let rt = self.ty_of(e)?;
+        let (Ty::Opt(p0), Ty::Opt(p1)) = (self.vty(recv), rt) else {
+            return self.err(line, format!("{} の受け手と結果が Option でない", name));
+        };
+        if super::coll::owns(self, self.vty(recv)) || super::coll::owns(self, rt) {
+            return self.err(line, format!("所有物を持つ Option の {} は段階 1 の対象外", name));
+        }
+        let (key, fargs, fret) = super::coll::callable(self, &args[0])?;
+        let want_ret = if and_then { rt } else { p1.ty() };
+        if fargs != [p0.ty()] || fret != want_ret {
+            return self.err(line, format!("{} の関数の型が Option の型と合わない", name));
+        }
+        let tag = self.emit(Ty::Bool, Op::Tag(recv));
+        let (some_b, _) = self.new_block(&[]);
+        let (none_b, _) = self.new_block(&[]);
+        let (join, jp) = self.new_block(&[rt]);
+        self.branch(tag, (some_b, vec![]), (none_b, vec![]));
+        self.cur = Some(some_b);
+        let pv = self.emit(p0.ty(), Op::Payload(recv));
+        let r = self.emit(fret, Op::Call { callee: key, args: vec![pv] });
+        let out = if and_then { r } else { self.emit(rt, Op::Some(r)) };
+        self.goto(join, vec![out]);
+        self.cur = Some(none_b);
+        let none = self.emit(rt, Op::Const(0));
+        self.goto(join, vec![none]);
         self.cur = Some(join);
         Ok(Some(jp[0]))
     }

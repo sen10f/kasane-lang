@@ -991,6 +991,13 @@ impl<'a> Vm<'a> {
                     let bytes = Self::fat_bytes(rp, *data as usize)?;
                     self.err_write(bytes);
                 }
+                Ins::FloatText { d, a, dst, bits } => {
+                    let x = r!(*a);
+                    let s = if *bits == 32 { py_float32(f32::from_bits(x as u32)) } else { py_float(f64::from_bits(x)) };
+                    let pa = r!(*dst);
+                    unsafe { std::ptr::copy_nonoverlapping(s.as_ptr(), addr(pa, s.len())? as *mut u8, s.len()) };
+                    w!(*d, s.len() as u64);
+                }
                 Ins::FmtFloat { a, bits } => {
                     let x = r!(*a);
                     let s = if *bits == 32 { py_float32(f32::from_bits(x as u32)) } else { py_float(f64::from_bits(x)) };

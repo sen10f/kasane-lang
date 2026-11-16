@@ -269,9 +269,9 @@ fn the_llvm_backend_runs_vecdeque_like_the_interpreter() {
     }
 }
 
-/// `split` を変数に持って `next()` で進める書き方はインタプリタだけ。ネイティブは「skipped」で退く。
+/// `split` を変数に持って `next()` で進める書き方 (局所の反復子) は、kir/native-gaps-3 でネイティブになった。出力は木走査と同じ。
 #[test]
-fn a_split_iterator_held_in_a_variable_is_interpreter_only() {
+fn a_split_iterator_held_in_a_variable_runs_natively() {
     let src = [
         "fn t.main() -> Result<(), std.io.Error> uses [io.console] panics may",
         "    let mut it = \"a,b\".split(\",\")",
@@ -288,8 +288,11 @@ fn a_split_iterator_held_in_a_variable_is_interpreter_only() {
     let interp = run(&["run"], &t.0);
     assert_eq!(interp.status.code(), Some(0), "{}{}", text(&interp.stdout), text(&interp.stderr));
     assert_eq!(text(&interp.stdout).trim(), "it ok");
-    let (_t, exe_path, out) = build_native_strict("str_split_var_clif", &src, false);
-    assert!(exe_path.is_none() && out.contains("native backend skipped"), "expected a skip: {}", out);
+    let (t, exe_path, out) = build_native_strict("str_split_var_clif", &src, false);
+    let p = exe_path.unwrap_or_else(|| panic!("no native executable: {}", out));
+    let o = Command::new(&p).current_dir(&t.0).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{} {}", text(&o.stdout), text(&o.stderr));
+    assert_eq!(text(&o.stdout).trim(), "it ok");
 }
 
 #[test]
