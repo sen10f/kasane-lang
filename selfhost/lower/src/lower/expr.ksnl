@@ -229,12 +229,20 @@ fn lower.expr.block(env: &types.env.Env, c: &mut lower.cx.Cx, p: &parse.cur.P, s
             }
         }
     }
-    lower.expr.trunc(c, mark)
-    if has {
-        return Ok(lower.cx.R { v: res, t: t })
+    if !has {
+        res = lower.expr.unit(c)?
     }
-    let u = lower.expr.unit(c)?
-    Ok(lower.cx.R { v: u, t: t })
+    // 局所の寿命の終わり (借用検査の注釈): スタックスロットの局所を逆順に `scope.end`。
+    let mut k = c.v.vals.len()
+    while k > mark {
+        k = k - 1usize
+        if lower.cx.is_slot(c, k) {
+            let sv = lower.cx.get_val(c, k).wrapping_sub(1usize)
+            let _e = lower.cx.def1(c, "unit", "scope.end ", sv)?
+        }
+    }
+    lower.expr.trunc(c, mark)
+    Ok(lower.cx.R { v: res, t: t })
 end lower.expr.block
 
 // `br_if %c, bT(), bF()` (引数なし) を足す。

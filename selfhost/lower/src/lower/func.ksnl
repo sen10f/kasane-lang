@@ -113,6 +113,16 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
             Some(h) => out.push_str(h.as_str())?
             None => core.mem.drop(0u8)
         }
+        // `alloca` は入口ブロックの先頭へ集める (Rust 版 flush_allocas)。
+        if b == 0usize {
+            for l in c.v.lines.as_slice().iter() {
+                if l.as_str().ends_with(" = alloca") {
+                    out.push_str("    ")?
+                    out.push_str(l.as_str())?
+                    out.push('\n')?
+                }
+            }
+        }
         let mut i = 0usize
         while i < c.v.lines.len() {
             let mine = match c.v.lblk.as_slice().get(i) {
@@ -122,9 +132,11 @@ fn lower.func.lower_item(env: &types.env.Env, c: &mut lower.cx.Cx, item: usize, 
             if mine {
                 match c.v.lines.as_slice().get(i) {
                     Some(l) => {
-                        out.push_str("    ")?
-                        out.push_str(l.as_str())?
-                        out.push('\n')?
+                        if !l.as_str().ends_with(" = alloca") {
+                            out.push_str("    ")?
+                            out.push_str(l.as_str())?
+                            out.push('\n')?
+                        }
                     }
                     None => core.mem.drop(0u8)
                 }
