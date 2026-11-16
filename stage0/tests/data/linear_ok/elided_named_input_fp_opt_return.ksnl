@@ -1,0 +1,14 @@
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 1u32
+    let o = Some(&a)
+    let r = t.opt_get(o)
+    core.mem.drop(r)
+    Ok(())
+end t.main
+
+fn t.opt_get(o: Option<&u32>) -> Option<&u32> uses [] panics never
+    match o {
+        Some(r) => Some(r)
+        None => None
+    }
+end t.opt_get

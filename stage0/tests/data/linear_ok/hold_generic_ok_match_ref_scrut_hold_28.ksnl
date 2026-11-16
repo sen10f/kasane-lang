@@ -1,0 +1,17 @@
+type t.Hold[T]
+    v: T
+end t.Hold
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    let a = 10u32
+    let o = Some(&a)
+    let r0 = &a
+    let h = match &o {
+        Some(r) => t.Hold { v: r }
+        None => t.Hold { v: &r0 }
+    }
+    match h {
+        t.Hold { v: r } => core.mem.drop(**r)
+    }
+    Ok(())
+end t.main

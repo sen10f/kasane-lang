@@ -2535,6 +2535,8 @@ enum Origin {
     Param(usize),
     /// 引数の参照を外して読んだ、中の省略した参照 (`x: &'a &u32` の `*x`)。呼び出しごとの新しい領域を持つ。
     Inner(usize),
+    /// 引数 (その番号) の欄を読んだ値。運ぶ領域はその欄の宣言の領域 (型引数を代入したもの。`'static` を含む)。
+    Field(usize, BTreeSet<String>),
 }
 
 impl<'a> Low<'a> {
@@ -2751,7 +2753,13 @@ impl<'a> Low<'a> {
                         Some(f) if f != "*" && Self::elided_param(d, q) => !self.field_named_lifetimes(d, q, f).is_empty(),
                         _ => true,
                     };
-                    if carries {
+                    let fld = match &read_field {
+                        Some(f) if f != "*" && carries => self.field_region(d, q, f),
+                        _ => None,
+                    };
+                    if let Some(set) = fld {
+                        out.push(Origin::Field(q, set));
+                    } else if carries {
                         out.push(Origin::Param(q));
                     }
                 } else if let Some(init) = inits.plain(v) {
@@ -2774,13 +2782,52 @@ impl<'a> Low<'a> {
                 for o in sub {
                     match o {
                         Origin::Param(q) if Self::param_text(d, q).map_or(false, |t| inner_elided(&t)) => out.push(Origin::Inner(q)),
-                        Origin::Param(_) => out.push(o),
+                        Origin::Param(_) | Origin::Field(..) => out.push(o),
                         _ => {}
                     }
                 }
             }
             Src::Contents { .. } => {}
         }
+    }
+
+    /// 引数 `q` の型 (`&t.Pair<'a, 'b>`) の欄 `f` の宣言の領域を、型の実引数 (`'a`, `'b`) で置き換えた集合。
+    /// 型が名前付きのライフタイム引数を全部書いていない・欄が型引数で決まる (領域を持たない) ときは None (従来の判定)。
+    fn field_region(&self, d: &Def, q: usize, f: &str) -> Option<BTreeSet<String>> {
+        let text = Self::param_text(d, q)?;
+        let mut ty = text.split_once(':').map_or(text.as_str(), |x| x.1).trim();
+        while let Some(t) = ty.strip_prefix('&') {
+            let t = t.trim_start();
+            let t = match t.strip_prefix('\'') {
+                Some(r) => r.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_').trim_start(),
+                None => t,
+            };
+            ty = t.strip_prefix("mut ").unwrap_or(t).trim_start();
+        }
+        let (name, args) = type_args(ty);
+        let tdi = self.type_of_name(&name)?;
+        let decl = &self.p.defs[tdi];
+        let lifes: Vec<_> = decl.generics.iter().filter(|g| g.0 == "life").collect();
+        let given: Vec<&String> = args.iter().filter(|a| a.starts_with('\'')).collect();
+        if lifes.is_empty() || given.len() != lifes.len() {
+            return None;
+        }
+        let flts = &decl.field_lifetimes.iter().find(|x| x.0 == f)?.1;
+        if flts.is_empty() {
+            return None;
+        }
+        let mut out = BTreeSet::new();
+        for l in flts {
+            match lifes.iter().position(|g| g.1.trim_start_matches('\'') == l.as_str()) {
+                Some(k) => {
+                    out.insert(given[k].trim_start_matches('\'').to_string());
+                }
+                None => {
+                    out.insert(l.clone());
+                }
+            }
+        }
+        Some(out)
     }
 
     /// 名前 (`t.Pair`) が指す型定義。型でなければ None。
@@ -2972,6 +3019,31 @@ impl<'a> Low<'a> {
                                 format!(
                                     "{}: the returned value carries the inner reference of argument `{}` (`{}`), whose lifetime is elided (a new region per call); the return type `{}` names a lifetime it does not outlive",
                                     d.name, d.params[q].0, ptexts[q], ret.trim(),
+                                ),
+                            ));
+                        }
+                    }
+                    Origin::Field(q, have) => {
+                        // 欄の領域が `'static`、または戻り値の名前付きの領域・宣言した包含関係に収まるときだけ通す。
+                        // 戻り値が領域を名指さない (省略した出力) ときは、引数全体の判定 (`Param`) と同じく省略規則に任せる。
+                        if have.contains("static") || expected.is_empty() || have.intersection(&expected).next().is_some() {
+                            continue;
+                        }
+                        if have.iter().any(|h| gen_text.contains(&format!("'{}:", h)) || gen_text.contains(&format!("'{} :", h))) {
+                            continue;
+                        }
+                        if seen.insert((nlineno(v), d.params[q].0.clone())) {
+                            out.push((
+                                "E3010",
+                                nlineno(v),
+                                format!(
+                                    "{}: the returned value carries the field borrow of argument `{}` (`{}`), whose lifetime {} is not the return type's `{}`; `{}` is not declared to outlive it",
+                                    d.name,
+                                    d.params[q].0,
+                                    ptexts[q],
+                                    have.iter().map(|h| format!("'{}", h)).collect::<Vec<_>>().join(", "),
+                                    ret.trim(),
+                                    have.iter().map(|h| format!("'{}", h)).collect::<Vec<_>>().join(", ")
                                 ),
                             ));
                         }
