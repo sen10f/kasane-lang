@@ -1432,3 +1432,65 @@ python3 -I compare.py --group examples --mine native                 # 一致 44
 ```
 
 端から端まで: 24.5 と同じ手順。98 / 98 一致 (`t.main` が全部下ろせた 98 本)。
+
+## 26. KIR への下ろしの段 (4g)
+
+2026-11-16。ブランチ `selfhost/lower-4g` (`selfhost/lower-4f` の先頭から)。触ったのは `selfhost/lower/src/` (`lower/loops` `expr` `std_calls` `chk` `tyk` `vec` `str` `opt`)、この章だけ。`stage0/`・`examples/`・テストの期待値は変えていない。
+
+結論を先に: **`compare.py --group parse` で `selfhost/parse` の 155 関数のうち 144 が Rust 版 (`ksn kir`) と一致する形になった** (前の段は 134)。下ろせた数は 145 (前は 135)。未対応は 20 → 10。`linear_ok` は一致 347 / 下ろせた 401 のまま (退行なし)、`examples` は一致 44 → 49・下ろせた 53 → 59、端から端まで 98 / 98 のまま。最後の差が残る `parse.cur.new` (所有物を持つ構造体の「移したかの印」) には手を付けられなかった (26.3)。
+
+### 26.1 下ろしたもの・直したもの
+
+- **`for x in s.split(sep)`** (`lower.loops.forsplit`): Rust 版 `kir_lower_for.rs` の `split_for` と同じブロックの並び (exit・先頭 (from)・探す (from, i)・比べる (from, k, i)・中継・本体 (from, end)・続き (end))。中継のブロックは、Rust 版が自分の引数を使わず「比べる」ブロックの引数を使う形まで写した。`continue` は続きのブロックが `end` を受け取るので未対応 (`parse` の `split` の本体には `continue` が無い)。
+- **`&str` の局所は借用されてもスロットに置かない** (`lower.opt.bind`): `&str` は `Ref` ではなく `Str` の型で来るので、`names.split(..)` の受け手として借用と数えられ `alloca` に退避されていた。
+- **`for x in NAME.as_slice().iter()`** (`lower.loops.forvec_path`): `NAME` は `Vec` の局所 (1 つの名前) か、欄の連なり (`p.ast.defs`。`lower.expr.hdr_of`)。
+- **欄の `Vec` / `String` のメソッドは引数を先に評価する** (`vec_field_call`): Rust 版は `p.ast.links.push(*v)` で `*v` の `load` を先に出し、後で `fieldaddr` の連鎖を作る。
+- **`str.as_bytes`** (値のまま)、**`slice.sub`** (`a <= b && b <= len` の検査 → `some (make(ptr + a*size, b - a))`、some・none・join の順)、**`slice.contains`** (添字で回すインラインのループ。比べるのは要素の `icmp.eq`)。
+- **`&str` / `&[T]` の `==` / `!=`**: `str.$eq` を呼ぶ (`!=` は `xor.bool`)。本体は Rust 版と同じ形で生成 (`lower.chk.text_str_eq`)。**`Option<整数・bool>` の `==`** は `Option<T>.$eq` (`lower.chk.opt_cmp` / `text_opt_eq`)。これまで両方とも誤った `icmp.eq.agg#N` / `icmp.eq.Option<u8>` を出していた。
+- **`String.push(char)`**: Rust 版と同じく、生成した小関数 `alloc.string.String.push<std.alloc.System>` の呼び出し。本体は Rust 版の形ではなく、4 バイト分の余地を取って (足りなければ `heap.realloc`)、幅 (1〜4) で場合分けして UTF-8 を書く (`lower.str.push_char_text`)。
+- **整数リテラルの `match`** (`lower.expr.matchint`): 腕ごとに (次の腕・この腕の本体) のブロックを作り `icmp.eq` で比べる。`_` の腕では、行き止まりの `unreachable` のブロックだけ作り、本体は今のブロックに下ろす。
+- **`break` / `continue`**: ループの中で作ったスロットの局所を、逆順に (`Vec` / `String` は解放して) `scope.end` してから飛ぶ (`lower.vec.exit_scope`)。`parse.lex.line` の差が消えた。
+
+### 26.2 数字
+
+| 対象 | 前 (4f) | 後 (4g) |
+| --- | ---: | ---: |
+| **`selfhost/parse` (155 関数)**: 一致 / 下ろせた | 134 / 135 | **144 / 145** |
+| `linear_ok` (459 関数): 一致 / 下ろせた | 347 / 401 | 347 / 401 |
+| `examples` (172 関数): 一致 / 下ろせた | 44 / 53 | **49 / 59** |
+| `examples/demo`: 一致 / 全体 | 3 / 4 | 3 / 4 |
+| `examples/tour`: 一致 / 全体 | 4 / 7 | 4 / 7 |
+| 端から端まで (emit → clang → 実行で Rust 版と一致 / `t.main` が全部下ろせた本) | 98 / 98 | 98 / 98 |
+
+- `String.push` (UTF-8 の 1〜4 バイト)・`split` の `for`・`as_bytes() ==` を使う小さな本を `/tmp` で端から端まで走らせ、Rust 版のネイティブと標準出力が一致することを確かめた。
+- `ksn check`: `selfhost/` の全パッケージで診断 0 件 (`probes/boxtree` の E4013 だけ期待どおり)。`selfhost/lower` の `ksn fmt --check` は通る。
+
+### 26.3 まだ
+
+`selfhost/parse` の未対応 10 関数と、差が残る 1 関数:
+
+| 関数 | 理由 |
+| --- | --- |
+| `parse.cur.new` (差) | 所有物を持つ構造体 (`parse.ast.Ast`) の局所 `ast` を構造体へ移すとき、Rust 版は「移したか」の印 (`frame.bytes 1`) を入口に作り、束縛で `true`・移した所で `false`、出口で印を読んで残りの欄 (`Vec` の ptr) を解放する枝を作る。`kir_lower_coll.rs` の `Owned::Val` と `drop_value` の写しが要る。`linear_ok` の食い違い約 20 件も同じ理由。`own.ksnl` は `own.consume` などの注釈だけで、値の解放はまだ無い |
+| `parse.process` `parse.main` `parse.read_file` | `str.ends_with` (インラインのループ)・`std.env.arg` (`Option<&str>`)・クロージャ。どれも所有物 (`Vec`) の解放とセットで、上の印が先 |
+| `parse.summary` `parse.error_text` | `String.push_u64` と、所有物の解放 |
+| `parse.push_range` | `core.str.from_utf8` (`Result<&str, Utf8Error>`) |
+| `parse.tok.push_code_name` | `core.char.char.try_from_u32` (`Option<char>`) |
+| `parse.push_kinds` | `as_mut_slice().get_mut(i)` |
+| `parse.analyze` | `match` の腕の入れ子の部分パターン |
+| `parse.ty.tuple` | `slice.get` で要素が `&str` のもの |
+
+- 端から端まで (全部下ろせた 98 本): 手順は 24.5 と同じ。再現用に `selfhost/emit/compare.py` の `ksn kir t.main` を `lower.native` の出力に替えたものを `/tmp` で回した (リポジトリには入れていない)。`selfhost/parse` 自身を端から端まで走らせる (項目 3) のは、未対応 10 関数が残るので未着手。
+
+### 26.4 処理系の不足 (stage0。直していない)
+
+新しく見つかったものはない。22.4 の 1・2 は変わらない。
+
+### 26.5 再現
+
+```
+cd selfhost/lower && ksn check && ksn fmt --check && ksn build --release
+python3 -I compare.py --group parse --mine native --reasons          # 一致 144 / 全体 155 (下ろせた 145)
+python3 -I compare.py --group linear_ok --mine native --jobs 8       # 一致 347 / 全体 459 (下ろせた 401)
+python3 -I compare.py --group examples --mine native                 # 一致 49 / 全体 172 (下ろせた 59)、demo 3/4、tour 4/7
+```
