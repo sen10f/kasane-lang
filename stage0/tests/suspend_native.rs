@@ -230,13 +230,15 @@ end t.main
 /// `block_on` の入れ子は実行時の panic (木走査と同じ)。
 #[test]
 fn native_nested_block_on_panics_101() {
+    // 直接の入れ子は検査が E4023 で止める。閉包を局所に受けて渡す形は実行時の panic (101) のまま。
     let src = with_say(
         "fn t.main() -> () uses [io.console, suspend] panics may
-    std.task.block_on(fn() -> () capture [] {
+    let g = fn() -> () capture [] {
         std.task.block_on(fn() -> () capture [] {
             t.say(\"inner\")
         })
-    })
+    }
+    std.task.block_on(g)
     t.say(\"after\")
 end t.main
 ",
