@@ -2918,7 +2918,7 @@ end t.Shape
 
 fn t.decode(text: &str) -> Result<t.Doc, std.json.Error> uses [alloc] panics never
     let doc = std.json.parse(text)?
-    t.Doc.from_json(doc.root())
+    t.Doc.from_json(&doc, doc.root())
 end t.decode
 
 fn t.error_of(text: &str) -> std.json.Error uses [alloc] panics may

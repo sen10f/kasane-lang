@@ -44,8 +44,7 @@ trait std.json.ToJson pub
     fn to_json(self: &Self, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never
 end std.json.ToJson
 
-type std.json.Value['a] derive [Clone, Copy] pub
-    doc: &'a std.json.Doc
+type std.json.Value derive [Clone, Copy] pub
     at: usize
 end std.json.Value
 
@@ -77,15 +76,15 @@ impl[T: std.json.FromJson] std.json.FromJson for alloc.vec.Vec<T, std.alloc.Syst
 
 impl[T: std.json.FromJson] std.json.FromJson for core.option.Option<T>
 
-fn std.json.Doc.root['a](self: &'a std.json.Doc) -> std.json.Value<'a> uses [] panics never pub
-    std.json.Value { doc: self, at: self.top }
+fn std.json.Doc.root(self: &std.json.Doc) -> std.json.Value uses [] panics never pub
+    std.json.Value { at: self.top }
 end std.json.Doc.root
 
-fn std.json.Doc.value_at['a](self: &'a std.json.Doc, at: usize) -> Option<std.json.Value<'a>> uses [] panics never pub
+fn std.json.Doc.value_at(self: &std.json.Doc, at: usize) -> Option<std.json.Value> uses [] panics never pub
     if at >= self.nodes.len() {
         None
     } else {
-        Some(std.json.Value { doc: self, at: at })
+        Some(std.json.Value { at: at })
     }
 end std.json.Doc.value_at
 
@@ -154,7 +153,7 @@ end std.json.ToJson.isize.to_json
 
 impl std.json.ToJson for std.json.Doc
 fn std.json.ToJson.std.json.Doc.to_json(self: &std.json.Doc, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never impls std.json.ToJson
-    std.json.write(self.root(), out)
+    std.json.write(self, self.root(), out)
 end std.json.ToJson.std.json.Doc.to_json
 
 impl std.json.ToJson for u16
@@ -214,170 +213,170 @@ fn std.json.char_of(code: u32) -> char
     char.try_from_u32(code).unwrap_or('?')
 end std.json.char_of
 
-fn std.json.decode_bool(v: std.json.Value) -> Result<bool, std.json.Error> uses [] panics never pub
-    match std.json.bool_at(v.doc, v.at) {
+fn std.json.decode_bool(doc: &std.json.Doc, v: std.json.Value) -> Result<bool, std.json.Error> uses [] panics never pub
+    match std.json.bool_at(doc, v.at) {
         Some(b) => Ok(b)
-        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
 end std.json.decode_bool
 
-fn std.json.decode_field['a](v: std.json.Value<'a>, name: &str, index: usize) -> Result<std.json.Value<'a>, std.json.Error> uses [] panics never pub
-    match std.json.obj_at(v.doc, v.at) {
+fn std.json.decode_field(doc: &std.json.Doc, v: std.json.Value, name: &str, index: usize) -> Result<std.json.Value, std.json.Error> uses [] panics never pub
+    match std.json.obj_at(doc, v.at) {
         Some((first, pairs)) => {
             for k in core.iter.range(0usize, pairs) {
                 let slot = first.wrapping_add(k.wrapping_mul(2usize))
-                let key = std.json.str_at(v.doc, std.json.link_at(v.doc, slot)?)?
+                let key = std.json.str_at(doc, std.json.link_at(doc, slot)?)?
                 if key == name {
-                    let at = std.json.link_at(v.doc, slot.wrapping_add(1usize))?
-                    return Ok(std.json.Value { doc: v.doc, at: at })
+                    let at = std.json.link_at(doc, slot.wrapping_add(1usize))?
+                    return Ok(std.json.Value { at: at })
                 }
             }
             Err(std.json.Error.MissingField(index))
         }
-        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
 end std.json.decode_field
 
-fn std.json.decode_i16(v: std.json.Value) -> Result<i16, std.json.Error> uses [] panics never pub
-    let text = std.json.number_text(v)?
+fn std.json.decode_i16(doc: &std.json.Doc, v: std.json.Value) -> Result<i16, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(doc, v)?
     match i16.parse(text) {
         Ok(x) => Ok(x)
         Err(_e) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_i16
 
-fn std.json.decode_i32(v: std.json.Value) -> Result<i32, std.json.Error> uses [] panics never pub
-    let text = std.json.number_text(v)?
+fn std.json.decode_i32(doc: &std.json.Doc, v: std.json.Value) -> Result<i32, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(doc, v)?
     match i32.parse(text) {
         Ok(x) => Ok(x)
         Err(_e) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_i32
 
-fn std.json.decode_i64(v: std.json.Value) -> Result<i64, std.json.Error> uses [] panics never pub
-    let text = std.json.number_text(v)?
+fn std.json.decode_i64(doc: &std.json.Doc, v: std.json.Value) -> Result<i64, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(doc, v)?
     match i64.parse(text) {
         Ok(x) => Ok(x)
         Err(_e) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_i64
 
-fn std.json.decode_i8(v: std.json.Value) -> Result<i8, std.json.Error> uses [] panics never pub
-    let text = std.json.number_text(v)?
+fn std.json.decode_i8(doc: &std.json.Doc, v: std.json.Value) -> Result<i8, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(doc, v)?
     match i8.parse(text) {
         Ok(x) => Ok(x)
         Err(_e) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_i8
 
-fn std.json.decode_isize(v: std.json.Value) -> Result<isize, std.json.Error> uses [] panics never pub
-    let text = std.json.number_text(v)?
+fn std.json.decode_isize(doc: &std.json.Doc, v: std.json.Value) -> Result<isize, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(doc, v)?
     match isize.parse(text) {
         Ok(x) => Ok(x)
         Err(_e) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_isize
 
-fn std.json.decode_item['a](v: std.json.Value<'a>, index: usize) -> Result<std.json.Value<'a>, std.json.Error> uses [] panics never pub
-    match std.json.arr_at(v.doc, v.at) {
+fn std.json.decode_item(doc: &std.json.Doc, v: std.json.Value, index: usize) -> Result<std.json.Value, std.json.Error> uses [] panics never pub
+    match std.json.arr_at(doc, v.at) {
         Some((first, count)) => {
             if index >= count {
                 return Err(std.json.Error.Eof)
             }
-            let at = std.json.link_at(v.doc, first.wrapping_add(index))?
-            Ok(std.json.Value { doc: v.doc, at: at })
+            let at = std.json.link_at(doc, first.wrapping_add(index))?
+            Ok(std.json.Value { at: at })
         }
-        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
 end std.json.decode_item
 
-fn std.json.decode_len(v: std.json.Value) -> Result<usize, std.json.Error> uses [] panics never pub
-    match std.json.arr_at(v.doc, v.at) {
+fn std.json.decode_len(doc: &std.json.Doc, v: std.json.Value) -> Result<usize, std.json.Error> uses [] panics never pub
+    match std.json.arr_at(doc, v.at) {
         Some((_first, count)) => Ok(count)
-        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
 end std.json.decode_len
 
-fn std.json.decode_payload['a](payload: Option<std.json.Value<'a>>) -> Result<std.json.Value<'a>, std.json.Error> uses [] panics never pub
+fn std.json.decode_payload(payload: Option<std.json.Value>) -> Result<std.json.Value, std.json.Error> uses [] panics never pub
     match payload {
         Some(x) => Ok(x)
         None => Err(std.json.Error.MissingPayload)
     }
 end std.json.decode_payload
 
-fn std.json.decode_string(v: std.json.Value) -> Result<alloc.string.String<std.alloc.System>, std.json.Error> uses [alloc] panics never pub
-    match std.json.text_at(v.doc, v.at) {
+fn std.json.decode_string(doc: &std.json.Doc, v: std.json.Value) -> Result<alloc.string.String<std.alloc.System>, std.json.Error> uses [alloc] panics never pub
+    match std.json.text_at(doc, v.at) {
         Some(s) => {
             let copy = alloc.string.String.from_str(std.alloc.SYSTEM, s)?
             Ok(copy)
         }
-        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
 end std.json.decode_string
 
-fn std.json.decode_tuple(v: std.json.Value, count: usize) -> Result<(), std.json.Error> uses [] panics never pub
-    let len = std.json.decode_len(v)?
+fn std.json.decode_tuple(doc: &std.json.Doc, v: std.json.Value, count: usize) -> Result<(), std.json.Error> uses [] panics never pub
+    let len = std.json.decode_len(doc, v)?
     if len != count {
         return Err(std.json.Error.TypeMismatch(std.json.Kind.Array))
     }
     Ok(())
 end std.json.decode_tuple
 
-fn std.json.decode_u16(v: std.json.Value) -> Result<u16, std.json.Error> uses [] panics never pub
-    let text = std.json.number_text(v)?
+fn std.json.decode_u16(doc: &std.json.Doc, v: std.json.Value) -> Result<u16, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(doc, v)?
     match u16.parse(text) {
         Ok(x) => Ok(x)
         Err(_e) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_u16
 
-fn std.json.decode_u32(v: std.json.Value) -> Result<u32, std.json.Error> uses [] panics never pub
-    let text = std.json.number_text(v)?
+fn std.json.decode_u32(doc: &std.json.Doc, v: std.json.Value) -> Result<u32, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(doc, v)?
     match u32.parse(text) {
         Ok(x) => Ok(x)
         Err(_e) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_u32
 
-fn std.json.decode_u64(v: std.json.Value) -> Result<u64, std.json.Error> uses [] panics never pub
-    let text = std.json.number_text(v)?
+fn std.json.decode_u64(doc: &std.json.Doc, v: std.json.Value) -> Result<u64, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(doc, v)?
     match u64.parse(text) {
         Ok(x) => Ok(x)
         Err(_e) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_u64
 
-fn std.json.decode_u8(v: std.json.Value) -> Result<u8, std.json.Error> uses [] panics never pub
-    let text = std.json.number_text(v)?
+fn std.json.decode_u8(doc: &std.json.Doc, v: std.json.Value) -> Result<u8, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(doc, v)?
     match u8.parse(text) {
         Ok(x) => Ok(x)
         Err(_e) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_u8
 
-fn std.json.decode_usize(v: std.json.Value) -> Result<usize, std.json.Error> uses [] panics never pub
-    let text = std.json.number_text(v)?
+fn std.json.decode_usize(doc: &std.json.Doc, v: std.json.Value) -> Result<usize, std.json.Error> uses [] panics never pub
+    let text = std.json.number_text(doc, v)?
     match usize.parse(text) {
         Ok(x) => Ok(x)
         Err(_e) => Err(std.json.Error.OutOfRange)
     }
 end std.json.decode_usize
 
-fn std.json.decode_variant['a](v: std.json.Value<'a>) -> Result<(&'a str, Option<std.json.Value<'a>>), std.json.Error> uses [] panics never pub
-    if std.json.text_at(v.doc, v.at).is_some() {
-        let name = std.json.str_at(v.doc, v.at)?
+fn std.json.decode_variant['a](doc: &'a std.json.Doc, v: std.json.Value) -> Result<(&'a str, Option<std.json.Value>), std.json.Error> uses [] panics never pub
+    if std.json.text_at(doc, v.at).is_some() {
+        let name = std.json.str_at(doc, v.at)?
         return Ok((name, None))
     }
-    match std.json.obj_at(v.doc, v.at) {
+    match std.json.obj_at(doc, v.at) {
         Some((first, pairs)) => {
             if pairs != 1usize {
                 return Err(std.json.Error.TypeMismatch(std.json.Kind.Object))
             }
-            let name = std.json.str_at(v.doc, std.json.link_at(v.doc, first)?)?
-            let at = std.json.link_at(v.doc, first.wrapping_add(1usize))?
-            Ok((name, Some(std.json.Value { doc: v.doc, at: at })))
+            let name = std.json.str_at(doc, std.json.link_at(doc, first)?)?
+            let at = std.json.link_at(doc, first.wrapping_add(1usize))?
+            Ok((name, Some(std.json.Value { at: at })))
         }
-        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
 end std.json.decode_variant
 
@@ -448,8 +447,8 @@ fn std.json.hex_value(c: u8) -> Option<u32>
     None
 end std.json.hex_value
 
-fn std.json.is_null(v: std.json.Value) -> bool uses [] panics never pub
-    match v.doc.nodes.as_slice().get(v.at) {
+fn std.json.is_null(doc: &std.json.Doc, v: std.json.Value) -> bool uses [] panics never pub
+    match doc.nodes.as_slice().get(v.at) {
         Some(std.json.Node.Null) => true
         Some(std.json.Node.Array(_a, _b)) => false
         Some(std.json.Node.Bool(_b)) => false
@@ -460,8 +459,8 @@ fn std.json.is_null(v: std.json.Value) -> bool uses [] panics never pub
     }
 end std.json.is_null
 
-fn std.json.kind_at(v: std.json.Value) -> std.json.Kind uses [] panics never pub
-    match v.doc.nodes.as_slice().get(v.at) {
+fn std.json.kind_at(doc: &std.json.Doc, v: std.json.Value) -> std.json.Kind uses [] panics never pub
+    match doc.nodes.as_slice().get(v.at) {
         Some(std.json.Node.Array(_a, _b)) => std.json.Kind.Array
         Some(std.json.Node.Bool(_b)) => std.json.Kind.Bool
         Some(std.json.Node.Number(_n)) => std.json.Kind.Number
@@ -507,10 +506,10 @@ fn std.json.num_at(doc: &std.json.Doc, at: usize) -> Option<&str>
     }
 end std.json.num_at
 
-fn std.json.number_text['a](v: std.json.Value<'a>) -> Result<&'a str, std.json.Error>
-    match std.json.num_at(v.doc, v.at) {
+fn std.json.number_text['a](doc: &'a std.json.Doc, v: std.json.Value) -> Result<&'a str, std.json.Error>
+    match std.json.num_at(doc, v.at) {
         Some(s) => Ok(s)
-        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(v)))
+        None => Err(std.json.Error.TypeMismatch(std.json.kind_at(doc, v)))
     }
 end std.json.number_text
 
@@ -871,8 +870,8 @@ fn std.json.to_string[T: std.json.ToJson](value: &T) -> Result<alloc.string.Stri
     Ok(out)
 end std.json.to_string
 
-fn std.json.write(v: std.json.Value, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
-    match v.doc.nodes.as_slice().get(v.at) {
+fn std.json.write(doc: &std.json.Doc, v: std.json.Value, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096 pub
+    match doc.nodes.as_slice().get(v.at) {
         None => out.push_str("null")
         Some(std.json.Node.Null) => out.push_str("null")
         Some(std.json.Node.Bool(b)) => {
@@ -890,7 +889,7 @@ fn std.json.write(v: std.json.Value, out: &mut alloc.string.String<std.alloc.Sys
                 if k > 0usize {
                     out.push(',')?
                 }
-                std.json.write_link(v.doc, first.wrapping_add(k), out)?
+                std.json.write_link(doc, first.wrapping_add(k), out)?
             }
             out.push(']')
         }
@@ -901,9 +900,9 @@ fn std.json.write(v: std.json.Value, out: &mut alloc.string.String<std.alloc.Sys
                     out.push(',')?
                 }
                 let slot = first.wrapping_add(k.wrapping_mul(2usize))
-                std.json.write_link(v.doc, slot, out)?
+                std.json.write_link(doc, slot, out)?
                 out.push(':')?
-                std.json.write_link(v.doc, slot.wrapping_add(1usize), out)?
+                std.json.write_link(doc, slot.wrapping_add(1usize), out)?
             }
             out.push('}')
         }
@@ -912,7 +911,7 @@ end std.json.write
 
 fn std.json.write_link(doc: &std.json.Doc, slot: usize, out: &mut alloc.string.String<std.alloc.System>) -> Result<(), alloc.alloc.AllocError> uses [alloc] panics never stack 4096
     match doc.links.as_slice().get(slot) {
-        Some(n) => std.json.write(std.json.Value { doc: doc, at: *n }, out)
+        Some(n) => std.json.write(doc, std.json.Value { at: *n }, out)
         None => Ok(())
     }
 end std.json.write_link

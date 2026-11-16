@@ -78,7 +78,7 @@ fn notes.store.Store.load(dir: &str) -> Result<notes.store.Store, notes.error.Er
                                     Ok(text) => {
                                         match std.json.parse(text.as_str()) {
                                             Ok(doc) => {
-                                                match note.Note.from_json(doc.root()) {
+                                                match note.Note.from_json(&doc, doc.root()) {
                                                     Ok(parsed) => {
                                                         core.mem.drop(store.notes.push(parsed)?)
                                                     }

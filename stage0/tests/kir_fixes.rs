@@ -76,7 +76,7 @@ fn a_one_armed_if_discards_an_owned_tail_value() {
 fn a_std_type_declared_in_kasane_source_lowers_natively() {
     let src = "fn t.read(text: &str) -> Result<i64, std.json.Error> uses [alloc] panics never\n\
                \x20   let doc = std.json.parse(text)?\n\
-               \x20   std.json.decode_i64(doc.root())\n\
+               \x20   std.json.decode_i64(&doc, doc.root())\n\
                end t.read\n\n\
                fn t.main() -> Result<(), std.io.Error> uses [alloc, io.console] panics may\n\
                \x20   match t.read(\"42\") {\n\

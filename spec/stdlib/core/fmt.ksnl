@@ -10,19 +10,24 @@ type core.fmt.Error derive [Debug, Clone, Copy] pub
     code: u32 pub
 end core.fmt.Error
 
-type core.fmt.Formatter['a] pub
-    buf: &'a mut [u8]
+type core.fmt.Formatter pub
+    buf: [u8; 256]
     len: usize
+    limit: usize
 end core.fmt.Formatter
 
-fn core.fmt.Formatter.new['a](buffer: &'a mut [u8]) -> core.fmt.Formatter<'a> const uses [] panics never pub
-    core.fmt.Formatter { buf: buffer, len: 0usize }
+fn core.fmt.Formatter.new(limit: usize) -> core.fmt.Formatter const uses [] panics never pub
+    let cap = if limit > 256usize { 256usize } else { limit }
+    core.fmt.Formatter { buf: [0u8; 256], len: 0usize, limit: cap }
 end core.fmt.Formatter.new
 
 fn core.fmt.Formatter.push_bytes(self: &mut core.fmt.Formatter, bytes: &[u8]) -> Result<(), core.fmt.Error> uses [] panics never
     let stop = match self.len.checked_add(bytes.len()) {
         Some(e) => e
         None => return Err(core.fmt.Error { code: 1u32 })
+    }
+    if stop > self.limit {
+        return Err(core.fmt.Error { code: 1u32 })
     }
     let dst = match self.buf.sub_mut(self.len, stop) {
         Some(d) => d
@@ -43,6 +48,6 @@ end core.fmt.Formatter.write_str
 fn core.fmt.Formatter.written(self: &core.fmt.Formatter) -> &[u8] uses [] panics never pub
     match self.buf.sub(0usize, self.len) {
         Some(part) => part
-        None => &*self.buf
+        None => &self.buf
     }
 end core.fmt.Formatter.written

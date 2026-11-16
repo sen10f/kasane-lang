@@ -381,10 +381,10 @@ fn todo.store.Store.parse_into(self: &mut todo.store.Store, text: &str) -> Resul
             let root = doc.root()
             let todos = model.decode_array(&doc, root.index())?
             self.todos = todos
-            let extras_v = std.json.decode_field(root, "extras", 0usize)
+            let extras_v = std.json.decode_field(&doc, root, "extras", 0usize)
             match extras_v {
                 Ok(ev) => {
-                    let extras = model.decode_extra_array(&doc, std.json.decode_len(ev)?)
+                    let extras = model.decode_extra_array(&doc, std.json.decode_len(&doc, ev)?)
                     self.extras = extras?
                 }
                 Err(_e) => core.mem.drop(0u8)
@@ -401,10 +401,10 @@ fn todo.store.Store.parse_users_into(self: &mut todo.store.Store, text: &str) ->
             let root = doc.root()
             let users = model.decode_user_array(&doc, root.index())?
             self.users = users
-            let sessions_v = std.json.decode_field(root, "sessions", 0usize)
+            let sessions_v = std.json.decode_field(&doc, root, "sessions", 0usize)
             match sessions_v {
                 Ok(sv) => {
-                    let sessions = model.decode_session_array(&doc, std.json.decode_len(sv)?)
+                    let sessions = model.decode_session_array(&doc, std.json.decode_len(&doc, sv)?)
                     self.sessions = sessions?
                 }
                 Err(_e) => core.mem.drop(0u8)

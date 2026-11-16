@@ -26,7 +26,7 @@ end todo.router.authenticate_user
 fn todo.router.create(db: &mut todo.store.Store, owner_id: i64, body: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, time] panics never
     let doc = std.json.parse(body).map_err(error.from_json)?
     let root = doc.root()
-    let (title, created_at) = model.from_create_value(root).map_err(error.from_json)?
+    let (title, created_at) = model.from_create_value(&doc, root).map_err(error.from_json)?
     let added = db.add(title.as_str(), created_at.as_str(), owner_id)?
     let s = model.to_json(added)?
     Ok(http.json_response(201u16, s))
@@ -98,10 +98,10 @@ end todo.router.list_all
 fn todo.router.login(db: &mut todo.store.Store, body: &str, ttl_seconds: u64) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, rand, time] panics never pub
     let doc = std.json.parse(body).map_err(error.from_json)?
     let root = doc.root()
-    let username_v = std.json.decode_field(root, "username", 0usize)?
-    let username = std.json.decode_string(username_v)?
-    let password_v = std.json.decode_field(root, "password", 1usize)?
-    let password = std.json.decode_string(password_v)?
+    let username_v = std.json.decode_field(&doc, root, "username", 0usize)?
+    let username = std.json.decode_string(&doc, username_v)?
+    let password_v = std.json.decode_field(&doc, root, "password", 1usize)?
+    let password = std.json.decode_string(&doc, password_v)?
     let user = match db.find_user_by_username(username.as_str()) {
         Some(u) => u
         None => return todo.router.error_response(401u16, "invalid credentials")
@@ -138,8 +138,8 @@ end todo.router.logout
 fn todo.router.patch(db: &mut todo.store.Store, _owner_id: i64, id: i64, body: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs] panics never
     let doc = std.json.parse(body).map_err(error.from_json)?
     let root = doc.root()
-    let done_v = std.json.decode_field(root, "done", 0usize)?
-    let done = match std.json.decode_bool(done_v) {
+    let done_v = std.json.decode_field(&doc, root, "done", 0usize)?
+    let done = match std.json.decode_bool(&doc, done_v) {
         Ok(d) => d
         Err(_e) => return todo.router.error_response(400u16, "bad done")
     }
@@ -233,13 +233,13 @@ end todo.router.read_page_size
 fn todo.router.register(db: &mut todo.store.Store, body: &str) -> Result<todo.http.Response, todo.error.Error> uses [alloc, io.fs, rand, time] panics never pub
     let doc = std.json.parse(body).map_err(error.from_json)?
     let root = doc.root()
-    let username_v = std.json.decode_field(root, "username", 0usize)?
-    let username = std.json.decode_string(username_v)?
+    let username_v = std.json.decode_field(&doc, root, "username", 0usize)?
+    let username = std.json.decode_string(&doc, username_v)?
     if username.len() > store.MAX_TITLE {
         return todo.router.error_response(400u16, "username too long")
     }
-    let password_v = std.json.decode_field(root, "password", 1usize)?
-    let password = std.json.decode_string(password_v)?
+    let password_v = std.json.decode_field(&doc, root, "password", 1usize)?
+    let password = std.json.decode_string(&doc, password_v)?
     let salt = auth.make_salt()?
     let hash = auth.hash_password(password.as_str(), salt.as_str())?
     let now = std.datetime.DateTime.now().to_rfc3339()?

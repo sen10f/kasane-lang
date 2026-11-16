@@ -57,18 +57,18 @@ fn todo.config.load(path: &str) -> Result<todo.config.Config, todo.error.Error> 
     let hist_def = todo.config.DEFAULT_HISTORY_PATH
     let ttl_def = todo.config.DEFAULT_SESSION_TTL_SECONDS
     let max_def = todo.config.DEFAULT_MAX_TITLE
-    let a = todo.config.read_string_field(root, "address", addr_def)?
-    let b = todo.config.read_string_field(root, "db_path", db_def)?
-    let h = todo.config.read_string_field(root, "history_path", hist_def)?
-    let t = todo.config.read_u64_field(root, "session_ttl_seconds", ttl_def)?
-    let m = todo.config.read_usize_field(root, "max_title", max_def)?
+    let a = todo.config.read_string_field(&doc, root, "address", addr_def)?
+    let b = todo.config.read_string_field(&doc, root, "db_path", db_def)?
+    let h = todo.config.read_string_field(&doc, root, "history_path", hist_def)?
+    let t = todo.config.read_u64_field(&doc, root, "session_ttl_seconds", ttl_def)?
+    let m = todo.config.read_usize_field(&doc, root, "max_title", max_def)?
     Ok(todo.config.Config { addr: a, db: b, hist: h, ttl: t, max: m })
 end todo.config.load
 
 // 文字列の JSON フィールドを読む。欠落または型不一致なら `fallback` を返す。
-fn todo.config.read_string_field(v: std.json.Value, name: &str, fallback: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
-    match std.json.decode_field(v, name, 0usize) {
-        Ok(value) => match std.json.decode_string(value) {
+fn todo.config.read_string_field(doc: &std.json.Doc, v: std.json.Value, name: &str, fallback: &str) -> Result<alloc.string.String<std.alloc.System>, todo.error.Error> uses [alloc] panics never pub
+    match std.json.decode_field(doc, v, name, 0usize) {
+        Ok(value) => match std.json.decode_string(doc, value) {
             Ok(text) => Ok(text)
             Err(_e) => match alloc.string.String.from_str(std.alloc.SYSTEM, fallback) {
                 Ok(s) => Ok(s)
@@ -83,9 +83,9 @@ fn todo.config.read_string_field(v: std.json.Value, name: &str, fallback: &str) 
 end todo.config.read_string_field
 
 // 整数の JSON フィールドを読む。欠落または型不一致なら `fallback` を返す。
-fn todo.config.read_u64_field(v: std.json.Value, name: &str, fallback: u64) -> Result<u64, todo.error.Error> uses [] panics never pub
-    match std.json.decode_field(v, name, 0usize) {
-        Ok(value) => match std.json.decode_u64(value) {
+fn todo.config.read_u64_field(doc: &std.json.Doc, v: std.json.Value, name: &str, fallback: u64) -> Result<u64, todo.error.Error> uses [] panics never pub
+    match std.json.decode_field(doc, v, name, 0usize) {
+        Ok(value) => match std.json.decode_u64(doc, value) {
             Ok(n) => Ok(n)
             Err(_e) => Ok(fallback)
         }
@@ -93,9 +93,9 @@ fn todo.config.read_u64_field(v: std.json.Value, name: &str, fallback: u64) -> R
     }
 end todo.config.read_u64_field
 
-fn todo.config.read_usize_field(v: std.json.Value, name: &str, fallback: usize) -> Result<usize, todo.error.Error> uses [] panics never pub
-    match std.json.decode_field(v, name, 0usize) {
-        Ok(value) => match std.json.decode_usize(value) {
+fn todo.config.read_usize_field(doc: &std.json.Doc, v: std.json.Value, name: &str, fallback: usize) -> Result<usize, todo.error.Error> uses [] panics never pub
+    match std.json.decode_field(doc, v, name, 0usize) {
+        Ok(value) => match std.json.decode_usize(doc, value) {
             Ok(n) => Ok(n)
             Err(_e) => Ok(fallback)
         }
@@ -145,18 +145,18 @@ end todo.config.load.test_missing_file_uses_defaults
 test todo.config.read_string_field.test_missing_and_present
     let doc = std.json.parse("{\"address\": \"127.0.0.1:9000\"}")?
     let root = doc.root()
-    let got = todo.config.read_string_field(root, "address", "default")?
+    let got = todo.config.read_string_field(&doc, root, "address", "default")?
     core.check.eq(got.as_str(), "127.0.0.1:9000")
-    let missing = todo.config.read_string_field(root, "not_there", "default")?
+    let missing = todo.config.read_string_field(&doc, root, "not_there", "default")?
     core.check.eq(missing.as_str(), "default")
 end todo.config.read_string_field.test_missing_and_present
 
 test todo.config.read_u64_field.test_missing_and_present
     let doc = std.json.parse("{\"session_ttl_seconds\": 7200}")?
     let root = doc.root()
-    let got = todo.config.read_u64_field(root, "session_ttl_seconds", 100u64)?
+    let got = todo.config.read_u64_field(&doc, root, "session_ttl_seconds", 100u64)?
     core.check.eq(got, 7200u64)
-    let missing = todo.config.read_u64_field(root, "not_there", 100u64)?
+    let missing = todo.config.read_u64_field(&doc, root, "not_there", 100u64)?
     core.check.eq(missing, 100u64)
 end todo.config.read_u64_field.test_missing_and_present
 
