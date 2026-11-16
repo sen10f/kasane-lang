@@ -1,0 +1,6 @@
+// expect: E2022
+// メソッドの引数の数 (`Vec.len` は引数なし。候補が複数あっても、どれにも合わなければ誤り)
+fn t.main() -> () uses [alloc] panics never
+    let v: alloc.vec.Vec<u8, std.alloc.System> = alloc.vec.Vec.new(std.alloc.SYSTEM)
+    core.mem.drop(v.len(1u32))
+end t.main

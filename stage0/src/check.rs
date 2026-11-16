@@ -2627,6 +2627,11 @@ impl<'a> Checker<'a> {
                         } else if matches!(r.target, Target::Native(_)) && r.rest.is_empty() {
                             let fq = self.p.expand(&segs, "").join(".");
                             if let Some(&si) = self.p.sigs.get(&fq) {
+                                // 組み込み・標準の関数も `.sig` の宣言と引数の数を照らす (利用者の関数と同じ E2001)。
+                                let (want, n) = (self.def(si).params.len(), items(&f[1]).len());
+                                if want != n {
+                                    self.diag("E2001", format!("{} takes {} argument(s) but {} given", self.def(si).name, want, n), di, nline(e));
+                                }
                                 self.effects(self.def(si), di, nline(e), free, items(&f[2]));
                             }
                         }

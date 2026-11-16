@@ -2399,13 +2399,13 @@ impl<'a> TypeCk<'a> {
         }
         let fit: Vec<(usize, String)> = cands.iter().cloned().filter(|(i, _)| self.p.defs[*i].params.len() == args.len() + 1).collect();
         if fit.is_empty() {
-            if cands.len() == 1 && complete {
-                let d = &self.p.defs[cands[0].0];
-                self.diag(
-                    "E2022",
-                    format!("method `{}` takes {} argument(s) but {} given", name, d.params.len() - 1, args.len()),
-                    line,
-                );
+            // どの候補も引数の数が合わない: 候補が複数でも (レシーバの型の持ち主が全部分かっているなら) 誤り。
+            if !cands.is_empty() && complete {
+                let mut wants: Vec<usize> = cands.iter().map(|(i, _)| self.p.defs[*i].params.len().saturating_sub(1)).collect();
+                wants.sort();
+                wants.dedup();
+                let w: Vec<String> = wants.iter().map(|n| n.to_string()).collect();
+                self.diag("E2022", format!("method `{}` takes {} argument(s) but {} given", name, w.join(" or "), args.len()), line);
             }
             escape_all(self);
             return Ty::Unknown;
@@ -4587,6 +4587,16 @@ impl<'a> TypeCk<'a> {
         }
         match r.target {
             Target::Variant(en, vn) => {
+                // 列挙子の構築も、宣言のペイロードの数と引数の数が合わなければ E2001 (関数の呼び出しと同じ)。
+                let want = match (en.as_str(), vn.as_str()) {
+                    ("Option", "Some") | ("Result", "Ok" | "Err") => Some(1),
+                    _ => self.type_def(&en).and_then(|td| td.variants.iter().find(|v| v.0 == vn).map(|v| v.1.len())),
+                };
+                if let Some(want) = want {
+                    if want != argt.len() {
+                        self.diag("E2001", format!("{} takes {} argument(s) but {} given", vn, want, argt.len()), line);
+                    }
+                }
                 let a0 = argt.first().cloned().unwrap_or(Ty::Unknown);
                 match (en.as_str(), vn.as_str()) {
                     ("Option", "Some") => Ty::Named("Option".into(), vec![a0]),
