@@ -1,0 +1,21 @@
+// expect: E3040
+type t.Res linear
+    id: u32
+end t.Res
+
+fn t.Res.shut(self: t.Res) -> () uses [] panics never
+    let t.Res { id: id } = self
+    core.mem.drop(id)
+end t.Res.shut
+
+fn t.bad() -> () uses [] panics never
+    with r = t.Res { id: 1u32 } close r.shut() {
+        match r {
+            t.Res { id: id } => core.mem.drop(id)
+        }
+    }
+end t.bad
+
+fn t.main() -> Result<(), std.io.Error> uses [] panics never
+    Ok(())
+end t.main

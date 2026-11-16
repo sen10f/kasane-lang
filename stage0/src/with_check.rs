@@ -81,6 +81,40 @@ impl<'a> Checker<'a> {
                 );
             }
         }
+        // 本体から外の変数への代入も、束縛の借用を後始末のあとへ残す (E3043)。
+        if checkable {
+            let mut locals_in_body = vec![];
+            let mut assigns: Vec<&V> = vec![];
+            fn scan<'b>(e: &'b V, locals: &mut Vec<String>, assigns: &mut Vec<&'b V>) {
+                match nname(e) {
+                    "Let" => pat_binds(&nf(e)[0], locals),
+                    "Assign" => assigns.push(e),
+                    _ => {}
+                }
+                for c in children(e) {
+                    scan(c, locals, assigns);
+                }
+            }
+            scan(&f[4], &mut locals_in_body, &mut assigns);
+            let hit = assigns.iter().find(|a| {
+                let lhs = &nf(a)[0];
+                let mut x = lhs;
+                while nname(x) == "Field" {
+                    x = &nf(x)[0];
+                }
+                nname(x) == "Path" && {
+                    let root = strs(&nf(x)[0])[0].clone();
+                    root != name && !locals_in_body.contains(&root)
+                } && self.borrows_from(&nf(a)[1], &name, &inner)
+            });
+            if let Some(a) = hit {
+                self.tdiag(
+                    "E3043",
+                    format!("the `with` body assigns a value that borrows from `{}` to an outer variable, which outlives the `close` (4.4)", name),
+                    nline(a),
+                );
+            }
+        }
         // 本体での move 記録は、後始末の検査に持ち越さない (後始末は本体とは別の経路)。
         self.revive_place(std::slice::from_ref(&name));
         self.tc_expr(&f[3], &inner, &inner_muts, false);
@@ -104,6 +138,17 @@ impl<'a> Checker<'a> {
             }
         };
         match nname(e) {
+            // 参照で取り込んだ閉包は束縛の借用を運ぶ。構造体・タプル・配列・`Some(..)` などの要素も同じ。
+            "Closure" => items(&nf(e)[2]).iter().any(|c| st(tel(c, 0)) != "move" && st(tel(c, 1)) == name),
+            "StructLit" => items(&nf(e)[1]).iter().any(|x| self.borrows_from(&items(x)[1], name, env)),
+            "TupleE" | "ArrayE" => items(&nf(e)[0]).iter().any(|x| self.borrows_from(x, name, env)),
+            "Call" if nname(&nf(e)[0]) == "Path" && strs(&nf(&nf(e)[0])[0]).len() <= 2 && {
+                let s = strs(&nf(&nf(e)[0])[0]);
+                s.last().map_or(false, |l| l == "Some" || l == "Ok" || l == "Err") && s[0] != name
+            } =>
+            {
+                items(&nf(e)[1]).iter().any(|x| self.borrows_from(x, name, env))
+            }
             "Unary" => matches!(st(&nf(e)[0]).as_str(), "&" | "&mut") && rooted(&nf(e)[1]),
             "Call" if nname(&nf(e)[0]) == "Path" => {
                 let segs = strs(&nf(&nf(e)[0])[0]);
@@ -205,6 +250,16 @@ impl<'a> Checker<'a> {
             "Return" => place(&f[0]),
             // 入れ子の `with` の初期化式に束縛を渡すのも move (`with b = a close ..`)。
             "With" => place(&f[2]),
+            // `match r { 値で分解・束縛するパターン => .. }` (`if let` も同じ形) は束縛を move する。
+            "Match" => {
+                nname(&f[0]) == "Path"
+                    && strs(&nf(&f[0])[0]) == [name.to_string()]
+                    && items(&f[1]).iter().any(|a| {
+                        let mut bs = Vec::new();
+                        pat_binds(&items(a)[0], &mut bs);
+                        !bs.is_empty()
+                    })
+            }
             "StructLit" => items(&f[1]).iter().any(|x| place(&items(x)[1])),
             "TupleE" | "ArrayE" => items(&f[0]).iter().any(place),
             "Block" => items(&f[0]).last().map_or(false, |s| nname(s) == "ExprStmt" && place(&nf(s)[0])),
